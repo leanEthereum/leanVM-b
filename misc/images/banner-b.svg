@@ -1,0 +1,339 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="1200" height="400" viewBox="0 0 1200 400" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bgGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#05060a;stop-opacity:1" />
+      <stop offset="30%" style="stop-color:#080a12;stop-opacity:1" />
+      <stop offset="70%" style="stop-color:#0a0c14;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#060810;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="ethGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#8299f7;stop-opacity:1" />
+      <stop offset="50%" style="stop-color:#627eea;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#4a63d3;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="proofGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#627eea;stop-opacity:0.9" />
+      <stop offset="25%" style="stop-color:#00d4aa;stop-opacity:1" />
+      <stop offset="50%" style="stop-color:#00f5c4;stop-opacity:1" />
+      <stop offset="75%" style="stop-color:#00d4aa;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#627eea;stop-opacity:0.9" />
+    </linearGradient>
+    <linearGradient id="innerDiamondGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#00f5c4;stop-opacity:0.8" />
+      <stop offset="100%" style="stop-color:#00d4aa;stop-opacity:0.6" />
+    </linearGradient>
+    <radialGradient id="centerGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" style="stop-color:#00d4aa;stop-opacity:0.15" />
+      <stop offset="40%" style="stop-color:#00d4aa;stop-opacity:0.05" />
+      <stop offset="100%" style="stop-color:#00d4aa;stop-opacity:0" />
+    </radialGradient>
+    <radialGradient id="outerGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" style="stop-color:#627eea;stop-opacity:0.08" />
+      <stop offset="60%" style="stop-color:#627eea;stop-opacity:0.02" />
+      <stop offset="100%" style="stop-color:#627eea;stop-opacity:0" />
+    </radialGradient>
+    <radialGradient id="starGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" style="stop-color:#ffffff;stop-opacity:0.9" />
+      <stop offset="50%" style="stop-color:#00d4aa;stop-opacity:0.3" />
+      <stop offset="100%" style="stop-color:#00d4aa;stop-opacity:0" />
+    </radialGradient>
+    <filter id="glow" x="-100%" y="-100%" width="300%" height="300%">
+      <feGaussianBlur stdDeviation="2" result="coloredBlur"/>
+      <feMerge><feMergeNode in="coloredBlur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="softGlow" x="-100%" y="-100%" width="300%" height="300%">
+      <feGaussianBlur stdDeviation="6" result="coloredBlur"/>
+      <feMerge><feMergeNode in="coloredBlur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="strongGlow" x="-100%" y="-100%" width="300%" height="300%">
+      <feGaussianBlur stdDeviation="12" result="coloredBlur"/>
+      <feMerge><feMergeNode in="coloredBlur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="starFilter" x="-200%" y="-200%" width="500%" height="500%">
+      <feGaussianBlur stdDeviation="1.5" result="coloredBlur"/>
+      <feMerge><feMergeNode in="coloredBlur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="digitGlow" x="-80%" y="-80%" width="260%" height="260%">
+      <feGaussianBlur stdDeviation="0.6" result="coloredBlur"/>
+      <feMerge><feMergeNode in="coloredBlur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <rect width="1200" height="400" fill="url(#bgGradient)"/>
+
+  <g opacity="0.03">
+    <circle cx="150" cy="80" r="0.5" fill="#fff"/>
+    <circle cx="320" cy="150" r="0.5" fill="#fff"/>
+    <circle cx="890" cy="90" r="0.5" fill="#fff"/>
+    <circle cx="1050" cy="180" r="0.5" fill="#fff"/>
+    <circle cx="200" cy="320" r="0.5" fill="#fff"/>
+    <circle cx="980" cy="340" r="0.5" fill="#fff"/>
+  </g>
+
+  <ellipse cx="600" cy="200" rx="500" ry="250" fill="url(#outerGlow)"/>
+  <ellipse cx="600" cy="200" rx="280" ry="200" fill="url(#centerGlow)"/>
+
+  <g>
+    <text x="50.2" y="68.8" font-family="'SFMono-Regular',Consolas,monospace" font-size="12.6" fill="#00d4aa" opacity="0.491" text-anchor="middle" filter="url(#digitGlow)">1</text>
+    <text x="50.2" y="89.0" font-family="'SFMono-Regular',Consolas,monospace" font-size="11.6" fill="#00d4aa" opacity="0.353" text-anchor="middle">0</text>
+    <text x="50.2" y="109.2" font-family="'SFMono-Regular',Consolas,monospace" font-size="11.6" fill="#00d4aa" opacity="0.348" text-anchor="middle">1</text>
+    <text x="50.2" y="129.4" font-family="'SFMono-Regular',Consolas,monospace" font-size="11.6" fill="#00d4aa" opacity="0.271" text-anchor="middle">1</text>
+    <text x="50.2" y="149.6" font-family="'SFMono-Regular',Consolas,monospace" font-size="11.6" fill="#00d4aa" opacity="0.207" text-anchor="middle">0</text>
+    <text x="50.2" y="184.9" font-family="'SFMono-Regular',Consolas,monospace" font-size="10.2" fill="#00d4aa" opacity="0.591" text-anchor="middle" filter="url(#digitGlow)">1</text>
+    <text x="50.2" y="201.0" font-family="'SFMono-Regular',Consolas,monospace" font-size="9.2" fill="#00d4aa" opacity="0.369" text-anchor="middle">1</text>
+    <text x="50.2" y="217.2" font-family="'SFMono-Regular',Consolas,monospace" font-size="9.2" fill="#00d4aa" opacity="0.359" text-anchor="middle">1</text>
+    <text x="50.2" y="233.3" font-family="'SFMono-Regular',Consolas,monospace" font-size="9.2" fill="#00d4aa" opacity="0.340" text-anchor="middle">0</text>
+    <text x="50.2" y="249.4" font-family="'SFMono-Regular',Consolas,monospace" font-size="9.2" fill="#00d4aa" opacity="0.282" text-anchor="middle">1</text>
+    <text x="50.2" y="265.6" font-family="'SFMono-Regular',Consolas,monospace" font-size="9.2" fill="#00d4aa" opacity="0.228" text-anchor="middle">0</text>
+    <text x="50.2" y="301.2" font-family="'SFMono-Regular',Consolas,monospace" font-size="10.5" fill="#00d4aa" opacity="0.540" text-anchor="middle" filter="url(#digitGlow)">0</text>
+    <text x="50.2" y="317.7" font-family="'SFMono-Regular',Consolas,monospace" font-size="9.5" fill="#00d4aa" opacity="0.417" text-anchor="middle">1</text>
+    <text x="50.2" y="334.3" font-family="'SFMono-Regular',Consolas,monospace" font-size="9.5" fill="#00d4aa" opacity="0.355" text-anchor="middle">1</text>
+    <text x="50.2" y="350.9" font-family="'SFMono-Regular',Consolas,monospace" font-size="9.5" fill="#00d4aa" opacity="0.317" text-anchor="middle">1</text>
+    <text x="50.2" y="367.4" font-family="'SFMono-Regular',Consolas,monospace" font-size="9.5" fill="#00d4aa" opacity="0.265" text-anchor="middle">0</text>
+    <text x="50.2" y="384.0" font-family="'SFMono-Regular',Consolas,monospace" font-size="9.5" fill="#00d4aa" opacity="0.211" text-anchor="middle">1</text>
+    <text x="105.2" y="67.9" font-family="'SFMono-Regular',Consolas,monospace" font-size="12.5" fill="#00d4aa" opacity="0.498" text-anchor="middle" filter="url(#digitGlow)">0</text>
+    <text x="105.2" y="87.9" font-family="'SFMono-Regular',Consolas,monospace" font-size="11.5" fill="#00d4aa" opacity="0.370" text-anchor="middle">1</text>
+    <text x="105.2" y="108.0" font-family="'SFMono-Regular',Consolas,monospace" font-size="11.5" fill="#00d4aa" opacity="0.274" text-anchor="middle">0</text>
+    <text x="105.2" y="128.0" font-family="'SFMono-Regular',Consolas,monospace" font-size="11.5" fill="#00d4aa" opacity="0.247" text-anchor="middle">1</text>
+    <text x="105.2" y="148.0" font-family="'SFMono-Regular',Consolas,monospace" font-size="11.5" fill="#00d4aa" opacity="0.225" text-anchor="middle">0</text>
+    <text x="105.2" y="168.1" font-family="'SFMono-Regular',Consolas,monospace" font-size="11.5" fill="#00d4aa" opacity="0.186" text-anchor="middle">1</text>
+    <text x="105.2" y="206.0" font-family="'SFMono-Regular',Consolas,monospace" font-size="11.2" fill="#00d4aa" opacity="0.505" text-anchor="middle" filter="url(#digitGlow)">0</text>
+    <text x="105.2" y="223.8" font-family="'SFMono-Regular',Consolas,monospace" font-size="10.2" fill="#00d4aa" opacity="0.407" text-anchor="middle">0</text>
+    <text x="105.2" y="241.6" font-family="'SFMono-Regular',Consolas,monospace" font-size="10.2" fill="#00d4aa" opacity="0.302" text-anchor="middle">0</text>
+    <text x="105.2" y="259.4" font-family="'SFMono-Regular',Consolas,monospace" font-size="10.2" fill="#00d4aa" opacity="0.299" text-anchor="middle">0</text>
+    <text x="105.2" y="277.2" font-family="'SFMono-Regular',Consolas,monospace" font-size="10.2" fill="#00d4aa" opacity="0.326" text-anchor="middle">1</text>
+    <text x="105.2" y="295.0" font-family="'SFMono-Regular',Consolas,monospace" font-size="10.2" fill="#00d4aa" opacity="0.247" text-anchor="middle">1</text>
+    <text x="105.2" y="312.8" font-family="'SFMono-Regular',Consolas,monospace" font-size="10.2" fill="#00d4aa" opacity="0.270" text-anchor="middle">1</text>
+    <text x="105.2" y="330.6" font-family="'SFMono-Regular',Consolas,monospace" font-size="10.2" fill="#00d4aa" opacity="0.229" text-anchor="middle">1</text>
+    <text x="105.2" y="348.4" font-family="'SFMono-Regular',Consolas,monospace" font-size="10.2" fill="#00d4aa" opacity="0.226" text-anchor="middle">0</text>
+    <text x="105.2" y="366.2" font-family="'SFMono-Regular',Consolas,monospace" font-size="10.2" fill="#00d4aa" opacity="0.190" text-anchor="middle">0</text>
+    <text x="105.2" y="384.0" font-family="'SFMono-Regular',Consolas,monospace" font-size="10.2" fill="#00d4aa" opacity="0.193" text-anchor="middle">0</text>
+    <text x="133.7" y="31.3" font-family="'SFMono-Regular',Consolas,monospace" font-size="11.3" fill="#00d4aa" opacity="0.416" text-anchor="middle" filter="url(#digitGlow)">0</text>
+    <text x="133.7" y="49.3" font-family="'SFMono-Regular',Consolas,monospace" font-size="10.3" fill="#00d4aa" opacity="0.317" text-anchor="middle">1</text>
+    <text x="133.7" y="67.3" font-family="'SFMono-Regular',Consolas,monospace" font-size="10.3" fill="#00d4aa" opacity="0.325" text-anchor="middle">1</text>
+    <text x="133.7" y="85.3" font-family="'SFMono-Regular',Consolas,monospace" font-size="10.3" fill="#00d4aa" opacity="0.312" text-anchor="middle">1</text>
+    <text x="133.7" y="103.3" font-family="'SFMono-Regular',Consolas,monospace" font-size="10.3" fill="#00d4aa" opacity="0.267" text-anchor="middle">0</text>
+    <text x="133.7" y="121.3" font-family="'SFMono-Regular',Consolas,monospace" font-size="10.3" fill="#00d4aa" opacity="0.279" text-anchor="middle">0</text>
+    <text x="133.7" y="139.3" font-family="'SFMono-Regular',Consolas,monospace" font-size="10.3" fill="#00d4aa" opacity="0.212" text-anchor="middle">1</text>
+    <text x="133.7" y="157.3" font-family="'SFMono-Regular',Consolas,monospace" font-size="10.3" fill="#00d4aa" opacity="0.207" text-anchor="middle">0</text>
+    <text x="133.7" y="175.3" font-family="'SFMono-Regular',Consolas,monospace" font-size="10.3" fill="#00d4aa" opacity="0.198" text-anchor="middle">0</text>
+    <text x="133.7" y="193.3" font-family="'SFMono-Regular',Consolas,monospace" font-size="10.3" fill="#00d4aa" opacity="0.194" text-anchor="middle">1</text>
+    <text x="133.7" y="211.3" font-family="'SFMono-Regular',Consolas,monospace" font-size="10.3" fill="#00d4aa" opacity="0.175" text-anchor="middle">1</text>
+    <text x="133.7" y="266.7" font-family="'SFMono-Regular',Consolas,monospace" font-size="12.2" fill="#00d4aa" opacity="0.439" text-anchor="middle" filter="url(#digitGlow)">0</text>
+    <text x="133.7" y="286.2" font-family="'SFMono-Regular',Consolas,monospace" font-size="11.2" fill="#00d4aa" opacity="0.296" text-anchor="middle">0</text>
+    <text x="133.7" y="305.8" font-family="'SFMono-Regular',Consolas,monospace" font-size="11.2" fill="#00d4aa" opacity="0.271" text-anchor="middle">0</text>
+    <text x="133.7" y="325.3" font-family="'SFMono-Regular',Consolas,monospace" font-size="11.2" fill="#00d4aa" opacity="0.235" text-anchor="middle">1</text>
+    <text x="133.7" y="344.9" font-family="'SFMono-Regular',Consolas,monospace" font-size="11.2" fill="#00d4aa" opacity="0.226" text-anchor="middle">1</text>
+    <text x="133.7" y="364.4" font-family="'SFMono-Regular',Consolas,monospace" font-size="11.2" fill="#00d4aa" opacity="0.190" text-anchor="middle">1</text>
+    <text x="133.7" y="384.0" font-family="'SFMono-Regular',Consolas,monospace" font-size="11.2" fill="#00d4aa" opacity="0.147" text-anchor="middle">1</text>
+    <text x="190.0" y="31.3" font-family="'SFMono-Regular',Consolas,monospace" font-size="10.4" fill="#00d4aa" opacity="0.321" text-anchor="middle" filter="url(#digitGlow)">1</text>
+    <text x="190.0" y="47.6" font-family="'SFMono-Regular',Consolas,monospace" font-size="9.4" fill="#00d4aa" opacity="0.251" text-anchor="middle">1</text>
+    <text x="190.0" y="64.0" font-family="'SFMono-Regular',Consolas,monospace" font-size="9.4" fill="#00d4aa" opacity="0.284" text-anchor="middle">0</text>
+    <text x="190.0" y="80.4" font-family="'SFMono-Regular',Consolas,monospace" font-size="9.4" fill="#00d4aa" opacity="0.257" text-anchor="middle">0</text>
+    <text x="190.0" y="96.7" font-family="'SFMono-Regular',Consolas,monospace" font-size="9.4" fill="#00d4aa" opacity="0.219" text-anchor="middle">1</text>
+    <text x="190.0" y="113.1" font-family="'SFMono-Regular',Consolas,monospace" font-size="9.4" fill="#00d4aa" opacity="0.234" text-anchor="middle">0</text>
+    <text x="190.0" y="129.5" font-family="'SFMono-Regular',Consolas,monospace" font-size="9.4" fill="#00d4aa" opacity="0.223" text-anchor="middle">1</text>
+    <text x="190.0" y="145.8" font-family="'SFMono-Regular',Consolas,monospace" font-size="9.4" fill="#00d4aa" opacity="0.167" text-anchor="middle">0</text>
+    <text x="190.0" y="162.2" font-family="'SFMono-Regular',Consolas,monospace" font-size="9.4" fill="#00d4aa" opacity="0.188" text-anchor="middle">1</text>
+    <text x="190.0" y="178.6" font-family="'SFMono-Regular',Consolas,monospace" font-size="9.4" fill="#00d4aa" opacity="0.145" text-anchor="middle">1</text>
+    <text x="190.0" y="194.9" font-family="'SFMono-Regular',Consolas,monospace" font-size="9.4" fill="#00d4aa" opacity="0.148" text-anchor="middle">0</text>
+    <text x="190.0" y="211.3" font-family="'SFMono-Regular',Consolas,monospace" font-size="9.4" fill="#00d4aa" opacity="0.121" text-anchor="middle">0</text>
+    <text x="190.0" y="281.3" font-family="'SFMono-Regular',Consolas,monospace" font-size="12.7" fill="#00d4aa" opacity="0.353" text-anchor="middle" filter="url(#digitGlow)">0</text>
+    <text x="190.0" y="301.8" font-family="'SFMono-Regular',Consolas,monospace" font-size="11.7" fill="#00d4aa" opacity="0.223" text-anchor="middle">0</text>
+    <text x="190.0" y="322.4" font-family="'SFMono-Regular',Consolas,monospace" font-size="11.7" fill="#00d4aa" opacity="0.225" text-anchor="middle">0</text>
+    <text x="190.0" y="342.9" font-family="'SFMono-Regular',Consolas,monospace" font-size="11.7" fill="#00d4aa" opacity="0.193" text-anchor="middle">1</text>
+    <text x="190.0" y="363.5" font-family="'SFMono-Regular',Consolas,monospace" font-size="11.7" fill="#00d4aa" opacity="0.143" text-anchor="middle">0</text>
+    <text x="190.0" y="384.0" font-family="'SFMono-Regular',Consolas,monospace" font-size="11.7" fill="#00d4aa" opacity="0.132" text-anchor="middle">1</text>
+    <text x="242.6" y="43.8" font-family="'SFMono-Regular',Consolas,monospace" font-size="13.1" fill="#00d4aa" opacity="0.294" text-anchor="middle" filter="url(#digitGlow)">0</text>
+    <text x="242.6" y="65.1" font-family="'SFMono-Regular',Consolas,monospace" font-size="12.1" fill="#00d4aa" opacity="0.201" text-anchor="middle">0</text>
+    <text x="242.6" y="86.3" font-family="'SFMono-Regular',Consolas,monospace" font-size="12.1" fill="#00d4aa" opacity="0.167" text-anchor="middle">1</text>
+    <text x="242.6" y="107.6" font-family="'SFMono-Regular',Consolas,monospace" font-size="12.1" fill="#00d4aa" opacity="0.119" text-anchor="middle">1</text>
+    <text x="242.6" y="128.8" font-family="'SFMono-Regular',Consolas,monospace" font-size="12.1" fill="#00d4aa" opacity="0.107" text-anchor="middle">1</text>
+    <text x="242.6" y="166.5" font-family="'SFMono-Regular',Consolas,monospace" font-size="11.2" fill="#00d4aa" opacity="0.257" text-anchor="middle" filter="url(#digitGlow)">0</text>
+    <text x="242.6" y="184.3" font-family="'SFMono-Regular',Consolas,monospace" font-size="10.2" fill="#00d4aa" opacity="0.175" text-anchor="middle">0</text>
+    <text x="242.6" y="202.1" font-family="'SFMono-Regular',Consolas,monospace" font-size="10.2" fill="#00d4aa" opacity="0.188" text-anchor="middle">0</text>
+    <text x="242.6" y="220.0" font-family="'SFMono-Regular',Consolas,monospace" font-size="10.2" fill="#00d4aa" opacity="0.160" text-anchor="middle">0</text>
+    <text x="242.6" y="237.8" font-family="'SFMono-Regular',Consolas,monospace" font-size="10.2" fill="#00d4aa" opacity="0.124" text-anchor="middle">0</text>
+    <text x="242.6" y="255.6" font-family="'SFMono-Regular',Consolas,monospace" font-size="10.2" fill="#00d4aa" opacity="0.107" text-anchor="middle">1</text>
+    <text x="242.6" y="289.8" font-family="'SFMono-Regular',Consolas,monospace" font-size="14.5" fill="#00d4aa" opacity="0.246" text-anchor="middle" filter="url(#digitGlow)">0</text>
+    <text x="242.6" y="313.4" font-family="'SFMono-Regular',Consolas,monospace" font-size="13.5" fill="#00d4aa" opacity="0.206" text-anchor="middle">0</text>
+    <text x="242.6" y="336.9" font-family="'SFMono-Regular',Consolas,monospace" font-size="13.5" fill="#00d4aa" opacity="0.144" text-anchor="middle">0</text>
+    <text x="242.6" y="360.5" font-family="'SFMono-Regular',Consolas,monospace" font-size="13.5" fill="#00d4aa" opacity="0.128" text-anchor="middle">0</text>
+    <text x="242.6" y="384.0" font-family="'SFMono-Regular',Consolas,monospace" font-size="13.5" fill="#00d4aa" opacity="0.094" text-anchor="middle">0</text>
+    <text x="272.3" y="77.7" font-family="'SFMono-Regular',Consolas,monospace" font-size="11.2" fill="#00d4aa" opacity="0.228" text-anchor="middle" filter="url(#digitGlow)">1</text>
+    <text x="272.3" y="95.5" font-family="'SFMono-Regular',Consolas,monospace" font-size="10.2" fill="#00d4aa" opacity="0.167" text-anchor="middle">0</text>
+    <text x="272.3" y="113.3" font-family="'SFMono-Regular',Consolas,monospace" font-size="10.2" fill="#00d4aa" opacity="0.157" text-anchor="middle">0</text>
+    <text x="272.3" y="131.1" font-family="'SFMono-Regular',Consolas,monospace" font-size="10.2" fill="#00d4aa" opacity="0.110" text-anchor="middle">1</text>
+    <text x="272.3" y="148.9" font-family="'SFMono-Regular',Consolas,monospace" font-size="10.2" fill="#00d4aa" opacity="0.107" text-anchor="middle">0</text>
+    <text x="272.3" y="166.7" font-family="'SFMono-Regular',Consolas,monospace" font-size="10.2" fill="#00d4aa" opacity="0.088" text-anchor="middle">1</text>
+    <text x="272.3" y="236.7" font-family="'SFMono-Regular',Consolas,monospace" font-size="10.4" fill="#00d4aa" opacity="0.220" text-anchor="middle" filter="url(#digitGlow)">1</text>
+    <text x="272.3" y="253.1" font-family="'SFMono-Regular',Consolas,monospace" font-size="9.4" fill="#00d4aa" opacity="0.154" text-anchor="middle">0</text>
+    <text x="272.3" y="269.4" font-family="'SFMono-Regular',Consolas,monospace" font-size="9.4" fill="#00d4aa" opacity="0.149" text-anchor="middle">0</text>
+    <text x="272.3" y="285.8" font-family="'SFMono-Regular',Consolas,monospace" font-size="9.4" fill="#00d4aa" opacity="0.152" text-anchor="middle">1</text>
+    <text x="272.3" y="302.2" font-family="'SFMono-Regular',Consolas,monospace" font-size="9.4" fill="#00d4aa" opacity="0.151" text-anchor="middle">0</text>
+    <text x="272.3" y="318.5" font-family="'SFMono-Regular',Consolas,monospace" font-size="9.4" fill="#00d4aa" opacity="0.116" text-anchor="middle">0</text>
+    <text x="272.3" y="334.9" font-family="'SFMono-Regular',Consolas,monospace" font-size="9.4" fill="#00d4aa" opacity="0.106" text-anchor="middle">1</text>
+    <text x="272.3" y="351.3" font-family="'SFMono-Regular',Consolas,monospace" font-size="9.4" fill="#00d4aa" opacity="0.103" text-anchor="middle">0</text>
+    <text x="272.3" y="367.6" font-family="'SFMono-Regular',Consolas,monospace" font-size="9.4" fill="#00d4aa" opacity="0.101" text-anchor="middle">1</text>
+    <text x="272.3" y="384.0" font-family="'SFMono-Regular',Consolas,monospace" font-size="9.4" fill="#00d4aa" opacity="0.077" text-anchor="middle">0</text>
+    <text x="916.1" y="51.0" font-family="'SFMono-Regular',Consolas,monospace" font-size="13.3" fill="#00d4aa" opacity="0.219" text-anchor="middle" filter="url(#digitGlow)">1</text>
+    <text x="916.1" y="72.6" font-family="'SFMono-Regular',Consolas,monospace" font-size="12.3" fill="#00d4aa" opacity="0.163" text-anchor="middle">1</text>
+    <text x="916.1" y="94.1" font-family="'SFMono-Regular',Consolas,monospace" font-size="12.3" fill="#00d4aa" opacity="0.130" text-anchor="middle">0</text>
+    <text x="916.1" y="115.7" font-family="'SFMono-Regular',Consolas,monospace" font-size="12.3" fill="#00d4aa" opacity="0.107" text-anchor="middle">1</text>
+    <text x="916.1" y="137.2" font-family="'SFMono-Regular',Consolas,monospace" font-size="12.3" fill="#00d4aa" opacity="0.074" text-anchor="middle">1</text>
+    <text x="916.1" y="176.8" font-family="'SFMono-Regular',Consolas,monospace" font-size="11.2" fill="#00d4aa" opacity="0.196" text-anchor="middle" filter="url(#digitGlow)">0</text>
+    <text x="916.1" y="194.6" font-family="'SFMono-Regular',Consolas,monospace" font-size="10.2" fill="#00d4aa" opacity="0.161" text-anchor="middle">0</text>
+    <text x="916.1" y="212.4" font-family="'SFMono-Regular',Consolas,monospace" font-size="10.2" fill="#00d4aa" opacity="0.135" text-anchor="middle">1</text>
+    <text x="916.1" y="230.2" font-family="'SFMono-Regular',Consolas,monospace" font-size="10.2" fill="#00d4aa" opacity="0.123" text-anchor="middle">1</text>
+    <text x="916.1" y="248.0" font-family="'SFMono-Regular',Consolas,monospace" font-size="10.2" fill="#00d4aa" opacity="0.095" text-anchor="middle">0</text>
+    <text x="916.1" y="265.8" font-family="'SFMono-Regular',Consolas,monospace" font-size="10.2" fill="#00d4aa" opacity="0.084" text-anchor="middle">1</text>
+    <text x="916.1" y="302.9" font-family="'SFMono-Regular',Consolas,monospace" font-size="12.6" fill="#00d4aa" opacity="0.207" text-anchor="middle" filter="url(#digitGlow)">1</text>
+    <text x="916.1" y="323.2" font-family="'SFMono-Regular',Consolas,monospace" font-size="11.6" fill="#00d4aa" opacity="0.149" text-anchor="middle">1</text>
+    <text x="916.1" y="343.4" font-family="'SFMono-Regular',Consolas,monospace" font-size="11.6" fill="#00d4aa" opacity="0.130" text-anchor="middle">0</text>
+    <text x="916.1" y="363.7" font-family="'SFMono-Regular',Consolas,monospace" font-size="11.6" fill="#00d4aa" opacity="0.103" text-anchor="middle">0</text>
+    <text x="916.1" y="384.0" font-family="'SFMono-Regular',Consolas,monospace" font-size="11.6" fill="#00d4aa" opacity="0.069" text-anchor="middle">1</text>
+    <text x="949.7" y="30.2" font-family="'SFMono-Regular',Consolas,monospace" font-size="13.9" fill="#00d4aa" opacity="0.230" text-anchor="middle" filter="url(#digitGlow)">0</text>
+    <text x="949.7" y="52.7" font-family="'SFMono-Regular',Consolas,monospace" font-size="12.9" fill="#00d4aa" opacity="0.183" text-anchor="middle">1</text>
+    <text x="949.7" y="75.2" font-family="'SFMono-Regular',Consolas,monospace" font-size="12.9" fill="#00d4aa" opacity="0.195" text-anchor="middle">1</text>
+    <text x="949.7" y="97.7" font-family="'SFMono-Regular',Consolas,monospace" font-size="12.9" fill="#00d4aa" opacity="0.159" text-anchor="middle">1</text>
+    <text x="949.7" y="120.2" font-family="'SFMono-Regular',Consolas,monospace" font-size="12.9" fill="#00d4aa" opacity="0.154" text-anchor="middle">1</text>
+    <text x="949.7" y="142.7" font-family="'SFMono-Regular',Consolas,monospace" font-size="12.9" fill="#00d4aa" opacity="0.143" text-anchor="middle">1</text>
+    <text x="949.7" y="165.2" font-family="'SFMono-Regular',Consolas,monospace" font-size="12.9" fill="#00d4aa" opacity="0.138" text-anchor="middle">1</text>
+    <text x="949.7" y="187.7" font-family="'SFMono-Regular',Consolas,monospace" font-size="12.9" fill="#00d4aa" opacity="0.124" text-anchor="middle">1</text>
+    <text x="949.7" y="210.2" font-family="'SFMono-Regular',Consolas,monospace" font-size="12.9" fill="#00d4aa" opacity="0.093" text-anchor="middle">0</text>
+    <text x="949.7" y="247.3" font-family="'SFMono-Regular',Consolas,monospace" font-size="14.0" fill="#00d4aa" opacity="0.229" text-anchor="middle" filter="url(#digitGlow)">1</text>
+    <text x="949.7" y="270.1" font-family="'SFMono-Regular',Consolas,monospace" font-size="13.0" fill="#00d4aa" opacity="0.188" text-anchor="middle">1</text>
+    <text x="949.7" y="292.9" font-family="'SFMono-Regular',Consolas,monospace" font-size="13.0" fill="#00d4aa" opacity="0.181" text-anchor="middle">1</text>
+    <text x="949.7" y="315.6" font-family="'SFMono-Regular',Consolas,monospace" font-size="13.0" fill="#00d4aa" opacity="0.153" text-anchor="middle">1</text>
+    <text x="949.7" y="338.4" font-family="'SFMono-Regular',Consolas,monospace" font-size="13.0" fill="#00d4aa" opacity="0.146" text-anchor="middle">0</text>
+    <text x="949.7" y="361.2" font-family="'SFMono-Regular',Consolas,monospace" font-size="13.0" fill="#00d4aa" opacity="0.115" text-anchor="middle">1</text>
+    <text x="949.7" y="384.0" font-family="'SFMono-Regular',Consolas,monospace" font-size="13.0" fill="#00d4aa" opacity="0.086" text-anchor="middle">1</text>
+    <text x="1006.9" y="56.8" font-family="'SFMono-Regular',Consolas,monospace" font-size="13.1" fill="#00d4aa" opacity="0.368" text-anchor="middle" filter="url(#digitGlow)">1</text>
+    <text x="1006.9" y="78.0" font-family="'SFMono-Regular',Consolas,monospace" font-size="12.1" fill="#00d4aa" opacity="0.264" text-anchor="middle">1</text>
+    <text x="1006.9" y="99.2" font-family="'SFMono-Regular',Consolas,monospace" font-size="12.1" fill="#00d4aa" opacity="0.219" text-anchor="middle">0</text>
+    <text x="1006.9" y="120.4" font-family="'SFMono-Regular',Consolas,monospace" font-size="12.1" fill="#00d4aa" opacity="0.191" text-anchor="middle">1</text>
+    <text x="1006.9" y="141.6" font-family="'SFMono-Regular',Consolas,monospace" font-size="12.1" fill="#00d4aa" opacity="0.170" text-anchor="middle">0</text>
+    <text x="1006.9" y="162.8" font-family="'SFMono-Regular',Consolas,monospace" font-size="12.1" fill="#00d4aa" opacity="0.143" text-anchor="middle">1</text>
+    <text x="1006.9" y="232.8" font-family="'SFMono-Regular',Consolas,monospace" font-size="10.6" fill="#00d4aa" opacity="0.354" text-anchor="middle" filter="url(#digitGlow)">1</text>
+    <text x="1006.9" y="249.6" font-family="'SFMono-Regular',Consolas,monospace" font-size="9.6" fill="#00d4aa" opacity="0.282" text-anchor="middle">1</text>
+    <text x="1006.9" y="266.4" font-family="'SFMono-Regular',Consolas,monospace" font-size="9.6" fill="#00d4aa" opacity="0.222" text-anchor="middle">1</text>
+    <text x="1006.9" y="283.2" font-family="'SFMono-Regular',Consolas,monospace" font-size="9.6" fill="#00d4aa" opacity="0.245" text-anchor="middle">0</text>
+    <text x="1006.9" y="300.0" font-family="'SFMono-Regular',Consolas,monospace" font-size="9.6" fill="#00d4aa" opacity="0.232" text-anchor="middle">1</text>
+    <text x="1006.9" y="316.8" font-family="'SFMono-Regular',Consolas,monospace" font-size="9.6" fill="#00d4aa" opacity="0.218" text-anchor="middle">0</text>
+    <text x="1006.9" y="333.6" font-family="'SFMono-Regular',Consolas,monospace" font-size="9.6" fill="#00d4aa" opacity="0.187" text-anchor="middle">0</text>
+    <text x="1006.9" y="350.4" font-family="'SFMono-Regular',Consolas,monospace" font-size="9.6" fill="#00d4aa" opacity="0.152" text-anchor="middle">1</text>
+    <text x="1006.9" y="367.2" font-family="'SFMono-Regular',Consolas,monospace" font-size="9.6" fill="#00d4aa" opacity="0.146" text-anchor="middle">0</text>
+    <text x="1006.9" y="384.0" font-family="'SFMono-Regular',Consolas,monospace" font-size="9.6" fill="#00d4aa" opacity="0.125" text-anchor="middle">1</text>
+    <text x="1045.8" y="42.2" font-family="'SFMono-Regular',Consolas,monospace" font-size="11.1" fill="#00d4aa" opacity="0.413" text-anchor="middle" filter="url(#digitGlow)">0</text>
+    <text x="1045.8" y="59.9" font-family="'SFMono-Regular',Consolas,monospace" font-size="10.1" fill="#00d4aa" opacity="0.327" text-anchor="middle">1</text>
+    <text x="1045.8" y="77.5" font-family="'SFMono-Regular',Consolas,monospace" font-size="10.1" fill="#00d4aa" opacity="0.272" text-anchor="middle">1</text>
+    <text x="1045.8" y="95.1" font-family="'SFMono-Regular',Consolas,monospace" font-size="10.1" fill="#00d4aa" opacity="0.221" text-anchor="middle">1</text>
+    <text x="1045.8" y="112.8" font-family="'SFMono-Regular',Consolas,monospace" font-size="10.1" fill="#00d4aa" opacity="0.221" text-anchor="middle">1</text>
+    <text x="1045.8" y="130.4" font-family="'SFMono-Regular',Consolas,monospace" font-size="10.1" fill="#00d4aa" opacity="0.190" text-anchor="middle">0</text>
+    <text x="1045.8" y="148.0" font-family="'SFMono-Regular',Consolas,monospace" font-size="10.1" fill="#00d4aa" opacity="0.152" text-anchor="middle">0</text>
+    <text x="1045.8" y="204.0" font-family="'SFMono-Regular',Consolas,monospace" font-size="11.3" fill="#00d4aa" opacity="0.386" text-anchor="middle" filter="url(#digitGlow)">0</text>
+    <text x="1045.8" y="222.0" font-family="'SFMono-Regular',Consolas,monospace" font-size="10.3" fill="#00d4aa" opacity="0.299" text-anchor="middle">1</text>
+    <text x="1045.8" y="240.0" font-family="'SFMono-Regular',Consolas,monospace" font-size="10.3" fill="#00d4aa" opacity="0.325" text-anchor="middle">0</text>
+    <text x="1045.8" y="258.0" font-family="'SFMono-Regular',Consolas,monospace" font-size="10.3" fill="#00d4aa" opacity="0.299" text-anchor="middle">0</text>
+    <text x="1045.8" y="276.0" font-family="'SFMono-Regular',Consolas,monospace" font-size="10.3" fill="#00d4aa" opacity="0.234" text-anchor="middle">0</text>
+    <text x="1045.8" y="294.0" font-family="'SFMono-Regular',Consolas,monospace" font-size="10.3" fill="#00d4aa" opacity="0.253" text-anchor="middle">1</text>
+    <text x="1045.8" y="312.0" font-family="'SFMono-Regular',Consolas,monospace" font-size="10.3" fill="#00d4aa" opacity="0.201" text-anchor="middle">0</text>
+    <text x="1045.8" y="330.0" font-family="'SFMono-Regular',Consolas,monospace" font-size="10.3" fill="#00d4aa" opacity="0.205" text-anchor="middle">1</text>
+    <text x="1045.8" y="348.0" font-family="'SFMono-Regular',Consolas,monospace" font-size="10.3" fill="#00d4aa" opacity="0.185" text-anchor="middle">0</text>
+    <text x="1045.8" y="366.0" font-family="'SFMono-Regular',Consolas,monospace" font-size="10.3" fill="#00d4aa" opacity="0.162" text-anchor="middle">1</text>
+    <text x="1045.8" y="384.0" font-family="'SFMono-Regular',Consolas,monospace" font-size="10.3" fill="#00d4aa" opacity="0.143" text-anchor="middle">0</text>
+    <text x="1087.3" y="79.9" font-family="'SFMono-Regular',Consolas,monospace" font-size="10.5" fill="#00d4aa" opacity="0.425" text-anchor="middle" filter="url(#digitGlow)">0</text>
+    <text x="1087.3" y="96.6" font-family="'SFMono-Regular',Consolas,monospace" font-size="9.5" fill="#00d4aa" opacity="0.387" text-anchor="middle">1</text>
+    <text x="1087.3" y="113.2" font-family="'SFMono-Regular',Consolas,monospace" font-size="9.5" fill="#00d4aa" opacity="0.348" text-anchor="middle">1</text>
+    <text x="1087.3" y="129.8" font-family="'SFMono-Regular',Consolas,monospace" font-size="9.5" fill="#00d4aa" opacity="0.319" text-anchor="middle">0</text>
+    <text x="1087.3" y="146.5" font-family="'SFMono-Regular',Consolas,monospace" font-size="9.5" fill="#00d4aa" opacity="0.305" text-anchor="middle">1</text>
+    <text x="1087.3" y="163.1" font-family="'SFMono-Regular',Consolas,monospace" font-size="9.5" fill="#00d4aa" opacity="0.257" text-anchor="middle">0</text>
+    <text x="1087.3" y="179.8" font-family="'SFMono-Regular',Consolas,monospace" font-size="9.5" fill="#00d4aa" opacity="0.246" text-anchor="middle">1</text>
+    <text x="1087.3" y="196.4" font-family="'SFMono-Regular',Consolas,monospace" font-size="9.5" fill="#00d4aa" opacity="0.199" text-anchor="middle">0</text>
+    <text x="1087.3" y="213.1" font-family="'SFMono-Regular',Consolas,monospace" font-size="9.5" fill="#00d4aa" opacity="0.167" text-anchor="middle">1</text>
+    <text x="1087.3" y="277.3" font-family="'SFMono-Regular',Consolas,monospace" font-size="13.2" fill="#00d4aa" opacity="0.456" text-anchor="middle" filter="url(#digitGlow)">0</text>
+    <text x="1087.3" y="298.7" font-family="'SFMono-Regular',Consolas,monospace" font-size="12.2" fill="#00d4aa" opacity="0.349" text-anchor="middle">1</text>
+    <text x="1087.3" y="320.0" font-family="'SFMono-Regular',Consolas,monospace" font-size="12.2" fill="#00d4aa" opacity="0.306" text-anchor="middle">0</text>
+    <text x="1087.3" y="341.3" font-family="'SFMono-Regular',Consolas,monospace" font-size="12.2" fill="#00d4aa" opacity="0.247" text-anchor="middle">0</text>
+    <text x="1087.3" y="362.7" font-family="'SFMono-Regular',Consolas,monospace" font-size="12.2" fill="#00d4aa" opacity="0.203" text-anchor="middle">0</text>
+    <text x="1087.3" y="384.0" font-family="'SFMono-Regular',Consolas,monospace" font-size="12.2" fill="#00d4aa" opacity="0.157" text-anchor="middle">1</text>
+    <text x="1134.9" y="62.1" font-family="'SFMono-Regular',Consolas,monospace" font-size="13.0" fill="#00d4aa" opacity="0.535" text-anchor="middle" filter="url(#digitGlow)">0</text>
+    <text x="1134.9" y="83.1" font-family="'SFMono-Regular',Consolas,monospace" font-size="12.0" fill="#00d4aa" opacity="0.440" text-anchor="middle">0</text>
+    <text x="1134.9" y="104.2" font-family="'SFMono-Regular',Consolas,monospace" font-size="12.0" fill="#00d4aa" opacity="0.370" text-anchor="middle">0</text>
+    <text x="1134.9" y="125.2" font-family="'SFMono-Regular',Consolas,monospace" font-size="12.0" fill="#00d4aa" opacity="0.356" text-anchor="middle">1</text>
+    <text x="1134.9" y="146.2" font-family="'SFMono-Regular',Consolas,monospace" font-size="12.0" fill="#00d4aa" opacity="0.286" text-anchor="middle">1</text>
+    <text x="1134.9" y="167.3" font-family="'SFMono-Regular',Consolas,monospace" font-size="12.0" fill="#00d4aa" opacity="0.314" text-anchor="middle">1</text>
+    <text x="1134.9" y="188.3" font-family="'SFMono-Regular',Consolas,monospace" font-size="12.0" fill="#00d4aa" opacity="0.282" text-anchor="middle">0</text>
+    <text x="1134.9" y="209.3" font-family="'SFMono-Regular',Consolas,monospace" font-size="12.0" fill="#00d4aa" opacity="0.237" text-anchor="middle">0</text>
+    <text x="1134.9" y="230.4" font-family="'SFMono-Regular',Consolas,monospace" font-size="12.0" fill="#00d4aa" opacity="0.197" text-anchor="middle">1</text>
+    <text x="1134.9" y="300.4" font-family="'SFMono-Regular',Consolas,monospace" font-size="12.9" fill="#00d4aa" opacity="0.522" text-anchor="middle" filter="url(#digitGlow)">1</text>
+    <text x="1134.9" y="321.3" font-family="'SFMono-Regular',Consolas,monospace" font-size="11.9" fill="#00d4aa" opacity="0.385" text-anchor="middle">0</text>
+    <text x="1134.9" y="342.2" font-family="'SFMono-Regular',Consolas,monospace" font-size="11.9" fill="#00d4aa" opacity="0.307" text-anchor="middle">1</text>
+    <text x="1134.9" y="363.1" font-family="'SFMono-Regular',Consolas,monospace" font-size="11.9" fill="#00d4aa" opacity="0.275" text-anchor="middle">1</text>
+    <text x="1134.9" y="384.0" font-family="'SFMono-Regular',Consolas,monospace" font-size="11.9" fill="#00d4aa" opacity="0.211" text-anchor="middle">1</text>
+  </g>
+
+  <g opacity="0.06">
+    <line x1="0" y1="200" x2="400" y2="200" stroke="url(#proofGradient)" stroke-width="0.5"/>
+    <line x1="800" y1="200" x2="1200" y2="200" stroke="url(#proofGradient)" stroke-width="0.5"/>
+  </g>
+
+  <g transform="translate(600, 200) scale(1.4)">
+    <circle cx="0" cy="0" r="165" stroke="#627eea" stroke-width="0.3" fill="none" opacity="0.15" filter="url(#softGlow)"/>
+    <circle cx="0" cy="0" r="150" stroke="#1a2540" stroke-width="0.5" fill="none" opacity="0.4"/>
+    <circle cx="0" cy="0" r="135" stroke="#627eea" stroke-width="0.3" fill="none" opacity="0.2" stroke-dasharray="2 8"/>
+    <circle cx="0" cy="0" r="120" stroke="#00d4aa" stroke-width="0.4" fill="none" opacity="0.15"/>
+
+    <g filter="url(#strongGlow)">
+      <polygon points="0,-105 84,0 0,105 -84,0" fill="none" stroke="url(#proofGradient)" stroke-width="1.5" opacity="0.9"/>
+    </g>
+
+    <polygon points="0,-100 80,0 0,100 -80,0" fill="none" stroke="#00d4aa" stroke-width="0.5" opacity="0.3"/>
+
+    <g filter="url(#softGlow)">
+      <polygon points="0,-65 52,0 0,65 -52,0" fill="none" stroke="url(#innerDiamondGradient)" stroke-width="1" opacity="0.7"/>
+    </g>
+
+    <polygon points="0,-60 48,0 0,60 -48,0" fill="none" stroke="#00f5c4" stroke-width="0.3" opacity="0.4"/>
+
+    <g filter="url(#glow)">
+      <polygon points="0,-38 28,0 0,16 -28,0" fill="url(#ethGradient)" opacity="0.95"/>
+    </g>
+
+    <polygon points="0,16 28,0 0,40 -28,0" fill="#4a63d3" opacity="0.8"/>
+
+    <g filter="url(#glow)">
+      <circle cx="0" cy="-105" r="2.5" fill="url(#starGlow)"/>
+      <circle cx="84" cy="0" r="2.5" fill="url(#starGlow)"/>
+      <circle cx="0" cy="105" r="2.5" fill="url(#starGlow)"/>
+      <circle cx="-84" cy="0" r="2.5" fill="url(#starGlow)"/>
+    </g>
+
+    <circle cx="0" cy="-65" r="1" fill="#00d4aa" opacity="0.5"/>
+    <circle cx="52" cy="0" r="1" fill="#00d4aa" opacity="0.5"/>
+    <circle cx="0" cy="65" r="1" fill="#00d4aa" opacity="0.5"/>
+    <circle cx="-52" cy="0" r="1" fill="#00d4aa" opacity="0.5"/>
+
+    <g opacity="0.5" filter="url(#starFilter)">
+      <circle cx="110" cy="-78" r="1.5" fill="#627eea"/>
+      <circle cx="110" cy="78" r="1.5" fill="#627eea"/>
+      <circle cx="-110" cy="-78" r="1.5" fill="#627eea"/>
+      <circle cx="-110" cy="78" r="1.5" fill="#627eea"/>
+    </g>
+
+    <g opacity="0.3">
+      <circle cx="130" cy="0" r="1" fill="#00d4aa"/>
+      <circle cx="-130" cy="0" r="1" fill="#00d4aa"/>
+      <circle cx="0" cy="130" r="1" fill="#00d4aa"/>
+      <circle cx="0" cy="-130" r="1" fill="#00d4aa"/>
+    </g>
+
+    <g stroke="#627eea" stroke-width="0.3" opacity="0.1">
+      <line x1="-150" y1="-150" x2="-100" y2="-100"/>
+      <line x1="150" y1="-150" x2="100" y2="-100"/>
+      <line x1="-150" y1="150" x2="-100" y2="100"/>
+      <line x1="150" y1="150" x2="100" y2="100"/>
+    </g>
+  </g>
+</svg>

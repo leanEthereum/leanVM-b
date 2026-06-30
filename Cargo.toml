@@ -1,0 +1,29 @@
+[package]
+name = "leanvm-b"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "leanvm_b"
+path = "src/lib.rs"
+
+[[bin]]
+name = "leanvm-b"
+path = "src/main.rs"
+
+[dependencies]
+rayon = "1.10"
+blake3 = "1.5"
+# Proof types derive `Serialize` so a proof can be measured / transmitted.
+serde = { version = "1", features = ["derive"] }
+# GF(2^128), additive NTT, Merkle, BaseFold/Ligerito PCS (§3). VENDORED under
+# `vendor/flock-core` so we do not depend on the external `../binary-fields/flock`
+# tree (which is restructured underneath us). Renamed to `flare` so the imports
+# stay `flare::…`; it is a frozen local snapshot, not a live path dependency.
+flare = { path = "vendor/flock-core", package = "flock-core" }
+# Measures the serialized proof size (the demo binary and the proof-size test).
+bincode = "1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
