@@ -56,12 +56,62 @@ const MAX_LOG_MEM: usize = 32;
 /// instructions of that opcode).
 const MAX_LOG_ROWS: usize = 32;
 
+/// A binding digest of the program bytecode (BLAKE3 of every instruction's
+/// canonical encoding — opcode, operands, and the DEREF store-mode), as two field
+/// elements. Seeded into the transcript alongside the public input, so EVERY
+/// challenge depends on the exact program.
+///
+/// Without this the program's instruction content would enter verification only
+/// through the bytecode bus's `Public`-coordinate MLE evaluation at the GKR point
+/// `ζ` — a single point an attacker recovers from a finished proof. It could then
+/// craft a different program `P'` agreeing with `P`'s bytecode columns at that one
+/// `ζ` and re-present the same proof for `P'` (adaptive-statement forgery). Seeding
+/// `H(program)` before any challenge makes the whole statement — (program, public
+/// input) — bound up front, so a different program yields a different sponge from
+/// the very first squeeze. Both sides hold the program, so both compute this
+/// identically; the announced sizes ride the stream (`announce_public`).
+fn program_digest(prog: &[Op]) -> [F128; 2] {
+    let mut h = blake3::Hasher::new();
+    h.update(b"leanvm-b/program/v0");
+    h.update(&(prog.len() as u64).to_le_bytes());
+    for op in prog {
+        let (tag, a, b, c, k) = match *op {
+            Op::Xor { a, b, c } => (0u8, a, b, c, F128::ZERO),
+            Op::Mul { a, b, c } => (1, a, b, c, F128::ZERO),
+            Op::Set { o, k } => (2, o, 0, 0, k),
+            Op::Deref { alpha, beta, gamma, mode } => {
+                (3 + mode as u8, alpha, beta, gamma, F128::ZERO) // mode ∈ {Cell,Pc,Fp} ⇒ tag 3/4/5
+            }
+            Op::Jump { oc, od, of } => (6, oc, od, of, F128::ZERO),
+            Op::Blake3 { a, b, c } => (7, a, b, c, F128::ZERO),
+        };
+        h.update(&[tag]);
+        h.update(&a.to_le_bytes());
+        h.update(&b.to_le_bytes());
+        h.update(&c.to_le_bytes());
+        h.update(&k.lo.to_le_bytes());
+        h.update(&k.hi.to_le_bytes());
+    }
+    let d = *h.finalize().as_bytes();
+    let w = |o: usize| u64::from_le_bytes(d[o..o + 8].try_into().unwrap());
+    [F128::new(w(0), w(8)), F128::new(w(16), w(24))]
+}
+
+/// The transcript seed: the public statement bound before any challenge — the
+/// public input `pi` followed by the program digest ([`program_digest`]). Both
+/// sides build it identically.
+fn transcript_seed(prog: &[Op], pi: &[F128; 2]) -> [F128; 4] {
+    let d = program_digest(prog);
+    [pi[0], pi[1], d[0], d[1]]
+}
+
 /// Announce the prover's per-table log-sizes (`log_mem` + the six `row_counts`) by
 /// writing them onto the scalar stream (which binds them into the sponge and lets
-/// the verifier reconstruct the layout). The public input is not announced here —
-/// it seeds the transcript at construction (see [`ProverState::new`]). The boundary
-/// states and per-table log-sizes (`taus`) are derived (constants from the program,
-/// and `padlen(row_counts)`), so they need no separate binding.
+/// the verifier reconstruct the layout). The public statement (program + input) is
+/// not announced here — it seeds the transcript at construction (see
+/// [`transcript_seed`]). The boundary states and per-table log-sizes (`taus`) are
+/// derived (constants from the program, and `padlen(row_counts)`), so they need no
+/// separate binding.
 fn announce_public(ps: &mut ProverState, log_mem: usize, row_counts: [usize; 6]) {
     ps.add_scalar(F128::new(log_mem as u64, 0));
     for r in row_counts {
@@ -1187,8 +1237,9 @@ pub fn prove(program: &Program, public_input: [F128; 2]) -> (Proof, Stats) {
         .filter(|(_, p)| !p.is_virtual())
         .map(|(c, _)| c.len())
         .sum();
-    // The public input seeds the transcript, so every challenge depends on it.
-    let mut ps = ProverState::new(b"leanvm-b", &public_input);
+    // The public statement (program digest + input) seeds the transcript, so
+    // every challenge depends on the exact program and public input.
+    let mut ps = ProverState::new(b"leanvm-b", &transcript_seed(&program.prog, &public_input));
 
     // Announce the prover's sizes, then commit, before sampling any challenge.
     announce_public(&mut ps, w.log_mem, w.row_counts);
@@ -1230,7 +1281,7 @@ pub fn prove(program: &Program, public_input: [F128; 2]) -> (Proof, Stats) {
 
     let mut claims = bus_claims;
     claims.extend(constraint_claims(&table_claims));
-    claims.push(bind_pi_prove(&w, &mut ps));
+    claims.push(bind_pi_claim(ps.sample(), &w.layout.placements, &w.layout.pi));
     if has_blake3 {
         // The input/output words bind via the memory bus (value columns are virtual
         // and route to q_pkd, see `slot_claims`); only q_pkd's constant slots need
@@ -1286,32 +1337,17 @@ pub fn prove(program: &Program, public_input: [F128; 2]) -> (Proof, Stats) {
     )
 }
 
-/// Bind the public input `m[0], m[1]` (256 bits) to the committed memory (§8):
-/// open the MEM column at `(r, 0,…,0)` and (verifier-side) check it equals the
-/// MLE of the public pair at `r`. Here we emit the prover's claim. `pi` is already
-/// bound (in `announce_public`), so `r` is sampled directly — no re-observe.
-fn bind_pi_prove(w: &Witness, ps: &mut ProverState) -> ColumnClaim {
-    let r = ps.sample();
-    let h = w.layout.placements[MEM].n_vars;
-    let mut point = vec![F128::ZERO; h];
+/// The public-input binding claim (§8): `MEM(r, 0,…,0) = interp(m[0], m[1], r)`.
+/// The value is a deterministic function of the (seeded) public input `pi` and the
+/// challenge `r`, so it is NOT transmitted — both sides compute it, and the single
+/// opening proves the committed `MEM` really evaluates to it (a memory whose first
+/// two cells disagree with `pi` then fails the opening). `pi` is already bound (the
+/// seed), so `r` is sampled directly. `placements`/`pi` come from the prover's or
+/// verifier's layout; both build the byte-identical claim.
+fn bind_pi_claim(r: F128, placements: &[witness::Placement], pi: &[F128; 2]) -> ColumnClaim {
+    let mut point = vec![F128::ZERO; placements[MEM].n_vars];
     point[0] = r;
-    let value = crate::multilinear::mle_eval(&w.cols[MEM], &point);
-    ps.add_scalar(value);
-    ColumnClaim { col: MEM, point, value }
-}
-
-/// Verifier side of [`bind_pi_prove`]: read the claimed `M(r,0,…,0)` and check it
-/// equals the public input's MLE `interp(m[0], m[1], r)`.
-fn bind_pi_verify(l: &Layout, vs: &mut VerifierState) -> Result<ColumnClaim, Error> {
-    let r = vs.sample();
-    let h = l.placements[MEM].n_vars;
-    let mut point = vec![F128::ZERO; h];
-    point[0] = r;
-    let value = vs.next_scalar().map_err(Error::Transcript)?;
-    if value != crate::multilinear::interp(l.pi[0], l.pi[1], r) {
-        return Err(Error::PublicInput);
-    }
-    Ok(ColumnClaim { col: MEM, point, value })
+    ColumnClaim { col: MEM, point, value: crate::multilinear::interp(pi[0], pi[1], r) }
 }
 
 /// Verify a proof against the public statement (program + public input): replay
@@ -1319,7 +1355,7 @@ fn bind_pi_verify(l: &Layout, vs: &mut VerifierState) -> Result<ColumnClaim, Err
 /// every scalar the prover wrote and pull the PCS hints, then assert the stream
 /// was fully consumed. Takes only public inputs — never the prover's witness.
 pub fn verify(program: &Program, public_input: &[F128; 2], proof: &Proof) -> Result<(), Error> {
-    let mut vs = VerifierState::new(b"leanvm-b", proof, public_input);
+    let mut vs = VerifierState::new(b"leanvm-b", proof, &transcript_seed(&program.prog, public_input));
     let l = read_public(&mut vs, program, public_input)?;
     let root = pcs::read_commitment(&mut vs).map_err(Error::Transcript)?;
 
@@ -1350,7 +1386,7 @@ pub fn verify(program: &Program, public_input: &[F128; 2], proof: &Proof) -> Res
 
     let mut claims = bus_claims;
     claims.extend(constraint_claims(&table_claims));
-    claims.push(bind_pi_verify(&l, &mut vs)?);
+    claims.push(bind_pi_claim(vs.sample(), &l.placements, &l.pi));
     if n_b3 > 0 {
         // Value columns are virtual (routed to q_pkd via `slot_claims`); only the
         // constant pins are added here, at a memory-bus point, mirroring `prove`.
@@ -1586,6 +1622,35 @@ mod tests {
         let (proof, stats) = prove(&program, pi);
         assert_eq!(stats.counts[5], 0, "no BLAKE3 rows");
         verify(&program, &pi, &proof).expect("non-BLAKE3 program verifies");
+    }
+
+    /// A proof is bound to its exact program: presenting it against a *different*
+    /// program (same sizes/layout, one instruction constant changed) must be
+    /// rejected — the program digest seeds the transcript, so a modified program
+    /// diverges the sponge from the first squeeze. Guards the adaptive-statement
+    /// forgery the bytecode-bus single-point MLE check does not, on its own, prevent.
+    #[test]
+    fn proof_bound_to_program() {
+        let prog = vec![
+            Op::Set { o: 2, k: F128::new(5, 0) },
+            Op::Set { o: 3, k: F128::new(6, 0) },
+            Op::Xor { a: 2, b: 3, c: 4 },
+            Op::Xor { a: 0, b: 0, c: 0 }, // sentinel
+        ];
+        let program = Program::from_bytecode(prog.clone(), 5);
+        let pi = [F128::new(1, 0), F128::new(2, 0)];
+        let (proof, _) = prove(&program, pi);
+        verify(&program, &pi, &proof).expect("honest proof verifies");
+
+        // Same shape (4 ops, same opcodes/operands, so identical layout + announced
+        // sizes) but one SET constant changed. Must be rejected.
+        let mut prog2 = prog;
+        prog2[0] = Op::Set { o: 2, k: F128::new(99, 0) };
+        let program2 = Program::from_bytecode(prog2, 5);
+        assert!(
+            verify(&program2, &pi, &proof).is_err(),
+            "a proof must not verify against a different program"
+        );
     }
 
     /// Out-of-process verification: a BLAKE3 proof (whose flock sub-proof now rides
