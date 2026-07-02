@@ -97,6 +97,7 @@ pub(crate) fn add_carry_parts(x: u32, y: u32) -> (u32, u32, u32, u32) {
 
 /// K × K sparse matrix with no nonzero entries. Used as an `a_0`/`b_0` stub
 /// when the constraint definition lives in a `LincheckCircuit` walker.
+#[allow(dead_code)] // used by the dropped keccak/sha2 encoders
 pub(crate) fn empty_matrix(k: usize) -> SparseBinaryMatrix {
     SparseBinaryMatrix {
         num_rows: k,
@@ -117,6 +118,7 @@ pub(crate) fn identity(k: usize) -> SparseBinaryMatrix {
 /// Build a `BlockR1cs` shell with empty A_0, B_0 stubs and C_0 = I_K. The
 /// constraint definition lives in a per-hash `LincheckCircuit` walker. Used
 /// by Keccak.
+#[allow(dead_code)] // used by the dropped keccak/sha2 encoders
 pub(crate) fn build_block_r1cs_empty_stub(
     n_blocks_log: usize,
     k_log: usize,

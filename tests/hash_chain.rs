@@ -1,30 +1,37 @@
-//! A BLAKE3 hash chain, proven end-to-end.
+//! BLAKE3 hash chain, written in the zkDSL and proven end-to-end.
 //!
-//! Starting from the 256-bit zero value `h_0 = 0…0`, each step compresses the
-//! previous value (fed as both 256-bit operands, so `h_{i+1} = BLAKE3(h_i, h_i)`)
-//! into the next. The final value `h_N` is published as the public input — the
-//! first two memory words `m[0], m[1]` — and the last chain step writes its
-//! output directly into those cells, so write-once memory forces the proven
-//! result to equal the announced public input.
+//! Starting from `h_0 = 0…0` (256 bits), each step is `h_{i+1} = BLAKE3(h_i,
+//! h_i)` (the previous value fed as both 256-bit operands). The program mirrors
+//! the Fibonacci demo's strategy: a `range` loop *in the exponent* on the
+//! outside, an unrolled block of `BLAKE3` steps on the inside, with the chain
+//! state carried through a heap `Array` (write-once memory). The final `h_N` is
+//! published into the public input (`m[0], m[1]`); write-once memory forces the
+//! proven result to equal it.
 //!
-//! The BLAKE3 compression is unproven (doc §7.6), so the proof certifies only the
-//! memory / state / bytecode bus interactions: that the chain's reads and writes
-//! are a consistent memory trace ending in the published cells.
+//! `N` and the unroll factor are read from the environment (`LEANVM_HASH_N`,
+//! `LEANVM_HASH_UNROLL`) so this doubles as a benchmark — e.g.
+//! `LEANVM_HASH_N=10000 LEANVM_HASH_UNROLL=1000 cargo test --release
+//! --test hash_chain -- --nocapture`. It prints cycles, per-table sizes, proof
+//! size, prove/verify time, and hashes/second, like `src/main.rs`.
 
-use leanvm_b::cpu::{Op, Program, prove, verify};
+use std::time::Instant;
+
+use leanvm_b::blake3_flock::warm_setup;
+use leanvm_b::compiler::{compile, parse};
+use leanvm_b::cpu::{prove, verify};
 use leanvm_b::field::F128;
 
-/// Independent reference for one compression step, mirroring the VM's encoding:
-/// the four input words `a0,a1,b0,b1` are laid little-endian (lo then hi) into 64
-/// bytes, BLAKE3-hashed, and the 32-byte digest split back into two words.
+/// One compression step `c = BLAKE3(a, b)` (the VM's `blake3` builtin): the four
+/// input words are laid little-endian into 64 bytes, BLAKE3-hashed, and the
+/// 32-byte digest split into two `F128` words. Matches `cpu::blake3_compress`.
 fn compress(a: [F128; 2], b: [F128; 2]) -> [F128; 2] {
     let mut input = [0u8; 64];
     for (slot, w) in input.chunks_exact_mut(16).zip([a[0], a[1], b[0], b[1]]) {
         slot[..8].copy_from_slice(&w.lo.to_le_bytes());
         slot[8..].copy_from_slice(&w.hi.to_le_bytes());
     }
-    let digest = blake3::hash(&input);
-    let d = digest.as_bytes();
+    let d = blake3::hash(&input);
+    let d = d.as_bytes();
     let word = |b: &[u8]| {
         F128::new(
             u64::from_le_bytes(b[..8].try_into().unwrap()),
@@ -34,53 +41,97 @@ fn compress(a: [F128; 2], b: [F128; 2]) -> [F128; 2] {
     [word(&d[..16]), word(&d[16..])]
 }
 
+/// Build the zkDSL source for an `n`-step chain unrolled `unroll` per outer
+/// iteration (`k = n / unroll` iterations). Layout in the heap `buff`: the chain
+/// value after `j·unroll` steps sits at cells `2j, 2j+1` (g-powers `g^{2j},
+/// g^{2j+1}`); each outer step reads that pair, runs `unroll` `BLAKE3`s in
+/// registers, and writes the next pair two cells along.
+fn chain_source(n: usize, unroll: usize) -> String {
+    assert!(unroll >= 1 && n.is_multiple_of(unroll), "N must be a positive multiple of UNROLL");
+    let k = n / unroll;
+    let two_k = 2 * k;
+
+    let mut body = String::new();
+    body.push_str("        c0_0 = buff[i]\n");
+    body.push_str("        c1_0 = buff[i * GEN]\n");
+    for s in 1..=unroll {
+        body.push_str(&format!(
+            "        c0_{s}, c1_{s} = blake3(c0_{p}, c1_{p}, c0_{p}, c1_{p})\n",
+            p = s - 1
+        ));
+    }
+    body.push_str(&format!("        buff[i * GEN ** 2] = c0_{unroll}\n"));
+    body.push_str(&format!("        buff[i * GEN ** 3] = c1_{unroll}\n"));
+
+    format!(
+        "def main():\n\
+        \x20   buff = Array({size})\n\
+        \x20   buff[1] = 0\n\
+        \x20   buff[GEN] = 0\n\
+        \x20   for i in range(0, {two_k}, 2):\n\
+        {body}\
+        \x20   p = 1\n\
+        \x20   p[1] = buff[GEN ** {two_k}]\n\
+        \x20   p[GEN] = buff[GEN ** {two_k_1}]\n\
+        \x20   return\n",
+        size = 2 * k + 2,
+        two_k_1 = two_k + 1,
+    )
+}
+
 #[test]
 fn blake3_hash_chain() {
-    // N steps; N+1 is a power of two so the bytecode is exactly the N steps plus
-    // one sentinel slot, with no filler instructions needed.
-    const N: usize = 15;
-    assert!((N + 1).is_power_of_two());
+    let env = |key: &str, default: usize| {
+        std::env::var(key).ok().and_then(|s| s.parse().ok()).unwrap_or(default)
+    };
+    let unroll = env("LEANVM_HASH_UNROLL", 4);
+    let n = env("LEANVM_HASH_N", 8);
+    assert!(n.is_multiple_of(unroll), "LEANVM_HASH_N must be a multiple of LEANVM_HASH_UNROLL");
 
-    // Reference chain: h[0] = 0…0, h[i+1] = BLAKE3(h[i], h[i]).
-    let mut h = vec![[F128::ZERO; 2]; N + 1];
-    for i in 0..N {
-        h[i + 1] = compress(h[i], h[i]);
+    // Reference chain in O(1) memory: a rolling value, no array of intermediates.
+    let mut h = [F128::ZERO; 2];
+    for _ in 0..n {
+        h = compress(h, h);
     }
-    let pi = h[N]; // the published final value
+    let pi = h; // the published final value h_N
 
-    // Memory layout (fp = 0 throughout): h[i] lives in the two consecutive cells
-    // (2+2i, 3+2i); h[0]'s cells are never written, so they read as 0 (= 0…0).
-    // Step i hashes h[i] into h[i+1]; the final step (i = N-1) writes h[N] into
-    // cells (0, 1), the public-input words.
-    let cell = |i: usize| (2 + 2 * i) as u32;
-    let mut prog: Vec<Op> = (0..N)
-        .map(|i| {
-            let out = if i + 1 == N { 0 } else { cell(i + 1) };
-            Op::Blake3 {
-                a: cell(i),
-                b: cell(i),
-                c: out,
-            }
-        })
-        .collect();
-    // Sentinel in the last slot (never executed; the run halts on reaching it).
-    prog.push(Op::Xor { a: 0, b: 0, c: 0 });
-    assert_eq!(prog.len(), N + 1);
+    let program = compile(&parse(&chain_source(n, unroll)).expect("parse"));
 
-    let main_frame = (2 * N + 2) as u32; // cells 0,1 and 2..=2N+1
-    let program = Program::from_bytecode(prog, main_frame);
+    // Pay the one-time, circuit-shape-only flock setup (build + hash the BLAKE3
+    // R1CS) up front so the timed prove/verify below reflect steady-state,
+    // repeated-proving cost rather than the cold start.
+    warm_setup(n);
 
-    // The run writes the final hash into m[0], m[1]; write-once would panic here
-    // if our reference chain disagreed with the VM's computation.
-    let exec = program.execute(pi);
-    assert_eq!(exec.mem[0], pi[0]);
-    assert_eq!(exec.mem[1], pi[1]);
-
+    let t = Instant::now();
     let (proof, stats) = prove(&program, pi);
-    assert_eq!(stats.counts[5], N, "one BLAKE3 row per chain step");
+    let t_prove = t.elapsed();
+    let t = Instant::now();
     verify(&program, &pi, &proof).expect("hash-chain proof verifies");
+    let t_verify = t.elapsed();
 
-    // A wrong public input must be rejected (the bound m[0],m[1] no longer match).
+    assert_eq!(stats.counts[5], n, "one BLAKE3 row per chain step");
+
+    println!("\nBLAKE3 hash chain (h_{{i+1}} = BLAKE3(h_i, h_i)), N = {n}, unroll = {unroll}");
+    println!("  cycles (VM steps)           : {}", stats.cycles);
+    for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3"].iter().zip(&stats.counts) {
+        let pow = if c == 0 {
+            "0".to_string()
+        } else {
+            format!("2^{:.3}", (c as f64).log2())
+        };
+        println!("    {name:<6} instructions       : {pow}");
+    }
+    println!("  committed witness size      : 2^{:.3}", (stats.committed as f64).log2());
+    let proof_bytes = bincode::serialized_size(&proof).expect("proof is serializable");
+    println!("  proof size                  : {:.1} KiB", proof_bytes as f64 / 1024.0);
+    println!("  proving (incl. witness gen) : {t_prove:?}");
+    println!("  verifying                   : {t_verify:?}");
+    println!(
+        "  throughput                  : {:.0} hashes/s",
+        n as f64 / t_prove.as_secs_f64()
+    );
+
+    // A wrong public input must be rejected.
     let mut bad = pi;
     bad[0] += F128::ONE;
     assert!(verify(&program, &bad, &proof).is_err());

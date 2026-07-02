@@ -163,6 +163,41 @@ pub struct Blake3Attachment {
 /// caller's already-committed `stack` (with `q_pkd` the aligned sub-block at
 /// `stack_offset`), reusing its `prover_data`/`commitment`. On the shared
 /// transcript `ps`.
+/// Memoized BLAKE3 R1CS [`Blake3Setup`], keyed by the executed-instance count.
+/// Building it (the symbolic constraint walk over `2^K_LOG` slots) and its
+/// statement digest cost ~hundreds of ms — fixed per circuit shape, independent
+/// of `N` or the proof. So we build each shape once and reuse it across `prove`,
+/// `verify`, and repeated proofs; the per-setup digest/CSC caches then stay warm,
+/// making verification milliseconds rather than rebuilding the circuit each time.
+fn setup_for(n_blocks: usize) -> std::sync::Arc<Blake3Setup> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<usize, std::sync::Arc<Blake3Setup>>>> =
+        std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    let mut map = cache.lock().expect("BLAKE3 setup cache poisoned");
+    std::sync::Arc::clone(map.entry(n_blocks).or_insert_with(|| std::sync::Arc::new(Blake3Setup::new(n_blocks))))
+}
+
+/// Pre-build (and cache) the flock BLAKE3 R1CS setup for `n_blocks` compressions,
+/// warming BOTH the circuit and the statement-digest caches. This is the fixed,
+/// circuit-shape-only cost (~hundreds of ms, independent of the witness or the
+/// number of proofs): building the `2^K_LOG`-slot R1CS and hashing it.
+///
+/// Call it once up front for a given BLAKE3 instance count to take it off the
+/// critical path, so a subsequent [`crate::cpu::prove`]/[`crate::cpu::verify`]
+/// reflects steady-state (repeated-proving) performance. `n_blocks` is the number
+/// of executed `BLAKE3` instructions (the BLAKE3 table's row count). Idempotent.
+pub fn warm_setup(n_blocks: usize) {
+    if n_blocks == 0 {
+        return;
+    }
+    let setup = setup_for(n_blocks);
+    let _ = setup.r1cs.statement_digest(); // warm the digest cache too
+}
+
+/// Prove `blocks` are valid compressions, discharging the proof against the
+/// caller's already-committed `stack` (with `q_pkd` the aligned sub-block at
+/// `stack_offset`), reusing its `prover_data`/`commitment`. On the shared
+/// transcript `ps`.
 #[allow(clippy::too_many_arguments)]
 pub fn prove_validity_stacked(
     blocks: &[Compression],
@@ -173,7 +208,7 @@ pub fn prove_validity_stacked(
     stack_pd: &[(Vec<F128>, F128)],
     ps: &mut ProverState,
 ) -> Blake3StackProof {
-    Blake3Setup::new(blocks.len())
+    setup_for(blocks.len())
         .prove_validity_stacked(blocks, stack, stack_offset, prover_data, commitment, stack_pd, ps)
 }
 
@@ -189,7 +224,7 @@ pub fn verify_validity_stacked(
     proof: &Blake3StackProof,
     vs: &mut VerifierState,
 ) -> Result<(), VerifyError> {
-    Blake3Setup::new(n_blocks).verify_validity_stacked(commitment, stack_offset, stack_pd, proof, vs)
+    setup_for(n_blocks).verify_validity_stacked(commitment, stack_offset, stack_pd, proof, vs)
 }
 
 #[cfg(test)]

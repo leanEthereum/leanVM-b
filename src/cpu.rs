@@ -743,9 +743,8 @@ fn col_kappas(log_mem: usize, log_bytecode: usize, taus: [usize; 6], n_blake3: u
     // q_pkd: `2^(K_LOG+n_log-7)` F128 coords when BLAKE3 ran, else a size-1 dummy.
     k[QPKD] = crate::blake3_flock::qpkd_kappa(n_blake3);
     for (t, table) in tables::tables().iter().enumerate() {
-        for c in sch.base[t]..sch.base[t] + table.n_committed_columns() {
-            k[c] = taus[t];
-        }
+        let base = sch.base[t];
+        k[base..base + table.n_committed_columns()].fill(taus[t]);
     }
     k
 }
@@ -1039,8 +1038,9 @@ impl Program {
         // BLAKE3, which `layout` rounds up to flock's `2^n_log`).
         for (t, table) in tables::tables().iter().enumerate() {
             let n = 1usize << l.taus[t];
-            for c in sch.base[t]..sch.base[t] + table.n_committed_columns() {
-                cols[c].resize(n, l.pad[c]);
+            let base = sch.base[t];
+            for (i, col) in cols[base..base + table.n_committed_columns()].iter_mut().enumerate() {
+                col.resize(n, l.pad[base + i]);
             }
         }
         // (`execute` already asserts the run halts at the sentinel (pc, fp) =
@@ -1298,6 +1298,9 @@ fn bind_pi_verify(l: &Layout, vs: &mut VerifierState) -> Result<ColumnClaim, Err
 /// every scalar the prover wrote and pull the PCS hints, then assert the stream
 /// was fully consumed. Takes only public inputs — never the prover's witness.
 pub fn verify(program: &Program, public_input: &[F128; 2], proof: &Proof) -> Result<(), Error> {
+    let prof = std::env::var("LEANVM_PROFILE").is_ok();
+    let ms = |t: std::time::Instant| t.elapsed().as_secs_f64() * 1e3;
+    let t0 = std::time::Instant::now();
     let mut vs = VerifierState::new(b"leanvm-b", proof);
     let l = read_public(&mut vs, program, public_input)?;
     let root = pcs::read_commitment(&mut vs).map_err(Error::Transcript)?;
@@ -1319,8 +1322,16 @@ pub fn verify(program: &Program, public_input: &[F128; 2], proof: &Proof) -> Res
         None
     };
 
+    if prof {
+        eprintln!("[verify] setup       : {:>7.2} ms", ms(t0));
+    }
+    let t = std::time::Instant::now();
     let bus_claims = leaf::verify_balance(&l.push, &l.pull, &l.count, &l.pad, &mut vs).map_err(Error::Bus)?;
+    if prof {
+        eprintln!("[verify] bus         : {:>7.2} ms", ms(t));
+    }
 
+    let t = std::time::Instant::now();
     let mut table_claims = Vec::new();
     for (ti, table) in tables::tables().iter().enumerate() {
         let involved = table.constraint_columns();
@@ -1335,6 +1346,9 @@ pub fn verify(program: &Program, public_input: &[F128; 2], proof: &Proof) -> Res
         table_claims.push(cl);
     }
 
+    if prof {
+        eprintln!("[verify] constraints : {:>7.2} ms", ms(t));
+    }
     let mut claims = bus_claims;
     claims.extend(constraint_claims(&table_claims));
     claims.push(bind_pi_verify(&l, &mut vs)?);
@@ -1348,6 +1362,7 @@ pub fn verify(program: &Program, public_input: &[F128; 2], proof: &Proof) -> Res
     let slots = slot_claims(&l, &claims);
 
     // ONE opening of the single commitment, mirroring `prove`.
+    let t = std::time::Instant::now();
     if blake3_rho.is_some() {
         let att = proof.blake3.as_ref().ok_or(Error::Blake3Missing)?;
         let offset = l.placements[QPKD].offset;
@@ -1357,6 +1372,9 @@ pub fn verify(program: &Program, public_input: &[F128; 2], proof: &Proof) -> Res
             .map_err(Error::Blake3)?;
     } else {
         pcs::verify(&mut vs, &slots, l.m, &root).map_err(Error::Open)?;
+    }
+    if prof {
+        eprintln!("[verify] open        : {:>7.2} ms", ms(t));
     }
     vs.finish().map_err(Error::Transcript)
 }

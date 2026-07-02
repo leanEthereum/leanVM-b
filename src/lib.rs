@@ -8,28 +8,28 @@
 //!
 //! Modules:
 //!
-//! - [`compiler`]    — a minimal Python-like zkDSL front end: parse → lower to
-//!                     the v1 ISA (calls, `range` loops in the exponent,
-//!                     `assert`) → witness, producing a provable [`cpu::Program`].
-//! - [`field`]       — GF(2^128) in GHASH form (flock), the generator `g`, and
-//!                     the g-power index helpers.
-//! - [`transcript`]  — Fiat–Shamir transcript (observe-and-fold in one op).
+//! - [`compiler`] — a minimal Python-like zkDSL front end: parse → lower to the
+//!   ISA (calls, `range` loops in the exponent, `assert`, `blake3`) → witness,
+//!   producing a provable [`cpu::Program`].
+//! - [`field`] — GF(2^128) in GHASH form (flock), the generator `g`, and the
+//!   g-power index helpers.
+//! - [`transcript`] — Fiat–Shamir transcript (observe-and-fold in one op).
 //! - [`multilinear`] — eq polynomial, folding, MLE evaluation, Lagrange eval.
-//! - [`pcs`]         — field-valued witness commitment via flock's BaseFold,
-//!                     opened at a plain point (§3).
-//! - [`witness`]     — field-valued columns stacked into one committed witness.
-//! - [`gkr`]         — the grand product via GKR (§4.3), which balances the bus.
-//! - [`leaf`]        — the shared bus: grand-product balance with g-power
-//!                     addresses/counts and the index column, decomposed to
-//!                     per-column claims (§4.2–§4.4, §5).
+//! - [`pcs`] — field-valued witness commitment via flock's BaseFold, opened at a
+//!   plain point (§3).
+//! - [`witness`] — field-valued columns stacked into one committed witness.
+//! - [`gkr`] — the grand product via GKR (§4.3), which balances the bus.
+//! - [`leaf`] — the shared bus: grand-product balance with g-power addresses /
+//!   counts and the index column, decomposed to per-column claims (§4.2–§4.4, §5).
 //! - [`constraints`] — the per-table degree-2 field zerocheck (§4.1): addresses,
-//!                     `XOR` sum, `MUL_NATIVE` product, `JUMP` selection.
-//! - [`cpu`]         — whole-program assembly: all six opcodes (`XOR`,
-//!                     `MUL_NATIVE`, `SET_CONSTANT`, `DEREF`, `JUMP`, `BLAKE3`) as
-//!                     tables sharing the state/memory/bytecode buses, with control
-//!                     flow, bound to one commitment and verified oracle-free.
-//!                     `BLAKE3`'s compression is unproven (only its bus
-//!                     interactions are enforced); see `doc.tex` §7.6.
+//!   `XOR` sum, `MUL_NATIVE` product, `JUMP` selection.
+//! - [`cpu`] — whole-program assembly: all six opcodes (`XOR`, `MUL_NATIVE`,
+//!   `SET_CONSTANT`, `DEREF`, `JUMP`, `BLAKE3`) as tables sharing the
+//!   state/memory/bytecode buses, with control flow, bound to one commitment and
+//!   verified oracle-free.
+//! - [`blake3_flock`] — the `BLAKE3` glue: flock's R1CS validity proof of the
+//!   compressions, discharged against the SAME committed stack as the rest of the
+//!   witness (single PCS), bound to the VM's memory values.
 
 pub mod blake3_flock;
 pub mod compiler;

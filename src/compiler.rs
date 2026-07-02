@@ -169,6 +169,14 @@ enum LOp {
         od: Off,
         of: Off,
     },
+    /// `BLAKE3`: the two 256-bit inputs `a = (a, a+1)`, `b = (b, b+1)` and output
+    /// `c = (c, c+1)` each occupy two CONSECUTIVE frame cells (the op reads/writes
+    /// the operand and its successor `×g`).
+    Blake3 {
+        a: Off,
+        b: Off,
+        c: Off,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -327,7 +335,36 @@ impl FnLower<'_> {
 
     /// Lower a call; returns the caller offsets bound to the returned values.
     fn call(&mut self, callee: &str, args: &[Expr], n_ret: usize) -> Vec<Off> {
+        if callee == "blake3" {
+            return self.blake3_call(args);
+        }
         self.lower_call(callee, args, n_ret, None)
+    }
+
+    /// `c0, c1 = blake3(a0, a1, b0, b1)` — the VM `BLAKE3` of the two 256-bit
+    /// inputs `a = (a0, a1)` and `b = (b0, b1)`, output `c = (c0, c1)`. The op
+    /// reads each operand at two *consecutive* frame cells, so the four input
+    /// words are copied into consecutive slots and the output takes two fresh
+    /// consecutive slots. Returns the two output offsets `(c0, c0+1)`.
+    fn blake3_call(&mut self, args: &[Expr]) -> Vec<Off> {
+        assert_eq!(args.len(), 4, "blake3 takes (a0, a1, b0, b1)");
+        let vals: Vec<Off> = args.iter().map(|a| self.expr(a)).collect();
+        // Materialize the `1` cell first so the six slots below stay contiguous
+        // (a copy's `Mul` reuses it without allocating a cell mid-block).
+        self.one();
+        let a0 = self.fresh();
+        let a1 = self.fresh();
+        let b0 = self.fresh();
+        let b1 = self.fresh();
+        let c0 = self.fresh();
+        let c1 = self.fresh();
+        debug_assert!(a1 == a0 + 1 && b0 == a0 + 2 && b1 == a0 + 3 && c0 == a0 + 4 && c1 == a0 + 5);
+        self.copy(vals[0], a0);
+        self.copy(vals[1], a1);
+        self.copy(vals[2], b0);
+        self.copy(vals[3], b1);
+        self.emit(LOp::Blake3 { a: a0, b: b0, c: c0 });
+        vec![c0, c1]
     }
 
     /// A *conditional* tail call: transfer to `callee(args)` iff `cond != 0`,
@@ -918,27 +955,27 @@ fn parse_expr(s: &str) -> Result<Expr, String> {
         let idx = parse_expr(&s[open + 1..s.len() - 1])?;
         return Ok(Expr::Index(Box::new(base), Box::new(idx)));
     }
-    if let Some(open) = s.find('(') {
-        if s.ends_with(')') {
-            let name = s[..open].trim().to_string();
-            let args_str = s[open + 1..s.len() - 1].trim();
-            let args = if args_str.is_empty() {
-                vec![]
-            } else {
-                split_top(args_str, ',')
-                    .iter()
-                    .map(|a| parse_expr(a))
-                    .collect::<Result<_, _>>()?
-            };
-            // `Array(n)` is a heap allocation, not an ordinary call.
-            if name == "Array" {
-                if let [Expr::Lit(n)] = args.as_slice() {
-                    return Ok(Expr::Array(*n as u64));
-                }
-                return Err("Array(n) needs one integer-literal size".into());
+    if let Some(open) = s.find('(')
+        && s.ends_with(')')
+    {
+        let name = s[..open].trim().to_string();
+        let args_str = s[open + 1..s.len() - 1].trim();
+        let args = if args_str.is_empty() {
+            vec![]
+        } else {
+            split_top(args_str, ',')
+                .iter()
+                .map(|a| parse_expr(a))
+                .collect::<Result<_, _>>()?
+        };
+        // `Array(n)` is a heap allocation, not an ordinary call.
+        if name == "Array" {
+            if let [Expr::Lit(n)] = args.as_slice() {
+                return Ok(Expr::Array(*n as u64));
             }
-            return Ok(Expr::Call(name, args));
+            return Err("Array(n) needs one integer-literal size".into());
         }
+        return Ok(Expr::Call(name, args));
     }
     if s.chars().all(|c| c.is_alphanumeric() || c == '_') && !s.is_empty() {
         return Ok(Expr::Var(s.to_string()));
@@ -1044,7 +1081,7 @@ pub fn disassemble(prog: &[Op]) -> String {
     let mut acc = F128::ONE;
     for j in 0..(prog.len() + 512) {
         gmap.entry(acc).or_insert(j);
-        acc = acc * crate::field::g();
+        acc *= crate::field::g();
     }
     let kfmt = |k: F128| match gmap.get(&k) {
         Some(j) => format!("g^{j}"),
@@ -1090,7 +1127,7 @@ fn g_pow_u128(mut e: u128) -> F128 {
     let mut base = crate::field::g();
     while e > 0 {
         if e & 1 == 1 {
-            result = result * base;
+            result *= base;
         }
         base = base * base;
         e >>= 1;
@@ -1127,6 +1164,7 @@ fn resolve(op: &LOp, entry: &HashMap<String, u32>, sentinel: u32) -> Op {
             od: *od,
             of: *of,
         },
+        LOp::Blake3 { a, b, c } => Op::Blake3 { a: *a, b: *b, c: *c },
     }
 }
 

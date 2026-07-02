@@ -167,12 +167,11 @@ pub fn verify_product(mu: usize, vs: &mut VerifierState) -> Result<(F128, LeafCl
         let k = mu - i;
         let mut rho = Vec::with_capacity(k);
         let mut eq_acc = F128::ONE; // ∏_{l<round} eq(r_l, ρ_l)
-        for round in 0..k {
+        for (round, &rj) in r.iter().enumerate().take(k) {
             let msg = vs.next_scalars(3).map_err(|_| GkrError::Truncated)?;
             // The prover sent only `h`; the full round univariate is
             // `q(t) = eq_acc·eq(r_round, t)·h(t)`, so `q(0)+q(1)` must equal the
             // claim (`eq(r_round,0)=1+r_round`, `eq(r_round,1)=r_round`).
-            let rj = r[round];
             if eq_acc * ((F128::ONE + rj) * msg[0] + rj * msg[1]) != claim {
                 return Err(GkrError::SumcheckInconsistent { layer: i, round });
             }

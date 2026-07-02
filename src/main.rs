@@ -56,7 +56,7 @@ fn fibonacci_program(fib_n: usize) -> (String, [F128; 2]) {
     const UNROLL: usize = 1000;
     const XORS: usize = 16;
     assert!(
-        fib_n >= UNROLL && fib_n % UNROLL == 0,
+        fib_n >= UNROLL && fib_n.is_multiple_of(UNROLL),
         "fib_n must be a positive multiple of {UNROLL}"
     );
     let k = fib_n / UNROLL; // number of blocks
