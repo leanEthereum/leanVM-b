@@ -78,7 +78,10 @@ pub fn placements_of(kappas: &[Option<usize>]) -> (Vec<Placement>, usize) {
         placements[i] = Placement { n_vars: k, offset: off };
         off += 1 << k;
     }
-    let m = crate::log2_ceil_usize(off.max(1)).max(2);
+    // Floor the stack size at the PCS minimum (Ligerito's recursion needs room;
+    // see `pcs::MIN_MU`) — tiny witnesses zero-pad up to it. Both sides derive
+    // this identically from the kappas alone.
+    let m = crate::log2_ceil_usize(off.max(1)).max(crate::pcs::MIN_MU);
     (placements, m)
 }
 

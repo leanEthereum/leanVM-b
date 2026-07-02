@@ -15,7 +15,7 @@
 //!   g-power index helpers.
 //! - [`transcript`] — Fiat–Shamir transcript (observe-and-fold in one op).
 //! - [`multilinear`] — eq polynomial, folding, MLE evaluation, Lagrange eval.
-//! - [`pcs`] — field-valued witness commitment via flock's BaseFold, opened at a
+//! - [`pcs`] — field-valued witness commitment via flock's Ligerito, opened at a
 //!   plain point (§3).
 //! - [`witness`] — field-valued columns stacked into one committed witness.
 //! - [`gkr`] — the grand product via GKR (§4.3), which balances the bus.

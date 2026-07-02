@@ -1501,7 +1501,7 @@ impl Blake3Setup {
 pub struct Blake3StackProof {
     pub zerocheck: flock_core::zerocheck::ZerocheckProof,
     pub lincheck: flock_core::lincheck::LincheckProof,
-    pub open: flock_core::pcs::BatchOpeningProof,
+    pub open: flock_core::pcs::BatchOpeningProofLigerito,
 }
 
 /// One claim on the committed packed BLAKE3 witness `q_pkd`, as left by the
@@ -1694,7 +1694,7 @@ impl Blake3Setup {
         stack_commitment: &Commitment,
         stack_pd: &[(Vec<F128>, F128)],
         challenger: &mut Ch,
-    ) -> flock_core::pcs::BatchOpeningProof {
+    ) -> flock_core::pcs::BatchOpeningProofLigerito {
         let padding = flock_core::zerocheck::PaddingSpec {
             k_log: self.r1cs.k_log,
             useful_bits_per_block: self.r1cs.useful_bits,
@@ -1706,7 +1706,8 @@ impl Blake3Setup {
             .iter()
             .map(|(point, value)| flock_core::pcs::StackClaim::Point { point, value: *value })
             .collect();
-        flock_core::pcs::open_batch_mixed_stacked(
+        let (lig_config, _) = stacked_lig_configs(stack_commitment);
+        flock_core::pcs::open_batch_mixed_ligerito_stacked(
             z_packed,
             &[ab_x.as_slice(), c_x.as_slice()],
             &[reduced.ab.s_hat_v.as_deref(), reduced.c.s_hat_v.as_deref()],
@@ -1716,6 +1717,7 @@ impl Blake3Setup {
             stack_data,
             stack_commitment,
             &pd,
+            &lig_config,
             challenger,
         )
     }
@@ -1800,7 +1802,8 @@ impl Blake3Setup {
             .iter()
             .map(|(point, value)| flock_core::pcs::StackClaim::Point { point, value: *value })
             .collect();
-        flock_core::pcs::verify_opening_batch_mixed_stacked(
+        let (_, lig_config) = stacked_lig_configs(stack_commitment);
+        flock_core::pcs::verify_opening_batch_mixed_ligerito_stacked(
             stack_commitment,
             stack_offset,
             qpkd_vars,
@@ -1809,10 +1812,28 @@ impl Blake3Setup {
             &[ab_x.as_slice(), c_x.as_slice()],
             &pd,
             &proof.open,
+            &lig_config,
             challenger,
         )
         .map_err(verifier::VerifyError::PcsAb)
     }
+}
+
+/// The Ligerito (prover, verifier) config pair for a stacked open against
+/// `stack_commitment` — derived from the commitment's own `(m, profile)` params,
+/// so both sides agree by construction.
+fn stacked_lig_configs(
+    stack_commitment: &Commitment,
+) -> (
+    flock_core::pcs::ligerito::ProverConfig,
+    flock_core::pcs::ligerito::VerifierConfig,
+) {
+    flock_core::pcs::ligerito::LigeritoSecurityConfig::derive_profile(
+        stack_commitment.params.m,
+        stack_commitment.params.profile,
+    )
+    .and_then(|sec| sec.to_prover_verifier_configs())
+    .expect("ligerito config for stacked open")
 }
 
 // ---------------------------------------------------------------------------

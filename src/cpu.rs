@@ -1200,7 +1200,7 @@ pub fn prove(program: &Program, public_input: [F128; 2]) -> (Proof, Stats) {
 
     // BLAKE3 ↔ flock (§blake3_flock), single PCS: q_pkd is a column in `w.q`.
     // flock's R1CS validity and EVERY leanVM point claim are discharged together
-    // by ONE BaseFold over this commitment (below). The input/output words bind via
+    // by ONE Ligerito over this commitment (below). The input/output words bind via
     // the memory bus (virtual value columns route to q_pkd); the constant pins reuse
     // a bus point, so no dedicated binding challenge is drawn. Mirrored in `verify`.
     let has_blake3 = !exec.trace.blake3.is_empty();
@@ -1260,7 +1260,7 @@ pub fn prove(program: &Program, public_input: [F128; 2]) -> (Proof, Stats) {
 
     // ONE opening of the single commitment over ONE claim list: leanVM's point
     // claims plus (if any) flock's ring-switched BLAKE3 bundle, all in one
-    // BaseFold. The bundle carries its own ring-switch front-end; `pcs::open`
+    // Ligerito. The bundle carries its own ring-switch front-end; `pcs::open`
     // delegates that combine to flock while keeping the point claims block-sparse.
     let offset = w.layout.placements[QPKD].offset;
     let mut open_claims: Vec<pcs::OpenClaim> = slots.into_iter().map(pcs::OpenClaim::Point).collect();
@@ -1270,7 +1270,7 @@ pub fn prove(program: &Program, public_input: [F128; 2]) -> (Proof, Stats) {
     let mixed_open = pcs::open(&mut ps, &committed, &w.q, &open_claims);
     if let Some((_, zc, lc, _)) = blake3 {
         // Carry flock's sub-proof on the shared channels: its scalar reduction on
-        // the `stream` (raw transport), its BaseFold on the `openings` hint channel.
+        // the `stream` (raw transport), its Ligerito on the `openings` hint channel.
         crate::blake3_flock::write_stack_proof(&mut ps, zc, lc, mixed_open.expect("mixed opening present with BLAKE3"));
     }
     if prof {
@@ -1324,7 +1324,7 @@ pub fn verify(program: &Program, public_input: &[F128; 2], proof: &Proof) -> Res
     let root = pcs::read_commitment(&mut vs).map_err(Error::Transcript)?;
 
     // BLAKE3 ↔ flock (single PCS): flock's R1CS validity and every leanVM point
-    // claim are verified together by ONE BaseFold opening at the end. The executed-
+    // claim are verified together by ONE Ligerito opening at the end. The executed-
     // BLAKE3 count is public (announced); its flock sub-proof rides the shared
     // `stream`/`openings`, and presence is enforced by consumption below plus
     // `vs.finish()` (a proof with `n_b3 = 0` but trailing flock data, or vice versa,
@@ -1359,7 +1359,7 @@ pub fn verify(program: &Program, public_input: &[F128; 2], proof: &Proof) -> Res
     }
     // Read flock's BLAKE3 sub-proof off the shared channels (mirrors prove's
     // `write_stack_proof`): the scalar reduction from the `stream` as raw transport
-    // (right after the last bound scalar), its BaseFold from `openings`.
+    // (right after the last bound scalar), its Ligerito from `openings`.
     let blake3_sub = if n_b3 > 0 {
         Some(crate::blake3_flock::read_stack_proof(&mut vs).map_err(Error::Transcript)?)
     } else {
@@ -1467,9 +1467,9 @@ mod tests {
 
         let (proof, stats) = prove(&program, pi);
         assert_eq!(stats.counts[5], 1, "one BLAKE3 row");
-        // flock's sub-proof rides the shared channels: its BaseFold is the proof's
+        // flock's sub-proof rides the shared channels: its Ligerito is the proof's
         // one opening, its scalar reduction trails the `stream`.
-        assert!(!proof.openings.is_empty(), "BLAKE3 program carries a BaseFold opening");
+        assert!(!proof.openings.is_empty(), "BLAKE3 program carries a Ligerito opening");
         verify(&program, &pi, &proof).expect("BLAKE3 program verifies");
     }
 
@@ -1507,7 +1507,7 @@ mod tests {
         verify(&program, &pi, &proof).expect("self-hash BLAKE3 verifies");
     }
 
-    /// Tampering flock's validity sub-proof (its BaseFold `final_b`, opened over
+    /// Tampering flock's validity sub-proof (its Ligerito `final_b`, opened over
     /// the same stacked commitment) must make verification fail.
     #[test]
     fn blake3_rejects_tampered_validity() {
@@ -1526,8 +1526,10 @@ mod tests {
         let (mut proof, _) = prove(&program, pi);
         verify(&program, &pi, &proof).expect("honest proof verifies");
 
-        // flock's BaseFold is the proof's opening; tamper its final value.
-        proof.openings.last_mut().expect("flock BaseFold opening").final_b += F128::ONE;
+        // flock's Ligerito opening is the proof's one hint; tamper a sumcheck
+        // round message (the inner-product transcript) — must be rejected.
+        let lig = proof.openings.last_mut().expect("flock Ligerito opening");
+        lig.sumcheck_transcript[0].u_0 += F128::ONE;
         assert!(
             verify(&program, &pi, &proof).is_err(),
             "tampered BLAKE3 validity proof must be rejected"
@@ -1539,7 +1541,7 @@ mod tests {
     /// the verifier's reduction/opening replay — so tampering a transport word
     /// diverges the recovered `(ab, c)` claims (or breaks decoding) and
     /// verification must reject. (Complements `blake3_rejects_tampered_validity`,
-    /// which tampers the BaseFold opening.)
+    /// which tampers the Ligerito opening.)
     #[test]
     fn blake3_rejects_tampered_reduction() {
         let prog = vec![

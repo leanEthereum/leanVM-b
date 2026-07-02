@@ -14,7 +14,7 @@
 //!   cannot bind-without-transmitting or transmit-without-binding by mistake. A
 //!   challenge is just `sample()`d, bound to everything seeded/sent so far.
 //! - **`hint_*` (prover) / `next_*` (verifier)**: transport that is NOT absorbed
-//!   here — either hash-bearing (the BaseFold `openings`, like leanVM's
+//!   here — either hash-bearing (the Ligerito `openings`, like leanVM's
 //!   `merkle_paths`) or already bound elsewhere (flock's scalar sub-proof, which
 //!   re-enters the sponge through flock's own reduction/opening replay).
 //! - **`sample` / `sample_vec`**: squeeze a challenge.
@@ -26,7 +26,7 @@
 
 use crate::field::F128;
 use flare::challenger::Challenger;
-use flare::pcs::basefold::BaseFoldProof;
+use flare::pcs::ligerito::LigeritoProof;
 
 // Domain tags, so distinct kinds of absorbed data cannot alias.
 const TAG_F128: u8 = 0x01;
@@ -85,13 +85,13 @@ impl Sponge {
     }
 }
 
-/// A complete proof: the scalar transcript stream plus the BaseFold opening hint
+/// A complete proof: the scalar transcript stream plus the Ligerito opening hint
 /// channel — **two** channels, no bolted-on side field. The commitment root and
-/// every transmitted scalar ride `stream`; the hash-bearing BaseFold openings
+/// every transmitted scalar ride `stream`; the hash-bearing Ligerito openings
 /// ride `openings`. flock's BLAKE3 sub-proof is carried the same way: its scalar
 /// reduction (zerocheck / lincheck / ring-switch) rides `stream` as pure
 /// transport ([`ProverState::hint_bytes`] — NOT re-absorbed, since flock's
-/// verifier replay is the sole binder) and its one BaseFold rides `openings`.
+/// verifier replay is the sole binder) and its one Ligerito opening rides `openings`.
 ///
 /// `Deserialize` as well as `Serialize`, so a proof round-trips over the wire and
 /// an independent verifier process reconstructs it: everything lives in these two
@@ -102,8 +102,8 @@ pub struct Proof {
     /// Every transmitted field scalar, in protocol order (plus flock's scalar
     /// sub-proof as trailing raw transport words).
     pub stream: Vec<F128>,
-    /// BaseFold openings (sumcheck/FRI messages + Merkle paths), in order.
-    pub openings: Vec<BaseFoldProof>,
+    /// Ligerito openings (sumcheck messages + Merkle roots/paths), in order.
+    pub openings: Vec<LigeritoProof>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -120,7 +120,7 @@ pub enum Error {
 pub struct ProverState {
     sponge: Sponge,
     stream: Vec<F128>,
-    openings: Vec<BaseFoldProof>,
+    openings: Vec<LigeritoProof>,
 }
 
 impl ProverState {
@@ -155,7 +155,7 @@ impl ProverState {
         (0..n).map(|_| self.sponge.sample()).collect()
     }
 
-    pub fn hint_opening(&mut self, bf: BaseFoldProof) {
+    pub fn hint_opening(&mut self, bf: LigeritoProof) {
         self.openings.push(bf);
     }
 
@@ -190,7 +190,7 @@ pub struct VerifierState<'a> {
     sponge: Sponge,
     stream: &'a [F128],
     offset: usize,
-    openings: &'a [BaseFoldProof],
+    openings: &'a [LigeritoProof],
     oi: usize,
 }
 
@@ -252,7 +252,7 @@ impl<'a> VerifierState<'a> {
         (0..n).map(|_| self.sponge.sample()).collect()
     }
 
-    pub fn next_opening(&mut self) -> Result<&'a BaseFoldProof, Error> {
+    pub fn next_opening(&mut self) -> Result<&'a LigeritoProof, Error> {
         let o = self.openings.get(self.oi).ok_or(Error::MissingHint)?;
         self.oi += 1;
         Ok(o)

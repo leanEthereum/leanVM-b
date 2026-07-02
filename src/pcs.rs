@@ -1,27 +1,32 @@
 //! Witness commitment: an inner-product PCS over F_{2^128} (doc §3).
 //!
-//! We reuse flock's BaseFold (Reed-Solomon + Merkle + FRI) as the scheme:
-//! `commit` encodes the F128 message, and an opening proves the inner product
-//! `Σ_x q(x)·W(x) = C` against any verifier-evaluable weight `W`, by sumcheck
-//! folding in lockstep with the FRI folds (a plain point evaluation `q̂(r)` is
-//! the case `W = eq(r,·)`).
+//! We reuse flock's **Ligerito** (interleaved Reed-Solomon + Merkle, recursively
+//! folded — see flock.tex §app:ligerito) as the scheme: `commit` encodes the F128
+//! message, and an opening proves the inner product `Σ_x q(x)·W(x) = C` against
+//! any verifier-evaluable weight `W`, by a sumcheck folded in lockstep with the
+//! recursive code folds (a plain point evaluation `q̂(r)` is the case
+//! `W = eq(r,·)`).
 //!
 //! For a batch of claims `q̂(point_j) = value_j` we fold them with a random `λ`
 //! into one weight `W_λ = Σ_j λ^j eq(point_j,·)` and target `C_λ = Σ_j λ^j
-//! value_j`, and run a single BaseFold opening on `Σ_x q(x)·W_λ(x) = C_λ`
-//! directly, with no separate reduction sumcheck. Its final weight value
-//! `final_b` is checked against `W_λ(ρ) = Σ_j λ^j eq(point_j, ρ)` at the folding
-//! point `ρ`.
+//! value_j`, and run a single Ligerito opening on `Σ_x q(x)·W_λ(x) = C_λ`
+//! directly, with no separate reduction sumcheck. The verifier evaluates `W_λ`
+//! itself at the residual points (the succinct-verifier closure), so `W_λ` never
+//! travels.
+//!
+//! Security: the [`PROFILE`] is Ligerito `Fast` — rate 1/2, **Johnson
+//! list-decoding regime with out-of-domain binding, 100-bit** round-by-round
+//! soundness (flock.tex §app:ligerito extends Ligerito to the list-decoding
+//! regime; parameters derived by `LigeritoSecurityConfig::derive_profile`).
 
 use crate::field::F128;
 use crate::multilinear::{eq_eval, eq_table};
 use crate::transcript::{ProverState, VerifierState};
 use rayon::prelude::*;
 
-use flare::ntt::AdditiveNttF128;
-use flare::pcs::basefold::{self, default_fri_queries};
-use flare::pcs::{StackClaim, open_batch_mixed_stacked, verify_opening_batch_mixed_stacked};
-pub use flare::pcs::{BatchOpeningProof, Commitment, PcsParams, ProverData};
+use flare::pcs::ligerito::{self, LigeritoProfile, LigeritoSecurityConfig, ProverConfig, VerifierConfig};
+use flare::pcs::{StackClaim, open_batch_mixed_ligerito_stacked, verify_opening_batch_mixed_ligerito_stacked};
+pub use flare::pcs::{BatchOpeningProofLigerito, Commitment, PcsParams, ProverData};
 use flare::zerocheck::PaddingSpec;
 
 /// flock frames `commit` as `m = log2(len) + LOG_PACKING`; the message length is
@@ -29,33 +34,54 @@ use flare::zerocheck::PaddingSpec;
 /// `m = μ + LOG_PACKING`.
 const LOG_PACKING: usize = 7;
 /// Row-batch lanes `2^LOG_BATCH`: also the Merkle leaf width (`2^LOG_BATCH`
-/// F128/leaf). Larger ⇒ far fewer Merkle nodes to hash (faster commit/open) at
-/// the cost of fatter query openings (proof size); soundness is unaffected
-/// (rate + query count are fixed). 6 is flock's own default and the speed/size
-/// knee at the 1–2M-instruction target scale.
+/// F128/leaf) and Ligerito's L0 fold count (`initial_k` — the shipped configs
+/// require exactly 6). Larger ⇒ far fewer Merkle nodes to hash at the cost of
+/// fatter query openings.
 const LOG_BATCH: usize = 6;
-/// Rate `2^-1` ⇒ 243 FRI queries ⇒ 100-bit provable soundness (doc §3).
+/// L0 rate `2^-1` — the `Fast` profile's rate (doc §3).
 pub const LOG_INV_RATE: usize = 1;
+/// Ligerito security profile: rate 1/2, Johnson **list-decoding** regime with
+/// out-of-domain binding, 100-bit round-by-round soundness.
+pub const PROFILE: LigeritoProfile = LigeritoProfile::Fast;
+/// Minimum committed-witness log-size: Ligerito's recursion needs every level's
+/// block length to accommodate its query count, which for the `Fast` profile
+/// bottoms out at `μ = 13` (flock `m = 20`). `witness::placements_of` zero-pads
+/// smaller stacks up to this floor (128 KB — negligible; real workloads are far
+/// above it).
+pub const MIN_MU: usize = 13;
 
 fn params_for(mu: usize) -> PcsParams {
-    assert!(mu >= 2, "witness needs ≥ 4 elements");
-    // Clamp the batch (leaf width) to the witness; both parties derive the same
-    // value from `mu`, so the commitment stays consistent.
-    let log_batch_size = LOG_BATCH.min(mu - 1);
-    // `profile` drives only the Ligerito opening; we use the BaseFold backend,
-    // which ignores it. `Fast` is rate 1/2 (= our `log_inv_rate`).
+    assert!(mu >= MIN_MU, "witness must be ≥ 2^{MIN_MU} elements (padded by placements_of)");
     PcsParams {
         m: mu + LOG_PACKING,
         log_inv_rate: LOG_INV_RATE,
-        log_batch_size,
-        profile: flare::pcs::ligerito::LigeritoProfile::Fast,
+        log_batch_size: LOG_BATCH,
+        profile: PROFILE,
     }
+}
+
+/// The Ligerito (prover, verifier) config pair for a `2^μ`-element witness,
+/// derived from the [`PROFILE`]'s security analysis and memoized per `μ` (the
+/// derivation is a pure function of `(m, profile)`, so both sides agree).
+fn lig_configs(mu: usize) -> std::sync::Arc<(ProverConfig, VerifierConfig)> {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex, OnceLock};
+    type Cache = Mutex<HashMap<usize, Arc<(ProverConfig, VerifierConfig)>>>;
+    static CACHE: OnceLock<Cache> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut map = cache.lock().expect("ligerito config cache poisoned");
+    Arc::clone(map.entry(mu).or_insert_with(|| {
+        let pair = LigeritoSecurityConfig::derive_profile(mu + LOG_PACKING, PROFILE)
+            .and_then(|sec| sec.to_prover_verifier_configs())
+            .unwrap_or_else(|e| panic!("ligerito {PROFILE:?} config for mu={mu}: {e}"));
+        Arc::new(pair)
+    }))
 }
 
 /// Rebuild the public [`Commitment`] (root + params) for a witness of `2^mu`
 /// elements. The verifier reconstructs the params from `mu` exactly as `commit`
 /// did, so the BLAKE3↔flock validity open (§blake3_flock) can verify its second
-/// BaseFold against this same commitment.
+/// Ligerito against this same commitment.
 pub fn commitment_from_root(root: [u8; 32], mu: usize) -> Commitment {
     Commitment {
         root,
@@ -69,7 +95,7 @@ pub fn commitment_from_root(root: [u8; 32], mu: usize) -> Commitment {
 pub struct Committed {
     pub commitment: Commitment,
     /// Codeword + Merkle tree retained for opening. Public so the BLAKE3↔flock
-    /// validity open (a second BaseFold over this same commitment, §blake3_flock)
+    /// validity open (a second Ligerito over this same commitment, §blake3_flock)
     /// can reuse it.
     pub prover_data: ProverData,
     /// `log2` of the witness length.
@@ -155,7 +181,7 @@ impl SlotClaim {
 /// sub-block `qpkd` produced at the univariate-skip/packed level (flock's BLAKE3
 /// R1CS validity `(ab, c)`), so they carry the ring-switch tensor front-end.
 /// [`crate::blake3_flock`] builds this from its reduction's claims; [`open`]
-/// slices `qpkd` from the committed stack and folds it into the one BaseFold.
+/// slices `qpkd` from the committed stack and folds it into the one Ligerito.
 pub struct RingSwitchOpen {
     /// `qpkd`'s offset inside the committed stack.
     pub offset: usize,
@@ -182,14 +208,14 @@ pub struct RingSwitchVerify<'a> {
     pub z_skips: Vec<F128>,
     pub x_outers: Vec<Vec<F128>>,
     /// The stacked mixed opening proof (carried in the BLAKE3 attachment).
-    pub open: &'a BatchOpeningProof,
+    pub open: &'a BatchOpeningProofLigerito,
 }
 
 /// One claim in the witness opening's unified list ([`open`]): either a plain
 /// point evaluation of the committed stack ([`SlotClaim`]), or the ring-switched
 /// packed bundle carrying a sub-proof front-end ([`RingSwitchOpen`] — flock's
 /// BLAKE3 `(ab, c)` validity). All claims in the list are discharged by ONE
-/// BaseFold; when a ring-switch bundle is present the combine is delegated to
+/// Ligerito; when a ring-switch bundle is present the combine is delegated to
 /// flock's mixed opener (which folds the point claims as `stack_pd`), otherwise
 /// the plain block-sparse λ-opener runs. The list holds at most one `RingSwitch`.
 pub enum OpenClaim {
@@ -205,8 +231,7 @@ pub enum VerifyClaim<'a> {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
-    BaseFold,
-    FinalWeightMismatch,
+    Ligerito,
     MissingHint,
 }
 
@@ -255,19 +280,19 @@ pub fn read_commitment(vs: &mut VerifierState) -> Result<[u8; 32], crate::transc
     Ok(scalars_to_root(&root_s))
 }
 
-/// Open the witness against a unified list of [`OpenClaim`]s: hint the BaseFold
+/// Open the witness against a unified list of [`OpenClaim`]s: hint the Ligerito
 /// opening (the hash-bearing data) and bind the claims. The commitment root was
 /// already bound at the protocol's start by [`commit`]; the claim *values*
 /// themselves already travelled the stream as part of the bus/constraint
 /// arguments.
 ///
 /// When the list carries a [`OpenClaim::RingSwitch`] bundle (BLAKE3 present),
-/// flock's ring-switched `(ab, c)` validity is discharged in the SAME BaseFold as
+/// flock's ring-switched `(ab, c)` validity is discharged in the SAME Ligerito as
 /// the point claims — the latter become full-stack `stack_pd` evaluations — and
 /// the mixed opening proof is returned (it rides the BLAKE3 attachment, not the
 /// `ps` hint channel). Otherwise the plain block-sparse λ-opener runs, hinting
 /// into `ps` and returning `None`.
-pub fn open(ps: &mut ProverState, c: &Committed, q: &[F128], claims: &[OpenClaim]) -> Option<BatchOpeningProof> {
+pub fn open(ps: &mut ProverState, c: &Committed, q: &[F128], claims: &[OpenClaim]) -> Option<BatchOpeningProofLigerito> {
     let n = 1usize << c.mu;
     debug_assert_eq!(q.len(), n, "witness length must match the commitment");
 
@@ -294,7 +319,8 @@ pub fn open(ps: &mut ProverState, c: &Committed, q: &[F128], claims: &[OpenClaim
         let stack_pd: Vec<StackClaim> = points.iter().map(|s| s.as_stack()).collect();
         let x_refs: Vec<&[F128]> = rs.x_outers.iter().map(|v| v.as_slice()).collect();
         let s_refs: Vec<Option<&[F128]>> = rs.s_hat_v.iter().map(|o| o.as_deref()).collect();
-        return Some(open_batch_mixed_stacked(
+        let cfg = lig_configs(c.mu);
+        return Some(open_batch_mixed_ligerito_stacked(
             qpkd,
             &x_refs,
             &s_refs,
@@ -304,6 +330,7 @@ pub fn open(ps: &mut ProverState, c: &Committed, q: &[F128], claims: &[OpenClaim
             &c.prover_data,
             &c.commitment,
             &stack_pd,
+            &cfg.0,
             ps,
         ));
     }
@@ -339,28 +366,24 @@ pub fn open(ps: &mut ProverState, c: &Committed, q: &[F128], claims: &[OpenClaim
         lambda_pow *= lambda;
     }
 
-    let params = params_for(c.mu);
-    let ntt = AdditiveNttF128::standard(params.k_code());
-    let bf = basefold::prove(
-        q,
+    let cfg = lig_configs(c.mu);
+    let lig = ligerito::recursive_prover_with_basis(
+        &cfg.0,
+        q.to_vec(),
         weight,
         target,
         &c.prover_data.codeword,
         &c.prover_data.merkle_tree,
-        &ntt,
-        params.log_inv_rate,
-        params.log_batch_size,
-        default_fri_queries(params.log_inv_rate),
         ps,
     );
-    ps.hint_opening(bf);
+    ps.hint_opening(lig);
     None
 }
 
 /// Verify the witness opening against a unified list of [`VerifyClaim`]s (mirror
 /// of [`open`]). When the list carries a [`VerifyClaim::RingSwitch`] bundle
 /// (BLAKE3 present), flock's ring-switched `(ab, c)` claims are verified in the
-/// SAME stacked BaseFold as the point claims; otherwise the plain hinted opening
+/// SAME stacked Ligerito as the point claims; otherwise the plain hinted opening
 /// is verified.
 pub fn verify(vs: &mut VerifierState, claims: &[VerifyClaim], mu: usize, root: &[u8; 32]) -> Result<(), Error> {
     // Split the unified list (order-preserving, mirroring `open`).
@@ -380,7 +403,8 @@ pub fn verify(vs: &mut VerifierState, claims: &[VerifyClaim], mu: usize, root: &
         let commitment = commitment_from_root(*root, mu);
         let stack_pd: Vec<StackClaim> = points.iter().map(|s| s.as_stack()).collect();
         let x_refs: Vec<&[F128]> = rs.x_outers.iter().map(|v| v.as_slice()).collect();
-        return verify_opening_batch_mixed_stacked(
+        let cfg = lig_configs(mu);
+        return verify_opening_batch_mixed_ligerito_stacked(
             &commitment,
             rs.offset,
             rs.qpkd_vars,
@@ -389,13 +413,14 @@ pub fn verify(vs: &mut VerifierState, claims: &[VerifyClaim], mu: usize, root: &
             &x_refs,
             &stack_pd,
             rs.open,
+            &cfg.1,
             vs,
         )
-        .map_err(|_| Error::BaseFold);
+        .map_err(|_| Error::Ligerito);
     }
 
     // The commitment root was bound at the protocol's start (read_commitment);
-    // here we bind the claims and pull the BaseFold opening hint.
+    // λ is sampled bound to every claim (values already on the stream).
     let lambda = vs.sample();
 
     let mut target = F128::ZERO;
@@ -405,31 +430,41 @@ pub fn verify(vs: &mut VerifierState, claims: &[VerifyClaim], mu: usize, root: &
         lambda_pow *= lambda;
     }
 
-    let bf = vs.next_opening().map_err(|_| Error::MissingHint)?;
-    let final_b = bf.final_b;
-    let params = params_for(mu);
-    let ntt = AdditiveNttF128::standard(params.k_code());
-    let challenges = basefold::verify(target, bf, root, &ntt, params.log_inv_rate, params.log_batch_size, vs)
-        .map_err(|_| Error::BaseFold)?;
-
-    // final_b must equal W_λ(ρ) = Σ_j λ^j eq(point_j, ρ), where the point is the
-    // low point followed by the slot's boolean selector bits.
-    let mut weight_at_rho = F128::ZERO;
-    let mut lambda_pow = F128::ONE;
-    for claim in &points {
-        let (offset, low_point, _) = claim.dense();
-        let n_vars = low_point.len();
-        let mut eq = eq_eval(&low_point, &challenges[..n_vars]);
-        let selector = offset >> n_vars;
-        for (bit, &x) in challenges[n_vars..mu].iter().enumerate() {
-            // eq(sel_bit, x): x if the bit is 1, else 1+x (char 2).
-            eq *= if (selector >> bit) & 1 == 1 { x } else { F128::ONE + x };
-        }
-        weight_at_rho += lambda_pow * eq;
-        lambda_pow *= lambda;
-    }
-    if final_b != weight_at_rho {
-        return Err(Error::FinalWeightMismatch);
+    let lig = vs.next_opening().map_err(|_| Error::MissingHint)?;
+    let cfg = lig_configs(mu);
+    // The succinct Ligerito verifier calls back for `W_λ` at the residual points
+    // `x = ris ++ y_bits`: `W_λ(x) = Σ_j λ^j eq(point_j, x)`, where each claim's
+    // full point is its low point followed by the slot's boolean selector bits
+    // (the same formula the old Ligerito `final_b` check used at its folding point).
+    let eval_b_residual = |ris: &[F128], yr_log_n: usize| -> Vec<F128> {
+        (0..1usize << yr_log_n)
+            .map(|y| {
+                let mut x = Vec::with_capacity(mu);
+                x.extend_from_slice(ris);
+                for k in 0..yr_log_n {
+                    x.push(F128::new(((y >> k) & 1) as u64, 0));
+                }
+                let mut acc = F128::ZERO;
+                let mut lambda_pow = F128::ONE;
+                for claim in &points {
+                    let (offset, low_point, _) = claim.dense();
+                    let n_vars = low_point.len();
+                    let mut eq = eq_eval(&low_point, &x[..n_vars]);
+                    let selector = offset >> n_vars;
+                    for (bit, &xi) in x[n_vars..mu].iter().enumerate() {
+                        // eq(sel_bit, x): x if the bit is 1, else 1+x (char 2).
+                        eq *= if (selector >> bit) & 1 == 1 { xi } else { F128::ONE + xi };
+                    }
+                    acc += lambda_pow * eq;
+                    lambda_pow *= lambda;
+                }
+                acc
+            })
+            .collect()
+    };
+    let ok = ligerito::recursive_verifier_with_basis_succinct(&cfg.1, lig, mu, target, root, eval_b_residual, vs);
+    if !ok {
+        return Err(Error::Ligerito);
     }
     Ok(())
 }

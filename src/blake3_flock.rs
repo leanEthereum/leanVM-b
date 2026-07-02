@@ -4,7 +4,7 @@
 //! ONE stacked witness (§3.1) — no separate flock commitment. The VM's `BLAKE3`
 //! table binds to it by point-eval equality (its value columns and `q_pkd`'s
 //! slots are point-evals of the same committed stack), and flock's R1CS validity
-//! is discharged by a BaseFold over that same stacked commitment
+//! is discharged by a Ligerito over that same stacked commitment
 //! ([`flock_prover::r1cs_hashes::blake3::Blake3Setup::prove_validity_stacked`],
 //! which lifts the ring-switch weight into the stack domain).
 //!
@@ -266,7 +266,7 @@ pub fn ring_switch_verify<'a>(
     offset: usize,
     ab: ZClaim,
     c: ZClaim,
-    open: &'a crate::pcs::BatchOpeningProof,
+    open: &'a crate::pcs::BatchOpeningProofLigerito,
 ) -> crate::pcs::RingSwitchVerify<'a> {
     crate::pcs::RingSwitchVerify {
         offset,
@@ -283,23 +283,23 @@ pub fn ring_switch_verify<'a>(
 /// and the opening's `ring_switches`) is serialized onto the `stream` as pure
 /// transport ([`ProverState::hint_bytes`]: NOT re-absorbed — the verifier's
 /// reduction/opening replay is the sole binder), and the one Merkle-bearing
-/// BaseFold rides the `openings` hint channel like every other PCS opening.
+/// Ligerito rides the `openings` hint channel like every other PCS opening.
 /// Mirrored by [`read_stack_proof`].
 pub fn write_stack_proof(
     ps: &mut ProverState,
     zerocheck: flock_prover::zerocheck::ZerocheckProof,
     lincheck: flock_prover::lincheck::LincheckProof,
-    open: crate::pcs::BatchOpeningProof,
+    open: crate::pcs::BatchOpeningProofLigerito,
 ) {
-    let crate::pcs::BatchOpeningProof { ring_switches, basefold } = open;
+    let crate::pcs::BatchOpeningProofLigerito { ring_switches, ligerito } = open;
     let bytes = bincode::serialize(&(zerocheck, lincheck, ring_switches))
         .expect("flock BLAKE3 sub-proof serializes");
     ps.hint_bytes(&bytes);
-    ps.hint_opening(basefold);
+    ps.hint_opening(ligerito);
 }
 
 /// Verifier side of [`write_stack_proof`]: read flock's scalar reduction back off
-/// the `stream` (raw — not re-absorbed) and its BaseFold off the `openings`
+/// the `stream` (raw — not re-absorbed) and its Ligerito off the `openings`
 /// channel, reassembling `(zerocheck, lincheck, open)` for [`verify_reduction`]
 /// and [`ring_switch_verify`].
 #[allow(clippy::type_complexity)]
@@ -309,7 +309,7 @@ pub fn read_stack_proof(
     (
         flock_prover::zerocheck::ZerocheckProof,
         flock_prover::lincheck::LincheckProof,
-        crate::pcs::BatchOpeningProof,
+        crate::pcs::BatchOpeningProofLigerito,
     ),
     crate::transcript::Error,
 > {
@@ -319,8 +319,8 @@ pub fn read_stack_proof(
         flock_prover::lincheck::LincheckProof,
         Vec<flare::pcs::RingSwitchProof>,
     ) = bincode::deserialize(&bytes).map_err(|_| crate::transcript::Error::MissingHint)?;
-    let basefold = vs.next_opening()?.clone();
-    Ok((zerocheck, lincheck, crate::pcs::BatchOpeningProof { ring_switches, basefold }))
+    let ligerito = vs.next_opening()?.clone();
+    Ok((zerocheck, lincheck, crate::pcs::BatchOpeningProofLigerito { ring_switches, ligerito }))
 }
 
 /// Prove `blocks` are valid compressions in two clean phases, discharging the
@@ -329,7 +329,7 @@ pub fn read_stack_proof(
 /// shared transcript `ps`:
 /// 1. the Flock reduction ([`prove_reduction`]): zerocheck + lincheck → the
 ///    `(ab, c)` claims on `q_pkd`;
-/// 2. the PCS: one stacked BaseFold discharging those claims together with the
+/// 2. the PCS: one stacked Ligerito discharging those claims together with the
 ///    caller's `stack_pd` point claims.
 #[allow(clippy::too_many_arguments)]
 pub fn prove_validity_stacked(
@@ -347,7 +347,7 @@ pub fn prove_validity_stacked(
 
 /// Verifier side of [`prove_validity_stacked`], in the same two phases:
 /// [`verify_reduction`] (replay zerocheck + lincheck → `(ab, c)` claims), then
-/// verify the SINGLE stacked BaseFold against `commitment` on the shared
+/// verify the SINGLE stacked Ligerito against `commitment` on the shared
 /// transcript. `stack_pd` are all of leanVM's point claims (bus / constraint /
 /// public-input / binding / pinning) folded into the same opening.
 pub fn verify_validity_stacked(
@@ -425,7 +425,7 @@ mod tests {
         assert_eq!(slot(0, PIN_SLOTS[2]), pin[2]);
     }
 
-    /// flock's validity proof, discharged by a BaseFold over a single committed
+    /// flock's validity proof, discharged by a Ligerito over a single committed
     /// stack containing `q_pkd` (plus a dummy column) — proves and verifies on
     /// the shared transcript, and a corrupted `q_pkd` is rejected.
     #[test]
