@@ -1,19 +1,23 @@
 //! Fiat–Shamir transcript, leanVM-style: a single state object *is* the channel
-//! between prover and verifier.
+//! between prover and verifier. The API is deliberately small, so it is hard to
+//! bind the wrong thing (mirrors leanVM's `FSProver`/`FSVerifier`):
 //!
-//! The prover **writes** scalars — `write_scalars` both binds them into the
-//! sponge and records them into the proof stream — and the verifier **reads**
-//! them back — `next_scalars` binds and advances a cursor. Because both observe
-//! the identical sequence, they squeeze identical challenges; nothing crosses
-//! between them except the [`Proof`]. Public, non-transmitted data (table shapes,
-//! domain labels) is bound with `observe_*`.
-//!
-//! Field scalars are the whole story for our own sub-protocols (GKR layers,
-//! constraint round polynomials, evaluation values). The PCS commitment root and
-//! BaseFold opening carry Merkle **hashes**, which are not field scalars, so they
-//! ride a side "hint" channel on the [`Proof`] — exactly as leanVM keeps
-//! `merkle_paths` outside its scalar transcript. flock's BaseFold drives off the
-//! same sponge (challenges only), so the whole proof shares one FS state.
+//! - **`add_scalar(s)`** (prover) / **`next_scalar(s)`** (verifier): the *only*
+//!   way a scalar enters the proof. It transmits AND absorbs, in one call — so
+//!   transmitted data is **always** bound, and the two sides cannot drift. This is
+//!   the workhorse (GKR layers, constraint round polys, evaluation values, the
+//!   commitment root).
+//! - **The public statement** (the public input) is seeded into the sponge at
+//!   construction ([`Sponge::new`]) by BOTH sides, so it is bound before any
+//!   challenge. There is deliberately **no `observe` method**: the only data a
+//!   caller can put into the sponge is via `add_*` (which also transmits), so you
+//!   cannot bind-without-transmitting or transmit-without-binding by mistake. A
+//!   challenge is just `sample()`d, bound to everything seeded/sent so far.
+//! - **`hint_*` (prover) / `next_*` (verifier)**: transport that is NOT absorbed
+//!   here — either hash-bearing (the BaseFold `openings`, like leanVM's
+//!   `merkle_paths`) or already bound elsewhere (flock's scalar sub-proof, which
+//!   re-enters the sponge through flock's own reduction/opening replay).
+//! - **`sample` / `sample_vec`**: squeeze a challenge.
 //!
 //! Soundness: challenges are BLAKE3 of the whole transcript so far. Every absorb
 //! is domain-tagged and length-prefixed (so a field element, a raw integer, and
@@ -26,7 +30,6 @@ use flare::pcs::basefold::BaseFoldProof;
 
 // Domain tags, so distinct kinds of absorbed data cannot alias.
 const TAG_F128: u8 = 0x01;
-const TAG_U64: u8 = 0x02;
 const TAG_BYTES: u8 = 0x03;
 const TAG_SQUEEZE: u8 = 0xFF;
 const TAG_RATCHET: u8 = 0xFE;
@@ -38,11 +41,18 @@ struct Sponge {
 }
 
 impl Sponge {
-    fn new(label: &[u8]) -> Self {
+    /// Seed with the domain `label` and the PUBLIC `statement` scalars (the public
+    /// input). Both sides seed identically, so the whole statement is bound before
+    /// any challenge — there is no mid-protocol "observe public data" step to get
+    /// wrong (or forget).
+    fn new(label: &[u8], statement: &[F128]) -> Self {
         let mut h = blake3::Hasher::new();
         h.update(b"leanvm-b/transcript/v0");
         let mut s = Self { h };
         s.absorb(TAG_BYTES, label);
+        for &x in statement {
+            s.observe(x);
+        }
         s
     }
 
@@ -57,10 +67,6 @@ impl Sponge {
         buf[..8].copy_from_slice(&x.lo.to_le_bytes());
         buf[8..].copy_from_slice(&x.hi.to_le_bytes());
         self.absorb(TAG_F128, &buf);
-    }
-
-    fn observe_u64(&mut self, x: u64) {
-        self.absorb(TAG_U64, &x.to_le_bytes());
     }
 
     fn absorb_bytes(&mut self, bytes: &[u8]) {
@@ -84,7 +90,7 @@ impl Sponge {
 /// every transmitted scalar ride `stream`; the hash-bearing BaseFold openings
 /// ride `openings`. flock's BLAKE3 sub-proof is carried the same way: its scalar
 /// reduction (zerocheck / lincheck / ring-switch) rides `stream` as pure
-/// transport ([`ProverState::write_bytes_raw`] — NOT re-absorbed, since flock's
+/// transport ([`ProverState::hint_bytes`] — NOT re-absorbed, since flock's
 /// verifier replay is the sole binder) and its one BaseFold rides `openings`.
 ///
 /// `Deserialize` as well as `Serialize`, so a proof round-trips over the wire and
@@ -118,36 +124,27 @@ pub struct ProverState {
 }
 
 impl ProverState {
-    pub fn new(label: &[u8]) -> Self {
+    /// `statement` is the public input, seeded into the sponge (see [`Sponge::new`]).
+    pub fn new(label: &[u8], statement: &[F128]) -> Self {
         Self {
-            sponge: Sponge::new(label),
+            sponge: Sponge::new(label, statement),
             stream: Vec::new(),
             openings: Vec::new(),
         }
     }
 
-    /// Record a scalar into the proof and bind it into the sponge.
+    /// Transmit a scalar into the proof AND bind it into the sponge (the two are
+    /// inseparable — you cannot send without binding).
     #[inline]
-    pub fn write_scalar(&mut self, x: F128) {
+    pub fn add_scalar(&mut self, x: F128) {
         self.sponge.observe(x);
         self.stream.push(x);
     }
 
-    pub fn write_scalars(&mut self, xs: &[F128]) {
+    pub fn add_scalars(&mut self, xs: &[F128]) {
         for &x in xs {
-            self.write_scalar(x);
+            self.add_scalar(x);
         }
-    }
-
-    /// Bind public data without transmitting it.
-    pub fn observe_scalars(&mut self, xs: &[F128]) {
-        for &x in xs {
-            self.sponge.observe(x);
-        }
-    }
-
-    pub fn observe_u64(&mut self, x: u64) {
-        self.sponge.observe_u64(x);
     }
 
     pub fn sample(&mut self) -> F128 {
@@ -162,12 +159,12 @@ impl ProverState {
         self.openings.push(bf);
     }
 
-    /// Append length-prefixed bytes to the stream (packed 16 per `F128` word)
-    /// **without** binding them into the sponge. For pure transport of data bound
-    /// elsewhere — flock's BLAKE3 scalar sub-proof, whose values re-enter the
-    /// sponge through the verifier's own reduction/opening replay, so absorbing
+    /// Transmit length-prefixed bytes on the stream (packed 16 per `F128` word)
+    /// **without** binding them into the sponge — the hint channel for data bound
+    /// elsewhere. Used for flock's BLAKE3 scalar sub-proof, whose values re-enter
+    /// the sponge through the verifier's own reduction/opening replay, so absorbing
     /// them here too would double-bind and diverge the sponge from the prover.
-    pub fn write_bytes_raw(&mut self, bytes: &[u8]) {
+    pub fn hint_bytes(&mut self, bytes: &[u8]) {
         self.stream.push(F128::new(bytes.len() as u64, 0));
         for chunk in bytes.chunks(16) {
             let mut buf = [0u8; 16];
@@ -198,9 +195,11 @@ pub struct VerifierState<'a> {
 }
 
 impl<'a> VerifierState<'a> {
-    pub fn new(label: &[u8], proof: &'a Proof) -> Self {
+    /// `statement` is the public input, seeded into the sponge (see [`Sponge::new`])
+    /// — must match the prover's, or the sponges diverge and verification fails.
+    pub fn new(label: &[u8], proof: &'a Proof, statement: &[F128]) -> Self {
         Self {
-            sponge: Sponge::new(label),
+            sponge: Sponge::new(label, statement),
             stream: &proof.stream,
             offset: 0,
             openings: &proof.openings,
@@ -208,7 +207,7 @@ impl<'a> VerifierState<'a> {
         }
     }
 
-    /// Read the next scalar, binding it into the sponge (mirrors `write_scalar`).
+    /// Read the next scalar, binding it into the sponge (mirrors `add_scalar`).
     #[inline]
     pub fn next_scalar(&mut self) -> Result<F128, Error> {
         let x = *self.stream.get(self.offset).ok_or(Error::ExceededStream)?;
@@ -222,17 +221,17 @@ impl<'a> VerifierState<'a> {
     }
 
     /// Advance the stream cursor by one **without** binding into the sponge — the
-    /// read counterpart of [`ProverState::write_bytes_raw`]'s per-word push.
+    /// read counterpart of [`ProverState::hint_bytes`]'s per-word push.
     fn take_raw(&mut self) -> Result<F128, Error> {
         let x = *self.stream.get(self.offset).ok_or(Error::ExceededStream)?;
         self.offset += 1;
         Ok(x)
     }
 
-    /// Read length-prefixed raw transport bytes written by
-    /// [`ProverState::write_bytes_raw`]: consumes stream words but does NOT bind
-    /// them into the sponge (their binding happens via the reduction/opening replay).
-    pub fn read_bytes_raw(&mut self) -> Result<Vec<u8>, Error> {
+    /// Read length-prefixed hint bytes written by [`ProverState::hint_bytes`]:
+    /// consumes stream words but does NOT bind them into the sponge (their binding
+    /// happens via the reduction/opening replay).
+    pub fn next_hint_bytes(&mut self) -> Result<Vec<u8>, Error> {
         let len = self.take_raw()?.lo as usize;
         let n_words = len.div_ceil(16);
         let mut bytes = Vec::with_capacity(n_words * 16);
@@ -243,16 +242,6 @@ impl<'a> VerifierState<'a> {
         }
         bytes.truncate(len);
         Ok(bytes)
-    }
-
-    pub fn observe_scalars(&mut self, xs: &[F128]) {
-        for &x in xs {
-            self.sponge.observe(x);
-        }
-    }
-
-    pub fn observe_u64(&mut self, x: u64) {
-        self.sponge.observe_u64(x);
     }
 
     pub fn sample(&mut self) -> F128 {
@@ -279,45 +268,10 @@ impl<'a> VerifierState<'a> {
     }
 }
 
-/// The Fiat–Shamir surface shared by both transcripts: absorb public data and
-/// draw a challenge. Lets prover and verifier share binding code as ordinary
-/// generic functions rather than duck-typed macros.
-pub trait Absorb {
-    fn observe_u64(&mut self, x: u64);
-    fn observe_scalars(&mut self, xs: &[F128]);
-    fn sample(&mut self) -> F128;
-}
-
-impl Absorb for ProverState {
-    fn observe_u64(&mut self, x: u64) {
-        self.sponge.observe_u64(x);
-    }
-    fn observe_scalars(&mut self, xs: &[F128]) {
-        for &x in xs {
-            self.sponge.observe(x);
-        }
-    }
-    fn sample(&mut self) -> F128 {
-        self.sponge.sample()
-    }
-}
-
-impl Absorb for VerifierState<'_> {
-    fn observe_u64(&mut self, x: u64) {
-        self.sponge.observe_u64(x);
-    }
-    fn observe_scalars(&mut self, xs: &[F128]) {
-        for &x in xs {
-            self.sponge.observe(x);
-        }
-    }
-    fn sample(&mut self) -> F128 {
-        self.sponge.sample()
-    }
-}
-
 // flock's PCS drives off the sponge for its challenges; its proof data rides the
 // hint channel, so the `Challenger` ops only touch the sponge (never the stream).
+// This is the vendored-flock adapter; leanVM-b's own code uses the inherent
+// `add_*`/`observe_*`/`sample` methods above, not `Challenger` directly.
 impl Challenger for ProverState {
     fn observe_label(&mut self, label: &[u8]) {
         self.sponge.absorb_bytes(label);

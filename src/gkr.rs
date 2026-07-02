@@ -89,7 +89,7 @@ pub fn prove_product(leaves: Vec<F128>, ps: &mut ProverState) -> (F128, LeafClai
     let mu = crate::log2_strict_usize(leaves.len());
     let layers = build_layers(leaves); // layers[0] is the (moved) leaf table
     let root = layers[mu][0];
-    ps.write_scalar(root);
+    ps.add_scalar(root);
 
     let nodes = tri_nodes();
     let mut r: Vec<F128> = Vec::new();
@@ -132,7 +132,7 @@ pub fn prove_product(leaves: Vec<F128>, ps: &mut ProverState) -> (F128, LeafClai
             } else {
                 (0..half).map(summand).fold([F128::ZERO; 3], add3)
             };
-            ps.write_scalars(&acc);
+            ps.add_scalars(&acc);
             let rk = ps.sample();
             rho.push(rk);
             even = par_fold(&even, rk);
@@ -140,8 +140,8 @@ pub fn prove_product(leaves: Vec<F128>, ps: &mut ProverState) -> (F128, LeafClai
         }
 
         let (eval0, eval1) = (even[0], odd[0]);
-        ps.write_scalar(eval0);
-        ps.write_scalar(eval1);
+        ps.add_scalar(eval0);
+        ps.add_scalar(eval1);
         let c = ps.sample();
         value = interp(eval0, eval1, c); // Ṽ_{i-1}(c, ρ) = Ṽ_0(r) on the last layer
 

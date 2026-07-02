@@ -56,24 +56,22 @@ const MAX_LOG_MEM: usize = 32;
 /// instructions of that opcode).
 const MAX_LOG_ROWS: usize = 32;
 
-/// Announce the public statement — per-table log-sizes (`log_mem` + the six
-/// `row_counts`) and the public input into the Fiat–Shamir transcript. The prover
-/// writes the seven sizes onto the scalar stream (so the verifier can reconstruct
-/// the layout — which binds them into the sponge) and observes the public input.
-/// The boundary states and per-table log-sizes (`taus`) are derived (constants
-/// from the program, and `padlen(row_counts)`), so they need no separate binding.
-/// Called right after the witness commitment, so every challenge depends on it.
-fn announce_public(ps: &mut ProverState, pi: &[F128; 2], log_mem: usize, row_counts: [usize; 6]) {
-    ps.write_scalar(F128::new(log_mem as u64, 0));
+/// Announce the prover's per-table log-sizes (`log_mem` + the six `row_counts`) by
+/// writing them onto the scalar stream (which binds them into the sponge and lets
+/// the verifier reconstruct the layout). The public input is not announced here —
+/// it seeds the transcript at construction (see [`ProverState::new`]). The boundary
+/// states and per-table log-sizes (`taus`) are derived (constants from the program,
+/// and `padlen(row_counts)`), so they need no separate binding.
+fn announce_public(ps: &mut ProverState, log_mem: usize, row_counts: [usize; 6]) {
+    ps.add_scalar(F128::new(log_mem as u64, 0));
     for r in row_counts {
-        ps.write_scalar(F128::new(r as u64, 0));
+        ps.add_scalar(F128::new(r as u64, 0));
     }
-    ps.observe_scalars(pi);
 }
 
 /// Verifier side of [`announce_public`]: read the seven announced sizes from the
-/// stream, reconstruct the public [`Layout`] from the program + sizes + public
-/// input, then observe the public input (matching the prover's binding order).
+/// stream and reconstruct the public [`Layout`] from the program + sizes + public
+/// input. (The public input was already bound by seeding the transcript.)
 fn read_public(vs: &mut VerifierState, prog: &Program, public_input: &[F128; 2]) -> Result<Layout, Error> {
     let log_mem = vs.next_scalar().map_err(Error::Transcript)?.lo as usize;
     let mut row_counts = [0usize; 6];
@@ -92,7 +90,6 @@ fn read_public(vs: &mut VerifierState, prog: &Program, public_input: &[F128; 2])
         return Err(Error::PublicInput);
     }
     let l = layout(&prog.prog, log_mem, row_counts, *public_input);
-    vs.observe_scalars(&l.pi);
     Ok(l)
 }
 
@@ -1190,11 +1187,11 @@ pub fn prove(program: &Program, public_input: [F128; 2]) -> (Proof, Stats) {
         .filter(|(_, p)| !p.is_virtual())
         .map(|(c, _)| c.len())
         .sum();
-    let mut ps = ProverState::new(b"leanvm-b");
+    // The public input seeds the transcript, so every challenge depends on it.
+    let mut ps = ProverState::new(b"leanvm-b", &public_input);
 
-    // Bind the public statement, then the witness commitment, before sampling
-    // any challenge.
-    announce_public(&mut ps, &w.layout.pi, w.log_mem, w.row_counts);
+    // Announce the prover's sizes, then commit, before sampling any challenge.
+    announce_public(&mut ps, w.log_mem, w.row_counts);
     let t = std::time::Instant::now();
     let committed = pcs::commit(&mut ps, &w.q);
     if prof {
@@ -1291,22 +1288,21 @@ pub fn prove(program: &Program, public_input: [F128; 2]) -> (Proof, Stats) {
 
 /// Bind the public input `m[0], m[1]` (256 bits) to the committed memory (§8):
 /// open the MEM column at `(r, 0,…,0)` and (verifier-side) check it equals the
-/// MLE of the public pair at `r`. Here we emit the prover's claim.
+/// MLE of the public pair at `r`. Here we emit the prover's claim. `pi` is already
+/// bound (in `announce_public`), so `r` is sampled directly — no re-observe.
 fn bind_pi_prove(w: &Witness, ps: &mut ProverState) -> ColumnClaim {
-    ps.observe_scalars(&w.layout.pi);
     let r = ps.sample();
     let h = w.layout.placements[MEM].n_vars;
     let mut point = vec![F128::ZERO; h];
     point[0] = r;
     let value = crate::multilinear::mle_eval(&w.cols[MEM], &point);
-    ps.write_scalar(value);
+    ps.add_scalar(value);
     ColumnClaim { col: MEM, point, value }
 }
 
 /// Verifier side of [`bind_pi_prove`]: read the claimed `M(r,0,…,0)` and check it
 /// equals the public input's MLE `interp(m[0], m[1], r)`.
 fn bind_pi_verify(l: &Layout, vs: &mut VerifierState) -> Result<ColumnClaim, Error> {
-    vs.observe_scalars(&l.pi);
     let r = vs.sample();
     let h = l.placements[MEM].n_vars;
     let mut point = vec![F128::ZERO; h];
@@ -1323,7 +1319,7 @@ fn bind_pi_verify(l: &Layout, vs: &mut VerifierState) -> Result<ColumnClaim, Err
 /// every scalar the prover wrote and pull the PCS hints, then assert the stream
 /// was fully consumed. Takes only public inputs — never the prover's witness.
 pub fn verify(program: &Program, public_input: &[F128; 2], proof: &Proof) -> Result<(), Error> {
-    let mut vs = VerifierState::new(b"leanvm-b", proof);
+    let mut vs = VerifierState::new(b"leanvm-b", proof, public_input);
     let l = read_public(&mut vs, program, public_input)?;
     let root = pcs::read_commitment(&mut vs).map_err(Error::Transcript)?;
 

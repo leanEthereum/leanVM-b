@@ -81,7 +81,7 @@ pub fn prove<F: Fn(F128, &[F128]) -> F128 + Sync>(cols: &[Vec<F128>], c_eval: F,
             let mut vals = vec![F128::ZERO; ncols];
             (0..half).fold([F128::ZERO; 3], |acc, i| add3(acc, summand(i, &mut vals)))
         };
-        ps.write_scalars(&p);
+        ps.add_scalars(&p);
         let rk = ps.sample();
         rho.push(rk);
         for c in tables.iter_mut() {
@@ -90,7 +90,7 @@ pub fn prove<F: Fn(F128, &[F128]) -> F128 + Sync>(cols: &[Vec<F128>], c_eval: F,
     }
 
     let evals: Vec<F128> = tables.iter().map(|c| c[0]).collect();
-    ps.write_scalars(&evals);
+    ps.add_scalars(&evals);
     Claims { rho, evals }
 }
 

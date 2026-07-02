@@ -281,7 +281,7 @@ pub fn ring_switch_verify<'a>(
 /// Carry flock's BLAKE3 sub-proof on leanVM's [`crate::transcript::Proof`]
 /// channels — no dedicated field. The scalar reduction (`zerocheck`, `lincheck`,
 /// and the opening's `ring_switches`) is serialized onto the `stream` as pure
-/// transport ([`ProverState::write_bytes_raw`]: NOT re-absorbed — the verifier's
+/// transport ([`ProverState::hint_bytes`]: NOT re-absorbed — the verifier's
 /// reduction/opening replay is the sole binder), and the one Merkle-bearing
 /// BaseFold rides the `openings` hint channel like every other PCS opening.
 /// Mirrored by [`read_stack_proof`].
@@ -294,7 +294,7 @@ pub fn write_stack_proof(
     let crate::pcs::BatchOpeningProof { ring_switches, basefold } = open;
     let bytes = bincode::serialize(&(zerocheck, lincheck, ring_switches))
         .expect("flock BLAKE3 sub-proof serializes");
-    ps.write_bytes_raw(&bytes);
+    ps.hint_bytes(&bytes);
     ps.hint_opening(basefold);
 }
 
@@ -313,7 +313,7 @@ pub fn read_stack_proof(
     ),
     crate::transcript::Error,
 > {
-    let bytes = vs.read_bytes_raw()?;
+    let bytes = vs.next_hint_bytes()?;
     let (zerocheck, lincheck, ring_switches): (
         flock_prover::zerocheck::ZerocheckProof,
         flock_prover::lincheck::LincheckProof,
@@ -443,7 +443,7 @@ mod tests {
         let pd_value = crate::multilinear::mle_eval(&stacked.q, &pd_point);
         let stack_pd = vec![(pd_point, pd_value)];
 
-        let mut ps = ProverState::new(b"vstack");
+        let mut ps = ProverState::new(b"vstack", &[]);
         let committed = crate::pcs::commit(&mut ps, &stacked.q);
         let proof = prove_validity_stacked(
             &blocks,
@@ -456,7 +456,7 @@ mod tests {
         );
         let bundle = ps.into_proof();
 
-        let mut vs = VerifierState::new(b"vstack", &bundle);
+        let mut vs = VerifierState::new(b"vstack", &bundle, &[]);
         let root = crate::pcs::read_commitment(&mut vs).unwrap();
         let commitment = crate::pcs::commitment_from_root(root, stacked.m);
         verify_validity_stacked(blocks.len(), &commitment, offset, &stack_pd, &proof, &mut vs)
@@ -464,7 +464,7 @@ mod tests {
 
         // A mismatched transcript (different domain) diverges the shared sponge,
         // so the validity proof must be rejected.
-        let mut vs_bad = VerifierState::new(b"different-domain", &bundle);
+        let mut vs_bad = VerifierState::new(b"different-domain", &bundle, &[]);
         let root_b = crate::pcs::read_commitment(&mut vs_bad).unwrap();
         let commitment_b = crate::pcs::commitment_from_root(root_b, stacked.m);
         assert!(
@@ -475,7 +475,7 @@ mod tests {
         // A tampered pd value must be rejected too.
         let mut bad_pd = stack_pd.clone();
         bad_pd[0].1 += F128::ONE;
-        let mut vs_pd = VerifierState::new(b"vstack", &bundle);
+        let mut vs_pd = VerifierState::new(b"vstack", &bundle, &[]);
         let root_p = crate::pcs::read_commitment(&mut vs_pd).unwrap();
         let commitment_p = crate::pcs::commitment_from_root(root_p, stacked.m);
         assert!(
@@ -497,7 +497,7 @@ mod tests {
         let offset = stacked.placements[0].offset;
 
         // Prover: commit, then run ONLY the reduction (no PCS open).
-        let mut ps = ProverState::new(b"reduce");
+        let mut ps = ProverState::new(b"reduce", &[]);
         let committed = crate::pcs::commit(&mut ps, &stacked.q);
         let (z_packed, zc, lc, reduced) =
             prove_reduction(&blocks, &committed.commitment, &mut ps);
@@ -508,7 +508,7 @@ mod tests {
         assert_eq!(&stacked.q[offset..offset + z_packed.len()], z_packed.as_slice());
 
         // Verifier: replay the reduction and recover the claims.
-        let mut vs = VerifierState::new(b"reduce", &bundle);
+        let mut vs = VerifierState::new(b"reduce", &bundle, &[]);
         let root = crate::pcs::read_commitment(&mut vs).unwrap();
         let (ab, c) = verify_reduction(blocks.len(), &root, stacked.m, &zc, &lc, &mut vs)
             .expect("reduction verifies");
@@ -519,7 +519,7 @@ mod tests {
 
         // A mismatched transcript domain diverges the sponge, so the recovered
         // claims must NOT match the prover's (the reduction is transcript-bound).
-        let mut vs_bad = VerifierState::new(b"different", &bundle);
+        let mut vs_bad = VerifierState::new(b"different", &bundle, &[]);
         let root_b = crate::pcs::read_commitment(&mut vs_bad).unwrap();
         if let Ok((ab_b, c_b)) = verify_reduction(blocks.len(), &root_b, stacked.m, &zc, &lc, &mut vs_bad) {
             assert!(

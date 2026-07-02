@@ -221,7 +221,7 @@ fn decompose_prove(
     let mut claims = Vec::new();
     decompose_formula(blocks, lay, zeta, alpha, gamma, |col, zeta_lo| {
         let v = mle_eval(&cols[col], zeta_lo);
-        ps.write_scalar(v);
+        ps.add_scalar(v);
         claims.push(ColumnClaim {
             col,
             point: zeta_lo.to_vec(),
@@ -255,13 +255,6 @@ fn decompose_verify(
         v
     });
     Ok((value, claims))
-}
-
-/// The public shape (block counts and arities) both sides bind into the sponge.
-fn shape_u64s(push: &[Block], pull: &[Block]) -> Vec<u64> {
-    let mut v = vec![push.len() as u64, pull.len() as u64];
-    v.extend(push.iter().chain(pull).map(|b| b.kappa as u64));
-    v
 }
 
 /// `base^e` by repeated squaring.
@@ -319,9 +312,10 @@ pub fn prove_balance(
     cols: &[Column],
     ps: &mut ProverState,
 ) -> Vec<ColumnClaim> {
-    for x in shape_u64s(push, pull) {
-        ps.observe_u64(x);
-    }
+    // No shape observe: the block structure is public and reconstructed by the
+    // verifier from the (bound) announced sizes + program, and `alpha`/`gamma` only
+    // need to follow the witness commitment (which they do) for the grand product
+    // to be sound. So sample the fingerprint challenges directly.
     let alpha = ps.sample();
     let gamma = ps.sample();
     let push_lay = layout(push);
@@ -375,9 +369,7 @@ pub fn verify_balance(
     pad: &[F128],
     vs: &mut VerifierState,
 ) -> Result<Vec<ColumnClaim>, Error> {
-    for x in shape_u64s(push, pull) {
-        vs.observe_u64(x);
-    }
+    // Mirror `prove_balance`: no shape observe (see there).
     let alpha = vs.sample();
     let gamma = vs.sample();
     let push_lay = layout(push);

@@ -15,7 +15,7 @@
 
 use crate::field::F128;
 use crate::multilinear::{eq_eval, eq_table};
-use crate::transcript::{Absorb, ProverState, VerifierState};
+use crate::transcript::{ProverState, VerifierState};
 use rayon::prelude::*;
 
 use flare::ntt::AdditiveNttF128;
@@ -218,7 +218,7 @@ pub fn commit(ps: &mut ProverState, witness: &[F128]) -> Committed {
     let mu = crate::log2_strict_usize(n);
     let params = params_for(mu);
     let (commitment, prover_data) = flare::pcs::commit(witness, &params);
-    ps.write_scalars(&root_to_scalars(&commitment.root));
+    ps.add_scalars(&root_to_scalars(&commitment.root));
     Committed {
         commitment,
         prover_data,
@@ -226,18 +226,11 @@ pub fn commit(ps: &mut ProverState, witness: &[F128]) -> Committed {
     }
 }
 
-/// Bind the batch of located claims (their values already rode the stream) and
-/// derive the folding scalar `λ`. Shared shape so prover/verifier agree.
-fn absorb_claims<T: Absorb>(s: &mut T, claims: &[SlotClaim]) -> F128 {
-    s.observe_u64(claims.len() as u64);
-    for c in claims {
-        let (offset, low_point, value) = c.dense();
-        s.observe_scalars(&low_point);
-        s.observe_u64(offset as u64);
-        s.observe_scalars(std::slice::from_ref(&value));
-    }
-    s.sample()
-}
+// The folding scalar `λ` is just `sample()`d: every claim it combines is already
+// bound — the values rode the stream (`add_scalar`) during the bus / constraint /
+// public-input sub-protocols, the points are prior challenges, and the offsets are
+// public (reconstructed identically from the announced layout). So `λ` sampled
+// here is already bound to all of them; no re-observe is needed.
 
 /// A Merkle root (32 bytes) as two field scalars, so it travels the transcript
 /// stream like any other transmitted value (leanVM parses its root the same way).
@@ -315,7 +308,7 @@ pub fn open(ps: &mut ProverState, c: &Committed, q: &[F128], claims: &[OpenClaim
         ));
     }
 
-    let lambda = absorb_claims(ps, &points);
+    let lambda = ps.sample();
 
     // W_λ over the cube and C_λ, built block-sparsely: each claim only writes
     // its column's slot, and eq-tables are cached across claims that share a
@@ -403,7 +396,7 @@ pub fn verify(vs: &mut VerifierState, claims: &[VerifyClaim], mu: usize, root: &
 
     // The commitment root was bound at the protocol's start (read_commitment);
     // here we bind the claims and pull the BaseFold opening hint.
-    let lambda = absorb_claims(vs, &points);
+    let lambda = vs.sample();
 
     let mut target = F128::ZERO;
     let mut lambda_pow = F128::ONE;
