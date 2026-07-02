@@ -34,3 +34,10 @@ bincode = "1"
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+# The standalone XMSS-over-BLAKE3 crate (`xmss/`). The vendored flock crates
+# are their own (empty) workspace roots, so they must be excluded here; they
+# remain plain path deps.
+[workspace]
+members = ["xmss"]
+exclude = ["vendor/flock-core", "vendor/flock-prover"]

@@ -1,0 +1,13 @@
+[package]
+name = "xmss"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+blake3 = "1.5"
+rand = "0.9"
+rayon = "1.10"
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+bincode = "1"
