@@ -80,7 +80,7 @@ Instruction & Operands & Semantics\\
 \end{tabular}
 \end{center}
 
-\texttt{BLAKE3} compresses $64$ bytes to $32$. Each operand names a $256$-bit value laid out in \emph{two consecutive memory words}: the reference $o$ names the cell at $\fp\cdot o$ and its successor at $\gen\cdot\fp\cdot o=\fp\cdot(\gen\cdot o)$, written $\loc{o}$ and $\loc{\gen\cdot o}$. The instruction reads the two inputs $a,b$ ($512$ bits) and writes the digest to the two cells of $c$ ($256$ bits). For now the compression itself is \emph{unproven}: the BLAKE3 table (\S\ref{sec:tab-blake3}) wires the six cells onto the memory, state, and bytecode interactions but carries no constraint relating the output words to the input words. That relation is deferred.
+\texttt{BLAKE3} compresses $64$ bytes to $32$. Each operand names a $256$-bit value laid out in \emph{two consecutive memory words}: the reference $o$ names the cell at $\fp\cdot o$ and its successor at $\gen\cdot\fp\cdot o=\fp\cdot(\gen\cdot o)$, written $\loc{o}$ and $\loc{\gen\cdot o}$. The instruction reads the two inputs $a,b$ ($512$ bits) and writes the digest to the two cells of $c$ ($256$ bits). The compression is \emph{fully proven}: the BLAKE3 table (\S\ref{sec:tab-blake3}) wires the six cells onto the memory, state, and bytecode interactions, and the relation $c=\mathrm{BLAKE3}(a,b)$ is discharged by an R1CS proof of the compression circuit, produced by flock~\cite{flock} (\S\ref{sec:tab-blake3}).
 
 \texttt{DEREF} stores, at the dereferenced address $\loc{\alpha}\cdot\beta$, a value chosen by a \emph{store mode} $s\in\{\texttt{deref\_cell}[\gamma],\texttt{deref\_pc},\texttt{deref\_fp}\}$:
 \[
@@ -152,7 +152,7 @@ a weighted sum over $\widehat q$ with weight $W(w)=\eq((\zeta,\mathsf{sel}_i),w)
 
 \subsection{Inner-product PCS}\label{sec:rs-dense}
 
-For now it's BaseFold~\cite{basefold}, over $\F_{2^{128}}$~\cite{cryptoeprint:2024/504}.
+It is Ligerito~\cite{cryptoeprint:2025/1187} in the list-decoding regime, over $\F_{2^{128}}$, targeting $100$-bit soundness.
 
 \section{M3 model}\label{sec:m3}
 
@@ -378,10 +378,12 @@ Alone among the tables, \texttt{JUMP} commits its successors.
 
 \subsection{\texttt{BLAKE3}}\label{sec:tab-blake3}
 
-Compresses the $64$ input bytes at $a$ and $b$ to the $32$ output bytes at $c$. Each operand names a $256$-bit value in two consecutive words, so the row touches six cells: the base addresses $a_A=\fp\cdot o_A$, $a_B=\fp\cdot o_B$, $a_C=\fp\cdot o_C$, and their successors $\gen\cdot a_A$, $\gen\cdot a_B$, $\gen\cdot a_C$ (each a virtual $\times\gen$ of its committed base, \S\ref{sec:prelim}). The two cells of $a,b$ are read inputs; the two cells of $c$ are the written digest, tied into committed memory like any other access. The compression relation is \emph{deferred}: this table proves only that the six cells are read and the instruction is fetched, with no constraint relating the output words to the input words.
+Compresses the $64$ input bytes at $a$ and $b$ to the $32$ output bytes at $c$. Each operand names a $256$-bit value in two consecutive words, so the row touches six cells: the base addresses $a_A=\fp\cdot o_A$, $a_B=\fp\cdot o_B$, $a_C=\fp\cdot o_C$, and their successors $\gen\cdot a_A$, $\gen\cdot a_B$, $\gen\cdot a_C$ (each a virtual $\times\gen$ of its committed base, \S\ref{sec:prelim}). The two cells of $a,b$ are read inputs; the two cells of $c$ are the written digest, tied into committed memory like any other access.
+
+The compression $c=\mathrm{BLAKE3}(a,b)$ is \emph{fully proven} by flock~\cite{flock}, which proves a batched R1CS of the circuit against a committed Boolean witness $w$. We commit flock's ring-switched~\cite{cryptoeprint:2024/504} witness $\widehat w$ over $\F_{2^{128}}$ alongside our own columns, in one stacked commitment (\S\ref{sec:rs-dense}). The words $a,b,c$ therefore already sit inside $\widehat w$, at fixed byte-aligned slots, so we do not re-commit the six value cells $v_{A0},\dots,v_{C1}$: each is a read from $\widehat w$ with appropriate boolean-selection.
 \begin{itemize}
-\item \textbf{Columns:} $\pc,\fp$; operands $o_A,o_B,o_C$; base addresses $a_A,a_B,a_C$; values $v_{A0},v_{A1},v_{B0},v_{B1},v_{C0},v_{C1}$; memory counts $r_{A0},r_{A1},r_{B0},r_{B1},r_{C0},r_{C1}$; bytecode count $r_{\mathrm{bc}}$. (The successor addresses $\gen\cdot a_X$ are virtual.)
-\item \textbf{Constraints:} the three base addresses $a_X=\fp\cdot o_X$. No constraint links $v_{C0},v_{C1}$ to the inputs (BLAKE3 unproven, deferred).
+\item \textbf{Columns:} $\pc,\fp$; operands $o_A,o_B,o_C$; base addresses $a_A,a_B,a_C$; memory counts $r_{A0},r_{A1},r_{B0},r_{B1},r_{C0},r_{C1}$; bytecode count $r_{\mathrm{bc}}$. The six values $v_{A0},v_{A1},v_{B0},v_{B1},v_{C0},v_{C1}$ are committed "inside" $w$, see above. The successor addresses $\gen\cdot a_X$ are virtual.
+\item \textbf{Constraints:} the three base addresses $a_X=\fp\cdot o_X$. The words $v_{X0},v_{X1}$ carry no constraint here, their correctness (the relation $c=\mathrm{BLAKE3}(a,b)$) is handled by Flock.
 \item \textbf{Flushes:}
   \begin{itemize}
   \item \textbf{State:} \pull\ $\tup{\dsep{ST},\pc,\fp}$, \push\ $\tup{\dsep{ST},\gen\cdot\pc,\fp}$.
@@ -528,6 +530,17 @@ Angus Gruen.
 \newblock Some Improvements for the PIOP for ZeroCheck.
 \newblock Cryptology ePrint Archive, Paper 2024/108, 2024.
 \newblock \url{https://eprint.iacr.org/2024/108}
+
+\bibitem{cryptoeprint:2025/1187}
+Andrija Novakovic and Guillermo Angeris.
+\newblock Ligerito: A Small and Concretely Fast Polynomial Commitment Scheme.
+\newblock Cryptology ePrint Archive, Paper 2025/1187, 2025.
+\newblock \url{https://eprint.iacr.org/2025/1187}
+
+\bibitem{flock}
+Succinct Labs.
+\newblock flock: a batched-R1CS proving system for hash circuits over binary towers.
+\newblock \url{https://github.com/succinctlabs/flock}
 
 \end{thebibliography}
 
