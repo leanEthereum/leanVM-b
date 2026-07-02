@@ -20,7 +20,7 @@ use rayon::prelude::*;
 
 use flare::ntt::AdditiveNttF128;
 use flare::pcs::basefold::{self, default_fri_queries};
-use flare::pcs::{open_batch_mixed_stacked, verify_opening_batch_mixed_stacked};
+use flare::pcs::{StackClaim, open_batch_mixed_stacked, verify_opening_batch_mixed_stacked};
 pub use flare::pcs::{BatchOpeningProof, Commitment, PcsParams, ProverData};
 use flare::zerocheck::PaddingSpec;
 
@@ -236,8 +236,12 @@ pub fn open(ps: &mut ProverState, c: &Committed, q: &[F128], claims: &[OpenClaim
     if let Some(rs) = ring {
         // The packed sub-block is exactly the committed slice — no separate copy.
         let qpkd = &q[rs.offset..rs.offset + (1usize << rs.qpkd_vars)];
-        let stack_pd: Vec<(Vec<F128>, F128)> =
-            points.iter().map(|s| (stack_point_of(s, c.mu), s.value)).collect();
+        // leanVM point claims are block-sparse slots (offset + within-column point);
+        // the opener builds `eq` over just each slot, not the whole 2^m stack.
+        let stack_pd: Vec<StackClaim> = points
+            .iter()
+            .map(|s| StackClaim::Slot { offset: s.offset, low_point: &s.low_point, value: s.value })
+            .collect();
         let x_refs: Vec<&[F128]> = rs.x_outers.iter().map(|v| v.as_slice()).collect();
         let s_refs: Vec<Option<&[F128]>> = rs.s_hat_v.iter().map(|o| o.as_deref()).collect();
         return Some(open_batch_mixed_stacked(
@@ -325,8 +329,10 @@ pub fn verify(vs: &mut VerifierState, claims: &[VerifyClaim], mu: usize, root: &
 
     if let Some(rs) = ring {
         let commitment = commitment_from_root(*root, mu);
-        let stack_pd: Vec<(Vec<F128>, F128)> =
-            points.iter().map(|s| (stack_point_of(s, mu), s.value)).collect();
+        let stack_pd: Vec<StackClaim> = points
+            .iter()
+            .map(|s| StackClaim::Slot { offset: s.offset, low_point: &s.low_point, value: s.value })
+            .collect();
         let x_refs: Vec<&[F128]> = rs.x_outers.iter().map(|v| v.as_slice()).collect();
         return verify_opening_batch_mixed_stacked(
             &commitment,
@@ -379,18 +385,4 @@ pub fn verify(vs: &mut VerifierState, claims: &[VerifyClaim], mu: usize, root: &
         return Err(Error::FinalWeightMismatch);
     }
     Ok(())
-}
-
-/// The full `mu`-variable point of a located slot claim in the stacked witness:
-/// the within-column `low_point` (low coords) followed by the column's boolean
-/// selector (high coords). Used to express leanVM's point claims as full-stack
-/// evaluations when they are batched with the ring-switched BLAKE3 claims in the
-/// single mixed opening.
-fn stack_point_of(slot: &SlotClaim, mu: usize) -> Vec<F128> {
-    let mut p = slot.low_point.clone();
-    let sel = slot.offset >> slot.low_point.len();
-    for k in 0..(mu - slot.low_point.len()) {
-        p.push(F128::new(((sel >> k) & 1) as u64, 0));
-    }
-    p
 }

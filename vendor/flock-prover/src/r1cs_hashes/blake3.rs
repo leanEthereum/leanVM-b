@@ -1701,6 +1701,11 @@ impl Blake3Setup {
         };
         let ab_x = crate::prover::quirky_x_outer_full(&reduced.ab.claim.point);
         let c_x = crate::prover::quirky_x_outer_full(&reduced.c.claim.point);
+        // This standalone-flock path takes general full-stack point claims.
+        let pd: Vec<flock_core::pcs::StackClaim> = stack_pd
+            .iter()
+            .map(|(point, value)| flock_core::pcs::StackClaim::Point { point, value: *value })
+            .collect();
         flock_core::pcs::open_batch_mixed_stacked(
             z_packed,
             &[ab_x.as_slice(), c_x.as_slice()],
@@ -1710,7 +1715,7 @@ impl Blake3Setup {
             stack_offset,
             stack_data,
             stack_commitment,
-            stack_pd,
+            &pd,
             challenger,
         )
     }
@@ -1791,6 +1796,10 @@ impl Blake3Setup {
         let ab_x = crate::prover::quirky_x_outer_full(&ab.point);
         let c_x = crate::prover::quirky_x_outer_full(&c.point);
         let qpkd_vars = self.r1cs.m - flock_core::pcs::LOG_PACKING;
+        let pd: Vec<flock_core::pcs::StackClaim> = stack_pd
+            .iter()
+            .map(|(point, value)| flock_core::pcs::StackClaim::Point { point, value: *value })
+            .collect();
         flock_core::pcs::verify_opening_batch_mixed_stacked(
             stack_commitment,
             stack_offset,
@@ -1798,7 +1807,7 @@ impl Blake3Setup {
             &[ab.value, c.value],
             &[ab.point.z_skip, c.point.z_skip],
             &[ab_x.as_slice(), c_x.as_slice()],
-            stack_pd,
+            &pd,
             &proof.open,
             challenger,
         )

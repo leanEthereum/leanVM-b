@@ -344,6 +344,30 @@ pub fn open_batch_mixed_with_precomputed_s_hat_v<Ch: Challenger>(
 /// constraint / binding / pinning claims). All are γ-folded into one weight and
 /// the single BaseFold runs over `stack` (`a_init`). `stack_offset` must be a
 /// multiple of `qpkd.len()`.
+/// A point claim folded into the stacked mixed opening ([`open_batch_mixed_stacked`]).
+/// Either a **block-sparse** slot claim — weight `eq(low_point,·)` supported on the
+/// aligned sub-block `[offset, offset + 2^low_point.len())`, so the opener builds
+/// `eq` over just the slot instead of the whole `2^m` stack — or a **general**
+/// full-stack point (`eq(point,·)` over all `2^m`). leanVM's point claims are all
+/// `Slot`s (their `eq` is zero outside the slot); `Point` keeps the opener usable
+/// for arbitrary claims.
+pub enum StackClaim<'a> {
+    /// `eq(low_point,·)` on `[offset, offset + 2^low_point.len())`. `offset` must
+    /// be a multiple of `2^low_point.len()` (an aligned slot).
+    Slot { offset: usize, low_point: &'a [F128], value: F128 },
+    /// `eq(point,·)` over the whole `2^m` stack.
+    Point { point: &'a [F128], value: F128 },
+}
+
+impl StackClaim<'_> {
+    #[inline]
+    fn value(&self) -> F128 {
+        match self {
+            StackClaim::Slot { value, .. } | StackClaim::Point { value, .. } => *value,
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn open_batch_mixed_stacked<Ch: Challenger>(
     qpkd: &[F128],
@@ -354,7 +378,7 @@ pub fn open_batch_mixed_stacked<Ch: Challenger>(
     stack_offset: usize,
     stack_data: &ProverData,
     stack_commitment: &Commitment,
-    stack_pd: &[(Vec<F128>, F128)],
+    stack_pd: &[StackClaim],
     challenger: &mut Ch,
 ) -> BatchOpeningProof {
     // Ring-switch + γ_rs over q_pkd (no q_pkd-level packed-direct), lifted to the
@@ -364,20 +388,52 @@ pub fn open_batch_mixed_stacked<Ch: Challenger>(
     b_stack[stack_offset..stack_offset + combined.b_combined.len()].copy_from_slice(&combined.b_combined);
     let mut target = combined.target_combined;
 
-    // Fold the full-stack point claims: observe all values, sample γ_pd, then add
-    // γ·eq(point) to the weight and γ·value to the target (same order flock's
+    // Fold the point claims: observe all values, sample γ_pd, then add γ·eq to
+    // the weight and γ·value to the target (same order flock's
     // `compute_combined_basis_and_target` uses for packed-direct claims).
-    for (_, value) in stack_pd {
+    for claim in stack_pd {
         challenger.observe_label(b"flock-pcs-packed-direct-v0");
-        challenger.observe_f128(*value);
+        challenger.observe_f128(claim.value());
     }
     let gammas_pd: Vec<F128> = (0..stack_pd.len()).map(|_| challenger.sample_f128()).collect();
-    for ((point, value), g) in stack_pd.iter().zip(gammas_pd.iter()) {
-        let eq = crate::zerocheck::univariate_skip::build_eq(point);
-        for (bi, ei) in b_stack.iter_mut().zip(eq.iter()) {
-            *bi += *g * *ei;
+    {
+        use rayon::prelude::*;
+        // `build_eq` and `build_eq_parallel` produce the identical table and serial
+        // and parallel scatter give the identical result, so the proof is
+        // byte-for-byte unchanged. A `Slot` builds `eq` over ONLY its aligned
+        // sub-block (leanVM's claims — `eq` is zero elsewhere), a `Point` over the
+        // whole stack. Both scatter with `+=`, so overlapping slots (e.g. several
+        // claims on the q_pkd column) accumulate correctly. Small slots use the
+        // serial path: with hundreds of tiny point claims, rayon dispatch would
+        // cost more than the fold itself.
+        const PAR_FOLD_THRESHOLD: usize = 1 << 14;
+        for (claim, g) in stack_pd.iter().zip(gammas_pd.iter()) {
+            let g = *g;
+            match claim {
+                StackClaim::Slot { offset, low_point, value } => {
+                    let len = 1usize << low_point.len();
+                    let dst = &mut b_stack[*offset..*offset + len];
+                    if len < PAR_FOLD_THRESHOLD {
+                        let eq = crate::zerocheck::univariate_skip::build_eq(low_point);
+                        for (bi, ei) in dst.iter_mut().zip(eq.iter()) {
+                            *bi += g * *ei;
+                        }
+                    } else {
+                        let eq = ring_switch::build_eq_parallel(low_point);
+                        dst.par_iter_mut().zip(eq.par_iter()).for_each(|(bi, ei)| *bi += g * *ei);
+                    }
+                    target += g * *value;
+                }
+                StackClaim::Point { point, value } => {
+                    let eq = ring_switch::build_eq_parallel(point);
+                    b_stack
+                        .par_iter_mut()
+                        .zip(eq.par_iter())
+                        .for_each(|(bi, ei)| *bi += g * *ei);
+                    target += g * *value;
+                }
+            }
         }
-        target += *g * *value;
     }
 
     let ntt = crate::ntt::AdditiveNttF128::standard(stack_commitment.params.k_code());
@@ -412,7 +468,7 @@ pub fn verify_opening_batch_mixed_stacked<Ch: Challenger>(
     claims: &[F128],
     z_skips: &[F128],
     x_outers: &[&[F128]],
-    stack_pd: &[(Vec<F128>, F128)],
+    stack_pd: &[StackClaim],
     proof: &BatchOpeningProof,
     challenger: &mut Ch,
 ) -> Result<(), VerifyError> {
@@ -435,15 +491,15 @@ pub fn verify_opening_batch_mixed_stacked<Ch: Challenger>(
         target_combined += *g * out.sumcheck_claim;
     }
 
-    // Full-stack point claims (mirror the prover): observe all values, sample
-    // γ_pd, fold their targets.
-    for (_, value) in stack_pd {
+    // Point claims (mirror the prover): observe all values, sample γ_pd, fold
+    // their targets.
+    for claim in stack_pd {
         challenger.observe_label(b"flock-pcs-packed-direct-v0");
-        challenger.observe_f128(*value);
+        challenger.observe_f128(claim.value());
     }
     let gammas_pd: Vec<F128> = (0..stack_pd.len()).map(|_| challenger.sample_f128()).collect();
-    for ((_, value), g) in stack_pd.iter().zip(gammas_pd.iter()) {
-        target_combined += *g * *value;
+    for (claim, g) in stack_pd.iter().zip(gammas_pd.iter()) {
+        target_combined += *g * claim.value();
     }
 
     let ntt = crate::ntt::AdditiveNttF128::standard(stack_commitment.params.k_code());
@@ -470,8 +526,23 @@ pub fn verify_opening_batch_mixed_stacked<Ch: Challenger>(
         rs_part += *g * ring_switch::eval_rs_eq(&x_outer[1..], chi_lo, &out.eq_r_dprime);
     }
     let mut expected_final_b = rs_part * sel_eq;
-    for ((point, _), g) in stack_pd.iter().zip(gammas_pd.iter()) {
-        expected_final_b += *g * crate::zerocheck::multilinear::eq_eval(point, &challenges);
+    for (claim, g) in stack_pd.iter().zip(gammas_pd.iter()) {
+        // `eq(point, χ)` for the claim. A `Slot`'s full point is
+        // `[low_point, selector_bits]`, so `eq = eq(low_point, χ_lo) · Π sel-lift`
+        // — identical to `eq_eval(full_point, χ)`, just without materializing it.
+        let w = match claim {
+            StackClaim::Slot { offset, low_point, .. } => {
+                let n = low_point.len();
+                let mut e = crate::zerocheck::multilinear::eq_eval(low_point, &challenges[..n]);
+                let sel = offset >> n;
+                for (k, &x) in challenges[n..].iter().enumerate() {
+                    e *= if (sel >> k) & 1 == 1 { x } else { F128::ONE + x };
+                }
+                e
+            }
+            StackClaim::Point { point, .. } => crate::zerocheck::multilinear::eq_eval(point, &challenges),
+        };
+        expected_final_b += *g * w;
     }
     if expected_final_b != proof.basefold.final_b {
         return Err(VerifyError::FinalBMismatch);

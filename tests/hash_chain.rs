@@ -116,7 +116,7 @@ fn blake3_hash_chain() {
 
     assert_eq!(stats.counts[5], n, "one BLAKE3 row per chain step");
 
-    println!("\nBLAKE3 hash chain (h_{{i+1}} = BLAKE3(h_i, h_i)), N = {n}, unroll = {unroll}");
+    println!("\nBLAKE3 hash chain, N = {n}, unroll = {unroll}");
     println!("  cycles (VM steps)           : {}", stats.cycles);
     for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3"].iter().zip(&stats.counts) {
         let pow = if c == 0 {
