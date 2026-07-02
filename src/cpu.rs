@@ -1459,6 +1459,40 @@ mod tests {
         verify(&program, &pi, &proof).expect("BLAKE3 program verifies");
     }
 
+    /// A self-hash `BLAKE3(h, h)` (the hash-chain step) passes the *same* operand
+    /// base as both `a` and `b` (`a == b`), so one 256-bit pair feeds both inputs
+    /// with no copy. The row reads those two cells twice; the running access counts
+    /// thread through and the bus still balances. This is the aliasing the
+    /// consecutive-pair DSL lowering relies on.
+    #[test]
+    fn blake3_self_hash_aliased_operands() {
+        let h0 = F128::new(0xfeed_face_dead_beef, 0x0123_4567_89ab_cdef);
+        let h1 = F128::new(0xcafe_d00d_1337_c0de, 0x8877_6655_4433_2211);
+        // 8 slots (power of two). Slots 2,3,6 are filler SETs stepping the pc so the
+        // last executed instruction (slot 6) lands at pc 7 (the sentinel, halt).
+        let prog = vec![
+            Op::Set { o: 2, k: h0 },         // operand pair h = (cell 2, cell 3)
+            Op::Set { o: 3, k: h1 },
+            Op::Set { o: 8, k: F128::ONE },  // filler
+            Op::Set { o: 9, k: F128::ONE },  // filler
+            Op::Set { o: 10, k: F128::ONE }, // filler
+            Op::Blake3 { a: 2, b: 2, c: 6 }, // a == b: hash h ‖ h into cells 6,7
+            Op::Set { o: 11, k: F128::ONE }, // filler
+            Op::Xor { a: 0, b: 0, c: 0 },    // sentinel
+        ];
+        let program = Program::from_bytecode(prog, 16);
+        let pi = [F128::new(3, 0), F128::new(5, 0)];
+
+        let exec = program.execute(pi);
+        let (d0, d1) = blake3_compress(h0, h1, h0, h1);
+        assert_eq!(exec.mem[6], d0);
+        assert_eq!(exec.mem[7], d1);
+
+        let (proof, stats) = prove(&program, pi);
+        assert_eq!(stats.counts[5], 1, "one BLAKE3 row");
+        verify(&program, &pi, &proof).expect("self-hash BLAKE3 verifies");
+    }
+
     /// Tampering flock's validity sub-proof (its BaseFold `final_b`, opened over
     /// the same stacked commitment) must make verification fail.
     #[test]

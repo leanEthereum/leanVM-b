@@ -67,8 +67,14 @@ pub enum Expr {
     Call(String, Vec<Expr>),
     /// `Array(n)` — allocate a heap buffer of `n` cells; evaluates to its pointer.
     Array(u64),
-    /// `arr[idx]` — read the heap cell at multiplicative offset `idx` (a g-power)
-    /// from pointer `arr`.
+    /// `StackArray(n)` — allocate `n` *consecutive* frame (stack) cells, bound as a
+    /// stack value. Its cells `sa[0..n]` are written/read directly (no heap deref),
+    /// and a size-2 `StackArray` is a valid `blake3` operand (the two 128-bit words
+    /// of a 256-bit value live in the two consecutive cells). See [`FnLower`].
+    StackArray(u64),
+    /// `arr[idx]` — read a cell. For a heap `arr` (a pointer): `m[arr·idx]` (idx a
+    /// g-power). For a [`Expr::StackArray`]: the frame cell `base + idx` (idx a
+    /// small integer literal), read directly.
     Index(Box<Expr>, Box<Expr>),
 }
 
@@ -200,6 +206,11 @@ struct Lowered {
 
 struct FnLower<'a> {
     vars: HashMap<String, Off>,
+    /// `StackArray` bindings: name → (base offset, size). The `size` cells
+    /// `base..base+size` are consecutive frame cells (so a size-2 one is a direct
+    /// `blake3` operand). Kept separate from `vars` since a stack value is a run of
+    /// cells, not a single scalar.
+    stacks: HashMap<String, (Off, u32)>,
     next: Off,
     n_args: u32,
     is_main: bool,
@@ -286,7 +297,12 @@ impl FnLower<'_> {
                 });
                 o
             }
-            Expr::Var(v) => *self.vars.get(v).unwrap_or_else(|| panic!("unbound variable `{v}`")),
+            Expr::Var(v) => {
+                if self.stacks.contains_key(v) {
+                    panic!("StackArray `{v}` used as a scalar; index it (`{v}[k]`) or pass it to blake3");
+                }
+                *self.vars.get(v).unwrap_or_else(|| panic!("unbound variable `{v}`"))
+            }
             Expr::Add(a, b) => {
                 let (la, lb) = (self.expr(a), self.expr(b));
                 let o = self.fresh();
@@ -309,7 +325,17 @@ impl FnLower<'_> {
                 });
                 arr
             }
+            Expr::StackArray(_) => {
+                panic!("StackArray(n) must be bound to a name: `x = StackArray(n)`")
+            }
             Expr::Index(arr, idx) => {
+                // Stack read `sa[k]`: the frame cell `base + k` directly (no deref).
+                if let Some((base, size)) = self.stack_of(arr) {
+                    let k = self.const_index(idx);
+                    assert!(k < size, "stack index {k} out of bounds (size {size})");
+                    return base + k;
+                }
+                // Heap read `m[arr·idx]`.
                 let ptr = self.array_ptr(arr, idx);
                 let dst = self.fresh();
                 // Read: bind dst := m[ptr] (the array cell, written earlier).
@@ -320,6 +346,61 @@ impl FnLower<'_> {
                     mode: DerefMode::Cell,
                 });
                 dst
+            }
+        }
+    }
+
+    /// Allocate `n` *consecutive* fresh frame cells (a stack run), returning the
+    /// base. Nothing else may `fresh()` between them, so they stay adjacent.
+    fn alloc_stack(&mut self, n: u32) -> Off {
+        let base = self.next;
+        self.next += n;
+        base
+    }
+
+    /// If `e` names a `StackArray` variable, its `(base, size)`.
+    fn stack_of(&self, e: &Expr) -> Option<(Off, u32)> {
+        match e {
+            Expr::Var(v) => self.stacks.get(v).copied(),
+            _ => None,
+        }
+    }
+
+    /// A stack index must be a plain integer literal.
+    fn const_index(&self, idx: &Expr) -> u32 {
+        match idx {
+            Expr::Lit(k) => *k as u32,
+            _ => panic!("a StackArray index must be an integer literal, got `{idx:?}`"),
+        }
+    }
+
+    /// Evaluate `e` writing its value straight into cell `dst` — no temporary +
+    /// copy for the common cases (a heap read DEREFs directly into `dst`; a
+    /// constant / arithmetic emits into `dst`). Falls back to `expr` + `copy` for
+    /// vars, calls, and stack reads.
+    fn expr_into(&mut self, e: &Expr, dst: Off) {
+        match e {
+            // Heap read straight into dst (a stack read falls through to the copy).
+            Expr::Index(arr, idx) if self.stack_of(arr).is_none() => {
+                let ptr = self.array_ptr(arr, idx);
+                self.emit(LOp::Deref { alpha: ptr, beta: 0, gamma: dst, mode: DerefMode::Cell });
+            }
+            Expr::Lit(n) => {
+                self.emit(LOp::Set { o: dst, k: KVal::Const(F128::new(*n as u64, (*n >> 64) as u64)) });
+            }
+            Expr::Gen => self.emit(LOp::Set { o: dst, k: KVal::Const(g_pow(1)) }),
+            Expr::GPow(k) => self.emit(LOp::Set { o: dst, k: KVal::Const(g_pow_u128(*k)) }),
+            Expr::Add(a, b) => {
+                let (la, lb) = (self.expr(a), self.expr(b));
+                self.emit(LOp::Xor { a: la, b: lb, c: dst });
+            }
+            Expr::Mul(a, b) => {
+                let (la, lb) = (self.expr(a), self.expr(b));
+                self.emit(LOp::Mul { a: la, b: lb, c: dst });
+            }
+            _ => {
+                let v = self.expr(e);
+                self.copy(v, dst);
             }
         }
     }
@@ -335,9 +416,10 @@ impl FnLower<'_> {
 
     /// Lower a call; returns the caller offsets bound to the returned values.
     fn call(&mut self, callee: &str, args: &[Expr], n_ret: usize) -> Vec<Off> {
-        if callee == "blake3" {
-            return self.blake3_call(args);
-        }
+        assert!(
+            callee != "blake3",
+            "blake3 returns a size-2 StackArray; bind it: `out = blake3(a, b)`"
+        );
         self.lower_call(callee, args, n_ret, None)
     }
 
@@ -346,25 +428,24 @@ impl FnLower<'_> {
     /// reads each operand at two *consecutive* frame cells, so the four input
     /// words are copied into consecutive slots and the output takes two fresh
     /// consecutive slots. Returns the two output offsets `(c0, c0+1)`.
-    fn blake3_call(&mut self, args: &[Expr]) -> Vec<Off> {
-        assert_eq!(args.len(), 4, "blake3 takes (a0, a1, b0, b1)");
-        let vals: Vec<Off> = args.iter().map(|a| self.expr(a)).collect();
-        // Materialize the `1` cell first so the six slots below stay contiguous
-        // (a copy's `Mul` reuses it without allocating a cell mid-block).
-        self.one();
-        let a0 = self.fresh();
-        let a1 = self.fresh();
-        let b0 = self.fresh();
-        let b1 = self.fresh();
-        let c0 = self.fresh();
-        let c1 = self.fresh();
-        debug_assert!(a1 == a0 + 1 && b0 == a0 + 2 && b1 == a0 + 3 && c0 == a0 + 4 && c1 == a0 + 5);
-        self.copy(vals[0], a0);
-        self.copy(vals[1], a1);
-        self.copy(vals[2], b0);
-        self.copy(vals[3], b1);
-        self.emit(LOp::Blake3 { a: a0, b: b0, c: c0 });
-        vec![c0, c1]
+    /// `out = blake3(a, b)` — `a` and `b` are size-2 `StackArray`s (each a 256-bit
+    /// value in two consecutive frame cells). Reads the operands *in place* and
+    /// writes the digest to a fresh size-2 `StackArray`, so nothing is copied. A
+    /// self-hash `blake3(h, h)` passes the same base for both operands (`a == b`),
+    /// aliasing one pair into both inputs. Returns the output stack `(base, 2)`.
+    fn blake3_call(&mut self, args: &[Expr]) -> (Off, u32) {
+        assert_eq!(args.len(), 2, "blake3(a, b) takes two size-2 StackArrays");
+        let (a_base, a_size) = self
+            .stack_of(&args[0])
+            .expect("blake3 operand `a` must be a StackArray");
+        let (b_base, b_size) = self
+            .stack_of(&args[1])
+            .expect("blake3 operand `b` must be a StackArray");
+        assert_eq!(a_size, 2, "blake3 operand `a` must have size 2");
+        assert_eq!(b_size, 2, "blake3 operand `b` must have size 2");
+        let out = self.alloc_stack(2);
+        self.emit(LOp::Blake3 { a: a_base, b: b_base, c: out });
+        (out, 2)
     }
 
     /// A *conditional* tail call: transfer to `callee(args)` iff `cond != 0`,
@@ -430,10 +511,22 @@ impl FnLower<'_> {
 
     fn stmt(&mut self, s: &Stmt) {
         match s {
-            Stmt::Let(name, e) => {
-                let o = self.expr(e);
-                self.vars.insert(name.clone(), o);
-            }
+            Stmt::Let(name, e) => match e {
+                // `x = StackArray(n)`: bind a run of `n` consecutive frame cells.
+                Expr::StackArray(n) => {
+                    let base = self.alloc_stack(*n as u32);
+                    self.stacks.insert(name.clone(), (base, *n as u32));
+                }
+                // `x = blake3(a, b)`: bind the size-2 output stack.
+                Expr::Call(f, args) if f == "blake3" => {
+                    let (base, size) = self.blake3_call(args);
+                    self.stacks.insert(name.clone(), (base, size));
+                }
+                _ => {
+                    let o = self.expr(e);
+                    self.vars.insert(name.clone(), o);
+                }
+            },
             Stmt::LetTuple(names, f, args) => {
                 let dsts = self.call(f, args, names.len());
                 for (n, d) in names.iter().zip(dsts) {
@@ -453,15 +546,22 @@ impl FnLower<'_> {
                 self.call(f, args, 0);
             }
             Stmt::Store(arr, idx, val) => {
-                // arr[idx] = val: assert m[arr·idx] == val (write-once store).
-                let v = self.expr(val);
-                let ptr = self.array_ptr(arr, idx);
-                self.emit(LOp::Deref {
-                    alpha: ptr,
-                    beta: 0,
-                    gamma: v,
-                    mode: DerefMode::Cell,
-                });
+                // Stack write `sa[k] = val`: place `val` straight into cell `base+k`.
+                if let Some((base, size)) = self.stack_of(arr) {
+                    let k = self.const_index(idx);
+                    assert!(k < size, "stack store index {k} out of bounds (size {size})");
+                    self.expr_into(val, base + k);
+                } else {
+                    // Heap store `arr[idx] = val`: assert m[arr·idx] == val (write-once).
+                    let v = self.expr(val);
+                    let ptr = self.array_ptr(arr, idx);
+                    self.emit(LOp::Deref {
+                        alpha: ptr,
+                        beta: 0,
+                        gamma: v,
+                        mode: DerefMode::Cell,
+                    });
+                }
             }
             Stmt::Return(es) => self.lower_return(es),
             Stmt::CallIfNe(lhs, rhs, callee, args) => {
@@ -577,7 +677,7 @@ fn free_vars_expr(e: &Expr, refs: &mut Vec<String>) {
             free_vars_expr(b, refs);
         }
         Expr::Call(_, args) => args.iter().for_each(|a| free_vars_expr(a, refs)),
-        Expr::Lit(_) | Expr::Gen | Expr::GPow(_) | Expr::Array(_) => {}
+        Expr::Lit(_) | Expr::Gen | Expr::GPow(_) | Expr::Array(_) | Expr::StackArray(_) => {}
     }
 }
 
@@ -627,6 +727,7 @@ fn lower_func(f: &Func, queue: &mut Vec<Func>, loop_ctr: &mut usize) -> Lowered 
     let next = 2 + f.params.len() as u32 + f.n_ret as u32;
     let mut lowerer = FnLower {
         vars,
+        stacks: HashMap::new(),
         next,
         n_args: f.params.len() as u32,
         is_main: f.name == "main",
@@ -968,12 +1069,18 @@ fn parse_expr(s: &str) -> Result<Expr, String> {
                 .map(|a| parse_expr(a))
                 .collect::<Result<_, _>>()?
         };
-        // `Array(n)` is a heap allocation, not an ordinary call.
+        // `Array(n)` / `StackArray(n)` are allocations, not ordinary calls.
         if name == "Array" {
             if let [Expr::Lit(n)] = args.as_slice() {
                 return Ok(Expr::Array(*n as u64));
             }
             return Err("Array(n) needs one integer-literal size".into());
+        }
+        if name == "StackArray" {
+            if let [Expr::Lit(n)] = args.as_slice() {
+                return Ok(Expr::StackArray(*n as u64));
+            }
+            return Err("StackArray(n) needs one integer-literal size".into());
         }
         return Ok(Expr::Call(name, args));
     }

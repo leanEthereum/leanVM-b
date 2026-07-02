@@ -44,24 +44,29 @@ fn compress(a: [F128; 2], b: [F128; 2]) -> [F128; 2] {
 /// Build the zkDSL source for an `n`-step chain unrolled `unroll` per outer
 /// iteration (`k = n / unroll` iterations). Layout in the heap `buff`: the chain
 /// value after `j·unroll` steps sits at cells `2j, 2j+1` (g-powers `g^{2j},
-/// g^{2j+1}`); each outer step reads that pair, runs `unroll` `BLAKE3`s in
-/// registers, and writes the next pair two cells along.
+/// g^{2j+1}`). Each outer step loads that pair into a size-2 `StackArray`, runs
+/// `unroll` `BLAKE3`s in the stack — each output stack feeds the next with **no
+/// copies** (a self-hash `blake3(h, h)` aliases one pair into both operands) —
+/// then writes the result pair two cells along.
 fn chain_source(n: usize, unroll: usize) -> String {
     assert!(unroll >= 1 && n.is_multiple_of(unroll), "N must be a positive multiple of UNROLL");
     let k = n / unroll;
     let two_k = 2 * k;
 
     let mut body = String::new();
-    body.push_str("        c0_0 = buff[i]\n");
-    body.push_str("        c1_0 = buff[i * GEN]\n");
+    // Load the current chain value into a size-2 StackArray (heap read straight
+    // into the two consecutive stack cells).
+    body.push_str("        h0 = StackArray(2)\n");
+    body.push_str("        h0[0] = buff[i]\n");
+    body.push_str("        h0[1] = buff[i * GEN]\n");
+    // `unroll` self-hashes; each `blake3` reads its operand stack in place and
+    // returns a fresh size-2 stack — no copies between steps.
     for s in 1..=unroll {
-        body.push_str(&format!(
-            "        c0_{s}, c1_{s} = blake3(c0_{p}, c1_{p}, c0_{p}, c1_{p})\n",
-            p = s - 1
-        ));
+        body.push_str(&format!("        h{s} = blake3(h{p}, h{p})\n", p = s - 1));
     }
-    body.push_str(&format!("        buff[i * GEN ** 2] = c0_{unroll}\n"));
-    body.push_str(&format!("        buff[i * GEN ** 3] = c1_{unroll}\n"));
+    // Write the block's result back to the next array pair.
+    body.push_str(&format!("        buff[i * GEN ** 2] = h{unroll}[0]\n"));
+    body.push_str(&format!("        buff[i * GEN ** 3] = h{unroll}[1]\n"));
 
     format!(
         "def main():\n\
