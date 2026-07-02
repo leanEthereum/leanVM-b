@@ -1119,16 +1119,32 @@ fn blake3_value_slot(col: usize) -> Option<usize> {
         .map(|i| crate::blake3_flock::SLOTS[i])
 }
 
-/// BLAKE3 `q_pkd` **pin** claims at the random instance point `rho`: per pin slot,
-/// `q_pkd(pin_slot‖rho) = pin_col(rho)` against the PUBLIC constant column
-/// (`cv = IV`, counter/blen/flags = 0/64/11), pinning the compression to a real
+/// The instance-cube point the BLAKE3 constant pins are checked at: any BLAKE3
+/// value-column bus claim's point (the memory bus's push-side GKR output, an
+/// FS-random, post-commit, `n_log`-dim point). Reusing it avoids a dedicated
+/// binding challenge. `claims` must already hold the bus claims, and BLAKE3 must
+/// have run (so a value-column claim exists). Deterministic and identical across
+/// prove/verify (both build the bus claims in the same order).
+fn blake3_pin_point(claims: &[ColumnClaim]) -> Vec<F128> {
+    claims
+        .iter()
+        .find(|c| blake3_value_slot(c.col).is_some())
+        .expect("BLAKE3 ran ⇒ a value-column bus claim exists")
+        .point
+        .clone()
+}
+
+/// BLAKE3 `q_pkd` **pin** claims at the instance point `point` (a memory-bus
+/// point, see [`blake3_pin_point`]): per pin slot, `q_pkd(pin_slot‖point) =
+/// pin_col(point)` against the PUBLIC constant column (`cv = IV`,
+/// counter/blen/flags = 0/64/11), pinning the compression to a real
 /// BLAKE3-of-64-bytes. The input/output words are NOT pinned here — they bind via
 /// the memory bus routing to `q_pkd` (see [`blake3_value_slot`]). Pin values are
 /// public, so both sides compute them; symmetric across prove/verify.
-fn blake3_pin_claims(rho: &[F128], n_blocks: usize) -> Vec<ColumnClaim> {
+fn blake3_pin_claims(point: &[F128], n_blocks: usize) -> Vec<ColumnClaim> {
     use crate::blake3_flock::{PIN_SLOTS, pin_constants, slot_point};
     let pin = pin_constants();
-    let n_slots = 1usize << rho.len();
+    let n_slots = 1usize << point.len();
     let mut v = Vec::with_capacity(PIN_SLOTS.len());
     for (k, &pslot) in PIN_SLOTS.iter().enumerate() {
         let mut col = vec![F128::ZERO; n_slots];
@@ -1137,8 +1153,8 @@ fn blake3_pin_claims(rho: &[F128], n_blocks: usize) -> Vec<ColumnClaim> {
         }
         v.push(ColumnClaim {
             col: QPKD,
-            point: slot_point(pslot, rho),
-            value: crate::multilinear::mle_eval(&col, rho),
+            point: slot_point(pslot, point),
+            value: crate::multilinear::mle_eval(&col, point),
         });
     }
     v
@@ -1185,15 +1201,12 @@ pub fn prove(program: &Program, public_input: [F128; 2]) -> (Proof, Stats) {
         eprintln!("[prove] commit      : {:>7.2} ms", ms(t));
     }
 
-    // BLAKE3 ↔ flock (§blake3_flock), single PCS: q_pkd is a column in `w.q`. The
-    // binding point `rho` is sampled right after the commitment; flock's R1CS
-    // validity and EVERY leanVM point claim are discharged together by ONE
-    // BaseFold over this commitment (below). Mirrored in `verify`.
-    let blake3_rho = if !exec.trace.blake3.is_empty() {
-        Some(ps.sample_vec(crate::blake3_flock::n_blocks_log(exec.trace.blake3.len())))
-    } else {
-        None
-    };
+    // BLAKE3 ↔ flock (§blake3_flock), single PCS: q_pkd is a column in `w.q`.
+    // flock's R1CS validity and EVERY leanVM point claim are discharged together
+    // by ONE BaseFold over this commitment (below). The input/output words bind via
+    // the memory bus (virtual value columns route to q_pkd); the constant pins reuse
+    // a bus point, so no dedicated binding challenge is drawn. Mirrored in `verify`.
+    let has_blake3 = !exec.trace.blake3.is_empty();
 
     let t = std::time::Instant::now();
     let l = &w.layout;
@@ -1221,11 +1234,12 @@ pub fn prove(program: &Program, public_input: [F128; 2]) -> (Proof, Stats) {
     let mut claims = bus_claims;
     claims.extend(constraint_claims(&table_claims));
     claims.push(bind_pi_prove(&w, &mut ps));
-    if let Some(rho) = &blake3_rho {
+    if has_blake3 {
         // The input/output words bind via the memory bus (value columns are virtual
-        // and route to q_pkd, see `slot_claims`), so nothing is transmitted here —
-        // only q_pkd's constant slots are pinned at `rho`.
-        claims.extend(blake3_pin_claims(rho, exec.trace.blake3.len()));
+        // and route to q_pkd, see `slot_claims`); only q_pkd's constant slots need
+        // pinning, at a memory-bus point (no dedicated challenge).
+        let pin_point = blake3_pin_point(&claims);
+        claims.extend(blake3_pin_claims(&pin_point, exec.trace.blake3.len()));
     }
     let slots = slot_claims(&w.layout, &claims);
 
@@ -1233,7 +1247,7 @@ pub fn prove(program: &Program, public_input: [F128; 2]) -> (Proof, Stats) {
     // c)` validity claims on the committed `q_pkd`. Those claims are proven by
     // the PCS below, folded into the same opening as every other point claim.
     let t = std::time::Instant::now();
-    let blake3 = if !exec.trace.blake3.is_empty() {
+    let blake3 = if has_blake3 {
         let blocks: Vec<flock_prover::r1cs_hashes::blake3::Compression> = exec
             .trace
             .blake3
@@ -1313,15 +1327,14 @@ pub fn verify(program: &Program, public_input: &[F128; 2], proof: &Proof) -> Res
     let l = read_public(&mut vs, program, public_input)?;
     let root = pcs::read_commitment(&mut vs).map_err(Error::Transcript)?;
 
-    // BLAKE3 ↔ flock (single PCS): sample the binding point `rho` right after the
-    // commitment (mirroring `prove`); flock's R1CS validity and every leanVM
-    // point claim are verified together by ONE BaseFold opening at the end.
-    // The executed-BLAKE3 count is public (announced). Its flock sub-proof rides
-    // the shared `stream`/`openings`; presence is enforced by consumption below
-    // plus `vs.finish()` (a proof with `n_b3 = 0` but trailing flock data, or vice
-    // versa, fails to fully consume).
+    // BLAKE3 ↔ flock (single PCS): flock's R1CS validity and every leanVM point
+    // claim are verified together by ONE BaseFold opening at the end. The executed-
+    // BLAKE3 count is public (announced); its flock sub-proof rides the shared
+    // `stream`/`openings`, and presence is enforced by consumption below plus
+    // `vs.finish()` (a proof with `n_b3 = 0` but trailing flock data, or vice versa,
+    // fails to fully consume). No dedicated binding challenge: the input/output
+    // words bind via the memory bus, the pins reuse a bus point.
     let n_b3 = l.row_counts[tables::BLAKE3_TABLE];
-    let blake3_rho = (n_b3 > 0).then(|| vs.sample_vec(crate::blake3_flock::n_blocks_log(n_b3)));
 
     let bus_claims = leaf::verify_balance(&l.push, &l.pull, &l.count, &l.pad, &mut vs).map_err(Error::Bus)?;
 
@@ -1342,15 +1355,16 @@ pub fn verify(program: &Program, public_input: &[F128; 2], proof: &Proof) -> Res
     let mut claims = bus_claims;
     claims.extend(constraint_claims(&table_claims));
     claims.push(bind_pi_verify(&l, &mut vs)?);
-    if let Some(rho) = &blake3_rho {
+    if n_b3 > 0 {
         // Value columns are virtual (routed to q_pkd via `slot_claims`); only the
-        // constant pins are added here, mirroring `prove`.
-        claims.extend(blake3_pin_claims(rho, n_b3));
+        // constant pins are added here, at a memory-bus point, mirroring `prove`.
+        let pin_point = blake3_pin_point(&claims);
+        claims.extend(blake3_pin_claims(&pin_point, n_b3));
     }
     // Read flock's BLAKE3 sub-proof off the shared channels (mirrors prove's
     // `write_stack_proof`): the scalar reduction from the `stream` as raw transport
     // (right after the last bound scalar), its BaseFold from `openings`.
-    let blake3_sub = if blake3_rho.is_some() {
+    let blake3_sub = if n_b3 > 0 {
         Some(crate::blake3_flock::read_stack_proof(&mut vs).map_err(Error::Transcript)?)
     } else {
         None
