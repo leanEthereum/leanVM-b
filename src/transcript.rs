@@ -82,7 +82,13 @@ impl Sponge {
 /// A complete proof: the scalar transcript stream plus the BaseFold opening hint
 /// channel. (The commitment root rides the stream as field scalars, like
 /// leanVM; only the hash-bearing BaseFold openings are hinted.)
-#[derive(Clone, Debug, serde::Serialize)]
+///
+/// `Deserialize` as well as `Serialize`, so a proof round-trips over the wire and
+/// an independent verifier process can reconstruct it: the whole proof (stream +
+/// opening hints + BLAKE3 attachment) lives in these fields, and
+/// [`VerifierState`] re-derives every challenge from them via the shared sponge,
+/// so nothing extra needs to travel out of band.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Proof {
     /// Every transmitted field scalar, in protocol order.
     pub stream: Vec<F128>,
