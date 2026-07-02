@@ -31,6 +31,7 @@
 //!                     `BLAKE3`'s compression is unproven (only its bus
 //!                     interactions are enforced); see `doc.tex` §7.6.
 
+pub mod blake3_flock;
 pub mod compiler;
 pub mod constraints;
 pub mod cpu;

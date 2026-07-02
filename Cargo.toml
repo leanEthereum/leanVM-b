@@ -21,6 +21,12 @@ serde = { version = "1", features = ["derive"] }
 # tree (which is restructured underneath us). Renamed to `flare` so the imports
 # stay `flare::…`; it is a frozen local snapshot, not a live path dependency.
 flare = { path = "vendor/flock-core", package = "flock-core" }
+# Vendored BLAKE3 R1CS prover subset (the generic R1CS prover + the BLAKE3
+# per-block encoder, re-laid for 128-bit packing alignment). Depends on the SAME
+# vendored `flock-core` as `flare` (path `vendor/flock-core`), so the packed
+# `F128` witness `q_pkd` it produces is the same field type as our committed
+# columns — letting us stack it alongside them (§BLAKE3 integration).
+flock-prover = { path = "vendor/flock-prover" }
 # Measures the serialized proof size (the demo binary and the proof-size test).
 bincode = "1"
 

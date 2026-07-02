@@ -88,6 +88,10 @@ pub struct Proof {
     pub stream: Vec<F128>,
     /// BaseFold openings (sumcheck/FRI messages + Merkle paths), in order.
     pub openings: Vec<BaseFoldProof>,
+    /// flock's BLAKE3 sub-proof (validity + `q_pkd` slot openings), present iff
+    /// the program executed ≥1 `BLAKE3`. Its challenges share this transcript's
+    /// sponge; its proof data is carried here rather than on `stream`.
+    pub blake3: Option<crate::blake3_flock::Blake3Attachment>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -156,6 +160,7 @@ impl ProverState {
         Proof {
             stream: self.stream,
             openings: self.openings,
+            blake3: None,
         }
     }
 }

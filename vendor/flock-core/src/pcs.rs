@@ -334,6 +334,151 @@ pub fn open_batch_mixed_with_precomputed_s_hat_v<Ch: Challenger>(
     }
 }
 
+/// Open ring-switched claims AND full-stack point claims in ONE BaseFold, when
+/// the committed witness is a larger STACK whose aligned sub-block
+/// `[stack_offset, stack_offset + qpkd.len())` is `qpkd` (the leanVM-b single-PCS
+/// integration: `qpkd` is flock's packed BLAKE3 witness, committed inside
+/// leanVM's one stacked commitment). The ring-switch combined weight is computed
+/// over `qpkd` and LIFTED into the stack domain; each `stack_pd = (point, value)`
+/// is a plain multilinear evaluation of the WHOLE stack (leanVM's bus /
+/// constraint / binding / pinning claims). All are γ-folded into one weight and
+/// the single BaseFold runs over `stack` (`a_init`). `stack_offset` must be a
+/// multiple of `qpkd.len()`.
+#[allow(clippy::too_many_arguments)]
+pub fn open_batch_mixed_stacked<Ch: Challenger>(
+    qpkd: &[F128],
+    x_outers: &[&[F128]],
+    precomputed_s_hat_v: &[Option<&[F128]>],
+    padding: &PaddingSpec,
+    stack: &[F128],
+    stack_offset: usize,
+    stack_data: &ProverData,
+    stack_commitment: &Commitment,
+    stack_pd: &[(Vec<F128>, F128)],
+    challenger: &mut Ch,
+) -> BatchOpeningProof {
+    // Ring-switch + γ_rs over q_pkd (no q_pkd-level packed-direct), lifted to the
+    // stack domain at the sub-block offset.
+    let combined = compute_combined_basis_and_target(qpkd, x_outers, precomputed_s_hat_v, &[], padding, challenger, false);
+    let mut b_stack = vec![F128::ZERO; stack.len()];
+    b_stack[stack_offset..stack_offset + combined.b_combined.len()].copy_from_slice(&combined.b_combined);
+    let mut target = combined.target_combined;
+
+    // Fold the full-stack point claims: observe all values, sample γ_pd, then add
+    // γ·eq(point) to the weight and γ·value to the target (same order flock's
+    // `compute_combined_basis_and_target` uses for packed-direct claims).
+    for (_, value) in stack_pd {
+        challenger.observe_label(b"flock-pcs-packed-direct-v0");
+        challenger.observe_f128(*value);
+    }
+    let gammas_pd: Vec<F128> = (0..stack_pd.len()).map(|_| challenger.sample_f128()).collect();
+    for ((point, value), g) in stack_pd.iter().zip(gammas_pd.iter()) {
+        let eq = crate::zerocheck::univariate_skip::build_eq(point);
+        for (bi, ei) in b_stack.iter_mut().zip(eq.iter()) {
+            *bi += *g * *ei;
+        }
+        target += *g * *value;
+    }
+
+    let ntt = crate::ntt::AdditiveNttF128::standard(stack_commitment.params.k_code());
+    let bf_proof = basefold::prove(
+        stack,
+        b_stack,
+        target,
+        &stack_data.codeword,
+        &stack_data.merkle_tree,
+        &ntt,
+        stack_commitment.params.log_inv_rate,
+        stack_commitment.params.log_batch_size,
+        default_fri_queries(stack_commitment.params.log_inv_rate),
+        challenger,
+    );
+    BatchOpeningProof {
+        ring_switches: combined.ring_switches,
+        basefold: bf_proof,
+    }
+}
+
+/// Verifier mirror of [`open_batch_mixed_stacked`]. `qpkd_vars = log2(qpkd.len())`
+/// is the sub-block's variable count; the BaseFold folding point splits into the
+/// low `qpkd_vars` coords (the q_pkd vars, fed to `eval_rs_eq`) and the high
+/// coords (the selector `stack_offset >> qpkd_vars`), so the lifted weight's
+/// final value is `eq(sel, χ_hi) · Σ γ·rs_eq(χ_lo)`.
+#[allow(clippy::too_many_arguments)]
+pub fn verify_opening_batch_mixed_stacked<Ch: Challenger>(
+    stack_commitment: &Commitment,
+    stack_offset: usize,
+    qpkd_vars: usize,
+    claims: &[F128],
+    z_skips: &[F128],
+    x_outers: &[&[F128]],
+    stack_pd: &[(Vec<F128>, F128)],
+    proof: &BatchOpeningProof,
+    challenger: &mut Ch,
+) -> Result<(), VerifyError> {
+    let n_rs = claims.len();
+    assert_eq!(z_skips.len(), n_rs);
+    assert_eq!(x_outers.len(), n_rs);
+    assert_eq!(proof.ring_switches.len(), n_rs);
+    challenger.observe_label(b"flock-pcs-open-batch-v0");
+
+    let mut rs_outputs = Vec::with_capacity(n_rs);
+    for i in 0..n_rs {
+        rs_outputs.push(
+            ring_switch::verify_succinct(claims[i], z_skips[i], x_outers[i], &proof.ring_switches[i], challenger)
+                .map_err(VerifyError::RingSwitch)?,
+        );
+    }
+    let gammas_rs: Vec<F128> = (0..n_rs).map(|_| challenger.sample_f128()).collect();
+    let mut target_combined = F128::ZERO;
+    for (out, g) in rs_outputs.iter().zip(gammas_rs.iter()) {
+        target_combined += *g * out.sumcheck_claim;
+    }
+
+    // Full-stack point claims (mirror the prover): observe all values, sample
+    // γ_pd, fold their targets.
+    for (_, value) in stack_pd {
+        challenger.observe_label(b"flock-pcs-packed-direct-v0");
+        challenger.observe_f128(*value);
+    }
+    let gammas_pd: Vec<F128> = (0..stack_pd.len()).map(|_| challenger.sample_f128()).collect();
+    for ((_, value), g) in stack_pd.iter().zip(gammas_pd.iter()) {
+        target_combined += *g * *value;
+    }
+
+    let ntt = crate::ntt::AdditiveNttF128::standard(stack_commitment.params.k_code());
+    let challenges = basefold::verify(
+        target_combined,
+        &proof.basefold,
+        &stack_commitment.root,
+        &ntt,
+        stack_commitment.params.log_inv_rate,
+        stack_commitment.params.log_batch_size,
+        challenger,
+    )
+    .map_err(VerifyError::BaseFold)?;
+
+    // Reconstruct final_b: the lifted ring-switch part `eq(sel,χ_hi)·Σγ_rs·rs_eq`
+    // plus the full-stack point part `Σγ_pd·eq(point, χ)`.
+    let (chi_lo, chi_hi) = challenges.split_at(qpkd_vars);
+    let sel = stack_offset >> qpkd_vars;
+    let sel_bits: Vec<F128> = (0..chi_hi.len()).map(|k| F128::new(((sel >> k) & 1) as u64, 0)).collect();
+    let sel_eq = crate::zerocheck::multilinear::eq_eval(&sel_bits, chi_hi);
+
+    let mut rs_part = F128::ZERO;
+    for (out, (g, x_outer)) in rs_outputs.iter().zip(gammas_rs.iter().zip(x_outers.iter())) {
+        rs_part += *g * ring_switch::eval_rs_eq(&x_outer[1..], chi_lo, &out.eq_r_dprime);
+    }
+    let mut expected_final_b = rs_part * sel_eq;
+    for ((point, _), g) in stack_pd.iter().zip(gammas_pd.iter()) {
+        expected_final_b += *g * crate::zerocheck::multilinear::eq_eval(point, &challenges);
+    }
+    if expected_final_b != proof.basefold.final_b {
+        return Err(VerifyError::FinalBMismatch);
+    }
+    Ok(())
+}
+
 /// Ligerito-backend counterpart to [`open_batch_mixed_with_precomputed_s_hat_v`].
 /// Shares the ring_switch + b_combined computation, then routes to
 /// [`ligerito::recursive_prover_with_basis`] using the existing `prover_data`'s

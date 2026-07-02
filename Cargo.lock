@@ -162,6 +162,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "flock-prover"
+version = "0.1.0"
+dependencies = [
+ "bincode",
+ "blake3",
+ "flock-core",
+ "rayon",
+ "serde",
+ "sha2",
+]
+
+[[package]]
 name = "generic-array"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -194,6 +206,7 @@ dependencies = [
  "bincode",
  "blake3",
  "flock-core",
+ "flock-prover",
  "rayon",
  "serde",
 ]

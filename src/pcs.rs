@@ -50,12 +50,26 @@ fn params_for(mu: usize) -> PcsParams {
     }
 }
 
+/// Rebuild the public [`Commitment`] (root + params) for a witness of `2^mu`
+/// elements. The verifier reconstructs the params from `mu` exactly as `commit`
+/// did, so the BLAKE3↔flock validity open (§blake3_flock) can verify its second
+/// BaseFold against this same commitment.
+pub fn commitment_from_root(root: [u8; 32], mu: usize) -> Commitment {
+    Commitment {
+        root,
+        params: params_for(mu),
+    }
+}
+
 /// A committed field-valued witness plus the data needed to open it. The witness
 /// itself is not retained (the caller still owns it and passes it back to
 /// [`open`]), so committing costs no extra full-trace copy.
 pub struct Committed {
     pub commitment: Commitment,
-    prover_data: ProverData,
+    /// Codeword + Merkle tree retained for opening. Public so the BLAKE3↔flock
+    /// validity open (a second BaseFold over this same commitment, §blake3_flock)
+    /// can reuse it.
+    pub prover_data: ProverData,
     /// `log2` of the witness length.
     pub mu: usize,
 }

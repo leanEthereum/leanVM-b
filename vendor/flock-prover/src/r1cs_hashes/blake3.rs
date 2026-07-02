@@ -1486,6 +1486,215 @@ impl Blake3Setup {
 
 
 // ---------------------------------------------------------------------------
+// leanVM-b single-PCS integration: discharge flock's R1CS validity claims
+// (ab, c) by a BaseFold over the CALLER'S committed stack, in which `q_pkd` is
+// an aligned sub-block. flock does NOT commit `q_pkd` separately and does NOT
+// run its own FRI — it reduces (zerocheck + lincheck + ring-switch) and the
+// final BaseFold runs over the stack codeword the caller already committed.
+// ---------------------------------------------------------------------------
+
+/// flock's BLAKE3 R1CS validity proof, discharged against the caller's stacked
+/// commitment. `(ab, c)` are recomputed by the verifier from the zerocheck +
+/// lincheck proofs; `open` is the single stacked BaseFold (with the ring-switch
+/// front-end).
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct Blake3StackProof {
+    pub zerocheck: flock_core::zerocheck::ZerocheckProof,
+    pub lincheck: flock_core::lincheck::LincheckProof,
+    pub open: flock_core::pcs::BatchOpeningProof,
+}
+
+impl Blake3Setup {
+    /// Prove `blocks` are valid compressions, discharging the `(ab, c)` claims by
+    /// a BaseFold over `stack` (the caller's committed witness, with `q_pkd` the
+    /// aligned sub-block at `stack_offset`). `stack_data`/`stack_commitment` are
+    /// the caller's commit; the transcript `challenger` is shared.
+    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn prove_validity_stacked<Ch: Challenger>(
+        &self,
+        blocks: &[Compression],
+        stack: &[F128],
+        stack_offset: usize,
+        stack_data: &flock_core::pcs::ProverData,
+        stack_commitment: &Commitment,
+        stack_pd: &[(Vec<F128>, F128)],
+        challenger: &mut Ch,
+    ) -> Blake3StackProof {
+        assert_eq!(blocks.len(), self.n_blocks);
+        let n_log = self.n_blocks_log();
+        let (z_packed, a_packed_f128, b_packed_f128, z_packed_lincheck) =
+            generate_witness_with_ab_packed_and_lincheck(blocks, n_log);
+        debug_assert_eq!(
+            &stack[stack_offset..stack_offset + z_packed.len()],
+            z_packed.as_slice(),
+            "committed q_pkd slice must equal the regenerated packed witness"
+        );
+
+        flock_core::proof::bind_statement(challenger, &self.r1cs, stack_commitment);
+
+        let padding = flock_core::zerocheck::PaddingSpec {
+            k_log: self.r1cs.k_log,
+            useful_bits_per_block: self.r1cs.useful_bits,
+        };
+        let (zc_proof, zc_claim, s_hat_v_c) = {
+            let a_packed: &[u8] = unsafe {
+                std::slice::from_raw_parts(
+                    a_packed_f128.as_ptr() as *const u8,
+                    a_packed_f128.len() * core::mem::size_of::<F128>(),
+                )
+            };
+            let b_packed: &[u8] = unsafe {
+                std::slice::from_raw_parts(
+                    b_packed_f128.as_ptr() as *const u8,
+                    b_packed_f128.len() * core::mem::size_of::<F128>(),
+                )
+            };
+            let c_packed: &[u8] = unsafe {
+                std::slice::from_raw_parts(
+                    z_packed.as_ptr() as *const u8,
+                    z_packed.len() * core::mem::size_of::<F128>(),
+                )
+            };
+            flock_core::zerocheck::prove_packed_padded_capture_s_hat_v_c(
+                a_packed, b_packed, c_packed, self.r1cs.m, &padding, challenger,
+            )
+        };
+
+        let inner_rest_len = self.r1cs.k_log - self.r1cs.k_skip;
+        let x_ab = flock_core::lincheck::QuirkyPoint {
+            z_skip: zc_claim.z,
+            x_inner_rest: zc_claim.mlv_challenges[..inner_rest_len].to_vec(),
+            x_outer: zc_claim.mlv_challenges[inner_rest_len..].to_vec(),
+        };
+        let (lc_proof, lc_claim, z_vec_pre) = flock_core::lincheck::prove_padded_capture_z_vec(
+            &z_packed_lincheck,
+            self.r1cs.m,
+            self.r1cs.k_log,
+            self.r1cs.k_skip,
+            self.r1cs.useful_bits,
+            self.r1cs.csc_lincheck_circuit(),
+            &x_ab,
+            challenger,
+        );
+
+        let ab = flock_core::proof::ZClaim {
+            point: flock_core::lincheck::QuirkyPoint {
+                z_skip: lc_claim.r_inner_skip,
+                x_inner_rest: lc_claim.r_inner_rest.clone(),
+                x_outer: x_ab.x_outer.clone(),
+            },
+            value: lc_claim.w,
+        };
+        let c = flock_core::proof::ZClaim {
+            point: flock_core::lincheck::QuirkyPoint {
+                z_skip: zc_claim.z,
+                x_inner_rest: zc_claim.r_rest[..inner_rest_len].to_vec(),
+                x_outer: zc_claim.r_rest[inner_rest_len..].to_vec(),
+            },
+            value: zc_claim.c_eval,
+        };
+        let s_hat_v_ab = if self.r1cs.k_log >= flock_core::pcs::LOG_PACKING {
+            Some(flock_core::pcs::ring_switch::s_hat_v_from_z_vec(
+                &z_vec_pre,
+                &lc_claim.r_inner_rest[1..],
+            ))
+        } else {
+            None
+        };
+
+        let ab_x = crate::prover::quirky_x_outer_full(&ab.point);
+        let c_x = crate::prover::quirky_x_outer_full(&c.point);
+        let open = flock_core::pcs::open_batch_mixed_stacked(
+            &z_packed,
+            &[ab_x.as_slice(), c_x.as_slice()],
+            &[s_hat_v_ab.as_deref(), Some(s_hat_v_c.as_slice())],
+            &padding,
+            stack,
+            stack_offset,
+            stack_data,
+            stack_commitment,
+            stack_pd,
+            challenger,
+        );
+
+        Blake3StackProof {
+            zerocheck: zc_proof,
+            lincheck: lc_proof,
+            open,
+        }
+    }
+
+    /// Verifier mirror of [`Self::prove_validity_stacked`]: replay the reduction
+    /// (zerocheck + lincheck) to recover the `(ab, c)` claims, then verify the
+    /// stacked BaseFold opening against `stack_commitment`. `stack_offset` and the
+    /// derived `qpkd_vars` locate `q_pkd` inside the stack.
+    pub fn verify_validity_stacked<Ch: Challenger>(
+        &self,
+        stack_commitment: &Commitment,
+        stack_offset: usize,
+        stack_pd: &[(Vec<F128>, F128)],
+        proof: &Blake3StackProof,
+        challenger: &mut Ch,
+    ) -> Result<(), verifier::VerifyError> {
+        flock_core::proof::bind_statement(challenger, &self.r1cs, stack_commitment);
+
+        let zc_claim = flock_core::zerocheck::verify(self.r1cs.m, &proof.zerocheck, challenger)
+            .map_err(verifier::VerifyError::Zerocheck)?;
+        let inner_rest_len = self.r1cs.k_log - self.r1cs.k_skip;
+        let x_ab = flock_core::lincheck::QuirkyPoint {
+            z_skip: zc_claim.z,
+            x_inner_rest: zc_claim.mlv_challenges[..inner_rest_len].to_vec(),
+            x_outer: zc_claim.mlv_challenges[inner_rest_len..].to_vec(),
+        };
+        let lc_claim = flock_core::lincheck::verify(
+            self.r1cs.m,
+            self.r1cs.k_log,
+            self.r1cs.k_skip,
+            self.r1cs.csc_lincheck_circuit(),
+            &x_ab,
+            zc_claim.a_eval,
+            zc_claim.b_eval,
+            &proof.lincheck,
+            challenger,
+        )
+        .map_err(verifier::VerifyError::Lincheck)?;
+
+        let ab = flock_core::proof::ZClaim {
+            point: flock_core::lincheck::QuirkyPoint {
+                z_skip: lc_claim.r_inner_skip,
+                x_inner_rest: lc_claim.r_inner_rest.clone(),
+                x_outer: x_ab.x_outer.clone(),
+            },
+            value: lc_claim.w,
+        };
+        let c = flock_core::proof::ZClaim {
+            point: flock_core::lincheck::QuirkyPoint {
+                z_skip: zc_claim.z,
+                x_inner_rest: zc_claim.r_rest[..inner_rest_len].to_vec(),
+                x_outer: zc_claim.r_rest[inner_rest_len..].to_vec(),
+            },
+            value: zc_claim.c_eval,
+        };
+        let ab_x = crate::prover::quirky_x_outer_full(&ab.point);
+        let c_x = crate::prover::quirky_x_outer_full(&c.point);
+        let qpkd_vars = self.r1cs.m - flock_core::pcs::LOG_PACKING;
+        flock_core::pcs::verify_opening_batch_mixed_stacked(
+            stack_commitment,
+            stack_offset,
+            qpkd_vars,
+            &[ab.value, c.value],
+            &[ab.point.z_skip, c.point.z_skip],
+            &[ab_x.as_slice(), c_x.as_slice()],
+            stack_pd,
+            &proof.open,
+            challenger,
+        )
+        .map_err(verifier::VerifyError::PcsAb)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 

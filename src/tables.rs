@@ -201,6 +201,22 @@ pub(crate) fn tables() -> [&'static dyn Table; 6] {
     ]
 }
 
+/// Index of the BLAKE3 table in [`tables`].
+pub(crate) const BLAKE3_TABLE: usize = 5;
+
+/// BLAKE3 value-column LOCAL indices in canonical slot order
+/// `[a0, a1, b0, b1, c0, c1]` (matches `blake3_flock::SLOTS`). `cpu` binds these
+/// committed columns to flock's packed `q_pkd` at a random instance point, so
+/// the BLAKE3 compression they feed the memory bus is a flock-proven one.
+pub(crate) const BLAKE3_VALUE_COLS: [usize; 6] = [
+    blake3t::VA0,
+    blake3t::VA1,
+    blake3t::VB0,
+    blake3t::VB1,
+    blake3t::VC0,
+    blake3t::VC1,
+];
+
 // ---- XOR / MUL ---------------------------------------------------------------
 
 /// `XOR` and `MUL_NATIVE` share their column layout, flushes, and fill; they

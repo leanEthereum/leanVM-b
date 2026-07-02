@@ -550,7 +550,13 @@ impl Program {
 const MEM: usize = 0; // the data-memory image
 const MFCNT: usize = 1; // per-cell memory access count, g^{A[i]}
 const BFCNT: usize = 2; // per-pc bytecode execution count, g^{A[pc]}
-const N_SHARED: usize = 3;
+// flock's packed BLAKE3 witness `q_pkd`, committed in the SAME stack as every
+// other column (single PCS). Size `2^(K_LOG+n_log-7)` when the program runs ≥1
+// BLAKE3, else a size-1 dummy (kept in the static schema). The BLAKE3 value
+// columns bind to it by point-eval equality, and flock's R1CS validity is
+// discharged by a basefold over this stacked commitment (§blake3_flock).
+const QPKD: usize = 3;
+const N_SHARED: usize = 4;
 
 /// Global column indexing: the shared columns occupy `0..N_SHARED`, then each
 /// table `t` (in [`tables::tables`] order) owns the contiguous block `[base[t],
@@ -709,6 +715,9 @@ pub struct Layout {
     /// the committed memory at verification (§8).
     pub pi: [F128; 2],
     pub taus: [usize; 6], // (xor, mul, set, deref, jump, blake3) log row counts
+    /// Real (non-padded) per-table row counts, as announced. `row_counts[5]` is
+    /// the executed `BLAKE3` count, which gates the flock sub-proof.
+    pub row_counts: [usize; 6],
 }
 
 /// The prover's witness bundle: the committed column values + their stacked
@@ -725,12 +734,14 @@ struct Witness {
 /// the bytecode finalize count is `2^log_bytecode`, and every column of table `t`
 /// is `2^taus[t]` (its padded log-row-count). Depends only on the public sizes,
 /// so the verifier can reconstruct the placements.
-fn col_kappas(log_mem: usize, log_bytecode: usize, taus: [usize; 6]) -> Vec<usize> {
+fn col_kappas(log_mem: usize, log_bytecode: usize, taus: [usize; 6], n_blake3: usize) -> Vec<usize> {
     let sch = schema();
     let mut k = vec![0usize; sch.n];
     k[MEM] = log_mem;
     k[MFCNT] = log_mem;
     k[BFCNT] = log_bytecode;
+    // q_pkd: `2^(K_LOG+n_log-7)` F128 coords when BLAKE3 ran, else a size-1 dummy.
+    k[QPKD] = crate::blake3_flock::qpkd_kappa(n_blake3);
     for (t, table) in tables::tables().iter().enumerate() {
         for c in sch.base[t]..sch.base[t] + table.n_committed_columns() {
             k[c] = taus[t];
@@ -755,6 +766,12 @@ fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; 6], pi: [F128; 2]) ->
     let mut taus = [0usize; 6];
     for (i, &r) in row_counts.iter().enumerate() {
         taus[i] = crate::log2_ceil_usize(r.max(1));
+    }
+    // The BLAKE3 table is sized to flock's `2^n_log` instance count (lincheck
+    // floor ≥ 8) so its per-instance value columns share `q_pkd`'s instance cube
+    // — the binding (§blake3_flock) opens both at one random point of that cube.
+    if row_counts[tables::BLAKE3_TABLE] > 0 {
+        taus[tables::BLAKE3_TABLE] = crate::blake3_flock::n_blocks_log(row_counts[tables::BLAKE3_TABLE]);
     }
 
     // Derived boundary: the run starts at (pc,fp) = (0,0) and, by convention, the
@@ -901,8 +918,24 @@ fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; 6], pi: [F128; 2]) ->
             pad[base + c] = F128::ONE;
         }
     }
+    // BLAKE3 padding rows must match flock's padding instance (the all-zero-input
+    // compression): zero inputs but a NONZERO output `out_lo`. So the two output
+    // value columns pad with that digest, not 0 — otherwise the value-column MLE
+    // would disagree with `q_pkd` on the padding instances and the binding
+    // (§blake3_flock) would fail. Inputs/counts keep their 0/1 defaults.
+    if row_counts[tables::BLAKE3_TABLE] > 0 {
+        let b3 = sch.base[tables::BLAKE3_TABLE];
+        let pc = crate::blake3_flock::padding_digest();
+        pad[b3 + tables::BLAKE3_VALUE_COLS[4]] = pc[0]; // c0
+        pad[b3 + tables::BLAKE3_VALUE_COLS[5]] = pc[1]; // c1
+    }
 
-    let (placements, m) = witness::placements_of(&col_kappas(log_mem, log_bytecode, taus));
+    let (placements, m) = witness::placements_of(&col_kappas(
+        log_mem,
+        log_bytecode,
+        taus,
+        row_counts[tables::BLAKE3_TABLE],
+    ));
     Layout {
         push,
         pull,
@@ -916,6 +949,7 @@ fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; 6], pi: [F128; 2]) ->
         final_fp,
         pi,
         taus,
+        row_counts,
     }
 }
 
@@ -935,8 +969,7 @@ impl Program {
         // the appended rows are all-zero, so on every domain their push and pull
         // are the identical tuple and self-cancel on the bus, and the all-zero
         // assignment satisfies every degree-≤2 constraint. (Padding is applied to
-        // the filled columns below, after the real rows.)
-        let padlen = |n: usize| n.max(1).next_power_of_two();
+        // the filled columns below, after the real rows, to `2^taus[t]`.)
 
         let sch = schema();
         let mut cols = vec![Column::new(); sch.n];
@@ -960,6 +993,19 @@ impl Program {
         cols[MEM] = exec.mem.clone();
         cols[MFCNT] = tr.mem_count.clone(); // running counts ended at g^{A[i]}
         cols[BFCNT] = tr.bytecode_count.clone(); // running counts ended at g^{A[pc]}
+        // flock's packed BLAKE3 witness q_pkd, committed in this same stack (or a
+        // size-1 dummy when no BLAKE3 ran). Built from the executed BLAKE3 rows in
+        // order, so row j = flock instance j.
+        cols[QPKD] = if tr.blake3.is_empty() {
+            vec![F128::ZERO]
+        } else {
+            let blocks: Vec<_> = tr
+                .blake3
+                .iter()
+                .map(|r| crate::blake3_flock::compression([r.va0, r.va1], [r.vb0, r.vb1]))
+                .collect();
+            crate::blake3_flock::build_qpkd(&blocks)
+        };
 
         if prof {
             eprintln!("[build] fill cols   : {:>7.2} ms", t_fill.elapsed().as_secs_f64() * 1e3);
@@ -989,8 +1035,10 @@ impl Program {
         // row (counts 1, else 0) flushes tuples that do not self-cancel; the
         // verifier divides them out of the bus product (§sec:gp). The shared
         // columns (MEM, MFCNT, BFCNT) keep their natural 2^h / 2^log_bytecode lengths.
+        // Pad to `2^taus[t]` (= `next_pow2(row_counts[t])` for every table except
+        // BLAKE3, which `layout` rounds up to flock's `2^n_log`).
         for (t, table) in tables::tables().iter().enumerate() {
-            let n = padlen(row_counts[t]);
+            let n = 1usize << l.taus[t];
             for c in sch.base[t]..sch.base[t] + table.n_committed_columns() {
                 cols[c].resize(n, l.pad[c]);
             }
@@ -1019,6 +1067,12 @@ pub enum Error {
     Open(pcs::Error),
     PublicInput,
     Transcript(crate::transcript::Error),
+    /// flock's BLAKE3 R1CS validity sub-proof failed to verify.
+    Blake3(flock_prover::verifier::VerifyError),
+    /// The BLAKE3 attachment is missing or inconsistent with the announced
+    /// BLAKE3 row count. (Constant pinning + value binding are checked as PCS
+    /// claims and surface as [`Error::Open`].)
+    Blake3Missing,
 }
 
 /// Lift each table's constraint evals (at its zerocheck point `rho`) to global
@@ -1034,6 +1088,50 @@ fn constraint_claims(table_claims: &[constraints::Claims]) -> Vec<ColumnClaim> {
                 value: table_claims[t].evals[k],
             });
         }
+    }
+    v
+}
+
+/// BLAKE3↔`q_pkd` binding claims, all point-evals of the single committed stack
+/// (§blake3_flock), at the random instance point `rho`:
+///
+/// - per value word `w`: `value_col_w(rho) = v_words[w]` AND `q_pkd(slot_w‖rho)
+///   = v_words[w]` — same value ⟹ the bus-tied value column equals the proven
+///   `q_pkd` slice;
+/// - per pin slot: `q_pkd(pin_slot‖rho) = pin_col(rho)` against the PUBLIC
+///   constant column (`cv = IV`, counter/blen/flags = 0/64/11), pinning the
+///   compression to a real BLAKE3-of-64-bytes.
+///
+/// `v_words` are transmitted (prover computes, verifier reads); the pin values
+/// are public, so both sides compute them. Symmetric across prove/verify.
+fn blake3_binding_claims(rho: &[F128], v_words: &[F128; 6], n_blocks: usize) -> Vec<ColumnClaim> {
+    use crate::blake3_flock::{PIN_SLOTS, SLOTS, pin_constants, slot_point};
+    let base = schema().base[tables::BLAKE3_TABLE];
+    let mut v = Vec::with_capacity(2 * 6 + PIN_SLOTS.len());
+    for (i, &local) in tables::BLAKE3_VALUE_COLS.iter().enumerate() {
+        v.push(ColumnClaim {
+            col: base + local,
+            point: rho.to_vec(),
+            value: v_words[i],
+        });
+        v.push(ColumnClaim {
+            col: QPKD,
+            point: slot_point(SLOTS[i], rho),
+            value: v_words[i],
+        });
+    }
+    let pin = pin_constants();
+    let n_slots = 1usize << rho.len();
+    for (k, &pslot) in PIN_SLOTS.iter().enumerate() {
+        let mut col = vec![F128::ZERO; n_slots];
+        for slot in col.iter_mut().take(n_blocks) {
+            *slot = pin[k];
+        }
+        v.push(ColumnClaim {
+            col: QPKD,
+            point: slot_point(pslot, rho),
+            value: crate::multilinear::mle_eval(&col, rho),
+        });
     }
     v
 }
@@ -1071,6 +1169,16 @@ pub fn prove(program: &Program, public_input: [F128; 2]) -> (Proof, Stats) {
         eprintln!("[prove] commit      : {:>7.2} ms", ms(t));
     }
 
+    // BLAKE3 ↔ flock (§blake3_flock), single PCS: q_pkd is a column in `w.q`. The
+    // binding point `rho` is sampled right after the commitment; flock's R1CS
+    // validity and EVERY leanVM point claim are discharged together by ONE
+    // BaseFold over this commitment (below). Mirrored in `verify`.
+    let blake3_rho = if !exec.trace.blake3.is_empty() {
+        Some(ps.sample_vec(crate::blake3_flock::n_blocks_log(exec.trace.blake3.len())))
+    } else {
+        None
+    };
+
     let t = std::time::Instant::now();
     let l = &w.layout;
     let bus_claims = leaf::prove_balance(&l.push, &l.pull, &l.count, &w.cols, &mut ps);
@@ -1097,14 +1205,57 @@ pub fn prove(program: &Program, public_input: [F128; 2]) -> (Proof, Stats) {
     let mut claims = bus_claims;
     claims.extend(constraint_claims(&table_claims));
     claims.push(bind_pi_prove(&w, &mut ps));
+    if let Some(rho) = &blake3_rho {
+        // Transmit the six value-column evals v_w = value_col_w(rho); each pairs a
+        // value-column claim and a q_pkd-slot claim (same value) — the binding.
+        let base = sch.base[tables::BLAKE3_TABLE];
+        let mut v_words = [F128::ZERO; 6];
+        for (i, &local) in tables::BLAKE3_VALUE_COLS.iter().enumerate() {
+            v_words[i] = crate::multilinear::mle_eval(&w.cols[base + local], rho);
+            ps.write_scalar(v_words[i]);
+        }
+        claims.extend(blake3_binding_claims(rho, &v_words, exec.trace.blake3.len()));
+    }
     let slots = slot_claims(&w.layout, &claims);
+
+    // ONE opening of the single commitment. With BLAKE3: flock's validity (the
+    // ring-switched ab/c) AND every point claim (as full-stack `stack_pd`) fold
+    // into one BaseFold. Without BLAKE3: the plain point-batch open.
     let t = std::time::Instant::now();
-    pcs::open(&mut ps, &committed, &w.q, &slots);
+    let blake3_attach = if blake3_rho.is_some() {
+        let blocks: Vec<flock_prover::r1cs_hashes::blake3::Compression> = exec
+            .trace
+            .blake3
+            .iter()
+            .map(|r| crate::blake3_flock::compression([r.va0, r.va1], [r.vb0, r.vb1]))
+            .collect();
+        let offset = w.layout.placements[QPKD].offset;
+        let stack_pd: Vec<(Vec<F128>, F128)> =
+            slots.iter().map(|s| (stack_point_of(s, w.layout.m), s.value)).collect();
+        let b3proof = crate::blake3_flock::prove_validity_stacked(
+            &blocks,
+            &w.q,
+            offset,
+            &committed.prover_data,
+            &committed.commitment,
+            &stack_pd,
+            &mut ps,
+        );
+        Some(crate::blake3_flock::Blake3Attachment {
+            n_blocks: blocks.len(),
+            proof: b3proof,
+        })
+    } else {
+        pcs::open(&mut ps, &committed, &w.q, &slots);
+        None
+    };
     if prof {
         eprintln!("[prove] open        : {:>7.2} ms", ms(t));
     }
+    let mut proof = ps.into_proof();
+    proof.blake3 = blake3_attach;
     (
-        ps.into_proof(),
+        proof,
         Stats {
             cycles,
             counts,
@@ -1151,6 +1302,23 @@ pub fn verify(program: &Program, public_input: &[F128; 2], proof: &Proof) -> Res
     let l = read_public(&mut vs, program, public_input)?;
     let root = pcs::read_commitment(&mut vs).map_err(Error::Transcript)?;
 
+    // BLAKE3 ↔ flock (single PCS): sample the binding point `rho` right after the
+    // commitment (mirroring `prove`); flock's R1CS validity and every leanVM
+    // point claim are verified together by ONE BaseFold opening at the end.
+    let n_b3 = l.row_counts[tables::BLAKE3_TABLE];
+    let blake3_rho = if n_b3 > 0 {
+        let att = proof.blake3.as_ref().ok_or(Error::Blake3Missing)?;
+        if att.n_blocks != n_b3 {
+            return Err(Error::Blake3Missing);
+        }
+        Some(vs.sample_vec(crate::blake3_flock::n_blocks_log(n_b3)))
+    } else {
+        if proof.blake3.is_some() {
+            return Err(Error::Blake3Missing); // attachment without any BLAKE3 rows
+        }
+        None
+    };
+
     let bus_claims = leaf::verify_balance(&l.push, &l.pull, &l.count, &l.pad, &mut vs).map_err(Error::Bus)?;
 
     let mut table_claims = Vec::new();
@@ -1170,8 +1338,26 @@ pub fn verify(program: &Program, public_input: &[F128; 2], proof: &Proof) -> Res
     let mut claims = bus_claims;
     claims.extend(constraint_claims(&table_claims));
     claims.push(bind_pi_verify(&l, &mut vs)?);
+    if let Some(rho) = &blake3_rho {
+        let mut v_words = [F128::ZERO; 6];
+        for v in &mut v_words {
+            *v = vs.next_scalar().map_err(Error::Transcript)?;
+        }
+        claims.extend(blake3_binding_claims(rho, &v_words, n_b3));
+    }
     let slots = slot_claims(&l, &claims);
-    pcs::verify(&mut vs, &slots, l.m, &root).map_err(Error::Open)?;
+
+    // ONE opening of the single commitment, mirroring `prove`.
+    if blake3_rho.is_some() {
+        let att = proof.blake3.as_ref().ok_or(Error::Blake3Missing)?;
+        let offset = l.placements[QPKD].offset;
+        let commitment = pcs::commitment_from_root(root, l.m);
+        let stack_pd: Vec<(Vec<F128>, F128)> = slots.iter().map(|s| (stack_point_of(s, l.m), s.value)).collect();
+        crate::blake3_flock::verify_validity_stacked(n_b3, &commitment, offset, &stack_pd, &att.proof, &mut vs)
+            .map_err(Error::Blake3)?;
+    } else {
+        pcs::verify(&mut vs, &slots, l.m, &root).map_err(Error::Open)?;
+    }
     vs.finish().map_err(Error::Transcript)
 }
 
@@ -1186,6 +1372,19 @@ fn slot_claims(l: &Layout, claims: &[ColumnClaim]) -> Vec<pcs::SlotClaim> {
             value: c.value,
         })
         .collect()
+}
+
+/// The full `m`-variable point of a located slot claim in the stacked witness:
+/// the within-column `low_point` (low coords) followed by the column's boolean
+/// selector (high coords). Used to express leanVM's point claims as full-stack
+/// `packed_direct` evaluations in the single fused BLAKE3 opening (§blake3_flock).
+fn stack_point_of(slot: &pcs::SlotClaim, m: usize) -> Vec<F128> {
+    let mut p = slot.low_point.clone();
+    let sel = slot.offset >> slot.low_point.len();
+    for k in 0..(m - slot.low_point.len()) {
+        p.push(F128::new(((sel >> k) & 1) as u64, 0));
+    }
+    p
 }
 
 #[cfg(test)]
@@ -1237,6 +1436,53 @@ mod tests {
 
         let (proof, stats) = prove(&program, pi);
         assert_eq!(stats.counts[5], 1, "one BLAKE3 row");
+        // The proof carries flock's BLAKE3 sub-proof (validity + slot openings).
+        assert!(proof.blake3.is_some(), "BLAKE3 program must attach a flock proof");
         verify(&program, &pi, &proof).expect("BLAKE3 program verifies");
+    }
+
+    /// Tampering flock's validity sub-proof (its BaseFold `final_b`, opened over
+    /// the same stacked commitment) must make verification fail.
+    #[test]
+    fn blake3_rejects_tampered_validity() {
+        let prog = vec![
+            Op::Set { o: 2, k: F128::new(0xABCD, 0x1234) },
+            Op::Set { o: 3, k: F128::new(0x5678, 0x9999) },
+            Op::Set { o: 4, k: F128::new(0x1111, 0x2222) },
+            Op::Set { o: 5, k: F128::new(0x3333, 0x4444) },
+            Op::Set { o: 8, k: F128::ONE },
+            Op::Blake3 { a: 2, b: 4, c: 6 },
+            Op::Set { o: 9, k: F128::ONE },
+            Op::Xor { a: 0, b: 0, c: 0 }, // sentinel
+        ];
+        let program = Program::from_bytecode(prog, 10);
+        let pi = [F128::new(7, 0), F128::new(11, 0)];
+        let (mut proof, _) = prove(&program, pi);
+        verify(&program, &pi, &proof).expect("honest proof verifies");
+
+        let att = proof.blake3.as_mut().expect("flock attachment");
+        att.proof.open.basefold.final_b += F128::ONE;
+        assert!(
+            verify(&program, &pi, &proof).is_err(),
+            "tampered BLAKE3 validity proof must be rejected"
+        );
+    }
+
+    /// A program with no BLAKE3 instructions proves and verifies with no flock
+    /// attachment (the `N = 0` path).
+    #[test]
+    fn non_blake3_program_verifies_without_attachment() {
+        let prog = vec![
+            Op::Set { o: 2, k: F128::new(5, 0) },
+            Op::Set { o: 3, k: F128::new(6, 0) },
+            Op::Xor { a: 2, b: 3, c: 4 },
+            Op::Xor { a: 0, b: 0, c: 0 }, // sentinel
+        ];
+        let program = Program::from_bytecode(prog, 5);
+        let pi = [F128::new(1, 0), F128::new(2, 0)];
+        let (proof, stats) = prove(&program, pi);
+        assert_eq!(stats.counts[5], 0, "no BLAKE3 rows");
+        assert!(proof.blake3.is_none(), "no BLAKE3 ⇒ no flock attachment");
+        verify(&program, &pi, &proof).expect("non-BLAKE3 program verifies");
     }
 }
