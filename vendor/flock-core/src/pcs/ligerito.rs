@@ -1453,7 +1453,11 @@ pub struct FinalProof {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LigeritoProof {
-    pub initial_root: Hash,
+    // NOTE: the L0 commitment root is deliberately NOT part of the proof — it is
+    // the *statement* (the caller transmits/binds it, e.g. leanVM's stream), and
+    // the verifier takes it as `expected_initial_root` and uses it directly for
+    // the L0 Merkle checks. Carrying a copy here would be redundant transport
+    // whose only safe use is an equality check.
     pub initial_proof: RecursiveProof,
     pub recursive_roots: Vec<Hash>,
     pub recursive_proofs: Vec<RecursiveProof>,
@@ -1483,7 +1487,7 @@ impl LigeritoProof {
         let level_bytes = |p: &RecursiveProof| -> usize {
             p.opened_rows.iter().map(|r| r.len() * ELEM).sum::<usize>() + p.merkle_proof.len() * 32
         };
-        let mut total = 32;
+        let mut total = 0usize; // the L0 root is the caller's statement, not proof data
         total += self.recursive_roots.len() * 32;
         total += level_bytes(&self.initial_proof);
         for p in &self.recursive_proofs {
@@ -2766,158 +2770,6 @@ fn merkle_multi_proof_for(tree: &[Hash], block_len: usize, queries: &[usize]) ->
     merkle::merkle_multi_proof(tree, block_len, queries)
 }
 
-/// Drive the recursive Ligerito prover to prove `poly(eval_point) = claimed_value`.
-///
-/// Protocol structure (unique-decoding regime, no OOD samples yet):
-/// 1. Commit f⁰ = `poly`.
-/// 2. Partial-eval at `eval_point[0..initial_k]` (LSB-first), commit f¹.
-/// 3. Open f⁰ at random query positions, induce a basis poly from the openings.
-/// 4. Start sumcheck on `Σ_x f¹(x) · eq(eval_point[initial_k..], x) = claimed_value`,
-///    introduce the induced basis (α-batched), glue with a separation challenge.
-/// 5. For each recursive level: do k_i sumcheck folds; if last, send the residual
-///    yr in clear and open the previous commitment; else commit the folded f,
-///    open the previous commitment, induce a fresh basis from these opens,
-///    introduce + glue.
-pub fn recursive_prover<Ch: Challenger>(
-    config: &ProverConfig,
-    poly: &[F128],
-    eval_point: &[F128],
-    claimed_value: F128,
-    challenger: &mut Ch,
-) -> LigeritoProof {
-    let trace = std::env::var("LIGERITO_TRACE").is_ok();
-    macro_rules! tlog {
-        ($($arg:tt)*) => { if trace { eprintln!($($arg)*); } }
-    }
-    let t_total = std::time::Instant::now();
-    let mut t_commits = std::time::Duration::ZERO;
-    let t_induce = std::time::Duration::ZERO;
-    let t_sumcheck = std::time::Duration::ZERO;
-    let t_opens = std::time::Duration::ZERO;
-    let log_n = poly.len().trailing_zeros() as usize;
-    let r = config.recursive_steps;
-    let initial_k = config.initial_k;
-
-    assert_eq!(poly.len(), 1usize << log_n);
-    assert_eq!(eval_point.len(), log_n);
-    assert_eq!(config.recursive_ks.len(), r);
-    assert_eq!(
-        config.log_inv_rates.len(),
-        r + 1,
-        "log_inv_rates must have R+1 entries"
-    );
-    assert!(r >= 1, "recursive_steps must be ≥ 1");
-
-    challenger.observe_label(b"flock-ligerito-v0");
-    challenger.observe_f128(claimed_value);
-    challenger.observe_f128_slice(eval_point);
-
-    // ---- Initial commit (wtns_0) ----
-    let log_inv_rate_0 = config.log_inv_rates[0];
-    let log_msg_cols_0 = log_n - initial_k;
-    let ntt_0 = AdditiveNttF128::standard(log_msg_cols_0 + log_inv_rate_0);
-    let t = std::time::Instant::now();
-    let wtns_0 = ligero_commit(poly, log_msg_cols_0, initial_k, log_inv_rate_0, &ntt_0);
-    let t_l0 = t.elapsed();
-    t_commits += t_l0;
-    tlog!("  [ligerito]   L0 commit: {:.2?}", t_l0);
-    recursive_prover_inner(
-        config,
-        poly,
-        wtns_0,
-        eval_point,
-        claimed_value,
-        challenger,
-        t_total,
-        t_commits,
-        t_induce,
-        t_sumcheck,
-        t_opens,
-        trace,
-    )
-}
-
-/// Variant of [`recursive_prover`] that reuses an **externally-built L0 commit**
-/// (the codeword + merkle tree). This is what Flock's `pcs::open_batch` will
-/// call after `pcs::commit` has already built the same shape. Skips the
-/// L0 commit cost (~17 ms at m=29 MT).
-///
-/// Caller responsibility: the external L0 data must match what `ligero_commit`
-/// would produce at the same `(log_msg_cols_0 = log_n - initial_k, initial_k,
-/// log_inv_rates[0])`. In practice this means using `PcsParams` with
-/// `log_batch_size = config.initial_k` and `log_inv_rate = config.log_inv_rates[0]`.
-pub fn recursive_prover_with_l0<Ch: Challenger>(
-    config: &ProverConfig,
-    poly: &[F128],
-    l0_codeword: Vec<F128>,
-    l0_tree: Vec<Hash>,
-    eval_point: &[F128],
-    claimed_value: F128,
-    challenger: &mut Ch,
-) -> LigeritoProof {
-    let trace = std::env::var("LIGERITO_TRACE").is_ok();
-    macro_rules! tlog {
-        ($($arg:tt)*) => { if trace { eprintln!($($arg)*); } }
-    }
-    let t_total = std::time::Instant::now();
-    let t_commits = std::time::Duration::ZERO;
-    let t_induce = std::time::Duration::ZERO;
-    let t_sumcheck = std::time::Duration::ZERO;
-    let t_opens = std::time::Duration::ZERO;
-
-    let log_n = poly.len().trailing_zeros() as usize;
-    let r = config.recursive_steps;
-    let initial_k = config.initial_k;
-    let log_inv_rate_0 = config.log_inv_rates[0];
-    let log_msg_cols_0 = log_n - initial_k;
-
-    assert_eq!(poly.len(), 1usize << log_n);
-    assert_eq!(eval_point.len(), log_n);
-    assert_eq!(config.recursive_ks.len(), r);
-    assert_eq!(config.log_inv_rates.len(), r + 1);
-    assert!(r >= 1, "recursive_steps must be ≥ 1");
-
-    let block_len = 1usize << (log_msg_cols_0 + log_inv_rate_0);
-    let num_interleaved = 1usize << initial_k;
-    let _ = r; // used implicitly via config in inner
-    assert_eq!(
-        l0_codeword.len(),
-        block_len * num_interleaved,
-        "external L0 codeword wrong size"
-    );
-    assert_eq!(
-        l0_tree.len(),
-        2 * block_len - 1,
-        "external L0 tree wrong size"
-    );
-
-    challenger.observe_label(b"flock-ligerito-v0");
-    challenger.observe_f128(claimed_value);
-    challenger.observe_f128_slice(eval_point);
-
-    let wtns_0 = LigeroWitness {
-        mat: l0_codeword,
-        tree: l0_tree,
-        block_len,
-        num_interleaved,
-    };
-    tlog!("  [ligerito]   L0 commit: REUSED (skipped)");
-
-    recursive_prover_inner(
-        config,
-        poly,
-        wtns_0,
-        eval_point,
-        claimed_value,
-        challenger,
-        t_total,
-        t_commits,
-        t_induce,
-        t_sumcheck,
-        t_opens,
-        trace,
-    )
-}
 
 /// Drop-in replacement for `basefold::prove`: takes a generic basis poly +
 /// target (typically the combined `Σ γ_k · eq(z_k, ·)` and target produced by
@@ -3265,7 +3117,6 @@ fn recursive_prover_with_basis_impl<Ch: Challenger>(
                 }
             }
             return LigeritoProof {
-                initial_root,
                 initial_proof,
                 recursive_roots,
                 recursive_proofs,
@@ -3413,13 +3264,12 @@ where
     if r < 1 || config.recursive_ks.len() != r || config.log_inv_rates.len() != r + 1 {
         return false;
     }
-    if &proof.initial_root != expected_initial_root {
-        return false;
-    }
 
+    // The L0 root is the caller's statement (not proof data): absorb it exactly
+    // where the prover absorbed its own, and verify L0 opens against it below.
     challenger.observe_label(b"flock-ligerito-basis-v0");
     challenger.observe_f128(target);
-    challenger.observe_bytes(&proof.initial_root);
+    challenger.observe_bytes(expected_initial_root);
 
     let log_inv_rate_0 = config.log_inv_rates[0];
     let log_msg_cols_0 = log_n - initial_k;
@@ -3540,7 +3390,7 @@ where
     let alpha_0 = challenger.sample_f128_vec(ceil_log2(num_queries_0));
     let _t = std::time::Instant::now();
     if !verify_level_opens(
-        &proof.initial_root,
+        expected_initial_root,
         block_len_0,
         &queries_0,
         &proof.initial_proof.opened_rows,
@@ -3965,13 +3815,12 @@ pub fn recursive_verifier_with_basis<Ch: Challenger>(
     if b_initial.len() != 1usize << log_n {
         return false;
     }
-    if &proof.initial_root != expected_initial_root {
-        return false;
-    }
 
+    // The L0 root is the caller's statement (not proof data) — see the succinct
+    // verifier; absorb it in the prover's slot and check L0 opens against it.
     challenger.observe_label(b"flock-ligerito-basis-v0");
     challenger.observe_f128(target);
-    challenger.observe_bytes(&proof.initial_root);
+    challenger.observe_bytes(expected_initial_root);
 
     let log_inv_rate_0 = config.log_inv_rates[0];
     let log_msg_cols_0 = log_n - initial_k;
@@ -4077,7 +3926,7 @@ pub fn recursive_verifier_with_basis<Ch: Challenger>(
     let queries_0 = sample_distinct_queries(challenger, block_len_0, num_queries_0);
     let alpha_0 = challenger.sample_f128_vec(ceil_log2(num_queries_0));
     if !verify_level_opens(
-        &proof.initial_root,
+        expected_initial_root,
         block_len_0,
         &queries_0,
         &proof.initial_proof.opened_rows,
@@ -4368,233 +4217,6 @@ pub fn recursive_verifier_with_basis<Ch: Challenger>(
     unreachable!()
 }
 
-/// Shared body — runs after wtns_0 is in hand (whether freshly built or
-/// supplied externally).
-#[allow(clippy::too_many_arguments)]
-fn recursive_prover_inner<Ch: Challenger>(
-    config: &ProverConfig,
-    poly: &[F128],
-    wtns_0: LigeroWitness,
-    eval_point: &[F128],
-    claimed_value: F128,
-    challenger: &mut Ch,
-    t_total: std::time::Instant,
-    mut t_commits: std::time::Duration,
-    mut t_induce: std::time::Duration,
-    mut t_sumcheck: std::time::Duration,
-    mut t_opens: std::time::Duration,
-    trace: bool,
-) -> LigeritoProof {
-    macro_rules! tlog {
-        ($($arg:tt)*) => { if trace { eprintln!($($arg)*); } }
-    }
-    // The legacy (non-basis) path predates OOD binding and fold grinding;
-    // configs that use them must go through `recursive_prover_with_basis`.
-    assert!(
-        config.ood_samples.iter().all(|&s| s == 0)
-            && config.fold_grinding_bits.iter().all(|&b| b == 0),
-        "OOD samples / fold grinding require the with_basis prover path"
-    );
-    let log_n = poly.len().trailing_zeros() as usize;
-    let r = config.recursive_steps;
-    let initial_k = config.initial_k;
-    let log_inv_rate_0 = config.log_inv_rates[0];
-
-    let initial_root = wtns_0.root();
-    challenger.observe_bytes(&initial_root);
-
-    // ---- Partial-eval at z[0..initial_k] and commit f¹ (wtns_1) ----
-    let v_challenges_0 = eval_point[..initial_k].to_vec();
-    let f1 = partial_eval_lsb(poly, &v_challenges_0);
-    let n1 = log_n - initial_k;
-    let log_num_interleaved_1 = config.recursive_ks[0];
-    assert!(n1 >= log_num_interleaved_1, "n1 < k_0");
-    let log_msg_cols_1 = n1 - log_num_interleaved_1;
-    let log_inv_rate_1 = config.log_inv_rates[1];
-    let ntt_1 = AdditiveNttF128::standard(log_msg_cols_1 + log_inv_rate_1);
-    let t = std::time::Instant::now();
-    let wtns_1 = ligero_commit(
-        &f1,
-        log_msg_cols_1,
-        log_num_interleaved_1,
-        log_inv_rate_1,
-        &ntt_1,
-    );
-    let t_l1 = t.elapsed();
-    t_commits += t_l1;
-    tlog!("  [ligerito]   L1 commit: {:.2?}", t_l1);
-    challenger.observe_bytes(&wtns_1.root());
-
-    // ---- Queries + open wtns_0 ----
-    let num_queries_0 = udr_queries(log_inv_rate_0);
-    let queries_0 = sample_distinct_queries(challenger, wtns_0.block_len, num_queries_0);
-    let alpha_0 = challenger.sample_f128_vec(ceil_log2(num_queries_0));
-    let t = std::time::Instant::now();
-    let opened_rows_0: Vec<Vec<F128>> = queries_0.iter().map(|&q| wtns_0.row(q).to_vec()).collect();
-    let merkle_proof_0 = merkle_multi_proof_for(&wtns_0.tree, wtns_0.block_len, &queries_0);
-    t_opens += t.elapsed();
-    let initial_proof = RecursiveProof {
-        opened_rows: opened_rows_0.clone(),
-        merkle_proof: merkle_proof_0,
-    };
-
-    // ---- Induce basis from wtns_0 opens ----
-    let sks_vks_n1 = eval_sk_at_vks(n1);
-    let t = std::time::Instant::now();
-    let (basis_0_induced, enforced_sum_0) = induce_sumcheck_poly_auto(
-        n1,
-        log_inv_rate_0,
-        &sks_vks_n1,
-        &opened_rows_0,
-        &v_challenges_0,
-        &queries_0,
-        &alpha_0,
-    );
-    t_induce += t.elapsed();
-
-    // ---- Start sumcheck: f¹ · eq(z[initial_k..], ·) = claimed_value ----
-    let eq_z_residual = build_eq_table(&eval_point[initial_k..]);
-    let t = std::time::Instant::now();
-    let (mut sc_prover, start_msg) = SumcheckProver::new(f1, eq_z_residual, claimed_value);
-    t_sumcheck += t.elapsed();
-    challenger.observe_f128(start_msg.u_0);
-    challenger.observe_f128(start_msg.u_2);
-
-    // ---- Introduce induced basis + glue ----
-    let intro_msg_0 = sc_prover.introduce_new(basis_0_induced, enforced_sum_0);
-    challenger.observe_f128(intro_msg_0.u_0);
-    challenger.observe_f128(intro_msg_0.u_2);
-    let beta_0 = challenger.sample_f128();
-    sc_prover.glue(beta_0);
-
-    // ---- Recursive levels ----
-    let mut wtns_prev = wtns_1;
-    let mut recursive_roots: Vec<Hash> = vec![wtns_prev.root()];
-    let mut recursive_proofs: Vec<RecursiveProof> = Vec::new();
-
-    for i in 0..r {
-        let k_i = config.recursive_ks[i];
-        let mut level_rs = Vec::with_capacity(k_i);
-        let t = std::time::Instant::now();
-        for _ in 0..k_i {
-            let ri = challenger.sample_f128();
-            let msg = sc_prover.fold(ri);
-            challenger.observe_f128(msg.u_0);
-            challenger.observe_f128(msg.u_2);
-            level_rs.push(ri);
-        }
-        t_sumcheck += t.elapsed();
-
-        if i == r - 1 {
-            tlog!(
-                "  [ligerito] commits: {:.2?}  induce: {:.2?}  sumcheck: {:.2?}  opens: {:.2?}  TOTAL: {:.2?}",
-                t_commits,
-                t_induce,
-                t_sumcheck,
-                t_opens,
-                t_total.elapsed()
-            );
-            // Last iter: send residual yr + open wtns_prev.
-            let yr = sc_prover.f().to_vec();
-            for v in &yr {
-                challenger.observe_f128(*v);
-            }
-            // wtns_prev's rate (= log_inv_rates[i+1] for wtns_{i+1}).
-            let num_queries_last = udr_queries(config.log_inv_rates[i + 1]);
-            let queries_last =
-                sample_distinct_queries(challenger, wtns_prev.block_len, num_queries_last);
-            let opened_rows_last: Vec<Vec<F128>> = queries_last
-                .iter()
-                .map(|&q| wtns_prev.row(q).to_vec())
-                .collect();
-            let merkle_proof_last =
-                merkle_multi_proof_for(&wtns_prev.tree, wtns_prev.block_len, &queries_last);
-            return LigeritoProof {
-                initial_root,
-                initial_proof,
-                recursive_roots,
-                recursive_proofs,
-                final_proof: FinalProof {
-                    yr,
-                    opened_rows: opened_rows_last,
-                    merkle_proof: merkle_proof_last,
-                },
-                sumcheck_transcript: sc_prover.transcript().to_vec(),
-                grinding_nonces: Vec::new(), // legacy recursive_prover_inner: no grinding plumbed
-                ood_values: Vec::new(),
-                fold_grinding_nonces: Vec::new(),
-            };
-        }
-
-        // Non-last: commit the folded poly → wtns_next.
-        // wtns_next = wtns_{i+2}, uses log_inv_rates[i+2].
-        let n_next = sc_prover.f().len().trailing_zeros() as usize;
-        let log_num_interleaved_next = config.recursive_ks[i + 1];
-        assert!(
-            n_next >= log_num_interleaved_next,
-            "f.n ({n_next}) < k_{} ({log_num_interleaved_next})",
-            i + 1
-        );
-        let log_msg_cols_next = n_next - log_num_interleaved_next;
-        let log_inv_rate_next = config.log_inv_rates[i + 2];
-        let ntt_next = AdditiveNttF128::standard(log_msg_cols_next + log_inv_rate_next);
-        let f_evals = sc_prover.f().to_vec();
-        let t = std::time::Instant::now();
-        let wtns_next = ligero_commit(
-            &f_evals,
-            log_msg_cols_next,
-            log_num_interleaved_next,
-            log_inv_rate_next,
-            &ntt_next,
-        );
-        let t_li = t.elapsed();
-        t_commits += t_li;
-        tlog!("  [ligerito]   L{} commit: {:.2?}", i + 2, t_li);
-        let root_next = wtns_next.root();
-        challenger.observe_bytes(&root_next);
-        recursive_roots.push(root_next);
-
-        // Open wtns_prev. wtns_prev = wtns_{i+1} uses log_inv_rates[i+1].
-        let num_queries_i = udr_queries(config.log_inv_rates[i + 1]);
-        let queries_i = sample_distinct_queries(challenger, wtns_prev.block_len, num_queries_i);
-        let alpha_i = challenger.sample_f128_vec(ceil_log2(num_queries_i));
-        let t = std::time::Instant::now();
-        let opened_rows_i: Vec<Vec<F128>> = queries_i
-            .iter()
-            .map(|&q| wtns_prev.row(q).to_vec())
-            .collect();
-        let merkle_proof_i =
-            merkle_multi_proof_for(&wtns_prev.tree, wtns_prev.block_len, &queries_i);
-        t_opens += t.elapsed();
-        recursive_proofs.push(RecursiveProof {
-            opened_rows: opened_rows_i.clone(),
-            merkle_proof: merkle_proof_i,
-        });
-
-        // Induce fresh basis from these opens.
-        let sks_vks_i = eval_sk_at_vks(n_next);
-        let (basis_i_induced, enforced_sum_i) = induce_sumcheck_poly(
-            n_next,
-            &sks_vks_i,
-            &opened_rows_i,
-            &level_rs,
-            &queries_i,
-            &alpha_i,
-        );
-
-        // Introduce + glue.
-        let intro_msg_i = sc_prover.introduce_new(basis_i_induced, enforced_sum_i);
-        challenger.observe_f128(intro_msg_i.u_0);
-        challenger.observe_f128(intro_msg_i.u_2);
-        let beta_i = challenger.sample_f128();
-        sc_prover.glue(beta_i);
-
-        wtns_prev = wtns_next;
-    }
-
-    unreachable!("recursive loop should return on last iter")
-}
-
 /// Verify all opened rows against one root via a single octopus multi-proof.
 /// `queries` must be sorted ascending and aligned with `opened_rows`.
 fn verify_level_opens(
@@ -4624,283 +4246,3 @@ fn verify_level_opens(
     merkle::verify_merkle_multi_proof(root, block_len, queries, &leaf_hashes, multi_proof)
 }
 
-/// Verifier counterpart to [`recursive_prover`]. Supports arbitrary `R ≥ 1`.
-pub fn recursive_verifier<Ch: Challenger>(
-    config: &VerifierConfig,
-    proof: &LigeritoProof,
-    eval_point: &[F128],
-    claimed_value: F128,
-    challenger: &mut Ch,
-) -> bool {
-    let log_n = eval_point.len();
-    let initial_k = config.initial_k;
-    let r = config.recursive_steps;
-
-    if r < 1 || config.recursive_ks.len() != r || config.log_inv_rates.len() != r + 1 {
-        return false;
-    }
-    // The legacy (non-basis) path predates OOD binding and fold grinding.
-    if config.ood_samples.iter().any(|&s| s != 0)
-        || config.fold_grinding_bits.iter().any(|&b| b != 0)
-    {
-        return false;
-    }
-
-    challenger.observe_label(b"flock-ligerito-v0");
-    challenger.observe_f128(claimed_value);
-    challenger.observe_f128_slice(eval_point);
-
-    // ---- Roots ----
-    challenger.observe_bytes(&proof.initial_root);
-    if proof.recursive_roots.len() != r {
-        return false;
-    }
-    let root_1 = proof.recursive_roots[0];
-    challenger.observe_bytes(&root_1);
-
-    // ---- Open wtns_0 + α₀ ----
-    let log_inv_rate_0 = config.log_inv_rates[0];
-    let log_msg_cols_0 = log_n - initial_k;
-    let block_len_0 = 1usize << (log_msg_cols_0 + log_inv_rate_0);
-    let num_interleaved_0 = 1usize << initial_k;
-    let num_queries_0 = udr_queries(log_inv_rate_0);
-    let queries_0 = sample_distinct_queries(challenger, block_len_0, num_queries_0);
-    let alpha_0 = challenger.sample_f128_vec(ceil_log2(num_queries_0));
-
-    if !verify_level_opens(
-        &proof.initial_root,
-        block_len_0,
-        &queries_0,
-        &proof.initial_proof.opened_rows,
-        num_interleaved_0,
-        &proof.initial_proof.merkle_proof,
-    ) {
-        return false;
-    }
-
-    // ---- Induce basis_0 from wtns_0 opens ----
-    let n1 = log_n - initial_k;
-    let sks_vks_n1 = eval_sk_at_vks(n1);
-    let (basis_0_induced, enforced_sum_0) = induce_sumcheck_poly_auto(
-        n1,
-        log_inv_rate_0,
-        &sks_vks_n1,
-        &proof.initial_proof.opened_rows,
-        &eval_point[..initial_k],
-        &queries_0,
-        &alpha_0,
-    );
-
-    // ---- Set up running sumcheck state ----
-    let eq_z_residual = build_eq_table(&eval_point[initial_k..]);
-    // basis_polys[k] are stored at the dim they were introduced. ris_starts[k] is
-    // the index in `ris` at the time basis_polys[k] was introduced.
-    let mut basis_polys: Vec<Vec<F128>> = vec![eq_z_residual];
-    let mut basis_ris_starts: Vec<usize> = vec![0];
-    let mut basis_separations: Vec<F128> = Vec::new(); // separation for basis_polys[k+1]
-    let mut ris: Vec<F128> = Vec::new();
-    let mut t_r = claimed_value;
-    let mut tx_idx = 0usize;
-
-    // ---- Start message ----
-    if tx_idx >= proof.sumcheck_transcript.len() {
-        return false;
-    }
-    let start_msg = proof.sumcheck_transcript[tx_idx];
-    tx_idx += 1;
-    challenger.observe_f128(start_msg.u_0);
-    challenger.observe_f128(start_msg.u_2);
-    let mut running_quad = RoundQuad::from_msg(start_msg, t_r);
-
-    // ---- Intro basis_0 + glue β₀ ----
-    if tx_idx >= proof.sumcheck_transcript.len() {
-        return false;
-    }
-    let intro_msg_0 = proof.sumcheck_transcript[tx_idx];
-    tx_idx += 1;
-    challenger.observe_f128(intro_msg_0.u_0);
-    challenger.observe_f128(intro_msg_0.u_2);
-    let intro_quad_0 = RoundQuad::from_msg(intro_msg_0, enforced_sum_0);
-    let beta_0 = challenger.sample_f128();
-    running_quad = RoundQuad::fold(&running_quad, &intro_quad_0, beta_0);
-    t_r += beta_0 * enforced_sum_0;
-    basis_polys.push(basis_0_induced);
-    basis_ris_starts.push(0);
-    basis_separations.push(beta_0);
-
-    // ---- Recursive iterations ----
-    let mut prev_root = root_1;
-    let mut prev_log_num_interleaved = config.recursive_ks[0];
-    let mut prev_log_msg_cols = n1 - prev_log_num_interleaved;
-    let mut prev_log_inv_rate = config.log_inv_rates[1]; // wtns_1's rate
-    let mut next_root_idx = 1usize;
-    let mut recursive_proof_idx = 0usize;
-    let mut n_current = n1;
-
-    for i in 0..r {
-        let k_i = config.recursive_ks[i];
-        if n_current < k_i {
-            return false;
-        }
-        let mut level_rs = Vec::with_capacity(k_i);
-        for _ in 0..k_i {
-            let ri = challenger.sample_f128();
-            ris.push(ri);
-            level_rs.push(ri);
-            t_r = running_quad.eval(ri);
-            if tx_idx >= proof.sumcheck_transcript.len() {
-                return false;
-            }
-            let msg = proof.sumcheck_transcript[tx_idx];
-            tx_idx += 1;
-            challenger.observe_f128(msg.u_0);
-            challenger.observe_f128(msg.u_2);
-            running_quad = RoundQuad::from_msg(msg, t_r);
-        }
-        n_current -= k_i;
-
-        if i == r - 1 {
-            // Last iter: read yr + open prev_root.
-            if tx_idx != proof.sumcheck_transcript.len() {
-                return false;
-            }
-            let yr = &proof.final_proof.yr;
-            if yr.len() != 1 << n_current {
-                return false;
-            }
-            for v in yr {
-                challenger.observe_f128(*v);
-            }
-            let prev_block_len = 1usize << (prev_log_msg_cols + prev_log_inv_rate);
-            let prev_num_interleaved = 1usize << prev_log_num_interleaved;
-            let num_queries_last = udr_queries(prev_log_inv_rate);
-            let queries_last =
-                sample_distinct_queries(challenger, prev_block_len, num_queries_last);
-            // Final-level basis-induction challenge (after yr + queries fixed).
-            let alpha_last = challenger.sample_f128_vec(ceil_log2(num_queries_last));
-            if !verify_level_opens(
-                &prev_root,
-                prev_block_len,
-                &queries_last,
-                &proof.final_proof.opened_rows,
-                prev_num_interleaved,
-                &proof.final_proof.merkle_proof,
-            ) {
-                return false;
-            }
-
-            // Bind the LAST commitment to `yr`: induce its opened rows into the
-            // sumcheck like every non-final level (without this `yr` is
-            // unconstrained and a forged `yr` opens to any value).
-            let sks_vks_last = eval_sk_at_vks(n_current);
-            let (basis_last_induced, enforced_sum_last) = induce_sumcheck_poly(
-                n_current,
-                &sks_vks_last,
-                &proof.final_proof.opened_rows,
-                &level_rs,
-                &queries_last,
-                &alpha_last,
-            );
-            let beta_last = challenger.sample_f128();
-            t_r += beta_last * enforced_sum_last;
-            basis_polys.push(basis_last_induced);
-            basis_ris_starts.push(ris.len());
-            basis_separations.push(beta_last);
-
-            // ---- Final residual check ----
-            // Each basis_polys[k] is partially-evaluated at ris[ris_starts[k]..].
-            // basis_polys[0] has separation 1, basis_polys[k+1] has separation basis_separations[k].
-            let yr_len = yr.len();
-            let mut combined = vec![F128::ZERO; yr_len];
-            for (k, basis) in basis_polys.iter().enumerate() {
-                let start = basis_ris_starts[k];
-                let residual = partial_eval_lsb(basis, &ris[start..]);
-                if residual.len() != yr_len {
-                    return false;
-                }
-                let sep = if k == 0 {
-                    F128::ONE
-                } else {
-                    basis_separations[k - 1]
-                };
-                for (c, &r) in combined.iter_mut().zip(residual.iter()) {
-                    *c += sep * r;
-                }
-            }
-            let inner: F128 = yr
-                .iter()
-                .zip(combined.iter())
-                .map(|(&y, &c)| y * c)
-                .fold(F128::ZERO, |a, v| a + v);
-            return inner == t_r;
-        }
-
-        // Non-last: read next root, sample queries on prev_root, induce basis, intro + glue.
-        if next_root_idx >= proof.recursive_roots.len() {
-            return false;
-        }
-        let root_next = proof.recursive_roots[next_root_idx];
-        next_root_idx += 1;
-        challenger.observe_bytes(&root_next);
-
-        let prev_block_len = 1usize << (prev_log_msg_cols + prev_log_inv_rate);
-        let prev_num_interleaved = 1usize << prev_log_num_interleaved;
-        let num_queries_i = udr_queries(prev_log_inv_rate);
-        let queries_i = sample_distinct_queries(challenger, prev_block_len, num_queries_i);
-        let alpha_i = challenger.sample_f128_vec(ceil_log2(num_queries_i));
-
-        if recursive_proof_idx >= proof.recursive_proofs.len() {
-            return false;
-        }
-        let rp = &proof.recursive_proofs[recursive_proof_idx];
-        recursive_proof_idx += 1;
-        if !verify_level_opens(
-            &prev_root,
-            prev_block_len,
-            &queries_i,
-            &rp.opened_rows,
-            prev_num_interleaved,
-            &rp.merkle_proof,
-        ) {
-            return false;
-        }
-
-        let sks_vks_i = eval_sk_at_vks(n_current);
-        let (basis_i_induced, enforced_sum_i) = induce_sumcheck_poly(
-            n_current,
-            &sks_vks_i,
-            &rp.opened_rows,
-            &level_rs,
-            &queries_i,
-            &alpha_i,
-        );
-
-        // Intro + glue
-        if tx_idx >= proof.sumcheck_transcript.len() {
-            return false;
-        }
-        let intro_msg_i = proof.sumcheck_transcript[tx_idx];
-        tx_idx += 1;
-        challenger.observe_f128(intro_msg_i.u_0);
-        challenger.observe_f128(intro_msg_i.u_2);
-        let intro_quad_i = RoundQuad::from_msg(intro_msg_i, enforced_sum_i);
-        let beta_i = challenger.sample_f128();
-        running_quad = RoundQuad::fold(&running_quad, &intro_quad_i, beta_i);
-        t_r += beta_i * enforced_sum_i;
-        basis_polys.push(basis_i_induced);
-        basis_ris_starts.push(ris.len());
-        basis_separations.push(beta_i);
-
-        // Update prev for next iteration: prev_root = root_next, dims = next commit's dims.
-        prev_root = root_next;
-        let k_next = config.recursive_ks[i + 1];
-        if n_current < k_next {
-            return false;
-        }
-        prev_log_num_interleaved = k_next;
-        prev_log_msg_cols = n_current - k_next;
-        prev_log_inv_rate = config.log_inv_rates[i + 2];
-    }
-
-    unreachable!("loop should return at i = r - 1")
-}

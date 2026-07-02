@@ -17,6 +17,12 @@ fn main() {
     // println!("SOURCE\n\n{src}\n");
     // println!("COMPILED\n\n{program}\n");
 
+    // Warm the flock BLAKE3 R1CS setup once up front (Fibonacci runs no BLAKE3, so
+    // this warms the single padding instance). It is a fixed, one-time,
+    // program-independent circuit build — not part of proving — so timing prove/
+    // verify below reflects steady-state performance.
+    leanvm_b::blake3_flock::warm_setup(0);
+
     let t = Instant::now();
     let (proof, stats) = prove(&program, pi);
     let t_prove = t.elapsed();
@@ -26,7 +32,7 @@ fn main() {
 
     println!("Fibonacci (in the exponent, i.e. modulo 2^128 - 1), N = {FIB_N}");
     println!("  cycles (VM steps)           : {}", stats.cycles);
-    for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP"].iter().zip(&stats.counts) {
+    for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3"].iter().zip(&stats.counts) {
         let pow = if c == 0 {
             "0".to_string()
         } else {
@@ -56,7 +62,7 @@ fn fibonacci_program(fib_n: usize) -> (String, [F128; 2]) {
     const UNROLL: usize = 1000;
     const XORS: usize = 16;
     assert!(
-        fib_n >= UNROLL && fib_n % UNROLL == 0,
+        fib_n >= UNROLL && fib_n.is_multiple_of(UNROLL),
         "fib_n must be a positive multiple of {UNROLL}"
     );
     let k = fib_n / UNROLL; // number of blocks

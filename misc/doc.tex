@@ -64,7 +64,7 @@
 \]
 Since addresses are exponents of $\gen$, the frame is the contiguous block $\gen^{\mathrm{base}},\gen^{\mathrm{base}+1},\dots$, and adding the offset $j$ to the base exponent is, in the field, a single multiplication $\fp\cdot o$.
 
-\paragraph{Instruction set.} The machine implements five instructions. Below, $o,o_A,\dots$ are fp-relative references and $k$ an immediate operand.
+\paragraph{Instruction set.} The machine implements six instructions. Below, $o,o_A,\dots$ are fp-relative references and $k$ an immediate operand.
 \begin{center}
 \begin{tabular}{lll}
 \hline
@@ -75,9 +75,12 @@ Instruction & Operands & Semantics\\
 \texttt{SET\_CONSTANT} & $[o,k]$         & $\loc{o}=k$\\
 \texttt{DEREF}         & $[\alpha,\beta,\gamma;\,s]$ & $\mem[\loc{\alpha}\cdot\beta]=\srcsel{s}$\\
 \texttt{JUMP}          & $[o_c,o_d,o_f]$ & conditional jump (below)\\
+\texttt{BLAKE3}        & $[o_A,o_B,o_C]$ & $\bigl(\loc{o_C},\loc{\gen\cdot o_C}\bigr)=\mathrm{BLAKE3}\bigl(\loc{o_A},\loc{\gen\cdot o_A},\loc{o_B},\loc{\gen\cdot o_B}\bigr)$ (below)\\
 \hline
 \end{tabular}
 \end{center}
+
+\texttt{BLAKE3} compresses $64$ bytes to $32$. Each operand names a $256$-bit value laid out in \emph{two consecutive memory words}: the reference $o$ names the cell at $\fp\cdot o$ and its successor at $\gen\cdot\fp\cdot o=\fp\cdot(\gen\cdot o)$, written $\loc{o}$ and $\loc{\gen\cdot o}$. The instruction reads the two inputs $a,b$ ($512$ bits) and writes the digest to the two cells of $c$ ($256$ bits). For now the compression itself is \emph{unproven}: the BLAKE3 table (\S\ref{sec:tab-blake3}) wires the six cells onto the memory, state, and bytecode interactions but carries no constraint relating the output words to the input words. That relation is deferred.
 
 \texttt{DEREF} stores, at the dereferenced address $\loc{\alpha}\cdot\beta$, a value chosen by a \emph{store mode} $s\in\{\texttt{deref\_cell}[\gamma],\texttt{deref\_pc},\texttt{deref\_fp}\}$:
 \[
@@ -103,12 +106,11 @@ Instruction (later) & Operands & Semantics\\
 \texttt{u32\_ADD}    & $[o_A,o_B,o_C]$     & integer add mod $2^{32}$\\
 \texttt{IS\_NONZERO} & $[o_x,o_b]$         & $\loc{o_b}=[\,\loc{o_x}\neq 0\,]$\\
 \texttt{u32\_MUL}    & $[o_A,o_B,o_C,o_D]$ & integer multiply, double word: $a\cdot b=c+2^{32}d$\\
-\texttt{BLAKE3}      & (varies)            & $64$-byte to $32$-byte compression\\
 \hline
 \end{tabular}
 \end{center}
 
-\noindent These operate on $32$-bit integers (\texttt{u32}) rather than native field elements, and so require integer addition with carries, which the field arithmetic does not provide. Their full semantics are fixed later. \todo{specify the \texttt{u32\_MUL} and \texttt{BLAKE3} semantics later.}
+\noindent These operate on $32$-bit integers (\texttt{u32}) rather than native field elements, and so require integer addition with carries, which the field arithmetic does not provide. Their full semantics are fixed later. \todo{specify the \texttt{u32\_MUL} semantics later.}
 \fi % end deferred future instructions
 
 \section{Proving primitives}\label{sec:prelim}
@@ -289,7 +291,7 @@ each factor $1$ at $\zeta_k=0$ and $\gen^{2^{k}}$ at $\zeta_k=1$. The verifier e
 
 \section{The instruction tables}\label{sec:tables}
 
-Each of the five instructions has its own table.
+Each of the six instructions has its own table.
 
 \subsection{\texttt{XOR}}\label{sec:tab-xor}
 
@@ -374,6 +376,20 @@ Alone among the tables, \texttt{JUMP} commits its successors.
   \end{itemize}
 \end{itemize}
 
+\subsection{\texttt{BLAKE3}}\label{sec:tab-blake3}
+
+Compresses the $64$ input bytes at $a$ and $b$ to the $32$ output bytes at $c$. Each operand names a $256$-bit value in two consecutive words, so the row touches six cells: the base addresses $a_A=\fp\cdot o_A$, $a_B=\fp\cdot o_B$, $a_C=\fp\cdot o_C$, and their successors $\gen\cdot a_A$, $\gen\cdot a_B$, $\gen\cdot a_C$ (each a virtual $\times\gen$ of its committed base, \S\ref{sec:prelim}). The two cells of $a,b$ are read inputs; the two cells of $c$ are the written digest, tied into committed memory like any other access. The compression relation is \emph{deferred}: this table proves only that the six cells are read and the instruction is fetched, with no constraint relating the output words to the input words.
+\begin{itemize}
+\item \textbf{Columns:} $\pc,\fp$; operands $o_A,o_B,o_C$; base addresses $a_A,a_B,a_C$; values $v_{A0},v_{A1},v_{B0},v_{B1},v_{C0},v_{C1}$; memory counts $r_{A0},r_{A1},r_{B0},r_{B1},r_{C0},r_{C1}$; bytecode count $r_{\mathrm{bc}}$. (The successor addresses $\gen\cdot a_X$ are virtual.)
+\item \textbf{Constraints:} the three base addresses $a_X=\fp\cdot o_X$. No constraint links $v_{C0},v_{C1}$ to the inputs (BLAKE3 unproven, deferred).
+\item \textbf{Flushes:}
+  \begin{itemize}
+  \item \textbf{State:} \pull\ $\tup{\dsep{ST},\pc,\fp}$, \push\ $\tup{\dsep{ST},\gen\cdot\pc,\fp}$.
+  \item \textbf{Bytecode:} \pull\ $\tup{\dsep{BC},\pc,r_{\mathrm{bc}},\opc{B3},o_A,o_B,o_C,0,0}$, \push\ the same at $\gen\cdot r_{\mathrm{bc}}$.
+  \item \textbf{Memory:} six reads, each \pull\ at count $r$ and \push\ at $\gen\cdot r$. For each $X\in\{A,B,C\}$ the two words \pull\ $\tup{\dsep{MEM},a_X,r_{X0},v_{X0}}$ and \pull\ $\tup{\dsep{MEM},\gen\cdot a_X,r_{X1},v_{X1}}$, with the matching pushes at $\gen\cdot r$.
+  \end{itemize}
+\end{itemize}
+
 \section{End-to-end protocol}\label{sec:e2e}
 
 This section assembles the primitives into the executable protocol, beginning with the constants, encodings, and padding fixed in advance.
@@ -391,7 +407,7 @@ Fixed once, public, and shared by prover and verifier: the field, the bus shape,
 
 \paragraph{Opcodes.} Coordinate $3$ of every bytecode tuple is an opcode, naming the instruction stored at that program counter (\S\ref{sec:bytecode}):
 \[
-  \opc{XOR}=1,\quad \opc{MUL}=\gen,\quad \opc{SET}=\gen^{2},\quad \opc{DRF}=\gen^{3},\quad \opc{JMP}=\gen^{4}.
+  \opc{XOR}=1,\quad \opc{MUL}=\gen,\quad \opc{SET}=\gen^{2},\quad \opc{DRF}=\gen^{3},\quad \opc{JMP}=\gen^{4},\quad \opc{B3}=\gen^{5}.
 \]
 
 \subsection{Bytecode encoding}\label{sec:e2e-bc}
@@ -407,6 +423,7 @@ Instruction & coord.\ $3$ & coord.\ $4$ & coord.\ $5$ & coord.\ $6$ & coord.\ $7
 \texttt{SET\_CONSTANT} & $\opc{SET}$ & $o$   & $k$   & $0$   & $0$ & $0$\\
 \texttt{DEREF}         & $\opc{DRF}$ & $\alpha$ & $\beta$ & $\gamma$ & $f_{\pc}$ & $f_{\fp}$\\
 \texttt{JUMP}          & $\opc{JMP}$ & $o_c$ & $o_d$ & $o_f$ & $0$ & $0$\\
+\texttt{BLAKE3}        & $\opc{B3}$  & $o_A$ & $o_B$ & $o_C$ & $0$ & $0$\\
 \hline
 \end{tabular}
 \end{center}
@@ -444,7 +461,7 @@ We lay out the whole protocol as one ordered sequence. Each reduction below adds
 \item \textbf{Prover \& Verifier.} Decompose each leaf claim (\S\ref{sec:leafstack}). The verifier forms the public part: the block selectors; the constant coordinates (separators, the per-table read opcodes, the boundary state $(\pc_0,\fp_0)$ and $(\pc_{\mathrm{final}},\fp_{\mathrm{final}})$); the index column (\S\ref{sec:idxcol}); and the public program columns of the bytecode seed and finalize, whose MLEs it forms directly. The prover supplies each block's committed-column evaluations (one field element each, \S\ref{sec:prelim}); a virtual coordinate such as $\gen\cdot\pc$ is read off its committed source. The verifier checks the decomposition formula against $\widetilde V_0(\zeta)$; the supplied evaluations enter the claim pool. The count channel decomposes likewise (its leaves are the count columns), adding only their evaluations.
 \end{enumerate}
 
-\paragraph{Local constraints.} Run once per table (\S\ref{sec:air}); the five runs share no challenges.
+\paragraph{Local constraints.} Run once per table (\S\ref{sec:air}); the six runs share no challenges.
 \begin{enumerate}
 \item \textbf{Verifier.} For the table, sends the constraint-batch challenge $\eta$ and the zerocheck point $r\in\F_{2^{128}}^{\tau}$, where $2^{\tau}$ is its row count.
 \item \textbf{Prover \& Verifier.} Run the table's zerocheck, a $\tau$-round sumcheck on the $\eta$-batched constraint $\sum_x C(x)\,\eq(r,x)=0$. Its end needs that table's (committed) column evaluations at the random point, which enter the pool.

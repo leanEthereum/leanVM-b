@@ -89,7 +89,7 @@ pub fn prove_product(leaves: Vec<F128>, ps: &mut ProverState) -> (F128, LeafClai
     let mu = crate::log2_strict_usize(leaves.len());
     let layers = build_layers(leaves); // layers[0] is the (moved) leaf table
     let root = layers[mu][0];
-    ps.write_scalar(root);
+    ps.add_scalar(root);
 
     let nodes = tri_nodes();
     let mut r: Vec<F128> = Vec::new();
@@ -132,7 +132,7 @@ pub fn prove_product(leaves: Vec<F128>, ps: &mut ProverState) -> (F128, LeafClai
             } else {
                 (0..half).map(summand).fold([F128::ZERO; 3], add3)
             };
-            ps.write_scalars(&acc);
+            ps.add_scalars(&acc);
             let rk = ps.sample();
             rho.push(rk);
             even = par_fold(&even, rk);
@@ -140,8 +140,8 @@ pub fn prove_product(leaves: Vec<F128>, ps: &mut ProverState) -> (F128, LeafClai
         }
 
         let (eval0, eval1) = (even[0], odd[0]);
-        ps.write_scalar(eval0);
-        ps.write_scalar(eval1);
+        ps.add_scalar(eval0);
+        ps.add_scalar(eval1);
         let c = ps.sample();
         value = interp(eval0, eval1, c); // Ṽ_{i-1}(c, ρ) = Ṽ_0(r) on the last layer
 
@@ -167,12 +167,11 @@ pub fn verify_product(mu: usize, vs: &mut VerifierState) -> Result<(F128, LeafCl
         let k = mu - i;
         let mut rho = Vec::with_capacity(k);
         let mut eq_acc = F128::ONE; // ∏_{l<round} eq(r_l, ρ_l)
-        for round in 0..k {
+        for (round, &rj) in r.iter().enumerate().take(k) {
             let msg = vs.next_scalars(3).map_err(|_| GkrError::Truncated)?;
             // The prover sent only `h`; the full round univariate is
             // `q(t) = eq_acc·eq(r_round, t)·h(t)`, so `q(0)+q(1)` must equal the
             // claim (`eq(r_round,0)=1+r_round`, `eq(r_round,1)=r_round`).
-            let rj = r[round];
             if eq_acc * ((F128::ONE + rj) * msg[0] + rj * msg[1]) != claim {
                 return Err(GkrError::SumcheckInconsistent { layer: i, round });
             }

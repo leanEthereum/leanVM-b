@@ -14,13 +14,20 @@ path = "src/main.rs"
 [dependencies]
 rayon = "1.10"
 blake3 = "1.5"
-# Proof types derive `Serialize` so a proof can be measured / transmitted.
+# Proof types derive `Serialize`/`Deserialize` so a proof can be measured,
+# transmitted, and reconstructed for out-of-process verification.
 serde = { version = "1", features = ["derive"] }
 # GF(2^128), additive NTT, Merkle, BaseFold/Ligerito PCS (§3). VENDORED under
 # `vendor/flock-core` so we do not depend on the external `../binary-fields/flock`
 # tree (which is restructured underneath us). Renamed to `flare` so the imports
 # stay `flare::…`; it is a frozen local snapshot, not a live path dependency.
 flare = { path = "vendor/flock-core", package = "flock-core" }
+# Vendored BLAKE3 R1CS prover subset (the generic R1CS prover + the BLAKE3
+# per-block encoder, re-laid for 128-bit packing alignment). Depends on the SAME
+# vendored `flock-core` as `flare` (path `vendor/flock-core`), so the packed
+# `F128` witness `q_pkd` it produces is the same field type as our committed
+# columns — letting us stack it alongside them (§BLAKE3 integration).
+flock-prover = { path = "vendor/flock-prover" }
 # Measures the serialized proof size (the demo binary and the proof-size test).
 bincode = "1"
 

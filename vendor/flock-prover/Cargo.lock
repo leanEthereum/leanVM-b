@@ -200,18 +200,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "leanvm-b"
-version = "0.1.0"
-dependencies = [
- "bincode",
- "blake3",
- "flock-core",
- "flock-prover",
- "rayon",
- "serde",
-]
-
-[[package]]
 name = "libc"
 version = "0.2.186"
 source = "registry+https://github.com/rust-lang/crates.io-index"

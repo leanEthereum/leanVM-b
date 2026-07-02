@@ -38,7 +38,7 @@ pub fn x_pow(k: usize) -> F128 {
     let mut e = k;
     while e > 0 {
         if e & 1 == 1 {
-            result = result * base;
+            result *= base;
         }
         base = base * base;
         e >>= 1;

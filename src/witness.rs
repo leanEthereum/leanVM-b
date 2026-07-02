@@ -10,7 +10,10 @@ use crate::field::F128;
 /// A committed column: `2^κ` field elements.
 pub type Column = Vec<F128>;
 
-/// Where a column sits in the stacked witness.
+/// Where a column sits in the stacked witness. A **virtual** placement
+/// ([`Placement::VIRTUAL`]) marks a column that is NOT committed (it has data on
+/// the prover for the bus, but its evaluation claims are settled against some
+/// other committed column — e.g. the BLAKE3 value columns route to `q_pkd`).
 #[derive(Clone, Copy, Debug)]
 pub struct Placement {
     pub n_vars: usize,
@@ -18,6 +21,14 @@ pub struct Placement {
 }
 
 impl Placement {
+    /// A column that is not committed in the stack (see the type docs).
+    pub const VIRTUAL: Placement = Placement { n_vars: usize::MAX, offset: 0 };
+
+    /// Whether this column is uncommitted (occupies no stack space).
+    pub fn is_virtual(&self) -> bool {
+        self.n_vars == usize::MAX
+    }
+
     /// The high-bit selector of the column's offset (`offset / 2^{n_vars}`).
     pub fn sel(&self) -> usize {
         self.offset >> self.n_vars
@@ -51,34 +62,37 @@ impl Stacked {
 
 /// Compute the per-column placements (offset + n_vars) and stack length `2^m`
 /// from the columns' log-sizes alone (`kappas`), largest-first at aligned
-/// offsets, padded to `m ≥ 2` (the PCS minimum). Depends only on the columns'
-/// lengths, not their values, so the verifier can reconstruct it.
-pub fn placements_of(kappas: &[usize]) -> (Vec<Placement>, usize) {
+/// offsets, padded to `m ≥ 2` (the PCS minimum). A `None` kappa marks a
+/// **virtual** (uncommitted) column: it gets [`Placement::VIRTUAL`] and occupies
+/// no stack space. Depends only on the columns' lengths, not their values, so the
+/// verifier can reconstruct it.
+pub fn placements_of(kappas: &[Option<usize>]) -> (Vec<Placement>, usize) {
     let n = kappas.len();
-    let mut order: Vec<usize> = (0..n).collect();
-    order.sort_by(|&a, &b| kappas[b].cmp(&kappas[a]).then(a.cmp(&b)));
+    let mut order: Vec<usize> = (0..n).filter(|&i| kappas[i].is_some()).collect();
+    order.sort_by(|&a, &b| kappas[b].unwrap().cmp(&kappas[a].unwrap()).then(a.cmp(&b)));
 
-    let mut offsets = vec![0usize; n];
+    let mut placements = vec![Placement::VIRTUAL; n];
     let mut off = 0usize;
     for &i in &order {
-        offsets[i] = off;
-        off += 1 << kappas[i];
+        let k = kappas[i].unwrap();
+        placements[i] = Placement { n_vars: k, offset: off };
+        off += 1 << k;
     }
-    let m = crate::log2_ceil_usize(off.max(1)).max(2);
-    let placements = (0..n)
-        .map(|i| Placement {
-            n_vars: kappas[i],
-            offset: offsets[i],
-        })
-        .collect();
+    // Floor the stack size at the PCS minimum (Ligerito's recursion needs room;
+    // see `pcs::MIN_MU`) — tiny witnesses zero-pad up to it. Both sides derive
+    // this identically from the kappas alone.
+    let m = crate::log2_ceil_usize(off.max(1)).max(crate::pcs::MIN_MU);
     (placements, m)
 }
 
-/// Copy the columns into one multilinear `q` of length `2^m` at their placed
-/// offsets (zero elsewhere).
+/// Copy the committed columns into one multilinear `q` of length `2^m` at their
+/// placed offsets (zero elsewhere). Virtual columns are skipped.
 pub fn stack_q(cols: &[Column], placements: &[Placement], m: usize) -> Vec<F128> {
     let mut q = vec![F128::ZERO; 1 << m];
     for (i, placement) in placements.iter().enumerate() {
+        if placement.is_virtual() {
+            continue;
+        }
         let offset = placement.offset;
         q[offset..offset + (1 << placement.n_vars)].copy_from_slice(&cols[i]);
     }
@@ -88,11 +102,11 @@ pub fn stack_q(cols: &[Column], placements: &[Placement], m: usize) -> Vec<F128>
 /// Stack columns largest-first at aligned offsets, zero-padded to `2^m`
 /// (`m ≥ 2`, the PCS minimum).
 pub fn stack(cols: &[Column]) -> Stacked {
-    let kappas: Vec<usize> = cols
+    let kappas: Vec<Option<usize>> = cols
         .iter()
         .map(|c| {
             assert!(!c.is_empty(), "column must be non-empty");
-            crate::log2_strict_usize(c.len())
+            Some(crate::log2_strict_usize(c.len()))
         })
         .collect();
     let (placements, m) = placements_of(&kappas);

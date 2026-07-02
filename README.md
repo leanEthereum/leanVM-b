@@ -13,7 +13,7 @@
 
 ## Fibonacci benchmark
 
-`cargo run --release`
+`RAYON_NUM_THREADS=10 cargo run --release`
 
 M4 Max:
 
@@ -25,17 +25,39 @@ Fibonacci (in the exponent, i.e. modulo 2^128 - 1), N = 2000000
     SET   instructions        : 2^13.776
     DEREF instructions        : 2^13.968
     JUMP  instructions        : 2^11.967
+    BLAKE3 instructions        : 0
   committed witness size      : 2^25.108
-  proof size                  : 1196.5 KiB
-  proving (incl. witness gen) : 1.281336625s
-  verifying                   : 5.478042ms
-  throughput                  : 1601524 cycles/s
+  proof size                  : 493.7 KiB
+  proving (incl. witness gen) : 1.202985166s
+  verifying                   : 6.568208ms
+  throughput                  : 1705832 cycles/s
 ```
+
+## Hash chain benchmark (BLAKE3)
+
+`RAYON_NUM_THREADS=10 LEANVM_HASH_UNROLL=1000 LEANVM_HASH_N=128000 cargo test --release --package leanvm-b --test hash_chain -- blake3_hash_chain --nocapture`
+
+```
+BLAKE3 hash chain, N = 128000, unroll = 1000
+  cycles (VM steps)           : 131359
+    XOR    instructions       : 2^7.000
+    MUL    instructions       : 2^10.008
+    SET    instructions       : 2^9.828
+    DEREF  instructions       : 2^10.014
+    JUMP   instructions       : 2^8.011
+    BLAKE3 instructions       : 2^16.966
+  committed witness size      : 2^24.206
+  proof size                  : 465.1 KiB
+  proving (incl. witness gen) : 523.120292ms
+  verifying                   : 5.520167ms
+  throughput                  : 244686 hashes/s
+```
+
 
 ## Security, proof size etc
 
-- security = 100 bits, proven, UDR, Basefold
-- proof size =  BIG (≈ 1 MiB)
+- security = 100 bits, proven, LDR, Ligerito
+- proof size = BIG (≈ 0.5 MiB)
 
 Both will be improved later.
 

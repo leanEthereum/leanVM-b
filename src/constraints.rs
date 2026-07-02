@@ -81,7 +81,7 @@ pub fn prove<F: Fn(F128, &[F128]) -> F128 + Sync>(cols: &[Vec<F128>], c_eval: F,
             let mut vals = vec![F128::ZERO; ncols];
             (0..half).fold([F128::ZERO; 3], |acc, i| add3(acc, summand(i, &mut vals)))
         };
-        ps.write_scalars(&p);
+        ps.add_scalars(&p);
         let rk = ps.sample();
         rho.push(rk);
         for c in tables.iter_mut() {
@@ -90,7 +90,7 @@ pub fn prove<F: Fn(F128, &[F128]) -> F128 + Sync>(cols: &[Vec<F128>], c_eval: F,
     }
 
     let evals: Vec<F128> = tables.iter().map(|c| c[0]).collect();
-    ps.write_scalars(&evals);
+    ps.add_scalars(&evals);
     Claims { rho, evals }
 }
 
@@ -110,11 +110,10 @@ pub fn verify<F: Fn(F128, &[F128]) -> F128>(
     let mut claim = F128::ZERO;
     let mut rho = Vec::with_capacity(tau);
     let mut eq_acc = F128::ONE; // ∏_{l<round} eq(r_l, ρ_l)
-    for round in 0..tau {
+    for (round, &rj) in r.iter().enumerate() {
         let p = vs.next_scalars(3).map_err(|_| Error::Truncated)?;
         // The prover sent only the product part; the full round univariate is
         // `q(t) = eq_acc·eq(r_round, t)·p(t)`, so `q(0)+q(1)` must equal the claim.
-        let rj = r[round];
         if eq_acc * ((F128::ONE + rj) * p[0] + rj * p[1]) != claim {
             return Err(Error::RoundInconsistent { round });
         }
