@@ -1067,12 +1067,10 @@ pub enum Error {
     Open(pcs::Error),
     PublicInput,
     Transcript(crate::transcript::Error),
-    /// flock's BLAKE3 R1CS validity sub-proof failed to verify.
+    /// flock's BLAKE3 R1CS validity sub-proof failed to verify. (A missing or
+    /// malformed sub-proof surfaces as [`Error::Transcript`] when the shared
+    /// `stream`/`openings` fail to reconstruct or fully consume.)
     Blake3(flock_prover::verifier::VerifyError),
-    /// The BLAKE3 attachment is missing or inconsistent with the announced
-    /// BLAKE3 row count. (Constant pinning + value binding are checked as PCS
-    /// claims and surface as [`Error::Open`].)
-    Blake3Missing,
 }
 
 /// Lift each table's constraint evals (at its zerocheck point `rho`) to global
@@ -1246,16 +1244,16 @@ pub fn prove(program: &Program, public_input: [F128; 2]) -> (Proof, Stats) {
         open_claims.push(pcs::OpenClaim::RingSwitch(crate::blake3_flock::ring_switch_open(*n, offset, reduced)));
     }
     let mixed_open = pcs::open(&mut ps, &committed, &w.q, &open_claims);
-    let blake3_attach = blake3.map(|(n, zc, lc, _)| {
-        crate::blake3_flock::attach(n, zc, lc, mixed_open.expect("mixed opening present with BLAKE3"))
-    });
+    if let Some((_, zc, lc, _)) = blake3 {
+        // Carry flock's sub-proof on the shared channels: its scalar reduction on
+        // the `stream` (raw transport), its BaseFold on the `openings` hint channel.
+        crate::blake3_flock::write_stack_proof(&mut ps, zc, lc, mixed_open.expect("mixed opening present with BLAKE3"));
+    }
     if prof {
         eprintln!("[prove] open        : {:>7.2} ms", ms(t));
     }
-    let mut proof = ps.into_proof();
-    proof.blake3 = blake3_attach;
     (
-        proof,
+        ps.into_proof(),
         Stats {
             cycles,
             counts,
@@ -1305,19 +1303,12 @@ pub fn verify(program: &Program, public_input: &[F128; 2], proof: &Proof) -> Res
     // BLAKE3 ↔ flock (single PCS): sample the binding point `rho` right after the
     // commitment (mirroring `prove`); flock's R1CS validity and every leanVM
     // point claim are verified together by ONE BaseFold opening at the end.
+    // The executed-BLAKE3 count is public (announced). Its flock sub-proof rides
+    // the shared `stream`/`openings`; presence is enforced by consumption below
+    // plus `vs.finish()` (a proof with `n_b3 = 0` but trailing flock data, or vice
+    // versa, fails to fully consume).
     let n_b3 = l.row_counts[tables::BLAKE3_TABLE];
-    let blake3_rho = if n_b3 > 0 {
-        let att = proof.blake3.as_ref().ok_or(Error::Blake3Missing)?;
-        if att.n_blocks != n_b3 {
-            return Err(Error::Blake3Missing);
-        }
-        Some(vs.sample_vec(crate::blake3_flock::n_blocks_log(n_b3)))
-    } else {
-        if proof.blake3.is_some() {
-            return Err(Error::Blake3Missing); // attachment without any BLAKE3 rows
-        }
-        None
-    };
+    let blake3_rho = (n_b3 > 0).then(|| vs.sample_vec(crate::blake3_flock::n_blocks_log(n_b3)));
 
     let bus_claims = leaf::verify_balance(&l.push, &l.pull, &l.count, &l.pad, &mut vs).map_err(Error::Bus)?;
 
@@ -1345,6 +1336,14 @@ pub fn verify(program: &Program, public_input: &[F128; 2], proof: &Proof) -> Res
         }
         claims.extend(blake3_binding_claims(rho, &v_words, n_b3));
     }
+    // Read flock's BLAKE3 sub-proof off the shared channels (mirrors prove's
+    // `write_stack_proof`): the scalar reduction from the `stream` as raw transport
+    // (right after the last bound scalar, `v_words`), its BaseFold from `openings`.
+    let blake3_sub = if blake3_rho.is_some() {
+        Some(crate::blake3_flock::read_stack_proof(&mut vs).map_err(Error::Transcript)?)
+    } else {
+        None
+    };
     let slots = slot_claims(&l, &claims);
 
     // BLAKE3: replay flock's reduction to recover its `(ab, c)` validity claims,
@@ -1352,19 +1351,12 @@ pub fn verify(program: &Program, public_input: &[F128; 2], proof: &Proof) -> Res
     // every point claim (mirroring `prove`).
     let offset = l.placements[QPKD].offset;
     let mut verify_claims: Vec<pcs::VerifyClaim> = slots.into_iter().map(pcs::VerifyClaim::Point).collect();
-    if blake3_rho.is_some() {
-        let att = proof.blake3.as_ref().ok_or(Error::Blake3Missing)?;
-        let (ab, c) = crate::blake3_flock::verify_reduction(
-            n_b3,
-            &root,
-            l.m,
-            &att.proof.zerocheck,
-            &att.proof.lincheck,
-            &mut vs,
-        )
-        .map_err(Error::Blake3)?;
-        verify_claims
-            .push(pcs::VerifyClaim::RingSwitch(crate::blake3_flock::ring_switch_verify(n_b3, offset, ab, c, &att.proof)));
+    if let Some((zerocheck, lincheck, open)) = &blake3_sub {
+        let (ab, c) = crate::blake3_flock::verify_reduction(n_b3, &root, l.m, zerocheck, lincheck, &mut vs)
+            .map_err(Error::Blake3)?;
+        verify_claims.push(pcs::VerifyClaim::RingSwitch(crate::blake3_flock::ring_switch_verify(
+            n_b3, offset, ab, c, open,
+        )));
     }
     pcs::verify(&mut vs, &verify_claims, l.m, &root).map_err(Error::Open)?;
     vs.finish().map_err(Error::Transcript)
@@ -1432,8 +1424,9 @@ mod tests {
 
         let (proof, stats) = prove(&program, pi);
         assert_eq!(stats.counts[5], 1, "one BLAKE3 row");
-        // The proof carries flock's BLAKE3 sub-proof (validity + slot openings).
-        assert!(proof.blake3.is_some(), "BLAKE3 program must attach a flock proof");
+        // flock's sub-proof rides the shared channels: its BaseFold is the proof's
+        // one opening, its scalar reduction trails the `stream`.
+        assert!(!proof.openings.is_empty(), "BLAKE3 program carries a BaseFold opening");
         verify(&program, &pi, &proof).expect("BLAKE3 program verifies");
     }
 
@@ -1490,18 +1483,20 @@ mod tests {
         let (mut proof, _) = prove(&program, pi);
         verify(&program, &pi, &proof).expect("honest proof verifies");
 
-        let att = proof.blake3.as_mut().expect("flock attachment");
-        att.proof.open.basefold.final_b += F128::ONE;
+        // flock's BaseFold is the proof's opening; tamper its final value.
+        proof.openings.last_mut().expect("flock BaseFold opening").final_b += F128::ONE;
         assert!(
             verify(&program, &pi, &proof).is_err(),
             "tampered BLAKE3 validity proof must be rejected"
         );
     }
 
-    /// The unified opening still binds flock's REDUCTION sub-proofs: tampering the
-    /// attachment's zerocheck or lincheck transcript diverges the recovered
-    /// `(ab, c)` claims from the committed witness, so verification must reject.
-    /// (Complements `blake3_rejects_tampered_validity`, which tampers the open.)
+    /// flock's REDUCTION sub-proof (zerocheck / lincheck / ring-switch) rides the
+    /// `stream` as raw transport, but its VALUES still re-enter the sponge through
+    /// the verifier's reduction/opening replay — so tampering a transport word
+    /// diverges the recovered `(ab, c)` claims (or breaks decoding) and
+    /// verification must reject. (Complements `blake3_rejects_tampered_validity`,
+    /// which tampers the BaseFold opening.)
     #[test]
     fn blake3_rejects_tampered_reduction() {
         let prog = vec![
@@ -1519,20 +1514,15 @@ mod tests {
         let (proof, _) = prove(&program, pi);
         verify(&program, &pi, &proof).expect("honest proof verifies");
 
-        // Tamper the zerocheck sub-proof (a round-1 univariate-skip evaluation).
-        let mut p_zc = proof.clone();
-        p_zc.blake3.as_mut().unwrap().proof.zerocheck.round1_ab[0] += F128::ONE;
+        // The reduction is serialized onto the stream tail (after the last bound
+        // scalar). Flip a full transport word there — the second-to-last word is
+        // always meaningful bytes (only the final word may be zero-padded).
+        let mut tampered = proof.clone();
+        let n = tampered.stream.len();
+        tampered.stream[n - 2] += F128::ONE;
         assert!(
-            verify(&program, &pi, &p_zc).is_err(),
-            "tampered zerocheck must be rejected"
-        );
-
-        // Tamper the lincheck sub-proof (the z_vec collapse feeding the ab value).
-        let mut p_lc = proof.clone();
-        p_lc.blake3.as_mut().unwrap().proof.lincheck.z_partial[0] += F128::ONE;
-        assert!(
-            verify(&program, &pi, &p_lc).is_err(),
-            "tampered lincheck must be rejected"
+            verify(&program, &pi, &tampered).is_err(),
+            "tampered reduction transport must be rejected"
         );
     }
 
@@ -1550,7 +1540,38 @@ mod tests {
         let pi = [F128::new(1, 0), F128::new(2, 0)];
         let (proof, stats) = prove(&program, pi);
         assert_eq!(stats.counts[5], 0, "no BLAKE3 rows");
-        assert!(proof.blake3.is_none(), "no BLAKE3 ⇒ no flock attachment");
         verify(&program, &pi, &proof).expect("non-BLAKE3 program verifies");
+    }
+
+    /// Out-of-process verification: a BLAKE3 proof (whose flock sub-proof now rides
+    /// the shared `stream` + `openings`, no side field) serializes to bytes,
+    /// deserializes on the other side, and verifies — everything travels in the two
+    /// channels, nothing out of band. A flipped encoded byte must not verify.
+    #[test]
+    fn proof_roundtrips_through_bytes_and_verifies() {
+        let prog = vec![
+            Op::Set { o: 2, k: F128::new(0xABCD, 0x1234) },
+            Op::Set { o: 3, k: F128::new(0x5678, 0x9999) },
+            Op::Set { o: 4, k: F128::new(0x1111, 0x2222) },
+            Op::Set { o: 5, k: F128::new(0x3333, 0x4444) },
+            Op::Set { o: 8, k: F128::ONE },
+            Op::Blake3 { a: 2, b: 4, c: 6 },
+            Op::Set { o: 9, k: F128::ONE },
+            Op::Xor { a: 0, b: 0, c: 0 }, // sentinel
+        ];
+        let program = Program::from_bytecode(prog, 10);
+        let pi = [F128::new(7, 0), F128::new(11, 0)];
+        let (proof, _) = prove(&program, pi);
+
+        let bytes = bincode::serialize(&proof).expect("proof serializes");
+        let decoded: Proof = bincode::deserialize(&bytes).expect("proof deserializes");
+        verify(&program, &pi, &decoded).expect("deserialized BLAKE3 proof verifies");
+
+        let mut tampered = bytes.clone();
+        let i = tampered.len() / 2;
+        tampered[i] ^= 0x01;
+        if let Ok(bad) = bincode::deserialize::<Proof>(&tampered) {
+            assert!(verify(&program, &pi, &bad).is_err(), "a corrupted encoded proof must not verify");
+        }
     }
 }

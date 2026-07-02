@@ -152,18 +152,6 @@ pub fn slot_point(slot: usize, rho: &[F128]) -> Vec<F128> {
     p
 }
 
-/// flock's BLAKE3 R1CS validity proof, carried alongside leanVM-b's
-/// [`crate::transcript::Proof`] (challenges share the sponge; this data does
-/// not). Present iff the program executed ≥1 `BLAKE3`.
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub struct Blake3Attachment {
-    /// Number of executed `BLAKE3` instructions (public; checked against the
-    /// announced row count and used to rebuild the flock setup).
-    pub n_blocks: usize,
-    /// flock's validity proof, discharged against leanVM's stacked commitment.
-    pub proof: Blake3StackProof,
-}
-
 /// Prove `blocks` are valid compressions, discharging the proof against the
 /// caller's already-committed `stack` (with `q_pkd` the aligned sub-block at
 /// `stack_offset`), reusing its `prover_data`/`commitment`. On the shared
@@ -268,35 +256,66 @@ pub fn ring_switch_open(n_blocks: usize, offset: usize, reduced: &ReducedClaims)
 /// Verifier counterpart of [`ring_switch_open`]: package the recovered `(ab, c)`
 /// claims (from [`verify_reduction`]) plus the transmitted opening as a
 /// [`crate::pcs::RingSwitchVerify`].
-pub fn ring_switch_verify(
+pub fn ring_switch_verify<'a>(
     n_blocks: usize,
     offset: usize,
     ab: ZClaim,
     c: ZClaim,
-    proof: &Blake3StackProof,
-) -> crate::pcs::RingSwitchVerify<'_> {
+    open: &'a crate::pcs::BatchOpeningProof,
+) -> crate::pcs::RingSwitchVerify<'a> {
     crate::pcs::RingSwitchVerify {
         offset,
         qpkd_vars: qpkd_kappa(n_blocks),
         values: vec![ab.value, c.value],
         z_skips: vec![ab.point.z_skip, c.point.z_skip],
         x_outers: vec![x_outer_full(&ab.point), x_outer_full(&c.point)],
-        open: &proof.open,
+        open,
     }
 }
 
-/// Assemble the BLAKE3 attachment from the reduction sub-proofs and the stacked
-/// opening the PCS produced ([`crate::pcs::open`]'s return value).
-pub fn attach(
-    n_blocks: usize,
+/// Carry flock's BLAKE3 sub-proof on leanVM's [`crate::transcript::Proof`]
+/// channels — no dedicated field. The scalar reduction (`zerocheck`, `lincheck`,
+/// and the opening's `ring_switches`) is serialized onto the `stream` as pure
+/// transport ([`ProverState::write_bytes_raw`]: NOT re-absorbed — the verifier's
+/// reduction/opening replay is the sole binder), and the one Merkle-bearing
+/// BaseFold rides the `openings` hint channel like every other PCS opening.
+/// Mirrored by [`read_stack_proof`].
+pub fn write_stack_proof(
+    ps: &mut ProverState,
     zerocheck: flock_prover::zerocheck::ZerocheckProof,
     lincheck: flock_prover::lincheck::LincheckProof,
     open: crate::pcs::BatchOpeningProof,
-) -> Blake3Attachment {
-    Blake3Attachment {
-        n_blocks,
-        proof: Blake3StackProof { zerocheck, lincheck, open },
-    }
+) {
+    let crate::pcs::BatchOpeningProof { ring_switches, basefold } = open;
+    let bytes = bincode::serialize(&(zerocheck, lincheck, ring_switches))
+        .expect("flock BLAKE3 sub-proof serializes");
+    ps.write_bytes_raw(&bytes);
+    ps.hint_opening(basefold);
+}
+
+/// Verifier side of [`write_stack_proof`]: read flock's scalar reduction back off
+/// the `stream` (raw — not re-absorbed) and its BaseFold off the `openings`
+/// channel, reassembling `(zerocheck, lincheck, open)` for [`verify_reduction`]
+/// and [`ring_switch_verify`].
+#[allow(clippy::type_complexity)]
+pub fn read_stack_proof(
+    vs: &mut VerifierState,
+) -> Result<
+    (
+        flock_prover::zerocheck::ZerocheckProof,
+        flock_prover::lincheck::LincheckProof,
+        crate::pcs::BatchOpeningProof,
+    ),
+    crate::transcript::Error,
+> {
+    let bytes = vs.read_bytes_raw()?;
+    let (zerocheck, lincheck, ring_switches): (
+        flock_prover::zerocheck::ZerocheckProof,
+        flock_prover::lincheck::LincheckProof,
+        Vec<flare::pcs::RingSwitchProof>,
+    ) = bincode::deserialize(&bytes).map_err(|_| crate::transcript::Error::MissingHint)?;
+    let basefold = vs.next_opening()?.clone();
+    Ok((zerocheck, lincheck, crate::pcs::BatchOpeningProof { ring_switches, basefold }))
 }
 
 /// Prove `blocks` are valid compressions in two clean phases, discharging the

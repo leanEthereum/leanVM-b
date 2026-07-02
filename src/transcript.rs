@@ -80,24 +80,24 @@ impl Sponge {
 }
 
 /// A complete proof: the scalar transcript stream plus the BaseFold opening hint
-/// channel. (The commitment root rides the stream as field scalars, like
-/// leanVM; only the hash-bearing BaseFold openings are hinted.)
+/// channel — **two** channels, no bolted-on side field. The commitment root and
+/// every transmitted scalar ride `stream`; the hash-bearing BaseFold openings
+/// ride `openings`. flock's BLAKE3 sub-proof is carried the same way: its scalar
+/// reduction (zerocheck / lincheck / ring-switch) rides `stream` as pure
+/// transport ([`ProverState::write_bytes_raw`] — NOT re-absorbed, since flock's
+/// verifier replay is the sole binder) and its one BaseFold rides `openings`.
 ///
 /// `Deserialize` as well as `Serialize`, so a proof round-trips over the wire and
-/// an independent verifier process can reconstruct it: the whole proof (stream +
-/// opening hints + BLAKE3 attachment) lives in these fields, and
-/// [`VerifierState`] re-derives every challenge from them via the shared sponge,
-/// so nothing extra needs to travel out of band.
+/// an independent verifier process reconstructs it: everything lives in these two
+/// fields, and [`VerifierState`] re-derives every challenge from them via the
+/// shared sponge, so nothing travels out of band.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Proof {
-    /// Every transmitted field scalar, in protocol order.
+    /// Every transmitted field scalar, in protocol order (plus flock's scalar
+    /// sub-proof as trailing raw transport words).
     pub stream: Vec<F128>,
     /// BaseFold openings (sumcheck/FRI messages + Merkle paths), in order.
     pub openings: Vec<BaseFoldProof>,
-    /// flock's BLAKE3 sub-proof (validity + `q_pkd` slot openings), present iff
-    /// the program executed ≥1 `BLAKE3`. Its challenges share this transcript's
-    /// sponge; its proof data is carried here rather than on `stream`.
-    pub blake3: Option<crate::blake3_flock::Blake3Attachment>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -162,11 +162,27 @@ impl ProverState {
         self.openings.push(bf);
     }
 
+    /// Append length-prefixed bytes to the stream (packed 16 per `F128` word)
+    /// **without** binding them into the sponge. For pure transport of data bound
+    /// elsewhere — flock's BLAKE3 scalar sub-proof, whose values re-enter the
+    /// sponge through the verifier's own reduction/opening replay, so absorbing
+    /// them here too would double-bind and diverge the sponge from the prover.
+    pub fn write_bytes_raw(&mut self, bytes: &[u8]) {
+        self.stream.push(F128::new(bytes.len() as u64, 0));
+        for chunk in bytes.chunks(16) {
+            let mut buf = [0u8; 16];
+            buf[..chunk.len()].copy_from_slice(chunk);
+            self.stream.push(F128::new(
+                u64::from_le_bytes(buf[..8].try_into().unwrap()),
+                u64::from_le_bytes(buf[8..].try_into().unwrap()),
+            ));
+        }
+    }
+
     pub fn into_proof(self) -> Proof {
         Proof {
             stream: self.stream,
             openings: self.openings,
-            blake3: None,
         }
     }
 }
@@ -203,6 +219,30 @@ impl<'a> VerifierState<'a> {
 
     pub fn next_scalars(&mut self, n: usize) -> Result<Vec<F128>, Error> {
         (0..n).map(|_| self.next_scalar()).collect()
+    }
+
+    /// Advance the stream cursor by one **without** binding into the sponge — the
+    /// read counterpart of [`ProverState::write_bytes_raw`]'s per-word push.
+    fn take_raw(&mut self) -> Result<F128, Error> {
+        let x = *self.stream.get(self.offset).ok_or(Error::ExceededStream)?;
+        self.offset += 1;
+        Ok(x)
+    }
+
+    /// Read length-prefixed raw transport bytes written by
+    /// [`ProverState::write_bytes_raw`]: consumes stream words but does NOT bind
+    /// them into the sponge (their binding happens via the reduction/opening replay).
+    pub fn read_bytes_raw(&mut self) -> Result<Vec<u8>, Error> {
+        let len = self.take_raw()?.lo as usize;
+        let n_words = len.div_ceil(16);
+        let mut bytes = Vec::with_capacity(n_words * 16);
+        for _ in 0..n_words {
+            let w = self.take_raw()?;
+            bytes.extend_from_slice(&w.lo.to_le_bytes());
+            bytes.extend_from_slice(&w.hi.to_le_bytes());
+        }
+        bytes.truncate(len);
+        Ok(bytes)
     }
 
     pub fn observe_scalars(&mut self, xs: &[F128]) {
