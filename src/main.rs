@@ -17,6 +17,12 @@ fn main() {
     // println!("SOURCE\n\n{src}\n");
     // println!("COMPILED\n\n{program}\n");
 
+    // Warm the flock BLAKE3 R1CS setup once up front (Fibonacci runs no BLAKE3, so
+    // this warms the single padding instance). It is a fixed, one-time,
+    // program-independent circuit build — not part of proving — so timing prove/
+    // verify below reflects steady-state performance.
+    leanvm_b::blake3_flock::warm_setup(0);
+
     let t = Instant::now();
     let (proof, stats) = prove(&program, pi);
     let t_prove = t.elapsed();

@@ -20,11 +20,9 @@
 //! regime; parameters derived by `LigeritoSecurityConfig::derive_profile`).
 
 use crate::field::F128;
-use crate::multilinear::{eq_eval, eq_table};
 use crate::transcript::{ProverState, VerifierState};
-use rayon::prelude::*;
 
-use flare::pcs::ligerito::{self, LigeritoProfile, LigeritoSecurityConfig, ProverConfig, VerifierConfig};
+use flare::pcs::ligerito::{LigeritoProfile, LigeritoSecurityConfig, ProverConfig, VerifierConfig};
 use flare::pcs::{StackClaim, open_batch_mixed_ligerito_stacked, verify_opening_batch_mixed_ligerito_stacked};
 pub use flare::pcs::{BatchOpeningProofLigerito, Commitment, PcsParams, ProverData};
 use flare::zerocheck::PaddingSpec;
@@ -157,22 +155,6 @@ impl SlotClaim {
             },
         }
     }
-
-    /// The equivalent dense `(offset, low_point, value)`. `Strided` materializes
-    /// `slot_bits ++ point`; used only by the plain λ-opener (non-BLAKE3), where
-    /// every claim is already a dense `Slot`, so no materialization occurs.
-    fn dense(&self) -> (usize, std::borrow::Cow<'_, [F128]>, F128) {
-        match self {
-            SlotClaim::Slot { offset, low_point, value } => (*offset, std::borrow::Cow::Borrowed(low_point), *value),
-            SlotClaim::Strided { offset, slot, stride_log, point, value } => {
-                let mut lp: Vec<F128> = (0..*stride_log)
-                    .map(|k| if (slot >> k) & 1 == 1 { F128::ONE } else { F128::ZERO })
-                    .collect();
-                lp.extend_from_slice(point);
-                (*offset, std::borrow::Cow::Owned(lp), *value)
-            }
-        }
-    }
 }
 
 /// A batch of **ring-switched** evaluation claims discharged in the SAME opening
@@ -211,28 +193,9 @@ pub struct RingSwitchVerify<'a> {
     pub open: &'a BatchOpeningProofLigerito,
 }
 
-/// One claim in the witness opening's unified list ([`open`]): either a plain
-/// point evaluation of the committed stack ([`SlotClaim`]), or the ring-switched
-/// packed bundle carrying a sub-proof front-end ([`RingSwitchOpen`] — flock's
-/// BLAKE3 `(ab, c)` validity). All claims in the list are discharged by ONE
-/// Ligerito; when a ring-switch bundle is present the combine is delegated to
-/// flock's mixed opener (which folds the point claims as `stack_pd`), otherwise
-/// the plain block-sparse λ-opener runs. The list holds at most one `RingSwitch`.
-pub enum OpenClaim {
-    Point(SlotClaim),
-    RingSwitch(RingSwitchOpen),
-}
-
-/// Verifier counterpart of [`OpenClaim`] (see [`verify`]).
-pub enum VerifyClaim<'a> {
-    Point(SlotClaim),
-    RingSwitch(RingSwitchVerify<'a>),
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
     Ligerito,
-    MissingHint,
 }
 
 /// Commit a field-valued witness of length `2^μ` (`μ ≥ 2`) and bind its root into
@@ -280,191 +243,70 @@ pub fn read_commitment(vs: &mut VerifierState) -> Result<[u8; 32], crate::transc
     Ok(scalars_to_root(&root_s))
 }
 
-/// Open the witness against a unified list of [`OpenClaim`]s: hint the Ligerito
-/// opening (the hash-bearing data) and bind the claims. The commitment root was
-/// already bound at the protocol's start by [`commit`]; the claim *values*
-/// themselves already travelled the stream as part of the bus/constraint
-/// arguments.
+/// Open the committed witness: discharge the `points` (leanVM's bus / constraint /
+/// public-input / pin claims, as block-sparse slot evaluations) AND flock's
+/// ring-switched BLAKE3 `(ab, c)` validity (`ring`) in ONE stacked Ligerito. The
+/// points become the opener's `stack_pd`; the returned proof rides the BLAKE3
+/// sub-proof channel (`write_stack_proof`), not the `ps` hint channel. The
+/// commitment root was already bound by [`commit`], and the point *values* rode
+/// the stream during their sub-protocols, so nothing extra is bound here.
 ///
-/// When the list carries a [`OpenClaim::RingSwitch`] bundle (BLAKE3 present),
-/// flock's ring-switched `(ab, c)` validity is discharged in the SAME Ligerito as
-/// the point claims — the latter become full-stack `stack_pd` evaluations — and
-/// the mixed opening proof is returned (it rides the BLAKE3 attachment, not the
-/// `ps` hint channel). Otherwise the plain block-sparse λ-opener runs, hinting
-/// into `ps` and returning `None`.
-pub fn open(ps: &mut ProverState, c: &Committed, q: &[F128], claims: &[OpenClaim]) -> Option<BatchOpeningProofLigerito> {
-    let n = 1usize << c.mu;
-    debug_assert_eq!(q.len(), n, "witness length must match the commitment");
-
-    // Split the unified list: the plain point claims and the (≤1) ring-switch
-    // bundle. The point order is preserved, so the λ-combine / `stack_pd` order
-    // is unchanged.
-    let points: Vec<SlotClaim> = claims
-        .iter()
-        .filter_map(|cl| match cl {
-            OpenClaim::Point(s) => Some(s.clone()),
-            OpenClaim::RingSwitch(_) => None,
-        })
-        .collect();
-    let ring = claims.iter().find_map(|cl| match cl {
-        OpenClaim::RingSwitch(r) => Some(r),
-        OpenClaim::Point(_) => None,
-    });
-
-    if let Some(rs) = ring {
-        // The packed sub-block is exactly the committed slice — no separate copy.
-        let qpkd = &q[rs.offset..rs.offset + (1usize << rs.qpkd_vars)];
-        // leanVM point claims are block-sparse slots (offset + within-column point);
-        // the opener builds `eq` over just each slot, not the whole 2^m stack.
-        let stack_pd: Vec<StackClaim> = points.iter().map(|s| s.as_stack()).collect();
-        let x_refs: Vec<&[F128]> = rs.x_outers.iter().map(|v| v.as_slice()).collect();
-        let s_refs: Vec<Option<&[F128]>> = rs.s_hat_v.iter().map(|o| o.as_deref()).collect();
-        let cfg = lig_configs(c.mu);
-        return Some(open_batch_mixed_ligerito_stacked(
-            qpkd,
-            &x_refs,
-            &s_refs,
-            &rs.padding,
-            q,
-            rs.offset,
-            &c.prover_data,
-            &c.commitment,
-            &stack_pd,
-            &cfg.0,
-            ps,
-        ));
-    }
-
-    let lambda = ps.sample();
-
-    // W_λ over the cube and C_λ, built block-sparsely: each claim only writes
-    // its column's slot, and eq-tables are cached across claims that share a
-    // point (e.g. every column of one constraint table shares `rho`).
-    let mut weight = vec![F128::ZERO; n];
-    let mut target = F128::ZERO;
-    let mut lambda_pow = F128::ONE; // running λ^j
-    let mut eq_cache: Vec<(Vec<F128>, Vec<F128>)> = Vec::new();
-    for claim in &points {
-        // The non-BLAKE3 λ-opener only ever sees dense `Slot`s (`Strided`
-        // claims come from BLAKE3, which takes the ring-switch path above).
-        let (offset, low_point, value) = claim.dense();
-        let n_vars = low_point.len();
-        debug_assert!(offset + (1 << n_vars) <= n, "slot out of range");
-        let cache_idx = match eq_cache.iter().position(|(point, _)| point.as_slice() == low_point.as_ref()) {
-            Some(i) => i,
-            None => {
-                eq_cache.push((low_point.to_vec(), eq_table(&low_point)));
-                eq_cache.len() - 1
-            }
-        };
-        let eq_block = &eq_cache[cache_idx].1;
-        weight[offset..offset + eq_block.len()]
-            .par_iter_mut()
-            .zip(eq_block.par_iter())
-            .for_each(|(w, eq)| *w += lambda_pow * *eq);
-        target += lambda_pow * value;
-        lambda_pow *= lambda;
-    }
-
+/// There is no plain (non-ring-switch) path: the witness ALWAYS carries a `q_pkd`
+/// sub-block (≥ 1 padding instance, §cpu), so every opening is stacked.
+pub fn open(
+    ps: &mut ProverState,
+    c: &Committed,
+    q: &[F128],
+    points: &[SlotClaim],
+    ring: &RingSwitchOpen,
+) -> BatchOpeningProofLigerito {
+    debug_assert_eq!(q.len(), 1usize << c.mu, "witness length must match the commitment");
+    // The packed sub-block is exactly the committed slice — no separate copy.
+    let qpkd = &q[ring.offset..ring.offset + (1usize << ring.qpkd_vars)];
+    let stack_pd: Vec<StackClaim> = points.iter().map(|s| s.as_stack()).collect();
+    let x_refs: Vec<&[F128]> = ring.x_outers.iter().map(|v| v.as_slice()).collect();
+    let s_refs: Vec<Option<&[F128]>> = ring.s_hat_v.iter().map(|o| o.as_deref()).collect();
     let cfg = lig_configs(c.mu);
-    let lig = ligerito::recursive_prover_with_basis(
+    open_batch_mixed_ligerito_stacked(
+        qpkd,
+        &x_refs,
+        &s_refs,
+        &ring.padding,
+        q,
+        ring.offset,
+        &c.prover_data,
+        &c.commitment,
+        &stack_pd,
         &cfg.0,
-        q.to_vec(),
-        weight,
-        target,
-        &c.prover_data.codeword,
-        &c.prover_data.merkle_tree,
         ps,
-    );
-    ps.hint_opening(lig);
-    None
+    )
 }
 
-/// Verify the witness opening against a unified list of [`VerifyClaim`]s (mirror
-/// of [`open`]). When the list carries a [`VerifyClaim::RingSwitch`] bundle
-/// (BLAKE3 present), flock's ring-switched `(ab, c)` claims are verified in the
-/// SAME stacked Ligerito as the point claims; otherwise the plain hinted opening
-/// is verified.
-pub fn verify(vs: &mut VerifierState, claims: &[VerifyClaim], mu: usize, root: &[u8; 32]) -> Result<(), Error> {
-    // Split the unified list (order-preserving, mirroring `open`).
-    let points: Vec<SlotClaim> = claims
-        .iter()
-        .filter_map(|cl| match cl {
-            VerifyClaim::Point(s) => Some(s.clone()),
-            VerifyClaim::RingSwitch(_) => None,
-        })
-        .collect();
-    let ring = claims.iter().find_map(|cl| match cl {
-        VerifyClaim::RingSwitch(r) => Some(r),
-        VerifyClaim::Point(_) => None,
-    });
-
-    if let Some(rs) = ring {
-        let commitment = commitment_from_root(*root, mu);
-        let stack_pd: Vec<StackClaim> = points.iter().map(|s| s.as_stack()).collect();
-        let x_refs: Vec<&[F128]> = rs.x_outers.iter().map(|v| v.as_slice()).collect();
-        let cfg = lig_configs(mu);
-        return verify_opening_batch_mixed_ligerito_stacked(
-            &commitment,
-            rs.offset,
-            rs.qpkd_vars,
-            &rs.values,
-            &rs.z_skips,
-            &x_refs,
-            &stack_pd,
-            rs.open,
-            &cfg.1,
-            vs,
-        )
-        .map_err(|_| Error::Ligerito);
-    }
-
-    // The commitment root was bound at the protocol's start (read_commitment);
-    // λ is sampled bound to every claim (values already on the stream).
-    let lambda = vs.sample();
-
-    let mut target = F128::ZERO;
-    let mut lambda_pow = F128::ONE;
-    for c in &points {
-        target += lambda_pow * c.value();
-        lambda_pow *= lambda;
-    }
-
-    let lig = vs.next_opening().map_err(|_| Error::MissingHint)?;
+/// Verify the opening (mirror of [`open`]): flock's ring-switched `(ab, c)` claims
+/// and every `points` slot evaluation are checked together in the ONE stacked
+/// Ligerito against `root`.
+pub fn verify(
+    vs: &mut VerifierState,
+    points: &[SlotClaim],
+    ring: &RingSwitchVerify,
+    mu: usize,
+    root: &[u8; 32],
+) -> Result<(), Error> {
+    let commitment = commitment_from_root(*root, mu);
+    let stack_pd: Vec<StackClaim> = points.iter().map(|s| s.as_stack()).collect();
+    let x_refs: Vec<&[F128]> = ring.x_outers.iter().map(|v| v.as_slice()).collect();
     let cfg = lig_configs(mu);
-    // The succinct Ligerito verifier calls back for `W_λ` at the residual points
-    // `x = ris ++ y_bits`: `W_λ(x) = Σ_j λ^j eq(point_j, x)`, where each claim's
-    // full point is its low point followed by the slot's boolean selector bits
-    // (the same formula the old Ligerito `final_b` check used at its folding point).
-    let eval_b_residual = |ris: &[F128], yr_log_n: usize| -> Vec<F128> {
-        (0..1usize << yr_log_n)
-            .map(|y| {
-                let mut x = Vec::with_capacity(mu);
-                x.extend_from_slice(ris);
-                for k in 0..yr_log_n {
-                    x.push(F128::new(((y >> k) & 1) as u64, 0));
-                }
-                let mut acc = F128::ZERO;
-                let mut lambda_pow = F128::ONE;
-                for claim in &points {
-                    let (offset, low_point, _) = claim.dense();
-                    let n_vars = low_point.len();
-                    let mut eq = eq_eval(&low_point, &x[..n_vars]);
-                    let selector = offset >> n_vars;
-                    for (bit, &xi) in x[n_vars..mu].iter().enumerate() {
-                        // eq(sel_bit, x): x if the bit is 1, else 1+x (char 2).
-                        eq *= if (selector >> bit) & 1 == 1 { xi } else { F128::ONE + xi };
-                    }
-                    acc += lambda_pow * eq;
-                    lambda_pow *= lambda;
-                }
-                acc
-            })
-            .collect()
-    };
-    let ok = ligerito::recursive_verifier_with_basis_succinct(&cfg.1, lig, mu, target, root, eval_b_residual, vs);
-    if !ok {
-        return Err(Error::Ligerito);
-    }
-    Ok(())
+    verify_opening_batch_mixed_ligerito_stacked(
+        &commitment,
+        ring.offset,
+        ring.qpkd_vars,
+        &ring.values,
+        &ring.z_skips,
+        &x_refs,
+        &stack_pd,
+        ring.open,
+        &cfg.1,
+        vs,
+    )
+    .map_err(|_| Error::Ligerito)
 }

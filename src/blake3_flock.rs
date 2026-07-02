@@ -111,15 +111,26 @@ pub fn n_blocks_log(n: usize) -> usize {
 }
 
 /// The variable count (`log2` length) of the committed `q_pkd` column for `n`
-/// compressions: `K_LOG + n_blocks_log - 7`, or `0` (a size-1 dummy) when `n=0`.
+/// executed compressions: `K_LOG + n_blocks_log(max(n,1)) - 7`. Always ≥ 1
+/// instance — `n = 0` still commits one padding instance (uniform proof shape).
 pub fn qpkd_kappa(n: usize) -> usize {
-    if n == 0 { 0 } else { K_LOG + n_blocks_log(n) - LOG_PACKING }
+    K_LOG + n_blocks_log(n.max(1)) - LOG_PACKING
 }
 
-/// Build the committed `q_pkd` column (flock's packed witness) for `blocks`.
-/// Deterministic, so it matches what `prove_validity_stacked` regenerates.
+/// The all-zero compression `([0;8],[0;16],0,0,0)` — the padding instance flock's
+/// witness generation fills unused slots with. Synthesized as the sole block when
+/// a program executes no BLAKE3, so `q_pkd` and the reduction always have ≥ 1
+/// instance.
+pub fn padding_compression() -> Compression {
+    ([0u32; 8], [0u32; 16], 0, 0, 0)
+}
+
+/// Build the committed `q_pkd` column (flock's packed witness) for `blocks`, padded
+/// to `2^n_blocks_log(max(blocks.len(),1))` instances (the unused ones all-zero
+/// padding). Deterministic, so it matches what the reduction regenerates. An empty
+/// `blocks` yields one padding cube (all instances are padding).
 pub fn build_qpkd(blocks: &[Compression]) -> Vec<F128> {
-    generate_witness_with_ab_packed_and_lincheck(blocks, n_blocks_log(blocks.len())).0
+    generate_witness_with_ab_packed_and_lincheck(blocks, n_blocks_log(blocks.len().max(1))).0
 }
 
 /// The output `(c0, c1)` of flock's padding compression — the all-zero input
@@ -174,35 +185,44 @@ pub fn slot_point(slot: usize, rho: &[F128]) -> Vec<F128> {
 /// correct, just not memoized; legit workloads use only a handful of sizes.
 const SETUP_CACHE_CAP: usize = 256;
 
-fn setup_for(n_blocks: usize) -> std::sync::Arc<Blake3Setup> {
+fn setup_cache() -> &'static std::sync::Mutex<std::collections::HashMap<usize, std::sync::Arc<Blake3Setup>>> {
     static CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<usize, std::sync::Arc<Blake3Setup>>>> =
         std::sync::OnceLock::new();
-    let cache = CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
-    let mut map = cache.lock().expect("BLAKE3 setup cache poisoned");
-    if let Some(s) = map.get(&n_blocks) {
+    CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+fn setup_for(n_blocks: usize) -> std::sync::Arc<Blake3Setup> {
+    let cache = setup_cache();
+    // Fast path: build OUTSIDE the lock so a concurrent builder (e.g. the
+    // background warm spawned by `cpu::prove`) doesn't serialize behind us — the
+    // ~hundreds-of-ms build must not hold the mutex.
+    if let Some(s) = cache.lock().expect("BLAKE3 setup cache poisoned").get(&n_blocks) {
         return std::sync::Arc::clone(s);
     }
     let setup = std::sync::Arc::new(Blake3Setup::new(n_blocks));
+    let mut map = cache.lock().expect("BLAKE3 setup cache poisoned");
+    // Re-check: another thread may have inserted while we built (harmless — one wins).
+    if let Some(s) = map.get(&n_blocks) {
+        return std::sync::Arc::clone(s);
+    }
     if map.len() < SETUP_CACHE_CAP {
         map.insert(n_blocks, std::sync::Arc::clone(&setup));
     }
     setup
 }
 
-/// Pre-build (and cache) the flock BLAKE3 R1CS setup for `n_blocks` compressions,
-/// warming BOTH the circuit and the statement-digest caches. This is the fixed,
-/// circuit-shape-only cost (~hundreds of ms, independent of the witness or the
-/// number of proofs): building the `2^K_LOG`-slot R1CS and hashing it.
+/// Pre-build (and cache) the flock BLAKE3 R1CS setup, warming BOTH the circuit and
+/// the statement-digest caches. This is the fixed, circuit-shape-only cost
+/// (~hundreds of ms, independent of the witness or the number of proofs): building
+/// the `2^K_LOG`-slot R1CS and hashing it.
 ///
-/// Call it once up front for a given BLAKE3 instance count to take it off the
-/// critical path, so a subsequent [`crate::cpu::prove`]/[`crate::cpu::verify`]
-/// reflects steady-state (repeated-proving) performance. `n_blocks` is the number
-/// of executed `BLAKE3` instructions (the BLAKE3 table's row count). Idempotent.
+/// Callers pass the number of EXECUTED `BLAKE3` instructions; it is floored at 1
+/// (the padding instance a no-BLAKE3 program still carries), matching
+/// `cpu::prove`/`verify`. Call it once up front so a subsequent prove/verify
+/// reflects steady-state (repeated-proving) performance — the ~hundreds-of-ms
+/// build is a one-time, program-independent cost, not part of proving. Idempotent.
 pub fn warm_setup(n_blocks: usize) {
-    if n_blocks == 0 {
-        return;
-    }
-    let setup = setup_for(n_blocks);
+    let setup = setup_for(n_blocks.max(1));
     let _ = setup.r1cs.statement_digest(); // warm the digest cache too
 }
 

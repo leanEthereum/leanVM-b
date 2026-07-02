@@ -27,10 +27,10 @@ Fibonacci (in the exponent, i.e. modulo 2^128 - 1), N = 2000000
     JUMP  instructions        : 2^11.967
     BLAKE3 instructions        : 0
   committed witness size      : 2^25.108
-  proof size                  : 1196.8 KiB
-  proving (incl. witness gen) : 1.136911375s
-  verifying                   : 5.152375ms
-  throughput                  : 1804970 cycles/s
+  proof size                  : 493.7 KiB
+  proving (incl. witness gen) : 1.202985166s
+  verifying                   : 6.568208ms
+  throughput                  : 1705832 cycles/s
 ```
 
 ## Hash chain benchmark (BLAKE3)
@@ -46,18 +46,18 @@ BLAKE3 hash chain, N = 128000, unroll = 1000
     DEREF  instructions       : 2^10.014
     JUMP   instructions       : 2^8.011
     BLAKE3 instructions       : 2^16.966
-  committed witness size      : 2^24.264
-  proof size                  : 1169.7 KiB
-  proving (incl. witness gen) : 526.35125ms
-  verifying                   : 7.045041ms
-  throughput                  : 243184 hashes/s
+  committed witness size      : 2^24.206
+  proof size                  : 465.1 KiB
+  proving (incl. witness gen) : 523.120292ms
+  verifying                   : 5.520167ms
+  throughput                  : 244686 hashes/s
 ```
 
 
 ## Security, proof size etc
 
-- security = 100 bits, proven, UDR, Basefold
-- proof size =  BIG (≈ 1 MiB)
+- security = 100 bits, proven, LDR, Ligerito
+- proof size = BIG (≈ 0.5 MiB)
 
 Both will be improved later.
 

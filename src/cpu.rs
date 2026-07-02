@@ -810,18 +810,17 @@ fn col_kappas(log_mem: usize, log_bytecode: usize, taus: [usize; 6], n_blake3: u
     k[MEM] = Some(log_mem);
     k[MFCNT] = Some(log_mem);
     k[BFCNT] = Some(log_bytecode);
-    // q_pkd: `2^(K_LOG+n_log-7)` F128 coords when BLAKE3 ran, else a size-1 dummy.
+    // q_pkd: `2^(K_LOG+n_log-7)` F128 coords, always ≥ 1 instance (`qpkd_kappa`
+    // floors `n_blake3` at 1 — padding instance for a no-BLAKE3 program).
     k[QPKD] = Some(crate::blake3_flock::qpkd_kappa(n_blake3));
     for (t, table) in tables::tables().iter().enumerate() {
         let base = sch.base[t];
         k[base..base + table.n_committed_columns()].fill(Some(taus[t]));
     }
-    // BLAKE3 value columns are virtual (read from q_pkd, not committed).
-    if n_blake3 > 0 {
-        let b3 = sch.base[tables::BLAKE3_TABLE];
-        for &c in &tables::BLAKE3_VALUE_COLS {
-            k[b3 + c] = None;
-        }
+    // BLAKE3 value columns are ALWAYS virtual (read from q_pkd, never committed).
+    let b3 = sch.base[tables::BLAKE3_TABLE];
+    for &c in &tables::BLAKE3_VALUE_COLS {
+        k[b3 + c] = None;
     }
     k
 }
@@ -843,13 +842,11 @@ fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; 6], pi: [F128; 2]) ->
     for (i, &r) in row_counts.iter().enumerate() {
         taus[i] = crate::log2_ceil_usize(r.max(1));
     }
-    // The BLAKE3 table is sized to flock's `2^n_log` instance count (lincheck
-    // floor ≥ 8) so its per-instance (virtual) value columns share `q_pkd`'s
-    // instance cube — a value-column bus claim at instance point `r` maps to the
-    // `q_pkd` slot at `slot_point(slot, r)` (§blake3_flock, `slot_claims`).
-    if row_counts[tables::BLAKE3_TABLE] > 0 {
-        taus[tables::BLAKE3_TABLE] = crate::blake3_flock::n_blocks_log(row_counts[tables::BLAKE3_TABLE]);
-    }
+    // The BLAKE3 table is ALWAYS sized to flock's `2^n_log` instance count
+    // (`max(count,1)`, lincheck floor ≥ 8) so its per-instance (virtual) value
+    // columns share `q_pkd`'s instance cube — a value-column bus claim at instance
+    // point `r` maps to the `q_pkd` slot at `slot_point(slot, r)` (`slot_claims`).
+    taus[tables::BLAKE3_TABLE] = crate::blake3_flock::n_blocks_log(row_counts[tables::BLAKE3_TABLE].max(1));
 
     // Derived boundary: the run starts at (pc,fp) = (0,0) and, by convention, the
     // final pc is the bytecode's last cell g^{B-1} (the compiler emits a halt jump
@@ -1000,8 +997,9 @@ fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; 6], pi: [F128; 2]) ->
     // value columns pad with that digest, not 0 — the memory bus flushes these
     // (virtual) columns, and their padding rows must equal `q_pkd`'s padding slots
     // so the default-padding surplus divides out and the routed claims agree.
-    // Inputs/counts keep their 0/1 defaults.
-    if row_counts[tables::BLAKE3_TABLE] > 0 {
+    // Inputs/counts keep their 0/1 defaults. Always applied (the BLAKE3 table is
+    // always present, all-padding for a no-BLAKE3 program).
+    {
         let b3 = sch.base[tables::BLAKE3_TABLE];
         let pc = crate::blake3_flock::padding_digest();
         pad[b3 + tables::BLAKE3_VALUE_COLS[4]] = pc[0]; // c0
@@ -1071,12 +1069,11 @@ impl Program {
         cols[MEM] = exec.mem.clone();
         cols[MFCNT] = tr.mem_count.clone(); // running counts ended at g^{A[i]}
         cols[BFCNT] = tr.bytecode_count.clone(); // running counts ended at g^{A[pc]}
-        // flock's packed BLAKE3 witness q_pkd, committed in this same stack (or a
-        // size-1 dummy when no BLAKE3 ran). Built from the executed BLAKE3 rows in
-        // order, so row j = flock instance j.
-        cols[QPKD] = if tr.blake3.is_empty() {
-            vec![F128::ZERO]
-        } else {
+        // flock's packed BLAKE3 witness q_pkd, ALWAYS committed in this same stack:
+        // built from the executed BLAKE3 rows in order (row j = flock instance j),
+        // padded to `2^n_blocks_log(max(count,1))` all-padding instances — so a
+        // program with no BLAKE3 still carries a single padding instance.
+        cols[QPKD] = {
             let blocks: Vec<_> = tr
                 .blake3
                 .iter()
@@ -1288,13 +1285,13 @@ pub fn prove(program: &Program, public_input: [F128; 2]) -> (Proof, Stats) {
         eprintln!("[prove] commit      : {:>7.2} ms", ms(t));
     }
 
-    // BLAKE3 ↔ flock (§blake3_flock), single PCS: q_pkd is a column in `w.q`.
-    // flock's R1CS validity and EVERY leanVM point claim are discharged together
-    // by ONE Ligerito over this commitment (below). The input/output words bind via
-    // the memory bus (virtual value columns route to q_pkd); the constant pins reuse
-    // a bus point, so no dedicated binding challenge is drawn. Mirrored in `verify`.
-    let has_blake3 = !exec.trace.blake3.is_empty();
-
+    // BLAKE3 ↔ flock (§blake3_flock), single PCS: q_pkd is ALWAYS a column in
+    // `w.q` (≥1 instance — a program with no BLAKE3 carries one padding instance,
+    // so the proof shape is uniform and there is no has/hasn't-BLAKE3 fork). flock's
+    // R1CS validity and EVERY leanVM point claim are discharged together by ONE
+    // Ligerito over this commitment (below). The input/output words bind via the
+    // memory bus (virtual value columns route to q_pkd); the constant pins reuse a
+    // bus point, so no dedicated binding challenge is drawn. Mirrored in `verify`.
     let t = std::time::Instant::now();
     let l = &w.layout;
     let bus_claims = leaf::prove_balance(&l.push, &l.pull, &l.count, &w.cols, &mut ps);
@@ -1321,48 +1318,37 @@ pub fn prove(program: &Program, public_input: [F128; 2]) -> (Proof, Stats) {
     let mut claims = bus_claims;
     claims.extend(constraint_claims(&table_claims));
     claims.push(bind_pi_claim(ps.sample(), &w.layout.placements, &w.layout.pi));
-    if has_blake3 {
-        // The input/output words bind via the memory bus (value columns are virtual
-        // and route to q_pkd, see `slot_claims`); only q_pkd's constant slots need
-        // pinning, at a memory-bus point (no dedicated challenge).
-        let pin_point = blake3_pin_point(&claims);
-        claims.extend(blake3_pin_claims(&pin_point, exec.trace.blake3.len()));
-    }
+    // The input/output words bind via the memory bus (value columns are virtual and
+    // route to q_pkd, see `slot_claims`); only q_pkd's constant slots need pinning,
+    // at a memory-bus point. The pin prefix uses the REAL BLAKE3 count (0 pins
+    // nothing — padding instances hold 0).
+    let pin_point = blake3_pin_point(&claims);
+    claims.extend(blake3_pin_claims(&pin_point, exec.trace.blake3.len()));
     let slots = slot_claims(&w.layout, &claims);
 
-    // BLAKE3: run flock's reduction (zerocheck + lincheck); it RETURNS the `(ab,
-    // c)` validity claims on the committed `q_pkd`. Those claims are proven by
-    // the PCS below, folded into the same opening as every other point claim.
+    // Run flock's reduction (zerocheck + lincheck) over the executed compressions
+    // (or a single padding instance when none ran); it returns the `(ab, c)`
+    // validity claims on the committed `q_pkd`, discharged by the PCS below in the
+    // SAME Ligerito as every leanVM point claim (the point claims become the
+    // opener's `stack_pd`).
     let t = std::time::Instant::now();
-    let blake3 = if has_blake3 {
-        let blocks: Vec<flock_prover::r1cs_hashes::blake3::Compression> = exec
-            .trace
+    use flock_prover::r1cs_hashes::blake3::Compression;
+    let blocks: Vec<Compression> = if exec.trace.blake3.is_empty() {
+        vec![crate::blake3_flock::padding_compression()]
+    } else {
+        exec.trace
             .blake3
             .iter()
             .map(|r| crate::blake3_flock::compression([r.va0, r.va1], [r.vb0, r.vb1]))
-            .collect();
-        let (_z_packed, zc, lc, reduced) =
-            crate::blake3_flock::prove_reduction(&blocks, &committed.commitment, &mut ps);
-        Some((blocks.len(), zc, lc, reduced))
-    } else {
-        None
+            .collect()
     };
-
-    // ONE opening of the single commitment over ONE claim list: leanVM's point
-    // claims plus (if any) flock's ring-switched BLAKE3 bundle, all in one
-    // Ligerito. The bundle carries its own ring-switch front-end; `pcs::open`
-    // delegates that combine to flock while keeping the point claims block-sparse.
+    let (_z_packed, zc, lc, reduced) = crate::blake3_flock::prove_reduction(&blocks, &committed.commitment, &mut ps);
     let offset = w.layout.placements[QPKD].offset;
-    let mut open_claims: Vec<pcs::OpenClaim> = slots.into_iter().map(pcs::OpenClaim::Point).collect();
-    if let Some((n, _, _, reduced)) = &blake3 {
-        open_claims.push(pcs::OpenClaim::RingSwitch(crate::blake3_flock::ring_switch_open(*n, offset, reduced)));
-    }
-    let mixed_open = pcs::open(&mut ps, &committed, &w.q, &open_claims);
-    if let Some((_, zc, lc, _)) = blake3 {
-        // Carry flock's sub-proof on the shared channels: its scalar reduction on
-        // the `stream` (raw transport), its Ligerito on the `openings` hint channel.
-        crate::blake3_flock::write_stack_proof(&mut ps, zc, lc, mixed_open.expect("mixed opening present with BLAKE3"));
-    }
+    let ring = crate::blake3_flock::ring_switch_open(blocks.len(), offset, &reduced);
+    let mixed_open = pcs::open(&mut ps, &committed, &w.q, &slots, &ring);
+    // Carry flock's sub-proof on the shared channels: its scalar reduction on the
+    // `stream` (raw transport), its Ligerito on the `openings` hint channel.
+    crate::blake3_flock::write_stack_proof(&mut ps, zc, lc, mixed_open);
     if prof {
         eprintln!("[prove] open        : {:>7.2} ms", ms(t));
     }
@@ -1426,35 +1412,26 @@ pub fn verify(program: &Program, public_input: &[F128; 2], proof: &Proof) -> Res
     let mut claims = bus_claims;
     claims.extend(constraint_claims(&table_claims));
     claims.push(bind_pi_claim(vs.sample(), &l.placements, &l.pi));
-    if n_b3 > 0 {
-        // Value columns are virtual (routed to q_pkd via `slot_claims`); only the
-        // constant pins are added here, at a memory-bus point, mirroring `prove`.
-        let pin_point = blake3_pin_point(&claims);
-        claims.extend(blake3_pin_claims(&pin_point, n_b3));
-    }
+    // Value columns are virtual (routed to q_pkd via `slot_claims`); only the
+    // constant pins are added here, at a memory-bus point, mirroring `prove`. The
+    // pin prefix uses the REAL count `n_b3` (0 pins nothing).
+    let pin_point = blake3_pin_point(&claims);
+    claims.extend(blake3_pin_claims(&pin_point, n_b3));
     // Read flock's BLAKE3 sub-proof off the shared channels (mirrors prove's
     // `write_stack_proof`): the scalar reduction from the `stream` as raw transport
     // (right after the last bound scalar), its Ligerito from `openings`.
-    let blake3_sub = if n_b3 > 0 {
-        Some(crate::blake3_flock::read_stack_proof(&mut vs).map_err(Error::Transcript)?)
-    } else {
-        None
-    };
+    let (zerocheck, lincheck, open) = crate::blake3_flock::read_stack_proof(&mut vs).map_err(Error::Transcript)?;
     let slots = slot_claims(&l, &claims);
 
-    // BLAKE3: replay flock's reduction to recover its `(ab, c)` validity claims,
-    // then add them to the SAME claim list. ONE opening verifies them alongside
-    // every point claim (mirroring `prove`).
+    // Replay flock's reduction to recover its `(ab, c)` validity claims on q_pkd,
+    // then verify them alongside every point claim in the ONE Ligerito opening
+    // (mirroring `prove`). `n_blocks = max(n_b3, 1)` — always ≥ 1 instance.
+    let n_blocks = n_b3.max(1);
     let offset = l.placements[QPKD].offset;
-    let mut verify_claims: Vec<pcs::VerifyClaim> = slots.into_iter().map(pcs::VerifyClaim::Point).collect();
-    if let Some((zerocheck, lincheck, open)) = &blake3_sub {
-        let (ab, c) = crate::blake3_flock::verify_reduction(n_b3, &root, l.m, zerocheck, lincheck, &mut vs)
-            .map_err(Error::Blake3)?;
-        verify_claims.push(pcs::VerifyClaim::RingSwitch(crate::blake3_flock::ring_switch_verify(
-            n_b3, offset, ab, c, open,
-        )));
-    }
-    pcs::verify(&mut vs, &verify_claims, l.m, &root).map_err(Error::Open)?;
+    let (ab, c) = crate::blake3_flock::verify_reduction(n_blocks, &root, l.m, &zerocheck, &lincheck, &mut vs)
+        .map_err(Error::Blake3)?;
+    let ring = crate::blake3_flock::ring_switch_verify(n_blocks, offset, ab, c, &open);
+    pcs::verify(&mut vs, &slots, &ring, l.m, &root).map_err(Error::Open)?;
     vs.finish().map_err(Error::Transcript)
 }
 
@@ -1468,14 +1445,14 @@ pub fn verify(program: &Program, public_input: &[F128; 2], proof: &Proof) -> Res
 /// coords to the slot's bits). No downstream special-casing — it folds into the
 /// one opening like every other point claim.
 fn slot_claims(l: &Layout, claims: &[ColumnClaim]) -> Vec<pcs::SlotClaim> {
-    let blake3_active = l.row_counts[tables::BLAKE3_TABLE] > 0;
     claims
         .iter()
         .map(|c| {
-            // A virtual BLAKE3 value column: its bus claim at instance point `c.point`
-            // is the q_pkd slot value — a boolean-selector (strided) claim on QPKD,
-            // folded sparsely (2^n_log, not the 2^(7+n_log) dense QPKD block).
-            if blake3_active && let Some(slot) = blake3_value_slot(c.col) {
+            // A virtual BLAKE3 value column (always virtual): its bus claim at
+            // instance point `c.point` is the q_pkd slot value — a boolean-selector
+            // (strided) claim on QPKD, folded sparsely (2^n_log, not the 2^(7+n_log)
+            // dense QPKD block).
+            if let Some(slot) = blake3_value_slot(c.col) {
                 return pcs::SlotClaim::Strided {
                     offset: l.placements[QPKD].offset,
                     slot,
@@ -1662,10 +1639,12 @@ mod tests {
         );
     }
 
-    /// A program with no BLAKE3 instructions proves and verifies with no flock
-    /// attachment (the `N = 0` path).
+    /// A program with no BLAKE3 instructions still proves and verifies through the
+    /// unified path: `q_pkd` carries a single padding instance and the flock
+    /// sub-proof (over that padding) rides the shared channels like any BLAKE3
+    /// program — there is no separate no-BLAKE3 code path.
     #[test]
-    fn non_blake3_program_verifies_without_attachment() {
+    fn non_blake3_program_verifies() {
         let prog = vec![
             Op::Set { o: 2, k: F128::new(5, 0) },
             Op::Set { o: 3, k: F128::new(6, 0) },
@@ -1675,7 +1654,9 @@ mod tests {
         let program = Program::from_bytecode(prog, 5);
         let pi = [F128::new(1, 0), F128::new(2, 0)];
         let (proof, stats) = prove(&program, pi);
-        assert_eq!(stats.counts[5], 0, "no BLAKE3 rows");
+        assert_eq!(stats.counts[5], 0, "no real BLAKE3 rows");
+        // The proof still carries exactly one Ligerito opening (over the padding).
+        assert_eq!(proof.openings.len(), 1, "unified path: one opening always");
         verify(&program, &pi, &proof).expect("non-BLAKE3 program verifies");
     }
 
