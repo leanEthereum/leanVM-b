@@ -9,7 +9,7 @@
 //! Modules:
 //!
 //! - [`compiler`] — a minimal Python-like zkDSL front end: parse → lower to the
-//!   ISA (calls, `range` loops in the exponent, `assert`, `blake3`) → witness,
+//!   ISA (calls, `mul_range` loops in the exponent, `assert`, `blake3`) → witness,
 //!   producing a provable [`cpu::Program`].
 //! - [`field`] — GF(2^128) in GHASH form (flock), the generator `g`, and the
 //!   g-power index helpers.

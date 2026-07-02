@@ -2,9 +2,9 @@
 //!
 //! Starting from `h_0 = 0…0` (256 bits), each step is `h_{i+1} = BLAKE3(h_i,
 //! h_i)` (the previous value fed as both 256-bit operands). The program mirrors
-//! the Fibonacci demo's strategy: a `range` loop *in the exponent* on the
+//! the Fibonacci demo's strategy: a `mul_range` loop *in the exponent* on the
 //! outside, an unrolled block of `BLAKE3` steps on the inside, with the chain
-//! state carried through a heap `Array` (write-once memory). The final `h_N` is
+//! state carried through a `HeapBuf` (write-once memory). The final `h_N` is
 //! published into the public input (`m[0], m[1]`); write-once memory forces the
 //! proven result to equal it.
 //!
@@ -44,7 +44,7 @@ fn compress(a: [F128; 2], b: [F128; 2]) -> [F128; 2] {
 /// Build the zkDSL source for an `n`-step chain unrolled `unroll` per outer
 /// iteration (`k = n / unroll` iterations). Layout in the heap `buff`: the chain
 /// value after `j·unroll` steps sits at cells `2j, 2j+1` (g-powers `g^{2j},
-/// g^{2j+1}`). Each outer step loads that pair into a size-2 `StackArray`, runs
+/// g^{2j+1}`). Each outer step loads that pair into a size-2 `StackBuf`, runs
 /// `unroll` `BLAKE3`s in the stack — each output stack feeds the next with **no
 /// copies** (a self-hash `blake3(h, h)` aliases one pair into both operands) —
 /// then writes the result pair two cells along.
@@ -54,26 +54,29 @@ fn chain_source(n: usize, unroll: usize) -> String {
     let two_k = 2 * k;
 
     let mut body = String::new();
-    // Load the current chain value into a size-2 StackArray (heap read straight
+    // Block `j`'s boundary pair sits at cells `g^{2j}, g^{2j+1}`; the loop counter
+    // `i = gʲ` is the block index (×g each iteration), so the pair base is `b = i·i`.
+    // Load the current chain value into a size-2 StackBuf (heap read straight
     // into the two consecutive stack cells).
-    body.push_str("        h0 = StackArray(2)\n");
-    body.push_str("        h0[0] = buff[i]\n");
-    body.push_str("        h0[1] = buff[i * GEN]\n");
+    body.push_str("        b = i * i\n");
+    body.push_str("        h0 = StackBuf(2)\n");
+    body.push_str("        h0[0] = buff[b]\n");
+    body.push_str("        h0[1] = buff[b * GEN]\n");
     // `unroll` self-hashes; each `blake3` reads its operand stack in place and
     // returns a fresh size-2 stack — no copies between steps.
     for s in 1..=unroll {
         body.push_str(&format!("        h{s} = blake3(h{p}, h{p})\n", p = s - 1));
     }
     // Write the block's result back to the next array pair.
-    body.push_str(&format!("        buff[i * GEN ** 2] = h{unroll}[0]\n"));
-    body.push_str(&format!("        buff[i * GEN ** 3] = h{unroll}[1]\n"));
+    body.push_str(&format!("        buff[b * GEN ** 2] = h{unroll}[0]\n"));
+    body.push_str(&format!("        buff[b * GEN ** 3] = h{unroll}[1]\n"));
 
     format!(
         "def main():\n\
-        \x20   buff = Array({size})\n\
+        \x20   buff = HeapBuf({size})\n\
         \x20   buff[1] = 0\n\
         \x20   buff[GEN] = 0\n\
-        \x20   for i in range(0, {two_k}, 2):\n\
+        \x20   for i in mul_range(1, GEN ** {k}):\n\
         {body}\
         \x20   p = 1\n\
         \x20   p[1] = buff[GEN ** {two_k}]\n\

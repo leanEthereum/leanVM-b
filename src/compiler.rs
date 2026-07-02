@@ -2,9 +2,9 @@
 //!
 //! Scope (deliberately small): immutable variables, field arithmetic (`+` =
 //! `XOR`, `*` = `MUL_NATIVE`), function calls with multiple returns,
-//! `assert a == b`, and `range` loops carried out *in the exponent* (the counter
-//! is `gᵏ`, advanced by one ×g per iteration). No mutable variables, no `Const`
-//! parameters, no `match`/`match_range`.
+//! `assert a == b`, and `mul_range` loops carried out *in the exponent* (the
+//! counter is `gᵏ`, advanced by one ×g per iteration). No mutable variables, no
+//! `Const` parameters, no `match`/`match_range`.
 //!
 //! ## Calling convention
 //!
@@ -25,7 +25,7 @@
 //! address `g²·pc` — the instruction two ahead, i.e. the resume point right
 //! after the call `JUMP`. The callee **returns** with one `JUMP[one, 0, 1]`.
 //!
-//! A **range loop** lowers to a recursive helper `loop(i)` that tests `i == g^hi`
+//! A **`mul_range` loop** lowers to a recursive helper `loop(i)` that tests `i == g^hi`
 //! (an is-zero gadget: prover-hinted inverse + a few degree-2 constraints, as in
 //! leanVM) and, while not done, runs the body and recurses on `i·g`. The
 //! termination test reuses the return `JUMP` as its taken branch.
@@ -65,15 +65,15 @@ pub enum Expr {
     Mul(Box<Expr>, Box<Expr>),
     /// Single-return function call in expression position.
     Call(String, Vec<Expr>),
-    /// `Array(n)` — allocate a heap buffer of `n` cells; evaluates to its pointer.
-    Array(u64),
-    /// `StackArray(n)` — allocate `n` *consecutive* frame (stack) cells, bound as a
+    /// `HeapBuf(n)` — allocate a heap buffer of `n` cells; evaluates to its pointer.
+    HeapBuf(u64),
+    /// `StackBuf(n)` — allocate `n` *consecutive* frame (stack) cells, bound as a
     /// stack value. Its cells `sa[0..n]` are written/read directly (no heap deref),
-    /// and a size-2 `StackArray` is a valid `blake3` operand (the two 128-bit words
+    /// and a size-2 `StackBuf` is a valid `blake3` operand (the two 128-bit words
     /// of a 256-bit value live in the two consecutive cells). See [`FnLower`].
-    StackArray(u64),
+    StackBuf(u64),
     /// `arr[idx]` — read a cell. For a heap `arr` (a pointer): `m[arr·idx]` (idx a
-    /// g-power). For a [`Expr::StackArray`]: the frame cell `base + idx` (idx a
+    /// g-power). For a [`Expr::StackBuf`]: the frame cell `base + idx` (idx a
     /// small integer literal), read directly.
     Index(Box<Expr>, Box<Expr>),
 }
@@ -91,14 +91,16 @@ pub enum Stmt {
     Call(String, Vec<Expr>),
     /// `arr[idx] = value` — store into a heap cell (write-once).
     Store(Expr, Expr, Expr),
-    /// `for i in range(lo, hi[, step]): body` — counter carried in the exponent,
-    /// advancing by `×g^step` each iteration (default `step = 1`). `(hi − lo)`
-    /// must be a multiple of `step` so the counter lands exactly on `g^hi`.
+    /// `for i in mul_range(GEN**lo, GEN**hi): body` — the counter is carried in
+    /// the exponent as `gⁱ`, starting at the `start` element `g^lo` and advancing
+    /// by `×g` each iteration until it reaches the `stop` element `g^hi` (the
+    /// terminal bound, not itself executed). The step is always `×g`: `mul_range`
+    /// names its bounds as field elements (e.g. `mul_range(1, GEN ** 10)` runs 10
+    /// times), so the multiplicative walk is explicit and there is no step knob.
     For {
         var: String,
         lo: u64,
         hi: u64,
-        step: u64,
         body: Vec<Stmt>,
     },
     /// `return e, …` (a bare `return` is the empty vector).
@@ -190,7 +192,7 @@ enum Hint {
     /// `m[fp·g^ptr] = g^{fresh base}` — a fresh, disjoint frame for `callee`.
     AllocFrame { ptr: Off, callee: String },
     /// `m[fp·g^ptr] = g^{fresh base}` — a fresh, disjoint heap region of `size`
-    /// cells (an `Array(size)`), addressed by g-power offsets from the pointer.
+    /// cells (a `HeapBuf(size)`), addressed by g-power offsets from the pointer.
     AllocBuffer { ptr: Off, size: u32 },
 }
 
@@ -206,7 +208,7 @@ struct Lowered {
 
 struct FnLower<'a> {
     vars: HashMap<String, Off>,
-    /// `StackArray` bindings: name → (base offset, size). The `size` cells
+    /// `StackBuf` bindings: name → (base offset, size). The `size` cells
     /// `base..base+size` are consecutive frame cells (so a size-2 one is a direct
     /// `blake3` operand). Kept separate from `vars` since a stack value is a run of
     /// cells, not a single scalar.
@@ -299,7 +301,7 @@ impl FnLower<'_> {
             }
             Expr::Var(v) => {
                 if self.stacks.contains_key(v) {
-                    panic!("StackArray `{v}` used as a scalar; index it (`{v}[k]`) or pass it to blake3");
+                    panic!("StackBuf `{v}` used as a scalar; index it (`{v}[k]`) or pass it to blake3");
                 }
                 *self.vars.get(v).unwrap_or_else(|| panic!("unbound variable `{v}`"))
             }
@@ -316,7 +318,7 @@ impl FnLower<'_> {
                 o
             }
             Expr::Call(f, args) => self.call(f, args, 1)[0],
-            Expr::Array(n) => {
+            Expr::HeapBuf(n) => {
                 let arr = self.fresh();
                 // Allocate before the next instruction reads the pointer.
                 self.pending.push(Hint::AllocBuffer {
@@ -325,8 +327,8 @@ impl FnLower<'_> {
                 });
                 arr
             }
-            Expr::StackArray(_) => {
-                panic!("StackArray(n) must be bound to a name: `x = StackArray(n)`")
+            Expr::StackBuf(_) => {
+                panic!("StackBuf(n) must be bound to a name: `x = StackBuf(n)`")
             }
             Expr::Index(arr, idx) => {
                 // Stack read `sa[k]`: the frame cell `base + k` directly (no deref).
@@ -358,7 +360,7 @@ impl FnLower<'_> {
         base
     }
 
-    /// If `e` names a `StackArray` variable, its `(base, size)`.
+    /// If `e` names a `StackBuf` variable, its `(base, size)`.
     fn stack_of(&self, e: &Expr) -> Option<(Off, u32)> {
         match e {
             Expr::Var(v) => self.stacks.get(v).copied(),
@@ -372,9 +374,9 @@ impl FnLower<'_> {
             // `as u32` would silently wrap a ≥ 2^32 literal (e.g. `sa[2^32]` → `sa[0]`);
             // reject it so the lowered program matches the source.
             Expr::Lit(k) => {
-                u32::try_from(*k).unwrap_or_else(|_| panic!("StackArray index {k} does not fit in u32"))
+                u32::try_from(*k).unwrap_or_else(|_| panic!("StackBuf index {k} does not fit in u32"))
             }
-            _ => panic!("a StackArray index must be an integer literal, got `{idx:?}`"),
+            _ => panic!("a StackBuf index must be an integer literal, got `{idx:?}`"),
         }
     }
 
@@ -422,7 +424,7 @@ impl FnLower<'_> {
     fn call(&mut self, callee: &str, args: &[Expr], n_ret: usize) -> Vec<Off> {
         assert!(
             callee != "blake3",
-            "blake3 returns a size-2 StackArray; bind it: `out = blake3(a, b)`"
+            "blake3 returns a size-2 StackBuf; bind it: `out = blake3(a, b)`"
         );
         self.lower_call(callee, args, n_ret, None)
     }
@@ -432,19 +434,19 @@ impl FnLower<'_> {
     /// reads each operand at two *consecutive* frame cells, so the four input
     /// words are copied into consecutive slots and the output takes two fresh
     /// consecutive slots. Returns the two output offsets `(c0, c0+1)`.
-    /// `out = blake3(a, b)` — `a` and `b` are size-2 `StackArray`s (each a 256-bit
+    /// `out = blake3(a, b)` — `a` and `b` are size-2 `StackBuf`s (each a 256-bit
     /// value in two consecutive frame cells). Reads the operands *in place* and
-    /// writes the digest to a fresh size-2 `StackArray`, so nothing is copied. A
+    /// writes the digest to a fresh size-2 `StackBuf`, so nothing is copied. A
     /// self-hash `blake3(h, h)` passes the same base for both operands (`a == b`),
     /// aliasing one pair into both inputs. Returns the output stack `(base, 2)`.
     fn blake3_call(&mut self, args: &[Expr]) -> (Off, u32) {
-        assert_eq!(args.len(), 2, "blake3(a, b) takes two size-2 StackArrays");
+        assert_eq!(args.len(), 2, "blake3(a, b) takes two size-2 StackBufs");
         let (a_base, a_size) = self
             .stack_of(&args[0])
-            .expect("blake3 operand `a` must be a StackArray");
+            .expect("blake3 operand `a` must be a StackBuf");
         let (b_base, b_size) = self
             .stack_of(&args[1])
-            .expect("blake3 operand `b` must be a StackArray");
+            .expect("blake3 operand `b` must be a StackBuf");
         assert_eq!(a_size, 2, "blake3 operand `a` must have size 2");
         assert_eq!(b_size, 2, "blake3 operand `b` must have size 2");
         let out = self.alloc_stack(2);
@@ -516,12 +518,12 @@ impl FnLower<'_> {
     fn stmt(&mut self, s: &Stmt) {
         match s {
             // A `let` rebinds the name's kind; clear the OTHER map so a stale
-            // binding (e.g. a former StackArray now rebound to a scalar) can't
+            // binding (e.g. a former StackBuf now rebound to a scalar) can't
             // shadow the new one. `vars`/`stacks` are consulted independently, so
             // both must be kept in sync on every rebind.
             Stmt::Let(name, e) => match e {
-                // `x = StackArray(n)`: bind a run of `n` consecutive frame cells.
-                Expr::StackArray(n) => {
+                // `x = StackBuf(n)`: bind a run of `n` consecutive frame cells.
+                Expr::StackBuf(n) => {
                     let base = self.alloc_stack(*n as u32);
                     self.vars.remove(name);
                     self.stacks.insert(name.clone(), (base, *n as u32));
@@ -585,9 +587,8 @@ impl FnLower<'_> {
                 var,
                 lo,
                 hi,
-                step,
                 body,
-            } => self.lower_for(var, *lo, *hi, *step, body),
+            } => self.lower_for(var, *lo, *hi, body),
         }
     }
 
@@ -604,21 +605,21 @@ impl FnLower<'_> {
         self.emit(LOp::Jump { oc: one, od: 0, of: 1 });
     }
 
-    /// `for i in range(lo, hi, step)` → a single tail-recursive helper, with the
+    /// `for i in mul_range(GEN**lo, GEN**hi)` → a single tail-recursive helper, with the
     /// exit test folded into the recursion's condition (no separate branch, no
     /// is-zero gadget):
     /// ```text
     /// loop(i):
     ///     <body>
-    ///     j = i·g^step
+    ///     j = i·g
     ///     if j != g^hi: loop(j)   // JUMP's nonzero test on (j − g^hi)
     ///     return
     /// caller: if lo != hi: loop(g^lo)   // resolved at compile time
     /// ```
     /// Free variables of the body that are bound in the enclosing scope are
-    /// captured by value as extra helper parameters (e.g. an `Array` pointer
+    /// captured by value as extra helper parameters (e.g. a `HeapBuf` pointer
     /// threaded through the loop).
-    fn lower_for(&mut self, var: &str, lo: u64, hi: u64, step: u64, body: &[Stmt]) {
+    fn lower_for(&mut self, var: &str, lo: u64, hi: u64, body: &[Stmt]) {
         let id = *self.loop_ctr;
         *self.loop_ctr += 1;
         let loop_name = format!("__loop{id}");
@@ -637,16 +638,16 @@ impl FnLower<'_> {
             if bound.contains(r) {
                 continue;
             }
-            // A StackArray is a run of cells, not a single scalar arg, and the
+            // A StackBuf is a run of cells, not a single scalar arg, and the
             // tail-recursive loop helper can't thread one across iterations — so a
-            // StackArray from the enclosing scope can't be captured. Reject with a
+            // StackBuf from the enclosing scope can't be captured. Reject with a
             // clear error (not the misleading "unbound variable" the capture drop
             // would otherwise trigger). Keep it inside the loop body, or carry
-            // state through a heap `Array`.
+            // state through a `HeapBuf`.
             if self.stacks.contains_key(r) {
                 panic!(
-                    "StackArray `{r}` cannot be captured into a `for` loop; \
-                     define it inside the loop body or carry state via a heap `Array`"
+                    "StackBuf `{r}` cannot be captured into a `for` loop; \
+                     define it inside the loop body or carry state via a `HeapBuf`"
                 );
             }
             if self.vars.contains_key(r) && seen.insert(r.clone()) {
@@ -664,12 +665,12 @@ impl FnLower<'_> {
             a
         };
 
-        // loop(i, caps): run the body, advance to j = i·g^step, and tail-recurse
+        // loop(i, caps): run the body, advance to j = i·g, and tail-recurse
         // while j != g^hi. The exit test is the recursive call's own condition
         // (`JUMP`'s nonzero check on j − g^hi) — no is-zero gadget, no inverse
         // hint, and no extra call beyond the one a loop iteration already makes.
         let next_var = format!("__next{id}");
-        let next = Expr::Mul(Box::new(Expr::Var(var.to_string())), Box::new(Expr::GPow(step as u128)));
+        let next = Expr::Mul(Box::new(Expr::Var(var.to_string())), Box::new(Expr::Gen));
         let mut loop_body: Vec<Stmt> = body.to_vec();
         loop_body.push(Stmt::Let(next_var.clone(), next));
         loop_body.push(Stmt::CallIfNe(
@@ -703,7 +704,7 @@ fn free_vars_expr(e: &Expr, refs: &mut Vec<String>) {
             free_vars_expr(b, refs);
         }
         Expr::Call(_, args) => args.iter().for_each(|a| free_vars_expr(a, refs)),
-        Expr::Lit(_) | Expr::Gen | Expr::GPow(_) | Expr::Array(_) | Expr::StackArray(_) => {}
+        Expr::Lit(_) | Expr::Gen | Expr::GPow(_) | Expr::HeapBuf(_) | Expr::StackBuf(_) => {}
     }
 }
 
@@ -781,9 +782,9 @@ fn lower_func(f: &Func, queue: &mut Vec<Func>, loop_ctr: &mut usize) -> Lowered 
 // ----------------------------------------------------------------------------
 
 /// Parse Python-like source into an [`Ast`]. Supports `def`, immutable
-/// assignment (`x = …`, `a, b = f(…)`), `assert a == b`, `for i in range(lo,
-/// hi):`, `return`, calls, and `+`/`*` arithmetic over integer literals and
-/// variables.
+/// assignment (`x = …`, `a, b = f(…)`), `assert a == b`, `for i in
+/// mul_range(GEN**lo, GEN**hi):`, `return`, calls, and `+`/`*` arithmetic over
+/// integer literals and variables.
 pub fn parse(src: &str) -> Result<Ast, String> {
     // (indent, content) for each significant line.
     let mut lines: Vec<(usize, String)> = Vec::new();
@@ -860,37 +861,33 @@ impl Parser {
     fn stmt(&mut self, indent: usize) -> Result<Stmt, String> {
         let line = self.lines[self.i].1.clone();
         if let Some(rest) = line.strip_prefix("for ") {
-            // for VAR in range(LO, HI):
+            // for VAR in mul_range(START, STOP): the counter walks gᵏ from START
+            // to STOP, ×g each iteration (STOP is exclusive). Bounds are field
+            // elements (powers of GEN), so the multiplicative walk is explicit.
             let rest = rest.strip_suffix(':').ok_or("`for` needs `:`")?;
-            let (var, range) = rest.split_once(" in ").ok_or("`for` needs `in`")?;
-            let inner = range
+            let (var, iter) = rest.split_once(" in ").ok_or("`for` needs `in`")?;
+            let inner = iter
                 .trim()
-                .strip_prefix("range(")
+                .strip_prefix("mul_range(")
                 .and_then(|s| s.strip_suffix(')'))
-                .ok_or("`for` needs `range(lo, hi[, step])`")?;
+                .ok_or("`for` needs `mul_range(start, stop)`")?;
             let parts = split_top(inner, ',');
-            if parts.len() != 2 && parts.len() != 3 {
-                return Err("range needs `lo, hi` or `lo, hi, step`".into());
+            if parts.len() != 2 {
+                return Err("mul_range needs `start, stop` (both powers of GEN)".into());
             }
-            let num = |s: &str| {
-                s.trim()
-                    .parse::<u64>()
-                    .map_err(|_| "range bounds must be integer literals".to_string())
-            };
-            let lo = num(&parts[0])?;
-            let hi = num(&parts[1])?;
-            let step = if parts.len() == 3 { num(&parts[2])? } else { 1 };
-            assert!(
-                step >= 1 && (hi - lo) % step == 0,
-                "range: (hi - lo) must be a multiple of step ≥ 1"
-            );
+            let lo = parse_gpow_bound(&parts[0])?;
+            let hi = parse_gpow_bound(&parts[1])?;
+            if lo > hi {
+                return Err(format!(
+                    "mul_range: start GEN**{lo} must not exceed stop GEN**{hi}"
+                ));
+            }
             self.i += 1;
             let body = self.block(indent)?;
             return Ok(Stmt::For {
                 var: var.trim().to_string(),
                 lo,
                 hi,
-                step,
                 body,
             });
         }
@@ -1029,6 +1026,25 @@ fn split_once_top(s: &str, op: &str) -> Option<(String, String)> {
     None
 }
 
+/// Parse a `mul_range` bound: a compile-time power of the generator — `1`
+/// (= `g^0`), `GEN` (= `g^1`), or `GEN ** k` — returning the exponent `k`. The
+/// loop counter starts at the `start` element and is multiplied by `g` each
+/// iteration until it equals `stop`, so both bounds must name `g^k` explicitly
+/// (a bound that is not a known power of `g` couldn't be reached by the walk).
+fn parse_gpow_bound(s: &str) -> Result<u64, String> {
+    match parse_expr(s)? {
+        // `1` is the multiplicative identity g^0 — the natural loop start.
+        Expr::Lit(1) => Ok(0),
+        Expr::Gen => Ok(1),
+        Expr::GPow(k) => {
+            u64::try_from(k).map_err(|_| format!("mul_range bound exponent {k} does not fit in u64"))
+        }
+        other => Err(format!(
+            "mul_range bounds must be powers of GEN (`1`, `GEN`, or `GEN ** k`), got `{other:?}`"
+        )),
+    }
+}
+
 /// Parse an expression with `+` (lowest) then `*`, atoms being integer literals,
 /// variables, calls `f(args)`, and parenthesised sub-expressions.
 fn parse_expr(s: &str) -> Result<Expr, String> {
@@ -1095,18 +1111,18 @@ fn parse_expr(s: &str) -> Result<Expr, String> {
                 .map(|a| parse_expr(a))
                 .collect::<Result<_, _>>()?
         };
-        // `Array(n)` / `StackArray(n)` are allocations, not ordinary calls.
-        if name == "Array" {
+        // `HeapBuf(n)` / `StackBuf(n)` are allocations, not ordinary calls.
+        if name == "HeapBuf" {
             if let [Expr::Lit(n)] = args.as_slice() {
-                return Ok(Expr::Array(*n as u64));
+                return Ok(Expr::HeapBuf(*n as u64));
             }
-            return Err("Array(n) needs one integer-literal size".into());
+            return Err("HeapBuf(n) needs one integer-literal size".into());
         }
-        if name == "StackArray" {
+        if name == "StackBuf" {
             if let [Expr::Lit(n)] = args.as_slice() {
-                return Ok(Expr::StackArray(*n as u64));
+                return Ok(Expr::StackBuf(*n as u64));
             }
-            return Err("StackArray(n) needs one integer-literal size".into());
+            return Err("StackBuf(n) needs one integer-literal size".into());
         }
         return Ok(Expr::Call(name, args));
     }
