@@ -1,4 +1,4 @@
-//! Whole-program assembly over GF(2^128) (§7, §8): all five v1 instruction
+//! Whole-program assembly over GF(2^128) (§7, §8): all six instruction
 //! tables sharing the state / memory / bytecode buses, bound to one field-valued
 //! commitment and verified oracle-free.
 //!
@@ -6,8 +6,9 @@
 //! shared interactions. Addresses, the program counter, and read counts are
 //! g-powers, so every increment is a free ×g; arithmetic is the field's own
 //! (XOR = degree-1, MUL_NATIVE = degree-2); there is no addition gadget and no
-//! materialization. A program with all five opcodes plus control flow proves and
-//! verifies end-to-end.
+//! materialization. `BLAKE3` (§7.6) adds memory/state/bytecode plumbing for a
+//! 64→32-byte compression whose relation is left unproven. A program with all
+//! six opcodes plus control flow proves and verifies end-to-end.
 
 use std::collections::HashMap;
 
@@ -18,10 +19,32 @@ use crate::field::{F128, g, g_pow};
 use crate::leaf::{self, Block, ColumnClaim, Coord};
 use crate::pcs;
 use crate::tables::{
-    self, FillCtx, FlushBuilder, OP_DEREF, OP_JUMP, OP_MUL, OP_SET, OP_XOR, SEP_BYTECODE, SEP_MEM, SEP_STATE,
+    self, FillCtx, FlushBuilder, OP_BLAKE3, OP_DEREF, OP_JUMP, OP_MUL, OP_SET, OP_XOR, SEP_BYTECODE, SEP_MEM,
+    SEP_STATE,
 };
 use crate::transcript::{ProverState, VerifierState};
 use crate::witness::{self, Column};
+
+/// `BLAKE3` compression (doc §7.6, unproven): the four input words are the two
+/// 256-bit operands `a = (va0, va1)` and `b = (vb0, vb1)`, laid out little-endian
+/// into 64 bytes; the 32-byte digest is split back into the two output words
+/// `c = (vc0, vc1)`. The exact compression is a future detail — we use the
+/// standard BLAKE3 hash of the 64-byte input, which is a deterministic
+/// 64-byte→32-byte map; nothing constrains it in the proof.
+fn blake3_compress(va0: F128, va1: F128, vb0: F128, vb1: F128) -> (F128, F128) {
+    let mut input = [0u8; 64];
+    for (slot, w) in input.chunks_exact_mut(16).zip([va0, va1, vb0, vb1]) {
+        slot[..8].copy_from_slice(&w.lo.to_le_bytes());
+        slot[8..].copy_from_slice(&w.hi.to_le_bytes());
+    }
+    let digest = blake3::hash(&input);
+    let d = digest.as_bytes();
+    let word = |b: &[u8]| F128::new(
+        u64::from_le_bytes(b[..8].try_into().unwrap()),
+        u64::from_le_bytes(b[8..16].try_into().unwrap()),
+    );
+    (word(&d[..16]), word(&d[16..]))
+}
 
 /// Data-memory size bounds (doc §Memory): memory is `2^h` cells with
 /// `MIN_LOG_MEM ≤ h ≤ MAX_LOG_MEM`. The prover pads up to the minimum; the
@@ -33,14 +56,14 @@ const MAX_LOG_MEM: usize = 32;
 /// instructions of that opcode).
 const MAX_LOG_ROWS: usize = 32;
 
-/// Announce the public statement — per-table log-sizes (`log_mem` + the five
+/// Announce the public statement — per-table log-sizes (`log_mem` + the six
 /// `row_counts`) and the public input into the Fiat–Shamir transcript. The prover
-/// writes the six sizes onto the scalar stream (so the verifier can reconstruct
+/// writes the seven sizes onto the scalar stream (so the verifier can reconstruct
 /// the layout — which binds them into the sponge) and observes the public input.
 /// The boundary states and per-table log-sizes (`taus`) are derived (constants
 /// from the program, and `padlen(row_counts)`), so they need no separate binding.
 /// Called right after the witness commitment, so every challenge depends on it.
-fn announce_public(ps: &mut ProverState, pi: &[F128; 2], log_mem: usize, row_counts: [usize; 5]) {
+fn announce_public(ps: &mut ProverState, pi: &[F128; 2], log_mem: usize, row_counts: [usize; 6]) {
     ps.write_scalar(F128::new(log_mem as u64, 0));
     for r in row_counts {
         ps.write_scalar(F128::new(r as u64, 0));
@@ -48,12 +71,12 @@ fn announce_public(ps: &mut ProverState, pi: &[F128; 2], log_mem: usize, row_cou
     ps.observe_scalars(pi);
 }
 
-/// Verifier side of [`announce_public`]: read the six announced sizes from the
+/// Verifier side of [`announce_public`]: read the seven announced sizes from the
 /// stream, reconstruct the public [`Layout`] from the program + sizes + public
 /// input, then observe the public input (matching the prover's binding order).
 fn read_public(vs: &mut VerifierState, prog: &Program, public_input: &[F128; 2]) -> Result<Layout, Error> {
     let log_mem = vs.next_scalar().map_err(Error::Transcript)?.lo as usize;
-    let mut row_counts = [0usize; 5];
+    let mut row_counts = [0usize; 6];
     for r in &mut row_counts {
         *r = vs.next_scalar().map_err(Error::Transcript)?.lo as usize;
     }
@@ -100,6 +123,17 @@ pub enum Op {
         od: u32,
         of: u32,
     },
+    /// `BLAKE3` (doc §7.6): each operand names a 256-bit value held in two
+    /// consecutive memory words (at `fp+o` and its successor `fp+o+1`). Reads the
+    /// two inputs `a, b` (64 bytes) and writes the 32-byte digest to `c`. The
+    /// compression itself is *unproven* — this table carries only the memory /
+    /// state / bytecode bus interactions, with no constraint relating output to
+    /// input.
+    Blake3 {
+        a: u32,
+        b: u32,
+        c: u32,
+    },
 }
 
 /// The source `DEREF` stores at `mem[loc_α·β]` (doc §1): a local cell, the return
@@ -131,6 +165,24 @@ pub struct Program {
     /// run the program. Public verification (\S `verify`) ignores them.
     pub(crate) hints: HashMap<u32, Vec<crate::compiler::RHint>>,
     pub(crate) main_frame: u32,
+}
+
+impl Program {
+    /// Assemble a program directly from a fixed bytecode vector, starting at
+    /// `(pc, fp) = (0, 0)` with no allocation hints. Suitable for straight-line
+    /// programs that never change the frame pointer and touch only the first
+    /// `main_frame` memory cells (so the prover needs no nondeterministic frame
+    /// allocation). `prog.len()` must be a power of two with a never-executed
+    /// sentinel in its last slot — the run halts on reaching `g^{len-1}` (§state).
+    pub fn from_bytecode(prog: Vec<Op>, main_frame: u32) -> Self {
+        Self {
+            prog,
+            pc0: 0,
+            fp0: 0,
+            hints: HashMap::new(),
+            main_frame,
+        }
+    }
 }
 
 /// Render the bytecode as a disassembly listing (also gives `Program::to_string`).
@@ -183,8 +235,8 @@ impl Program {
 
         // Per-opcode trace rows, accumulated during the walk and assembled into the
         // `Trace` once the run finishes (alongside the final count columns).
-        let (mut xor, mut mul, mut set, mut deref, mut jump) =
-            (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let (mut xor, mut mul, mut set, mut deref, mut jump, mut blake3) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
 
         // Grow the dense vectors so `idx` is in range (keeps mem/written/mem_count in
         // sync). All accessed cells satisfy cell < next_free after their frame's
@@ -420,6 +472,46 @@ impl Program {
                         pc += 1;
                     }
                 }
+                Op::Blake3 { a, b, c } => {
+                    // Each operand spans two consecutive words: base = fp+o, second = base+1.
+                    let (aa, ab, ac) = (fp + a, fp + b, fp + c);
+                    let (va0, va1) = (get(&mem, &written, aa), get(&mem, &written, aa + 1));
+                    let (vb0, vb1) = (get(&mem, &written, ab), get(&mem, &written, ab + 1));
+                    // Compress the 64 input bytes to the 32-byte digest, then write
+                    // it to c's two words. The relation is unproven (no constraint),
+                    // but the prover still computes a definite digest so the output
+                    // cells are consistent for any later read.
+                    let (vc0, vc1) = blake3_compress(va0, va1, vb0, vb1);
+                    put(&mut mem, &mut written, &mut mem_count, ac, vc0);
+                    put(&mut mem, &mut written, &mut mem_count, ac + 1, vc1);
+                    let ra0 = bump_access_count(&mut mem, &mut written, &mut mem_count, g_step, aa);
+                    let ra1 = bump_access_count(&mut mem, &mut written, &mut mem_count, g_step, aa + 1);
+                    let rb0 = bump_access_count(&mut mem, &mut written, &mut mem_count, g_step, ab);
+                    let rb1 = bump_access_count(&mut mem, &mut written, &mut mem_count, g_step, ab + 1);
+                    let rc0 = bump_access_count(&mut mem, &mut written, &mut mem_count, g_step, ac);
+                    let rc1 = bump_access_count(&mut mem, &mut written, &mut mem_count, g_step, ac + 1);
+                    blake3.push(Brow {
+                        pc,
+                        fp,
+                        aa,
+                        ab,
+                        ac,
+                        va0,
+                        va1,
+                        vb0,
+                        vb1,
+                        vc0,
+                        vc1,
+                        ra0,
+                        ra1,
+                        rb0,
+                        rb1,
+                        rc0,
+                        rc1,
+                        bytecode_read,
+                    });
+                    pc += 1;
+                }
             }
             steps += 1;
         }
@@ -438,6 +530,7 @@ impl Program {
             set,
             deref,
             jump,
+            blake3,
             mem_count,
             bytecode_count,
         };
@@ -464,7 +557,7 @@ const N_SHARED: usize = 3;
 /// base[t] + n_committed_columns_t)`. Both prover and verifier derive this identically
 /// from the table set, so every column claim lines up.
 struct Schema {
-    base: [usize; 5],
+    base: [usize; 6],
     n: usize,
 }
 
@@ -472,7 +565,7 @@ struct Schema {
 fn schema() -> &'static Schema {
     static SCHEMA: std::sync::OnceLock<Schema> = std::sync::OnceLock::new();
     SCHEMA.get_or_init(|| {
-        let mut base = [0usize; 5];
+        let mut base = [0usize; 6];
         let mut next = N_SHARED;
         for (t, table) in tables::tables().iter().enumerate() {
             base[t] = next;
@@ -556,12 +649,37 @@ pub(crate) struct Jrow {
     pub(crate) bytecode_read: F128,
 }
 
+/// `BLAKE3` row: the base addresses `aa, ab, ac` (each spanning two words), the
+/// six word values (two inputs `a`, two inputs `b`, two outputs `c`), and the six
+/// per-word memory read counts.
+pub(crate) struct Brow {
+    pub(crate) pc: u32,
+    pub(crate) fp: u32,
+    pub(crate) aa: u32,
+    pub(crate) ab: u32,
+    pub(crate) ac: u32,
+    pub(crate) va0: F128,
+    pub(crate) va1: F128,
+    pub(crate) vb0: F128,
+    pub(crate) vb1: F128,
+    pub(crate) vc0: F128,
+    pub(crate) vc1: F128,
+    pub(crate) ra0: F128,
+    pub(crate) ra1: F128,
+    pub(crate) rb0: F128,
+    pub(crate) rb1: F128,
+    pub(crate) rc0: F128,
+    pub(crate) rc1: F128,
+    pub(crate) bytecode_read: F128,
+}
+
 pub(crate) struct Trace {
     pub(crate) xor: Vec<Xrow>,
     pub(crate) mul: Vec<Xrow>,
     pub(crate) set: Vec<Srow>,
     pub(crate) deref: Vec<Drow>,
     pub(crate) jump: Vec<Jrow>,
+    pub(crate) blake3: Vec<Brow>,
     pub(crate) mem_count: Vec<F128>, // per-cell running access count g^{count}; final = g^{A[i]}
     pub(crate) bytecode_count: Vec<F128>, // per-pc running execution count g^{count}; final = g^{A[pc]}
 }
@@ -590,7 +708,7 @@ pub struct Layout {
     /// Public input: the first two memory cells `m[0], m[1]` (256 bits), bound to
     /// the committed memory at verification (§8).
     pub pi: [F128; 2],
-    pub taus: [usize; 5], // (xor, mul, set, deref, jump) log row counts
+    pub taus: [usize; 6], // (xor, mul, set, deref, jump, blake3) log row counts
 }
 
 /// The prover's witness bundle: the committed column values + their stacked
@@ -600,14 +718,14 @@ struct Witness {
     q: Vec<F128>,
     layout: Layout,
     log_mem: usize,
-    row_counts: [usize; 5],
+    row_counts: [usize; 6],
 }
 
 /// Column → log-size (`kappa`) map: the shared MEM/MFCNT columns are `2^log_mem`,
 /// the bytecode finalize count is `2^log_bytecode`, and every column of table `t`
 /// is `2^taus[t]` (its padded log-row-count). Depends only on the public sizes,
 /// so the verifier can reconstruct the placements.
-fn col_kappas(log_mem: usize, log_bytecode: usize, taus: [usize; 5]) -> Vec<usize> {
+fn col_kappas(log_mem: usize, log_bytecode: usize, taus: [usize; 6]) -> Vec<usize> {
     let sch = schema();
     let mut k = vec![0usize; sch.n];
     k[MEM] = log_mem;
@@ -622,11 +740,11 @@ fn col_kappas(log_mem: usize, log_bytecode: usize, taus: [usize; 5]) -> Vec<usiz
 }
 
 /// Build the public [`Layout`] from the program, the memory log-size `log_mem`, the
-/// five tables' real row counts `row_counts`, and the public input `pi`. The flush
+/// six tables' real row counts `row_counts`, and the public input `pi`. The flush
 /// blocks reference columns only by INDEX and the program only through its
 /// public columns, so this needs no committed witness — both prover and verifier
 /// reconstruct exactly the same structure (§7, §8).
-fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; 5], pi: [F128; 2]) -> Layout {
+fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; 6], pi: [F128; 2]) -> Layout {
     let bytecode_size = prog.len();
     let log_bytecode = crate::log2_strict_usize(bytecode_size);
     let cells = 1usize << log_mem;
@@ -634,7 +752,7 @@ fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; 5], pi: [F128; 2]) ->
     // Per-table padded log-row-counts (the boundary block is fixed). The real
     // (non-padded) `row_counts[t]` tell each flush how many of its 2^kappa rows
     // are padding (default rows divided out of the bus, §sec:gp).
-    let mut taus = [0usize; 5];
+    let mut taus = [0usize; 6];
     for (i, &r) in row_counts.iter().enumerate() {
         taus[i] = crate::log2_ceil_usize(r.max(1));
     }
@@ -658,6 +776,7 @@ fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; 5], pi: [F128; 2]) ->
             Op::Set { o, .. } => o,
             Op::Deref { alpha, beta, gamma, .. } => alpha.max(beta).max(gamma),
             Op::Jump { oc, od, of } => oc.max(od).max(of),
+            Op::Blake3 { a, b, c } => a.max(b).max(c),
         })
         .max()
         .unwrap_or(0) as usize;
@@ -670,6 +789,7 @@ fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; 5], pi: [F128; 2]) ->
         Op::Set { .. } => OP_SET,
         Op::Deref { .. } => OP_DEREF,
         Op::Jump { .. } => OP_JUMP,
+        Op::Blake3 { .. } => OP_BLAKE3,
     };
     let operands = |op: &Op| -> (F128, F128, F128) {
         match *op {
@@ -677,6 +797,7 @@ fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; 5], pi: [F128; 2]) ->
             Op::Set { o, k } => (g_at(o), k, F128::ZERO),
             Op::Deref { alpha, beta, gamma, .. } => (g_at(alpha), g_at(beta), g_at(gamma)),
             Op::Jump { oc, od, of } => (g_at(oc), g_at(od), g_at(of)),
+            Op::Blake3 { a, b, c } => (g_at(a), g_at(b), g_at(c)),
         }
     };
     // The two DEREF store-mode flags, public program fields (0 elsewhere).
@@ -848,7 +969,14 @@ impl Program {
         // boundary, taus) is a pure function of the program + announced sizes +
         // public input, with no committed witness; reconstruct it here so the
         // prover and verifier share exactly the same structure (§7, §8).
-        let row_counts = [tr.xor.len(), tr.mul.len(), tr.set.len(), tr.deref.len(), tr.jump.len()];
+        let row_counts = [
+            tr.xor.len(),
+            tr.mul.len(),
+            tr.set.len(),
+            tr.deref.len(),
+            tr.jump.len(),
+            tr.blake3.len(),
+        ];
         assert!(
             row_counts.iter().all(|&r| r <= 1 << MAX_LOG_ROWS),
             "a table exceeds 2^{MAX_LOG_ROWS} rows"
@@ -911,12 +1039,12 @@ fn constraint_claims(table_claims: &[constraints::Claims]) -> Vec<ColumnClaim> {
 }
 
 /// Run statistics returned alongside the proof: the cycle count (total executed
-/// instructions), the per-opcode counts `[XOR, MUL, SET, DEREF, JUMP]`, and the
+/// instructions), the per-opcode counts `[XOR, MUL, SET, DEREF, JUMP, BLAKE3]`, and the
 /// committed witness size — the sum of the column lengths, i.e. the real data
 /// before the stacked witness is zero-padded to a power of two `2^m`.
 pub struct Stats {
     pub cycles: usize,
-    pub counts: [usize; 5],
+    pub counts: [usize; 6],
     pub committed: usize,
 }
 
@@ -1058,4 +1186,57 @@ fn slot_claims(l: &Layout, claims: &[ColumnClaim]) -> Vec<pcs::SlotClaim> {
             value: c.value,
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A hand-built straight-line program exercising the `BLAKE3` table: set up
+    /// the two 256-bit inputs (`a` at cells 2,3 and `b` at cells 4,5), hash them
+    /// into the output `c` (cells 6,7), and halt at the sentinel. The compression
+    /// is unproven, but the memory / state / bytecode bus interactions must still
+    /// balance, so this proves and verifies end-to-end.
+    #[test]
+    fn blake3_proves_and_verifies() {
+        let x0 = F128::new(0x0123_4567_89ab_cdef, 0xfedc_ba98_7654_3210);
+        let x1 = F128::new(0x1111_2222_3333_4444, 0x5555_6666_7777_8888);
+        let y0 = F128::new(0xdead_beef_cafe_babe, 0x0badf00d_0badf00d);
+        let y1 = F128::new(0x9999_aaaa_bbbb_cccc, 0xdddd_eeee_ffff_0000);
+
+        // 8 slots (power of two). Slots 4 and 6 are filler SETs whose only job is to
+        // step the pc so the last executed instruction lands at slot 6 (→ pc 7,
+        // halt). Slot 7 is the never-executed sentinel.
+        let prog = vec![
+            Op::Set { o: 2, k: x0 },
+            Op::Set { o: 3, k: x1 },
+            Op::Set { o: 4, k: y0 },
+            Op::Set { o: 5, k: y1 },
+            Op::Set { o: 8, k: F128::ONE },
+            Op::Blake3 { a: 2, b: 4, c: 6 },
+            Op::Set { o: 9, k: F128::ONE },
+            Op::Xor { a: 0, b: 0, c: 0 }, // sentinel (never executed)
+        ];
+        let program = Program {
+            prog,
+            pc0: 0,
+            fp0: 0,
+            hints: HashMap::new(),
+            main_frame: 10,
+        };
+
+        let pi = [F128::new(7, 0), F128::new(11, 0)];
+        let exec = program.execute(pi);
+
+        // The output cells hold the digest of the two inputs (the prover computes
+        // a definite value even though nothing constrains it).
+        let (d0, d1) = blake3_compress(x0, x1, y0, y1);
+        assert_eq!(exec.mem[6], d0);
+        assert_eq!(exec.mem[7], d1);
+        assert_eq!(exec.trace.blake3.len(), 1);
+
+        let (proof, stats) = prove(&program, pi);
+        assert_eq!(stats.counts[5], 1, "one BLAKE3 row");
+        verify(&program, &pi, &proof).expect("BLAKE3 program verifies");
+    }
 }

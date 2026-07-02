@@ -1073,6 +1073,9 @@ pub fn disassemble(prog: &[Op]) -> String {
             Op::Jump { oc, od, of } => {
                 format!("JUMP   if fp[{oc}]≠0: pc=fp[{od}], fp=fp[{of}]")
             }
+            Op::Blake3 { a, b, c } => {
+                format!("BLAKE3 fp[{c}..]= H(fp[{a}..], fp[{b}..])")
+            }
         };
         out.push_str(&format!("{pc:>4}  {line}\n"));
     }

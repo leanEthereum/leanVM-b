@@ -24,10 +24,12 @@
 //!                     per-column claims (§4.2–§4.4, §5).
 //! - [`constraints`] — the per-table degree-2 field zerocheck (§4.1): addresses,
 //!                     `XOR` sum, `MUL_NATIVE` product, `JUMP` selection.
-//! - [`cpu`]         — whole-program assembly: all five v1 opcodes (`XOR`,
-//!                     `MUL_NATIVE`, `SET_CONSTANT`, `DEREF`, `JUMP`) as tables
-//!                     sharing the state/memory/bytecode buses, with control
+//! - [`cpu`]         — whole-program assembly: all six opcodes (`XOR`,
+//!                     `MUL_NATIVE`, `SET_CONSTANT`, `DEREF`, `JUMP`, `BLAKE3`) as
+//!                     tables sharing the state/memory/bytecode buses, with control
 //!                     flow, bound to one commitment and verified oracle-free.
+//!                     `BLAKE3`'s compression is unproven (only its bus
+//!                     interactions are enforced); see `doc.tex` §7.6.
 
 pub mod compiler;
 pub mod constraints;

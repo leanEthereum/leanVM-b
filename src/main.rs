@@ -26,7 +26,7 @@ fn main() {
 
     println!("Fibonacci (in the exponent, i.e. modulo 2^128 - 1), N = {FIB_N}");
     println!("  cycles (VM steps)           : {}", stats.cycles);
-    for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP"].iter().zip(&stats.counts) {
+    for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3"].iter().zip(&stats.counts) {
         let pow = if c == 0 {
             "0".to_string()
         } else {
