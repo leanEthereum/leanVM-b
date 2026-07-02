@@ -1298,9 +1298,6 @@ fn bind_pi_verify(l: &Layout, vs: &mut VerifierState) -> Result<ColumnClaim, Err
 /// every scalar the prover wrote and pull the PCS hints, then assert the stream
 /// was fully consumed. Takes only public inputs — never the prover's witness.
 pub fn verify(program: &Program, public_input: &[F128; 2], proof: &Proof) -> Result<(), Error> {
-    let prof = std::env::var("LEANVM_PROFILE").is_ok();
-    let ms = |t: std::time::Instant| t.elapsed().as_secs_f64() * 1e3;
-    let t0 = std::time::Instant::now();
     let mut vs = VerifierState::new(b"leanvm-b", proof);
     let l = read_public(&mut vs, program, public_input)?;
     let root = pcs::read_commitment(&mut vs).map_err(Error::Transcript)?;
@@ -1322,16 +1319,8 @@ pub fn verify(program: &Program, public_input: &[F128; 2], proof: &Proof) -> Res
         None
     };
 
-    if prof {
-        eprintln!("[verify] setup       : {:>7.2} ms", ms(t0));
-    }
-    let t = std::time::Instant::now();
     let bus_claims = leaf::verify_balance(&l.push, &l.pull, &l.count, &l.pad, &mut vs).map_err(Error::Bus)?;
-    if prof {
-        eprintln!("[verify] bus         : {:>7.2} ms", ms(t));
-    }
 
-    let t = std::time::Instant::now();
     let mut table_claims = Vec::new();
     for (ti, table) in tables::tables().iter().enumerate() {
         let involved = table.constraint_columns();
@@ -1346,9 +1335,6 @@ pub fn verify(program: &Program, public_input: &[F128; 2], proof: &Proof) -> Res
         table_claims.push(cl);
     }
 
-    if prof {
-        eprintln!("[verify] constraints : {:>7.2} ms", ms(t));
-    }
     let mut claims = bus_claims;
     claims.extend(constraint_claims(&table_claims));
     claims.push(bind_pi_verify(&l, &mut vs)?);
@@ -1364,7 +1350,6 @@ pub fn verify(program: &Program, public_input: &[F128; 2], proof: &Proof) -> Res
     // BLAKE3: replay flock's reduction to recover its `(ab, c)` validity claims,
     // then add them to the SAME claim list. ONE opening verifies them alongside
     // every point claim (mirroring `prove`).
-    let t = std::time::Instant::now();
     let offset = l.placements[QPKD].offset;
     let mut verify_claims: Vec<pcs::VerifyClaim> = slots.into_iter().map(pcs::VerifyClaim::Point).collect();
     if blake3_rho.is_some() {
@@ -1382,9 +1367,6 @@ pub fn verify(program: &Program, public_input: &[F128; 2], proof: &Proof) -> Res
             .push(pcs::VerifyClaim::RingSwitch(crate::blake3_flock::ring_switch_verify(n_b3, offset, ab, c, &att.proof)));
     }
     pcs::verify(&mut vs, &verify_claims, l.m, &root).map_err(Error::Open)?;
-    if prof {
-        eprintln!("[verify] open        : {:>7.2} ms", ms(t));
-    }
     vs.finish().map_err(Error::Transcript)
 }
 
