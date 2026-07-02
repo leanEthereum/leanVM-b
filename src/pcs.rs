@@ -20,7 +20,9 @@ use rayon::prelude::*;
 
 use flare::ntt::AdditiveNttF128;
 use flare::pcs::basefold::{self, default_fri_queries};
-pub use flare::pcs::{Commitment, PcsParams, ProverData};
+use flare::pcs::{open_batch_mixed_stacked, verify_opening_batch_mixed_stacked};
+pub use flare::pcs::{BatchOpeningProof, Commitment, PcsParams, ProverData};
+use flare::zerocheck::PaddingSpec;
 
 /// flock frames `commit` as `m = log2(len) + LOG_PACKING`; the message length is
 /// `2^(m - LOG_PACKING)`, so for an F-valued witness of `2^μ` elements we set
@@ -88,6 +90,60 @@ pub struct SlotClaim {
     pub value: F128,
 }
 
+/// A batch of **ring-switched** evaluation claims discharged in the SAME opening
+/// as the plain [`SlotClaim`]s (prover side). Unlike a `SlotClaim` — a plain
+/// `eq`-point evaluation of the committed stack — these are claims on a packed
+/// sub-block `qpkd` produced at the univariate-skip/packed level (flock's BLAKE3
+/// R1CS validity `(ab, c)`), so they carry the ring-switch tensor front-end.
+/// [`crate::blake3_flock`] builds this from its reduction's claims; [`open`]
+/// slices `qpkd` from the committed stack and folds it into the one BaseFold.
+pub struct RingSwitchOpen {
+    /// `qpkd`'s offset inside the committed stack.
+    pub offset: usize,
+    /// `log2` of `qpkd`'s length; the opener slices `qpkd = stack[offset ..
+    /// offset + 2^qpkd_vars]` (the committed sub-block, so no separate copy).
+    pub qpkd_vars: usize,
+    /// Per-claim `x_outer_full` (the multilinear tail of each quirky point).
+    pub x_outers: Vec<Vec<F128>>,
+    /// Per-claim optional precomputed ring-switch weight `s_hat_v`.
+    pub s_hat_v: Vec<Option<Vec<F128>>>,
+    /// flock's padding spec for the ring-switch weight (`k_log`, `useful_bits`).
+    pub padding: PaddingSpec,
+}
+
+/// Verifier counterpart of [`RingSwitchOpen`]: the recovered `(ab, c)` claims and
+/// the transmitted mixed opening proof.
+pub struct RingSwitchVerify<'a> {
+    /// `qpkd`'s offset inside the committed stack.
+    pub offset: usize,
+    /// `log2` of `qpkd`'s length (flock's `m − LOG_PACKING`).
+    pub qpkd_vars: usize,
+    /// Per-claim value, univariate-skip coord, and `x_outer_full`.
+    pub values: Vec<F128>,
+    pub z_skips: Vec<F128>,
+    pub x_outers: Vec<Vec<F128>>,
+    /// The stacked mixed opening proof (carried in the BLAKE3 attachment).
+    pub open: &'a BatchOpeningProof,
+}
+
+/// One claim in the witness opening's unified list ([`open`]): either a plain
+/// point evaluation of the committed stack ([`SlotClaim`]), or the ring-switched
+/// packed bundle carrying a sub-proof front-end ([`RingSwitchOpen`] — flock's
+/// BLAKE3 `(ab, c)` validity). All claims in the list are discharged by ONE
+/// BaseFold; when a ring-switch bundle is present the combine is delegated to
+/// flock's mixed opener (which folds the point claims as `stack_pd`), otherwise
+/// the plain block-sparse λ-opener runs. The list holds at most one `RingSwitch`.
+pub enum OpenClaim {
+    Point(SlotClaim),
+    RingSwitch(RingSwitchOpen),
+}
+
+/// Verifier counterpart of [`OpenClaim`] (see [`verify`]).
+pub enum VerifyClaim<'a> {
+    Point(SlotClaim),
+    RingSwitch(RingSwitchVerify<'a>),
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
     BaseFold,
@@ -146,14 +202,59 @@ pub fn read_commitment(vs: &mut VerifierState) -> Result<[u8; 32], crate::transc
     Ok(scalars_to_root(&root_s))
 }
 
-/// Open a batch of located evaluation claims: hint the BaseFold opening (the
-/// hash-bearing data) and bind the claims. The commitment root was already bound
-/// at the protocol's start by [`commit`]; the claim *values* themselves already
-/// travelled the stream as part of the bus/constraint arguments.
-pub fn open(ps: &mut ProverState, c: &Committed, q: &[F128], claims: &[SlotClaim]) {
+/// Open the witness against a unified list of [`OpenClaim`]s: hint the BaseFold
+/// opening (the hash-bearing data) and bind the claims. The commitment root was
+/// already bound at the protocol's start by [`commit`]; the claim *values*
+/// themselves already travelled the stream as part of the bus/constraint
+/// arguments.
+///
+/// When the list carries a [`OpenClaim::RingSwitch`] bundle (BLAKE3 present),
+/// flock's ring-switched `(ab, c)` validity is discharged in the SAME BaseFold as
+/// the point claims — the latter become full-stack `stack_pd` evaluations — and
+/// the mixed opening proof is returned (it rides the BLAKE3 attachment, not the
+/// `ps` hint channel). Otherwise the plain block-sparse λ-opener runs, hinting
+/// into `ps` and returning `None`.
+pub fn open(ps: &mut ProverState, c: &Committed, q: &[F128], claims: &[OpenClaim]) -> Option<BatchOpeningProof> {
     let n = 1usize << c.mu;
     debug_assert_eq!(q.len(), n, "witness length must match the commitment");
-    let lambda = absorb_claims(ps, claims);
+
+    // Split the unified list: the plain point claims and the (≤1) ring-switch
+    // bundle. The point order is preserved, so the λ-combine / `stack_pd` order
+    // is unchanged.
+    let points: Vec<SlotClaim> = claims
+        .iter()
+        .filter_map(|cl| match cl {
+            OpenClaim::Point(s) => Some(s.clone()),
+            OpenClaim::RingSwitch(_) => None,
+        })
+        .collect();
+    let ring = claims.iter().find_map(|cl| match cl {
+        OpenClaim::RingSwitch(r) => Some(r),
+        OpenClaim::Point(_) => None,
+    });
+
+    if let Some(rs) = ring {
+        // The packed sub-block is exactly the committed slice — no separate copy.
+        let qpkd = &q[rs.offset..rs.offset + (1usize << rs.qpkd_vars)];
+        let stack_pd: Vec<(Vec<F128>, F128)> =
+            points.iter().map(|s| (stack_point_of(s, c.mu), s.value)).collect();
+        let x_refs: Vec<&[F128]> = rs.x_outers.iter().map(|v| v.as_slice()).collect();
+        let s_refs: Vec<Option<&[F128]>> = rs.s_hat_v.iter().map(|o| o.as_deref()).collect();
+        return Some(open_batch_mixed_stacked(
+            qpkd,
+            &x_refs,
+            &s_refs,
+            &rs.padding,
+            q,
+            rs.offset,
+            &c.prover_data,
+            &c.commitment,
+            &stack_pd,
+            ps,
+        ));
+    }
+
+    let lambda = absorb_claims(ps, &points);
 
     // W_λ over the cube and C_λ, built block-sparsely: each claim only writes
     // its column's slot, and eq-tables are cached across claims that share a
@@ -162,7 +263,7 @@ pub fn open(ps: &mut ProverState, c: &Committed, q: &[F128], claims: &[SlotClaim
     let mut target = F128::ZERO;
     let mut lambda_pow = F128::ONE; // running λ^j
     let mut eq_cache: Vec<(Vec<F128>, Vec<F128>)> = Vec::new();
-    for claim in claims {
+    for claim in &points {
         let n_vars = claim.low_point.len();
         debug_assert!(claim.offset + (1 << n_vars) <= n, "slot out of range");
         let cache_idx = match eq_cache
@@ -200,17 +301,54 @@ pub fn open(ps: &mut ProverState, c: &Committed, q: &[F128], claims: &[SlotClaim
         ps,
     );
     ps.hint_opening(bf);
+    None
 }
 
-/// Verify a batch opening read from `vs` against the hinted commitment.
-pub fn verify(vs: &mut VerifierState, claims: &[SlotClaim], mu: usize, root: &[u8; 32]) -> Result<(), Error> {
+/// Verify the witness opening against a unified list of [`VerifyClaim`]s (mirror
+/// of [`open`]). When the list carries a [`VerifyClaim::RingSwitch`] bundle
+/// (BLAKE3 present), flock's ring-switched `(ab, c)` claims are verified in the
+/// SAME stacked BaseFold as the point claims; otherwise the plain hinted opening
+/// is verified.
+pub fn verify(vs: &mut VerifierState, claims: &[VerifyClaim], mu: usize, root: &[u8; 32]) -> Result<(), Error> {
+    // Split the unified list (order-preserving, mirroring `open`).
+    let points: Vec<SlotClaim> = claims
+        .iter()
+        .filter_map(|cl| match cl {
+            VerifyClaim::Point(s) => Some(s.clone()),
+            VerifyClaim::RingSwitch(_) => None,
+        })
+        .collect();
+    let ring = claims.iter().find_map(|cl| match cl {
+        VerifyClaim::RingSwitch(r) => Some(r),
+        VerifyClaim::Point(_) => None,
+    });
+
+    if let Some(rs) = ring {
+        let commitment = commitment_from_root(*root, mu);
+        let stack_pd: Vec<(Vec<F128>, F128)> =
+            points.iter().map(|s| (stack_point_of(s, mu), s.value)).collect();
+        let x_refs: Vec<&[F128]> = rs.x_outers.iter().map(|v| v.as_slice()).collect();
+        return verify_opening_batch_mixed_stacked(
+            &commitment,
+            rs.offset,
+            rs.qpkd_vars,
+            &rs.values,
+            &rs.z_skips,
+            &x_refs,
+            &stack_pd,
+            rs.open,
+            vs,
+        )
+        .map_err(|_| Error::BaseFold);
+    }
+
     // The commitment root was bound at the protocol's start (read_commitment);
     // here we bind the claims and pull the BaseFold opening hint.
-    let lambda = absorb_claims(vs, claims);
+    let lambda = absorb_claims(vs, &points);
 
     let mut target = F128::ZERO;
     let mut lambda_pow = F128::ONE;
-    for c in claims {
+    for c in &points {
         target += lambda_pow * c.value;
         lambda_pow *= lambda;
     }
@@ -226,7 +364,7 @@ pub fn verify(vs: &mut VerifierState, claims: &[SlotClaim], mu: usize, root: &[u
     // low point followed by the slot's boolean selector bits.
     let mut weight_at_rho = F128::ZERO;
     let mut lambda_pow = F128::ONE;
-    for claim in claims {
+    for claim in &points {
         let n_vars = claim.low_point.len();
         let mut eq = eq_eval(&claim.low_point, &challenges[..n_vars]);
         let selector = claim.offset >> n_vars;
@@ -241,4 +379,18 @@ pub fn verify(vs: &mut VerifierState, claims: &[SlotClaim], mu: usize, root: &[u
         return Err(Error::FinalWeightMismatch);
     }
     Ok(())
+}
+
+/// The full `mu`-variable point of a located slot claim in the stacked witness:
+/// the within-column `low_point` (low coords) followed by the column's boolean
+/// selector (high coords). Used to express leanVM's point claims as full-stack
+/// evaluations when they are batched with the ring-switched BLAKE3 claims in the
+/// single mixed opening.
+fn stack_point_of(slot: &SlotClaim, mu: usize) -> Vec<F128> {
+    let mut p = slot.low_point.clone();
+    let sel = slot.offset >> slot.low_point.len();
+    for k in 0..(mu - slot.low_point.len()) {
+        p.push(F128::new(((sel >> k) & 1) as u64, 0));
+    }
+    p
 }

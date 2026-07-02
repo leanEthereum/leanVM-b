@@ -1504,32 +1504,56 @@ pub struct Blake3StackProof {
     pub open: flock_core::pcs::BatchOpeningProof,
 }
 
+/// One claim on the committed packed BLAKE3 witness `q_pkd`, as left by the
+/// Flock reduction and handed to the PCS. `claim` is the `ẑ(point) = value`
+/// evaluation the PCS must discharge; `s_hat_v` is the prover-only ring-switch
+/// tensor weight the packed open consumes (`None` when `k_log < LOG_PACKING`,
+/// and unused on the verifier side, which recovers it from `proof.open`).
+#[derive(Clone, Debug)]
+pub struct WitnessClaim {
+    pub claim: flock_core::proof::ZClaim,
+    pub s_hat_v: Option<Vec<F128>>,
+}
+
+/// The two claims on the committed witness `q_pkd` left by the Flock BLAKE3
+/// zerocheck + lincheck reduction, for the PCS to discharge:
+/// - `ab`: the `A∘B` side, from lincheck.
+/// - `c` : the `C` side, from zerocheck (`C = I`, so a direct z-claim).
+///
+/// This is the clean seam between Flock's reduction and the PCS: the reduction
+/// produces these; the PCS opens them (see [`Blake3Setup::prove_reduction`]).
+#[derive(Clone, Debug)]
+pub struct ReducedClaims {
+    pub ab: WitnessClaim,
+    pub c: WitnessClaim,
+}
+
 impl Blake3Setup {
-    /// Prove `blocks` are valid compressions, discharging the `(ab, c)` claims by
-    /// a BaseFold over `stack` (the caller's committed witness, with `q_pkd` the
-    /// aligned sub-block at `stack_offset`). `stack_data`/`stack_commitment` are
-    /// the caller's commit; the transcript `challenger` is shared.
-    #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
-    pub fn prove_validity_stacked<Ch: Challenger>(
+    /// **Flock reduction (prover).** Bind the statement, then run the BLAKE3
+    /// zerocheck and lincheck on the shared `challenger`, reducing R1CS validity
+    /// of `blocks` to two evaluation claims on the committed packed witness
+    /// `q_pkd` (see `flock.tex` §zerocheck/§lincheck). Returns:
+    /// - `z_packed`: the regenerated packed witness the PCS later opens against;
+    /// - the transmitted zerocheck / lincheck sub-proofs;
+    /// - the [`ReducedClaims`] `(ab, c)` on `q_pkd`, with ring-switch weights.
+    ///
+    /// This touches the commitment only to *bind* it — it does NOT open the PCS.
+    /// The caller discharges the returned claims (see [`Self::prove_validity_stacked`]).
+    pub fn prove_reduction<Ch: Challenger>(
         &self,
         blocks: &[Compression],
-        stack: &[F128],
-        stack_offset: usize,
-        stack_data: &flock_core::pcs::ProverData,
         stack_commitment: &Commitment,
-        stack_pd: &[(Vec<F128>, F128)],
         challenger: &mut Ch,
-    ) -> Blake3StackProof {
+    ) -> (
+        Vec<F128>,
+        flock_core::zerocheck::ZerocheckProof,
+        flock_core::lincheck::LincheckProof,
+        ReducedClaims,
+    ) {
         assert_eq!(blocks.len(), self.n_blocks);
         let n_log = self.n_blocks_log();
         let (z_packed, a_packed_f128, b_packed_f128, z_packed_lincheck) =
             generate_witness_with_ab_packed_and_lincheck(blocks, n_log);
-        debug_assert_eq!(
-            &stack[stack_offset..stack_offset + z_packed.len()],
-            z_packed.as_slice(),
-            "committed q_pkd slice must equal the regenerated packed witness"
-        );
 
         flock_core::proof::bind_statement(challenger, &self.r1cs, stack_commitment);
 
@@ -1603,13 +1627,48 @@ impl Blake3Setup {
             None
         };
 
-        let ab_x = crate::prover::quirky_x_outer_full(&ab.point);
-        let c_x = crate::prover::quirky_x_outer_full(&c.point);
-        let open = flock_core::pcs::open_batch_mixed_stacked(
+        let reduced = ReducedClaims {
+            ab: WitnessClaim { claim: ab, s_hat_v: s_hat_v_ab },
+            c: WitnessClaim { claim: c, s_hat_v: Some(s_hat_v_c) },
+        };
+        (z_packed, zc_proof, lc_proof, reduced)
+    }
+
+    /// Prove `blocks` are valid compressions in two clean phases:
+    /// 1. [`Self::prove_reduction`] — Flock zerocheck + lincheck → the `(ab, c)`
+    ///    claims on the committed witness `q_pkd`;
+    /// 2. the PCS: discharge those claims *together with* the caller's own
+    ///    `stack_pd` point claims in ONE stacked BaseFold over `stack` (the
+    ///    caller's committed witness, with `q_pkd` the aligned sub-block at
+    ///    `stack_offset`).
+    ///
+    /// `stack_data`/`stack_commitment` are the caller's commit; the transcript
+    /// `challenger` is shared.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prove_validity_stacked<Ch: Challenger>(
+        &self,
+        blocks: &[Compression],
+        stack: &[F128],
+        stack_offset: usize,
+        stack_data: &flock_core::pcs::ProverData,
+        stack_commitment: &Commitment,
+        stack_pd: &[(Vec<F128>, F128)],
+        challenger: &mut Ch,
+    ) -> Blake3StackProof {
+        // Phase 1 — Flock reduction: zerocheck + lincheck → claims on q_pkd.
+        let (z_packed, zerocheck, lincheck, reduced) =
+            self.prove_reduction(blocks, stack_commitment, challenger);
+        debug_assert_eq!(
+            &stack[stack_offset..stack_offset + z_packed.len()],
+            z_packed.as_slice(),
+            "committed q_pkd slice must equal the regenerated packed witness"
+        );
+
+        // Phase 2 — PCS: discharge the reduction's claims (plus the caller's
+        // full-stack point claims) in one stacked BaseFold.
+        let open = self.discharge_reduction_stacked(
             &z_packed,
-            &[ab_x.as_slice(), c_x.as_slice()],
-            &[s_hat_v_ab.as_deref(), Some(s_hat_v_c.as_slice())],
-            &padding,
+            &reduced,
             stack,
             stack_offset,
             stack_data,
@@ -1618,28 +1677,59 @@ impl Blake3Setup {
             challenger,
         );
 
-        Blake3StackProof {
-            zerocheck: zc_proof,
-            lincheck: lc_proof,
-            open,
-        }
+        Blake3StackProof { zerocheck, lincheck, open }
     }
 
-    /// Verifier mirror of [`Self::prove_validity_stacked`]: replay the reduction
-    /// (zerocheck + lincheck) to recover the `(ab, c)` claims, then verify the
-    /// stacked BaseFold opening against `stack_commitment`. `stack_offset` and the
-    /// derived `qpkd_vars` locate `q_pkd` inside the stack.
-    pub fn verify_validity_stacked<Ch: Challenger>(
+    /// Phase 2 of [`Self::prove_validity_stacked`]: the PCS open of the
+    /// reduction's `(ab, c)` claims on `q_pkd` (`z_packed`), lifted into the
+    /// caller's `stack` and batched with the caller's `stack_pd` point claims.
+    #[allow(clippy::too_many_arguments)]
+    fn discharge_reduction_stacked<Ch: Challenger>(
+        &self,
+        z_packed: &[F128],
+        reduced: &ReducedClaims,
+        stack: &[F128],
+        stack_offset: usize,
+        stack_data: &flock_core::pcs::ProverData,
+        stack_commitment: &Commitment,
+        stack_pd: &[(Vec<F128>, F128)],
+        challenger: &mut Ch,
+    ) -> flock_core::pcs::BatchOpeningProof {
+        let padding = flock_core::zerocheck::PaddingSpec {
+            k_log: self.r1cs.k_log,
+            useful_bits_per_block: self.r1cs.useful_bits,
+        };
+        let ab_x = crate::prover::quirky_x_outer_full(&reduced.ab.claim.point);
+        let c_x = crate::prover::quirky_x_outer_full(&reduced.c.claim.point);
+        flock_core::pcs::open_batch_mixed_stacked(
+            z_packed,
+            &[ab_x.as_slice(), c_x.as_slice()],
+            &[reduced.ab.s_hat_v.as_deref(), reduced.c.s_hat_v.as_deref()],
+            &padding,
+            stack,
+            stack_offset,
+            stack_data,
+            stack_commitment,
+            stack_pd,
+            challenger,
+        )
+    }
+
+    /// **Flock reduction (verifier).** Bind the statement, then replay the BLAKE3
+    /// zerocheck and lincheck from `zerocheck`/`lincheck` on the shared
+    /// `challenger`, recovering the two `(ab, c)` evaluation claims on the
+    /// committed witness `q_pkd`. Mirror of [`Self::prove_reduction`]; the PCS
+    /// then discharges the returned claims (see [`Self::verify_validity_stacked`]).
+    pub fn verify_reduction<Ch: Challenger>(
         &self,
         stack_commitment: &Commitment,
-        stack_offset: usize,
-        stack_pd: &[(Vec<F128>, F128)],
-        proof: &Blake3StackProof,
+        zerocheck: &flock_core::zerocheck::ZerocheckProof,
+        lincheck: &flock_core::lincheck::LincheckProof,
         challenger: &mut Ch,
-    ) -> Result<(), verifier::VerifyError> {
+    ) -> Result<(flock_core::proof::ZClaim, flock_core::proof::ZClaim), verifier::VerifyError> {
         flock_core::proof::bind_statement(challenger, &self.r1cs, stack_commitment);
 
-        let zc_claim = flock_core::zerocheck::verify(self.r1cs.m, &proof.zerocheck, challenger)
+        let zc_claim = flock_core::zerocheck::verify(self.r1cs.m, zerocheck, challenger)
             .map_err(verifier::VerifyError::Zerocheck)?;
         let inner_rest_len = self.r1cs.k_log - self.r1cs.k_skip;
         let x_ab = flock_core::lincheck::QuirkyPoint {
@@ -1655,7 +1745,7 @@ impl Blake3Setup {
             &x_ab,
             zc_claim.a_eval,
             zc_claim.b_eval,
-            &proof.lincheck,
+            lincheck,
             challenger,
         )
         .map_err(verifier::VerifyError::Lincheck)?;
@@ -1676,6 +1766,28 @@ impl Blake3Setup {
             },
             value: zc_claim.c_eval,
         };
+        Ok((ab, c))
+    }
+
+    /// Verifier mirror of [`Self::prove_validity_stacked`], in the same two
+    /// phases: (1) [`Self::verify_reduction`] replays zerocheck + lincheck to
+    /// recover the `(ab, c)` claims on `q_pkd`, then (2) the stacked BaseFold
+    /// opening of those claims (and the caller's `stack_pd`) is verified against
+    /// `stack_commitment`. `stack_offset` and the derived `qpkd_vars` locate
+    /// `q_pkd` inside the stack.
+    pub fn verify_validity_stacked<Ch: Challenger>(
+        &self,
+        stack_commitment: &Commitment,
+        stack_offset: usize,
+        stack_pd: &[(Vec<F128>, F128)],
+        proof: &Blake3StackProof,
+        challenger: &mut Ch,
+    ) -> Result<(), verifier::VerifyError> {
+        // Phase 1 — Flock reduction: replay zerocheck + lincheck → (ab, c).
+        let (ab, c) =
+            self.verify_reduction(stack_commitment, &proof.zerocheck, &proof.lincheck, challenger)?;
+
+        // Phase 2 — PCS: verify the stacked opening of (ab, c) + stack_pd.
         let ab_x = crate::prover::quirky_x_outer_full(&ab.point);
         let c_x = crate::prover::quirky_x_outer_full(&c.point);
         let qpkd_vars = self.r1cs.m - flock_core::pcs::LOG_PACKING;

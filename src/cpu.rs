@@ -1218,37 +1218,37 @@ pub fn prove(program: &Program, public_input: [F128; 2]) -> (Proof, Stats) {
     }
     let slots = slot_claims(&w.layout, &claims);
 
-    // ONE opening of the single commitment. With BLAKE3: flock's validity (the
-    // ring-switched ab/c) AND every point claim (as full-stack `stack_pd`) fold
-    // into one BaseFold. Without BLAKE3: the plain point-batch open.
+    // BLAKE3: run flock's reduction (zerocheck + lincheck); it RETURNS the `(ab,
+    // c)` validity claims on the committed `q_pkd`. Those claims are proven by
+    // the PCS below, folded into the same opening as every other point claim.
     let t = std::time::Instant::now();
-    let blake3_attach = if blake3_rho.is_some() {
+    let blake3 = if !exec.trace.blake3.is_empty() {
         let blocks: Vec<flock_prover::r1cs_hashes::blake3::Compression> = exec
             .trace
             .blake3
             .iter()
             .map(|r| crate::blake3_flock::compression([r.va0, r.va1], [r.vb0, r.vb1]))
             .collect();
-        let offset = w.layout.placements[QPKD].offset;
-        let stack_pd: Vec<(Vec<F128>, F128)> =
-            slots.iter().map(|s| (stack_point_of(s, w.layout.m), s.value)).collect();
-        let b3proof = crate::blake3_flock::prove_validity_stacked(
-            &blocks,
-            &w.q,
-            offset,
-            &committed.prover_data,
-            &committed.commitment,
-            &stack_pd,
-            &mut ps,
-        );
-        Some(crate::blake3_flock::Blake3Attachment {
-            n_blocks: blocks.len(),
-            proof: b3proof,
-        })
+        let (_z_packed, zc, lc, reduced) =
+            crate::blake3_flock::prove_reduction(&blocks, &committed.commitment, &mut ps);
+        Some((blocks.len(), zc, lc, reduced))
     } else {
-        pcs::open(&mut ps, &committed, &w.q, &slots);
         None
     };
+
+    // ONE opening of the single commitment over ONE claim list: leanVM's point
+    // claims plus (if any) flock's ring-switched BLAKE3 bundle, all in one
+    // BaseFold. The bundle carries its own ring-switch front-end; `pcs::open`
+    // delegates that combine to flock while keeping the point claims block-sparse.
+    let offset = w.layout.placements[QPKD].offset;
+    let mut open_claims: Vec<pcs::OpenClaim> = slots.into_iter().map(pcs::OpenClaim::Point).collect();
+    if let Some((n, _, _, reduced)) = &blake3 {
+        open_claims.push(pcs::OpenClaim::RingSwitch(crate::blake3_flock::ring_switch_open(*n, offset, reduced)));
+    }
+    let mixed_open = pcs::open(&mut ps, &committed, &w.q, &open_claims);
+    let blake3_attach = blake3.map(|(n, zc, lc, _)| {
+        crate::blake3_flock::attach(n, zc, lc, mixed_open.expect("mixed opening present with BLAKE3"))
+    });
     if prof {
         eprintln!("[prove] open        : {:>7.2} ms", ms(t));
     }
@@ -1361,18 +1361,27 @@ pub fn verify(program: &Program, public_input: &[F128; 2], proof: &Proof) -> Res
     }
     let slots = slot_claims(&l, &claims);
 
-    // ONE opening of the single commitment, mirroring `prove`.
+    // BLAKE3: replay flock's reduction to recover its `(ab, c)` validity claims,
+    // then add them to the SAME claim list. ONE opening verifies them alongside
+    // every point claim (mirroring `prove`).
     let t = std::time::Instant::now();
+    let offset = l.placements[QPKD].offset;
+    let mut verify_claims: Vec<pcs::VerifyClaim> = slots.into_iter().map(pcs::VerifyClaim::Point).collect();
     if blake3_rho.is_some() {
         let att = proof.blake3.as_ref().ok_or(Error::Blake3Missing)?;
-        let offset = l.placements[QPKD].offset;
-        let commitment = pcs::commitment_from_root(root, l.m);
-        let stack_pd: Vec<(Vec<F128>, F128)> = slots.iter().map(|s| (stack_point_of(s, l.m), s.value)).collect();
-        crate::blake3_flock::verify_validity_stacked(n_b3, &commitment, offset, &stack_pd, &att.proof, &mut vs)
-            .map_err(Error::Blake3)?;
-    } else {
-        pcs::verify(&mut vs, &slots, l.m, &root).map_err(Error::Open)?;
+        let (ab, c) = crate::blake3_flock::verify_reduction(
+            n_b3,
+            &root,
+            l.m,
+            &att.proof.zerocheck,
+            &att.proof.lincheck,
+            &mut vs,
+        )
+        .map_err(Error::Blake3)?;
+        verify_claims
+            .push(pcs::VerifyClaim::RingSwitch(crate::blake3_flock::ring_switch_verify(n_b3, offset, ab, c, &att.proof)));
     }
+    pcs::verify(&mut vs, &verify_claims, l.m, &root).map_err(Error::Open)?;
     if prof {
         eprintln!("[verify] open        : {:>7.2} ms", ms(t));
     }
@@ -1390,19 +1399,6 @@ fn slot_claims(l: &Layout, claims: &[ColumnClaim]) -> Vec<pcs::SlotClaim> {
             value: c.value,
         })
         .collect()
-}
-
-/// The full `m`-variable point of a located slot claim in the stacked witness:
-/// the within-column `low_point` (low coords) followed by the column's boolean
-/// selector (high coords). Used to express leanVM's point claims as full-stack
-/// `packed_direct` evaluations in the single fused BLAKE3 opening (§blake3_flock).
-fn stack_point_of(slot: &pcs::SlotClaim, m: usize) -> Vec<F128> {
-    let mut p = slot.low_point.clone();
-    let sel = slot.offset >> slot.low_point.len();
-    for k in 0..(m - slot.low_point.len()) {
-        p.push(F128::new(((sel >> k) & 1) as u64, 0));
-    }
-    p
 }
 
 #[cfg(test)]
@@ -1517,6 +1513,44 @@ mod tests {
         assert!(
             verify(&program, &pi, &proof).is_err(),
             "tampered BLAKE3 validity proof must be rejected"
+        );
+    }
+
+    /// The unified opening still binds flock's REDUCTION sub-proofs: tampering the
+    /// attachment's zerocheck or lincheck transcript diverges the recovered
+    /// `(ab, c)` claims from the committed witness, so verification must reject.
+    /// (Complements `blake3_rejects_tampered_validity`, which tampers the open.)
+    #[test]
+    fn blake3_rejects_tampered_reduction() {
+        let prog = vec![
+            Op::Set { o: 2, k: F128::new(0xABCD, 0x1234) },
+            Op::Set { o: 3, k: F128::new(0x5678, 0x9999) },
+            Op::Set { o: 4, k: F128::new(0x1111, 0x2222) },
+            Op::Set { o: 5, k: F128::new(0x3333, 0x4444) },
+            Op::Set { o: 8, k: F128::ONE },
+            Op::Blake3 { a: 2, b: 4, c: 6 },
+            Op::Set { o: 9, k: F128::ONE },
+            Op::Xor { a: 0, b: 0, c: 0 }, // sentinel
+        ];
+        let program = Program::from_bytecode(prog, 10);
+        let pi = [F128::new(7, 0), F128::new(11, 0)];
+        let (proof, _) = prove(&program, pi);
+        verify(&program, &pi, &proof).expect("honest proof verifies");
+
+        // Tamper the zerocheck sub-proof (a round-1 univariate-skip evaluation).
+        let mut p_zc = proof.clone();
+        p_zc.blake3.as_mut().unwrap().proof.zerocheck.round1_ab[0] += F128::ONE;
+        assert!(
+            verify(&program, &pi, &p_zc).is_err(),
+            "tampered zerocheck must be rejected"
+        );
+
+        // Tamper the lincheck sub-proof (the z_vec collapse feeding the ab value).
+        let mut p_lc = proof.clone();
+        p_lc.blake3.as_mut().unwrap().proof.lincheck.z_partial[0] += F128::ONE;
+        assert!(
+            verify(&program, &pi, &p_lc).is_err(),
+            "tampered lincheck must be rejected"
         );
     }
 

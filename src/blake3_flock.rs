@@ -31,10 +31,15 @@ use crate::transcript::{ProverState, VerifierState};
 use flare::pcs::LOG_PACKING;
 use flock_prover::pcs::{Commitment, ProverData};
 use flock_prover::r1cs_hashes::blake3::{
-    BLAKE3_IV, Blake3Setup, Blake3StackProof, Compression, K_LOG, blake3_compress,
+    BLAKE3_IV, Blake3Setup, Blake3StackProof, Compression, K_LOG, ReducedClaims, blake3_compress,
     generate_witness_with_ab_packed_and_lincheck, min_n_blocks_log,
 };
 use flock_prover::verifier::VerifyError;
+
+/// A `ẑ(point) = value` claim on the committed witness `q_pkd`, recovered by the
+/// Flock zerocheck + lincheck reduction ([`prove_reduction`] / [`verify_reduction`])
+/// and later discharged by the PCS. Re-exported from `flock_prover`.
+pub use flock_prover::proof::ZClaim;
 
 /// flock flags for a single 64-byte root block: `CHUNK_START(1) | CHUNK_END(2) |
 /// ROOT(8) = 11` — the configuration under which the compression output equals
@@ -194,10 +199,114 @@ pub fn warm_setup(n_blocks: usize) {
     let _ = setup.r1cs.statement_digest(); // warm the digest cache too
 }
 
-/// Prove `blocks` are valid compressions, discharging the proof against the
-/// caller's already-committed `stack` (with `q_pkd` the aligned sub-block at
-/// `stack_offset`), reusing its `prover_data`/`commitment`. On the shared
-/// transcript `ps`.
+/// **Flock reduction only** (prover): run flock's BLAKE3 zerocheck + lincheck
+/// over `blocks`, binding to `commitment`, and return the two claims
+/// [`ReducedClaims`] on the committed witness `q_pkd` — `ab` (`A∘B`, lincheck)
+/// and `c` (`C`, zerocheck) — along with the regenerated packed witness and the
+/// transmitted zerocheck / lincheck sub-proofs. Does NOT open the PCS: the
+/// caller discharges the returned claims (see [`prove_validity_stacked`]). This
+/// is the clean seam the PCS builds on.
+pub fn prove_reduction(
+    blocks: &[Compression],
+    commitment: &Commitment,
+    ps: &mut ProverState,
+) -> (
+    Vec<F128>,
+    flock_prover::zerocheck::ZerocheckProof,
+    flock_prover::lincheck::LincheckProof,
+    ReducedClaims,
+) {
+    setup_for(blocks.len()).prove_reduction(blocks, commitment, ps)
+}
+
+/// **Flock reduction only** (verifier): mirror of [`prove_reduction`]. Rebuild the
+/// stack commitment from `root`/`mu`, replay the `zerocheck` + `lincheck`
+/// sub-proofs (binding to it), and recover the two `(ab, c)` claims on `q_pkd`
+/// for the PCS to discharge. In a full proof these sub-proofs live in
+/// [`Blake3StackProof`] (`proof.zerocheck` / `proof.lincheck`).
+pub fn verify_reduction(
+    n_blocks: usize,
+    root: &[u8; 32],
+    mu: usize,
+    zerocheck: &flock_prover::zerocheck::ZerocheckProof,
+    lincheck: &flock_prover::lincheck::LincheckProof,
+    vs: &mut VerifierState,
+) -> Result<(ZClaim, ZClaim), VerifyError> {
+    let commitment = crate::pcs::commitment_from_root(*root, mu);
+    setup_for(n_blocks).verify_reduction(&commitment, zerocheck, lincheck, vs)
+}
+
+/// The multilinear tail `x_inner_rest ++ x_outer` of a quirky point — the
+/// `x_outer_full` the PCS ring-switch front-end consumes.
+fn x_outer_full(point: &flock_prover::lincheck::QuirkyPoint) -> Vec<F128> {
+    let mut v = point.x_inner_rest.clone();
+    v.extend_from_slice(&point.x_outer);
+    v
+}
+
+/// Package the prover's reduction claims ([`ReducedClaims`]) as a
+/// [`crate::pcs::RingSwitchOpen`], so the PCS discharges flock's `(ab, c)`
+/// validity in the SAME opening as leanVM's point claims. `offset` is `q_pkd`'s
+/// slot in the committed stack; the opener slices `q_pkd` from there.
+pub fn ring_switch_open(n_blocks: usize, offset: usize, reduced: &ReducedClaims) -> crate::pcs::RingSwitchOpen {
+    let setup = setup_for(n_blocks);
+    crate::pcs::RingSwitchOpen {
+        offset,
+        qpkd_vars: qpkd_kappa(n_blocks),
+        x_outers: vec![
+            x_outer_full(&reduced.ab.claim.point),
+            x_outer_full(&reduced.c.claim.point),
+        ],
+        s_hat_v: vec![reduced.ab.s_hat_v.clone(), reduced.c.s_hat_v.clone()],
+        padding: flock_prover::zerocheck::PaddingSpec {
+            k_log: setup.r1cs.k_log,
+            useful_bits_per_block: setup.r1cs.useful_bits,
+        },
+    }
+}
+
+/// Verifier counterpart of [`ring_switch_open`]: package the recovered `(ab, c)`
+/// claims (from [`verify_reduction`]) plus the transmitted opening as a
+/// [`crate::pcs::RingSwitchVerify`].
+pub fn ring_switch_verify(
+    n_blocks: usize,
+    offset: usize,
+    ab: ZClaim,
+    c: ZClaim,
+    proof: &Blake3StackProof,
+) -> crate::pcs::RingSwitchVerify<'_> {
+    crate::pcs::RingSwitchVerify {
+        offset,
+        qpkd_vars: qpkd_kappa(n_blocks),
+        values: vec![ab.value, c.value],
+        z_skips: vec![ab.point.z_skip, c.point.z_skip],
+        x_outers: vec![x_outer_full(&ab.point), x_outer_full(&c.point)],
+        open: &proof.open,
+    }
+}
+
+/// Assemble the BLAKE3 attachment from the reduction sub-proofs and the stacked
+/// opening the PCS produced ([`crate::pcs::open`]'s return value).
+pub fn attach(
+    n_blocks: usize,
+    zerocheck: flock_prover::zerocheck::ZerocheckProof,
+    lincheck: flock_prover::lincheck::LincheckProof,
+    open: crate::pcs::BatchOpeningProof,
+) -> Blake3Attachment {
+    Blake3Attachment {
+        n_blocks,
+        proof: Blake3StackProof { zerocheck, lincheck, open },
+    }
+}
+
+/// Prove `blocks` are valid compressions in two clean phases, discharging the
+/// proof against the caller's already-committed `stack` (with `q_pkd` the aligned
+/// sub-block at `stack_offset`), reusing its `prover_data`/`commitment`, on the
+/// shared transcript `ps`:
+/// 1. the Flock reduction ([`prove_reduction`]): zerocheck + lincheck → the
+///    `(ab, c)` claims on `q_pkd`;
+/// 2. the PCS: one stacked BaseFold discharging those claims together with the
+///    caller's `stack_pd` point claims.
 #[allow(clippy::too_many_arguments)]
 pub fn prove_validity_stacked(
     blocks: &[Compression],
@@ -212,7 +321,8 @@ pub fn prove_validity_stacked(
         .prove_validity_stacked(blocks, stack, stack_offset, prover_data, commitment, stack_pd, ps)
 }
 
-/// Verifier side of [`prove_validity_stacked`]: replay flock's reduction and
+/// Verifier side of [`prove_validity_stacked`], in the same two phases:
+/// [`verify_reduction`] (replay zerocheck + lincheck → `(ab, c)` claims), then
 /// verify the SINGLE stacked BaseFold against `commitment` on the shared
 /// transcript. `stack_pd` are all of leanVM's point claims (bus / constraint /
 /// public-input / binding / pinning) folded into the same opening.
@@ -348,5 +458,50 @@ mod tests {
             verify_validity_stacked(blocks.len(), &commitment_p, offset, &bad_pd, &proof, &mut vs_pd).is_err(),
             "tampered pd value must fail"
         );
+    }
+
+    /// The Flock reduction (zerocheck + lincheck) is a clean, self-contained
+    /// unit: run WITHOUT any PCS open, the prover's `(ab, c)` claims on the
+    /// committed witness `q_pkd` are exactly what the verifier recovers by
+    /// replaying the sub-proofs. This is the seam the PCS builds on.
+    #[test]
+    fn reduction_roundtrip() {
+        let blocks = sample_blocks(4);
+        let q_pkd = build_qpkd(&blocks);
+        let dummy = vec![f(7, 9); 8];
+        let stacked = crate::witness::stack(&[q_pkd.clone(), dummy]);
+        let offset = stacked.placements[0].offset;
+
+        // Prover: commit, then run ONLY the reduction (no PCS open).
+        let mut ps = ProverState::new(b"reduce");
+        let committed = crate::pcs::commit(&mut ps, &stacked.q);
+        let (z_packed, zc, lc, reduced) =
+            prove_reduction(&blocks, &committed.commitment, &mut ps);
+        let bundle = ps.into_proof();
+
+        // The reduction regenerates exactly the committed `q_pkd` sub-block.
+        assert_eq!(z_packed, q_pkd, "reduction witness must equal committed q_pkd");
+        assert_eq!(&stacked.q[offset..offset + z_packed.len()], z_packed.as_slice());
+
+        // Verifier: replay the reduction and recover the claims.
+        let mut vs = VerifierState::new(b"reduce", &bundle);
+        let root = crate::pcs::read_commitment(&mut vs).unwrap();
+        let (ab, c) = verify_reduction(blocks.len(), &root, stacked.m, &zc, &lc, &mut vs)
+            .expect("reduction verifies");
+
+        // Prover and verifier agree on the claims left for the PCS.
+        assert_eq!(reduced.ab.claim, ab, "ab claim mismatch");
+        assert_eq!(reduced.c.claim, c, "c claim mismatch");
+
+        // A mismatched transcript domain diverges the sponge, so the recovered
+        // claims must NOT match the prover's (the reduction is transcript-bound).
+        let mut vs_bad = VerifierState::new(b"different", &bundle);
+        let root_b = crate::pcs::read_commitment(&mut vs_bad).unwrap();
+        if let Ok((ab_b, c_b)) = verify_reduction(blocks.len(), &root_b, stacked.m, &zc, &lc, &mut vs_bad) {
+            assert!(
+                ab_b != ab || c_b != c,
+                "a diverged sponge must not reproduce the prover's claims"
+            );
+        }
     }
 }
