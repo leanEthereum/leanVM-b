@@ -234,6 +234,12 @@ impl<'a> VerifierState<'a> {
     pub fn next_hint_bytes(&mut self) -> Result<Vec<u8>, Error> {
         let len = self.take_raw()?.lo as usize;
         let n_words = len.div_ceil(16);
+        // The bytes come from `n_words` stream words; a malicious `len` cannot make
+        // us reserve more than the actual remaining stream (bounds the allocation
+        // to the proof size and rules out the `n_words * 16` overflow).
+        if n_words > self.stream.len() - self.offset {
+            return Err(Error::ExceededStream);
+        }
         let mut bytes = Vec::with_capacity(n_words * 16);
         for _ in 0..n_words {
             let w = self.take_raw()?;

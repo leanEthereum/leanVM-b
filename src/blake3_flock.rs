@@ -167,12 +167,26 @@ pub fn slot_point(slot: usize, rho: &[F128]) -> Vec<F128> {
 /// of `N` or the proof. So we build each shape once and reuse it across `prove`,
 /// `verify`, and repeated proofs; the per-setup digest/CSC caches then stay warm,
 /// making verification milliseconds rather than rebuilding the circuit each time.
+///
+/// The cache is bounded ([`SETUP_CACHE_CAP`]): `verify` calls this with the
+/// PROVER-ANNOUNCED count, so an attacker cycling distinct counts could otherwise
+/// grow it without limit. Past the cap we build an ephemeral (uncached) setup —
+/// correct, just not memoized; legit workloads use only a handful of sizes.
+const SETUP_CACHE_CAP: usize = 256;
+
 fn setup_for(n_blocks: usize) -> std::sync::Arc<Blake3Setup> {
     static CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<usize, std::sync::Arc<Blake3Setup>>>> =
         std::sync::OnceLock::new();
     let cache = CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
     let mut map = cache.lock().expect("BLAKE3 setup cache poisoned");
-    std::sync::Arc::clone(map.entry(n_blocks).or_insert_with(|| std::sync::Arc::new(Blake3Setup::new(n_blocks))))
+    if let Some(s) = map.get(&n_blocks) {
+        return std::sync::Arc::clone(s);
+    }
+    let setup = std::sync::Arc::new(Blake3Setup::new(n_blocks));
+    if map.len() < SETUP_CACHE_CAP {
+        map.insert(n_blocks, std::sync::Arc::clone(&setup));
+    }
+    setup
 }
 
 /// Pre-build (and cache) the flock BLAKE3 R1CS setup for `n_blocks` compressions,

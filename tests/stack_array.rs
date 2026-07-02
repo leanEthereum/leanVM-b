@@ -84,3 +84,35 @@ def main():
     assert_eq!(stats.counts[5], 0, "no BLAKE3 here");
     verify(&program, &want, &proof).expect("StackArray indexing verifies");
 }
+
+/// A StackArray index literal that does not fit `u32` is rejected at compile time,
+/// not silently truncated modulo 2^32 (which would resolve `sa[2^32]` to `sa[0]`).
+#[test]
+#[should_panic(expected = "does not fit in u32")]
+fn stack_array_index_overflow_rejected() {
+    let src = "def main():\n    sa = StackArray(2)\n    x = sa[4294967296]\n    return\n";
+    let _ = compile(&parse(src).expect("parse"));
+}
+
+/// Rebinding a StackArray name to a scalar clears the stack binding, so the name
+/// is a plain scalar afterward (the old bug left a stale `stacks` entry that made
+/// `x` still look like a StackArray, panicking on scalar use).
+#[test]
+fn stack_array_rebind_to_scalar() {
+    let src = "def main():\n    x = StackArray(2)\n    x = 5\n    p = 1\n    p[1] = x\n    p[GEN] = x\n    return\n";
+    let program = compile(&parse(src).expect("parse"));
+    let want = [F128::new(5, 0), F128::new(5, 0)];
+    let (proof, _) = prove(&program, want);
+    verify(&program, &want, &proof).expect("rebound-scalar program verifies");
+}
+
+/// A StackArray from the enclosing scope referenced inside a `for` loop cannot be
+/// captured; the compiler rejects it with a clear message (not a misleading
+/// "unbound variable" from the capture being silently dropped). (Rebinding one in
+/// the body, `h = blake3(h,h)`, is likewise a compile error via `blake3_call`.)
+#[test]
+#[should_panic(expected = "cannot be captured into a `for` loop")]
+fn stack_array_loop_capture_rejected() {
+    let src = "def main():\n    h = StackArray(2)\n    h[0] = 1\n    h[1] = 2\n    for i in range(0, 4, 1):\n        x = h[0]\n    return\n";
+    let _ = compile(&parse(src).expect("parse"));
+}

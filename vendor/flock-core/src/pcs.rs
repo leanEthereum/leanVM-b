@@ -548,9 +548,18 @@ pub fn verify_opening_batch_mixed_ligerito_stacked<Ch: Challenger>(
     challenger: &mut Ch,
 ) -> Result<(), VerifyError> {
     let n_rs = claims.len();
+    // These are caller (leanVM) invariants.
     assert_eq!(z_skips.len(), n_rs);
     assert_eq!(x_outers.len(), n_rs);
-    assert_eq!(proof.ring_switches.len(), n_rs);
+    // `proof` is attacker-controlled (deserialized): validate its shape and return
+    // an Err rather than panicking (verifier DoS). `verify_succinct` internally
+    // asserts `s_hat_v.len() == 2^LOG_PACKING`, so check that here too.
+    let shape_err = || VerifyError::BaseFold(crate::pcs::basefold::VerifyError::InvalidProofShape);
+    if proof.ring_switches.len() != n_rs
+        || proof.ring_switches.iter().any(|rs| rs.s_hat_v.len() != 1 << LOG_PACKING)
+    {
+        return Err(shape_err());
+    }
     challenger.observe_label(b"flock-pcs-open-batch-v0");
 
     let mut rs_outputs = Vec::with_capacity(n_rs);

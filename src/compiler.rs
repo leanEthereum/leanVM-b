@@ -369,7 +369,11 @@ impl FnLower<'_> {
     /// A stack index must be a plain integer literal.
     fn const_index(&self, idx: &Expr) -> u32 {
         match idx {
-            Expr::Lit(k) => *k as u32,
+            // `as u32` would silently wrap a ≥ 2^32 literal (e.g. `sa[2^32]` → `sa[0]`);
+            // reject it so the lowered program matches the source.
+            Expr::Lit(k) => {
+                u32::try_from(*k).unwrap_or_else(|_| panic!("StackArray index {k} does not fit in u32"))
+            }
             _ => panic!("a StackArray index must be an integer literal, got `{idx:?}`"),
         }
     }
@@ -511,19 +515,26 @@ impl FnLower<'_> {
 
     fn stmt(&mut self, s: &Stmt) {
         match s {
+            // A `let` rebinds the name's kind; clear the OTHER map so a stale
+            // binding (e.g. a former StackArray now rebound to a scalar) can't
+            // shadow the new one. `vars`/`stacks` are consulted independently, so
+            // both must be kept in sync on every rebind.
             Stmt::Let(name, e) => match e {
                 // `x = StackArray(n)`: bind a run of `n` consecutive frame cells.
                 Expr::StackArray(n) => {
                     let base = self.alloc_stack(*n as u32);
+                    self.vars.remove(name);
                     self.stacks.insert(name.clone(), (base, *n as u32));
                 }
                 // `x = blake3(a, b)`: bind the size-2 output stack.
                 Expr::Call(f, args) if f == "blake3" => {
                     let (base, size) = self.blake3_call(args);
+                    self.vars.remove(name);
                     self.stacks.insert(name.clone(), (base, size));
                 }
                 _ => {
                     let o = self.expr(e);
+                    self.stacks.remove(name);
                     self.vars.insert(name.clone(), o);
                 }
             },
@@ -623,7 +634,22 @@ impl FnLower<'_> {
         let mut captures = Vec::new();
         let mut seen = std::collections::HashSet::new();
         for r in &referenced {
-            if !bound.contains(r) && self.vars.contains_key(r) && seen.insert(r.clone()) {
+            if bound.contains(r) {
+                continue;
+            }
+            // A StackArray is a run of cells, not a single scalar arg, and the
+            // tail-recursive loop helper can't thread one across iterations — so a
+            // StackArray from the enclosing scope can't be captured. Reject with a
+            // clear error (not the misleading "unbound variable" the capture drop
+            // would otherwise trigger). Keep it inside the loop body, or carry
+            // state through a heap `Array`.
+            if self.stacks.contains_key(r) {
+                panic!(
+                    "StackArray `{r}` cannot be captured into a `for` loop; \
+                     define it inside the loop body or carry state via a heap `Array`"
+                );
+            }
+            if self.vars.contains_key(r) && seen.insert(r.clone()) {
                 captures.push(r.clone());
             }
         }
@@ -1170,13 +1196,7 @@ pub fn compile(ast: &Ast) -> Program {
 
     // Pad the bytecode to `B` (the sentinel slot g^{B-1} must exist for execution).
     prog.resize(bytecode_size, Op::Set { o: 0, k: F128::ZERO });
-    Program {
-        prog,
-        pc0: 0,
-        fp0: 0,
-        hints,
-        main_frame: frame_size["main"],
-    }
+    Program::assemble(prog, 0, 0, hints, frame_size["main"])
 }
 
 /// Render compiled bytecode as a human-readable disassembly. `fp[k]` is the cell

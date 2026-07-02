@@ -98,11 +98,10 @@ fn program_digest(prog: &[Op]) -> [F128; 2] {
 }
 
 /// The transcript seed: the public statement bound before any challenge — the
-/// public input `pi` followed by the program digest ([`program_digest`]). Both
-/// sides build it identically.
-fn transcript_seed(prog: &[Op], pi: &[F128; 2]) -> [F128; 4] {
-    let d = program_digest(prog);
-    [pi[0], pi[1], d[0], d[1]]
+/// public input `pi` followed by the program's stored [`digest`](Program::digest)
+/// (computed once at assembly, not re-hashed here). Both sides build it identically.
+fn transcript_seed(program: &Program, pi: &[F128; 2]) -> [F128; 4] {
+    [pi[0], pi[1], program.digest[0], program.digest[1]]
 }
 
 /// Announce the prover's per-table log-sizes (`log_mem` + the six `row_counts`) by
@@ -135,7 +134,7 @@ fn read_public(vs: &mut VerifierState, prog: &Program, public_input: &[F128; 2])
     let bytecode_size = prog.prog.len();
     if !bytecode_size.is_power_of_two()
         || !(MIN_LOG_MEM..=MAX_LOG_MEM).contains(&log_mem)
-        || row_counts.iter().any(|&r| r > (1usize << MAX_LOG_ROWS))
+        || row_counts.iter().any(|&r| r >= (1usize << MAX_LOG_ROWS))
     {
         return Err(Error::PublicInput);
     }
@@ -207,11 +206,33 @@ pub struct Program {
     pub prog: Vec<Op>, // bytecode (size B, power of two)
     pub pc0: u32,
     pub fp0: u32,
+    /// A binding digest of `prog` ([`program_digest`]), computed once at assembly
+    /// and seeded into the transcript so every challenge depends on the exact
+    /// program. Trusted to match `prog` — always set by [`Program::assemble`] from
+    /// the bytecode, so a `Program` value cannot carry a digest inconsistent with
+    /// its own `prog`.
+    pub(crate) digest: [F128; 2],
     /// Prover-side frame/buffer allocation hints (keyed by global pc) and the
     /// size of `main`'s frame — the nondeterminism [`Program::execute`] needs to
     /// run the program. Public verification (\S `verify`) ignores them.
     pub(crate) hints: HashMap<u32, Vec<crate::compiler::RHint>>,
     pub(crate) main_frame: u32,
+}
+
+impl Program {
+    /// Assemble a [`Program`], computing its bytecode [`digest`](Program::digest)
+    /// from `prog`. The single funnel for construction, so the digest is always
+    /// consistent with the bytecode.
+    pub(crate) fn assemble(
+        prog: Vec<Op>,
+        pc0: u32,
+        fp0: u32,
+        hints: HashMap<u32, Vec<crate::compiler::RHint>>,
+        main_frame: u32,
+    ) -> Self {
+        let digest = program_digest(&prog);
+        Self { prog, pc0, fp0, digest, hints, main_frame }
+    }
 }
 
 impl Program {
@@ -222,13 +243,7 @@ impl Program {
     /// allocation). `prog.len()` must be a power of two with a never-executed
     /// sentinel in its last slot — the run halts on reaching `g^{len-1}` (§state).
     pub fn from_bytecode(prog: Vec<Op>, main_frame: u32) -> Self {
-        Self {
-            prog,
-            pc0: 0,
-            fp0: 0,
-            hints: HashMap::new(),
-            main_frame,
-        }
+        Self::assemble(prog, 0, 0, HashMap::new(), main_frame)
     }
 }
 
@@ -1181,27 +1196,51 @@ fn blake3_pin_point(claims: &[ColumnClaim]) -> Vec<F128> {
         .clone()
 }
 
+/// MLE of `[1;n, 0;…]` at `point` (LSB-first), i.e. `Σ_{j<n} eq(j, point)`, in
+/// `O(point.len()²)` — one term per set bit of `n` (an aligned `2^t` block sums to
+/// `eq` of its high bits), never materializing the `2^point.len()` vector.
+fn mle_of_ones_then_zeros(n: usize, point: &[F128]) -> F128 {
+    let l = point.len();
+    debug_assert!(n <= 1usize << l);
+    let mut sum = F128::ZERO;
+    let mut base = 0usize; // low indices already covered
+    // Include t = l so the full cube (n = 2^l, bit l set) is one block whose free
+    // coords all sum to 1; `point[l..]` is then empty ⇒ eq = 1.
+    for t in (0..=l).rev() {
+        if (n >> t) & 1 == 1 {
+            // Block [base, base + 2^t): its high bits (coords t..l) are `base >> t`.
+            let a = base >> t;
+            let mut e = F128::ONE;
+            for (i, &x) in point[t..].iter().enumerate() {
+                e *= if (a >> i) & 1 == 1 { x } else { F128::ONE + x };
+            }
+            sum += e;
+            base += 1 << t;
+        }
+    }
+    sum
+}
+
 /// BLAKE3 `q_pkd` **pin** claims at the instance point `point` (a memory-bus
 /// point, see [`blake3_pin_point`]): per pin slot, `q_pkd(pin_slot‖point) =
 /// pin_col(point)` against the PUBLIC constant column (`cv = IV`,
 /// counter/blen/flags = 0/64/11), pinning the compression to a real
-/// BLAKE3-of-64-bytes. The input/output words are NOT pinned here — they bind via
-/// the memory bus routing to `q_pkd` (see [`blake3_value_slot`]). Pin values are
-/// public, so both sides compute them; symmetric across prove/verify.
+/// BLAKE3-of-64-bytes. The pin column is `pin[k]` on the first `n_blocks`
+/// instances and `0` on padding, so its MLE is `pin[k] · Σ_{j<n_blocks} eq(j,
+/// point)` — computed in `O(n_log²)` by [`mle_of_ones_then_zeros`], never materialized. The
+/// input/output words are NOT pinned here — they bind via the memory bus routing
+/// to `q_pkd` (see [`blake3_value_slot`]). Values are public; symmetric across
+/// prove/verify.
 fn blake3_pin_claims(point: &[F128], n_blocks: usize) -> Vec<ColumnClaim> {
     use crate::blake3_flock::{PIN_SLOTS, pin_constants, slot_point};
     let pin = pin_constants();
-    let n_slots = 1usize << point.len();
+    let prefix = mle_of_ones_then_zeros(n_blocks, point);
     let mut v = Vec::with_capacity(PIN_SLOTS.len());
     for (k, &pslot) in PIN_SLOTS.iter().enumerate() {
-        let mut col = vec![F128::ZERO; n_slots];
-        for slot in col.iter_mut().take(n_blocks) {
-            *slot = pin[k];
-        }
         v.push(ColumnClaim {
             col: QPKD,
             point: slot_point(pslot, point),
-            value: crate::multilinear::mle_eval(&col, point),
+            value: pin[k] * prefix,
         });
     }
     v
@@ -1239,7 +1278,7 @@ pub fn prove(program: &Program, public_input: [F128; 2]) -> (Proof, Stats) {
         .sum();
     // The public statement (program digest + input) seeds the transcript, so
     // every challenge depends on the exact program and public input.
-    let mut ps = ProverState::new(b"leanvm-b", &transcript_seed(&program.prog, &public_input));
+    let mut ps = ProverState::new(b"leanvm-b", &transcript_seed(program, &public_input));
 
     // Announce the prover's sizes, then commit, before sampling any challenge.
     announce_public(&mut ps, w.log_mem, w.row_counts);
@@ -1355,7 +1394,7 @@ fn bind_pi_claim(r: F128, placements: &[witness::Placement], pi: &[F128; 2]) -> 
 /// every scalar the prover wrote and pull the PCS hints, then assert the stream
 /// was fully consumed. Takes only public inputs — never the prover's witness.
 pub fn verify(program: &Program, public_input: &[F128; 2], proof: &Proof) -> Result<(), Error> {
-    let mut vs = VerifierState::new(b"leanvm-b", proof, &transcript_seed(&program.prog, public_input));
+    let mut vs = VerifierState::new(b"leanvm-b", proof, &transcript_seed(program, public_input));
     let l = read_public(&mut vs, program, public_input)?;
     let root = pcs::read_commitment(&mut vs).map_err(Error::Transcript)?;
 
@@ -1458,6 +1497,28 @@ fn slot_claims(l: &Layout, claims: &[ColumnClaim]) -> Vec<pcs::SlotClaim> {
 mod tests {
     use super::*;
 
+    /// The O(n_log²) `mle_of_ones_then_zeros` must equal the naive MLE of the prefix
+    /// indicator `[1;n, 0;…]` — the pin value depends on it, so any mismatch is a
+    /// soundness bug, not just a perf regression.
+    #[test]
+    fn mle_of_ones_then_zeros_matches_dense() {
+        for l in 0..=6usize {
+            let point: Vec<F128> = (0..l).map(|i| F128::new(0x9e37 * (i as u64 + 1) + 3, 0x51 * i as u64 + 7)).collect();
+            for n in 0..=(1usize << l) {
+                let mut col = vec![F128::ZERO; 1usize << l];
+                for c in col.iter_mut().take(n) {
+                    *c = F128::ONE;
+                }
+                let dense = if l == 0 {
+                    if n >= 1 { F128::ONE } else { F128::ZERO }
+                } else {
+                    crate::multilinear::mle_eval(&col, &point)
+                };
+                assert_eq!(mle_of_ones_then_zeros(n, &point), dense, "l={l} n={n}");
+            }
+        }
+    }
+
     /// A hand-built straight-line program exercising the `BLAKE3` table: set up
     /// the two 256-bit inputs (`a` at cells 2,3 and `b` at cells 4,5), hash them
     /// into the output `c` (cells 6,7), and halt at the sentinel. The compression
@@ -1483,13 +1544,7 @@ mod tests {
             Op::Set { o: 9, k: F128::ONE },
             Op::Xor { a: 0, b: 0, c: 0 }, // sentinel (never executed)
         ];
-        let program = Program {
-            prog,
-            pc0: 0,
-            fp0: 0,
-            hints: HashMap::new(),
-            main_frame: 10,
-        };
+        let program = Program::assemble(prog, 0, 0, HashMap::new(), 10);
 
         let pi = [F128::new(7, 0), F128::new(11, 0)];
         let exec = program.execute(pi);
