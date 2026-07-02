@@ -83,11 +83,70 @@ pub struct Committed {
 /// weight `eq(point,·)` is supported only inside the slot, where it equals
 /// `eq(low_point,·)` — so W_λ is built block-sparsely in O(Σ_j 2^{n_vars_j})
 /// rather than O(J·2^μ).
+///
+/// A [`SlotClaim::Strided`] is a further-sparse special case for **boolean-selector
+/// slots on a packed column** (a BLAKE3 value word inside `q_pkd`): the low
+/// `stride_log` within-block coords are frozen to `slot`'s bits, so `eq` is nonzero
+/// only at `offset + slot + j·2^stride_log` — folded in `O(2^{point.len()})` rather
+/// than the full `O(2^{stride_log + point.len()})` block. Equivalent to a `Slot`
+/// with `low_point = slot_bits ++ point`.
 #[derive(Clone, Debug)]
-pub struct SlotClaim {
-    pub offset: usize,
-    pub low_point: Vec<F128>,
-    pub value: F128,
+pub enum SlotClaim {
+    Slot {
+        offset: usize,
+        low_point: Vec<F128>,
+        value: F128,
+    },
+    Strided {
+        offset: usize,
+        slot: usize,
+        stride_log: usize,
+        point: Vec<F128>,
+        value: F128,
+    },
+}
+
+impl SlotClaim {
+    pub fn value(&self) -> F128 {
+        match self {
+            SlotClaim::Slot { value, .. } | SlotClaim::Strided { value, .. } => *value,
+        }
+    }
+
+    /// This claim as a borrowed flock [`StackClaim`] — `Strided` maps to the sparse
+    /// [`StackClaim::StridedSlot`], `Slot` to the dense [`StackClaim::Slot`].
+    fn as_stack(&self) -> StackClaim<'_> {
+        match self {
+            SlotClaim::Slot { offset, low_point, value } => StackClaim::Slot {
+                offset: *offset,
+                low_point,
+                value: *value,
+            },
+            SlotClaim::Strided { offset, slot, stride_log, point, value } => StackClaim::StridedSlot {
+                offset: *offset,
+                slot: *slot,
+                stride_log: *stride_log,
+                point,
+                value: *value,
+            },
+        }
+    }
+
+    /// The equivalent dense `(offset, low_point, value)`. `Strided` materializes
+    /// `slot_bits ++ point`; used only by the plain λ-opener (non-BLAKE3), where
+    /// every claim is already a dense `Slot`, so no materialization occurs.
+    fn dense(&self) -> (usize, std::borrow::Cow<'_, [F128]>, F128) {
+        match self {
+            SlotClaim::Slot { offset, low_point, value } => (*offset, std::borrow::Cow::Borrowed(low_point), *value),
+            SlotClaim::Strided { offset, slot, stride_log, point, value } => {
+                let mut lp: Vec<F128> = (0..*stride_log)
+                    .map(|k| if (slot >> k) & 1 == 1 { F128::ONE } else { F128::ZERO })
+                    .collect();
+                lp.extend_from_slice(point);
+                (*offset, std::borrow::Cow::Owned(lp), *value)
+            }
+        }
+    }
 }
 
 /// A batch of **ring-switched** evaluation claims discharged in the SAME opening
@@ -172,9 +231,10 @@ pub fn commit(ps: &mut ProverState, witness: &[F128]) -> Committed {
 fn absorb_claims<T: Absorb>(s: &mut T, claims: &[SlotClaim]) -> F128 {
     s.observe_u64(claims.len() as u64);
     for c in claims {
-        s.observe_scalars(&c.low_point);
-        s.observe_u64(c.offset as u64);
-        s.observe_scalars(std::slice::from_ref(&c.value));
+        let (offset, low_point, value) = c.dense();
+        s.observe_scalars(&low_point);
+        s.observe_u64(offset as u64);
+        s.observe_scalars(std::slice::from_ref(&value));
     }
     s.sample()
 }
@@ -238,10 +298,7 @@ pub fn open(ps: &mut ProverState, c: &Committed, q: &[F128], claims: &[OpenClaim
         let qpkd = &q[rs.offset..rs.offset + (1usize << rs.qpkd_vars)];
         // leanVM point claims are block-sparse slots (offset + within-column point);
         // the opener builds `eq` over just each slot, not the whole 2^m stack.
-        let stack_pd: Vec<StackClaim> = points
-            .iter()
-            .map(|s| StackClaim::Slot { offset: s.offset, low_point: &s.low_point, value: s.value })
-            .collect();
+        let stack_pd: Vec<StackClaim> = points.iter().map(|s| s.as_stack()).collect();
         let x_refs: Vec<&[F128]> = rs.x_outers.iter().map(|v| v.as_slice()).collect();
         let s_refs: Vec<Option<&[F128]>> = rs.s_hat_v.iter().map(|o| o.as_deref()).collect();
         return Some(open_batch_mixed_stacked(
@@ -268,25 +325,24 @@ pub fn open(ps: &mut ProverState, c: &Committed, q: &[F128], claims: &[OpenClaim
     let mut lambda_pow = F128::ONE; // running λ^j
     let mut eq_cache: Vec<(Vec<F128>, Vec<F128>)> = Vec::new();
     for claim in &points {
-        let n_vars = claim.low_point.len();
-        debug_assert!(claim.offset + (1 << n_vars) <= n, "slot out of range");
-        let cache_idx = match eq_cache
-            .iter()
-            .position(|(point, _)| point.as_slice() == claim.low_point.as_slice())
-        {
+        // The non-BLAKE3 λ-opener only ever sees dense `Slot`s (`Strided`
+        // claims come from BLAKE3, which takes the ring-switch path above).
+        let (offset, low_point, value) = claim.dense();
+        let n_vars = low_point.len();
+        debug_assert!(offset + (1 << n_vars) <= n, "slot out of range");
+        let cache_idx = match eq_cache.iter().position(|(point, _)| point.as_slice() == low_point.as_ref()) {
             Some(i) => i,
             None => {
-                eq_cache.push((claim.low_point.clone(), eq_table(&claim.low_point)));
+                eq_cache.push((low_point.to_vec(), eq_table(&low_point)));
                 eq_cache.len() - 1
             }
         };
-        let offset = claim.offset;
         let eq_block = &eq_cache[cache_idx].1;
         weight[offset..offset + eq_block.len()]
             .par_iter_mut()
             .zip(eq_block.par_iter())
             .for_each(|(w, eq)| *w += lambda_pow * *eq);
-        target += lambda_pow * claim.value;
+        target += lambda_pow * value;
         lambda_pow *= lambda;
     }
 
@@ -329,10 +385,7 @@ pub fn verify(vs: &mut VerifierState, claims: &[VerifyClaim], mu: usize, root: &
 
     if let Some(rs) = ring {
         let commitment = commitment_from_root(*root, mu);
-        let stack_pd: Vec<StackClaim> = points
-            .iter()
-            .map(|s| StackClaim::Slot { offset: s.offset, low_point: &s.low_point, value: s.value })
-            .collect();
+        let stack_pd: Vec<StackClaim> = points.iter().map(|s| s.as_stack()).collect();
         let x_refs: Vec<&[F128]> = rs.x_outers.iter().map(|v| v.as_slice()).collect();
         return verify_opening_batch_mixed_stacked(
             &commitment,
@@ -355,7 +408,7 @@ pub fn verify(vs: &mut VerifierState, claims: &[VerifyClaim], mu: usize, root: &
     let mut target = F128::ZERO;
     let mut lambda_pow = F128::ONE;
     for c in &points {
-        target += lambda_pow * c.value;
+        target += lambda_pow * c.value();
         lambda_pow *= lambda;
     }
 
@@ -371,9 +424,10 @@ pub fn verify(vs: &mut VerifierState, claims: &[VerifyClaim], mu: usize, root: &
     let mut weight_at_rho = F128::ZERO;
     let mut lambda_pow = F128::ONE;
     for claim in &points {
-        let n_vars = claim.low_point.len();
-        let mut eq = eq_eval(&claim.low_point, &challenges[..n_vars]);
-        let selector = claim.offset >> n_vars;
+        let (offset, low_point, _) = claim.dense();
+        let n_vars = low_point.len();
+        let mut eq = eq_eval(&low_point, &challenges[..n_vars]);
+        let selector = offset >> n_vars;
         for (bit, &x) in challenges[n_vars..mu].iter().enumerate() {
             // eq(sel_bit, x): x if the bit is 1, else 1+x (char 2).
             eq *= if (selector >> bit) & 1 == 1 { x } else { F128::ONE + x };

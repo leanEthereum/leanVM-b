@@ -140,12 +140,17 @@ pub fn pin_constants() -> [F128; 3] {
     ]
 }
 
+/// `log2` of the within-instance packed span (`PACKED_PER_INSTANCE = 2^7`): the
+/// number of low coords in a [`slot_point`] that carry the slot's bits, and the
+/// stride between consecutive instances' same-slot coords in `q_pkd`. A value
+/// claim on `q_pkd` is thus a boolean-selector (strided) claim with this stride.
+pub const SLOT_STRIDE_LOG: usize = K_LOG - LOG_PACKING;
+
 /// The `q_pkd`-column MLE point selecting within-instance `slot` over the
 /// instance cube `rho`: the low 7 coords are `slot`'s bits (LSB-first), the high
 /// `n_log` coords are `rho`.
 pub fn slot_point(slot: usize, rho: &[F128]) -> Vec<F128> {
-    let nbits = K_LOG - LOG_PACKING; // 7
-    let mut p: Vec<F128> = (0..nbits)
+    let mut p: Vec<F128> = (0..SLOT_STRIDE_LOG)
         .map(|b| if (slot >> b) & 1 == 1 { F128::ONE } else { F128::ZERO })
         .collect();
     p.extend_from_slice(rho);

@@ -355,6 +355,13 @@ pub enum StackClaim<'a> {
     /// `eq(low_point,·)` on `[offset, offset + 2^low_point.len())`. `offset` must
     /// be a multiple of `2^low_point.len()` (an aligned slot).
     Slot { offset: usize, low_point: &'a [F128], value: F128 },
+    /// A **boolean-selector** claim on a packed column, equivalent to a `Slot`
+    /// with `low_point = slot_bits(slot, stride_log) ++ point` but folded sparsely:
+    /// the low `stride_log` block coords are frozen to `slot`'s bits (so the weight
+    /// is nonzero only at `offset + slot + j·2^stride_log`), and `point` is the
+    /// high part. Costs `2^point.len()` instead of `2^(stride_log + point.len())`.
+    /// `offset` must be a multiple of `2^(stride_log + point.len())`.
+    StridedSlot { offset: usize, slot: usize, stride_log: usize, point: &'a [F128], value: F128 },
     /// `eq(point,·)` over the whole `2^m` stack.
     Point { point: &'a [F128], value: F128 },
 }
@@ -363,7 +370,9 @@ impl StackClaim<'_> {
     #[inline]
     fn value(&self) -> F128 {
         match self {
-            StackClaim::Slot { value, .. } | StackClaim::Point { value, .. } => *value,
+            StackClaim::Slot { value, .. }
+            | StackClaim::StridedSlot { value, .. }
+            | StackClaim::Point { value, .. } => *value,
         }
     }
 }
@@ -421,6 +430,23 @@ pub fn open_batch_mixed_stacked<Ch: Challenger>(
                     } else {
                         let eq = ring_switch::build_eq_parallel(low_point);
                         dst.par_iter_mut().zip(eq.par_iter()).for_each(|(bi, ei)| *bi += g * *ei);
+                    }
+                    target += g * *value;
+                }
+                StackClaim::StridedSlot { offset, slot, stride_log, point, value } => {
+                    // Sparse: eq over the instance `point` (2^point.len()),
+                    // scattered at stride 2^stride_log into the slot's positions.
+                    // Identical b_stack contribution to the dense Slot with
+                    // low_point = slot_bits ++ point, at ~2^stride_log× less work.
+                    let stride = 1usize << stride_log;
+                    let base = *offset + *slot;
+                    let eq = if point.len() < 14 {
+                        crate::zerocheck::univariate_skip::build_eq(point)
+                    } else {
+                        ring_switch::build_eq_parallel(point)
+                    };
+                    for (j, &ej) in eq.iter().enumerate() {
+                        b_stack[base + j * stride] += g * ej;
                     }
                     target += g * *value;
                 }
@@ -536,6 +562,22 @@ pub fn verify_opening_batch_mixed_stacked<Ch: Challenger>(
                 let mut e = crate::zerocheck::multilinear::eq_eval(low_point, &challenges[..n]);
                 let sel = offset >> n;
                 for (k, &x) in challenges[n..].iter().enumerate() {
+                    e *= if (sel >> k) & 1 == 1 { x } else { F128::ONE + x };
+                }
+                e
+            }
+            StackClaim::StridedSlot { offset, slot, stride_log, point, .. } => {
+                // eq(slot_bits ++ point ++ selector_bits, challenges) — the same
+                // value the dense Slot with low_point = slot_bits ++ point yields.
+                let mut e = F128::ONE;
+                for k in 0..*stride_log {
+                    let x = challenges[k];
+                    e *= if (slot >> k) & 1 == 1 { x } else { F128::ONE + x };
+                }
+                let block_vars = stride_log + point.len();
+                e *= crate::zerocheck::multilinear::eq_eval(point, &challenges[*stride_log..block_vars]);
+                let sel = offset >> block_vars;
+                for (k, &x) in challenges[block_vars..].iter().enumerate() {
                     e *= if (sel >> k) & 1 == 1 { x } else { F128::ONE + x };
                 }
                 e

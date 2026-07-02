@@ -205,9 +205,10 @@ pub(crate) fn tables() -> [&'static dyn Table; 6] {
 pub(crate) const BLAKE3_TABLE: usize = 5;
 
 /// BLAKE3 value-column LOCAL indices in canonical slot order
-/// `[a0, a1, b0, b1, c0, c1]` (matches `blake3_flock::SLOTS`). `cpu` binds these
-/// committed columns to flock's packed `q_pkd` at a random instance point, so
-/// the BLAKE3 compression they feed the memory bus is a flock-proven one.
+/// `[a0, a1, b0, b1, c0, c1]` (matches `blake3_flock::SLOTS`). These columns are
+/// VIRTUAL (never committed): `q_pkd` already holds those words at fixed packed
+/// slots, so `cpu` routes their memory-bus evaluation claims straight to `q_pkd`
+/// (`slot_claims`) — the value the bus flushes IS the flock-proven word.
 pub(crate) const BLAKE3_VALUE_COLS: [usize; 6] = [
     blake3t::VA0,
     blake3t::VA1,
@@ -556,6 +557,11 @@ impl Table for JumpTable {
 /// successors `g·aa, g·ab, g·ac`. Only the three base-address bindings are
 /// constrained; the compression relating output words to input words is
 /// *unproven* (deferred), so no constraint links `vc*` to the inputs.
+///
+/// The six value columns are listed in `n_committed_columns` (they need a local
+/// index for the flushes and are filled from the trace for the bus), but `cpu`
+/// treats them as VIRTUAL — not committed — and routes their bus claims to
+/// `q_pkd`, which already holds those words (see [`BLAKE3_VALUE_COLS`]).
 struct Blake3Table;
 
 mod blake3t {
