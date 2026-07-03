@@ -2,9 +2,10 @@
 //!
 //! Scope (deliberately small): immutable variables, field arithmetic (`+` =
 //! `XOR`, `*` = `MUL_NATIVE`), function calls with multiple returns,
-//! `assert a == b`, and `mul_range` loops carried out *in the exponent* (the
-//! counter is `gᵏ`, advanced by one ×g per iteration). No mutable variables, no
-//! `Const` parameters, no `match`/`match_range`.
+//! `assert a == b`, range checks in the exponent (`assert log x < log GEN ** k`
+//! or `assert log x < k`), and `mul_range` loops carried out *in the exponent*
+//! (the counter is `gᵏ`, advanced by one ×g per iteration). No mutable
+//! variables, no `Const` parameters, no `match`/`match_range`.
 //!
 //! ## Calling convention
 //!
@@ -87,6 +88,13 @@ pub enum Stmt {
     LetTuple(Vec<String>, String, Vec<Expr>),
     /// `assert a == b` — a proof-enforced equality.
     AssertEq(Expr, Expr),
+    /// `assert log X < log Y` (also `assert log X < k` with an integer
+    /// exponent) — a *range check in the exponent*: with `X = g^x`, proves
+    /// `x < k`, i.e. `X ∈ {g^0, g^1, …, g^{k-1}}`. The bound `Y = g^k` is a
+    /// compile-time power of `GEN` with `1 ≤ k ≤ 2^MIN_LOG_MEM`; see
+    /// [`FnLower::lower_assert_lt`] for the 3-cycle gadget (leanVM's DEREF
+    /// range-check trick, transported to g-powers).
+    AssertLt(Expr, u64),
     /// `f(args)` as a statement (returns discarded).
     Call(String, Vec<Expr>),
     /// `arr[idx] = value` — store into a heap cell (write-once).
@@ -218,6 +226,9 @@ struct FnLower<'a> {
     is_main: bool,
     code: Vec<LInstr>,
     one_off: Option<Off>,
+    /// Range-check product-target cells: bound `k` → the frame cell holding
+    /// `g^{k-1}`, set lazily once and shared by every check of that bound.
+    bounds: HashMap<u64, Off>,
     /// Hints queued to attach to the next emitted instruction.
     pending: Vec<Hint>,
     queue: &'a mut Vec<Func>,
@@ -271,6 +282,57 @@ impl FnLower<'_> {
     fn copy(&mut self, src: Off, dst: Off) {
         let one = self.one();
         self.emit(LOp::Mul { a: src, b: one, c: dst });
+    }
+
+    /// The frame cell holding `g^{k-1}` — the range-check product target — set
+    /// lazily once per distinct bound `k` and shared by that bound's checks.
+    fn bound_cell(&mut self, k: u64) -> Off {
+        if let Some(&o) = self.bounds.get(&k) {
+            return o;
+        }
+        let o = self.fresh();
+        self.emit(LOp::Set {
+            o,
+            k: KVal::Const(g_pow_u128((k - 1) as u128)),
+        });
+        self.bounds.insert(k, o);
+        o
+    }
+
+    /// `assert log x < log GEN ** k` — the 3-cycle range check *in the
+    /// exponent* (leanVM's DEREF trick, doc `../leanVM/misc/minimal_zkVM.tex`
+    /// §range-checks, transported to g-powers). With `x = g^e`:
+    ///
+    /// 1. `DEREF` through `x` — the dereferenced address `x·g^0` must be one of
+    ///    the memory's `2^h` addresses `{g^0, …, g^{2^h-1}}` (doc §Memory), so
+    ///    the bus itself proves `x = g^e` with `e < 2^h`;
+    /// 2. `MUL x·y` into the write-once cell holding `g^{k-1}` — asserts
+    ///    `x·y = g^{k-1}`. The complement `y = g^{k-1-e}` needs no hint: the
+    ///    result cell is already written, so the runner back-solves the one
+    ///    unknown operand (leanVM's ADD deduction, multiplicatively);
+    /// 3. `DEREF` through `y` — proves `y = g^f` with `f < 2^h`.
+    ///
+    /// Then `e + f ≡ k-1 (mod 2^128-1)` with `e, f < 2^h`, and since a negative
+    /// `k-1-e` wraps to `≈ 2^128 ≫ 2^h`, this forces `e ≤ k-1` — for ANY memory
+    /// size the prover announces, provided `k ≤ 2^MIN_LOG_MEM`. The two `DEREF`
+    /// target cells are unconstrained touches (only the address matters),
+    /// back-filled at the end of execution; the constant cell is one amortized
+    /// `SET` per distinct bound.
+    fn lower_assert_lt(&mut self, e: &Expr, k: u64) {
+        assert!(k >= 1, "range-check bound GEN ** 0 names the empty set");
+        assert!(
+            k <= 1 << crate::cpu::MIN_LOG_MEM,
+            "range-check bound GEN ** {k} exceeds 2^{} (the minimum memory size)",
+            crate::cpu::MIN_LOG_MEM,
+        );
+        let x = self.expr(e);
+        let kcell = self.bound_cell(k);
+        let y = self.fresh(); // the complement g^{k-1-e}, back-solved by the MUL
+        let t1 = self.fresh(); // DEREF targets: unconstrained touch cells
+        let t2 = self.fresh();
+        self.emit(LOp::Deref { alpha: x, beta: 0, gamma: t1, mode: DerefMode::Cell });
+        self.emit(LOp::Mul { a: x, b: y, c: kcell });
+        self.emit(LOp::Deref { alpha: y, beta: 0, gamma: t2, mode: DerefMode::Cell });
     }
 
     fn expr(&mut self, e: &Expr) -> Off {
@@ -555,6 +617,7 @@ impl FnLower<'_> {
                     k: KVal::Const(F128::ZERO),
                 });
             }
+            Stmt::AssertLt(e, k) => self.lower_assert_lt(e, *k),
             Stmt::Call(f, args) => {
                 self.call(f, args, 0);
             }
@@ -725,6 +788,7 @@ fn free_vars_stmt(s: &Stmt, refs: &mut Vec<String>, bound: &mut std::collections
             free_vars_expr(a, refs);
             free_vars_expr(b, refs);
         }
+        Stmt::AssertLt(e, _) => free_vars_expr(e, refs),
         Stmt::CallIfNe(a, b, _, args) => {
             free_vars_expr(a, refs);
             free_vars_expr(b, refs);
@@ -760,6 +824,7 @@ fn lower_func(f: &Func, queue: &mut Vec<Func>, loop_ctr: &mut usize) -> Lowered 
         is_main: f.name == "main",
         code: Vec::new(),
         one_off: None,
+        bounds: HashMap::new(),
         pending: Vec::new(),
         queue,
         loop_ctr,
@@ -904,8 +969,32 @@ impl Parser {
             ));
         }
         if let Some(rest) = line.strip_prefix("assert ") {
-            let (a, b) = split_once_top(rest, "==").ok_or("`assert` needs `==`")?;
-            return Ok(Stmt::AssertEq(parse_expr(&a)?, parse_expr(&b)?));
+            if let Some((a, b)) = split_once_top(rest, "==") {
+                return Ok(Stmt::AssertEq(parse_expr(&a)?, parse_expr(&b)?));
+            }
+            // `assert log X < log Y` (`Y` a compile-time g-power) or
+            // `assert log X < k` (`k` an integer exponent) — a range check in
+            // the exponent: proves `log_g(X) < k`.
+            if let Some((a, b)) = split_once_top(rest, "<") {
+                let x = strip_log(&a).ok_or(
+                    "a `<` assert compares logs: `assert log X < log Y` or `assert log X < k`",
+                )?;
+                let bound = match strip_log(&b) {
+                    Some(y) => gpow_bound(&parse_expr(y)?)?, // log GEN ** k = k
+                    None => match parse_expr(&b)? {
+                        Expr::Lit(k) => u64::try_from(k)
+                            .map_err(|_| format!("log bound {k} does not fit in u64"))?,
+                        other => {
+                            return Err(format!(
+                                "a log bound must be `log GEN ** k` or an integer literal, \
+                                 got `{other:?}`"
+                            ));
+                        }
+                    },
+                };
+                return Ok(Stmt::AssertLt(parse_expr(x)?, bound));
+            }
+            return Err("`assert` needs `==` or `log _ < _`".into());
         }
         // Assignment or bare call.
         if let Some((lhs, rhs)) = split_assign(&line) {
@@ -1026,23 +1115,34 @@ fn split_once_top(s: &str, op: &str) -> Option<(String, String)> {
     None
 }
 
-/// Parse a `mul_range` bound: a compile-time power of the generator — `1`
-/// (= `g^0`), `GEN` (= `g^1`), or `GEN ** k` — returning the exponent `k`. The
-/// loop counter starts at the `start` element and is multiplied by `g` each
-/// iteration until it equals `stop`, so both bounds must name `g^k` explicitly
-/// (a bound that is not a known power of `g` couldn't be reached by the walk).
-fn parse_gpow_bound(s: &str) -> Result<u64, String> {
-    match parse_expr(s)? {
+/// A range bound (`mul_range` bounds and `assert log _ < log _` bounds): a
+/// compile-time power of the generator — `1` (= `g^0`), `GEN` (= `g^1`), or
+/// `GEN ** k` — returning the exponent `k`. Both uses walk/compare exponents,
+/// so the bound must name `g^k` explicitly (an element that is not a known
+/// power of `g` has no usable exponent).
+fn gpow_bound(e: &Expr) -> Result<u64, String> {
+    match e {
         // `1` is the multiplicative identity g^0 — the natural loop start.
         Expr::Lit(1) => Ok(0),
         Expr::Gen => Ok(1),
         Expr::GPow(k) => {
-            u64::try_from(k).map_err(|_| format!("mul_range bound exponent {k} does not fit in u64"))
+            u64::try_from(*k).map_err(|_| format!("bound exponent {k} does not fit in u64"))
         }
         other => Err(format!(
-            "mul_range bounds must be powers of GEN (`1`, `GEN`, or `GEN ** k`), got `{other:?}`"
+            "a range bound must be a power of GEN (`1`, `GEN`, or `GEN ** k`), got `{other:?}`"
         )),
     }
+}
+
+fn parse_gpow_bound(s: &str) -> Result<u64, String> {
+    gpow_bound(&parse_expr(s)?)
+}
+
+/// Strip a leading `log` token (`log x`, `log(x)`), if present. The token must
+/// end at a boundary, so a variable named `logx` is not a log of `x`.
+fn strip_log(s: &str) -> Option<&str> {
+    let r = s.trim_start().strip_prefix("log")?;
+    r.starts_with([' ', '(']).then_some(r)
 }
 
 /// Parse an expression with `+` (lowest) then `*`, atoms being integer literals,

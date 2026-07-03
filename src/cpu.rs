@@ -48,8 +48,11 @@ fn blake3_compress(va0: F128, va1: F128, vb0: F128, vb1: F128) -> (F128, F128) {
 
 /// Data-memory size bounds (doc §Memory): memory is `2^h` cells with
 /// `MIN_LOG_MEM ≤ h ≤ MAX_LOG_MEM`. The prover pads up to the minimum; the
-/// verifier rejects any announced `h` outside the range.
-const MIN_LOG_MEM: usize = 16;
+/// verifier rejects any announced `h` outside the range. `MIN_LOG_MEM` is also
+/// the static cap on range-check bounds (`compiler::Stmt::AssertLt`): a bound
+/// `≤ 2^MIN_LOG_MEM` keeps the complement argument sound for every memory size
+/// the prover may announce.
+pub(crate) const MIN_LOG_MEM: usize = 16;
 const MAX_LOG_MEM: usize = 32;
 
 /// Each per-opcode table holds at most `2^MAX_LOG_ROWS` rows (executed
@@ -297,8 +300,21 @@ impl Program {
 
         // Per-opcode trace rows, accumulated during the walk and assembled into the
         // `Trace` once the run finishes (alongside the final count columns).
-        let (mut xor, mut mul, mut set, mut deref, mut jump, mut blake3) =
-            (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let (mut xor, mut mul, mut set, mut deref, mut jump, mut blake3): (
+            Vec<Xrow>,
+            Vec<Xrow>,
+            Vec<Srow>,
+            Vec<Drow>,
+            Vec<Jrow>,
+            Vec<Brow>,
+        ) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+
+        // `DEREF Cell` touches whose two sides are both still unwritten (the
+        // range-check gadget's unconstrained target cells): `(deref row index,
+        // a2, a3)`, back-filled after the run — write-once memory is
+        // order-independent, so the value can be decided at the end (leanVM's
+        // end-of-execution deref-hint resolution).
+        let mut deferred: Vec<(usize, usize, u32)> = Vec::new();
 
         // Grow the dense vectors so `idx` is in range (keeps mem/written/mem_count in
         // sync). All accessed cells satisfy cell < next_free after their frame's
@@ -381,6 +397,28 @@ impl Program {
                 Op::Xor { a, b, c } | Op::Mul { a, b, c } => {
                     let is_xor = matches!(self.prog[pc as usize], Op::Xor { .. });
                     let (aa, ab, ac) = (fp + a, fp + b, fp + c);
+                    // The row is the equality `m[c] = m[a] op m[b]` over write-once
+                    // memory. Normally the operands are known and the result is
+                    // computed forward; with the result already written and exactly
+                    // one operand unwritten, the runner back-solves the operand
+                    // (leanVM's ADD deduction, multiplicatively: this is what
+                    // produces the range-check complement `y = g^{k-1}·x^{-1}` from
+                    // `MUL x·y = g^{k-1}`, with no dedicated hint).
+                    let is_set = |w: &[bool], cell: u32| (cell as usize) < w.len() && w[cell as usize];
+                    if is_set(&written, ac) {
+                        let (ha, hb) = (is_set(&written, aa), is_set(&written, ab));
+                        if ha ^ hb {
+                            let vc = get(&mem, &written, ac);
+                            let vk = get(&mem, &written, if ha { aa } else { ab });
+                            let v = if is_xor {
+                                vc + vk
+                            } else {
+                                assert!(!vk.is_zero(), "cannot back-solve MUL through a zero operand");
+                                vc * vk.inv()
+                            };
+                            put(&mut mem, &mut written, &mut mem_count, if ha { ab } else { aa }, v);
+                        }
+                    }
                     let va = get(&mem, &written, aa);
                     let vb = get(&mem, &written, ab);
                     let vc = if is_xor { va + vb } else { va * vb };
@@ -429,7 +467,26 @@ impl Program {
                 } => {
                     let a1 = fp + alpha;
                     let p = get(&mem, &written, a1);
-                    let base = *gmap.get(&p).expect("DEREF pointer is not a g-power");
+                    let base = match gmap.get(&p) {
+                        Some(&b) => b,
+                        None => {
+                            // Not indexed yet: grow the g-power index to the minimum
+                            // memory size — range-check touches point anywhere below
+                            // their bound (≤ 2^MIN_LOG_MEM), not just at allocated
+                            // frames/buffers. A value still absent is no valid
+                            // pointer: a wild deref, or a failed range check
+                            // (`assert log _ < _`) surfacing honestly.
+                            grow_gpow(&mut gpow, &mut gmap, 1 << MIN_LOG_MEM);
+                            *gmap.get(&p).unwrap_or_else(|| {
+                                panic!(
+                                    "DEREF pointer is not a small g-power at pc {pc}: a wild \
+                                     pointer, or a failed range check \
+                                     (value 0x{:016x}{:016x})",
+                                    p.hi, p.lo
+                                )
+                            })
+                        }
+                    };
                     let a2 = (base + beta) as usize;
                     let a3 = fp + gamma;
                     match mode {
@@ -450,7 +507,15 @@ impl Program {
                                     let v = get(&mem, &written, a3);
                                     put(&mut mem, &mut written, &mut mem_count, a2 as u32, v);
                                 }
-                                (false, false) => panic!("DEREF Cell: both sides unset"),
+                                (false, false) => {
+                                    // Both sides still unwritten: a range-check
+                                    // touch (only the address validity of `a2`
+                                    // matters, not its value). Defer: the row is
+                                    // pushed with ZERO values and patched after
+                                    // the run, once `m[a2]`'s final value (a later
+                                    // program write, or ZERO) is known.
+                                    deferred.push((deref.len(), a2, a3));
+                                }
                             }
                         }
                         DerefMode::Pc => {
@@ -579,6 +644,33 @@ impl Program {
         }
 
         assert_eq!((pc, fp), (ending_pc, 0), "main must halt at the sentinel pc g^{{B-1}}");
+
+        // Resolve the deferred DEREF touches: a fixpoint, so a touch whose cell is
+        // filled by another deferred entry picks up that value; cells nobody ever
+        // writes are fixed to ZERO. The rows' values are patched in place (their
+        // access counts were already bumped during the walk — the memory bus is
+        // order-independent, it only needs every access to agree on the value).
+        while {
+            let before = deferred.len();
+            deferred.retain(|&(i, a2, a3)| {
+                if written[a2] {
+                    let v = mem[a2];
+                    put(&mut mem, &mut written, &mut mem_count, a3, v);
+                    deref[i].v2 = v;
+                    deref[i].v3 = v;
+                    false
+                } else {
+                    true
+                }
+            });
+            deferred.len() < before
+        } {}
+        for (_, a2, a3) in deferred {
+            // Never written: the cells are genuinely unconstrained; fix them (and
+            // the rows, already ZERO) to ZERO.
+            put(&mut mem, &mut written, &mut mem_count, a2 as u32, F128::ZERO);
+            put(&mut mem, &mut written, &mut mem_count, a3, F128::ZERO);
+        }
 
         // Pad memory to a power of two (the boundary tables read a dense image),
         // at least 2^MIN_LOG_MEM cells (doc §Memory).
