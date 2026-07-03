@@ -95,6 +95,17 @@ def StackBuf(n: int) -> _Elt:
     return _Elt()
 
 
+def hint_witness(dest, name: str) -> None:
+    """Fill `dest` — a StackBuf, or a StackBuf/HeapBuf slice of any length —
+    with the next ENTRY (a slice of values) of the named prover witness
+    stream; the same symbol may be hinted many times, each call popping the
+    next entry (`Program::set_witness`; test programs declare one
+    `# witness name: v1, …` line per entry). Zero cycles, and the values are
+    completely UNCONSTRAINED: the program must constrain them itself
+    (asserts, range checks, hashes)."""
+    _ = dest, name
+
+
 def blake3(a, b, out) -> None:
     """The BLAKE3 compression of the two 256-bit operands `a`, `b`, written
     into the 2-cell run `out` (write-once: if `out` was already written, this

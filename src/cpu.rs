@@ -220,6 +220,12 @@ pub struct Program {
     /// run the program. Public verification (\S `verify`) ignores them.
     pub(crate) hints: HashMap<u32, Vec<crate::compiler::RHint>>,
     pub(crate) main_frame: u32,
+    /// Named prover witness streams for the program's `hint_witness` calls
+    /// ([`Program::set_witness`]): a stream is a sequence of *entries* (one
+    /// slice of values per `hint_witness` call — the same symbol may be
+    /// hinted many times); each call pops the next entry, whose length must
+    /// match its destination. Prover-side only; verification ignores them.
+    pub(crate) witness: HashMap<String, Vec<Vec<F128>>>,
 }
 
 impl Program {
@@ -234,7 +240,15 @@ impl Program {
         main_frame: u32,
     ) -> Self {
         let digest = program_digest(&prog);
-        Self { prog, pc0, fp0, digest, hints, main_frame }
+        Self { prog, pc0, fp0, digest, hints, main_frame, witness: HashMap::new() }
+    }
+
+    /// Supply the entries of witness stream `name`: one slice of values per
+    /// `hint_witness(dest, "name")` call, popped in order (the same symbol
+    /// may be hinted many times). Prover-side data: entirely unconstrained,
+    /// invisible to verification.
+    pub fn set_witness(&mut self, name: impl Into<String>, entries: Vec<Vec<F128>>) {
+        self.witness.insert(name.into(), entries);
     }
 }
 
@@ -297,6 +311,10 @@ impl Program {
         let mut next_free = self.main_frame;
         let (mut pc, mut fp) = (self.pc0, self.fp0);
         let mut steps = 0usize;
+
+        // Per-stream cursor into the named witness data (`hint_witness` pops
+        // sequentially).
+        let mut wit_pos: HashMap<String, usize> = HashMap::new();
 
         // Per-opcode trace rows, accumulated during the walk and assembled into the
         // `Trace` once the run finishes (alongside the final count columns).
@@ -367,9 +385,30 @@ impl Program {
 
             // Apply the hints scheduled before this instruction.
             if let Some(hs) = self.hints.get(&pc) {
+                // Pop the next entry of witness stream `name`; it must hold
+                // exactly `len` values (the destination run's length).
+                let pop_witness = |wit_pos: &mut HashMap<String, usize>, name: &str, len: u32| {
+                    let entries = self
+                        .witness
+                        .get(name)
+                        .unwrap_or_else(|| panic!("no witness stream `{name}` (Program::set_witness)"));
+                    let pos = wit_pos.entry(name.to_string()).or_insert(0);
+                    let entry = entries.get(*pos).unwrap_or_else(|| {
+                        panic!("witness stream `{name}` exhausted (needs entry {}, has {})", *pos + 1, entries.len())
+                    });
+                    assert_eq!(
+                        entry.len(),
+                        len as usize,
+                        "witness `{name}` entry {} holds {} values, the destination {len}",
+                        *pos,
+                        entry.len()
+                    );
+                    *pos += 1;
+                    entry.clone()
+                };
                 for h in hs {
-                    match *h {
-                        RHint::Alloc { ptr, size } => {
+                    match h {
+                        &RHint::Alloc { ptr, size } => {
                             let cell = fp + ptr;
                             ensure(&mut mem, &mut written, &mut mem_count, cell as usize);
                             if !written[cell as usize] {
@@ -379,6 +418,22 @@ impl Program {
                                 ensure(&mut mem, &mut written, &mut mem_count, next_free as usize);
                                 mem[cell as usize] = gpow[base as usize];
                                 written[cell as usize] = true;
+                            }
+                        }
+                        RHint::WitnessStack { name, base, len } => {
+                            let vals = pop_witness(&mut wit_pos, name, *len);
+                            for (k, v) in vals.into_iter().enumerate() {
+                                put(&mut mem, &mut written, &mut mem_count, fp + base + k as u32, v);
+                            }
+                        }
+                        RHint::WitnessHeap { name, ptr, lo, len } => {
+                            let p = get(&mem, &written, fp + ptr);
+                            let b = *gmap.get(&p).unwrap_or_else(|| {
+                                panic!("hint_witness heap pointer is not a g-power")
+                            });
+                            let vals = pop_witness(&mut wit_pos, name, *len);
+                            for (k, v) in vals.into_iter().enumerate() {
+                                put(&mut mem, &mut written, &mut mem_count, b + lo + k as u32, v);
                             }
                         }
                     }

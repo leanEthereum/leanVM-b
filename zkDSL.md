@@ -381,6 +381,34 @@ signature verifier wants.
 The compression is proven by the vendored flock BLAKE3 R1CS (see `doc.pdf`
 §BLAKE3); one instruction per 64→32-byte compression.
 
+## Hints — `hint_witness(dest, "name")`
+
+```python
+sb = StackBuf(2)
+hint_witness(sb, "r")        # fill the whole StackBuf
+hint_witness(hb[0:3], "h")   # or any StackBuf/HeapBuf slice (any length)
+assert log(sb[0]) < 8        # hinted values are UNCONSTRAINED: pin them down
+```
+
+Prover-supplied data (leanVM's `hint_witness`): a stream is a sequence of
+**entries** — one slice of values per `hint_witness` call, and the same
+symbol may be hinted many times. Each call pops the stream's next entry
+(whose length must match the destination run) and writes it into `dest`
+through the hint mechanism, at **zero cycles**. The values are completely
+unconstrained; the program must constrain them itself (asserts, range checks,
+hashes) — an unconstrained hint consumed by anything security-relevant is a
+critical vulnerability. Runtime-start heap slices (`buf[i:i + k]`, `k` a
+literal) work too.
+
+The prover supplies streams with `program.set_witness("name", entries)`
+(`Vec<Vec<F128>>`); test programs declare them as annotations, one line per
+entry — repeated lines with the same name are its successive entries:
+
+```python
+# witness r: GEN ** 5, 12
+# witness r: 9
+```
+
 ## Cost cheat sheet
 
 | construct | instructions |
@@ -399,6 +427,7 @@ The compression is proven by the vendored flock BLAKE3 R1CS (see `doc.pdf`
 | `mul_range` iteration | body + ≈ 1 `MUL` + 1 `XOR` + call overhead |
 | `unroll` iteration | body only (compile-time replication) |
 | `blake3(a, b, out)` | 1 (+2 `DEREF`s per heap operand, +1 `MUL` per runtime slice start) |
+| `hint_witness(dest, "name")` | 0 (+1 `MUL` for a runtime slice start) |
 
 ## Example
 
@@ -432,4 +461,4 @@ Mutable variables and compound assignment; conditions other than field
 constants; multi-file imports; `@inline`; `Const` parameters as `mul_range`
 or range-check bounds (those are parsed as literals); runtime slice starts on
 a `StackBuf`; runtime range-check bounds (`assert log a < log b` with runtime
-`b`); custom hints; precompiles beyond `BLAKE3`.
+`b`); custom hint kinds beyond `hint_witness`; precompiles beyond `BLAKE3`.

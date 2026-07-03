@@ -103,6 +103,14 @@ pub enum Stmt {
     AssertLt(Expr, u64),
     /// `f(args)` as a statement (returns discarded).
     Call(String, Vec<Expr>),
+    /// `hint_witness(dest, "name")` — fill `dest` (a `StackBuf`, or a
+    /// `StackBuf`/`HeapBuf` slice of any length) with the next *entry* of the
+    /// named prover witness stream (`Program::set_witness`); the same symbol
+    /// may be hinted many times, each call popping the next entry, whose
+    /// length must match `dest`. Zero cycles: the values land through the
+    /// hint mechanism, completely unconstrained — the program must constrain
+    /// them itself (asserts, range checks, hashes).
+    HintWitness { dest: Expr, name: String },
     /// `if lhs == rhs:` (`eq`) / `if lhs != rhs:` (`!eq`) with an optional
     /// `else` block (an `elif` parses as an `else` holding a nested `if`).
     /// One conditional `JUMP` on the XOR of the two sides; bindings made
@@ -264,6 +272,12 @@ enum Hint {
     /// `m[fp·g^ptr] = g^{fresh base}` — a fresh, disjoint heap region of `size`
     /// cells (a `HeapBuf(size)`), addressed by g-power offsets from the pointer.
     AllocBuffer { ptr: Off, size: u32 },
+    /// Pop stream `name`'s next entry (`len` values) into the frame cells
+    /// `m[fp·g^{base+k}]`, `k < len`.
+    WitnessStack { name: String, base: Off, len: u32 },
+    /// Pop stream `name`'s next entry (`len` values) into the heap cells
+    /// `m[p·g^{lo+k}]`, `k < len`, where `p = m[fp·g^ptr]`.
+    WitnessHeap { name: String, ptr: Off, lo: u32, len: u32 },
 }
 
 struct Lowered {
@@ -414,6 +428,13 @@ impl FnLower<'_> {
             self.bounds.clone(),
         );
         f(self);
+        // A hint pending at the end of a branch (e.g. a trailing
+        // `hint_witness`) must not attach to whatever instruction follows the
+        // join — that would fire it unconditionally. Absorb it with a no-op.
+        if !self.pending.is_empty() {
+            let o = self.fresh();
+            self.emit(LOp::Set { o, k: KVal::Const(F128::ZERO) });
+        }
         (self.vars, self.stacks, self.consts, self.one_off, self.self_fp_off, self.bounds) = saved;
     }
 
@@ -565,6 +586,50 @@ impl FnLower<'_> {
         });
         self.bounds.insert(k, o);
         o
+    }
+
+    /// `hint_witness(dest, "name")` — resolve `dest` to a run of cells and
+    /// queue the witness-fill hint (no instructions: the values are written
+    /// by the runner before the next instruction executes, unconstrained).
+    /// `dest`: a whole `StackBuf`, a `StackBuf` slice, a `HeapBuf` slice with
+    /// compile-time bounds, or a runtime-start heap slice `buf[i:i + k]`.
+    fn lower_hint_witness(&mut self, dest: &Expr, name: &str) {
+        let name = name.to_string();
+        let hint = match dest {
+            Expr::Var(_) => {
+                let (base, len) = self
+                    .stack_of(dest)
+                    .expect("hint_witness dest must be a StackBuf or a StackBuf/HeapBuf slice");
+                Hint::WitnessStack { name, base, len }
+            }
+            Expr::Slice(arr, lo, hi) => match (self.try_const_index(lo), self.try_const_index(hi)) {
+                (Some(lo), Some(hi)) => {
+                    assert!(lo < hi, "empty hint_witness slice {lo}:{hi}");
+                    if let Some((base, size)) = self.stack_of(arr) {
+                        assert!(hi <= size, "slice {lo}:{hi} out of bounds (StackBuf size {size})");
+                        Hint::WitnessStack { name, base: base + lo, len: hi - lo }
+                    } else {
+                        let ptr = self.expr(arr);
+                        Hint::WitnessHeap { name, ptr, lo, len: hi - lo }
+                    }
+                }
+                _ => {
+                    assert!(
+                        self.stack_of(arr).is_none(),
+                        "a StackBuf slice needs compile-time bounds (frame offsets are baked into the bytecode)"
+                    );
+                    let k = plus_k(lo, hi).unwrap_or_else(|| {
+                        panic!("a runtime hint_witness slice must be `buf[i:i + k]`, got `{lo:?}:{hi:?}`")
+                    });
+                    let len = u32::try_from(k).expect("hint_witness slice length overflows u32");
+                    assert!(len > 0, "empty hint_witness slice");
+                    let ptr = self.array_ptr(arr, lo);
+                    Hint::WitnessHeap { name, ptr, lo: 0, len }
+                }
+            },
+            other => panic!("hint_witness dest must be a StackBuf or a slice, got `{other:?}`"),
+        };
+        self.pending.push(hint);
     }
 
     /// `assert log x < log GEN ** k` — the 3-cycle range check *in the
@@ -776,8 +841,8 @@ impl FnLower<'_> {
                         "a StackBuf slice needs compile-time bounds (frame offsets are baked into the bytecode)"
                     );
                     assert!(
-                        is_plus_two(lo, hi),
-                        "a runtime slice must have the shape `buf[i:i + 2]`, got `{lo:?}:{hi:?}`"
+                        plus_k(lo, hi) == Some(2),
+                        "a runtime blake3 slice must have the shape `buf[i:i + 2]`, got `{lo:?}:{hi:?}`"
                     );
                     let ptr = self.array_ptr(arr, lo);
                     B3Operand::Heap { ptr, lo: 0 }
@@ -1021,6 +1086,7 @@ impl FnLower<'_> {
                 });
             }
             Stmt::AssertLt(e, k) => self.lower_assert_lt(e, *k),
+            Stmt::HintWitness { dest, name } => self.lower_hint_witness(dest, name),
             Stmt::If { eq, lhs, rhs, then, els } => self.lower_if(*eq, lhs, rhs, then, els),
             Stmt::Match { x, cases } => self.lower_match(x, cases),
             Stmt::LetMatchRange { names, x, arms } => self.lower_match_range(names, x, arms),
@@ -1206,17 +1272,18 @@ impl FnLower<'_> {
     }
 }
 
-/// `hi` is syntactically `lo + 2` (either operand order) — the shape of a
-/// runtime slice, whose bounds cannot be evaluated at compile time. Structural
-/// comparison via the derived `Debug` form (expressions are small and have no
-/// interning).
-fn is_plus_two(lo: &Expr, hi: &Expr) -> bool {
+/// The literal `k` when `hi` is syntactically `lo + k` (either operand
+/// order) — the shape of a runtime slice, whose bounds cannot be evaluated at
+/// compile time. Structural comparison via the derived `Debug` form
+/// (expressions are small and have no interning).
+fn plus_k(lo: &Expr, hi: &Expr) -> Option<u128> {
     let eq = |a: &Expr, b: &Expr| format!("{a:?}") == format!("{b:?}");
     match hi {
-        Expr::Add(a, b) => {
-            (matches!(**b, Expr::Lit(2)) && eq(a, lo)) || (matches!(**a, Expr::Lit(2)) && eq(b, lo))
-        }
-        _ => false,
+        Expr::Add(a, b) => match (a.as_ref(), b.as_ref()) {
+            (Expr::Lit(k), other) | (other, Expr::Lit(k)) if eq(other, lo) => Some(*k),
+            _ => None,
+        },
+        _ => None,
     }
 }
 
@@ -1256,6 +1323,7 @@ fn free_vars_stmt(s: &Stmt, refs: &mut Vec<String>, bound: &mut std::collections
             free_vars_expr(b, refs);
         }
         Stmt::AssertLt(e, _) => free_vars_expr(e, refs),
+        Stmt::HintWitness { dest, .. } => free_vars_expr(dest, refs),
         Stmt::If { lhs, rhs, then, els, .. } => {
             free_vars_expr(lhs, refs);
             free_vars_expr(rhs, refs);
@@ -1551,6 +1619,20 @@ impl Parser {
                     .collect::<Result<_, _>>()?,
             ));
         }
+        // `hint_witness(dest, "name")` — the string literal is not an
+        // expression; parsed here.
+        if let Some(inner) = line.strip_prefix("hint_witness(").and_then(|s| s.strip_suffix(')')) {
+            let parts = split_top(inner, ',');
+            let [dest, name] = parts.as_slice() else {
+                return Err("hint_witness(dest, \"name\") takes two arguments".into());
+            };
+            let name = name
+                .trim()
+                .strip_prefix('"')
+                .and_then(|s| s.strip_suffix('"'))
+                .ok_or("hint_witness's second argument is a string literal: \"name\"")?;
+            return Ok(Stmt::HintWitness { dest: parse_expr(dest)?, name: name.to_string() });
+        }
         if let Some(rest) = line.strip_prefix("assert ") {
             if let Some((a, b)) = split_once_top(rest, "==") {
                 return Ok(Stmt::AssertEq(parse_expr(&a)?, parse_expr(&b)?));
@@ -1836,6 +1918,9 @@ fn subst_stmt(s: &Stmt, name: &str, to: &Expr) -> (Stmt, bool) {
         Stmt::AssertEq(a, b) => (Stmt::AssertEq(e(a), e(b)), false),
         Stmt::AssertLt(a, k) => (Stmt::AssertLt(e(a), *k), false),
         Stmt::Call(f, args) => (Stmt::Call(f.clone(), args.iter().map(e).collect()), false),
+        Stmt::HintWitness { dest, name: n } => {
+            (Stmt::HintWitness { dest: e(dest), name: n.clone() }, false)
+        }
         Stmt::Store(a, i, v) => (Stmt::Store(e(a), e(i), e(v)), false),
         Stmt::Return(es) => (Stmt::Return(es.iter().map(e).collect()), false),
         Stmt::CallIfNe(a, b, f, args) => (
@@ -2051,6 +2136,10 @@ fn parse_expr(s: &str) -> Result<Expr, String> {
 pub(crate) enum RHint {
     /// Allocate a fresh region of `size` cells and write `g^{base}` to the cell.
     Alloc { ptr: Off, size: u32 },
+    /// Pop stream `name`'s next entry (`len` values) into frame cells `fp+base+k`.
+    WitnessStack { name: String, base: Off, len: u32 },
+    /// Pop stream `name`'s next entry (`len` values) into heap cells `m[fp+ptr]·g^{lo+k}`.
+    WitnessHeap { name: String, ptr: Off, lo: u32, len: u32 },
 }
 
 /// Compile an [`Ast`] to a provable [`Program`]. Panics on a malformed program
@@ -2122,6 +2211,17 @@ pub fn compile(ast: &Ast) -> Program {
                             size: frame_size[callee],
                         },
                         Hint::AllocBuffer { ptr, size } => RHint::Alloc { ptr: *ptr, size: *size },
+                        Hint::WitnessStack { name, base, len } => RHint::WitnessStack {
+                            name: name.clone(),
+                            base: *base,
+                            len: *len,
+                        },
+                        Hint::WitnessHeap { name, ptr, lo, len } => RHint::WitnessHeap {
+                            name: name.clone(),
+                            ptr: *ptr,
+                            lo: *lo,
+                            len: *len,
+                        },
                     })
                     .collect();
                 hints.insert(here, rhs);
