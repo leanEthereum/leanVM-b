@@ -45,9 +45,9 @@ fn compress(a: [F128; 2], b: [F128; 2]) -> [F128; 2] {
 /// iteration (`k = n / unroll` iterations). Layout in the heap `buff`: the chain
 /// value after `j·unroll` steps sits at cells `2j, 2j+1` (g-powers `g^{2j},
 /// g^{2j+1}`). Each outer step loads that pair into a size-2 `StackBuf`, runs
-/// `unroll` `BLAKE3`s in the stack — each output stack feeds the next with **no
-/// copies** (a self-hash `blake3(h, h)` aliases one pair into both operands) —
-/// then writes the result pair two cells along.
+/// `unroll` `BLAKE3`s in the stack — each output pair feeds the next with **no
+/// copies** (a self-hash `blake3(h, h, out)` aliases one pair into both input
+/// operands) — then writes the result pair two cells along.
 fn chain_source(n: usize, unroll: usize) -> String {
     assert!(unroll >= 1 && n.is_multiple_of(unroll), "N must be a positive multiple of UNROLL");
     let k = n / unroll;
@@ -63,9 +63,10 @@ fn chain_source(n: usize, unroll: usize) -> String {
     body.push_str("        h0[0] = buff[b]\n");
     body.push_str("        h0[1] = buff[b * GEN]\n");
     // `unroll` self-hashes; each `blake3` reads its operand stack in place and
-    // returns a fresh size-2 stack — no copies between steps.
+    // writes into the next pre-allocated size-2 stack — no copies between steps.
     for s in 1..=unroll {
-        body.push_str(&format!("        h{s} = blake3(h{p}, h{p})\n", p = s - 1));
+        body.push_str(&format!("        h{s} = StackBuf(2)\n"));
+        body.push_str(&format!("        blake3(h{p}, h{p}, h{s})\n", p = s - 1));
     }
     // Write the block's result back to the next array pair.
     body.push_str(&format!("        buff[b * GEN ** 2] = h{unroll}[0]\n"));

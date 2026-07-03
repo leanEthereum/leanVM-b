@@ -75,8 +75,13 @@ pub enum Expr {
     StackBuf(u64),
     /// `arr[idx]` — read a cell. For a heap `arr` (a pointer): `m[arr·idx]` (idx a
     /// g-power). For a [`Expr::StackBuf`]: the frame cell `base + idx` (idx a
-    /// small integer literal), read directly.
+    /// compile-time integer), read directly.
     Index(Box<Expr>, Box<Expr>),
+    /// `buf[lo:hi]` — a run of cells of a [`Expr::StackBuf`], with
+    /// compile-time integer bounds (`hi` exclusive). Only meaningful as a
+    /// `blake3` operand, where it must span exactly 2 cells (one 256-bit
+    /// value).
+    Slice(Box<Expr>, Box<Expr>, Box<Expr>),
 }
 
 /// A statement.
@@ -217,10 +222,16 @@ struct Lowered {
 struct FnLower<'a> {
     vars: HashMap<String, Off>,
     /// `StackBuf` bindings: name → (base offset, size). The `size` cells
-    /// `base..base+size` are consecutive frame cells (so a size-2 one is a direct
-    /// `blake3` operand). Kept separate from `vars` since a stack value is a run of
-    /// cells, not a single scalar.
+    /// `base..base+size` are consecutive frame cells (so a size-2 one, or a
+    /// 2-cell slice of a larger one, is a direct `blake3` operand). Kept
+    /// separate from `vars` since a stack value is a run of cells, not a
+    /// single scalar.
     stacks: HashMap<String, (Off, u32)>,
+    /// Names bound to integer literals (`x = 10`), usable in compile-time
+    /// index positions: stack indexes and slice bounds. Cleared on rebind to
+    /// anything else. (Index arithmetic is integer arithmetic — `x + 2` in a
+    /// slice bound is 12, not the field XOR the same syntax means elsewhere.)
+    consts: HashMap<String, u32>,
     next: Off,
     n_args: u32,
     is_main: bool,
@@ -411,6 +422,7 @@ impl FnLower<'_> {
                 });
                 dst
             }
+            Expr::Slice(..) => panic!("a slice is not a scalar; it is only a blake3 operand"),
         }
     }
 
@@ -430,7 +442,9 @@ impl FnLower<'_> {
         }
     }
 
-    /// A stack index must be a plain integer literal.
+    /// A stack index or slice bound: a compile-time integer — a literal, a
+    /// name bound to a literal, or `+`/`*` of those (evaluated as *integer*
+    /// arithmetic: this is index space, not the field).
     fn const_index(&self, idx: &Expr) -> u32 {
         match idx {
             // `as u32` would silently wrap a ≥ 2^32 literal (e.g. `sa[2^32]` → `sa[0]`);
@@ -438,7 +452,42 @@ impl FnLower<'_> {
             Expr::Lit(k) => {
                 u32::try_from(*k).unwrap_or_else(|_| panic!("StackBuf index {k} does not fit in u32"))
             }
-            _ => panic!("a StackBuf index must be an integer literal, got `{idx:?}`"),
+            Expr::Var(v) => *self.consts.get(v).unwrap_or_else(|| {
+                panic!("stack index `{v}` is not a compile-time constant (bind it to an integer literal)")
+            }),
+            Expr::Add(a, b) => self
+                .const_index(a)
+                .checked_add(self.const_index(b))
+                .unwrap_or_else(|| panic!("stack index overflows u32")),
+            Expr::Mul(a, b) => self
+                .const_index(a)
+                .checked_mul(self.const_index(b))
+                .unwrap_or_else(|| panic!("stack index overflows u32")),
+            _ => panic!("a StackBuf index must be a compile-time integer, got `{idx:?}`"),
+        }
+    }
+
+    /// Resolve a `blake3` operand — a size-2 `StackBuf` name, or a 2-cell
+    /// slice `buf[lo:hi]` of a (large) `StackBuf` with compile-time bounds —
+    /// to the frame offset of its first cell.
+    fn stack_operand(&self, e: &Expr) -> Off {
+        match e {
+            Expr::Var(_) => {
+                let (base, size) = self.stack_of(e).expect("a blake3 operand must be a StackBuf");
+                assert!(
+                    size == 2,
+                    "a whole-StackBuf blake3 operand must have size 2; slice a larger one: `buf[lo:lo + 2]`"
+                );
+                base
+            }
+            Expr::Slice(arr, lo, hi) => {
+                let (base, size) = self.stack_of(arr).expect("only a StackBuf can be sliced");
+                let (lo, hi) = (self.const_index(lo), self.const_index(hi));
+                assert!(hi == lo + 2, "a blake3 slice must span exactly 2 cells, got {lo}:{hi}");
+                assert!(hi <= size, "slice {lo}:{hi} out of bounds (StackBuf size {size})");
+                base + lo
+            }
+            other => panic!("a blake3 operand must be a StackBuf or a StackBuf slice, got `{other:?}`"),
         }
     }
 
@@ -486,34 +535,9 @@ impl FnLower<'_> {
     fn call(&mut self, callee: &str, args: &[Expr], n_ret: usize) -> Vec<Off> {
         assert!(
             callee != "blake3",
-            "blake3 returns a size-2 StackBuf; bind it: `out = blake3(a, b)`"
+            "blake3 is a statement: `blake3(a, b, out)` writes the digest into the 2-cell stack run `out`"
         );
         self.lower_call(callee, args, n_ret, None)
-    }
-
-    /// `c0, c1 = blake3(a0, a1, b0, b1)` — the VM `BLAKE3` of the two 256-bit
-    /// inputs `a = (a0, a1)` and `b = (b0, b1)`, output `c = (c0, c1)`. The op
-    /// reads each operand at two *consecutive* frame cells, so the four input
-    /// words are copied into consecutive slots and the output takes two fresh
-    /// consecutive slots. Returns the two output offsets `(c0, c0+1)`.
-    /// `out = blake3(a, b)` — `a` and `b` are size-2 `StackBuf`s (each a 256-bit
-    /// value in two consecutive frame cells). Reads the operands *in place* and
-    /// writes the digest to a fresh size-2 `StackBuf`, so nothing is copied. A
-    /// self-hash `blake3(h, h)` passes the same base for both operands (`a == b`),
-    /// aliasing one pair into both inputs. Returns the output stack `(base, 2)`.
-    fn blake3_call(&mut self, args: &[Expr]) -> (Off, u32) {
-        assert_eq!(args.len(), 2, "blake3(a, b) takes two size-2 StackBufs");
-        let (a_base, a_size) = self
-            .stack_of(&args[0])
-            .expect("blake3 operand `a` must be a StackBuf");
-        let (b_base, b_size) = self
-            .stack_of(&args[1])
-            .expect("blake3 operand `b` must be a StackBuf");
-        assert_eq!(a_size, 2, "blake3 operand `a` must have size 2");
-        assert_eq!(b_size, 2, "blake3 operand `b` must have size 2");
-        let out = self.alloc_stack(2);
-        self.emit(LOp::Blake3 { a: a_base, b: b_base, c: out });
-        (out, 2)
     }
 
     /// A *conditional* tail call: transfer to `callee(args)` iff `cond != 0`,
@@ -588,23 +612,28 @@ impl FnLower<'_> {
                 Expr::StackBuf(n) => {
                     let base = self.alloc_stack(*n as u32);
                     self.vars.remove(name);
+                    self.consts.remove(name);
                     self.stacks.insert(name.clone(), (base, *n as u32));
-                }
-                // `x = blake3(a, b)`: bind the size-2 output stack.
-                Expr::Call(f, args) if f == "blake3" => {
-                    let (base, size) = self.blake3_call(args);
-                    self.vars.remove(name);
-                    self.stacks.insert(name.clone(), (base, size));
                 }
                 _ => {
                     let o = self.expr(e);
                     self.stacks.remove(name);
+                    // A literal binding is also usable as a compile-time index.
+                    match e {
+                        Expr::Lit(n) if u32::try_from(*n).is_ok() => {
+                            self.consts.insert(name.clone(), *n as u32);
+                        }
+                        _ => {
+                            self.consts.remove(name);
+                        }
+                    }
                     self.vars.insert(name.clone(), o);
                 }
             },
             Stmt::LetTuple(names, f, args) => {
                 let dsts = self.call(f, args, names.len());
                 for (n, d) in names.iter().zip(dsts) {
+                    self.consts.remove(n);
                     self.vars.insert(n.clone(), d);
                 }
             }
@@ -619,6 +648,17 @@ impl FnLower<'_> {
             }
             Stmt::AssertLt(e, k) => self.lower_assert_lt(e, *k),
             Stmt::Call(f, args) => {
+                // `blake3(a, b, out)`: the digest of the two 256-bit operands
+                // lands in the existing 2-cell stack run `out` (write-once: if
+                // `out` was already written, this asserts the digest equals it).
+                if f == "blake3" {
+                    assert_eq!(args.len(), 3, "blake3 takes (a, b, out)");
+                    let a = self.stack_operand(&args[0]);
+                    let b = self.stack_operand(&args[1]);
+                    let c = self.stack_operand(&args[2]);
+                    self.emit(LOp::Blake3 { a, b, c });
+                    return;
+                }
                 self.call(f, args, 0);
             }
             Stmt::Store(arr, idx, val) => {
@@ -766,6 +806,11 @@ fn free_vars_expr(e: &Expr, refs: &mut Vec<String>) {
             free_vars_expr(a, refs);
             free_vars_expr(b, refs);
         }
+        Expr::Slice(a, lo, hi) => {
+            free_vars_expr(a, refs);
+            free_vars_expr(lo, refs);
+            free_vars_expr(hi, refs);
+        }
         Expr::Call(_, args) => args.iter().for_each(|a| free_vars_expr(a, refs)),
         Expr::Lit(_) | Expr::Gen | Expr::GPow(_) | Expr::HeapBuf(_) | Expr::StackBuf(_) => {}
     }
@@ -819,6 +864,7 @@ fn lower_func(f: &Func, queue: &mut Vec<Func>, loop_ctr: &mut usize) -> Lowered 
     let mut lowerer = FnLower {
         vars,
         stacks: HashMap::new(),
+        consts: HashMap::new(),
         next,
         n_args: f.params.len() as u32,
         is_main: f.name == "main",
@@ -1233,11 +1279,19 @@ fn parse_expr(s: &str) -> Result<Expr, String> {
     if let Ok(n) = s.parse::<u128>() {
         return Ok(Expr::Lit(n));
     }
-    // Index `base[idx]` (binds tightest, like a call).
+    // Index `base[idx]` or slice `base[lo:hi]` (binds tightest, like a call).
     if s.ends_with(']') {
         let open = s.find('[').ok_or_else(|| format!("unbalanced `]` in `{s}`"))?;
         let base = parse_expr(&s[..open])?;
-        let idx = parse_expr(&s[open + 1..s.len() - 1])?;
+        let inner = &s[open + 1..s.len() - 1];
+        if let Some((lo, hi)) = split_once_top(inner, ":") {
+            return Ok(Expr::Slice(
+                Box::new(base),
+                Box::new(parse_expr(&lo)?),
+                Box::new(parse_expr(&hi)?),
+            ));
+        }
+        let idx = parse_expr(inner)?;
         return Ok(Expr::Index(Box::new(base), Box::new(idx)));
     }
     if let Some(open) = s.find('(')

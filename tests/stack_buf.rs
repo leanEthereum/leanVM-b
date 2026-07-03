@@ -1,8 +1,9 @@
 //! `StackBuf` — a run of consecutive frame (stack) cells in the zkDSL. Indexed
 //! reads/writes go straight to `base+k` (no heap deref), and a size-2 `StackBuf`
 //! is a `blake3` operand: its two cells hold the 256-bit value's two words, so
-//! `blake3(a, b)` reads them in place with no copies (a self-hash `blake3(h, h)`
-//! aliases one pair into both operands).
+//! `blake3(a, b, out)` reads them in place with no copies (a self-hash
+//! `blake3(h, h, out)` aliases one pair into both input operands) and writes
+//! the digest into the pre-allocated pair `out`.
 
 use leanvm_b::blake3_flock::warm_setup;
 use leanvm_b::compiler::{compile, parse};
@@ -39,7 +40,8 @@ def main():
     a = StackBuf(2)
     a[0] = 5
     a[1] = 7
-    c = blake3(a, a)
+    c = StackBuf(2)
+    blake3(a, a, c)
     p = 1
     p[1] = c[0]
     p[GEN] = c[1]
@@ -108,8 +110,7 @@ fn stack_buf_rebind_to_scalar() {
 
 /// A StackBuf from the enclosing scope referenced inside a `for` loop cannot be
 /// captured; the compiler rejects it with a clear message (not a misleading
-/// "unbound variable" from the capture being silently dropped). (Rebinding one in
-/// the body, `h = blake3(h,h)`, is likewise a compile error via `blake3_call`.)
+/// "unbound variable" from the capture being silently dropped).
 #[test]
 #[should_panic(expected = "cannot be captured into a `for` loop")]
 fn stack_buf_loop_capture_rejected() {
