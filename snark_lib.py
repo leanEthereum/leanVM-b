@@ -40,9 +40,23 @@ GEN = _Elt()
 def log(x) -> int:
     """The discrete log base GEN: `x = GEN ** log(x)`. Only meaningful inside
     a range-check assert — `assert log(x) < log(GEN ** k)` (equivalently
-    `assert log(x) < k`) proves `x ∈ {GEN**0, …, GEN**(k-1)}` in 3 cycles."""
+    `assert log(x) < k`) proves `x ∈ {GEN**0, …, GEN**(k-1)}` in 3 cycles —
+    or as the scrutinee of `match` / `match_range`."""
     _ = x
     return 0
+
+
+def match_range(value: int, *args):
+    """A `match` with generated arms: `match_range(log(x), range(a, b),
+    lambda i: …, …)` expands to one arm per integer of the contiguous ranges
+    (which must start at 0), the lambda applied to the concrete value; the
+    results bind to the assignment targets. In Python execution, finds the
+    matching range and calls its lambda."""
+    for i in range(0, len(args), 2):
+        rng, fn = args[i], args[i + 1]
+        if value in rng:
+            return fn(value)
+    raise AssertionError(f"value {value} not in any range")
 
 
 def mul_range(start, stop) -> list:

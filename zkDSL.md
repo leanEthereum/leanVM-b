@@ -253,6 +253,23 @@ many repeated small matches — but only the trampoline is implemented.)
 (`assert log(x) < n`, 3 cycles), as in leanVM. Case bodies are branch-local,
 like `if` branches.
 
+### `match_range`
+
+```python
+r = match_range(log(x), range(0, 6), lambda i: f(i))
+a, b = match_range(log(x), range(0, 2), lambda i: g(1), range(2, 6), lambda i: g(i))
+```
+
+A `match` with generated arms (leanVM's `match_range`): arm `j` is the lambda
+body with the parameter replaced by the **integer literal** `j` — usable as a
+field constant or a compile-time index — expanded at parse time over the
+contiguous `(range, lambda)` pairs, which must start at 0. Unlike `match`
+cases, the arms produce values: every arm writes its results into the same
+fresh cells (write-once is sound — exactly one arm executes), and the targets
+name those cells after the join. Multiple targets take a multi-return call as
+the arm body. The whole call sits on one line (no line continuation), and the
+`match` soundness caveat applies unchanged.
+
 Statements without effect are rejected.
 
 ## Assertions
@@ -333,6 +350,7 @@ The compression is proven by the vendored flock BLAKE3 R1CS (see `doc.pdf`
 | `assert log x < k` | 3 (+1 `SET` amortized per bound per frame) |
 | `if a == b: …` | 3 (+2 to skip a non-empty `else`; +2 amortized `self-fp` per branching function) |
 | `match log(x): …` | ≈ 7, independent of the case count |
+| `… = match_range(log(x), …)` | the `match`, + 1 `MUL` copy per target |
 | function call | ≈ `n_args + n_returns + 4` |
 | `mul_range` iteration | body + ≈ 1 `MUL` + 1 `XOR` + call overhead |
 | `blake3(a, b, out)` | 1 (+2 `DEREF`s per heap operand, +1 `MUL` per runtime slice start) |

@@ -123,6 +123,18 @@ pub enum Stmt {
     /// to lie in `[0, n)` — range-check a hinted value first. Case bodies are
     /// branch-local, like [`Stmt::If`] branches. See [`FnLower::lower_match`].
     Match { x: Expr, cases: Vec<Vec<Stmt>> },
+    /// `names = match_range(log(x), range(a, b), lambda i: expr, …)` — a
+    /// [`Stmt::Match`] with generated arms (leanVM's `match_range`): arm `j`
+    /// holds the lambda body with the parameter replaced by the integer
+    /// literal `j` (expanded at parse time, one entry of `arms` per integer).
+    /// Every arm writes its results into the same fresh cells — write-once is
+    /// sound, exactly one arm executes — and `names` bind to those cells at
+    /// the join. Multiple names take a multi-return call as the arm body.
+    LetMatchRange {
+        names: Vec<String>,
+        x: Expr,
+        arms: Vec<Expr>,
+    },
     /// `arr[idx] = value` — store into a heap cell (write-once).
     Store(Expr, Expr, Expr),
     /// `for i in mul_range(GEN**lo, GEN**hi): body` — the counter is carried in
@@ -366,11 +378,11 @@ impl FnLower<'_> {
         }
     }
 
-    /// Lower a branch body with branch-local scope: bindings AND the lazily
-    /// cached cells (`one`, `self_fp`, range-check bounds) revert at the join
-    /// — a cell whose `SET` sits inside a conditionally-executed region must
-    /// not be trusted outside it.
-    fn branch(&mut self, body: &[Stmt]) {
+    /// Run `f` with branch-local scope: bindings AND the lazily cached cells
+    /// (`one`, `self_fp`, range-check bounds) revert afterwards — a cell
+    /// whose `SET` sits inside a conditionally-executed region must not be
+    /// trusted outside it.
+    fn scoped(&mut self, f: impl FnOnce(&mut Self)) {
         let saved = (
             self.vars.clone(),
             self.stacks.clone(),
@@ -379,10 +391,17 @@ impl FnLower<'_> {
             self.self_fp_off,
             self.bounds.clone(),
         );
-        for s in body {
-            self.stmt(s);
-        }
+        f(self);
         (self.vars, self.stacks, self.consts, self.one_off, self.self_fp_off, self.bounds) = saved;
+    }
+
+    /// Lower a branch body with branch-local scope ([`Self::scoped`]).
+    fn branch(&mut self, body: &[Stmt]) {
+        self.scoped(|s| {
+            for st in body {
+                s.stmt(st);
+            }
+        });
     }
 
     /// `match log(x)` — two jumps through a trampoline table (doc §ISA
@@ -403,6 +422,45 @@ impl FnLower<'_> {
     /// first (as in leanVM).
     fn lower_match(&mut self, x: &Expr, cases: &[Vec<Stmt>]) {
         let xo = self.expr(x);
+        self.lower_match_dispatch(xo, cases.len(), |s, j| s.branch(&cases[j]));
+    }
+
+    /// `names = match_range(log(x), …)` — the same dispatch as
+    /// [`Self::lower_match`], with generated arms: arm `j` evaluates its
+    /// expression (the lambda body at `i = j`) and copies the results into
+    /// cells shared by every arm (write-once: exactly one arm executes);
+    /// `names` bind to those cells at the join.
+    fn lower_match_range(&mut self, names: &[String], x: &Expr, arms: &[Expr]) {
+        let xo = self.expr(x);
+        let rcells: Vec<Off> = names.iter().map(|_| self.fresh()).collect();
+        self.lower_match_dispatch(xo, arms.len(), |s, j| {
+            s.scoped(|s| {
+                if let [rcell] = rcells.as_slice() {
+                    let o = s.expr(&arms[j]);
+                    s.copy(o, *rcell);
+                } else {
+                    let Expr::Call(f, cargs) = &arms[j] else {
+                        panic!("a multi-target match_range arm must be a function call, got `{:?}`", arms[j]);
+                    };
+                    let outs = s.call(f, cargs, rcells.len());
+                    for (o, &r) in outs.into_iter().zip(&rcells) {
+                        s.copy(o, r);
+                    }
+                }
+            });
+        });
+        for (name, &cell) in names.iter().zip(&rcells) {
+            self.stacks.remove(name);
+            self.consts.remove(name);
+            self.vars.insert(name.clone(), cell);
+        }
+    }
+
+    /// The trampoline dispatch shared by `match` and `match_range`: jump to
+    /// `d = g^T · x²` (slot `j` of the two-instruction table at bytecode base
+    /// `T`), then to `body(j)`'s code; every non-final body exits to the
+    /// join. `body` lowers arm `j` — with its own branch-local scope.
+    fn lower_match_dispatch(&mut self, xo: Off, n: usize, mut body: impl FnMut(&mut Self, usize)) {
         // Hoisted on purpose: these SETs must dominate the join.
         let sfp = self.self_fp();
         let one = self.one();
@@ -421,17 +479,17 @@ impl FnLower<'_> {
         // The trampoline table.
         self.patch_local(kset, self.code.len());
         let mut slots = Vec::new();
-        for _ in cases {
+        for _ in 0..n {
             let c = self.fresh();
             slots.push(self.code.len());
             self.emit(LOp::Set { o: c, k: KVal::Local(0) }); // patched: its block
             self.emit(LOp::Jump { oc: one, od: c, of: sfp });
         }
-        // The case blocks, each exiting to the join (the last falls through).
-        for (j, body) in cases.iter().enumerate() {
-            self.patch_local(slots[j], self.code.len());
-            self.branch(body);
-            if j + 1 != cases.len() {
+        // The arm blocks, each exiting to the join (the last falls through).
+        for (j, &slot) in slots.iter().enumerate() {
+            self.patch_local(slot, self.code.len());
+            body(self, j);
+            if j + 1 != n {
                 self.emit(LOp::Jump { oc: one, od: join, of: sfp });
             }
         }
@@ -884,6 +942,7 @@ impl FnLower<'_> {
             Stmt::AssertLt(e, k) => self.lower_assert_lt(e, *k),
             Stmt::If { eq, lhs, rhs, then, els } => self.lower_if(*eq, lhs, rhs, then, els),
             Stmt::Match { x, cases } => self.lower_match(x, cases),
+            Stmt::LetMatchRange { names, x, arms } => self.lower_match_range(names, x, arms),
             Stmt::Call(f, args) => {
                 // `blake3(a, b, out)`: the digest of the two 256-bit operands
                 // lands in the existing 2-cell run `out` (write-once: if `out`
@@ -1107,6 +1166,13 @@ fn free_vars_stmt(s: &Stmt, refs: &mut Vec<String>, bound: &mut std::collections
             cases
                 .iter()
                 .for_each(|c| c.iter().for_each(|s| free_vars_stmt(s, refs, bound)));
+        }
+        Stmt::LetMatchRange { names, x, arms } => {
+            free_vars_expr(x, refs);
+            arms.iter().for_each(|a| free_vars_expr(a, refs));
+            names.iter().for_each(|n| {
+                bound.insert(n.clone());
+            });
         }
         Stmt::CallIfNe(a, b, _, args) => {
             free_vars_expr(a, refs);
@@ -1369,6 +1435,11 @@ impl Parser {
         }
         // Assignment or bare call.
         if let Some((lhs, rhs)) = split_assign(&line) {
+            // `names = match_range(…)` carries lambdas, which `parse_expr`
+            // does not speak — expanded by its own parser.
+            if rhs.trim_start().starts_with("match_range(") {
+                return parse_match_range(&lhs, &rhs);
+            }
             let rhs_expr = parse_expr(&rhs)?;
             // Indexed LHS `arr[idx] = value` is a heap store.
             if lhs.trim_end().ends_with(']') {
@@ -1586,6 +1657,74 @@ fn parse_gpow_bound(s: &str) -> Result<u64, String> {
 fn strip_log(s: &str) -> Option<&str> {
     let r = s.trim_start().strip_prefix("log")?;
     r.starts_with([' ', '(']).then_some(r)
+}
+
+/// `e` with every `Var(name)` replaced by `to` — the `match_range` arm
+/// expansion, where the lambda parameter becomes the arm's integer literal.
+fn subst_var(e: &Expr, name: &str, to: &Expr) -> Expr {
+    let s = |b: &Expr| Box::new(subst_var(b, name, to));
+    match e {
+        Expr::Var(v) if v == name => to.clone(),
+        Expr::Add(a, b) => Expr::Add(s(a), s(b)),
+        Expr::Mul(a, b) => Expr::Mul(s(a), s(b)),
+        Expr::Index(a, b) => Expr::Index(s(a), s(b)),
+        Expr::Slice(a, lo, hi) => Expr::Slice(s(a), s(lo), s(hi)),
+        Expr::Call(f, args) => {
+            Expr::Call(f.clone(), args.iter().map(|a| subst_var(a, name, to)).collect())
+        }
+        other => other.clone(),
+    }
+}
+
+/// `names = match_range(log(x), range(a, b), lambda i: expr, …)` — leanVM's
+/// `match_range`, expanded at parse time: one arm per integer of the
+/// contiguous `(range, lambda)` pairs, arm `j` being the lambda body with the
+/// parameter substituted by the literal `j`. The union of the ranges must be
+/// gapless and start at 0 (this compiler's `match` rule). Everything sits on
+/// one line — there is no line continuation.
+fn parse_match_range(lhs: &str, rhs: &str) -> Result<Stmt, String> {
+    if lhs.trim_end().ends_with(']') {
+        return Err("bind `match_range` results to names, not a store target".into());
+    }
+    let names: Vec<String> = split_top(lhs, ',').iter().map(|t| t.trim().to_string()).collect();
+    let inner = rhs
+        .trim()
+        .strip_prefix("match_range(")
+        .and_then(|s| s.strip_suffix(')'))
+        .ok_or("malformed `match_range(…)`")?;
+    let chunks = split_top(inner, ',');
+    let (first, pairs) = chunks.split_first().ok_or("match_range needs arguments")?;
+    let x = strip_log(first).ok_or("`match_range` matches logs: `match_range(log(x), …)`")?;
+    let x = parse_expr(x)?;
+    if pairs.is_empty() || !pairs.len().is_multiple_of(2) {
+        return Err("match_range needs `range(a, b), lambda i: …` pairs after the scrutinee".into());
+    }
+    let mut arms = Vec::new();
+    for pair in pairs.chunks(2) {
+        let (lo, hi) = match parse_expr(&pair[0])? {
+            Expr::Call(f, args) if f == "range" => match args.as_slice() {
+                [Expr::Lit(a), Expr::Lit(b)] if a < b => (*a, *b),
+                _ => return Err("match_range needs `range(a, b)` with integer literals, a < b".into()),
+            },
+            other => return Err(format!("expected `range(a, b)`, got `{other:?}`")),
+        };
+        if lo != arms.len() as u128 {
+            return Err(format!(
+                "match_range ranges must be contiguous from 0: expected a range starting at {}, got {lo}",
+                arms.len()
+            ));
+        }
+        let lam = pair[1]
+            .trim()
+            .strip_prefix("lambda ")
+            .ok_or("expected `lambda i: …` after each range")?;
+        let (param, body) = split_once_top(lam, ":").ok_or("`lambda` needs `:`")?;
+        let body = parse_expr(&body)?;
+        for j in lo..hi {
+            arms.push(subst_var(&body, param.trim(), &Expr::Lit(j)));
+        }
+    }
+    Ok(Stmt::LetMatchRange { names, x, arms })
 }
 
 /// Parse an expression with `+` (lowest) then `*`, atoms being integer literals,
