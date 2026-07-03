@@ -149,6 +149,19 @@ pub enum Stmt {
         hi: u64,
         body: Vec<Stmt>,
     },
+    /// `for i in unroll(a, b): body` — compile-time replication: the body is
+    /// emitted `b − a` times with `i` substituted by each integer literal in
+    /// turn (usable anywhere a literal is: stack indexes, slice bounds,
+    /// `Const` arguments). No call, no frame, no counter — zero loop
+    /// overhead, at the price of code size. The bounds are compile-time
+    /// integer *expressions*, evaluated at lowering — after `Const`-parameter
+    /// specialization, so `unroll(0, n)` with `n: Const` works.
+    Unroll {
+        var: String,
+        lo: Expr,
+        hi: Expr,
+        body: Vec<Stmt>,
+    },
     /// `return e, …` (a bare `return` is the empty vector).
     Return(Vec<Expr>),
     /// Internal (loop lowering): `if lhs != rhs: callee(args)` — a tail call on
@@ -1067,6 +1080,24 @@ impl FnLower<'_> {
                 hi,
                 body,
             } => self.lower_for(var, *lo, *hi, body),
+            // Compile-time unrolling: emit the body per integer, the counter
+            // substituted as its literal. Every copy executes (this is
+            // straight-line code, not a branch), so bindings simply rebind —
+            // a fresh binding per iteration — and lazy caches persist.
+            Stmt::Unroll { var, lo, hi, body } => {
+                let bound = |s: &Self, e: &Expr| {
+                    s.try_const_index(e).unwrap_or_else(|| {
+                        panic!("unroll bounds must be compile-time integers, got `{e:?}`")
+                    })
+                };
+                let (lo, hi) = (bound(self, lo), bound(self, hi));
+                assert!(lo <= hi, "unroll(a, b) needs a <= b, got ({lo}, {hi})");
+                for j in lo..hi {
+                    for s in subst_stmts(body, var, &Expr::Lit(j as u128)) {
+                        self.stmt(&s);
+                    }
+                }
+            }
         }
     }
 
@@ -1257,6 +1288,12 @@ fn free_vars_stmt(s: &Stmt, refs: &mut Vec<String>, bound: &mut std::collections
         }
         Stmt::Return(es) => es.iter().for_each(|e| free_vars_expr(e, refs)),
         Stmt::For { var, body, .. } => {
+            bound.insert(var.clone());
+            body.iter().for_each(|s| free_vars_stmt(s, refs, bound));
+        }
+        Stmt::Unroll { var, lo, hi, body } => {
+            free_vars_expr(lo, refs);
+            free_vars_expr(hi, refs);
             bound.insert(var.clone());
             body.iter().for_each(|s| free_vars_stmt(s, refs, bound));
         }
@@ -1451,11 +1488,29 @@ impl Parser {
             // elements (powers of GEN), so the multiplicative walk is explicit.
             let rest = rest.strip_suffix(':').ok_or("`for` needs `:`")?;
             let (var, iter) = rest.split_once(" in ").ok_or("`for` needs `in`")?;
+            // `for i in unroll(a, b):` — compile-time replication; the bounds
+            // are integer expressions, evaluated at lowering (so a `Const`
+            // parameter works as a bound).
+            if let Some(inner) = iter.trim().strip_prefix("unroll(").and_then(|s| s.strip_suffix(')')) {
+                let parts = split_top(inner, ',');
+                if parts.len() != 2 {
+                    return Err("unroll needs `a, b` (compile-time integers)".into());
+                }
+                let (lo, hi) = (parse_expr(&parts[0])?, parse_expr(&parts[1])?);
+                self.i += 1;
+                let body = self.block(indent)?;
+                return Ok(Stmt::Unroll {
+                    var: var.trim().to_string(),
+                    lo,
+                    hi,
+                    body,
+                });
+            }
             let inner = iter
                 .trim()
                 .strip_prefix("mul_range(")
                 .and_then(|s| s.strip_suffix(')'))
-                .ok_or("`for` needs `mul_range(start, stop)`")?;
+                .ok_or("`for` needs `mul_range(start, stop)` or `unroll(a, b)`")?;
             let parts = split_top(inner, ',');
             if parts.len() != 2 {
                 return Err("mul_range needs `start, stop` (both powers of GEN)".into());
@@ -1791,6 +1846,10 @@ fn subst_stmt(s: &Stmt, name: &str, to: &Expr) -> (Stmt, bool) {
             // The counter shadows `name` inside the body only.
             let body = if var == name { body.clone() } else { subst_stmts(body, name, to) };
             (Stmt::For { var: var.clone(), lo: *lo, hi: *hi, body }, false)
+        }
+        Stmt::Unroll { var, lo, hi, body } => {
+            let body = if var == name { body.clone() } else { subst_stmts(body, name, to) };
+            (Stmt::Unroll { var: var.clone(), lo: e(lo), hi: e(hi), body }, false)
         }
         Stmt::If { eq, lhs, rhs, then, els } => (
             Stmt::If {

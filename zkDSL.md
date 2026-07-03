@@ -213,6 +213,27 @@ separate is-zero gadget. Free variables of the body are captured **by value**
 as extra parameters; a `HeapBuf` pointer threads through fine, a `StackBuf`
 does not (compile error).
 
+### `for i in unroll(a, b)` — compile-time unrolling
+
+```python
+for i in unroll(0, 7):
+    sb[i + 1] = sb[i] * GEN          # i is the integer literal of each copy
+
+def chain(buf, n: Const):
+    for i in unroll(0, n):           # a Const parameter as a bound
+        blake3(buf[i * 2:i * 2 + 2], buf[i * 2:i * 2 + 2], buf[i * 2 + 2:i * 2 + 4])
+    return
+```
+
+The body is replicated `b − a` times with `i` substituted by each integer
+literal in turn — usable anywhere a literal is (stack indexes, slice bounds,
+`Const` arguments). Zero loop overhead: no call, no frame, no counter — the
+price is code size. Bounds are compile-time integer expressions, evaluated
+after `Const` specialization, so `unroll(0, n)` with `n: Const` works (unlike
+`mul_range`, whose bounds are parse-time literals). Every copy executes —
+this is straight-line code, not a branch — so bindings simply rebind, a fresh
+binding per iteration.
+
 ### `if` / `elif` / `else`
 
 ```python
@@ -376,6 +397,7 @@ The compression is proven by the vendored flock BLAKE3 R1CS (see `doc.pdf`
 | `… = match_range(log(x), …)` | the `match`, + 1 `MUL` copy per target |
 | function call | ≈ `n_args + n_returns + 4` |
 | `mul_range` iteration | body + ≈ 1 `MUL` + 1 `XOR` + call overhead |
+| `unroll` iteration | body only (compile-time replication) |
 | `blake3(a, b, out)` | 1 (+2 `DEREF`s per heap operand, +1 `MUL` per runtime slice start) |
 
 ## Example

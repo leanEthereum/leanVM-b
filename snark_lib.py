@@ -73,6 +73,14 @@ def mul_range(start, stop) -> list:
     return []
 
 
+def unroll(a: int, b: int) -> range:
+    """Compile-time unrolling: the body is replicated for i = a, …, b-1, the
+    counter substituted as an integer literal (usable as a stack index, slice
+    bound, or `Const` argument). Bounds are compile-time integers — including
+    `Const` parameters."""
+    return range(a, b)
+
+
 def HeapBuf(n: int) -> _Elt:
     """Allocate a fresh, disjoint heap buffer of `n` cells; evaluates to its
     pointer (a fresh g-power)."""
