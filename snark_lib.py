@@ -68,8 +68,9 @@ def StackBuf(n: int) -> _Elt:
 
 
 def blake3(a, b, out) -> None:
-    """The BLAKE3 compression of the two 256-bit operands `a`, `b` — size-2
-    StackBufs, or 2-cell slices `buf[lo:hi]` of larger ones — written into the
-    existing 2-cell run `out` (write-once: if `out` was already written, this
-    asserts it equals the digest)."""
+    """The BLAKE3 compression of the two 256-bit operands `a`, `b`, written
+    into the 2-cell run `out` (write-once: if `out` was already written, this
+    asserts it equals the digest). Operands are size-2 StackBufs or 2-cell
+    slices `buf[lo:hi]` of larger StackBufs or of HeapBufs (heap slices are
+    bridged through the stack, one DEREF per cell)."""
     _ = a, b, out

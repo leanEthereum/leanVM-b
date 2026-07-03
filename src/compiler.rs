@@ -77,10 +77,11 @@ pub enum Expr {
     /// g-power). For a [`Expr::StackBuf`]: the frame cell `base + idx` (idx a
     /// compile-time integer), read directly.
     Index(Box<Expr>, Box<Expr>),
-    /// `buf[lo:hi]` — a run of cells of a [`Expr::StackBuf`], with
-    /// compile-time integer bounds (`hi` exclusive). Only meaningful as a
-    /// `blake3` operand, where it must span exactly 2 cells (one 256-bit
-    /// value).
+    /// `buf[lo:hi]` — a run of cells of a [`Expr::StackBuf`] (frame cells
+    /// `base+lo..base+hi`) or of a [`Expr::HeapBuf`] (heap cells
+    /// `ptr·g^lo..ptr·g^hi`), with compile-time integer bounds (`hi`
+    /// exclusive). Only meaningful as a `blake3` operand, where it must span
+    /// exactly 2 cells (one 256-bit value).
     Slice(Box<Expr>, Box<Expr>, Box<Expr>),
 }
 
@@ -213,6 +214,15 @@ struct Lowered {
     name: String,
     code: Vec<LInstr>,
     frame_size: u32,
+}
+
+/// A resolved 2-cell `blake3` operand: a frame (stack) run used in place, or a
+/// heap slice — the buffer pointer's cell plus the first g-power offset —
+/// which must be bridged through the stack (`BLAKE3` addresses only frame
+/// cells).
+enum B3Operand {
+    Stack(Off),
+    Heap { ptr: Off, lo: u32 },
 }
 
 // ----------------------------------------------------------------------------
@@ -442,52 +452,110 @@ impl FnLower<'_> {
         }
     }
 
-    /// A stack index or slice bound: a compile-time integer — a literal, a
-    /// name bound to a literal, or `+`/`*` of those (evaluated as *integer*
-    /// arithmetic: this is index space, not the field).
-    fn const_index(&self, idx: &Expr) -> u32 {
+    /// A compile-time integer index — a literal, a name bound to a literal,
+    /// or `+`/`*` of those (evaluated as *integer* arithmetic: this is index
+    /// space, not the field). `None` when the expression is a runtime value
+    /// (which a heap slice start may be; see [`Self::blake3_operand`]).
+    fn try_const_index(&self, idx: &Expr) -> Option<u32> {
         match idx {
             // `as u32` would silently wrap a ≥ 2^32 literal (e.g. `sa[2^32]` → `sa[0]`);
             // reject it so the lowered program matches the source.
-            Expr::Lit(k) => {
-                u32::try_from(*k).unwrap_or_else(|_| panic!("StackBuf index {k} does not fit in u32"))
-            }
-            Expr::Var(v) => *self.consts.get(v).unwrap_or_else(|| {
-                panic!("stack index `{v}` is not a compile-time constant (bind it to an integer literal)")
-            }),
-            Expr::Add(a, b) => self
-                .const_index(a)
-                .checked_add(self.const_index(b))
-                .unwrap_or_else(|| panic!("stack index overflows u32")),
-            Expr::Mul(a, b) => self
-                .const_index(a)
-                .checked_mul(self.const_index(b))
-                .unwrap_or_else(|| panic!("stack index overflows u32")),
-            _ => panic!("a StackBuf index must be a compile-time integer, got `{idx:?}`"),
+            Expr::Lit(k) => Some(
+                u32::try_from(*k).unwrap_or_else(|_| panic!("stack index {k} does not fit in u32")),
+            ),
+            Expr::Var(v) => self.consts.get(v).copied(),
+            Expr::Add(a, b) => Some(
+                self.try_const_index(a)?
+                    .checked_add(self.try_const_index(b)?)
+                    .unwrap_or_else(|| panic!("stack index overflows u32")),
+            ),
+            Expr::Mul(a, b) => Some(
+                self.try_const_index(a)?
+                    .checked_mul(self.try_const_index(b)?)
+                    .unwrap_or_else(|| panic!("stack index overflows u32")),
+            ),
+            _ => None,
         }
     }
 
-    /// Resolve a `blake3` operand — a size-2 `StackBuf` name, or a 2-cell
-    /// slice `buf[lo:hi]` of a (large) `StackBuf` with compile-time bounds —
-    /// to the frame offset of its first cell.
-    fn stack_operand(&self, e: &Expr) -> Off {
+    /// A stack index or compile-time slice bound: [`Self::try_const_index`],
+    /// required to succeed.
+    fn const_index(&self, idx: &Expr) -> u32 {
+        self.try_const_index(idx).unwrap_or_else(|| {
+            panic!("a StackBuf index must be a compile-time integer, got `{idx:?}`")
+        })
+    }
+
+    /// Resolve a `blake3` operand — a size-2 `StackBuf` name, a 2-cell
+    /// `StackBuf` slice `buf[lo:hi]`, or a 2-cell `HeapBuf` slice (cells
+    /// `ptr·g^lo`, `ptr·g^{lo+1}`) — with compile-time bounds. Stack operands
+    /// are used in place; heap operands must be bridged through the stack,
+    /// since `BLAKE3` addresses only frame cells (see [`Self::blake3_input`]).
+    fn blake3_operand(&mut self, e: &Expr) -> B3Operand {
         match e {
             Expr::Var(_) => {
-                let (base, size) = self.stack_of(e).expect("a blake3 operand must be a StackBuf");
+                let (base, size) = self.stack_of(e).expect(
+                    "a bare blake3 operand must be a StackBuf; slice a HeapBuf: `buf[lo:lo + 2]`",
+                );
                 assert!(
                     size == 2,
                     "a whole-StackBuf blake3 operand must have size 2; slice a larger one: `buf[lo:lo + 2]`"
                 );
-                base
+                B3Operand::Stack(base)
             }
-            Expr::Slice(arr, lo, hi) => {
-                let (base, size) = self.stack_of(arr).expect("only a StackBuf can be sliced");
-                let (lo, hi) = (self.const_index(lo), self.const_index(hi));
-                assert!(hi == lo + 2, "a blake3 slice must span exactly 2 cells, got {lo}:{hi}");
-                assert!(hi <= size, "slice {lo}:{hi} out of bounds (StackBuf size {size})");
-                base + lo
+            Expr::Slice(arr, lo, hi) => match (self.try_const_index(lo), self.try_const_index(hi)) {
+                // Compile-time bounds: integer cell indexes `lo..lo+2` (frame
+                // offsets for a stack, g-power exponents for the heap).
+                (Some(lo), Some(hi)) => {
+                    assert!(hi == lo + 2, "a blake3 slice must span exactly 2 cells, got {lo}:{hi}");
+                    if let Some((base, size)) = self.stack_of(arr) {
+                        assert!(hi <= size, "slice {lo}:{hi} out of bounds (StackBuf size {size})");
+                        B3Operand::Stack(base + lo)
+                    } else {
+                        // A heap slice: `arr` evaluates to the buffer pointer (no
+                        // compile-time size to check — heap indexing never has one).
+                        let ptr = self.expr(arr);
+                        B3Operand::Heap { ptr, lo }
+                    }
+                }
+                // Runtime start (heap only): `buf[i:i + 2]` with a runtime
+                // g-power index `i` names the cells `buf·i`, `buf·i·g`. The
+                // `hi` bound cannot be evaluated, only shape-checked: it must
+                // be syntactically `lo + 2`. One MUL folds `i` into the
+                // pointer; the two-cell bridge is then offsets 0, 1 off it.
+                _ => {
+                    assert!(
+                        self.stack_of(arr).is_none(),
+                        "a StackBuf slice needs compile-time bounds (frame offsets are baked into the bytecode)"
+                    );
+                    assert!(
+                        is_plus_two(lo, hi),
+                        "a runtime slice must have the shape `buf[i:i + 2]`, got `{lo:?}:{hi:?}`"
+                    );
+                    let ptr = self.array_ptr(arr, lo);
+                    B3Operand::Heap { ptr, lo: 0 }
+                }
+            },
+            other => panic!(
+                "a blake3 operand must be a StackBuf, a StackBuf slice, or a HeapBuf slice, got `{other:?}`"
+            ),
+        }
+    }
+
+    /// A `blake3` *input* operand as a frame offset: stack runs in place; a
+    /// heap slice is pulled into a fresh stack pair first — one `DEREF` per
+    /// cell (`m[ptr·g^{lo+k}] == m[fp+t+k]`, the `β` immediate doing the
+    /// pointer offset). The heap cells must already be written.
+    fn blake3_input(&mut self, e: &Expr) -> Off {
+        match self.blake3_operand(e) {
+            B3Operand::Stack(o) => o,
+            B3Operand::Heap { ptr, lo } => {
+                let t = self.alloc_stack(2);
+                for k in 0..2 {
+                    self.emit(LOp::Deref { alpha: ptr, beta: lo + k, gamma: t + k, mode: DerefMode::Cell });
+                }
+                t
             }
-            other => panic!("a blake3 operand must be a StackBuf or a StackBuf slice, got `{other:?}`"),
         }
     }
 
@@ -649,14 +717,25 @@ impl FnLower<'_> {
             Stmt::AssertLt(e, k) => self.lower_assert_lt(e, *k),
             Stmt::Call(f, args) => {
                 // `blake3(a, b, out)`: the digest of the two 256-bit operands
-                // lands in the existing 2-cell stack run `out` (write-once: if
-                // `out` was already written, this asserts the digest equals it).
+                // lands in the existing 2-cell run `out` (write-once: if `out`
+                // was already written, this asserts the digest equals it). A
+                // heap `out` slice takes the digest via a fresh stack pair and
+                // two `DEREF`s after the hash (the store direction is the same
+                // instruction as the load — write-once fills the unset side).
                 if f == "blake3" {
                     assert_eq!(args.len(), 3, "blake3 takes (a, b, out)");
-                    let a = self.stack_operand(&args[0]);
-                    let b = self.stack_operand(&args[1]);
-                    let c = self.stack_operand(&args[2]);
+                    let a = self.blake3_input(&args[0]);
+                    let b = self.blake3_input(&args[1]);
+                    let (c, heap_out) = match self.blake3_operand(&args[2]) {
+                        B3Operand::Stack(o) => (o, None),
+                        B3Operand::Heap { ptr, lo } => (self.alloc_stack(2), Some((ptr, lo))),
+                    };
                     self.emit(LOp::Blake3 { a, b, c });
+                    if let Some((ptr, lo)) = heap_out {
+                        for k in 0..2 {
+                            self.emit(LOp::Deref { alpha: ptr, beta: lo + k, gamma: c + k, mode: DerefMode::Cell });
+                        }
+                    }
                     return;
                 }
                 self.call(f, args, 0);
@@ -795,6 +874,20 @@ impl FnLower<'_> {
         if lo != hi {
             self.call(&loop_name, &cap_args(Expr::GPow(lo as u128)), 0);
         }
+    }
+}
+
+/// `hi` is syntactically `lo + 2` (either operand order) — the shape of a
+/// runtime slice, whose bounds cannot be evaluated at compile time. Structural
+/// comparison via the derived `Debug` form (expressions are small and have no
+/// interning).
+fn is_plus_two(lo: &Expr, hi: &Expr) -> bool {
+    let eq = |a: &Expr, b: &Expr| format!("{a:?}") == format!("{b:?}");
+    match hi {
+        Expr::Add(a, b) => {
+            (matches!(**b, Expr::Lit(2)) && eq(a, lo)) || (matches!(**a, Expr::Lit(2)) && eq(b, lo))
+        }
+        _ => false,
     }
 }
 
