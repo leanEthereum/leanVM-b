@@ -1,26 +1,30 @@
-//! The hash layer: plain BLAKE3 for the single-block hashes, and a
-//! Merkle-Damgard mode for the multi-block ones.
+//! The hash layer, built entirely from one primitive — [`compress`]
+//! (`H: {0,1}^512 -> {0,1}^256`, BLAKE3 of exactly 64 bytes, the VM blake3
+//! opcode shape):
 //!
-//! - [`tweak_hash`]: `blake3(tweak | pp | payload)` truncated to a 16-byte
-//!   [`Digest`]. Used for chain steps (48-byte input) and Merkle nodes (64
-//!   bytes).
-//! - [`md_tweak_hash`]: Merkle-Damgard over [`compress`]
-//!   (`H: {0,1}^512 -> {0,1}^256`, BLAKE3 of exactly 64 bytes, the VM blake3
-//!   opcode shape). The 32-byte state starts at `IV = tweak | pp` and absorbs
+//! - [`tweak_hash`]: one compression, `H(tweak | pp, payload | 0-pad)`. Used
+//!   for chain steps (16-byte payload, zero-padded) and Merkle nodes (32
+//!   bytes exactly).
+//! - [`md_tweak_hash`]: Merkle-Damgard over [`compress`], with the absorbed
+//!   size in the IV *in the exponent* of the VM's field generator:
+//!   `IV = g^{num_bytes} (16B, GHASH form) | 0^16`, where `num_bytes` counts
+//!   everything absorbed. The first block is `tweak | pp`, then the payload's
 //!   32-byte blocks; the final state is truncated to a digest. Used for the
-//!   WOTS public-key hash (42 tips = 672 bytes = 21 blocks) and the message
-//!   encoding (msg block + zero-padded randomness block). The chaining state
+//!   WOTS public-key hash (42 tips = 22 blocks) and the message encoding
+//!   (tweak/pp + msg + zero-padded randomness = 3 blocks). The chaining state
 //!   is the FULL 32-byte output (truncating mid-chain would admit 2^64
-//!   internal collisions).
+//!   internal collisions). The exponent form makes the size element free for
+//!   the VM, whose loop counters ARE g-powers.
 //!
 //! The 16-byte tweak makes every call site a distinct hash function
 //! (multi-target separation, as in leanVM) and the public parameter separates
-//! users. Input lengths are fixed per tweak type, and BLAKE3 itself binds the
-//! input length, so no length field is needed.
+//! users. Payload lengths are FIXED per tweak type — the single-block hash
+//! zero-pads, so unlike raw BLAKE3 it does not bind the payload length
+//! itself; the multi-block hash binds its total length through the IV.
 //!
 //! Compression counts per call: chain step 1, Merkle node 1, message encoding
-//! 2, WOTS public key 21. A full XMSS verification is a constant 155
-//! compressions: 2 (encoding) + 100 (chains, fixed by the target sum) + 21
+//! 3, WOTS public key 22. A full XMSS verification is a constant 157
+//! compressions: 3 (encoding) + 100 (chains, fixed by the target sum) + 22
 //! (tips) + 32 (Merkle path).
 
 use crate::*;
@@ -49,8 +53,11 @@ pub fn make_tweak(tweak_type: u8, sub_position: u32, index: u32) -> Tweak {
     tweak
 }
 
-/// Plain BLAKE3, truncated: `blake3(tweak | pp | payload)[..16]`. The hash for
-/// the single-block inputs: chain steps and Merkle nodes.
+/// Single-block tweakable hash: one compression `H(tweak | pp, payload |
+/// 0-pad)` — the state operand carries the tweak and public parameter, the
+/// block the payload, zero-padded to 32 bytes (the payload length is fixed
+/// per tweak type). The hash for chain steps (16-byte payload) and Merkle
+/// nodes (32 bytes).
 pub fn tweak_hash(
     pp: &PublicParam,
     tweak_type: u8,
@@ -58,11 +65,13 @@ pub fn tweak_hash(
     index: u32,
     payload: &[u8],
 ) -> Digest {
-    let mut h = blake3::Hasher::new();
-    h.update(&make_tweak(tweak_type, sub_position, index));
-    h.update(pp);
-    h.update(payload);
-    h.finalize().as_bytes()[..DIGEST_LEN].try_into().unwrap()
+    assert!(payload.len() <= STATE_LEN, "single-block payload exceeds 32 bytes");
+    let mut state = [0u8; STATE_LEN];
+    state[..TWEAK_LEN].copy_from_slice(&make_tweak(tweak_type, sub_position, index));
+    state[TWEAK_LEN..].copy_from_slice(pp);
+    let mut block = [0u8; STATE_LEN];
+    block[..payload.len()].copy_from_slice(payload);
+    compress(&state, &block)[..DIGEST_LEN].try_into().unwrap()
 }
 
 /// The MD primitive: `H: {0,1}^512 -> {0,1}^256`, BLAKE3 of 64 bytes (one
@@ -84,9 +93,11 @@ pub fn md_hash(iv: State, data: &[u8]) -> State {
 }
 
 /// The Merkle-Damgard tweakable hash, for the multi-block inputs (the WOTS
-/// public-key hash and the message encoding): `IV = tweak | pp`, absorb
-/// `data`, truncate the final state to a digest. Costs `data.len() / 32`
-/// compressions.
+/// public-key hash and the message encoding): `IV = g^{num_bytes} | 0^16`
+/// with the total absorbed size in the exponent of the VM's field generator
+/// (GHASH form, [`gf128::g_pow_bytes`]); the first block is `tweak | pp`,
+/// then `data`. Truncates the final state to a digest. Costs
+/// `1 + data.len() / 32` compressions.
 pub fn md_tweak_hash(
     pp: &PublicParam,
     tweak_type: u8,
@@ -94,10 +105,14 @@ pub fn md_tweak_hash(
     index: u32,
     data: &[u8],
 ) -> Digest {
+    let num_bytes = STATE_LEN + data.len();
     let mut iv = [0u8; STATE_LEN];
-    iv[..TWEAK_LEN].copy_from_slice(&make_tweak(tweak_type, sub_position, index));
-    iv[TWEAK_LEN..].copy_from_slice(pp);
-    md_hash(iv, data)[..DIGEST_LEN].try_into().unwrap()
+    iv[..TWEAK_LEN].copy_from_slice(&crate::gf128::g_pow_bytes(num_bytes));
+    let mut first = [0u8; STATE_LEN];
+    first[..TWEAK_LEN].copy_from_slice(&make_tweak(tweak_type, sub_position, index));
+    first[TWEAK_LEN..].copy_from_slice(pp);
+    let state = compress(&iv, &first);
+    md_hash(state, data)[..DIGEST_LEN].try_into().unwrap()
 }
 
 #[cfg(test)]
@@ -114,21 +129,25 @@ mod tests {
         assert_ne!(base, tweak_hash(&pp, TWEAK_TYPE_CHAIN, 4, 5, &x));
         assert_ne!(base, tweak_hash(&pp, TWEAK_TYPE_CHAIN, 3, 6, &x));
         assert_ne!(base, tweak_hash(&[8u8; 16], TWEAK_TYPE_CHAIN, 3, 5, &x));
-        // BLAKE3 binds the payload length: zero-extension changes the hash.
+        // NOTE: the single-block hash zero-pads its payload, so it does NOT
+        // bind the payload length — lengths are fixed per tweak type instead.
         let mut extended = [0u8; STATE_LEN];
         extended[..DIGEST_LEN].copy_from_slice(&x);
-        assert_ne!(base, tweak_hash(&pp, TWEAK_TYPE_CHAIN, 3, 5, &extended));
+        assert_eq!(base, tweak_hash(&pp, TWEAK_TYPE_CHAIN, 3, 5, &extended));
     }
 
     #[test]
     fn md_matches_manual_chaining() {
         let pp = [9u8; PUBLIC_PARAM_LEN];
         let data = [5u8; 2 * STATE_LEN];
+        // IV = g^{num_bytes} | 0^16, num_bytes = tweak/pp block + data.
         let mut iv = [0u8; STATE_LEN];
-        iv[..TWEAK_LEN].copy_from_slice(&make_tweak(TWEAK_TYPE_WOTS_PK, 0, 42));
-        iv[TWEAK_LEN..].copy_from_slice(&pp);
+        iv[..TWEAK_LEN].copy_from_slice(&crate::gf128::g_pow_bytes(STATE_LEN + data.len()));
+        let mut first = [0u8; STATE_LEN];
+        first[..TWEAK_LEN].copy_from_slice(&make_tweak(TWEAK_TYPE_WOTS_PK, 0, 42));
+        first[TWEAK_LEN..].copy_from_slice(&pp);
         let expected = compress(
-            &compress(&iv, data[..STATE_LEN].try_into().unwrap()),
+            &compress(&compress(&iv, &first), data[..STATE_LEN].try_into().unwrap()),
             data[STATE_LEN..].try_into().unwrap(),
         );
         assert_eq!(

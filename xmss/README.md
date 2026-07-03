@@ -2,25 +2,37 @@
 
 ## Hash functions
 
-Single-block hashes (chain steps, Merkle nodes): plain BLAKE3, truncated to
-`n = 16` bytes:
-
-```
-blake3(tweak | pp | payload)[..16]
-```
-
-with inputs of 48 bytes (chain step) and 64 bytes (Merkle node).
-
-Multi-block hashes (WOTS public key: 42 chain tips = 672 bytes; message
-encoding: `msg (32) | randomness (24) | zeros (8)`): a Merkle-Damgard mode
-over
+Everything is built from one primitive — the compression
 
 ```
 H: {0,1}^512 -> {0,1}^256,   H(x) = BLAKE3(x)
 ```
 
-where the 32-byte state starts at `IV = tweak | pp` and absorbs 32-byte blocks
-via `state <- H(state | block)`; the final state is truncated to 16 bytes.
+(BLAKE3 of exactly 64 bytes: the VM blake3 opcode shape).
+
+Single-block hashes (chain steps, Merkle nodes): one compression,
+
+```
+H(tweak | pp, payload | 0-pad)[..16]
+```
+
+with payloads of 16 bytes (chain step, zero-padded) and 32 bytes (Merkle
+node). Payload lengths are fixed per tweak type (the padding does not bind
+them).
+
+Multi-block hashes (WOTS public key: 42 chain tips = 672 bytes; message
+encoding: `msg (32) | randomness (24) | zeros (8)`): a Merkle-Damgard mode
+with the absorbed size in the IV, **in the exponent** of the VM field's
+generator `g` (GF(2^128), GHASH form — the VM's loop counters are g-powers,
+so the size element is free in-circuit):
+
+```
+IV = g^num_bytes (16) | zeros (16)
+state <- H(state | block)  over  tweak | pp (32) | data...
+```
+
+where `num_bytes` counts everything absorbed (the tweak/pp block included);
+the final state is truncated to 16 bytes.
 
 The 16-byte tweak, little-endian:
 
@@ -65,8 +77,8 @@ pseudo-random fillers.
 
 ## Verification cost
 
-A constant 155 compressions per signature: 2 (encoding) + 100 (chain walks,
-fixed by the target sum) + 21 (WOTS public-key hash) + 32 (Merkle path).
+A constant 157 compressions per signature: 3 (encoding) + 100 (chain walks,
+fixed by the target sum) + 22 (WOTS public-key hash) + 32 (Merkle path).
 
 ## Signature size
 

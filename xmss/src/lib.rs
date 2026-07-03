@@ -9,6 +9,7 @@
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
+pub mod gf128;
 mod hash;
 pub use hash::*;
 mod wots;

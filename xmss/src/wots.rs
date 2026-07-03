@@ -75,7 +75,7 @@ impl WotsSignature {
 
 impl WotsPublicKey {
     /// The Merkle leaf: Merkle-Damgard over the 42 concatenated chain tips
-    /// (21 compressions, two tips per block).
+    /// (22 compressions: the tweak/pp block, then two tips per block).
     pub fn hash(&self, public_param: &PublicParam, slot: u32) -> Digest {
         let mut data = [0u8; V * DIGEST_LEN];
         for (chunk, tip) in data.chunks_exact_mut(DIGEST_LEN).zip(&self.0) {
@@ -127,9 +127,9 @@ pub fn find_randomness_for_wots_encoding(
 }
 
 /// The target-sum encoding. `D = MD(msg | randomness | zeros)` under the
-/// encoding tweak, truncated to 16 bytes: 2 compressions, the message filling
-/// block 1 and the zero-padded randomness block 2. `D`'s 128 bits, split
-/// little-endian into 42 chunks
+/// encoding tweak, truncated to 16 bytes: 3 compressions — the tweak/pp
+/// block, the message block, and the zero-padded randomness block. `D`'s 128
+/// bits, split little-endian into 42 chunks
 /// of 3 bits, are the encoding; valid iff the 2 leftover top bits (126, 127)
 /// are zero AND the chunks sum to [`TARGET_SUM`]. Grinding the top bits to
 /// zero makes `D = sum(e_i * 2^{3i})` exactly, so the digest decomposes into
