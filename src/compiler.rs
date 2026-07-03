@@ -850,6 +850,11 @@ fn lower_func(f: &Func, queue: &mut Vec<Func>, loop_ctr: &mut usize) -> Lowered 
 /// assignment (`x = …`, `a, b = f(…)`), `assert a == b`, `for i in
 /// mul_range(GEN**lo, GEN**hi):`, `return`, calls, and `+`/`*` arithmetic over
 /// integer literals and variables.
+///
+/// A DSL source is a valid Python file: `import snark_lib` / `from snark_lib
+/// import *` pulls the stub definitions (`snark_lib.py` at the repo root) that
+/// make editors and linters happy, and is skipped here. Importing anything
+/// else is an error — the compiler does not include other source files.
 pub fn parse(src: &str) -> Result<Ast, String> {
     // (indent, content) for each significant line.
     let mut lines: Vec<(usize, String)> = Vec::new();
@@ -857,6 +862,16 @@ pub fn parse(src: &str) -> Result<Ast, String> {
         let no_comment = raw.split('#').next().unwrap();
         if no_comment.trim().is_empty() {
             continue;
+        }
+        let t = no_comment.trim();
+        if let Some(rest) = t.strip_prefix("import ").or_else(|| t.strip_prefix("from ")) {
+            let module = rest.split_whitespace().next().unwrap_or("");
+            if module != "snark_lib" {
+                return Err(format!(
+                    "file imports are not supported (only the `snark_lib` stub): `{t}`"
+                ));
+            }
+            continue; // the stub is for Python tooling; the compiler skips it
         }
         let indent = no_comment.len() - no_comment.trim_start().len();
         lines.push((indent, no_comment.trim().to_string()));
@@ -867,6 +882,33 @@ pub fn parse(src: &str) -> Result<Ast, String> {
         funcs.push(p.func()?);
     }
     Ok(Ast { funcs })
+}
+
+/// Evaluate a compile-time constant expression — integer literals, `GEN`,
+/// `GEN ** k`, and `+`/`*` combinations of those — to its field element.
+/// Used for the `# public_input: <elt>, <elt>` annotation of `.py` test
+/// programs (see `tests/py_source.rs`).
+pub fn parse_const(s: &str) -> Result<F128, String> {
+    fn eval(e: &Expr) -> Result<F128, String> {
+        match e {
+            Expr::Lit(n) => Ok(F128::new(*n as u64, (*n >> 64) as u64)),
+            Expr::Gen => Ok(g_pow(1)),
+            Expr::GPow(k) => Ok(g_pow_u128(*k)),
+            Expr::Add(a, b) => Ok(eval(a)? + eval(b)?),
+            Expr::Mul(a, b) => Ok(eval(a)? * eval(b)?),
+            other => Err(format!("not a constant expression: `{other:?}`")),
+        }
+    }
+    eval(&parse_expr(s)?)
+}
+
+/// Parse a zkDSL source file (a `.py` file — the DSL is Python-shaped, see
+/// [`parse`]).
+pub fn parse_file(path: impl AsRef<std::path::Path>) -> Result<Ast, String> {
+    let path = path.as_ref();
+    let src = std::fs::read_to_string(path)
+        .map_err(|e| format!("cannot read `{}`: {e}", path.display()))?;
+    parse(&src)
 }
 
 struct Parser {
