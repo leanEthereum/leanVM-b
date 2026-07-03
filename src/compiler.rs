@@ -116,6 +116,13 @@ pub enum Stmt {
         then: Vec<Stmt>,
         els: Vec<Stmt>,
     },
+    /// `match log(x):` with `case 0: … case n-1:` — consecutive integer cases
+    /// from 0, matched against the log of the g-power scrutinee (`x = g^j`
+    /// runs case `j`). Dispatched through a trampoline table in the bytecode
+    /// (doc §ISA programming / Match statements); the scrutinee must be known
+    /// to lie in `[0, n)` — range-check a hinted value first. Case bodies are
+    /// branch-local, like [`Stmt::If`] branches. See [`FnLower::lower_match`].
+    Match { x: Expr, cases: Vec<Vec<Stmt>> },
     /// `arr[idx] = value` — store into a heap cell (write-once).
     Store(Expr, Expr, Expr),
     /// `for i in mul_range(GEN**lo, GEN**hi): body` — the counter is carried in
@@ -376,6 +383,59 @@ impl FnLower<'_> {
             self.stmt(s);
         }
         (self.vars, self.stacks, self.consts, self.one_off, self.self_fp_off, self.bounds) = saved;
+    }
+
+    /// `match log(x)` — two jumps through a trampoline table (doc §ISA
+    /// programming / Match statements). leanVM's switch jumps to the affine
+    /// `pc = a + b·x`; in the exponent the dispatch is multiplicative:
+    /// `d = g^T · x²` lands on slot `j` of the table at bytecode base `T` —
+    /// `n` consecutive two-instruction slots, slot `j` being `SET c =
+    /// g^{block_j}; JUMP c`. The case blocks sit anywhere, unaligned; only
+    /// the fixed-size slots are consecutive. The slots are two instructions
+    /// rather than one because a `JUMP` reads its target from a *cell*: a
+    /// one-instruction slot would need its cell pre-`SET`, i.e. `n` `SET`s
+    /// executed before every dispatch — folding the `SET` into the slot puts
+    /// it on the taken path only, and the doubled slot stride is absorbed as
+    /// `x²` (one extra `MUL`). Cost ≈ 7 cycles, independent of `n`.
+    ///
+    /// Soundness: nothing here bounds `x` — a scrutinee outside `[0, n)`
+    /// dispatches to an arbitrary pc, so hinted values must be range-checked
+    /// first (as in leanVM).
+    fn lower_match(&mut self, x: &Expr, cases: &[Vec<Stmt>]) {
+        let xo = self.expr(x);
+        // Hoisted on purpose: these SETs must dominate the join.
+        let sfp = self.self_fp();
+        let one = self.one();
+        let join = self.fresh();
+        let jset = self.code.len();
+        self.emit(LOp::Set { o: join, k: KVal::Local(0) }); // patched: the join
+        // d = g^T · x² — slot j (two instructions) sits at T + 2j.
+        let kcell = self.fresh();
+        let kset = self.code.len();
+        self.emit(LOp::Set { o: kcell, k: KVal::Local(0) }); // patched: table base T
+        let x2 = self.fresh();
+        self.emit(LOp::Mul { a: xo, b: xo, c: x2 });
+        let d = self.fresh();
+        self.emit(LOp::Mul { a: kcell, b: x2, c: d });
+        self.emit(LOp::Jump { oc: one, od: d, of: sfp });
+        // The trampoline table.
+        self.patch_local(kset, self.code.len());
+        let mut slots = Vec::new();
+        for _ in cases {
+            let c = self.fresh();
+            slots.push(self.code.len());
+            self.emit(LOp::Set { o: c, k: KVal::Local(0) }); // patched: its block
+            self.emit(LOp::Jump { oc: one, od: c, of: sfp });
+        }
+        // The case blocks, each exiting to the join (the last falls through).
+        for (j, body) in cases.iter().enumerate() {
+            self.patch_local(slots[j], self.code.len());
+            self.branch(body);
+            if j + 1 != cases.len() {
+                self.emit(LOp::Jump { oc: one, od: join, of: sfp });
+            }
+        }
+        self.patch_local(jset, self.code.len());
     }
 
     /// `if` / `else` — one `XOR` and one conditional `JUMP` (taken ⇔ the
@@ -823,6 +883,7 @@ impl FnLower<'_> {
             }
             Stmt::AssertLt(e, k) => self.lower_assert_lt(e, *k),
             Stmt::If { eq, lhs, rhs, then, els } => self.lower_if(*eq, lhs, rhs, then, els),
+            Stmt::Match { x, cases } => self.lower_match(x, cases),
             Stmt::Call(f, args) => {
                 // `blake3(a, b, out)`: the digest of the two 256-bit operands
                 // lands in the existing 2-cell run `out` (write-once: if `out`
@@ -1041,6 +1102,12 @@ fn free_vars_stmt(s: &Stmt, refs: &mut Vec<String>, bound: &mut std::collections
             then.iter().for_each(|s| free_vars_stmt(s, refs, bound));
             els.iter().for_each(|s| free_vars_stmt(s, refs, bound));
         }
+        Stmt::Match { x, cases } => {
+            free_vars_expr(x, refs);
+            cases
+                .iter()
+                .for_each(|c| c.iter().for_each(|s| free_vars_stmt(s, refs, bound)));
+        }
         Stmt::CallIfNe(a, b, _, args) => {
             free_vars_expr(a, refs);
             free_vars_expr(b, refs);
@@ -1256,6 +1323,10 @@ impl Parser {
             let rest = rest.to_string();
             return self.if_stmt(&rest, indent);
         }
+        if let Some(rest) = line.strip_prefix("match ") {
+            let rest = rest.to_string();
+            return self.match_stmt(&rest, indent);
+        }
         self.i += 1;
         if line == "return" {
             return Ok(Stmt::Return(vec![]));
@@ -1354,6 +1425,47 @@ impl Parser {
             }
         }
         Ok(Stmt::If { eq, lhs, rhs, then, els })
+    }
+
+    /// `match log(x):` with `case 0:` … `case n-1:` bodies — the cases must
+    /// be consecutive integers from 0 (the trampoline table is dense; there
+    /// is no `case _`). Matching is on the *log*: `x = GEN ** j` runs case `j`.
+    fn match_stmt(&mut self, header: &str, indent: usize) -> Result<Stmt, String> {
+        let inner = header.strip_suffix(':').ok_or("`match` needs `:`")?;
+        let x = strip_log(inner).ok_or("`match` matches logs: `match log(x):`")?;
+        let x = parse_expr(x)?;
+        self.i += 1;
+        let case_indent = match self.lines.get(self.i) {
+            Some((ind, _)) if *ind > indent => *ind,
+            _ => return Err("`match` needs an indented `case` block".into()),
+        };
+        let mut cases = Vec::new();
+        while let Some((ind, line)) = self.lines.get(self.i).cloned() {
+            if ind != case_indent {
+                break;
+            }
+            let rest = line
+                .strip_prefix("case ")
+                .ok_or_else(|| format!("expected `case k:`, got `{line}`"))?;
+            let k: usize = rest
+                .strip_suffix(':')
+                .ok_or("`case` needs `:`")?
+                .trim()
+                .parse()
+                .map_err(|_| format!("a `case` value must be an integer literal, got `{rest}`"))?;
+            if k != cases.len() {
+                return Err(format!(
+                    "match cases must be consecutive from 0: expected `case {}:`, got `case {k}:`",
+                    cases.len()
+                ));
+            }
+            self.i += 1;
+            cases.push(self.block(case_indent)?);
+        }
+        if cases.is_empty() {
+            return Err("`match` needs at least one case".into());
+        }
+        Ok(Stmt::Match { x, cases })
     }
 }
 

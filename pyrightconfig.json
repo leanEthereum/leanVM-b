@@ -1,4 +1,5 @@
 {
     "extraPaths": ["."],
-    "typeCheckingMode": "basic"
+    "typeCheckingMode": "basic",
+    "pythonVersion": "3.13"
 }

@@ -220,7 +220,40 @@ Local jumps must carry the frame pointer, which the ISA cannot read directly;
 each branching function materializes its own `fp` once (2 `DEREF`s through a
 1-cell heap bounce; free in `main`, where `fp = g^0 = 1`).
 
-Statements without effect are rejected. There is no `match` yet.
+### `match`
+
+```python
+match log(x):        # x = GEN ** j runs case j
+    case 0:
+        r[1] = 11
+    case 1:
+        r[1] = 17
+    case 2:
+        r[1] = 21
+```
+
+Matches the **log** of a g-power scrutinee against integer cases, which must
+be consecutive from 0 (the dispatch table is dense; no `case _`). The
+lowering is two jumps through a *trampoline table* in the bytecode: the
+dispatch jumps to `g^T · x²` — the j-th two-instruction slot (`SET` the case
+block's address, `JUMP` to it) of a table at base `T` — and the slot jumps to
+the case block, which can sit anywhere, unaligned and of any length. Cost ≈ 7
+cycles, independent of the case count.
+
+(Why not leanVM's single-jump `pc = a + b·x`: that affine address needs
+integer *scaling* by the common block size `b`, which in the exponent becomes
+`x^b` — log₂ b squarings — plus padding every block to the longest; the
+trampoline collapses the aligned region to 2-instruction slots, so the
+scaling is the single squaring `x²`. Other layouts exist — e.g. a
+memory-resident address table dispatched with a single jump, worthwhile for
+many repeated small matches — but only the trampoline is implemented.)
+
+**Soundness**: nothing in the dispatch bounds `x` — a scrutinee outside
+`[0, n)` jumps to an arbitrary pc. A hinted value must be range-checked first
+(`assert log(x) < n`, 3 cycles), as in leanVM. Case bodies are branch-local,
+like `if` branches.
+
+Statements without effect are rejected.
 
 ## Assertions
 
@@ -299,6 +332,7 @@ The compression is proven by the vendored flock BLAKE3 R1CS (see `doc.pdf`
 | `assert a == b` | 2 |
 | `assert log x < k` | 3 (+1 `SET` amortized per bound per frame) |
 | `if a == b: …` | 3 (+2 to skip a non-empty `else`; +2 amortized `self-fp` per branching function) |
+| `match log(x): …` | ≈ 7, independent of the case count |
 | function call | ≈ `n_args + n_returns + 4` |
 | `mul_range` iteration | body + ≈ 1 `MUL` + 1 `XOR` + call overhead |
 | `blake3(a, b, out)` | 1 (+2 `DEREF`s per heap operand, +1 `MUL` per runtime slice start) |
@@ -330,8 +364,9 @@ def main():
 
 ## Not (yet) supported
 
-Mutable variables and compound assignment; `match`; conditions other than
-field (in)equality; top-level constants; multi-file imports; `Const`/typed
-parameters and `@inline`; runtime slice starts on a `StackBuf`; runtime
-range-check bounds (`assert log a < log b` with runtime `b`); custom hints;
-precompiles beyond `BLAKE3`.
+Mutable variables and compound assignment; conditions other than field
+(in)equality; `match` defaults (`case _`) and non-contiguous cases; top-level
+constants; multi-file imports; `Const`/typed parameters and `@inline`;
+runtime slice starts on a `StackBuf`; runtime range-check bounds
+(`assert log a < log b` with runtime `b`); custom hints; precompiles beyond
+`BLAKE3`.

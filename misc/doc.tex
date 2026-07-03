@@ -482,6 +482,50 @@ We lay out the whole protocol as one ordered sequence. Each reduction below adds
 \item \textbf{Verifier.} Accepts iff the two roots agreed, each leaf decomposition and every sumcheck's final value matched the supplied evaluations, the public-input claim held, and the PCS opening verified.
 \end{enumerate}
 
+\section{ISA programming}\label{sec:isa-programming}
+
+How the zkDSL compiler (\texttt{src/compiler.rs}; surface language in \texttt{zkDSL.md}) programs the six-instruction ISA. Two themes run through every pattern: \emph{write-once memory is an assertion mechanism} (a second write of a cell is an equality check, an unwritten cell is prover-chosen), and \emph{indices live in the exponent} (a logical index $i$ is the element $\gen^{i}$, so incrementing, offsetting, and address formation are single field multiplications).
+
+\subsection{Hints}\label{sec:prog-hints}
+
+The prover's nondeterminism enters only through write-once cells that no instruction defines — e.g.\ allocation pointers: a fresh region's base $\gen^{\mathrm{base}}$, written unconstrained.
+
+\subsection{Functions}\label{sec:prog-functions}
+
+A frame is fp-relative with layout $[\mathit{retpc},\mathit{retfp},\mathrm{args},\mathrm{rets},\mathrm{locals}]$. A call: the callee frame pointer is hinted into a fresh cell $\mathit{nfp}$; the arguments and the caller's $\fp$ are stored through $\mathit{nfp}$ with \texttt{DEREF}s (modes \texttt{cell} and \texttt{fp}); a \texttt{DEREF} in mode \texttt{pc} stores the return address $\gen^{2}\cdot\pc$ (the instruction after the transfer); one \texttt{JUMP} enters the callee. Return is a single \texttt{JUMP} to $\loc{1}$ with frame pointer $\loc{\gen}$. Cost: $n_{\mathrm{args}}+n_{\mathrm{rets}}+4$ instructions per call.
+
+\subsection{Loops}\label{sec:prog-loops}
+
+A counted loop keeps its counter in the exponent: it starts at $\gen^{\mathrm{lo}}$, advances by one multiplication $i\gets\gen\cdot i$, and exits on reaching $\gen^{\mathrm{hi}}$. The body is lowered as a tail-recursive helper function whose exit test \emph{is} the recursive call's \texttt{JUMP} condition — the \texttt{XOR} $i+\gen^{\mathrm{hi}}$ is nonzero exactly while the loop must continue — so an iteration costs one call plus two instructions, with no is-zero gadget. Loop state is threaded through captured arguments or a heap buffer.
+
+\subsection{Conditionals}\label{sec:prog-conditionals}
+
+\texttt{if}/\texttt{else} on a field equality is one \texttt{XOR} plus one conditional \texttt{JUMP}: the taken jump goes to whichever block the test should \emph{not} fall into ($=$ falls into \emph{then}, $\neq$ into \emph{else}), so no negation is ever computed. Intra-function jump targets are bytecode addresses $\gen^{\mathrm{entry}+i}$, backpatched at layout.
+
+A taken \texttt{JUMP} reloads $\fp$ from a cell, and the ISA has no $\fp$-read; a branching function therefore materializes its own $\fp$ once: a \texttt{DEREF} in mode \texttt{fp} writes $\fp$ into a fresh one-cell heap buffer, a \texttt{DEREF} in mode \texttt{cell} copies it back into the frame (2 instructions, amortized; in \texttt{main}, $\fp=\gen^{0}=1$ is already a constant). Bindings made inside a branch are local to it; branches communicate through write-once cells — only one branch executes, so both may write the \emph{same} cell.
+
+\subsection{Range checks}\label{sec:prog-range-checks}
+
+The range check \emph{in the exponent} proves $x\in\{\gen^{0},\dots,\gen^{k-1}\}$, i.e.\ $\log_{\gen}x<k$, in 3 cycles (leanVM's \texttt{DEREF} trick \cite{leanvm-doc}, transported to $\gen$-powers):
+\begin{enumerate}
+\item \texttt{DEREF} through $x$: the dereferenced address $x\cdot\gen^{0}$ rides the memory interaction, which balances only for the $2^{h}$ addresses $\gen^{0},\dots,\gen^{2^{h}-1}$ (\S\ref{sec:memchan}) — the bus itself proves $x=\gen^{e}$ with $e<2^{h}$;
+\item \texttt{MUL} $x\cdot y$ into a write-once cell holding the constant $\gen^{k-1}$: the runner back-solves the complement $y=\gen^{k-1-e}$ (\S\ref{sec:prog-hints}), and the double write asserts $x\cdot y=\gen^{k-1}$;
+\item \texttt{DEREF} through $y$: proves $y=\gen^{f}$, $f<2^{h}$.
+\end{enumerate}
+Then $e+f\equiv k-1\pmod{2^{128}-1}$ with $e,f<2^{h}$; a ``negative'' $k-1-e$ wraps to $\approx2^{128}\gg2^{h}$, so $e\le k-1$ — for every memory size the prover may announce, provided $k\le2^{16}$ (the minimum, \S\ref{sec:vm}). The two \texttt{DEREF} targets are deferred touches; the constant cell is one amortized \texttt{SET} per distinct bound per frame.
+
+\subsection{Match statements}\label{sec:prog-match}
+
+leanVM dispatches a switch with a single jump to $\pc=a+b\cdot x$: the case blocks, padded to a common length $b$, sit consecutively from base $a$, and its integer arithmetic forms the affine address in one instruction. That computation does not transport to this VM. Addresses here are $\gen$-powers: the additive offset $a+j$ is the cheap product $\gen^{a}\cdot x$, but the \emph{scaling} $b\cdot j$ is the power $x^{b}$ — $\log_2 b$ squarings per dispatch — with every block still padded to the longest. Instead, the aligned region collapses to fixed two-instruction \emph{trampoline slots} and the real blocks move out of line: matching on $x=\gen^{j}$, $j\in[0,n)$, the dispatch jumps to
+\[
+  d \;=\; \gen^{T}\cdot x^{2} \;=\; \gen^{T+2j},
+\]
+slot $j$ of a table at bytecode base $T$, where a slot is $\texttt{SET}\ c=\gen^{\mathrm{block}_j}$ then $\texttt{JUMP}\ c$. The case blocks sit anywhere, unaligned and of any length; the scaling cost is the single squaring $x^{2}$. Two jumps per dispatch, $\approx7$ cycles independent of $n$.
+
+The slots are two instructions rather than one because a \texttt{JUMP} reads its destination from a \emph{cell}: a one-instruction slot would need its target cell pre-written, i.e.\ $n$ \texttt{SET}s executed before every dispatch. (Other layouts exist and trade exactly this — e.g.\ a memory-resident table of the $n$ block addresses, read with one \texttt{DEREF} and taken with a \emph{single} jump, paying the \texttt{SET}s as setup; worthwhile for many repeated small matches. The compiler currently emits only the trampoline.)
+
+As in leanVM, the matched value must be known to lie in $[0,n)$ — a hinted $x$ must be range-checked first (\S\ref{sec:prog-range-checks}); otherwise the dispatch lands at an attacker-chosen program counter.
+
 \iffalse % Deferred annex (u32 addition gadget, ring-switching): commented out for now.
 \appendix
 
@@ -541,6 +585,11 @@ Andrija Novakovic and Guillermo Angeris.
 Succinct Labs.
 \newblock flock: a batched-R1CS proving system for hash circuits over binary towers.
 \newblock \url{https://github.com/succinctlabs/flock}
+
+\bibitem{leanvm-doc}
+leanEthereum.
+\newblock leanVM: a minimal zkVM (\texttt{misc/minimal\_zkVM.tex}, \S Range checks, \S Switch statements).
+\newblock \url{https://github.com/leanEthereum/leanVM}
 
 \end{thebibliography}
 
