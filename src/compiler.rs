@@ -103,6 +103,19 @@ pub enum Stmt {
     AssertLt(Expr, u64),
     /// `f(args)` as a statement (returns discarded).
     Call(String, Vec<Expr>),
+    /// `if lhs == rhs:` (`eq`) / `if lhs != rhs:` (`!eq`) with an optional
+    /// `else` block (an `elif` parses as an `else` holding a nested `if`).
+    /// One conditional `JUMP` on the XOR of the two sides; bindings made
+    /// inside a branch are local to it — branches communicate through
+    /// write-once memory (only one branch executes, so both may write the
+    /// same cell). See [`FnLower::lower_if`].
+    If {
+        eq: bool,
+        lhs: Expr,
+        rhs: Expr,
+        then: Vec<Stmt>,
+        els: Vec<Stmt>,
+    },
     /// `arr[idx] = value` — store into a heap cell (write-once).
     Store(Expr, Expr, Expr),
     /// `for i in mul_range(GEN**lo, GEN**hi): body` — the counter is carried in
@@ -154,6 +167,11 @@ enum KVal {
     /// The halt sentinel pc `g^{B-1}` (last bytecode slot), fixed once the
     /// padded bytecode size `B` is known. `main` jumps here to terminate.
     EndSentinel,
+    /// An intra-function jump target: the `i`-th instruction of the function
+    /// this `SET` belongs to, resolved to `g^{entry + i}` once entry pcs are
+    /// fixed. Emitted with a placeholder by the `if`/`else` lowering and
+    /// backpatched ([`FnLower::patch_local`]).
+    Local(u32),
 }
 
 #[derive(Clone, Debug)]
@@ -247,6 +265,10 @@ struct FnLower<'a> {
     is_main: bool,
     code: Vec<LInstr>,
     one_off: Option<Off>,
+    /// The cell holding this function's own `fp`, materialized lazily
+    /// ([`Self::self_fp`]) — local (`if`/`else`) jumps reload the frame
+    /// pointer on the taken branch.
+    self_fp_off: Option<Off>,
     /// Range-check product-target cells: bound `k` → the frame cell holding
     /// `g^{k-1}`, set lazily once and shared by every check of that bound.
     bounds: HashMap<u64, Off>,
@@ -303,6 +325,91 @@ impl FnLower<'_> {
     fn copy(&mut self, src: Off, dst: Off) {
         let one = self.one();
         self.emit(LOp::Mul { a: src, b: one, c: dst });
+    }
+
+    /// A frame cell holding this function's own `fp` (the g-power element),
+    /// materialized lazily once: a taken `JUMP` reloads the frame pointer
+    /// from a cell, so local (`if`/`else`) jumps must name it. The ISA has no
+    /// fp-read, so bounce it through a fresh 1-cell heap buffer — a
+    /// `DEREF`-fp writes it there, a `DEREF`-cell copies it back (2 cycles,
+    /// once per function that branches). In `main`, `fp = g^0 = 1`, which is
+    /// the [`Self::one`] cell.
+    fn self_fp(&mut self) -> Off {
+        if self.is_main {
+            return self.one();
+        }
+        if let Some(o) = self.self_fp_off {
+            return o;
+        }
+        let q = self.fresh();
+        self.pending.push(Hint::AllocBuffer { ptr: q, size: 1 });
+        self.emit(LOp::Deref { alpha: q, beta: 0, gamma: 0, mode: DerefMode::Fp }); // m[q] := fp
+        let o = self.fresh();
+        self.emit(LOp::Deref { alpha: q, beta: 0, gamma: o, mode: DerefMode::Cell }); // m[fp·g^o] := m[q]
+        self.self_fp_off = Some(o);
+        o
+    }
+
+    /// Backpatch a [`KVal::Local`] `SET` (emitted with a placeholder) to name
+    /// the instruction at index `target` of this function's code.
+    fn patch_local(&mut self, set_idx: usize, target: usize) {
+        match &mut self.code[set_idx].op {
+            LOp::Set { k: KVal::Local(t), .. } => *t = target as u32,
+            other => unreachable!("patch_local on {other:?}"),
+        }
+    }
+
+    /// Lower a branch body with branch-local scope: bindings AND the lazily
+    /// cached cells (`one`, `self_fp`, range-check bounds) revert at the join
+    /// — a cell whose `SET` sits inside a conditionally-executed region must
+    /// not be trusted outside it.
+    fn branch(&mut self, body: &[Stmt]) {
+        let saved = (
+            self.vars.clone(),
+            self.stacks.clone(),
+            self.consts.clone(),
+            self.one_off,
+            self.self_fp_off,
+            self.bounds.clone(),
+        );
+        for s in body {
+            self.stmt(s);
+        }
+        (self.vars, self.stacks, self.consts, self.one_off, self.self_fp_off, self.bounds) = saved;
+    }
+
+    /// `if` / `else` — one `XOR` and one conditional `JUMP` (taken ⇔ the
+    /// sides differ). The taken jump goes to whichever block the test
+    /// *doesn't* fall into, so no negation gadget is needed: for `==` the
+    /// fall-through is `then`, for `!=` it is `else`. Local jumps keep the
+    /// frame via [`Self::self_fp`]; targets are backpatched
+    /// [`KVal::Local`]s. Costs 3 cycles, +2 (`SET` + `JUMP`) when a non-empty
+    /// second block must be skipped over, + the amortized `one`/`self_fp`
+    /// materialization.
+    fn lower_if(&mut self, eq: bool, lhs: &Expr, rhs: &Expr, then: &[Stmt], els: &[Stmt]) {
+        let (la, lb) = (self.expr(lhs), self.expr(rhs));
+        let x = self.fresh();
+        self.emit(LOp::Xor { a: la, b: lb, c: x }); // x = lhs + rhs: nonzero ⇔ !=
+        // Hoisted on purpose: these SETs must dominate the join.
+        let sfp = self.self_fp();
+        let one = self.one();
+        let (a_block, b_block) = if eq { (then, els) } else { (els, then) };
+        let bdest = self.fresh();
+        let bset = self.code.len();
+        self.emit(LOp::Set { o: bdest, k: KVal::Local(0) }); // patched: start of B
+        self.emit(LOp::Jump { oc: x, od: bdest, of: sfp });
+        self.branch(a_block);
+        if b_block.is_empty() {
+            self.patch_local(bset, self.code.len());
+        } else {
+            let edest = self.fresh();
+            let eset = self.code.len();
+            self.emit(LOp::Set { o: edest, k: KVal::Local(0) }); // patched: the join
+            self.emit(LOp::Jump { oc: one, od: edest, of: sfp });
+            self.patch_local(bset, self.code.len());
+            self.branch(b_block);
+            self.patch_local(eset, self.code.len());
+        }
     }
 
     /// The frame cell holding `g^{k-1}` — the range-check product target — set
@@ -715,6 +822,7 @@ impl FnLower<'_> {
                 });
             }
             Stmt::AssertLt(e, k) => self.lower_assert_lt(e, *k),
+            Stmt::If { eq, lhs, rhs, then, els } => self.lower_if(*eq, lhs, rhs, then, els),
             Stmt::Call(f, args) => {
                 // `blake3(a, b, out)`: the digest of the two 256-bit operands
                 // lands in the existing 2-cell run `out` (write-once: if `out`
@@ -927,6 +1035,12 @@ fn free_vars_stmt(s: &Stmt, refs: &mut Vec<String>, bound: &mut std::collections
             free_vars_expr(b, refs);
         }
         Stmt::AssertLt(e, _) => free_vars_expr(e, refs),
+        Stmt::If { lhs, rhs, then, els, .. } => {
+            free_vars_expr(lhs, refs);
+            free_vars_expr(rhs, refs);
+            then.iter().for_each(|s| free_vars_stmt(s, refs, bound));
+            els.iter().for_each(|s| free_vars_stmt(s, refs, bound));
+        }
         Stmt::CallIfNe(a, b, _, args) => {
             free_vars_expr(a, refs);
             free_vars_expr(b, refs);
@@ -963,6 +1077,7 @@ fn lower_func(f: &Func, queue: &mut Vec<Func>, loop_ctr: &mut usize) -> Lowered 
         is_main: f.name == "main",
         code: Vec::new(),
         one_off: None,
+        self_fp_off: None,
         bounds: HashMap::new(),
         pending: Vec::new(),
         queue,
@@ -1137,6 +1252,10 @@ impl Parser {
                 body,
             });
         }
+        if let Some(rest) = line.strip_prefix("if ") {
+            let rest = rest.to_string();
+            return self.if_stmt(&rest, indent);
+        }
         self.i += 1;
         if line == "return" {
             return Ok(Stmt::Return(vec![]));
@@ -1204,6 +1323,37 @@ impl Parser {
             return Ok(Stmt::Call(f, args));
         }
         Err(format!("statement has no effect: `{line}`"))
+    }
+
+    /// `if a == b:` / `if a != b:` (the current line, its `if `/`elif `
+    /// prefix already stripped into `header`), with an optional `elif`/`else`
+    /// tail at the same indent — an `elif` is sugar for an `else` holding a
+    /// nested `if`.
+    fn if_stmt(&mut self, header: &str, indent: usize) -> Result<Stmt, String> {
+        let cond = header.strip_suffix(':').ok_or("`if` needs `:`")?;
+        let (eq, l, r) = if let Some((l, r)) = split_once_top(cond, "==") {
+            (true, l, r)
+        } else if let Some((l, r)) = split_once_top(cond, "!=") {
+            (false, l, r)
+        } else {
+            return Err("an `if` condition must be `a == b` or `a != b`".into());
+        };
+        let (lhs, rhs) = (parse_expr(&l)?, parse_expr(&r)?);
+        self.i += 1;
+        let then = self.block(indent)?;
+        let mut els = Vec::new();
+        if let Some((ind, line)) = self.lines.get(self.i).cloned()
+            && ind == indent
+        {
+            if line == "else:" {
+                self.i += 1;
+                els = self.block(indent)?;
+            } else if let Some(rest) = line.strip_prefix("elif ") {
+                let rest = rest.to_string();
+                els = vec![self.if_stmt(&rest, indent)?];
+            }
+        }
+        Ok(Stmt::If { eq, lhs, rhs, then, els })
     }
 }
 
@@ -1479,6 +1629,7 @@ pub fn compile(ast: &Ast) -> Program {
     let mut prog: Vec<Op> = Vec::new();
     let mut hints: HashMap<u32, Vec<RHint>> = HashMap::new();
     for l in &lowered {
+        let base = entry[&l.name];
         for ins in &l.code {
             let here = prog.len() as u32;
             if !ins.hints.is_empty() {
@@ -1495,7 +1646,7 @@ pub fn compile(ast: &Ast) -> Program {
                     .collect();
                 hints.insert(here, rhs);
             }
-            prog.push(resolve(&ins.op, &entry, sentinel));
+            prog.push(resolve(&ins.op, &entry, sentinel, base));
         }
     }
 
@@ -1567,11 +1718,12 @@ fn g_pow_u128(mut e: u128) -> F128 {
     result
 }
 
-fn resolve(op: &LOp, entry: &HashMap<String, u32>, sentinel: u32) -> Op {
+fn resolve(op: &LOp, entry: &HashMap<String, u32>, sentinel: u32, base: u32) -> Op {
     let resolve_kval = |kv: &KVal| match kv {
         KVal::Const(c) => *c,
         KVal::Entry(name) => g_pow(entry[name] as usize),
         KVal::EndSentinel => g_pow(sentinel as usize),
+        KVal::Local(i) => g_pow((base + i) as usize),
     };
     match op {
         LOp::Set { o, k: kv } => Op::Set {

@@ -190,7 +190,37 @@ separate is-zero gadget. Free variables of the body are captured **by value**
 as extra parameters; a `HeapBuf` pointer threads through fine, a `StackBuf`
 does not (compile error).
 
-There is no `if`/`elif`/`match` yet. Statements without effect are rejected.
+### `if` / `elif` / `else`
+
+```python
+if x == GEN ** 3:
+    r[1] = 5
+elif x != y:
+    r[1] = 7
+else:
+    r[1] = 9
+```
+
+Conditions are field-equality tests: `a == b` or `a != b` (there are no other
+predicates — order facts come from range-check asserts). The lowering is one
+`XOR` plus one conditional `JUMP` on it; the taken jump goes to whichever
+block the test doesn't fall into, so no negation gadget is needed. An `elif`
+is sugar for an `else` holding a nested `if`.
+
+Two write-once-flavored rules:
+
+- **bindings made inside a branch are local to it** — the compile-time scope
+  reverts at the join. Branches communicate through memory: only one branch
+  executes, so both may write the *same* cell (`r[1]` above), and the join
+  reads it.
+- a cell nobody wrote (e.g. skipped-branch territory) stays unconstrained —
+  same rule as everywhere else in write-once memory.
+
+Local jumps must carry the frame pointer, which the ISA cannot read directly;
+each branching function materializes its own `fp` once (2 `DEREF`s through a
+1-cell heap bounce; free in `main`, where `fp = g^0 = 1`).
+
+Statements without effect are rejected. There is no `match` yet.
 
 ## Assertions
 
@@ -268,6 +298,7 @@ The compression is proven by the vendored flock BLAKE3 R1CS (see `doc.pdf`
 | stack read / store `sa[k]` | 0 (direct cell addressing) |
 | `assert a == b` | 2 |
 | `assert log x < k` | 3 (+1 `SET` amortized per bound per frame) |
+| `if a == b: …` | 3 (+2 to skip a non-empty `else`; +2 amortized `self-fp` per branching function) |
 | function call | ≈ `n_args + n_returns + 4` |
 | `mul_range` iteration | body + ≈ 1 `MUL` + 1 `XOR` + call overhead |
 | `blake3(a, b, out)` | 1 (+2 `DEREF`s per heap operand, +1 `MUL` per runtime slice start) |
@@ -299,8 +330,8 @@ def main():
 
 ## Not (yet) supported
 
-Mutable variables and compound assignment; `if`/`elif`/`else`, `match`;
-top-level constants; multi-file imports; `Const`/typed parameters and
-`@inline`; runtime slice starts on a `StackBuf`; runtime range-check bounds
-(`assert log a < log b` with runtime `b`); custom hints; precompiles beyond
-`BLAKE3`.
+Mutable variables and compound assignment; `match`; conditions other than
+field (in)equality; top-level constants; multi-file imports; `Const`/typed
+parameters and `@inline`; runtime slice starts on a `StackBuf`; runtime
+range-check bounds (`assert log a < log b` with runtime `b`); custom hints;
+precompiles beyond `BLAKE3`.
