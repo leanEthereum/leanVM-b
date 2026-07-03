@@ -100,6 +100,29 @@ transfers with one `JUMP`. Cost: about `n_args + n_returns + 4` instructions
 per call. Every non-`main` function must end in an explicit `return`; in
 `main`, `return` is a no-op (main halts at a sentinel automatically).
 
+### `Const` parameters
+
+```python
+def hash_pair(buf, k: Const):
+    h = StackBuf(2)
+    blake3(buf[k * 2:k * 2 + 2], buf[k * 2:k * 2 + 2], h)
+    return h[0], h[1]
+```
+
+`k: Const` marks a **compile-time parameter**: the call site must pass a
+constant (an integer literal, `GEN ** k`, or a literal-bound name), and the
+compiler *specializes* the function per distinct constant tuple — a
+monomorphized copy (`hash_pair__L1`) with the parameter substituted as its
+literal, shared by every call with the same constants; only the runtime
+arguments are passed. Inside the body the parameter *is* the literal, so it
+works in compile-time positions: stack indexes, slice bounds. A function with
+a `Const` parameter is a template — it is never lowered itself. The idiomatic
+pairing dispatches a runtime index to a const-indexed helper:
+
+```python
+r = match_range(log(x), range(0, 4), lambda i: hash_pair(buf, i))
+```
+
 ## Variables
 
 Bindings are **immutable**: `x = e` names a fresh cell. Re-binding a name is
@@ -384,7 +407,7 @@ def main():
 
 Mutable variables and compound assignment; conditions other than field
 (in)equality; `match` defaults (`case _`) and non-contiguous cases; top-level
-constants; multi-file imports; `Const`/typed parameters and `@inline`;
-runtime slice starts on a `StackBuf`; runtime range-check bounds
-(`assert log a < log b` with runtime `b`); custom hints; precompiles beyond
-`BLAKE3`.
+constants; multi-file imports; `@inline`; `Const` parameters as `mul_range`
+or range-check bounds (those are parsed as literals); runtime slice starts on
+a `StackBuf`; runtime range-check bounds (`assert log a < log b` with runtime
+`b`); custom hints; precompiles beyond `BLAKE3`.

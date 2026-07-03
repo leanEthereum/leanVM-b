@@ -161,6 +161,12 @@ pub enum Stmt {
 pub struct Func {
     pub name: String,
     pub params: Vec<String>,
+    /// Per-parameter `Const` marker (`def f(k: Const, x):`). A function with
+    /// a `Const` parameter is a *template*: it is never lowered itself — each
+    /// call site with a distinct constant tuple queues a monomorphized copy
+    /// with the parameter substituted by its literal (see
+    /// [`FnLower::specialize`]).
+    pub const_params: Vec<bool>,
     pub n_ret: usize,
     pub body: Vec<Stmt>,
 }
@@ -295,6 +301,9 @@ struct FnLower<'a> {
     pending: Vec<Hint>,
     queue: &'a mut Vec<Func>,
     loop_ctr: &'a mut usize,
+    /// The program's function definitions by name, for `Const`-parameter
+    /// specialization at call sites ([`Self::specialize`]).
+    defs: &'a HashMap<String, Func>,
 }
 
 impl FnLower<'_> {
@@ -841,7 +850,66 @@ impl FnLower<'_> {
         self.lower_call(callee, args, 0, Some(cond));
     }
 
+    /// If `callee` declares `Const` parameters, monomorphize: the constant
+    /// arguments (literals, `GEN ** k`, or literal-bound names) substitute
+    /// into a copy of the callee — queued once per distinct constant tuple,
+    /// named `callee__L5_G3`-style — and only the runtime arguments remain.
+    fn specialize(&mut self, callee: &str, args: &[Expr]) -> (String, Vec<Expr>) {
+        let defs: &HashMap<String, Func> = self.defs;
+        let Some(def) = defs.get(callee) else {
+            return (callee.to_string(), args.to_vec()); // loop helpers, unknown names
+        };
+        if !def.const_params.contains(&true) {
+            return (callee.to_string(), args.to_vec());
+        }
+        assert_eq!(args.len(), def.params.len(), "call to `{callee}`: wrong arity");
+        let mut tag = String::new();
+        let (mut rt_params, mut rt_args, mut substs) = (Vec::new(), Vec::new(), Vec::new());
+        for ((p, &is_const), a) in def.params.iter().zip(&def.const_params).zip(args) {
+            if !is_const {
+                rt_params.push(p.clone());
+                rt_args.push(a.clone());
+                continue;
+            }
+            let c = match a {
+                Expr::Lit(n) => Expr::Lit(*n),
+                Expr::Gen => Expr::GPow(1),
+                Expr::GPow(k) => Expr::GPow(*k),
+                Expr::Var(v) if self.consts.contains_key(v) => Expr::Lit(self.consts[v] as u128),
+                other => panic!(
+                    "argument for Const parameter `{p}` of `{callee}` must be a compile-time \
+                     constant, got `{other:?}`"
+                ),
+            };
+            tag.push_str(&match &c {
+                Expr::Lit(n) => format!("_L{n}"),
+                Expr::GPow(k) => format!("_G{k}"),
+                _ => unreachable!(),
+            });
+            substs.push((p.clone(), c));
+        }
+        let name = format!("{callee}_{tag}");
+        if !self.queue.iter().any(|f| f.name == name) {
+            assert!(self.queue.len() < 10_000, "Const specialization explosion (recursive constants?)");
+            let mut body = def.body.clone();
+            for (p, c) in &substs {
+                body = subst_stmts(&body, p, c);
+            }
+            let const_params = vec![false; rt_params.len()];
+            self.queue.push(Func {
+                name: name.clone(),
+                params: rt_params,
+                const_params,
+                n_ret: def.n_ret,
+                body,
+            });
+        }
+        (name, rt_args)
+    }
+
     fn lower_call(&mut self, callee: &str, args: &[Expr], n_ret: usize, cond: Option<Off>) -> Vec<Off> {
+        let (callee, args) = self.specialize(callee, args);
+        let (callee, args) = (callee.as_str(), args.as_slice());
         let arg_offs: Vec<Off> = args.iter().map(|a| self.expr(a)).collect();
         let nfp = self.fresh();
         let entry = self.fresh();
@@ -1090,9 +1158,11 @@ impl FnLower<'_> {
             cap_args(Expr::Var(next_var)),
         ));
         loop_body.push(Stmt::Return(vec![]));
+        let const_params = vec![false; params.len()];
         self.queue.push(Func {
             name: loop_name.clone(),
             params,
+            const_params,
             n_ret: 0,
             body: loop_body,
         });
@@ -1194,7 +1264,12 @@ fn free_vars_stmt(s: &Stmt, refs: &mut Vec<String>, bound: &mut std::collections
 }
 
 /// Lower one function to its instruction list and frame size.
-fn lower_func(f: &Func, queue: &mut Vec<Func>, loop_ctr: &mut usize) -> Lowered {
+fn lower_func(
+    f: &Func,
+    queue: &mut Vec<Func>,
+    loop_ctr: &mut usize,
+    defs: &HashMap<String, Func>,
+) -> Lowered {
     let mut vars = HashMap::new();
     for (i, p) in f.params.iter().enumerate() {
         vars.insert(p.clone(), 2 + i as u32);
@@ -1215,6 +1290,7 @@ fn lower_func(f: &Func, queue: &mut Vec<Func>, loop_ctr: &mut usize) -> Lowered 
         pending: Vec::new(),
         queue,
         loop_ctr,
+        defs,
     };
     for s in &f.body {
         lowerer.stmt(s);
@@ -1313,11 +1389,25 @@ impl Parser {
         let open = header.find('(').ok_or("function header needs `(`")?;
         let name = header[..open].trim().to_string();
         let params_str = header[open + 1..header.rfind(')').ok_or("missing `)`")?].trim();
-        let params: Vec<String> = if params_str.is_empty() {
-            vec![]
-        } else {
-            params_str.split(',').map(|s| s.trim().to_string()).collect()
-        };
+        let (mut params, mut const_params) = (Vec::new(), Vec::new());
+        if !params_str.is_empty() {
+            for part in params_str.split(',') {
+                // `x` (runtime) or `x: Const` (compile-time, specialized).
+                if let Some((n, ann)) = part.split_once(':') {
+                    if ann.trim() != "Const" {
+                        return Err(format!(
+                            "unsupported parameter annotation `{}` (only `Const`)",
+                            ann.trim()
+                        ));
+                    }
+                    params.push(n.trim().to_string());
+                    const_params.push(true);
+                } else {
+                    params.push(part.trim().to_string());
+                    const_params.push(false);
+                }
+            }
+        }
         self.i += 1;
         let body = self.block(indent)?;
         let n_ret = body
@@ -1328,6 +1418,7 @@ impl Parser {
         Ok(Func {
             name,
             params,
+            const_params,
             n_ret,
             body,
         })
@@ -1659,6 +1750,76 @@ fn strip_log(s: &str) -> Option<&str> {
     r.starts_with([' ', '(']).then_some(r)
 }
 
+/// Substitute `Var(name)` → `to` through a statement list, stopping at a
+/// statement that rebinds `name` (later uses refer to the new binding).
+/// Nested blocks recurse independently — their bindings are branch-local,
+/// matching the lowering's scoping. Used by `Const`-parameter specialization.
+fn subst_stmts(stmts: &[Stmt], name: &str, to: &Expr) -> Vec<Stmt> {
+    let mut out = Vec::with_capacity(stmts.len());
+    let mut active = true;
+    for s in stmts {
+        if !active {
+            out.push(s.clone());
+            continue;
+        }
+        let (s, rebinds) = subst_stmt(s, name, to);
+        out.push(s);
+        active = !rebinds;
+    }
+    out
+}
+
+/// One statement of [`subst_stmts`]; the flag says whether it rebinds `name`.
+fn subst_stmt(s: &Stmt, name: &str, to: &Expr) -> (Stmt, bool) {
+    let e = |x: &Expr| subst_var(x, name, to);
+    match s {
+        Stmt::Let(n, x) => (Stmt::Let(n.clone(), e(x)), n == name),
+        Stmt::LetTuple(ns, f, args) => (
+            Stmt::LetTuple(ns.clone(), f.clone(), args.iter().map(e).collect()),
+            ns.iter().any(|n| n == name),
+        ),
+        Stmt::AssertEq(a, b) => (Stmt::AssertEq(e(a), e(b)), false),
+        Stmt::AssertLt(a, k) => (Stmt::AssertLt(e(a), *k), false),
+        Stmt::Call(f, args) => (Stmt::Call(f.clone(), args.iter().map(e).collect()), false),
+        Stmt::Store(a, i, v) => (Stmt::Store(e(a), e(i), e(v)), false),
+        Stmt::Return(es) => (Stmt::Return(es.iter().map(e).collect()), false),
+        Stmt::CallIfNe(a, b, f, args) => (
+            Stmt::CallIfNe(e(a), e(b), f.clone(), args.iter().map(e).collect()),
+            false,
+        ),
+        Stmt::For { var, lo, hi, body } => {
+            // The counter shadows `name` inside the body only.
+            let body = if var == name { body.clone() } else { subst_stmts(body, name, to) };
+            (Stmt::For { var: var.clone(), lo: *lo, hi: *hi, body }, false)
+        }
+        Stmt::If { eq, lhs, rhs, then, els } => (
+            Stmt::If {
+                eq: *eq,
+                lhs: e(lhs),
+                rhs: e(rhs),
+                then: subst_stmts(then, name, to),
+                els: subst_stmts(els, name, to),
+            },
+            false,
+        ),
+        Stmt::Match { x, cases } => (
+            Stmt::Match {
+                x: e(x),
+                cases: cases.iter().map(|c| subst_stmts(c, name, to)).collect(),
+            },
+            false,
+        ),
+        Stmt::LetMatchRange { names, x, arms } => (
+            Stmt::LetMatchRange {
+                names: names.clone(),
+                x: e(x),
+                arms: arms.iter().map(e).collect(),
+            },
+            names.iter().any(|n| n == name),
+        ),
+    }
+}
+
 /// `e` with every `Var(name)` replaced by `to` — the `match_range` arm
 /// expansion, where the lambda parameter becomes the arm's integer literal.
 fn subst_var(e: &Expr, name: &str, to: &Expr) -> Expr {
@@ -1843,12 +2004,16 @@ pub fn compile(ast: &Ast) -> Program {
         .iter()
         .find(|f| f.name == "main")
         .expect("program needs a `main`");
+    assert!(!main.const_params.contains(&true), "main cannot take Const parameters");
     queue.push(main.clone());
     for f in &ast.funcs {
         if f.name != "main" {
             queue.push(f.clone());
         }
     }
+    // Definitions by name, for Const-parameter specialization at call sites.
+    let defs: HashMap<String, Func> =
+        ast.funcs.iter().map(|f| (f.name.clone(), f.clone())).collect();
 
     let mut loop_ctr = 0usize;
     let mut lowered: Vec<Lowered> = Vec::new();
@@ -1856,7 +2021,12 @@ pub fn compile(ast: &Ast) -> Program {
     while i < queue.len() {
         let f = queue[i].clone();
         i += 1;
-        let low = lower_func(&f, &mut queue, &mut loop_ctr);
+        // A function with Const parameters is a template: only its call-site
+        // specializations (queued with the constants substituted) are lowered.
+        if f.const_params.contains(&true) {
+            continue;
+        }
+        let low = lower_func(&f, &mut queue, &mut loop_ctr, &defs);
         lowered.push(low);
     }
 

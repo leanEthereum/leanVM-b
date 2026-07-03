@@ -2,6 +2,12 @@
 # valid Python for editors and linters. The leanVM-b compiler skips the
 # import; it does not include other source files (single-file programs only).
 
+from typing import Any
+
+Const = Any
+"""Parameter annotation: `def f(k: Const, x):` — `k` is a compile-time
+argument; the compiler specializes the function per distinct constant."""
+
 
 class _Elt:
     """A GF(2^128) element (GHASH form). Indices and addresses are carried as
