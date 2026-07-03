@@ -48,12 +48,13 @@ pub fn x_pow(k: usize) -> F128 {
 
 /// The fixed generator `g = x` (the GHASH variable). A logical index `i` is
 /// carried as `g^i`; incrementing it is `mul_by_x` (multiply by `g`), the free
-/// virtual operation of the design. Its multiplicative order must exceed every
-/// index used (memory size `2^h`, program length, access counts).
-#[inline]
-pub fn g() -> F128 {
-    F128::generator()
-}
+/// virtual operation of the design. `x` is primitive: its multiplicative order
+/// is exactly `2^128 − 1` (checked via `x^{(2^128−1)/p} ≠ 1` for every prime
+/// `p | 2^128 − 1`), which exceeds every index used (memory size `2^h`,
+/// program length, access counts). For `k < 128`, `g^k` is the monomial `x^k`
+/// (bit `k`), which the XMSS encoding check relies on (the
+/// `encoding_check_telescopes` test in `xmss/`).
+pub const G: F128 = F128::generator();
 
 /// `g^i`, the `g`-power encoding of index `i` (§1). Equal to `x_pow(i)` since
 /// `g = x`.
@@ -67,7 +68,7 @@ pub fn g_pow(i: usize) -> F128 {
 /// `∏_{k=0}^{n−1} (1 + ζ_k·(1 + g^{2^k}))`, evaluated in `O(n)` (§5.3).
 pub fn index_mle(zeta: &[F128]) -> F128 {
     let mut acc = F128::ONE;
-    let mut g2k = g(); // g^{2^0} = g
+    let mut g2k = G; // g^{2^0} = g
     for &z in zeta {
         acc *= F128::ONE + z * (F128::ONE + g2k);
         g2k = g2k * g2k; // g^{2^{k+1}}

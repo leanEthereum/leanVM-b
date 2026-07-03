@@ -132,8 +132,10 @@ pub fn find_randomness_for_wots_encoding(
 /// little-endian into 42 chunks
 /// of 3 bits, are the encoding; valid iff the 2 leftover top bits (126, 127)
 /// are zero AND the chunks sum to [`TARGET_SUM`]. Grinding the top bits to
-/// zero makes `D = sum(e_i * 2^{3i})` exactly, so an in-circuit verifier
-/// decomposes the digest into the chunks with no slack term.
+/// zero makes `D = sum(e_i * 2^{3i})` exactly, so the digest decomposes into
+/// the chunks with no slack term — in-circuit this is checked over GF(2^128)
+/// by XORing telescoping per-step constants along the chain walks (see the
+/// `encoding_check_telescopes` test).
 pub fn wots_encode(
     message: &Message,
     slot: u32,

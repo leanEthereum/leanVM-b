@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use rayon::prelude::*;
 
 use crate::constraints;
-use crate::field::{F128, g, g_pow};
+use crate::field::{F128, G, g_pow};
 use crate::leaf::{self, Block, ColumnClaim, Coord};
 use crate::pcs;
 use crate::tables::{
@@ -269,7 +269,7 @@ impl Program {
         use crate::compiler::{RHint, grow_gpow};
 
         let ending_pc = (self.prog.len() - 1) as u32; // last bytecode slot, g^{B-1}
-        let g_step = g();
+        let g_step = G;
 
         // g^j and its reverse index g^j ↦ j, grown lazily (deep recursion is
         // unbounded). Seed enough for the program counters / return targets.

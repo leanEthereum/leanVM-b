@@ -1224,7 +1224,7 @@ pub fn disassemble(prog: &[Op]) -> String {
     let mut acc = F128::ONE;
     for j in 0..(prog.len() + 512) {
         gmap.entry(acc).or_insert(j);
-        acc *= crate::field::g();
+        acc *= crate::field::G;
     }
     let kfmt = |k: F128| match gmap.get(&k) {
         Some(j) => format!("g^{j}"),
@@ -1267,7 +1267,7 @@ pub fn disassemble(prog: &[Op]) -> String {
 /// exceed 64 bits.
 fn g_pow_u128(mut e: u128) -> F128 {
     let mut result = F128::ONE;
-    let mut base = crate::field::g();
+    let mut base = crate::field::G;
     while e > 0 {
         if e & 1 == 1 {
             result *= base;
@@ -1315,7 +1315,7 @@ fn resolve(op: &LOp, entry: &HashMap<String, u32>, sentinel: u32) -> Op {
 pub(crate) fn grow_gpow(gpow: &mut Vec<F128>, gmap: &mut HashMap<F128, u32>, upto: usize) {
     assert!(upto < (1 << 28), "address space overflow (program too large)");
     while gpow.len() <= upto {
-        let next = *gpow.last().unwrap() * crate::field::g();
+        let next = *gpow.last().unwrap() * crate::field::G;
         gmap.insert(next, gpow.len() as u32);
         gpow.push(next);
     }

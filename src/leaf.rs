@@ -13,7 +13,7 @@
 //! column `g^z` (§5.3). There is no materialization.
 
 use crate::PAR_THRESHOLD;
-use crate::field::{F128, g, index_mle};
+use crate::field::{F128, G, index_mle};
 use crate::gkr;
 use crate::multilinear::{eq_eval, mle_eval};
 use crate::transcript::{ProverState, VerifierState};
@@ -122,7 +122,7 @@ pub fn build_leaves(blocks: &[Block], lay: &Layout, cols: &[Column], alpha: F128
             match c {
                 Coord::Const(v) => const_part += alpha_pow * *v,
                 Coord::Col(i) => terms.push(Term::Col(*i, alpha_pow)),
-                Coord::GCol(i) => terms.push(Term::Col(*i, alpha_pow * g())),
+                Coord::GCol(i) => terms.push(Term::Col(*i, alpha_pow * G)),
                 Coord::Index => terms.push(Term::Index(alpha_pow)),
                 Coord::Public(vals) => terms.push(Term::Public(vals, alpha_pow)),
             }
@@ -186,7 +186,7 @@ pub fn decompose_formula<F: FnMut(usize, &[F128]) -> F128>(
                 Coord::Const(v) => *v,
                 Coord::Index => index_mle(zeta_lo),
                 Coord::Col(i) => col_val(*i, zeta_lo),
-                Coord::GCol(i) => g() * col_val(*i, zeta_lo),
+                Coord::GCol(i) => G * col_val(*i, zeta_lo),
                 Coord::Public(vals) => mle_eval(vals, zeta_lo),
             };
             inner += alpha_pow * coord_val;
@@ -280,7 +280,7 @@ fn default_fingerprint(block: &Block, pad: &[F128], alpha: F128) -> F128 {
         let coord_val = match c {
             Coord::Const(v) => *v,
             Coord::Col(i) => pad[*i],
-            Coord::GCol(i) => g() * pad[*i],
+            Coord::GCol(i) => G * pad[*i],
             Coord::Index | Coord::Public(_) => F128::ZERO,
         };
         fingerprint += alpha_pow * coord_val;

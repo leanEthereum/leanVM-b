@@ -7,7 +7,7 @@
 use rayon::prelude::*;
 
 use crate::cpu::Trace;
-use crate::field::{F128, g, mul_by_x};
+use crate::field::{F128, G, mul_by_x};
 use crate::leaf::Coord::{self, Col, Const, GCol};
 use crate::witness::Column;
 
@@ -413,7 +413,7 @@ impl Table for DerefTable {
         // over the two boolean store-mode flags. The `pc` source is the virtual
         // return target g²·pc (a free ×g² of the committed pc), so no column.
         let src =
-            (F128::ONE + cols[FPC] + cols[FFP]) * cols[V3] + cols[FPC] * (g() * g() * cols[PC]) + cols[FFP] * cols[FP];
+            (F128::ONE + cols[FPC] + cols[FFP]) * cols[V3] + cols[FPC] * (G * G * cols[PC]) + cols[FFP] * cols[FP];
         (cols[A1] + cols[FP] * cols[OAL])
             + eta * (cols[A2] + cols[P] * cols[OBE])
             + eta * eta * (cols[A3] + cols[FP] * cols[OGA])
@@ -497,7 +497,7 @@ impl Table for JumpTable {
     fn eval_constraint(&self, eta: F128, cols: &Cols) -> F128 {
         use jump::*;
         let one = F128::ONE;
-        let fall_through = g() * cols[PC]; // next pc when the branch is not taken
+        let fall_through = G * cols[PC]; // next pc when the branch is not taken
         let addrs = (cols[AC] + cols[FP] * cols[OC])
             + eta * (cols[AD] + cols[FP] * cols[OD])
             + eta * eta * (cols[AF] + cols[FP] * cols[OF]);
