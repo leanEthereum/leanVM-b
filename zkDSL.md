@@ -203,9 +203,22 @@ for i in mul_range(1, GEN ** 10):   # i = g^0, g^1, …, g^9
 ```
 
 The counter walks multiplicatively: it starts at `start`, advances by `×GEN`
-each iteration, and stops on reaching `stop` (exclusive). Both bounds are
-compile-time powers of `GEN` (`1`, `GEN`, or `GEN ** k`). An empty range
-(`lo == hi`) compiles to nothing.
+each iteration, and stops on reaching `stop` (exclusive). The start is a
+compile-time power of `GEN` (`1`, `GEN`, or `GEN ** k`); the stop is either
+compile-time too (an empty range compiles to nothing) or a **runtime** g-power
+element — e.g. a hinted count:
+
+```python
+hint_witness(nb[0:1], "n_blocks")
+n = nb[0]
+assert log(n) < 16       # the walk terminates only by REACHING the bound:
+for j in mul_range(1, n):   # bound its log first, or it never does
+    ...
+```
+
+A runtime bound is evaluated once at entry and threaded through the loop as
+an extra parameter (+1 argument per iteration call); entry itself is the same
+`!=` test, so a bound equal to the start runs zero iterations.
 
 Lowering: the body becomes a tail-recursive helper function whose exit test is
 folded into the recursion's `JUMP` condition — one call per iteration, no
@@ -459,6 +472,7 @@ def main():
 Mutable variables and compound assignment; conditions other than field
 (in)equality; `match` defaults (`case _`) and non-contiguous cases; top-level
 constants; multi-file imports; `@inline`; `Const` parameters as `mul_range`
-or range-check bounds (those are parsed as literals); runtime slice starts on
-a `StackBuf`; runtime range-check bounds (`assert log a < log b` with runtime
-`b`); custom hint kinds beyond `hint_witness`; precompiles beyond `BLAKE3`.
+or range-check bounds (a substituted literal is a bit-pattern element, not
+the g-power a bound needs); runtime slice starts on a `StackBuf`; runtime
+range-check bounds (`assert log a < log b` with runtime `b`); custom hint
+kinds beyond `hint_witness`; precompiles beyond `BLAKE3`.

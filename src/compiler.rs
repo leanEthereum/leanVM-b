@@ -145,16 +145,19 @@ pub enum Stmt {
     },
     /// `arr[idx] = value` — store into a heap cell (write-once).
     Store(Expr, Expr, Expr),
-    /// `for i in mul_range(GEN**lo, GEN**hi): body` — the counter is carried in
+    /// `for i in mul_range(GEN**lo, stop): body` — the counter is carried in
     /// the exponent as `gⁱ`, starting at the `start` element `g^lo` and advancing
-    /// by `×g` each iteration until it reaches the `stop` element `g^hi` (the
-    /// terminal bound, not itself executed). The step is always `×g`: `mul_range`
-    /// names its bounds as field elements (e.g. `mul_range(1, GEN ** 10)` runs 10
+    /// by `×g` each iteration until it reaches the `stop` element (the terminal
+    /// bound, not itself executed). The step is always `×g`: `mul_range` names
+    /// its bounds as field elements (e.g. `mul_range(1, GEN ** 10)` runs 10
     /// times), so the multiplicative walk is explicit and there is no step knob.
+    /// `stop` is a compile-time power of `GEN`, or a *runtime* g-power element
+    /// (e.g. a hinted count) — which the program must know to be reachable:
+    /// range-check its log first, or the walk never terminates.
     For {
         var: String,
         lo: u64,
-        hi: u64,
+        hi: ForBound,
         body: Vec<Stmt>,
     },
     /// `for i in unroll(a, b): body` — compile-time replication: the body is
@@ -175,6 +178,15 @@ pub enum Stmt {
     /// Internal (loop lowering): `if lhs != rhs: callee(args)` — a tail call on
     /// the not-equal branch, dispatched by `JUMP`'s nonzero test.
     CallIfNe(Expr, Expr, String, Vec<Expr>),
+}
+
+/// A `mul_range` stop bound: a compile-time `GEN ** k`, or a runtime g-power
+/// element (evaluated once in the enclosing scope and threaded through the
+/// loop helper as a parameter).
+#[derive(Clone, Debug)]
+pub enum ForBound {
+    Const(u64),
+    Runtime(Expr),
 }
 
 /// A function definition. `main` is the entry point.
@@ -1145,7 +1157,7 @@ impl FnLower<'_> {
                 lo,
                 hi,
                 body,
-            } => self.lower_for(var, *lo, *hi, body),
+            } => self.lower_for(var, *lo, hi, body),
             // Compile-time unrolling: emit the body per integer, the counter
             // substituted as its literal. Every copy executes (this is
             // straight-line code, not a branch), so bindings simply rebind —
@@ -1194,10 +1206,18 @@ impl FnLower<'_> {
     /// Free variables of the body that are bound in the enclosing scope are
     /// captured by value as extra helper parameters (e.g. a `HeapBuf` pointer
     /// threaded through the loop).
-    fn lower_for(&mut self, var: &str, lo: u64, hi: u64, body: &[Stmt]) {
+    fn lower_for(&mut self, var: &str, lo: u64, hi: &ForBound, body: &[Stmt]) {
         let id = *self.loop_ctr;
         *self.loop_ctr += 1;
         let loop_name = format!("__loop{id}");
+        // A runtime stop bound is evaluated once here and threaded through the
+        // helper as an extra leading parameter (the exit test compares the
+        // advanced counter against it each iteration).
+        let bound_var = format!("__bound{id}");
+        let (exit, entry_bound): (Expr, Expr) = match hi {
+            ForBound::Const(hi) => (Expr::GPow(*hi as u128), Expr::GPow(*hi as u128)),
+            ForBound::Runtime(e) => (Expr::Var(bound_var.clone()), e.clone()),
+        };
 
         // Determine captures: referenced − locally-bound − the counter, kept if
         // they exist in the enclosing scope (deterministic order).
@@ -1230,29 +1250,38 @@ impl FnLower<'_> {
             }
         }
 
-        // The helper takes the counter, then the captures. `cap_args` builds an
-        // argument list (a leading expression, then the captures by name).
+        // The helper takes the counter, the runtime bound (if any), then the
+        // captures. `cap_args` builds an argument list (a leading expression,
+        // the bound, then the captures by name).
+        let runtime = matches!(hi, ForBound::Runtime(_));
         let mut params = vec![var.to_string()];
+        if runtime {
+            params.push(bound_var.clone());
+        }
         params.extend(captures.iter().cloned());
-        let cap_args = |first: Expr| {
+        let cap_args = |first: Expr, bound: Expr| {
             let mut a = vec![first];
+            if runtime {
+                a.push(bound);
+            }
             a.extend(captures.iter().map(|c| Expr::Var(c.clone())));
             a
         };
 
-        // loop(i, caps): run the body, advance to j = i·g, and tail-recurse
-        // while j != g^hi. The exit test is the recursive call's own condition
-        // (`JUMP`'s nonzero check on j − g^hi) — no is-zero gadget, no inverse
-        // hint, and no extra call beyond the one a loop iteration already makes.
+        // loop(i, [bound,] caps): run the body, advance to j = i·g, and
+        // tail-recurse while j != stop. The exit test is the recursive call's
+        // own condition (`JUMP`'s nonzero check on j − stop) — no is-zero
+        // gadget, no inverse hint, and no extra call beyond the one a loop
+        // iteration already makes.
         let next_var = format!("__next{id}");
         let next = Expr::Mul(Box::new(Expr::Var(var.to_string())), Box::new(Expr::Gen));
         let mut loop_body: Vec<Stmt> = body.to_vec();
         loop_body.push(Stmt::Let(next_var.clone(), next));
         loop_body.push(Stmt::CallIfNe(
             Expr::Var(next_var.clone()),
-            Expr::GPow(hi as u128),
+            exit,
             loop_name.clone(),
-            cap_args(Expr::Var(next_var)),
+            cap_args(Expr::Var(next_var), Expr::Var(bound_var.clone())),
         ));
         loop_body.push(Stmt::Return(vec![]));
         let const_params = vec![false; params.len()];
@@ -1264,10 +1293,28 @@ impl FnLower<'_> {
             body: loop_body,
         });
 
-        // Enter the loop iff it runs at least once. `lo` and `hi` are known now,
-        // so an empty range (`lo == hi`) compiles to nothing.
-        if lo != hi {
-            self.call(&loop_name, &cap_args(Expr::GPow(lo as u128)), 0);
+        // Enter the loop iff it runs at least once: compile-time for constant
+        // bounds (an empty range compiles to nothing), a conditional call on
+        // `g^lo != stop` for runtime ones.
+        match hi {
+            ForBound::Const(hi) => {
+                if lo != *hi {
+                    self.call(
+                        &loop_name,
+                        &cap_args(Expr::GPow(lo as u128), Expr::GPow(*hi as u128)),
+                        0,
+                    );
+                }
+            }
+            ForBound::Runtime(_) => {
+                let stmt = Stmt::CallIfNe(
+                    Expr::GPow(lo as u128),
+                    entry_bound.clone(),
+                    loop_name,
+                    cap_args(Expr::GPow(lo as u128), entry_bound),
+                );
+                self.stmt(&stmt);
+            }
         }
     }
 }
@@ -1355,7 +1402,10 @@ fn free_vars_stmt(s: &Stmt, refs: &mut Vec<String>, bound: &mut std::collections
             free_vars_expr(val, refs);
         }
         Stmt::Return(es) => es.iter().for_each(|e| free_vars_expr(e, refs)),
-        Stmt::For { var, body, .. } => {
+        Stmt::For { var, hi, body, .. } => {
+            if let ForBound::Runtime(b) = hi {
+                free_vars_expr(b, refs);
+            }
             bound.insert(var.clone());
             body.iter().for_each(|s| free_vars_stmt(s, refs, bound));
         }
@@ -1581,15 +1631,22 @@ impl Parser {
                 .ok_or("`for` needs `mul_range(start, stop)` or `unroll(a, b)`")?;
             let parts = split_top(inner, ',');
             if parts.len() != 2 {
-                return Err("mul_range needs `start, stop` (both powers of GEN)".into());
+                return Err("mul_range needs `start, stop`".into());
             }
             let lo = parse_gpow_bound(&parts[0])?;
-            let hi = parse_gpow_bound(&parts[1])?;
-            if lo > hi {
-                return Err(format!(
-                    "mul_range: start GEN**{lo} must not exceed stop GEN**{hi}"
-                ));
-            }
+            // The stop bound: a compile-time power of GEN, or any expression —
+            // a runtime g-power element the walk must be able to reach.
+            let hi = match parse_gpow_bound(&parts[1]) {
+                Ok(hi) => {
+                    if lo > hi {
+                        return Err(format!(
+                            "mul_range: start GEN**{lo} must not exceed stop GEN**{hi}"
+                        ));
+                    }
+                    ForBound::Const(hi)
+                }
+                Err(_) => ForBound::Runtime(parse_expr(&parts[1])?),
+            };
             self.i += 1;
             let body = self.block(indent)?;
             return Ok(Stmt::For {
@@ -1928,9 +1985,13 @@ fn subst_stmt(s: &Stmt, name: &str, to: &Expr) -> (Stmt, bool) {
             false,
         ),
         Stmt::For { var, lo, hi, body } => {
+            let hi = match hi {
+                ForBound::Const(k) => ForBound::Const(*k),
+                ForBound::Runtime(b) => ForBound::Runtime(e(b)),
+            };
             // The counter shadows `name` inside the body only.
             let body = if var == name { body.clone() } else { subst_stmts(body, name, to) };
-            (Stmt::For { var: var.clone(), lo: *lo, hi: *hi, body }, false)
+            (Stmt::For { var: var.clone(), lo: *lo, hi, body }, false)
         }
         Stmt::Unroll { var, lo, hi, body } => {
             let body = if var == name { body.clone() } else { subst_stmts(body, name, to) };
