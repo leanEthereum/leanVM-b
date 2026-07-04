@@ -11,8 +11,11 @@
 - WARNING: Highly experimental / sloppy (currently).
 - Proving architecture is volontarily kept simple for now
 
+# Benchmarks
 
-## XMSS aggregation benchmark
+Machine: M4 Max
+
+## XMSS aggregation
 
 `RAYON_NUM_THREADS=10 LEANVM_XMSS_N=1024 cargo test --release --test xmss_vm -- --nocapture`
 
@@ -26,52 +29,50 @@ XMSS aggregation, 1024 signatures
     JUMP   instructions       :     271352 = 2^18.05   (   265.0 / XMSS)
     BLAKE3 instructions       :     161973 = 2^17.31   (   158.2 / XMSS)
   committed witness size      : 2^26.956
-  proof size                  : 527.8 KiB
-  proving (incl. witness gen) : 4.168371291s
-  verifying                   : 6.717958ms
-  throughput                  : 245.7 XMSS/s
+  proof size                  : 525.7 KiB
+  proving (incl. witness gen) : 4.510089167s
+  verifying                   : 6.830958ms
+  throughput                  : 227.0 XMSS/s
 ```
 
-## Fibonacci benchmark
+## Fibonacci
 
 `RAYON_NUM_THREADS=10 cargo run --release`
 
-M4 Max:
-
 ```
 Fibonacci (in the exponent, i.e. modulo 2^128 - 1), N = 2000000
-  cycles (VM steps)           : 2052091
-    XOR   instructions        : 2^10.977
-    MUL   instructions        : 2^20.943
-    SET   instructions        : 2^13.776
-    DEREF instructions        : 2^13.968
+  cycles (VM steps)           : 2054025
+    XOR   instructions        : 2^10.966
+    MUL   instructions        : 2^20.944
+    SET   instructions        : 2^13.774
+    DEREF instructions        : 2^13.967
     JUMP  instructions        : 2^11.967
     BLAKE3 instructions        : 0
   committed witness size      : 2^25.108
-  proof size                  : 493.7 KiB
-  proving (incl. witness gen) : 1.202985166s
-  verifying                   : 6.568208ms
-  throughput                  : 1705832 cycles/s
+  proof size                  : 492.6 KiB
+  proving (incl. witness gen) : 1.336219458s
+  verifying                   : 6.628208ms
+  throughput                  : 1537191 cycles/s
 ```
 
-## Hash chain benchmark (BLAKE3)
+## Hash chain (BLAKE3)
 
 `RAYON_NUM_THREADS=10 LEANVM_HASH_UNROLL=1000 LEANVM_HASH_N=128000 cargo test --release --package leanvm-b --test hash_chain -- blake3_hash_chain --nocapture`
 
 ```
 BLAKE3 hash chain, N = 128000, unroll = 1000
-  cycles (VM steps)           : 131359
+  cycles (VM steps)           : 131487
     XOR    instructions       : 2^7.000
-    MUL    instructions       : 2^10.008
+    MUL    instructions       : 2^10.177
     SET    instructions       : 2^9.828
     DEREF  instructions       : 2^10.014
     JUMP   instructions       : 2^8.011
     BLAKE3 instructions       : 2^16.966
   committed witness size      : 2^24.206
-  proof size                  : 465.1 KiB
-  proving (incl. witness gen) : 523.120292ms
-  verifying                   : 5.520167ms
-  throughput                  : 244686 hashes/s
+  proof size                  : 463.2 KiB
+  proving (incl. witness gen) : 602.582584ms
+  verifying                   : 5.796042ms
+  throughput                  : 212419 hashes/s
 ```
 
 
