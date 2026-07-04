@@ -1066,6 +1066,15 @@ impl FnLower<'_> {
                     self.consts.remove(name);
                     self.stacks.insert(name.clone(), (base, *n as u32));
                 }
+                // `x = other_stackbuf`: a compile-time alias of the same cell
+                // run (zero instructions) — the chaining-state idiom
+                // `st = sn` of an MD loop.
+                Expr::Var(v) if self.stacks.contains_key(v) => {
+                    let bs = self.stacks[v];
+                    self.vars.remove(name);
+                    self.consts.remove(name);
+                    self.stacks.insert(name.clone(), bs);
+                }
                 _ => {
                     let o = self.expr(e);
                     self.stacks.remove(name);

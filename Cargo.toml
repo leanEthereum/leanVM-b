@@ -31,6 +31,12 @@ flock-prover = { path = "vendor/flock-prover" }
 # Measures the serialized proof size (the demo binary and the proof-size test).
 bincode = "1"
 
+[dev-dependencies]
+# The XMSS scheme this VM's flagship program verifies: the `xmss_vm` test
+# signs natively with it and re-verifies inside the VM.
+xmss = { path = "xmss" }
+rand = "0.9"
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

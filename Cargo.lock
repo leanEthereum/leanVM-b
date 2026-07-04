@@ -219,8 +219,10 @@ dependencies = [
  "blake3",
  "flock-core",
  "flock-prover",
+ "rand",
  "rayon",
  "serde",
+ "xmss",
 ]
 
 [[package]]
