@@ -192,6 +192,8 @@ pub enum Error {
     MissingHint,
     /// Verification finished without consuming the whole proof.
     NotFullyConsumed,
+    /// A grinding nonce failed its proof-of-work check.
+    PowFailed,
 }
 
 /// Prover side: writes scalars into the stream and opening hints to the side.
@@ -235,6 +237,17 @@ impl ProverState {
 
     pub fn hint_opening(&mut self, bf: LigeritoProof) {
         self.openings.push(bf);
+    }
+
+    /// Proof-of-work grind of `bits` before the next challenge, raising that
+    /// challenge's Schwartz–Zippel soundness by `bits` (the prover must redo
+    /// the PoW to re-roll the challenge). Grinds, binds the nonce into the
+    /// sponge, and transmits it on the stream as raw transport — already bound
+    /// by the grind, so it is NOT re-absorbed. `bits = 0` is the canonical
+    /// no-work nonce `0`.
+    pub fn grind(&mut self, bits: u32) {
+        let nonce = self.sponge.grind_pow(bits);
+        self.stream.push(F128::new(nonce, 0));
     }
 
     /// Transmit length-prefixed bytes on the stream (packed 16 per `F128` word)
@@ -340,6 +353,18 @@ impl<'a> VerifierState<'a> {
         let o = self.openings.get(self.oi).ok_or(Error::MissingHint)?;
         self.oi += 1;
         Ok(o)
+    }
+
+    /// Verifier mirror of [`ProverState::grind`]: read the transmitted nonce and
+    /// check it clears the `bits` proof-of-work, then bind it (so the sponge
+    /// stays in lockstep). Rejects a proof that skipped or under-did the grind.
+    pub fn grind_check(&mut self, bits: u32) -> Result<(), Error> {
+        let nonce = self.take_raw()?.lo;
+        if self.sponge.verify_pow(nonce, bits) {
+            Ok(())
+        } else {
+            Err(Error::PowFailed)
+        }
     }
 
     /// Assert the whole proof was consumed (no trailing/extra data).

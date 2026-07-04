@@ -14,10 +14,9 @@
 //! itself at the residual points (the succinct-verifier closure), so `W_λ` never
 //! travels.
 //!
-//! Security: the [`PROFILE`] is Ligerito `Fast` — rate 1/2, **Johnson
-//! list-decoding regime with out-of-domain binding, 100-bit** round-by-round
-//! soundness (flock.tex §app:ligerito extends Ligerito to the list-decoding
-//! regime; parameters derived by `LigeritoSecurityConfig::derive_profile`).
+//! Security: the [`PROFILE`] is Ligerito `Secure` — rate 1/2, **unique-decoding
+//! regime (list size 1, no out-of-domain binding), 120-bit** round-by-round
+//! soundness (parameters derived by `LigeritoSecurityConfig::derive_profile`).
 
 use crate::field::F128;
 use crate::transcript::{ProverState, VerifierState};
@@ -38,15 +37,25 @@ const LOG_PACKING: usize = 7;
 const LOG_BATCH: usize = 6;
 /// L0 rate `2^-1` — the `Fast` profile's rate (doc §3).
 pub const LOG_INV_RATE: usize = 1;
-/// Ligerito security profile: rate 1/2, Johnson **list-decoding** regime with
-/// out-of-domain binding, 100-bit round-by-round soundness.
-pub const PROFILE: LigeritoProfile = LigeritoProfile::Fast;
+/// Ligerito security profile: rate 1/2, unique-decoding regime (list size 1,
+/// no out-of-domain binding), **120-bit** round-by-round soundness. Same rate
+/// as `Fast` (so `LOG_INV_RATE` is unchanged); the extra soundness comes from
+/// more queries per level, i.e. a somewhat larger proof. Its bit target must
+/// match the crate-wide [`crate::SECURITY_BITS`] (checked below).
+pub const PROFILE: LigeritoProfile = LigeritoProfile::Secure;
+
+// The PCS profile and the bus grinding both target `SECURITY_BITS`; keep them
+// in sync — a stronger profile without bumping the constant (or vice versa)
+// would leave one round below the intended level.
+const _: () = assert!(PROFILE.security_bits() == crate::SECURITY_BITS as usize);
 /// Minimum committed-witness log-size: Ligerito's recursion needs every level's
-/// block length to accommodate its query count, which for the `Fast` profile
-/// bottoms out at `μ = 13` (flock `m = 20`). `witness::placements_of` zero-pads
-/// smaller stacks up to this floor (128 KB — negligible; real workloads are far
-/// above it).
-pub const MIN_MU: usize = 13;
+/// block length to accommodate its query count. The `Secure` profile's
+/// unique-decoding regime uses more queries than `Fast`, so its floor is higher
+/// — feasible from `μ = 14` (flock `m = 21`); we set `μ = 15` (`m = 22`, the
+/// shipped-config minimum) for a one-level margin. `witness::placements_of`
+/// zero-pads smaller stacks up to this floor (512 KB — negligible; real
+/// workloads are far above it).
+pub const MIN_MU: usize = 15;
 
 fn params_for(mu: usize) -> PcsParams {
     assert!(mu >= MIN_MU, "witness must be ≥ 2^{MIN_MU} elements (padded by placements_of)");

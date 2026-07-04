@@ -80,7 +80,7 @@ impl LigeritoProfile {
     /// Round-by-round soundness target (bits) the profile's configs are derived
     /// for: every round must individually clear this level (total security =
     /// min over rounds, per the Fiat-Shamir / `soundcalc` convention).
-    pub fn security_bits(self) -> usize {
+    pub const fn security_bits(self) -> usize {
         match self {
             Self::Fast | Self::Slim => 100,
             Self::Secure => 120,

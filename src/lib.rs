@@ -44,6 +44,13 @@ pub mod tables;
 pub mod transcript;
 pub mod witness;
 
+/// Target soundness of the whole proof, in bits. Every round is designed to
+/// clear this: the PCS runs the Ligerito `Secure` profile ([`pcs::PROFILE`],
+/// 120-bit), and the bus grand product grinds up to this level before its
+/// multiset challenge ([`leaf`]). Raising it means bumping BOTH (a stronger
+/// profile and more grinding).
+pub const SECURITY_BITS: u32 = 120;
+
 /// Below this many parallelizable items (sumcheck-round summands, per-block leaf
 /// rows) a pass runs serially: rayon's fan-out overhead is not worth it for small
 /// inputs. Shared by [`constraints`], [`gkr`], and [`leaf`].

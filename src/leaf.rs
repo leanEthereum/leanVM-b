@@ -76,6 +76,34 @@ pub enum Error {
     Decomposition {
         side: &'static str,
     },
+    /// The bus grinding nonce (before the multiset challenge γ) failed its PoW.
+    PowFailed,
+}
+
+/// Proof-of-work bits to grind before the multiset challenge γ, so the bus
+/// grand-product phase clears [`crate::SECURITY_BITS`]. Two Schwartz–Zippel
+/// failure events share this randomness; union-bound over them:
+///
+/// - the push/pull **balance** `push_root · d_pull = pull_root · d_push` — one
+///   identity in γ whose difference has degree `max(push factors, pull
+///   factors)` (the larger of the two sides; within a side the default-padding
+///   factors are a single high-multiplicity root, so it is `max` not sum);
+/// - the **count** channel `count_root ≠ 0` — a *separate* grand product of
+///   `count factors`.
+///
+/// So `N = max(2^push_mu, 2^pull_mu) + 2^count_mu`, and a false phase passes a
+/// random challenge with probability ≤ `N / 2^128`, i.e. `128 − log2(N)` bits.
+/// Grinding adds that many bits back (the prover must redo the PoW to re-roll
+/// γ), so we grind the deficit up to the target.
+///
+/// The fingerprint challenge α needs no grind: forging a fingerprint collision
+/// (its `~N·w / 2^128` error) requires a fresh commitment to re-roll α, whose
+/// `≥ 2^MIN_MU` Merkle-hash cost already exceeds the target for every witness
+/// size we admit (`MIN_MU = 15`).
+fn grand_product_grinding_bits(push: &Layout, pull: &Layout, count: &Layout) -> u32 {
+    let n = (1usize << push.mu).max(1usize << pull.mu) + (1usize << count.mu);
+    let ceil_log2_n = crate::log2_ceil_usize(n) as u32;
+    (crate::SECURITY_BITS + ceil_log2_n).saturating_sub(128)
 }
 
 /// Stack blocks largest-first at aligned offsets; `μ = ⌈log2 Σ 2^{κ_b}⌉`.
@@ -315,12 +343,15 @@ pub fn prove_balance(
     // No shape observe: the block structure is public and reconstructed by the
     // verifier from the (bound) announced sizes + program, and `alpha`/`gamma` only
     // need to follow the witness commitment (which they do) for the grand product
-    // to be sound. So sample the fingerprint challenges directly.
+    // to be sound. So sample the fingerprint challenge directly. Then grind
+    // before γ to lift the grand product to [`BUS_TARGET_BITS`] (see
+    // [`bus_grind_bits`]).
     let alpha = ps.sample();
-    let gamma = ps.sample();
     let push_lay = layout(push);
     let pull_lay = layout(pull);
     let count_lay = layout(count);
+    ps.grind(grand_product_grinding_bits(&push_lay, &pull_lay, &count_lay));
+    let gamma = ps.sample();
     // The three leaf vectors are independent (transcript-free), so build them
     // concurrently. The count channel's leaf is the read count itself, so its
     // root is the product of all counts (a single `Col`, `γ=0`, `α=1`; §sec:memchan).
@@ -369,12 +400,17 @@ pub fn verify_balance(
     pad: &[F128],
     vs: &mut VerifierState,
 ) -> Result<Vec<ColumnClaim>, Error> {
-    // Mirror `prove_balance`: no shape observe (see there).
+    // Mirror `prove_balance`: no shape observe (see there); check the pre-γ
+    // grinding nonce before sampling γ.
     let alpha = vs.sample();
-    let gamma = vs.sample();
     let push_lay = layout(push);
     let pull_lay = layout(pull);
     let count_lay = layout(count);
+    vs.grind_check(grand_product_grinding_bits(&push_lay, &pull_lay, &count_lay)).map_err(|e| match e {
+        crate::transcript::Error::PowFailed => Error::PowFailed,
+        _ => Error::Truncated,
+    })?;
+    let gamma = vs.sample();
     let (push_root, cp) = gkr::verify_product(push_lay.mu, vs).map_err(Error::Gkr)?;
     let (pull_root, cq) = gkr::verify_product(pull_lay.mu, vs).map_err(Error::Gkr)?;
     let (count_root, cc) = gkr::verify_product(count_lay.mu, vs).map_err(Error::Gkr)?;

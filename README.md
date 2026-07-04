@@ -29,10 +29,10 @@ XMSS aggregation, 1024 signatures
     JUMP   instructions       :     271352 = 2^18.05   (   265.0 / XMSS)
     BLAKE3 instructions       :     161973 = 2^17.31   (   158.2 / XMSS)
   committed witness size      : 2^26.956
-  proof size                  : 525.7 KiB
-  proving (incl. witness gen) : 4.510089167s
-  verifying                   : 6.830958ms
-  throughput                  : 227.0 XMSS/s
+  proof size                  : 778.3 KiB
+  proving (incl. witness gen) : 4.435836291s
+  verifying                   : 7.492334ms
+  throughput                  : 230.8 XMSS/s
 ```
 
 ## Fibonacci
@@ -49,10 +49,10 @@ Fibonacci (in the exponent, i.e. modulo 2^128 - 1), N = 2000000
     JUMP  instructions        : 2^11.967
     BLAKE3 instructions        : 0
   committed witness size      : 2^25.108
-  proof size                  : 492.6 KiB
-  proving (incl. witness gen) : 1.336219458s
-  verifying                   : 6.628208ms
-  throughput                  : 1537191 cycles/s
+  proof size                  : 715.8 KiB
+  proving (incl. witness gen) : 1.31697125s
+  verifying                   : 7.348958ms
+  throughput                  : 1559658 cycles/s
 ```
 
 ## Hash chain (BLAKE3)
@@ -69,17 +69,17 @@ BLAKE3 hash chain, N = 128000, unroll = 1000
     JUMP   instructions       : 2^8.011
     BLAKE3 instructions       : 2^16.966
   committed witness size      : 2^24.206
-  proof size                  : 463.2 KiB
-  proving (incl. witness gen) : 602.582584ms
-  verifying                   : 5.796042ms
-  throughput                  : 212419 hashes/s
+  proof size                  : 671.7 KiB
+  proving (incl. witness gen) : 583.345167ms
+  verifying                   : 6.411209ms
+  throughput                  : 219424 hashes/s
 ```
 
 
 ## Security, proof size etc
 
-- security = 100 bits, proven, LDR, Ligerito
-- proof size = BIG (≈ 0.5 MiB)
+- security = 120 bits, proven, UDR, Ligerito
+- proof size = BIG (≈ 0.7 MiB)
 
 Both will be improved later.
 
