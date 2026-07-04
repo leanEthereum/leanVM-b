@@ -33,6 +33,25 @@ const TAG_F128: u8 = 0x01;
 const TAG_BYTES: u8 = 0x03;
 const TAG_SQUEEZE: u8 = 0xFF;
 const TAG_RATCHET: u8 = 0xFE;
+// PoW base digest, so a grinding challenge can never alias an ordinary squeeze.
+const TAG_POW: u8 = 0xFD;
+
+/// `BLAKE3(state_digest || nonce_le)` has at least `bits` leading zero bits —
+/// the grinding predicate, byte-identical to flock's `FsChallenger` so the
+/// vendored Ligerito's prover/verifier PoW stay in lockstep with our sponge.
+#[inline]
+fn pow_bits_ok(state_digest: &[u8; 32], nonce: u64, bits: u32) -> bool {
+    let mut input = [0u8; 40];
+    input[..32].copy_from_slice(state_digest);
+    input[32..].copy_from_slice(&nonce.to_le_bytes());
+    let h = *blake3::hash(&input).as_bytes();
+    let full = (bits / 8) as usize;
+    let extra = bits % 8;
+    if h[..full].iter().any(|&b| b != 0) {
+        return false;
+    }
+    extra == 0 || (h[full] >> (8 - extra)) == 0
+}
 
 /// The BLAKE3-backed Fiat–Shamir sponge shared by both states.
 #[derive(Clone)]
@@ -82,6 +101,65 @@ impl Sponge {
         let hi = u64::from_le_bytes(bytes[8..16].try_into().unwrap());
         self.absorb(TAG_RATCHET, &bytes[..16]);
         F128::new(lo, hi)
+    }
+
+    /// A 32-byte PoW base digest bound to the current transcript state: clone +
+    /// distinct tag + finalize, so it reads the state without mutating the live
+    /// sponge and can never alias a `sample` squeeze.
+    fn pow_state_digest(&self) -> [u8; 32] {
+        let mut r = self.h.clone();
+        r.update(&[TAG_POW]);
+        *r.finalize().as_bytes()
+    }
+
+    /// Prover-side PoW grind (mirrors flock's `FsChallenger::grind_pow`): find the
+    /// smallest `u64` nonce whose `BLAKE3(state || nonce)` has `bits` leading zero
+    /// bits, then absorb it so later challenges bind to it. `bits = 0` is the
+    /// canonical no-work nonce `0`. Parallel search for the larger grinds.
+    fn grind_pow(&mut self, bits: u32) -> u64 {
+        const PARALLEL_GRIND_MIN_HASHES: u64 = 1 << 13;
+        let digest = self.pow_state_digest();
+        let nonce = if bits == 0 {
+            0
+        } else if (1u64 << bits.min(63)) < PARALLEL_GRIND_MIN_HASHES {
+            let mut n: u64 = 0;
+            loop {
+                if pow_bits_ok(&digest, n, bits) {
+                    break n;
+                }
+                n = n.wrapping_add(1);
+            }
+        } else {
+            use rayon::prelude::*;
+            // `find_first` returns the globally smallest satisfying nonce, so the
+            // proof is deterministic regardless of the block scan.
+            let block: u64 = 1 << (bits.min(24) + 1);
+            let mut start: u64 = 0;
+            loop {
+                if let Some(n) = (start..start.saturating_add(block))
+                    .into_par_iter()
+                    .find_first(|&n| pow_bits_ok(&digest, n, bits))
+                {
+                    break n;
+                }
+                start = start.saturating_add(block);
+            }
+        };
+        // Absorb the nonce so the transcript binds to it (verifier mirrors).
+        self.absorb(TAG_BYTES, &nonce.to_le_bytes());
+        nonce
+    }
+
+    /// Verifier-side mirror of [`Self::grind_pow`]: check `nonce` clears the
+    /// `bits` PoW against the current state, then absorb it regardless (so the
+    /// sponge stays byte-identical to an honest prover's — a failed check rejects
+    /// at the call site). `bits = 0` accepts only the canonical nonce `0`, which
+    /// keeps proofs non-malleable at zero-bit grinding sites.
+    fn verify_pow(&mut self, nonce: u64, bits: u32) -> bool {
+        let digest = self.pow_state_digest();
+        let ok = if bits == 0 { nonce == 0 } else { pow_bits_ok(&digest, nonce, bits) };
+        self.absorb(TAG_BYTES, &nonce.to_le_bytes());
+        ok
     }
 }
 
@@ -291,6 +369,15 @@ impl Challenger for ProverState {
     fn sample_f128(&mut self) -> F128 {
         self.sponge.sample()
     }
+    // Ligerito's proximity-gap soundness budgets in fold-challenge PoW grinding
+    // (`fold_grinding_bits`); without these overrides the trait defaults no-op
+    // the grind and the proof falls below its target soundness.
+    fn grind_pow(&mut self, bits: u32) -> u64 {
+        self.sponge.grind_pow(bits)
+    }
+    fn verify_pow(&mut self, nonce: u64, bits: u32) -> bool {
+        self.sponge.verify_pow(nonce, bits)
+    }
 }
 
 impl Challenger for VerifierState<'_> {
@@ -305,5 +392,13 @@ impl Challenger for VerifierState<'_> {
     }
     fn sample_f128(&mut self) -> F128 {
         self.sponge.sample()
+    }
+    // The verifier mirror: check each grinding nonce (an honest prover's proof
+    // stays byte-identical; a forged one that skipped the grind is rejected).
+    fn grind_pow(&mut self, bits: u32) -> u64 {
+        self.sponge.grind_pow(bits)
+    }
+    fn verify_pow(&mut self, nonce: u64, bits: u32) -> bool {
+        self.sponge.verify_pow(nonce, bits)
     }
 }
