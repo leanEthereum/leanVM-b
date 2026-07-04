@@ -1,10 +1,10 @@
-//! Stage 1 of the in-VM XMSS verifier: the WOTS core (`tests/xmss_wots.py`).
-//! A real signature is produced natively with the `xmss` crate; its pieces
-//! become the program's witness streams; the VM re-derives the encoding
-//! digest, checks the hinted digits (range, target sum in the exponent, and
-//! the monomial-subspace reconstruction against the digest), walks the 42
-//! chains, hashes the tips, and publishes (Merkle leaf, encoding digest) —
-//! compared against the natively computed values.
+//! The in-VM XMSS verifier (`tests/xmss_verify.py`): a real signature is
+//! produced natively with the `xmss` crate; its pieces become the program's
+//! witness streams; the VM re-derives the encoding digest, checks the hinted
+//! digits (range, target sum in the exponent, and the monomial-subspace
+//! reconstruction against the digest), walks the 42 chains, hashes the tips
+//! into the Merkle leaf, climbs the 32 hinted levels, and publishes
+//! (Merkle root, encoding digest) — compared against the native values.
 
 use leanvm_b::compiler::{compile, parse_file};
 use leanvm_b::cpu::{prove, verify};
@@ -27,7 +27,7 @@ fn pair(a: &[u8], b: &[u8]) -> Vec<F128> {
 }
 
 #[test]
-fn wots_core_in_vm() {
+fn xmss_verify_in_vm() {
     let seed = [42u8; 32];
     let slot = 7u32;
     let message: Message = std::array::from_fn(|i| (i * 5 + 1) as u8);
@@ -38,7 +38,6 @@ fn wots_core_in_vm() {
     let encoding = wots_encode(&message, slot, &pp, &wots.randomness).expect("encoding");
 
     // Native values the program must reproduce.
-    let leaf = wots.recover_public_key(&message, slot, &pp).expect("recover").hash(&pp, slot);
     let mut enc_data = [0u8; 2 * STATE_LEN];
     enc_data[..MESSAGE_LEN].copy_from_slice(&message);
     enc_data[MESSAGE_LEN..][..RANDOMNESS_LEN].copy_from_slice(&wots.randomness);
@@ -46,7 +45,7 @@ fn wots_core_in_vm() {
 
     // The witness streams.
     let mut program = compile(
-        &parse_file(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/xmss_wots.py")).expect("parse"),
+        &parse_file(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/xmss_verify.py")).expect("parse"),
     );
     let tweak_pair = |ty: u8, pos: u32| pair(&make_tweak(ty, pos, slot), &pp);
     program.set_witness("enc_tweak", vec![tweak_pair(TWEAK_TYPE_ENCODING, 0)]);
@@ -71,12 +70,32 @@ fn wots_core_in_vm() {
     }
     program.set_witness("chain_tweaks", chain_tweaks);
     program.set_witness("pk_tweak", vec![tweak_pair(TWEAK_TYPE_WOTS_PK, 0)]);
+    // The Merkle path: per level, the slot bit, the sibling, and the parent
+    // node's tweak|pp pair (level+1, index = slot >> (level+1)).
+    program.set_witness(
+        "merkle_bits",
+        (0..LOG_LIFETIME).map(|l| vec![F128::new((slot as u64 >> l) & 1, 0)]).collect(),
+    );
+    program.set_witness(
+        "siblings",
+        sig.merkle_proof.iter().map(|s| vec![word(s)]).collect(),
+    );
+    program.set_witness(
+        "merkle_tweaks",
+        (0..LOG_LIFETIME)
+            .map(|l| {
+                let parent_index = (slot as u64 >> (l + 1)) as u32;
+                pair(&make_tweak(TWEAK_TYPE_MERKLE, (l + 1) as u32, parent_index), &pp)
+            })
+            .collect(),
+    );
 
-    let want = [word(&leaf), word(&digest)];
+    let want = [word(&pk.merkle_root), word(&digest)];
     let (proof, stats) = prove(&program, want);
-    // 3 (encoding) + 100 (chain walks, fixed by the target sum) + 22 (tips).
-    assert_eq!(stats.counts[5], 125, "BLAKE3 instruction count");
-    verify(&program, &want, &proof).expect("WOTS core verifies in-VM");
+    // 3 (encoding) + 100 (chains, fixed by the target sum) + 22 (tips) + 32
+    // (Merkle path) — the native verifier's constant 157.
+    assert_eq!(stats.counts[5], 157, "BLAKE3 instruction count");
+    verify(&program, &want, &proof).expect("XMSS verifies in-VM");
 
     // A wrong public input (a tampered digest) is rejected.
     let bad = [want[0], want[1] + F128::ONE];

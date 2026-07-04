@@ -1,6 +1,6 @@
-# Stage 1 of the in-VM XMSS verifier: the WOTS core. Everything the prover
-# supplies is a witness stream (driven by tests/xmss_vm.rs from a real
-# signature); every hinted value is constrained below.
+# The in-VM XMSS verifier (stages 1+2: WOTS core + Merkle path). Everything
+# the prover supplies is a witness stream (driven by tests/xmss_vm.rs from a
+# real signature); every hinted value is constrained below.
 #
 # - The encoding digest D = MD(tweak|pp, msg, randomness) with the absorbed
 #   size in the IV, in the exponent (g^96 — 3 blocks of 32 bytes).
@@ -11,7 +11,11 @@
 #   (g^{sum} == g^194), and the encoding is reconstructed in the monomial
 #   subspaces: acc = XOR_i bits_i * x^{3i}, compared against D.
 # - The WOTS public key hash is MD over the 42 tips (size 704 bytes in the
-#   IV), and its digest is published together with D.
+#   IV) — the Merkle leaf.
+# - The Merkle path walks 32 levels: per level the sibling, the slot bit, and
+#   the tweak|pp pair are hinted; the bit is constrained boolean (b·b == b —
+#   x² = x exactly on {0, 1}) and orders the children. The root is published
+#   together with D.
 from snark_lib import *
 
 
@@ -66,8 +70,32 @@ def main():
         blake3(st, tips[2 * j:2 * j + 2], sn)
         st = sn
 
+    # Merkle path: from the leaf, 32 levels up. The hinted slot bit orders
+    # the children (bit 0: the node is the left child); write-once lets both
+    # branches target the same block pair — only one runs.
+    node = st[0]
+    for l in unroll(0, 32):
+        bb = StackBuf(1)
+        hint_witness(bb[0:1], "merkle_bits")
+        b = bb[0]
+        assert b * b == b
+        sb = StackBuf(1)
+        hint_witness(sb[0:1], "siblings")
+        lr = StackBuf(2)
+        if b == 0:
+            lr[0] = node
+            lr[1] = sb[0]
+        else:
+            lr[0] = sb[0]
+            lr[1] = node
+        mtw = StackBuf(2)
+        hint_witness(mtw, "merkle_tweaks")
+        out = StackBuf(2)
+        blake3(mtw, lr, out)
+        node = out[0]
+
     p = GEN ** 0
-    p[1] = st[0]  # the Merkle leaf (WOTS pk hash)
+    p[1] = node  # the Merkle root
     p[GEN] = s3[0]  # the encoding digest
     return
 
