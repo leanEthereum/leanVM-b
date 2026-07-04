@@ -1182,7 +1182,7 @@ impl LigeritoSecurityConfig {
             target_security_bits,
             analysis_version: "no_row_union_over_ben_sasson_2025_cor_1_4".into(),
             field: "f128".into(),
-            hash: "sha256".into(),
+            hash: "blake3".into(),
             grinding_step: GrindingStep::PostCommitPreQueries,
             levels,
             final_block: FinalBlockConfig { yr_log_n },
@@ -1347,7 +1347,7 @@ impl LigeritoSecurityConfig {
             target_security_bits: target_bits,
             analysis_version: analysis_version.into(),
             field: "f128".into(),
-            hash: "sha256".into(),
+            hash: "blake3".into(),
             grinding_step: GrindingStep::PostCommitPreQueries,
             levels,
             final_block: FinalBlockConfig {

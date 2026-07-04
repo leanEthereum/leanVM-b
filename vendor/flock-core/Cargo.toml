@@ -18,7 +18,6 @@ unsound-challenger = []
 
 [dependencies]
 rayon = "1.10"
-sha2 = { version = "0.10", features = ["asm"] }
 blake3 = "1.5"
 serde = { version = "1", features = ["derive"] }
 bincode = "1.3"

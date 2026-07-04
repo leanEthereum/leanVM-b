@@ -14,15 +14,14 @@
 //!   that structural it is compiled *only* under `cfg(test)` or the
 //!   `unsound-challenger` feature — a normal (real-proof) build has no insecure
 //!   challenger to reach for.
-//! - [`FsChallenger`] — SHA-256-based Fiat-Shamir. Absorbs observations into a
-//!   running hash state; samples by cloning the state and squeezing bytes via a
-//!   counter (`SHA256(state || ctr)` for ctr = 0, 1, …, since SHA-256 is not an
-//!   XOF), then re-absorbing the squeezed bytes so the next challenge binds to
-//!   the previous one (Merlin-style duplex). SHA-256 is also used for the
-//!   Merkle commitments, so the whole system rests on a single hash.
+//! - [`FsChallenger`] — BLAKE3-based Fiat-Shamir. Absorbs observations into a
+//!   running hash state; samples by squeezing bytes from BLAKE3's native XOF
+//!   over the current state, then re-absorbing the squeezed bytes so the next
+//!   challenge binds to the previous one (Merlin-style duplex). BLAKE3 is also
+//!   used for the Merkle commitments, so the whole system rests on a single
+//!   hash.
 
 use crate::field::F128;
-use sha2::{Digest, Sha256};
 
 // `Send` supertrait: the verifier runs its PIOP/PCS replay inside a dedicated
 // single-thread rayon pool (see `verifier::verifier_pool`), so the challenger
@@ -60,7 +59,7 @@ pub trait Challenger: Send {
     }
 
     /// Prover-side PoW grinding: snapshot the current transcript state,
-    /// search for a `u64` nonce such that `SHA256(state || nonce)` has at
+    /// search for a `u64` nonce such that `BLAKE3(state || nonce)` has at
     /// least `bits` leading zero bits, then absorb the nonce into the
     /// transcript so subsequent challenges bind to it.
     ///
@@ -141,9 +140,9 @@ fn splitmix64(state: &mut u64) -> u64 {
 // and a slice observation cannot collide with two scalar observations of the
 // same total length.
 //
-// Sampling clones the live hasher, squeezes challenge bytes via SHA256(state
-// || ctr) (SHA-256 is not an XOF), and absorbs the squeezed output back into
-// the live state. This "duplex" pattern binds each subsequent
+// Sampling squeezes challenge bytes from BLAKE3's native XOF over the live
+// state (without mutating it) and absorbs the squeezed output back into the
+// live state. This "duplex" pattern binds each subsequent
 // challenge/observation to all prior squeezed output.
 // ---------------------------------------------------------------------------
 
@@ -157,7 +156,7 @@ const KIND_SCALAR: u8 = 0x01;
 const KIND_SLICE: u8 = 0x02;
 
 /// Global Fiat–Shamir hash counters, enabled with `--features hash-count`.
-/// Tracks the SHA-256 squeeze count and the SHA-256 PoW checks; absorbed
+/// Tracks the BLAKE3 squeeze count and the BLAKE3 PoW checks; absorbed
 /// transcript bytes are tracked via [`FsChallenger::absorbed_bytes`].
 #[cfg(feature = "hash-count")]
 pub mod fs_count {
@@ -166,23 +165,23 @@ pub mod fs_count {
     /// Number of XOF finalizations (one per `sample_f128` /
     /// `sample_f128_vec` / PoW state-digest extraction).
     pub static SQUEEZES: AtomicU64 = AtomicU64::new(0);
-    /// Number of SHA-256 PoW evaluations (1 compression each; 40 B input).
-    pub static POW_SHA256: AtomicU64 = AtomicU64::new(0);
+    /// Number of BLAKE3 PoW evaluations (1 compression each; 40 B input).
+    pub static POW_BLAKE3: AtomicU64 = AtomicU64::new(0);
 
     pub fn reset() {
         SQUEEZES.store(0, Relaxed);
-        POW_SHA256.store(0, Relaxed);
+        POW_BLAKE3.store(0, Relaxed);
     }
 
-    /// (squeezes, pow_sha256_calls)
+    /// (squeezes, pow_blake3_calls)
     pub fn snapshot() -> (u64, u64) {
-        (SQUEEZES.load(Relaxed), POW_SHA256.load(Relaxed))
+        (SQUEEZES.load(Relaxed), POW_BLAKE3.load(Relaxed))
     }
 }
 
 #[derive(Clone)]
 pub struct FsChallenger {
-    hasher: Sha256,
+    hasher: blake3::Hasher,
     /// Running total of absorbed transcript bytes, for the `hash-count`
     /// instrumentation (read only under that feature).
     #[allow(dead_code)]
@@ -196,7 +195,7 @@ impl FsChallenger {
     /// produce the same initial state.
     pub fn new(domain: &[u8]) -> Self {
         let mut c = Self {
-            hasher: Sha256::new(),
+            hasher: blake3::Hasher::new(),
             n_absorbed: 0,
         };
         c.absorb(&[OP_DOMAIN]);
@@ -219,24 +218,14 @@ impl FsChallenger {
     }
 
     /// Squeeze `out.len()` pseudorandom bytes from the current transcript
-    /// state without mutating it. SHA-256 is not an XOF, so we derive the
-    /// stream by hashing `state || ctr` for ctr = 0, 1, … (32 bytes each).
+    /// state without mutating it. BLAKE3 is an XOF, so we read the stream
+    /// directly from `finalize_xof()` (no counter construction needed).
     fn squeeze_into(&self, out: &mut [u8]) {
-        let mut off = 0usize;
-        let mut ctr: u64 = 0;
-        while off < out.len() {
-            let mut h = self.hasher.clone();
-            h.update(ctr.to_le_bytes());
-            let block: [u8; 32] = h.finalize().into();
-            let take = (out.len() - off).min(32);
-            out[off..off + take].copy_from_slice(&block[..take]);
-            off += take;
-            ctr = ctr.wrapping_add(1);
-        }
+        self.hasher.finalize_xof().fill(out);
     }
 
     /// Total bytes absorbed into the transcript so far. Used by the
-    /// `hash-count` instrumentation to estimate SHA-256 compression calls
+    /// `hash-count` instrumentation to estimate BLAKE3 compression calls
     /// (≈ bytes / 64).
     #[cfg(feature = "hash-count")]
     pub fn absorbed_bytes(&self) -> u64 {
@@ -317,10 +306,10 @@ impl Challenger for FsChallenger {
             0
         } else if (1u64 << bits.min(63)) < PARALLEL_GRIND_MIN_HASHES {
             // Sequential search: try u64 nonces until
-            // SHA256(state_digest || nonce_le) has `bits` leading zeros.
+            // BLAKE3(state_digest || nonce_le) has `bits` leading zeros.
             let mut nonce: u64 = 0;
             loop {
-                if sha256_has_leading_zero_bits(&state_digest, nonce, bits) {
+                if blake3_has_leading_zero_bits(&state_digest, nonce, bits) {
                     break nonce;
                 }
                 nonce = nonce.wrapping_add(1);
@@ -339,7 +328,7 @@ impl Challenger for FsChallenger {
             loop {
                 if let Some(n) = (start..start.saturating_add(block))
                     .into_par_iter()
-                    .find_first(|&n| sha256_has_leading_zero_bits(&state_digest, n, bits))
+                    .find_first(|&n| blake3_has_leading_zero_bits(&state_digest, n, bits))
                 {
                     break n;
                 }
@@ -365,7 +354,7 @@ impl Challenger for FsChallenger {
             // proofs canonical / non-malleable at zero-bit grinding sites.
             nonce == 0
         } else {
-            sha256_has_leading_zero_bits(&state_digest, nonce, bits)
+            blake3_has_leading_zero_bits(&state_digest, nonce, bits)
         };
         // Absorb regardless of `ok` so the transcript stays byte-identical to
         // the prover's (an honest prover always reaches this with the same
@@ -375,27 +364,27 @@ impl Challenger for FsChallenger {
     }
 }
 
-/// Extract a 32-byte digest from the current SHA-256 challenger state, to be
-/// used as the PoW base. Cloning + finalize gives a state-bound digest without
+/// Extract a 32-byte digest from the current BLAKE3 challenger state, to be
+/// used as the PoW base. `finalize` reads a state-bound digest without
 /// mutating the live hasher.
 #[inline]
-fn fs_pow_state_digest(hasher: &Sha256) -> [u8; 32] {
+fn fs_pow_state_digest(hasher: &blake3::Hasher) -> [u8; 32] {
     #[cfg(feature = "hash-count")]
     fs_count::SQUEEZES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    hasher.clone().finalize().into()
+    hasher.finalize().into()
 }
 
-/// Check whether `SHA256(state_digest || nonce.to_le_bytes())` has at least
-/// `bits` leading zero bits. Uses the `sha2` crate (hardware-accelerated on
-/// aarch64). Matches the grinding semantics from the benches.
+/// Check whether `BLAKE3(state_digest || nonce.to_le_bytes())` has at least
+/// `bits` leading zero bits. Uses the `blake3` crate (SIMD-accelerated).
+/// Matches the grinding semantics from the benches.
 #[inline]
-fn sha256_has_leading_zero_bits(state_digest: &[u8; 32], nonce: u64, bits: u32) -> bool {
+fn blake3_has_leading_zero_bits(state_digest: &[u8; 32], nonce: u64, bits: u32) -> bool {
     #[cfg(feature = "hash-count")]
-    fs_count::POW_SHA256.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let mut hasher = Sha256::new();
-    hasher.update(state_digest);
-    hasher.update(nonce.to_le_bytes());
-    let h: [u8; 32] = hasher.finalize().into();
+    fs_count::POW_BLAKE3.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut input = [0u8; 40];
+    input[..32].copy_from_slice(state_digest);
+    input[32..].copy_from_slice(&nonce.to_le_bytes());
+    let h: [u8; 32] = blake3::hash(&input).into();
     let full_bytes = (bits / 8) as usize;
     let extra = bits % 8;
     for &b in h.iter().take(full_bytes) {
