@@ -1,16 +1,9 @@
-//! The bus: a single shared channel balanced by a grand product (§4.2–§4.4).
-//!
-//! Each interaction wires a table's columns into width-`m` tuples and flushes
-//! them in a direction (`push`/`pull`). The bus balances when the pushed and
-//! pulled tuples form the same multiset, proven by two GKR product passes over
-//! the leaf vectors `γ − π_α(σ)` (one per side). Each pass reduces to a single
-//! leaf claim `Ṽ₀(ζ)`, which we decompose — block by block, coordinate by
-//! coordinate — into evaluation claims on the committed columns (settled against
-//! the witness commitment by `crate::pcs`).
-//!
-//! Coordinates are field elements: a public constant, a committed column, the
-//! `g`-multiple of a committed column (the free increment `g·x`), or the index
-//! column `g^z` (§5.3). There is no materialization.
+//! The bus: a single shared channel balanced by a grand product (§4.2–§4.4). Each
+//! interaction wires a table's columns into width-`m` tuples and flushes them in a
+//! direction; the bus balances when pushed and pulled tuples form the same
+//! multiset, proven by two GKR passes over the leaf vectors `γ − π_α(σ)`. Each pass
+//! reduces to a leaf claim `Ṽ₀(ζ)`, decomposed into evaluation claims on the
+//! committed columns.
 
 use crate::PAR_THRESHOLD;
 use crate::field::{F128, G, index_mle};
@@ -29,18 +22,16 @@ pub enum Coord {
     Col(usize),
     /// The free increment `g · col[z]` (a virtual column, §1).
     GCol(usize),
-    /// The index column `g^z` (§5.3): MLE `∏_k(1+ζ_k(1+g^{2^k}))`, free.
+    /// The index column `g^z` (§5.3), free via the factored MLE.
     Index,
-    /// A public column (the bytecode program, §8): not committed; both parties
-    /// form its MLE directly, so it raises no claim.
+    /// A public column (the bytecode program, §8): not committed; both parties form
+    /// its MLE directly, so it raises no claim.
     Public(Vec<F128>),
 }
 
 /// A flushing rule: `2^kappa` rows, each a tuple of coordinates. `real` is the
-/// number of meaningful rows; the remaining `2^kappa - real` are padding rows,
-/// every column zero but the read counts (which are `g^0 = 1`, §e2e-pad). A
-/// padding row's tuple is therefore a fixed default the verifier divides out of
-/// the bus product (\S sec:gp).
+/// number of meaningful rows; the rest are padding (every column zero but the read
+/// counts, which are `1`), a fixed default the verifier divides out (§e2e-pad).
 #[derive(Clone, Debug)]
 pub struct Block {
     pub kappa: usize,
@@ -56,8 +47,7 @@ pub struct Layout {
 }
 
 /// An evaluation claim on a committed column, settled against the witness.
-/// Reconstructed identically by prover and verifier (its value rides the
-/// transcript stream), so it is not itself part of the proof.
+/// Reconstructed identically by both sides (its value rides the stream).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ColumnClaim {
     pub col: usize,
@@ -69,8 +59,7 @@ pub struct ColumnClaim {
 pub enum Error {
     Truncated,
     Unbalanced,
-    /// A read count is zero, so a read self-cancels on the bus (the count product
-    /// has a zero factor). See `Coord::GCol` and §sec:memchan.
+    /// A read count is zero, so a read self-cancels on the bus (§sec:memchan).
     ZeroCount,
     Gkr(gkr::GkrError),
     Decomposition {
@@ -121,8 +110,8 @@ pub fn layout(blocks: &[Block]) -> Layout {
     Layout { mu, offsets }
 }
 
-/// A non-constant coordinate as `(source, coefficient)`: its contribution to a
-/// leaf is `coeff · source(z)`. `GCol` folds the `g` factor into the coefficient.
+/// A non-constant coordinate as `(source, coefficient)`: its leaf contribution is
+/// `coeff · source(z)`. `GCol` folds the `g` factor into the coefficient.
 enum Term<'a> {
     Col(usize, F128),
     Index(F128),
@@ -130,16 +119,10 @@ enum Term<'a> {
 }
 
 /// Build one side's leaf vector: block `b` row `z` holds `γ − Σ_i α^i c_i(z)`,
-/// padded to `2^μ` with the identity `1`.
-///
-/// The `α`-power chain and the constant coordinates are row-invariant, so they
-/// are folded once per block into `const_part`; the per-row loop then costs one
-/// multiply-add per *non-constant* coordinate (no per-row `α` chain, no per-row
-/// handling of separators / seed counts).
+/// padded to `2^μ` with the identity `1`. The row-invariant `α`-power chain and
+/// constant coordinates are folded once per block into `const_part`.
 pub fn build_leaves(blocks: &[Block], lay: &Layout, cols: &[Column], alpha: F128, gamma: F128) -> Vec<F128> {
     let mut leaves = vec![F128::ONE; 1usize << lay.mu];
-    // Precompute the index column g^z so the `Index` coordinate is an O(1) lookup
-    // instead of an O(log z) power.
     let maxk = blocks.iter().map(|b| b.kappa).max().unwrap_or(0);
     let gpow = crate::field::g_powers(1usize << maxk);
     for (b, blk) in blocks.iter().enumerate() {
@@ -181,10 +164,9 @@ pub fn build_leaves(blocks: &[Block], lay: &Layout, cols: &[Column], alpha: F128
     leaves
 }
 
-/// Recompute `Ṽ₀(ζ)` from the block structure, taking each committed column's
-/// value at `ζ_lo` from `col_val` (in block/coord order). The prover passes a
-/// closure reading the real columns; the verifier one replaying PCS-certified
-/// values.
+/// Recompute `Ṽ₀(ζ)` from the block structure, taking each committed column's value
+/// at `ζ_lo` from `col_val` (block/coord order): the prover reads the real columns,
+/// the verifier replays PCS-certified values.
 pub fn decompose_formula<F: FnMut(usize, &[F128]) -> F128>(
     blocks: &[Block],
     lay: &Layout,
@@ -222,11 +204,12 @@ pub fn decompose_formula<F: FnMut(usize, &[F128]) -> F128>(
         }
         acc += eq_hi * (gamma + inner);
     }
+    // The padding rows (identity `1`) contribute the leftover mass `1 - Σ_b sel_b`.
     acc + (F128::ONE + sel_sum)
 }
 
-/// The number of committed coordinates (`Col`/`GCol`) in a side — i.e. how many
-/// claim values flow through the transcript for it.
+/// The number of committed coordinates (`Col`/`GCol`) in a side — how many claim
+/// values flow through the transcript for it.
 fn n_committed(blocks: &[Block]) -> usize {
     blocks
         .iter()
@@ -235,8 +218,8 @@ fn n_committed(blocks: &[Block]) -> usize {
         .count()
 }
 
-/// Prover-side decomposition: reads the real columns, writing each committed
-/// value into the stream and recording the matching claim (block/coord order).
+/// Prover-side decomposition: reads the real columns, writing each committed value
+/// onto the stream and recording the matching claim (block/coord order).
 fn decompose_prove(
     blocks: &[Block],
     lay: &Layout,
@@ -298,9 +281,8 @@ fn fpow(base: F128, mut e: usize) -> F128 {
     r
 }
 
-/// `π_α` of a block's padding-row tuple, where every column is zero but the read
-/// counts (value `1`): `Col(i) -> pad[i]`, `GCol(i) -> g·pad[i]`. Only blocks with
-/// padding rows are queried, and those carry only `Const`/`Col`/`GCol`.
+/// `π_α` of a block's padding-row tuple (every column zero but the read counts,
+/// value `1`). Only padded blocks are queried, and those carry only `Const`/`Col`/`GCol`.
 fn default_fingerprint(block: &Block, pad: &[F128], alpha: F128) -> F128 {
     let mut fingerprint = F128::ZERO;
     let mut alpha_pow = F128::ONE;
@@ -318,8 +300,7 @@ fn default_fingerprint(block: &Block, pad: &[F128], alpha: F128) -> F128 {
 }
 
 /// The default-padding surplus on one side: `∏_b (γ − π_α(default_b))^{2^{κ_b} −
-/// real_b}`. The default rows do not self-cancel (nonzero counts, §e2e-pad), so
-/// the verifier divides this out before comparing the two sides (§sec:gp).
+/// real_b}`. The verifier divides it out before comparing the two sides (§sec:gp).
 fn default_surplus(blocks: &[Block], pad: &[F128], alpha: F128, gamma: F128) -> F128 {
     let mut acc = F128::ONE;
     for b in blocks {
@@ -331,8 +312,9 @@ fn default_surplus(blocks: &[Block], pad: &[F128], alpha: F128, gamma: F128) -> 
     acc
 }
 
-/// Prove the bus balances, writing the proof into `ps`; returns the per-column
-/// claims to open (§4.4).
+/// Prove the bus balances; returns the per-column claims to open (§4.4). `alpha`/
+/// `gamma` follow the witness commitment (the only ordering the grand product
+/// needs), and the block structure is public, so no shape is observed.
 pub fn prove_balance(
     push: &[Block],
     pull: &[Block],
@@ -340,21 +322,15 @@ pub fn prove_balance(
     cols: &[Column],
     ps: &mut ProverState,
 ) -> Vec<ColumnClaim> {
-    // No shape observe: the block structure is public and reconstructed by the
-    // verifier from the (bound) announced sizes + program, and `alpha`/`gamma` only
-    // need to follow the witness commitment (which they do) for the grand product
-    // to be sound. So sample the fingerprint challenge directly. Then grind
-    // before γ to lift the grand product to [`BUS_TARGET_BITS`] (see
-    // [`bus_grind_bits`]).
     let alpha = ps.sample();
     let push_lay = layout(push);
     let pull_lay = layout(pull);
     let count_lay = layout(count);
+    // Grind before γ to lift the grand product to `SECURITY_BITS` ([`grand_product_grinding_bits`]).
     ps.grind(grand_product_grinding_bits(&push_lay, &pull_lay, &count_lay));
     let gamma = ps.sample();
-    // The three leaf vectors are independent (transcript-free), so build them
-    // concurrently. The count channel's leaf is the read count itself, so its
-    // root is the product of all counts (a single `Col`, `γ=0`, `α=1`; §sec:memchan).
+    // Independent leaf vectors; build concurrently. The count channel's leaf is the
+    // count itself (a single `Col`, `γ=0`, `α=1`), so its root is the product of all counts.
     let (push_leaves, (pull_leaves, count_leaves)) = rayon::join(
         || build_leaves(push, &push_lay, cols, alpha, gamma),
         || {
@@ -390,9 +366,8 @@ pub fn prove_balance(
     claims
 }
 
-/// Verify the bus balances, reading the proof from `vs` — oracle-free (the
-/// prover's committed values arrive on the stream and are certified by `pcs`).
-/// Returns the reconstructed per-column claims for the caller to open.
+/// Verify the bus balances, oracle-free (the prover's committed values arrive on
+/// the stream and are certified by `pcs`). Returns the per-column claims to open.
 pub fn verify_balance(
     push: &[Block],
     pull: &[Block],
@@ -400,8 +375,7 @@ pub fn verify_balance(
     pad: &[F128],
     vs: &mut VerifierState,
 ) -> Result<Vec<ColumnClaim>, Error> {
-    // Mirror `prove_balance`: no shape observe (see there); check the pre-γ
-    // grinding nonce before sampling γ.
+    // Check the pre-γ grinding nonce before sampling γ (mirror of prove_balance).
     let alpha = vs.sample();
     let push_lay = layout(push);
     let pull_lay = layout(pull);
@@ -414,13 +388,13 @@ pub fn verify_balance(
     let (push_root, cp) = gkr::verify_product(push_lay.mu, vs).map_err(Error::Gkr)?;
     let (pull_root, cq) = gkr::verify_product(pull_lay.mu, vs).map_err(Error::Gkr)?;
     let (count_root, cc) = gkr::verify_product(count_lay.mu, vs).map_err(Error::Gkr)?;
-    // Every read count is nonzero iff this product is (§sec:memchan); a zero
-    // would let a read self-cancel and free its value from memory.
+    // Every read count is nonzero iff this product is (§sec:memchan); a zero would
+    // let a read self-cancel and free its value from memory.
     if count_root == F128::ZERO {
         return Err(Error::ZeroCount);
     }
-    // The two sides differ by the default-padding surplus (§sec:gp); divide each
-    // out (cross-multiplied) before comparing.
+    // The two sides differ by the default-padding surplus; divide each out
+    // (cross-multiplied) before comparing.
     let d_push = default_surplus(push, pad, alpha, gamma);
     let d_pull = default_surplus(pull, pad, alpha, gamma);
     if push_root * d_pull != pull_root * d_push {

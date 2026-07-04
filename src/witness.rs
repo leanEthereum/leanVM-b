@@ -1,19 +1,16 @@
-//! Field-valued columns stacked into one committed witness (§3.1).
-//!
-//! A column is a vector of `2^κ` field elements. The columns are laid end to
-//! end, largest first at aligned offsets, into one multilinear `q` of length
-//! `2^m`; an evaluation claim on column `i` at `ζ` is the claim `q̂(ζ, sel_i) = c`
-//! on the stack, where `sel_i` is the high-bit selector of the column's offset.
+//! Field-valued columns stacked into one committed witness (§3.1): columns laid
+//! end to end, largest first at aligned offsets, into one multilinear `q`. An
+//! evaluation claim on column `i` at `ζ` becomes the claim `q̂(ζ, sel_i) = c` on
+//! the stack, where `sel_i` is the high-bit selector of the column's offset.
 
 use crate::field::F128;
 
 /// A committed column: `2^κ` field elements.
 pub type Column = Vec<F128>;
 
-/// Where a column sits in the stacked witness. A **virtual** placement
-/// ([`Placement::VIRTUAL`]) marks a column that is NOT committed (it has data on
-/// the prover for the bus, but its evaluation claims are settled against some
-/// other committed column — e.g. the BLAKE3 value columns route to `q_pkd`).
+/// Where a column sits in the stacked witness. A [`Placement::VIRTUAL`] column is
+/// NOT committed: it carries data for the bus, but its evaluation claims settle
+/// against some other committed column (e.g. the BLAKE3 value columns route to `q_pkd`).
 #[derive(Clone, Copy, Debug)]
 pub struct Placement {
     pub n_vars: usize,
@@ -21,10 +18,11 @@ pub struct Placement {
 }
 
 impl Placement {
-    /// A column that is not committed in the stack (see the type docs).
-    pub const VIRTUAL: Placement = Placement { n_vars: usize::MAX, offset: 0 };
+    pub const VIRTUAL: Placement = Placement {
+        n_vars: usize::MAX,
+        offset: 0,
+    };
 
-    /// Whether this column is uncommitted (occupies no stack space).
     pub fn is_virtual(&self) -> bool {
         self.n_vars == usize::MAX
     }
@@ -37,17 +35,14 @@ impl Placement {
 
 /// The stacked witness and the per-column placements (in input order).
 pub struct Stacked {
-    /// `log2` of the witness length.
     pub m: usize,
-    /// The stacked witness `q`, length `2^m`.
     pub q: Vec<F128>,
     pub placements: Vec<Placement>,
 }
 
 impl Stacked {
-    /// The PCS evaluation point for a claim on column `c` at `point` (length
-    /// `κ_c`): the within-column coordinates followed by the column's selector
-    /// bits, total length `m` (LSB-first).
+    /// The PCS evaluation point for a claim on column `c` at `point` (length `κ_c`):
+    /// the within-column coordinates followed by the column's selector bits (LSB-first).
     pub fn pcs_point(&self, c: usize, point: &[F128]) -> Vec<F128> {
         let placement = self.placements[c];
         debug_assert_eq!(point.len(), placement.n_vars);
@@ -60,12 +55,9 @@ impl Stacked {
     }
 }
 
-/// Compute the per-column placements (offset + n_vars) and stack length `2^m`
-/// from the columns' log-sizes alone (`kappas`), largest-first at aligned
-/// offsets, padded to `m ≥ 2` (the PCS minimum). A `None` kappa marks a
-/// **virtual** (uncommitted) column: it gets [`Placement::VIRTUAL`] and occupies
-/// no stack space. Depends only on the columns' lengths, not their values, so the
-/// verifier can reconstruct it.
+/// Per-column placements (offset + n_vars) and stack length `2^m` from the columns'
+/// log-sizes alone, largest-first at aligned offsets. A `None` kappa marks a virtual
+/// (uncommitted) column. Depends only on lengths, so the verifier can reconstruct it.
 pub fn placements_of(kappas: &[Option<usize>]) -> (Vec<Placement>, usize) {
     let n = kappas.len();
     let mut order: Vec<usize> = (0..n).filter(|&i| kappas[i].is_some()).collect();
@@ -78,9 +70,8 @@ pub fn placements_of(kappas: &[Option<usize>]) -> (Vec<Placement>, usize) {
         placements[i] = Placement { n_vars: k, offset: off };
         off += 1 << k;
     }
-    // Floor the stack size at the PCS minimum (Ligerito's recursion needs room;
-    // see `pcs::MIN_MU`) — tiny witnesses zero-pad up to it. Both sides derive
-    // this identically from the kappas alone.
+    // Floor at the PCS minimum (Ligerito's recursion needs room); tiny witnesses
+    // zero-pad up. Both sides derive this identically from the kappas.
     let m = crate::log2_ceil_usize(off.max(1)).max(crate::pcs::MIN_MU);
     (placements, m)
 }
@@ -99,8 +90,7 @@ pub fn stack_q(cols: &[Column], placements: &[Placement], m: usize) -> Vec<F128>
     q
 }
 
-/// Stack columns largest-first at aligned offsets, zero-padded to `2^m`
-/// (`m ≥ 2`, the PCS minimum).
+/// Stack columns largest-first at aligned offsets, zero-padded to `2^m`.
 pub fn stack(cols: &[Column]) -> Stacked {
     let kappas: Vec<Option<usize>> = cols
         .iter()

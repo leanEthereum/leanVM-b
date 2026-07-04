@@ -1,21 +1,18 @@
-//! Multilinear-extension utilities shared across the protocol: the equality
-//! polynomial, single-variable folding, and full MLE evaluation.
-//!
-//! Convention: a length-`2^n` truth table is indexed little-endian — variable
-//! `k` is bit `k` of the index. Folding binds the lowest free variable (the
-//! LSB), halving the table, which is the order the sumcheck rounds consume.
+//! Multilinear-extension utilities: the equality polynomial, single-variable
+//! folding, and MLE evaluation. Truth tables are indexed little-endian (variable
+//! `k` is bit `k`); folding binds the lowest free variable, the order sumcheck
+//! rounds consume.
 
 use crate::field::F128;
 
-/// Multilinear interpolation in one variable: value at `t` given the X=0 (`lo`)
-/// and X=1 (`hi`) values. `lo + t·(lo+hi)` is the char-2 form of `(1−t)lo+t·hi`.
+/// Multilinear interpolation in one variable: `lo + t·(lo+hi)`, the char-2 form of
+/// `(1−t)·lo + t·hi`.
 #[inline]
 pub fn interp(lo: F128, hi: F128, t: F128) -> F128 {
     lo + t * (lo + hi)
 }
 
-/// `eq(r, x) = ∏_i (1 + r_i + x_i)` — the multilinear that is 1 at `x = r` and 0
-/// at every other Boolean point. Both arguments are full coordinate vectors.
+/// `eq(r, x) = ∏_i (1 + r_i + x_i)` — 1 at `x = r`, 0 at every other Boolean point.
 pub fn eq_eval(r: &[F128], x: &[F128]) -> F128 {
     debug_assert_eq!(r.len(), x.len());
     let mut acc = F128::ONE;
@@ -25,10 +22,8 @@ pub fn eq_eval(r: &[F128], x: &[F128]) -> F128 {
     acc
 }
 
-/// The `eq(r, ·)` table over `n = r.len()` variables: `table[x] = eq(r, x)` for
-/// every Boolean point `x` (indexed little-endian). Expanded in place in one
-/// `2^n` buffer (no per-level reallocation): descending `i` keeps the unread
-/// low half intact while the high half is written from it.
+/// The `eq(r, ·)` table over `n = r.len()` variables, expanded in place: descending
+/// `i` keeps the unread low half intact while the high half is written from it.
 pub fn eq_table(r: &[F128]) -> Vec<F128> {
     let mut eq = vec![F128::ZERO; 1usize << r.len()];
     eq[0] = F128::ONE;
@@ -37,16 +32,16 @@ pub fn eq_table(r: &[F128]) -> Vec<F128> {
         let one_plus = F128::ONE + rk;
         for i in (0..half).rev() {
             let e = eq[i];
-            eq[i + half] = e * rk; // bit k = 1
-            eq[i] = e * one_plus; // bit k = 0
+            eq[i + half] = e * rk;
+            eq[i] = e * one_plus;
         }
         half <<= 1;
     }
     eq
 }
 
-/// Bind the lowest free variable of `table` to `rho`, returning the half-size
-/// table: `out[i] = interp(table[2i], table[2i+1], rho)`.
+/// Bind the lowest free variable of `table` to `rho`: `out[i] = interp(table[2i],
+/// table[2i+1], rho)`.
 pub fn fold_low(table: &[F128], rho: F128) -> Vec<F128> {
     debug_assert_eq!(table.len() % 2, 0);
     (0..table.len() / 2)
@@ -54,8 +49,7 @@ pub fn fold_low(table: &[F128], rho: F128) -> Vec<F128> {
         .collect()
 }
 
-/// In-place [`fold_low`]: halve `table`, binding its lowest variable to `rho`,
-/// with no reallocation (`i ≤ 2i`, so unread entries are never clobbered).
+/// In-place [`fold_low`], no reallocation (`i ≤ 2i`, so unread entries survive).
 pub fn fold_low_inplace(table: &mut Vec<F128>, rho: F128) {
     debug_assert_eq!(table.len() % 2, 0);
     let half = table.len() / 2;
@@ -65,9 +59,9 @@ pub fn fold_low_inplace(table: &mut Vec<F128>, rho: F128) {
     table.truncate(half);
 }
 
-/// Generic Lagrange evaluation: given distinct `nodes` and a polynomial's
-/// `values` at them, evaluate the interpolant at `p`. Used to read a sumcheck
-/// round's univariate (sent as evaluations) at the verifier's challenge.
+/// Lagrange evaluation: given distinct `nodes` and a polynomial's `values` there,
+/// evaluate the interpolant at `p`. Reads a sumcheck round's univariate (sent as
+/// evaluations) at the verifier's challenge.
 pub fn lagrange_eval(nodes: &[F128], values: &[F128], p: F128) -> F128 {
     debug_assert_eq!(nodes.len(), values.len());
     let n = nodes.len();
@@ -87,17 +81,14 @@ pub fn lagrange_eval(nodes: &[F128], values: &[F128], p: F128) -> F128 {
     acc
 }
 
-/// The 3 evaluation nodes {0, 1, γ} (γ = the field generator) at which a degree-2
-/// sumcheck round univariate is sent. With the `eq` weight factored out, each
-/// round univariate is degree 2, so 3 evaluations determine it. Shared by the
-/// per-table zerocheck ([`crate::constraints`]) and the GKR product ([`crate::gkr`]).
+/// The 3 nodes {0, 1, γ} at which a degree-2 sumcheck round univariate is sent
+/// (the eq weight is factored out). Shared by [`crate::constraints`] and [`crate::gkr`].
 #[inline]
 pub fn tri_nodes() -> [F128; 3] {
     [F128::ZERO, F128::ONE, F128::generator()]
 }
 
-/// Add two 3-coefficient sumcheck accumulators componentwise (the reduce/fold
-/// identity for a degree-2 round's running sum over the [`tri_nodes`]).
+/// Add two 3-coefficient sumcheck accumulators componentwise.
 #[inline]
 pub fn add3(mut x: [F128; 3], y: [F128; 3]) -> [F128; 3] {
     for i in 0..3 {
@@ -106,9 +97,8 @@ pub fn add3(mut x: [F128; 3], y: [F128; 3]) -> [F128; 3] {
     x
 }
 
-/// Evaluate the multilinear extension whose truth table is `table` at `point`
-/// (length `log2(table.len())`), by binding variables LSB-first. One copy, then
-/// folded in place (no per-round reallocation).
+/// Evaluate the MLE with truth table `table` at `point` (length `log2(len)`),
+/// binding variables LSB-first. One copy, then folded in place.
 pub fn mle_eval(table: &[F128], point: &[F128]) -> F128 {
     debug_assert_eq!(table.len(), 1 << point.len());
     let mut cur = table.to_vec();

@@ -1,18 +1,7 @@
-//! Per-table local constraints (§4.1): a zerocheck for a batch of degree-≤2
-//! field identities over the row's committed columns.
-//!
-//! A table's constraints (the fp-relative addresses `addr = fp·o`, `XOR`'s sum,
-//! `MUL_NATIVE`'s product, `JUMP`'s nonzero indicator and selection) are combined with
-//! a verifier scalar `η` into one polynomial `C` over the columns, of degree
-//! `≤ 2`. The parties run `Σ_x C(x)·eq(r,x) = 0` by sumcheck; the `eq` weight is
-//! factored out (eq-trick), so each round univariate is degree 2, sent as 3
-//! evaluations and reweighted by the verifier. The final claim needs the involved
-//! columns' evaluations at the random point `ρ`; those are prover-supplied and
-//! certified against the witness commitment by `crate::pcs`.
-//!
-//! `c_eval(η, vals)` is the public batched constraint: given the column values
-//! at a row (in a fixed order) it returns `Σ_t η^{t-1} C_t`. Both parties share
-//! it; the prover folds the columns through it, the verifier checks `C(ρ)`.
+//! Per-table local constraints (§4.1): a zerocheck of the row's degree-≤2 field
+//! identities, batched by a verifier scalar `η` and run by sumcheck. The `eq`
+//! weight is factored out (eq-trick), so each round univariate is degree 2, sent
+//! as 3 evaluations and reweighted by the verifier.
 
 use crate::PAR_THRESHOLD;
 use crate::field::F128;
@@ -20,8 +9,8 @@ use crate::multilinear::{add3, eq_table, fold_low_inplace, interp, lagrange_eval
 use crate::transcript::{ProverState, VerifierState};
 use rayon::prelude::*;
 
-/// The involved columns' evaluations at the zerocheck point `ρ` (in the fixed
-/// column order), plus `ρ`. Reconstructed identically by prover and verifier.
+/// The involved columns' evaluations at the zerocheck point `rho` (fixed column
+/// order), reconstructed identically by prover and verifier.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Claims {
     pub rho: Vec<F128>,
@@ -36,9 +25,7 @@ pub enum Error {
 }
 
 /// Prove the batched constraint vanishes on every row. `cols` are the involved
-/// columns (each `2^τ` values, in the order `c_eval` expects). The batched
-/// constraint is degree ≤2 and the `eq` weight is factored out, so each round
-/// sends 3 evaluations (eq-trick, §sec:gkr).
+/// columns (`2^tau` values each, in the order `c_eval` expects).
 pub fn prove<F: Fn(F128, &[F128]) -> F128 + Sync>(cols: &[Vec<F128>], c_eval: F, ps: &mut ProverState) -> Claims {
     let tau = crate::log2_strict_usize(cols[0].len());
     let eta = ps.sample();
@@ -51,11 +38,9 @@ pub fn prove<F: Fn(F128, &[F128]) -> F128 + Sync>(cols: &[Vec<F128>], c_eval: F,
 
     for j in 0..tau {
         let half = tables[0].len() / 2;
-        // The eq weight factors out (eq-trick, §sec:gkr): the round message is the
-        // degree-2 `Σ_{x'} eq(r_{>j}, x')·C(t, x')` at the 3 nodes, and the verifier
-        // multiplies `eq(r_{≤j}, ·)` back. `eqr` is eq over the variables after the
-        // one bound this round; `vals` is a reused scratch buffer (the columns
-        // interpolated to node `tt`), so there is no per-row allocation.
+        // Round message: the degree-2 product part `Σ_{x'} eq(r_{>j}, x')·C(t, x')`
+        // at the 3 nodes; the verifier multiplies `eq(r_{≤j}, ·)` back. `vals` is a
+        // reused scratch buffer (the columns interpolated to node `tt`).
         let eqr = eq_table(&r[j + 1..]);
         let summand = |i: usize, vals: &mut [F128]| -> [F128; 3] {
             let mut acc = [F128::ZERO; 3];
@@ -94,9 +79,8 @@ pub fn prove<F: Fn(F128, &[F128]) -> F128 + Sync>(cols: &[Vec<F128>], c_eval: F,
     Claims { rho, evals }
 }
 
-/// Verify the constraint zerocheck, reading the proof from `vs`. `ncols` is the
-/// number of involved columns. Returns the reconstructed claims (`ρ` and the
-/// column evals) for the caller to settle against the commitment.
+/// Verify the constraint zerocheck, returning the reconstructed claims (`rho` and
+/// the column evals) for the caller to settle against the commitment.
 pub fn verify<F: Fn(F128, &[F128]) -> F128>(
     tau: usize,
     ncols: usize,
@@ -119,11 +103,10 @@ pub fn verify<F: Fn(F128, &[F128]) -> F128>(
         }
         let rk = vs.sample();
         rho.push(rk);
-        eq_acc *= F128::ONE + rj + rk; // ·= eq(r_round, ρ_round)
-        claim = eq_acc * lagrange_eval(&nd, &p, rk); // = q(ρ_round)
+        eq_acc *= F128::ONE + rj + rk;
+        claim = eq_acc * lagrange_eval(&nd, &p, rk);
     }
     let evals = vs.next_scalars(ncols).map_err(|_| Error::Truncated)?;
-    // claim = eq(r,ρ)·C(ρ) now (eq_acc = eq(r,ρ)); bind the sent column evals.
     if claim != eq_acc * c_eval(eta, &evals) {
         return Err(Error::FinalMismatch);
     }

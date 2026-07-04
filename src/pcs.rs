@@ -1,29 +1,19 @@
-//! Witness commitment: an inner-product PCS over F_{2^128} (doc §3).
+//! Witness commitment: an inner-product PCS over F_{2^128} (doc §3), reusing
+//! flock's **Ligerito**. An opening proves `Σ_x q(x)·W(x) = C` against any
+//! verifier-evaluable weight `W` (a point evaluation `q̂(r)` is `W = eq(r,·)`). A
+//! batch of claims `q̂(point_j) = value_j` folds with a random `λ` into one weight
+//! `W_λ = Σ_j λ^j eq(point_j,·)` and target `C_λ = Σ_j λ^j value_j`, opened in a
+//! single Ligerito run — the verifier evaluates `W_λ` itself, so it never travels.
 //!
-//! We reuse flock's **Ligerito** (interleaved Reed-Solomon + Merkle, recursively
-//! folded — see flock.tex §app:ligerito) as the scheme: `commit` encodes the F128
-//! message, and an opening proves the inner product `Σ_x q(x)·W(x) = C` against
-//! any verifier-evaluable weight `W`, by a sumcheck folded in lockstep with the
-//! recursive code folds (a plain point evaluation `q̂(r)` is the case
-//! `W = eq(r,·)`).
-//!
-//! For a batch of claims `q̂(point_j) = value_j` we fold them with a random `λ`
-//! into one weight `W_λ = Σ_j λ^j eq(point_j,·)` and target `C_λ = Σ_j λ^j
-//! value_j`, and run a single Ligerito opening on `Σ_x q(x)·W_λ(x) = C_λ`
-//! directly, with no separate reduction sumcheck. The verifier evaluates `W_λ`
-//! itself at the residual points (the succinct-verifier closure), so `W_λ` never
-//! travels.
-//!
-//! Security: the [`PROFILE`] is Ligerito `Secure` — rate 1/2, **unique-decoding
-//! regime (list size 1, no out-of-domain binding), 120-bit** round-by-round
-//! soundness (parameters derived by `LigeritoSecurityConfig::derive_profile`).
+//! Security: the [`PROFILE`] is Ligerito `Secure` — rate 1/2, unique-decoding
+//! regime (list size 1, no out-of-domain binding), 120-bit round-by-round soundness.
 
 use crate::field::F128;
 use crate::transcript::{ProverState, VerifierState};
 
 use flare::pcs::ligerito::{LigeritoProfile, LigeritoSecurityConfig, ProverConfig, VerifierConfig};
-use flare::pcs::{StackClaim, open_batch_mixed_ligerito_stacked, verify_opening_batch_mixed_ligerito_stacked};
 pub use flare::pcs::{BatchOpeningProofLigerito, Commitment, PcsParams, ProverData};
+use flare::pcs::{StackClaim, open_batch_mixed_ligerito_stacked, verify_opening_batch_mixed_ligerito_stacked};
 use flare::zerocheck::PaddingSpec;
 
 /// flock frames `commit` as `m = log2(len) + LOG_PACKING`; the message length is
@@ -58,7 +48,10 @@ const _: () = assert!(PROFILE.security_bits() == crate::SECURITY_BITS as usize);
 pub const MIN_MU: usize = 15;
 
 fn params_for(mu: usize) -> PcsParams {
-    assert!(mu >= MIN_MU, "witness must be ≥ 2^{MIN_MU} elements (padded by placements_of)");
+    assert!(
+        mu >= MIN_MU,
+        "witness must be ≥ 2^{MIN_MU} elements (padded by placements_of)"
+    );
     PcsParams {
         m: mu + LOG_PACKING,
         log_inv_rate: LOG_INV_RATE,
@@ -150,12 +143,22 @@ impl SlotClaim {
     /// [`StackClaim::StridedSlot`], `Slot` to the dense [`StackClaim::Slot`].
     fn as_stack(&self) -> StackClaim<'_> {
         match self {
-            SlotClaim::Slot { offset, low_point, value } => StackClaim::Slot {
+            SlotClaim::Slot {
+                offset,
+                low_point,
+                value,
+            } => StackClaim::Slot {
                 offset: *offset,
                 low_point,
                 value: *value,
             },
-            SlotClaim::Strided { offset, slot, stride_log, point, value } => StackClaim::StridedSlot {
+            SlotClaim::Strided {
+                offset,
+                slot,
+                stride_log,
+                point,
+                value,
+            } => StackClaim::StridedSlot {
                 offset: *offset,
                 slot: *slot,
                 stride_log: *stride_log,
