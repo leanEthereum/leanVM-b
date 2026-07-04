@@ -82,6 +82,52 @@ program in the directory:
 # public_input: GEN ** 89, 101229015297003380629709256178361811305
 ```
 
+## Global constants and placeholders
+
+Above the functions (after the optional `snark_lib` import) a program may
+declare **global constants** — top-level `NAME = <const-expr>`:
+
+```python
+from snark_lib import *
+
+N = 8                    # an integer size / value
+STEP = GEN ** 2          # a g-power constant (index carried in the exponent)
+WIDE = N + 1             # `+`/`*` are the field's own (XOR / GHASH); references
+                         # to *earlier* constants are allowed
+
+def main():
+    buf = StackBuf(N)    # a constant is a plain literal: usable as a size,
+    x = GEN ** N         # a `**` exponent, a stack/slice index, an operand,
+    assert log x < N     # an `assert log _ < _` bound, or a `Const` argument
+    return
+```
+
+Each constant is **evaluated to its field value** and substituted, as a single
+literal, everywhere its name appears below — so unlike a `Const` parameter it
+needs no call site and works in every literal position. Constants must precede
+the `def`s and are resolved *before* variables, so a constant name is
+**reserved**: do not reuse it as a parameter or local name. (Being a valid
+Python file, `N = 8` is also just a Python module global.)
+
+**Placeholders** let a host fill values at compile time without editing the
+source. Any identifier may be mapped to replacement text before parsing
+(`compiler::parse_with_replacements` / `parse_file_with_replacements`, taking a
+`BTreeMap<String, String>`); the replacement is identifier-bounded (`FOO` does
+not touch `FOOBAR`). The idiom is a placeholder feeding a constant:
+
+```python
+V = V_PLACEHOLDER        # with replacement  "V_PLACEHOLDER" ↦ "128"
+LOG_LIFETIME = LOG_LIFETIME_PLACEHOLDER
+
+def main():
+    ...                  # V is the constant 128 throughout
+```
+
+so one source template compiles at many sizes. An unfilled placeholder (no
+replacement, no matching constant) is a compile error, not a silent variable.
+A program that uses placeholders only type-checks as Python once its
+placeholders are also defined (e.g. bound in `snark_lib` for tooling).
+
 ## Functions
 
 ```python
@@ -471,7 +517,8 @@ def main():
 
 Mutable variables and compound assignment; conditions other than field
 (in)equality; `match` defaults (`case _`) and non-contiguous cases; top-level
-constants; multi-file imports; `@inline`; `Const` parameters as `mul_range`
+constant *arrays* (only scalar constants — see "Global constants and
+placeholders"); multi-file imports; `@inline`; `Const` parameters as `mul_range`
 or range-check bounds (a substituted literal is a bit-pattern element, not
 the g-power a bound needs); runtime slice starts on a `StackBuf`; runtime
 range-check bounds (`assert log a < log b` with runtime `b`); custom hint

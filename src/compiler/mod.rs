@@ -33,7 +33,10 @@ pub use ast::*;
 pub(crate) use ir::*;
 use lower::lower_func;
 pub(crate) use parser::subst_stmts;
-pub use parser::{parse, parse_const, parse_file};
+pub use parser::{
+    apply_replacements, parse, parse_const, parse_file, parse_file_with_replacements,
+    parse_with_replacements,
+};
 
 // ----------------------------------------------------------------------------
 // Layout, resolution, witness generation

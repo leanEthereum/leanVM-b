@@ -7,7 +7,9 @@
 
 use std::time::Instant;
 
-use leanvm_b::compiler::{compile, parse_file};
+use std::collections::BTreeMap;
+
+use leanvm_b::compiler::{compile, parse_file_with_replacements};
 use leanvm_b::cpu::{prove, verify};
 use leanvm_b::field::{F128, g_pow};
 use rand::SeedableRng;
@@ -78,9 +80,21 @@ fn test_aggregate_xmss() {
     let state = md_hash(iv, &data);
     let want = [word(&state[..16]), word(&state[16..])];
 
+    // The XMSS instance parameters, injected into the program's placeholders;
+    // every derived size (tweak-table width, IV byte counts, …) is computed
+    // from these by the DSL's compile-time integer arithmetic.
+    let replacements = BTreeMap::from([
+        ("V_PLACEHOLDER".to_string(), V.to_string()),
+        ("W_PLACEHOLDER".to_string(), W.to_string()),
+        ("TARGET_SUM_PLACEHOLDER".to_string(), TARGET_SUM.to_string()),
+        ("LOG_LIFETIME_PLACEHOLDER".to_string(), LOG_LIFETIME.to_string()),
+    ]);
     let mut program = compile(
-        &parse_file(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/xmss_aggregate.py"))
-            .expect("parse"),
+        &parse_file_with_replacements(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/tests/xmss_aggregate.py"),
+            &replacements,
+        )
+        .expect("parse"),
     );
     program.set_witness("n_pks", vec![vec![g_pow(n)]]);
     program.set_witness("msg", vec![pair(&message[..16], &message[16..])]);
