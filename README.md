@@ -11,6 +11,27 @@
 - WARNING: Highly experimental / sloppy (currently).
 - Proving architecture is volontarily kept simple for now
 
+
+## XMSS aggregation benchmark
+
+`RAYON_NUM_THREADS=10 LEANVM_XMSS_N=1024 cargo test --release --test xmss_vm -- --nocapture`
+
+```
+XMSS aggregation, 1024 signatures
+  cycles (VM steps)           :    3530378 = 2^21.75   (  3447.6 / XMSS)
+    XOR    instructions       :      79873 = 2^16.29   (    78.0 / XMSS)
+    MUL    instructions       :    1383141 = 2^20.40   (  1350.7 / XMSS)
+    SET    instructions       :    1048956 = 2^20.00   (  1024.4 / XMSS)
+    DEREF  instructions       :     585083 = 2^19.16   (   571.4 / XMSS)
+    JUMP   instructions       :     271352 = 2^18.05   (   265.0 / XMSS)
+    BLAKE3 instructions       :     161973 = 2^17.31   (   158.2 / XMSS)
+  committed witness size      : 2^26.956
+  proof size                  : 527.8 KiB
+  proving (incl. witness gen) : 4.168371291s
+  verifying                   : 6.717958ms
+  throughput                  : 245.7 XMSS/s
+```
+
 ## Fibonacci benchmark
 
 `RAYON_NUM_THREADS=10 cargo run --release`

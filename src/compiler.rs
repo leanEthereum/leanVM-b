@@ -68,6 +68,13 @@ pub enum Expr {
     Call(String, Vec<Expr>),
     /// `HeapBuf(n)` — allocate a heap buffer of `n` cells; evaluates to its pointer.
     HeapBuf(u64),
+    /// `HeapBuf(size)` with a *runtime* size carried **in the exponent**: the
+    /// buffer holds `k` cells where `size = g^k` (so a size derived from a
+    /// g-power count `n` is plain field arithmetic — `HeapBuf(n * n * GEN**2)`
+    /// is `2·log(n) + 2` cells). The allocation is a prover convenience (like
+    /// every base pointer), so an under-size only hurts the prover:
+    /// overlapping regions trip write-once. Evaluates to the pointer.
+    HeapBufDyn(Box<Expr>),
     /// `StackBuf(n)` — allocate `n` *consecutive* frame (stack) cells, bound as a
     /// stack value. Its cells `sa[0..n]` are written/read directly (no heap deref),
     /// and a size-2 `StackBuf` is a valid `blake3` operand (the two 128-bit words
@@ -284,6 +291,9 @@ enum Hint {
     /// `m[fp·g^ptr] = g^{fresh base}` — a fresh, disjoint heap region of `size`
     /// cells (a `HeapBuf(size)`), addressed by g-power offsets from the pointer.
     AllocBuffer { ptr: Off, size: u32 },
+    /// `AllocBuffer` with a *runtime* size in the exponent: the cell count is
+    /// the g-power exponent of `m[fp·g^size]` (a `HeapBuf(size_expr)`).
+    AllocBufferDyn { ptr: Off, size: Off },
     /// Pop stream `name`'s next entry (`len` values) into the frame cells
     /// `m[fp·g^{base+k}]`, `k < len`.
     WitnessStack { name: String, base: Off, len: u32 },
@@ -732,6 +742,14 @@ impl FnLower<'_> {
                     ptr: arr,
                     size: *n as u32,
                 });
+                arr
+            }
+            Expr::HeapBufDyn(e) => {
+                // Evaluate the size first (its cell must be written when the
+                // alloc hint fires), then allocate before the pointer is read.
+                let size = self.expr(e);
+                let arr = self.fresh();
+                self.pending.push(Hint::AllocBufferDyn { ptr: arr, size });
                 arr
             }
             Expr::StackBuf(_) => {
@@ -1357,6 +1375,7 @@ fn free_vars_expr(e: &Expr, refs: &mut Vec<String>) {
             free_vars_expr(hi, refs);
         }
         Expr::Call(_, args) => args.iter().for_each(|a| free_vars_expr(a, refs)),
+        Expr::HeapBufDyn(sz) => free_vars_expr(sz, refs),
         Expr::Lit(_) | Expr::Gen | Expr::GPow(_) | Expr::HeapBuf(_) | Expr::StackBuf(_) => {}
     }
 }
@@ -2044,6 +2063,7 @@ fn subst_var(e: &Expr, name: &str, to: &Expr) -> Expr {
         Expr::Mul(a, b) => Expr::Mul(s(a), s(b)),
         Expr::Index(a, b) => Expr::Index(s(a), s(b)),
         Expr::Slice(a, lo, hi) => Expr::Slice(s(a), s(lo), s(hi)),
+        Expr::HeapBufDyn(sz) => Expr::HeapBufDyn(s(sz)),
         Expr::Call(f, args) => {
             Expr::Call(f.clone(), args.iter().map(|a| subst_var(a, name, to)).collect())
         }
@@ -2178,10 +2198,13 @@ fn parse_expr(s: &str) -> Result<Expr, String> {
         };
         // `HeapBuf(n)` / `StackBuf(n)` are allocations, not ordinary calls.
         if name == "HeapBuf" {
-            if let [Expr::Lit(n)] = args.as_slice() {
-                return Ok(Expr::HeapBuf(*n as u64));
-            }
-            return Err("HeapBuf(n) needs one integer-literal size".into());
+            return match args.as_slice() {
+                // A literal size is baked into the bytecode; any other
+                // expression is a runtime size (its low word is the count).
+                [Expr::Lit(n)] => Ok(Expr::HeapBuf(*n as u64)),
+                [e] => Ok(Expr::HeapBufDyn(Box::new(e.clone()))),
+                _ => Err("HeapBuf(size) takes one argument".into()),
+            };
         }
         if name == "StackBuf" {
             if let [Expr::Lit(n)] = args.as_slice() {
@@ -2206,6 +2229,9 @@ fn parse_expr(s: &str) -> Result<Expr, String> {
 pub(crate) enum RHint {
     /// Allocate a fresh region of `size` cells and write `g^{base}` to the cell.
     Alloc { ptr: Off, size: u32 },
+    /// `Alloc` with the cell count read at runtime as the g-power exponent of
+    /// `m[fp+size]`.
+    AllocDyn { ptr: Off, size: Off },
     /// Pop stream `name`'s next entry (`len` values) into frame cells `fp+base+k`.
     WitnessStack { name: String, base: Off, len: u32 },
     /// Pop stream `name`'s next entry (`len` values) into heap cells `m[fp+ptr]·g^{lo+k}`.
@@ -2281,6 +2307,7 @@ pub fn compile(ast: &Ast) -> Program {
                             size: frame_size[callee],
                         },
                         Hint::AllocBuffer { ptr, size } => RHint::Alloc { ptr: *ptr, size: *size },
+                        Hint::AllocBufferDyn { ptr, size } => RHint::AllocDyn { ptr: *ptr, size: *size },
                         Hint::WitnessStack { name, base, len } => RHint::WitnessStack {
                             name: name.clone(),
                             base: *base,

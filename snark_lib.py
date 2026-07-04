@@ -81,9 +81,13 @@ def unroll(a: int, b: int) -> range:
     return range(a, b)
 
 
-def HeapBuf(n: int) -> _Elt:
-    """Allocate a fresh, disjoint heap buffer of `n` cells; evaluates to its
-    pointer (a fresh g-power)."""
+def HeapBuf(n) -> _Elt:
+    """Allocate a fresh, disjoint heap buffer; evaluates to its pointer (a
+    fresh g-power). `n` is either an integer literal (compile-time size), or a
+    runtime value carrying the cell count *in the exponent* — `g^k` allocates
+    `k` cells, so a size derived from a g-power count is plain field arithmetic
+    (`HeapBuf(cnt * cnt)` is `2·log(cnt)` cells). Allocation is a prover
+    convenience, so an under-size only trips write-once."""
     _ = n
     return _Elt()
 

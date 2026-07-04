@@ -408,7 +408,27 @@ impl Program {
                 };
                 for h in hs {
                     match h {
-                        &RHint::Alloc { ptr, size } => {
+                        // A fresh region: write its base `g^{next_free}` into the
+                        // pointer cell (once) and reserve `size` cells. `AllocDyn`
+                        // reads the size from a cell at runtime.
+                        RHint::Alloc { .. } | RHint::AllocDyn { .. } => {
+                            let (ptr, size) = match *h {
+                                RHint::Alloc { ptr, size } => (ptr, size),
+                                // A runtime size is carried in the exponent:
+                                // the cell holds g^k, allocate k cells (reverse
+                                // g-power lookup, growing the index if needed).
+                                RHint::AllocDyn { ptr, size } => {
+                                    let sz = get(&mem, &written, fp + size);
+                                    let cells = gmap.get(&sz).copied().unwrap_or_else(|| {
+                                        grow_gpow(&mut gpow, &mut gmap, 1 << 20);
+                                        *gmap.get(&sz).unwrap_or_else(|| {
+                                            panic!("HeapBuf size is not a g-power below 2^20 cells")
+                                        })
+                                    });
+                                    (ptr, cells)
+                                }
+                                _ => unreachable!(),
+                            };
                             let cell = fp + ptr;
                             ensure(&mut mem, &mut written, &mut mem_count, cell as usize);
                             if !written[cell as usize] {

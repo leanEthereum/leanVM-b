@@ -1,10 +1,11 @@
-//! The in-VM XMSS verifier (`tests/xmss_verify.py`): a real signature is
-//! produced natively with the `xmss` crate; its pieces become the program's
-//! witness streams; the VM re-derives the encoding digest, checks the hinted
-//! digits (range, target sum in the exponent, and the monomial-subspace
-//! reconstruction against the digest), walks the 42 chains, hashes the tips
-//! into the Merkle leaf, climbs the 32 hinted levels, and publishes
-//! (Merkle root, encoding digest) — compared against the native values.
+//! The in-VM XMSS aggregation verifier (`tests/xmss_aggregate.py`): `n`
+//! signers (fresh keypairs) sign the same message at the same slot with the
+//! `xmss` crate; the VM absorbs `message | tweaks | merkle_bits | public
+//! keys` into the size-in-IV Merkle-Damgard hash while verifying every
+//! signature against the bound data, and publishes the final 32-byte state —
+//! compared against the natively computed aggregation hash.
+
+use std::time::Instant;
 
 use leanvm_b::compiler::{compile, parse_file};
 use leanvm_b::cpu::{prove, verify};
@@ -13,7 +14,6 @@ use rand::SeedableRng;
 use rand::rngs::StdRng;
 use xmss::*;
 
-/// A 16-byte digest/tweak/pp as the F128 word the VM sees (little-endian).
 fn word(bytes: &[u8]) -> F128 {
     F128::new(
         u64::from_le_bytes(bytes[..8].try_into().unwrap()),
@@ -21,83 +21,133 @@ fn word(bytes: &[u8]) -> F128 {
     )
 }
 
-/// One 32-byte block as a 2-word witness entry.
 fn pair(a: &[u8], b: &[u8]) -> Vec<F128> {
     vec![word(a), word(b)]
 }
 
 #[test]
-fn xmss_verify_in_vm() {
-    let seed = [42u8; 32];
+fn test_aggregate_xmss() {
     let slot = 7u32;
+    // Batch size, overridable: `LEANVM_XMSS_N=16 cargo test … -- --nocapture`.
+    let n = std::env::var("LEANVM_XMSS_N").ok().and_then(|s| s.parse().ok()).unwrap_or(3);
     let message: Message = std::array::from_fn(|i| (i * 5 + 1) as u8);
-    let (sk, pk) = xmss_key_gen(seed, 0, 15).expect("keygen");
-    let sig = xmss_sign(&mut StdRng::seed_from_u64(1), &sk, &message, slot).expect("sign");
-    let pp = pk.public_param;
-    let wots = &sig.wots_signature;
-    let encoding = wots_encode(&message, slot, &pp, &wots.randomness).expect("encoding");
+    let signers: Vec<(XmssPublicKey, XmssSignature)> = (0..n)
+        .map(|s| {
+            let seed = [10 + s as u8; 32];
+            let (sk, pk) = xmss_key_gen(seed, 0, 15).expect("keygen");
+            let sig =
+                xmss_sign(&mut StdRng::seed_from_u64(s as u64), &sk, &message, slot).expect("sign");
+            (pk, sig)
+        })
+        .collect();
 
-    // Native values the program must reproduce.
-    let mut enc_data = [0u8; 2 * STATE_LEN];
-    enc_data[..MESSAGE_LEN].copy_from_slice(&message);
-    enc_data[MESSAGE_LEN..][..RANDOMNESS_LEN].copy_from_slice(&wots.randomness);
-    let digest = md_tweak_hash(&pp, TWEAK_TYPE_ENCODING, 0, slot, &enc_data);
-
-    // The witness streams.
-    let mut program = compile(
-        &parse_file(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/xmss_verify.py")).expect("parse"),
-    );
-    let tweak_pair = |ty: u8, pos: u32| pair(&make_tweak(ty, pos, slot), &pp);
-    program.set_witness("enc_tweak", vec![tweak_pair(TWEAK_TYPE_ENCODING, 0)]);
-    program.set_witness("msg", vec![pair(&message[..16], &message[16..])]);
-    program.set_witness("rand", vec![pair(&enc_data[MESSAGE_LEN..][..16], &enc_data[MESSAGE_LEN + 16..])]);
-    program.set_witness(
-        "digits",
-        encoding.iter().map(|&e| vec![g_pow(e as usize)]).collect(),
-    );
-    program.set_witness(
-        "sig",
-        wots.chain_tips.iter().map(|t| vec![word(t)]).collect(),
-    );
-    // Per chain, the tweak|pp pair of each executed step (positions e_i..6),
-    // in execution order.
-    let mut chain_tweaks = Vec::new();
-    for (i, &e) in encoding.iter().enumerate() {
-        for s in e as usize..CHAIN_LENGTH - 1 {
-            let position = (i * CHAIN_LENGTH + s) as u32;
-            chain_tweaks.push(tweak_pair(TWEAK_TYPE_CHAIN, position));
+    // The 328-word tweak table (word index — see the program header). The
+    // Merkle parent index is `slot >> (level+1)` computed in u64 (a u32 shift
+    // by 32 at the top level would mask, not zero).
+    let mut tweaks: Vec<Tweak> = vec![make_tweak(TWEAK_TYPE_ENCODING, 0, slot)];
+    for i in 0..V {
+        for s in 0..CHAIN_LENGTH - 1 {
+            tweaks.push(make_tweak(TWEAK_TYPE_CHAIN, (i * CHAIN_LENGTH + s) as u32, slot));
         }
     }
-    program.set_witness("chain_tweaks", chain_tweaks);
-    program.set_witness("pk_tweak", vec![tweak_pair(TWEAK_TYPE_WOTS_PK, 0)]);
-    // The Merkle path: per level, the slot bit, the sibling, and the parent
-    // node's tweak|pp pair (level+1, index = slot >> (level+1)).
+    tweaks.push(make_tweak(TWEAK_TYPE_WOTS_PK, 0, slot));
+    for l in 0..LOG_LIFETIME {
+        let parent_index = ((slot as u64) >> (l + 1)) as u32;
+        tweaks.push(make_tweak(TWEAK_TYPE_MERKLE, (l + 1) as u32, parent_index));
+    }
+    assert_eq!(tweaks.len(), 328);
+
+    // The natively computed aggregation hash.
+    let mut data = Vec::new();
+    data.extend_from_slice(&message);
+    for t in &tweaks {
+        data.extend_from_slice(t);
+    }
+    for l in 0..LOG_LIFETIME {
+        let mut w = [0u8; 16];
+        w[0] = ((slot >> l) & 1) as u8;
+        data.extend_from_slice(&w);
+    }
+    for (pk, _) in &signers {
+        data.extend_from_slice(&pk.flatten());
+    }
+    let num_bytes = data.len();
+    assert_eq!(num_bytes, 5792 + 32 * n);
+    let mut iv = [0u8; STATE_LEN];
+    iv[..16].copy_from_slice(&gf128::g_pow_bytes(num_bytes));
+    let state = md_hash(iv, &data);
+    let want = [word(&state[..16]), word(&state[16..])];
+
+    let mut program = compile(
+        &parse_file(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/xmss_aggregate.py"))
+            .expect("parse"),
+    );
+    program.set_witness("n_pks", vec![vec![g_pow(n)]]);
+    program.set_witness("msg", vec![pair(&message[..16], &message[16..])]);
+    program.set_witness("tweaks", tweaks.chunks(2).map(|c| pair(&c[0], &c[1])).collect());
+    let bit_word = |l: usize| F128::new(((slot >> l) & 1) as u64, 0);
     program.set_witness(
         "merkle_bits",
-        (0..LOG_LIFETIME).map(|l| vec![F128::new((slot as u64 >> l) & 1, 0)]).collect(),
+        (0..LOG_LIFETIME / 2).map(|u| vec![bit_word(2 * u), bit_word(2 * u + 1)]).collect(),
     );
     program.set_witness(
-        "siblings",
-        sig.merkle_proof.iter().map(|s| vec![word(s)]).collect(),
+        "pks",
+        signers.iter().map(|(pk, _)| pair(&pk.merkle_root, &pk.public_param)).collect(),
     );
-    program.set_witness(
-        "merkle_tweaks",
-        (0..LOG_LIFETIME)
-            .map(|l| {
-                let parent_index = (slot as u64 >> (l + 1)) as u32;
-                pair(&make_tweak(TWEAK_TYPE_MERKLE, (l + 1) as u32, parent_index), &pp)
-            })
-            .collect(),
-    );
+    // Per-signature streams, signature-major order.
+    let (mut rand_s, mut digits_s, mut chain_starts_s, mut sib_s) = (vec![], vec![], vec![], vec![]);
+    for (pk, sig) in &signers {
+        let wots = &sig.wots_signature;
+        let mut rnd = [0u8; STATE_LEN];
+        rnd[..RANDOMNESS_LEN].copy_from_slice(&wots.randomness);
+        rand_s.push(pair(&rnd[..16], &rnd[16..]));
+        let encoding =
+            wots_encode(&message, slot, &pk.public_param, &wots.randomness).expect("encoding");
+        digits_s.extend(encoding.iter().map(|&e| vec![g_pow(e as usize)]));
+        chain_starts_s.extend(wots.chain_tips.iter().map(|t| vec![word(t)]));
+        sib_s.extend(sig.merkle_proof.iter().map(|s| vec![word(s)]));
+    }
+    program.set_witness("rand", rand_s);
+    program.set_witness("digits", digits_s);
+    program.set_witness("chain_starts", chain_starts_s);
+    program.set_witness("siblings", sib_s);
 
-    let want = [word(&pk.merkle_root), word(&digest)];
+    let t = Instant::now();
     let (proof, stats) = prove(&program, want);
-    // 3 (encoding) + 100 (chains, fixed by the target sum) + 22 (tips) + 32
-    // (Merkle path) — the native verifier's constant 157.
-    assert_eq!(stats.counts[5], 157, "BLAKE3 instruction count");
-    verify(&program, &want, &proof).expect("XMSS verifies in-VM");
+    let t_prove = t.elapsed();
+    let t = Instant::now();
+    verify(&program, &want, &proof).expect("XMSS aggregation verifies in-VM");
+    let t_verify = t.elapsed();
 
-    // A wrong public input (a tampered digest) is rejected.
+    // 181 fixed blocks + per signature: 1 (pk absorb) + 157 (the native
+    // verifier's constant).
+    assert_eq!(stats.counts[5], 181 + 158 * n, "BLAKE3 instruction count");
     let bad = [want[0], want[1] + F128::ONE];
     assert!(verify(&program, &bad, &proof).is_err());
+
+    let proof_bytes = bincode::serialized_size(&proof).expect("proof is serializable");
+    let per = |x: usize| x as f64 / n as f64;
+    let pow = |x: usize| if x == 0 { "     -".into() } else { format!("2^{:.2}", (x as f64).log2()) };
+    println!("\nXMSS aggregation, {n} signatures");
+    println!(
+        "  cycles (VM steps)           : {:>10} = {:>7}   ({:>8.1} / XMSS)",
+        stats.cycles,
+        pow(stats.cycles),
+        per(stats.cycles)
+    );
+    for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3"].iter().zip(&stats.counts) {
+        println!(
+            "    {name:<6} instructions       : {c:>10} = {:>7}   ({:>8.1} / XMSS)",
+            pow(c),
+            per(c)
+        );
+    }
+    println!("  committed witness size      : 2^{:.3}", (stats.committed as f64).log2());
+    println!("  proof size                  : {:.1} KiB", proof_bytes as f64 / 1024.0);
+    println!("  proving (incl. witness gen) : {t_prove:?}");
+    println!("  verifying                   : {t_verify:?}");
+    println!(
+        "  throughput                  : {:.1} XMSS/s",
+        n as f64 / t_prove.as_secs_f64()
+    );
 }
