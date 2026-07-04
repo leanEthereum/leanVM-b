@@ -1,8 +1,7 @@
-//! Field-arithmetic benchmark: compares the three >=128-bit binary fields.
+//! Field-arithmetic benchmark: the current field vs. the >128-bit tower.
 //!
 //!   A. `F128` — GF(2^128), GHASH form (the current field; 128-bit security ceiling)
 //!   B. `F192` — GF((2^64)^3), degree-3 tower over GF(2^64)   (192 bits)
-//!   C. `F160` — GF((2^32)^5), degree-5 extension of GF(2^32) (160 bits)
 //!
 //! Run with:
 //!   cargo run --release --bin field_bench
@@ -18,8 +17,8 @@
 //! - inner product      — sum of a_i * b_i two ways: fully reduced per term vs
 //!   deferred reduction (XOR-accumulate unreduced products, reduce once) —
 //!   the shape of the PCS/sumcheck hot loop.
-//! - per-implementation variants of mul (schoolbook / Karatsuba / Montgomery /
-//!   Barrett / vec2 batch) at both latency and throughput.
+//! - per-implementation variants of mul (schoolbook / Karatsuba / Barrett /
+//!   vec2 batch) at both latency and throughput.
 //! - add, square, inv   — supporting ops.
 //!
 //! Methodology: fixed-seed splitmix64 data, 2 warmup runs, median of 7 timed
@@ -30,7 +29,7 @@ use std::hint::black_box;
 use std::ops::{Add, Mul};
 use std::time::Instant;
 
-use flare::field::{F128, F160, F160Unreduced, F192, F192Unreduced, F256Unreduced};
+use flare::field::{F128, F192, F192Unreduced, F256Unreduced};
 
 // ---------------------------------------------------------------------------
 // Harness
@@ -109,19 +108,6 @@ impl BenchField for F128 {
     }
     fn inv(self) -> Self {
         F128::inv(self)
-    }
-}
-
-impl BenchField for F160 {
-    fn rand(s: &mut u64) -> Self {
-        let (a, b, c) = (splitmix64(s), splitmix64(s), splitmix64(s));
-        F160::new([a as u32, (a >> 32) as u32, b as u32, (b >> 32) as u32, c as u32])
-    }
-    fn zero() -> Self {
-        F160::ZERO
-    }
-    fn inv(self) -> Self {
-        F160::inv(self)
     }
 }
 
@@ -244,24 +230,22 @@ fn inv_bench<T: BenchField>() -> f64 {
 
 struct Row {
     metric: &'static str,
-    v: [f64; 3], // [F128, F160, F192], ns/op
+    v: [f64; 2], // [F128, F192], ns/op
 }
 
 fn print_headline(rows: &[Row]) {
     println!(
-        "\n  {:<26} {:>10} {:>10} {:>10} {:>11} {:>11}",
-        "metric (ns/op)", "F128", "F160", "F192", "F160/F128", "F192/F128"
+        "\n  {:<26} {:>10} {:>10} {:>11}",
+        "metric (ns/op)", "F128", "F192", "F192/F128"
     );
-    println!("  {}", "-".repeat(83));
+    println!("  {}", "-".repeat(60));
     for r in rows {
         println!(
-            "  {:<26} {:>10.2} {:>10.2} {:>10.2} {:>10.2}x {:>10.2}x",
+            "  {:<26} {:>10.2} {:>10.2} {:>10.2}x",
             r.metric,
             r.v[0],
             r.v[1],
-            r.v[2],
-            r.v[1] / r.v[0],
-            r.v[2] / r.v[0]
+            r.v[1] / r.v[0]
         );
     }
 }
@@ -275,9 +259,6 @@ fn preflight() {
     for _ in 0..200 {
         let (a, b) = (F192::rand(&mut s), F192::rand(&mut s));
         assert_eq!(a * b, flare::field::gf2_64x3::software::mul(a, b));
-        assert_eq!(a.square(), a * a);
-        let (a, b) = (F160::rand(&mut s), F160::rand(&mut s));
-        assert_eq!(a * b, flare::field::gf2_32x5::software::mul(a, b));
         assert_eq!(a.square(), a * a);
         let (a, b) = (F128::rand(&mut s), F128::rand(&mut s));
         assert_eq!(a * b, flare::field::gf2_128::software::ghash_mul(a, b));
@@ -301,9 +282,8 @@ fn main() {
     println!("\nfields:");
     println!("  A. F128 = GF(2^128)     GHASH poly, 16 B/elem — mul: 4 PMULL + 2 reduce-PMULL");
     println!("  B. F192 = GF((2^64)^3)  y^3+y+1 over x^64+x^4+x^3+x+1, 24 B/elem — mul: 6 PMULL + 3 reduce-PMULL");
-    println!("  C. F160 = GF((2^32)^5)  y^5+y^2+1 over x^32+x^7+x^3+x^2+1, 20 B/elem — mul: 13 PMULL + scalar folds");
 
-    // -- headline: one row per metric, all three fields.
+    // -- headline: one row per metric, both fields.
     let mut s = 1u64;
     let rows = vec![
         Row {
@@ -311,10 +291,6 @@ fn main() {
             v: [
                 lat_chain(F128::rand(&mut s), {
                     let m = F128::rand(&mut s);
-                    move |a| a * m
-                }),
-                lat_chain(F160::rand(&mut s), {
-                    let m = F160::rand(&mut s);
                     move |a| a * m
                 }),
                 lat_chain(F192::rand(&mut s), {
@@ -327,7 +303,6 @@ fn main() {
             metric: "mul tput (8 chains)",
             v: [
                 tp_chains::<F128>(|a, m| a * m),
-                tp_chains::<F160>(|a, m| a * m),
                 tp_chains::<F192>(|a, m| a * m),
             ],
         },
@@ -335,7 +310,6 @@ fn main() {
             metric: "mul tput (array 1024)",
             v: [
                 tp_array::<F128>(|a, m| a * m),
-                tp_array::<F160>(|a, m| a * m),
                 tp_array::<F192>(|a, m| a * m),
             ],
         },
@@ -343,7 +317,6 @@ fn main() {
             metric: "inner prod, reduced",
             v: [
                 inner_reduced::<F128>(),
-                inner_reduced::<F160>(),
                 inner_reduced::<F192>(),
             ],
         },
@@ -351,7 +324,6 @@ fn main() {
             metric: "inner prod, deferred",
             v: [
                 inner_deferred!(F128, F256Unreduced, 0xA5A5_1001),
-                inner_deferred!(F160, F160Unreduced, 0xA5A5_1002),
                 inner_deferred!(F192, F192Unreduced, 0xA5A5_1003),
             ],
         },
@@ -359,7 +331,6 @@ fn main() {
             metric: "square latency (chain)",
             v: [
                 lat_chain(F128::rand(&mut s), |a| a.square()),
-                lat_chain(F160::rand(&mut s), |a| a.square()),
                 lat_chain(F192::rand(&mut s), |a| a.square()),
             ],
         },
@@ -367,13 +338,12 @@ fn main() {
             metric: "add tput (array 1024)",
             v: [
                 tp_array::<F128>(|a, m| a + m),
-                tp_array::<F160>(|a, m| a + m),
                 tp_array::<F192>(|a, m| a + m),
             ],
         },
         Row {
             metric: "inverse",
-            v: [inv_bench::<F128>(), inv_bench::<F160>(), inv_bench::<F192>()],
+            v: [inv_bench::<F128>(), inv_bench::<F192>()],
         },
     ];
     print_headline(&rows);
@@ -385,7 +355,7 @@ fn main() {
     println!("\nnotes:");
     println!("  - latency = serial dependency chain; tput = independent ops (ILP).");
     println!("  - 'inner prod, deferred' XOR-accumulates unreduced products and reduces once");
-    println!("    (accumulator: F128 32 B, F160 72 B, F192 80 B) — the sumcheck hot-loop shape.");
+    println!("    (accumulator: F128 32 B, F192 80 B) — the sumcheck hot-loop shape.");
     println!("  - inverse is Fermat (square-and-multiply); setup-only, shown for completeness.");
 }
 
@@ -395,7 +365,6 @@ fn main() {
 
 #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
 fn variants() {
-    use flare::field::gf2_32x5::aarch64 as c160;
     use flare::field::gf2_64x3::aarch64 as t192;
     use flare::field::gf2_128::aarch64 as g128;
 
@@ -456,12 +425,6 @@ fn variants() {
         };
         println!("  {:<34} {:>10.2} {:>12.2}", "F128 vec2 batch (per mul)", lat, tput);
     }
-
-    report::<F160>("F160 montgomery-13 (default)", |a, b| unsafe {
-        c160::mul_montgomery(a, b)
-    });
-    report::<F160>("F160 karatsuba-15", |a, b| unsafe { c160::mul_karatsuba(a, b) });
-    report::<F160>("F160 schoolbook-25", |a, b| unsafe { c160::mul_schoolbook(a, b) });
 
     report::<F192>("F192 karatsuba-6 (default)", |a, b| unsafe {
         t192::mul_karatsuba(a, b)
