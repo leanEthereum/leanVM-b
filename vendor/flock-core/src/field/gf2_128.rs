@@ -55,15 +55,30 @@ impl F128 {
         ghash_mul_unreduced(self, rhs)
     }
 
+    /// Squaring. Char-2 cross terms vanish, so only 2 PMULL (lo², hi²) + one
+    /// GHASH reduction — vs 4 PMULL + reduction for a general mul.
+    #[inline]
+    pub fn square(self) -> Self {
+        #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
+        {
+            // SAFETY: aes target feature is enabled at compile time.
+            unsafe { aarch64::ghash_square(self) }
+        }
+        #[cfg(not(all(target_arch = "aarch64", target_feature = "aes")))]
+        {
+            software::ghash_mul(self, self)
+        }
+    }
+
     /// Multiplicative inverse via Fermat: x^{2^128 − 2}.
     /// Used in one-time setup (Lagrange weight computation), not in hot paths.
     pub fn inv(self) -> Self {
         // x^{2^128 - 2} = ∏_{i=1..127} x^{2^i}
         let mut r = Self::ONE;
-        let mut cur = self * self; // x^2
+        let mut cur = self.square(); // x^2
         for _ in 1..128 {
             r *= cur;
-            cur = cur * cur;
+            cur = cur.square();
         }
         r
     }
@@ -452,6 +467,28 @@ pub mod aarch64 {
                     hi: vgetq_lane_u64::<1>(final_hi),
                 },
             ]
+        }
+    }
+
+    /// Squaring: the cross products vanish in char 2, so the 256-bit square is
+    /// just (lo², hi²) — 2 PMULL — followed by the scalar GHASH reduction.
+    ///
+    /// # Safety
+    /// Requires the `aes` target feature (compiles to PMULL); only call where
+    /// `aes` is statically enabled or has been runtime-detected.
+    #[inline]
+    #[target_feature(enable = "aes")]
+    pub unsafe fn ghash_square(a: F128) -> F128 {
+        // SAFETY: function carries the aes target feature.
+        unsafe {
+            let s0 = pmull(a.lo, a.lo);
+            let s1 = pmull(a.hi, a.hi);
+            ghash_reduce(
+                vgetq_lane_u64::<0>(s0),
+                vgetq_lane_u64::<1>(s0),
+                vgetq_lane_u64::<0>(s1),
+                vgetq_lane_u64::<1>(s1),
+            )
         }
     }
 
