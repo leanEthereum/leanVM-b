@@ -65,11 +65,12 @@
 //!
 //! [DP24]: <https://eprint.iacr.org/2024/504>
 
+use crate::bits::transpose_8x8_bits;
 use crate::challenger::Challenger;
 use crate::field::{F64, F128, F128T};
 use serde::{Deserialize, Serialize};
 
-use super::ligerito_k::{build_eq_table_ext, inner_product_base_ext};
+use super::ligerito_k::{build_eq_table_ext, build_eq_table_ext_parallel, inner_product_base_ext};
 use super::pack_k::{LOG_PACKING_K, PACKING_WIDTH_K};
 use super::tensor_algebra_k::{DEGREE_E, TensorAlgebraE, transpose_s_hat};
 
@@ -145,11 +146,27 @@ pub fn claim_check(prefix_weights: &[F128T], s_hat_v: &[F128T]) -> F128T {
 /// Output: `s_hat_v[i] = sum_y bit_i(packed_witness[y]) * suffix_tensor[y]`
 /// for `i in 0..64` (bit i = polynomial-basis coordinate of the u64).
 ///
-/// Mirror of `ring_switch::fold_1b_rows_naive` at 64-bit width: rayon
-/// bit-scan with per-thread length-64 partial accumulators XOR-reduced at
-/// the end. This is the standalone (non-fused) prove path; the
-/// univariate-skip-fused variant is a later optimization.
+/// Dispatch: the method-of-four-Russians kernel
+/// ([`fold_1b_rows_k_mfr_8wide`]) for lengths divisible by 8 (any real
+/// witness), the scalar bit-scan otherwise (tiny test instances). Both
+/// compute the same per-bit XOR-sums, only regrouped, and GF(2^128)
+/// addition is XOR (commutative, associative, exact), so the output and
+/// hence the transcript are byte-identical either way.
 pub fn fold_1b_rows_k(packed_witness: &[F64], suffix_tensor: &[F128T]) -> Vec<F128T> {
+    assert_eq!(packed_witness.len(), suffix_tensor.len());
+    if !packed_witness.is_empty() && packed_witness.len().is_multiple_of(8) {
+        fold_1b_rows_k_mfr_8wide(packed_witness, suffix_tensor)
+    } else {
+        fold_1b_rows_k_scalar(packed_witness, suffix_tensor)
+    }
+}
+
+/// Scalar reference path of [`fold_1b_rows_k`]: mirror of
+/// `ring_switch::fold_1b_rows_naive` at 64-bit width, a rayon bit-scan with
+/// per-thread length-64 partial accumulators XOR-reduced at the end.
+/// Data-dependent cost: `trailing_zeros` + RMW + branch per set bit
+/// (~32/word on a random witness).
+fn fold_1b_rows_k_scalar(packed_witness: &[F64], suffix_tensor: &[F128T]) -> Vec<F128T> {
     use rayon::prelude::*;
     assert_eq!(packed_witness.len(), suffix_tensor.len());
     let n = PACKING_WIDTH_K;
@@ -164,6 +181,81 @@ pub fn fold_1b_rows_k(packed_witness: &[F64], suffix_tensor: &[F128T]) -> Vec<F1
                 let r = bits.trailing_zeros() as usize;
                 acc[r] += w;
                 bits &= bits - 1;
+            }
+            acc
+        })
+        .reduce(zero_acc, |mut a, b| {
+            for (av, bv) in a.iter_mut().zip(b.iter()) {
+                *av += *bv;
+            }
+            a
+        })
+}
+
+/// Build the 16-entry subset-sum lookup table over 4 E elements:
+/// `sums[mask] = sum_{k in 0..4 : bit_k(mask) = 1} elems[k]`. 15 additions
+/// via the standard doubling pattern (mirror of
+/// `ring_switch::subset_sums_4` retyped to the tower).
+#[inline(always)]
+fn subset_sums_4_ext(elems: [F128T; 4]) -> [F128T; 16] {
+    let mut sums = [F128T::ZERO; 16];
+    for (i, &e) in elems.iter().enumerate() {
+        let half = 1 << i;
+        for k in 0..half {
+            sums[half + k] = sums[k] + e;
+        }
+    }
+    sums
+}
+
+/// Method-of-four-Russians [`fold_1b_rows_k`] kernel: the F128 layer's
+/// `fold_1b_rows_1way_mfr_8wide_k4` ported to 8-byte K words (where 8 words
+/// per transpose group cover ALL 64 output bits with the 8 byte positions,
+/// no wasted transpose rows).
+///
+/// Per group of 8 words: build two 16-entry subset-sum tables over the 8
+/// suffix weights (low nibble = words 0..4, high = words 4..8, 30 adds
+/// total); then for each byte position `r_byte` gather that byte of all 8
+/// words into a u64 (word `e` in byte slot `e`) and 8x8 bit-transpose it,
+/// so transposed byte `p`, bit `e` is bit `r_byte*8 + p` of word `e`: an
+/// 8-bit mask over the group for output position `r = r_byte*8 + p`. Each
+/// output position then costs two table lookups + one in-register add + one
+/// accumulator RMW, regardless of bit density: a constant ~12 adds + 8 RMWs
+/// per word vs the scalar path's ~32 data-dependent conditional adds.
+/// Per-thread accumulators via rayon fold/reduce (no shared cache lines).
+fn fold_1b_rows_k_mfr_8wide(packed_witness: &[F64], suffix_tensor: &[F128T]) -> Vec<F128T> {
+    use rayon::prelude::*;
+    let n = PACKING_WIDTH_K;
+    assert_eq!(packed_witness.len(), suffix_tensor.len());
+    assert!(packed_witness.len().is_multiple_of(8));
+    let zero_acc = || vec![F128T::ZERO; n];
+
+    packed_witness
+        .par_chunks(8)
+        .zip(suffix_tensor.par_chunks(8))
+        .fold(zero_acc, |mut acc, (m_chunk, t_chunk)| {
+            let lo_tbl = subset_sums_4_ext([t_chunk[0], t_chunk[1], t_chunk[2], t_chunk[3]]);
+            let hi_tbl = subset_sums_4_ext([t_chunk[4], t_chunk[5], t_chunk[6], t_chunk[7]]);
+
+            let mut m_bytes = [[0u8; 8]; 8];
+            for (e, slot) in m_bytes.iter_mut().enumerate() {
+                *slot = m_chunk[e].0.to_le_bytes();
+            }
+
+            for r_byte in 0..8 {
+                let combined: u64 = (m_bytes[0][r_byte] as u64)
+                    | ((m_bytes[1][r_byte] as u64) << 8)
+                    | ((m_bytes[2][r_byte] as u64) << 16)
+                    | ((m_bytes[3][r_byte] as u64) << 24)
+                    | ((m_bytes[4][r_byte] as u64) << 32)
+                    | ((m_bytes[5][r_byte] as u64) << 40)
+                    | ((m_bytes[6][r_byte] as u64) << 48)
+                    | ((m_bytes[7][r_byte] as u64) << 56);
+                let tb = transpose_8x8_bits(combined).to_le_bytes();
+                let base = r_byte * 8;
+                for (p, &mask) in tb.iter().enumerate() {
+                    acc[base + p] += lo_tbl[(mask & 0x0F) as usize] + hi_tbl[(mask >> 4) as usize];
+                }
             }
             acc
         })
@@ -362,10 +454,20 @@ pub fn prove<Ch: Challenger>(
 
     challenger.observe_label(b"flock-ring-switch-k-v0");
 
-    let suffix_tensor = build_eq_table_ext(suffix_point);
+    // Optional phase timing, answering to the same env var as the Ligerito-K
+    // tracing (one env lookup per prove, no work when unset).
+    let trace = std::env::var_os("LIG_K_TRACE").is_some();
+    let t = std::time::Instant::now();
+    // Parallel eq build: byte-identical to `build_eq_table_ext` (pinned by
+    // ligerito_k's eq_table_parallel_and_seeded_match_serial), and the
+    // dominant prove cost at real q_pkd sizes when built serially.
+    let suffix_tensor = build_eq_table_ext_parallel(suffix_point);
+    let t_tensor = t.elapsed();
 
     // Compute and send s_hat_v.
+    let t = std::time::Instant::now();
     let s_hat_v = fold_1b_rows_k(packed_witness, &suffix_tensor);
+    let t_fold = t.elapsed();
     assert_eq!(
         claim_check(prefix_weights, &s_hat_v),
         claim,
@@ -382,7 +484,16 @@ pub fn prove<Ch: Challenger>(
     let sumcheck_claim = inner_product_base_ext(&s_hat_u, &eq_r_dprime);
 
     // Transparent weight vector rs_eq_ind = Phi(eq(r_suffix, .)).
+    let t = std::time::Instant::now();
     let rs_eq_ind = fold_ext_elems(&suffix_tensor, &eq_r_dprime);
+    if trace {
+        eprintln!(
+            "[rs-k-prove] suffix tensor: {:6.2} ms, fold_1b_rows: {:6.2} ms, rs_eq_ind fold: {:6.2} ms",
+            t_tensor.as_secs_f64() * 1e3,
+            t_fold.as_secs_f64() * 1e3,
+            t.elapsed().as_secs_f64() * 1e3,
+        );
+    }
 
     (
         RingSwitchProofK { s_hat_v },
@@ -632,6 +743,33 @@ mod tests {
             assert_eq!(s_hat_v[i], expected, "bit column {i}");
         }
         assert_eq!(s_hat_v, s_hat_v_reference(&packed, &suffix_point));
+    }
+
+    /// The MFR kernel must equal the scalar bit-scan (same XOR-sums, only
+    /// regrouped) on random data, and the dispatcher must route both regimes
+    /// correctly (multiple-of-8 lengths to MFR, smaller powers of two to the
+    /// scalar path).
+    #[test]
+    fn fold_1b_rows_mfr_matches_scalar() {
+        let mut s = 31u64;
+        for log_len in [3usize, 4, 7, 11] {
+            let len = 1usize << log_len;
+            let packed: Vec<F64> = (0..len).map(|_| F64(splitmix64(&mut s))).collect();
+            let tensor: Vec<F128T> = (0..len).map(|_| rand_ext(&mut s)).collect();
+            let mfr = fold_1b_rows_k_mfr_8wide(&packed, &tensor);
+            let scalar = fold_1b_rows_k_scalar(&packed, &tensor);
+            assert_eq!(mfr, scalar, "MFR/scalar split at len={len}");
+            assert_eq!(fold_1b_rows_k(&packed, &tensor), mfr, "dispatcher at len={len}");
+        }
+        for len in [1usize, 2, 4] {
+            let packed: Vec<F64> = (0..len).map(|_| F64(splitmix64(&mut s))).collect();
+            let tensor: Vec<F128T> = (0..len).map(|_| rand_ext(&mut s)).collect();
+            assert_eq!(
+                fold_1b_rows_k(&packed, &tensor),
+                fold_1b_rows_k_scalar(&packed, &tensor),
+                "scalar fallback at len={len}"
+            );
+        }
     }
 
     /// Claim-check completeness (a plain point claim verifies) and soundness

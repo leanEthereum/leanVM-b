@@ -224,6 +224,14 @@ fn n_committed(blocks: &[Block]) -> usize {
 
 /// Prover-side decomposition: reads the real columns, writing each committed value
 /// onto the stream and recording the matching claim (block/coord order).
+///
+/// The column MLE evaluations run in a parallel first pass: within one
+/// `decompose_formula` call no challenge is sampled between claims (`zeta`,
+/// `alpha`, `gamma` are fixed arguments and each claim's point is
+/// `zeta[..kappa]` of its block), so the values are independent of the
+/// transcript and only their `add_scalar` ORDER matters. The second pass
+/// replays them through the transcript in the original block/coord order,
+/// keeping the stream byte-identical to the serial form.
 fn decompose_prove(
     blocks: &[Block],
     lay: &Layout,
@@ -233,9 +241,30 @@ fn decompose_prove(
     gamma: F128T,
     ps: &mut ProverState,
 ) -> Vec<ColumnClaim> {
+    // Pass 1: enumerate the committed coords exactly as `decompose_formula`
+    // visits them (blocks in order, coords in order, Col/GCol only; the same
+    // filter as `n_committed`), then evaluate all column MLEs in parallel.
+    let mut jobs: Vec<(usize, usize)> = Vec::new();
+    for blk in blocks {
+        for c in &blk.coords {
+            if let Coord::Col(i) | Coord::GCol(i, _) = c {
+                jobs.push((*i, blk.kappa));
+            }
+        }
+    }
+    let vals: Vec<F128T> = jobs
+        .par_iter()
+        .map(|&(col, kappa)| mle_eval(&cols[col], &zeta[..kappa]))
+        .collect();
+
+    // Pass 2: replay in the original order.
+    let mut vals_iter = vals.iter().copied();
     let mut claims = Vec::new();
     decompose_formula(blocks, lay, zeta, alpha, gamma, |col, zeta_lo| {
-        let v = mle_eval(&cols[col], zeta_lo);
+        let v = vals_iter
+            .next()
+            .expect("job enumeration matches decompose_formula's col_val order");
+        debug_assert_eq!(v, mle_eval(&cols[col], zeta_lo), "job/coord order drift");
         ps.add_scalar(v);
         claims.push(ColumnClaim {
             col,
