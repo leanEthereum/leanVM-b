@@ -12,7 +12,7 @@ All numbers: XMSS aggregation, N = 1024, `RAYON_NUM_THREADS=10`, M-series.
 | throughput | 229.6 XMSS/s | ~106 XMSS/s | **210.5 XMSS/s** |
 | proof size | 778.3 KiB | 666.0 KiB | **666.0 KiB** |
 | verification | 7.6 ms | 11.4 ms | ~10 ms |
-| committed bits | 2^33.96 | 2^33.23 | **2^33.23** |
+| committed data | 1.95 GiB | 1.17 GiB | **1.17 GiB** |
 
 The program does less work (7% fewer VM cycles), commits 40% fewer bits, and
 produces a 14% smaller proof. Most of what looked like a design regression
@@ -40,8 +40,14 @@ query-opening bytes all shrank. The proof-size drop is this effect.
 
 ## The field question: is GHASH F128 fundamentally faster than the tower?
 
-TLDR: no, but a 1.8x per-multiply residue remains on E x E after our best
-rewrite, and it matters only in the phases that are pure E x E (GKR).
+TLDR: per multiply, today, yes: GHASH E x E runs 0.70 ns/op vs the tower's
+1.28, so 1.8x faster, and that is a real gap. What is NOT fundamental is
+its origin: the multiply counts are equal, the difference is reduction
+structure and two decades of AES-GCM tuning. Part of the 1.8x is still
+closable (deferred-reduction accumulators); a residual ~1.2-1.4x is
+probably inherent to the two-limb tower shape. The design's actual answer
+is different: make E x E RARE. K x K and K x E dominate the pipeline, and
+pure E x E survives only in GKR, about 19% of the prove.
 
 | ns/op, lat / tput | day one | after rewrite | GHASH ref |
 |---|---|---|---|
@@ -49,13 +55,9 @@ rewrite, and it matters only in the phases that are pure E x E (GKR).
 | K x E (`mul_base`) | 6.57 / 1.16 | 5.14 / **0.70** | = one GHASH mul |
 | K x K | 4.85 / 0.64 | 4.82 / **0.50** | |
 
-- PMULL counts favor the tower (5 vs 5-6); the day-one gap was overhead
-  (shift-XOR folds, GPR crossings), now fixed with PMULL folds and fully
-  vector-resident kernels.
-- The residue is structural granularity: a two-limb tower reduces at 64-bit
-  boundaries (three sub-folds per product, one behind the y^2 = y + x^61
-  multiply) where GHASH folds a 256-bit product once by one sparse
-  constant. Plus twenty years of AES-GCM tuning on GHASH's side.
+- The reduction structure: a two-limb tower folds at 64-bit boundaries
+  (three sub-folds per product, one behind the y^2 = y + x^61 multiply);
+  GHASH folds its 256-bit product once by one sparse constant.
 - mul_base ended at exact per-op parity with a full GHASH multiply, so the
   mixed-product phases cost the same per element as the old design's full
   multiplies, over more elements.
@@ -100,21 +102,19 @@ eq-weight vector is one 16-byte E element per committed word whatever the
 word width, so the 128-bit design amortizes each weight over 128 bits, ours
 over 64.
 
-| witness bits | GHASH F128 | F64 commit / E open | ratio |
+| witness | GHASH F128 | F64 commit / E open | ratio |
 |---|---|---|---|
-| 2^24 (2 MiB) | 3.4 Gbit/s | 3.0 Gbit/s | 0.88x |
-| 2^26 (8 MiB) | 7.6 | 6.5 | 0.86x |
-| 2^28 (32 MiB) | 13.7 | 11.1 | 0.81x |
-| 2^30 (128 MiB) | 18.0 | 14.3 | 0.79x |
+| 2 MiB | 0.40 GiB/s | 0.35 GiB/s | 0.88x |
+| 8 MiB | 0.88 | 0.75 | 0.86x |
+| 32 MiB | 1.60 | 1.29 | 0.81x |
+| 128 MiB | 2.09 | 1.66 | 0.79x |
 
-Units: gigaBITS per second; 18 Gbit/s is 2.2 GiB/s of witness. That rate is
-real and mundane: at 2^30 the commit (39 ms) is a bandwidth-bound NTT over
-the 256 MiB rate-1/2 codeword (~18 ms) plus multi-threaded BLAKE3 Merkle
-over the same bytes (~21 ms, about 1.2 GB/s per core across 10 threads),
-and the open (21 ms) is one folding pass over the 128 MiB witness plus
-geometrically shrinking levels and a few hundred query paths. Throughput
-grows with size because fixed costs amortize; it would plateau once the
-codeword outgrows the last-level cache's streaming advantage.
+The 2.09 GiB/s at 128 MiB is real and mundane: the commit (39 ms) is a
+bandwidth-bound NTT over the 256 MiB rate-1/2 codeword (~18 ms) plus
+multi-threaded BLAKE3 Merkle over the same bytes (~21 ms, about 1.2 GiB/s
+per core across 10 threads), and the open (21 ms) is one folding pass over
+the 128 MiB witness plus geometrically shrinking levels and a few hundred
+query paths. Throughput grows with size because fixed costs amortize.
 
 Per machine WORD (the VM view: same data, half the bytes): 1.2x to 1.34x
 FASTER, which is where the smaller proofs come from.

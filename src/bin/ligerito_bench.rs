@@ -141,12 +141,12 @@ fn main() {
     );
     println!(
         "{:>10} | {:>9} {:>11} | {:>9} {:>11} |",
-        "bits", "sec", "Gbit/s", "sec", "Gbit/s"
+        "", "sec", "GiB/s", "sec", "GiB/s"
     );
     println!("{}", "-".repeat(72));
 
     for log_bits in [24usize, 26, 28, 30] {
-        let bits = (1u64 << log_bits) as f64;
+        let gib = (1u64 << log_bits) as f64 / 8.0 / (1u64 << 30) as f64;
 
         // Current: 2^(log_bits-7) F128 elements.
         let t128 = run_f128(log_bits - 7, log_bits == 24);
@@ -158,11 +158,11 @@ fn main() {
 
         println!(
             "{:>10} | {:>9.3} {:>11.3} | {:>9.3} {:>11.3} | {:>7.2}x",
-            format!("2^{log_bits}"),
+            format!("{} MiB", (1u64 << log_bits) / 8 / (1 << 20)),
             total128,
-            bits / total128 / 1e9,
+            gib / total128,
             totalk,
-            bits / totalk / 1e9,
+            gib / totalk,
             total128 / totalk,
         );
         println!(
