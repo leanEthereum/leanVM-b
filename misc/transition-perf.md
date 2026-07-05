@@ -102,10 +102,19 @@ over 64.
 
 | witness bits | GHASH F128 | F64 commit / E open | ratio |
 |---|---|---|---|
-| 2^24 | 3.4 Gbit/s | 3.0 Gbit/s | 0.88x |
-| 2^26 | 7.6 | 6.5 | 0.86x |
-| 2^28 | 13.7 | 11.1 | 0.81x |
-| 2^30 | 18.0 | 14.3 | 0.79x |
+| 2^24 (2 MiB) | 3.4 Gbit/s | 3.0 Gbit/s | 0.88x |
+| 2^26 (8 MiB) | 7.6 | 6.5 | 0.86x |
+| 2^28 (32 MiB) | 13.7 | 11.1 | 0.81x |
+| 2^30 (128 MiB) | 18.0 | 14.3 | 0.79x |
+
+Units: gigaBITS per second; 18 Gbit/s is 2.2 GiB/s of witness. That rate is
+real and mundane: at 2^30 the commit (39 ms) is a bandwidth-bound NTT over
+the 256 MiB rate-1/2 codeword (~18 ms) plus multi-threaded BLAKE3 Merkle
+over the same bytes (~21 ms, about 1.2 GB/s per core across 10 threads),
+and the open (21 ms) is one folding pass over the 128 MiB witness plus
+geometrically shrinking levels and a few hundred query paths. Throughput
+grows with size because fixed costs amortize; it would plateau once the
+codeword outgrows the last-level cache's streaming advantage.
 
 Per machine WORD (the VM view: same data, half the bytes): 1.2x to 1.34x
 FASTER, which is where the smaller proofs come from.
