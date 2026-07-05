@@ -836,6 +836,177 @@ pub(crate) fn induce_sumcheck_poly_ext(
     (basis_poly, enforced_sum)
 }
 
+/// Compute just the `enforced_sum` half of the L0 induce (mirror of
+/// `ligerito::induce_sumcheck_enforced_sum`, F64 rows via `mul_base`):
+///   `enforced_sum = Σ_i eq(α, i) · <opened_rows[i], eq(v_challenges, ·)>`
+/// Cheap: O(num_queries x num_interleaved). The succinct verifier needs this
+/// at level intro time (before the residual challenges are known).
+pub(crate) fn induce_sumcheck_enforced_sum_base(
+    opened_rows: &[Vec<F64>],
+    v_challenges: &[F128T],
+    queries: &[usize],
+    alpha: &[F128T],
+) -> F128T {
+    assert_eq!(opened_rows.len(), queries.len());
+    let eq = build_eq_table_ext(v_challenges);
+    let n_queries = queries.len();
+    let alpha_weights: Vec<F128T> = if n_queries == 0 {
+        Vec::new()
+    } else {
+        build_eq_table_ext(alpha)
+            .into_iter()
+            .take(n_queries)
+            .collect()
+    };
+    let mut sum = F128T::ZERO;
+    for (i, row) in opened_rows.iter().enumerate() {
+        debug_assert_eq!(row.len(), eq.len());
+        let dot: F128T = row
+            .iter()
+            .zip(eq.iter())
+            .map(|(&r, &e)| e.mul_base(r))
+            .fold(F128T::ZERO, |a, v| a + v);
+        sum += alpha_weights[i] * dot;
+    }
+    sum
+}
+
+/// Deeper-level counterpart of [`induce_sumcheck_enforced_sum_base`]:
+/// E-valued opened rows, pure-E row dot.
+pub(crate) fn induce_sumcheck_enforced_sum_ext(
+    opened_rows: &[Vec<F128T>],
+    v_challenges: &[F128T],
+    queries: &[usize],
+    alpha: &[F128T],
+) -> F128T {
+    assert_eq!(opened_rows.len(), queries.len());
+    let eq = build_eq_table_ext(v_challenges);
+    let n_queries = queries.len();
+    let alpha_weights: Vec<F128T> = if n_queries == 0 {
+        Vec::new()
+    } else {
+        build_eq_table_ext(alpha)
+            .into_iter()
+            .take(n_queries)
+            .collect()
+    };
+    let mut sum = F128T::ZERO;
+    for (i, row) in opened_rows.iter().enumerate() {
+        debug_assert_eq!(row.len(), eq.len());
+        let dot: F128T = row
+            .iter()
+            .zip(eq.iter())
+            .map(|(&r, &e)| r * e)
+            .fold(F128T::ZERO, |a, v| a + v);
+        sum += alpha_weights[i] * dot;
+    }
+    sum
+}
+
+/// SUCCINCT evaluator for the induced basis poly's MLE at residual points
+/// (mirror of `ligerito::induce_sumcheck_evaluate_at_residual`). Replaces the
+/// dense basis + `partial_eval_lsb` in the verifier via the closed form:
+///   `MLE(basis_poly)(p) = Σ_i eq(α, i) · Π_k (1 + p[k] · (1 + W-hat_k(q_i)))`
+/// where `q_i = F64(queries[i])` and the K-valued `W-hat_k(q_i)` lifts into E
+/// through the char-2 factor. `ris_for_basis` is the fixed residual prefix
+/// (length `log_msg_cols - yr_log_n`); returns evaluations at the `2^yr_log_n`
+/// points `ris_for_basis ++ y_bits`.
+pub(crate) fn induce_sumcheck_evaluate_at_residual_k(
+    log_msg_cols: usize,
+    sks_vks: &[F64],
+    queries: &[usize],
+    alpha: &[F128T],
+    ris_for_basis: &[F128T],
+    yr_log_n: usize,
+) -> Vec<F128T> {
+    use rayon::prelude::*;
+    assert_eq!(ris_for_basis.len() + yr_log_n, log_msg_cols);
+    let n_queries = queries.len();
+    let yr_len = 1usize << yr_log_n;
+
+    let alpha_pows: Vec<F128T> = if n_queries == 0 {
+        Vec::new()
+    } else {
+        let table = build_eq_table_ext(alpha);
+        debug_assert!(table.len() >= n_queries);
+        table.into_iter().take(n_queries).collect()
+    };
+
+    let inv_sks_vks: Vec<F64> = sks_vks
+        .iter()
+        .map(|&v| if v.is_zero() { F64::ZERO } else { v.inv() })
+        .collect();
+
+    let prefix_len = ris_for_basis.len();
+
+    // Per-query precomputation: W-hat_k(q) for all k over K, split into a
+    // fixed prefix product (E scalar) and the suffix W-hat values varied per y.
+    struct PerQuery {
+        prefix_prod: F128T,
+        suffix_w: Vec<F64>, // length = yr_log_n
+    }
+    let compute_query = |&q: &usize| -> PerQuery {
+        let q_field = F64(q as u64);
+        let mut sks_at_x = Vec::with_capacity(log_msg_cols.max(1));
+        if log_msg_cols > 0 {
+            sks_at_x.push(q_field);
+            for k in 1..log_msg_cols {
+                sks_at_x.push(next_s_k(sks_at_x[k - 1], sks_vks[k - 1]));
+            }
+            for k in 0..log_msg_cols {
+                sks_at_x[k] *= inv_sks_vks[k];
+            }
+        }
+        // Prefix product: Π_{k<prefix_len} (1 + ris[k] · (1 + W-hat_k(q)))
+        let mut prefix_prod = F128T::ONE;
+        for k in 0..prefix_len {
+            prefix_prod *=
+                F128T::ONE + ris_for_basis[k] * (F128T::ONE + F128T::from(sks_at_x[k]));
+        }
+        let suffix_w = if log_msg_cols > prefix_len {
+            sks_at_x[prefix_len..].to_vec()
+        } else {
+            Vec::new()
+        };
+        PerQuery {
+            prefix_prod,
+            suffix_w,
+        }
+    };
+    // Once per recursion level over verify-sized inputs; stay serial below
+    // the rayon dispatch crossover (mirror of the original's PAR_FLOOR).
+    const PAR_FLOOR: usize = 1024;
+    let per_query: Vec<PerQuery> = if n_queries > PAR_FLOOR {
+        queries.par_iter().map(compute_query).collect()
+    } else {
+        queries.iter().map(compute_query).collect()
+    };
+
+    // For each residual position y, accumulate the suffix product per query.
+    let compute_y = |y: usize| -> F128T {
+        let mut sum = F128T::ZERO;
+        for i in 0..n_queries {
+            let pq = &per_query[i];
+            let mut suffix_prod = F128T::ONE;
+            for j in 0..yr_log_n {
+                let p_j = if (y >> j) & 1 == 1 {
+                    F128T::ONE
+                } else {
+                    F128T::ZERO
+                };
+                suffix_prod *= F128T::ONE + p_j * (F128T::ONE + F128T::from(pq.suffix_w[j]));
+            }
+            sum += alpha_pows[i] * pq.prefix_prod * suffix_prod;
+        }
+        sum
+    };
+    if yr_len > PAR_FLOOR {
+        (0..yr_len).into_par_iter().map(compute_y).collect()
+    } else {
+        (0..yr_len).map(compute_y).collect()
+    }
+}
+
 // ===================================================================
 // Transposed-NTT fast path for basis induction (mirror of the original)
 // ===================================================================
@@ -2084,8 +2255,9 @@ fn verify_level_opens_ext(
 /// Dense verifier for [`recursive_prover_with_basis_k`] (mirror of
 /// `ligerito::recursive_verifier_with_basis`): materializes `b_initial` and
 /// every induced basis poly, replays the transcript, and checks the residual
-/// inner product against the running sum-claim. The succinct verifier is not
-/// ported; this one exists for correctness testing and benchmarking.
+/// inner product against the running sum-claim. Production callers should
+/// prefer [`recursive_verifier_with_basis_succinct_k`]; this one exists for
+/// correctness testing (dense/succinct agreement) and benchmarking.
 pub fn recursive_verifier_with_basis_k<Ch: Challenger>(
     config: &VerifierConfig,
     proof: &LigeritoProofK,
@@ -2445,6 +2617,402 @@ pub fn recursive_verifier_with_basis_k<Ch: Challenger>(
 }
 
 // ===================================================================
+// Succinct verifier
+// ===================================================================
+
+/// Succinct verifier for [`recursive_prover_with_basis_k`] (mirror of
+/// `ligerito::recursive_verifier_with_basis_succinct`): instead of a dense
+/// `b_initial` (2^log_n E-values) it takes a closure `eval_b_residual` that
+/// evaluates b's multilinear extension at the residual. The closure is called
+/// ONCE at the final check with the full `ris` and `yr_log_n`, and must
+/// return the `2^yr_log_n` values `eval_b(ris ++ y_bits)` for
+/// `y in [0, 2^yr_log_n)` (batching lets callers amortize prefix work).
+///
+/// Per-level induced bases are never materialized: intro time uses the cheap
+/// enforced-sum recomputation, and the residual uses the closed-form
+/// [`induce_sumcheck_evaluate_at_residual_k`]. `log_n` is the committed
+/// K-witness log size (b's logical dimension). Transcript replay is
+/// byte-identical to the dense verifier (OOD elided; config must take zero
+/// OOD samples, as asserted by the prover).
+pub fn recursive_verifier_with_basis_succinct_k<Ch, F>(
+    config: &VerifierConfig,
+    proof: &LigeritoProofK,
+    log_n: usize,
+    target: F128T,
+    expected_initial_root: &Hash,
+    eval_b_residual: F,
+    challenger: &mut Ch,
+) -> bool
+where
+    Ch: Challenger,
+    // Called ONCE at the residual check with the full ris and yr_log_n.
+    F: Fn(&[F128T], usize) -> Vec<F128T>,
+{
+    let initial_k = config.initial_k;
+    let r = config.recursive_steps;
+    if r < 1 || config.recursive_ks.len() != r || config.log_inv_rates.len() != r + 1 {
+        return false;
+    }
+    // OOD is not ported; reject configs that would require it.
+    if config.ood_samples.iter().any(|&s| s != 0) {
+        return false;
+    }
+
+    // The L0 root is the caller's statement (not proof data): absorb it
+    // exactly where the prover absorbed its own.
+    challenger.observe_label(b"flock-ligerito-k-basis-v0");
+    observe_ext(challenger, target);
+    challenger.observe_bytes(expected_initial_root);
+
+    let log_inv_rate_0 = config.log_inv_rates[0];
+    let log_msg_cols_0 = log_n - initial_k;
+    let block_len_0 = 1usize << (log_msg_cols_0 + log_inv_rate_0);
+    let num_interleaved_0 = 1usize << initial_k;
+
+    let mut t_r = target;
+    let mut tx_idx = 0usize;
+    if tx_idx >= proof.sumcheck_transcript.len() {
+        return false;
+    }
+    let start_msg = proof.sumcheck_transcript[tx_idx];
+    tx_idx += 1;
+    observe_ext(challenger, start_msg.u_0);
+    observe_ext(challenger, start_msg.u_2);
+    let mut running_quad = RoundQuadK::from_msg(start_msg, t_r);
+
+    let fold_bits =
+        |lvl: usize| -> u32 { config.fold_grinding_bits.get(lvl).copied().unwrap_or(0) as u32 };
+    let mut fold_nonce_idx = 0usize;
+
+    let mut r_lane_fold = Vec::with_capacity(initial_k);
+    for j in 0..initial_k {
+        // Fold-challenge PoW mirror (L0's lane folds), tapered per round.
+        let bits = fold_bits(0).saturating_sub(j as u32);
+        if bits > 0 {
+            if fold_nonce_idx >= proof.fold_grinding_nonces.len() {
+                return false;
+            }
+            if !challenger.verify_pow(proof.fold_grinding_nonces[fold_nonce_idx], bits) {
+                return false;
+            }
+            fold_nonce_idx += 1;
+        }
+        let ri = sample_ext(challenger);
+        r_lane_fold.push(ri);
+        t_r = running_quad.eval(ri);
+        if tx_idx >= proof.sumcheck_transcript.len() {
+            return false;
+        }
+        let msg = proof.sumcheck_transcript[tx_idx];
+        tx_idx += 1;
+        observe_ext(challenger, msg.u_0);
+        observe_ext(challenger, msg.u_2);
+        running_quad = RoundQuadK::from_msg(msg, t_r);
+    }
+
+    if proof.recursive_roots.is_empty() {
+        return false;
+    }
+    let root_1 = proof.recursive_roots[0];
+    challenger.observe_bytes(&root_1);
+
+    // (OOD binding mirror elided: zero samples enforced above.)
+
+    // PoW grinding check for L0's query phase.
+    let mut nonce_idx = 0usize;
+    if nonce_idx >= proof.grinding_nonces.len() {
+        return false;
+    }
+    if !challenger.verify_pow(
+        proof.grinding_nonces[nonce_idx],
+        config.grinding_bits[0] as u32,
+    ) {
+        return false;
+    }
+    nonce_idx += 1;
+
+    let num_queries_0 = config.queries[0];
+    let queries_0 = sample_distinct_queries(challenger, block_len_0, num_queries_0);
+    let alpha_0 = sample_ext_vec(challenger, ceil_log2(num_queries_0));
+    if !verify_level_opens_base(
+        expected_initial_root,
+        block_len_0,
+        &queries_0,
+        &proof.initial_proof.opened_rows,
+        num_interleaved_0,
+        &proof.initial_proof.merkle_proof,
+    ) {
+        return false;
+    }
+
+    // Compute enforced_sum cheaply at intro time. The induced basis poly's
+    // residual evaluations are deferred to the final closed-form check.
+    let n1 = log_n - initial_k;
+    let enforced_sum_0 = induce_sumcheck_enforced_sum_base(
+        &proof.initial_proof.opened_rows,
+        &r_lane_fold,
+        &queries_0,
+        &alpha_0,
+    );
+
+    if tx_idx >= proof.sumcheck_transcript.len() {
+        return false;
+    }
+    let intro_msg_0 = proof.sumcheck_transcript[tx_idx];
+    tx_idx += 1;
+    observe_ext(challenger, intro_msg_0.u_0);
+    observe_ext(challenger, intro_msg_0.u_2);
+    let intro_quad_0 = RoundQuadK::from_msg(intro_msg_0, enforced_sum_0);
+    let beta_0 = sample_ext(challenger);
+    running_quad = RoundQuadK::fold(&running_quad, &intro_quad_0, beta_0);
+    t_r += beta_0 * enforced_sum_0;
+
+    // Per-level induced-basis evaluation context: small (no dense vec).
+    struct LevelCtx {
+        log_msg_cols: usize,
+        queries: Vec<usize>,
+        alpha: Vec<F128T>, // ceil(log2 Q) elements (eq-tensor combination)
+        ris_start: usize,
+        beta: F128T,
+    }
+    let mut level_ctxs: Vec<LevelCtx> = vec![LevelCtx {
+        log_msg_cols: n1,
+        queries: queries_0.clone(),
+        alpha: alpha_0,
+        ris_start: initial_k,
+        beta: beta_0,
+    }];
+    let mut ris: Vec<F128T> = r_lane_fold.clone();
+
+    let mut prev_root = root_1;
+    let mut prev_log_num_interleaved = config.recursive_ks[0];
+    let mut prev_log_msg_cols = n1 - prev_log_num_interleaved;
+    let mut prev_log_inv_rate = config.log_inv_rates[1];
+    let mut next_root_idx = 1usize;
+    let mut recursive_proof_idx = 0usize;
+    let mut n_current = n1;
+
+    for i in 0..r {
+        let k_i = config.recursive_ks[i];
+        if n_current < k_i {
+            return false;
+        }
+        let mut level_rs = Vec::with_capacity(k_i);
+        for j in 0..k_i {
+            // Fold-challenge PoW mirror (level i+1's folds), tapered.
+            let bits = fold_bits(i + 1).saturating_sub(j as u32);
+            if bits > 0 {
+                if fold_nonce_idx >= proof.fold_grinding_nonces.len() {
+                    return false;
+                }
+                if !challenger.verify_pow(proof.fold_grinding_nonces[fold_nonce_idx], bits) {
+                    return false;
+                }
+                fold_nonce_idx += 1;
+            }
+            let ri = sample_ext(challenger);
+            ris.push(ri);
+            level_rs.push(ri);
+            t_r = running_quad.eval(ri);
+            if tx_idx >= proof.sumcheck_transcript.len() {
+                return false;
+            }
+            let msg = proof.sumcheck_transcript[tx_idx];
+            tx_idx += 1;
+            observe_ext(challenger, msg.u_0);
+            observe_ext(challenger, msg.u_2);
+            running_quad = RoundQuadK::from_msg(msg, t_r);
+        }
+        n_current -= k_i;
+
+        if i == r - 1 {
+            if tx_idx != proof.sumcheck_transcript.len() {
+                return false;
+            }
+            if fold_nonce_idx != proof.fold_grinding_nonces.len() {
+                return false;
+            }
+            let yr = &proof.final_proof.yr;
+            if yr.len() != 1 << n_current {
+                return false;
+            }
+            for v in yr {
+                observe_ext(challenger, *v);
+            }
+            // PoW grinding check for the last level's query phase.
+            if nonce_idx >= proof.grinding_nonces.len() {
+                return false;
+            }
+            if !challenger.verify_pow(
+                proof.grinding_nonces[nonce_idx],
+                config.grinding_bits[i + 1] as u32,
+            ) {
+                return false;
+            }
+            // (last nonce: nonce_idx is not advanced past it)
+
+            let prev_block_len = 1usize << (prev_log_msg_cols + prev_log_inv_rate);
+            let prev_num_interleaved = 1usize << prev_log_num_interleaved;
+            let num_queries_last = config.queries[i + 1];
+            let queries_last =
+                sample_distinct_queries(challenger, prev_block_len, num_queries_last);
+            // Basis-induction challenge for the LAST commitment, sampled after
+            // `yr` was observed and the queries are fixed (mirror of the
+            // dense verifier, so both stay in lockstep).
+            let alpha_last = sample_ext_vec(challenger, ceil_log2(num_queries_last));
+            if !verify_level_opens_ext(
+                &prev_root,
+                prev_block_len,
+                &queries_last,
+                &proof.final_proof.opened_rows,
+                prev_num_interleaved,
+                &proof.final_proof.merkle_proof,
+            ) {
+                return false;
+            }
+
+            // Bind the LAST commitment to `yr` (same tie as the dense
+            // verifier): its induced basis is already at the residual
+            // dimension (zero further folds), so it joins `combined` below
+            // via this LevelCtx.
+            let enforced_sum_last = induce_sumcheck_enforced_sum_ext(
+                &proof.final_proof.opened_rows,
+                &level_rs,
+                &queries_last,
+                &alpha_last,
+            );
+            let beta_last = sample_ext(challenger);
+            t_r += beta_last * enforced_sum_last;
+            level_ctxs.push(LevelCtx {
+                log_msg_cols: n_current,
+                queries: queries_last.clone(),
+                alpha: alpha_last,
+                ris_start: ris.len(),
+                beta: beta_last,
+            });
+
+            // Succinct residual check: per-level induced basis evaluations
+            // via closed-form (no dense materialization).
+            let yr_len = yr.len();
+            let yr_log_n = n_current;
+
+            let induced_residuals: Vec<Vec<F128T>> = level_ctxs
+                .iter()
+                .map(|ctx| {
+                    let sks_vks = eval_sk_at_vks_k(ctx.log_msg_cols);
+                    let ris_for_basis =
+                        &ris[ctx.ris_start..ctx.ris_start + ctx.log_msg_cols - yr_log_n];
+                    induce_sumcheck_evaluate_at_residual_k(
+                        ctx.log_msg_cols,
+                        &sks_vks,
+                        &ctx.queries,
+                        &ctx.alpha,
+                        ris_for_basis,
+                        yr_log_n,
+                    )
+                })
+                .collect();
+            for resid in &induced_residuals {
+                if resid.len() != yr_len {
+                    return false;
+                }
+            }
+
+            // Batch-evaluate b at all yr positions in one call so the caller
+            // can amortize prefix work.
+            let evb_vec = eval_b_residual(&ris, yr_log_n);
+            if evb_vec.len() != yr_len {
+                return false;
+            }
+            let mut inner = F128T::ZERO;
+            for y in 0..yr_len {
+                let mut combined_y = evb_vec[y];
+                for (k, residual) in induced_residuals.iter().enumerate() {
+                    combined_y += level_ctxs[k].beta * residual[y];
+                }
+                inner += yr[y] * combined_y;
+            }
+            return inner == t_r;
+        }
+
+        if next_root_idx >= proof.recursive_roots.len() {
+            return false;
+        }
+        let root_next = proof.recursive_roots[next_root_idx];
+        next_root_idx += 1;
+        challenger.observe_bytes(&root_next);
+
+        // (OOD binding mirror elided.)
+
+        // PoW grinding check for this iteration's query phase.
+        if nonce_idx >= proof.grinding_nonces.len() {
+            return false;
+        }
+        if !challenger.verify_pow(
+            proof.grinding_nonces[nonce_idx],
+            config.grinding_bits[i + 1] as u32,
+        ) {
+            return false;
+        }
+        nonce_idx += 1;
+
+        let prev_block_len = 1usize << (prev_log_msg_cols + prev_log_inv_rate);
+        let prev_num_interleaved = 1usize << prev_log_num_interleaved;
+        let num_queries_i = config.queries[i + 1];
+        let queries_i = sample_distinct_queries(challenger, prev_block_len, num_queries_i);
+        let alpha_i = sample_ext_vec(challenger, ceil_log2(num_queries_i));
+        if recursive_proof_idx >= proof.recursive_proofs.len() {
+            return false;
+        }
+        let rp = &proof.recursive_proofs[recursive_proof_idx];
+        recursive_proof_idx += 1;
+        if !verify_level_opens_ext(
+            &prev_root,
+            prev_block_len,
+            &queries_i,
+            &rp.opened_rows,
+            prev_num_interleaved,
+            &rp.merkle_proof,
+        ) {
+            return false;
+        }
+
+        let enforced_sum_i =
+            induce_sumcheck_enforced_sum_ext(&rp.opened_rows, &level_rs, &queries_i, &alpha_i);
+
+        if tx_idx >= proof.sumcheck_transcript.len() {
+            return false;
+        }
+        let intro_msg_i = proof.sumcheck_transcript[tx_idx];
+        tx_idx += 1;
+        observe_ext(challenger, intro_msg_i.u_0);
+        observe_ext(challenger, intro_msg_i.u_2);
+        let intro_quad_i = RoundQuadK::from_msg(intro_msg_i, enforced_sum_i);
+        let beta_i = sample_ext(challenger);
+        running_quad = RoundQuadK::fold(&running_quad, &intro_quad_i, beta_i);
+        t_r += beta_i * enforced_sum_i;
+        level_ctxs.push(LevelCtx {
+            log_msg_cols: n_current,
+            queries: queries_i.clone(),
+            alpha: alpha_i,
+            ris_start: ris.len(),
+            beta: beta_i,
+        });
+
+        prev_root = root_next;
+        let k_next = config.recursive_ks[i + 1];
+        if n_current < k_next {
+            return false;
+        }
+        prev_log_num_interleaved = k_next;
+        prev_log_msg_cols = n_current - k_next;
+        prev_log_inv_rate = config.log_inv_rates[i + 2];
+    }
+
+    unreachable!()
+}
+
+// ===================================================================
 // Tests
 // ===================================================================
 
@@ -2484,6 +3052,9 @@ mod tests {
 
     struct Instance {
         vc: VerifierConfig,
+        log_n: usize,
+        /// The eq-point behind `b_initial` (for the succinct closure).
+        point: Vec<F128T>,
         b_initial: Vec<F128T>,
         target: F128T,
         root: Hash,
@@ -2512,6 +3083,8 @@ mod tests {
         );
         Instance {
             vc,
+            log_n,
+            point,
             b_initial,
             target,
             root: cm.root,
@@ -2529,6 +3102,46 @@ mod tests {
             &inst.root,
             &mut ch,
         )
+    }
+
+    /// Succinct verify with the eq-point residual closure: for b = eq(point, ·)
+    /// (LSB-first), `eval_b(ris ++ y_bits)` factors into the char-2 eq prefix
+    /// over the folded variables times the eq table over the residual tail:
+    ///   `Π_{j<split} (1 + point[j] + ris[j]) · eq_table(point[split..])[y]`.
+    fn verify_succinct_instance(inst: &Instance, proof: &LigeritoProofK) -> bool {
+        let mut ch = FsChallenger::new(b"ligerito-k-test");
+        let point = &inst.point;
+        let log_n = inst.log_n;
+        recursive_verifier_with_basis_succinct_k(
+            &inst.vc,
+            proof,
+            log_n,
+            inst.target,
+            &inst.root,
+            |ris, yr_log_n| {
+                let split = log_n - yr_log_n;
+                assert_eq!(ris.len(), split, "closure gets the full folded ris");
+                let mut prefix = F128T::ONE;
+                for j in 0..split {
+                    prefix *= F128T::ONE + point[j] + ris[j];
+                }
+                let mut tail = build_eq_table_ext(&point[split..]);
+                for v in tail.iter_mut() {
+                    *v *= prefix;
+                }
+                tail
+            },
+            &mut ch,
+        )
+    }
+
+    /// Both verifiers on the same proof, asserting they agree; returns the
+    /// shared verdict.
+    fn verify_both_agree(inst: &Instance, proof: &LigeritoProofK, what: &str) -> bool {
+        let dense = verify_instance(inst, proof);
+        let succinct = verify_succinct_instance(inst, proof);
+        assert_eq!(dense, succinct, "dense/succinct verdict split on {what}");
+        dense
     }
 
     /// Pin that the log_n = 16 roundtrip exercises the strict Secure-profile
@@ -2577,6 +3190,100 @@ mod tests {
         ));
         let inst = prove_instance(18, 8);
         assert!(verify_instance(&inst, &inst.proof), "honest proof rejected");
+    }
+
+    /// The succinct verifier accepts the same honest proofs the dense one
+    /// does, driven through the eq-point residual closure (LSB-first).
+    #[test]
+    fn succinct_roundtrips() {
+        for (log_n, seed) in [(16usize, 2u64), (18, 8)] {
+            let inst = prove_instance(log_n, seed);
+            assert!(
+                verify_succinct_instance(&inst, &inst.proof),
+                "succinct verifier rejected an honest proof at log_n={log_n}"
+            );
+        }
+    }
+
+    /// The succinct verifier rejects the same tamper cases the dense one does.
+    #[test]
+    fn succinct_rejects_tampered() {
+        let inst = prove_instance(12, 3);
+        let mut bad = inst.proof.clone();
+        bad.initial_proof.opened_rows[0][0].0 ^= 1;
+        assert!(
+            !verify_succinct_instance(&inst, &bad),
+            "bit-flipped L0 opened row must be rejected"
+        );
+        let mut bad2 = inst.proof.clone();
+        bad2.final_proof.opened_rows[0][0].c0 ^= 1;
+        assert!(
+            !verify_succinct_instance(&inst, &bad2),
+            "bit-flipped final-level opened row must be rejected"
+        );
+        let mut bad3 = inst.proof.clone();
+        bad3.sumcheck_transcript[0].u_0.c0 ^= 1;
+        assert!(
+            !verify_succinct_instance(&inst, &bad3),
+            "bit-flipped sumcheck u_0 must be rejected"
+        );
+    }
+
+    /// Dense and succinct must return the same verdict on every proof:
+    /// honest plus a spread of randomized single-bit tampers, at both a
+    /// fallback-config shape (log_n = 12) and a Secure-profile shape with a
+    /// fold-grinding nonce (log_n = 16).
+    #[test]
+    fn dense_and_succinct_agree() {
+        for (log_n, seed) in [(12usize, 11u64), (16, 12)] {
+            let inst = prove_instance(log_n, seed);
+            assert!(verify_both_agree(&inst, &inst.proof, "honest proof"));
+
+            let mut s = seed ^ 0xABCD;
+            type Tamper = fn(&mut LigeritoProofK, u64);
+            let tampers: &[(&str, Tamper)] = &[
+                ("L0 opened row", |p, r| {
+                    let row = (r as usize) % p.initial_proof.opened_rows.len();
+                    p.initial_proof.opened_rows[row][0].0 ^= 1;
+                }),
+                ("sumcheck u_2", |p, r| {
+                    let idx = (r as usize) % p.sumcheck_transcript.len();
+                    p.sumcheck_transcript[idx].u_2.c1 ^= 1;
+                }),
+                ("yr value", |p, r| {
+                    let idx = (r as usize) % p.final_proof.yr.len();
+                    p.final_proof.yr[idx].c0 ^= 1;
+                }),
+                ("recursive root", |p, _| {
+                    p.recursive_roots[0][0] ^= 1;
+                }),
+                ("merkle proof node", |p, r| {
+                    let idx = (r as usize) % p.initial_proof.merkle_proof.len();
+                    p.initial_proof.merkle_proof[idx][0] ^= 1;
+                }),
+                ("grinding nonce", |p, _| {
+                    p.grinding_nonces[0] ^= 1;
+                }),
+            ];
+            for (what, tamper) in tampers {
+                let mut bad = inst.proof.clone();
+                tamper(&mut bad, splitmix64(&mut s));
+                assert!(
+                    !verify_both_agree(&inst, &bad, what),
+                    "tampered {what} accepted at log_n={log_n}"
+                );
+            }
+            // Fold-grinding nonce tamper (present only under the Secure
+            // profile's nonzero L0 fold grinding, i.e. log_n = 16 here).
+            if !inst.proof.fold_grinding_nonces.is_empty() {
+                let mut bad = inst.proof.clone();
+                bad.fold_grinding_nonces[0] ^= 1;
+                assert!(
+                    !verify_both_agree(&inst, &bad, "fold-grinding nonce"),
+                    "tampered fold-grinding nonce accepted at log_n={log_n}"
+                );
+            }
+        }
     }
 
     #[test]

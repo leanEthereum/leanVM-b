@@ -237,15 +237,29 @@ fn run_k(log_n: usize, verify_once: bool) -> Timing {
         if verify_once && !checked {
             checked = true;
             let mut vch = FsChallenger::new(b"ligerito-bench-k");
-            let ok = lk::recursive_verifier_with_basis_k(
+            let point_v = point.clone();
+            let ok = lk::recursive_verifier_with_basis_succinct_k(
                 &vc,
                 &proof,
-                &b,
+                log_n,
                 target,
                 &c.root,
+                |ris: &[F128T], yr_log_n: usize| {
+                    // b = eq(point, .), LSB-first: ris bind point[..split].
+                    let split = ris.len();
+                    debug_assert_eq!(split + yr_log_n, point_v.len());
+                    let mut prefix = F128T::ONE;
+                    for (p, r) in point_v[..split].iter().zip(ris) {
+                        prefix *= *p * *r + (F128T::ONE + *p) * (F128T::ONE + *r);
+                    }
+                    lk::build_eq_table_ext(&point_v[split..])
+                        .into_iter()
+                        .map(|t| prefix * t)
+                        .collect()
+                },
                 &mut vch,
             );
-            assert!(ok, "K verification failed at log_n={log_n}");
+            assert!(ok, "K succinct verification failed at log_n={log_n}");
         }
         black_box(proof);
     }
