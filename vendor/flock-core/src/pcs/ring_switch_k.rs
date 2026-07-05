@@ -820,7 +820,7 @@ mod tests {
         assert_eq!(inner_product_base_ext(&packed, &out.rs_eq_ind), out.sumcheck_claim);
         let lig_proof = recursive_prover_with_basis_k(
             &pc,
-            packed,
+            &packed,
             out.rs_eq_ind,
             out.sumcheck_claim,
             &pd.codeword,

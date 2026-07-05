@@ -100,14 +100,13 @@ pub mod aarch64 {
     #[inline]
     #[target_feature(enable = "aes")]
     pub unsafe fn mul_neon(a: F64, b: F64) -> F64 {
-        // SAFETY: function carries the aes target feature.
-        unsafe {
-            let p = vmull_p64(a.0, b.0);
-            let (lo, hi) = (p as u64, (p >> 64) as u64);
-            let t = vmull_p64(hi, R64);
-            let (tlo, ov) = (t as u64, (t >> 64) as u64); // ov ≤ 4 bits
-            F64(lo ^ tlo ^ ov ^ (ov << 1) ^ (ov << 3) ^ (ov << 4))
-        }
+        // The intrinsic calls are safe here: the function itself carries the
+        // aes target feature, so no inner unsafe block is needed.
+        let p = vmull_p64(a.0, b.0);
+        let (lo, hi) = (p as u64, (p >> 64) as u64);
+        let t = vmull_p64(hi, R64);
+        let (tlo, ov) = (t as u64, (t >> 64) as u64); // ov ≤ 4 bits
+        F64(lo ^ tlo ^ ov ^ (ov << 1) ^ (ov << 3) ^ (ov << 4))
     }
 }
 

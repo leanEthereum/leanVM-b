@@ -14,6 +14,11 @@ use crate::transcript::{ProverState, VerifierState};
 use rayon::prelude::*;
 
 /// Bind the lowest variable of `table` to `rho`, in parallel for large tables.
+/// Deliberately scalar: pairing adjacent outputs through [`F128T::mul2`]
+/// measures slower (2.14 vs 1.75 ns/output). The mul has the loop-invariant
+/// `rho` on one side, the OoO core already overlaps the independent
+/// iterations, and the pair kernel's third NEON fold outweighs its 2-PMULL
+/// saving once nothing is latency-bound.
 fn par_fold(table: &[F128T], rho: F128T) -> Vec<F128T> {
     let half = table.len() / 2;
     if half >= PAR_THRESHOLD {
@@ -52,6 +57,10 @@ pub fn pad_to_pow2(mut leaves: Vec<F128T>) -> (Vec<F128T>, usize) {
 }
 
 /// Build every product-tree layer: `layers[0]` = leaves, `layers[μ]` = `[root]`.
+/// Deliberately scalar: routing adjacent output pairs through [`F128T::mul2`]
+/// wins ~4% single-threaded but loses ~2% end to end (interleaved A/B: 1339 vs
+/// 1370 ms bus-GKR at `LEANVM_XMSS_N=1024`, 10 threads); at full parallelism
+/// this loop is memory-bandwidth-bound and the paired form only adds overhead.
 fn build_layers(leaves: Vec<F128T>) -> Vec<Vec<F128T>> {
     let mut layers = vec![leaves];
     while layers.last().unwrap().len() > 1 {
@@ -95,6 +104,11 @@ pub fn prove_product(leaves: Vec<F128T>, ps: &mut ProverState) -> (F128T, LeafCl
             // `eqr` is eq over the variables after the one bound this round, so the
             // per-row product `eq·even·odd` is degree 2 (eq-trick).
             let eqr = eq_table(&r[j + 1..]);
+            // Deliberately scalar: batching the row's independent muls through
+            // [`F128T::mul2`] (within a row or across two adjacent rows)
+            // measures no better or worse (16.7 scalar vs 18.4 / 16.8
+            // ns/idx); the closure's live values plus the 2-wide dataflow eat
+            // the kernel's small throughput edge.
             let summand = |idx: usize| -> [F128T; 3] {
                 let (lo, hi) = (2 * idx, 2 * idx + 1);
                 let eq = eqr[idx];

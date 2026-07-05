@@ -83,6 +83,26 @@ impl F128T {
         }
     }
 
+    /// Two independent products at once: `[a[0]·b[0], a[1]·b[1]]`, exactly the
+    /// values of two scalar muls. On NEON the pair kernel interleaves the two
+    /// products so the six PMULL latency chains overlap and the three shared
+    /// pair folds reduce both at once ([`aarch64::mul2_neon`]). Worth it only
+    /// when the two muls sit on serial dependence chains (~40% faster there,
+    /// see `bench_mul2_kernel`); in loops over independent data the OoO core
+    /// already overlaps scalar muls and the pair form gains little or loses.
+    #[inline]
+    pub fn mul2(a: [Self; 2], b: [Self; 2]) -> [Self; 2] {
+        #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
+        {
+            // SAFETY: aes target feature is enabled at compile time.
+            unsafe { aarch64::mul2_neon(a, b) }
+        }
+        #[cfg(not(all(target_arch = "aarch64", target_feature = "aes")))]
+        {
+            [a[0] * b[0], a[1] * b[1]]
+        }
+    }
+
     /// Multiplicative inverse via Fermat: self^(2^128 − 2). `ZERO.inv() == ZERO`.
     pub fn inv(self) -> Self {
         let mut cur = self.square();
@@ -171,22 +191,21 @@ pub mod aarch64 {
     #[inline]
     #[target_feature(enable = "aes")]
     unsafe fn fold_pair(lo: uint64x2_t, hi: uint64x2_t) -> uint64x2_t {
-        // SAFETY: pure NEON ops under the aes feature.
-        unsafe {
-            let f = veorq_u64(
-                veorq_u64(hi, vshlq_n_u64::<1>(hi)),
-                veorq_u64(vshlq_n_u64::<3>(hi), vshlq_n_u64::<4>(hi)),
-            );
-            let ov = veorq_u64(
-                veorq_u64(vshrq_n_u64::<63>(hi), vshrq_n_u64::<61>(hi)),
-                vshrq_n_u64::<60>(hi),
-            );
-            let f2 = veorq_u64(
-                veorq_u64(ov, vshlq_n_u64::<1>(ov)),
-                veorq_u64(vshlq_n_u64::<3>(ov), vshlq_n_u64::<4>(ov)),
-            );
-            veorq_u64(veorq_u64(lo, f), f2)
-        }
+        // Pure NEON ops, safe here: the function itself carries the aes
+        // target feature, so no inner unsafe block is needed.
+        let f = veorq_u64(
+            veorq_u64(hi, vshlq_n_u64::<1>(hi)),
+            veorq_u64(vshlq_n_u64::<3>(hi), vshlq_n_u64::<4>(hi)),
+        );
+        let ov = veorq_u64(
+            veorq_u64(vshrq_n_u64::<63>(hi), vshrq_n_u64::<61>(hi)),
+            vshrq_n_u64::<60>(hi),
+        );
+        let f2 = veorq_u64(
+            veorq_u64(ov, vshlq_n_u64::<1>(ov)),
+            veorq_u64(vshlq_n_u64::<3>(ov), vshlq_n_u64::<4>(ov)),
+        );
+        veorq_u64(veorq_u64(lo, f), f2)
     }
 
     /// Karatsuba-2 over K with the fold y^2 = y + x^61, NEON-resident:
@@ -223,6 +242,53 @@ pub mod aarch64 {
                 ^ (ov << 3)
                 ^ (ov << 4);
             F128T { c0, c1 }
+        }
+    }
+
+    /// Two independent [`mul_neon`] products with the instruction streams
+    /// interleaved: the six Karatsuba PMULLs issue back to back (hiding the
+    /// PMULL latency the scalar kernel serializes behind), the two (p1, pm^p0)
+    /// reductions run as one overlapping [`fold_pair`] each, and the two C61
+    /// fold tails are transposed into a single third [`fold_pair`]. Totals:
+    /// 8 PMULL + 3 pair folds for the pair, vs 10 PMULL + 2 pair folds +
+    /// 2 scalar tails for two scalar muls.
+    ///
+    /// # Safety
+    /// Requires the `aes` target feature; see [`mul_neon`].
+    #[inline]
+    #[target_feature(enable = "aes")]
+    pub unsafe fn mul2_neon(a: [F128T; 2], b: [F128T; 2]) -> [F128T; 2] {
+        // SAFETY: function carries the aes target feature.
+        unsafe {
+            // All six products up front: independent PMULLs, back to back.
+            let p0x = pmull(a[0].c0, b[0].c0);
+            let p0y = pmull(a[1].c0, b[1].c0);
+            let p1x = pmull(a[0].c1, b[0].c1);
+            let p1y = pmull(a[1].c1, b[1].c1);
+            let pmx = pmull(a[0].c0 ^ a[0].c1, b[0].c0 ^ b[0].c1);
+            let pmy = pmull(a[1].c0 ^ a[1].c1, b[1].c0 ^ b[1].c1);
+            // Per product, reduce p1 and pm^p0 as a pair; the two folds overlap.
+            let qx = veorq_u64(pmx, p0x);
+            let qy = veorq_u64(pmy, p0y);
+            let redx = fold_pair(vtrn1q_u64(p1x, qx), vtrn2q_u64(p1x, qx));
+            let redy = fold_pair(vtrn1q_u64(p1y, qy), vtrn2q_u64(p1y, qy));
+            let r1x = vgetq_lane_u64::<0>(redx);
+            let r1y = vgetq_lane_u64::<0>(redy);
+            // c0 = reduce(p0 ^ x^61 * r1) for each: transpose the two e0
+            // vectors and finish both reductions in one shared pair fold.
+            let e0x = veorq_u64(p0x, pmull(r1x, C61));
+            let e0y = veorq_u64(p0y, pmull(r1y, C61));
+            let red0 = fold_pair(vtrn1q_u64(e0x, e0y), vtrn2q_u64(e0x, e0y));
+            [
+                F128T {
+                    c0: vgetq_lane_u64::<0>(red0),
+                    c1: vgetq_lane_u64::<1>(redx),
+                },
+                F128T {
+                    c0: vgetq_lane_u64::<1>(red0),
+                    c1: vgetq_lane_u64::<1>(redy),
+                },
+            ]
         }
     }
 
@@ -361,6 +427,89 @@ mod tests {
             assert_eq!(a * (b + c), a * b + a * c);
             assert_eq!(a.square(), a * a);
         }
+    }
+
+    #[test]
+    fn mul2_matches_scalar() {
+        let mut s = 7u64;
+        for _ in 0..10_000 {
+            let a = [rand_e(&mut s), rand_e(&mut s)];
+            let b = [rand_e(&mut s), rand_e(&mut s)];
+            assert_eq!(F128T::mul2(a, b), [a[0] * b[0], a[1] * b[1]]);
+        }
+        // Edge lanes: zero/one in either slot.
+        let x = rand_e(&mut s);
+        for e in [F128T::ZERO, F128T::ONE, F128T::Y] {
+            assert_eq!(F128T::mul2([e, x], [x, e]), [e * x, x * e]);
+        }
+    }
+
+    /// Kernel timing probe, scalar vs [`F128T::mul2`], throughput- and
+    /// latency-bound (run with
+    /// `cargo test --release --lib -- --ignored bench_mul2 --nocapture`).
+    /// On Apple M-series the pair kernel wins ~5% on independent-product
+    /// throughput and ~40% on serial dependence chains; loops whose muls the
+    /// OoO core already overlaps see only the former.
+    #[test]
+    #[ignore]
+    fn bench_mul2_kernel() {
+        use std::hint::black_box;
+        use std::time::Instant;
+        let mut s = 9u64;
+        let n = 1usize << 12;
+        let a: Vec<F128T> = (0..n).map(|_| rand_e(&mut s)).collect();
+        let b: Vec<F128T> = (0..n).map(|_| rand_e(&mut s)).collect();
+        let mut out = vec![F128T::ZERO; n];
+        let iters = 20_000usize;
+        let total = (n * iters) as f64;
+
+        let t0 = Instant::now();
+        for _ in 0..iters {
+            for i in 0..n {
+                out[i] = a[i] * b[i];
+            }
+            black_box(&mut out);
+        }
+        let scalar_tp = t0.elapsed().as_secs_f64() / total * 1e9;
+
+        let t0 = Instant::now();
+        for _ in 0..iters {
+            for i in 0..n / 2 {
+                let m = F128T::mul2([a[2 * i], a[2 * i + 1]], [b[2 * i], b[2 * i + 1]]);
+                out[2 * i] = m[0];
+                out[2 * i + 1] = m[1];
+            }
+            black_box(&mut out);
+        }
+        let mul2_tp = t0.elapsed().as_secs_f64() / total * 1e9;
+
+        // Latency-bound: one serial chain vs two chains through mul2.
+        let iters_lat = 4_000usize;
+        let t0 = Instant::now();
+        let mut acc = F128T::ONE;
+        for _ in 0..iters_lat {
+            for i in 0..n {
+                acc = (acc + a[i]) * b[i];
+            }
+        }
+        black_box(acc);
+        let scalar_lat = t0.elapsed().as_secs_f64() / (n * iters_lat) as f64 * 1e9;
+
+        let t0 = Instant::now();
+        let mut acc2 = [F128T::ONE, F128T::Y];
+        for _ in 0..iters_lat {
+            for i in 0..n / 2 {
+                acc2 = F128T::mul2(
+                    [acc2[0] + a[2 * i], acc2[1] + a[2 * i + 1]],
+                    [b[2 * i], b[2 * i + 1]],
+                );
+            }
+        }
+        black_box(acc2);
+        let mul2_lat = t0.elapsed().as_secs_f64() / (n * iters_lat) as f64 * 1e9;
+
+        eprintln!("throughput ns/mul: scalar {scalar_tp:.3}  mul2 {mul2_tp:.3}");
+        eprintln!("latency    ns/mul: scalar {scalar_lat:.3}  mul2(2 chains) {mul2_lat:.3}");
     }
 
     #[test]

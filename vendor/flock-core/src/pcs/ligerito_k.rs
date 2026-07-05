@@ -104,6 +104,61 @@ pub fn build_eq_table_ext(point: &[F128T]) -> Vec<F128T> {
     out
 }
 
+/// Parallel mirror of [`build_eq_table_ext`]: identical LSB-first doubling
+/// recurrence, byte-identical output, with each level's independent
+/// iterations fanned out across rayon threads once the level is large enough
+/// to amortize dispatch. Structure copied from the F128 layer's
+/// `ring_switch::build_eq_parallel`.
+pub fn build_eq_table_ext_parallel(point: &[F128T]) -> Vec<F128T> {
+    // Uninit alloc: the doubling below writes every slot before any is read
+    // (level j reads out[..2^j], all written earlier, and writes
+    // out[2^j..2^(j+1)] fresh).
+    let mut out: Vec<F128T> = crate::alloc_uninit_vec(1usize << point.len());
+    build_eq_table_ext_seeded_into(point, F128T::ONE, &mut out);
+    out
+}
+
+/// In-place seeded core of [`build_eq_table_ext_parallel`]: fills
+/// `out[..2^point.len()]` with `seed * eq(point, .)`.
+///
+/// Seeding folds a batching scalar into the table for free: every entry is
+/// `seed` times a product of point factors, and field multiplication is
+/// exact and associative, so the result equals the post-multiplied table
+/// byte for byte while skipping one full multiply pass. `out` must have
+/// length exactly `2^point.len()`; every slot is written before any is read,
+/// so an uninit or reused scratch buffer is fine.
+pub fn build_eq_table_ext_seeded_into(point: &[F128T], seed: F128T, out: &mut [F128T]) {
+    use rayon::prelude::*;
+    let n = point.len();
+    assert_eq!(out.len(), 1usize << n, "out must have length 2^point.len()");
+    out[0] = seed;
+    // Threshold below which rayon dispatch overhead beats the parallel work
+    // (same floor as the F128 layer's `build_eq_parallel`).
+    const PAR_THRESHOLD: usize = 1 << 12;
+    for j in 0..n {
+        let r_j = point[j];
+        let one_plus_r_j = F128T::ONE + r_j;
+        let half = 1usize << j;
+        let (lo, hi_rest) = out.split_at_mut(half);
+        let hi = &mut hi_rest[..half];
+        if half < PAR_THRESHOLD {
+            for (lo_x, hi_x) in lo.iter_mut().zip(hi.iter_mut()) {
+                let v = *lo_x;
+                *hi_x = v * r_j;
+                *lo_x = v * one_plus_r_j;
+            }
+        } else {
+            lo.par_iter_mut()
+                .zip(hi.par_iter_mut())
+                .for_each(|(lo_x, hi_x)| {
+                    let v = *lo_x;
+                    *hi_x = v * r_j;
+                    *lo_x = v * one_plus_r_j;
+                });
+        }
+    }
+}
+
 /// Partially evaluate the multilinear extension of `evals` at the first
 /// `rs.len()` (LSB) variables. Mirror of `ligerito::partial_eval_lsb`.
 pub(crate) fn partial_eval_lsb_ext(evals: &[F128T], rs: &[F128T]) -> Vec<F128T> {
@@ -1651,17 +1706,18 @@ fn fold_and_msg_lsb_ext(
     (nf, nb, SumcheckMessageK { u_0, u_2 })
 }
 
-/// Two-phase witness: the committed K-message before the first fold, an
+/// Two-phase witness: the committed K-message (borrowed from the caller, it
+/// is only read until the first fold) before the first fold, an owned
 /// E-vector afterwards.
-enum WitnessK {
-    Base(Vec<F64>),
+enum WitnessK<'a> {
+    Base(&'a [F64]),
     Ext(Vec<F128T>),
 }
 
 /// Mirror of `ligerito::SumcheckProver` with the two-phase witness. The
 /// `introduce_new_with_eval` fusion (OOD-only) is not ported; see module docs.
-pub struct SumcheckProverK {
-    f: WitnessK,
+pub struct SumcheckProverK<'a> {
+    f: WitnessK<'a>,
     /// Single combined basis poly: after every `glue(beta)` the introduced
     /// basis is folded in as `combined_basis += beta * b_new`.
     combined_basis: Vec<F128T>,
@@ -1670,10 +1726,10 @@ pub struct SumcheckProverK {
     pending_glue: Option<(Vec<F128T>, F128T)>,
 }
 
-impl SumcheckProverK {
-    pub fn new(f: Vec<F64>, b1: Vec<F128T>, h1: F128T) -> (Self, SumcheckMessageK) {
+impl<'a> SumcheckProverK<'a> {
+    pub fn new(f: &'a [F64], b1: Vec<F128T>, h1: F128T) -> (Self, SumcheckMessageK) {
         assert_eq!(f.len(), b1.len());
-        let msg = round_msg_lsb_base(&f, &b1);
+        let msg = round_msg_lsb_base(f, &b1);
         let mut inst = Self {
             f: WitnessK::Base(f),
             combined_basis: b1,
@@ -1864,13 +1920,17 @@ fn merkle_multi_proof_for(tree: &[Hash], block_len: usize, queries: &[usize]) ->
 /// produced by [`commit_k`] (with `log_batch_size = config.initial_k` and
 /// `log_inv_rate = config.log_inv_rates[0]`).
 ///
+/// `witness` is borrowed: it is only READ (round-0 message + the first lane
+/// fold, which lifts it into an owned E-vector), so callers with a large
+/// committed stack pass the slice directly instead of paying a full copy.
+///
 /// Transcript order is identical to the original (label, target, root,
 /// (u_0, u_2) stream, tapered fold grinds, query grinds, queries, alphas,
 /// betas, `yr` in the clear at the end), with OOD blocks elided because the
 /// config is asserted to take zero OOD samples.
 pub fn recursive_prover_with_basis_k<Ch: Challenger>(
     config: &ProverConfig,
-    witness: Vec<F64>,
+    witness: &[F64],
     b_initial: Vec<F128T>,
     target: F128T,
     l0_codeword: &[F64],
@@ -3074,7 +3134,7 @@ mod tests {
         let mut ch = FsChallenger::new(b"ligerito-k-test");
         let proof = recursive_prover_with_basis_k(
             &pc,
-            witness,
+            &witness,
             b_initial.clone(),
             target,
             &pd.codeword,
@@ -3157,6 +3217,25 @@ mod tests {
         // And log_n = 12 is below the Secure ladder's feasibility floor, so
         // the tests there use the default_config fallback.
         assert!(k_configs_for(12).is_err());
+    }
+
+    /// The parallel eq builder must be byte-identical to the serial one, and
+    /// the seeded variant must equal the gamma-scaled table, at sizes on both
+    /// sides of the internal parallel level floor (2^12 halves, so n = 15
+    /// exercises parallel levels; n = 6 stays fully serial).
+    #[test]
+    fn eq_table_parallel_and_seeded_match_serial() {
+        let mut s = 21u64;
+        for n in [0usize, 1, 6, 13, 15] {
+            let point: Vec<F128T> = (0..n).map(|_| rand_ext(&mut s)).collect();
+            let serial = build_eq_table_ext(&point);
+            assert_eq!(build_eq_table_ext_parallel(&point), serial, "parallel mismatch at n={n}");
+            let g = rand_ext(&mut s);
+            let mut seeded = vec![F128T::ZERO; 1 << n];
+            build_eq_table_ext_seeded_into(&point, g, &mut seeded);
+            let scaled: Vec<F128T> = serial.iter().map(|&e| g * e).collect();
+            assert_eq!(seeded, scaled, "seeded mismatch at n={n}");
+        }
     }
 
     #[test]

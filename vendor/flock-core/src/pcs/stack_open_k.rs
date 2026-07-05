@@ -63,8 +63,8 @@ use serde::{Deserialize, Serialize};
 
 use super::ligerito::{ProverConfig, VerifierConfig};
 use super::ligerito_k::{
-    LigeritoProofK, ProverDataK, build_eq_table_ext, recursive_prover_with_basis_k,
-    recursive_verifier_with_basis_succinct_k,
+    LigeritoProofK, ProverDataK, build_eq_table_ext, build_eq_table_ext_seeded_into,
+    recursive_prover_with_basis_k, recursive_verifier_with_basis_succinct_k,
 };
 use super::pack_k::PACKING_WIDTH_K;
 use super::ring_switch_k::{
@@ -205,8 +205,15 @@ pub struct BatchOpeningProofK {
 /// `fold_stacked_point_claims`: a `Point` builds eq over ONLY its aligned
 /// slice, a `Strided` scatters the eq of its high coords at the slot's
 /// stride. Both scatter with `+=`, so overlapping slices accumulate
-/// correctly. Small slices use the serial path (with many tiny point claims,
-/// rayon dispatch would cost more than the fold itself).
+/// correctly; the OUTER loop therefore stays serial (several bus claims can
+/// land on one column region), and parallelism lives inside each claim: the
+/// gamma-seeded eq build ([`build_eq_table_ext_seeded_into`], parallel above
+/// its level floor, into one scratch buffer reused across claims) and the
+/// slice add. Small slices stay fully serial (with many tiny point claims,
+/// rayon dispatch would cost more than the fold itself). The gamma seeding
+/// and the serial/parallel splits are exact-field/order-preserving, so
+/// `b_stack`'s bytes (and hence the proof) are unchanged relative to the
+/// build-then-multiply form.
 fn fold_stacked_point_claims_k(
     b_stack: &mut [F128T],
     target: &mut F128T,
@@ -215,6 +222,19 @@ fn fold_stacked_point_claims_k(
 ) {
     use rayon::prelude::*;
     const PAR_FOLD_THRESHOLD: usize = 1 << 14;
+    // One reusable eq scratch sized to the largest Point claim: a fresh
+    // multi-MB allocation per claim would pay the first-touch page faults
+    // anew every time. Uninit is fine: the seeded build writes every slot of
+    // its prefix before any is read.
+    let max_len = claims
+        .iter()
+        .map(|c| match c {
+            StackClaimK::Point { low_point, .. } => 1usize << low_point.len(),
+            StackClaimK::Strided { .. } => 0,
+        })
+        .max()
+        .unwrap_or(0);
+    let mut scratch: Vec<F128T> = crate::alloc_uninit_vec(max_len);
     for (claim, g) in claims.iter().zip(gammas.iter()) {
         let g = *g;
         match claim {
@@ -228,16 +248,17 @@ fn fold_stacked_point_claims_k(
                     offset % len == 0,
                     "StackClaimK::Point: offset must be 2^|low_point|-aligned"
                 );
-                let eq = build_eq_table_ext(low_point);
+                build_eq_table_ext_seeded_into(low_point, g, &mut scratch[..len]);
+                let eq = &scratch[..len];
                 let dst = &mut b_stack[*offset..*offset + len];
                 if len < PAR_FOLD_THRESHOLD {
                     for (bi, ei) in dst.iter_mut().zip(eq.iter()) {
-                        *bi += g * *ei;
+                        *bi += *ei;
                     }
                 } else {
                     dst.par_iter_mut()
                         .zip(eq.par_iter())
-                        .for_each(|(bi, ei)| *bi += g * *ei);
+                        .for_each(|(bi, ei)| *bi += *ei);
                 }
                 *target += g * *value;
             }
@@ -343,6 +364,16 @@ pub fn open_batch_mixed_ligerito_stacked_k<Ch: Challenger>(
         !ring.claims.is_empty(),
         "stacked K opening carries at least one ring-switched claim"
     );
+    // Optional phase timing, answering to the same env var as the Ligerito-K
+    // prover/commit tracing (one env lookup per open, no work when unset).
+    let trace = std::env::var_os("LIG_K_TRACE").is_some();
+    let mut t = std::time::Instant::now();
+    let mark = |label: &str, t: &mut std::time::Instant| {
+        if trace {
+            eprintln!("[stack-open-k] {label}: {:7.2} ms", t.elapsed().as_secs_f64() * 1e3);
+        }
+        *t = std::time::Instant::now();
+    };
 
     challenger.observe_label(b"flock-pcs-open-batch-k-v0");
 
@@ -367,6 +398,7 @@ pub fn open_batch_mixed_ligerito_stacked_k<Ch: Challenger>(
         rs_proofs.push(proof);
         rs_outputs.push(out);
     }
+    mark("ring-switch proves", &mut t);
     // Per-claim batching gammas, sampled AFTER all ring-switch messages are
     // bound (mirror of the F128 layer's gamma_rs pattern).
     let gammas_rs = sample_ext_vec(challenger, ring.claims.len());
@@ -386,7 +418,20 @@ pub fn open_batch_mixed_ligerito_stacked_k<Ch: Challenger>(
     for (out, g) in rs_outputs.iter().zip(gammas_rs.iter()) {
         target += *g * out.sumcheck_claim;
     }
-    let mut b_stack = vec![F128T::ZERO; stack.len()];
+    // Uninit alloc + parallel zero fill: `vec![F128T::ZERO; n]` does not hit
+    // the calloc zero-page specialization (F128T is not a byte pattern the
+    // allocator recognizes), so at large stacks it is a multi-GB
+    // single-threaded write. The additive scatters below RELY on the zeroed
+    // start; every position is written here before any is read.
+    let mut b_stack: Vec<F128T> = crate::alloc_uninit_vec(stack.len());
+    {
+        use rayon::prelude::*;
+        const ZERO_CHUNK: usize = 1 << 16;
+        b_stack
+            .par_chunks_mut(ZERO_CHUNK)
+            .for_each(|c| c.fill(F128T::ZERO));
+    }
+    mark("b_stack zero fill", &mut t);
     {
         use rayon::prelude::*;
         let dst = &mut b_stack[ring.offset..ring.offset + qpkd_len];
@@ -398,12 +443,15 @@ pub fn open_batch_mixed_ligerito_stacked_k<Ch: Challenger>(
             *b = acc;
         });
     }
+    mark("rs_eq_ind scatter", &mut t);
     fold_stacked_point_claims_k(&mut b_stack, &mut target, point_claims, &gammas_pd);
+    mark("point-claim folds", &mut t);
 
-    // 4. One Ligerito-K over the full stack against the combined claim.
+    // 4. One Ligerito-K over the full stack against the combined claim (the
+    //    stack is borrowed by the prover; no copy).
     let ligerito = recursive_prover_with_basis_k(
         config,
-        stack.to_vec(),
+        stack,
         b_stack,
         target,
         &prover_data.codeword,

@@ -41,6 +41,8 @@ pub fn eq_table(r: &[F128T]) -> Vec<F128T> {
     for &rk in r {
         let one_plus = F128T::ONE + rk;
         for i in (0..half).rev() {
+            // Deliberately scalar: `rk`/`one_plus` are loop-invariant and the
+            // scalar pair beats an `F128T::mul2` here (3.37 vs 3.73 ns/entry).
             let e = eq[i];
             eq[i + half] = e * rk;
             eq[i] = e * one_plus;
@@ -130,6 +132,9 @@ pub fn mle_eval(table: &[F64], point: &[F128T]) -> F128T {
     let mut len = cur.len();
     for &p in &point[1..] {
         len /= 2;
+        // Deliberately scalar: the fold's mul has the loop-invariant `p` on
+        // one side, and pairing outputs through `F128T::mul2` measures slower
+        // (1.75 vs 2.14 ns/output, same shape as the GKR `par_fold`).
         for i in 0..len {
             cur[i] = interp(cur[2 * i], cur[2 * i + 1], p);
         }

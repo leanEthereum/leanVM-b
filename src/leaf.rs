@@ -335,6 +335,8 @@ pub fn prove_balance(
     let gamma = ps.sample();
     // Independent leaf vectors; build concurrently. The count channel's leaf is the
     // count itself (a single `Col`, `γ=0`, `α=1`), so its root is the product of all counts.
+    let prof = std::env::var("LEANVM_PROFILE").is_ok();
+    let t0 = std::time::Instant::now();
     let (push_leaves, (pull_leaves, count_leaves)) = rayon::join(
         || build_leaves(push, &push_lay, cols, alpha, gamma),
         || {
@@ -344,9 +346,17 @@ pub fn prove_balance(
             )
         },
     );
+    if prof {
+        eprintln!("[bus]   leaves    : {:>7.2} ms", t0.elapsed().as_secs_f64() * 1e3);
+    }
+    let t0 = std::time::Instant::now();
     let (_, push_claim) = gkr::prove_product(push_leaves, ps);
     let (_, pull_claim) = gkr::prove_product(pull_leaves, ps);
     let (_, count_claim) = gkr::prove_product(count_leaves, ps);
+    if prof {
+        eprintln!("[bus]   gkr       : {:>7.2} ms", t0.elapsed().as_secs_f64() * 1e3);
+    }
+    let t0 = std::time::Instant::now();
 
     let mut claims = decompose_prove(push, &push_lay, cols, &push_claim.point, alpha, gamma, ps);
     claims.extend(decompose_prove(
@@ -367,6 +377,9 @@ pub fn prove_balance(
         F128T::ZERO,
         ps,
     ));
+    if prof {
+        eprintln!("[bus]   decompose : {:>7.2} ms", t0.elapsed().as_secs_f64() * 1e3);
+    }
     claims
 }
 

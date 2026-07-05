@@ -452,9 +452,21 @@ pub fn prove(program: &Program, public_input: [F64; 2]) -> (Proof, Stats) {
     };
     let (_z_packed, zc, lc, reduced) =
         crate::blake3_flock::prove_reduction(&blocks, &committed.commitment.root, committed.mu, &mut ps);
+    if prof {
+        eprintln!("[prove]   reduction : {:>7.2} ms", ms(t));
+    }
+    let t = std::time::Instant::now();
     let offset = w.layout.placements[QPKD].offset;
     let ring = crate::blake3_flock::ring_switch_open(blocks.len(), offset, &reduced);
+    if prof {
+        eprintln!("[prove]   ring pkg  : {:>7.2} ms", ms(t));
+    }
+    let t = std::time::Instant::now();
     let mixed_open = pcs::open(&mut ps, &committed, &w.q, &slots, &ring);
+    if prof {
+        eprintln!("[prove]   stack open: {:>7.2} ms", ms(t));
+    }
+    let t = std::time::Instant::now();
     // Carry flock's sub-proof on the shared channels: its scalar reduction on the
     // `stream` (raw transport), its Ligerito on the `openings` hint channel.
     crate::blake3_flock::write_stack_proof(&mut ps, zc, lc, mixed_open);

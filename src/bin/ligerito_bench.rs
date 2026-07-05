@@ -225,7 +225,7 @@ fn run_k(log_n: usize, verify_once: bool) -> Timing {
         let t = Instant::now();
         let proof = lk::recursive_prover_with_basis_k(
             &pc,
-            witness.clone(),
+            &witness,
             b.clone(),
             target,
             &pd.codeword,
