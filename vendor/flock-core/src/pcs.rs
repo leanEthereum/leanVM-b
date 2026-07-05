@@ -26,8 +26,11 @@ pub mod commit;
 pub mod ligerito;
 pub mod ligerito_k;
 pub mod pack;
+pub mod pack_k;
 pub mod ring_switch;
+pub mod ring_switch_k;
 pub mod tensor_algebra;
+pub mod tensor_algebra_k;
 
 pub use basefold::{
     BaseFoldProof, DEFAULT_FRI_QUERIES, RoundCommitment, RoundMessage, default_fri_queries,
