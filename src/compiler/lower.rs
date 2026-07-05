@@ -243,10 +243,7 @@ impl FnLower<'_> {
                             arms[j]
                         );
                     };
-                    let outs = s.call(f, cargs, rcells.len());
-                    for (o, &r) in outs.into_iter().zip(&rcells) {
-                        s.copy(o, r);
-                    }
+                    s.lower_call(f, cargs, rcells.len(), None, Some(&rcells));
                 }
             });
         });
@@ -731,6 +728,10 @@ impl FnLower<'_> {
                 let (la, lb) = (self.expr(a), self.expr(b));
                 self.emit(LOp::Mul { a: la, b: lb, c: dst });
             }
+            // A call writes its single return value straight into `dst`.
+            Expr::Call(f, args) => {
+                self.lower_call(f, args, 1, None, Some(&[dst]));
+            }
             _ => {
                 let v = self.expr(e);
                 self.copy(v, dst);
@@ -820,7 +821,7 @@ impl FnLower<'_> {
             callee != "blake3",
             "blake3 is a statement: `blake3(a, b, out)` writes the digest into the 2-cell stack run `out`"
         );
-        self.lower_call(callee, args, n_ret, None)
+        self.lower_call(callee, args, n_ret, None, None)
     }
 
     /// A *conditional* tail call: transfer to `callee(args)` iff `cond != 0`,
@@ -828,7 +829,7 @@ impl FnLower<'_> {
     /// either way; when not taken the callee frame is just never entered. Binds
     /// no return values, so the not-taken path continues straight after it.
     fn call_cond(&mut self, callee: &str, args: &[Expr], cond: Off) {
-        self.lower_call(callee, args, 0, Some(cond));
+        self.lower_call(callee, args, 0, Some(cond), None);
     }
 
     /// If `callee` declares `Const` parameters, monomorphize: the constant
@@ -891,7 +892,17 @@ impl FnLower<'_> {
         (name, rt_args)
     }
 
-    fn lower_call(&mut self, callee: &str, args: &[Expr], n_ret: usize, cond: Option<Off>) -> Vec<Off> {
+    /// Lower a call. Return values land in `dsts_in` when given (write-once, so
+    /// distinct arms of a `match_range` may share the same cells), else in fresh
+    /// cells — sparing the caller a temp-then-copy.
+    fn lower_call(
+        &mut self,
+        callee: &str,
+        args: &[Expr],
+        n_ret: usize,
+        cond: Option<Off>,
+        dsts_in: Option<&[Off]>,
+    ) -> Vec<Off> {
         let (callee, args) = self.specialize(callee, args);
         let (callee, args) = (callee.as_str(), args.as_slice());
         let arg_offs: Vec<Off> = args.iter().map(|a| self.expr(a)).collect();
@@ -934,7 +945,10 @@ impl FnLower<'_> {
         self.emit(LOp::Jump { oc, od: entry, of: nfp });
 
         let n_args = args.len() as u32;
-        let dsts: Vec<Off> = (0..n_ret).map(|_| self.fresh()).collect();
+        let dsts: Vec<Off> = match dsts_in {
+            Some(d) => d.to_vec(),
+            None => (0..n_ret).map(|_| self.fresh()).collect(),
+        };
         for (i, &d) in dsts.iter().enumerate() {
             self.emit(LOp::Deref {
                 alpha: nfp,
