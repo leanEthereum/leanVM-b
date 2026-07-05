@@ -29,7 +29,7 @@ use std::hint::black_box;
 use std::ops::{Add, Mul};
 use std::time::Instant;
 
-use flare::field::{F128, F192, F192Unreduced, F256Unreduced};
+use flare::field::{F64, F128, F128T, F192, F192Unreduced, F256Unreduced};
 
 // ---------------------------------------------------------------------------
 // Harness
@@ -108,6 +108,30 @@ impl BenchField for F128 {
     }
     fn inv(self) -> Self {
         F128::inv(self)
+    }
+}
+
+impl BenchField for F128T {
+    fn rand(s: &mut u64) -> Self {
+        F128T::new(splitmix64(s), splitmix64(s))
+    }
+    fn zero() -> Self {
+        F128T::ZERO
+    }
+    fn inv(self) -> Self {
+        F128T::inv(self)
+    }
+}
+
+impl BenchField for F64 {
+    fn rand(s: &mut u64) -> Self {
+        F64(splitmix64(s))
+    }
+    fn zero() -> Self {
+        F64::ZERO
+    }
+    fn inv(self) -> Self {
+        F64::inv(self)
     }
 }
 
@@ -433,4 +457,64 @@ fn variants() {
     report::<F192>("F192 karatsuba, scalar reduce", |a, b| unsafe {
         t192::mul_karatsuba_scalar_reduce(a, b)
     });
+
+    // -- the 64-bit transition fields: E = F128T (tower) vs the GHASH F128
+    //    above, plus the mixed and base products that motivate the tower.
+    println!(
+        "\n  {:<34} {:>10} {:>12}",
+        "transition fields (ns/op)", "latency", "tput(8ch)"
+    );
+    println!("  {}", "-".repeat(59));
+    report::<F128T>("F128T tower mul (default)", |a, b| a * b);
+    {
+        let mut s = 7u64;
+        let ms = [F128T::rand(&mut s), F128T::rand(&mut s)];
+        let lat = {
+            let seed = [F128T::rand(&mut s), F128T::rand(&mut s)];
+            lat_chain(seed, move |a| F128T::mul2(a, ms)) / 2.0
+        };
+        let tput = {
+            let mut s = 8u64;
+            let mut accs: Vec<[F128T; 2]> = (0..CHAINS / 2)
+                .map(|_| [F128T::rand(&mut s), F128T::rand(&mut s)])
+                .collect();
+            let mms: Vec<[F128T; 2]> = (0..CHAINS / 2)
+                .map(|_| [F128T::rand(&mut s), F128T::rand(&mut s)])
+                .collect();
+            let iters = chain_iters();
+            measure(iters * CHAINS as u64, move || {
+                let mut a = black_box(accs.clone());
+                for _ in 0..iters {
+                    for j in 0..CHAINS / 2 {
+                        a[j] = F128T::mul2(a[j], mms[j]);
+                    }
+                }
+                accs = black_box(a);
+            })
+        };
+        println!("  {:<34} {:>10.2} {:>12.2}", "F128T mul2 batch (per mul)", lat, tput);
+    }
+    report::<F64>("F64 base mul (K x K)", |a, b| a * b);
+    // mul_base: K x E. Latency chains through the E accumulator.
+    {
+        let mut s = 7u64;
+        let k = F64::rand(&mut s);
+        let lat = lat_chain(F128T::rand(&mut s), move |a| a.mul_base(k));
+        let tput = {
+            let mut s = 8u64;
+            let mut accs: Vec<F128T> = (0..CHAINS).map(|_| F128T::rand(&mut s)).collect();
+            let ks: Vec<F64> = (0..CHAINS).map(|_| F64::rand(&mut s)).collect();
+            let iters = chain_iters();
+            measure(iters * CHAINS as u64, move || {
+                let mut a = black_box(accs.clone());
+                for _ in 0..iters {
+                    for j in 0..CHAINS {
+                        a[j] = a[j].mul_base(ks[j]);
+                    }
+                }
+                accs = black_box(a);
+            })
+        };
+        println!("  {:<34} {:>10.2} {:>12.2}", "F128T mul_base (K x E)", lat, tput);
+    }
 }
