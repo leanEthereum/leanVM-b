@@ -1,0 +1,501 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath, amssymb, amsthm}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage[colorlinks=true, linkcolor=blue!50!black, citecolor=blue!50!black, urlcolor=blue!50!black]{hyperref}
+
+\newcommand{\F}{\mathbb{F}}
+\newcommand{\K}{K}            % F_{2^64}, the data field
+\newcommand{\E}{E}            % F_{2^128}, the proof field (degree-2 tower)
+\newcommand{\eq}{\operatorname{eq}}
+\newcommand{\cube}[1]{\{0,1\}^{#1}}
+\newcommand{\gen}{\mathsf{g}}
+\newcommand{\pkd}{\mathrm{pkd}}
+\newcommand{\WP}[1]{\textbf{WP#1}}
+\newtheorem{remark}{Remark}
+
+\title{\bf Transition to 64 bits}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+\vspace{-3em}
+\begin{center}
+Moving leanVM-b's data to $\F_{2^{64}}$ inside the degree-2 tower $\F_{2^{128}}=\F_{2^{64}}[y]$:\\
+64-bit machine words, commitments over $\F_{2^{64}}$, challenges in $\F_{2^{128}}$, one ring switching.
+\end{center}
+
+\tableofcontents
+
+\section{Motivation and summary}\label{sec:summary}
+
+The machine and its proof system currently live entirely in $\F_{2^{128}}$
+(\texttt{misc/doc.tex}): every machine value is a 128-bit field element, and
+the committed witness is $\F_{2^{128}}$-valued. But the VM's data (memory
+words, addresses, registers, counters) does not need 128 bits; committing it
+at that width doubles the witness for nothing.
+
+We keep the 128-bit challenge field, and with it today's $\sim$120-bit
+soundness, but split the roles that $\F_{2^{128}}$ plays today between the
+two levels of a degree-2 \emph{tower}
+\[
+  \K=\F_{2^{64}},\qquad \E=\F_{2^{128}}=\K[y]/(y^2+y+c):
+\]
+\begin{itemize}
+\item \textbf{Data and commitments live in $\K$.} Memory words, addresses,
+  registers, operands, counts, opcodes, separators: everything the VM
+  touches is a $\K$-element, and the committed witness is one dense
+  $\K$-valued stack, Reed--Solomon encoded over $\K$ (8-byte symbols).
+  Committed data \emph{halves} in size relative to today. Flock's Boolean
+  witness stays in $\F_2$ and is packed $64$ bits per $\K$-word.
+\item \textbf{Randomness lives in $\E$.} Every challenge ($\alpha,\gamma,
+  \eta,\lambda$, zerocheck points, sumcheck and GKR rounds, PCS folds, and
+  the ring-switching batch) is sampled from $\E$, so every interactive
+  error term keeps its current form $c/2^{128}$: the security level does
+  not move. Since $\K\subset\E$ is a basis-aligned subfield, $\K$-valued
+  data combines with $\E$-valued challenges at a fraction of today's cost.
+\item \textbf{One ring switching}~\cite{rsgen}, for flock only: the $\F_2$
+  witness packs into $\K$ ($64=2^6$ bits per element) and its claims,
+  opened over $\E$, reduce to one claim on the packed $\K$-polynomial. The
+  VM columns need \emph{no} ring switching at all: they are committed
+  directly, and their claims are $\E$-weighted sums over $\K$-data, which
+  the PCS opens natively (\S\ref{sec:rs}).
+\end{itemize}
+Structurally the system stays exactly today's architecture (one stacked
+witness, one claim pool, one batch-mixed Ligerito opening, one flock ring
+switching): two type substitutions (data $\F_{2^{128}}\to\K$, randomness
+$\F_{2^{128}}\to\E$) and \texttt{LOG\_PACKING} $7\to6$. This transition
+buys witness size and prover speed, not security: a $\K$-product costs $1$
+\texttt{PMULL} (versus $6$ for today's product) and the mixed
+$\K\times\E$ product costs $2$.
+
+\paragraph{Outlook.} When more than $128$ bits of soundness are needed,
+swap $\E$ for the degree-3 extension $\F_{2^{192}}=\K[y]/(y^3+y+1)$
+(implemented and benchmarked: type \texttt{F192}): commitments stay over
+$\K$, only the challenge field grows, and every interactive error term
+drops to $c/2^{192}$. This document targets the degree-2 step only.
+
+\section{The field stack}\label{sec:fields}
+
+\paragraph{The base field $\K$.}
+$\K=\F_{2^{64}}=\F_2[x]/(x^{64}+x^4+x^3+x+1)$, the standard low-weight
+irreducible pentanomial; reduction folds by $\mathtt{0x1B}$. One
+multiplication is a single \texttt{PMULL} plus a fold. Crucially for the VM
+(\S\ref{sec:vm-transport}), $x$ is \emph{primitive}: its order is exactly
+$2^{64}-1$ (verified by checking $x^{(2^{64}-1)/q}\neq 1$ for every prime
+$q\mid 2^{64}-1=3\cdot5\cdot17\cdot257\cdot641\cdot65537\cdot6700417$; a
+unit test pins this).
+
+\paragraph{The extension $\E$.}
+$\E=\K[y]/(y^2+y+c)$ with $c=x^{61}$. By Artin--Schreier, $y^2+y+c$ is
+irreducible over $\K$ exactly when $\mathrm{Tr}_{\K/\F_2}(c)=1$, and
+$x^{61}$ is the least monomial of trace $1$ ($x^{63}$ is the only other
+one; a unit test pins the choice). Elements are $e_0+e_1y$ with
+$e_0,e_1\in\K$: two 64-bit lanes, the natural layout for packing pairs of
+$\K$-values. This $\E$ is isomorphic to today's GHASH field but in a
+different representation: transcripts and serialized proofs change bytes,
+not security.
+
+\paragraph{Embeddings and mixed arithmetic.}
+$\F_2\subset\K\subset\E$; the embedding $\K\hookrightarrow\E$ is
+$e\mapsto(e,0)$, free. The workhorse is the \emph{mixed} product
+\[
+  \K\times\E\to\E,\qquad k\cdot(e_0+e_1y)=ke_0+ke_1\,y,
+\]
+two base multiplications ($2$ \texttt{PMULL}): a third of the cost of
+today's $\F_{2^{128}}$ product ($6$ \texttt{PMULL}). The full
+$\E\times\E$ product is a 2-term Karatsuba ($3$ \texttt{PMULL} products,
+the fold $y^2=y+c$ with the sparse constant $c=x^{61}$, and two base
+reductions), on par with today's product; the exact schedule is fixed at
+\WP1 and \texttt{field\_bench} arbitrates. In \texttt{PMULL} counts:
+$\K\times\K$ costs $1$, $\K\times\E$ costs $2$, $\E\times\E$ about $6$.
+
+\section{What lives where}\label{sec:vm-transport}
+
+\subsection{Machine values move to $\K$}
+
+Every VM quantity of \texttt{doc.tex} \S1 transports verbatim with
+$\F_{2^{128}}$ replaced by $\K$ and $\gen=x\in\K$:
+memory cells, the registers $\mathbf{pc},\mathbf{fp}$, operands, immediates,
+read counts, domain separators, opcodes, all $\K$-elements; addresses and
+counts remain powers of $\gen$, with $\operatorname{ord}(\gen)=2^{64}-1$.
+
+\paragraph{Instance caps.}\label{sec:caps}
+Several soundness arguments count objects against
+$\operatorname{ord}(\gen)$. At $2^{128}$ they could be waved through,
+since no instance approaches $2^{128}$ of anything; at $2^{64}$ that
+hand-wave is not an argument, and we do not make it. Instead the protocol
+fixes explicit \emph{caps} as public constants, and the verifier checks the
+\emph{announced} instance against them before running any reduction,
+rejecting on violation:
+\[
+  h\le 32,\qquad N\le 2^{32},\qquad \sum_{t}2^{\tau_t}\;\le\;2^{56}
+\]
+(memory size, program length, total announced rows across all tables). A
+row makes at most $16$ reads (generously; the post-transition
+\texttt{BLAKE3} row makes $13$: twelve memory, one bytecode), so every
+\emph{admissible} instance performs
+\[
+  R\;\le\;16\cdot 2^{56}+2\cdot 2^{h}+2\cdot N\;<\;2^{61}
+\]
+read flushes in total: a bound that holds for every instance the
+verifier accepts, not merely realistic ones. ($2^{56}$ rows is
+$\sim\!10^{17}$, far beyond any provable trace, so the caps cost no
+completeness; the exact constants may be revisited, what matters is that
+they are checked and keep $R$ provably below $2^{64}-1$.)
+
+The counting arguments are then theorems, conditional only on the cap
+check:
+\begin{itemize}
+\item \emph{Memory soundness} (doc \S6.1): if the bus balances while some
+  read of address $i$ returns $v\neq\mathbf{m}[i]$, the multiset of
+  value-$v$ read counts is invariant under $\times\gen$, so nonempty it has
+  size at least $\operatorname{ord}(\gen)=2^{64}-1>R$, contradicting the
+  cap. Hence it is empty and every read returns the committed value.
+\item \emph{Counts cannot wrap}: every count exponent is at most
+  $R<2^{64}-1$, so the counts $\gen^{0},\gen^{1},\dots$ occurring in one
+  address's history are pairwise distinct and the finalize count is
+  uniquely determined.
+\item \emph{Range checks in the exponent} (doc \S9.5): $e+f\equiv k-1
+  \pmod{2^{64}-1}$ with $e,f<2^{h}\le2^{32}$ and $k\le 2^{16}$ forces
+  $e+f<2^{33}<2^{64}-1$: the congruence is an equality over the integers,
+  and $e\le k-1$ follows exactly as before.
+\item \emph{Monomial index encoding}: $\gen^k=x^k$ is the $k$-th monomial for
+  $k<64$ (previously $k<128$); the XMSS encoding check must budget indices
+  accordingly.
+\end{itemize}
+When \texttt{doc.tex} is next revised, its ``automatic at any real
+scale'' remarks (doc \S6.1) must be replaced by these caps.
+
+\subsection{ISA deltas}
+
+\begin{itemize}
+\item \texttt{MUL\_NATIVE} becomes the $\K$-product (one \texttt{PMULL}
+  natively; in-circuit constraint $v_C=v_A\cdot v_B$ is now a $\K$-relation,
+  degree 2 as before).
+\item \texttt{BLAKE3}: a 256-bit value now spans \emph{four} consecutive
+  64-bit cells; the instruction touches $3\times4=12$ memory cells (was 6).
+  Operand $o$ names cells $\mathbf{fp}\cdot o,\ \gen\cdot\mathbf{fp}\cdot o,\
+  \gen^2\cdot\mathbf{fp}\cdot o,\ \gen^3\cdot\mathbf{fp}\cdot o$ (three
+  virtual $\times\gen$ successors). Bus traffic per hash row grows
+  accordingly; the value cells are still not re-committed but read out of the
+  flock witness (\S\ref{sec:pipeline}).
+\item Public input: $256$ bits now occupy memory cells $0..3$ (a 2-variable
+  subcube); the verifier's line $\widetilde{\mathrm{PI}}$ becomes a
+  square.
+\item Compiler/programs: immediates are 64-bit; XMSS digests are 4 words;
+  frame layouts, trampolines, range checks are otherwise untouched.
+\end{itemize}
+
+\subsection{Protocol randomness moves to $\E$}
+
+All challenges are sampled from $\E$ (16-byte transcript reads, as today,
+in the tower representation); all sumchecks, zerochecks and GKR passes run
+over $\E$. Committed columns are $\K$-valued, so:
+\begin{itemize}
+\item the bus fingerprint $\pi_\alpha(\sigma)=\sum_i\alpha^i\sigma_i$ has
+  $\sigma_i\in\K\subset\E$, $\alpha\in\E$: Schwartz--Zippel over
+  $(\alpha,\gamma)$ errs at $K(m-1)/2^{128}$, as today;
+\item GKR leaves $\gamma-\pi_\alpha(\sigma)$ and all product-tree layers
+  are $\E$-valued, computed with the deferred-reduction accumulators;
+\item zerocheck first rounds evaluate $\K$-valued columns against $\E$-valued
+  $\eq$ tensors: mixed products at a third of today's cost.
+\end{itemize}
+
+\section{One commitment over $\K$, one ring switching}\label{sec:rs}
+
+\subsection{The stacked witness}\label{sec:lists}
+
+As today (doc \S3.1), no column is committed on its own: all committed
+data is stacked largest-first into \emph{one} multilinear
+$q:\cube{M}\to\K$, zero-padded to a power of two, with each column at a
+$2^\kappa$-aligned offset recoverable through an $\eq$-selector. The only
+changes are the value type ($\K$ instead of $\F_{2^{128}}$) and one
+region: flock's Boolean witness enters as the \emph{packed} column
+$q_\pkd$, $64=2^6$ bits per $\K$-word (\texttt{LOG\_PACKING} $7\to6$),
+exactly as it enters today's $\F_{2^{128}}$ stack at $128$ bits per word.
+
+\subsection{Base-field commitment, extension-field opening}\label{sec:pipeline}
+
+Ligerito commits $q$ \emph{over $\K$} and opens it \emph{over $\E$}: an
+opening proves $\sum_{w\in\cube{M}} W(w)\,\widehat q(w)=C$ for any
+verifier-evaluable weight $W:\cube{M}\to\E$. This base-field-commit,
+extension-field-open mode is standard in this PCS family; WHIR~\cite{whir}
+(the very similar PCS used by leanVM) ships it natively. Nothing in
+Ligerito resists it: the commitment layer (the Reed--Solomon code over
+$\K$, the Merkle tree over 8-byte $\K$-symbols) only contributes
+\emph{distance}, while every random ingredient (row batching, folding
+challenges, the opening sumcheck) is sampled from $\E$ with error terms
+$c/2^{128}$, exactly as today. After the first fold with an $\E$-challenge
+the working vectors are $\E$-valued regardless; only the level-0 codeword
+and its Merkle leaves are $\K$-valued, and query answers shrink
+accordingly.
+
+The claim pipeline is then \emph{today's, verbatim} (doc \S10): every
+reduction deposits evaluation claims on committed columns into the claim
+pool; each claim is an $\E$-weighted sum over the $\K$-stack via the
+stacking selectors; a $\lambda$-batch folds the pool into a single
+weighted claim, discharged by one batch-mixed Ligerito opening. VM columns
+need no ring switching at all. The single addition, as today, is flock's
+ring switching, whose output claim on the $q_\pkd$ region joins the same
+opening.
+
+\subsection{Flock's ring switching: $\F_2\to\K$, opened over $\E$}\label{sec:multi}
+
+The bit-level claims on flock's witness are arranged to be a
+\emph{single} global claim $\widehat q_F(\zeta)=v$ over $\E$ (flock's
+zerocheck output; any further bit-witness claims, e.g.\ the BLAKE3 value
+cells, $\K$-words read out of the bit witness by 64-bit monomial-weighted
+selection, are batched into it upstream, inside flock's own reduction).
+Here the note's~\cite{rsgen} two degrees genuinely differ: the packing
+field is $\K$ ($f=64$), the opening field is $\E$ ($e=128$), and the note
+is stated for exactly this unrelated-degrees setting.
+
+Split $\zeta$ at the packing boundary: with members $P_j$, $j\in\cube{6}$,
+\[
+  v\;=\;\sum_{j\in\cube{6}}
+  \eq\bigl(j,\zeta_{\mathrm{hi}}\bigr)\,
+  \widehat P_{j}(\zeta_{\mathrm{lo}}) .
+\]
+The prover reveals the $64$ member values
+$\alpha_{j}=\widehat P_{j}(\zeta_{\mathrm{lo}})\in\E$ (the
+$\widehat s$-vector, now $1$\,KB), and the verifier asserts the
+combination. The note then runs as written: the verifier computes the
+$e=128$ coordinate targets $t_w=\sum_j\alpha_{w,j}\,b^F_j\in\K$ itself
+(the bijection; nothing more is sent), batches them with powers of
+$\gamma$, and one degree-2 sumcheck over $m_F$ variables against the
+committed $q_\pkd$ reduces everything to a single claim
+$\widehat q_\pkd(r')=\alpha'$ at $r'\in\E^{m_F}$, which joins the pool.
+Two tower-specific points:
+\begin{itemize}
+\item the batching challenge must come from an extension of the
+  \emph{packing} field (note, Remark~1): $\gamma\leftarrow\E\supseteq\K$,
+  which the tower provides by construction;
+\item the sumcheck summand pairs the $\K$-valued $q_\pkd$ with the
+  $\E$-valued transparent factor $B$: mixed products, $2$ \texttt{PMULL}
+  per term.
+\end{itemize}
+Error: $(2m_F+128)/2^{128}$. The verifier's $\widetilde B(r')$ is one
+matrix-branching-program evaluation of width $e=128$, the DP24
+tensor-algebra machinery already in \texttt{pcs/tensor\_algebra.rs}.
+Revealing the member values is safe for one reason only: they feed the
+bijection, so a fake vector forces some $t_w$ wrong with certainty and the
+$\gamma$-batched sumcheck rejects; the values must never be checked only
+through a combined opening. (The prototype in
+\texttt{tests/ring\_switch\_proto.rs} exercises exactly this
+reveal-and-assert machinery and its attacks, end to end.)
+
+\section{Ligerito over $\K$}\label{sec:pcs}
+
+\paragraph{Code layer.} One additive NTT over $\K$, encoding
+$\K$-messages into $\K$-codewords: single lane, no interleaving. (New
+module, the $\F_{2^{64}}$ analogue of \path{ntt/additive_ntt_f128.rs};
+LCH basis over an $\F_2$-subspace of dimension $\le 64$: domains up to
+$2^{64}$, far beyond need.) Symbols shrink to $8$ bytes; the Merkle layer is otherwise
+untouched. Folds pair $\K$-symbols with $\E$-challenges (mixed kernels)
+at the first level and are $\E$-valued afterwards, where deeper Ligerito
+levels commit $\E$-valued codewords (two $\K$-lanes, encoded lane-wise by
+the same NTT).
+
+\paragraph{Parameters.} Unchanged. The challenge field is the same
+$2^{128}$, the rate and decoding regime carry over, and so do query counts
+and proof-of-work grinding; the base-field commitment only shrinks the
+level-0 query answers. The base-commit analysis (correlated agreement for
+$\E$-linear combinations of $\K$-codewords) is the standard one this PCS
+family already relies on, stated explicitly by WHIR~\cite{whir}; \WP4
+writes it down for our parameters.
+
+\section{Soundness budget}\label{sec:soundness}
+
+All interactive reductions sample from $\E$; writing $s$ for constraint
+counts, $\tau$ for table log-sizes, $K$ for bus tuples, $\mu$ for GKR tree
+height, $J$ for the pool size, every term keeps its current form
+$c/2^{128}$: constraint batching $(s-1)/2^{128}$; zerochecks
+$O(\tau)/2^{128}$; bus fingerprint $K(m-1)/2^{128}$; GKR
+$O(\mu^2)/2^{128}$; flock's ring switching $(2m_F+128)/2^{128}$
+(\S\ref{sec:multi}); the pool batch $J/2^{128}$. The counting arguments
+(memory checking, count non-wrap, range checks) contribute no
+probabilistic term at all: under the instance caps of
+\S\ref{sec:vm-transport} they are exact. The PCS keeps today's
+parameters. \textbf{End-to-end: $\sim$120 bits, unchanged}: this
+transition moves the data and commitment field, not the security level;
+the upgrade past $128$ bits is the degree-3 outlook.
+
+\section{Performance forecast}\label{sec:perf}
+
+Directional accounting against today's prover, in \texttt{PMULL} counts
+(\S\ref{sec:fields}):
+
+\begin{itemize}
+\item \textbf{Committed data halves.} Words shrink $128\to64$ bits; the
+  flock side was already bit-packed. Half the bytes to encode and hash;
+  8-byte symbols halve the level-0 query answers.
+\item \textbf{Trace generation and witness building} run in $\K$: one
+  \texttt{PMULL} per product, $6\times$ cheaper than today.
+\item \textbf{Sumcheck/zerocheck early rounds} pair $\K$-columns with
+  $\E$-tensors: $2$ \texttt{PMULL} per term, a third of today. Later
+  rounds and \textbf{GKR} are pure $\E$: on par with today per element.
+  GKR leaf count is unchanged; BLAKE3 rows add bus tuples ($12$ vs.\ $6$
+  memory flushes).
+\item \textbf{NTT}: $\K$-butterflies at $1$ \texttt{PMULL} on half the
+  data.
+\item \textbf{No new sumchecks.} The pipeline has exactly today's shape:
+  one flock ring-switching sumcheck (now with mixed $2$-\texttt{PMULL}
+  terms) and one batch-mixed opening; the $\widehat s$-vector halves to
+  $1$\,KB.
+\end{itemize}
+Net expectation: prover faster across the board, proof slightly smaller,
+security level unchanged.
+
+\section{Actionable migration plan}\label{sec:plan}
+
+Work packages in dependency order. Each lists its primary files and an
+acceptance gate. $\K$ denotes the new first-class $\F_{2^{64}}$ type
+(\texttt{F64}); the tower field type is \texttt{F128T}.
+
+\paragraph{\WP{1}: Field plumbing.}
+Promote $\K$ to a first-class field type \texttt{F64} in
+\path{vendor/flock-core/src/field/} (NEON mul $=1$ \texttt{PMULL} $+$
+fold, \texttt{square}, \texttt{inv}, serde). Implement the tower type
+\texttt{F128T} $=\K[y]/(y^2+y+x^{61})$: 2-term Karatsuba mul,
+deferred-reduction accumulator, \texttt{square}, \texttt{inv}, mixed ops
+\texttt{mul\_base(F64)} at $2$ \texttt{PMULL}, \texttt{From<F64>}, batched
+kernels. Unit tests mirror \texttt{gf2\_64x3.rs} (portable references,
+independently generated vectors, primitivity of $x$, the trace-1 check on
+$c$). Add \texttt{F128T} rows to \texttt{field\_bench} against the GHASH
+\texttt{F128}. \texttt{F192} stays in the tree for the outlook.
+\emph{Gate:} field tests green, including mixed-op agreement with the
+portable references; \texttt{F128T} multiplication on par with GHASH.
+
+\paragraph{\WP{2}: Transcript and challenger.}
+\path{src/transcript.rs} and \path{flock-core}'s \path{challenger.rs}:
+sample $\E$ challenges (16 bytes, tower representation), domain
+separation, keep BLAKE3 hashing and PoW grinding.
+\emph{Gate:} transcript vectors regenerate deterministically; grinding test.
+
+\paragraph{\WP{3}: Additive NTT over $\K$ and $\K$-symbol commitment.}
+New \path{ntt/additive_ntt_f64.rs} (LCH over $\K$, parallel version);
+$\K$-codeword commitment with 8-byte symbols (\path{pcs/commit.rs},
+\path{merkle.rs}).
+\emph{Gate:} encode/decode round-trip tests; distance spot-checks against a
+naive Lagrange evaluator; NTT bench.
+
+\paragraph{\WP{4}: Ligerito, $\K$-commit / $\E$-open.}
+\texttt{pcs/ligerito.rs}, \texttt{pcs/basefold.rs}: level-0 fold kernels
+pair $\K$-symbols with $\E$-challenges (mixed products, deferred
+reduction); deeper levels are $\E$-valued (two $\K$-lanes through the same
+NTT). Keep today's parameter derivation, query counts and grinding bits;
+write down the base-commit correlated-agreement statement for our
+parameters (WHIR~\cite{whir} precedent); \texttt{src/pcs.rs}
+\texttt{PROFILE}/\texttt{MIN\_MU} untouched.
+\emph{Gate:} commit/open/verify round-trip at several sizes; opening bench
+against today's numbers.
+
+\paragraph{\WP{5}: VM in $\K$.}
+The \texttt{src/cpu} modules (\texttt{isa}, \texttt{execute},
+\texttt{trace}, \texttt{layout}): 64-bit machine words, $\gen=x\in\K$,
+BLAKE3 operands as 4-cell values (12 reads);
+\texttt{src/field.rs}: \texttt{g\_powers}, \texttt{x\_pow},
+\texttt{index\_mle} over $\K$ (evaluated into $\E$);
+\texttt{src/compiler}: 64-bit immediates, 4-word digests;
+\texttt{src/tables.rs} and \texttt{src/constraints.rs}: $\K$-valued
+columns, $\E$-valued zerocheck (mixed first rounds); \texttt{src/gkr.rs}
+and \texttt{src/leaf.rs}: $\E$-valued trees over $\K$-fingerprint inputs;
+\texttt{src/witness.rs}: the $\K$-stack; \texttt{tests}: xmss\_vm,
+hash\_chain, range\_check ported. The verifier gains the
+\emph{instance-cap checks} of \S\ref{sec:vm-transport}: announced table
+sizes, memory size $h$, and program length $N$ are validated against the
+caps before any reduction runs.
+\emph{Gate:} full VM test suite green with commitments stubbed (claims
+checked directly against columns); negative tests for each cap (an
+announcement exceeding $h$, $N$, or the row cap must be rejected).
+
+\paragraph{\WP{6}: Flock's ring switching, $\F_2\to\K$.}
+Adapt the DP24 pipeline (\path{pcs/ring_switch.rs}, \path{pcs/pack.rs},
+\path{pcs/tensor_algebra.rs}, \path{flock-prover}'s witness layout) from
+$f=e=128$ to $f=64$, $e=128$: \texttt{LOG\_PACKING} $7\to6$, the
+$\widehat s$-vector at $64$ entries, the coordinate targets $t_w\in\K$,
+the batching challenge $\gamma\in\E$ (note, Remark~1), the sumcheck
+summand mixed $\K\times\E$; the univariate-skip prefix accounting moves
+from $7$ to $6$ packing variables, and every representation-sensitive
+constant (the $\varphi_8$ LCH basis, the \texttt{rs\_eq} machinery) is
+re-derived for $\K$ and the tower. Ensure every bit-witness claim,
+including the BLAKE3 value cells, is batched into flock's single output
+claim upstream. The prototype in \texttt{tests/ring\_switch\_proto.rs}
+provides reference machinery for the reveal-and-assert step and its
+adversarial tests.
+\emph{Gate:} flock's BLAKE3 R1CS proof verifies end-to-end against the
+$\K$-packed witness; cross-check the packed polynomial against a bit-level
+reference.
+
+\paragraph{\WP{7}: Protocol assembly.}
+In \texttt{src} (\texttt{pcs.rs}, \texttt{blake3\_flock.rs},
+\texttt{lib.rs}, \texttt{main.rs}): the single $\K$-stack (VM columns plus
+$q_\pkd$), the pool and $\lambda$-batch as today, flock's ring-switched
+claim routed into the same batch-mixed opening, proof types/serde
+updated, proof sizes re-measured.
+\emph{Gate:} \texttt{cargo testall} green (xmss\_vm, hash\_chain
+end-to-end); proof-size and prover-time table added to README; soundness
+budget of \S\ref{sec:soundness} re-checked against final parameters.
+
+\paragraph{Suggested sequencing.} \WP1$\to$\WP2 unblock everything;
+\WP3$\to$\WP4 (PCS) and \WP5 (VM) proceed in parallel; \WP6 needs
+\WP1--\WP4; \WP7 last. The system stays green throughout if \WP5's gate
+runs with stubbed commitments, letting the VM port land before the PCS
+port.
+
+\section{Risks and open questions}\label{sec:risks}
+
+\begin{itemize}
+\item \textbf{Base-commit analysis} (\WP4). Committing over $\K$ and
+  opening over $\E$ is standard (WHIR~\cite{whir} ships it), but the
+  correlated-agreement statement for $\E$-linear combinations of
+  $\K$-codewords must be written down for our concrete Ligerito
+  parameters, not assumed; have it reviewed before freezing.
+\item \textbf{Representation swap breadth} (\WP2, \WP4, \WP6). Everything
+  typed \texttt{F128} changes meaning: the GHASH and tower representations
+  must be distinct types with no byte-level interchange, and every
+  representation-sensitive constant (LCH/$\varphi_8$ bases,
+  \texttt{rs\_eq} tables, transcript encoding) re-derived. Mechanical, but
+  wide; the type system should do the policing.
+\item \textbf{$\E\times\E$ parity} (\WP1). The tower product is expected
+  on par with GHASH ($3$ Karatsuba \texttt{PMULL} plus folds versus
+  GHASH's $6$); confirm on hardware with \texttt{field\_bench} before
+  committing to the swap everywhere.
+\item \textbf{Ring-switching rework depth} (\WP6). Going from $f=e=128$ to
+  $f=64$, $e=128$ changes the type of the coordinate targets ($t_w\in\K$)
+  and the packing prefix width; the univariate-skip coupling in
+  \path{pcs/ring_switch.rs} is the place where surprises would live.
+\item \textbf{Deferred security upgrade.} This transition keeps
+  $\sim$120 bits. The degree-3 path to more than $128$ bits is implemented
+  (\texttt{F192}) and its non-power-of-two ring switching is covered by
+  the note~\cite{rsgen}; revisit once the 64-bit data plane is landed.
+\item \textbf{Non-goals for this transition}: no change to BLAKE3 as the
+  hash, to the M3/bus design, to the ISA surface beyond the word width,
+  to the PCS parameters, or to the XMSS scheme.
+\end{itemize}
+
+\begin{thebibliography}{9}
+\bibitem{rsgen} Ring switching, generalized. This repository,
+\texttt{ring-switching-generalized.tex}.
+\bibitem{DP24} Benjamin E. Diamond and Jim Posen. Polylogarithmic Proofs for
+Multilinears over Binary Towers. Cryptology ePrint Archive, Paper 2024/504.
+\url{https://eprint.iacr.org/2024/504}
+\bibitem{ligerito} Andrija Novakovic and Guillermo Angeris. Ligerito: A Small
+and Concretely Fast Polynomial Commitment Scheme. Cryptology ePrint Archive,
+Paper 2025/1187. \url{https://eprint.iacr.org/2025/1187}
+\bibitem{whir} Gal Arnon, Alessandro Chiesa, Giacomo Fenzi, and Eylon
+Yogev. WHIR: Reed--Solomon Proximity Testing with Super-Fast Verification.
+Cryptology ePrint Archive, Paper 2024/1586.
+\url{https://eprint.iacr.org/2024/1586}
+\bibitem{flock} Benedikt B\"unz, Ron Rothblum, and William Wang. Flock: Fast
+proving for batch Boolean computations. Cryptology ePrint Archive, Paper
+2026/1329. \url{https://eprint.iacr.org/2026/1329}
+\bibitem{doc} leanVM-b specification. This repository,
+\texttt{misc/doc.tex}.
+\end{thebibliography}
+
+\end{document}

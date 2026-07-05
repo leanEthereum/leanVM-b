@@ -1,0 +1,89 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{xcolor}
+\usepackage[colorlinks=true,linkcolor=blue!50!black,citecolor=blue!50!black,urlcolor=blue!50!black]{hyperref}
+
+\newcommand{\F}{\mathbb{F}}
+\newcommand{\eq}{\mathrm{eq}}
+\newcommand{\pkd}{\mathrm{packed}}
+
+\title{\textbf{Ring switching, generalized}}
+
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+\vspace{-3em}
+\begin{center}
+How to transform a PCS for $\F_{2^f}$ into a PCS for $\F_{2^e}$, for arbitrary $e$ and $f$.
+\end{center}
+
+\paragraph{Goal.} We want $f$ \emph{bit}-valued multilinears $P_1,\dots,P_f:\{0,1\}^m\to\{0,1\}$ over the same $m$ variables, to be committed through a dense PCS over the \emph{packing} field $\F_{2^f}$ (if we can commit to bits, we can trivially commit in any extension). The evaluation claims, however, arrive over a \emph{different} field: at an opening point $r\in\F_{2^e}^m$ we are given $P_i(r)=\alpha_i\in\F_{2^e}$. Ring switching~\cite{DP26} packs the $f$ polynomials into one $\F_{2^f}$-dense polynomial and reduces the $f$ claims to a single claim on it. The two extension degrees, $f$ (packing) and $e$ (opening), are unrelated (not necessarily a sub-field / extension-field).
+
+\paragraph{Packing.} Fix an $\F_2$-basis $\{b^{F}_i\}_{i=1}^f$ of $\F_{2^f}$. Consider the multilinear polynomial:
+\[
+P_\pkd(y)=\sum_{i=1}^f P_i(y)\,b^{F}_i,\qquad y\in\{0,1\}^m,
+\]
+dense over $\F_{2^f}$, which we commit to.
+
+\paragraph{Reduction.} The claims share a \emph{common} point $r\in\F_{2^e}^m$; each is
+\[
+\alpha_i=P_i(r)=\sum_{y\in\{0,1\}^m}\eq(r,y)\,P_i(y),
+\]
+with bits $P_i(y)$ and weights $\eq(r,y)\in\F_{2^e}$. Fix an $\F_2$-basis $\{b^{E}_w\}_{w=1}^e$ of the \emph{opening} field $\F_{2^e}$ and expand the weights, $\eq(r,y)=\sum_{w=1}^e A(y,w)\,b^{E}_w$, with $A:\{0,1\}^m\times[e]\to\F_2$ public, multilinear in $y$ for each fixed $w$, with efficiently computable MLE (see \nameref{section:eval_B} below). Substituting and pulling out the basis,
+\[
+\alpha_i=\sum_{w=1}^eb^{E}_w\underbrace{\sum_{y\in\{0,1\}^m}A(y,w)\,P_i(y)}_{\in\,\F_2},
+\]
+so the $w$-th $\F_2$-coordinate of $\alpha_i$ is $\alpha_{w,i}=\sum_{y\in\{0,1\}^m}A(y,w)\,P_i(y)$. Now recombine \emph{across $i$} with the \emph{packing} basis $\{b^{F}_i\}$: define, for each $w \in \{1,\dots,e\}$,
+\[
+t_w:=\sum_{i=1}^f\alpha_{w,i}\,b^{F}_i=\sum_{y\in\{0,1\}^m}A(y,w)\underbrace{\sum_{i=1}^fP_i(y)\,b^{F}_i}_{=\,P_\pkd(y)}=\sum_{y\in\{0,1\}^m}A(y,w)\,P_\pkd(y)\ \in\ \F_{2^f}
+\]
+one claim per $w$, now purely about the packed polynomial $P_\pkd$ over $\F_{2^f}$ and public $A$. Batch these $e$ claims with powers of a random $\gamma\leftarrow\F_{2^f}$ into a single sumcheck on $\sum_{y\in\{0,1\}^m}B(y)\,P_\pkd(y)=\sum_{w=1}^e\gamma^w t_w$, with $B(y)=\sum_{w=1}^e\gamma^w A(y,w)$. Its output is the packed claim $P_\pkd(r')=\alpha'$ at a point $r'\in\F_{2^f}^m$ (plus a $B(r')$ the verifier computes itself). Done.
+
+\paragraph{Soundness.} Suppose the input is wrong: $\alpha_i\neq P_i(r)$ for some $i$, against the committed $P_\pkd$. Then the reduction outputs a correct packed claim $P_\pkd(r')=\alpha'$ with probability at most
+\[
+\underbrace{\frac{e}{2^f}}_{\text{batching}}\;+\;\underbrace{\frac{2m}{2^f}}_{\text{sumcheck}}\;=\;\frac{2m+e}{2^f},
+\]
+
+Proof:
+
+\begin{enumerate}
+\item The map $(\alpha_i)_{i=1}^f\mapsto(t_w)_{w=1}^e$ is a \emph{bijection} $\F_{2^e}^f\to\F_{2^f}^e$. So a wrong input forces, with certainty, $t_w\neq\sum_{y\in\{0,1\}^m}A(y,w)\,P_\pkd(y)$ for some $w$.
+\item By Schwartz--Zippel, $\sum_{w=1}^e\gamma^w t_w$ then differs from $\sum_{y\in\{0,1\}^m}B(y)\,P_\pkd(y)$ except with probability $\le e/2^f$ over $\gamma\leftarrow\F_{2^f}$.
+\item Sumcheck started from this false value (summand of degree $2$, over $m$ variables) ends at a correct claim $P_\pkd(r')=\alpha'$ with probability $\le 2m/2^f$.
+\end{enumerate}
+
+\phantomsection
+\section*{Evaluating $B$}
+\label{section:eval_B}
+
+It remains to compute $B(r')$, where $B(y)=\sum_{w=1}^e\gamma^w A(y,w)$ and $A(y,w)\in\F_2$ is the $w$-th coordinate of $\eq(r,y)$, i.e.\ $\eq(r,y)=\sum_{w=1}^e A(y,w)\,b^E_w$. Following~\cite{Flock}, this gives $B$ a closed form on the hypercube. Let $\Phi:\F_{2^e}\to\F_{2^f}$ be the $\F_2$-linear map with $\Phi(b^E_w)=\gamma^w$. For every $y\in\{0,1\}^m$:
+\[
+\Phi\big(\eq(r,y)\big)=\Phi\Big(\sum_{w=1}^e A(y,w)\,b^E_w\Big)=\sum_{w=1}^e A(y,w)\,\Phi(b^E_w)=\sum_{w=1}^e A(y,w)\,\gamma^w=B(y).
+\]
+So on the hypercube $B$ is ``compute $\eq(r,y)\in\F_{2^e}$, then apply $\Phi$''.
+
+Now $\eq(r,y)=\prod_{j=1}^m g_j(y_j)$ with $g_j(0)=1-r_j$, $g_j(1)=r_j$, and multiplication by a fixed element of $\F_{2^e}$ is an $e\times e$ matrix $M_j^{(y_j)}$ over $\F_2$; so, on $\{0,1\}^m$, $B$ is a width-$e$ \emph{matrix} branching program: the product $\prod_j M_j^{(y_j)}$ (started from the coordinates of $1$), followed by $\Phi$. Its multilinear extension is then evaluable at $r'$ in $O(m e^2)$ field operations (see~\cite[Section~4.1]{Jagged}, or more generally~\cite{HR18}).
+
+\section*{Remarks}
+
+\begin{enumerate}
+\item \emph{Small $\F_{2^f}$.} If $2^f$ is too small for the error $(2m+e)/2^f$, sample $\gamma$ (and run the sumcheck) in an extension $L\supseteq\F_{2^f}$: the error becomes $(2m+e)/|L|$, and $P_\pkd$ is just opened at $r'\in L^m$.
+\item \emph{Any field.} Nothing uses characteristic $2$: replace $\F_2$ by any field $K$ and $\F_{2^f},\F_{2^e}$ by degree-$f$ and degree-$e$ extensions of $K$; it still works.
+\end{enumerate}
+
+\section*{Credits}
+
+The idea comes from Lev Soukhanov, \textit{[[alloc]init]}.
+
+\begin{thebibliography}{9}
+\bibitem{DP26} Benjamin E. Diamond and Jim Posen. Polylogarithmic proofs for multilinears over binary towers. In \emph{Advances in Cryptology -- EUROCRYPT 2026}, pages 3--32. Springer, 2026.
+\bibitem{Flock} Benedikt B\"unz, Ron Rothblum, and William Wang. Flock: Fast proving for batch Boolean computations. Cryptology ePrint Archive, Paper 2026/1329, 2026. \url{https://eprint.iacr.org/2026/1329}.
+\bibitem{Jagged} Tamir Hemo, Kevin Jue, Eugene Rabinovich, Gyumin Roh, and Ron D. Rothblum. Jagged polynomial commitments (or: How to stack multilinears). Cryptology ePrint Archive, Paper 2025/917, 2025. \url{https://eprint.iacr.org/2025/917}.
+\bibitem{HR18} Justin Holmgren and Ron D. Rothblum. Delegating computations with (almost) minimal time and space overhead. In \emph{59th IEEE Annual Symposium on Foundations of Computer Science, FOCS 2018}, pages 124--135. IEEE, 2018.
+
+\end{thebibliography}
+
+\end{document}

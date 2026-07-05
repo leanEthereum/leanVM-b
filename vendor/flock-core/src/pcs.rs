@@ -24,6 +24,7 @@
 pub mod basefold;
 pub mod commit;
 pub mod ligerito;
+pub mod ligerito_k;
 pub mod pack;
 pub mod ring_switch;
 pub mod tensor_algebra;

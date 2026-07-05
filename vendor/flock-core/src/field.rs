@@ -7,12 +7,16 @@
 //! - [`F192`] — GF((2^64)^3): degree-3 tower over GF(2^64), for >128-bit security
 //! - [`F192Unreduced`] — its deferred-reduction accumulator
 
+pub mod gf2_64;
 pub mod gf2_128;
 pub mod gf2_64x3;
 pub mod gf2_8;
 pub mod phi8;
+pub mod tower_f128;
 
 pub use gf2_8::F8;
+pub use gf2_64::F64;
 pub use gf2_64x3::{F192, F192Unreduced};
 pub use gf2_128::{F128, F256Unreduced, mul_by_x};
 pub use phi8::{PHI_8_TABLE, phi8};
+pub use tower_f128::F128T;

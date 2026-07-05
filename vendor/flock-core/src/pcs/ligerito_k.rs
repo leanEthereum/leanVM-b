@@ -1,0 +1,2706 @@
+// Credit: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
+// Copyright (c) 2026 Bain Capital Crypto, LP and Ron Rothblum
+// Modifications copyright 2026 Succinct Labs, Benedikt Bunz, William Wang
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
+//! Ligerito over K = GF(2^64): commit in the base field, challenge in the tower.
+//!
+//! A duplicate-and-retype port of [`super::ligerito`] (plus the commit phase of
+//! [`super::commit`]) for the 64-bit transition. The committed message is a
+//! vector of [`F64`] values; every verifier challenge, sumcheck message, basis
+//! poly, and post-fold witness lives in E = GF(2^128) represented as the
+//! degree-2 tower [`F128T`] over the very same K. The existing F128 (GHASH)
+//! path is untouched; this module is purely additive.
+//!
+//! Type map relative to the original:
+//! - committed message / L0 codeword / L0 opened rows: `F64` (8 bytes)
+//! - challenges, sumcheck messages, folded witnesses, deeper-level codewords
+//!   and opened rows, `b_initial`, betas, alphas, `yr`: `F128T` (16 bytes)
+//! - the RS-encoding evaluation domain and all LCH twiddles stay in K, so the
+//!   deeper-level (E-valued) encodes use K-twiddles via the mixed product
+//!   [`F128T::mul_base`] (2 PMULL) instead of a full E multiplication.
+//!
+//! Deliberate divergences from the original (each noted inline too):
+//! - OOD sampling is NOT ported. The `Secure` (UDR) profile that drives this
+//!   port takes zero OOD samples at every level (unique-decoding list size 1);
+//!   the prover/verifier assert `ood_samples == 0` instead of carrying the
+//!   branches.
+//! - Buffers use plain `Vec` allocation where the original recycles through
+//!   `crate::scratch` (no F64/F128T pool exists yet).
+//! - The prover/commit timing instrumentation answers to `LIG_K_TRACE`
+//!   (instead of the original's `LIG_PROVE_TRACE` / `FLOCK_COMMIT_TIMING`).
+//!
+//! Basis induction mirrors the original's two strategies: the dense
+//! per-query LCH expansion and the sparse transposed-NTT fast path
+//! ([`induce_sumcheck_poly_via_ntt_base`]), with the SAME auto-dispatch size
+//! heuristic at L0 (deeper levels stay dense, exactly like the original).
+//!
+//! Soundness note: the configs are REUSED from the F128-era derivation
+//! ([`LigeritoSecurityConfig::derive_profile`] with `analysis q = 2^128`).
+//! The challenge field here is also 2^128-sized, and the shape parameters are
+//! field-agnostic, so the reuse is coherent; still, the K parameterization
+//! (base-field alphabet in the interleaved code, tower-sampling details) gets
+//! its own soundness derivation later. See [`k_configs_for`].
+
+use crate::challenger::Challenger;
+use crate::field::{F64, F128, F128T};
+use crate::merkle::{self, Hash};
+use crate::ntt::AdditiveNttF64;
+use serde::{Deserialize, Serialize};
+
+use super::ligerito::{LigeritoProfile, LigeritoSecurityConfig, ProverConfig, VerifierConfig, ceil_log2};
+
+// ===================================================================
+// Challenger shim: E = F128T over the existing F128-typed transcript
+// ===================================================================
+//
+// The `Challenger` trait speaks F128 (16 uniform transcript bytes). Every
+// 16-byte pattern is a valid F128T (two independent K-lanes), so sampling an
+// E-challenge is a raw reinterpretation of the same uniform bytes, and
+// observing one absorbs its two lanes in the same (lo, hi) slots. The GHASH
+// F128 and the tower F128T are different representations of GF(2^128); the
+// shim never multiplies in the F128 representation, it only ferries bytes.
+
+#[inline]
+fn sample_ext<Ch: Challenger>(challenger: &mut Ch) -> F128T {
+    let v = challenger.sample_f128();
+    F128T::new(v.lo, v.hi)
+}
+
+fn sample_ext_vec<Ch: Challenger>(challenger: &mut Ch, n: usize) -> Vec<F128T> {
+    challenger
+        .sample_f128_vec(n)
+        .into_iter()
+        .map(|v| F128T::new(v.lo, v.hi))
+        .collect()
+}
+
+#[inline]
+fn observe_ext<Ch: Challenger>(challenger: &mut Ch, e: F128T) {
+    challenger.observe_f128(F128::new(e.c0, e.c1));
+}
+
+// ===================================================================
+// Multilinear helpers over E
+// ===================================================================
+
+/// Build the eq-MLE table at `point` in E^d, LSB-first: mirror of
+/// `lincheck::build_eq_table` with F128T arithmetic.
+pub fn build_eq_table_ext(point: &[F128T]) -> Vec<F128T> {
+    let d = point.len();
+    let mut out: Vec<F128T> = Vec::with_capacity(1usize << d);
+    out.push(F128T::ONE);
+    for j in 0..d {
+        let r_j = point[j];
+        let one_plus_r_j = F128T::ONE + r_j;
+        let len = 1usize << j;
+        out.resize(2 * len, F128T::ZERO);
+        for i in 0..len {
+            let v = out[i];
+            out[i + len] = v * r_j;
+            out[i] = v * one_plus_r_j;
+        }
+    }
+    out
+}
+
+/// Partially evaluate the multilinear extension of `evals` at the first
+/// `rs.len()` (LSB) variables. Mirror of `ligerito::partial_eval_lsb`.
+pub(crate) fn partial_eval_lsb_ext(evals: &[F128T], rs: &[F128T]) -> Vec<F128T> {
+    let mut cur = evals.to_vec();
+    for &r in rs {
+        let one_plus_r = F128T::ONE + r;
+        let half = cur.len() / 2;
+        let mut next = Vec::with_capacity(half);
+        for i in 0..half {
+            next.push(cur[2 * i] * one_plus_r + cur[2 * i + 1] * r);
+        }
+        cur = next;
+    }
+    cur
+}
+
+/// Mixed inner product `Σ_i b[i] · witness[i]` (E x K via `mul_base`). The
+/// evaluation-claim `target` for a K-witness against an E-basis.
+pub fn inner_product_base_ext(witness: &[F64], b: &[F128T]) -> F128T {
+    use rayon::prelude::*;
+    assert_eq!(witness.len(), b.len());
+    const PAR_THRESHOLD: usize = 4096;
+    if witness.len() < PAR_THRESHOLD {
+        return witness
+            .iter()
+            .zip(b.iter())
+            .map(|(&w, &e)| e.mul_base(w))
+            .fold(F128T::ZERO, |a, v| a + v);
+    }
+    witness
+        .par_iter()
+        .zip(b.par_iter())
+        .with_min_len(PAR_THRESHOLD / 4)
+        .map(|(&w, &e)| e.mul_base(w))
+        .reduce(|| F128T::ZERO, |a, v| a + v)
+}
+
+#[inline]
+fn log2_pow2(n: usize) -> usize {
+    assert!(
+        n.is_power_of_two() && n > 0,
+        "length must be a positive power of 2"
+    );
+    n.trailing_zeros() as usize
+}
+
+// ===================================================================
+// Config reuse
+// ===================================================================
+
+/// Derive `(ProverConfig, VerifierConfig)` for a K-witness of `2^log_n` F64
+/// elements, reusing the F128-era `Secure` profile at `m = log_n + LOG_PACKING`
+/// exactly like the main crate does for its packed witnesses.
+///
+/// NOTE: the soundness constants behind `derive_profile` (query counts,
+/// fold-grinding bits, the `q = 2^128` analysis) are F128-era. E here is also
+/// 2^128-sized and the config is shape-only, but the K parameterization gets
+/// its own soundness derivation later; treat these numbers as provisional.
+pub fn k_configs_for(log_n: usize) -> Result<(ProverConfig, VerifierConfig), String> {
+    let sec = LigeritoSecurityConfig::derive_profile(
+        log_n + crate::pcs::LOG_PACKING,
+        LigeritoProfile::Secure,
+    )?;
+    sec.to_prover_verifier_configs()
+}
+
+// ===================================================================
+// Commit: F64 message -> interleaved RS codeword -> Merkle root
+// ===================================================================
+
+/// Public commitment for a K-message: the L0 Merkle root plus the shape
+/// parameters needed to re-derive block lengths. The F128 path's `Commitment`
+/// carries a full `PcsParams` (packing- and profile-aware), which does not
+/// apply to a raw K-message, so this port defines its own minimal type.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CommitmentK {
+    pub root: Hash,
+    /// log2 of the committed message length in F64 elements.
+    pub log_msg_len: usize,
+    /// Lanes per Merkle leaf (log2); must equal the Ligerito `initial_k`.
+    pub log_batch_size: usize,
+    pub log_inv_rate: usize,
+}
+
+/// Prover-side state retained after commit for the opening phase. The message
+/// itself is NOT stored (mirror of the F128 `ProverData` contract).
+pub struct ProverDataK {
+    pub codeword: Vec<F64>,
+    pub merkle_tree: Vec<Hash>,
+}
+
+/// Fill `codeword` with `2^r` replicas of `msg`: the exact state after the
+/// first `r` forward-NTT layers on the zero-padded coefficient vector
+/// `[msg, 0, ..., 0]`. Pair with `forward_transform_*_from_layer(.., r)`.
+/// Mirror of `commit::replicate_message_fill`, generic over the element type.
+fn replicate_message_fill_t<T: Copy + Send + Sync>(codeword: &mut [T], msg: &[T]) {
+    use rayon::prelude::*;
+    let msg_len = msg.len();
+    debug_assert!(codeword.len().is_multiple_of(msg_len));
+    const COPY_CHUNK: usize = 1 << 16;
+    if msg_len >= COPY_CHUNK {
+        // Both are powers of two, so chunks never straddle a replica boundary.
+        codeword
+            .par_chunks_mut(COPY_CHUNK)
+            .enumerate()
+            .for_each(|(i, dst)| {
+                let src_off = (i * COPY_CHUNK) % msg_len;
+                dst.copy_from_slice(&msg[src_off..src_off + dst.len()]);
+            });
+    } else {
+        for rep in codeword.chunks_mut(msg_len) {
+            rep.copy_from_slice(msg);
+        }
+    }
+}
+
+/// Commit to a K-message (mirror of `commit::commit` / `finalize_commit`):
+/// replicate the message `2^log_inv_rate` times, run the interleaved additive
+/// NTT over F_{2^64} from layer `log_inv_rate`, then Merkle-commit one leaf
+/// per codeword position (= `2^log_batch_size` F64 = `2^log_batch_size * 8`
+/// bytes per leaf).
+///
+/// `message.len()` must be a power of two `>= 2^log_batch_size`.
+pub fn commit_k(
+    message: &[F64],
+    log_batch_size: usize,
+    log_inv_rate: usize,
+) -> (CommitmentK, ProverDataK) {
+    let log_msg_len = log2_pow2(message.len());
+    assert!(
+        log_msg_len >= log_batch_size,
+        "message too small for log_batch_size"
+    );
+    assert!(
+        log_inv_rate >= 1,
+        "log_inv_rate must be >= 1 for a non-trivial RS code"
+    );
+    let log_dim = log_msg_len - log_batch_size;
+    let k_code = log_dim + log_inv_rate;
+    let num_ntts = 1usize << log_batch_size;
+    let n_positions = 1usize << k_code;
+    let codeword_len = n_positions * num_ntts;
+
+    // Plain allocation: the F128 path routes this buffer through the scratch
+    // pool; no F64 pool exists (yet). Every slot is written by the replicate
+    // fill below, so uninit is fine.
+    let mut codeword: Vec<F64> = crate::alloc_uninit_vec(codeword_len);
+    replicate_message_fill_t(&mut codeword, message);
+
+    // Optional phase timing (LIG_K_TRACE): one env lookup per commit, no
+    // work when unset.
+    let trace = std::env::var_os("LIG_K_TRACE").is_some();
+    let t_ntt = std::time::Instant::now();
+    let ntt = AdditiveNttF64::standard(k_code);
+    ntt.forward_transform_interleaved_from_layer(&mut codeword, num_ntts, log_inv_rate);
+    let ntt_elapsed = t_ntt.elapsed();
+    let t_merkle = std::time::Instant::now();
+
+    // Merkle commitment, zero-copy over the codeword bytes.
+    // SAFETY: F64 is repr(transparent) over u64; a `[F64]` slice is therefore
+    // a contiguous little-endian u64 byte image (8 bytes each), identical to
+    // an explicit `to_le_bytes()` serialization on this (LE) target. The cast
+    // covers exactly `codeword.len() * size_of::<F64>()` initialized bytes.
+    let codeword_bytes: &[u8] = unsafe {
+        core::slice::from_raw_parts(
+            codeword.as_ptr() as *const u8,
+            codeword.len() * core::mem::size_of::<F64>(),
+        )
+    };
+    let merkle_tree = merkle::merkle_tree(codeword_bytes, n_positions);
+    let root = *merkle_tree.last().expect("merkle tree non-empty");
+    if trace {
+        eprintln!(
+            "[lig-k-commit] k_code={k_code} lanes={num_ntts}: ntt = {:.4} s, merkle = {:.4} s",
+            ntt_elapsed.as_secs_f64(),
+            t_merkle.elapsed().as_secs_f64(),
+        );
+    }
+
+    (
+        CommitmentK {
+            root,
+            log_msg_len,
+            log_batch_size,
+            log_inv_rate,
+        },
+        ProverDataK {
+            codeword,
+            merkle_tree,
+        },
+    )
+}
+
+// ===================================================================
+// Interleaved forward additive NTT over E with K-twiddles
+// ===================================================================
+//
+// Deeper Ligerito levels RS-encode an E-valued (folded) witness on the SAME
+// K-domain: the twiddles are F64, and each butterfly multiply is the mixed
+// product `v.mul_base(twiddle)` (2 PMULL). Structure copied from
+// `ntt::additive_ntt_f64`'s interleaved transform, with constants re-derived
+// for 16-byte elements.
+
+pub(crate) fn forward_transform_interleaved_ext_from_layer(
+    ntt: &AdditiveNttF64,
+    data: &mut [F128T],
+    num_ntts: usize,
+    start_layer: usize,
+) {
+    assert!(num_ntts.is_power_of_two() && num_ntts > 0);
+    let n_total = data.len();
+    assert_eq!(n_total % num_ntts, 0);
+    let log_d = log2_pow2(n_total / num_ntts);
+    assert!(log_d <= ntt.log_domain_size());
+    assert!(start_layer <= log_d);
+
+    forward_transform_interleaved_ext_parallel_from_layer(ntt, data, num_ntts, start_layer);
+}
+
+/// Scalar reference for the E-valued interleaved forward NTT (test oracle and
+/// small-input path).
+fn forward_transform_interleaved_ext_scalar_from_layer(
+    ntt: &AdditiveNttF64,
+    data: &mut [F128T],
+    num_ntts: usize,
+    start_layer: usize,
+) {
+    let n_total = data.len();
+    let log_d = log2_pow2(n_total / num_ntts);
+
+    for layer in start_layer..log_d {
+        let num_blocks = 1usize << layer;
+        let block_size = 1usize << (log_d - layer);
+        let block_size_half = block_size >> 1;
+        let block_elems = block_size * num_ntts;
+        for block in 0..num_blocks {
+            let twiddle = ntt.twiddle(layer, block);
+            let block_start = block * block_elems;
+            for row in 0..block_size_half {
+                let off_top = block_start + row * num_ntts;
+                let off_bot = off_top + block_size_half * num_ntts;
+                for lane in 0..num_ntts {
+                    let v = data[off_bot + lane];
+                    let new_u = data[off_top + lane] + v.mul_base(twiddle);
+                    data[off_top + lane] = new_u;
+                    data[off_bot + lane] = v + new_u;
+                }
+            }
+        }
+    }
+}
+
+/// Parallel interleaved forward NTT over E, cache-blocked like the F64 twin:
+/// top layers sweep the full buffer (fused two-layer passes, row-parallel),
+/// deep layers run as cache-resident sub-NTTs in parallel. Constants are
+/// re-derived for 16-byte elements.
+fn forward_transform_interleaved_ext_parallel_from_layer(
+    ntt: &AdditiveNttF64,
+    data: &mut [F128T],
+    num_ntts: usize,
+    start_layer: usize,
+) {
+    use rayon::prelude::*;
+    let n_total = data.len();
+    let log_d = log2_pow2(n_total / num_ntts);
+
+    // Target sub-group ~2 MB; each position is num_ntts x 16 bytes.
+    const TARGET_SUBGROUP_LOG_BYTES: usize = 21;
+    let log_bytes_per_position = 4 + log2_pow2(num_ntts);
+    let target_log_positions = TARGET_SUBGROUP_LOG_BYTES.saturating_sub(log_bytes_per_position);
+    let cache_n_top = log_d.saturating_sub(target_log_positions);
+
+    const PARALLEL_FLOOR_LOG_D: usize = 12;
+    const MIN_SUB_LOG: usize = 8;
+    let n_top = if log_d >= PARALLEL_FLOOR_LOG_D {
+        let want_subs_log = log2_pow2(rayon::current_num_threads().next_power_of_two());
+        let max_n_top = log_d.saturating_sub(MIN_SUB_LOG);
+        cache_n_top.max(want_subs_log.min(max_n_top))
+    } else {
+        cache_n_top
+    };
+    if n_top == 0 || log_d < 8 {
+        forward_transform_interleaved_ext_scalar_from_layer(ntt, data, num_ntts, start_layer);
+        return;
+    }
+
+    // Top layers: full-buffer sweeps, fusing two layers where possible.
+    let mut layer = start_layer.min(n_top);
+    while layer < n_top {
+        let num_blocks = 1usize << layer;
+        let block_size = 1usize << (log_d - layer);
+        let block_elems = block_size * num_ntts;
+
+        if layer + 1 < n_top && block_size >= 4 {
+            let quarter = block_size >> 2;
+            for block in 0..num_blocks {
+                let t_outer = ntt.twiddle(layer, block);
+                let t_inner_a = ntt.twiddle(layer + 1, 2 * block);
+                let t_inner_b = ntt.twiddle(layer + 1, 2 * block + 1);
+                let start = block * block_elems;
+                butterfly_interleaved_ext_fused_2layer_par_rows(
+                    &mut data[start..start + block_elems],
+                    t_outer,
+                    t_inner_a,
+                    t_inner_b,
+                    quarter,
+                    num_ntts,
+                );
+            }
+            layer += 2;
+        } else {
+            let block_size_half = block_size >> 1;
+            for block in 0..num_blocks {
+                let t = ntt.twiddle(layer, block);
+                let start = block * block_elems;
+                butterfly_interleaved_ext_block_par_rows(
+                    &mut data[start..start + block_elems],
+                    t,
+                    block_size_half,
+                    num_ntts,
+                );
+            }
+            layer += 1;
+        }
+    }
+
+    // Deep layers: parallel cache-resident sub-NTTs.
+    let sub_size_positions = 1usize << (log_d - n_top);
+    let sub_elems = sub_size_positions * num_ntts;
+    data.par_chunks_mut(sub_elems)
+        .enumerate()
+        .for_each(|(sub_idx, sub_data)| {
+            for layer in n_top.max(start_layer)..log_d {
+                let layer_in_sub = layer - n_top;
+                let num_blocks_in_sub = 1usize << layer_in_sub;
+                let block_size = 1usize << (log_d - layer);
+                let block_size_half = block_size >> 1;
+                let block_elems = block_size * num_ntts;
+                for block_in_sub in 0..num_blocks_in_sub {
+                    let global_block = sub_idx * num_blocks_in_sub + block_in_sub;
+                    let twiddle = ntt.twiddle(layer, global_block);
+                    let block_start = block_in_sub * block_elems;
+                    let block = &mut sub_data[block_start..block_start + block_elems];
+                    butterfly_interleaved_ext_block(block, twiddle, block_size_half, num_ntts);
+                }
+            }
+        });
+}
+
+fn butterfly_interleaved_ext_block_par_rows(
+    block: &mut [F128T],
+    twiddle: F64,
+    block_size_half: usize,
+    num_ntts: usize,
+) {
+    use rayon::prelude::*;
+    const PARALLEL_ROW_THRESHOLD: usize = 1024;
+    if block_size_half < PARALLEL_ROW_THRESHOLD {
+        butterfly_interleaved_ext_block(block, twiddle, block_size_half, num_ntts);
+        return;
+    }
+    let half_offset = block_size_half * num_ntts;
+    let (top, bot) = block.split_at_mut(half_offset);
+    top.par_chunks_mut(num_ntts)
+        .zip(bot.par_chunks_mut(num_ntts))
+        .for_each(|(top_row, bot_row)| {
+            for lane in 0..num_ntts {
+                let v = bot_row[lane];
+                let new_u = top_row[lane] + v.mul_base(twiddle);
+                top_row[lane] = new_u;
+                bot_row[lane] = v + new_u;
+            }
+        });
+}
+
+/// Fused 2-layer butterfly, row-parallel; see the F64 twin for the shape.
+fn butterfly_interleaved_ext_fused_2layer_par_rows(
+    block: &mut [F128T],
+    t_outer: F64,
+    t_inner_a: F64,
+    t_inner_b: F64,
+    quarter: usize,
+    num_ntts: usize,
+) {
+    use rayon::prelude::*;
+    const PARALLEL_ROW_THRESHOLD: usize = 512;
+    let stride = quarter * num_ntts;
+    debug_assert_eq!(block.len(), 4 * stride);
+
+    let do_one =
+        |row_a: &mut [F128T], row_b: &mut [F128T], row_c: &mut [F128T], row_d: &mut [F128T]| {
+            for lane in 0..num_ntts {
+                let mut a = row_a[lane];
+                let mut b = row_b[lane];
+                let mut c = row_c[lane];
+                let mut d = row_d[lane];
+                let new_a = a + c.mul_base(t_outer);
+                c += new_a;
+                a = new_a;
+                let new_b = b + d.mul_base(t_outer);
+                d += new_b;
+                b = new_b;
+                let new_a2 = a + b.mul_base(t_inner_a);
+                b += new_a2;
+                a = new_a2;
+                let new_c2 = c + d.mul_base(t_inner_b);
+                d += new_c2;
+                c = new_c2;
+                row_a[lane] = a;
+                row_b[lane] = b;
+                row_c[lane] = c;
+                row_d[lane] = d;
+            }
+        };
+
+    let (top_half, bot_half) = block.split_at_mut(2 * stride);
+    let (q1, q2) = top_half.split_at_mut(stride);
+    let (q3, q4) = bot_half.split_at_mut(stride);
+
+    if quarter < PARALLEL_ROW_THRESHOLD {
+        for r in 0..quarter {
+            let off = r * num_ntts;
+            let (q1r, _) = q1[off..].split_at_mut(num_ntts);
+            let (q2r, _) = q2[off..].split_at_mut(num_ntts);
+            let (q3r, _) = q3[off..].split_at_mut(num_ntts);
+            let (q4r, _) = q4[off..].split_at_mut(num_ntts);
+            do_one(q1r, q2r, q3r, q4r);
+        }
+    } else {
+        q1.par_chunks_mut(num_ntts)
+            .zip(q2.par_chunks_mut(num_ntts))
+            .zip(q3.par_chunks_mut(num_ntts))
+            .zip(q4.par_chunks_mut(num_ntts))
+            .for_each(|(((row_a, row_b), row_c), row_d)| {
+                do_one(row_a, row_b, row_c, row_d);
+            });
+    }
+}
+
+#[inline]
+fn butterfly_interleaved_ext_block(
+    block: &mut [F128T],
+    twiddle: F64,
+    block_size_half: usize,
+    num_ntts: usize,
+) {
+    let off_bot = block_size_half * num_ntts;
+    for r in 0..block_size_half {
+        let off_top = r * num_ntts;
+        let off_bot_r = off_top + off_bot;
+        for lane in 0..num_ntts {
+            let v = block[off_bot_r + lane];
+            let new_u = block[off_top + lane] + v.mul_base(twiddle);
+            block[off_top + lane] = new_u;
+            block[off_bot_r + lane] = v + new_u;
+        }
+    }
+}
+
+// ===================================================================
+// LCH novel-basis evaluations over K (mirror of ligerito's F128 block)
+// ===================================================================
+//
+// The subspace-polynomial recurrence runs entirely over the K evaluation
+// domain (F64 values); results are lifted into E with `mul_base` only where
+// they scale E-accumulators. Standard basis only (v_i = x^i = F64(1 << i)).
+
+#[inline]
+fn next_s_k(s: F64, s_at_root: F64) -> F64 {
+    s * s + s_at_root * s
+}
+
+/// `sks_vks[k] = s_k(v_k)` for `k = 0..=log_n`, over K. Mirror of
+/// `ligerito::eval_sk_at_vks`.
+pub(crate) fn eval_sk_at_vks_k(log_n: usize) -> Vec<F64> {
+    let mut sks_vks = vec![F64::ZERO; log_n + 1];
+    sks_vks[0] = F64::ONE;
+    if log_n == 0 {
+        return sks_vks;
+    }
+    let mut layer: Vec<F64> = (1..=log_n).map(|i| F64(1u64 << i)).collect();
+    let mut cur_len = log_n;
+    for i in 0..log_n {
+        for j in 0..cur_len {
+            let sk_at_vk = next_s_k(layer[j], sks_vks[i]);
+            if j == 0 {
+                sks_vks[i + 1] = sk_at_vk;
+            } else {
+                layer[j - 1] = sk_at_vk;
+            }
+        }
+        cur_len -= 1;
+    }
+    sks_vks
+}
+
+/// Write into `basis` the normalized LCH novel-basis polynomials evaluated at
+/// `x` (a K point), each scaled by the E-value `alpha`. The `sks_at_x`
+/// recurrence stays in K; the basis expansion lifts into E via `mul_base`.
+fn evaluate_scaled_basis_inplace_k(
+    sks_at_x: &mut [F64],
+    basis: &mut [F128T],
+    sks_vks: &[F64],
+    inv_sks_vks: &[F64],
+    x: F64,
+    alpha: F128T,
+) {
+    let log_n = basis.len().trailing_zeros() as usize;
+    debug_assert_eq!(basis.len(), 1 << log_n);
+    debug_assert!(sks_at_x.len() >= log_n);
+    debug_assert!(inv_sks_vks.len() > log_n);
+
+    if log_n > 0 {
+        sks_at_x[0] = x;
+        for i in 1..log_n {
+            sks_at_x[i] = next_s_k(sks_at_x[i - 1], sks_vks[i - 1]);
+        }
+        // Normalize: W-hat_i(x) = s_i(x) / s_i(v_i)
+        for i in 0..log_n {
+            sks_at_x[i] *= inv_sks_vks[i];
+        }
+    }
+
+    basis[0] = alpha;
+    for k in 0..log_n {
+        let s_at_x = sks_at_x[k];
+        let current_len = 1 << k;
+        for i in 0..current_len {
+            basis[i + current_len] = basis[i].mul_base(s_at_x);
+        }
+    }
+}
+
+// ===================================================================
+// induce_sumcheck_poly: dense path (base-field rows at L0, E rows deeper)
+// ===================================================================
+//
+// The sparse transposed-NTT fast path plus the auto dispatch that selects it
+// at L0 lives in the "Transposed-NTT fast path" section below, mirroring the
+// original's strategy split.
+
+/// Level-0 induce: opened rows are F64. `basis_poly[j] = Σ_i eq(α, i) ·
+/// W-hat_j(q_i)`, `enforced_sum = Σ_i eq(α, i) · <row_i, eq(v_challenges, ·)>`
+/// with the row dot done via `mul_base`. Mirror of the dense
+/// `ligerito::induce_sumcheck_poly` (per-thread chunked accumulation).
+pub(crate) fn induce_sumcheck_poly_base(
+    log_msg_cols: usize,
+    sks_vks: &[F64],
+    opened_rows: &[Vec<F64>],
+    v_challenges: &[F128T],
+    queries: &[usize],
+    alpha: &[F128T],
+) -> (Vec<F128T>, F128T) {
+    use rayon::prelude::*;
+    let n = 1usize << log_msg_cols;
+    let n_queries = queries.len();
+    assert_eq!(opened_rows.len(), n_queries);
+    debug_assert_eq!(
+        v_challenges.len(),
+        opened_rows
+            .first()
+            .map(|r| r.len().trailing_zeros() as usize)
+            .unwrap_or(0)
+    );
+
+    let eq = build_eq_table_ext(v_challenges);
+
+    let alpha_pows: Vec<F128T> = if n_queries == 0 {
+        Vec::new()
+    } else {
+        let table = build_eq_table_ext(alpha);
+        debug_assert!(table.len() >= n_queries);
+        table.into_iter().take(n_queries).collect()
+    };
+
+    let inv_sks_vks: Vec<F64> = sks_vks
+        .iter()
+        .map(|&v| if v.is_zero() { F64::ZERO } else { v.inv() })
+        .collect();
+
+    let n_threads = rayon::current_num_threads().max(1);
+    let chunk_size = (n_queries + n_threads - 1) / n_threads.max(1);
+
+    let partials: Vec<(Vec<F128T>, F128T)> = (0..n_threads)
+        .into_par_iter()
+        .map(|t| {
+            let start = t * chunk_size;
+            let end = (start + chunk_size).min(n_queries);
+            if start >= end {
+                return (vec![F128T::ZERO; n], F128T::ZERO);
+            }
+            let mut accum_basis = vec![F128T::ZERO; n];
+            let mut local_basis = vec![F128T::ZERO; n];
+            let mut sks_at_x = vec![F64::ZERO; log_msg_cols.max(1)];
+            let mut local_sum = F128T::ZERO;
+
+            for i in start..end {
+                let row = &opened_rows[i];
+                let q = queries[i];
+                let ap = alpha_pows[i];
+
+                // Mixed dot: E eq-weights times K row entries.
+                let dot: F128T = row
+                    .iter()
+                    .zip(eq.iter())
+                    .map(|(&r, &e)| e.mul_base(r))
+                    .fold(F128T::ZERO, |a, v| a + v);
+                local_sum += dot * ap;
+
+                let q_field = F64(q as u64);
+                evaluate_scaled_basis_inplace_k(
+                    &mut sks_at_x,
+                    &mut local_basis,
+                    sks_vks,
+                    &inv_sks_vks,
+                    q_field,
+                    ap,
+                );
+                for (acc, &v) in accum_basis.iter_mut().zip(local_basis.iter()) {
+                    *acc += v;
+                }
+            }
+            (accum_basis, local_sum)
+        })
+        .collect();
+
+    let mut basis_poly = vec![F128T::ZERO; n];
+    let mut enforced_sum = F128T::ZERO;
+    for (lb, ls) in partials {
+        for (acc, &v) in basis_poly.iter_mut().zip(lb.iter()) {
+            *acc += v;
+        }
+        enforced_sum += ls;
+    }
+
+    (basis_poly, enforced_sum)
+}
+
+/// Deeper-level induce: opened rows are E-valued. Same structure as
+/// [`induce_sumcheck_poly_base`] with a pure-E row dot.
+pub(crate) fn induce_sumcheck_poly_ext(
+    log_msg_cols: usize,
+    sks_vks: &[F64],
+    opened_rows: &[Vec<F128T>],
+    v_challenges: &[F128T],
+    queries: &[usize],
+    alpha: &[F128T],
+) -> (Vec<F128T>, F128T) {
+    use rayon::prelude::*;
+    let n = 1usize << log_msg_cols;
+    let n_queries = queries.len();
+    assert_eq!(opened_rows.len(), n_queries);
+    debug_assert_eq!(
+        v_challenges.len(),
+        opened_rows
+            .first()
+            .map(|r| r.len().trailing_zeros() as usize)
+            .unwrap_or(0)
+    );
+
+    let eq = build_eq_table_ext(v_challenges);
+
+    let alpha_pows: Vec<F128T> = if n_queries == 0 {
+        Vec::new()
+    } else {
+        let table = build_eq_table_ext(alpha);
+        debug_assert!(table.len() >= n_queries);
+        table.into_iter().take(n_queries).collect()
+    };
+
+    let inv_sks_vks: Vec<F64> = sks_vks
+        .iter()
+        .map(|&v| if v.is_zero() { F64::ZERO } else { v.inv() })
+        .collect();
+
+    let n_threads = rayon::current_num_threads().max(1);
+    let chunk_size = (n_queries + n_threads - 1) / n_threads.max(1);
+
+    let partials: Vec<(Vec<F128T>, F128T)> = (0..n_threads)
+        .into_par_iter()
+        .map(|t| {
+            let start = t * chunk_size;
+            let end = (start + chunk_size).min(n_queries);
+            if start >= end {
+                return (vec![F128T::ZERO; n], F128T::ZERO);
+            }
+            let mut accum_basis = vec![F128T::ZERO; n];
+            let mut local_basis = vec![F128T::ZERO; n];
+            let mut sks_at_x = vec![F64::ZERO; log_msg_cols.max(1)];
+            let mut local_sum = F128T::ZERO;
+
+            for i in start..end {
+                let row = &opened_rows[i];
+                let q = queries[i];
+                let ap = alpha_pows[i];
+
+                let dot: F128T = row
+                    .iter()
+                    .zip(eq.iter())
+                    .map(|(&r, &e)| r * e)
+                    .fold(F128T::ZERO, |a, v| a + v);
+                local_sum += dot * ap;
+
+                let q_field = F64(q as u64);
+                evaluate_scaled_basis_inplace_k(
+                    &mut sks_at_x,
+                    &mut local_basis,
+                    sks_vks,
+                    &inv_sks_vks,
+                    q_field,
+                    ap,
+                );
+                for (acc, &v) in accum_basis.iter_mut().zip(local_basis.iter()) {
+                    *acc += v;
+                }
+            }
+            (accum_basis, local_sum)
+        })
+        .collect();
+
+    let mut basis_poly = vec![F128T::ZERO; n];
+    let mut enforced_sum = F128T::ZERO;
+    for (lb, ls) in partials {
+        for (acc, &v) in basis_poly.iter_mut().zip(lb.iter()) {
+            *acc += v;
+        }
+        enforced_sum += ls;
+    }
+
+    (basis_poly, enforced_sum)
+}
+
+// ===================================================================
+// Transposed-NTT fast path for basis induction (mirror of the original)
+// ===================================================================
+
+/// Transposed forward additive NTT, `F^T`, in place over `2^log_d` E-values
+/// with K-twiddles. Forward butterfly is `M = [[1, t], [1, t+1]]`; transpose
+/// `M^T = [[1, 1], [t, t+1]]` is `s = a + b; top = s; bot = t*s + b` (here
+/// `s.mul_base(t) + b`), applied in reverse layer order. Mirror of
+/// `ligerito::transpose_forward_ntt` (one parallel sweep per layer).
+fn transpose_forward_ntt_ext(ntt: &AdditiveNttF64, data: &mut [F128T], log_d: usize) {
+    use rayon::prelude::*;
+    debug_assert_eq!(data.len(), 1usize << log_d);
+    debug_assert!(log_d <= ntt.log_domain_size());
+    let n_threads = rayon::current_num_threads().max(1);
+    for layer in (0..log_d).rev() {
+        let num_blocks = 1usize << layer;
+        let block_size = 1usize << (log_d - layer);
+        let bsh = block_size >> 1;
+        if num_blocks >= n_threads {
+            data.par_chunks_mut(block_size)
+                .enumerate()
+                .for_each(|(block, chunk)| {
+                    let t = ntt.twiddle(layer, block);
+                    let (top, bot) = chunk.split_at_mut(bsh);
+                    for (a_ref, b_ref) in top.iter_mut().zip(bot.iter_mut()) {
+                        let a = *a_ref;
+                        let b = *b_ref;
+                        let s = a + b;
+                        *a_ref = s;
+                        *b_ref = s.mul_base(t) + b;
+                    }
+                });
+        } else {
+            for block in 0..num_blocks {
+                let t = ntt.twiddle(layer, block);
+                let chunk = &mut data[block * block_size..(block + 1) * block_size];
+                let (top, bot) = chunk.split_at_mut(bsh);
+                top.par_iter_mut()
+                    .zip(bot.par_iter_mut())
+                    .for_each(|(a_ref, b_ref)| {
+                        let a = *a_ref;
+                        let b = *b_ref;
+                        let s = a + b;
+                        *a_ref = s;
+                        *b_ref = s.mul_base(t) + b;
+                    });
+            }
+        }
+    }
+}
+
+/// Sparse-prefix variant of [`transpose_forward_ntt_ext`]: the input has only
+/// `positions.len()` nonzeros and the first `k` transpose steps (forward
+/// layers `log_d-1 .. log_d-k`, pairing distances `1 .. 2^(k-1)`) mix only
+/// WITHIN `2^k`-aligned windows. We process just the windows that contain a
+/// nonzero (a dense `2^k` transpose each, disjoint so window-parallel),
+/// densify, then run the remaining steps as full dense sweeps. Output is
+/// identical to `transpose_forward_ntt_ext` on the scattered input. Mirror
+/// of `ligerito::transpose_forward_ntt_sparse`.
+fn transpose_forward_ntt_sparse_ext(
+    ntt: &AdditiveNttF64,
+    positions: &[usize],
+    values: &[F128T],
+    log_d: usize,
+) -> Vec<F128T> {
+    use rayon::prelude::*;
+    use std::collections::HashMap;
+    let n = 1usize << log_d;
+    // No prefix for small domains: just scatter + full dense transpose.
+    let k = if log_d >= 12 { 8usize.min(log_d) } else { 0 };
+
+    if k == 0 {
+        let mut data = vec![F128T::ZERO; n];
+        for (&p, &v) in positions.iter().zip(values) {
+            data[p] += v;
+        }
+        if log_d > 0 {
+            transpose_forward_ntt_ext(ntt, &mut data, log_d);
+        }
+        return data;
+    }
+
+    let wmask = (1usize << k) - 1;
+    // Group nonzeros into 2^k windows.
+    let mut windows: HashMap<usize, Vec<F128T>> = HashMap::new();
+    for (&p, &v) in positions.iter().zip(values) {
+        let buf = windows
+            .entry(p >> k)
+            .or_insert_with(|| vec![F128T::ZERO; 1 << k]);
+        buf[p & wmask] += v;
+    }
+
+    // Steps s = 0..k-1 within each active window, in parallel (windows disjoint).
+    let win_vec: Vec<(usize, Vec<F128T>)> = windows.into_iter().collect();
+    let processed: Vec<(usize, Vec<F128T>)> = win_vec
+        .into_par_iter()
+        .map(|(w, mut buf)| {
+            for s in 0..k {
+                let layer = log_d - 1 - s;
+                let bsh = 1usize << s; // pairing distance
+                let block_size = bsh << 1;
+                let nblocks = (1usize << k) / block_size;
+                for jb in 0..nblocks {
+                    // global block index = ((w<<k) + jb*block_size) >> (s+1).
+                    let t = ntt.twiddle(layer, (w << (k - s - 1)) + jb);
+                    let base = jb * block_size;
+                    for r in 0..bsh {
+                        let a = buf[base + r];
+                        let b = buf[base + r + bsh];
+                        let sab = a + b;
+                        buf[base + r] = sab;
+                        buf[base + r + bsh] = sab.mul_base(t) + b;
+                    }
+                }
+            }
+            (w, buf)
+        })
+        .collect();
+
+    // Densify (active windows only; the rest stay zero, which is the correct
+    // post-step-(k-1) state for an all-zero window).
+    let mut data = vec![F128T::ZERO; n];
+    for (w, buf) in processed {
+        data[(w << k)..((w + 1) << k)].copy_from_slice(&buf);
+    }
+
+    // Remaining steps s = k..log_d-1 = forward layers (log_d-1-k) .. 0, dense.
+    let n_threads = rayon::current_num_threads().max(1);
+    for layer in (0..(log_d - k)).rev() {
+        let num_blocks = 1usize << layer;
+        let block_size = 1usize << (log_d - layer);
+        let bsh = block_size >> 1;
+        if num_blocks >= n_threads {
+            data.par_chunks_mut(block_size)
+                .enumerate()
+                .for_each(|(block, chunk)| {
+                    let t = ntt.twiddle(layer, block);
+                    let (top, bot) = chunk.split_at_mut(bsh);
+                    for (a_ref, b_ref) in top.iter_mut().zip(bot.iter_mut()) {
+                        let a = *a_ref;
+                        let b = *b_ref;
+                        let sab = a + b;
+                        *a_ref = sab;
+                        *b_ref = sab.mul_base(t) + b;
+                    }
+                });
+        } else {
+            for block in 0..num_blocks {
+                let t = ntt.twiddle(layer, block);
+                let chunk = &mut data[block * block_size..(block + 1) * block_size];
+                let (top, bot) = chunk.split_at_mut(bsh);
+                top.par_iter_mut()
+                    .zip(bot.par_iter_mut())
+                    .for_each(|(a_ref, b_ref)| {
+                        let a = *a_ref;
+                        let b = *b_ref;
+                        let sab = a + b;
+                        *a_ref = sab;
+                        *b_ref = sab.mul_base(t) + b;
+                    });
+            }
+        }
+    }
+    data
+}
+
+/// `F^T`-based fast path for [`induce_sumcheck_poly_base`]: scatter per-query
+/// E-weights into the codeword domain, apply `F^T` with K-twiddles, keep the
+/// low `2^log_msg_cols` outputs. Byte-identical output to the dense path
+/// (pinned by `induce_via_ntt_matches_dense`). Mirror of
+/// `ligerito::induce_sumcheck_poly_via_ntt` with the L0 mixed row dot.
+pub(crate) fn induce_sumcheck_poly_via_ntt_base(
+    log_msg_cols: usize,
+    log_inv_rate: usize,
+    opened_rows: &[Vec<F64>],
+    v_challenges: &[F128T],
+    queries: &[usize],
+    alpha: &[F128T],
+) -> (Vec<F128T>, F128T) {
+    let n = 1usize << log_msg_cols;
+    let log_block = log_msg_cols + log_inv_rate;
+    let block_len = 1usize << log_block;
+    let n_queries = queries.len();
+    assert_eq!(opened_rows.len(), n_queries);
+
+    let eq = build_eq_table_ext(v_challenges);
+    let alpha_pows: Vec<F128T> = if n_queries == 0 {
+        Vec::new()
+    } else {
+        let table = build_eq_table_ext(alpha);
+        debug_assert!(table.len() >= n_queries);
+        table.into_iter().take(n_queries).collect()
+    };
+
+    let mut enforced_sum = F128T::ZERO;
+    for i in 0..n_queries {
+        let dot: F128T = opened_rows[i]
+            .iter()
+            .zip(eq.iter())
+            .map(|(&r, &e)| e.mul_base(r))
+            .fold(F128T::ZERO, |a, v| a + v);
+        enforced_sum += dot * alpha_pows[i];
+    }
+
+    let mut coeffs = if log_block == 0 {
+        let mut c = vec![F128T::ZERO; block_len];
+        for i in 0..n_queries {
+            c[queries[i]] += alpha_pows[i];
+        }
+        c
+    } else {
+        let ntt = AdditiveNttF64::standard(log_block);
+        transpose_forward_ntt_sparse_ext(&ntt, queries, &alpha_pows, log_block)
+    };
+    coeffs.truncate(n);
+    (coeffs, enforced_sum)
+}
+
+/// The original's cost-based dispatch heuristic, verbatim: the dense path
+/// costs `O(n_queries * 2^log_msg_cols)`, the NTT path one pass over the
+/// `2^log_block` codeword domain, so the NTT wins exactly when
+/// `n_queries > 4 * 2^log_inv_rate * log_block`. Same constants as the
+/// original so both field versions choose the same strategy at the same
+/// shapes.
+#[inline]
+pub(crate) fn induce_use_ntt_heuristic(
+    log_msg_cols: usize,
+    log_inv_rate: usize,
+    n_queries: usize,
+) -> bool {
+    let log_block = log_msg_cols + log_inv_rate;
+    log_msg_cols >= 12 && n_queries > 4 * (1usize << log_inv_rate) * log_block.max(1)
+}
+
+/// Dispatch between the dense [`induce_sumcheck_poly_base`] and the sparse
+/// [`induce_sumcheck_poly_via_ntt_base`] for L0 (base-field rows). Mirror of
+/// `ligerito::induce_sumcheck_poly_auto`: in the recursive PCS this fires
+/// only at the top level (large message domain, many queries); deeper levels
+/// stay dense. Both paths produce identical output, so a mis-dispatch only
+/// costs time.
+pub(crate) fn induce_sumcheck_poly_auto_base(
+    log_msg_cols: usize,
+    log_inv_rate: usize,
+    sks_vks: &[F64],
+    opened_rows: &[Vec<F64>],
+    v_challenges: &[F128T],
+    queries: &[usize],
+    alpha: &[F128T],
+) -> (Vec<F128T>, F128T) {
+    if induce_use_ntt_heuristic(log_msg_cols, log_inv_rate, queries.len()) {
+        induce_sumcheck_poly_via_ntt_base(
+            log_msg_cols,
+            log_inv_rate,
+            opened_rows,
+            v_challenges,
+            queries,
+            alpha,
+        )
+    } else {
+        induce_sumcheck_poly_base(
+            log_msg_cols,
+            sks_vks,
+            opened_rows,
+            v_challenges,
+            queries,
+            alpha,
+        )
+    }
+}
+
+// ===================================================================
+// ligero_commit for E-valued (folded) witnesses
+// ===================================================================
+
+/// Codeword + Merkle tree for one deeper Ligerito commitment level.
+/// `mat[pos * num_interleaved + lane]`; each row (one `pos` across all lanes)
+/// is one Merkle leaf of `num_interleaved * 16` bytes.
+pub(crate) struct LigeroWitnessK {
+    pub mat: Vec<F128T>,
+    pub tree: Vec<Hash>,
+    pub block_len: usize,
+    pub num_interleaved: usize,
+}
+
+// No Drop/scratch-pool recycling here (divergence from the original's
+// `LigeroWitness`): there is no F128T scratch pool, and deeper-level matrices
+// are small relative to L0.
+
+impl LigeroWitnessK {
+    #[inline]
+    pub fn row(&self, pos: usize) -> &[F128T] {
+        let start = pos * self.num_interleaved;
+        &self.mat[start..start + self.num_interleaved]
+    }
+
+    #[inline]
+    pub fn root(&self) -> Hash {
+        self.tree[self.tree.len() - 1]
+    }
+}
+
+/// Mirror of `ligerito::ligero_commit` for an E-valued poly: replicate the
+/// LSB-lane-layout message into all `2^log_inv_rate` sub-blocks, RS-encode
+/// each lane with the K-twiddle mixed-product NTT, and Merkle over rows.
+pub(crate) fn ligero_commit_ext(
+    poly: &[F128T],
+    log_msg_cols: usize,
+    log_num_interleaved: usize,
+    log_inv_rate: usize,
+    ntt: &AdditiveNttF64,
+) -> LigeroWitnessK {
+    let msg_cols = 1usize << log_msg_cols;
+    let num_interleaved = 1usize << log_num_interleaved;
+    let block_len = msg_cols << log_inv_rate;
+    let log_block_len = log_msg_cols + log_inv_rate;
+    assert_eq!(poly.len(), num_interleaved * msg_cols);
+    assert!(log_block_len <= ntt.log_domain_size());
+
+    // Plain allocation (scratch-pool divergence; see module docs). Every slot
+    // is written by the replicate fill.
+    let codeword_len = block_len * num_interleaved;
+    let mut mat: Vec<F128T> = crate::alloc_uninit_vec(codeword_len);
+    replicate_message_fill_t(&mut mat, poly);
+
+    // Optional per-level NTT/Merkle split (LIG_K_TRACE): one env lookup per
+    // commit level, no work when unset.
+    let trace = std::env::var_os("LIG_K_TRACE").is_some();
+    let t_ntt = std::time::Instant::now();
+    forward_transform_interleaved_ext_from_layer(ntt, &mut mat, num_interleaved, log_inv_rate);
+    let ntt_elapsed = t_ntt.elapsed();
+    let t_merkle = std::time::Instant::now();
+
+    // Merkle over rows, zero-copy.
+    // SAFETY: F128T is repr(C) { c0: u64, c1: u64 } (16 bytes, no padding);
+    // a `[F128T]` slice is a contiguous little-endian (c0, c1) byte image on
+    // this (LE) target. The cast covers exactly `mat.len() * 16` initialized
+    // bytes.
+    let leaf_size_bytes = num_interleaved * core::mem::size_of::<F128T>();
+    let data_bytes: &[u8] = unsafe {
+        core::slice::from_raw_parts(
+            mat.as_ptr() as *const u8,
+            mat.len() * core::mem::size_of::<F128T>(),
+        )
+    };
+    debug_assert_eq!(data_bytes.len(), block_len * leaf_size_bytes);
+    let tree = merkle::merkle_tree(data_bytes, block_len);
+    if trace {
+        eprintln!(
+            "[lig-k] ligero_commit(log_block={log_block_len}, lanes={num_interleaved}): \
+             ntt = {:.4} s, merkle = {:.4} s",
+            ntt_elapsed.as_secs_f64(),
+            t_merkle.elapsed().as_secs_f64(),
+        );
+    }
+
+    LigeroWitnessK {
+        mat,
+        tree,
+        block_len,
+        num_interleaved,
+    }
+}
+
+// ===================================================================
+// Stateful sumcheck over E with a two-phase (Base then Ext) witness
+// ===================================================================
+//
+// Same (u_0, u_2) convention as the original: per-round quadratic
+// q(X) = u_0 + u_1 X + u_2 X^2 with q(0) + q(1) = T_r, verifier derives
+// u_1 = T_r + u_2 (char 2), round eval q(r) = u_0 + r T_r + (r + r^2) u_2.
+//
+// Round 0 pairs the K-witness with the E-basis via `mul_base`; the first fold
+// lifts the witness into E and all later rounds are pure E.
+
+/// (u_0, u_2) per round in E.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SumcheckMessageK {
+    pub u_0: F128T,
+    pub u_2: F128T,
+}
+
+/// Round-quadratic in coefficient form `c + b X + a X^2` (verifier side).
+#[derive(Clone, Copy, Debug)]
+struct RoundQuadK {
+    c: F128T, // u_0
+    b: F128T, // u_1 (X coeff), derived from T_r and u_2
+    a: F128T, // u_2 (X^2 coeff)
+}
+
+impl RoundQuadK {
+    #[inline]
+    fn from_msg(msg: SumcheckMessageK, t_r: F128T) -> Self {
+        Self {
+            c: msg.u_0,
+            b: t_r + msg.u_2,
+            a: msg.u_2,
+        }
+    }
+    #[inline]
+    fn eval(&self, r: F128T) -> F128T {
+        self.c + r * self.b + r * r * self.a
+    }
+    #[inline]
+    fn fold(p1: &Self, p2: &Self, alpha: F128T) -> Self {
+        Self {
+            c: p1.c + alpha * p2.c,
+            b: p1.b + alpha * p2.b,
+            a: p1.a + alpha * p2.a,
+        }
+    }
+}
+
+/// Round message for the mixed phase: `f` in K, `b` in E. All products are
+/// `mul_base` (2 PMULL each).
+fn round_msg_lsb_base(f: &[F64], b: &[F128T]) -> SumcheckMessageK {
+    use rayon::prelude::*;
+    let n = f.len();
+    debug_assert!(n.is_power_of_two() && n >= 2);
+    debug_assert_eq!(b.len(), n);
+
+    const PAR_THRESHOLD: usize = 4096;
+    let half = n / 2;
+    if half < PAR_THRESHOLD {
+        let mut u_0 = F128T::ZERO;
+        let mut u_2 = F128T::ZERO;
+        for j in 0..half {
+            let f0 = f[2 * j];
+            let f1 = f[2 * j + 1];
+            let b0 = b[2 * j];
+            let b1 = b[2 * j + 1];
+            u_0 += b0.mul_base(f0);
+            u_2 += (b0 + b1).mul_base(f0 + f1);
+        }
+        return SumcheckMessageK { u_0, u_2 };
+    }
+
+    let (u_0, u_2) = (0..half)
+        .into_par_iter()
+        .with_min_len(PAR_THRESHOLD / 4)
+        .map(|j| {
+            let f0 = f[2 * j];
+            let f1 = f[2 * j + 1];
+            let b0 = b[2 * j];
+            let b1 = b[2 * j + 1];
+            (b0.mul_base(f0), (b0 + b1).mul_base(f0 + f1))
+        })
+        .reduce(
+            || (F128T::ZERO, F128T::ZERO),
+            |(a0, a2), (b0, b2)| (a0 + b0, a2 + b2),
+        );
+    SumcheckMessageK { u_0, u_2 }
+}
+
+/// Round message for the pure-E phase. Mirror of `ligerito::round_msg_lsb`.
+fn round_msg_lsb_ext(f: &[F128T], b: &[F128T]) -> SumcheckMessageK {
+    use rayon::prelude::*;
+    let n = f.len();
+    debug_assert!(n.is_power_of_two() && n >= 2);
+    debug_assert_eq!(b.len(), n);
+
+    const PAR_THRESHOLD: usize = 4096;
+    let half = n / 2;
+    if half < PAR_THRESHOLD {
+        let mut u_0 = F128T::ZERO;
+        let mut u_2 = F128T::ZERO;
+        for j in 0..half {
+            let f0 = f[2 * j];
+            let f1 = f[2 * j + 1];
+            let b0 = b[2 * j];
+            let b1 = b[2 * j + 1];
+            u_0 += f0 * b0;
+            u_2 += (f0 + f1) * (b0 + b1);
+        }
+        return SumcheckMessageK { u_0, u_2 };
+    }
+
+    let (u_0, u_2) = (0..half)
+        .into_par_iter()
+        .with_min_len(PAR_THRESHOLD / 4)
+        .map(|j| {
+            let f0 = f[2 * j];
+            let f1 = f[2 * j + 1];
+            let b0 = b[2 * j];
+            let b1 = b[2 * j + 1];
+            (f0 * b0, (f0 + f1) * (b0 + b1))
+        })
+        .reduce(
+            || (F128T::ZERO, F128T::ZERO),
+            |(a0, a2), (b0, b2)| (a0 + b0, a2 + b2),
+        );
+    SumcheckMessageK { u_0, u_2 }
+}
+
+/// Fused fold + next-round message for the FIRST fold (mixed phase): the
+/// K-witness folds into E (`(1+r).mul_base(f0) + r.mul_base(f1)`), the basis
+/// folds in E, and the next-round message is built over the freshly folded
+/// E values in the same pass. Mirror of `ligerito::fold_and_msg_lsb`.
+fn fold_and_msg_lsb_base(
+    f: &[F64],
+    b: &[F128T],
+    r: F128T,
+) -> (Vec<F128T>, Vec<F128T>, SumcheckMessageK) {
+    use rayon::prelude::*;
+    let n = f.len();
+    debug_assert!(n.is_power_of_two() && n >= 2);
+    debug_assert_eq!(b.len(), n);
+    let half = n / 2;
+    let one_plus_r = F128T::ONE + r;
+
+    const PAR_THRESHOLD: usize = 4096;
+    if half < PAR_THRESHOLD {
+        let mut nf = Vec::with_capacity(half);
+        let mut nb = Vec::with_capacity(half);
+        for j in 0..half {
+            nf.push(one_plus_r.mul_base(f[2 * j]) + r.mul_base(f[2 * j + 1]));
+            nb.push(b[2 * j] * one_plus_r + b[2 * j + 1] * r);
+        }
+        let mut u_0 = F128T::ZERO;
+        let mut u_2 = F128T::ZERO;
+        let mut k = 0;
+        while k + 1 < half {
+            let f0 = nf[k];
+            let f1 = nf[k + 1];
+            let b0 = nb[k];
+            let b1 = nb[k + 1];
+            u_0 += f0 * b0;
+            u_2 += (f0 + f1) * (b0 + b1);
+            k += 2;
+        }
+        return (nf, nb, SumcheckMessageK { u_0, u_2 });
+    }
+
+    // Parallel path: `half` is a power of two >= PAR_THRESHOLD and CHUNK is a
+    // power of two, so every chunk has even length and starts at an even
+    // global index (message pairs never straddle a chunk boundary).
+    const CHUNK: usize = 2048;
+    let mut nf: Vec<F128T> = crate::alloc_uninit_vec(half);
+    let mut nb: Vec<F128T> = crate::alloc_uninit_vec(half);
+    let (u_0, u_2) = nf
+        .par_chunks_mut(CHUNK)
+        .zip(nb.par_chunks_mut(CHUNK))
+        .enumerate()
+        .map(|(ci, (fc, bc))| {
+            let base = ci * CHUNK;
+            let len = fc.len();
+            let mut u0 = F128T::ZERO;
+            let mut u2 = F128T::ZERO;
+            for t in 0..len {
+                let j = base + t;
+                fc[t] = one_plus_r.mul_base(f[2 * j]) + r.mul_base(f[2 * j + 1]);
+                bc[t] = b[2 * j] * one_plus_r + b[2 * j + 1] * r;
+            }
+            let mut k = 0;
+            while k + 1 < len {
+                let f0 = fc[k];
+                let f1 = fc[k + 1];
+                let b0 = bc[k];
+                let b1 = bc[k + 1];
+                u0 += f0 * b0;
+                u2 += (f0 + f1) * (b0 + b1);
+                k += 2;
+            }
+            (u0, u2)
+        })
+        .reduce(
+            || (F128T::ZERO, F128T::ZERO),
+            |(a0, a2), (c0, c2)| (a0 + c0, a2 + c2),
+        );
+    (nf, nb, SumcheckMessageK { u_0, u_2 })
+}
+
+/// Fused fold + next-round message for the pure-E phase. Mirror of
+/// `ligerito::fold_and_msg_lsb`.
+fn fold_and_msg_lsb_ext(
+    f: &[F128T],
+    b: &[F128T],
+    r: F128T,
+) -> (Vec<F128T>, Vec<F128T>, SumcheckMessageK) {
+    use rayon::prelude::*;
+    let n = f.len();
+    debug_assert!(n.is_power_of_two() && n >= 2);
+    debug_assert_eq!(b.len(), n);
+    let half = n / 2;
+    let one_plus_r = F128T::ONE + r;
+
+    const PAR_THRESHOLD: usize = 4096;
+    if half < PAR_THRESHOLD {
+        let mut nf = Vec::with_capacity(half);
+        let mut nb = Vec::with_capacity(half);
+        for j in 0..half {
+            nf.push(f[2 * j] * one_plus_r + f[2 * j + 1] * r);
+            nb.push(b[2 * j] * one_plus_r + b[2 * j + 1] * r);
+        }
+        let mut u_0 = F128T::ZERO;
+        let mut u_2 = F128T::ZERO;
+        let mut k = 0;
+        while k + 1 < half {
+            let f0 = nf[k];
+            let f1 = nf[k + 1];
+            let b0 = nb[k];
+            let b1 = nb[k + 1];
+            u_0 += f0 * b0;
+            u_2 += (f0 + f1) * (b0 + b1);
+            k += 2;
+        }
+        return (nf, nb, SumcheckMessageK { u_0, u_2 });
+    }
+
+    const CHUNK: usize = 2048;
+    let mut nf: Vec<F128T> = crate::alloc_uninit_vec(half);
+    let mut nb: Vec<F128T> = crate::alloc_uninit_vec(half);
+    let (u_0, u_2) = nf
+        .par_chunks_mut(CHUNK)
+        .zip(nb.par_chunks_mut(CHUNK))
+        .enumerate()
+        .map(|(ci, (fc, bc))| {
+            let base = ci * CHUNK;
+            let len = fc.len();
+            let mut u0 = F128T::ZERO;
+            let mut u2 = F128T::ZERO;
+            for t in 0..len {
+                let j = base + t;
+                fc[t] = f[2 * j] * one_plus_r + f[2 * j + 1] * r;
+                bc[t] = b[2 * j] * one_plus_r + b[2 * j + 1] * r;
+            }
+            let mut k = 0;
+            while k + 1 < len {
+                let f0 = fc[k];
+                let f1 = fc[k + 1];
+                let b0 = bc[k];
+                let b1 = bc[k + 1];
+                u0 += f0 * b0;
+                u2 += (f0 + f1) * (b0 + b1);
+                k += 2;
+            }
+            (u0, u2)
+        })
+        .reduce(
+            || (F128T::ZERO, F128T::ZERO),
+            |(a0, a2), (c0, c2)| (a0 + c0, a2 + c2),
+        );
+    (nf, nb, SumcheckMessageK { u_0, u_2 })
+}
+
+/// Two-phase witness: the committed K-message before the first fold, an
+/// E-vector afterwards.
+enum WitnessK {
+    Base(Vec<F64>),
+    Ext(Vec<F128T>),
+}
+
+/// Mirror of `ligerito::SumcheckProver` with the two-phase witness. The
+/// `introduce_new_with_eval` fusion (OOD-only) is not ported; see module docs.
+pub struct SumcheckProverK {
+    f: WitnessK,
+    /// Single combined basis poly: after every `glue(beta)` the introduced
+    /// basis is folded in as `combined_basis += beta * b_new`.
+    combined_basis: Vec<F128T>,
+    t_r: F128T,
+    transcript: Vec<SumcheckMessageK>,
+    pending_glue: Option<(Vec<F128T>, F128T)>,
+}
+
+impl SumcheckProverK {
+    pub fn new(f: Vec<F64>, b1: Vec<F128T>, h1: F128T) -> (Self, SumcheckMessageK) {
+        assert_eq!(f.len(), b1.len());
+        let msg = round_msg_lsb_base(&f, &b1);
+        let mut inst = Self {
+            f: WitnessK::Base(f),
+            combined_basis: b1,
+            t_r: h1,
+            transcript: Vec::new(),
+            pending_glue: None,
+        };
+        inst.transcript.push(msg);
+        (inst, msg)
+    }
+
+    pub fn fold(&mut self, r: F128T) -> SumcheckMessageK {
+        let (nf, nb, msg) = match &self.f {
+            WitnessK::Base(f) => fold_and_msg_lsb_base(f, &self.combined_basis, r),
+            WitnessK::Ext(f) => fold_and_msg_lsb_ext(f, &self.combined_basis, r),
+        };
+        self.f = WitnessK::Ext(nf);
+        self.combined_basis = nb;
+        self.transcript.push(msg);
+        msg
+    }
+
+    /// Introduce a fresh basis poly with claimed sum `h_new`; sends the
+    /// (u_0, u_2) for `Σ_x f(x) · b_new(x)` at the current dim.
+    pub fn introduce_new(&mut self, b_new: Vec<F128T>, h_new: F128T) -> SumcheckMessageK {
+        let msg = match &self.f {
+            WitnessK::Base(f) => {
+                assert_eq!(b_new.len(), f.len());
+                round_msg_lsb_base(f, &b_new)
+            }
+            WitnessK::Ext(f) => {
+                assert_eq!(b_new.len(), f.len());
+                round_msg_lsb_ext(f, &b_new)
+            }
+        };
+        self.transcript.push(msg);
+        self.pending_glue = Some((b_new, h_new));
+        msg
+    }
+
+    /// Combine the introduced basis into `combined_basis` with separation
+    /// `alpha`: `combined_basis[j] += alpha * b_new[j]`, `T_r += alpha * h_new`.
+    pub fn glue(&mut self, alpha: F128T) {
+        use rayon::prelude::*;
+        let (b_new, h_new) = self
+            .pending_glue
+            .take()
+            .expect("glue without introduce_new");
+        assert_eq!(b_new.len(), self.combined_basis.len());
+        const PAR_THRESHOLD: usize = 4096;
+        if self.combined_basis.len() < PAR_THRESHOLD {
+            for (acc, &v) in self.combined_basis.iter_mut().zip(b_new.iter()) {
+                *acc += alpha * v;
+            }
+        } else {
+            self.combined_basis
+                .par_iter_mut()
+                .zip(b_new.par_iter())
+                .with_min_len(PAR_THRESHOLD / 4)
+                .for_each(|(acc, &v)| *acc += alpha * v);
+        }
+        self.t_r += alpha * h_new;
+    }
+
+    /// The folded witness (post-first-fold: always E). Panics if called
+    /// before the first fold (the base phase never reaches a commit).
+    pub fn f_ext(&self) -> &[F128T] {
+        match &self.f {
+            WitnessK::Ext(f) => f,
+            WitnessK::Base(_) => panic!("witness still in base phase (no fold yet)"),
+        }
+    }
+
+    pub fn transcript(&self) -> &[SumcheckMessageK] {
+        &self.transcript
+    }
+}
+
+// ===================================================================
+// Proof
+// ===================================================================
+
+/// L0 opened rows: F64 (the commitment field).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InitialProofK {
+    /// One row per query (`num_interleaved` F64 entries), sorted by query
+    /// position to align with the Merkle multi-proof.
+    pub opened_rows: Vec<Vec<F64>>,
+    pub merkle_proof: Vec<Hash>,
+}
+
+/// Deeper-level opened rows: E-valued.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecursiveProofK {
+    pub opened_rows: Vec<Vec<F128T>>,
+    pub merkle_proof: Vec<Hash>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FinalProofK {
+    /// Remaining polynomial sent in clear at the last recursive step.
+    pub yr: Vec<F128T>,
+    pub opened_rows: Vec<Vec<F128T>>,
+    pub merkle_proof: Vec<Hash>,
+}
+
+/// Mirror of `LigeritoProof` minus `ood_values` (OOD is not ported; the UDR
+/// profile takes none). The L0 root is the caller's statement, not proof data.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LigeritoProofK {
+    pub initial_proof: InitialProofK,
+    pub recursive_roots: Vec<Hash>,
+    pub recursive_proofs: Vec<RecursiveProofK>,
+    pub final_proof: FinalProofK,
+    pub sumcheck_transcript: Vec<SumcheckMessageK>,
+    /// Per-level query-phase PoW nonces (0 when the level grinds 0 bits).
+    pub grinding_nonces: Vec<u64>,
+    /// Fold-challenge PoW nonces, flattened in transcript order (one per fold
+    /// challenge at every level with `fold_grinding_bits > 0`).
+    pub fold_grinding_nonces: Vec<u64>,
+}
+
+impl LigeritoProofK {
+    pub fn size_bytes(&self) -> usize {
+        const EXT: usize = core::mem::size_of::<F128T>();
+        const BASE: usize = core::mem::size_of::<F64>();
+        let mut total = 0usize;
+        total += self.recursive_roots.len() * 32;
+        total += self
+            .initial_proof
+            .opened_rows
+            .iter()
+            .map(|r| r.len() * BASE)
+            .sum::<usize>()
+            + self.initial_proof.merkle_proof.len() * 32;
+        for p in &self.recursive_proofs {
+            total += p.opened_rows.iter().map(|r| r.len() * EXT).sum::<usize>()
+                + p.merkle_proof.len() * 32;
+        }
+        total += self.final_proof.yr.len() * EXT
+            + self
+                .final_proof
+                .opened_rows
+                .iter()
+                .map(|r| r.len() * EXT)
+                .sum::<usize>()
+            + self.final_proof.merkle_proof.len() * 32;
+        total += self.sumcheck_transcript.len() * 2 * EXT;
+        total += (self.grinding_nonces.len() + self.fold_grinding_nonces.len()) * 8;
+        total
+    }
+}
+
+// ===================================================================
+// Prover
+// ===================================================================
+
+/// Sample `count` distinct positions in `[0, block_len)`. Same challenger
+/// pattern as the original (`sample_f128().lo % block_len`).
+fn sample_distinct_queries<Ch: Challenger>(
+    challenger: &mut Ch,
+    block_len: usize,
+    count: usize,
+) -> Vec<usize> {
+    assert!(
+        count <= block_len,
+        "sample_distinct_queries: count ({count}) > block_len ({block_len}): config is too thin for this query count"
+    );
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::with_capacity(count);
+    while out.len() < count {
+        let v = challenger.sample_f128();
+        let q = (v.lo as usize) % block_len;
+        if seen.insert(q) {
+            out.push(q);
+        }
+    }
+    out.sort_unstable();
+    out
+}
+
+fn merkle_multi_proof_for(tree: &[Hash], block_len: usize, queries: &[usize]) -> Vec<Hash> {
+    merkle::merkle_multi_proof(tree, block_len, queries)
+}
+
+/// K-witness mirror of `ligerito::recursive_prover_with_basis`: proves the
+/// claim `Σ_x witness(x) · b_initial(x) = target` against the L0 commitment
+/// produced by [`commit_k`] (with `log_batch_size = config.initial_k` and
+/// `log_inv_rate = config.log_inv_rates[0]`).
+///
+/// Transcript order is identical to the original (label, target, root,
+/// (u_0, u_2) stream, tapered fold grinds, query grinds, queries, alphas,
+/// betas, `yr` in the clear at the end), with OOD blocks elided because the
+/// config is asserted to take zero OOD samples.
+pub fn recursive_prover_with_basis_k<Ch: Challenger>(
+    config: &ProverConfig,
+    witness: Vec<F64>,
+    b_initial: Vec<F128T>,
+    target: F128T,
+    l0_codeword: &[F64],
+    l0_tree: &[Hash],
+    challenger: &mut Ch,
+) -> LigeritoProofK {
+    let log_n = witness.len().trailing_zeros() as usize;
+    let r = config.recursive_steps;
+    let initial_k = config.initial_k;
+
+    assert_eq!(witness.len(), 1usize << log_n);
+    assert_eq!(b_initial.len(), 1usize << log_n);
+    assert_eq!(config.recursive_ks.len(), r);
+    assert_eq!(config.log_inv_rates.len(), r + 1);
+    assert!(r >= 1);
+    assert!(initial_k >= 1);
+    // OOD sampling is not ported (module docs): the UDR (`Secure`) profile
+    // takes none at any level.
+    assert!(
+        config.ood_samples.iter().all(|&s| s == 0),
+        "ligerito_k: OOD sampling is not ported; config must take 0 OOD samples"
+    );
+
+    let log_inv_rate_0 = config.log_inv_rates[0];
+    let log_msg_cols_0 = log_n - initial_k;
+    let block_len_0 = 1usize << (log_msg_cols_0 + log_inv_rate_0);
+    let num_interleaved_0 = 1usize << initial_k;
+    assert_eq!(l0_codeword.len(), block_len_0 * num_interleaved_0);
+    assert_eq!(l0_tree.len(), 2 * block_len_0 - 1);
+
+    // Optional per-phase timing (LIG_K_TRACE): mirror of the original's
+    // LIG_PROVE_TRACE. One env lookup per prove; the Instant reads are
+    // negligible and the accumulation/printing is gated on `trace`.
+    let trace = std::env::var_os("LIG_K_TRACE").is_some();
+    let mut t_init_sumcheck = std::time::Duration::ZERO;
+    let mut t_commits = std::time::Duration::ZERO;
+    let mut t_opens = std::time::Duration::ZERO;
+    let mut t_induce = std::time::Duration::ZERO;
+    let mut t_sumcheck_folds = std::time::Duration::ZERO;
+    let mut t_intro_glue = std::time::Duration::ZERO;
+    let t_total = std::time::Instant::now();
+
+    challenger.observe_label(b"flock-ligerito-k-basis-v0");
+    observe_ext(challenger, target);
+
+    // L0 codeword + tree are borrowed (reused from `commit_k`).
+    let initial_root: Hash = l0_tree[l0_tree.len() - 1];
+    let l0_row = |q: usize| -> &[F64] {
+        let start = q * num_interleaved_0;
+        &l0_codeword[start..start + num_interleaved_0]
+    };
+    challenger.observe_bytes(&initial_root);
+
+    let mut fold_grinding_nonces: Vec<u64> = Vec::new();
+    let fold_bits =
+        |lvl: usize| -> u32 { config.fold_grinding_bits.get(lvl).copied().unwrap_or(0) as u32 };
+
+    let _t = std::time::Instant::now();
+    let (mut sc_prover, start_msg) = SumcheckProverK::new(witness, b_initial, target);
+    observe_ext(challenger, start_msg.u_0);
+    observe_ext(challenger, start_msg.u_2);
+
+    let mut r_lane_fold = Vec::with_capacity(initial_k);
+    for j in 0..initial_k {
+        // Tapered fold-challenge grinding: round j of the lane fold needs
+        // (fold_bits - j) bits (worst round j=0 carries the full budget); see
+        // the original's App. C.3 `mca-commutes` comment.
+        let bits = fold_bits(0).saturating_sub(j as u32);
+        if bits > 0 {
+            fold_grinding_nonces.push(challenger.grind_pow(bits));
+        }
+        let r_j = sample_ext(challenger);
+        let msg = sc_prover.fold(r_j);
+        observe_ext(challenger, msg.u_0);
+        observe_ext(challenger, msg.u_2);
+        r_lane_fold.push(r_j);
+    }
+    if trace {
+        t_init_sumcheck += _t.elapsed();
+    }
+
+    // Commit f^1 = folded (now E-valued) witness as wtns_1.
+    let n1 = log_n - initial_k;
+    let log_num_interleaved_1 = config.recursive_ks[0];
+    assert!(n1 >= log_num_interleaved_1);
+    let log_msg_cols_1 = n1 - log_num_interleaved_1;
+    let log_inv_rate_1 = config.log_inv_rates[1];
+    let _t = std::time::Instant::now();
+    let ntt_1 = AdditiveNttF64::standard(log_msg_cols_1 + log_inv_rate_1);
+    let f1 = sc_prover.f_ext().to_vec();
+    let wtns_1 = ligero_commit_ext(
+        &f1,
+        log_msg_cols_1,
+        log_num_interleaved_1,
+        log_inv_rate_1,
+        &ntt_1,
+    );
+    if trace {
+        t_commits += _t.elapsed();
+    }
+    challenger.observe_bytes(&wtns_1.root());
+
+    // (OOD binding block elided: zero samples asserted above.)
+
+    // Query-phase PoW grinding for L0 (0 bits in the Secure profile; the
+    // canonical 0 nonce is still absorbed to keep the transcript in lockstep).
+    let pow_nonce_0 = challenger.grind_pow(config.grinding_bits[0] as u32);
+    let mut grinding_nonces: Vec<u64> = vec![pow_nonce_0];
+
+    // Open L0; lane-fold weights = r_lane_fold.
+    let num_queries_0 = config.queries[0];
+    let queries_0 = sample_distinct_queries(challenger, block_len_0, num_queries_0);
+    let alpha_0 = sample_ext_vec(challenger, ceil_log2(num_queries_0));
+    let _t = std::time::Instant::now();
+    let opened_rows_0: Vec<Vec<F64>> = queries_0.iter().map(|&q| l0_row(q).to_vec()).collect();
+    let merkle_proof_0 = merkle_multi_proof_for(l0_tree, block_len_0, &queries_0);
+    if trace {
+        t_opens += _t.elapsed();
+    }
+    let initial_proof = InitialProofK {
+        opened_rows: opened_rows_0.clone(),
+        merkle_proof: merkle_proof_0,
+    };
+
+    // Induce basis_0 from the L0 opens. L0 dominates the induce phase, where
+    // the sparse-prefix transposed-NTT path wins; the dispatcher auto-selects
+    // it (deeper levels stay dense), mirroring the original.
+    let sks_vks_n1 = eval_sk_at_vks_k(n1);
+    let _t = std::time::Instant::now();
+    let (basis_0_induced, enforced_sum_0) = induce_sumcheck_poly_auto_base(
+        n1,
+        log_inv_rate_0,
+        &sks_vks_n1,
+        &opened_rows_0,
+        &r_lane_fold,
+        &queries_0,
+        &alpha_0,
+    );
+    if trace {
+        t_induce += _t.elapsed();
+    }
+
+    // Introduce + glue basis_0.
+    let _t = std::time::Instant::now();
+    let intro_msg_0 = sc_prover.introduce_new(basis_0_induced, enforced_sum_0);
+    observe_ext(challenger, intro_msg_0.u_0);
+    observe_ext(challenger, intro_msg_0.u_2);
+    let beta_0 = sample_ext(challenger);
+    sc_prover.glue(beta_0);
+    if trace {
+        t_intro_glue += _t.elapsed();
+    }
+
+    // Recursive levels.
+    let mut wtns_prev = wtns_1;
+    let mut recursive_roots: Vec<Hash> = vec![wtns_prev.root()];
+    let mut recursive_proofs: Vec<RecursiveProofK> = Vec::new();
+
+    for i in 0..r {
+        let k_i = config.recursive_ks[i];
+        let mut level_rs = Vec::with_capacity(k_i);
+        let _t = std::time::Instant::now();
+        for j in 0..k_i {
+            // These folds fold level i+1's commitment; tapered grinding as in
+            // the L0 loop.
+            let bits = fold_bits(i + 1).saturating_sub(j as u32);
+            if bits > 0 {
+                fold_grinding_nonces.push(challenger.grind_pow(bits));
+            }
+            let ri = sample_ext(challenger);
+            let msg = sc_prover.fold(ri);
+            observe_ext(challenger, msg.u_0);
+            observe_ext(challenger, msg.u_2);
+            level_rs.push(ri);
+        }
+        if trace {
+            t_sumcheck_folds += _t.elapsed();
+        }
+
+        if i == r - 1 {
+            let yr = sc_prover.f_ext().to_vec();
+            for v in &yr {
+                observe_ext(challenger, *v);
+            }
+            // PoW grinding for the last level before sampling its queries.
+            let nonce_last = challenger.grind_pow(config.grinding_bits[i + 1] as u32);
+            grinding_nonces.push(nonce_last);
+            let num_queries_last = config.queries[i + 1];
+            let queries_last =
+                sample_distinct_queries(challenger, wtns_prev.block_len, num_queries_last);
+            let _t = std::time::Instant::now();
+            let opened_rows_last: Vec<Vec<F128T>> = queries_last
+                .iter()
+                .map(|&q| wtns_prev.row(q).to_vec())
+                .collect();
+            let merkle_proof_last =
+                merkle_multi_proof_for(&wtns_prev.tree, wtns_prev.block_len, &queries_last);
+            if trace {
+                t_opens += _t.elapsed();
+                let total = t_total.elapsed();
+                eprintln!("[lig-k-prove] total = {:.4} s", total.as_secs_f64());
+                eprintln!(
+                    "  initial sumcheck (initial_k folds + SC build): {:.4} s",
+                    t_init_sumcheck.as_secs_f64()
+                );
+                eprintln!(
+                    "  recursive commits (NTT + merkle):              {:.4} s",
+                    t_commits.as_secs_f64()
+                );
+                eprintln!(
+                    "  opens (rows + multi-proof, incl. final):      {:.4} s",
+                    t_opens.as_secs_f64()
+                );
+                eprintln!(
+                    "  induce_sumcheck_poly:                          {:.4} s",
+                    t_induce.as_secs_f64()
+                );
+                eprintln!(
+                    "  sumcheck recursive folds:                      {:.4} s",
+                    t_sumcheck_folds.as_secs_f64()
+                );
+                eprintln!(
+                    "  introduce_new + glue:                          {:.4} s",
+                    t_intro_glue.as_secs_f64()
+                );
+            }
+            return LigeritoProofK {
+                initial_proof,
+                recursive_roots,
+                recursive_proofs,
+                final_proof: FinalProofK {
+                    yr,
+                    opened_rows: opened_rows_last,
+                    merkle_proof: merkle_proof_last,
+                },
+                sumcheck_transcript: sc_prover.transcript().to_vec(),
+                grinding_nonces,
+                fold_grinding_nonces,
+            };
+        }
+
+        let n_next = sc_prover.f_ext().len().trailing_zeros() as usize;
+        let log_num_interleaved_next = config.recursive_ks[i + 1];
+        assert!(n_next >= log_num_interleaved_next);
+        let log_msg_cols_next = n_next - log_num_interleaved_next;
+        let log_inv_rate_next = config.log_inv_rates[i + 2];
+        let _t = std::time::Instant::now();
+        let ntt_next = AdditiveNttF64::standard(log_msg_cols_next + log_inv_rate_next);
+        let f_evals = sc_prover.f_ext().to_vec();
+        let wtns_next = ligero_commit_ext(
+            &f_evals,
+            log_msg_cols_next,
+            log_num_interleaved_next,
+            log_inv_rate_next,
+            &ntt_next,
+        );
+        if trace {
+            t_commits += _t.elapsed();
+        }
+        let root_next = wtns_next.root();
+        challenger.observe_bytes(&root_next);
+        recursive_roots.push(root_next);
+
+        // (OOD binding block elided: zero samples asserted above.)
+
+        // PoW grinding for this iteration's query phase.
+        let nonce_i = challenger.grind_pow(config.grinding_bits[i + 1] as u32);
+        grinding_nonces.push(nonce_i);
+        let num_queries_i = config.queries[i + 1];
+        let queries_i = sample_distinct_queries(challenger, wtns_prev.block_len, num_queries_i);
+        let alpha_i = sample_ext_vec(challenger, ceil_log2(num_queries_i));
+        let _t = std::time::Instant::now();
+        let opened_rows_i: Vec<Vec<F128T>> = queries_i
+            .iter()
+            .map(|&q| wtns_prev.row(q).to_vec())
+            .collect();
+        let merkle_proof_i =
+            merkle_multi_proof_for(&wtns_prev.tree, wtns_prev.block_len, &queries_i);
+        if trace {
+            t_opens += _t.elapsed();
+        }
+        recursive_proofs.push(RecursiveProofK {
+            opened_rows: opened_rows_i.clone(),
+            merkle_proof: merkle_proof_i,
+        });
+
+        let sks_vks_i = eval_sk_at_vks_k(n_next);
+        let _t = std::time::Instant::now();
+        let (basis_i_induced, enforced_sum_i) = induce_sumcheck_poly_ext(
+            n_next,
+            &sks_vks_i,
+            &opened_rows_i,
+            &level_rs,
+            &queries_i,
+            &alpha_i,
+        );
+        if trace {
+            t_induce += _t.elapsed();
+        }
+
+        let _t = std::time::Instant::now();
+        let intro_msg_i = sc_prover.introduce_new(basis_i_induced, enforced_sum_i);
+        observe_ext(challenger, intro_msg_i.u_0);
+        observe_ext(challenger, intro_msg_i.u_2);
+        let beta_i = sample_ext(challenger);
+        sc_prover.glue(beta_i);
+        if trace {
+            t_intro_glue += _t.elapsed();
+        }
+
+        wtns_prev = wtns_next;
+    }
+
+    unreachable!()
+}
+
+// ===================================================================
+// Dense verifier
+// ===================================================================
+
+/// Verify all opened L0 (F64) rows against one root via a single multi-proof.
+fn verify_level_opens_base(
+    root: &Hash,
+    block_len: usize,
+    queries: &[usize],
+    opened_rows: &[Vec<F64>],
+    expected_num_interleaved: usize,
+    multi_proof: &[Hash],
+) -> bool {
+    if queries.len() != opened_rows.len() {
+        return false;
+    }
+    let mut leaf_hashes: Vec<Hash> = Vec::with_capacity(opened_rows.len());
+    for row in opened_rows {
+        if row.len() != expected_num_interleaved {
+            return false;
+        }
+        // SAFETY: F64 is repr(transparent) over u64 (8 bytes, no padding);
+        // the row's byte image is exactly `row.len() * 8` initialized bytes.
+        let bytes: &[u8] = unsafe {
+            core::slice::from_raw_parts(
+                row.as_ptr() as *const u8,
+                row.len() * core::mem::size_of::<F64>(),
+            )
+        };
+        leaf_hashes.push(merkle::hash_leaf(bytes));
+    }
+    merkle::verify_merkle_multi_proof(root, block_len, queries, &leaf_hashes, multi_proof)
+}
+
+/// Verify all opened deeper-level (F128T) rows against one root.
+fn verify_level_opens_ext(
+    root: &Hash,
+    block_len: usize,
+    queries: &[usize],
+    opened_rows: &[Vec<F128T>],
+    expected_num_interleaved: usize,
+    multi_proof: &[Hash],
+) -> bool {
+    if queries.len() != opened_rows.len() {
+        return false;
+    }
+    let mut leaf_hashes: Vec<Hash> = Vec::with_capacity(opened_rows.len());
+    for row in opened_rows {
+        if row.len() != expected_num_interleaved {
+            return false;
+        }
+        // SAFETY: F128T is repr(C) { c0: u64, c1: u64 } (16 bytes, no
+        // padding); the row's byte image is exactly `row.len() * 16`
+        // initialized bytes.
+        let bytes: &[u8] = unsafe {
+            core::slice::from_raw_parts(
+                row.as_ptr() as *const u8,
+                row.len() * core::mem::size_of::<F128T>(),
+            )
+        };
+        leaf_hashes.push(merkle::hash_leaf(bytes));
+    }
+    merkle::verify_merkle_multi_proof(root, block_len, queries, &leaf_hashes, multi_proof)
+}
+
+/// Dense verifier for [`recursive_prover_with_basis_k`] (mirror of
+/// `ligerito::recursive_verifier_with_basis`): materializes `b_initial` and
+/// every induced basis poly, replays the transcript, and checks the residual
+/// inner product against the running sum-claim. The succinct verifier is not
+/// ported; this one exists for correctness testing and benchmarking.
+pub fn recursive_verifier_with_basis_k<Ch: Challenger>(
+    config: &VerifierConfig,
+    proof: &LigeritoProofK,
+    b_initial: &[F128T],
+    target: F128T,
+    expected_initial_root: &Hash,
+    challenger: &mut Ch,
+) -> bool {
+    let log_n = b_initial.len().trailing_zeros() as usize;
+    let initial_k = config.initial_k;
+    let r = config.recursive_steps;
+
+    if r < 1 || config.recursive_ks.len() != r || config.log_inv_rates.len() != r + 1 {
+        return false;
+    }
+    if b_initial.len() != 1usize << log_n {
+        return false;
+    }
+    // OOD is not ported; reject configs that would require it.
+    if config.ood_samples.iter().any(|&s| s != 0) {
+        return false;
+    }
+
+    // The L0 root is the caller's statement (not proof data): absorb it in the
+    // prover's slot and check L0 opens against it below.
+    challenger.observe_label(b"flock-ligerito-k-basis-v0");
+    observe_ext(challenger, target);
+    challenger.observe_bytes(expected_initial_root);
+
+    let log_inv_rate_0 = config.log_inv_rates[0];
+    let log_msg_cols_0 = log_n - initial_k;
+    let block_len_0 = 1usize << (log_msg_cols_0 + log_inv_rate_0);
+    let num_interleaved_0 = 1usize << initial_k;
+
+    // Replay sumcheck: start msg, then initial_k folds.
+    let mut t_r = target;
+    let mut tx_idx = 0usize;
+    if tx_idx >= proof.sumcheck_transcript.len() {
+        return false;
+    }
+    let start_msg = proof.sumcheck_transcript[tx_idx];
+    tx_idx += 1;
+    observe_ext(challenger, start_msg.u_0);
+    observe_ext(challenger, start_msg.u_2);
+    let mut running_quad = RoundQuadK::from_msg(start_msg, t_r);
+
+    let fold_bits =
+        |lvl: usize| -> u32 { config.fold_grinding_bits.get(lvl).copied().unwrap_or(0) as u32 };
+    let mut fold_nonce_idx = 0usize;
+
+    let mut r_lane_fold = Vec::with_capacity(initial_k);
+    for j in 0..initial_k {
+        // Fold-challenge PoW mirror (L0's lane folds), tapered per round.
+        let bits = fold_bits(0).saturating_sub(j as u32);
+        if bits > 0 {
+            if fold_nonce_idx >= proof.fold_grinding_nonces.len() {
+                return false;
+            }
+            if !challenger.verify_pow(proof.fold_grinding_nonces[fold_nonce_idx], bits) {
+                return false;
+            }
+            fold_nonce_idx += 1;
+        }
+        let ri = sample_ext(challenger);
+        r_lane_fold.push(ri);
+        t_r = running_quad.eval(ri);
+        if tx_idx >= proof.sumcheck_transcript.len() {
+            return false;
+        }
+        let msg = proof.sumcheck_transcript[tx_idx];
+        tx_idx += 1;
+        observe_ext(challenger, msg.u_0);
+        observe_ext(challenger, msg.u_2);
+        running_quad = RoundQuadK::from_msg(msg, t_r);
+    }
+
+    // Observe wtns_1 root + open wtns_0.
+    if proof.recursive_roots.is_empty() {
+        return false;
+    }
+    let root_1 = proof.recursive_roots[0];
+    challenger.observe_bytes(&root_1);
+
+    // (OOD binding mirror elided: zero samples enforced above.)
+
+    // PoW grinding check for L0's query phase (no-op at 0 bits but keeps the
+    // FS state in lockstep with the prover).
+    let mut nonce_idx = 0usize;
+    if nonce_idx >= proof.grinding_nonces.len() {
+        return false;
+    }
+    if !challenger.verify_pow(
+        proof.grinding_nonces[nonce_idx],
+        config.grinding_bits[0] as u32,
+    ) {
+        return false;
+    }
+    nonce_idx += 1;
+
+    let num_queries_0 = config.queries[0];
+    let queries_0 = sample_distinct_queries(challenger, block_len_0, num_queries_0);
+    let alpha_0 = sample_ext_vec(challenger, ceil_log2(num_queries_0));
+    if !verify_level_opens_base(
+        expected_initial_root,
+        block_len_0,
+        &queries_0,
+        &proof.initial_proof.opened_rows,
+        num_interleaved_0,
+        &proof.initial_proof.merkle_proof,
+    ) {
+        return false;
+    }
+
+    // L0 induce with the same auto dispatch as the prover (dense vs sparse
+    // transposed-NTT; identical outputs either way).
+    let n1 = log_n - initial_k;
+    let sks_vks_n1 = eval_sk_at_vks_k(n1);
+    let (basis_0_induced, enforced_sum_0) = induce_sumcheck_poly_auto_base(
+        n1,
+        log_inv_rate_0,
+        &sks_vks_n1,
+        &proof.initial_proof.opened_rows,
+        &r_lane_fold,
+        &queries_0,
+        &alpha_0,
+    );
+
+    // Intro + glue.
+    if tx_idx >= proof.sumcheck_transcript.len() {
+        return false;
+    }
+    let intro_msg_0 = proof.sumcheck_transcript[tx_idx];
+    tx_idx += 1;
+    observe_ext(challenger, intro_msg_0.u_0);
+    observe_ext(challenger, intro_msg_0.u_2);
+    let intro_quad_0 = RoundQuadK::from_msg(intro_msg_0, enforced_sum_0);
+    let beta_0 = sample_ext(challenger);
+    running_quad = RoundQuadK::fold(&running_quad, &intro_quad_0, beta_0);
+    t_r += beta_0 * enforced_sum_0;
+
+    // Basis poly tracking for the residual check. b_initial folds at ALL ris;
+    // basis_0_induced starts after the lane folds.
+    let mut basis_polys: Vec<Vec<F128T>> = vec![b_initial.to_vec(), basis_0_induced];
+    let mut basis_ris_starts: Vec<usize> = vec![0, initial_k];
+    let mut basis_separations: Vec<F128T> = vec![beta_0];
+    let mut ris: Vec<F128T> = r_lane_fold.clone();
+
+    let mut prev_root = root_1;
+    let mut prev_log_num_interleaved = config.recursive_ks[0];
+    let mut prev_log_msg_cols = n1 - prev_log_num_interleaved;
+    let mut prev_log_inv_rate = config.log_inv_rates[1];
+    let mut next_root_idx = 1usize;
+    let mut recursive_proof_idx = 0usize;
+    let mut n_current = n1;
+
+    for i in 0..r {
+        let k_i = config.recursive_ks[i];
+        if n_current < k_i {
+            return false;
+        }
+        let mut level_rs = Vec::with_capacity(k_i);
+        for j in 0..k_i {
+            // Fold-challenge PoW mirror (level i+1's folds), tapered.
+            let bits = fold_bits(i + 1).saturating_sub(j as u32);
+            if bits > 0 {
+                if fold_nonce_idx >= proof.fold_grinding_nonces.len() {
+                    return false;
+                }
+                if !challenger.verify_pow(proof.fold_grinding_nonces[fold_nonce_idx], bits) {
+                    return false;
+                }
+                fold_nonce_idx += 1;
+            }
+            let ri = sample_ext(challenger);
+            ris.push(ri);
+            level_rs.push(ri);
+            t_r = running_quad.eval(ri);
+            if tx_idx >= proof.sumcheck_transcript.len() {
+                return false;
+            }
+            let msg = proof.sumcheck_transcript[tx_idx];
+            tx_idx += 1;
+            observe_ext(challenger, msg.u_0);
+            observe_ext(challenger, msg.u_2);
+            running_quad = RoundQuadK::from_msg(msg, t_r);
+        }
+        n_current -= k_i;
+
+        if i == r - 1 {
+            if tx_idx != proof.sumcheck_transcript.len() {
+                return false;
+            }
+            if fold_nonce_idx != proof.fold_grinding_nonces.len() {
+                return false;
+            }
+            let yr = &proof.final_proof.yr;
+            if yr.len() != 1 << n_current {
+                return false;
+            }
+            for v in yr {
+                observe_ext(challenger, *v);
+            }
+            // PoW grinding check for the last level.
+            if nonce_idx >= proof.grinding_nonces.len() {
+                return false;
+            }
+            if !challenger.verify_pow(
+                proof.grinding_nonces[nonce_idx],
+                config.grinding_bits[i + 1] as u32,
+            ) {
+                return false;
+            }
+            // (last nonce: nonce_idx is not advanced past it)
+
+            let prev_block_len = 1usize << (prev_log_msg_cols + prev_log_inv_rate);
+            let prev_num_interleaved = 1usize << prev_log_num_interleaved;
+            let num_queries_last = config.queries[i + 1];
+            let queries_last =
+                sample_distinct_queries(challenger, prev_block_len, num_queries_last);
+            // Final-level basis-induction challenge: sampled AFTER `yr` was
+            // observed and the queries are fixed, so a forged `yr` cannot be
+            // adapted to it (mirror of the original).
+            let alpha_last = sample_ext_vec(challenger, ceil_log2(num_queries_last));
+            if !verify_level_opens_ext(
+                &prev_root,
+                prev_block_len,
+                &queries_last,
+                &proof.final_proof.opened_rows,
+                prev_num_interleaved,
+                &proof.final_proof.merkle_proof,
+            ) {
+                return false;
+            }
+
+            // Bind the LAST commitment to `yr`: induce its opened rows into
+            // the sumcheck like every non-final level, batched with a fresh
+            // `beta_last` (see the original's binding-fix comment).
+            let sks_vks_last = eval_sk_at_vks_k(n_current);
+            let (basis_last_induced, enforced_sum_last) = induce_sumcheck_poly_ext(
+                n_current,
+                &sks_vks_last,
+                &proof.final_proof.opened_rows,
+                &level_rs,
+                &queries_last,
+                &alpha_last,
+            );
+            let beta_last = sample_ext(challenger);
+            t_r += beta_last * enforced_sum_last;
+            basis_polys.push(basis_last_induced);
+            basis_ris_starts.push(ris.len());
+            basis_separations.push(beta_last);
+
+            // Residual check.
+            let yr_len = yr.len();
+            let mut combined = vec![F128T::ZERO; yr_len];
+            for (k, basis) in basis_polys.iter().enumerate() {
+                let start = basis_ris_starts[k];
+                let residual = partial_eval_lsb_ext(basis, &ris[start..]);
+                if residual.len() != yr_len {
+                    return false;
+                }
+                let sep = if k == 0 {
+                    F128T::ONE
+                } else {
+                    basis_separations[k - 1]
+                };
+                for (c, &rr) in combined.iter_mut().zip(residual.iter()) {
+                    *c += sep * rr;
+                }
+            }
+            let inner: F128T = yr
+                .iter()
+                .zip(combined.iter())
+                .map(|(&y, &c)| y * c)
+                .fold(F128T::ZERO, |a, v| a + v);
+            return inner == t_r;
+        }
+
+        if next_root_idx >= proof.recursive_roots.len() {
+            return false;
+        }
+        let root_next = proof.recursive_roots[next_root_idx];
+        next_root_idx += 1;
+        challenger.observe_bytes(&root_next);
+
+        // (OOD binding mirror elided.)
+
+        // PoW grinding check for this iteration's query phase.
+        if nonce_idx >= proof.grinding_nonces.len() {
+            return false;
+        }
+        if !challenger.verify_pow(
+            proof.grinding_nonces[nonce_idx],
+            config.grinding_bits[i + 1] as u32,
+        ) {
+            return false;
+        }
+        nonce_idx += 1;
+
+        let prev_block_len = 1usize << (prev_log_msg_cols + prev_log_inv_rate);
+        let prev_num_interleaved = 1usize << prev_log_num_interleaved;
+        let num_queries_i = config.queries[i + 1];
+        let queries_i = sample_distinct_queries(challenger, prev_block_len, num_queries_i);
+        let alpha_i = sample_ext_vec(challenger, ceil_log2(num_queries_i));
+        if recursive_proof_idx >= proof.recursive_proofs.len() {
+            return false;
+        }
+        let rp = &proof.recursive_proofs[recursive_proof_idx];
+        recursive_proof_idx += 1;
+        if !verify_level_opens_ext(
+            &prev_root,
+            prev_block_len,
+            &queries_i,
+            &rp.opened_rows,
+            prev_num_interleaved,
+            &rp.merkle_proof,
+        ) {
+            return false;
+        }
+
+        let sks_vks_i = eval_sk_at_vks_k(n_current);
+        let (basis_i_induced, enforced_sum_i) = induce_sumcheck_poly_ext(
+            n_current,
+            &sks_vks_i,
+            &rp.opened_rows,
+            &level_rs,
+            &queries_i,
+            &alpha_i,
+        );
+
+        if tx_idx >= proof.sumcheck_transcript.len() {
+            return false;
+        }
+        let intro_msg_i = proof.sumcheck_transcript[tx_idx];
+        tx_idx += 1;
+        observe_ext(challenger, intro_msg_i.u_0);
+        observe_ext(challenger, intro_msg_i.u_2);
+        let intro_quad_i = RoundQuadK::from_msg(intro_msg_i, enforced_sum_i);
+        let beta_i = sample_ext(challenger);
+        running_quad = RoundQuadK::fold(&running_quad, &intro_quad_i, beta_i);
+        t_r += beta_i * enforced_sum_i;
+        basis_polys.push(basis_i_induced);
+        basis_ris_starts.push(ris.len());
+        basis_separations.push(beta_i);
+
+        prev_root = root_next;
+        let k_next = config.recursive_ks[i + 1];
+        if n_current < k_next {
+            return false;
+        }
+        prev_log_num_interleaved = k_next;
+        prev_log_msg_cols = n_current - k_next;
+        prev_log_inv_rate = config.log_inv_rates[i + 2];
+    }
+
+    unreachable!()
+}
+
+// ===================================================================
+// Tests
+// ===================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::challenger::FsChallenger;
+    use crate::pcs::ligerito::{default_config, default_verifier_config};
+
+    fn splitmix64(state: &mut u64) -> u64 {
+        *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = *state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    fn rand_ext(s: &mut u64) -> F128T {
+        F128T::new(splitmix64(s), splitmix64(s))
+    }
+
+    /// Configs for a K-witness of `2^log_n` elements. Prefers the strict
+    /// Secure-profile derivation (the production path, [`k_configs_for`]);
+    /// its ladder needs L0 block_len >= ~300 queries, i.e. log_n >= 14, so
+    /// smaller test sizes fall back to the ad-hoc `default_config` shape
+    /// (test-only; same fallback the main crate uses for small instances).
+    fn configs_for(log_n: usize) -> (ProverConfig, VerifierConfig) {
+        match k_configs_for(log_n) {
+            Ok(pv) => pv,
+            Err(_) => {
+                let pc = default_config(log_n, 5, 1).unwrap();
+                let vc = default_verifier_config(log_n, 5, 1).unwrap();
+                (pc, vc)
+            }
+        }
+    }
+
+    struct Instance {
+        vc: VerifierConfig,
+        b_initial: Vec<F128T>,
+        target: F128T,
+        root: Hash,
+        proof: LigeritoProofK,
+    }
+
+    fn prove_instance(log_n: usize, seed: u64) -> Instance {
+        let (pc, vc) = configs_for(log_n);
+        let mut s = seed;
+        let witness: Vec<F64> = (0..1usize << log_n)
+            .map(|_| F64(splitmix64(&mut s)))
+            .collect();
+        let (cm, pd) = commit_k(&witness, pc.initial_k, pc.log_inv_rates[0]);
+        let point: Vec<F128T> = (0..log_n).map(|_| rand_ext(&mut s)).collect();
+        let b_initial = build_eq_table_ext(&point);
+        let target = inner_product_base_ext(&witness, &b_initial);
+        let mut ch = FsChallenger::new(b"ligerito-k-test");
+        let proof = recursive_prover_with_basis_k(
+            &pc,
+            witness,
+            b_initial.clone(),
+            target,
+            &pd.codeword,
+            &pd.merkle_tree,
+            &mut ch,
+        );
+        Instance {
+            vc,
+            b_initial,
+            target,
+            root: cm.root,
+            proof,
+        }
+    }
+
+    fn verify_instance(inst: &Instance, proof: &LigeritoProofK) -> bool {
+        let mut ch = FsChallenger::new(b"ligerito-k-test");
+        recursive_verifier_with_basis_k(
+            &inst.vc,
+            proof,
+            &inst.b_initial,
+            inst.target,
+            &inst.root,
+            &mut ch,
+        )
+    }
+
+    /// Pin that the log_n = 16 roundtrip exercises the strict Secure-profile
+    /// derivation (not the small-size fallback): the ladder must exist and
+    /// carry the L0 lane fold at initial_k = 6 with nonzero L0 fold grinding.
+    #[test]
+    fn k_configs_secure_profile_shape() {
+        let (pc, vc) = k_configs_for(16).expect("Secure profile feasible at log_n = 16");
+        assert_eq!(pc.initial_k, 6);
+        assert!(pc.recursive_steps >= 1);
+        assert_eq!(vc.initial_k, pc.initial_k);
+        assert!(pc.ood_samples.iter().all(|&s| s == 0));
+        // And log_n = 12 is below the Secure ladder's feasibility floor, so
+        // the tests there use the default_config fallback.
+        assert!(k_configs_for(12).is_err());
+    }
+
+    #[test]
+    fn roundtrip_log_n_12() {
+        let inst = prove_instance(12, 1);
+        assert!(verify_instance(&inst, &inst.proof), "honest proof rejected");
+    }
+
+    #[test]
+    fn roundtrip_log_n_16() {
+        let inst = prove_instance(16, 2);
+        assert!(verify_instance(&inst, &inst.proof), "honest proof rejected");
+    }
+
+    /// At log_n = 18 (Secure profile) L0 has log_msg_cols = 12 and ~290
+    /// queries, which trips the sparse transposed-NTT dispatch in BOTH the
+    /// prover and the dense verifier; pin the heuristic, then roundtrip.
+    #[test]
+    fn roundtrip_log_n_18_sparse_induce() {
+        let (pc, _) = k_configs_for(18).expect("Secure profile feasible at log_n = 18");
+        assert!(
+            induce_use_ntt_heuristic(18 - pc.initial_k, pc.log_inv_rates[0], pc.queries[0]),
+            "shape must select the sparse transposed-NTT induce at L0"
+        );
+        // And the smaller roundtrips stay on the dense path (cols < 12).
+        let (pc16, _) = k_configs_for(16).unwrap();
+        assert!(!induce_use_ntt_heuristic(
+            16 - pc16.initial_k,
+            pc16.log_inv_rates[0],
+            pc16.queries[0]
+        ));
+        let inst = prove_instance(18, 8);
+        assert!(verify_instance(&inst, &inst.proof), "honest proof rejected");
+    }
+
+    #[test]
+    fn proving_is_deterministic() {
+        let a = prove_instance(12, 7);
+        let b = prove_instance(12, 7);
+        assert_eq!(a.proof, b.proof, "same inputs must yield identical proofs");
+    }
+
+    #[test]
+    fn tampered_opened_row_rejects() {
+        let inst = prove_instance(12, 3);
+        let mut bad = inst.proof.clone();
+        bad.initial_proof.opened_rows[0][0].0 ^= 1;
+        assert!(
+            !verify_instance(&inst, &bad),
+            "bit-flipped L0 opened row must be rejected"
+        );
+        // Also flip a deeper (E-valued) row for good measure.
+        let mut bad2 = inst.proof.clone();
+        bad2.final_proof.opened_rows[0][0].c0 ^= 1;
+        assert!(
+            !verify_instance(&inst, &bad2),
+            "bit-flipped final-level opened row must be rejected"
+        );
+    }
+
+    #[test]
+    fn tampered_sumcheck_u0_rejects() {
+        let inst = prove_instance(12, 4);
+        let mut bad = inst.proof.clone();
+        bad.sumcheck_transcript[0].u_0.c0 ^= 1;
+        assert!(
+            !verify_instance(&inst, &bad),
+            "bit-flipped sumcheck u_0 must be rejected"
+        );
+    }
+
+    /// The E-valued interleaved NTT with K-twiddles must act lane-wise on the
+    /// tower coordinates: transforming (c0, c1) packed as F128T equals two
+    /// independent F64 transforms of the c0 and c1 lanes.
+    #[test]
+    fn ext_ntt_matches_two_base_ntts() {
+        let mut s = 5u64;
+        for (log_d, lanes, start_layer) in [(6usize, 4usize, 0usize), (9, 2, 2), (10, 1, 1)] {
+            let ntt = AdditiveNttF64::standard(log_d);
+            let n = (1usize << log_d) * lanes;
+            let ext: Vec<F128T> = (0..n).map(|_| rand_ext(&mut s)).collect();
+            let mut c0: Vec<F64> = ext.iter().map(|e| F64(e.c0)).collect();
+            let mut c1: Vec<F64> = ext.iter().map(|e| F64(e.c1)).collect();
+            let mut ext_t = ext.clone();
+            forward_transform_interleaved_ext_from_layer(&ntt, &mut ext_t, lanes, start_layer);
+            ntt.forward_transform_interleaved_from_layer(&mut c0, lanes, start_layer);
+            ntt.forward_transform_interleaved_from_layer(&mut c1, lanes, start_layer);
+            for i in 0..n {
+                assert_eq!(ext_t[i], F128T::new(c0[i].0, c1[i].0), "mismatch at {i}");
+            }
+        }
+    }
+
+    /// The sparse transposed-NTT induce must be byte-identical to the dense
+    /// LCH-expansion induce (same guarantee the original pins). Covers both
+    /// the windowed sparse-prefix path (log_block >= 12, k = 8) and the
+    /// scatter + full-dense-transpose path (log_block < 12, k = 0).
+    #[test]
+    fn induce_via_ntt_matches_dense() {
+        let mut s = 9u64;
+        for (log_msg_cols, log_inv_rate, lanes_log, n_queries) in
+            [(12usize, 1usize, 5usize, 130usize), (6, 2, 3, 40)]
+        {
+            let block_len = 1usize << (log_msg_cols + log_inv_rate);
+            let lanes = 1usize << lanes_log;
+            // Distinct sorted query positions plus one aligned random row each.
+            let mut qs: Vec<usize> = Vec::new();
+            let mut seen = std::collections::HashSet::new();
+            while qs.len() < n_queries {
+                let q = (splitmix64(&mut s) as usize) % block_len;
+                if seen.insert(q) {
+                    qs.push(q);
+                }
+            }
+            qs.sort_unstable();
+            let rows: Vec<Vec<F64>> = (0..n_queries)
+                .map(|_| (0..lanes).map(|_| F64(splitmix64(&mut s))).collect())
+                .collect();
+            let v_challenges: Vec<F128T> = (0..lanes_log).map(|_| rand_ext(&mut s)).collect();
+            let alpha: Vec<F128T> = (0..ceil_log2(n_queries)).map(|_| rand_ext(&mut s)).collect();
+
+            let sks_vks = eval_sk_at_vks_k(log_msg_cols);
+            let dense = induce_sumcheck_poly_base(
+                log_msg_cols,
+                &sks_vks,
+                &rows,
+                &v_challenges,
+                &qs,
+                &alpha,
+            );
+            let via_ntt = induce_sumcheck_poly_via_ntt_base(
+                log_msg_cols,
+                log_inv_rate,
+                &rows,
+                &v_challenges,
+                &qs,
+                &alpha,
+            );
+            assert_eq!(dense.1, via_ntt.1, "enforced_sum mismatch");
+            assert_eq!(dense.0, via_ntt.0, "basis_poly mismatch");
+        }
+    }
+
+    /// The scalar and parallel ext transforms agree (parallel path is only
+    /// taken for larger inputs; force both on the same data).
+    #[test]
+    fn ext_ntt_scalar_matches_parallel() {
+        let mut s = 6u64;
+        let log_d = 13;
+        let lanes = 2;
+        let ntt = AdditiveNttF64::standard(log_d);
+        let n = (1usize << log_d) * lanes;
+        let orig: Vec<F128T> = (0..n).map(|_| rand_ext(&mut s)).collect();
+        let mut a = orig.clone();
+        let mut b = orig;
+        forward_transform_interleaved_ext_scalar_from_layer(&ntt, &mut a, lanes, 1);
+        forward_transform_interleaved_ext_parallel_from_layer(&ntt, &mut b, lanes, 1);
+        assert_eq!(a, b);
+    }
+}
