@@ -389,8 +389,10 @@ fn main() {
 
 #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
 fn variants() {
+    use flare::field::gf2_64::aarch64 as k64;
     use flare::field::gf2_64x3::aarch64 as t192;
     use flare::field::gf2_128::aarch64 as g128;
+    use flare::field::tower_f128::aarch64 as t128;
 
     fn report<T: BenchField>(name: &str, op: impl Fn(T, T) -> T + Copy) {
         let mut s = 7u64;
@@ -465,7 +467,14 @@ fn variants() {
         "transition fields (ns/op)", "latency", "tput(8ch)"
     );
     println!("  {}", "-".repeat(59));
-    report::<F128T>("F128T tower mul (default)", |a, b| a * b);
+    // SAFETY (all closures below): same as above, aes is statically enabled.
+    report::<F128T>("F128T mul parallel-fold (default)", |a, b| a * b);
+    report::<F128T>("F128T mul shift-tail", |a, b| unsafe {
+        t128::mul_shift_tail(a, b)
+    });
+    report::<F128T>("F128T mul serial-fold", |a, b| unsafe {
+        t128::mul_serial_fold(a, b)
+    });
     {
         let mut s = 7u64;
         let ms = [F128T::rand(&mut s), F128T::rand(&mut s)];
@@ -494,12 +503,13 @@ fn variants() {
         };
         println!("  {:<34} {:>10.2} {:>12.2}", "F128T mul2 batch (per mul)", lat, tput);
     }
-    report::<F64>("F64 base mul (K x K)", |a, b| a * b);
+    report::<F64>("F64 mul shift-tail (default)", |a, b| a * b);
+    report::<F64>("F64 mul pmull-fold", |a, b| unsafe { k64::mul_pmull_fold(a, b) });
     // mul_base: K x E. Latency chains through the E accumulator.
-    {
+    fn report_mul_base(name: &str, op: impl Fn(F128T, F64) -> F128T + Copy) {
         let mut s = 7u64;
         let k = F64::rand(&mut s);
-        let lat = lat_chain(F128T::rand(&mut s), move |a| a.mul_base(k));
+        let lat = lat_chain(F128T::rand(&mut s), move |a| op(a, k));
         let tput = {
             let mut s = 8u64;
             let mut accs: Vec<F128T> = (0..CHAINS).map(|_| F128T::rand(&mut s)).collect();
@@ -509,12 +519,34 @@ fn variants() {
                 let mut a = black_box(accs.clone());
                 for _ in 0..iters {
                     for j in 0..CHAINS {
-                        a[j] = a[j].mul_base(ks[j]);
+                        a[j] = op(a[j], ks[j]);
                     }
                 }
                 accs = black_box(a);
             })
         };
-        println!("  {:<34} {:>10.2} {:>12.2}", "F128T mul_base (K x E)", lat, tput);
+        println!("  {:<34} {:>10.2} {:>12.2}", name, lat, tput);
     }
+    report_mul_base("F128T mul_base tbl (default)", |a, k| a.mul_base(k));
+    report_mul_base("F128T mul_base pmull4", |a, k| unsafe {
+        t128::mul_base_pmull4(a, k.0)
+    });
+    report_mul_base("F128T mul_base shift-tail", |a, k| unsafe {
+        t128::mul_base_shift_tail(a, k.0)
+    });
+    // Array throughput: the memory-resident shape of the PCS/NTT hot loops,
+    // where values load straight into NEON and skip the GPR boundary that
+    // dominates the register-chain metrics above.
+    println!(
+        "  {:<34} {:>10} {:>12.2}",
+        "F64 mul tput (array 1024)",
+        "-",
+        tp_array::<F64>(|a, m| a * m)
+    );
+    println!(
+        "  {:<34} {:>10} {:>12.2}",
+        "F128T mul tput (array 1024)",
+        "-",
+        tp_array::<F128T>(|a, m| a * m)
+    );
 }

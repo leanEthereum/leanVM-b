@@ -5,9 +5,9 @@
 //! its module docs for the subspace-polynomial construction, the
 //! neighbors-last layer ordering, and the SoA interleaved layout). The inner
 //! butterfly loops route through a NEON lane-pair kernel (two 1-PMULL
-//! products per iteration with a vectorized 0x1B fold, no GPR round-trips);
-//! at large sizes the transform is memory-bandwidth bound either way, like
-//! its F128 twin.
+//! products per iteration with a PMULL-by-0x1B pair fold, no GPR
+//! round-trips); at large sizes the transform is memory-bandwidth bound
+//! either way, like its F128 twin.
 
 use crate::field::F64;
 
@@ -380,10 +380,9 @@ fn butterfly_interleaved_block(
 /// shared twiddle: new_u = u + v*t; new_v = v + new_u.
 ///
 /// On NEON this processes two lanes per iteration entirely inside the vector
-/// register file (2 PMULL for the products, one vectorized 0x1B fold for the
-/// pair, no GPR round-trips), which is what makes the F64 NTT beat the F128
-/// one on equal bytes; the scalar path is the portable fallback and the odd
-/// tail.
+/// register file (2 PMULL for the products, one PMULL-by-0x1B pair fold, no
+/// GPR round-trips), which is what makes the F64 NTT beat the F128 one on
+/// equal bytes; the scalar path is the portable fallback and the odd tail.
 #[inline]
 fn butterfly_lanes(top: &mut [F64], bot: &mut [F64], twiddle: F64) {
     debug_assert_eq!(top.len(), bot.len());
@@ -421,6 +420,10 @@ fn butterfly_lanes(top: &mut [F64], bot: &mut [F64], twiddle: F64) {
 }
 
 /// Two F64 butterflies with a shared twiddle, NEON-resident end to end.
+/// The two products issue as PMULL/PMULL2 on the loaded row (no lane
+/// extraction) and reduce through the all-PMULL lane-pair fold
+/// ([`crate::field::gf2_64::aarch64::reduce_pair_pmull4`]), replacing the
+/// old 10-op shift-XOR fold chain.
 ///
 /// # Safety
 /// Requires the `aes` target feature; `top`/`bot` must each point at two
@@ -429,32 +432,22 @@ fn butterfly_lanes(top: &mut [F64], bot: &mut [F64], twiddle: F64) {
 #[inline]
 #[target_feature(enable = "aes")]
 unsafe fn butterfly_lane_pair_neon(top: *mut F64, bot: *mut F64, twiddle: u64) {
+    use crate::field::gf2_64::aarch64::reduce_pair_pmull4;
     use core::arch::aarch64::*;
     // SAFETY: caller guarantees the pointees; F64 is repr(transparent) u64.
     unsafe {
         let u = vld1q_u64(top as *const u64);
         let v = vld1q_u64(bot as *const u64);
-        // Products v_lane * twiddle (2 PMULL), then repack (lo0,lo1)/(hi0,hi1).
+        // Products v_lane * twiddle: PMULL on the low lanes, PMULL2 on the
+        // highs (the dup is loop-invariant and hoisted after inlining).
+        let tw = vdupq_n_u64(twiddle);
         let p0: uint64x2_t =
             core::mem::transmute(vmull_p64(vgetq_lane_u64::<0>(v), twiddle));
-        let p1: uint64x2_t =
-            core::mem::transmute(vmull_p64(vgetq_lane_u64::<1>(v), twiddle));
-        let lo = vtrn1q_u64(p0, p1);
-        let hi = vtrn2q_u64(p0, p1);
-        // Fold both highs by 0x1B: x^64 = x^4 + x^3 + x + 1.
-        let f = veorq_u64(
-            veorq_u64(hi, vshlq_n_u64::<1>(hi)),
-            veorq_u64(vshlq_n_u64::<3>(hi), vshlq_n_u64::<4>(hi)),
-        );
-        let ov = veorq_u64(
-            veorq_u64(vshrq_n_u64::<63>(hi), vshrq_n_u64::<61>(hi)),
-            vshrq_n_u64::<60>(hi),
-        );
-        let f2 = veorq_u64(
-            veorq_u64(ov, vshlq_n_u64::<1>(ov)),
-            veorq_u64(vshlq_n_u64::<3>(ov), vshlq_n_u64::<4>(ov)),
-        );
-        let prod = veorq_u64(veorq_u64(lo, f), f2);
+        let p1: uint64x2_t = core::mem::transmute(vmull_high_p64(
+            core::mem::transmute(v),
+            core::mem::transmute(tw),
+        ));
+        let prod = reduce_pair_pmull4(p0, p1);
         let new_u = veorq_u64(u, prod);
         let new_v = veorq_u64(v, new_u);
         vst1q_u64(top as *mut u64, new_u);

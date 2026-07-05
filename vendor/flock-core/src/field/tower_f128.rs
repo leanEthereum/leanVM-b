@@ -11,11 +11,14 @@
 //! This field is isomorphic to the GHASH [`super::gf2_128::F128`] but in a
 //! different representation; the two must never be byte-interchanged.
 //!
-//! Multiplication is a 2-term Karatsuba over K: 3 PMULL products, the y-fold
-//! (y^2 = y + c, one PMULL by the sparse constant after reducing the high
-//! coefficient), and per-coefficient base folds. The mixed product
-//! [`F128T::mul_base`] costs 2 PMULL: the workhorse pairing committed K-data
-//! with E-challenges.
+//! Multiplication is a 2-term Karatsuba over K (3 PMULL products) with
+//! PMULL-based reductions that never leave the NEON register file: the
+//! y-lane folds its high half by 0x1B, and the constant lane folds
+//! p0 ^ x^61·p1 as one 192-bit value with a parallel PMULL pair (word 1 by
+//! x^64 mod P = 0x1B, word 2 by x^128 mod P = 0x145), 8 PMULL total. The
+//! mixed product [`F128T::mul_base`] costs 2 product PMULL + a 2-PMULL pair
+//! fold with a TBL tail: the workhorse pairing committed K-data with
+//! E-challenges.
 
 use core::ops::{Add, AddAssign, Mul, MulAssign};
 
@@ -167,53 +170,31 @@ impl MulAssign for F128T {
 #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
 pub mod aarch64 {
     use super::{C61, F128T, R64};
+    use crate::field::gf2_64::aarch64::{
+        pmull, pmull_hi, reduce_pair, reduce_pair_pmull4, reduce_pair_tbl,
+    };
     use core::arch::aarch64::*;
-    use core::mem::transmute;
 
-    /// 64x64 carry-less product as a 128-bit NEON vector.
-    ///
-    /// # Safety
-    /// Requires the `aes` target feature.
-    #[inline]
-    #[target_feature(enable = "aes")]
-    unsafe fn pmull(a: u64, b: u64) -> uint64x2_t {
-        // SAFETY: u128 and uint64x2_t are both 128-bit values.
-        unsafe { transmute::<u128, uint64x2_t>(vmull_p64(a, b)) }
-    }
+    /// x^128 mod (x^64 + x^4 + x^3 + x + 1) = (x^4 + x^3 + x + 1)^2, the
+    /// Frobenius square of `R64`: folds the third 64-bit word of a 192-bit
+    /// carry-less value in one PMULL.
+    const R128: u64 = 0x145;
 
-    /// Vectorized base fold of a lane pair: given lo = (l0, l1) and
-    /// hi = (h0, h1) of two 128-bit carry-less products, returns
-    /// (reduce(l0, h0), reduce(l1, h1)) via the shift-XOR fold by 0x1B,
-    /// entirely inside the NEON register file.
-    ///
-    /// # Safety
-    /// Requires the `aes` target feature.
-    #[inline]
-    #[target_feature(enable = "aes")]
-    unsafe fn fold_pair(lo: uint64x2_t, hi: uint64x2_t) -> uint64x2_t {
-        // Pure NEON ops, safe here: the function itself carries the aes
-        // target feature, so no inner unsafe block is needed.
-        let f = veorq_u64(
-            veorq_u64(hi, vshlq_n_u64::<1>(hi)),
-            veorq_u64(vshlq_n_u64::<3>(hi), vshlq_n_u64::<4>(hi)),
-        );
-        let ov = veorq_u64(
-            veorq_u64(vshrq_n_u64::<63>(hi), vshrq_n_u64::<61>(hi)),
-            vshrq_n_u64::<60>(hi),
-        );
-        let f2 = veorq_u64(
-            veorq_u64(ov, vshlq_n_u64::<1>(ov)),
-            veorq_u64(vshlq_n_u64::<3>(ov), vshlq_n_u64::<4>(ov)),
-        );
-        veorq_u64(veorq_u64(lo, f), f2)
-    }
-
-    /// Karatsuba-2 over K with the fold y^2 = y + x^61, NEON-resident:
-    /// 5 PMULL total (3 products, the sparse-constant fold, one final base
-    /// fold) plus one vectorized pair fold for the other two reductions.
+    /// Karatsuba-2 over K with the fold y^2 = y + x^61, NEON-resident with
+    /// parallel PMULL reductions (8 PMULL total, no GPR round-trips):
     ///
     /// (a0 + a1 y)(b0 + b1 y) = (p0 + c·p1) + (pm + p0)·y, with
     /// p0 = a0b0, p1 = a1b1, pm = (a0+a1)(b0+b1).
+    ///
+    /// The y-lane reduces as usual: c1 = reduce(pm ^ p0), one PMULL-by-0x1B
+    /// fold. For the constant lane, x^61·reduce(p1) ≡ x^61·p1 (mod P), so
+    /// instead of reducing p1 first and feeding a serial C61 multiply, the
+    /// kernel builds the 189-bit value p0 ^ x^61·p1 directly (x^61·p1 is a
+    /// 3-word shift of p1) and folds its two upper words in one parallel
+    /// PMULL pair: word 1 by 0x1B (= x^64 mod P), word 2 by 0x145 (= x^128
+    /// mod P). Each lane's tiny second-order overflow (≤5 bits for c0,
+    /// ≤4 bits for c1) folds exactly with one more PMULL each, and the
+    /// result packs as a single uint64x2 {c0, c1}.
     ///
     /// # Safety
     /// Requires the `aes` target feature (compiles to PMULL); only call where
@@ -226,32 +207,120 @@ pub mod aarch64 {
             let p0 = pmull(a.c0, b.c0);
             let p1 = pmull(a.c1, b.c1);
             let pm = pmull(a.c0 ^ a.c1, b.c0 ^ b.c1);
-            // Reduce p1 (needed for the c-fold) and pm^p0 (= c1) as a pair.
+            let r = vdupq_n_u64(R64);
+
+            // c1 = reduce(pm ^ p0): PMULL fold + PMULL overflow fold.
             let q = veorq_u64(pm, p0);
-            let red = fold_pair(vtrn1q_u64(p1, q), vtrn2q_u64(p1, q));
-            let r1 = vgetq_lane_u64::<0>(red);
-            let c1 = vgetq_lane_u64::<1>(red);
-            // c0 = reduce(p0 ^ x^61 * r1).
-            let e0 = veorq_u64(p0, pmull(r1, C61));
-            let t = pmull(vgetq_lane_u64::<1>(e0), R64);
-            let ov = vgetq_lane_u64::<1>(t); // <= 4 bits
-            let c0 = vgetq_lane_u64::<0>(e0)
-                ^ vgetq_lane_u64::<0>(t)
-                ^ ov
-                ^ (ov << 1)
-                ^ (ov << 3)
-                ^ (ov << 4);
-            F128T { c0, c1 }
+            let tq = pmull_hi(q, r);
+            let u1 = pmull_hi(tq, r); // exact ≤8-bit fold, high lane 0
+            let c1v = veorq_u64(veorq_u64(q, tq), u1);
+
+            // c0 = reduce(p0 ^ x^61·p1) as a 192-bit fold. x^61·p1 spans
+            // words {p1.lo<<61, p1.lo>>3 ^ p1.hi<<61, p1.hi>>3}.
+            let sl = vshlq_n_u64::<61>(p1);
+            let sr = vshrq_n_u64::<3>(p1);
+            // v = {v0, v1}: the low two words of p0 ^ x^61·p1.
+            let v = veorq_u64(
+                veorq_u64(p0, sl),
+                vextq_u64::<1>(vdupq_n_u64(0), sr),
+            );
+            let w1 = pmull_hi(v, r); // v1·0x1B, ≤68 bits
+            let w2 = pmull_hi(sr, vdupq_n_u64(R128)); // v2·0x145, ≤69 bits
+            let x = veorq_u64(w1, w2);
+            let u0 = pmull_hi(x, r); // exact ≤9-bit fold of x.hi ≤ 5 bits
+            let c0v = veorq_u64(veorq_u64(v, x), u0);
+
+            let res = vtrn1q_u64(c0v, c1v);
+            F128T {
+                c0: vgetq_lane_u64::<0>(res),
+                c1: vgetq_lane_u64::<1>(res),
+            }
         }
     }
 
-    /// Two independent [`mul_neon`] products with the instruction streams
-    /// interleaved: the six Karatsuba PMULLs issue back to back (hiding the
-    /// PMULL latency the scalar kernel serializes behind), the two (p1, pm^p0)
-    /// reductions run as one overlapping [`fold_pair`] each, and the two C61
-    /// fold tails are transposed into a single third [`fold_pair`]. Totals:
-    /// 8 PMULL + 3 pair folds for the pair, vs 10 PMULL + 2 pair folds +
-    /// 2 scalar tails for two scalar muls.
+    /// [`mul_neon`] with the two second-order overflows folded together by a
+    /// shared vectorized shift-XOR instead of two PMULLs (6 PMULL total).
+    /// Benchmark alternate: marginally better serial latency, ~15% worse
+    /// array throughput than the PMULL tails.
+    ///
+    /// # Safety
+    /// Requires the `aes` target feature; see [`mul_neon`].
+    #[inline]
+    #[target_feature(enable = "aes")]
+    pub unsafe fn mul_shift_tail(a: F128T, b: F128T) -> F128T {
+        // SAFETY: function carries the aes target feature.
+        unsafe {
+            let p0 = pmull(a.c0, b.c0);
+            let p1 = pmull(a.c1, b.c1);
+            let pm = pmull(a.c0 ^ a.c1, b.c0 ^ b.c1);
+            let r = vdupq_n_u64(R64);
+
+            let q = veorq_u64(pm, p0);
+            let tq = pmull_hi(q, r);
+
+            let sl = vshlq_n_u64::<61>(p1);
+            let sr = vshrq_n_u64::<3>(p1);
+            let v = veorq_u64(
+                veorq_u64(p0, sl),
+                vextq_u64::<1>(vdupq_n_u64(0), sr),
+            );
+            let w1 = pmull_hi(v, r);
+            let w2 = pmull_hi(sr, vdupq_n_u64(R128));
+            let x = veorq_u64(w1, w2);
+
+            // Shared tail: lane 0 finishes c0, lane 1 finishes c1. The
+            // overflows (x.hi ≤ 5 bits, tq.hi ≤ 4 bits) fold exactly by
+            // one shift-XOR (ov·0x1B fits in 9 bits).
+            let lo = vtrn1q_u64(veorq_u64(v, x), veorq_u64(q, tq));
+            let ov = vtrn2q_u64(x, tq);
+            let f = veorq_u64(
+                veorq_u64(ov, vshlq_n_u64::<1>(ov)),
+                veorq_u64(vshlq_n_u64::<3>(ov), vshlq_n_u64::<4>(ov)),
+            );
+            let res = veorq_u64(lo, f);
+            F128T {
+                c0: vgetq_lane_u64::<0>(res),
+                c1: vgetq_lane_u64::<1>(res),
+            }
+        }
+    }
+
+    /// Serial-fold variant: reduce p1 fully (2 PMULL), multiply by C61, then
+    /// reduce the constant lane (8 PMULL, longer y-fold dependency chain).
+    /// Kept as a benchmark alternate; [`mul_neon`]'s parallel 192-bit fold
+    /// beat it on both latency and throughput.
+    ///
+    /// # Safety
+    /// Requires the `aes` target feature; see [`mul_neon`].
+    #[inline]
+    #[target_feature(enable = "aes")]
+    pub unsafe fn mul_serial_fold(a: F128T, b: F128T) -> F128T {
+        // SAFETY: function carries the aes target feature.
+        unsafe {
+            let p0 = pmull(a.c0, b.c0);
+            let p1 = pmull(a.c1, b.c1);
+            let pm = pmull(a.c0 ^ a.c1, b.c0 ^ b.c1);
+            let q = veorq_u64(pm, p0);
+            // {r1, c1} = {reduce(p1), reduce(q)}.
+            let red = reduce_pair(p1, q);
+            // c0 = reduce(p0 ^ x^61·r1): the C61 product waits on r1.
+            let e0 = veorq_u64(p0, pmull(vgetq_lane_u64::<0>(red), C61));
+            let r = vdupq_n_u64(R64);
+            let t = pmull_hi(e0, r);
+            let u = pmull_hi(t, r);
+            let c0v = veorq_u64(veorq_u64(e0, t), u);
+            F128T {
+                c0: vgetq_lane_u64::<0>(c0v),
+                c1: vgetq_lane_u64::<1>(red),
+            }
+        }
+    }
+
+    /// Two independent [`mul_neon`] products. With the parallel-fold kernel
+    /// each mul's reduction is already fully vectorized (no shared work left
+    /// to merge), so the pair form is exactly two inlined muls: its value is
+    /// letting the sixteen PMULLs of two muls issue back to back on serial
+    /// dependence chains that a scalar loop would run one mul at a time.
     ///
     /// # Safety
     /// Requires the `aes` target feature; see [`mul_neon`].
@@ -259,40 +328,13 @@ pub mod aarch64 {
     #[target_feature(enable = "aes")]
     pub unsafe fn mul2_neon(a: [F128T; 2], b: [F128T; 2]) -> [F128T; 2] {
         // SAFETY: function carries the aes target feature.
-        unsafe {
-            // All six products up front: independent PMULLs, back to back.
-            let p0x = pmull(a[0].c0, b[0].c0);
-            let p0y = pmull(a[1].c0, b[1].c0);
-            let p1x = pmull(a[0].c1, b[0].c1);
-            let p1y = pmull(a[1].c1, b[1].c1);
-            let pmx = pmull(a[0].c0 ^ a[0].c1, b[0].c0 ^ b[0].c1);
-            let pmy = pmull(a[1].c0 ^ a[1].c1, b[1].c0 ^ b[1].c1);
-            // Per product, reduce p1 and pm^p0 as a pair; the two folds overlap.
-            let qx = veorq_u64(pmx, p0x);
-            let qy = veorq_u64(pmy, p0y);
-            let redx = fold_pair(vtrn1q_u64(p1x, qx), vtrn2q_u64(p1x, qx));
-            let redy = fold_pair(vtrn1q_u64(p1y, qy), vtrn2q_u64(p1y, qy));
-            let r1x = vgetq_lane_u64::<0>(redx);
-            let r1y = vgetq_lane_u64::<0>(redy);
-            // c0 = reduce(p0 ^ x^61 * r1) for each: transpose the two e0
-            // vectors and finish both reductions in one shared pair fold.
-            let e0x = veorq_u64(p0x, pmull(r1x, C61));
-            let e0y = veorq_u64(p0y, pmull(r1y, C61));
-            let red0 = fold_pair(vtrn1q_u64(e0x, e0y), vtrn2q_u64(e0x, e0y));
-            [
-                F128T {
-                    c0: vgetq_lane_u64::<0>(red0),
-                    c1: vgetq_lane_u64::<1>(redx),
-                },
-                F128T {
-                    c0: vgetq_lane_u64::<1>(red0),
-                    c1: vgetq_lane_u64::<1>(redy),
-                },
-            ]
-        }
+        unsafe { [mul_neon(a[0], b[0]), mul_neon(a[1], b[1])] }
     }
 
-    /// Mixed product K x E: 2 PMULL plus one vectorized pair fold.
+    /// Mixed product K x E: 2 product PMULL + the TBL lane-pair reduction
+    /// ([`reduce_pair_tbl`]). Shortest dependency chain of the variants
+    /// tried (~2.8 ns serial latency vs ~4.7 for the all-PMULL reduce) at
+    /// equal chain throughput.
     ///
     /// # Safety
     /// Requires the `aes` target feature; see [`mul_neon`].
@@ -303,7 +345,7 @@ pub mod aarch64 {
         unsafe {
             let p0 = pmull(e.c0, k);
             let p1 = pmull(e.c1, k);
-            let red = fold_pair(vtrn1q_u64(p0, p1), vtrn2q_u64(p0, p1));
+            let red = reduce_pair_tbl(p0, p1);
             F128T {
                 c0: vgetq_lane_u64::<0>(red),
                 c1: vgetq_lane_u64::<1>(red),
@@ -311,6 +353,50 @@ pub mod aarch64 {
         }
     }
 
+    /// [`mul_base_neon`] with the all-PMULL pair reduction (6 PMULL, minimal
+    /// non-PMULL op count): best array throughput, benchmark alternate.
+    ///
+    /// # Safety
+    /// Requires the `aes` target feature; see [`mul_neon`].
+    #[inline]
+    #[target_feature(enable = "aes")]
+    pub unsafe fn mul_base_pmull4(e: F128T, k: u64) -> F128T {
+        // SAFETY: function carries the aes target feature.
+        unsafe {
+            let p0 = pmull(e.c0, k);
+            let p1 = pmull(e.c1, k);
+            let red = reduce_pair_pmull4(p0, p1);
+            F128T {
+                c0: vgetq_lane_u64::<0>(red),
+                c1: vgetq_lane_u64::<1>(red),
+            }
+        }
+    }
+
+    /// [`mul_base_neon`] with the shift-XOR overflow tail. Benchmark
+    /// alternate.
+    ///
+    /// # Safety
+    /// Requires the `aes` target feature; see [`mul_neon`].
+    #[inline]
+    #[target_feature(enable = "aes")]
+    pub unsafe fn mul_base_shift_tail(e: F128T, k: u64) -> F128T {
+        // SAFETY: function carries the aes target feature.
+        unsafe {
+            let p0 = pmull(e.c0, k);
+            let p1 = pmull(e.c1, k);
+            let red = reduce_pair(p0, p1);
+            F128T {
+                c0: vgetq_lane_u64::<0>(red),
+                c1: vgetq_lane_u64::<1>(red),
+            }
+        }
+    }
+
+    /// Squaring: (c0 + c1·y)^2 = (c0^2 + c·c1^2) + c1^2·y. Same structure as
+    /// [`mul_neon`] with p0 = c0^2, p1 = c1^2 and the y-lane just reduce(s1)
+    /// (7 PMULL total).
+    ///
     /// # Safety
     /// Requires the `aes` target feature; see [`mul_neon`].
     #[inline]
@@ -320,22 +406,31 @@ pub mod aarch64 {
         unsafe {
             let s0 = pmull(a.c0, a.c0);
             let s1 = pmull(a.c1, a.c1);
-            let red = fold_pair(vtrn1q_u64(s1, s0), vtrn2q_u64(s1, s0));
-            let r1 = vgetq_lane_u64::<0>(red);
-            let r0 = vgetq_lane_u64::<1>(red);
-            // c0 = reduce(s0) ^ reduce(x^61 * r1); both operands of the final
-            // XOR are already reduced except the c-fold product.
-            let e0 = pmull(r1, C61);
-            let t = pmull(vgetq_lane_u64::<1>(e0), R64);
-            let ov = vgetq_lane_u64::<1>(t);
-            let c0 = r0
-                ^ vgetq_lane_u64::<0>(e0)
-                ^ vgetq_lane_u64::<0>(t)
-                ^ ov
-                ^ (ov << 1)
-                ^ (ov << 3)
-                ^ (ov << 4);
-            F128T { c0, c1: r1 }
+            let r = vdupq_n_u64(R64);
+
+            // c1 = reduce(s1).
+            let tq = pmull_hi(s1, r);
+            let u1 = pmull_hi(tq, r);
+            let c1v = veorq_u64(veorq_u64(s1, tq), u1);
+
+            // c0 = reduce(s0 ^ x^61·s1), 192-bit fold as in mul_neon.
+            let sl = vshlq_n_u64::<61>(s1);
+            let sr = vshrq_n_u64::<3>(s1);
+            let v = veorq_u64(
+                veorq_u64(s0, sl),
+                vextq_u64::<1>(vdupq_n_u64(0), sr),
+            );
+            let w1 = pmull_hi(v, r);
+            let w2 = pmull_hi(sr, vdupq_n_u64(R128));
+            let x = veorq_u64(w1, w2);
+            let u0 = pmull_hi(x, r);
+            let c0v = veorq_u64(veorq_u64(v, x), u0);
+
+            let res = vtrn1q_u64(c0v, c1v);
+            F128T {
+                c0: vgetq_lane_u64::<0>(res),
+                c1: vgetq_lane_u64::<1>(res),
+            }
         }
     }
 }
@@ -426,6 +521,32 @@ mod tests {
             assert_eq!((a * b) * c, a * (b * c));
             assert_eq!(a * (b + c), a * b + a * c);
             assert_eq!(a.square(), a * a);
+        }
+    }
+
+    /// Every NEON kernel variant agrees with the software reference.
+    #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
+    #[test]
+    fn neon_variants_match_software() {
+        let mut s = 11u64;
+        for _ in 0..10_000 {
+            let (a, b) = (rand_e(&mut s), rand_e(&mut s));
+            let k = splitmix64(&mut s);
+            let want = software::mul(a, b);
+            let want_base = F128T {
+                c0: (F64(a.c0) * F64(k)).0,
+                c1: (F64(a.c1) * F64(k)).0,
+            };
+            // SAFETY: aes target feature is enabled at compile time.
+            unsafe {
+                assert_eq!(aarch64::mul_neon(a, b), want);
+                assert_eq!(aarch64::mul_shift_tail(a, b), want);
+                assert_eq!(aarch64::mul_serial_fold(a, b), want);
+                assert_eq!(aarch64::mul_base_neon(a, k), want_base);
+                assert_eq!(aarch64::mul_base_pmull4(a, k), want_base);
+                assert_eq!(aarch64::mul_base_shift_tail(a, k), want_base);
+                assert_eq!(aarch64::square_neon(a), software::square(a));
+            }
         }
     }
 
