@@ -1,7 +1,7 @@
 //! Per-opcode trace rows, emitted during execution and assembled into a [`Trace`].
 
 use super::DerefMode;
-use crate::field::F128;
+use crate::field::F64;
 
 pub(crate) struct Xrow {
     pub(crate) pc: u32,
@@ -9,19 +9,19 @@ pub(crate) struct Xrow {
     pub(crate) aa: u32,
     pub(crate) ab: u32,
     pub(crate) ac: u32,
-    pub(crate) ra: F128,
-    pub(crate) rb: F128,
-    pub(crate) rc: F128,
-    pub(crate) bytecode_read: F128,
+    pub(crate) ra: F64,
+    pub(crate) rb: F64,
+    pub(crate) rc: F64,
+    pub(crate) bytecode_read: F64,
 }
 pub(crate) struct Srow {
     pub(crate) pc: u32,
     pub(crate) fp: u32,
     pub(crate) o: u32,
     pub(crate) a: u32,
-    pub(crate) k: F128,
-    pub(crate) r: F128,
-    pub(crate) bytecode_read: F128,
+    pub(crate) k: F64,
+    pub(crate) r: F64,
+    pub(crate) bytecode_read: F64,
 }
 pub(crate) struct Drow {
     pub(crate) pc: u32,
@@ -31,60 +31,54 @@ pub(crate) struct Drow {
     pub(crate) gamma: u32,
     pub(crate) mode: DerefMode,
     pub(crate) a1: u32,
-    pub(crate) p: F128,
+    pub(crate) p: F64,
     pub(crate) a2: usize,
     pub(crate) a3: u32,
-    pub(crate) v2: F128, // mem[a2], the store target
-    pub(crate) v3: F128, // mem[a3], the local cell
-    pub(crate) r1: F128,
-    pub(crate) r2: F128,
-    pub(crate) r3: F128,
-    pub(crate) bytecode_read: F128,
+    pub(crate) v2: F64, // mem[a2], the store target
+    pub(crate) v3: F64, // mem[a3], the local cell
+    pub(crate) r1: F64,
+    pub(crate) r2: F64,
+    pub(crate) r3: F64,
+    pub(crate) bytecode_read: F64,
 }
 pub(crate) struct Jrow {
     pub(crate) pc: u32,
     pub(crate) fp: u32,
-    pub(crate) npc: F128,
-    pub(crate) nfp: F128,
+    pub(crate) npc: F64,
+    pub(crate) nfp: F64,
     pub(crate) oc: u32,
     pub(crate) od: u32,
     pub(crate) of: u32,
     pub(crate) ac: u32,
     pub(crate) ad: u32,
     pub(crate) af: u32,
-    pub(crate) c: F128,
-    pub(crate) d: F128,
-    pub(crate) f: F128,
-    pub(crate) w: F128, // inverse hint (is-nonzero witness): c⁻¹ when c ≠ 0, else 0
-    pub(crate) b: F128, // taken indicator b = [c ≠ 0]
-    pub(crate) rc: F128,
-    pub(crate) rd: F128,
-    pub(crate) rf: F128,
-    pub(crate) bytecode_read: F128,
+    pub(crate) c: F64,
+    pub(crate) d: F64,
+    pub(crate) f: F64,
+    pub(crate) w: F64, // inverse hint (is-nonzero witness): c⁻¹ when c ≠ 0, else 0
+    pub(crate) b: F64, // taken indicator b = [c ≠ 0]
+    pub(crate) rc: F64,
+    pub(crate) rd: F64,
+    pub(crate) rf: F64,
+    pub(crate) bytecode_read: F64,
 }
 
-/// `BLAKE3` row: the base addresses `aa, ab, ac` (each spanning two words), the
-/// six word values (two inputs `a`, two inputs `b`, two outputs `c`), and the six
-/// per-word memory read counts.
+/// `BLAKE3` row: the base addresses `aa, ab, ac` (each spanning four consecutive
+/// words), the twelve word values (four inputs `a`, four inputs `b`, four
+/// outputs `c`), and the twelve per-word memory read counts.
 pub(crate) struct Brow {
     pub(crate) pc: u32,
     pub(crate) fp: u32,
     pub(crate) aa: u32,
     pub(crate) ab: u32,
     pub(crate) ac: u32,
-    pub(crate) va0: F128,
-    pub(crate) va1: F128,
-    pub(crate) vb0: F128,
-    pub(crate) vb1: F128,
-    pub(crate) vc0: F128,
-    pub(crate) vc1: F128,
-    pub(crate) ra0: F128,
-    pub(crate) ra1: F128,
-    pub(crate) rb0: F128,
-    pub(crate) rb1: F128,
-    pub(crate) rc0: F128,
-    pub(crate) rc1: F128,
-    pub(crate) bytecode_read: F128,
+    pub(crate) va: [F64; 4],
+    pub(crate) vb: [F64; 4],
+    pub(crate) vc: [F64; 4],
+    pub(crate) ra: [F64; 4],
+    pub(crate) rb: [F64; 4],
+    pub(crate) rc: [F64; 4],
+    pub(crate) bytecode_read: F64,
 }
 
 pub(crate) struct Trace {
@@ -94,6 +88,6 @@ pub(crate) struct Trace {
     pub(crate) deref: Vec<Drow>,
     pub(crate) jump: Vec<Jrow>,
     pub(crate) blake3: Vec<Brow>,
-    pub(crate) mem_count: Vec<F128>, // per-cell running access count g^{count}; final = g^{A[i]}
-    pub(crate) bytecode_count: Vec<F128>, // per-pc running execution count g^{count}; final = g^{A[pc]}
+    pub(crate) mem_count: Vec<F64>, // per-cell running access count g^{count}; final = g^{A[i]}
+    pub(crate) bytecode_count: Vec<F64>, // per-pc running execution count g^{count}; final = g^{A[pc]}
 }

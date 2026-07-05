@@ -1,46 +1,41 @@
 //! `StackBuf` — a run of consecutive frame (stack) cells in the zkDSL. Indexed
-//! reads/writes go straight to `base+k` (no heap deref), and a size-2 `StackBuf`
-//! is a `blake3` operand: its two cells hold the 256-bit value's two words, so
-//! `blake3(a, b, out)` reads them in place with no copies (a self-hash
-//! `blake3(h, h, out)` aliases one pair into both input operands) and writes
-//! the digest into the pre-allocated pair `out`.
+//! reads/writes go straight to `base+k` (no heap deref), and a size-4 `StackBuf`
+//! is a `blake3` operand: its four cells hold the 256-bit value's four 64-bit
+//! words, so `blake3(a, b, out)` reads them in place with no copies (a self-hash
+//! `blake3(h, h, out)` aliases one quad into both input operands) and writes
+//! the digest into the pre-allocated quad `out`.
 
 use leanvm_b::blake3_flock::warm_setup;
 use leanvm_b::compiler::{compile, parse};
 use leanvm_b::cpu::{prove, verify};
-use leanvm_b::field::F128;
+use leanvm_b::field::F64;
 
-/// `BLAKE3(a, b)` reference (matches `cpu::blake3_compress`): the four words laid
-/// little-endian into 64 bytes, hashed, digest split into two `F128` words.
-fn compress(a: [F128; 2], b: [F128; 2]) -> [F128; 2] {
+/// `BLAKE3(a, b)` reference (matches `cpu::blake3_compress`): the eight words
+/// laid little-endian into 64 bytes, hashed, digest split into four `F64` words.
+fn compress(a: [F64; 4], b: [F64; 4]) -> [F64; 4] {
     let mut input = [0u8; 64];
-    for (slot, w) in input.chunks_exact_mut(16).zip([a[0], a[1], b[0], b[1]]) {
-        slot[..8].copy_from_slice(&w.lo.to_le_bytes());
-        slot[8..].copy_from_slice(&w.hi.to_le_bytes());
+    for (slot, w) in input.chunks_exact_mut(8).zip(a.into_iter().chain(b)) {
+        slot.copy_from_slice(&w.0.to_le_bytes());
     }
     let d = blake3::hash(&input);
     let d = d.as_bytes();
-    let word = |b: &[u8]| {
-        F128::new(
-            u64::from_le_bytes(b[..8].try_into().unwrap()),
-            u64::from_le_bytes(b[8..16].try_into().unwrap()),
-        )
-    };
-    [word(&d[..16]), word(&d[16..])]
+    std::array::from_fn(|k| F64(u64::from_le_bytes(d[8 * k..8 * k + 8].try_into().unwrap())))
 }
 
-/// A size-2 `StackBuf` fed to `blake3` as a self-hash `blake3(h, h)`, then the
-/// digest published to `m[0], m[1]`. Proves and verifies, and a wrong published
-/// digest is rejected — so the whole path (StackBuf load → aliased blake3 →
-/// stack read → publish) is exercised end-to-end.
+/// A size-4 `StackBuf` fed to `blake3` as a self-hash `blake3(h, h)`, then the
+/// digest's first two words published to `m[0], m[1]`. Proves and verifies, and a
+/// wrong published digest is rejected — so the whole path (StackBuf load →
+/// aliased blake3 → stack read → publish) is exercised end-to-end.
 #[test]
 fn stack_buf_blake3_self_hash() {
     let src = "\
 def main():
-    a = StackBuf(2)
+    a = StackBuf(4)
     a[0] = 5
     a[1] = 7
-    c = StackBuf(2)
+    a[2] = 11
+    a[3] = 13
+    c = StackBuf(4)
     blake3(a, a, c)
     p = 1
     p[1] = c[0]
@@ -50,16 +45,16 @@ def main():
     let program = compile(&parse(src).expect("parse"));
     warm_setup(1);
 
-    let five = F128::new(5, 0);
-    let seven = F128::new(7, 0);
-    let want = compress([five, seven], [five, seven]);
+    let h = [F64(5), F64(7), F64(11), F64(13)];
+    let d = compress(h, h);
+    let want = [d[0], d[1]];
 
     let (proof, stats) = prove(&program, want);
     assert_eq!(stats.counts[5], 1, "one BLAKE3 instruction");
     verify(&program, &want, &proof).expect("StackBuf self-hash verifies");
 
     let mut bad = want;
-    bad[0] += F128::ONE;
+    bad[0] += F64::ONE;
     assert!(verify(&program, &bad, &proof).is_err(), "wrong digest must be rejected");
 }
 
@@ -81,7 +76,7 @@ def main():
 ";
     let program = compile(&parse(src).expect("parse"));
     // `+` is XOR: 3 ^ 4 = 7. Published: (sa[2], sa[1]) = (7, 4).
-    let want = [F128::new(7, 0), F128::new(4, 0)];
+    let want = [F64(7), F64(4)];
     let (proof, stats) = prove(&program, want);
     assert_eq!(stats.counts[5], 0, "no BLAKE3 here");
     verify(&program, &want, &proof).expect("StackBuf indexing verifies");
@@ -103,7 +98,7 @@ fn stack_buf_index_overflow_rejected() {
 fn stack_buf_rebind_to_scalar() {
     let src = "def main():\n    x = StackBuf(2)\n    x = 5\n    p = 1\n    p[1] = x\n    p[GEN] = x\n    return\n";
     let program = compile(&parse(src).expect("parse"));
-    let want = [F128::new(5, 0), F128::new(5, 0)];
+    let want = [F64(5), F64(5)];
     let (proof, _) = prove(&program, want);
     verify(&program, &want, &proof).expect("rebound-scalar program verifies");
 }

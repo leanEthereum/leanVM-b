@@ -4,9 +4,9 @@
 //! h_i)` (the previous value fed as both 256-bit operands). The program mirrors
 //! the Fibonacci demo's strategy: a `mul_range` loop *in the exponent* on the
 //! outside, an unrolled block of `BLAKE3` steps on the inside, with the chain
-//! state carried through a `HeapBuf` (write-once memory). The final `h_N` is
-//! published into the public input (`m[0], m[1]`); write-once memory forces the
-//! proven result to equal it.
+//! state carried through a `HeapBuf` (write-once memory). The first two words of
+//! the final `h_N` are published into the public input (`m[0], m[1]`);
+//! write-once memory forces the proven result to equal it.
 //!
 //! `N` and the unroll factor are read from the environment (`LEANVM_HASH_N`,
 //! `LEANVM_HASH_UNROLL`) so this doubles as a benchmark — e.g.
@@ -19,90 +19,92 @@ use std::time::Instant;
 use leanvm_b::blake3_flock::warm_setup;
 use leanvm_b::compiler::{compile, parse};
 use leanvm_b::cpu::{prove, verify};
-use leanvm_b::field::F128;
+use leanvm_b::field::F64;
 
-/// One compression step `c = BLAKE3(a, b)` (the VM's `blake3` builtin): the four
+/// One compression step `c = BLAKE3(a, b)` (the VM's `blake3` builtin): the eight
 /// input words are laid little-endian into 64 bytes, BLAKE3-hashed, and the
-/// 32-byte digest split into two `F128` words. Matches `cpu::blake3_compress`.
-fn compress(a: [F128; 2], b: [F128; 2]) -> [F128; 2] {
+/// 32-byte digest split into four `F64` words. Matches `cpu::blake3_compress`.
+fn compress(a: [F64; 4], b: [F64; 4]) -> [F64; 4] {
     let mut input = [0u8; 64];
-    for (slot, w) in input.chunks_exact_mut(16).zip([a[0], a[1], b[0], b[1]]) {
-        slot[..8].copy_from_slice(&w.lo.to_le_bytes());
-        slot[8..].copy_from_slice(&w.hi.to_le_bytes());
+    for (slot, w) in input.chunks_exact_mut(8).zip(a.into_iter().chain(b)) {
+        slot.copy_from_slice(&w.0.to_le_bytes());
     }
     let d = blake3::hash(&input);
     let d = d.as_bytes();
-    let word = |b: &[u8]| {
-        F128::new(
-            u64::from_le_bytes(b[..8].try_into().unwrap()),
-            u64::from_le_bytes(b[8..16].try_into().unwrap()),
-        )
-    };
-    [word(&d[..16]), word(&d[16..])]
+    std::array::from_fn(|k| F64(u64::from_le_bytes(d[8 * k..8 * k + 8].try_into().unwrap())))
 }
 
 /// Build the zkDSL source for an `n`-step chain unrolled `unroll` per outer
 /// iteration (`k = n / unroll` iterations). Layout in the heap `buff`: the chain
-/// value after `j·unroll` steps sits at cells `2j, 2j+1` (g-powers `g^{2j},
-/// g^{2j+1}`). Each outer step loads that pair into a size-2 `StackBuf`, runs
-/// `unroll` `BLAKE3`s in the stack — each output pair feeds the next with **no
-/// copies** (a self-hash `blake3(h, h, out)` aliases one pair into both input
-/// operands) — then writes the result pair two cells along.
+/// value after `j·unroll` steps sits at cells `4j..4j+4` (g-powers `g^{4j}..`).
+/// Each outer step loads that quad into a size-4 `StackBuf`, runs `unroll`
+/// `BLAKE3`s in the stack — each output quad feeds the next with **no copies**
+/// (a self-hash `blake3(h, h, out)` aliases one quad into both input operands) —
+/// then writes the result quad four cells along.
 fn chain_source(n: usize, unroll: usize) -> String {
-    assert!(unroll >= 1 && n.is_multiple_of(unroll), "N must be a positive multiple of UNROLL");
+    assert!(
+        unroll >= 1 && n.is_multiple_of(unroll),
+        "N must be a positive multiple of UNROLL"
+    );
     let k = n / unroll;
-    let two_k = 2 * k;
+    let four_k = 4 * k;
 
     let mut body = String::new();
-    // Block `j`'s boundary pair sits at cells `g^{2j}, g^{2j+1}`; the loop counter
-    // `i = gʲ` is the block index (×g each iteration), so the pair base is `b = i·i`.
-    // Load the current chain value into a size-2 StackBuf (heap read straight
-    // into the two consecutive stack cells).
-    body.push_str("        b = i * i\n");
-    body.push_str("        h0 = StackBuf(2)\n");
+    // Block `j`'s boundary quad sits at cells `g^{4j}..g^{4j+3}`; the loop counter
+    // `i = gʲ` is the block index (×g each iteration), so the quad base is `b = i⁴`.
+    // Load the current chain value into a size-4 StackBuf (heap read straight
+    // into the four consecutive stack cells).
+    body.push_str("        b = i * i * i * i\n");
+    body.push_str("        h0 = StackBuf(4)\n");
     body.push_str("        h0[0] = buff[b]\n");
     body.push_str("        h0[1] = buff[b * GEN]\n");
+    body.push_str("        h0[2] = buff[b * GEN ** 2]\n");
+    body.push_str("        h0[3] = buff[b * GEN ** 3]\n");
     // `unroll` self-hashes; each `blake3` reads its operand stack in place and
-    // writes into the next pre-allocated size-2 stack — no copies between steps.
+    // writes into the next pre-allocated size-4 stack — no copies between steps.
     for s in 1..=unroll {
-        body.push_str(&format!("        h{s} = StackBuf(2)\n"));
+        body.push_str(&format!("        h{s} = StackBuf(4)\n"));
         body.push_str(&format!("        blake3(h{p}, h{p}, h{s})\n", p = s - 1));
     }
-    // Write the block's result back to the next array pair.
-    body.push_str(&format!("        buff[b * GEN ** 2] = h{unroll}[0]\n"));
-    body.push_str(&format!("        buff[b * GEN ** 3] = h{unroll}[1]\n"));
+    // Write the block's result back to the next array quad.
+    for w in 0..4 {
+        body.push_str(&format!("        buff[b * GEN ** {}] = h{unroll}[{w}]\n", 4 + w));
+    }
 
     format!(
         "def main():\n\
         \x20   buff = HeapBuf({size})\n\
         \x20   buff[1] = 0\n\
         \x20   buff[GEN] = 0\n\
+        \x20   buff[GEN ** 2] = 0\n\
+        \x20   buff[GEN ** 3] = 0\n\
         \x20   for i in mul_range(1, GEN ** {k}):\n\
         {body}\
         \x20   p = 1\n\
-        \x20   p[1] = buff[GEN ** {two_k}]\n\
-        \x20   p[GEN] = buff[GEN ** {two_k_1}]\n\
+        \x20   p[1] = buff[GEN ** {four_k}]\n\
+        \x20   p[GEN] = buff[GEN ** {four_k_1}]\n\
         \x20   return\n",
-        size = 2 * k + 2,
-        two_k_1 = two_k + 1,
+        size = 4 * k + 4,
+        four_k_1 = four_k + 1,
     )
 }
 
 #[test]
 fn blake3_hash_chain() {
-    let env = |key: &str, default: usize| {
-        std::env::var(key).ok().and_then(|s| s.parse().ok()).unwrap_or(default)
-    };
+    let env = |key: &str, default: usize| std::env::var(key).ok().and_then(|s| s.parse().ok()).unwrap_or(default);
     let unroll = env("LEANVM_HASH_UNROLL", 4);
     let n = env("LEANVM_HASH_N", 8);
-    assert!(n.is_multiple_of(unroll), "LEANVM_HASH_N must be a multiple of LEANVM_HASH_UNROLL");
+    assert!(
+        n.is_multiple_of(unroll),
+        "LEANVM_HASH_N must be a multiple of LEANVM_HASH_UNROLL"
+    );
 
     // Reference chain in O(1) memory: a rolling value, no array of intermediates.
-    let mut h = [F128::ZERO; 2];
+    let mut h = [F64::ZERO; 4];
     for _ in 0..n {
         h = compress(h, h);
     }
-    let pi = h; // the published final value h_N
+    let pi = [h[0], h[1]]; // the published words of the final value h_N
 
     let program = compile(&parse(&chain_source(n, unroll)).expect("parse"));
 
@@ -130,7 +132,10 @@ fn blake3_hash_chain() {
         };
         println!("    {name:<6} instructions       : {pow}");
     }
-    println!("  committed witness size      : 2^{:.3}", (stats.committed as f64).log2());
+    println!(
+        "  committed witness size      : 2^{:.3}",
+        (stats.committed as f64).log2()
+    );
     let proof_bytes = bincode::serialized_size(&proof).expect("proof is serializable");
     println!("  proof size                  : {:.1} KiB", proof_bytes as f64 / 1024.0);
     println!("  proving (incl. witness gen) : {t_prove:?}");
@@ -142,6 +147,6 @@ fn blake3_hash_chain() {
 
     // A wrong public input must be rejected.
     let mut bad = pi;
-    bad[0] += F128::ONE;
+    bad[0] += F64::ONE;
     assert!(verify(&program, &bad, &proof).is_err());
 }

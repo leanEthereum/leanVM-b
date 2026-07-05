@@ -44,10 +44,10 @@ pub fn parse(src: &str) -> Result<Ast, String> {
 /// `GEN ** k`, and `+`/`*` combinations of those — to its field element.
 /// Used for the `# public_input: <elt>, <elt>` annotation of `.py` test
 /// programs (see `tests/py_source.rs`).
-pub fn parse_const(s: &str) -> Result<F128, String> {
-    fn eval(e: &Expr) -> Result<F128, String> {
+pub fn parse_const(s: &str) -> Result<F64, String> {
+    fn eval(e: &Expr) -> Result<F64, String> {
         match e {
-            Expr::Lit(n) => Ok(F128::new(*n as u64, (*n >> 64) as u64)),
+            Expr::Lit(n) => u64::try_from(*n).map(F64).map_err(|_| format!("literal {n} does not fit in 64 bits")),
             Expr::Gen => Ok(g_pow(1)),
             Expr::GPow(k) => Ok(g_pow_u128(*k)),
             Expr::Add(a, b) => Ok(eval(a)? + eval(b)?),

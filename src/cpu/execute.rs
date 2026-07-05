@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use super::*;
 
 pub struct Execution {
-    pub mem: Vec<F128>,      // data memory after the run, write-once (size cells, power of two)
+    pub mem: Vec<F64>,      // data memory after the run, write-once (size cells, power of two)
     pub cycles: usize,       // number of instructions the run executed (trace length)
     pub(crate) trace: Trace, // rows + final access-count columns, emitted in the same walk
 }
@@ -16,7 +16,7 @@ impl Program {
     /// the final memory image and the step count. The public input seeds the
     /// first two memory cells `m[0], m[1]` (§e2e-pi). Compilation yields the
     /// `Program`; executing it (here) and proving it are separate later phases.
-    pub fn execute(&self, public_input: [F128; 2]) -> Execution {
+    pub fn execute(&self, public_input: [F64; 2]) -> Execution {
         use crate::compiler::{RHint, grow_gpow};
 
         let ending_pc = (self.prog.len() - 1) as u32; // last bytecode slot, g^{B-1}
@@ -24,15 +24,15 @@ impl Program {
 
         // g^j and its reverse index g^j ↦ j, grown lazily (deep recursion is
         // unbounded). Seed enough for the program counters / return targets.
-        let mut gpow: Vec<F128> = vec![F128::ONE];
-        let mut gmap: HashMap<F128, u32> = HashMap::from([(F128::ONE, 0u32)]);
+        let mut gpow: Vec<F64> = vec![F64::ONE];
+        let mut gmap: HashMap<F64, u32> = HashMap::from([(F64::ONE, 0u32)]);
         grow_gpow(&mut gpow, &mut gmap, self.prog.len() + 2);
 
         // Dense write-once data memory (read path stays a vector for speed), the
         // per-cell access count (g^{count}, default g^0 = 1), and a written mask.
-        let mut mem: Vec<F128> = vec![F128::ZERO; self.main_frame.max(2) as usize];
+        let mut mem: Vec<F64> = vec![F64::ZERO; self.main_frame.max(2) as usize];
         let mut written: Vec<bool> = vec![false; mem.len()];
-        let mut mem_count: Vec<F128> = vec![F128::ONE; mem.len()];
+        let mut mem_count: Vec<F64> = vec![F64::ONE; mem.len()];
         // Seed the public input into m[0], m[1] (addresses g^0, g^1, §e2e-pi).
         mem[0] = public_input[0];
         mem[1] = public_input[1];
@@ -40,7 +40,7 @@ impl Program {
         written[1] = true;
 
         // Per-pc bytecode execution count (g^{count}).
-        let mut bytecode_count: Vec<F128> = vec![F128::ONE; self.prog.len()];
+        let mut bytecode_count: Vec<F64> = vec![F64::ONE; self.prog.len()];
 
         let mut next_free = self.main_frame;
         let (mut pc, mut fp) = (self.pc0, self.fp0);
@@ -71,25 +71,25 @@ impl Program {
         // Grow the dense vectors so `idx` is in range (keeps mem/written/mem_count in
         // sync). All accessed cells satisfy cell < next_free after their frame's
         // allocation, so this only ever extends.
-        fn ensure(mem: &mut Vec<F128>, written: &mut Vec<bool>, mem_count: &mut Vec<F128>, idx: usize) {
+        fn ensure(mem: &mut Vec<F64>, written: &mut Vec<bool>, mem_count: &mut Vec<F64>, idx: usize) {
             if idx >= mem.len() {
                 let n = idx + 1;
-                mem.resize(n, F128::ZERO);
+                mem.resize(n, F64::ZERO);
                 written.resize(n, false);
-                mem_count.resize(n, F128::ONE);
+                mem_count.resize(n, F64::ONE);
             }
         }
         // Read a cell; an unwritten cell reads as ZERO.
-        fn get(mem: &[F128], written: &[bool], cell: u32) -> F128 {
+        fn get(mem: &[F64], written: &[bool], cell: u32) -> F64 {
             let c = cell as usize;
             if c < written.len() && written[c] {
                 mem[c]
             } else {
-                F128::ZERO
+                F64::ZERO
             }
         }
         // Write-once store: writing a different value to an already-set cell panics.
-        fn put(mem: &mut Vec<F128>, written: &mut Vec<bool>, mem_count: &mut Vec<F128>, cell: u32, v: F128) {
+        fn put(mem: &mut Vec<F64>, written: &mut Vec<bool>, mem_count: &mut Vec<F64>, cell: u32, v: F64) {
             ensure(mem, written, mem_count, cell as usize);
             let c = cell as usize;
             if written[c] {
@@ -101,12 +101,12 @@ impl Program {
         }
         // Read the running access count and advance it by ×g (the free increment).
         fn bump_access_count(
-            mem: &mut Vec<F128>,
+            mem: &mut Vec<F64>,
             written: &mut Vec<bool>,
-            mem_count: &mut Vec<F128>,
-            g_step: F128,
+            mem_count: &mut Vec<F64>,
+            g_step: F64,
             cell: u32,
-        ) -> F128 {
+        ) -> F64 {
             ensure(mem, written, mem_count, cell as usize);
             let cell_idx = cell as usize;
             let count = mem_count[cell_idx];
@@ -294,8 +294,8 @@ impl Program {
                                 panic!(
                                     "DEREF pointer is not a small g-power at pc {pc}: a wild \
                                      pointer, or a failed range check \
-                                     (value 0x{:016x}{:016x})",
-                                    p.hi, p.lo
+                                     (value 0x{:016x})",
+                                    p.0
                                 )
                             })
                         }
@@ -371,9 +371,9 @@ impl Program {
                     let d = get(&mem, &written, ad);
                     let f = get(&mem, &written, af);
                     let (w, b) = if c.is_zero() {
-                        (F128::ZERO, F128::ZERO)
+                        (F64::ZERO, F64::ZERO)
                     } else {
-                        (c.inv(), F128::ONE)
+                        (c.inv(), F64::ONE)
                     };
                     let rc = bump_access_count(&mut mem, &mut written, &mut mem_count, g_step, ac);
                     let rd = bump_access_count(&mut mem, &mut written, &mut mem_count, g_step, ad);
@@ -413,41 +413,38 @@ impl Program {
                     }
                 }
                 Op::Blake3 { a, b, c } => {
-                    // Each operand spans two consecutive words: base = fp+o, second = base+1.
+                    // Each operand spans four consecutive words: base = fp+o, word k = base+k.
                     let (aa, ab, ac) = (fp + a, fp + b, fp + c);
-                    let (va0, va1) = (get(&mem, &written, aa), get(&mem, &written, aa + 1));
-                    let (vb0, vb1) = (get(&mem, &written, ab), get(&mem, &written, ab + 1));
+                    let va: [F64; 4] = std::array::from_fn(|k| get(&mem, &written, aa + k as u32));
+                    let vb: [F64; 4] = std::array::from_fn(|k| get(&mem, &written, ab + k as u32));
                     // Compress the 64 input bytes to the 32-byte digest, then write
-                    // it to c's two words. The relation is unproven (no constraint),
-                    // but the prover still computes a definite digest so the output
-                    // cells are consistent for any later read.
-                    let (vc0, vc1) = blake3_compress(va0, va1, vb0, vb1);
-                    put(&mut mem, &mut written, &mut mem_count, ac, vc0);
-                    put(&mut mem, &mut written, &mut mem_count, ac + 1, vc1);
-                    let ra0 = bump_access_count(&mut mem, &mut written, &mut mem_count, g_step, aa);
-                    let ra1 = bump_access_count(&mut mem, &mut written, &mut mem_count, g_step, aa + 1);
-                    let rb0 = bump_access_count(&mut mem, &mut written, &mut mem_count, g_step, ab);
-                    let rb1 = bump_access_count(&mut mem, &mut written, &mut mem_count, g_step, ab + 1);
-                    let rc0 = bump_access_count(&mut mem, &mut written, &mut mem_count, g_step, ac);
-                    let rc1 = bump_access_count(&mut mem, &mut written, &mut mem_count, g_step, ac + 1);
+                    // it to c's four words. The relation carries no local constraint
+                    // (flock proves it), but the prover still computes a definite
+                    // digest so the output cells are consistent for any later read.
+                    let vc = blake3_compress(va, vb);
+                    for (k, &w) in vc.iter().enumerate() {
+                        put(&mut mem, &mut written, &mut mem_count, ac + k as u32, w);
+                    }
+                    let mut counts = [[F64::ZERO; 4]; 3];
+                    for (base, dst) in [aa, ab, ac].into_iter().zip(counts.iter_mut()) {
+                        for (k, slot) in dst.iter_mut().enumerate() {
+                            *slot =
+                                bump_access_count(&mut mem, &mut written, &mut mem_count, g_step, base + k as u32);
+                        }
+                    }
+                    let [ra, rb, rc] = counts;
                     blake3.push(Brow {
                         pc,
                         fp,
                         aa,
                         ab,
                         ac,
-                        va0,
-                        va1,
-                        vb0,
-                        vb1,
-                        vc0,
-                        vc1,
-                        ra0,
-                        ra1,
-                        rb0,
-                        rb1,
-                        rc0,
-                        rc1,
+                        va,
+                        vb,
+                        vc,
+                        ra,
+                        rb,
+                        rc,
                         bytecode_read,
                     });
                     pc += 1;
@@ -481,16 +478,16 @@ impl Program {
         for (_, a2, a3) in deferred {
             // Never written: the cells are genuinely unconstrained; fix them (and
             // the rows, already ZERO) to ZERO.
-            put(&mut mem, &mut written, &mut mem_count, a2 as u32, F128::ZERO);
-            put(&mut mem, &mut written, &mut mem_count, a3, F128::ZERO);
+            put(&mut mem, &mut written, &mut mem_count, a2 as u32, F64::ZERO);
+            put(&mut mem, &mut written, &mut mem_count, a3, F64::ZERO);
         }
 
         // Pad memory to a power of two (the boundary tables read a dense image),
         // at least 2^MIN_LOG_MEM cells (doc §Memory).
         let cells = mem.len().next_power_of_two().max(1 << MIN_LOG_MEM);
         assert!(cells <= 1 << MAX_LOG_MEM, "data memory exceeds 2^{MAX_LOG_MEM} cells");
-        mem.resize(cells, F128::ZERO);
-        mem_count.resize(cells, F128::ONE);
+        mem.resize(cells, F64::ZERO);
+        mem_count.resize(cells, F64::ONE);
         let trace = Trace {
             xor,
             mul,

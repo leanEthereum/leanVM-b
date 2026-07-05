@@ -3,10 +3,9 @@
 /// An expression. Arithmetic is the field's own: `+` is `XOR`, `*` is `MUL`.
 #[derive(Clone, Debug)]
 pub enum Expr {
-    /// Integer / field literal: a `u128` taken as the field element's 128 bits,
-    /// `F128::new(n_lo, n_hi)`. Small values behave like integers (`5` is
-    /// `F128::new(5, 0)`); a full 128-bit value names an arbitrary field
-    /// constant (e.g. a Fibonacci result computed in the exponent).
+    /// Integer / field literal: taken as the field element's 64 bits (`5` is
+    /// `F64(5)`; a full 64-bit value names an arbitrary field constant, e.g. a
+    /// digest word). Must fit `u64` — the machine word is 64 bits now.
     Lit(u128),
     /// The generator `g` — written `GEN` in source. A logical index `i` is
     /// carried "in the exponent" as `gⁱ`, so `GEN` is the unit step and
@@ -33,8 +32,8 @@ pub enum Expr {
     HeapBufDyn(Box<Expr>),
     /// `StackBuf(n)` — allocate `n` *consecutive* frame (stack) cells, bound as a
     /// stack value. Its cells `sa[0..n]` are written/read directly (no heap deref),
-    /// and a size-2 `StackBuf` is a valid `blake3` operand (the two 128-bit words
-    /// of a 256-bit value live in the two consecutive cells). See [`FnLower`].
+    /// and a size-4 `StackBuf` is a valid `blake3` operand (the four 64-bit words
+    /// of a 256-bit value live in the four consecutive cells). See [`FnLower`].
     StackBuf(u64),
     /// `arr[idx]` — read a cell. For a heap `arr` (a pointer): `m[arr·idx]` (idx a
     /// g-power). For a [`Expr::StackBuf`]: the frame cell `base + idx` (idx a
@@ -44,7 +43,7 @@ pub enum Expr {
     /// `base+lo..base+hi`) or of a [`Expr::HeapBuf`] (heap cells
     /// `ptr·g^lo..ptr·g^hi`), with compile-time integer bounds (`hi`
     /// exclusive). Only meaningful as a `blake3` operand, where it must span
-    /// exactly 2 cells (one 256-bit value).
+    /// exactly 4 cells (one 256-bit value).
     Slice(Box<Expr>, Box<Expr>, Box<Expr>),
 }
 

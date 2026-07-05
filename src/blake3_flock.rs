@@ -1,12 +1,13 @@
 //! Bridge to the vendored flock BLAKE3 prover (`flock_prover`), single-PCS.
 //!
-//! `q_pkd` (flock's packed BLAKE3 witness) is committed as a column in leanVM-b's
-//! ONE stacked witness (§3.1) — no separate flock commitment. The VM's `BLAKE3`
-//! table binds to it by point-eval equality (its value columns and `q_pkd`'s
-//! slots are point-evals of the same committed stack), and flock's R1CS validity
-//! is discharged by a Ligerito over that same stacked commitment
-//! ([`flock_prover::r1cs_hashes::blake3::Blake3Setup::prove_validity_stacked`],
-//! which lifts the ring-switch weight into the stack domain).
+//! `q_pkd` (flock's packed BLAKE3 witness, 64 bits per `F64` word) is committed
+//! as a column in leanVM-b's ONE stacked `K`-witness (§3.1) — no separate flock
+//! commitment. The VM's `BLAKE3` table binds to it by point-eval equality (its
+//! value columns and `q_pkd`'s slots are point-evals of the same committed
+//! stack), and flock's R1CS validity is discharged by the same stacked Ligerito:
+//! the reduction's two claims cross from flock's GHASH world into the tower via
+//! [`ring_switch_open`] / [`ring_switch_verify`] and join the batch-mixed
+//! opening ([`flare::pcs::stack_open_k`]).
 //!
 //! ## The mapping
 //!
@@ -15,30 +16,32 @@
 //! `CHUNK_START | CHUNK_END | ROOT` (= [`FLAGS`]) — exactly `blake3::hash` of the
 //! 64-byte message `a‖b`, matching `cpu::blake3_compress`.
 //!
-//! ## The layout (after the alignment re-layout, `M_BASE = 640`)
+//! ## The layout (aligned re-layout, `M_BASE = 640`, 64-bit words)
 //!
 //! Each compression's `2^K_LOG` bits pack into [`PACKED_PER_INSTANCE`]`
-//! = 2^(K_LOG-7)` `F128` coordinates; each VM-visible 128-bit word is one whole
-//! packed coordinate at a fixed within-instance slot:
+//! = 2^(K_LOG-6)` `F64` words; each VM-visible 64-bit word is one whole packed
+//! word at a fixed within-instance slot (bit position / 64):
 //!
 //! ```text
-//!   c0,c1 = slots 2,3     a0,a1 = slots 5,6     b0,b1 = slots 7,8
-//!   cv = slots 0,1 (= IV)    counter‖blen‖flags = slot 9 (pinned constants)
+//!   c0..c3 = slots 4..8      a0..a3 = slots 10..14    b0..b3 = slots 14..18
+//!   cv = slots 0..4 (= IV)   counter = slot 18        blen‖flags = slot 19
 //! ```
 
-use crate::field::F128;
+use crate::field::{F64, F128T};
 use crate::transcript::{ProverState, VerifierState};
-use flare::pcs::LOG_PACKING;
-use flock_prover::pcs::{Commitment, ProverData};
+use flare::field::{F128, ghash_to_tower};
+use flare::pcs::pack_k::LOG_PACKING_K;
+use flare::zerocheck::multilinear::lagrange_weights_naive;
 use flock_prover::r1cs_hashes::blake3::{
-    BLAKE3_IV, Blake3Setup, Blake3StackProof, Compression, K_LOG, ReducedClaims, blake3_compress,
+    BLAKE3_IV, Blake3Setup, Compression, K_LOG, ReducedClaims, blake3_compress,
     generate_witness_with_ab_packed_and_lincheck, min_n_blocks_log,
 };
 use flock_prover::verifier::VerifyError;
 
 /// A `ẑ(point) = value` claim on the committed witness `q_pkd`, recovered by the
 /// Flock zerocheck + lincheck reduction ([`prove_reduction`] / [`verify_reduction`])
-/// and later discharged by the PCS. Re-exported from `flock_prover`.
+/// and later discharged by the PCS. Re-exported from `flock_prover` (GHASH-typed;
+/// [`ring_switch_verify`] maps it into the tower).
 pub use flock_prover::proof::ZClaim;
 
 /// flock flags for a single 64-byte root block: `CHUNK_START(1) | CHUNK_END(2) |
@@ -46,61 +49,70 @@ pub use flock_prover::proof::ZClaim;
 /// `blake3::hash` of the 64-byte input.
 pub const FLAGS: u32 = (1 << 0) | (1 << 1) | (1 << 3);
 
-/// Packed `F128` coordinates per compression instance: `K / 128 = 2^(K_LOG-7)`.
+/// Packed `F64` words per compression instance: `K / 64 = 2^(K_LOG-6)`.
 /// Instance `j` occupies packed indices `[j*PACKED_PER_INSTANCE, (j+1)*…)`.
-pub const PACKED_PER_INSTANCE: usize = 1 << (K_LOG - LOG_PACKING);
+pub const PACKED_PER_INSTANCE: usize = 1 << (K_LOG - LOG_PACKING_K);
 
-// Within-instance packed-coordinate (slot) indices of the VM-visible words,
-// fixed by the aligned flock layout (asserted by `layout_constants` there).
-pub const SLOT_C0: usize = 2;
-pub const SLOT_C1: usize = 3;
-pub const SLOT_A0: usize = 5;
-pub const SLOT_A1: usize = 6;
-pub const SLOT_B0: usize = 7;
-pub const SLOT_B1: usize = 8;
+// Within-instance packed-word (slot) indices of the VM-visible words, fixed by
+// the aligned flock layout (bit bases asserted by `layout_constants` there):
+// `OUT_LO_BASE = 256` → c words 4..8, `M_BASE = 640` → a words 10..14 and
+// b words 14..18.
+pub const SLOT_C0: usize = 4;
+pub const SLOT_A0: usize = 10;
+pub const SLOT_B0: usize = 14;
 
-/// The six within-instance value slots in canonical order `[a0,a1,b0,b1,c0,c1]`,
-/// matching `tables::BLAKE3_VALUE_COLS`.
-pub const SLOTS: [usize; 6] = [SLOT_A0, SLOT_A1, SLOT_B0, SLOT_B1, SLOT_C0, SLOT_C1];
+/// The twelve within-instance value slots in canonical order
+/// `[a0..a3, b0..b3, c0..c3]`, matching `tables::BLAKE3_VALUE_COLS`.
+pub const SLOTS: [usize; 12] = [
+    SLOT_A0,
+    SLOT_A0 + 1,
+    SLOT_A0 + 2,
+    SLOT_A0 + 3,
+    SLOT_B0,
+    SLOT_B0 + 1,
+    SLOT_B0 + 2,
+    SLOT_B0 + 3,
+    SLOT_C0,
+    SLOT_C0 + 1,
+    SLOT_C0 + 2,
+    SLOT_C0 + 3,
+];
 
-/// Within-instance slots pinned to PUBLIC constants: `cv` (slots 0,1 = the IV)
-/// and the packed `counter‖counter_hi‖block_len‖flags` word (slot 9). Pinning
-/// them makes the proven compression a real BLAKE3-of-64-bytes.
-pub const PIN_SLOTS: [usize; 3] = [0, 1, 9];
+/// Within-instance slots pinned to PUBLIC constants: `cv` (slots 0..4 = the IV,
+/// two u32 words each), the counter word (slot 18: `counter_lo‖counter_hi = 0`),
+/// and the packed `block_len‖flags` word (slot 19). Pinning them makes the
+/// proven compression a real BLAKE3-of-64-bytes.
+pub const PIN_SLOTS: [usize; 6] = [0, 1, 2, 3, 18, 19];
 
-/// Split a 128-bit field element into the four little-endian `u32` words flock's
-/// message uses (`lo` → words 0,1; `hi` → words 2,3) — the VM memory byte order.
-fn words_of(x: F128) -> [u32; 4] {
-    [x.lo as u32, (x.lo >> 32) as u32, x.hi as u32, (x.hi >> 32) as u32]
+/// Split a 64-bit field element into the two little-endian `u32` words flock's
+/// message uses — the VM memory byte order.
+fn words_of(x: F64) -> [u32; 2] {
+    [x.0 as u32, (x.0 >> 32) as u32]
 }
 
-/// Inverse of [`words_of`]: pack four little-endian `u32` words into the `F128`.
-pub fn pack_words(w: [u32; 4]) -> F128 {
-    F128::new(
-        (w[0] as u64) | ((w[1] as u64) << 32),
-        (w[2] as u64) | ((w[3] as u64) << 32),
-    )
+/// Inverse of [`words_of`]: pack two little-endian `u32` words into the `F64`.
+pub fn pack_words(w: [u32; 2]) -> F64 {
+    F64((w[0] as u64) | ((w[1] as u64) << 32))
 }
 
 /// The flock [`Compression`] for one VM `BLAKE3(a, b)`: `cv = IV`, message
 /// `m = a‖b`, counter `0`, block length `64`, flags [`FLAGS`].
-pub fn compression(a: [F128; 2], b: [F128; 2]) -> Compression {
+pub fn compression(a: [F64; 4], b: [F64; 4]) -> Compression {
     let mut m = [0u32; 16];
-    m[0..4].copy_from_slice(&words_of(a[0]));
-    m[4..8].copy_from_slice(&words_of(a[1]));
-    m[8..12].copy_from_slice(&words_of(b[0]));
-    m[12..16].copy_from_slice(&words_of(b[1]));
+    for (i, &w) in a.iter().enumerate() {
+        m[2 * i..2 * i + 2].copy_from_slice(&words_of(w));
+    }
+    for (i, &w) in b.iter().enumerate() {
+        m[8 + 2 * i..8 + 2 * i + 2].copy_from_slice(&words_of(w));
+    }
     (BLAKE3_IV, m, 0, 64, FLAGS)
 }
 
-/// The 256-bit digest `c = (c0, c1)` of a compression (= flock's `out_lo` =
+/// The 256-bit digest `c = (c0..c3)` of a compression (= flock's `out_lo` =
 /// `blake3::hash(a‖b)`).
-pub fn digest(block: &Compression) -> [F128; 2] {
+pub fn digest(block: &Compression) -> [F64; 4] {
     let st = blake3_compress(&block.0, &block.1, block.2, block.3, block.4);
-    [
-        pack_words([st[0], st[1], st[2], st[3]]),
-        pack_words([st[4], st[5], st[6], st[7]]),
-    ]
+    std::array::from_fn(|k| pack_words([st[2 * k], st[2 * k + 1]]))
 }
 
 /// flock's `n_blocks_log` for `n` compressions (lincheck floor `≥ 3`). The VM's
@@ -111,10 +123,10 @@ pub fn n_blocks_log(n: usize) -> usize {
 }
 
 /// The variable count (`log2` length) of the committed `q_pkd` column for `n`
-/// executed compressions: `K_LOG + n_blocks_log(max(n,1)) - 7`. Always ≥ 1
+/// executed compressions: `K_LOG + n_blocks_log(max(n,1)) - 6`. Always ≥ 1
 /// instance — `n = 0` still commits one padding instance (uniform proof shape).
 pub fn qpkd_kappa(n: usize) -> usize {
-    K_LOG + n_blocks_log(n.max(1)) - LOG_PACKING
+    K_LOG + n_blocks_log(n.max(1)) - LOG_PACKING_K
 }
 
 /// The all-zero compression `([0;8],[0;16],0,0,0)` — the padding instance flock's
@@ -125,53 +137,65 @@ pub fn padding_compression() -> Compression {
     ([0u32; 8], [0u32; 16], 0, 0, 0)
 }
 
+/// Flatten flock's GHASH-packed witness (128 bits per `F128` word, bit `i` at
+/// position `i`) into the committed `F64` packing (64 bits per word): word `j`
+/// becomes words `2j` (lo lanes, bits 0..64) and `2j+1` (hi lanes, bits
+/// 64..128), which is exactly `pack_witness_k`'s convention on the same bit string.
+fn flatten_packed(packed: Vec<F128>) -> Vec<F64> {
+    let mut out = Vec::with_capacity(packed.len() * 2);
+    for w in packed {
+        out.push(F64(w.lo));
+        out.push(F64(w.hi));
+    }
+    out
+}
+
 /// Build the committed `q_pkd` column (flock's packed witness) for `blocks`, padded
 /// to `2^n_blocks_log(max(blocks.len(),1))` instances (the unused ones all-zero
 /// padding). Deterministic, so it matches what the reduction regenerates. An empty
 /// `blocks` yields one padding cube (all instances are padding).
-pub fn build_qpkd(blocks: &[Compression]) -> Vec<F128> {
-    generate_witness_with_ab_packed_and_lincheck(blocks, n_blocks_log(blocks.len().max(1))).0
+pub fn build_qpkd(blocks: &[Compression]) -> Vec<F64> {
+    flatten_packed(generate_witness_with_ab_packed_and_lincheck(blocks, n_blocks_log(blocks.len().max(1))).0)
 }
 
-/// The output `(c0, c1)` of flock's padding compression — the all-zero input
+/// The output `(c0..c3)` of flock's padding compression — the all-zero input
 /// `([0;8],[0;16],0,0,0)` that fills padding instances (const-wire pin). Its
 /// output is NONZERO, so the VM pads its BLAKE3 output value columns with this.
-pub fn padding_digest() -> [F128; 2] {
-    digest(&([0u32; 8], [0u32; 16], 0, 0, 0))
+pub fn padding_digest() -> [F64; 4] {
+    digest(&padding_compression())
 }
 
 /// The PUBLIC constants the [`PIN_SLOTS`] hold on a real instance, in PIN_SLOTS
-/// order: `cv[0..4]`, `cv[4..8]` (the IV), and `(counter_lo=0, counter_hi=0,
-/// block_len=64, flags=11)` packed. Padding instances hold 0.
-pub fn pin_constants() -> [F128; 3] {
+/// order: the IV's four 64-bit words, the zero counter word, and
+/// `block_len=64 ‖ flags=11`. Padding instances hold 0.
+pub fn pin_constants() -> [F64; 6] {
     [
-        pack_words([BLAKE3_IV[0], BLAKE3_IV[1], BLAKE3_IV[2], BLAKE3_IV[3]]),
-        pack_words([BLAKE3_IV[4], BLAKE3_IV[5], BLAKE3_IV[6], BLAKE3_IV[7]]),
-        pack_words([0, 0, 64, FLAGS]),
+        pack_words([BLAKE3_IV[0], BLAKE3_IV[1]]),
+        pack_words([BLAKE3_IV[2], BLAKE3_IV[3]]),
+        pack_words([BLAKE3_IV[4], BLAKE3_IV[5]]),
+        pack_words([BLAKE3_IV[6], BLAKE3_IV[7]]),
+        pack_words([0, 0]),
+        pack_words([64, FLAGS]),
     ]
 }
 
-/// `log2` of the within-instance packed span (`PACKED_PER_INSTANCE = 2^7`): the
+/// `log2` of the within-instance packed span (`PACKED_PER_INSTANCE = 2^8`): the
 /// number of low coords in a [`slot_point`] that carry the slot's bits, and the
-/// stride between consecutive instances' same-slot coords in `q_pkd`. A value
+/// stride between consecutive instances' same-slot words in `q_pkd`. A value
 /// claim on `q_pkd` is thus a boolean-selector (strided) claim with this stride.
-pub const SLOT_STRIDE_LOG: usize = K_LOG - LOG_PACKING;
+pub const SLOT_STRIDE_LOG: usize = K_LOG - LOG_PACKING_K;
 
 /// The `q_pkd`-column MLE point selecting within-instance `slot` over the
-/// instance cube `rho`: the low 7 coords are `slot`'s bits (LSB-first), the high
+/// instance cube `rho`: the low 8 coords are `slot`'s bits (LSB-first), the high
 /// `n_log` coords are `rho`.
-pub fn slot_point(slot: usize, rho: &[F128]) -> Vec<F128> {
-    let mut p: Vec<F128> = (0..SLOT_STRIDE_LOG)
-        .map(|b| if (slot >> b) & 1 == 1 { F128::ONE } else { F128::ZERO })
+pub fn slot_point(slot: usize, rho: &[F128T]) -> Vec<F128T> {
+    let mut p: Vec<F128T> = (0..SLOT_STRIDE_LOG)
+        .map(|b| if (slot >> b) & 1 == 1 { F128T::ONE } else { F128T::ZERO })
         .collect();
     p.extend_from_slice(rho);
     p
 }
 
-/// Prove `blocks` are valid compressions, discharging the proof against the
-/// caller's already-committed `stack` (with `q_pkd` the aligned sub-block at
-/// `stack_offset`), reusing its `prover_data`/`commitment`. On the shared
-/// transcript `ps`.
 /// Memoized BLAKE3 R1CS [`Blake3Setup`], keyed by the executed-instance count.
 /// Building it (the symbolic constraint walk over `2^K_LOG` slots) and its
 /// statement digest cost ~hundreds of ms — fixed per circuit shape, independent
@@ -227,30 +251,36 @@ pub fn warm_setup(n_blocks: usize) {
 }
 
 /// **Flock reduction only** (prover): run flock's BLAKE3 zerocheck + lincheck
-/// over `blocks`, binding to `commitment`, and return the two claims
+/// over `blocks`, binding to the stack commitment (`root`/`mu`, see
+/// [`crate::pcs::commitment_from_root`]), and return the two claims
 /// [`ReducedClaims`] on the committed witness `q_pkd` — `ab` (`A∘B`, lincheck)
-/// and `c` (`C`, zerocheck) — along with the regenerated packed witness and the
-/// transmitted zerocheck / lincheck sub-proofs. Does NOT open the PCS: the
-/// caller discharges the returned claims (see [`prove_validity_stacked`]). This
-/// is the clean seam the PCS builds on.
+/// and `c` (`C`, zerocheck) — along with the regenerated packed witness (already
+/// flattened to the committed `F64` packing) and the transmitted zerocheck /
+/// lincheck sub-proofs. Does NOT open the PCS: the caller packages the returned
+/// claims for the stacked opening ([`ring_switch_open`]). flock runs entirely in
+/// its GHASH world on the shared sponge `ps` (the [`flare::challenger::Challenger`]
+/// impl); only the claims cross into the tower.
 pub fn prove_reduction(
     blocks: &[Compression],
-    commitment: &Commitment,
+    root: &[u8; 32],
+    mu: usize,
     ps: &mut ProverState,
 ) -> (
-    Vec<F128>,
+    Vec<F64>,
     flock_prover::zerocheck::ZerocheckProof,
     flock_prover::lincheck::LincheckProof,
     ReducedClaims,
 ) {
-    setup_for(blocks.len()).prove_reduction(blocks, commitment, ps)
+    let commitment = crate::pcs::commitment_from_root(*root, mu);
+    let (z_packed, zc, lc, reduced) = setup_for(blocks.len()).prove_reduction(blocks, &commitment, ps);
+    (flatten_packed(z_packed), zc, lc, reduced)
 }
 
 /// **Flock reduction only** (verifier): mirror of [`prove_reduction`]. Rebuild the
 /// stack commitment from `root`/`mu`, replay the `zerocheck` + `lincheck`
 /// sub-proofs (binding to it), and recover the two `(ab, c)` claims on `q_pkd`
-/// for the PCS to discharge. In a full proof these sub-proofs live in
-/// [`Blake3StackProof`] (`proof.zerocheck` / `proof.lincheck`).
+/// for the PCS to discharge. In a full proof these sub-proofs ride the shared
+/// channels ([`read_stack_proof`]).
 pub fn verify_reduction(
     n_blocks: usize,
     root: &[u8; 32],
@@ -263,12 +293,35 @@ pub fn verify_reduction(
     setup_for(n_blocks).verify_reduction(&commitment, zerocheck, lincheck, vs)
 }
 
-/// The multilinear tail `x_inner_rest ++ x_outer` of a quirky point — the
-/// `x_outer_full` the PCS ring-switch front-end consumes.
-fn x_outer_full(point: &flock_prover::lincheck::QuirkyPoint) -> Vec<F128> {
-    let mut v = point.x_inner_rest.clone();
-    v.extend_from_slice(&point.x_outer);
-    v
+/// One flock claim as a tower [`crate::pcs::RingSwitchClaimK`]: the quirky point
+/// splits at the packing boundary. Its univariate-skip coordinate `z_skip`
+/// covers exactly the `k_skip = LOG_PACKING_K = 6` packed variables, so the
+/// packing prefix is the 64 φ8-Lagrange weights at `z_skip`, and the WHOLE
+/// multilinear tail `x_inner_rest ++ x_outer` is the suffix point (`q_pkd` has
+/// `2^(K_LOG + n_log − 6)` words: one more variable than the old F128 stack, and
+/// no coordinate is split off into the prefix). Everything crosses from GHASH to
+/// the tower through the field isomorphism `ghash_to_tower`, under which the
+/// claim identity `value = Σ_i L_i(z_skip)·ŝ_i(suffix)` transports exactly (the
+/// bit-slice MLEs have F2 coefficients, which the isomorphism fixes).
+fn ring_claim(z: &ZClaim, qpkd_vars: usize) -> crate::pcs::RingSwitchClaimK {
+    let prefix_weights: Vec<F128T> = lagrange_weights_naive(LOG_PACKING_K, z.point.z_skip)
+        .into_iter()
+        .map(ghash_to_tower)
+        .collect();
+    let mut suffix_point: Vec<F128T> = z.point.x_inner_rest.iter().copied().map(ghash_to_tower).collect();
+    suffix_point.extend(z.point.x_outer.iter().copied().map(ghash_to_tower));
+    // Length invariant: prefix (6) + suffix == K_LOG + n_blocks_log, i.e. the
+    // suffix spans exactly the committed q_pkd cube.
+    assert_eq!(
+        suffix_point.len(),
+        qpkd_vars,
+        "ring-switch suffix must span the q_pkd cube"
+    );
+    crate::pcs::RingSwitchClaimK {
+        prefix_weights,
+        suffix_point,
+        value: ghash_to_tower(z.value),
+    }
 }
 
 /// Package the prover's reduction claims ([`ReducedClaims`]) as a
@@ -276,39 +329,27 @@ fn x_outer_full(point: &flock_prover::lincheck::QuirkyPoint) -> Vec<F128> {
 /// validity in the SAME opening as leanVM's point claims. `offset` is `q_pkd`'s
 /// slot in the committed stack; the opener slices `q_pkd` from there.
 pub fn ring_switch_open(n_blocks: usize, offset: usize, reduced: &ReducedClaims) -> crate::pcs::RingSwitchOpen {
-    let setup = setup_for(n_blocks);
+    let qpkd_vars = qpkd_kappa(n_blocks);
     crate::pcs::RingSwitchOpen {
         offset,
-        qpkd_vars: qpkd_kappa(n_blocks),
-        x_outers: vec![
-            x_outer_full(&reduced.ab.claim.point),
-            x_outer_full(&reduced.c.claim.point),
+        qpkd_vars,
+        claims: vec![
+            ring_claim(&reduced.ab.claim, qpkd_vars),
+            ring_claim(&reduced.c.claim, qpkd_vars),
         ],
-        s_hat_v: vec![reduced.ab.s_hat_v.clone(), reduced.c.s_hat_v.clone()],
-        padding: flock_prover::zerocheck::PaddingSpec {
-            k_log: setup.r1cs.k_log,
-            useful_bits_per_block: setup.r1cs.useful_bits,
-        },
     }
 }
 
 /// Verifier counterpart of [`ring_switch_open`]: package the recovered `(ab, c)`
-/// claims (from [`verify_reduction`]) plus the transmitted opening as a
-/// [`crate::pcs::RingSwitchVerify`].
-pub fn ring_switch_verify<'a>(
-    n_blocks: usize,
-    offset: usize,
-    ab: ZClaim,
-    c: ZClaim,
-    open: &'a crate::pcs::BatchOpeningProofLigerito,
-) -> crate::pcs::RingSwitchVerify<'a> {
+/// claims (from [`verify_reduction`]) as a [`crate::pcs::RingSwitchVerify`], the
+/// same statement data; the transmitted opening travels separately
+/// ([`read_stack_proof`]).
+pub fn ring_switch_verify(n_blocks: usize, offset: usize, ab: ZClaim, c: ZClaim) -> crate::pcs::RingSwitchVerify {
+    let qpkd_vars = qpkd_kappa(n_blocks);
     crate::pcs::RingSwitchVerify {
         offset,
-        qpkd_vars: qpkd_kappa(n_blocks),
-        values: vec![ab.value, c.value],
-        z_skips: vec![ab.point.z_skip, c.point.z_skip],
-        x_outers: vec![x_outer_full(&ab.point), x_outer_full(&c.point)],
-        open,
+        qpkd_vars,
+        claims: vec![ring_claim(&ab, qpkd_vars), ring_claim(&c, qpkd_vars)],
     }
 }
 
@@ -323,11 +364,10 @@ pub fn write_stack_proof(
     ps: &mut ProverState,
     zerocheck: flock_prover::zerocheck::ZerocheckProof,
     lincheck: flock_prover::lincheck::LincheckProof,
-    open: crate::pcs::BatchOpeningProofLigerito,
+    open: crate::pcs::BatchOpeningProofK,
 ) {
-    let crate::pcs::BatchOpeningProofLigerito { ring_switches, ligerito } = open;
-    let bytes = bincode::serialize(&(zerocheck, lincheck, ring_switches))
-        .expect("flock BLAKE3 sub-proof serializes");
+    let crate::pcs::BatchOpeningProofK { ring_switches, ligerito } = open;
+    let bytes = bincode::serialize(&(zerocheck, lincheck, ring_switches)).expect("flock BLAKE3 sub-proof serializes");
     ps.hint_bytes(&bytes);
     ps.hint_opening(ligerito);
 }
@@ -335,7 +375,7 @@ pub fn write_stack_proof(
 /// Verifier side of [`write_stack_proof`]: read flock's scalar reduction back off
 /// the `stream` (raw — not re-absorbed) and its Ligerito off the `openings`
 /// channel, reassembling `(zerocheck, lincheck, open)` for [`verify_reduction`]
-/// and [`ring_switch_verify`].
+/// and [`crate::pcs::verify`].
 #[allow(clippy::type_complexity)]
 pub fn read_stack_proof(
     vs: &mut VerifierState,
@@ -343,7 +383,7 @@ pub fn read_stack_proof(
     (
         flock_prover::zerocheck::ZerocheckProof,
         flock_prover::lincheck::LincheckProof,
-        crate::pcs::BatchOpeningProofLigerito,
+        crate::pcs::BatchOpeningProofK,
     ),
     crate::transcript::Error,
 > {
@@ -351,78 +391,50 @@ pub fn read_stack_proof(
     let (zerocheck, lincheck, ring_switches): (
         flock_prover::zerocheck::ZerocheckProof,
         flock_prover::lincheck::LincheckProof,
-        Vec<flare::pcs::RingSwitchProof>,
+        Vec<flare::pcs::ring_switch_k::RingSwitchProofK>,
     ) = bincode::deserialize(&bytes).map_err(|_| crate::transcript::Error::MissingHint)?;
     let ligerito = vs.next_opening()?.clone();
-    Ok((zerocheck, lincheck, crate::pcs::BatchOpeningProofLigerito { ring_switches, ligerito }))
-}
-
-/// Prove `blocks` are valid compressions in two clean phases, discharging the
-/// proof against the caller's already-committed `stack` (with `q_pkd` the aligned
-/// sub-block at `stack_offset`), reusing its `prover_data`/`commitment`, on the
-/// shared transcript `ps`:
-/// 1. the Flock reduction ([`prove_reduction`]): zerocheck + lincheck → the
-///    `(ab, c)` claims on `q_pkd`;
-/// 2. the PCS: one stacked Ligerito discharging those claims together with the
-///    caller's `stack_pd` point claims.
-#[allow(clippy::too_many_arguments)]
-pub fn prove_validity_stacked(
-    blocks: &[Compression],
-    stack: &[F128],
-    stack_offset: usize,
-    prover_data: &ProverData,
-    commitment: &Commitment,
-    stack_pd: &[(Vec<F128>, F128)],
-    ps: &mut ProverState,
-) -> Blake3StackProof {
-    setup_for(blocks.len())
-        .prove_validity_stacked(blocks, stack, stack_offset, prover_data, commitment, stack_pd, ps)
-}
-
-/// Verifier side of [`prove_validity_stacked`], in the same two phases:
-/// [`verify_reduction`] (replay zerocheck + lincheck → `(ab, c)` claims), then
-/// verify the SINGLE stacked Ligerito against `commitment` on the shared
-/// transcript. `stack_pd` are all of leanVM's point claims (bus / constraint /
-/// public-input / binding / pinning) folded into the same opening.
-pub fn verify_validity_stacked(
-    n_blocks: usize,
-    commitment: &Commitment,
-    stack_offset: usize,
-    stack_pd: &[(Vec<F128>, F128)],
-    proof: &Blake3StackProof,
-    vs: &mut VerifierState,
-) -> Result<(), VerifyError> {
-    setup_for(n_blocks).verify_validity_stacked(commitment, stack_offset, stack_pd, proof, vs)
+    Ok((zerocheck, lincheck, crate::pcs::BatchOpeningProofK { ring_switches, ligerito }))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn f(lo: u64, hi: u64) -> F128 {
-        F128::new(lo, hi)
+    fn f(x: u64) -> F64 {
+        F64(x)
     }
 
     fn sample_blocks(n: usize) -> Vec<Compression> {
         (0..n as u64)
             .map(|i| {
                 compression(
-                    [f(0x11 * (i + 1), 0x22 * (i + 1)), f(0x33 * (i + 1), 0x44 * (i + 1))],
-                    [f(0x55 * (i + 1), 0x66 * (i + 1)), f(0x77 * (i + 1), 0x88 * (i + 1))],
+                    [
+                        f(0x11 * (i + 1)),
+                        f(0x22 * (i + 1)),
+                        f(0x33 * (i + 1)),
+                        f(0x44 * (i + 1)),
+                    ],
+                    [
+                        f(0x55 * (i + 1)),
+                        f(0x66 * (i + 1)),
+                        f(0x77 * (i + 1)),
+                        f(0x88 * (i + 1)),
+                    ],
                 )
             })
             .collect()
     }
 
-    /// `q_pkd`'s aligned packed slots hold the VM's 128-bit words in our field
+    /// `q_pkd`'s aligned packed slots hold the VM's 64-bit words in our field
     /// representation, and the digest matches the `blake3` crate.
     #[test]
     fn qpkd_words_match_layout() {
-        let inputs: Vec<([F128; 2], [F128; 2])> = (0..5u64)
+        let inputs: Vec<([F64; 4], [F64; 4])> = (0..5u64)
             .map(|i| {
                 (
-                    [f(0x1000 + i, 0x2000 + i), f(0x3000 + i, 0x4000 + i)],
-                    [f(0x5000 + i, 0x6000 + i), f(0x7000 + i, 0x8000 + i)],
+                    [f(0x1000 + i), f(0x2000 + i), f(0x3000 + i), f(0x4000 + i)],
+                    [f(0x5000 + i), f(0x6000 + i), f(0x7000 + i), f(0x8000 + i)],
                 )
             })
             .collect();
@@ -432,90 +444,28 @@ mod tests {
 
         let slot = |j: usize, s: usize| q_pkd[j * PACKED_PER_INSTANCE + s];
         for (j, (&(a, b), blk)) in inputs.iter().zip(&blocks).enumerate() {
-            assert_eq!(slot(j, SLOT_A0), a[0]);
-            assert_eq!(slot(j, SLOT_A1), a[1]);
-            assert_eq!(slot(j, SLOT_B0), b[0]);
-            assert_eq!(slot(j, SLOT_B1), b[1]);
+            for k in 0..4 {
+                assert_eq!(slot(j, SLOT_A0 + k), a[k]);
+                assert_eq!(slot(j, SLOT_B0 + k), b[k]);
+            }
             let mut input = [0u8; 64];
-            for (s, w) in input.chunks_exact_mut(16).zip([a[0], a[1], b[0], b[1]]) {
-                s[..8].copy_from_slice(&w.lo.to_le_bytes());
-                s[8..].copy_from_slice(&w.hi.to_le_bytes());
+            for (s, w) in input.chunks_exact_mut(8).zip(a.into_iter().chain(b)) {
+                s.copy_from_slice(&w.0.to_le_bytes());
             }
             let h = *blake3::hash(&input).as_bytes();
-            let word = |o: usize| {
-                F128::new(
-                    u64::from_le_bytes(h[o..o + 8].try_into().unwrap()),
-                    u64::from_le_bytes(h[o + 8..o + 16].try_into().unwrap()),
-                )
-            };
-            assert_eq!(digest(blk), [word(0), word(16)]);
-            assert_eq!(slot(j, SLOT_C0), word(0));
-            assert_eq!(slot(j, SLOT_C1), word(16));
+            let word = |o: usize| F64(u64::from_le_bytes(h[o..o + 8].try_into().unwrap()));
+            let d: [F64; 4] = std::array::from_fn(|k| word(8 * k));
+            assert_eq!(digest(blk), d);
+            for k in 0..4 {
+                assert_eq!(slot(j, SLOT_C0 + k), d[k]);
+            }
         }
-        // Pinned slots: cv = IV on real instances.
+        // Pinned slots on a real instance: the IV words, the zero counter, and
+        // blen‖flags, exactly `pin_constants`.
         let pin = pin_constants();
-        assert_eq!(slot(0, PIN_SLOTS[0]), pin[0]);
-        assert_eq!(slot(0, PIN_SLOTS[1]), pin[1]);
-        assert_eq!(slot(0, PIN_SLOTS[2]), pin[2]);
-    }
-
-    /// flock's validity proof, discharged by a Ligerito over a single committed
-    /// stack containing `q_pkd` (plus a dummy column) — proves and verifies on
-    /// the shared transcript, and a corrupted `q_pkd` is rejected.
-    #[test]
-    fn validity_stacked_roundtrip() {
-        let blocks = sample_blocks(4);
-        let q_pkd = build_qpkd(&blocks);
-        let dummy = vec![f(7, 9); 8];
-        let cols = vec![q_pkd.clone(), dummy];
-        let stacked = crate::witness::stack(&cols);
-        let offset = stacked.placements[0].offset;
-
-        // Also fold in one full-stack point claim (exercises the pd path of the
-        // single fused opening).
-        let pd_point: Vec<F128> = (0..stacked.m).map(|i| f(0x100 + i as u64, 0x7)).collect();
-        let pd_value = crate::multilinear::mle_eval(&stacked.q, &pd_point);
-        let stack_pd = vec![(pd_point, pd_value)];
-
-        let mut ps = ProverState::new(b"vstack", &[]);
-        let committed = crate::pcs::commit(&mut ps, &stacked.q);
-        let proof = prove_validity_stacked(
-            &blocks,
-            &stacked.q,
-            offset,
-            &committed.prover_data,
-            &committed.commitment,
-            &stack_pd,
-            &mut ps,
-        );
-        let bundle = ps.into_proof();
-
-        let mut vs = VerifierState::new(b"vstack", &bundle, &[]);
-        let root = crate::pcs::read_commitment(&mut vs).unwrap();
-        let commitment = crate::pcs::commitment_from_root(root, stacked.m);
-        verify_validity_stacked(blocks.len(), &commitment, offset, &stack_pd, &proof, &mut vs)
-            .expect("validity verifies");
-
-        // A mismatched transcript (different domain) diverges the shared sponge,
-        // so the validity proof must be rejected.
-        let mut vs_bad = VerifierState::new(b"different-domain", &bundle, &[]);
-        let root_b = crate::pcs::read_commitment(&mut vs_bad).unwrap();
-        let commitment_b = crate::pcs::commitment_from_root(root_b, stacked.m);
-        assert!(
-            verify_validity_stacked(blocks.len(), &commitment_b, offset, &stack_pd, &proof, &mut vs_bad).is_err(),
-            "validity under a mismatched transcript must fail"
-        );
-
-        // A tampered pd value must be rejected too.
-        let mut bad_pd = stack_pd.clone();
-        bad_pd[0].1 += F128::ONE;
-        let mut vs_pd = VerifierState::new(b"vstack", &bundle, &[]);
-        let root_p = crate::pcs::read_commitment(&mut vs_pd).unwrap();
-        let commitment_p = crate::pcs::commitment_from_root(root_p, stacked.m);
-        assert!(
-            verify_validity_stacked(blocks.len(), &commitment_p, offset, &bad_pd, &proof, &mut vs_pd).is_err(),
-            "tampered pd value must fail"
-        );
+        for (k, &ps) in PIN_SLOTS.iter().enumerate() {
+            assert_eq!(slot(0, ps), pin[k]);
+        }
     }
 
     /// The Flock reduction (zerocheck + lincheck) is a clean, self-contained
@@ -526,7 +476,7 @@ mod tests {
     fn reduction_roundtrip() {
         let blocks = sample_blocks(4);
         let q_pkd = build_qpkd(&blocks);
-        let dummy = vec![f(7, 9); 8];
+        let dummy = vec![f(7); 8];
         let stacked = crate::witness::stack(&[q_pkd.clone(), dummy]);
         let offset = stacked.placements[0].offset;
 
@@ -534,7 +484,7 @@ mod tests {
         let mut ps = ProverState::new(b"reduce", &[]);
         let committed = crate::pcs::commit(&mut ps, &stacked.q);
         let (z_packed, zc, lc, reduced) =
-            prove_reduction(&blocks, &committed.commitment, &mut ps);
+            prove_reduction(&blocks, &committed.commitment.root, committed.mu, &mut ps);
         let bundle = ps.into_proof();
 
         // The reduction regenerates exactly the committed `q_pkd` sub-block.
@@ -544,8 +494,8 @@ mod tests {
         // Verifier: replay the reduction and recover the claims.
         let mut vs = VerifierState::new(b"reduce", &bundle, &[]);
         let root = crate::pcs::read_commitment(&mut vs).unwrap();
-        let (ab, c) = verify_reduction(blocks.len(), &root, stacked.m, &zc, &lc, &mut vs)
-            .expect("reduction verifies");
+        let (ab, c) =
+            verify_reduction(blocks.len(), &root, stacked.m, &zc, &lc, &mut vs).expect("reduction verifies");
 
         // Prover and verifier agree on the claims left for the PCS.
         assert_eq!(reduced.ab.claim, ab, "ab claim mismatch");
@@ -561,5 +511,68 @@ mod tests {
                 "a diverged sponge must not reproduce the prover's claims"
             );
         }
+    }
+
+    /// flock's validity claims, discharged by ONE stacked Ligerito-K over a
+    /// hand-stacked witness containing `q_pkd` (plus a dummy column) together
+    /// with an ordinary point claim: the full prove_reduction → ring-switch →
+    /// stack_open seam without the VM pipeline. Proves and verifies on the
+    /// shared transcript; a mismatched domain and a tampered point value are
+    /// rejected.
+    #[test]
+    fn validity_stacked_roundtrip() {
+        let blocks = sample_blocks(4);
+        let q_pkd = build_qpkd(&blocks);
+        let dummy: Vec<F64> = (0..8u64).map(|i| f(0x9000 + i)).collect();
+        let stacked = crate::witness::stack(&[q_pkd.clone(), dummy.clone()]);
+        let offset = stacked.placements[0].offset;
+
+        // One ordinary point claim on the dummy column (exercises the point-claim
+        // path of the single fused opening).
+        let dummy_pl = stacked.placements[1];
+        let low_point: Vec<F128T> = (0..dummy_pl.n_vars)
+            .map(|i| F128T::new(0x100 + i as u64, 0x7))
+            .collect();
+        let pd_value = crate::multilinear::mle_eval(&dummy, &low_point);
+        let points = vec![crate::pcs::SlotClaim::Point {
+            offset: dummy_pl.offset,
+            low_point: low_point.clone(),
+            value: pd_value,
+        }];
+
+        let mut ps = ProverState::new(b"vstack", &[]);
+        let committed = crate::pcs::commit(&mut ps, &stacked.q);
+        let (_z, zc, lc, reduced) = prove_reduction(&blocks, &committed.commitment.root, committed.mu, &mut ps);
+        let ring = ring_switch_open(blocks.len(), offset, &reduced);
+        let open = crate::pcs::open(&mut ps, &committed, &stacked.q, &points, &ring);
+        write_stack_proof(&mut ps, zc, lc, open);
+        let bundle = ps.into_proof();
+
+        let run = |label: &'static [u8], points: &[crate::pcs::SlotClaim]| -> Result<(), &'static str> {
+            let mut vs = VerifierState::new(label, &bundle, &[]);
+            let root = crate::pcs::read_commitment(&mut vs).map_err(|_| "root")?;
+            let (zc, lc, open) = read_stack_proof(&mut vs).map_err(|_| "stack proof")?;
+            let (ab, c) = verify_reduction(blocks.len(), &root, stacked.m, &zc, &lc, &mut vs)
+                .map_err(|_| "reduction")?;
+            let ring = ring_switch_verify(blocks.len(), offset, ab, c);
+            crate::pcs::verify(&mut vs, points, &ring, &open, stacked.m, &root).map_err(|_| "opening")?;
+            vs.finish().map_err(|_| "leftover")
+        };
+
+        run(b"vstack", &points).expect("validity verifies");
+
+        // A mismatched transcript (different domain) diverges the shared sponge,
+        // so the stacked opening must be rejected.
+        assert!(
+            run(b"different-domain", &points).is_err(),
+            "validity under a mismatched transcript must fail"
+        );
+
+        // A tampered point value must be rejected too.
+        let mut bad_points = points.clone();
+        if let crate::pcs::SlotClaim::Point { value, .. } = &mut bad_points[0] {
+            *value += F128T::ONE;
+        }
+        assert!(run(b"vstack", &bad_points).is_err(), "tampered point value must fail");
     }
 }

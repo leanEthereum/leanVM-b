@@ -3,16 +3,18 @@
 //! to a single leaf evaluation `Ṽ_0(ζ)`. Layer relation (low-bit split): `V_i(x)
 //! = V_{i-1}(0,x)·V_{i-1}(1,x)`; each layer's sumcheck uses the eq-trick, so its
 //! round univariate is degree 2 (3 evaluations) plus a degree-1 fold-back line.
+//! Leaves and every layer are `E`-valued (the bus fingerprints mix `K`-columns
+//! into `E` upstream, [`crate::leaf`]).
 
 use crate::PAR_THRESHOLD;
-use crate::field::F128;
+use crate::field::F128T;
 use crate::multilinear::lagrange_eval;
 use crate::multilinear::{add3, eq_table, interp, tri_nodes};
 use crate::transcript::{ProverState, VerifierState};
 use rayon::prelude::*;
 
 /// Bind the lowest variable of `table` to `rho`, in parallel for large tables.
-fn par_fold(table: &[F128], rho: F128) -> Vec<F128> {
+fn par_fold(table: &[F128T], rho: F128T) -> Vec<F128T> {
     let half = table.len() / 2;
     if half >= PAR_THRESHOLD {
         (0..half)
@@ -27,8 +29,8 @@ fn par_fold(table: &[F128], rho: F128) -> Vec<F128> {
 /// The single evaluation claim the proof reduces to: `Ṽ_0(point) = value`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LeafClaim {
-    pub point: Vec<F128>,
-    pub value: F128,
+    pub point: Vec<F128T>,
+    pub value: F128T,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -40,22 +42,22 @@ pub enum GkrError {
 
 /// Pad a leaf vector up to a power of two with the multiplicative identity `1`
 /// (so the product is unchanged), returning `(padded, μ)`.
-pub fn pad_to_pow2(mut leaves: Vec<F128>) -> (Vec<F128>, usize) {
+pub fn pad_to_pow2(mut leaves: Vec<F128T>) -> (Vec<F128T>, usize) {
     if leaves.is_empty() {
-        leaves.push(F128::ONE);
+        leaves.push(F128T::ONE);
     }
     let mu = crate::log2_ceil_usize(leaves.len());
-    leaves.resize(1 << mu, F128::ONE);
+    leaves.resize(1 << mu, F128T::ONE);
     (leaves, mu)
 }
 
 /// Build every product-tree layer: `layers[0]` = leaves, `layers[μ]` = `[root]`.
-fn build_layers(leaves: Vec<F128>) -> Vec<Vec<F128>> {
+fn build_layers(leaves: Vec<F128T>) -> Vec<Vec<F128T>> {
     let mut layers = vec![leaves];
     while layers.last().unwrap().len() > 1 {
         let cur = layers.last().unwrap();
         let half = cur.len() / 2;
-        let next: Vec<F128> = if half >= PAR_THRESHOLD {
+        let next: Vec<F128T> = if half >= PAR_THRESHOLD {
             (0..half).into_par_iter().map(|j| cur[2 * j] * cur[2 * j + 1]).collect()
         } else {
             (0..half).map(|j| cur[2 * j] * cur[2 * j + 1]).collect()
@@ -67,14 +69,14 @@ fn build_layers(leaves: Vec<F128>) -> Vec<Vec<F128>> {
 
 /// Prove `root = ∏ leaves` for a power-of-two leaf vector. Returns the product and
 /// the leaf claim `Ṽ₀(ζ)`, which the leaf decomposition (§4.4) settles.
-pub fn prove_product(leaves: Vec<F128>, ps: &mut ProverState) -> (F128, LeafClaim) {
+pub fn prove_product(leaves: Vec<F128T>, ps: &mut ProverState) -> (F128T, LeafClaim) {
     let mu = crate::log2_strict_usize(leaves.len());
     let layers = build_layers(leaves);
     let root = layers[mu][0];
     ps.add_scalar(root);
 
     let nodes = tri_nodes();
-    let mut r: Vec<F128> = Vec::new();
+    let mut r: Vec<F128T> = Vec::new();
     // Each layer's connecting line at `c` is `Ṽ_0` at the new point, so the last
     // one is `Ṽ_0(r)` — no final re-evaluation of the whole leaf table needed.
     let mut value = root;
@@ -83,8 +85,8 @@ pub fn prove_product(leaves: Vec<F128>, ps: &mut ProverState) -> (F128, LeafClai
         let below = &layers[i - 1];
         let k = mu - i; // sumcheck variables this layer
         let width = 1usize << k;
-        let mut even: Vec<F128> = (0..width).map(|j| below[2 * j]).collect();
-        let mut odd: Vec<F128> = (0..width).map(|j| below[2 * j + 1]).collect();
+        let mut even: Vec<F128T> = (0..width).map(|j| below[2 * j]).collect();
+        let mut odd: Vec<F128T> = (0..width).map(|j| below[2 * j + 1]).collect();
 
         let mut rho = Vec::with_capacity(k);
         for j in 0..k {
@@ -93,7 +95,7 @@ pub fn prove_product(leaves: Vec<F128>, ps: &mut ProverState) -> (F128, LeafClai
             // `eqr` is eq over the variables after the one bound this round, so the
             // per-row product `eq·even·odd` is degree 2 (eq-trick).
             let eqr = eq_table(&r[j + 1..]);
-            let summand = |idx: usize| -> [F128; 3] {
+            let summand = |idx: usize| -> [F128T; 3] {
                 let (lo, hi) = (2 * idx, 2 * idx + 1);
                 let eq = eqr[idx];
                 let prod0 = eq * even[lo] * odd[lo];
@@ -104,9 +106,9 @@ pub fn prove_product(leaves: Vec<F128>, ps: &mut ProverState) -> (F128, LeafClai
                 [prod0, prod1, prod2]
             };
             let acc = if half >= PAR_THRESHOLD {
-                (0..half).into_par_iter().map(summand).reduce(|| [F128::ZERO; 3], add3)
+                (0..half).into_par_iter().map(summand).reduce(|| [F128T::ZERO; 3], add3)
             } else {
-                (0..half).map(summand).fold([F128::ZERO; 3], add3)
+                (0..half).map(summand).fold([F128T::ZERO; 3], add3)
             };
             ps.add_scalars(&acc);
             let rk = ps.sample();
@@ -131,26 +133,26 @@ pub fn prove_product(leaves: Vec<F128>, ps: &mut ProverState) -> (F128, LeafClai
 }
 
 /// Verify a product proof, returning the product `root` and the leaf claim `Ṽ₀(ζ)`.
-pub fn verify_product(mu: usize, vs: &mut VerifierState) -> Result<(F128, LeafClaim), GkrError> {
+pub fn verify_product(mu: usize, vs: &mut VerifierState) -> Result<(F128T, LeafClaim), GkrError> {
     let root = vs.next_scalar().map_err(|_| GkrError::Truncated)?;
     let nodes = tri_nodes();
-    let mut r: Vec<F128> = Vec::new();
+    let mut r: Vec<F128T> = Vec::new();
     let mut claim = root;
 
     for i in (1..=mu).rev() {
         let k = mu - i;
         let mut rho = Vec::with_capacity(k);
-        let mut eq_acc = F128::ONE; // ∏_{l<round} eq(r_l, ρ_l)
+        let mut eq_acc = F128T::ONE; // ∏_{l<round} eq(r_l, ρ_l)
         for (round, &rj) in r.iter().enumerate().take(k) {
             let msg = vs.next_scalars(3).map_err(|_| GkrError::Truncated)?;
             // Full round univariate `q(t) = eq_acc·eq(r_round, t)·h(t)`, so
             // `q(0)+q(1)` must equal the claim.
-            if eq_acc * ((F128::ONE + rj) * msg[0] + rj * msg[1]) != claim {
+            if eq_acc * ((F128T::ONE + rj) * msg[0] + rj * msg[1]) != claim {
                 return Err(GkrError::SumcheckInconsistent { layer: i, round });
             }
             let rk = vs.sample();
             rho.push(rk);
-            eq_acc *= F128::ONE + rj + rk;
+            eq_acc *= F128T::ONE + rj + rk;
             claim = eq_acc * lagrange_eval(&nodes, &msg, rk);
         }
         let eval0 = vs.next_scalar().map_err(|_| GkrError::Truncated)?;

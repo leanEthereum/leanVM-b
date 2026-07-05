@@ -19,14 +19,21 @@
 //!   re-enters the sponge through flock's own reduction/opening replay).
 //! - **`sample` / `sample_vec`**: squeeze a challenge.
 //!
+//! Scalars are `E = F128T` (the tower challenge field): 16 transcript bytes per
+//! word, the two `K`-lanes little-endian, byte-for-byte the same sponge layout
+//! the vendored code's GHASH-typed [`Challenger`] uses, so one sponge serves
+//! both (the `Challenger` impls below ferry the 16 raw bytes; no arithmetic
+//! ever happens in the GHASH representation here).
+//!
 //! Soundness: challenges are BLAKE3 of the whole transcript so far. Every absorb
 //! is domain-tagged and length-prefixed (so a field element, a raw integer, and
 //! a byte string cannot alias), and every squeeze is ratcheted back in (binding
 //! challenge order) under the random-oracle heuristic.
 
-use crate::field::F128;
+use crate::field::F128T;
 use flare::challenger::Challenger;
-use flare::pcs::ligerito::LigeritoProof;
+use flare::field::F128;
+use flare::pcs::ligerito_k::LigeritoProofK;
 
 // Domain tags, so distinct kinds of absorbed data cannot alias.
 const TAG_F128: u8 = 0x01;
@@ -64,7 +71,7 @@ impl Sponge {
     /// input). Both sides seed identically, so the whole statement is bound before
     /// any challenge — there is no mid-protocol "observe public data" step to get
     /// wrong (or forget).
-    fn new(label: &[u8], statement: &[F128]) -> Self {
+    fn new(label: &[u8], statement: &[F128T]) -> Self {
         let mut h = blake3::Hasher::new();
         h.update(b"leanvm-b/transcript/v0");
         let mut s = Self { h };
@@ -81,18 +88,26 @@ impl Sponge {
         self.h.update(bytes);
     }
 
-    fn observe(&mut self, x: F128) {
+    /// Absorb one 16-byte scalar (two little-endian `u64` lanes) under
+    /// [`TAG_F128`]. Shared by [`Self::observe`] and the GHASH-typed
+    /// [`Challenger`] path, so both absorb byte-identically.
+    fn observe_lanes(&mut self, lo: u64, hi: u64) {
         let mut buf = [0u8; 16];
-        buf[..8].copy_from_slice(&x.lo.to_le_bytes());
-        buf[8..].copy_from_slice(&x.hi.to_le_bytes());
+        buf[..8].copy_from_slice(&lo.to_le_bytes());
+        buf[8..].copy_from_slice(&hi.to_le_bytes());
         self.absorb(TAG_F128, &buf);
+    }
+
+    fn observe(&mut self, x: F128T) {
+        self.observe_lanes(x.c0, x.c1);
     }
 
     fn absorb_bytes(&mut self, bytes: &[u8]) {
         self.absorb(TAG_BYTES, bytes);
     }
 
-    fn sample(&mut self) -> F128 {
+    /// Squeeze 16 uniform bytes as two `u64` lanes and ratchet them back in.
+    fn squeeze_lanes(&mut self) -> (u64, u64) {
         let mut r = self.h.clone();
         r.update(&[TAG_SQUEEZE]);
         let digest = r.finalize();
@@ -100,7 +115,12 @@ impl Sponge {
         let lo = u64::from_le_bytes(bytes[0..8].try_into().unwrap());
         let hi = u64::from_le_bytes(bytes[8..16].try_into().unwrap());
         self.absorb(TAG_RATCHET, &bytes[..16]);
-        F128::new(lo, hi)
+        (lo, hi)
+    }
+
+    fn sample(&mut self) -> F128T {
+        let (lo, hi) = self.squeeze_lanes();
+        F128T::new(lo, hi)
     }
 
     /// A 32-byte PoW base digest bound to the current transcript state: clone +
@@ -179,9 +199,9 @@ impl Sponge {
 pub struct Proof {
     /// Every transmitted field scalar, in protocol order (plus flock's scalar
     /// sub-proof as trailing raw transport words).
-    pub stream: Vec<F128>,
+    pub stream: Vec<F128T>,
     /// Ligerito openings (sumcheck messages + Merkle roots/paths), in order.
-    pub openings: Vec<LigeritoProof>,
+    pub openings: Vec<LigeritoProofK>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -199,13 +219,13 @@ pub enum Error {
 /// Prover side: writes scalars into the stream and opening hints to the side.
 pub struct ProverState {
     sponge: Sponge,
-    stream: Vec<F128>,
-    openings: Vec<LigeritoProof>,
+    stream: Vec<F128T>,
+    openings: Vec<LigeritoProofK>,
 }
 
 impl ProverState {
     /// `statement` is the public input, seeded into the sponge (see [`Sponge::new`]).
-    pub fn new(label: &[u8], statement: &[F128]) -> Self {
+    pub fn new(label: &[u8], statement: &[F128T]) -> Self {
         Self {
             sponge: Sponge::new(label, statement),
             stream: Vec::new(),
@@ -216,26 +236,26 @@ impl ProverState {
     /// Transmit a scalar into the proof AND bind it into the sponge (the two are
     /// inseparable — you cannot send without binding).
     #[inline]
-    pub fn add_scalar(&mut self, x: F128) {
+    pub fn add_scalar(&mut self, x: F128T) {
         self.sponge.observe(x);
         self.stream.push(x);
     }
 
-    pub fn add_scalars(&mut self, xs: &[F128]) {
+    pub fn add_scalars(&mut self, xs: &[F128T]) {
         for &x in xs {
             self.add_scalar(x);
         }
     }
 
-    pub fn sample(&mut self) -> F128 {
+    pub fn sample(&mut self) -> F128T {
         self.sponge.sample()
     }
 
-    pub fn sample_vec(&mut self, n: usize) -> Vec<F128> {
+    pub fn sample_vec(&mut self, n: usize) -> Vec<F128T> {
         (0..n).map(|_| self.sponge.sample()).collect()
     }
 
-    pub fn hint_opening(&mut self, bf: LigeritoProof) {
+    pub fn hint_opening(&mut self, bf: LigeritoProofK) {
         self.openings.push(bf);
     }
 
@@ -247,20 +267,20 @@ impl ProverState {
     /// no-work nonce `0`.
     pub fn grind(&mut self, bits: u32) {
         let nonce = self.sponge.grind_pow(bits);
-        self.stream.push(F128::new(nonce, 0));
+        self.stream.push(F128T::new(nonce, 0));
     }
 
-    /// Transmit length-prefixed bytes on the stream (packed 16 per `F128` word)
+    /// Transmit length-prefixed bytes on the stream (packed 16 per `F128T` word)
     /// **without** binding them into the sponge — the hint channel for data bound
     /// elsewhere. Used for flock's BLAKE3 scalar sub-proof, whose values re-enter
     /// the sponge through the verifier's own reduction/opening replay, so absorbing
     /// them here too would double-bind and diverge the sponge from the prover.
     pub fn hint_bytes(&mut self, bytes: &[u8]) {
-        self.stream.push(F128::new(bytes.len() as u64, 0));
+        self.stream.push(F128T::new(bytes.len() as u64, 0));
         for chunk in bytes.chunks(16) {
             let mut buf = [0u8; 16];
             buf[..chunk.len()].copy_from_slice(chunk);
-            self.stream.push(F128::new(
+            self.stream.push(F128T::new(
                 u64::from_le_bytes(buf[..8].try_into().unwrap()),
                 u64::from_le_bytes(buf[8..].try_into().unwrap()),
             ));
@@ -279,16 +299,16 @@ impl ProverState {
 /// hints in order.
 pub struct VerifierState<'a> {
     sponge: Sponge,
-    stream: &'a [F128],
+    stream: &'a [F128T],
     offset: usize,
-    openings: &'a [LigeritoProof],
+    openings: &'a [LigeritoProofK],
     oi: usize,
 }
 
 impl<'a> VerifierState<'a> {
     /// `statement` is the public input, seeded into the sponge (see [`Sponge::new`])
     /// — must match the prover's, or the sponges diverge and verification fails.
-    pub fn new(label: &[u8], proof: &'a Proof, statement: &[F128]) -> Self {
+    pub fn new(label: &[u8], proof: &'a Proof, statement: &[F128T]) -> Self {
         Self {
             sponge: Sponge::new(label, statement),
             stream: &proof.stream,
@@ -300,20 +320,20 @@ impl<'a> VerifierState<'a> {
 
     /// Read the next scalar, binding it into the sponge (mirrors `add_scalar`).
     #[inline]
-    pub fn next_scalar(&mut self) -> Result<F128, Error> {
+    pub fn next_scalar(&mut self) -> Result<F128T, Error> {
         let x = *self.stream.get(self.offset).ok_or(Error::ExceededStream)?;
         self.offset += 1;
         self.sponge.observe(x);
         Ok(x)
     }
 
-    pub fn next_scalars(&mut self, n: usize) -> Result<Vec<F128>, Error> {
+    pub fn next_scalars(&mut self, n: usize) -> Result<Vec<F128T>, Error> {
         (0..n).map(|_| self.next_scalar()).collect()
     }
 
     /// Advance the stream cursor by one **without** binding into the sponge — the
     /// read counterpart of [`ProverState::hint_bytes`]'s per-word push.
-    fn take_raw(&mut self) -> Result<F128, Error> {
+    fn take_raw(&mut self) -> Result<F128T, Error> {
         let x = *self.stream.get(self.offset).ok_or(Error::ExceededStream)?;
         self.offset += 1;
         Ok(x)
@@ -323,7 +343,7 @@ impl<'a> VerifierState<'a> {
     /// consumes stream words but does NOT bind them into the sponge (their binding
     /// happens via the reduction/opening replay).
     pub fn next_hint_bytes(&mut self) -> Result<Vec<u8>, Error> {
-        let len = self.take_raw()?.lo as usize;
+        let len = self.take_raw()?.c0 as usize;
         let n_words = len.div_ceil(16);
         // The bytes come from `n_words` stream words; a malicious `len` cannot make
         // us reserve more than the actual remaining stream (bounds the allocation
@@ -334,22 +354,22 @@ impl<'a> VerifierState<'a> {
         let mut bytes = Vec::with_capacity(n_words * 16);
         for _ in 0..n_words {
             let w = self.take_raw()?;
-            bytes.extend_from_slice(&w.lo.to_le_bytes());
-            bytes.extend_from_slice(&w.hi.to_le_bytes());
+            bytes.extend_from_slice(&w.c0.to_le_bytes());
+            bytes.extend_from_slice(&w.c1.to_le_bytes());
         }
         bytes.truncate(len);
         Ok(bytes)
     }
 
-    pub fn sample(&mut self) -> F128 {
+    pub fn sample(&mut self) -> F128T {
         self.sponge.sample()
     }
 
-    pub fn sample_vec(&mut self, n: usize) -> Vec<F128> {
+    pub fn sample_vec(&mut self, n: usize) -> Vec<F128T> {
         (0..n).map(|_| self.sponge.sample()).collect()
     }
 
-    pub fn next_opening(&mut self) -> Result<&'a LigeritoProof, Error> {
+    pub fn next_opening(&mut self) -> Result<&'a LigeritoProofK, Error> {
         let o = self.openings.get(self.oi).ok_or(Error::MissingHint)?;
         self.oi += 1;
         Ok(o)
@@ -359,7 +379,7 @@ impl<'a> VerifierState<'a> {
     /// check it clears the `bits` proof-of-work, then bind it (so the sponge
     /// stays in lockstep). Rejects a proof that skipped or under-did the grind.
     pub fn grind_check(&mut self, bits: u32) -> Result<(), Error> {
-        let nonce = self.take_raw()?.lo;
+        let nonce = self.take_raw()?.c0;
         if self.sponge.verify_pow(nonce, bits) {
             Ok(())
         } else {
@@ -377,22 +397,27 @@ impl<'a> VerifierState<'a> {
     }
 }
 
-// flock's PCS drives off the sponge for its challenges; its proof data rides the
-// hint channel, so the `Challenger` ops only touch the sponge (never the stream).
-// This is the vendored-flock adapter; leanVM-b's own code uses the inherent
-// `add_*`/`observe_*`/`sample` methods above, not `Challenger` directly.
+// The vendored code (flock's zerocheck/lincheck AND the K-committed PCS) drives
+// off the sponge for its challenges through the F128-typed `Challenger` trait:
+// 16 uniform transcript bytes per scalar, ferried through the GHASH type's
+// (lo, hi) lanes without any GHASH arithmetic. The byte layout matches
+// `Sponge::observe` exactly, so one sponge serves both worlds. Proof data rides
+// the hint channels, so the `Challenger` ops only touch the sponge (never the
+// stream). leanVM-b's own code uses the inherent `add_*`/`sample` methods
+// above, not `Challenger` directly.
 impl Challenger for ProverState {
     fn observe_label(&mut self, label: &[u8]) {
         self.sponge.absorb_bytes(label);
     }
     fn observe_f128(&mut self, value: F128) {
-        self.sponge.observe(value);
+        self.sponge.observe_lanes(value.lo, value.hi);
     }
     fn observe_bytes(&mut self, bytes: &[u8]) {
         self.sponge.absorb_bytes(bytes);
     }
     fn sample_f128(&mut self) -> F128 {
-        self.sponge.sample()
+        let (lo, hi) = self.sponge.squeeze_lanes();
+        F128::new(lo, hi)
     }
     // Ligerito's proximity-gap soundness budgets in fold-challenge PoW grinding
     // (`fold_grinding_bits`); without these overrides the trait defaults no-op
@@ -410,13 +435,14 @@ impl Challenger for VerifierState<'_> {
         self.sponge.absorb_bytes(label);
     }
     fn observe_f128(&mut self, value: F128) {
-        self.sponge.observe(value);
+        self.sponge.observe_lanes(value.lo, value.hi);
     }
     fn observe_bytes(&mut self, bytes: &[u8]) {
         self.sponge.absorb_bytes(bytes);
     }
     fn sample_f128(&mut self) -> F128 {
-        self.sponge.sample()
+        let (lo, hi) = self.sponge.squeeze_lanes();
+        F128::new(lo, hi)
     }
     // The verifier mirror: check each grinding nonce (an honest prover's proof
     // stays byte-identical; a forged one that skipped the grind is rejected).

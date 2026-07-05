@@ -8,7 +8,7 @@ pub(crate) type Off = u32;
 /// once entry program counters are fixed.
 #[derive(Clone, Debug)]
 pub(crate) enum KVal {
-    Const(F128),
+    Const(F64),
     Entry(String),
     /// The halt sentinel pc `g^{B-1}` (last bytecode slot), fixed once the
     /// padded bytecode size `B` is known. `main` jumps here to terminate.
@@ -55,9 +55,9 @@ pub(crate) enum LOp {
         od: Off,
         of: Off,
     },
-    /// `BLAKE3`: the two 256-bit inputs `a = (a, a+1)`, `b = (b, b+1)` and output
-    /// `c = (c, c+1)` each occupy two CONSECUTIVE frame cells (the op reads/writes
-    /// the operand and its successor `×g`).
+    /// `BLAKE3`: the two 256-bit inputs `a = a..a+4`, `b = b..b+4` and output
+    /// `c = c..c+4` each occupy four CONSECUTIVE frame cells (the op reads/writes
+    /// the operand and its `×g`, `×g²`, `×g³` successors).
     Blake3 {
         a: Off,
         b: Off,
@@ -89,7 +89,7 @@ pub(crate) struct Lowered {
     pub(crate) frame_size: u32,
 }
 
-/// A resolved 2-cell `blake3` operand: a frame (stack) run used in place, or a
+/// A resolved 4-cell `blake3` operand: a frame (stack) run used in place, or a
 /// heap slice — the buffer pointer's cell plus the first g-power offset —
 /// which must be bridged through the stack (`BLAKE3` addresses only frame
 /// cells).

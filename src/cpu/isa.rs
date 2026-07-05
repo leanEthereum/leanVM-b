@@ -1,6 +1,6 @@
 //! The ISA: the six opcodes and the `DEREF` store modes.
 
-use crate::field::F128;
+use crate::field::F64;
 
 #[derive(Clone, Copy, Debug)]
 pub enum Op {
@@ -16,7 +16,7 @@ pub enum Op {
     },
     Set {
         o: u32,
-        k: F128,
+        k: F64,
     },
     Deref {
         alpha: u32,
@@ -29,9 +29,9 @@ pub enum Op {
         od: u32,
         of: u32,
     },
-    /// `BLAKE3` (§7.6): each operand names a 256-bit value in two consecutive
-    /// memory words (`fp+o`, `fp+o+1`). Reads inputs `a, b` (64 bytes) and writes
-    /// the 32-byte digest to `c`; the compression relation is proven by flock.
+    /// `BLAKE3` (§7.6): each operand names a 256-bit value in FOUR consecutive
+    /// 64-bit memory words (`fp+o .. fp+o+3`). Reads inputs `a, b` (64 bytes) and
+    /// writes the 32-byte digest to `c`; the compression relation is proven by flock.
     Blake3 {
         a: u32,
         b: u32,
@@ -50,10 +50,10 @@ pub enum DerefMode {
 }
 
 impl DerefMode {
-    pub(crate) fn f_pc(self) -> F128 {
-        if self == DerefMode::Pc { F128::ONE } else { F128::ZERO }
+    pub(crate) fn f_pc(self) -> F64 {
+        if self == DerefMode::Pc { F64::ONE } else { F64::ZERO }
     }
-    pub(crate) fn f_fp(self) -> F128 {
-        if self == DerefMode::Fp { F128::ONE } else { F128::ZERO }
+    pub(crate) fn f_fp(self) -> F64 {
+        if self == DerefMode::Fp { F64::ONE } else { F64::ZERO }
     }
 }

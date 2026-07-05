@@ -1,16 +1,20 @@
-//! leanVM-b — arithmetization of a minimal binary-field zkVM (see `doc.tex`).
+//! leanVM-b — arithmetization of a minimal binary-field zkVM (see `doc.tex` and
+//! `misc/transition-to-64-bits.tex`).
 //!
-//! Every machine value is an element of GF(2^128), and logical indices are powers
-//! of a fixed generator `g`, so incrementing an index is a multiplication by `g` —
-//! a free virtual operation needing no addition gadget. The witness is field-valued
-//! and committed directly by a dense multilinear PCS (no bit-decomposition).
+//! Every machine value is an element of `K = GF(2^64)`, and logical indices are
+//! powers of a fixed generator `g`, so incrementing an index is a multiplication
+//! by `g` — a free virtual operation needing no addition gadget. The witness is
+//! `K`-valued and committed directly by a dense multilinear PCS (no
+//! bit-decomposition); every challenge and transcript scalar lives in the
+//! degree-2 tower `E = GF(2^128) = K[y]`, so all interactive error terms keep
+//! their `c/2^128` form.
 //!
 //! - [`compiler`] — Python-like zkDSL front end: parse → lower to the ISA → [`cpu::Program`].
-//! - [`field`] — GF(2^128) in GHASH form, the generator `g`, and g-power helpers.
+//! - [`field`] — `K`/`E` re-exports, the generator `g`, and g-power helpers.
 //! - [`transcript`] — Fiat–Shamir transcript (observe-and-fold in one op).
-//! - [`multilinear`] — eq polynomial, folding, MLE and Lagrange evaluation.
-//! - [`pcs`] — field-valued witness commitment via flock's Ligerito (§3).
-//! - [`witness`] — field-valued columns stacked into one committed witness.
+//! - [`multilinear`] — eq polynomial, folding, MLE and Lagrange evaluation (mixed `K`×`E`).
+//! - [`pcs`] — `K`-committed witness, `E`-opened, via flock's Ligerito-K (§3).
+//! - [`witness`] — `K`-valued columns stacked into one committed witness.
 //! - [`gkr`] — the grand product via GKR (§4.3), balancing the bus.
 //! - [`leaf`] — the shared bus: grand-product balance, decomposed to per-column claims (§4.2–§4.4, §5).
 //! - [`constraints`] — the per-table degree-2 field zerocheck (§4.1).

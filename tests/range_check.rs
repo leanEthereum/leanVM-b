@@ -8,7 +8,7 @@
 
 use leanvm_b::compiler::{compile, parse};
 use leanvm_b::cpu::{prove, verify};
-use leanvm_b::field::{F128, g_pow};
+use leanvm_b::field::{F64, g_pow};
 
 /// Both bound forms (`log GEN ** k` and a plain integer exponent) with the
 /// boundary elements (`g^{k-1}`, `1 = g^0`), end-to-end: prove + verify, and a
@@ -77,7 +77,7 @@ def main():
     return
 ";
     let program = compile(&parse(src).expect("parse"));
-    let want = [F128::new(5, 0), F128::new(7, 0)];
+    let want = [F64(5), F64(7)];
     let (proof, stats) = prove(&program, want);
     // 6 iterations × 2 range-check DEREFs, plus call/publish plumbing.
     assert!(stats.counts[3] >= 12, "at least the 12 range-check DEREFs");
@@ -92,7 +92,7 @@ def main():
 fn range_check_at_bound_rejected() {
     let src = "def main():\n    x = GEN ** 8\n    assert log x < 8\n    return\n";
     let program = compile(&parse(src).expect("parse"));
-    program.execute([F128::ZERO, F128::ZERO]);
+    program.execute([F64::ZERO, F64::ZERO]);
 }
 
 /// A value that is no small g-power at all (5 = x^2 + 1) fails at the first
@@ -102,7 +102,7 @@ fn range_check_at_bound_rejected() {
 fn range_check_non_g_power_rejected() {
     let src = "def main():\n    x = 5\n    assert log x < 8\n    return\n";
     let program = compile(&parse(src).expect("parse"));
-    program.execute([F128::ZERO, F128::ZERO]);
+    program.execute([F64::ZERO, F64::ZERO]);
 }
 
 /// Bound 0 names the empty set — rejected at compile time.

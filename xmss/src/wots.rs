@@ -128,14 +128,17 @@ pub fn find_randomness_for_wots_encoding(
 
 /// The target-sum encoding. `D = MD(msg | randomness | zeros)` under the
 /// encoding tweak, truncated to 16 bytes: 3 compressions — the tweak/pp
-/// block, the message block, and the zero-padded randomness block. `D`'s 128
-/// bits, split little-endian into 42 chunks
-/// of 3 bits, are the encoding; valid iff the 2 leftover top bits (126, 127)
-/// are zero AND the chunks sum to [`TARGET_SUM`]. Grinding the top bits to
-/// zero makes `D = sum(e_i * 2^{3i})` exactly, so the digest decomposes into
-/// the chunks with no slack term — in-circuit this is checked over GF(2^128)
-/// by XORing telescoping per-step constants along the chain walks (see the
-/// `encoding_check_telescopes` test).
+/// block, the message block, and the zero-padded randomness block. `D`'s two
+/// little-endian 64-bit words each hold 21 chunks of 3 bits (the VM's word
+/// width budgets the monomial encoding at 64 bits per word: `g^k = x^k` only
+/// for `k < 64`): digit `i < 21` sits at bits `3i` of word 0, digit `i >= 21`
+/// at bits `3(i-21)` of word 1. The encoding is valid iff the leftover top
+/// bit of EACH word (bits 63 and 127) is zero AND the chunks sum to
+/// [`TARGET_SUM`]. Grinding the top bits to zero makes each digest word
+/// exactly `sum(e_i * 2^{3i})` of its 21 digits, so both words decompose into
+/// the chunks with no slack term — in-circuit this is checked over GF(2^64)
+/// per word by accumulating the dispatched digit literals against `8^i`
+/// monomial weights (see `tests/xmss_aggregate.py`).
 pub fn wots_encode(
     message: &Message,
     slot: u32,
@@ -147,13 +150,14 @@ pub fn wots_encode(
     data[MESSAGE_LEN..][..RANDOMNESS_LEN].copy_from_slice(randomness);
     let digest = md_tweak_hash(public_param, TWEAK_TYPE_ENCODING, 0, slot, &data);
 
-    if digest[DIGEST_LEN - 1] >> 6 != 0 {
-        return None; // the 2 leftover bits must be zero
+    if digest[7] >> 7 != 0 || digest[DIGEST_LEN - 1] >> 7 != 0 {
+        return None; // the leftover top bit of each 64-bit word must be zero
     }
     let bit = |j: usize| (digest[j / 8] >> (j % 8)) & 1;
+    let pos = |i: usize| if i < V / 2 { W * i } else { 64 + W * (i - V / 2) };
     let mut encoding = [0u8; V];
     for (i, e) in encoding.iter_mut().enumerate() {
-        *e = (0..W).fold(0, |acc, k| acc | (bit(W * i + k) << k));
+        *e = (0..W).fold(0, |acc, k| acc | (bit(pos(i) + k) << k));
     }
     (encoding.iter().map(|&x| x as usize).sum::<usize>() == TARGET_SUM).then_some(encoding)
 }

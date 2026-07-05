@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use leanvm_b::compiler::{compile, parse};
 use leanvm_b::cpu::{prove, verify};
-use leanvm_b::field::{F128, g_pow};
+use leanvm_b::field::{F64, g_pow};
 
 fn main() {
     run_test_fibonacci::<2_000_000>();
@@ -38,7 +38,7 @@ fn run_test_fibonacci<const FIB_N: usize>() {
     verify(&program, &pi, &proof).unwrap();
     let t_verify = t.elapsed();
 
-    println!("Fibonacci (in the exponent, i.e. modulo 2^128 - 1), N = {FIB_N}");
+    println!("Fibonacci (in the exponent, i.e. modulo 2^64 - 1), N = {FIB_N}");
     println!("  cycles (VM steps)           : {}", stats.cycles);
     for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3"]
         .iter()
@@ -69,7 +69,7 @@ fn run_test_fibonacci<const FIB_N: usize>() {
 /// unrolled `mul_range` loop over a `HeapBuf`), with the result `g^{F(N)}`
 /// published into cell `m[0]`. Returns the zkDSL source and the public input
 /// `[g^{F(N)}, 0]`.
-fn fibonacci_program(fib_n: usize) -> (String, [F128; 2]) {
+fn fibonacci_program(fib_n: usize) -> (String, [F64; 2]) {
     const UNROLL: usize = 1000;
     assert!(
         fib_n >= UNROLL && fib_n.is_multiple_of(UNROLL),
@@ -79,13 +79,13 @@ fn fibonacci_program(fib_n: usize) -> (String, [F128; 2]) {
 
     // Run the recurrence in the field (the same one the VM runs in the exponent)
     // to pin the result g^{F(N)}, the public input.
-    let (mut a, mut b) = (F128::ONE, g_pow(1)); // g^{F(0)}, g^{F(1)}
+    let (mut a, mut b) = (F64::ONE, g_pow(1)); // g^{F(0)}, g^{F(1)}
     for _ in 1..=fib_n {
         let c = a * b;
         a = b;
         b = c; // (a, b) = (g^{F(m)}, g^{F(m+1)})
     }
-    let pi = [a, F128::ZERO]; // a = g^{F(N)}: the result, then 0
+    let pi = [a, F64::ZERO]; // a = g^{F(N)}: the result, then 0
 
     // `K` blocks: each reads its boundary pair into locals, runs `UNROLL`
     // Fibonacci `MUL`s in registers, and writes the next pair (4 DEREFs per

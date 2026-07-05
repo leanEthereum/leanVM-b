@@ -23,7 +23,7 @@
 use std::collections::HashMap;
 
 use crate::cpu::{DerefMode, Op, Program};
-use crate::field::{F128, g_pow};
+use crate::field::{F64, g_pow};
 
 mod ast;
 mod ir;
@@ -142,7 +142,7 @@ pub fn compile(ast: &Ast) -> Program {
     }
 
     // Pad the bytecode to `B` (the sentinel slot g^{B-1} must exist for execution).
-    prog.resize(bytecode_size, Op::Set { o: 0, k: F128::ZERO });
+    prog.resize(bytecode_size, Op::Set { o: 0, k: F64::ZERO });
     Program::assemble(prog, 0, 0, hints, frame_size["main"])
 }
 
@@ -151,15 +151,15 @@ pub fn compile(ast: &Ast) -> Program {
 /// constants that are small g-powers (code addresses, indices) show as `gʲ`.
 pub fn disassemble(prog: &[Op]) -> String {
     // Reverse index for small g-powers, to pretty-print code addresses/indices.
-    let mut gmap: HashMap<F128, usize> = HashMap::new();
-    let mut acc = F128::ONE;
+    let mut gmap: HashMap<F64, usize> = HashMap::new();
+    let mut acc = F64::ONE;
     for j in 0..(prog.len() + 512) {
         gmap.entry(acc).or_insert(j);
         acc *= crate::field::G;
     }
-    let kfmt = |k: F128| match gmap.get(&k) {
+    let kfmt = |k: F64| match gmap.get(&k) {
         Some(j) => format!("g^{j}"),
-        None => format!("0x{:016x}{:016x}", k.hi, k.lo),
+        None => format!("0x{:016x}", k.0),
     };
 
     let mut out = String::new();
@@ -193,11 +193,17 @@ pub fn disassemble(prog: &[Op]) -> String {
     out
 }
 
+/// A `u128` source literal as a field constant: the value must fit the 64-bit
+/// machine word (the parser's integer range is wider than the field).
+pub(crate) fn lit_field(n: u128) -> F64 {
+    F64(u64::try_from(n).unwrap_or_else(|_| panic!("literal {n} does not fit in 64 bits")))
+}
+
 /// `g^e` for a `u128` exponent (square-and-multiply). `field::g_pow` only takes
 /// a `usize`; an index carried in the exponent (a Fibonacci number, say) can
-/// exceed 64 bits.
-fn g_pow_u128(mut e: u128) -> F128 {
-    let mut result = F128::ONE;
+/// exceed 64 bits (`ord(g) = 2^64 − 1`, so the exponent wraps mod that).
+fn g_pow_u128(mut e: u128) -> F64 {
+    let mut result = F64::ONE;
     let mut base = crate::field::G;
     while e > 0 {
         if e & 1 == 1 {
@@ -244,7 +250,7 @@ fn resolve(op: &LOp, entry: &HashMap<String, u32>, sentinel: u32, base: u32) -> 
 }
 
 /// Extend the `g^j` table and its reverse index `g^j ↦ j` to cover index `upto`.
-pub(crate) fn grow_gpow(gpow: &mut Vec<F128>, gmap: &mut HashMap<F128, u32>, upto: usize) {
+pub(crate) fn grow_gpow(gpow: &mut Vec<F64>, gmap: &mut HashMap<F64, u32>, upto: usize) {
     assert!(upto < (1 << 28), "address space overflow (program too large)");
     while gpow.len() <= upto {
         let next = *gpow.last().unwrap() * crate::field::G;

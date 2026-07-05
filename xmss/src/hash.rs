@@ -7,7 +7,7 @@
 //!   bytes exactly).
 //! - [`md_tweak_hash`]: Merkle-Damgard over [`compress`], with the absorbed
 //!   size in the IV *in the exponent* of the VM's field generator:
-//!   `IV = g^{num_bytes} (16B, GHASH form) | 0^16`, where `num_bytes` counts
+//!   `IV = g^{num_bytes} (8B, GF(2^64)) | 0^24`, where `num_bytes` counts
 //!   everything absorbed. The first block is `tweak | pp`, then the payload's
 //!   32-byte blocks; the final state is truncated to a digest. Used for the
 //!   WOTS public-key hash (42 tips = 22 blocks) and the message encoding
@@ -93,9 +93,9 @@ pub fn md_hash(iv: State, data: &[u8]) -> State {
 }
 
 /// The Merkle-Damgard tweakable hash, for the multi-block inputs (the WOTS
-/// public-key hash and the message encoding): `IV = g^{num_bytes} | 0^16`
+/// public-key hash and the message encoding): `IV = g^{num_bytes} | 0^24`
 /// with the total absorbed size in the exponent of the VM's field generator
-/// (GHASH form, [`gf128::g_pow_bytes`]); the first block is `tweak | pp`,
+/// (GF(2^64), [`gf64::g_pow_bytes`]); the first block is `tweak | pp`,
 /// then `data`. Truncates the final state to a digest. Costs
 /// `1 + data.len() / 32` compressions.
 pub fn md_tweak_hash(
@@ -107,7 +107,7 @@ pub fn md_tweak_hash(
 ) -> Digest {
     let num_bytes = STATE_LEN + data.len();
     let mut iv = [0u8; STATE_LEN];
-    iv[..TWEAK_LEN].copy_from_slice(&crate::gf128::g_pow_bytes(num_bytes));
+    iv[..8].copy_from_slice(&crate::gf64::g_pow_bytes(num_bytes));
     let mut first = [0u8; STATE_LEN];
     first[..TWEAK_LEN].copy_from_slice(&make_tweak(tweak_type, sub_position, index));
     first[TWEAK_LEN..].copy_from_slice(pp);
@@ -140,9 +140,9 @@ mod tests {
     fn md_matches_manual_chaining() {
         let pp = [9u8; PUBLIC_PARAM_LEN];
         let data = [5u8; 2 * STATE_LEN];
-        // IV = g^{num_bytes} | 0^16, num_bytes = tweak/pp block + data.
+        // IV = g^{num_bytes} | 0^24, num_bytes = tweak/pp block + data.
         let mut iv = [0u8; STATE_LEN];
-        iv[..TWEAK_LEN].copy_from_slice(&crate::gf128::g_pow_bytes(STATE_LEN + data.len()));
+        iv[..8].copy_from_slice(&crate::gf64::g_pow_bytes(STATE_LEN + data.len()));
         let mut first = [0u8; STATE_LEN];
         first[..TWEAK_LEN].copy_from_slice(&make_tweak(TWEAK_TYPE_WOTS_PK, 0, 42));
         first[TWEAK_LEN..].copy_from_slice(&pp);

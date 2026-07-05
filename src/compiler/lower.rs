@@ -6,8 +6,8 @@ use super::*;
 struct FnLower<'a> {
     vars: HashMap<String, Off>,
     /// `StackBuf` bindings: name → (base offset, size). The `size` cells
-    /// `base..base+size` are consecutive frame cells (so a size-2 one, or a
-    /// 2-cell slice of a larger one, is a direct `blake3` operand). Kept
+    /// `base..base+size` are consecutive frame cells (so a size-4 one, or a
+    /// 4-cell slice of a larger one, is a direct `blake3` operand). Kept
     /// separate from `vars` since a stack value is a run of cells, not a
     /// single scalar.
     stacks: HashMap<String, (Off, u32)>,
@@ -57,7 +57,7 @@ impl FnLower<'_> {
         let o = self.fresh();
         self.emit(LOp::Set {
             o,
-            k: KVal::Const(F128::ONE),
+            k: KVal::Const(F64::ONE),
         });
         self.one_off = Some(o);
         o
@@ -149,7 +149,7 @@ impl FnLower<'_> {
             let o = self.fresh();
             self.emit(LOp::Set {
                 o,
-                k: KVal::Const(F128::ZERO),
+                k: KVal::Const(F64::ZERO),
             });
         }
         (
@@ -455,7 +455,7 @@ impl FnLower<'_> {
                 let o = self.fresh();
                 self.emit(LOp::Set {
                     o,
-                    k: KVal::Const(F128::new(*n as u64, (*n >> 64) as u64)),
+                    k: KVal::Const(lit_field(*n)),
                 });
                 o
             }
@@ -584,9 +584,9 @@ impl FnLower<'_> {
             .unwrap_or_else(|| panic!("a StackBuf index must be a compile-time integer, got `{idx:?}`"))
     }
 
-    /// Resolve a `blake3` operand — a size-2 `StackBuf` name, a 2-cell
-    /// `StackBuf` slice `buf[lo:hi]`, or a 2-cell `HeapBuf` slice (cells
-    /// `ptr·g^lo`, `ptr·g^{lo+1}`) — with compile-time bounds. Stack operands
+    /// Resolve a `blake3` operand — a size-4 `StackBuf` name, a 4-cell
+    /// `StackBuf` slice `buf[lo:hi]`, or a 4-cell `HeapBuf` slice (cells
+    /// `ptr·g^{lo+k}`, `k < 4`) — with compile-time bounds. Stack operands
     /// are used in place; heap operands must be bridged through the stack,
     /// since `BLAKE3` addresses only frame cells (see [`Self::blake3_input`]).
     fn blake3_operand(&mut self, e: &Expr) -> B3Operand {
@@ -594,18 +594,18 @@ impl FnLower<'_> {
             Expr::Var(_) => {
                 let (base, size) = self
                     .stack_of(e)
-                    .expect("a bare blake3 operand must be a StackBuf; slice a HeapBuf: `buf[lo:lo + 2]`");
+                    .expect("a bare blake3 operand must be a StackBuf; slice a HeapBuf: `buf[lo:lo + 4]`");
                 assert!(
-                    size == 2,
-                    "a whole-StackBuf blake3 operand must have size 2; slice a larger one: `buf[lo:lo + 2]`"
+                    size == 4,
+                    "a whole-StackBuf blake3 operand must have size 4; slice a larger one: `buf[lo:lo + 4]`"
                 );
                 B3Operand::Stack(base)
             }
             Expr::Slice(arr, lo, hi) => match (self.try_const_index(lo), self.try_const_index(hi)) {
-                // Compile-time bounds: integer cell indexes `lo..lo+2` (frame
+                // Compile-time bounds: integer cell indexes `lo..lo+4` (frame
                 // offsets for a stack, g-power exponents for the heap).
                 (Some(lo), Some(hi)) => {
-                    assert!(hi == lo + 2, "a blake3 slice must span exactly 2 cells, got {lo}:{hi}");
+                    assert!(hi == lo + 4, "a blake3 slice must span exactly 4 cells, got {lo}:{hi}");
                     if let Some((base, size)) = self.stack_of(arr) {
                         assert!(hi <= size, "slice {lo}:{hi} out of bounds (StackBuf size {size})");
                         B3Operand::Stack(base + lo)
@@ -616,19 +616,19 @@ impl FnLower<'_> {
                         B3Operand::Heap { ptr, lo }
                     }
                 }
-                // Runtime start (heap only): `buf[i:i + 2]` with a runtime
-                // g-power index `i` names the cells `buf·i`, `buf·i·g`. The
+                // Runtime start (heap only): `buf[i:i + 4]` with a runtime
+                // g-power index `i` names the cells `buf·i·g^k`, k < 4. The
                 // `hi` bound cannot be evaluated, only shape-checked: it must
-                // be syntactically `lo + 2`. One MUL folds `i` into the
-                // pointer; the two-cell bridge is then offsets 0, 1 off it.
+                // be syntactically `lo + 4`. One MUL folds `i` into the
+                // pointer; the four-cell bridge is then offsets 0..4 off it.
                 _ => {
                     assert!(
                         self.stack_of(arr).is_none(),
                         "a StackBuf slice needs compile-time bounds (frame offsets are baked into the bytecode)"
                     );
                     assert!(
-                        plus_k(lo, hi) == Some(2),
-                        "a runtime blake3 slice must have the shape `buf[i:i + 2]`, got `{lo:?}:{hi:?}`"
+                        plus_k(lo, hi) == Some(4),
+                        "a runtime blake3 slice must have the shape `buf[i:i + 4]`, got `{lo:?}:{hi:?}`"
                     );
                     let ptr = self.array_ptr(arr, lo);
                     B3Operand::Heap { ptr, lo: 0 }
@@ -641,15 +641,15 @@ impl FnLower<'_> {
     }
 
     /// A `blake3` *input* operand as a frame offset: stack runs in place; a
-    /// heap slice is pulled into a fresh stack pair first — one `DEREF` per
+    /// heap slice is pulled into a fresh stack quad first — one `DEREF` per
     /// cell (`m[ptr·g^{lo+k}] == m[fp+t+k]`, the `β` immediate doing the
     /// pointer offset). The heap cells must already be written.
     fn blake3_input(&mut self, e: &Expr) -> Off {
         match self.blake3_operand(e) {
             B3Operand::Stack(o) => o,
             B3Operand::Heap { ptr, lo } => {
-                let t = self.alloc_stack(2);
-                for k in 0..2 {
+                let t = self.alloc_stack(4);
+                for k in 0..4 {
                     self.emit(LOp::Deref {
                         alpha: ptr,
                         beta: lo + k,
@@ -681,7 +681,7 @@ impl FnLower<'_> {
             Expr::Lit(n) => {
                 self.emit(LOp::Set {
                     o: dst,
-                    k: KVal::Const(F128::new(*n as u64, (*n >> 64) as u64)),
+                    k: KVal::Const(lit_field(*n)),
                 });
             }
             Expr::Gen => self.emit(LOp::Set {
@@ -720,7 +720,7 @@ impl FnLower<'_> {
     fn call(&mut self, callee: &str, args: &[Expr], n_ret: usize) -> Vec<Off> {
         assert!(
             callee != "blake3",
-            "blake3 is a statement: `blake3(a, b, out)` writes the digest into the 2-cell stack run `out`"
+            "blake3 is a statement: `blake3(a, b, out)` writes the digest into the 4-cell stack run `out`"
         );
         self.lower_call(callee, args, n_ret, None)
     }
@@ -899,7 +899,7 @@ impl FnLower<'_> {
                 self.emit(LOp::Xor { a: la, b: lb, c: t });
                 self.emit(LOp::Set {
                     o: t,
-                    k: KVal::Const(F128::ZERO),
+                    k: KVal::Const(F64::ZERO),
                 });
             }
             Stmt::AssertLt(e, k) => self.lower_assert_lt(e, *k),
@@ -915,10 +915,10 @@ impl FnLower<'_> {
             Stmt::LetMatchRange { names, x, arms } => self.lower_match_range(names, x, arms),
             Stmt::Call(f, args) => {
                 // `blake3(a, b, out)`: the digest of the two 256-bit operands
-                // lands in the existing 2-cell run `out` (write-once: if `out`
+                // lands in the existing 4-cell run `out` (write-once: if `out`
                 // was already written, this asserts the digest equals it). A
-                // heap `out` slice takes the digest via a fresh stack pair and
-                // two `DEREF`s after the hash (the store direction is the same
+                // heap `out` slice takes the digest via a fresh stack quad and
+                // four `DEREF`s after the hash (the store direction is the same
                 // instruction as the load — write-once fills the unset side).
                 if f == "blake3" {
                     assert_eq!(args.len(), 3, "blake3 takes (a, b, out)");
@@ -926,11 +926,11 @@ impl FnLower<'_> {
                     let b = self.blake3_input(&args[1]);
                     let (c, heap_out) = match self.blake3_operand(&args[2]) {
                         B3Operand::Stack(o) => (o, None),
-                        B3Operand::Heap { ptr, lo } => (self.alloc_stack(2), Some((ptr, lo))),
+                        B3Operand::Heap { ptr, lo } => (self.alloc_stack(4), Some((ptr, lo))),
                     };
                     self.emit(LOp::Blake3 { a, b, c });
                     if let Some((ptr, lo)) = heap_out {
-                        for k in 0..2 {
+                        for k in 0..4 {
                             self.emit(LOp::Deref {
                                 alpha: ptr,
                                 beta: lo + k,
