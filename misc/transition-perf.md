@@ -40,66 +40,29 @@ query-opening bytes all shrank. The proof-size drop is this effect.
 
 ## The field question: is GHASH F128 fundamentally faster than the tower?
 
-Mostly no, but a measurable residue remains. `field_bench` numbers (latency
-= serial dependency chain; throughput = 8 independent chains, ns/multiply),
-before and after the kernel rewrite that made the tower vector-resident with
-PMULL-based folds:
+TLDR: no, but a 1.8x per-multiply residue remains on E x E after our best
+rewrite, and it matters only in the phases that are pure E x E (GKR).
 
-| op | PMULLs | day-one lat/tput | rewritten lat/tput |
+| ns/op, lat / tput | day one | after rewrite | GHASH ref |
 |---|---|---|---|
-| F128 GHASH mul (reference) | 5-6 | 5.89 / 0.70 | unchanged |
-| F128T tower mul (E x E) | 5 | 10.19 / 3.41 | **6.91 / 1.28** |
-| F128T mul2, paired | 8 / pair | 6.17 / 2.18 | 3.49 / 1.46 |
-| F64 mul (K x K) | 1 | 4.85 / 0.64 | 4.82 / 0.50 |
-| F128T mul_base (K x E) | 2 | 6.57 / 1.16 | **5.14 / 0.70** |
+| E x E | 10.19 / 3.41 | 6.91 / **1.28** | 5.89 / 0.70 |
+| K x E (`mul_base`) | 6.57 / 1.16 | 5.14 / **0.70** | = one GHASH mul |
+| K x K | 4.85 / 0.64 | 4.82 / **0.50** | |
 
-The day-one smoking gun was the F64 row: a one-PMULL 64-bit multiply merely
-tying the GHASH multiply on throughput cannot be explained by math; the
-overhead was everything around the PMULLs:
-
-1. **Reduction strategy.** GHASH reduces once, at the end, with PMULL by the
-   sparse constant 0x87, staying entirely inside the vector registers (about
-   4 extra vector ops). Our K reduction uses a ~10-instruction shift-XOR fold
-   chain, and the tower multiply performs three such reductions. Pure NEON
-   port pressure.
-2. **Register-domain crossings.** Our kernels extract 64-bit lanes to feed
-   `vmull_p64` and reassemble results through general-purpose registers.
-   Every crossing costs cycles and issue slots; GHASH-shaped code never
-   leaves the vector file.
-3. **A serial fold.** The tower reduction y^2 = y + x^61 has a *multiply*
-   inside the reduction chain: reduce the high coefficient, multiply it by
-   the constant, reduce again. GHASH's reduction is one shot. This is the
-   only genuinely structural cost of the tower, and it affects latency
-   (roughly 1.3x), not throughput.
-
-The rewrite fixed (1) and (2): folds are now PMULL-based and the kernels
-never leave the vector file; the tower's serial y-fold was even parallelized
-(the x^61-shifted high product folds directly with per-word constants,
-including x^128 mod P for the top word). What remains after all that is
-E x E at 1.28 vs GHASH's 0.70 ns/op, a 1.8x residue whose causes are the
-reduction granularity (a two-limb tower folds at 64-bit boundaries, three
-sub-reductions per product, where GHASH folds a 256-bit product once by one
-sparse constant) plus twenty years of AES-GCM kernel lineage on the other
-side. mul_base landed at exact GHASH-mul parity per op (0.70): two PMULLs
-of work, but the fold overhead eats the theoretical 3x. Deferred-reduction
-accumulators (XOR unreduced Karatsuba triples, reduce once per sum, which
-the GHASH pipeline already does via F256Unreduced) are the identified next
-step for the accumulation-shaped loops and would close part of the residue.
-
-### What the tower buys that GHASH cannot offer
-
-GHASH F128 has no 64-bit subfield you can address in its representation:
-committed data must be 128-bit words and every product is a full multiply.
-The tower gives three cheaper operation classes that dominate the system:
-
-- K x K at 1 PMULL: all trace arithmetic (MUL_NATIVE, address chains).
-- K x E at 2 PMULL (`mul_base`): every sumcheck round 0, leaf fingerprints,
-  base-field NTT butterflies against E-folded codewords.
-- Committed words at 64 bits: half the committed bits for the same data.
-
-The phases that stay pure E x E (the GKR product tree, later sumcheck
-rounds) pay the residual tower tax: GKR runs 939 ms vs main's ~750 (was
-1327 ms before the kernel rewrite).
+- PMULL counts favor the tower (5 vs 5-6); the day-one gap was overhead
+  (shift-XOR folds, GPR crossings), now fixed with PMULL folds and fully
+  vector-resident kernels.
+- The residue is structural granularity: a two-limb tower reduces at 64-bit
+  boundaries (three sub-folds per product, one behind the y^2 = y + x^61
+  multiply) where GHASH folds a 256-bit product once by one sparse
+  constant. Plus twenty years of AES-GCM tuning on GHASH's side.
+- mul_base ended at exact per-op parity with a full GHASH multiply, so the
+  mixed-product phases cost the same per element as the old design's full
+  multiplies, over more elements.
+- What GHASH cannot offer at any speed: addressable 64-bit words (half the
+  committed bits), 1-PMULL trace arithmetic, and the subfield structure the
+  single ring switch needs. Next identified kernel lever: deferred-reduction
+  accumulators (parity with GHASH's F256Unreduced).
 
 ## Where the original 2x wall-clock regression actually came from
 
