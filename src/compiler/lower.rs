@@ -28,6 +28,10 @@ struct FnLower<'a> {
     /// Range-check product-target cells: bound `k` → the frame cell holding
     /// `g^{k-1}`, set lazily once and shared by every check of that bound.
     bounds: HashMap<u64, Off>,
+    /// Constant cells: field value (as bits) → the frame cell holding it, SET
+    /// lazily once per distinct constant ([`Self::const_cell`]). Cells are
+    /// write-once and read-many, so one `SET` serves every use in scope.
+    const_cells: HashMap<u64, Off>,
     /// Hints queued to attach to the next emitted instruction.
     pending: Vec<Hint>,
     queue: &'a mut Vec<Func>,
@@ -60,6 +64,23 @@ impl FnLower<'_> {
             k: KVal::Const(F64::ONE),
         });
         self.one_off = Some(o);
+        o
+    }
+
+    /// A frame cell holding the constant `v`, SET lazily once per distinct
+    /// constant and shared by every read of it in scope (`1` shares
+    /// [`Self::one`]'s cell). Branch-local like the other lazy cells: a cache
+    /// entry made inside an `if`/`match` arm reverts at the join.
+    fn const_cell(&mut self, v: F64) -> Off {
+        if v == F64::ONE {
+            return self.one();
+        }
+        if let Some(&o) = self.const_cells.get(&v.0) {
+            return o;
+        }
+        let o = self.fresh();
+        self.emit(LOp::Set { o, k: KVal::Const(v) });
+        self.const_cells.insert(v.0, o);
         o
     }
 
@@ -140,6 +161,7 @@ impl FnLower<'_> {
             self.one_off,
             self.self_fp_off,
             self.bounds.clone(),
+            self.const_cells.clone(),
         );
         f(self);
         // A hint pending at the end of a branch (e.g. a trailing
@@ -159,6 +181,7 @@ impl FnLower<'_> {
             self.one_off,
             self.self_fp_off,
             self.bounds,
+            self.const_cells,
         ) = saved;
     }
 
@@ -296,9 +319,17 @@ impl FnLower<'_> {
     /// second block must be skipped over, + the amortized `one`/`self_fp`
     /// materialization.
     fn lower_if(&mut self, eq: bool, lhs: &Expr, rhs: &Expr, then: &[Stmt], els: &[Stmt]) {
-        let (la, lb) = (self.expr(lhs), self.expr(rhs));
-        let x = self.fresh();
-        self.emit(LOp::Xor { a: la, b: lb, c: x }); // x = lhs + rhs: nonzero ⇔ !=
+        // `x != 0` needs no XOR: the cell itself is the JUMP's nonzero test.
+        let x = if self.try_lit(rhs) == Some(0) {
+            self.expr(lhs)
+        } else if self.try_lit(lhs) == Some(0) {
+            self.expr(rhs)
+        } else {
+            let (la, lb) = (self.expr(lhs), self.expr(rhs));
+            let x = self.fresh();
+            self.emit(LOp::Xor { a: la, b: lb, c: x }); // x = lhs + rhs: nonzero ⇔ !=
+            x
+        };
         // Hoisted on purpose: these SETs must dominate the join.
         let sfp = self.self_fp();
         let one = self.one();
@@ -394,8 +425,8 @@ impl FnLower<'_> {
                     });
                     let len = u32::try_from(k).expect("hint_witness slice length overflows u32");
                     assert!(len > 0, "empty hint_witness slice");
-                    let ptr = self.array_ptr(arr, lo);
-                    Hint::WitnessHeap { name, ptr, lo: 0, len }
+                    let (ptr, lo) = self.array_ptr(arr, lo);
+                    Hint::WitnessHeap { name, ptr, lo, len }
                 }
             },
             other => panic!("hint_witness dest must be a StackBuf or a slice, got `{other:?}`"),
@@ -451,29 +482,12 @@ impl FnLower<'_> {
 
     fn expr(&mut self, e: &Expr) -> Off {
         match e {
-            Expr::Lit(n) => {
-                let o = self.fresh();
-                self.emit(LOp::Set {
-                    o,
-                    k: KVal::Const(lit_field(*n)),
-                });
-                o
-            }
-            Expr::Gen => {
-                let o = self.fresh();
-                self.emit(LOp::Set {
-                    o,
-                    k: KVal::Const(g_pow(1)),
-                });
-                o
-            }
-            Expr::GPow(k) => {
-                let o = self.fresh();
-                self.emit(LOp::Set {
-                    o,
-                    k: KVal::Const(g_pow_u128(*k)),
-                });
-                o
+            Expr::Lit(n) => self.const_cell(lit_field(*n)),
+            Expr::Gen => self.const_cell(g_pow(1)),
+            Expr::GPow(k) => self.const_cell(g_pow_u128(*k)),
+            Expr::GPowE(k) => {
+                let k = self.gpow_e(k);
+                self.const_cell(g_pow_u128(k as u128))
             }
             Expr::Var(v) => {
                 if self.stacks.contains_key(v) {
@@ -482,12 +496,26 @@ impl FnLower<'_> {
                 *self.vars.get(v).unwrap_or_else(|| panic!("unbound variable `{v}`"))
             }
             Expr::Add(a, b) => {
+                // `x + 0` is `x` (XOR identity), e.g. an accumulator seeded with 0.
+                if self.try_lit(a) == Some(0) {
+                    return self.expr(b);
+                }
+                if self.try_lit(b) == Some(0) {
+                    return self.expr(a);
+                }
                 let (la, lb) = (self.expr(a), self.expr(b));
                 let o = self.fresh();
                 self.emit(LOp::Xor { a: la, b: lb, c: o });
                 o
             }
             Expr::Mul(a, b) => {
+                // `x * 1` is `x`, e.g. a product accumulator seeded with 1.
+                if self.try_lit(a) == Some(1) {
+                    return self.expr(b);
+                }
+                if self.try_lit(b) == Some(1) {
+                    return self.expr(a);
+                }
                 let (la, lb) = (self.expr(a), self.expr(b));
                 let o = self.fresh();
                 self.emit(LOp::Mul { a: la, b: lb, c: o });
@@ -522,12 +550,12 @@ impl FnLower<'_> {
                     return base + k;
                 }
                 // Heap read `m[arr·idx]`.
-                let ptr = self.array_ptr(arr, idx);
+                let (ptr, beta) = self.array_ptr(arr, idx);
                 let dst = self.fresh();
-                // Read: bind dst := m[ptr] (the array cell, written earlier).
+                // Read: bind dst := m[ptr·g^beta] (the array cell, written earlier).
                 self.emit(LOp::Deref {
                     alpha: ptr,
-                    beta: 0,
+                    beta,
                     gamma: dst,
                     mode: DerefMode::Cell,
                 });
@@ -584,6 +612,47 @@ impl FnLower<'_> {
             .unwrap_or_else(|| panic!("a StackBuf index must be a compile-time integer, got `{idx:?}`"))
     }
 
+    /// The exponent of a `GEN ** (expr)` ([`Expr::GPowE`]): a compile-time
+    /// integer expression, required to evaluate (all its names literal-bound
+    /// once `unroll`/`Const` substitution has run).
+    fn gpow_e(&self, e: &Expr) -> u32 {
+        self.try_const_index(e)
+            .unwrap_or_else(|| panic!("a `GEN ** (expr)` exponent must be a compile-time integer, got `{e:?}`"))
+    }
+
+    /// The field value of `e` when it is a trivial compile-time constant (a
+    /// literal, a literal-bound name, or `GEN ** 0`), for the `x*1`/`x+0`
+    /// arithmetic identities and the `== 0` test of [`Self::lower_if`].
+    fn try_lit(&self, e: &Expr) -> Option<u64> {
+        match e {
+            Expr::Lit(n) => u64::try_from(*n).ok(),
+            Expr::Var(v) => self.consts.get(v).map(|&n| n as u64),
+            Expr::GPow(0) => Some(1),
+            _ => None,
+        }
+    }
+
+    /// The compile-time g-power exponent of a heap-index expression, when it
+    /// has one: `1` (= `g^0`), `GEN`, `GEN ** k`, power-of-two literals
+    /// (`g = x`, so the literal `2^j` IS `g^j`), names bound to such
+    /// literals, and products of those (exponents add). `None` for runtime
+    /// values, and for exponents ≥ 2^MIN_LOG_MEM, which must not become a
+    /// `DEREF` `beta` immediate (`beta` is capped by the smallest admissible
+    /// memory size; the fallback MUL path handles any element).
+    fn try_gpow_index(&self, idx: &Expr) -> Option<u32> {
+        let cap = |k: u32| (k < (1u32 << crate::cpu::MIN_LOG_MEM)).then_some(k);
+        let pow2 = |n: u128| (n.is_power_of_two() && n < (1 << 64)).then(|| n.trailing_zeros());
+        match idx {
+            Expr::Lit(n) => pow2(*n).and_then(cap),
+            Expr::Var(v) => pow2(*self.consts.get(v)? as u128).and_then(cap),
+            Expr::Gen => Some(1),
+            Expr::GPow(k) => cap(u32::try_from(*k).ok()?),
+            Expr::GPowE(e) => cap(self.try_const_index(e)?),
+            Expr::Mul(a, b) => cap(self.try_gpow_index(a)?.checked_add(self.try_gpow_index(b)?)?),
+            _ => None,
+        }
+    }
+
     /// Resolve a `blake3` operand — a size-4 `StackBuf` name, a 4-cell
     /// `StackBuf` slice `buf[lo:hi]`, or a 4-cell `HeapBuf` slice (cells
     /// `ptr·g^{lo+k}`, `k < 4`) — with compile-time bounds. Stack operands
@@ -630,8 +699,8 @@ impl FnLower<'_> {
                         plus_k(lo, hi) == Some(4),
                         "a runtime blake3 slice must have the shape `buf[i:i + 4]`, got `{lo:?}:{hi:?}`"
                     );
-                    let ptr = self.array_ptr(arr, lo);
-                    B3Operand::Heap { ptr, lo: 0 }
+                    let (ptr, lo) = self.array_ptr(arr, lo);
+                    B3Operand::Heap { ptr, lo }
                 }
             },
             other => {
@@ -670,10 +739,10 @@ impl FnLower<'_> {
         match e {
             // Heap read straight into dst (a stack read falls through to the copy).
             Expr::Index(arr, idx) if self.stack_of(arr).is_none() => {
-                let ptr = self.array_ptr(arr, idx);
+                let (ptr, beta) = self.array_ptr(arr, idx);
                 self.emit(LOp::Deref {
                     alpha: ptr,
-                    beta: 0,
+                    beta,
                     gamma: dst,
                     mode: DerefMode::Cell,
                 });
@@ -692,6 +761,13 @@ impl FnLower<'_> {
                 o: dst,
                 k: KVal::Const(g_pow_u128(*k)),
             }),
+            Expr::GPowE(k) => {
+                let k = self.gpow_e(k);
+                self.emit(LOp::Set {
+                    o: dst,
+                    k: KVal::Const(g_pow_u128(k as u128)),
+                });
+            }
             Expr::Add(a, b) => {
                 let (la, lb) = (self.expr(a), self.expr(b));
                 self.emit(LOp::Xor { a: la, b: lb, c: dst });
@@ -707,13 +783,33 @@ impl FnLower<'_> {
         }
     }
 
-    /// Compute the absolute pointer `arr·idx` into a fresh cell (heap addressing
-    /// in the exponent: cell `g^k` of the buffer sits at `arr·g^k`).
-    fn array_ptr(&mut self, arr: &Expr, idx: &Expr) -> Off {
+    /// Resolve a heap access `arr[idx]` to a `DEREF`-ready pair: a cell
+    /// holding a pointer `p` and a compile-time exponent `beta`, the accessed
+    /// cell being `m[p·g^beta]` (heap addressing in the exponent: cell `g^k`
+    /// of the buffer sits at `arr·g^k`). A constant g-power `idx`, or a
+    /// constant g-power *factor* of it, folds into the `beta` immediate, so
+    /// only a runtime factor costs a pointer `MUL` (and a wholly constant
+    /// index costs nothing at all).
+    fn array_ptr(&mut self, arr: &Expr, idx: &Expr) -> (Off, u32) {
+        if let Some(k) = self.try_gpow_index(idx) {
+            return (self.expr(arr), k);
+        }
+        // `buf[r * GEN ** k]` (either factor order): beta takes the constant,
+        // the pointer MUL takes only the runtime factor `r`.
+        if let Expr::Mul(a, b) = idx {
+            for (c, r) in [(a, b), (b, a)] {
+                if let Some(k) = self.try_gpow_index(c) {
+                    let (la, lr) = (self.expr(arr), self.expr(r));
+                    let ptr = self.fresh();
+                    self.emit(LOp::Mul { a: la, b: lr, c: ptr });
+                    return (ptr, k);
+                }
+            }
+        }
         let (la, li) = (self.expr(arr), self.expr(idx));
         let ptr = self.fresh();
         self.emit(LOp::Mul { a: la, b: li, c: ptr });
-        ptr
+        (ptr, 0)
     }
 
     /// Lower a call; returns the caller offsets bound to the returned values.
@@ -952,10 +1048,10 @@ impl FnLower<'_> {
                 } else {
                     // Heap store `arr[idx] = val`: assert m[arr·idx] == val (write-once).
                     let v = self.expr(val);
-                    let ptr = self.array_ptr(arr, idx);
+                    let (ptr, beta) = self.array_ptr(arr, idx);
                     self.emit(LOp::Deref {
                         alpha: ptr,
-                        beta: 0,
+                        beta,
                         gamma: v,
                         mode: DerefMode::Cell,
                     });
@@ -994,9 +1090,10 @@ impl FnLower<'_> {
             return; // a `return` in main is a no-op; main halts via the trailing sentinel jump (lower_func).
         }
         let ret_base = 2 + self.n_args;
-        let vals: Vec<Off> = exprs.iter().map(|e| self.expr(e)).collect();
-        for (i, v) in vals.into_iter().enumerate() {
-            self.copy(v, ret_base + i as u32);
+        // Each value lands straight in its return slot (the slots are never
+        // variable homes, so an earlier slot write cannot feed a later value).
+        for (i, e) in exprs.iter().enumerate() {
+            self.expr_into(e, ret_base + i as u32);
         }
         let one = self.one();
         self.emit(LOp::Jump { oc: one, od: 0, of: 1 });
@@ -1159,6 +1256,7 @@ fn free_vars_expr(e: &Expr, refs: &mut Vec<String>) {
         }
         Expr::Call(_, args) => args.iter().for_each(|a| free_vars_expr(a, refs)),
         Expr::HeapBufDyn(sz) => free_vars_expr(sz, refs),
+        Expr::GPowE(k) => free_vars_expr(k, refs),
         Expr::Lit(_) | Expr::Gen | Expr::GPow(_) | Expr::HeapBuf(_) | Expr::StackBuf(_) => {}
     }
 }
@@ -1255,6 +1353,7 @@ pub(crate) fn lower_func(
         one_off: None,
         self_fp_off: None,
         bounds: HashMap::new(),
+        const_cells: HashMap::new(),
         pending: Vec::new(),
         queue,
         loop_ctr,

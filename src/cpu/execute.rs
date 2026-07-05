@@ -68,6 +68,10 @@ impl Program {
         // end-of-execution deref-hint resolution).
         let mut deferred: Vec<(usize, usize, u32)> = Vec::new();
 
+        // Attribution aid: LEANVM_PC_HISTO=1 dumps per-pc execution counts
+        // alongside the disassembly after the run, tying cycles to source.
+        let mut pc_histo: Option<Vec<u64>> = std::env::var_os("LEANVM_PC_HISTO").map(|_| vec![0u64; self.prog.len()]);
+
         // Grow the dense vectors so `idx` is in range (keeps mem/written/mem_count in
         // sync). All accessed cells satisfy cell < next_free after their frame's
         // allocation, so this only ever extends.
@@ -116,6 +120,9 @@ impl Program {
 
         while pc != ending_pc {
             assert!(steps < 100_000_000, "step limit exceeded (runaway recursion?)");
+            if let Some(h) = pc_histo.as_mut() {
+                h[pc as usize] += 1;
+            }
 
             // Apply the hints scheduled before this instruction.
             if let Some(hs) = self.hints.get(&pc) {
@@ -454,6 +461,12 @@ impl Program {
         }
 
         assert_eq!((pc, fp), (ending_pc, 0), "main must halt at the sentinel pc g^{{B-1}}");
+
+        if let Some(h) = &pc_histo {
+            for (line, cnt) in crate::compiler::disassemble(&self.prog).lines().zip(h) {
+                eprintln!("{cnt:>9}  {line}");
+            }
+        }
 
         // Resolve the deferred DEREF touches: a fixpoint, so a touch whose cell is
         // filled by another deferred entry picks up that value; cells nobody ever

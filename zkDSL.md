@@ -32,8 +32,9 @@ Every runtime value is one element of GF(2^128) in GHASH form
 - an integer literal `n` denotes the field element with bit pattern `n`
   (bit `k` is the coefficient of `x^k`) — `5` is `1 + x^2`, not "five",
 - `GEN` is the fixed generator `g = x` (multiplicative order `2^128 − 1`),
-- `GEN ** k` is the compile-time constant `g^k` (`**` takes base `GEN` and an
-  integer-literal exponent only).
+- `GEN ** k` is the compile-time constant `g^k` (`**` takes base `GEN`; the
+  exponent is an integer literal or a parenthesised compile-time integer
+  expression, so `GEN ** (2 * s + 1)` works under an unrolled counter `s`).
 
 A logical **index** `i` is carried as `g^i`: incrementing is one
 multiplication by `GEN`, and memory/bytecode addresses are g-powers. This is

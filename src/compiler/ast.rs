@@ -15,6 +15,11 @@ pub enum Expr {
     /// exponent is a `u128`, so an index can be a large logical value — e.g. a
     /// Fibonacci number carried in the exponent.
     GPow(u128),
+    /// `GEN ** (expr)` with a compile-time integer *expression* exponent,
+    /// evaluated at lowering (after `unroll`/`Const` substitution turns its
+    /// variables into literals), so `GEN ** (2 * s)` works under an unrolled
+    /// counter `s`. Integer arithmetic, like stack indexes and slice bounds.
+    GPowE(Box<Expr>),
     /// A variable in scope.
     Var(String),
     Add(Box<Expr>, Box<Expr>),

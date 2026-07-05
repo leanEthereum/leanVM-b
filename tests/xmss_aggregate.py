@@ -61,28 +61,26 @@ def main():
     state = StackBuf(4)
     blake3(iv, msg_block, state)
 
-    tweak_slot = 1  # tweak_table cell cursor: g^0, g^4, g^8, … (4 cells / block)
+    # Block t fills cells g^{4t}..g^{4t+3}: compile-time indexes, so every
+    # store is a single DEREF (the offset rides the beta immediate).
     for t in unroll(0, 164):
         block = StackBuf(4)
         hint_witness(block, "tweaks")
-        tweak_table[tweak_slot] = block[0]
-        tweak_table[tweak_slot * GEN] = block[1]
-        tweak_table[tweak_slot * GEN ** 2] = block[2]
-        tweak_table[tweak_slot * GEN ** 3] = block[3]
-        tweak_slot = tweak_slot * GEN ** 4
+        tweak_table[GEN ** (4 * t)] = block[0]
+        tweak_table[GEN ** (4 * t + 1)] = block[1]
+        tweak_table[GEN ** (4 * t + 2)] = block[2]
+        tweak_table[GEN ** (4 * t + 3)] = block[3]
         next_state = StackBuf(4)
         blake3(state, block, next_state)
         state = next_state
 
-    bit_slot = 1
     for u in unroll(0, 16):
         block = StackBuf(4)
         hint_witness(block, "merkle_bits")
-        merkle_bits[bit_slot] = block[0]
-        merkle_bits[bit_slot * GEN] = block[1]
-        merkle_bits[bit_slot * GEN ** 2] = block[2]
-        merkle_bits[bit_slot * GEN ** 3] = block[3]
-        bit_slot = bit_slot * GEN ** 4
+        merkle_bits[GEN ** (4 * u)] = block[0]
+        merkle_bits[GEN ** (4 * u + 1)] = block[1]
+        merkle_bits[GEN ** (4 * u + 2)] = block[2]
+        merkle_bits[GEN ** (4 * u + 3)] = block[3]
         next_state = StackBuf(4)
         blake3(state, block, next_state)
         state = next_state
@@ -98,17 +96,22 @@ def main():
     agg_states[GEN ** 2] = state[2]
     agg_states[GEN ** 3] = state[3]
     for j in mul_range(1, n_sigs):
-        slot = j * j * j * j  # signature k occupies cells g^{4k}..g^{4k+3}
-        hint_witness(pubkeys[slot:slot + 4], "pks")
-        blake3(agg_states[slot:slot + 4], pubkeys[slot:slot + 4], agg_states[slot * GEN ** 4:slot * GEN ** 4 + 4])
-        verify_sig(message, tweak_table, merkle_bits, pubkeys * slot)
+        j2 = j * j
+        slot = j2 * j2  # signature k occupies cells g^{4k}..g^{4k+3}
+        # Name the two slot pointers once; the slices off them are then
+        # compile-time (beta) offsets, with no per-operand pointer MUL.
+        sig_state = agg_states * slot
+        sig_pk = pubkeys * slot
+        hint_witness(sig_pk[0:4], "pks")
+        blake3(sig_state[0:4], sig_pk[0:4], sig_state[4:8])
+        verify_sig(message, tweak_table, merkle_bits, sig_pk)
 
     # Publish the first two words of the final MD state = the aggregation
     # public input.
-    final_slot = n_sigs_4
+    final_ptr = agg_states * n_sigs_4
     public_input = GEN ** 0
-    public_input[1] = agg_states[final_slot]
-    public_input[GEN] = agg_states[final_slot * GEN]
+    public_input[1] = final_ptr[1]
+    public_input[GEN] = final_ptr[GEN]
     return
 
 
@@ -206,14 +209,13 @@ def verify_sig(message, tweak_table, merkle_bits, pk_ptr):
         leaf = next_leaf
 
     # Merkle path from the leaf to the root: the hinted slot bit orders the
-    # two children at each level; the tweak comes from the bound table. The
-    # cursor g^{2l} indexes both two-cell tables (bit l, tweak word 296+l).
+    # two children at each level; the tweak comes from the bound table. Level
+    # l reads bit word 2l and tweak word 592+2l: compile-time (beta) indexes,
+    # one DEREF each.
     node0 = leaf[0]
     node1 = leaf[1]
-    lvl = 1
-    merkle_tweaks = tweak_table * GEN ** 592
     for l in unroll(0, 32):
-        bit = merkle_bits[lvl]
+        bit = merkle_bits[GEN ** (2 * l)]
         sibling = StackBuf(2)
         hint_witness(sibling, "siblings")
         children = StackBuf(4)
@@ -228,27 +230,23 @@ def verify_sig(message, tweak_table, merkle_bits, pk_ptr):
             children[2] = node0
             children[3] = node1
         merkle_tweak_pp = StackBuf(4)
-        merkle_tweak_pp[0] = merkle_tweaks[lvl]
-        merkle_tweak_pp[1] = merkle_tweaks[lvl * GEN]
+        merkle_tweak_pp[0] = tweak_table[GEN ** (592 + 2 * l)]
+        merkle_tweak_pp[1] = tweak_table[GEN ** (593 + 2 * l)]
         merkle_tweak_pp[2] = pp0
         merkle_tweak_pp[3] = pp1
         parent = StackBuf(4)
         blake3(merkle_tweak_pp, children, parent)
         node0 = parent[0]
         node1 = parent[1]
-        lvl = lvl * GEN ** 2
     assert node0 == pk_ptr[1]
     assert node1 == pk_ptr[GEN]
     return
 
 
 def walk(value0, value1, chain_tweaks, pp0, pp1, k: Const):
-    # Walk WOTS chain steps k..6: value' = H(tweak|pp, value|0), the step
-    # tweaks read off the bound subtable (cursor advanced to step k first,
-    # two cells per tweak).
-    tweak_cur = chain_tweaks
-    for a in unroll(0, k):
-        tweak_cur = tweak_cur * GEN ** 2
+    # Walk WOTS chain steps k..6: value' = H(tweak|pp, value|0). Step s reads
+    # its tweak at cells 2s, 2s+1 off the chain's subtable: compile-time
+    # (beta) offsets, one DEREF each; no cursor to advance.
     block = StackBuf(4)
     block[0] = value0
     block[1] = value1
@@ -256,8 +254,8 @@ def walk(value0, value1, chain_tweaks, pp0, pp1, k: Const):
     block[3] = 0
     for s in unroll(k, 7):
         step_tweak = StackBuf(4)
-        step_tweak[0] = tweak_cur[1]
-        step_tweak[1] = tweak_cur[GEN]
+        step_tweak[0] = chain_tweaks[GEN ** (2 * s)]
+        step_tweak[1] = chain_tweaks[GEN ** (2 * s + 1)]
         step_tweak[2] = pp0
         step_tweak[3] = pp1
         out = StackBuf(4)
@@ -267,5 +265,4 @@ def walk(value0, value1, chain_tweaks, pp0, pp1, k: Const):
         block[1] = out[1]
         block[2] = 0
         block[3] = 0
-        tweak_cur = tweak_cur * GEN ** 2
     return block[0], block[1], k

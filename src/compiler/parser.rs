@@ -607,6 +607,7 @@ fn subst_var(e: &Expr, name: &str, to: &Expr) -> Expr {
         Expr::Var(v) if v == name => to.clone(),
         Expr::Add(a, b) => Expr::Add(s(a), s(b)),
         Expr::Mul(a, b) => Expr::Mul(s(a), s(b)),
+        Expr::GPowE(k) => Expr::GPowE(s(k)),
         Expr::Index(a, b) => Expr::Index(s(a), s(b)),
         Expr::Slice(a, lo, hi) => Expr::Slice(s(a), s(lo), s(hi)),
         Expr::HeapBufDyn(sz) => Expr::HeapBufDyn(s(sz)),
@@ -690,16 +691,17 @@ fn parse_expr(s: &str) -> Result<Expr, String> {
         }
         return Ok(acc);
     }
-    // `**` (compile-time power), tightest binding: `base ** k` with `k` a
-    // (possibly large) integer literal.
+    // `**` (compile-time power), tightest binding: `base ** k` with `k` an
+    // integer literal (possibly large), or a parenthesised compile-time
+    // integer expression like `GEN ** (2 * s + 1)`, evaluated at lowering
+    // ([`Expr::GPowE`]), so it can reference `unroll` counters and constants.
     if let Some((base, exp)) = split_once_top(s, "**") {
-        let k: u128 = exp
-            .trim()
-            .parse()
-            .map_err(|_| "`**` exponent must be an integer literal")?;
-        return match parse_expr(&base)? {
-            Expr::Gen => Ok(Expr::GPow(k)),
-            other => Err(format!("`**` is only supported with base `GEN`, got `{other:?}`")),
+        if !matches!(parse_expr(&base)?, Expr::Gen) {
+            return Err(format!("`**` is only supported with base `GEN`, got `{base}`"));
+        }
+        return match exp.trim().parse::<u128>() {
+            Ok(k) => Ok(Expr::GPow(k)),
+            Err(_) => Ok(Expr::GPowE(Box::new(parse_expr(&exp)?))),
         };
     }
     // Atom.
