@@ -3,6 +3,33 @@
 
 use super::*;
 
+/// A value equal to `pointer(base)·g^exp`, or the pure constant `g^exp` when
+/// `base` is `None`. Heap-address arithmetic — `ptr·gᵏ`, and constant g-power
+/// cursors such as a tweak-table index — is tracked symbolically so a later
+/// access folds the whole offset into `DEREF`'s `β` immediate rather than
+/// emitting a `SET`+`MUL` per step. A cursor read only as an index thus costs
+/// nothing; one used as a value is materialized on demand ([`FnLower::materialize`]).
+#[derive(Clone, Copy)]
+struct GAddr {
+    base: Option<Off>,
+    exp: u128,
+}
+
+/// `a·b` in the [`GAddr`] representation: exponents add, and at most one factor
+/// may carry a runtime base (two pointers can't be multiplied symbolically).
+fn gmul(a: GAddr, b: GAddr) -> Option<GAddr> {
+    let base = match (a.base, b.base) {
+        (None, x) | (x, None) => x,
+        (Some(_), Some(_)) => return None,
+    };
+    Some(GAddr { base, exp: a.exp.checked_add(b.exp)? })
+}
+
+/// Cap on a `β`-folded exponent: the operand g-power table is sized to the
+/// largest immediate, so beyond this a huge constant index falls back to a
+/// materialized pointer instead of inflating that table.
+const FOLD_MAX: u128 = 1 << 16;
+
 struct FnLower<'a> {
     vars: HashMap<String, Off>,
     /// `StackBuf` bindings: name → (base offset, size). The `size` cells
@@ -28,6 +55,9 @@ struct FnLower<'a> {
     /// Range-check product-target cells: bound `k` → the frame cell holding
     /// `g^{k-1}`, set lazily once and shared by every check of that bound.
     bounds: HashMap<u64, Off>,
+    /// Variables bound to a symbolic g-address ([`GAddr`]) — index cursors and
+    /// shifted pointers, kept virtual so their offsets fold into `DEREF`'s `β`.
+    gaddrs: HashMap<String, GAddr>,
     /// Hints queued to attach to the next emitted instruction.
     pending: Vec<Hint>,
     queue: &'a mut Vec<Func>,
@@ -140,6 +170,7 @@ impl FnLower<'_> {
             self.one_off,
             self.self_fp_off,
             self.bounds.clone(),
+            self.gaddrs.clone(),
         );
         f(self);
         // A hint pending at the end of a branch (e.g. a trailing
@@ -159,6 +190,7 @@ impl FnLower<'_> {
             self.one_off,
             self.self_fp_off,
             self.bounds,
+            self.gaddrs,
         ) = saved;
     }
 
@@ -203,8 +235,7 @@ impl FnLower<'_> {
         self.lower_match_dispatch(xo, arms.len(), |s, j| {
             s.scoped(|s| {
                 if let [rcell] = rcells.as_slice() {
-                    let o = s.expr(&arms[j]);
-                    s.copy(o, *rcell);
+                    s.expr_into(&arms[j], *rcell);
                 } else {
                     let Expr::Call(f, cargs) = &arms[j] else {
                         panic!(
@@ -222,6 +253,7 @@ impl FnLower<'_> {
         for (name, &cell) in names.iter().zip(&rcells) {
             self.stacks.remove(name);
             self.consts.remove(name);
+            self.gaddrs.remove(name);
             self.vars.insert(name.clone(), cell);
         }
     }
@@ -375,13 +407,9 @@ impl FnLower<'_> {
                             len: hi - lo,
                         }
                     } else {
-                        let ptr = self.expr(arr);
-                        Hint::WitnessHeap {
-                            name,
-                            ptr,
-                            lo,
-                            len: hi - lo,
-                        }
+                        let len = hi - lo;
+                        let (ptr, lo) = self.heap_base(arr, lo as u128);
+                        Hint::WitnessHeap { name, ptr, lo, len }
                     }
                 }
                 _ => {
@@ -394,8 +422,8 @@ impl FnLower<'_> {
                     });
                     let len = u32::try_from(k).expect("hint_witness slice length overflows u32");
                     assert!(len > 0, "empty hint_witness slice");
-                    let ptr = self.array_ptr(arr, lo);
-                    Hint::WitnessHeap { name, ptr, lo: 0, len }
+                    let (ptr, lo) = self.heap_addr(arr, lo);
+                    Hint::WitnessHeap { name, ptr, lo, len }
                 }
             },
             other => panic!("hint_witness dest must be a StackBuf or a slice, got `{other:?}`"),
@@ -479,6 +507,9 @@ impl FnLower<'_> {
                 if self.stacks.contains_key(v) {
                     panic!("StackBuf `{v}` used as a scalar; index it (`{v}[k]`) or pass it to blake3");
                 }
+                if let Some(&ga) = self.gaddrs.get(v) {
+                    return self.materialize(ga);
+                }
                 *self.vars.get(v).unwrap_or_else(|| panic!("unbound variable `{v}`"))
             }
             Expr::Add(a, b) => {
@@ -521,13 +552,12 @@ impl FnLower<'_> {
                     assert!(k < size, "stack index {k} out of bounds (size {size})");
                     return base + k;
                 }
-                // Heap read `m[arr·idx]`.
-                let ptr = self.array_ptr(arr, idx);
+                // Heap read: bind dst := m[arr·idx] (the array cell, written earlier).
+                let (base, beta) = self.heap_addr(arr, idx);
                 let dst = self.fresh();
-                // Read: bind dst := m[ptr] (the array cell, written earlier).
                 self.emit(LOp::Deref {
-                    alpha: ptr,
-                    beta: 0,
+                    alpha: base,
+                    beta,
                     gamma: dst,
                     mode: DerefMode::Cell,
                 });
@@ -610,9 +640,10 @@ impl FnLower<'_> {
                         assert!(hi <= size, "slice {lo}:{hi} out of bounds (StackBuf size {size})");
                         B3Operand::Stack(base + lo)
                     } else {
-                        // A heap slice: `arr` evaluates to the buffer pointer (no
-                        // compile-time size to check — heap indexing never has one).
-                        let ptr = self.expr(arr);
+                        // A heap slice (no compile-time size to check — heap
+                        // indexing never has one): fold `arr`'s shift and `lo`
+                        // into the pointer offset.
+                        let (ptr, lo) = self.heap_base(arr, lo as u128);
                         B3Operand::Heap { ptr, lo }
                     }
                 }
@@ -630,8 +661,8 @@ impl FnLower<'_> {
                         plus_k(lo, hi) == Some(2),
                         "a runtime blake3 slice must have the shape `buf[i:i + 2]`, got `{lo:?}:{hi:?}`"
                     );
-                    let ptr = self.array_ptr(arr, lo);
-                    B3Operand::Heap { ptr, lo: 0 }
+                    let (ptr, lo) = self.heap_addr(arr, lo);
+                    B3Operand::Heap { ptr, lo }
                 }
             },
             other => {
@@ -670,10 +701,10 @@ impl FnLower<'_> {
         match e {
             // Heap read straight into dst (a stack read falls through to the copy).
             Expr::Index(arr, idx) if self.stack_of(arr).is_none() => {
-                let ptr = self.array_ptr(arr, idx);
+                let (base, beta) = self.heap_addr(arr, idx);
                 self.emit(LOp::Deref {
-                    alpha: ptr,
-                    beta: 0,
+                    alpha: base,
+                    beta,
                     gamma: dst,
                     mode: DerefMode::Cell,
                 });
@@ -714,6 +745,73 @@ impl FnLower<'_> {
         let ptr = self.fresh();
         self.emit(LOp::Mul { a: la, b: li, c: ptr });
         ptr
+    }
+
+    /// The symbolic g-address of `e`, when it is one: a constant g-power
+    /// (`1 = g⁰`, `GEN`, `GEN ** k`), a tracked cursor/shifted pointer, or a
+    /// plain scalar var as its own base (`base·g⁰`). Products of these combine
+    /// via [`gmul`]. `None` for anything with a runtime, non-g-power value.
+    fn gaddr_of(&self, e: &Expr) -> Option<GAddr> {
+        match e {
+            Expr::Lit(1) => Some(GAddr { base: None, exp: 0 }),
+            Expr::Gen => Some(GAddr { base: None, exp: 1 }),
+            Expr::GPow(k) => Some(GAddr { base: None, exp: *k }),
+            Expr::Var(v) => self
+                .gaddrs
+                .get(v)
+                .copied()
+                .or_else(|| self.vars.get(v).map(|&c| GAddr { base: Some(c), exp: 0 })),
+            Expr::Mul(a, b) => gmul(self.gaddr_of(a)?, self.gaddr_of(b)?),
+            _ => None,
+        }
+    }
+
+    /// Realize a [`GAddr`] into a frame cell holding its value: a constant is one
+    /// `SET`; a base with no shift is already that cell; a shifted base is a
+    /// `SET`+`MUL`.
+    fn materialize(&mut self, ga: GAddr) -> Off {
+        match ga {
+            GAddr { base: Some(c), exp: 0 } => c,
+            GAddr { base, exp } => {
+                let k = self.fresh();
+                self.emit(LOp::Set { o: k, k: KVal::Const(g_pow_u128(exp)) });
+                let Some(c) = base else { return k };
+                let o = self.fresh();
+                self.emit(LOp::Mul { a: c, b: k, c: o });
+                o
+            }
+        }
+    }
+
+    /// Address `arr·g^extra` as `(base_cell, β)`, folding `arr`'s symbolic shift
+    /// and the constant `extra` into `β`. Falls back to a materialized pointer
+    /// (`β = 0`) when there is no runtime base or the offset exceeds [`FOLD_MAX`].
+    fn heap_base(&mut self, arr: &Expr, extra: u128) -> (Off, u32) {
+        if let Some(ga) = self.gaddr_of(arr) {
+            if let (Some(base), Some(exp)) = (ga.base, ga.exp.checked_add(extra)) {
+                if exp <= FOLD_MAX {
+                    return (base, exp as u32);
+                }
+            }
+        }
+        let a = self.expr(arr);
+        if extra == 0 {
+            return (a, 0);
+        }
+        let k = self.fresh();
+        self.emit(LOp::Set { o: k, k: KVal::Const(g_pow_u128(extra)) });
+        let ptr = self.fresh();
+        self.emit(LOp::Mul { a, b: k, c: ptr });
+        (ptr, 0)
+    }
+
+    /// Address `arr[idx]` as `(base_cell, β)`. A constant g-power `idx` folds
+    /// into `β` ([`Self::heap_base`]); a runtime index materializes the pointer.
+    fn heap_addr(&mut self, arr: &Expr, idx: &Expr) -> (Off, u32) {
+        if let Some(GAddr { base: None, exp }) = self.gaddr_of(idx) {
+            return self.heap_base(arr, exp);
+        }
+        (self.array_ptr(arr, idx), 0)
     }
 
     /// Lower a call; returns the caller offsets bound to the returned values.
@@ -860,6 +958,7 @@ impl FnLower<'_> {
                     let base = self.alloc_stack(*n as u32);
                     self.vars.remove(name);
                     self.consts.remove(name);
+                    self.gaddrs.remove(name);
                     self.stacks.insert(name.clone(), (base, *n as u32));
                 }
                 // `x = other_stackbuf`: a compile-time alias of the same cell
@@ -869,10 +968,10 @@ impl FnLower<'_> {
                     let bs = self.stacks[v];
                     self.vars.remove(name);
                     self.consts.remove(name);
+                    self.gaddrs.remove(name);
                     self.stacks.insert(name.clone(), bs);
                 }
                 _ => {
-                    let o = self.expr(e);
                     self.stacks.remove(name);
                     // A literal binding is also usable as a compile-time index.
                     match e {
@@ -883,13 +982,24 @@ impl FnLower<'_> {
                             self.consts.remove(name);
                         }
                     }
-                    self.vars.insert(name.clone(), o);
+                    // A symbolic g-address (a constant g-power or a shifted
+                    // pointer) stays virtual: no instruction here, its offset
+                    // folds into `β` at each use, materialized only on demand.
+                    if let Some(ga) = self.gaddr_of(e) {
+                        self.vars.remove(name);
+                        self.gaddrs.insert(name.clone(), ga);
+                    } else {
+                        let o = self.expr(e);
+                        self.gaddrs.remove(name);
+                        self.vars.insert(name.clone(), o);
+                    }
                 }
             },
             Stmt::LetTuple(names, f, args) => {
                 let dsts = self.call(f, args, names.len());
                 for (n, d) in names.iter().zip(dsts) {
                     self.consts.remove(n);
+                    self.gaddrs.remove(n);
                     self.vars.insert(n.clone(), d);
                 }
             }
@@ -952,10 +1062,10 @@ impl FnLower<'_> {
                 } else {
                     // Heap store `arr[idx] = val`: assert m[arr·idx] == val (write-once).
                     let v = self.expr(val);
-                    let ptr = self.array_ptr(arr, idx);
+                    let (base, beta) = self.heap_addr(arr, idx);
                     self.emit(LOp::Deref {
-                        alpha: ptr,
-                        beta: 0,
+                        alpha: base,
+                        beta,
                         gamma: v,
                         mode: DerefMode::Cell,
                     });
@@ -994,9 +1104,8 @@ impl FnLower<'_> {
             return; // a `return` in main is a no-op; main halts via the trailing sentinel jump (lower_func).
         }
         let ret_base = 2 + self.n_args;
-        let vals: Vec<Off> = exprs.iter().map(|e| self.expr(e)).collect();
-        for (i, v) in vals.into_iter().enumerate() {
-            self.copy(v, ret_base + i as u32);
+        for (i, e) in exprs.iter().enumerate() {
+            self.expr_into(e, ret_base + i as u32);
         }
         let one = self.one();
         self.emit(LOp::Jump { oc: one, od: 0, of: 1 });
@@ -1055,7 +1164,7 @@ impl FnLower<'_> {
                      define it inside the loop body or carry state via a `HeapBuf`"
                 );
             }
-            if self.vars.contains_key(r) && seen.insert(r.clone()) {
+            if (self.vars.contains_key(r) || self.gaddrs.contains_key(r)) && seen.insert(r.clone()) {
                 captures.push(r.clone());
             }
         }
@@ -1255,6 +1364,7 @@ pub(crate) fn lower_func(
         one_off: None,
         self_fp_off: None,
         bounds: HashMap::new(),
+        gaddrs: HashMap::new(),
         pending: Vec::new(),
         queue,
         loop_ctr,
