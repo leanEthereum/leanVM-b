@@ -352,6 +352,23 @@ security level unchanged.
 
 \section{Actionable migration plan}\label{sec:plan}
 
+\paragraph{Status.} All work packages below have landed on
+\texttt{field-exploration}; \texttt{cargo testall} is green end to end
+(including \texttt{xmss\_vm} and \texttt{hash\_chain}). Two deltas
+against the plan as written. First, the flock boundary is cleaner than
+anticipated: the zerocheck (with \(\varphi_8\) and the univariate skip)
+stays entirely in the GHASH representation, and its output claims cross
+into the tower through an explicit field isomorphism
+(\path{vendor/flock-core/src/field/iso_f128.rs}), so \WP6 required no
+changes to the zerocheck stack at all; the ring switch itself was built
+fresh at \(f=64\), \(e=128\) with generalized prefix weights
+(\path{pcs/ring_switch_k.rs}, \path{pcs/stack_open_k.rs}). Second,
+\texttt{flock-prover} needed no witness re-layout: \(\mathtt{M\_BASE}=640\)
+is already 64-aligned, so \(q_{\mathrm{pkd}}\) over $\K$ is the lo/hi
+flattening of the old packed words and only the slot indices doubled.
+Measured on the demo workload (Fibonacci, $2^{21}$ cycles): 1.2M cycles/s
+proving, 10\,ms verification, 570\,KiB proof.
+
 Work packages in dependency order. Each lists its primary files and an
 acceptance gate. $\K$ denotes the new first-class $\F_{2^{64}}$ type
 (\texttt{F64}); the tower field type is \texttt{F128T}.
