@@ -9,17 +9,18 @@ All numbers: XMSS aggregation, N = 1024, `RAYON_NUM_THREADS=10`, M-series.
 | metric | main (F128) | transition, first port | now |
 |---|---|---|---|
 | cycles / XMSS | 3472.7 | 4692.6 | **3200.8** |
-| throughput | 229.6 XMSS/s | ~106 XMSS/s | **180.2 XMSS/s** |
+| throughput | 229.6 XMSS/s | ~106 XMSS/s | **210.5 XMSS/s** |
 | proof size | 778.3 KiB | 666.0 KiB | **666.0 KiB** |
 | verification | 7.6 ms | 11.4 ms | ~10 ms |
 | committed bits | 2^33.96 | 2^33.23 | **2^33.23** |
 
 The program does less work (7% fewer VM cycles), commits 40% fewer bits, and
-produces a 14% smaller proof. The wall-clock deficit is concentrated in the
-prover's extension-field arithmetic, and most of what looked like a design
-regression turned out to be implementation debt. The path from 106 to 180
-XMSS/s was four fixes; the remaining 22% gap is field-kernel quality, being
-addressed now.
+produces a 14% smaller proof. Most of what looked like a design regression
+was implementation debt (memory cliffs, serial builds, day-one field
+kernels), all since fixed. The remaining ~9% deficit has three structural
+sources, quantified below: opening cost scales with element count rather
+than bits, pure E x E phases pay a ~1.8x per-op tax against GHASH, and the
+power-of-two padding doubles the opened positions at this instance size.
 
 ## Why "we commit more elements than main"
 
@@ -39,22 +40,22 @@ query-opening bytes all shrank. The proof-size drop is this effect.
 
 ## The field question: is GHASH F128 fundamentally faster than the tower?
 
-No. It is currently faster in our code for implementation reasons, measured
-precisely in `field_bench` (latency = serial dependency chain; throughput =
-8 independent chains, ns per multiply):
+Mostly no, but a measurable residue remains. `field_bench` numbers (latency
+= serial dependency chain; throughput = 8 independent chains, ns/multiply),
+before and after the kernel rewrite that made the tower vector-resident with
+PMULL-based folds:
 
-| op | PMULLs | latency | throughput |
+| op | PMULLs | day-one lat/tput | rewritten lat/tput |
 |---|---|---|---|
-| F128 GHASH mul | 6 | 5.89 | **0.70** |
-| F128T tower mul (E x E) | 5 | 10.19 | 3.41 |
-| F128T mul2, paired | 8 / pair | 6.17 | 2.18 |
-| F64 mul (K x K) | 1 | 4.85 | 0.64 |
-| F128T mul_base (K x E) | 2 | 6.57 | 1.16 |
+| F128 GHASH mul (reference) | 5-6 | 5.89 / 0.70 | unchanged |
+| F128T tower mul (E x E) | 5 | 10.19 / 3.41 | **6.91 / 1.28** |
+| F128T mul2, paired | 8 / pair | 6.17 / 2.18 | 3.49 / 1.46 |
+| F64 mul (K x K) | 1 | 4.85 / 0.64 | 4.82 / 0.50 |
+| F128T mul_base (K x E) | 2 | 6.57 / 1.16 | **5.14 / 0.70** |
 
-The smoking gun is the F64 row: a one-PMULL 64-bit multiply merely *ties* the
-six-PMULL GHASH multiply on throughput. That cannot be explained by the math;
-the multiply counts favor the tower. The overhead is in everything around the
-PMULLs:
+The day-one smoking gun was the F64 row: a one-PMULL 64-bit multiply merely
+tying the GHASH multiply on throughput cannot be explained by math; the
+overhead was everything around the PMULLs:
 
 1. **Reduction strategy.** GHASH reduces once, at the end, with PMULL by the
    sparse constant 0x87, staying entirely inside the vector registers (about
@@ -71,11 +72,19 @@ PMULLs:
    only genuinely structural cost of the tower, and it affects latency
    (roughly 1.3x), not throughput.
 
-Add to this that the GHASH kernel inherits two decades of AES-GCM tuning
-while the tower kernels are day-one code. A careful rewrite (PMULL-based
-folds, fully vector-resident) should bring E x E within ~1.5x of GHASH and
-make K x K and mul_base decisively cheaper than a GHASH multiply, which is
-the entire premise of the transition.
+The rewrite fixed (1) and (2): folds are now PMULL-based and the kernels
+never leave the vector file; the tower's serial y-fold was even parallelized
+(the x^61-shifted high product folds directly with per-word constants,
+including x^128 mod P for the top word). What remains after all that is
+E x E at 1.28 vs GHASH's 0.70 ns/op, a 1.8x residue whose causes are the
+reduction granularity (a two-limb tower folds at 64-bit boundaries, three
+sub-reductions per product, where GHASH folds a 256-bit product once by one
+sparse constant) plus twenty years of AES-GCM kernel lineage on the other
+side. mul_base landed at exact GHASH-mul parity per op (0.70): two PMULLs
+of work, but the fold overhead eats the theoretical 3x. Deferred-reduction
+accumulators (XOR unreduced Karatsuba triples, reduce once per sum, which
+the GHASH pipeline already does via F256Unreduced) are the identified next
+step for the accumulation-shaped loops and would close part of the residue.
 
 ### What the tower buys that GHASH cannot offer
 
@@ -88,9 +97,9 @@ The tower gives three cheaper operation classes that dominate the system:
   base-field NTT butterflies against E-folded codewords.
 - Committed words at 64 bits: half the committed bits for the same data.
 
-The phases that stay pure E x E (the GKR product tree, later sumcheck rounds)
-pay the tower tax, currently 1.65x in GKR. That tax is what the kernel
-rewrite attacks.
+The phases that stay pure E x E (the GKR product tree, later sumcheck
+rounds) pay the residual tower tax: GKR runs 939 ms vs main's ~750 (was
+1327 ms before the kernel rewrite).
 
 ## Where the original 2x wall-clock regression actually came from
 
@@ -112,40 +121,68 @@ now (`LEANVM_PROFILE=1`):
 
 | phase | main | now | note |
 |---|---|---|---|
-| commit | 736 ms | 968 ms | F64 NTT extra layer at equal bytes |
-| bus: leaves | | 87 ms | mul_base, cheap |
-| bus: GKR | ~700 ms | 1321 ms | pure E x E, the tower tax |
-| bus: decompose | | 40 ms | |
-| constraints | 240 ms | 267 ms | |
-| flock reduction | ~850 ms | 838 ms | same GHASH code both sides |
-| stack open | ~550 ms | 1348 ms | 2x positions + E arithmetic |
-| **total prove** | **4.46 s** | **5.68 s** | |
+| commit | 736 ms | 759 ms | same bytes; F64 NTT extra layer offsets the bit halving |
+| bus (leaves+GKR+decompose) | 1095 ms | 1056 ms | GKR 939 is the E x E tax; decompose 36 |
+| constraints | 240 ms | 223 ms | mixed round 0 wins |
+| flock reduction | ~850 ms | 878 ms | same GHASH code both sides |
+| stack open | ~550 ms | 1158 ms | 2x padded positions + E arithmetic + ring switch |
+| **total prove** | **4.46 s** | **4.87 s** | 229.6 vs 210.5 XMSS/s |
 
-## What remains, ranked
+## The PCS head to head, bits committed + opened per second
 
-1. **Field kernels** (in flight): PMULL-based folds and vector-resident
-   scheduling for F64 and F128T. Targets: K x K <= 0.4 ns/op, mul_base <= 0.7,
-   E x E <= 1.5. Feeds directly into GKR (1.32 s), the opening sumchecks, and
-   the NTT.
-2. **GKR structure**: fusing the even/odd folds and reusing layer buffers
-   (memory-bound at the top layers). The 2-wide mul2 kernel was built,
-   measured in place, and honestly reverted: those loops are port-bound, not
-   latency-bound.
-3. **Commit**: the F64 NTT's extra layer costs ~230 ms at equal bytes; a
-   pmull-fold butterfly may claw some back.
-4. **Structural floor**: the stacked opening handles 2^28 positions instead
-   of 2^27 (E-valued weight vector over twice the words). This is inherent
-   to committing K words; it is paid back by the 40% bit reduction in
-   commit/query bytes and the smaller proof.
-5. **VM cycles**: walk-call inlining in the XMSS dispatch arms would save
-   ~600 cycles/sig at the cost of doubling the bytecode (2^14 to 2^15).
+Same witness bits, Secure profile, commit + one opening (post kernel
+rewrite). Commit is near parity (same bytes encoded and hashed); open is
+~1.5x slower because opening cost scales with ELEMENT COUNT, not bits: the
+eq-weight vector is one 16-byte E element per committed word whatever the
+word width, so the 128-bit design amortizes each weight over 128 bits, ours
+over 64.
+
+| witness bits | GHASH F128 | F64 commit / E open | ratio |
+|---|---|---|---|
+| 2^24 | 3.4 Gbit/s | 3.0 Gbit/s | 0.88x |
+| 2^26 | 7.6 | 6.5 | 0.86x |
+| 2^28 | 13.7 | 11.1 | 0.81x |
+| 2^30 | 18.0 | 14.3 | 0.79x |
+
+Per machine WORD (the VM view: same data, half the bytes): 1.2x to 1.34x
+FASTER, which is where the smaller proofs come from.
+
+At the XMSS instance size the position count is further doubled by padding
+luck: the real stack (2^27.23 words) pads to 2^28 (74% waste) while main's
+2^26.96 pads to 2^27 (3% waste), so the stacked opening processes 2x the
+positions for 1.2x the real data. Instance-size dependent, not structural.
+
+## What remains, and what is deliberately left alone
+
+Remaining field-specific levers (paused on request):
+
+1. **Deferred-reduction accumulators for the tower** (parity with GHASH's
+   F256Unreduced): would shave part of the E x E residue in GKR summands and
+   the opening inner products.
+2. **The padding sensitivity**: the 2x opened positions at this instance
+   size is rounding luck; sizing programs against the padding boundary, or a
+   non-power-of-two-friendly stacking, would reclaim most of the stack-open
+   delta.
+
+Deliberately NOT pursued, to keep the comparison against main honest: any
+optimization that would speed main equally (witness generation, GKR
+even/odd fold fusion, buffer reuse). Those are field-agnostic and would pad
+our side of the ledger. For the record, the 2-wide mul2 kernel was built,
+measured in place, and reverted: the GKR loops are port-bound, not
+latency-bound.
+The structural floor stays: the opening's per-word work (one E-valued
+weight and one fold slot per committed word) is inherent to committing K
+words, and is paid back by the 40% bit reduction in commit/query bytes and
+the smaller proof. On the VM side, walk-call inlining in the XMSS dispatch
+arms would save ~600 cycles/sig at the cost of doubling the bytecode.
 
 ## Verdict
 
 The transition delivers on its statement-level promises today: fewer cycles,
 40% fewer committed bits, 14% smaller proofs, one ring switch, 64-bit machine
-words. The prover wall-clock deficit is not a property of the tower design:
-it is one part implementation maturity of brand-new field kernels against the
-most-optimized binary-field kernel in existence, and one part the 2x position
-count in the E-valued phases, which the halved bit volume was always going to
-trade against. The kernel rewrite should close most of the remaining 22%.
+words. The prover wall-clock deficit (9% at this instance size) decomposes
+into: the opening's element-count scaling amplified by unlucky padding, the
+1.8x E x E residue in GKR, and mul_base landing at parity per op instead of
+its theoretical 3x advantage. None of these erase the design's statement:
+the trade is bit volume against position count, and at other instance sizes
+(or with the identified field-specific levers) it tilts the other way.
