@@ -29,6 +29,7 @@ pub mod pack;
 pub mod pack_k;
 pub mod ring_switch;
 pub mod ring_switch_k;
+pub mod stack_open_k;
 pub mod tensor_algebra;
 pub mod tensor_algebra_k;
 
