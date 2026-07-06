@@ -92,8 +92,8 @@ from snark_lib import *
 
 N = 8                    # an integer size / value
 STEP = GEN ** 2          # a g-power constant (index carried in the exponent)
-WIDE = N + 1             # `+`/`*` are the field's own (XOR / GHASH); references
-                         # to *earlier* constants are allowed
+WIDE = N + 1             # compile-time INTEGER arithmetic (`+ - * / **`);
+                         # references to *earlier* constants are allowed
 
 def main():
     buf = StackBuf(N)    # a constant is a plain literal: usable as a size,
@@ -169,6 +169,35 @@ pairing dispatches a runtime index to a const-indexed helper:
 r = match_range(log(x), range(0, 4), lambda i: hash_pair(buf, i))
 ```
 
+### `@unroll` — inline a function at its call sites
+
+```python
+@unroll
+def combine(a, b, k: Const):
+    s = StackBuf(2)
+    if k % 2 == 0:      # a folded `if` (see below): baked per Const value
+        s[0] = a
+    else:
+        s[0] = b
+    s[1] = a + b
+    return s[k % 2]
+```
+
+An `@unroll` function is **expanded at each call site** instead of emitting a
+real call — no frame, no argument/return `DEREF`s, no call/return `JUMP`s. The
+body must be a single **tail** `return`; it may contain `blake3`, `if`, and
+`unroll`, but not a call to another (user) function, a `for`/`match`, or any
+nested/early `return`. It is never lowered standalone; a call to a
+non-`@unroll` function is unchanged. Named for the DSL's compile-time
+expansion verb (cf. `unroll(a, b)` for loops).
+
+Because the body runs in the *caller's* frame, a `Const` parameter whose `if`s
+fold (below) bakes straight-line, per-case code — the idiom for a `match_range`
+arm that must specialize on the arm value. The trade-off is frame cells: each
+call site gets its own copy, so `@unroll` pays off for small, hot callees;
+inlining a large body at many sites grows the committed witness (more data
+memory), so it is opt-in, not automatic.
+
 ## Variables
 
 Bindings are **immutable**: `x = e` names a fresh cell. Re-binding a name is
@@ -197,10 +226,14 @@ v = buf[i]            # m[buf·i]   — i is any runtime g-power (e.g. a loop co
 buf[i * GEN] = v      # the next cell along
 ```
 
-The index is a runtime field element; cell `k` of the buffer lives at address
-`buf · g^k`. A read or store is one `DEREF` (plus one `MUL` for the `buf·i`
-pointer product). There are no bounds checks — the buffer is a region
-convention, not a checked type.
+The index is a field element; cell `k` of the buffer lives at address
+`buf · g^k`. A read or store is one `DEREF`. A **runtime** index costs one
+extra `MUL` for the `buf·i` pointer, but a **compile-time g-power** offset —
+`buf[1]`, `buf[GEN ** k]`, or a cursor advanced by `× GEN ** m` — folds into
+the `DEREF`'s address immediate for free: no `MUL`, no `SET`, and the cursor
+arithmetic itself vanishes (so a `× GEN` walk over consecutive cells is zero
+instructions). There are no bounds checks — the buffer is a region convention,
+not a checked type.
 
 ### `StackBuf(n)` — frame-cell runs, indexed by compile-time integers
 
@@ -209,12 +242,14 @@ sa = StackBuf(3)      # n consecutive cells of the current frame
 sa[0] = 3             # direct frame cell: zero instructions to address
 sa[2] = sa[0] + sa[1]
 x = 1
-v = sa[x + 1]         # indexes: literals, literal-bound names, + and * of those
+v = sa[x + 1]         # indexes: literals, literal-bound names, and + * // % of those
 ```
 
-Stack indexes are **compile-time integers** and index arithmetic is *integer*
-arithmetic (`x + 1` above is 2 — index space, not the field XOR the same
-syntax means elsewhere). Bounds are checked at compile time. A `StackBuf`
+Stack indexes and slice bounds are **compile-time integers**, and index
+arithmetic (`+ * // %`) is *integer* arithmetic (`x + 1` above is 2, `k // 2`
+floor-divides, `k % 2` is a remainder — index space, not the field, where XOR
+is what `+` means and `//`/`%` have no meaning at all: using one as a runtime
+field value is a compile error). Bounds are checked at compile time. A `StackBuf`
 name is a run of cells, not a scalar: using it as one is an error, and it
 cannot be captured into a `for` loop body (carry state through a `HeapBuf`
 instead).
@@ -309,6 +344,12 @@ predicates — order facts come from range-check asserts). The lowering is one
 `XOR` plus one conditional `JUMP` on it; the taken jump goes to whichever
 block the test doesn't fall into, so no negation gadget is needed. An `elif`
 is sugar for an `else` holding a nested `if`.
+
+When **both sides are compile-time integers** (e.g. after a `Const` parameter
+is substituted — `if k % 2 == 0:`), the condition is known at compile time and
+the `if` **folds** to just the taken branch: no `XOR`, no `JUMP`, no `self-fp`.
+This is what lets an `@unroll` function bake different straight-line code per
+`Const` value.
 
 Two write-once-flavored rules:
 
@@ -475,14 +516,14 @@ entry — repeated lines with the same name are its successive entries:
 | `x = <literal>` / `GEN ** k` | 1 `SET` |
 | `a + b` | 1 `XOR` |
 | `a * b` | 1 `MUL` |
-| heap read / store `buf[i]` | 1 `MUL` (pointer) + 1 `DEREF` |
+| heap read / store `buf[i]` | 1 `DEREF`; +1 `MUL` for a *runtime* index (a compile-time g-power offset folds into the `DEREF` — free) |
 | stack read / store `sa[k]` | 0 (direct cell addressing) |
 | `assert a == b` | 2 |
 | `assert log x < k` | 3 (+1 `SET` amortized per bound per frame) |
-| `if a == b: …` | 3 (+2 to skip a non-empty `else`; +2 amortized `self-fp` per branching function) |
+| `if a == b: …` | 3 (+2 to skip a non-empty `else`; +2 amortized `self-fp` per branching function); **0 if the condition is compile-time** |
 | `match log(x): …` | ≈ 7, independent of the case count |
-| `… = match_range(log(x), …)` | the `match`, + 1 `MUL` copy per target |
-| function call | ≈ `n_args + n_returns + 4` |
+| `… = match_range(log(x), …)` | the `match` (arm results written into the targets directly, no copy) |
+| function call | ≈ `n_args + n_returns + 4` (0 when the callee is `@unroll`) |
 | `mul_range` iteration | body + ≈ 1 `MUL` + 1 `XOR` + call overhead |
 | `unroll` iteration | body only (compile-time replication) |
 | `blake3(a, b, out)` | 1 (+2 `DEREF`s per heap operand, +1 `MUL` per runtime slice start) |
@@ -518,7 +559,7 @@ def main():
 Mutable variables and compound assignment; conditions other than field
 (in)equality; `match` defaults (`case _`) and non-contiguous cases; top-level
 constant *arrays* (only scalar constants — see "Global constants and
-placeholders"); multi-file imports; `@inline`; `Const` parameters as `mul_range`
+placeholders"); multi-file imports; `Const` parameters as `mul_range`
 or range-check bounds (a substituted literal is a bit-pattern element, not
 the g-power a bound needs); runtime slice starts on a `StackBuf`; runtime
 range-check bounds (`assert log a < log b` with runtime `b`); custom hint

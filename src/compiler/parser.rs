@@ -686,10 +686,12 @@ fn split_top(s: &str, sep: char) -> Vec<String> {
     parts
 }
 
-/// Split `s` on every top-level lone `*` (not part of a `**`).
-fn split_mul(s: &str) -> Vec<String> {
+/// Split `s` at the top-level multiplicative tier: the operands and the
+/// operators between them (`*`, `//` for floor-division, `%` for remainder).
+/// A `**` power is left intact (bound tighter). Left-associative.
+fn split_mul(s: &str) -> (Vec<String>, Vec<u8>) {
     let b = s.as_bytes();
-    let mut parts = Vec::new();
+    let (mut segs, mut ops) = (Vec::new(), Vec::new());
     let (mut depth, mut start, mut i) = (0i32, 0usize, 0usize);
     while i < b.len() {
         match b[i] {
@@ -698,16 +700,28 @@ fn split_mul(s: &str) -> Vec<String> {
             b'*' if depth == 0 => {
                 let double = (i + 1 < b.len() && b[i + 1] == b'*') || (i > 0 && b[i - 1] == b'*');
                 if !double {
-                    parts.push(s[start..i].to_string());
+                    segs.push(s[start..i].to_string());
+                    ops.push(b'*');
                     start = i + 1;
                 }
+            }
+            b'/' if depth == 0 && b.get(i + 1) == Some(&b'/') => {
+                segs.push(s[start..i].to_string());
+                ops.push(b'/');
+                i += 1; // consume the second `/`
+                start = i + 1;
+            }
+            b'%' if depth == 0 => {
+                segs.push(s[start..i].to_string());
+                ops.push(b'%');
+                start = i + 1;
             }
             _ => {}
         }
         i += 1;
     }
-    parts.push(s[start..].to_string());
-    parts
+    segs.push(s[start..].to_string());
+    (segs, ops)
 }
 
 /// Split `s` once on a top-level multi-char operator `op`.
@@ -880,6 +894,8 @@ fn subst_var(e: &Expr, name: &str, to: &Expr) -> Expr {
         Expr::Var(v) if v == name => to.clone(),
         Expr::Add(a, b) => Expr::Add(s(a), s(b)),
         Expr::Mul(a, b) => Expr::Mul(s(a), s(b)),
+        Expr::Div(a, b) => Expr::Div(s(a), s(b)),
+        Expr::Mod(a, b) => Expr::Mod(s(a), s(b)),
         Expr::Index(a, b) => Expr::Index(s(a), s(b)),
         Expr::Slice(a, lo, hi) => Expr::Slice(s(a), s(lo), s(hi)),
         Expr::HeapBufDyn(sz) => Expr::HeapBufDyn(s(sz)),
@@ -953,13 +969,18 @@ fn parse_expr(s: &str) -> Result<Expr, String> {
         }
         return Ok(acc);
     }
-    // `*` (binds tighter than `+`), skipping the two-char `**`.
-    let star = split_mul(s);
-    if star.len() > 1 {
-        let mut it = star.iter();
-        let mut acc = parse_expr(it.next().unwrap())?;
-        for t in it {
-            acc = Expr::Mul(Box::new(acc), Box::new(parse_expr(t)?));
+    // `*`, `//`, `%` (bind tighter than `+`), skipping the two-char `**`.
+    let (segs, ops) = split_mul(s);
+    if segs.len() > 1 {
+        let mut acc = parse_expr(&segs[0])?;
+        for (op, seg) in ops.iter().zip(&segs[1..]) {
+            let rhs = Box::new(parse_expr(seg)?);
+            let lhs = Box::new(acc);
+            acc = match op {
+                b'*' => Expr::Mul(lhs, rhs),
+                b'/' => Expr::Div(lhs, rhs),
+                _ => Expr::Mod(lhs, rhs),
+            };
         }
         return Ok(acc);
     }

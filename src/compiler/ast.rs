@@ -20,6 +20,12 @@ pub enum Expr {
     Var(String),
     Add(Box<Expr>, Box<Expr>),
     Mul(Box<Expr>, Box<Expr>),
+    /// Integer floor-division `a // b` and remainder `a % b` — **compile-time
+    /// only** (the field has no integer division). Valid where an index /
+    /// slice bound / `Const` argument is expected, or as a folded `if`
+    /// condition; using one as a runtime field value is an error.
+    Div(Box<Expr>, Box<Expr>),
+    Mod(Box<Expr>, Box<Expr>),
     /// Single-return function call in expression position.
     Call(String, Vec<Expr>),
     /// `HeapBuf(n)` — allocate a heap buffer of `n` cells; evaluates to its pointer.

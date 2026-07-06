@@ -329,6 +329,13 @@ impl FnLower<'_> {
     /// second block must be skipped over, + the amortized `one`/`self_fp`
     /// materialization.
     fn lower_if(&mut self, eq: bool, lhs: &Expr, rhs: &Expr, then: &[Stmt], els: &[Stmt]) {
+        // Compile-time condition (both sides compile-time integers, e.g. after
+        // `Const`-argument substitution): fold to the taken branch, emitting no
+        // test or jump. Lets `@unroll` arms bake per-case control flow.
+        if let (Some(a), Some(b)) = (self.try_const_index(lhs), self.try_const_index(rhs)) {
+            self.branch(if (a == b) == eq { then } else { els });
+            return;
+        }
         let (la, lb) = (self.expr(lhs), self.expr(rhs));
         let x = self.fresh();
         self.emit(LOp::Xor { a: la, b: lb, c: x }); // x = lhs + rhs: nonzero ⇔ !=
@@ -564,6 +571,9 @@ impl FnLower<'_> {
                 });
                 dst
             }
+            Expr::Div(..) | Expr::Mod(..) => {
+                panic!("`//` and `%` are compile-time only; use them in an index, a bound, or a `Const` argument")
+            }
             Expr::Slice(..) => panic!("a slice is not a scalar; it is only a blake3 operand"),
         }
     }
@@ -585,9 +595,9 @@ impl FnLower<'_> {
     }
 
     /// A compile-time integer index — a literal, a name bound to a literal,
-    /// or `+`/`*` of those (evaluated as *integer* arithmetic: this is index
-    /// space, not the field). `None` when the expression is a runtime value
-    /// (which a heap slice start may be; see [`Self::blake3_operand`]).
+    /// or `+`/`*`/`//`/`%` of those (evaluated as *integer* arithmetic: this is
+    /// index space, not the field). `None` when the expression is a runtime
+    /// value (which a heap slice start may be; see [`Self::blake3_operand`]).
     fn try_const_index(&self, idx: &Expr) -> Option<u32> {
         match idx {
             // `as u32` would silently wrap a ≥ 2^32 literal (e.g. `sa[2^32]` → `sa[0]`);
@@ -604,6 +614,16 @@ impl FnLower<'_> {
                     .checked_mul(self.try_const_index(b)?)
                     .unwrap_or_else(|| panic!("stack index overflows u32")),
             ),
+            Expr::Div(a, b) => {
+                let d = self.try_const_index(b)?;
+                assert!(d != 0, "compile-time division by zero");
+                Some(self.try_const_index(a)? / d)
+            }
+            Expr::Mod(a, b) => {
+                let d = self.try_const_index(b)?;
+                assert!(d != 0, "compile-time modulo by zero");
+                Some(self.try_const_index(a)? % d)
+            }
             _ => None,
         }
     }
@@ -1393,7 +1413,7 @@ fn plus_k(lo: &Expr, hi: &Expr) -> Option<u128> {
 fn free_vars_expr(e: &Expr, refs: &mut Vec<String>) {
     match e {
         Expr::Var(v) => refs.push(v.clone()),
-        Expr::Add(a, b) | Expr::Mul(a, b) | Expr::Index(a, b) => {
+        Expr::Add(a, b) | Expr::Mul(a, b) | Expr::Div(a, b) | Expr::Mod(a, b) | Expr::Index(a, b) => {
             free_vars_expr(a, refs);
             free_vars_expr(b, refs);
         }
