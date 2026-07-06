@@ -414,6 +414,15 @@ name those cells after the join. Multiple targets take a multi-return call as
 the arm body. The whole call sits on one line (no line continuation), and the
 `match` soundness caveat applies unchanged.
 
+**Dispatched-call fusion.** When *every* arm is a call to the same function
+with identical runtime arguments — the common `lambda k: f(a, b, k)`, where
+only a `Const` argument varies — the compiler builds the callee frame **once**
+and the dispatch jumps straight into the selected specialization's entry, which
+returns past the join. Each taken arm is then just the trampoline's two
+instructions (`SET entry; JUMP`) instead of a full call: no per-arm frame
+setup, call jump, or return jump. (The `walk`-per-digit dispatch in the XMSS
+verifier is the motivating case.)
+
 Statements without effect are rejected.
 
 ## Assertions
@@ -522,7 +531,7 @@ entry — repeated lines with the same name are its successive entries:
 | `assert log x < k` | 3 (+1 `SET` amortized per bound per frame) |
 | `if a == b: …` | 3 (+2 to skip a non-empty `else`; +2 amortized `self-fp` per branching function); **0 if the condition is compile-time** |
 | `match log(x): …` | ≈ 7, independent of the case count |
-| `… = match_range(log(x), …)` | the `match` (arm results written into the targets directly, no copy) |
+| `… = match_range(log(x), …)` | the `match` + the arm; results written into the targets directly. Uniform-call arms (`lambda k: f(a, b, k)`) **fuse**: one shared frame + dispatch to entry, each arm just `SET`+`JUMP` |
 | function call | ≈ `n_args + n_returns + 4` (0 when the callee is `@unroll`) |
 | `mul_range` iteration | body + ≈ 1 `MUL` + 1 `XOR` + call overhead |
 | `unroll` iteration | body only (compile-time replication) |

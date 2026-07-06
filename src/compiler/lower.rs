@@ -234,6 +234,30 @@ impl FnLower<'_> {
     /// cells shared by every arm (write-once: exactly one arm executes);
     /// `names` bind to those cells at the join.
     fn lower_match_range(&mut self, names: &[String], x: &Expr, arms: &[Expr]) {
+        // Fusion: when every arm is a direct call to the same function with
+        // identical runtime args (differing only in `Const` args — the usual
+        // `lambda k: f(a, b, k)`), set up one shared callee frame and dispatch
+        // straight to the specialization's entry, which returns to the join.
+        // Collapses each arm from a full call to a two-instruction trampoline
+        // slot; see [`Self::lower_dispatched_call`].
+        if arms.iter().all(|a| matches!(a, Expr::Call(..))) {
+            let specialized: Vec<(String, Vec<Expr>)> = arms
+                .iter()
+                .map(|a| {
+                    let Expr::Call(f, cargs) = a else { unreachable!() };
+                    self.specialize(f, cargs)
+                })
+                .collect();
+            let rt0 = &specialized[0].1;
+            if specialized.iter().all(|(_, rt)| exprs_eq(rt, rt0)) {
+                let callees: Vec<String> = specialized.iter().map(|(c, _)| c.clone()).collect();
+                let rt_args = rt0.clone();
+                self.lower_dispatched_call(names, x, &callees, &rt_args);
+                return;
+            }
+            // Not uniform: fall through (the specializations queued above are
+            // re-requested idempotently by `call_into`).
+        }
         let xo = self.expr(x);
         let rcells: Vec<Off> = names.iter().map(|_| self.fresh()).collect();
         self.lower_match_dispatch(xo, arms.len(), |s, j| {
@@ -251,6 +275,99 @@ impl FnLower<'_> {
                 }
             });
         });
+        for (name, &cell) in names.iter().zip(&rcells) {
+            self.stacks.remove(name);
+            self.consts.remove(name);
+            self.gaddrs.remove(name);
+            self.vars.insert(name.clone(), cell);
+        }
+    }
+
+    /// `names = match_range(log(x), …, lambda k: f(args, k))` fused: the arms all
+    /// call one of `callees` (specializations sharing the arg/return layout) with
+    /// the same runtime `args`, so build the callee frame **once** and let the
+    /// dispatch jump straight into the selected entry, which returns to the join.
+    /// Each taken arm is then just the trampoline's `SET entry; JUMP` — no
+    /// per-arm frame setup, call, or return jump.
+    fn lower_dispatched_call(&mut self, names: &[String], x: &Expr, callees: &[String], rt_args: &[Expr]) {
+        let n_args = rt_args.len() as u32;
+        let rcells: Vec<Off> = names.iter().map(|_| self.fresh()).collect();
+
+        // Shared callee frame: args, retfp, and retpc = the join (so the callee
+        // returns straight past the dispatch). Evaluated once.
+        let arg_offs: Vec<Off> = rt_args.iter().map(|a| self.expr(a)).collect();
+        let xo = self.expr(x);
+        let one = self.one();
+        let sfp = self.self_fp();
+
+        let nfp = self.fresh();
+        self.pending.push(Hint::AllocFrameMax {
+            ptr: nfp,
+            callees: callees.to_vec(),
+        });
+        for (i, &ao) in arg_offs.iter().enumerate() {
+            self.emit(LOp::Deref {
+                alpha: nfp,
+                beta: 2 + i as u32,
+                gamma: ao,
+                mode: DerefMode::Cell,
+            });
+        }
+        self.emit(LOp::Deref {
+            alpha: nfp,
+            beta: 1,
+            gamma: 0,
+            mode: DerefMode::Fp,
+        }); // retfp
+        let join_cell = self.fresh();
+        let join_set = self.code.len();
+        self.emit(LOp::Set {
+            o: join_cell,
+            k: KVal::Local(0),
+        }); // patched: the join pc
+        self.emit(LOp::Deref {
+            alpha: nfp,
+            beta: 0,
+            gamma: join_cell,
+            mode: DerefMode::Cell,
+        }); // retpc = join
+
+        // Dispatch: d = g^T · x² lands on the two-instruction slot for the digit.
+        let kcell = self.fresh();
+        let kset = self.code.len();
+        self.emit(LOp::Set {
+            o: kcell,
+            k: KVal::Local(0),
+        }); // patched: table base T
+        let x2 = self.fresh();
+        self.emit(LOp::Mul { a: xo, b: xo, c: x2 });
+        let d = self.fresh();
+        self.emit(LOp::Mul { a: kcell, b: x2, c: d });
+        self.emit(LOp::Jump { oc: one, od: d, of: sfp });
+
+        // Trampoline: slot j enters `callees[j]` with fp = nfp; the callee's own
+        // `return` jumps to retpc (the join) in the caller frame.
+        self.patch_local(kset, self.code.len());
+        for callee in callees {
+            let c = self.fresh();
+            self.emit(LOp::Set {
+                o: c,
+                k: KVal::Entry(callee.clone()),
+            });
+            self.emit(LOp::Jump { oc: one, od: c, of: nfp });
+        }
+
+        // Join: read the return values (written by whichever callee ran).
+        self.patch_local(join_set, self.code.len());
+        for (i, &r) in rcells.iter().enumerate() {
+            self.emit(LOp::Deref {
+                alpha: nfp,
+                beta: 2 + n_args + i as u32,
+                gamma: r,
+                mode: DerefMode::Cell,
+            });
+        }
+
         for (name, &cell) in names.iter().zip(&rcells) {
             self.stacks.remove(name);
             self.consts.remove(name);
@@ -1372,6 +1489,13 @@ impl FnLower<'_> {
             }
         }
     }
+}
+
+/// Structural equality of two argument lists (small expressions, no interning),
+/// via the derived `Debug` form — used to check `match_range` arms share their
+/// runtime arguments ([`FnLower::lower_match_range`] fusion).
+fn exprs_eq(a: &[Expr], b: &[Expr]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| format!("{x:?}") == format!("{y:?}"))
 }
 
 /// A body safe to inline: a single **tail** `return`, and no construct whose

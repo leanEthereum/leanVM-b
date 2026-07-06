@@ -125,6 +125,10 @@ pub fn compile(ast: &Ast) -> Program {
                             ptr: *ptr,
                             size: frame_size[callee],
                         },
+                        Hint::AllocFrameMax { ptr, callees } => RHint::Alloc {
+                            ptr: *ptr,
+                            size: callees.iter().map(|c| frame_size[c]).max().unwrap(),
+                        },
                         Hint::AllocBuffer { ptr, size } => RHint::Alloc { ptr: *ptr, size: *size },
                         Hint::AllocBufferDyn { ptr, size } => RHint::AllocDyn { ptr: *ptr, size: *size },
                         Hint::WitnessStack { name, base, len } => RHint::WitnessStack {
