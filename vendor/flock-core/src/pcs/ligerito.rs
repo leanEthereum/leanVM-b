@@ -1434,11 +1434,13 @@ impl LigeritoSecurityConfig {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecursiveProof {
-    /// One row per query, each of `num_interleaved` F128 entries. Rows are
-    /// emitted in **sorted** query-position order so they align with the
-    /// merkle multi-proof.
+    /// The DISTINCT opened rows (`num_interleaved` F128 each), in sorted-query
+    /// order — the pruned form. The verifier restores the full per-query set with
+    /// [`restore_level`] before the canonical check.
     pub opened_rows: Vec<Vec<F128>>,
-    /// Single octopus multi-proof shared across all queries at this level.
+    /// The **pruned** (octopus) Merkle siblings: only those not derivable from
+    /// another queried subtree. [`prune_level`] emits them; [`restore_level`]
+    /// rebuilds every query's full path.
     pub merkle_proof: Vec<Hash>,
 }
 
@@ -1446,7 +1448,7 @@ pub struct RecursiveProof {
 pub struct FinalProof {
     /// Remaining polynomial sent in clear at the last recursive step.
     pub yr: Vec<F128>,
-    /// Same sorted-by-position convention as [`RecursiveProof`].
+    /// Same sampling-order / independent-path convention as [`RecursiveProof`].
     pub opened_rows: Vec<Vec<F128>>,
     pub merkle_proof: Vec<Hash>,
 }
@@ -2740,34 +2742,71 @@ impl SumcheckProver {
 // Prover / Verifier — stubs
 // ===================================================================
 
-/// Sample `count` distinct positions in `[0, block_len)` via the challenger.
-/// Asserts `count <= block_len` — otherwise no number of samples could satisfy
-/// the distinctness requirement (would infinite-loop).
-fn sample_distinct_queries<Ch: Challenger>(
-    challenger: &mut Ch,
-    block_len: usize,
-    count: usize,
-) -> Vec<usize> {
-    assert!(
-        count <= block_len,
-        "sample_distinct_queries: count ({count}) > block_len ({block_len}) — config is too thin for this query count"
-    );
-    let mut seen = std::collections::HashSet::new();
-    let mut out = Vec::with_capacity(count);
-    while out.len() < count {
-        let v = challenger.sample_f128();
-        let q = (v.lo as usize) % block_len;
-        if seen.insert(q) {
-            out.push(q);
-        }
-    }
-    out.sort_unstable();
-    out
+/// Sample `count` query positions in `[0, block_len)` via the challenger — **with
+/// replacement, in draw order** (NO dedup, NO sort). This is exactly `count`
+/// challenger draws, so the transcript advances by a fixed amount, and each query
+/// is opened + verified by its OWN independent Merkle path. A recursive verifier
+/// then needs no sort/dedup/permutation gadget — it just re-samples `count`
+/// challenges and checks `count` independent paths in order.
+///
+/// Sampling with replacement (vs. the previous distinct-set) costs a negligible
+/// soundness margin: expected duplicates ≈ `count²/(2·block_len)` ≪ 1 for the
+/// shipped configs (e.g. 243 queries into `block_len ≥ 2^15`), and the samples
+/// are random-oracle outputs the prover cannot steer toward collisions.
+fn sample_queries<Ch: Challenger>(challenger: &mut Ch, block_len: usize, count: usize) -> Vec<usize> {
+    (0..count).map(|_| (challenger.sample_f128().lo as usize) % block_len).collect()
 }
 
-/// Build a single octopus multi-proof for all `queries` against `tree`.
-fn merkle_multi_proof_for(tree: &[Hash], block_len: usize, queries: &[usize]) -> Vec<Hash> {
-    merkle::merkle_multi_proof(tree, block_len, queries)
+/// Prover: prune a level's opening to the theoretical minimum. The queries are
+/// sampled with replacement (unsorted, possibly duplicate); this dedups them,
+/// keeps the distinct leaf rows in sorted-position order, and emits only the
+/// octopus — the siblings NOT derivable from another queried subtree — via
+/// [`merkle::merkle_multi_proof`]. Stored as `(opened_rows, merkle_proof)`; the
+/// verifier rebuilds the full per-query paths with [`restore_level`].
+fn prune_level(queries: &[usize], rows: &[Vec<F128>], tree: &[Hash], block_len: usize) -> (Vec<Vec<F128>>, Vec<Hash>) {
+    let mut items: Vec<(usize, &Vec<F128>)> = queries.iter().copied().zip(rows).collect();
+    items.sort_by_key(|&(q, _)| q);
+    items.dedup_by_key(|&mut (q, _)| q);
+    let sorted: Vec<usize> = items.iter().map(|&(q, _)| q).collect();
+    let leaf_data: Vec<Vec<F128>> = items.iter().map(|&(_, r)| r.clone()).collect();
+    let sibling_hashes = merkle::merkle_multi_proof(tree, block_len, &sorted);
+    (leaf_data, sibling_hashes)
+}
+
+/// Verifier: restore the fully-expanded per-query `(opened_rows, merkle_proof)`
+/// from the pruned `(leaf_data, sibling_hashes)` — the inverse of [`prune_level`].
+/// The result feeds the recursion-friendly [`verify_level_opens`] (and the
+/// sumcheck induction), so all sort/dedup/tree-reconstruction stays *here*, in the
+/// separable restore step, never in the canonical checker. `None` on any
+/// inconsistency (which the caller turns into a rejected proof).
+fn restore_level(
+    queries: &[usize],
+    leaf_data: &[Vec<F128>],
+    sibling_hashes: &[Hash],
+    block_len: usize,
+) -> Option<(Vec<Vec<F128>>, Vec<Hash>)> {
+    let leaf_hashes: Vec<Hash> = leaf_data
+        .iter()
+        .map(|row| {
+            let bytes: &[u8] = unsafe {
+                core::slice::from_raw_parts(row.as_ptr() as *const u8, row.len() * core::mem::size_of::<F128>())
+            };
+            merkle::hash_leaf(bytes)
+        })
+        .collect();
+    let paths = merkle::restore_multi_proof(block_len, queries, &leaf_hashes, sibling_hashes)?;
+    // Map the distinct leaf rows back to the per-query (unsorted, duplicate) order.
+    let mut sorted: Vec<usize> = queries.to_vec();
+    sorted.sort_unstable();
+    sorted.dedup();
+    if sorted.len() != leaf_data.len() {
+        return None;
+    }
+    let mut rows = Vec::with_capacity(queries.len());
+    for &q in queries {
+        rows.push(leaf_data[sorted.binary_search(&q).ok()?].clone());
+    }
+    Some((rows, paths))
 }
 
 
@@ -2991,16 +3030,16 @@ fn recursive_prover_with_basis_impl<Ch: Challenger>(
 
     // Open L0; lane-fold weights = r_lane_fold.
     let num_queries_0 = config.queries[0];
-    let queries_0 = sample_distinct_queries(challenger, l0_block_len, num_queries_0);
+    let queries_0 = sample_queries(challenger, l0_block_len, num_queries_0);
     let alpha_0 = challenger.sample_f128_vec(ceil_log2(num_queries_0));
     let _t = std::time::Instant::now();
     let opened_rows_0: Vec<Vec<F128>> = queries_0.iter().map(|&q| l0_row(q).to_vec()).collect();
-    let merkle_proof_0 = merkle_multi_proof_for(l0_tree, l0_block_len, &queries_0);
+    let (pruned_rows_0, merkle_proof_0) = prune_level(&queries_0, &opened_rows_0, l0_tree, l0_block_len);
     if trace {
         t_opens += _t.elapsed();
     }
     let initial_proof = RecursiveProof {
-        opened_rows: opened_rows_0.clone(),
+        opened_rows: pruned_rows_0,
         merkle_proof: merkle_proof_0,
     };
 
@@ -3070,14 +3109,14 @@ fn recursive_prover_with_basis_impl<Ch: Challenger>(
             grinding_nonces.push(nonce_last);
             let num_queries_last = config.queries[i + 1];
             let queries_last =
-                sample_distinct_queries(challenger, wtns_prev.block_len, num_queries_last);
+                sample_queries(challenger, wtns_prev.block_len, num_queries_last);
             let _t = std::time::Instant::now();
             let opened_rows_last: Vec<Vec<F128>> = queries_last
                 .iter()
                 .map(|&q| wtns_prev.row(q).to_vec())
                 .collect();
-            let merkle_proof_last =
-                merkle_multi_proof_for(&wtns_prev.tree, wtns_prev.block_len, &queries_last);
+            let (pruned_rows_last, merkle_proof_last) =
+                prune_level(&queries_last, &opened_rows_last, &wtns_prev.tree, wtns_prev.block_len);
             if trace {
                 t_opens += _t.elapsed();
             }
@@ -3122,7 +3161,7 @@ fn recursive_prover_with_basis_impl<Ch: Challenger>(
                 recursive_proofs,
                 final_proof: FinalProof {
                     yr,
-                    opened_rows: opened_rows_last,
+                    opened_rows: pruned_rows_last,
                     merkle_proof: merkle_proof_last,
                 },
                 sumcheck_transcript: sc_prover.transcript().to_vec(),
@@ -3177,20 +3216,20 @@ fn recursive_prover_with_basis_impl<Ch: Challenger>(
         let nonce_i = challenger.grind_pow(config.grinding_bits[i + 1] as u32);
         grinding_nonces.push(nonce_i);
         let num_queries_i = config.queries[i + 1];
-        let queries_i = sample_distinct_queries(challenger, wtns_prev.block_len, num_queries_i);
+        let queries_i = sample_queries(challenger, wtns_prev.block_len, num_queries_i);
         let alpha_i = challenger.sample_f128_vec(ceil_log2(num_queries_i));
         let _t = std::time::Instant::now();
         let opened_rows_i: Vec<Vec<F128>> = queries_i
             .iter()
             .map(|&q| wtns_prev.row(q).to_vec())
             .collect();
-        let merkle_proof_i =
-            merkle_multi_proof_for(&wtns_prev.tree, wtns_prev.block_len, &queries_i);
+        let (pruned_rows_i, merkle_proof_i) =
+            prune_level(&queries_i, &opened_rows_i, &wtns_prev.tree, wtns_prev.block_len);
         if trace {
             t_opens += _t.elapsed();
         }
         recursive_proofs.push(RecursiveProof {
-            opened_rows: opened_rows_i.clone(),
+            opened_rows: pruned_rows_i,
             merkle_proof: merkle_proof_i,
         });
 
@@ -3383,19 +3422,30 @@ where
 
     let num_queries_0 = config.queries[0];
     let _t = std::time::Instant::now();
-    let queries_0 = sample_distinct_queries(challenger, block_len_0, num_queries_0);
+    let queries_0 = sample_queries(challenger, block_len_0, num_queries_0);
     if trace {
         t_sample_q += _t.elapsed();
     }
     let alpha_0 = challenger.sample_f128_vec(ceil_log2(num_queries_0));
     let _t = std::time::Instant::now();
+    // Restore the pruned opening to the fully-expanded per-query rows + paths, then
+    // check each path independently (sort/dedup lives only in the restore).
+    let (exp_rows_0, exp_paths_0) = match restore_level(
+        &queries_0,
+        &proof.initial_proof.opened_rows,
+        &proof.initial_proof.merkle_proof,
+        block_len_0,
+    ) {
+        Some(r) => r,
+        None => return false,
+    };
     if !verify_level_opens(
         expected_initial_root,
         block_len_0,
         &queries_0,
-        &proof.initial_proof.opened_rows,
+        &exp_rows_0,
         num_interleaved_0,
-        &proof.initial_proof.merkle_proof,
+        &exp_paths_0,
     ) {
         return false;
     }
@@ -3409,7 +3459,7 @@ where
     let n1 = log_n - initial_k;
     let _t = std::time::Instant::now();
     let enforced_sum_0 = induce_sumcheck_enforced_sum(
-        &proof.initial_proof.opened_rows,
+        &exp_rows_0,
         &r_lane_fold,
         &queries_0,
         &alpha_0,
@@ -3522,7 +3572,7 @@ where
             let num_queries_last = config.queries[i + 1];
             let _t = std::time::Instant::now();
             let queries_last =
-                sample_distinct_queries(challenger, prev_block_len, num_queries_last);
+                sample_queries(challenger, prev_block_len, num_queries_last);
             // Basis-induction challenge for the LAST commitment. Sampled here —
             // after `yr` was observed (top of this branch) and the queries are
             // fixed — so a forged `yr` cannot be adapted to it. Mirrors `alpha_i`
@@ -3532,13 +3582,22 @@ where
                 t_sample_q += _t.elapsed();
             }
             let _t = std::time::Instant::now();
+            let (exp_rows_last, exp_paths_last) = match restore_level(
+                &queries_last,
+                &proof.final_proof.opened_rows,
+                &proof.final_proof.merkle_proof,
+                prev_block_len,
+            ) {
+                Some(r) => r,
+                None => return false,
+            };
             if !verify_level_opens(
                 &prev_root,
                 prev_block_len,
                 &queries_last,
-                &proof.final_proof.opened_rows,
+                &exp_rows_last,
                 prev_num_interleaved,
-                &proof.final_proof.merkle_proof,
+                &exp_paths_last,
             ) {
                 return false;
             }
@@ -3560,7 +3619,7 @@ where
             // forces `yr` to agree with the committed codeword at every queried
             // column (multilinear Schwartz–Zippel), restoring binding.
             let enforced_sum_last = induce_sumcheck_enforced_sum(
-                &proof.final_proof.opened_rows,
+                &exp_rows_last,
                 &level_rs,
                 &queries_last,
                 &alpha_last,
@@ -3660,7 +3719,7 @@ where
                     t_merkle.as_secs_f64() * 1e3
                 );
                 eprintln!(
-                    "  sample_distinct_queries:   {:.2} ms",
+                    "  sample_queries:            {:.2} ms",
                     t_sample_q.as_secs_f64() * 1e3
                 );
                 eprintln!(
@@ -3729,7 +3788,7 @@ where
         let prev_num_interleaved = 1usize << prev_log_num_interleaved;
         let num_queries_i = config.queries[i + 1];
         let _t = std::time::Instant::now();
-        let queries_i = sample_distinct_queries(challenger, prev_block_len, num_queries_i);
+        let queries_i = sample_queries(challenger, prev_block_len, num_queries_i);
         if trace {
             t_sample_q += _t.elapsed();
         }
@@ -3740,13 +3799,17 @@ where
         let rp = &proof.recursive_proofs[recursive_proof_idx];
         recursive_proof_idx += 1;
         let _t = std::time::Instant::now();
+        let (exp_rows_i, exp_paths_i) = match restore_level(&queries_i, &rp.opened_rows, &rp.merkle_proof, prev_block_len) {
+            Some(r) => r,
+            None => return false,
+        };
         if !verify_level_opens(
             &prev_root,
             prev_block_len,
             &queries_i,
-            &rp.opened_rows,
+            &exp_rows_i,
             prev_num_interleaved,
-            &rp.merkle_proof,
+            &exp_paths_i,
         ) {
             return false;
         }
@@ -3756,7 +3819,7 @@ where
 
         let _t = std::time::Instant::now();
         let enforced_sum_i =
-            induce_sumcheck_enforced_sum(&rp.opened_rows, &level_rs, &queries_i, &alpha_i);
+            induce_sumcheck_enforced_sum(&exp_rows_i, &level_rs, &queries_i, &alpha_i);
         if trace {
             t_enforced += _t.elapsed();
         }
@@ -3923,15 +3986,24 @@ pub fn recursive_verifier_with_basis<Ch: Challenger>(
     nonce_idx += 1;
 
     let num_queries_0 = config.queries[0];
-    let queries_0 = sample_distinct_queries(challenger, block_len_0, num_queries_0);
+    let queries_0 = sample_queries(challenger, block_len_0, num_queries_0);
     let alpha_0 = challenger.sample_f128_vec(ceil_log2(num_queries_0));
+    let (exp_rows_0, exp_paths_0) = match restore_level(
+        &queries_0,
+        &proof.initial_proof.opened_rows,
+        &proof.initial_proof.merkle_proof,
+        block_len_0,
+    ) {
+        Some(r) => r,
+        None => return false,
+    };
     if !verify_level_opens(
         expected_initial_root,
         block_len_0,
         &queries_0,
-        &proof.initial_proof.opened_rows,
+        &exp_rows_0,
         num_interleaved_0,
-        &proof.initial_proof.merkle_proof,
+        &exp_paths_0,
     ) {
         return false;
     }
@@ -3942,7 +4014,7 @@ pub fn recursive_verifier_with_basis<Ch: Challenger>(
         n1,
         log_inv_rate_0,
         &sks_vks_n1,
-        &proof.initial_proof.opened_rows,
+        &exp_rows_0,
         &r_lane_fold,
         &queries_0,
         &alpha_0,
@@ -4043,19 +4115,28 @@ pub fn recursive_verifier_with_basis<Ch: Challenger>(
             let prev_num_interleaved = 1usize << prev_log_num_interleaved;
             let num_queries_last = config.queries[i + 1];
             let queries_last =
-                sample_distinct_queries(challenger, prev_block_len, num_queries_last);
+                sample_queries(challenger, prev_block_len, num_queries_last);
             // Final-level basis-induction challenge — sampled after `yr` and the
             // queries are fixed. Same position as the succinct verifier
             // (recursive_verifier_with_basis_succinct), which verifies the same
             // proof, so both stay in lockstep.
             let alpha_last = challenger.sample_f128_vec(ceil_log2(num_queries_last));
+            let (exp_rows_last, exp_paths_last) = match restore_level(
+                &queries_last,
+                &proof.final_proof.opened_rows,
+                &proof.final_proof.merkle_proof,
+                prev_block_len,
+            ) {
+                Some(r) => r,
+                None => return false,
+            };
             if !verify_level_opens(
                 &prev_root,
                 prev_block_len,
                 &queries_last,
-                &proof.final_proof.opened_rows,
+                &exp_rows_last,
                 prev_num_interleaved,
-                &proof.final_proof.merkle_proof,
+                &exp_paths_last,
             ) {
                 return false;
             }
@@ -4069,7 +4150,7 @@ pub fn recursive_verifier_with_basis<Ch: Challenger>(
             let (basis_last_induced, enforced_sum_last) = induce_sumcheck_poly(
                 n_current,
                 &sks_vks_last,
-                &proof.final_proof.opened_rows,
+                &exp_rows_last,
                 &level_rs,
                 &queries_last,
                 &alpha_last,
@@ -4161,20 +4242,24 @@ pub fn recursive_verifier_with_basis<Ch: Challenger>(
         let prev_block_len = 1usize << (prev_log_msg_cols + prev_log_inv_rate);
         let prev_num_interleaved = 1usize << prev_log_num_interleaved;
         let num_queries_i = config.queries[i + 1];
-        let queries_i = sample_distinct_queries(challenger, prev_block_len, num_queries_i);
+        let queries_i = sample_queries(challenger, prev_block_len, num_queries_i);
         let alpha_i = challenger.sample_f128_vec(ceil_log2(num_queries_i));
         if recursive_proof_idx >= proof.recursive_proofs.len() {
             return false;
         }
         let rp = &proof.recursive_proofs[recursive_proof_idx];
         recursive_proof_idx += 1;
+        let (exp_rows_i, exp_paths_i) = match restore_level(&queries_i, &rp.opened_rows, &rp.merkle_proof, prev_block_len) {
+            Some(r) => r,
+            None => return false,
+        };
         if !verify_level_opens(
             &prev_root,
             prev_block_len,
             &queries_i,
-            &rp.opened_rows,
+            &exp_rows_i,
             prev_num_interleaved,
-            &rp.merkle_proof,
+            &exp_paths_i,
         ) {
             return false;
         }
@@ -4183,7 +4268,7 @@ pub fn recursive_verifier_with_basis<Ch: Challenger>(
         let (basis_i_induced, enforced_sum_i) = induce_sumcheck_poly(
             n_current,
             &sks_vks_i,
-            &rp.opened_rows,
+            &exp_rows_i,
             &level_rs,
             &queries_i,
             &alpha_i,
@@ -4217,21 +4302,27 @@ pub fn recursive_verifier_with_basis<Ch: Challenger>(
     unreachable!()
 }
 
-/// Verify all opened rows against one root via a single octopus multi-proof.
-/// `queries` must be sorted ascending and aligned with `opened_rows`.
+/// Verify every opened row against the root by its OWN independent Merkle path.
+/// `queries` and `opened_rows` are aligned in sampling order (no sort/dedup);
+/// `paths` is the flat concatenation of one `log2(block_len)`-sibling path per
+/// query. Each check is a plain [`merkle::verify_merkle_proof`], so this maps to
+/// a recursive verifier with no sort/permutation/octopus reconstruction.
 fn verify_level_opens(
     root: &Hash,
     block_len: usize,
     queries: &[usize],
     opened_rows: &[Vec<F128>],
     expected_num_interleaved: usize,
-    multi_proof: &[Hash],
+    paths: &[Hash],
 ) -> bool {
     if queries.len() != opened_rows.len() {
         return false;
     }
-    let mut leaf_hashes: Vec<Hash> = Vec::with_capacity(opened_rows.len());
-    for row in opened_rows {
+    let depth = block_len.trailing_zeros() as usize;
+    if paths.len() != queries.len() * depth {
+        return false;
+    }
+    for (i, (&q, row)) in queries.iter().zip(opened_rows).enumerate() {
         if row.len() != expected_num_interleaved {
             return false;
         }
@@ -4241,8 +4332,11 @@ fn verify_level_opens(
                 row.len() * core::mem::size_of::<F128>(),
             )
         };
-        leaf_hashes.push(merkle::hash_leaf(bytes));
+        let leaf = merkle::hash_leaf(bytes);
+        if !merkle::verify_merkle_proof(root, &leaf, q, &paths[i * depth..(i + 1) * depth]) {
+            return false;
+        }
     }
-    merkle::verify_merkle_multi_proof(root, block_len, queries, &leaf_hashes, multi_proof)
+    true
 }
 

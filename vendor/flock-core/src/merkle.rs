@@ -417,3 +417,119 @@ pub fn verify_merkle_multi_proof(
     }
     active.len() == 1 && active[0].1 == *root
 }
+
+/// Reconstruct the full per-query Merkle paths from a *pruned* (octopus) proof —
+/// the inverse of [`merkle_multi_proof`]. Given the ORIGINAL `queries` (unsorted,
+/// possibly duplicate), the distinct leaves' hashes (`leaf_hashes`, aligned with
+/// the sorted-unique query set), and the pruned `sibling_hashes`, it rebuilds for
+/// each query its full `log2(num_leaves)`-sibling path — the *expanded* form the
+/// recursion-friendly [`verify_merkle_proof`] consumes. Returns the paths
+/// concatenated flat (one `height`-long path per query, in query order), or `None`
+/// on any inconsistency (wrong sibling count, unresolvable node). It authenticates
+/// nothing itself; the caller verifies each restored path against the root.
+pub fn restore_multi_proof(
+    num_leaves: usize,
+    queries: &[usize],
+    leaf_hashes: &[Hash],
+    sibling_hashes: &[Hash],
+) -> Option<Vec<Hash>> {
+    if !num_leaves.is_power_of_two() || num_leaves == 0 {
+        return None;
+    }
+    let height = num_leaves.trailing_zeros() as usize;
+    let mut sorted: Vec<usize> = queries.to_vec();
+    sorted.sort_unstable();
+    sorted.dedup();
+    if sorted.len() != leaf_hashes.len() || sorted.last().is_some_and(|&p| p >= num_leaves) {
+        return None;
+    }
+    // Rebuild every tree node on the query paths bottom-up, pulling a pruned
+    // sibling only where that sibling is not itself a queried subtree (which we
+    // just computed). `known[lvl]` records the nodes present at each level.
+    let mut supplied = sibling_hashes.iter();
+    let mut known: Vec<Vec<(usize, Hash)>> = Vec::with_capacity(height);
+    let mut nodes: Vec<(usize, Hash)> = sorted.iter().copied().zip(leaf_hashes.iter().copied()).collect();
+    for _ in 0..height {
+        let mut level = Vec::with_capacity(2 * nodes.len());
+        let mut parents = Vec::with_capacity(nodes.len());
+        let mut i = 0;
+        while i < nodes.len() {
+            let idx = nodes[i].0;
+            let paired = idx & 1 == 0 && nodes.get(i + 1).is_some_and(|&(j, _)| j == (idx | 1));
+            let (left, right) = if paired {
+                (nodes[i].1, nodes[i + 1].1)
+            } else if idx & 1 == 0 {
+                (nodes[i].1, *supplied.next()?)
+            } else {
+                (*supplied.next()?, nodes[i].1)
+            };
+            parents.push((idx >> 1, hash_pair(&left, &right)));
+            level.push((idx & !1, left));
+            level.push((idx | 1, right));
+            i += if paired { 2 } else { 1 };
+        }
+        known.push(level);
+        nodes = parents;
+    }
+    if supplied.next().is_some() {
+        return None; // extra siblings ⇒ malformed proof
+    }
+    // Read each distinct leaf's full sibling path out of the reconstructed levels.
+    let per_distinct: Vec<Vec<Hash>> = sorted
+        .iter()
+        .map(|&leaf| {
+            (0..height)
+                .map(|lvl| {
+                    let sib = (leaf >> lvl) ^ 1;
+                    let level = &known[lvl];
+                    level.binary_search_by_key(&sib, |&(j, _)| j).ok().map(|pos| level[pos].1)
+                })
+                .collect::<Option<Vec<_>>>()
+        })
+        .collect::<Option<Vec<_>>>()?;
+    // Fan back out to the original (unsorted, possibly duplicate) query order.
+    let mut out = Vec::with_capacity(queries.len() * height);
+    for &q in queries {
+        let slot = sorted.binary_search(&q).ok()?;
+        out.extend_from_slice(&per_distinct[slot]);
+    }
+    Some(out)
+}
+
+#[cfg(test)]
+mod prune_tests {
+    use super::*;
+
+    /// `merkle_multi_proof` (prune) then `restore_multi_proof` (expand) reproduces
+    /// each query's full path, and every restored path authenticates to the root —
+    /// including unsorted, duplicate queries. Extra siblings are rejected.
+    #[test]
+    fn prune_restore_roundtrip() {
+        let num_leaves = 8usize;
+        let leaf_size = 4usize;
+        let height = 3usize;
+        let data: Vec<u8> = (0..(num_leaves * leaf_size) as u8).collect();
+        let tree = merkle_tree(&data, num_leaves);
+        let root = tree[tree.len() - 1];
+
+        let queries = [5usize, 1, 5, 3, 1]; // unsorted, with duplicates
+        let mut sorted = queries.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup(); // [1, 3, 5]
+        let leaf_hashes: Vec<Hash> = sorted.iter().map(|&q| hash_leaf(&data[q * leaf_size..(q + 1) * leaf_size])).collect();
+
+        let pruned = merkle_multi_proof(&tree, num_leaves, &sorted);
+        let flat = restore_multi_proof(num_leaves, &queries, &leaf_hashes, &pruned).expect("restore");
+        assert_eq!(flat.len(), queries.len() * height);
+        for (i, &q) in queries.iter().enumerate() {
+            let leaf = hash_leaf(&data[q * leaf_size..(q + 1) * leaf_size]);
+            let path = &flat[i * height..(i + 1) * height];
+            assert!(verify_merkle_proof(&root, &leaf, q, path), "restored path for query {q} (pos {i}) must verify");
+        }
+
+        // An extra (unconsumed) sibling is a malformed proof.
+        let mut extra = pruned.clone();
+        extra.push([0u8; 32]);
+        assert!(restore_multi_proof(num_leaves, &queries, &leaf_hashes, &extra).is_none());
+    }
+}
