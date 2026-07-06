@@ -10,17 +10,22 @@
 //! Total nodes: `2·num_leaves − 1`. The flat layout keeps the tree contiguous
 //! in memory for cheap Merkle-path extraction later.
 //!
-//! Hash uses the [`blake3`] crate, which auto-selects the widest SIMD backend
-//! at runtime (AVX-512/AVX2/SSE4.1/SSE2 on x86, NEON on aarch64 — no target
-//! feature needed) and hashes each node one-shot. Bulk hashing (independent
-//! leaves, independent nodes within a level) is parallelised across nodes with
-//! rayon.
+//! Hashing is **VM-native** — built only from the fixed 64→32 BLAKE3 compression
+//! `f(a,b) = BLAKE3(a‖b)` that leanVM-b's `Blake3` opcode computes (see
+//! [`compress`]), so every node hash a verifier recomputes can be replayed by a
+//! program running on the VM (the prerequisite for recursion). An internal node
+//! ([`hash_pair`]) is one compression. A leaf ([`hash_leaf`]) is a **Merkle–
+//! Damgård chain with the byte length in the IV** — one compression per 32-byte
+//! block — NOT a one-shot `blake3::hash` (whose multi-block chunk tree, flags,
+//! and counter the opcode cannot express). Bulk hashing (independent leaves,
+//! independent nodes within a level) is parallelised across nodes with rayon.
 //!
-//! No domain separation between leaf and internal hashes — this is a
-//! micro-benchmark module, not production code. A production PCS commit
-//! should prepend `0x00`/`0x01` (or equivalent) to distinguish the two
-//! pre-images and avoid second-preimage attacks via interpretation collision.
+//! No domain separation between leaf and internal hashes — but the length-in-IV
+//! leaf construction differs structurally from a pair compression, so a leaf and
+//! an internal node do not share a pre-image shape. A production PCS may still
+//! prefer explicit `0x00`/`0x01` tags.
 
+use crate::field::F128;
 use rayon::prelude::*;
 
 pub type Hash = [u8; 32];
@@ -60,27 +65,70 @@ pub mod hash_count {
     }
 }
 
-/// Hash one leaf of arbitrary byte length.
+/// The VM's 64→32 BLAKE3 compression `f(a, b) = BLAKE3(a‖b)` on two 32-byte
+/// halves — exactly leanVM-b's `Blake3` opcode / `vmhash::compress`. THE
+/// primitive; [`hash_pair`] and the [`hash_leaf`] MD chain are both just this.
+#[inline]
+fn compress(a: &[u8; 32], b: &[u8; 32]) -> Hash {
+    let mut buf = [0u8; 64];
+    buf[..32].copy_from_slice(a);
+    buf[32..].copy_from_slice(b);
+    *blake3::hash(&buf).as_bytes()
+}
+
+/// `g^k`, the field generator to the `k`-th power by square-and-multiply — the
+/// length marker for the leaf IV. Mirrors leanVM-b's `vmhash`/XMSS convention so
+/// [`hash_leaf`] equals `vmhash::hash_slice` on the same field words.
+fn g_pow(k: usize) -> F128 {
+    let mut result = F128::ONE;
+    let mut base = F128::generator();
+    let mut e = k;
+    while e > 0 {
+        if e & 1 == 1 {
+            result = result * base;
+        }
+        base = base * base;
+        e >>= 1;
+    }
+    result
+}
+
+/// Hash one leaf (any byte length) with the VM-native Merkle–Damgård slice hash:
+/// IV `(g^{num_bytes}, 0)` serialized to 32 bytes, then one [`compress`] per
+/// 32-byte block (the last zero-padded). The length in the IV binds the leaf
+/// size — non-length-extendable, no finalization block. On F128-word leaves (all
+/// callers pass `f128_slice_to_bytes(words)`) this is byte-identical to
+/// `vmhash::hash_slice(words)`, so a recursive verifier reproduces every leaf
+/// with the `Blake3` opcode alone. Costs `⌈len/32⌉` compressions (~2× a one-shot
+/// `blake3::hash`, whose intermediate-block flags the opcode cannot reproduce).
 #[inline]
 pub fn hash_leaf(data: &[u8]) -> Hash {
     #[cfg(feature = "hash-count")]
     {
         use std::sync::atomic::Ordering::Relaxed;
         hash_count::LEAF_CALLS.fetch_add(1, Relaxed);
-        hash_count::LEAF_COMPRESSIONS.fetch_add(hash_count::blake3_blocks(data.len()), Relaxed);
+        hash_count::LEAF_COMPRESSIONS.fetch_add((data.len().div_ceil(32)).max(1) as u64, Relaxed);
     }
-    *blake3::hash(data).as_bytes()
+    // IV = (g^{num_bytes}, 0) as 32 bytes: g^{num_bytes} in the low F128 word.
+    let iv0 = g_pow(data.len());
+    let mut cv = [0u8; 32];
+    cv[..8].copy_from_slice(&iv0.lo.to_le_bytes());
+    cv[8..16].copy_from_slice(&iv0.hi.to_le_bytes());
+    for block in data.chunks(32) {
+        let mut b = [0u8; 32];
+        b[..block.len()].copy_from_slice(block);
+        cv = compress(&cv, &b);
+    }
+    cv
 }
 
-/// Hash a pair of children into a parent node (64 B → 32 B).
+/// Hash a pair of children into a parent node (64 B → 32 B): one [`compress`],
+/// which is already exactly the VM opcode.
 #[inline]
 pub fn hash_pair(left: &Hash, right: &Hash) -> Hash {
     #[cfg(feature = "hash-count")]
     hash_count::PAIR_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let mut buf = [0u8; 64];
-    buf[..32].copy_from_slice(left);
-    buf[32..].copy_from_slice(right);
-    *blake3::hash(&buf).as_bytes()
+    compress(left, right)
 }
 
 /// Compute the Merkle root of `data` split into `num_leaves` equal-sized leaves.

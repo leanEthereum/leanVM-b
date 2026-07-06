@@ -34,20 +34,8 @@ pub(crate) use trace::{Brow, Drow, Jrow, Srow, Trace, Xrow};
 /// 64 bytes; the 32-byte digest is split back into `c = (vc0, vc1)`. The BLAKE3
 /// hash of the 64-byte input — the relation flock then proves ([`crate::blake3_flock`]).
 fn blake3_compress(va0: F128, va1: F128, vb0: F128, vb1: F128) -> (F128, F128) {
-    let mut input = [0u8; 64];
-    for (slot, w) in input.chunks_exact_mut(16).zip([va0, va1, vb0, vb1]) {
-        slot[..8].copy_from_slice(&w.lo.to_le_bytes());
-        slot[8..].copy_from_slice(&w.hi.to_le_bytes());
-    }
-    let digest = blake3::hash(&input);
-    let d = digest.as_bytes();
-    let word = |b: &[u8]| {
-        F128::new(
-            u64::from_le_bytes(b[..8].try_into().unwrap()),
-            u64::from_le_bytes(b[8..16].try_into().unwrap()),
-        )
-    };
-    (word(&d[..16]), word(&d[16..]))
+    let [c0, c1] = crate::vmhash::compress([va0, va1], [vb0, vb1]);
+    (c0, c1)
 }
 
 /// Data-memory size bounds (doc §Memory): memory is `2^h` cells with
@@ -78,12 +66,16 @@ const MAX_LOG_ROWS: usize = 32;
 /// the very first squeeze. Both sides hold the program, so both compute this
 /// identically; the announced sizes ride the stream (`announce_public`).
 fn program_digest(prog: &[Op]) -> [F128; 2] {
-    let mut h = blake3::Hasher::new();
-    h.update(b"leanvm-b/program/v0");
-    h.update(&(prog.len() as u64).to_le_bytes());
+    // VM-native: encode the program as a field-element slice and hash it with the
+    // Merkle–Damgård slice hash ([`crate::vmhash::hash_slice`]), so a recursive
+    // verifier can recompute this digest with the `Blake3` opcode alone.
+    let mut words: Vec<F128> = Vec::with_capacity(2 * prog.len() + 1);
+    // Domain/version marker (the MD IV also binds the total length).
+    words.push(F128::new(prog.len() as u64, 1));
     for op in prog {
         // Encode every op injectively as (tag, four u32 operands, one field
-        // immediate). BLAKE3 carries five offsets, so its 4th/5th ride the
+        // immediate) → two words: the tag + three offsets packed, then the
+        // immediate. BLAKE3 carries five offsets, so its 4th/5th ride the
         // immediate's two 64-bit limbs.
         let (tag, a, b, c, k) = match *op {
             Op::Xor { a, b, c } => (0u8, a, b, c, F128::ZERO),
@@ -100,16 +92,12 @@ fn program_digest(prog: &[Op]) -> [F128; 2] {
             Op::Jump { oc, od, of } => (6, oc, od, of, F128::ZERO),
             Op::Blake3 { ins, out } => (7, ins[0], ins[1], ins[2], F128::new(ins[3] as u64, out as u64)),
         };
-        h.update(&[tag]);
-        h.update(&a.to_le_bytes());
-        h.update(&b.to_le_bytes());
-        h.update(&c.to_le_bytes());
-        h.update(&k.lo.to_le_bytes());
-        h.update(&k.hi.to_le_bytes());
+        let lo = a as u64 | ((b as u64) << 32);
+        let hi = c as u64 | ((tag as u64) << 32);
+        words.push(F128::new(lo, hi));
+        words.push(k);
     }
-    let d = *h.finalize().as_bytes();
-    let w = |o: usize| u64::from_le_bytes(d[o..o + 8].try_into().unwrap());
-    [F128::new(w(0), w(8)), F128::new(w(16), w(24))]
+    crate::vmhash::hash_slice(&words)
 }
 
 /// The transcript seed: the public statement bound before any challenge — the

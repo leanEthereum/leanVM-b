@@ -29,6 +29,7 @@ pub mod multilinear;
 pub mod pcs;
 pub mod tables;
 pub mod transcript;
+pub mod vmhash;
 pub mod witness;
 
 /// Build rayon's global thread pool with every worker pinned to a **performance
