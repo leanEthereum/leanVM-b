@@ -208,7 +208,7 @@ A name bound to an integer literal (`x = 2`) additionally acts as a
 **compile-time index constant** — usable in stack indexes and slice bounds
 (see below). Any other re-binding clears that role.
 
-Two families of binding are folded and carried **virtually**, costing no
+Three families of binding are folded and carried **virtually**, costing no
 instruction until used as a value:
 
 - **g-powers and shifted pointers** — a cursor like `s = s * GEN` or a pointer
@@ -218,6 +218,10 @@ instruction until used as a value:
   and `*`, e.g. a running weight `w = w * CHAIN_LENGTH` in an unrolled loop.
   The arithmetic that advances it is compile-time (zero instructions); each use
   is one `SET` of the folded constant.
+- **stack-cell copies and zeros** — a store `sa[k] = other` or `sa[k] = 0` is
+  recorded as an alias rather than emitting a `MUL`/`SET`; every read of `sa[k]`
+  forwards to the real source (write-once keeps it valid). This is what makes
+  assembling a `BLAKE3` operand from scattered values free (see "BLAKE3").
 
 ## Memory
 
@@ -489,10 +493,15 @@ Operands are size-2 `StackBuf`s or 2-cell slices:
 
 - **stack operands** are read/written in place — zero copies; a self-hash
   `blake3(h, h, out)` aliases one pair into both inputs;
-- **heap slices** are bridged through the stack (the `BLAKE3` instruction
-  addresses only frame cells): +2 `DEREF`s per heap operand, inputs pulled
-  before the hash, outputs stored after — the same instruction either way,
-  write-once memory fills whichever side is unset.
+- the instruction addresses its **four input words independently**, so when a
+  256-bit operand is *assembled* from values that live in different cells —
+  the idiom `p = StackBuf(2); p[0] = tweak; p[1] = pp; blake3(p, …)` — the
+  copies vanish: a stack store of a plain copy or a zero is forwarded to its
+  source (see "Variables"), and `BLAKE3` reads each word where it already is;
+- **heap slices** are still bridged through the stack for the *input pull* (the
+  operand's word comes from the heap): +1 `DEREF` per heap word, and the output,
+  if a heap slice, is stored after — write-once memory fills whichever side is
+  unset.
 
 If `out` was already written, the statement *asserts* the digest equals it —
 write-once turning the hash into a verification, which is exactly what a
@@ -546,7 +555,7 @@ entry — repeated lines with the same name are its successive entries:
 | function call | ≈ `n_args + n_returns + 4` (0 when the callee is `@unroll`) |
 | `mul_range` iteration | body + ≈ 1 `MUL` + 1 `XOR` + call overhead |
 | `unroll` iteration | body only (compile-time replication) |
-| `blake3(a, b, out)` | 1 (+2 `DEREF`s per heap operand, +1 `MUL` per runtime slice start) |
+| `blake3(a, b, out)` | 1; input words read in place (copies/zeros assembling an operand are forwarded, not emitted), +1 `DEREF` per heap input word, +1 `MUL` per runtime slice start |
 | `hint_witness(dest, "name")` | 0 (+1 `MUL` for a runtime slice start) |
 
 ## Example
