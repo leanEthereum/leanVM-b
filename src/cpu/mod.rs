@@ -116,14 +116,14 @@ fn transcript_seed(program: &Program, pi: &[F128; 2]) -> [F128; 4] {
     [pi[0], pi[1], program.digest[0], program.digest[1]]
 }
 
-/// Announce the prover's per-table log-sizes (`log_mem` + the six `row_counts`) by
+/// Announce the prover's per-table log-sizes (`log_mem` + the five `row_counts`) by
 /// writing them onto the scalar stream (which binds them into the sponge and lets
 /// the verifier reconstruct the layout). The public statement (program + input) is
 /// not announced here — it seeds the transcript at construction (see
 /// [`transcript_seed`]). The boundary states and per-table log-sizes (`taus`) are
 /// derived (constants from the program, and `padlen(row_counts)`), so they need no
 /// separate binding.
-fn announce_public(ps: &mut ProverState, log_mem: usize, row_counts: [usize; 6]) {
+fn announce_public(ps: &mut ProverState, log_mem: usize, row_counts: [usize; tables::N_TABLES]) {
     ps.add_scalar(F128::new(log_mem as u64, 0));
     for r in row_counts {
         ps.add_scalar(F128::new(r as u64, 0));
@@ -135,7 +135,7 @@ fn announce_public(ps: &mut ProverState, log_mem: usize, row_counts: [usize; 6])
 /// input. (The public input was already bound by seeding the transcript.)
 fn read_public(vs: &mut VerifierState, prog: &Program, public_input: &[F128; 2]) -> Result<Layout, Error> {
     let log_mem = vs.next_scalar().map_err(Error::Transcript)?.lo as usize;
-    let mut row_counts = [0usize; 6];
+    let mut row_counts = [0usize; tables::N_TABLES];
     for r in &mut row_counts {
         *r = vs.next_scalar().map_err(Error::Transcript)?.lo as usize;
     }
@@ -340,9 +340,10 @@ fn blake3_pin_claims(point: &[F128], n_blocks: usize) -> Vec<ColumnClaim> {
 }
 
 /// Run statistics returned alongside the proof: the cycle count (total executed
-/// instructions), the per-opcode counts `[XOR, MUL, SET, DEREF, JUMP, BLAKE3]`, and the
-/// committed witness size — the sum of the column lengths, i.e. the real data
-/// before the stacked witness is zero-padded to a power of two `2^m`.
+/// instructions), the per-*opcode* counts `[XOR, MUL, SET, DEREF, JUMP, BLAKE3]`
+/// (6-wide — XOR and MUL are reported separately even though one merged table
+/// proves them), and the committed witness size — the sum of the column lengths,
+/// i.e. the real data before the stacked witness is zero-padded to `2^m`.
 pub struct Stats {
     pub cycles: usize,
     pub counts: [usize; 6],
@@ -364,7 +365,17 @@ pub fn prove(program: &Program, public_input: [F128; 2]) -> (Proof, Stats) {
     let exec = program.execute(public_input);
     let cycles = exec.cycles;
     let w = program.build(&exec);
-    let counts = w.row_counts;
+    // Per-opcode run stats (6-wide, XOR and MUL split), distinct from the merged
+    // per-table `w.row_counts` (5-wide) used for the layout.
+    let tr = &exec.trace;
+    let counts = [
+        tr.xor.len(),
+        tr.mul.len(),
+        tr.set.len(),
+        tr.deref.len(),
+        tr.jump.len(),
+        tr.blake3.len(),
+    ];
     // Real committed data, before zero-pad to 2^m. Virtual columns (the BLAKE3
     // value columns) carry data for the bus but are NOT committed, so exclude them.
     let committed_size: usize = w

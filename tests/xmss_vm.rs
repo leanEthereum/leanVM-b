@@ -149,7 +149,28 @@ fn test_aggregate_xmss() {
         pow(stats.cycles),
         per(stats.cycles)
     );
-    for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3"].iter().zip(&stats.counts) {
+    // Merged arithmetic table (XOR + MUL share one block), shown in place of the
+    // separate XOR/MUL instruction lines: its committed footprint and row split.
+    {
+        let (n_xor, n_mul) = (stats.counts[0], stats.counts[1]);
+        let rows = n_xor + n_mul;
+        let padded = rows.next_power_of_two(); // = 2^tau_arith (matches the layout)
+        let cols = leanvm_b::tables::ARITH_COLUMNS;
+        let committed = cols * padded;
+        let pct = |x: usize| if rows == 0 { 0.0 } else { 100.0 * x as f64 / rows as f64 };
+        println!(
+            "    arithmetic table          : {rows:>10} rows → pad 2^{} × {cols} cols = 2^{:.3} F128",
+            padded.trailing_zeros(),
+            (committed as f64).log2()
+        );
+        println!(
+            "      XOR / MUL split         : {:>5.1}% XOR ({n_xor})  /  {:.1}% MUL ({n_mul})",
+            pct(n_xor),
+            pct(n_mul)
+        );
+    }
+    // The remaining single-opcode tables (XOR/MUL are covered above).
+    for (name, &c) in ["SET", "DEREF", "JUMP", "BLAKE3"].iter().zip(&stats.counts[2..]) {
         println!(
             "    {name:<6} instructions       : {c:>10} = {:>7}   ({:>8.1} / XMSS)",
             pow(c),

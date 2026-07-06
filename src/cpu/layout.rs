@@ -26,7 +26,7 @@ pub(crate) const N_SHARED: usize = 4;
 /// base[t] + n_committed_columns_t)`. Both prover and verifier derive this identically
 /// from the table set, so every column claim lines up.
 pub(crate) struct Schema {
-    pub(crate) base: [usize; 6],
+    pub(crate) base: [usize; tables::N_TABLES],
     pub(crate) n: usize,
 }
 
@@ -34,7 +34,7 @@ pub(crate) struct Schema {
 pub(crate) fn schema() -> &'static Schema {
     static SCHEMA: std::sync::OnceLock<Schema> = std::sync::OnceLock::new();
     SCHEMA.get_or_init(|| {
-        let mut base = [0usize; 6];
+        let mut base = [0usize; tables::N_TABLES];
         let mut next = N_SHARED;
         for (t, table) in tables::tables().iter().enumerate() {
             base[t] = next;
@@ -76,10 +76,11 @@ pub struct Layout {
     /// Public input: the first two memory cells `m[0], m[1]` (256 bits), bound to
     /// the committed memory at verification (§8).
     pub pi: [F128; 2],
-    pub taus: [usize; 6], // (xor, mul, set, deref, jump, blake3) log row counts
-    /// Real (non-padded) per-table row counts, as announced. `row_counts[5]` is
-    /// the executed `BLAKE3` count, which gates the flock sub-proof.
-    pub row_counts: [usize; 6],
+    pub taus: [usize; tables::N_TABLES], // (arith, set, deref, jump, blake3) log row counts
+    /// Real (non-padded) per-table row counts, as announced. `row_counts[0]` is the
+    /// merged XOR+MUL arithmetic count; `row_counts[BLAKE3_TABLE]` is the executed
+    /// `BLAKE3` count, which gates the flock sub-proof.
+    pub row_counts: [usize; tables::N_TABLES],
 }
 
 /// The prover's witness bundle: the committed column values + their stacked
@@ -89,7 +90,7 @@ pub(crate) struct Witness {
     pub(crate) q: Vec<F128>,
     pub(crate) layout: Layout,
     pub(crate) log_mem: usize,
-    pub(crate) row_counts: [usize; 6],
+    pub(crate) row_counts: [usize; tables::N_TABLES],
 }
 
 /// Column → log-size (`kappa`) map: the shared MEM/MFCNT columns are `2^log_mem`,
@@ -103,7 +104,7 @@ pub(crate) struct Witness {
 /// redundant. Their memory-bus claims route directly to `q_pkd` slot evaluations
 /// (see [`slot_claims`] / [`blake3_flock::slot_point`]), which both binds them to
 /// the proven witness AND eliminates the separate value-binding sub-protocol.
-fn col_kappas(log_mem: usize, log_bytecode: usize, taus: [usize; 6], n_blake3: usize) -> Vec<Option<usize>> {
+fn col_kappas(log_mem: usize, log_bytecode: usize, taus: [usize; tables::N_TABLES], n_blake3: usize) -> Vec<Option<usize>> {
     let sch = schema();
     let mut k = vec![Some(0usize); sch.n];
     k[MEM] = Some(log_mem);
@@ -125,11 +126,11 @@ fn col_kappas(log_mem: usize, log_bytecode: usize, taus: [usize; 6], n_blake3: u
 }
 
 /// Build the public [`Layout`] from the program, the memory log-size `log_mem`, the
-/// six tables' real row counts `row_counts`, and the public input `pi`. The flush
+/// five tables' real row counts `row_counts`, and the public input `pi`. The flush
 /// blocks reference columns only by INDEX and the program only through its
 /// public columns, so this needs no committed witness — both prover and verifier
 /// reconstruct exactly the same structure (§7, §8).
-pub(crate) fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; 6], pi: [F128; 2]) -> Layout {
+pub(crate) fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; tables::N_TABLES], pi: [F128; 2]) -> Layout {
     let bytecode_size = prog.len();
     let log_bytecode = crate::log2_strict_usize(bytecode_size);
     let cells = 1usize << log_mem;
@@ -137,7 +138,7 @@ pub(crate) fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; 6], pi: [F
     // Per-table padded log-row-counts (the boundary block is fixed). The real
     // (non-padded) `row_counts[t]` tell each flush how many of its 2^kappa rows
     // are padding (default rows divided out of the bus, §sec:gp).
-    let mut taus = [0usize; 6];
+    let mut taus = [0usize; tables::N_TABLES];
     for (i, &r) in row_counts.iter().enumerate() {
         taus[i] = crate::log2_ceil_usize(r.max(1));
     }
@@ -290,6 +291,11 @@ pub(crate) fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; 6], pi: [F
             count_blocks.push(blk(kappa, real, vec![Col(base + c)]));
             pad[base + c] = F128::ONE;
         }
+        // Columns padded with g^0 = 1 (but raising no count block): the merged
+        // arithmetic table's OP column, so its padding rows read as no-op XORs.
+        for &c in table.unit_padded_columns() {
+            pad[base + c] = F128::ONE;
+        }
     }
     // BLAKE3 padding rows must match flock's padding instance (the all-zero-input
     // compression): zero inputs but a NONZERO output `out_lo`. So the two output
@@ -386,8 +392,7 @@ impl Program {
         // public input, with no committed witness; reconstruct it here so the
         // prover and verifier share exactly the same structure (§7, §8).
         let row_counts = [
-            tr.xor.len(),
-            tr.mul.len(),
+            tr.xor.len() + tr.mul.len(), // arith: XOR and MUL share one merged table
             tr.set.len(),
             tr.deref.len(),
             tr.jump.len(),

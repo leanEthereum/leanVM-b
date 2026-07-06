@@ -166,7 +166,7 @@ The arithmetization follows the M3 model (multi-multiset matching)~\cite{m3}. Th
 
 \paragraph{Balance.} The bus balances when its pushed tuples and its pulled tuples form the same multiset: the same tuples with the same multiplicities, in any order. This is the instance's only global check, proven by grand product argument (\S\ref{sec:gp}).
 
-\paragraph{Per-instruction tables.} Each instruction has its own table, with columns $\pc$, $\fp$, $\mathit{next\_pc}$, $\mathit{next\_fp}$, the operands, the operand addresses, and the read values. For every instruction except \texttt{JUMP}, the successor is virtual: $\mathit{next\_fp}=\fp$ is a copy of $\fp$, and $\mathit{next\_pc}=\gen\cdot\pc$ is the free increment of \S\ref{sec:vm}. Each row makes the same kinds of flush: on the state interaction (\S\ref{sec:state}) it pulls $\tup{\dsep{ST},\pc,\fp}$ and pushes $\tup{\dsep{ST},\mathit{next\_pc},\mathit{next\_fp}}$; it makes one memory flush per cell read (\S\ref{sec:memchan}) and one bytecode flush for the instruction at $\pc$ (\S\ref{sec:bytecode}). The concrete tables are in \S\ref{sec:tables}.
+\paragraph{Per-instruction tables.} Each instruction has its own table (\texttt{XOR} and \texttt{MUL\_NATIVE} sharing one, \S\ref{sec:tab-arith}), with columns $\pc$, $\fp$, $\mathit{next\_pc}$, $\mathit{next\_fp}$, the operands, the operand addresses, and the read values. For every instruction except \texttt{JUMP}, the successor is virtual: $\mathit{next\_fp}=\fp$ is a copy of $\fp$, and $\mathit{next\_pc}=\gen\cdot\pc$ is the free increment of \S\ref{sec:vm}. Each row makes the same kinds of flush: on the state interaction (\S\ref{sec:state}) it pulls $\tup{\dsep{ST},\pc,\fp}$ and pushes $\tup{\dsep{ST},\mathit{next\_pc},\mathit{next\_fp}}$; it makes one memory flush per cell read (\S\ref{sec:memchan}) and one bytecode flush for the instruction at $\pc$ (\S\ref{sec:bytecode}). The concrete tables are in \S\ref{sec:tables}.
 
 \subsection{Proving the local constraints}\label{sec:air}
 
@@ -291,30 +291,33 @@ each factor $1$ at $\zeta_k=0$ and $\gen^{2^{k}}$ at $\zeta_k=1$. The verifier e
 
 \section{The instruction tables}\label{sec:tables}
 
-Each of the six instructions has its own table.
+The six instructions are proven by five tables: \texttt{XOR} and \texttt{MUL\_NATIVE} share one arithmetic table (\S\ref{sec:tab-arith}); each of the four others has its own.
 
-\subsection{\texttt{XOR}}\label{sec:tab-xor}
+\subsection{\texttt{XOR} and \texttt{MUL\_NATIVE} (arithmetic)}\label{sec:tab-arith}
 
-Asserts $\loc{o_C}=\loc{o_A}+\loc{o_B}$, the field sum.
+One table serves both arithmetic opcodes. \texttt{XOR} asserts $\loc{o_C}=\loc{o_A}+\loc{o_B}$ (the field sum) and \texttt{MUL\_NATIVE} asserts $\loc{o_C}=\loc{o_A}\cdot\loc{o_B}$ (the GHASH product); the executed rows of both share one block, and a committed per-row opcode column $\mathit{op}$ selects which identity holds. The two arithmetic opcodes thus share one block and one constraint system, at the cost of two extra columns (the committed opcode $\mathit{op}$ and the product $p$).
 \begin{itemize}
-\item \textbf{Columns:} $\pc,\fp$; operands $o_A,o_B,o_C$; addresses $a_A,a_B,a_C$; values $v_A,v_B,v_C$; memory counts $r_A,r_B,r_C$; bytecode count $r_{\mathrm{bc}}$.
-\item \textbf{Constraints:} the three addresses $a_X=\fp\cdot o_X$, and the sum $v_C=v_A+v_B$.
+\item \textbf{Columns:} $\pc,\fp$; operands $o_A,o_B,o_C$; addresses $a_A,a_B,a_C$; values $v_A,v_B,v_C$; memory counts $r_A,r_B,r_C$; bytecode count $r_{\mathrm{bc}}$; the opcode $\mathit{op}\in\{\opc{XOR},\opc{MUL}\}=\{1,\gen\}$; and the product $p=v_A\cdot v_B$.
+\item \textbf{Constraints:}
+  \begin{itemize}
+  \item the three addresses $a_X=\fp\cdot o_X$;
+  \item the product $p=v_A\cdot v_B$, broken out into its own column so the result identity stays degree $2$;
+  \item the result selection, cleared of a field inverse by multiplying through by $\gen+1$:
+    \[
+      (\gen+1)\,(v_C+v_A+v_B)\;+\;(\mathit{op}+1)\,(p+v_A+v_B)\;=\;0,
+    \]
+    which for $\mathit{op}=1$ (\textsc{xor}) forces $v_C=v_A+v_B$ and for $\mathit{op}=\gen$ (\textsc{mul}) forces $v_C=p$;
+  \item opcode validity $(\mathit{op}+\opc{XOR})\,(\mathit{op}+\opc{MUL})=(\mathit{op}+1)(\mathit{op}+\gen)=0$, pinning $\mathit{op}\in\{1,\gen\}$.
+  \end{itemize}
 \item \textbf{Flushes:}
   \begin{itemize}
   \item \textbf{State:} \pull\ $\tup{\dsep{ST},\pc,\fp}$, \push\ $\tup{\dsep{ST},\gen\cdot\pc,\fp}$.
-  \item \textbf{Bytecode:} \pull\ $\tup{\dsep{BC},\pc,r_{\mathrm{bc}},\opc{XOR},o_A,o_B,o_C,0,0}$, \push\ the same at $\gen\cdot r_{\mathrm{bc}}$.
+  \item \textbf{Bytecode:} \pull\ $\tup{\dsep{BC},\pc,r_{\mathrm{bc}},\mathit{op},o_A,o_B,o_C,0,0}$, \push\ the same at $\gen\cdot r_{\mathrm{bc}}$. The opcode coordinate is the \emph{committed} column $\mathit{op}$, not a constant; the bus pins it to the program's opcode at $\pc$ (\S\ref{sec:e2e-bc}).
   \item \textbf{Memory} ($X\in\{A,B,C\}$): \pull\ $\tup{\dsep{MEM},a_X,r_X,v_X}$, \push\ $\tup{\dsep{MEM},a_X,\gen\cdot r_X,v_X}$.
   \end{itemize}
 \end{itemize}
 
-\subsection{\texttt{MUL\_NATIVE}}\label{sec:tab-mul}
-
-Identical to \texttt{XOR} but for the product:
-\begin{itemize}
-\item \textbf{Columns:} as \texttt{XOR}.
-\item \textbf{Constraints:} the three addresses, and the product $v_C=v_A\cdot v_B$ (the GHASH multiplication in $\F_{2^{128}}$).
-\item \textbf{Flushes:} as \texttt{XOR}, with opcode $\opc{MUL}$.
-\end{itemize}
+Padding rows take $\mathit{op}=\opc{XOR}=1$ (\S\ref{sec:e2e-pad}): an inert no-op $v_C=v_A+v_B$ on the all-else-zero row, so every constraint still vanishes.
 
 \subsection{\texttt{SET\_CONSTANT}}\label{sec:tab-set}
 
@@ -429,13 +432,13 @@ Instruction & coord.\ $3$ & coord.\ $4$ & coord.\ $5$ & coord.\ $6$ & coord.\ $7
 \hline
 \end{tabular}
 \end{center}
-So the program is six public columns (opcode, three operands, two flags), whose MLEs the verifier forms itself. Writing $\mathit{instr}$ for the six, the bytecode seed at $\pc$ pushes $\tup{\dsep{BC},\pc,1,\mathit{instr}}$ and an instruction table pulls it with its opcode hardcoded (\S\ref{sec:tables}); balance then forces each table's operands \emph{and} flags to match the program at its $\pc$.
+So the program is six public columns (opcode, three operands, two flags), whose MLEs the verifier forms itself. Writing $\mathit{instr}$ for the six, the bytecode seed at $\pc$ pushes $\tup{\dsep{BC},\pc,1,\mathit{instr}}$ and an instruction table pulls it with its opcode fixed---a hardcoded constant for the four single-opcode tables, or a committed column pinned to $\{\opc{XOR},\opc{MUL}\}$ for the merged arithmetic table (\S\ref{sec:tab-arith})---so balance forces each table's opcode, operands \emph{and} flags to match the program at its $\pc$.
 
 The program is padded to a power of two (\S\ref{sec:idxcol}). A padding entry is never executed: no table pulls it, so its seed push and finalize pull (both at count $1$) cancel.
 
 \subsection{Padding rows}\label{sec:e2e-pad}
 
-Each table is padded to a power of two. Padding rows are a fixed default, not all zeros (a zero count would self-cancel a read, \S\ref{sec:memchan}): every column zero but the read counts $\gen^{0}=1$, satisfying every constraint. The prover announces each table's real row count and the verifier divides the default surplus out of the bus product (\S\ref{sec:gp}).
+Each table is padded to a power of two. Padding rows are a fixed default, not all zeros (a zero count would self-cancel a read, \S\ref{sec:memchan}): every column zero but the read counts $\gen^{0}=1$ (and, in the arithmetic table, the opcode column $\mathit{op}=\opc{XOR}=1$, \S\ref{sec:tab-arith}), satisfying every constraint. The prover announces each table's real row count and the verifier divides the default surplus out of the bus product (\S\ref{sec:gp}).
 
 \subsection{Public input}\label{sec:e2e-pi}
 
@@ -460,7 +463,7 @@ We lay out the whole protocol as one ordered sequence. Each reduction below adds
 \item \textbf{Verifier.} Sends the fingerprint challenge $\alpha$ and the multiset challenge $\gamma$.
 \item \textbf{Prover.} Forms the push, pull, and \emph{count} leaf vectors (\S\ref{sec:leafstack}; the count leaves are the count columns themselves, \S\ref{sec:memchan}), stacked into blocks and padded with $1$s. Sends the count root $R_c$ and one bus root $R$, the push/pull product after the default surplus is removed (\S\ref{sec:gp}).
 \item \textbf{Prover \& Verifier.} Run GKR (\S\ref{sec:gkr}) on all three. For the bus, the verifier multiplies $R$ by each side's public surplus and checks the side's product against it; one $R$ for both sides is the balance check (\S\ref{sec:gp}). For the counts it checks $R_c\neq0$ (no read self-cancels, \S\ref{sec:memchan}). Each pass yields a leaf claim $\widetilde V_0(\zeta)$.
-\item \textbf{Prover \& Verifier.} Decompose each leaf claim (\S\ref{sec:leafstack}). The verifier forms the public part: the block selectors; the constant coordinates (separators, the per-table read opcodes, the boundary state $(\pc_0,\fp_0)$ and $(\pc_{\mathrm{final}},\fp_{\mathrm{final}})$); the index column (\S\ref{sec:idxcol}); and the public program columns of the bytecode seed and finalize, whose MLEs it forms directly. The prover supplies each block's committed-column evaluations (one field element each, \S\ref{sec:prelim}); a virtual coordinate such as $\gen\cdot\pc$ is read off its committed source. The verifier checks the decomposition formula against $\widetilde V_0(\zeta)$; the supplied evaluations enter the claim pool. The count channel decomposes likewise (its leaves are the count columns), adding only their evaluations.
+\item \textbf{Prover \& Verifier.} Decompose each leaf claim (\S\ref{sec:leafstack}). The verifier forms the public part: the block selectors; the constant coordinates (separators, the single-opcode tables' constant read opcodes, the boundary state $(\pc_0,\fp_0)$ and $(\pc_{\mathrm{final}},\fp_{\mathrm{final}})$); the index column (\S\ref{sec:idxcol}); and the public program columns of the bytecode seed and finalize, whose MLEs it forms directly. The prover supplies each block's committed-column evaluations (one field element each, \S\ref{sec:prelim}); a virtual coordinate such as $\gen\cdot\pc$ is read off its committed source. The verifier checks the decomposition formula against $\widetilde V_0(\zeta)$; the supplied evaluations enter the claim pool. The count channel decomposes likewise (its leaves are the count columns), adding only their evaluations.
 \end{enumerate}
 
 \paragraph{Local constraints.} Run once per table (\S\ref{sec:air}); the six runs share no challenges.

@@ -78,10 +78,23 @@ impl FlushBuilder {
     }
 
     /// Bytecode read at `pc`: the program tuple (opcode + five operand slots),
-    /// with the per-pc execution count advanced by ×g on the push side.
+    /// with the per-pc execution count advanced by ×g on the push side. The opcode
+    /// is a public constant (the table serves a single opcode).
     pub(crate) fn bytecode(&mut self, pc: usize, count: usize, opcode: F128, operands: &[Coord]) {
-        let mut push = vec![Const(SEP_BYTECODE), Col(pc), GCol(count), Const(opcode)];
-        let mut pull = vec![Const(SEP_BYTECODE), Col(pc), Col(count), Const(opcode)];
+        self.bytecode_coord(pc, count, Const(opcode), operands);
+    }
+
+    /// Like [`bytecode`](Self::bytecode) but the opcode coordinate is a committed
+    /// COLUMN, not a public constant — for a table serving several opcodes that
+    /// carries the actual opcode per row (the merged arithmetic table). The
+    /// bytecode bus then pins that column to the program's opcode at `pc`.
+    pub(crate) fn bytecode_col(&mut self, pc: usize, count: usize, op: usize, operands: &[Coord]) {
+        self.bytecode_coord(pc, count, Col(op), operands);
+    }
+
+    fn bytecode_coord(&mut self, pc: usize, count: usize, opcode: Coord, operands: &[Coord]) {
+        let mut push = vec![Const(SEP_BYTECODE), Col(pc), GCol(count), opcode.clone()];
+        let mut pull = vec![Const(SEP_BYTECODE), Col(pc), Col(count), opcode];
         push.extend_from_slice(operands);
         pull.extend_from_slice(operands);
         self.pair(push, pull);
@@ -164,8 +177,6 @@ pub(crate) fn column_positions(columns: &[usize]) -> Vec<usize> {
 /// [`count_columns`](Table::count_columns), and
 /// [`constraint_columns`](Table::constraint_columns) are local to this table.
 pub(crate) trait Table: Sync {
-    /// Distinct opcode tag (coordinate 3 of the bytecode tuple).
-    fn opcode_tag(&self) -> F128;
     /// Number of committed columns (local indices `0..n_committed_columns`).
     fn n_committed_columns(&self) -> usize;
     /// Local indices of this table's read-count columns — the `g^{count}` values
@@ -173,6 +184,15 @@ pub(crate) trait Table: Sync {
     /// framework treats them specially: each gets its own single-column "count"
     /// bus block, and padding rows fill them with `1` (= g^0) instead of `0`.
     fn count_columns(&self) -> &'static [usize];
+    /// Local indices of committed columns whose PADDING value is `g^0 = 1` rather
+    /// than `0` — but which, unlike [`count_columns`](Table::count_columns), raise
+    /// no count block. The merged arithmetic table pads its committed `OP` column
+    /// with `OP_XOR = g^0 = 1`, so a padding row is an inert no-op XOR and every
+    /// degree-2 identity (notably the opcode-validity `(op+1)(op+g)`) still
+    /// vanishes on it. Empty for single-opcode tables (all-zero padding suffices).
+    fn unit_padded_columns(&self) -> &'static [usize] {
+        &[]
+    }
     /// The committed columns this constraint reads, opened at its zerocheck point.
     /// Order is irrelevant — `eval_constraint` indexes them by name through [`Cols`].
     fn constraint_columns(&self) -> &'static [usize];
@@ -188,21 +208,20 @@ pub(crate) trait Table: Sync {
     fn fill(&self, ctx: &FillCtx, out: &mut [Column]);
 }
 
-/// The six tables in fixed order `[XOR, MUL, SET, DEREF, JUMP, BLAKE3]` — the
-/// order of `row_counts` / `taus` throughout `cpu`.
-pub(crate) fn tables() -> [&'static dyn Table; 6] {
-    [
-        &Arith { is_xor: true },
-        &Arith { is_xor: false },
-        &SetTable,
-        &DerefTable,
-        &JumpTable,
-        &Blake3Table,
-    ]
+/// The number of instruction tables (the length of [`tables`]). XOR and MUL share
+/// one merged [`Arith`] table, so this is 5, not one-per-opcode. It sizes the
+/// per-table `row_counts` / `taus` / `base` arrays throughout `cpu`; the
+/// per-*opcode* run statistics ([`crate::cpu::Stats::counts`]) stay 6-wide.
+pub(crate) const N_TABLES: usize = 5;
+
+/// The five tables in fixed order `[ARITH (XOR|MUL), SET, DEREF, JUMP, BLAKE3]` —
+/// the order of `row_counts` / `taus` throughout `cpu`.
+pub(crate) fn tables() -> [&'static dyn Table; N_TABLES] {
+    [&Arith, &SetTable, &DerefTable, &JumpTable, &Blake3Table]
 }
 
-/// Index of the BLAKE3 table in [`tables`].
-pub(crate) const BLAKE3_TABLE: usize = 5;
+/// Index of the BLAKE3 table in [`tables`] (last).
+pub(crate) const BLAKE3_TABLE: usize = N_TABLES - 1;
 
 /// BLAKE3 value-column LOCAL indices in canonical slot order
 /// `[a0, a1, b0, b1, c0, c1]` (matches `blake3_flock::SLOTS`). These columns are
@@ -218,14 +237,17 @@ pub(crate) const BLAKE3_VALUE_COLS: [usize; 6] = [
     blake3t::VC1,
 ];
 
-// ---- XOR / MUL ---------------------------------------------------------------
+// ---- ARITH (XOR + MUL) -------------------------------------------------------
 
-/// `XOR` and `MUL_NATIVE` share their column layout, flushes, and fill; they
-/// differ only in the opcode tag and the third-operand identity (`vc = va + vb`
-/// for `XOR`, `vc = va·vb` for `MUL`).
-struct Arith {
-    is_xor: bool,
-}
+/// One table serving BOTH arithmetic opcodes — `XOR` (field add, `vc = va + vb`)
+/// and `MUL_NATIVE` (`vc = va·vb`). Instead of two tables each padded to its own
+/// power of two, the executed XOR and MUL rows share one block. A committed
+/// per-row opcode column `OP` (`OP_XOR = 1` or `OP_MUL = g`), placed on the
+/// bytecode bus so it is pinned to the program's opcode at `pc`, selects the
+/// identity. The product is broken out into its own committed column `PROD =
+/// va·vb`, so the mul branch enters the result identity as a single degree-1
+/// column and the whole constraint stays degree 2.
+struct Arith;
 
 mod arith {
     pub const PC: usize = 0;
@@ -243,13 +265,24 @@ mod arith {
     pub const RB: usize = 12;
     pub const RC: usize = 13;
     pub const RBC: usize = 14;
-    pub const N: usize = 15;
+    /// Committed opcode of the row: `OP_XOR` (`= g^0 = 1`) or `OP_MUL` (`= g^1 =
+    /// g`). Lives on the bytecode bus (pinned to the program's opcode at `pc`) and
+    /// drives the add/mul selection. Padding rows hold `OP_XOR` (see
+    /// [`Table::unit_padded_columns`]).
+    pub const OP: usize = 15;
+    /// Committed product `va·vb`, so the mul branch is a single degree-1 column in
+    /// the result identity (keeping the constraint degree 2).
+    pub const PROD: usize = 16;
+    pub const N: usize = 17;
 }
 
+/// The merged arithmetic (XOR + MUL) table's committed column count — its per-row
+/// width. Public so tools can report the table's committed footprint,
+/// `ARITH_COLUMNS · 2^tau_arith`, where `2^tau_arith` is the executed XOR+MUL row
+/// count rounded up to a power of two.
+pub const ARITH_COLUMNS: usize = arith::N;
+
 impl Table for Arith {
-    fn opcode_tag(&self) -> F128 {
-        if self.is_xor { OP_XOR } else { OP_MUL }
-    }
     fn n_committed_columns(&self) -> usize {
         arith::N
     }
@@ -257,29 +290,44 @@ impl Table for Arith {
         use arith::*;
         &[RA, RB, RC, RBC]
     }
+    fn unit_padded_columns(&self) -> &'static [usize] {
+        &[arith::OP]
+    }
     fn constraint_columns(&self) -> &'static [usize] {
         use arith::*;
-        &[FP, OA, OB, OC, AA, AB, AC, VA, VB, VC]
+        &[FP, OA, OB, OC, AA, AB, AC, VA, VB, VC, OP, PROD]
     }
     fn eval_constraint(&self, eta: F128, cols: &Cols) -> F128 {
         use arith::*;
-        let third = if self.is_xor {
-            cols[VA] + cols[VB]
-        } else {
-            cols[VA] * cols[VB]
-        };
+        let one = F128::ONE;
+        let sum = cols[VA] + cols[VB];
+        // Result selection. `is_mul ∈ {0,1}` is the affine image of `OP ∈ {1, g}`:
+        // `is_mul = (OP + 1)/(g + 1)`. Multiplying the selection through by `(g+1)`
+        // clears the field inverse and keeps it degree 2:
+        //   (g+1)·(vc + va + vb) + (OP + 1)·(PROD + va + vb) = 0
+        //   OP = 1 (XOR) ⇒ (g+1)(vc + va + vb) = 0 ⇒ vc = va + vb
+        //   OP = g (MUL) ⇒ (g+1)(vc + PROD)     = 0 ⇒ vc = PROD  (= va·vb)
+        let result = (G + one) * (cols[VC] + sum) + (cols[OP] + one) * (cols[PROD] + sum);
+        // Opcode validity `(OP + OP_XOR)(OP + OP_MUL) = 0` pins `OP ∈ {1, g}`. This
+        // is what stops a non-arithmetic instruction being routed into this table:
+        // the bytecode bus would force `OP` to that opcode's tag (g²…g⁵), which
+        // this identity then rejects. (In the split tables the per-table constant
+        // opcode played that role.)
+        let op_valid = (cols[OP] + one) * (cols[OP] + G);
         (cols[AA] + cols[FP] * cols[OA])
             + eta * (cols[AB] + cols[FP] * cols[OB])
             + eta * eta * (cols[AC] + cols[FP] * cols[OC])
-            + eta * eta * eta * (cols[VC] + third)
+            + eta * eta * eta * (cols[PROD] + cols[VA] * cols[VB])
+            + eta * eta * eta * eta * result
+            + eta * eta * eta * eta * eta * op_valid
     }
     fn flushes(&self, f: &mut FlushBuilder) {
         use arith::*;
         f.state_step(PC, FP);
-        f.bytecode(
+        f.bytecode_col(
             PC,
             RBC,
-            self.opcode_tag(),
+            OP,
             &[Col(OA), Col(OB), Col(OC), Const(F128::ZERO), Const(F128::ZERO)],
         );
         f.memory(AA, RA, VA);
@@ -288,22 +336,37 @@ impl Table for Arith {
     }
     fn fill(&self, ctx: &FillCtx, out: &mut [Column]) {
         use arith::*;
-        let rows = if self.is_xor { &ctx.trace.xor } else { &ctx.trace.mul };
-        out[PC] = rows.par_iter().map(|r| ctx.g_at(r.pc)).collect();
-        out[FP] = rows.par_iter().map(|r| ctx.g_at(r.fp)).collect();
-        out[OA] = rows.par_iter().map(|r| ctx.g_at(r.aa - r.fp)).collect();
-        out[OB] = rows.par_iter().map(|r| ctx.g_at(r.ab - r.fp)).collect();
-        out[OC] = rows.par_iter().map(|r| ctx.g_at(r.ac - r.fp)).collect();
-        out[AA] = rows.par_iter().map(|r| ctx.g_at(r.aa)).collect();
-        out[AB] = rows.par_iter().map(|r| ctx.g_at(r.ab)).collect();
-        out[AC] = rows.par_iter().map(|r| ctx.g_at(r.ac)).collect();
-        out[VA] = rows.par_iter().map(|r| ctx.mem[r.aa as usize]).collect();
-        out[VB] = rows.par_iter().map(|r| ctx.mem[r.ab as usize]).collect();
-        out[VC] = rows.par_iter().map(|r| ctx.mem[r.ac as usize]).collect();
-        out[RA] = rows.par_iter().map(|r| r.ra).collect();
-        out[RB] = rows.par_iter().map(|r| r.rb).collect();
-        out[RC] = rows.par_iter().map(|r| r.rc).collect();
-        out[RBC] = rows.par_iter().map(|r| r.bytecode_read).collect();
+        // The executed XOR rows first, then the MUL rows, as one block. Every
+        // column uses this same concatenation, so a given row index names the same
+        // instruction across all columns; `OP` records which half it came from.
+        let (xor, mul) = (&ctx.trace.xor, &ctx.trace.mul);
+        macro_rules! both {
+            ($f:expr) => {
+                xor.par_iter().map($f).chain(mul.par_iter().map($f)).collect()
+            };
+        }
+        out[PC] = both!(|r| ctx.g_at(r.pc));
+        out[FP] = both!(|r| ctx.g_at(r.fp));
+        out[OA] = both!(|r| ctx.g_at(r.aa - r.fp));
+        out[OB] = both!(|r| ctx.g_at(r.ab - r.fp));
+        out[OC] = both!(|r| ctx.g_at(r.ac - r.fp));
+        out[AA] = both!(|r| ctx.g_at(r.aa));
+        out[AB] = both!(|r| ctx.g_at(r.ab));
+        out[AC] = both!(|r| ctx.g_at(r.ac));
+        out[VA] = both!(|r| ctx.mem[r.aa as usize]);
+        out[VB] = both!(|r| ctx.mem[r.ab as usize]);
+        out[VC] = both!(|r| ctx.mem[r.ac as usize]);
+        out[RA] = both!(|r| r.ra);
+        out[RB] = both!(|r| r.rb);
+        out[RC] = both!(|r| r.rc);
+        out[RBC] = both!(|r| r.bytecode_read);
+        out[PROD] = both!(|r| ctx.mem[r.aa as usize] * ctx.mem[r.ab as usize]);
+        // `OP`: OP_XOR on the xor half, OP_MUL on the mul half.
+        out[OP] = xor
+            .par_iter()
+            .map(|_| OP_XOR)
+            .chain(mul.par_iter().map(|_| OP_MUL))
+            .collect();
     }
 }
 
@@ -323,9 +386,6 @@ mod set {
 }
 
 impl Table for SetTable {
-    fn opcode_tag(&self) -> F128 {
-        OP_SET
-    }
     fn n_committed_columns(&self) -> usize {
         set::N
     }
@@ -392,9 +452,6 @@ mod deref {
 }
 
 impl Table for DerefTable {
-    fn opcode_tag(&self) -> F128 {
-        OP_DEREF
-    }
     fn n_committed_columns(&self) -> usize {
         deref::N
     }
@@ -480,9 +537,6 @@ mod jump {
 }
 
 impl Table for JumpTable {
-    fn opcode_tag(&self) -> F128 {
-        OP_JUMP
-    }
     fn n_committed_columns(&self) -> usize {
         jump::N
     }
@@ -590,9 +644,6 @@ mod blake3t {
 }
 
 impl Table for Blake3Table {
-    fn opcode_tag(&self) -> F128 {
-        OP_BLAKE3
-    }
     fn n_committed_columns(&self) -> usize {
         blake3t::N
     }
