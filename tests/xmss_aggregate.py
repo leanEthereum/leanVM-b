@@ -205,13 +205,15 @@ def verify_sig(message, tweak_table, merkle_bits, pk_ptr):
         bit = merkle_bits[level]
         sibling = StackBuf(1)
         hint_witness(sibling[0:1], "siblings")
+        # Branchless child ordering: bit ∈ {0,1} (bound by the hash), so the
+        # swap is a select, not a branch. m = bit·(node⊕sibling) is 0 when
+        # bit=0 and node⊕sibling when bit=1, so children[0] = node⊕m is node
+        # for bit=0 and sibling for bit=1 (and children[1] the complement).
+        diff = node + sibling[0]
+        m = bit * diff
         children = StackBuf(WORDS_PER_BLOCK)
-        if bit == 0:
-            children[0] = node
-            children[1] = sibling[0]
-        else:
-            children[0] = sibling[0]
-            children[1] = node
+        children[0] = node + m
+        children[1] = sibling[0] + m
         merkle_tweak_pp = StackBuf(WORDS_PER_BLOCK)
         merkle_tweak_pp[0] = merkle_tweaks[level]
         merkle_tweak_pp[1] = pp
