@@ -82,6 +82,9 @@ fn program_digest(prog: &[Op]) -> [F128; 2] {
     h.update(b"leanvm-b/program/v0");
     h.update(&(prog.len() as u64).to_le_bytes());
     for op in prog {
+        // Encode every op injectively as (tag, four u32 operands, one field
+        // immediate). BLAKE3 carries five offsets, so its 4th/5th ride the
+        // immediate's two 64-bit limbs.
         let (tag, a, b, c, k) = match *op {
             Op::Xor { a, b, c } => (0u8, a, b, c, F128::ZERO),
             Op::Mul { a, b, c } => (1, a, b, c, F128::ZERO),
@@ -95,7 +98,7 @@ fn program_digest(prog: &[Op]) -> [F128; 2] {
                 (3 + mode as u8, alpha, beta, gamma, F128::ZERO) // mode ∈ {Cell,Pc,Fp} ⇒ tag 3/4/5
             }
             Op::Jump { oc, od, of } => (6, oc, od, of, F128::ZERO),
-            Op::Blake3 { a, b, c } => (7, a, b, c, F128::ZERO),
+            Op::Blake3 { ins, out } => (7, ins[0], ins[1], ins[2], F128::new(ins[3] as u64, out as u64)),
         };
         h.update(&[tag]);
         h.update(&a.to_le_bytes());
@@ -648,7 +651,7 @@ mod tests {
             Op::Set { o: 4, k: y0 },
             Op::Set { o: 5, k: y1 },
             Op::Set { o: 8, k: F128::ONE },
-            Op::Blake3 { a: 2, b: 4, c: 6 },
+            Op::Blake3 { ins: [2, 3, 4, 5], out: 6 },
             Op::Set { o: 9, k: F128::ONE },
             Op::Xor { a: 0, b: 0, c: 0 }, // sentinel (never executed)
         ];
@@ -689,7 +692,7 @@ mod tests {
             Op::Set { o: 8, k: F128::ONE },  // filler
             Op::Set { o: 9, k: F128::ONE },  // filler
             Op::Set { o: 10, k: F128::ONE }, // filler
-            Op::Blake3 { a: 2, b: 2, c: 6 }, // a == b: hash h ‖ h into cells 6,7
+            Op::Blake3 { ins: [2, 3, 2, 3], out: 6 }, // a == b: hash h ‖ h into cells 6,7
             Op::Set { o: 11, k: F128::ONE }, // filler
             Op::Xor { a: 0, b: 0, c: 0 },    // sentinel
         ];
@@ -728,7 +731,7 @@ mod tests {
                 k: F128::new(0x3333, 0x4444),
             },
             Op::Set { o: 8, k: F128::ONE },
-            Op::Blake3 { a: 2, b: 4, c: 6 },
+            Op::Blake3 { ins: [2, 3, 4, 5], out: 6 },
             Op::Set { o: 9, k: F128::ONE },
             Op::Xor { a: 0, b: 0, c: 0 }, // sentinel
         ];
@@ -773,7 +776,7 @@ mod tests {
                 k: F128::new(0x3333, 0x4444),
             },
             Op::Set { o: 8, k: F128::ONE },
-            Op::Blake3 { a: 2, b: 4, c: 6 },
+            Op::Blake3 { ins: [2, 3, 4, 5], out: 6 },
             Op::Set { o: 9, k: F128::ONE },
             Op::Xor { a: 0, b: 0, c: 0 }, // sentinel
         ];
@@ -883,7 +886,7 @@ mod tests {
                 k: F128::new(0x3333, 0x4444),
             },
             Op::Set { o: 8, k: F128::ONE },
-            Op::Blake3 { a: 2, b: 4, c: 6 },
+            Op::Blake3 { ins: [2, 3, 4, 5], out: 6 },
             Op::Set { o: 9, k: F128::ONE },
             Op::Xor { a: 0, b: 0, c: 0 }, // sentinel
         ];

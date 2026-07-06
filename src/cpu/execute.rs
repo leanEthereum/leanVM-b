@@ -413,11 +413,15 @@ impl Program {
                         pc += 1;
                     }
                 }
-                Op::Blake3 { a, b, c } => {
-                    // Each operand spans two consecutive words: base = fp+o, second = base+1.
-                    let (aa, ab, ac) = (fp + a, fp + b, fp + c);
-                    let (va0, va1) = (get(&mem, &written, aa), get(&mem, &written, aa + 1));
-                    let (vb0, vb1) = (get(&mem, &written, ab), get(&mem, &written, ab + 1));
+                Op::Blake3 { ins, out } => {
+                    // Four independently-addressed input words; the output spans two
+                    // consecutive words (ac, ac+1).
+                    let (aa0, aa1, ab0, ab1) = (fp + ins[0], fp + ins[1], fp + ins[2], fp + ins[3]);
+                    let ac = fp + out;
+                    let va0 = get(&mem, &written, aa0);
+                    let va1 = get(&mem, &written, aa1);
+                    let vb0 = get(&mem, &written, ab0);
+                    let vb1 = get(&mem, &written, ab1);
                     // Compress the 64 input bytes to the 32-byte digest, then write
                     // it to c's two words. The relation is unproven (no constraint),
                     // but the prover still computes a definite digest so the output
@@ -425,17 +429,19 @@ impl Program {
                     let (vc0, vc1) = blake3_compress(va0, va1, vb0, vb1);
                     put(&mut mem, &mut written, &mut mem_count, ac, vc0);
                     put(&mut mem, &mut written, &mut mem_count, ac + 1, vc1);
-                    let ra0 = bump_access_count(&mut mem, &mut written, &mut mem_count, aa);
-                    let ra1 = bump_access_count(&mut mem, &mut written, &mut mem_count, aa + 1);
-                    let rb0 = bump_access_count(&mut mem, &mut written, &mut mem_count, ab);
-                    let rb1 = bump_access_count(&mut mem, &mut written, &mut mem_count, ab + 1);
+                    let ra0 = bump_access_count(&mut mem, &mut written, &mut mem_count, aa0);
+                    let ra1 = bump_access_count(&mut mem, &mut written, &mut mem_count, aa1);
+                    let rb0 = bump_access_count(&mut mem, &mut written, &mut mem_count, ab0);
+                    let rb1 = bump_access_count(&mut mem, &mut written, &mut mem_count, ab1);
                     let rc0 = bump_access_count(&mut mem, &mut written, &mut mem_count, ac);
                     let rc1 = bump_access_count(&mut mem, &mut written, &mut mem_count, ac + 1);
                     blake3.push(Brow {
                         pc,
                         fp,
-                        aa,
-                        ab,
+                        aa0,
+                        aa1,
+                        ab0,
+                        ab1,
                         ac,
                         va0,
                         va1,

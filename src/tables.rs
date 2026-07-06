@@ -551,12 +551,13 @@ impl Table for JumpTable {
 
 // ---- BLAKE3 ------------------------------------------------------------------
 
-/// `BLAKE3` (doc §7.6): each of the three operands names a 256-bit value in two
-/// consecutive memory words, so the row reads six cells — the two inputs `a, b`
-/// and the two output words `c` — at base addresses `aa, ab, ac` and their
-/// successors `g·aa, g·ab, g·ac`. Only the three base-address bindings are
-/// constrained; the compression relating output words to input words is
-/// *unproven* (deferred), so no constraint links `vc*` to the inputs.
+/// `BLAKE3` (doc §7.6): the four 64-byte input words are addressed
+/// *independently* at `aa0, aa1, ab0, ab1` (`= fp·g^{ins[i]}`) — no forced
+/// contiguity, so a caller hashing e.g. `(tweak, pp)` need not copy them into
+/// adjacent cells. The 32-byte output occupies the two consecutive words `ac`,
+/// `g·ac`. Five address bindings `a_X = fp·o_X` are constrained; the
+/// compression relating output to input words is *unproven* (deferred), so no
+/// constraint links `vc*` to the inputs.
 ///
 /// The six value columns are listed in `n_committed_columns` (they need a local
 /// index for the flushes and are filled from the trace for the bus), but `cpu`
@@ -567,26 +568,30 @@ struct Blake3Table;
 mod blake3t {
     pub const PC: usize = 0;
     pub const FP: usize = 1;
-    pub const OA: usize = 2;
-    pub const OB: usize = 3;
-    pub const OC: usize = 4;
-    pub const AA: usize = 5; // base address of input a (word 0); word 1 is g·AA
-    pub const AB: usize = 6;
-    pub const AC: usize = 7;
-    pub const VA0: usize = 8;
-    pub const VA1: usize = 9;
-    pub const VB0: usize = 10;
-    pub const VB1: usize = 11;
-    pub const VC0: usize = 12;
-    pub const VC1: usize = 13;
-    pub const RA0: usize = 14;
-    pub const RA1: usize = 15;
-    pub const RB0: usize = 16;
-    pub const RB1: usize = 17;
-    pub const RC0: usize = 18;
-    pub const RC1: usize = 19;
-    pub const RBC: usize = 20;
-    pub const N: usize = 21;
+    pub const OA0: usize = 2; // operand g-powers (offsets) of the four inputs …
+    pub const OA1: usize = 3;
+    pub const OB0: usize = 4;
+    pub const OB1: usize = 5;
+    pub const OC: usize = 6; // … and the output base
+    pub const AA0: usize = 7; // the four independent input addresses …
+    pub const AA1: usize = 8;
+    pub const AB0: usize = 9;
+    pub const AB1: usize = 10;
+    pub const AC: usize = 11; // … and the output base (word 1 is g·AC)
+    pub const VA0: usize = 12;
+    pub const VA1: usize = 13;
+    pub const VB0: usize = 14;
+    pub const VB1: usize = 15;
+    pub const VC0: usize = 16;
+    pub const VC1: usize = 17;
+    pub const RA0: usize = 18;
+    pub const RA1: usize = 19;
+    pub const RB0: usize = 20;
+    pub const RB1: usize = 21;
+    pub const RC0: usize = 22;
+    pub const RC1: usize = 23;
+    pub const RBC: usize = 24;
+    pub const N: usize = 25;
 }
 
 impl Table for Blake3Table {
@@ -602,31 +607,29 @@ impl Table for Blake3Table {
     }
     fn constraint_columns(&self) -> &'static [usize] {
         use blake3t::*;
-        &[FP, OA, OB, OC, AA, AB, AC]
+        &[FP, OA0, OA1, OB0, OB1, OC, AA0, AA1, AB0, AB1, AC]
     }
     fn eval_constraint(&self, eta: F128, cols: &Cols) -> F128 {
         use blake3t::*;
-        // Only the three base-address bindings a_X = fp·o_X. The compression is
+        // The five address bindings a_X = fp·o_X (degree 2). The compression is
         // unproven, so the output words carry no constraint (doc §7.6).
-        (cols[AA] + cols[FP] * cols[OA])
-            + eta * (cols[AB] + cols[FP] * cols[OB])
-            + eta * eta * (cols[AC] + cols[FP] * cols[OC])
+        let bind = |a: usize, o: usize| cols[a] + cols[FP] * cols[o];
+        bind(AA0, OA0)
+            + eta * bind(AA1, OA1)
+            + eta * eta * bind(AB0, OB0)
+            + eta * eta * eta * bind(AB1, OB1)
+            + eta * eta * eta * eta * bind(AC, OC)
     }
     fn flushes(&self, f: &mut FlushBuilder) {
         use blake3t::*;
         f.state_step(PC, FP);
-        f.bytecode(
-            PC,
-            RBC,
-            OP_BLAKE3,
-            &[Col(OA), Col(OB), Col(OC), Const(F128::ZERO), Const(F128::ZERO)],
-        );
-        // Six reads: each input/output occupies two consecutive words, the second
-        // at the successor address g·base.
-        f.memory(AA, RA0, VA0);
-        f.memory_succ(AA, RA1, VA1);
-        f.memory(AB, RB0, VB0);
-        f.memory_succ(AB, RB1, VB1);
+        f.bytecode(PC, RBC, OP_BLAKE3, &[Col(OA0), Col(OA1), Col(OB0), Col(OB1), Col(OC)]);
+        // Four independent input reads; the output occupies two consecutive words
+        // (base and the free successor g·AC).
+        f.memory(AA0, RA0, VA0);
+        f.memory(AA1, RA1, VA1);
+        f.memory(AB0, RB0, VB0);
+        f.memory(AB1, RB1, VB1);
         f.memory(AC, RC0, VC0);
         f.memory_succ(AC, RC1, VC1);
     }
@@ -635,11 +638,15 @@ impl Table for Blake3Table {
         let rows = &ctx.trace.blake3;
         out[PC] = rows.par_iter().map(|r| ctx.g_at(r.pc)).collect();
         out[FP] = rows.par_iter().map(|r| ctx.g_at(r.fp)).collect();
-        out[OA] = rows.par_iter().map(|r| ctx.g_at(r.aa - r.fp)).collect();
-        out[OB] = rows.par_iter().map(|r| ctx.g_at(r.ab - r.fp)).collect();
+        out[OA0] = rows.par_iter().map(|r| ctx.g_at(r.aa0 - r.fp)).collect();
+        out[OA1] = rows.par_iter().map(|r| ctx.g_at(r.aa1 - r.fp)).collect();
+        out[OB0] = rows.par_iter().map(|r| ctx.g_at(r.ab0 - r.fp)).collect();
+        out[OB1] = rows.par_iter().map(|r| ctx.g_at(r.ab1 - r.fp)).collect();
         out[OC] = rows.par_iter().map(|r| ctx.g_at(r.ac - r.fp)).collect();
-        out[AA] = rows.par_iter().map(|r| ctx.g_at(r.aa)).collect();
-        out[AB] = rows.par_iter().map(|r| ctx.g_at(r.ab)).collect();
+        out[AA0] = rows.par_iter().map(|r| ctx.g_at(r.aa0)).collect();
+        out[AA1] = rows.par_iter().map(|r| ctx.g_at(r.aa1)).collect();
+        out[AB0] = rows.par_iter().map(|r| ctx.g_at(r.ab0)).collect();
+        out[AB1] = rows.par_iter().map(|r| ctx.g_at(r.ab1)).collect();
         out[AC] = rows.par_iter().map(|r| ctx.g_at(r.ac)).collect();
         out[VA0] = rows.par_iter().map(|r| r.va0).collect();
         out[VA1] = rows.par_iter().map(|r| r.va1).collect();

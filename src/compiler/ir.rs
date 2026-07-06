@@ -55,12 +55,10 @@ pub(crate) enum LOp {
         od: Off,
         of: Off,
     },
-    /// `BLAKE3`: the two 256-bit inputs `a = (a, a+1)`, `b = (b, b+1)` and output
-    /// `c = (c, c+1)` each occupy two CONSECUTIVE frame cells (the op reads/writes
-    /// the operand and its successor `×g`).
+    /// `BLAKE3`: the four input words `ins` are addressed independently (`fp+ins[i]`);
+    /// the 32-bit output `c = (c, c+1)` occupies two CONSECUTIVE frame cells.
     Blake3 {
-        a: Off,
-        b: Off,
+        ins: [Off; 4],
         c: Off,
     },
 }

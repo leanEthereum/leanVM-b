@@ -30,6 +30,16 @@ fn gmul(a: GAddr, b: GAddr) -> Option<GAddr> {
 /// materialized pointer instead of inflating that table.
 const FOLD_MAX: u128 = 1 << 16;
 
+/// A deferred stack-cell store: the cell is a copy of another cell, or a zero.
+/// Recorded instead of emitting the `MUL`/`SET`, and forwarded to the source at
+/// each use ([`FnLower::word_src`]) — so `BLAKE3`, which now addresses its four
+/// input words independently, reads them in place without assembling copies.
+#[derive(Clone, Copy)]
+enum Alias {
+    Cell(Off),
+    Zero,
+}
+
 struct FnLower<'a> {
     vars: HashMap<String, Off>,
     /// `StackBuf` bindings: name → (base offset, size). The `size` cells
@@ -66,6 +76,10 @@ struct FnLower<'a> {
     /// cells its tail `return` binds into instead of emitting a return jump.
     /// `None` outside an inlined body.
     inline_ret: Option<Vec<Off>>,
+    /// Deferred stack-cell copies/zeros ([`Alias`]), forwarded at use.
+    alias: HashMap<Off, Alias>,
+    /// A cached frame cell holding `0` (for forwarded zero words), set lazily.
+    zero_off: Option<Off>,
     /// Hints queued to attach to the next emitted instruction.
     pending: Vec<Hint>,
     queue: &'a mut Vec<Func>,
@@ -99,6 +113,35 @@ impl FnLower<'_> {
         });
         self.one_off = Some(o);
         o
+    }
+
+    /// A frame cell holding `0`, set lazily once — the source for forwarded zero
+    /// words (a `BLAKE3` padding half).
+    fn zero(&mut self) -> Off {
+        if let Some(o) = self.zero_off {
+            return o;
+        }
+        let o = self.fresh();
+        self.emit(LOp::Set {
+            o,
+            k: KVal::Const(F128::ZERO),
+        });
+        self.zero_off = Some(o);
+        o
+    }
+
+    /// A stack store `sa[k] = val` whose value is a plain copy or a zero, which we
+    /// defer as an [`Alias`] (forwarded at use) instead of emitting.
+    fn copy_alias(&self, val: &Expr) -> Option<Alias> {
+        match val {
+            Expr::Lit(0) => Some(Alias::Zero),
+            Expr::Var(v) => self.vars.get(v).map(|&c| Alias::Cell(c)),
+            Expr::Index(arr, idx) => {
+                let (base, _) = self.stack_of(arr)?;
+                Some(Alias::Cell(base + self.try_const_index(idx)?))
+            }
+            _ => None,
+        }
     }
 
     /// Terminate `main`: jump to the halt sentinel `g^{B-1}` with `fp = g^0`.
@@ -180,6 +223,8 @@ impl FnLower<'_> {
             self.bounds.clone(),
             self.gaddrs.clone(),
             self.fconsts.clone(),
+            self.alias.clone(),
+            self.zero_off,
         );
         f(self);
         // A hint pending at the end of a branch (e.g. a trailing
@@ -201,6 +246,8 @@ impl FnLower<'_> {
             self.bounds,
             self.gaddrs,
             self.fconsts,
+            self.alias,
+            self.zero_off,
         ) = saved;
     }
 
@@ -684,11 +731,12 @@ impl FnLower<'_> {
                 panic!("StackBuf(n) must be bound to a name: `x = StackBuf(n)`")
             }
             Expr::Index(arr, idx) => {
-                // Stack read `sa[k]`: the frame cell `base + k` directly (no deref).
+                // Stack read `sa[k]`: the frame cell `base + k` directly (no deref),
+                // forwarded through any deferred copy/zero alias.
                 if let Some((base, size)) = self.stack_of(arr) {
                     let k = self.const_index(idx);
                     assert!(k < size, "stack index {k} out of bounds (size {size})");
-                    return base + k;
+                    return self.word_src(base + k);
                 }
                 // Heap read: bind dst := m[arr·idx] (the array cell, written earlier).
                 let (base, beta) = self.heap_addr(arr, idx);
@@ -826,9 +874,12 @@ impl FnLower<'_> {
     /// heap slice is pulled into a fresh stack pair first — one `DEREF` per
     /// cell (`m[ptr·g^{lo+k}] == m[fp+t+k]`, the `β` immediate doing the
     /// pointer offset). The heap cells must already be written.
-    fn blake3_input(&mut self, e: &Expr) -> Off {
+    fn blake3_input(&mut self, e: &Expr) -> [Off; 2] {
         match self.blake3_operand(e) {
-            B3Operand::Stack(o) => o,
+            // A stack operand: the two words live at `o, o+1`; forward each cell's
+            // real source where one is known (a copy or a zero), so a hash of
+            // non-adjacent values needs no assembling copies.
+            B3Operand::Stack(o) => [self.word_src(o), self.word_src(o + 1)],
             B3Operand::Heap { ptr, lo } => {
                 let t = self.alloc_stack(2);
                 for k in 0..2 {
@@ -839,8 +890,20 @@ impl FnLower<'_> {
                         mode: DerefMode::Cell,
                     });
                 }
-                t
+                [t, t + 1]
             }
+        }
+    }
+
+    /// The cell holding the value of stack cell `o`, following a recorded copy /
+    /// zero alias to its real source (so `BLAKE3` reads the source directly and
+    /// the assembling copy is never emitted). Returns `o` when it holds a genuine
+    /// value.
+    fn word_src(&mut self, o: Off) -> Off {
+        match self.alias.get(&o).copied() {
+            Some(Alias::Cell(s)) => self.word_src(s),
+            Some(Alias::Zero) => self.zero(),
+            None => o,
         }
     }
 
@@ -1324,7 +1387,13 @@ impl FnLower<'_> {
                         B3Operand::Stack(o) => (o, None),
                         B3Operand::Heap { ptr, lo } => (self.alloc_stack(2), Some((ptr, lo))),
                     };
-                    self.emit(LOp::Blake3 { a, b, c });
+                    // Each operand's two words are at `base, base+1`; the flexible
+                    // opcode addresses them independently (`blake3_input` forwards
+                    // the real word sources where it can).
+                    self.emit(LOp::Blake3 {
+                        ins: [a[0], a[1], b[0], b[1]],
+                        c,
+                    });
                     if let Some((ptr, lo)) = heap_out {
                         for k in 0..2 {
                             self.emit(LOp::Deref {
@@ -1344,7 +1413,16 @@ impl FnLower<'_> {
                 if let Some((base, size)) = self.stack_of(arr) {
                     let k = self.const_index(idx);
                     assert!(k < size, "stack store index {k} out of bounds (size {size})");
-                    self.expr_into(val, base + k);
+                    let dst = base + k;
+                    // A plain copy / zero is deferred as an alias and forwarded at
+                    // its uses (write-once, so the source cell keeps its value) —
+                    // the assembling `MUL`/`SET` is never emitted.
+                    if let Some(a) = self.copy_alias(val) {
+                        self.alias.insert(dst, a);
+                    } else {
+                        self.alias.remove(&dst);
+                        self.expr_into(val, dst);
+                    }
                 } else {
                     // Heap store `arr[idx] = val`: assert m[arr·idx] == val (write-once).
                     let v = self.expr(val);
@@ -1689,6 +1767,8 @@ pub(crate) fn lower_func(
         gaddrs: HashMap::new(),
         fconsts: HashMap::new(),
         inline_ret: None,
+        alias: HashMap::new(),
+        zero_off: None,
         pending: Vec::new(),
         queue,
         loop_ctr,

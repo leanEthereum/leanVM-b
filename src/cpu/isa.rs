@@ -29,13 +29,15 @@ pub enum Op {
         od: u32,
         of: u32,
     },
-    /// `BLAKE3` (§7.6): each operand names a 256-bit value in two consecutive
-    /// memory words (`fp+o`, `fp+o+1`). Reads inputs `a, b` (64 bytes) and writes
-    /// the 32-byte digest to `c`; the compression relation is proven by flock.
+    /// `BLAKE3` (§7.6): compresses the four 64-byte input words `ins` (the two
+    /// 256-bit operands `ins[0]‖ins[1]` and `ins[2]‖ins[3]`) and writes the
+    /// 32-byte digest to the two consecutive words `out`, `out+1`. Each input
+    /// word is addressed independently (`fp+ins[i]`) — no forced contiguity, so
+    /// the caller need not assemble its operands into adjacent cells. The
+    /// compression relation is proven by flock.
     Blake3 {
-        a: u32,
-        b: u32,
-        c: u32,
+        ins: [u32; 4],
+        out: u32,
     },
 }
 
