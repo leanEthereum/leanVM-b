@@ -73,7 +73,7 @@ pub fn parse_with_replacements(src: &str, replacements: &BTreeMap<String, String
     let mut start = 0;
     while start < lines.len() {
         let (indent, line) = &lines[start];
-        if *indent == 0 && line.starts_with("def ") {
+        if *indent == 0 && (line.starts_with("def ") || line.starts_with('@')) {
             break;
         }
         if *indent != 0 {
@@ -334,7 +334,18 @@ struct Parser {
 
 impl Parser {
     fn func(&mut self) -> Result<Func, String> {
-        let (indent, line) = self.lines[self.i].clone();
+        let (mut indent, mut line) = self.lines[self.i].clone();
+        // Optional `@unroll` decorator on its own line before `def`.
+        let unroll = if let Some(dec) = line.strip_prefix('@') {
+            if dec.trim() != "unroll" {
+                return Err(format!("unknown decorator `@{}` (only `@unroll`)", dec.trim()));
+            }
+            self.i += 1;
+            (indent, line) = self.lines.get(self.i).cloned().ok_or("`@unroll` must precede a `def`")?;
+            true
+        } else {
+            false
+        };
         let header = line
             .strip_prefix("def ")
             .ok_or_else(|| format!("expected `def`, got `{line}`"))?;
@@ -374,6 +385,7 @@ impl Parser {
             const_params,
             n_ret,
             body,
+            unroll,
         })
     }
 

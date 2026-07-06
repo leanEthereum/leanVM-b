@@ -165,6 +165,12 @@ pub struct Func {
     pub const_params: Vec<bool>,
     pub n_ret: usize,
     pub body: Vec<Stmt>,
+    /// `@unroll` decorator: expand this function at each call site instead of
+    /// emitting a real call — no frame, no argument/return plumbing (the
+    /// call-convention `DEREF`s and jumps vanish). The body must be a single
+    /// tail `return`; it is never lowered standalone. Named for the DSL's
+    /// compile-time-expansion verb (cf. `unroll(a, b)` for loops).
+    pub unroll: bool,
 }
 
 /// A whole program: a set of functions including `main`.

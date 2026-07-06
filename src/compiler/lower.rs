@@ -58,6 +58,10 @@ struct FnLower<'a> {
     /// Variables bound to a symbolic g-address ([`GAddr`]) — index cursors and
     /// shifted pointers, kept virtual so their offsets fold into `DEREF`'s `β`.
     gaddrs: HashMap<String, GAddr>,
+    /// While inlining an `@unroll` call ([`Self::try_inline`]), the destination
+    /// cells its tail `return` binds into instead of emitting a return jump.
+    /// `None` outside an inlined body.
+    inline_ret: Option<Vec<Off>>,
     /// Hints queued to attach to the next emitted instruction.
     pending: Vec<Hint>,
     queue: &'a mut Vec<Func>,
@@ -243,7 +247,7 @@ impl FnLower<'_> {
                             arms[j]
                         );
                     };
-                    s.lower_call(f, cargs, rcells.len(), None, Some(&rcells));
+                    s.call_into(f, cargs, &rcells);
                 }
             });
         });
@@ -729,9 +733,7 @@ impl FnLower<'_> {
                 self.emit(LOp::Mul { a: la, b: lb, c: dst });
             }
             // A call writes its single return value straight into `dst`.
-            Expr::Call(f, args) => {
-                self.lower_call(f, args, 1, None, Some(&[dst]));
-            }
+            Expr::Call(f, args) => self.call_into(f, args, &[dst]),
             _ => {
                 let v = self.expr(e);
                 self.copy(v, dst);
@@ -821,7 +823,97 @@ impl FnLower<'_> {
             callee != "blake3",
             "blake3 is a statement: `blake3(a, b, out)` writes the digest into the 2-cell stack run `out`"
         );
-        self.lower_call(callee, args, n_ret, None, None)
+        let dsts: Vec<Off> = (0..n_ret).map(|_| self.fresh()).collect();
+        self.call_into(callee, args, &dsts);
+        dsts
+    }
+
+    /// Evaluate `callee(args)` into `dsts` — inlining the callee when it is
+    /// `@unroll` ([`Self::try_inline`]), else a real call.
+    fn call_into(&mut self, callee: &str, args: &[Expr], dsts: &[Off]) {
+        assert!(callee != "blake3", "blake3 is a statement, not a value-returning call");
+        if !self.try_inline(callee, args, dsts) {
+            self.lower_call(callee, args, dsts.len(), None, Some(dsts));
+        }
+    }
+
+    /// The runtime params, runtime args, and `Const`-substituted body of a call
+    /// to a user function — the ingredients for inlining. `None` for a builtin/
+    /// unknown callee, an arity mismatch, or an unresolved `Const` argument.
+    fn specialized_body(&self, callee: &str, args: &[Expr]) -> Option<(Vec<String>, Vec<Expr>, Vec<Stmt>, usize)> {
+        let def = self.defs.get(callee)?;
+        if args.len() != def.params.len() {
+            return None;
+        }
+        let mut body = def.body.clone();
+        let (mut rt_params, mut rt_args) = (Vec::new(), Vec::new());
+        for ((p, &is_const), a) in def.params.iter().zip(&def.const_params).zip(args) {
+            if !is_const {
+                rt_params.push(p.clone());
+                rt_args.push(a.clone());
+                continue;
+            }
+            let c = match a {
+                Expr::Lit(n) => Expr::Lit(*n),
+                Expr::Gen => Expr::GPow(1),
+                Expr::GPow(k) => Expr::GPow(*k),
+                Expr::Var(v) => Expr::Lit(*self.consts.get(v)? as u128),
+                _ => return None,
+            };
+            body = subst_stmts(&body, p, &c);
+        }
+        Some((rt_params, rt_args, body, def.n_ret))
+    }
+
+    /// Inline an `@unroll` `callee(args)` into the current frame, binding its
+    /// return values straight into `dsts` — no frame setup, no argument/return
+    /// plumbing, no call/return jumps. Returns `false` for a non-`@unroll`
+    /// callee (the caller emits a real call). Panics if an `@unroll` function
+    /// isn't inlinable ([`body_inlinable`]) or its `Const` args don't resolve.
+    fn try_inline(&mut self, callee: &str, args: &[Expr], dsts: &[Off]) -> bool {
+        if !self.defs.get(callee).is_some_and(|d| d.unroll) {
+            return false;
+        }
+        let (params, rt_args, body, n_ret) = self
+            .specialized_body(callee, args)
+            .unwrap_or_else(|| panic!("`@unroll {callee}`: bad arity or unresolved Const argument"));
+        assert_eq!(n_ret, dsts.len(), "`@unroll {callee}` returns {n_ret} values, call binds {}", dsts.len());
+        assert!(
+            body_inlinable(&body),
+            "`@unroll {callee}` must be a single tail `return` with no call/loop/match (see body_inlinable)"
+        );
+        // Bind the params from the caller-scope arguments (symbolically where we
+        // can, so a shifted-pointer arg keeps folding into `β`), then lower the
+        // body in a fresh variable environment — a function sees only its
+        // params. The frame, `one`, `self_fp`, and range-check bounds stay the
+        // caller's: the inlined code runs in the caller's frame, so they fit.
+        let mut binds: Vec<(String, Result<GAddr, Off>)> = Vec::new();
+        for (p, a) in params.iter().zip(&rt_args) {
+            let b = match self.gaddr_of(a) {
+                Some(ga) => Ok(ga),
+                None => Err(self.expr(a)),
+            };
+            binds.push((p.clone(), b));
+        }
+        let saved = (
+            std::mem::take(&mut self.vars),
+            std::mem::take(&mut self.stacks),
+            std::mem::take(&mut self.consts),
+            std::mem::take(&mut self.gaddrs),
+        );
+        for (p, b) in binds {
+            match b {
+                Ok(ga) => { self.gaddrs.insert(p, ga); }
+                Err(cell) => { self.vars.insert(p, cell); }
+            }
+        }
+        let saved_ret = self.inline_ret.replace(dsts.to_vec());
+        for s in &body {
+            self.stmt(s);
+        }
+        self.inline_ret = saved_ret;
+        (self.vars, self.stacks, self.consts, self.gaddrs) = saved;
+        true
     }
 
     /// A *conditional* tail call: transfer to `callee(args)` iff `cond != 0`,
@@ -887,6 +979,7 @@ impl FnLower<'_> {
                 const_params,
                 n_ret: def.n_ret,
                 body,
+                unroll: false,
             });
         }
         (name, rt_args)
@@ -1114,6 +1207,14 @@ impl FnLower<'_> {
     }
 
     fn lower_return(&mut self, exprs: &[Expr]) {
+        // Inlined (`@unroll`): bind the return values into the caller's cells
+        // and fall through — the body's tail return, so no jump is needed.
+        if let Some(dsts) = self.inline_ret.clone() {
+            for (e, &d) in exprs.iter().zip(&dsts) {
+                self.expr_into(e, d);
+            }
+            return;
+        }
         if self.is_main {
             return; // a `return` in main is a no-op; main halts via the trailing sentinel jump (lower_func).
         }
@@ -1224,6 +1325,7 @@ impl FnLower<'_> {
             const_params,
             n_ret: 0,
             body: loop_body,
+            unroll: false,
         });
 
         // Enter the loop iff it runs at least once: compile-time for constant
@@ -1249,6 +1351,26 @@ impl FnLower<'_> {
                 self.stmt(&stmt);
             }
         }
+    }
+}
+
+/// A body safe to inline: a single **tail** `return`, and no construct whose
+/// lowering needs its own frame or a dispatch — a call to a user function, a
+/// runtime loop, or a match (which would recurse the inliner or reload a frame
+/// pointer that is no longer the callee's). `blake3` is a builtin statement and
+/// is fine; `unroll`/`if` are compile-time / same-frame and recurse into.
+fn body_inlinable(body: &[Stmt]) -> bool {
+    matches!(body.split_last(), Some((Stmt::Return(_), rest)) if rest.iter().all(stmt_inline_safe))
+}
+
+fn stmt_inline_safe(s: &Stmt) -> bool {
+    match s {
+        Stmt::Let(..) | Stmt::Store(..) | Stmt::HintWitness { .. } | Stmt::AssertEq(..) | Stmt::AssertLt(..) => true,
+        Stmt::Call(f, _) => f == "blake3",
+        Stmt::If { then, els, .. } => then.iter().all(stmt_inline_safe) && els.iter().all(stmt_inline_safe),
+        Stmt::Unroll { body, .. } => body.iter().all(stmt_inline_safe),
+        // Return (non-tail), For, Match, LetMatchRange, LetTuple, CallIfNe, user Call.
+        _ => false,
     }
 }
 
@@ -1379,6 +1501,7 @@ pub(crate) fn lower_func(
         self_fp_off: None,
         bounds: HashMap::new(),
         gaddrs: HashMap::new(),
+        inline_ret: None,
         pending: Vec::new(),
         queue,
         loop_ctr,

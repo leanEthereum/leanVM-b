@@ -347,6 +347,11 @@ pub struct Stats {
     pub cycles: usize,
     pub counts: [usize; 6],
     pub committed: usize,
+    /// Data memory is `2^log_mem` cells (the padded write-once image).
+    pub log_mem: usize,
+    /// Cells actually touched, before the pad to `2^log_mem` — the real memory
+    /// footprint (`log2` is fractional).
+    pub mem_used: usize,
 }
 
 /// Prove the program on the given public input: run it (witness generation),
@@ -454,6 +459,8 @@ pub fn prove(program: &Program, public_input: [F128; 2]) -> (Proof, Stats) {
             cycles,
             counts,
             committed: committed_size,
+            log_mem: w.log_mem,
+            mem_used: exec.mem_used,
         },
     )
 }

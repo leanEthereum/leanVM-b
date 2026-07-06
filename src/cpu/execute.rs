@@ -8,6 +8,7 @@ use super::*;
 pub struct Execution {
     pub mem: Vec<F128>,      // data memory after the run, write-once (size cells, power of two)
     pub cycles: usize,       // number of instructions the run executed (trace length)
+    pub mem_used: usize,     // cells actually touched, before the power-of-two pad of `mem`
     pub(crate) trace: Trace, // rows + final access-count columns, emitted in the same walk
 }
 
@@ -487,6 +488,7 @@ impl Program {
 
         // Pad memory to a power of two (the boundary tables read a dense image),
         // at least 2^MIN_LOG_MEM cells (doc §Memory).
+        let mem_used = mem.len();
         let cells = mem.len().next_power_of_two().max(1 << MIN_LOG_MEM);
         assert!(cells <= 1 << MAX_LOG_MEM, "data memory exceeds 2^{MAX_LOG_MEM} cells");
         mem.resize(cells, F128::ZERO);
@@ -504,6 +506,7 @@ impl Program {
         Execution {
             mem,
             cycles: steps,
+            mem_used,
             trace,
         }
     }

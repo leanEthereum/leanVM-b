@@ -157,6 +157,11 @@ fn test_aggregate_xmss() {
         );
     }
     println!("  committed witness size      : 2^{:.3}", (stats.committed as f64).log2());
+    println!(
+        "  data memory                 : 2^{} padded (2^{:.2} used)",
+        stats.log_mem,
+        (stats.mem_used as f64).log2()
+    );
     println!("  proof size                  : {:.1} KiB", proof_bytes as f64 / 1024.0);
     println!("  proving (incl. witness gen) : {t_prove:?}");
     println!("  verifying                   : {t_verify:?}");
