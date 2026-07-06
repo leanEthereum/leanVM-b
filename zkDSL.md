@@ -208,6 +208,17 @@ A name bound to an integer literal (`x = 2`) additionally acts as a
 **compile-time index constant** — usable in stack indexes and slice bounds
 (see below). Any other re-binding clears that role.
 
+Two families of binding are folded and carried **virtually**, costing no
+instruction until used as a value:
+
+- **g-powers and shifted pointers** — a cursor like `s = s * GEN` or a pointer
+  view `p = buf * GEN ** k`. The offset folds into the `DEREF` address of each
+  access; only a scalar use materializes it.
+- **field constants** — a value built from literals / `GEN ** k` by field `+`
+  and `*`, e.g. a running weight `w = w * CHAIN_LENGTH` in an unrolled loop.
+  The arithmetic that advances it is compile-time (zero instructions); each use
+  is one `SET` of the folded constant.
+
 ## Memory
 
 All memory is **write-once**: a cell is set once; a second write of the same

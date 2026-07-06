@@ -58,6 +58,10 @@ struct FnLower<'a> {
     /// Variables bound to a symbolic g-address ([`GAddr`]) — index cursors and
     /// shifted pointers, kept virtual so their offsets fold into `DEREF`'s `β`.
     gaddrs: HashMap<String, GAddr>,
+    /// Variables bound to a compile-time *field* constant that isn't a g-power
+    /// (e.g. a running weight `CHAIN_LENGTH^i`). Kept virtual — folded through
+    /// constant field arithmetic and materialized (one `SET`) only when used.
+    fconsts: HashMap<String, F128>,
     /// While inlining an `@unroll` call ([`Self::try_inline`]), the destination
     /// cells its tail `return` binds into instead of emitting a return jump.
     /// `None` outside an inlined body.
@@ -175,6 +179,7 @@ impl FnLower<'_> {
             self.self_fp_off,
             self.bounds.clone(),
             self.gaddrs.clone(),
+            self.fconsts.clone(),
         );
         f(self);
         // A hint pending at the end of a branch (e.g. a trailing
@@ -195,6 +200,7 @@ impl FnLower<'_> {
             self.self_fp_off,
             self.bounds,
             self.gaddrs,
+            self.fconsts,
         ) = saved;
     }
 
@@ -279,6 +285,7 @@ impl FnLower<'_> {
             self.stacks.remove(name);
             self.consts.remove(name);
             self.gaddrs.remove(name);
+            self.fconsts.remove(name);
             self.vars.insert(name.clone(), cell);
         }
     }
@@ -372,6 +379,7 @@ impl FnLower<'_> {
             self.stacks.remove(name);
             self.consts.remove(name);
             self.gaddrs.remove(name);
+            self.fconsts.remove(name);
             self.vars.insert(name.clone(), cell);
         }
     }
@@ -634,6 +642,11 @@ impl FnLower<'_> {
                 }
                 if let Some(&ga) = self.gaddrs.get(v) {
                     return self.materialize(ga);
+                }
+                if let Some(&c) = self.fconsts.get(v) {
+                    let o = self.fresh();
+                    self.emit(LOp::Set { o, k: KVal::Const(c) });
+                    return o;
                 }
                 *self.vars.get(v).unwrap_or_else(|| panic!("unbound variable `{v}`"))
             }
@@ -906,6 +919,25 @@ impl FnLower<'_> {
         }
     }
 
+    /// `e` as a compile-time *field* constant, when it is one: a literal, `GEN`,
+    /// `GEN ** k`, a var bound to a field constant (or a constant g-power), or
+    /// `+`/`*` of those evaluated in the field (XOR / GHASH). `None` for a
+    /// runtime value or a compile-time *integer* op (`//`/`%` are index-only).
+    fn try_field_const(&self, e: &Expr) -> Option<F128> {
+        match e {
+            Expr::Lit(n) => Some(F128::new(*n as u64, (*n >> 64) as u64)),
+            Expr::Gen => Some(g_pow(1)),
+            Expr::GPow(k) => Some(g_pow_u128(*k)),
+            Expr::Var(v) => self.fconsts.get(v).copied().or_else(|| match self.gaddrs.get(v) {
+                Some(GAddr { base: None, exp }) => Some(g_pow_u128(*exp)),
+                _ => None,
+            }),
+            Expr::Add(a, b) => Some(self.try_field_const(a)? + self.try_field_const(b)?),
+            Expr::Mul(a, b) => Some(self.try_field_const(a)? * self.try_field_const(b)?),
+            _ => None,
+        }
+    }
+
     /// Realize a [`GAddr`] into a frame cell holding its value: a constant is one
     /// `SET`; a base with no shift is already that cell; a shifted base is a
     /// `SET`+`MUL`.
@@ -1037,6 +1069,7 @@ impl FnLower<'_> {
             std::mem::take(&mut self.stacks),
             std::mem::take(&mut self.consts),
             std::mem::take(&mut self.gaddrs),
+            std::mem::take(&mut self.fconsts),
         );
         for (p, b) in binds {
             match b {
@@ -1049,7 +1082,7 @@ impl FnLower<'_> {
             self.stmt(s);
         }
         self.inline_ret = saved_ret;
-        (self.vars, self.stacks, self.consts, self.gaddrs) = saved;
+        (self.vars, self.stacks, self.consts, self.gaddrs, self.fconsts) = saved;
         true
     }
 
@@ -1203,6 +1236,7 @@ impl FnLower<'_> {
                     self.vars.remove(name);
                     self.consts.remove(name);
                     self.gaddrs.remove(name);
+                    self.fconsts.remove(name);
                     self.stacks.insert(name.clone(), (base, *n as u32));
                 }
                 // `x = other_stackbuf`: a compile-time alias of the same cell
@@ -1213,6 +1247,7 @@ impl FnLower<'_> {
                     self.vars.remove(name);
                     self.consts.remove(name);
                     self.gaddrs.remove(name);
+                    self.fconsts.remove(name);
                     self.stacks.insert(name.clone(), bs);
                 }
                 _ => {
@@ -1227,14 +1262,20 @@ impl FnLower<'_> {
                         }
                     }
                     // A symbolic g-address (a constant g-power or a shifted
-                    // pointer) stays virtual: no instruction here, its offset
-                    // folds into `β` at each use, materialized only on demand.
+                    // pointer) or a compile-time field constant stays virtual:
+                    // no instruction here, folded / materialized only on demand.
                     if let Some(ga) = self.gaddr_of(e) {
                         self.vars.remove(name);
+                        self.fconsts.remove(name);
                         self.gaddrs.insert(name.clone(), ga);
+                    } else if let Some(c) = self.try_field_const(e) {
+                        self.vars.remove(name);
+                        self.gaddrs.remove(name);
+                        self.fconsts.insert(name.clone(), c);
                     } else {
                         let o = self.expr(e);
                         self.gaddrs.remove(name);
+                        self.fconsts.remove(name);
                         self.vars.insert(name.clone(), o);
                     }
                 }
@@ -1244,6 +1285,7 @@ impl FnLower<'_> {
                 for (n, d) in names.iter().zip(dsts) {
                     self.consts.remove(n);
                     self.gaddrs.remove(n);
+                    self.fconsts.remove(n);
                     self.vars.insert(n.clone(), d);
                 }
             }
@@ -1645,6 +1687,7 @@ pub(crate) fn lower_func(
         self_fp_off: None,
         bounds: HashMap::new(),
         gaddrs: HashMap::new(),
+        fconsts: HashMap::new(),
         inline_ret: None,
         pending: Vec::new(),
         queue,
