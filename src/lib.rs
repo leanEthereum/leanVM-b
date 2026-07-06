@@ -31,6 +31,47 @@ pub mod tables;
 pub mod transcript;
 pub mod witness;
 
+/// Build rayon's global thread pool with every worker pinned to a **performance
+/// core** (macOS QoS `USER_INTERACTIVE`), so the prover's fork-join stages are not
+/// dragged by efficiency-core stragglers at their barriers. The thread *count*
+/// still follows `RAYON_NUM_THREADS` (or rayon's default); this only fixes which
+/// cores the workers are scheduled on.
+///
+/// Idempotent and best-effort: call it **once at program/test start, before any
+/// other rayon use** (rayon's global pool is built on first use — once built, this
+/// is a no-op and the QoS hint does not apply). On non-macOS it is a plain pool.
+pub fn init_prover_pool() {
+    use std::sync::Once;
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        let builder = rayon::ThreadPoolBuilder::new().spawn_handler(|thread| {
+            std::thread::Builder::new().spawn(move || {
+                #[cfg(target_os = "macos")]
+                set_qos_user_interactive();
+                thread.run();
+            })?;
+            Ok(())
+        });
+        // Fails only if the global pool is already built — then we silently keep it.
+        let _ = builder.build_global();
+    });
+}
+
+/// Pin the calling thread to a performance core by requesting the
+/// `USER_INTERACTIVE` QoS class (macOS): the scheduler keeps `USER_INTERACTIVE`
+/// work off the efficiency cores. `QOS_CLASS_USER_INTERACTIVE = 0x21`.
+#[cfg(target_os = "macos")]
+fn set_qos_user_interactive() {
+    const QOS_CLASS_USER_INTERACTIVE: u32 = 0x21;
+    unsafe extern "C" {
+        fn pthread_set_qos_class_self_np(qos_class: u32, relative_priority: i32) -> i32;
+    }
+    // SAFETY: a libSystem call that only adjusts this thread's scheduling class.
+    unsafe {
+        pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+    }
+}
+
 /// Target soundness of the whole proof, in bits. Every round is designed to clear
 /// this: the PCS runs the Ligerito `Secure` profile ([`pcs::PROFILE`], 120-bit),
 /// and the bus grand product grinds up to it before its multiset challenge

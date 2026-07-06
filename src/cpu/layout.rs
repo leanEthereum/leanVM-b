@@ -368,6 +368,8 @@ impl Program {
         // built from the executed BLAKE3 rows in order (row j = flock instance j),
         // padded to `2^n_blocks_log(max(count,1))` all-padding instances — so a
         // program with no BLAKE3 still carries a single padding instance.
+        let fill_ms = t_fill.elapsed().as_secs_f64() * 1e3;
+        let t_qpkd = std::time::Instant::now();
         cols[QPKD] = {
             let blocks: Vec<_> = tr
                 .blake3
@@ -376,9 +378,11 @@ impl Program {
                 .collect();
             crate::blake3_flock::build_qpkd(&blocks)
         };
+        let qpkd_ms = t_qpkd.elapsed().as_secs_f64() * 1e3;
 
         if prof {
-            eprintln!("[build] fill cols   : {:>7.2} ms", t_fill.elapsed().as_secs_f64() * 1e3);
+            eprintln!("[build] fill cols   : {fill_ms:>7.2} ms");
+            eprintln!("[build] build q_pkd : {qpkd_ms:>7.2} ms");
         }
 
         // The public layout (flush/count blocks, per-column padding, placements,
@@ -416,7 +420,11 @@ impl Program {
         }
         // (`execute` already asserts the run halts at the sentinel (pc, fp) =
         // (g^{B-1}, 0), exactly the boundary the public layout derives.)
+        let t_stack = std::time::Instant::now();
         let q = witness::stack_q(&cols, &l.placements, l.m);
+        if prof {
+            eprintln!("[build] stack_q     : {:>7.2} ms", t_stack.elapsed().as_secs_f64() * 1e3);
+        }
         Witness {
             cols,
             q,

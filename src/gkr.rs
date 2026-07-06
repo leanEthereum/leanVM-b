@@ -5,7 +5,7 @@
 //! round univariate is degree 2 (3 evaluations) plus a degree-1 fold-back line.
 
 use crate::PAR_THRESHOLD;
-use crate::field::F128;
+use crate::field::{F128, mul_by_x};
 use crate::multilinear::lagrange_eval;
 use crate::multilinear::{add3, eq_table, interp, tri_nodes};
 use crate::transcript::{ProverState, VerifierState};
@@ -73,7 +73,6 @@ pub fn prove_product(leaves: Vec<F128>, ps: &mut ProverState) -> (F128, LeafClai
     let root = layers[mu][0];
     ps.add_scalar(root);
 
-    let nodes = tri_nodes();
     let mut r: Vec<F128> = Vec::new();
     // Each layer's connecting line at `c` is `Ṽ_0` at the new point, so the last
     // one is `Ṽ_0(r)` — no final re-evaluation of the whole leaf table needed.
@@ -89,7 +88,6 @@ pub fn prove_product(leaves: Vec<F128>, ps: &mut ProverState) -> (F128, LeafClai
         let mut rho = Vec::with_capacity(k);
         for j in 0..k {
             let half = even.len() / 2;
-            let node2 = nodes[2];
             // `eqr` is eq over the variables after the one bound this round, so the
             // per-row product `eq·even·odd` is degree 2 (eq-trick).
             let eqr = eq_table(&r[j + 1..]);
@@ -98,8 +96,11 @@ pub fn prove_product(leaves: Vec<F128>, ps: &mut ProverState) -> (F128, LeafClai
                 let eq = eqr[idx];
                 let prod0 = eq * even[lo] * odd[lo];
                 let prod1 = eq * even[hi] * odd[hi];
+                // The degree-2 round univariate is sent at nodes {0, 1, g}; node 2
+                // is the generator `g = x`, so `g·diff = mul_by_x(diff)` — a
+                // shift-fold, not a PMULL (bit-identical to `nodes[2] * diff`).
                 let (even_diff, odd_diff) = (even[lo] + even[hi], odd[lo] + odd[hi]);
-                let (even_at2, odd_at2) = (even[lo] + node2 * even_diff, odd[lo] + node2 * odd_diff);
+                let (even_at2, odd_at2) = (even[lo] + mul_by_x(even_diff), odd[lo] + mul_by_x(odd_diff));
                 let prod2 = eq * even_at2 * odd_at2;
                 [prod0, prod1, prod2]
             };

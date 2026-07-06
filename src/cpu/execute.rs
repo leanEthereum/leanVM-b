@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 
 use super::*;
+use crate::field::mul_by_x;
 
 pub struct Execution {
     pub mem: Vec<F128>,      // data memory after the run, write-once (size cells, power of two)
@@ -21,12 +22,12 @@ impl Program {
         use crate::compiler::{RHint, grow_gpow};
 
         let ending_pc = (self.prog.len() - 1) as u32; // last bytecode slot, g^{B-1}
-        let g_step = G;
 
         // g^j and its reverse index g^j ↦ j, grown lazily (deep recursion is
         // unbounded). Seed enough for the program counters / return targets.
         let mut gpow: Vec<F128> = vec![F128::ONE];
-        let mut gmap: HashMap<F128, u32> = HashMap::from([(F128::ONE, 0u32)]);
+        let mut gmap = crate::compiler::GPowMap::default();
+        gmap.insert(F128::ONE, 0u32);
         grow_gpow(&mut gpow, &mut gmap, self.prog.len() + 2);
 
         // Dense write-once data memory (read path stays a vector for speed), the
@@ -101,17 +102,13 @@ impl Program {
             }
         }
         // Read the running access count and advance it by ×g (the free increment).
-        fn bump_access_count(
-            mem: &mut Vec<F128>,
-            written: &mut Vec<bool>,
-            mem_count: &mut Vec<F128>,
-            g_step: F128,
-            cell: u32,
-        ) -> F128 {
+        // ×g is ×x, i.e. `mul_by_x` — a shift+fold, not a PMULL; this runs on every
+        // memory access (several million per run), so the cheap form matters.
+        fn bump_access_count(mem: &mut Vec<F128>, written: &mut Vec<bool>, mem_count: &mut Vec<F128>, cell: u32) -> F128 {
             ensure(mem, written, mem_count, cell as usize);
             let cell_idx = cell as usize;
             let count = mem_count[cell_idx];
-            mem_count[cell_idx] = count * g_step;
+            mem_count[cell_idx] = mul_by_x(count);
             count
         }
 
@@ -203,7 +200,7 @@ impl Program {
 
             let bytecode_read = {
                 let v = bytecode_count[pc as usize];
-                bytecode_count[pc as usize] = v * g_step;
+                bytecode_count[pc as usize] = mul_by_x(v);
                 v
             };
 
@@ -237,9 +234,9 @@ impl Program {
                     let vb = get(&mem, &written, ab);
                     let vc = if is_xor { va + vb } else { va * vb };
                     put(&mut mem, &mut written, &mut mem_count, ac, vc);
-                    let ra = bump_access_count(&mut mem, &mut written, &mut mem_count, g_step, aa);
-                    let rb = bump_access_count(&mut mem, &mut written, &mut mem_count, g_step, ab);
-                    let rc = bump_access_count(&mut mem, &mut written, &mut mem_count, g_step, ac);
+                    let ra = bump_access_count(&mut mem, &mut written, &mut mem_count, aa);
+                    let rb = bump_access_count(&mut mem, &mut written, &mut mem_count, ab);
+                    let rc = bump_access_count(&mut mem, &mut written, &mut mem_count, ac);
                     let row = Xrow {
                         pc,
                         fp,
@@ -261,7 +258,7 @@ impl Program {
                 Op::Set { o, k } => {
                     let a = fp + o;
                     put(&mut mem, &mut written, &mut mem_count, a, k);
-                    let r = bump_access_count(&mut mem, &mut written, &mut mem_count, g_step, a);
+                    let r = bump_access_count(&mut mem, &mut written, &mut mem_count, a);
                     set.push(Srow {
                         pc,
                         fp,
@@ -343,9 +340,9 @@ impl Program {
                     }
                     let v2 = get(&mem, &written, a2 as u32);
                     let v3 = get(&mem, &written, a3);
-                    let r1 = bump_access_count(&mut mem, &mut written, &mut mem_count, g_step, a1);
-                    let r2 = bump_access_count(&mut mem, &mut written, &mut mem_count, g_step, a2 as u32);
-                    let r3 = bump_access_count(&mut mem, &mut written, &mut mem_count, g_step, a3);
+                    let r1 = bump_access_count(&mut mem, &mut written, &mut mem_count, a1);
+                    let r2 = bump_access_count(&mut mem, &mut written, &mut mem_count, a2 as u32);
+                    let r3 = bump_access_count(&mut mem, &mut written, &mut mem_count, a3);
                     deref.push(Drow {
                         pc,
                         fp,
@@ -371,19 +368,22 @@ impl Program {
                     let c = get(&mem, &written, ac);
                     let d = get(&mem, &written, ad);
                     let f = get(&mem, &written, af);
-                    let (w, b) = if c.is_zero() {
-                        (F128::ZERO, F128::ZERO)
-                    } else {
-                        (c.inv(), F128::ONE)
-                    };
-                    let rc = bump_access_count(&mut mem, &mut written, &mut mem_count, g_step, ac);
-                    let rd = bump_access_count(&mut mem, &mut written, &mut mem_count, g_step, ad);
-                    let rf = bump_access_count(&mut mem, &mut written, &mut mem_count, g_step, af);
+                    // `b = [c ≠ 0]` is needed now; `w = c⁻¹` is only recorded into
+                    // the trace (never used for control flow), so it is deferred to
+                    // ONE batched Montgomery inversion after the run — computing it
+                    // per-jump here runs a 254-mul Fermat inverse on every taken
+                    // branch (~2^17 of them), which dominated `execute`. Placeholder
+                    // 0 now; batch-filled below (bit-identical to `c.inv()`).
+                    let b = if c.is_zero() { F128::ZERO } else { F128::ONE };
+                    let w = F128::ZERO;
+                    let rc = bump_access_count(&mut mem, &mut written, &mut mem_count, ac);
+                    let rd = bump_access_count(&mut mem, &mut written, &mut mem_count, ad);
+                    let rf = bump_access_count(&mut mem, &mut written, &mut mem_count, af);
                     let taken = !c.is_zero();
                     let (npc, nfp) = if taken {
                         (d, f)
                     } else {
-                        (g_step * gpow[pc as usize], gpow[fp as usize])
+                        (mul_by_x(gpow[pc as usize]), gpow[fp as usize])
                     };
                     jump.push(Jrow {
                         pc,
@@ -425,12 +425,12 @@ impl Program {
                     let (vc0, vc1) = blake3_compress(va0, va1, vb0, vb1);
                     put(&mut mem, &mut written, &mut mem_count, ac, vc0);
                     put(&mut mem, &mut written, &mut mem_count, ac + 1, vc1);
-                    let ra0 = bump_access_count(&mut mem, &mut written, &mut mem_count, g_step, aa);
-                    let ra1 = bump_access_count(&mut mem, &mut written, &mut mem_count, g_step, aa + 1);
-                    let rb0 = bump_access_count(&mut mem, &mut written, &mut mem_count, g_step, ab);
-                    let rb1 = bump_access_count(&mut mem, &mut written, &mut mem_count, g_step, ab + 1);
-                    let rc0 = bump_access_count(&mut mem, &mut written, &mut mem_count, g_step, ac);
-                    let rc1 = bump_access_count(&mut mem, &mut written, &mut mem_count, g_step, ac + 1);
+                    let ra0 = bump_access_count(&mut mem, &mut written, &mut mem_count, aa);
+                    let ra1 = bump_access_count(&mut mem, &mut written, &mut mem_count, aa + 1);
+                    let rb0 = bump_access_count(&mut mem, &mut written, &mut mem_count, ab);
+                    let rb1 = bump_access_count(&mut mem, &mut written, &mut mem_count, ab + 1);
+                    let rc0 = bump_access_count(&mut mem, &mut written, &mut mem_count, ac);
+                    let rc1 = bump_access_count(&mut mem, &mut written, &mut mem_count, ac + 1);
                     blake3.push(Brow {
                         pc,
                         fp,
@@ -484,6 +484,31 @@ impl Program {
             // the rows, already ZERO) to ZERO.
             put(&mut mem, &mut written, &mut mem_count, a2 as u32, F128::ZERO);
             put(&mut mem, &mut written, &mut mem_count, a3, F128::ZERO);
+        }
+
+        // Fill the deferred JUMP inverse hints `w = c⁻¹` (the is-nonzero witness)
+        // in ONE batched Montgomery inversion: a single field inverse plus ~2·#jumps
+        // multiplies, instead of a 254-mul Fermat inverse per taken branch. `w` is
+        // only recorded into the trace, so this reproduces exactly the per-jump
+        // `c.inv()` (0 for the c = 0 rows). `prefix[i]` is the running product of the
+        // nonzero conditions before row `i`; `acc` ends as the product of all
+        // nonzero conditions (nonzero, so invertible).
+        {
+            let mut acc = F128::ONE;
+            let mut prefix: Vec<F128> = Vec::with_capacity(jump.len());
+            for r in &jump {
+                prefix.push(acc);
+                if !r.c.is_zero() {
+                    acc *= r.c;
+                }
+            }
+            let mut inv = acc.inv();
+            for (i, r) in jump.iter_mut().enumerate().rev() {
+                if !r.c.is_zero() {
+                    r.w = inv * prefix[i];
+                    inv *= r.c;
+                }
+            }
         }
 
         // Pad memory to a power of two (the boundary tables read a dense image),

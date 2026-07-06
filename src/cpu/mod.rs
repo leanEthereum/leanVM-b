@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use rayon::prelude::*;
 
 use crate::constraints;
-use crate::field::{F128, G, g_pow};
+use crate::field::{F128, g_pow};
 use crate::leaf::{self, Block, ColumnClaim, Coord};
 use crate::pcs;
 use crate::tables::{
@@ -361,7 +361,22 @@ pub struct Stats {
 pub fn prove(program: &Program, public_input: [F128; 2]) -> (Proof, Stats) {
     let prof = std::env::var("LEANVM_PROFILE").is_ok();
     let ms = |t: std::time::Instant| t.elapsed().as_secs_f64() * 1e3;
+    let t = std::time::Instant::now();
     let exec = program.execute(public_input);
+    if prof {
+        eprintln!("[prove] execute     : {:>7.2} ms", ms(t));
+    }
+    // The BLAKE3 R1CS setup (circuit construction) is a ~hundreds-of-ms cost that
+    // depends only on the compression count (the circuit *shape*), not the witness
+    // — but it is otherwise built synchronously inside the final reduction, adding
+    // that latency serially with nothing overlapping it. Now that `execute` has
+    // told us the count, build it on a background thread: it constructs
+    // concurrently with the build/commit/bus/constraint stages (~1 s of work) and
+    // lands in the shared setup cache, so the reduction's `setup_for` is a cache
+    // hit. Pure warm-up — the result is fetched from the cache, nothing here joins
+    // the handle. (A no-BLAKE3 program still warms the size-1 padding shape.)
+    let n_b3_warm = exec.trace.blake3.len().max(1);
+    std::thread::spawn(move || crate::blake3_flock::warm_setup(n_b3_warm));
     let cycles = exec.cycles;
     let w = program.build(&exec);
     let counts = w.row_counts;
@@ -446,7 +461,14 @@ pub fn prove(program: &Program, public_input: [F128; 2]) -> (Proof, Stats) {
     let (_z_packed, zc, lc, reduced) = crate::blake3_flock::prove_reduction(&blocks, &committed.commitment, &mut ps);
     let offset = w.layout.placements[QPKD].offset;
     let ring = crate::blake3_flock::ring_switch_open(blocks.len(), offset, &reduced);
+    if prof {
+        eprintln!("[open]  reduction   : {:>7.2} ms", ms(t));
+    }
+    let t_pcs = std::time::Instant::now();
     let mixed_open = pcs::open(&mut ps, &committed, &w.q, &slots, &ring);
+    if prof {
+        eprintln!("[open]  pcs::open   : {:>7.2} ms", ms(t_pcs));
+    }
     // Carry flock's sub-proof on the shared channels: its scalar reduction on the
     // `stream` (raw transport), its Ligerito on the `openings` hint channel.
     crate::blake3_flock::write_stack_proof(&mut ps, zc, lc, mixed_open);

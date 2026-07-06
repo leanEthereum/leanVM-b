@@ -17,22 +17,23 @@ Machine: M4 Max
 
 ## XMSS aggregation
 
-`RAYON_NUM_THREADS=10 LEANVM_XMSS_N=820 cargo test --release --test xmss_vm -- --nocapture`
+`RAYON_NUM_THREADS=11 LEANVM_XMSS_N=820 cargo test --release --test xmss_vm -- --nocapture`
 
 ```
 XMSS aggregation, 820 signatures
-  cycles (VM steps)           :    2029286 = 2^20.95   (  2474.7 / XMSS)
-    XOR    instructions       :      63961 = 2^15.96   (    78.0 / XMSS)
-    MUL    instructions       :     665036 = 2^19.34   (   811.0 / XMSS)
-    SET    instructions       :     484634 = 2^18.89   (   591.0 / XMSS)
+  cycles (VM steps)           :    1729153 = 2^20.72   (  2108.7 / XMSS)
+    XOR    instructions       :     116441 = 2^16.83   (   142.0 / XMSS)
+    MUL    instructions       :     535476 = 2^19.03   (   653.0 / XMSS)
+    SET    instructions       :     372294 = 2^18.51   (   454.0 / XMSS)
     DEREF  instructions       :     468599 = 2^18.84   (   571.5 / XMSS)
-    JUMP   instructions       :     217315 = 2^17.73   (   265.0 / XMSS)
+    JUMP   instructions       :     106602 = 2^16.70   (   130.0 / XMSS)
     BLAKE3 instructions       :     129741 = 2^16.99   (   158.2 / XMSS)
-  committed witness size      : 2^25.872
-  proof size                  : 716.4 KiB
-  proving (incl. witness gen) : 2.510787917s
-  verifying                   : 8.257917ms
-  throughput                  : 326.6 XMSS/s
+  committed witness size      : 2^25.836
+  data memory                 : 2^22 padded (2^21.56 used)
+  proof size                  : 717.0 KiB
+  proving (incl. witness gen) : 1.610039458s
+  verifying                   : 7.92975ms
+  throughput                  : 509.3 XMSS/s
 ```
 
 ## Fibonacci

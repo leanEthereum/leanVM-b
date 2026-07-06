@@ -42,6 +42,37 @@ pub use parser::{
 // Layout, resolution, witness generation
 // ----------------------------------------------------------------------------
 
+/// A fast [`std::hash::Hasher`] for the g-power reverse index (`g^k ↦ k`). The
+/// keys are field elements that are effectively uniform, so one multiplicative
+/// mix of the two 64-bit limbs distributes well — far cheaper than the default
+/// SipHash across the interpreter's millions of reverse-index lookups/inserts
+/// (e.g. growing the index to `2^20` on a dynamic allocation).
+#[derive(Default)]
+pub(crate) struct GPowHasher(u64);
+
+impl std::hash::Hasher for GPowHasher {
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        // Fallback for non-u64 writes (F128's derived Hash uses `write_u64`, so
+        // this is not on the hot path).
+        for &b in bytes {
+            self.0 = (self.0 ^ b as u64).wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+    #[inline]
+    fn write_u64(&mut self, i: u64) {
+        // F128 hashes its `lo` then `hi` limb through here; fold both.
+        self.0 = (self.0 ^ i).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    }
+}
+
+/// The g-power reverse index type: `F128 → u32` keyed by [`GPowHasher`].
+pub(crate) type GPowMap = HashMap<crate::field::F128, u32, std::hash::BuildHasherDefault<GPowHasher>>;
+
 /// A hint resolved to concrete offsets/sizes, keyed by global program counter.
 #[derive(Clone, Debug)]
 pub(crate) enum RHint {
@@ -253,10 +284,11 @@ fn resolve(op: &LOp, entry: &HashMap<String, u32>, sentinel: u32, base: u32) -> 
 }
 
 /// Extend the `g^j` table and its reverse index `g^j ↦ j` to cover index `upto`.
-pub(crate) fn grow_gpow(gpow: &mut Vec<F128>, gmap: &mut HashMap<F128, u32>, upto: usize) {
+pub(crate) fn grow_gpow(gpow: &mut Vec<F128>, gmap: &mut GPowMap, upto: usize) {
     assert!(upto < (1 << 28), "address space overflow (program too large)");
     while gpow.len() <= upto {
-        let next = *gpow.last().unwrap() * crate::field::G;
+        // ×g is ×x = `mul_by_x` (shift+fold), not a PMULL.
+        let next = crate::field::mul_by_x(*gpow.last().unwrap());
         gmap.insert(next, gpow.len() as u32);
         gpow.push(next);
     }
