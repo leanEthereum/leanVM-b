@@ -57,6 +57,8 @@ pub(crate) struct Jrow {
     pub(crate) f: F128,
     pub(crate) w: F128, // inverse hint (is-nonzero witness): c⁻¹ when c ≠ 0, else 0
     pub(crate) b: F128, // taken indicator b = [c ≠ 0]
+    pub(crate) direct: bool, // immediate-target jump (npc = g^target, not m[fp·g^od])
+    pub(crate) target: u32,  // the immediate code address (0 when indirect)
     pub(crate) rc: F128,
     pub(crate) rd: F128,
     pub(crate) rf: F128,

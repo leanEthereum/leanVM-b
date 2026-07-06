@@ -74,7 +74,7 @@ Instruction & Operands & Semantics\\
 \texttt{MUL\_NATIVE}   & $[o_A,o_B,o_C]$ & $\loc{o_C}=\loc{o_A}\cdot\loc{o_B}$ \quad(field product in $\F_{2^{128}}$)\\
 \texttt{SET\_CONSTANT} & $[o,k]$         & $\loc{o}=k$\\
 \texttt{DEREF}         & $[\alpha,\beta,\gamma;\,s]$ & $\mem[\loc{\alpha}\cdot\beta]=\srcsel{s}$\\
-\texttt{JUMP}          & $[o_c,o_d,o_f]$ & conditional jump (below)\\
+\texttt{JUMP}          & $[o_c,o_d,o_f;\,\delta,t]$ & conditional jump (below)\\
 \texttt{BLAKE3}        & $[o_0,o_1,o_2,o_3,o_C]$ & $\bigl(\loc{o_C},\loc{\gen\cdot o_C}\bigr)=\mathrm{BLAKE3}\bigl(\loc{o_0},\loc{o_1},\loc{o_2},\loc{o_3}\bigr)$ (below)\\
 \hline
 \end{tabular}
@@ -93,7 +93,7 @@ Instruction & Operands & Semantics\\
 \]
 The \texttt{deref\_pc} and \texttt{deref\_fp} modes let a caller save its return address and frame so a callee can later return and restore them, the basis for function calls. The skip of two is the call's return target: place the \texttt{DEREF} that saves $\gen^{2}\cdot\pc$ immediately before the \texttt{JUMP} that transfers control, and $\gen^{2}\cdot\pc$ names the instruction just after that \texttt{JUMP}.
 
-\texttt{JUMP} reads a condition $c=\loc{o_c}$, an arbitrary field element, and branches on whether it is zero. When $c\neq0$ it transfers control, $\pc\gets\loc{o_d}$ and $\fp\gets\loc{o_f}$; when $c=0$ it falls through, $\pc\gets\gen\cdot\pc$ and $\fp\gets\fp$.
+\texttt{JUMP} reads a condition $c=\loc{o_c}$, an arbitrary field element, and branches on whether it is zero. When $c\neq0$ it transfers control, $\fp\gets\loc{o_f}$ and $\pc$ to the destination; when $c=0$ it falls through, $\pc\gets\gen\cdot\pc$ and $\fp\gets\fp$. The destination is either \emph{indirect}, $\pc\gets\loc{o_d}$ (a code address held in a cell, flag $\delta=0$), or an \emph{immediate}, $\pc\gets\gen^{t}$ (flag $\delta=1$): a compile-time-constant target reached with no \texttt{SET} to build it.
 
 
 \iffalse % Deferred future instructions (u32, BLAKE3): commented out for now.
@@ -356,7 +356,7 @@ which gives $v_3$, $\gen^{2}\cdot\pc$, or $\fp$ at the three flag settings (in c
 
 \subsection{\texttt{JUMP}}\label{sec:tab-jump}
 
-A conditional jump on whether the condition $c=\loc{o_c}$ is nonzero, with $c$ an arbitrary field element. It transfers to $\pc\gets d$, $\fp\gets f$ when $c\neq0$ (the destination $d=\loc{o_d}$, a code address, and the new frame $f=\loc{o_f}$), and falls through, $\pc\gets\gen\cdot\pc$, $\fp\gets\fp$, when $c=0$. The branch is taken according to a committed boolean indicator $b=[\,c\neq0\,]$, which a prover-supplied inverse $w$ certifies through the two degree-$2$ constraints
+A conditional jump on whether the condition $c=\loc{o_c}$ is nonzero, with $c$ an arbitrary field element. It transfers to $\pc\gets d$, $\fp\gets f$ when $c\neq0$ (the new frame $f=\loc{o_f}$), and falls through, $\pc\gets\gen\cdot\pc$, $\fp\gets\fp$, when $c=0$. The destination $d$ is either the cell value $\loc{o_d}$ (indirect, flag $\delta=0$) or the immediate $\gen^{t}$ (direct, $\delta=1$); a helper column $d=\delta\cdot\gen^{t}+(1-\delta)\loc{o_d}$ carries it, keeping the pc-selection below degree $2$. The flag $\delta$ is a public bytecode field, hence $\{0,1\}$ by construction. The branch is taken according to a committed boolean indicator $b=[\,c\neq0\,]$, which a prover-supplied inverse $w$ certifies through the two degree-$2$ constraints
 \[
   b=c\cdot w,\qquad c\,(b+1)=0 .
 \]
@@ -366,13 +366,13 @@ When $c\neq0$ the second forces $b=1$ and the first then $w=c^{-1}$; when $c=0$ 
 \]
 Alone among the tables, \texttt{JUMP} commits its successors.
 \begin{itemize}
-\item \textbf{Columns:} $\pc,\fp,\mathit{next\_pc},\mathit{next\_fp}$; operands $o_c,o_d,o_f$; addresses $a_c,a_d,a_f$; values $c,d,f$; inverse $w$; indicator $b$; memory counts $r_c,r_d,r_f$; bytecode count $r_{\mathrm{bc}}$. ($w$ and $b$ are witness columns, neither read from memory nor in the bytecode; the fall-through $s=\gen\cdot\pc$ is virtual.)
-\item \textbf{Constraints:} the three addresses $a_X=\fp\cdot o_X$; the indicator pair $b=c\cdot w$ and $c\,(b+1)=0$; and the two selections $\mathit{next\_pc},\mathit{next\_fp}$ above.
+\item \textbf{Columns:} $\pc,\fp,\mathit{next\_pc},\mathit{next\_fp}$; operands $o_c,o_d,o_f$; addresses $a_c,a_d,a_f$; values $c,f$ and the effective destination $d$; the immediate $\gen^{t}$ and flag $\delta$; inverse $w$; indicator $b$; memory counts $r_c,r_d,r_f$; bytecode count $r_{\mathrm{bc}}$. ($w$ and $b$ are witness columns, neither read from memory nor in the bytecode; the fall-through $s=\gen\cdot\pc$ is virtual.)
+\item \textbf{Constraints:} the three addresses $a_X=\fp\cdot o_X$; the destination select $d=\delta\cdot\gen^{t}+(1-\delta)\,d_{\mathrm{cell}}$ where $d_{\mathrm{cell}}=\loc{o_d}$; the indicator pair $b=c\cdot w$ and $c\,(b+1)=0$; and the two selections $\mathit{next\_pc},\mathit{next\_fp}$ above. All degree $2$.
 \item \textbf{Flushes:}
   \begin{itemize}
   \item \textbf{State:} \pull\ $\tup{\dsep{ST},\pc,\fp}$, \push\ $\tup{\dsep{ST},\mathit{next\_pc},\mathit{next\_fp}}$.
-  \item \textbf{Bytecode:} \pull\ $\tup{\dsep{BC},\pc,r_{\mathrm{bc}},\opc{JMP},o_c,o_d,o_f,0,0}$, \push\ the same at $\gen\cdot r_{\mathrm{bc}}$.
-  \item \textbf{Memory} ($X\in\{c,d,f\}$): \pull\ $\tup{\dsep{MEM},a_X,r_X,X}$, \push\ $\tup{\dsep{MEM},a_X,\gen\cdot r_X,X}$.
+  \item \textbf{Bytecode:} \pull\ $\tup{\dsep{BC},\pc,r_{\mathrm{bc}},\opc{JMP},o_c,o_d,o_f,\gen^{t},\delta}$, \push\ the same at $\gen\cdot r_{\mathrm{bc}}$. (The two \texttt{DEREF}-flag slots carry $\gen^{t}$ and $\delta$.)
+  \item \textbf{Memory} ($X\in\{c,d_{\mathrm{cell}},f\}$): \pull\ $\tup{\dsep{MEM},a_X,r_X,X}$, \push\ $\tup{\dsep{MEM},a_X,\gen\cdot r_X,X}$. In direct mode $o_d=0$, so the $d_{\mathrm{cell}}$ read touches the frame's cell $0$ and is discarded.
   \end{itemize}
 \end{itemize}
 
@@ -414,7 +414,7 @@ Fixed once, public, and shared by prover and verifier: the field, the bus shape,
 
 \subsection{Bytecode encoding}\label{sec:e2e-bc}
 
-The program is public. Instruction $\pc$ fills coordinates $3$ through $8$ of its bytecode tuple $\tup{\dsep{BC},\pc,\cnt,\cdot}$: an opcode in coordinate $3$, three operands in coordinates $4,5,6$, and coordinates $7,8$ carrying the two \texttt{DEREF} flags $(f_{\pc},f_{\fp})$ — or, for \texttt{BLAKE3}, its fourth and fifth operands $(o_3,o_C)$ — ($0$ for every other opcode). Each operand is a $\gen$-power or an immediate.
+The program is public. Instruction $\pc$ fills coordinates $3$ through $8$ of its bytecode tuple $\tup{\dsep{BC},\pc,\cnt,\cdot}$: an opcode in coordinate $3$, three operands in coordinates $4,5,6$, and coordinates $7,8$ carrying the two \texttt{DEREF} flags $(f_{\pc},f_{\fp})$ — or, for \texttt{BLAKE3}, its fourth and fifth operands $(o_3,o_C)$, or, for \texttt{JUMP}, its immediate target $\gen^{t}$ and direct flag $\delta$ — ($0$ for every other opcode). Each operand is a $\gen$-power or an immediate.
 \begin{center}
 \begin{tabular}{lllllll}
 \hline
@@ -424,7 +424,7 @@ Instruction & coord.\ $3$ & coord.\ $4$ & coord.\ $5$ & coord.\ $6$ & coord.\ $7
 \texttt{MUL\_NATIVE}   & $\opc{MUL}$ & $o_A$ & $o_B$ & $o_C$ & $0$ & $0$\\
 \texttt{SET\_CONSTANT} & $\opc{SET}$ & $o$   & $k$   & $0$   & $0$ & $0$\\
 \texttt{DEREF}         & $\opc{DRF}$ & $\alpha$ & $\beta$ & $\gamma$ & $f_{\pc}$ & $f_{\fp}$\\
-\texttt{JUMP}          & $\opc{JMP}$ & $o_c$ & $o_d$ & $o_f$ & $0$ & $0$\\
+\texttt{JUMP}          & $\opc{JMP}$ & $o_c$ & $o_d$ & $o_f$ & $\gen^{t}$ & $\delta$\\
 \texttt{BLAKE3}        & $\opc{B3}$  & $o_0$ & $o_1$ & $o_2$ & $o_3$ & $o_C$\\
 \hline
 \end{tabular}

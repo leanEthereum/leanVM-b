@@ -97,7 +97,7 @@ fn program_digest(prog: &[Op]) -> [F128; 2] {
             } => {
                 (3 + mode as u8, alpha, beta, gamma, F128::ZERO) // mode ∈ {Cell,Pc,Fp} ⇒ tag 3/4/5
             }
-            Op::Jump { oc, od, of } => (6, oc, od, of, F128::ZERO),
+            Op::Jump { oc, od, of, direct, target } => (6, oc, od, of, F128::new(direct as u64, target as u64)),
             Op::Blake3 { ins, out } => (7, ins[0], ins[1], ins[2], F128::new(ins[3] as u64, out as u64)),
         };
         h.update(&[tag]);

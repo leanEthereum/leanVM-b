@@ -394,18 +394,19 @@ match log(x):        # x = GEN ** j runs case j
 Matches the **log** of a g-power scrutinee against integer cases, which must
 be consecutive from 0 (the dispatch table is dense; no `case _`). The
 lowering is two jumps through a *trampoline table* in the bytecode: the
-dispatch jumps to `g^T · x²` — the j-th two-instruction slot (`SET` the case
-block's address, `JUMP` to it) of a table at base `T` — and the slot jumps to
-the case block, which can sit anywhere, unaligned and of any length. Cost ≈ 7
-cycles, independent of the case count.
+dispatch jumps to `g^T · x` — the j-th slot, a single direct `JUMP` straight
+to the case block, of a table at base `T` — and the slot jumps to the case
+block, which can sit anywhere, unaligned and of any length. Cost ≈ 5 cycles,
+independent of the case count.
 
 (Why not leanVM's single-jump `pc = a + b·x`: that affine address needs
 integer *scaling* by the common block size `b`, which in the exponent becomes
-`x^b` — log₂ b squarings — plus padding every block to the longest; the
-trampoline collapses the aligned region to 2-instruction slots, so the
-scaling is the single squaring `x²`. Other layouts exist — e.g. a
-memory-resident address table dispatched with a single jump, worthwhile for
-many repeated small matches — but only the trampoline is implemented.)
+`x^b` — log₂ b squarings — plus padding every block to the longest. Because a
+`JUMP` can name a constant target directly (an immediate code address, no
+`SET` to build it), each trampoline slot is one instruction, so slots are
+stride-1 and the dispatch's scaling is just `×x`, no squaring. Other layouts exist — e.g. a memory-resident address
+table dispatched with a single jump, worthwhile for many repeated small
+matches — but only the trampoline is implemented.)
 
 **Soundness**: nothing in the dispatch bounds `x` — a scrutinee outside
 `[0, n)` jumps to an arbitrary pc. A hinted value must be range-checked first
@@ -433,8 +434,8 @@ the arm body. The whole call sits on one line (no line continuation), and the
 with identical runtime arguments — the common `lambda k: f(a, b, k)`, where
 only a `Const` argument varies — the compiler builds the callee frame **once**
 and the dispatch jumps straight into the selected specialization's entry, which
-returns past the join. Each taken arm is then just the trampoline's two
-instructions (`SET entry; JUMP`) instead of a full call: no per-arm frame
+returns past the join. Each taken arm is then just the trampoline's single
+direct `JUMP` into the callee's entry, instead of a full call: no per-arm frame
 setup, call jump, or return jump. (The `walk`-per-digit dispatch in the XMSS
 verifier is the motivating case.)
 
@@ -549,9 +550,9 @@ entry — repeated lines with the same name are its successive entries:
 | stack read / store `sa[k]` | 0 (direct cell addressing) |
 | `assert a == b` | 2 |
 | `assert log x < k` | 3 (+1 `SET` amortized per bound per frame) |
-| `if a == b: …` | 3 (+2 to skip a non-empty `else`; +2 amortized `self-fp` per branching function); **0 if the condition is compile-time** |
-| `match log(x): …` | ≈ 7, independent of the case count |
-| `… = match_range(log(x), …)` | the `match` + the arm; results written into the targets directly. Uniform-call arms (`lambda k: f(a, b, k)`) **fuse**: one shared frame + dispatch to entry, each arm just `SET`+`JUMP` |
+| `if a == b: …` | 2 (+1 to skip a non-empty `else`; +2 amortized `self-fp` per branching function); **0 if the condition is compile-time** |
+| `match log(x): …` | ≈ 5, independent of the case count |
+| `… = match_range(log(x), …)` | the `match` + the arm; results written into the targets directly. Uniform-call arms (`lambda k: f(a, b, k)`) **fuse**: one shared frame + dispatch to entry, each arm just a single direct `JUMP` |
 | function call | ≈ `n_args + n_returns + 4` (0 when the callee is `@unroll`) |
 | `mul_range` iteration | body + ≈ 1 `MUL` + 1 `XOR` + call overhead |
 | `unroll` iteration | body only (compile-time replication) |

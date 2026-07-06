@@ -476,7 +476,13 @@ mod jump {
     // the taken indicator `b = [c ≠ 0]` it certifies (doc §7.5).
     pub const W: usize = 17;
     pub const B: usize = 18;
-    pub const N: usize = 19;
+    // Immediate-target jump: `ot = g^target` and the `dir` flag (public bytecode
+    // fields), and the effective dest `dest = dir·ot + (1-dir)·d` (a helper column
+    // that keeps the pc-select degree 2).
+    pub const OT: usize = 19;
+    pub const DIR: usize = 20;
+    pub const DEST: usize = 21;
+    pub const N: usize = 22;
 }
 
 impl Table for JumpTable {
@@ -492,7 +498,7 @@ impl Table for JumpTable {
     }
     fn constraint_columns(&self) -> &'static [usize] {
         use jump::*;
-        &[PC, FP, NPC, NFP, OC, OD, OF, AC, AD, AF, C, D, F, W, B]
+        &[PC, FP, NPC, NFP, OC, OD, OF, AC, AD, AF, C, D, F, W, B, OT, DIR, DEST]
     }
     fn eval_constraint(&self, eta: F128, cols: &Cols) -> F128 {
         use jump::*;
@@ -507,19 +513,17 @@ impl Table for JumpTable {
         // when `cond = 0` the first gives `b = 0`.
         let ind_def = eta3 * (cols[B] + cols[C] * cols[W]);
         let ind_nz = eta3 * eta * (cols[C] * (cols[B] + one));
-        let sel_pc = eta3 * eta * eta * (cols[NPC] + cols[B] * cols[D] + (cols[B] + one) * fall_through);
-        let sel_fp = eta3 * eta * eta * eta * (cols[NFP] + cols[B] * cols[F] + (cols[B] + one) * cols[FP]);
-        addrs + ind_def + ind_nz + sel_pc + sel_fp
+        // Effective dest: `dest = dir·ot + (1-dir)·d` (a helper so the pc-select
+        // stays degree 2). `dir` is a public bytecode flag ⇒ 0/1 by construction.
+        let dest_def = eta3 * eta * eta * (cols[DEST] + cols[DIR] * cols[OT] + (one + cols[DIR]) * cols[D]);
+        let sel_pc = eta3 * eta * eta * eta * (cols[NPC] + cols[B] * cols[DEST] + (cols[B] + one) * fall_through);
+        let sel_fp = eta3 * eta * eta * eta * eta * (cols[NFP] + cols[B] * cols[F] + (cols[B] + one) * cols[FP]);
+        addrs + ind_def + ind_nz + dest_def + sel_pc + sel_fp
     }
     fn flushes(&self, f: &mut FlushBuilder) {
         use jump::*;
         f.state_jump(PC, FP, NPC, NFP);
-        f.bytecode(
-            PC,
-            RBC,
-            OP_JUMP,
-            &[Col(OC), Col(OD), Col(OF), Const(F128::ZERO), Const(F128::ZERO)],
-        );
+        f.bytecode(PC, RBC, OP_JUMP, &[Col(OC), Col(OD), Col(OF), Col(OT), Col(DIR)]);
         f.memory(AC, RC, C);
         f.memory(AD, RD, D);
         f.memory(AF, RF, F);
@@ -542,6 +546,9 @@ impl Table for JumpTable {
         out[F] = rows.par_iter().map(|r| r.f).collect();
         out[W] = rows.par_iter().map(|r| r.w).collect();
         out[B] = rows.par_iter().map(|r| r.b).collect();
+        out[OT] = rows.par_iter().map(|r| if r.direct { ctx.g_at(r.target) } else { F128::ZERO }).collect();
+        out[DIR] = rows.par_iter().map(|r| if r.direct { F128::ONE } else { F128::ZERO }).collect();
+        out[DEST] = rows.par_iter().map(|r| if r.direct { ctx.g_at(r.target) } else { r.d }).collect();
         out[RC] = rows.par_iter().map(|r| r.rc).collect();
         out[RD] = rows.par_iter().map(|r| r.rd).collect();
         out[RF] = rows.par_iter().map(|r| r.rf).collect();

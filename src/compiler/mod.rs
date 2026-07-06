@@ -221,8 +221,9 @@ pub fn disassemble(prog: &[Op]) -> String {
                 };
                 format!("DEREF  *(fp[{alpha}]·g^{beta}) = {src}  [{mode:?}]")
             }
-            Op::Jump { oc, od, of } => {
-                format!("JUMP   if fp[{oc}]≠0: pc=fp[{od}], fp=fp[{of}]")
+            Op::Jump { oc, od, of, direct, target } => {
+                let dst = if *direct { format!("pc={target}") } else { format!("pc=fp[{od}]") };
+                format!("JUMP   if fp[{oc}]≠0: {dst}, fp=fp[{of}]")
             }
             Op::Blake3 { ins, out } => {
                 format!(
@@ -259,6 +260,15 @@ fn resolve(op: &LOp, entry: &HashMap<String, u32>, sentinel: u32, base: u32) -> 
         KVal::EndSentinel => g_pow(sentinel as usize),
         KVal::Local(i) => g_pow((base + i) as usize),
     };
+    // A `KVal` code address resolved to its concrete `pc` (for a direct JUMP).
+    let target_pc = |kv: &KVal| -> u32 {
+        match kv {
+            KVal::Entry(name) => entry[name],
+            KVal::EndSentinel => sentinel,
+            KVal::Local(i) => base + i,
+            KVal::Const(_) => unreachable!("a direct JUMP target is a code address, not a constant"),
+        }
+    };
     match op {
         LOp::Set { o, k: kv } => Op::Set {
             o: *o,
@@ -277,10 +287,21 @@ fn resolve(op: &LOp, entry: &HashMap<String, u32>, sentinel: u32, base: u32) -> 
             gamma: *gamma,
             mode: *mode,
         },
-        LOp::Jump { oc, od, of } => Op::Jump {
-            oc: *oc,
-            od: *od,
-            of: *of,
+        LOp::Jump { oc, of, dest } => match dest {
+            JumpDest::Indirect(od) => Op::Jump {
+                oc: *oc,
+                od: *od,
+                of: *of,
+                direct: false,
+                target: 0,
+            },
+            JumpDest::Direct(kv) => Op::Jump {
+                oc: *oc,
+                od: 0,
+                of: *of,
+                direct: true,
+                target: target_pc(kv),
+            },
         },
         LOp::Blake3 { ins, c } => Op::Blake3 { ins: *ins, out: *c },
     }

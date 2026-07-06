@@ -165,7 +165,7 @@ pub(crate) fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; 6], pi: [F
             Op::Xor { a, b, c } | Op::Mul { a, b, c } => a.max(b).max(c),
             Op::Set { o, .. } => o,
             Op::Deref { alpha, beta, gamma, .. } => alpha.max(beta).max(gamma),
-            Op::Jump { oc, od, of } => oc.max(od).max(of),
+            Op::Jump { oc, od, of, target, .. } => oc.max(od).max(of).max(target),
             Op::Blake3 { ins, out } => ins[0].max(ins[1]).max(ins[2]).max(ins[3]).max(out),
         })
         .max()
@@ -186,7 +186,7 @@ pub(crate) fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; 6], pi: [F
             Op::Xor { a, b, c } | Op::Mul { a, b, c } => (g_at(a), g_at(b), g_at(c)),
             Op::Set { o, k } => (g_at(o), k, F128::ZERO),
             Op::Deref { alpha, beta, gamma, .. } => (g_at(alpha), g_at(beta), g_at(gamma)),
-            Op::Jump { oc, od, of } => (g_at(oc), g_at(od), g_at(of)),
+            Op::Jump { oc, od, of, .. } => (g_at(oc), g_at(od), g_at(of)),
             // BLAKE3's first three input-word offsets; the last two ride the
             // fpc/ffp bytecode slots below.
             Op::Blake3 { ins, .. } => (g_at(ins[0]), g_at(ins[1]), g_at(ins[2])),
@@ -197,10 +197,20 @@ pub(crate) fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; 6], pi: [F
     let fpc = |op: &Op| match op {
         Op::Deref { mode, .. } => mode.f_pc(),
         Op::Blake3 { ins, .. } => g_at(ins[3]),
+        // JUMP's immediate target g^target (0 when indirect).
+        Op::Jump { direct: true, target, .. } => g_at(*target),
         _ => F128::ZERO,
     };
     let ffp = |op: &Op| match op {
         Op::Deref { mode, .. } => mode.f_fp(),
+        // JUMP's direct flag.
+        Op::Jump { direct, .. } => {
+            if *direct {
+                F128::ONE
+            } else {
+                F128::ZERO
+            }
+        }
         Op::Blake3 { out, .. } => g_at(*out),
         _ => F128::ZERO,
     };

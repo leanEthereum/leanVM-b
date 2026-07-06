@@ -363,10 +363,14 @@ impl Program {
                     });
                     pc += 1;
                 }
-                Op::Jump { oc, od, of } => {
+                Op::Jump { oc, od, of, direct, target } => {
                     let (ac, ad, af) = (fp + oc, fp + od, fp + of);
                     let c = get(&mem, &written, ac);
+                    // The dest cell is read either way (in direct mode `od = 0`, so
+                    // this touches the frame's cell 0 and is ignored). `dest` is the
+                    // effective target g-power: the immediate `g^target`, or `d`.
                     let d = get(&mem, &written, ad);
+                    let dest = if direct { gpow[target as usize] } else { d };
                     let f = get(&mem, &written, af);
                     // `b = [c ≠ 0]` is needed now; `w = c⁻¹` is only recorded into
                     // the trace (never used for control flow), so it is deferred to
@@ -381,7 +385,7 @@ impl Program {
                     let rf = bump_access_count(&mut mem, &mut written, &mut mem_count, af);
                     let taken = !c.is_zero();
                     let (npc, nfp) = if taken {
-                        (d, f)
+                        (dest, f)
                     } else {
                         (mul_by_x(gpow[pc as usize]), gpow[fp as usize])
                     };
@@ -401,13 +405,15 @@ impl Program {
                         f,
                         w,
                         b,
+                        direct,
+                        target,
                         rc,
                         rd,
                         rf,
                         bytecode_read,
                     });
                     if taken {
-                        pc = *gmap.get(&d).expect("JUMP target not a g-power");
+                        pc = if direct { target } else { *gmap.get(&d).expect("JUMP target not a g-power") };
                         fp = *gmap.get(&f).expect("JUMP fp not a g-power");
                     } else {
                         pc += 1;

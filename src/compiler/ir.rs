@@ -28,6 +28,13 @@ pub(crate) struct LInstr {
     pub(crate) hints: Vec<Hint>,
 }
 
+/// A `JUMP` target: read from a frame cell, or an immediate code address.
+#[derive(Clone, Debug)]
+pub(crate) enum JumpDest {
+    Indirect(Off),
+    Direct(KVal),
+}
+
 #[derive(Clone, Debug)]
 pub(crate) enum LOp {
     Set {
@@ -52,8 +59,10 @@ pub(crate) enum LOp {
     },
     Jump {
         oc: Off,
-        od: Off,
         of: Off,
+        /// The jump target: a cell (`m[fp·g^od]`) or an immediate code address
+        /// (a resolved `KVal`, avoiding a `SET` of a constant target).
+        dest: JumpDest,
     },
     /// `BLAKE3`: the four input words `ins` are addressed independently (`fp+ins[i]`);
     /// the 32-bit output `c = (c, c+1)` occupies two CONSECUTIVE frame cells.

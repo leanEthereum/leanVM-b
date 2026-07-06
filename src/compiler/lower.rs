@@ -144,20 +144,14 @@ impl FnLower<'_> {
         }
     }
 
-    /// Terminate `main`: jump to the halt sentinel `g^{B-1}` with `fp = g^0`.
-    /// The cell holding `1` doubles as the (nonzero) jump condition and the new
-    /// frame pointer `g^0`; the dest cell holds `g^{B-1}` (\S e2e, final state).
+    /// Terminate `main`: jump directly to the halt sentinel `g^{B-1}` with
+    /// `fp = g^0`. The `1` cell is the (nonzero) condition and the new `fp`.
     fn halt(&mut self) {
         let one = self.one();
-        let dest = self.fresh();
-        self.emit(LOp::Set {
-            o: dest,
-            k: KVal::EndSentinel,
-        });
         self.emit(LOp::Jump {
             oc: one,
-            od: dest,
             of: one,
+            dest: JumpDest::Direct(KVal::EndSentinel),
         });
     }
 
@@ -206,6 +200,14 @@ impl FnLower<'_> {
         match &mut self.code[set_idx].op {
             LOp::Set { k: KVal::Local(t), .. } => *t = target as u32,
             other => unreachable!("patch_local on {other:?}"),
+        }
+    }
+
+    /// Backpatch a direct [`LOp::Jump`]'s [`KVal::Local`] target to `target`.
+    fn patch_jump_target(&mut self, jump_idx: usize, target: usize) {
+        match &mut self.code[jump_idx].op {
+            LOp::Jump { dest: JumpDest::Direct(KVal::Local(t)), .. } => *t = target as u32,
+            other => unreachable!("patch_jump_target on {other:?}"),
         }
     }
 
@@ -386,29 +388,30 @@ impl FnLower<'_> {
             mode: DerefMode::Cell,
         }); // retpc = join
 
-        // Dispatch: d = g^T · x² lands on the two-instruction slot for the digit.
+        // Dispatch: d = g^T · x lands on the one-instruction slot for the digit.
         let kcell = self.fresh();
         let kset = self.code.len();
         self.emit(LOp::Set {
             o: kcell,
             k: KVal::Local(0),
         }); // patched: table base T
-        let x2 = self.fresh();
-        self.emit(LOp::Mul { a: xo, b: xo, c: x2 });
         let d = self.fresh();
-        self.emit(LOp::Mul { a: kcell, b: x2, c: d });
-        self.emit(LOp::Jump { oc: one, od: d, of: sfp });
+        self.emit(LOp::Mul { a: kcell, b: xo, c: d });
+        self.emit(LOp::Jump {
+            oc: one,
+            of: sfp,
+            dest: JumpDest::Indirect(d),
+        });
 
-        // Trampoline: slot j enters `callees[j]` with fp = nfp; the callee's own
-        // `return` jumps to retpc (the join) in the caller frame.
+        // Trampoline: slot j jumps directly into `callees[j]`'s entry with
+        // fp = nfp; the callee's own `return` jumps to retpc (the join).
         self.patch_local(kset, self.code.len());
         for callee in callees {
-            let c = self.fresh();
-            self.emit(LOp::Set {
-                o: c,
-                k: KVal::Entry(callee.clone()),
+            self.emit(LOp::Jump {
+                oc: one,
+                of: nfp,
+                dest: JumpDest::Direct(KVal::Entry(callee.clone())),
             });
-            self.emit(LOp::Jump { oc: one, od: c, of: nfp });
         }
 
         // Join: read the return values (written by whichever callee ran).
@@ -445,47 +448,41 @@ impl FnLower<'_> {
             o: join,
             k: KVal::Local(0),
         }); // patched: the join
-        // d = g^T · x² — slot j (two instructions) sits at T + 2j.
+        // d = g^T · x — slot j (ONE direct-jump instruction) sits at T + j, so
+        // the dispatch needs only a single ×x (no squaring).
         let kcell = self.fresh();
         let kset = self.code.len();
         self.emit(LOp::Set {
             o: kcell,
             k: KVal::Local(0),
         }); // patched: table base T
-        let x2 = self.fresh();
-        self.emit(LOp::Mul { a: xo, b: xo, c: x2 });
         let d = self.fresh();
-        self.emit(LOp::Mul { a: kcell, b: x2, c: d });
+        self.emit(LOp::Mul { a: kcell, b: xo, c: d });
         self.emit(LOp::Jump {
             oc: one,
-            od: d,
             of: sfp,
+            dest: JumpDest::Indirect(d),
         });
-        // The trampoline table.
+        // The trampoline table: one direct jump per slot.
         self.patch_local(kset, self.code.len());
         let mut slots = Vec::new();
         for _ in 0..n {
-            let c = self.fresh();
             slots.push(self.code.len());
-            self.emit(LOp::Set {
-                o: c,
-                k: KVal::Local(0),
-            }); // patched: its block
             self.emit(LOp::Jump {
                 oc: one,
-                od: c,
                 of: sfp,
+                dest: JumpDest::Direct(KVal::Local(0)), // patched: its block
             });
         }
         // The arm blocks, each exiting to the join (the last falls through).
         for (j, &slot) in slots.iter().enumerate() {
-            self.patch_local(slot, self.code.len());
+            self.patch_jump_target(slot, self.code.len());
             body(self, j);
             if j + 1 != n {
                 self.emit(LOp::Jump {
                     oc: one,
-                    od: join,
                     of: sfp,
+                    dest: JumpDest::Indirect(join),
                 });
             }
         }
@@ -515,35 +512,25 @@ impl FnLower<'_> {
         let sfp = self.self_fp();
         let one = self.one();
         let (a_block, b_block) = if eq { (then, els) } else { (els, then) };
-        let bdest = self.fresh();
-        let bset = self.code.len();
-        self.emit(LOp::Set {
-            o: bdest,
-            k: KVal::Local(0),
-        }); // patched: start of B
+        let bjump = self.code.len();
         self.emit(LOp::Jump {
             oc: x,
-            od: bdest,
             of: sfp,
+            dest: JumpDest::Direct(KVal::Local(0)), // patched: start of B
         });
         self.branch(a_block);
         if b_block.is_empty() {
-            self.patch_local(bset, self.code.len());
+            self.patch_jump_target(bjump, self.code.len());
         } else {
-            let edest = self.fresh();
-            let eset = self.code.len();
-            self.emit(LOp::Set {
-                o: edest,
-                k: KVal::Local(0),
-            }); // patched: the join
+            let ejump = self.code.len();
             self.emit(LOp::Jump {
                 oc: one,
-                od: edest,
                 of: sfp,
+                dest: JumpDest::Direct(KVal::Local(0)), // patched: the join
             });
-            self.patch_local(bset, self.code.len());
+            self.patch_jump_target(bjump, self.code.len());
             self.branch(b_block);
-            self.patch_local(eset, self.code.len());
+            self.patch_jump_target(ejump, self.code.len());
         }
     }
 
@@ -1233,15 +1220,10 @@ impl FnLower<'_> {
         let (callee, args) = (callee.as_str(), args.as_slice());
         let arg_offs: Vec<Off> = args.iter().map(|a| self.expr(a)).collect();
         let nfp = self.fresh();
-        let entry = self.fresh();
         // Resolve the jump condition up front: `self.one()` may emit a `SET`, and
         // nothing may sit between the retpc `DEREF` and the `JUMP` (the `g²·pc`
         // return target assumes the `JUMP` is exactly one instruction later).
         let oc = cond.unwrap_or_else(|| self.one());
-        self.emit(LOp::Set {
-            o: entry,
-            k: KVal::Entry(callee.to_string()),
-        });
 
         // The frame-pointer hint fires before the first DEREF that reads `nfp`.
         self.pending.push(Hint::AllocFrame {
@@ -1268,7 +1250,11 @@ impl FnLower<'_> {
             gamma: 0,
             mode: DerefMode::Pc,
         }); // retpc = g²·pc
-        self.emit(LOp::Jump { oc, od: entry, of: nfp });
+        self.emit(LOp::Jump {
+            oc,
+            of: nfp,
+            dest: JumpDest::Direct(KVal::Entry(callee.to_string())),
+        });
 
         let n_args = args.len() as u32;
         let dsts: Vec<Off> = match dsts_in {
@@ -1480,7 +1466,11 @@ impl FnLower<'_> {
             self.expr_into(e, ret_base + i as u32);
         }
         let one = self.one();
-        self.emit(LOp::Jump { oc: one, od: 0, of: 1 });
+        self.emit(LOp::Jump {
+            oc: one,
+            of: 1,
+            dest: JumpDest::Indirect(0),
+        });
     }
 
     /// `for i in mul_range(GEN**lo, GEN**hi)` → a single tail-recursive helper, with the

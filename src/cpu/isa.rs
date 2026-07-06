@@ -24,10 +24,16 @@ pub enum Op {
         gamma: u32,
         mode: DerefMode,
     },
+    /// Conditional jump. When `m[fp·g^oc] ≠ 0`, transfer to the new frame
+    /// `m[fp·g^of]` and the new pc: `m[fp·g^od]` (indirect, `direct = false`), or
+    /// the immediate code address `target` (`direct = true`) — the latter avoids
+    /// a `SET` of a constant target. In direct mode `od` is a dummy (`0`).
     Jump {
         oc: u32,
         od: u32,
         of: u32,
+        direct: bool,
+        target: u32,
     },
     /// `BLAKE3` (§7.6): compresses the four 64-byte input words `ins` (the two
     /// 256-bit operands `ins[0]‖ins[1]` and `ins[2]‖ins[3]`) and writes the
