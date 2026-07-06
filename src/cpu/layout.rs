@@ -166,7 +166,7 @@ pub(crate) fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; 6], pi: [F
             Op::Set { o, .. } => o,
             Op::Deref { alpha, beta, gamma, .. } => alpha.max(beta).max(gamma),
             Op::Jump { oc, od, of } => oc.max(od).max(of),
-            Op::Blake3 { a, b, c } => a.max(b).max(c),
+            Op::Blake3 { ins, out } => ins[0].max(ins[1]).max(ins[2]).max(ins[3]).max(out),
         })
         .max()
         .unwrap_or(0) as usize;
@@ -187,16 +187,21 @@ pub(crate) fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; 6], pi: [F
             Op::Set { o, k } => (g_at(o), k, F128::ZERO),
             Op::Deref { alpha, beta, gamma, .. } => (g_at(alpha), g_at(beta), g_at(gamma)),
             Op::Jump { oc, od, of } => (g_at(oc), g_at(od), g_at(of)),
-            Op::Blake3 { a, b, c } => (g_at(a), g_at(b), g_at(c)),
+            // BLAKE3's first three input-word offsets; the last two ride the
+            // fpc/ffp bytecode slots below.
+            Op::Blake3 { ins, .. } => (g_at(ins[0]), g_at(ins[1]), g_at(ins[2])),
         }
     };
-    // The two DEREF store-mode flags, public program fields (0 elsewhere).
+    // The 4th/5th bytecode operand slots: the two DEREF store-mode flags, or
+    // BLAKE3's remaining input word / output base (0 elsewhere).
     let fpc = |op: &Op| match op {
         Op::Deref { mode, .. } => mode.f_pc(),
+        Op::Blake3 { ins, .. } => g_at(ins[3]),
         _ => F128::ZERO,
     };
     let ffp = |op: &Op| match op {
         Op::Deref { mode, .. } => mode.f_fp(),
+        Op::Blake3 { out, .. } => g_at(*out),
         _ => F128::ZERO,
     };
     // The program is PUBLIC (not committed): six public columns over the
