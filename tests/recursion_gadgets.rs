@@ -618,6 +618,97 @@ fn runtime_observe_loop() {
     verify(&program, &pi, &proof).expect("runtime-observe loop verifies");
 }
 
+/// Gadget 15: **fold-PoW leading-zero check** (the m33 config grinds fold
+/// challenges). verify_pow computes `base = compress(cv,[0,DS_POW])`, then checks
+/// `compress(base,[nonce,DS_POW])` has ≥ `bits` leading zero bits (LE byte order =
+/// low `bits` coefficients of h[0]). The guest recomputes the two compressions,
+/// decomposes h[0], and asserts its low `bits` bits are zero.
+#[test]
+fn fold_pow_check() {
+    use leanvm_b::vmhash::compress;
+    let ds_pow = F128::new(5, 0);
+    let lz = |h: [F128; 2], bits: u32| {
+        let mut o = [0u8; 32];
+        o[0..8].copy_from_slice(&h[0].lo.to_le_bytes());
+        o[8..16].copy_from_slice(&h[0].hi.to_le_bytes());
+        let full = (bits / 8) as usize;
+        let extra = bits % 8;
+        o[..full].iter().all(|&b| b == 0) && (extra == 0 || (o[full] >> (8 - extra)) == 0)
+    };
+    let cv = fs_ref::seed_cv(b"powtest", &[F128::new(9, 9)]);
+    let base = compress(cv, [F128::ZERO, ds_pow]);
+    let bits = 12u32;
+    let mut nonce = 0u64;
+    while !lz(compress(base, [F128::new(nonce, 0), ds_pow]), bits) {
+        nonce += 1;
+    }
+    let h = compress(base, [F128::new(nonce, 0), ds_pow]);
+
+    // The zero-bit set of pow_bits_ok(bits): low `full` bytes (bits 0..8*full) +
+    // the top `extra` bits of byte `full` (bits 8*full+8-extra .. 8*full+8).
+    let full = (bits / 8) as usize;
+    let extra = (bits % 8) as usize;
+    let mut zero_bits: Vec<usize> = (0..8 * full).collect();
+    if extra > 0 {
+        zero_bits.extend(8 * full + 8 - extra..8 * full + 8);
+    }
+    let zero_asserts: String = zero_bits
+        .iter()
+        .map(|&i| format!("    zb{i} = hb[GEN ** {i}]\n    assert zb{i} == 0\n"))
+        .collect();
+
+    let src = format!(
+        "from snark_lib import *\n\
+         CV0 = {}\n\
+         CV1 = {}\n\
+         NONCE = {nonce}\n\
+         \n\
+         def main():\n\
+         \x20   cvb = StackBuf(2)\n\
+         \x20   cvb[0] = CV0\n\
+         \x20   cvb[1] = CV1\n\
+         \x20   zin = StackBuf(2)\n\
+         \x20   zin[0] = 0\n\
+         \x20   zin[1] = 5\n\
+         \x20   base = StackBuf(2)\n\
+         \x20   blake3(cvb, zin, base)\n\
+         \x20   ni = StackBuf(2)\n\
+         \x20   ni[0] = NONCE\n\
+         \x20   ni[1] = 5\n\
+         \x20   h = StackBuf(2)\n\
+         \x20   blake3(base, ni, h)\n\
+         \x20   hb = HeapBuf(128)\n\
+         \x20   hint_witness(hb[0:128], \"hbits\")\n\
+         \x20   h0 = h[0]\n\
+         \x20   cb = hb\n\
+         \x20   w = GEN ** 0\n\
+         \x20   acc = 0\n\
+         \x20   for i in unroll(0, 128):\n\
+         \x20       b = cb[1]\n\
+         \x20       sq = b * b\n\
+         \x20       assert sq == b\n\
+         \x20       acc = acc + b * w\n\
+         \x20       cb = cb * GEN\n\
+         \x20       w = w * GEN\n\
+         \x20   assert acc == h0\n\
+         {zero_asserts}\
+         \x20   return\n",
+        u(cv[0]),
+        u(cv[1]),
+    );
+    let hbits: Vec<F128> = (0..128)
+        .map(|i| {
+            let bit = if i < 64 { (h[0].lo >> i) & 1 } else { (h[0].hi >> (i - 64)) & 1 };
+            F128::new(bit, 0)
+        })
+        .collect();
+    let mut program = compile(&parse(&src).expect("parse fold-pow"));
+    program.set_witness("hbits", vec![hbits]);
+    let pi = [F128::ZERO, F128::ZERO];
+    let (proof, _) = prove(&program, pi);
+    verify(&program, &pi, &proof).expect("fold-pow leading-zero check verifies");
+}
+
 /// A Ligerito config (the shape shared by prover + verifier). `r = recursive_ks.len()`.
 #[derive(Clone)]
 struct LigCfg {
