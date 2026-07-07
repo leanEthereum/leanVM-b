@@ -208,15 +208,16 @@ fn hash_leaves_batched(data: &[u8], leaf_size: usize, out: &mut [Hash]) {
     const GROUP: usize = 4096;
     let n_blocks = leaf_size.div_ceil(32).max(1);
 
-    out.par_chunks_mut(GROUP).enumerate().for_each(|(gi, out_group)| {
-        let plat = blake3::platform::Platform::detect();
-        let n = out_group.len();
-        let base = gi * GROUP * leaf_size;
-        // z = min trailing all-zero 32-byte blocks across the group (uniform for
-        // MSB-lane's structural zero lanes; 0 for zero-free levels).
-        let mut z = n_blocks;
-        for i in 0..n {
-            let leaf_end = base + (i + 1) * leaf_size;
+    // Shared trailing-zero-block skip = the MIN across ALL leaves, computed ONCE.
+    // Every leaf has ≥ z trailing zero blocks (uniform for MSB-lane's structural
+    // zero lanes, 0 otherwise), so `zero_suffix_state(z)` is a common prefix for
+    // every leaf — a leaf with extra zeros just hashes them explicitly. Hoisted
+    // out of the per-group loop so its `Mutex` lookup runs once, not per SIMD
+    // group (which serialized on many-core machines).
+    let z = (0..out.len())
+        .into_par_iter()
+        .map(|i| {
+            let leaf_end = (i + 1) * leaf_size;
             let mut zi = 0;
             while zi < n_blocks {
                 let end = leaf_end - zi * 32;
@@ -226,18 +227,23 @@ fn hash_leaves_batched(data: &[u8], leaf_size: usize, out: &mut [Hash]) {
                 }
                 zi += 1;
             }
-            z = z.min(zi);
-            if z == 0 {
-                break;
-            }
-        }
-        let start_cv = zero_suffix_state(leaf_size, z);
+            zi
+        })
+        .min()
+        .unwrap_or(0);
+    let start_cv = zero_suffix_state(leaf_size, z);
+    let real_blocks = n_blocks - z;
+
+    out.par_chunks_mut(GROUP).enumerate().for_each(|(gi, out_group)| {
+        let plat = blake3::platform::Platform::detect();
+        let n = out_group.len();
+        let base = gi * GROUP * leaf_size;
         let mut cvs: Vec<[u8; 32]> = vec![start_cv; n];
         let mut blocks: Vec<[u8; 64]> = vec![[0u8; 64]; n];
         let mut hm_out = vec![0u8; n * 32];
         // Absorb the real blocks last-to-first (RTL); the trailing z zero blocks
         // are already folded into `start_cv`.
-        for j in (0..n_blocks - z).rev() {
+        for j in (0..real_blocks).rev() {
             for (i, blk) in blocks.iter_mut().enumerate() {
                 blk[..32].copy_from_slice(&cvs[i]);
                 let off = base + i * leaf_size + j * 32;

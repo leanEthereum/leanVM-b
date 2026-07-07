@@ -265,9 +265,20 @@ pub(crate) fn transpose_hi_lanes(z: &[F128], log_batch: usize) -> Vec<F128> {
     let ni = 1usize << log_batch;
     let msg_cols = z.len() / ni;
     let mut out = vec![F128::ZERO; z.len()];
-    out.par_chunks_mut(ni).enumerate().for_each(|(lo, chunk)| {
-        for (hi, slot) in chunk.iter_mut().enumerate() {
-            *slot = z[hi * msg_cols + lo];
+    // Cache-blocked transpose of the `ni × msg_cols` matrix. Each task owns a tile
+    // of `B` output columns (`ni·B` elems, cache-resident) and, per lane `hi`,
+    // streams a contiguous `B`-run of `z` into it: reads are `ni` streaming runs
+    // (not a cache miss per element as a stride-`msg_cols` gather would be), writes
+    // stay in the tile. `msg_cols` can be < B for tiny witnesses — handled by `bw`.
+    const B: usize = 64;
+    out.par_chunks_mut(ni * B).enumerate().for_each(|(t, out_tile)| {
+        let lo0 = t * B;
+        let bw = (msg_cols - lo0).min(B);
+        for hi in 0..ni {
+            let src = &z[hi * msg_cols + lo0..hi * msg_cols + lo0 + bw];
+            for (d, &v) in src.iter().enumerate() {
+                out_tile[d * ni + hi] = v;
+            }
         }
     });
     out
