@@ -859,6 +859,134 @@ fn merkle_path_verify() {
     }
 }
 
+/// Emit a full `gkr::verify_product` replay for `2^mu` leaves into an in-progress
+/// `main()` body that has already set up the sponge (`cv0,cv1`) and stream cursor
+/// (`sp`). All local names are `tag`-prefixed so several products can be verified
+/// back-to-back over one shared transcript. Leaves `root{tag}` bound to the
+/// product root; the internal asserts constitute the verification.
+fn emit_gkr_verify_body(s: &mut String, n: &mut usize, mu: usize, tag: &str) {
+    emit_read(s, n, &format!("root{tag}"));
+    line(s, format!("clm{tag} = root{tag}"));
+    line(s, format!("rbuf{tag} = HeapBuf({})", mu * mu));
+    for p in 0..mu {
+        let base = p * mu;
+        let mut eqacc = format!("e{tag}_{p}_0");
+        line(s, format!("{eqacc} = GEN ** 0"));
+        for round in 0..p {
+            let (m0, m1, m2) = (
+                format!("g{tag}{p}_{round}_0"),
+                format!("g{tag}{p}_{round}_1"),
+                format!("g{tag}{p}_{round}_2"),
+            );
+            emit_read(s, n, &m0);
+            emit_read(s, n, &m1);
+            emit_read(s, n, &m2);
+            let rj = format!("j{tag}{p}_{round}");
+            line(s, format!("{rj} = rbuf{tag}[GEN ** {}]", (p - 1) * mu + round));
+            line(s, format!("o{tag}{p}_{round} = 1 + {rj}"));
+            line(s, format!("t{tag}{p}_{round} = o{tag}{p}_{round} * {m0} + {rj} * {m1}"));
+            line(s, format!("k{tag}{p}_{round} = {eqacc} * t{tag}{p}_{round}"));
+            line(s, format!("assert k{tag}{p}_{round} == clm{tag}"));
+            let rk = format!("y{tag}{p}_{round}");
+            emit_sample(s, n, &rk);
+            line(s, format!("rbuf{tag}[GEN ** {}] = {rk}", base + round + 1));
+            let neweq = format!("e{tag}_{p}_{}", round + 1);
+            line(s, format!("s{tag}{p}_{round} = 1 + {rj} + {rk}"));
+            line(s, format!("{neweq} = {eqacc} * s{tag}{p}_{round}"));
+            eqacc = neweq;
+            emit_lagrange(s, &format!("{tag}{p}_{round}"), &m0, &m1, &m2, &rk, &format!("L{tag}{p}_{round}"));
+            line(s, format!("clm{tag} = {eqacc} * L{tag}{p}_{round}"));
+        }
+        let (e0, e1) = (format!("v{tag}{p}_0"), format!("v{tag}{p}_1"));
+        emit_read(s, n, &e0);
+        emit_read(s, n, &e1);
+        line(s, format!("pe{tag}{p} = {e0} * {e1}"));
+        line(s, format!("pv{tag}{p} = {eqacc} * pe{tag}{p}"));
+        line(s, format!("assert clm{tag} == pv{tag}{p}"));
+        let c = format!("c{tag}{p}");
+        emit_sample(s, n, &c);
+        line(s, format!("rbuf{tag}[GEN ** {base}] = {c}"));
+        line(s, format!("dd{tag}{p} = {e0} + {e1}"));
+        line(s, format!("clm{tag} = {e0} + {c} * dd{tag}{p}"));
+    }
+}
+
+/// Grand-product **multiset-balance** verifier — the essence of leanVM-b's bus.
+/// Verifies three GKR products (push/pull/count) over one shared transcript and
+/// asserts `push_root == pull_root` (the two sides are the same multiset) and
+/// `count_root != 0` (no read self-cancels). Demonstrates composing several
+/// sumcheck sub-protocols + a cross-product relation in a single guest program.
+fn balance_verify_source(mu: usize, seed: [F128; 2], n_stream: usize) -> String {
+    let g = F128::generator();
+    let (inv0, inv1, inv2) = (g.inv(), (F128::ONE + g).inv(), (g * (F128::ONE + g)).inv());
+    let mut s = String::new();
+    s.push_str("from snark_lib import *\n");
+    s.push_str(&format!("SEED0 = {}\n", u(seed[0])));
+    s.push_str(&format!("SEED1 = {}\n", u(seed[1])));
+    s.push_str(&format!("INV0 = {}\n", u(inv0)));
+    s.push_str(&format!("INV1 = {}\n", u(inv1)));
+    s.push_str(&format!("INV2 = {}\n", u(inv2)));
+    s.push_str(&format!("N = {n_stream}\n\n"));
+    s.push_str("def main():\n");
+    let mut n = 0usize;
+    line(&mut s, "stream = HeapBuf(N)".into());
+    line(&mut s, "hint_witness(stream[0:N], \"stream\")".into());
+    line(&mut s, "cv0 = SEED0".into());
+    line(&mut s, "cv1 = SEED1".into());
+    line(&mut s, "sp = stream".into());
+    emit_gkr_verify_body(&mut s, &mut n, mu, "P");
+    emit_gkr_verify_body(&mut s, &mut n, mu, "Q");
+    emit_gkr_verify_body(&mut s, &mut n, mu, "C");
+    // Balance: the push and pull multisets coincide ⇒ equal grand products.
+    line(&mut s, "assert rootP == rootQ".into());
+    // No read self-cancels: count_root != 0, proven by exhibiting its inverse
+    // (only 0 has none) — the idiomatic nonzero check (assert has no `!=`).
+    line(&mut s, "cinv = StackBuf(1)".into());
+    line(&mut s, "hint_witness(cinv, \"count_inv\")".into());
+    line(&mut s, "cprod = rootC * cinv[0]".into());
+    line(&mut s, "assert cprod == GEN ** 0".into());
+    line(&mut s, "return".into());
+    s
+}
+
+#[test]
+fn balance_verify() {
+    use leanvm_b::gkr;
+    use leanvm_b::transcript::{ProverState, VerifierState};
+
+    let mu = 3usize;
+    let m = 1usize << mu;
+    // push and pull are permutations of one another ⇒ identical grand product.
+    let push: Vec<F128> = (0..m as u64).map(|i| F128::new(0x100 + i, 0x9 * i + 1)).collect();
+    let mut pull = push.clone();
+    pull.reverse(); // a permutation ⇒ same product
+    let count: Vec<F128> = (0..m as u64).map(|i| F128::new(0x7 * i + 3, 0x5 + i)).collect();
+
+    let label = b"bustest";
+    let mut ps = ProverState::new(label, &[]);
+    let _ = gkr::prove_product(push, &mut ps);
+    let _ = gkr::prove_product(pull, &mut ps);
+    let _ = gkr::prove_product(count, &mut ps);
+    let proof = ps.into_proof();
+
+    // Sanity: replay the three products natively (confirms the transcript shape).
+    let mut vs = VerifierState::new(label, &proof, &[]);
+    let (rp, _) = gkr::verify_product(mu, &mut vs).unwrap();
+    let (rq, _) = gkr::verify_product(mu, &mut vs).unwrap();
+    let (rc, _) = gkr::verify_product(mu, &mut vs).unwrap();
+    assert_eq!(rp, rq, "permutation ⇒ equal product");
+    assert_ne!(rc, F128::ZERO);
+
+    let seed = fs_ref::seed_cv(label, &[]);
+    let src = balance_verify_source(mu, seed, proof.stream.len());
+    let mut program = compile(&parse(&src).expect("parse balance verifier"));
+    program.set_witness("stream", vec![proof.stream.clone()]);
+    program.set_witness("count_inv", vec![vec![rc.inv()]]);
+    let pi = [F128::ZERO, F128::ZERO];
+    let (gproof, _) = prove(&program, pi);
+    verify(&program, &pi, &gproof).expect("balance verify replay verifies");
+}
+
 #[test]
 fn gkr_product_verify() {
     use leanvm_b::gkr;
