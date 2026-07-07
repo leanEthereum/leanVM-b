@@ -1057,8 +1057,9 @@ fn gen_lig_tr(
     mir: &MirOut,
     target: F128,
     label: &[u8],
+    z: &[F128],
 ) -> (String, std::collections::BTreeMap<String, String>, Vec<(String, Vec<F128>)>) {
-    use flare::pcs::ligerito::ceil_log2;
+    use flare::pcs::ligerito::{ceil_log2, eval_sk_at_vks};
     use std::collections::BTreeMap;
     use std::fmt::Write as _;
 
@@ -1094,6 +1095,17 @@ fn gen_lig_tr(
     };
     consts.push(("LBLA".into(), word(0)));
     consts.push(("LBLB".into(), word(16)));
+    for (i, &zi) in z.iter().enumerate() {
+        consts.push((format!("Z{i}"), zi));
+    }
+    for k in 0..=r {
+        let lmc = mir.ctx_lmc[k];
+        let svk = eval_sk_at_vks(lmc);
+        for j in 0..lmc {
+            consts.push((format!("SVK{k}_{j}"), svk[j]));
+            consts.push((format!("IVK{k}_{j}"), if svk[j] == F128::ZERO { F128::ZERO } else { svk[j].inv() }));
+        }
+    }
 
     // Fold-PoW nonces (placeholders) + digest-bit hints, computed by replaying the
     // sponge exactly as run_mirror does, in emit order.
@@ -1136,6 +1148,7 @@ fn gen_lig_tr(
     assert!(sp.verify_pow(proof.grinding_nonces[ni], 0));
     ni += 1;
     let bl0 = 1usize << (cfg.initial_log_msg_cols + cfg.log_inv_rates[0]);
+    let mut bl_per_level = vec![bl0];
     let (q0v, _) = sp.sample_queries_ordered(bl0, cfg.queries[0]);
     let a0v: Vec<F128> = (0..ceil_log2(cfg.queries[0])).map(|_| sp.sample()).collect();
     {
@@ -1170,6 +1183,7 @@ fn gen_lig_tr(
         }
         n_current -= k_i;
         let prev_block_len = 1usize << (prev_lmc + prev_lir);
+        bl_per_level.push(prev_block_len);
         if i == r - 1 {
             for v in &proof.final_proof.yr {
                 sp.observe(*v);
@@ -1210,6 +1224,21 @@ fn gen_lig_tr(
     s.push_str("def absorb(c0, c1, x, tag):\n    a = StackBuf(2)\n    a[0] = c0\n    a[1] = c1\n    b = StackBuf(2)\n    b[0] = x\n    b[1] = tag\n    o = StackBuf(2)\n    blake3(a, b, o)\n    return o[0], o[1]\n\n");
     s.push_str("def sqz(c0, c1):\n    a = StackBuf(2)\n    a[0] = c0\n    a[1] = c1\n    b = StackBuf(2)\n    b[0] = 0\n    b[1] = DS_SQ\n    o = StackBuf(2)\n    blake3(a, b, o)\n    return o[0], o[0], o[1]\n\n");
     s.push_str("def dec128(bp, v):\n    cb = bp\n    w = GEN ** 0\n    acc = 0\n    for i in unroll(0, 128):\n        b = cb[1]\n        sq = b * b\n        assert sq == b\n        acc = acc + b * w\n        cb = cb * GEN\n        w = w * GEN\n    assert acc == v\n    return\n\n");
+    s.push_str("def mstep(n0, n1, s0, s1, bit):\n    nb = StackBuf(2)\n    nb[0] = n0\n    nb[1] = n1\n    sb = StackBuf(2)\n    sb[0] = s0\n    sb[1] = s1\n    pr = StackBuf(2)\n    if bit == 0:\n        blake3(nb, sb, pr)\n    else:\n        blake3(sb, nb, pr)\n    return pr[0], pr[1]\n\n");
+    // foldyr: fold a 2^yl multilinear (LSB-first) over yl vars with per-var weights.
+    let yl = cfg.yr_log_n;
+    {
+        let args: Vec<String> = (0..yl).flat_map(|j| [format!("a{j}"), format!("b{j}")]).collect();
+        let _ = writeln!(s, "def foldyr(yp, {}):", args.join(", "));
+        let mut prev = "yp".to_string();
+        for lev in 0..yl - 1 {
+            let sz = 1usize << (yl - 1 - lev);
+            let _ = writeln!(s, "    l{lev} = HeapBuf({sz})\n    src = {prev}\n    dst = l{lev}\n    for i in unroll(0, {sz}):\n        dst[1] = a{lev} * src[1] + b{lev} * src[GEN]\n        src = src * GEN ** 2\n        dst = dst * GEN");
+            prev = format!("l{lev}");
+        }
+        let last = yl - 1;
+        let _ = writeln!(s, "    res = a{last} * {prev}[1] + b{last} * {prev}[GEN]\n    return res\n");
+    }
 
     // helper: emit an eq-table build of `k` challenges (var names in `chals`) into HeapBuf `buf`
     let emit_eq = |s: &mut String, buf: &str, chals: &[String], k: usize, take: usize| {
@@ -1246,18 +1275,22 @@ fn gen_lig_tr(
         let n = mir.levels[lvl].sorted.len();
         let klvl = if lvl == 0 { cfg.initial_k } else { cfg.recursive_ks[lvl - 1] };
         let width = n * (1usize << klvl);
-        let _ = writeln!(s, "    row{lvl} = HeapBuf({width})\n    hint_witness(row{lvl}[0:{width}], \"row{lvl}\")");
-        let flat: Vec<F128> = {
-            let rows = if lvl == 0 {
-                &proof.initial_proof.opened_rows
-            } else if lvl == r {
-                &proof.final_proof.opened_rows
-            } else {
-                &proof.recursive_proofs[lvl - 1].opened_rows
-            };
-            rows.iter().flatten().copied().collect()
+        let depth = bl_per_level[lvl].trailing_zeros() as usize;
+        let (rows, path) = if lvl == 0 {
+            (&proof.initial_proof.opened_rows, &proof.initial_proof.merkle_proof)
+        } else if lvl == r {
+            (&proof.final_proof.opened_rows, &proof.final_proof.merkle_proof)
+        } else {
+            (&proof.recursive_proofs[lvl - 1].opened_rows, &proof.recursive_proofs[lvl - 1].merkle_proof)
         };
-        hints.push((format!("row{lvl}"), flat));
+        let _ = writeln!(s, "    row{lvl} = HeapBuf({width})\n    hint_witness(row{lvl}[0:{width}], \"row{lvl}\")");
+        hints.push((format!("row{lvl}"), rows.iter().flatten().copied().collect()));
+        let psz = n * depth * 2;
+        let _ = writeln!(s, "    path{lvl} = HeapBuf({psz})\n    hint_witness(path{lvl}[0:{psz}], \"path{lvl}\")");
+        hints.push((format!("path{lvl}"), path.iter().flat_map(|&h| hb(h)).collect()));
+        let ssz = n * 128;
+        let _ = writeln!(s, "    sbits{lvl} = HeapBuf({ssz})\n    hint_witness(sbits{lvl}[0:{ssz}], \"sbits{lvl}\")");
+        hints.push((format!("sbits{lvl}"), mir.levels[lvl].raw.iter().flat_map(|&v| bits_of(v)).collect()));
     }
     for (idx, _) in fp.iter().chain(lvl_fp.iter().flatten()) {
         let _ = writeln!(s, "    fpb{idx} = HeapBuf(128)\n    hint_witness(fpb{idx}[0:128], \"fpb{idx}\")");
@@ -1275,9 +1308,10 @@ fn gen_lig_tr(
     // into vars enf{tag}. `chals` = the level's fold-challenge var names, klvl = their count.
     let emit_query_phase = |s: &mut String, tag: &str, n: usize, klvl: usize, chals: &[String]| {
         let a = ceil_log2(n);
-        // sample-advance loop
+        // sample-advance loop, capturing each sampled query value into qv{tag}
         let _ = writeln!(s, "    c0b_{tag} = HeapBuf({0})\n    c1b_{tag} = HeapBuf({0})\n    c0b_{tag}[1] = cv0\n    c1b_{tag}[1] = cv1", n + 1);
-        let _ = writeln!(s, "    for xq in mul_range(1, GEN ** {n}):\n        chq, nc0, nc1 = sqz(c0b_{tag}[xq], c1b_{tag}[xq])\n        c0b_{tag}[xq * GEN] = nc0\n        c1b_{tag}[xq * GEN] = nc1");
+        let _ = writeln!(s, "    qv{tag} = HeapBuf({n})");
+        let _ = writeln!(s, "    for xq in mul_range(1, GEN ** {n}):\n        chq, nc0, nc1 = sqz(c0b_{tag}[xq], c1b_{tag}[xq])\n        qv{tag}[xq] = chq\n        c0b_{tag}[xq * GEN] = nc0\n        c1b_{tag}[xq * GEN] = nc1");
         let _ = writeln!(s, "    cv0 = c0b_{tag}[GEN ** {n}]\n    cv1 = c1b_{tag}[GEN ** {n}]");
         // alpha samples
         let mut alphas = Vec::new();
@@ -1328,7 +1362,8 @@ fn gen_lig_tr(
     s.push_str("    iu0 = sp[1]\n    cv0, cv1 = obs(cv0, cv1, iu0)\n    sp = sp * GEN\n    iu2 = sp[1]\n    cv0, cv1 = obs(cv0, cv1, iu2)\n    sp = sp * GEN\n    beta0, cv0, cv1 = sqz(cv0, cv1)\n    qc = qc + beta0 * iu0\n    qb = qb + beta0 * (enf0 + iu2)\n    qa = qa + beta0 * iu2\n    tr = tr + beta0 * enf0\n");
 
     // recursive levels
-    let mut trterms: Vec<String> = Vec::new();
+    let mut ris_names = r_lane.clone();
+    let mut beta_names = vec!["beta0".to_string()];
     for i in 0..r {
         let k_i = cfg.recursive_ks[i];
         let mut level_rs: Vec<String> = Vec::new();
@@ -1358,9 +1393,105 @@ fn gen_lig_tr(
             emit_query_phase(&mut s, &tag, cfg.queries[i + 1], k_i, &level_rs);
             let _ = writeln!(s, "    iu0_{tag} = sp[1]\n    cv0, cv1 = obs(cv0, cv1, iu0_{tag})\n    sp = sp * GEN\n    iu2_{tag} = sp[1]\n    cv0, cv1 = obs(cv0, cv1, iu2_{tag})\n    sp = sp * GEN\n    beta{tag}, cv0, cv1 = sqz(cv0, cv1)\n    qc = qc + beta{tag} * iu0_{tag}\n    qb = qb + beta{tag} * (enf{tag} + iu2_{tag})\n    qa = qa + beta{tag} * iu2_{tag}\n    tr = tr + beta{tag} * enf{tag}");
         }
-        let _ = &mut trterms;
+        ris_names.extend(level_rs.clone());
+        beta_names.push(format!("beta{tag}"));
     }
-    s.push_str("    assert tr == TR\n    return\n");
+    // ---- per-query Merkle loops (one single path per query, no octopus) ----
+    let emit_merkle = |s: &mut String, tag: &str, n: usize, klvl: usize, block_len: usize, ra: &str, rb: &str| {
+        let d = block_len.trailing_zeros() as usize;
+        let w = 1usize << klvl;
+        let blocks = w / 2;
+        let nbytes = w * 16;
+        let _ = writeln!(s, "    for xm{tag} in mul_range(1, GEN ** {n}):");
+        // decompose the sampled value into this query's 128-bit block
+        let _ = writeln!(s, "        s128_{tag} = xm{tag}");
+        for _ in 0..7 {
+            let _ = writeln!(s, "        s128_{tag} = s128_{tag} * s128_{tag}");
+        }
+        let _ = writeln!(s, "        sbp_{tag} = sbits{tag} * s128_{tag}");
+        let _ = writeln!(s, "        dec128(sbp_{tag}, qv{tag}[xm{tag}])");
+        // leaf hash over the query's row (MD chain, iv = g^nbytes)
+        let _ = writeln!(s, "        rl_{tag} = xm{tag}");
+        for _ in 0..klvl {
+            let _ = writeln!(s, "        rl_{tag} = rl_{tag} * rl_{tag}");
+        }
+        let _ = writeln!(s, "        rc_{tag} = rl_{tag}\n        ld0_{tag} = GEN ** {nbytes}\n        ld1_{tag} = 0");
+        let _ = writeln!(s, "        for jb in unroll(0, {blocks}):\n            aa_{tag} = StackBuf(2)\n            aa_{tag}[0] = ld0_{tag}\n            aa_{tag}[1] = ld1_{tag}\n            mm_{tag} = StackBuf(2)\n            mm_{tag}[0] = row{tag}[rc_{tag}]\n            rc_{tag} = rc_{tag} * GEN\n            mm_{tag}[1] = row{tag}[rc_{tag}]\n            rc_{tag} = rc_{tag} * GEN\n            oo_{tag} = StackBuf(2)\n            blake3(aa_{tag}, mm_{tag}, oo_{tag})\n            ld0_{tag} = oo_{tag}[0]\n            ld1_{tag} = oo_{tag}[1]");
+        // walk the single path with the query-index bits (low d bits of the sample)
+        let _ = writeln!(s, "        pbase_{tag} = xm{tag}");
+        for _ in 0..(2 * d - 1) {
+            let _ = writeln!(s, "        pbase_{tag} = pbase_{tag} * xm{tag}");
+        }
+        let _ = writeln!(s, "        pbp_{tag} = path{tag} * pbase_{tag}\n        bb_{tag} = sbp_{tag}");
+        let _ = writeln!(s, "        for lw in unroll(0, {d}):\n            ld0_{tag}, ld1_{tag} = mstep(ld0_{tag}, ld1_{tag}, pbp_{tag}[1], pbp_{tag}[GEN], bb_{tag}[1])\n            pbp_{tag} = pbp_{tag} * GEN ** 2\n            bb_{tag} = bb_{tag} * GEN");
+        let _ = writeln!(s, "        assert ld0_{tag} == {ra}\n        assert ld1_{tag} == {rb}");
+    };
+    for lvl in 0..=r {
+        let tag = if lvl == 0 { "0".to_string() } else { format!("{lvl}") };
+        let n = mir.levels[lvl].sorted.len();
+        let klvl = if lvl == 0 { cfg.initial_k } else { cfg.recursive_ks[lvl - 1] };
+        let (ra, rb) = if lvl == 0 { ("INITROOT0".to_string(), "INITROOT1".to_string()) } else { (format!("REC{}A", lvl - 1), format!("REC{}B", lvl - 1)) };
+        emit_merkle(&mut s, &tag, n, klvl, bl_per_level[lvl], &ra, &rb);
+    }
+
+    // ---- residual loops (per level) + terminal inner == t_r ----
+    s.push_str("    one = GEN ** 0\n");
+    let len_ris = ris_names.len();
+    for k in 0..=r {
+        let tag = format!("{k}");
+        let n = mir.levels[k].sorted.len();
+        let lmc = mir.ctx_lmc[k];
+        let ris_start = mir.ctx_ris_start[k];
+        let prefix_len = lmc - yl;
+        let d = bl_per_level[k].trailing_zeros() as usize;
+        let _ = writeln!(s, "    accR{tag} = HeapBuf({0})\n    accR{tag}[1] = 0", n + 1);
+        let _ = writeln!(s, "    for xr{tag} in mul_range(1, GEN ** {n}):");
+        let _ = writeln!(s, "        sq_{tag} = xr{tag}");
+        for _ in 0..7 {
+            let _ = writeln!(s, "        sq_{tag} = sq_{tag} * sq_{tag}");
+        }
+        let _ = writeln!(s, "        sbp_{tag} = sbits{tag} * sq_{tag}");
+        // q_field = low d bits of the sample (the codeword position)
+        let _ = writeln!(s, "        qc_{tag} = sbp_{tag}\n        wq_{tag} = GEN ** 0\n        qf_{tag} = 0");
+        let _ = writeln!(s, "        for bq in unroll(0, {d}):\n            qf_{tag} = qf_{tag} + qc_{tag}[1] * wq_{tag}\n            qc_{tag} = qc_{tag} * GEN\n            wq_{tag} = wq_{tag} * GEN");
+        // novel-basis recurrence: s_0=q, s_t = s²+svk·s; w_t = s_t·inv(svk_t)
+        let _ = writeln!(s, "        sr_{tag}_0 = qf_{tag}\n        wr_{tag}_0 = sr_{tag}_0 * IVK{tag}_0");
+        for t in 1..lmc {
+            let _ = writeln!(s, "        sr_{tag}_{t} = sr_{tag}_{p} * sr_{tag}_{p} + SVK{tag}_{pm} * sr_{tag}_{p}\n        wr_{tag}_{t} = sr_{tag}_{t} * IVK{tag}_{t}", p = t - 1, pm = t - 1);
+        }
+        // prefix product over the ris fold-challenges
+        let _ = writeln!(s, "        prefix_{tag} = GEN ** 0");
+        for t in 0..prefix_len {
+            let _ = writeln!(s, "        prefix_{tag} = prefix_{tag} * (1 + {rc} * (1 + wr_{tag}_{t}))", rc = ris_names[ris_start + t]);
+        }
+        // S = Σ_y yr[y]·Π_{j:bit}(suffix_w) via foldyr
+        let mut fargs = Vec::new();
+        for j in 0..yl {
+            fargs.push("one".to_string());
+            fargs.push(format!("wr_{tag}_{}", prefix_len + j));
+        }
+        let _ = writeln!(s, "        S_{tag} = foldyr(yr, {})", fargs.join(", "));
+        let _ = writeln!(s, "        accR{tag}[xr{tag} * GEN] = accR{tag}[xr{tag}] + aw_{tag}[xr{tag}] * prefix_{tag} * S_{tag}");
+        let _ = writeln!(s, "    residsum{tag} = accR{tag}[GEN ** {n}]");
+    }
+    // eqris = Π_{t<len_ris} (1 + z[t] + ris[t])
+    s.push_str("    eqris = GEN ** 0\n");
+    for t in 0..len_ris {
+        let _ = writeln!(s, "    eqris = eqris * (1 + Z{t} + {rc})", rc = ris_names[t]);
+    }
+    // sy_evb = Σ_y yr[y]·eq(z[len_ris..], y_bits)  via foldyr
+    let mut sargs = Vec::new();
+    for j in 0..yl {
+        let _ = writeln!(s, "    az{j} = 1 + Z{}", len_ris + j);
+        sargs.push(format!("az{j}"));
+        sargs.push(format!("Z{}", len_ris + j));
+    }
+    let _ = writeln!(s, "    sy_evb = foldyr(yr, {})", sargs.join(", "));
+    let mut inner = "eqris * sy_evb".to_string();
+    for k in 0..=r {
+        inner.push_str(&format!(" + {} * residsum{k}", beta_names[k]));
+    }
+    let _ = writeln!(s, "    inner = {inner}\n    assert inner == tr\n    return");
     (s, rep, hints)
 }
 
@@ -1403,7 +1534,7 @@ fn ml_tr_small() {
     let m = run_mirror(&cfg, &proof, &z, target, label);
     assert_eq!(m.inner, m.tr);
 
-    let (src, rep, hints) = gen_lig_tr(&cfg, &proof, &m, target, label);
+    let (src, rep, hints) = gen_lig_tr(&cfg, &proof, &m, target, label, &z);
     std::fs::write(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/lig_ml_gen.py"), &src).ok();
     let mut program = compile(&parse_with_replacements(&src, &rep).expect("parse generated verifier"));
     for (name, vals) in &hints {
