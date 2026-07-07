@@ -182,6 +182,91 @@ pub fn merkle_root(data: &[u8], num_leaves: usize) -> Hash {
     tree[tree.len() - 1]
 }
 
+// The VM `compress` = `blake3::hash(64B)` is a ROOT single-block chunk. blake3's
+// SIMD `hash_many` reproduces it exactly when the last block carries the ROOT
+// flag (verified in tests), so many independent leaf compressions batch 4–16×.
+const B3_IV: [u32; 8] = [
+    0x6a09_e667, 0xbb67_ae85, 0x3c6e_f372, 0xa54f_f53a, 0x510e_527f, 0x9b05_688c, 0x1f83_d9ab, 0x5be0_cd19,
+];
+const B3_CHUNK_START: u8 = 1;
+const B3_CHUNK_END: u8 = 2;
+const B3_ROOT: u8 = 8;
+
+/// Hash all `out.len()` equal-size leaves with the VM-native MD slice hash, but
+/// SIMD-batch each MD step's `compress` across leaves via blake3's `hash_many`.
+/// Byte-identical to calling [`hash_leaf`] per leaf: the same **right-to-left**
+/// chain with the shared trailing-zero prefix skipped (MSB-lane zero lanes). Per
+/// group it skips `z` = the MINIMUM trailing-zero blocks across the group's leaves
+/// (every leaf has ≥ z, so the shared `zero_suffix_state` is a common prefix; a
+/// leaf with extra zeros hashes them explicitly — same result). Removes the
+/// per-call `blake3::hash` overhead, the lack of cross-leaf SIMD, AND the zero
+/// lanes.
+fn hash_leaves_batched(data: &[u8], leaf_size: usize, out: &mut [Hash]) {
+    use rayon::prelude::*;
+    // Leaves per SIMD group: enough to fill the batch + amortize, small enough to
+    // stay cache-resident (n·(32 cv + 64 block + 32 out) bytes).
+    const GROUP: usize = 4096;
+    let n_blocks = leaf_size.div_ceil(32).max(1);
+
+    out.par_chunks_mut(GROUP).enumerate().for_each(|(gi, out_group)| {
+        let plat = blake3::platform::Platform::detect();
+        let n = out_group.len();
+        let base = gi * GROUP * leaf_size;
+        // z = min trailing all-zero 32-byte blocks across the group (uniform for
+        // MSB-lane's structural zero lanes; 0 for zero-free levels).
+        let mut z = n_blocks;
+        for i in 0..n {
+            let leaf_end = base + (i + 1) * leaf_size;
+            let mut zi = 0;
+            while zi < n_blocks {
+                let end = leaf_end - zi * 32;
+                let start = end.saturating_sub(32);
+                if data[start..end].iter().any(|&b| b != 0) {
+                    break;
+                }
+                zi += 1;
+            }
+            z = z.min(zi);
+            if z == 0 {
+                break;
+            }
+        }
+        let start_cv = zero_suffix_state(leaf_size, z);
+        let mut cvs: Vec<[u8; 32]> = vec![start_cv; n];
+        let mut blocks: Vec<[u8; 64]> = vec![[0u8; 64]; n];
+        let mut hm_out = vec![0u8; n * 32];
+        // Absorb the real blocks last-to-first (RTL); the trailing z zero blocks
+        // are already folded into `start_cv`.
+        for j in (0..n_blocks - z).rev() {
+            for (i, blk) in blocks.iter_mut().enumerate() {
+                blk[..32].copy_from_slice(&cvs[i]);
+                let off = base + i * leaf_size + j * 32;
+                let end = (off + 32).min(base + (i + 1) * leaf_size);
+                let len = end - off;
+                blk[32..32 + len].copy_from_slice(&data[off..end]);
+                blk[32 + len..].fill(0); // zero-pad an odd tail (matches hash_leaf)
+            }
+            let refs: Vec<&[u8; 64]> = blocks.iter().collect();
+            plat.hash_many::<64>(
+                &refs,
+                &B3_IV,
+                0,
+                blake3::IncrementCounter::No,
+                0,
+                B3_CHUNK_START,
+                B3_CHUNK_END | B3_ROOT,
+                &mut hm_out,
+            );
+            for (i, cv) in cvs.iter_mut().enumerate() {
+                cv.copy_from_slice(&hm_out[i * 32..i * 32 + 32]);
+            }
+        }
+        for (o, cv) in out_group.iter_mut().zip(cvs.iter()) {
+            *o = *cv;
+        }
+    });
+}
+
 /// Compute the full Merkle tree (flat layout, see module docs) for `data`
 /// split into `num_leaves` equal-sized leaves.
 pub fn merkle_tree(data: &[u8], num_leaves: usize) -> Vec<Hash> {
@@ -202,11 +287,12 @@ pub fn merkle_tree(data: &[u8], num_leaves: usize) -> Vec<Hash> {
     // was just written) and writes itself.
     let mut tree: Vec<Hash> = crate::alloc_uninit_vec(total_nodes);
 
-    // 1. Leaves — fully parallel; BLAKE3's own SIMD per hash, rayon across them.
-    tree[..num_leaves]
-        .par_iter_mut()
-        .zip(data.par_chunks(leaf_size))
-        .for_each(|(out, leaf)| *out = hash_leaf(leaf));
+    // 1. Leaves — the VM-native MD slice hash (one `compress` per 32-byte block),
+    // but the per-step compressions are SIMD-batched ACROSS leaves via blake3's
+    // `hash_many` (byte-identical to per-leaf `hash_leaf`, so recursion
+    // reproducibility is preserved) — recovering the one-shot-`blake3::hash` speed
+    // the VM-native chain otherwise loses to per-call overhead + no SIMD.
+    hash_leaves_batched(data, leaf_size, &mut tree[..num_leaves]);
 
     // 2. Internal levels — parallel within a level, sequential across levels.
     // Small upper levels can't fill the cores, so a rayon dispatch per level
@@ -598,6 +684,47 @@ mod prune_tests {
                 *b = (i as u8) | 1;
             }
             assert_eq!(hash_leaf(&data), full_rtl(&data), "zero_blocks={zero_blocks}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod vmhash_batch_tests {
+    use super::*;
+
+    /// blake3's SIMD `hash_many` with the ROOT flag must reproduce
+    /// `blake3::hash(64B)` (the VM `compress`) exactly — the invariant the batched
+    /// leaf hasher relies on.
+    #[test]
+    fn hash_many_root_matches_hash() {
+        let plat = blake3::platform::Platform::detect();
+        let mut b0 = [0u8; 64];
+        for (i, x) in b0.iter_mut().enumerate() {
+            *x = (i as u8).wrapping_mul(7).wrapping_add(1);
+        }
+        let mut b1 = [0u8; 64];
+        for (i, x) in b1.iter_mut().enumerate() {
+            *x = (i as u8).wrapping_mul(13).wrapping_add(3);
+        }
+        let inputs: [&[u8; 64]; 2] = [&b0, &b1];
+        let mut out = [0u8; 64];
+        plat.hash_many::<64>(&inputs, &B3_IV, 0, blake3::IncrementCounter::No, 0, B3_CHUNK_START, B3_CHUNK_END | B3_ROOT, &mut out);
+        assert_eq!(&out[..32], blake3::hash(&b0).as_bytes());
+        assert_eq!(&out[32..], blake3::hash(&b1).as_bytes());
+    }
+
+    /// The SIMD-batched `merkle_tree` must be byte-identical to the per-leaf
+    /// `merkle_tree_sequential` (which uses `hash_leaf`) — same root, same nodes —
+    /// across leaf sizes incl. an odd (non-32-multiple) leaf and group boundaries.
+    #[test]
+    fn batched_matches_sequential() {
+        for (num_leaves, leaf_size) in [(8usize, 32usize), (16, 1024), (2, 48), (8192, 16), (1, 32)] {
+            let data: Vec<u8> = (0..num_leaves * leaf_size).map(|i| (i.wrapping_mul(131) ^ 0x5a) as u8).collect();
+            assert_eq!(
+                merkle_tree(&data, num_leaves),
+                merkle_tree_sequential(&data, num_leaves),
+                "num_leaves={num_leaves} leaf_size={leaf_size}"
+            );
         }
     }
 }

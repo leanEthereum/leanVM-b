@@ -1178,6 +1178,7 @@ mod tests {
             log_inv_rate: 1,
             log_batch_size: 1,
             profile: Default::default(),
+            msb_lane: false,
         }
     }
 
@@ -1530,6 +1531,7 @@ mod tests {
             log_inv_rate: 1,
             log_batch_size: initial_k,
             profile: Default::default(),
+            msb_lane: false,
         };
         let z_packed = pack_witness(&z, m);
         let (commitment, prover_data) = commit(&z_packed, &params);

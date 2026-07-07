@@ -441,6 +441,7 @@ mod tests {
             log_inv_rate: 1,
             log_batch_size: 1,
             profile: Default::default(),
+            msb_lane: false,
         }
     }
 
@@ -458,6 +459,7 @@ mod tests {
                 log_inv_rate,
                 log_batch_size,
                 profile: Default::default(),
+                msb_lane: false,
             };
             let z = rng.bits(1 << m);
             let z_packed = super::super::pack::pack_witness(&z, m);
