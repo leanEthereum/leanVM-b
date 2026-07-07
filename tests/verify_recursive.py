@@ -107,6 +107,66 @@ PDLBLA = PDLBLA_PLACEHOLDER
 PDLBLB = PDLBLB_PLACEHOLDER
 NCL = NCL_PLACEHOLDER
 CVCHK_E1 = CVCHK_E1_PLACEHOLDER
+# Phase E2: the Ligerito opening core over the stacked commitment (config-driven
+# exactly like tests/ligerito_recursive.py), plus the generalized eval_b
+# terminal: per pooled claim, its point location (CPBUF: 0=zeta, 1=rho,
+# 2=pi, 3=pin, 4=strided value), offsets/lengths, baked low bits (pin slot /
+# stride slot), the selector, and its residual-cube slot YT.
+LIGLBLA = LIGLBLA_PLACEHOLDER
+LIGLBLB = LIGLBLB_PLACEHOLDER
+NLEVELS = NLEVELS_PLACEHOLDER
+R = R_PLACEHOLDER
+YR_LOG_N = YR_LOG_N_PLACEHOLDER
+YR_LEN = YR_LEN_PLACEHOLDER
+LENRIS = LENRIS_PLACEHOLDER
+MAXNI = MAXNI_PLACEHOLDER
+MAXQ = MAXQ_PLACEHOLDER
+MAXNSQ = MAXNSQ_PLACEHOLDER
+MAXLMC = MAXLMC_PLACEHOLDER
+QP_LEN = QP_LEN_PLACEHOLDER
+LSC_LEN = LSC_LEN_PLACEHOLDER
+LROWS_LEN = LROWS_LEN_PLACEHOLDER
+LPATHS_LEN = LPATHS_LEN_PLACEHOLDER
+LSBITS_LEN = LSBITS_LEN_PLACEHOLDER
+LFPB_LEN = LFPB_LEN_PLACEHOLDER
+QUERIES = QUERIES_PLACEHOLDER
+KLVL = KLVL_PLACEHOLDER
+NUMINTER = NUMINTER_PLACEHOLDER
+NBYTES = NBYTES_PLACEHOLDER
+BLOCKS = BLOCKS_PLACEHOLDER
+DEPTH = DEPTH_PLACEHOLDER
+PER = PER_PLACEHOLDER
+NSQ = NSQ_PLACEHOLDER
+QPOFF = QPOFF_PLACEHOLDER
+ALPHALEN = ALPHALEN_PLACEHOLDER
+LMC = LMC_PLACEHOLDER
+RISSTART = RISSTART_PLACEHOLDER
+PREFIXLEN = PREFIXLEN_PLACEHOLDER
+ROOTA = ROOTA_PLACEHOLDER
+ROOTB = ROOTB_PLACEHOLDER
+FOLDBASE = FOLDBASE_PLACEHOLDER
+ROWOFF = ROWOFF_PLACEHOLDER
+PATHOFF = PATHOFF_PLACEHOLDER
+SBITSOFF = SBITSOFF_PLACEHOLDER
+SVKOFF = SVKOFF_PLACEHOLDER
+BITS = BITS_PLACEHOLDER
+FULL = FULL_PLACEHOLDER
+EXTRA8 = EXTRA8_PLACEHOLDER
+FN = FN_PLACEHOLDER
+SVK = SVK_PLACEHOLDER
+IVK = IVK_PLACEHOLDER
+# eval_b claim descriptors + the ring-switch selector data.
+CPBUF = CPBUF_PLACEHOLDER
+CPOFF = CPOFF_PLACEHOLDER
+CPLEN = CPLEN_PLACEHOLDER
+CSLOT = CSLOT_PLACEHOLDER
+CSEL = CSEL_PLACEHOLDER
+NOVER = NOVER_PLACEHOLDER
+SELN = SELN_PLACEHOLDER
+YTHI = YTHI_PLACEHOLDER
+QPKDV = QPKDV_PLACEHOLDER
+RSSEL = RSSEL_PLACEHOLDER
+YRS = YRS_PLACEHOLDER
 
 DS_SCALAR = 1
 DS_BYTE = 2
@@ -161,6 +221,45 @@ def dec128(bp, v):
         acc = acc + b * GEN ** i
     assert acc == v
     return
+
+
+def decq(bp, v, qfp, qbpp, d: Const, per: Const):
+    # dec128 fused with query extraction (see tests/ligerito_recursive.py).
+    acc = 0
+    for j in unroll(0, per):
+        qf = 0
+        for b in unroll(0, d):
+            t = bp[GEN ** (j * d + b)]
+            sq = t * t
+            assert sq == t
+            qf = qf + t * GEN ** b
+        qfp[GEN ** j] = qf
+        qbpp[GEN ** j] = bp * GEN ** (j * d)
+        acc = acc + qf * GEN ** (j * d)
+    for i in unroll(per * d, 128):
+        t = bp[GEN ** i]
+        sq = t * t
+        assert sq == t
+        acc = acc + t * GEN ** i
+    assert acc == v
+    return
+
+
+@unroll
+def foldyr(yp, weights, wbase: Const):
+    # Weighted fold of the yr multilinear (see tests/ligerito_recursive.py).
+    l0 = StackBuf(YR_LEN)
+    for t in unroll(0, YR_LEN // 2):
+        l0[t] = weights[wbase] * yp[GEN ** (2 * t)] + weights[wbase + 1] * yp[GEN ** (2 * t + 1)]
+    cur = l0
+    n = YR_LEN // 2
+    for j in unroll(1, YR_LOG_N):
+        nxt = StackBuf(YR_LEN)
+        for t in unroll(0, n // 2):
+            nxt[t] = weights[wbase + 2 * j] * cur[2 * t] + weights[wbase + 2 * j + 1] * cur[2 * t + 1]
+        cur = nxt
+        n = n // 2
+    return cur[0]
 
 
 def main():
@@ -678,4 +777,283 @@ def main():
 
     # ---- Phase E1 checkpoint ----
     assert cv0 == CVCHK_E1
+
+    # ================= the Ligerito opening core (stacked, m = STACK) ========
+    lsc = HeapBuf(LSC_LEN)
+    hint_witness(lsc[0:LSC_LEN], "lsc")
+    lrows = HeapBuf(LROWS_LEN)
+    hint_witness(lrows[0:LROWS_LEN], "lrows")
+    lpaths = HeapBuf(LPATHS_LEN)
+    hint_witness(lpaths[0:LPATHS_LEN], "lpaths")
+    lsbits = HeapBuf(LSBITS_LEN)
+    hint_witness(lsbits[0:LSBITS_LEN], "lsbits")
+    lfpb = HeapBuf(LFPB_LEN)
+    hint_witness(lfpb[0:LFPB_LEN], "lfpb")
+    lyr = HeapBuf(YR_LEN)
+    hint_witness(lyr[0:YR_LEN], "lyr")
+
+    ris = HeapBuf(LENRIS)
+    lbet = HeapBuf(NLEVELS)
+    lenf = HeapBuf(NLEVELS)
+    law = HeapBuf(NLEVELS * MAXQ)
+    qfb = HeapBuf(QP_LEN)
+    qbp = HeapBuf(QP_LEN)
+
+    cv0, cv1 = absorb(cv0, cv1, 23, DS_LEN)
+    cv0, cv1 = absorb(cv0, cv1, LIGLBLA, DS_BYTE)
+    cv0, cv1 = absorb(cv0, cv1, LIGLBLB, DS_BYTE)
+    cv0, cv1 = obs(cv0, cv1, target)
+    cv0, cv1 = absorb(cv0, cv1, 32, DS_LEN)
+    cv0, cv1 = absorb(cv0, cv1, rt0, DS_BYTE)
+    cv0, cv1 = absorb(cv0, cv1, rt1, DS_BYTE)
+
+    lsp = lsc
+    lu0 = lsp[GEN ** 0]
+    cv0, cv1 = obs(cv0, cv1, lu0)
+    lu2 = lsp[GEN ** 1]
+    cv0, cv1 = obs(cv0, cv1, lu2)
+    lsp = lsp * GEN ** 2
+    lqc = lu0
+    lqb = target + lu2
+    lqa = lu2
+    tr = target
+
+    for lvl in unroll(0, NLEVELS):
+        for j in unroll(0, KLVL[lvl]):
+            lg = FOLDBASE[lvl] + j
+            if BITS[lg] != 0:
+                lpb = StackBuf(2)
+                lpb[0] = cv0
+                lpb[1] = cv1
+                lpz = StackBuf(2)
+                lpz[0] = 0
+                lpz[1] = DS_POW
+                lpbase = StackBuf(2)
+                blake3(lpb, lpz, lpbase)
+                lpn = StackBuf(2)
+                lpn[0] = FN[lg]
+                lpn[1] = DS_POW
+                lph = StackBuf(2)
+                blake3(lpbase, lpn, lph)
+                dec128(lfpb * GEN ** (128 * lg), lph[0])
+                for b in unroll(0, 8 * FULL[lg]):
+                    lz0 = lfpb[GEN ** (128 * lg + b)]
+                    assert lz0 == 0
+                for b in unroll(8 * FULL[lg] + 8 - EXTRA8[lg], 8 * FULL[lg] + 8):
+                    lz1 = lfpb[GEN ** (128 * lg + b)]
+                    assert lz1 == 0
+                cv0, cv1 = absorb(cv0, cv1, FN[lg], DS_POW)
+            lri, cv0, cv1 = sqz(cv0, cv1)
+            ris[GEN ** (FOLDBASE[lvl] + j)] = lri
+            tr = lqc + lri * lqb + lri * lri * lqa
+            la = lsp[GEN ** 0]
+            cv0, cv1 = obs(cv0, cv1, la)
+            lb = lsp[GEN ** 1]
+            cv0, cv1 = obs(cv0, cv1, lb)
+            lsp = lsp * GEN ** 2
+            lqc = la
+            lqb = tr + lb
+            lqa = lb
+
+        if lvl == R:
+            for iy in unroll(0, YR_LEN):
+                cv0, cv1 = obs(cv0, cv1, lyr[GEN ** iy])
+        else:
+            cv0, cv1 = absorb(cv0, cv1, 32, DS_LEN)
+            cv0, cv1 = absorb(cv0, cv1, ROOTA[lvl + 1], DS_BYTE)
+            cv0, cv1 = absorb(cv0, cv1, ROOTB[lvl + 1], DS_BYTE)
+        cv0, cv1 = absorb(cv0, cv1, 0, DS_POW)
+
+        c0b = HeapBuf(MAXNSQ + 1)
+        c1b = HeapBuf(MAXNSQ + 1)
+        c0b[GEN ** 0] = cv0
+        c1b[GEN ** 0] = cv1
+        for xs in mul_range(1, GEN ** NSQ[lvl]):
+            chq, nc0, nc1 = sqz(c0b[xs], c1b[xs])
+            c0b[xs * GEN] = nc0
+            c1b[xs * GEN] = nc1
+            lbp = lsbits * GEN ** SBITSOFF[lvl] * xs ** 128
+            lqpp = xs ** PER[lvl]
+            decq(lbp, chq, qfb * GEN ** QPOFF[lvl] * lqpp, qbp * GEN ** QPOFF[lvl] * lqpp, DEPTH[lvl], PER[lvl])
+        cv0 = c0b[GEN ** NSQ[lvl]]
+        cv1 = c1b[GEN ** NSQ[lvl]]
+
+        lalr = HeapBuf(MAXNI)
+        for t in unroll(0, ALPHALEN[lvl]):
+            lav, cv0, cv1 = sqz(cv0, cv1)
+            lalr[GEN ** t] = lav
+        leqt = HeapBuf(MAXNI)
+        for i in unroll(0, NUMINTER[lvl]):
+            lp = GEN ** 0
+            for c in unroll(0, KLVL[lvl]):
+                lrc = ris[GEN ** (FOLDBASE[lvl] + c)]
+                if (i // (2 ** c)) % 2 == 1:
+                    lp = lp * lrc
+                else:
+                    lp = lp * (1 + lrc)
+            leqt[GEN ** i] = lp
+        for i in unroll(0, QUERIES[lvl]):
+            lp = GEN ** 0
+            for c in unroll(0, ALPHALEN[lvl]):
+                lac = lalr[GEN ** c]
+                if (i // (2 ** c)) % 2 == 1:
+                    lp = lp * lac
+                else:
+                    lp = lp * (1 + lac)
+            law[GEN ** (lvl * MAXQ + i)] = lp
+
+        accE = HeapBuf(MAXQ + 1)
+        accE[GEN ** 0] = 0
+        for xe in mul_range(1, GEN ** QUERIES[lvl]):
+            lrb = xe ** NUMINTER[lvl]
+            ld0 = GEN ** NBYTES[lvl]
+            ld1 = 0
+            ldot = 0
+            for jb in unroll(0, BLOCKS[lvl]):
+                laa = StackBuf(2)
+                laa[0] = ld0
+                laa[1] = ld1
+                lmm = StackBuf(2)
+                lmm[0] = lrows[GEN ** ROWOFF[lvl] * lrb * GEN ** (2 * jb)]
+                lmm[1] = lrows[GEN ** ROWOFF[lvl] * lrb * GEN ** (2 * jb + 1)]
+                loo = StackBuf(2)
+                blake3(laa, lmm, loo)
+                ld0 = loo[0]
+                ld1 = loo[1]
+                ldot = ldot + lmm[0] * leqt[GEN ** (2 * jb)] + lmm[1] * leqt[GEN ** (2 * jb + 1)]
+            accE[xe * GEN] = accE[xe] + law[GEN ** (lvl * MAXQ) * xe] * ldot
+            lsbp = qbp[GEN ** QPOFF[lvl] * xe]
+            lpb2 = xe ** (2 * DEPTH[lvl])
+            for lw2 in unroll(0, DEPTH[lvl]):
+                ls0 = lpaths[GEN ** PATHOFF[lvl] * lpb2 * GEN ** (2 * lw2)]
+                ls1 = lpaths[GEN ** PATHOFF[lvl] * lpb2 * GEN ** (2 * lw2 + 1)]
+                lbit = lsbp[GEN ** lw2]
+                lt0 = ld0 + ls0
+                lt1 = ld1 + ls1
+                lla = StackBuf(2)
+                lla[0] = ld0 + lbit * lt0
+                lla[1] = ld1 + lbit * lt1
+                lra = StackBuf(2)
+                lra[0] = lt0 + lla[0]
+                lra[1] = lt1 + lla[1]
+                loo2 = StackBuf(2)
+                blake3(lla, lra, loo2)
+                ld0 = loo2[0]
+                ld1 = loo2[1]
+            if lvl == 0:
+                assert ld0 == rt0
+                assert ld1 == rt1
+            else:
+                assert ld0 == ROOTA[lvl]
+                assert ld1 == ROOTB[lvl]
+        lenf[GEN ** lvl] = accE[GEN ** QUERIES[lvl]]
+
+        if lvl == R:
+            lbl2, cv0, cv1 = sqz(cv0, cv1)
+            lbet[GEN ** lvl] = lbl2
+            tr = tr + lbl2 * lenf[GEN ** lvl]
+        else:
+            liu0 = lsp[GEN ** 0]
+            cv0, cv1 = obs(cv0, cv1, liu0)
+            liu2 = lsp[GEN ** 1]
+            cv0, cv1 = obs(cv0, cv1, liu2)
+            lsp = lsp * GEN ** 2
+            lbl2, cv0, cv1 = sqz(cv0, cv1)
+            lbet[GEN ** lvl] = lbl2
+            le = lenf[GEN ** lvl]
+            lqc = lqc + lbl2 * liu0
+            lqb = lqb + lbl2 * (le + liu2)
+            lqa = lqa + lbl2 * liu2
+            tr = tr + lbl2 * le
+
+    # ---- residual (per level, novel basis) ----
+    innerbuf = HeapBuf(NLEVELS + 1)
+    innerbuf[GEN ** 0] = 0
+    for lvl in unroll(0, NLEVELS):
+        accR = HeapBuf(MAXQ + 1)
+        accR[GEN ** 0] = 0
+        for xr in mul_range(1, GEN ** QUERIES[lvl]):
+            wbuf = StackBuf(MAXLMC)
+            ls = qfb[GEN ** QPOFF[lvl] * xr]
+            wbuf[0] = ls * IVK[SVKOFF[lvl]]
+            for t in unroll(1, LMC[lvl]):
+                ls = ls * ls + SVK[SVKOFF[lvl] + t - 1] * ls
+                wbuf[t] = ls * IVK[SVKOFF[lvl] + t]
+            lprefix = GEN ** 0
+            for t in unroll(0, PREFIXLEN[lvl]):
+                lrc = ris[GEN ** (RISSTART[lvl] + t)]
+                lprefix = lprefix * (1 + lrc * (1 + wbuf[t]))
+            sfw = StackBuf(2 * YR_LOG_N)
+            for j in unroll(0, YR_LOG_N):
+                sfw[2 * j] = GEN ** 0
+                sfw[2 * j + 1] = wbuf[PREFIXLEN[lvl] + j]
+            lsy = foldyr(lyr, sfw, 0)
+            accR[xr * GEN] = accR[xr] + law[GEN ** (lvl * MAXQ) * xr] * lprefix * lsy
+        innerbuf[GEN ** (lvl + 1)] = innerbuf[GEN ** lvl] + lbet[GEN ** lvl] * accR[GEN ** QUERIES[lvl]]
+
+    # ---- generalized eval_b terminal ----
+    # Per pooled claim j: eqbase_j = eq(low point, ris) x eq(selector low bits,
+    # remaining ris coords); its full weight lands at residual slot YT[j]. The
+    # ring-switch part (deferred rsq values) lands at slot YRS with the qpkd
+    # selector eq over ris[QPKDV..].
+    ebase = HeapBuf(NCL)
+    for j in unroll(0, NCL):
+        eb = GEN ** 0
+        if CPBUF[j] == 0:
+            for k in unroll(0, CPLEN[j] - NOVER[j]):
+                eb = eb * (1 + zeta[GEN ** (CPOFF[j] + k)] + ris[GEN ** k])
+        if CPBUF[j] == 1:
+            for k in unroll(0, CPLEN[j] - NOVER[j]):
+                eb = eb * (1 + rho[GEN ** (CPOFF[j] + k)] + ris[GEN ** k])
+        if CPBUF[j] == 2:
+            eb = 1 + rm + ris[GEN ** 0]
+            for k in unroll(1, CPLEN[j]):
+                eb = eb * (1 + ris[GEN ** k])
+        if CPBUF[j] == 3:
+            for k in unroll(0, 7):
+                if (CSLOT[j] // (2 ** k)) % 2 == 1:
+                    eb = eb * ris[GEN ** k]
+                else:
+                    eb = eb * (1 + ris[GEN ** k])
+            for k in unroll(0, CPLEN[j]):
+                eb = eb * (1 + zeta[GEN ** (CPOFF[j] + k)] + ris[GEN ** (7 + k)])
+        # selector part over the ris coords above the claim's low span (SELN
+        # baked as max(0, LENRIS - nvt); empty when the point overlaps y).
+        nvt = CPLEN[j]
+        if CPBUF[j] == 3:
+            nvt = 7 + CPLEN[j]
+        for k in unroll(0, SELN[j]):
+            if (CSEL[j] // (2 ** k)) % 2 == 1:
+                eb = eb * ris[GEN ** (nvt + k)]
+            else:
+                eb = eb * (1 + ris[GEN ** (nvt + k)])
+        ebase[GEN ** j] = eb * gpd[GEN ** j]
+    # ring-switch weight base over ris[QPKDV..LENRIS).
+    rsb = g0 * rsq[GEN ** 0] + g1 * rsq[GEN ** 1]
+    for k in unroll(0, LENRIS - QPKDV):
+        if (RSSEL // (2 ** k)) % 2 == 1:
+            rsb = rsb * ris[GEN ** (QPKDV + k)]
+        else:
+            rsb = rsb * (1 + ris[GEN ** (QPKDV + k)])
+    # inner = sum_y lyr[y] * eval_b[y] + the residual sums.
+    inner = innerbuf[GEN ** NLEVELS]
+    for y in unroll(0, YR_LEN):
+        ey = 0
+        if y == YRS:
+            ey = ey + rsb
+        for j in unroll(0, NCL):
+            if (y // (2 ** NOVER[j])) == YTHI[j]:
+                f = ebase[GEN ** j]
+                for t in unroll(0, NOVER[j]):
+                    if CPBUF[j] == 0:
+                        pv = zeta[GEN ** (CPOFF[j] + CPLEN[j] - NOVER[j] + t)]
+                    else:
+                        pv = rho[GEN ** (CPOFF[j] + CPLEN[j] - NOVER[j] + t)]
+                    if (y // (2 ** t)) % 2 == 1:
+                        f = f * pv
+                    else:
+                        f = f * (1 + pv)
+                ey = ey + f
+        inner = inner + lyr[GEN ** y] * ey
+    assert inner == tr
     return

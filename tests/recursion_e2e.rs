@@ -254,6 +254,7 @@ fn gen_verify(
     }
 
     // ---- structural walk: challenges + checkpoint ----
+    let seed = Mirror::new(b"leanvm-b", &[pi[0], pi[1], dig[0], dig[1]]);
     let mut w = Walk { ops, i: 0 };
     for _ in 0..9 {
         w.so(); // 7 announced + 2 root words
@@ -357,10 +358,11 @@ fn gen_verify(
     let zc1: Vec<F128> = (0..128).map(|_| observe(&mut w)).collect();
     let _zz = w.sample();
     let mut zcr = Vec::new();
+    let mut zrho = Vec::new();
     for _ in 0..n_mlv {
         zcr.push(observe(&mut w));
         zcr.push(observe(&mut w));
-        w.sample();
+        zrho.push(w.sample());
     }
     let zcf = vec![observe(&mut w), observe(&mut w)];
     assert_eq!(absorb(&mut w), b"flock-lincheck-v0".to_vec());
@@ -431,9 +433,111 @@ fn gen_verify(
         tclaim.push(flare::pcs::ring_switch::inner_product(&shu, &eqd));
     }
 
+    // ---- Phase E2 walk: the Ligerito core (mirror kept in lockstep for PoW) ----
+    let stack_mu = l.m;
+    let vcfg = flare::pcs::ligerito::LigeritoSecurityConfig::derive_profile(
+        stack_mu + 7,
+        flare::pcs::ligerito::LigeritoProfile::Secure,
+    )
+    .and_then(|s| s.to_prover_verifier_configs())
+    .expect("stack ligerito config")
+    .1;
+    let log_n = stack_mu;
+    let r = vcfg.level_steps;
+    let nlev = r + 1;
+    let klvl: Vec<usize> = std::iter::once(vcfg.initial_k).chain(vcfg.level_ks.iter().copied()).collect();
+    let queries = vcfg.queries.clone();
+    let mut lmc = vec![log_n - vcfg.initial_k];
+    for i in 0..r {
+        lmc.push(lmc[i] - vcfg.level_ks[i]);
+    }
+    let yr_log_n = *lmc.last().unwrap();
+    let mut block_len = vec![1usize << (vcfg.initial_log_msg_cols + vcfg.log_inv_rates[0])];
+    for i in 0..r {
+        block_len.push(1usize << (vcfg.level_log_msg_cols[i] + vcfg.log_inv_rates[i + 1]));
+    }
+    let depth: Vec<usize> = block_len.iter().map(|b| b.trailing_zeros() as usize).collect();
+    let per: Vec<usize> = depth.iter().map(|&d| 128 / d).collect();
+    let nsq: Vec<usize> = (0..nlev).map(|i| queries[i].div_ceil(per[i])).collect();
+    let fgb = |lvl: usize| vcfg.fold_grinding_bits.get(lvl).copied().unwrap_or(0) as i64;
+
+    // Lockstep mirror through the ligerito section.
+    let mut lm = seed.clone();
+    lm.replay(&ops[0..phase_e1_end]);
+    let mut fold_pow: Vec<(u32, u64, F128)> = Vec::new();
+    let mut lig_sc: Vec<F128> = Vec::new();
+    let mut lig_raw: Vec<Vec<F128>> = vec![Vec::new(); nlev]; // squeezes per level
+    let mut lig_ris: Vec<F128> = Vec::new();
+    let mut step = |w: &mut Walk, lm: &mut Mirror| {
+        let op = w.ops[w.i].clone();
+        w.i += 1;
+        lm.replay(std::slice::from_ref(&op));
+        op
+    };
+    let expect_obs = |op: TraceOp| match op {
+        TraceOp::Observe(x) => x,
+        other => panic!("lig walk: expected Observe, got {other:?}"),
+    };
+    let expect_sample = |op: TraceOp| match op {
+        TraceOp::Sample(v) => v,
+        other => panic!("lig walk: expected Sample, got {other:?}"),
+    };
+    // label + target + root
+    assert!(matches!(step(&mut w, &mut lm), TraceOp::AbsorbBytes(b) if b == b"flock-ligerito-basis-v0"));
+    let walked_target = expect_obs(step(&mut w, &mut lm));
+    assert!(matches!(step(&mut w, &mut lm), TraceOp::AbsorbBytes(_)));
+    // prologue msg
+    lig_sc.push(expect_obs(step(&mut w, &mut lm)));
+    lig_sc.push(expect_obs(step(&mut w, &mut lm)));
+    for lvl in 0..nlev {
+        for j in 0..klvl[lvl] {
+            let bits = (fgb(lvl) - j as i64).max(0) as u32;
+            if bits > 0 {
+                // PoW: digest from the mirror state BEFORE the nonce absorb.
+                let (nonce, b2) = match w.ops[w.i] {
+                    TraceOp::Pow { nonce, bits } => (nonce, bits),
+                    ref other => panic!("expected Pow, got {other:?}"),
+                };
+                assert_eq!(b2, bits);
+                let base = compress(lm.cv, [F128::ZERO, F128::new(5, 0)]);
+                let dig = compress(base, [F128::new(nonce, 0), F128::new(5, 0)])[0];
+                fold_pow.push((bits, nonce, dig));
+                step(&mut w, &mut lm);
+            } else {
+                fold_pow.push((0, 0, F128::ZERO));
+            }
+            lig_ris.push(expect_sample(step(&mut w, &mut lm)));
+            lig_sc.push(expect_obs(step(&mut w, &mut lm)));
+            lig_sc.push(expect_obs(step(&mut w, &mut lm)));
+        }
+        if lvl == r {
+            for _ in 0..(1usize << yr_log_n) {
+                expect_obs(step(&mut w, &mut lm));
+            }
+        } else {
+            assert!(matches!(step(&mut w, &mut lm), TraceOp::AbsorbBytes(_)));
+        }
+        // query-phase grind (0 bits) + squeezes + alphas
+        assert!(matches!(step(&mut w, &mut lm), TraceOp::Pow { bits: 0, .. }));
+        for _ in 0..nsq[lvl] {
+            lig_raw[lvl].push(expect_sample(step(&mut w, &mut lm)));
+        }
+        let alphalen = flare::pcs::ligerito::ceil_log2(queries[lvl]);
+        for _ in 0..alphalen {
+            expect_sample(step(&mut w, &mut lm));
+        }
+        if lvl != r {
+            lig_sc.push(expect_obs(step(&mut w, &mut lm)));
+            lig_sc.push(expect_obs(step(&mut w, &mut lm)));
+        }
+        expect_sample(step(&mut w, &mut lm)); // beta
+    }
+    assert_eq!(w.i, ops.len(), "ligerito walk must consume the whole trace");
+    let cvchk_e1_unused = ();
+    let _ = cvchk_e1_unused;
+
     // ---- hints ----
     // fpb: the grind digest bits. Base = compress(cv_after_alpha, [0, POW]).
-    let seed = Mirror::new(b"leanvm-b", &[pi[0], pi[1], dig[0], dig[1]]);
     let mut m = seed.clone();
     // replay through the alpha sample (9 observes + 1 sample).
     m.replay(&ops[0..10]);
@@ -604,6 +708,242 @@ fn gen_verify(
     ps("NCL", ncl.to_string());
     ps("CVCHK_E1", u(cvchk_e1).to_string());
 
+    // ---- Phase E2 placeholders + hints (the stacked Ligerito) ----
+    let lig = &proof.openings[0];
+    let numinter: Vec<usize> = klvl.iter().map(|&k| 1usize << k).collect();
+    let lenris: usize = klvl.iter().sum();
+    let prefix_sum2 = |f: &dyn Fn(usize) -> usize| -> Vec<usize> {
+        let mut o = Vec::with_capacity(nlev);
+        let mut acc = 0;
+        for lv in 0..nlev {
+            o.push(acc);
+            acc += f(lv);
+        }
+        o
+    };
+    let rowoff = prefix_sum2(&|lv| queries[lv] * numinter[lv]);
+    let pathoff = prefix_sum2(&|lv| queries[lv] * depth[lv] * 2);
+    let sbitsoff = prefix_sum2(&|lv| nsq[lv] * 128);
+    let qpoff = prefix_sum2(&|lv| nsq[lv] * per[lv]);
+    let qp_len: usize = (0..nlev).map(|lv| nsq[lv] * per[lv]).sum();
+    let svkoff = prefix_sum2(&|lv| lmc[lv] + 1);
+    let foldbase = prefix_sum2(&|lv| klvl[lv]);
+    let risstart: Vec<usize> = (0..nlev).map(|k| foldbase[k] + klvl[k]).collect();
+    let total_folds: usize = klvl.iter().sum();
+    // positions per level from the packed squeezes.
+    let positions: Vec<Vec<usize>> = (0..nlev)
+        .map(|lv| {
+            let d = depth[lv];
+            let mut out = Vec::with_capacity(queries[lv]);
+            for v in &lig_raw[lv] {
+                let bits = (v.lo as u128) | ((v.hi as u128) << 64);
+                for j in 0..per[lv].min(queries[lv] - out.len()) {
+                    out.push(((bits >> (j * d)) as usize) & (block_len[lv] - 1));
+                }
+            }
+            out
+        })
+        .collect();
+    let rows_of = |lv: usize| -> &Vec<Vec<F128>> {
+        if lv == 0 {
+            &lig.initial_proof.opened_rows
+        } else if lv == r {
+            &lig.final_proof.opened_rows
+        } else {
+            &lig.level_proofs[lv - 1].opened_rows
+        }
+    };
+    let path_of = |lv: usize| -> &Vec<[u8; 32]> {
+        if lv == 0 {
+            &lig.initial_proof.merkle_proof
+        } else if lv == r {
+            &lig.final_proof.merkle_proof
+        } else {
+            &lig.level_proofs[lv - 1].merkle_proof
+        }
+    };
+    let hb32 = |h: [u8; 32]| {
+        let wd = |o: usize| u64::from_le_bytes(h[o..o + 8].try_into().unwrap());
+        [F128::new(wd(0), wd(8)), F128::new(wd(16), wd(24))]
+    };
+    let (mut lrows_flat, mut lpaths_flat, mut lsbits_flat) = (Vec::new(), Vec::new(), Vec::new());
+    for lv in 0..nlev {
+        let (rows_exp, path_exp) =
+            flare::pcs::ligerito::expand_level_opening(block_len[lv], &positions[lv], rows_of(lv), numinter[lv], path_of(lv))
+                .expect("expand stacked level opening");
+        for row in &rows_exp {
+            lrows_flat.extend_from_slice(row);
+        }
+        for &h in &path_exp {
+            lpaths_flat.extend_from_slice(&hb32(h));
+        }
+        assert_eq!(lig_raw[lv].len(), nsq[lv]);
+        for &v in &lig_raw[lv] {
+            lsbits_flat.extend_from_slice(&bits_of(v));
+        }
+    }
+    let mut lfpb_flat = vec![F128::ZERO; total_folds * 128];
+    for (g, &(bits, _n, dig)) in fold_pow.iter().enumerate() {
+        if bits > 0 {
+            lfpb_flat[g * 128..g * 128 + 128].copy_from_slice(&bits_of(dig));
+        }
+    }
+    // deferred eval_rs_eq values (now that ris is known).
+    let qpkdv = l.placements[leanvm_b::cpu::QPKD].n_vars;
+    let zrho_tail: Vec<F128> = zrho[lcrounds..].to_vec();
+    let x_outer_ab: Vec<F128> = lrr.iter().rev().copied().chain(zrho_tail.iter().copied()).collect();
+    let x_outer_c: Vec<F128> = zc_r[6..m_r1cs].to_vec();
+    let eqd_ab = flare::zerocheck::univariate_skip::build_eq(&rdp[0..7]);
+    let eqd_c = flare::zerocheck::univariate_skip::build_eq(&rdp[7..14]);
+    let rsq = vec![
+        flare::pcs::ring_switch::eval_rs_eq(&x_outer_ab[1..], &lig_ris[..qpkdv], &eqd_ab),
+        flare::pcs::ring_switch::eval_rs_eq(&x_outer_c[1..], &lig_ris[..qpkdv], &eqd_c),
+    ];
+
+    // claim descriptors, in exact clv order.
+    let (mut cpbuf, mut cpoff, mut cplen, mut cslot, mut csel, mut yt) = (vec![], vec![], vec![], vec![], vec![], vec![]);
+    let (mut nover_v, mut seln_v): (Vec<usize>, Vec<usize>) = (vec![], vec![]);
+    let qpkd_pl = l.placements[leanvm_b::cpu::QPKD];
+    // Per claim: nvt = full low span; when nvt > lenris the point overlaps the
+    // residual y region by nover coords (runtime factors in the terminal); the
+    // selector's in-ris part has seln bits; the y-pattern is the rest.
+    let mut push_desc = |buf: usize, off: usize, plen: usize, slot: usize, sel_full: usize, nvt: usize| {
+        let nover = nvt.saturating_sub(lenris);
+        let seln = lenris.saturating_sub(nvt);
+        cpbuf.push(buf);
+        cpoff.push(off);
+        cplen.push(plen);
+        cslot.push(slot);
+        csel.push(if seln == 0 { 0 } else { sel_full & ((1usize << seln) - 1) });
+        nover_v.push(nover);
+        seln_v.push(seln);
+        yt.push(sel_full >> seln);
+    };
+    for (s, blocks) in sides.iter().enumerate() {
+        for blk in blocks.iter() {
+            for c in &blk.coords {
+                if let Coord::Col(i) | Coord::GCol(i) = c {
+                    if valcols.contains(i) {
+                        let slot_i = leanvm_b::blake3_flock::SLOTS[valcols.iter().position(|v| v == i).unwrap()];
+                        let nvt = 7 + blk.kappa;
+                        push_desc(3, s * mumax, blk.kappa, slot_i, qpkd_pl.offset >> nvt, nvt);
+                    } else {
+                        let pl = l.placements[*i];
+                        push_desc(0, s * mumax, blk.kappa, 0, pl.offset >> blk.kappa, blk.kappa);
+                    }
+                }
+            }
+        }
+    }
+    for (t, table) in leanvm_b::tables::tables().iter().enumerate() {
+        for &c in table.constraint_columns() {
+            let col = sch.base[t] + c;
+            let pl = l.placements[col];
+            if pl.is_virtual() {
+                let slot_i = leanvm_b::blake3_flock::SLOTS
+                    [valcols.iter().position(|v| *v == col).unwrap()];
+                let nvt = 7 + taus[t];
+                push_desc(3, 0, taus[t], slot_i, qpkd_pl.offset >> nvt, nvt);
+            } else {
+                push_desc(1, t * taus.iter().max().unwrap(), taus[t], 0, pl.offset >> taus[t], taus[t]);
+            }
+        }
+    }
+    {
+        // PI claim on MEM: point = [r_m, 0, 0, ...]. Coords beyond lenris are
+        // const zero, so they fold into the y pattern (required-zero bits)
+        // instead of runtime overlap factors: cap the low span at lenris and
+        // shift the selector pattern left by the folded coord count.
+        let pl = l.placements[leanvm_b::cpu::MEM];
+        let folded = pl.n_vars.saturating_sub(lenris);
+        let low = pl.n_vars - folded;
+        push_desc(2, 0, low, 0, (pl.offset >> pl.n_vars) << folded, low);
+    }
+    for &pslot in leanvm_b::blake3_flock::PIN_SLOTS.iter() {
+        let nvt = 7 + pin_kappa;
+        push_desc(3, pin_side * mumax, pin_kappa, pslot, qpkd_pl.offset >> nvt, nvt);
+    }
+    assert_eq!(cpbuf.len(), ncl, "descriptor count == pool size");
+    let rssel_full = qpkd_pl.offset >> qpkdv;
+    let yrs = rssel_full >> (lenris - qpkdv);
+    let rssel = rssel_full & ((1usize << (lenris - qpkdv)) - 1);
+
+    ps("LIGLBLA", u(word16(b"flock-ligerito-basis-v0", 0)).to_string());
+    ps("LIGLBLB", u(word16(b"flock-ligerito-basis-v0", 16)).to_string());
+    ps("NLEVELS", nlev.to_string());
+    ps("R", r.to_string());
+    ps("YR_LOG_N", yr_log_n.to_string());
+    ps("YR_LEN", (1usize << yr_log_n).to_string());
+    ps("LENRIS", lenris.to_string());
+    ps("MAXNI", numinter.iter().max().unwrap().to_string());
+    ps("MAXQ", queries.iter().max().unwrap().to_string());
+    ps("MAXNSQ", nsq.iter().max().unwrap().to_string());
+    ps("MAXLMC", lmc.iter().max().unwrap().to_string());
+    ps("QP_LEN", qp_len.to_string());
+    ps("LSC_LEN", lig_sc.len().to_string());
+    ps("LROWS_LEN", lrows_flat.len().to_string());
+    ps("LPATHS_LEN", lpaths_flat.len().to_string());
+    ps("LSBITS_LEN", lsbits_flat.len().to_string());
+    ps("LFPB_LEN", lfpb_flat.len().to_string());
+    ps("QUERIES", ints(&queries));
+    ps("KLVL", ints(&klvl));
+    ps("NUMINTER", ints(&numinter));
+    ps("NBYTES", ints(&numinter.iter().map(|&n| n * 16).collect::<Vec<_>>()));
+    ps("BLOCKS", ints(&numinter.iter().map(|&n| n / 2).collect::<Vec<_>>()));
+    ps("DEPTH", ints(&depth));
+    ps("PER", ints(&per));
+    ps("NSQ", ints(&nsq));
+    ps("QPOFF", ints(&qpoff));
+    ps("ALPHALEN", ints(&queries.iter().map(|&q| flare::pcs::ligerito::ceil_log2(q)).collect::<Vec<_>>()));
+    ps("LMC", ints(&lmc));
+    ps("RISSTART", ints(&risstart));
+    ps("PREFIXLEN", ints(&lmc.iter().map(|&m2| m2 - yr_log_n).collect::<Vec<_>>()));
+    let mut roota = vec![F128::ZERO];
+    let mut rootb = vec![F128::ZERO];
+    for lv in 1..nlev {
+        let rw = hb32(if lv - 1 < lig.level_roots.len() {
+            lig.level_roots[lv - 1]
+        } else {
+            panic!("missing level root")
+        });
+        roota.push(rw[0]);
+        rootb.push(rw[1]);
+    }
+    ps("ROOTA", flds(&roota));
+    ps("ROOTB", flds(&rootb));
+    ps("FOLDBASE", ints(&foldbase));
+    ps("ROWOFF", ints(&rowoff));
+    ps("PATHOFF", ints(&pathoff));
+    ps("SBITSOFF", ints(&sbitsoff));
+    ps("SVKOFF", ints(&svkoff));
+    ps("BITS", ints(&fold_pow.iter().map(|&(b, _, _)| b as usize).collect::<Vec<_>>()));
+    ps("FULL", ints(&fold_pow.iter().map(|&(b, _, _)| (b / 8) as usize).collect::<Vec<_>>()));
+    ps("EXTRA8", ints(&fold_pow.iter().map(|&(b, _, _)| (b % 8) as usize).collect::<Vec<_>>()));
+    let fnv: Vec<u128> = fold_pow.iter().map(|&(_, n, _)| n as u128).collect();
+    ps("FN", us(&fnv));
+    let mut svk_flat = Vec::new();
+    let mut ivk_flat = Vec::new();
+    for lv in 0..nlev {
+        let s2 = flare::pcs::ligerito::eval_sk_at_vks(lmc[lv]);
+        for &v in &s2 {
+            svk_flat.push(v);
+            ivk_flat.push(if v == F128::ZERO { F128::ZERO } else { v.inv() });
+        }
+    }
+    ps("SVK", flds(&svk_flat));
+    ps("IVK", flds(&ivk_flat));
+    ps("CPBUF", ints(&cpbuf));
+    ps("CPOFF", ints(&cpoff));
+    ps("CPLEN", ints(&cplen));
+    ps("CSLOT", ints(&cslot));
+    ps("CSEL", ints(&csel));
+    ps("NOVER", ints(&nover_v));
+    ps("SELN", ints(&seln_v));
+    ps("YTHI", ints(&yt));
+    ps("QPKDV", qpkdv.to_string());
+    ps("RSSEL", rssel.to_string());
+    ps("YRS", yrs.to_string());
+
     let mut zinv = vec![F128::ONE; n_mlv];
     for (i, item) in zinv.iter_mut().enumerate().take(n_mlv).skip(7) {
         *item = (F128::ONE + zc_r[6 + i]).inv();
@@ -622,7 +962,13 @@ fn gen_verify(
         ("matpart".to_string(), vec![matpart]),
         ("shv".to_string(), shv.clone()),
         ("tclaim".to_string(), tclaim),
-        ("rsq".to_string(), vec![F128::ZERO, F128::ZERO]), // filled by phase E2
+        ("rsq".to_string(), rsq),
+        ("lsc".to_string(), lig_sc.clone()),
+        ("lrows".to_string(), lrows_flat),
+        ("lpaths".to_string(), lpaths_flat),
+        ("lsbits".to_string(), lsbits_flat),
+        ("lfpb".to_string(), lfpb_flat),
+        ("lyr".to_string(), lig.final_proof.yr.clone()),
     ];
     (rep, hints)
 }
