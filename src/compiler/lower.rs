@@ -683,6 +683,14 @@ impl FnLower<'_> {
                 });
                 o
             }
+            Expr::GenPow(e) => {
+                let o = self.fresh();
+                self.emit(LOp::Set {
+                    o,
+                    k: KVal::Const(g_pow_u128(self.gpow_exp(e))),
+                });
+                o
+            }
             Expr::Var(v) => {
                 if self.stacks.contains_key(v) {
                     panic!("StackBuf `{v}` used as a scalar; index it (`{v}[k]`) or pass it to blake3");
@@ -813,6 +821,12 @@ impl FnLower<'_> {
             .unwrap_or_else(|| panic!("a StackBuf index must be a compile-time integer, got `{idx:?}`"))
     }
 
+    /// The exponent of `GEN ** e`: a compile-time integer, required to succeed.
+    fn gpow_exp(&self, e: &Expr) -> u128 {
+        self.try_const_index(e)
+            .unwrap_or_else(|| panic!("`GEN ** e` needs a compile-time integer exponent, got `{e:?}`")) as u128
+    }
+
     /// Resolve a `blake3` operand — a size-2 `StackBuf` name, a 2-cell
     /// `StackBuf` slice `buf[lo:hi]`, or a 2-cell `HeapBuf` slice (cells
     /// `ptr·g^lo`, `ptr·g^{lo+1}`) — with compile-time bounds. Stack operands
@@ -937,6 +951,10 @@ impl FnLower<'_> {
                 o: dst,
                 k: KVal::Const(g_pow_u128(*k)),
             }),
+            Expr::GenPow(e) => self.emit(LOp::Set {
+                o: dst,
+                k: KVal::Const(g_pow_u128(self.gpow_exp(e))),
+            }),
             Expr::Add(a, b) => {
                 let (la, lb) = (self.expr(a), self.expr(b));
                 self.emit(LOp::Xor { a: la, b: lb, c: dst });
@@ -972,6 +990,7 @@ impl FnLower<'_> {
             Expr::Lit(1) => Some(GAddr { base: None, exp: 0 }),
             Expr::Gen => Some(GAddr { base: None, exp: 1 }),
             Expr::GPow(k) => Some(GAddr { base: None, exp: *k }),
+            Expr::GenPow(e) => Some(GAddr { base: None, exp: self.try_const_index(e)? as u128 }),
             Expr::Var(v) => self
                 .gaddrs
                 .get(v)
@@ -991,6 +1010,7 @@ impl FnLower<'_> {
             Expr::Lit(n) => Some(F128::new(*n as u64, (*n >> 64) as u64)),
             Expr::Gen => Some(g_pow(1)),
             Expr::GPow(k) => Some(g_pow_u128(*k)),
+            Expr::GenPow(e) => Some(g_pow_u128(self.try_const_index(e)? as u128)),
             Expr::Var(v) => self.fconsts.get(v).copied().or_else(|| match self.gaddrs.get(v) {
                 Some(GAddr { base: None, exp }) => Some(g_pow_u128(*exp)),
                 _ => None,
@@ -1667,7 +1687,7 @@ fn free_vars_expr(e: &Expr, refs: &mut Vec<String>) {
             free_vars_expr(hi, refs);
         }
         Expr::Call(_, args) => args.iter().for_each(|a| free_vars_expr(a, refs)),
-        Expr::HeapBufDyn(sz) => free_vars_expr(sz, refs),
+        Expr::HeapBufDyn(sz) | Expr::GenPow(sz) => free_vars_expr(sz, refs),
         Expr::Lit(_) | Expr::Gen | Expr::GPow(_) | Expr::HeapBuf(_) | Expr::StackBuf(_) => {}
     }
 }

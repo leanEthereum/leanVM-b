@@ -898,6 +898,7 @@ fn subst_var(e: &Expr, name: &str, to: &Expr) -> Expr {
         Expr::Mod(a, b) => Expr::Mod(s(a), s(b)),
         Expr::Index(a, b) => Expr::Index(s(a), s(b)),
         Expr::Slice(a, lo, hi) => Expr::Slice(s(a), s(lo), s(hi)),
+        Expr::GenPow(e) => Expr::GenPow(s(e)),
         Expr::HeapBufDyn(sz) => Expr::HeapBufDyn(s(sz)),
         Expr::Call(f, args) => Expr::Call(f.clone(), args.iter().map(|a| subst_var(a, name, to)).collect()),
         other => other.clone(),
@@ -987,13 +988,16 @@ fn parse_expr(s: &str) -> Result<Expr, String> {
     // `**` (compile-time power), tightest binding: `base ** k` with `k` a
     // (possibly large) integer literal.
     if let Some((base, exp)) = split_once_top(s, "**") {
-        let k: u128 = exp
-            .trim()
-            .parse()
-            .map_err(|_| "`**` exponent must be an integer literal")?;
-        return match parse_expr(&base)? {
-            Expr::Gen => Ok(Expr::GPow(k)),
-            other => Err(format!("`**` is only supported with base `GEN`, got `{other:?}`")),
+        let base = parse_expr(&base)?;
+        if !matches!(base, Expr::Gen) {
+            return Err(format!("`**` is only supported with base `GEN`, got `{base:?}`"));
+        }
+        // A bare integer literal folds straight to `g^k`; anything else is a
+        // compile-time integer expression (e.g. an `unroll` var), resolved at
+        // lowering via `Expr::GenPow`.
+        return match exp.trim().parse::<u128>() {
+            Ok(k) => Ok(Expr::GPow(k)),
+            Err(_) => Ok(Expr::GenPow(Box::new(parse_expr(&exp)?))),
         };
     }
     // Atom.

@@ -16,6 +16,12 @@ pub enum Expr {
     /// exponent is a `u128`, so an index can be a large logical value — e.g. a
     /// Fibonacci number carried in the exponent.
     GPow(u128),
+    /// `GEN ** e` where `e` is a compile-time integer *expression* (an `unroll`
+    /// variable, a constant, `len(...)`, or index arithmetic of those) rather
+    /// than a bare literal. Resolved to a concrete `g^k` at lowering by
+    /// evaluating `e` in index space. Lets `buf[GEN ** i]` name cell `i` inside
+    /// an `unroll` loop without a running-pointer cursor.
+    GenPow(Box<Expr>),
     /// A variable in scope.
     Var(String),
     Add(Box<Expr>, Box<Expr>),

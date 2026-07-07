@@ -1500,6 +1500,28 @@ fn crate_compress(cv: [F128; 2], msg: [F128; 2]) -> [F128; 2] {
     leanvm_b::vmhash::compress(cv, msg)
 }
 
+/// `GEN ** <expr>` (incl. an `unroll` variable) — the compiler feature that lets
+/// `buf[GEN ** i]` name heap cell `i` directly, no running-pointer cursor. Reads
+/// `buf[GEN**i]` and weights by `GEN**i`, reconstructing `Σ v_i·g^i`.
+#[test]
+fn genpow_index_smoke() {
+    let src = "from snark_lib import *\n\
+        def main():\n\
+        \x20   buf = HeapBuf(4)\n\
+        \x20   hint_witness(buf[0:4], \"v\")\n\
+        \x20   acc = 0\n\
+        \x20   for i in unroll(0, 4):\n\
+        \x20       acc = acc + buf[GEN ** i] * GEN ** i\n\
+        \x20   exp = 1 + GEN ** 2\n\
+        \x20   assert acc == exp\n\
+        \x20   return\n";
+    let mut program = compile(&parse(src).expect("parse genpow smoke"));
+    program.set_witness("v", vec![vec![F128::new(1, 0), F128::ZERO, F128::new(1, 0), F128::ZERO]]);
+    let pi = [F128::ZERO, F128::ZERO];
+    let (proof, _) = prove(&program, pi);
+    verify(&program, &pi, &proof).expect("GEN**i index verifies");
+}
+
 /// Multi-level per-query `t_r` at the small config, from a generated `.py`.
 #[test]
 fn ml_tr_small() {
