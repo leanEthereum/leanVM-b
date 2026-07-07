@@ -1476,7 +1476,7 @@ fn ligerito_verify_source(
 // single Merkle path, keeping the port tractable. Prints the concrete proof shapes
 // the guest port must consume.
 #[test]
-fn verify_ligerito_recursive() {
+fn test_recursive_ligerito() {
     use leanvm_b::transcript::ProverState;
     use flare::lincheck::build_eq_table;
     use flare::ntt::AdditiveNttF128;
@@ -1672,8 +1672,25 @@ fn verify_ligerito_recursive() {
     program.set_witness("vq0", vec![bits_of(v_q0)]);
     program.set_witness("vql", vec![bits_of(v_ql)]);
     let pi = [F128::ZERO, F128::ZERO];
-    let (gproof, _) = prove(&program, pi);
-    verify(&program, &pi, &gproof).expect("tiny Ligerito opening verifier verifies in-circuit");
+    let t = std::time::Instant::now();
+    let (gproof, stats) = prove(&program, pi);
+    let t_prove = t.elapsed();
+    let t = std::time::Instant::now();
+    verify(&program, &pi, &gproof).expect("recursive Ligerito verification");
+    let t_verify = t.elapsed();
+
+    let proof_bytes = bincode::serialized_size(&gproof).expect("proof serializes");
+    println!("\nRecursive Ligerito verification, in-circuit (config: log_n=8, initial_k=2, 1 query/level)");
+    println!("  cycles (VM steps)           : {}", stats.cycles);
+    for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3"].iter().zip(&stats.counts) {
+        let pow = if c == 0 { "0".to_string() } else { format!("2^{:.2}", (c as f64).log2()) };
+        println!("    {name:<6} instructions      : {c:>8}  = {pow}");
+    }
+    println!("  committed witness size      : 2^{:.3}", (stats.committed as f64).log2());
+    println!("  data memory                 : 2^{} padded", stats.log_mem);
+    println!("  proof size                  : {:.1} KiB", proof_bytes as f64 / 1024.0);
+    println!("  proving (incl. witness gen) : {t_prove:?}");
+    println!("  verifying                   : {t_verify:?}");
 }
 
 // ---- Gadget 10: ring-switch claim check (φ₈ F₈-Lagrange, runtime) ----

@@ -40,6 +40,8 @@ rand = "0.9"
 # `ring_switch::build_claim_weights`, `PHI_8_TABLE`) to cross-check the zkDSL
 # ports against the reference. Same vendored crate `flare` depends on.
 flare = { path = "vendor/flock-core", package = "flock-core" }
+# The recursive-Ligerito benchmark measures the proof size of the recursion guest.
+bincode = "1"
 
 [profile.release]
 lto = "thin"
