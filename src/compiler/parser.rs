@@ -703,6 +703,29 @@ fn split_top(s: &str, sep: char) -> Vec<String> {
     parts
 }
 
+/// Split `s` at the top-level additive tier: operands and the `+` / `-`
+/// operators between them. Left-associative; parenthesised/bracketed sub-terms
+/// are left intact.
+fn split_add(s: &str) -> (Vec<String>, Vec<u8>) {
+    let b = s.as_bytes();
+    let (mut segs, mut ops) = (Vec::new(), Vec::new());
+    let (mut depth, mut start) = (0i32, 0usize);
+    for i in 0..b.len() {
+        match b[i] {
+            b'(' | b'[' => depth += 1,
+            b')' | b']' => depth -= 1,
+            b'+' | b'-' if depth == 0 => {
+                segs.push(s[start..i].to_string());
+                ops.push(b[i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    segs.push(s[start..].to_string());
+    (segs, ops)
+}
+
 /// Split `s` at the top-level multiplicative tier: the operands and the
 /// operators between them (`*`, `//` for floor-division, `%` for remainder).
 /// A `**` power is left intact (bound tighter). Left-associative.
@@ -911,6 +934,7 @@ fn subst_var(e: &Expr, name: &str, to: &Expr) -> Expr {
         Expr::Var(v) if v == name => to.clone(),
         Expr::Add(a, b) => Expr::Add(s(a), s(b)),
         Expr::Mul(a, b) => Expr::Mul(s(a), s(b)),
+        Expr::Sub(a, b) => Expr::Sub(s(a), s(b)),
         Expr::Div(a, b) => Expr::Div(s(a), s(b)),
         Expr::Mod(a, b) => Expr::Mod(s(a), s(b)),
         Expr::Index(a, b) => Expr::Index(s(a), s(b)),
@@ -978,13 +1002,15 @@ fn parse_match_range(lhs: &str, rhs: &str) -> Result<Stmt, String> {
 /// variables, calls `f(args)`, and parenthesised sub-expressions.
 fn parse_expr(s: &str) -> Result<Expr, String> {
     let s = s.trim();
-    // `+` at top level (lowest precedence), left-associative.
-    let plus = split_top(s, '+');
-    if plus.len() > 1 {
-        let mut it = plus.iter();
-        let mut acc = parse_expr(it.next().unwrap())?;
-        for t in it {
-            acc = Expr::Add(Box::new(acc), Box::new(parse_expr(t)?));
+    // `+` / `-` at top level (lowest precedence), left-associative. `-` is
+    // compile-time integer subtraction (field subtraction is `+` = XOR).
+    let (segs, ops) = split_add(s);
+    if ops.len() > 0 {
+        let mut acc = parse_expr(&segs[0])?;
+        for (op, seg) in ops.iter().zip(&segs[1..]) {
+            let rhs = Box::new(parse_expr(seg)?);
+            let lhs = Box::new(acc);
+            acc = if *op == b'+' { Expr::Add(lhs, rhs) } else { Expr::Sub(lhs, rhs) };
         }
         return Ok(acc);
     }
@@ -1057,8 +1083,13 @@ fn parse_expr(s: &str) -> Result<Expr, String> {
                 .map(|a| parse_expr(a))
                 .collect::<Result<_, _>>()?
         };
-        // `HeapBuf(n)` / `StackBuf(n)` are allocations, not ordinary calls.
+        // `HeapBuf(n)` / `StackBuf(n)` are allocations, not ordinary calls. A size
+        // that folds as parse-time integer arithmetic (`MAXQ + 1`, constants
+        // already substituted) is a static size like a bare literal.
         if name == "HeapBuf" {
+            if let Ok(n) = eval_const_int(args_str) {
+                return Ok(Expr::HeapBuf(n as u64));
+            }
             return match args.as_slice() {
                 // A literal size is baked into the bytecode; any other
                 // expression is a runtime size (its low word is the count).
@@ -1068,10 +1099,10 @@ fn parse_expr(s: &str) -> Result<Expr, String> {
             };
         }
         if name == "StackBuf" {
-            if let [Expr::Lit(n)] = args.as_slice() {
-                return Ok(Expr::StackBuf(*n as u64));
+            if let Ok(n) = eval_const_int(args_str) {
+                return Ok(Expr::StackBuf(n as u64));
             }
-            return Err("StackBuf(n) needs one integer-literal size".into());
+            return Err("StackBuf(n) needs a parse-time integer size".into());
         }
         return Ok(Expr::Call(name, args));
     }

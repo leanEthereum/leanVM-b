@@ -109,6 +109,7 @@ pub fn compile(ast: &Ast) -> Program {
     let defs: HashMap<String, Func> = ast.funcs.iter().map(|f| (f.name.clone(), f.clone())).collect();
     // Constant arrays by name, resolved at lowering (`NAME[i]`, `len(NAME)`).
     let const_arrays: HashMap<String, Vec<u128>> = ast.const_arrays.iter().cloned().collect();
+    let dbg_lower = std::env::var("DBG_LOWER").is_ok();
 
     let mut loop_ctr = 0usize;
     let mut lowered: Vec<Lowered> = Vec::new();
@@ -123,6 +124,12 @@ pub fn compile(ast: &Ast) -> Program {
             continue;
         }
         let low = lower_func(&f, &mut queue, &mut loop_ctr, &defs, &const_arrays);
+        if dbg_lower {
+            eprintln!("== fn {} (frame {}) ==", low.name, low.frame_size);
+            for (i, ins) in low.code.iter().enumerate() {
+                eprintln!("  {i:>3}: {:?}", ins.op);
+            }
+        }
         lowered.push(low);
     }
 

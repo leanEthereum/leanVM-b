@@ -506,9 +506,14 @@ impl FnLower<'_> {
     fn lower_if(&mut self, eq: bool, lhs: &Expr, rhs: &Expr, then: &[Stmt], els: &[Stmt]) {
         // Compile-time condition (both sides compile-time integers, e.g. after
         // `Const`-argument substitution): fold to the taken branch, emitting no
-        // test or jump. Lets `@unroll` arms bake per-case control flow.
+        // test or jump. Lets `@unroll` arms bake per-case control flow. The
+        // taken branch is straight-line code (like an unroll iteration), so its
+        // bindings persist — unlike a runtime branch, whose bindings are
+        // branch-local (a runtime branch may not execute).
         if let (Some(a), Some(b)) = (self.try_const_index(lhs), self.try_const_index(rhs)) {
-            self.branch(if (a == b) == eq { then } else { els });
+            for st in if (a == b) == eq { then } else { els } {
+                self.stmt(st);
+            }
             return;
         }
         let (la, lb) = (self.expr(lhs), self.expr(rhs));
@@ -775,8 +780,8 @@ impl FnLower<'_> {
                 });
                 dst
             }
-            Expr::Div(..) | Expr::Mod(..) => {
-                panic!("`//` and `%` are compile-time only; use them in an index, a bound, or a `Const` argument")
+            Expr::Sub(..) | Expr::Div(..) | Expr::Mod(..) => {
+                panic!("`-`, `//`, `%` are compile-time only (field subtraction is `+`); use them in an index, a bound, or a `Const` argument, got `{e:?}`")
             }
             Expr::Slice(..) => panic!("a slice is not a scalar; it is only a blake3 operand"),
         }
@@ -804,14 +809,19 @@ impl FnLower<'_> {
     /// value (which a heap slice start may be; see [`Self::blake3_operand`]).
     fn try_const_index(&self, idx: &Expr) -> Option<u32> {
         match idx {
-            // `as u32` would silently wrap a ≥ 2^32 literal (e.g. `sa[2^32]` → `sa[0]`);
-            // reject it so the lowered program matches the source.
-            Expr::Lit(k) => Some(u32::try_from(*k).unwrap_or_else(|_| panic!("stack index {k} does not fit in u32"))),
+            // A literal that fits is an index; a ≥ 2^32 literal is a field value,
+            // not an index (`None` — callers that require an index then error).
+            Expr::Lit(k) => u32::try_from(*k).ok(),
             Expr::Var(v) => self.consts.get(v).copied(),
             Expr::Add(a, b) => Some(
                 self.try_const_index(a)?
                     .checked_add(self.try_const_index(b)?)
                     .unwrap_or_else(|| panic!("stack index overflows u32")),
+            ),
+            Expr::Sub(a, b) => Some(
+                self.try_const_index(a)?
+                    .checked_sub(self.try_const_index(b)?)
+                    .unwrap_or_else(|| panic!("compile-time subtraction went negative")),
             ),
             Expr::Mul(a, b) => Some(
                 self.try_const_index(a)?
@@ -1022,6 +1032,14 @@ impl FnLower<'_> {
     /// constant / arithmetic emits into `dst`). Falls back to `expr` + `copy` for
     /// vars, calls, and stack reads.
     fn expr_into(&mut self, e: &Expr, dst: Off) {
+        // A constant-array element is a compile-time value, not a heap read.
+        if let Some(elem) = self.const_array_elem(e) {
+            self.emit(LOp::Set {
+                o: dst,
+                k: KVal::Const(F128::new(elem as u64, (elem >> 64) as u64)),
+            });
+            return;
+        }
         match e {
             // Heap read straight into dst (a stack read falls through to the copy).
             Expr::Index(arr, idx) if self.stack_of(arr).is_none() => {
@@ -1448,12 +1466,15 @@ impl FnLower<'_> {
                 }
                 _ => {
                     self.stacks.remove(name);
-                    // A literal binding is also usable as a compile-time index.
-                    match e {
-                        Expr::Lit(n) if u32::try_from(*n).is_ok() => {
-                            self.consts.insert(name.clone(), *n as u32);
+                    // A compile-time integer binding (a literal, or an expression
+                    // that folds — `FOLDBASE[lvl] + j`, `n // 2`, `len(A) - 1`) is
+                    // usable as a compile-time index / bound / exponent.
+                    let k_idx = self.try_const_index(e);
+                    match k_idx {
+                        Some(k) => {
+                            self.consts.insert(name.clone(), k);
                         }
-                        _ => {
+                        None => {
                             self.consts.remove(name);
                         }
                     }
@@ -1468,6 +1489,13 @@ impl FnLower<'_> {
                         self.vars.remove(name);
                         self.gaddrs.remove(name);
                         self.fconsts.insert(name.clone(), c);
+                    } else if let Some(k) = k_idx {
+                        // Integer-only fold (`//`, `-`, `%` of constants): a
+                        // compile-time value too — as a scalar it is the field
+                        // element with those 128 bits, materialized on demand.
+                        self.vars.remove(name);
+                        self.gaddrs.remove(name);
+                        self.fconsts.insert(name.clone(), F128::new(k as u64, 0));
                     } else {
                         let o = self.expr(e);
                         self.gaddrs.remove(name);
@@ -1790,7 +1818,13 @@ fn plus_k(lo: &Expr, hi: &Expr) -> Option<u128> {
 fn free_vars_expr(e: &Expr, refs: &mut Vec<String>) {
     match e {
         Expr::Var(v) => refs.push(v.clone()),
-        Expr::Add(a, b) | Expr::Mul(a, b) | Expr::Div(a, b) | Expr::Mod(a, b) | Expr::Index(a, b) | Expr::Pow(a, b) => {
+        Expr::Add(a, b)
+        | Expr::Mul(a, b)
+        | Expr::Sub(a, b)
+        | Expr::Div(a, b)
+        | Expr::Mod(a, b)
+        | Expr::Index(a, b)
+        | Expr::Pow(a, b) => {
             free_vars_expr(a, refs);
             free_vars_expr(b, refs);
         }

@@ -32,6 +32,11 @@ pub enum Expr {
     Var(String),
     Add(Box<Expr>, Box<Expr>),
     Mul(Box<Expr>, Box<Expr>),
+    /// Integer subtraction `a - b` — **compile-time only**. In this field `+` is
+    /// XOR, so field subtraction *is* `+`; a `-` is therefore only meaningful in
+    /// index space (an index / slice bound / `unroll` count / `**` exponent /
+    /// folded `if`). Using one as a runtime field value is an error.
+    Sub(Box<Expr>, Box<Expr>),
     /// Integer floor-division `a // b` and remainder `a % b` — **compile-time
     /// only** (the field has no integer division). Valid where an index /
     /// slice bound / `Const` argument is expected, or as a folded `if`

@@ -47,6 +47,11 @@ impl Program {
         let mut next_free = self.main_frame;
         let (mut pc, mut fp) = (self.pc0, self.fp0);
         let mut steps = 0usize;
+        thread_local! {
+            /// Debug: the pc of the currently executing instruction, so the
+            /// write-once panic can report where the conflict happened.
+            static DBG_PC: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+        }
 
         // Per-stream cursor into the named witness data (`hint_witness` pops
         // sequentially).
@@ -95,7 +100,15 @@ impl Program {
             ensure(mem, written, mem_count, cell as usize);
             let c = cell as usize;
             if written[c] {
-                assert!(mem[c] == v, "write-once conflict at cell {cell}");
+                assert!(
+                    mem[c] == v,
+                    "write-once conflict at cell {cell} (pc {}): had {:x}:{:x}, new {:x}:{:x}",
+                    DBG_PC.with(|p| p.get()),
+                    mem[c].hi,
+                    mem[c].lo,
+                    v.hi,
+                    v.lo
+                );
             } else {
                 mem[c] = v;
                 written[c] = true;
@@ -114,6 +127,7 @@ impl Program {
 
         while pc != ending_pc {
             assert!(steps < 100_000_000, "step limit exceeded (runaway recursion?)");
+            DBG_PC.with(|p| p.set(pc));
 
             // Apply the hints scheduled before this instruction.
             if let Some(hs) = self.hints.get(&pc) {

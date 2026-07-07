@@ -1,6 +1,2 @@
 .build
 target
-
-# Generated recursion-verifier zkDSL programs (emitted by gen_lig_tr in tests).
-tests/lig_ml_gen.py
-tests/lig_m33_gen.py

@@ -819,6 +819,11 @@ struct MirOut {
     ctx_lmc: Vec<usize>,       // log_msg_cols per level ctx (len r+1)
     ctx_ris_start: Vec<usize>, // ris_start per level ctx
     levels: Vec<MirLevel>,     // len r+1
+    // Per global fold (level-major, j within level): (bits, nonce, digest word0).
+    // bits==0 folds carry (0, 0, ZERO). The guest re-derives the digest and
+    // checks its leading-zero bits.
+    fold_pow: Vec<(u32, u64, F128)>,
+    block_len: Vec<usize>, // Merkle tree size per level's queries (len r+1)
 }
 
 /// Reusable, config-driven mirror of `recursive_verifier_with_basis_succinct`:
@@ -846,12 +851,20 @@ fn run_mirror(cfg: &LigCfg, proof: &flare::pcs::ligerito::LigeritoProof, z: &[F1
     let mut quad = fm(sc[0].u_0, sc[0].u_2, tr);
     let mut txi = 1usize;
     let mut fni = 0usize;
+    let mut fold_pow: Vec<(u32, u64, F128)> = Vec::new();
+    let pow_digest = |cv: [F128; 2], nonce: u64| -> F128 {
+        let base = leanvm_b::vmhash::compress(cv, [F128::ZERO, F128::new(5, 0)]);
+        leanvm_b::vmhash::compress(base, [F128::new(nonce, 0), F128::new(5, 0)])[0]
+    };
 
     let mut r_lane = Vec::new();
     for j in 0..cfg.initial_k {
         let bits = (fgb(0) - j as i64).max(0) as u32;
+        let nonce = if bits > 0 { proof.fold_grinding_nonces[fni] } else { 0 };
+        let dig = if bits > 0 { pow_digest(sp.cv, nonce) } else { F128::ZERO };
+        fold_pow.push((bits, nonce, dig));
         if bits > 0 {
-            assert!(sp.verify_pow(proof.fold_grinding_nonces[fni], bits));
+            assert!(sp.verify_pow(nonce, bits));
             fni += 1;
         }
         let ri = sp.sample();
@@ -867,6 +880,7 @@ fn run_mirror(cfg: &LigCfg, proof: &flare::pcs::ligerito::LigeritoProof, z: &[F1
     assert!(sp.verify_pow(proof.grinding_nonces[ni], 0));
     ni += 1;
     let bl0 = 1usize << (cfg.initial_log_msg_cols + cfg.log_inv_rates[0]);
+    let mut block_len = vec![bl0];
     let (q0, raw0) = sp.sample_queries_ordered(bl0, cfg.queries[0]);
     let a0: Vec<F128> = (0..ceil_log2(cfg.queries[0])).map(|_| sp.sample()).collect();
     let rows0 = expand_opened_rows_ordered(&proof.initial_proof.opened_rows, &q0).expect("expand rows0");
@@ -896,8 +910,11 @@ fn run_mirror(cfg: &LigCfg, proof: &flare::pcs::ligerito::LigeritoProof, z: &[F1
         let mut level_rs = Vec::new();
         for j in 0..k_i {
             let bits = (fgb(i + 1) - j as i64).max(0) as u32;
+            let nonce = if bits > 0 { proof.fold_grinding_nonces[fni] } else { 0 };
+            let dig = if bits > 0 { pow_digest(sp.cv, nonce) } else { F128::ZERO };
+            fold_pow.push((bits, nonce, dig));
             if bits > 0 {
-                assert!(sp.verify_pow(proof.fold_grinding_nonces[fni], bits));
+                assert!(sp.verify_pow(nonce, bits));
                 fni += 1;
             }
             let ri = sp.sample();
@@ -911,6 +928,7 @@ fn run_mirror(cfg: &LigCfg, proof: &flare::pcs::ligerito::LigeritoProof, z: &[F1
         }
         n_current -= k_i;
         let prev_block_len = 1usize << (prev_lmc + prev_lir);
+        block_len.push(prev_block_len);
         let _ = prev_lni;
         if i == r - 1 {
             let yr = &proof.final_proof.yr;
@@ -977,7 +995,7 @@ fn run_mirror(cfg: &LigCfg, proof: &flare::pcs::ligerito::LigeritoProof, z: &[F1
         }
     }
     assert_eq!(txi, sc.len(), "all sumcheck messages consumed");
-    MirOut { tr, inner, ris, ctx_lmc, ctx_ris_start, levels }
+    MirOut { tr, inner, ris, ctx_lmc, ctx_ris_start, levels, fold_pow, block_len }
 }
 
 #[test]
@@ -1037,485 +1055,6 @@ fn ligerito_small_mirror() {
     eprintln!("small mirror OK: N per level = {ns:?}, T (raw samples) = {ts:?}");
 }
 
-/// Zero-bit set enforced by `pow_bits_ok(bits)`: low `full` bytes + the top
-/// `extra` bits of byte `full` (MSB-first within a byte), as coefficient indices.
-fn pow_zero_bits(bits: u32) -> Vec<usize> {
-    let full = (bits / 8) as usize;
-    let extra = (bits % 8) as usize;
-    let mut z: Vec<usize> = (0..8 * full).collect();
-    if extra > 0 {
-        z.extend(8 * full + 8 - extra..8 * full + 8);
-    }
-    z
-}
-
-/// Generate the multi-level per-query Ligerito verifier `t_r` core as zkDSL `.py`
-/// source: sponge replay + RoundQuad folds + per-fold PoW + per-level query phases
-/// (a `mul_range` sample-advance loop + `enforced_sum` accumulator loop + glue).
-/// Returns (source, placeholder map, witness hints). No dedup/sort — enforced_sum
-/// needs only the opened rows, so `t_r` needs no query positions.
-fn gen_lig_tr(
-    cfg: &LigCfg,
-    proof: &flare::pcs::ligerito::LigeritoProof,
-    mir: &MirOut,
-    target: F128,
-    label: &[u8],
-    z: &[F128],
-) -> (String, std::collections::BTreeMap<String, String>, Vec<(String, Vec<F128>)>) {
-    use flare::pcs::ligerito::{ceil_log2, eval_sk_at_vks};
-    use std::collections::BTreeMap;
-    use std::fmt::Write as _;
-
-    let r = cfg.r();
-    let mut rep = BTreeMap::new();
-    let mut hints: Vec<(String, Vec<F128>)> = Vec::new();
-    hints.push(("sc".into(), proof.sumcheck_transcript.iter().flat_map(|m| [m.u_0, m.u_2]).collect()));
-    let hb = |h: [u8; 32]| {
-        let w = |o: usize| u64::from_le_bytes(h[o..o + 8].try_into().unwrap());
-        [F128::new(w(0), w(8)), F128::new(w(16), w(24))]
-    };
-    let seed = fs_ref::seed_cv(label, &[]);
-    let mut consts: Vec<(String, F128)> = vec![
-        ("SEED0".into(), seed[0]),
-        ("SEED1".into(), seed[1]),
-        ("TARGET".into(), target),
-        ("TR".into(), mir.tr),
-    ];
-    let ir = hb(proof.initial_root);
-    consts.push(("INITROOT0".into(), ir[0]));
-    consts.push(("INITROOT1".into(), ir[1]));
-    for (i, root) in proof.recursive_roots.iter().enumerate() {
-        let rr = hb(*root);
-        consts.push((format!("REC{i}A"), rr[0]));
-        consts.push((format!("REC{i}B"), rr[1]));
-    }
-    let lbl = b"flock-ligerito-basis-v0";
-    let word = |o: usize| {
-        let mut b = [0u8; 16];
-        let e = (lbl.len() - o).min(16);
-        b[..e].copy_from_slice(&lbl[o..o + e]);
-        F128::new(u64::from_le_bytes(b[..8].try_into().unwrap()), u64::from_le_bytes(b[8..16].try_into().unwrap()))
-    };
-    consts.push(("LBLA".into(), word(0)));
-    consts.push(("LBLB".into(), word(16)));
-    for (i, &zi) in z.iter().enumerate() {
-        consts.push((format!("Z{i}"), zi));
-    }
-    for k in 0..=r {
-        let lmc = mir.ctx_lmc[k];
-        let svk = eval_sk_at_vks(lmc);
-        for j in 0..lmc {
-            consts.push((format!("SVK{k}_{j}"), svk[j]));
-            consts.push((format!("IVK{k}_{j}"), if svk[j] == F128::ZERO { F128::ZERO } else { svk[j].inv() }));
-        }
-    }
-
-    // Fold-PoW nonces (placeholders) + digest-bit hints, computed by replaying the
-    // sponge exactly as run_mirror does, in emit order.
-    let fgb = |lvl: usize| cfg.fold_grinding_bits.get(lvl).copied().unwrap_or(0) as i64;
-    let sc = &proof.sumcheck_transcript;
-    let mut sp = fs_ref::Sponge::new(label, &[]);
-    sp.observe_bytes(b"flock-ligerito-basis-v0");
-    sp.observe(target);
-    sp.observe_bytes(&proof.initial_root);
-    sp.observe(sc[0].u_0);
-    sp.observe(sc[0].u_2);
-    let mut txi = 1usize;
-    let mut fni = 0usize;
-    let mut inst = 0usize;
-    // Records: (instance, bits) in emit order; nonce placeholder FN{inst}, hint fpb{inst}.
-    let mut fp: Vec<(usize, u32)> = Vec::new();
-    let mut do_foldpow = |sp: &mut fs_ref::Sponge, nonce: u64, bits: u32, inst: usize, consts: &mut Vec<(String, F128)>, hints: &mut Vec<(String, Vec<F128>)>| {
-        let base = crate_compress(sp.cv, [F128::ZERO, F128::new(5, 0)]);
-        let h = crate_compress(base, [F128::new(nonce, 0), F128::new(5, 0)]);
-        consts.push((format!("FN{inst}"), F128::new(nonce, 0)));
-        hints.push((format!("fpb{inst}"), bits_of(h[0])));
-        assert!(sp.verify_pow(nonce, bits));
-    };
-    let mut r_lane_v: Vec<F128> = Vec::new();
-    for j in 0..cfg.initial_k {
-        let bits = (fgb(0) - j as i64).max(0) as u32;
-        if bits > 0 {
-            do_foldpow(&mut sp, proof.fold_grinding_nonces[fni], bits, inst, &mut consts, &mut hints);
-            fp.push((inst, bits));
-            fni += 1;
-            inst += 1;
-        }
-        r_lane_v.push(sp.sample());
-        sp.observe(sc[txi].u_0);
-        sp.observe(sc[txi].u_2);
-        txi += 1;
-    }
-    sp.observe_bytes(&proof.recursive_roots[0]);
-    let mut ni = 0usize;
-    assert!(sp.verify_pow(proof.grinding_nonces[ni], 0));
-    ni += 1;
-    let bl0 = 1usize << (cfg.initial_log_msg_cols + cfg.log_inv_rates[0]);
-    let mut bl_per_level = vec![bl0];
-    let (q0v, _) = sp.sample_queries_ordered(bl0, cfg.queries[0]);
-    let a0v: Vec<F128> = (0..ceil_log2(cfg.queries[0])).map(|_| sp.sample()).collect();
-    {
-        use flare::pcs::ligerito::{expand_opened_rows_ordered, induce_sumcheck_enforced_sum};
-        let rows0 = expand_opened_rows_ordered(&proof.initial_proof.opened_rows, &q0v).expect("expand rows0");
-        let enf0 = induce_sumcheck_enforced_sum(&rows0, &r_lane_v, &q0v, &a0v);
-        consts.push(("ENF0".into(), enf0));
-    }
-    sp.observe(sc[txi].u_0);
-    sp.observe(sc[txi].u_2);
-    txi += 1;
-    let _ = sp.sample(); // beta0
-    let mut prev_lmc = (cfg.log_n - cfg.initial_k) - cfg.recursive_ks[0];
-    let mut prev_lir = cfg.log_inv_rates[1];
-    let mut nri = 1usize;
-    let mut n_current = cfg.log_n - cfg.initial_k;
-    // Per-recursive-level fold-PoW instances (record which instance/bits each fold is).
-    let mut lvl_fp: Vec<Vec<(usize, u32)>> = vec![Vec::new(); r];
-    for i in 0..r {
-        let k_i = cfg.recursive_ks[i];
-        for j in 0..k_i {
-            let bits = (fgb(i + 1) - j as i64).max(0) as u32;
-            if bits > 0 {
-                do_foldpow(&mut sp, proof.fold_grinding_nonces[fni], bits, inst, &mut consts, &mut hints);
-                lvl_fp[i].push((inst, bits));
-                fni += 1;
-                inst += 1;
-            }
-            let _ = sp.sample();
-            sp.observe(sc[txi].u_0);
-            sp.observe(sc[txi].u_2);
-            txi += 1;
-        }
-        n_current -= k_i;
-        let prev_block_len = 1usize << (prev_lmc + prev_lir);
-        bl_per_level.push(prev_block_len);
-        if i == r - 1 {
-            for v in &proof.final_proof.yr {
-                sp.observe(*v);
-            }
-            assert!(sp.verify_pow(proof.grinding_nonces[ni], 0));
-            let _ = sp.sample_queries_ordered(prev_block_len, cfg.queries[i + 1]);
-            let _: Vec<F128> = (0..ceil_log2(cfg.queries[i + 1])).map(|_| sp.sample()).collect();
-            let _ = sp.sample(); // beta_last
-        } else {
-            sp.observe_bytes(&proof.recursive_roots[nri]);
-            nri += 1;
-            assert!(sp.verify_pow(proof.grinding_nonces[ni], 0));
-            ni += 1;
-            let _ = sp.sample_queries_ordered(prev_block_len, cfg.queries[i + 1]);
-            let _: Vec<F128> = (0..ceil_log2(cfg.queries[i + 1])).map(|_| sp.sample()).collect();
-            sp.observe(sc[txi].u_0);
-            sp.observe(sc[txi].u_2);
-            txi += 1;
-            let _ = sp.sample(); // beta_i
-            let k_next = cfg.recursive_ks[i + 1];
-            prev_lmc = n_current - k_next;
-            prev_lir = cfg.log_inv_rates[i + 2];
-        }
-    }
-
-    for (k, v) in &consts {
-        rep.insert(format!("{k}_PLACEHOLDER"), u(*v).to_string());
-    }
-
-    // ---------- emit source ----------
-    let mut s = String::new();
-    s.push_str("from snark_lib import *\n\n");
-    for (k, _) in &consts {
-        let _ = writeln!(s, "{k} = {k}_PLACEHOLDER");
-    }
-    s.push_str("DS_SCALAR = 1\nDS_BYTE = 2\nDS_LEN = 3\nDS_SQ = 4\nDS_POW = 5\n\n");
-    s.push_str("def obs(c0, c1, x):\n    a = StackBuf(2)\n    a[0] = c0\n    a[1] = c1\n    b = StackBuf(2)\n    b[0] = x\n    b[1] = DS_SCALAR\n    o = StackBuf(2)\n    blake3(a, b, o)\n    return o[0], o[1]\n\n");
-    s.push_str("def absorb(c0, c1, x, tag):\n    a = StackBuf(2)\n    a[0] = c0\n    a[1] = c1\n    b = StackBuf(2)\n    b[0] = x\n    b[1] = tag\n    o = StackBuf(2)\n    blake3(a, b, o)\n    return o[0], o[1]\n\n");
-    s.push_str("def sqz(c0, c1):\n    a = StackBuf(2)\n    a[0] = c0\n    a[1] = c1\n    b = StackBuf(2)\n    b[0] = 0\n    b[1] = DS_SQ\n    o = StackBuf(2)\n    blake3(a, b, o)\n    return o[0], o[0], o[1]\n\n");
-    s.push_str("def dec128(bp, v):\n    cb = bp\n    w = GEN ** 0\n    acc = 0\n    for i in unroll(0, 128):\n        b = cb[1]\n        sq = b * b\n        assert sq == b\n        acc = acc + b * w\n        cb = cb * GEN\n        w = w * GEN\n    assert acc == v\n    return\n\n");
-    s.push_str("def mstep(n0, n1, s0, s1, bit):\n    nb = StackBuf(2)\n    nb[0] = n0\n    nb[1] = n1\n    sb = StackBuf(2)\n    sb[0] = s0\n    sb[1] = s1\n    pr = StackBuf(2)\n    if bit == 0:\n        blake3(nb, sb, pr)\n    else:\n        blake3(sb, nb, pr)\n    return pr[0], pr[1]\n\n");
-    // foldyr: fold a 2^yl multilinear (LSB-first) over yl vars with per-var weights.
-    let yl = cfg.yr_log_n;
-    {
-        let args: Vec<String> = (0..yl).flat_map(|j| [format!("a{j}"), format!("b{j}")]).collect();
-        let _ = writeln!(s, "def foldyr(yp, {}):", args.join(", "));
-        let mut prev = "yp".to_string();
-        for lev in 0..yl - 1 {
-            let sz = 1usize << (yl - 1 - lev);
-            let _ = writeln!(s, "    l{lev} = HeapBuf({sz})\n    src = {prev}\n    dst = l{lev}\n    for i in unroll(0, {sz}):\n        dst[1] = a{lev} * src[1] + b{lev} * src[GEN]\n        src = src * GEN ** 2\n        dst = dst * GEN");
-            prev = format!("l{lev}");
-        }
-        let last = yl - 1;
-        let _ = writeln!(s, "    res = a{last} * {prev}[1] + b{last} * {prev}[GEN]\n    return res\n");
-    }
-
-    // helper: emit an eq-table build of `k` challenges (var names in `chals`) into HeapBuf `buf`
-    let emit_eq = |s: &mut String, buf: &str, chals: &[String], k: usize, take: usize| {
-        let _ = writeln!(s, "    {buf} = HeapBuf({take})");
-        for (j, c) in chals.iter().enumerate() {
-            let _ = writeln!(s, "    om_{buf}_{j} = 1 + {c}");
-        }
-        for i in 0..take {
-            let mut factors = Vec::new();
-            for j in 0..k {
-                if (i >> j) & 1 == 1 {
-                    factors.push(chals[j].clone());
-                } else {
-                    factors.push(format!("om_{buf}_{j}"));
-                }
-            }
-            let _ = writeln!(s, "    {buf}[GEN ** {i}] = {}", factors.join(" * "));
-        }
-    };
-
-    // helper: emit a per-fold PoW check given instance/bits
-    let emit_foldpow = |s: &mut String, inst: usize, bits: u32| {
-        let _ = writeln!(s, "    pb_{inst} = StackBuf(2)\n    pb_{inst}[0] = cv0\n    pb_{inst}[1] = cv1\n    pz_{inst} = StackBuf(2)\n    pz_{inst}[0] = 0\n    pz_{inst}[1] = DS_POW\n    pbase_{inst} = StackBuf(2)\n    blake3(pb_{inst}, pz_{inst}, pbase_{inst})\n    pn_{inst} = StackBuf(2)\n    pn_{inst}[0] = FN{inst}\n    pn_{inst}[1] = DS_POW\n    ph_{inst} = StackBuf(2)\n    blake3(pbase_{inst}, pn_{inst}, ph_{inst})\n    fpv_{inst} = ph_{inst}[0]\n    dec128(fpb{inst}, fpv_{inst})");
-        for b in pow_zero_bits(bits) {
-            let _ = writeln!(s, "    zb_{inst}_{b} = fpb{inst}[GEN ** {b}]\n    assert zb_{inst}_{b} == 0");
-        }
-        let _ = writeln!(s, "    cv0, cv1 = absorb(cv0, cv1, FN{inst}, DS_POW)");
-    };
-
-    s.push_str("def main():\n");
-    let nmsg = sc.len();
-    let _ = writeln!(s, "    sc = HeapBuf({0})\n    hint_witness(sc[0:{0}], \"sc\")", 2 * nmsg);
-    for lvl in 0..=r {
-        let n = mir.levels[lvl].sorted.len();
-        let klvl = if lvl == 0 { cfg.initial_k } else { cfg.recursive_ks[lvl - 1] };
-        let width = n * (1usize << klvl);
-        let depth = bl_per_level[lvl].trailing_zeros() as usize;
-        let (rows, path) = if lvl == 0 {
-            (&proof.initial_proof.opened_rows, &proof.initial_proof.merkle_proof)
-        } else if lvl == r {
-            (&proof.final_proof.opened_rows, &proof.final_proof.merkle_proof)
-        } else {
-            (&proof.recursive_proofs[lvl - 1].opened_rows, &proof.recursive_proofs[lvl - 1].merkle_proof)
-        };
-        // The proof stores each level's opening COMPRESSED (index-dedup + octopus).
-        // Expand to the flat per-query witness the guest consumes: `n` rows in
-        // transcript order + `n` single Merkle paths. The guest re-authenticates
-        // each path against the root, so the expansion needs no separate check.
-        let (rows_exp, path_exp) = flare::pcs::ligerito::expand_level_opening(
-            bl_per_level[lvl],
-            &mir.levels[lvl].sorted,
-            rows,
-            1usize << klvl,
-            path,
-        )
-        .expect("expand level opening");
-        let _ = writeln!(s, "    row{lvl} = HeapBuf({width})\n    hint_witness(row{lvl}[0:{width}], \"row{lvl}\")");
-        hints.push((format!("row{lvl}"), rows_exp.iter().flatten().copied().collect()));
-        let psz = n * depth * 2;
-        let _ = writeln!(s, "    path{lvl} = HeapBuf({psz})\n    hint_witness(path{lvl}[0:{psz}], \"path{lvl}\")");
-        hints.push((format!("path{lvl}"), path_exp.iter().flat_map(|&h| hb(h)).collect()));
-        let ssz = n * 128;
-        let _ = writeln!(s, "    sbits{lvl} = HeapBuf({ssz})\n    hint_witness(sbits{lvl}[0:{ssz}], \"sbits{lvl}\")");
-        hints.push((format!("sbits{lvl}"), mir.levels[lvl].raw.iter().flat_map(|&v| bits_of(v)).collect()));
-    }
-    for (idx, _) in fp.iter().chain(lvl_fp.iter().flatten()) {
-        let _ = writeln!(s, "    fpb{idx} = HeapBuf(128)\n    hint_witness(fpb{idx}[0:128], \"fpb{idx}\")");
-    }
-
-    // sponge seed
-    s.push_str("    cv0 = SEED0\n    cv1 = SEED1\n");
-    s.push_str("    cv0, cv1 = absorb(cv0, cv1, 23, DS_LEN)\n    cv0, cv1 = absorb(cv0, cv1, LBLA, DS_BYTE)\n    cv0, cv1 = absorb(cv0, cv1, LBLB, DS_BYTE)\n");
-    s.push_str("    cv0, cv1 = obs(cv0, cv1, TARGET)\n");
-    s.push_str("    cv0, cv1 = absorb(cv0, cv1, 32, DS_LEN)\n    cv0, cv1 = absorb(cv0, cv1, INITROOT0, DS_BYTE)\n    cv0, cv1 = absorb(cv0, cv1, INITROOT1, DS_BYTE)\n");
-    // prologue
-    s.push_str("    sp = sc\n    u0 = sp[1]\n    cv0, cv1 = obs(cv0, cv1, u0)\n    sp = sp * GEN\n    u2 = sp[1]\n    cv0, cv1 = obs(cv0, cv1, u2)\n    sp = sp * GEN\n    qc = u0\n    qb = TARGET + u2\n    qa = u2\n    tr = TARGET\n");
-
-    // helper: emit one query phase (advance cv `n` times, alpha, eq, alpha_w, enforced)
-    // into vars enf{tag}. `chals` = the level's fold-challenge var names, klvl = their count.
-    let emit_query_phase = |s: &mut String, tag: &str, n: usize, klvl: usize, chals: &[String]| {
-        let a = ceil_log2(n);
-        // sample-advance loop, capturing each sampled query value into qv{tag}
-        let _ = writeln!(s, "    c0b_{tag} = HeapBuf({0})\n    c1b_{tag} = HeapBuf({0})\n    c0b_{tag}[1] = cv0\n    c1b_{tag}[1] = cv1", n + 1);
-        let _ = writeln!(s, "    qv{tag} = HeapBuf({n})");
-        let _ = writeln!(s, "    for xq in mul_range(1, GEN ** {n}):\n        chq, nc0, nc1 = sqz(c0b_{tag}[xq], c1b_{tag}[xq])\n        qv{tag}[xq] = chq\n        c0b_{tag}[xq * GEN] = nc0\n        c1b_{tag}[xq * GEN] = nc1");
-        let _ = writeln!(s, "    cv0 = c0b_{tag}[GEN ** {n}]\n    cv1 = c1b_{tag}[GEN ** {n}]");
-        // alpha samples
-        let mut alphas = Vec::new();
-        for t in 0..a {
-            let _ = writeln!(s, "    al_{tag}_{t}, cv0, cv1 = sqz(cv0, cv1)");
-            alphas.push(format!("al_{tag}_{t}"));
-        }
-        // eq(fold challenges) [2^klvl] and alpha_w [n]
-        emit_eq(s, &format!("eq_{tag}"), chals, klvl, 1usize << klvl);
-        if a == 0 {
-            let _ = writeln!(s, "    aw_{tag} = HeapBuf(1)\n    aw_{tag}[GEN ** 0] = GEN ** 0");
-        } else {
-            emit_eq(s, &format!("aw_{tag}"), &alphas, a, n);
-        }
-        // enforced accumulator loop
-        let w = 1usize << klvl;
-        let _ = writeln!(s, "    accE_{tag} = HeapBuf({0})\n    accE_{tag}[1] = 0", n + 1);
-        let _ = writeln!(s, "    for xe in mul_range(1, GEN ** {n}):");
-        // rowbase = xe ^ w  (w = 2^klvl)
-        let _ = writeln!(s, "        rb_{tag} = xe");
-        for _ in 0..klvl {
-            let _ = writeln!(s, "        rb_{tag} = rb_{tag} * rb_{tag}");
-        }
-        let _ = writeln!(s, "        rc_{tag} = rb_{tag}\n        ec_{tag} = GEN ** 0\n        dot_{tag} = 0");
-        let _ = writeln!(s, "        for c in unroll(0, {w}):\n            dot_{tag} = dot_{tag} + row{tag}[rc_{tag}] * eq_{tag}[ec_{tag}]\n            rc_{tag} = rc_{tag} * GEN\n            ec_{tag} = ec_{tag} * GEN");
-        let _ = writeln!(s, "        accE_{tag}[xe * GEN] = accE_{tag}[xe] + aw_{tag}[xe] * dot_{tag}");
-        let _ = writeln!(s, "    enf{tag} = accE_{tag}[GEN ** {n}]");
-    };
-
-    // L0 lane fold
-    let mut r_lane: Vec<String> = Vec::new();
-    let mut fpiter = fp.iter();
-    for j in 0..cfg.initial_k {
-        let bits = (fgb(0) - j as i64).max(0) as u32;
-        if bits > 0 {
-            let (idx, b) = *fpiter.next().unwrap();
-            emit_foldpow(&mut s, idx, b);
-        }
-        let _ = writeln!(s, "    r0_{j}, cv0, cv1 = sqz(cv0, cv1)\n    tr = qc + r0_{j} * qb + r0_{j} * r0_{j} * qa");
-        let _ = writeln!(s, "    a0_{j} = sp[1]\n    cv0, cv1 = obs(cv0, cv1, a0_{j})\n    sp = sp * GEN\n    b0_{j} = sp[1]\n    cv0, cv1 = obs(cv0, cv1, b0_{j})\n    sp = sp * GEN\n    qc = a0_{j}\n    qb = tr + b0_{j}\n    qa = b0_{j}");
-        r_lane.push(format!("r0_{j}"));
-    }
-    // L0 query phase (root_0 + grinding first)
-    s.push_str("    cv0, cv1 = absorb(cv0, cv1, 32, DS_LEN)\n    cv0, cv1 = absorb(cv0, cv1, REC0A, DS_BYTE)\n    cv0, cv1 = absorb(cv0, cv1, REC0B, DS_BYTE)\n    cv0, cv1 = absorb(cv0, cv1, 0, DS_POW)\n");
-    emit_query_phase(&mut s, "0", cfg.queries[0], cfg.initial_k, &r_lane);
-    s.push_str("    assert enf0 == ENF0\n");
-    // glue
-    s.push_str("    iu0 = sp[1]\n    cv0, cv1 = obs(cv0, cv1, iu0)\n    sp = sp * GEN\n    iu2 = sp[1]\n    cv0, cv1 = obs(cv0, cv1, iu2)\n    sp = sp * GEN\n    beta0, cv0, cv1 = sqz(cv0, cv1)\n    qc = qc + beta0 * iu0\n    qb = qb + beta0 * (enf0 + iu2)\n    qa = qa + beta0 * iu2\n    tr = tr + beta0 * enf0\n");
-
-    // recursive levels
-    let mut ris_names = r_lane.clone();
-    let mut beta_names = vec!["beta0".to_string()];
-    for i in 0..r {
-        let k_i = cfg.recursive_ks[i];
-        let mut level_rs: Vec<String> = Vec::new();
-        let mut it = lvl_fp[i].iter();
-        for j in 0..k_i {
-            let bits = (fgb(i + 1) - j as i64).max(0) as u32;
-            if bits > 0 {
-                let (idx, b) = *it.next().unwrap();
-                emit_foldpow(&mut s, idx, b);
-            }
-            let _ = writeln!(s, "    r{lp}_{j}, cv0, cv1 = sqz(cv0, cv1)\n    tr = qc + r{lp}_{j} * qb + r{lp}_{j} * r{lp}_{j} * qa", lp = i + 1);
-            let _ = writeln!(s, "    c{lp}_{j} = sp[1]\n    cv0, cv1 = obs(cv0, cv1, c{lp}_{j})\n    sp = sp * GEN\n    d{lp}_{j} = sp[1]\n    cv0, cv1 = obs(cv0, cv1, d{lp}_{j})\n    sp = sp * GEN\n    qc = c{lp}_{j}\n    qb = tr + d{lp}_{j}\n    qa = d{lp}_{j}", lp = i + 1);
-            level_rs.push(format!("r{}_{j}", i + 1));
-        }
-        let tag = format!("{}", i + 1);
-        if i == r - 1 {
-            // observe yr, grinding, query, enforced, beta_last
-            let yl = cfg.yr_log_n;
-            let ylen = 1usize << yl;
-            let _ = writeln!(s, "    yr = HeapBuf({ylen})\n    hint_witness(yr[0:{ylen}], \"yr\")\n    yp = yr\n    for iy in unroll(0, {ylen}):\n        yv = yp[1]\n        cv0, cv1 = obs(cv0, cv1, yv)\n        yp = yp * GEN");
-            hints.push(("yr".into(), proof.final_proof.yr.clone()));
-            s.push_str("    cv0, cv1 = absorb(cv0, cv1, 0, DS_POW)\n");
-            emit_query_phase(&mut s, &tag, cfg.queries[i + 1], k_i, &level_rs);
-            let _ = writeln!(s, "    beta{tag}, cv0, cv1 = sqz(cv0, cv1)\n    tr = tr + beta{tag} * enf{tag}");
-        } else {
-            let _ = writeln!(s, "    cv0, cv1 = absorb(cv0, cv1, 32, DS_LEN)\n    cv0, cv1 = absorb(cv0, cv1, REC{lp}A, DS_BYTE)\n    cv0, cv1 = absorb(cv0, cv1, REC{lp}B, DS_BYTE)\n    cv0, cv1 = absorb(cv0, cv1, 0, DS_POW)", lp = i + 1);
-            emit_query_phase(&mut s, &tag, cfg.queries[i + 1], k_i, &level_rs);
-            let _ = writeln!(s, "    iu0_{tag} = sp[1]\n    cv0, cv1 = obs(cv0, cv1, iu0_{tag})\n    sp = sp * GEN\n    iu2_{tag} = sp[1]\n    cv0, cv1 = obs(cv0, cv1, iu2_{tag})\n    sp = sp * GEN\n    beta{tag}, cv0, cv1 = sqz(cv0, cv1)\n    qc = qc + beta{tag} * iu0_{tag}\n    qb = qb + beta{tag} * (enf{tag} + iu2_{tag})\n    qa = qa + beta{tag} * iu2_{tag}\n    tr = tr + beta{tag} * enf{tag}");
-        }
-        ris_names.extend(level_rs.clone());
-        beta_names.push(format!("beta{tag}"));
-    }
-    // ---- per-query Merkle loops (one single path per query, no octopus) ----
-    let emit_merkle = |s: &mut String, tag: &str, n: usize, klvl: usize, block_len: usize, ra: &str, rb: &str| {
-        let d = block_len.trailing_zeros() as usize;
-        let w = 1usize << klvl;
-        let blocks = w / 2;
-        let nbytes = w * 16;
-        let _ = writeln!(s, "    for xm{tag} in mul_range(1, GEN ** {n}):");
-        // decompose the sampled value into this query's 128-bit block
-        let _ = writeln!(s, "        s128_{tag} = xm{tag}");
-        for _ in 0..7 {
-            let _ = writeln!(s, "        s128_{tag} = s128_{tag} * s128_{tag}");
-        }
-        let _ = writeln!(s, "        sbp_{tag} = sbits{tag} * s128_{tag}");
-        let _ = writeln!(s, "        dec128(sbp_{tag}, qv{tag}[xm{tag}])");
-        // leaf hash over the query's row (MD chain, iv = g^nbytes)
-        let _ = writeln!(s, "        rl_{tag} = xm{tag}");
-        for _ in 0..klvl {
-            let _ = writeln!(s, "        rl_{tag} = rl_{tag} * rl_{tag}");
-        }
-        let _ = writeln!(s, "        rc_{tag} = rl_{tag}\n        ld0_{tag} = GEN ** {nbytes}\n        ld1_{tag} = 0");
-        let _ = writeln!(s, "        for jb in unroll(0, {blocks}):\n            aa_{tag} = StackBuf(2)\n            aa_{tag}[0] = ld0_{tag}\n            aa_{tag}[1] = ld1_{tag}\n            mm_{tag} = StackBuf(2)\n            mm_{tag}[0] = row{tag}[rc_{tag}]\n            rc_{tag} = rc_{tag} * GEN\n            mm_{tag}[1] = row{tag}[rc_{tag}]\n            rc_{tag} = rc_{tag} * GEN\n            oo_{tag} = StackBuf(2)\n            blake3(aa_{tag}, mm_{tag}, oo_{tag})\n            ld0_{tag} = oo_{tag}[0]\n            ld1_{tag} = oo_{tag}[1]");
-        // walk the single path with the query-index bits (low d bits of the sample)
-        let _ = writeln!(s, "        pbase_{tag} = xm{tag}");
-        for _ in 0..(2 * d - 1) {
-            let _ = writeln!(s, "        pbase_{tag} = pbase_{tag} * xm{tag}");
-        }
-        let _ = writeln!(s, "        pbp_{tag} = path{tag} * pbase_{tag}\n        bb_{tag} = sbp_{tag}");
-        let _ = writeln!(s, "        for lw in unroll(0, {d}):\n            ld0_{tag}, ld1_{tag} = mstep(ld0_{tag}, ld1_{tag}, pbp_{tag}[1], pbp_{tag}[GEN], bb_{tag}[1])\n            pbp_{tag} = pbp_{tag} * GEN ** 2\n            bb_{tag} = bb_{tag} * GEN");
-        let _ = writeln!(s, "        assert ld0_{tag} == {ra}\n        assert ld1_{tag} == {rb}");
-    };
-    for lvl in 0..=r {
-        let tag = if lvl == 0 { "0".to_string() } else { format!("{lvl}") };
-        let n = mir.levels[lvl].sorted.len();
-        let klvl = if lvl == 0 { cfg.initial_k } else { cfg.recursive_ks[lvl - 1] };
-        let (ra, rb) = if lvl == 0 { ("INITROOT0".to_string(), "INITROOT1".to_string()) } else { (format!("REC{}A", lvl - 1), format!("REC{}B", lvl - 1)) };
-        emit_merkle(&mut s, &tag, n, klvl, bl_per_level[lvl], &ra, &rb);
-    }
-
-    // ---- residual loops (per level) + terminal inner == t_r ----
-    s.push_str("    one = GEN ** 0\n");
-    let len_ris = ris_names.len();
-    for k in 0..=r {
-        let tag = format!("{k}");
-        let n = mir.levels[k].sorted.len();
-        let lmc = mir.ctx_lmc[k];
-        let ris_start = mir.ctx_ris_start[k];
-        let prefix_len = lmc - yl;
-        let d = bl_per_level[k].trailing_zeros() as usize;
-        let _ = writeln!(s, "    accR{tag} = HeapBuf({0})\n    accR{tag}[1] = 0", n + 1);
-        let _ = writeln!(s, "    for xr{tag} in mul_range(1, GEN ** {n}):");
-        let _ = writeln!(s, "        sq_{tag} = xr{tag}");
-        for _ in 0..7 {
-            let _ = writeln!(s, "        sq_{tag} = sq_{tag} * sq_{tag}");
-        }
-        let _ = writeln!(s, "        sbp_{tag} = sbits{tag} * sq_{tag}");
-        // q_field = low d bits of the sample (the codeword position)
-        let _ = writeln!(s, "        qc_{tag} = sbp_{tag}\n        wq_{tag} = GEN ** 0\n        qf_{tag} = 0");
-        let _ = writeln!(s, "        for bq in unroll(0, {d}):\n            qf_{tag} = qf_{tag} + qc_{tag}[1] * wq_{tag}\n            qc_{tag} = qc_{tag} * GEN\n            wq_{tag} = wq_{tag} * GEN");
-        // novel-basis recurrence: s_0=q, s_t = s²+svk·s; w_t = s_t·inv(svk_t)
-        let _ = writeln!(s, "        sr_{tag}_0 = qf_{tag}\n        wr_{tag}_0 = sr_{tag}_0 * IVK{tag}_0");
-        for t in 1..lmc {
-            let _ = writeln!(s, "        sr_{tag}_{t} = sr_{tag}_{p} * sr_{tag}_{p} + SVK{tag}_{pm} * sr_{tag}_{p}\n        wr_{tag}_{t} = sr_{tag}_{t} * IVK{tag}_{t}", p = t - 1, pm = t - 1);
-        }
-        // prefix product over the ris fold-challenges
-        let _ = writeln!(s, "        prefix_{tag} = GEN ** 0");
-        for t in 0..prefix_len {
-            let _ = writeln!(s, "        prefix_{tag} = prefix_{tag} * (1 + {rc} * (1 + wr_{tag}_{t}))", rc = ris_names[ris_start + t]);
-        }
-        // S = Σ_y yr[y]·Π_{j:bit}(suffix_w) via foldyr
-        let mut fargs = Vec::new();
-        for j in 0..yl {
-            fargs.push("one".to_string());
-            fargs.push(format!("wr_{tag}_{}", prefix_len + j));
-        }
-        let _ = writeln!(s, "        S_{tag} = foldyr(yr, {})", fargs.join(", "));
-        let _ = writeln!(s, "        accR{tag}[xr{tag} * GEN] = accR{tag}[xr{tag}] + aw_{tag}[xr{tag}] * prefix_{tag} * S_{tag}");
-        let _ = writeln!(s, "    residsum{tag} = accR{tag}[GEN ** {n}]");
-    }
-    // eqris = Π_{t<len_ris} (1 + z[t] + ris[t])
-    s.push_str("    eqris = GEN ** 0\n");
-    for t in 0..len_ris {
-        let _ = writeln!(s, "    eqris = eqris * (1 + Z{t} + {rc})", rc = ris_names[t]);
-    }
-    // sy_evb = Σ_y yr[y]·eq(z[len_ris..], y_bits)  via foldyr
-    let mut sargs = Vec::new();
-    for j in 0..yl {
-        let _ = writeln!(s, "    az{j} = 1 + Z{}", len_ris + j);
-        sargs.push(format!("az{j}"));
-        sargs.push(format!("Z{}", len_ris + j));
-    }
-    let _ = writeln!(s, "    sy_evb = foldyr(yr, {})", sargs.join(", "));
-    let mut inner = "eqris * sy_evb".to_string();
-    for k in 0..=r {
-        inner.push_str(&format!(" + {} * residsum{k}", beta_names[k]));
-    }
-    let _ = writeln!(s, "    inner = {inner}\n    assert inner == tr\n    return");
-    (s, rep, hints)
-}
-
-/// crate-visible `compress` for the harness (same as `fs_ref`'s).
-fn crate_compress(cv: [F128; 2], msg: [F128; 2]) -> [F128; 2] {
-    leanvm_b::vmhash::compress(cv, msg)
-}
-
 /// `GEN ** <expr>` (incl. an `unroll` variable) — the compiler feature that lets
 /// `buf[GEN ** i]` name heap cell `i` directly, no running-pointer cursor. Reads
 /// `buf[GEN**i]` and weights by `GEN**i`, reconstructing `Σ v_i·g^i`.
@@ -1560,6 +1099,24 @@ fn pow_smoke() {
     verify(&program, &pi, &proof).expect("pow verifies");
 }
 
+
+/// If-folding on an unroll variable: the branch must execute only at matching j.
+#[test]
+fn iffold_smoke() {
+    let src = "from snark_lib import *\n\
+        def main():\n\
+        \x20   acc = 0\n\
+        \x20   for j in unroll(0, 3):\n\
+        \x20       if j == 1:\n\
+        \x20           acc = acc + GEN ** (j + 5)\n\
+        \x20   assert acc == GEN ** 6\n\
+        \x20   return\n";
+    let mut program = compile(&parse(src).expect("parse iffold"));
+    let pi = [F128::ZERO, F128::ZERO];
+    let (proof, _) = prove(&program, pi);
+    verify(&program, &pi, &proof).expect("iffold verifies");
+}
+
 /// Top-level constant arrays: `NAME[i]` as a field value, `len(NAME)` as an
 /// `unroll` bound, and `NAME[0]` as a compile-time loop count.
 #[test]
@@ -1590,10 +1147,201 @@ fn const_array_smoke() {
     verify(&p2, &pi, &pr2).expect("placeholder array verifies");
 }
 
-/// Multi-level per-query `t_r` at the small config, from a generated `.py`.
+/// Compute the placeholder map + flat witness hints for the hand-written,
+/// config-driven verifier `tests/ligerito_recursive.py`. All per-level structure
+/// is expressed as constant arrays (the `.py` loops over them); no zkDSL is
+/// generated from Rust.
+fn gen_clean(
+    cfg: &LigCfg,
+    proof: &flare::pcs::ligerito::LigeritoProof,
+    mir: &MirOut,
+    z: &[F128],
+    target: F128,
+    label: &[u8],
+) -> (std::collections::BTreeMap<String, String>, Vec<(String, Vec<F128>)>) {
+    use flare::pcs::ligerito::{ceil_log2, eval_sk_at_vks};
+    use std::collections::BTreeMap;
+    let r = cfg.r();
+    let nlev = r + 1;
+    let yl = cfg.yr_log_n;
+    let hb = |h: [u8; 32]| {
+        let w = |o: usize| u64::from_le_bytes(h[o..o + 8].try_into().unwrap());
+        [F128::new(w(0), w(8)), F128::new(w(16), w(24))]
+    };
+    let rows_of = |lvl: usize| -> &Vec<Vec<F128>> {
+        if lvl == 0 {
+            &proof.initial_proof.opened_rows
+        } else if lvl == r {
+            &proof.final_proof.opened_rows
+        } else {
+            &proof.recursive_proofs[lvl - 1].opened_rows
+        }
+    };
+    let path_of = |lvl: usize| -> &Vec<[u8; 32]> {
+        if lvl == 0 {
+            &proof.initial_proof.merkle_proof
+        } else if lvl == r {
+            &proof.final_proof.merkle_proof
+        } else {
+            &proof.recursive_proofs[lvl - 1].merkle_proof
+        }
+    };
+
+    // Per-level scalars.
+    let klvl: Vec<usize> = (0..nlev).map(|l| if l == 0 { cfg.initial_k } else { cfg.recursive_ks[l - 1] }).collect();
+    let numinter: Vec<usize> = klvl.iter().map(|&k| 1 << k).collect();
+    let queries: Vec<usize> = (0..nlev).map(|l| mir.levels[l].sorted.len()).collect();
+    let depth: Vec<usize> = mir.block_len.iter().map(|b| b.trailing_zeros() as usize).collect();
+    let lmc = &mir.ctx_lmc;
+    let rootw: Vec<[F128; 2]> = std::iter::once(hb(proof.initial_root))
+        .chain(proof.recursive_roots.iter().map(|&h| hb(h)))
+        .collect();
+
+    // Flat-buffer offsets.
+    let prefix_sum = |f: &dyn Fn(usize) -> usize| -> Vec<usize> {
+        let mut o = Vec::with_capacity(nlev);
+        let mut acc = 0;
+        for l in 0..nlev {
+            o.push(acc);
+            acc += f(l);
+        }
+        o
+    };
+    let rowoff = prefix_sum(&|l| queries[l] * numinter[l]);
+    let pathoff = prefix_sum(&|l| queries[l] * depth[l] * 2);
+    let sbitsoff = prefix_sum(&|l| queries[l] * 128);
+    // `eval_sk_at_vks(lmc)` yields `lmc + 1` values per level.
+    let svkoff = prefix_sum(&|l| lmc[l] + 1);
+    let foldbase = prefix_sum(&|l| klvl[l]);
+    let total_folds: usize = klvl.iter().sum();
+
+    // Per-global-fold PoW data (bits/full/extra8/nonce) + digest bits into fpb.
+    let (mut bits_a, mut full_a, mut extra_a, mut fn_a) = (vec![], vec![], vec![], vec![]);
+    let mut fpb = vec![F128::ZERO; total_folds * 128];
+    for (g, &(bits, nonce, dig)) in mir.fold_pow.iter().enumerate() {
+        bits_a.push(bits as usize);
+        full_a.push((bits / 8) as usize);
+        extra_a.push((bits % 8) as usize);
+        fn_a.push(nonce as u128);
+        if bits > 0 {
+            fpb[g * 128..g * 128 + 128].copy_from_slice(&bits_of(dig));
+        }
+    }
+
+    // Novel-basis constants, flattened per level.
+    let (mut svk, mut ivk) = (vec![], vec![]);
+    for l in 0..nlev {
+        let s = eval_sk_at_vks(lmc[l]);
+        for &v in &s {
+            svk.push(v);
+            ivk.push(if v == F128::ZERO { F128::ZERO } else { v.inv() });
+        }
+    }
+
+    // Flat witness hints. The proof stores each level's opening COMPRESSED
+    // (index-dedup + octopus); expand to the flat per-query witness the guest
+    // consumes (n rows in transcript order + n single Merkle paths). The guest
+    // re-authenticates every path against the root, so the expansion itself
+    // needs no separate check.
+    let mut rows_flat = vec![];
+    let mut paths_flat = vec![];
+    let mut sbits_flat = vec![];
+    for l in 0..nlev {
+        let (rows_exp, path_exp) = flare::pcs::ligerito::expand_level_opening(
+            mir.block_len[l],
+            &mir.levels[l].sorted,
+            rows_of(l),
+            numinter[l],
+            path_of(l),
+        )
+        .expect("expand level opening");
+        for row in &rows_exp {
+            rows_flat.extend_from_slice(row);
+        }
+        for &h in &path_exp {
+            paths_flat.extend_from_slice(&hb(h));
+        }
+        for &v in &mir.levels[l].raw {
+            sbits_flat.extend_from_slice(&bits_of(v));
+        }
+    }
+    let sc_flat: Vec<F128> = proof.sumcheck_transcript.iter().flat_map(|m| [m.u_0, m.u_2]).collect();
+
+    // Placeholder map.
+    let lbl = b"flock-ligerito-basis-v0";
+    let word = |o: usize| {
+        let mut b = [0u8; 16];
+        let e = (lbl.len() - o).min(16);
+        b[..e].copy_from_slice(&lbl[o..o + e]);
+        F128::new(u64::from_le_bytes(b[..8].try_into().unwrap()), u64::from_le_bytes(b[8..16].try_into().unwrap()))
+    };
+    let seed = fs_ref::seed_cv(label, &[]);
+    let ints = |v: &[usize]| format!("[{}]", v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(", "));
+    let flds = |v: &[F128]| format!("[{}]", v.iter().map(|&x| u(x).to_string()).collect::<Vec<_>>().join(", "));
+
+    let mut rep = BTreeMap::new();
+    let mut ps = |k: &str, v: String| {
+        rep.insert(format!("{k}_PLACEHOLDER"), v);
+    };
+    ps("SEED0", u(seed[0]).to_string());
+    ps("SEED1", u(seed[1]).to_string());
+    ps("TARGET", u(target).to_string());
+    ps("LBLA", u(word(0)).to_string());
+    ps("LBLB", u(word(16)).to_string());
+    ps("NLEVELS", nlev.to_string());
+    ps("R", r.to_string());
+    ps("YR_LOG_N", yl.to_string());
+    ps("YR_LEN", (1usize << yl).to_string());
+    ps("LENRIS", mir.ris.len().to_string());
+    ps("MAXNI", numinter.iter().max().unwrap().to_string());
+    ps("MAXQ", queries.iter().max().unwrap().to_string());
+    ps("MAXLMC", lmc.iter().max().unwrap().to_string());
+    ps("SC_LEN", sc_flat.len().to_string());
+    ps("ROWS_LEN", rows_flat.len().to_string());
+    ps("PATHS_LEN", paths_flat.len().to_string());
+    ps("SBITS_LEN", sbits_flat.len().to_string());
+    ps("FPB_LEN", fpb.len().to_string());
+    ps("QUERIES", ints(&queries));
+    ps("KLVL", ints(&klvl));
+    ps("NUMINTER", ints(&numinter));
+    ps("NBYTES", ints(&numinter.iter().map(|&n| n * 16).collect::<Vec<_>>()));
+    ps("BLOCKS", ints(&numinter.iter().map(|&n| n / 2).collect::<Vec<_>>()));
+    ps("DEPTH", ints(&depth));
+    ps("ALPHALEN", ints(&queries.iter().map(|&q| ceil_log2(q)).collect::<Vec<_>>()));
+    ps("LMC", ints(lmc));
+    ps("RISSTART", ints(&mir.ctx_ris_start));
+    ps("PREFIXLEN", ints(&lmc.iter().map(|&m| m - yl).collect::<Vec<_>>()));
+    ps("ROOTA", flds(&rootw.iter().map(|r| r[0]).collect::<Vec<_>>()));
+    ps("ROOTB", flds(&rootw.iter().map(|r| r[1]).collect::<Vec<_>>()));
+    ps("FOLDBASE", ints(&foldbase));
+    ps("ROWOFF", ints(&rowoff));
+    ps("PATHOFF", ints(&pathoff));
+    ps("SBITSOFF", ints(&sbitsoff));
+    ps("SVKOFF", ints(&svkoff));
+    ps("BITS", ints(&bits_a));
+    ps("FULL", ints(&full_a));
+    ps("EXTRA8", ints(&extra_a));
+    ps("FN", format!("[{}]", fn_a.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(", ")));
+    ps("Z", flds(z));
+    ps("SVK", flds(&svk));
+    ps("IVK", flds(&ivk));
+
+    let hints = vec![
+        ("sc".to_string(), sc_flat),
+        ("rows".to_string(), rows_flat),
+        ("paths".to_string(), paths_flat),
+        ("sbits".to_string(), sbits_flat),
+        ("fpb".to_string(), fpb),
+        ("yr".to_string(), proof.final_proof.yr.clone()),
+    ];
+    (rep, hints)
+}
+
+/// The clean config-driven verifier (`tests/ligerito_recursive.py`) at the small
+/// multi-level config — same proof `ml_tr_small` uses, but hand-written zkDSL.
 #[test]
-fn ml_tr_small() {
-    use leanvm_b::compiler::parse_with_replacements;
+fn ml_clean_small() {
+    use leanvm_b::compiler::parse_file_with_replacements;
     use leanvm_b::transcript::ProverState;
     use flare::lincheck::build_eq_table;
     use flare::ntt::AdditiveNttF128;
@@ -1624,16 +1372,16 @@ fn ml_tr_small() {
     let m = run_mirror(&cfg, &proof, &z, target, label);
     assert_eq!(m.inner, m.tr);
 
-    let (src, rep, hints) = gen_lig_tr(&cfg, &proof, &m, target, label, &z);
-    std::fs::write(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/lig_ml_gen.py"), &src).ok();
-    let mut program = compile(&parse_with_replacements(&src, &rep).expect("parse generated verifier"));
+    let (rep, hints) = gen_clean(&cfg, &proof, &m, &z, target, label);
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/ligerito_recursive.py");
+    let mut program = compile(&parse_file_with_replacements(path, &rep).expect("parse ligerito_recursive.py"));
     for (name, vals) in &hints {
         program.set_witness(name, vec![vals.clone()]);
     }
     let pi = [F128::ZERO, F128::ZERO];
     let (gproof, stats) = prove(&program, pi);
-    verify(&program, &pi, &gproof).expect("multi-level t_r verifies");
-    eprintln!("ml_tr_small OK: {} cycles, {} BLAKE3", stats.cycles, stats.counts[5]);
+    verify(&program, &pi, &gproof).expect("clean multi-level verifier");
+    eprintln!("ml_clean_small OK: {} cycles, {} BLAKE3", stats.cycles, stats.counts[5]);
 }
 
 /// **The production benchmark.** Drives a real m33_secure Ligerito proof (log_n=26,
@@ -1645,7 +1393,6 @@ fn ml_tr_small() {
 #[ignore = "heavy production-config bench; run explicitly"]
 fn test_recursive_ligerito() {
     use std::time::Instant;
-    use leanvm_b::compiler::parse_with_replacements;
     use leanvm_b::transcript::ProverState;
     use flare::lincheck::build_eq_table;
     use flare::ntt::AdditiveNttF128;
@@ -1695,15 +1442,15 @@ fn test_recursive_ligerito() {
     let m = run_mirror(&cfg, &proof, &z, target, label);
     assert_eq!(m.inner, m.tr, "m33 mirror inner == t_r");
 
-    // Generate + compile the in-circuit verifier for this proof.
+    // Specialize + compile the hand-written config-driven verifier for this proof.
     let t = Instant::now();
-    let (src, rep, hints) = gen_lig_tr(&cfg, &proof, &m, target, label, &z);
-    std::fs::write(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/lig_m33_gen.py"), &src).ok();
-    let mut program = compile(&parse_with_replacements(&src, &rep).expect("parse m33 verifier"));
+    let (rep, hints) = gen_clean(&cfg, &proof, &m, &z, target, label);
+    let py = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/ligerito_recursive.py");
+    let mut program = compile(&leanvm_b::compiler::parse_file_with_replacements(py, &rep).expect("parse m33 verifier"));
     for (name, vals) in &hints {
         program.set_witness(name, vec![vals.clone()]);
     }
-    eprintln!("[m33] guest gen+compile: {:?}", t.elapsed());
+    eprintln!("[m33] guest specialize+compile: {:?}", t.elapsed());
 
     let pi = [F128::ZERO, F128::ZERO];
     let t = Instant::now();
@@ -1993,17 +1740,15 @@ fn ligerito_m33_native_probe() {
 // the guest port must consume.
 #[test]
 fn recursive_ligerito_tiny() {
-    use std::collections::BTreeMap;
-    use std::time::Instant;
     use leanvm_b::compiler::parse_file_with_replacements;
     use leanvm_b::transcript::ProverState;
     use flare::lincheck::build_eq_table;
     use flare::ntt::AdditiveNttF128;
-    use flare::pcs::ligerito::{eval_sk_at_vks, ligero_commit, recursive_prover_with_basis, recursive_verifier_with_basis_succinct};
+    use flare::pcs::ligerito::{ligero_commit, recursive_prover_with_basis, recursive_verifier_with_basis_succinct};
     use flare::zerocheck::multilinear::eq_eval;
 
-    // The tiny config (1 query/level). The verifier program lives in the readable
-    // `.py` file `tests/ligerito_verifier.py`, loaded via placeholder substitution.
+    // The tiny config (1 query/level) through the same config-driven verifier
+    // (`tests/ligerito_recursive.py`) the m33 benchmark uses.
     let cfg = LigCfg {
         log_n: 8,
         initial_k: 2,
@@ -2046,76 +1791,16 @@ fn recursive_ligerito_tiny() {
     let mut vch = ProverState::new(label, &[]);
     assert!(recursive_verifier_with_basis_succinct(&cfg.verifier(), &proof, cfg.log_n, target, &initial_root, eval_b, &mut vch));
 
-    // Mirror confirms inner == t_r and extracts the sampled query values.
+    // Mirror confirms inner == t_r and extracts the per-level query data.
     let m = run_mirror(&cfg, &proof, &z, target, label);
     assert_eq!(m.inner, m.tr, "mirror: inner == t_r");
-    let v_q0 = m.levels[0].raw[0];
-    let v_ql = m.levels[1].raw[0];
 
-    // ---- Load the zkDSL verifier from tests/ligerito_verifier.py, filling the
-    // per-proof constants via placeholder substitution (recursion.py convention). ----
-    let hbytes = |h: [u8; 32]| {
-        let w = |o: usize| u64::from_le_bytes(h[o..o + 8].try_into().unwrap());
-        [F128::new(w(0), w(8)), F128::new(w(16), w(24))]
-    };
-    let ir = hbytes(proof.initial_root);
-    let rr = hbytes(proof.recursive_roots[0]);
-    let lbl_bytes = b"flock-ligerito-basis-v0";
-    let word = |o: usize| {
-        let mut buf = [0u8; 16];
-        let end = (lbl_bytes.len() - o).min(16);
-        buf[..end].copy_from_slice(&lbl_bytes[o..o + end]);
-        F128::new(u64::from_le_bytes(buf[..8].try_into().unwrap()), u64::from_le_bytes(buf[8..].try_into().unwrap()))
-    };
-    let sv6 = eval_sk_at_vks(6);
-    let iv6: Vec<F128> = sv6.iter().map(|&v| if v == F128::ZERO { F128::ZERO } else { v.inv() }).collect();
-    let sv4 = eval_sk_at_vks(4);
-    let iv4: Vec<F128> = sv4.iter().map(|&v| if v == F128::ZERO { F128::ZERO } else { v.inv() }).collect();
-    let seed = fs_ref::seed_cv(label, &[]);
-
-    let mut rep: BTreeMap<String, String> = BTreeMap::new();
-    let mut put = |k: String, v: F128| {
-        rep.insert(format!("{k}_PLACEHOLDER"), u(v).to_string());
-    };
-    put("SEED0".into(), seed[0]);
-    put("SEED1".into(), seed[1]);
-    put("TARGET".into(), target);
-    put("INITROOT0".into(), ir[0]);
-    put("INITROOT1".into(), ir[1]);
-    put("RECROOT0".into(), rr[0]);
-    put("RECROOT1".into(), rr[1]);
-    put("LBLA".into(), word(0));
-    put("LBLB".into(), word(16));
-    for i in 0..5 {
-        put(format!("SV6_{i}"), sv6[i]);
+    let (rep, hints) = gen_clean(&cfg, &proof, &m, &z, target, label);
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/ligerito_recursive.py");
+    let mut program = compile(&parse_file_with_replacements(path, &rep).expect("parse ligerito_recursive.py"));
+    for (name, vals) in &hints {
+        program.set_witness(name, vec![vals.clone()]);
     }
-    for i in 0..6 {
-        put(format!("IV6_{i}"), iv6[i]);
-    }
-    for i in 0..3 {
-        put(format!("SV4_{i}"), sv4[i]);
-    }
-    for i in 0..4 {
-        put(format!("IV4_{i}"), iv4[i]);
-    }
-    for i in 0..8 {
-        put(format!("Z{i}"), z[i]);
-    }
-
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/ligerito_verifier.py");
-    let ast = parse_file_with_replacements(path, &rep).expect("parse ligerito_verifier.py");
-    let mut program = compile(&ast);
-
-    let sc_flat: Vec<F128> = proof.sumcheck_transcript.iter().flat_map(|m| [m.u_0, m.u_2]).collect();
-    let path_flat = |p: &[[u8; 32]]| -> Vec<F128> { p.iter().flat_map(|&h| hbytes(h)).collect() };
-    program.set_witness("sc", vec![sc_flat]);
-    program.set_witness("l0row", vec![proof.initial_proof.opened_rows[0].clone()]);
-    program.set_witness("l0path", vec![path_flat(&proof.initial_proof.merkle_proof)]);
-    program.set_witness("lastrow", vec![proof.final_proof.opened_rows[0].clone()]);
-    program.set_witness("lastpath", vec![path_flat(&proof.final_proof.merkle_proof)]);
-    program.set_witness("yr", vec![proof.final_proof.yr.clone()]);
-    program.set_witness("vq0", vec![bits_of(v_q0)]);
-    program.set_witness("vql", vec![bits_of(v_ql)]);
     let pi = [F128::ZERO, F128::ZERO];
     let t = std::time::Instant::now();
     let (gproof, stats) = prove(&program, pi);
