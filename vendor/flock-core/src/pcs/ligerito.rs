@@ -6,7 +6,7 @@
 // Ported from bolt-rs (https://github.com/bcc-research/bolt-rs,
 // `ligerito_recursive.rs`).
 
-//! Ligerito: recursive multilinear PCS.
+//! Ligerito: multilevel multilinear PCS.
 //!
 //! Ported from bolt-rs (`ligerito_recursive.rs`) onto Flock primitives:
 //! `F128` (GHASH irreducible), [`AdditiveNttF128`] (LCH novel basis,
@@ -25,7 +25,7 @@
 //! 2. Partial-eval f^0 with `initial_k` challenges → f^1.
 //! 3. Commit f^1.
 //! 4. Open `num_queries` rows of f^0; build induced sumcheck basis poly.
-//! 5. For each recursive step i:
+//! 5. For each level step i:
 //!    a. Run k_i sumcheck rounds.
 //!    b. Last step: send remaining poly + open f^i.
 //!    c. Else: commit f^{i+2}, open f^{i+1}, induce next basis, glue.
@@ -106,50 +106,50 @@ impl LigeritoProfile {
 #[derive(Clone, Debug)]
 pub struct ProverConfig {
     pub log_inv_rates: Vec<usize>,
-    pub recursive_steps: usize,
+    pub level_steps: usize,
     pub initial_log_msg_cols: usize,
     pub initial_log_num_interleaved: usize,
     pub initial_k: usize,
-    pub recursive_log_msg_cols: Vec<usize>,
-    pub recursive_ks: Vec<usize>,
-    /// Per-level query counts (L0, L1, ..., L_r). Length = recursive_steps + 1.
+    pub level_log_msg_cols: Vec<usize>,
+    pub level_ks: Vec<usize>,
+    /// Per-level query counts (L0, L1, ..., L_r). Length = level_steps + 1.
     /// `default_config` fills these via [`udr_queries`]; for tighter
     /// (or stronger) per-level numbers, load a [`LigeritoSecurityConfig`].
     pub queries: Vec<usize>,
     /// Per-level **query-phase** PoW grinding bits (L0, L1, ..., L_r), ground
-    /// post-commit/pre-queries. Length = recursive_steps + 1. Each bit here
+    /// post-commit/pre-queries. Length = level_steps + 1. Each bit here
     /// substitutes for ~1/log₂(1/(1−γ)) queries at that level.
     pub grinding_bits: Vec<usize>,
     /// Per-level **fold-challenge** PoW grinding bits (L0, ..., L_r), ground
     /// immediately before EACH of the level's fold challenges (so a level
     /// with `k` folds does `k` grinds of this many bits). Boosts the
     /// proximity-gap term, which lives on the fold challenges. Length =
-    /// recursive_steps + 1.
+    /// level_steps + 1.
     pub fold_grinding_bits: Vec<usize>,
     /// Per-commit-level out-of-domain samples (L0, ..., L_r), taken right
     /// after the level's Merkle root enters the transcript. `[0]` must be 0:
     /// L0 is bound by the opening's own (post-commit, random-point)
-    /// evaluation claim. Length = recursive_steps + 1.
+    /// evaluation claim. Length = level_steps + 1.
     pub ood_samples: Vec<usize>,
 }
 
 #[derive(Clone, Debug)]
 pub struct VerifierConfig {
     pub log_inv_rates: Vec<usize>,
-    pub recursive_steps: usize,
+    pub level_steps: usize,
     pub initial_log_msg_cols: usize,
     pub initial_log_num_interleaved: usize,
     pub initial_k: usize,
-    pub recursive_log_msg_cols: Vec<usize>,
-    pub recursive_ks: Vec<usize>,
-    /// Per-level query counts. Length = recursive_steps + 1.
+    pub level_log_msg_cols: Vec<usize>,
+    pub level_ks: Vec<usize>,
+    /// Per-level query counts. Length = level_steps + 1.
     pub queries: Vec<usize>,
-    /// Per-level query-phase PoW grinding bits. Length = recursive_steps + 1.
+    /// Per-level query-phase PoW grinding bits. Length = level_steps + 1.
     pub grinding_bits: Vec<usize>,
     /// Per-level fold-challenge PoW grinding bits (one grind per fold
-    /// challenge of the level). Length = recursive_steps + 1.
+    /// challenge of the level). Length = level_steps + 1.
     pub fold_grinding_bits: Vec<usize>,
-    /// Per-commit-level OOD samples. Length = recursive_steps + 1.
+    /// Per-commit-level OOD samples. Length = level_steps + 1.
     pub ood_samples: Vec<usize>,
 }
 
@@ -186,8 +186,8 @@ pub fn udr_queries(log_inv_rate: usize) -> usize {
 /// and `log_inv_rate` come from `PcsParams` (Ligerito's `initial_k` matches
 /// `log_batch_size` for L0 reuse; the first rate matches `log_inv_rate`).
 ///
-/// Strategy: 3-bit recursive folds (`k_i = 3`) with **decreasing rate**
-/// (one rate step per recursive level) until the residual is small (`≤ 5` bits).
+/// Strategy: 3-bit level folds (`k_i = 3`) with **decreasing rate**
+/// (one rate step per fold level) until the residual is small (`≤ 5` bits).
 /// Asserts that the chosen rate keeps `block_len ≥ udr_queries(rate)` at
 /// every level; if not, bumps the rate further.
 ///
@@ -203,8 +203,8 @@ pub fn default_config(
     }
 
     let mut log_inv_rates = vec![log_inv_rate];
-    let mut recursive_ks = Vec::new();
-    let mut recursive_log_msg_cols = Vec::new();
+    let mut level_ks = Vec::new();
+    let mut level_log_msg_cols = Vec::new();
 
     let mut n_running = log_n - initial_k;
     let mut rate_running = log_inv_rate;
@@ -231,18 +231,18 @@ pub fn default_config(
             }
             next_rate += 1;
             if next_rate > 20 {
-                return Err("could not find feasible recursive rate (level too deep)");
+                return Err("could not find feasible level rate (level too deep)");
             }
         }
-        recursive_log_msg_cols.push(log_msg_cols_next);
-        recursive_ks.push(k);
+        level_log_msg_cols.push(log_msg_cols_next);
+        level_ks.push(k);
         log_inv_rates.push(next_rate);
         n_running -= k;
         rate_running = next_rate;
     }
 
-    if recursive_ks.is_empty() {
-        return Err("log_n too small — no recursive levels needed (use BaseFold directly)");
+    if level_ks.is_empty() {
+        return Err("log_n too small — no fold levels needed (use BaseFold directly)");
     }
 
     let queries: Vec<usize> = log_inv_rates.iter().map(|&r| udr_queries(r)).collect();
@@ -251,12 +251,12 @@ pub fn default_config(
 
     Ok(ProverConfig {
         log_inv_rates: log_inv_rates.clone(),
-        recursive_steps: recursive_ks.len(),
+        level_steps: level_ks.len(),
         initial_log_msg_cols: log_n - initial_k,
         initial_log_num_interleaved: initial_k,
         initial_k,
-        recursive_log_msg_cols,
-        recursive_ks,
+        level_log_msg_cols,
+        level_ks,
         queries,
         grinding_bits,
         fold_grinding_bits: vec![0usize; n_levels],
@@ -264,17 +264,17 @@ pub fn default_config(
     })
 }
 
-/// Recursion-ladder shape: per-level dims (index 0 = L0) plus the residual.
+/// Level-ladder shape: per-level dims (index 0 = L0) plus the residual.
 struct LadderShape {
     log_inv_rates: Vec<usize>,
     log_msg_cols: Vec<usize>,
     log_num_interleaved: Vec<usize>,
-    k_recursive: Vec<usize>,
+    k_levels: Vec<usize>,
     yr_log_n: usize,
 }
 
 /// Shared shape derivation behind [`default_config`] and
-/// [`LigeritoSecurityConfig::derive_profile`]: 3-bit recursive folds with the
+/// [`LigeritoSecurityConfig::derive_profile`]: 3-bit level folds with the
 /// rate index increasing by ≥ 1 per level, bumped further whenever the block
 /// length couldn't accommodate `queries_at_rate(rate)` distinct queries.
 fn derive_ladder_shape(
@@ -290,7 +290,7 @@ fn derive_ladder_shape(
         log_inv_rates: vec![log_inv_rate],
         log_msg_cols: vec![log_n - initial_k],
         log_num_interleaved: vec![initial_k],
-        k_recursive: vec![initial_k],
+        k_levels: vec![initial_k],
         yr_log_n: 0,
     };
     let mut n_running = log_n - initial_k;
@@ -308,18 +308,18 @@ fn derive_ladder_shape(
             }
             next_rate += 1;
             if next_rate > 20 {
-                return Err("could not find feasible recursive rate (level too deep)".into());
+                return Err("could not find feasible level rate (level too deep)".into());
             }
         }
         shape.log_inv_rates.push(next_rate);
         shape.log_msg_cols.push(log_msg_cols_next);
         shape.log_num_interleaved.push(k);
-        shape.k_recursive.push(k);
+        shape.k_levels.push(k);
         n_running -= k;
         rate_running = next_rate;
     }
-    if shape.k_recursive.len() < 2 {
-        return Err("log_n too small — no recursive levels needed (use BaseFold directly)".into());
+    if shape.k_levels.len() < 2 {
+        return Err("log_n too small — no fold levels needed (use BaseFold directly)".into());
     }
     shape.yr_log_n = n_running;
     Ok(shape)
@@ -431,12 +431,12 @@ pub fn default_verifier_config(
     let p = default_config(log_n, log_batch_size, log_inv_rate)?;
     Ok(VerifierConfig {
         log_inv_rates: p.log_inv_rates,
-        recursive_steps: p.recursive_steps,
+        level_steps: p.level_steps,
         initial_log_msg_cols: p.initial_log_msg_cols,
         initial_log_num_interleaved: p.initial_log_num_interleaved,
         initial_k: p.initial_k,
-        recursive_log_msg_cols: p.recursive_log_msg_cols,
-        recursive_ks: p.recursive_ks,
+        level_log_msg_cols: p.level_log_msg_cols,
+        level_ks: p.level_ks,
         queries: p.queries,
         grinding_bits: p.grinding_bits,
         fold_grinding_bits: p.fold_grinding_bits,
@@ -493,9 +493,9 @@ pub enum GrindingStep {
     PostCommitPreQueries,
 }
 
-/// Parameters for a single level in the recursive Ligerito ladder.
+/// Parameters for a single level in the multilevel Ligerito ladder.
 /// L0 = the upstream `pcs::commit` output (reused, not re-committed);
-/// L1 .. L_{r−1} are the recursive commits; the final residual `yr` block
+/// L1 .. L_{r−1} are the level commits; the final residual `yr` block
 /// is described separately in [`FinalBlockConfig`].
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LigeritoLevelConfig {
@@ -505,11 +505,11 @@ pub struct LigeritoLevelConfig {
     /// the codeword). `log_msg_cols + log_inv_rate = log_2(block_len)`.
     pub log_msg_cols: usize,
     /// Log of lane width per Merkle leaf at this level. For L0 = `initial_k`;
-    /// for L_i (i ≥ 1) = the previous level's k_recursive.
+    /// for L_i (i ≥ 1) = the previous level's k_levels.
     pub log_num_interleaved: usize,
     /// Number of sumcheck folds taken at this level. For L0 = `initial_k`
-    /// (the lane fold); for L_i (i ≥ 1) = the recursive fold k_{i−1}.
-    pub k_recursive: usize,
+    /// (the lane fold); for L_i (i ≥ 1) = the level fold k_{i−1}.
+    pub k_levels: usize,
     /// Which proximity-gap analysis the (eta, queries, grinding_bits)
     /// tuple was derived under. Determines the formulas the implementation
     /// validates against.
@@ -532,7 +532,7 @@ pub struct LigeritoLevelConfig {
     /// ~1/log₂(1/(1−γ)) queries at this level.
     pub grinding_bits: usize,
     /// **Fold-challenge** PoW grinding bits, ground immediately before EACH
-    /// of this level's `k_recursive` fold challenges. Boosts the
+    /// of this level's `k_levels` fold challenges. Boosts the
     /// proximity-gap term (which lives on the fold challenges):
     /// `eps_pg + fold_grinding_bits ≥ target`.
     #[serde(default)]
@@ -561,12 +561,12 @@ pub struct LigeritoLevelConfig {
 }
 
 /// Descriptor for the final-residual block (`yr`) sent in the clear at the
-/// end of the last recursive level. It has no commit and no queries, so the
+/// end of the last fold level. It has no commit and no queries, so the
 /// only meaningful parameter is its dimension.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FinalBlockConfig {
     /// `log_2(|yr|)` — number of F128 values sent in the clear. The last
-    /// recursive level's sumcheck stops at this dim instead of folding to 1.
+    /// fold level's sumcheck stops at this dim instead of folding to 1.
     pub yr_log_n: usize,
 }
 
@@ -574,14 +574,14 @@ pub struct FinalBlockConfig {
 /// `(hash, m)` pair. Designed to round-trip cleanly via serde (TOML/JSON).
 ///
 /// **Validation invariants** (checked by [`Self::validate`]):
-/// 1. `initial_k + Σ levels[1..].k_recursive + final_block.yr_log_n == log_n`.
+/// 1. `initial_k + Σ levels[1..].k_levels + final_block.yr_log_n == log_n`.
 /// 2. Each level's `expected_eps_pg_bits` is consistent with the declared
 ///    regime and `eta` (within tolerance).
 /// 3. Each level's `expected_eps_query_bits ≥ target_security_bits −
 ///    grinding_bits` (queries cover what grinding doesn't).
 /// 4. `eta` is `Some` iff regime ∈ {Johnson, JohnsonOod}; `None` for Udr.
-/// 5. `log_msg_cols`, `log_num_interleaved`, `k_recursive` match the
-///    recursive-shape constraint (each level's input dim equals the
+/// 5. `log_msg_cols`, `log_num_interleaved`, `k_levels` match the
+///    level-shape constraint (each level's input dim equals the
 ///    previous level's `log_msg_cols`).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LigeritoSecurityConfig {
@@ -883,29 +883,29 @@ impl LigeritoSecurityConfig {
             ));
         }
 
-        // Recursion shape: initial_k + Σ k_recursive (L1+) + yr_log_n = log_n.
-        let levels_recursive_sum: usize = self.levels.iter().skip(1).map(|lv| lv.k_recursive).sum();
+        // Level shape: initial_k + Σ k_levels (L1+) + yr_log_n = log_n.
+        let levels_level_k_sum: usize = self.levels.iter().skip(1).map(|lv| lv.k_levels).sum();
         let yr_log_n = self.final_block.yr_log_n;
-        if self.initial_k + levels_recursive_sum + yr_log_n != self.log_n {
+        if self.initial_k + levels_level_k_sum + yr_log_n != self.log_n {
             return Err(format!(
-                "shape mismatch: initial_k ({}) + Σ k_recursive ({}) + yr_log_n ({}) = {} ≠ log_n ({})",
+                "shape mismatch: initial_k ({}) + Σ k_levels ({}) + yr_log_n ({}) = {} ≠ log_n ({})",
                 self.initial_k,
-                levels_recursive_sum,
+                levels_level_k_sum,
                 yr_log_n,
-                self.initial_k + levels_recursive_sum + yr_log_n,
+                self.initial_k + levels_level_k_sum + yr_log_n,
                 self.log_n,
             ));
         }
 
-        // L0 must have k_recursive = initial_k and log_num_interleaved = initial_k.
+        // L0 must have k_levels = initial_k and log_num_interleaved = initial_k.
         let l0 = self
             .levels
             .first()
             .ok_or_else(|| "empty levels".to_string())?;
-        if l0.k_recursive != self.initial_k {
+        if l0.k_levels != self.initial_k {
             return Err(format!(
-                "L0.k_recursive ({}) must equal initial_k ({})",
-                l0.k_recursive, self.initial_k
+                "L0.k_levels ({}) must equal initial_k ({})",
+                l0.k_levels, self.initial_k
             ));
         }
         if l0.log_num_interleaved != self.initial_k {
@@ -1078,8 +1078,8 @@ impl LigeritoSecurityConfig {
                 ));
             }
 
-            // Advance dim_in for next level: subtract k_recursive (the folds at this level).
-            dim_in -= lv.k_recursive;
+            // Advance dim_in for next level: subtract k_levels (the folds at this level).
+            dim_in -= lv.k_levels;
         }
 
         if dim_in != yr_log_n {
@@ -1099,7 +1099,7 @@ impl LigeritoSecurityConfig {
     /// Mechanically derive a paper-compatible `LigeritoSecurityConfig` for
     /// `(m, log_inv_rate)` targeting `target_security_bits`, in the
     /// **unique-decoding regime** (BCHKS25 Theorem 1.4). Uses the same
-    /// recursion shape as [`default_config`] and picks per-level
+    /// level shape as [`default_config`] and picks per-level
     /// `(proximity_loss, queries)` so that each level satisfies:
     ///
     ///   * `expected_eps_query_bits ≥ target_security_bits` (queries alone
@@ -1122,20 +1122,20 @@ impl LigeritoSecurityConfig {
             .ok_or_else(|| format!("m ({m}) < LOG_PACKING (7)"))?;
         let initial_k = 6usize;
         let prover = default_config(log_n, initial_k, log_inv_rate).map_err(|e| e.to_string())?;
-        let r = prover.recursive_steps;
+        let r = prover.level_steps;
         let mut levels = Vec::with_capacity(r + 1);
-        // Build per-level (log_msg_cols, log_num_interleaved, k_recursive).
+        // Build per-level (log_msg_cols, log_num_interleaved, k_levels).
         let mut log_msg_cols_per_level = Vec::with_capacity(r + 1);
         let mut log_num_interleaved_per_level = Vec::with_capacity(r + 1);
-        let mut k_recursive_per_level = Vec::with_capacity(r + 1);
+        let mut k_levels_per_level = Vec::with_capacity(r + 1);
         // L0
         log_msg_cols_per_level.push(log_n - initial_k);
         log_num_interleaved_per_level.push(initial_k);
-        k_recursive_per_level.push(initial_k);
+        k_levels_per_level.push(initial_k);
         for i in 0..r {
-            log_msg_cols_per_level.push(prover.recursive_log_msg_cols[i]);
-            log_num_interleaved_per_level.push(prover.recursive_ks[i]);
-            k_recursive_per_level.push(prover.recursive_ks[i]);
+            log_msg_cols_per_level.push(prover.level_log_msg_cols[i]);
+            log_num_interleaved_per_level.push(prover.level_ks[i]);
+            k_levels_per_level.push(prover.level_ks[i]);
         }
         for i in 0..=r {
             let rate = prover.log_inv_rates[i];
@@ -1160,7 +1160,7 @@ impl LigeritoSecurityConfig {
                 log_inv_rate: rate,
                 log_msg_cols: log_msg_cols_per_level[i],
                 log_num_interleaved: log_num_interleaved_per_level[i],
-                k_recursive: k_recursive_per_level[i],
+                k_levels: k_levels_per_level[i],
                 regime: SoundnessRegime::Udr,
                 eta: None,
                 proximity_loss: Some(proximity_loss),
@@ -1174,9 +1174,9 @@ impl LigeritoSecurityConfig {
                 expected_eps_ood_bits: None,
             });
         }
-        // Final residual: yr_log_n = log_n − initial_k − Σ k_recursive
-        let total_recursive: usize = prover.recursive_ks.iter().sum();
-        let yr_log_n = log_n - initial_k - total_recursive;
+        // Final residual: yr_log_n = log_n − initial_k − Σ k_levels
+        let total_level_ks: usize = prover.level_ks.iter().sum();
+        let yr_log_n = log_n - initial_k - total_level_ks;
         let cfg = Self {
             m,
             log_n,
@@ -1322,7 +1322,7 @@ impl LigeritoSecurityConfig {
                 log_inv_rate: rate,
                 log_msg_cols: cols,
                 log_num_interleaved: ilv,
-                k_recursive: shape.k_recursive[i],
+                k_levels: shape.k_levels[i],
                 regime,
                 eta,
                 proximity_loss,
@@ -1379,18 +1379,18 @@ impl LigeritoSecurityConfig {
 
     /// Build a `(ProverConfig, VerifierConfig)` pair from this security config.
     /// Drops the security-only fields (eta, queries, grinding, expected_*) but
-    /// preserves the recursion shape so the existing prover/verifier code path
+    /// preserves the level shape so the existing prover/verifier code path
     /// works unchanged.
     pub fn to_prover_verifier_configs(&self) -> Result<(ProverConfig, VerifierConfig), String> {
         self.validate()?;
         let log_inv_rates: Vec<usize> = self.levels.iter().map(|lv| lv.log_inv_rate).collect();
-        let recursive_ks: Vec<usize> = self
+        let level_ks: Vec<usize> = self
             .levels
             .iter()
             .skip(1)
-            .map(|lv| lv.k_recursive)
+            .map(|lv| lv.k_levels)
             .collect();
-        let recursive_log_msg_cols: Vec<usize> = self
+        let level_log_msg_cols: Vec<usize> = self
             .levels
             .iter()
             .skip(1)
@@ -1403,12 +1403,12 @@ impl LigeritoSecurityConfig {
         let ood_samples: Vec<usize> = self.levels.iter().map(|lv| lv.ood_samples).collect();
         let prover = ProverConfig {
             log_inv_rates: log_inv_rates.clone(),
-            recursive_steps: recursive_ks.len(),
+            level_steps: level_ks.len(),
             initial_log_msg_cols: self.levels[0].log_msg_cols,
             initial_log_num_interleaved: self.initial_k,
             initial_k: self.initial_k,
-            recursive_log_msg_cols: recursive_log_msg_cols.clone(),
-            recursive_ks: recursive_ks.clone(),
+            level_log_msg_cols: level_log_msg_cols.clone(),
+            level_ks: level_ks.clone(),
             queries: queries.clone(),
             grinding_bits: grinding_bits.clone(),
             fold_grinding_bits: fold_grinding_bits.clone(),
@@ -1416,12 +1416,12 @@ impl LigeritoSecurityConfig {
         };
         let verifier = VerifierConfig {
             log_inv_rates: log_inv_rates.clone(),
-            recursive_steps: recursive_ks.len(),
+            level_steps: level_ks.len(),
             initial_log_msg_cols: self.levels[0].log_msg_cols,
             initial_log_num_interleaved: self.initial_k,
             initial_k: self.initial_k,
-            recursive_log_msg_cols,
-            recursive_ks,
+            level_log_msg_cols,
+            level_ks,
             queries,
             grinding_bits,
             fold_grinding_bits,
@@ -1436,7 +1436,7 @@ impl LigeritoSecurityConfig {
 // ===================================================================
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RecursiveProof {
+pub struct LevelProof {
     /// One row per query, each of `num_interleaved` F128 entries. Rows are
     /// emitted in **sorted** query-position order so they align with the
     /// merkle multi-proof.
@@ -1447,9 +1447,9 @@ pub struct RecursiveProof {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FinalProof {
-    /// Remaining polynomial sent in clear at the last recursive step.
+    /// Remaining polynomial sent in clear at the last level step.
     pub yr: Vec<F128>,
-    /// Same sorted-by-position convention as [`RecursiveProof`].
+    /// Same sorted-by-position convention as [`LevelProof`].
     pub opened_rows: Vec<Vec<F128>>,
     pub merkle_proof: Vec<Hash>,
 }
@@ -1457,9 +1457,9 @@ pub struct FinalProof {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LigeritoProof {
     pub initial_root: Hash,
-    pub initial_proof: RecursiveProof,
-    pub recursive_roots: Vec<Hash>,
-    pub recursive_proofs: Vec<RecursiveProof>,
+    pub initial_proof: LevelProof,
+    pub level_roots: Vec<Hash>,
+    pub level_proofs: Vec<LevelProof>,
     pub final_proof: FinalProof,
     pub sumcheck_transcript: Vec<SumcheckMessage>,
     /// Per-level PoW nonces (one entry per query phase). When all
@@ -1483,13 +1483,13 @@ pub struct LigeritoProof {
 impl LigeritoProof {
     pub fn size_bytes(&self) -> usize {
         const ELEM: usize = core::mem::size_of::<F128>();
-        let level_bytes = |p: &RecursiveProof| -> usize {
+        let level_bytes = |p: &LevelProof| -> usize {
             p.opened_rows.iter().map(|r| r.len() * ELEM).sum::<usize>() + p.merkle_proof.len() * 32
         };
         let mut total = 32;
-        total += self.recursive_roots.len() * 32;
+        total += self.level_roots.len() * 32;
         total += level_bytes(&self.initial_proof);
-        for p in &self.recursive_proofs {
+        for p in &self.level_proofs {
             total += level_bytes(p);
         }
         total += self.final_proof.yr.len() * ELEM
@@ -1519,7 +1519,7 @@ impl LigeritoProof {
             }
         };
 
-        let roots_b = 32 * (1 + self.recursive_roots.len());
+        let roots_b = 32 * (1 + self.level_roots.len());
         let init_opened: usize = self
             .initial_proof
             .opened_rows
@@ -1540,11 +1540,11 @@ impl LigeritoProof {
         );
         let mut total_opened = init_opened;
         let mut total_merkle = init_merkle;
-        for (i, rp) in self.recursive_proofs.iter().enumerate() {
+        for (i, rp) in self.level_proofs.iter().enumerate() {
             let opened: usize = rp.opened_rows.iter().map(|r| r.len() * ELEM).sum();
             let merkle: usize = rp.merkle_proof.len() * 32;
             eprintln!(
-                "  L{} (recursive): opened={} ({}q × {}lanes × {}B)  merkle={}",
+                "  L{} (level): opened={} ({}q × {}lanes × {}B)  merkle={}",
                 i + 1,
                 kb(opened),
                 rp.opened_rows.len(),
@@ -1565,7 +1565,7 @@ impl LigeritoProof {
         let yr_b = self.final_proof.yr.len() * ELEM;
         eprintln!(
             "  L{} (final):  opened={} ({}q × {}lanes × {}B)  merkle={}  yr={} ({}×{}B)",
-            self.recursive_proofs.len() + 1,
+            self.level_proofs.len() + 1,
             kb(final_opened),
             self.final_proof.opened_rows.len(),
             self.final_proof.opened_rows.first().map_or(0, |r| r.len()),
@@ -1847,7 +1847,7 @@ pub fn induce_sumcheck_evaluate_at_residual(
             suffix_w,
         }
     };
-    // This runs once per recursion level over tiny verify-sized inputs
+    // This runs once per fold level over tiny verify-sized inputs
     // (`queries` ≈ tens; `yr_len` ≤ 2^5 since the residual folds to ≤5 bits), so
     // a rayon dispatch per level costs more than the field work itself (measured
     // ~0.47 ms serial vs ~0.75 ms parallel for the whole residual eval at m=30).
@@ -2096,7 +2096,7 @@ pub(crate) fn induce_sumcheck_poly_via_ntt(
 /// blow-up and depth:
 ///   `n_queries  >  C · 2^log_inv_rate · log_block`   (C≈4: the NTT is ~2×
 /// costlier per op — memory-bound, multi-pass — plus margin so we only switch
-/// when clearly ahead). In the recursive PCS this fires only at the top level
+/// when clearly ahead). In the multilevel PCS this fires only at the top level
 /// (large message domain, many queries); deeper levels stay dense.
 ///
 /// Both paths are byte-identical (see `induce_sumcheck_poly_via_ntt_matches_dense`),
@@ -2357,7 +2357,7 @@ pub fn ligero_commit(
 // Verifier derives u_1 = T_r + u_2 (char 2). Round eval at challenge r:
 //   q(r) = u_0 + r·(T_r + u_2) + r²·u_2 = u_0 + r·T_r + (r + r²)·u_2
 //
-// Ligerito extends plain sumcheck with two ops at recursive-level boundaries:
+// Ligerito extends plain sumcheck with two ops at level boundaries:
 //
 //   introduce_new(b_new, h):
 //     Prover commits to a new basis poly b_new with its own claimed sum h
@@ -2622,7 +2622,7 @@ pub struct SumcheckProver {
     /// Single combined basis poly. After every `glue(β)`, the introduced
     /// `b_new` is folded into here as `combined_basis += β · b_new`. This
     /// keeps fold cost O(1 + 1) = (f + combined_basis) regardless of how
-    /// many recursive intro/glue pairs have happened.
+    /// many level intro/glue pairs have happened.
     combined_basis: Vec<F128>,
     t_r: F128,
     transcript: Vec<SumcheckMessage>,
@@ -2647,7 +2647,7 @@ impl SumcheckProver {
     /// Like [`Self::new`] but skips the initial `round_msg_lsb` pass over
     /// `(f, b1)` because the caller already computed `(u_0, u_2)` while
     /// building `b1` (saves a 256 MB read pass at m=30 BLAKE3). Used by
-    /// `recursive_prover_with_basis` to consume the round0 prime that
+    /// `multilevel_prover_with_basis` to consume the round0 prime that
     /// `compute_combined_basis_and_target` produces for free.
     pub fn new_with_first_msg(
         f: Vec<F128>,
@@ -2874,7 +2874,7 @@ pub fn expand_opened_rows_ordered(
 /// recursion-friendly verifier consumes: `(rows_ordered, flat_paths)` — one row
 /// and one full `⌈log2(block_len)⌉`-deep Merkle path per query, in transcript
 /// order (duplicates included). `queries` is the ordered list; `rows_sorted` /
-/// `octopus` are the stored `RecursiveProof` fields. Returns `None` on a
+/// `octopus` are the stored `LevelProof` fields. Returns `None` on a
 /// malformed proof (wrong row width or unrecoverable octopus). It authenticates
 /// nothing itself — the caller re-checks each restored path against the root, so
 /// a bad expansion is caught there. Inverse of [`compress_level_opening`].
@@ -2911,7 +2911,7 @@ pub fn expand_level_opening(
 /// ordered `queries` (keep one row per distinct position, in sorted order) and
 /// build the shared octopus multi-proof (Merkle path pruning). `row_at` reads the
 /// opened row at a position. Returns `(rows_sorted, octopus)` for a
-/// `RecursiveProof`. Inverse of [`expand_level_opening`].
+/// `LevelProof`. Inverse of [`expand_level_opening`].
 fn compress_level_opening(
     tree: &[Hash],
     block_len: usize,
@@ -2924,7 +2924,7 @@ fn compress_level_opening(
     (rows, octopus)
 }
 
-/// Drive the recursive Ligerito prover to prove `poly(eval_point) = claimed_value`.
+/// Drive the multilevel Ligerito prover to prove `poly(eval_point) = claimed_value`.
 ///
 /// Protocol structure (unique-decoding regime, no OOD samples yet):
 /// 1. Commit f⁰ = `poly`.
@@ -2932,11 +2932,11 @@ fn compress_level_opening(
 /// 3. Open f⁰ at random query positions, induce a basis poly from the openings.
 /// 4. Start sumcheck on `Σ_x f¹(x) · eq(eval_point[initial_k..], x) = claimed_value`,
 ///    introduce the induced basis (α-batched), glue with a separation challenge.
-/// 5. For each recursive level: do k_i sumcheck folds; if last, send the residual
+/// 5. For each fold level: do k_i sumcheck folds; if last, send the residual
 ///    yr in clear and open the previous commitment; else commit the folded f,
 ///    open the previous commitment, induce a fresh basis from these opens,
 ///    introduce + glue.
-pub fn recursive_prover<Ch: Challenger>(
+pub fn multilevel_prover<Ch: Challenger>(
     config: &ProverConfig,
     poly: &[F128],
     eval_point: &[F128],
@@ -2953,18 +2953,18 @@ pub fn recursive_prover<Ch: Challenger>(
     let t_sumcheck = std::time::Duration::ZERO;
     let t_opens = std::time::Duration::ZERO;
     let log_n = poly.len().trailing_zeros() as usize;
-    let r = config.recursive_steps;
+    let r = config.level_steps;
     let initial_k = config.initial_k;
 
     assert_eq!(poly.len(), 1usize << log_n);
     assert_eq!(eval_point.len(), log_n);
-    assert_eq!(config.recursive_ks.len(), r);
+    assert_eq!(config.level_ks.len(), r);
     assert_eq!(
         config.log_inv_rates.len(),
         r + 1,
         "log_inv_rates must have R+1 entries"
     );
-    assert!(r >= 1, "recursive_steps must be ≥ 1");
+    assert!(r >= 1, "level_steps must be ≥ 1");
 
     challenger.observe_label(b"flock-ligerito-v0");
     challenger.observe_f128(claimed_value);
@@ -2979,7 +2979,7 @@ pub fn recursive_prover<Ch: Challenger>(
     let t_l0 = t.elapsed();
     t_commits += t_l0;
     tlog!("  [ligerito]   L0 commit: {:.2?}", t_l0);
-    recursive_prover_inner(
+    multilevel_prover_inner(
         config,
         poly,
         wtns_0,
@@ -2995,7 +2995,7 @@ pub fn recursive_prover<Ch: Challenger>(
     )
 }
 
-/// Variant of [`recursive_prover`] that reuses an **externally-built L0 commit**
+/// Variant of [`multilevel_prover`] that reuses an **externally-built L0 commit**
 /// (the codeword + merkle tree). This is what Flock's `pcs::open_batch` will
 /// call after `pcs::commit` has already built the same shape. Skips the
 /// L0 commit cost (~17 ms at m=29 MT).
@@ -3004,7 +3004,7 @@ pub fn recursive_prover<Ch: Challenger>(
 /// would produce at the same `(log_msg_cols_0 = log_n - initial_k, initial_k,
 /// log_inv_rates[0])`. In practice this means using `PcsParams` with
 /// `log_batch_size = config.initial_k` and `log_inv_rate = config.log_inv_rates[0]`.
-pub fn recursive_prover_with_l0<Ch: Challenger>(
+pub fn multilevel_prover_with_l0<Ch: Challenger>(
     config: &ProverConfig,
     poly: &[F128],
     l0_codeword: Vec<F128>,
@@ -3024,16 +3024,16 @@ pub fn recursive_prover_with_l0<Ch: Challenger>(
     let t_opens = std::time::Duration::ZERO;
 
     let log_n = poly.len().trailing_zeros() as usize;
-    let r = config.recursive_steps;
+    let r = config.level_steps;
     let initial_k = config.initial_k;
     let log_inv_rate_0 = config.log_inv_rates[0];
     let log_msg_cols_0 = log_n - initial_k;
 
     assert_eq!(poly.len(), 1usize << log_n);
     assert_eq!(eval_point.len(), log_n);
-    assert_eq!(config.recursive_ks.len(), r);
+    assert_eq!(config.level_ks.len(), r);
     assert_eq!(config.log_inv_rates.len(), r + 1);
-    assert!(r >= 1, "recursive_steps must be ≥ 1");
+    assert!(r >= 1, "level_steps must be ≥ 1");
 
     let block_len = 1usize << (log_msg_cols_0 + log_inv_rate_0);
     let num_interleaved = 1usize << initial_k;
@@ -3061,7 +3061,7 @@ pub fn recursive_prover_with_l0<Ch: Challenger>(
     };
     tlog!("  [ligerito]   L0 commit: REUSED (skipped)");
 
-    recursive_prover_inner(
+    multilevel_prover_inner(
         config,
         poly,
         wtns_0,
@@ -3082,12 +3082,12 @@ pub fn recursive_prover_with_l0<Ch: Challenger>(
 /// `ring_switch::prove_batched` for batched claims), plus an externally-built
 /// L0 commitment (the existing `pcs::commit` output).
 ///
-/// Differs from [`recursive_prover`] in the initial step: instead of partial-
+/// Differs from [`multilevel_prover`] in the initial step: instead of partial-
 /// evaluating at `z[0..initial_k]` (which doesn't make sense for a combined
 /// basis with no single `z`), runs `initial_k` real sumcheck rounds folding
 /// both `f` and `b` together with FS challenges. The folded f becomes wtns_1
 /// and the rest of the protocol proceeds identically.
-pub fn recursive_prover_with_basis<Ch: Challenger>(
+pub fn multilevel_prover_with_basis<Ch: Challenger>(
     config: &ProverConfig,
     packed_witness: Vec<F128>,
     b_initial: Vec<F128>,
@@ -3096,7 +3096,7 @@ pub fn recursive_prover_with_basis<Ch: Challenger>(
     l0_tree: &[Hash],
     challenger: &mut Ch,
 ) -> LigeritoProof {
-    recursive_prover_with_basis_impl(
+    multilevel_prover_with_basis_impl(
         config,
         packed_witness,
         b_initial,
@@ -3108,13 +3108,13 @@ pub fn recursive_prover_with_basis<Ch: Challenger>(
     )
 }
 
-/// Variant of [`recursive_prover_with_basis`] that accepts the round-0 sumcheck
+/// Variant of [`multilevel_prover_with_basis`] that accepts the round-0 sumcheck
 /// `(u_0, u_2)` pre-computed by the caller. Useful from
 /// `pcs::compute_combined_basis_and_target` which produces these values as a
 /// side effect while building `b_initial` — passing them in here lets
 /// `SumcheckProver::new` skip the redundant 256 MB read pass over (f, b1).
 #[allow(clippy::too_many_arguments)]
-pub fn recursive_prover_with_basis_precomputed_round0<Ch: Challenger>(
+pub fn multilevel_prover_with_basis_precomputed_round0<Ch: Challenger>(
     config: &ProverConfig,
     packed_witness: Vec<F128>,
     b_initial: Vec<F128>,
@@ -3124,7 +3124,7 @@ pub fn recursive_prover_with_basis_precomputed_round0<Ch: Challenger>(
     round0_uv: (F128, F128),
     challenger: &mut Ch,
 ) -> LigeritoProof {
-    recursive_prover_with_basis_impl(
+    multilevel_prover_with_basis_impl(
         config,
         packed_witness,
         b_initial,
@@ -3140,7 +3140,7 @@ pub fn recursive_prover_with_basis_precomputed_round0<Ch: Challenger>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn recursive_prover_with_basis_impl<Ch: Challenger>(
+fn multilevel_prover_with_basis_impl<Ch: Challenger>(
     config: &ProverConfig,
     packed_witness: Vec<F128>,
     b_initial: Vec<F128>,
@@ -3151,12 +3151,12 @@ fn recursive_prover_with_basis_impl<Ch: Challenger>(
     challenger: &mut Ch,
 ) -> LigeritoProof {
     let log_n = packed_witness.len().trailing_zeros() as usize;
-    let r = config.recursive_steps;
+    let r = config.level_steps;
     let initial_k = config.initial_k;
 
     assert_eq!(packed_witness.len(), 1usize << log_n);
     assert_eq!(b_initial.len(), 1usize << log_n);
-    assert_eq!(config.recursive_ks.len(), r);
+    assert_eq!(config.level_ks.len(), r);
     assert_eq!(config.log_inv_rates.len(), r + 1);
     assert!(r >= 1);
 
@@ -3242,7 +3242,7 @@ fn recursive_prover_with_basis_impl<Ch: Challenger>(
 
     // Commit f^1 = folded packed witness as wtns_1.
     let n1 = log_n - initial_k;
-    let log_num_interleaved_1 = config.recursive_ks[0];
+    let log_num_interleaved_1 = config.level_ks[0];
     assert!(n1 >= log_num_interleaved_1);
     let log_msg_cols_1 = n1 - log_num_interleaved_1;
     let log_inv_rate_1 = config.log_inv_rates[1];
@@ -3309,7 +3309,7 @@ fn recursive_prover_with_basis_impl<Ch: Challenger>(
     if trace {
         t_opens += _t.elapsed();
     }
-    let initial_proof = RecursiveProof {
+    let initial_proof = LevelProof {
         opened_rows: stored_rows_0,
         merkle_proof: merkle_proof_0,
     };
@@ -3343,13 +3343,13 @@ fn recursive_prover_with_basis_impl<Ch: Challenger>(
         t_intro_glue += _t.elapsed();
     }
 
-    // Recursive levels — same as recursive_prover_inner from here.
+    // Recursive levels — same as multilevel_prover_inner from here.
     let mut wtns_prev = wtns_1;
-    let mut recursive_roots: Vec<Hash> = vec![wtns_prev.root()];
-    let mut recursive_proofs: Vec<RecursiveProof> = Vec::new();
+    let mut level_roots: Vec<Hash> = vec![wtns_prev.root()];
+    let mut level_proofs: Vec<LevelProof> = Vec::new();
 
     for i in 0..r {
-        let k_i = config.recursive_ks[i];
+        let k_i = config.level_ks[i];
         let mut level_rs = Vec::with_capacity(k_i);
         let _t = std::time::Instant::now();
         for j in 0..k_i {
@@ -3401,7 +3401,7 @@ fn recursive_prover_with_basis_impl<Ch: Challenger>(
                     t_init_sumcheck.as_secs_f64() * 1e3
                 );
                 eprintln!(
-                    "  recursive commits (NTT + merkle):              {:.2} ms",
+                    "  level commits (NTT + merkle):              {:.2} ms",
                     t_commits.as_secs_f64() * 1e3
                 );
                 eprintln!(
@@ -3413,7 +3413,7 @@ fn recursive_prover_with_basis_impl<Ch: Challenger>(
                     t_induce.as_secs_f64() * 1e3
                 );
                 eprintln!(
-                    "  sumcheck recursive folds:                      {:.2} ms",
+                    "  sumcheck level folds:                      {:.2} ms",
                     t_sumcheck_folds.as_secs_f64() * 1e3
                 );
                 eprintln!(
@@ -3431,8 +3431,8 @@ fn recursive_prover_with_basis_impl<Ch: Challenger>(
             return LigeritoProof {
                 initial_root,
                 initial_proof,
-                recursive_roots,
-                recursive_proofs,
+                level_roots,
+                level_proofs,
                 final_proof: FinalProof {
                     yr,
                     opened_rows: opened_rows_last,
@@ -3446,7 +3446,7 @@ fn recursive_prover_with_basis_impl<Ch: Challenger>(
         }
 
         let n_next = sc_prover.f().len().trailing_zeros() as usize;
-        let log_num_interleaved_next = config.recursive_ks[i + 1];
+        let log_num_interleaved_next = config.level_ks[i + 1];
         assert!(n_next >= log_num_interleaved_next);
         let log_msg_cols_next = n_next - log_num_interleaved_next;
         let log_inv_rate_next = config.log_inv_rates[i + 2];
@@ -3465,7 +3465,7 @@ fn recursive_prover_with_basis_impl<Ch: Challenger>(
         }
         let root_next = wtns_next.root();
         challenger.observe_bytes(&root_next);
-        recursive_roots.push(root_next);
+        level_roots.push(root_next);
 
         // OOD binding for the L_{i+2} commit (same as the L1 block above).
         {
@@ -3507,7 +3507,7 @@ fn recursive_prover_with_basis_impl<Ch: Challenger>(
         if trace {
             t_opens += _t.elapsed();
         }
-        recursive_proofs.push(RecursiveProof {
+        level_proofs.push(LevelProof {
             opened_rows: stored_rows_i,
             merkle_proof: merkle_proof_i,
         });
@@ -3542,7 +3542,7 @@ fn recursive_prover_with_basis_impl<Ch: Challenger>(
     unreachable!()
 }
 
-/// Succinct verifier for [`recursive_prover_with_basis`]: instead of accepting
+/// Succinct verifier for [`multilevel_prover_with_basis`]: instead of accepting
 /// a dense `b_initial: &[F128]` (which would be ~16 MB at m=29), accepts a
 /// **closure** `eval_b` that evaluates `b_initial(point)` at any multilinear
 /// point. The verifier calls `eval_b` only `yr.len()` times (at the residual)
@@ -3552,7 +3552,7 @@ fn recursive_prover_with_basis_impl<Ch: Challenger>(
 ///
 /// `log_n` is the original packed-witness log size (= b_initial's logical dim).
 #[allow(clippy::too_many_arguments)]
-pub fn recursive_verifier_with_basis_succinct<Ch, F>(
+pub fn multilevel_verifier_with_basis_succinct<Ch, F>(
     config: &VerifierConfig,
     proof: &LigeritoProof,
     log_n: usize,
@@ -3578,8 +3578,8 @@ where
     let t_start = std::time::Instant::now();
 
     let initial_k = config.initial_k;
-    let r = config.recursive_steps;
-    if r < 1 || config.recursive_ks.len() != r || config.log_inv_rates.len() != r + 1 {
+    let r = config.level_steps;
+    if r < 1 || config.level_ks.len() != r || config.log_inv_rates.len() != r + 1 {
         return false;
     }
     if &proof.initial_root != expected_initial_root {
@@ -3650,10 +3650,10 @@ where
         running_quad = RoundQuad::from_msg(msg, t_r);
     }
 
-    if proof.recursive_roots.is_empty() {
+    if proof.level_roots.is_empty() {
         return false;
     }
-    let root_1 = proof.recursive_roots[0];
+    let root_1 = proof.level_roots[0];
     challenger.observe_bytes(&root_1);
 
     // OOD binding mirror for the L1 commit: sample z, read the claimed
@@ -3780,15 +3780,15 @@ where
     let mut ris: Vec<F128> = r_lane_fold.clone();
 
     let mut prev_root = root_1;
-    let mut prev_log_num_interleaved = config.recursive_ks[0];
+    let mut prev_log_num_interleaved = config.level_ks[0];
     let mut prev_log_msg_cols = n1 - prev_log_num_interleaved;
     let mut prev_log_inv_rate = config.log_inv_rates[1];
     let mut next_root_idx = 1usize;
-    let mut recursive_proof_idx = 0usize;
+    let mut level_proof_idx = 0usize;
     let mut n_current = n1;
 
     for i in 0..r {
-        let k_i = config.recursive_ks[i];
+        let k_i = config.level_ks[i];
         if n_current < k_i {
             return false;
         }
@@ -4021,10 +4021,10 @@ where
             return inner == t_r;
         }
 
-        if next_root_idx >= proof.recursive_roots.len() {
+        if next_root_idx >= proof.level_roots.len() {
             return false;
         }
-        let root_next = proof.recursive_roots[next_root_idx];
+        let root_next = proof.level_roots[next_root_idx];
         next_root_idx += 1;
         challenger.observe_bytes(&root_next);
 
@@ -4076,11 +4076,11 @@ where
             t_sample_q += _t.elapsed();
         }
         let alpha_i = challenger.sample_f128_vec(ceil_log2(num_queries_i));
-        if recursive_proof_idx >= proof.recursive_proofs.len() {
+        if level_proof_idx >= proof.level_proofs.len() {
             return false;
         }
-        let rp = &proof.recursive_proofs[recursive_proof_idx];
-        recursive_proof_idx += 1;
+        let rp = &proof.level_proofs[level_proof_idx];
+        level_proof_idx += 1;
         let _t = std::time::Instant::now();
         let (opened_rows_i, merkle_paths_i) = match expand_level_opening(
             prev_block_len,
@@ -4133,7 +4133,7 @@ where
         });
 
         prev_root = root_next;
-        let k_next = config.recursive_ks[i + 1];
+        let k_next = config.level_ks[i + 1];
         if n_current < k_next {
             return false;
         }
@@ -4145,11 +4145,11 @@ where
     unreachable!()
 }
 
-/// Verifier for [`recursive_prover_with_basis`]. Caller supplies the basis
+/// Verifier for [`multilevel_prover_with_basis`]. Caller supplies the basis
 /// `b_initial` recomputed locally (typically from the combined claims) and
 /// `target`. Also supplies the L0 root (from the upstream `Commitment`).
 #[allow(clippy::too_many_arguments)]
-pub fn recursive_verifier_with_basis<Ch: Challenger>(
+pub fn multilevel_verifier_with_basis<Ch: Challenger>(
     config: &VerifierConfig,
     proof: &LigeritoProof,
     b_initial: &[F128],
@@ -4159,9 +4159,9 @@ pub fn recursive_verifier_with_basis<Ch: Challenger>(
 ) -> bool {
     let log_n = b_initial.len().trailing_zeros() as usize;
     let initial_k = config.initial_k;
-    let r = config.recursive_steps;
+    let r = config.level_steps;
 
-    if r < 1 || config.recursive_ks.len() != r || config.log_inv_rates.len() != r + 1 {
+    if r < 1 || config.level_ks.len() != r || config.log_inv_rates.len() != r + 1 {
         return false;
     }
     if b_initial.len() != 1usize << log_n {
@@ -4232,10 +4232,10 @@ pub fn recursive_verifier_with_basis<Ch: Challenger>(
     }
 
     // Observe wtns_1 root + open wtns_0.
-    if proof.recursive_roots.is_empty() {
+    if proof.level_roots.is_empty() {
         return false;
     }
-    let root_1 = proof.recursive_roots[0];
+    let root_1 = proof.level_roots[0];
     challenger.observe_bytes(&root_1);
 
     // OOD binding mirror for the L1 commit.
@@ -4332,15 +4332,15 @@ pub fn recursive_verifier_with_basis<Ch: Challenger>(
     let mut ris: Vec<F128> = r_lane_fold.clone();
 
     let mut prev_root = root_1;
-    let mut prev_log_num_interleaved = config.recursive_ks[0];
+    let mut prev_log_num_interleaved = config.level_ks[0];
     let mut prev_log_msg_cols = n1 - prev_log_num_interleaved;
     let mut prev_log_inv_rate = config.log_inv_rates[1];
     let mut next_root_idx = 1usize;
-    let mut recursive_proof_idx = 0usize;
+    let mut level_proof_idx = 0usize;
     let mut n_current = n1;
 
     for i in 0..r {
-        let k_i = config.recursive_ks[i];
+        let k_i = config.level_ks[i];
         if n_current < k_i {
             return false;
         }
@@ -4408,7 +4408,7 @@ pub fn recursive_verifier_with_basis<Ch: Challenger>(
                 sample_queries_ordered(challenger, prev_block_len, num_queries_last);
             // Final-level basis-induction challenge — sampled after `yr` and the
             // queries are fixed. Same position as the succinct verifier
-            // (recursive_verifier_with_basis_succinct), which verifies the same
+            // (multilevel_verifier_with_basis_succinct), which verifies the same
             // proof, so both stay in lockstep.
             let alpha_last = challenger.sample_f128_vec(ceil_log2(num_queries_last));
             let sorted_last = sorted_unique_queries(&queries_last);
@@ -4484,10 +4484,10 @@ pub fn recursive_verifier_with_basis<Ch: Challenger>(
             return inner == t_r;
         }
 
-        if next_root_idx >= proof.recursive_roots.len() {
+        if next_root_idx >= proof.level_roots.len() {
             return false;
         }
-        let root_next = proof.recursive_roots[next_root_idx];
+        let root_next = proof.level_roots[next_root_idx];
         next_root_idx += 1;
         challenger.observe_bytes(&root_next);
 
@@ -4531,11 +4531,11 @@ pub fn recursive_verifier_with_basis<Ch: Challenger>(
         let num_queries_i = config.queries[i + 1];
         let queries_i = sample_queries_ordered(challenger, prev_block_len, num_queries_i);
         let alpha_i = challenger.sample_f128_vec(ceil_log2(num_queries_i));
-        if recursive_proof_idx >= proof.recursive_proofs.len() {
+        if level_proof_idx >= proof.level_proofs.len() {
             return false;
         }
-        let rp = &proof.recursive_proofs[recursive_proof_idx];
-        recursive_proof_idx += 1;
+        let rp = &proof.level_proofs[level_proof_idx];
+        level_proof_idx += 1;
         let sorted_i = sorted_unique_queries(&queries_i);
         if !verify_level_opens(
             &prev_root,
@@ -4578,7 +4578,7 @@ pub fn recursive_verifier_with_basis<Ch: Challenger>(
         basis_separations.push(beta_i);
 
         prev_root = root_next;
-        let k_next = config.recursive_ks[i + 1];
+        let k_next = config.level_ks[i + 1];
         if n_current < k_next {
             return false;
         }
@@ -4593,7 +4593,7 @@ pub fn recursive_verifier_with_basis<Ch: Challenger>(
 /// Shared body — runs after wtns_0 is in hand (whether freshly built or
 /// supplied externally).
 #[allow(clippy::too_many_arguments)]
-fn recursive_prover_inner<Ch: Challenger>(
+fn multilevel_prover_inner<Ch: Challenger>(
     config: &ProverConfig,
     poly: &[F128],
     wtns_0: LigeroWitness,
@@ -4611,14 +4611,14 @@ fn recursive_prover_inner<Ch: Challenger>(
         ($($arg:tt)*) => { if trace { eprintln!($($arg)*); } }
     }
     // The legacy (non-basis) path predates OOD binding and fold grinding;
-    // configs that use them must go through `recursive_prover_with_basis`.
+    // configs that use them must go through `multilevel_prover_with_basis`.
     assert!(
         config.ood_samples.iter().all(|&s| s == 0)
             && config.fold_grinding_bits.iter().all(|&b| b == 0),
         "OOD samples / fold grinding require the with_basis prover path"
     );
     let log_n = poly.len().trailing_zeros() as usize;
-    let r = config.recursive_steps;
+    let r = config.level_steps;
     let initial_k = config.initial_k;
     let log_inv_rate_0 = config.log_inv_rates[0];
 
@@ -4629,7 +4629,7 @@ fn recursive_prover_inner<Ch: Challenger>(
     let v_challenges_0 = eval_point[..initial_k].to_vec();
     let f1 = partial_eval_lsb(poly, &v_challenges_0);
     let n1 = log_n - initial_k;
-    let log_num_interleaved_1 = config.recursive_ks[0];
+    let log_num_interleaved_1 = config.level_ks[0];
     assert!(n1 >= log_num_interleaved_1, "n1 < k_0");
     let log_msg_cols_1 = n1 - log_num_interleaved_1;
     let log_inv_rate_1 = config.log_inv_rates[1];
@@ -4655,7 +4655,7 @@ fn recursive_prover_inner<Ch: Challenger>(
     let opened_rows_0: Vec<Vec<F128>> = queries_0.iter().map(|&q| wtns_0.row(q).to_vec()).collect();
     let merkle_proof_0 = merkle_multi_proof_for(&wtns_0.tree, wtns_0.block_len, &queries_0);
     t_opens += t.elapsed();
-    let initial_proof = RecursiveProof {
+    let initial_proof = LevelProof {
         opened_rows: opened_rows_0.clone(),
         merkle_proof: merkle_proof_0,
     };
@@ -4689,13 +4689,13 @@ fn recursive_prover_inner<Ch: Challenger>(
     let beta_0 = challenger.sample_f128();
     sc_prover.glue(beta_0);
 
-    // ---- Recursive levels ----
+    // ---- Fold levels ----
     let mut wtns_prev = wtns_1;
-    let mut recursive_roots: Vec<Hash> = vec![wtns_prev.root()];
-    let mut recursive_proofs: Vec<RecursiveProof> = Vec::new();
+    let mut level_roots: Vec<Hash> = vec![wtns_prev.root()];
+    let mut level_proofs: Vec<LevelProof> = Vec::new();
 
     for i in 0..r {
-        let k_i = config.recursive_ks[i];
+        let k_i = config.level_ks[i];
         let mut level_rs = Vec::with_capacity(k_i);
         let t = std::time::Instant::now();
         for _ in 0..k_i {
@@ -4734,15 +4734,15 @@ fn recursive_prover_inner<Ch: Challenger>(
             return LigeritoProof {
                 initial_root,
                 initial_proof,
-                recursive_roots,
-                recursive_proofs,
+                level_roots,
+                level_proofs,
                 final_proof: FinalProof {
                     yr,
                     opened_rows: opened_rows_last,
                     merkle_proof: merkle_proof_last,
                 },
                 sumcheck_transcript: sc_prover.transcript().to_vec(),
-                grinding_nonces: Vec::new(), // legacy recursive_prover_inner: no grinding plumbed
+                grinding_nonces: Vec::new(), // legacy multilevel_prover_inner: no grinding plumbed
                 ood_values: Vec::new(),
                 fold_grinding_nonces: Vec::new(),
             };
@@ -4751,7 +4751,7 @@ fn recursive_prover_inner<Ch: Challenger>(
         // Non-last: commit the folded poly → wtns_next.
         // wtns_next = wtns_{i+2}, uses log_inv_rates[i+2].
         let n_next = sc_prover.f().len().trailing_zeros() as usize;
-        let log_num_interleaved_next = config.recursive_ks[i + 1];
+        let log_num_interleaved_next = config.level_ks[i + 1];
         assert!(
             n_next >= log_num_interleaved_next,
             "f.n ({n_next}) < k_{} ({log_num_interleaved_next})",
@@ -4774,7 +4774,7 @@ fn recursive_prover_inner<Ch: Challenger>(
         tlog!("  [ligerito]   L{} commit: {:.2?}", i + 2, t_li);
         let root_next = wtns_next.root();
         challenger.observe_bytes(&root_next);
-        recursive_roots.push(root_next);
+        level_roots.push(root_next);
 
         // Open wtns_prev. wtns_prev = wtns_{i+1} uses log_inv_rates[i+1].
         let num_queries_i = udr_queries(config.log_inv_rates[i + 1]);
@@ -4788,7 +4788,7 @@ fn recursive_prover_inner<Ch: Challenger>(
         let merkle_proof_i =
             merkle_multi_proof_for(&wtns_prev.tree, wtns_prev.block_len, &queries_i);
         t_opens += t.elapsed();
-        recursive_proofs.push(RecursiveProof {
+        level_proofs.push(LevelProof {
             opened_rows: opened_rows_i.clone(),
             merkle_proof: merkle_proof_i,
         });
@@ -4814,7 +4814,7 @@ fn recursive_prover_inner<Ch: Challenger>(
         wtns_prev = wtns_next;
     }
 
-    unreachable!("recursive loop should return on last iter")
+    unreachable!("level loop should return on last iter")
 }
 
 /// Verify all opened rows against one root via a single octopus multi-proof.
@@ -4846,8 +4846,8 @@ fn verify_level_opens(
     merkle::verify_merkle_multi_proof(root, block_len, queries, &leaf_hashes, multi_proof)
 }
 
-/// Verifier counterpart to [`recursive_prover`]. Supports arbitrary `R ≥ 1`.
-pub fn recursive_verifier<Ch: Challenger>(
+/// Verifier counterpart to [`multilevel_prover`]. Supports arbitrary `R ≥ 1`.
+pub fn multilevel_verifier<Ch: Challenger>(
     config: &VerifierConfig,
     proof: &LigeritoProof,
     eval_point: &[F128],
@@ -4856,9 +4856,9 @@ pub fn recursive_verifier<Ch: Challenger>(
 ) -> bool {
     let log_n = eval_point.len();
     let initial_k = config.initial_k;
-    let r = config.recursive_steps;
+    let r = config.level_steps;
 
-    if r < 1 || config.recursive_ks.len() != r || config.log_inv_rates.len() != r + 1 {
+    if r < 1 || config.level_ks.len() != r || config.log_inv_rates.len() != r + 1 {
         return false;
     }
     // The legacy (non-basis) path predates OOD binding and fold grinding.
@@ -4874,10 +4874,10 @@ pub fn recursive_verifier<Ch: Challenger>(
 
     // ---- Roots ----
     challenger.observe_bytes(&proof.initial_root);
-    if proof.recursive_roots.len() != r {
+    if proof.level_roots.len() != r {
         return false;
     }
-    let root_1 = proof.recursive_roots[0];
+    let root_1 = proof.level_roots[0];
     challenger.observe_bytes(&root_1);
 
     // ---- Open wtns_0 + α₀ ----
@@ -4950,17 +4950,17 @@ pub fn recursive_verifier<Ch: Challenger>(
     basis_ris_starts.push(0);
     basis_separations.push(beta_0);
 
-    // ---- Recursive iterations ----
+    // ---- Level iterations ----
     let mut prev_root = root_1;
-    let mut prev_log_num_interleaved = config.recursive_ks[0];
+    let mut prev_log_num_interleaved = config.level_ks[0];
     let mut prev_log_msg_cols = n1 - prev_log_num_interleaved;
     let mut prev_log_inv_rate = config.log_inv_rates[1]; // wtns_1's rate
     let mut next_root_idx = 1usize;
-    let mut recursive_proof_idx = 0usize;
+    let mut level_proof_idx = 0usize;
     let mut n_current = n1;
 
     for i in 0..r {
-        let k_i = config.recursive_ks[i];
+        let k_i = config.level_ks[i];
         if n_current < k_i {
             return false;
         }
@@ -5058,10 +5058,10 @@ pub fn recursive_verifier<Ch: Challenger>(
         }
 
         // Non-last: read next root, sample queries on prev_root, induce basis, intro + glue.
-        if next_root_idx >= proof.recursive_roots.len() {
+        if next_root_idx >= proof.level_roots.len() {
             return false;
         }
-        let root_next = proof.recursive_roots[next_root_idx];
+        let root_next = proof.level_roots[next_root_idx];
         next_root_idx += 1;
         challenger.observe_bytes(&root_next);
 
@@ -5071,11 +5071,11 @@ pub fn recursive_verifier<Ch: Challenger>(
         let queries_i = sample_distinct_queries(challenger, prev_block_len, num_queries_i);
         let alpha_i = challenger.sample_f128_vec(ceil_log2(num_queries_i));
 
-        if recursive_proof_idx >= proof.recursive_proofs.len() {
+        if level_proof_idx >= proof.level_proofs.len() {
             return false;
         }
-        let rp = &proof.recursive_proofs[recursive_proof_idx];
-        recursive_proof_idx += 1;
+        let rp = &proof.level_proofs[level_proof_idx];
+        level_proof_idx += 1;
         if !verify_level_opens(
             &prev_root,
             prev_block_len,
@@ -5115,7 +5115,7 @@ pub fn recursive_verifier<Ch: Challenger>(
 
         // Update prev for next iteration: prev_root = root_next, dims = next commit's dims.
         prev_root = root_next;
-        let k_next = config.recursive_ks[i + 1];
+        let k_next = config.level_ks[i + 1];
         if n_current < k_next {
             return false;
         }
@@ -5164,7 +5164,7 @@ mod tests {
         let (pv, _vc) = cfg.to_prover_verifier_configs().unwrap();
         let default = default_config(22, 6, 1).unwrap();
         assert_eq!(pv.log_inv_rates, default.log_inv_rates);
-        assert_eq!(pv.recursive_ks, default.recursive_ks);
+        assert_eq!(pv.level_ks, default.level_ks);
         assert_eq!(pv.queries[0], 218);
 
         // Slim mode: rates start at 1/4.
@@ -5178,7 +5178,7 @@ mod tests {
         let (pv_slim, _vc_slim) = cfg_slim.to_prover_verifier_configs().unwrap();
         let default_slim = default_config(22, 6, 2).unwrap();
         assert_eq!(pv_slim.log_inv_rates, default_slim.log_inv_rates);
-        assert_eq!(pv_slim.recursive_ks, default_slim.recursive_ks);
+        assert_eq!(pv_slim.level_ks, default_slim.level_ks);
     }
 
     /// Helper: re-emit all the embedded TOMLs from `derive_paper_compatible`.
@@ -5419,7 +5419,7 @@ mod tests {
     }
 
     /// End-to-end: a security config with **non-zero grinding** at L0 drives
-    /// an actual recursive_prover_with_basis → recursive_verifier_with_basis
+    /// an actual multilevel_prover_with_basis → multilevel_verifier_with_basis
     /// roundtrip. Confirms the PoW step is plumbed into the FS transcript
     /// on both sides (without grinding the proof would either be rejected
     /// or the FS state would diverge between prover and verifier).
@@ -5448,12 +5448,12 @@ mod tests {
         let grinding_bits = vec![6usize, 0]; // L0 grinds 6 bits, L1 doesn't
         let cfg = ProverConfig {
             log_inv_rates: log_inv_rates.clone(),
-            recursive_steps: 1,
+            level_steps: 1,
             initial_log_msg_cols: log_n - initial_k,
             initial_log_num_interleaved: initial_k,
             initial_k,
-            recursive_log_msg_cols: vec![log_n - initial_k - k_0],
-            recursive_ks: vec![k_0],
+            level_log_msg_cols: vec![log_n - initial_k - k_0],
+            level_ks: vec![k_0],
             queries: queries.clone(),
             grinding_bits: grinding_bits.clone(),
             fold_grinding_bits: vec![0; 2],
@@ -5466,7 +5466,7 @@ mod tests {
         let initial_root = wtns_0.root();
 
         let mut p_ch = crate::challenger::FsChallenger::new(b"pow-test");
-        let proof = recursive_prover_with_basis(
+        let proof = multilevel_prover_with_basis(
             &cfg,
             poly.clone(),
             b.clone(),
@@ -5479,12 +5479,12 @@ mod tests {
 
         let v_cfg = VerifierConfig {
             log_inv_rates,
-            recursive_steps: 1,
+            level_steps: 1,
             initial_log_msg_cols: log_n - initial_k,
             initial_log_num_interleaved: initial_k,
             initial_k,
-            recursive_log_msg_cols: vec![log_n - initial_k - k_0],
-            recursive_ks: vec![k_0],
+            level_log_msg_cols: vec![log_n - initial_k - k_0],
+            level_ks: vec![k_0],
             queries,
             grinding_bits,
             fold_grinding_bits: vec![0; 2],
@@ -5492,7 +5492,7 @@ mod tests {
         };
         let mut v_ch = crate::challenger::FsChallenger::new(b"pow-test");
         let ok =
-            recursive_verifier_with_basis(&v_cfg, &proof, &b, target, &initial_root, &mut v_ch);
+            multilevel_verifier_with_basis(&v_cfg, &proof, &b, target, &initial_root, &mut v_ch);
         assert!(
             ok,
             "verifier should accept proof with valid grinding nonces"
@@ -5503,7 +5503,7 @@ mod tests {
         bad_proof.grinding_nonces[0] = bad_proof.grinding_nonces[0].wrapping_add(1);
         let mut v_ch = crate::challenger::FsChallenger::new(b"pow-test");
         let ok =
-            recursive_verifier_with_basis(&v_cfg, &bad_proof, &b, target, &initial_root, &mut v_ch);
+            multilevel_verifier_with_basis(&v_cfg, &bad_proof, &b, target, &initial_root, &mut v_ch);
         assert!(
             !ok,
             "verifier must reject proof with tampered grinding nonce"
@@ -5512,14 +5512,14 @@ mod tests {
 
     /// The security config produces ProverConfig/VerifierConfig matching the
     /// existing `default_config(log_n=22, log_batch_size=6, log_inv_rate=1)`
-    /// in shape (rates + recursive_ks + initial_k all agree).
+    /// in shape (rates + level_ks + initial_k all agree).
     #[test]
     fn ligerito_security_config_matches_default_config() {
         let cfg = blake3_m29_udr_example();
         let (pv, _vc) = cfg.to_prover_verifier_configs().unwrap();
         let default = default_config(22, 6, 1).unwrap();
         assert_eq!(pv.log_inv_rates, default.log_inv_rates);
-        assert_eq!(pv.recursive_ks, default.recursive_ks);
+        assert_eq!(pv.level_ks, default.level_ks);
         assert_eq!(pv.initial_k, default.initial_k);
     }
 
@@ -5953,7 +5953,7 @@ mod tests {
     }
 
     /// End-to-end roundtrip: prover proves `poly(z) = v`, verifier accepts.
-    /// R = 1 (one recursive step).
+    /// R = 1 (one level step).
     #[test]
     fn ligerito_r1_roundtrip_accepts() {
         use crate::challenger::Challenger;
@@ -5980,12 +5980,12 @@ mod tests {
         let grinding_bits = vec![0; log_inv_rates.len()];
         let prover_cfg = ProverConfig {
             log_inv_rates: log_inv_rates.clone(),
-            recursive_steps: 1,
+            level_steps: 1,
             initial_log_msg_cols: log_n - initial_k,
             initial_log_num_interleaved: initial_k,
             initial_k,
-            recursive_log_msg_cols: vec![log_n - initial_k - k_0],
-            recursive_ks: vec![k_0],
+            level_log_msg_cols: vec![log_n - initial_k - k_0],
+            level_ks: vec![k_0],
             queries: queries.clone(),
             grinding_bits: grinding_bits.clone(),
             fold_grinding_bits: vec![0; 2],
@@ -5993,12 +5993,12 @@ mod tests {
         };
         let verifier_cfg = VerifierConfig {
             log_inv_rates: log_inv_rates.clone(),
-            recursive_steps: 1,
+            level_steps: 1,
             initial_log_msg_cols: log_n - initial_k,
             initial_log_num_interleaved: initial_k,
             initial_k,
-            recursive_log_msg_cols: vec![log_n - initial_k - k_0],
-            recursive_ks: vec![k_0],
+            level_log_msg_cols: vec![log_n - initial_k - k_0],
+            level_ks: vec![k_0],
             queries,
             grinding_bits,
             fold_grinding_bits: vec![0; 2],
@@ -6008,35 +6008,35 @@ mod tests {
 
         // Prove
         let mut p_ch = crate::challenger::FsChallenger::new(b"test");
-        let proof = recursive_prover(&prover_cfg, &poly, &z, v, &mut p_ch);
+        let proof = multilevel_prover(&prover_cfg, &poly, &z, v, &mut p_ch);
 
         // Verify
         let mut v_ch = crate::challenger::FsChallenger::new(b"test");
-        let ok = recursive_verifier(&verifier_cfg, &proof, &z, v, &mut v_ch);
+        let ok = multilevel_verifier(&verifier_cfg, &proof, &z, v, &mut v_ch);
         assert!(ok, "verifier rejected a valid proof");
     }
 
     /// Run the size measurement at the configured (log_n, initial_k, ks, rates).
-    /// `log_inv_rates.len()` must equal `recursive_ks.len() + 1` (one per commit).
+    /// `log_inv_rates.len()` must equal `level_ks.len() + 1` (one per commit).
     /// Also times the prover (best of 3 runs). Returns the measured proof size
     /// in bytes.
     fn size_breakdown_at(
         log_n: usize,
         initial_k: usize,
-        recursive_ks: Vec<usize>,
+        level_ks: Vec<usize>,
         log_inv_rates: Vec<usize>,
     ) -> usize {
         use crate::challenger::Challenger;
         use std::time::Instant;
-        assert_eq!(log_inv_rates.len(), recursive_ks.len() + 1);
+        assert_eq!(log_inv_rates.len(), level_ks.len() + 1);
 
         // dims sanity: n1 = 16; after k_0=4 → 12; after k_1=3 → 9 → yr = 512 elems.
-        let r = recursive_ks.len();
-        let mut recursive_log_msg_cols = Vec::with_capacity(r);
+        let r = level_ks.len();
+        let mut level_log_msg_cols = Vec::with_capacity(r);
         let mut n_running = log_n - initial_k;
-        for &k in &recursive_ks {
+        for &k in &level_ks {
             assert!(n_running >= k);
-            recursive_log_msg_cols.push(n_running - k);
+            level_log_msg_cols.push(n_running - k);
             n_running -= k;
         }
 
@@ -6044,7 +6044,7 @@ mod tests {
         let queries_per_level: Vec<usize> = log_inv_rates.iter().map(|&r| udr_queries(r)).collect();
         eprintln!(
             "log_n={log_n}  initial_k={initial_k}  ks={:?}  log_inv_rates={:?}  queries={:?}",
-            recursive_ks, log_inv_rates, queries_per_level
+            level_ks, log_inv_rates, queries_per_level
         );
         let poly: Vec<F128> = (0..(1usize << log_n)).map(|_| rng.sample_f128()).collect();
         let z: Vec<F128> = (0..log_n).map(|_| rng.sample_f128()).collect();
@@ -6059,12 +6059,12 @@ mod tests {
         let grinding_bits = vec![0; log_inv_rates.len()];
         let cfg = ProverConfig {
             log_inv_rates: log_inv_rates.clone(),
-            recursive_steps: r,
+            level_steps: r,
             initial_log_msg_cols: log_n - initial_k,
             initial_log_num_interleaved: initial_k,
             initial_k,
-            recursive_log_msg_cols: recursive_log_msg_cols.clone(),
-            recursive_ks: recursive_ks.clone(),
+            level_log_msg_cols: level_log_msg_cols.clone(),
+            level_ks: level_ks.clone(),
             queries: queries_per_level.clone(),
             grinding_bits: grinding_bits.clone(),
             fold_grinding_bits: vec![0; r + 1],
@@ -6072,12 +6072,12 @@ mod tests {
         };
         let v_cfg = VerifierConfig {
             log_inv_rates: log_inv_rates.clone(),
-            recursive_steps: r,
+            level_steps: r,
             initial_log_msg_cols: log_n - initial_k,
             initial_log_num_interleaved: initial_k,
             initial_k,
-            recursive_log_msg_cols,
-            recursive_ks: recursive_ks.clone(),
+            level_log_msg_cols,
+            level_ks: level_ks.clone(),
             queries: queries_per_level,
             grinding_bits,
             fold_grinding_bits: vec![0; r + 1],
@@ -6088,12 +6088,12 @@ mod tests {
         let mut best = std::time::Duration::from_secs(3600);
         let mut proof = {
             let mut p_ch = crate::challenger::FsChallenger::new(b"size-test");
-            recursive_prover(&cfg, &poly, &z, v, &mut p_ch)
+            multilevel_prover(&cfg, &poly, &z, v, &mut p_ch)
         };
         for _ in 0..3 {
             let mut p_ch = crate::challenger::FsChallenger::new(b"size-test");
             let t = Instant::now();
-            proof = recursive_prover(&cfg, &poly, &z, v, &mut p_ch);
+            proof = multilevel_prover(&cfg, &poly, &z, v, &mut p_ch);
             let el = t.elapsed();
             if el < best {
                 best = el;
@@ -6107,7 +6107,7 @@ mod tests {
 
         // Smoke-check it verifies (so we know the proof is valid, not just plausibly-sized).
         let mut v_ch = crate::challenger::FsChallenger::new(b"size-test");
-        assert!(recursive_verifier(&v_cfg, &proof, &z, v, &mut v_ch));
+        assert!(multilevel_verifier(&v_cfg, &proof, &z, v, &mut v_ch));
         proof.size_bytes()
     }
 
@@ -6207,12 +6207,12 @@ mod tests {
     fn estimate_size_at(
         log_n: usize,
         initial_k: usize,
-        recursive_ks: Vec<usize>,
+        level_ks: Vec<usize>,
         log_inv_rates: Vec<usize>,
     ) -> usize {
         const ELEM: usize = core::mem::size_of::<F128>();
-        assert_eq!(log_inv_rates.len(), recursive_ks.len() + 1);
-        let r = recursive_ks.len();
+        assert_eq!(log_inv_rates.len(), level_ks.len() + 1);
+        let r = level_ks.len();
         let kb = |b: usize| {
             if b >= 1024 * 1024 {
                 format!("{:.2} MB", b as f64 / 1024.0 / 1024.0)
@@ -6225,7 +6225,7 @@ mod tests {
 
         // Dim/lane/queries per commit (R+1 commits).
         let mut log_num_interleaved: Vec<usize> = vec![initial_k];
-        log_num_interleaved.extend_from_slice(&recursive_ks);
+        log_num_interleaved.extend_from_slice(&level_ks);
         let mut log_msg_cols: Vec<usize> = Vec::with_capacity(r + 1);
         let mut n_running = log_n;
         for i in 0..=r {
@@ -6247,7 +6247,7 @@ mod tests {
 
         eprintln!(
             "m={log_n}  initial_k={initial_k}  ks={:?}  rates={:?}  queries={:?}  yr_log={yr_log_n}",
-            recursive_ks, log_inv_rates, queries_per_level
+            level_ks, log_inv_rates, queries_per_level
         );
 
         // Drive a challenger-deterministic query sampling, count siblings.
@@ -6272,7 +6272,7 @@ mod tests {
             } else if i == r {
                 "L{} (final)"
             } else {
-                "L{} (recursive)"
+                "L{} (level)"
             };
             eprintln!(
                 "  {label} [bl=2^{}, lanes=2^{}, q={qn}]: opened={}  merkle={} ({} sibs)",
@@ -6287,8 +6287,8 @@ mod tests {
         }
         let yr_b = (1usize << yr_log_n) * ELEM;
         let roots_b = (r + 1) * 32;
-        // Transcript: 1 start + 1 intro per recursive boundary (R) + sum(k_i) folds, all (u_0, u_2).
-        let sumcheck_msgs = 1 + r + recursive_ks.iter().sum::<usize>();
+        // Transcript: 1 start + 1 intro per level boundary (R) + sum(k_i) folds, all (u_0, u_2).
+        let sumcheck_msgs = 1 + r + level_ks.iter().sum::<usize>();
         let tx_b = sumcheck_msgs * 2 * ELEM;
         let total = total_opened + total_merkle + yr_b + roots_b + tx_b;
         eprintln!(
@@ -6331,7 +6331,7 @@ mod tests {
         eprintln!(
             "\n=== Ligerito m=29 — uniform rate 1/2 (basefold-style baseline, infeasible at deepest level) ==="
         );
-        // Uniform rate with deep recursion: block_len at L5 = 2^6 = 64 < 221 queries.
+        // Uniform rate with a deep level ladder: block_len at L5 = 2^6 = 64 < 221 queries.
         // Show this is structurally bad without aggressive rate decrease.
         estimate_size_at(29, 4, vec![4, 4, 4, 4, 3], vec![1, 1, 1, 1, 1, 1]);
 
@@ -6370,20 +6370,20 @@ mod tests {
             "\n=== Ligerito m=29 — initial_k=6 (matches basefold's 64-lane initial leaves) ==="
         );
         // initial_k = 6, then ks chosen to keep deeper levels thin.
-        eprintln!("\n  Config A: thin recursive lanes, aggressive rate decrease");
+        eprintln!("\n  Config A: thin level lanes, aggressive rate decrease");
         estimate_size_at(29, 6, vec![3, 3, 3, 3, 3, 2], vec![1, 2, 3, 4, 5, 6, 7]);
 
-        eprintln!("\n  Config B: medium recursive lanes, fewer levels");
+        eprintln!("\n  Config B: medium level lanes, fewer levels");
         estimate_size_at(29, 6, vec![4, 4, 4, 3, 3], vec![1, 2, 3, 4, 5, 6]);
 
-        eprintln!("\n  Config C: 2x6-bit recursive lanes (= basefold's epoch leaves)");
+        eprintln!("\n  Config C: 2x6-bit level lanes (= basefold's epoch leaves)");
         estimate_size_at(29, 6, vec![6, 6, 4, 3], vec![1, 2, 3, 4, 5]);
     }
 
     #[test]
     fn estimate_ligerito_m30_initial_k6() {
         eprintln!("\n=== Ligerito m=30 — initial_k=6 ===");
-        eprintln!("\n  Config A: thin recursive lanes");
+        eprintln!("\n  Config A: thin level lanes");
         estimate_size_at(
             30,
             6,
@@ -6424,12 +6424,12 @@ mod tests {
         let _ = num_queries;
         let cfg = ProverConfig {
             log_inv_rates: log_inv_rates.clone(),
-            recursive_steps: 2,
+            level_steps: 2,
             initial_log_msg_cols: log_n - initial_k,
             initial_log_num_interleaved: initial_k,
             initial_k,
-            recursive_log_msg_cols: vec![log_n - initial_k - k_0, log_n - initial_k - k_0 - k_1],
-            recursive_ks: vec![k_0, k_1],
+            level_log_msg_cols: vec![log_n - initial_k - k_0, log_n - initial_k - k_0 - k_1],
+            level_ks: vec![k_0, k_1],
             queries: log_inv_rates.iter().map(|&r| udr_queries(r)).collect(),
             grinding_bits: vec![0; log_inv_rates.len()],
             fold_grinding_bits: vec![0; 3],
@@ -6437,12 +6437,12 @@ mod tests {
         };
         let v_cfg = VerifierConfig {
             log_inv_rates: log_inv_rates.clone(),
-            recursive_steps: 2,
+            level_steps: 2,
             initial_log_msg_cols: log_n - initial_k,
             initial_log_num_interleaved: initial_k,
             initial_k,
-            recursive_log_msg_cols: vec![log_n - initial_k - k_0, log_n - initial_k - k_0 - k_1],
-            recursive_ks: vec![k_0, k_1],
+            level_log_msg_cols: vec![log_n - initial_k - k_0, log_n - initial_k - k_0 - k_1],
+            level_ks: vec![k_0, k_1],
             queries: log_inv_rates.iter().map(|&r| udr_queries(r)).collect(),
             grinding_bits: vec![0; log_inv_rates.len()],
             fold_grinding_bits: vec![0; 3],
@@ -6450,12 +6450,12 @@ mod tests {
         };
 
         let mut p_ch = crate::challenger::FsChallenger::new(b"test-r2");
-        let proof = recursive_prover(&cfg, &poly, &z, v, &mut p_ch);
-        assert_eq!(proof.recursive_roots.len(), 2);
-        assert_eq!(proof.recursive_proofs.len(), 1);
+        let proof = multilevel_prover(&cfg, &poly, &z, v, &mut p_ch);
+        assert_eq!(proof.level_roots.len(), 2);
+        assert_eq!(proof.level_proofs.len(), 1);
 
         let mut v_ch = crate::challenger::FsChallenger::new(b"test-r2");
-        let ok = recursive_verifier(&v_cfg, &proof, &z, v, &mut v_ch);
+        let ok = multilevel_verifier(&v_cfg, &proof, &z, v, &mut v_ch);
         assert!(ok, "R=2 verifier rejected valid proof");
     }
 
@@ -6480,19 +6480,19 @@ mod tests {
         let log_inv_rates = vec![log_inv_rate, log_inv_rate];
         let cfg = ProverConfig {
             log_inv_rates: log_inv_rates.clone(),
-            recursive_steps: 1,
+            level_steps: 1,
             initial_log_msg_cols: log_n - initial_k,
             initial_log_num_interleaved: initial_k,
             initial_k,
-            recursive_log_msg_cols: vec![log_n - initial_k - k_0],
-            recursive_ks: vec![k_0],
+            level_log_msg_cols: vec![log_n - initial_k - k_0],
+            level_ks: vec![k_0],
             queries: log_inv_rates.iter().map(|&r| udr_queries(r)).collect(),
             grinding_bits: vec![0; log_inv_rates.len()],
             fold_grinding_bits: vec![0; 2],
             ood_samples: vec![0; 2],
         };
         let mut p_ch = crate::challenger::FsChallenger::new(b"serde");
-        let proof = recursive_prover(&cfg, &poly, &z, v, &mut p_ch);
+        let proof = multilevel_prover(&cfg, &poly, &z, v, &mut p_ch);
 
         let bytes = bincode::serialize(&proof).expect("serialize");
         let proof2: LigeritoProof = bincode::deserialize(&bytes).expect("deserialize");
@@ -6500,12 +6500,12 @@ mod tests {
         eprintln!("LigeritoProof bincode size: {} bytes", bytes.len());
     }
 
-    /// `recursive_prover_with_basis` + `recursive_verifier_with_basis`
+    /// `multilevel_prover_with_basis` + `multilevel_verifier_with_basis`
     /// roundtrip — this is the basefold-compatible signature that
     /// `pcs::open_batch` will call. Single-claim case (`b = eq(z, ·)`,
     /// `target = poly(z)`) — must round-trip cleanly.
     #[test]
-    fn recursive_prover_with_basis_roundtrip_single_claim() {
+    fn multilevel_prover_with_basis_roundtrip_single_claim() {
         use crate::challenger::Challenger;
         let log_n = 14;
         let initial_k = 3;
@@ -6525,12 +6525,12 @@ mod tests {
         let log_inv_rates = vec![log_inv_rate, log_inv_rate];
         let cfg = ProverConfig {
             log_inv_rates: log_inv_rates.clone(),
-            recursive_steps: 1,
+            level_steps: 1,
             initial_log_msg_cols: log_n - initial_k,
             initial_log_num_interleaved: initial_k,
             initial_k,
-            recursive_log_msg_cols: vec![log_n - initial_k - k_0],
-            recursive_ks: vec![k_0],
+            level_log_msg_cols: vec![log_n - initial_k - k_0],
+            level_ks: vec![k_0],
             queries: log_inv_rates.iter().map(|&r| udr_queries(r)).collect(),
             grinding_bits: vec![0; log_inv_rates.len()],
             fold_grinding_bits: vec![0; 2],
@@ -6543,7 +6543,7 @@ mod tests {
         let initial_root = wtns_0.root();
 
         let mut p_ch = crate::challenger::FsChallenger::new(b"basis-test");
-        let proof = recursive_prover_with_basis(
+        let proof = multilevel_prover_with_basis(
             &cfg,
             poly.clone(),
             b.clone(),
@@ -6555,12 +6555,12 @@ mod tests {
 
         let v_cfg = VerifierConfig {
             log_inv_rates: log_inv_rates.clone(),
-            recursive_steps: 1,
+            level_steps: 1,
             initial_log_msg_cols: log_n - initial_k,
             initial_log_num_interleaved: initial_k,
             initial_k,
-            recursive_log_msg_cols: vec![log_n - initial_k - k_0],
-            recursive_ks: vec![k_0],
+            level_log_msg_cols: vec![log_n - initial_k - k_0],
+            level_ks: vec![k_0],
             queries: log_inv_rates.iter().map(|&r| udr_queries(r)).collect(),
             grinding_bits: vec![0; log_inv_rates.len()],
             fold_grinding_bits: vec![0; 2],
@@ -6568,7 +6568,7 @@ mod tests {
         };
         let mut v_ch = crate::challenger::FsChallenger::new(b"basis-test");
         let ok =
-            recursive_verifier_with_basis(&v_cfg, &proof, &b, target, &initial_root, &mut v_ch);
+            multilevel_verifier_with_basis(&v_cfg, &proof, &b, target, &initial_root, &mut v_ch);
         assert!(ok, "basis-based verifier rejected valid proof");
     }
 
@@ -6640,7 +6640,7 @@ mod tests {
     }
 
     /// Regression for the final-level proximity binding (the Ligerito
-    /// soundness fix). Every non-final recursion level folds its opened rows
+    /// soundness fix). Every non-final fold level folds its opened rows
     /// into the running sumcheck via `induce_sumcheck`; the final level used to
     /// only Merkle-check its opened rows, leaving `yr` (the claimed final
     /// message) constrained by a single scalar equation — so a malicious prover
@@ -6728,7 +6728,7 @@ mod tests {
     /// given an `eval_b` closure that returns the same values as the dense
     /// `b_initial[idx]` at multilinear `point = bit-decomp(idx)`.
     #[test]
-    fn recursive_verifier_with_basis_succinct_matches_dense() {
+    fn multilevel_verifier_with_basis_succinct_matches_dense() {
         use crate::challenger::Challenger;
         let log_n = 14;
         let initial_k = 3;
@@ -6748,12 +6748,12 @@ mod tests {
         let log_inv_rates = vec![log_inv_rate, log_inv_rate];
         let cfg = ProverConfig {
             log_inv_rates: log_inv_rates.clone(),
-            recursive_steps: 1,
+            level_steps: 1,
             initial_log_msg_cols: log_n - initial_k,
             initial_log_num_interleaved: initial_k,
             initial_k,
-            recursive_log_msg_cols: vec![log_n - initial_k - k_0],
-            recursive_ks: vec![k_0],
+            level_log_msg_cols: vec![log_n - initial_k - k_0],
+            level_ks: vec![k_0],
             queries: log_inv_rates.iter().map(|&r| udr_queries(r)).collect(),
             grinding_bits: vec![0; log_inv_rates.len()],
             fold_grinding_bits: vec![0; 2],
@@ -6766,7 +6766,7 @@ mod tests {
         let initial_root = wtns_0.root();
 
         let mut p_ch = crate::challenger::FsChallenger::new(b"succ-cmp");
-        let proof = recursive_prover_with_basis(
+        let proof = multilevel_prover_with_basis(
             &cfg,
             poly.clone(),
             b.clone(),
@@ -6778,12 +6778,12 @@ mod tests {
 
         let v_cfg = VerifierConfig {
             log_inv_rates: log_inv_rates.clone(),
-            recursive_steps: 1,
+            level_steps: 1,
             initial_log_msg_cols: log_n - initial_k,
             initial_log_num_interleaved: initial_k,
             initial_k,
-            recursive_log_msg_cols: vec![log_n - initial_k - k_0],
-            recursive_ks: vec![k_0],
+            level_log_msg_cols: vec![log_n - initial_k - k_0],
+            level_ks: vec![k_0],
             queries: log_inv_rates.iter().map(|&r| udr_queries(r)).collect(),
             grinding_bits: vec![0; log_inv_rates.len()],
             fold_grinding_bits: vec![0; 2],
@@ -6793,7 +6793,7 @@ mod tests {
         // Dense verifier
         let mut v_ch = crate::challenger::FsChallenger::new(b"succ-cmp");
         let dense_ok =
-            recursive_verifier_with_basis(&v_cfg, &proof, &b, target, &initial_root, &mut v_ch);
+            multilevel_verifier_with_basis(&v_cfg, &proof, &b, target, &initial_root, &mut v_ch);
         assert!(dense_ok, "dense verifier must accept");
 
         // Succinct verifier — batch eval_b is just eq(z, ris ++ y_bits) by construction
@@ -6815,7 +6815,7 @@ mod tests {
                 })
                 .collect()
         };
-        let succ_ok = recursive_verifier_with_basis_succinct(
+        let succ_ok = multilevel_verifier_with_basis_succinct(
             &v_cfg,
             &proof,
             log_n,
@@ -6829,7 +6829,7 @@ mod tests {
 
     /// Build a matching (ProverConfig, VerifierConfig) pair with explicit
     /// OOD samples and fold-challenge grinding, for the OOD-path tests below.
-    /// Shape: L0 (initial_k) → r recursive levels of `k`; small query counts
+    /// Shape: L0 (initial_k) → r fold levels of `k`; small query counts
     /// and grind bits keep the test fast while still exercising every path.
     fn ood_test_configs(
         log_n: usize,
@@ -6840,22 +6840,22 @@ mod tests {
     ) -> (ProverConfig, VerifierConfig) {
         let r = ks.len();
         let log_inv_rates: Vec<usize> = (0..=r).map(|i| 1 + i).collect();
-        let mut recursive_log_msg_cols = Vec::new();
+        let mut level_log_msg_cols = Vec::new();
         let mut dim = log_n - initial_k;
         for &k in ks {
-            recursive_log_msg_cols.push(dim - k);
+            level_log_msg_cols.push(dim - k);
             dim -= k;
         }
         let queries = vec![20usize; r + 1];
         let grinding_bits = vec![0usize; r + 1];
         let p = ProverConfig {
             log_inv_rates: log_inv_rates.clone(),
-            recursive_steps: r,
+            level_steps: r,
             initial_log_msg_cols: log_n - initial_k,
             initial_log_num_interleaved: initial_k,
             initial_k,
-            recursive_log_msg_cols: recursive_log_msg_cols.clone(),
-            recursive_ks: ks.to_vec(),
+            level_log_msg_cols: level_log_msg_cols.clone(),
+            level_ks: ks.to_vec(),
             queries: queries.clone(),
             grinding_bits: grinding_bits.clone(),
             fold_grinding_bits: fold_grinding_bits.clone(),
@@ -6863,12 +6863,12 @@ mod tests {
         };
         let v = VerifierConfig {
             log_inv_rates,
-            recursive_steps: r,
+            level_steps: r,
             initial_log_msg_cols: log_n - initial_k,
             initial_log_num_interleaved: initial_k,
             initial_k,
-            recursive_log_msg_cols,
-            recursive_ks: ks.to_vec(),
+            level_log_msg_cols,
+            level_ks: ks.to_vec(),
             queries,
             grinding_bits,
             fold_grinding_bits,
@@ -6907,7 +6907,7 @@ mod tests {
         let initial_root = wtns_0.root();
 
         let mut p_ch = crate::challenger::FsChallenger::new(b"ood-test");
-        let proof = recursive_prover_with_basis(
+        let proof = multilevel_prover_with_basis(
             &p_cfg,
             poly.clone(),
             b.clone(),
@@ -6919,12 +6919,12 @@ mod tests {
 
         // Sanity: the new proof fields are populated.
         assert_eq!(proof.ood_values.len(), 4, "2 OOD samples each at L1 and L2");
-        // 2 lane folds (L0) + 2 + 2 recursive folds, each with 3 grind bits.
+        // 2 lane folds (L0) + 2 + 2 level folds, each with 3 grind bits.
         assert_eq!(proof.fold_grinding_nonces.len(), initial_k + ks[0] + ks[1]);
 
         let dense = |proof: &LigeritoProof| {
             let mut ch = crate::challenger::FsChallenger::new(b"ood-test");
-            recursive_verifier_with_basis(&v_cfg, proof, &b, target, &initial_root, &mut ch)
+            multilevel_verifier_with_basis(&v_cfg, proof, &b, target, &initial_root, &mut ch)
         };
         let eval_b_residual = {
             let z = z.clone();
@@ -6948,7 +6948,7 @@ mod tests {
         };
         let succinct = |proof: &LigeritoProof| {
             let mut ch = crate::challenger::FsChallenger::new(b"ood-test");
-            recursive_verifier_with_basis_succinct(
+            multilevel_verifier_with_basis_succinct(
                 &v_cfg,
                 proof,
                 log_n,
@@ -7016,7 +7016,7 @@ mod tests {
         let initial_root = wtns_0.root();
 
         let mut p_ch = crate::challenger::FsChallenger::new(b"m22-fast");
-        let proof = recursive_prover_with_basis(
+        let proof = multilevel_prover_with_basis(
             &p_cfg,
             poly,
             b.clone(),
@@ -7028,7 +7028,7 @@ mod tests {
 
         let mut v_ch = crate::challenger::FsChallenger::new(b"m22-fast");
         assert!(
-            recursive_verifier_with_basis(&v_cfg, &proof, &b, target, &initial_root, &mut v_ch),
+            multilevel_verifier_with_basis(&v_cfg, &proof, &b, target, &initial_root, &mut v_ch),
             "m22 fast profile proof must verify"
         );
     }
@@ -7037,7 +7037,7 @@ mod tests {
     /// `target = γ_1·poly(z_1) + γ_2·poly(z_2)`. This is the shape ring_switch
     /// produces.
     #[test]
-    fn recursive_prover_with_basis_roundtrip_batched_claims() {
+    fn multilevel_prover_with_basis_roundtrip_batched_claims() {
         use crate::challenger::Challenger;
         let log_n = 14;
         let initial_k = 3;
@@ -7072,12 +7072,12 @@ mod tests {
         let log_inv_rates = vec![log_inv_rate, log_inv_rate];
         let cfg = ProverConfig {
             log_inv_rates: log_inv_rates.clone(),
-            recursive_steps: 1,
+            level_steps: 1,
             initial_log_msg_cols: log_n - initial_k,
             initial_log_num_interleaved: initial_k,
             initial_k,
-            recursive_log_msg_cols: vec![log_n - initial_k - k_0],
-            recursive_ks: vec![k_0],
+            level_log_msg_cols: vec![log_n - initial_k - k_0],
+            level_ks: vec![k_0],
             queries: log_inv_rates.iter().map(|&r| udr_queries(r)).collect(),
             grinding_bits: vec![0; log_inv_rates.len()],
             fold_grinding_bits: vec![0; 2],
@@ -7090,7 +7090,7 @@ mod tests {
         let initial_root = wtns_0.root();
 
         let mut p_ch = crate::challenger::FsChallenger::new(b"batched");
-        let proof = recursive_prover_with_basis(
+        let proof = multilevel_prover_with_basis(
             &cfg,
             poly.clone(),
             b.clone(),
@@ -7102,12 +7102,12 @@ mod tests {
 
         let v_cfg = VerifierConfig {
             log_inv_rates: log_inv_rates.clone(),
-            recursive_steps: 1,
+            level_steps: 1,
             initial_log_msg_cols: log_n - initial_k,
             initial_log_num_interleaved: initial_k,
             initial_k,
-            recursive_log_msg_cols: vec![log_n - initial_k - k_0],
-            recursive_ks: vec![k_0],
+            level_log_msg_cols: vec![log_n - initial_k - k_0],
+            level_ks: vec![k_0],
             queries: log_inv_rates.iter().map(|&r| udr_queries(r)).collect(),
             grinding_bits: vec![0; log_inv_rates.len()],
             fold_grinding_bits: vec![0; 2],
@@ -7115,15 +7115,15 @@ mod tests {
         };
         let mut v_ch = crate::challenger::FsChallenger::new(b"batched");
         let ok =
-            recursive_verifier_with_basis(&v_cfg, &proof, &b, target, &initial_root, &mut v_ch);
+            multilevel_verifier_with_basis(&v_cfg, &proof, &b, target, &initial_root, &mut v_ch);
         assert!(ok, "batched-basis verifier rejected valid proof");
     }
 
-    /// `recursive_prover_with_l0` (external L0 path, for integration with
+    /// `multilevel_prover_with_l0` (external L0 path, for integration with
     /// Flock's `pcs::commit`) produces a byte-identical proof to
-    /// `recursive_prover` when given a matching pre-built L0.
+    /// `multilevel_prover` when given a matching pre-built L0.
     #[test]
-    fn recursive_prover_with_l0_matches_full() {
+    fn multilevel_prover_with_l0_matches_full() {
         use crate::challenger::Challenger;
         let log_n = 14;
         let initial_k = 3;
@@ -7143,12 +7143,12 @@ mod tests {
         let log_inv_rates = vec![log_inv_rate, log_inv_rate];
         let cfg = ProverConfig {
             log_inv_rates: log_inv_rates.clone(),
-            recursive_steps: 1,
+            level_steps: 1,
             initial_log_msg_cols: log_n - initial_k,
             initial_log_num_interleaved: initial_k,
             initial_k,
-            recursive_log_msg_cols: vec![log_n - initial_k - k_0],
-            recursive_ks: vec![k_0],
+            level_log_msg_cols: vec![log_n - initial_k - k_0],
+            level_ks: vec![k_0],
             queries: log_inv_rates.iter().map(|&r| udr_queries(r)).collect(),
             grinding_bits: vec![0; log_inv_rates.len()],
             fold_grinding_bits: vec![0; 2],
@@ -7157,7 +7157,7 @@ mod tests {
 
         // Path 1: built-in L0 commit.
         let mut p_ch = crate::challenger::FsChallenger::new(b"l0-test");
-        let proof_a = recursive_prover(&cfg, &poly, &z, v, &mut p_ch);
+        let proof_a = multilevel_prover(&cfg, &poly, &z, v, &mut p_ch);
 
         // Path 2: build L0 externally via ligero_commit, then call _with_l0.
         let log_msg_cols_0 = log_n - initial_k;
@@ -7165,7 +7165,7 @@ mod tests {
         let mut wtns_0_external =
             ligero_commit(&poly, log_msg_cols_0, initial_k, log_inv_rate, &ntt_0);
         let mut p_ch_b = crate::challenger::FsChallenger::new(b"l0-test");
-        let proof_b = recursive_prover_with_l0(
+        let proof_b = multilevel_prover_with_l0(
             &cfg,
             &poly,
             std::mem::take(&mut wtns_0_external.mat),
@@ -7177,7 +7177,7 @@ mod tests {
 
         // Proofs must be byte-identical (same FS state, same prover work).
         assert_eq!(proof_a.initial_root, proof_b.initial_root);
-        assert_eq!(proof_a.recursive_roots, proof_b.recursive_roots);
+        assert_eq!(proof_a.level_roots, proof_b.level_roots);
         assert_eq!(proof_a.final_proof.yr, proof_b.final_proof.yr);
         assert_eq!(
             proof_a.sumcheck_transcript.len(),
@@ -7194,19 +7194,19 @@ mod tests {
         // And both must verify against the same VerifierConfig.
         let v_cfg = VerifierConfig {
             log_inv_rates: log_inv_rates.clone(),
-            recursive_steps: 1,
+            level_steps: 1,
             initial_log_msg_cols: log_n - initial_k,
             initial_log_num_interleaved: initial_k,
             initial_k,
-            recursive_log_msg_cols: vec![log_n - initial_k - k_0],
-            recursive_ks: vec![k_0],
+            level_log_msg_cols: vec![log_n - initial_k - k_0],
+            level_ks: vec![k_0],
             queries: log_inv_rates.iter().map(|&r| udr_queries(r)).collect(),
             grinding_bits: vec![0; log_inv_rates.len()],
             fold_grinding_bits: vec![0; 2],
             ood_samples: vec![0; 2],
         };
         let mut v_ch = crate::challenger::FsChallenger::new(b"l0-test");
-        assert!(recursive_verifier(&v_cfg, &proof_b, &z, v, &mut v_ch));
+        assert!(multilevel_verifier(&v_cfg, &proof_b, &z, v, &mut v_ch));
     }
 
     /// Mutation rejection: change one element of yr → verify should fail.
@@ -7233,12 +7233,12 @@ mod tests {
         let _ = num_queries;
         let prover_cfg = ProverConfig {
             log_inv_rates: log_inv_rates.clone(),
-            recursive_steps: 1,
+            level_steps: 1,
             initial_log_msg_cols: log_n - initial_k,
             initial_log_num_interleaved: initial_k,
             initial_k,
-            recursive_log_msg_cols: vec![log_n - initial_k - k_0],
-            recursive_ks: vec![k_0],
+            level_log_msg_cols: vec![log_n - initial_k - k_0],
+            level_ks: vec![k_0],
             queries: log_inv_rates.iter().map(|&r| udr_queries(r)).collect(),
             grinding_bits: vec![0; log_inv_rates.len()],
             fold_grinding_bits: vec![0; 2],
@@ -7246,12 +7246,12 @@ mod tests {
         };
         let verifier_cfg = VerifierConfig {
             log_inv_rates: log_inv_rates.clone(),
-            recursive_steps: 1,
+            level_steps: 1,
             initial_log_msg_cols: log_n - initial_k,
             initial_log_num_interleaved: initial_k,
             initial_k,
-            recursive_log_msg_cols: vec![log_n - initial_k - k_0],
-            recursive_ks: vec![k_0],
+            level_log_msg_cols: vec![log_n - initial_k - k_0],
+            level_ks: vec![k_0],
             queries: log_inv_rates.iter().map(|&r| udr_queries(r)).collect(),
             grinding_bits: vec![0; log_inv_rates.len()],
             fold_grinding_bits: vec![0; 2],
@@ -7259,13 +7259,13 @@ mod tests {
         };
 
         let mut p_ch = crate::challenger::FsChallenger::new(b"test-mut");
-        let mut proof = recursive_prover(&prover_cfg, &poly, &z, v, &mut p_ch);
+        let mut proof = multilevel_prover(&prover_cfg, &poly, &z, v, &mut p_ch);
 
         // Mutate yr.
         proof.final_proof.yr[0] += F128::ONE;
 
         let mut v_ch = crate::challenger::FsChallenger::new(b"test-mut");
-        let ok = recursive_verifier(&verifier_cfg, &proof, &z, v, &mut v_ch);
+        let ok = multilevel_verifier(&verifier_cfg, &proof, &z, v, &mut v_ch);
         assert!(!ok, "verifier accepted a proof with mutated yr");
     }
 

@@ -762,14 +762,14 @@ fn fold_pow_check() {
     verify(&program, &pi, &proof).expect("fold-pow leading-zero check verifies");
 }
 
-/// A Ligerito config (the shape shared by prover + verifier). `r = recursive_ks.len()`.
+/// A Ligerito config (the shape shared by prover + verifier). `r = level_ks.len()`.
 #[derive(Clone)]
 struct LigCfg {
     log_n: usize,
     initial_k: usize,
     log_inv_rates: Vec<usize>,
-    recursive_ks: Vec<usize>,
-    recursive_log_msg_cols: Vec<usize>,
+    level_ks: Vec<usize>,
+    level_log_msg_cols: Vec<usize>,
     initial_log_msg_cols: usize,
     queries: Vec<usize>,
     fold_grinding_bits: Vec<usize>,
@@ -777,17 +777,17 @@ struct LigCfg {
 }
 impl LigCfg {
     fn r(&self) -> usize {
-        self.recursive_ks.len()
+        self.level_ks.len()
     }
     fn prover(&self) -> flare::pcs::ligerito::ProverConfig {
         flare::pcs::ligerito::ProverConfig {
             log_inv_rates: self.log_inv_rates.clone(),
-            recursive_steps: self.r(),
+            level_steps: self.r(),
             initial_log_msg_cols: self.initial_log_msg_cols,
             initial_log_num_interleaved: self.initial_k,
             initial_k: self.initial_k,
-            recursive_log_msg_cols: self.recursive_log_msg_cols.clone(),
-            recursive_ks: self.recursive_ks.clone(),
+            level_log_msg_cols: self.level_log_msg_cols.clone(),
+            level_ks: self.level_ks.clone(),
             queries: self.queries.clone(),
             grinding_bits: vec![0; self.r() + 1],
             fold_grinding_bits: self.fold_grinding_bits.clone(),
@@ -797,12 +797,12 @@ impl LigCfg {
     fn verifier(&self) -> flare::pcs::ligerito::VerifierConfig {
         flare::pcs::ligerito::VerifierConfig {
             log_inv_rates: self.log_inv_rates.clone(),
-            recursive_steps: self.r(),
+            level_steps: self.r(),
             initial_log_msg_cols: self.initial_log_msg_cols,
             initial_log_num_interleaved: self.initial_k,
             initial_k: self.initial_k,
-            recursive_log_msg_cols: self.recursive_log_msg_cols.clone(),
-            recursive_ks: self.recursive_ks.clone(),
+            level_log_msg_cols: self.level_log_msg_cols.clone(),
+            level_ks: self.level_ks.clone(),
             queries: self.queries.clone(),
             grinding_bits: vec![0; self.r() + 1],
             fold_grinding_bits: self.fold_grinding_bits.clone(),
@@ -832,7 +832,7 @@ struct MirOut {
     block_len: Vec<usize>, // Merkle tree size per level's queries (len r+1)
 }
 
-/// Reusable, config-driven mirror of `recursive_verifier_with_basis_succinct`:
+/// Reusable, config-driven mirror of `multilevel_verifier_with_basis_succinct`:
 /// replays the whole verifier (fold-PoW, sample_distinct_queries, enforced sums,
 /// residual), asserts `inner == t_r`, and returns the per-level query data the
 /// guest port needs. Generalizes the (validated) inline m33 mirror.
@@ -881,7 +881,7 @@ fn run_mirror(cfg: &LigCfg, proof: &flare::pcs::ligerito::LigeritoProof, z: &[F1
         quad = fm(sc[txi].u_0, sc[txi].u_2, tr);
         txi += 1;
     }
-    sp.observe_bytes(&proof.recursive_roots[0]);
+    sp.observe_bytes(&proof.level_roots[0]);
     let mut ni = 0usize;
     assert!(sp.verify_pow(proof.grinding_nonces[ni], 0));
     ni += 1;
@@ -903,16 +903,16 @@ fn run_mirror(cfg: &LigCfg, proof: &flare::pcs::ligerito::LigeritoProof, z: &[F1
     let mut ctx_lmc = vec![n1];
     let mut ctx_ris_start = vec![cfg.initial_k];
     let mut ris = r_lane.clone();
-    let mut prev_lmc = n1 - cfg.recursive_ks[0];
+    let mut prev_lmc = n1 - cfg.level_ks[0];
     let mut prev_lir = cfg.log_inv_rates[1];
-    let mut prev_lni = cfg.recursive_ks[0];
+    let mut prev_lni = cfg.level_ks[0];
     let mut nri = 1usize;
     let mut rpi = 0usize;
     let mut n_current = n1;
     let mut inner = F128::ZERO;
 
     for i in 0..r {
-        let k_i = cfg.recursive_ks[i];
+        let k_i = cfg.level_ks[i];
         let mut level_rs = Vec::new();
         for j in 0..k_i {
             let bits = (fgb(i + 1) - j as i64).max(0) as u32;
@@ -973,14 +973,14 @@ fn run_mirror(cfg: &LigCfg, proof: &flare::pcs::ligerito::LigeritoProof, z: &[F1
                 inner += yr[y] * comb;
             }
         } else {
-            let root_next = proof.recursive_roots[nri];
+            let root_next = proof.level_roots[nri];
             nri += 1;
             sp.observe_bytes(&root_next);
             assert!(sp.verify_pow(proof.grinding_nonces[ni], 0));
             ni += 1;
             let (qi, rawi) = sp.sample_queries_ordered(prev_block_len, cfg.queries[i + 1]);
             let ai: Vec<F128> = (0..ceil_log2(cfg.queries[i + 1])).map(|_| sp.sample()).collect();
-            let rp = &proof.recursive_proofs[rpi];
+            let rp = &proof.level_proofs[rpi];
             rpi += 1;
             let rowsi = expand_opened_rows_ordered(&rp.opened_rows, &qi).expect("expand rowsi");
             let enfi = induce_sumcheck_enforced_sum(&rowsi, &level_rs, &qi, &ai);
@@ -994,7 +994,7 @@ fn run_mirror(cfg: &LigCfg, proof: &flare::pcs::ligerito::LigeritoProof, z: &[F1
             ctx_lmc.push(n_current);
             ctx_ris_start.push(ris.len());
             levels.push(MirLevel { sorted: qi, raw: rawi, alpha: ai, beta: betai });
-            let k_next = cfg.recursive_ks[i + 1];
+            let k_next = cfg.level_ks[i + 1];
             prev_lni = k_next;
             prev_lmc = n_current - k_next;
             prev_lir = cfg.log_inv_rates[i + 2];
@@ -1009,7 +1009,7 @@ fn ligerito_small_mirror() {
     use leanvm_b::transcript::ProverState;
     use flare::lincheck::build_eq_table;
     use flare::ntt::AdditiveNttF128;
-    use flare::pcs::ligerito::{ligero_commit, recursive_prover_with_basis, recursive_verifier_with_basis_succinct};
+    use flare::pcs::ligerito::{ligero_commit, multilevel_prover_with_basis, multilevel_verifier_with_basis_succinct};
     use flare::zerocheck::multilinear::eq_eval;
 
     // A small multi-query, multi-level, fold-PoW config for fast iteration.
@@ -1017,8 +1017,8 @@ fn ligerito_small_mirror() {
         log_n: 12,
         initial_k: 3,
         log_inv_rates: vec![1, 2, 3],
-        recursive_ks: vec![2, 2],
-        recursive_log_msg_cols: vec![7, 5],
+        level_ks: vec![2, 2],
+        level_log_msg_cols: vec![7, 5],
         initial_log_msg_cols: 9,
         queries: vec![6, 5, 4],
         fold_grinding_bits: vec![3, 2, 1],
@@ -1036,7 +1036,7 @@ fn ligerito_small_mirror() {
     let initial_root = wtns.root();
     let label = b"smalltest";
     let mut pch = ProverState::new(label, &[]);
-    let proof = recursive_prover_with_basis(&cfg.prover(), poly, b, target, &wtns.mat, &wtns.tree, &mut pch);
+    let proof = multilevel_prover_with_basis(&cfg.prover(), poly, b, target, &wtns.mat, &wtns.tree, &mut pch);
 
     let zc = z.clone();
     let eval_b = move |ris: &[F128], yl: usize| -> Vec<F128> {
@@ -1052,7 +1052,7 @@ fn ligerito_small_mirror() {
             .collect()
     };
     let mut vch = ProverState::new(label, &[]);
-    assert!(recursive_verifier_with_basis_succinct(&cfg.verifier(), &proof, cfg.log_n, target, &initial_root, eval_b, &mut vch));
+    assert!(multilevel_verifier_with_basis_succinct(&cfg.verifier(), &proof, cfg.log_n, target, &initial_root, eval_b, &mut vch));
 
     let m = run_mirror(&cfg, &proof, &z, target, label);
     assert_eq!(m.inner, m.tr, "small-config mirror inner == t_r");
@@ -1180,7 +1180,7 @@ fn gen_clean(
         } else if lvl == r {
             &proof.final_proof.opened_rows
         } else {
-            &proof.recursive_proofs[lvl - 1].opened_rows
+            &proof.level_proofs[lvl - 1].opened_rows
         }
     };
     let path_of = |lvl: usize| -> &Vec<[u8; 32]> {
@@ -1189,18 +1189,18 @@ fn gen_clean(
         } else if lvl == r {
             &proof.final_proof.merkle_proof
         } else {
-            &proof.recursive_proofs[lvl - 1].merkle_proof
+            &proof.level_proofs[lvl - 1].merkle_proof
         }
     };
 
     // Per-level scalars.
-    let klvl: Vec<usize> = (0..nlev).map(|l| if l == 0 { cfg.initial_k } else { cfg.recursive_ks[l - 1] }).collect();
+    let klvl: Vec<usize> = (0..nlev).map(|l| if l == 0 { cfg.initial_k } else { cfg.level_ks[l - 1] }).collect();
     let numinter: Vec<usize> = klvl.iter().map(|&k| 1 << k).collect();
     let queries: Vec<usize> = (0..nlev).map(|l| mir.levels[l].sorted.len()).collect();
     let depth: Vec<usize> = mir.block_len.iter().map(|b| b.trailing_zeros() as usize).collect();
     let lmc = &mir.ctx_lmc;
     let rootw: Vec<[F128; 2]> = std::iter::once(hb(proof.initial_root))
-        .chain(proof.recursive_roots.iter().map(|&h| hb(h)))
+        .chain(proof.level_roots.iter().map(|&h| hb(h)))
         .collect();
 
     // Flat-buffer offsets.
@@ -1362,14 +1362,14 @@ fn ml_clean_small() {
     use leanvm_b::transcript::ProverState;
     use flare::lincheck::build_eq_table;
     use flare::ntt::AdditiveNttF128;
-    use flare::pcs::ligerito::{ligero_commit, recursive_prover_with_basis};
+    use flare::pcs::ligerito::{ligero_commit, multilevel_prover_with_basis};
 
     let cfg = LigCfg {
         log_n: 12,
         initial_k: 3,
         log_inv_rates: vec![1, 2, 3],
-        recursive_ks: vec![2, 2],
-        recursive_log_msg_cols: vec![7, 5],
+        level_ks: vec![2, 2],
+        level_log_msg_cols: vec![7, 5],
         initial_log_msg_cols: 9,
         queries: vec![6, 5, 4],
         fold_grinding_bits: vec![3, 2, 1],
@@ -1385,7 +1385,7 @@ fn ml_clean_small() {
     let wtns = ligero_commit(&poly, cfg.initial_log_msg_cols, cfg.initial_k, cfg.log_inv_rates[0], &ntt);
     let label = b"smalltest";
     let mut pch = ProverState::new(label, &[]);
-    let proof = recursive_prover_with_basis(&cfg.prover(), poly, b, target, &wtns.mat, &wtns.tree, &mut pch);
+    let proof = multilevel_prover_with_basis(&cfg.prover(), poly, b, target, &wtns.mat, &wtns.tree, &mut pch);
     let m = run_mirror(&cfg, &proof, &z, target, label);
     assert_eq!(m.inner, m.tr);
 
@@ -1413,15 +1413,15 @@ fn test_recursive_ligerito() {
     use leanvm_b::transcript::ProverState;
     use flare::lincheck::build_eq_table;
     use flare::ntt::AdditiveNttF128;
-    use flare::pcs::ligerito::{ligero_commit, recursive_prover_with_basis, recursive_verifier_with_basis_succinct};
+    use flare::pcs::ligerito::{ligero_commit, multilevel_prover_with_basis, multilevel_verifier_with_basis_succinct};
     use flare::zerocheck::multilinear::eq_eval;
 
     let cfg = LigCfg {
         log_n: 26,
         initial_k: 6,
         log_inv_rates: vec![1, 2, 3, 4, 5, 6],
-        recursive_ks: vec![3, 3, 3, 3, 3],
-        recursive_log_msg_cols: vec![17, 14, 11, 8, 5],
+        level_ks: vec![3, 3, 3, 3, 3],
+        level_log_msg_cols: vec![17, 14, 11, 8, 5],
         initial_log_msg_cols: 20,
         queries: vec![290, 177, 145, 132, 126, 124],
         fold_grinding_bits: vec![11, 10, 8, 6, 4, 2],
@@ -1439,7 +1439,7 @@ fn test_recursive_ligerito() {
     let initial_root = wtns.root();
     let label = b"m33test";
     let mut pch = ProverState::new(label, &[]);
-    let proof = recursive_prover_with_basis(&cfg.prover(), poly, b, target, &wtns.mat, &wtns.tree, &mut pch);
+    let proof = multilevel_prover_with_basis(&cfg.prover(), poly, b, target, &wtns.mat, &wtns.tree, &mut pch);
     eprintln!("[m33] inner commit+prove: {:?}", t.elapsed());
     let zc = z.clone();
     let eval_b = move |ris: &[F128], yl: usize| -> Vec<F128> {
@@ -1455,7 +1455,7 @@ fn test_recursive_ligerito() {
             .collect()
     };
     let mut vch = ProverState::new(label, &[]);
-    assert!(recursive_verifier_with_basis_succinct(&cfg.verifier(), &proof, cfg.log_n, target, &initial_root, eval_b, &mut vch));
+    assert!(multilevel_verifier_with_basis_succinct(&cfg.verifier(), &proof, cfg.log_n, target, &initial_root, eval_b, &mut vch));
     let m = run_mirror(&cfg, &proof, &z, target, label);
     assert_eq!(m.inner, m.tr, "m33 mirror inner == t_r");
 
@@ -1504,8 +1504,8 @@ fn ligerito_m33_native_probe() {
     use flare::lincheck::build_eq_table;
     use flare::ntt::AdditiveNttF128;
     use flare::pcs::ligerito::{
-        ProverConfig, VerifierConfig, ligero_commit, recursive_prover_with_basis,
-        recursive_verifier_with_basis_succinct,
+        ProverConfig, VerifierConfig, ligero_commit, multilevel_prover_with_basis,
+        multilevel_verifier_with_basis_succinct,
     };
     use flare::zerocheck::multilinear::eq_eval;
 
@@ -1514,12 +1514,12 @@ fn ligerito_m33_native_probe() {
     let lir = vec![1usize, 2, 3, 4, 5, 6];
     let mkp = || ProverConfig {
         log_inv_rates: lir.clone(),
-        recursive_steps: 5,
+        level_steps: 5,
         initial_log_msg_cols: 20,
         initial_log_num_interleaved: initial_k,
         initial_k,
-        recursive_log_msg_cols: vec![17, 14, 11, 8, 5],
-        recursive_ks: vec![3, 3, 3, 3, 3],
+        level_log_msg_cols: vec![17, 14, 11, 8, 5],
+        level_ks: vec![3, 3, 3, 3, 3],
         queries: vec![290, 177, 145, 132, 126, 124],
         grinding_bits: vec![0; 6],
         fold_grinding_bits: vec![11, 10, 8, 6, 4, 2],
@@ -1527,12 +1527,12 @@ fn ligerito_m33_native_probe() {
     };
     let vc = VerifierConfig {
         log_inv_rates: lir.clone(),
-        recursive_steps: 5,
+        level_steps: 5,
         initial_log_msg_cols: 20,
         initial_log_num_interleaved: initial_k,
         initial_k,
-        recursive_log_msg_cols: vec![17, 14, 11, 8, 5],
-        recursive_ks: vec![3, 3, 3, 3, 3],
+        level_log_msg_cols: vec![17, 14, 11, 8, 5],
+        level_ks: vec![3, 3, 3, 3, 3],
         queries: vec![290, 177, 145, 132, 126, 124],
         grinding_bits: vec![0; 6],
         fold_grinding_bits: vec![11, 10, 8, 6, 4, 2],
@@ -1557,8 +1557,8 @@ fn ligerito_m33_native_probe() {
     let label = b"m33probe";
     let t = Instant::now();
     let mut pch = ProverState::new(label, &[]);
-    let proof = recursive_prover_with_basis(&mkp(), poly, b, target, &wtns.mat, &wtns.tree, &mut pch);
-    eprintln!("[m33] recursive prove: {:?}", t.elapsed());
+    let proof = multilevel_prover_with_basis(&mkp(), poly, b, target, &wtns.mat, &wtns.tree, &mut pch);
+    eprintln!("[m33] multilevel prove: {:?}", t.elapsed());
 
     let zc = z.clone();
     let eval_b = move |ris: &[F128], yl: usize| -> Vec<F128> {
@@ -1575,7 +1575,7 @@ fn ligerito_m33_native_probe() {
     };
     let t = Instant::now();
     let mut vch = ProverState::new(label, &[]);
-    let ok = recursive_verifier_with_basis_succinct(&vc, &proof, log_n, target, &initial_root, eval_b, &mut vch);
+    let ok = multilevel_verifier_with_basis_succinct(&vc, &proof, log_n, target, &initial_root, eval_b, &mut vch);
     eprintln!("[m33] native verify: {:?} -> {ok}", t.elapsed());
     assert!(ok);
 
@@ -1617,7 +1617,7 @@ fn ligerito_m33_native_probe() {
         quad = fm(sc[txi].u_0, sc[txi].u_2, tr);
         txi += 1;
     }
-    sp.observe_bytes(&proof.recursive_roots[0]);
+    sp.observe_bytes(&proof.level_roots[0]);
     let mut ni = 0usize;
     assert!(sp.verify_pow(proof.grinding_nonces[ni], 0));
     ni += 1;
@@ -1704,14 +1704,14 @@ fn ligerito_m33_native_probe() {
                 inner += yr[y] * comb;
             }
         } else {
-            let root_next = proof.recursive_roots[nri];
+            let root_next = proof.level_roots[nri];
             nri += 1;
             sp.observe_bytes(&root_next);
             assert!(sp.verify_pow(proof.grinding_nonces[ni], 0));
             ni += 1;
             let (qi, _) = sp.sample_queries_ordered(prev_block_len, cfgq[i + 1]);
             let ai: Vec<F128> = (0..ceil_log2(cfgq[i + 1])).map(|_| sp.sample()).collect();
-            let rp = &proof.recursive_proofs[rpi];
+            let rp = &proof.level_proofs[rpi];
             rpi += 1;
             let rowsi = expand_opened_rows_ordered(&rp.opened_rows, &qi).expect("expand rowsi");
             let enfi = induce_sumcheck_enforced_sum(&rowsi, &level_rs, &qi, &ai);
@@ -1733,16 +1733,16 @@ fn ligerito_m33_native_probe() {
     assert_eq!(inner, tr, "m33 mirror: inner == t_r (matches native accept)");
     eprintln!("[m33] mirror OK: inner == t_r  ({:?})", tm.elapsed());
 
-    let tot_q: usize = proof.recursive_proofs.iter().map(|p| p.opened_rows.len()).sum::<usize>()
+    let tot_q: usize = proof.level_proofs.iter().map(|p| p.opened_rows.len()).sum::<usize>()
         + proof.initial_proof.opened_rows.len()
         + proof.final_proof.opened_rows.len();
     eprintln!(
-        "[m33] shapes: sumcheck msgs={}, init rows={}x{}, mp={}, rec levels={}, final yr={}, total opened rows={}",
+        "[m33] shapes: sumcheck msgs={}, init rows={}x{}, mp={}, fold levels={}, final yr={}, total opened rows={}",
         proof.sumcheck_transcript.len(),
         proof.initial_proof.opened_rows.len(),
         proof.initial_proof.opened_rows.first().map(|r| r.len()).unwrap_or(0),
         proof.initial_proof.merkle_proof.len(),
-        proof.recursive_proofs.len(),
+        proof.level_proofs.len(),
         proof.final_proof.yr.len(),
         tot_q,
     );
@@ -1750,7 +1750,7 @@ fn ligerito_m33_native_probe() {
 
 // ---- Ligerito core: native driver probe (tiny instance, 1 query/level) ----
 //
-// Drives flock's actual recursive Ligerito prover + succinct verifier at a tiny
+// Drives flock's actual multilevel Ligerito prover + succinct verifier at a tiny
 // config with a leanVM-b ProverState challenger (the compress-sponge the zkDSL
 // guest replays). With 1 query per level the octopus multi-proof degenerates to a
 // single Merkle path, keeping the port tractable. Prints the concrete proof shapes
@@ -1761,7 +1761,7 @@ fn recursive_ligerito_tiny() {
     use leanvm_b::transcript::ProverState;
     use flare::lincheck::build_eq_table;
     use flare::ntt::AdditiveNttF128;
-    use flare::pcs::ligerito::{ligero_commit, recursive_prover_with_basis, recursive_verifier_with_basis_succinct};
+    use flare::pcs::ligerito::{ligero_commit, multilevel_prover_with_basis, multilevel_verifier_with_basis_succinct};
     use flare::zerocheck::multilinear::eq_eval;
 
     // The tiny config (1 query/level) through the same config-driven verifier
@@ -1770,8 +1770,8 @@ fn recursive_ligerito_tiny() {
         log_n: 8,
         initial_k: 2,
         log_inv_rates: vec![1, 1],
-        recursive_ks: vec![2],
-        recursive_log_msg_cols: vec![4],
+        level_ks: vec![2],
+        level_log_msg_cols: vec![4],
         initial_log_msg_cols: 6,
         queries: vec![1, 1],
         fold_grinding_bits: vec![0, 0],
@@ -1790,7 +1790,7 @@ fn recursive_ligerito_tiny() {
 
     let label = b"ligtest";
     let mut pch = ProverState::new(label, &[]);
-    let proof = recursive_prover_with_basis(&cfg.prover(), poly, b, target, &wtns.mat, &wtns.tree, &mut pch);
+    let proof = multilevel_prover_with_basis(&cfg.prover(), poly, b, target, &wtns.mat, &wtns.tree, &mut pch);
 
     let zc = z.clone();
     let eval_b = move |ris: &[F128], yl: usize| -> Vec<F128> {
@@ -1806,7 +1806,7 @@ fn recursive_ligerito_tiny() {
             .collect()
     };
     let mut vch = ProverState::new(label, &[]);
-    assert!(recursive_verifier_with_basis_succinct(&cfg.verifier(), &proof, cfg.log_n, target, &initial_root, eval_b, &mut vch));
+    assert!(multilevel_verifier_with_basis_succinct(&cfg.verifier(), &proof, cfg.log_n, target, &initial_root, eval_b, &mut vch));
 
     // Mirror confirms inner == t_r and extracts the per-level query data.
     let m = run_mirror(&cfg, &proof, &z, target, label);

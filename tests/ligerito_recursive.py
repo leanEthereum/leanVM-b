@@ -1,7 +1,7 @@
 from snark_lib import *
 
 # In-circuit multi-level Ligerito PCS-opening verifier — a config-driven zkDSL port
-# of flock's `recursive_verifier_with_basis_succinct` (leanVM-b's opening scheme).
+# of flock's `multilevel_verifier_with_basis_succinct` (leanVM-b's opening scheme).
 # ONE source, specialised per proof by placeholder-filled constant arrays; no
 # Rust-side code generation. Verifies each query independently (no dedup/sort —
 # that is proof-storage compression). The transcript sponge is the `blake3` opcode

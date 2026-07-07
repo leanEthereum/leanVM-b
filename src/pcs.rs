@@ -38,7 +38,7 @@ pub const PROFILE: LigeritoProfile = LigeritoProfile::Secure;
 // in sync — a stronger profile without bumping the constant (or vice versa)
 // would leave one round below the intended level.
 const _: () = assert!(PROFILE.security_bits() == crate::SECURITY_BITS as usize);
-/// Minimum committed-witness log-size: Ligerito's recursion needs every level's
+/// Minimum committed-witness log-size: Ligerito's level ladder needs every level's
 /// block length to accommodate its query count. The `Secure` profile's
 /// unique-decoding regime uses more queries than `Fast`, so its floor is higher
 /// — feasible from `μ = 14` (flock `m = 21`); we set `μ = 15` (`m = 22`, the

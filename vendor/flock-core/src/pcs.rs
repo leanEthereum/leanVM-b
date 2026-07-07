@@ -53,7 +53,7 @@ pub struct OpeningProof {
 
 /// Batched opening proof with the **Ligerito** PCS backend instead of BaseFold.
 /// Same ring-switching frontend; the combined `b_combined` + target_combined
-/// feed [`ligerito::recursive_prover_with_basis`] for a smaller proof at the
+/// feed [`ligerito::multilevel_prover_with_basis`] for a smaller proof at the
 /// cost of ~1.4× prover time (see ligerito module docs).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BatchOpeningProofLigerito {
@@ -337,7 +337,7 @@ pub fn open_batch_mixed_with_precomputed_s_hat_v<Ch: Challenger>(
 
 /// Ligerito-backend counterpart to [`open_batch_mixed_with_precomputed_s_hat_v`].
 /// Shares the ring_switch + b_combined computation, then routes to
-/// [`ligerito::recursive_prover_with_basis`] using the existing `prover_data`'s
+/// [`ligerito::multilevel_prover_with_basis`] using the existing `prover_data`'s
 /// codeword + tree as Ligerito's L0 commit (no L0 re-commit).
 ///
 /// `lig_config.initial_k` must equal `commitment.params.log_batch_size` so that
@@ -379,7 +379,7 @@ pub fn open_batch_mixed_ligerito_with_precomputed_s_hat_v<Ch: Challenger>(
     );
 
     let t = std::time::Instant::now();
-    let ligerito_proof = ligerito::recursive_prover_with_basis_precomputed_round0(
+    let ligerito_proof = ligerito::multilevel_prover_with_basis_precomputed_round0(
         lig_config,
         packed_witness,
         combined.b_combined,
@@ -391,7 +391,7 @@ pub fn open_batch_mixed_ligerito_with_precomputed_s_hat_v<Ch: Challenger>(
     );
     if trace {
         eprintln!(
-            "  [open_batch] ligerito::recursive_prover_with_basis: {:6.2} ms",
+            "  [open_batch] ligerito::multilevel_prover_with_basis: {:6.2} ms",
             t.elapsed().as_secs_f64() * 1e3
         );
         eprintln!(
@@ -951,7 +951,7 @@ pub fn verify_opening_batch_mixed<Ch: Challenger>(
 /// Ligerito-backend mirror of [`verify_opening_batch_mixed`]. Uses
 /// `ring_switch::verify` (non-succinct, so it returns the dense `rs_eq_ind`)
 /// to reconstruct `b_combined`, then delegates to
-/// [`ligerito::recursive_verifier_with_basis`].
+/// [`ligerito::multilevel_verifier_with_basis`].
 ///
 /// NOTE: this is the simple (non-succinct) verifier path; it materializes
 /// the full `2^(m-7)` rs_eq_ind, costing ~16 MB at m=29. A succinct variant
@@ -1083,7 +1083,7 @@ pub fn verify_opening_batch_ligerito_mixed<Ch: Challenger>(
 
     // 5. Drive ligerito SUCCINCT verifier — eval_b_residual is called ONCE
     //    at the residual check (returns all yr_len values in one batch).
-    let ok = ligerito::recursive_verifier_with_basis_succinct(
+    let ok = ligerito::multilevel_verifier_with_basis_succinct(
         lig_config,
         &proof.ligerito,
         log_n,
@@ -1534,7 +1534,7 @@ mod tests {
         let z_packed = pack_witness(&z, m);
         let (commitment, prover_data) = commit(&z_packed, &params);
 
-        let recursive_ks = vec![3usize, 3, 3];
+        let level_ks = vec![3usize, 3, 3];
         let log_inv_rates = vec![1usize, 3, 4, 6];
         let queries: Vec<usize> = log_inv_rates
             .iter()
@@ -1544,12 +1544,12 @@ mod tests {
         let n_levels = log_inv_rates.len();
         let lig_p_cfg = crate::pcs::ligerito::ProverConfig {
             log_inv_rates: log_inv_rates.clone(),
-            recursive_steps: recursive_ks.len(),
+            level_steps: level_ks.len(),
             initial_log_msg_cols: (m - LOG_PACKING) - initial_k,
             initial_log_num_interleaved: initial_k,
             initial_k,
-            recursive_log_msg_cols: vec![6, 3, 0],
-            recursive_ks: recursive_ks.clone(),
+            level_log_msg_cols: vec![6, 3, 0],
+            level_ks: level_ks.clone(),
             queries: queries.clone(),
             grinding_bits: grinding_bits.clone(),
             fold_grinding_bits: vec![0; n_levels],
@@ -1557,12 +1557,12 @@ mod tests {
         };
         let lig_v_cfg = crate::pcs::ligerito::VerifierConfig {
             log_inv_rates,
-            recursive_steps: recursive_ks.len(),
+            level_steps: level_ks.len(),
             initial_log_msg_cols: (m - LOG_PACKING) - initial_k,
             initial_log_num_interleaved: initial_k,
             initial_k,
-            recursive_log_msg_cols: vec![6, 3, 0],
-            recursive_ks,
+            level_log_msg_cols: vec![6, 3, 0],
+            level_ks,
             queries,
             grinding_bits,
             fold_grinding_bits: vec![0; n_levels],
@@ -1740,7 +1740,7 @@ fn stack_claim_eq_at(claim: &StackClaim, x: &[F128]) -> F128 {
 /// **Ligerito**-backend counterpart of [`open_batch_mixed_ligerito_stacked`]: the identical
 /// ring-switch combine + lifted `b_stack` build (same transcript order, same
 /// `⟨stack, b_stack⟩ = target` inner-product claim), discharged by the Ligerito
-/// recursive prover instead of BaseFold, reusing the caller's commit as L0.
+/// multilevel prover instead of BaseFold, reusing the caller's commit as L0.
 /// `lig_config.initial_k` / `log_inv_rates[0]` must match the commit's params.
 #[allow(clippy::too_many_arguments)]
 pub fn open_batch_mixed_ligerito_stacked<Ch: Challenger>(
@@ -1777,7 +1777,7 @@ pub fn open_batch_mixed_ligerito_stacked<Ch: Challenger>(
     let gammas_pd: Vec<F128> = (0..stack_pd.len()).map(|_| challenger.sample_f128()).collect();
     fold_stacked_point_claims(&mut b_stack, &mut target, stack_pd, &gammas_pd);
 
-    let lig = ligerito::recursive_prover_with_basis(
+    let lig = ligerito::multilevel_prover_with_basis(
         lig_config,
         stack.to_vec(),
         b_stack,
@@ -1880,7 +1880,7 @@ pub fn verify_opening_batch_mixed_ligerito_stacked<Ch: Challenger>(
             .collect()
     };
 
-    let ok = ligerito::recursive_verifier_with_basis_succinct(
+    let ok = ligerito::multilevel_verifier_with_basis_succinct(
         lig_config,
         &proof.ligerito,
         log_n,

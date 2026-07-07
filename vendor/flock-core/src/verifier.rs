@@ -39,7 +39,7 @@ fn verifier_pool() -> &'static rayon::ThreadPool {
         rayon::ThreadPoolBuilder::new()
             .num_threads(1)
             // The whole verify body runs on this worker — including the deep
-            // recursive Ligerito verifier — so give it an ample stack. A rayon
+            // multilevel Ligerito verifier — so give it an ample stack. A rayon
             // worker otherwise defaults to ~2 MiB (vs the 8 MiB main thread),
             // which the recursion overflows.
             .stack_size(64 * 1024 * 1024)

@@ -88,7 +88,7 @@ flock BLAKE3 R1CS reduction) + recursion harness.
 
 ## END-TO-END LIGERITO OPENING VERIFIER — DONE (tiny instance)
 `ligerito_verify_end_to_end` (tests/recursion_gadgets.rs) is a complete zkDSL port of
-`recursive_verifier_with_basis_succinct` — leanVM-b's actual Ligerito opening — that
+`multilevel_verifier_with_basis_succinct` — leanVM-b's actual Ligerito opening — that
 verifies a REAL flock `LigeritoProof` end-to-end, proven+checked by leanVM-b's own
 prover/verifier. Full protocol: sponge replay + RoundQuad sumcheck + enforced-sum glue
 + single-path Merkle opens (query bits pinned by 128-bit decomposition) + residual
@@ -120,7 +120,7 @@ debug). No cheap algebraic bypass exists (the transpose touches every bit).
 
 ## The target is the LIGERITO backend (not basefold)
 leanVM-b's opening is `verify_opening_batch_mixed_ligerito_stacked` (pcs.rs:1802)
-→ `ligerito::recursive_verifier_with_basis_succinct` (ligerito.rs:3389). The
+→ `ligerito::multilevel_verifier_with_basis_succinct` (ligerito.rs:3389). The
 single-claim `verify_opening`→`basefold::verify` path (with NTT `fri_fold_coset`)
 is a DIFFERENT scheme leanVM-b does not use — do not port it.
 

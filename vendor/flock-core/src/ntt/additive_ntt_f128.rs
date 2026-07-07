@@ -286,7 +286,7 @@ impl AdditiveNttF128 {
         // Parallelism floor. The cache heuristic keeps each sub-NTT ~2 MB, but
         // for a mid-size transform whose whole codeword already fits that
         // budget it yields `cache_n_top == 0` and the transform runs fully
-        // serial — e.g. the recursive Ligerito commits (~1 ms of NTT each,
+        // serial — e.g. the multilevel Ligerito commits (~1 ms of NTT each,
         // previously 1.0× across threads). When the transform is big enough to
         // amortize rayon overhead, raise `n_top` so the deep-layer split
         // produces ~one sub-NTT per worker thread (capped to keep each sub-NTT
@@ -294,7 +294,7 @@ impl AdditiveNttF128 {
         // its `cache_n_top` already exceeds this floor.
         //
         // The floor (log_d ≥ 12) is the measured dispatch-vs-compute crossover
-        // for num_ntts≈8 recursive commits: at log_d=12 parallelizing cuts the
+        // for num_ntts≈8 level commits: at log_d=12 parallelizing cuts the
         // NTT ~0.22 → ~0.08 ms, but at log_d=10 the rayon dispatch costs more
         // than the ~0.04 ms of work, so those stay scalar.
         const PARALLEL_FLOOR_LOG_D: usize = 12;
