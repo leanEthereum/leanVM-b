@@ -1477,159 +1477,67 @@ fn ligerito_verify_source(
 // the guest port must consume.
 #[test]
 fn test_recursive_ligerito() {
+    use std::collections::BTreeMap;
+    use std::time::Instant;
+    use leanvm_b::compiler::parse_file_with_replacements;
     use leanvm_b::transcript::ProverState;
     use flare::lincheck::build_eq_table;
     use flare::ntt::AdditiveNttF128;
-    use flare::pcs::ligerito::{
-        ProverConfig, VerifierConfig, ligero_commit, recursive_prover_with_basis,
-        recursive_verifier_with_basis_succinct,
-    };
+    use flare::pcs::ligerito::{eval_sk_at_vks, ligero_commit, recursive_prover_with_basis, recursive_verifier_with_basis_succinct};
     use flare::zerocheck::multilinear::eq_eval;
 
-    let log_n = 8usize;
-    let initial_k = 2usize;
-    let k_0 = 2usize;
-    let rate = 1usize;
-
-    let poly: Vec<F128> = (0..(1usize << log_n))
+    // The tiny config (1 query/level). The verifier program lives in the readable
+    // `.py` file `tests/ligerito_verifier.py`, loaded via placeholder substitution.
+    let cfg = LigCfg {
+        log_n: 8,
+        initial_k: 2,
+        log_inv_rates: vec![1, 1],
+        recursive_ks: vec![2],
+        recursive_log_msg_cols: vec![4],
+        initial_log_msg_cols: 6,
+        queries: vec![1, 1],
+        fold_grinding_bits: vec![0, 0],
+        yr_log_n: 4,
+    };
+    let poly: Vec<F128> = (0..(1usize << cfg.log_n))
         .map(|i| F128::new(0x9E37_79B9u64.wrapping_mul(i as u64 + 1) + 1, 0x1234 ^ (i as u64)))
         .collect();
-    let z: Vec<F128> = (0..log_n).map(|i| F128::new(0xABCD + i as u64, 0x55u64.wrapping_mul(i as u64) + 7)).collect();
+    let z: Vec<F128> = (0..cfg.log_n).map(|i| F128::new(0xABCD + i as u64, 0x55u64.wrapping_mul(i as u64) + 7)).collect();
     let b = build_eq_table(&z);
     let target: F128 = poly.iter().zip(b.iter()).map(|(&a, &c)| a * c).fold(F128::ZERO, |a, x| a + x);
 
-    let lir = vec![rate, rate];
-    let pc = ProverConfig {
-        log_inv_rates: lir.clone(),
-        recursive_steps: 1,
-        initial_log_msg_cols: log_n - initial_k,
-        initial_log_num_interleaved: initial_k,
-        initial_k,
-        recursive_log_msg_cols: vec![log_n - initial_k - k_0],
-        recursive_ks: vec![k_0],
-        queries: vec![1, 1],
-        grinding_bits: vec![0; 2],
-        fold_grinding_bits: vec![0; 2],
-        ood_samples: vec![0; 2],
-    };
-    let vc = VerifierConfig {
-        log_inv_rates: lir.clone(),
-        recursive_steps: 1,
-        initial_log_msg_cols: log_n - initial_k,
-        initial_log_num_interleaved: initial_k,
-        initial_k,
-        recursive_log_msg_cols: vec![log_n - initial_k - k_0],
-        recursive_ks: vec![k_0],
-        queries: vec![1, 1],
-        grinding_bits: vec![0; 2],
-        fold_grinding_bits: vec![0; 2],
-        ood_samples: vec![0; 2],
-    };
-
-    let ntt = AdditiveNttF128::standard(log_n - initial_k + rate);
-    let wtns = ligero_commit(&poly, log_n - initial_k, initial_k, rate, &ntt);
+    let ntt = AdditiveNttF128::standard(cfg.initial_log_msg_cols + cfg.log_inv_rates[0]);
+    let wtns = ligero_commit(&poly, cfg.initial_log_msg_cols, cfg.initial_k, cfg.log_inv_rates[0], &ntt);
     let initial_root = wtns.root();
 
     let label = b"ligtest";
     let mut pch = ProverState::new(label, &[]);
-    let proof = recursive_prover_with_basis(&pc, poly.clone(), b.clone(), target, &wtns.mat, &wtns.tree, &mut pch);
+    let proof = recursive_prover_with_basis(&cfg.prover(), poly, b, target, &wtns.mat, &wtns.tree, &mut pch);
 
     let zc = z.clone();
-    let eval_b_residual = move |ris: &[F128], yr_log_n: usize| -> Vec<F128> {
-        let mut point = ris.to_vec();
-        point.resize(ris.len() + yr_log_n, F128::ZERO);
-        (0..(1usize << yr_log_n))
+    let eval_b = move |ris: &[F128], yl: usize| -> Vec<F128> {
+        let mut p = ris.to_vec();
+        p.resize(ris.len() + yl, F128::ZERO);
+        (0..(1usize << yl))
             .map(|y| {
-                for j in 0..yr_log_n {
-                    point[ris.len() + j] = if (y >> j) & 1 == 1 { F128::ONE } else { F128::ZERO };
+                for j in 0..yl {
+                    p[ris.len() + j] = if (y >> j) & 1 == 1 { F128::ONE } else { F128::ZERO };
                 }
-                eq_eval(&zc, &point)
+                eq_eval(&zc, &p)
             })
             .collect()
     };
     let mut vch = ProverState::new(label, &[]);
-    let ok = recursive_verifier_with_basis_succinct(&vc, &proof, log_n, target, &initial_root, eval_b_residual, &mut vch);
-    assert!(ok, "native ligerito verifier accepts the honest proof");
+    assert!(recursive_verifier_with_basis_succinct(&cfg.verifier(), &proof, cfg.log_n, target, &initial_root, eval_b, &mut vch));
 
-    // ---- Rust mirror of the tiny verifier (validates the port spec + extracts
-    // the sampled query values). If `inner == t_r` here, the replay is correct
-    // and matches native (which accepted the same proof). ----
-    use flare::lincheck::build_eq_table as bet;
-    use flare::pcs::ligerito::{eval_sk_at_vks, induce_sumcheck_evaluate_at_residual};
-    use flare::zerocheck::multilinear::eq_eval as eqe;
+    // Mirror confirms inner == t_r and extracts the sampled query values.
+    let m = run_mirror(&cfg, &proof, &z, target, label);
+    assert_eq!(m.inner, m.tr, "mirror: inner == t_r");
+    let v_q0 = m.levels[0].raw[0];
+    let v_ql = m.levels[1].raw[0];
 
-    let sc = &proof.sumcheck_transcript;
-    let fm = |u0: F128, u2: F128, tr: F128| (u0, tr + u2, u2); // from_msg -> (c,b,a)
-    let ev = |q: (F128, F128, F128), r: F128| q.0 + r * q.1 + r * r * q.2;
-    let fold = |a: (F128, F128, F128), b: (F128, F128, F128), al: F128| (a.0 + al * b.0, a.1 + al * b.1, a.2 + al * b.2);
-    let dot = |row: &[F128], eq: &[F128]| row.iter().zip(eq).map(|(&r, &e)| r * e).fold(F128::ZERO, |a, x| a + x);
-
-    let mut sp = fs_ref::Sponge::new(label, &[]);
-    sp.observe_bytes(b"flock-ligerito-basis-v0");
-    sp.observe(target);
-    sp.observe_bytes(&initial_root);
-    let mut tr = target;
-    sp.observe(sc[0].u_0);
-    sp.observe(sc[0].u_2);
-    let mut quad = fm(sc[0].u_0, sc[0].u_2, tr);
-    let mut r_lane = Vec::new();
-    for j in 0..initial_k {
-        let ri = sp.sample();
-        r_lane.push(ri);
-        tr = ev(quad, ri);
-        sp.observe(sc[1 + j].u_0);
-        sp.observe(sc[1 + j].u_2);
-        quad = fm(sc[1 + j].u_0, sc[1 + j].u_2, tr);
-    }
-    sp.observe_bytes(&proof.recursive_roots[0]);
-    sp.absorb_nonce(0);
-    let v_q0 = sp.sample();
-    let q0 = (v_q0.lo as usize) % 128;
-    let enforced0 = dot(&proof.initial_proof.opened_rows[0], &bet(&r_lane));
-    sp.observe(sc[3].u_0);
-    sp.observe(sc[3].u_2);
-    let iq = fm(sc[3].u_0, sc[3].u_2, enforced0);
-    let beta0 = sp.sample();
-    quad = fold(quad, iq, beta0);
-    tr += beta0 * enforced0;
-    let mut level_rs = Vec::new();
-    for j in 0..k_0 {
-        let ri = sp.sample();
-        level_rs.push(ri);
-        tr = ev(quad, ri);
-        sp.observe(sc[4 + j].u_0);
-        sp.observe(sc[4 + j].u_2);
-        quad = fm(sc[4 + j].u_0, sc[4 + j].u_2, tr);
-    }
-    for v in &proof.final_proof.yr {
-        sp.observe(*v);
-    }
-    sp.absorb_nonce(0);
-    let v_ql = sp.sample();
-    let q_last = (v_ql.lo as usize) % 32;
-    let enforced_last = dot(&proof.final_proof.opened_rows[0], &bet(&level_rs));
-    let beta_last = sp.sample();
-    tr += beta_last * enforced_last;
-
-    let mut ris = r_lane.clone();
-    ris.extend(&level_rs);
-    let yr_log_n = 4usize;
-    let resid0 = induce_sumcheck_evaluate_at_residual(6, &eval_sk_at_vks(6), &[q0], &[], &ris[2..4], yr_log_n);
-    let resid_last = induce_sumcheck_evaluate_at_residual(4, &eval_sk_at_vks(4), &[q_last], &[], &ris[4..4], yr_log_n);
-    let mut inner = F128::ZERO;
-    for y in 0..16usize {
-        let mut point = ris.clone();
-        for j in 0..yr_log_n {
-            point.push(if (y >> j) & 1 == 1 { F128::ONE } else { F128::ZERO });
-        }
-        let comb = eqe(&z, &point) + beta0 * resid0[y] + beta_last * resid_last[y];
-        inner += proof.final_proof.yr[y] * comb;
-    }
-    assert_eq!(inner, tr, "mirror: inner == t_r (matches native accept)");
-    let _ = (q0, q_last);
-
-    // ---- The zkDSL guest port, verified end-to-end against this real proof ----
-    let seed = fs_ref::seed_cv(label, &[]);
+    // ---- Load the zkDSL verifier from tests/ligerito_verifier.py, filling the
+    // per-proof constants via placeholder substitution (recursion.py convention). ----
     let hbytes = |h: [u8; 32]| {
         let w = |o: usize| u64::from_le_bytes(h[o..o + 8].try_into().unwrap());
         [F128::new(w(0), w(8)), F128::new(w(16), w(24))]
@@ -1643,26 +1551,47 @@ fn test_recursive_ligerito() {
         buf[..end].copy_from_slice(&lbl_bytes[o..o + end]);
         F128::new(u64::from_le_bytes(buf[..8].try_into().unwrap()), u64::from_le_bytes(buf[8..].try_into().unwrap()))
     };
-    let lbl = [word(0), word(16)];
     let sv6 = eval_sk_at_vks(6);
-    let isv6: Vec<F128> = sv6.iter().map(|&v| if v == F128::ZERO { F128::ZERO } else { v.inv() }).collect();
+    let iv6: Vec<F128> = sv6.iter().map(|&v| if v == F128::ZERO { F128::ZERO } else { v.inv() }).collect();
     let sv4 = eval_sk_at_vks(4);
-    let isv4: Vec<F128> = sv4.iter().map(|&v| if v == F128::ZERO { F128::ZERO } else { v.inv() }).collect();
-    let evb: Vec<F128> = (0..16)
-        .map(|y: usize| {
-            let mut p = F128::ONE;
-            for j in 0..4 {
-                p *= if (y >> j) & 1 == 1 { z[4 + j] } else { F128::ONE + z[4 + j] };
-            }
-            p
-        })
-        .collect();
-    let src = ligerito_verify_source(seed, target, ir, rr, lbl, &z, &sv6, &isv6, &sv4, &isv4, &evb);
+    let iv4: Vec<F128> = sv4.iter().map(|&v| if v == F128::ZERO { F128::ZERO } else { v.inv() }).collect();
+    let seed = fs_ref::seed_cv(label, &[]);
+
+    let mut rep: BTreeMap<String, String> = BTreeMap::new();
+    let mut put = |k: String, v: F128| {
+        rep.insert(format!("{k}_PLACEHOLDER"), u(v).to_string());
+    };
+    put("SEED0".into(), seed[0]);
+    put("SEED1".into(), seed[1]);
+    put("TARGET".into(), target);
+    put("INITROOT0".into(), ir[0]);
+    put("INITROOT1".into(), ir[1]);
+    put("RECROOT0".into(), rr[0]);
+    put("RECROOT1".into(), rr[1]);
+    put("LBLA".into(), word(0));
+    put("LBLB".into(), word(16));
+    for i in 0..5 {
+        put(format!("SV6_{i}"), sv6[i]);
+    }
+    for i in 0..6 {
+        put(format!("IV6_{i}"), iv6[i]);
+    }
+    for i in 0..3 {
+        put(format!("SV4_{i}"), sv4[i]);
+    }
+    for i in 0..4 {
+        put(format!("IV4_{i}"), iv4[i]);
+    }
+    for i in 0..8 {
+        put(format!("Z{i}"), z[i]);
+    }
+
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/ligerito_verifier.py");
+    let ast = parse_file_with_replacements(path, &rep).expect("parse ligerito_verifier.py");
+    let mut program = compile(&ast);
 
     let sc_flat: Vec<F128> = proof.sumcheck_transcript.iter().flat_map(|m| [m.u_0, m.u_2]).collect();
     let path_flat = |p: &[[u8; 32]]| -> Vec<F128> { p.iter().flat_map(|&h| hbytes(h)).collect() };
-
-    let mut program = compile(&parse(&src).expect("parse ligerito verifier"));
     program.set_witness("sc", vec![sc_flat]);
     program.set_witness("l0row", vec![proof.initial_proof.opened_rows[0].clone()]);
     program.set_witness("l0path", vec![path_flat(&proof.initial_proof.merkle_proof)]);
