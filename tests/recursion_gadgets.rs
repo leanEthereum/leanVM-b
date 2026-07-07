@@ -470,6 +470,112 @@ fn gkr_verify_source(mu: usize, seed: [F128; 2], leaf_val: F128, n_stream: usize
     s
 }
 
+// ---- Gadget 6: single-path Merkle verification ----
+//
+// A Ligerito query opening proves a codeword column sits at a leaf of the commit
+// Merkle tree. The leaf hash is the length-in-IV MD chain `vmhash::hash_slice`
+// (proven equal to flock's `merkle::hash_leaf`); each internal node is
+// `compress(left,right)` with sibling order chosen by the query-index bit
+// (`idx&1`, LSB-first bottom-up). The guest hashes the leaf, then walks up: at
+// each level it packs the running node, reads the sibling, and — branching on the
+// (boolean-constrained) index bit — compresses `(node,sib)` or `(sib,node)`,
+// asserting the final root. (The batched octopus multi-proof reuses this per
+// query; shared-node handling is layered on at assembly time.)
+
+/// Generate a zkDSL program verifying a depth-`h` Merkle path for a 2-cell leaf
+/// (num_interleaved = 2, a single 32-byte leaf block), asserting the recomputed
+/// root equals the constant `root`.
+fn merkle_verify_source(h: usize, root: [F128; 2]) -> String {
+    let mut s = String::new();
+    s.push_str("from snark_lib import *\n");
+    s.push_str(&format!("ROOT0 = {}\n", u(root[0])));
+    s.push_str(&format!("ROOT1 = {}\n", u(root[1])));
+    s.push_str(&format!("H = {h}\n\n"));
+    s.push_str("def main():\n");
+    line(&mut s, "leaf = HeapBuf(2)".into());
+    line(&mut s, "hint_witness(leaf[0:2], \"leaf\")".into());
+    line(&mut s, format!("path = HeapBuf({})", 2 * h));
+    line(&mut s, format!("hint_witness(path[0:{}], \"path\")", 2 * h));
+    line(&mut s, format!("bits = HeapBuf({h})"));
+    line(&mut s, format!("hint_witness(bits[0:{h}], \"bits\")"));
+    // Leaf hash: iv = (g^{32}, 0) (32 = 2 cells · 16 bytes), one compression.
+    line(&mut s, "iv = StackBuf(2)".into());
+    line(&mut s, "iv[0] = GEN ** 32".into());
+    line(&mut s, "iv[1] = 0".into());
+    line(&mut s, "lf = StackBuf(2)".into());
+    line(&mut s, "lf[0] = leaf[1]".into());
+    line(&mut s, "lf[1] = leaf[GEN]".into());
+    line(&mut s, "lh = StackBuf(2)".into());
+    line(&mut s, "blake3(iv, lf, lh)".into());
+    line(&mut s, "node0 = lh[0]".into());
+    line(&mut s, "node1 = lh[1]".into());
+    for level in 0..h {
+        line(&mut s, format!("bl{level} = bits[GEN ** {level}]"));
+        line(&mut s, format!("bsq{level} = bl{level} * bl{level}"));
+        line(&mut s, format!("assert bsq{level} == bl{level}")); // boolean
+        line(&mut s, format!("nb{level} = StackBuf(2)"));
+        line(&mut s, format!("nb{level}[0] = node0"));
+        line(&mut s, format!("nb{level}[1] = node1"));
+        line(&mut s, format!("sb{level} = StackBuf(2)"));
+        line(&mut s, format!("sb{level}[0] = path[GEN ** {}]", 2 * level));
+        line(&mut s, format!("sb{level}[1] = path[GEN ** {}]", 2 * level + 1));
+        line(&mut s, format!("par{level} = StackBuf(2)"));
+        line(&mut s, format!("if bl{level} == 0:"));
+        s.push_str(&format!("        blake3(nb{level}, sb{level}, par{level})\n")); // node is left
+        line(&mut s, "else:".into());
+        s.push_str(&format!("        blake3(sb{level}, nb{level}, par{level})\n")); // node is right
+        line(&mut s, format!("node0 = par{level}[0]"));
+        line(&mut s, format!("node1 = par{level}[1]"));
+    }
+    line(&mut s, "assert node0 == ROOT0".into());
+    line(&mut s, "assert node1 == ROOT1".into());
+    line(&mut s, "return".into());
+    s
+}
+
+#[test]
+fn merkle_path_verify() {
+    use leanvm_b::vmhash::{compress, hash_slice};
+
+    for h in [1usize, 2, 3, 4] {
+        let n_leaves = 1usize << h;
+        let rows: Vec<[F128; 2]> = (0..n_leaves)
+            .map(|i| {
+                [
+                    F128::new(0xdead_0000 ^ i as u64, 0xbeef_0000 ^ ((i as u64) << 8)),
+                    F128::new(0xcafe_1234 ^ ((i as u64) << 3), 0xf00d_5678 ^ i as u64),
+                ]
+            })
+            .collect();
+        // Build the tree bottom-up.
+        let leaf_hashes: Vec<[F128; 2]> = rows.iter().map(|r| hash_slice(&r[..])).collect();
+
+        for q in 0..n_leaves {
+            // Extract the sibling path and root for query q.
+            let mut cur = leaf_hashes.clone();
+            let mut idx = q;
+            let mut path: Vec<[F128; 2]> = Vec::new();
+            while cur.len() > 1 {
+                path.push(cur[idx ^ 1]);
+                cur = (0..cur.len() / 2).map(|j| compress(cur[2 * j], cur[2 * j + 1])).collect();
+                idx >>= 1;
+            }
+            let root = cur[0];
+
+            let src = merkle_verify_source(h, root);
+            let mut program = compile(&parse(&src).unwrap_or_else(|e| panic!("h={h} q={q}: parse: {e}")));
+            program.set_witness("leaf", vec![rows[q].to_vec()]);
+            program.set_witness("path", vec![path.iter().flat_map(|p| p.to_vec()).collect()]);
+            let bit_vals: Vec<F128> = (0..h).map(|l| F128::new(((q >> l) & 1) as u64, 0)).collect();
+            program.set_witness("bits", vec![bit_vals]);
+
+            let pi = [F128::ZERO, F128::ZERO];
+            let (proof, _) = prove(&program, pi);
+            verify(&program, &pi, &proof).unwrap_or_else(|e| panic!("h={h} q={q}: verify: {e:?}"));
+        }
+    }
+}
+
 #[test]
 fn gkr_product_verify() {
     use leanvm_b::gkr;
