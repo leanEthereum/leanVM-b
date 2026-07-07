@@ -61,19 +61,23 @@ b∈0..128) with accumulators threaded through write-once HeapBufs — the
 debug). No cheap algebraic bypass exists (the transpose touches every bit).
 `build_eq(r_dprime)` (128-value eq tensor from 7 samples) is a small runtime loop.
 
-## The genuinely-hard remaining sub-problems (algorithmic, not DSL gaps)
-The full flock opening (`verify_opening_batch_mixed_ligerito_stacked` → ring_switch
-+ basefold FRI) has ~290 FRI queries (rate ½, 120-bit) and these hard-in-circuit
-pieces: (1) ring-switch `tensor_algebra_transpose` — a 128×128 F₂ bit-transpose
-of `s_hat_v` (needs 128 bit-decompositions + recompose, or an algebraic bypass);
-(2) `build_claim_weights`'s φ₈-embedded F₈ Lagrange; (3) BaseFold FRI fold checks
-across NTT-domain positions (additive-NTT twiddle arithmetic); (4) the octopus
-multi-proof (sidestep: harness expands to independent per-query paths, verified by
-the Merkle gadget). Each is real work; the whole is comparable in scale to the
-reference's multi-file `rec_aggregation` crate. Methodology: build a flat Rust
-mirror (drive `pcs::open` with a leanVM-b `ProverState` so the transcript is the
-compress-sponge, NOT flock's native `FsChallenger`), cross-check vs flock, port
-stage-by-stage.
+## The target is the LIGERITO backend (not basefold)
+leanVM-b's opening is `verify_opening_batch_mixed_ligerito_stacked` (pcs.rs:1802)
+→ `ligerito::recursive_verifier_with_basis_succinct` (ligerito.rs:3389). The
+single-claim `verify_opening`→`basefold::verify` path (with NTT `fri_fold_coset`)
+is a DIFFERENT scheme leanVM-b does not use — do not port it.
+
+Remaining hard sub-problems on the Ligerito path: (1,2) ring-switch transpose +
+φ₈ F₈-Lagrange — BOTH DONE (stage 1). (3) the Ligerito core's per-level query
+opens: `sample_distinct_queries` (v.lo % block_len, rejection-sampled) + Merkle
+multi-proof (sidestep: harness expands the octopus to independent per-query paths,
+verified by the Merkle gadget) + `induce_sumcheck_enforced_sum` (eq-tensor · opened
+rows). (4) the final residual: `induce_sumcheck_evaluate_at_residual` (novel-basis
+Ŵ_k recurrence, `sks_vks` constants) + `eval_b_residual`/`eval_rs_eq` (TensorAlgebra
+recurrence). NO NTT arithmetic anywhere on this path. Methodology: drive `pcs::open`
+with a leanVM-b `ProverState` (compress-sponge, NOT flock's native `FsChallenger`),
+cross-check each stage vs flock, port stage-by-stage — ring_switch done, Ligerito
+core next.
 
 ## Status — DONE (all committed on branch `recursion`, tests green)
 1. **bit-decomposition** — hint bits, `b*b==b`, reconstruct `Σ b_i·GEN**i` (full
