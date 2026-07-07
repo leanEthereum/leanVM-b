@@ -66,6 +66,13 @@ pub struct PcsParams {
     /// backend. Defaults to `Fast`.
     #[serde(default)]
     pub profile: crate::pcs::ligerito::LigeritoProfile,
+    /// **MSB-lane layout**: transpose the packed witness at commit so its padded
+    /// high indices form whole trailing zero lanes (⇒ zero-suffixed leaves the
+    /// leaf hash skips). Only the stacked-mixed Ligerito open/verify path applies
+    /// the matching fold transpose + verifier point-rotation, so leave this
+    /// `false` for the BaseFold / non-stacked paths.
+    #[serde(default)]
+    pub msb_lane: bool,
 }
 
 impl PcsParams {
@@ -221,6 +228,17 @@ pub fn commit_into(
         "commit_into: prebuilt codeword buffer has wrong length"
     );
 
+    // MSB-lane: transpose the packed witness so the padded high indices land in
+    // whole trailing lanes (⇒ zero-suffixed leaves). Gated — only the stacked
+    // Ligerito open/verify applies the matching fold transpose + point-rotation.
+    let z_transposed;
+    let z_packed: &[F128] = if params.msb_lane {
+        z_transposed = transpose_hi_lanes(z_packed, params.log_batch_size);
+        &z_transposed
+    } else {
+        z_packed
+    };
+
     // RS encoding of [z, 0, …, 0] starts with `log_inv_rate` butterfly layers
     // whose bottom inputs are all zero — each is a pure copy, so after those
     // layers the buffer holds 2^log_inv_rate replicas of z. Write that state
@@ -237,6 +255,24 @@ pub fn commit_into(
 /// the zero-padded coefficient vector `[msg, 0, …, 0]`. Pair with
 /// `forward_transform_interleaved_from_layer(…, r)`. Every slot of `codeword`
 /// is written (input contents may be stale/uninit).
+/// Transpose the packed witness so its top `log_batch` index bits become the low
+/// (lane) bits — the **MSB-lane** layout. Under the LSB-lane codeword reshape this
+/// makes the witness's high (zero-padded) indices fall into whole *trailing* lanes,
+/// so each Merkle leaf ends in zero entries (which the leaf hash can then skip).
+/// `π: out[lo·ni + hi] = z[hi·msg_cols + lo]` (a `ni × msg_cols` matrix transpose).
+pub(crate) fn transpose_hi_lanes(z: &[F128], log_batch: usize) -> Vec<F128> {
+    use rayon::prelude::*;
+    let ni = 1usize << log_batch;
+    let msg_cols = z.len() / ni;
+    let mut out = vec![F128::ZERO; z.len()];
+    out.par_chunks_mut(ni).enumerate().for_each(|(lo, chunk)| {
+        for (hi, slot) in chunk.iter_mut().enumerate() {
+            *slot = z[hi * msg_cols + lo];
+        }
+    });
+    out
+}
+
 pub(crate) fn replicate_message_fill(codeword: &mut [F128], msg: &[F128]) {
     use rayon::prelude::*;
     let msg_len = msg.len();

@@ -57,6 +57,9 @@ fn params_for(mu: usize) -> PcsParams {
         log_inv_rate: LOG_INV_RATE,
         log_batch_size: LOG_BATCH,
         profile: PROFILE,
+        // MSB-lane: pad-aligned trailing zero lanes ⇒ zero-suffixed leaves the
+        // leaf hash skips (the stacked open/verify applies the matching transpose).
+        msb_lane: true,
     }
 }
 

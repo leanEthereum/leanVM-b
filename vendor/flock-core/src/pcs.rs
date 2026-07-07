@@ -513,10 +513,21 @@ pub fn open_batch_mixed_ligerito_stacked<Ch: Challenger>(
     let gammas_pd: Vec<F128> = (0..stack_pd.len()).map(|_| challenger.sample_f128()).collect();
     fold_stacked_point_claims(&mut b_stack, &mut target, stack_pd, &gammas_pd);
 
+    // MSB-lane: the committed codeword was transposed so the padded high indices
+    // form trailing zero lanes; fold the witness and weight through the same π so
+    // the sumcheck matches the codeword. `target = Σ stack·b_stack` is invariant.
+    let (stack_v, b_stack_v) = if stack_commitment.params.msb_lane {
+        (
+            commit::transpose_hi_lanes(stack, lig_config.initial_k),
+            commit::transpose_hi_lanes(&b_stack, lig_config.initial_k),
+        )
+    } else {
+        (stack.to_vec(), b_stack)
+    };
     let lig = ligerito::recursive_prover_with_basis(
         lig_config,
-        stack.to_vec(),
-        b_stack,
+        stack_v,
+        b_stack_v,
         target,
         &stack_data.codeword,
         &stack_data.merkle_tree,
@@ -588,6 +599,9 @@ pub fn verify_opening_batch_mixed_ligerito_stacked<Ch: Challenger>(
     // evaluate b at the full point `ris ++ y_bits` (low coords = ris, high = y).
     let log_n = stack_commitment.params.m - LOG_PACKING;
     let sel = stack_offset >> qpkd_vars;
+    // MSB-lane: rotate the (transposed, lane-first) sumcheck point back to the
+    // weight's original coord order; a no-op otherwise.
+    let rot = if stack_commitment.params.msb_lane { lig_config.initial_k } else { 0 };
     let eval_b_residual = |ris: &[F128], yr_log_n: usize| -> Vec<F128> {
         use rayon::prelude::*;
         (0..1usize << yr_log_n)
@@ -598,6 +612,10 @@ pub fn verify_opening_batch_mixed_ligerito_stacked<Ch: Challenger>(
                 for k in 0..yr_log_n {
                     x.push(F128::new(((y >> k) & 1) as u64, 0));
                 }
+                // MSB-lane: the prover folded the transposed witness, so `x` is in
+                // transposed (lane-first) coords; rotate back to the weight's
+                // original coord order (move the lane coords to the end).
+                x.rotate_left(rot);
                 let (x_lo, x_hi) = x.split_at(qpkd_vars);
                 let mut sel_eq = F128::ONE;
                 for (k, &xi) in x_hi.iter().enumerate() {

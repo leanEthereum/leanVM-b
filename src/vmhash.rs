@@ -99,26 +99,9 @@ mod tests {
         assert_eq!(one, manual);
     }
 
-    /// The vendored PCS Merkle leaf hash (`flare::merkle::hash_leaf`) must equal
-    /// `hash_slice` on the same field words — the invariant that lets a recursive
-    /// verifier reuse ONE routine for the transcript/leaf hashing and the PCS
-    /// tree. Covers single-word, odd, and full-width (2^6) leaves.
-    #[test]
-    fn hash_slice_matches_flock_leaf() {
-        for n in [1usize, 2, 3, 5, 64] {
-            let words: Vec<F128> = (0..n).map(|i| e(i as u64 + 1)).collect();
-            let mut bytes = Vec::with_capacity(n * 16);
-            for w in &words {
-                bytes.extend_from_slice(&w.lo.to_le_bytes());
-                bytes.extend_from_slice(&w.hi.to_le_bytes());
-            }
-            let mine = hash_slice(&words);
-            let mut expect = [0u8; 32];
-            expect[..8].copy_from_slice(&mine[0].lo.to_le_bytes());
-            expect[8..16].copy_from_slice(&mine[0].hi.to_le_bytes());
-            expect[16..24].copy_from_slice(&mine[1].lo.to_le_bytes());
-            expect[24..32].copy_from_slice(&mine[1].hi.to_le_bytes());
-            assert_eq!(flare::merkle::hash_leaf(&bytes), expect, "n={n}");
-        }
-    }
+    // NOTE: `flare::merkle::hash_leaf` is now the RIGHT-TO-LEFT, zero-suffix-
+    // skipping leaf hash used by the PCS Merkle tree (an MSB-lane optimization),
+    // so it deliberately no longer equals `hash_slice` (which is the forward
+    // transcript hash). The RTL zero-skip's correctness is checked in
+    // `flock-core`'s `merkle` tests; the transcript's own hashing is covered above.
 }

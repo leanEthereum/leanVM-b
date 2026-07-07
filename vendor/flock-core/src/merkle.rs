@@ -93,30 +93,71 @@ fn g_pow(k: usize) -> F128 {
     result
 }
 
-/// Hash one leaf (any byte length) with the VM-native Merkle–Damgård slice hash:
-/// IV `(g^{num_bytes}, 0)` serialized to 32 bytes, then one [`compress`] per
-/// 32-byte block (the last zero-padded). The length in the IV binds the leaf
-/// size — non-length-extendable, no finalization block. On F128-word leaves (all
-/// callers pass `f128_slice_to_bytes(words)`) this is byte-identical to
-/// `vmhash::hash_slice(words)`, so a recursive verifier reproduces every leaf
-/// with the `Blake3` opcode alone. Costs `⌈len/32⌉` compressions (~2× a one-shot
-/// `blake3::hash`, whose intermediate-block flags the opcode cannot reproduce).
+/// IV `(g^{num_bytes}, 0)` serialized to 32 bytes.
+#[inline]
+fn leaf_iv(num_bytes: usize) -> Hash {
+    let iv0 = g_pow(num_bytes);
+    let mut cv = [0u8; 32];
+    cv[..8].copy_from_slice(&iv0.lo.to_le_bytes());
+    cv[8..16].copy_from_slice(&iv0.hi.to_le_bytes());
+    cv
+}
+
+/// The Merkle–Damgård state after `IV(num_bytes)` absorbs `z` all-zero 32-byte
+/// blocks — the reusable "trailing zeros" prefix of the RTL leaf hash. Memoized
+/// because `z` is constant across all leaves of a tree (the MSB-lane zero lanes),
+/// so the whole zero suffix costs a handful of compressions ONCE per tree instead
+/// of `z` per leaf.
+fn zero_suffix_state(num_bytes: usize, z: usize) -> Hash {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    static CACHE: OnceLock<Mutex<HashMap<(usize, usize), Hash>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(&h) = cache.lock().unwrap().get(&(num_bytes, z)) {
+        return h;
+    }
+    let mut cv = leaf_iv(num_bytes);
+    for _ in 0..z {
+        cv = compress(&cv, &[0u8; 32]);
+    }
+    cache.lock().unwrap().insert((num_bytes, z), cv);
+    cv
+}
+
+/// Hash one leaf with the VM-native Merkle–Damgård slice hash, **right-to-left**:
+/// IV `(g^{num_bytes}, 0)`, then one [`compress`] per 32-byte block from the LAST
+/// block to the first. Hashing RTL puts trailing all-zero blocks (the MSB-lane
+/// zero lanes, `ligero_commit`) at the chain's *prefix*, whose state depends only
+/// on `(length, #zero-blocks)` — precomputed once per tree and reused, so those
+/// compressions are skipped entirely (forward hashing can't: trailing zeros there
+/// hang off the varying real-data state). The length in the IV binds the leaf
+/// size. Prover (tree build) and verifier (opening re-hash) both call this, so
+/// they stay consistent. Costs `⌈len/32⌉ − #trailing-zero-blocks` compressions.
 #[inline]
 pub fn hash_leaf(data: &[u8]) -> Hash {
+    let num_blocks = data.len().div_ceil(32).max(1);
+    // Count trailing all-zero 32-byte blocks.
+    let mut z = 0;
+    while z < num_blocks {
+        let end = data.len().saturating_sub(z * 32);
+        let start = end.saturating_sub(32);
+        if data[start..end].iter().any(|&b| b != 0) {
+            break;
+        }
+        z += 1;
+    }
     #[cfg(feature = "hash-count")]
     {
         use std::sync::atomic::Ordering::Relaxed;
         hash_count::LEAF_CALLS.fetch_add(1, Relaxed);
-        hash_count::LEAF_COMPRESSIONS.fetch_add((data.len().div_ceil(32)).max(1) as u64, Relaxed);
+        hash_count::LEAF_COMPRESSIONS.fetch_add((num_blocks - z) as u64, Relaxed);
     }
-    // IV = (g^{num_bytes}, 0) as 32 bytes: g^{num_bytes} in the low F128 word.
-    let iv0 = g_pow(data.len());
-    let mut cv = [0u8; 32];
-    cv[..8].copy_from_slice(&iv0.lo.to_le_bytes());
-    cv[8..16].copy_from_slice(&iv0.hi.to_le_bytes());
-    for block in data.chunks(32) {
+    let mut cv = zero_suffix_state(data.len(), z);
+    for bi in (0..num_blocks - z).rev() {
+        let start = bi * 32;
+        let end = (start + 32).min(data.len());
         let mut b = [0u8; 32];
-        b[..block.len()].copy_from_slice(block);
+        b[..end - start].copy_from_slice(&data[start..end]);
         cv = compress(&cv, &b);
     }
     cv
@@ -531,5 +572,32 @@ mod prune_tests {
         let mut extra = pruned.clone();
         extra.push([0u8; 32]);
         assert!(restore_multi_proof(num_leaves, &queries, &leaf_hashes, &extra).is_none());
+    }
+
+    /// The zero-suffix skip in `hash_leaf` must equal a naive right-to-left MD
+    /// over the full leaf (with the trailing zeros hashed explicitly) — i.e. the
+    /// precompute is a faithful shortcut, for any number of trailing zero blocks.
+    #[test]
+    fn hash_leaf_zero_skip_matches_full_rtl() {
+        let full_rtl = |data: &[u8]| -> Hash {
+            let nb = data.len().div_ceil(32).max(1);
+            let mut cv = leaf_iv(data.len());
+            for bi in (0..nb).rev() {
+                let start = bi * 32;
+                let end = (start + 32).min(data.len());
+                let mut b = [0u8; 32];
+                b[..end - start].copy_from_slice(&data[start..end]);
+                cv = compress(&cv, &b);
+            }
+            cv
+        };
+        for zero_blocks in 0..6usize {
+            let mut data = vec![0u8; 8 * 32];
+            // fill the leading blocks with non-zero data, leave `zero_blocks` trailing zero
+            for (i, b) in data.iter_mut().enumerate().take((8 - zero_blocks) * 32) {
+                *b = (i as u8) | 1;
+            }
+            assert_eq!(hash_leaf(&data), full_rtl(&data), "zero_blocks={zero_blocks}");
+        }
     }
 }
