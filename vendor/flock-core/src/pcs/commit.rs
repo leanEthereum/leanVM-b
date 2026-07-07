@@ -264,7 +264,9 @@ pub(crate) fn transpose_hi_lanes(z: &[F128], log_batch: usize) -> Vec<F128> {
     use rayon::prelude::*;
     let ni = 1usize << log_batch;
     let msg_cols = z.len() / ni;
-    let mut out = vec![F128::ZERO; z.len()];
+    // Uninitialized: the transpose writes every slot exactly once below, so
+    // pre-zeroing `z.len()` elems (~1.3 GB at m=26) would be pure wasted writes.
+    let mut out = crate::alloc_uninit_vec::<F128>(z.len());
     // Cache-blocked transpose of the `ni × msg_cols` matrix. Each task owns a tile
     // of `B` output columns (`ni·B` elems, cache-resident) and, per lane `hi`,
     // streams a contiguous `B`-run of `z` into it: reads are `ni` streaming runs
