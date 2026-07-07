@@ -48,20 +48,31 @@ inner `Proof` (`stream: Vec<F128>` + `openings`) as `hint_witness` streams.
 ## END-TO-END m33 (500-XMSS) LIGERITO OPENING VERIFIER — DONE & BENCHMARKED
 `test_recursive_ligerito` (tests/recursion_gadgets.rs, #[ignore]) drives a real
 m33_secure LigeritoProof (log_n=26, initial_k=6, 6 levels, queries
-[290,177,145,132,126,124], fold-PoW [11,10,8,6,4,2], 994 query opens), generates the
-in-circuit verifier via `gen_lig_tr`, and proves+verifies it in leanVM-b. Real numbers:
-**2,249,240 cycles (2^21.1), 30,238 BLAKE3 (2^14.9), committed 2^25.86, proof 977 KiB,
-prove 77.7s, verify 72ms** (inner commit+prove 51s). Run:
+[290,177,145,132,126,124], fold-PoW [11,10,8,6,4,2], 994 query opens) through the
+in-circuit verifier and proves+verifies it in leanVM-b. Real numbers (clean verifier):
+**2,569,442 cycles (2^21.3), 30,238 BLAKE3 (2^14.9), committed 2^25.94, proof 718 KiB,
+prove 80.1s, verify 86ms** (inner commit+prove 54s). Run:
 `RAYON_NUM_THREADS=8 cargo test --release --test recursion_gadgets test_recursive_ligerito -- --ignored --nocapture`.
 
-Per user direction, the verifier does NO dedup/sort — flock's `_with_basis` path was
-changed to sample queries in transcript order and verify one Merkle path per query
-(octopus = storage compression only). The verifier is a config-driven zkDSL `.py`
-emitted by `gen_lig_tr`: sponge + RoundQuad folds + per-fold PoW + per-level query
-phases (mul_range sample/enforced loops) + per-query Merkle loops + per-query residual
-loops (novel-basis Ŵ_k + foldyr) + terminal inner==t_r. Validated at a small 3-level
-config (`ml_tr_small`) and m33. Remaining broader goal: the FULL `cpu::verify` replay
-(bus GKR + 6 zerochecks + flock BLAKE3 R1CS reduction) + recursion harness.
+Per user direction, the verifier does NO dedup/sort — the opening is *transmitted*
+compressed (index-dedup + octopus) and *expanded* to flat per-query form before
+verification (storage compression only; flock's `_with_basis` path samples queries
+in transcript order and verifies one Merkle path per query).
+
+The verifier is ONE hand-written config-driven zkDSL program,
+**`tests/ligerito_recursive.py`** (~330 lines) — no Rust codegen. Per-level
+structure comes from placeholder-filled constant arrays (QUERIES/KLVL/DEPTH/LMC/
+FOLDBASE/SVK/...); the program loops over levels with `unroll` + folded `if`s and
+over queries with `mul_range`: sponge + RoundQuad folds + per-fold PoW + query
+phases (sample/enforced loops) + per-query Merkle loops + per-query residual loops
+(novel-basis Ŵ_k + foldyr) + terminal inner==t_r. The harness (`gen_clean`)
+computes the config arrays + flat expanded witness hints. Validated at the tiny
+config (`recursive_ligerito_tiny`), a small 3-level config (`ml_clean_small`), and
+m33. Compiler features added for this: `GEN ** <expr>`, constant arrays + `len()`,
+`base ** e` (square-and-multiply), compile-time `-`, const-folded `Let`/buffer
+sizes, and folded-`if` branches lowering transparently (bindings persist).
+Remaining broader goal: the FULL `cpu::verify` replay (bus GKR + 6 zerochecks +
+flock BLAKE3 R1CS reduction) + recursion harness.
 
 ## END-TO-END LIGERITO OPENING VERIFIER — DONE (tiny instance)
 `ligerito_verify_end_to_end` (tests/recursion_gadgets.rs) is a complete zkDSL port of
