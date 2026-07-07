@@ -1647,7 +1647,7 @@ fn next_s(s: F128, s_at_root: F128) -> F128 {
 
 /// `sks_vks[k] = s_k(v_k)` for `k = 0..=log_n`. Length `log_n + 1`.
 /// Only depends on `log_n`, so callers cache.
-pub(crate) fn eval_sk_at_vks(log_n: usize) -> Vec<F128> {
+pub fn eval_sk_at_vks(log_n: usize) -> Vec<F128> {
     let mut sks_vks = vec![F128::ZERO; log_n + 1];
     sks_vks[0] = F128::ONE;
     if log_n == 0 {
@@ -1726,7 +1726,7 @@ fn evaluate_scaled_basis_inplace(
 ///   `enforced_sum = Σ_i eq(α, i_bin) · ⟨opened_rows[i], eq(v_challenges, ·)⟩`
 /// Cheap: O(num_queries × num_interleaved). Verifier needs this at level
 /// intro time (before residual challenges are known).
-pub(crate) fn induce_sumcheck_enforced_sum(
+pub fn induce_sumcheck_enforced_sum(
     opened_rows: &[Vec<F128>],
     v_challenges: &[F128],
     queries: &[usize],
@@ -1771,7 +1771,7 @@ pub(crate) fn induce_sumcheck_enforced_sum(
 /// `⌈log₂ n⌉`. Number of bits needed to index `n` items. Used to size the
 /// per-level `alpha` slice for the eq-tensor basis-induction combination.
 #[inline]
-pub(crate) fn ceil_log2(n: usize) -> usize {
+pub fn ceil_log2(n: usize) -> usize {
     if n <= 1 {
         0
     } else {
@@ -1779,7 +1779,7 @@ pub(crate) fn ceil_log2(n: usize) -> usize {
     }
 }
 
-pub(crate) fn induce_sumcheck_evaluate_at_residual(
+pub fn induce_sumcheck_evaluate_at_residual(
     log_msg_cols: usize,
     sks_vks: &[F128],
     queries: &[usize],
@@ -2257,7 +2257,7 @@ fn transpose_forward_ntt_sparse(
 /// `mat` is row-major: `mat[pos * num_interleaved + lane]` for
 /// `pos ∈ [0, block_len)`, `lane ∈ [0, num_interleaved)`. Each row
 /// (one `pos` across all lanes) is one Merkle leaf.
-pub(crate) struct LigeroWitness {
+pub struct LigeroWitness {
     pub mat: Vec<F128>,
     pub tree: Vec<Hash>,
     pub block_len: usize,
@@ -2303,7 +2303,7 @@ impl LigeroWitness {
 /// The first `log_num_interleaved` LSB variables of the multilinear poly are the
 /// lane indices, so `partial_eval_lsb(poly, lane_challenges)` produces the
 /// next-level poly directly. This composes cleanly with sumcheck folds.
-pub(crate) fn ligero_commit(
+pub fn ligero_commit(
     poly: &[F128],
     log_msg_cols: usize,
     log_num_interleaved: usize,

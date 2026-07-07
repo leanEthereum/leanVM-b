@@ -543,6 +543,98 @@ fn runtime_observe_loop() {
     verify(&program, &pi, &proof).expect("runtime-observe loop verifies");
 }
 
+// ---- Ligerito core: native driver probe (tiny instance, 1 query/level) ----
+//
+// Drives flock's actual recursive Ligerito prover + succinct verifier at a tiny
+// config with a leanVM-b ProverState challenger (the compress-sponge the zkDSL
+// guest replays). With 1 query per level the octopus multi-proof degenerates to a
+// single Merkle path, keeping the port tractable. Prints the concrete proof shapes
+// the guest port must consume.
+#[test]
+fn ligerito_native_probe() {
+    use leanvm_b::transcript::ProverState;
+    use flare::lincheck::build_eq_table;
+    use flare::ntt::AdditiveNttF128;
+    use flare::pcs::ligerito::{
+        ProverConfig, VerifierConfig, ligero_commit, recursive_prover_with_basis,
+        recursive_verifier_with_basis_succinct,
+    };
+    use flare::zerocheck::multilinear::eq_eval;
+
+    let log_n = 8usize;
+    let initial_k = 2usize;
+    let k_0 = 2usize;
+    let rate = 1usize;
+
+    let poly: Vec<F128> = (0..(1usize << log_n))
+        .map(|i| F128::new(0x9E37_79B9u64.wrapping_mul(i as u64 + 1) + 1, 0x1234 ^ (i as u64)))
+        .collect();
+    let z: Vec<F128> = (0..log_n).map(|i| F128::new(0xABCD + i as u64, 0x55u64.wrapping_mul(i as u64) + 7)).collect();
+    let b = build_eq_table(&z);
+    let target: F128 = poly.iter().zip(b.iter()).map(|(&a, &c)| a * c).fold(F128::ZERO, |a, x| a + x);
+
+    let lir = vec![rate, rate];
+    let pc = ProverConfig {
+        log_inv_rates: lir.clone(),
+        recursive_steps: 1,
+        initial_log_msg_cols: log_n - initial_k,
+        initial_log_num_interleaved: initial_k,
+        initial_k,
+        recursive_log_msg_cols: vec![log_n - initial_k - k_0],
+        recursive_ks: vec![k_0],
+        queries: vec![1, 1],
+        grinding_bits: vec![0; 2],
+        fold_grinding_bits: vec![0; 2],
+        ood_samples: vec![0; 2],
+    };
+    let vc = VerifierConfig {
+        log_inv_rates: lir.clone(),
+        recursive_steps: 1,
+        initial_log_msg_cols: log_n - initial_k,
+        initial_log_num_interleaved: initial_k,
+        initial_k,
+        recursive_log_msg_cols: vec![log_n - initial_k - k_0],
+        recursive_ks: vec![k_0],
+        queries: vec![1, 1],
+        grinding_bits: vec![0; 2],
+        fold_grinding_bits: vec![0; 2],
+        ood_samples: vec![0; 2],
+    };
+
+    let ntt = AdditiveNttF128::standard(log_n - initial_k + rate);
+    let wtns = ligero_commit(&poly, log_n - initial_k, initial_k, rate, &ntt);
+    let initial_root = wtns.root();
+
+    let label = b"ligtest";
+    let mut pch = ProverState::new(label, &[]);
+    let proof = recursive_prover_with_basis(&pc, poly.clone(), b.clone(), target, &wtns.mat, &wtns.tree, &mut pch);
+
+    let zc = z.clone();
+    let eval_b_residual = move |ris: &[F128], yr_log_n: usize| -> Vec<F128> {
+        let mut point = ris.to_vec();
+        point.resize(ris.len() + yr_log_n, F128::ZERO);
+        (0..(1usize << yr_log_n))
+            .map(|y| {
+                for j in 0..yr_log_n {
+                    point[ris.len() + j] = if (y >> j) & 1 == 1 { F128::ONE } else { F128::ZERO };
+                }
+                eq_eval(&zc, &point)
+            })
+            .collect()
+    };
+    let mut vch = ProverState::new(label, &[]);
+    let ok = recursive_verifier_with_basis_succinct(&vc, &proof, log_n, target, &initial_root, eval_b_residual, &mut vch);
+    assert!(ok, "native ligerito verifier accepts the honest proof");
+
+    eprintln!("=== tiny ligerito proof shapes ===");
+    eprintln!("sumcheck_transcript.len = {}", proof.sumcheck_transcript.len());
+    let sh = |rows: &[Vec<F128>]| (rows.len(), rows.first().map(|r| r.len()).unwrap_or(0));
+    eprintln!("initial_proof.opened_rows = {:?}, merkle_proof.len = {}", sh(&proof.initial_proof.opened_rows), proof.initial_proof.merkle_proof.len());
+    eprintln!("recursive_roots.len = {}", proof.recursive_roots.len());
+    eprintln!("final_proof.yr.len = {}", proof.final_proof.yr.len());
+    eprintln!("final_proof.opened_rows = {:?}, merkle_proof.len = {}", sh(&proof.final_proof.opened_rows), proof.final_proof.merkle_proof.len());
+}
+
 // ---- Gadget 10: ring-switch claim check (φ₈ F₈-Lagrange, runtime) ----
 //
 // The first stage of the real Ligerito opening (`ring_switch::verify_succinct`):
