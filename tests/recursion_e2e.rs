@@ -397,6 +397,40 @@ fn gen_verify(
     pinw *= lcz[pincol % 64];
     let matpart = lrun + pinw;
 
+    // ---- Phase E1 walk: opening labels, ring-switch fronts, claim combine ----
+    assert_eq!(absorb(&mut w), b"flock-pcs-open-batch-v0".to_vec());
+    let mut shv = Vec::new();
+    let mut rdp = Vec::new();
+    for _ in 0..2 {
+        assert_eq!(absorb(&mut w), b"flock-ring-switch-v0".to_vec());
+        for _ in 0..128 {
+            shv.push(observe(&mut w));
+        }
+        for _ in 0..7 {
+            rdp.push(w.sample());
+        }
+    }
+    let _g0 = w.sample();
+    let _g1 = w.sample();
+    let evtot_e: usize = ncol.iter().sum();
+    let ncl = nclaims + evtot_e + 1 + 3;
+    for _ in 0..ncl {
+        assert_eq!(absorb(&mut w), b"flock-pcs-packed-direct-v0".to_vec());
+        observe(&mut w);
+    }
+    for _ in 0..ncl {
+        w.sample();
+    }
+    let phase_e1_end = w.i;
+
+    // Deferred tensor claims: the transposed sumcheck claims per ring switch.
+    let mut tclaim = Vec::new();
+    for rs in 0..2 {
+        let shu = flare::pcs::ring_switch::tensor_algebra_transpose(&shv[128 * rs..128 * rs + 128]);
+        let eqd = flare::zerocheck::univariate_skip::build_eq(&rdp[7 * rs..7 * rs + 7]);
+        tclaim.push(flare::pcs::ring_switch::inner_product(&shu, &eqd));
+    }
+
     // ---- hints ----
     // fpb: the grind digest bits. Base = compress(cv_after_alpha, [0, POW]).
     let seed = Mirror::new(b"leanvm-b", &[pi[0], pi[1], dig[0], dig[1]]);
@@ -431,6 +465,9 @@ fn gen_verify(
     let mut m = seed.clone();
     m.replay(&ops[0..phase_d_end]);
     let cvchk_d = m.cv[0];
+    let mut m = seed.clone();
+    m.replay(&ops[0..phase_e1_end]);
+    let cvchk_e1 = m.cv[0];
 
     // ---- placeholder map ----
     let ints = |v: &[usize]| format!("[{}]", v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(", "));
@@ -558,6 +595,14 @@ fn gen_verify(
     ps("PINCOL", pincol.to_string());
     ps("KLOG", flock_prover::r1cs_hashes::blake3::K_LOG.to_string());
     ps("CVCHK_D", u(cvchk_d).to_string());
+    ps("OBLBLA", u(word16(b"flock-pcs-open-batch-v0", 0)).to_string());
+    ps("OBLBLB", u(word16(b"flock-pcs-open-batch-v0", 16)).to_string());
+    ps("RSLBLA", u(word16(b"flock-ring-switch-v0", 0)).to_string());
+    ps("RSLBLB", u(word16(b"flock-ring-switch-v0", 16)).to_string());
+    ps("PDLBLA", u(word16(b"flock-pcs-packed-direct-v0", 0)).to_string());
+    ps("PDLBLB", u(word16(b"flock-pcs-packed-direct-v0", 16)).to_string());
+    ps("NCL", ncl.to_string());
+    ps("CVCHK_E1", u(cvchk_e1).to_string());
 
     let mut zinv = vec![F128::ONE; n_mlv];
     for (i, item) in zinv.iter_mut().enumerate().take(n_mlv).skip(7) {
@@ -575,6 +620,9 @@ fn gen_verify(
         ("lcr".to_string(), lcr.clone()),
         ("lcz".to_string(), lcz.clone()),
         ("matpart".to_string(), vec![matpart]),
+        ("shv".to_string(), shv.clone()),
+        ("tclaim".to_string(), tclaim),
+        ("rsq".to_string(), vec![F128::ZERO, F128::ZERO]), // filled by phase E2
     ];
     (rep, hints)
 }

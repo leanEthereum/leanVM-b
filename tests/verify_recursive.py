@@ -96,6 +96,17 @@ LCR = LCR_PLACEHOLDER
 PINCOL = PINCOL_PLACEHOLDER
 KLOG = KLOG_PLACEHOLDER
 CVCHK_D = CVCHK_D_PLACEHOLDER
+# Phase E: the stacked mixed opening. Labels; the two ring-switch fronts
+# (claim check in-circuit; the tensor transpose + eval_rs_eq DEFERRED); the
+# gamma-combination of the two ring-switch claims and the NCL pool claims.
+OBLBLA = OBLBLA_PLACEHOLDER
+OBLBLB = OBLBLB_PLACEHOLDER
+RSLBLA = RSLBLA_PLACEHOLDER
+RSLBLB = RSLBLB_PLACEHOLDER
+PDLBLA = PDLBLA_PLACEHOLDER
+PDLBLB = PDLBLB_PLACEHOLDER
+NCL = NCL_PLACEHOLDER
+CVCHK_E1 = CVCHK_E1_PLACEHOLDER
 
 DS_SCALAR = 1
 DS_BYTE = 2
@@ -602,4 +613,69 @@ def main():
 
     # ---- Phase D checkpoint ----
     assert cv0 == CVCHK_D
+
+    # ---- stacked mixed opening: ring-switch fronts + claim combination ----
+    cv0, cv1 = absorb(cv0, cv1, 23, DS_LEN)
+    cv0, cv1 = absorb(cv0, cv1, OBLBLA, DS_BYTE)
+    cv0, cv1 = absorb(cv0, cv1, OBLBLB, DS_BYTE)
+    # Ring-switch claim 0 (ab): value lw, z_skip = lsk, x_outer[0] = lrr[LCR-1]
+    # (x_inner_rest is the REVERSED lincheck round vector). Claim 1 (c): value
+    # ceval, z_skip = zz, x_outer[0] = zr[6].
+    shv = HeapBuf(256)
+    hint_witness(shv[0:256], "shv")
+    tcl = HeapBuf(2)
+    hint_witness(tcl[0:2], "tclaim")
+    rsq = HeapBuf(2)
+    hint_witness(rsq[0:2], "rsq")
+    rdp = HeapBuf(14)
+    for rs in unroll(0, 2):
+        cv0, cv1 = absorb(cv0, cv1, 20, DS_LEN)
+        cv0, cv1 = absorb(cv0, cv1, RSLBLA, DS_BYTE)
+        cv0, cv1 = absorb(cv0, cv1, RSLBLB, DS_BYTE)
+        for i in unroll(0, 128):
+            cv0, cv1 = obs(cv0, cv1, shv[GEN ** (128 * rs + i)])
+        # claim check: weights[i] = lambda_{i&63}(z_skip) * eq(x_outer0, i>>6).
+        if rs == 0:
+            zsk = lsk
+            xo0 = lrr[GEN ** (LCR - 1)]
+            clm = lw
+        else:
+            zsk = zz
+            xo0 = zr[GEN ** 6]
+            clm = ceval
+        wpre = HeapBuf(65)
+        wpre[GEN ** 0] = GEN ** 0
+        for i in unroll(0, 64):
+            wpre[GEN ** (i + 1)] = wpre[GEN ** i] * (zsk + PHI[i])
+        wsuf = HeapBuf(65)
+        wsuf[GEN ** 64] = GEN ** 0
+        for i in unroll(0, 64):
+            wsuf[GEN ** (63 - i)] = wsuf[GEN ** (64 - i)] * (zsk + PHI[63 - i])
+        cchk = 0
+        for i in unroll(0, 64):
+            lam = wpre[GEN ** i] * wsuf[GEN ** (i + 1)] * ISDOM[i]
+            cchk = cchk + lam * ((1 + xo0) * shv[GEN ** (128 * rs + i)] + xo0 * shv[GEN ** (128 * rs + 64 + i)])
+        assert cchk == clm
+        # r'' (7 samples), kept for the deferred transpose/eval_rs_eq claims.
+        for i in unroll(0, 7):
+            rv, cv0, cv1 = sqz(cv0, cv1)
+            rdp[GEN ** (7 * rs + i)] = rv
+    # gamma-combine the two (deferred) transposed sumcheck claims...
+    g0, cv0, cv1 = sqz(cv0, cv1)
+    g1, cv0, cv1 = sqz(cv0, cv1)
+    target = g0 * tcl[GEN ** 0] + g1 * tcl[GEN ** 1]
+    # ...then every pooled point claim, each labeled and observed.
+    for j in unroll(0, NCL):
+        cv0, cv1 = absorb(cv0, cv1, 26, DS_LEN)
+        cv0, cv1 = absorb(cv0, cv1, PDLBLA, DS_BYTE)
+        cv0, cv1 = absorb(cv0, cv1, PDLBLB, DS_BYTE)
+        cv0, cv1 = obs(cv0, cv1, clv[GEN ** j])
+    gpd = HeapBuf(NCL)
+    for j in unroll(0, NCL):
+        gv, cv0, cv1 = sqz(cv0, cv1)
+        gpd[GEN ** j] = gv
+        target = target + gv * clv[GEN ** j]
+
+    # ---- Phase E1 checkpoint ----
+    assert cv0 == CVCHK_E1
     return
