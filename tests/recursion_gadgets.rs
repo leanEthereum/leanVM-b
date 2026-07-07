@@ -569,6 +569,107 @@ fn runtime_observe_loop() {
     verify(&program, &pi, &proof).expect("runtime-observe loop verifies");
 }
 
+/// Feasibility probe: can this machine drive a real m33_secure Ligerito proof
+/// (log_n=26, the config a 500-XMSS leanVM-b proof produces)? Times commit +
+/// prove + native verify and prints the proof shapes the guest port must consume.
+#[test]
+#[ignore = "heavy: ~1 GiB witness; run explicitly for the production-config bench"]
+fn ligerito_m33_native_probe() {
+    use std::time::Instant;
+    use leanvm_b::transcript::ProverState;
+    use flare::lincheck::build_eq_table;
+    use flare::ntt::AdditiveNttF128;
+    use flare::pcs::ligerito::{
+        ProverConfig, VerifierConfig, ligero_commit, recursive_prover_with_basis,
+        recursive_verifier_with_basis_succinct,
+    };
+    use flare::zerocheck::multilinear::eq_eval;
+
+    let log_n = 26usize;
+    let initial_k = 6usize;
+    let lir = vec![1usize, 2, 3, 4, 5, 6];
+    let mkp = || ProverConfig {
+        log_inv_rates: lir.clone(),
+        recursive_steps: 5,
+        initial_log_msg_cols: 20,
+        initial_log_num_interleaved: initial_k,
+        initial_k,
+        recursive_log_msg_cols: vec![17, 14, 11, 8, 5],
+        recursive_ks: vec![3, 3, 3, 3, 3],
+        queries: vec![290, 177, 145, 132, 126, 124],
+        grinding_bits: vec![0; 6],
+        fold_grinding_bits: vec![11, 10, 8, 6, 4, 2],
+        ood_samples: vec![0; 6],
+    };
+    let vc = VerifierConfig {
+        log_inv_rates: lir.clone(),
+        recursive_steps: 5,
+        initial_log_msg_cols: 20,
+        initial_log_num_interleaved: initial_k,
+        initial_k,
+        recursive_log_msg_cols: vec![17, 14, 11, 8, 5],
+        recursive_ks: vec![3, 3, 3, 3, 3],
+        queries: vec![290, 177, 145, 132, 126, 124],
+        grinding_bits: vec![0; 6],
+        fold_grinding_bits: vec![11, 10, 8, 6, 4, 2],
+        ood_samples: vec![0; 6],
+    };
+
+    let t = Instant::now();
+    let poly: Vec<F128> = (0..(1usize << log_n))
+        .map(|i| F128::new(0x9E37_79B9u64.wrapping_mul(i as u64 + 1) + 1, 0x1234 ^ (i as u64)))
+        .collect();
+    eprintln!("[m33] witness gen: {:?}", t.elapsed());
+    let z: Vec<F128> = (0..log_n).map(|i| F128::new(0xABCD + i as u64, 7 * i as u64 + 1)).collect();
+    let b = build_eq_table(&z);
+    let target: F128 = poly.iter().zip(b.iter()).map(|(&a, &c)| a * c).fold(F128::ZERO, |a, x| a + x);
+
+    let t = Instant::now();
+    let ntt = AdditiveNttF128::standard(20 + 1);
+    let wtns = ligero_commit(&poly, 20, initial_k, 1, &ntt);
+    eprintln!("[m33] commit: {:?}", t.elapsed());
+    let initial_root = wtns.root();
+
+    let label = b"m33probe";
+    let t = Instant::now();
+    let mut pch = ProverState::new(label, &[]);
+    let proof = recursive_prover_with_basis(&mkp(), poly, b, target, &wtns.mat, &wtns.tree, &mut pch);
+    eprintln!("[m33] recursive prove: {:?}", t.elapsed());
+
+    let zc = z.clone();
+    let eval_b = move |ris: &[F128], yl: usize| -> Vec<F128> {
+        let mut p = ris.to_vec();
+        p.resize(ris.len() + yl, F128::ZERO);
+        (0..(1usize << yl))
+            .map(|y| {
+                for j in 0..yl {
+                    p[ris.len() + j] = if (y >> j) & 1 == 1 { F128::ONE } else { F128::ZERO };
+                }
+                eq_eval(&zc, &p)
+            })
+            .collect()
+    };
+    let t = Instant::now();
+    let mut vch = ProverState::new(label, &[]);
+    let ok = recursive_verifier_with_basis_succinct(&vc, &proof, log_n, target, &initial_root, eval_b, &mut vch);
+    eprintln!("[m33] native verify: {:?} -> {ok}", t.elapsed());
+    assert!(ok);
+
+    let tot_q: usize = proof.recursive_proofs.iter().map(|p| p.opened_rows.len()).sum::<usize>()
+        + proof.initial_proof.opened_rows.len()
+        + proof.final_proof.opened_rows.len();
+    eprintln!(
+        "[m33] shapes: sumcheck msgs={}, init rows={}x{}, mp={}, rec levels={}, final yr={}, total opened rows={}",
+        proof.sumcheck_transcript.len(),
+        proof.initial_proof.opened_rows.len(),
+        proof.initial_proof.opened_rows.first().map(|r| r.len()).unwrap_or(0),
+        proof.initial_proof.merkle_proof.len(),
+        proof.recursive_proofs.len(),
+        proof.final_proof.yr.len(),
+        tot_q,
+    );
+}
+
 // ---- Gadget 14: the COMPLETE tiny Ligerito opening verifier (end-to-end) ----
 //
 // A full port of `recursive_verifier_with_basis_succinct` for a tiny real instance
