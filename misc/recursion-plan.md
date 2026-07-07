@@ -49,9 +49,11 @@ inner `Proof` (`stream: Vec<F128>` + `openings`) as `hint_witness` streams.
 `test_recursive_ligerito` (tests/recursion_gadgets.rs, #[ignore]) drives a real
 m33_secure LigeritoProof (log_n=26, initial_k=6, 6 levels, queries
 [290,177,145,132,126,124], fold-PoW [11,10,8,6,4,2], 994 query opens) through the
-in-circuit verifier and proves+verifies it in leanVM-b. Real numbers (clean verifier):
-**2,569,442 cycles (2^21.3), 30,238 BLAKE3 (2^14.9), committed 2^25.94, proof 718 KiB,
-prove 80.1s, verify 86ms** (inner commit+prove 54s). Run:
+in-circuit verifier and proves+verifies it in leanVM-b. Real numbers (clean verifier,
+after the cycle-reduction pass):
+**1,164,128 cycles (2^20.2), 29,387 BLAKE3 (2^14.8), committed 2^24.70, proof 682 KiB,
+prove 38.1s, verify 80ms** (inner commit+prove 54s; before the perf pass this was
+2,569,442 cycles / 2^25.94 committed / 80s prove). Run:
 `RAYON_NUM_THREADS=8 cargo test --release --test recursion_gadgets test_recursive_ligerito -- --ignored --nocapture`.
 
 Per user direction, the verifier does NO dedup/sort — the opening is *transmitted*
@@ -71,6 +73,16 @@ config (`recursive_ligerito_tiny`), a small 3-level config (`ml_clean_small`), a
 m33. Compiler features added for this: `GEN ** <expr>`, constant arrays + `len()`,
 `base ** e` (square-and-multiply), compile-time `-`, const-folded `Let`/buffer
 sizes, and folded-`if` branches lowering transparently (bindings persist).
+Cycle-reduction pass (-55%): query sampling packs floor(128/depth) positions per
+squeeze (disjoint d-bit chunks of one uniform squeeze — flock + mirror + guest in
+sync), so ONE 128-bit decomposition covers ~6 queries (994->143; dec128 was 54% of
+all cycles); the decomposition is fused with position extraction (`decq` stores
+each chunk's q_field + bit-pointer as a side effect of reconstructing the
+squeeze); the enforced-sum dot, Merkle leaf hash, and path walk are fused into one
+per-query pass (each row value read once); the walk step is an inline branch-free
+select (left = node + bit·(node+sibling)); foldyr is @unroll-inlined over stack
+cells. Profiling via `DBG_PROF=1` (per-function cycle histogram in execute).
+
 Remaining broader goal: the FULL `cpu::verify` replay (bus GKR + 6 zerochecks +
 flock BLAKE3 R1CS reduction) + recursion harness.
 
