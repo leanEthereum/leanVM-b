@@ -207,6 +207,44 @@ impl AdditiveNttF128 {
         }
     }
 
+    /// Like [`Self::forward_transform_interleaved_from_layer`] but transforms
+    /// only the first `active_lanes` lanes per position — the **MSB-lane**
+    /// zero-lane skip (trailing lanes stay zero, exact). `active_lanes ==
+    /// num_ntts` is the ordinary full transform.
+    pub fn forward_transform_interleaved_from_layer_active(
+        &self,
+        data: &mut [F128],
+        num_ntts: usize,
+        active_lanes: usize,
+        start_layer: usize,
+    ) {
+        assert!(num_ntts.is_power_of_two() && num_ntts > 0);
+        assert!(active_lanes <= num_ntts);
+        let n_total = data.len();
+        assert_eq!(n_total % num_ntts, 0);
+        let log_d = log2_pow2(n_total / num_ntts);
+        assert!(log_d <= self.log_domain_size());
+        assert!(start_layer <= log_d);
+        #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
+        {
+            self.forward_transform_interleaved_parallel_from_layer_active(
+                data,
+                num_ntts,
+                active_lanes,
+                start_layer,
+            );
+        }
+        #[cfg(not(all(target_arch = "aarch64", target_feature = "aes")))]
+        {
+            self.forward_transform_interleaved_scalar_from_layer_active(
+                data,
+                num_ntts,
+                active_lanes,
+                start_layer,
+            );
+        }
+    }
+
     /// Scalar reference for the interleaved forward NTT.
     pub fn forward_transform_interleaved_scalar(&self, data: &mut [F128], num_ntts: usize) {
         self.forward_transform_interleaved_scalar_from_layer(data, num_ntts, 0);
@@ -220,6 +258,25 @@ impl AdditiveNttF128 {
         num_ntts: usize,
         start_layer: usize,
     ) {
+        self.forward_transform_interleaved_scalar_from_layer_active(
+            data, num_ntts, num_ntts, start_layer,
+        );
+    }
+
+    /// Like [`Self::forward_transform_interleaved_scalar_from_layer`] but only
+    /// transforms the first `active_lanes` lanes of each interleaved position,
+    /// leaving lanes `active_lanes..num_ntts` untouched. Under the **MSB-lane**
+    /// layout those trailing lanes are the zero-padded ones, and a zero lane is a
+    /// fixed point of every butterfly (`0 + 0·ω = 0`), so skipping them is exact
+    /// and saves `(num_ntts − active_lanes)/num_ntts` of the transform.
+    pub fn forward_transform_interleaved_scalar_from_layer_active(
+        &self,
+        data: &mut [F128],
+        num_ntts: usize,
+        active_lanes: usize,
+        start_layer: usize,
+    ) {
+        debug_assert!(active_lanes <= num_ntts);
         let n_total = data.len();
         let log_d = log2_pow2(n_total / num_ntts);
 
@@ -236,7 +293,7 @@ impl AdditiveNttF128 {
                 for row in 0..block_size_half {
                     let off_top = block_start + row * num_ntts;
                     let off_bot = off_top + block_size_half * num_ntts;
-                    for lane in 0..num_ntts {
+                    for lane in 0..active_lanes {
                         let v = data[off_bot + lane];
                         let new_u = data[off_top + lane] + v * twiddle;
                         data[off_top + lane] = new_u;
@@ -267,6 +324,23 @@ impl AdditiveNttF128 {
         &self,
         data: &mut [F128],
         num_ntts: usize,
+        start_layer: usize,
+    ) {
+        self.forward_transform_interleaved_parallel_from_layer_active(
+            data, num_ntts, num_ntts, start_layer,
+        );
+    }
+
+    /// MSB-lane zero-lane-skipping variant of
+    /// [`Self::forward_transform_interleaved_parallel_from_layer`]: transforms
+    /// only the first `active_lanes` lanes per position (trailing lanes stay
+    /// zero, exact — see [`Self::forward_transform_interleaved_from_layer_active`]).
+    #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
+    pub fn forward_transform_interleaved_parallel_from_layer_active(
+        &self,
+        data: &mut [F128],
+        num_ntts: usize,
+        active_lanes: usize,
         start_layer: usize,
     ) {
         use rayon::prelude::*;
@@ -307,7 +381,12 @@ impl AdditiveNttF128 {
             cache_n_top
         };
         if n_top == 0 || log_d < 8 {
-            self.forward_transform_interleaved_scalar_from_layer(data, num_ntts, start_layer);
+            self.forward_transform_interleaved_scalar_from_layer_active(
+                data,
+                num_ntts,
+                active_lanes,
+                start_layer,
+            );
             return;
         }
 
@@ -343,6 +422,7 @@ impl AdditiveNttF128 {
                         t_inner_b,
                         quarter,
                         num_ntts,
+                        active_lanes,
                     );
                 }
                 layer += 2;
@@ -356,6 +436,7 @@ impl AdditiveNttF128 {
                         t,
                         block_size_half,
                         num_ntts,
+                        active_lanes,
                     );
                 }
                 layer += 1;
@@ -381,7 +462,13 @@ impl AdditiveNttF128 {
                         let twiddle = self.twiddle(layer, global_block);
                         let block_start = block_in_sub * block_bytes;
                         let block = &mut sub_data[block_start..block_start + block_bytes];
-                        butterfly_interleaved_block(block, twiddle, block_size_half, num_ntts);
+                        butterfly_interleaved_block(
+                            block,
+                            twiddle,
+                            block_size_half,
+                            num_ntts,
+                            active_lanes,
+                        );
                     }
                 }
             });
@@ -662,11 +749,12 @@ fn butterfly_interleaved_block_par_rows(
     twiddle: F128,
     block_size_half: usize,
     num_ntts: usize,
+    active_lanes: usize,
 ) {
     use rayon::prelude::*;
     const PARALLEL_ROW_THRESHOLD: usize = 512;
     if block_size_half < PARALLEL_ROW_THRESHOLD {
-        butterfly_interleaved_block(block, twiddle, block_size_half, num_ntts);
+        butterfly_interleaved_block(block, twiddle, block_size_half, num_ntts, active_lanes);
         return;
     }
     let half_offset = block_size_half * num_ntts;
@@ -674,7 +762,7 @@ fn butterfly_interleaved_block_par_rows(
     top.par_chunks_mut(num_ntts)
         .zip(bot.par_chunks_mut(num_ntts))
         .for_each(|(top_row, bot_row)| {
-            for lane in 0..num_ntts {
+            for lane in 0..active_lanes {
                 let v = bot_row[lane];
                 let new_u = top_row[lane] + v * twiddle;
                 top_row[lane] = new_u;
@@ -702,6 +790,7 @@ fn butterfly_interleaved_fused_2layer_par_rows(
     t_inner_b: F128,
     quarter: usize,
     num_ntts: usize,
+    active_lanes: usize,
 ) {
     use rayon::prelude::*;
     const PARALLEL_ROW_THRESHOLD: usize = 256;
@@ -710,7 +799,7 @@ fn butterfly_interleaved_fused_2layer_par_rows(
 
     let do_one =
         |row_a: &mut [F128], row_b: &mut [F128], row_c: &mut [F128], row_d: &mut [F128]| {
-            for lane in 0..num_ntts {
+            for lane in 0..active_lanes {
                 let mut a = row_a[lane];
                 let mut b = row_b[lane];
                 let mut c = row_c[lane];
@@ -783,12 +872,13 @@ fn butterfly_interleaved_block(
     twiddle: F128,
     block_size_half: usize,
     num_ntts: usize,
+    active_lanes: usize,
 ) {
     let off_bot = block_size_half * num_ntts;
     for r in 0..block_size_half {
         let off_top = r * num_ntts;
         let off_bot_r = off_top + off_bot;
-        for lane in 0..num_ntts {
+        for lane in 0..active_lanes {
             let v = block[off_bot_r + lane];
             let new_u = block[off_top + lane] + v * twiddle;
             block[off_top + lane] = new_u;
@@ -949,6 +1039,50 @@ mod tests {
             ntt.forward_transform(&mut v);
             ntt.inverse_transform(&mut v);
             assert_eq!(v, original, "roundtrip failed at log_d={log_d}");
+        }
+    }
+
+    /// MSB-lane zero-lane skip: transforming only the first `active_lanes` lanes
+    /// gives the SAME buffer as the full transform when the trailing lanes are
+    /// zero (a zero lane is a butterfly fixed point). Covers the scalar path AND
+    /// the platform dispatch (which is the parallel/NEON path on aarch64), so the
+    /// M4 fast-path is validated here too.
+    #[test]
+    fn interleaved_active_matches_full_on_zero_suffix() {
+        let mut rng = Rng::new(0x5AFE_1A9E);
+        for log_d in [4usize, 6, 8, 10] {
+            for &num_ntts in &[2usize, 4, 8, 16] {
+                for active in 1..=num_ntts {
+                    let ntt = AdditiveNttF128::standard(log_d);
+                    let n_pos = 1usize << log_d;
+                    let mut data = vec![F128::ZERO; n_pos * num_ntts];
+                    for pos in 0..n_pos {
+                        for lane in 0..active {
+                            data[pos * num_ntts + lane] = rng.f128();
+                        }
+                    }
+                    let mut full = data.clone();
+                    let mut act = data.clone();
+                    ntt.forward_transform_interleaved_scalar_from_layer(&mut full, num_ntts, 0);
+                    ntt.forward_transform_interleaved_scalar_from_layer_active(
+                        &mut act, num_ntts, active, 0,
+                    );
+                    assert_eq!(
+                        full, act,
+                        "scalar active mismatch log_d={log_d} num_ntts={num_ntts} active={active}"
+                    );
+                    let mut full2 = data.clone();
+                    let mut act2 = data.clone();
+                    ntt.forward_transform_interleaved_from_layer(&mut full2, num_ntts, 0);
+                    ntt.forward_transform_interleaved_from_layer_active(
+                        &mut act2, num_ntts, active, 0,
+                    );
+                    assert_eq!(
+                        full2, act2,
+                        "dispatch active mismatch log_d={log_d} num_ntts={num_ntts} active={active}"
+                    );
+                }
+            }
         }
     }
 

@@ -231,6 +231,24 @@ pub fn commit_into(
     // MSB-lane: transpose the packed witness so the padded high indices land in
     // whole trailing lanes (⇒ zero-suffixed leaves). Gated — only the stacked
     // Ligerito open/verify applies the matching fold transpose + point-rotation.
+    let num_ntts = params.num_ntts();
+    // Active (non-zero) lanes: with the transpose, lane `hi` holds witness block
+    // `[hi·msg_cols, (hi+1)·msg_cols)`, so lanes at/above `⌈real/msg_cols⌉` are
+    // wholly padding-zero. RS(0)=0 and a zero lane is a butterfly fixed point, so
+    // the NTT (and the leaf hash) can skip them entirely. `real` = last non-zero
+    // index + 1 (a cheap backward scan over the zero-padded tail).
+    let active_lanes = if params.msb_lane {
+        let msg_cols = z_packed.len() / num_ntts;
+        let real = z_packed
+            .iter()
+            .rposition(|&x| x != F128::ZERO)
+            .map(|i| i + 1)
+            .unwrap_or(0);
+        real.div_ceil(msg_cols).clamp(1, num_ntts)
+    } else {
+        num_ntts
+    };
+
     let z_transposed;
     let z_packed: &[F128] = if params.msb_lane {
         z_transposed = transpose_hi_lanes(z_packed, params.log_batch_size);
@@ -247,7 +265,7 @@ pub fn commit_into(
     // layers' full-buffer reads and multiplies.
     replicate_message_fill(&mut codeword, z_packed);
 
-    finalize_commit(codeword, params)
+    finalize_commit(codeword, params, active_lanes)
 }
 
 /// Fill `codeword` with `2^r` replicas of `msg` (`r = log2(codeword.len() /
@@ -309,17 +327,24 @@ pub(crate) fn replicate_message_fill(codeword: &mut [F128], msg: &[F128]) {
 
 /// Shared tail of [`commit`] / [`commit_into`]: interleaved forward additive
 /// NTT (RS-encode every lane) then the initial Merkle tree over codeword rows.
-fn finalize_commit(mut codeword: Vec<F128>, params: &PcsParams) -> (Commitment, ProverData) {
+fn finalize_commit(
+    mut codeword: Vec<F128>,
+    params: &PcsParams,
+    active_lanes: usize,
+) -> (Commitment, ProverData) {
     let timing = std::env::var_os("FLOCK_COMMIT_TIMING").is_some();
     let t_ntt = std::time::Instant::now();
     // ---- Interleaved forward additive NTT: 2^log_batch_size independent
     // sub-NTTs with shared twiddles. Each sub-NTT operates on its lane of the
     // SoA buffer. The first `log_inv_rate` layers were pre-applied by the
-    // caller's replicate-fill (commit_into), so start past them.
+    // caller's replicate-fill (commit_into), so start past them. Under MSB-lane
+    // `active_lanes < num_ntts`: the trailing lanes are wholly zero (padding) and
+    // stay zero through every butterfly, so we transform only the active prefix.
     let ntt = AdditiveNttF128::standard(params.k_code());
-    ntt.forward_transform_interleaved_from_layer(
+    ntt.forward_transform_interleaved_from_layer_active(
         &mut codeword,
         params.num_ntts(),
+        active_lanes,
         params.log_inv_rate,
     );
     if timing {
