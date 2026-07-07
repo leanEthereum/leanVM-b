@@ -813,21 +813,13 @@ impl FnLower<'_> {
             // not an index (`None` — callers that require an index then error).
             Expr::Lit(k) => u32::try_from(*k).ok(),
             Expr::Var(v) => self.consts.get(v).copied(),
-            Expr::Add(a, b) => Some(
-                self.try_const_index(a)?
-                    .checked_add(self.try_const_index(b)?)
-                    .unwrap_or_else(|| panic!("stack index overflows u32")),
-            ),
-            Expr::Sub(a, b) => Some(
-                self.try_const_index(a)?
-                    .checked_sub(self.try_const_index(b)?)
-                    .unwrap_or_else(|| panic!("compile-time subtraction went negative")),
-            ),
-            Expr::Mul(a, b) => Some(
-                self.try_const_index(a)?
-                    .checked_mul(self.try_const_index(b)?)
-                    .unwrap_or_else(|| panic!("stack index overflows u32")),
-            ),
+            // Overflow (or a negative `-`) means the expression is not a valid
+            // index — decline (`None`) rather than panic: this evaluator also
+            // probes `Let` bindings speculatively, where `A * B` may be a
+            // perfectly fine *field* expression whose integer product overflows.
+            Expr::Add(a, b) => self.try_const_index(a)?.checked_add(self.try_const_index(b)?),
+            Expr::Sub(a, b) => self.try_const_index(a)?.checked_sub(self.try_const_index(b)?),
+            Expr::Mul(a, b) => self.try_const_index(a)?.checked_mul(self.try_const_index(b)?),
             Expr::Div(a, b) => {
                 let d = self.try_const_index(b)?;
                 assert!(d != 0, "compile-time division by zero");
@@ -844,12 +836,9 @@ impl FnLower<'_> {
                 u32::try_from(e).unwrap_or_else(|_| panic!("const-array element {e} does not fit a u32 index"))
             }),
             Expr::Call(..) => self.const_len(idx).map(|n| n as u32),
-            // Integer power `b ** e` (both compile-time), e.g. `2 ** c` for a bit test.
-            Expr::Pow(b, e) => Some(
-                self.try_const_index(b)?
-                    .checked_pow(self.try_const_index(e)?)
-                    .unwrap_or_else(|| panic!("index power overflows u32")),
-            ),
+            // Integer power `b ** e` (both compile-time), e.g. `2 ** c` for a bit
+            // test. Overflow declines (see the Add/Sub/Mul comment above).
+            Expr::Pow(b, e) => self.try_const_index(b)?.checked_pow(self.try_const_index(e)?),
             _ => None,
         }
     }
@@ -857,8 +846,14 @@ impl FnLower<'_> {
     /// A stack index or compile-time slice bound: [`Self::try_const_index`],
     /// required to succeed.
     fn const_index(&self, idx: &Expr) -> u32 {
-        self.try_const_index(idx)
-            .unwrap_or_else(|| panic!("a StackBuf index must be a compile-time integer, got `{idx:?}`"))
+        self.try_const_index(idx).unwrap_or_else(|| {
+            // An oversized literal is an index-shaped mistake, not a runtime
+            // value — diagnose it precisely (`sa[2^32]` must not wrap to `sa[0]`).
+            if let Expr::Lit(k) = idx {
+                panic!("stack index {k} does not fit in u32");
+            }
+            panic!("a StackBuf index must be a compile-time integer, got `{idx:?}`")
+        })
     }
 
     /// The exponent of `GEN ** e`: a compile-time integer, required to succeed.
