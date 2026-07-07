@@ -2617,6 +2617,68 @@ fn fold_and_msg_lsb(f: &[F128], b: &[F128], r: F128) -> (Vec<F128>, Vec<F128>, S
     (nf, nb, SumcheckMessage { u_0, u_2 })
 }
 
+/// Round message for folding the **outer** variable — the block index's LSB —
+/// pairing adjacent `block_len`-blocks instead of adjacent elements. Folds
+/// exactly the same sumcheck variable as `round_msg_lsb` would on the
+/// TRANSPOSED (MSB-lane) layout: `u_0` sums `f·b` over even blocks, `u_2` over
+/// block pairs. Lets the first `initial_k` L0 rounds fold the lanes with no
+/// witness transpose (the lanes are `z`'s high bits = whole `msg_cols`-blocks).
+fn round_msg_outer(f: &[F128], b: &[F128], block_len: usize) -> SumcheckMessage {
+    use rayon::prelude::*;
+    let nblocks = f.len() / block_len;
+    debug_assert!(nblocks >= 2 && nblocks.is_multiple_of(2));
+    debug_assert_eq!(b.len(), f.len());
+    let half = nblocks / 2;
+    let (u_0, u_2) = (0..half)
+        .into_par_iter()
+        .map(|i| {
+            let e = 2 * i * block_len;
+            let o = e + block_len;
+            let mut a0 = F128::ZERO;
+            let mut a2 = F128::ZERO;
+            for lo in 0..block_len {
+                let fe = f[e + lo];
+                let fo = f[o + lo];
+                let be = b[e + lo];
+                let bo = b[o + lo];
+                a0 += fe * be;
+                a2 += (fe + fo) * (be + bo);
+            }
+            (a0, a2)
+        })
+        .reduce(
+            || (F128::ZERO, F128::ZERO),
+            |(x0, x2), (y0, y2)| (x0 + y0, x2 + y2),
+        );
+    SumcheckMessage { u_0, u_2 }
+}
+
+/// Fold the **outer** variable (block index LSB) at `r`, pairing adjacent
+/// `block_len`-blocks: `nf[i·bl+lo] = f[2i·bl+lo]·(1+r) + f[(2i+1)·bl+lo]·r`.
+/// MSB-lane counterpart of one `partial_eval_lsb_one` on the transposed layout,
+/// but with cache-friendly *adjacent-block* access and no transpose. Returns the
+/// halved `(f, b)`; the caller computes the next-round message (outer or, once
+/// the last lane bit is folded, LSB over the single remaining block).
+fn fold_outer(f: &[F128], b: &[F128], r: F128, block_len: usize) -> (Vec<F128>, Vec<F128>) {
+    use rayon::prelude::*;
+    let one_plus_r = F128::ONE + r;
+    let out_len = f.len() / 2;
+    let mut nf = crate::alloc_uninit_f128_vec(out_len);
+    let mut nbf = crate::alloc_uninit_f128_vec(out_len);
+    nf.par_chunks_mut(block_len)
+        .zip(nbf.par_chunks_mut(block_len))
+        .enumerate()
+        .for_each(|(i, (fc, bc))| {
+            let e = 2 * i * block_len;
+            let o = e + block_len;
+            for lo in 0..block_len {
+                fc[lo] = f[e + lo] * one_plus_r + f[o + lo] * r;
+                bc[lo] = b[e + lo] * one_plus_r + b[o + lo] * r;
+            }
+        });
+    (nf, nbf)
+}
+
 pub struct SumcheckProver {
     f: Vec<F128>,
     /// Single combined basis poly. After every `glue(β)`, the introduced
@@ -2627,6 +2689,11 @@ pub struct SumcheckProver {
     t_r: F128,
     transcript: Vec<SumcheckMessage>,
     pending_glue: Option<(Vec<F128>, F128)>,
+    /// MSB-lane: fold the OUTER (block/lane) variable for the next `outer_left`
+    /// rounds — pairing adjacent `block_len`-blocks — then switch to LSB. Zero
+    /// for the default (LSB-throughout) callers.
+    outer_left: usize,
+    block_len: usize,
 }
 
 impl SumcheckProver {
@@ -2638,9 +2705,37 @@ impl SumcheckProver {
             t_r: h1,
             transcript: Vec::new(),
             pending_glue: None,
+            outer_left: 0,
+            block_len: 0,
         };
         let msg = round_msg_lsb(&inst.f, &inst.combined_basis);
         inst.transcript.push(msg);
+        (inst, msg)
+    }
+
+    /// MSB-lane constructor: the first `outer_rounds` folds are OUTER folds over
+    /// `block_len`-blocks (the lanes = `z`'s high bits), reproducing exactly the
+    /// transpose-then-LSB sumcheck without transposing the witness. Round 0's
+    /// message is computed over the blocks here.
+    pub fn new_outer(
+        f: Vec<F128>,
+        b1: Vec<F128>,
+        h1: F128,
+        block_len: usize,
+        outer_rounds: usize,
+    ) -> (Self, SumcheckMessage) {
+        assert_eq!(f.len(), b1.len());
+        assert!(outer_rounds >= 1 && block_len >= 1);
+        let msg = round_msg_outer(&f, &b1, block_len);
+        let inst = Self {
+            f,
+            combined_basis: b1,
+            t_r: h1,
+            transcript: vec![msg],
+            pending_glue: None,
+            outer_left: outer_rounds,
+            block_len,
+        };
         (inst, msg)
     }
 
@@ -2662,12 +2757,30 @@ impl SumcheckProver {
             t_r: h1,
             transcript: Vec::new(),
             pending_glue: None,
+            outer_left: 0,
+            block_len: 0,
         };
         inst.transcript.push(first_msg);
         (inst, first_msg)
     }
 
     pub fn fold(&mut self, r: F128) -> SumcheckMessage {
+        if self.outer_left > 0 {
+            // MSB-lane: fold the outer (lane) variable — adjacent-block pairs.
+            let (nf, nb) = fold_outer(&self.f, &self.combined_basis, r, self.block_len);
+            self.outer_left -= 1;
+            // Next round's message: still outer while lane bits remain, else LSB
+            // over the single surviving block.
+            let msg = if self.outer_left > 0 {
+                round_msg_outer(&nf, &nb, self.block_len)
+            } else {
+                round_msg_lsb(&nf, &nb)
+            };
+            self.f = nf;
+            self.combined_basis = nb;
+            self.transcript.push(msg);
+            return msg;
+        }
         // Fused: fold f and combined_basis at r AND build the next-round
         // message in one parallel pass (was three passes). See
         // [`fold_and_msg_lsb`].
@@ -2949,6 +3062,34 @@ pub fn recursive_prover_with_basis<Ch: Challenger>(
         l0_codeword,
         l0_tree,
         None,
+        false,
+        challenger,
+    )
+}
+
+/// **MSB-lane** variant of [`recursive_prover_with_basis`]: the L0 codeword was
+/// committed transposed (padded high indices → whole trailing zero lanes), so
+/// `packed_witness` / `b_initial` are passed UN-transposed and the first
+/// `initial_k` (lane) rounds fold the outer block dimension instead of LSB —
+/// reproducing the transpose-then-LSB sumcheck bit-for-bit with no transpose.
+pub fn recursive_prover_with_basis_msb_lane<Ch: Challenger>(
+    config: &ProverConfig,
+    packed_witness: Vec<F128>,
+    b_initial: Vec<F128>,
+    target: F128,
+    l0_codeword: &[F128],
+    l0_tree: &[Hash],
+    challenger: &mut Ch,
+) -> LigeritoProof {
+    recursive_prover_with_basis_impl(
+        config,
+        packed_witness,
+        b_initial,
+        target,
+        l0_codeword,
+        l0_tree,
+        None,
+        true,
         challenger,
     )
 }
@@ -2980,6 +3121,7 @@ pub fn recursive_prover_with_basis_precomputed_round0<Ch: Challenger>(
             u_0: round0_uv.0,
             u_2: round0_uv.1,
         }),
+        false,
         challenger,
     )
 }
@@ -2993,6 +3135,7 @@ fn recursive_prover_with_basis_impl<Ch: Challenger>(
     l0_codeword: &[F128],
     l0_tree: &[Hash],
     first_msg: Option<SumcheckMessage>,
+    msb_lane: bool,
     challenger: &mut Ch,
 ) -> LigeritoProof {
     let log_n = packed_witness.len().trailing_zeros() as usize;
@@ -3053,9 +3196,15 @@ fn recursive_prover_with_basis_impl<Ch: Challenger>(
     let ood_count = |lvl: usize| -> usize { config.ood_samples.get(lvl).copied().unwrap_or(0) };
 
     let _t = std::time::Instant::now();
-    let (mut sc_prover, start_msg) = match first_msg {
-        Some(msg) => SumcheckProver::new_with_first_msg(packed_witness, b_initial, target, msg),
-        None => SumcheckProver::new(packed_witness, b_initial, target),
+    let (mut sc_prover, start_msg) = if msb_lane {
+        debug_assert!(first_msg.is_none(), "msb_lane computes its own outer round0");
+        // First `initial_k` rounds fold the outer (lane) block dimension.
+        SumcheckProver::new_outer(packed_witness, b_initial, target, 1usize << log_msg_cols_0, initial_k)
+    } else {
+        match first_msg {
+            Some(msg) => SumcheckProver::new_with_first_msg(packed_witness, b_initial, target, msg),
+            None => SumcheckProver::new(packed_witness, b_initial, target),
+        }
     };
     challenger.observe_f128(start_msg.u_0);
     challenger.observe_f128(start_msg.u_2);
@@ -6351,6 +6500,82 @@ mod tests {
         let ok =
             recursive_verifier_with_basis(&v_cfg, &proof, &b, target, &initial_root, &mut v_ch);
         assert!(ok, "basis-based verifier rejected valid proof");
+    }
+
+    /// MSB-lane equivalence: folding the first `initial_k` rounds over the outer
+    /// block dimension (`recursive_prover_with_basis_msb_lane`, NO transpose)
+    /// must produce a BIT-IDENTICAL proof to transposing the witness+weight and
+    /// folding LSB (`recursive_prover_with_basis`) — against the same committed
+    /// (transposed) codeword. This is the invariant that lets the stacked open
+    /// drop its two full-array open-side transposes.
+    #[test]
+    fn msb_lane_prover_matches_transpose() {
+        use crate::challenger::Challenger;
+        let log_n = 14;
+        let initial_k = 3;
+        let k_0 = 2;
+        let log_inv_rate = 1;
+
+        let mut rng = crate::challenger::RandomChallenger::new(0x5B1_A2E5);
+        let poly: Vec<F128> = (0..(1usize << log_n)).map(|_| rng.sample_f128()).collect();
+        let z: Vec<F128> = (0..log_n).map(|_| rng.sample_f128()).collect();
+        let b = build_eq_table(&z);
+        let target: F128 = poly
+            .iter()
+            .zip(b.iter())
+            .map(|(&a, &c)| a * c)
+            .fold(F128::ZERO, |a, x| a + x);
+
+        let log_inv_rates = vec![log_inv_rate, log_inv_rate];
+        let cfg = ProverConfig {
+            log_inv_rates: log_inv_rates.clone(),
+            recursive_steps: 1,
+            initial_log_msg_cols: log_n - initial_k,
+            initial_log_num_interleaved: initial_k,
+            initial_k,
+            recursive_log_msg_cols: vec![log_n - initial_k - k_0],
+            recursive_ks: vec![k_0],
+            queries: log_inv_rates.iter().map(|&r| udr_queries(r)).collect(),
+            grinding_bits: vec![0; log_inv_rates.len()],
+            fold_grinding_bits: vec![0; 2],
+            ood_samples: vec![0; 2],
+        };
+
+        // Commit the TRANSPOSED message = the MSB-lane codeword both provers open.
+        let poly_t = crate::pcs::commit::transpose_hi_lanes(&poly, initial_k);
+        let log_msg_cols_0 = log_n - initial_k;
+        let ntt_0 = AdditiveNttF128::standard(log_msg_cols_0 + log_inv_rate);
+        let wtns = ligero_commit(&poly_t, log_msg_cols_0, initial_k, log_inv_rate, &ntt_0);
+
+        // (a) transpose witness+weight, fold LSB.
+        let b_t = crate::pcs::commit::transpose_hi_lanes(&b, initial_k);
+        let mut ch_a = crate::challenger::FsChallenger::new(b"msb-eq");
+        let proof_a = recursive_prover_with_basis(
+            &cfg,
+            poly_t.clone(),
+            b_t,
+            target,
+            &wtns.mat,
+            &wtns.tree,
+            &mut ch_a,
+        );
+
+        // (b) un-transposed, fold the first initial_k rounds over the block dim.
+        let mut ch_b = crate::challenger::FsChallenger::new(b"msb-eq");
+        let proof_b = recursive_prover_with_basis_msb_lane(
+            &cfg,
+            poly.clone(),
+            b.clone(),
+            target,
+            &wtns.mat,
+            &wtns.tree,
+            &mut ch_b,
+        );
+
+        assert_eq!(
+            proof_a, proof_b,
+            "MSB-lane outer-fold must match transpose+LSB bit-for-bit"
+        );
     }
 
     /// `induce_sumcheck_evaluate_at_residual` matches dense

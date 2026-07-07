@@ -1780,25 +1780,30 @@ pub fn open_batch_mixed_ligerito_stacked<Ch: Challenger>(
     fold_stacked_point_claims(&mut b_stack, &mut target, stack_pd, &gammas_pd);
 
     // MSB-lane: the committed codeword was transposed so the padded high indices
-    // form trailing zero lanes; fold the witness and weight through the same π so
-    // the sumcheck matches the codeword. `target = Σ stack·b_stack` is invariant.
-    let (stack_v, b_stack_v) = if stack_commitment.params.msb_lane {
-        (
-            commit::transpose_hi_lanes(stack, lig_config.initial_k),
-            commit::transpose_hi_lanes(&b_stack, lig_config.initial_k),
+    // form trailing zero lanes. Rather than transpose the witness+weight to match
+    // (a full-array data move, ×2), fold the first `initial_k` (lane) sumcheck
+    // rounds over the outer block dimension — bit-identical result, no transpose.
+    let lig = if stack_commitment.params.msb_lane {
+        ligerito::recursive_prover_with_basis_msb_lane(
+            lig_config,
+            stack.to_vec(),
+            b_stack,
+            target,
+            &stack_data.codeword,
+            &stack_data.merkle_tree,
+            challenger,
         )
     } else {
-        (stack.to_vec(), b_stack)
+        ligerito::recursive_prover_with_basis(
+            lig_config,
+            stack.to_vec(),
+            b_stack,
+            target,
+            &stack_data.codeword,
+            &stack_data.merkle_tree,
+            challenger,
+        )
     };
-    let lig = ligerito::recursive_prover_with_basis(
-        lig_config,
-        stack_v,
-        b_stack_v,
-        target,
-        &stack_data.codeword,
-        &stack_data.merkle_tree,
-        challenger,
-    );
     BatchOpeningProofLigerito {
         ring_switches: combined.ring_switches,
         ligerito: lig,
