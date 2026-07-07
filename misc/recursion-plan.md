@@ -45,6 +45,22 @@ inner `Proof` (`stream: Vec<F128>` + `openings`) as `hint_witness` streams.
   expressed all 10 gadgets. `assert` has only `==` and `log _ < _` (no `!=`); the
   nonzero check `x != 0` is done by exhibiting `x^-1` (`assert x·x⁻¹ == 1`).
 
+## END-TO-END LIGERITO OPENING VERIFIER — DONE (tiny instance)
+`ligerito_verify_end_to_end` (tests/recursion_gadgets.rs) is a complete zkDSL port of
+`recursive_verifier_with_basis_succinct` — leanVM-b's actual Ligerito opening — that
+verifies a REAL flock `LigeritoProof` end-to-end, proven+checked by leanVM-b's own
+prover/verifier. Full protocol: sponge replay + RoundQuad sumcheck + enforced-sum glue
++ single-path Merkle opens (query bits pinned by 128-bit decomposition) + residual
+(novel-basis Ŵ_k recurrence + eval_b + terminal inner==t_r). Cross-checked vs a Rust
+mirror that matches native accept. Tiny config (log_n=8, 1 query/level) for
+tractability; the emitter is config-driven. To reach production m22: swap the
+single-path Merkle for the octopus multi-proof (or harness-expand to independent
+paths) and loop the query phases — all arithmetic already generalizes; no new
+capability. The top-level `verify_opening_batch_mixed_ligerito_stacked` wraps this
+with per-claim `ring_switch::verify_succinct` (DONE, gadget 12) + γ-combine +
+`eval_b_residual`, plus the full `cpu::verify` replay (bus GKR + zerochecks + flock
+BLAKE3 reduction) and the recursion harness.
+
 ## Progress into the actual opening (stage 1a DONE)
 `ring_switch::verify_succinct`'s **claim check** is ported + tested in-circuit
 (gadget 10): runtime φ₈ F₈-Lagrange (`build_claim_weights`) + the 128-term
