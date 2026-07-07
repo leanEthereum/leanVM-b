@@ -56,6 +56,13 @@ IDXC = IDXC_PLACEHOLDER
 # deferred bytecode values (Public coords), and the count-root inverse hint.
 NCLAIMS = NCLAIMS_PLACEHOLDER
 NBCV = NBCV_PLACEHOLDER
+# Zerochecks: per-table log row counts, constraint-column counts, eval offsets.
+TAU = TAU_PLACEHOLDER
+NCOL = NCOL_PLACEHOLDER
+EVOFF = EVOFF_PLACEHOLDER
+TAUMAX = TAUMAX_PLACEHOLDER
+EVTOT = EVTOT_PLACEHOLDER
+CVCHK_B = CVCHK_B_PLACEHOLDER
 
 DS_SCALAR = 1
 DS_BYTE = 2
@@ -305,6 +312,76 @@ def main():
         acc = acc + 1 + selsum
         assert acc == gval[GEN ** s]
 
-    # ---- Phase A checkpoint (temporary): sponge state matches the mirror ----
+    # ---- Phase A checkpoint: sponge state matches the mirror ----
     assert cv0 == CVCHK_A
+
+    # ---- 6x per-table zerocheck (XOR, MUL, SET, DEREF, JUMP, BLAKE3) ----
+    # For each table: eta, the zerocheck point r (tau samples), tau eq-trick
+    # rounds (claim starts at 0), then the involved-column evaluations (pooled)
+    # and the final AIR check claim == eq_acc * C_t(eta, evals).
+    rho = HeapBuf(6 * TAUMAX)
+    evb = HeapBuf(EVTOT)
+    for t in unroll(0, 6):
+        eta, cv0, cv1 = sqz(cv0, cv1)
+        rr = HeapBuf(TAUMAX)
+        for k in unroll(0, TAU[t]):
+            rv, cv0, cv1 = sqz(cv0, cv1)
+            rr[GEN ** k] = rv
+        claim = 0
+        eq_acc = GEN ** 0
+        for k in unroll(0, TAU[t]):
+            p0 = cur[GEN ** 0]
+            cv0, cv1 = obs(cv0, cv1, p0)
+            cur = cur * GEN
+            p1 = cur[GEN ** 0]
+            cv0, cv1 = obs(cv0, cv1, p1)
+            cur = cur * GEN
+            p2 = cur[GEN ** 0]
+            cv0, cv1 = obs(cv0, cv1, p2)
+            cur = cur * GEN
+            rj = rr[GEN ** k]
+            lhs = eq_acc * ((1 + rj) * p0 + rj * p1)
+            assert lhs == claim
+            rk, cv0, cv1 = sqz(cv0, cv1)
+            rho[GEN ** (t * TAUMAX + k)] = rk
+            eq_acc = eq_acc * (1 + rj + rk)
+            l0 = (rk + 1) * (rk + GG) * ILD0
+            l1 = rk * (rk + GG) * ILD1
+            l2 = rk * (rk + 1) * ILD2
+            claim = eq_acc * (p0 * l0 + p1 * l1 + p2 * l2)
+        ee = HeapBuf(16)
+        for k in unroll(0, NCOL[t]):
+            e = cur[GEN ** 0]
+            cv0, cv1 = obs(cv0, cv1, e)
+            cur = cur * GEN
+            evb[GEN ** (EVOFF[t] + k)] = e
+            ee[GEN ** k] = e
+            clv[GEN ** ci] = e
+            ci = ci + 1
+        # the table's AIR constraint at the final point (ev order = the table's
+        # constraint_columns order; formulas mirror tables.rs eval_constraint).
+        if t == 0:
+            cst = (ee[GEN ** 4] + ee[GEN ** 0] * ee[GEN ** 1]) + eta * (ee[GEN ** 5] + ee[GEN ** 0] * ee[GEN ** 2]) + eta * eta * (ee[GEN ** 6] + ee[GEN ** 0] * ee[GEN ** 3]) + eta * eta * eta * (ee[GEN ** 9] + ee[GEN ** 7] + ee[GEN ** 8])
+        if t == 1:
+            cst = (ee[GEN ** 4] + ee[GEN ** 0] * ee[GEN ** 1]) + eta * (ee[GEN ** 5] + ee[GEN ** 0] * ee[GEN ** 2]) + eta * eta * (ee[GEN ** 6] + ee[GEN ** 0] * ee[GEN ** 3]) + eta * eta * eta * (ee[GEN ** 9] + ee[GEN ** 7] * ee[GEN ** 8])
+        if t == 2:
+            cst = ee[GEN ** 2] + ee[GEN ** 0] * ee[GEN ** 1]
+        if t == 3:
+            src = (1 + ee[GEN ** 8] + ee[GEN ** 9]) * ee[GEN ** 11] + ee[GEN ** 8] * (GG * GG * ee[GEN ** 12]) + ee[GEN ** 9] * ee[GEN ** 0]
+            cst = (ee[GEN ** 4] + ee[GEN ** 0] * ee[GEN ** 1]) + eta * (ee[GEN ** 5] + ee[GEN ** 7] * ee[GEN ** 2]) + eta * eta * (ee[GEN ** 6] + ee[GEN ** 0] * ee[GEN ** 3]) + eta * eta * eta * (ee[GEN ** 10] + src)
+        if t == 4:
+            ft = GG * ee[GEN ** 0]
+            addrs = (ee[GEN ** 7] + ee[GEN ** 1] * ee[GEN ** 4]) + eta * (ee[GEN ** 8] + ee[GEN ** 1] * ee[GEN ** 5]) + eta * eta * (ee[GEN ** 9] + ee[GEN ** 1] * ee[GEN ** 6])
+            eta3 = eta * eta * eta
+            ind_def = eta3 * (ee[GEN ** 14] + ee[GEN ** 10] * ee[GEN ** 13])
+            ind_nz = eta3 * eta * (ee[GEN ** 10] * (ee[GEN ** 14] + 1))
+            sel_pc = eta3 * eta * eta * (ee[GEN ** 2] + ee[GEN ** 14] * ee[GEN ** 11] + (ee[GEN ** 14] + 1) * ft)
+            sel_fp = eta3 * eta * eta * eta * (ee[GEN ** 3] + ee[GEN ** 14] * ee[GEN ** 12] + (ee[GEN ** 14] + 1) * ee[GEN ** 1])
+            cst = addrs + ind_def + ind_nz + sel_pc + sel_fp
+        if t == 5:
+            cst = (ee[GEN ** 6] + ee[GEN ** 0] * ee[GEN ** 1]) + eta * (ee[GEN ** 7] + ee[GEN ** 0] * ee[GEN ** 2]) + eta * eta * (ee[GEN ** 8] + ee[GEN ** 0] * ee[GEN ** 3]) + eta * eta * eta * (ee[GEN ** 9] + ee[GEN ** 0] * ee[GEN ** 4]) + eta * eta * eta * eta * (ee[GEN ** 10] + ee[GEN ** 0] * ee[GEN ** 5])
+        assert claim == eq_acc * cst
+
+    # ---- Phase B checkpoint ----
+    assert cv0 == CVCHK_B
     return

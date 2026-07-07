@@ -288,6 +288,26 @@ fn gen_verify(
     }
     let phase_a_end = w.i;
 
+    // ---- Phase B walk: 6 zerochecks ----
+    let taus = l.taus;
+    let ncol: Vec<usize> = leanvm_b::tables::tables().iter().map(|t| t.constraint_columns().len()).collect();
+    for t in 0..6 {
+        w.sample(); // eta
+        for _ in 0..taus[t] {
+            w.sample(); // r
+        }
+        for _ in 0..taus[t] {
+            for _ in 0..3 {
+                w.so();
+            }
+            w.sample();
+        }
+        for _ in 0..ncol[t] {
+            w.so();
+        }
+    }
+    let phase_b_end = w.i;
+
     // ---- hints ----
     // fpb: the grind digest bits. Base = compress(cv_after_alpha, [0, POW]).
     let seed = Mirror::new(b"leanvm-b", &[pi[0], pi[1], dig[0], dig[1]]);
@@ -309,10 +329,13 @@ fn gen_verify(
     }
     assert_eq!(bcv.len(), nbcv);
     let cinv = roots[2].inv();
-    // checkpoint cv after the bus phase.
+    // checkpoint cvs after each phase.
     let mut m = seed.clone();
     m.replay(&ops[0..phase_a_end]);
     let cvchk_a = m.cv[0];
+    let mut m = seed.clone();
+    m.replay(&ops[0..phase_b_end]);
+    let cvchk_b = m.cv[0];
 
     // ---- placeholder map ----
     let ints = |v: &[usize]| format!("[{}]", v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(", "));
@@ -355,8 +378,19 @@ fn gen_verify(
         })
         .collect();
     ps("IDXC", us(&idxc));
-    ps("NCLAIMS", nclaims.to_string());
+    let evtot: usize = ncol.iter().sum();
+    ps("NCLAIMS", (nclaims + evtot + 8).to_string());
     ps("NBCV", nbcv.to_string());
+    ps("TAU", ints(&taus));
+    ps("NCOL", ints(&ncol));
+    let mut evoff = vec![0usize];
+    for t in 0..5 {
+        evoff.push(evoff[t] + ncol[t]);
+    }
+    ps("EVOFF", ints(&evoff));
+    ps("TAUMAX", taus.iter().max().unwrap().to_string());
+    ps("EVTOT", evtot.to_string());
+    ps("CVCHK_B", u(cvchk_b).to_string());
 
     let hints = vec![
         ("stream".to_string(), proof.stream.clone()),

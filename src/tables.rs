@@ -163,7 +163,7 @@ pub(crate) fn column_positions(columns: &[usize]) -> Vec<usize> {
 /// One instruction table. Indices in [`flushes`](Table::flushes),
 /// [`count_columns`](Table::count_columns), and
 /// [`constraint_columns`](Table::constraint_columns) are local to this table.
-pub(crate) trait Table: Sync {
+pub trait Table: Sync {
     /// Distinct opcode tag (coordinate 3 of the bytecode tuple).
     fn opcode_tag(&self) -> F128;
     /// Number of committed columns (local indices `0..n_committed_columns`).
@@ -190,7 +190,7 @@ pub(crate) trait Table: Sync {
 
 /// The six tables in fixed order `[XOR, MUL, SET, DEREF, JUMP, BLAKE3]` — the
 /// order of `row_counts` / `taus` throughout `cpu`.
-pub(crate) fn tables() -> [&'static dyn Table; 6] {
+pub fn tables() -> [&'static dyn Table; 6] {
     [
         &Arith { is_xor: true },
         &Arith { is_xor: false },
