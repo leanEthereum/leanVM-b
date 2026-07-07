@@ -1105,7 +1105,7 @@ fn ligerito_verify_source(
 // single Merkle path, keeping the port tractable. Prints the concrete proof shapes
 // the guest port must consume.
 #[test]
-fn ligerito_verify_end_to_end() {
+fn verify_ligerito_recursive() {
     use leanvm_b::transcript::ProverState;
     use flare::lincheck::build_eq_table;
     use flare::ntt::AdditiveNttF128;
