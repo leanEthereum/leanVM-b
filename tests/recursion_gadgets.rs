@@ -80,6 +80,55 @@ mod fs_ref {
         pub fn absorb_nonce(&mut self, nonce: u64) {
             self.cv = compress(self.cv, [F128::new(nonce, 0), F128::new(5, 0)]); // DS_POW
         }
+        /// Verifier PoW mirror (transcript.rs): base = compress(cv,[0,DS_POW]);
+        /// for bits>0 check compress(base,[nonce,DS_POW]) has `bits` leading zero
+        /// bits (LE byte order); then absorb the nonce. Returns the check result.
+        pub fn verify_pow(&mut self, nonce: u64, bits: u32) -> bool {
+            let base = compress(self.cv, [F128::ZERO, F128::new(5, 0)]);
+            let ok = if bits == 0 {
+                nonce == 0
+            } else {
+                let h = compress(base, [F128::new(nonce, 0), F128::new(5, 0)]);
+                leading_zero_bits(h, bits)
+            };
+            self.absorb_nonce(nonce);
+            ok
+        }
+        /// sample_distinct_queries: sample until `count` distinct `v.lo % block_len`
+        /// collected; returns (sorted distinct positions, the raw sampled values in
+        /// order). block_len is a power of two.
+        pub fn sample_distinct_queries(&mut self, block_len: usize, count: usize) -> (Vec<usize>, Vec<F128>) {
+            use std::collections::HashSet;
+            let mut seen = HashSet::new();
+            let mut sorted = Vec::new();
+            let mut raw = Vec::new();
+            while sorted.len() < count {
+                let v = self.sample();
+                raw.push(v);
+                let q = (v.lo as usize) % block_len;
+                if seen.insert(q) {
+                    sorted.push(q);
+                }
+            }
+            sorted.sort_unstable();
+            (sorted, raw)
+        }
+    }
+
+    /// True iff `state_bytes(h)` has ≥ `bits` leading zero bits (mirrors
+    /// transcript.rs `pow_bits_ok`): LE serialization, low `bits` bits of h[0].
+    fn leading_zero_bits(h: [F128; 2], bits: u32) -> bool {
+        let mut out = [0u8; 32];
+        out[0..8].copy_from_slice(&h[0].lo.to_le_bytes());
+        out[8..16].copy_from_slice(&h[0].hi.to_le_bytes());
+        out[16..24].copy_from_slice(&h[1].lo.to_le_bytes());
+        out[24..32].copy_from_slice(&h[1].hi.to_le_bytes());
+        let full = (bits / 8) as usize;
+        let extra = bits % 8;
+        if out[..full].iter().any(|&b| b != 0) {
+            return false;
+        }
+        extra == 0 || (out[full] >> (8 - extra)) == 0
     }
 }
 
@@ -654,6 +703,157 @@ fn ligerito_m33_native_probe() {
     let ok = recursive_verifier_with_basis_succinct(&vc, &proof, log_n, target, &initial_root, eval_b, &mut vch);
     eprintln!("[m33] native verify: {:?} -> {ok}", t.elapsed());
     assert!(ok);
+
+    // ---- General mirror: reproduce the full 6-level verifier, confirm inner==t_r ----
+    use flare::pcs::ligerito::{ceil_log2, eval_sk_at_vks, induce_sumcheck_enforced_sum, induce_sumcheck_evaluate_at_residual};
+    use flare::zerocheck::multilinear::eq_eval as eqe;
+    let tm = Instant::now();
+    let rec_ks = [3usize, 3, 3, 3, 3];
+    let cfgq = [290usize, 177, 145, 132, 126, 124];
+    let fgb = [11i64, 10, 8, 6, 4, 2];
+    let sc = &proof.sumcheck_transcript;
+    let fm = |u0: F128, u2: F128, tr: F128| (u0, tr + u2, u2);
+    let evq = |q: (F128, F128, F128), r: F128| q.0 + r * q.1 + r * r * q.2;
+    let foldq = |a: (F128, F128, F128), b: (F128, F128, F128), al: F128| (a.0 + al * b.0, a.1 + al * b.1, a.2 + al * b.2);
+
+    let n1 = log_n - initial_k; // 20
+    let mut sp = fs_ref::Sponge::new(label, &[]);
+    sp.observe_bytes(b"flock-ligerito-basis-v0");
+    sp.observe(target);
+    sp.observe_bytes(&proof.initial_root);
+    let mut tr = target;
+    sp.observe(sc[0].u_0);
+    sp.observe(sc[0].u_2);
+    let mut quad = fm(sc[0].u_0, sc[0].u_2, tr);
+    let mut txi = 1usize;
+    let mut fni = 0usize;
+    let mut r_lane = Vec::new();
+    for j in 0..initial_k {
+        let bits = (fgb[0] - j as i64).max(0) as u32;
+        if bits > 0 {
+            assert!(sp.verify_pow(proof.fold_grinding_nonces[fni], bits));
+            fni += 1;
+        }
+        let ri = sp.sample();
+        r_lane.push(ri);
+        tr = evq(quad, ri);
+        sp.observe(sc[txi].u_0);
+        sp.observe(sc[txi].u_2);
+        quad = fm(sc[txi].u_0, sc[txi].u_2, tr);
+        txi += 1;
+    }
+    sp.observe_bytes(&proof.recursive_roots[0]);
+    let mut ni = 0usize;
+    assert!(sp.verify_pow(proof.grinding_nonces[ni], 0));
+    ni += 1;
+    let bl0 = 1usize << (20 + 1);
+    let (q0, _) = sp.sample_distinct_queries(bl0, cfgq[0]);
+    let a0: Vec<F128> = (0..ceil_log2(cfgq[0])).map(|_| sp.sample()).collect();
+    let enf0 = induce_sumcheck_enforced_sum(&proof.initial_proof.opened_rows, &r_lane, &q0, &a0);
+    sp.observe(sc[txi].u_0);
+    sp.observe(sc[txi].u_2);
+    let iq = fm(sc[txi].u_0, sc[txi].u_2, enf0);
+    txi += 1;
+    let beta0 = sp.sample();
+    quad = foldq(quad, iq, beta0);
+    tr += beta0 * enf0;
+    struct Ctx {
+        lmc: usize,
+        queries: Vec<usize>,
+        alpha: Vec<F128>,
+        ris_start: usize,
+        beta: F128,
+    }
+    let mut ctxs = vec![Ctx { lmc: n1, queries: q0, alpha: a0, ris_start: initial_k, beta: beta0 }];
+    let mut ris = r_lane.clone();
+    let mut prev_lni = rec_ks[0];
+    let mut prev_lmc = n1 - rec_ks[0];
+    let mut prev_lir = lir[1];
+    let mut nri = 1usize;
+    let mut rpi = 0usize;
+    let mut n_current = n1;
+    let mut inner = F128::ZERO;
+    for i in 0..5usize {
+        let k_i = rec_ks[i];
+        let mut level_rs = Vec::new();
+        for j in 0..k_i {
+            let bits = (fgb[i + 1] - j as i64).max(0) as u32;
+            if bits > 0 {
+                assert!(sp.verify_pow(proof.fold_grinding_nonces[fni], bits));
+                fni += 1;
+            }
+            let ri = sp.sample();
+            ris.push(ri);
+            level_rs.push(ri);
+            tr = evq(quad, ri);
+            sp.observe(sc[txi].u_0);
+            sp.observe(sc[txi].u_2);
+            quad = fm(sc[txi].u_0, sc[txi].u_2, tr);
+            txi += 1;
+        }
+        n_current -= k_i;
+        let prev_block_len = 1usize << (prev_lmc + prev_lir);
+        let _ = prev_lni;
+        if i == 4 {
+            let yr = &proof.final_proof.yr;
+            for v in yr {
+                sp.observe(*v);
+            }
+            assert!(sp.verify_pow(proof.grinding_nonces[ni], 0));
+            let (ql, _) = sp.sample_distinct_queries(prev_block_len, cfgq[i + 1]);
+            let al: Vec<F128> = (0..ceil_log2(cfgq[i + 1])).map(|_| sp.sample()).collect();
+            let enfl = induce_sumcheck_enforced_sum(&proof.final_proof.opened_rows, &level_rs, &ql, &al);
+            let betal = sp.sample();
+            tr += betal * enfl;
+            ctxs.push(Ctx { lmc: n_current, queries: ql, alpha: al, ris_start: ris.len(), beta: betal });
+            let yr_log_n = n_current;
+            let resids: Vec<Vec<F128>> = ctxs
+                .iter()
+                .map(|c| {
+                    let svk = eval_sk_at_vks(c.lmc);
+                    let rfb = &ris[c.ris_start..c.ris_start + c.lmc - yr_log_n];
+                    induce_sumcheck_evaluate_at_residual(c.lmc, &svk, &c.queries, &c.alpha, rfb, yr_log_n)
+                })
+                .collect();
+            for y in 0..(1usize << yr_log_n) {
+                let mut point = ris.clone();
+                for j in 0..yr_log_n {
+                    point.push(if (y >> j) & 1 == 1 { F128::ONE } else { F128::ZERO });
+                }
+                let mut comb = eqe(&z, &point);
+                for (k, c) in ctxs.iter().enumerate() {
+                    comb += c.beta * resids[k][y];
+                }
+                inner += yr[y] * comb;
+            }
+        } else {
+            let root_next = proof.recursive_roots[nri];
+            nri += 1;
+            sp.observe_bytes(&root_next);
+            assert!(sp.verify_pow(proof.grinding_nonces[ni], 0));
+            ni += 1;
+            let (qi, _) = sp.sample_distinct_queries(prev_block_len, cfgq[i + 1]);
+            let ai: Vec<F128> = (0..ceil_log2(cfgq[i + 1])).map(|_| sp.sample()).collect();
+            let rp = &proof.recursive_proofs[rpi];
+            rpi += 1;
+            let enfi = induce_sumcheck_enforced_sum(&rp.opened_rows, &level_rs, &qi, &ai);
+            sp.observe(sc[txi].u_0);
+            sp.observe(sc[txi].u_2);
+            let iqi = fm(sc[txi].u_0, sc[txi].u_2, enfi);
+            txi += 1;
+            let betai = sp.sample();
+            quad = foldq(quad, iqi, betai);
+            tr += betai * enfi;
+            ctxs.push(Ctx { lmc: n_current, queries: qi, alpha: ai, ris_start: ris.len(), beta: betai });
+            let k_next = rec_ks[i + 1];
+            prev_lni = k_next;
+            prev_lmc = n_current - k_next;
+            prev_lir = lir[i + 2];
+        }
+    }
+    assert_eq!(txi, sc.len(), "all sumcheck messages consumed");
+    assert_eq!(inner, tr, "m33 mirror: inner == t_r (matches native accept)");
+    eprintln!("[m33] mirror OK: inner == t_r  ({:?})", tm.elapsed());
 
     let tot_q: usize = proof.recursive_proofs.iter().map(|p| p.opened_rows.len()).sum::<usize>()
         + proof.initial_proof.opened_rows.len()
