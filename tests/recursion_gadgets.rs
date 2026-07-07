@@ -1014,6 +1014,68 @@ fn roundquad_sumcheck() {
     }
 }
 
+/// Gadget 13: **squeeze in a runtime loop** — the query-phase sampling mechanic.
+/// The Ligerito core's `sample_distinct_queries` draws a runtime number of
+/// challenges (`sample_f128`) to derive query indices. This validates squeezing
+/// inside a `mul_range` whose bound is a runtime g-power, threading BOTH the
+/// sponge chaining value AND an accumulator through write-once HeapBufs: step j
+/// squeezes `cv_{j+1} = compress(cv_j, [0, DS_SQUEEZE])` (challenge = `cv_{j+1}[0]`)
+/// and folds it into a running XOR. The final accumulator is read back at the
+/// runtime address `nbound`, and matches a native squeeze loop.
+#[test]
+fn runtime_sample_loop() {
+    use leanvm_b::vmhash::compress;
+    let ds_squeeze = F128::new(4, 0);
+
+    let n = 6usize;
+    let seed = fs_ref::seed_cv(b"qtest", &[]);
+    let mut cv = seed;
+    let mut acc = F128::ZERO;
+    for _ in 0..n {
+        let o = compress(cv, [F128::ZERO, ds_squeeze]);
+        cv = o;
+        acc += o[0]; // fold the sampled challenge
+    }
+    let nbound = leanvm_b::field::g_pow(n);
+
+    let src = format!(
+        "from snark_lib import *\n\
+         SEED0 = {}\n\
+         SEED1 = {}\n\
+         ACC = {}\n\
+         \n\
+         def main():\n\
+         \x20   nb = StackBuf(1)\n\
+         \x20   hint_witness(nb, \"nbound\")\n\
+         \x20   nbound = nb[0]\n\
+         \x20   assert log(nbound) < 16\n\
+         \x20   cvbuf = HeapBuf(nbound * nbound * GEN ** 2)\n\
+         \x20   cvbuf[1] = SEED0\n\
+         \x20   cvbuf[GEN] = SEED1\n\
+         \x20   accbuf = HeapBuf(nbound * GEN)\n\
+         \x20   accbuf[1] = 0\n\
+         \x20   for x in mul_range(1, nbound):\n\
+         \x20       b = x * x\n\
+         \x20       sqin = StackBuf(2)\n\
+         \x20       sqin[0] = 0\n\
+         \x20       sqin[1] = 4\n\
+         \x20       blake3(cvbuf[b : b + 2], sqin, cvbuf[b * GEN ** 2 : b * GEN ** 2 + 2])\n\
+         \x20       accbuf[x * GEN] = accbuf[x] + cvbuf[b * GEN ** 2]\n\
+         \x20   fin = accbuf[nbound]\n\
+         \x20   assert fin == ACC\n\
+         \x20   return\n",
+        u(seed[0]),
+        u(seed[1]),
+        u(acc),
+    );
+
+    let mut program = compile(&parse(&src).expect("parse runtime-sample"));
+    program.set_witness("nbound", vec![vec![nbound]]);
+    let pi = [F128::ZERO, F128::ZERO];
+    let (proof, _) = prove(&program, pi);
+    verify(&program, &pi, &proof).expect("runtime-sample loop verifies");
+}
+
 // ---- Gadget 7: the per-table zerocheck verifier (constraints.rs replay) ----
 //
 // A verify() sub-protocol: the same degree-2 sumcheck core as GKR, but it samples
