@@ -831,10 +831,9 @@ impl FnLower<'_> {
                 Some(self.try_const_index(a)? % d)
             }
             // A constant-array element `NAME[i]` or `len(NAME)` used as an index /
-            // bound / `unroll` count (both must fit an index).
-            Expr::Index(..) => self.const_array_elem(idx).map(|e| {
-                u32::try_from(e).unwrap_or_else(|_| panic!("const-array element {e} does not fit a u32 index"))
-            }),
+            // bound / `unroll` count. An element too large for an index declines
+            // (it is a field value; this evaluator also probes speculatively).
+            Expr::Index(..) => self.const_array_elem(idx).and_then(|e| u32::try_from(e).ok()),
             Expr::Call(..) => self.const_len(idx).map(|n| n as u32),
             // Integer power `b ** e` (both compile-time), e.g. `2 ** c` for a bit
             // test. Overflow declines (see the Add/Sub/Mul comment above).
