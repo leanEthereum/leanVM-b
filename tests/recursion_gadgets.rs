@@ -618,6 +618,286 @@ fn runtime_observe_loop() {
     verify(&program, &pi, &proof).expect("runtime-observe loop verifies");
 }
 
+/// A Ligerito config (the shape shared by prover + verifier). `r = recursive_ks.len()`.
+#[derive(Clone)]
+struct LigCfg {
+    log_n: usize,
+    initial_k: usize,
+    log_inv_rates: Vec<usize>,
+    recursive_ks: Vec<usize>,
+    recursive_log_msg_cols: Vec<usize>,
+    initial_log_msg_cols: usize,
+    queries: Vec<usize>,
+    fold_grinding_bits: Vec<usize>,
+    yr_log_n: usize,
+}
+impl LigCfg {
+    fn r(&self) -> usize {
+        self.recursive_ks.len()
+    }
+    fn prover(&self) -> flare::pcs::ligerito::ProverConfig {
+        flare::pcs::ligerito::ProverConfig {
+            log_inv_rates: self.log_inv_rates.clone(),
+            recursive_steps: self.r(),
+            initial_log_msg_cols: self.initial_log_msg_cols,
+            initial_log_num_interleaved: self.initial_k,
+            initial_k: self.initial_k,
+            recursive_log_msg_cols: self.recursive_log_msg_cols.clone(),
+            recursive_ks: self.recursive_ks.clone(),
+            queries: self.queries.clone(),
+            grinding_bits: vec![0; self.r() + 1],
+            fold_grinding_bits: self.fold_grinding_bits.clone(),
+            ood_samples: vec![0; self.r() + 1],
+        }
+    }
+    fn verifier(&self) -> flare::pcs::ligerito::VerifierConfig {
+        flare::pcs::ligerito::VerifierConfig {
+            log_inv_rates: self.log_inv_rates.clone(),
+            recursive_steps: self.r(),
+            initial_log_msg_cols: self.initial_log_msg_cols,
+            initial_log_num_interleaved: self.initial_k,
+            initial_k: self.initial_k,
+            recursive_log_msg_cols: self.recursive_log_msg_cols.clone(),
+            recursive_ks: self.recursive_ks.clone(),
+            queries: self.queries.clone(),
+            grinding_bits: vec![0; self.r() + 1],
+            fold_grinding_bits: self.fold_grinding_bits.clone(),
+            ood_samples: vec![0; self.r() + 1],
+        }
+    }
+}
+
+/// Per-level data extracted by the mirror.
+struct MirLevel {
+    sorted: Vec<usize>,  // distinct sorted query positions
+    raw: Vec<F128>,      // raw sampled values (len = T ≥ N), for Merkle-bit extraction
+    alpha: Vec<F128>,
+    beta: F128,
+}
+struct MirOut {
+    tr: F128,
+    inner: F128,
+    ris: Vec<F128>,
+    ctx_lmc: Vec<usize>,       // log_msg_cols per level ctx (len r+1)
+    ctx_ris_start: Vec<usize>, // ris_start per level ctx
+    levels: Vec<MirLevel>,     // len r+1
+}
+
+/// Reusable, config-driven mirror of `recursive_verifier_with_basis_succinct`:
+/// replays the whole verifier (fold-PoW, sample_distinct_queries, enforced sums,
+/// residual), asserts `inner == t_r`, and returns the per-level query data the
+/// guest port needs. Generalizes the (validated) inline m33 mirror.
+fn run_mirror(cfg: &LigCfg, proof: &flare::pcs::ligerito::LigeritoProof, z: &[F128], target: F128, label: &[u8]) -> MirOut {
+    use flare::pcs::ligerito::{ceil_log2, eval_sk_at_vks, induce_sumcheck_enforced_sum, induce_sumcheck_evaluate_at_residual};
+    use flare::zerocheck::multilinear::eq_eval as eqe;
+    let r = cfg.r();
+    let sc = &proof.sumcheck_transcript;
+    let fm = |u0: F128, u2: F128, tr: F128| (u0, tr + u2, u2);
+    let evq = |q: (F128, F128, F128), x: F128| q.0 + x * q.1 + x * x * q.2;
+    let foldq = |a: (F128, F128, F128), b: (F128, F128, F128), al: F128| (a.0 + al * b.0, a.1 + al * b.1, a.2 + al * b.2);
+    let fgb = |lvl: usize| cfg.fold_grinding_bits.get(lvl).copied().unwrap_or(0) as i64;
+    let n1 = cfg.log_n - cfg.initial_k;
+
+    let mut sp = fs_ref::Sponge::new(label, &[]);
+    sp.observe_bytes(b"flock-ligerito-basis-v0");
+    sp.observe(target);
+    sp.observe_bytes(&proof.initial_root);
+    let mut tr = target;
+    sp.observe(sc[0].u_0);
+    sp.observe(sc[0].u_2);
+    let mut quad = fm(sc[0].u_0, sc[0].u_2, tr);
+    let mut txi = 1usize;
+    let mut fni = 0usize;
+
+    let mut r_lane = Vec::new();
+    for j in 0..cfg.initial_k {
+        let bits = (fgb(0) - j as i64).max(0) as u32;
+        if bits > 0 {
+            assert!(sp.verify_pow(proof.fold_grinding_nonces[fni], bits));
+            fni += 1;
+        }
+        let ri = sp.sample();
+        r_lane.push(ri);
+        tr = evq(quad, ri);
+        sp.observe(sc[txi].u_0);
+        sp.observe(sc[txi].u_2);
+        quad = fm(sc[txi].u_0, sc[txi].u_2, tr);
+        txi += 1;
+    }
+    sp.observe_bytes(&proof.recursive_roots[0]);
+    let mut ni = 0usize;
+    assert!(sp.verify_pow(proof.grinding_nonces[ni], 0));
+    ni += 1;
+    let bl0 = 1usize << (cfg.initial_log_msg_cols + cfg.log_inv_rates[0]);
+    let (q0, raw0) = sp.sample_distinct_queries(bl0, cfg.queries[0]);
+    let a0: Vec<F128> = (0..ceil_log2(cfg.queries[0])).map(|_| sp.sample()).collect();
+    let enf0 = induce_sumcheck_enforced_sum(&proof.initial_proof.opened_rows, &r_lane, &q0, &a0);
+    sp.observe(sc[txi].u_0);
+    sp.observe(sc[txi].u_2);
+    let iq = fm(sc[txi].u_0, sc[txi].u_2, enf0);
+    txi += 1;
+    let beta0 = sp.sample();
+    quad = foldq(quad, iq, beta0);
+    tr += beta0 * enf0;
+
+    let mut levels = vec![MirLevel { sorted: q0, raw: raw0, alpha: a0, beta: beta0 }];
+    let mut ctx_lmc = vec![n1];
+    let mut ctx_ris_start = vec![cfg.initial_k];
+    let mut ris = r_lane.clone();
+    let mut prev_lmc = n1 - cfg.recursive_ks[0];
+    let mut prev_lir = cfg.log_inv_rates[1];
+    let mut prev_lni = cfg.recursive_ks[0];
+    let mut nri = 1usize;
+    let mut rpi = 0usize;
+    let mut n_current = n1;
+    let mut inner = F128::ZERO;
+
+    for i in 0..r {
+        let k_i = cfg.recursive_ks[i];
+        let mut level_rs = Vec::new();
+        for j in 0..k_i {
+            let bits = (fgb(i + 1) - j as i64).max(0) as u32;
+            if bits > 0 {
+                assert!(sp.verify_pow(proof.fold_grinding_nonces[fni], bits));
+                fni += 1;
+            }
+            let ri = sp.sample();
+            ris.push(ri);
+            level_rs.push(ri);
+            tr = evq(quad, ri);
+            sp.observe(sc[txi].u_0);
+            sp.observe(sc[txi].u_2);
+            quad = fm(sc[txi].u_0, sc[txi].u_2, tr);
+            txi += 1;
+        }
+        n_current -= k_i;
+        let prev_block_len = 1usize << (prev_lmc + prev_lir);
+        let _ = prev_lni;
+        if i == r - 1 {
+            let yr = &proof.final_proof.yr;
+            for v in yr {
+                sp.observe(*v);
+            }
+            assert!(sp.verify_pow(proof.grinding_nonces[ni], 0));
+            let (ql, rawl) = sp.sample_distinct_queries(prev_block_len, cfg.queries[i + 1]);
+            let al: Vec<F128> = (0..ceil_log2(cfg.queries[i + 1])).map(|_| sp.sample()).collect();
+            let enfl = induce_sumcheck_enforced_sum(&proof.final_proof.opened_rows, &level_rs, &ql, &al);
+            let betal = sp.sample();
+            tr += betal * enfl;
+            ctx_lmc.push(n_current);
+            ctx_ris_start.push(ris.len());
+            levels.push(MirLevel { sorted: ql, raw: rawl, alpha: al, beta: betal });
+            let yr_log_n = cfg.yr_log_n;
+            assert_eq!(n_current, yr_log_n);
+            let resids: Vec<Vec<F128>> = (0..=r)
+                .map(|k| {
+                    let lmc = ctx_lmc[k];
+                    let svk = eval_sk_at_vks(lmc);
+                    let rfb = &ris[ctx_ris_start[k]..ctx_ris_start[k] + lmc - yr_log_n];
+                    induce_sumcheck_evaluate_at_residual(lmc, &svk, &levels[k].sorted, &levels[k].alpha, rfb, yr_log_n)
+                })
+                .collect();
+            for y in 0..(1usize << yr_log_n) {
+                let mut point = ris.clone();
+                for j in 0..yr_log_n {
+                    point.push(if (y >> j) & 1 == 1 { F128::ONE } else { F128::ZERO });
+                }
+                let mut comb = eqe(z, &point);
+                for k in 0..=r {
+                    comb += levels[k].beta * resids[k][y];
+                }
+                inner += yr[y] * comb;
+            }
+        } else {
+            let root_next = proof.recursive_roots[nri];
+            nri += 1;
+            sp.observe_bytes(&root_next);
+            assert!(sp.verify_pow(proof.grinding_nonces[ni], 0));
+            ni += 1;
+            let (qi, rawi) = sp.sample_distinct_queries(prev_block_len, cfg.queries[i + 1]);
+            let ai: Vec<F128> = (0..ceil_log2(cfg.queries[i + 1])).map(|_| sp.sample()).collect();
+            let rp = &proof.recursive_proofs[rpi];
+            rpi += 1;
+            let enfi = induce_sumcheck_enforced_sum(&rp.opened_rows, &level_rs, &qi, &ai);
+            sp.observe(sc[txi].u_0);
+            sp.observe(sc[txi].u_2);
+            let iqi = fm(sc[txi].u_0, sc[txi].u_2, enfi);
+            txi += 1;
+            let betai = sp.sample();
+            quad = foldq(quad, iqi, betai);
+            tr += betai * enfi;
+            ctx_lmc.push(n_current);
+            ctx_ris_start.push(ris.len());
+            levels.push(MirLevel { sorted: qi, raw: rawi, alpha: ai, beta: betai });
+            let k_next = cfg.recursive_ks[i + 1];
+            prev_lni = k_next;
+            prev_lmc = n_current - k_next;
+            prev_lir = cfg.log_inv_rates[i + 2];
+        }
+    }
+    assert_eq!(txi, sc.len(), "all sumcheck messages consumed");
+    MirOut { tr, inner, ris, ctx_lmc, ctx_ris_start, levels }
+}
+
+#[test]
+fn ligerito_small_mirror() {
+    use leanvm_b::transcript::ProverState;
+    use flare::lincheck::build_eq_table;
+    use flare::ntt::AdditiveNttF128;
+    use flare::pcs::ligerito::{ligero_commit, recursive_prover_with_basis, recursive_verifier_with_basis_succinct};
+    use flare::zerocheck::multilinear::eq_eval;
+
+    // A small multi-query, multi-level, fold-PoW config for fast iteration.
+    let cfg = LigCfg {
+        log_n: 12,
+        initial_k: 3,
+        log_inv_rates: vec![1, 2, 3],
+        recursive_ks: vec![2, 2],
+        recursive_log_msg_cols: vec![7, 5],
+        initial_log_msg_cols: 9,
+        queries: vec![6, 5, 4],
+        fold_grinding_bits: vec![3, 2, 1],
+        yr_log_n: 5,
+    };
+    let poly: Vec<F128> = (0..(1usize << cfg.log_n))
+        .map(|i| F128::new(0x9E37_79B9u64.wrapping_mul(i as u64 + 1) + 1, 0x1234 ^ (i as u64)))
+        .collect();
+    let z: Vec<F128> = (0..cfg.log_n).map(|i| F128::new(0xABCD + i as u64, 7 * i as u64 + 1)).collect();
+    let b = build_eq_table(&z);
+    let target: F128 = poly.iter().zip(b.iter()).map(|(&a, &c)| a * c).fold(F128::ZERO, |a, x| a + x);
+
+    let ntt = AdditiveNttF128::standard(cfg.initial_log_msg_cols + cfg.log_inv_rates[0]);
+    let wtns = ligero_commit(&poly, cfg.initial_log_msg_cols, cfg.initial_k, cfg.log_inv_rates[0], &ntt);
+    let initial_root = wtns.root();
+    let label = b"smalltest";
+    let mut pch = ProverState::new(label, &[]);
+    let proof = recursive_prover_with_basis(&cfg.prover(), poly, b, target, &wtns.mat, &wtns.tree, &mut pch);
+
+    let zc = z.clone();
+    let eval_b = move |ris: &[F128], yl: usize| -> Vec<F128> {
+        let mut p = ris.to_vec();
+        p.resize(ris.len() + yl, F128::ZERO);
+        (0..(1usize << yl))
+            .map(|y| {
+                for j in 0..yl {
+                    p[ris.len() + j] = if (y >> j) & 1 == 1 { F128::ONE } else { F128::ZERO };
+                }
+                eq_eval(&zc, &p)
+            })
+            .collect()
+    };
+    let mut vch = ProverState::new(label, &[]);
+    assert!(recursive_verifier_with_basis_succinct(&cfg.verifier(), &proof, cfg.log_n, target, &initial_root, eval_b, &mut vch));
+
+    let m = run_mirror(&cfg, &proof, &z, target, label);
+    assert_eq!(m.inner, m.tr, "small-config mirror inner == t_r");
+    let ts: Vec<usize> = m.levels.iter().map(|l| l.raw.len()).collect();
+    let ns: Vec<usize> = m.levels.iter().map(|l| l.sorted.len()).collect();
+    eprintln!("small mirror OK: N per level = {ns:?}, T (raw samples) = {ts:?}");
+}
+
+/// Feasibility probe: can this machine drive a real m33_secure Ligerito proof
+
 /// Feasibility probe: can this machine drive a real m33_secure Ligerito proof
 /// (log_n=26, the config a 500-XMSS leanVM-b proof produces)? Times commit +
 /// prove + native verify and prints the proof shapes the guest port must consume.
