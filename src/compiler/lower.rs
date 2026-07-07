@@ -1261,15 +1261,24 @@ impl FnLower<'_> {
             "`@unroll {callee}` must be a single tail `return` with no call/loop/match (see body_inlinable)"
         );
         // Bind the params from the caller-scope arguments (symbolically where we
-        // can, so a shifted-pointer arg keeps folding into `β`), then lower the
-        // body in a fresh variable environment — a function sees only its
-        // params. The frame, `one`, `self_fp`, and range-check bounds stay the
-        // caller's: the inlined code runs in the caller's frame, so they fit.
-        let mut binds: Vec<(String, Result<GAddr, Off>)> = Vec::new();
+        // can, so a shifted-pointer arg keeps folding into `β`; a `StackBuf` arg
+        // aliases its cell run), then lower the body in a fresh variable
+        // environment — a function sees only its params. The frame, `one`,
+        // `self_fp`, and range-check bounds stay the caller's: the inlined code
+        // runs in the caller's frame, so they fit.
+        enum Bind {
+            Stack(Off, u32),
+            Addr(GAddr),
+            Cell(Off),
+        }
+        let mut binds: Vec<(String, Bind)> = Vec::new();
         for (p, a) in params.iter().zip(&rt_args) {
-            let b = match self.gaddr_of(a) {
-                Some(ga) => Ok(ga),
-                None => Err(self.expr(a)),
+            let b = if let Some((base, size)) = self.stack_of(a) {
+                Bind::Stack(base, size)
+            } else if let Some(ga) = self.gaddr_of(a) {
+                Bind::Addr(ga)
+            } else {
+                Bind::Cell(self.expr(a))
             };
             binds.push((p.clone(), b));
         }
@@ -1282,8 +1291,15 @@ impl FnLower<'_> {
         );
         for (p, b) in binds {
             match b {
-                Ok(ga) => { self.gaddrs.insert(p, ga); }
-                Err(cell) => { self.vars.insert(p, cell); }
+                Bind::Stack(base, size) => {
+                    self.stacks.insert(p, (base, size));
+                }
+                Bind::Addr(ga) => {
+                    self.gaddrs.insert(p, ga);
+                }
+                Bind::Cell(cell) => {
+                    self.vars.insert(p, cell);
+                }
             }
         }
         let saved_ret = self.inline_ret.replace(dsts.to_vec());
@@ -1328,11 +1344,15 @@ impl FnLower<'_> {
                 Expr::Lit(n) => Expr::Lit(*n),
                 Expr::Gen => Expr::GPow(1),
                 Expr::GPow(k) => Expr::GPow(*k),
-                Expr::Var(v) if self.consts.contains_key(v) => Expr::Lit(self.consts[v] as u128),
-                other => panic!(
-                    "argument for Const parameter `{p}` of `{callee}` must be a compile-time \
-                     constant, got `{other:?}`"
-                ),
+                // Any compile-time integer expression (a bound name, a constant-
+                // array element `DEPTH[lvl]`, `len(...)`, index arithmetic).
+                other => match self.try_const_index(other) {
+                    Some(k) => Expr::Lit(k as u128),
+                    None => panic!(
+                        "argument for Const parameter `{p}` of `{callee}` must be a compile-time \
+                         constant, got `{other:?}`"
+                    ),
+                },
             };
             tag.push_str(&match &c {
                 Expr::Lit(n) => format!("_L{n}"),

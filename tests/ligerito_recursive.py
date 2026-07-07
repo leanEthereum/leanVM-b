@@ -131,37 +131,50 @@ def dec128(bp, v):
     return
 
 
-def mstep(n0, n1, s0, s1, bit):
-    nb = StackBuf(2)
-    nb[0] = n0
-    nb[1] = n1
-    sb = StackBuf(2)
-    sb[0] = s0
-    sb[1] = s1
-    pr = StackBuf(2)
-    if bit == 0:
-        blake3(nb, sb, pr)
-    else:
-        blake3(sb, nb, pr)
-    return pr[0], pr[1]
+def decq(bp, v, qfp, qbpp, d: Const, per: Const):
+    # dec128 fused with query extraction: boolean-constrain the 128 hinted bits
+    # at `bp`, assert they reconstruct the squeeze `v`, and store each d-bit
+    # chunk's position value (chunk j at qfp[g^j]) and bit-pointer (qbpp[g^j]).
+    # The full reconstruction is just the chunk sums re-weighted:
+    # v = Σ_j qf_j·g^{j·d} + Σ_{i≥per·d} b_i·g^i.
+    acc = 0
+    for j in unroll(0, per):
+        qf = 0
+        for b in unroll(0, d):
+            t = bp[GEN ** (j * d + b)]
+            sq = t * t
+            assert sq == t
+            qf = qf + t * GEN ** b
+        qfp[GEN ** j] = qf
+        qbpp[GEN ** j] = bp * GEN ** (j * d)
+        acc = acc + qf * GEN ** (j * d)
+    for i in unroll(per * d, 128):
+        t = bp[GEN ** i]
+        sq = t * t
+        assert sq == t
+        acc = acc + t * GEN ** i
+    assert acc == v
+    return
 
 
+@unroll
 def foldyr(yp, weights, wbase: Const):
-    # Fold a 2^YR_LOG_N multilinear (LSB-first) over YR_LOG_N vars: level j
-    # combines out[t] = weights[wbase+2j]·in[2t] + weights[wbase+2j+1]·in[2t+1].
-    # `weights` holds the (a_j, b_j) pairs starting at wbase. Returns the scalar.
-    cur = yp
-    n = YR_LEN
-    for j in unroll(0, YR_LOG_N):
-        a = weights[GEN ** (wbase + 2 * j)]
-        b = weights[GEN ** (wbase + 2 * j + 1)]
-        half = n // 2
-        nxt = HeapBuf(YR_LEN)
-        for t in unroll(0, half):
-            nxt[GEN ** t] = a * cur[GEN ** (2 * t)] + b * cur[GEN ** (2 * t + 1)]
+    # Weighted fold of the 2^YR_LOG_N multilinear `yp` (heap, LSB-first): level j
+    # combines out[t] = weights[wbase+2j]·in[2t] + weights[wbase+2j+1]·in[2t+1];
+    # returns the scalar. Inlined at the call site with stack-cell intermediates
+    # (`weights` is a StackBuf), so only the first level touches the heap.
+    l0 = StackBuf(YR_LEN)
+    for t in unroll(0, YR_LEN // 2):
+        l0[t] = weights[wbase] * yp[GEN ** (2 * t)] + weights[wbase + 1] * yp[GEN ** (2 * t + 1)]
+    cur = l0
+    n = YR_LEN // 2
+    for j in unroll(1, YR_LOG_N):
+        nxt = StackBuf(YR_LEN)
+        for t in unroll(0, n // 2):
+            nxt[t] = weights[wbase + 2 * j] * cur[2 * t] + weights[wbase + 2 * j + 1] * cur[2 * t + 1]
         cur = nxt
-        n = half
-    return cur[GEN ** 0]
+        n = n // 2
+    return cur[0]
 
 
 def main():
@@ -272,14 +285,8 @@ def main():
             c0b[xs * GEN] = nc0
             c1b[xs * GEN] = nc1
             bp = sbits * GEN ** SBITSOFF[lvl] * xs ** 128
-            dec128(bp, chq)
-            for j in unroll(0, PER[lvl]):
-                qf = 0
-                for b in unroll(0, DEPTH[lvl]):
-                    qf = qf + bp[GEN ** (j * DEPTH[lvl] + b)] * GEN ** b
-                qp = GEN ** QPOFF[lvl] * xs ** PER[lvl] * GEN ** j
-                qfb[qp] = qf
-                qbp[qp] = bp * GEN ** (j * DEPTH[lvl])
+            qpp = xs ** PER[lvl]
+            decq(bp, chq, qfb * GEN ** QPOFF[lvl] * qpp, qbp * GEN ** QPOFF[lvl] * qpp, DEPTH[lvl], PER[lvl])
         cv0 = c0b[GEN ** NSQ[lvl]]
         cv1 = c1b[GEN ** NSQ[lvl]]
 
@@ -308,15 +315,51 @@ def main():
                     p = p * (1 + ac)
             aw[GEN ** (lvl * MAXQ + i)] = p
 
-        # enforced_sum = Σ_i alpha_w[i]·<row_i, eq>
+        # Per-query pass: one read of each opened row value feeds BOTH the
+        # enforced_sum dot (Σ_i alpha_w[i]·<row_i, eq>) and the Merkle leaf hash;
+        # then walk the query's single path to the level root.
         accE = HeapBuf(MAXQ + 1)
         accE[GEN ** 0] = 0
         for xe in mul_range(1, GEN ** QUERIES[lvl]):
             rb = xe ** NUMINTER[lvl]
+            ld0 = GEN ** NBYTES[lvl]
+            ld1 = 0
             dot = 0
-            for c in unroll(0, NUMINTER[lvl]):
-                dot = dot + rows[GEN ** ROWOFF[lvl] * rb * GEN ** c] * eqt[GEN ** c]
+            for jb in unroll(0, BLOCKS[lvl]):
+                aa = StackBuf(2)
+                aa[0] = ld0
+                aa[1] = ld1
+                mm = StackBuf(2)
+                mm[0] = rows[GEN ** ROWOFF[lvl] * rb * GEN ** (2 * jb)]
+                mm[1] = rows[GEN ** ROWOFF[lvl] * rb * GEN ** (2 * jb + 1)]
+                oo = StackBuf(2)
+                blake3(aa, mm, oo)
+                ld0 = oo[0]
+                ld1 = oo[1]
+                dot = dot + mm[0] * eqt[GEN ** (2 * jb)] + mm[1] * eqt[GEN ** (2 * jb + 1)]
             accE[xe * GEN] = accE[xe] + aw[GEN ** (lvl * MAXQ) * xe] * dot
+            # walk: hash (left, right) = bit ? (sibling, node) : (node, sibling),
+            # selected branch-free — left = node + bit·(node+sibling) (bit boolean).
+            sbp = qbp[GEN ** QPOFF[lvl] * xe]
+            pb2 = xe ** (2 * DEPTH[lvl])
+            for lw in unroll(0, DEPTH[lvl]):
+                s0 = paths[GEN ** PATHOFF[lvl] * pb2 * GEN ** (2 * lw)]
+                s1 = paths[GEN ** PATHOFF[lvl] * pb2 * GEN ** (2 * lw + 1)]
+                b = sbp[GEN ** lw]
+                t0 = ld0 + s0
+                t1 = ld1 + s1
+                la = StackBuf(2)
+                la[0] = ld0 + b * t0
+                la[1] = ld1 + b * t1
+                ra = StackBuf(2)
+                ra[0] = t0 + la[0]
+                ra[1] = t1 + la[1]
+                oo2 = StackBuf(2)
+                blake3(la, ra, oo2)
+                ld0 = oo2[0]
+                ld1 = oo2[1]
+            assert ld0 == ROOTA[lvl]
+            assert ld1 == ROOTB[lvl]
         enf[GEN ** lvl] = accE[GEN ** QUERIES[lvl]]
 
         # glue (folds the intro sumcheck msg), or the final beta.
@@ -339,32 +382,6 @@ def main():
             tr = tr + bl * e
 
 
-    # ---- per-query Merkle openings (one single path per query, per level) ----
-    for lvl in unroll(0, NLEVELS):
-        for xm in mul_range(1, GEN ** QUERIES[lvl]):
-            sbp = qbp[GEN ** QPOFF[lvl] * xm]
-            rb = xm ** NUMINTER[lvl]
-            ld0 = GEN ** NBYTES[lvl]
-            ld1 = 0
-            for jb in unroll(0, BLOCKS[lvl]):
-                aa = StackBuf(2)
-                aa[0] = ld0
-                aa[1] = ld1
-                mm = StackBuf(2)
-                mm[0] = rows[GEN ** ROWOFF[lvl] * rb * GEN ** (2 * jb)]
-                mm[1] = rows[GEN ** ROWOFF[lvl] * rb * GEN ** (2 * jb + 1)]
-                oo = StackBuf(2)
-                blake3(aa, mm, oo)
-                ld0 = oo[0]
-                ld1 = oo[1]
-            pb2 = xm ** (2 * DEPTH[lvl])
-            for lw in unroll(0, DEPTH[lvl]):
-                s0 = paths[GEN ** PATHOFF[lvl] * pb2 * GEN ** (2 * lw)]
-                s1 = paths[GEN ** PATHOFF[lvl] * pb2 * GEN ** (2 * lw + 1)]
-                ld0, ld1 = mstep(ld0, ld1, s0, s1, sbp[GEN ** lw])
-            assert ld0 == ROOTA[lvl]
-            assert ld1 == ROOTB[lvl]
-
     # ---- residual (per level) + terminal inner == t_r ----
     # inner = eqris·Σ_y yr[y]·EVB_y  +  Σ_lvl beta_lvl·Σ_y yr[y]·resid_lvl[y]
     # Each Σ_y is a fold of yr; the residual per query is a novel-basis recurrence.
@@ -375,21 +392,21 @@ def main():
         accR[GEN ** 0] = 0
         for xr in mul_range(1, GEN ** QUERIES[lvl]):
             # w_t = s_t · inv(svk_t); s_0 = q_field, s_t = s_{t-1}²+svk_{t-1}·s_{t-1}
-            wbuf = HeapBuf(MAXLMC)
+            wbuf = StackBuf(MAXLMC)
             s = qfb[GEN ** QPOFF[lvl] * xr]
-            wbuf[GEN ** 0] = s * IVK[SVKOFF[lvl]]
+            wbuf[0] = s * IVK[SVKOFF[lvl]]
             for t in unroll(1, LMC[lvl]):
                 s = s * s + SVK[SVKOFF[lvl] + t - 1] * s
-                wbuf[GEN ** t] = s * IVK[SVKOFF[lvl] + t]
+                wbuf[t] = s * IVK[SVKOFF[lvl] + t]
             prefix = GEN ** 0
             for t in unroll(0, PREFIXLEN[lvl]):
                 rc = ris[GEN ** (RISSTART[lvl] + t)]
-                prefix = prefix * (1 + rc * (1 + wbuf[GEN ** t]))
+                prefix = prefix * (1 + rc * (1 + wbuf[t]))
             # suffix fold weights [1, w_{prefix+j}] for j<YR_LOG_N
-            sfw = HeapBuf(2 * YR_LOG_N)
+            sfw = StackBuf(2 * YR_LOG_N)
             for j in unroll(0, YR_LOG_N):
-                sfw[GEN ** (2 * j)] = GEN ** 0
-                sfw[GEN ** (2 * j + 1)] = wbuf[GEN ** (PREFIXLEN[lvl] + j)]
+                sfw[2 * j] = GEN ** 0
+                sfw[2 * j + 1] = wbuf[PREFIXLEN[lvl] + j]
             sy = foldyr(yr, sfw, 0)
             contrib = aw[GEN ** (lvl * MAXQ) * xr] * prefix * sy
             accR[xr * GEN] = accR[xr] + contrib
@@ -400,10 +417,10 @@ def main():
     for t in unroll(0, LENRIS):
         eqris = eqris * (1 + Z[t] + ris[GEN ** t])
     # sy_evb: fold yr with (1+Z[LENRIS+j], Z[LENRIS+j])
-    evbw = HeapBuf(2 * YR_LOG_N)
+    evbw = StackBuf(2 * YR_LOG_N)
     for j in unroll(0, YR_LOG_N):
-        evbw[GEN ** (2 * j)] = 1 + Z[LENRIS + j]
-        evbw[GEN ** (2 * j + 1)] = Z[LENRIS + j]
+        evbw[2 * j] = 1 + Z[LENRIS + j]
+        evbw[2 * j + 1] = Z[LENRIS + j]
     sy_evb = foldyr(yr, evbw, 0)
 
     inner = eqris * sy_evb + innerbuf[GEN ** NLEVELS]
