@@ -86,6 +86,36 @@ cells. Profiling via `DBG_PROF=1` (per-function cycle histogram in execute).
 Remaining broader goal: the FULL `cpu::verify` replay (bus GKR + 6 zerochecks +
 flock BLAKE3 R1CS reduction) + recursion harness.
 
+## Deferred matrix-evaluation claims (the lincheck blocker, SOLVED in principle)
+The one `cpu::verify` step infeasible to replay in-circuit is the lincheck's
+evaluation of the fixed BLAKE3 R1CS block matrices: A_0/B_0 are 2^14 x 2^14 but
+NOT very sparse — nnz(A)=15.2M, nnz(B)=5.8M (the "Option D" dense-matrix/small-k
+trade). Standard evaluation = eq table (2^14 muls) + one XOR per nonzero: ~21 ms
+native (measured, tests/matnnz_probe.rs) but >=21M cycles AND ~21M bytecode
+instructions in-circuit — 20-50x the whole opening verifier. Not portable.
+
+Solution: the leanVM "bytecode evaluation claims" pattern (minimal_zkVM.tex
+§Bytecode evaluation claims). Each in-circuit lincheck defers its two claims
+Ã_0(r)=v_a, B̃_0(r)=v_b (28-var multilinears, same point) to the public input;
+an aggregation node batches the 2·n_rec collected claims with an RLC + ONE
+28-variable sumcheck over P(x) = A(x)·W_A(x) + B(x)·W_B(x), W_M = Σ γ_t·eq(r_t,·),
+reducing to single claims Ã_0(r*), B̃_0(r*) forwarded outward; only the outermost
+NATIVE verifier evaluates them directly (~21 ms).
+
+The batching-sumcheck PROVER exploits sparsity so no dense 2^28 object exists
+(tests/matclaim_sumcheck_probe.rs, verified end-to-end vs direct evaluation):
+phase 1 binds the 14 row vars using per-claim column contractions
+m_t[i] = Σ_{j∈row i} eq(r_t^col, j) — XOR-only nnz passes (boolean entries, no
+muls) — then dense 2^14 product rounds; phase 2 binds the 14 col vars via one
+row contraction per matrix at r*_row + collapsed dense W tables. Measured
+(single-threaded, real matrices): t=2 claims/matrix -> 78 ms, t=4 -> 129 ms,
+t=8 -> 240 ms; ~(t+1) XOR-only nnz passes (~20 ms each) dominate, and the
+contractions parallelize trivially if it ever matters. The in-circuit verifier
+side is ~28 rounds x (2 observes + 1 squeeze + O(1) field ops) + t·56 muls for
+W(r*) — a few thousand cycles, negligible vs the 1.16M-cycle opening verifier.
+A dense 2^28 sumcheck would need ~4 GiB tables and tens of seconds — the sparse
+structure buys ~100-1000x.
+
 ## END-TO-END LIGERITO OPENING VERIFIER — DONE (tiny instance)
 `ligerito_verify_end_to_end` (tests/recursion_gadgets.rs) is a complete zkDSL port of
 `multilevel_verifier_with_basis_succinct` — leanVM-b's actual Ligerito opening — that
