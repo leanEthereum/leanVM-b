@@ -205,3 +205,156 @@ impl InvNttTableByteSingleGf8 {
         self.apply(c_bytes, c_out);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Rng(u64);
+    impl Rng {
+        fn new(seed: u64) -> Self {
+            Self(seed)
+        }
+        fn next_u64(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9E3779B97F4A7C15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+            z ^ (z >> 31)
+        }
+    }
+
+    /// Naive reference: unpack `bytes` into `ell` GF(2)-valued F8 elements
+    /// (one per coefficient bit), apply inv_NTT_S, then fwd_NTT_Λ.
+    fn naive_apply(ntt_s: &AdditiveNttGf8, ntt_l: &AdditiveNttGf8, bytes: &[u8]) -> Vec<F8> {
+        let ell = 1usize << ntt_s.k();
+        assert_eq!(bytes.len(), ell / 8);
+        let mut v = vec![F8::ZERO; ell];
+        for (b, &byte) in bytes.iter().enumerate() {
+            for t in 0..8 {
+                if (byte >> t) & 1 != 0 {
+                    v[8 * b + t] = F8::ONE;
+                }
+            }
+        }
+        ntt_s.inverse(&mut v);
+        ntt_l.forward(&mut v);
+        v
+    }
+
+    #[test]
+    fn matches_naive_k3() {
+        let ntt_s = AdditiveNttGf8::new(3, F8::ZERO);
+        let ntt_l = AdditiveNttGf8::new(3, F8(1 << 3));
+        let table = InvNttTableByteSingleGf8::new(&ntt_s, &ntt_l);
+        assert_eq!(table.ell, 8);
+        assert_eq!(table.n_chunks, 1);
+
+        let mut rng = Rng::new(100);
+        let mut out = vec![F8::ZERO; 8];
+        for _ in 0..64 {
+            let bytes = [(rng.next_u64() & 0xff) as u8];
+            table.apply(&bytes, &mut out);
+            let expected = naive_apply(&ntt_s, &ntt_l, &bytes);
+            assert_eq!(out, expected, "byte={:02x}", bytes[0]);
+        }
+    }
+
+    #[test]
+    fn matches_naive_k4() {
+        let ntt_s = AdditiveNttGf8::new(4, F8::ZERO);
+        let ntt_l = AdditiveNttGf8::new(4, F8(1 << 4));
+        let table = InvNttTableByteSingleGf8::new(&ntt_s, &ntt_l);
+        assert_eq!(table.ell, 16);
+        assert_eq!(table.n_chunks, 2);
+
+        let mut rng = Rng::new(101);
+        let mut out = vec![F8::ZERO; 16];
+        for _ in 0..64 {
+            let bytes: [u8; 2] = [(rng.next_u64() & 0xff) as u8, (rng.next_u64() & 0xff) as u8];
+            table.apply(&bytes, &mut out);
+            let expected = naive_apply(&ntt_s, &ntt_l, &bytes);
+            assert_eq!(out, expected, "bytes={:02x?}", bytes);
+        }
+    }
+
+    #[test]
+    fn matches_naive_k6_protocol_size() {
+        // k_skip = 6 is the headline parameter for the m=29 workload.
+        let ntt_s = AdditiveNttGf8::new(6, F8::ZERO);
+        let ntt_l = AdditiveNttGf8::new(6, F8(1 << 6));
+        let table = InvNttTableByteSingleGf8::new(&ntt_s, &ntt_l);
+        assert_eq!(table.ell, 64);
+        assert_eq!(table.n_chunks, 8);
+
+        let mut rng = Rng::new(102);
+        let mut out = vec![F8::ZERO; 64];
+        for _ in 0..16 {
+            let bytes: Vec<u8> = (0..8).map(|_| (rng.next_u64() & 0xff) as u8).collect();
+            table.apply(&bytes, &mut out);
+            let expected = naive_apply(&ntt_s, &ntt_l, &bytes);
+            assert_eq!(out, expected, "bytes={:02x?}", bytes);
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn apply_neon_matches_apply_scalar() {
+        // Cover both k=4 (n_chunks=2, n128=1) and k=6 (n_chunks=8, n128=4 —
+        // the headline protocol size).
+        for &k in &[4usize, 5, 6] {
+            let ntt_s = AdditiveNttGf8::new(k, F8::ZERO);
+            let ntt_l = AdditiveNttGf8::new(k, F8(1u8 << k));
+            let table = InvNttTableByteSingleGf8::new(&ntt_s, &ntt_l);
+            let n_chunks = table.n_chunks;
+            let ell = table.ell;
+
+            let mut rng = Rng::new(100 + k as u64);
+            for _ in 0..32 {
+                let bytes: Vec<u8> = (0..n_chunks)
+                    .map(|_| (rng.next_u64() & 0xff) as u8)
+                    .collect();
+                let mut out_scalar = vec![F8::ZERO; ell];
+                let mut out_neon = vec![F8::ZERO; ell];
+                table.apply_scalar(&bytes, &mut out_scalar);
+                // SAFETY: on aarch64.
+                unsafe { table.apply_neon_unchecked(&bytes, &mut out_neon) };
+                assert_eq!(
+                    out_scalar, out_neon,
+                    "scalar/neon apply disagree at k={k}, bytes={:02x?}",
+                    bytes
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn apply_triple_matches_three_singles() {
+        let ntt_s = AdditiveNttGf8::new(5, F8::ZERO);
+        let ntt_l = AdditiveNttGf8::new(5, F8(1 << 5));
+        let table = InvNttTableByteSingleGf8::new(&ntt_s, &ntt_l);
+
+        let mut rng = Rng::new(103);
+        let nc = table.n_chunks;
+        let ell = table.ell;
+        let ab: Vec<u8> = (0..nc).map(|_| (rng.next_u64() & 0xff) as u8).collect();
+        let bb: Vec<u8> = (0..nc).map(|_| (rng.next_u64() & 0xff) as u8).collect();
+        let cb: Vec<u8> = (0..nc).map(|_| (rng.next_u64() & 0xff) as u8).collect();
+
+        let mut a1 = vec![F8::ZERO; ell];
+        let mut b1 = vec![F8::ZERO; ell];
+        let mut c1 = vec![F8::ZERO; ell];
+        table.apply(&ab, &mut a1);
+        table.apply(&bb, &mut b1);
+        table.apply(&cb, &mut c1);
+
+        let mut a2 = vec![F8::ZERO; ell];
+        let mut b2 = vec![F8::ZERO; ell];
+        let mut c2 = vec![F8::ZERO; ell];
+        table.apply_triple(&ab, &mut a2, &bb, &mut b2, &cb, &mut c2);
+
+        assert_eq!(a1, a2);
+        assert_eq!(b1, b2);
+        assert_eq!(c1, c2);
+    }
+}

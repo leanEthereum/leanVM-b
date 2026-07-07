@@ -1048,3 +1048,33 @@ pub static PHI_8_TABLE: [F128; 256] = [
 pub fn phi8(a: F8) -> F128 {
     PHI_8_TABLE[a.0 as usize]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zero_and_one_map_correctly() {
+        assert_eq!(phi8(F8::ZERO), F128::ZERO);
+        assert_eq!(phi8(F8::ONE), F128::ONE);
+    }
+
+    #[test]
+    fn homomorphism_full() {
+        // Exhaustive check: φ(a·b) = φ(a)·φ(b) and φ(a+b) = φ(a)+φ(b)
+        // for all 65536 ordered pairs in F_8.
+        for a in 0u8..=255 {
+            for b in 0u8..=255 {
+                let fa = F8(a);
+                let fb = F8(b);
+                let lhs_mul = phi8(fa * fb);
+                let rhs_mul = phi8(fa) * phi8(fb);
+                assert_eq!(lhs_mul, rhs_mul, "mul mismatch at a={a}, b={b}");
+
+                let lhs_add = phi8(fa + fb);
+                let rhs_add = phi8(fa) + phi8(fb);
+                assert_eq!(lhs_add, rhs_add, "add mismatch at a={a}, b={b}");
+            }
+        }
+    }
+}

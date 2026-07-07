@@ -101,3 +101,85 @@ pub fn unpack_witness(packed: &[F128], m: usize) -> Vec<bool> {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Rng(u64);
+    impl Rng {
+        fn new(seed: u64) -> Self {
+            Self(seed)
+        }
+        fn next_u64(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9E3779B97F4A7C15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+            z ^ (z >> 31)
+        }
+        fn bits(&mut self, n: usize) -> Vec<bool> {
+            (0..n).map(|_| self.next_u64() & 1 == 1).collect()
+        }
+    }
+
+    #[test]
+    fn pack_unpack_roundtrip() {
+        let mut rng = Rng::new(0xC0FFEE);
+        for m in [7usize, 8, 10, 12, 14] {
+            let z = rng.bits(1 << m);
+            let packed = pack_witness(&z, m);
+            assert_eq!(packed.len(), 1 << (m - LOG_PACKING));
+            let z_back = unpack_witness(&packed, m);
+            assert_eq!(z, z_back, "roundtrip failed at m={m}");
+        }
+    }
+
+    #[test]
+    fn pack_layout_matches_natural_bit_order() {
+        // For m = LOG_PACKING (= 7): exactly one packed element, holding the
+        // entire 128-bit witness in natural u128 bit order.
+        let mut z = vec![false; 128];
+        // Set a known bit pattern: bits at positions 0, 1, 5, 63, 64, 127.
+        for &i in &[0usize, 1, 5, 63, 64, 127] {
+            z[i] = true;
+        }
+        let packed = pack_witness(&z, LOG_PACKING);
+        assert_eq!(packed.len(), 1);
+        let expected = F128 {
+            lo: (1u64 << 0) | (1u64 << 1) | (1u64 << 5) | (1u64 << 63),
+            hi: (1u64 << 0) | (1u64 << 63),
+        };
+        assert_eq!(packed[0], expected);
+    }
+
+    #[test]
+    fn pack_independent_chunks() {
+        // Two adjacent 128-bit chunks should pack independently — flipping a
+        // bit in one chunk affects only that chunk.
+        let z = vec![true; 256];
+        let packed = pack_witness(&z, 8);
+        assert_eq!(packed.len(), 2);
+        assert_eq!(
+            packed[0],
+            F128 {
+                lo: u64::MAX,
+                hi: u64::MAX
+            }
+        );
+        assert_eq!(
+            packed[1],
+            F128 {
+                lo: u64::MAX,
+                hi: u64::MAX
+            }
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "witness too small")]
+    fn rejects_undersized_witness() {
+        let z = vec![false; 64]; // m = 6 < LOG_PACKING = 7
+        let _ = pack_witness(&z, 6);
+    }
+}

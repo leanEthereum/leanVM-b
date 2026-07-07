@@ -1023,3 +1023,586 @@ pub fn uni_skip_fold_and_round_pair_optimized(
         mlv_challenges,
     )
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Rng(u64);
+    impl Rng {
+        fn new(seed: u64) -> Self {
+            Self(seed)
+        }
+        fn next_u64(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9E3779B97F4A7C15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+            z ^ (z >> 31)
+        }
+        fn bit(&mut self) -> bool {
+            (self.next_u64() & 1) != 0
+        }
+        fn bits(&mut self, n: usize) -> Vec<bool> {
+            (0..n).map(|_| self.bit()).collect()
+        }
+        fn f128(&mut self) -> F128 {
+            F128 {
+                lo: self.next_u64(),
+                hi: self.next_u64(),
+            }
+        }
+        fn f128_vec(&mut self, n: usize) -> Vec<F128> {
+            (0..n).map(|_| self.f128()).collect()
+        }
+    }
+
+    // ----------------------------------------------------------------------
+    // Lagrange weights — algebraic properties.
+    // ----------------------------------------------------------------------
+
+    /// `Σ_i L_i(z) = 1` for all z. The polynomial `1` interpolates to constant
+    /// `1` at every node, so its evaluation at z is `Σ_i 1·L_i(z) = Σ_i L_i(z)`.
+    #[test]
+    fn lagrange_weights_sum_to_one() {
+        let mut rng = Rng::new(1);
+        for &k_skip in &[1usize, 2, 3, 4, 5, 6] {
+            for _ in 0..4 {
+                let z = rng.f128();
+                let weights = lagrange_weights_naive(k_skip, z);
+                let sum: F128 = weights.iter().copied().fold(F128::ZERO, |a, b| a + b);
+                assert_eq!(sum, F128::ONE, "Σ L_i ≠ 1 at k_skip={k_skip}");
+            }
+        }
+    }
+
+    /// `L_i(s_j) = δ_{ij}` — Kronecker delta. At a node, exactly one weight is 1.
+    #[test]
+    fn lagrange_at_node_is_indicator() {
+        for k_skip in [2usize, 3, 4, 5] {
+            let ell = 1usize << k_skip;
+            for i in 0..ell {
+                let z = PHI_8_TABLE[i];
+                let weights = lagrange_weights_naive(k_skip, z);
+                for j in 0..ell {
+                    let expected = if j == i { F128::ONE } else { F128::ZERO };
+                    assert_eq!(weights[j], expected, "k_skip={k_skip}, z=node{i}, j={j}");
+                }
+            }
+        }
+    }
+
+    // ----------------------------------------------------------------------
+    // Fold — algebraic properties.
+    // ----------------------------------------------------------------------
+
+    /// At a node `z = φ_8(i)`, fold reduces to the witness restricted to s=i:
+    /// `a_mlv[x_rest] = a[x_rest · 2^k_skip + i]` (lifted to F_128).
+    #[test]
+    fn fold_at_node_recovers_witness_slice() {
+        let m = 8;
+        let k_skip = 3;
+        let ell = 1usize << k_skip;
+        let n_rest = 1usize << (m - k_skip);
+        let mut rng = Rng::new(7);
+        let a = rng.bits(1 << m);
+        for i in 0..ell {
+            let z = PHI_8_TABLE[i];
+            let weights = lagrange_weights_naive(k_skip, z);
+            let a_mlv = fold_at_z_naive(&a, m, k_skip, &weights);
+            for x_rest in 0..n_rest {
+                let expected = if a[x_rest * ell + i] {
+                    F128::ONE
+                } else {
+                    F128::ZERO
+                };
+                assert_eq!(
+                    a_mlv[x_rest], expected,
+                    "fold at node {i} mismatch at x_rest={x_rest}"
+                );
+            }
+        }
+    }
+
+    /// Fold is linear in the input witness: fold(a ⊕ a') = fold(a) + fold(a').
+    /// (XOR-linearity is the defining property of the multilinear extension.)
+    #[test]
+    fn fold_is_xor_linear() {
+        let m = 7;
+        let k_skip = 3;
+        let mut rng = Rng::new(11);
+        let a = rng.bits(1 << m);
+        let aprime = rng.bits(1 << m);
+        let a_xor: Vec<bool> = a.iter().zip(&aprime).map(|(x, y)| x ^ y).collect();
+        let z = rng.f128();
+        let weights = lagrange_weights_naive(k_skip, z);
+
+        let fa = fold_at_z_naive(&a, m, k_skip, &weights);
+        let fap = fold_at_z_naive(&aprime, m, k_skip, &weights);
+        let fxor = fold_at_z_naive(&a_xor, m, k_skip, &weights);
+        for i in 0..fa.len() {
+            assert_eq!(fa[i] + fap[i], fxor[i], "linearity broken at i={i}");
+        }
+    }
+
+    // ----------------------------------------------------------------------
+    // Round-2 message — properties + cross-checks.
+    // ----------------------------------------------------------------------
+
+    /// All-zero witness ⇒ a_mlv = b_mlv = 0 ⇒ G(1) = G(∞) = 0, so the message
+    /// elements (r[0]·G(1), G(∞)) are also both zero.
+    #[test]
+    fn zero_witness_gives_zero_round_message() {
+        let m = 6;
+        let k_skip = 3;
+        let mut rng = Rng::new(20);
+        let z = rng.f128();
+        let mlv_challenges = rng.f128_vec(m - k_skip);
+        let zeros = vec![false; 1 << m];
+        let (a_mlv, b_mlv, msg_1, msg_inf) =
+            uni_skip_fold_and_round_pair_naive(&zeros, &zeros, m, k_skip, z, &mlv_challenges);
+        assert!(a_mlv.iter().all(|v| v.is_zero()));
+        assert!(b_mlv.iter().all(|v| v.is_zero()));
+        assert_eq!(msg_1, F128::ZERO);
+        assert_eq!(msg_inf, F128::ZERO);
+    }
+
+    #[test]
+    fn deterministic() {
+        let m = 7;
+        let k_skip = 3;
+        let mut rng = Rng::new(33);
+        let a = rng.bits(1 << m);
+        let b = rng.bits(1 << m);
+        let z = rng.f128();
+        let mlv_challenges = rng.f128_vec(m - k_skip);
+        let o1 = uni_skip_fold_and_round_pair_naive(&a, &b, m, k_skip, z, &mlv_challenges);
+        let o2 = uni_skip_fold_and_round_pair_naive(&a, &b, m, k_skip, z, &mlv_challenges);
+        assert_eq!(o1, o2);
+    }
+
+    /// Round-pair message is symmetric in a, b: swapping a↔b gives the same
+    /// message. `a · b = b · a` is built-in, and the `r[0]` multiplier doesn't
+    /// distinguish AB.
+    #[test]
+    fn round_pair_symmetric_in_ab() {
+        let m = 6;
+        let k_skip = 3;
+        let mut rng = Rng::new(40);
+        let a = rng.bits(1 << m);
+        let b = rng.bits(1 << m);
+        let z = rng.f128();
+        let mlv_challenges = rng.f128_vec(m - k_skip);
+        let (_, _, m1_ab, minf_ab) =
+            uni_skip_fold_and_round_pair_naive(&a, &b, m, k_skip, z, &mlv_challenges);
+        let (_, _, m1_ba, minf_ba) =
+            uni_skip_fold_and_round_pair_naive(&b, &a, m, k_skip, z, &mlv_challenges);
+        assert_eq!(m1_ab, m1_ba);
+        assert_eq!(minf_ab, minf_ba);
+    }
+
+    // ----------------------------------------------------------------------
+    // Optimized fused — UniSkipFoldTable + fold_one_row, then naive cross-check.
+    // ----------------------------------------------------------------------
+
+    /// NEON `fold_one_row_neon_unchecked_8` matches scalar `fold_one_row`.
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn fold_one_row_neon_matches_scalar() {
+        let k_skip = 6;
+        let mut rng = Rng::new(70);
+        let z = rng.f128();
+        let table = UniSkipFoldTable::new(k_skip, z);
+
+        for _ in 0..256 {
+            let mut bytes = [0u8; 8];
+            for byte in bytes.iter_mut() {
+                *byte = (rng.next_u64() & 0xff) as u8;
+            }
+            let scalar = table.fold_one_row(&bytes);
+            // SAFETY: on aarch64; bytes has 8 entries; table has 8 chunks.
+            let neon = unsafe {
+                fold_one_row_neon_unchecked_8(table.data.as_ptr() as *const u8, bytes.as_ptr())
+            };
+            assert_eq!(scalar, neon, "fold mismatch bytes={bytes:02x?}");
+        }
+    }
+
+    /// `fold_in_place_pair` correctness: post-fold a[x] = a[2x] + X·(a[2x+1]+a[2x]).
+    #[test]
+    fn fold_in_place_pair_matches_formula() {
+        let mut rng = Rng::new(300);
+        for &log_n in &[1usize, 2, 3, 4, 6] {
+            let n = 1usize << log_n;
+            let a_orig: Vec<F128> = (0..n).map(|_| rng.f128()).collect();
+            let b_orig: Vec<F128> = (0..n).map(|_| rng.f128()).collect();
+            let challenge = rng.f128();
+
+            let mut a = a_orig.clone();
+            let mut b = b_orig.clone();
+            fold_in_place_pair(&mut a, &mut b, challenge);
+
+            assert_eq!(a.len(), n / 2);
+            assert_eq!(b.len(), n / 2);
+            for x in 0..(n / 2) {
+                let a0 = a_orig[2 * x];
+                let a1 = a_orig[2 * x + 1];
+                let b0 = b_orig[2 * x];
+                let b1 = b_orig[2 * x + 1];
+                assert_eq!(a[x], a0 + challenge * (a1 + a0), "log_n={log_n}, x={x}");
+                assert_eq!(b[x], b0 + challenge * (b1 + b0), "log_n={log_n}, x={x}");
+            }
+        }
+    }
+
+    /// **The c-claim identity**: `C_s · interpolate(round1_c, k_skip, z)` equals
+    /// `ĉ(z, r_rest)` computed by direct folding (Lagrange at z, then bind each
+    /// `r_rest` value). This is the math identity that lets the extract_c
+    /// prover skip per-round c tracking entirely.
+    #[test]
+    fn c_eval_from_round1_c_matches_direct_fold() {
+        use crate::field::F8;
+        use crate::ntt::{AdditiveNttGf8, InvNttTableByteSingleGf8};
+        use crate::zerocheck::univariate_skip_optimized::{
+            c_s_f128, medium_challenges_ghash, round1_shift_reduce_extract_c_packed,
+            small_challenges_ghash,
+        };
+
+        const K_SKIP: usize = 6;
+        const N_INNER: usize = 7;
+
+        for &m in &[14usize, 15, 16] {
+            let mut rng = Rng::new(500 + m as u64);
+            let a = rng.bits(1 << m);
+            let b = rng.bits(1 << m);
+            let c = rng.bits(1 << m);
+
+            // Build r with protocol-fixed constants in the middle 7 dims,
+            // matching how `prove` constructs it.
+            let mut r = vec![F128::ZERO; m];
+            for slot in r[..K_SKIP].iter_mut() {
+                *slot = rng.f128();
+            }
+            for (i, v) in small_challenges_ghash().iter().enumerate() {
+                r[K_SKIP + i] = *v;
+            }
+            for (i, v) in medium_challenges_ghash().iter().enumerate() {
+                r[K_SKIP + 3 + i] = *v;
+            }
+            for slot in r[K_SKIP + N_INNER..].iter_mut() {
+                *slot = rng.f128();
+            }
+            let z = rng.f128();
+
+            let a_packed = pack_bits(&a);
+            let b_packed = pack_bits(&b);
+            let c_packed = pack_bits(&c);
+
+            let ntt_s = AdditiveNttGf8::new(K_SKIP, F8::ZERO);
+            let ntt_l = AdditiveNttGf8::new(K_SKIP, F8(1u8 << K_SKIP));
+            let inv_table = InvNttTableByteSingleGf8::new(&ntt_s, &ntt_l);
+            let (_round1_ab, round1_c) = round1_shift_reduce_extract_c_packed(
+                &a_packed, &b_packed, &c_packed, m, K_SKIP, &r, &inv_table,
+            );
+
+            // Path A: interpolate round1_c at z, scale by C_s.
+            let c_eval_via_interpolation =
+                c_s_f128() * interpolate_at_z_on_lambda(&round1_c, K_SKIP, z);
+
+            // Path B: direct fold of c at z (Lagrange) then bind each
+            // r_rest = r[K_SKIP..m] element with fold_in_place_single.
+            let weights = lagrange_weights_naive(K_SKIP, z);
+            let mut c_mlv = fold_at_z_naive(&c, m, K_SKIP, &weights);
+            for &r_val in &r[K_SKIP..] {
+                fold_in_place_single(&mut c_mlv, r_val);
+            }
+            assert_eq!(c_mlv.len(), 1);
+            let c_eval_via_fold = c_mlv[0];
+
+            assert_eq!(
+                c_eval_via_interpolation, c_eval_via_fold,
+                "c-claim identity broken at m={m}"
+            );
+        }
+    }
+
+    /// **The big cross-check**: fused `fold_and_compute_round_pair_optimized`
+    /// produces the same output as the unfused sequence
+    /// `fold_in_place_pair` → `round_pair_naive`.
+    #[test]
+    fn fused_round_matches_unfused() {
+        let mut rng = Rng::new(310);
+        // fold_and_compute requires lo_size ≥ 2 in SplitEqGhash. eq is over
+        // r_next[1..] (size log_n − 2); with MAX_N_HI = 7, n_lo ≥ 1 needs
+        // eq size ≥ 8 ⇒ log_n ≥ 10. Smaller cases use the unfused path.
+        for &log_n in &[10usize, 11, 12] {
+            let n = 1usize << log_n;
+            let a: Vec<F128> = (0..n).map(|_| rng.f128()).collect();
+            let b: Vec<F128> = (0..n).map(|_| rng.f128()).collect();
+            let r_fold = rng.f128();
+            let r_next = rng.f128_vec(log_n - 1);
+
+            // Fused path.
+            let (a_fused, b_fused, m1_fused, minf_fused) =
+                fold_and_compute_round_pair_optimized(&a, &b, r_fold, &r_next);
+
+            // Unfused path: clone, in-place fold, naive message.
+            let mut a_unf = a.clone();
+            let mut b_unf = b.clone();
+            fold_in_place_pair(&mut a_unf, &mut b_unf, r_fold);
+            let (m1_unf, minf_unf) = round_pair_naive(&a_unf, &b_unf, &r_next);
+
+            assert_eq!(a_fused, a_unf, "a mismatch at log_n={log_n}");
+            assert_eq!(b_fused, b_unf, "b mismatch at log_n={log_n}");
+            assert_eq!(m1_fused, m1_unf, "msg_1 mismatch at log_n={log_n}");
+            assert_eq!(minf_fused, minf_unf, "msg_inf mismatch at log_n={log_n}");
+        }
+    }
+
+    /// Parallel `uni_skip_fold_and_round_pair_optimized_packed` produces
+    /// byte-identical output to the serial version. F128 XOR + multiply sum
+    /// is commutative + associative, so worker scheduling order doesn't
+    /// affect the result.
+    #[test]
+    fn parallel_matches_serial() {
+        for &m in &[7usize, 8, 9, 10] {
+            let k_skip = 6;
+            if m <= k_skip {
+                continue;
+            }
+            let mut rng = Rng::new(200 + m as u64);
+            let a = rng.bits(1 << m);
+            let b = rng.bits(1 << m);
+            let z = rng.f128();
+            let mlv_challenges = rng.f128_vec(m - k_skip);
+            let a_packed = pack_bits(&a);
+            let b_packed = pack_bits(&b);
+            let table = UniSkipFoldTable::new(k_skip, z);
+
+            let par = uni_skip_fold_and_round_pair_optimized_packed(
+                &a_packed,
+                &b_packed,
+                m,
+                k_skip,
+                &table,
+                &mlv_challenges,
+            );
+            let ser = uni_skip_fold_and_round_pair_optimized_packed_serial(
+                &a_packed,
+                &b_packed,
+                m,
+                k_skip,
+                &table,
+                &mlv_challenges,
+            );
+
+            assert_eq!(par.0, ser.0, "a_mlv mismatch at m={m}");
+            assert_eq!(par.1, ser.1, "b_mlv mismatch at m={m}");
+            assert_eq!(par.2, ser.2, "msg_1 mismatch at m={m}");
+            assert_eq!(par.3, ser.3, "msg_inf mismatch at m={m}");
+        }
+    }
+
+    /// **Padding skip is byte-identical to the dense round-2 kernel.** Builds
+    /// witnesses with bits `[useful_bits, 2^k_log)` of every block honestly
+    /// zero, then asserts the `_padded` kernel produces the same
+    /// `(a_mlv, b_mlv, msg_1, msg_inf)` as the dense path.
+    ///
+    /// Covers all three hash padding shapes: BLAKE3 (k_log=14, useful=15409),
+    /// SHA-2 (k_log=15, useful=31401), Keccak (k_log=16, useful=42560).
+    #[test]
+    fn uni_skip_fold_round_pair_padded_matches_dense() {
+        const K_SKIP: usize = 6;
+        let cases: &[(usize, usize, usize)] =
+            &[(17, 14, 15_409), (18, 15, 31_401), (19, 16, 42_560)];
+        for &(m, k_log, useful_bits) in cases {
+            let mut rng = Rng::new(0xFADE_F00D_u64.wrapping_add((k_log * 31 + m) as u64));
+            let total_bits = 1usize << m;
+            let block_size = 1usize << k_log;
+            let n_blocks = 1usize << (m - k_log);
+
+            // Random witness, then zero bits [useful_bits, block_size) of each
+            // block in both a and b (matches honestly-padded hash R1CS).
+            let mut a = rng.bits(total_bits);
+            let mut b = rng.bits(total_bits);
+            for blk in 0..n_blocks {
+                for j in useful_bits..block_size {
+                    a[blk * block_size + j] = false;
+                    b[blk * block_size + j] = false;
+                }
+            }
+            let a_packed = pack_bits(&a);
+            let b_packed = pack_bits(&b);
+
+            let z = rng.f128();
+            let mlv_challenges = rng.f128_vec(m - K_SKIP);
+            let table = UniSkipFoldTable::new(K_SKIP, z);
+            let padding = PaddingSpec {
+                k_log,
+                useful_bits_per_block: useful_bits,
+            };
+
+            let dense = uni_skip_fold_and_round_pair_optimized_packed(
+                &a_packed,
+                &b_packed,
+                m,
+                K_SKIP,
+                &table,
+                &mlv_challenges,
+            );
+            let padded = uni_skip_fold_and_round_pair_optimized_packed_padded(
+                &a_packed,
+                &b_packed,
+                m,
+                K_SKIP,
+                &table,
+                &mlv_challenges,
+                &padding,
+            );
+            assert_eq!(
+                dense.0, padded.0,
+                "a_mlv: m={m}, k_log={k_log}, useful={useful_bits}"
+            );
+            assert_eq!(
+                dense.1, padded.1,
+                "b_mlv: m={m}, k_log={k_log}, useful={useful_bits}"
+            );
+            assert_eq!(
+                dense.2, padded.2,
+                "msg_1: m={m}, k_log={k_log}, useful={useful_bits}"
+            );
+            assert_eq!(
+                dense.3, padded.3,
+                "msg_inf: m={m}, k_log={k_log}, useful={useful_bits}"
+            );
+        }
+    }
+
+    /// `fold_one_row` via the table equals direct-Lagrange fold.
+    #[test]
+    fn fold_table_one_row_matches_direct_lagrange() {
+        let m = 8;
+        let k_skip = 3;
+        let mut rng = Rng::new(60);
+        let z = rng.f128();
+        let a = rng.bits(1 << m);
+        let weights = lagrange_weights_naive(k_skip, z);
+        let table = UniSkipFoldTable::new(k_skip, z);
+        let a_packed = pack_bits(&a);
+
+        let n_chunks = 1usize << (k_skip / 8);
+        let _ = n_chunks; // ell/8 = (1<<k_skip)/8
+        let n_chunks = table.n_chunks;
+
+        for x_rest in 0..(1usize << (m - k_skip)) {
+            let direct = {
+                let mut acc = F128::ZERO;
+                for s in 0..(1usize << k_skip) {
+                    if a[x_rest * (1usize << k_skip) + s] {
+                        acc += weights[s];
+                    }
+                }
+                acc
+            };
+            let via_table =
+                table.fold_one_row(&a_packed[x_rest * n_chunks..(x_rest + 1) * n_chunks]);
+            assert_eq!(via_table, direct, "x_rest={x_rest}");
+        }
+    }
+
+    /// **The full cross-check**: optimized fused output matches naive
+    /// byte-for-byte at the headline `k_skip = 6` (and other small m). Same eq
+    /// weights, same z, same r — so a_mlv, b_mlv, and the two message values
+    /// must all agree exactly.
+    #[test]
+    fn optimized_matches_naive() {
+        for &m in &[7usize, 8, 9, 10] {
+            let k_skip = 6;
+            if m <= k_skip {
+                continue;
+            }
+            let mut rng = Rng::new(100 + m as u64);
+            let a = rng.bits(1 << m);
+            let b = rng.bits(1 << m);
+            let z = rng.f128();
+            let mlv_challenges = rng.f128_vec(m - k_skip);
+
+            let (a_n, b_n, m1_n, minf_n) =
+                uni_skip_fold_and_round_pair_naive(&a, &b, m, k_skip, z, &mlv_challenges);
+            let (a_o, b_o, m1_o, minf_o) =
+                uni_skip_fold_and_round_pair_optimized(&a, &b, m, k_skip, z, &mlv_challenges);
+
+            assert_eq!(a_n, a_o, "a_mlv mismatch at m={m}");
+            assert_eq!(b_n, b_o, "b_mlv mismatch at m={m}");
+            assert_eq!(m1_n, m1_o, "msg_1 mismatch at m={m}");
+            assert_eq!(minf_n, minf_o, "msg_inf mismatch at m={m}");
+        }
+    }
+
+    /// Strong cross-check: compute G(0), G(1), G(∞) by direct sum (using the
+    /// LSB-first index convention `a_mlv(0, x') = a[2x']`, `a_mlv(1, x') = a[2x'+1]`),
+    /// then verify that G interpolated through those three values agrees with
+    /// the direct multilinear evaluation at a fresh random X — confirming G
+    /// genuinely has degree ≤ 2.
+    ///
+    /// Also verifies `round_pair_naive` returns `(r[0] · G(1), G(∞))`.
+    #[test]
+    fn round_pair_message_has_degree_two() {
+        let m = 6;
+        let k_skip = 3;
+        let mut rng = Rng::new(55);
+        let a = rng.bits(1 << m);
+        let b = rng.bits(1 << m);
+        let z = rng.f128();
+        let r = rng.f128_vec(m - k_skip);
+
+        let weights = lagrange_weights_naive(k_skip, z);
+        let a_mlv = fold_at_z_naive(&a, m, k_skip, &weights);
+        let b_mlv = fold_at_z_naive(&b, m, k_skip, &weights);
+
+        let n = a_mlv.len();
+        let half = n / 2;
+        let eq_remaining = build_eq(&r[1..]);
+
+        // G(0), G(1), G(∞) by direct definition.
+        let mut g0 = F128::ZERO;
+        let mut g1 = F128::ZERO;
+        let mut g_inf = F128::ZERO;
+        for x_prime in 0..half {
+            let a0 = a_mlv[2 * x_prime];
+            let a1 = a_mlv[2 * x_prime + 1];
+            let b0 = b_mlv[2 * x_prime];
+            let b1 = b_mlv[2 * x_prime + 1];
+            let eq_x = eq_remaining[x_prime];
+            g0 += eq_x * a0 * b0;
+            g1 += eq_x * a1 * b1;
+            g_inf += eq_x * (a0 + a1) * (b0 + b1);
+        }
+
+        // round_pair_naive returns (r[0] · g1, g_inf).
+        let (msg_1, msg_inf) = round_pair_naive(&a_mlv, &b_mlv, &r);
+        assert_eq!(msg_1, r[0] * g1);
+        assert_eq!(msg_inf, g_inf);
+
+        // Degree-2 check: G(X) reconstructed through (G(0), G(1), G(∞)) must
+        // agree with the direct multilinear evaluation at a fresh point X.
+        // Char-2 interpolation: G(X) = G(0) + X·(G(0)+G(1)) + X·(X+1)·G(∞).
+        let x = rng.f128();
+        let g_via_poly = g0 + x * (g0 + g1) + x * (x + F128::ONE) * g_inf;
+        let mut g_via_sum = F128::ZERO;
+        for x_prime in 0..half {
+            let a0 = a_mlv[2 * x_prime];
+            let a1 = a_mlv[2 * x_prime + 1];
+            let b0 = b_mlv[2 * x_prime];
+            let b1 = b_mlv[2 * x_prime + 1];
+            let a_x = a0 + x * (a0 + a1);
+            let b_x = b0 + x * (b0 + b1);
+            g_via_sum += eq_remaining[x_prime] * a_x * b_x;
+        }
+        assert_eq!(g_via_poly, g_via_sum);
+    }
+}

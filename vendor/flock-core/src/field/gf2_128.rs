@@ -546,3 +546,207 @@ fn ghash_mul_unreduced(a: F128, b: F128) -> F256Unreduced {
         software::ghash_mul_unreduced(a, b)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Rng(u64);
+    impl Rng {
+        fn new(seed: u64) -> Self {
+            Self(seed)
+        }
+        fn next_u64(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9E3779B97F4A7C15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+            z ^ (z >> 31)
+        }
+        fn next_f128(&mut self) -> F128 {
+            F128 {
+                lo: self.next_u64(),
+                hi: self.next_u64(),
+            }
+        }
+    }
+
+    #[test]
+    fn add_identities() {
+        let mut rng = Rng::new(1);
+        for _ in 0..64 {
+            let a = rng.next_f128();
+            assert_eq!(a + F128::ZERO, a);
+            assert_eq!(a + a, F128::ZERO);
+        }
+    }
+
+    #[test]
+    fn mul_identities() {
+        let mut rng = Rng::new(2);
+        for _ in 0..64 {
+            let a = rng.next_f128();
+            assert_eq!(a * F128::ZERO, F128::ZERO);
+            assert_eq!(a * F128::ONE, a);
+        }
+    }
+
+    #[test]
+    fn mul_by_x_matches_mul_by_gen() {
+        let mut rng = Rng::new(3);
+        for _ in 0..256 {
+            let a = rng.next_f128();
+            assert_eq!(mul_by_x(a), a * F128::generator());
+        }
+    }
+
+    #[test]
+    fn deferred_reduction_matches_direct() {
+        let mut rng = Rng::new(4);
+        for _ in 0..64 {
+            let a = rng.next_f128();
+            let b = rng.next_f128();
+            let direct = a * b;
+            let deferred = a.mul_unreduced(b).reduce();
+            assert_eq!(direct, deferred);
+        }
+    }
+
+    #[test]
+    fn deferred_xor_commutes_with_reduction() {
+        // Σ aᵢ·bᵢ in F128 must equal reduce(XOR-sum of unreduced products).
+        let mut rng = Rng::new(5);
+        let n = 16;
+        let pairs: Vec<(F128, F128)> = (0..n).map(|_| (rng.next_f128(), rng.next_f128())).collect();
+
+        let direct: F128 = pairs.iter().fold(F128::ZERO, |acc, (a, b)| acc + *a * *b);
+
+        let mut acc = F256Unreduced::ZERO;
+        for (a, b) in &pairs {
+            acc ^= a.mul_unreduced(*b);
+        }
+        assert_eq!(direct, acc.reduce());
+    }
+
+    #[test]
+    fn inverse_roundtrip() {
+        let mut rng = Rng::new(6);
+        for _ in 0..16 {
+            let a = rng.next_f128();
+            if a.is_zero() {
+                continue;
+            }
+            assert_eq!(a * a.inv(), F128::ONE);
+        }
+    }
+
+    #[test]
+    fn associativity_random() {
+        let mut rng = Rng::new(7);
+        for _ in 0..64 {
+            let a = rng.next_f128();
+            let b = rng.next_f128();
+            let c = rng.next_f128();
+            assert_eq!((a * b) * c, a * (b * c));
+            assert_eq!(a * (b + c), a * b + a * c);
+        }
+    }
+
+    #[test]
+    fn mul_commutativity() {
+        let mut rng = Rng::new(91);
+        for _ in 0..256 {
+            let a = rng.next_f128();
+            let b = rng.next_f128();
+            assert_eq!(a * b, b * a);
+        }
+    }
+
+    #[test]
+    fn ghash_reduction_smoking_gun() {
+        // The defining identity of the GHASH polynomial:
+        //   x · x^127 = x^128 = x^7 + x^2 + x + 1 = 0x87.
+        // If the reduction constant 0x87 is wrong (e.g. 0x86, 0x07, byte-swapped),
+        // this test fails immediately and pinpoints the bug.
+        let x = F128::generator();
+        let x_127 = F128 {
+            lo: 0,
+            hi: 1u64 << 63,
+        };
+        assert_eq!(x * x_127, F128 { lo: 0x87, hi: 0 }, "x · x^127");
+
+        // x · x^63 = x^64 — crosses the lo/hi word boundary with no reduction.
+        // Catches lo/hi swaps and off-by-one in the 64-bit word split.
+        let x_63 = F128 {
+            lo: 1u64 << 63,
+            hi: 0,
+        };
+        assert_eq!(x * x_63, F128 { lo: 0, hi: 1 }, "x · x^63 = x^64");
+
+        // x^64 · x^64 = x^128 = 0x87 — reaches the reduction through a different
+        // multiplication path (high·high product).
+        let x_64 = F128 { lo: 0, hi: 1 };
+        assert_eq!(x_64 * x_64, F128 { lo: 0x87, hi: 0 }, "x^64 · x^64");
+
+        // x · x = x^2 (no reduction).
+        assert_eq!(x * x, F128 { lo: 4, hi: 0 }, "x^2");
+    }
+
+    #[test]
+    fn high_bit_inputs_reduce_correctly() {
+        // Verify mul still satisfies a^{-1} · a = 1 when both inputs have the
+        // top bit (x^127) set — exercising the most overflow-prone code path
+        // of `ghash_reduce`. The inverse test naturally lands here for random
+        // inputs only by luck; this makes it deterministic.
+        let high = F128 {
+            lo: 0,
+            hi: 1u64 << 63,
+        };
+        assert_eq!(high * high.inv(), F128::ONE);
+        let almost_max = F128 {
+            lo: u64::MAX,
+            hi: u64::MAX,
+        };
+        assert_eq!(almost_max * almost_max.inv(), F128::ONE);
+        let just_top = F128 {
+            lo: 0,
+            hi: u64::MAX,
+        };
+        assert_eq!(just_top * just_top.inv(), F128::ONE);
+    }
+
+    #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
+    #[test]
+    fn neon_mul_vec2_matches_scalar() {
+        let mut rng = Rng::new(11);
+        for _ in 0..128 {
+            let a0 = rng.next_f128();
+            let a1 = rng.next_f128();
+            let b0 = rng.next_f128();
+            let b1 = rng.next_f128();
+            let expected = [a0 * b0, a1 * b1];
+            let result = unsafe { aarch64::ghash_mul_vec2_neon([a0, a1], [b0, b1]) };
+            assert_eq!(result[0], expected[0], "lane 0");
+            assert_eq!(result[1], expected[1], "lane 1");
+        }
+    }
+
+    #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
+    #[test]
+    fn all_neon_variants_agree() {
+        let mut rng = Rng::new(8);
+        for _ in 0..128 {
+            let a = rng.next_f128();
+            let b = rng.next_f128();
+            let sw = software::ghash_mul(a, b);
+            let sb = unsafe { aarch64::ghash_mul_schoolbook(a, b) };
+            let ka = unsafe { aarch64::ghash_mul_karatsuba(a, b) };
+            let kb = unsafe { aarch64::ghash_mul_karatsuba_barrett(a, b) };
+            let bi = unsafe { aarch64::ghash_mul_binius(a, b) };
+            assert_eq!(sw, sb);
+            assert_eq!(sw, ka);
+            assert_eq!(sw, kb);
+            assert_eq!(sw, bi);
+        }
+    }
+}

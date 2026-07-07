@@ -781,3 +781,203 @@ fn observe_evals<C: Challenger>(ch: &mut C, evals: &[F128; 7]) {
         ch.observe_f128(*e);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::challenger::FsChallenger;
+
+    // SplitMix64, matching the repo's test RNG convention.
+    struct Rng(u64);
+    impl Rng {
+        fn new(seed: u64) -> Self {
+            Self(seed)
+        }
+        fn next_u64(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^ (z >> 31)
+        }
+        fn f128(&mut self) -> F128 {
+            F128::new(self.next_u64(), self.next_u64())
+        }
+        fn permutation(&mut self, n: usize) -> Vec<usize> {
+            let mut p: Vec<usize> = (0..n).collect();
+            for i in (1..n).rev() {
+                let j = (self.next_u64() % (i as u64 + 1)) as usize;
+                p.swap(i, j);
+            }
+            p
+        }
+    }
+
+    fn invert(sigma: &[usize]) -> Vec<usize> {
+        let mut inv = vec![0usize; sigma.len()];
+        for (x, &sx) in sigma.iter().enumerate() {
+            inv[sx] = x;
+        }
+        inv
+    }
+
+    /// Build an honest instance: random `g`, permutation `σ`, and
+    /// `f(x) = g(σ⁻¹(x))` so the multiset `{(f,s_id)} = {(g,s_σ)}` holds.
+    fn honest_instance(mu: usize, seed: u64) -> (Vec<F128>, Vec<F128>, Vec<usize>) {
+        let n = 1usize << mu;
+        let mut rng = Rng::new(seed);
+        let g: Vec<F128> = (0..n).map(|_| rng.f128()).collect();
+        let sigma = rng.permutation(n);
+        let sinv = invert(&sigma);
+        let f: Vec<F128> = (0..n).map(|x| g[sinv[x]]).collect();
+        (f, g, sigma)
+    }
+
+    fn bind<C: Challenger>(ch: &mut C, f: &[F128], g: &[F128], sigma: &[usize]) {
+        ch.observe_f128_slice(f);
+        ch.observe_f128_slice(g);
+        for &s in sigma {
+            ch.observe_f128(F128::new(s as u64, 0));
+        }
+    }
+
+    fn run_prove(f: &[F128], g: &[F128], sigma: &[usize]) -> (PermutationProof, PermutationClaim) {
+        let mut ch = FsChallenger::new(b"perm-test");
+        bind(&mut ch, f, g, sigma);
+        prove(f, g, sigma, &mut ch)
+    }
+
+    fn run_verify(
+        mu: usize,
+        f: &[F128],
+        g: &[F128],
+        sigma: &[usize],
+        proof: &PermutationProof,
+    ) -> Result<PermutationClaim, VerifyError> {
+        let mut ch = FsChallenger::new(b"perm-test");
+        bind(&mut ch, f, g, sigma);
+        verify(mu, proof, &mut ch)
+    }
+
+    #[test]
+    fn honest_roundtrip_and_claim_match() {
+        // Spans both backend regimes for `v` (log_n = μ+1): BaseFold at μ≤6
+        // (log_n ≤ 7 < 8) and Ligerito at μ≥7 (log_n ≥ 8).
+        for mu in 1..=8 {
+            let (f, g, sigma) = honest_instance(mu, 0xC0FFEE ^ mu as u64);
+            let (proof, claim_p) = run_prove(&f, &g, &sigma);
+            assert_eq!(proof.claimed_product, F128::ONE, "μ={mu}: ∏ℓ ≠ 1");
+            let claim_v = run_verify(mu, &f, &g, &sigma, &proof).expect("verify");
+            assert_eq!(claim_p, claim_v, "μ={mu}: prover/verifier claim mismatch");
+        }
+    }
+
+    #[test]
+    fn claim_matches_direct_mle() {
+        let mu = 6;
+        let (f, g, sigma) = honest_instance(mu, 0xABCD);
+        let (_proof, claim) = run_prove(&f, &g, &sigma);
+
+        // Rebuild the witness-derived polys to evaluate their MLEs directly.
+        let mut ch = FsChallenger::new(b"perm-test");
+        bind(&mut ch, &f, &g, &sigma);
+        ch.observe_label(DOMAIN);
+        let beta = ch.sample_f128();
+        let gamma = ch.sample_f128();
+        let n = 1usize << mu;
+        let basis = s_id_basis(mu);
+        let s_id_vec: Vec<F128> = (0..n).map(|x| s_id_value(x, &basis)).collect();
+        let s_sig_vec: Vec<F128> = (0..n).map(|x| s_id_value(sigma[x], &basis)).collect();
+        let p: Vec<F128> = (0..n).map(|x| f[x] + beta * s_id_vec[x] + gamma).collect();
+        let q: Vec<F128> = (0..n).map(|x| g[x] + beta * s_sig_vec[x] + gamma).collect();
+        let q_inv = batch_inverse(&q);
+        let leaves: Vec<F128> = (0..n).map(|x| p[x] * q_inv[x]).collect();
+        let v = build_grand_product(&leaves);
+
+        let rho = &claim.rho;
+        assert_eq!(claim.f_eval, mle_eval(&f, rho));
+        assert_eq!(claim.g_eval, mle_eval(&g, rho));
+        assert_eq!(claim.s_sigma_eval, mle_eval(&s_sig_vec, rho));
+        // The leaf value ℓ(ρ) lives inside v as v(0,ρ) = v_0x (checked below).
+        assert_eq!(claim.v_0x, mle_eval(&leaves, rho));
+
+        // v evaluations: low bit selects (·,0)/(·,1); high bit selects (0,·)/(1,·).
+        let mut pt_x0 = vec![F128::ZERO];
+        pt_x0.extend_from_slice(rho);
+        let mut pt_x1 = vec![F128::ONE];
+        pt_x1.extend_from_slice(rho);
+        let mut pt_1x = rho.clone();
+        pt_1x.push(F128::ONE);
+        let mut pt_0x = rho.clone();
+        pt_0x.push(F128::ZERO);
+        assert_eq!(claim.v_x0, mle_eval(&v, &pt_x0));
+        assert_eq!(claim.v_x1, mle_eval(&v, &pt_x1));
+        assert_eq!(claim.v_1x, mle_eval(&v, &pt_1x));
+        assert_eq!(claim.v_0x, mle_eval(&v, &pt_0x));
+        assert_eq!(v[2 * n - 2], F128::ONE);
+    }
+
+    #[test]
+    fn tampered_witness_rejected() {
+        let mu = 5;
+        let (f, g, sigma) = honest_instance(mu, 0x1234);
+        let (proof, _) = run_prove(&f, &g, &sigma);
+
+        // Verifier binds a different f (flip one entry): challenges diverge, so
+        // the sumcheck final consistency fails.
+        let mut f_bad = f.clone();
+        f_bad[3] += F128::ONE;
+        let res = run_verify(mu, &f_bad, &g, &sigma, &proof);
+        assert!(
+            matches!(res, Err(VerifyError::SumcheckFinalFailed)),
+            "got {res:?}"
+        );
+    }
+
+    #[test]
+    fn non_permutation_relation_rejected() {
+        // f is NOT a permutation of g ⇒ honest prover's ∏h ≠ 1 ⇒ RootNotOne.
+        let mu = 4;
+        let n = 1usize << mu;
+        let mut rng = Rng::new(0x9999);
+        let g: Vec<F128> = (0..n).map(|_| rng.f128()).collect();
+        let f: Vec<F128> = (0..n).map(|_| rng.f128()).collect(); // unrelated
+        let sigma: Vec<usize> = (0..n).collect(); // identity tag
+        let (proof, _) = run_prove(&f, &g, &sigma);
+        assert_ne!(proof.claimed_product, F128::ONE, "expected ∏h ≠ 1");
+        let res = run_verify(mu, &f, &g, &sigma, &proof);
+        assert_eq!(res, Err(VerifyError::RootNotOne));
+    }
+
+    #[test]
+    fn tampered_basefold_opening_rejected() {
+        // μ=5 → v has log_n=6, below Ligerito's floor, so it opens with BaseFold.
+        // Corrupt its final value: the sumcheck and root checks still pass (evals
+        // + claimed_product are untouched), so the rejection comes purely from the
+        // PCS opening no longer matching the committed `v`.
+        let mu = 5;
+        let (f, g, sigma) = honest_instance(mu, 0x2468);
+        let (mut proof, _) = run_prove(&f, &g, &sigma);
+        match &mut proof.v_open {
+            BatchOpening::BaseFold(bf) => bf.basefold.final_a.lo ^= 1,
+            BatchOpening::Ligerito(_) => panic!("μ={mu} should use BaseFold for v"),
+        }
+        let res = run_verify(mu, &f, &g, &sigma, &proof);
+        assert!(matches!(res, Err(VerifyError::PcsOpen(_))), "got {res:?}");
+    }
+
+    #[test]
+    fn backend_is_adaptive_to_size() {
+        // μ=6: v has log_n=7 < 8 → BaseFold.
+        let (f, g, sigma) = honest_instance(6, 0x66);
+        let (p6, _) = run_prove(&f, &g, &sigma);
+        assert!(matches!(p6.v_open, BatchOpening::BaseFold(_)));
+        run_verify(6, &f, &g, &sigma, &p6).expect("μ=6 BaseFold verify");
+
+        // μ=7: v has log_n=8 ≥ 8 → Ligerito. Still verifies end-to-end.
+        let (f, g, sigma) = honest_instance(7, 0x77);
+        let (p7, _) = run_prove(&f, &g, &sigma);
+        assert!(matches!(p7.v_open, BatchOpening::Ligerito(_)));
+        run_verify(7, &f, &g, &sigma, &p7).expect("μ=7 Ligerito verify");
+    }
+}

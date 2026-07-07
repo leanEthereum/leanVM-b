@@ -6,7 +6,7 @@
 
 use crate::challenger::Challenger;
 use crate::field::F128;
-use crate::lincheck::{self, QuirkyPoint};
+use crate::lincheck;
 use crate::pcs::{self, Commitment};
 use crate::proof::{R1csClaim, R1csProof, R1csProofLigerito, ZClaim};
 use crate::r1cs::BlockR1cs;
@@ -222,13 +222,9 @@ fn verify_core_inner<Ch: Challenger>(
         );
     }
 
-    // ---- Build lincheck's shared quirky point from the zerocheck output.
-    let inner_rest_len = r1cs.k_log - r1cs.k_skip;
-    let x_ab = QuirkyPoint {
-        z_skip: zc_claim.z,
-        x_inner_rest: zc_claim.mlv_challenges[..inner_rest_len].to_vec(),
-        x_outer: zc_claim.mlv_challenges[inner_rest_len..].to_vec(),
-    };
+    // ---- Build lincheck's shared quirky point from the zerocheck output
+    // (layout-aware: the mlv challenges are address-ordered).
+    let x_ab = r1cs.x_ab_from_mlv(zc_claim.z, &zc_claim.mlv_challenges);
 
     // ---- Lincheck. v_a, v_b come from the zerocheck's final â, b̂ evals.
     let t = std::time::Instant::now();
@@ -252,21 +248,14 @@ fn verify_core_inner<Ch: Challenger>(
     }
 
     // ---- Build the two z-claims (must match what `prove` returned).
+    // Layout-aware: the ZClaim points are address-ordered for the PCS.
     let ab = ZClaim {
-        point: QuirkyPoint {
-            z_skip: lc_claim.r_inner_skip,
-            x_inner_rest: lc_claim.r_inner_rest.clone(),
-            x_outer: x_ab.x_outer.clone(),
-        },
+        point: r1cs.ab_claim_point(lc_claim.r_inner_skip, &lc_claim.r_inner_rest, &x_ab.x_outer),
         value: lc_claim.w,
     };
     // c-claim is already a z-claim since `C = I` ⇒ ĉ = ẑ.
     let c = ZClaim {
-        point: QuirkyPoint {
-            z_skip: zc_claim.z,
-            x_inner_rest: zc_claim.r_rest[..inner_rest_len].to_vec(),
-            x_outer: zc_claim.r_rest[inner_rest_len..].to_vec(),
-        },
+        point: r1cs.c_claim_point(zc_claim.z, &zc_claim.r_rest),
         value: zc_claim.c_eval,
     };
 
@@ -305,4 +294,21 @@ fn verify_claims_inner<Ch: Challenger>(
         .collect();
     let x_refs: Vec<&[F128]> = x_fulls.iter().map(|v| v.as_slice()).collect();
     pcs::verify_opening_batch(commitment, &values, &z_skips, &x_refs, pcs_open, challenger)
+}
+
+#[cfg(test)]
+mod tests {
+    /// The verifier is intentionally single-threaded: every `par_*` reached
+    /// from a verify core must collapse onto the one-thread `verifier_pool`.
+    /// Guard the invariant so a future `ThreadPoolBuilder` tweak can't silently
+    /// re-parallelize verification.
+    ///
+    /// (The end-to-end prove → verify roundtrip and tamper-rejection tests live
+    /// in `flock-prover`'s `tests/verifier_roundtrip.rs`, since they need the
+    /// prove path.)
+    #[test]
+    fn verifier_pool_is_single_threaded() {
+        let n = super::verifier_pool().install(rayon::current_num_threads);
+        assert_eq!(n, 1, "verifier_pool must have exactly one worker thread");
+    }
 }

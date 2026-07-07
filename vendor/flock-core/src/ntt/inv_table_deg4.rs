@@ -219,3 +219,123 @@ impl InvNttTableSToV8Gf8 {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Rng(u64);
+    impl Rng {
+        fn new(seed: u64) -> Self {
+            Self(seed)
+        }
+        fn next_u64(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9E3779B97F4A7C15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+            z ^ (z >> 31)
+        }
+    }
+
+    /// Direct NTT path: same math as the table but without the table.
+    /// inv_NTT_S on length-64, zero-pad to 256, fwd_NTT_V₈ on length-256.
+    fn naive_extend(bytes: &[u8], ntt_s: &AdditiveNttGf8, ntt_v8: &AdditiveNttGf8) -> Vec<F8> {
+        let ell_in = 1usize << ntt_s.k();
+        let ell_out = 1usize << ntt_v8.k();
+        let mut buf = vec![F8::ZERO; ell_out];
+        for s in 0..ell_in {
+            let bit = (bytes[s / 8] >> (s % 8)) & 1;
+            buf[s] = F8(bit);
+        }
+        ntt_s.inverse(&mut buf[..ell_in]);
+        // Coefficients at positions ell_in..ell_out are already zero (W_64..W_255).
+        ntt_v8.forward(&mut buf);
+        buf
+    }
+
+    /// Table.apply equals the direct NTT extension on random inputs.
+    #[test]
+    fn apply_matches_naive_random() {
+        let ntt_s = AdditiveNttGf8::new(6, F8::ZERO);
+        let ntt_v8 = AdditiveNttGf8::new(8, F8::ZERO);
+        let table = InvNttTableSToV8Gf8::new(&ntt_s, &ntt_v8);
+
+        let mut rng = Rng::new(0xC0FFEE);
+        for _trial in 0..16 {
+            let bytes: [u8; 8] = [
+                rng.next_u64() as u8,
+                rng.next_u64() as u8,
+                rng.next_u64() as u8,
+                rng.next_u64() as u8,
+                rng.next_u64() as u8,
+                rng.next_u64() as u8,
+                rng.next_u64() as u8,
+                rng.next_u64() as u8,
+            ];
+            let naive = naive_extend(&bytes, &ntt_s, &ntt_v8);
+            let mut got = vec![F8::ZERO; 256];
+            table.apply(&bytes, &mut got);
+            assert_eq!(got, naive, "table.apply ≠ direct NTT on bytes {bytes:?}");
+        }
+    }
+
+    /// `apply` and `apply_scalar` agree (validates the NEON path against the
+    /// scalar reference).
+    #[test]
+    fn apply_matches_apply_scalar() {
+        let ntt_s = AdditiveNttGf8::new(6, F8::ZERO);
+        let ntt_v8 = AdditiveNttGf8::new(8, F8::ZERO);
+        let table = InvNttTableSToV8Gf8::new(&ntt_s, &ntt_v8);
+
+        let mut rng = Rng::new(0xBADCAFE);
+        for _trial in 0..16 {
+            let bytes: [u8; 8] = [
+                rng.next_u64() as u8,
+                rng.next_u64() as u8,
+                rng.next_u64() as u8,
+                rng.next_u64() as u8,
+                rng.next_u64() as u8,
+                rng.next_u64() as u8,
+                rng.next_u64() as u8,
+                rng.next_u64() as u8,
+            ];
+            let mut got_scalar = vec![F8::ZERO; 256];
+            let mut got_dispatch = vec![F8::ZERO; 256];
+            table.apply_scalar(&bytes, &mut got_scalar);
+            table.apply(&bytes, &mut got_dispatch);
+            assert_eq!(
+                got_scalar, got_dispatch,
+                "apply (NEON or scalar) ≠ apply_scalar on bytes {bytes:?}"
+            );
+        }
+    }
+
+    /// First 64 lanes of the output reproduce the input bits exactly.
+    #[test]
+    fn first_64_lanes_match_input_bits() {
+        let ntt_s = AdditiveNttGf8::new(6, F8::ZERO);
+        let ntt_v8 = AdditiveNttGf8::new(8, F8::ZERO);
+        let table = InvNttTableSToV8Gf8::new(&ntt_s, &ntt_v8);
+
+        let mut rng = Rng::new(0xA17);
+        for _trial in 0..8 {
+            let bytes: [u8; 8] = [
+                rng.next_u64() as u8,
+                rng.next_u64() as u8,
+                rng.next_u64() as u8,
+                rng.next_u64() as u8,
+                rng.next_u64() as u8,
+                rng.next_u64() as u8,
+                rng.next_u64() as u8,
+                rng.next_u64() as u8,
+            ];
+            let mut got = vec![F8::ZERO; 256];
+            table.apply(&bytes, &mut got);
+            for s in 0..64 {
+                let expected_bit = (bytes[s / 8] >> (s % 8)) & 1;
+                assert_eq!(got[s], F8(expected_bit), "input bit mismatch at s={s}");
+            }
+        }
+    }
+}

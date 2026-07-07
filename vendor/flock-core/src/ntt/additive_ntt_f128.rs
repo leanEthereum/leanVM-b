@@ -910,3 +910,230 @@ unsafe fn butterfly_across_blocks_neon_in_chunk(chunk: &mut [F128], t_a: F128, t
     chunk[2] = new_u_b;
     chunk[3] = new_v_b;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Rng(u64);
+    impl Rng {
+        fn new(seed: u64) -> Self {
+            Self(seed)
+        }
+        fn next_u64(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9E3779B97F4A7C15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+            z ^ (z >> 31)
+        }
+        fn f128(&mut self) -> F128 {
+            F128 {
+                lo: self.next_u64(),
+                hi: self.next_u64(),
+            }
+        }
+    }
+
+    fn rand_vec(rng: &mut Rng, n: usize) -> Vec<F128> {
+        (0..n).map(|_| rng.f128()).collect()
+    }
+
+    #[test]
+    fn forward_inverse_roundtrip() {
+        let mut rng = Rng::new(0xAB1);
+        for log_d in [1usize, 2, 3, 4, 6, 8] {
+            let ntt = AdditiveNttF128::standard(log_d);
+            let original = rand_vec(&mut rng, 1 << log_d);
+            let mut v = original.clone();
+            ntt.forward_transform(&mut v);
+            ntt.inverse_transform(&mut v);
+            assert_eq!(v, original, "roundtrip failed at log_d={log_d}");
+        }
+    }
+
+    #[test]
+    fn inverse_forward_roundtrip() {
+        let mut rng = Rng::new(0xAB2);
+        for log_d in [1usize, 2, 3, 4, 6, 8] {
+            let ntt = AdditiveNttF128::standard(log_d);
+            let original = rand_vec(&mut rng, 1 << log_d);
+            let mut v = original.clone();
+            ntt.inverse_transform(&mut v);
+            ntt.forward_transform(&mut v);
+            assert_eq!(
+                v, original,
+                "inverse∘forward roundtrip failed at log_d={log_d}"
+            );
+        }
+    }
+
+    #[test]
+    fn forward_is_linear() {
+        let mut rng = Rng::new(0xAB3);
+        for log_d in [1usize, 2, 3, 5] {
+            let ntt = AdditiveNttF128::standard(log_d);
+            let n = 1 << log_d;
+            let a = rand_vec(&mut rng, n);
+            let b = rand_vec(&mut rng, n);
+            let ab: Vec<F128> = a.iter().zip(&b).map(|(x, y)| *x + *y).collect();
+
+            let mut fa = a.clone();
+            ntt.forward_transform(&mut fa);
+            let mut fb = b.clone();
+            ntt.forward_transform(&mut fb);
+            let mut fab = ab.clone();
+            ntt.forward_transform(&mut fab);
+
+            for i in 0..n {
+                assert_eq!(
+                    fa[i] + fb[i],
+                    fab[i],
+                    "linearity fails at i={i}, log_d={log_d}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn ntt_of_zero_is_zero() {
+        for log_d in [1usize, 2, 3, 6] {
+            let ntt = AdditiveNttF128::standard(log_d);
+            let mut v = vec![F128::ZERO; 1 << log_d];
+            ntt.forward_transform(&mut v);
+            assert!(v.iter().all(|&x| x == F128::ZERO));
+        }
+    }
+
+    #[test]
+    fn twiddle_at_layer_0_uses_full_basis_minus_one() {
+        // At layer 0 (topmost forward butterfly), there's 1 block.
+        // twiddle(0, 0) = 0 (no bits set in block index 0).
+        let ntt = AdditiveNttF128::standard(4);
+        assert_eq!(ntt.twiddle(0, 0), F128::ZERO);
+    }
+
+    /// At layer log_d - 1 (deepest, where FRI starts), pairs are adjacent.
+    /// twiddle should match the "domain points" indexing.
+    #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
+    #[test]
+    fn neon_matches_scalar() {
+        let mut rng = Rng::new(0xBB1);
+        for log_d in 1..=10 {
+            let ntt = AdditiveNttF128::standard(log_d);
+            let original = rand_vec(&mut rng, 1 << log_d);
+            let mut v_scalar = original.clone();
+            ntt.forward_transform_scalar(&mut v_scalar);
+            let mut v_neon = original.clone();
+            ntt.forward_transform_neon(&mut v_neon);
+            assert_eq!(
+                v_neon, v_scalar,
+                "NEON disagrees with scalar at log_d={log_d}"
+            );
+        }
+    }
+
+    #[test]
+    fn interleaved_matches_per_lane() {
+        let mut rng = Rng::new(0xCC1);
+        // For several log_d and num_ntts, verify the interleaved transform
+        // matches running the per-lane scalar transform on each sub-NTT.
+        for log_d in [3usize, 4, 8] {
+            for num_ntts in [1usize, 2, 4, 8] {
+                let ntt = AdditiveNttF128::standard(log_d);
+                let n_total = (1 << log_d) * num_ntts;
+                let original = rand_vec(&mut rng, n_total);
+
+                // Interleaved.
+                let mut v_inter = original.clone();
+                ntt.forward_transform_interleaved_scalar(&mut v_inter, num_ntts);
+
+                // Reference: per-lane, gather + scalar transform + scatter.
+                let mut v_ref = original.clone();
+                for lane in 0..num_ntts {
+                    let mut sub: Vec<F128> = (0..(1 << log_d))
+                        .map(|pos| v_ref[pos * num_ntts + lane])
+                        .collect();
+                    ntt.forward_transform_scalar(&mut sub);
+                    for pos in 0..(1 << log_d) {
+                        v_ref[pos * num_ntts + lane] = sub[pos];
+                    }
+                }
+
+                assert_eq!(
+                    v_inter, v_ref,
+                    "interleaved mismatch at log_d={log_d}, num_ntts={num_ntts}"
+                );
+            }
+        }
+    }
+
+    #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
+    #[test]
+    fn interleaved_parallel_matches_scalar() {
+        let mut rng = Rng::new(0xCC2);
+        for log_d in [4usize, 10, 14, 17, 19] {
+            for &num_ntts in &[2usize, 8, 32] {
+                let ntt = AdditiveNttF128::standard(log_d);
+                let n_total = (1 << log_d) * num_ntts;
+                let original = rand_vec(&mut rng, n_total);
+                let mut v_scalar = original.clone();
+                ntt.forward_transform_interleaved_scalar(&mut v_scalar, num_ntts);
+                let mut v_par = original.clone();
+                ntt.forward_transform_interleaved_parallel(&mut v_par, num_ntts);
+                assert_eq!(
+                    v_par, v_scalar,
+                    "interleaved parallel mismatch at log_d={log_d}, num_ntts={num_ntts}"
+                );
+            }
+        }
+    }
+
+    #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
+    #[test]
+    fn batched_matches_scalar() {
+        let mut rng = Rng::new(0xBB4);
+        // Include sizes above the TARGET_SUB_NTT_LOG threshold (17) so we
+        // exercise the cache-blocked path.
+        for log_d in [4usize, 8, 12, 17, 18, 19, 20] {
+            let ntt = AdditiveNttF128::standard(log_d);
+            let original = rand_vec(&mut rng, 1 << log_d);
+            let mut v_scalar = original.clone();
+            ntt.forward_transform_scalar(&mut v_scalar);
+            let mut v_batched = original.clone();
+            ntt.forward_transform_batched(&mut v_batched);
+            assert_eq!(
+                v_batched, v_scalar,
+                "batched disagrees with scalar at log_d={log_d}"
+            );
+        }
+    }
+
+    #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
+    #[test]
+    fn parallel_matches_scalar() {
+        let mut rng = Rng::new(0xBB2);
+        for log_d in [4usize, 8, 12, 15, 16] {
+            let ntt = AdditiveNttF128::standard(log_d);
+            let original = rand_vec(&mut rng, 1 << log_d);
+            let mut v_scalar = original.clone();
+            ntt.forward_transform_scalar(&mut v_scalar);
+            let mut v_par = original.clone();
+            ntt.forward_transform_parallel(&mut v_par);
+            assert_eq!(
+                v_par, v_scalar,
+                "parallel disagrees with scalar at log_d={log_d}"
+            );
+        }
+    }
+
+    #[test]
+    fn deepest_layer_twiddle_count() {
+        let log_d = 4;
+        let ntt = AdditiveNttF128::standard(log_d);
+        // At layer log_d - 1 = 3, there are 2^3 = 8 blocks. twiddle(3, b) for b ∈ 0..8.
+        for b in 0..8 {
+            let _t = ntt.twiddle(log_d - 1, b);
+        }
+    }
+}
