@@ -1034,6 +1034,387 @@ fn ligerito_small_mirror() {
     eprintln!("small mirror OK: N per level = {ns:?}, T (raw samples) = {ts:?}");
 }
 
+/// Zero-bit set enforced by `pow_bits_ok(bits)`: low `full` bytes + the top
+/// `extra` bits of byte `full` (MSB-first within a byte), as coefficient indices.
+fn pow_zero_bits(bits: u32) -> Vec<usize> {
+    let full = (bits / 8) as usize;
+    let extra = (bits % 8) as usize;
+    let mut z: Vec<usize> = (0..8 * full).collect();
+    if extra > 0 {
+        z.extend(8 * full + 8 - extra..8 * full + 8);
+    }
+    z
+}
+
+/// Generate the multi-level per-query Ligerito verifier `t_r` core as zkDSL `.py`
+/// source: sponge replay + RoundQuad folds + per-fold PoW + per-level query phases
+/// (a `mul_range` sample-advance loop + `enforced_sum` accumulator loop + glue).
+/// Returns (source, placeholder map, witness hints). No dedup/sort — enforced_sum
+/// needs only the opened rows, so `t_r` needs no query positions.
+fn gen_lig_tr(
+    cfg: &LigCfg,
+    proof: &flare::pcs::ligerito::LigeritoProof,
+    mir: &MirOut,
+    target: F128,
+    label: &[u8],
+) -> (String, std::collections::BTreeMap<String, String>, Vec<(String, Vec<F128>)>) {
+    use flare::pcs::ligerito::ceil_log2;
+    use std::collections::BTreeMap;
+    use std::fmt::Write as _;
+
+    let r = cfg.r();
+    let mut rep = BTreeMap::new();
+    let mut hints: Vec<(String, Vec<F128>)> = Vec::new();
+    hints.push(("sc".into(), proof.sumcheck_transcript.iter().flat_map(|m| [m.u_0, m.u_2]).collect()));
+    let hb = |h: [u8; 32]| {
+        let w = |o: usize| u64::from_le_bytes(h[o..o + 8].try_into().unwrap());
+        [F128::new(w(0), w(8)), F128::new(w(16), w(24))]
+    };
+    let seed = fs_ref::seed_cv(label, &[]);
+    let mut consts: Vec<(String, F128)> = vec![
+        ("SEED0".into(), seed[0]),
+        ("SEED1".into(), seed[1]),
+        ("TARGET".into(), target),
+        ("TR".into(), mir.tr),
+    ];
+    let ir = hb(proof.initial_root);
+    consts.push(("INITROOT0".into(), ir[0]));
+    consts.push(("INITROOT1".into(), ir[1]));
+    for (i, root) in proof.recursive_roots.iter().enumerate() {
+        let rr = hb(*root);
+        consts.push((format!("REC{i}A"), rr[0]));
+        consts.push((format!("REC{i}B"), rr[1]));
+    }
+    let lbl = b"flock-ligerito-basis-v0";
+    let word = |o: usize| {
+        let mut b = [0u8; 16];
+        let e = (lbl.len() - o).min(16);
+        b[..e].copy_from_slice(&lbl[o..o + e]);
+        F128::new(u64::from_le_bytes(b[..8].try_into().unwrap()), u64::from_le_bytes(b[8..16].try_into().unwrap()))
+    };
+    consts.push(("LBLA".into(), word(0)));
+    consts.push(("LBLB".into(), word(16)));
+
+    // Fold-PoW nonces (placeholders) + digest-bit hints, computed by replaying the
+    // sponge exactly as run_mirror does, in emit order.
+    let fgb = |lvl: usize| cfg.fold_grinding_bits.get(lvl).copied().unwrap_or(0) as i64;
+    let sc = &proof.sumcheck_transcript;
+    let mut sp = fs_ref::Sponge::new(label, &[]);
+    sp.observe_bytes(b"flock-ligerito-basis-v0");
+    sp.observe(target);
+    sp.observe_bytes(&proof.initial_root);
+    sp.observe(sc[0].u_0);
+    sp.observe(sc[0].u_2);
+    let mut txi = 1usize;
+    let mut fni = 0usize;
+    let mut inst = 0usize;
+    // Records: (instance, bits) in emit order; nonce placeholder FN{inst}, hint fpb{inst}.
+    let mut fp: Vec<(usize, u32)> = Vec::new();
+    let mut do_foldpow = |sp: &mut fs_ref::Sponge, nonce: u64, bits: u32, inst: usize, consts: &mut Vec<(String, F128)>, hints: &mut Vec<(String, Vec<F128>)>| {
+        let base = crate_compress(sp.cv, [F128::ZERO, F128::new(5, 0)]);
+        let h = crate_compress(base, [F128::new(nonce, 0), F128::new(5, 0)]);
+        consts.push((format!("FN{inst}"), F128::new(nonce, 0)));
+        hints.push((format!("fpb{inst}"), bits_of(h[0])));
+        assert!(sp.verify_pow(nonce, bits));
+    };
+    let mut r_lane_v: Vec<F128> = Vec::new();
+    for j in 0..cfg.initial_k {
+        let bits = (fgb(0) - j as i64).max(0) as u32;
+        if bits > 0 {
+            do_foldpow(&mut sp, proof.fold_grinding_nonces[fni], bits, inst, &mut consts, &mut hints);
+            fp.push((inst, bits));
+            fni += 1;
+            inst += 1;
+        }
+        r_lane_v.push(sp.sample());
+        sp.observe(sc[txi].u_0);
+        sp.observe(sc[txi].u_2);
+        txi += 1;
+    }
+    sp.observe_bytes(&proof.recursive_roots[0]);
+    let mut ni = 0usize;
+    assert!(sp.verify_pow(proof.grinding_nonces[ni], 0));
+    ni += 1;
+    let bl0 = 1usize << (cfg.initial_log_msg_cols + cfg.log_inv_rates[0]);
+    let (q0v, _) = sp.sample_queries_ordered(bl0, cfg.queries[0]);
+    let a0v: Vec<F128> = (0..ceil_log2(cfg.queries[0])).map(|_| sp.sample()).collect();
+    {
+        use flare::pcs::ligerito::induce_sumcheck_enforced_sum;
+        let enf0 = induce_sumcheck_enforced_sum(&proof.initial_proof.opened_rows, &r_lane_v, &q0v, &a0v);
+        consts.push(("ENF0".into(), enf0));
+    }
+    sp.observe(sc[txi].u_0);
+    sp.observe(sc[txi].u_2);
+    txi += 1;
+    let _ = sp.sample(); // beta0
+    let mut prev_lmc = (cfg.log_n - cfg.initial_k) - cfg.recursive_ks[0];
+    let mut prev_lir = cfg.log_inv_rates[1];
+    let mut nri = 1usize;
+    let mut n_current = cfg.log_n - cfg.initial_k;
+    // Per-recursive-level fold-PoW instances (record which instance/bits each fold is).
+    let mut lvl_fp: Vec<Vec<(usize, u32)>> = vec![Vec::new(); r];
+    for i in 0..r {
+        let k_i = cfg.recursive_ks[i];
+        for j in 0..k_i {
+            let bits = (fgb(i + 1) - j as i64).max(0) as u32;
+            if bits > 0 {
+                do_foldpow(&mut sp, proof.fold_grinding_nonces[fni], bits, inst, &mut consts, &mut hints);
+                lvl_fp[i].push((inst, bits));
+                fni += 1;
+                inst += 1;
+            }
+            let _ = sp.sample();
+            sp.observe(sc[txi].u_0);
+            sp.observe(sc[txi].u_2);
+            txi += 1;
+        }
+        n_current -= k_i;
+        let prev_block_len = 1usize << (prev_lmc + prev_lir);
+        if i == r - 1 {
+            for v in &proof.final_proof.yr {
+                sp.observe(*v);
+            }
+            assert!(sp.verify_pow(proof.grinding_nonces[ni], 0));
+            let _ = sp.sample_queries_ordered(prev_block_len, cfg.queries[i + 1]);
+            let _: Vec<F128> = (0..ceil_log2(cfg.queries[i + 1])).map(|_| sp.sample()).collect();
+            let _ = sp.sample(); // beta_last
+        } else {
+            sp.observe_bytes(&proof.recursive_roots[nri]);
+            nri += 1;
+            assert!(sp.verify_pow(proof.grinding_nonces[ni], 0));
+            ni += 1;
+            let _ = sp.sample_queries_ordered(prev_block_len, cfg.queries[i + 1]);
+            let _: Vec<F128> = (0..ceil_log2(cfg.queries[i + 1])).map(|_| sp.sample()).collect();
+            sp.observe(sc[txi].u_0);
+            sp.observe(sc[txi].u_2);
+            txi += 1;
+            let _ = sp.sample(); // beta_i
+            let k_next = cfg.recursive_ks[i + 1];
+            prev_lmc = n_current - k_next;
+            prev_lir = cfg.log_inv_rates[i + 2];
+        }
+    }
+
+    for (k, v) in &consts {
+        rep.insert(format!("{k}_PLACEHOLDER"), u(*v).to_string());
+    }
+
+    // ---------- emit source ----------
+    let mut s = String::new();
+    s.push_str("from snark_lib import *\n\n");
+    for (k, _) in &consts {
+        let _ = writeln!(s, "{k} = {k}_PLACEHOLDER");
+    }
+    s.push_str("DS_SCALAR = 1\nDS_BYTE = 2\nDS_LEN = 3\nDS_SQ = 4\nDS_POW = 5\n\n");
+    s.push_str("def obs(c0, c1, x):\n    a = StackBuf(2)\n    a[0] = c0\n    a[1] = c1\n    b = StackBuf(2)\n    b[0] = x\n    b[1] = DS_SCALAR\n    o = StackBuf(2)\n    blake3(a, b, o)\n    return o[0], o[1]\n\n");
+    s.push_str("def absorb(c0, c1, x, tag):\n    a = StackBuf(2)\n    a[0] = c0\n    a[1] = c1\n    b = StackBuf(2)\n    b[0] = x\n    b[1] = tag\n    o = StackBuf(2)\n    blake3(a, b, o)\n    return o[0], o[1]\n\n");
+    s.push_str("def sqz(c0, c1):\n    a = StackBuf(2)\n    a[0] = c0\n    a[1] = c1\n    b = StackBuf(2)\n    b[0] = 0\n    b[1] = DS_SQ\n    o = StackBuf(2)\n    blake3(a, b, o)\n    return o[0], o[0], o[1]\n\n");
+    s.push_str("def dec128(bp, v):\n    cb = bp\n    w = GEN ** 0\n    acc = 0\n    for i in unroll(0, 128):\n        b = cb[1]\n        sq = b * b\n        assert sq == b\n        acc = acc + b * w\n        cb = cb * GEN\n        w = w * GEN\n    assert acc == v\n    return\n\n");
+
+    // helper: emit an eq-table build of `k` challenges (var names in `chals`) into HeapBuf `buf`
+    let emit_eq = |s: &mut String, buf: &str, chals: &[String], k: usize, take: usize| {
+        let _ = writeln!(s, "    {buf} = HeapBuf({take})");
+        for (j, c) in chals.iter().enumerate() {
+            let _ = writeln!(s, "    om_{buf}_{j} = 1 + {c}");
+        }
+        for i in 0..take {
+            let mut factors = Vec::new();
+            for j in 0..k {
+                if (i >> j) & 1 == 1 {
+                    factors.push(chals[j].clone());
+                } else {
+                    factors.push(format!("om_{buf}_{j}"));
+                }
+            }
+            let _ = writeln!(s, "    {buf}[GEN ** {i}] = {}", factors.join(" * "));
+        }
+    };
+
+    // helper: emit a per-fold PoW check given instance/bits
+    let emit_foldpow = |s: &mut String, inst: usize, bits: u32| {
+        let _ = writeln!(s, "    pb_{inst} = StackBuf(2)\n    pb_{inst}[0] = cv0\n    pb_{inst}[1] = cv1\n    pz_{inst} = StackBuf(2)\n    pz_{inst}[0] = 0\n    pz_{inst}[1] = DS_POW\n    pbase_{inst} = StackBuf(2)\n    blake3(pb_{inst}, pz_{inst}, pbase_{inst})\n    pn_{inst} = StackBuf(2)\n    pn_{inst}[0] = FN{inst}\n    pn_{inst}[1] = DS_POW\n    ph_{inst} = StackBuf(2)\n    blake3(pbase_{inst}, pn_{inst}, ph_{inst})\n    fpv_{inst} = ph_{inst}[0]\n    dec128(fpb{inst}, fpv_{inst})");
+        for b in pow_zero_bits(bits) {
+            let _ = writeln!(s, "    zb_{inst}_{b} = fpb{inst}[GEN ** {b}]\n    assert zb_{inst}_{b} == 0");
+        }
+        let _ = writeln!(s, "    cv0, cv1 = absorb(cv0, cv1, FN{inst}, DS_POW)");
+    };
+
+    s.push_str("def main():\n");
+    let nmsg = sc.len();
+    let _ = writeln!(s, "    sc = HeapBuf({0})\n    hint_witness(sc[0:{0}], \"sc\")", 2 * nmsg);
+    for lvl in 0..=r {
+        let n = mir.levels[lvl].sorted.len();
+        let klvl = if lvl == 0 { cfg.initial_k } else { cfg.recursive_ks[lvl - 1] };
+        let width = n * (1usize << klvl);
+        let _ = writeln!(s, "    row{lvl} = HeapBuf({width})\n    hint_witness(row{lvl}[0:{width}], \"row{lvl}\")");
+        let flat: Vec<F128> = {
+            let rows = if lvl == 0 {
+                &proof.initial_proof.opened_rows
+            } else if lvl == r {
+                &proof.final_proof.opened_rows
+            } else {
+                &proof.recursive_proofs[lvl - 1].opened_rows
+            };
+            rows.iter().flatten().copied().collect()
+        };
+        hints.push((format!("row{lvl}"), flat));
+    }
+    for (idx, _) in fp.iter().chain(lvl_fp.iter().flatten()) {
+        let _ = writeln!(s, "    fpb{idx} = HeapBuf(128)\n    hint_witness(fpb{idx}[0:128], \"fpb{idx}\")");
+    }
+
+    // sponge seed
+    s.push_str("    cv0 = SEED0\n    cv1 = SEED1\n");
+    s.push_str("    cv0, cv1 = absorb(cv0, cv1, 23, DS_LEN)\n    cv0, cv1 = absorb(cv0, cv1, LBLA, DS_BYTE)\n    cv0, cv1 = absorb(cv0, cv1, LBLB, DS_BYTE)\n");
+    s.push_str("    cv0, cv1 = obs(cv0, cv1, TARGET)\n");
+    s.push_str("    cv0, cv1 = absorb(cv0, cv1, 32, DS_LEN)\n    cv0, cv1 = absorb(cv0, cv1, INITROOT0, DS_BYTE)\n    cv0, cv1 = absorb(cv0, cv1, INITROOT1, DS_BYTE)\n");
+    // prologue
+    s.push_str("    sp = sc\n    u0 = sp[1]\n    cv0, cv1 = obs(cv0, cv1, u0)\n    sp = sp * GEN\n    u2 = sp[1]\n    cv0, cv1 = obs(cv0, cv1, u2)\n    sp = sp * GEN\n    qc = u0\n    qb = TARGET + u2\n    qa = u2\n    tr = TARGET\n");
+
+    // helper: emit one query phase (advance cv `n` times, alpha, eq, alpha_w, enforced)
+    // into vars enf{tag}. `chals` = the level's fold-challenge var names, klvl = their count.
+    let emit_query_phase = |s: &mut String, tag: &str, n: usize, klvl: usize, chals: &[String]| {
+        let a = ceil_log2(n);
+        // sample-advance loop
+        let _ = writeln!(s, "    c0b_{tag} = HeapBuf({0})\n    c1b_{tag} = HeapBuf({0})\n    c0b_{tag}[1] = cv0\n    c1b_{tag}[1] = cv1", n + 1);
+        let _ = writeln!(s, "    for xq in mul_range(1, GEN ** {n}):\n        chq, nc0, nc1 = sqz(c0b_{tag}[xq], c1b_{tag}[xq])\n        c0b_{tag}[xq * GEN] = nc0\n        c1b_{tag}[xq * GEN] = nc1");
+        let _ = writeln!(s, "    cv0 = c0b_{tag}[GEN ** {n}]\n    cv1 = c1b_{tag}[GEN ** {n}]");
+        // alpha samples
+        let mut alphas = Vec::new();
+        for t in 0..a {
+            let _ = writeln!(s, "    al_{tag}_{t}, cv0, cv1 = sqz(cv0, cv1)");
+            alphas.push(format!("al_{tag}_{t}"));
+        }
+        // eq(fold challenges) [2^klvl] and alpha_w [n]
+        emit_eq(s, &format!("eq_{tag}"), chals, klvl, 1usize << klvl);
+        if a == 0 {
+            let _ = writeln!(s, "    aw_{tag} = HeapBuf(1)\n    aw_{tag}[GEN ** 0] = GEN ** 0");
+        } else {
+            emit_eq(s, &format!("aw_{tag}"), &alphas, a, n);
+        }
+        // enforced accumulator loop
+        let w = 1usize << klvl;
+        let _ = writeln!(s, "    accE_{tag} = HeapBuf({0})\n    accE_{tag}[1] = 0", n + 1);
+        let _ = writeln!(s, "    for xe in mul_range(1, GEN ** {n}):");
+        // rowbase = xe ^ w  (w = 2^klvl)
+        let _ = writeln!(s, "        rb_{tag} = xe");
+        for _ in 0..klvl {
+            let _ = writeln!(s, "        rb_{tag} = rb_{tag} * rb_{tag}");
+        }
+        let _ = writeln!(s, "        rc_{tag} = rb_{tag}\n        ec_{tag} = GEN ** 0\n        dot_{tag} = 0");
+        let _ = writeln!(s, "        for c in unroll(0, {w}):\n            dot_{tag} = dot_{tag} + row{tag}[rc_{tag}] * eq_{tag}[ec_{tag}]\n            rc_{tag} = rc_{tag} * GEN\n            ec_{tag} = ec_{tag} * GEN");
+        let _ = writeln!(s, "        accE_{tag}[xe * GEN] = accE_{tag}[xe] + aw_{tag}[xe] * dot_{tag}");
+        let _ = writeln!(s, "    enf{tag} = accE_{tag}[GEN ** {n}]");
+    };
+
+    // L0 lane fold
+    let mut r_lane: Vec<String> = Vec::new();
+    let mut fpiter = fp.iter();
+    for j in 0..cfg.initial_k {
+        let bits = (fgb(0) - j as i64).max(0) as u32;
+        if bits > 0 {
+            let (idx, b) = *fpiter.next().unwrap();
+            emit_foldpow(&mut s, idx, b);
+        }
+        let _ = writeln!(s, "    r0_{j}, cv0, cv1 = sqz(cv0, cv1)\n    tr = qc + r0_{j} * qb + r0_{j} * r0_{j} * qa");
+        let _ = writeln!(s, "    a0_{j} = sp[1]\n    cv0, cv1 = obs(cv0, cv1, a0_{j})\n    sp = sp * GEN\n    b0_{j} = sp[1]\n    cv0, cv1 = obs(cv0, cv1, b0_{j})\n    sp = sp * GEN\n    qc = a0_{j}\n    qb = tr + b0_{j}\n    qa = b0_{j}");
+        r_lane.push(format!("r0_{j}"));
+    }
+    // L0 query phase (root_0 + grinding first)
+    s.push_str("    cv0, cv1 = absorb(cv0, cv1, 32, DS_LEN)\n    cv0, cv1 = absorb(cv0, cv1, REC0A, DS_BYTE)\n    cv0, cv1 = absorb(cv0, cv1, REC0B, DS_BYTE)\n    cv0, cv1 = absorb(cv0, cv1, 0, DS_POW)\n");
+    emit_query_phase(&mut s, "0", cfg.queries[0], cfg.initial_k, &r_lane);
+    s.push_str("    assert enf0 == ENF0\n");
+    // glue
+    s.push_str("    iu0 = sp[1]\n    cv0, cv1 = obs(cv0, cv1, iu0)\n    sp = sp * GEN\n    iu2 = sp[1]\n    cv0, cv1 = obs(cv0, cv1, iu2)\n    sp = sp * GEN\n    beta0, cv0, cv1 = sqz(cv0, cv1)\n    qc = qc + beta0 * iu0\n    qb = qb + beta0 * (enf0 + iu2)\n    qa = qa + beta0 * iu2\n    tr = tr + beta0 * enf0\n");
+
+    // recursive levels
+    let mut trterms: Vec<String> = Vec::new();
+    for i in 0..r {
+        let k_i = cfg.recursive_ks[i];
+        let mut level_rs: Vec<String> = Vec::new();
+        let mut it = lvl_fp[i].iter();
+        for j in 0..k_i {
+            let bits = (fgb(i + 1) - j as i64).max(0) as u32;
+            if bits > 0 {
+                let (idx, b) = *it.next().unwrap();
+                emit_foldpow(&mut s, idx, b);
+            }
+            let _ = writeln!(s, "    r{lp}_{j}, cv0, cv1 = sqz(cv0, cv1)\n    tr = qc + r{lp}_{j} * qb + r{lp}_{j} * r{lp}_{j} * qa", lp = i + 1);
+            let _ = writeln!(s, "    c{lp}_{j} = sp[1]\n    cv0, cv1 = obs(cv0, cv1, c{lp}_{j})\n    sp = sp * GEN\n    d{lp}_{j} = sp[1]\n    cv0, cv1 = obs(cv0, cv1, d{lp}_{j})\n    sp = sp * GEN\n    qc = c{lp}_{j}\n    qb = tr + d{lp}_{j}\n    qa = d{lp}_{j}", lp = i + 1);
+            level_rs.push(format!("r{}_{j}", i + 1));
+        }
+        let tag = format!("{}", i + 1);
+        if i == r - 1 {
+            // observe yr, grinding, query, enforced, beta_last
+            let yl = cfg.yr_log_n;
+            let ylen = 1usize << yl;
+            let _ = writeln!(s, "    yr = HeapBuf({ylen})\n    hint_witness(yr[0:{ylen}], \"yr\")\n    yp = yr\n    for iy in unroll(0, {ylen}):\n        yv = yp[1]\n        cv0, cv1 = obs(cv0, cv1, yv)\n        yp = yp * GEN");
+            hints.push(("yr".into(), proof.final_proof.yr.clone()));
+            s.push_str("    cv0, cv1 = absorb(cv0, cv1, 0, DS_POW)\n");
+            emit_query_phase(&mut s, &tag, cfg.queries[i + 1], k_i, &level_rs);
+            let _ = writeln!(s, "    beta{tag}, cv0, cv1 = sqz(cv0, cv1)\n    tr = tr + beta{tag} * enf{tag}");
+        } else {
+            let _ = writeln!(s, "    cv0, cv1 = absorb(cv0, cv1, 32, DS_LEN)\n    cv0, cv1 = absorb(cv0, cv1, REC{lp}A, DS_BYTE)\n    cv0, cv1 = absorb(cv0, cv1, REC{lp}B, DS_BYTE)\n    cv0, cv1 = absorb(cv0, cv1, 0, DS_POW)", lp = i + 1);
+            emit_query_phase(&mut s, &tag, cfg.queries[i + 1], k_i, &level_rs);
+            let _ = writeln!(s, "    iu0_{tag} = sp[1]\n    cv0, cv1 = obs(cv0, cv1, iu0_{tag})\n    sp = sp * GEN\n    iu2_{tag} = sp[1]\n    cv0, cv1 = obs(cv0, cv1, iu2_{tag})\n    sp = sp * GEN\n    beta{tag}, cv0, cv1 = sqz(cv0, cv1)\n    qc = qc + beta{tag} * iu0_{tag}\n    qb = qb + beta{tag} * (enf{tag} + iu2_{tag})\n    qa = qa + beta{tag} * iu2_{tag}\n    tr = tr + beta{tag} * enf{tag}");
+        }
+        let _ = &mut trterms;
+    }
+    s.push_str("    assert tr == TR\n    return\n");
+    (s, rep, hints)
+}
+
+/// crate-visible `compress` for the harness (same as `fs_ref`'s).
+fn crate_compress(cv: [F128; 2], msg: [F128; 2]) -> [F128; 2] {
+    leanvm_b::vmhash::compress(cv, msg)
+}
+
+/// Multi-level per-query `t_r` at the small config, from a generated `.py`.
+#[test]
+fn ml_tr_small() {
+    use leanvm_b::compiler::parse_with_replacements;
+    use leanvm_b::transcript::ProverState;
+    use flare::lincheck::build_eq_table;
+    use flare::ntt::AdditiveNttF128;
+    use flare::pcs::ligerito::{ligero_commit, recursive_prover_with_basis};
+
+    let cfg = LigCfg {
+        log_n: 12,
+        initial_k: 3,
+        log_inv_rates: vec![1, 2, 3],
+        recursive_ks: vec![2, 2],
+        recursive_log_msg_cols: vec![7, 5],
+        initial_log_msg_cols: 9,
+        queries: vec![6, 5, 4],
+        fold_grinding_bits: vec![3, 2, 1],
+        yr_log_n: 5,
+    };
+    let poly: Vec<F128> = (0..(1usize << cfg.log_n))
+        .map(|i| F128::new(0x9E37_79B9u64.wrapping_mul(i as u64 + 1) + 1, 0x1234 ^ (i as u64)))
+        .collect();
+    let z: Vec<F128> = (0..cfg.log_n).map(|i| F128::new(0xABCD + i as u64, 7 * i as u64 + 1)).collect();
+    let b = build_eq_table(&z);
+    let target: F128 = poly.iter().zip(b.iter()).map(|(&a, &c)| a * c).fold(F128::ZERO, |a, x| a + x);
+    let ntt = AdditiveNttF128::standard(cfg.initial_log_msg_cols + cfg.log_inv_rates[0]);
+    let wtns = ligero_commit(&poly, cfg.initial_log_msg_cols, cfg.initial_k, cfg.log_inv_rates[0], &ntt);
+    let label = b"smalltest";
+    let mut pch = ProverState::new(label, &[]);
+    let proof = recursive_prover_with_basis(&cfg.prover(), poly, b, target, &wtns.mat, &wtns.tree, &mut pch);
+    let m = run_mirror(&cfg, &proof, &z, target, label);
+    assert_eq!(m.inner, m.tr);
+
+    let (src, rep, hints) = gen_lig_tr(&cfg, &proof, &m, target, label);
+    std::fs::write(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/lig_ml_gen.py"), &src).ok();
+    let mut program = compile(&parse_with_replacements(&src, &rep).expect("parse generated verifier"));
+    for (name, vals) in &hints {
+        program.set_witness(name, vec![vals.clone()]);
+    }
+    let pi = [F128::ZERO, F128::ZERO];
+    let (gproof, stats) = prove(&program, pi);
+    verify(&program, &pi, &gproof).expect("multi-level t_r verifies");
+    eprintln!("ml_tr_small OK: {} cycles, {} BLAKE3", stats.cycles, stats.counts[5]);
+}
+
 /// Feasibility probe: can this machine drive a real m33_secure Ligerito proof
 
 /// Feasibility probe: can this machine drive a real m33_secure Ligerito proof
