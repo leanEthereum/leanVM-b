@@ -537,3 +537,377 @@ pub fn round1_evals_on_s(
 
     (p_ab, p_c)
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Rng(u64);
+    impl Rng {
+        fn new(seed: u64) -> Self {
+            Self(seed)
+        }
+        fn next_u64(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9E3779B97F4A7C15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+            z ^ (z >> 31)
+        }
+        fn bit(&mut self) -> bool {
+            (self.next_u64() & 1) != 0
+        }
+        fn f128(&mut self) -> F128 {
+            F128 {
+                lo: self.next_u64(),
+                hi: self.next_u64(),
+            }
+        }
+        fn bits(&mut self, n: usize) -> Vec<bool> {
+            (0..n).map(|_| self.bit()).collect()
+        }
+        fn f128_vec(&mut self, n: usize) -> Vec<F128> {
+            (0..n).map(|_| self.f128()).collect()
+        }
+    }
+
+    #[test]
+    fn build_eq_basic() {
+        // Empty r → table = [1].
+        assert_eq!(build_eq(&[]), vec![F128::ONE]);
+        // Single r = [r0] → table = [(1+r0), r0].
+        let r0 = F128 {
+            lo: 0xCAFEBABE,
+            hi: 0x12345678,
+        };
+        let t = build_eq(&[r0]);
+        assert_eq!(t.len(), 2);
+        assert_eq!(t[0], F128::ONE + r0);
+        assert_eq!(t[1], r0);
+        // Sum of all eq values is 1 (a defining property of the multilinear eq).
+        let n = 5;
+        let mut rng = Rng::new(99);
+        let r = rng.f128_vec(n);
+        let t = build_eq(&r);
+        let sum: F128 = t.iter().copied().fold(F128::ZERO, |a, b| a + b);
+        assert_eq!(sum, F128::ONE, "Σ_x eq(r, x) should be 1");
+    }
+
+    #[test]
+    fn round1_output_shape() {
+        let m = 8;
+        let k_skip = 3;
+        let ell = 1usize << k_skip;
+        let mut rng = Rng::new(1);
+        let a = rng.bits(1 << m);
+        let b = rng.bits(1 << m);
+        let c = rng.bits(1 << m);
+        let r = rng.f128_vec(m);
+        let (p_ab, p_c) = round1_naive(&a, &b, &c, m, k_skip, &r);
+        assert_eq!(p_ab.len(), ell);
+        assert_eq!(p_c.len(), ell);
+    }
+
+    #[test]
+    fn round1_all_zero_witness_gives_zero_message() {
+        let m = 7;
+        let k_skip = 3;
+        let mut rng = Rng::new(2);
+        let r = rng.f128_vec(m);
+        let zeros = vec![false; 1 << m];
+        let (p_ab, p_c) = round1_naive(&zeros, &zeros, &zeros, m, k_skip, &r);
+        assert!(p_ab.iter().all(|v| v.is_zero()));
+        assert!(p_c.iter().all(|v| v.is_zero()));
+    }
+
+    #[test]
+    fn round1_deterministic() {
+        let m = 6;
+        let k_skip = 3;
+        let mut rng = Rng::new(3);
+        let a = rng.bits(1 << m);
+        let b = rng.bits(1 << m);
+        let c = rng.bits(1 << m);
+        let r = rng.f128_vec(m);
+        let out1 = round1_naive(&a, &b, &c, m, k_skip, &r);
+        let out2 = round1_naive(&a, &b, &c, m, k_skip, &r);
+        assert_eq!(out1, out2);
+    }
+
+    #[test]
+    fn round1_p_c_is_xor_linear_in_c() {
+        // p_c(c1 XOR c2) = p_c(c1) + p_c(c2), with a, b fixed.
+        let m = 6;
+        let k_skip = 3;
+        let mut rng = Rng::new(4);
+        let a = rng.bits(1 << m);
+        let b = rng.bits(1 << m);
+        let c1 = rng.bits(1 << m);
+        let c2 = rng.bits(1 << m);
+        let c_sum: Vec<bool> = c1.iter().zip(&c2).map(|(x, y)| x ^ y).collect();
+        let r = rng.f128_vec(m);
+
+        let (ab1, pc1) = round1_naive(&a, &b, &c1, m, k_skip, &r);
+        let (ab2, pc2) = round1_naive(&a, &b, &c2, m, k_skip, &r);
+        let (ab_sum, pc_sum) = round1_naive(&a, &b, &c_sum, m, k_skip, &r);
+
+        // P^AB only depends on (a, b), not c: should be unchanged.
+        assert_eq!(ab1, ab_sum);
+        assert_eq!(ab2, ab_sum);
+        // P^C is XOR-linear in c.
+        for i in 0..pc1.len() {
+            assert_eq!(pc1[i] + pc2[i], pc_sum[i]);
+        }
+    }
+
+    #[test]
+    fn round1_at_s_zero_for_honest_witness() {
+        // The strongest correctness check we can write without the optimized
+        // version: for an honest witness with a · b = c on the hypercube,
+        // the round-1 polynomial P^{AB}(λ) + P^C(λ) is zero at every λ ∈ S.
+        // (At S the extension polynomial equals the original boolean values,
+        // so P at S is just the eq-weighted sum of (a·b ⊕ c) = 0.)
+        //
+        // We use `round1_evals_on_s` as the test oracle since it computes P at S
+        // directly without the NTT. The protocol's actual round-1 message
+        // (`round1_naive`) lives at Λ; cross-checking S↔Λ via NTT
+        // interpolation is left for the optimized-vs-naive comparison.
+        let m = 8;
+        let k_skip = 3;
+        let mut rng = Rng::new(5);
+        let a = rng.bits(1 << m);
+        let b = rng.bits(1 << m);
+        // Honest c: c = a AND b for every i.
+        let c: Vec<bool> = a.iter().zip(&b).map(|(x, y)| *x & *y).collect();
+        let r = rng.f128_vec(m);
+
+        let (p_ab_s, p_c_s) = round1_evals_on_s(&a, &b, &c, m, k_skip, &r);
+        for s in 0..p_ab_s.len() {
+            assert_eq!(
+                p_ab_s[s] + p_c_s[s],
+                F128::ZERO,
+                "P at S should be 0 for honest witness, but failed at s={s}"
+            );
+        }
+    }
+
+    #[test]
+    fn round1_at_s_nonzero_for_random_witness() {
+        // Sanity: for an arbitrary (likely-not-honest) witness, P at S is
+        // generally nonzero. This guards against round1_evals_on_s returning
+        // zero trivially.
+        let m = 8;
+        let k_skip = 3;
+        let mut rng = Rng::new(6);
+        let a = rng.bits(1 << m);
+        let b = rng.bits(1 << m);
+        let c = rng.bits(1 << m);
+        let r = rng.f128_vec(m);
+
+        let (p_ab_s, p_c_s) = round1_evals_on_s(&a, &b, &c, m, k_skip, &r);
+        let combined: Vec<F128> = p_ab_s.iter().zip(&p_c_s).map(|(x, y)| *x + *y).collect();
+        let nonzero = combined.iter().any(|v| !v.is_zero());
+        assert!(nonzero, "P at S should be nonzero for a random witness");
+    }
+
+    fn make_inv_table(k_skip: usize) -> InvNttTableByteSingleGf8 {
+        let ntt_s = AdditiveNttGf8::new(k_skip, F8::ZERO);
+        let ntt_l = AdditiveNttGf8::new(k_skip, F8(1u8 << k_skip));
+        InvNttTableByteSingleGf8::new(&ntt_s, &ntt_l)
+    }
+
+    #[test]
+    fn extract_c_output_shape() {
+        let m = 7;
+        let k_skip = 3;
+        let mut rng = Rng::new(10);
+        let a = rng.bits(1 << m);
+        let b = rng.bits(1 << m);
+        let c = rng.bits(1 << m);
+        let r = rng.f128_vec(m);
+        let table = make_inv_table(k_skip);
+        let (ab, c_l) = round1_extract_c(&a, &b, &c, m, k_skip, &r, &table);
+        assert_eq!(ab.len(), 1usize << k_skip);
+        assert_eq!(c_l.len(), 1usize << k_skip);
+    }
+
+    #[test]
+    fn extract_c_deterministic() {
+        let m = 6;
+        let k_skip = 3;
+        let mut rng = Rng::new(11);
+        let a = rng.bits(1 << m);
+        let b = rng.bits(1 << m);
+        let c = rng.bits(1 << m);
+        let r = rng.f128_vec(m);
+        let table = make_inv_table(k_skip);
+        let out1 = round1_extract_c(&a, &b, &c, m, k_skip, &r, &table);
+        let out2 = round1_extract_c(&a, &b, &c, m, k_skip, &r, &table);
+        assert_eq!(out1, out2);
+    }
+
+    /// `round1_extract_c_packed_with_s_hat_v` produces the same `res_ab` and
+    /// `res_c_lifted` as `round1_extract_c_packed` (the wire output is
+    /// reconstructed from the two banks via summation).
+    #[test]
+    fn extract_c_with_s_hat_v_matches_original_wire() {
+        for &(m, k_skip) in &[(4, 3), (5, 3), (6, 3), (7, 4), (8, 3), (9, 6)] {
+            let mut rng = Rng::new(0xBEEF + m as u64 * 7 + k_skip as u64);
+            let a = pack_bits(&rng.bits(1 << m));
+            let b = pack_bits(&rng.bits(1 << m));
+            let c = pack_bits(&rng.bits(1 << m));
+            let r = rng.f128_vec(m);
+            let table = make_inv_table(k_skip);
+
+            let (ab_old, c_old) = round1_extract_c_packed(&a, &b, &c, m, k_skip, &r, &table);
+            let (ab_new, c_new, _) =
+                round1_extract_c_packed_with_s_hat_v(&a, &b, &c, m, k_skip, &r, &table);
+
+            assert_eq!(ab_old, ab_new, "res_ab mismatch m={m} k_skip={k_skip}");
+            assert_eq!(c_old, c_new, "res_c_lifted mismatch m={m} k_skip={k_skip}");
+        }
+    }
+
+    /// The `s_hat_v_c` output is byte-identical to what ring-switch's
+    /// `fold_1b_rows` would produce on the C-witness against the canonical
+    /// suffix `r[k_skip + 1 ..]` (everything past `prefix0 = r[k_skip]`).
+    #[test]
+    fn extract_c_with_s_hat_v_matches_fold_1b_rows() {
+        use crate::pcs::pack::pack_witness;
+        use crate::pcs::ring_switch::fold_1b_rows_naive;
+        // K_SKIP = 6 is the production setup (LOG_PACKING = 7, so 2 · 2^K_SKIP
+        // = 128 matches s_hat_v's length). The kernel needs m >= K_SKIP + 1 =
+        // 7 for pack_witness, plus the SplitEqGhash's n_lo + n_hi machinery
+        // wants m - k_skip >= some floor — tested at m=8..11.
+        const K_SKIP: usize = 6;
+        for &m in &[8usize, 9, 10, 11] {
+            let mut rng = Rng::new(0xC0FFEE_u64.wrapping_add(m as u64));
+            let z_bits = rng.bits(1 << m);
+            let a = pack_bits(&rng.bits(1 << m));
+            let b = pack_bits(&rng.bits(1 << m));
+            let c = pack_bits(&z_bits);
+            let r = rng.f128_vec(m);
+            let table = make_inv_table(K_SKIP);
+
+            let (_, _, s_hat_v_c) =
+                round1_extract_c_packed_with_s_hat_v(&a, &b, &c, m, K_SKIP, &r, &table);
+
+            // Reference: fold_1b_rows on the packed C-witness against the
+            // suffix tensor built from r[k_skip + 1 ..].
+            let packed_c = pack_witness(&z_bits, m);
+            let suffix = &r[K_SKIP + 1..];
+            let suffix_tensor = build_eq(suffix);
+            let want = fold_1b_rows_naive(&packed_c, &suffix_tensor);
+
+            assert_eq!(s_hat_v_c.len(), want.len(), "length mismatch at m={m}");
+            assert_eq!(s_hat_v_c, want, "s_hat_v_c mismatch at m={m}");
+        }
+    }
+
+    /// The strongest correctness check: extract_c must produce **identical**
+    /// output to the naive round-1 message — same eq weights, same protocol,
+    /// just a faster algorithm.
+    #[test]
+    fn extract_c_matches_naive() {
+        for &(m, k_skip) in &[(4, 3), (5, 3), (6, 3), (7, 4), (8, 3), (9, 6)] {
+            let mut rng = Rng::new(100 + m as u64 * 10 + k_skip as u64);
+            let a = rng.bits(1 << m);
+            let b = rng.bits(1 << m);
+            let c = rng.bits(1 << m);
+            let r = rng.f128_vec(m);
+            let table = make_inv_table(k_skip);
+
+            let (naive_ab, naive_c) = round1_naive(&a, &b, &c, m, k_skip, &r);
+            let (opt_ab, opt_c) = round1_extract_c(&a, &b, &c, m, k_skip, &r, &table);
+
+            assert_eq!(naive_ab, opt_ab, "AB mismatch at m={m}, k_skip={k_skip}");
+            assert_eq!(naive_c, opt_c, "C mismatch at m={m}, k_skip={k_skip}");
+        }
+    }
+
+    /// Honest-witness check at extract_c level: when c = a AND b, the
+    /// combined polynomial `res_AB + res_C_lifted` at every λ ∈ Λ should be
+    /// the same as the naive `p_ab + p_c` (which is also zero on S after
+    /// inverse-NTT — but at Λ it can be nonzero in general).
+    #[test]
+    fn extract_c_honest_witness_combined_matches_naive() {
+        let m = 8;
+        let k_skip = 3;
+        let mut rng = Rng::new(200);
+        let a = rng.bits(1 << m);
+        let b = rng.bits(1 << m);
+        let c: Vec<bool> = a.iter().zip(&b).map(|(x, y)| *x & *y).collect();
+        let r = rng.f128_vec(m);
+        let table = make_inv_table(k_skip);
+
+        let (naive_ab, naive_c) = round1_naive(&a, &b, &c, m, k_skip, &r);
+        let (opt_ab, opt_c) = round1_extract_c(&a, &b, &c, m, k_skip, &r, &table);
+
+        for i in 0..naive_ab.len() {
+            assert_eq!(naive_ab[i] + naive_c[i], opt_ab[i] + opt_c[i]);
+        }
+    }
+
+    #[test]
+    fn split_eq_basic() {
+        // Building the lo and hi tables separately should produce the same
+        // values as the full eq table when indexed appropriately.
+        let mut rng = Rng::new(300);
+        let n = 6;
+        let r = rng.f128_vec(n);
+        let full = build_eq(&r);
+        let eq = SplitEqGhash::new(&r);
+        assert_eq!(eq.n_lo + eq.n_hi, n);
+        for x in 0..(1 << n) {
+            let x_lo = x & ((1 << eq.n_lo) - 1);
+            let x_hi = x >> eq.n_lo;
+            assert_eq!(eq.lo[x_lo] * eq.hi[x_hi], full[x]);
+        }
+    }
+
+    #[test]
+    fn ntt_extend_round_trips_naive_c_path() {
+        // Sanity for the F128 NTT extension: build a length-ell F128 vector by
+        // applying the naive (eq-weighted) C accumulation at S, then
+        // NTT-extending it. Compare to running the naive C path (which does
+        // the NTT-extend per row). These must agree because both are linear.
+        let m = 6;
+        let k_skip = 3;
+        let mut rng = Rng::new(400);
+        let a = rng.bits(1 << m); // unused for C
+        let b = rng.bits(1 << m); // unused for C
+        let c = rng.bits(1 << m);
+        let r = rng.f128_vec(m);
+        let table = make_inv_table(k_skip);
+        let _ = (&a, &b); // silence unused-var lints
+
+        // Naive p_c: NTT-extends per row.
+        let (_, naive_c) = round1_naive(&a, &b, &c, m, k_skip, &r);
+
+        // Extract_c path: accumulate on S, then NTT-extend once.
+        let (_, opt_c) = round1_extract_c(&a, &b, &c, m, k_skip, &r, &table);
+
+        assert_eq!(naive_c, opt_c);
+    }
+
+    #[test]
+    fn round1_message_nonzero_for_random_witness() {
+        // Sanity: round1_naive on random inputs should give nonzero output too.
+        // (Catches accidentally zeroing the accumulators.)
+        let m = 8;
+        let k_skip = 3;
+        let mut rng = Rng::new(7);
+        let a = rng.bits(1 << m);
+        let b = rng.bits(1 << m);
+        let c = rng.bits(1 << m);
+        let r = rng.f128_vec(m);
+
+        let (p_ab, p_c) = round1_naive(&a, &b, &c, m, k_skip, &r);
+        assert!(p_ab.iter().any(|v| !v.is_zero()));
+        assert!(p_c.iter().any(|v| !v.is_zero()));
+    }
+}

@@ -167,3 +167,184 @@ pub fn round1_deg4_naive(
 
     (p_abcd, p_z)
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Rng(u64);
+    impl Rng {
+        fn new(seed: u64) -> Self {
+            Self(seed)
+        }
+        fn next_u64(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9E3779B97F4A7C15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+            z ^ (z >> 31)
+        }
+        fn bits(&mut self, n: usize) -> Vec<bool> {
+            (0..n).map(|_| self.next_u64() & 1 == 1).collect()
+        }
+        fn f128(&mut self) -> F128 {
+            F128 {
+                lo: self.next_u64(),
+                hi: self.next_u64(),
+            }
+        }
+    }
+
+    /// Sanity: NTT-extend a length-64 F8 vector via the "inv on S, fwd on V₈"
+    /// trick. The first 64 outputs should match the original input.
+    #[test]
+    fn ntt_extend_roundtrips_on_s() {
+        let ntt_s = AdditiveNttGf8::new(K_SKIP, F8::ZERO);
+        let ntt_v8 = AdditiveNttGf8::new(K_V8, F8::ZERO);
+
+        let mut rng = Rng::new(0xA17);
+        let original_bits: Vec<F8> = (0..S_SIZE).map(|_| F8(rng.next_u64() as u8 & 1)).collect();
+
+        let mut buf = vec![F8::ZERO; V8_SIZE];
+        buf[..S_SIZE].copy_from_slice(&original_bits);
+        ntt_s.inverse(&mut buf[..S_SIZE]);
+        // tail is already zero (zero-padded coefficients on W_64..W_255).
+        ntt_v8.forward(&mut buf);
+
+        for i in 0..S_SIZE {
+            assert_eq!(
+                buf[i], original_bits[i],
+                "NTT-extend on S mismatch at i={i}"
+            );
+        }
+    }
+
+    /// Shape: round1_deg4_naive produces the right-length outputs.
+    #[test]
+    fn round1_deg4_output_shape() {
+        let m = K_SKIP + 1; // smallest non-trivial m
+        let mut rng = Rng::new(0xBEEF);
+        let a = rng.bits(1 << m);
+        let b = rng.bits(1 << m);
+        let c = rng.bits(1 << m);
+        let d = rng.bits(1 << m);
+        let z = rng.bits(1 << m);
+        let r: Vec<F128> = (0..m).map(|_| rng.f128()).collect();
+        let (p_abcd, p_z) = round1_deg4_naive(&a, &b, &c, &d, &z, m, &r);
+        assert_eq!(p_abcd.len(), LAMBDA4_SIZE);
+        assert_eq!(p_z.len(), LAMBDA4_SIZE);
+    }
+
+    /// Sanity vs the degree-2 round1: when c = d = (all 1), the degree-4
+    /// product a·b·c·d collapses to a·b. The two messages should agree on
+    /// **Λ ∩ Λ₄** (= empty since the degree-2 Λ = {64..127} and degree-4 Λ₄ =
+    /// {64..255} overlap on positions 0..63 of each). So at λ = 64..127, the
+    /// degree-2 and degree-4 messages must coincide (lifted via φ₈).
+    ///
+    /// This validates that the degree-4 path's NTT extension is doing the
+    /// same thing as the degree-2 path on the matching subdomain.
+    #[test]
+    fn degree4_reduces_to_degree2_when_cd_one() {
+        let m = K_SKIP + 1;
+        let mut rng = Rng::new(123);
+        let a = rng.bits(1 << m);
+        let b = rng.bits(1 << m);
+        let c = vec![true; 1 << m];
+        let d = vec![true; 1 << m];
+        let z = vec![false; 1 << m]; // zero linear term — focus on a·b·c·d
+        let r: Vec<F128> = (0..m).map(|_| rng.f128()).collect();
+
+        // degree-4 message.
+        let (p_abcd, _p_z) = round1_deg4_naive(&a, &b, &c, &d, &z, m, &r);
+
+        // degree-2 oracle: directly evaluate a·b on the SAME domain points
+        // (λ ∈ V₈ \ S = positions 64..255) by the same NTT-extend trick.
+        let ntt_s = AdditiveNttGf8::new(K_SKIP, F8::ZERO);
+        let ntt_v8 = AdditiveNttGf8::new(K_V8, F8::ZERO);
+        let n_chunks_x = 1usize << (m - K_SKIP);
+        let eq_full = build_eq(&r[K_SKIP..]);
+        let mut p_ab_ref = vec![F128::ZERO; LAMBDA4_SIZE];
+        let mut a_col = vec![F8::ZERO; V8_SIZE];
+        let mut b_col = vec![F8::ZERO; V8_SIZE];
+        for x_rest in 0..n_chunks_x {
+            let base = x_rest * S_SIZE;
+            for col in [&mut a_col, &mut b_col] {
+                for v in col.iter_mut() {
+                    *v = F8::ZERO;
+                }
+            }
+            for s in 0..S_SIZE {
+                a_col[s] = F8(a[base + s] as u8);
+                b_col[s] = F8(b[base + s] as u8);
+            }
+            for col in [&mut a_col, &mut b_col] {
+                ntt_s.inverse(&mut col[..S_SIZE]);
+                ntt_v8.forward(col);
+            }
+            let eq_x = eq_full[x_rest];
+            for i in 0..LAMBDA4_SIZE {
+                let lam = S_SIZE + i;
+                p_ab_ref[i] += eq_x * phi8(a_col[lam] * b_col[lam]);
+            }
+        }
+
+        for i in 0..LAMBDA4_SIZE {
+            assert_eq!(
+                p_abcd[i],
+                p_ab_ref[i],
+                "degree-4 vs degree-2 mismatch at i={i} (λ={})",
+                S_SIZE + i
+            );
+        }
+    }
+
+    /// Linear-only sanity: a = b = c = d = 0 ⇒ p_abcd = 0 everywhere; p_z
+    /// matches a direct NTT extension of z.
+    #[test]
+    fn linear_only_path() {
+        let m = K_SKIP + 2;
+        let mut rng = Rng::new(0xC0DE);
+        let a = vec![false; 1 << m];
+        let b = vec![false; 1 << m];
+        let c = vec![false; 1 << m];
+        let d = vec![false; 1 << m];
+        let z = rng.bits(1 << m);
+        let r: Vec<F128> = (0..m).map(|_| rng.f128()).collect();
+        let (p_abcd, p_z) = round1_deg4_naive(&a, &b, &c, &d, &z, m, &r);
+
+        // p_abcd must be all zero.
+        for v in &p_abcd {
+            assert_eq!(*v, F128::ZERO);
+        }
+
+        // p_z reference: NTT-extend z on each x_rest row, lift via φ₈, weight by eq.
+        let ntt_s = AdditiveNttGf8::new(K_SKIP, F8::ZERO);
+        let ntt_v8 = AdditiveNttGf8::new(K_V8, F8::ZERO);
+        let n_chunks_x = 1usize << (m - K_SKIP);
+        let eq_full = build_eq(&r[K_SKIP..]);
+        let mut p_z_ref = vec![F128::ZERO; LAMBDA4_SIZE];
+        let mut z_col = vec![F8::ZERO; V8_SIZE];
+        for x_rest in 0..n_chunks_x {
+            let base = x_rest * S_SIZE;
+            for v in z_col.iter_mut() {
+                *v = F8::ZERO;
+            }
+            for s in 0..S_SIZE {
+                z_col[s] = F8(z[base + s] as u8);
+            }
+            ntt_s.inverse(&mut z_col[..S_SIZE]);
+            ntt_v8.forward(&mut z_col);
+            let eq_x = eq_full[x_rest];
+            for i in 0..LAMBDA4_SIZE {
+                p_z_ref[i] += eq_x * phi8(z_col[S_SIZE + i]);
+            }
+        }
+        for i in 0..LAMBDA4_SIZE {
+            assert_eq!(p_z[i], p_z_ref[i], "p_z mismatch at i={i}");
+        }
+    }
+}

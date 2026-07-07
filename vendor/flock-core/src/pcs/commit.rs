@@ -377,3 +377,146 @@ pub fn prefault_codeword_during<R>(
         (Some(h.join().unwrap()), r)
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Rng(u64);
+    impl Rng {
+        fn new(seed: u64) -> Self {
+            Self(seed)
+        }
+        fn next_u64(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9E3779B97F4A7C15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+            z ^ (z >> 31)
+        }
+        fn bits(&mut self, n: usize) -> Vec<bool> {
+            (0..n).map(|_| self.next_u64() & 1 == 1).collect()
+        }
+    }
+
+    fn default_params(m: usize) -> PcsParams {
+        PcsParams {
+            m,
+            log_inv_rate: 1,
+            log_batch_size: 1,
+            profile: Default::default(),
+        }
+    }
+
+    /// The replicate-fill + start-at-layer-`log_inv_rate` fast path must be
+    /// byte-identical to the definitional encoding: zero-padded coefficients
+    /// through the FULL forward NTT. Covers rate 1/2 and 1/4 and both
+    /// interleaving widths.
+    #[test]
+    fn commit_matches_full_ntt_oracle() {
+        use crate::ntt::AdditiveNttF128;
+        let mut rng = Rng::new(0xFEED);
+        for (m, log_inv_rate, log_batch_size) in [(10, 1, 1), (12, 1, 2), (12, 2, 1), (14, 2, 3)] {
+            let params = PcsParams {
+                m,
+                log_inv_rate,
+                log_batch_size,
+                profile: Default::default(),
+            };
+            let z = rng.bits(1 << m);
+            let z_packed = super::super::pack::pack_witness(&z, m);
+
+            let (commitment, pd) = commit(&z_packed, &params);
+
+            // Oracle: explicit [z, 0, …, 0] coefficients, full NTT from layer 0.
+            let mut oracle = vec![F128::ZERO; params.codeword_len_f128()];
+            oracle[..z_packed.len()].copy_from_slice(&z_packed);
+            let ntt = AdditiveNttF128::standard(params.k_code());
+            ntt.forward_transform_interleaved(&mut oracle, params.num_ntts());
+
+            assert_eq!(
+                pd.codeword, oracle,
+                "codeword mismatch at m={m} r={log_inv_rate}"
+            );
+            let oracle_bytes: &[u8] = unsafe {
+                core::slice::from_raw_parts(oracle.as_ptr() as *const u8, oracle.len() * 16)
+            };
+            let oracle_root = *crate::merkle::merkle_tree(oracle_bytes, params.n_leaves())
+                .last()
+                .unwrap();
+            assert_eq!(
+                commitment.root, oracle_root,
+                "root mismatch at m={m} r={log_inv_rate}"
+            );
+        }
+    }
+
+    #[test]
+    fn commit_runs_and_produces_root() {
+        let mut rng = Rng::new(42);
+        for m in [8usize, 10, 12] {
+            let z = rng.bits(1 << m);
+            let z_packed = super::super::pack::pack_witness(&z, m);
+            let params = default_params(m);
+            let (commitment, prover_data) = commit(&z_packed, &params);
+            assert_eq!(prover_data.codeword.len(), params.codeword_len_f128());
+            assert_eq!(
+                prover_data.merkle_tree.last().copied().unwrap(),
+                commitment.root
+            );
+            assert_eq!(z_packed.len(), 1 << params.log_msg_len());
+        }
+    }
+
+    #[test]
+    fn commit_is_deterministic() {
+        let mut rng = Rng::new(7);
+        let m = 10;
+        let z = rng.bits(1 << m);
+        let z_packed = super::super::pack::pack_witness(&z, m);
+        let params = default_params(m);
+        let (c1, _) = commit(&z_packed, &params);
+        let (c2, _) = commit(&z_packed, &params);
+        assert_eq!(c1.root, c2.root);
+    }
+
+    #[test]
+    fn commit_root_sensitive_to_witness() {
+        let mut rng = Rng::new(99);
+        let m = 10;
+        let mut z = rng.bits(1 << m);
+        let params = default_params(m);
+        let (c1, _) = commit(&super::super::pack::pack_witness(&z, m), &params);
+        z[7] ^= true;
+        let (c2, _) = commit(&super::super::pack::pack_witness(&z, m), &params);
+        assert_ne!(c1.root, c2.root);
+    }
+
+    #[test]
+    fn rs_encoding_is_linear() {
+        let mut rng = Rng::new(123);
+        let m = 9;
+        let params = default_params(m);
+        let z1 = rng.bits(1 << m);
+        let z2 = rng.bits(1 << m);
+        let z_xor: Vec<bool> = z1.iter().zip(&z2).map(|(a, b)| a ^ b).collect();
+        let pack = |z: &[bool]| super::super::pack::pack_witness(z, m);
+        let (_, pd1) = commit(&pack(&z1), &params);
+        let (_, pd2) = commit(&pack(&z2), &params);
+        let (_, pd_x) = commit(&pack(&z_xor), &params);
+        for (i, (&c1, &c2)) in pd1.codeword.iter().zip(&pd2.codeword).enumerate() {
+            assert_eq!(c1 + c2, pd_x.codeword[i], "linearity fails at i={i}");
+        }
+    }
+
+    #[test]
+    fn codeword_doubles_message_length() {
+        let mut rng = Rng::new(2);
+        let m = 10;
+        let params = default_params(m);
+        let z = rng.bits(1 << m);
+        let z_packed = super::super::pack::pack_witness(&z, m);
+        let (_, pd) = commit(&z_packed, &params);
+        assert_eq!(pd.codeword.len(), 2 * z_packed.len());
+    }
+}

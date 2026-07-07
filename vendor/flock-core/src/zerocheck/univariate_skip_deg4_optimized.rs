@@ -782,3 +782,151 @@ pub fn round1_shift_reduce_extract_z_packed_deg4(
     let res_z_lifted = ntt_extend_f128_vec_ghash_deg4(&res_z_on_s, table);
     (res_abcd.to_vec(), res_z_lifted)
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::super::univariate_skip::pack_bits;
+    use super::super::univariate_skip_deg4::round1_deg4_naive;
+    use super::super::univariate_skip_optimized::c_s_f128;
+    use super::*;
+
+    struct Rng(u64);
+    impl Rng {
+        fn new(seed: u64) -> Self {
+            Self(seed)
+        }
+        fn next_u64(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9E3779B97F4A7C15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+            z ^ (z >> 31)
+        }
+        fn bits(&mut self, n: usize) -> Vec<bool> {
+            (0..n).map(|_| self.next_u64() & 1 == 1).collect()
+        }
+        fn f128(&mut self) -> F128 {
+            F128 {
+                lo: self.next_u64(),
+                hi: self.next_u64(),
+            }
+        }
+    }
+
+    /// Build the protocol r: fix the small + medium dims, randomize the outer.
+    fn build_r(m: usize, rng: &mut Rng) -> Vec<F128> {
+        let mut r = vec![F128::ZERO; m];
+        // First K_SKIP slots are unused (consumed by univariate skip). Set to
+        // arbitrary values for completeness.
+        for i in 0..K_SKIP {
+            r[i] = rng.f128();
+        }
+        // K_SKIP .. K_SKIP+3: small challenges, protocol-fixed.
+        r[K_SKIP..K_SKIP + 3].copy_from_slice(&small_challenges_deg4());
+        // K_SKIP+3 .. K_SKIP+7: medium challenges, protocol-fixed.
+        r[K_SKIP + 3..K_SKIP + 7].copy_from_slice(&medium_challenges_deg4());
+        // K_SKIP+7 .. m: outer (random).
+        for i in (K_SKIP + N_INNER)..m {
+            r[i] = rng.f128();
+        }
+        r
+    }
+
+    /// Sanity: extend_row on a deterministic input. First 64 outputs reproduce
+    /// the input bits.
+    #[test]
+    fn extend_row_recovers_input_on_s() {
+        let ntts = NttPairDeg4::new();
+        let mut rng = Rng::new(0xA17);
+        let input_bytes: Vec<u8> = (0..N_CHUNKS).map(|_| rng.next_u64() as u8).collect();
+        let mut out = vec![F8::ZERO; V8_SIZE];
+        ntts.extend_row(&input_bytes, &mut out);
+        for s in 0..S_SIZE {
+            let expected_bit = (input_bytes[s / 8] >> (s % 8)) & 1;
+            assert_eq!(
+                out[s],
+                F8(expected_bit),
+                "extend_row mismatch at s={s} (expected bit {expected_bit}, got {:?})",
+                out[s]
+            );
+        }
+    }
+
+    /// Headline cross-check: `C_s · (opt_ABCD + opt_Z) == naive_ABCD + naive_Z`
+    /// on the smallest m where the optimization applies (m = K_SKIP + N_INNER).
+    #[test]
+    fn optimized_matches_naive_modulo_cs() {
+        let m = K_SKIP + N_INNER; // 13
+        let mut rng = Rng::new(0xBEEF);
+        let a = rng.bits(1 << m);
+        let b = rng.bits(1 << m);
+        let c = rng.bits(1 << m);
+        let d = rng.bits(1 << m);
+        let z = rng.bits(1 << m);
+        let r = build_r(m, &mut rng);
+
+        let ntts = NttPairDeg4::new();
+        let table = InvNttTableSToV8Gf8::new(&ntts.ntt_s, &ntts.ntt_v8);
+        let (a_p, b_p, c_p, d_p, z_p) = (
+            pack_bits(&a),
+            pack_bits(&b),
+            pack_bits(&c),
+            pack_bits(&d),
+            pack_bits(&z),
+        );
+
+        let (opt_abcd, opt_z) = round1_shift_reduce_extract_z_packed_deg4(
+            &a_p, &b_p, &c_p, &d_p, &z_p, m, &r, &ntts, &table,
+        );
+        let (naive_abcd, naive_z) = round1_deg4_naive(&a, &b, &c, &d, &z, m, &r);
+
+        let cs = c_s_f128();
+        for i in 0..LAMBDA4_SIZE {
+            let lhs = cs * (opt_abcd[i] + opt_z[i]);
+            let rhs = naive_abcd[i] + naive_z[i];
+            assert_eq!(
+                lhs, rhs,
+                "round1 mismatch at i={i}: C_s·(opt_ab+opt_z) = {lhs:?}, naive sum = {rhs:?}"
+            );
+        }
+    }
+
+    /// Same cross-check, slightly larger m for more outer-dim coverage.
+    #[test]
+    fn optimized_matches_naive_modulo_cs_m14() {
+        let m = K_SKIP + N_INNER + 1; // 14
+        let mut rng = Rng::new(0xCAFE);
+        let a = rng.bits(1 << m);
+        let b = rng.bits(1 << m);
+        let c = rng.bits(1 << m);
+        let d = rng.bits(1 << m);
+        let z = rng.bits(1 << m);
+        let r = build_r(m, &mut rng);
+
+        let ntts = NttPairDeg4::new();
+        let table = InvNttTableSToV8Gf8::new(&ntts.ntt_s, &ntts.ntt_v8);
+        let (a_p, b_p, c_p, d_p, z_p) = (
+            pack_bits(&a),
+            pack_bits(&b),
+            pack_bits(&c),
+            pack_bits(&d),
+            pack_bits(&z),
+        );
+
+        let (opt_abcd, opt_z) = round1_shift_reduce_extract_z_packed_deg4(
+            &a_p, &b_p, &c_p, &d_p, &z_p, m, &r, &ntts, &table,
+        );
+        let (naive_abcd, naive_z) = round1_deg4_naive(&a, &b, &c, &d, &z, m, &r);
+
+        let cs = c_s_f128();
+        for i in 0..LAMBDA4_SIZE {
+            let lhs = cs * (opt_abcd[i] + opt_z[i]);
+            let rhs = naive_abcd[i] + naive_z[i];
+            assert_eq!(lhs, rhs, "mismatch at i={i} (m=14)");
+        }
+    }
+}
