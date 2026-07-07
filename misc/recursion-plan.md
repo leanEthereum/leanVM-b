@@ -33,6 +33,32 @@ dispatched to unrolled-const variants via `match_range`, exactly as `whir.py`
 does. The harness will bake the inner seed cv, layout constants, and feed the
 inner `Proof` (`stream: Vec<F128>` + `openings`) as `hint_witness` streams.
 
+## Two findings that reshape the assembly
+- **Compile-time specialization removes runtime dispatch.** The harness
+  self-referentially compiles the guest for ONE known inner-proof shape, so every
+  size (μ, level counts, query counts) is a compile-time constant baked in. The
+  reference's `match_range`→unrolled-const dispatch is only needed to handle
+  *varying* inner sizes in one program — an optimization for later. So the
+  straight-line Rust→zkDSL codegen used by the gadgets IS the right tool; no new
+  DSL control-flow capability is needed for a first end-to-end.
+- **No compiler enrichment was needed for any primitive.** The existing zkDSL
+  expressed all 10 gadgets. `assert` has only `==` and `log _ < _` (no `!=`); the
+  nonzero check `x != 0` is done by exhibiting `x^-1` (`assert x·x⁻¹ == 1`).
+
+## The genuinely-hard remaining sub-problems (algorithmic, not DSL gaps)
+The full flock opening (`verify_opening_batch_mixed_ligerito_stacked` → ring_switch
++ basefold FRI) has ~290 FRI queries (rate ½, 120-bit) and these hard-in-circuit
+pieces: (1) ring-switch `tensor_algebra_transpose` — a 128×128 F₂ bit-transpose
+of `s_hat_v` (needs 128 bit-decompositions + recompose, or an algebraic bypass);
+(2) `build_claim_weights`'s φ₈-embedded F₈ Lagrange; (3) BaseFold FRI fold checks
+across NTT-domain positions (additive-NTT twiddle arithmetic); (4) the octopus
+multi-proof (sidestep: harness expands to independent per-query paths, verified by
+the Merkle gadget). Each is real work; the whole is comparable in scale to the
+reference's multi-file `rec_aggregation` crate. Methodology: build a flat Rust
+mirror (drive `pcs::open` with a leanVM-b `ProverState` so the transcript is the
+compress-sponge, NOT flock's native `FsChallenger`), cross-check vs flock, port
+stage-by-stage.
+
 ## Status — DONE (all committed on branch `recursion`, tests green)
 1. **bit-decomposition** — hint bits, `b*b==b`, reconstruct `Σ b_i·GEN**i` (full
    128-bit, exact). Basis for query indices + PoW leading-zero checks.
@@ -45,6 +71,11 @@ inner `Proof` (`stream: Vec<F128>` + `openings`) as `hint_witness` streams.
    + layer fold; validated μ∈{1,2,3,5} against native `gkr::prove_product`.
 4. **Merkle path verify** — leaf MD-hash + `compress` walk with index-bit sibling
    ordering; validated all queries at depth 1..4.
+5. **runtime-count loop** — `mul_range` (runtime bound) with the sponge chained
+   through a write-once HeapBuf (Fibonacci idiom).
+6. **RoundQuad sumcheck** — the Ligerito fold (`b=t_r+u_2` consistency baking).
+7. **grand-product balance verifier** — three GKR products + `push==pull` +
+   `count!=0` over one transcript (first multi-sub-protocol composition; the bus).
 
 ## Status — TODO (the assembly)
 6. **Enrich compiler as needed** — candidates: multi-file imports (modular guest
