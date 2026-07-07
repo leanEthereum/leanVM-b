@@ -612,6 +612,59 @@ fn runtime_observe_loop() {
     verify(&program, &pi, &proof).expect("runtime-observe loop verifies");
 }
 
+/// Gadget 16: **runtime multi-query Merkle loop** — the dominant m33 pattern.
+/// Verify N independent per-query Merkle openings in ONE `mul_range` loop (body
+/// compiled once), each query's leaf/path/bit offsets derived from the counter
+/// `x = g^i`. This is how the m33 verifier opens ~994 queries/proof without
+/// unrolling. Loaded from `tests/rt_merkle_loop.py`.
+#[test]
+fn runtime_merkle_loop() {
+    use std::collections::BTreeMap;
+    use leanvm_b::compiler::parse_file_with_replacements;
+    use leanvm_b::vmhash::{compress, hash_slice};
+
+    let n = 4usize;
+    let h = 2usize;
+    let rows: Vec<[F128; 2]> = (0..n as u64)
+        .map(|i| [F128::new(0xAA ^ i, 0xBB), F128::new(0xCC, 0xDD ^ i)])
+        .collect();
+    let leaf_hashes: Vec<[F128; 2]> = rows.iter().map(|r| hash_slice(&r[..])).collect();
+    let build = |q: usize| {
+        let mut cur = leaf_hashes.clone();
+        let mut idx = q;
+        let mut path = Vec::new();
+        while cur.len() > 1 {
+            path.push(cur[idx ^ 1]);
+            cur = (0..cur.len() / 2).map(|j| compress(cur[2 * j], cur[2 * j + 1])).collect();
+            idx >>= 1;
+        }
+        (path, cur[0])
+    };
+    let root = build(0).1;
+    let (mut leaves_flat, mut paths_flat, mut bits_flat) = (Vec::new(), Vec::new(), Vec::new());
+    for q in 0..n {
+        leaves_flat.extend_from_slice(&rows[q]);
+        let (path, _) = build(q);
+        for sib in &path {
+            paths_flat.extend_from_slice(sib);
+        }
+        for l in 0..h {
+            bits_flat.push(F128::new(((q >> l) & 1) as u64, 0));
+        }
+    }
+    let mut rep = BTreeMap::new();
+    rep.insert("ROOT0_PLACEHOLDER".to_string(), u(root[0]).to_string());
+    rep.insert("ROOT1_PLACEHOLDER".to_string(), u(root[1]).to_string());
+    let py = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/rt_merkle_loop.py");
+    let mut program = compile(&parse_file_with_replacements(py, &rep).expect("parse rt_merkle_loop.py"));
+    program.set_witness("leaves", vec![leaves_flat]);
+    program.set_witness("paths", vec![paths_flat]);
+    program.set_witness("bits", vec![bits_flat]);
+    let pi = [F128::ZERO, F128::ZERO];
+    let (proof, _) = prove(&program, pi);
+    verify(&program, &pi, &proof).expect("runtime merkle loop verifies");
+}
+
 /// Gadget 15: **fold-PoW leading-zero check** (the m33 config grinds fold
 /// challenges). verify_pow computes `base = compress(cv,[0,DS_POW])`, then checks
 /// `compress(base,[nonce,DS_POW])` has ≥ `bits` leading zero bits (LE byte order =
