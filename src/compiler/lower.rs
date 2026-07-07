@@ -694,6 +694,7 @@ impl FnLower<'_> {
                 });
                 o
             }
+            Expr::Pow(b, e) => self.pow_expr(b, e),
             Expr::Var(v) => {
                 if self.stacks.contains_key(v) {
                     panic!("StackBuf `{v}` used as a scalar; index it (`{v}[k]`) or pass it to blake3");
@@ -833,6 +834,12 @@ impl FnLower<'_> {
                 u32::try_from(e).unwrap_or_else(|_| panic!("const-array element {e} does not fit a u32 index"))
             }),
             Expr::Call(..) => self.const_len(idx).map(|n| n as u32),
+            // Integer power `b ** e` (both compile-time), e.g. `2 ** c` for a bit test.
+            Expr::Pow(b, e) => Some(
+                self.try_const_index(b)?
+                    .checked_pow(self.try_const_index(e)?)
+                    .unwrap_or_else(|| panic!("index power overflows u32")),
+            ),
             _ => None,
         }
     }
@@ -848,6 +855,44 @@ impl FnLower<'_> {
     fn gpow_exp(&self, e: &Expr) -> u128 {
         self.try_const_index(e)
             .unwrap_or_else(|| panic!("`GEN ** e` needs a compile-time integer exponent, got `{e:?}`")) as u128
+    }
+
+    /// `base ** e` (non-`GEN` base, compile-time exponent `e`): a fully-constant
+    /// base folds to one `SET`; a runtime base is raised by square-and-multiply.
+    fn pow_expr(&mut self, b: &Expr, e: &Expr) -> Off {
+        let k = self
+            .try_const_index(e)
+            .unwrap_or_else(|| panic!("`**` exponent must be a compile-time integer, got `{e:?}`"));
+        // Fully constant → evaluate in the field and emit a single `SET`.
+        if let Some(bc) = self.try_field_const(b) {
+            let mut acc = F128::ONE;
+            for _ in 0..k {
+                acc *= bc;
+            }
+            let o = self.fresh();
+            self.emit(LOp::Set { o, k: KVal::Const(acc) });
+            return o;
+        }
+        if k == 0 {
+            let o = self.fresh();
+            self.emit(LOp::Set { o, k: KVal::Const(F128::ONE) });
+            return o;
+        }
+        // Runtime base: square-and-multiply over the compile-time exponent bits.
+        let base = self.expr(b);
+        let hi = 31 - (k as u32).leading_zeros(); // top set bit (k >= 1)
+        let mut acc = base;
+        for bit in (0..hi).rev() {
+            let sq = self.fresh();
+            self.emit(LOp::Mul { a: acc, b: acc, c: sq });
+            acc = sq;
+            if (k >> bit) & 1 == 1 {
+                let m = self.fresh();
+                self.emit(LOp::Mul { a: acc, b: base, c: m });
+                acc = m;
+            }
+        }
+        acc
     }
 
     /// If `e` is `NAME[i]` for a top-level constant array `NAME` with a
@@ -1006,6 +1051,10 @@ impl FnLower<'_> {
                 o: dst,
                 k: KVal::Const(g_pow_u128(self.gpow_exp(e))),
             }),
+            Expr::Pow(b, e) => {
+                let v = self.pow_expr(b, e);
+                self.copy(v, dst);
+            }
             Expr::Add(a, b) => {
                 let (la, lb) = (self.expr(a), self.expr(b));
                 self.emit(LOp::Xor { a: la, b: lb, c: dst });
@@ -1071,6 +1120,16 @@ impl FnLower<'_> {
             // A constant-array element `NAME[i]` as a field value, or `len(NAME)`.
             Expr::Index(..) => self.const_array_elem(e).map(|v| F128::new(v as u64, (v >> 64) as u64)),
             Expr::Call(..) => self.const_len(e).map(|n| F128::new(n as u64, 0)),
+            // `b ** e` as a field constant (constant base, compile-time exponent).
+            Expr::Pow(b, e) => {
+                let bc = self.try_field_const(b)?;
+                let k = self.try_const_index(e)?;
+                let mut acc = F128::ONE;
+                for _ in 0..k {
+                    acc *= bc;
+                }
+                Some(acc)
+            }
             _ => None,
         }
     }
@@ -1731,7 +1790,7 @@ fn plus_k(lo: &Expr, hi: &Expr) -> Option<u128> {
 fn free_vars_expr(e: &Expr, refs: &mut Vec<String>) {
     match e {
         Expr::Var(v) => refs.push(v.clone()),
-        Expr::Add(a, b) | Expr::Mul(a, b) | Expr::Div(a, b) | Expr::Mod(a, b) | Expr::Index(a, b) => {
+        Expr::Add(a, b) | Expr::Mul(a, b) | Expr::Div(a, b) | Expr::Mod(a, b) | Expr::Index(a, b) | Expr::Pow(a, b) => {
             free_vars_expr(a, refs);
             free_vars_expr(b, refs);
         }

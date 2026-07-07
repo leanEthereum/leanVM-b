@@ -36,6 +36,10 @@ Every runtime value is one element of GF(2^128) in GHASH form
   compile-time integer exponent — a literal, a constant, an `unroll` variable,
   `len(...)`, or index arithmetic of those). So `buf[GEN ** i]` names heap cell
   `i` directly inside an `unroll` loop, with no running-pointer cursor.
+- `base ** e` with a **non-`GEN`** base and a compile-time exponent `e` is
+  square-and-multiply: integer arithmetic in an index/bound position (`2 ** c`),
+  or field arithmetic in a value position (`x ** k`, e.g. a loop counter `g^i`
+  raised to a stride to reach cell `i·stride`). The base may be runtime.
 
 A logical **index** `i` is carried as `g^i`: incrementing is one
 multiplication by `GEN`, and memory/bytecode addresses are g-powers. This is

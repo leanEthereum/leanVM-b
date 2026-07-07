@@ -916,6 +916,7 @@ fn subst_var(e: &Expr, name: &str, to: &Expr) -> Expr {
         Expr::Index(a, b) => Expr::Index(s(a), s(b)),
         Expr::Slice(a, lo, hi) => Expr::Slice(s(a), s(lo), s(hi)),
         Expr::GenPow(e) => Expr::GenPow(s(e)),
+        Expr::Pow(a, b) => Expr::Pow(s(a), s(b)),
         Expr::HeapBufDyn(sz) => Expr::HeapBufDyn(s(sz)),
         Expr::Call(f, args) => Expr::Call(f.clone(), args.iter().map(|a| subst_var(a, name, to)).collect()),
         other => other.clone(),
@@ -1006,15 +1007,16 @@ fn parse_expr(s: &str) -> Result<Expr, String> {
     // (possibly large) integer literal.
     if let Some((base, exp)) = split_once_top(s, "**") {
         let base = parse_expr(&base)?;
-        if !matches!(base, Expr::Gen) {
-            return Err(format!("`**` is only supported with base `GEN`, got `{base:?}`"));
-        }
-        // A bare integer literal folds straight to `g^k`; anything else is a
-        // compile-time integer expression (e.g. an `unroll` var), resolved at
-        // lowering via `Expr::GenPow`.
-        return match exp.trim().parse::<u128>() {
-            Ok(k) => Ok(Expr::GPow(k)),
-            Err(_) => Ok(Expr::GenPow(Box::new(parse_expr(&exp)?))),
+        let exp_e = parse_expr(&exp)?;
+        return match base {
+            // `GEN ** k`: a bare literal folds to `g^k`; a compile-time integer
+            // expression (e.g. an `unroll` var) becomes `GenPow`, resolved at lowering.
+            Expr::Gen => match exp.trim().parse::<u128>() {
+                Ok(k) => Ok(Expr::GPow(k)),
+                Err(_) => Ok(Expr::GenPow(Box::new(exp_e))),
+            },
+            // Any other base with a compile-time exponent: square-and-multiply.
+            _ => Ok(Expr::Pow(Box::new(base), Box::new(exp_e))),
         };
     }
     // Atom.

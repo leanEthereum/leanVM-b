@@ -1522,6 +1522,28 @@ fn genpow_index_smoke() {
     verify(&program, &pi, &proof).expect("GEN**i index verifies");
 }
 
+/// `base ** k` with a non-`GEN` base: field power (runtime base, square-and-multiply)
+/// and integer power (`2 ** c` as a compile-time index).
+#[test]
+fn pow_smoke() {
+    let src = "from snark_lib import *\n\
+        def main():\n\
+        \x20   buf = HeapBuf(8)\n\
+        \x20   hint_witness(buf[0:8], \"v\")\n\
+        \x20   x = buf[GEN ** 1]\n\
+        \x20   c = x ** 5\n\
+        \x20   assert c == x * x * x * x * x\n\
+        \x20   y = buf[GEN ** (2 ** 2)]\n\
+        \x20   assert y == buf[GEN ** 4]\n\
+        \x20   return\n";
+    let mut program = compile(&parse(src).expect("parse pow smoke"));
+    let vals: Vec<F128> = (0..8).map(|i| F128::new(0x1234 + i, 0x9 * i + 1)).collect();
+    program.set_witness("v", vec![vals]);
+    let pi = [F128::ZERO, F128::ZERO];
+    let (proof, _) = prove(&program, pi);
+    verify(&program, &pi, &proof).expect("pow verifies");
+}
+
 /// Top-level constant arrays: `NAME[i]` as a field value, `len(NAME)` as an
 /// `unroll` bound, and `NAME[0]` as a compile-time loop count.
 #[test]

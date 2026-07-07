@@ -22,6 +22,12 @@ pub enum Expr {
     /// evaluating `e` in index space. Lets `buf[GEN ** i]` name cell `i` inside
     /// an `unroll` loop without a running-pointer cursor.
     GenPow(Box<Expr>),
+    /// `base ** e` with a **non-`GEN`** base and a compile-time integer exponent
+    /// `e`. Evaluated by square-and-multiply at lowering — as integer arithmetic
+    /// in an index/bound position (`2 ** c`), or as field arithmetic in a value
+    /// position (`x ** k` = `x·x·…`, e.g. a loop counter `g^i` raised to a stride
+    /// `g^{i·stride}`). The exponent must be compile-time; the base may be runtime.
+    Pow(Box<Expr>, Box<Expr>),
     /// A variable in scope.
     Var(String),
     Add(Box<Expr>, Box<Expr>),
