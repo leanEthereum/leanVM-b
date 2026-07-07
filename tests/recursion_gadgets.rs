@@ -543,6 +543,107 @@ fn runtime_observe_loop() {
     verify(&program, &pi, &proof).expect("runtime-observe loop verifies");
 }
 
+// ---- Gadget 9: the Ligerito RoundQuad sumcheck fold ----
+//
+// The Ligerito opening runs one global sumcheck whose round message is
+// `{u_0, u_2}` (2 evals) and whose running quadratic `u(X)=c+bX+aX²` is rebuilt
+// each round as `c=u_0, b=t_r+u_2, a=u_2` — a choice that bakes the consistency
+// `u(0)+u(1)=t_r` in (so no separate check), advancing `t_r ← u(ri)` per fold.
+// This gadget replays that fold: read msg0 → build quad → per fold {sample ri;
+// t_r=eval(ri); read next msg; rebuild quad}, and pins the final `t_r`.
+
+fn roundquad_source(k: usize, seed: [F128; 2], target: F128, n_stream: usize) -> String {
+    let mut s = String::new();
+    s.push_str("from snark_lib import *\n");
+    s.push_str(&format!("SEED0 = {}\n", u(seed[0])));
+    s.push_str(&format!("SEED1 = {}\n", u(seed[1])));
+    s.push_str(&format!("TARGET = {}\n", u(target)));
+    s.push_str(&format!("N = {n_stream}\n\n"));
+    s.push_str("def main():\n");
+    let mut n = 0usize;
+    line(&mut s, "stream = HeapBuf(N)".into());
+    line(&mut s, "hint_witness(stream[0:N], \"stream\")".into());
+    line(&mut s, "cv0 = SEED0".into());
+    line(&mut s, "cv1 = SEED1".into());
+    line(&mut s, "sp = stream".into());
+    // msg0 → initial quad; t_r = target.
+    emit_read(&mut s, &mut n, "u0i");
+    emit_read(&mut s, &mut n, "u2i");
+    line(&mut s, "qc = u0i".into());
+    line(&mut s, "qb = TARGET + u2i".into());
+    line(&mut s, "qa = u2i".into());
+    line(&mut s, "tr = TARGET".into());
+    for j in 0..k {
+        let ri = format!("ri{j}");
+        emit_sample(&mut s, &mut n, &ri);
+        // t_r = c + ri·b + ri²·a
+        line(&mut s, format!("r2_{j} = {ri} * {ri}"));
+        line(&mut s, format!("tr = qc + {ri} * qb + r2_{j} * qa"));
+        // read next message, rebuild quad with the new t_r.
+        emit_read(&mut s, &mut n, &format!("u0_{j}"));
+        emit_read(&mut s, &mut n, &format!("u2_{j}"));
+        line(&mut s, format!("qc = u0_{j}"));
+        line(&mut s, format!("qb = tr + u2_{j}"));
+        line(&mut s, format!("qa = u2_{j}"));
+    }
+    // Pin the final t_r via the public input.
+    line(&mut s, "pp = GEN ** 0".into());
+    line(&mut s, "pp[1] = tr".into());
+    line(&mut s, "return".into());
+    s
+}
+
+#[test]
+fn roundquad_sumcheck() {
+    use leanvm_b::vmhash::compress;
+    let ds_scalar = F128::new(1, 0);
+    let ds_squeeze = F128::new(4, 0);
+    let obs = |cv: &mut [F128; 2], x: F128| *cv = compress(*cv, [x, ds_scalar]);
+
+    for k in [1usize, 3, 6] {
+        let seed = fs_ref::seed_cv(b"rq", &[]);
+        let target = F128::new(0x1234_5678_9abc_def0, 0x0fed_cba9_8765_4321);
+        // K+1 arbitrary round messages (u_0, u_2).
+        let msgs: Vec<(F128, F128)> = (0..=k as u64)
+            .map(|j| {
+                (
+                    F128::new(0xA1_00 ^ j.wrapping_mul(0x9E37), 0xB2_00 ^ (j << 20)),
+                    F128::new(0xC3_00 ^ j.wrapping_mul(0x7F4A), 0xD4_00 ^ (j << 24)),
+                )
+            })
+            .collect();
+        let stream: Vec<F128> = msgs.iter().flat_map(|&(a, b)| [a, b]).collect();
+
+        // Reference t_r evolution.
+        let mut cv = seed;
+        obs(&mut cv, msgs[0].0);
+        obs(&mut cv, msgs[0].1);
+        let (mut qc, mut qb, mut qa) = (msgs[0].0, target + msgs[0].1, msgs[0].1);
+        let mut tr = target;
+        for j in 0..k {
+            let ri = {
+                let o = compress(cv, [F128::ZERO, ds_squeeze]);
+                cv = o;
+                o[0]
+            };
+            tr = qc + ri * qb + ri * ri * qa;
+            obs(&mut cv, msgs[j + 1].0);
+            obs(&mut cv, msgs[j + 1].1);
+            qc = msgs[j + 1].0;
+            qb = tr + msgs[j + 1].1;
+            qa = msgs[j + 1].1;
+        }
+        let tr_final = tr;
+
+        let src = roundquad_source(k, seed, target, stream.len());
+        let mut program = compile(&parse(&src).unwrap_or_else(|e| panic!("k={k}: parse: {e}")));
+        program.set_witness("stream", vec![stream]);
+        let pi = [tr_final, F128::ZERO];
+        let (proof, _) = prove(&program, pi);
+        verify(&program, &pi, &proof).unwrap_or_else(|e| panic!("k={k}: verify: {e:?}"));
+    }
+}
+
 // ---- Gadget 7: the per-table zerocheck verifier (constraints.rs replay) ----
 //
 // A verify() sub-protocol: the same degree-2 sumcheck core as GKR, but it samples
