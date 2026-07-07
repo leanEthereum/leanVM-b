@@ -70,6 +70,7 @@ pub fn parse_with_replacements(src: &str, replacements: &BTreeMap<String, String
     // positions that demand a parse-time literal (`StackBuf`, `**`, `assert log
     // _ < _`).
     let mut consts: BTreeMap<String, String> = BTreeMap::new();
+    let mut const_arrays: Vec<(String, Vec<u128>)> = Vec::new();
     let mut start = 0;
     while start < lines.len() {
         let (indent, line) = &lines[start];
@@ -86,14 +87,30 @@ pub fn parse_with_replacements(src: &str, replacements: &BTreeMap<String, String
         if !is_ident(&name) {
             return Err(format!("global constant name must be a plain identifier: `{}`", lhs.trim()));
         }
-        if consts.contains_key(&name) {
+        if consts.contains_key(&name) || const_arrays.iter().any(|(n, _)| n == &name) {
             return Err(format!("global constant `{name}` is declared twice"));
         }
-        // Resolve earlier constants inside the value, then evaluate it as a
-        // compile-time integer.
+        // Resolve earlier scalar constants inside the value first.
         let rhs = apply_replacements(rhs.trim(), &consts);
-        let value = eval_const_int(&rhs).map_err(|e| format!("global constant `{name}`: {e}"))?;
-        consts.insert(name, value.to_string());
+        let rhs = rhs.trim();
+        if let Some(inner) = rhs.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+            // A constant array `NAME = [a, b, c]`: each element a compile-time
+            // integer / field value. Not textually substituted — carried to
+            // lowering, indexed/measured there.
+            let mut elems = Vec::new();
+            for part in split_top(inner, ',') {
+                let p = part.trim();
+                if p.is_empty() {
+                    continue; // tolerate a trailing comma
+                }
+                elems.push(eval_const_int(p).map_err(|e| format!("global constant array `{name}`: {e}"))?);
+            }
+            const_arrays.push((name, elems));
+        } else {
+            // A scalar constant: evaluate it as a compile-time integer.
+            let value = eval_const_int(rhs).map_err(|e| format!("global constant `{name}`: {e}"))?;
+            consts.insert(name, value.to_string());
+        }
         start += 1;
     }
     // Substitute the constants into every remaining (function) line, then parse.
@@ -106,7 +123,7 @@ pub fn parse_with_replacements(src: &str, replacements: &BTreeMap<String, String
     while p.i < p.lines.len() {
         funcs.push(p.func()?);
     }
-    Ok(Ast { funcs })
+    Ok(Ast { funcs, const_arrays })
 }
 
 /// Apply identifier-level **placeholder** replacements to source text before

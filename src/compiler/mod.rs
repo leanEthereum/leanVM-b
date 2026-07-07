@@ -107,6 +107,8 @@ pub fn compile(ast: &Ast) -> Program {
     }
     // Definitions by name, for Const-parameter specialization at call sites.
     let defs: HashMap<String, Func> = ast.funcs.iter().map(|f| (f.name.clone(), f.clone())).collect();
+    // Constant arrays by name, resolved at lowering (`NAME[i]`, `len(NAME)`).
+    let const_arrays: HashMap<String, Vec<u128>> = ast.const_arrays.iter().cloned().collect();
 
     let mut loop_ctr = 0usize;
     let mut lowered: Vec<Lowered> = Vec::new();
@@ -120,7 +122,7 @@ pub fn compile(ast: &Ast) -> Program {
         if f.const_params.contains(&true) || f.unroll {
             continue;
         }
-        let low = lower_func(&f, &mut queue, &mut loop_ctr, &defs);
+        let low = lower_func(&f, &mut queue, &mut loop_ctr, &defs, &const_arrays);
         lowered.push(low);
     }
 

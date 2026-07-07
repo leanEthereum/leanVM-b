@@ -130,6 +130,32 @@ replacement, no matching constant) is a compile error, not a silent variable.
 A program that uses placeholders only type-checks as Python once its
 placeholders are also defined (e.g. bound in `snark_lib` for tooling).
 
+### Constant arrays
+
+A global constant may be a **list literal** — `NAME = [a, b, c]` — of
+compile-time values (integers or field values, each a `<const-expr>`). Unlike a
+scalar constant it is **not** textually substituted; it is carried to lowering
+and consumed at compile time:
+
+```python
+QUERIES = [290, 177, 145]          # or QUERIES = QUERIES_PLACEHOLDER, filled "[290, 177, 145]"
+Z       = [Z0_PLACEHOLDER, Z1_PLACEHOLDER, Z2_PLACEHOLDER]   # arbitrary field values
+
+def main():
+    for lvl in unroll(0, len(QUERIES)):     # len(NAME) is a compile-time count
+        n = QUERIES[lvl]                     # NAME[i] with a compile-time index i
+        row = buf[GEN ** QUERIES[lvl]]       #   (i a literal / constant / unroll var)
+        ...
+```
+
+`NAME[i]` yields the element — as a field value in value position, or as an
+integer where an index / slice bound / `unroll` count / `**` exponent is
+expected — and `len(NAME)` its length. The index `i` must be compile-time (a
+literal, a constant, or an `unroll` variable). This is what lets one source file
+adapt to a per-level config vector (query counts, fold factors, sizes) without
+Rust-side code generation. Nested lists are not (yet) supported — flatten a 2-D
+table into one array plus an offsets array.
+
 ## Functions
 
 ```python

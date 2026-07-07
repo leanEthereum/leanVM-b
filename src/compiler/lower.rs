@@ -87,6 +87,9 @@ struct FnLower<'a> {
     /// The program's function definitions by name, for `Const`-parameter
     /// specialization at call sites ([`Self::specialize`]).
     defs: &'a HashMap<String, Func>,
+    /// Top-level constant arrays, resolved at compile time: `NAME[i]` yields the
+    /// element (a field value or an index), `len(NAME)` its length.
+    const_arrays: &'a HashMap<String, Vec<u128>>,
 }
 
 impl FnLower<'_> {
@@ -717,7 +720,15 @@ impl FnLower<'_> {
                 self.emit(LOp::Mul { a: la, b: lb, c: o });
                 o
             }
-            Expr::Call(f, args) => self.call(f, args, 1)[0],
+            Expr::Call(f, args) => {
+                if let Some(n) = self.const_len(e) {
+                    let o = self.fresh();
+                    self.emit(LOp::Set { o, k: KVal::Const(F128::new(n as u64, 0)) });
+                    o
+                } else {
+                    self.call(f, args, 1)[0]
+                }
+            }
             Expr::HeapBuf(n) => {
                 let arr = self.fresh();
                 // Allocate before the next instruction reads the pointer.
@@ -739,6 +750,12 @@ impl FnLower<'_> {
                 panic!("StackBuf(n) must be bound to a name: `x = StackBuf(n)`")
             }
             Expr::Index(arr, idx) => {
+                // Constant-array element `NAME[i]`: a compile-time field value.
+                if let Some(elem) = self.const_array_elem(e) {
+                    let o = self.fresh();
+                    self.emit(LOp::Set { o, k: KVal::Const(F128::new(elem as u64, (elem >> 64) as u64)) });
+                    return o;
+                }
                 // Stack read `sa[k]`: the frame cell `base + k` directly (no deref),
                 // forwarded through any deferred copy/zero alias.
                 if let Some((base, size)) = self.stack_of(arr) {
@@ -810,6 +827,12 @@ impl FnLower<'_> {
                 assert!(d != 0, "compile-time modulo by zero");
                 Some(self.try_const_index(a)? % d)
             }
+            // A constant-array element `NAME[i]` or `len(NAME)` used as an index /
+            // bound / `unroll` count (both must fit an index).
+            Expr::Index(..) => self.const_array_elem(idx).map(|e| {
+                u32::try_from(e).unwrap_or_else(|_| panic!("const-array element {e} does not fit a u32 index"))
+            }),
+            Expr::Call(..) => self.const_len(idx).map(|n| n as u32),
             _ => None,
         }
     }
@@ -825,6 +848,34 @@ impl FnLower<'_> {
     fn gpow_exp(&self, e: &Expr) -> u128 {
         self.try_const_index(e)
             .unwrap_or_else(|| panic!("`GEN ** e` needs a compile-time integer exponent, got `{e:?}`")) as u128
+    }
+
+    /// If `e` is `NAME[i]` for a top-level constant array `NAME` with a
+    /// compile-time index `i`, its element (a raw `u128`).
+    fn const_array_elem(&self, e: &Expr) -> Option<u128> {
+        if let Expr::Index(arr, idx) = e
+            && let Expr::Var(v) = arr.as_ref()
+            && let Some(a) = self.const_arrays.get(v)
+        {
+            let i = self.try_const_index(idx)? as usize;
+            return Some(
+                *a.get(i)
+                    .unwrap_or_else(|| panic!("const array `{v}` index {i} out of bounds (len {})", a.len())),
+            );
+        }
+        None
+    }
+
+    /// If `e` is `len(NAME)` for a top-level constant array `NAME`, its length.
+    fn const_len(&self, e: &Expr) -> Option<usize> {
+        if let Expr::Call(f, args) = e
+            && f == "len"
+            && args.len() == 1
+            && let Expr::Var(v) = &args[0]
+        {
+            return self.const_arrays.get(v).map(|a| a.len());
+        }
+        None
     }
 
     /// Resolve a `blake3` operand — a size-2 `StackBuf` name, a 2-cell
@@ -1017,6 +1068,9 @@ impl FnLower<'_> {
             }),
             Expr::Add(a, b) => Some(self.try_field_const(a)? + self.try_field_const(b)?),
             Expr::Mul(a, b) => Some(self.try_field_const(a)? * self.try_field_const(b)?),
+            // A constant-array element `NAME[i]` as a field value, or `len(NAME)`.
+            Expr::Index(..) => self.const_array_elem(e).map(|v| F128::new(v as u64, (v >> 64) as u64)),
+            Expr::Call(..) => self.const_len(e).map(|n| F128::new(n as u64, 0)),
             _ => None,
         }
     }
@@ -1766,6 +1820,7 @@ pub(crate) fn lower_func(
     queue: &mut Vec<Func>,
     loop_ctr: &mut usize,
     defs: &HashMap<String, Func>,
+    const_arrays: &HashMap<String, Vec<u128>>,
 ) -> Lowered {
     let mut vars = HashMap::new();
     for (i, p) in f.params.iter().enumerate() {
@@ -1793,6 +1848,7 @@ pub(crate) fn lower_func(
         queue,
         loop_ctr,
         defs,
+        const_arrays,
     };
     for s in &f.body {
         lowerer.stmt(s);

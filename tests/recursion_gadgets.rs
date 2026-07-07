@@ -1522,6 +1522,36 @@ fn genpow_index_smoke() {
     verify(&program, &pi, &proof).expect("GEN**i index verifies");
 }
 
+/// Top-level constant arrays: `NAME[i]` as a field value, `len(NAME)` as an
+/// `unroll` bound, and `NAME[0]` as a compile-time loop count.
+#[test]
+fn const_array_smoke() {
+    let src = "from snark_lib import *\n\
+        W = [3, 5, 7, 9]\n\
+        def main():\n\
+        \x20   acc = 0\n\
+        \x20   for i in unroll(0, len(W)):\n\
+        \x20       acc = acc + W[i] * GEN ** i\n\
+        \x20   exp = 3 + 5 * GEN + 7 * GEN ** 2 + 9 * GEN ** 3\n\
+        \x20   assert acc == exp\n\
+        \x20   cnt = 0\n\
+        \x20   for j in unroll(0, W[0]):\n\
+        \x20       cnt = cnt + GEN ** j\n\
+        \x20   assert cnt == 1 + GEN + GEN ** 2\n\
+        \x20   return\n";
+    let mut program = compile(&parse(src).expect("parse const array smoke"));
+    let pi = [F128::ZERO, F128::ZERO];
+    let (proof, _) = prove(&program, pi);
+    verify(&program, &pi, &proof).expect("const array verifies");
+    // Also confirm placeholder substitution of a whole array literal works.
+    let mut rep = std::collections::BTreeMap::new();
+    rep.insert("W_PLACEHOLDER".to_string(), "[3, 5, 7, 9]".to_string());
+    let src2 = "from snark_lib import *\nW = W_PLACEHOLDER\ndef main():\n    acc = 0\n    for i in unroll(0, len(W)):\n        acc = acc + W[i] * GEN ** i\n    assert acc == 3 + 5 * GEN + 7 * GEN ** 2 + 9 * GEN ** 3\n    return\n";
+    let mut p2 = compile(&leanvm_b::compiler::parse_with_replacements(src2, &rep).expect("parse w/ placeholder"));
+    let (pr2, _) = prove(&p2, pi);
+    verify(&p2, &pi, &pr2).expect("placeholder array verifies");
+}
+
 /// Multi-level per-query `t_r` at the small config, from a generated `.py`.
 #[test]
 fn ml_tr_small() {

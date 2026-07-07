@@ -189,4 +189,11 @@ pub struct Func {
 #[derive(Clone, Debug)]
 pub struct Ast {
     pub funcs: Vec<Func>,
+    /// Top-level constant arrays `NAME = [a, b, c]` (declaration order). Each
+    /// element is a `u128` (a field value `F128::new(lo,hi)` where used as a
+    /// value, or a small integer where used as a compile-time index / bound /
+    /// `unroll` count). Indexed `NAME[i]` and measured `len(NAME)` at compile
+    /// time only (`i` a literal / constant / `unroll` var). Not textually
+    /// substituted (unlike scalar constants) — resolved at lowering.
+    pub const_arrays: Vec<(String, Vec<u128>)>,
 }
