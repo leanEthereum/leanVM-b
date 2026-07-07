@@ -650,6 +650,92 @@ fn ring_switch_claim_check() {
     verify(&program, &pi, &proof).expect("ring-switch claim check verifies");
 }
 
+// ---- Gadget 11: ring-switch tensor transpose + sumcheck_claim ----
+//
+// The second half of `ring_switch::verify_succinct`: `s_hat_u =
+// tensor_algebra_transpose(s_hat_v)` (bit i of s_hat_u[b] = bit b of s_hat_v[i]),
+// then `sumcheck_claim = Σ_b s_hat_u[b]·eq_r_dprime[b]`. Reordering,
+// `sumcheck_claim = Σ_i x^i·(Σ_b bit_b(s_hat_v[i])·eq[b])`, so per row i the guest
+// hints the 128 bits of s_hat_v[i], boolean-checks them, reconstructs
+// `Σ_b bit_b·GEN^b == s_hat_v[i]` (which pins the bits), and folds `Σ_b bit_b·eq[b]`.
+// The inner b-loop lives in a helper function (compiled once, called 128×), so the
+// ~80k-op transpose is a few hundred instructions of bytecode, not a flat unroll.
+
+#[test]
+fn ring_switch_transpose() {
+    use flare::pcs::ring_switch::{inner_product, tensor_algebra_transpose};
+
+    let s_hat_v: Vec<F128> = (0..128u64)
+        .map(|i| F128::new(0x1357_9BDF_0000 ^ i.wrapping_mul(0x9E37_79B9), 0x2468_ACE0 ^ (i << 41)))
+        .collect();
+    let eq: Vec<F128> = (0..128u64)
+        .map(|b| F128::new(0xF00D_0000 ^ b.wrapping_mul(0x100_0001), 0xBA11 ^ (b << 33)))
+        .collect();
+    let sumcheck_claim = inner_product(&tensor_algebra_transpose(&s_hat_v), &eq);
+
+    // Flat bit matrix B[i*128 + b] = bit_b(s_hat_v[i]).
+    let mut bits = Vec::with_capacity(128 * 128);
+    for v in &s_hat_v {
+        for b in 0..128 {
+            let bit = if b < 64 { (v.lo >> b) & 1 } else { (v.hi >> (b - 64)) & 1 };
+            bits.push(F128::new(bit, 0));
+        }
+    }
+
+    let src = format!(
+        "from snark_lib import *\n\
+         SC = {}\n\
+         \n\
+         def main():\n\
+         \x20   shv = HeapBuf(128)\n\
+         \x20   hint_witness(shv[0:128], \"s_hat_v\")\n\
+         \x20   eq = HeapBuf(128)\n\
+         \x20   hint_witness(eq[0:128], \"eq\")\n\
+         \x20   bits = HeapBuf(16384)\n\
+         \x20   hint_witness(bits[0:16384], \"bits\")\n\
+         \x20   brow = bits\n\
+         \x20   srow = shv\n\
+         \x20   wi = GEN ** 0\n\
+         \x20   acc = 0\n\
+         \x20   for i in unroll(0, 128):\n\
+         \x20       inr, rec = process_row(brow, eq)\n\
+         \x20       chk = srow[1]\n\
+         \x20       assert rec == chk\n\
+         \x20       acc = acc + wi * inr\n\
+         \x20       brow = brow * (GEN ** 128)\n\
+         \x20       srow = srow * GEN\n\
+         \x20       wi = wi * GEN\n\
+         \x20   assert acc == SC\n\
+         \x20   return\n\
+         \n\
+         def process_row(brow, eq):\n\
+         \x20   cb = brow\n\
+         \x20   ep = eq\n\
+         \x20   wb = GEN ** 0\n\
+         \x20   recon = 0\n\
+         \x20   inner = 0\n\
+         \x20   for b in unroll(0, 128):\n\
+         \x20       bb = cb[1]\n\
+         \x20       bsq = bb * bb\n\
+         \x20       assert bsq == bb\n\
+         \x20       recon = recon + bb * wb\n\
+         \x20       inner = inner + bb * ep[1]\n\
+         \x20       cb = cb * GEN\n\
+         \x20       ep = ep * GEN\n\
+         \x20       wb = wb * GEN\n\
+         \x20   return inner, recon\n",
+        u(sumcheck_claim)
+    );
+
+    let mut program = compile(&parse(&src).expect("parse transpose"));
+    program.set_witness("s_hat_v", vec![s_hat_v]);
+    program.set_witness("eq", vec![eq]);
+    program.set_witness("bits", vec![bits]);
+    let pi = [F128::ZERO, F128::ZERO];
+    let (proof, _) = prove(&program, pi);
+    verify(&program, &pi, &proof).expect("ring-switch transpose verifies");
+}
+
 // ---- Gadget 9: the Ligerito RoundQuad sumcheck fold ----
 //
 // The Ligerito opening runs one global sumcheck whose round message is

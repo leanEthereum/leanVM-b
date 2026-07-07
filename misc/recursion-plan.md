@@ -45,6 +45,22 @@ inner `Proof` (`stream: Vec<F128>` + `openings`) as `hint_witness` streams.
   expressed all 10 gadgets. `assert` has only `==` and `log _ < _` (no `!=`); the
   nonzero check `x != 0` is done by exhibiting `x^-1` (`assert x·x⁻¹ == 1`).
 
+## Progress into the actual opening (stage 1a DONE)
+`ring_switch::verify_succinct`'s **claim check** is ported + tested in-circuit
+(gadget 10): runtime φ₈ F₈-Lagrange (`build_claim_weights`) + the 128-term
+weighted inner product, cross-checked against flock. This is the first real
+stage of the production opening, and it retires the F₈-Lagrange hard sub-problem.
+
+Remaining in `verify_succinct` (stage 1b): the `tensor_algebra_transpose` +
+`sumcheck_claim`. Concrete feasibility finding — the 128×128 bit-transpose is
+inherently ~128·(128 boolean + 128 reconstruct + 128 inner) ≈ 80k ops, which
+**cannot be flat-unrolled** (the generated program is too large for the compiler
+to be practical). It requires a **nested runtime loop** (outer i∈0..128, inner
+b∈0..128) with accumulators threaded through write-once HeapBufs — the
+`runtime_observe_loop` pattern, nested. Buildable, but intricate (multi-cycle
+debug). No cheap algebraic bypass exists (the transpose touches every bit).
+`build_eq(r_dprime)` (128-value eq tensor from 7 samples) is a small runtime loop.
+
 ## The genuinely-hard remaining sub-problems (algorithmic, not DSL gaps)
 The full flock opening (`verify_opening_batch_mixed_ligerito_stacked` → ring_switch
 + basefold FRI) has ~290 FRI queries (rate ½, 120-bit) and these hard-in-circuit
