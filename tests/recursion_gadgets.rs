@@ -470,6 +470,79 @@ fn gkr_verify_source(mu: usize, seed: [F128; 2], leaf_val: F128, n_stream: usize
     s
 }
 
+/// Gadget 8: **runtime-count observe loop** — the write-once sponge chain over a
+/// `mul_range` whose bound is a *runtime* g-power. The Ligerito verifier has loops
+/// whose length is a runtime size (query counts, round counts), and `mul_range`
+/// can't carry a `StackBuf` and memory is write-once, so the chaining value is
+/// threaded through a HeapBuf: step `j` (counter `x = g^j`, base `b = x·x =
+/// g^{2j}`) reads `cv_j` at cells `2j,2j+1` and writes `cv_{j+1}` at `2j+2,2j+3`
+/// (the Fibonacci idiom). After `N` steps `cv_N` sits at cell `2N`, addressed by
+/// the runtime `nbound·nbound`. This is the pattern every runtime-length loop in
+/// the assembled verifier will use.
+#[test]
+fn runtime_observe_loop() {
+    use leanvm_b::vmhash::compress;
+    let ds_scalar = F128::new(1, 0);
+    let ds_squeeze = F128::new(4, 0);
+
+    let n = 5usize;
+    let stream: Vec<F128> = (0..n as u64)
+        .map(|k| F128::new(0xC0FFEE_00 ^ k.wrapping_mul(0x9E3779B9), 0x1357_9BDF ^ (k << 32)))
+        .collect();
+    let mut cv = [F128::ZERO, F128::ZERO];
+    for &x in &stream {
+        cv = compress(cv, [x, ds_scalar]);
+    }
+    let challenge = compress(cv, [F128::ZERO, ds_squeeze])[0];
+
+    // nbound = g^N carries the loop length "in the exponent"; the runner walks the
+    // counter x = g^0..g^{N-1} and stops on reaching nbound.
+    let nbound = leanvm_b::field::g_pow(n);
+
+    let src = format!(
+        "from snark_lib import *\n\
+         CH = {}\n\
+         N = {n}\n\
+         \n\
+         def main():\n\
+         \x20   nb = StackBuf(1)\n\
+         \x20   hint_witness(nb, \"nbound\")\n\
+         \x20   nbound = nb[0]\n\
+         \x20   assert log(nbound) < 16\n\
+         \x20   stream = HeapBuf(N)\n\
+         \x20   hint_witness(stream[0:N], \"stream\")\n\
+         \x20   cvbuf = HeapBuf(nbound * nbound * GEN ** 2)\n\
+         \x20   cvbuf[1] = 0\n\
+         \x20   cvbuf[GEN] = 0\n\
+         \x20   for x in mul_range(1, nbound):\n\
+         \x20       b = x * x\n\
+         \x20       inp = StackBuf(2)\n\
+         \x20       inp[0] = stream[x]\n\
+         \x20       inp[1] = 1\n\
+         \x20       blake3(cvbuf[b : b + 2], inp, cvbuf[b * GEN ** 2 : b * GEN ** 2 + 2])\n\
+         \x20   fb = nbound * nbound\n\
+         \x20   cvf = StackBuf(2)\n\
+         \x20   cvf[0] = cvbuf[fb]\n\
+         \x20   cvf[1] = cvbuf[fb * GEN]\n\
+         \x20   sqin = StackBuf(2)\n\
+         \x20   sqin[0] = 0\n\
+         \x20   sqin[1] = 4\n\
+         \x20   outc = StackBuf(2)\n\
+         \x20   blake3(cvf, sqin, outc)\n\
+         \x20   ch = outc[0]\n\
+         \x20   assert ch == CH\n\
+         \x20   return\n",
+        u(challenge),
+    );
+
+    let mut program = compile(&parse(&src).expect("parse runtime-observe"));
+    program.set_witness("nbound", vec![vec![nbound]]);
+    program.set_witness("stream", vec![stream]);
+    let pi = [F128::ZERO, F128::ZERO];
+    let (proof, _) = prove(&program, pi);
+    verify(&program, &pi, &proof).expect("runtime-observe loop verifies");
+}
+
 // ---- Gadget 7: the per-table zerocheck verifier (constraints.rs replay) ----
 //
 // A verify() sub-protocol: the same degree-2 sumcheck core as GKR, but it samples
