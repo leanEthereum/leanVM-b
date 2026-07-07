@@ -2784,16 +2784,6 @@ fn sample_queries_ordered<Ch: Challenger>(challenger: &mut Ch, block_len: usize,
     (0..count).map(|_| (challenger.sample_f128().lo as usize) % block_len).collect()
 }
 
-/// Concatenated per-query single Merkle paths (one `⌈log2(block_len)⌉`-deep path
-/// per query, in query order). The prover's counterpart to per-query verification.
-fn merkle_paths_for(tree: &[Hash], block_len: usize, queries: &[usize]) -> Vec<Hash> {
-    let mut out = Vec::with_capacity(queries.len() * block_len.trailing_zeros() as usize);
-    for &q in queries {
-        out.extend(merkle::merkle_proof(tree, block_len, q));
-    }
-    out
-}
-
 /// Verify each query's single Merkle path against `root` (no octopus, no sort).
 fn verify_level_opens_perquery(
     root: &Hash,
@@ -2822,6 +2812,101 @@ fn verify_level_opens_perquery(
         }
     }
     true
+}
+
+// ---------------------------------------------------------------------------
+// Storage compression ↔ per-query expansion.
+//
+// A level's opening is TRANSMITTED compressed (index-deduplicated rows + a single
+// octopus Merkle multi-proof) and EXPANDED back to the flat per-query form the
+// verifier's authentication + enforced-sum math consume. Queries are sampled
+// with replacement in transcript order (`sample_queries_ordered`, cheap to port
+// in-circuit); the compression is a pure storage layer that never enters the
+// (recursive) verifier's flat per-query logic.
+// ---------------------------------------------------------------------------
+
+/// Sort + dedup a query list into its strictly-ascending distinct positions —
+/// the alignment of the stored (compressed) `opened_rows` and the octopus.
+fn sorted_unique_queries(queries: &[usize]) -> Vec<usize> {
+    let mut s = queries.to_vec();
+    s.sort_unstable();
+    s.dedup();
+    s
+}
+
+/// Fan a level's stored (index-deduplicated, sorted-unique) `opened_rows` back
+/// out to the transcript-sampled query order (duplicates included) — the
+/// alignment the enforced-sum / induced-basis math indexes by. `queries` is the
+/// ordered list re-derived from the transcript. Returns `None` if the stored row
+/// count does not match the distinct-query count (malformed proof).
+pub fn expand_opened_rows_ordered(
+    rows_sorted: &[Vec<F128>],
+    queries: &[usize],
+) -> Option<Vec<Vec<F128>>> {
+    let sorted = sorted_unique_queries(queries);
+    if sorted.len() != rows_sorted.len() {
+        return None;
+    }
+    let mut out = Vec::with_capacity(queries.len());
+    for &q in queries {
+        let slot = sorted.binary_search(&q).ok()?;
+        out.push(rows_sorted[slot].clone());
+    }
+    Some(out)
+}
+
+/// Expand a level's stored (compressed) opening into the flat per-query form the
+/// recursion-friendly verifier consumes: `(rows_ordered, flat_paths)` — one row
+/// and one full `⌈log2(block_len)⌉`-deep Merkle path per query, in transcript
+/// order (duplicates included). `queries` is the ordered list; `rows_sorted` /
+/// `octopus` are the stored `RecursiveProof` fields. Returns `None` on a
+/// malformed proof (wrong row width or unrecoverable octopus). It authenticates
+/// nothing itself — the caller re-checks each restored path against the root, so
+/// a bad expansion is caught there. Inverse of [`compress_level_opening`].
+pub fn expand_level_opening(
+    block_len: usize,
+    queries: &[usize],
+    rows_sorted: &[Vec<F128>],
+    expected_num_interleaved: usize,
+    octopus: &[Hash],
+) -> Option<(Vec<Vec<F128>>, Vec<Hash>)> {
+    let sorted = sorted_unique_queries(queries);
+    if sorted.len() != rows_sorted.len() {
+        return None;
+    }
+    let mut leaf_hashes = Vec::with_capacity(rows_sorted.len());
+    for row in rows_sorted {
+        if row.len() != expected_num_interleaved {
+            return None;
+        }
+        let bytes: &[u8] = unsafe {
+            core::slice::from_raw_parts(
+                row.as_ptr() as *const u8,
+                row.len() * core::mem::size_of::<F128>(),
+            )
+        };
+        leaf_hashes.push(merkle::hash_leaf(bytes));
+    }
+    let flat_paths = merkle::restore_multi_proof(block_len, queries, &leaf_hashes, octopus)?;
+    let rows_ordered = expand_opened_rows_ordered(rows_sorted, queries)?;
+    Some((rows_ordered, flat_paths))
+}
+
+/// Compress a level's opening for STORAGE: index-deduplicate the transcript-
+/// ordered `queries` (keep one row per distinct position, in sorted order) and
+/// build the shared octopus multi-proof (Merkle path pruning). `row_at` reads the
+/// opened row at a position. Returns `(rows_sorted, octopus)` for a
+/// `RecursiveProof`. Inverse of [`expand_level_opening`].
+fn compress_level_opening(
+    tree: &[Hash],
+    block_len: usize,
+    queries: &[usize],
+    mut row_at: impl FnMut(usize) -> Vec<F128>,
+) -> (Vec<Vec<F128>>, Vec<Hash>) {
+    let sorted = sorted_unique_queries(queries);
+    let rows = sorted.iter().map(|&q| row_at(q)).collect();
+    let octopus = merkle::merkle_multi_proof(tree, block_len, &sorted);
+    (rows, octopus)
 }
 
 /// Drive the recursive Ligerito prover to prove `poly(eval_point) = claimed_value`.
@@ -3200,13 +3285,17 @@ fn recursive_prover_with_basis_impl<Ch: Challenger>(
     let queries_0 = sample_queries_ordered(challenger, l0_block_len, num_queries_0);
     let alpha_0 = challenger.sample_f128_vec(ceil_log2(num_queries_0));
     let _t = std::time::Instant::now();
+    // `opened_rows_0` stays in transcript (ordered, possibly-duplicate) order for
+    // the induce-sumcheck math below; the STORED proof compresses it (index dedup
+    // + octopus path pruning) and the verifier re-expands before its flat checks.
     let opened_rows_0: Vec<Vec<F128>> = queries_0.iter().map(|&q| l0_row(q).to_vec()).collect();
-    let merkle_proof_0 = merkle_paths_for(l0_tree, l0_block_len, &queries_0);
+    let (stored_rows_0, merkle_proof_0) =
+        compress_level_opening(l0_tree, l0_block_len, &queries_0, |q| l0_row(q).to_vec());
     if trace {
         t_opens += _t.elapsed();
     }
     let initial_proof = RecursiveProof {
-        opened_rows: opened_rows_0.clone(),
+        opened_rows: stored_rows_0,
         merkle_proof: merkle_proof_0,
     };
 
@@ -3278,12 +3367,14 @@ fn recursive_prover_with_basis_impl<Ch: Challenger>(
             let queries_last =
                 sample_queries_ordered(challenger, wtns_prev.block_len, num_queries_last);
             let _t = std::time::Instant::now();
-            let opened_rows_last: Vec<Vec<F128>> = queries_last
-                .iter()
-                .map(|&q| wtns_prev.row(q).to_vec())
-                .collect();
-            let merkle_proof_last =
-                merkle_paths_for(&wtns_prev.tree, wtns_prev.block_len, &queries_last);
+            // Final level: opened rows are only stored (no induce), so keep just
+            // the compressed (deduped + octopus) form.
+            let (opened_rows_last, merkle_proof_last) = compress_level_opening(
+                &wtns_prev.tree,
+                wtns_prev.block_len,
+                &queries_last,
+                |q| wtns_prev.row(q).to_vec(),
+            );
             if trace {
                 t_opens += _t.elapsed();
             }
@@ -3387,17 +3478,22 @@ fn recursive_prover_with_basis_impl<Ch: Challenger>(
         let queries_i = sample_queries_ordered(challenger, wtns_prev.block_len, num_queries_i);
         let alpha_i = challenger.sample_f128_vec(ceil_log2(num_queries_i));
         let _t = std::time::Instant::now();
+        // `opened_rows_i` stays ordered for the induce-sumcheck; store compressed.
         let opened_rows_i: Vec<Vec<F128>> = queries_i
             .iter()
             .map(|&q| wtns_prev.row(q).to_vec())
             .collect();
-        let merkle_proof_i =
-            merkle_paths_for(&wtns_prev.tree, wtns_prev.block_len, &queries_i);
+        let (stored_rows_i, merkle_proof_i) = compress_level_opening(
+            &wtns_prev.tree,
+            wtns_prev.block_len,
+            &queries_i,
+            |q| wtns_prev.row(q).to_vec(),
+        );
         if trace {
             t_opens += _t.elapsed();
         }
         recursive_proofs.push(RecursiveProof {
-            opened_rows: opened_rows_i.clone(),
+            opened_rows: stored_rows_i,
             merkle_proof: merkle_proof_i,
         });
 
@@ -3597,13 +3693,26 @@ where
     }
     let alpha_0 = challenger.sample_f128_vec(ceil_log2(num_queries_0));
     let _t = std::time::Instant::now();
-    if !verify_level_opens_perquery(
-        &proof.initial_root,
+    // Expand the stored (compressed) opening into the flat per-query form: one
+    // row + one full Merkle path per query in transcript order, then verify each
+    // path independently. The expansion self-authenticates via these root checks.
+    let (opened_rows_0, merkle_paths_0) = match expand_level_opening(
         block_len_0,
         &queries_0,
         &proof.initial_proof.opened_rows,
         num_interleaved_0,
         &proof.initial_proof.merkle_proof,
+    ) {
+        Some(x) => x,
+        None => return false,
+    };
+    if !verify_level_opens_perquery(
+        &proof.initial_root,
+        block_len_0,
+        &queries_0,
+        &opened_rows_0,
+        num_interleaved_0,
+        &merkle_paths_0,
     ) {
         return false;
     }
@@ -3617,7 +3726,7 @@ where
     let n1 = log_n - initial_k;
     let _t = std::time::Instant::now();
     let enforced_sum_0 = induce_sumcheck_enforced_sum(
-        &proof.initial_proof.opened_rows,
+        &opened_rows_0,
         &r_lane_fold,
         &queries_0,
         &alpha_0,
@@ -3740,13 +3849,23 @@ where
                 t_sample_q += _t.elapsed();
             }
             let _t = std::time::Instant::now();
-            if !verify_level_opens_perquery(
-                &prev_root,
+            let (opened_rows_last, merkle_paths_last) = match expand_level_opening(
                 prev_block_len,
                 &queries_last,
                 &proof.final_proof.opened_rows,
                 prev_num_interleaved,
                 &proof.final_proof.merkle_proof,
+            ) {
+                Some(x) => x,
+                None => return false,
+            };
+            if !verify_level_opens_perquery(
+                &prev_root,
+                prev_block_len,
+                &queries_last,
+                &opened_rows_last,
+                prev_num_interleaved,
+                &merkle_paths_last,
             ) {
                 return false;
             }
@@ -3768,7 +3887,7 @@ where
             // forces `yr` to agree with the committed codeword at every queried
             // column (multilinear Schwartz–Zippel), restoring binding.
             let enforced_sum_last = induce_sumcheck_enforced_sum(
-                &proof.final_proof.opened_rows,
+                &opened_rows_last,
                 &level_rs,
                 &queries_last,
                 &alpha_last,
@@ -3948,13 +4067,23 @@ where
         let rp = &proof.recursive_proofs[recursive_proof_idx];
         recursive_proof_idx += 1;
         let _t = std::time::Instant::now();
-        if !verify_level_opens_perquery(
-            &prev_root,
+        let (opened_rows_i, merkle_paths_i) = match expand_level_opening(
             prev_block_len,
             &queries_i,
             &rp.opened_rows,
             prev_num_interleaved,
             &rp.merkle_proof,
+        ) {
+            Some(x) => x,
+            None => return false,
+        };
+        if !verify_level_opens_perquery(
+            &prev_root,
+            prev_block_len,
+            &queries_i,
+            &opened_rows_i,
+            prev_num_interleaved,
+            &merkle_paths_i,
         ) {
             return false;
         }
@@ -3964,7 +4093,7 @@ where
 
         let _t = std::time::Instant::now();
         let enforced_sum_i =
-            induce_sumcheck_enforced_sum(&rp.opened_rows, &level_rs, &queries_i, &alpha_i);
+            induce_sumcheck_enforced_sum(&opened_rows_i, &level_rs, &queries_i, &alpha_i);
         if trace {
             t_enforced += _t.elapsed();
         }
@@ -4132,18 +4261,27 @@ pub fn recursive_verifier_with_basis<Ch: Challenger>(
     nonce_idx += 1;
 
     let num_queries_0 = config.queries[0];
-    let queries_0 = sample_distinct_queries(challenger, block_len_0, num_queries_0);
+    let queries_0 = sample_queries_ordered(challenger, block_len_0, num_queries_0);
     let alpha_0 = challenger.sample_f128_vec(ceil_log2(num_queries_0));
+    // Verify the shared octopus multi-proof against the sorted-unique positions
+    // (the alignment the deduped `opened_rows` are stored in).
+    let sorted_0 = sorted_unique_queries(&queries_0);
     if !verify_level_opens(
         &proof.initial_root,
         block_len_0,
-        &queries_0,
+        &sorted_0,
         &proof.initial_proof.opened_rows,
         num_interleaved_0,
         &proof.initial_proof.merkle_proof,
     ) {
         return false;
     }
+    // Fan the deduped rows back out to transcript order for the induce math.
+    let opened_rows_0 =
+        match expand_opened_rows_ordered(&proof.initial_proof.opened_rows, &queries_0) {
+            Some(x) => x,
+            None => return false,
+        };
 
     let n1 = log_n - initial_k;
     let sks_vks_n1 = eval_sk_at_vks(n1);
@@ -4151,7 +4289,7 @@ pub fn recursive_verifier_with_basis<Ch: Challenger>(
         n1,
         log_inv_rate_0,
         &sks_vks_n1,
-        &proof.initial_proof.opened_rows,
+        &opened_rows_0,
         &r_lane_fold,
         &queries_0,
         &alpha_0,
@@ -4252,22 +4390,28 @@ pub fn recursive_verifier_with_basis<Ch: Challenger>(
             let prev_num_interleaved = 1usize << prev_log_num_interleaved;
             let num_queries_last = config.queries[i + 1];
             let queries_last =
-                sample_distinct_queries(challenger, prev_block_len, num_queries_last);
+                sample_queries_ordered(challenger, prev_block_len, num_queries_last);
             // Final-level basis-induction challenge — sampled after `yr` and the
             // queries are fixed. Same position as the succinct verifier
             // (recursive_verifier_with_basis_succinct), which verifies the same
             // proof, so both stay in lockstep.
             let alpha_last = challenger.sample_f128_vec(ceil_log2(num_queries_last));
+            let sorted_last = sorted_unique_queries(&queries_last);
             if !verify_level_opens(
                 &prev_root,
                 prev_block_len,
-                &queries_last,
+                &sorted_last,
                 &proof.final_proof.opened_rows,
                 prev_num_interleaved,
                 &proof.final_proof.merkle_proof,
             ) {
                 return false;
             }
+            let opened_rows_last =
+                match expand_opened_rows_ordered(&proof.final_proof.opened_rows, &queries_last) {
+                    Some(x) => x,
+                    None => return false,
+                };
 
             // Bind the LAST commitment to `yr`: induce its opened rows into the
             // sumcheck exactly like every non-final level, batched with a fresh
@@ -4278,7 +4422,7 @@ pub fn recursive_verifier_with_basis<Ch: Challenger>(
             let (basis_last_induced, enforced_sum_last) = induce_sumcheck_poly(
                 n_current,
                 &sks_vks_last,
-                &proof.final_proof.opened_rows,
+                &opened_rows_last,
                 &level_rs,
                 &queries_last,
                 &alpha_last,
@@ -4370,29 +4514,34 @@ pub fn recursive_verifier_with_basis<Ch: Challenger>(
         let prev_block_len = 1usize << (prev_log_msg_cols + prev_log_inv_rate);
         let prev_num_interleaved = 1usize << prev_log_num_interleaved;
         let num_queries_i = config.queries[i + 1];
-        let queries_i = sample_distinct_queries(challenger, prev_block_len, num_queries_i);
+        let queries_i = sample_queries_ordered(challenger, prev_block_len, num_queries_i);
         let alpha_i = challenger.sample_f128_vec(ceil_log2(num_queries_i));
         if recursive_proof_idx >= proof.recursive_proofs.len() {
             return false;
         }
         let rp = &proof.recursive_proofs[recursive_proof_idx];
         recursive_proof_idx += 1;
+        let sorted_i = sorted_unique_queries(&queries_i);
         if !verify_level_opens(
             &prev_root,
             prev_block_len,
-            &queries_i,
+            &sorted_i,
             &rp.opened_rows,
             prev_num_interleaved,
             &rp.merkle_proof,
         ) {
             return false;
         }
+        let opened_rows_i = match expand_opened_rows_ordered(&rp.opened_rows, &queries_i) {
+            Some(x) => x,
+            None => return false,
+        };
 
         let sks_vks_i = eval_sk_at_vks(n_current);
         let (basis_i_induced, enforced_sum_i) = induce_sumcheck_poly(
             n_current,
             &sks_vks_i,
-            &rp.opened_rows,
+            &opened_rows_i,
             &level_rs,
             &queries_i,
             &alpha_i,

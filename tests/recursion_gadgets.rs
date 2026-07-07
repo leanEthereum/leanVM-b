@@ -826,7 +826,7 @@ struct MirOut {
 /// residual), asserts `inner == t_r`, and returns the per-level query data the
 /// guest port needs. Generalizes the (validated) inline m33 mirror.
 fn run_mirror(cfg: &LigCfg, proof: &flare::pcs::ligerito::LigeritoProof, z: &[F128], target: F128, label: &[u8]) -> MirOut {
-    use flare::pcs::ligerito::{ceil_log2, eval_sk_at_vks, induce_sumcheck_enforced_sum, induce_sumcheck_evaluate_at_residual};
+    use flare::pcs::ligerito::{ceil_log2, eval_sk_at_vks, expand_opened_rows_ordered, induce_sumcheck_enforced_sum, induce_sumcheck_evaluate_at_residual};
     use flare::zerocheck::multilinear::eq_eval as eqe;
     let r = cfg.r();
     let sc = &proof.sumcheck_transcript;
@@ -869,7 +869,8 @@ fn run_mirror(cfg: &LigCfg, proof: &flare::pcs::ligerito::LigeritoProof, z: &[F1
     let bl0 = 1usize << (cfg.initial_log_msg_cols + cfg.log_inv_rates[0]);
     let (q0, raw0) = sp.sample_queries_ordered(bl0, cfg.queries[0]);
     let a0: Vec<F128> = (0..ceil_log2(cfg.queries[0])).map(|_| sp.sample()).collect();
-    let enf0 = induce_sumcheck_enforced_sum(&proof.initial_proof.opened_rows, &r_lane, &q0, &a0);
+    let rows0 = expand_opened_rows_ordered(&proof.initial_proof.opened_rows, &q0).expect("expand rows0");
+    let enf0 = induce_sumcheck_enforced_sum(&rows0, &r_lane, &q0, &a0);
     sp.observe(sc[txi].u_0);
     sp.observe(sc[txi].u_2);
     let iq = fm(sc[txi].u_0, sc[txi].u_2, enf0);
@@ -919,7 +920,8 @@ fn run_mirror(cfg: &LigCfg, proof: &flare::pcs::ligerito::LigeritoProof, z: &[F1
             assert!(sp.verify_pow(proof.grinding_nonces[ni], 0));
             let (ql, rawl) = sp.sample_queries_ordered(prev_block_len, cfg.queries[i + 1]);
             let al: Vec<F128> = (0..ceil_log2(cfg.queries[i + 1])).map(|_| sp.sample()).collect();
-            let enfl = induce_sumcheck_enforced_sum(&proof.final_proof.opened_rows, &level_rs, &ql, &al);
+            let rowsl = expand_opened_rows_ordered(&proof.final_proof.opened_rows, &ql).expect("expand rowsl");
+            let enfl = induce_sumcheck_enforced_sum(&rowsl, &level_rs, &ql, &al);
             let betal = sp.sample();
             tr += betal * enfl;
             ctx_lmc.push(n_current);
@@ -956,7 +958,8 @@ fn run_mirror(cfg: &LigCfg, proof: &flare::pcs::ligerito::LigeritoProof, z: &[F1
             let ai: Vec<F128> = (0..ceil_log2(cfg.queries[i + 1])).map(|_| sp.sample()).collect();
             let rp = &proof.recursive_proofs[rpi];
             rpi += 1;
-            let enfi = induce_sumcheck_enforced_sum(&rp.opened_rows, &level_rs, &qi, &ai);
+            let rowsi = expand_opened_rows_ordered(&rp.opened_rows, &qi).expect("expand rowsi");
+            let enfi = induce_sumcheck_enforced_sum(&rowsi, &level_rs, &qi, &ai);
             sp.observe(sc[txi].u_0);
             sp.observe(sc[txi].u_2);
             let iqi = fm(sc[txi].u_0, sc[txi].u_2, enfi);
@@ -1152,8 +1155,9 @@ fn gen_lig_tr(
     let (q0v, _) = sp.sample_queries_ordered(bl0, cfg.queries[0]);
     let a0v: Vec<F128> = (0..ceil_log2(cfg.queries[0])).map(|_| sp.sample()).collect();
     {
-        use flare::pcs::ligerito::induce_sumcheck_enforced_sum;
-        let enf0 = induce_sumcheck_enforced_sum(&proof.initial_proof.opened_rows, &r_lane_v, &q0v, &a0v);
+        use flare::pcs::ligerito::{expand_opened_rows_ordered, induce_sumcheck_enforced_sum};
+        let rows0 = expand_opened_rows_ordered(&proof.initial_proof.opened_rows, &q0v).expect("expand rows0");
+        let enf0 = induce_sumcheck_enforced_sum(&rows0, &r_lane_v, &q0v, &a0v);
         consts.push(("ENF0".into(), enf0));
     }
     sp.observe(sc[txi].u_0);
@@ -1283,11 +1287,23 @@ fn gen_lig_tr(
         } else {
             (&proof.recursive_proofs[lvl - 1].opened_rows, &proof.recursive_proofs[lvl - 1].merkle_proof)
         };
+        // The proof stores each level's opening COMPRESSED (index-dedup + octopus).
+        // Expand to the flat per-query witness the guest consumes: `n` rows in
+        // transcript order + `n` single Merkle paths. The guest re-authenticates
+        // each path against the root, so the expansion needs no separate check.
+        let (rows_exp, path_exp) = flare::pcs::ligerito::expand_level_opening(
+            bl_per_level[lvl],
+            &mir.levels[lvl].sorted,
+            rows,
+            1usize << klvl,
+            path,
+        )
+        .expect("expand level opening");
         let _ = writeln!(s, "    row{lvl} = HeapBuf({width})\n    hint_witness(row{lvl}[0:{width}], \"row{lvl}\")");
-        hints.push((format!("row{lvl}"), rows.iter().flatten().copied().collect()));
+        hints.push((format!("row{lvl}"), rows_exp.iter().flatten().copied().collect()));
         let psz = n * depth * 2;
         let _ = writeln!(s, "    path{lvl} = HeapBuf({psz})\n    hint_witness(path{lvl}[0:{psz}], \"path{lvl}\")");
-        hints.push((format!("path{lvl}"), path.iter().flat_map(|&h| hb(h)).collect()));
+        hints.push((format!("path{lvl}"), path_exp.iter().flat_map(|&h| hb(h)).collect()));
         let ssz = n * 128;
         let _ = writeln!(s, "    sbits{lvl} = HeapBuf({ssz})\n    hint_witness(sbits{lvl}[0:{ssz}], \"sbits{lvl}\")");
         hints.push((format!("sbits{lvl}"), mir.levels[lvl].raw.iter().flat_map(|&v| bits_of(v)).collect()));
@@ -1800,7 +1816,7 @@ fn ligerito_m33_native_probe() {
     assert!(ok);
 
     // ---- General mirror: reproduce the full 6-level verifier, confirm inner==t_r ----
-    use flare::pcs::ligerito::{ceil_log2, eval_sk_at_vks, induce_sumcheck_enforced_sum, induce_sumcheck_evaluate_at_residual};
+    use flare::pcs::ligerito::{ceil_log2, eval_sk_at_vks, expand_opened_rows_ordered, induce_sumcheck_enforced_sum, induce_sumcheck_evaluate_at_residual};
     use flare::zerocheck::multilinear::eq_eval as eqe;
     let tm = Instant::now();
     let rec_ks = [3usize, 3, 3, 3, 3];
@@ -1844,7 +1860,8 @@ fn ligerito_m33_native_probe() {
     let bl0 = 1usize << (20 + 1);
     let (q0, _) = sp.sample_queries_ordered(bl0, cfgq[0]);
     let a0: Vec<F128> = (0..ceil_log2(cfgq[0])).map(|_| sp.sample()).collect();
-    let enf0 = induce_sumcheck_enforced_sum(&proof.initial_proof.opened_rows, &r_lane, &q0, &a0);
+    let rows0 = expand_opened_rows_ordered(&proof.initial_proof.opened_rows, &q0).expect("expand rows0");
+    let enf0 = induce_sumcheck_enforced_sum(&rows0, &r_lane, &q0, &a0);
     sp.observe(sc[txi].u_0);
     sp.observe(sc[txi].u_2);
     let iq = fm(sc[txi].u_0, sc[txi].u_2, enf0);
@@ -1897,7 +1914,8 @@ fn ligerito_m33_native_probe() {
             assert!(sp.verify_pow(proof.grinding_nonces[ni], 0));
             let (ql, _) = sp.sample_queries_ordered(prev_block_len, cfgq[i + 1]);
             let al: Vec<F128> = (0..ceil_log2(cfgq[i + 1])).map(|_| sp.sample()).collect();
-            let enfl = induce_sumcheck_enforced_sum(&proof.final_proof.opened_rows, &level_rs, &ql, &al);
+            let rowsl = expand_opened_rows_ordered(&proof.final_proof.opened_rows, &ql).expect("expand rowsl");
+            let enfl = induce_sumcheck_enforced_sum(&rowsl, &level_rs, &ql, &al);
             let betal = sp.sample();
             tr += betal * enfl;
             ctxs.push(Ctx { lmc: n_current, queries: ql, alpha: al, ris_start: ris.len(), beta: betal });
@@ -1931,7 +1949,8 @@ fn ligerito_m33_native_probe() {
             let ai: Vec<F128> = (0..ceil_log2(cfgq[i + 1])).map(|_| sp.sample()).collect();
             let rp = &proof.recursive_proofs[rpi];
             rpi += 1;
-            let enfi = induce_sumcheck_enforced_sum(&rp.opened_rows, &level_rs, &qi, &ai);
+            let rowsi = expand_opened_rows_ordered(&rp.opened_rows, &qi).expect("expand rowsi");
+            let enfi = induce_sumcheck_enforced_sum(&rowsi, &level_rs, &qi, &ai);
             sp.observe(sc[txi].u_0);
             sp.observe(sc[txi].u_2);
             let iqi = fm(sc[txi].u_0, sc[txi].u_2, enfi);
