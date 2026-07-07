@@ -167,6 +167,8 @@ YTHI = YTHI_PLACEHOLDER
 QPKDV = QPKDV_PLACEHOLDER
 RSSEL = RSSEL_PLACEHOLDER
 YRS = YRS_PLACEHOLDER
+# Phase F: log rows of the bytecode blocks (the deferred bytecode points).
+KBC = KBC_PLACEHOLDER
 
 DS_SCALAR = 1
 DS_BYTE = 2
@@ -1056,4 +1058,49 @@ def main():
                 ey = ey + f
         inner = inner + lyr[GEN ** y] * ey
     assert inner == tr
+
+    # ---- Phase F: bind the deferred data to the outer public input ----
+    # A fresh hash chain (same tagged compress as the FS observe) over: the
+    # inner public input; the two bytecode points + the 12 deferred bytecode
+    # values; the deferred matrix claim (alpha, row point, round challenges,
+    # z_partial, value); the deferred tensor data (s_hat_v, r'', transposed
+    # claims, eval_rs_eq values, and the coords the outer checker needs to
+    # rebuild the eval_rs_eq inputs). The outer public input must equal it.
+    h0 = 0
+    h1 = 0
+    h0, h1 = obs(h0, h1, PI0)
+    h0, h1 = obs(h0, h1, PI1)
+    for s in unroll(0, 2):
+        for k in unroll(0, KBC):
+            h0, h1 = obs(h0, h1, zeta[GEN ** (s * MUMAX + k)])
+    for k in unroll(0, NBCV):
+        h0, h1 = obs(h0, h1, bcv[GEN ** k])
+    h0, h1 = obs(h0, h1, lal)
+    h0, h1 = obs(h0, h1, zz)
+    for k in unroll(0, LCR):
+        h0, h1 = obs(h0, h1, zrho[GEN ** k])
+    for k in unroll(0, LCR):
+        h0, h1 = obs(h0, h1, lrr[GEN ** k])
+    for k in unroll(0, 64):
+        h0, h1 = obs(h0, h1, lcz[GEN ** k])
+    h0, h1 = obs(h0, h1, matp[GEN ** 0])
+    for k in unroll(0, 256):
+        h0, h1 = obs(h0, h1, shv[GEN ** k])
+    for k in unroll(0, 14):
+        h0, h1 = obs(h0, h1, rdp[GEN ** k])
+    h0, h1 = obs(h0, h1, tcl[GEN ** 0])
+    h0, h1 = obs(h0, h1, tcl[GEN ** 1])
+    h0, h1 = obs(h0, h1, rsq[GEN ** 0])
+    h0, h1 = obs(h0, h1, rsq[GEN ** 1])
+    for k in unroll(0, QPKDV):
+        h0, h1 = obs(h0, h1, ris[GEN ** k])
+    for k in unroll(LCR, NMLV):
+        h0, h1 = obs(h0, h1, zrho[GEN ** k])
+    for k in unroll(13, MR1CS):
+        h0, h1 = obs(h0, h1, zr[GEN ** k])
+    pp = GEN ** 0
+    pia = pp[1]
+    pib = pp[GEN]
+    assert pia == h0
+    assert pib == h1
     return

@@ -195,6 +195,100 @@ fn prove_inner() -> (Program, leanvm_b::cpu::Proof) {
     (program, proof)
 }
 
+/// The deferred-claim data the guest binds to the outer public input: the outer
+/// verifier checks each claim natively (doc.tex §Deferred evaluation claims;
+/// n_rec = 1 forwards fresh claims without batching).
+struct Deferred {
+    outer_pi: [F128; 2],
+    kbc: usize,
+    zetas01: [Vec<F128>; 2],
+    bcv: Vec<F128>,
+    lc_alpha: F128,
+    zz: F128,
+    zrho: Vec<F128>,
+    lrr: Vec<F128>,
+    lcz: Vec<F128>,
+    matpart: F128,
+    shv: Vec<F128>,
+    rdp: Vec<F128>,
+    tclaim: Vec<F128>,
+    rsq: Vec<F128>,
+    lig_ris_lo: Vec<F128>,
+    zc_r_tail: Vec<F128>,
+    n_log_b3: usize,
+}
+
+/// The OUTER verifier's native discharge of the deferred claims: bytecode MLE
+/// evaluations, the lincheck matrix evaluation, the ring-switch tensor
+/// transposes, and the eval_rs_eq weights. Cheap native work (one nnz pass +
+/// O(small) field ops); only this plus `cpu::verify(outer)` and the export-hash
+/// recomputation constitute outer verification.
+fn check_deferred(program: &Program, pi: [F128; 2], proof: &leanvm_b::cpu::Proof, d: &Deferred) {
+    // (a) the 12 bytecode claims.
+    let l = leanvm_b::cpu::layout(
+        &program.prog,
+        proof.stream[0].lo as usize,
+        [1, 2, 3, 4, 5, 6].map(|i| proof.stream[i].lo as usize),
+        pi,
+    );
+    let mut i = 0;
+    for (s, blocks) in [&l.push, &l.pull].into_iter().enumerate() {
+        for blk in blocks.iter() {
+            for c in &blk.coords {
+                if let Coord::Public(vals) = c {
+                    assert_eq!(blk.kappa, d.kbc);
+                    assert_eq!(
+                        mle_eval(vals, &d.zetas01[s][..d.kbc]),
+                        d.bcv[i],
+                        "deferred bytecode claim {i}"
+                    );
+                    i += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(i, d.bcv.len());
+    // (b) the deferred matrix evaluation (one sparse nnz pass).
+    let r1cs = flock_prover::r1cs_hashes::blake3::build_block_r1cs(d.n_log_b3);
+    let eqi = flare::lincheck::build_quirky_eq_table(d.zz, &d.zrho[..d.lrr.len()], 6);
+    use flare::lincheck::LincheckCircuit as _;
+    let mut comb = r1cs.csc_lincheck_circuit().fold_alpha_batched(d.lc_alpha, &eqi);
+    for &rv in &d.lrr {
+        flare::lincheck::sumcheck_bind_top_in_place_par(&mut comb, rv);
+    }
+    assert_eq!(
+        flare::pcs::ring_switch::inner_product(&comb, &d.lcz),
+        d.matpart,
+        "deferred matrix claim"
+    );
+    // (c) the two transposed ring-switch sumcheck claims.
+    for rs in 0..2 {
+        let shu = flare::pcs::ring_switch::tensor_algebra_transpose(&d.shv[128 * rs..128 * rs + 128]);
+        let eqd = flare::zerocheck::univariate_skip::build_eq(&d.rdp[7 * rs..7 * rs + 7]);
+        assert_eq!(
+            flare::pcs::ring_switch::inner_product(&shu, &eqd),
+            d.tclaim[rs],
+            "deferred tensor claim {rs}"
+        );
+    }
+    // (d) the two eval_rs_eq weights.
+    let inner7: Vec<F128> = flare::zerocheck::univariate_skip_optimized::small_challenges_ghash()
+        .into_iter()
+        .chain(flare::zerocheck::univariate_skip_optimized::medium_challenges_ghash())
+        .collect();
+    let lcr = d.lrr.len();
+    let x_outer_ab: Vec<F128> = d.lrr.iter().rev().copied().chain(d.zrho[lcr..].iter().copied()).collect();
+    let x_outer_c: Vec<F128> = inner7.into_iter().chain(d.zc_r_tail.iter().copied()).collect();
+    for (rs, xo) in [x_outer_ab, x_outer_c].iter().enumerate() {
+        let eqd = flare::zerocheck::univariate_skip::build_eq(&d.rdp[7 * rs..7 * rs + 7]);
+        assert_eq!(
+            flare::pcs::ring_switch::eval_rs_eq(&xo[1..], &d.lig_ris_lo, &eqd),
+            d.rsq[rs],
+            "deferred eval_rs_eq {rs}"
+        );
+    }
+}
+
 /// Config + hints for the recursion guest (`tests/verify_recursive.py`), built
 /// from the REAL `cpu::layout` of the inner program and the transcript trace of
 /// a real `cpu::verify` run (zero hand-mirroring drift).
@@ -203,7 +297,7 @@ fn gen_verify(
     pi: [F128; 2],
     proof: &leanvm_b::cpu::Proof,
     ops: &[TraceOp],
-) -> (BTreeMap<String, String>, Vec<(String, Vec<F128>)>) {
+) -> (BTreeMap<String, String>, Vec<(String, Vec<F128>)>, Deferred) {
     let dig = program.digest();
     let l = leanvm_b::cpu::layout(
         &program.prog,
@@ -432,6 +526,7 @@ fn gen_verify(
         let eqd = flare::zerocheck::univariate_skip::build_eq(&rdp[7 * rs..7 * rs + 7]);
         tclaim.push(flare::pcs::ring_switch::inner_product(&shu, &eqd));
     }
+    let tclaim_export = tclaim.clone();
 
     // ---- Phase E2 walk: the Ligerito core (mirror kept in lockstep for PoW) ----
     let stack_mu = l.m;
@@ -545,10 +640,12 @@ fn gen_verify(
     let gdig = compress(base, [F128::new(nonce, 0), F128::new(5, 0)])[0];
     // bcv: the deferred bytecode evaluations, block/coord order.
     let mut bcv = Vec::new();
+    let mut kbc = 0usize;
     for (s, blocks) in sides.iter().enumerate() {
         for blk in blocks.iter() {
             for c in &blk.coords {
                 if let Coord::Public(vals) = c {
+                    kbc = blk.kappa;
                     bcv.push(mle_eval(vals, &zetas[s][..blk.kappa]));
                 }
             }
@@ -799,6 +896,7 @@ fn gen_verify(
         flare::pcs::ring_switch::eval_rs_eq(&x_outer_ab[1..], &lig_ris[..qpkdv], &eqd_ab),
         flare::pcs::ring_switch::eval_rs_eq(&x_outer_c[1..], &lig_ris[..qpkdv], &eqd_c),
     ];
+    let rsq_hint = rsq.clone();
 
     // claim descriptors, in exact clv order.
     let (mut cpbuf, mut cpoff, mut cplen, mut cslot, mut csel, mut yt) = (vec![], vec![], vec![], vec![], vec![], vec![]);
@@ -943,6 +1041,72 @@ fn gen_verify(
     ps("QPKDV", qpkdv.to_string());
     ps("RSSEL", rssel.to_string());
     ps("YRS", yrs.to_string());
+    ps("KBC", kbc.to_string());
+
+    // ---- outer public input: the deferred-data hash (mirrors guest Phase F) ----
+    let mut h = Mirror { cv: [F128::ZERO; 2] };
+    h.observe(pi[0]);
+    h.observe(pi[1]);
+    for zs in zetas.iter().take(2) {
+        for k in 0..kbc {
+            h.observe(zs[k]);
+        }
+    }
+    for &v in &bcv {
+        h.observe(v);
+    }
+    h.observe(lc_alpha);
+    h.observe(_zz);
+    for &v in &zrho[..lcrounds] {
+        h.observe(v);
+    }
+    for &v in &lrr {
+        h.observe(v);
+    }
+    for &v in &lcz {
+        h.observe(v);
+    }
+    h.observe(matpart);
+    for &v in &shv {
+        h.observe(v);
+    }
+    for &v in &rdp {
+        h.observe(v);
+    }
+    for &v in &tclaim_export {
+        h.observe(v);
+    }
+    for &v in &rsq {
+        h.observe(v);
+    }
+    for &v in &lig_ris[..qpkdv] {
+        h.observe(v);
+    }
+    for &v in &zrho[lcrounds..] {
+        h.observe(v);
+    }
+    for &v in &zc_r[13..] {
+        h.observe(v);
+    }
+    let deferred = Deferred {
+        outer_pi: h.cv,
+        kbc,
+        zetas01: [zetas[0].clone(), zetas[1].clone()],
+        bcv: bcv.clone(),
+        lc_alpha,
+        zz: _zz,
+        zrho: zrho.clone(),
+        lrr: lrr.clone(),
+        lcz: lcz.clone(),
+        matpart,
+        shv: shv.clone(),
+        rdp: rdp.clone(),
+        tclaim: tclaim_export.clone(),
+        rsq: rsq.clone(),
+        lig_ris_lo: lig_ris[..qpkdv].to_vec(),
+        zc_r_tail: zc_r[13..].to_vec(),
+        n_log_b3,
+    };
 
     let mut zinv = vec![F128::ONE; n_mlv];
     for (i, item) in zinv.iter_mut().enumerate().take(n_mlv).skip(7) {
@@ -962,7 +1126,7 @@ fn gen_verify(
         ("matpart".to_string(), vec![matpart]),
         ("shv".to_string(), shv.clone()),
         ("tclaim".to_string(), tclaim),
-        ("rsq".to_string(), rsq),
+        ("rsq".to_string(), rsq_hint),
         ("lsc".to_string(), lig_sc.clone()),
         ("lrows".to_string(), lrows_flat),
         ("lpaths".to_string(), lpaths_flat),
@@ -970,7 +1134,7 @@ fn gen_verify(
         ("lfpb".to_string(), lfpb_flat),
         ("lyr".to_string(), lig.final_proof.yr.clone()),
     ];
-    (rep, hints)
+    (rep, hints, deferred)
 }
 
 /// Phase A of the recursion guest: seed → announced → root → the full bus
@@ -978,23 +1142,41 @@ fn gen_verify(
 /// proven and verified in-circuit against the real inner proof, with the final
 /// sponge state checked against the trace replay.
 #[test]
-fn guest_phase_a() {
+fn recursion_1to1() {
     let (program, proof) = prove_inner();
     let pi = inner_pi();
     trace_start();
     verify(&program, &pi, &proof).expect("inner verifies");
     let ops = trace_take();
 
-    let (rep, hints) = gen_verify(&program, pi, &proof, &ops);
+    let (rep, hints, deferred) = gen_verify(&program, pi, &proof, &ops);
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/verify_recursive.py");
     let mut guest = compile(&parse_file_with_replacements(path, &rep).expect("parse verify_recursive.py"));
     for (name, vals) in &hints {
         guest.set_witness(name, vec![vals.clone()]);
     }
-    let gpi = [F128::ZERO, F128::ZERO];
+    // The outer public input IS the deferred-claim binding hash.
+    let gpi = deferred.outer_pi;
+    let t = std::time::Instant::now();
     let (gproof, stats) = prove(&guest, gpi);
-    verify(&guest, &gpi, &gproof).expect("phase A verifies in-circuit");
-    eprintln!("guest_phase_a OK: {} cycles, {} BLAKE3", stats.cycles, stats.counts[5]);
+    let t_prove = t.elapsed();
+    let t = std::time::Instant::now();
+    verify(&guest, &gpi, &gproof).expect("outer proof verifies");
+    let t_verify = t.elapsed();
+    // The outer verifier's remaining duty: discharge the deferred claims.
+    let t = std::time::Instant::now();
+    check_deferred(&program, pi, &proof, &deferred);
+    let t_deferred = t.elapsed();
+    let psize = bincode::serialize(&gproof).expect("serialize outer proof").len();
+    eprintln!(
+        "recursion_1to1 OK: guest {} cycles, {} BLAKE3; outer prove {:.2}s, verify {:.1}ms, deferred checks {:.1}ms, outer proof ~{} KiB",
+        stats.cycles,
+        stats.counts[5],
+        t_prove.as_secs_f64(),
+        t_verify.as_secs_f64() * 1e3,
+        t_deferred.as_secs_f64() * 1e3,
+        psize / 1024,
+    );
 }
 
 /// Dump the transcript-op trace of a real `cpu::verify` run on the inner proof:
