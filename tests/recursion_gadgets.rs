@@ -736,6 +736,183 @@ fn ring_switch_transpose() {
     verify(&program, &pi, &proof).expect("ring-switch transpose verifies");
 }
 
+// ---- Gadget 12: the COMPLETE ring_switch::verify_succinct (opening stage 1) ----
+//
+// Assembles the validated pieces into a full port of `ring_switch::verify_succinct`
+// and checks it end-to-end against native flock: seed the sponge, absorb the
+// protocol label, observe the 128 s_hat_v, sample r'' (7), build eq(r''), run the
+// claim check (Σ weights·s_hat_v == claim, weights precomputed since z_skip is a
+// public statement input), then the transpose fold (Σ_i x^i·Σ_b bit_b(s_hat_v[i])
+// ·eq[b]) and assert it equals native's sumcheck_claim. A complete, real Ligerito-
+// opening sub-protocol verified in-circuit.
+
+fn verify_succinct_source(seed: [F128; 2], lbl0: F128, lbl1: F128, weights: &[F128], claim: F128, sc: F128) -> String {
+    let mut s = String::new();
+    s.push_str("from snark_lib import *\n");
+    s.push_str(&format!("SEED0 = {}\n", u(seed[0])));
+    s.push_str(&format!("SEED1 = {}\n", u(seed[1])));
+    s.push_str(&format!("LBL0 = {}\n", u(lbl0)));
+    s.push_str(&format!("LBL1 = {}\n", u(lbl1)));
+    for (i, w) in weights.iter().enumerate() {
+        s.push_str(&format!("W{i} = {}\n", u(*w)));
+    }
+    s.push_str(&format!("CLAIM = {}\n", u(claim)));
+    s.push_str(&format!("SC = {}\n\n", u(sc)));
+
+    s.push_str("def main():\n");
+    let mut n = 0usize;
+    line(&mut s, "shv = HeapBuf(128)".into());
+    line(&mut s, "hint_witness(shv[0:128], \"s_hat_v\")".into());
+    line(&mut s, "bits = HeapBuf(16384)".into());
+    line(&mut s, "hint_witness(bits[0:16384], \"bits\")".into());
+    line(&mut s, "cv0 = SEED0".into());
+    line(&mut s, "cv1 = SEED1".into());
+    // observe_label("flock-ring-switch-v0") = absorb_bytes: len frame (20) + 2 words.
+    let emit_absorb = |s: &mut String, n: &mut usize, w: &str, tag: u32| {
+        let k = *n;
+        *n += 1;
+        line(s, format!("ab{k} = StackBuf(2)"));
+        line(s, format!("ab{k}[0] = {w}"));
+        line(s, format!("ab{k}[1] = {tag}"));
+        line(s, format!("bc{k} = StackBuf(2)"));
+        line(s, format!("bc{k}[0] = cv0"));
+        line(s, format!("bc{k}[1] = cv1"));
+        line(s, format!("bo{k} = StackBuf(2)"));
+        line(s, format!("blake3(bc{k}, ab{k}, bo{k})"));
+        line(s, "cv0 = bo".to_string() + &k.to_string() + "[0]");
+        line(s, "cv1 = bo".to_string() + &k.to_string() + "[1]");
+    };
+    emit_absorb(&mut s, &mut n, "20", 3); // DS_LEN
+    emit_absorb(&mut s, &mut n, "LBL0", 2); // DS_BYTE
+    emit_absorb(&mut s, &mut n, "LBL1", 2);
+    // observe the 128 s_hat_v (a helper compiled once).
+    line(&mut s, "cv0, cv1 = observe_all(cv0, cv1, shv)".into());
+    // sample r'' = 7 challenges.
+    for k in 0..7 {
+        emit_sample(&mut s, &mut n, &format!("r{k}"));
+    }
+    // build_eq(r''): eqb[b] = ∏_k (bit_k(b) ? r_k : 1+r_k).
+    for k in 0..7 {
+        line(&mut s, format!("om{k} = GEN ** 0 + r{k}"));
+    }
+    line(&mut s, "eqb = HeapBuf(128)".into());
+    for b in 0..128usize {
+        let factors: Vec<String> = (0..7)
+            .map(|k| if (b >> k) & 1 == 1 { format!("r{k}") } else { format!("om{k}") })
+            .collect();
+        line(&mut s, format!("eqb[GEN ** {b}] = {}", factors.join(" * ")));
+    }
+    // claim check: Σ_i weights[i]·s_hat_v[i] == claim.
+    line(&mut s, "cs0 = W0 * shv[GEN ** 0]".into());
+    for i in 1..128 {
+        line(&mut s, format!("cs{i} = cs{} + W{i} * shv[GEN ** {i}]", i - 1));
+    }
+    line(&mut s, "assert cs127 == CLAIM".into());
+    // transpose fold: acc = Σ_i GEN^i · (Σ_b bit_b(s_hat_v[i])·eq[b]) == sumcheck_claim.
+    line(&mut s, "brow = bits".into());
+    line(&mut s, "srow = shv".into());
+    line(&mut s, "wi = GEN ** 0".into());
+    line(&mut s, "acc = 0".into());
+    line(&mut s, "for i in unroll(0, 128):".into());
+    s.push_str("        inr, rec = process_row(brow, eqb)\n");
+    s.push_str("        chk = srow[1]\n");
+    s.push_str("        assert rec == chk\n");
+    s.push_str("        acc = acc + wi * inr\n");
+    s.push_str("        brow = brow * (GEN ** 128)\n");
+    s.push_str("        srow = srow * GEN\n");
+    s.push_str("        wi = wi * GEN\n");
+    line(&mut s, "assert acc == SC".into());
+    line(&mut s, "return".into());
+    // helper: observe 128 values, threading the chaining value; returns it.
+    s.push_str("\ndef observe_all(c0, c1, ptr):\n");
+    s.push_str("    sp = ptr\n");
+    s.push_str("    for b in unroll(0, 128):\n");
+    s.push_str("        pk = StackBuf(2)\n");
+    s.push_str("        pk[0] = c0\n");
+    s.push_str("        pk[1] = c1\n");
+    s.push_str("        ip = StackBuf(2)\n");
+    s.push_str("        ip[0] = sp[1]\n");
+    s.push_str("        ip[1] = 1\n");
+    s.push_str("        op = StackBuf(2)\n");
+    s.push_str("        blake3(pk, ip, op)\n");
+    s.push_str("        c0 = op[0]\n");
+    s.push_str("        c1 = op[1]\n");
+    s.push_str("        sp = sp * GEN\n");
+    s.push_str("    return c0, c1\n");
+    // helper: fold one row's 128 bits (boolean + reconstruct + inner product).
+    s.push_str("\ndef process_row(brow, eqb):\n");
+    s.push_str("    cb = brow\n");
+    s.push_str("    ep = eqb\n");
+    s.push_str("    wb = GEN ** 0\n");
+    s.push_str("    recon = 0\n");
+    s.push_str("    inner = 0\n");
+    s.push_str("    for b in unroll(0, 128):\n");
+    s.push_str("        bb = cb[1]\n");
+    s.push_str("        bsq = bb * bb\n");
+    s.push_str("        assert bsq == bb\n");
+    s.push_str("        recon = recon + bb * wb\n");
+    s.push_str("        inner = inner + bb * ep[1]\n");
+    s.push_str("        cb = cb * GEN\n");
+    s.push_str("        ep = ep * GEN\n");
+    s.push_str("        wb = wb * GEN\n");
+    s.push_str("    return inner, recon\n");
+    s
+}
+
+#[test]
+fn ring_switch_verify_succinct_full() {
+    use leanvm_b::transcript::ProverState;
+    use flare::field::PHI_8_TABLE;
+    use flare::pcs::ring_switch::{RingSwitchProof, build_claim_weights, claim_check, verify_succinct};
+    let _ = PHI_8_TABLE; // (weights come from build_claim_weights)
+
+    let z_skip = F128::new(0x9abc_def0_1234_5678, 0x1122_3344_5566_7788);
+    let x_outer = vec![F128::new(0xdead_beef_cafe_babe, 0x0bad_f00d_1337_c0de)];
+    let s_hat_v: Vec<F128> = (0..128u64)
+        .map(|i| F128::new(0x0246_8ACE ^ i.wrapping_mul(0x9E37_79B9), 0x1357 ^ (i << 39)))
+        .collect();
+    let weights = build_claim_weights(z_skip, x_outer[0]);
+    let claim = claim_check(&weights, &s_hat_v);
+    let proof = RingSwitchProof { s_hat_v: s_hat_v.clone() };
+
+    // Native verify_succinct with a leanVM-b ProverState challenger (the
+    // compress-sponge the guest replays), seeded with an empty statement.
+    let label = b"rstest";
+    let mut ch = ProverState::new(label, &[]);
+    let out = verify_succinct(claim, z_skip, &x_outer, &proof, &mut ch).expect("native verify_succinct");
+    let seed = fs_ref::seed_cv(label, &[]);
+
+    // Protocol label "flock-ring-switch-v0" (20 bytes) as two absorbed words.
+    let lbl = b"flock-ring-switch-v0";
+    let word = |o: usize| {
+        let mut buf = [0u8; 16];
+        let end = (lbl.len() - o).min(16);
+        buf[..end].copy_from_slice(&lbl[o..o + end]);
+        F128::new(
+            u64::from_le_bytes(buf[..8].try_into().unwrap()),
+            u64::from_le_bytes(buf[8..].try_into().unwrap()),
+        )
+    };
+    let (lbl0, lbl1) = (word(0), word(16));
+
+    // Bit matrix B[i*128+b] = bit_b(s_hat_v[i]).
+    let mut bits = Vec::with_capacity(128 * 128);
+    for v in &s_hat_v {
+        for b in 0..128 {
+            let bit = if b < 64 { (v.lo >> b) & 1 } else { (v.hi >> (b - 64)) & 1 };
+            bits.push(F128::new(bit, 0));
+        }
+    }
+
+    let src = verify_succinct_source(seed, lbl0, lbl1, &weights, claim, out.sumcheck_claim);
+    let mut program = compile(&parse(&src).expect("parse verify_succinct"));
+    program.set_witness("s_hat_v", vec![s_hat_v]);
+    program.set_witness("bits", vec![bits]);
+    let pi = [F128::ZERO, F128::ZERO];
+    let (gproof, _) = prove(&program, pi);
+    verify(&program, &pi, &gproof).expect("full verify_succinct verifies");
+}
+
 // ---- Gadget 9: the Ligerito RoundQuad sumcheck fold ----
 //
 // The Ligerito opening runs one global sumcheck whose round message is
