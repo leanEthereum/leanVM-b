@@ -67,3 +67,70 @@ fn bit_decompose_128() {
     let (proof, _) = prove(&program, pi);
     verify(&program, &pi, &proof).expect("bit-decompose verifies");
 }
+
+/// Gadget 2: **Fiat–Shamir sponge replay**. The transcript sponge
+/// (`src/transcript.rs`) is a 256-bit chaining value advanced only by the fixed
+/// 64→32 BLAKE3 compression the `blake3` opcode computes, domain-tagged in the
+/// second input word: `observe(x)` = `compress(cv, [x, DS_SCALAR])`, `sample()` =
+/// `compress(cv, [0, DS_SQUEEZE])` (its first output word is the challenge, the
+/// full output the new state). Because it's exactly the `blake3` opcode, a guest
+/// program re-derives byte-identical challenges. Here the guest observes two
+/// scalars and squeezes, and asserts the challenge equals the value `vmhash`
+/// (the opcode's Rust twin) computes for the same steps.
+#[test]
+fn sponge_observe_sample() {
+    use leanvm_b::vmhash::compress;
+    // Domain-separation tags (src/transcript.rs): carried in the SECOND word.
+    let ds_scalar = F128::new(1, 0);
+    let ds_squeeze = F128::new(4, 0);
+
+    let x0 = F128::new(0x1111_2222_3333_4444, 0x5555_6666_7777_8888);
+    let x1 = F128::new(0x9999_aaaa_bbbb_cccc, 0xdddd_eeee_ffff_0000);
+
+    // Reference challenge: zero IV, observe x0, observe x1, squeeze.
+    let mut cv = [F128::ZERO, F128::ZERO];
+    cv = compress(cv, [x0, ds_scalar]);
+    cv = compress(cv, [x1, ds_scalar]);
+    let challenge = compress(cv, [F128::ZERO, ds_squeeze])[0];
+
+    let u = |f: F128| (f.lo as u128) | ((f.hi as u128) << 64);
+    let src = format!(
+        "from snark_lib import *\n\
+         X0 = {}\n\
+         X1 = {}\n\
+         CH = {}\n\
+         DS_SCALAR = 1\n\
+         DS_SQUEEZE = 4\n\
+         \n\
+         def main():\n\
+         \x20   cv = StackBuf(2)\n\
+         \x20   cv[0] = 0\n\
+         \x20   cv[1] = 0\n\
+         \x20   in0 = StackBuf(2)\n\
+         \x20   in0[0] = X0\n\
+         \x20   in0[1] = DS_SCALAR\n\
+         \x20   cv1 = StackBuf(2)\n\
+         \x20   blake3(cv, in0, cv1)\n\
+         \x20   in1 = StackBuf(2)\n\
+         \x20   in1[0] = X1\n\
+         \x20   in1[1] = DS_SCALAR\n\
+         \x20   cv2 = StackBuf(2)\n\
+         \x20   blake3(cv1, in1, cv2)\n\
+         \x20   sq = StackBuf(2)\n\
+         \x20   sq[0] = 0\n\
+         \x20   sq[1] = DS_SQUEEZE\n\
+         \x20   out = StackBuf(2)\n\
+         \x20   blake3(cv2, sq, out)\n\
+         \x20   ch = out[0]\n\
+         \x20   assert ch == CH\n\
+         \x20   return\n",
+        u(x0),
+        u(x1),
+        u(challenge)
+    );
+
+    let program = compile(&parse(&src).expect("parse"));
+    let pi = [F128::ZERO, F128::ZERO];
+    let (proof, _) = prove(&program, pi);
+    verify(&program, &pi, &proof).expect("sponge replay verifies");
+}
