@@ -14,6 +14,49 @@ use leanvm_b::compiler::{compile, parse};
 use leanvm_b::cpu::{prove, verify};
 use leanvm_b::field::F128;
 
+/// A field element as the decimal `u128` the zkDSL parser accepts as a literal.
+fn u(f: F128) -> u128 {
+    (f.lo as u128) | ((f.hi as u128) << 64)
+}
+
+/// A faithful Rust mirror of `src/transcript.rs`'s `Sponge` seeding, so a test
+/// can compute the exact chaining value the guest must start its transcript
+/// replay from (the real `Sponge` is private). Same `compress`, same domain
+/// tags, same framing — this is the value the recursion harness will bake into
+/// the guest as a constant.
+mod fs_ref {
+    use leanvm_b::field::F128;
+    use leanvm_b::vmhash::compress;
+    const DS_SCALAR: F128 = F128::new(1, 0);
+    const DS_BYTE: F128 = F128::new(2, 0);
+    const DS_LEN: F128 = F128::new(3, 0);
+
+    fn absorb_bytes(mut cv: [F128; 2], bytes: &[u8]) -> [F128; 2] {
+        cv = compress(cv, [F128::new(bytes.len() as u64, 0), DS_LEN]);
+        for chunk in bytes.chunks(16) {
+            let mut buf = [0u8; 16];
+            buf[..chunk.len()].copy_from_slice(chunk);
+            let w = F128::new(
+                u64::from_le_bytes(buf[..8].try_into().unwrap()),
+                u64::from_le_bytes(buf[8..16].try_into().unwrap()),
+            );
+            cv = compress(cv, [w, DS_BYTE]);
+        }
+        cv
+    }
+
+    /// The chaining value after `Sponge::new(label, statement)`.
+    pub fn seed_cv(label: &[u8], statement: &[F128]) -> [F128; 2] {
+        let mut cv = [F128::ZERO, F128::ZERO];
+        cv = absorb_bytes(cv, b"leanvm-b/transcript/v1");
+        cv = absorb_bytes(cv, label);
+        for &x in statement {
+            cv = compress(cv, [x, DS_SCALAR]);
+        }
+        cv
+    }
+}
+
 /// The 128 polynomial-basis coefficients of `v`, LSB first (`bit i` = coeff of
 /// `x^i` = the monomial `GEN**i`), each as a field 0/1.
 fn bits_of(v: F128) -> Vec<F128> {
@@ -278,4 +321,189 @@ fn observe_root_bytes() {
     let pi = [F128::ZERO, F128::ZERO];
     let (proof, _) = prove(&program, pi);
     verify(&program, &pi, &proof).expect("observe-root verifies");
+}
+
+// ---- Gadget 5: the degree-2 sumcheck / GKR grand-product verifier ----
+//
+// This is the first *code-generated* verifier: a Rust emitter unrolls
+// `gkr::verify_product` for a fixed `mu` into straight-line zkDSL (the real
+// recursion verifier will dispatch a runtime `mu` to such unrolled variants via
+// `match_range`, exactly as the reference's `whir.py` does). The guest replays a
+// real `gkr::prove_product` transcript (fed as a `hint_witness` stream), running
+// every round's eq-trick consistency check and Lagrange interpolation itself,
+// and publishes the final leaf-claim value — which write-once pins to the value
+// the native `gkr::verify_product` returns.
+
+/// Append one 4-space-indented line to a `main()` body under construction.
+fn line(s: &mut String, l: String) {
+    s.push_str("    ");
+    s.push_str(&l);
+    s.push('\n');
+}
+
+/// Emit `next_scalar`: read `stream[cursor]` into `dst`, absorb it into the
+/// sponge (`cv0,cv1`), and step the cursor (`sp *= GEN`). Mirrors
+/// `VerifierState::next_scalar`.
+fn emit_read(s: &mut String, n: &mut usize, dst: &str) {
+    let k = *n;
+    *n += 1;
+    line(s, format!("{dst} = sp[1]"));
+    line(s, format!("rb{k} = StackBuf(2)"));
+    line(s, format!("rb{k}[0] = cv0"));
+    line(s, format!("rb{k}[1] = cv1"));
+    line(s, format!("ri{k} = StackBuf(2)"));
+    line(s, format!("ri{k}[0] = {dst}"));
+    line(s, format!("ri{k}[1] = 1")); // DS_SCALAR
+    line(s, format!("ro{k} = StackBuf(2)"));
+    line(s, format!("blake3(rb{k}, ri{k}, ro{k})"));
+    line(s, format!("cv0 = ro{k}[0]"));
+    line(s, format!("cv1 = ro{k}[1]"));
+    line(s, "sp = sp * GEN".into());
+}
+
+/// Emit `sample`: squeeze a challenge into `dst` and ratchet the sponge.
+fn emit_sample(s: &mut String, n: &mut usize, dst: &str) {
+    let k = *n;
+    *n += 1;
+    line(s, format!("sb{k} = StackBuf(2)"));
+    line(s, format!("sb{k}[0] = cv0"));
+    line(s, format!("sb{k}[1] = cv1"));
+    line(s, format!("si{k} = StackBuf(2)"));
+    line(s, format!("si{k}[0] = 0"));
+    line(s, format!("si{k}[1] = 4")); // DS_SQUEEZE
+    line(s, format!("so{k} = StackBuf(2)"));
+    line(s, format!("blake3(sb{k}, si{k}, so{k})"));
+    line(s, format!("{dst} = so{k}[0]"));
+    line(s, format!("cv0 = so{k}[0]"));
+    line(s, format!("cv1 = so{k}[1]"));
+}
+
+/// Generate the full zkDSL program that replays `gkr::verify_product` for a
+/// power-of-two leaf count `2^mu`, starting the transcript from `seed`, and
+/// publishes the final leaf-claim value (pinned to `LEAF` via the public input).
+fn gkr_verify_source(mu: usize, seed: [F128; 2], leaf_val: F128, n_stream: usize) -> String {
+    let g = F128::generator();
+    // Lagrange inverse-denominators at nodes {0,1,g} — compile-time constants.
+    let inv0 = g.inv();
+    let inv1 = (F128::ONE + g).inv();
+    let inv2 = (g * (F128::ONE + g)).inv();
+
+    let mut s = String::new();
+    s.push_str("from snark_lib import *\n");
+    s.push_str(&format!("SEED0 = {}\n", u(seed[0])));
+    s.push_str(&format!("SEED1 = {}\n", u(seed[1])));
+    s.push_str(&format!("INV0 = {}\n", u(inv0)));
+    s.push_str(&format!("INV1 = {}\n", u(inv1)));
+    s.push_str(&format!("INV2 = {}\n", u(inv2)));
+    s.push_str(&format!("LEAF = {}\n", u(leaf_val)));
+    s.push_str(&format!("N = {n_stream}\n\n"));
+    s.push_str("def main():\n");
+
+    let mut n = 0usize;
+    line(&mut s, "stream = HeapBuf(N)".into());
+    line(&mut s, "hint_witness(stream[0:N], \"stream\")".into());
+    line(&mut s, format!("rbuf = HeapBuf({})", mu * mu));
+    line(&mut s, "cv0 = SEED0".into());
+    line(&mut s, "cv1 = SEED1".into());
+    line(&mut s, "sp = stream".into());
+    emit_read(&mut s, &mut n, "root"); // observe the product root
+    line(&mut s, "claim = root".into());
+
+    for p in 0..mu {
+        let k = p; // rounds this layer
+        let base = p * mu; // this layer's r-vector base in rbuf
+        let mut eqacc = format!("ea{p}_0");
+        line(&mut s, format!("{eqacc} = GEN ** 0")); // eq_acc = 1 (a field one)
+        for round in 0..k {
+            let (m0, m1, m2) = (
+                format!("m{p}_{round}_0"),
+                format!("m{p}_{round}_1"),
+                format!("m{p}_{round}_2"),
+            );
+            emit_read(&mut s, &mut n, &m0);
+            emit_read(&mut s, &mut n, &m1);
+            emit_read(&mut s, &mut n, &m2);
+            // rj = r[round] of the previous layer.
+            let rj = format!("rj{p}_{round}");
+            line(&mut s, format!("{rj} = rbuf[GEN ** {}]", (p - 1) * mu + round));
+            // eq-trick round check: eq_acc*((1+rj)*m0 + rj*m1) == claim.
+            line(&mut s, format!("or{p}_{round} = 1 + {rj}"));
+            line(&mut s, format!("tm{p}_{round} = or{p}_{round} * {m0} + {rj} * {m1}"));
+            line(&mut s, format!("ck{p}_{round} = {eqacc} * tm{p}_{round}"));
+            line(&mut s, format!("assert ck{p}_{round} == claim"));
+            // sample rk, record rho[round] at position round+1.
+            let rk = format!("rk{p}_{round}");
+            emit_sample(&mut s, &mut n, &rk);
+            line(&mut s, format!("rbuf[GEN ** {}] = {rk}", base + round + 1));
+            // eq_acc *= 1 + rj + rk.
+            let neweq = format!("ea{p}_{}", round + 1);
+            line(&mut s, format!("os{p}_{round} = 1 + {rj} + {rk}"));
+            line(&mut s, format!("{neweq} = {eqacc} * os{p}_{round}"));
+            eqacc = neweq;
+            // claim = eq_acc * lagrange(msg, rk), nodes {0,1,g}.
+            line(&mut s, format!("pa{p}_{round} = {rk} + 1"));
+            line(&mut s, format!("pb{p}_{round} = {rk} + GEN"));
+            line(&mut s, format!("l0{p}_{round} = {m0} * pa{p}_{round} * pb{p}_{round} * INV0"));
+            line(&mut s, format!("l1{p}_{round} = {m1} * {rk} * pb{p}_{round} * INV1"));
+            line(&mut s, format!("l2{p}_{round} = {m2} * {rk} * pa{p}_{round} * INV2"));
+            line(&mut s, format!("lg{p}_{round} = l0{p}_{round} + l1{p}_{round} + l2{p}_{round}"));
+            line(&mut s, format!("claim = {eqacc} * lg{p}_{round}"));
+        }
+        // Layer tail: read the two child evals, check, sample c, connect.
+        let (e0, e1) = (format!("ev{p}_0"), format!("ev{p}_1"));
+        emit_read(&mut s, &mut n, &e0);
+        emit_read(&mut s, &mut n, &e1);
+        line(&mut s, format!("pe{p} = {e0} * {e1}"));
+        line(&mut s, format!("pv{p} = {eqacc} * pe{p}"));
+        line(&mut s, format!("assert claim == pv{p}"));
+        let c = format!("c{p}");
+        emit_sample(&mut s, &mut n, &c);
+        line(&mut s, format!("rbuf[GEN ** {base}] = {c}"));
+        line(&mut s, format!("dd{p} = {e0} + {e1}"));
+        line(&mut s, format!("claim = {e0} + {c} * dd{p}"));
+    }
+
+    // Publish the leaf-claim value into m[0]; write-once pins it to LEAF.
+    line(&mut s, "pp = GEN ** 0".into());
+    line(&mut s, "pp[1] = claim".into());
+    line(&mut s, "return".into());
+    s
+}
+
+#[test]
+fn gkr_product_verify() {
+    use leanvm_b::gkr;
+    use leanvm_b::transcript::{ProverState, VerifierState};
+
+    // Exercise the emitter across sizes so the codegen is trusted for the
+    // real verifier (μ = 1 has a single degenerate layer; μ = 5 has 10 rounds).
+    for mu in [1usize, 2, 3, 5] {
+        let leaves: Vec<F128> = (0..(1usize << mu))
+            .map(|i| {
+                F128::new(
+                    0x9e37_79b9_7f4a_7c15u64.wrapping_mul(i as u64 + 3) + 1,
+                    0x1234_5678 ^ ((i as u64) << 20),
+                )
+            })
+            .collect();
+
+        let label = b"gkrtest";
+        let mut ps = ProverState::new(label, &[]);
+        let _ = gkr::prove_product(leaves, &mut ps);
+        let proof = ps.into_proof();
+
+        // Reference leaf-claim value from the native verifier.
+        let mut vs = VerifierState::new(label, &proof, &[]);
+        let (_root, leafclaim) = gkr::verify_product(mu, &mut vs).expect("ref verify_product");
+        let leaf_val = leafclaim.value;
+
+        let seed = fs_ref::seed_cv(label, &[]);
+        let src = gkr_verify_source(mu, seed, leaf_val, proof.stream.len());
+
+        let mut program = compile(&parse(&src).unwrap_or_else(|e| panic!("mu={mu}: parse: {e}")));
+        program.set_witness("stream", vec![proof.stream.clone()]);
+        let pi = [leaf_val, F128::ZERO];
+        let (gproof, _) = prove(&program, pi);
+        verify(&program, &pi, &gproof).unwrap_or_else(|e| panic!("mu={mu}: verify: {e:?}"));
+    }
 }
