@@ -1546,6 +1546,97 @@ fn ml_tr_small() {
     eprintln!("ml_tr_small OK: {} cycles, {} BLAKE3", stats.cycles, stats.counts[5]);
 }
 
+/// **The production benchmark.** Drives a real m33_secure Ligerito proof (log_n=26,
+/// the shape a 500-XMSS leanVM-b proof produces), generates the in-circuit
+/// multi-level per-query verifier for it, proves+verifies it in leanVM-b, and
+/// prints XMSS-style stats. Heavy (~1 GiB witness for the inner commit); run with
+/// `--ignored`.
+#[test]
+#[ignore = "heavy production-config bench; run explicitly"]
+fn test_recursive_ligerito() {
+    use std::time::Instant;
+    use leanvm_b::compiler::parse_with_replacements;
+    use leanvm_b::transcript::ProverState;
+    use flare::lincheck::build_eq_table;
+    use flare::ntt::AdditiveNttF128;
+    use flare::pcs::ligerito::{ligero_commit, recursive_prover_with_basis, recursive_verifier_with_basis_succinct};
+    use flare::zerocheck::multilinear::eq_eval;
+
+    let cfg = LigCfg {
+        log_n: 26,
+        initial_k: 6,
+        log_inv_rates: vec![1, 2, 3, 4, 5, 6],
+        recursive_ks: vec![3, 3, 3, 3, 3],
+        recursive_log_msg_cols: vec![17, 14, 11, 8, 5],
+        initial_log_msg_cols: 20,
+        queries: vec![290, 177, 145, 132, 126, 124],
+        fold_grinding_bits: vec![11, 10, 8, 6, 4, 2],
+        yr_log_n: 5,
+    };
+    let poly: Vec<F128> = (0..(1usize << cfg.log_n))
+        .map(|i| F128::new(0x9E37_79B9u64.wrapping_mul(i as u64 + 1) + 1, 0x1234 ^ (i as u64)))
+        .collect();
+    let z: Vec<F128> = (0..cfg.log_n).map(|i| F128::new(0xABCD + i as u64, 7 * i as u64 + 1)).collect();
+    let b = build_eq_table(&z);
+    let target: F128 = poly.iter().zip(b.iter()).map(|(&a, &c)| a * c).fold(F128::ZERO, |a, x| a + x);
+    let t = Instant::now();
+    let ntt = AdditiveNttF128::standard(cfg.initial_log_msg_cols + cfg.log_inv_rates[0]);
+    let wtns = ligero_commit(&poly, cfg.initial_log_msg_cols, cfg.initial_k, cfg.log_inv_rates[0], &ntt);
+    let initial_root = wtns.root();
+    let label = b"m33test";
+    let mut pch = ProverState::new(label, &[]);
+    let proof = recursive_prover_with_basis(&cfg.prover(), poly, b, target, &wtns.mat, &wtns.tree, &mut pch);
+    eprintln!("[m33] inner commit+prove: {:?}", t.elapsed());
+    let zc = z.clone();
+    let eval_b = move |ris: &[F128], yl: usize| -> Vec<F128> {
+        let mut p = ris.to_vec();
+        p.resize(ris.len() + yl, F128::ZERO);
+        (0..(1usize << yl))
+            .map(|y| {
+                for j in 0..yl {
+                    p[ris.len() + j] = if (y >> j) & 1 == 1 { F128::ONE } else { F128::ZERO };
+                }
+                eq_eval(&zc, &p)
+            })
+            .collect()
+    };
+    let mut vch = ProverState::new(label, &[]);
+    assert!(recursive_verifier_with_basis_succinct(&cfg.verifier(), &proof, cfg.log_n, target, &initial_root, eval_b, &mut vch));
+    let m = run_mirror(&cfg, &proof, &z, target, label);
+    assert_eq!(m.inner, m.tr, "m33 mirror inner == t_r");
+
+    // Generate + compile the in-circuit verifier for this proof.
+    let t = Instant::now();
+    let (src, rep, hints) = gen_lig_tr(&cfg, &proof, &m, target, label, &z);
+    std::fs::write(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/lig_m33_gen.py"), &src).ok();
+    let mut program = compile(&parse_with_replacements(&src, &rep).expect("parse m33 verifier"));
+    for (name, vals) in &hints {
+        program.set_witness(name, vec![vals.clone()]);
+    }
+    eprintln!("[m33] guest gen+compile: {:?}", t.elapsed());
+
+    let pi = [F128::ZERO, F128::ZERO];
+    let t = Instant::now();
+    let (gproof, stats) = prove(&program, pi);
+    let t_prove = t.elapsed();
+    let t = Instant::now();
+    verify(&program, &pi, &gproof).expect("recursive m33 Ligerito verification");
+    let t_verify = t.elapsed();
+    let proof_bytes = bincode::serialized_size(&gproof).expect("proof serializes");
+
+    println!("\nRecursive Ligerito verification, in-circuit (m33_secure: log_n=26, initial_k=6, 6 levels, 994 query opens)");
+    println!("  cycles (VM steps)           : {}", stats.cycles);
+    for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3"].iter().zip(&stats.counts) {
+        let pow = if c == 0 { "0".to_string() } else { format!("2^{:.2}", (c as f64).log2()) };
+        println!("    {name:<6} instructions      : {c:>9}  = {pow}");
+    }
+    println!("  committed witness size      : 2^{:.3}", (stats.committed as f64).log2());
+    println!("  data memory                 : 2^{} padded", stats.log_mem);
+    println!("  proof size                  : {:.1} KiB", proof_bytes as f64 / 1024.0);
+    println!("  proving (incl. witness gen) : {t_prove:?}");
+    println!("  verifying                   : {t_verify:?}");
+}
+
 /// Feasibility probe: can this machine drive a real m33_secure Ligerito proof
 
 /// Feasibility probe: can this machine drive a real m33_secure Ligerito proof
@@ -1808,7 +1899,7 @@ fn ligerito_m33_native_probe() {
 // single Merkle path, keeping the port tractable. Prints the concrete proof shapes
 // the guest port must consume.
 #[test]
-fn test_recursive_ligerito() {
+fn recursive_ligerito_tiny() {
     use std::collections::BTreeMap;
     use std::time::Instant;
     use leanvm_b::compiler::parse_file_with_replacements;
