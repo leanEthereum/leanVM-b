@@ -1,5 +1,18 @@
 # End-to-end 1→1 recursion — working notes (guest spec)
 
+STATUS: DONE (tests/recursion_e2e.rs `recursion_1to1`). Inner: 531 cycles, all six
+tables, committed 2^17.13. Guest: 777,795 cycles, 23,935 BLAKE3. Outer: prove
+33.7s, verify 105.7ms + 211ms native deferred checks, proof ~682 KiB. Deferred and
+bound to the outer public input: 12 bytecode MLE claims, the lincheck matrix
+evaluation (one sparse nnz pass native), the two ring-switch tensor transposes and
+the two eval_rs_eq weights (bound-data claims; see the caveat below). Remaining
+for 2→1: batch the bytecode/matrix claims with the sumcheck of doc.tex §Deferred
+evaluation claims; the tensor/eval_rs_eq deferrals do not aggregate (they grow the
+public input linearly with the tree), so either accept that or find an
+in-circuit-cheap formulation (the transpose costs ~80k cycles as a gadget; the
+eval_rs_eq tensor steps cost 2 transposes per coordinate, which is why both are
+deferred).
+
 Goal: a guest program replaying `cpu::verify(inner_program, pi, inner_proof)`
 in-circuit with the bytecode + flock-matrix evaluations deferred (doc.tex
 §Deferred evaluation claims), proven as the outer proof.
