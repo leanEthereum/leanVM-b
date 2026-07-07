@@ -470,6 +470,115 @@ fn gkr_verify_source(mu: usize, seed: [F128; 2], leaf_val: F128, n_stream: usize
     s
 }
 
+// ---- Gadget 7: the per-table zerocheck verifier (constraints.rs replay) ----
+//
+// A verify() sub-protocol: the same degree-2 sumcheck core as GKR, but it samples
+// the batching scalar `eta` and the zerocheck point `r` up front, starts the
+// running claim at 0, and closes with `claim == eq_acc · c_eval(eta, evals)`.
+// Here the test constraint is `c(a,b) = a + b` (proves column a == column b on
+// every row), so `c_eval = ev0 + ev1`. The 6-table verifier will codegen a
+// per-table `c_eval` (the AIR-evaluator codegen, mirroring the reference).
+
+/// Emit the Lagrange interpolation of a degree-2 round univariate sent at nodes
+/// {0,1,g} as evals `(m0,m1,m2)`, evaluated at `rk`, into result var `dst`.
+/// Requires globals `INV0,INV1,INV2` (the inverse-denominators).
+fn emit_lagrange(s: &mut String, tag: &str, m0: &str, m1: &str, m2: &str, rk: &str, dst: &str) {
+    line(s, format!("pa{tag} = {rk} + 1"));
+    line(s, format!("pb{tag} = {rk} + GEN"));
+    line(s, format!("q0{tag} = {m0} * pa{tag} * pb{tag} * INV0"));
+    line(s, format!("q1{tag} = {m1} * {rk} * pb{tag} * INV1"));
+    line(s, format!("q2{tag} = {m2} * {rk} * pa{tag} * INV2"));
+    line(s, format!("{dst} = q0{tag} + q1{tag} + q2{tag}"));
+}
+
+fn zerocheck_verify_source(tau: usize, seed: [F128; 2], n_stream: usize) -> String {
+    let g = F128::generator();
+    let (inv0, inv1, inv2) = (g.inv(), (F128::ONE + g).inv(), (g * (F128::ONE + g)).inv());
+
+    let mut s = String::new();
+    s.push_str("from snark_lib import *\n");
+    s.push_str(&format!("SEED0 = {}\n", u(seed[0])));
+    s.push_str(&format!("SEED1 = {}\n", u(seed[1])));
+    s.push_str(&format!("INV0 = {}\n", u(inv0)));
+    s.push_str(&format!("INV1 = {}\n", u(inv1)));
+    s.push_str(&format!("INV2 = {}\n", u(inv2)));
+    s.push_str(&format!("N = {n_stream}\n\n"));
+    s.push_str("def main():\n");
+
+    let mut n = 0usize;
+    line(&mut s, "stream = HeapBuf(N)".into());
+    line(&mut s, "hint_witness(stream[0:N], \"stream\")".into());
+    line(&mut s, "cv0 = SEED0".into());
+    line(&mut s, "cv1 = SEED1".into());
+    line(&mut s, "sp = stream".into());
+    emit_sample(&mut s, &mut n, "eta"); // batching scalar (unused by c=a+b, but keeps sponge in sync)
+    for j in 0..tau {
+        emit_sample(&mut s, &mut n, &format!("rr{j}")); // the zerocheck point r
+    }
+    line(&mut s, "claim = GEN ** 0 + GEN ** 0".into()); // an unambiguous field zero
+    let mut eqacc = "ea0".to_string();
+    line(&mut s, format!("{eqacc} = GEN ** 0"));
+    for round in 0..tau {
+        let (m0, m1, m2) = (format!("z{round}0"), format!("z{round}1"), format!("z{round}2"));
+        emit_read(&mut s, &mut n, &m0);
+        emit_read(&mut s, &mut n, &m1);
+        emit_read(&mut s, &mut n, &m2);
+        let rj = format!("rr{round}");
+        line(&mut s, format!("or{round} = 1 + {rj}"));
+        line(&mut s, format!("tm{round} = or{round} * {m0} + {rj} * {m1}"));
+        line(&mut s, format!("ck{round} = {eqacc} * tm{round}"));
+        line(&mut s, format!("assert ck{round} == claim"));
+        let rk = format!("rk{round}");
+        emit_sample(&mut s, &mut n, &rk);
+        let neweq = format!("ea{}", round + 1);
+        line(&mut s, format!("os{round} = 1 + {rj} + {rk}"));
+        line(&mut s, format!("{neweq} = {eqacc} * os{round}"));
+        eqacc = neweq;
+        emit_lagrange(&mut s, &format!("_{round}"), &m0, &m1, &m2, &rk, &format!("lg{round}"));
+        line(&mut s, format!("claim = {eqacc} * lg{round}"));
+    }
+    // Read the two column evals; final check claim == eq_acc·(ev0+ev1).
+    emit_read(&mut s, &mut n, "ev0");
+    emit_read(&mut s, &mut n, "ev1");
+    line(&mut s, "cev = ev0 + ev1".into());
+    line(&mut s, format!("fin = {eqacc} * cev"));
+    line(&mut s, "assert claim == fin".into());
+    line(&mut s, "return".into());
+    s
+}
+
+#[test]
+fn zerocheck_verify() {
+    use leanvm_b::constraints;
+    use leanvm_b::transcript::{ProverState, VerifierState};
+
+    for tau in [1usize, 2, 3] {
+        let col_len = 1usize << tau;
+        // Two equal columns ⇒ constraint c = a + b vanishes on every row.
+        let a: Vec<F128> = (0..col_len)
+            .map(|i| F128::new(0x51_7c_c1_b7 ^ i as u64, 0x2f_2f ^ ((i as u64) << 12)))
+            .collect();
+        let cols = vec![a.clone(), a];
+        let c_eval = |_eta: F128, vals: &[F128]| vals[0] + vals[1];
+
+        let label = b"zctest";
+        let mut ps = ProverState::new(label, &[]);
+        let _ = constraints::prove(&cols, c_eval, &mut ps);
+        let proof = ps.into_proof();
+        // Sanity: the native verifier accepts.
+        let mut vs = VerifierState::new(label, &proof, &[]);
+        constraints::verify(tau, 2, c_eval, &mut vs).expect("ref zerocheck verify");
+
+        let seed = fs_ref::seed_cv(label, &[]);
+        let src = zerocheck_verify_source(tau, seed, proof.stream.len());
+        let mut program = compile(&parse(&src).unwrap_or_else(|e| panic!("tau={tau}: parse: {e}")));
+        program.set_witness("stream", vec![proof.stream.clone()]);
+        let pi = [F128::ZERO, F128::ZERO];
+        let (gproof, _) = prove(&program, pi);
+        verify(&program, &pi, &gproof).unwrap_or_else(|e| panic!("tau={tau}: verify: {e:?}"));
+    }
+}
+
 // ---- Gadget 6: single-path Merkle verification ----
 //
 // A Ligerito query opening proves a codeword column sits at a leaf of the commit
