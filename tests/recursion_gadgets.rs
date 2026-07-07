@@ -543,6 +543,113 @@ fn runtime_observe_loop() {
     verify(&program, &pi, &proof).expect("runtime-observe loop verifies");
 }
 
+// ---- Gadget 10: ring-switch claim check (φ₈ F₈-Lagrange, runtime) ----
+//
+// The first stage of the real Ligerito opening (`ring_switch::verify_succinct`):
+// it rebuilds the 128 claim weights from the univariate-skip coord `z_skip` and
+// the 7th prefix bit `x_outer_0` and checks `Σ weights[i]·s_hat_v[i] == claim`.
+// `weights[i] = λ_{i&63}(z_skip) · eq(x_outer_0, i>>6)`, where λ_j(z) =
+// (∏_{l≠j}(z + s_l))·ID_j is the F₈-Lagrange basis over the φ₈-embedded nodes
+// `s_l = PHI_8_TABLE[l]` (constants) with `ID_j = (∏_{l≠j}(s_j+s_l))^{-1}`
+// (constants). With `z_skip`/`x_outer_0` HINTED at runtime, this is genuine
+// runtime F₈-Lagrange in-circuit — one of the opening's hard sub-problems. The
+// 64 numerators `∏_{l≠j}(z+s_l)` are formed in O(64) via prefix/suffix products.
+
+/// Generate the claim-check program. `sj[l]` = φ₈ node l, `id[j]` = the constant
+/// inverse-denominator; `claim` is the value flock's `claim_check` returns.
+fn claim_check_source(sj: &[F128], id: &[F128], claim: F128) -> String {
+    let mut s = String::new();
+    s.push_str("from snark_lib import *\n");
+    for (j, v) in sj.iter().enumerate() {
+        s.push_str(&format!("SJ_{j} = {}\n", u(*v)));
+    }
+    for (j, v) in id.iter().enumerate() {
+        s.push_str(&format!("ID_{j} = {}\n", u(*v)));
+    }
+    s.push_str(&format!("CLAIM = {}\n\n", u(claim)));
+    s.push_str("def main():\n");
+    line(&mut s, "zin = StackBuf(1)".into());
+    line(&mut s, "hint_witness(zin, \"z_skip\")".into());
+    line(&mut s, "zskip = zin[0]".into());
+    line(&mut s, "xin = StackBuf(1)".into());
+    line(&mut s, "hint_witness(xin, \"x_outer0\")".into());
+    line(&mut s, "x0 = xin[0]".into());
+    line(&mut s, "shv = HeapBuf(128)".into());
+    line(&mut s, "hint_witness(shv[0:128], \"s_hat_v\")".into());
+    // t_l = z_skip + s_l  (64 terms)
+    for l in 0..64 {
+        line(&mut s, format!("t{l} = zskip + SJ_{l}"));
+    }
+    // prefix pre_j = ∏_{l<j} t_l  (pre_0 = 1)
+    line(&mut s, "pre0 = GEN ** 0".into());
+    for j in 1..64 {
+        line(&mut s, format!("pre{j} = pre{} * t{}", j - 1, j - 1));
+    }
+    // suffix suf_j = ∏_{l>j} t_l  (suf_63 = 1)
+    line(&mut s, "suf63 = GEN ** 0".into());
+    for j in (0..63).rev() {
+        line(&mut s, format!("suf{j} = suf{} * t{}", j + 1, j + 1));
+    }
+    // λ_j = pre_j · suf_j · ID_j
+    for j in 0..64 {
+        line(&mut s, format!("lam{j} = pre{j} * suf{j} * ID_{j}"));
+    }
+    // lo_sum = Σ_{i<64} λ_i·shv[i] ; hi_sum = Σ_{i<64} λ_i·shv[64+i]
+    line(&mut s, "lo0 = lam0 * shv[GEN ** 0]".into());
+    for i in 1..64 {
+        line(&mut s, format!("lo{i} = lo{} + lam{i} * shv[GEN ** {i}]", i - 1));
+    }
+    line(&mut s, "hi0 = lam0 * shv[GEN ** 64]".into());
+    for i in 1..64 {
+        line(&mut s, format!("hi{i} = hi{} + lam{i} * shv[GEN ** {}]", i - 1, 64 + i));
+    }
+    // claim = eq(x0,0)·lo_sum + eq(x0,1)·hi_sum = (1+x0)·lo_sum + x0·hi_sum
+    line(&mut s, "eqlo = GEN ** 0 + x0".into());
+    line(&mut s, "acc = eqlo * lo63 + x0 * hi63".into());
+    line(&mut s, "assert acc == CLAIM".into());
+    line(&mut s, "return".into());
+    s
+}
+
+#[test]
+fn ring_switch_claim_check() {
+    use flare::field::PHI_8_TABLE;
+    use flare::pcs::ring_switch::{build_claim_weights, claim_check};
+
+    let z_skip = F128::new(0x1234_5678_9abc_def0, 0x0fed_cba9_8765_4321);
+    let x0 = F128::new(0x0f0f_0f0f_1111_2222, 0x3333_4444_5555_6666);
+    let s_hat_v: Vec<F128> = (0..128u64)
+        .map(|i| F128::new(0xABCD_0000 ^ i.wrapping_mul(0x9E37_79B9), 0x55 ^ (i << 40)))
+        .collect();
+
+    // Reference weights + claim from flock itself.
+    let weights = build_claim_weights(z_skip, x0);
+    let claim = claim_check(&weights, &s_hat_v);
+
+    // φ₈ nodes and inverse-denominators (compile-time constants for the guest).
+    let sj: Vec<F128> = (0..64).map(|j| PHI_8_TABLE[j]).collect();
+    let id: Vec<F128> = (0..64)
+        .map(|j| {
+            let mut den = F128::ONE;
+            for l in 0..64 {
+                if l != j {
+                    den *= sj[j] + sj[l];
+                }
+            }
+            den.inv()
+        })
+        .collect();
+
+    let src = claim_check_source(&sj, &id, claim);
+    let mut program = compile(&parse(&src).expect("parse claim_check"));
+    program.set_witness("z_skip", vec![vec![z_skip]]);
+    program.set_witness("x_outer0", vec![vec![x0]]);
+    program.set_witness("s_hat_v", vec![s_hat_v]);
+    let pi = [F128::ZERO, F128::ZERO];
+    let (proof, _) = prove(&program, pi);
+    verify(&program, &pi, &proof).expect("ring-switch claim check verifies");
+}
+
 // ---- Gadget 9: the Ligerito RoundQuad sumcheck fold ----
 //
 // The Ligerito opening runs one global sumcheck whose round message is

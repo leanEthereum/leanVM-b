@@ -36,6 +36,10 @@ bincode = "1"
 # signs natively with it and re-verifies inside the VM.
 xmss = { path = "xmss" }
 rand = "0.9"
+# The recursion gadget tests drive flock's PCS primitives directly (e.g.
+# `ring_switch::build_claim_weights`, `PHI_8_TABLE`) to cross-check the zkDSL
+# ports against the reference. Same vendored crate `flare` depends on.
+flare = { path = "vendor/flock-core", package = "flock-core" }
 
 [profile.release]
 lto = "thin"
