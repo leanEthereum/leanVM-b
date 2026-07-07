@@ -306,6 +306,49 @@ impl ProverState {
 
 /// Verifier side: reads scalars from a received [`Proof`] (borrowed) and pulls
 /// hints in order.
+/// One verifier-side transcript operation, recorded by the (diagnostic) trace
+/// ([`trace_start`] / [`trace_take`]). The in-circuit verifier replays exactly
+/// this op sequence, so the trace of a real `cpu::verify` run is both the guest
+/// program's mechanical spec and its checkpoint data.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TraceOp {
+    /// `next_scalar`: a stream word read AND bound into the sponge.
+    StreamObserve(F128),
+    /// `take_raw`: a stream word consumed without binding (hint bytes, nonces).
+    StreamRaw(F128),
+    /// A non-stream observe (flock replay binding a sub-proof struct value).
+    Observe(F128),
+    /// `absorb_bytes` (labels, roots).
+    AbsorbBytes(Vec<u8>),
+    Sample(F128),
+    Pow { nonce: u64, bits: u32 },
+    /// `next_opening` (the Ligerito hint channel).
+    Opening,
+}
+
+thread_local! {
+    static TRACE: std::cell::RefCell<Option<Vec<TraceOp>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Start recording verifier transcript ops on this thread (diagnostic).
+pub fn trace_start() {
+    TRACE.with(|t| *t.borrow_mut() = Some(Vec::new()));
+}
+
+/// Stop recording and return the ops recorded since [`trace_start`].
+pub fn trace_take() -> Vec<TraceOp> {
+    TRACE.with(|t| t.borrow_mut().take().unwrap_or_default())
+}
+
+#[inline]
+fn trace(op: impl FnOnce() -> TraceOp) {
+    TRACE.with(|t| {
+        if let Some(v) = t.borrow_mut().as_mut() {
+            v.push(op());
+        }
+    });
+}
+
 pub struct VerifierState<'a> {
     sponge: Sponge,
     stream: &'a [F128],
@@ -333,6 +376,7 @@ impl<'a> VerifierState<'a> {
         let x = *self.stream.get(self.offset).ok_or(Error::ExceededStream)?;
         self.offset += 1;
         self.sponge.observe(x);
+        trace(|| TraceOp::StreamObserve(x));
         Ok(x)
     }
 
@@ -345,6 +389,7 @@ impl<'a> VerifierState<'a> {
     fn take_raw(&mut self) -> Result<F128, Error> {
         let x = *self.stream.get(self.offset).ok_or(Error::ExceededStream)?;
         self.offset += 1;
+        trace(|| TraceOp::StreamRaw(x));
         Ok(x)
     }
 
@@ -371,16 +416,19 @@ impl<'a> VerifierState<'a> {
     }
 
     pub fn sample(&mut self) -> F128 {
-        self.sponge.sample()
+        let v = self.sponge.sample();
+        trace(|| TraceOp::Sample(v));
+        v
     }
 
     pub fn sample_vec(&mut self, n: usize) -> Vec<F128> {
-        (0..n).map(|_| self.sponge.sample()).collect()
+        (0..n).map(|_| self.sample()).collect()
     }
 
     pub fn next_opening(&mut self) -> Result<&'a LigeritoProof, Error> {
         let o = self.openings.get(self.oi).ok_or(Error::MissingHint)?;
         self.oi += 1;
+        trace(|| TraceOp::Opening);
         Ok(o)
     }
 
@@ -389,6 +437,7 @@ impl<'a> VerifierState<'a> {
     /// stays in lockstep). Rejects a proof that skipped or under-did the grind.
     pub fn grind_check(&mut self, bits: u32) -> Result<(), Error> {
         let nonce = self.take_raw()?.lo;
+        trace(|| TraceOp::Pow { nonce, bits });
         if self.sponge.verify_pow(nonce, bits) {
             Ok(())
         } else {
@@ -437,15 +486,20 @@ impl Challenger for ProverState {
 impl Challenger for VerifierState<'_> {
     fn observe_label(&mut self, label: &[u8]) {
         self.sponge.absorb_bytes(label);
+        trace(|| TraceOp::AbsorbBytes(label.to_vec()));
     }
     fn observe_f128(&mut self, value: F128) {
         self.sponge.observe(value);
+        trace(|| TraceOp::Observe(value));
     }
     fn observe_bytes(&mut self, bytes: &[u8]) {
         self.sponge.absorb_bytes(bytes);
+        trace(|| TraceOp::AbsorbBytes(bytes.to_vec()));
     }
     fn sample_f128(&mut self) -> F128 {
-        self.sponge.sample()
+        let v = self.sponge.sample();
+        trace(|| TraceOp::Sample(v));
+        v
     }
     // The verifier mirror: check each grinding nonce (an honest prover's proof
     // stays byte-identical; a forged one that skipped the grind is rejected).
@@ -453,6 +507,7 @@ impl Challenger for VerifierState<'_> {
         self.sponge.grind_pow(bits)
     }
     fn verify_pow(&mut self, nonce: u64, bits: u32) -> bool {
+        trace(|| TraceOp::Pow { nonce, bits });
         self.sponge.verify_pow(nonce, bits)
     }
 }

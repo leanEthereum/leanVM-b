@@ -26,7 +26,7 @@ mod layout;
 mod trace;
 pub use execute::Execution;
 pub use isa::{DerefMode, Op};
-pub(crate) use layout::*;
+pub use layout::*;
 pub(crate) use trace::{Brow, Drow, Jrow, Srow, Trace, Xrow};
 
 /// Witness-gen `BLAKE3` compression (doc §7.6): the four input words are the two
@@ -194,6 +194,12 @@ impl Program {
             witness: HashMap::new(),
             fn_ranges: Vec::new(),
         }
+    }
+
+    /// The program's binding digest ([`program_digest`]) — the recursion
+    /// harness bakes it into the outer guest's transcript seed.
+    pub fn digest(&self) -> [F128; 2] {
+        self.digest
     }
 
     /// Supply the entries of witness stream `name`: one slice of values per

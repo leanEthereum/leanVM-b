@@ -9,29 +9,29 @@ use super::*;
 // Shared committed columns (indices `0..N_SHARED`). The program (opcode +
 // operands) is PUBLIC, not committed: it rides the bytecode seed/finalize blocks
 // as `Coord::Public`; only the witness-dependent finalize counts are committed.
-pub(crate) const MEM: usize = 0; // the data-memory image
-pub(crate) const MFCNT: usize = 1; // per-cell memory access count, g^{A[i]}
-pub(crate) const BFCNT: usize = 2; // per-pc bytecode execution count, g^{A[pc]}
+pub const MEM: usize = 0; // the data-memory image
+pub const MFCNT: usize = 1; // per-cell memory access count, g^{A[i]}
+pub const BFCNT: usize = 2; // per-pc bytecode execution count, g^{A[pc]}
 // flock's packed BLAKE3 witness `q_pkd`, committed in the SAME stack as every
 // other column (single PCS). Size `2^(K_LOG+n_log-7)` when the program runs ≥1
 // BLAKE3, else a size-1 dummy (kept in the static schema). It is the SOLE copy of
 // the input/output words: the VM's BLAKE3 value columns are virtual and their
 // memory-bus claims route to `q_pkd` slots (§blake3_flock), so nothing duplicates
 // them. flock's R1CS validity is discharged by a basefold over this commitment.
-pub(crate) const QPKD: usize = 3;
-pub(crate) const N_SHARED: usize = 4;
+pub const QPKD: usize = 3;
+pub const N_SHARED: usize = 4;
 
 /// Global column indexing: the shared columns occupy `0..N_SHARED`, then each
 /// table `t` (in [`tables::tables`] order) owns the contiguous block `[base[t],
 /// base[t] + n_committed_columns_t)`. Both prover and verifier derive this identically
 /// from the table set, so every column claim lines up.
-pub(crate) struct Schema {
-    pub(crate) base: [usize; 6],
-    pub(crate) n: usize,
+pub struct Schema {
+    pub base: [usize; 6],
+    pub n: usize,
 }
 
 /// The schema is a pure function of the fixed table set, so compute it once.
-pub(crate) fn schema() -> &'static Schema {
+pub fn schema() -> &'static Schema {
     static SCHEMA: std::sync::OnceLock<Schema> = std::sync::OnceLock::new();
     SCHEMA.get_or_init(|| {
         let mut base = [0usize; 6];
@@ -129,7 +129,7 @@ fn col_kappas(log_mem: usize, log_bytecode: usize, taus: [usize; 6], n_blake3: u
 /// blocks reference columns only by INDEX and the program only through its
 /// public columns, so this needs no committed witness — both prover and verifier
 /// reconstruct exactly the same structure (§7, §8).
-pub(crate) fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; 6], pi: [F128; 2]) -> Layout {
+pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; 6], pi: [F128; 2]) -> Layout {
     let bytecode_size = prog.len();
     let log_bytecode = crate::log2_strict_usize(bytecode_size);
     let cells = 1usize << log_mem;
