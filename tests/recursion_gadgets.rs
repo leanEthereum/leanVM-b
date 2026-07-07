@@ -55,6 +55,32 @@ mod fs_ref {
         }
         cv
     }
+
+    /// A stateful mirror of `src/transcript.rs`'s `Sponge`, so a test can replay
+    /// the exact challenge sequence a `ProverState`-driven verifier produces (to
+    /// extract the sampled query values that the guest must hint bits for).
+    pub struct Sponge {
+        pub cv: [F128; 2],
+    }
+    impl Sponge {
+        pub fn new(label: &[u8], statement: &[F128]) -> Self {
+            Self { cv: seed_cv(label, statement) }
+        }
+        pub fn observe(&mut self, x: F128) {
+            self.cv = compress(self.cv, [x, DS_SCALAR]);
+        }
+        pub fn observe_bytes(&mut self, bytes: &[u8]) {
+            self.cv = absorb_bytes(self.cv, bytes);
+        }
+        pub fn sample(&mut self) -> F128 {
+            let out = compress(self.cv, [F128::ZERO, F128::new(4, 0)]); // DS_SQUEEZE
+            self.cv = out;
+            out[0]
+        }
+        pub fn absorb_nonce(&mut self, nonce: u64) {
+            self.cv = compress(self.cv, [F128::new(nonce, 0), F128::new(5, 0)]); // DS_POW
+        }
+    }
 }
 
 /// The 128 polynomial-basis coefficients of `v`, LSB first (`bit i` = coeff of
@@ -626,13 +652,82 @@ fn ligerito_native_probe() {
     let ok = recursive_verifier_with_basis_succinct(&vc, &proof, log_n, target, &initial_root, eval_b_residual, &mut vch);
     assert!(ok, "native ligerito verifier accepts the honest proof");
 
-    eprintln!("=== tiny ligerito proof shapes ===");
-    eprintln!("sumcheck_transcript.len = {}", proof.sumcheck_transcript.len());
-    let sh = |rows: &[Vec<F128>]| (rows.len(), rows.first().map(|r| r.len()).unwrap_or(0));
-    eprintln!("initial_proof.opened_rows = {:?}, merkle_proof.len = {}", sh(&proof.initial_proof.opened_rows), proof.initial_proof.merkle_proof.len());
-    eprintln!("recursive_roots.len = {}", proof.recursive_roots.len());
-    eprintln!("final_proof.yr.len = {}", proof.final_proof.yr.len());
-    eprintln!("final_proof.opened_rows = {:?}, merkle_proof.len = {}", sh(&proof.final_proof.opened_rows), proof.final_proof.merkle_proof.len());
+    // ---- Rust mirror of the tiny verifier (validates the port spec + extracts
+    // the sampled query values). If `inner == t_r` here, the replay is correct
+    // and matches native (which accepted the same proof). ----
+    use flare::lincheck::build_eq_table as bet;
+    use flare::pcs::ligerito::{eval_sk_at_vks, induce_sumcheck_evaluate_at_residual};
+    use flare::zerocheck::multilinear::eq_eval as eqe;
+
+    let sc = &proof.sumcheck_transcript;
+    let fm = |u0: F128, u2: F128, tr: F128| (u0, tr + u2, u2); // from_msg -> (c,b,a)
+    let ev = |q: (F128, F128, F128), r: F128| q.0 + r * q.1 + r * r * q.2;
+    let fold = |a: (F128, F128, F128), b: (F128, F128, F128), al: F128| (a.0 + al * b.0, a.1 + al * b.1, a.2 + al * b.2);
+    let dot = |row: &[F128], eq: &[F128]| row.iter().zip(eq).map(|(&r, &e)| r * e).fold(F128::ZERO, |a, x| a + x);
+
+    let mut sp = fs_ref::Sponge::new(label, &[]);
+    sp.observe_bytes(b"flock-ligerito-basis-v0");
+    sp.observe(target);
+    sp.observe_bytes(&initial_root);
+    let mut tr = target;
+    sp.observe(sc[0].u_0);
+    sp.observe(sc[0].u_2);
+    let mut quad = fm(sc[0].u_0, sc[0].u_2, tr);
+    let mut r_lane = Vec::new();
+    for j in 0..initial_k {
+        let ri = sp.sample();
+        r_lane.push(ri);
+        tr = ev(quad, ri);
+        sp.observe(sc[1 + j].u_0);
+        sp.observe(sc[1 + j].u_2);
+        quad = fm(sc[1 + j].u_0, sc[1 + j].u_2, tr);
+    }
+    sp.observe_bytes(&proof.recursive_roots[0]);
+    sp.absorb_nonce(0);
+    let v_q0 = sp.sample();
+    let q0 = (v_q0.lo as usize) % 128;
+    let enforced0 = dot(&proof.initial_proof.opened_rows[0], &bet(&r_lane));
+    sp.observe(sc[3].u_0);
+    sp.observe(sc[3].u_2);
+    let iq = fm(sc[3].u_0, sc[3].u_2, enforced0);
+    let beta0 = sp.sample();
+    quad = fold(quad, iq, beta0);
+    tr += beta0 * enforced0;
+    let mut level_rs = Vec::new();
+    for j in 0..k_0 {
+        let ri = sp.sample();
+        level_rs.push(ri);
+        tr = ev(quad, ri);
+        sp.observe(sc[4 + j].u_0);
+        sp.observe(sc[4 + j].u_2);
+        quad = fm(sc[4 + j].u_0, sc[4 + j].u_2, tr);
+    }
+    for v in &proof.final_proof.yr {
+        sp.observe(*v);
+    }
+    sp.absorb_nonce(0);
+    let v_ql = sp.sample();
+    let q_last = (v_ql.lo as usize) % 32;
+    let enforced_last = dot(&proof.final_proof.opened_rows[0], &bet(&level_rs));
+    let beta_last = sp.sample();
+    tr += beta_last * enforced_last;
+
+    let mut ris = r_lane.clone();
+    ris.extend(&level_rs);
+    let yr_log_n = 4usize;
+    let resid0 = induce_sumcheck_evaluate_at_residual(6, &eval_sk_at_vks(6), &[q0], &[], &ris[2..4], yr_log_n);
+    let resid_last = induce_sumcheck_evaluate_at_residual(4, &eval_sk_at_vks(4), &[q_last], &[], &ris[4..4], yr_log_n);
+    let mut inner = F128::ZERO;
+    for y in 0..16usize {
+        let mut point = ris.clone();
+        for j in 0..yr_log_n {
+            point.push(if (y >> j) & 1 == 1 { F128::ONE } else { F128::ZERO });
+        }
+        let comb = eqe(&z, &point) + beta0 * resid0[y] + beta_last * resid_last[y];
+        inner += proof.final_proof.yr[y] * comb;
+    }
+    assert_eq!(inner, tr, "mirror: inner == t_r (matches native accept)");
+    eprintln!("mirror OK — q0={q0}, q_last={q_last}, sumcheck msgs={}", sc.len());
 }
 
 // ---- Gadget 10: ring-switch claim check (φ₈ F₈-Lagrange, runtime) ----
