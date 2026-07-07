@@ -72,6 +72,30 @@ NLOGB3 = NLOGB3_PLACEHOLDER
 PINZOFF = PINZOFF_PLACEHOLDER
 PINV = PINV_PLACEHOLDER
 CVCHK_C = CVCHK_C_PLACEHOLDER
+# Phase D (flock reduction): the r1cs statement label/digest words, zerocheck +
+# lincheck label words, the seven fixed inner challenges (+ inverses of 1+c),
+# the phi8 node table + baked Lagrange inverse denominators (Lambda domain,
+# combined domain, S domain), and shapes: MR1CS = r1cs.m, NMLV = MR1CS-6,
+# LCR = k_log - k_skip, PINCOL = the const-pin column.
+R1CSLBL = R1CSLBL_PLACEHOLDER
+SD0 = SD0_PLACEHOLDER
+SD1 = SD1_PLACEHOLDER
+ZCLBLA = ZCLBLA_PLACEHOLDER
+ZCLBLB = ZCLBLB_PLACEHOLDER
+LCLBLA = LCLBLA_PLACEHOLDER
+LCLBLB = LCLBLB_PLACEHOLDER
+INNER7 = INNER7_PLACEHOLDER
+I7INV = I7INV_PLACEHOLDER
+PHI = PHI_PLACEHOLDER
+ILAM = ILAM_PLACEHOLDER
+ICMB = ICMB_PLACEHOLDER
+ISDOM = ISDOM_PLACEHOLDER
+MR1CS = MR1CS_PLACEHOLDER
+NMLV = NMLV_PLACEHOLDER
+LCR = LCR_PLACEHOLDER
+PINCOL = PINCOL_PLACEHOLDER
+KLOG = KLOG_PLACEHOLDER
+CVCHK_D = CVCHK_D_PLACEHOLDER
 
 DS_SCALAR = 1
 DS_BYTE = 2
@@ -137,6 +161,20 @@ def main():
     hint_witness(bcv[0:NBCV], "bcv")
     cinv = HeapBuf(1)
     hint_witness(cinv[0:1], "cinv")
+    zc1 = HeapBuf(128)
+    hint_witness(zc1[0:128], "zc1")
+    zcr = HeapBuf(2 * NMLV)
+    hint_witness(zcr[0:2 * NMLV], "zcr")
+    zcf = HeapBuf(2)
+    hint_witness(zcf[0:2], "zcf")
+    zinv = HeapBuf(NMLV)
+    hint_witness(zinv[0:NMLV], "zinv")
+    lcr = HeapBuf(2 * LCR)
+    hint_witness(lcr[0:2 * LCR], "lcr")
+    lcz = HeapBuf(64)
+    hint_witness(lcz[0:64], "lcz")
+    matp = HeapBuf(1)
+    hint_witness(matp[0:1], "matpart")
 
     # Claim pool: values of every committed-coordinate claim, in decompose order
     # (their points are the GKR ζ's, resolvable from the baked block structure).
@@ -425,4 +463,143 @@ def main():
 
     # ---- Phase C checkpoint ----
     assert cv0 == CVCHK_C
+
+    # ---- flock reduction: bind_statement ----
+    cv0, cv1 = absorb(cv0, cv1, 13, DS_LEN)
+    cv0, cv1 = absorb(cv0, cv1, R1CSLBL, DS_BYTE)
+    cv0, cv1 = absorb(cv0, cv1, 32, DS_LEN)
+    cv0, cv1 = absorb(cv0, cv1, SD0, DS_BYTE)
+    cv0, cv1 = absorb(cv0, cv1, SD1, DS_BYTE)
+    cv0, cv1 = absorb(cv0, cv1, 32, DS_LEN)
+    cv0, cv1 = absorb(cv0, cv1, rt0, DS_BYTE)
+    cv0, cv1 = absorb(cv0, cv1, rt1, DS_BYTE)
+
+    # ---- flock zerocheck (univariate skip, k_skip = 6) ----
+    cv0, cv1 = absorb(cv0, cv1, 18, DS_LEN)
+    cv0, cv1 = absorb(cv0, cv1, ZCLBLA, DS_BYTE)
+    cv0, cv1 = absorb(cv0, cv1, ZCLBLB, DS_BYTE)
+    # the full r vector: 6 sampled skips, 7 fixed inner, MR1CS-13 sampled outer.
+    zr = HeapBuf(MR1CS)
+    for i in unroll(0, 6):
+        rv, cv0, cv1 = sqz(cv0, cv1)
+        zr[GEN ** i] = rv
+    for i in unroll(0, 7):
+        zr[GEN ** (6 + i)] = INNER7[i]
+    for i in unroll(0, MR1CS - 13):
+        rv, cv0, cv1 = sqz(cv0, cv1)
+        zr[GEN ** (13 + i)] = rv
+    # observe round-1 messages (ab then c), sample z.
+    for i in unroll(0, 128):
+        cv0, cv1 = obs(cv0, cv1, zc1[GEN ** i])
+    zz, cv0, cv1 = sqz(cv0, cv1)
+    # interpolate P^C(z) on the Lambda domain (phi8 nodes 64..128): prefix/
+    # suffix numerator products with baked inverse denominators.
+    lpre = HeapBuf(65)
+    lpre[GEN ** 0] = GEN ** 0
+    for i in unroll(0, 64):
+        lpre[GEN ** (i + 1)] = lpre[GEN ** i] * (zz + PHI[64 + i])
+    lsuf = HeapBuf(65)
+    lsuf[GEN ** 64] = GEN ** 0
+    for i in unroll(0, 64):
+        lsuf[GEN ** (63 - i)] = lsuf[GEN ** (64 - i)] * (zz + PHI[64 + 63 - i])
+    ceval = 0
+    for i in unroll(0, 64):
+        ceval = ceval + lpre[GEN ** i] * lsuf[GEN ** (i + 1)] * ILAM[i] * zc1[GEN ** (64 + i)]
+    # combined interpolation at z over ALL 128 phi8 nodes (Lambda values only;
+    # the S half is zero by the zerocheck identity).
+    cpre = HeapBuf(129)
+    cpre[GEN ** 0] = GEN ** 0
+    for i in unroll(0, 128):
+        cpre[GEN ** (i + 1)] = cpre[GEN ** i] * (zz + PHI[i])
+    csuf = HeapBuf(129)
+    csuf[GEN ** 128] = GEN ** 0
+    for i in unroll(0, 128):
+        csuf[GEN ** (127 - i)] = csuf[GEN ** (128 - i)] * (zz + PHI[127 - i])
+    comb = 0
+    for i in unroll(0, 64):
+        comb = comb + cpre[GEN ** (64 + i)] * csuf[GEN ** (64 + i + 1)] * ICMB[i] * (zc1[GEN ** i] + zc1[GEN ** (64 + i)])
+    crun = comb + ceval
+    # multilinear rounds.
+    zrho = HeapBuf(NMLV)
+    for i in unroll(0, 7):
+        g1 = zcr[GEN ** (2 * i)]
+        gi = zcr[GEN ** (2 * i + 1)]
+        req = zr[GEN ** (6 + i)]
+        g0 = (crun + req * g1) * I7INV[i]
+        cv0, cv1 = obs(cv0, cv1, g1)
+        cv0, cv1 = obs(cv0, cv1, gi)
+        rhov, cv0, cv1 = sqz(cv0, cv1)
+        zrho[GEN ** i] = rhov
+        crun = g0 * (1 + rhov) + g1 * rhov + gi * rhov * (1 + rhov)
+    for i in unroll(7, NMLV):
+        g1 = zcr[GEN ** (2 * i)]
+        gi = zcr[GEN ** (2 * i + 1)]
+        req = zr[GEN ** (6 + i)]
+        ionepr = zinv[GEN ** i]
+        chkinv = (1 + req) * ionepr
+        assert chkinv == 1
+        g0 = (crun + req * g1) * ionepr
+        cv0, cv1 = obs(cv0, cv1, g1)
+        cv0, cv1 = obs(cv0, cv1, gi)
+        rhov, cv0, cv1 = sqz(cv0, cv1)
+        zrho[GEN ** i] = rhov
+        crun = g0 * (1 + rhov) + g1 * rhov + gi * rhov * (1 + rhov)
+    # final: crun == a_eval * b_eval; observe both.
+    fa = zcf[GEN ** 0]
+    fb = zcf[GEN ** 1]
+    fchk = fa * fb
+    assert crun == fchk
+    cv0, cv1 = obs(cv0, cv1, fa)
+    cv0, cv1 = obs(cv0, cv1, fb)
+
+    # ---- flock lincheck (matrix evaluation DEFERRED) ----
+    cv0, cv1 = absorb(cv0, cv1, 17, DS_LEN)
+    cv0, cv1 = absorb(cv0, cv1, LCLBLA, DS_BYTE)
+    cv0, cv1 = absorb(cv0, cv1, LCLBLB, DS_BYTE)
+    lal, cv0, cv1 = sqz(cv0, cv1)
+    lbe, cv0, cv1 = sqz(cv0, cv1)
+    lrun = lal * fa + fb + lbe
+    lrr = HeapBuf(LCR)
+    for i in unroll(0, LCR):
+        e1 = lcr[GEN ** (2 * i)]
+        ei = lcr[GEN ** (2 * i + 1)]
+        cv0, cv1 = obs(cv0, cv1, e1)
+        cv0, cv1 = obs(cv0, cv1, ei)
+        rv, cv0, cv1 = sqz(cv0, cv1)
+        lrr[GEN ** i] = rv
+        e0 = lrun + e1
+        c1q = e0 + e1 + ei
+        lrun = ei * rv * rv + c1q * rv + e0
+    for i in unroll(0, 64):
+        cv0, cv1 = obs(cv0, cv1, lcz[GEN ** i])
+    # final consistency: running == matpart (DEFERRED) + beta * pin term. The
+    # const-pin column folds through the top-variable bindings: weight =
+    # prod_j (bit_{klog-1-j}(PINCOL) ? r_j : 1+r_j), surviving z_partial index
+    # = PINCOL low 6 bits.
+    pinw = lbe
+    for j in unroll(0, LCR):
+        if (PINCOL // (2 ** (KLOG - 1 - j))) % 2 == 1:
+            pinw = pinw * lrr[GEN ** j]
+        else:
+            pinw = pinw * (1 + lrr[GEN ** j])
+    pinw = pinw * lcz[GEN ** (PINCOL % 64)]
+    mp = matp[GEN ** 0]
+    lchk = mp + pinw
+    assert lrun == lchk
+    # fresh z_skip; w = <lagrange_S(r_inner_skip), z_partial> (phi8 nodes 0..64).
+    lsk, cv0, cv1 = sqz(cv0, cv1)
+    spre = HeapBuf(65)
+    spre[GEN ** 0] = GEN ** 0
+    for i in unroll(0, 64):
+        spre[GEN ** (i + 1)] = spre[GEN ** i] * (lsk + PHI[i])
+    ssuf = HeapBuf(65)
+    ssuf[GEN ** 64] = GEN ** 0
+    for i in unroll(0, 64):
+        ssuf[GEN ** (63 - i)] = ssuf[GEN ** (64 - i)] * (lsk + PHI[63 - i])
+    lw = 0
+    for i in unroll(0, 64):
+        lw = lw + spre[GEN ** i] * ssuf[GEN ** (i + 1)] * ISDOM[i] * lcz[GEN ** i]
+
+    # ---- Phase D checkpoint ----
+    assert cv0 == CVCHK_D
     return

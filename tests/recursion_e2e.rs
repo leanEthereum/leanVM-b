@@ -312,6 +312,91 @@ fn gen_verify(
     w.sample();
     let phase_c_end = w.i;
 
+    // ---- Phase D walk: flock reduction (values straight from the trace) ----
+    // hint-bytes transport (raw words) then the opening marker.
+    while matches!(ops[w.i], TraceOp::StreamRaw(_)) {
+        w.i += 1;
+    }
+    assert!(matches!(ops[w.i], TraceOp::Opening));
+    w.i += 1;
+    let absorb = |w: &mut Walk| -> Vec<u8> {
+        let op = &w.ops[w.i];
+        w.i += 1;
+        match op {
+            TraceOp::AbsorbBytes(b) => b.clone(),
+            other => panic!("expected AbsorbBytes, got {other:?}"),
+        }
+    };
+    let observe = |w: &mut Walk| -> F128 {
+        let op = &w.ops[w.i];
+        w.i += 1;
+        match op {
+            TraceOp::Observe(x) => *x,
+            other => panic!("expected Observe, got {other:?}"),
+        }
+    };
+    assert_eq!(absorb(&mut w), b"flock-r1cs-v0".to_vec());
+    let sd_bytes = absorb(&mut w); // statement digest (32 bytes)
+    let _root_bytes = absorb(&mut w);
+    assert_eq!(absorb(&mut w), b"flock-zerocheck-v0".to_vec());
+    let n_log_b3 = l.taus[5];
+    let m_r1cs = flock_prover::r1cs_hashes::blake3::K_LOG + n_log_b3;
+    let n_mlv = m_r1cs - 6;
+    let mut zc_r = Vec::new();
+    for _ in 0..6 {
+        zc_r.push(w.sample());
+    }
+    let inner7: Vec<F128> = flare::zerocheck::univariate_skip_optimized::small_challenges_ghash()
+        .into_iter()
+        .chain(flare::zerocheck::univariate_skip_optimized::medium_challenges_ghash())
+        .collect();
+    zc_r.extend(&inner7);
+    for _ in 0..m_r1cs - 13 {
+        zc_r.push(w.sample());
+    }
+    let zc1: Vec<F128> = (0..128).map(|_| observe(&mut w)).collect();
+    let _zz = w.sample();
+    let mut zcr = Vec::new();
+    for _ in 0..n_mlv {
+        zcr.push(observe(&mut w));
+        zcr.push(observe(&mut w));
+        w.sample();
+    }
+    let zcf = vec![observe(&mut w), observe(&mut w)];
+    assert_eq!(absorb(&mut w), b"flock-lincheck-v0".to_vec());
+    let lc_alpha = w.sample();
+    let lc_beta = w.sample();
+    let mut lcr = Vec::new();
+    let mut lrr = Vec::new();
+    let lcrounds = flock_prover::r1cs_hashes::blake3::K_LOG - 6;
+    for _ in 0..lcrounds {
+        lcr.push(observe(&mut w));
+        lcr.push(observe(&mut w));
+        lrr.push(w.sample());
+    }
+    let lcz: Vec<F128> = (0..64).map(|_| observe(&mut w)).collect();
+    let _lsk = w.sample();
+    let phase_d_end = w.i;
+
+    // matpart = the deferred weighted matrix evaluation: the lincheck running
+    // claim minus (= plus, char 2) the const-pin contribution.
+    let r1cs = flock_prover::r1cs_hashes::blake3::build_block_r1cs(n_log_b3);
+    let pincol = r1cs.const_pin.expect("blake3 r1cs has a const pin");
+    let mut lrun = lc_alpha * zcf[0] + zcf[1] + lc_beta;
+    for i in 0..lcrounds {
+        let (e1, ei, rv) = (lcr[2 * i], lcr[2 * i + 1], lrr[i]);
+        let e0 = lrun + e1;
+        let c1q = e0 + e1 + ei;
+        lrun = ei * rv * rv + c1q * rv + e0;
+    }
+    let mut pinw = lc_beta;
+    for (j, &rv) in lrr.iter().enumerate() {
+        let bit = (pincol >> (flock_prover::r1cs_hashes::blake3::K_LOG - 1 - j)) & 1;
+        pinw *= if bit == 1 { rv } else { F128::ONE + rv };
+    }
+    pinw *= lcz[pincol % 64];
+    let matpart = lrun + pinw;
+
     // ---- hints ----
     // fpb: the grind digest bits. Base = compress(cv_after_alpha, [0, POW]).
     let seed = Mirror::new(b"leanvm-b", &[pi[0], pi[1], dig[0], dig[1]]);
@@ -343,6 +428,9 @@ fn gen_verify(
     let mut m = seed.clone();
     m.replay(&ops[0..phase_c_end]);
     let cvchk_c = m.cv[0];
+    let mut m = seed.clone();
+    m.replay(&ops[0..phase_d_end]);
+    let cvchk_d = m.cv[0];
 
     // ---- placeholder map ----
     let ints = |v: &[usize]| format!("[{}]", v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(", "));
@@ -426,12 +514,67 @@ fn gen_verify(
     let pinv: Vec<u128> = leanvm_b::blake3_flock::pin_constants().iter().map(|&v| u(v)).collect();
     ps("PINV", us(&pinv));
     ps("CVCHK_C", u(cvchk_c).to_string());
+    // ---- Phase D placeholders ----
+    let word16 = |b: &[u8], o: usize| {
+        let mut buf = [0u8; 16];
+        let e = (b.len() - o).min(16);
+        buf[..e].copy_from_slice(&b[o..o + e]);
+        F128::new(
+            u64::from_le_bytes(buf[..8].try_into().unwrap()),
+            u64::from_le_bytes(buf[8..].try_into().unwrap()),
+        )
+    };
+    ps("R1CSLBL", u(word16(b"flock-r1cs-v0", 0)).to_string());
+    ps("SD0", u(word16(&sd_bytes, 0)).to_string());
+    ps("SD1", u(word16(&sd_bytes, 16)).to_string());
+    ps("ZCLBLA", u(word16(b"flock-zerocheck-v0", 0)).to_string());
+    ps("ZCLBLB", u(word16(b"flock-zerocheck-v0", 16)).to_string());
+    ps("LCLBLA", u(word16(b"flock-lincheck-v0", 0)).to_string());
+    ps("LCLBLB", u(word16(b"flock-lincheck-v0", 16)).to_string());
+    let flds = |v: &[F128]| format!("[{}]", v.iter().map(|&x| u(x).to_string()).collect::<Vec<_>>().join(", "));
+    ps("INNER7", flds(&inner7));
+    let i7inv: Vec<F128> = inner7.iter().map(|&c| (F128::ONE + c).inv()).collect();
+    ps("I7INV", flds(&i7inv));
+    let phi: Vec<F128> = flare::field::phi8::PHI_8_TABLE[..128].to_vec();
+    ps("PHI", flds(&phi));
+    let inv_den = |nodes: &[F128], node: F128, skip: F128| {
+        let mut d = F128::ONE;
+        for &s in nodes {
+            if s != skip {
+                d *= node + s;
+            }
+        }
+        d.inv()
+    };
+    let ilam: Vec<F128> = (0..64).map(|i| inv_den(&phi[64..128], phi[64 + i], phi[64 + i])).collect();
+    let icmb: Vec<F128> = (0..64).map(|i| inv_den(&phi[..128], phi[64 + i], phi[64 + i])).collect();
+    let isdom: Vec<F128> = (0..64).map(|i| inv_den(&phi[..64], phi[i], phi[i])).collect();
+    ps("ILAM", flds(&ilam));
+    ps("ICMB", flds(&icmb));
+    ps("ISDOM", flds(&isdom));
+    ps("MR1CS", m_r1cs.to_string());
+    ps("NMLV", n_mlv.to_string());
+    ps("LCR", lcrounds.to_string());
+    ps("PINCOL", pincol.to_string());
+    ps("KLOG", flock_prover::r1cs_hashes::blake3::K_LOG.to_string());
+    ps("CVCHK_D", u(cvchk_d).to_string());
 
+    let mut zinv = vec![F128::ONE; n_mlv];
+    for (i, item) in zinv.iter_mut().enumerate().take(n_mlv).skip(7) {
+        *item = (F128::ONE + zc_r[6 + i]).inv();
+    }
     let hints = vec![
         ("stream".to_string(), proof.stream.clone()),
         ("fpb".to_string(), bits_of(gdig)),
         ("bcv".to_string(), bcv),
         ("cinv".to_string(), vec![cinv]),
+        ("zc1".to_string(), zc1),
+        ("zcr".to_string(), zcr),
+        ("zcf".to_string(), zcf.clone()),
+        ("zinv".to_string(), zinv),
+        ("lcr".to_string(), lcr.clone()),
+        ("lcz".to_string(), lcz.clone()),
+        ("matpart".to_string(), vec![matpart]),
     ];
     (rep, hints)
 }
