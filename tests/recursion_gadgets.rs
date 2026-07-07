@@ -94,24 +94,18 @@ mod fs_ref {
             self.absorb_nonce(nonce);
             ok
         }
-        /// sample_distinct_queries: sample until `count` distinct `v.lo % block_len`
-        /// collected; returns (sorted distinct positions, the raw sampled values in
-        /// order). block_len is a power of two.
-        pub fn sample_distinct_queries(&mut self, block_len: usize, count: usize) -> (Vec<usize>, Vec<F128>) {
-            use std::collections::HashSet;
-            let mut seen = HashSet::new();
-            let mut sorted = Vec::new();
-            let mut raw = Vec::new();
-            while sorted.len() < count {
+        /// sample_queries_ordered: sample `count` positions `v.lo % block_len` in
+        /// transcript order — NO dedup, NO sort (matches flock's core path).
+        /// Returns (positions in sample order, the raw sampled values).
+        pub fn sample_queries_ordered(&mut self, block_len: usize, count: usize) -> (Vec<usize>, Vec<F128>) {
+            let mut positions = Vec::with_capacity(count);
+            let mut raw = Vec::with_capacity(count);
+            for _ in 0..count {
                 let v = self.sample();
                 raw.push(v);
-                let q = (v.lo as usize) % block_len;
-                if seen.insert(q) {
-                    sorted.push(q);
-                }
+                positions.push((v.lo as usize) % block_len);
             }
-            sorted.sort_unstable();
-            (sorted, raw)
+            (positions, raw)
         }
     }
 
@@ -820,7 +814,7 @@ fn run_mirror(cfg: &LigCfg, proof: &flare::pcs::ligerito::LigeritoProof, z: &[F1
     assert!(sp.verify_pow(proof.grinding_nonces[ni], 0));
     ni += 1;
     let bl0 = 1usize << (cfg.initial_log_msg_cols + cfg.log_inv_rates[0]);
-    let (q0, raw0) = sp.sample_distinct_queries(bl0, cfg.queries[0]);
+    let (q0, raw0) = sp.sample_queries_ordered(bl0, cfg.queries[0]);
     let a0: Vec<F128> = (0..ceil_log2(cfg.queries[0])).map(|_| sp.sample()).collect();
     let enf0 = induce_sumcheck_enforced_sum(&proof.initial_proof.opened_rows, &r_lane, &q0, &a0);
     sp.observe(sc[txi].u_0);
@@ -870,7 +864,7 @@ fn run_mirror(cfg: &LigCfg, proof: &flare::pcs::ligerito::LigeritoProof, z: &[F1
                 sp.observe(*v);
             }
             assert!(sp.verify_pow(proof.grinding_nonces[ni], 0));
-            let (ql, rawl) = sp.sample_distinct_queries(prev_block_len, cfg.queries[i + 1]);
+            let (ql, rawl) = sp.sample_queries_ordered(prev_block_len, cfg.queries[i + 1]);
             let al: Vec<F128> = (0..ceil_log2(cfg.queries[i + 1])).map(|_| sp.sample()).collect();
             let enfl = induce_sumcheck_enforced_sum(&proof.final_proof.opened_rows, &level_rs, &ql, &al);
             let betal = sp.sample();
@@ -905,7 +899,7 @@ fn run_mirror(cfg: &LigCfg, proof: &flare::pcs::ligerito::LigeritoProof, z: &[F1
             sp.observe_bytes(&root_next);
             assert!(sp.verify_pow(proof.grinding_nonces[ni], 0));
             ni += 1;
-            let (qi, rawi) = sp.sample_distinct_queries(prev_block_len, cfg.queries[i + 1]);
+            let (qi, rawi) = sp.sample_queries_ordered(prev_block_len, cfg.queries[i + 1]);
             let ai: Vec<F128> = (0..ceil_log2(cfg.queries[i + 1])).map(|_| sp.sample()).collect();
             let rp = &proof.recursive_proofs[rpi];
             rpi += 1;
@@ -1118,7 +1112,7 @@ fn ligerito_m33_native_probe() {
     assert!(sp.verify_pow(proof.grinding_nonces[ni], 0));
     ni += 1;
     let bl0 = 1usize << (20 + 1);
-    let (q0, _) = sp.sample_distinct_queries(bl0, cfgq[0]);
+    let (q0, _) = sp.sample_queries_ordered(bl0, cfgq[0]);
     let a0: Vec<F128> = (0..ceil_log2(cfgq[0])).map(|_| sp.sample()).collect();
     let enf0 = induce_sumcheck_enforced_sum(&proof.initial_proof.opened_rows, &r_lane, &q0, &a0);
     sp.observe(sc[txi].u_0);
@@ -1171,7 +1165,7 @@ fn ligerito_m33_native_probe() {
                 sp.observe(*v);
             }
             assert!(sp.verify_pow(proof.grinding_nonces[ni], 0));
-            let (ql, _) = sp.sample_distinct_queries(prev_block_len, cfgq[i + 1]);
+            let (ql, _) = sp.sample_queries_ordered(prev_block_len, cfgq[i + 1]);
             let al: Vec<F128> = (0..ceil_log2(cfgq[i + 1])).map(|_| sp.sample()).collect();
             let enfl = induce_sumcheck_enforced_sum(&proof.final_proof.opened_rows, &level_rs, &ql, &al);
             let betal = sp.sample();
@@ -1203,7 +1197,7 @@ fn ligerito_m33_native_probe() {
             sp.observe_bytes(&root_next);
             assert!(sp.verify_pow(proof.grinding_nonces[ni], 0));
             ni += 1;
-            let (qi, _) = sp.sample_distinct_queries(prev_block_len, cfgq[i + 1]);
+            let (qi, _) = sp.sample_queries_ordered(prev_block_len, cfgq[i + 1]);
             let ai: Vec<F128> = (0..ceil_log2(cfgq[i + 1])).map(|_| sp.sample()).collect();
             let rp = &proof.recursive_proofs[rpi];
             rpi += 1;
