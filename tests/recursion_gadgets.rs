@@ -134,3 +134,148 @@ fn sponge_observe_sample() {
     let (proof, _) = prove(&program, pi);
     verify(&program, &pi, &proof).expect("sponge replay verifies");
 }
+
+/// Gadget 3: **transcript reader** — the `next_scalar` loop. A recursive verifier
+/// consumes the inner proof's scalar stream (fed here as a `hint_witness` array),
+/// absorbing each scalar into the sponge as it reads it, then samples. The stream
+/// is walked with a `× GEN` cursor (`sp[1]` is the current cell, `sp = sp*GEN`
+/// steps — folded, free), and the 256-bit chaining value is threaded through two
+/// rebinding scalars re-packed into a `blake3` operand each step (the copies are
+/// forwarded, not emitted). This is the exact replay of `VerifierState` reading
+/// `n` scalars via `next_scalar` (each observes) and then `sample`.
+#[test]
+fn transcript_reader_observe() {
+    use leanvm_b::vmhash::compress;
+    let ds_scalar = F128::new(1, 0);
+    let ds_squeeze = F128::new(4, 0);
+
+    // The inner proof's stream (arbitrary scalars).
+    let stream: Vec<F128> = (0..5u64)
+        .map(|k| F128::new(0x1000_0000_0000_0001u64.wrapping_mul(k + 1), 0xABCD_0000 ^ (k << 40)))
+        .collect();
+
+    // Reference: absorb each, then squeeze.
+    let mut cv = [F128::ZERO, F128::ZERO];
+    for &x in &stream {
+        cv = compress(cv, [x, ds_scalar]);
+    }
+    let challenge = compress(cv, [F128::ZERO, ds_squeeze])[0];
+
+    let u = |f: F128| (f.lo as u128) | ((f.hi as u128) << 64);
+    let src = format!(
+        "from snark_lib import *\n\
+         N = 5\n\
+         CH = {}\n\
+         DS_SCALAR = 1\n\
+         DS_SQUEEZE = 4\n\
+         \n\
+         def main():\n\
+         \x20   stream = HeapBuf(N)\n\
+         \x20   hint_witness(stream[0:N], \"stream\")\n\
+         \x20   cv0 = 0\n\
+         \x20   cv1 = 0\n\
+         \x20   sp = stream\n\
+         \x20   for i in unroll(0, N):\n\
+         \x20       cvb = StackBuf(2)\n\
+         \x20       cvb[0] = cv0\n\
+         \x20       cvb[1] = cv1\n\
+         \x20       inp = StackBuf(2)\n\
+         \x20       inp[0] = sp[1]\n\
+         \x20       inp[1] = DS_SCALAR\n\
+         \x20       out = StackBuf(2)\n\
+         \x20       blake3(cvb, inp, out)\n\
+         \x20       cv0 = out[0]\n\
+         \x20       cv1 = out[1]\n\
+         \x20       sp = sp * GEN\n\
+         \x20   final = StackBuf(2)\n\
+         \x20   final[0] = cv0\n\
+         \x20   final[1] = cv1\n\
+         \x20   sqin = StackBuf(2)\n\
+         \x20   sqin[0] = 0\n\
+         \x20   sqin[1] = DS_SQUEEZE\n\
+         \x20   outc = StackBuf(2)\n\
+         \x20   blake3(final, sqin, outc)\n\
+         \x20   ch = outc[0]\n\
+         \x20   assert ch == CH\n\
+         \x20   return\n",
+        u(challenge)
+    );
+
+    let mut program = compile(&parse(&src).expect("parse"));
+    program.set_witness("stream", vec![stream]);
+    let pi = [F128::ZERO, F128::ZERO];
+    let (proof, _) = prove(&program, pi);
+    verify(&program, &pi, &proof).expect("transcript reader verifies");
+}
+
+/// Gadget 4: **`observe_bytes` on a Merkle root** — the last FS-challenger op the
+/// Ligerito verifier needs (it `observe_bytes(&root)`s at every level commit).
+/// `absorb_bytes` (src/transcript.rs) frames the length then absorbs 16-byte
+/// words, each tagged `DS_BYTE`: a 32-byte root is `compress(cv,[32,DS_LEN])`
+/// then two `compress(cv,[word,DS_BYTE])` over the two root scalars (exactly the
+/// `root_to_scalars` split). Confirms the guest reproduces root binding + a
+/// subsequent challenge.
+#[test]
+fn observe_root_bytes() {
+    use leanvm_b::vmhash::compress;
+    let ds_len = F128::new(3, 0);
+    let ds_byte = F128::new(2, 0);
+    let ds_squeeze = F128::new(4, 0);
+
+    // A 32-byte root, viewed as its two field scalars (little-endian words).
+    let r0 = F128::new(0x0011_2233_4455_6677, 0x8899_aabb_ccdd_eeff);
+    let r1 = F128::new(0xffee_ddcc_bbaa_9988, 0x7766_5544_3322_1100);
+
+    let mut cv = [F128::ZERO, F128::ZERO];
+    cv = compress(cv, [F128::new(32, 0), ds_len]); // length frame (32 bytes)
+    cv = compress(cv, [r0, ds_byte]); // word 0
+    cv = compress(cv, [r1, ds_byte]); // word 1
+    let challenge = compress(cv, [F128::ZERO, ds_squeeze])[0];
+
+    let u = |f: F128| (f.lo as u128) | ((f.hi as u128) << 64);
+    let src = format!(
+        "from snark_lib import *\n\
+         R0 = {}\n\
+         R1 = {}\n\
+         CH = {}\n\
+         DS_LEN = 3\n\
+         DS_BYTE = 2\n\
+         DS_SQUEEZE = 4\n\
+         \n\
+         def main():\n\
+         \x20   cv = StackBuf(2)\n\
+         \x20   cv[0] = 0\n\
+         \x20   cv[1] = 0\n\
+         \x20   lenf = StackBuf(2)\n\
+         \x20   lenf[0] = 32\n\
+         \x20   lenf[1] = DS_LEN\n\
+         \x20   cv1 = StackBuf(2)\n\
+         \x20   blake3(cv, lenf, cv1)\n\
+         \x20   w0 = StackBuf(2)\n\
+         \x20   w0[0] = R0\n\
+         \x20   w0[1] = DS_BYTE\n\
+         \x20   cv2 = StackBuf(2)\n\
+         \x20   blake3(cv1, w0, cv2)\n\
+         \x20   w1 = StackBuf(2)\n\
+         \x20   w1[0] = R1\n\
+         \x20   w1[1] = DS_BYTE\n\
+         \x20   cv3 = StackBuf(2)\n\
+         \x20   blake3(cv2, w1, cv3)\n\
+         \x20   sqin = StackBuf(2)\n\
+         \x20   sqin[0] = 0\n\
+         \x20   sqin[1] = DS_SQUEEZE\n\
+         \x20   outc = StackBuf(2)\n\
+         \x20   blake3(cv3, sqin, outc)\n\
+         \x20   ch = outc[0]\n\
+         \x20   assert ch == CH\n\
+         \x20   return\n",
+        u(r0),
+        u(r1),
+        u(challenge)
+    );
+
+    let program = compile(&parse(&src).expect("parse"));
+    let pi = [F128::ZERO, F128::ZERO];
+    let (proof, _) = prove(&program, pi);
+    verify(&program, &pi, &proof).expect("observe-root verifies");
+}
