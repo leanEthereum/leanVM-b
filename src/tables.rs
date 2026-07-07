@@ -209,7 +209,7 @@ pub(crate) const BLAKE3_TABLE: usize = 5;
 /// VIRTUAL (never committed): `q_pkd` already holds those words at fixed packed
 /// slots, so `cpu` routes their memory-bus evaluation claims straight to `q_pkd`
 /// (`slot_claims`) — the value the bus flushes IS the flock-proven word.
-pub(crate) const BLAKE3_VALUE_COLS: [usize; 6] = [
+pub const BLAKE3_VALUE_COLS: [usize; 6] = [
     blake3t::VA0,
     blake3t::VA1,
     blake3t::VB0,

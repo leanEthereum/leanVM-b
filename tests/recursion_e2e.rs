@@ -308,6 +308,10 @@ fn gen_verify(
     }
     let phase_b_end = w.i;
 
+    // ---- Phase C walk: r_m sample (the PI claim); pins are sponge-silent ----
+    w.sample();
+    let phase_c_end = w.i;
+
     // ---- hints ----
     // fpb: the grind digest bits. Base = compress(cv_after_alpha, [0, POW]).
     let seed = Mirror::new(b"leanvm-b", &[pi[0], pi[1], dig[0], dig[1]]);
@@ -336,6 +340,9 @@ fn gen_verify(
     let mut m = seed.clone();
     m.replay(&ops[0..phase_b_end]);
     let cvchk_b = m.cv[0];
+    let mut m = seed.clone();
+    m.replay(&ops[0..phase_c_end]);
+    let cvchk_c = m.cv[0];
 
     // ---- placeholder map ----
     let ints = |v: &[usize]| format!("[{}]", v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(", "));
@@ -391,6 +398,34 @@ fn gen_verify(
     ps("TAUMAX", taus.iter().max().unwrap().to_string());
     ps("EVTOT", evtot.to_string());
     ps("CVCHK_B", u(cvchk_b).to_string());
+    ps("PI0", u(pi[0]).to_string());
+    ps("PI1", u(pi[1]).to_string());
+    // The pin point: the first BLAKE3 value-column bus claim. Scan blocks/coords
+    // exactly as the claims are ordered to find its side + kappa.
+    let sch = leanvm_b::cpu::schema();
+    let b3base = sch.base[5];
+    let valcols: Vec<usize> = leanvm_b::tables::BLAKE3_VALUE_COLS.iter().map(|&c| b3base + c).collect();
+    let mut pin_side_kappa: Option<(usize, usize)> = None;
+    'outer: for (s, blocks) in sides.iter().enumerate() {
+        for blk in blocks.iter() {
+            for c in &blk.coords {
+                if let Coord::Col(i) | Coord::GCol(i) = c
+                    && valcols.contains(i)
+                {
+                    pin_side_kappa = Some((s, blk.kappa));
+                    break 'outer;
+                }
+            }
+        }
+    }
+    let (pin_side, pin_kappa) = pin_side_kappa.expect("BLAKE3 value-column claim exists");
+    let n_b3 = proof.stream[6].lo as usize; // announced BLAKE3 row count
+    ps("NB3", n_b3.to_string());
+    ps("NLOGB3", pin_kappa.to_string());
+    ps("PINZOFF", (pin_side * mumax).to_string());
+    let pinv: Vec<u128> = leanvm_b::blake3_flock::pin_constants().iter().map(|&v| u(v)).collect();
+    ps("PINV", us(&pinv));
+    ps("CVCHK_C", u(cvchk_c).to_string());
 
     let hints = vec![
         ("stream".to_string(), proof.stream.clone()),

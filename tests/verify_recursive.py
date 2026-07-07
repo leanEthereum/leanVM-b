@@ -63,6 +63,15 @@ EVOFF = EVOFF_PLACEHOLDER
 TAUMAX = TAUMAX_PLACEHOLDER
 EVTOT = EVTOT_PLACEHOLDER
 CVCHK_B = CVCHK_B_PLACEHOLDER
+# Phase C: the public input (baked; the seed already binds it), the real BLAKE3
+# count + pin-point location, and the three public pin constants.
+PI0 = PI0_PLACEHOLDER
+PI1 = PI1_PLACEHOLDER
+NB3 = NB3_PLACEHOLDER
+NLOGB3 = NLOGB3_PLACEHOLDER
+PINZOFF = PINZOFF_PLACEHOLDER
+PINV = PINV_PLACEHOLDER
+CVCHK_C = CVCHK_C_PLACEHOLDER
 
 DS_SCALAR = 1
 DS_BYTE = 2
@@ -384,4 +393,36 @@ def main():
 
     # ---- Phase B checkpoint ----
     assert cv0 == CVCHK_B
+
+    # ---- public-input binding claim: MEM(r_m, 0..) = interp(pi0, pi1, r_m) ----
+    rm, cv0, cv1 = sqz(cv0, cv1)
+    piv = PI0 + rm * (PI0 + PI1)
+    clv[GEN ** ci] = piv
+    ci = ci + 1
+
+    # ---- BLAKE3 constant-pin claims (on q_pkd, at the pin bus point) ----
+    # prefix = MLE of [1;NB3, 0;...] at the pin point (the first BLAKE3
+    # value-column bus claim's ζ_lo: NLOGB3 coords starting at zeta[PINZOFF]):
+    # one eq-term per set bit of NB3, over the aligned block's high bits.
+    prefix = 0
+    base = 0
+    for tb in unroll(0, NLOGB3 + 1):
+        t = NLOGB3 - tb
+        if (NB3 // (2 ** t)) % 2 == 1:
+            a = base // (2 ** t)
+            e = GEN ** 0
+            for iv in unroll(0, NLOGB3 - t):
+                zk = zeta[GEN ** (PINZOFF + t + iv)]
+                if (a // (2 ** iv)) % 2 == 1:
+                    e = e * zk
+                else:
+                    e = e * (1 + zk)
+            prefix = prefix + e
+            base = base + 2 ** t
+    for pk in unroll(0, 3):
+        clv[GEN ** ci] = PINV[pk] * prefix
+        ci = ci + 1
+
+    # ---- Phase C checkpoint ----
+    assert cv0 == CVCHK_C
     return
