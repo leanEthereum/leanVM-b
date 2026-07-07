@@ -94,16 +94,22 @@ mod fs_ref {
             self.absorb_nonce(nonce);
             ok
         }
-        /// sample_queries_ordered: sample `count` positions `v.lo % block_len` in
-        /// transcript order — NO dedup, NO sort (matches flock's core path).
-        /// Returns (positions in sample order, the raw sampled values).
+        /// sample_queries_ordered: `count` positions in transcript order — NO
+        /// dedup, NO sort. `block_len = 2^d`; each squeeze yields `⌊128/d⌋`
+        /// positions (its disjoint d-bit chunks, low bits first) — matching
+        /// flock's core path. Returns (positions, the raw squeezed values).
         pub fn sample_queries_ordered(&mut self, block_len: usize, count: usize) -> (Vec<usize>, Vec<F128>) {
+            let d = block_len.trailing_zeros() as usize;
+            let per = 128 / d;
             let mut positions = Vec::with_capacity(count);
-            let mut raw = Vec::with_capacity(count);
-            for _ in 0..count {
+            let mut raw = Vec::new();
+            while positions.len() < count {
                 let v = self.sample();
                 raw.push(v);
-                positions.push((v.lo as usize) % block_len);
+                let bits = (v.lo as u128) | ((v.hi as u128) << 64);
+                for j in 0..per.min(count - positions.len()) {
+                    positions.push(((bits >> (j * d)) as usize) & (block_len - 1));
+                }
             }
             (positions, raw)
         }
@@ -1207,9 +1213,14 @@ fn gen_clean(
         }
         o
     };
+    // Query sampling packs `per = ⌊128/depth⌋` positions per squeeze.
+    let per: Vec<usize> = depth.iter().map(|&d| 128 / d).collect();
+    let nsq: Vec<usize> = (0..nlev).map(|l| queries[l].div_ceil(per[l])).collect();
     let rowoff = prefix_sum(&|l| queries[l] * numinter[l]);
     let pathoff = prefix_sum(&|l| queries[l] * depth[l] * 2);
-    let sbitsoff = prefix_sum(&|l| queries[l] * 128);
+    let sbitsoff = prefix_sum(&|l| nsq[l] * 128);
+    let qpoff = prefix_sum(&|l| nsq[l] * per[l]);
+    let qp_len: usize = (0..nlev).map(|l| nsq[l] * per[l]).sum();
     // `eval_sk_at_vks(lmc)` yields `lmc + 1` values per level.
     let svkoff = prefix_sum(&|l| lmc[l] + 1);
     let foldbase = prefix_sum(&|l| klvl[l]);
@@ -1261,6 +1272,7 @@ fn gen_clean(
         for &h in &path_exp {
             paths_flat.extend_from_slice(&hb(h));
         }
+        assert_eq!(mir.levels[l].raw.len(), nsq[l], "one raw squeeze per nsq");
         for &v in &mir.levels[l].raw {
             sbits_flat.extend_from_slice(&bits_of(v));
         }
@@ -1295,6 +1307,8 @@ fn gen_clean(
     ps("LENRIS", mir.ris.len().to_string());
     ps("MAXNI", numinter.iter().max().unwrap().to_string());
     ps("MAXQ", queries.iter().max().unwrap().to_string());
+    ps("MAXNSQ", nsq.iter().max().unwrap().to_string());
+    ps("QP_LEN", qp_len.to_string());
     ps("MAXLMC", lmc.iter().max().unwrap().to_string());
     ps("SC_LEN", sc_flat.len().to_string());
     ps("ROWS_LEN", rows_flat.len().to_string());
@@ -1307,6 +1321,9 @@ fn gen_clean(
     ps("NBYTES", ints(&numinter.iter().map(|&n| n * 16).collect::<Vec<_>>()));
     ps("BLOCKS", ints(&numinter.iter().map(|&n| n / 2).collect::<Vec<_>>()));
     ps("DEPTH", ints(&depth));
+    ps("PER", ints(&per));
+    ps("NSQ", ints(&nsq));
+    ps("QPOFF", ints(&qpoff));
     ps("ALPHALEN", ints(&queries.iter().map(|&q| ceil_log2(q)).collect::<Vec<_>>()));
     ps("LMC", ints(lmc));
     ps("RISSTART", ints(&mir.ctx_ris_start));

@@ -52,6 +52,9 @@ impl Program {
             /// write-once panic can report where the conflict happened.
             static DBG_PC: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
         }
+        // `DBG_PROF=1`: per-pc step counts, printed as a per-function cycle
+        // profile after the run (needs `fn_ranges`, i.e. a compiled program).
+        let mut prof: Option<Vec<u64>> = std::env::var("DBG_PROF").is_ok().then(|| vec![0u64; self.prog.len()]);
 
         // Per-stream cursor into the named witness data (`hint_witness` pops
         // sequentially).
@@ -128,6 +131,9 @@ impl Program {
         while pc != ending_pc {
             assert!(steps < 100_000_000, "step limit exceeded (runaway recursion?)");
             DBG_PC.with(|p| p.set(pc));
+            if let Some(p) = prof.as_mut() {
+                p[pc as usize] += 1;
+            }
 
             // Apply the hints scheduled before this instruction.
             if let Some(hs) = self.hints.get(&pc) {
@@ -478,6 +484,22 @@ impl Program {
         }
 
         assert_eq!((pc, fp), (ending_pc, 0), "main must halt at the sentinel pc g^{{B-1}}");
+
+        if let Some(p) = &prof {
+            let mut rows: Vec<(String, u64)> = self
+                .fn_ranges
+                .iter()
+                .map(|(name, entry, len)| {
+                    let total: u64 = p[*entry as usize..(*entry + *len) as usize].iter().sum();
+                    (name.clone(), total)
+                })
+                .collect();
+            rows.sort_by_key(|(_, c)| std::cmp::Reverse(*c));
+            eprintln!("== DBG_PROF: cycles by function ({steps} total) ==");
+            for (name, c) in rows.iter().filter(|(_, c)| *c > 0) {
+                eprintln!("  {c:>9}  {:>5.1}%  {name}", 100.0 * *c as f64 / steps as f64);
+            }
+        }
 
         // Resolve the deferred DEREF touches: a fixpoint, so a touch whose cell is
         // filled by another deferred entry picks up that value; cells nobody ever

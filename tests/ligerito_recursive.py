@@ -12,12 +12,20 @@ from snark_lib import *
 #            TARGET, LBLA/B, and the pow domain tags.
 #   arrays   QUERIES[lvl], KLVL[lvl] (fold count = log2 num-interleaved),
 #            NUMINTER[lvl] (=2^KLVL), NBYTES[lvl] (=16·NUMINTER), BLOCKS[lvl]
-#            (=NUMINTER/2), DEPTH[lvl] (Merkle depth), ALPHALEN[lvl], LMC[lvl],
+#            (=NUMINTER/2), DEPTH[lvl] (Merkle depth), PER[lvl] (=128//DEPTH,
+#            positions per squeeze), NSQ[lvl] (squeezes = ceil(QUERIES/PER)),
+#            QPOFF[lvl] (position-table offsets), ALPHALEN[lvl], LMC[lvl],
 #            RISSTART[lvl], PREFIXLEN[lvl] (=LMC-YR_LOG_N), ROOTA/ROOTB[lvl],
 #            FOLDBASE[lvl] (fold-index prefix sum), Z[..LOG_N],
 #            per-fold  BITS[g], FULL[g], EXTRA8[g], FN[g] (pow nonce),
 #            per-level flattened novel-basis  SVK[..], IVK[..], SVKOFF[lvl].
 #   hints    sc, rows, paths, sbits, fpb (flat, with ROWOFF/PATHOFF/... arrays), yr.
+#
+# Query sampling packs ⌊128/DEPTH⌋ positions per squeeze (its disjoint DEPTH-bit
+# chunks, low bits first — mirrored by flock's sample_queries_ordered), so ONE
+# 128-bit decomposition covers ~6 queries instead of one: the sampling loop
+# decomposes each squeeze and stores every position's q_field and bit-pointer;
+# the Merkle/residual loops just read them back.
 
 SEED0 = SEED0_PLACEHOLDER
 SEED1 = SEED1_PLACEHOLDER
@@ -31,7 +39,9 @@ YR_LEN = YR_LEN_PLACEHOLDER
 LENRIS = LENRIS_PLACEHOLDER
 MAXNI = MAXNI_PLACEHOLDER
 MAXQ = MAXQ_PLACEHOLDER
+MAXNSQ = MAXNSQ_PLACEHOLDER
 MAXLMC = MAXLMC_PLACEHOLDER
+QP_LEN = QP_LEN_PLACEHOLDER
 SC_LEN = SC_LEN_PLACEHOLDER
 ROWS_LEN = ROWS_LEN_PLACEHOLDER
 PATHS_LEN = PATHS_LEN_PLACEHOLDER
@@ -44,6 +54,9 @@ NUMINTER = NUMINTER_PLACEHOLDER
 NBYTES = NBYTES_PLACEHOLDER
 BLOCKS = BLOCKS_PLACEHOLDER
 DEPTH = DEPTH_PLACEHOLDER
+PER = PER_PLACEHOLDER
+NSQ = NSQ_PLACEHOLDER
+QPOFF = QPOFF_PLACEHOLDER
 ALPHALEN = ALPHALEN_PLACEHOLDER
 LMC = LMC_PLACEHOLDER
 RISSTART = RISSTART_PLACEHOLDER
@@ -169,8 +182,11 @@ def main():
     ris = HeapBuf(LENRIS)
     beta = HeapBuf(NLEVELS)
     enf = HeapBuf(NLEVELS)
-    qv = HeapBuf(NLEVELS * MAXQ)
     aw = HeapBuf(NLEVELS * MAXQ)
+    # Per-query position tables, filled by the sampling loop: q_field (the
+    # position as a field element) and a pointer to its DEPTH sample bits.
+    qfb = HeapBuf(QP_LEN)
+    qbp = HeapBuf(QP_LEN)
 
     # ---- sponge seed: label, target, initial root ----
     cv0 = SEED0
@@ -244,18 +260,28 @@ def main():
             cv0, cv1 = absorb(cv0, cv1, ROOTB[lvl + 1], DS_BYTE)
         cv0, cv1 = absorb(cv0, cv1, 0, DS_POW)
 
-        # query sampling: advance cv QUERIES[lvl] times, capturing each value.
-        c0b = HeapBuf(MAXQ + 1)
-        c1b = HeapBuf(MAXQ + 1)
+        # query sampling: NSQ squeezes, each yielding PER positions (its disjoint
+        # DEPTH-bit chunks, low bits first). Decompose each squeeze once and
+        # store every position's q_field + bit-pointer for the later loops.
+        c0b = HeapBuf(MAXNSQ + 1)
+        c1b = HeapBuf(MAXNSQ + 1)
         c0b[GEN ** 0] = cv0
         c1b[GEN ** 0] = cv1
-        for xq in mul_range(1, GEN ** QUERIES[lvl]):
-            chq, nc0, nc1 = sqz(c0b[xq], c1b[xq])
-            qv[GEN ** (lvl * MAXQ) * xq] = chq
-            c0b[xq * GEN] = nc0
-            c1b[xq * GEN] = nc1
-        cv0 = c0b[GEN ** QUERIES[lvl]]
-        cv1 = c1b[GEN ** QUERIES[lvl]]
+        for xs in mul_range(1, GEN ** NSQ[lvl]):
+            chq, nc0, nc1 = sqz(c0b[xs], c1b[xs])
+            c0b[xs * GEN] = nc0
+            c1b[xs * GEN] = nc1
+            bp = sbits * GEN ** SBITSOFF[lvl] * xs ** 128
+            dec128(bp, chq)
+            for j in unroll(0, PER[lvl]):
+                qf = 0
+                for b in unroll(0, DEPTH[lvl]):
+                    qf = qf + bp[GEN ** (j * DEPTH[lvl] + b)] * GEN ** b
+                qp = GEN ** QPOFF[lvl] * xs ** PER[lvl] * GEN ** j
+                qfb[qp] = qf
+                qbp[qp] = bp * GEN ** (j * DEPTH[lvl])
+        cv0 = c0b[GEN ** NSQ[lvl]]
+        cv1 = c1b[GEN ** NSQ[lvl]]
 
         # sample alpha, build eq(fold challenges) and alpha_weights.
         alr = HeapBuf(MAXNI)
@@ -316,8 +342,7 @@ def main():
     # ---- per-query Merkle openings (one single path per query, per level) ----
     for lvl in unroll(0, NLEVELS):
         for xm in mul_range(1, GEN ** QUERIES[lvl]):
-            sbp = sbits * GEN ** SBITSOFF[lvl] * xm ** 128
-            dec128(sbp, qv[GEN ** (lvl * MAXQ) * xm])
+            sbp = qbp[GEN ** QPOFF[lvl] * xm]
             rb = xm ** NUMINTER[lvl]
             ld0 = GEN ** NBYTES[lvl]
             ld1 = 0
@@ -349,13 +374,9 @@ def main():
         accR = HeapBuf(MAXQ + 1)
         accR[GEN ** 0] = 0
         for xr in mul_range(1, GEN ** QUERIES[lvl]):
-            sbp = sbits * GEN ** SBITSOFF[lvl] * xr ** 128
-            qf = 0
-            for b in unroll(0, DEPTH[lvl]):
-                qf = qf + sbp[GEN ** b] * GEN ** b
-            # w_t = s_t · inv(svk_t); s_0=qf, s_t = s_{t-1}²+svk_{t-1}·s_{t-1}
+            # w_t = s_t · inv(svk_t); s_0 = q_field, s_t = s_{t-1}²+svk_{t-1}·s_{t-1}
             wbuf = HeapBuf(MAXLMC)
-            s = qf
+            s = qfb[GEN ** QPOFF[lvl] * xr]
             wbuf[GEN ** 0] = s * IVK[SVKOFF[lvl]]
             for t in unroll(1, LMC[lvl]):
                 s = s * s + SVK[SVKOFF[lvl] + t - 1] * s

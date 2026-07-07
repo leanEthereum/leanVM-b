@@ -192,7 +192,9 @@ pub fn compile(ast: &Ast) -> Program {
 
     // Pad the bytecode to `B` (the sentinel slot g^{B-1} must exist for execution).
     prog.resize(bytecode_size, Op::Set { o: 0, k: F128::ZERO });
-    Program::assemble(prog, 0, 0, hints, frame_size["main"])
+    let mut program = Program::assemble(prog, 0, 0, hints, frame_size["main"]);
+    program.fn_ranges = lowered.iter().map(|l| (l.name.clone(), entry[&l.name], l.code.len() as u32)).collect();
+    program
 }
 
 /// Render compiled bytecode as a human-readable disassembly. `fp[k]` is the cell

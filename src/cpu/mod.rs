@@ -166,6 +166,10 @@ pub struct Program {
     /// hinted many times); each call pops the next entry, whose length must
     /// match its destination. Prover-side only; verification ignores them.
     pub(crate) witness: HashMap<String, Vec<Vec<F128>>>,
+    /// Function pc-ranges `(name, entry, len)` from the compiler, for the
+    /// `DBG_PROF=1` per-function cycle profile ([`Program::execute`]). Purely
+    /// diagnostic; empty for hand-assembled programs.
+    pub(crate) fn_ranges: Vec<(String, u32, u32)>,
 }
 
 impl Program {
@@ -188,6 +192,7 @@ impl Program {
             hints,
             main_frame,
             witness: HashMap::new(),
+            fn_ranges: Vec::new(),
         }
     }
 

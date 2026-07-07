@@ -2780,8 +2780,23 @@ fn merkle_multi_proof_for(tree: &[Hash], block_len: usize, queries: &[usize]) ->
 // ---------------------------------------------------------------------------
 
 /// Sample `count` query positions in transcript order — no dedup, no sort.
+/// `block_len = 2^d`; each squeezed field element yields `⌊128/d⌋` positions —
+/// its disjoint d-bit chunks, low bits first. Positions stay uniform and the
+/// whole squeeze stays transcript-bound; packing them amortizes one squeeze
+/// (and, in the recursive verifier, one 128-bit decomposition) across `128/d`
+/// queries.
 fn sample_queries_ordered<Ch: Challenger>(challenger: &mut Ch, block_len: usize, count: usize) -> Vec<usize> {
-    (0..count).map(|_| (challenger.sample_f128().lo as usize) % block_len).collect()
+    let d = block_len.trailing_zeros() as usize;
+    let per = 128 / d;
+    let mut out = Vec::with_capacity(count);
+    while out.len() < count {
+        let v = challenger.sample_f128();
+        let bits = (v.lo as u128) | ((v.hi as u128) << 64);
+        for j in 0..per.min(count - out.len()) {
+            out.push(((bits >> (j * d)) as usize) & (block_len - 1));
+        }
+    }
+    out
 }
 
 /// Verify each query's single Merkle path against `root` (no octopus, no sort).
