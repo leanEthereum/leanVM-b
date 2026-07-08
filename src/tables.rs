@@ -43,7 +43,7 @@ pub(crate) const OP_BLAKE3: F128 = g_pow(5);
 /// push/pull of a memory-checked entry differ only by one coordinate carrying the
 /// post-increment `g·count` (`GCol`) instead of the pre-increment (`Col`); these
 /// helpers encode that pairing so each table reads declaratively.
-pub(crate) struct FlushBuilder {
+pub struct FlushBuilder {
     pub(crate) push: Vec<Vec<Coord>>,
     pub(crate) pull: Vec<Vec<Coord>>,
 }
@@ -110,7 +110,7 @@ impl FlushBuilder {
 
 /// Inputs a table needs to fill its columns: the trace rows, the final memory
 /// image (for read values), and `g^0..` for O(1) address/operand lookups.
-pub(crate) struct FillCtx<'a> {
+pub struct FillCtx<'a> {
     pub(crate) trace: &'a Trace,
     pub(crate) mem: &'a [F128],
     pub(crate) gpow: &'a [F128],
@@ -129,7 +129,7 @@ impl FillCtx<'_> {
 /// than a positional `v[5]`. It holds the [`Table::constraint_columns`] values
 /// plus a reverse map (local index → position), so the order those columns are
 /// listed in is irrelevant to `eval_constraint`.
-pub(crate) struct Cols<'a> {
+pub struct Cols<'a> {
     values: &'a [F128],
     position: &'a [usize],
 }

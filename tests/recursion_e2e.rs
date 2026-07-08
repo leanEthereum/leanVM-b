@@ -156,11 +156,6 @@ fn inner_program() -> Program {
     compile(&parse(src).expect("parse inner"))
 }
 
-/// Public input of the inner proof.
-fn inner_pi() -> [F128; 2] {
-    [F128::new(0x1111_2222, 0x3333_4444), F128::new(0x5555_6666, 0x7777_8888)]
-}
-
 /// Prove the inner program, returning (program, proof).
 fn prove_inner(pi: [F128; 2]) -> (Program, leanvm_b::cpu::Proof) {
     let mut program = inner_program();
@@ -1417,49 +1412,3 @@ fn recursion_2to1() {
     run_recursion(2);
 }
 
-/// Dump the transcript-op trace of a real `cpu::verify` run on the inner proof:
-/// the guest's mechanical spec. Prints aggregate counts and the phase structure.
-#[test]
-fn inner_verify_trace() {
-    let pi = inner_pi();
-    let (program, proof) = prove_inner(pi);
-    trace_start();
-    verify(&program, &pi, &proof).expect("inner verifies");
-    let ops = trace_take();
-
-    let mut counts: std::collections::BTreeMap<&'static str, usize> = Default::default();
-    for op in &ops {
-        *counts
-            .entry(match op {
-                TraceOp::StreamObserve(_) => "stream_observe",
-                TraceOp::StreamRaw(_) => "stream_raw",
-                TraceOp::Observe(_) => "observe",
-                TraceOp::AbsorbBytes(_) => "absorb_bytes",
-                TraceOp::Sample(_) => "sample",
-                TraceOp::Pow { .. } => "pow",
-                TraceOp::Opening => "opening",
-            })
-            .or_default() += 1;
-    }
-    eprintln!("[trace] total ops = {}", ops.len());
-    for (k, v) in &counts {
-        eprintln!("[trace]   {k:<16} {v}");
-    }
-    // Phase landmarks: print the first few ops and each absorb_bytes (labels/roots
-    // delimit phases), with indices, so the guest structure can be aligned.
-    for (i, op) in ops.iter().enumerate() {
-        match op {
-            TraceOp::AbsorbBytes(b) => {
-                let txt = if b.len() == 32 {
-                    "<32-byte root>".to_string()
-                } else {
-                    String::from_utf8_lossy(b).to_string()
-                };
-                eprintln!("[trace] {i:>6}: absorb_bytes {txt}");
-            }
-            TraceOp::Pow { nonce, bits } => eprintln!("[trace] {i:>6}: pow bits={bits} nonce={nonce}"),
-            TraceOp::Opening => eprintln!("[trace] {i:>6}: opening"),
-            _ => {}
-        }
-    }
-}

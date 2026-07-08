@@ -1,18 +1,25 @@
 from snark_lib import *
 
-# In-circuit replay of leanVM-b's `cpu::verify` for a fixed inner proof — the
-# recursion guest (doc.tex §Recursive aggregation). Config-driven by placeholder
-# constants computed by the harness from the REAL `cpu::layout` of the inner
-# program; the inner proof stream arrives as one hint buffer and every scalar
-# read is bound into the sponge exactly as the native verifier does.
+# The recursion guest: in-circuit replay of leanVM-b's `cpu::verify` for NSUB
+# sub-proofs of one fixed inner program, followed by the aggregation of their
+# deferred claims (doc.tex §Recursive aggregation, §Deferred evaluation claims,
+# §Ring-switch claims via linearized polynomials).
 #
-# Deferred evaluation claims (doc.tex §Deferred evaluation claims): the bytecode
-# MLE evaluations (the bus decomposition's Public coordinates) are HINTED, used
-# in the formula, and exported as claims instead of being computed in-circuit.
+# Per sub-proof: seed (hinted statement + baked program digest) → announced
+# sizes → commitment root → bus (grinding, 3× GKR grand product, balance,
+# 3× leaf decomposition with the claim pool, stacked-bytecode reduction) →
+# 6 AIR zerochecks → public-input claim + BLAKE3 pins → flock reduction
+# (univariate-skip zerocheck, lincheck with the matrix evaluation DEFERRED) →
+# ring-switch fronts (tensor algebra in-circuit via linearized polynomials) →
+# the stacked Ligerito opening (config-driven levels, fused query passes,
+# generalized eval_b terminal). Then the aggregation phase batches the deferred
+# bytecode and matrix claims with two sumchecks and binds the reduced claims to
+# the public input.
 #
-# Phase A (this file so far): seed → announced sizes → commitment root → bus
-# (α, grinding, γ, 3× GKR grand product, count≠0, balance with default surplus,
-# 3× leaf decomposition with the claim pool).
+# Config-driven by placeholder constants the harness computes from the REAL
+# `cpu::layout` and the transcript trace of a native verify run; all per-proof
+# data (streams, sub statements, level roots, fold nonces, sponge checkpoints)
+# arrives as hints (`tests/recursion_e2e.rs::gen_verify`).
 #
 # Naming: `cur` is the stream cursor (heap pointer, advanced ×g per word read);
 # `cvb` is the sponge chain (StackBuf pair, aliased forward per absorb);
