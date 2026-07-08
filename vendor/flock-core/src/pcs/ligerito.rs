@@ -1255,11 +1255,11 @@ impl LigeritoSecurityConfig {
         // Query-phase grinding trades prover PoW for query count: with g bits
         // of grinding, the per-level queries only need to cover
         // `target - g` bits (validation rule 3). Secure: 120-bit rounds with
-        // 20 bits ground, so queries cover 100 — about a sixth fewer queries,
+        // 18 bits ground, so queries cover 102 — about 15% fewer queries,
         // which recursion feels directly (the query walk dominates a guest).
         let query_grind: usize = match profile {
             LigeritoProfile::Slim => 16,
-            LigeritoProfile::Secure => 20,
+            LigeritoProfile::Secure => 18,
             LigeritoProfile::Fast => 0,
         };
         let log_n = m
