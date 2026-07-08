@@ -24,12 +24,12 @@ from snark_lib import *
 # SOUNDNESS: every hint is untrusted prover input; each is bound one of four
 # ways, and nothing else enters the computation:
 #   - sponge-bound (observed/absorbed before any challenge that depends on it):
-#     the stream scalars, zc1/zcr/zcf, lcr/lcz, shv, lsc, lyr, the level roots
+#     the stream scalars, zc_round1/zc_msgs/zc_finals, lincheck_msgs/z_partial, s_hat_v, lsc, yr, the level roots
 #     rta/rtb, the fold nonces fnn, the aggregation round messages bscr/mscr,
 #     and the deferred bytecode values bcv (absorbed by the in-protocol
 #     stacked-bytecode reduction before its selector challenges);
-#   - assert-checked: cinv and zinv (hinted inverses, product asserted 1),
-#     fpb/lfpb (grinding digest bits: booleanity + reconstruction against the
+#   - assert-checked: count_root_inv and zc_invs (hinted inverses, product asserted 1),
+#     grind_bits/fold_grind_bits (grinding digest bits: booleanity + reconstruction against the
 #     in-circuit digest + leading-zero asserts), lsbits (query bits: booleanity
 #     + reconstruction equal to the squeezed word), lrows/lpaths (Merkle
 #     inclusion against the bound roots);
@@ -44,21 +44,12 @@ from snark_lib import *
 # claimed sub statements + reduced claims, and evaluate the three fixed
 # polynomials (stacked bytecode, A0, B0) at the reduced points.
 #
-# Naming: `cur` is the stream cursor (heap pointer, advanced ×g per word read);
-# `cvb` is the sponge chain (StackBuf pair, aliased forward per absorb; `hb`
-# and `eb` are the aggregation and export chains); `zeta` holds the three GKR
-# points side by side and `rho` the six zerocheck points; `clv` is the pool of
-# committed-column claim values. Flock replay: `zz`/`zrho` the zerocheck skip
-# challenge and round challenges, `lal`/`lbe`/`lrr`/`lw`/`lsk` the lincheck
-# alpha/beta/round challenges/output value/fresh skip. Ring switch: `rdp` the
-# r'' samples, `wq` their eq tensor, `dt` the dual-basis Frobenius table, `ckb`
-# the linearized coefficients c_k, `tclv` the transposed claims, `rsqv` the
-# eval_rs_eq values. Ligerito: `lqc/lqb/lqa` the running round-polynomial
-# coefficients, `tr` the running target, `ris` the fold challenges, `lbet` the
-# level batching challenges, `lenf` the enforced sums, `law` the query batching
-# weights, `qfb`/`qbp` the extracted query positions (field form / bit
-# pointers). Aggregation: `gbc`/`gmt` the RLC coefficients, `rbs`/`rms` the
-# sumcheck points, `bcstar`/`astar`/`mbstar` the reduced claims.
+# Conventions: `fs` is the Fiat-Shamir sponge chain (a StackBuf pair aliased
+# forward per compression; `agg_fs` and `out_fs` are the aggregation and
+# public-input chains); `cursor` walks the proof stream (heap pointer, advanced
+# by g per word read); `_s`-suffixed names are this sub-proof's slice of an
+# NSUB-wide hint buffer; chains across runtime loop iterations live in
+# g-indexed heap buffers (`*_chain`).
 
 STREAM_LEN = STREAM_LEN_PLACEHOLDER
 ANN = ANN_PLACEHOLDER
@@ -274,15 +265,15 @@ def foldyr(yp, weights, wbase: Const):
     l0 = StackBuf(YR_LEN)
     for t in unroll(0, YR_LEN // 2):
         l0[t] = weights[wbase] * yp[GEN ** (2 * t)] + weights[wbase + 1] * yp[GEN ** (2 * t + 1)]
-    cur = l0
+    cursor = l0
     n = YR_LEN // 2
     for j in unroll(1, YR_LOG_N):
         nxt = StackBuf(YR_LEN)
         for t in unroll(0, n // 2):
-            nxt[t] = weights[wbase + 2 * j] * cur[2 * t] + weights[wbase + 2 * j + 1] * cur[2 * t + 1]
-        cur = nxt
+            nxt[t] = weights[wbase + 2 * j] * cursor[2 * t] + weights[wbase + 2 * j + 1] * cursor[2 * t + 1]
+        cursor = nxt
         n = n // 2
-    return cur[0]
+    return cursor[0]
 
 
 @unroll
@@ -343,42 +334,42 @@ def eqtree(rp, out, nc: Const):
     out[GEN ** 1] = r0
     for t in unroll(1, nc):
         rt = rp[GEN ** t]
-        rt1 = 1 + rt
+        commit_root_1 = 1 + rt
         for i in unroll(0, 2 ** t):
             pw = out[GEN ** (2 ** t - 2 + i)]
-            out[GEN ** (2 ** (t + 1) - 2 + i)] = pw * rt1
+            out[GEN ** (2 ** (t + 1) - 2 + i)] = pw * commit_root_1
             out[GEN ** (2 ** (t + 1) - 2 + 2 ** t + i)] = pw * rt
     return
 
 
 def main():
-    zt_ = StackBuf(2)
-    zt_[0] = 0
-    zt_[1] = DS_SQ
+    sqz_tag = StackBuf(2)
+    sqz_tag[0] = 0
+    sqz_tag[1] = DS_SQ
     stream = HeapBuf(NSUB * (STREAM_LEN))
     hint_witness(stream[0:NSUB * (STREAM_LEN)], "stream")
-    fpb = HeapBuf(NSUB * (128))
-    hint_witness(fpb[0:NSUB * (128)], "fpb")
+    grind_bits = HeapBuf(NSUB * (128))
+    hint_witness(grind_bits[0:NSUB * (128)], "grind_bits")
     bcv = HeapBuf(NSUB * (NBCV))
     hint_witness(bcv[0:NSUB * (NBCV)], "bcv")
-    cinv = HeapBuf(NSUB * (1))
-    hint_witness(cinv[0:NSUB * (1)], "cinv")
-    zc1 = HeapBuf(NSUB * (128))
-    hint_witness(zc1[0:NSUB * (128)], "zc1")
-    zcr = HeapBuf(NSUB * (2 * NMLV))
-    hint_witness(zcr[0:NSUB * (2 * NMLV)], "zcr")
-    zcf = HeapBuf(NSUB * (2))
-    hint_witness(zcf[0:NSUB * (2)], "zcf")
-    zinv = HeapBuf(NSUB * (NMLV))
-    hint_witness(zinv[0:NSUB * (NMLV)], "zinv")
-    lcr = HeapBuf(NSUB * (2 * LCR))
-    hint_witness(lcr[0:NSUB * (2 * LCR)], "lcr")
-    lcz = HeapBuf(NSUB * (64))
-    hint_witness(lcz[0:NSUB * (64)], "lcz")
-    matp = HeapBuf(NSUB * (1))
-    hint_witness(matp[0:NSUB * (1)], "matpart")
-    shv = HeapBuf(NSUB * (256))
-    hint_witness(shv[0:NSUB * (256)], "shv")
+    count_root_inv = HeapBuf(NSUB * (1))
+    hint_witness(count_root_inv[0:NSUB * (1)], "count_root_inv")
+    zc_round1 = HeapBuf(NSUB * (128))
+    hint_witness(zc_round1[0:NSUB * (128)], "zc_round1")
+    zc_msgs = HeapBuf(NSUB * (2 * NMLV))
+    hint_witness(zc_msgs[0:NSUB * (2 * NMLV)], "zc_msgs")
+    zc_finals = HeapBuf(NSUB * (2))
+    hint_witness(zc_finals[0:NSUB * (2)], "zc_finals")
+    zc_invs = HeapBuf(NSUB * (NMLV))
+    hint_witness(zc_invs[0:NSUB * (NMLV)], "zc_invs")
+    lincheck_msgs = HeapBuf(NSUB * (2 * LCR))
+    hint_witness(lincheck_msgs[0:NSUB * (2 * LCR)], "lincheck_msgs")
+    z_partial = HeapBuf(NSUB * (64))
+    hint_witness(z_partial[0:NSUB * (64)], "z_partial")
+    matrix_eval = HeapBuf(NSUB * (1))
+    hint_witness(matrix_eval[0:NSUB * (1)], "matpart")
+    s_hat_v = HeapBuf(NSUB * (256))
+    hint_witness(s_hat_v[0:NSUB * (256)], "s_hat_v")
     lsc = HeapBuf(NSUB * (LSC_LEN))
     hint_witness(lsc[0:NSUB * (LSC_LEN)], "lsc")
     lrows = HeapBuf(NSUB * (LROWS_LEN))
@@ -387,10 +378,10 @@ def main():
     hint_witness(lpaths[0:NSUB * (LPATHS_LEN)], "lpaths")
     lsbits = HeapBuf(NSUB * (LSBITS_LEN))
     hint_witness(lsbits[0:NSUB * (LSBITS_LEN)], "lsbits")
-    lfpb = HeapBuf(NSUB * (LFPB_LEN))
-    hint_witness(lfpb[0:NSUB * (LFPB_LEN)], "lfpb")
-    lyr = HeapBuf(NSUB * (YR_LEN))
-    hint_witness(lyr[0:NSUB * (YR_LEN)], "lyr")
+    fold_grind_bits = HeapBuf(NSUB * (LFPB_LEN))
+    hint_witness(fold_grind_bits[0:NSUB * (LFPB_LEN)], "fold_grind_bits")
+    yr = HeapBuf(NSUB * (YR_LEN))
+    hint_witness(yr[0:NSUB * (YR_LEN)], "yr")
     spi = HeapBuf(NSUB * 2)
     hint_witness(spi[0:NSUB * 2], "spi")
     rta = HeapBuf(NSUB * NLEVELS)
@@ -409,46 +400,46 @@ def main():
     hint_witness(bst[0:1], "bst")
     mst = HeapBuf(2)
     hint_witness(mst[0:2], "mst")
-    # The dual-basis Frobenius powers dt[128k + i] = DELTA[i]^(2^k) are claim-
+    # The dual-basis Frobenius powers delta_pows[128k + i] = DELTA[i]^(2^k) are claim-
     # and sub-independent: build the table once, read-only afterwards.
-    dt = HeapBuf(128 * 128)
+    delta_pows = HeapBuf(128 * 128)
     for i in unroll(0, 128):
-        dt[GEN ** i] = DELTA[i]
+        delta_pows[GEN ** i] = DELTA[i]
     for xk in mul_range(1, GEN ** 127):
-        rowd = dt * xk ** 128
-        nrowd = rowd * GEN ** 128
+        delta_row = delta_pows * xk ** 128
+        nrowd = delta_row * GEN ** 128
         for i in unroll(0, 128):
-            dv = rowd[GEN ** i]
+            dv = delta_row[GEN ** i]
             nrowd[GEN ** i] = dv * dv
 
     # cross-sub buffers holding each sub-proof's deferred-claim data
-    dzt = HeapBuf(NSUB * 2 * KBC)
-    dsb = HeapBuf(NSUB * 3)
-    dwb = HeapBuf(NSUB * 2)
-    dal = HeapBuf(NSUB)
-    dzz = HeapBuf(NSUB)
-    dzr = HeapBuf(NSUB * LCR)
-    dlr = HeapBuf(NSUB * LCR)
+    def_bytecode_points = HeapBuf(NSUB * 2 * KBC)
+    def_selectors = HeapBuf(NSUB * 3)
+    def_bytecode_vals = HeapBuf(NSUB * 2)
+    def_alphas = HeapBuf(NSUB)
+    def_z_skips = HeapBuf(NSUB)
+    def_row_points = HeapBuf(NSUB * LCR)
+    def_round_rs = HeapBuf(NSUB * LCR)
 
     for sub in unroll(0, NSUB):
         stream_s = stream * GEN ** (sub * (STREAM_LEN))
-        fpb_s = fpb * GEN ** (sub * (128))
+        grind_bits_s = grind_bits * GEN ** (sub * (128))
         bcv_s = bcv * GEN ** (sub * (NBCV))
-        cinv_s = cinv * GEN ** (sub * (1))
-        zc1_s = zc1 * GEN ** (sub * (128))
-        zcr_s = zcr * GEN ** (sub * (2 * NMLV))
-        zcf_s = zcf * GEN ** (sub * (2))
-        zinv_s = zinv * GEN ** (sub * (NMLV))
-        lcr_s = lcr * GEN ** (sub * (2 * LCR))
-        lcz_s = lcz * GEN ** (sub * (64))
-        matp_s = matp * GEN ** (sub * (1))
-        shv_s = shv * GEN ** (sub * (256))
+        count_root_inv_s = count_root_inv * GEN ** (sub * (1))
+        zc_round1_s = zc_round1 * GEN ** (sub * (128))
+        zc_msgs_s = zc_msgs * GEN ** (sub * (2 * NMLV))
+        zc_finals_s = zc_finals * GEN ** (sub * (2))
+        zc_invs_s = zc_invs * GEN ** (sub * (NMLV))
+        lincheck_msgs_s = lincheck_msgs * GEN ** (sub * (2 * LCR))
+        z_partial_s = z_partial * GEN ** (sub * (64))
+        matrix_eval_s = matrix_eval * GEN ** (sub * (1))
+        s_hat_v_s = s_hat_v * GEN ** (sub * (256))
         lsc_s = lsc * GEN ** (sub * (LSC_LEN))
         lrows_s = lrows * GEN ** (sub * (LROWS_LEN))
         lpaths_s = lpaths * GEN ** (sub * (LPATHS_LEN))
         lsbits_s = lsbits * GEN ** (sub * (LSBITS_LEN))
-        lfpb_s = lfpb * GEN ** (sub * (LFPB_LEN))
-        lyr_s = lyr * GEN ** (sub * (YR_LEN))
+        fold_grind_bits_s = fold_grind_bits * GEN ** (sub * (LFPB_LEN))
+        yr_s = yr * GEN ** (sub * (YR_LEN))
         spi_s = spi * GEN ** (sub * 2)
         rta_s = rta * GEN ** (sub * NLEVELS)
         rtb_s = rtb * GEN ** (sub * NLEVELS)
@@ -456,118 +447,118 @@ def main():
         cvh_s = cvh * GEN ** (sub * 4)
         # Claim pool: values of every committed-coordinate claim, in decompose order
         # (their points are the GKR ζ's, resolvable from the baked block structure).
-        clv = HeapBuf(NCLAIMS)
+        claim_pool = HeapBuf(NCLAIMS)
         # The three GKR leaf points, stored side by side (ZOFF offsets).
         zeta = HeapBuf(3 * MUMAX)
 
         # ---- seed (statement pre-bound: hinted sub pi + baked program digest) ----
-        pv0 = spi_s[GEN ** 0]
-        pv1 = spi_s[GEN ** 1]
-        cvb = StackBuf(2)
-        cvb[0] = SEEDB0
-        cvb[1] = SEEDB1
-        cvb = obs(cvb, pv0)
-        cvb = obs(cvb, pv1)
-        cvb = obs(cvb, DIG0)
-        cvb = obs(cvb, DIG1)
-        cur = stream_s
+        sub_pi_0 = spi_s[GEN ** 0]
+        sub_pi_1 = spi_s[GEN ** 1]
+        fs = StackBuf(2)
+        fs[0] = SEEDB0
+        fs[1] = SEEDB1
+        fs = obs(fs, sub_pi_0)
+        fs = obs(fs, sub_pi_1)
+        fs = obs(fs, DIG0)
+        fs = obs(fs, DIG1)
+        cursor = stream_s
 
         # ---- announced sizes: log_mem + 6 row counts (assert = baked config) ----
         for i in unroll(0, 7):
-            x = cur[GEN ** 0]
-            cvb = obs(cvb, x)
+            x = cursor[GEN ** 0]
+            fs = obs(fs, x)
             assert x == ANN[i]
-            cur = cur * GEN
+            cursor = cursor * GEN
 
         # ---- commitment root (2 words), kept for the opening phase ----
-        rt0 = cur[GEN ** 0]
-        cvb = obs(cvb, rt0)
-        cur = cur * GEN
-        rt1 = cur[GEN ** 0]
-        cvb = obs(cvb, rt1)
-        cur = cur * GEN
+        commit_root_0 = cursor[GEN ** 0]
+        fs = obs(fs, commit_root_0)
+        cursor = cursor * GEN
+        commit_root_1 = cursor[GEN ** 0]
+        fs = obs(fs, commit_root_1)
+        cursor = cursor * GEN
 
         # ---- bus: α, grinding, γ ----
-        cvb = squeeze(cvb, zt_)
-        alpha = cvb[0]
+        fs = squeeze(fs, sqz_tag)
+        alpha = fs[0]
         # grinding nonce: raw stream_s word (NOT observed), PoW-checked, then bound.
-        nonce = cur[GEN ** 0]
-        cur = cur * GEN
+        nonce = cursor[GEN ** 0]
+        cursor = cursor * GEN
         pz = StackBuf(2)
         pz[0] = 0
         pz[1] = DS_POW
         pbase = StackBuf(2)
-        blake3(cvb, pz, pbase)
+        blake3(fs, pz, pbase)
         pn = StackBuf(2)
         pn[0] = nonce
         pn[1] = DS_POW
         ph = StackBuf(2)
         blake3(pbase, pn, ph)
-        dec128(fpb_s, ph[0])
+        dec128(grind_bits_s, ph[0])
         for b in unroll(0, 8 * GFULL):
-            z0 = fpb_s[GEN ** b]
+            z0 = grind_bits_s[GEN ** b]
             assert z0 == 0
         for b in unroll(8 * GFULL + 8 - GEXTRA, 8 * GFULL + 8):
-            z1 = fpb_s[GEN ** b]
+            z1 = grind_bits_s[GEN ** b]
             assert z1 == 0
-        cvb = absorb(cvb, nonce, DS_POW)
-        cvb = squeeze(cvb, zt_)
-        gamma = cvb[0]
+        fs = absorb(fs, nonce, DS_POW)
+        fs = squeeze(fs, sqz_tag)
+        gamma = fs[0]
 
         # ---- 3× GKR grand product (push / pull / count) ----
-        groot = HeapBuf(3)
-        gval = HeapBuf(3)
+        gkr_roots = HeapBuf(3)
+        gkr_claims = HeapBuf(3)
         for s in unroll(0, 3):
-            rootv = cur[GEN ** 0]
-            cvb = obs(cvb, rootv)
-            cur = cur * GEN
+            rootv = cursor[GEN ** 0]
+            fs = obs(fs, rootv)
+            cursor = cursor * GEN
             claim = rootv
-            rprev = HeapBuf(MUMAX)
+            prev_point = HeapBuf(MUMAX)
             for li in unroll(0, SMU[s]):
                 eq_acc = GEN ** 0
-                rnew = HeapBuf(MUMAX)
+                next_point = HeapBuf(MUMAX)
                 for j in unroll(0, li):
-                    m0 = cur[GEN ** 0]
-                    cvb = obs(cvb, m0)
-                    cur = cur * GEN
-                    m1 = cur[GEN ** 0]
-                    cvb = obs(cvb, m1)
-                    cur = cur * GEN
-                    m2 = cur[GEN ** 0]
-                    cvb = obs(cvb, m2)
-                    cur = cur * GEN
-                    rj = rprev[GEN ** j]
+                    m0 = cursor[GEN ** 0]
+                    fs = obs(fs, m0)
+                    cursor = cursor * GEN
+                    m1 = cursor[GEN ** 0]
+                    fs = obs(fs, m1)
+                    cursor = cursor * GEN
+                    m2 = cursor[GEN ** 0]
+                    fs = obs(fs, m2)
+                    cursor = cursor * GEN
+                    rj = prev_point[GEN ** j]
                     lhs = eq_acc * ((1 + rj) * m0 + rj * m1)
                     assert lhs == claim
-                    cvb = squeeze(cvb, zt_)
-                    rk = cvb[0]
-                    rnew[GEN ** (j + 1)] = rk
+                    fs = squeeze(fs, sqz_tag)
+                    rk = fs[0]
+                    next_point[GEN ** (j + 1)] = rk
                     eq_acc = eq_acc * (1 + rj + rk)
                     # Lagrange at nodes {0, 1, g} with baked inverse denominators.
                     l0 = (rk + 1) * (rk + GG) * ILD0
                     l1 = rk * (rk + GG) * ILD1
                     l2 = rk * (rk + 1) * ILD2
                     claim = eq_acc * (m0 * l0 + m1 * l1 + m2 * l2)
-                e0 = cur[GEN ** 0]
-                cvb = obs(cvb, e0)
-                cur = cur * GEN
-                e1 = cur[GEN ** 0]
-                cvb = obs(cvb, e1)
-                cur = cur * GEN
+                e0 = cursor[GEN ** 0]
+                fs = obs(fs, e0)
+                cursor = cursor * GEN
+                e1 = cursor[GEN ** 0]
+                fs = obs(fs, e1)
+                cursor = cursor * GEN
                 assert claim == eq_acc * e0 * e1
-                cvb = squeeze(cvb, zt_)
-                c = cvb[0]
+                fs = squeeze(fs, sqz_tag)
+                c = fs[0]
                 claim = e0 + c * (e0 + e1)
-                rnew[GEN ** 0] = c
-                rprev = rnew
+                next_point[GEN ** 0] = c
+                prev_point = next_point
             for t in unroll(0, SMU[s]):
-                zeta[GEN ** (ZOFF[s] + t)] = rprev[GEN ** t]
-            groot[GEN ** s] = rootv
-            gval[GEN ** s] = claim
+                zeta[GEN ** (ZOFF[s] + t)] = prev_point[GEN ** t]
+            gkr_roots[GEN ** s] = rootv
+            gkr_claims[GEN ** s] = claim
 
         # ---- count root nonzero (hinted inverse) ----
-        cprod = groot[GEN ** 2] * cinv_s[GEN ** 0]
-        assert cprod == 1
+        count_product = gkr_roots[GEN ** 2] * count_root_inv_s[GEN ** 0]
+        assert count_product == 1
 
         # ---- balance: push_root · d_pull == pull_root · d_push ----
         # d_side = Π_b (γ + Σ_i α^i·FPV[i])^DELTA_b over the side's padded blocks.
@@ -583,8 +574,8 @@ def main():
                         apw = apw * alpha
                     d = d * (gamma + fp) ** BDELTA[b]
             dsur[GEN ** s] = d
-        lhsb = groot[GEN ** 0] * dsur[GEN ** 1]
-        rhsb = groot[GEN ** 1] * dsur[GEN ** 0]
+        lhsb = gkr_roots[GEN ** 0] * dsur[GEN ** 1]
+        rhsb = gkr_roots[GEN ** 1] * dsur[GEN ** 0]
         assert lhsb == rhsb
 
         # ---- 3× leaf decomposition (claims pooled; bytecode Public DEFERRED) ----
@@ -608,22 +599,22 @@ def main():
                         eqh = eqh * (1 + zk)
                 selsum = selsum + eqh
                 # inner fingerprint Σ_i α^i · coord_i(ζ_lo); count side uses α=1,γ=0.
-                inner = 0
+                inner_sum = 0
                 apw = GEN ** 0
                 for i in unroll(0, BCN[b]):
                     if CT[BC0[b] + i] == 0:
                         cval = CVAL[BC0[b] + i]
                     if CT[BC0[b] + i] == 1:
-                        cval = cur[GEN ** 0]
-                        cvb = obs(cvb, cval)
-                        cur = cur * GEN
-                        clv[GEN ** ci] = cval
+                        cval = cursor[GEN ** 0]
+                        fs = obs(fs, cval)
+                        cursor = cursor * GEN
+                        claim_pool[GEN ** ci] = cval
                         ci = ci + 1
                     if CT[BC0[b] + i] == 2:
-                        rawv = cur[GEN ** 0]
-                        cvb = obs(cvb, rawv)
-                        cur = cur * GEN
-                        clv[GEN ** ci] = rawv
+                        rawv = cursor[GEN ** 0]
+                        fs = obs(fs, rawv)
+                        cursor = cursor * GEN
+                        claim_pool[GEN ** ci] = rawv
                         ci = ci + 1
                         cval = GG * rawv
                     if CT[BC0[b] + i] == 3:
@@ -634,16 +625,16 @@ def main():
                         cval = bcv_s[GEN ** bi]
                         bi = bi + 1
                     if s == 2:
-                        inner = inner + cval
+                        inner_sum = inner_sum + cval
                     else:
-                        inner = inner + apw * cval
+                        inner_sum = inner_sum + apw * cval
                         apw = apw * alpha
                 if s == 2:
-                    acc = acc + eqh * inner
+                    acc = acc + eqh * inner_sum
                 else:
-                    acc = acc + eqh * (gamma + inner)
+                    acc = acc + eqh * (gamma + inner_sum)
             acc = acc + 1 + selsum
-            assert acc == gval[GEN ** s]
+            assert acc == gkr_claims[GEN ** s]
 
         # ---- stacked-bytecode reduction (part of the native protocol) ----
         # The bytecode is ONE multilinear polynomial in KBC + 3 variables (the six
@@ -651,11 +642,11 @@ def main():
         # per-column values, sample three eq challenges, and reduce each point's
         # six claims to B(zeta_lo, sb) = sum_c eq(sb, c) * v_c.
         for k in unroll(0, NBCV):
-            cvb = obs(cvb, bcv_s[GEN ** k])
+            fs = obs(fs, bcv_s[GEN ** k])
         sb = HeapBuf(3)
         for t in unroll(0, 3):
-            cvb = squeeze(cvb, zt_)
-            sv = cvb[0]
+            fs = squeeze(fs, sqz_tag)
+            sv = fs[0]
             sb[GEN ** t] = sv
         wbc = HeapBuf(2)
         for s in unroll(0, 2):
@@ -671,9 +662,9 @@ def main():
             wbc[GEN ** s] = wv
 
         # ---- Phase A checkpoint: sponge state matches the mirror ----
-        cck = cvh_s[GEN ** 0]
-        ccg = cvb[0]
-        assert ccg == cck
+        want_state = cvh_s[GEN ** 0]
+        sponge_state = fs[0]
+        assert sponge_state == want_state
 
         # ---- 6x per-table zerocheck (XOR, MUL, SET, DEREF, JUMP, BLAKE3) ----
         # For each table: eta, the zerocheck point r (tau samples), tau eq-trick
@@ -681,30 +672,30 @@ def main():
         # and the final AIR check claim == eq_acc * C_t(eta, evals).
         rho = HeapBuf(6 * TAUMAX)
         for t in unroll(0, 6):
-            cvb = squeeze(cvb, zt_)
-            eta = cvb[0]
+            fs = squeeze(fs, sqz_tag)
+            eta = fs[0]
             rr = HeapBuf(TAUMAX)
             for k in unroll(0, TAU[t]):
-                cvb = squeeze(cvb, zt_)
-                rv = cvb[0]
+                fs = squeeze(fs, sqz_tag)
+                rv = fs[0]
                 rr[GEN ** k] = rv
             claim = 0
             eq_acc = GEN ** 0
             for k in unroll(0, TAU[t]):
-                p0 = cur[GEN ** 0]
-                cvb = obs(cvb, p0)
-                cur = cur * GEN
-                p1 = cur[GEN ** 0]
-                cvb = obs(cvb, p1)
-                cur = cur * GEN
-                p2 = cur[GEN ** 0]
-                cvb = obs(cvb, p2)
-                cur = cur * GEN
+                p0 = cursor[GEN ** 0]
+                fs = obs(fs, p0)
+                cursor = cursor * GEN
+                p1 = cursor[GEN ** 0]
+                fs = obs(fs, p1)
+                cursor = cursor * GEN
+                p2 = cursor[GEN ** 0]
+                fs = obs(fs, p2)
+                cursor = cursor * GEN
                 rj = rr[GEN ** k]
                 lhs = eq_acc * ((1 + rj) * p0 + rj * p1)
                 assert lhs == claim
-                cvb = squeeze(cvb, zt_)
-                rk = cvb[0]
+                fs = squeeze(fs, sqz_tag)
+                rk = fs[0]
                 rho[GEN ** (t * TAUMAX + k)] = rk
                 eq_acc = eq_acc * (1 + rj + rk)
                 l0 = (rk + 1) * (rk + GG) * ILD0
@@ -713,11 +704,11 @@ def main():
                 claim = eq_acc * (p0 * l0 + p1 * l1 + p2 * l2)
             ee = HeapBuf(16)
             for k in unroll(0, NCOL[t]):
-                e = cur[GEN ** 0]
-                cvb = obs(cvb, e)
-                cur = cur * GEN
+                e = cursor[GEN ** 0]
+                fs = obs(fs, e)
+                cursor = cursor * GEN
                 ee[GEN ** k] = e
-                clv[GEN ** ci] = e
+                claim_pool[GEN ** ci] = e
                 ci = ci + 1
             # the table's AIR constraint at the final point (ev order = the table's
             # constraint_columns order; formulas mirror tables.rs eval_constraint).
@@ -744,15 +735,15 @@ def main():
             assert claim == eq_acc * cst
 
         # ---- Phase B checkpoint ----
-        cck = cvh_s[GEN ** 1]
-        ccg = cvb[0]
-        assert ccg == cck
+        want_state = cvh_s[GEN ** 1]
+        sponge_state = fs[0]
+        assert sponge_state == want_state
 
         # ---- public-input binding claim: MEM(r_m, 0..) = interp(pi0, pi1, r_m) ----
-        cvb = squeeze(cvb, zt_)
-        rm = cvb[0]
-        piv = pv0 + rm * (pv0 + pv1)
-        clv[GEN ** ci] = piv
+        fs = squeeze(fs, sqz_tag)
+        rm = fs[0]
+        pi_interp = sub_pi_0 + rm * (sub_pi_0 + sub_pi_1)
+        claim_pool[GEN ** ci] = pi_interp
         ci = ci + 1
 
         # ---- BLAKE3 constant-pin claims (on q_pkd, at the pin bus point) ----
@@ -775,342 +766,342 @@ def main():
                 prefix = prefix + e
                 base = base + 2 ** t
         for pk in unroll(0, 3):
-            clv[GEN ** ci] = PINV[pk] * prefix
+            claim_pool[GEN ** ci] = PINV[pk] * prefix
             ci = ci + 1
 
         # ---- Phase C checkpoint ----
-        cck = cvh_s[GEN ** 2]
-        ccg = cvb[0]
-        assert ccg == cck
+        want_state = cvh_s[GEN ** 2]
+        sponge_state = fs[0]
+        assert sponge_state == want_state
 
         # ---- flock reduction: bind_statement ----
-        cvb = absorb(cvb, 13, DS_LEN)
-        cvb = absorb(cvb, R1CSLBL, DS_BYTE)
-        cvb = absorb(cvb, 32, DS_LEN)
-        cvb = absorb(cvb, SD0, DS_BYTE)
-        cvb = absorb(cvb, SD1, DS_BYTE)
-        cvb = absorb(cvb, 32, DS_LEN)
-        cvb = absorb(cvb, rt0, DS_BYTE)
-        cvb = absorb(cvb, rt1, DS_BYTE)
+        fs = absorb(fs, 13, DS_LEN)
+        fs = absorb(fs, R1CSLBL, DS_BYTE)
+        fs = absorb(fs, 32, DS_LEN)
+        fs = absorb(fs, SD0, DS_BYTE)
+        fs = absorb(fs, SD1, DS_BYTE)
+        fs = absorb(fs, 32, DS_LEN)
+        fs = absorb(fs, commit_root_0, DS_BYTE)
+        fs = absorb(fs, commit_root_1, DS_BYTE)
 
         # ---- flock zerocheck (univariate skip, k_skip = 6) ----
-        cvb = absorb(cvb, 18, DS_LEN)
-        cvb = absorb(cvb, ZCLBLA, DS_BYTE)
-        cvb = absorb(cvb, ZCLBLB, DS_BYTE)
+        fs = absorb(fs, 18, DS_LEN)
+        fs = absorb(fs, ZCLBLA, DS_BYTE)
+        fs = absorb(fs, ZCLBLB, DS_BYTE)
         # the full r vector: 6 sampled skips, 7 fixed inner, MR1CS-13 sampled outer.
-        zr = HeapBuf(MR1CS)
+        zerocheck_r = HeapBuf(MR1CS)
         for i in unroll(0, 6):
-            cvb = squeeze(cvb, zt_)
-            rv = cvb[0]
-            zr[GEN ** i] = rv
+            fs = squeeze(fs, sqz_tag)
+            rv = fs[0]
+            zerocheck_r[GEN ** i] = rv
         for i in unroll(0, 7):
-            zr[GEN ** (6 + i)] = INNER7[i]
+            zerocheck_r[GEN ** (6 + i)] = INNER7[i]
         for i in unroll(0, MR1CS - 13):
-            cvb = squeeze(cvb, zt_)
-            rv = cvb[0]
-            zr[GEN ** (13 + i)] = rv
+            fs = squeeze(fs, sqz_tag)
+            rv = fs[0]
+            zerocheck_r[GEN ** (13 + i)] = rv
         # observe round-1 messages (ab then c), sample z.
         for i in unroll(0, 128):
-            cvb = obs(cvb, zc1_s[GEN ** i])
-        cvb = squeeze(cvb, zt_)
-        zz = cvb[0]
+            fs = obs(fs, zc_round1_s[GEN ** i])
+        fs = squeeze(fs, sqz_tag)
+        zerocheck_z = fs[0]
         # interpolate P^C(z) on the Lambda domain (phi8 nodes 64..128): prefix/
         # suffix numerator products with baked inverse denominators.
-        lnum = StackBuf(64)
-        lag64(zz, lnum, 64)
-        ceval = 0
+        lagrange_nums = StackBuf(64)
+        lag64(zerocheck_z, lagrange_nums, 64)
+        c_eval = 0
         for i in unroll(0, 64):
-            ceval = ceval + lnum[i] * ILAM[i] * zc1_s[GEN ** (64 + i)]
+            c_eval = c_eval + lagrange_nums[i] * ILAM[i] * zc_round1_s[GEN ** (64 + i)]
         # combined interpolation at z over ALL 128 phi8 nodes (Lambda values only;
         # the S half is zero by the zerocheck identity). The Lambda-node numerators
-        # reuse lnum: the full-domain product only adds the S-half factor.
-        sfull = GEN ** 0
+        # reuse lagrange_nums: the full-domain product only adds the S-half factor.
+        s_half_product = GEN ** 0
         for i in unroll(0, 64):
-            sfull = sfull * (zz + PHI[i])
-        comb = 0
+            s_half_product = s_half_product * (zerocheck_z + PHI[i])
+        combined_eval = 0
         for i in unroll(0, 64):
-            comb = comb + lnum[i] * ICMB[i] * (zc1_s[GEN ** i] + zc1_s[GEN ** (64 + i)])
-        comb = comb * sfull
-        crun = comb + ceval
+            combined_eval = combined_eval + lagrange_nums[i] * ICMB[i] * (zc_round1_s[GEN ** i] + zc_round1_s[GEN ** (64 + i)])
+        combined_eval = combined_eval * s_half_product
+        zc_running = combined_eval + c_eval
         # multilinear rounds.
-        zrho = HeapBuf(NMLV)
+        zerocheck_rhos = HeapBuf(NMLV)
         for i in unroll(0, 7):
-            g1 = zcr_s[GEN ** (2 * i)]
-            gi = zcr_s[GEN ** (2 * i + 1)]
-            req = zr[GEN ** (6 + i)]
-            g0 = (crun + req * g1) * I7INV[i]
-            cvb = obs(cvb, g1)
-            cvb = obs(cvb, gi)
-            cvb = squeeze(cvb, zt_)
-            rhov = cvb[0]
-            zrho[GEN ** i] = rhov
-            crun = g0 * (1 + rhov) + g1 * rhov + gi * rhov * (1 + rhov)
+            gamma_c = zc_msgs_s[GEN ** (2 * i)]
+            g_inf = zc_msgs_s[GEN ** (2 * i + 1)]
+            r_eq = zerocheck_r[GEN ** (6 + i)]
+            gamma_ab = (zc_running + r_eq * gamma_c) * I7INV[i]
+            fs = obs(fs, gamma_c)
+            fs = obs(fs, g_inf)
+            fs = squeeze(fs, sqz_tag)
+            rho_v = fs[0]
+            zerocheck_rhos[GEN ** i] = rho_v
+            zc_running = gamma_ab * (1 + rho_v) + gamma_c * rho_v + g_inf * rho_v * (1 + rho_v)
         for i in unroll(7, NMLV):
-            g1 = zcr_s[GEN ** (2 * i)]
-            gi = zcr_s[GEN ** (2 * i + 1)]
-            req = zr[GEN ** (6 + i)]
-            ionepr = zinv_s[GEN ** i]
-            chkinv = (1 + req) * ionepr
-            assert chkinv == 1
-            g0 = (crun + req * g1) * ionepr
-            cvb = obs(cvb, g1)
-            cvb = obs(cvb, gi)
-            cvb = squeeze(cvb, zt_)
-            rhov = cvb[0]
-            zrho[GEN ** i] = rhov
-            crun = g0 * (1 + rhov) + g1 * rhov + gi * rhov * (1 + rhov)
-        # final: crun == a_eval * b_eval; observe both.
-        fa = zcf_s[GEN ** 0]
-        fb = zcf_s[GEN ** 1]
-        fchk = fa * fb
-        assert crun == fchk
-        cvb = obs(cvb, fa)
-        cvb = obs(cvb, fb)
+            gamma_c = zc_msgs_s[GEN ** (2 * i)]
+            g_inf = zc_msgs_s[GEN ** (2 * i + 1)]
+            r_eq = zerocheck_r[GEN ** (6 + i)]
+            inv_one_plus_r = zc_invs_s[GEN ** i]
+            inv_check = (1 + r_eq) * inv_one_plus_r
+            assert inv_check == 1
+            gamma_ab = (zc_running + r_eq * gamma_c) * inv_one_plus_r
+            fs = obs(fs, gamma_c)
+            fs = obs(fs, g_inf)
+            fs = squeeze(fs, sqz_tag)
+            rho_v = fs[0]
+            zerocheck_rhos[GEN ** i] = rho_v
+            zc_running = gamma_ab * (1 + rho_v) + gamma_c * rho_v + g_inf * rho_v * (1 + rho_v)
+        # final: zc_running == a_eval * b_eval; observe both.
+        a_eval = zc_finals_s[GEN ** 0]
+        b_eval = zc_finals_s[GEN ** 1]
+        ab_product = a_eval * b_eval
+        assert zc_running == ab_product
+        fs = obs(fs, a_eval)
+        fs = obs(fs, b_eval)
 
         # ---- flock lincheck (matrix evaluation DEFERRED) ----
-        cvb = absorb(cvb, 17, DS_LEN)
-        cvb = absorb(cvb, LCLBLA, DS_BYTE)
-        cvb = absorb(cvb, LCLBLB, DS_BYTE)
-        cvb = squeeze(cvb, zt_)
-        lal = cvb[0]
-        cvb = squeeze(cvb, zt_)
-        lbe = cvb[0]
-        lrun = lal * fa + fb + lbe
-        lrr = HeapBuf(LCR)
+        fs = absorb(fs, 17, DS_LEN)
+        fs = absorb(fs, LCLBLA, DS_BYTE)
+        fs = absorb(fs, LCLBLB, DS_BYTE)
+        fs = squeeze(fs, sqz_tag)
+        lincheck_alpha = fs[0]
+        fs = squeeze(fs, sqz_tag)
+        lincheck_beta = fs[0]
+        lc_running = lincheck_alpha * a_eval + b_eval + lincheck_beta
+        lincheck_rs = HeapBuf(LCR)
         for i in unroll(0, LCR):
-            e1 = lcr_s[GEN ** (2 * i)]
-            ei = lcr_s[GEN ** (2 * i + 1)]
-            cvb = obs(cvb, e1)
-            cvb = obs(cvb, ei)
-            cvb = squeeze(cvb, zt_)
-            rv = cvb[0]
-            lrr[GEN ** i] = rv
-            e0 = lrun + e1
+            e1 = lincheck_msgs_s[GEN ** (2 * i)]
+            ei = lincheck_msgs_s[GEN ** (2 * i + 1)]
+            fs = obs(fs, e1)
+            fs = obs(fs, ei)
+            fs = squeeze(fs, sqz_tag)
+            rv = fs[0]
+            lincheck_rs[GEN ** i] = rv
+            e0 = lc_running + e1
             c1q = e0 + e1 + ei
-            lrun = ei * rv * rv + c1q * rv + e0
+            lc_running = ei * rv * rv + c1q * rv + e0
         for i in unroll(0, 64):
-            cvb = obs(cvb, lcz_s[GEN ** i])
+            fs = obs(fs, z_partial_s[GEN ** i])
         # final consistency: running == matpart (DEFERRED) + beta * pin term. The
         # const-pin column folds through the top-variable bindings: weight =
         # prod_j (bit_{klog-1-j}(PINCOL) ? r_j : 1+r_j), surviving z_partial index
         # = PINCOL low 6 bits.
-        pinw = lbe
+        pin_term = lincheck_beta
         for j in unroll(0, LCR):
             if (PINCOL // (2 ** (KLOG - 1 - j))) % 2 == 1:
-                pinw = pinw * lrr[GEN ** j]
+                pin_term = pin_term * lincheck_rs[GEN ** j]
             else:
-                pinw = pinw * (1 + lrr[GEN ** j])
-        pinw = pinw * lcz_s[GEN ** (PINCOL % 64)]
-        mp = matp_s[GEN ** 0]
-        lchk = mp + pinw
-        assert lrun == lchk
+                pin_term = pin_term * (1 + lincheck_rs[GEN ** j])
+        pin_term = pin_term * z_partial_s[GEN ** (PINCOL % 64)]
+        matrix_part = matrix_eval_s[GEN ** 0]
+        lincheck_final = matrix_part + pin_term
+        assert lc_running == lincheck_final
         # fresh z_skip; w = <lagrange_S(r_inner_skip), z_partial> (phi8 nodes 0..64).
-        cvb = squeeze(cvb, zt_)
-        lsk = cvb[0]
-        snum = StackBuf(64)
-        lag64(lsk, snum, 0)
-        lw = 0
+        fs = squeeze(fs, sqz_tag)
+        lincheck_z_skip = fs[0]
+        skip_nums = StackBuf(64)
+        lag64(lincheck_z_skip, skip_nums, 0)
+        lincheck_w = 0
         for i in unroll(0, 64):
-            lw = lw + snum[i] * ISDOM[i] * lcz_s[GEN ** i]
+            lincheck_w = lincheck_w + skip_nums[i] * ISDOM[i] * z_partial_s[GEN ** i]
 
         # ---- Phase D checkpoint ----
-        cck = cvh_s[GEN ** 3]
-        ccg = cvb[0]
-        assert ccg == cck
+        want_state = cvh_s[GEN ** 3]
+        sponge_state = fs[0]
+        assert sponge_state == want_state
 
         # ---- stacked mixed opening: ring-switch fronts + claim combination ----
-        cvb = absorb(cvb, 23, DS_LEN)
-        cvb = absorb(cvb, OBLBLA, DS_BYTE)
-        cvb = absorb(cvb, OBLBLB, DS_BYTE)
-        # Ring-switch claim 0 (ab): value lw, z_skip = lsk, x_outer[0] = lrr[LCR-1]
+        fs = absorb(fs, 23, DS_LEN)
+        fs = absorb(fs, OBLBLA, DS_BYTE)
+        fs = absorb(fs, OBLBLB, DS_BYTE)
+        # Ring-switch claim 0 (ab): value lincheck_w, z_skip = lincheck_z_skip, x_outer[0] = lincheck_rs[LCR-1]
         # (x_inner_rest is the REVERSED lincheck round vector). Claim 1 (c): value
-        # ceval, z_skip = zz, x_outer[0] = zr[6].
-        tclv = HeapBuf(2)
-        rsqv = HeapBuf(2)
-        ckb = HeapBuf(2 * 128)
-        zvb = HeapBuf(2 * QPKDV)
-        rdp = HeapBuf(14)
+        # c_eval, z_skip = zerocheck_z, x_outer[0] = zerocheck_r[6].
+        transposed_claims = HeapBuf(2)
+        rs_eq_vals = HeapBuf(2)
+        c_table = HeapBuf(2 * 128)
+        z_vals = HeapBuf(2 * QPKDV)
+        r_dprime = HeapBuf(14)
         for rs in unroll(0, 2):
-            cvb = absorb(cvb, 20, DS_LEN)
-            cvb = absorb(cvb, RSLBLA, DS_BYTE)
-            cvb = absorb(cvb, RSLBLB, DS_BYTE)
+            fs = absorb(fs, 20, DS_LEN)
+            fs = absorb(fs, RSLBLA, DS_BYTE)
+            fs = absorb(fs, RSLBLB, DS_BYTE)
             for i in unroll(0, 128):
-                cvb = obs(cvb, shv_s[GEN ** (128 * rs + i)])
+                fs = obs(fs, s_hat_v_s[GEN ** (128 * rs + i)])
             # claim check: weights[i] = lambda_{i&63}(z_skip) * eq(x_outer0, i>>6).
             if rs == 0:
-                zsk = lsk
-                xo0 = lrr[GEN ** (LCR - 1)]
-                clm = lw
+                claim_z_skip = lincheck_z_skip
+                claim_x_outer_0 = lincheck_rs[GEN ** (LCR - 1)]
+                claim_val = lincheck_w
             else:
-                zsk = zz
-                xo0 = zr[GEN ** 6]
-                clm = ceval
-            wnum = StackBuf(64)
-            lag64(zsk, wnum, 0)
-            cchk = 0
+                claim_z_skip = zerocheck_z
+                claim_x_outer_0 = zerocheck_r[GEN ** 6]
+                claim_val = c_eval
+            claim_nums = StackBuf(64)
+            lag64(claim_z_skip, claim_nums, 0)
+            claim_check = 0
             for i in unroll(0, 64):
-                lam = wnum[i] * ISDOM[i]
-                cchk = cchk + lam * ((1 + xo0) * shv_s[GEN ** (128 * rs + i)] + xo0 * shv_s[GEN ** (128 * rs + 64 + i)])
-            assert cchk == clm
+                lagrange_w = claim_nums[i] * ISDOM[i]
+                claim_check = claim_check + lagrange_w * ((1 + claim_x_outer_0) * s_hat_v_s[GEN ** (128 * rs + i)] + claim_x_outer_0 * s_hat_v_s[GEN ** (128 * rs + 64 + i)])
+            assert claim_check == claim_val
             # r'' (7 samples).
             for i in unroll(0, 7):
-                cvb = squeeze(cvb, zt_)
-                rv = cvb[0]
-                rdp[GEN ** (7 * rs + i)] = rv
+                fs = squeeze(fs, sqz_tag)
+                rv = fs[0]
+                r_dprime[GEN ** (7 * rs + i)] = rv
             # w = eq tensor of the seven r'' coords (doubling tree, final 128 at 126).
-            wq = HeapBuf(254)
-            eqtree(rdp * GEN ** (7 * rs), wq, 7)
-            # c_k = sum_i w_i * dt[k][i], one runtime loop over the levels k.
-            ckrow = ckb * GEN ** (128 * rs)
+            w_eq = HeapBuf(254)
+            eqtree(r_dprime * GEN ** (7 * rs), w_eq, 7)
+            # c_k = sum_i w_i * delta_pows[k][i], one runtime loop over the levels k.
+            c_row = c_table * GEN ** (128 * rs)
             for xk in mul_range(1, GEN ** 128):
-                rowd = dt * xk ** 128
-                cacc = 0
+                delta_row = delta_pows * xk ** 128
+                c_acc = 0
                 for i in unroll(0, 128):
-                    cacc = cacc + wq[GEN ** (126 + i)] * rowd[GEN ** i]
-                ckrow[xk] = cacc
+                    c_acc = c_acc + w_eq[GEN ** (126 + i)] * delta_row[GEN ** i]
+                c_row[xk] = c_acc
             # transposed claim T = sum_j x^j * L_w(shv_j): one runtime pass over
             # the observed values; per value the Frobenius powers evolve as a
             # scalar against the c table, and x^j chains through a heap cell.
-            shvrow = shv_s * GEN ** (128 * rs)
-            xpw = HeapBuf(129)
-            xpw[GEN ** 0] = GEN ** 0
-            tacc = HeapBuf(129)
-            tacc[GEN ** 0] = 0
+            shvrow = s_hat_v_s * GEN ** (128 * rs)
+            x_pow_chain = HeapBuf(129)
+            x_pow_chain[GEN ** 0] = GEN ** 0
+            t_chain = HeapBuf(129)
+            t_chain[GEN ** 0] = 0
             for xj in mul_range(1, GEN ** 128):
                 xh = StackBuf(1)
                 xh[0] = 2
-                yp = shvrow[xj]
-                lw = 0
+                y_pow = shvrow[xj]
+                lin_eval = 0
                 for k in unroll(0, 128):
-                    lw = lw + ckrow[GEN ** k] * yp
-                    yp = yp * yp
-                tacc[xj * GEN] = tacc[xj] + xpw[xj] * lw
-                xpw[xj * GEN] = xpw[xj] * xh[0]
-            tclv[GEN ** rs] = tacc[GEN ** 128]
+                    lin_eval = lin_eval + c_row[GEN ** k] * y_pow
+                    y_pow = y_pow * y_pow
+                t_chain[xj * GEN] = t_chain[xj] + x_pow_chain[xj] * lin_eval
+                x_pow_chain[xj * GEN] = x_pow_chain[xj] * xh[0]
+            transposed_claims[GEN ** rs] = t_chain[GEN ** 128]
             # z_vals for eval_rs_eq (the x_outer tail), used at the opening terminal.
             if rs == 0:
                 for t in unroll(0, LCR - 1):
-                    zvb[GEN ** t] = lrr[GEN ** (LCR - 2 - t)]
+                    z_vals[GEN ** t] = lincheck_rs[GEN ** (LCR - 2 - t)]
                 for t in unroll(0, NMLV - LCR):
-                    zvb[GEN ** (LCR - 1 + t)] = zrho[GEN ** (LCR + t)]
+                    z_vals[GEN ** (LCR - 1 + t)] = zerocheck_rhos[GEN ** (LCR + t)]
             else:
                 for t in unroll(0, QPKDV):
-                    zvb[GEN ** (QPKDV + t)] = zr[GEN ** (7 + t)]
+                    z_vals[GEN ** (QPKDV + t)] = zerocheck_r[GEN ** (7 + t)]
         # gamma-combine the two transposed sumcheck claims (computed in-circuit).
-        cvb = squeeze(cvb, zt_)
-        g0 = cvb[0]
-        cvb = squeeze(cvb, zt_)
-        g1 = cvb[0]
-        target = g0 * tclv[GEN ** 0] + g1 * tclv[GEN ** 1]
+        fs = squeeze(fs, sqz_tag)
+        gamma_ab = fs[0]
+        fs = squeeze(fs, sqz_tag)
+        gamma_c = fs[0]
+        target = gamma_ab * transposed_claims[GEN ** 0] + gamma_c * transposed_claims[GEN ** 1]
         # ...then every pooled point claim, each labeled and observed.
         for j in unroll(0, NCL):
-            cvb = absorb(cvb, 26, DS_LEN)
-            cvb = absorb(cvb, PDLBLA, DS_BYTE)
-            cvb = absorb(cvb, PDLBLB, DS_BYTE)
-            cvb = obs(cvb, clv[GEN ** j])
-        gpd = HeapBuf(NCL)
+            fs = absorb(fs, 26, DS_LEN)
+            fs = absorb(fs, PDLBLA, DS_BYTE)
+            fs = absorb(fs, PDLBLB, DS_BYTE)
+            fs = obs(fs, claim_pool[GEN ** j])
+        gamma_pool = HeapBuf(NCL)
         for j in unroll(0, NCL):
-            cvb = squeeze(cvb, zt_)
-            gv = cvb[0]
-            gpd[GEN ** j] = gv
-            target = target + gv * clv[GEN ** j]
+            fs = squeeze(fs, sqz_tag)
+            gv = fs[0]
+            gamma_pool[GEN ** j] = gv
+            target = target + gv * claim_pool[GEN ** j]
 
         # ================= the Ligerito opening core (stacked, m = STACK) ========
 
         ris = HeapBuf(LENRIS)
-        lbet = HeapBuf(NLEVELS)
-        lenf = HeapBuf(NLEVELS)
-        law = HeapBuf(NLEVELS * MAXQ)
+        betas = HeapBuf(NLEVELS)
+        enforced_sums = HeapBuf(NLEVELS)
+        alpha_weights = HeapBuf(NLEVELS * MAXQ)
         qfb = HeapBuf(QP_LEN)
         qbp = HeapBuf(QP_LEN)
 
-        cvb = absorb(cvb, 23, DS_LEN)
-        cvb = absorb(cvb, LIGLBLA, DS_BYTE)
-        cvb = absorb(cvb, LIGLBLB, DS_BYTE)
-        cvb = obs(cvb, target)
-        cvb = absorb(cvb, 32, DS_LEN)
-        cvb = absorb(cvb, rt0, DS_BYTE)
-        cvb = absorb(cvb, rt1, DS_BYTE)
+        fs = absorb(fs, 23, DS_LEN)
+        fs = absorb(fs, LIGLBLA, DS_BYTE)
+        fs = absorb(fs, LIGLBLB, DS_BYTE)
+        fs = obs(fs, target)
+        fs = absorb(fs, 32, DS_LEN)
+        fs = absorb(fs, commit_root_0, DS_BYTE)
+        fs = absorb(fs, commit_root_1, DS_BYTE)
 
-        lsp = lsc_s
-        lu0 = lsp[GEN ** 0]
-        cvb = obs(cvb, lu0)
-        lu2 = lsp[GEN ** 1]
-        cvb = obs(cvb, lu2)
-        lsp = lsp * GEN ** 2
-        lqc = lu0
-        lqb = target + lu2
-        lqa = lu2
-        tr = target
+        msg_cursor = lsc_s
+        msg_u0 = msg_cursor[GEN ** 0]
+        fs = obs(fs, msg_u0)
+        msg_u2 = msg_cursor[GEN ** 1]
+        fs = obs(fs, msg_u2)
+        msg_cursor = msg_cursor * GEN ** 2
+        quad_c = msg_u0
+        quad_b = target + msg_u2
+        quad_a = msg_u2
+        t_r = target
 
         for lvl in unroll(0, NLEVELS):
             for j in unroll(0, KLVL[lvl]):
-                lg = FOLDBASE[lvl] + j
-                if BITS[lg] != 0:
-                    lpz = StackBuf(2)
-                    lpz[0] = 0
-                    lpz[1] = DS_POW
-                    lpbase = StackBuf(2)
-                    blake3(cvb, lpz, lpbase)
-                    lpn = StackBuf(2)
-                    lpn[0] = fnn_s[GEN ** lg]
-                    lpn[1] = DS_POW
-                    lph = StackBuf(2)
-                    blake3(lpbase, lpn, lph)
-                    dec128(lfpb_s * GEN ** (128 * lg), lph[0])
-                    for b in unroll(0, 8 * FULL[lg]):
-                        lz0 = lfpb_s[GEN ** (128 * lg + b)]
-                        assert lz0 == 0
-                    for b in unroll(8 * FULL[lg] + 8 - EXTRA8[lg], 8 * FULL[lg] + 8):
-                        lz1 = lfpb_s[GEN ** (128 * lg + b)]
-                        assert lz1 == 0
-                    fnv = fnn_s[GEN ** lg]
-                    cvb = absorb(cvb, fnv, DS_POW)
-                cvb = squeeze(cvb, zt_)
-                lri = cvb[0]
-                ris[GEN ** (FOLDBASE[lvl] + j)] = lri
-                tr = lqc + lri * lqb + lri * lri * lqa
-                la = lsp[GEN ** 0]
-                cvb = obs(cvb, la)
-                lb = lsp[GEN ** 1]
-                cvb = obs(cvb, lb)
-                lsp = lsp * GEN ** 2
-                lqc = la
-                lqb = tr + lb
-                lqa = lb
+                fold_idx = FOLDBASE[lvl] + j
+                if BITS[fold_idx] != 0:
+                    pow_tag = StackBuf(2)
+                    pow_tag[0] = 0
+                    pow_tag[1] = DS_POW
+                    pow_base = StackBuf(2)
+                    blake3(fs, pow_tag, pow_base)
+                    pow_nonce = StackBuf(2)
+                    pow_nonce[0] = fnn_s[GEN ** fold_idx]
+                    pow_nonce[1] = DS_POW
+                    pow_out = StackBuf(2)
+                    blake3(pow_base, pow_nonce, pow_out)
+                    dec128(fold_grind_bits_s * GEN ** (128 * fold_idx), pow_out[0])
+                    for b in unroll(0, 8 * FULL[fold_idx]):
+                        zero_bit_lo = fold_grind_bits_s[GEN ** (128 * fold_idx + b)]
+                        assert zero_bit_lo == 0
+                    for b in unroll(8 * FULL[fold_idx] + 8 - EXTRA8[fold_idx], 8 * FULL[fold_idx] + 8):
+                        zero_bit_hi = fold_grind_bits_s[GEN ** (128 * fold_idx + b)]
+                        assert zero_bit_hi == 0
+                    nonce_v = fnn_s[GEN ** fold_idx]
+                    fs = absorb(fs, nonce_v, DS_POW)
+                fs = squeeze(fs, sqz_tag)
+                fold_challenge = fs[0]
+                ris[GEN ** (FOLDBASE[lvl] + j)] = fold_challenge
+                t_r = quad_c + fold_challenge * quad_b + fold_challenge * fold_challenge * quad_a
+                msg_a = msg_cursor[GEN ** 0]
+                fs = obs(fs, msg_a)
+                msg_b = msg_cursor[GEN ** 1]
+                fs = obs(fs, msg_b)
+                msg_cursor = msg_cursor * GEN ** 2
+                quad_c = msg_a
+                quad_b = t_r + msg_b
+                quad_a = msg_b
 
             if lvl == R:
                 for iy in unroll(0, YR_LEN):
-                    cvb = obs(cvb, lyr_s[GEN ** iy])
+                    fs = obs(fs, yr_s[GEN ** iy])
             else:
-                cvb = absorb(cvb, 32, DS_LEN)
-                nra = rta_s[GEN ** (lvl + 1)]
-                nrb = rtb_s[GEN ** (lvl + 1)]
-                cvb = absorb(cvb, nra, DS_BYTE)
-                cvb = absorb(cvb, nrb, DS_BYTE)
-            cvb = absorb(cvb, 0, DS_POW)
+                fs = absorb(fs, 32, DS_LEN)
+                next_root_a = rta_s[GEN ** (lvl + 1)]
+                next_root_b = rtb_s[GEN ** (lvl + 1)]
+                fs = absorb(fs, next_root_a, DS_BYTE)
+                fs = absorb(fs, next_root_b, DS_BYTE)
+            fs = absorb(fs, 0, DS_POW)
 
-            c0b = HeapBuf(MAXNSQ + 1)
-            c1b = HeapBuf(MAXNSQ + 1)
-            c0b[GEN ** 0] = cvb[0]
-            c1b[GEN ** 0] = cvb[1]
+            sqz_chain_0 = HeapBuf(MAXNSQ + 1)
+            sqz_chain_1 = HeapBuf(MAXNSQ + 1)
+            sqz_chain_0[GEN ** 0] = fs[0]
+            sqz_chain_1[GEN ** 0] = fs[1]
             for xs in mul_range(1, GEN ** NSQ[lvl]):
-                chq, nc0, nc1 = sqz(c0b[xs], c1b[xs])
-                c0b[xs * GEN] = nc0
-                c1b[xs * GEN] = nc1
-                lbp = lsbits_s * GEN ** SBITSOFF[lvl] * xs ** 128
-                lqpp = xs ** PER[lvl]
-                decq(lbp, chq, qfb * GEN ** QPOFF[lvl] * lqpp, qbp * GEN ** QPOFF[lvl] * lqpp, DEPTH[lvl], PER[lvl])
-            cvb = StackBuf(2)
-            cvb[0] = c0b[GEN ** NSQ[lvl]]
-            cvb[1] = c1b[GEN ** NSQ[lvl]]
+                packed_word, next_c0, next_c1 = sqz(sqz_chain_0[xs], sqz_chain_1[xs])
+                sqz_chain_0[xs * GEN] = next_c0
+                sqz_chain_1[xs * GEN] = next_c1
+                bits_ptr = lsbits_s * GEN ** SBITSOFF[lvl] * xs ** 128
+                query_ptr = xs ** PER[lvl]
+                decq(bits_ptr, packed_word, qfb * GEN ** QPOFF[lvl] * query_ptr, qbp * GEN ** QPOFF[lvl] * query_ptr, DEPTH[lvl], PER[lvl])
+            fs = StackBuf(2)
+            fs[0] = sqz_chain_0[GEN ** NSQ[lvl]]
+            fs[1] = sqz_chain_1[GEN ** NSQ[lvl]]
 
-            lalr = HeapBuf(MAXNI)
+            alphas = HeapBuf(MAXNI)
             for t in unroll(0, ALPHALEN[lvl]):
-                cvb = squeeze(cvb, zt_)
-                lav = cvb[0]
-                lalr[GEN ** t] = lav
-            leqt = HeapBuf(MAXNI)
+                fs = squeeze(fs, sqz_tag)
+                lav = fs[0]
+                alphas[GEN ** t] = lav
+            eq_tab = HeapBuf(MAXNI)
             for i in unroll(0, NUMINTER[lvl]):
                 lp = GEN ** 0
                 for c in unroll(0, KLVL[lvl]):
@@ -1119,343 +1110,343 @@ def main():
                         lp = lp * lrc
                     else:
                         lp = lp * (1 + lrc)
-                leqt[GEN ** i] = lp
+                eq_tab[GEN ** i] = lp
             for i in unroll(0, QUERIES[lvl]):
                 lp = GEN ** 0
                 for c in unroll(0, ALPHALEN[lvl]):
-                    lac = lalr[GEN ** c]
+                    lac = alphas[GEN ** c]
                     if (i // (2 ** c)) % 2 == 1:
                         lp = lp * lac
                     else:
                         lp = lp * (1 + lac)
-                law[GEN ** (lvl * MAXQ + i)] = lp
+                alpha_weights[GEN ** (lvl * MAXQ + i)] = lp
 
-            accE = HeapBuf(MAXQ + 1)
-            accE[GEN ** 0] = 0
+            enforced_chain = HeapBuf(MAXQ + 1)
+            enforced_chain[GEN ** 0] = 0
             for xe in mul_range(1, GEN ** QUERIES[lvl]):
-                lrb = xe ** NUMINTER[lvl]
-                lst = StackBuf(2)
-                lst[0] = GEN ** NBYTES[lvl]
-                lst[1] = 0
-                ldot = 0
+                row_base = xe ** NUMINTER[lvl]
+                leaf_state = StackBuf(2)
+                leaf_state[0] = GEN ** NBYTES[lvl]
+                leaf_state[1] = 0
+                row_dot = 0
                 for jb in unroll(0, BLOCKS[lvl]):
-                    lmm = StackBuf(2)
-                    lmm[0] = lrows_s[GEN ** ROWOFF[lvl] * lrb * GEN ** (2 * jb)]
-                    lmm[1] = lrows_s[GEN ** ROWOFF[lvl] * lrb * GEN ** (2 * jb + 1)]
-                    loo = StackBuf(2)
-                    blake3(lst, lmm, loo)
-                    lst = loo
-                    ldot = ldot + lmm[0] * leqt[GEN ** (2 * jb)] + lmm[1] * leqt[GEN ** (2 * jb + 1)]
-                ld0 = lst[0]
-                ld1 = lst[1]
-                accE[xe * GEN] = accE[xe] + law[GEN ** (lvl * MAXQ) * xe] * ldot
-                lsbp = qbp[GEN ** QPOFF[lvl] * xe]
-                lpb2 = xe ** (2 * DEPTH[lvl])
+                    row_pair = StackBuf(2)
+                    row_pair[0] = lrows_s[GEN ** ROWOFF[lvl] * row_base * GEN ** (2 * jb)]
+                    row_pair[1] = lrows_s[GEN ** ROWOFF[lvl] * row_base * GEN ** (2 * jb + 1)]
+                    leaf_digest = StackBuf(2)
+                    blake3(leaf_state, row_pair, leaf_digest)
+                    leaf_state = leaf_digest
+                    row_dot = row_dot + row_pair[0] * eq_tab[GEN ** (2 * jb)] + row_pair[1] * eq_tab[GEN ** (2 * jb + 1)]
+                node_0 = leaf_state[0]
+                node_1 = leaf_state[1]
+                enforced_chain[xe * GEN] = enforced_chain[xe] + alpha_weights[GEN ** (lvl * MAXQ) * xe] * row_dot
+                walk_bits = qbp[GEN ** QPOFF[lvl] * xe]
+                path_base = xe ** (2 * DEPTH[lvl])
                 for lw2 in unroll(0, DEPTH[lvl]):
-                    ls0 = lpaths_s[GEN ** PATHOFF[lvl] * lpb2 * GEN ** (2 * lw2)]
-                    ls1 = lpaths_s[GEN ** PATHOFF[lvl] * lpb2 * GEN ** (2 * lw2 + 1)]
-                    lbit = lsbp[GEN ** lw2]
-                    lt0 = ld0 + ls0
-                    lt1 = ld1 + ls1
-                    lla = StackBuf(2)
-                    lla[0] = ld0 + lbit * lt0
-                    lla[1] = ld1 + lbit * lt1
-                    lra = StackBuf(2)
-                    lra[0] = lt0 + lla[0]
-                    lra[1] = lt1 + lla[1]
-                    loo2 = StackBuf(2)
-                    blake3(lla, lra, loo2)
-                    ld0 = loo2[0]
-                    ld1 = loo2[1]
+                    sibling_0 = lpaths_s[GEN ** PATHOFF[lvl] * path_base * GEN ** (2 * lw2)]
+                    sibling_1 = lpaths_s[GEN ** PATHOFF[lvl] * path_base * GEN ** (2 * lw2 + 1)]
+                    dir_bit = walk_bits[GEN ** lw2]
+                    diff_0 = node_0 + sibling_0
+                    diff_1 = node_1 + sibling_1
+                    left_node = StackBuf(2)
+                    left_node[0] = node_0 + dir_bit * diff_0
+                    left_node[1] = node_1 + dir_bit * diff_1
+                    right_node = StackBuf(2)
+                    right_node[0] = diff_0 + left_node[0]
+                    right_node[1] = diff_1 + left_node[1]
+                    walk_digest = StackBuf(2)
+                    blake3(left_node, right_node, walk_digest)
+                    node_0 = walk_digest[0]
+                    node_1 = walk_digest[1]
                 if lvl == 0:
-                    assert ld0 == rt0
-                    assert ld1 == rt1
+                    assert node_0 == commit_root_0
+                    assert node_1 == commit_root_1
                 else:
-                    lra = rta_s[GEN ** lvl]
-                    lrb2 = rtb_s[GEN ** lvl]
-                    assert ld0 == lra
-                    assert ld1 == lrb2
-            lenf[GEN ** lvl] = accE[GEN ** QUERIES[lvl]]
+                    right_node = rta_s[GEN ** lvl]
+                    root_hi = rtb_s[GEN ** lvl]
+                    assert node_0 == right_node
+                    assert node_1 == root_hi
+            enforced_sums[GEN ** lvl] = enforced_chain[GEN ** QUERIES[lvl]]
 
             if lvl == R:
-                cvb = squeeze(cvb, zt_)
-                lbl2 = cvb[0]
-                lbet[GEN ** lvl] = lbl2
-                tr = tr + lbl2 * lenf[GEN ** lvl]
+                fs = squeeze(fs, sqz_tag)
+                beta_lvl = fs[0]
+                betas[GEN ** lvl] = beta_lvl
+                t_r = t_r + beta_lvl * enforced_sums[GEN ** lvl]
             else:
-                liu0 = lsp[GEN ** 0]
-                cvb = obs(cvb, liu0)
-                liu2 = lsp[GEN ** 1]
-                cvb = obs(cvb, liu2)
-                lsp = lsp * GEN ** 2
-                cvb = squeeze(cvb, zt_)
-                lbl2 = cvb[0]
-                lbet[GEN ** lvl] = lbl2
-                le = lenf[GEN ** lvl]
-                lqc = lqc + lbl2 * liu0
-                lqb = lqb + lbl2 * (le + liu2)
-                lqa = lqa + lbl2 * liu2
-                tr = tr + lbl2 * le
+                intro_u0 = msg_cursor[GEN ** 0]
+                fs = obs(fs, intro_u0)
+                intro_u2 = msg_cursor[GEN ** 1]
+                fs = obs(fs, intro_u2)
+                msg_cursor = msg_cursor * GEN ** 2
+                fs = squeeze(fs, sqz_tag)
+                beta_lvl = fs[0]
+                betas[GEN ** lvl] = beta_lvl
+                enforced = enforced_sums[GEN ** lvl]
+                quad_c = quad_c + beta_lvl * intro_u0
+                quad_b = quad_b + beta_lvl * (enforced + intro_u2)
+                quad_a = quad_a + beta_lvl * intro_u2
+                t_r = t_r + beta_lvl * enforced
 
         # ---- residual (per level, novel basis) ----
-        innerbuf = HeapBuf(NLEVELS + 1)
-        innerbuf[GEN ** 0] = 0
+        inner_chain = HeapBuf(NLEVELS + 1)
+        inner_chain[GEN ** 0] = 0
         for lvl in unroll(0, NLEVELS):
-            accR = HeapBuf(MAXQ + 1)
-            accR[GEN ** 0] = 0
+            residual_chain = HeapBuf(MAXQ + 1)
+            residual_chain[GEN ** 0] = 0
             for xr in mul_range(1, GEN ** QUERIES[lvl]):
-                wbuf = StackBuf(MAXLMC)
-                ls = qfb[GEN ** QPOFF[lvl] * xr]
-                wbuf[0] = ls * IVK[SVKOFF[lvl]]
+                basis_w = StackBuf(MAXLMC)
+                s_chain = qfb[GEN ** QPOFF[lvl] * xr]
+                basis_w[0] = s_chain * IVK[SVKOFF[lvl]]
                 for t in unroll(1, LMC[lvl]):
-                    ls = ls * (ls + SVK[SVKOFF[lvl] + t - 1])
-                    wbuf[t] = ls * IVK[SVKOFF[lvl] + t]
-                lprefix = GEN ** 0
+                    s_chain = s_chain * (s_chain + SVK[SVKOFF[lvl] + t - 1])
+                    basis_w[t] = s_chain * IVK[SVKOFF[lvl] + t]
+                prefix_eq = GEN ** 0
                 for t in unroll(0, PREFIXLEN[lvl]):
                     lrc = ris[GEN ** (RISSTART[lvl] + t)]
-                    lprefix = lprefix * (1 + lrc * (1 + wbuf[t]))
-                sfw = StackBuf(2 * YR_LOG_N)
+                    prefix_eq = prefix_eq * (1 + lrc * (1 + basis_w[t]))
+                fold_w = StackBuf(2 * YR_LOG_N)
                 for j in unroll(0, YR_LOG_N):
-                    sfw[2 * j] = GEN ** 0
-                    sfw[2 * j + 1] = wbuf[PREFIXLEN[lvl] + j]
-                lsy = foldyr(lyr_s, sfw, 0)
-                accR[xr * GEN] = accR[xr] + law[GEN ** (lvl * MAXQ) * xr] * lprefix * lsy
-            innerbuf[GEN ** (lvl + 1)] = innerbuf[GEN ** lvl] + lbet[GEN ** lvl] * accR[GEN ** QUERIES[lvl]]
+                    fold_w[2 * j] = GEN ** 0
+                    fold_w[2 * j + 1] = basis_w[PREFIXLEN[lvl] + j]
+                yr_eval = foldyr(yr_s, fold_w, 0)
+                residual_chain[xr * GEN] = residual_chain[xr] + alpha_weights[GEN ** (lvl * MAXQ) * xr] * prefix_eq * yr_eval
+            inner_chain[GEN ** (lvl + 1)] = inner_chain[GEN ** lvl] + betas[GEN ** lvl] * residual_chain[GEN ** QUERIES[lvl]]
 
         # ---- generalized eval_b terminal ----
         # Per pooled claim j: eqbase_j = eq(low point, ris) x eq(selector low bits,
         # remaining ris coords); its full weight lands at residual slot YT[j]. The
         # ring-switch part (deferred rsq values) lands at slot YRS with the qpkd
         # selector eq over ris[QPKDV..].
-        ebase = HeapBuf(NCL)
+        claim_weights = HeapBuf(NCL)
         for j in unroll(0, NCL):
-            eb = GEN ** 0
+            out_fs = GEN ** 0
             if CPBUF[j] == 0:
                 for k in unroll(0, CPLEN[j] - NOVER[j]):
-                    eb = eb * (1 + zeta[GEN ** (CPOFF[j] + k)] + ris[GEN ** k])
+                    out_fs = out_fs * (1 + zeta[GEN ** (CPOFF[j] + k)] + ris[GEN ** k])
             if CPBUF[j] == 1:
                 for k in unroll(0, CPLEN[j] - NOVER[j]):
-                    eb = eb * (1 + rho[GEN ** (CPOFF[j] + k)] + ris[GEN ** k])
+                    out_fs = out_fs * (1 + rho[GEN ** (CPOFF[j] + k)] + ris[GEN ** k])
             if CPBUF[j] == 2:
-                eb = 1 + rm + ris[GEN ** 0]
+                out_fs = 1 + rm + ris[GEN ** 0]
                 for k in unroll(1, CPLEN[j]):
-                    eb = eb * (1 + ris[GEN ** k])
+                    out_fs = out_fs * (1 + ris[GEN ** k])
             if CPBUF[j] == 3:
                 for k in unroll(0, 7):
                     if (CSLOT[j] // (2 ** k)) % 2 == 1:
-                        eb = eb * ris[GEN ** k]
+                        out_fs = out_fs * ris[GEN ** k]
                     else:
-                        eb = eb * (1 + ris[GEN ** k])
+                        out_fs = out_fs * (1 + ris[GEN ** k])
                 for k in unroll(0, CPLEN[j]):
-                    eb = eb * (1 + zeta[GEN ** (CPOFF[j] + k)] + ris[GEN ** (7 + k)])
+                    out_fs = out_fs * (1 + zeta[GEN ** (CPOFF[j] + k)] + ris[GEN ** (7 + k)])
             # selector part over the ris coords above the claim's low span (SELN
-            # baked as max(0, LENRIS - nvt); empty when the point overlaps y).
-            nvt = CPLEN[j]
+            # baked as max(0, LENRIS - n_low_vars); empty when the point overlaps y).
+            n_low_vars = CPLEN[j]
             if CPBUF[j] == 3:
-                nvt = 7 + CPLEN[j]
+                n_low_vars = 7 + CPLEN[j]
             for k in unroll(0, SELN[j]):
                 if (CSEL[j] // (2 ** k)) % 2 == 1:
-                    eb = eb * ris[GEN ** (nvt + k)]
+                    out_fs = out_fs * ris[GEN ** (n_low_vars + k)]
                 else:
-                    eb = eb * (1 + ris[GEN ** (nvt + k)])
-            ebase[GEN ** j] = eb * gpd[GEN ** j]
+                    out_fs = out_fs * (1 + ris[GEN ** (n_low_vars + k)])
+            claim_weights[GEN ** j] = out_fs * gamma_pool[GEN ** j]
         # eval_rs_eq per claim: E = sum_k c_k * prod_j (z_j^(2^k) + 1 + ris_j)
         # (the telescoped product formula; z powers evolve by squaring per k).
-        rq = HeapBuf(QPKDV)
+        one_plus_q = HeapBuf(QPKDV)
         for j in unroll(0, QPKDV):
-            rq[GEN ** j] = 1 + ris[GEN ** j]
+            one_plus_q[GEN ** j] = 1 + ris[GEN ** j]
         for rs in unroll(0, 2):
-            zpt = HeapBuf(129 * QPKDV)
+            z_pows = HeapBuf(129 * QPKDV)
             for j in unroll(0, QPKDV):
-                zpt[GEN ** j] = zvb[GEN ** (QPKDV * rs + j)]
-            eacc = HeapBuf(129)
-            eacc[GEN ** 0] = 0
-            ckrow = ckb * GEN ** (128 * rs)
+                z_pows[GEN ** j] = z_vals[GEN ** (QPKDV * rs + j)]
+            e_acc = HeapBuf(129)
+            e_acc[GEN ** 0] = 0
+            c_row = c_table * GEN ** (128 * rs)
             for xk in mul_range(1, GEN ** 128):
-                rowz = zpt * xk ** QPKDV
-                nrowz = rowz * GEN ** QPKDV
+                z_row = z_pows * xk ** QPKDV
+                z_row_next = z_row * GEN ** QPKDV
                 prod = GEN ** 0
                 for j in unroll(0, QPKDV):
-                    zv = rowz[GEN ** j]
-                    prod = prod * (zv + rq[GEN ** j])
-                    nrowz[GEN ** j] = zv * zv
-                eacc[xk * GEN] = eacc[xk] + ckrow[xk] * prod
-            rsqv[GEN ** rs] = eacc[GEN ** 128]
+                    zv = z_row[GEN ** j]
+                    prod = prod * (zv + one_plus_q[GEN ** j])
+                    z_row_next[GEN ** j] = zv * zv
+                e_acc[xk * GEN] = e_acc[xk] + c_row[xk] * prod
+            rs_eq_vals[GEN ** rs] = e_acc[GEN ** 128]
         # ring-switch weight base over ris[QPKDV..LENRIS).
-        rsb = g0 * rsqv[GEN ** 0] + g1 * rsqv[GEN ** 1]
+        rs_weight = gamma_ab * rs_eq_vals[GEN ** 0] + gamma_c * rs_eq_vals[GEN ** 1]
         for k in unroll(0, LENRIS - QPKDV):
             if (RSSEL // (2 ** k)) % 2 == 1:
-                rsb = rsb * ris[GEN ** (QPKDV + k)]
+                rs_weight = rs_weight * ris[GEN ** (QPKDV + k)]
             else:
-                rsb = rsb * (1 + ris[GEN ** (QPKDV + k)])
-        # inner = sum_y lyr_s[y] * eval_b[y] + the residual sums.
-        inner = innerbuf[GEN ** NLEVELS]
+                rs_weight = rs_weight * (1 + ris[GEN ** (QPKDV + k)])
+        # inner_sum = sum_y yr_s[y] * eval_b[y] + the residual sums.
+        inner_sum = inner_chain[GEN ** NLEVELS]
         for y in unroll(0, YR_LEN):
-            ey = 0
+            slot_sum = 0
             if y == YRS:
-                ey = ey + rsb
+                slot_sum = slot_sum + rs_weight
             for j in unroll(0, NCL):
                 if (y // (2 ** NOVER[j])) == YTHI[j]:
-                    f = ebase[GEN ** j]
+                    f = claim_weights[GEN ** j]
                     for t in unroll(0, NOVER[j]):
                         if CPBUF[j] == 0:
-                            pv = zeta[GEN ** (CPOFF[j] + CPLEN[j] - NOVER[j] + t)]
+                            overlap_coord = zeta[GEN ** (CPOFF[j] + CPLEN[j] - NOVER[j] + t)]
                         else:
-                            pv = rho[GEN ** (CPOFF[j] + CPLEN[j] - NOVER[j] + t)]
+                            overlap_coord = rho[GEN ** (CPOFF[j] + CPLEN[j] - NOVER[j] + t)]
                         if (y // (2 ** t)) % 2 == 1:
-                            f = f * pv
+                            f = f * overlap_coord
                         else:
-                            f = f * (1 + pv)
-                    ey = ey + f
-            inner = inner + lyr_s[GEN ** y] * ey
-        assert inner == tr
+                            f = f * (1 + overlap_coord)
+                    slot_sum = slot_sum + f
+            inner_sum = inner_sum + yr_s[GEN ** y] * slot_sum
+        assert inner_sum == t_r
 
 
         # ---- save this sub-proof's deferred-claim data for the aggregation ----
         for k in unroll(0, KBC):
-            dzt[GEN ** (sub * 2 * KBC + k)] = zeta[GEN ** k]
-            dzt[GEN ** (sub * 2 * KBC + KBC + k)] = zeta[GEN ** (MUMAX + k)]
+            def_bytecode_points[GEN ** (sub * 2 * KBC + k)] = zeta[GEN ** k]
+            def_bytecode_points[GEN ** (sub * 2 * KBC + KBC + k)] = zeta[GEN ** (MUMAX + k)]
         for k in unroll(0, 3):
-            dsb[GEN ** (sub * 3 + k)] = sb[GEN ** k]
-        dwb[GEN ** (2 * sub)] = wbc[GEN ** 0]
-        dwb[GEN ** (2 * sub + 1)] = wbc[GEN ** 1]
-        dal[GEN ** sub] = lal
-        dzz[GEN ** sub] = zz
+            def_selectors[GEN ** (sub * 3 + k)] = sb[GEN ** k]
+        def_bytecode_vals[GEN ** (2 * sub)] = wbc[GEN ** 0]
+        def_bytecode_vals[GEN ** (2 * sub + 1)] = wbc[GEN ** 1]
+        def_alphas[GEN ** sub] = lincheck_alpha
+        def_z_skips[GEN ** sub] = zerocheck_z
         for k in unroll(0, LCR):
-            dzr[GEN ** (sub * LCR + k)] = zrho[GEN ** k]
-            dlr[GEN ** (sub * LCR + k)] = lrr[GEN ** k]
+            def_row_points[GEN ** (sub * LCR + k)] = zerocheck_rhos[GEN ** k]
+            def_round_rs[GEN ** (sub * LCR + k)] = lincheck_rs[GEN ** k]
 
     # ================= aggregation: batch the deferred claims =================
     # A fresh transcript absorbs every deferred claim (points and values),
     # samples the RLC coefficients, and verifies the two batching sumchecks of
     # doc.tex §Deferred evaluation claims. Only the reduced claims (one per
     # fixed polynomial) reach the public input.
-    hb = StackBuf(2)
-    hb[0] = 0
-    hb[1] = 0
+    agg_fs = StackBuf(2)
+    agg_fs[0] = 0
+    agg_fs[1] = 0
     for sub in unroll(0, NSUB):
-        hb = obs(hb, spi[GEN ** (2 * sub)])
-        hb = obs(hb, spi[GEN ** (2 * sub + 1)])
+        agg_fs = obs(agg_fs, spi[GEN ** (2 * sub)])
+        agg_fs = obs(agg_fs, spi[GEN ** (2 * sub + 1)])
         for k in unroll(0, 2 * KBC):
-            hb = obs(hb, dzt[GEN ** (sub * 2 * KBC + k)])
+            agg_fs = obs(agg_fs, def_bytecode_points[GEN ** (sub * 2 * KBC + k)])
         for k in unroll(0, 3):
-            hb = obs(hb, dsb[GEN ** (sub * 3 + k)])
-        hb = obs(hb, dwb[GEN ** (2 * sub)])
-        hb = obs(hb, dwb[GEN ** (2 * sub + 1)])
-        hb = obs(hb, dal[GEN ** sub])
-        hb = obs(hb, dzz[GEN ** sub])
+            agg_fs = obs(agg_fs, def_selectors[GEN ** (sub * 3 + k)])
+        agg_fs = obs(agg_fs, def_bytecode_vals[GEN ** (2 * sub)])
+        agg_fs = obs(agg_fs, def_bytecode_vals[GEN ** (2 * sub + 1)])
+        agg_fs = obs(agg_fs, def_alphas[GEN ** sub])
+        agg_fs = obs(agg_fs, def_z_skips[GEN ** sub])
         for k in unroll(0, LCR):
-            hb = obs(hb, dzr[GEN ** (sub * LCR + k)])
+            agg_fs = obs(agg_fs, def_row_points[GEN ** (sub * LCR + k)])
         for k in unroll(0, LCR):
-            hb = obs(hb, dlr[GEN ** (sub * LCR + k)])
+            agg_fs = obs(agg_fs, def_round_rs[GEN ** (sub * LCR + k)])
         for k in unroll(0, 64):
-            hb = obs(hb, lcz[GEN ** (sub * 64 + k)])
-        hb = obs(hb, matp[GEN ** sub])
+            agg_fs = obs(agg_fs, z_partial[GEN ** (sub * 64 + k)])
+        agg_fs = obs(agg_fs, matrix_eval[GEN ** sub])
 
     # ---- bytecode batching sumcheck (KBCV variables, 2*NSUB claims) ----
-    gbc = HeapBuf(2 * NSUB)
-    brun = 0
+    gamma_bc = HeapBuf(2 * NSUB)
+    bc_running = 0
     for t in unroll(0, 2 * NSUB):
-        hb = squeeze(hb, zt_)
-        gv = hb[0]
-        gbc[GEN ** t] = gv
-        brun = brun + gv * dwb[GEN ** t]
-    rbs = HeapBuf(KBCV)
+        agg_fs = squeeze(agg_fs, sqz_tag)
+        gv = agg_fs[0]
+        gamma_bc[GEN ** t] = gv
+        bc_running = bc_running + gv * def_bytecode_vals[GEN ** t]
+    bc_point = HeapBuf(KBCV)
     for rd in unroll(0, KBCV):
-        g1v = bscr[GEN ** (2 * rd)]
-        giv = bscr[GEN ** (2 * rd + 1)]
-        hb = obs(hb, g1v)
-        hb = obs(hb, giv)
-        hb = squeeze(hb, zt_)
-        rv = hb[0]
-        rbs[GEN ** rd] = rv
-        g0v = brun + g1v
-        c1v = g0v + g1v + giv
-        brun = giv * rv * rv + c1v * rv + g0v
+        msg_g1 = bscr[GEN ** (2 * rd)]
+        msg_ginf = bscr[GEN ** (2 * rd + 1)]
+        agg_fs = obs(agg_fs, msg_g1)
+        agg_fs = obs(agg_fs, msg_ginf)
+        agg_fs = squeeze(agg_fs, sqz_tag)
+        rv = agg_fs[0]
+        bc_point[GEN ** rd] = rv
+        g_zero = bc_running + msg_g1
+        c_one = g_zero + msg_g1 + msg_ginf
+        bc_running = msg_ginf * rv * rv + c_one * rv + g_zero
     # terminal: W(r*) in-circuit; the reduced bytecode claim B(r*) is deferred.
-    wsum = 0
+    bc_weight = 0
     for t in unroll(0, 2 * NSUB):
         e = GEN ** 0
         for k in unroll(0, KBC):
-            e = e * (1 + dzt[GEN ** ((t // 2) * 2 * KBC + (t % 2) * KBC + k)] + rbs[GEN ** k])
+            e = e * (1 + def_bytecode_points[GEN ** ((t // 2) * 2 * KBC + (t % 2) * KBC + k)] + bc_point[GEN ** k])
         for k in unroll(0, 3):
-            e = e * (1 + dsb[GEN ** ((t // 2) * 3 + k)] + rbs[GEN ** (KBC + k)])
-        wsum = wsum + gbc[GEN ** t] * e
-    bcstar = bst[GEN ** 0]
-    bchk = bcstar * wsum
-    assert brun == bchk
+            e = e * (1 + def_selectors[GEN ** ((t // 2) * 3 + k)] + bc_point[GEN ** (KBC + k)])
+        bc_weight = bc_weight + gamma_bc[GEN ** t] * e
+    bytecode_star = bst[GEN ** 0]
+    bc_final = bytecode_star * bc_weight
+    assert bc_running == bc_final
 
     # ---- matrix batching sumcheck (2*KLOG variables, NSUB weighted claims) ----
-    gmt = HeapBuf(NSUB)
-    mrun = 0
+    gamma_mat = HeapBuf(NSUB)
+    mat_running = 0
     for t in unroll(0, NSUB):
-        hb = squeeze(hb, zt_)
-        gv = hb[0]
-        gmt[GEN ** t] = gv
-        mrun = mrun + gv * matp[GEN ** t]
-    rms = HeapBuf(2 * KLOG)
+        agg_fs = squeeze(agg_fs, sqz_tag)
+        gv = agg_fs[0]
+        gamma_mat[GEN ** t] = gv
+        mat_running = mat_running + gv * matrix_eval[GEN ** t]
+    mat_point = HeapBuf(2 * KLOG)
     for rd in unroll(0, 2 * KLOG):
-        g1v = mscr[GEN ** (2 * rd)]
-        giv = mscr[GEN ** (2 * rd + 1)]
-        hb = obs(hb, g1v)
-        hb = obs(hb, giv)
-        hb = squeeze(hb, zt_)
-        rv = hb[0]
-        rms[GEN ** rd] = rv
-        g0v = mrun + g1v
-        c1v = g0v + g1v + giv
-        mrun = giv * rv * rv + c1v * rv + g0v
+        msg_g1 = mscr[GEN ** (2 * rd)]
+        msg_ginf = mscr[GEN ** (2 * rd + 1)]
+        agg_fs = obs(agg_fs, msg_g1)
+        agg_fs = obs(agg_fs, msg_ginf)
+        agg_fs = squeeze(agg_fs, sqz_tag)
+        rv = agg_fs[0]
+        mat_point[GEN ** rd] = rv
+        g_zero = mat_running + msg_g1
+        c_one = g_zero + msg_g1 + msg_ginf
+        mat_running = msg_ginf * rv * rv + c_one * rv + g_zero
     # terminal weights: U_t(r*) = urow_t(r*_row) * wcol_t(r*_col), with
-    # urow = (sum_i L_i(zz_t) eq(r*[0..6], i)) * eq(zrho_t, r*[6..KLOG]) and
-    # wcol = (sum_i z_partial_t[i] eq(r*[KLOG..KLOG+6], i)) * prod_j (1 + lrr_j
+    # row_weight = (sum_i L_i(zz_t) eq(r*[0..6], i)) * eq(zrho_t, r*[6..KLOG]) and
+    # col_weight = (sum_i z_partial_t[i] eq(r*[KLOG..KLOG+6], i)) * prod_j (1 + lrr_j
     # + r*[2*KLOG-1-j]) (the lincheck binds column variables top-down).
-    eqr = HeapBuf(126)
-    eqtree(rms, eqr, 6)
-    eqc = HeapBuf(126)
-    eqtree(rms * GEN ** KLOG, eqc, 6)
-    wam = 0
-    wbm = 0
+    eq_rows = HeapBuf(126)
+    eqtree(mat_point, eq_rows, 6)
+    eq_cols = HeapBuf(126)
+    eqtree(mat_point * GEN ** KLOG, eq_cols, 6)
+    weight_a = 0
+    weight_b = 0
     for t in unroll(0, NSUB):
-        zzv = dzz[GEN ** t]
-        unum = StackBuf(64)
-        lag64(zzv, unum, 0)
-        urow = 0
+        z_skip_t = def_z_skips[GEN ** t]
+        row_nums = StackBuf(64)
+        lag64(z_skip_t, row_nums, 0)
+        row_weight = 0
         for i in unroll(0, 64):
-            urow = urow + unum[i] * ISDOM[i] * eqr[GEN ** (62 + i)]
+            row_weight = row_weight + row_nums[i] * ISDOM[i] * eq_rows[GEN ** (62 + i)]
         for k in unroll(0, LCR):
-            urow = urow * (1 + dzr[GEN ** (t * LCR + k)] + rms[GEN ** (6 + k)])
-        wcol = 0
+            row_weight = row_weight * (1 + def_row_points[GEN ** (t * LCR + k)] + mat_point[GEN ** (6 + k)])
+        col_weight = 0
         for i in unroll(0, 64):
-            wcol = wcol + lcz[GEN ** (t * 64 + i)] * eqc[GEN ** (62 + i)]
+            col_weight = col_weight + z_partial[GEN ** (t * 64 + i)] * eq_cols[GEN ** (62 + i)]
         for j in unroll(0, LCR):
-            wcol = wcol * (1 + dlr[GEN ** (t * LCR + j)] + rms[GEN ** (2 * KLOG - 1 - j)])
-        u = urow * wcol
-        wam = wam + gmt[GEN ** t] * dal[GEN ** t] * u
-        wbm = wbm + gmt[GEN ** t] * u
-    astar = mst[GEN ** 0]
-    mbstar = mst[GEN ** 1]
-    mchk = astar * wam + mbstar * wbm
-    assert mrun == mchk
+            col_weight = col_weight * (1 + def_round_rs[GEN ** (t * LCR + j)] + mat_point[GEN ** (2 * KLOG - 1 - j)])
+        u = row_weight * col_weight
+        weight_a = weight_a + gamma_mat[GEN ** t] * def_alphas[GEN ** t] * u
+        weight_b = weight_b + gamma_mat[GEN ** t] * u
+    a_star = mst[GEN ** 0]
+    b_star = mst[GEN ** 1]
+    mat_final = a_star * weight_a + b_star * weight_b
+    assert mat_running == mat_final
 
     # ---- bind the sub statements + the reduced claims to the public input ----
-    eb = StackBuf(2)
-    eb[0] = 0
-    eb[1] = 0
+    out_fs = StackBuf(2)
+    out_fs[0] = 0
+    out_fs[1] = 0
     for sub in unroll(0, NSUB):
-        eb = obs(eb, spi[GEN ** (2 * sub)])
-        eb = obs(eb, spi[GEN ** (2 * sub + 1)])
+        out_fs = obs(out_fs, spi[GEN ** (2 * sub)])
+        out_fs = obs(out_fs, spi[GEN ** (2 * sub + 1)])
     for k in unroll(0, KBCV):
-        eb = obs(eb, rbs[GEN ** k])
-    eb = obs(eb, bcstar)
+        out_fs = obs(out_fs, bc_point[GEN ** k])
+    out_fs = obs(out_fs, bytecode_star)
     for k in unroll(0, 2 * KLOG):
-        eb = obs(eb, rms[GEN ** k])
-    eb = obs(eb, astar)
-    eb = obs(eb, mbstar)
-    pp = GEN ** 0
-    pia = pp[1]
-    pib = pp[GEN]
-    ef0 = eb[0]
-    ef1 = eb[1]
-    assert pia == ef0
-    assert pib == ef1
+        out_fs = obs(out_fs, mat_point[GEN ** k])
+    out_fs = obs(out_fs, a_star)
+    out_fs = obs(out_fs, b_star)
+    pub_ptr = GEN ** 0
+    own_pi_0 = pub_ptr[1]
+    own_pi_1 = pub_ptr[GEN]
+    out_word_0 = out_fs[0]
+    out_word_1 = out_fs[1]
+    assert own_pi_0 == out_word_0
+    assert own_pi_1 == out_word_1
     return
