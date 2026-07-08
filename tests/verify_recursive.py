@@ -316,6 +316,41 @@ def squeeze(cb, zt):
     return nb
 
 
+@unroll
+def lag64(z, w, nbase: Const):
+    # The 64 phi8-domain Lagrange NUMERATORS at z, nodes PHI[nbase..nbase+64]:
+    # w[i] = prod_{j != i} (z + PHI[nbase + j]). Callers multiply by their
+    # baked inverse-denominator table (ISDOM / ILAM / ICMB).
+    pre = StackBuf(65)
+    pre[0] = 1
+    for i in unroll(0, 64):
+        pre[i + 1] = pre[i] * (z + PHI[nbase + i])
+    suf = StackBuf(65)
+    suf[64] = 1
+    for i in unroll(0, 64):
+        suf[63 - i] = suf[64 - i] * (z + PHI[nbase + 63 - i])
+    for i in unroll(0, 64):
+        w[i] = pre[i] * suf[i + 1]
+    return
+
+
+@unroll
+def eqtree(rp, out, nc: Const):
+    # The eq tensor of the nc challenges at rp[0..nc], built by doubling into
+    # out (size 2^(nc+1) - 2); the final 2^nc values start at offset 2^nc - 2.
+    r0 = rp[GEN ** 0]
+    out[GEN ** 0] = 1 + r0
+    out[GEN ** 1] = r0
+    for t in unroll(1, nc):
+        rt = rp[GEN ** t]
+        rt1 = 1 + rt
+        for i in unroll(0, 2 ** t):
+            pw = out[GEN ** (2 ** t - 2 + i)]
+            out[GEN ** (2 ** (t + 1) - 2 + i)] = pw * rt1
+            out[GEN ** (2 ** (t + 1) - 2 + 2 ** t + i)] = pw * rt
+    return
+
+
 def main():
     zt_ = StackBuf(2)
     zt_[0] = 0
@@ -781,26 +816,20 @@ def main():
         zz = cvb[0]
         # interpolate P^C(z) on the Lambda domain (phi8 nodes 64..128): prefix/
         # suffix numerator products with baked inverse denominators.
-        lpre = HeapBuf(65)
-        lpre[GEN ** 0] = GEN ** 0
-        for i in unroll(0, 64):
-            lpre[GEN ** (i + 1)] = lpre[GEN ** i] * (zz + PHI[64 + i])
-        lsuf = HeapBuf(65)
-        lsuf[GEN ** 64] = GEN ** 0
-        for i in unroll(0, 64):
-            lsuf[GEN ** (63 - i)] = lsuf[GEN ** (64 - i)] * (zz + PHI[64 + 63 - i])
+        lnum = StackBuf(64)
+        lag64(zz, lnum, 64)
         ceval = 0
         for i in unroll(0, 64):
-            ceval = ceval + lpre[GEN ** i] * lsuf[GEN ** (i + 1)] * ILAM[i] * zc1_s[GEN ** (64 + i)]
+            ceval = ceval + lnum[i] * ILAM[i] * zc1_s[GEN ** (64 + i)]
         # combined interpolation at z over ALL 128 phi8 nodes (Lambda values only;
         # the S half is zero by the zerocheck identity). The Lambda-node numerators
-        # reuse lpre/lsuf: the full-domain product only adds the S-half factor.
+        # reuse lnum: the full-domain product only adds the S-half factor.
         sfull = GEN ** 0
         for i in unroll(0, 64):
             sfull = sfull * (zz + PHI[i])
         comb = 0
         for i in unroll(0, 64):
-            comb = comb + lpre[GEN ** i] * lsuf[GEN ** (i + 1)] * ICMB[i] * (zc1_s[GEN ** i] + zc1_s[GEN ** (64 + i)])
+            comb = comb + lnum[i] * ICMB[i] * (zc1_s[GEN ** i] + zc1_s[GEN ** (64 + i)])
         comb = comb * sfull
         crun = comb + ceval
         # multilinear rounds.
@@ -878,17 +907,11 @@ def main():
         # fresh z_skip; w = <lagrange_S(r_inner_skip), z_partial> (phi8 nodes 0..64).
         cvb = squeeze(cvb, zt_)
         lsk = cvb[0]
-        spre = HeapBuf(65)
-        spre[GEN ** 0] = GEN ** 0
-        for i in unroll(0, 64):
-            spre[GEN ** (i + 1)] = spre[GEN ** i] * (lsk + PHI[i])
-        ssuf = HeapBuf(65)
-        ssuf[GEN ** 64] = GEN ** 0
-        for i in unroll(0, 64):
-            ssuf[GEN ** (63 - i)] = ssuf[GEN ** (64 - i)] * (lsk + PHI[63 - i])
+        snum = StackBuf(64)
+        lag64(lsk, snum, 0)
         lw = 0
         for i in unroll(0, 64):
-            lw = lw + spre[GEN ** i] * ssuf[GEN ** (i + 1)] * ISDOM[i] * lcz_s[GEN ** i]
+            lw = lw + snum[i] * ISDOM[i] * lcz_s[GEN ** i]
 
         # ---- Phase D checkpoint ----
         cck = cvh_s[GEN ** 3]
@@ -922,17 +945,11 @@ def main():
                 zsk = zz
                 xo0 = zr[GEN ** 6]
                 clm = ceval
-            wpre = HeapBuf(65)
-            wpre[GEN ** 0] = GEN ** 0
-            for i in unroll(0, 64):
-                wpre[GEN ** (i + 1)] = wpre[GEN ** i] * (zsk + PHI[i])
-            wsuf = HeapBuf(65)
-            wsuf[GEN ** 64] = GEN ** 0
-            for i in unroll(0, 64):
-                wsuf[GEN ** (63 - i)] = wsuf[GEN ** (64 - i)] * (zsk + PHI[63 - i])
+            wnum = StackBuf(64)
+            lag64(zsk, wnum, 0)
             cchk = 0
             for i in unroll(0, 64):
-                lam = wpre[GEN ** i] * wsuf[GEN ** (i + 1)] * ISDOM[i]
+                lam = wnum[i] * ISDOM[i]
                 cchk = cchk + lam * ((1 + xo0) * shv_s[GEN ** (128 * rs + i)] + xo0 * shv_s[GEN ** (128 * rs + 64 + i)])
             assert cchk == clm
             # r'' (7 samples).
@@ -942,13 +959,7 @@ def main():
                 rdp[GEN ** (7 * rs + i)] = rv
             # w = eq tensor of the seven r'' coords (doubling tree, final 128 at 126).
             wq = HeapBuf(254)
-            wq[GEN ** 0] = 1 + rdp[GEN ** (7 * rs)]
-            wq[GEN ** 1] = rdp[GEN ** (7 * rs)]
-            for t in unroll(1, 7):
-                for i in unroll(0, 2 ** t):
-                    pw = wq[GEN ** (2 ** t - 2 + i)]
-                    wq[GEN ** (2 ** (t + 1) - 2 + i)] = pw * (1 + rdp[GEN ** (7 * rs + t)])
-                    wq[GEN ** (2 ** (t + 1) - 2 + 2 ** t + i)] = pw * rdp[GEN ** (7 * rs + t)]
+            eqtree(rdp * GEN ** (7 * rs), wq, 7)
             # c_k = sum_i w_i * dt[k][i], one runtime loop over the levels k.
             ckrow = ckb * GEN ** (128 * rs)
             for xk in mul_range(1, GEN ** 128):
@@ -1399,36 +1410,18 @@ def main():
     # wcol = (sum_i z_partial_t[i] eq(r*[KLOG..KLOG+6], i)) * prod_j (1 + lrr_j
     # + r*[2*KLOG-1-j]) (the lincheck binds column variables top-down).
     eqr = HeapBuf(126)
-    eqr[GEN ** 0] = 1 + rms[GEN ** 0]
-    eqr[GEN ** 1] = rms[GEN ** 0]
-    for t in unroll(1, 6):
-        for i in unroll(0, 2 ** t):
-            pw = eqr[GEN ** (2 ** t - 2 + i)]
-            eqr[GEN ** (2 ** (t + 1) - 2 + i)] = pw * (1 + rms[GEN ** t])
-            eqr[GEN ** (2 ** (t + 1) - 2 + 2 ** t + i)] = pw * rms[GEN ** t]
+    eqtree(rms, eqr, 6)
     eqc = HeapBuf(126)
-    eqc[GEN ** 0] = 1 + rms[GEN ** KLOG]
-    eqc[GEN ** 1] = rms[GEN ** KLOG]
-    for t in unroll(1, 6):
-        for i in unroll(0, 2 ** t):
-            pw = eqc[GEN ** (2 ** t - 2 + i)]
-            eqc[GEN ** (2 ** (t + 1) - 2 + i)] = pw * (1 + rms[GEN ** (KLOG + t)])
-            eqc[GEN ** (2 ** (t + 1) - 2 + 2 ** t + i)] = pw * rms[GEN ** (KLOG + t)]
+    eqtree(rms * GEN ** KLOG, eqc, 6)
     wam = 0
     wbm = 0
     for t in unroll(0, NSUB):
         zzv = dzz[GEN ** t]
-        lpre2 = HeapBuf(65)
-        lpre2[GEN ** 0] = GEN ** 0
-        for i in unroll(0, 64):
-            lpre2[GEN ** (i + 1)] = lpre2[GEN ** i] * (zzv + PHI[i])
-        lsuf2 = HeapBuf(65)
-        lsuf2[GEN ** 64] = GEN ** 0
-        for i in unroll(0, 64):
-            lsuf2[GEN ** (63 - i)] = lsuf2[GEN ** (64 - i)] * (zzv + PHI[63 - i])
+        unum = StackBuf(64)
+        lag64(zzv, unum, 0)
         urow = 0
         for i in unroll(0, 64):
-            urow = urow + lpre2[GEN ** i] * lsuf2[GEN ** (i + 1)] * ISDOM[i] * eqr[GEN ** (62 + i)]
+            urow = urow + unum[i] * ISDOM[i] * eqr[GEN ** (62 + i)]
         for k in unroll(0, LCR):
             urow = urow * (1 + dzr[GEN ** (t * LCR + k)] + rms[GEN ** (6 + k)])
         wcol = 0

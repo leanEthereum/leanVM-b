@@ -573,20 +573,12 @@ fn gen_verify(
     .expect("stack ligerito config")
     .1;
     let log_n = stack_mu;
-    let r = vcfg.level_steps;
-    let nlev = r + 1;
-    let klvl: Vec<usize> = std::iter::once(vcfg.initial_k).chain(vcfg.level_ks.iter().copied()).collect();
+    let shapes = vcfg.level_shapes(log_n);
+    let (nlev, r) = (shapes.levels, vcfg.level_steps);
+    let (klvl, lmc, yr_log_n) = (shapes.ks, shapes.log_msg_cols, shapes.yr_log_n);
     let queries = vcfg.queries.clone();
-    let mut lmc = vec![log_n - vcfg.initial_k];
-    for i in 0..r {
-        lmc.push(lmc[i] - vcfg.level_ks[i]);
-    }
-    let yr_log_n = *lmc.last().unwrap();
-    let mut block_len = vec![1usize << (vcfg.initial_log_msg_cols + vcfg.log_inv_rates[0])];
-    for i in 0..r {
-        block_len.push(1usize << (vcfg.level_log_msg_cols[i] + vcfg.log_inv_rates[i + 1]));
-    }
-    let depth: Vec<usize> = block_len.iter().map(|b| b.trailing_zeros() as usize).collect();
+    // query packing: each squeezed word carries 128/depth positions.
+    let depth: Vec<usize> = shapes.block_len.iter().map(|b| b.trailing_zeros() as usize).collect();
     let per: Vec<usize> = depth.iter().map(|&d| 128 / d).collect();
     let nsq: Vec<usize> = (0..nlev).map(|i| queries[i].div_ceil(per[i])).collect();
     let fgb = |lvl: usize| vcfg.fold_grinding_bits.get(lvl).copied().unwrap_or(0) as i64;
@@ -786,7 +778,7 @@ fn gen_verify(
             for v in &lig_raw[lv] {
                 let bits = (v.lo as u128) | ((v.hi as u128) << 64);
                 for j in 0..per[lv].min(queries[lv] - out.len()) {
-                    out.push(((bits >> (j * d)) as usize) & (block_len[lv] - 1));
+                    out.push(((bits >> (j * d)) as usize) & (shapes.block_len[lv] - 1));
                 }
             }
             out
@@ -817,7 +809,7 @@ fn gen_verify(
     let (mut lrows_flat, mut lpaths_flat, mut lsbits_flat) = (Vec::new(), Vec::new(), Vec::new());
     for lv in 0..nlev {
         let (rows_exp, path_exp) =
-            flare::pcs::ligerito::expand_level_opening(block_len[lv], &positions[lv], rows_of(lv), numinter[lv], path_of(lv))
+            flare::pcs::ligerito::expand_level_opening(shapes.block_len[lv], &positions[lv], rows_of(lv), numinter[lv], path_of(lv))
                 .expect("expand stacked level opening");
         for row in &rows_exp {
             lrows_flat.extend_from_slice(row);

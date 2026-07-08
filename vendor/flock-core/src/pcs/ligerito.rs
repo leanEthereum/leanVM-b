@@ -133,6 +133,24 @@ pub struct ProverConfig {
     pub ood_samples: Vec<usize>,
 }
 
+/// The per-level shape table a [`VerifierConfig`] implies for a
+/// `log_n`-variable opening — the numbers every consumer of the multilevel
+/// protocol (the verifier itself, recursion harnesses) otherwise re-derives.
+#[derive(Clone, Debug)]
+pub struct LevelShapes {
+    /// Level count (`level_steps + 1`).
+    pub levels: usize,
+    /// Fold count per level: `initial_k` then `level_ks`.
+    pub ks: Vec<usize>,
+    /// Log message columns entering each level's fold (`log_n - initial_k`,
+    /// then descending by each level's `k`).
+    pub log_msg_cols: Vec<usize>,
+    /// Committed block length per level (`msg_cols * inv_rate`).
+    pub block_len: Vec<usize>,
+    /// The residual cube dimension left after every fold.
+    pub yr_log_n: usize,
+}
+
 #[derive(Clone, Debug)]
 pub struct VerifierConfig {
     pub log_inv_rates: Vec<usize>,
@@ -152,6 +170,30 @@ pub struct VerifierConfig {
     /// Per-commit-level OOD samples. Length = level_steps + 1.
     pub ood_samples: Vec<usize>,
 }
+
+impl VerifierConfig {
+    /// See [`LevelShapes`].
+    pub fn level_shapes(&self, log_n: usize) -> LevelShapes {
+        let r = self.level_steps;
+        let ks: Vec<usize> = std::iter::once(self.initial_k).chain(self.level_ks.iter().copied()).collect();
+        let mut log_msg_cols = vec![log_n - self.initial_k];
+        for i in 0..r {
+            log_msg_cols.push(log_msg_cols[i] - self.level_ks[i]);
+        }
+        let mut block_len = vec![1usize << (self.initial_log_msg_cols + self.log_inv_rates[0])];
+        for i in 0..r {
+            block_len.push(1usize << (self.level_log_msg_cols[i] + self.log_inv_rates[i + 1]));
+        }
+        LevelShapes {
+            levels: r + 1,
+            ks,
+            yr_log_n: *log_msg_cols.last().unwrap(),
+            log_msg_cols,
+            block_len,
+        }
+    }
+}
+
 
 /// Proximity loss `ε*` for the UDR (unique-decoding regime) analysis. It
 /// would back the proximity radius off to `γ = δ/2 − ε*` (δ = 1 − ρ the
