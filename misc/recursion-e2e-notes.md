@@ -9,9 +9,18 @@ lincheck matrix evaluation (one sparse nnz pass native). The ring-switch tensor
 algebra runs IN-CIRCUIT via the linearized-polynomial identities (doc.tex
 §Ring-switch claims via linearized polynomials; ~436k cycles), so nothing
 tensor-shaped crosses the proof boundary and the deferral set is exactly what
-the 2→1 batching sumcheck consumes. Remaining for 2→1: batch the bytecode +
-matrix claims with the sumcheck of doc.tex §Deferred evaluation claims
-(prover prototyped in matclaim_sumcheck_probe.rs).
+the 2→1 batching sumcheck consumes. 2→1 DONE (`recursion_2to1`; the guest is
+NSUB-generic and `recursion_1to1` is the same runner at NSUB=1): the guest
+verifies NSUB sub-proofs (per-sub hint offsets; proof-dependent values are
+hints; seeds computed from hinted statements), then an aggregation phase on a
+fresh transcript batches the deferred claims with the two sumchecks of doc.tex
+§Deferred evaluation claims (bytecode: kappa_bc+3 vars, 2 NSUB claims;
+matrices: 28 vars, NSUB weighted claims; terminal weights evaluated succinctly
+in-circuit) and exports only the three reduced claims. 2→1 numbers: guest
+2,439,529 cycles / 47,477 BLAKE3; outer prove 78s, verify 0.5s, reduced checks
+163ms, proof ~718 KiB. Remaining for arbitrary depth: aggregate-of-aggregates
+(read a child aggregate's reduced claims from its public input and re-batch
+them alongside the fresh ones).
 
 Goal: a guest program replaying `cpu::verify(inner_program, pi, inner_proof)`
 in-circuit with the bytecode + flock-matrix evaluations deferred (doc.tex
