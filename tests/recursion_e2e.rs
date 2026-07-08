@@ -1098,23 +1098,12 @@ fn run_recursion(nsub: usize, inner_iters: usize) {
     );
 }
 
-#[test]
-fn recursion_1to1() {
-    run_recursion(1, 16);
-}
-
+/// THE recursion test: two ~1M-cycle inner proofs (log_mem 21, committed
+/// 2^24.6, an m=33 stacked opening each), verified and aggregated by one
+/// guest into one outer proof, whose three reduced claims are then discharged
+/// natively.
 #[test]
 fn recursion_2to1() {
-    run_recursion(2, 16);
-}
-
-/// 2→1 with a ~1M-cycle inner program (log_mem 21, an m=33 stacked opening):
-/// the guest cost is structure-dominated, so it grows only with the log of
-/// the inner execution length; at this size each in-circuit verification
-/// costs fewer cycles than the execution it verifies. Heavy; run explicitly.
-#[test]
-#[ignore]
-fn recursion_2to1_big() {
     run_recursion(2, 1 << 15);
 }
 
