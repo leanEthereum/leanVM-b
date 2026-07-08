@@ -1278,7 +1278,10 @@ impl FnLower<'_> {
                 Expr::Gen => Expr::GPow(1),
                 Expr::GPow(k) => Expr::GPow(*k),
                 Expr::Var(v) => Expr::Lit(*self.consts.get(v)? as u128),
-                _ => return None,
+                // Any other compile-time integer expression (const-array
+                // element, arithmetic over Const params) is a valid Const
+                // argument — e.g. `foldyr(yr, w, 0, YRLOG2[mi])`.
+                other => Expr::Lit(self.try_const_index(other)? as u128),
             };
             body = subst_stmts(&body, p, &c);
         }

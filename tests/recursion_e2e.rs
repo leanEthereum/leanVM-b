@@ -1043,8 +1043,6 @@ fn gen_verify(
     ps("LIGLBLA", u(word16(b"flock-ligerito-basis-v0", 0)).to_string());
     ps("LIGLBLB", u(word16(b"flock-ligerito-basis-v0", 16)).to_string());
     ps("YR_LOG_N", yr_log_n.to_string());
-    ps("YR_LEN", (1usize << yr_log_n).to_string());
-    ps("LENRIS", lenris.to_string());
     ps("MBAKED", stack_mu.to_string());
     ps("NMCAND", (maxm - minm + 1).to_string());
     ps("IGMIN", u(g_pow(minm).inv()).to_string());
@@ -1072,15 +1070,7 @@ fn gen_verify(
     }
     ps("CPBUF", ints(&cpbuf));
     ps("CPOFF", ints(&cpoff));
-    ps("CPLEN", ints(&cplen));
-    ps("CSLOT", ints(&cslot));
-    ps("CSEL", ints(&csel));
-    ps("NOVER", ints(&nover_v));
-    ps("SELN", ints(&seln_v));
-    ps("YTHI", ints(&yt));
     ps("QPKDV", qpkdv.to_string());
-    ps("RSSEL", rssel.to_string());
-    ps("YRS", yrs.to_string());
     ps("KBC", kbc.to_string());
     ps("DEFSZ", (2 * kbc + 2 * lcrounds + 72).to_string());
     ps("KBCV", (kbc + 3).to_string());
@@ -1134,6 +1124,49 @@ fn gen_verify(
         ("rtb".to_string(), rootb),
         ("fnn".to_string(), fnv),
         ("annmus".to_string(), smu.iter().map(|&m| g_pow(m)).collect()),
+        ("cwqh".to_string(), (0..ncl).map(|j| g_pow(cplen[j] - nover_v[j])).collect()),
+        ("selnh".to_string(), (0..ncl).map(|j| g_pow(seln_v[j])).collect()),
+        ("nlowh".to_string(), (0..ncl).map(|j| g_pow(cplen[j] + if cpbuf[j] == 3 { 7 } else { 0 })).collect()),
+        ("cslotb".to_string(), {
+            let mut v = Vec::new();
+            for j in 0..ncl {
+                for k in 0..7 {
+                    v.push(F128::new(((cslot[j] >> k) & 1) as u64, 0));
+                }
+            }
+            v
+        }),
+        ("cselb".to_string(), {
+            let mut v = Vec::new();
+            for j in 0..ncl {
+                for k in 0..33 {
+                    v.push(F128::new(((csel[j] >> k) & 1) as u64, 0));
+                }
+            }
+            v
+        }),
+        ("maskb".to_string(), {
+            let mut v = Vec::new();
+            for j in 0..ncl {
+                for k in 0..8 {
+                    v.push(F128::new(u64::from(k < nover_v[j]), 0));
+                }
+            }
+            v
+        }),
+        ("ythib".to_string(), {
+            let mut v = Vec::new();
+            for j in 0..ncl {
+                for k in 0..8 {
+                    let b = if k < nover_v[j] { 0 } else { (yt[j] >> (k - nover_v[j])) & 1 };
+                    v.push(F128::new(b as u64, 0));
+                }
+            }
+            v
+        }),
+        ("yrsb".to_string(), (0..8).map(|k| F128::new(((yrs >> k) & 1) as u64, 0)).collect()),
+        ("rsqh".to_string(), vec![g_pow(lenris - qpkdv)]),
+        ("rsselb".to_string(), (0..33).map(|k| F128::new(((rssel >> k) & 1) as u64, 0)).collect()),
         ("bkap".to_string(), bkappa.iter().map(|&k| g_pow(k)).collect()),
         ("bq".to_string(), {
             let side_of = |b: usize| (0..3).rev().find(|&s| b >= sblk[s]).unwrap();

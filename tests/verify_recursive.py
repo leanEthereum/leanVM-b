@@ -143,8 +143,6 @@ NCL = NCL_PLACEHOLDER
 LIGLBLA = LIGLBLA_PLACEHOLDER
 LIGLBLB = LIGLBLB_PLACEHOLDER
 YR_LOG_N = YR_LOG_N_PLACEHOLDER
-YR_LEN = YR_LEN_PLACEHOLDER
-LENRIS = LENRIS_PLACEHOLDER
 # Opening dispatch: baked committed log-size, candidate range, g^-MINM.
 MBAKED = MBAKED_PLACEHOLDER
 MINM = MINM_PLACEHOLDER
@@ -205,15 +203,7 @@ QBITS = QBITS_PLACEHOLDER
 # eval_b claim descriptors + the ring-switch selector data.
 CPBUF = CPBUF_PLACEHOLDER
 CPOFF = CPOFF_PLACEHOLDER
-CPLEN = CPLEN_PLACEHOLDER
-CSLOT = CSLOT_PLACEHOLDER
-CSEL = CSEL_PLACEHOLDER
-NOVER = NOVER_PLACEHOLDER
-SELN = SELN_PLACEHOLDER
-YTHI = YTHI_PLACEHOLDER
 QPKDV = QPKDV_PLACEHOLDER
-RSSEL = RSSEL_PLACEHOLDER
-YRS = YRS_PLACEHOLDER
 # Ring-switch linearized algebra: the trace-dual basis (bit_i(y) = Tr(delta_i y))
 # (any eq-weighted bit-sum is the linearized
 # polynomial L_w(y) = sum_k c_k y^(2^k), c_k = sum_i w_i delta_i^(2^k); squaring
@@ -289,15 +279,16 @@ def decq(bp, v, qfp, qbpp, d: Const, per: Const):
 
 
 @inline
-def foldyr(yp, weights, wbase: Const):
-    # Weighted fold of the yr multilinear (see tests/ligerito_recursive.py).
-    l0 = StackBuf(YR_LEN)
-    for t in unroll(0, YR_LEN // 2):
+def foldyr(yp, weights, wbase: Const, nlv: Const):
+    # Weighted fold of the yr multilinear over 2^nlv values (nlv is the
+    # candidate's yr_log_n; the frame buffers use the global max size).
+    l0 = StackBuf(2 ** YRLOGG)
+    for t in unroll(0, 2 ** nlv // 2):
         l0[t] = weights[wbase] * yp[GEN ** (2 * t)] + weights[wbase + 1] * yp[GEN ** (2 * t + 1)]
     cursor = l0
-    n = YR_LEN // 2
-    for j in unroll(1, YR_LOG_N):
-        nxt = StackBuf(YR_LEN)
+    n = 2 ** nlv // 2
+    for j in unroll(1, nlv):
+        nxt = StackBuf(2 ** YRLOGG)
         for t in unroll(0, n // 2):
             nxt[t] = weights[wbase + 2 * j] * cursor[2 * t] + weights[wbase + 2 * j + 1] * cursor[2 * t + 1]
         cursor = nxt
@@ -630,7 +621,7 @@ def open_stacked(mi: Const, fs0, fs1, target, commit_root_0, commit_root_1):
             for j in unroll(0, YRLOG2[mi]):
                 fold_w[2 * j] = GEN ** 0
                 fold_w[2 * j + 1] = basis_w[PREFIXLEN2[mi * MAXLEV + lvl] + j]
-            yr_eval = foldyr(yr, fold_w, 0)
+            yr_eval = foldyr(yr, fold_w, 0, YRLOG2[mi])
             residual_chain[xr * GEN] = residual_chain[xr] + alpha_weights[GEN ** (lvl * MAXQ2[mi]) * xr] * prefix_eq * yr_eval
         inner_chain[GEN ** (lvl + 1)] = inner_chain[GEN ** lvl] + betas[GEN ** lvl] * residual_chain[GEN ** QUERIES2[mi * MAXLEV + lvl]]
     return t_r, ris, yr, inner_chain[GEN ** NLEV2[mi]]
@@ -1527,43 +1518,75 @@ def verify_sub(pi_0, pi_1, delta_pows, dout):
     assert log(sel) < NMCAND
     t_r, ris, yr, inner_total = match_range(log(sel), range(0, NMCAND), lambda mi: open_stacked(mi, fs[0], fs[1], target, commit_root_0, commit_root_1))
 
-    # ---- generalized eval_b terminal ----
-    # Per pooled claim j: eqbase_j = eq(low point, ris) x eq(selector low bits,
-    # remaining ris coords); its full weight lands at residual slot YT[j]. The
-    # ring-switch part (deferred rsq values) lands at slot YRS with the qpkd
-    # selector eq over ris[QPKDV..].
+    # ---- generalized eval_b terminal (runtime claim shapes) ----
+    # Per-claim lengths, selector bits, and slot data are HINTED; the final
+    # identity inner_sum == t_r against the opening-bound target certifies
+    # them (the P4a argument), so only range checks and booleanity are
+    # enforced here. All selector products use eq(b, r) = 1 + b + r.
+    cwqh = HeapBuf(NCL)
+    hint_witness(cwqh[0:NCL], "cwqh")
+    selnh = HeapBuf(NCL)
+    hint_witness(selnh[0:NCL], "selnh")
+    nlowh = HeapBuf(NCL)
+    hint_witness(nlowh[0:NCL], "nlowh")
+    cslotb = HeapBuf(7 * NCL)
+    hint_witness(cslotb[0:7 * NCL], "cslotb")
+    cselb = HeapBuf(33 * NCL)
+    hint_witness(cselb[0:33 * NCL], "cselb")
+    maskb = HeapBuf(8 * NCL)
+    hint_witness(maskb[0:8 * NCL], "maskb")
+    ythib = HeapBuf(8 * NCL)
+    hint_witness(ythib[0:8 * NCL], "ythib")
+    yrsb = HeapBuf(8)
+    hint_witness(yrsb[0:8], "yrsb")
+    rsqh = HeapBuf(1)
+    hint_witness(rsqh[0:1], "rsqh")
+    rsselb = HeapBuf(33)
+    hint_witness(rsselb[0:33], "rsselb")
     claim_weights = HeapBuf(NCL)
     for j in unroll(0, NCL):
-        out_fs = GEN ** 0
+        cwq = cwqh[GEN ** j]
+        assert log(cwq) < 34
+        low_chain = HeapBuf(35)
         if CPBUF[j] == 0:
-            for k in unroll(0, CPLEN[j] - NOVER[j]):
-                out_fs = out_fs * (1 + zeta[GEN ** (CPOFF[j] + k)] + ris[GEN ** k])
+            zptr = zeta * GEN ** CPOFF[j]
+            low_chain[GEN ** 0] = 1
+            for xk in mul_range(1, cwq):
+                low_chain[xk * GEN] = low_chain[xk] * (1 + zptr[xk] + ris[xk])
         if CPBUF[j] == 1:
-            for k in unroll(0, CPLEN[j] - NOVER[j]):
-                out_fs = out_fs * (1 + rho[GEN ** (CPOFF[j] + k)] + ris[GEN ** k])
+            rptr = rho * GEN ** CPOFF[j]
+            low_chain[GEN ** 0] = 1
+            for xk in mul_range(1, cwq):
+                low_chain[xk * GEN] = low_chain[xk] * (1 + rptr[xk] + ris[xk])
         if CPBUF[j] == 2:
-            out_fs = 1 + rm + ris[GEN ** 0]
-            for k in unroll(1, CPLEN[j]):
-                out_fs = out_fs * (1 + ris[GEN ** k])
+            low_chain[GEN ** 1] = 1 + rm + ris[GEN ** 0]
+            for xk in mul_range(GEN, cwq):
+                low_chain[xk * GEN] = low_chain[xk] * (1 + ris[xk])
         if CPBUF[j] == 3:
+            s7 = GEN ** 0
             for k in unroll(0, 7):
-                if (CSLOT[j] // (2 ** k)) % 2 == 1:
-                    out_fs = out_fs * ris[GEN ** k]
-                else:
-                    out_fs = out_fs * (1 + ris[GEN ** k])
-            for k in unroll(0, CPLEN[j]):
-                out_fs = out_fs * (1 + zeta[GEN ** (CPOFF[j] + k)] + ris[GEN ** (7 + k)])
-        # selector part over the ris coords above the claim's low span (SELN
-        # baked as max(0, LENRIS - n_low_vars); empty when the point overlaps y).
-        n_low_vars = CPLEN[j]
-        if CPBUF[j] == 3:
-            n_low_vars = 7 + CPLEN[j]
-        for k in unroll(0, SELN[j]):
-            if (CSEL[j] // (2 ** k)) % 2 == 1:
-                out_fs = out_fs * ris[GEN ** (n_low_vars + k)]
-            else:
-                out_fs = out_fs * (1 + ris[GEN ** (n_low_vars + k)])
-        claim_weights[GEN ** j] = out_fs * gamma_pool[GEN ** j]
+                sb3 = cslotb[GEN ** (7 * j + k)]
+                assert sb3 * sb3 == sb3
+                s7 = s7 * (1 + sb3 + ris[GEN ** k])
+            zptr = zeta * GEN ** CPOFF[j]
+            ris7 = ris * GEN ** 7
+            low_chain[GEN ** 0] = s7
+            for xk in mul_range(1, cwq):
+                low_chain[xk * GEN] = low_chain[xk] * (1 + zptr[xk] + ris7[xk])
+        out_fs = low_chain[cwq]
+        seln = selnh[GEN ** j]
+        assert log(seln) < 34
+        nlow = nlowh[GEN ** j]
+        assert log(nlow) < 40
+        ris_hi = ris * nlow
+        selrow = cselb * GEN ** (33 * j)
+        sel_chain = HeapBuf(35)
+        sel_chain[GEN ** 0] = out_fs
+        for xk in mul_range(1, seln):
+            cb = selrow[xk]
+            assert cb * cb == cb
+            sel_chain[xk * GEN] = sel_chain[xk] * (1 + cb + ris_hi[xk])
+        claim_weights[GEN ** j] = sel_chain[seln] * gamma_pool[GEN ** j]
     # eval_rs_eq per claim: E = sum_k c_k * prod_j (z_j^(2^k) + 1 + ris_j)
     # (the telescoped product formula; z powers evolve by squaring per k).
     # QPKDV = tau_5 + (KLOG - 7), exponent-additive from the certified
@@ -1595,33 +1618,57 @@ def verify_sub(pi_0, pi_1, delta_pows, dout):
             e_acc[xk * GEN] = e_acc[xk] + c_table[xk] * prod_chain[qpkdv_g]
             row_ptr[xk * GEN] = z_row_next
         rs_eq_vals[GEN ** rs] = e_acc[GEN ** 128]
-    # ring-switch weight base over ris[QPKDV..LENRIS).
+    # ring-switch weight base over the ris coords above qpkdv (hinted
+    # length and selector bits, identity-certified).
     rs_weight = gamma_ab * rs_eq_vals[GEN ** 0] + gamma_c * rs_eq_vals[GEN ** 1]
-    for k in unroll(0, LENRIS - QPKDV):
-        if (RSSEL // (2 ** k)) % 2 == 1:
-            rs_weight = rs_weight * ris[GEN ** (QPKDV + k)]
-        else:
-            rs_weight = rs_weight * (1 + ris[GEN ** (QPKDV + k)])
-    # inner_sum = sum_y yr[y] * eval_b[y] + the residual sums.
+    rsq = rsqh[GEN ** 0]
+    assert log(rsq) < 34
+    ris_q = ris * qpkdv_g
+    rsw_chain = HeapBuf(35)
+    rsw_chain[GEN ** 0] = rs_weight
+    for xk in mul_range(1, rsq):
+        rb = rsselb[xk]
+        assert rb * rb == rb
+        rsw_chain[xk * GEN] = rsw_chain[xk] * (1 + rb + ris_q[xk])
+    rs_weight = rsw_chain[rsq]
+    # inner_sum = sum_y yr[y] * eval_b[y]: reordered per claim. Claim j's
+    # y-contribution is cw_j times the yr MLE at the point (overlap coords
+    # || hinted slot bits): coord_k = m_k * ov_k + (1 + m_k) * bit_k with
+    # hinted mask bits m_k = [k < NOVER]. Point bits beyond the shape's
+    # yr_log_n are hinted zero, so the eq tensor zero-pads itself and the
+    # dot over the FULL 2^YRLOGG range reads deferred zeros past yr's end:
+    # everything unrolls at compile time. The ring-switch slot is the same
+    # form with no overlaps and the hinted YRS bits.
     inner_sum = inner_total
-    for y in unroll(0, YR_LEN):
-        slot_sum = 0
-        if y == YRS:
-            slot_sum = slot_sum + rs_weight
-        for j in unroll(0, NCL):
-            if (y // (2 ** NOVER[j])) == YTHI[j]:
-                f = claim_weights[GEN ** j]
-                for t in unroll(0, NOVER[j]):
-                    if CPBUF[j] == 0:
-                        overlap_coord = zeta[GEN ** (CPOFF[j] + CPLEN[j] - NOVER[j] + t)]
-                    else:
-                        overlap_coord = rho[GEN ** (CPOFF[j] + CPLEN[j] - NOVER[j] + t)]
-                    if (y // (2 ** t)) % 2 == 1:
-                        f = f * overlap_coord
-                    else:
-                        f = f * (1 + overlap_coord)
-                slot_sum = slot_sum + f
-        inner_sum = inner_sum + yr[GEN ** y] * slot_sum
+    for j in unroll(0, NCL):
+        pnt = HeapBuf(YRLOGG)
+        if CPBUF[j] == 0:
+            ovp = zeta * GEN ** CPOFF[j] * cwqh[GEN ** j]
+        else:
+            ovp = rho * GEN ** CPOFF[j] * cwqh[GEN ** j]
+        for k in unroll(0, YRLOGG):
+            mv = maskb[GEN ** (8 * j + k)]
+            assert mv * mv == mv
+            tv = ythib[GEN ** (8 * j + k)]
+            assert tv * tv == tv
+            pnt[GEN ** k] = mv * ovp[GEN ** k] + (1 + mv) * tv
+        eqt = HeapBuf(2 ** (YRLOGG + 1) - 2)
+        eqtree(pnt, eqt, YRLOGG)
+        ydot = 0
+        for y in unroll(0, 2 ** YRLOGG):
+            ydot = ydot + yr[GEN ** y] * eqt[GEN ** (2 ** YRLOGG - 2 + y)]
+        inner_sum = inner_sum + claim_weights[GEN ** j] * ydot
+    rs_pnt = HeapBuf(YRLOGG)
+    for k in unroll(0, YRLOGG):
+        yb = yrsb[GEN ** k]
+        assert yb * yb == yb
+        rs_pnt[GEN ** k] = yb
+    rs_eqt = HeapBuf(2 ** (YRLOGG + 1) - 2)
+    eqtree(rs_pnt, rs_eqt, YRLOGG)
+    rs_dot = 0
+    for y in unroll(0, 2 ** YRLOGG):
+        rs_dot = rs_dot + yr[GEN ** y] * rs_eqt[GEN ** (2 ** YRLOGG - 2 + y)]
+    inner_sum = inner_sum + rs_weight * rs_dot
     assert inner_sum == t_r
 
 
