@@ -18,7 +18,7 @@ use std::collections::BTreeMap;
 
 use leanvm_b::compiler::{compile, parse, parse_file_with_replacements};
 use leanvm_b::cpu::{Program, prove, verify};
-use leanvm_b::field::{F128, G};
+use leanvm_b::field::{g_pow, F128, G};
 use leanvm_b::leaf::{Block, Coord};
 use leanvm_b::multilinear::mle_eval;
 use leanvm_b::transcript::{Sponge, TraceOp, trace_start, trace_take};
@@ -640,6 +640,11 @@ fn gen_verify(
     ps("STREAM_LEN", proof.stream.len().to_string());
     let ann: Vec<u128> = (0..7).map(|i| u(proof.stream[i])).collect();
     ps("ANN", us(&ann));
+    let log_mem = proof.stream[0].lo as usize;
+    let mut annlog = vec![log_mem];
+    annlog.extend(l.taus.iter().copied());
+    ps("ANNLOG", ints(&annlog));
+    ps("GINV", u(G.inv()).to_string());
     ps("GFULL", (gbits / 8).to_string());
     ps("GEXTRA", (gbits % 8).to_string());
     ps("GG", u(G).to_string());
@@ -1032,6 +1037,36 @@ fn gen_verify(
         ("rta".to_string(), roota),
         ("rtb".to_string(), rootb),
         ("fnn".to_string(), fnv),
+        ("annexp".to_string(), {
+            let mut v = vec![g_pow(log_mem)];
+            v.extend(l.taus.iter().map(|&t| g_pow(t)));
+            v
+        }),
+        ("annbits".to_string(), {
+            let mut v = Vec::with_capacity(192);
+            for t in 0..6 {
+                let c = proof.stream[1 + t].lo;
+                for j in 0..32 {
+                    v.push(F128::new((c >> j) & 1, 0));
+                }
+            }
+            v
+        }),
+        ("anninv".to_string(), {
+            let floors = [0usize, 0, 0, 0, 0, 3];
+            (0..6)
+                .map(|t| {
+                    let (c, tau) = (proof.stream[1 + t].lo, l.taus[t]);
+                    if tau == floors[t] {
+                        return F128::ONE; // minimality waived at the floor
+                    }
+                    let mask = (1u64 << (tau - 1)) - 1;
+                    let min_a = F128::new(c & !mask, 0);
+                    let min_b = F128::new(c ^ (1u64 << (tau - 1)), 0);
+                    (min_a * min_b).inv()
+                })
+                .collect()
+        }),
         ("qnonce".to_string(), query_pow.iter().map(|&(n, _)| F128::new(n, 0)).collect()),
         (
             "qgrind".to_string(),

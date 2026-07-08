@@ -53,6 +53,11 @@ from snark_lib import *
 
 STREAM_LEN = STREAM_LEN_PLACEHOLDER
 ANN = ANN_PLACEHOLDER
+# Baked exponents of the certified structural logs (scaffolding, see P1).
+ANNLOG = ANNLOG_PLACEHOLDER
+# Per-table tau floor: BLAKE3 is sized to flock's instance count (>= 2^3).
+FLOORS = [0, 0, 0, 0, 0, 3]
+GINV = GINV_PLACEHOLDER
 GFULL = GFULL_PLACEHOLDER
 GEXTRA = GEXTRA_PLACEHOLDER
 GG = GG_PLACEHOLDER
@@ -424,11 +429,71 @@ def verify_sub(pi_0, pi_1, delta_pows, dout):
     cursor = stream
 
     # ---- announced sizes: log_mem + 6 row counts (assert = baked config) ----
+    sizes = HeapBuf(7)
     for i in unroll(0, 7):
         x = cursor[GEN ** 0]
         fs = obs(fs, x)
         assert x == ANN[i]
+        sizes[GEN ** i] = x
         cursor = cursor * GEN
+
+    # ---- certify the hinted structural logs against the announced words ----
+    # ann_exp[0] = g^log_mem, ann_exp[1 + t] = g^tau_t: witness hints (off
+    # transcript), pinned to the announced words in-circuit (plan doc, P1).
+    # The downstream shape-generic phases consume ann_exp; the ANNLOG
+    # equality at the end is scaffolding until they do.
+    ann_exp = HeapBuf(7)
+    hint_witness(ann_exp[0:7], "annexp")
+    ann_bits = HeapBuf(192)
+    hint_witness(ann_bits[0:192], "annbits")
+    ann_inv = HeapBuf(6)
+    hint_witness(ann_inv[0:6], "anninv")
+    # Baked tables over exponents 0..32: T[g^j] = j and W[g^j] = 2^j (words).
+    exp_word = HeapBuf(33)
+    pow_word = HeapBuf(33)
+    for j in unroll(0, 33):
+        exp_word[GEN ** j] = j
+        pow_word[GEN ** j] = 2 ** j
+    # log_mem is announced AS a log (an integer word L): T[g^L] == L pins the
+    # hinted g-power to it.
+    g_log_mem = ann_exp[GEN ** 0]
+    assert log(g_log_mem) < 33
+    lm_word = exp_word[g_log_mem]
+    lm_ann = sizes[GEN ** 0]
+    assert lm_word == lm_ann
+    assert g_log_mem == GEN ** ANNLOG[0]
+    # Per count: 32 hinted bits -> partial sums p[j] = value of the low j
+    # bits; p[32] == count binds the bits to the announced word; then
+    # p[g^tau] pins count < 2^tau (or count == 2^tau via W), and a
+    # hinted-inverse nonzero check pins minimality, waived at the table's
+    # floor (BLAKE3 sizes to flock's instance count, ceil_log2(max(n, 8))).
+    psums = HeapBuf(6 * 34)
+    for t in unroll(0, 6):
+        count = sizes[GEN ** (t + 1)]
+        pt = psums * GEN ** (34 * t)
+        pt[GEN ** 0] = 0
+        acc = 0
+        for j in unroll(0, 32):
+            b = ann_bits[GEN ** (32 * t + j)]
+            assert b * b == b
+            acc = acc + b * (2 ** j)
+            pt[GEN ** (j + 1)] = acc
+        assert acc == count
+        gtau = ann_exp[GEN ** (t + 1)]
+        assert log(gtau) < 33
+        low = pt[gtau]
+        diff_low = low + count
+        diff_pow = count + pow_word[gtau]
+        assert diff_low * low == 0
+        assert diff_low * diff_pow == 0
+        if gtau != GEN ** FLOORS[t]:
+            low_prev = pt[gtau * GINV]
+            min_a = low_prev + count
+            min_b = count + pow_word[gtau * GINV]
+            min_prod = min_a * min_b
+            prod_inv = ann_inv[GEN ** t]
+            assert min_prod * prod_inv == 1
+        assert gtau == GEN ** ANNLOG[t + 1]
 
     # ---- commitment root (2 words), kept for the opening phase ----
     commit_root_0 = cursor[GEN ** 0]
