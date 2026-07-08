@@ -1275,6 +1275,111 @@ pub fn claim_check(weights: &[F128], s_hat_v: &[F128]) -> F128 {
 }
 
 /// Standard inner product `Σ_i a[i] · b[i]` over F_{2^128}.
+/// The trace-dual basis {δ_i} of the polynomial basis {B_j = x^j}:
+/// `Tr(δ_i·B_j) = [i = j]`, so `bit_i(y) = Tr(δ_i·y)` for every `y`.
+/// Computed once (Gram matrix of the trace form inverted over F₂).
+pub fn trace_dual_basis() -> &'static [F128; 128] {
+    use std::sync::OnceLock;
+    static DUAL: OnceLock<[F128; 128]> = OnceLock::new();
+    DUAL.get_or_init(|| {
+        let basis = |j: usize| {
+            if j < 64 { F128::new(1u64 << j, 0) } else { F128::new(0, 1u64 << (j - 64)) }
+        };
+        let tr = |x: F128| {
+            let (mut acc, mut p) = (F128::ZERO, x);
+            for _ in 0..128 {
+                acc += p;
+                p *= p;
+            }
+            acc
+        };
+        let mut g: Vec<u128> = vec![0; 128];
+        for i in 0..128 {
+            for j in 0..128 {
+                if tr(basis(i) * basis(j)) == F128::ONE {
+                    g[i] |= 1u128 << j;
+                }
+            }
+        }
+        let mut inv: Vec<u128> = (0..128).map(|i| 1u128 << i).collect();
+        for col in 0..128 {
+            let piv = (col..128).find(|&r| (g[r] >> col) & 1 == 1).expect("trace Gram matrix is invertible");
+            g.swap(col, piv);
+            inv.swap(col, piv);
+            for r in 0..128 {
+                if r != col && (g[r] >> col) & 1 == 1 {
+                    g[r] ^= g[col];
+                    inv[r] ^= inv[col];
+                }
+            }
+        }
+        let mut out = [F128::ZERO; 128];
+        for (i, o) in out.iter_mut().enumerate() {
+            for j in 0..128 {
+                if (inv[i] >> j) & 1 == 1 {
+                    *o += basis(j);
+                }
+            }
+        }
+        out
+    })
+}
+
+/// The linearized-polynomial coefficients of the eq-weighted bit-sum:
+/// `Σ_i w_i·bit_i(y) = L_w(y) = Σ_k c_k·y^{2^k}` with `c_k = Σ_i w_i·δ_i^{2^k}`.
+/// Every tensor-algebra fold against `w` reduces to `L_w`, replacing bit-level
+/// transposes with field arithmetic (squaring is one multiplication).
+pub fn linearized_eq_coeffs(w: &[F128]) -> [F128; 128] {
+    assert_eq!(w.len(), 128);
+    let delta = trace_dual_basis();
+    let mut c = [F128::ZERO; 128];
+    for i in 0..128 {
+        let mut p = delta[i];
+        for ck in c.iter_mut() {
+            *ck += w[i] * p;
+            p *= p;
+        }
+    }
+    c
+}
+
+/// `⟨tensor_algebra_transpose(s_hat_v), w⟩` without the transpose:
+/// `Σ_j B_j·L_w(s_hat_v[j])` (see [`linearized_eq_coeffs`]).
+pub fn transposed_claim_linearized(s_hat_v: &[F128], c: &[F128; 128]) -> F128 {
+    assert_eq!(s_hat_v.len(), 128);
+    let basis = |j: usize| {
+        if j < 64 { F128::new(1u64 << j, 0) } else { F128::new(0, 1u64 << (j - 64)) }
+    };
+    let mut acc = F128::ZERO;
+    for (j, &y) in s_hat_v.iter().enumerate() {
+        let (mut lw, mut p) = (F128::ZERO, y);
+        for &ck in c.iter() {
+            lw += ck * p;
+            p *= p;
+        }
+        acc += basis(j) * lw;
+    }
+    acc
+}
+
+/// [`eval_rs_eq`] via the telescoped product formula. The tensor element is
+/// `Π_j (z_j⊗1 + 1⊗(1+q_j))`; its rank-1 subset expansion re-sums per
+/// Frobenius power into `Σ_k c_k·Π_j (z_j^{2^k} + 1 + q_j)`.
+pub fn eval_rs_eq_linearized(z_vals: &[F128], query: &[F128], c: &[F128; 128]) -> F128 {
+    assert_eq!(z_vals.len(), query.len());
+    let mut zp: Vec<F128> = z_vals.to_vec();
+    let mut acc = F128::ZERO;
+    for &ck in c.iter() {
+        let mut prod = F128::ONE;
+        for (zpj, &qj) in zp.iter_mut().zip(query.iter()) {
+            prod *= *zpj + F128::ONE + qj;
+            *zpj *= *zpj;
+        }
+        acc += ck * prod;
+    }
+    acc
+}
+
 pub fn inner_product(a: &[F128], b: &[F128]) -> F128 {
     assert_eq!(a.len(), b.len());
     let mut acc = F128::ZERO;
@@ -2554,8 +2659,10 @@ pub fn verify_succinct<Ch: Challenger>(
     let r_dprime = challenger.sample_f128_vec(LOG_PACKING);
     let eq_r_dprime = build_eq(&r_dprime);
 
-    let s_hat_u = tensor_algebra_transpose(&proof.s_hat_v);
-    let sumcheck_claim = inner_product(&s_hat_u, &eq_r_dprime);
+    // Linearized form (identical value, no bit transpose): the transposed
+    // fold against the eq tensor is Σ_j B_j·L_w(s_hat_v[j]).
+    let c = linearized_eq_coeffs(&eq_r_dprime);
+    let sumcheck_claim = transposed_claim_linearized(&proof.s_hat_v, &c);
 
     Ok(RingSwitchVerifierOutput {
         sumcheck_claim,
@@ -2584,8 +2691,6 @@ pub fn verify_succinct<Ch: Challenger>(
 ///
 /// [DP24]: <https://eprint.iacr.org/2024/504>
 pub fn eval_rs_eq(z_vals: &[F128], query: &[F128], eq_r_dprime: &[F128]) -> F128 {
-    use crate::pcs::tensor_algebra::TensorAlgebra;
-
     assert_eq!(
         z_vals.len(),
         query.len(),
@@ -2596,18 +2701,11 @@ pub fn eval_rs_eq(z_vals: &[F128], query: &[F128], eq_r_dprime: &[F128]) -> F128
         1 << LOG_PACKING,
         "eval_rs_eq: eq_r_dprime length must be 128"
     );
-
-    let mut eval = TensorAlgebra::from_vertical(F128::ONE);
-    for (&z_i, &q_i) in z_vals.iter().zip(query.iter()) {
-        // In characteristic 2: eq(z, q) = 1 + z + q + 2·z·q = 1 + z + q.
-        // So updating eval ← eval + z·eval + q·eval (with vertical = z-axis,
-        // horizontal = q-axis) yields the correct per-step eq tensor update.
-        let vert_scaled = eval.clone().scale_vertical(z_i);
-        let hztl_scaled = eval.clone().scale_horizontal(q_i);
-        eval += &vert_scaled;
-        eval += &hztl_scaled;
-    }
-    eval.fold_vertical(eq_r_dprime)
+    // Linearized form (identical value): the tensor recurrence is the product
+    // Π_j (z_j⊗1 + 1⊗(1+q_j)) folded against eq_r_dprime, which telescopes to
+    // Σ_k c_k·Π_j (z_j^{2^k} + 1 + q_j).
+    let c = linearized_eq_coeffs(eq_r_dprime);
+    eval_rs_eq_linearized(z_vals, query, &c)
 }
 
 /// **Prefix-only** variant of [`eval_rs_eq`]: walks `prefix_len` of the

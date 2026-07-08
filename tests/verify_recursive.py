@@ -167,6 +167,12 @@ YTHI = YTHI_PLACEHOLDER
 QPKDV = QPKDV_PLACEHOLDER
 RSSEL = RSSEL_PLACEHOLDER
 YRS = YRS_PLACEHOLDER
+# Ring-switch linearized algebra: the trace-dual basis (bit_i(y) = Tr(delta_i y))
+# and the monomial basis B_j = x^j. Any eq-weighted bit-sum is the linearized
+# polynomial L_w(y) = sum_k c_k y^(2^k), c_k = sum_i w_i delta_i^(2^k); squaring
+# is one MUL, so the tensor transpose and eval_rs_eq run in-circuit.
+DELTA = DELTA_PLACEHOLDER
+FB = FB_PLACEHOLDER
 # Phase F: log rows of the bytecode blocks (the deferred bytecode points).
 KBC = KBC_PLACEHOLDER
 
@@ -748,10 +754,10 @@ def main():
     # ceval, z_skip = zz, x_outer[0] = zr[6].
     shv = HeapBuf(256)
     hint_witness(shv[0:256], "shv")
-    tcl = HeapBuf(2)
-    hint_witness(tcl[0:2], "tclaim")
-    rsq = HeapBuf(2)
-    hint_witness(rsq[0:2], "rsq")
+    tclv = HeapBuf(2)
+    rsqv = HeapBuf(2)
+    ckb = HeapBuf(2 * 128)
+    zvb = HeapBuf(2 * QPKDV)
     rdp = HeapBuf(14)
     for rs in unroll(0, 2):
         cv0, cv1 = absorb(cv0, cv1, 20, DS_LEN)
@@ -781,14 +787,68 @@ def main():
             lam = wpre[GEN ** i] * wsuf[GEN ** (i + 1)] * ISDOM[i]
             cchk = cchk + lam * ((1 + xo0) * shv[GEN ** (128 * rs + i)] + xo0 * shv[GEN ** (128 * rs + 64 + i)])
         assert cchk == clm
-        # r'' (7 samples), kept for the deferred transpose/eval_rs_eq claims.
+        # r'' (7 samples).
         for i in unroll(0, 7):
             rv, cv0, cv1 = sqz(cv0, cv1)
             rdp[GEN ** (7 * rs + i)] = rv
-    # gamma-combine the two (deferred) transposed sumcheck claims...
+        # w = eq tensor of the seven r'' coords (doubling tree, final 128 at 126).
+        wq = HeapBuf(254)
+        wq[GEN ** 0] = 1 + rdp[GEN ** (7 * rs)]
+        wq[GEN ** 1] = rdp[GEN ** (7 * rs)]
+        for t in unroll(1, 7):
+            for i in unroll(0, 2 ** t):
+                pw = wq[GEN ** (2 ** t - 2 + i)]
+                wq[GEN ** (2 ** (t + 1) - 2 + i)] = pw * (1 + rdp[GEN ** (7 * rs + t)])
+                wq[GEN ** (2 ** (t + 1) - 2 + 2 ** t + i)] = pw * rdp[GEN ** (7 * rs + t)]
+        # c_k = sum_i w_i * delta_i^(2^k): runtime loop over k, the dual-basis
+        # powers evolve by squaring (row k of dt at offset 128k).
+        dt = HeapBuf(128 * 128)
+        for i in unroll(0, 128):
+            dt[GEN ** i] = DELTA[i]
+        ckrow = ckb * GEN ** (128 * rs)
+        for xk in mul_range(1, GEN ** 127):
+            rowc = dt * xk ** 128
+            nrowc = rowc * GEN ** 128
+            cacc = 0
+            for i in unroll(0, 128):
+                dv = rowc[GEN ** i]
+                cacc = cacc + wq[GEN ** (126 + i)] * dv
+                nrowc[GEN ** i] = dv * dv
+            ckrow[xk] = cacc
+        cacc = 0
+        for i in unroll(0, 128):
+            cacc = cacc + wq[GEN ** (126 + i)] * dt[GEN ** (127 * 128 + i)]
+        ckrow[GEN ** 127] = cacc
+        # transposed sumcheck claim T = sum_k c_k * (sum_j B_j * shv_j^(2^k)),
+        # the s_hat_v powers evolving by squaring per k.
+        ytab = HeapBuf(129 * 128)
+        for j in unroll(0, 128):
+            ytab[GEN ** j] = shv[GEN ** (128 * rs + j)]
+        tacc = HeapBuf(129)
+        tacc[GEN ** 0] = 0
+        for xk in mul_range(1, GEN ** 128):
+            rowy = ytab * xk ** 128
+            nrowy = rowy * GEN ** 128
+            sk = 0
+            for j in unroll(0, 128):
+                yv = rowy[GEN ** j]
+                sk = sk + FB[j] * yv
+                nrowy[GEN ** j] = yv * yv
+            tacc[xk * GEN] = tacc[xk] + ckrow[xk] * sk
+        tclv[GEN ** rs] = tacc[GEN ** 128]
+        # z_vals for eval_rs_eq (the x_outer tail), used at the opening terminal.
+        if rs == 0:
+            for t in unroll(0, LCR - 1):
+                zvb[GEN ** t] = lrr[GEN ** (LCR - 2 - t)]
+            for t in unroll(0, NMLV - LCR):
+                zvb[GEN ** (LCR - 1 + t)] = zrho[GEN ** (LCR + t)]
+        else:
+            for t in unroll(0, QPKDV):
+                zvb[GEN ** (QPKDV + t)] = zr[GEN ** (7 + t)]
+    # gamma-combine the two transposed sumcheck claims (computed in-circuit).
     g0, cv0, cv1 = sqz(cv0, cv1)
     g1, cv0, cv1 = sqz(cv0, cv1)
-    target = g0 * tcl[GEN ** 0] + g1 * tcl[GEN ** 1]
+    target = g0 * tclv[GEN ** 0] + g1 * tclv[GEN ** 1]
     # ...then every pooled point claim, each labeled and observed.
     for j in unroll(0, NCL):
         cv0, cv1 = absorb(cv0, cv1, 26, DS_LEN)
@@ -1054,8 +1114,27 @@ def main():
             else:
                 eb = eb * (1 + ris[GEN ** (nvt + k)])
         ebase[GEN ** j] = eb * gpd[GEN ** j]
+    # eval_rs_eq per claim: E = sum_k c_k * prod_j (z_j^(2^k) + 1 + ris_j)
+    # (the telescoped product formula; z powers evolve by squaring per k).
+    for rs in unroll(0, 2):
+        zpt = HeapBuf(129 * QPKDV)
+        for j in unroll(0, QPKDV):
+            zpt[GEN ** j] = zvb[GEN ** (QPKDV * rs + j)]
+        eacc = HeapBuf(129)
+        eacc[GEN ** 0] = 0
+        ckrow = ckb * GEN ** (128 * rs)
+        for xk in mul_range(1, GEN ** 128):
+            rowz = zpt * xk ** QPKDV
+            nrowz = rowz * GEN ** QPKDV
+            prod = GEN ** 0
+            for j in unroll(0, QPKDV):
+                zv = rowz[GEN ** j]
+                prod = prod * (zv + 1 + ris[GEN ** j])
+                nrowz[GEN ** j] = zv * zv
+            eacc[xk * GEN] = eacc[xk] + ckrow[xk] * prod
+        rsqv[GEN ** rs] = eacc[GEN ** 128]
     # ring-switch weight base over ris[QPKDV..LENRIS).
-    rsb = g0 * rsq[GEN ** 0] + g1 * rsq[GEN ** 1]
+    rsb = g0 * rsqv[GEN ** 0] + g1 * rsqv[GEN ** 1]
     for k in unroll(0, LENRIS - QPKDV):
         if (RSSEL // (2 ** k)) % 2 == 1:
             rsb = rsb * ris[GEN ** (QPKDV + k)]
@@ -1110,20 +1189,6 @@ def main():
     for k in unroll(0, 64):
         h0, h1 = obs(h0, h1, lcz[GEN ** k])
     h0, h1 = obs(h0, h1, matp[GEN ** 0])
-    for k in unroll(0, 256):
-        h0, h1 = obs(h0, h1, shv[GEN ** k])
-    for k in unroll(0, 14):
-        h0, h1 = obs(h0, h1, rdp[GEN ** k])
-    h0, h1 = obs(h0, h1, tcl[GEN ** 0])
-    h0, h1 = obs(h0, h1, tcl[GEN ** 1])
-    h0, h1 = obs(h0, h1, rsq[GEN ** 0])
-    h0, h1 = obs(h0, h1, rsq[GEN ** 1])
-    for k in unroll(0, QPKDV):
-        h0, h1 = obs(h0, h1, ris[GEN ** k])
-    for k in unroll(LCR, NMLV):
-        h0, h1 = obs(h0, h1, zrho[GEN ** k])
-    for k in unroll(13, MR1CS):
-        h0, h1 = obs(h0, h1, zr[GEN ** k])
     pp = GEN ** 0
     pia = pp[1]
     pib = pp[GEN]

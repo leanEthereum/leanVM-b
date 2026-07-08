@@ -210,12 +210,6 @@ struct Deferred {
     lrr: Vec<F128>,
     lcz: Vec<F128>,
     matpart: F128,
-    shv: Vec<F128>,
-    rdp: Vec<F128>,
-    tclaim: Vec<F128>,
-    rsq: Vec<F128>,
-    lig_ris_lo: Vec<F128>,
-    zc_r_tail: Vec<F128>,
     n_log_b3: usize,
 }
 
@@ -265,32 +259,6 @@ fn check_deferred(program: &Program, pi: [F128; 2], proof: &leanvm_b::cpu::Proof
         d.matpart,
         "deferred matrix claim"
     );
-    // (c) the two transposed ring-switch sumcheck claims.
-    for rs in 0..2 {
-        let shu = flare::pcs::ring_switch::tensor_algebra_transpose(&d.shv[128 * rs..128 * rs + 128]);
-        let eqd = flare::zerocheck::univariate_skip::build_eq(&d.rdp[7 * rs..7 * rs + 7]);
-        assert_eq!(
-            flare::pcs::ring_switch::inner_product(&shu, &eqd),
-            d.tclaim[rs],
-            "deferred tensor claim {rs}"
-        );
-    }
-    // (d) the two eval_rs_eq weights.
-    let inner7: Vec<F128> = flare::zerocheck::univariate_skip_optimized::small_challenges_ghash()
-        .into_iter()
-        .chain(flare::zerocheck::univariate_skip_optimized::medium_challenges_ghash())
-        .collect();
-    let lcr = d.lrr.len();
-    let x_outer_ab: Vec<F128> = d.lrr.iter().rev().copied().chain(d.zrho[lcr..].iter().copied()).collect();
-    let x_outer_c: Vec<F128> = inner7.into_iter().chain(d.zc_r_tail.iter().copied()).collect();
-    for (rs, xo) in [x_outer_ab, x_outer_c].iter().enumerate() {
-        let eqd = flare::zerocheck::univariate_skip::build_eq(&d.rdp[7 * rs..7 * rs + 7]);
-        assert_eq!(
-            flare::pcs::ring_switch::eval_rs_eq(&xo[1..], &d.lig_ris_lo, &eqd),
-            d.rsq[rs],
-            "deferred eval_rs_eq {rs}"
-        );
-    }
 }
 
 /// Config + hints for the recursion guest (`tests/verify_recursive.py`), built
@@ -503,14 +471,13 @@ fn gen_verify(
     // ---- Phase E1 walk: opening labels, ring-switch fronts, claim combine ----
     assert_eq!(absorb(&mut w), b"flock-pcs-open-batch-v0".to_vec());
     let mut shv = Vec::new();
-    let mut rdp = Vec::new();
     for _ in 0..2 {
         assert_eq!(absorb(&mut w), b"flock-ring-switch-v0".to_vec());
         for _ in 0..128 {
             shv.push(observe(&mut w));
         }
         for _ in 0..7 {
-            rdp.push(w.sample());
+            w.sample(); // r'' (consumed in-circuit by the linearized algebra)
         }
     }
     let _g0 = w.sample();
@@ -526,14 +493,6 @@ fn gen_verify(
     }
     let phase_e1_end = w.i;
 
-    // Deferred tensor claims: the transposed sumcheck claims per ring switch.
-    let mut tclaim = Vec::new();
-    for rs in 0..2 {
-        let shu = flare::pcs::ring_switch::tensor_algebra_transpose(&shv[128 * rs..128 * rs + 128]);
-        let eqd = flare::zerocheck::univariate_skip::build_eq(&rdp[7 * rs..7 * rs + 7]);
-        tclaim.push(flare::pcs::ring_switch::inner_product(&shu, &eqd));
-    }
-    let tclaim_export = tclaim.clone();
 
     // ---- Phase E2 walk: the Ligerito core (mirror kept in lockstep for PoW) ----
     let stack_mu = l.m;
@@ -901,18 +860,7 @@ fn gen_verify(
             lfpb_flat[g * 128..g * 128 + 128].copy_from_slice(&bits_of(dig));
         }
     }
-    // deferred eval_rs_eq values (now that ris is known).
     let qpkdv = l.placements[leanvm_b::cpu::QPKD].n_vars;
-    let zrho_tail: Vec<F128> = zrho[lcrounds..].to_vec();
-    let x_outer_ab: Vec<F128> = lrr.iter().rev().copied().chain(zrho_tail.iter().copied()).collect();
-    let x_outer_c: Vec<F128> = zc_r[6..m_r1cs].to_vec();
-    let eqd_ab = flare::zerocheck::univariate_skip::build_eq(&rdp[0..7]);
-    let eqd_c = flare::zerocheck::univariate_skip::build_eq(&rdp[7..14]);
-    let rsq = vec![
-        flare::pcs::ring_switch::eval_rs_eq(&x_outer_ab[1..], &lig_ris[..qpkdv], &eqd_ab),
-        flare::pcs::ring_switch::eval_rs_eq(&x_outer_c[1..], &lig_ris[..qpkdv], &eqd_c),
-    ];
-    let rsq_hint = rsq.clone();
 
     // claim descriptors, in exact clv order.
     let (mut cpbuf, mut cpoff, mut cplen, mut cslot, mut csel, mut yt) = (vec![], vec![], vec![], vec![], vec![], vec![]);
@@ -1058,6 +1006,9 @@ fn gen_verify(
     ps("RSSEL", rssel.to_string());
     ps("YRS", yrs.to_string());
     ps("KBC", kbc.to_string());
+    ps("DELTA", flds(&flare::pcs::ring_switch::trace_dual_basis()[..]));
+    let fb: Vec<u128> = (0..128).map(|j| 1u128 << j).collect();
+    ps("FB", us(&fb));
 
     // ---- outer public input: the deferred-data hash (mirrors guest Phase F) ----
     let mut h = Mirror { cv: [F128::ZERO; 2] };
@@ -1086,27 +1037,6 @@ fn gen_verify(
         h.observe(v);
     }
     h.observe(matpart);
-    for &v in &shv {
-        h.observe(v);
-    }
-    for &v in &rdp {
-        h.observe(v);
-    }
-    for &v in &tclaim_export {
-        h.observe(v);
-    }
-    for &v in &rsq {
-        h.observe(v);
-    }
-    for &v in &lig_ris[..qpkdv] {
-        h.observe(v);
-    }
-    for &v in &zrho[lcrounds..] {
-        h.observe(v);
-    }
-    for &v in &zc_r[13..] {
-        h.observe(v);
-    }
     let deferred = Deferred {
         outer_pi: h.cv,
         kbc,
@@ -1119,12 +1049,6 @@ fn gen_verify(
         lrr: lrr.clone(),
         lcz: lcz.clone(),
         matpart,
-        shv: shv.clone(),
-        rdp: rdp.clone(),
-        tclaim: tclaim_export.clone(),
-        rsq: rsq.clone(),
-        lig_ris_lo: lig_ris[..qpkdv].to_vec(),
-        zc_r_tail: zc_r[13..].to_vec(),
         n_log_b3,
     };
 
@@ -1145,8 +1069,6 @@ fn gen_verify(
         ("lcz".to_string(), lcz.clone()),
         ("matpart".to_string(), vec![matpart]),
         ("shv".to_string(), shv.clone()),
-        ("tclaim".to_string(), tclaim),
-        ("rsq".to_string(), rsq_hint),
         ("lsc".to_string(), lig_sc.clone()),
         ("lrows".to_string(), lrows_flat),
         ("lpaths".to_string(), lpaths_flat),

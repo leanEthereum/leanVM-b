@@ -507,6 +507,26 @@ The matrix sumcheck runs over the $28$-variable polynomial
 \]
 and ends in the reduced claims $\widetilde A_0(r^\ast)$ and $\widetilde B_0(r^\ast)$, at a common point. The in-circuit cost is that of the sumcheck verifier: $28$ cheap rounds. The prover exploits sparsity to avoid the $2^{28}$-sized cube. During the first $14$ rounds (the row variables), each claim enters through the column contraction $m_t[i]=\sum_{j\in\mathrm{row}_i}\eq(r_t^{\mathrm{col}},j)$; for the last $14$ rounds, each matrix is contracted once along its rows, at the row point just fixed. Each contraction is a single addition-only pass over the nonzeros (the entries are Boolean), and all remaining work is dense of size $2^{14}$. Batching $t$ claims per matrix therefore costs $t+1$ passes over its nonzeros plus $O(t\cdot2^{14})$ multiplications, against the $O(2^{28})$ field operations and memory of a dense sumcheck. The bytecode sumcheck is the same, only smaller and with a dense polynomial.
 
+\subsection{Ring-switch claims via linearized polynomials}\label{sec:rs-linearized}
+
+A second step appears not to fit. The ring-switching layer of the PCS opening \cite{cryptoeprint:2024/504} works in the tensor algebra $\F_{2^{128}}\otimes_{\F_2}\F_{2^{128}}$, which the verifier manipulates through the \emph{bits} of field elements: a $D\times D$ bit transpose to form the batched sumcheck claim (with $D=128$ the packing degree), and one such bit crossing per coordinate when evaluating the ring-switch $\eq$ indicator at the opening's final point. In-circuit, every bit costs a hint and a booleanity check, and each crossing touches $D^2$ of them.
+
+Both computations, however, only ever fold bits against one fixed vector $w\in\F_{2^{128}}^{D}$ (the $\eq$ tensor of the ring-switch challenges $r''$), and a $w$-weighted bit sum is a \emph{linearized polynomial}. Let $\{\delta_i\}$ be the trace-dual basis of the monomial basis $\{x^j\}$, so that $\mathrm{bit}_i(y)=\mathrm{Tr}(\delta_i\,y)$ with $\mathrm{Tr}$ the absolute trace onto $\F_2$. Then
+\[
+  \sum_i w_i\,\mathrm{bit}_i(y) \;=\; L_w(y) \;=\; \sum_{k<D} c_k\,y^{2^k},
+  \qquad
+  c_k=\sum_i w_i\,\delta_i^{2^k},
+\]
+where the $\delta_i^{2^k}$ are fixed constants. Since squaring is one multiplication, $L_w$ is plain field arithmetic. The two tensor computations collapse:
+\begin{itemize}
+\item the transposed fold of the sent slice $\hat s\in\F_{2^{128}}^{D}$ becomes $\sum_j x^j\,L_w(\hat s_j)$;
+\item the $\eq$ indicator at $(z,q)\in\F_{2^{128}}^{\ell}\times\F_{2^{128}}^{\ell}$ is the fold of the tensor element $\prod_{j}\bigl(z_j\otimes 1 + 1\otimes(1+q_j)\bigr)$; expanding it into the $2^{\ell}$ rank-one terms $\sum_{S}\bigl(\prod_{j\in S}z_j\bigr)\otimes\bigl(\prod_{j\notin S}(1+q_j)\bigr)$, folding term-wise via $a\otimes b\mapsto L_w(a)\,b$, and re-summing per Frobenius power gives
+\[
+  \sum_{k<D} c_k\,\prod_{j}\bigl(z_j^{2^k}+1+q_j\bigr).
+\]
+\end{itemize}
+The table $(c_k)$ costs $O(D^2)$ multiplications and either evaluation $O\bigl(D(D+\ell)\bigr)$, with no bit decomposition, in-circuit and natively alike. Ring-switch claims are therefore checked \emph{inside} the recursion; only the three fixed polynomials above ever cross a proof boundary.
+
 \section{ISA programming}\label{sec:isa-programming}
 
 How the zkDSL compiler (\texttt{src/compiler.rs}; surface language in \texttt{zkDSL.md}) programs the six-instruction ISA. Two themes run through every pattern: \emph{write-once memory is an assertion mechanism} (a second write of a cell is an equality check, an unwritten cell is prover-chosen), and \emph{indices live in the exponent} (a logical index $i$ is the element $\gen^{i}$, so incrementing, offsetting, and address formation are single field multiplications).
