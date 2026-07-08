@@ -98,9 +98,8 @@ fn prove_inner(pi: [F128; 2], iters: usize) -> (Program, leanvm_b::cpu::Proof) {
     program.set_witness("outinv", vec![vec![out.inv()]]);
     let (proof, stats) = prove(&program, pi);
     eprintln!(
-        "[inner] cycles={} counts={:?} committed=2^{:.2}",
+        "[inner] cycles={} committed=2^{:.2}",
         stats.cycles,
-        stats.counts,
         (stats.committed as f64).log2()
     );
     (program, proof)
