@@ -102,8 +102,6 @@ NCOL = NCOL_PLACEHOLDER
 TAUMAX = TAUMAX_PLACEHOLDER
 # Phase C: the public input (baked; the seed already binds it), the real BLAKE3
 # count + pin-point location, and the three public pin constants.
-NB3 = NB3_PLACEHOLDER
-NLOGB3 = NLOGB3_PLACEHOLDER
 PINZOFF = PINZOFF_PLACEHOLDER
 PINV = PINV_PLACEHOLDER
 # Phase D (flock reduction): the r1cs statement label/digest words, zerocheck +
@@ -448,8 +446,8 @@ def verify_sub(pi_0, pi_1, delta_pows, dout):
     # equality at the end is scaffolding until they do.
     ann_exp = HeapBuf(7)
     hint_witness(ann_exp[0:7], "annexp")
-    ann_bits = HeapBuf(192)
-    hint_witness(ann_bits[0:192], "annbits")
+    ann_bits = HeapBuf(198)
+    hint_witness(ann_bits[0:198], "annbits")
     ann_inv = HeapBuf(6)
     hint_witness(ann_inv[0:6], "anninv")
     # Baked tables over exponents 0..32: T[g^j] = j and W[g^j] = 2^j (words).
@@ -471,14 +469,14 @@ def verify_sub(pi_0, pi_1, delta_pows, dout):
     # p[g^tau] pins count < 2^tau (or count == 2^tau via W), and a
     # hinted-inverse nonzero check pins minimality, waived at the table's
     # floor (BLAKE3 sizes to flock's instance count, ceil_log2(max(n, 8))).
-    psums = HeapBuf(6 * 34)
+    psums = HeapBuf(6 * 35)
     for t in unroll(0, 6):
         count = sizes[GEN ** (t + 1)]
-        pt = psums * GEN ** (34 * t)
+        pt = psums * GEN ** (35 * t)
         pt[GEN ** 0] = 0
         acc = 0
-        for j in unroll(0, 32):
-            b = ann_bits[GEN ** (32 * t + j)]
+        for j in unroll(0, 33):
+            b = ann_bits[GEN ** (33 * t + j)]
             assert b * b == b
             acc = acc + b * (2 ** j)
             pt[GEN ** (j + 1)] = acc
@@ -915,21 +913,23 @@ def verify_sub(pi_0, pi_1, delta_pows, dout):
     # prefix = MLE of [1;NB3, 0;...] at the pin point (the first BLAKE3
     # value-column bus claim's ζ_lo: NLOGB3 coords starting at zeta[PINZOFF]):
     # one eq-term per set bit of NB3, over the aligned block's high bits.
-    prefix = 0
-    base = 0
-    for tb in unroll(0, NLOGB3 + 1):
-        t = NLOGB3 - tb
-        if (NB3 // (2 ** t)) % 2 == 1:
-            a = base // (2 ** t)
-            e = GEN ** 0
-            for iv in unroll(0, NLOGB3 - t):
-                zk = zeta[GEN ** (PINZOFF + t + iv)]
-                if (a // (2 ** iv)) % 2 == 1:
-                    e = e * zk
-                else:
-                    e = e * (1 + zk)
-            prefix = prefix + e
-            base = base + 2 ** t
+    # Telescoping over the certified count bits, low to high: adding coord
+    # z_k for bit b_k maps P -> (1+z)(b + (1+b)P) + z*b*P (b = 1 fills the
+    # z_k = 0 half with the all-ones MLE 1); the top bit (count == 2^tau_5
+    # exactly) forces the all-ones MLE.
+    bits5 = ann_bits * GEN ** (33 * 5)
+    zeta_pin = zeta * GEN ** PINZOFF
+    tau5_g = ann_exp[GEN ** 6]
+    pin_chain = HeapBuf(35)
+    pin_chain[GEN ** 0] = 0
+    for xk in mul_range(1, tau5_g):
+        pv = pin_chain[xk]
+        bk = bits5[xk]
+        zk = zeta_pin[xk]
+        pn = (1 + zk) * (bk + (1 + bk) * pv) + zk * bk * pv
+        pin_chain[xk * GEN] = pn
+    b_top = bits5[tau5_g]
+    prefix = b_top + (1 + b_top) * pin_chain[tau5_g]
     for pk in unroll(0, 3):
         claim_pool[GEN ** ci] = PINV[pk] * prefix
         ci = ci + 1
@@ -961,10 +961,27 @@ def verify_sub(pi_0, pi_1, delta_pows, dout):
         zerocheck_r[GEN ** i] = rv
     for i in unroll(0, 7):
         zerocheck_r[GEN ** (6 + i)] = INNER7[i]
-    for i in unroll(0, MR1CS - 13):
-        fs = squeeze(fs, sqz_tag)
-        rv = fs[0]
-        zerocheck_r[GEN ** (13 + i)] = rv
+    # outer samples at runtime count: MR1CS = KLOG + tau_5 (certified).
+    mr1cs_g = ann_exp[GEN ** 6] * GEN ** KLOG
+    zcr_fs0 = HeapBuf(MR1CS + 2)
+    zcr_fs1 = HeapBuf(MR1CS + 2)
+    zcr_fs0[GEN ** 13] = fs[0]
+    zcr_fs1[GEN ** 13] = fs[1]
+    for xi in mul_range(GEN ** 13, mr1cs_g):
+        kfs = StackBuf(2)
+        kfs[0] = zcr_fs0[xi]
+        kfs[1] = zcr_fs1[xi]
+        ktag = StackBuf(2)
+        ktag[0] = 0
+        ktag[1] = DS_SQ
+        kfs = squeeze(kfs, ktag)
+        zerocheck_r[xi] = kfs[0]
+        xin = xi * GEN
+        zcr_fs0[xin] = kfs[0]
+        zcr_fs1[xin] = kfs[1]
+    fs = StackBuf(2)
+    fs[0] = zcr_fs0[mr1cs_g]
+    fs[1] = zcr_fs1[mr1cs_g]
     # observe round-1 messages (ab then c), sample z.
     for i in unroll(0, 128):
         fs = obs(fs, zc_round1[GEN ** i])
@@ -1001,20 +1018,43 @@ def verify_sub(pi_0, pi_1, delta_pows, dout):
         rho_v = fs[0]
         zerocheck_rhos[GEN ** i] = rho_v
         zc_running = gamma_ab * (1 + rho_v) + gamma_c * rho_v + g_inf * rho_v * (1 + rho_v)
-    for i in unroll(7, NMLV):
-        gamma_c = zc_msgs[GEN ** (2 * i)]
-        g_inf = zc_msgs[GEN ** (2 * i + 1)]
-        r_eq = zerocheck_r[GEN ** (6 + i)]
-        inv_one_plus_r = zc_invs[GEN ** i]
+    # rounds 7..NMLV at runtime count: NMLV = KLOG + tau_5 - 6 (certified).
+    nmlv_g = ann_exp[GEN ** 6] * GEN ** (KLOG - 6)
+    uv_fs0 = HeapBuf(NMLV + 2)
+    uv_fs1 = HeapBuf(NMLV + 2)
+    uv_run = HeapBuf(NMLV + 2)
+    uv_fs0[GEN ** 7] = fs[0]
+    uv_fs1[GEN ** 7] = fs[1]
+    uv_run[GEN ** 7] = zc_running
+    for xi in mul_range(GEN ** 7, nmlv_g):
+        jfs = StackBuf(2)
+        jfs[0] = uv_fs0[xi]
+        jfs[1] = uv_fs1[xi]
+        jrun = uv_run[xi]
+        gamma_c = zc_msgs[xi * xi]
+        g_inf = zc_msgs[xi * xi * GEN]
+        r_eq = zerocheck_r[GEN ** 6 * xi]
+        inv_one_plus_r = zc_invs[xi]
         inv_check = (1 + r_eq) * inv_one_plus_r
         assert inv_check == 1
-        gamma_ab = (zc_running + r_eq * gamma_c) * inv_one_plus_r
-        fs = obs(fs, gamma_c)
-        fs = obs(fs, g_inf)
-        fs = squeeze(fs, sqz_tag)
-        rho_v = fs[0]
-        zerocheck_rhos[GEN ** i] = rho_v
-        zc_running = gamma_ab * (1 + rho_v) + gamma_c * rho_v + g_inf * rho_v * (1 + rho_v)
+        gamma_ab = (jrun + r_eq * gamma_c) * inv_one_plus_r
+        jfs = obs(jfs, gamma_c)
+        jfs = obs(jfs, g_inf)
+        jtag = StackBuf(2)
+        jtag[0] = 0
+        jtag[1] = DS_SQ
+        jfs = squeeze(jfs, jtag)
+        rho_v = jfs[0]
+        zerocheck_rhos[xi] = rho_v
+        jrun = gamma_ab * (1 + rho_v) + gamma_c * rho_v + g_inf * rho_v * (1 + rho_v)
+        xin = xi * GEN
+        uv_fs0[xin] = jfs[0]
+        uv_fs1[xin] = jfs[1]
+        uv_run[xin] = jrun
+    fs = StackBuf(2)
+    fs[0] = uv_fs0[nmlv_g]
+    fs[1] = uv_fs1[nmlv_g]
+    zc_running = uv_run[nmlv_g]
     # final: zc_running == a_eval * b_eval; observe both.
     a_eval = zc_finals[GEN ** 0]
     b_eval = zc_finals[GEN ** 1]
@@ -1148,8 +1188,10 @@ def verify_sub(pi_0, pi_1, delta_pows, dout):
         if rs == 0:
             for t in unroll(0, LCR - 1):
                 z_vals[GEN ** t] = lincheck_rs[GEN ** (LCR - 2 - t)]
-            for t in unroll(0, NMLV - LCR):
-                z_vals[GEN ** (LCR - 1 + t)] = zerocheck_rhos[GEN ** (LCR + t)]
+            zv_lo = z_vals * GEN ** (LCR - 1)
+            zr_hi = zerocheck_rhos * GEN ** LCR
+            for xt in mul_range(1, ann_exp[GEN ** 6]):
+                zv_lo[xt] = zr_hi[xt]
         else:
             for t in unroll(0, QPKDV):
                 z_vals[GEN ** (QPKDV + t)] = zerocheck_r[GEN ** (7 + t)]

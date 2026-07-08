@@ -702,8 +702,6 @@ fn gen_verify(
     }
     let (pin_side, pin_kappa) = pin_side_kappa.expect("BLAKE3 value-column claim exists");
     let n_b3 = proof.stream[6].lo as usize; // announced BLAKE3 row count
-    ps("NB3", n_b3.to_string());
-    ps("NLOGB3", pin_kappa.to_string());
     ps("PINZOFF", (pin_side * mumax).to_string());
     let pinv: Vec<u128> = leanvm_b::blake3_flock::pin_constants().iter().map(|&v| u(v)).collect();
     ps("PINV", us(&pinv));
@@ -1046,10 +1044,10 @@ fn gen_verify(
             v
         }),
         ("annbits".to_string(), {
-            let mut v = Vec::with_capacity(192);
+            let mut v = Vec::with_capacity(198);
             for t in 0..6 {
                 let c = proof.stream[1 + t].lo;
-                for j in 0..32 {
+                for j in 0..33 {
                     v.push(F128::new((c >> j) & 1, 0));
                 }
             }
