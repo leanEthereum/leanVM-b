@@ -466,6 +466,14 @@ fn initial_lane_words() -> [Word; 16] {
 
 /// Build the per-block base matrices `(A_0, B_0)`. `C_0 = I_k` (circuit-shape
 /// R1CS — every z slot is the output of its row).
+/// The fixed per-block R1CS matrices `(A0, B0)`, built once per process and
+/// cached: verifiers (native reduced-claim checks, aggregation provers) treat
+/// them as setup constants, not per-proof work.
+pub fn matrices() -> &'static (SparseBinaryMatrix, SparseBinaryMatrix) {
+    static MATRICES: std::sync::OnceLock<(SparseBinaryMatrix, SparseBinaryMatrix)> = std::sync::OnceLock::new();
+    MATRICES.get_or_init(build_matrices)
+}
+
 pub fn build_matrices() -> (SparseBinaryMatrix, SparseBinaryMatrix) {
     let mut a_rows: Vec<Vec<usize>> = vec![Vec::new(); K];
     let mut b_rows: Vec<Vec<usize>> = vec![Vec::new(); K];

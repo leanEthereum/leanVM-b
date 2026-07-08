@@ -254,7 +254,7 @@ fn gen_agg(
 
     // ---- matrix batching sumcheck (two-phase sparse, per the probe) ----
     let gmt: Vec<F128> = (0..nsub).map(|_| h.sample()).collect();
-    let (ma, mb) = flock_prover::r1cs_hashes::blake3::build_matrices();
+    let (ma, mb) = flock_prover::r1cs_hashes::blake3::matrices();
     // per-claim dense weight tables: rows = quirky eq, cols = eq(top rounds) x z_partial.
     let mut us: Vec<Vec<F128>> = subs
         .iter()
@@ -422,7 +422,7 @@ fn gen_agg(
 fn check_reduced(program: &Program, proof0: &leanvm_b::cpu::Proof, pi0: [F128; 2], red: &Reduced) {
     let stacked = stacked_bytecode(program, proof0, pi0);
     assert_eq!(mle_eval(&stacked, &red.r_bc), red.v_bc, "reduced bytecode claim");
-    let (ma, mb) = flock_prover::r1cs_hashes::blake3::build_matrices();
+    let (ma, mb) = flock_prover::r1cs_hashes::blake3::matrices();
     let klog = flock_prover::r1cs_hashes::blake3::K_LOG;
     let eq_r = flare::zerocheck::univariate_skip::build_eq(&red.r_m[..klog]);
     let eq_c = flare::zerocheck::univariate_skip::build_eq(&red.r_m[klog..]);
@@ -1099,6 +1099,13 @@ fn run_recursion(nsub: usize, inner_iters: usize) {
     for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3"].iter().zip(&stats.counts) {
         println!("    {name:<6} instructions     : {c:>10} = {:>7}", pow(c));
     }
+    let real_instrs: usize = guest.fn_ranges.iter().map(|(_, _, len)| *len as usize).sum();
+    println!(
+        "  guest bytecode size         : {:>10} = {:>7}   instructions (2^{} padded)",
+        real_instrs,
+        pow(real_instrs),
+        guest.prog.len().trailing_zeros()
+    );
     println!("  committed witness size      : 2^{:.3}", (stats.committed as f64).log2());
     println!(
         "  data memory                 : 2^{} padded (2^{:.2} used)",

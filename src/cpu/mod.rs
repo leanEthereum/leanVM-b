@@ -169,7 +169,7 @@ pub struct Program {
     /// Function pc-ranges `(name, entry, len)` from the compiler, for the
     /// `DBG_PROF=1` per-function cycle profile ([`Program::execute`]). Purely
     /// diagnostic; empty for hand-assembled programs.
-    pub(crate) fn_ranges: Vec<(String, u32, u32)>,
+    pub fn_ranges: Vec<(String, u32, u32)>,
 }
 
 impl Program {
