@@ -654,6 +654,8 @@ fn gen_verify(
     ps("SMU", ints(&smu));
     ps("ZOFF", ints(&[0, mumax, 2 * mumax]));
     ps("MUMAX", mumax.to_string());
+    ps("TRICAP", (mumax * (mumax + 1) / 2 + mumax + 2).to_string());
+    ps("PTSCAP", ((mumax + 1) * mumax).to_string());
     ps("SBLK", ints(&sblk));
     ps("BKAPPA", ints(&bkappa));
     ps("BSEL", ints(&bsel));
@@ -1037,6 +1039,7 @@ fn gen_verify(
         ("rta".to_string(), roota),
         ("rtb".to_string(), rootb),
         ("fnn".to_string(), fnv),
+        ("annmus".to_string(), smu.iter().map(|&m| g_pow(m)).collect()),
         ("annexp".to_string(), {
             let mut v = vec![g_pow(log_mem)];
             v.extend(l.taus.iter().map(|&t| g_pow(t)));

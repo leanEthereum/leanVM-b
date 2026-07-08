@@ -70,6 +70,10 @@ ILD2 = ILD2_PLACEHOLDER
 SMU = SMU_PLACEHOLDER
 ZOFF = ZOFF_PLACEHOLDER
 MUMAX = MUMAX_PLACEHOLDER
+# GKR runtime-loop chain capacities: per-tree round positions (triangle
+# rounds plus one slot per layer) and the point triangle (rows x MUMAX).
+TRICAP = TRICAP_PLACEHOLDER
+PTSCAP = PTSCAP_PLACEHOLDER
 
 # Bus blocks, flattened across the 3 sides (side s covers blocks
 # [SBLK[s], SBLK[s+1])): per block its κ, its selector (offset >> κ), the number
@@ -530,56 +534,135 @@ def verify_sub(pi_0, pi_1, delta_pows, dout):
     fs = squeeze(fs, sqz_tag)
     gamma = fs[0]
 
-    # ---- 3× GKR grand product (push / pull / count) ----
+    # ---- 3× GKR grand product (push / pull / count), RUNTIME depth ----
+    # The layer count mu_s is a hinted g-power (pinned to the baked SMU while
+    # downstream phases still bake shapes; certified from the announced sizes
+    # in P4). Both loop levels are runtime mul_range; the sponge, stream
+    # cursor, claim, and eq accumulator thread through write-once heap
+    # chains: layer state indexed by the layer cursor, round state by a
+    # per-tree position pointer that advances once per round.
     gkr_roots = HeapBuf(3)
     gkr_claims = HeapBuf(3)
+    ann_mus = HeapBuf(3)
+    hint_witness(ann_mus[0:3], "annmus")
+    lc_fs0 = HeapBuf(3 * (MUMAX + 2))
+    lc_fs1 = HeapBuf(3 * (MUMAX + 2))
+    lc_cur = HeapBuf(3 * (MUMAX + 2))
+    lc_claim = HeapBuf(3 * (MUMAX + 2))
+    lc_row = HeapBuf(3 * (MUMAX + 2))
+    lc_rnd = HeapBuf(3 * (MUMAX + 2))
+    rc_fs0 = HeapBuf(3 * TRICAP)
+    rc_fs1 = HeapBuf(3 * TRICAP)
+    rc_cur = HeapBuf(3 * TRICAP)
+    rc_claim = HeapBuf(3 * TRICAP)
+    rc_eq = HeapBuf(3 * TRICAP)
+    gkr_pts = HeapBuf(3 * PTSCAP)
     for s in unroll(0, 3):
+        mu_g = ann_mus[GEN ** s]
+        assert log(mu_g) < 33
+        assert mu_g == GEN ** SMU[s]
         rootv = cursor[GEN ** 0]
         fs = obs(fs, rootv)
         cursor = cursor * GEN
-        claim = rootv
-        prev_point = HeapBuf(MUMAX)
-        for li in unroll(0, SMU[s]):
-            eq_acc = GEN ** 0
-            next_point = HeapBuf(MUMAX)
-            for j in unroll(0, li):
-                m0 = cursor[GEN ** 0]
-                fs = obs(fs, m0)
-                cursor = cursor * GEN
-                m1 = cursor[GEN ** 0]
-                fs = obs(fs, m1)
-                cursor = cursor * GEN
-                m2 = cursor[GEN ** 0]
-                fs = obs(fs, m2)
-                cursor = cursor * GEN
-                rj = prev_point[GEN ** j]
-                lhs = eq_acc * ((1 + rj) * m0 + rj * m1)
-                assert lhs == claim
-                fs = squeeze(fs, sqz_tag)
-                rk = fs[0]
-                next_point[GEN ** (j + 1)] = rk
-                eq_acc = eq_acc * (1 + rj + rk)
+        lfs0 = lc_fs0 * GEN ** (s * (MUMAX + 2))
+        lfs1 = lc_fs1 * GEN ** (s * (MUMAX + 2))
+        lcur = lc_cur * GEN ** (s * (MUMAX + 2))
+        lclaim = lc_claim * GEN ** (s * (MUMAX + 2))
+        lrow = lc_row * GEN ** (s * (MUMAX + 2))
+        lrnd = lc_rnd * GEN ** (s * (MUMAX + 2))
+        lfs0[GEN ** 0] = fs[0]
+        lfs1[GEN ** 0] = fs[1]
+        lcur[GEN ** 0] = cursor
+        lclaim[GEN ** 0] = rootv
+        lrow[GEN ** 0] = gkr_pts * GEN ** (s * PTSCAP)
+        lrnd[GEN ** 0] = GEN ** (s * TRICAP)
+        for xl in mul_range(1, mu_g):
+            hfs = StackBuf(2)
+            hfs[0] = lfs0[xl]
+            hfs[1] = lfs1[xl]
+            curp = lcur[xl]
+            claim_l = lclaim[xl]
+            rowp = lrow[xl]
+            rndp = lrnd[xl]
+            nextrow = rowp * GEN ** MUMAX
+            rc_fs0[rndp] = hfs[0]
+            rc_fs1[rndp] = hfs[1]
+            rc_cur[rndp] = curp
+            rc_claim[rndp] = claim_l
+            rc_eq[rndp] = 1
+            for xj in mul_range(1, xl):
+                ip = rndp * xj
+                jfs = StackBuf(2)
+                jfs[0] = rc_fs0[ip]
+                jfs[1] = rc_fs1[ip]
+                jcur = rc_cur[ip]
+                jclaim = rc_claim[ip]
+                jeq = rc_eq[ip]
+                m0 = jcur[GEN ** 0]
+                jfs = obs(jfs, m0)
+                m1 = jcur[GEN ** 1]
+                jfs = obs(jfs, m1)
+                m2 = jcur[GEN ** 2]
+                jfs = obs(jfs, m2)
+                jcur = jcur * GEN ** 3
+                rj = rowp[xj]
+                lhs = jeq * ((1 + rj) * m0 + rj * m1)
+                assert lhs == jclaim
+                jtag = StackBuf(2)
+                jtag[0] = 0
+                jtag[1] = DS_SQ
+                jfs = squeeze(jfs, jtag)
+                rk = jfs[0]
+                nextrow[xj * GEN] = rk
+                jeq = jeq * (1 + rj + rk)
                 # Lagrange at nodes {0, 1, g} with baked inverse denominators.
                 l0 = (rk + 1) * (rk + GG) * ILD0
                 l1 = rk * (rk + GG) * ILD1
                 l2 = rk * (rk + 1) * ILD2
-                claim = eq_acc * (m0 * l0 + m1 * l1 + m2 * l2)
-            e0 = cursor[GEN ** 0]
-            fs = obs(fs, e0)
-            cursor = cursor * GEN
-            e1 = cursor[GEN ** 0]
-            fs = obs(fs, e1)
-            cursor = cursor * GEN
-            assert claim == eq_acc * e0 * e1
-            fs = squeeze(fs, sqz_tag)
-            c = fs[0]
-            claim = e0 + c * (e0 + e1)
-            next_point[GEN ** 0] = c
-            prev_point = next_point
-        for t in unroll(0, SMU[s]):
-            zeta[GEN ** (ZOFF[s] + t)] = prev_point[GEN ** t]
+                jclaim = jeq * (m0 * l0 + m1 * l1 + m2 * l2)
+                ipn = ip * GEN
+                rc_fs0[ipn] = jfs[0]
+                rc_fs1[ipn] = jfs[1]
+                rc_cur[ipn] = jcur
+                rc_claim[ipn] = jclaim
+                rc_eq[ipn] = jeq
+            fpos = rndp * xl
+            tfs = StackBuf(2)
+            tfs[0] = rc_fs0[fpos]
+            tfs[1] = rc_fs1[fpos]
+            tcur = rc_cur[fpos]
+            tclaim = rc_claim[fpos]
+            teq = rc_eq[fpos]
+            e0 = tcur[GEN ** 0]
+            tfs = obs(tfs, e0)
+            e1 = tcur[GEN ** 1]
+            tfs = obs(tfs, e1)
+            tcur = tcur * GEN ** 2
+            assert tclaim == teq * e0 * e1
+            ttag = StackBuf(2)
+            ttag[0] = 0
+            ttag[1] = DS_SQ
+            tfs = squeeze(tfs, ttag)
+            c = tfs[0]
+            claim_n = e0 + c * (e0 + e1)
+            nextrow[GEN ** 0] = c
+            xln = xl * GEN
+            lfs0[xln] = tfs[0]
+            lfs1[xln] = tfs[1]
+            lcur[xln] = tcur
+            lclaim[xln] = claim_n
+            lrow[xln] = nextrow
+            lrnd[xln] = rndp * xl * GEN
+        fs = StackBuf(2)
+        fs[0] = lfs0[mu_g]
+        fs[1] = lfs1[mu_g]
+        cursor = lcur[mu_g]
+        frow = lrow[mu_g]
+        zeta_s = zeta * GEN ** ZOFF[s]
+        for xt in mul_range(1, mu_g):
+            zeta_s[xt] = frow[xt]
         gkr_roots[GEN ** s] = rootv
-        gkr_claims[GEN ** s] = claim
+        gkr_claims[GEN ** s] = lclaim[mu_g]
 
     # ---- count root nonzero (hinted inverse) ----
     count_product = gkr_roots[GEN ** 2] * count_root_inv[GEN ** 0]
