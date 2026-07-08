@@ -855,16 +855,20 @@ pub fn verify_opening_batch_mixed<Ch: Challenger>(
     //    matches the prover's `prove_batched_padded_with_precomputed` which
     //    samples γ_rs at the same transcript point and bakes it into the fold.
     let t = std::time::Instant::now();
+    for i in 0..n_rs {
+        ring_switch::verify_bind(claims[i], z_skips[i], x_outers[i], &proof.ring_switches[i], challenger)
+            .map_err(VerifyError::RingSwitch)?;
+    }
+    let r_dprime = challenger.sample_f128_vec(LOG_PACKING);
+    let eq_r_dprime = crate::zerocheck::univariate_skip::build_eq(&r_dprime);
+    let lin_coeffs = ring_switch::linearized_eq_coeffs(&eq_r_dprime);
     let mut rs_outputs = Vec::with_capacity(n_rs);
     for i in 0..n_rs {
-        let out = ring_switch::verify_succinct(
-            claims[i],
-            z_skips[i],
-            x_outers[i],
-            &proof.ring_switches[i],
-            challenger,
-        )
-        .map_err(VerifyError::RingSwitch)?;
+        let out = ring_switch::RingSwitchVerifierOutput {
+            sumcheck_claim: ring_switch::transposed_claim_linearized(&proof.ring_switches[i].s_hat_v, &lin_coeffs),
+            r_dprime: r_dprime.clone(),
+            eq_r_dprime: eq_r_dprime.clone(),
+        };
         rs_outputs.push(out);
     }
     let gammas_rs: Vec<F128> = (0..n_rs).map(|_| challenger.sample_f128()).collect();
@@ -981,16 +985,20 @@ pub fn verify_opening_batch_ligerito_mixed<Ch: Challenger>(
     // 1. Ring-switch SUCCINCT verify per claim — gets sumcheck_claim and a
     //    length-128 `eq_r_dprime` instead of the dense `rs_eq_ind`. Saves
     //    ~16 MB allocation at m=29.
+    for i in 0..n_rs {
+        ring_switch::verify_bind(claims[i], z_skips[i], x_outers[i], &proof.ring_switches[i], challenger)
+            .map_err(VerifyError::RingSwitch)?;
+    }
+    let r_dprime = challenger.sample_f128_vec(LOG_PACKING);
+    let eq_r_dprime = crate::zerocheck::univariate_skip::build_eq(&r_dprime);
+    let lin_coeffs = ring_switch::linearized_eq_coeffs(&eq_r_dprime);
     let mut rs_outputs = Vec::with_capacity(n_rs);
     for i in 0..n_rs {
-        let out = ring_switch::verify_succinct(
-            claims[i],
-            z_skips[i],
-            x_outers[i],
-            &proof.ring_switches[i],
-            challenger,
-        )
-        .map_err(VerifyError::RingSwitch)?;
+        let out = ring_switch::RingSwitchVerifierOutput {
+            sumcheck_claim: ring_switch::transposed_claim_linearized(&proof.ring_switches[i].s_hat_v, &lin_coeffs),
+            r_dprime: r_dprime.clone(),
+            eq_r_dprime: eq_r_dprime.clone(),
+        };
         rs_outputs.push(out);
     }
     let gammas_rs: Vec<F128> = (0..n_rs).map(|_| challenger.sample_f128()).collect();
@@ -1805,8 +1813,8 @@ pub fn open_batch_mixed_ligerito_stacked<Ch: Challenger>(
 /// recursion harness needs, named and typed.
 #[derive(Clone, Debug)]
 pub struct StackedOpeningSummary {
-    /// Per ring-switch claim, in order: the sampled `r''`.
-    pub rs_r_dprime: Vec<Vec<F128>>,
+    /// The `r''` shared by every ring-switch claim of the batch.
+    pub r_dprime: Vec<F128>,
     pub lig: ligerito::LigVerifierSummary,
 }
 
@@ -1837,13 +1845,22 @@ pub fn verify_opening_batch_mixed_ligerito_stacked<Ch: Challenger>(
     }
     challenger.observe_label(b"flock-pcs-open-batch-v0");
 
-    let mut rs_outputs = Vec::with_capacity(n_rs);
+    // Bind + check every claim, then sample ONE shared r'' (sound: every
+    // slice is absorbed before the challenge), then form the batched claims.
     for i in 0..n_rs {
-        rs_outputs.push(
-            ring_switch::verify_succinct(claims[i], z_skips[i], x_outers[i], &proof.ring_switches[i], challenger)
-                .map_err(VerifyError::RingSwitch)?,
-        );
+        ring_switch::verify_bind(claims[i], z_skips[i], x_outers[i], &proof.ring_switches[i], challenger)
+            .map_err(VerifyError::RingSwitch)?;
     }
+    let r_dprime = challenger.sample_f128_vec(LOG_PACKING);
+    let eq_r_dprime = crate::zerocheck::univariate_skip::build_eq(&r_dprime);
+    let lin_coeffs = ring_switch::linearized_eq_coeffs(&eq_r_dprime);
+    let rs_outputs: Vec<ring_switch::RingSwitchVerifierOutput> = (0..n_rs)
+        .map(|i| ring_switch::RingSwitchVerifierOutput {
+            sumcheck_claim: ring_switch::transposed_claim_linearized(&proof.ring_switches[i].s_hat_v, &lin_coeffs),
+            r_dprime: r_dprime.clone(),
+            eq_r_dprime: eq_r_dprime.clone(),
+        })
+        .collect();
     let gammas_rs: Vec<F128> = (0..n_rs).map(|_| challenger.sample_f128()).collect();
     let mut target_combined = F128::ZERO;
     for (out, g) in rs_outputs.iter().zip(gammas_rs.iter()) {
@@ -1902,7 +1919,7 @@ pub fn verify_opening_batch_mixed_ligerito_stacked<Ch: Challenger>(
     )
     .ok_or(VerifyError::BaseFold(crate::pcs::basefold::VerifyError::InvalidProofShape))?;
     Ok(StackedOpeningSummary {
-        rs_r_dprime: rs_outputs.iter().map(|o| o.r_dprime.clone()).collect(),
+        r_dprime,
         lig,
     })
 }

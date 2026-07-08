@@ -2492,7 +2492,12 @@ pub fn prove_batched_padded_with_precomputed<Ch: Challenger>(
         sumcheck_claim: F128,
         eq_r_dprime: Vec<F128>,
     }
-    let mut work: Vec<ClaimWork> = Vec::with_capacity(n);
+    // Bind every claim's slice first, then sample ONE r'' shared by all of
+    // them: each per-slice batching is sound conditioned on r'' being drawn
+    // after its slice is absorbed, which holds for all slices at once, and a
+    // recursive verifier then builds a single eq tensor and one linearized
+    // coefficient table for the whole batch.
+    let mut slices: Vec<Vec<F128>> = Vec::with_capacity(n);
     for i in 0..n {
         challenger.observe_label(b"flock-ring-switch-v0");
         let s_hat_v: Vec<F128> = match kinds[i] {
@@ -2500,16 +2505,18 @@ pub fn prove_batched_padded_with_precomputed<Ch: Challenger>(
             Kind::Sparse(s) => sparse_s_hat_v[s].clone(),
         };
         challenger.observe_f128_slice(&s_hat_v);
-        let r_dprime = challenger.sample_f128_vec(LOG_PACKING);
-        let eq_r_dprime = build_eq(&r_dprime);
-
+        slices.push(s_hat_v);
+    }
+    let r_dprime = challenger.sample_f128_vec(LOG_PACKING);
+    let eq_r_dprime = build_eq(&r_dprime);
+    let mut work: Vec<ClaimWork> = Vec::with_capacity(n);
+    for s_hat_v in slices {
         let s_hat_u = tensor_algebra_transpose(&s_hat_v);
         let sumcheck_claim = inner_product(&s_hat_u, &eq_r_dprime);
-
         work.push(ClaimWork {
             s_hat_v,
             sumcheck_claim,
-            eq_r_dprime,
+            eq_r_dprime: eq_r_dprime.clone(),
         });
     }
 
@@ -2632,6 +2639,27 @@ pub struct RingSwitchVerifierOutput {
     /// `eq` tensor of length `2^LOG_PACKING = 128` derived from the verifier's
     /// sampled `r''`. Used by [`eval_rs_eq`] at the BaseFold final point.
     pub eq_r_dprime: Vec<F128>,
+}
+
+/// The bind + claim-check phase of [`verify_succinct`], for batch callers
+/// that share one `r''` across claims: absorbs the label and slice, checks
+/// the claim, samples nothing.
+pub fn verify_bind<Ch: Challenger>(
+    claim: F128,
+    z_skip: F128,
+    x_outer: &[F128],
+    proof: &RingSwitchProof,
+    challenger: &mut Ch,
+) -> Result<(), VerifyError> {
+    assert!(!x_outer.is_empty());
+    assert_eq!(proof.s_hat_v.len(), 1 << LOG_PACKING);
+    challenger.observe_label(b"flock-ring-switch-v0");
+    challenger.observe_f128_slice(&proof.s_hat_v);
+    let weights = build_claim_weights(z_skip, x_outer[0]);
+    if claim_check(&weights, &proof.s_hat_v) != claim {
+        return Err(VerifyError::ClaimMismatch);
+    }
+    Ok(())
 }
 
 /// Polylog-cost ring-switching verifier.

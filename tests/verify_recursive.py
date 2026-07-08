@@ -930,9 +930,9 @@ def main():
         # c_eval, z_skip = zerocheck_z, x_outer[0] = zerocheck_r[6].
         transposed_claims = HeapBuf(2)
         rs_eq_vals = HeapBuf(2)
-        c_table = HeapBuf(2 * 128)
+        c_table = HeapBuf(128)
         z_vals = HeapBuf(2 * QPKDV)
-        r_dprime = HeapBuf(14)
+        r_dprime = HeapBuf(7)
         for rs in unroll(0, 2):
             fs = absorb(fs, 20, DS_LEN)
             fs = absorb(fs, RSLBLA, DS_BYTE)
@@ -955,22 +955,23 @@ def main():
                 lagrange_w = claim_nums[i] * ISDOM[i]
                 claim_check = claim_check + lagrange_w * ((1 + claim_x_outer_0) * s_hat_v_s[GEN ** (128 * rs + i)] + claim_x_outer_0 * s_hat_v_s[GEN ** (128 * rs + 64 + i)])
             assert claim_check == claim_val
-            # r'' (7 samples).
-            for i in unroll(0, 7):
-                fs = squeeze(fs, sqz_tag)
-                rv = fs[0]
-                r_dprime[GEN ** (7 * rs + i)] = rv
-            # w = eq tensor of the seven r'' coords (doubling tree, final 128 at 126).
-            w_eq = HeapBuf(254)
-            eqtree(r_dprime * GEN ** (7 * rs), w_eq, 7)
-            # c_k = sum_i w_i * delta_pows[k][i], one runtime loop over the levels k.
-            c_row = c_table * GEN ** (128 * rs)
-            for xk in mul_range(1, GEN ** 128):
-                delta_row = delta_pows * xk ** 128
-                c_acc = 0
-                for i in unroll(0, 128):
-                    c_acc = c_acc + w_eq[GEN ** (126 + i)] * delta_row[GEN ** i]
-                c_row[xk] = c_acc
+        # ONE r'' shared by both claims (each slice was absorbed before the
+        # sample), so one eq tensor and one linearized coefficient table
+        # serve the whole batch.
+        for i in unroll(0, 7):
+            fs = squeeze(fs, sqz_tag)
+            rv = fs[0]
+            r_dprime[GEN ** i] = rv
+        w_eq = HeapBuf(254)
+        eqtree(r_dprime, w_eq, 7)
+        # c_k = sum_i w_i * delta_pows[k][i], one runtime loop over the levels k.
+        for xk in mul_range(1, GEN ** 128):
+            delta_row = delta_pows * xk ** 128
+            c_acc = 0
+            for i in unroll(0, 128):
+                c_acc = c_acc + w_eq[GEN ** (126 + i)] * delta_row[GEN ** i]
+            c_table[xk] = c_acc
+        for rs in unroll(0, 2):
             # transposed claim T = sum_j x^j * L_w(shv_j): one runtime pass over
             # the observed values; per value the Frobenius powers evolve as a
             # scalar against the c table, and x^j chains through a heap cell.
@@ -985,7 +986,7 @@ def main():
                 y_pow = shvrow[xj]
                 lin_eval = 0
                 for k in unroll(0, 128):
-                    lin_eval = lin_eval + c_row[GEN ** k] * y_pow
+                    lin_eval = lin_eval + c_table[GEN ** k] * y_pow
                     y_pow = y_pow * y_pow
                 t_chain[xj * GEN] = t_chain[xj] + x_pow_chain[xj] * lin_eval
                 x_pow_chain[xj * GEN] = x_pow_chain[xj] * xh[0]
@@ -1296,7 +1297,6 @@ def main():
                 z_pows[GEN ** j] = z_vals[GEN ** (QPKDV * rs + j)]
             e_acc = HeapBuf(129)
             e_acc[GEN ** 0] = 0
-            c_row = c_table * GEN ** (128 * rs)
             for xk in mul_range(1, GEN ** 128):
                 z_row = z_pows * xk ** QPKDV
                 z_row_next = z_row * GEN ** QPKDV
@@ -1305,7 +1305,7 @@ def main():
                     zv = z_row[GEN ** j]
                     prod = prod * (zv + one_plus_q[GEN ** j])
                     z_row_next[GEN ** j] = zv * zv
-                e_acc[xk * GEN] = e_acc[xk] + c_row[xk] * prod
+                e_acc[xk * GEN] = e_acc[xk] + c_table[xk] * prod
             rs_eq_vals[GEN ** rs] = e_acc[GEN ** 128]
         # ring-switch weight base over ris[QPKDV..LENRIS).
         rs_weight = gamma_ab * rs_eq_vals[GEN ** 0] + gamma_c * rs_eq_vals[GEN ** 1]
