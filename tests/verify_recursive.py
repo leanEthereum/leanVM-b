@@ -778,38 +778,95 @@ def verify_sub(pi_0, pi_1, delta_pows, dout):
     # For each table: eta, the zerocheck point r (tau samples), tau eq-trick
     # rounds (claim starts at 0), then the involved-column evaluations (pooled)
     # and the final AIR check claim == eq_acc * C_t(eta, evals).
+    # RUNTIME round counts: tau_t is the certified announced log height
+    # (ann_exp[1 + t]) — the first consumer of the count gadget, no
+    # scaffolding needed. Round state threads through heap chains exactly
+    # like the GKR trees.
     rho = HeapBuf(6 * TAUMAX)
+    zp_fs0 = HeapBuf(6 * (TAUMAX + 2))
+    zp_fs1 = HeapBuf(6 * (TAUMAX + 2))
+    zr_fs0 = HeapBuf(6 * (TAUMAX + 2))
+    zr_fs1 = HeapBuf(6 * (TAUMAX + 2))
+    zr_cur = HeapBuf(6 * (TAUMAX + 2))
+    zr_claim = HeapBuf(6 * (TAUMAX + 2))
+    zr_eq = HeapBuf(6 * (TAUMAX + 2))
     for t in unroll(0, 6):
+        tau_g = ann_exp[GEN ** (t + 1)]
         fs = squeeze(fs, sqz_tag)
         eta = fs[0]
+        # the zerocheck point r: tau squeezes, sponge chained by round.
         rr = HeapBuf(TAUMAX)
-        for k in unroll(0, TAU[t]):
-            fs = squeeze(fs, sqz_tag)
-            rv = fs[0]
-            rr[GEN ** k] = rv
-        claim = 0
-        eq_acc = GEN ** 0
-        for k in unroll(0, TAU[t]):
-            p0 = cursor[GEN ** 0]
-            fs = obs(fs, p0)
-            cursor = cursor * GEN
-            p1 = cursor[GEN ** 0]
-            fs = obs(fs, p1)
-            cursor = cursor * GEN
-            p2 = cursor[GEN ** 0]
-            fs = obs(fs, p2)
-            cursor = cursor * GEN
-            rj = rr[GEN ** k]
-            lhs = eq_acc * ((1 + rj) * p0 + rj * p1)
-            assert lhs == claim
-            fs = squeeze(fs, sqz_tag)
-            rk = fs[0]
-            rho[GEN ** (t * TAUMAX + k)] = rk
-            eq_acc = eq_acc * (1 + rj + rk)
+        pfs0 = zp_fs0 * GEN ** (t * (TAUMAX + 2))
+        pfs1 = zp_fs1 * GEN ** (t * (TAUMAX + 2))
+        pfs0[GEN ** 0] = fs[0]
+        pfs1[GEN ** 0] = fs[1]
+        for xk in mul_range(1, tau_g):
+            kfs = StackBuf(2)
+            kfs[0] = pfs0[xk]
+            kfs[1] = pfs1[xk]
+            ktag = StackBuf(2)
+            ktag[0] = 0
+            ktag[1] = DS_SQ
+            kfs = squeeze(kfs, ktag)
+            rr[xk] = kfs[0]
+            xkn = xk * GEN
+            pfs0[xkn] = kfs[0]
+            pfs1[xkn] = kfs[1]
+        fs = StackBuf(2)
+        fs[0] = pfs0[tau_g]
+        fs[1] = pfs1[tau_g]
+        # tau eq-trick rounds (claim starts at 0, eq at 1).
+        rfs0 = zr_fs0 * GEN ** (t * (TAUMAX + 2))
+        rfs1 = zr_fs1 * GEN ** (t * (TAUMAX + 2))
+        rcur = zr_cur * GEN ** (t * (TAUMAX + 2))
+        rclaim = zr_claim * GEN ** (t * (TAUMAX + 2))
+        req = zr_eq * GEN ** (t * (TAUMAX + 2))
+        rho_t = rho * GEN ** (t * TAUMAX)
+        rfs0[GEN ** 0] = fs[0]
+        rfs1[GEN ** 0] = fs[1]
+        rcur[GEN ** 0] = cursor
+        rclaim[GEN ** 0] = 0
+        req[GEN ** 0] = 1
+        for xk in mul_range(1, tau_g):
+            jfs = StackBuf(2)
+            jfs[0] = rfs0[xk]
+            jfs[1] = rfs1[xk]
+            jcur = rcur[xk]
+            jclaim = rclaim[xk]
+            jeq = req[xk]
+            p0 = jcur[GEN ** 0]
+            jfs = obs(jfs, p0)
+            p1 = jcur[GEN ** 1]
+            jfs = obs(jfs, p1)
+            p2 = jcur[GEN ** 2]
+            jfs = obs(jfs, p2)
+            jcur = jcur * GEN ** 3
+            rj = rr[xk]
+            lhs = jeq * ((1 + rj) * p0 + rj * p1)
+            assert lhs == jclaim
+            jtag = StackBuf(2)
+            jtag[0] = 0
+            jtag[1] = DS_SQ
+            jfs = squeeze(jfs, jtag)
+            rk = jfs[0]
+            rho_t[xk] = rk
+            jeq = jeq * (1 + rj + rk)
             l0 = (rk + 1) * (rk + GG) * ILD0
             l1 = rk * (rk + GG) * ILD1
             l2 = rk * (rk + 1) * ILD2
-            claim = eq_acc * (p0 * l0 + p1 * l1 + p2 * l2)
+            jclaim = jeq * (p0 * l0 + p1 * l1 + p2 * l2)
+            xkn = xk * GEN
+            rfs0[xkn] = jfs[0]
+            rfs1[xkn] = jfs[1]
+            rcur[xkn] = jcur
+            rclaim[xkn] = jclaim
+            req[xkn] = jeq
+        fs = StackBuf(2)
+        fs[0] = rfs0[tau_g]
+        fs[1] = rfs1[tau_g]
+        cursor = rcur[tau_g]
+        claim = rclaim[tau_g]
+        eq_acc = req[tau_g]
         ee = HeapBuf(16)
         for k in unroll(0, NCOL[t]):
             e = cursor[GEN ** 0]
