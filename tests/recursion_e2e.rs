@@ -981,13 +981,7 @@ fn gen_verify(
     ps("NBCV", nbcv.to_string());
     ps("TAU", ints(&taus));
     ps("NCOL", ints(&ncol));
-    let mut evoff = vec![0usize];
-    for t in 0..5 {
-        evoff.push(evoff[t] + ncol[t]);
-    }
-    ps("EVOFF", ints(&evoff));
     ps("TAUMAX", taus.iter().max().unwrap().to_string());
-    ps("EVTOT", evtot.to_string());
     // The pin point: the first BLAKE3 value-column bus claim. Scan blocks/coords
     // exactly as the claims are ordered to find its side + kappa.
     let sch = leanvm_b::cpu::schema();
@@ -1296,8 +1290,6 @@ fn gen_verify(
     ps("DIG0", u(dig[0]).to_string());
     ps("DIG1", u(dig[1]).to_string());
     ps("DELTA", flds(&flare::pcs::ring_switch::trace_dual_basis()[..]));
-    let fb: Vec<u128> = (0..128).map(|j| 1u128 << j).collect();
-    ps("FB", us(&fb));
 
     let deferred = SubDefer {
         pi,

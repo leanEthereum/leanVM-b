@@ -56,9 +56,7 @@ NBCV = NBCV_PLACEHOLDER
 # Zerochecks: per-table log row counts, constraint-column counts, eval offsets.
 TAU = TAU_PLACEHOLDER
 NCOL = NCOL_PLACEHOLDER
-EVOFF = EVOFF_PLACEHOLDER
 TAUMAX = TAUMAX_PLACEHOLDER
-EVTOT = EVTOT_PLACEHOLDER
 # Phase C: the public input (baked; the seed already binds it), the real BLAKE3
 # count + pin-point location, and the three public pin constants.
 NB3 = NB3_PLACEHOLDER
@@ -156,11 +154,10 @@ QPKDV = QPKDV_PLACEHOLDER
 RSSEL = RSSEL_PLACEHOLDER
 YRS = YRS_PLACEHOLDER
 # Ring-switch linearized algebra: the trace-dual basis (bit_i(y) = Tr(delta_i y))
-# and the monomial basis B_j = x^j. Any eq-weighted bit-sum is the linearized
+# (any eq-weighted bit-sum is the linearized
 # polynomial L_w(y) = sum_k c_k y^(2^k), c_k = sum_i w_i delta_i^(2^k); squaring
 # is one MUL, so the tensor transpose and eval_rs_eq run in-circuit.
 DELTA = DELTA_PLACEHOLDER
-FB = FB_PLACEHOLDER
 # Phase F: log rows of the bytecode blocks (the deferred bytecode points).
 KBC = KBC_PLACEHOLDER
 # Aggregation: NSUB sub-proofs of the same program; per-sub proof data arrives
@@ -322,6 +319,18 @@ def main():
     hint_witness(bst[0:1], "bst")
     mst = HeapBuf(2)
     hint_witness(mst[0:2], "mst")
+    # The dual-basis Frobenius powers dt[128k + i] = DELTA[i]^(2^k) are claim-
+    # and sub-independent: build the table once, read-only afterwards.
+    dt = HeapBuf(128 * 128)
+    for i in unroll(0, 128):
+        dt[GEN ** i] = DELTA[i]
+    for xk in mul_range(1, GEN ** 127):
+        rowd = dt * xk ** 128
+        nrowd = rowd * GEN ** 128
+        for i in unroll(0, 128):
+            dv = rowd[GEN ** i]
+            nrowd[GEN ** i] = dv * dv
+
     # cross-sub buffers holding each sub-proof's deferred-claim data
     dzt = HeapBuf(NSUB * 2 * KBC)
     dsb = HeapBuf(NSUB * 3)
@@ -575,7 +584,6 @@ def main():
         # rounds (claim starts at 0), then the involved-column evaluations (pooled)
         # and the final AIR check claim == eq_acc * C_t(eta, evals).
         rho = HeapBuf(6 * TAUMAX)
-        evb = HeapBuf(EVTOT)
         for t in unroll(0, 6):
             eta, cv0, cv1 = sqz(cv0, cv1)
             rr = HeapBuf(TAUMAX)
@@ -609,7 +617,6 @@ def main():
                 e = cur[GEN ** 0]
                 cv0, cv1 = obs(cv0, cv1, e)
                 cur = cur * GEN
-                evb[GEN ** (EVOFF[t] + k)] = e
                 ee[GEN ** k] = e
                 clv[GEN ** ci] = e
                 ci = ci + 1
@@ -716,18 +723,15 @@ def main():
         for i in unroll(0, 64):
             ceval = ceval + lpre[GEN ** i] * lsuf[GEN ** (i + 1)] * ILAM[i] * zc1_s[GEN ** (64 + i)]
         # combined interpolation at z over ALL 128 phi8 nodes (Lambda values only;
-        # the S half is zero by the zerocheck identity).
-        cpre = HeapBuf(129)
-        cpre[GEN ** 0] = GEN ** 0
-        for i in unroll(0, 128):
-            cpre[GEN ** (i + 1)] = cpre[GEN ** i] * (zz + PHI[i])
-        csuf = HeapBuf(129)
-        csuf[GEN ** 128] = GEN ** 0
-        for i in unroll(0, 128):
-            csuf[GEN ** (127 - i)] = csuf[GEN ** (128 - i)] * (zz + PHI[127 - i])
+        # the S half is zero by the zerocheck identity). The Lambda-node numerators
+        # reuse lpre/lsuf: the full-domain product only adds the S-half factor.
+        sfull = GEN ** 0
+        for i in unroll(0, 64):
+            sfull = sfull * (zz + PHI[i])
         comb = 0
         for i in unroll(0, 64):
-            comb = comb + cpre[GEN ** (64 + i)] * csuf[GEN ** (64 + i + 1)] * ICMB[i] * (zc1_s[GEN ** i] + zc1_s[GEN ** (64 + i)])
+            comb = comb + lpre[GEN ** i] * lsuf[GEN ** (i + 1)] * ICMB[i] * (zc1_s[GEN ** i] + zc1_s[GEN ** (64 + i)])
+        comb = comb * sfull
         crun = comb + ceval
         # multilinear rounds.
         zrho = HeapBuf(NMLV)
@@ -867,41 +871,33 @@ def main():
                     pw = wq[GEN ** (2 ** t - 2 + i)]
                     wq[GEN ** (2 ** (t + 1) - 2 + i)] = pw * (1 + rdp[GEN ** (7 * rs + t)])
                     wq[GEN ** (2 ** (t + 1) - 2 + 2 ** t + i)] = pw * rdp[GEN ** (7 * rs + t)]
-            # c_k = sum_i w_i * delta_i^(2^k): runtime loop over k, the dual-basis
-            # powers evolve by squaring (row k of dt at offset 128k).
-            dt = HeapBuf(128 * 128)
-            for i in unroll(0, 128):
-                dt[GEN ** i] = DELTA[i]
-            ckrow = ckb * GEN ** (128 * rs)
-            for xk in mul_range(1, GEN ** 127):
-                rowc = dt * xk ** 128
-                nrowc = rowc * GEN ** 128
-                cacc = 0
-                for i in unroll(0, 128):
-                    dv = rowc[GEN ** i]
-                    cacc = cacc + wq[GEN ** (126 + i)] * dv
-                    nrowc[GEN ** i] = dv * dv
-                ckrow[xk] = cacc
-            cacc = 0
-            for i in unroll(0, 128):
-                cacc = cacc + wq[GEN ** (126 + i)] * dt[GEN ** (127 * 128 + i)]
-            ckrow[GEN ** 127] = cacc
-            # transposed sumcheck claim T = sum_k c_k * (sum_j B_j * shv_j^(2^k)),
-            # the s_hat_v powers evolving by squaring per k.
+            # One runtime loop over the Frobenius levels k computes both
+            # c_k = sum_i w_i * dt[k][i] (stored for the terminal eval_rs_eq)
+            # and the transposed claim T = sum_k c_k * S_k, where
+            # S_k = sum_j x^j * shv_j^(2^k) accumulates by Horner in x and the
+            # s_hat_v powers evolve by squaring.
             ytab = HeapBuf(129 * 128)
             for j in unroll(0, 128):
                 ytab[GEN ** j] = shv_s[GEN ** (128 * rs + j)]
+            ckrow = ckb * GEN ** (128 * rs)
             tacc = HeapBuf(129)
             tacc[GEN ** 0] = 0
             for xk in mul_range(1, GEN ** 128):
+                rowd = dt * xk ** 128
                 rowy = ytab * xk ** 128
                 nrowy = rowy * GEN ** 128
+                cacc = 0
+                for i in unroll(0, 128):
+                    cacc = cacc + wq[GEN ** (126 + i)] * rowd[GEN ** i]
+                xh = StackBuf(1)
+                xh[0] = 2
                 sk = 0
                 for j in unroll(0, 128):
-                    yv = rowy[GEN ** j]
-                    sk = sk + FB[j] * yv
-                    nrowy[GEN ** j] = yv * yv
-                tacc[xk * GEN] = tacc[xk] + ckrow[xk] * sk
+                    yv = rowy[GEN ** (127 - j)]
+                    sk = sk * xh[0] + yv
+                    nrowy[GEN ** (127 - j)] = yv * yv
+                ckrow[xk] = cacc
+                tacc[xk * GEN] = tacc[xk] + cacc * sk
             tclv[GEN ** rs] = tacc[GEN ** 128]
             # z_vals for eval_rs_eq (the x_outer tail), used at the opening terminal.
             if rs == 0:
@@ -1051,21 +1047,20 @@ def main():
             accE[GEN ** 0] = 0
             for xe in mul_range(1, GEN ** QUERIES[lvl]):
                 lrb = xe ** NUMINTER[lvl]
-                ld0 = GEN ** NBYTES[lvl]
-                ld1 = 0
+                lst = StackBuf(2)
+                lst[0] = GEN ** NBYTES[lvl]
+                lst[1] = 0
                 ldot = 0
                 for jb in unroll(0, BLOCKS[lvl]):
-                    laa = StackBuf(2)
-                    laa[0] = ld0
-                    laa[1] = ld1
                     lmm = StackBuf(2)
                     lmm[0] = lrows_s[GEN ** ROWOFF[lvl] * lrb * GEN ** (2 * jb)]
                     lmm[1] = lrows_s[GEN ** ROWOFF[lvl] * lrb * GEN ** (2 * jb + 1)]
                     loo = StackBuf(2)
-                    blake3(laa, lmm, loo)
-                    ld0 = loo[0]
-                    ld1 = loo[1]
+                    blake3(lst, lmm, loo)
+                    lst = loo
                     ldot = ldot + lmm[0] * leqt[GEN ** (2 * jb)] + lmm[1] * leqt[GEN ** (2 * jb + 1)]
+                ld0 = lst[0]
+                ld1 = lst[1]
                 accE[xe * GEN] = accE[xe] + law[GEN ** (lvl * MAXQ) * xe] * ldot
                 lsbp = qbp[GEN ** QPOFF[lvl] * xe]
                 lpb2 = xe ** (2 * DEPTH[lvl])
@@ -1177,6 +1172,9 @@ def main():
             ebase[GEN ** j] = eb * gpd[GEN ** j]
         # eval_rs_eq per claim: E = sum_k c_k * prod_j (z_j^(2^k) + 1 + ris_j)
         # (the telescoped product formula; z powers evolve by squaring per k).
+        rq = HeapBuf(QPKDV)
+        for j in unroll(0, QPKDV):
+            rq[GEN ** j] = 1 + ris[GEN ** j]
         for rs in unroll(0, 2):
             zpt = HeapBuf(129 * QPKDV)
             for j in unroll(0, QPKDV):
@@ -1190,7 +1188,7 @@ def main():
                 prod = GEN ** 0
                 for j in unroll(0, QPKDV):
                     zv = rowz[GEN ** j]
-                    prod = prod * (zv + 1 + ris[GEN ** j])
+                    prod = prod * (zv + rq[GEN ** j])
                     nrowz[GEN ** j] = zv * zv
                 eacc[xk * GEN] = eacc[xk] + ckrow[xk] * prod
             rsqv[GEN ** rs] = eacc[GEN ** 128]
