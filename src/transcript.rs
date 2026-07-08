@@ -260,6 +260,11 @@ impl ProverState {
         self.sponge.sample()
     }
 
+    /// Prover mirror of [`VerifierState::observe_scalar`].
+    pub fn observe_scalar(&mut self, x: F128) {
+        self.sponge.observe(x);
+    }
+
     pub fn sample_vec(&mut self, n: usize) -> Vec<F128> {
         (0..n).map(|_| self.sponge.sample()).collect()
     }
@@ -423,6 +428,14 @@ impl<'a> VerifierState<'a> {
 
     pub fn sample_vec(&mut self, n: usize) -> Vec<F128> {
         (0..n).map(|_| self.sample()).collect()
+    }
+
+    /// Absorb a value both parties compute themselves (never transmitted):
+    /// protocol steps that bind derived values before sampling, e.g. the
+    /// stacked-bytecode claim reduction (`leaf::verify_balance`).
+    pub fn observe_scalar(&mut self, x: F128) {
+        self.sponge.observe(x);
+        trace(|| TraceOp::Observe(x));
     }
 
     pub fn next_opening(&mut self) -> Result<&'a LigeritoProof, Error> {

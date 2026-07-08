@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 use leanvm_b::compiler::{compile, parse, parse_file_with_replacements};
 use leanvm_b::cpu::{Program, prove, verify};
-use leanvm_b::field::{F128, G, g_pow};
+use leanvm_b::field::{F128, G};
 use leanvm_b::leaf::{Block, Coord};
 use leanvm_b::multilinear::mle_eval;
 use leanvm_b::transcript::{TraceOp, trace_start, trace_take};
@@ -202,7 +202,8 @@ struct Deferred {
     outer_pi: [F128; 2],
     kbc: usize,
     zetas01: [Vec<F128>; 2],
-    bcv: Vec<F128>,
+    sb: Vec<F128>,
+    wbc: Vec<F128>,
     lc_alpha: F128,
     zz: F128,
     zrho: Vec<F128>,
@@ -224,30 +225,33 @@ struct Deferred {
 /// O(small) field ops); only this plus `cpu::verify(outer)` and the export-hash
 /// recomputation constitute outer verification.
 fn check_deferred(program: &Program, pi: [F128; 2], proof: &leanvm_b::cpu::Proof, d: &Deferred) {
-    // (a) the 12 bytecode claims.
+    // (a) the two reduced bytecode claims: the six encoding columns stacked
+    // along three selector bits form ONE multilinear polynomial B in
+    // kbc + 3 variables; check B(zeta_lo, sb) per side.
     let l = leanvm_b::cpu::layout(
         &program.prog,
         proof.stream[0].lo as usize,
         [1, 2, 3, 4, 5, 6].map(|i| proof.stream[i].lo as usize),
         pi,
     );
-    let mut i = 0;
-    for (s, blocks) in [&l.push, &l.pull].into_iter().enumerate() {
-        for blk in blocks.iter() {
-            for c in &blk.coords {
-                if let Coord::Public(vals) = c {
-                    assert_eq!(blk.kappa, d.kbc);
-                    assert_eq!(
-                        mle_eval(vals, &d.zetas01[s][..d.kbc]),
-                        d.bcv[i],
-                        "deferred bytecode claim {i}"
-                    );
-                    i += 1;
-                }
+    let mut stacked = vec![F128::ZERO; 8 << d.kbc];
+    let mut c_idx = 0;
+    for blk in l.push.iter() {
+        for c in &blk.coords {
+            if let Coord::Public(vals) = c {
+                assert_eq!(blk.kappa, d.kbc);
+                assert_eq!(vals.len(), 1 << d.kbc);
+                stacked[(c_idx << d.kbc)..((c_idx + 1) << d.kbc)].copy_from_slice(vals);
+                c_idx += 1;
             }
         }
     }
-    assert_eq!(i, d.bcv.len());
+    assert_eq!(c_idx, 6);
+    for s in 0..2 {
+        let mut pt = d.zetas01[s][..d.kbc].to_vec();
+        pt.extend_from_slice(&d.sb);
+        assert_eq!(mle_eval(&stacked, &pt), d.wbc[s], "reduced bytecode claim {s}");
+    }
     // (b) the deferred matrix evaluation (one sparse nnz pass).
     let r1cs = flock_prover::r1cs_hashes::blake3::build_block_r1cs(d.n_log_b3);
     let eqi = flare::lincheck::build_quirky_eq_table(d.zz, &d.zrho[..d.lrr.len()], 6);
@@ -350,6 +354,22 @@ fn gen_verify(
     // ---- structural walk: challenges + checkpoint ----
     let seed = Mirror::new(b"leanvm-b", &[pi[0], pi[1], dig[0], dig[1]]);
     let mut w = Walk { ops, i: 0 };
+    let absorb = |w: &mut Walk| -> Vec<u8> {
+        let op = &w.ops[w.i];
+        w.i += 1;
+        match op {
+            TraceOp::AbsorbBytes(b) => b.clone(),
+            other => panic!("expected AbsorbBytes, got {other:?}"),
+        }
+    };
+    let observe = |w: &mut Walk| -> F128 {
+        let op = &w.ops[w.i];
+        w.i += 1;
+        match op {
+            TraceOp::Observe(x) => *x,
+            other => panic!("expected Observe, got {other:?}"),
+        }
+    };
     for _ in 0..9 {
         w.so(); // 7 announced + 2 root words
     }
@@ -381,6 +401,9 @@ fn gen_verify(
     for _ in 0..nclaims {
         w.so();
     }
+    // stacked-bytecode reduction (native protocol): 12 observes + 3 samples.
+    let bcv_trace: Vec<F128> = (0..nbcv).map(|_| observe(&mut w)).collect();
+    let sb: Vec<F128> = (0..3).map(|_| w.sample()).collect();
     let phase_a_end = w.i;
 
     // ---- Phase B walk: 6 zerochecks ----
@@ -414,22 +437,6 @@ fn gen_verify(
     }
     assert!(matches!(ops[w.i], TraceOp::Opening));
     w.i += 1;
-    let absorb = |w: &mut Walk| -> Vec<u8> {
-        let op = &w.ops[w.i];
-        w.i += 1;
-        match op {
-            TraceOp::AbsorbBytes(b) => b.clone(),
-            other => panic!("expected AbsorbBytes, got {other:?}"),
-        }
-    };
-    let observe = |w: &mut Walk| -> F128 {
-        let op = &w.ops[w.i];
-        w.i += 1;
-        match op {
-            TraceOp::Observe(x) => *x,
-            other => panic!("expected Observe, got {other:?}"),
-        }
-    };
     assert_eq!(absorb(&mut w), b"flock-r1cs-v0".to_vec());
     let sd_bytes = absorb(&mut w); // statement digest (32 bytes)
     let _root_bytes = absorb(&mut w);
@@ -579,7 +586,7 @@ fn gen_verify(
     };
     // label + target + root
     assert!(matches!(step(&mut w, &mut lm), TraceOp::AbsorbBytes(b) if b == b"flock-ligerito-basis-v0"));
-    let walked_target = expect_obs(step(&mut w, &mut lm));
+    let _walked_target = expect_obs(step(&mut w, &mut lm));
     assert!(matches!(step(&mut w, &mut lm), TraceOp::AbsorbBytes(_)));
     // prologue msg
     lig_sc.push(expect_obs(step(&mut w, &mut lm)));
@@ -628,8 +635,6 @@ fn gen_verify(
         expect_sample(step(&mut w, &mut lm)); // beta
     }
     assert_eq!(w.i, ops.len(), "ligerito walk must consume the whole trace");
-    let cvchk_e1_unused = ();
-    let _ = cvchk_e1_unused;
 
     // ---- hints ----
     // fpb: the grind digest bits. Base = compress(cv_after_alpha, [0, POW]).
@@ -652,6 +657,17 @@ fn gen_verify(
         }
     }
     assert_eq!(bcv.len(), nbcv);
+    assert_eq!(bcv, bcv_trace, "layout-computed bytecode evals match the trace");
+    let eq3 = |c: usize| -> F128 {
+        let mut e = F128::ONE;
+        for (t, &s) in sb.iter().enumerate() {
+            e *= if (c >> t) & 1 == 1 { s } else { F128::ONE + s };
+        }
+        e
+    };
+    let wbc: Vec<F128> = (0..2)
+        .map(|s| (0..6).map(|c| eq3(c) * bcv[6 * s + c]).fold(F128::ZERO, |a, x| a + x))
+        .collect();
     let cinv = roots[2].inv();
     // checkpoint cvs after each phase.
     let mut m = seed.clone();
@@ -1052,7 +1068,10 @@ fn gen_verify(
             h.observe(zs[k]);
         }
     }
-    for &v in &bcv {
+    for &v in &sb {
+        h.observe(v);
+    }
+    for &v in &wbc {
         h.observe(v);
     }
     h.observe(lc_alpha);
@@ -1092,7 +1111,8 @@ fn gen_verify(
         outer_pi: h.cv,
         kbc,
         zetas01: [zetas[0].clone(), zetas[1].clone()],
-        bcv: bcv.clone(),
+        sb: sb.clone(),
+        wbc: wbc.clone(),
         lc_alpha,
         zz: _zz,
         zrho: zrho.clone(),

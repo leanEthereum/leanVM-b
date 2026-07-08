@@ -312,6 +312,52 @@ fn default_surplus(blocks: &[Block], pad: &[F128], alpha: F128, gamma: F128) -> 
     acc
 }
 
+/// One reduced claim on the bytecode polynomial. The six public encoding
+/// columns (op, o1, o2, o3, fpc, ffp) stacked along three selector bits form
+/// ONE multilinear polynomial B̃ in `κ_bc + 3` variables; after the three
+/// decompositions both parties absorb the twelve per-column evaluations,
+/// sample three selector challenges `s`, and reduce each bus side's six
+/// values to `B̃(ζ_side_lo, s) = Σ_c eq(s, c)·v_c`. Natively the claim is
+/// true by construction (the verifier evaluated the columns itself); a
+/// recursive verifier defers exactly these two claims to its public input.
+#[derive(Clone, Debug)]
+pub struct BytecodeClaim {
+    /// `ζ_side_lo ++ s` — a point in `κ_bc + 3` variables.
+    pub point: Vec<F128>,
+    /// `B̃(point)`.
+    pub value: F128,
+}
+
+/// The public (bytecode) coordinate evaluations of a side at its GKR point,
+/// block/coord order, with the bytecode block's `κ`.
+fn public_evals(blocks: &[Block], zeta: &[F128]) -> (usize, Vec<F128>) {
+    let mut kappa = 0;
+    let mut out = Vec::new();
+    for blk in blocks {
+        for c in &blk.coords {
+            if let Coord::Public(vals) = c {
+                kappa = blk.kappa;
+                out.push(mle_eval(vals, &zeta[..blk.kappa]));
+            }
+        }
+    }
+    (kappa, out)
+}
+
+/// `Σ_c eq(s, c)·v_c`: one side's public-column evaluations reduced to the
+/// stacked-polynomial value at selector point `s`.
+fn stacked_bytecode_value(evals: &[F128], s: &[F128; 3]) -> F128 {
+    let mut acc = F128::ZERO;
+    for (c, &v) in evals.iter().enumerate() {
+        let mut e = F128::ONE;
+        for (t, &st) in s.iter().enumerate() {
+            e *= if (c >> t) & 1 == 1 { st } else { F128::ONE + st };
+        }
+        acc += e * v;
+    }
+    acc
+}
+
 /// Prove the bus balances; returns the per-column claims to open (§4.4). `alpha`/
 /// `gamma` follow the witness commitment (the only ordering the grand product
 /// needs), and the block structure is public, so no shape is observed.
@@ -321,7 +367,7 @@ pub fn prove_balance(
     count: &[Block],
     cols: &[Column],
     ps: &mut ProverState,
-) -> Vec<ColumnClaim> {
+) -> (Vec<ColumnClaim>, Vec<BytecodeClaim>) {
     let alpha = ps.sample();
     let push_lay = layout(push);
     let pull_lay = layout(pull);
@@ -363,7 +409,26 @@ pub fn prove_balance(
         F128::ZERO,
         ps,
     ));
-    claims
+
+    // Bytecode = ONE polynomial: bind the twelve public-column evaluations,
+    // sample the selector challenges, emit the two reduced claims.
+    let (kbc, pv_push) = public_evals(push, &push_claim.point);
+    let (_, pv_pull) = public_evals(pull, &pull_claim.point);
+    for &v in pv_push.iter().chain(&pv_pull) {
+        ps.observe_scalar(v);
+    }
+    let s = [ps.sample(), ps.sample(), ps.sample()];
+    let bytecode_claims = vec![
+        BytecodeClaim {
+            point: [&push_claim.point[..kbc], &s[..]].concat(),
+            value: stacked_bytecode_value(&pv_push, &s),
+        },
+        BytecodeClaim {
+            point: [&pull_claim.point[..kbc], &s[..]].concat(),
+            value: stacked_bytecode_value(&pv_pull, &s),
+        },
+    ];
+    (claims, bytecode_claims)
 }
 
 /// Verify the bus balances, oracle-free (the prover's committed values arrive on
@@ -374,7 +439,7 @@ pub fn verify_balance(
     count: &[Block],
     pad: &[F128],
     vs: &mut VerifierState,
-) -> Result<Vec<ColumnClaim>, Error> {
+) -> Result<(Vec<ColumnClaim>, Vec<BytecodeClaim>), Error> {
     // Check the pre-γ grinding nonce before sampling γ (mirror of prove_balance).
     let alpha = vs.sample();
     let push_lay = layout(push);
@@ -415,5 +480,25 @@ pub fn verify_balance(
         return Err(Error::Decomposition { side: "count" });
     }
     claims.extend(claims_c);
-    Ok(claims)
+
+    // Bytecode = ONE polynomial (mirror of `prove_balance`): bind the twelve
+    // public-column evaluations, sample the selector challenges, emit the two
+    // reduced claims on the stacked bytecode multilinear.
+    let (kbc, pv_push) = public_evals(push, &cp.point);
+    let (_, pv_pull) = public_evals(pull, &cq.point);
+    for &v in pv_push.iter().chain(&pv_pull) {
+        vs.observe_scalar(v);
+    }
+    let s = [vs.sample(), vs.sample(), vs.sample()];
+    let bytecode_claims = vec![
+        BytecodeClaim {
+            point: [&cp.point[..kbc], &s[..]].concat(),
+            value: stacked_bytecode_value(&pv_push, &s),
+        },
+        BytecodeClaim {
+            point: [&cq.point[..kbc], &s[..]].concat(),
+            value: stacked_bytecode_value(&pv_pull, &s),
+        },
+    ];
+    Ok((claims, bytecode_claims))
 }

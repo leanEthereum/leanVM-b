@@ -412,7 +412,7 @@ pub fn prove(program: &Program, public_input: [F128; 2]) -> (Proof, Stats) {
     // bus point, so no dedicated binding challenge is drawn. Mirrored in `verify`.
     let t = std::time::Instant::now();
     let l = &w.layout;
-    let bus_claims = leaf::prove_balance(&l.push, &l.pull, &l.count, &w.cols, &mut ps);
+    let (bus_claims, _bytecode_claims) = leaf::prove_balance(&l.push, &l.pull, &l.count, &w.cols, &mut ps);
     if prof {
         eprintln!("[prove] bus(grand-p): {:>7.2} ms", ms(t));
     }
@@ -510,7 +510,11 @@ fn bind_pi_claim(r: F128, placements: &[witness::Placement], pi: &[F128; 2]) -> 
 /// the transcript, reconstruct the public layout from the announced sizes, read
 /// every scalar the prover wrote and pull the PCS hints, then assert the stream
 /// was fully consumed. Takes only public inputs — never the prover's witness.
-pub fn verify(program: &Program, public_input: &[F128; 2], proof: &Proof) -> Result<(), Error> {
+pub fn verify(
+    program: &Program,
+    public_input: &[F128; 2],
+    proof: &Proof,
+) -> Result<Vec<leaf::BytecodeClaim>, Error> {
     let mut vs = VerifierState::new(b"leanvm-b", proof, &transcript_seed(program, public_input));
     let l = read_public(&mut vs, program, public_input)?;
     let root = pcs::read_commitment(&mut vs).map_err(Error::Transcript)?;
@@ -524,7 +528,8 @@ pub fn verify(program: &Program, public_input: &[F128; 2], proof: &Proof) -> Res
     // words bind via the memory bus, the pins reuse a bus point.
     let n_b3 = l.row_counts[tables::BLAKE3_TABLE];
 
-    let bus_claims = leaf::verify_balance(&l.push, &l.pull, &l.count, &l.pad, &mut vs).map_err(Error::Bus)?;
+    let (bus_claims, bytecode_claims) =
+        leaf::verify_balance(&l.push, &l.pull, &l.count, &l.pad, &mut vs).map_err(Error::Bus)?;
 
     let mut table_claims = Vec::new();
     for (ti, table) in tables::tables().iter().enumerate() {
@@ -563,7 +568,8 @@ pub fn verify(program: &Program, public_input: &[F128; 2], proof: &Proof) -> Res
         .map_err(Error::Blake3)?;
     let ring = crate::blake3_flock::ring_switch_verify(n_blocks, offset, ab, c, &open);
     pcs::verify(&mut vs, &slots, &ring, l.m, &root).map_err(Error::Open)?;
-    vs.finish().map_err(Error::Transcript)
+    vs.finish().map_err(Error::Transcript)?;
+    Ok(bytecode_claims)
 }
 
 /// Lift `ColumnClaim`s to located PCS claims: a claim on column `c` lives in

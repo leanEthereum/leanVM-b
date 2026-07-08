@@ -471,6 +471,30 @@ def main():
         acc = acc + 1 + selsum
         assert acc == gval[GEN ** s]
 
+    # ---- stacked-bytecode reduction (part of the native protocol) ----
+    # The bytecode is ONE multilinear polynomial in KBC + 3 variables (the six
+    # encoding columns stacked along three selector bits). Absorb the twelve
+    # per-column values, sample three eq challenges, and reduce each point's
+    # six claims to B(zeta_lo, sb) = sum_c eq(sb, c) * v_c.
+    for k in unroll(0, NBCV):
+        cv0, cv1 = obs(cv0, cv1, bcv[GEN ** k])
+    sb = HeapBuf(3)
+    for t in unroll(0, 3):
+        sv, cv0, cv1 = sqz(cv0, cv1)
+        sb[GEN ** t] = sv
+    wbc = HeapBuf(2)
+    for s in unroll(0, 2):
+        wv = 0
+        for c in unroll(0, 6):
+            e = GEN ** 0
+            for t in unroll(0, 3):
+                if (c // (2 ** t)) % 2 == 1:
+                    e = e * sb[GEN ** t]
+                else:
+                    e = e * (1 + sb[GEN ** t])
+            wv = wv + e * bcv[GEN ** (6 * s + c)]
+        wbc[GEN ** s] = wv
+
     # ---- Phase A checkpoint: sponge state matches the mirror ----
     assert cv0 == CVCHK_A
 
@@ -1061,8 +1085,8 @@ def main():
 
     # ---- Phase F: bind the deferred data to the outer public input ----
     # A fresh hash chain (same tagged compress as the FS observe) over: the
-    # inner public input; the two bytecode points + the 12 deferred bytecode
-    # values; the deferred matrix claim (alpha, row point, round challenges,
+    # inner public input; the two bytecode points + the eq challenges and the
+    # two reduced stacked-bytecode claims; the deferred matrix claim (alpha, row point, round challenges,
     # z_partial, value); the deferred tensor data (s_hat_v, r'', transposed
     # claims, eval_rs_eq values, and the coords the outer checker needs to
     # rebuild the eval_rs_eq inputs). The outer public input must equal it.
@@ -1073,8 +1097,10 @@ def main():
     for s in unroll(0, 2):
         for k in unroll(0, KBC):
             h0, h1 = obs(h0, h1, zeta[GEN ** (s * MUMAX + k)])
-    for k in unroll(0, NBCV):
-        h0, h1 = obs(h0, h1, bcv[GEN ** k])
+    for t in unroll(0, 3):
+        h0, h1 = obs(h0, h1, sb[GEN ** t])
+    h0, h1 = obs(h0, h1, wbc[GEN ** 0])
+    h0, h1 = obs(h0, h1, wbc[GEN ** 1])
     h0, h1 = obs(h0, h1, lal)
     h0, h1 = obs(h0, h1, zz)
     for k in unroll(0, LCR):
