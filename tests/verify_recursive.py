@@ -152,6 +152,12 @@ LROWS_LEN = LROWS_LEN_PLACEHOLDER
 LPATHS_LEN = LPATHS_LEN_PLACEHOLDER
 LSBITS_LEN = LSBITS_LEN_PLACEHOLDER
 LFPB_LEN = LFPB_LEN_PLACEHOLDER
+# Query-phase grinding: QBITS[lvl] leading zero bits checked on the digest
+# before the query indexes are sampled (queries then only cover
+# target - QBITS bits of soundness).
+QBITS = QBITS_PLACEHOLDER
+QGFULL = QGFULL_PLACEHOLDER
+QGEXTRA = QGEXTRA_PLACEHOLDER
 QUERIES = QUERIES_PLACEHOLDER
 KLVL = KLVL_PLACEHOLDER
 NUMINTER = NUMINTER_PLACEHOLDER
@@ -390,6 +396,10 @@ def main():
     hint_witness(rtb[0:NSUB * NLEVELS], "rtb")
     fnn = HeapBuf(NSUB * LENRIS)
     hint_witness(fnn[0:NSUB * LENRIS], "fnn")
+    qnonce = HeapBuf(NSUB * NLEVELS)
+    hint_witness(qnonce[0:NSUB * NLEVELS], "qnonce")
+    qgrind = HeapBuf(NSUB * NLEVELS * 128)
+    hint_witness(qgrind[0:NSUB * NLEVELS * 128], "qgrind")
     cvh = HeapBuf(NSUB * 4)
     hint_witness(cvh[0:NSUB * 4], "cvh")
     bscr = HeapBuf(2 * KBCV)
@@ -444,6 +454,8 @@ def main():
         rta_s = rta * GEN ** (sub * NLEVELS)
         rtb_s = rtb * GEN ** (sub * NLEVELS)
         fnn_s = fnn * GEN ** (sub * LENRIS)
+        qnonce_s = qnonce * GEN ** (sub * NLEVELS)
+        qgrind_s = qgrind * GEN ** (sub * NLEVELS * 128)
         cvh_s = cvh * GEN ** (sub * 4)
         # Claim pool: values of every committed-coordinate claim, in decompose order
         # (their points are the GKR ζ's, resolvable from the baked block structure).
@@ -1079,7 +1091,28 @@ def main():
                 next_root_b = rtb_s[GEN ** (lvl + 1)]
                 fs = absorb(fs, next_root_a, DS_BYTE)
                 fs = absorb(fs, next_root_b, DS_BYTE)
-            fs = absorb(fs, 0, DS_POW)
+            if QBITS[lvl] != 0:
+                pow_tag = StackBuf(2)
+                pow_tag[0] = 0
+                pow_tag[1] = DS_POW
+                pow_base = StackBuf(2)
+                blake3(fs, pow_tag, pow_base)
+                pow_nonce = StackBuf(2)
+                pow_nonce[0] = qnonce_s[GEN ** lvl]
+                pow_nonce[1] = DS_POW
+                pow_out = StackBuf(2)
+                blake3(pow_base, pow_nonce, pow_out)
+                dec128(qgrind_s * GEN ** (128 * lvl), pow_out[0])
+                for b in unroll(0, 8 * QGFULL[lvl]):
+                    zero_bit_lo = qgrind_s[GEN ** (128 * lvl + b)]
+                    assert zero_bit_lo == 0
+                for b in unroll(8 * QGFULL[lvl] + 8 - QGEXTRA[lvl], 8 * QGFULL[lvl] + 8):
+                    zero_bit_hi = qgrind_s[GEN ** (128 * lvl + b)]
+                    assert zero_bit_hi == 0
+                q_nonce = qnonce_s[GEN ** lvl]
+                fs = absorb(fs, q_nonce, DS_POW)
+            else:
+                fs = absorb(fs, 0, DS_POW)
 
             sqz_chain_0 = HeapBuf(MAXNSQ + 1)
             sqz_chain_1 = HeapBuf(MAXNSQ + 1)

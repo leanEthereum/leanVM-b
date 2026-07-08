@@ -591,23 +591,28 @@ fn gen_verify(
         .iter()
         .flat_map(|m| [m.u_0, m.u_2])
         .collect();
-    // Fold grinds: bits from the config, nonces from the proof, digests from
-    // the trace (bits > 0 pows, in order).
+    // Grinds, in transcript order after the bus grind: per level, the fold
+    // grinds (bits > 0 per the config schedule) then ONE query-phase grind.
+    let qbits: Vec<u32> = (0..nlev).map(|lvl| vcfg.grinding_bits[lvl] as u32).collect();
     let mut fold_pow: Vec<(u32, u64, F128)> = Vec::new();
-    let mut fold_grinds = pows[1..].iter().filter(|p| p.1 > 0);
+    let mut query_pow: Vec<(u64, F128)> = Vec::new();
+    let mut grinds = pows[1..].iter();
     for lvl in 0..nlev {
         for j in 0..klvl[lvl] {
             let bits = (fgb(lvl) - j as i64).max(0) as u32;
             if bits > 0 {
-                let &(nonce, b2, dig) = fold_grinds.next().expect("fold grind recorded");
+                let &(nonce, b2, dig) = grinds.next().expect("fold grind recorded");
                 assert_eq!(b2, bits);
                 fold_pow.push((bits, nonce, dig));
             } else {
                 fold_pow.push((0, 0, F128::ZERO));
             }
         }
+        let &(nonce, b2, dig) = grinds.next().expect("query grind recorded");
+        assert_eq!(b2, qbits[lvl], "level {lvl} query grind bits");
+        query_pow.push((nonce, dig));
     }
-    assert!(fold_grinds.next().is_none(), "every fold grind consumed");
+    assert!(grinds.next().is_none(), "every grind consumed");
 
     // ---- hints ----
     // bcv: the deferred bytecode evaluations (leaf's own scan, block/coord order).
@@ -917,6 +922,9 @@ fn gen_verify(
     ps("LPATHS_LEN", lpaths_flat.len().to_string());
     ps("LSBITS_LEN", lsbits_flat.len().to_string());
     ps("LFPB_LEN", lfpb_flat.len().to_string());
+    ps("QBITS", ints(&qbits.iter().map(|&b| b as usize).collect::<Vec<_>>()));
+    ps("QGFULL", ints(&qbits.iter().map(|&b| (b / 8) as usize).collect::<Vec<_>>()));
+    ps("QGEXTRA", ints(&qbits.iter().map(|&b| (b % 8) as usize).collect::<Vec<_>>()));
     ps("QUERIES", ints(&queries));
     ps("KLVL", ints(&klvl));
     ps("NUMINTER", ints(&numinter));
@@ -1023,6 +1031,11 @@ fn gen_verify(
         ("rta".to_string(), roota),
         ("rtb".to_string(), rootb),
         ("fnn".to_string(), fnv),
+        ("qnonce".to_string(), query_pow.iter().map(|&(n, _)| F128::new(n, 0)).collect()),
+        (
+            "qgrind".to_string(),
+            query_pow.iter().flat_map(|&(_, dig)| bits_of(dig)).collect(),
+        ),
         ("cvh".to_string(), cvh),
     ];
     (rep, hints, deferred)

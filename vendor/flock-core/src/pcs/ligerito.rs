@@ -1252,9 +1252,15 @@ impl LigeritoSecurityConfig {
         const JOHNSON_ETA: f64 = 0.02;
         let target_bits = profile.security_bits();
         let log_inv_rate = profile.log_inv_rate();
+        // Query-phase grinding trades prover PoW for query count: with g bits
+        // of grinding, the per-level queries only need to cover
+        // `target - g` bits (validation rule 3). Secure: 120-bit rounds with
+        // 20 bits ground, so queries cover 100 — about a sixth fewer queries,
+        // which recursion feels directly (the query walk dominates a guest).
         let query_grind: usize = match profile {
             LigeritoProfile::Slim => 16,
-            LigeritoProfile::Fast | LigeritoProfile::Secure => 0,
+            LigeritoProfile::Secure => 20,
+            LigeritoProfile::Fast => 0,
         };
         let log_n = m
             .checked_sub(crate::pcs::LOG_PACKING)
