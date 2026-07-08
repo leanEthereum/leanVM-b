@@ -21,9 +21,44 @@ from snark_lib import *
 # data (streams, sub statements, level roots, fold nonces, sponge checkpoints)
 # arrives as hints (`tests/recursion_e2e.rs::gen_verify`).
 #
+# SOUNDNESS: every hint is untrusted prover input; each is bound one of four
+# ways, and nothing else enters the computation:
+#   - sponge-bound (observed/absorbed before any challenge that depends on it):
+#     the stream scalars, zc1/zcr/zcf, lcr/lcz, shv, lsc, lyr, the level roots
+#     rta/rtb, the fold nonces fnn, the aggregation round messages bscr/mscr,
+#     and the deferred bytecode values bcv (absorbed by the in-protocol
+#     stacked-bytecode reduction before its selector challenges);
+#   - assert-checked: cinv and zinv (hinted inverses, product asserted 1),
+#     fpb/lfpb (grinding digest bits: booleanity + reconstruction against the
+#     in-circuit digest + leading-zero asserts), lsbits (query bits: booleanity
+#     + reconstruction equal to the squeezed word), lrows/lpaths (Merkle
+#     inclusion against the bound roots);
+#   - statement-bound (fed to the outer public-input hash): spi (the sub
+#     statements, which also derive the transcript seeds), matpart (with its
+#     complete weight data), and the reduced claims bst/mst with their points;
+#   - debug-only, no soundness role: cvh (sponge checkpoints, self-asserts
+#     that localize a divergence during development).
+# The stream hint itself is transport, never trusted: binding always comes from
+# the sponge absorb of each value read off it. The outer verifier's total
+# obligation is: verify the outer proof, recompute the statement hash from the
+# claimed sub statements + reduced claims, and evaluate the three fixed
+# polynomials (stacked bytecode, A0, B0) at the reduced points.
+#
 # Naming: `cur` is the stream cursor (heap pointer, advanced ×g per word read);
-# `cvb` is the sponge chain (StackBuf pair, aliased forward per absorb);
-# `zeta` holds the three GKR points side by side.
+# `cvb` is the sponge chain (StackBuf pair, aliased forward per absorb; `hb`
+# and `eb` are the aggregation and export chains); `zeta` holds the three GKR
+# points side by side and `rho` the six zerocheck points; `clv` is the pool of
+# committed-column claim values. Flock replay: `zz`/`zrho` the zerocheck skip
+# challenge and round challenges, `lal`/`lbe`/`lrr`/`lw`/`lsk` the lincheck
+# alpha/beta/round challenges/output value/fresh skip. Ring switch: `rdp` the
+# r'' samples, `wq` their eq tensor, `dt` the dual-basis Frobenius table, `ckb`
+# the linearized coefficients c_k, `tclv` the transposed claims, `rsqv` the
+# eval_rs_eq values. Ligerito: `lqc/lqb/lqa` the running round-polynomial
+# coefficients, `tr` the running target, `ris` the fold challenges, `lbet` the
+# level batching challenges, `lenf` the enforced sums, `law` the query batching
+# weights, `qfb`/`qbp` the extracted query positions (field form / bit
+# pointers). Aggregation: `gbc`/`gmt` the RLC coefficients, `rbs`/`rms` the
+# sumcheck points, `bcstar`/`astar`/`mbstar` the reduced claims.
 
 STREAM_LEN = STREAM_LEN_PLACEHOLDER
 ANN = ANN_PLACEHOLDER

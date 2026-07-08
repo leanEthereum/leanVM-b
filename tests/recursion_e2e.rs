@@ -1,9 +1,18 @@
-//! End-to-end 1→1 recursion: a guest program replays `cpu::verify` of a
-//! non-trivial inner proof in-circuit, with the bytecode and flock-matrix
-//! evaluations deferred to the public input (doc.tex §Deferred evaluation
-//! claims). Built bottom-up: the transcript trace of a REAL `cpu::verify` run is
-//! the guest's mechanical spec (`transcript::trace_start`/`trace_take`), and the
-//! real `cpu::layout` supplies every compile-time shape.
+//! End-to-end N→1 recursion: one guest program (`tests/verify_recursive.py`)
+//! replays `cpu::verify` for NSUB proofs of a fixed inner program, batches
+//! their deferred claims with the two aggregation sumchecks, and binds the sub
+//! statements + the three reduced claims (stacked bytecode, A0, B0) to its own
+//! public input (doc.tex §Recursive aggregation, §Deferred evaluation claims).
+//!
+//! Zero hand-mirroring: the transcript trace of a REAL `cpu::verify` run
+//! (`transcript::trace_start`/`trace_take`) is the guest's mechanical spec —
+//! `gen_verify` walks it structurally (a `Walk` cursor plus a lockstep `Mirror`
+//! sponge) to extract every hint value and checkpoint, and the real
+//! `cpu::layout` supplies every compile-time shape. `gen_agg` mirrors the
+//! guest's aggregation transcript and runs the two batching-sumcheck provers
+//! (dense for the bytecode, two-phase sparse for the flock matrices).
+//! `check_reduced` is the outer verifier's entire native duty: one evaluation
+//! of each fixed polynomial at its reduced point.
 
 use std::collections::BTreeMap;
 
@@ -372,7 +381,6 @@ fn gen_agg(
     let ws: Vec<Vec<F128>> = subs
         .iter()
         .map(|d| {
-            let lcr = d.lrr.len();
             (0..1usize << klog)
                 .map(|c| {
                     let mut w = d.lcz[c & 63];
@@ -380,7 +388,6 @@ fn gen_agg(
                         let bit = (c >> (klog - 1 - j)) & 1;
                         w *= if bit == 1 { rj } else { F128::ONE + rj };
                     }
-                    let _ = lcr;
                     w
                 })
                 .collect()
@@ -713,7 +720,7 @@ fn gen_verify(
         zc_r.push(w.sample());
     }
     let zc1: Vec<F128> = (0..128).map(|_| observe(&mut w)).collect();
-    let _zz = w.sample();
+    let zc_z = w.sample();
     let mut zcr = Vec::new();
     let mut zrho = Vec::new();
     for _ in 0..n_mlv {
@@ -972,7 +979,8 @@ fn gen_verify(
         .collect();
     ps("IDXC", us(&idxc));
     let evtot: usize = ncol.iter().sum();
-    ps("NCLAIMS", (nclaims + evtot + 8).to_string());
+    // claim pool size: bus coords + constraint evals + the PI claim + 3 pins.
+    ps("NCLAIMS", (nclaims + evtot + 1 + 3).to_string());
     ps("NBCV", nbcv.to_string());
     ps("TAU", ints(&taus));
     ps("NCOL", ints(&ncol));
@@ -1294,7 +1302,7 @@ fn gen_verify(
         sb: sb.clone(),
         wbc: wbc.clone(),
         lc_alpha,
-        zz: _zz,
+        zz: zc_z,
         zrho8: zrho[..lcrounds].to_vec(),
         lrr: lrr.clone(),
         lcz: lcz.clone(),
