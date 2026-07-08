@@ -6,8 +6,8 @@
 //!
 //! Zero hand-mirroring: the transcript trace of a REAL `cpu::verify` run
 //! (`transcript::trace_start`/`trace_take`) is the guest's mechanical spec —
-//! `gen_verify` walks it structurally (a `Walk` cursor plus a lockstep `Mirror`
-//! sponge) to extract every hint value and checkpoint, and the real
+//! `gen_verify` walks it structurally (a `Walk` cursor; `Sponge::replay` yields
+//! the checkpoint states) to extract every hint value, and the real
 //! `cpu::layout` supplies every compile-time shape. `gen_agg` mirrors the
 //! guest's aggregation transcript and runs the two batching-sumcheck provers
 //! (dense for the bytecode, two-phase sparse for the flock matrices).
@@ -21,8 +21,7 @@ use leanvm_b::cpu::{Program, prove, verify};
 use leanvm_b::field::{F128, G};
 use leanvm_b::leaf::{Block, Coord};
 use leanvm_b::multilinear::mle_eval;
-use leanvm_b::transcript::{TraceOp, trace_start, trace_take};
-use leanvm_b::vmhash::compress;
+use leanvm_b::transcript::{Sponge, TraceOp, trace_start, trace_take};
 
 /// A field element as the decimal `u128` literal the zkDSL parser accepts.
 fn u(f: F128) -> u128 {
@@ -38,60 +37,6 @@ fn bits_of(v: F128) -> Vec<F128> {
         }
     }
     out
-}
-
-/// Minimal mirror of `transcript::Sponge` (same compress chain), for computing
-/// the guest's baked seed and replaying trace prefixes to checkpoint values.
-#[derive(Clone)]
-struct Mirror {
-    cv: [F128; 2],
-}
-impl Mirror {
-    fn new(label: &[u8], statement: &[F128]) -> Self {
-        let mut s = Self { cv: [F128::ZERO; 2] };
-        s.absorb_bytes(b"leanvm-b/transcript/v1");
-        s.absorb_bytes(label);
-        for &x in statement {
-            s.observe(x);
-        }
-        s
-    }
-    fn observe(&mut self, x: F128) {
-        self.cv = compress(self.cv, [x, F128::new(1, 0)]);
-    }
-    fn absorb_bytes(&mut self, bytes: &[u8]) {
-        self.cv = compress(self.cv, [F128::new(bytes.len() as u64, 0), F128::new(3, 0)]);
-        for chunk in bytes.chunks(16) {
-            let mut buf = [0u8; 16];
-            buf[..chunk.len()].copy_from_slice(chunk);
-            let w = F128::new(
-                u64::from_le_bytes(buf[..8].try_into().unwrap()),
-                u64::from_le_bytes(buf[8..].try_into().unwrap()),
-            );
-            self.cv = compress(self.cv, [w, F128::new(2, 0)]);
-        }
-    }
-    fn sample(&mut self) -> F128 {
-        let out = compress(self.cv, [F128::ZERO, F128::new(4, 0)]);
-        self.cv = out;
-        out[0]
-    }
-    fn absorb_nonce(&mut self, nonce: u64) {
-        self.cv = compress(self.cv, [F128::new(nonce, 0), F128::new(5, 0)]);
-    }
-    /// Replay recorded trace ops (asserting every sample matches), so any prefix
-    /// yields the exact sponge state the guest must reach there.
-    fn replay(&mut self, ops: &[TraceOp]) {
-        for op in ops {
-            match op {
-                TraceOp::StreamObserve(x) | TraceOp::Observe(x) => self.observe(*x),
-                TraceOp::AbsorbBytes(b) => self.absorb_bytes(b),
-                TraceOp::Sample(v) => assert_eq!(self.sample(), *v, "trace replay diverged"),
-                TraceOp::Pow { nonce, .. } => self.absorb_nonce(*nonce),
-                TraceOp::StreamRaw(_) | TraceOp::Opening => {}
-            }
-        }
-    }
 }
 
 /// Structural cursor over the trace, for extracting challenge values.
@@ -124,11 +69,11 @@ impl Walk<'_> {
             other => panic!("expected StreamRaw at {}, got {other:?}", self.i - 1),
         }
     }
-    fn pow(&mut self) -> (u64, u32) {
+    fn pow(&mut self) -> (u64, u32, F128) {
         let op = &self.ops[self.i];
         self.i += 1;
         match op {
-            TraceOp::Pow { nonce, bits } => (*nonce, *bits),
+            TraceOp::Pow { nonce, bits, digest } => (*nonce, *bits, *digest),
             other => panic!("expected Pow at {}, got {other:?}", self.i - 1),
         }
     }
@@ -305,7 +250,7 @@ fn gen_agg(
     let klog = flock_prover::r1cs_hashes::blake3::K_LOG;
 
     // ---- the aggregation transcript (mirrors the guest exactly) ----
-    let mut h = Mirror { cv: [F128::ZERO; 2] };
+    let mut h = Sponge::empty();
     for d in subs {
         h.observe(d.pi[0]);
         h.observe(d.pi[1]);
@@ -500,7 +445,7 @@ fn gen_agg(
     }
 
     // ---- outer public input: sub statements + the reduced claims ----
-    let mut e = Mirror { cv: [F128::ZERO; 2] };
+    let mut e = Sponge::empty();
     for d in subs {
         e.observe(d.pi[0]);
         e.observe(d.pi[1]);
@@ -525,7 +470,7 @@ fn gen_agg(
     (
         hints,
         Reduced {
-            outer_pi: e.cv,
+            outer_pi: e.state(),
             r_bc,
             v_bc,
             r_m,
@@ -615,7 +560,7 @@ fn gen_verify(
     }
 
     // ---- structural walk: challenges + checkpoint ----
-    let seed = Mirror::new(b"leanvm-b", &[pi[0], pi[1], dig[0], dig[1]]);
+    let seed = Sponge::new(b"leanvm-b", &[pi[0], pi[1], dig[0], dig[1]]);
     let mut w = Walk { ops, i: 0 };
     let absorb = |w: &mut Walk| -> Vec<u8> {
         let op = &w.ops[w.i];
@@ -638,7 +583,7 @@ fn gen_verify(
     }
     let _alpha = w.sample();
     let _nonce_word = w.raw();
-    let (nonce, gbits) = w.pow();
+    let (_nonce, gbits, gdig) = w.pow();
     let _gamma = w.sample();
     let mut zetas: Vec<Vec<F128>> = Vec::new();
     let mut roots: Vec<F128> = Vec::new();
@@ -817,86 +762,57 @@ fn gen_verify(
     let nsq: Vec<usize> = (0..nlev).map(|i| queries[i].div_ceil(per[i])).collect();
     let fgb = |lvl: usize| vcfg.fold_grinding_bits.get(lvl).copied().unwrap_or(0) as i64;
 
-    // Lockstep mirror through the ligerito section.
-    let mut lm = seed.clone();
-    lm.replay(&ops[0..phase_e1_end]);
+    // Walk the ligerito section (fold-PoW digests ride the trace ops).
     let mut fold_pow: Vec<(u32, u64, F128)> = Vec::new();
     let mut lig_sc: Vec<F128> = Vec::new();
     let mut lig_raw: Vec<Vec<F128>> = vec![Vec::new(); nlev]; // squeezes per level
     let mut lig_ris: Vec<F128> = Vec::new();
-    let step = |w: &mut Walk, lm: &mut Mirror| {
-        let op = w.ops[w.i].clone();
-        w.i += 1;
-        lm.replay(std::slice::from_ref(&op));
-        op
-    };
-    let expect_obs = |op: TraceOp| match op {
-        TraceOp::Observe(x) => x,
-        other => panic!("lig walk: expected Observe, got {other:?}"),
-    };
-    let expect_sample = |op: TraceOp| match op {
-        TraceOp::Sample(v) => v,
-        other => panic!("lig walk: expected Sample, got {other:?}"),
-    };
-    // label + target + root
-    assert!(matches!(step(&mut w, &mut lm), TraceOp::AbsorbBytes(b) if b == b"flock-ligerito-basis-v0"));
-    let _walked_target = expect_obs(step(&mut w, &mut lm));
-    assert!(matches!(step(&mut w, &mut lm), TraceOp::AbsorbBytes(_)));
+    assert_eq!(absorb(&mut w), b"flock-ligerito-basis-v0".to_vec());
+    let _walked_target = observe(&mut w);
+    absorb(&mut w); // initial (stack commitment) root
     // prologue msg
-    lig_sc.push(expect_obs(step(&mut w, &mut lm)));
-    lig_sc.push(expect_obs(step(&mut w, &mut lm)));
+    lig_sc.push(observe(&mut w));
+    lig_sc.push(observe(&mut w));
     for lvl in 0..nlev {
         for j in 0..klvl[lvl] {
             let bits = (fgb(lvl) - j as i64).max(0) as u32;
             if bits > 0 {
-                // PoW: digest from the mirror state BEFORE the nonce absorb.
-                let (nonce, b2) = match w.ops[w.i] {
-                    TraceOp::Pow { nonce, bits } => (nonce, bits),
-                    ref other => panic!("expected Pow, got {other:?}"),
-                };
+                let (nonce, b2, dig) = w.pow();
                 assert_eq!(b2, bits);
-                let base = compress(lm.cv, [F128::ZERO, F128::new(5, 0)]);
-                let dig = compress(base, [F128::new(nonce, 0), F128::new(5, 0)])[0];
                 fold_pow.push((bits, nonce, dig));
-                step(&mut w, &mut lm);
             } else {
                 fold_pow.push((0, 0, F128::ZERO));
             }
-            lig_ris.push(expect_sample(step(&mut w, &mut lm)));
-            lig_sc.push(expect_obs(step(&mut w, &mut lm)));
-            lig_sc.push(expect_obs(step(&mut w, &mut lm)));
+            lig_ris.push(w.sample());
+            lig_sc.push(observe(&mut w));
+            lig_sc.push(observe(&mut w));
         }
         if lvl == r {
             for _ in 0..(1usize << yr_log_n) {
-                expect_obs(step(&mut w, &mut lm));
+                observe(&mut w);
             }
         } else {
-            assert!(matches!(step(&mut w, &mut lm), TraceOp::AbsorbBytes(_)));
+            absorb(&mut w); // next level root
         }
         // query-phase grind (0 bits) + squeezes + alphas
-        assert!(matches!(step(&mut w, &mut lm), TraceOp::Pow { bits: 0, .. }));
+        let (_, zero_bits, _) = w.pow();
+        assert_eq!(zero_bits, 0);
         for _ in 0..nsq[lvl] {
-            lig_raw[lvl].push(expect_sample(step(&mut w, &mut lm)));
+            lig_raw[lvl].push(w.sample());
         }
         let alphalen = flare::pcs::ligerito::ceil_log2(queries[lvl]);
         for _ in 0..alphalen {
-            expect_sample(step(&mut w, &mut lm));
+            w.sample();
         }
         if lvl != r {
-            lig_sc.push(expect_obs(step(&mut w, &mut lm)));
-            lig_sc.push(expect_obs(step(&mut w, &mut lm)));
+            lig_sc.push(observe(&mut w));
+            lig_sc.push(observe(&mut w));
         }
-        expect_sample(step(&mut w, &mut lm)); // beta
+        w.sample(); // beta
     }
     assert_eq!(w.i, ops.len(), "ligerito walk must consume the whole trace");
 
     // ---- hints ----
-    // fpb: the grind digest bits. Base = compress(cv_after_alpha, [0, POW]).
-    let mut m = seed.clone();
-    // replay through the alpha sample (9 observes + 1 sample).
-    m.replay(&ops[0..10]);
-    let base = compress(m.cv, [F128::ZERO, F128::new(5, 0)]);
-    let gdig = compress(base, [F128::new(nonce, 0), F128::new(5, 0)])[0];
     // bcv: the deferred bytecode evaluations, block/coord order.
     let mut bcv = Vec::new();
     let mut kbc = 0usize;
@@ -926,19 +842,19 @@ fn gen_verify(
     // checkpoint cvs after each phase.
     let mut m = seed.clone();
     m.replay(&ops[0..phase_a_end]);
-    let cvchk_a = m.cv[0];
+    let cvchk_a = m.state()[0];
     let mut m = seed.clone();
     m.replay(&ops[0..phase_b_end]);
-    let cvchk_b = m.cv[0];
+    let cvchk_b = m.state()[0];
     let mut m = seed.clone();
     m.replay(&ops[0..phase_c_end]);
-    let cvchk_c = m.cv[0];
+    let cvchk_c = m.state()[0];
     let mut m = seed.clone();
     m.replay(&ops[0..phase_d_end]);
-    let cvchk_d = m.cv[0];
+    let cvchk_d = m.state()[0];
     let mut m = seed.clone();
     m.replay(&ops[0..phase_e1_end]);
-    let cvchk_e1 = m.cv[0];
+    let cvchk_e1 = m.state()[0];
 
     // ---- placeholder map ----
     let ints = |v: &[usize]| format!("[{}]", v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(", "));
@@ -1285,11 +1201,9 @@ fn gen_verify(
     ps("YRS", yrs.to_string());
     ps("KBC", kbc.to_string());
     ps("KBCV", (kbc + 3).to_string());
-    let mut base = Mirror { cv: [F128::ZERO; 2] };
-    base.absorb_bytes(b"leanvm-b/transcript/v1");
-    base.absorb_bytes(b"leanvm-b");
-    ps("SEEDB0", u(base.cv[0]).to_string());
-    ps("SEEDB1", u(base.cv[1]).to_string());
+    let label_state = Sponge::new(b"leanvm-b", &[]).state();
+    ps("SEEDB0", u(label_state[0]).to_string());
+    ps("SEEDB1", u(label_state[1]).to_string());
     ps("DIG0", u(dig[0]).to_string());
     ps("DIG1", u(dig[1]).to_string());
     ps("DELTA", flds(&flare::pcs::ring_switch::trace_dual_basis()[..]));

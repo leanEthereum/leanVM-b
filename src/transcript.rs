@@ -81,7 +81,7 @@ fn pow_bits_ok(base: [F128; 2], nonce: u64, bits: u32) -> bool {
 /// SHA-256, inputs are GF(2^128) field elements, and — because every absorb is
 /// domain-tagged per compression — no explicit double-hash ratchet is needed.
 #[derive(Clone)]
-struct Sponge {
+pub struct Sponge {
     /// The 256-bit chaining value: a Merkle–Damgård hash of the transcript so far.
     cv: [F128; 2],
 }
@@ -91,7 +91,7 @@ impl Sponge {
     /// input). Both sides seed identically, so the whole statement is bound before
     /// any challenge — there is no mid-protocol "observe public data" step to get
     /// wrong (or forget).
-    fn new(label: &[u8], statement: &[F128]) -> Self {
+    pub fn new(label: &[u8], statement: &[F128]) -> Self {
         let mut s = Self { cv: [F128::ZERO, F128::ZERO] };
         s.absorb_bytes(b"leanvm-b/transcript/v1");
         s.absorb_bytes(label);
@@ -102,13 +102,13 @@ impl Sponge {
     }
 
     /// Absorb one scalar: `cv ← compress(cv, (x, DS_SCALAR))`.
-    fn observe(&mut self, x: F128) {
+    pub fn observe(&mut self, x: F128) {
         self.cv = compress(self.cv, [x, DS_SCALAR]);
     }
 
     /// Absorb a byte string: a length frame then its 16-byte words as tagged
     /// blocks, so a field element, a raw integer, and a byte string cannot alias.
-    fn absorb_bytes(&mut self, bytes: &[u8]) {
+    pub fn absorb_bytes(&mut self, bytes: &[u8]) {
         self.cv = compress(self.cv, [F128::new(bytes.len() as u64, 0), DS_LEN]);
         for chunk in bytes.chunks(16) {
             let mut buf = [0u8; 16];
@@ -126,7 +126,7 @@ impl Sponge {
     /// domain-separated from absorbs, so a challenge cannot be confused with a
     /// continued absorb. In Fiat–Shamir everything is public; soundness comes from
     /// each challenge being a random-oracle image of the entire prior transcript.
-    fn sample(&mut self) -> F128 {
+    pub fn sample(&mut self) -> F128 {
         let out = compress(self.cv, [F128::ZERO, DS_SQUEEZE]);
         self.cv = out;
         out[0]
@@ -139,6 +139,40 @@ impl Sponge {
     }
 
     /// Bind a grinding nonce into the state (both sides, so they stay in lockstep).
+    /// A fresh chain at the zero state: the guest-side aggregation and export
+    /// transcripts start here (no label), and the harness mirrors them.
+    pub fn empty() -> Self {
+        Self { cv: [F128::ZERO; 2] }
+    }
+
+    /// The current 256-bit chaining value.
+    pub fn state(&self) -> [F128; 2] {
+        self.cv
+    }
+
+    /// The grinding digest this state yields for `nonce` (read-only preview;
+    /// [`Self::verify_pow`] is the mutating check).
+    pub fn pow_digest(&self, nonce: u64) -> F128 {
+        compress(self.pow_base(), [F128::new(nonce, 0), DS_POW])[0]
+    }
+
+    /// Re-run recorded verifier transcript ops through this sponge, asserting
+    /// every recorded sample (and grind) matches what this state re-derives —
+    /// any prefix of a real verify trace yields the exact state reached there.
+    pub fn replay(&mut self, ops: &[TraceOp]) {
+        for op in ops {
+            match op {
+                TraceOp::StreamObserve(x) | TraceOp::Observe(x) => self.observe(*x),
+                TraceOp::AbsorbBytes(b) => self.absorb_bytes(b),
+                TraceOp::Sample(v) => assert_eq!(self.sample(), *v, "trace replay diverged"),
+                TraceOp::Pow { nonce, bits, .. } => {
+                    assert!(self.verify_pow(*nonce, *bits), "trace replay: grind failed")
+                }
+                TraceOp::StreamRaw(_) | TraceOp::Opening => {}
+            }
+        }
+    }
+
     fn absorb_nonce(&mut self, nonce: u64) {
         self.cv = compress(self.cv, [F128::new(nonce, 0), DS_POW]);
     }
@@ -184,7 +218,7 @@ impl Sponge {
     /// PoW against the current state, then bind it regardless (so the sponge stays
     /// in lockstep with an honest prover — a failed check rejects at the call
     /// site). `bits = 0` accepts only the canonical nonce `0`.
-    fn verify_pow(&mut self, nonce: u64, bits: u32) -> bool {
+    pub fn verify_pow(&mut self, nonce: u64, bits: u32) -> bool {
         let base = self.pow_base();
         let ok = if bits == 0 { nonce == 0 } else { pow_bits_ok(base, nonce, bits) };
         self.absorb_nonce(nonce);
@@ -326,7 +360,10 @@ pub enum TraceOp {
     /// `absorb_bytes` (labels, roots).
     AbsorbBytes(Vec<u8>),
     Sample(F128),
-    Pow { nonce: u64, bits: u32 },
+    /// A grinding check: the nonce, the required bits, and the digest the
+    /// pre-absorb state yields for that nonce (so trace consumers never need
+    /// to track sponge state in lockstep).
+    Pow { nonce: u64, bits: u32, digest: F128 },
     /// `next_opening` (the Ligerito hint channel).
     Opening,
 }
@@ -450,7 +487,7 @@ impl<'a> VerifierState<'a> {
     /// stays in lockstep). Rejects a proof that skipped or under-did the grind.
     pub fn grind_check(&mut self, bits: u32) -> Result<(), Error> {
         let nonce = self.take_raw()?.lo;
-        trace(|| TraceOp::Pow { nonce, bits });
+        trace(|| TraceOp::Pow { nonce, bits, digest: self.sponge.pow_digest(nonce) });
         if self.sponge.verify_pow(nonce, bits) {
             Ok(())
         } else {
@@ -520,7 +557,7 @@ impl Challenger for VerifierState<'_> {
         self.sponge.grind_pow(bits)
     }
     fn verify_pow(&mut self, nonce: u64, bits: u32) -> bool {
-        trace(|| TraceOp::Pow { nonce, bits });
+        trace(|| TraceOp::Pow { nonce, bits, digest: self.sponge.pow_digest(nonce) });
         self.sponge.verify_pow(nonce, bits)
     }
 }
