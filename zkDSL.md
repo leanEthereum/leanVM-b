@@ -296,8 +296,15 @@ extra `MUL` for the `buf·i` pointer, but a **compile-time g-power** offset —
 `buf[1]`, `buf[GEN ** k]`, or a cursor advanced by `× GEN ** m` — folds into
 the `DEREF`'s address immediate for free: no `MUL`, no `SET`, and the cursor
 arithmetic itself vanishes (so a `× GEN` walk over consecutive cells is zero
-instructions). There are no bounds checks — the buffer is a region convention,
-not a checked type.
+instructions).
+
+**Compile-time indices are bounds-checked.** When the whole index is a
+compile-time exponent and the pointer resolves to a declared `HeapBuf`
+(directly, or through shifted aliases like `row = buf * GEN ** k`), the
+compiler rejects `index >= size` — same for the spans of `hint_witness` and
+`blake3` slices. **Runtime** indices are not checked (their value is unknown
+at compile time): there the buffer remains a region convention, and a stray
+access surfaces at proving time as a write-once conflict or wild deref.
 
 ### `StackBuf(n)` — frame-cell runs, indexed by compile-time integers
 

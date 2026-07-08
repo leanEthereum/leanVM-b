@@ -117,3 +117,49 @@ fn stack_buf_loop_capture_rejected() {
     let src = "def main():\n    h = StackBuf(2)\n    h[0] = 1\n    h[1] = 2\n    for i in mul_range(1, GEN ** 4):\n        x = h[0]\n    return\n";
     let _ = compile(&parse(src).expect("parse"));
 }
+
+/// A compile-time heap index past the buffer's declared size is a compile
+/// error, not a runtime wild deref.
+#[test]
+#[should_panic(expected = "heap index 8 out of bounds for `hb` (HeapBuf size 8)")]
+fn heap_index_oob_rejected() {
+    let src = "def main():\n    hb = HeapBuf(8)\n    x = hb[GEN ** 8]\n    assert x == x\n    return\n";
+    let _ = compile(&parse(src).expect("parse"));
+}
+
+/// The bound follows shifted aliases back to the original buffer: a pointer
+/// alias `row = hb * GEN ** k` checks `row[GEN ** j]` against size − k.
+#[test]
+#[should_panic(expected = "heap index 9 out of bounds for `hb` (HeapBuf size 8)")]
+fn heap_alias_index_oob_rejected() {
+    let src = "def main():\n    hb = HeapBuf(8)\n    row = hb * GEN ** 6\n    x = row[GEN ** 3]\n    assert x == x\n    return\n";
+    let _ = compile(&parse(src).expect("parse"));
+}
+
+/// A hint slice whose end exceeds the buffer is rejected at compile time.
+#[test]
+#[should_panic(expected = "heap slice 0:9 out of bounds for `hb` (HeapBuf size 8)")]
+fn heap_hint_slice_oob_rejected() {
+    let src = "def main():\n    hb = HeapBuf(8)\n    hint_witness(hb[0:9], \"w\")\n    x = hb[GEN ** 0]\n    assert x == x\n    return\n";
+    let _ = compile(&parse(src).expect("parse"));
+}
+
+/// A blake3 heap slice straddling the buffer end is rejected (the span is 2
+/// cells, so the last valid start is size − 2).
+#[test]
+#[should_panic(expected = "heap slice 7:9 out of bounds for `hb` (HeapBuf size 8)")]
+fn heap_blake3_slice_oob_rejected() {
+    let src = "def main():\n    hb = HeapBuf(8)\n    hb[GEN ** 7] = 5\n    out = StackBuf(2)\n    blake3(hb[7:9], hb[7:9], out)\n    return\n";
+    let _ = compile(&parse(src).expect("parse"));
+}
+
+/// The last in-bounds index and a full-size slice still compile and run.
+#[test]
+fn heap_index_boundary_ok() {
+    warm_setup(1);
+    let src = "def main():\n    hb = HeapBuf(8)\n    hb[GEN ** 7] = 5\n    row = hb * GEN ** 4\n    y = row[GEN ** 3]\n    assert y == 5\n    return\n";
+    let program = compile(&parse(src).expect("parse"));
+    let pi = [F128::new(3, 0), F128::new(4, 0)];
+    let (proof, _) = prove(&program, pi);
+    verify(&program, &pi, &proof).expect("boundary access verifies");
+}

@@ -59,6 +59,10 @@ struct FnLower<'a> {
     code: Vec<LInstr>,
     one_off: Option<Off>,
     const_pool: HashMap<(u64, u64), Off>,
+    /// Declared size of each `HeapBuf`, keyed by its pointer cell. Shifted
+    /// aliases resolve to the same base cell through their gaddr, so a
+    /// compile-time index checks against the ORIGINAL buffer's bound.
+    heap_sizes: HashMap<Off, u128>,
     /// The cell holding this function's own `fp`, materialized lazily
     /// ([`Self::self_fp`]) — local (`if`/`else`) jumps reload the frame
     /// pointer on the taken branch.
@@ -616,6 +620,7 @@ impl FnLower<'_> {
                         }
                     } else {
                         let len = hi - lo;
+                        self.check_heap_bound(arr, lo as u128, len as u128);
                         let (ptr, lo) = self.heap_base(arr, lo as u128);
                         Hint::WitnessHeap { name, ptr, lo, len }
                     }
@@ -734,6 +739,7 @@ impl FnLower<'_> {
             }
             Expr::HeapBuf(n) => {
                 let arr = self.fresh();
+                self.heap_sizes.insert(arr, *n as u128);
                 // Allocate before the next instruction reads the pointer.
                 self.pending.push(Hint::AllocBuffer {
                     ptr: arr,
@@ -948,9 +954,9 @@ impl FnLower<'_> {
                         assert!(hi <= size, "slice {lo}:{hi} out of bounds (StackBuf size {size})");
                         B3Operand::Stack(base + lo)
                     } else {
-                        // A heap slice (no compile-time size to check — heap
-                        // indexing never has one): fold `arr`'s shift and `lo`
-                        // into the pointer offset.
+                        // A heap slice: fold `arr`'s shift and `lo` into the
+                        // pointer offset, checking the 2-cell span.
+                        self.check_heap_bound(arr, lo as u128, 2);
                         let (ptr, lo) = self.heap_base(arr, lo as u128);
                         B3Operand::Heap { ptr, lo }
                     }
@@ -1158,10 +1164,36 @@ impl FnLower<'_> {
         }
     }
 
+    /// Compile-time bounds check: when `arr` resolves to a sized `HeapBuf`
+    /// (directly or through shifted aliases) and the whole index is the
+    /// compile-time exponent `exp`, reject `exp + span > size`. Runtime
+    /// indices are not checked (their value is not known here).
+    fn check_heap_bound(&self, arr: &Expr, extra: u128, span: u128) {
+        let Some(ga) = self.gaddr_of(arr) else { return };
+        let (Some(base), Some(exp)) = (ga.base, ga.exp.checked_add(extra)) else { return };
+        let Some(&size) = self.heap_sizes.get(&base) else { return };
+        if exp + span > size {
+            let name = self
+                .vars
+                .iter()
+                .find(|(_, c)| **c == base)
+                .map(|(n, _)| n.as_str())
+                .unwrap_or("?");
+            if span == 1 {
+                panic!("heap index {exp} out of bounds for `{name}` (HeapBuf size {size})");
+            }
+            panic!(
+                "heap slice {exp}:{} out of bounds for `{name}` (HeapBuf size {size})",
+                exp + span
+            );
+        }
+    }
+
     /// Address `arr·g^extra` as `(base_cell, β)`, folding `arr`'s symbolic shift
     /// and the constant `extra` into `β`. Falls back to a materialized pointer
     /// (`β = 0`) when there is no runtime base or the offset exceeds [`FOLD_MAX`].
     fn heap_base(&mut self, arr: &Expr, extra: u128) -> (Off, u32) {
+        self.check_heap_bound(arr, extra, 1);
         if let Some(ga) = self.gaddr_of(arr) {
             if let (Some(base), Some(exp)) = (ga.base, ga.exp.checked_add(extra)) {
                 if exp <= FOLD_MAX {
@@ -1978,6 +2010,7 @@ pub(crate) fn lower_func(
         code: Vec::new(),
         one_off: None,
         const_pool: HashMap::new(),
+        heap_sizes: HashMap::new(),
         self_fp_off: None,
         bounds: HashMap::new(),
         gaddrs: HashMap::new(),
