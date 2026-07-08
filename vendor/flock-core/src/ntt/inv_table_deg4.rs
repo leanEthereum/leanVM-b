@@ -159,13 +159,19 @@ impl InvNttTableSToV8Gf8 {
         }
     }
 
-    /// Dispatch helper — uses NEON when available, scalar otherwise.
+    /// Dispatch helper — NEON on aarch64 / SSE2 on x86_64, scalar otherwise.
     #[inline]
     pub fn apply(&self, bytes: &[u8], out: &mut [F8]) {
         #[cfg(target_arch = "aarch64")]
         if self.ell_out >= 16 {
             // SAFETY: aarch64 statically guarantees NEON; the method validates lengths.
             unsafe { self.apply_neon_unchecked(bytes, out) };
+            return;
+        }
+        #[cfg(target_arch = "x86_64")]
+        if self.ell_out >= 16 {
+            // SAFETY: x86_64 statically guarantees SSE2; the method validates lengths.
+            unsafe { self.apply_sse2_unchecked(bytes, out) };
             return;
         }
         self.apply_scalar(bytes, out);
@@ -213,6 +219,57 @@ impl InvNttTableSToV8Gf8 {
                         let v = vld1q_u8(row_b.add(sc * 16));
                         let dst = out_ptr.add(c * 16);
                         vst1q_u8(dst, veorq_u8(vld1q_u8(dst), v));
+                    }
+                }
+            }
+        }
+    }
+
+    /// SSE2 variant of `apply` — the x86 twin of [`Self::apply_neon_unchecked`].
+    /// Same 16-byte-chunk structure; the odd-`b` within-chunk half-swap is
+    /// `_mm_shuffle_epi32::<0b01_00_11_10>` (swap the two 64-bit halves).
+    ///
+    /// # Safety
+    /// Uses `core::arch::x86_64` SSE2 intrinsics (baseline on x86_64); only
+    /// call on `x86_64`. Slice lengths must match the table shape (asserted).
+    #[cfg(target_arch = "x86_64")]
+    pub unsafe fn apply_sse2_unchecked(&self, bytes: &[u8], out: &mut [F8]) {
+        use core::arch::x86_64::*;
+        assert_eq!(bytes.len(), self.n_chunks);
+        assert_eq!(out.len(), self.ell_out);
+        let n128 = self.ell_out / 16; // 16 for ell_out = 256
+        let base = self.data.as_ptr() as *const u8;
+        let out_ptr = out.as_mut_ptr() as *mut u8;
+
+        unsafe {
+            // b = 0: straight copy from row 0.
+            let row0 = base.add(bytes[0] as usize * self.ell_out);
+            for c in 0..n128 {
+                _mm_storeu_si128(
+                    out_ptr.add(c * 16) as *mut __m128i,
+                    _mm_loadu_si128(row0.add(c * 16) as *const __m128i),
+                );
+            }
+
+            // b ≥ 1: XOR with table row[bytes[b]], permuted per (b >> 1, b & 1).
+            for b in 1..self.n_chunks {
+                let b_high = b >> 1;
+                let b_odd = (b & 1) != 0;
+                let row_b = base.add(bytes[b] as usize * self.ell_out);
+                if b_odd {
+                    for c in 0..n128 {
+                        let sc = c ^ b_high;
+                        let v = _mm_loadu_si128(row_b.add(sc * 16) as *const __m128i);
+                        let v_swapped = _mm_shuffle_epi32::<0b01_00_11_10>(v);
+                        let dst = out_ptr.add(c * 16) as *mut __m128i;
+                        _mm_storeu_si128(dst, _mm_xor_si128(_mm_loadu_si128(dst), v_swapped));
+                    }
+                } else {
+                    for c in 0..n128 {
+                        let sc = c ^ b_high;
+                        let v = _mm_loadu_si128(row_b.add(sc * 16) as *const __m128i);
+                        let dst = out_ptr.add(c * 16) as *mut __m128i;
+                        _mm_storeu_si128(dst, _mm_xor_si128(_mm_loadu_si128(dst), v));
                     }
                 }
             }

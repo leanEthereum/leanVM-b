@@ -2412,6 +2412,32 @@ impl RoundQuad {
 ///
 /// Uses a SINGLE combined basis poly. (Previously took `&[Vec<F128>]` and
 /// summed at every pair index; collapsing to one basis happens at glue time.)
+/// One message-pair term, batched: `(f0·b0, (f0+f1)·(b0+b1))` as a 2-wide
+/// CLMUL on x86_64 with VPCLMULQDQ, scalar muls elsewhere.
+#[inline]
+fn msg_pair_products(f0: F128, f1: F128, b0: F128, b1: F128) -> (F128, F128) {
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "vpclmulqdq",
+        target_feature = "avx2"
+    ))]
+    {
+        // SAFETY: vpclmulqdq+avx2 statically enabled by the cfg gate.
+        let p = unsafe {
+            crate::field::gf2_128::x86_64::ghash_mul_vec2_clmul([f0, f0 + f1], [b0, b0 + b1])
+        };
+        (p[0], p[1])
+    }
+    #[cfg(not(all(
+        target_arch = "x86_64",
+        target_feature = "vpclmulqdq",
+        target_feature = "avx2"
+    )))]
+    {
+        (f0 * b0, (f0 + f1) * (b0 + b1))
+    }
+}
+
 fn round_msg_lsb(f: &[F128], b: &[F128]) -> SumcheckMessage {
     use rayon::prelude::*;
     let n = f.len();
@@ -2424,12 +2450,9 @@ fn round_msg_lsb(f: &[F128], b: &[F128]) -> SumcheckMessage {
         let mut u_0 = F128::ZERO;
         let mut u_2 = F128::ZERO;
         for j in 0..half {
-            let f0 = f[2 * j];
-            let f1 = f[2 * j + 1];
-            let b0 = b[2 * j];
-            let b1 = b[2 * j + 1];
-            u_0 += f0 * b0;
-            u_2 += (f0 + f1) * (b0 + b1);
+            let (p0, p2) = msg_pair_products(f[2 * j], f[2 * j + 1], b[2 * j], b[2 * j + 1]);
+            u_0 += p0;
+            u_2 += p2;
         }
         return SumcheckMessage { u_0, u_2 };
     }
@@ -2437,13 +2460,7 @@ fn round_msg_lsb(f: &[F128], b: &[F128]) -> SumcheckMessage {
     let (u_0, u_2) = (0..half)
         .into_par_iter()
         .with_min_len(PAR_THRESHOLD / 4)
-        .map(|j| {
-            let f0 = f[2 * j];
-            let f1 = f[2 * j + 1];
-            let b0 = b[2 * j];
-            let b1 = b[2 * j + 1];
-            (f0 * b0, (f0 + f1) * (b0 + b1))
-        })
+        .map(|j| msg_pair_products(f[2 * j], f[2 * j + 1], b[2 * j], b[2 * j + 1]))
         .reduce(
             || (F128::ZERO, F128::ZERO),
             |(a0, a2), (b0, b2)| (a0 + b0, a2 + b2),
@@ -2546,32 +2563,57 @@ fn partial_eval_lsb_one(evals: &mut Vec<F128>, r: F128) {
 ///
 /// Returns `(folded_f, folded_b, next_msg)` where `next_msg = round_msg_lsb
 /// (folded_f, folded_b)`. Bit-identical to the unfused sequence.
+/// Fold one `(f, b)` pair against the same `r`, in the one-mul char-2
+/// interpolation form `x0 + r·(x0+x1)` (bit-identical to `x0·(1+r) + x1·r`,
+/// half the muls). The two streams' muls share `r`, so on x86_64 with
+/// VPCLMULQDQ they run as one 2-wide CLMUL.
+#[inline]
+fn fold_fb_pair(f0: F128, f1: F128, b0: F128, b1: F128, r: F128) -> (F128, F128) {
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "vpclmulqdq",
+        target_feature = "avx2"
+    ))]
+    {
+        // SAFETY: vpclmulqdq+avx2 statically enabled by the cfg gate.
+        let p = unsafe {
+            crate::field::gf2_128::x86_64::ghash_mul_vec2_clmul([r, r], [f0 + f1, b0 + b1])
+        };
+        (f0 + p[0], b0 + p[1])
+    }
+    #[cfg(not(all(
+        target_arch = "x86_64",
+        target_feature = "vpclmulqdq",
+        target_feature = "avx2"
+    )))]
+    {
+        (f0 + r * (f0 + f1), b0 + r * (b0 + b1))
+    }
+}
+
 fn fold_and_msg_lsb(f: &[F128], b: &[F128], r: F128) -> (Vec<F128>, Vec<F128>, SumcheckMessage) {
     use rayon::prelude::*;
     let n = f.len();
     debug_assert!(n.is_power_of_two() && n >= 2);
     debug_assert_eq!(b.len(), n);
     let half = n / 2;
-    let one_plus_r = F128::ONE + r;
 
     const PAR_THRESHOLD: usize = 4096;
     if half < PAR_THRESHOLD {
         let mut nf = Vec::with_capacity(half);
         let mut nb = Vec::with_capacity(half);
         for j in 0..half {
-            nf.push(f[2 * j] * one_plus_r + f[2 * j + 1] * r);
-            nb.push(b[2 * j] * one_plus_r + b[2 * j + 1] * r);
+            let (nfj, nbj) = fold_fb_pair(f[2 * j], f[2 * j + 1], b[2 * j], b[2 * j + 1], r);
+            nf.push(nfj);
+            nb.push(nbj);
         }
         let mut u_0 = F128::ZERO;
         let mut u_2 = F128::ZERO;
         let mut k = 0;
         while k + 1 < half {
-            let f0 = nf[k];
-            let f1 = nf[k + 1];
-            let b0 = nb[k];
-            let b1 = nb[k + 1];
-            u_0 += f0 * b0;
-            u_2 += (f0 + f1) * (b0 + b1);
+            let (p0, p2) = msg_pair_products(nf[k], nf[k + 1], nb[k], nb[k + 1]);
+            u_0 += p0;
+            u_2 += p2;
             k += 2;
         }
         return (nf, nb, SumcheckMessage { u_0, u_2 });
@@ -2595,17 +2637,15 @@ fn fold_and_msg_lsb(f: &[F128], b: &[F128], r: F128) -> (Vec<F128>, Vec<F128>, S
             // Fold this slice, then pair up the just-folded values for the msg.
             for t in 0..len {
                 let j = base + t;
-                fc[t] = f[2 * j] * one_plus_r + f[2 * j + 1] * r;
-                bc[t] = b[2 * j] * one_plus_r + b[2 * j + 1] * r;
+                let (nfj, nbj) = fold_fb_pair(f[2 * j], f[2 * j + 1], b[2 * j], b[2 * j + 1], r);
+                fc[t] = nfj;
+                bc[t] = nbj;
             }
             let mut k = 0;
             while k + 1 < len {
-                let f0 = fc[k];
-                let f1 = fc[k + 1];
-                let b0 = bc[k];
-                let b1 = bc[k + 1];
-                u0 += f0 * b0;
-                u2 += (f0 + f1) * (b0 + b1);
+                let (p0, p2) = msg_pair_products(fc[k], fc[k + 1], bc[k], bc[k + 1]);
+                u0 += p0;
+                u2 += p2;
                 k += 2;
             }
             (u0, u2)
