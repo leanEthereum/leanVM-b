@@ -917,6 +917,9 @@ fn gen_verify(
     ps("YR_LOG_N", yr_log_n.to_string());
     ps("YR_LEN", (1usize << yr_log_n).to_string());
     ps("LENRIS", lenris.to_string());
+    ps("MBAKED", stack_mu.to_string());
+    ps("NMCAND", "1".to_string());
+    ps("IGMIN", u(g_pow(stack_mu).inv()).to_string());
     ps("MAXNI", numinter.iter().max().unwrap().to_string());
     ps("MAXQ", queries.iter().max().unwrap().to_string());
     ps("MAXNSQ", nsq.iter().max().unwrap().to_string());
@@ -1038,6 +1041,7 @@ fn gen_verify(
         ("rtb".to_string(), rootb),
         ("fnn".to_string(), fnv),
         ("annmus".to_string(), smu.iter().map(|&m| g_pow(m)).collect()),
+        ("annm".to_string(), vec![g_pow(stack_mu)]),
         ("annexp".to_string(), {
             let mut v = vec![g_pow(log_mem)];
             v.extend(l.taus.iter().map(|&t| g_pow(t)));
