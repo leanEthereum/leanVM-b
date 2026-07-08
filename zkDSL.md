@@ -201,10 +201,10 @@ pairing dispatches a runtime index to a const-indexed helper:
 r = match_range(log(x), range(0, 4), lambda i: hash_pair(buf, i))
 ```
 
-### `@unroll` — inline a function at its call sites
+### `@inline` — inline a function at its call sites
 
 ```python
-@unroll
+@inline
 def combine(a, b, k: Const):
     s = StackBuf(2)
     if k % 2 == 0:      # a folded `if` (see below): baked per Const value
@@ -215,20 +215,20 @@ def combine(a, b, k: Const):
     return s[k % 2]
 ```
 
-An `@unroll` function is **expanded at each call site** instead of emitting a
+An `@inline` function is **expanded at each call site** instead of emitting a
 real call — no frame, no argument/return `DEREF`s, no call/return `JUMP`s. The
 body must be a single **tail** `return`; it may contain `blake3`, `if`, and
 `unroll`, but not a call to another (user) function, a `for`/`match`, or any
 nested/early `return`. It is never lowered standalone; a call to a
-non-`@unroll` function is unchanged. Named for the DSL's compile-time
-expansion verb (cf. `unroll(a, b)` for loops).
+non-`@inline` function is unchanged. (Distinct from `unroll(a, b)`, which
+replicates a loop body: that one really does unroll.)
 
-An `@unroll` function may also **return a `StackBuf`**: the caller's binding
+An `@inline` function may also **return a `StackBuf`**: the caller's binding
 aliases the returned cell run (zero copies), and `StackBuf` arguments alias
 likewise. This makes chained-state helpers free, the MD-chain idiom:
 
 ```python
-@unroll
+@inline
 def obs(cb, x):          # sponge absorb: cb <- compress(cb, (x, SCALAR))
     tg = StackBuf(2)
     tg[0] = x
@@ -243,7 +243,7 @@ cvb = obs(cvb, v)        # exactly 3 ops: two tag writes + one blake3
 Because the body runs in the *caller's* frame, a `Const` parameter whose `if`s
 fold (below) bakes straight-line, per-case code — the idiom for a `match_range`
 arm that must specialize on the arm value. The trade-off is frame cells: each
-call site gets its own copy, so `@unroll` pays off for small, hot callees;
+call site gets its own copy, so `@inline` pays off for small, hot callees;
 inlining a large body at many sites grows the committed witness (more data
 memory), so it is opt-in, not automatic.
 
@@ -419,7 +419,7 @@ is sugar for an `else` holding a nested `if`.
 When **both sides are compile-time integers** (e.g. after a `Const` parameter
 is substituted — `if k % 2 == 0:`), the condition is known at compile time and
 the `if` **folds** to just the taken branch: no `XOR`, no `JUMP`, no `self-fp`.
-This is what lets an `@unroll` function bake different straight-line code per
+This is what lets an `@inline` function bake different straight-line code per
 `Const` value.
 
 Two write-once-flavored rules:
@@ -608,7 +608,7 @@ entry — repeated lines with the same name are its successive entries:
 | `if a == b: …` | 3 (+2 to skip a non-empty `else`; +2 amortized `self-fp` per branching function); **0 if the condition is compile-time** |
 | `match log(x): …` | ≈ 7, independent of the case count |
 | `… = match_range(log(x), …)` | the `match` + the arm; results written into the targets directly. Uniform-call arms (`lambda k: f(a, b, k)`) **fuse**: one shared frame + dispatch to entry, each arm just `SET`+`JUMP` |
-| function call | ≈ `n_args + n_returns + 4` (0 when the callee is `@unroll`) |
+| function call | ≈ `n_args + n_returns + 4` (0 when the callee is `@inline`) |
 | `mul_range` iteration | body + ≈ 1 `MUL` + 1 `XOR` + call overhead |
 | `unroll` iteration | body only (compile-time replication) |
 | `blake3(a, b, out)` | 1; input words read in place (copies/zeros assembling an operand are forwarded, not emitted), +1 `DEREF` per heap input word, +1 `MUL` per runtime slice start |

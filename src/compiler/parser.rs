@@ -352,13 +352,13 @@ struct Parser {
 impl Parser {
     fn func(&mut self) -> Result<Func, String> {
         let (mut indent, mut line) = self.lines[self.i].clone();
-        // Optional `@unroll` decorator on its own line before `def`.
-        let unroll = if let Some(dec) = line.strip_prefix('@') {
-            if dec.trim() != "unroll" {
-                return Err(format!("unknown decorator `@{}` (only `@unroll`)", dec.trim()));
+        // Optional `@inline` decorator on its own line before `def`.
+        let inline = if let Some(dec) = line.strip_prefix('@') {
+            if dec.trim() != "inline" {
+                return Err(format!("unknown decorator `@{}` (only `@inline`)", dec.trim()));
             }
             self.i += 1;
-            (indent, line) = self.lines.get(self.i).cloned().ok_or("`@unroll` must precede a `def`")?;
+            (indent, line) = self.lines.get(self.i).cloned().ok_or("`@inline` must precede a `def`")?;
             true
         } else {
             false
@@ -402,7 +402,7 @@ impl Parser {
             const_params,
             n_ret,
             body,
-            unroll,
+            inline,
         })
     }
 

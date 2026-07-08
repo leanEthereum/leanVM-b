@@ -98,7 +98,7 @@ pub fn compile(ast: &Ast) -> Program {
         .find(|f| f.name == "main")
         .expect("program needs a `main`");
     assert!(!main.const_params.contains(&true), "main cannot take Const parameters");
-    assert!(!main.unroll, "main cannot be `@unroll`");
+    assert!(!main.inline, "main cannot be `@inline`");
     queue.push(main.clone());
     for f in &ast.funcs {
         if f.name != "main" {
@@ -118,9 +118,9 @@ pub fn compile(ast: &Ast) -> Program {
         let f = queue[i].clone();
         i += 1;
         // A function with Const parameters is a template (only its call-site
-        // specializations are lowered); an `@unroll` function is expanded at
+        // specializations are lowered); an `@inline` function is expanded at
         // each call site ([`FnLower::try_inline`]), never lowered standalone.
-        if f.const_params.contains(&true) || f.unroll {
+        if f.const_params.contains(&true) || f.inline {
             continue;
         }
         let low = lower_func(&f, &mut queue, &mut loop_ctr, &defs, &const_arrays);

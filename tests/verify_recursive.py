@@ -267,7 +267,7 @@ def decq(bp, v, qfp, qbpp, d: Const, per: Const):
     return
 
 
-@unroll
+@inline
 def foldyr(yp, weights, wbase: Const):
     # Weighted fold of the yr multilinear (see tests/ligerito_recursive.py).
     l0 = StackBuf(YR_LEN)
@@ -284,7 +284,7 @@ def foldyr(yp, weights, wbase: Const):
     return cursor[0]
 
 
-@unroll
+@inline
 def obs(cb, x):
     # Bind one scalar into the sponge chain: cb <- compress(cb, (x, SCALAR)).
     # Returns the successor StackBuf; the call site aliases it (zero copies).
@@ -296,7 +296,7 @@ def obs(cb, x):
     return nb
 
 
-@unroll
+@inline
 def absorb(cb, x, tag):
     # Tagged absorb (length frames, byte words, grinding nonces).
     tg = StackBuf(2)
@@ -307,7 +307,7 @@ def absorb(cb, x, tag):
     return nb
 
 
-@unroll
+@inline
 def squeeze(cb, zt):
     # Ratchet: the compress output is the new state; word 0 is the challenge.
     nb = StackBuf(2)
@@ -315,7 +315,7 @@ def squeeze(cb, zt):
     return nb
 
 
-@unroll
+@inline
 def lag64(z, w, nbase: Const):
     # The 64 phi8-domain Lagrange NUMERATORS at z, nodes PHI[nbase..nbase+64]:
     # w[i] = prod_{j != i} (z + PHI[nbase + j]). Callers multiply by their
@@ -333,7 +333,7 @@ def lag64(z, w, nbase: Const):
     return
 
 
-@unroll
+@inline
 def eqtree(rp, out, nc: Const):
     # The eq tensor of the nc challenges at rp[0..nc], built by doubling into
     # out (size 2^(nc+1) - 2); the final 2^nc values start at offset 2^nc - 2.

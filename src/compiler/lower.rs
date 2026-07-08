@@ -77,7 +77,7 @@ struct FnLower<'a> {
     /// (e.g. a running weight `CHAIN_LENGTH^i`). Kept virtual — folded through
     /// constant field arithmetic and materialized (one `SET`) only when used.
     fconsts: HashMap<String, F128>,
-    /// While inlining an `@unroll` call ([`Self::try_inline`]), the destination
+    /// While inlining an `@inline` call ([`Self::try_inline`]), the destination
     /// cells its tail `return` binds into instead of emitting a return jump.
     /// `None` outside an inlined body.
     inline_ret: Option<Vec<Off>>,
@@ -530,7 +530,7 @@ impl FnLower<'_> {
     fn lower_if(&mut self, eq: bool, lhs: &Expr, rhs: &Expr, then: &[Stmt], els: &[Stmt]) {
         // Compile-time condition (both sides compile-time integers, e.g. after
         // `Const`-argument substitution): fold to the taken branch, emitting no
-        // test or jump. Lets `@unroll` arms bake per-case control flow. The
+        // test or jump. Lets `@inline` arms bake per-case control flow. The
         // taken branch is straight-line code (like an unroll iteration), so its
         // bindings persist — unlike a runtime branch, whose bindings are
         // branch-local (a runtime branch may not execute).
@@ -1249,7 +1249,7 @@ impl FnLower<'_> {
     }
 
     /// Evaluate `callee(args)` into `dsts` — inlining the callee when it is
-    /// `@unroll` ([`Self::try_inline`]), else a real call.
+    /// `@inline` ([`Self::try_inline`]), else a real call.
     fn call_into(&mut self, callee: &str, args: &[Expr], dsts: &[Off]) {
         assert!(callee != "blake3", "blake3 is a statement, not a value-returning call");
         if !self.try_inline(callee, args, dsts) {
@@ -1285,22 +1285,22 @@ impl FnLower<'_> {
         Some((rt_params, rt_args, body, def.n_ret))
     }
 
-    /// Inline an `@unroll` `callee(args)` into the current frame, binding its
+    /// Inline an `@inline` `callee(args)` into the current frame, binding its
     /// return values straight into `dsts` — no frame setup, no argument/return
-    /// plumbing, no call/return jumps. Returns `false` for a non-`@unroll`
-    /// callee (the caller emits a real call). Panics if an `@unroll` function
+    /// plumbing, no call/return jumps. Returns `false` for a non-`@inline`
+    /// callee (the caller emits a real call). Panics if an `@inline` function
     /// isn't inlinable ([`body_inlinable`]) or its `Const` args don't resolve.
     fn try_inline(&mut self, callee: &str, args: &[Expr], dsts: &[Off]) -> bool {
-        if !self.defs.get(callee).is_some_and(|d| d.unroll) {
+        if !self.defs.get(callee).is_some_and(|d| d.inline) {
             return false;
         }
         let (params, rt_args, body, n_ret) = self
             .specialized_body(callee, args)
-            .unwrap_or_else(|| panic!("`@unroll {callee}`: bad arity or unresolved Const argument"));
-        assert_eq!(n_ret, dsts.len(), "`@unroll {callee}` returns {n_ret} values, call binds {}", dsts.len());
+            .unwrap_or_else(|| panic!("`@inline {callee}`: bad arity or unresolved Const argument"));
+        assert_eq!(n_ret, dsts.len(), "`@inline {callee}` returns {n_ret} values, call binds {}", dsts.len());
         assert!(
             body_inlinable(&body),
-            "`@unroll {callee}` must be a single tail `return` with no call/loop/match (see body_inlinable)"
+            "`@inline {callee}` must be a single tail `return` with no call/loop/match (see body_inlinable)"
         );
         // Bind the params from the caller-scope arguments (symbolically where we
         // can, so a shifted-pointer arg keeps folding into `β`; a `StackBuf` arg
@@ -1420,7 +1420,7 @@ impl FnLower<'_> {
                 const_params,
                 n_ret: def.n_ret,
                 body,
-                unroll: false,
+                inline: false,
             });
         }
         (name, rt_args)
@@ -1695,10 +1695,10 @@ impl FnLower<'_> {
     }
 
     fn lower_return(&mut self, exprs: &[Expr]) {
-        // Inlined (`@unroll`): bind the return values into the caller's cells
+        // Inlined (`@inline`): bind the return values into the caller's cells
         // and fall through — the body's tail return, so no jump is needed.
         if let Some(dsts) = self.inline_ret.clone() {
-            // `return <stackbuf>` from an `@unroll` body: hand the caller the
+            // `return <stackbuf>` from an `@inline` body: hand the caller the
             // cell run itself (alias), not copies — the buffer was allocated
             // in the caller's frame, so it outlives the inline scope.
             if let [e] = exprs
@@ -1822,7 +1822,7 @@ impl FnLower<'_> {
             const_params,
             n_ret: 0,
             body: loop_body,
-            unroll: false,
+            inline: false,
         });
 
         // Enter the loop iff it runs at least once: compile-time for constant
