@@ -657,15 +657,13 @@ fn gen_verify(
     ps("TRICAP", (mumax * (mumax + 1) / 2 + mumax + 2).to_string());
     ps("PTSCAP", ((mumax + 1) * mumax).to_string());
     ps("SBLK", ints(&sblk));
-    ps("BKAPPA", ints(&bkappa));
-    ps("BSEL", ints(&bsel));
-    ps("BDELTA", ints(&bdelta));
+    ps("NB", bkappa.len().to_string());
     ps("BC0", ints(&bc0));
     ps("BCN", ints(&bcn));
     ps("CT", us(&ct));
     ps("CVAL", us(&cval));
     ps("FPV", us(&fpv));
-    let idxc: Vec<u128> = (0..mumax)
+    let idxc: Vec<u128> = (0..34)
         .map(|i| {
             let mut g2k = G;
             for _ in 0..i {
@@ -1136,6 +1134,29 @@ fn gen_verify(
         ("rtb".to_string(), rootb),
         ("fnn".to_string(), fnv),
         ("annmus".to_string(), smu.iter().map(|&m| g_pow(m)).collect()),
+        ("bkap".to_string(), bkappa.iter().map(|&k| g_pow(k)).collect()),
+        ("bq".to_string(), {
+            let side_of = |b: usize| (0..3).rev().find(|&s| b >= sblk[s]).unwrap();
+            bkappa.iter().enumerate().map(|(b, &k)| g_pow(smu[side_of(b)] - k)).collect()
+        }),
+        ("bselb".to_string(), {
+            let mut v = Vec::new();
+            for &s in &bsel {
+                for k in 0..mumax {
+                    v.push(F128::new(((s >> k) & 1) as u64, 0));
+                }
+            }
+            v
+        }),
+        ("bdel".to_string(), {
+            let mut v = Vec::new();
+            for &d in &bdelta {
+                for j in 0..33 {
+                    v.push(F128::new(((d >> j) & 1) as u64, 0));
+                }
+            }
+            v
+        }),
         ("annm".to_string(), vec![g_pow(stack_mu)]),
         ("annexp".to_string(), {
             let mut v = vec![g_pow(log_mem)];

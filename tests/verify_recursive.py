@@ -82,9 +82,7 @@ PTSCAP = PTSCAP_PLACEHOLDER
 # CV (the const value, else 0), FPV (its default-padding fingerprint value).
 # Per side: SALPHA selects (α, γ) for push/pull and (1, 0) for count.
 SBLK = SBLK_PLACEHOLDER
-BKAPPA = BKAPPA_PLACEHOLDER
-BSEL = BSEL_PLACEHOLDER
-BDELTA = BDELTA_PLACEHOLDER
+NB = NB_PLACEHOLDER
 BC0 = BC0_PLACEHOLDER
 BCN = BCN_PLACEHOLDER
 CT = CT_PLACEHOLDER
@@ -925,19 +923,45 @@ def verify_sub(pi_0, pi_1, delta_pows, dout):
     count_product = gkr_roots[GEN ** 2] * count_root_inv[GEN ** 0]
     assert count_product == 1
 
+    # ---- per-block shape data (hinted; the identities certify it) ----
+    # kappa and the side-quotient g^(mu_s - kappa) are range-checked and tied
+    # to each other against the hinted mu_s; selector and padding-delta bits
+    # are boolean-checked. Wrong values cannot satisfy the balance and
+    # decompose identities against the committed bus (and, downstream, the
+    # opening), so no further certification is needed.
+    bkap = HeapBuf(NB)
+    hint_witness(bkap[0:NB], "bkap")
+    bq = HeapBuf(NB)
+    hint_witness(bq[0:NB], "bq")
+    bselb = HeapBuf(NB * MUMAX)
+    hint_witness(bselb[0:NB * MUMAX], "bselb")
+    bdel = HeapBuf(NB * 33)
+    hint_witness(bdel[0:NB * 33], "bdel")
+    idxc_tab = HeapBuf(34)
+    for t in unroll(0, 34):
+        idxc_tab[GEN ** t] = IDXC[t]
+
     # ---- balance: push_root · d_pull == pull_root · d_push ----
-    # d_side = Π_b (γ + Σ_i α^i·FPV[i])^DELTA_b over the side's padded blocks.
+    # d_side = Π_b (γ + Σ_i α^i·FPV[i])^DELTA_b; the delta exponent rides its
+    # hinted bits through a square-and-multiply ladder (uniform over blocks:
+    # unpadded blocks hint delta = 0 and the ladder is the identity).
     dsur = HeapBuf(2)
     for s in unroll(0, 2):
         d = GEN ** 0
         for b in unroll(SBLK[s], SBLK[s + 1]):
-            if BDELTA[b] != 0:
-                fp = 0
-                apw = GEN ** 0
-                for i in unroll(0, BCN[b]):
-                    fp = fp + apw * FPV[BC0[b] + i]
-                    apw = apw * alpha
-                d = d * (gamma + fp) ** BDELTA[b]
+            fp = 0
+            apw = GEN ** 0
+            for i in unroll(0, BCN[b]):
+                fp = fp + apw * FPV[BC0[b] + i]
+                apw = apw * alpha
+            ladder = GEN ** 0
+            sqx = gamma + fp
+            for j in unroll(0, 33):
+                dbit = bdel[GEN ** (b * 33 + j)]
+                assert dbit * dbit == dbit
+                ladder = ladder * (1 + dbit * (sqx + 1))
+                sqx = sqx * sqx
+            d = d * ladder
         dsur[GEN ** s] = d
     lhsb = gkr_roots[GEN ** 0] * dsur[GEN ** 1]
     rhsb = gkr_roots[GEN ** 1] * dsur[GEN ** 0]
@@ -953,15 +977,27 @@ def verify_sub(pi_0, pi_1, delta_pows, dout):
     for s in unroll(0, 3):
         acc = 0
         selsum = 0
+        smu_gs = ann_mus[GEN ** s]
+        zeta_zs = zeta * GEN ** ZOFF[s]
         for b in unroll(SBLK[s], SBLK[s + 1]):
-            # eq_hi over the ζ coords above κ, against the baked selector bits.
-            eqh = GEN ** 0
-            for k in unroll(0, SMU[s] - BKAPPA[b]):
-                zk = zeta[GEN ** (ZOFF[s] + BKAPPA[b] + k)]
-                if (BSEL[b] // (2 ** k)) % 2 == 1:
-                    eqh = eqh * zk
-                else:
-                    eqh = eqh * (1 + zk)
+            # eq_hi over the ζ coords above κ, against the HINTED selector
+            # bits (eq(s, z) = 1 + s + z in this field); the bound mu_s - κ
+            # rides the hinted quotient, tied by qg · κg == g^mu_s.
+            kg = bkap[GEN ** b]
+            assert log(kg) < 34
+            qg = bq[GEN ** b]
+            assert log(qg) < 34
+            qk_prod = qg * kg
+            assert qk_prod == smu_gs
+            zeta_hi = zeta_zs * kg
+            selrow = bselb * GEN ** (b * MUMAX)
+            eq_chain = HeapBuf(MUMAX + 2)
+            eq_chain[GEN ** 0] = 1
+            for xk in mul_range(1, qg):
+                sbit = selrow[xk]
+                assert sbit * sbit == sbit
+                eq_chain[xk * GEN] = eq_chain[xk] * (1 + sbit + zeta_hi[xk])
+            eqh = eq_chain[qg]
             selsum = selsum + eqh
             # inner fingerprint Σ_i α^i · coord_i(ζ_lo); count side uses α=1,γ=0.
             inner_sum = 0
@@ -983,9 +1019,11 @@ def verify_sub(pi_0, pi_1, delta_pows, dout):
                     ci = ci + 1
                     cval = GG * rawv
                 if CT[BC0[b] + i] == 3:
-                    cval = GEN ** 0
-                    for t in unroll(0, BKAPPA[b]):
-                        cval = cval * (1 + zeta[GEN ** (ZOFF[s] + t)] * IDXC[t])
+                    idx_chain = HeapBuf(MUMAX + 2)
+                    idx_chain[GEN ** 0] = 1
+                    for xt in mul_range(1, kg):
+                        idx_chain[xt * GEN] = idx_chain[xt] * (1 + zeta_zs[xt] * idxc_tab[xt])
+                    cval = idx_chain[kg]
                 if CT[BC0[b] + i] == 4:
                     cval = bcv[GEN ** bi]
                     bi = bi + 1
