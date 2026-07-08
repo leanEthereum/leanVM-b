@@ -1192,8 +1192,23 @@ impl FnLower<'_> {
     /// Address `arr[idx]` as `(base_cell, β)`. A constant g-power `idx` folds
     /// into `β` ([`Self::heap_base`]); a runtime index materializes the pointer.
     fn heap_addr(&mut self, arr: &Expr, idx: &Expr) -> (Off, u32) {
-        if let Some(GAddr { base: None, exp }) = self.gaddr_of(idx) {
-            return self.heap_base(arr, exp);
+        match self.gaddr_of(idx) {
+            Some(GAddr { base: None, exp }) => return self.heap_base(arr, exp),
+            // A runtime-base index carrying a constant g-power shift
+            // (`buf[cursor * GEN ** k]`): fold the whole constant part — the
+            // index's shift plus `arr`'s own symbolic shift — into `β`, and
+            // emit ONE pointer multiply instead of materializing g^k.
+            Some(GAddr { base: Some(ib), exp }) => {
+                if let Some(ga) = self.gaddr_of(arr)
+                    && let (Some(ab), Some(total)) = (ga.base, ga.exp.checked_add(exp))
+                    && total <= FOLD_MAX
+                {
+                    let ptr = self.fresh();
+                    self.emit(LOp::Mul { a: ab, b: ib, c: ptr });
+                    return (ptr, total as u32);
+                }
+            }
+            None => {}
         }
         (self.array_ptr(arr, idx), 0)
     }

@@ -146,7 +146,10 @@ pub fn compile(ast: &Ast) -> Program {
     // sentinel pc `g^{B-1}` (last slot) is known before resolving: `main`'s
     // `EndSentinel` jump dest resolves to it, and the program halts there.
     let total: usize = lowered.iter().map(|l| l.code.len()).sum();
-    let bytecode_size = total.max(1).next_power_of_two();
+    // The sentinel needs a slot of its own PAST all real code: pad from
+    // total + 1, so a program of exactly 2^k instructions doesn't collide
+    // its last instruction with the halt pc.
+    let bytecode_size = (total + 1).next_power_of_two();
     let sentinel = (bytecode_size - 1) as u32;
 
     // Resolve to bytecode + a hint map keyed by global pc.
