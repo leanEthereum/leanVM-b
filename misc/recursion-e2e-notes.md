@@ -1,17 +1,17 @@
 # End-to-end 1→1 recursion — working notes (guest spec)
 
 STATUS: DONE (tests/recursion_e2e.rs `recursion_1to1`). Inner: 531 cycles, all six
-tables, committed 2^17.13. Guest: 777,795 cycles, 23,935 BLAKE3. Outer: prove
-33.7s, verify 105.7ms + 211ms native deferred checks, proof ~682 KiB. Deferred and
-bound to the outer public input: 12 bytecode MLE claims, the lincheck matrix
-evaluation (one sparse nnz pass native), the two ring-switch tensor transposes and
-the two eval_rs_eq weights (bound-data claims; see the caveat below). Remaining
-for 2→1: batch the bytecode/matrix claims with the sumcheck of doc.tex §Deferred
-evaluation claims; the tensor/eval_rs_eq deferrals do not aggregate (they grow the
-public input linearly with the tree), so either accept that or find an
-in-circuit-cheap formulation (the transpose costs ~80k cycles as a gadget; the
-eval_rs_eq tensor steps cost 2 transposes per coordinate, which is why both are
-deferred).
+tables, committed 2^17.13. Guest: 1,214,357 cycles, 23,652 BLAKE3. Outer: prove
+~38s, verify ~280ms + 213ms native deferred checks, proof ~683 KiB. Deferred and
+bound to the outer public input: the two stacked-bytecode claims (one polynomial
+in kappa_bc + 3 vars; the reduction is part of the native protocol) and the
+lincheck matrix evaluation (one sparse nnz pass native). The ring-switch tensor
+algebra runs IN-CIRCUIT via the linearized-polynomial identities (doc.tex
+§Ring-switch claims via linearized polynomials; ~436k cycles), so nothing
+tensor-shaped crosses the proof boundary and the deferral set is exactly what
+the 2→1 batching sumcheck consumes. Remaining for 2→1: batch the bytecode +
+matrix claims with the sumcheck of doc.tex §Deferred evaluation claims
+(prover prototyped in matclaim_sumcheck_probe.rs).
 
 Goal: a guest program replaying `cpu::verify(inner_program, pi, inner_proof)`
 in-circuit with the bytecode + flock-matrix evaluations deferred (doc.tex
