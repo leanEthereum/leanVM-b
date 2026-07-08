@@ -1490,8 +1490,10 @@ def verify_sub(pi_0, pi_1, delta_pows, dout):
             for xt in mul_range(1, ann_exp[GEN ** 6]):
                 zv_lo[xt] = zr_hi[xt]
         else:
-            for t in unroll(0, QPKDV):
-                z_vals[GEN ** (QPKDV + t)] = zerocheck_r[GEN ** (7 + t)]
+            zv_hi = z_vals * (ann_exp[GEN ** 6] * GEN ** (KLOG - 7))
+            zcr7 = zerocheck_r * GEN ** 7
+            for xt in mul_range(1, ann_exp[GEN ** 6] * GEN ** (KLOG - 7)):
+                zv_hi[xt] = zcr7[xt]
     # gamma-combine the two transposed sumcheck claims (computed in-circuit).
     fs = squeeze(fs, sqz_tag)
     gamma_ab = fs[0]
@@ -1564,24 +1566,34 @@ def verify_sub(pi_0, pi_1, delta_pows, dout):
         claim_weights[GEN ** j] = out_fs * gamma_pool[GEN ** j]
     # eval_rs_eq per claim: E = sum_k c_k * prod_j (z_j^(2^k) + 1 + ris_j)
     # (the telescoped product formula; z powers evolve by squaring per k).
-    one_plus_q = HeapBuf(QPKDV)
-    for j in unroll(0, QPKDV):
-        one_plus_q[GEN ** j] = 1 + ris[GEN ** j]
+    # QPKDV = tau_5 + (KLOG - 7), exponent-additive from the certified
+    # announced log; the per-k z-power rows chain by a runtime g^qpkdv
+    # stride, and the inner passes are runtime loops with product/square
+    # state chained per row.
+    qpkdv_g = ann_exp[GEN ** 6] * GEN ** (KLOG - 7)
+    one_plus_q = HeapBuf(GEN ** (QPKDV))
+    for xj in mul_range(1, qpkdv_g):
+        one_plus_q[xj] = 1 + ris[xj]
     for rs in unroll(0, 2):
         z_pows = HeapBuf(129 * QPKDV)
-        for j in unroll(0, QPKDV):
-            z_pows[GEN ** j] = z_vals[GEN ** (QPKDV * rs + j)]
+        zsrc = z_vals * GEN ** (QPKDV * rs)
+        for xj in mul_range(1, qpkdv_g):
+            z_pows[xj] = zsrc[xj]
         e_acc = HeapBuf(129)
         e_acc[GEN ** 0] = 0
+        row_ptr = HeapBuf(129)
+        row_ptr[GEN ** 0] = z_pows
         for xk in mul_range(1, GEN ** 128):
-            z_row = z_pows * xk ** QPKDV
-            z_row_next = z_row * GEN ** QPKDV
-            prod = GEN ** 0
-            for j in unroll(0, QPKDV):
-                zv = z_row[GEN ** j]
-                prod = prod * (zv + one_plus_q[GEN ** j])
-                z_row_next[GEN ** j] = zv * zv
-            e_acc[xk * GEN] = e_acc[xk] + c_table[xk] * prod
+            z_row = row_ptr[xk]
+            z_row_next = z_row * qpkdv_g
+            prod_chain = HeapBuf(GEN ** (QPKDV + 1))
+            prod_chain[GEN ** 0] = 1
+            for xj in mul_range(1, qpkdv_g):
+                zv = z_row[xj]
+                prod_chain[xj * GEN] = prod_chain[xj] * (zv + one_plus_q[xj])
+                z_row_next[xj] = zv * zv
+            e_acc[xk * GEN] = e_acc[xk] + c_table[xk] * prod_chain[qpkdv_g]
+            row_ptr[xk * GEN] = z_row_next
         rs_eq_vals[GEN ** rs] = e_acc[GEN ** 128]
     # ring-switch weight base over ris[QPKDV..LENRIS).
     rs_weight = gamma_ab * rs_eq_vals[GEN ** 0] + gamma_c * rs_eq_vals[GEN ** 1]
