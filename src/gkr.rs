@@ -5,22 +5,26 @@
 //! round univariate is degree 2 (3 evaluations) plus a degree-1 fold-back line.
 
 use crate::PAR_THRESHOLD;
-use crate::field::{F128, mul_by_x};
+use crate::field::{F128, F256Unreduced, mul_by_x};
 use crate::multilinear::lagrange_eval;
-use crate::multilinear::{add3, eq_table, interp, tri_nodes};
+use crate::multilinear::{eq_table, interp, tri_nodes};
 use crate::transcript::{ProverState, VerifierState};
 use rayon::prelude::*;
 
-/// Bind the lowest variable of `table` to `rho`, in parallel for large tables.
-fn par_fold(table: &[F128], rho: F128) -> Vec<F128> {
-    let half = table.len() / 2;
+/// Bind the lowest variable of `src` into `dst` (in parallel for large tables):
+/// `dst[i] = interp(src[2i], src[2i+1], rho)`. Writing into a caller-owned
+/// scratch buffer instead of a fresh Vec lets each layer's rounds ping-pong two
+/// allocations instead of allocating (and page-faulting) per round.
+fn par_fold_into(src: &[F128], rho: F128, dst: &mut Vec<F128>) {
+    let half = src.len() / 2;
     if half >= PAR_THRESHOLD {
         (0..half)
             .into_par_iter()
-            .map(|i| interp(table[2 * i], table[2 * i + 1], rho))
-            .collect()
+            .map(|i| interp(src[2 * i], src[2 * i + 1], rho))
+            .collect_into_vec(dst);
     } else {
-        (0..half).map(|i| interp(table[2 * i], table[2 * i + 1], rho)).collect()
+        dst.clear();
+        dst.extend((0..half).map(|i| interp(src[2 * i], src[2 * i + 1], rho)));
     }
 }
 
@@ -82,38 +86,72 @@ pub fn prove_product(leaves: Vec<F128>, ps: &mut ProverState) -> (F128, LeafClai
         let below = &layers[i - 1];
         let k = mu - i; // sumcheck variables this layer
         let width = 1usize << k;
-        let mut even: Vec<F128> = (0..width).map(|j| below[2 * j]).collect();
-        let mut odd: Vec<F128> = (0..width).map(|j| below[2 * j + 1]).collect();
+        let strided_copy = |off: usize| -> Vec<F128> {
+            if width >= PAR_THRESHOLD {
+                (0..width).into_par_iter().map(|j| below[2 * j + off]).collect()
+            } else {
+                (0..width).map(|j| below[2 * j + off]).collect()
+            }
+        };
+        let mut even = strided_copy(0);
+        let mut odd = strided_copy(1);
+        // Ping-pong fold scratch, allocated once per layer, reused every round.
+        let mut even_next: Vec<F128> = Vec::new();
+        let mut odd_next: Vec<F128> = Vec::new();
+
+        // `eqr` at round j is eq over the variables after the one bound that
+        // round (the eq-trick keeps the per-row product `eq·even·odd` at degree
+        // 2). Build it ONCE per layer for r[1..]; each later round's table is
+        // the pair-wise XOR fold of the previous one — `eq(r_j,0) + eq(r_j,1)
+        // = 1`, so summing adjacent entries marginalizes the bound variable
+        // with no multiplies (vs rebuilding with ~2^{k-j} muls per round).
+        let mut eqr: Vec<F128> = if k > 0 { eq_table(&r[1..]) } else { Vec::new() };
 
         let mut rho = Vec::with_capacity(k);
-        for j in 0..k {
+        for _ in 0..k {
             let half = even.len() / 2;
-            // `eqr` is eq over the variables after the one bound this round, so the
-            // per-row product `eq·even·odd` is degree 2 (eq-trick).
-            let eqr = eq_table(&r[j + 1..]);
-            let summand = |idx: usize| -> [F128; 3] {
+            let summand = |idx: usize| -> [F256Unreduced; 3] {
                 let (lo, hi) = (2 * idx, 2 * idx + 1);
                 let eq = eqr[idx];
-                let prod0 = eq * even[lo] * odd[lo];
-                let prod1 = eq * even[hi] * odd[hi];
+                let t0 = even[lo] * odd[lo];
+                let t1 = even[hi] * odd[hi];
                 // The degree-2 round univariate is sent at nodes {0, 1, g}; node 2
                 // is the generator `g = x`, so `g·diff = mul_by_x(diff)` — a
-                // shift-fold, not a PMULL (bit-identical to `nodes[2] * diff`).
+                // shift-fold, not a carry-less mul (bit-identical to `nodes[2] * diff`).
                 let (even_diff, odd_diff) = (even[lo] + even[hi], odd[lo] + odd[hi]);
                 let (even_at2, odd_at2) = (even[lo] + mul_by_x(even_diff), odd[lo] + mul_by_x(odd_diff));
-                let prod2 = eq * even_at2 * odd_at2;
-                [prod0, prod1, prod2]
+                let t2 = even_at2 * odd_at2;
+                // Defer the mod-p reduction of the outer eq·(…) products:
+                // XOR-accumulate the 256-bit unreduced products and reduce once
+                // per accumulator after the sum (reduction commutes with XOR).
+                [eq.mul_unreduced(t0), eq.mul_unreduced(t1), eq.mul_unreduced(t2)]
             };
-            let acc = if half >= PAR_THRESHOLD {
-                (0..half).into_par_iter().map(summand).reduce(|| [F128::ZERO; 3], add3)
+            let xor3 = |mut x: [F256Unreduced; 3], y: [F256Unreduced; 3]| {
+                x[0] ^= y[0];
+                x[1] ^= y[1];
+                x[2] ^= y[2];
+                x
+            };
+            let acc_u = if half >= PAR_THRESHOLD {
+                (0..half).into_par_iter().map(summand).reduce(|| [F256Unreduced::ZERO; 3], xor3)
             } else {
-                (0..half).map(summand).fold([F128::ZERO; 3], add3)
+                (0..half).map(summand).fold([F256Unreduced::ZERO; 3], xor3)
             };
+            let acc = [acc_u[0].reduce(), acc_u[1].reduce(), acc_u[2].reduce()];
             ps.add_scalars(&acc);
             let rk = ps.sample();
             rho.push(rk);
-            even = par_fold(&even, rk);
-            odd = par_fold(&odd, rk);
+            par_fold_into(&even, rk, &mut even_next);
+            std::mem::swap(&mut even, &mut even_next);
+            par_fold_into(&odd, rk, &mut odd_next);
+            std::mem::swap(&mut odd, &mut odd_next);
+            // Shrink eq to the next round's suffix table (in place: the read
+            // cursor `2·idx` stays ahead of the write cursor `idx`).
+            let eq_half = eqr.len() / 2;
+            for idx in 0..eq_half {
+                eqr[idx] = eqr[2 * idx] + eqr[2 * idx + 1];
+            }
+            eqr.truncate(eq_half);
         }
 
         let (eval0, eval1) = (even[0], odd[0]);

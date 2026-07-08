@@ -104,8 +104,8 @@ impl InvNttTableByteSingleGf8 {
     /// `bytes` is `n_chunks` bytes (the LCH-coefficient bits of the row);
     /// `out` will be filled with the `ell` evaluations on Λ.
     ///
-    /// Dispatches: NEON on aarch64 when `ell ≥ 16` (true for the protocol
-    /// path k_skip=6 ⇒ ell=64), scalar otherwise.
+    /// Dispatches: NEON on aarch64 / SSE2 on x86_64 when `ell ≥ 16` (true for
+    /// the protocol path k_skip=6 ⇒ ell=64), scalar otherwise.
     #[inline]
     pub fn apply(&self, bytes: &[u8], out: &mut [F8]) {
         #[cfg(target_arch = "aarch64")]
@@ -113,6 +113,13 @@ impl InvNttTableByteSingleGf8 {
             // SAFETY: aarch64 statically guarantees NEON; ell ≥ 16 ⇒ at least
             // one 128-bit chunk; method validates slice lengths.
             unsafe { self.apply_neon_unchecked(bytes, out) };
+            return;
+        }
+        #[cfg(target_arch = "x86_64")]
+        if self.ell >= 16 {
+            // SAFETY: x86_64 statically guarantees SSE2; ell ≥ 16 ⇒ at least
+            // one 128-bit chunk; method validates slice lengths.
+            unsafe { self.apply_sse2_unchecked(bytes, out) };
             return;
         }
         self.apply_scalar(bytes, out);
@@ -182,6 +189,57 @@ impl InvNttTableByteSingleGf8 {
                         let v = vld1q_u8(row_b.add(sc * 16));
                         let dst = out_ptr.add(c * 16);
                         vst1q_u8(dst, veorq_u8(vld1q_u8(dst), v));
+                    }
+                }
+            }
+        }
+    }
+
+    /// SSE2 variant of `apply` — the x86 twin of [`Self::apply_neon_unchecked`].
+    /// Same 16-byte-chunk structure; the odd-`b` within-chunk half-swap is
+    /// `_mm_shuffle_epi32::<0b01_00_11_10>` (swap the two 64-bit halves).
+    ///
+    /// # Safety
+    /// Caller must be on x86_64 (SSE2 is baseline there; statically true at
+    /// the dispatch site). The method validates slice lengths.
+    #[cfg(target_arch = "x86_64")]
+    pub unsafe fn apply_sse2_unchecked(&self, bytes: &[u8], out: &mut [F8]) {
+        use core::arch::x86_64::*;
+        assert_eq!(bytes.len(), self.n_chunks);
+        assert_eq!(out.len(), self.ell);
+        let n128 = self.ell / 16; // 4 for ell = 64
+        let base = self.data.as_ptr() as *const u8;
+        let out_ptr = out.as_mut_ptr() as *mut u8;
+
+        unsafe {
+            // b = 0: identity permutation — straight copy from row 0.
+            let row0 = base.add(bytes[0] as usize * self.ell);
+            for c in 0..n128 {
+                _mm_storeu_si128(
+                    out_ptr.add(c * 16) as *mut __m128i,
+                    _mm_loadu_si128(row0.add(c * 16) as *const __m128i),
+                );
+            }
+
+            // b ≥ 1: XOR with table row[bytes[b]], permuted.
+            for b in 1..self.n_chunks {
+                let b_high = b >> 1;
+                let b_odd = (b & 1) != 0;
+                let row_b = base.add(bytes[b] as usize * self.ell);
+                if b_odd {
+                    for c in 0..n128 {
+                        let sc = c ^ b_high;
+                        let v = _mm_loadu_si128(row_b.add(sc * 16) as *const __m128i);
+                        let v_swapped = _mm_shuffle_epi32::<0b01_00_11_10>(v);
+                        let dst = out_ptr.add(c * 16) as *mut __m128i;
+                        _mm_storeu_si128(dst, _mm_xor_si128(_mm_loadu_si128(dst), v_swapped));
+                    }
+                } else {
+                    for c in 0..n128 {
+                        let sc = c ^ b_high;
+                        let v = _mm_loadu_si128(row_b.add(sc * 16) as *const __m128i);
+                        let dst = out_ptr.add(c * 16) as *mut __m128i;
+                        _mm_storeu_si128(dst, _mm_xor_si128(_mm_loadu_si128(dst), v));
                     }
                 }
             }
@@ -322,6 +380,37 @@ mod tests {
                 assert_eq!(
                     out_scalar, out_neon,
                     "scalar/neon apply disagree at k={k}, bytes={:02x?}",
+                    bytes
+                );
+            }
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn apply_sse2_matches_apply_scalar() {
+        // Cover both k=4 (n_chunks=2, n128=1) and k=6 (n_chunks=8, n128=4 —
+        // the headline protocol size).
+        for &k in &[4usize, 5, 6] {
+            let ntt_s = AdditiveNttGf8::new(k, F8::ZERO);
+            let ntt_l = AdditiveNttGf8::new(k, F8(1u8 << k));
+            let table = InvNttTableByteSingleGf8::new(&ntt_s, &ntt_l);
+            let n_chunks = table.n_chunks;
+            let ell = table.ell;
+
+            let mut rng = Rng::new(100 + k as u64);
+            for _ in 0..32 {
+                let bytes: Vec<u8> = (0..n_chunks)
+                    .map(|_| (rng.next_u64() & 0xff) as u8)
+                    .collect();
+                let mut out_scalar = vec![F8::ZERO; ell];
+                let mut out_sse2 = vec![F8::ZERO; ell];
+                table.apply_scalar(&bytes, &mut out_scalar);
+                // SAFETY: on x86_64.
+                unsafe { table.apply_sse2_unchecked(&bytes, &mut out_sse2) };
+                assert_eq!(
+                    out_scalar, out_sse2,
+                    "scalar/sse2 apply disagree at k={k}, bytes={:02x?}",
                     bytes
                 );
             }
