@@ -58,6 +58,7 @@ struct FnLower<'a> {
     is_main: bool,
     code: Vec<LInstr>,
     one_off: Option<Off>,
+    const_pool: HashMap<(u64, u64), Off>,
     /// The cell holding this function's own `fp`, materialized lazily
     /// ([`Self::self_fp`]) — local (`if`/`else`) jumps reload the frame
     /// pointer on the taken branch.
@@ -109,6 +110,19 @@ impl FnLower<'_> {
     }
 
     /// A frame cell holding `1` (always-taken `JUMP` condition), set lazily once.
+    /// Materialize a field constant into a frame cell, pooled per function:
+    /// frames are write-once, so one cell per distinct constant serves every
+    /// use site (`main` alone had ~57k duplicated constant `SET`s before this).
+    fn const_cell(&mut self, v: F128) -> Off {
+        if let Some(&o) = self.const_pool.get(&(v.lo, v.hi)) {
+            return o;
+        }
+        let o = self.fresh();
+        self.emit(LOp::Set { o, k: KVal::Const(v) });
+        self.const_pool.insert((v.lo, v.hi), o);
+        o
+    }
+
     fn one(&mut self) -> Off {
         if let Some(o) = self.one_off {
             return o;
@@ -232,6 +246,7 @@ impl FnLower<'_> {
             self.fconsts.clone(),
             self.alias.clone(),
             self.zero_off,
+            self.const_pool.clone(),
         );
         f(self);
         // A hint pending at the end of a branch (e.g. a trailing
@@ -255,6 +270,7 @@ impl FnLower<'_> {
             self.fconsts,
             self.alias,
             self.zero_off,
+            self.const_pool,
         ) = saved;
     }
 
@@ -671,30 +687,9 @@ impl FnLower<'_> {
 
     fn expr(&mut self, e: &Expr) -> Off {
         match e {
-            Expr::Lit(n) => {
-                let o = self.fresh();
-                self.emit(LOp::Set {
-                    o,
-                    k: KVal::Const(F128::new(*n as u64, (*n >> 64) as u64)),
-                });
-                o
-            }
-            Expr::Gen => {
-                let o = self.fresh();
-                self.emit(LOp::Set {
-                    o,
-                    k: KVal::Const(g_pow(1)),
-                });
-                o
-            }
-            Expr::GPow(k) => {
-                let o = self.fresh();
-                self.emit(LOp::Set {
-                    o,
-                    k: KVal::Const(g_pow_u128(*k)),
-                });
-                o
-            }
+            Expr::Lit(n) => self.const_cell(F128::new(*n as u64, (*n >> 64) as u64)),
+            Expr::Gen => self.const_cell(g_pow(1)),
+            Expr::GPow(k) => self.const_cell(g_pow_u128(*k)),
             Expr::GenPow(e) => {
                 let o = self.fresh();
                 self.emit(LOp::Set {
@@ -732,9 +727,7 @@ impl FnLower<'_> {
             }
             Expr::Call(f, args) => {
                 if let Some(n) = self.const_len(e) {
-                    let o = self.fresh();
-                    self.emit(LOp::Set { o, k: KVal::Const(F128::new(n as u64, 0)) });
-                    o
+                    self.const_cell(F128::new(n as u64, 0))
                 } else {
                     self.call(f, args, 1)[0]
                 }
@@ -762,9 +755,7 @@ impl FnLower<'_> {
             Expr::Index(arr, idx) => {
                 // Constant-array element `NAME[i]`: a compile-time field value.
                 if let Some(elem) = self.const_array_elem(e) {
-                    let o = self.fresh();
-                    self.emit(LOp::Set { o, k: KVal::Const(F128::new(elem as u64, (elem >> 64) as u64)) });
-                    return o;
+                    return self.const_cell(F128::new(elem as u64, (elem >> 64) as u64));
                 }
                 // Stack read `sa[k]`: the frame cell `base + k` directly (no deref),
                 // forwarded through any deferred copy/zero alias.
@@ -1986,6 +1977,7 @@ pub(crate) fn lower_func(
         is_main: f.name == "main",
         code: Vec::new(),
         one_off: None,
+        const_pool: HashMap::new(),
         self_fp_off: None,
         bounds: HashMap::new(),
         gaddrs: HashMap::new(),

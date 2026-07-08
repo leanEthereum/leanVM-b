@@ -1158,14 +1158,15 @@ def main():
             enforced_chain[GEN ** 0] = 0
             for xe in mul_range(1, GEN ** QUERIES[lvl]):
                 row_base = xe ** NUMINTER[lvl]
+                row_ptr = lrows_s * GEN ** ROWOFF[lvl] * row_base
                 leaf_state = StackBuf(2)
                 leaf_state[0] = GEN ** NBYTES[lvl]
                 leaf_state[1] = 0
                 row_dot = 0
                 for jb in unroll(0, BLOCKS[lvl]):
                     row_pair = StackBuf(2)
-                    row_pair[0] = lrows_s[GEN ** ROWOFF[lvl] * row_base * GEN ** (2 * jb)]
-                    row_pair[1] = lrows_s[GEN ** ROWOFF[lvl] * row_base * GEN ** (2 * jb + 1)]
+                    row_pair[0] = row_ptr[GEN ** (2 * jb)]
+                    row_pair[1] = row_ptr[GEN ** (2 * jb + 1)]
                     leaf_digest = StackBuf(2)
                     blake3(leaf_state, row_pair, leaf_digest)
                     leaf_state = leaf_digest
@@ -1175,9 +1176,10 @@ def main():
                 enforced_chain[xe * GEN] = enforced_chain[xe] + alpha_weights[GEN ** (lvl * MAXQ) * xe] * row_dot
                 walk_bits = qbp[GEN ** QPOFF[lvl] * xe]
                 path_base = xe ** (2 * DEPTH[lvl])
+                path_ptr = lpaths_s * GEN ** PATHOFF[lvl] * path_base
                 for lw2 in unroll(0, DEPTH[lvl]):
-                    sibling_0 = lpaths_s[GEN ** PATHOFF[lvl] * path_base * GEN ** (2 * lw2)]
-                    sibling_1 = lpaths_s[GEN ** PATHOFF[lvl] * path_base * GEN ** (2 * lw2 + 1)]
+                    sibling_0 = path_ptr[GEN ** (2 * lw2)]
+                    sibling_1 = path_ptr[GEN ** (2 * lw2 + 1)]
                     dir_bit = walk_bits[GEN ** lw2]
                     diff_0 = node_0 + sibling_0
                     diff_1 = node_1 + sibling_1
