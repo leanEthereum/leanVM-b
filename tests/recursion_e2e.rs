@@ -981,6 +981,7 @@ fn gen_verify(
     ps("RSSEL", rssel.to_string());
     ps("YRS", yrs.to_string());
     ps("KBC", kbc.to_string());
+    ps("DEFSZ", (2 * kbc + 2 * lcrounds + 72).to_string());
     ps("KBCV", (kbc + 3).to_string());
     let label_state = Sponge::new(b"leanvm-b", &[]).state();
     ps("SEEDB0", u(label_state[0]).to_string());
@@ -1061,7 +1062,7 @@ fn run_recursion(nsub: usize, inner_iters: usize) {
         protos.push((program, pi, proof, summary, ops));
     }
     let mut rep0 = None;
-    let mut merged: Vec<(String, Vec<F128>)> = Vec::new();
+    let mut merged: Vec<(String, Vec<Vec<F128>>)> = Vec::new();
     let mut subs = Vec::new();
     for (program, pi, proof, summary, ops) in &protos {
         let (rep, hints, defer) = gen_verify(program, *pi, proof, summary, ops);
@@ -1069,12 +1070,14 @@ fn run_recursion(nsub: usize, inner_iters: usize) {
             None => rep0 = Some(rep),
             Some(r0) => assert_eq!(r0, &rep, "sub-proof shapes must agree"),
         }
+        // one witness ENTRY per sub-proof and stream: verify_sub pops the
+        // next entry of every stream on each call.
         if merged.is_empty() {
-            merged = hints;
+            merged = hints.into_iter().map(|(n, v)| (n, vec![v])).collect();
         } else {
             for ((name, acc), (n2, more)) in merged.iter_mut().zip(hints) {
                 assert_eq!(*name, n2);
-                acc.extend(more);
+                acc.push(more);
             }
         }
         subs.push(defer);
@@ -1082,13 +1085,17 @@ fn run_recursion(nsub: usize, inner_iters: usize) {
     let mut rep = rep0.unwrap();
     rep.insert("NSUB_PLACEHOLDER".to_string(), nsub.to_string());
     let (program0, pi0, proof0, _, _) = &protos[0];
+    // spi is main-level (one hint site): merge the statements into one entry.
+    let spi_all: Vec<F128> = subs.iter().flat_map(|d| [d.pi[0], d.pi[1]]).collect();
+    let spi_pos = merged.iter().position(|(n, _)| n == "spi").expect("spi hint");
+    merged[spi_pos].1 = vec![spi_all];
     let (agg_hints, reduced) = gen_agg(program0, proof0, &subs);
-    merged.extend(agg_hints);
+    merged.extend(agg_hints.into_iter().map(|(n, v)| (n, vec![v])));
 
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/verify_recursive.py");
     let mut guest = compile(&parse_file_with_replacements(path, &rep).expect("parse verify_recursive.py"));
-    for (name, vals) in &merged {
-        guest.set_witness(name, vec![vals.clone()]);
+    for (name, entries) in &merged {
+        guest.set_witness(name, entries.clone());
     }
     let gpi = reduced.outer_pi;
     let t = std::time::Instant::now();

@@ -1997,6 +1997,10 @@ pub(crate) fn lower_func(
     }
     if lowerer.is_main {
         lowerer.halt(); // main terminates at the sentinel pc, not by falling off
+    } else if !matches!(f.body.last(), Some(Stmt::Return(_))) {
+        // A function must never fall off its end into whatever code the
+        // layout placed next: append the implicit bare return.
+        lowerer.stmt(&Stmt::Return(vec![]));
     }
     Lowered {
         name: f.name.clone(),
