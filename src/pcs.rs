@@ -13,7 +13,7 @@ use crate::transcript::{ProverState, VerifierState};
 
 use flare::pcs::ligerito::{LigeritoProfile, LigeritoSecurityConfig, ProverConfig, VerifierConfig};
 pub use flare::pcs::{BatchOpeningProofLigerito, Commitment, PcsParams, ProverData};
-use flare::pcs::{StackClaim, open_batch_mixed_ligerito_stacked, verify_opening_batch_mixed_ligerito_stacked};
+use flare::pcs::{StackClaim, StackedOpeningSummary, open_batch_mixed_ligerito_stacked, verify_opening_batch_mixed_ligerito_stacked};
 use flare::zerocheck::PaddingSpec;
 
 /// flock frames `commit` as `m = log2(len) + LOG_PACKING`; the message length is
@@ -303,7 +303,7 @@ pub fn verify(
     ring: &RingSwitchVerify,
     mu: usize,
     root: &[u8; 32],
-) -> Result<(), Error> {
+) -> Result<StackedOpeningSummary, Error> {
     let commitment = commitment_from_root(*root, mu);
     let stack_pd: Vec<StackClaim> = points.iter().map(|s| s.as_stack()).collect();
     let x_refs: Vec<&[F128]> = ring.x_outers.iter().map(|v| v.as_slice()).collect();

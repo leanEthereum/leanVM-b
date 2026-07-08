@@ -2825,6 +2825,40 @@ fn merkle_multi_proof_for(tree: &[Hash], block_len: usize, queries: &[usize]) ->
 /// whole squeeze stays transcript-bound; packing them amortizes one squeeze
 /// (and, in the recursive verifier, one 128-bit decomposition) across `128/d`
 /// queries.
+/// What the succinct multilevel verifier hands back on accept: the data a
+/// recursion harness needs to drive an in-circuit replay, all named and typed
+/// (no transcript scraping).
+#[derive(Clone, Debug)]
+pub struct LigVerifierSummary {
+    /// Every fold challenge, in order (the full `ris` vector the residual
+    /// eval_b consumes).
+    pub ris: Vec<F128>,
+    /// The raw query-sampling squeezes, per level in transcript order (each
+    /// word packs `128 / depth` positions).
+    pub query_squeezes: Vec<Vec<F128>>,
+}
+
+/// [`sample_queries_ordered`], also returning the raw squeezed words.
+fn sample_queries_ordered_with_raw<Ch: Challenger>(
+    challenger: &mut Ch,
+    block_len: usize,
+    count: usize,
+) -> (Vec<usize>, Vec<F128>) {
+    let d = block_len.trailing_zeros() as usize;
+    let per = 128 / d;
+    let mut out = Vec::with_capacity(count);
+    let mut raw = Vec::with_capacity(count.div_ceil(per));
+    while out.len() < count {
+        let v = challenger.sample_f128();
+        raw.push(v);
+        let bits = (v.lo as u128) | ((v.hi as u128) << 64);
+        for j in 0..per.min(count - out.len()) {
+            out.push(((bits >> (j * d)) as usize) & (block_len - 1));
+        }
+    }
+    (out, raw)
+}
+
 fn sample_queries_ordered<Ch: Challenger>(challenger: &mut Ch, block_len: usize, count: usize) -> Vec<usize> {
     let d = block_len.trailing_zeros() as usize;
     let per = 128 / d;
@@ -3600,7 +3634,7 @@ pub fn multilevel_verifier_with_basis_succinct<Ch, F>(
     expected_initial_root: &Hash,
     eval_b_residual: F,
     challenger: &mut Ch,
-) -> bool
+) -> Option<LigVerifierSummary>
 where
     Ch: Challenger,
     // Called ONCE at the residual check with the full ris and yr_log_n.
@@ -3617,13 +3651,14 @@ where
     let mut t_evalb = std::time::Duration::ZERO;
     let t_start = std::time::Instant::now();
 
+    let mut query_squeezes: Vec<Vec<F128>> = Vec::new();
     let initial_k = config.initial_k;
     let r = config.level_steps;
     if r < 1 || config.level_ks.len() != r || config.log_inv_rates.len() != r + 1 {
-        return false;
+        return None;
     }
     if &proof.initial_root != expected_initial_root {
-        return false;
+        return None;
     }
 
     challenger.observe_label(b"flock-ligerito-basis-v0");
@@ -3638,7 +3673,7 @@ where
     let mut t_r = target;
     let mut tx_idx = 0usize;
     if tx_idx >= proof.sumcheck_transcript.len() {
-        return false;
+        return None;
     }
     let start_msg = proof.sumcheck_transcript[tx_idx];
     tx_idx += 1;
@@ -3650,7 +3685,7 @@ where
         |lvl: usize| -> u32 { config.fold_grinding_bits.get(lvl).copied().unwrap_or(0) as u32 };
     let ood_count = |lvl: usize| -> usize { config.ood_samples.get(lvl).copied().unwrap_or(0) };
     if config.ood_samples.first().copied().unwrap_or(0) != 0 {
-        return false; // L0 must be bound by the opening's own eval claim
+        return None; // L0 must be bound by the opening's own eval claim
     }
     let mut fold_nonce_idx = 0usize;
     let mut ood_idx = 0usize;
@@ -3670,10 +3705,10 @@ where
         let bits = fold_bits(0).saturating_sub(j as u32);
         if bits > 0 {
             if fold_nonce_idx >= proof.fold_grinding_nonces.len() {
-                return false;
+                return None;
             }
             if !challenger.verify_pow(proof.fold_grinding_nonces[fold_nonce_idx], bits) {
-                return false;
+                return None;
             }
             fold_nonce_idx += 1;
         }
@@ -3681,7 +3716,7 @@ where
         r_lane_fold.push(ri);
         t_r = running_quad.eval(ri);
         if tx_idx >= proof.sumcheck_transcript.len() {
-            return false;
+            return None;
         }
         let msg = proof.sumcheck_transcript[tx_idx];
         tx_idx += 1;
@@ -3691,7 +3726,7 @@ where
     }
 
     if proof.level_roots.is_empty() {
-        return false;
+        return None;
     }
     let root_1 = proof.level_roots[0];
     challenger.observe_bytes(&root_1);
@@ -3702,13 +3737,13 @@ where
     for _ in 0..ood_count(1) {
         let z = challenger.sample_f128_vec(log_n - initial_k);
         if ood_idx >= proof.ood_values.len() {
-            return false;
+            return None;
         }
         let y = proof.ood_values[ood_idx];
         ood_idx += 1;
         challenger.observe_f128(y);
         if tx_idx >= proof.sumcheck_transcript.len() {
-            return false;
+            return None;
         }
         let intro_msg = proof.sumcheck_transcript[tx_idx];
         tx_idx += 1;
@@ -3730,19 +3765,20 @@ where
     // prover side).
     let mut nonce_idx = 0usize;
     if nonce_idx >= proof.grinding_nonces.len() {
-        return false;
+        return None;
     }
     if !challenger.verify_pow(
         proof.grinding_nonces[nonce_idx],
         config.grinding_bits[0] as u32,
     ) {
-        return false;
+        return None;
     }
     nonce_idx += 1;
 
     let num_queries_0 = config.queries[0];
     let _t = std::time::Instant::now();
-    let queries_0 = sample_queries_ordered(challenger, block_len_0, num_queries_0);
+    let (queries_0, raw_0) = sample_queries_ordered_with_raw(challenger, block_len_0, num_queries_0);
+    query_squeezes.push(raw_0);
     if trace {
         t_sample_q += _t.elapsed();
     }
@@ -3759,7 +3795,7 @@ where
         &proof.initial_proof.merkle_proof,
     ) {
         Some(x) => x,
-        None => return false,
+        None => return None,
     };
     if !verify_level_opens_perquery(
         &proof.initial_root,
@@ -3769,7 +3805,7 @@ where
         num_interleaved_0,
         &merkle_paths_0,
     ) {
-        return false;
+        return None;
     }
     if trace {
         t_merkle += _t.elapsed();
@@ -3791,7 +3827,7 @@ where
     }
 
     if tx_idx >= proof.sumcheck_transcript.len() {
-        return false;
+        return None;
     }
     let intro_msg_0 = proof.sumcheck_transcript[tx_idx];
     tx_idx += 1;
@@ -3830,7 +3866,7 @@ where
     for i in 0..r {
         let k_i = config.level_ks[i];
         if n_current < k_i {
-            return false;
+            return None;
         }
         let mut level_rs = Vec::with_capacity(k_i);
         for j in 0..k_i {
@@ -3839,10 +3875,10 @@ where
             let bits = fold_bits(i + 1).saturating_sub(j as u32);
             if bits > 0 {
                 if fold_nonce_idx >= proof.fold_grinding_nonces.len() {
-                    return false;
+                    return None;
                 }
                 if !challenger.verify_pow(proof.fold_grinding_nonces[fold_nonce_idx], bits) {
-                    return false;
+                    return None;
                 }
                 fold_nonce_idx += 1;
             }
@@ -3851,7 +3887,7 @@ where
             level_rs.push(ri);
             t_r = running_quad.eval(ri);
             if tx_idx >= proof.sumcheck_transcript.len() {
-                return false;
+                return None;
             }
             let msg = proof.sumcheck_transcript[tx_idx];
             tx_idx += 1;
@@ -3863,29 +3899,29 @@ where
 
         if i == r - 1 {
             if tx_idx != proof.sumcheck_transcript.len() {
-                return false;
+                return None;
             }
             if ood_idx != proof.ood_values.len()
                 || fold_nonce_idx != proof.fold_grinding_nonces.len()
             {
-                return false;
+                return None;
             }
             let yr = &proof.final_proof.yr;
             if yr.len() != 1 << n_current {
-                return false;
+                return None;
             }
             for v in yr {
                 challenger.observe_f128(*v);
             }
             // PoW grinding check for last level's query phase.
             if nonce_idx >= proof.grinding_nonces.len() {
-                return false;
+                return None;
             }
             if !challenger.verify_pow(
                 proof.grinding_nonces[nonce_idx],
                 config.grinding_bits[i + 1] as u32,
             ) {
-                return false;
+                return None;
             }
             // (last nonce — nonce_idx is not advanced past it)
 
@@ -3893,8 +3929,9 @@ where
             let prev_num_interleaved = 1usize << prev_log_num_interleaved;
             let num_queries_last = config.queries[i + 1];
             let _t = std::time::Instant::now();
-            let queries_last =
-                sample_queries_ordered(challenger, prev_block_len, num_queries_last);
+            let (queries_last, raw_last) =
+                sample_queries_ordered_with_raw(challenger, prev_block_len, num_queries_last);
+            query_squeezes.push(raw_last);
             // Basis-induction challenge for the LAST commitment. Sampled here —
             // after `yr` was observed (top of this branch) and the queries are
             // fixed — so a forged `yr` cannot be adapted to it. Mirrors `alpha_i`
@@ -3912,7 +3949,7 @@ where
                 &proof.final_proof.merkle_proof,
             ) {
                 Some(x) => x,
-                None => return false,
+                None => return None,
             };
             if !verify_level_opens_perquery(
                 &prev_root,
@@ -3922,7 +3959,7 @@ where
                 prev_num_interleaved,
                 &merkle_paths_last,
             ) {
-                return false;
+                return None;
             }
             if trace {
                 t_merkle += _t.elapsed();
@@ -3984,7 +4021,7 @@ where
             }
             for resid in &induced_residuals {
                 if resid.len() != yr_len {
-                    return false;
+                    return None;
                 }
             }
 
@@ -3995,7 +4032,7 @@ where
             let mut ood_residuals: Vec<Vec<F128>> = Vec::with_capacity(ood_ctxs.len());
             for ctx in &ood_ctxs {
                 if ctx.z.len() < yr_log_n || ctx.ris_start + (ctx.z.len() - yr_log_n) > ris.len() {
-                    return false;
+                    return None;
                 }
                 let folded = ctx.z.len() - yr_log_n;
                 let mut scalar = ctx.beta;
@@ -4017,7 +4054,7 @@ where
                 t_evalb += _te.elapsed();
             }
             if evb_vec.len() != yr_len {
-                return false;
+                return None;
             }
             let mut inner = F128::ZERO;
             let _t = std::time::Instant::now();
@@ -4058,11 +4095,14 @@ where
                     t_evalb.as_secs_f64() * 1e3
                 );
             }
-            return inner == t_r;
+            if inner != t_r {
+                return None;
+            }
+            return Some(LigVerifierSummary { ris, query_squeezes });
         }
 
         if next_root_idx >= proof.level_roots.len() {
-            return false;
+            return None;
         }
         let root_next = proof.level_roots[next_root_idx];
         next_root_idx += 1;
@@ -4072,13 +4112,13 @@ where
         for _ in 0..ood_count(i + 2) {
             let z = challenger.sample_f128_vec(n_current);
             if ood_idx >= proof.ood_values.len() {
-                return false;
+                return None;
             }
             let y = proof.ood_values[ood_idx];
             ood_idx += 1;
             challenger.observe_f128(y);
             if tx_idx >= proof.sumcheck_transcript.len() {
-                return false;
+                return None;
             }
             let intro_msg = proof.sumcheck_transcript[tx_idx];
             tx_idx += 1;
@@ -4097,13 +4137,13 @@ where
 
         // PoW grinding check for this iteration's query phase.
         if nonce_idx >= proof.grinding_nonces.len() {
-            return false;
+            return None;
         }
         if !challenger.verify_pow(
             proof.grinding_nonces[nonce_idx],
             config.grinding_bits[i + 1] as u32,
         ) {
-            return false;
+            return None;
         }
         nonce_idx += 1;
 
@@ -4111,13 +4151,14 @@ where
         let prev_num_interleaved = 1usize << prev_log_num_interleaved;
         let num_queries_i = config.queries[i + 1];
         let _t = std::time::Instant::now();
-        let queries_i = sample_queries_ordered(challenger, prev_block_len, num_queries_i);
+        let (queries_i, raw_i) = sample_queries_ordered_with_raw(challenger, prev_block_len, num_queries_i);
+        query_squeezes.push(raw_i);
         if trace {
             t_sample_q += _t.elapsed();
         }
         let alpha_i = challenger.sample_f128_vec(ceil_log2(num_queries_i));
         if level_proof_idx >= proof.level_proofs.len() {
-            return false;
+            return None;
         }
         let rp = &proof.level_proofs[level_proof_idx];
         level_proof_idx += 1;
@@ -4130,7 +4171,7 @@ where
             &rp.merkle_proof,
         ) {
             Some(x) => x,
-            None => return false,
+            None => return None,
         };
         if !verify_level_opens_perquery(
             &prev_root,
@@ -4140,7 +4181,7 @@ where
             prev_num_interleaved,
             &merkle_paths_i,
         ) {
-            return false;
+            return None;
         }
         if trace {
             t_merkle += _t.elapsed();
@@ -4154,7 +4195,7 @@ where
         }
 
         if tx_idx >= proof.sumcheck_transcript.len() {
-            return false;
+            return None;
         }
         let intro_msg_i = proof.sumcheck_transcript[tx_idx];
         tx_idx += 1;
@@ -4175,7 +4216,7 @@ where
         prev_root = root_next;
         let k_next = config.level_ks[i + 1];
         if n_current < k_next {
-            return false;
+            return None;
         }
         prev_log_num_interleaved = k_next;
         prev_log_msg_cols = n_current - k_next;

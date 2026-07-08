@@ -2627,6 +2627,8 @@ pub fn verify<Ch: Challenger>(
 #[derive(Clone, Debug)]
 pub struct RingSwitchVerifierOutput {
     pub sumcheck_claim: F128,
+    /// The sampled `r''` itself (`LOG_PACKING = 7` coordinates).
+    pub r_dprime: Vec<F128>,
     /// `eq` tensor of length `2^LOG_PACKING = 128` derived from the verifier's
     /// sampled `r''`. Used by [`eval_rs_eq`] at the BaseFold final point.
     pub eq_r_dprime: Vec<F128>,
@@ -2666,6 +2668,7 @@ pub fn verify_succinct<Ch: Challenger>(
 
     Ok(RingSwitchVerifierOutput {
         sumcheck_claim,
+        r_dprime,
         eq_r_dprime,
     })
 }

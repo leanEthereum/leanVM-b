@@ -258,7 +258,10 @@ pub fn verify_reduction(
     zerocheck: &flock_prover::zerocheck::ZerocheckProof,
     lincheck: &flock_prover::lincheck::LincheckProof,
     vs: &mut VerifierState,
-) -> Result<(ZClaim, ZClaim), VerifyError> {
+) -> Result<
+    (ZClaim, ZClaim, flare::zerocheck::ZerocheckClaim, flare::lincheck::LincheckClaim),
+    VerifyError,
+> {
     let commitment = crate::pcs::commitment_from_root(*root, mu);
     setup_for(n_blocks).verify_reduction(&commitment, zerocheck, lincheck, vs)
 }
@@ -544,7 +547,7 @@ mod tests {
         // Verifier: replay the reduction and recover the claims.
         let mut vs = VerifierState::new(b"reduce", &bundle, &[]);
         let root = crate::pcs::read_commitment(&mut vs).unwrap();
-        let (ab, c) = verify_reduction(blocks.len(), &root, stacked.m, &zc, &lc, &mut vs)
+        let (ab, c, _, _) = verify_reduction(blocks.len(), &root, stacked.m, &zc, &lc, &mut vs)
             .expect("reduction verifies");
 
         // Prover and verifier agree on the claims left for the PCS.
@@ -555,7 +558,7 @@ mod tests {
         // claims must NOT match the prover's (the reduction is transcript-bound).
         let mut vs_bad = VerifierState::new(b"different", &bundle, &[]);
         let root_b = crate::pcs::read_commitment(&mut vs_bad).unwrap();
-        if let Ok((ab_b, c_b)) = verify_reduction(blocks.len(), &root_b, stacked.m, &zc, &lc, &mut vs_bad) {
+        if let Ok((ab_b, c_b, _, _)) = verify_reduction(blocks.len(), &root_b, stacked.m, &zc, &lc, &mut vs_bad) {
             assert!(
                 ab_b != ab || c_b != c,
                 "a diverged sponge must not reproduce the prover's claims"

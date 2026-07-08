@@ -495,6 +495,12 @@ impl<'a> VerifierState<'a> {
         }
     }
 
+    /// The sponge's current chaining value (recursion harnesses snapshot the
+    /// phase-boundary states as guest debug checkpoints).
+    pub fn sponge_state(&self) -> [F128; 2] {
+        self.sponge.state()
+    }
+
     /// Assert the whole proof was consumed (no trailing/extra data).
     pub fn finish(&self) -> Result<(), Error> {
         if self.offset == self.stream.len() && self.oi == self.openings.len() {

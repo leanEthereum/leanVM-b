@@ -1083,7 +1083,7 @@ pub fn verify_opening_batch_ligerito_mixed<Ch: Challenger>(
 
     // 5. Drive ligerito SUCCINCT verifier — eval_b_residual is called ONCE
     //    at the residual check (returns all yr_len values in one batch).
-    let ok = ligerito::multilevel_verifier_with_basis_succinct(
+    if ligerito::multilevel_verifier_with_basis_succinct(
         lig_config,
         &proof.ligerito,
         log_n,
@@ -1091,8 +1091,9 @@ pub fn verify_opening_batch_ligerito_mixed<Ch: Challenger>(
         &commitment.root,
         eval_b_residual,
         challenger,
-    );
-    if !ok {
+    )
+    .is_none()
+    {
         return Err(VerifyError::BaseFold(
             crate::pcs::basefold::VerifyError::InvalidProofShape,
         ));
@@ -1799,6 +1800,16 @@ pub fn open_batch_mixed_ligerito_stacked<Ch: Challenger>(
 /// `b(x) = eq(sel, x_hi)·Σ γ_rs·rs_eq(x_lo) + Σ γ_pd·eq(claim, x)` (the same
 /// formula the BaseFold path checks once at its folding point).
 #[allow(clippy::too_many_arguments)]
+/// What the stacked opening verifier hands back on accept: the ring-switch
+/// batching challenges and the Ligerito fold/query data — everything a
+/// recursion harness needs, named and typed.
+#[derive(Clone, Debug)]
+pub struct StackedOpeningSummary {
+    /// Per ring-switch claim, in order: the sampled `r''`.
+    pub rs_r_dprime: Vec<Vec<F128>>,
+    pub lig: ligerito::LigVerifierSummary,
+}
+
 pub fn verify_opening_batch_mixed_ligerito_stacked<Ch: Challenger>(
     stack_commitment: &Commitment,
     stack_offset: usize,
@@ -1810,7 +1821,7 @@ pub fn verify_opening_batch_mixed_ligerito_stacked<Ch: Challenger>(
     proof: &BatchOpeningProofLigerito,
     lig_config: &ligerito::VerifierConfig,
     challenger: &mut Ch,
-) -> Result<(), VerifyError> {
+) -> Result<StackedOpeningSummary, VerifyError> {
     let n_rs = claims.len();
     // These are caller (leanVM) invariants.
     assert_eq!(z_skips.len(), n_rs);
@@ -1880,7 +1891,7 @@ pub fn verify_opening_batch_mixed_ligerito_stacked<Ch: Challenger>(
             .collect()
     };
 
-    let ok = ligerito::multilevel_verifier_with_basis_succinct(
+    let lig = ligerito::multilevel_verifier_with_basis_succinct(
         lig_config,
         &proof.ligerito,
         log_n,
@@ -1888,9 +1899,10 @@ pub fn verify_opening_batch_mixed_ligerito_stacked<Ch: Challenger>(
         &stack_commitment.root,
         eval_b_residual,
         challenger,
-    );
-    if !ok {
-        return Err(VerifyError::BaseFold(crate::pcs::basefold::VerifyError::InvalidProofShape));
-    }
-    Ok(())
+    )
+    .ok_or(VerifyError::BaseFold(crate::pcs::basefold::VerifyError::InvalidProofShape))?;
+    Ok(StackedOpeningSummary {
+        rs_r_dprime: rs_outputs.iter().map(|o| o.r_dprime.clone()).collect(),
+        lig,
+    })
 }

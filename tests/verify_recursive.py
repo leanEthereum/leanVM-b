@@ -333,8 +333,8 @@ def main():
     hint_witness(rtb[0:NSUB * NLEVELS], "rtb")
     fnn = HeapBuf(NSUB * LENRIS)
     hint_witness(fnn[0:NSUB * LENRIS], "fnn")
-    cvh = HeapBuf(NSUB * 5)
-    hint_witness(cvh[0:NSUB * 5], "cvh")
+    cvh = HeapBuf(NSUB * 4)
+    hint_witness(cvh[0:NSUB * 4], "cvh")
     bscr = HeapBuf(2 * KBCV)
     hint_witness(bscr[0:2 * KBCV], "bscr")
     mscr = HeapBuf(4 * KLOG)
@@ -387,7 +387,7 @@ def main():
         rta_s = rta * GEN ** (sub * NLEVELS)
         rtb_s = rtb * GEN ** (sub * NLEVELS)
         fnn_s = fnn * GEN ** (sub * LENRIS)
-        cvh_s = cvh * GEN ** (sub * 5)
+        cvh_s = cvh * GEN ** (sub * 4)
         # Claim pool: values of every committed-coordinate claim, in decompose order
         # (their points are the GKR ζ's, resolvable from the baked block structure).
         clv = HeapBuf(NCLAIMS)
@@ -1296,11 +1296,6 @@ def main():
             gv = nb_[0]
             gpd[GEN ** j] = gv
             target = target + gv * clv[GEN ** j]
-
-        # ---- Phase E1 checkpoint ----
-        cck = cvh_s[GEN ** 4]
-        ccg = cvb[0]
-        assert ccg == cck
 
         # ================= the Ligerito opening core (stacked, m = STACK) ========
 

@@ -510,11 +510,30 @@ fn bind_pi_claim(r: F128, placements: &[witness::Placement], pi: &[F128; 2]) -> 
 /// the transcript, reconstruct the public layout from the announced sizes, read
 /// every scalar the prover wrote and pull the PCS hints, then assert the stream
 /// was fully consumed. Takes only public inputs — never the prover's witness.
+/// Everything a recursion harness needs from an accepting verify run, named
+/// and typed: the deferred bytecode claims, the count-channel root, the sponge
+/// states at the phase boundaries (guest debug checkpoints), flock's sub-proof
+/// structs and reduction claims, and the stacked-opening summary (ring-switch
+/// challenges + Ligerito fold/query data). Ordinary callers just `?`-discard it.
+pub struct VerifySummary {
+    pub bytecode_claims: Vec<leaf::BytecodeClaim>,
+    pub count_root: F128,
+    /// Sponge states after: the bus, the zerochecks, the PI sample, and the
+    /// flock reduction.
+    pub checkpoints: [[F128; 2]; 4],
+    pub zerocheck: flock_prover::zerocheck::ZerocheckProof,
+    pub ring_switches: Vec<flare::pcs::RingSwitchProof>,
+    pub lincheck: flock_prover::lincheck::LincheckProof,
+    pub zc_claim: flare::zerocheck::ZerocheckClaim,
+    pub lc_claim: flare::lincheck::LincheckClaim,
+    pub opening: flare::pcs::StackedOpeningSummary,
+}
+
 pub fn verify(
     program: &Program,
     public_input: &[F128; 2],
     proof: &Proof,
-) -> Result<Vec<leaf::BytecodeClaim>, Error> {
+) -> Result<VerifySummary, Error> {
     let mut vs = VerifierState::new(b"leanvm-b", proof, &transcript_seed(program, public_input));
     let l = read_public(&mut vs, program, public_input)?;
     let root = pcs::read_commitment(&mut vs).map_err(Error::Transcript)?;
@@ -528,8 +547,8 @@ pub fn verify(
     // words bind via the memory bus, the pins reuse a bus point.
     let n_b3 = l.row_counts[tables::BLAKE3_TABLE];
 
-    let (bus_claims, bytecode_claims) =
-        leaf::verify_balance(&l.push, &l.pull, &l.count, &l.pad, &mut vs).map_err(Error::Bus)?;
+    let bus = leaf::verify_balance(&l.push, &l.pull, &l.count, &l.pad, &mut vs).map_err(Error::Bus)?;
+    let checkpoint_bus = vs.sponge_state();
 
     let mut table_claims = Vec::new();
     for (ti, table) in tables::tables().iter().enumerate() {
@@ -544,10 +563,12 @@ pub fn verify(
         .map_err(|e| Error::Constraint(ti, e))?;
         table_claims.push(cl);
     }
+    let checkpoint_zerochecks = vs.sponge_state();
 
-    let mut claims = bus_claims;
+    let mut claims = bus.claims;
     claims.extend(constraint_claims(&table_claims));
     claims.push(bind_pi_claim(vs.sample(), &l.placements, &l.pi));
+    let checkpoint_pi = vs.sponge_state();
     // Value columns are virtual (routed to q_pkd via `slot_claims`); only the
     // constant pins are added here, at a memory-bus point, mirroring `prove`. The
     // pin prefix uses the REAL count `n_b3` (0 pins nothing).
@@ -564,12 +585,24 @@ pub fn verify(
     // (mirroring `prove`). `n_blocks = max(n_b3, 1)` — always ≥ 1 instance.
     let n_blocks = n_b3.max(1);
     let offset = l.placements[QPKD].offset;
-    let (ab, c) = crate::blake3_flock::verify_reduction(n_blocks, &root, l.m, &zerocheck, &lincheck, &mut vs)
-        .map_err(Error::Blake3)?;
+    let (ab, c, zc_claim, lc_claim) =
+        crate::blake3_flock::verify_reduction(n_blocks, &root, l.m, &zerocheck, &lincheck, &mut vs)
+            .map_err(Error::Blake3)?;
+    let checkpoint_flock = vs.sponge_state();
     let ring = crate::blake3_flock::ring_switch_verify(n_blocks, offset, ab, c, &open);
-    pcs::verify(&mut vs, &slots, &ring, l.m, &root).map_err(Error::Open)?;
+    let opening = pcs::verify(&mut vs, &slots, &ring, l.m, &root).map_err(Error::Open)?;
     vs.finish().map_err(Error::Transcript)?;
-    Ok(bytecode_claims)
+    Ok(VerifySummary {
+        bytecode_claims: bus.bytecode_claims,
+        count_root: bus.count_root,
+        checkpoints: [checkpoint_bus, checkpoint_zerochecks, checkpoint_pi, checkpoint_flock],
+        zerocheck,
+        ring_switches: open.ring_switches.clone(),
+        lincheck,
+        zc_claim,
+        lc_claim,
+        opening,
+    })
 }
 
 /// Lift `ColumnClaim`s to located PCS claims: a claim on column `c` lives in

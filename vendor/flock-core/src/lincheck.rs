@@ -383,6 +383,13 @@ pub struct LincheckProof {
 /// (publicly known to the caller).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LincheckClaim {
+    /// The A/B batching challenge (sampled first).
+    pub alpha: F128,
+    /// The constant-pin challenge (sampled after `alpha`; zero when the
+    /// circuit has no pin column).
+    pub beta: F128,
+    /// The sumcheck round challenges, in round order (MSB-first binding).
+    pub r_rounds: Vec<F128>,
     /// Univariate-skip post-vector random sample.
     pub r_inner_skip: F128,
     /// Multilinear post-vector random sample, length `k_log − k_skip`.
@@ -1647,8 +1654,9 @@ fn prove_padded_inner<Ch: Challenger>(
     //     boolean index, eq(j*, ·) is the one-hot vector and this is a single
     //     entry update. β is sampled after α; the verifier mirrors both. See
     //     docs/const-wire-pin.md.
+    let mut beta = F128::ZERO;
     if let Some(col) = circuit.const_pin_col() {
-        let beta = challenger.sample_f128();
+        beta = challenger.sample_f128();
         comb_vec[col] += beta;
     }
 
@@ -1738,11 +1746,14 @@ fn prove_padded_inner<Ch: Challenger>(
     //    (inner_rest_len − 1) of the i_rest part (= bit (k_log − 1) of i).
     //    LSB-first: x_inner_rest[j] binds bit (k_skip + j) of i — i.e.,
     //    r_inner_rest[j] = r_rounds[inner_rest_len − 1 − j].
-    let mut r_inner_rest = r_rounds;
+    let mut r_inner_rest = r_rounds.clone();
     r_inner_rest.reverse();
 
     let proof = LincheckProof { rounds, z_partial };
     let claim = LincheckClaim {
+        alpha,
+        beta,
+        r_rounds,
         r_inner_skip,
         r_inner_rest,
         w,
@@ -1853,8 +1864,9 @@ pub fn verify<Ch: Challenger>(
     // the constant column, and the initial target gains +β·1 — the honest
     // all-ones constant column folds to 1. See docs/const-wire-pin.md.
     let mut target = alpha * v_a + v_b;
+    let mut beta = F128::ZERO;
     if let Some(col) = circuit.const_pin_col() {
-        let beta = challenger.sample_f128();
+        beta = challenger.sample_f128();
         comb_vec[col] += beta;
         target += beta;
     }
@@ -1912,10 +1924,13 @@ pub fn verify<Ch: Challenger>(
 
     // 8. Convert sumcheck challenges to LSB-first x_inner_rest order
     //    (same convention as prover).
-    let mut r_inner_rest = r_rounds;
+    let mut r_inner_rest = r_rounds.clone();
     r_inner_rest.reverse();
 
     Ok(LincheckClaim {
+        alpha,
+        beta,
+        r_rounds,
         r_inner_skip,
         r_inner_rest,
         w,

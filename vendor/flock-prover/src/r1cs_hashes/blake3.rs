@@ -2608,7 +2608,15 @@ impl Blake3Setup {
         zerocheck: &flock_core::zerocheck::ZerocheckProof,
         lincheck: &flock_core::lincheck::LincheckProof,
         challenger: &mut Ch,
-    ) -> Result<(flock_core::proof::ZClaim, flock_core::proof::ZClaim), verifier::VerifyError> {
+    ) -> Result<
+        (
+            flock_core::proof::ZClaim,
+            flock_core::proof::ZClaim,
+            flock_core::zerocheck::ZerocheckClaim,
+            flock_core::lincheck::LincheckClaim,
+        ),
+        verifier::VerifyError,
+    > {
         flock_core::proof::bind_statement(challenger, &self.r1cs, stack_commitment);
 
         let zc_claim = flock_core::zerocheck::verify(self.r1cs.m, zerocheck, challenger)
@@ -2648,7 +2656,7 @@ impl Blake3Setup {
             },
             value: zc_claim.c_eval,
         };
-        Ok((ab, c))
+        Ok((ab, c, zc_claim, lc_claim))
     }
 
     /// Verifier mirror of [`Self::prove_validity_stacked`], in the same two
@@ -2666,7 +2674,7 @@ impl Blake3Setup {
         challenger: &mut Ch,
     ) -> Result<(), verifier::VerifyError> {
         // Phase 1 — Flock reduction: replay zerocheck + lincheck → (ab, c).
-        let (ab, c) =
+        let (ab, c, _, _) =
             self.verify_reduction(stack_commitment, &proof.zerocheck, &proof.lincheck, challenger)?;
 
         // Phase 2 — PCS: verify the stacked opening of (ab, c) + stack_pd.
@@ -2690,6 +2698,7 @@ impl Blake3Setup {
             &lig_config,
             challenger,
         )
+        .map(|_| ())
         .map_err(verifier::VerifyError::PcsAb)
     }
 }

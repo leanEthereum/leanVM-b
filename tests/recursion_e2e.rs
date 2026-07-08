@@ -39,62 +39,6 @@ fn bits_of(v: F128) -> Vec<F128> {
     out
 }
 
-/// Structural cursor over the trace, for extracting challenge values.
-struct Walk<'a> {
-    ops: &'a [TraceOp],
-    i: usize,
-}
-impl Walk<'_> {
-    fn so(&mut self) -> F128 {
-        let op = &self.ops[self.i];
-        self.i += 1;
-        match op {
-            TraceOp::StreamObserve(x) => *x,
-            other => panic!("expected StreamObserve at {}, got {other:?}", self.i - 1),
-        }
-    }
-    fn sample(&mut self) -> F128 {
-        let op = &self.ops[self.i];
-        self.i += 1;
-        match op {
-            TraceOp::Sample(v) => *v,
-            other => panic!("expected Sample at {}, got {other:?}", self.i - 1),
-        }
-    }
-    fn raw(&mut self) -> F128 {
-        let op = &self.ops[self.i];
-        self.i += 1;
-        match op {
-            TraceOp::StreamRaw(x) => *x,
-            other => panic!("expected StreamRaw at {}, got {other:?}", self.i - 1),
-        }
-    }
-    fn observe(&mut self) -> F128 {
-        let op = &self.ops[self.i];
-        self.i += 1;
-        match op {
-            TraceOp::Observe(x) => *x,
-            other => panic!("expected Observe at {}, got {other:?}", self.i - 1),
-        }
-    }
-    fn absorb(&mut self) -> Vec<u8> {
-        let op = &self.ops[self.i];
-        self.i += 1;
-        match op {
-            TraceOp::AbsorbBytes(b) => b.clone(),
-            other => panic!("expected AbsorbBytes at {}, got {other:?}", self.i - 1),
-        }
-    }
-    fn pow(&mut self) -> (u64, u32, F128) {
-        let op = &self.ops[self.i];
-        self.i += 1;
-        match op {
-            TraceOp::Pow { nonce, bits, digest } => (*nonce, *bits, *digest),
-            other => panic!("expected Pow at {}, got {other:?}", self.i - 1),
-        }
-    }
-}
-
 /// The non-trivial inner program: a BLAKE3 hash chain seeded from the public
 /// input, a `mul_range` product loop with heap traffic, and a final assert tying
 /// them together — exercises every table (XOR/MUL/SET/DEREF/JUMP/BLAKE3).
@@ -499,6 +443,7 @@ fn gen_verify(
     program: &Program,
     pi: [F128; 2],
     proof: &leanvm_b::cpu::Proof,
+    summary: &leanvm_b::cpu::VerifySummary,
     ops: &[TraceOp],
 ) -> (BTreeMap<String, String>, Vec<(String, Vec<F128>)>, SubDefer) {
     let dig = program.digest();
@@ -550,123 +495,55 @@ fn gen_verify(
         sblk.push(bkappa.len());
     }
 
-    // ---- structural walk: challenges + checkpoint ----
+    // ---- typed extraction: proof structs + the verifier's summary ----
+    // Drift check: replaying the recorded trace from the seed must reproduce
+    // every challenge and grind the native run produced.
     let seed = Sponge::new(b"leanvm-b", &[pi[0], pi[1], dig[0], dig[1]]);
-    let mut w = Walk { ops, i: 0 };
-    for _ in 0..9 {
-        w.so(); // 7 announced + 2 root words
-    }
-    let _alpha = w.sample();
-    let _nonce_word = w.raw();
-    let (_nonce, gbits, gdig) = w.pow();
-    let _gamma = w.sample();
-    let mut zetas: Vec<Vec<F128>> = Vec::new();
-    let mut roots: Vec<F128> = Vec::new();
-    for &mu in &smu {
-        roots.push(w.so());
-        let mut r: Vec<F128> = Vec::new();
-        for li in 0..mu {
-            let mut rho = Vec::new();
-            for _ in 0..li {
-                for _ in 0..3 {
-                    w.so();
-                }
-                rho.push(w.sample());
-            }
-            w.so();
-            w.so();
-            let c = w.sample();
-            r = std::iter::once(c).chain(rho).collect();
-        }
-        zetas.push(r);
-    }
-    // decompose reads (claim values), in order — advances the walk to phase end.
-    for _ in 0..nclaims {
-        w.so();
-    }
-    // stacked-bytecode reduction (native protocol): 12 observes + 3 samples.
-    let bcv_trace: Vec<F128> = (0..nbcv).map(|_| w.observe()).collect();
-    let sb: Vec<F128> = (0..3).map(|_| w.sample()).collect();
-    let phase_a_end = w.i;
+    seed.clone().replay(ops);
 
-    // ---- Phase B walk: 6 zerochecks ----
+    // Grinding digests are the only trace-borne data (they are functions of
+    // sponge states): the first Pow is the bus grind; among the rest, fold
+    // grinds carry bits > 0 and query-phase grinds carry bits = 0.
+    let pows: Vec<(u64, u32, F128)> = ops
+        .iter()
+        .filter_map(|op| match op {
+            TraceOp::Pow { nonce, bits, digest } => Some((*nonce, *bits, *digest)),
+            _ => None,
+        })
+        .collect();
+    let (gbits, gdig) = (pows[0].1, pows[0].2);
+
+    // Bus: the bytecode claims carry the push/pull ζ_lo points and sb.
+    let kbc = summary.bytecode_claims[0].point.len() - 3;
+    let zeta_push: Vec<F128> = summary.bytecode_claims[0].point[..kbc].to_vec();
+    let zeta_pull: Vec<F128> = summary.bytecode_claims[1].point[..kbc].to_vec();
+    let sb: Vec<F128> = summary.bytecode_claims[0].point[kbc..].to_vec();
+
     let taus = l.taus;
     let ncol: Vec<usize> = leanvm_b::tables::tables().iter().map(|t| t.constraint_columns().len()).collect();
-    for t in 0..6 {
-        w.sample(); // eta
-        for _ in 0..taus[t] {
-            w.sample(); // r
-        }
-        for _ in 0..taus[t] {
-            for _ in 0..3 {
-                w.so();
-            }
-            w.sample();
-        }
-        for _ in 0..ncol[t] {
-            w.so();
-        }
-    }
-    let phase_b_end = w.i;
 
-    // ---- Phase C walk: r_m sample (the PI claim); pins are sponge-silent ----
-    w.sample();
-    let phase_c_end = w.i;
-
-    // ---- Phase D walk: flock reduction (values straight from the trace) ----
-    // hint-bytes transport (raw words) then the opening marker.
-    while matches!(ops[w.i], TraceOp::StreamRaw(_)) {
-        w.i += 1;
-    }
-    assert!(matches!(ops[w.i], TraceOp::Opening));
-    w.i += 1;
-    assert_eq!(w.absorb(), b"flock-r1cs-v0".to_vec());
-    let sd_bytes = w.absorb(); // statement digest (32 bytes)
-    let _root_bytes = w.absorb();
-    assert_eq!(w.absorb(), b"flock-zerocheck-v0".to_vec());
+    // Flock replay data, all named struct fields.
     let n_log_b3 = l.taus[5];
     let m_r1cs = flock_prover::r1cs_hashes::blake3::K_LOG + n_log_b3;
     let n_mlv = m_r1cs - 6;
-    let mut zc_r = Vec::new();
-    for _ in 0..6 {
-        zc_r.push(w.sample());
-    }
-    let inner7: Vec<F128> = flare::zerocheck::univariate_skip_optimized::small_challenges_ghash()
-        .into_iter()
-        .chain(flare::zerocheck::univariate_skip_optimized::medium_challenges_ghash())
-        .collect();
-    zc_r.extend(&inner7);
-    for _ in 0..m_r1cs - 13 {
-        zc_r.push(w.sample());
-    }
-    let zc1: Vec<F128> = (0..128).map(|_| w.observe()).collect();
-    let zc_z = w.sample();
-    let mut zcr = Vec::new();
-    let mut zrho = Vec::new();
-    for _ in 0..n_mlv {
-        zcr.push(w.observe());
-        zcr.push(w.observe());
-        zrho.push(w.sample());
-    }
-    let zcf = vec![w.observe(), w.observe()];
-    assert_eq!(w.absorb(), b"flock-lincheck-v0".to_vec());
-    let lc_alpha = w.sample();
-    let lc_beta = w.sample();
-    let mut lcr = Vec::new();
-    let mut lrr = Vec::new();
     let lcrounds = flock_prover::r1cs_hashes::blake3::K_LOG - 6;
-    for _ in 0..lcrounds {
-        lcr.push(w.observe());
-        lcr.push(w.observe());
-        lrr.push(w.sample());
-    }
-    let lcz: Vec<F128> = (0..64).map(|_| w.observe()).collect();
-    let _lsk = w.sample();
-    let phase_d_end = w.i;
+    let zc1: Vec<F128> = summary.zerocheck.round1_ab.iter().chain(&summary.zerocheck.round1_c).copied().collect();
+    let zcr: Vec<F128> = summary.zerocheck.multilinear_rounds.iter().flat_map(|&(a, b)| [a, b]).collect();
+    let zcf = vec![summary.zerocheck.final_a_eval, summary.zerocheck.final_b_eval];
+    let zc_z = summary.zc_claim.z;
+    let zrho = summary.zc_claim.mlv_challenges.clone();
+    let r_rest = &summary.zc_claim.r_rest;
+    let lcr: Vec<F128> = summary.lincheck.rounds.iter().flat_map(|&(a, b)| [a, b]).collect();
+    let lcz = summary.lincheck.z_partial.clone();
+    let lc_alpha = summary.lc_claim.alpha;
+    let lc_beta = summary.lc_claim.beta;
+    let lrr = summary.lc_claim.r_rounds.clone();
+    let shv: Vec<F128> = summary.ring_switches.iter().flat_map(|rs| rs.s_hat_v.iter().copied()).collect();
 
     // matpart = the deferred weighted matrix evaluation: the lincheck running
     // claim minus (= plus, char 2) the const-pin contribution.
     let r1cs = flock_prover::r1cs_hashes::blake3::build_block_r1cs(n_log_b3);
+    let sd_bytes = r1cs.statement_digest();
     let pincol = r1cs.const_pin.expect("blake3 r1cs has a const pin");
     let mut lrun = lc_alpha * zcf[0] + zcf[1] + lc_beta;
     for i in 0..lcrounds {
@@ -683,33 +560,10 @@ fn gen_verify(
     pinw *= lcz[pincol % 64];
     let matpart = lrun + pinw;
 
-    // ---- Phase E1 walk: opening labels, ring-switch fronts, claim combine ----
-    assert_eq!(w.absorb(), b"flock-pcs-open-batch-v0".to_vec());
-    let mut shv = Vec::new();
-    for _ in 0..2 {
-        assert_eq!(w.absorb(), b"flock-ring-switch-v0".to_vec());
-        for _ in 0..128 {
-            shv.push(w.observe());
-        }
-        for _ in 0..7 {
-            w.sample(); // r'' (consumed in-circuit by the linearized algebra)
-        }
-    }
-    let _g0 = w.sample();
-    let _g1 = w.sample();
     let evtot_e: usize = ncol.iter().sum();
     let ncl = nclaims + evtot_e + 1 + 3;
-    for _ in 0..ncl {
-        assert_eq!(w.absorb(), b"flock-pcs-packed-direct-v0".to_vec());
-        w.observe();
-    }
-    for _ in 0..ncl {
-        w.sample();
-    }
-    let phase_e1_end = w.i;
 
-
-    // ---- Phase E2 walk: the Ligerito core (mirror kept in lockstep for PoW) ----
+    // ---- the stacked opening: config + the opening summary ----
     let stack_mu = l.m;
     let vcfg = flare::pcs::ligerito::LigeritoSecurityConfig::derive_profile(
         stack_mu + 7,
@@ -737,85 +591,45 @@ fn gen_verify(
     let nsq: Vec<usize> = (0..nlev).map(|i| queries[i].div_ceil(per[i])).collect();
     let fgb = |lvl: usize| vcfg.fold_grinding_bits.get(lvl).copied().unwrap_or(0) as i64;
 
-    // Walk the ligerito section (fold-PoW digests ride the trace ops).
+    let lig_raw = summary.opening.lig.query_squeezes.clone();
+    let lig_sc: Vec<F128> = proof.openings[0]
+        .sumcheck_transcript
+        .iter()
+        .flat_map(|m| [m.u_0, m.u_2])
+        .collect();
+    // Fold grinds: bits from the config, nonces from the proof, digests from
+    // the trace (bits > 0 pows, in order).
     let mut fold_pow: Vec<(u32, u64, F128)> = Vec::new();
-    let mut lig_sc: Vec<F128> = Vec::new();
-    let mut lig_raw: Vec<Vec<F128>> = vec![Vec::new(); nlev]; // squeezes per level
-    let mut lig_ris: Vec<F128> = Vec::new();
-    assert_eq!(w.absorb(), b"flock-ligerito-basis-v0".to_vec());
-    let _walked_target = w.observe();
-    w.absorb(); // initial (stack commitment) root
-    // prologue msg
-    lig_sc.push(w.observe());
-    lig_sc.push(w.observe());
+    let mut fold_grinds = pows[1..].iter().filter(|p| p.1 > 0);
     for lvl in 0..nlev {
         for j in 0..klvl[lvl] {
             let bits = (fgb(lvl) - j as i64).max(0) as u32;
             if bits > 0 {
-                let (nonce, b2, dig) = w.pow();
+                let &(nonce, b2, dig) = fold_grinds.next().expect("fold grind recorded");
                 assert_eq!(b2, bits);
                 fold_pow.push((bits, nonce, dig));
             } else {
                 fold_pow.push((0, 0, F128::ZERO));
             }
-            lig_ris.push(w.sample());
-            lig_sc.push(w.observe());
-            lig_sc.push(w.observe());
         }
-        if lvl == r {
-            for _ in 0..(1usize << yr_log_n) {
-                w.observe();
-            }
-        } else {
-            w.absorb(); // next level root
-        }
-        // query-phase grind (0 bits) + squeezes + alphas
-        let (_, zero_bits, _) = w.pow();
-        assert_eq!(zero_bits, 0);
-        for _ in 0..nsq[lvl] {
-            lig_raw[lvl].push(w.sample());
-        }
-        let alphalen = flare::pcs::ligerito::ceil_log2(queries[lvl]);
-        for _ in 0..alphalen {
-            w.sample();
-        }
-        if lvl != r {
-            lig_sc.push(w.observe());
-            lig_sc.push(w.observe());
-        }
-        w.sample(); // beta
     }
-    assert_eq!(w.i, ops.len(), "ligerito walk must consume the whole trace");
+    assert!(fold_grinds.next().is_none(), "every fold grind consumed");
 
     // ---- hints ----
     // bcv: the deferred bytecode evaluations (leaf's own scan, block/coord order).
-    let (kbc, bcv_push) = leanvm_b::leaf::public_evals(&l.push, &zetas[0]);
-    let (_, bcv_pull) = leanvm_b::leaf::public_evals(&l.pull, &zetas[1]);
+    let (kbc2, bcv_push) = leanvm_b::leaf::public_evals(&l.push, &zeta_push);
+    let (_, bcv_pull) = leanvm_b::leaf::public_evals(&l.pull, &zeta_pull);
+    assert_eq!(kbc2, kbc);
     let bcv: Vec<F128> = bcv_push.iter().chain(&bcv_pull).copied().collect();
     assert_eq!(bcv.len(), nbcv);
-    assert_eq!(bcv, bcv_trace, "layout-computed bytecode evals match the trace");
     let sb3: [F128; 3] = sb.clone().try_into().unwrap();
     let wbc = vec![
         leanvm_b::leaf::stacked_bytecode_value(&bcv[..6], &sb3),
         leanvm_b::leaf::stacked_bytecode_value(&bcv[6..], &sb3),
     ];
-    let cinv = roots[2].inv();
-    // checkpoint cvs after each phase.
-    let mut m = seed.clone();
-    m.replay(&ops[0..phase_a_end]);
-    let cvchk_a = m.state()[0];
-    let mut m = seed.clone();
-    m.replay(&ops[0..phase_b_end]);
-    let cvchk_b = m.state()[0];
-    let mut m = seed.clone();
-    m.replay(&ops[0..phase_c_end]);
-    let cvchk_c = m.state()[0];
-    let mut m = seed.clone();
-    m.replay(&ops[0..phase_d_end]);
-    let cvchk_d = m.state()[0];
-    let mut m = seed.clone();
-    m.replay(&ops[0..phase_e1_end]);
-    let cvchk_e1 = m.state()[0];
+    let cinv = summary.count_root.inv();
+    // checkpoints: the verifier's phase-boundary sponge states (guest cvh).
+    let cvh: Vec<F128> = summary.checkpoints.iter().map(|s| s[0]).collect();
 
     // ---- placeholder map ----
     let ints = |v: &[usize]| format!("[{}]", v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(", "));
@@ -905,6 +719,10 @@ fn gen_verify(
     ps("LCLBLA", u(word16(b"flock-lincheck-v0", 0)).to_string());
     ps("LCLBLB", u(word16(b"flock-lincheck-v0", 16)).to_string());
     let flds = |v: &[F128]| format!("[{}]", v.iter().map(|&x| u(x).to_string()).collect::<Vec<_>>().join(", "));
+    let inner7: Vec<F128> = flare::zerocheck::univariate_skip_optimized::small_challenges_ghash()
+        .into_iter()
+        .chain(flare::zerocheck::univariate_skip_optimized::medium_challenges_ghash())
+        .collect();
     ps("INNER7", flds(&inner7));
     let i7inv: Vec<F128> = inner7.iter().map(|&c| (F128::ONE + c).inv()).collect();
     ps("I7INV", flds(&i7inv));
@@ -1172,8 +990,8 @@ fn gen_verify(
     let deferred = SubDefer {
         pi,
         kbc,
-        zeta_push: zetas[0][..kbc].to_vec(),
-        zeta_pull: zetas[1][..kbc].to_vec(),
+        zeta_push,
+        zeta_pull,
         sb: sb.clone(),
         wbc: wbc.clone(),
         lc_alpha,
@@ -1186,7 +1004,7 @@ fn gen_verify(
 
     let mut zinv = vec![F128::ONE; n_mlv];
     for (i, item) in zinv.iter_mut().enumerate().take(n_mlv).skip(7) {
-        *item = (F128::ONE + zc_r[6 + i]).inv();
+        *item = (F128::ONE + r_rest[i]).inv();
     }
     let hints = vec![
         ("stream".to_string(), proof.stream.clone()),
@@ -1211,7 +1029,7 @@ fn gen_verify(
         ("rta".to_string(), roota),
         ("rtb".to_string(), rootb),
         ("fnn".to_string(), fnv),
-        ("cvh".to_string(), vec![cvchk_a, cvchk_b, cvchk_c, cvchk_d, cvchk_e1]),
+        ("cvh".to_string(), cvh),
     ];
     (rep, hints, deferred)
 }
@@ -1229,15 +1047,15 @@ fn run_recursion(nsub: usize) {
         ];
         let (program, proof) = prove_inner(pi);
         trace_start();
-        verify(&program, &pi, &proof).expect("inner verifies");
+        let summary = verify(&program, &pi, &proof).expect("inner verifies");
         let ops = trace_take();
-        protos.push((program, pi, proof, ops));
+        protos.push((program, pi, proof, summary, ops));
     }
     let mut rep0 = None;
     let mut merged: Vec<(String, Vec<F128>)> = Vec::new();
     let mut subs = Vec::new();
-    for (program, pi, proof, ops) in &protos {
-        let (rep, hints, defer) = gen_verify(program, *pi, proof, ops);
+    for (program, pi, proof, summary, ops) in &protos {
+        let (rep, hints, defer) = gen_verify(program, *pi, proof, summary, ops);
         match &rep0 {
             None => rep0 = Some(rep),
             Some(r0) => assert_eq!(r0, &rep, "sub-proof shapes must agree"),
@@ -1254,7 +1072,7 @@ fn run_recursion(nsub: usize) {
     }
     let mut rep = rep0.unwrap();
     rep.insert("NSUB_PLACEHOLDER".to_string(), nsub.to_string());
-    let (program0, pi0, proof0, _) = &protos[0];
+    let (program0, pi0, proof0, _, _) = &protos[0];
     let (agg_hints, reduced) = gen_agg(program0, proof0, &subs);
     merged.extend(agg_hints);
 

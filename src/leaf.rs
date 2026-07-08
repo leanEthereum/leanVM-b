@@ -454,6 +454,15 @@ pub fn prove_balance(
     (claims, bytecode_claims)
 }
 
+/// What [`verify_balance`] establishes: the per-column claims to open, the two
+/// reduced bytecode claims, and the count-channel root (nonzero; recursion
+/// guests prove that via a hinted inverse).
+pub struct BusVerify {
+    pub claims: Vec<ColumnClaim>,
+    pub bytecode_claims: Vec<BytecodeClaim>,
+    pub count_root: F128,
+}
+
 /// Verify the bus balances, oracle-free (the prover's committed values arrive on
 /// the stream and are certified by `pcs`). Returns the per-column claims to open.
 pub fn verify_balance(
@@ -462,7 +471,7 @@ pub fn verify_balance(
     count: &[Block],
     pad: &[F128],
     vs: &mut VerifierState,
-) -> Result<(Vec<ColumnClaim>, Vec<BytecodeClaim>), Error> {
+) -> Result<BusVerify, Error> {
     // Check the pre-γ grinding nonce before sampling γ (mirror of prove_balance).
     let alpha = vs.sample();
     let push_lay = layout(push);
@@ -523,5 +532,9 @@ pub fn verify_balance(
             value: stacked_bytecode_value(&pv_pull, &s),
         },
     ];
-    Ok((claims, bytecode_claims))
+    Ok(BusVerify {
+        claims,
+        bytecode_claims,
+        count_root,
+    })
 }
