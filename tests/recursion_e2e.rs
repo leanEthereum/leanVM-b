@@ -74,7 +74,7 @@ fn inner_program(iters: usize) -> Program {
 }
 
 /// Prove the inner program, returning (program, proof).
-fn prove_inner(pi: [F128; 2], iters: usize) -> (Program, leanvm_b::cpu::Proof) {
+fn prove_inner(pi: [F128; 2], iters: usize) -> (Program, leanvm_b::cpu::Proof, usize) {
     let mut program = inner_program(iters);
     // The final accumulator must be nonzero for the hinted-inverse assert; the
     // witness generator computes it, so run once natively to fetch the value.
@@ -102,7 +102,7 @@ fn prove_inner(pi: [F128; 2], iters: usize) -> (Program, leanvm_b::cpu::Proof) {
         stats.cycles,
         (stats.committed as f64).log2()
     );
-    (program, proof)
+    (program, proof, stats.cycles)
 }
 
 /// The deferred-claim data the guest binds to the outer public input: the outer
@@ -1033,13 +1033,15 @@ fn gen_verify(
 /// deferred claims with the two aggregation sumchecks, prove the guest, and
 /// natively discharge the three reduced claims.
 fn run_recursion(nsub: usize, inner_iters: usize) {
+    let mut total_inner_cycles = 0usize;
     let mut protos = Vec::new();
     for k in 0..nsub {
         let pi = [
             F128::new(0x1111_2222 + k as u64, 0x3333_4444),
             F128::new(0x5555_6666, 0x7777_8888 + k as u64),
         ];
-        let (program, proof) = prove_inner(pi, inner_iters);
+        let (program, proof, inner_cycles) = prove_inner(pi, inner_iters);
+        total_inner_cycles += inner_cycles;
         trace_start();
         let summary = verify(&program, &pi, &proof).expect("inner verifies");
         let ops = trace_take();
@@ -1085,16 +1087,28 @@ fn run_recursion(nsub: usize, inner_iters: usize) {
     let t = std::time::Instant::now();
     check_reduced(program0, proof0, *pi0, &reduced);
     let t_red = t.elapsed();
-    let psize = bincode::serialize(&gproof).expect("serialize outer proof").len();
-    eprintln!(
-        "recursion_{nsub}to1 OK: guest {} cycles, {} BLAKE3; outer prove {:.2}s, verify {:.1}ms, reduced checks {:.1}ms, outer proof ~{} KiB",
+    let proof_bytes = bincode::serialized_size(&gproof).expect("proof is serializable");
+    let pow = |x: usize| if x == 0 { "     -".into() } else { format!("2^{:.2}", (x as f64).log2()) };
+    println!("\nrecursion {nsub}\u{2192}1: {nsub} inner proofs of {} cycles each", total_inner_cycles / nsub);
+    println!(
+        "  guest cycles (VM steps)     : {:>10} = {:>7}   ({:.2} / inner cycle)",
         stats.cycles,
-        stats.counts[5],
-        t_prove.as_secs_f64(),
-        t_verify.as_secs_f64() * 1e3,
-        t_red.as_secs_f64() * 1e3,
-        psize / 1024,
+        pow(stats.cycles),
+        stats.cycles as f64 / total_inner_cycles as f64
     );
+    for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3"].iter().zip(&stats.counts) {
+        println!("    {name:<6} instructions     : {c:>10} = {:>7}", pow(c));
+    }
+    println!("  committed witness size      : 2^{:.3}", (stats.committed as f64).log2());
+    println!(
+        "  data memory                 : 2^{} padded (2^{:.2} used)",
+        stats.log_mem,
+        (stats.mem_used as f64).log2()
+    );
+    println!("  outer proof size            : {:.1} KiB", proof_bytes as f64 / 1024.0);
+    println!("  outer proving               : {t_prove:?}");
+    println!("  outer verifying             : {t_verify:?}");
+    println!("  reduced claims (native)     : {t_red:?}");
 }
 
 /// THE recursion test: two ~1M-cycle inner proofs (log_mem 21, committed
