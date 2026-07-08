@@ -76,6 +76,10 @@ struct FnLower<'a> {
     /// cells its tail `return` binds into instead of emitting a return jump.
     /// `None` outside an inlined body.
     inline_ret: Option<Vec<Off>>,
+    /// Set by an inlined tail `return <stackbuf>`: the returned cell run, which
+    /// the caller's `let` binds as a stack alias (the MD-chain idiom
+    /// `cvb = obs(cvb, x)` costs zero copies).
+    inline_stack_ret: Option<(Off, u32)>,
     /// Deferred stack-cell copies/zeros ([`Alias`]), forwarded at use.
     alias: HashMap<Off, Alias>,
     /// A cached frame cell holding `0` (for forwarded zero words), set lazily.
@@ -1201,6 +1205,7 @@ impl FnLower<'_> {
             "blake3 is a statement: `blake3(a, b, out)` writes the digest into the 2-cell stack run `out`"
         );
         let dsts: Vec<Off> = (0..n_ret).map(|_| self.fresh()).collect();
+        self.inline_stack_ret = None;
         self.call_into(callee, args, &dsts);
         dsts
     }
@@ -1479,7 +1484,9 @@ impl FnLower<'_> {
                     self.stacks.insert(name.clone(), bs);
                 }
                 _ => {
-                    self.stacks.remove(name);
+                    // NOTE: `name`'s old binding stays visible while the RHS is
+                    // lowered (the MD-chain idiom `cvb = obs(cvb, x)` reads it);
+                    // each terminal path below unbinds/rebinds afterwards.
                     // A compile-time integer binding (a literal, or an expression
                     // that folds — `FOLDBASE[lvl] + j`, `n // 2`, `len(A) - 1`) is
                     // usable as a compile-time index / bound / exponent.
@@ -1497,10 +1504,12 @@ impl FnLower<'_> {
                     // no instruction here, folded / materialized only on demand.
                     if let Some(ga) = self.gaddr_of(e) {
                         self.vars.remove(name);
+                        self.stacks.remove(name);
                         self.fconsts.remove(name);
                         self.gaddrs.insert(name.clone(), ga);
                     } else if let Some(c) = self.try_field_const(e) {
                         self.vars.remove(name);
+                        self.stacks.remove(name);
                         self.gaddrs.remove(name);
                         self.fconsts.insert(name.clone(), c);
                     } else if let Some(k) = k_idx {
@@ -1508,13 +1517,22 @@ impl FnLower<'_> {
                         // compile-time value too — as a scalar it is the field
                         // element with those 128 bits, materialized on demand.
                         self.vars.remove(name);
+                        self.stacks.remove(name);
                         self.gaddrs.remove(name);
                         self.fconsts.insert(name.clone(), F128::new(k as u64, 0));
                     } else {
                         let o = self.expr(e);
-                        self.gaddrs.remove(name);
-                        self.fconsts.remove(name);
-                        self.vars.insert(name.clone(), o);
+                        if let Some((base, size)) = self.inline_stack_ret.take() {
+                            self.vars.remove(name);
+                            self.gaddrs.remove(name);
+                            self.fconsts.remove(name);
+                            self.stacks.insert(name.clone(), (base, size));
+                        } else {
+                            self.stacks.remove(name);
+                            self.gaddrs.remove(name);
+                            self.fconsts.remove(name);
+                            self.vars.insert(name.clone(), o);
+                        }
                     }
                 }
             },
@@ -1642,6 +1660,15 @@ impl FnLower<'_> {
         // Inlined (`@unroll`): bind the return values into the caller's cells
         // and fall through — the body's tail return, so no jump is needed.
         if let Some(dsts) = self.inline_ret.clone() {
+            // `return <stackbuf>` from an `@unroll` body: hand the caller the
+            // cell run itself (alias), not copies — the buffer was allocated
+            // in the caller's frame, so it outlives the inline scope.
+            if let [e] = exprs
+                && let Some((base, size)) = self.stack_of(e)
+            {
+                self.inline_stack_ret = Some((base, size));
+                return;
+            }
             for (e, &d) in exprs.iter().zip(&dsts) {
                 self.expr_into(e, d);
             }
@@ -1949,6 +1976,7 @@ pub(crate) fn lower_func(
         gaddrs: HashMap::new(),
         fconsts: HashMap::new(),
         inline_ret: None,
+        inline_stack_ret: None,
         alias: HashMap::new(),
         zero_off: None,
         pending: Vec::new(),

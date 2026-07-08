@@ -223,6 +223,23 @@ nested/early `return`. It is never lowered standalone; a call to a
 non-`@unroll` function is unchanged. Named for the DSL's compile-time
 expansion verb (cf. `unroll(a, b)` for loops).
 
+An `@unroll` function may also **return a `StackBuf`**: the caller's binding
+aliases the returned cell run (zero copies), and `StackBuf` arguments alias
+likewise. This makes chained-state helpers free, the MD-chain idiom:
+
+```python
+@unroll
+def obs(cb, x):          # sponge absorb: cb <- compress(cb, (x, SCALAR))
+    tg = StackBuf(2)
+    tg[0] = x
+    tg[1] = DS_SCALAR
+    nb = StackBuf(2)
+    blake3(cb, tg, nb)
+    return nb            # the call site's `cvb = obs(cvb, v)` aliases nb
+
+cvb = obs(cvb, v)        # exactly 3 ops: two tag writes + one blake3
+```
+
 Because the body runs in the *caller's* frame, a `Const` parameter whose `if`s
 fold (below) bakes straight-line, per-case code — the idiom for a `match_range`
 arm that must specialize on the arm value. The trade-off is frame cells: each
