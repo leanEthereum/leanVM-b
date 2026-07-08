@@ -42,9 +42,11 @@ fn bits_of(v: F128) -> Vec<F128> {
 /// The non-trivial inner program: a BLAKE3 hash chain seeded from the public
 /// input, a `mul_range` product loop with heap traffic, and a final assert tying
 /// them together — exercises every table (XOR/MUL/SET/DEREF/JUMP/BLAKE3).
-fn inner_program() -> Program {
-    let src = "from snark_lib import *\n\
+fn inner_program(iters: usize) -> Program {
+    let src = format!(
+        "from snark_lib import *\n\
         N = 8\n\
+        ITERS = {iters}\n\
         def main():\n\
         \x20   p = GEN ** 0\n\
         \x20   st = StackBuf(2)\n\
@@ -55,24 +57,25 @@ fn inner_program() -> Program {
         \x20       blake3(st, st, nx)\n\
         \x20       st = nx\n\
         \x20   s1 = 1 * st[1]\n\
-        \x20   buf = HeapBuf(16)\n\
-        \x20   acc = HeapBuf(17)\n\
+        \x20   buf = HeapBuf(ITERS)\n\
+        \x20   acc = HeapBuf(ITERS + 1)\n\
         \x20   acc[GEN ** 0] = st[0]\n\
-        \x20   for x in mul_range(1, GEN ** 16):\n\
+        \x20   for x in mul_range(1, GEN ** ITERS):\n\
         \x20       buf[x] = acc[x] * acc[x] + s1\n\
         \x20       acc[x * GEN] = buf[x] + x\n\
-        \x20   out = acc[GEN ** 16]\n\
+        \x20   out = acc[GEN ** ITERS]\n\
         \x20   nz = HeapBuf(1)\n\
         \x20   hint_witness(nz[0:1], \"outinv\")\n\
         \x20   prod = out * nz[GEN ** 0]\n\
         \x20   assert prod == 1\n\
-        \x20   return\n";
-    compile(&parse(src).expect("parse inner"))
+        \x20   return\n"
+    );
+    compile(&parse(&src).expect("parse inner"))
 }
 
 /// Prove the inner program, returning (program, proof).
-fn prove_inner(pi: [F128; 2]) -> (Program, leanvm_b::cpu::Proof) {
-    let mut program = inner_program();
+fn prove_inner(pi: [F128; 2], iters: usize) -> (Program, leanvm_b::cpu::Proof) {
+    let mut program = inner_program(iters);
     // The final accumulator must be nonzero for the hinted-inverse assert; the
     // witness generator computes it, so run once natively to fetch the value.
     // (Cheap: the inverse hint is the only witness stream.)
@@ -85,7 +88,7 @@ fn prove_inner(pi: [F128; 2]) -> (Program, leanvm_b::cpu::Proof) {
     let mut acc = st[0];
     let mut x = F128::ONE;
     let g = leanvm_b::field::g_pow(1);
-    for _ in 0..16 {
+    for _ in 0..iters {
         let b = acc * acc + st[1];
         acc = b + x;
         x *= g;
@@ -1030,14 +1033,14 @@ fn gen_verify(
 /// distinct statements), verify all of them inside ONE guest, batch the
 /// deferred claims with the two aggregation sumchecks, prove the guest, and
 /// natively discharge the three reduced claims.
-fn run_recursion(nsub: usize) {
+fn run_recursion(nsub: usize, inner_iters: usize) {
     let mut protos = Vec::new();
     for k in 0..nsub {
         let pi = [
             F128::new(0x1111_2222 + k as u64, 0x3333_4444),
             F128::new(0x5555_6666, 0x7777_8888 + k as u64),
         ];
-        let (program, proof) = prove_inner(pi);
+        let (program, proof) = prove_inner(pi, inner_iters);
         trace_start();
         let summary = verify(&program, &pi, &proof).expect("inner verifies");
         let ops = trace_take();
@@ -1097,11 +1100,21 @@ fn run_recursion(nsub: usize) {
 
 #[test]
 fn recursion_1to1() {
-    run_recursion(1);
+    run_recursion(1, 16);
 }
 
 #[test]
 fn recursion_2to1() {
-    run_recursion(2);
+    run_recursion(2, 16);
+}
+
+/// 2→1 with a ~1M-cycle inner program (log_mem 21, an m=33 stacked opening):
+/// the guest cost is structure-dominated, so it grows only with the log of
+/// the inner execution length; at this size each in-circuit verification
+/// costs fewer cycles than the execution it verifies. Heavy; run explicitly.
+#[test]
+#[ignore]
+fn recursion_2to1_big() {
+    run_recursion(2, 1 << 15);
 }
 
