@@ -26,12 +26,36 @@ counts) plus the hash count implied by counts[5]. Derived: per-table
 log-heights tau_t, the three GKR depths mu_s, the stacked layout, the
 committed total m, flock's m_r1cs, both Ligerito level structures.
 
-Announced counts are integer words, not g-powers: hint tau_t, verify with
-a dec128 of the count that bit tau_t-1 is the top set bit (or the count is
-exactly 2^tau_t). Then tau_t lives as a g-power g^tau_t for dispatch and
-range checks. Same for log_mem (announced directly as a small integer:
-convert by hinting g^log_mem and checking the match via a baked power
-table selected with match_range).
+### Settled P1 mechanism: hinted exponent-form logs + count gadget
+
+NO protocol change. The transcript already binds everything needed (the 7
+announced words: log_mem + six row counts). The structural logs the guest
+consumes (g^tau_t, g^log_mem, later g^m) arrive as WITNESS HINTS — free,
+off-transcript — and the guest certifies each against the announced words
+in-circuit:
+
+- Count gadget, per count (~170 cycles): hint 32 bits, assert booleanity,
+  build partial sums p[j] = sum_{i<j} b_i 2^i in a HeapBuf, assert
+  p[32] == count (binds bits to the announced word), then hint g^tau,
+  range-check `assert log(g^tau) < 33` (3 cycles), and assert
+  p[g^tau] == count — which holds iff all bits >= tau are zero, i.e.
+  count < 2^tau. Handle the exact-power case (count == 2^tau) via the
+  baked g^j -> 2^j word table; pin minimality (count > 2^{tau-1}) with a
+  hinted-inverse nonzero check, so tau = ceil(log2 count) exactly and the
+  guest's structure matches the native verifier's derivation bit for bit.
+  Wrinkles: table 5 (BLAKE3) uses n_blocks_log (a lincheck floor), so its
+  exactness check carries the floor case; tau = 0 (count = 1) skips the
+  minimality check.
+
+- log_mem is announced AS a log (small integer word L): hint X = g^L,
+  range-check, and deref a baked 33-entry exponent-indexed table
+  T[g^j] = j against L (T[X] == L pins X = g^L), 2 cycles + shared setup.
+
+- Derived sizes with exponent-ADDITIVE relations (the GKR depths mu_s as
+  functions of log_mem and the tau's) are checked free in the exponent
+  (g^mu == g^logmem * g^k is one MUL). Derived sizes needing integer sums
+  (the stacked total for m) use the baked g^j -> 2^j word table to
+  reconstruct the total as a word, then one more count-gadget instance.
 
 ## Strategy per phase (in guest order)
 
