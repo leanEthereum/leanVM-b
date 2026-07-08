@@ -15,7 +15,8 @@ from snark_lib import *
 # 3× leaf decomposition with the claim pool).
 #
 # Naming: `cur` is the stream cursor (heap pointer, advanced ×g per word read);
-# `cv0/cv1` the sponge; `zeta` holds the three GKR points side by side.
+# `cvb` is the sponge chain (StackBuf pair, aliased forward per absorb);
+# `zeta` holds the three GKR points side by side.
 
 STREAM_LEN = STREAM_LEN_PLACEHOLDER
 ANN = ANN_PLACEHOLDER
@@ -177,28 +178,6 @@ DS_SQ = 4
 DS_POW = 5
 
 
-def obs(c0, c1, x):
-    a = StackBuf(2)
-    a[0] = c0
-    a[1] = c1
-    b = StackBuf(2)
-    b[0] = x
-    b[1] = DS_SCALAR
-    o = StackBuf(2)
-    blake3(a, b, o)
-    return o[0], o[1]
-
-
-def absorb(c0, c1, x, tag):
-    a = StackBuf(2)
-    a[0] = c0
-    a[1] = c1
-    b = StackBuf(2)
-    b[0] = x
-    b[1] = tag
-    o = StackBuf(2)
-    blake3(a, b, o)
-    return o[0], o[1]
 
 
 def sqz(c0, c1):
@@ -265,6 +244,9 @@ def foldyr(yp, weights, wbase: Const):
 
 
 def main():
+    zt_ = StackBuf(2)
+    zt_[0] = 0
+    zt_[1] = DS_SQ
     stream = HeapBuf(NSUB * (STREAM_LEN))
     hint_witness(stream[0:NSUB * (STREAM_LEN)], "stream")
     fpb = HeapBuf(NSUB * (128))
@@ -373,40 +355,78 @@ def main():
         # ---- seed (statement pre-bound: hinted sub pi + baked program digest) ----
         pv0 = spi_s[GEN ** 0]
         pv1 = spi_s[GEN ** 1]
-        cv0, cv1 = obs(SEEDB0, SEEDB1, pv0)
-        cv0, cv1 = obs(cv0, cv1, pv1)
-        cv0, cv1 = obs(cv0, cv1, DIG0)
-        cv0, cv1 = obs(cv0, cv1, DIG1)
+        cvb = StackBuf(2)
+        cvb[0] = SEEDB0
+        cvb[1] = SEEDB1
+        tg_ = StackBuf(2)
+        tg_[0] = pv0
+        tg_[1] = DS_SCALAR
+        nb_ = StackBuf(2)
+        blake3(cvb, tg_, nb_)
+        cvb = nb_
+        tg_ = StackBuf(2)
+        tg_[0] = pv1
+        tg_[1] = DS_SCALAR
+        nb_ = StackBuf(2)
+        blake3(cvb, tg_, nb_)
+        cvb = nb_
+        tg_ = StackBuf(2)
+        tg_[0] = DIG0
+        tg_[1] = DS_SCALAR
+        nb_ = StackBuf(2)
+        blake3(cvb, tg_, nb_)
+        cvb = nb_
+        tg_ = StackBuf(2)
+        tg_[0] = DIG1
+        tg_[1] = DS_SCALAR
+        nb_ = StackBuf(2)
+        blake3(cvb, tg_, nb_)
+        cvb = nb_
         cur = stream_s
 
         # ---- announced sizes: log_mem + 6 row counts (assert = baked config) ----
         for i in unroll(0, 7):
             x = cur[GEN ** 0]
-            cv0, cv1 = obs(cv0, cv1, x)
+            tg_ = StackBuf(2)
+            tg_[0] = x
+            tg_[1] = DS_SCALAR
+            nb_ = StackBuf(2)
+            blake3(cvb, tg_, nb_)
+            cvb = nb_
             assert x == ANN[i]
             cur = cur * GEN
 
         # ---- commitment root (2 words), kept for the opening phase ----
         rt0 = cur[GEN ** 0]
-        cv0, cv1 = obs(cv0, cv1, rt0)
+        tg_ = StackBuf(2)
+        tg_[0] = rt0
+        tg_[1] = DS_SCALAR
+        nb_ = StackBuf(2)
+        blake3(cvb, tg_, nb_)
+        cvb = nb_
         cur = cur * GEN
         rt1 = cur[GEN ** 0]
-        cv0, cv1 = obs(cv0, cv1, rt1)
+        tg_ = StackBuf(2)
+        tg_[0] = rt1
+        tg_[1] = DS_SCALAR
+        nb_ = StackBuf(2)
+        blake3(cvb, tg_, nb_)
+        cvb = nb_
         cur = cur * GEN
 
         # ---- bus: α, grinding, γ ----
-        alpha, cv0, cv1 = sqz(cv0, cv1)
+        nb_ = StackBuf(2)
+        blake3(cvb, zt_, nb_)
+        cvb = nb_
+        alpha = nb_[0]
         # grinding nonce: raw stream_s word (NOT observed), PoW-checked, then bound.
         nonce = cur[GEN ** 0]
         cur = cur * GEN
-        pb = StackBuf(2)
-        pb[0] = cv0
-        pb[1] = cv1
         pz = StackBuf(2)
         pz[0] = 0
         pz[1] = DS_POW
         pbase = StackBuf(2)
-        blake3(pb, pz, pbase)
+        blake3(cvb, pz, pbase)
         pn = StackBuf(2)
         pn[0] = nonce
         pn[1] = DS_POW
@@ -419,15 +439,28 @@ def main():
         for b in unroll(8 * GFULL + 8 - GEXTRA, 8 * GFULL + 8):
             z1 = fpb_s[GEN ** b]
             assert z1 == 0
-        cv0, cv1 = absorb(cv0, cv1, nonce, DS_POW)
-        gamma, cv0, cv1 = sqz(cv0, cv1)
+        tg_ = StackBuf(2)
+        tg_[0] = nonce
+        tg_[1] = DS_POW
+        nb_ = StackBuf(2)
+        blake3(cvb, tg_, nb_)
+        cvb = nb_
+        nb_ = StackBuf(2)
+        blake3(cvb, zt_, nb_)
+        cvb = nb_
+        gamma = nb_[0]
 
         # ---- 3× GKR grand product (push / pull / count) ----
         groot = HeapBuf(3)
         gval = HeapBuf(3)
         for s in unroll(0, 3):
             rootv = cur[GEN ** 0]
-            cv0, cv1 = obs(cv0, cv1, rootv)
+            tg_ = StackBuf(2)
+            tg_[0] = rootv
+            tg_[1] = DS_SCALAR
+            nb_ = StackBuf(2)
+            blake3(cvb, tg_, nb_)
+            cvb = nb_
             cur = cur * GEN
             claim = rootv
             rprev = HeapBuf(MUMAX)
@@ -436,18 +469,36 @@ def main():
                 rnew = HeapBuf(MUMAX)
                 for j in unroll(0, li):
                     m0 = cur[GEN ** 0]
-                    cv0, cv1 = obs(cv0, cv1, m0)
+                    tg_ = StackBuf(2)
+                    tg_[0] = m0
+                    tg_[1] = DS_SCALAR
+                    nb_ = StackBuf(2)
+                    blake3(cvb, tg_, nb_)
+                    cvb = nb_
                     cur = cur * GEN
                     m1 = cur[GEN ** 0]
-                    cv0, cv1 = obs(cv0, cv1, m1)
+                    tg_ = StackBuf(2)
+                    tg_[0] = m1
+                    tg_[1] = DS_SCALAR
+                    nb_ = StackBuf(2)
+                    blake3(cvb, tg_, nb_)
+                    cvb = nb_
                     cur = cur * GEN
                     m2 = cur[GEN ** 0]
-                    cv0, cv1 = obs(cv0, cv1, m2)
+                    tg_ = StackBuf(2)
+                    tg_[0] = m2
+                    tg_[1] = DS_SCALAR
+                    nb_ = StackBuf(2)
+                    blake3(cvb, tg_, nb_)
+                    cvb = nb_
                     cur = cur * GEN
                     rj = rprev[GEN ** j]
                     lhs = eq_acc * ((1 + rj) * m0 + rj * m1)
                     assert lhs == claim
-                    rk, cv0, cv1 = sqz(cv0, cv1)
+                    nb_ = StackBuf(2)
+                    blake3(cvb, zt_, nb_)
+                    cvb = nb_
+                    rk = nb_[0]
                     rnew[GEN ** (j + 1)] = rk
                     eq_acc = eq_acc * (1 + rj + rk)
                     # Lagrange at nodes {0, 1, g} with baked inverse denominators.
@@ -456,13 +507,26 @@ def main():
                     l2 = rk * (rk + 1) * ILD2
                     claim = eq_acc * (m0 * l0 + m1 * l1 + m2 * l2)
                 e0 = cur[GEN ** 0]
-                cv0, cv1 = obs(cv0, cv1, e0)
+                tg_ = StackBuf(2)
+                tg_[0] = e0
+                tg_[1] = DS_SCALAR
+                nb_ = StackBuf(2)
+                blake3(cvb, tg_, nb_)
+                cvb = nb_
                 cur = cur * GEN
                 e1 = cur[GEN ** 0]
-                cv0, cv1 = obs(cv0, cv1, e1)
+                tg_ = StackBuf(2)
+                tg_[0] = e1
+                tg_[1] = DS_SCALAR
+                nb_ = StackBuf(2)
+                blake3(cvb, tg_, nb_)
+                cvb = nb_
                 cur = cur * GEN
                 assert claim == eq_acc * e0 * e1
-                c, cv0, cv1 = sqz(cv0, cv1)
+                nb_ = StackBuf(2)
+                blake3(cvb, zt_, nb_)
+                cvb = nb_
+                c = nb_[0]
                 claim = e0 + c * (e0 + e1)
                 rnew[GEN ** 0] = c
                 rprev = rnew
@@ -521,13 +585,23 @@ def main():
                         cval = CVAL[BC0[b] + i]
                     if CT[BC0[b] + i] == 1:
                         cval = cur[GEN ** 0]
-                        cv0, cv1 = obs(cv0, cv1, cval)
+                        tg_ = StackBuf(2)
+                        tg_[0] = cval
+                        tg_[1] = DS_SCALAR
+                        nb_ = StackBuf(2)
+                        blake3(cvb, tg_, nb_)
+                        cvb = nb_
                         cur = cur * GEN
                         clv[GEN ** ci] = cval
                         ci = ci + 1
                     if CT[BC0[b] + i] == 2:
                         rawv = cur[GEN ** 0]
-                        cv0, cv1 = obs(cv0, cv1, rawv)
+                        tg_ = StackBuf(2)
+                        tg_[0] = rawv
+                        tg_[1] = DS_SCALAR
+                        nb_ = StackBuf(2)
+                        blake3(cvb, tg_, nb_)
+                        cvb = nb_
                         cur = cur * GEN
                         clv[GEN ** ci] = rawv
                         ci = ci + 1
@@ -557,10 +631,18 @@ def main():
         # per-column values, sample three eq challenges, and reduce each point's
         # six claims to B(zeta_lo, sb) = sum_c eq(sb, c) * v_c.
         for k in unroll(0, NBCV):
-            cv0, cv1 = obs(cv0, cv1, bcv_s[GEN ** k])
+            tg_ = StackBuf(2)
+            tg_[0] = bcv_s[GEN ** k]
+            tg_[1] = DS_SCALAR
+            nb_ = StackBuf(2)
+            blake3(cvb, tg_, nb_)
+            cvb = nb_
         sb = HeapBuf(3)
         for t in unroll(0, 3):
-            sv, cv0, cv1 = sqz(cv0, cv1)
+            nb_ = StackBuf(2)
+            blake3(cvb, zt_, nb_)
+            cvb = nb_
+            sv = nb_[0]
             sb[GEN ** t] = sv
         wbc = HeapBuf(2)
         for s in unroll(0, 2):
@@ -577,7 +659,8 @@ def main():
 
         # ---- Phase A checkpoint: sponge state matches the mirror ----
         cck = cvh_s[GEN ** 0]
-        assert cv0 == cck
+        ccg = cvb[0]
+        assert ccg == cck
 
         # ---- 6x per-table zerocheck (XOR, MUL, SET, DEREF, JUMP, BLAKE3) ----
         # For each table: eta, the zerocheck point r (tau samples), tau eq-trick
@@ -585,27 +668,51 @@ def main():
         # and the final AIR check claim == eq_acc * C_t(eta, evals).
         rho = HeapBuf(6 * TAUMAX)
         for t in unroll(0, 6):
-            eta, cv0, cv1 = sqz(cv0, cv1)
+            nb_ = StackBuf(2)
+            blake3(cvb, zt_, nb_)
+            cvb = nb_
+            eta = nb_[0]
             rr = HeapBuf(TAUMAX)
             for k in unroll(0, TAU[t]):
-                rv, cv0, cv1 = sqz(cv0, cv1)
+                nb_ = StackBuf(2)
+                blake3(cvb, zt_, nb_)
+                cvb = nb_
+                rv = nb_[0]
                 rr[GEN ** k] = rv
             claim = 0
             eq_acc = GEN ** 0
             for k in unroll(0, TAU[t]):
                 p0 = cur[GEN ** 0]
-                cv0, cv1 = obs(cv0, cv1, p0)
+                tg_ = StackBuf(2)
+                tg_[0] = p0
+                tg_[1] = DS_SCALAR
+                nb_ = StackBuf(2)
+                blake3(cvb, tg_, nb_)
+                cvb = nb_
                 cur = cur * GEN
                 p1 = cur[GEN ** 0]
-                cv0, cv1 = obs(cv0, cv1, p1)
+                tg_ = StackBuf(2)
+                tg_[0] = p1
+                tg_[1] = DS_SCALAR
+                nb_ = StackBuf(2)
+                blake3(cvb, tg_, nb_)
+                cvb = nb_
                 cur = cur * GEN
                 p2 = cur[GEN ** 0]
-                cv0, cv1 = obs(cv0, cv1, p2)
+                tg_ = StackBuf(2)
+                tg_[0] = p2
+                tg_[1] = DS_SCALAR
+                nb_ = StackBuf(2)
+                blake3(cvb, tg_, nb_)
+                cvb = nb_
                 cur = cur * GEN
                 rj = rr[GEN ** k]
                 lhs = eq_acc * ((1 + rj) * p0 + rj * p1)
                 assert lhs == claim
-                rk, cv0, cv1 = sqz(cv0, cv1)
+                nb_ = StackBuf(2)
+                blake3(cvb, zt_, nb_)
+                cvb = nb_
+                rk = nb_[0]
                 rho[GEN ** (t * TAUMAX + k)] = rk
                 eq_acc = eq_acc * (1 + rj + rk)
                 l0 = (rk + 1) * (rk + GG) * ILD0
@@ -615,7 +722,12 @@ def main():
             ee = HeapBuf(16)
             for k in unroll(0, NCOL[t]):
                 e = cur[GEN ** 0]
-                cv0, cv1 = obs(cv0, cv1, e)
+                tg_ = StackBuf(2)
+                tg_[0] = e
+                tg_[1] = DS_SCALAR
+                nb_ = StackBuf(2)
+                blake3(cvb, tg_, nb_)
+                cvb = nb_
                 cur = cur * GEN
                 ee[GEN ** k] = e
                 clv[GEN ** ci] = e
@@ -646,10 +758,14 @@ def main():
 
         # ---- Phase B checkpoint ----
         cck = cvh_s[GEN ** 1]
-        assert cv0 == cck
+        ccg = cvb[0]
+        assert ccg == cck
 
         # ---- public-input binding claim: MEM(r_m, 0..) = interp(pi0, pi1, r_m) ----
-        rm, cv0, cv1 = sqz(cv0, cv1)
+        nb_ = StackBuf(2)
+        blake3(cvb, zt_, nb_)
+        cvb = nb_
+        rm = nb_[0]
         piv = pv0 + rm * (pv0 + pv1)
         clv[GEN ** ci] = piv
         ci = ci + 1
@@ -679,36 +795,106 @@ def main():
 
         # ---- Phase C checkpoint ----
         cck = cvh_s[GEN ** 2]
-        assert cv0 == cck
+        ccg = cvb[0]
+        assert ccg == cck
 
         # ---- flock reduction: bind_statement ----
-        cv0, cv1 = absorb(cv0, cv1, 13, DS_LEN)
-        cv0, cv1 = absorb(cv0, cv1, R1CSLBL, DS_BYTE)
-        cv0, cv1 = absorb(cv0, cv1, 32, DS_LEN)
-        cv0, cv1 = absorb(cv0, cv1, SD0, DS_BYTE)
-        cv0, cv1 = absorb(cv0, cv1, SD1, DS_BYTE)
-        cv0, cv1 = absorb(cv0, cv1, 32, DS_LEN)
-        cv0, cv1 = absorb(cv0, cv1, rt0, DS_BYTE)
-        cv0, cv1 = absorb(cv0, cv1, rt1, DS_BYTE)
+        tg_ = StackBuf(2)
+        tg_[0] = 13
+        tg_[1] = DS_LEN
+        nb_ = StackBuf(2)
+        blake3(cvb, tg_, nb_)
+        cvb = nb_
+        tg_ = StackBuf(2)
+        tg_[0] = R1CSLBL
+        tg_[1] = DS_BYTE
+        nb_ = StackBuf(2)
+        blake3(cvb, tg_, nb_)
+        cvb = nb_
+        tg_ = StackBuf(2)
+        tg_[0] = 32
+        tg_[1] = DS_LEN
+        nb_ = StackBuf(2)
+        blake3(cvb, tg_, nb_)
+        cvb = nb_
+        tg_ = StackBuf(2)
+        tg_[0] = SD0
+        tg_[1] = DS_BYTE
+        nb_ = StackBuf(2)
+        blake3(cvb, tg_, nb_)
+        cvb = nb_
+        tg_ = StackBuf(2)
+        tg_[0] = SD1
+        tg_[1] = DS_BYTE
+        nb_ = StackBuf(2)
+        blake3(cvb, tg_, nb_)
+        cvb = nb_
+        tg_ = StackBuf(2)
+        tg_[0] = 32
+        tg_[1] = DS_LEN
+        nb_ = StackBuf(2)
+        blake3(cvb, tg_, nb_)
+        cvb = nb_
+        tg_ = StackBuf(2)
+        tg_[0] = rt0
+        tg_[1] = DS_BYTE
+        nb_ = StackBuf(2)
+        blake3(cvb, tg_, nb_)
+        cvb = nb_
+        tg_ = StackBuf(2)
+        tg_[0] = rt1
+        tg_[1] = DS_BYTE
+        nb_ = StackBuf(2)
+        blake3(cvb, tg_, nb_)
+        cvb = nb_
 
         # ---- flock zerocheck (univariate skip, k_skip = 6) ----
-        cv0, cv1 = absorb(cv0, cv1, 18, DS_LEN)
-        cv0, cv1 = absorb(cv0, cv1, ZCLBLA, DS_BYTE)
-        cv0, cv1 = absorb(cv0, cv1, ZCLBLB, DS_BYTE)
+        tg_ = StackBuf(2)
+        tg_[0] = 18
+        tg_[1] = DS_LEN
+        nb_ = StackBuf(2)
+        blake3(cvb, tg_, nb_)
+        cvb = nb_
+        tg_ = StackBuf(2)
+        tg_[0] = ZCLBLA
+        tg_[1] = DS_BYTE
+        nb_ = StackBuf(2)
+        blake3(cvb, tg_, nb_)
+        cvb = nb_
+        tg_ = StackBuf(2)
+        tg_[0] = ZCLBLB
+        tg_[1] = DS_BYTE
+        nb_ = StackBuf(2)
+        blake3(cvb, tg_, nb_)
+        cvb = nb_
         # the full r vector: 6 sampled skips, 7 fixed inner, MR1CS-13 sampled outer.
         zr = HeapBuf(MR1CS)
         for i in unroll(0, 6):
-            rv, cv0, cv1 = sqz(cv0, cv1)
+            nb_ = StackBuf(2)
+            blake3(cvb, zt_, nb_)
+            cvb = nb_
+            rv = nb_[0]
             zr[GEN ** i] = rv
         for i in unroll(0, 7):
             zr[GEN ** (6 + i)] = INNER7[i]
         for i in unroll(0, MR1CS - 13):
-            rv, cv0, cv1 = sqz(cv0, cv1)
+            nb_ = StackBuf(2)
+            blake3(cvb, zt_, nb_)
+            cvb = nb_
+            rv = nb_[0]
             zr[GEN ** (13 + i)] = rv
         # observe round-1 messages (ab then c), sample z.
         for i in unroll(0, 128):
-            cv0, cv1 = obs(cv0, cv1, zc1_s[GEN ** i])
-        zz, cv0, cv1 = sqz(cv0, cv1)
+            tg_ = StackBuf(2)
+            tg_[0] = zc1_s[GEN ** i]
+            tg_[1] = DS_SCALAR
+            nb_ = StackBuf(2)
+            blake3(cvb, tg_, nb_)
+            cvb = nb_
+        nb_ = StackBuf(2)
+        blake3(cvb, zt_, nb_)
+        cvb = nb_
+        zz = nb_[0]
         # interpolate P^C(z) on the Lambda domain (phi8 nodes 64..128): prefix/
         # suffix numerator products with baked inverse denominators.
         lpre = HeapBuf(65)
@@ -740,9 +926,22 @@ def main():
             gi = zcr_s[GEN ** (2 * i + 1)]
             req = zr[GEN ** (6 + i)]
             g0 = (crun + req * g1) * I7INV[i]
-            cv0, cv1 = obs(cv0, cv1, g1)
-            cv0, cv1 = obs(cv0, cv1, gi)
-            rhov, cv0, cv1 = sqz(cv0, cv1)
+            tg_ = StackBuf(2)
+            tg_[0] = g1
+            tg_[1] = DS_SCALAR
+            nb_ = StackBuf(2)
+            blake3(cvb, tg_, nb_)
+            cvb = nb_
+            tg_ = StackBuf(2)
+            tg_[0] = gi
+            tg_[1] = DS_SCALAR
+            nb_ = StackBuf(2)
+            blake3(cvb, tg_, nb_)
+            cvb = nb_
+            nb_ = StackBuf(2)
+            blake3(cvb, zt_, nb_)
+            cvb = nb_
+            rhov = nb_[0]
             zrho[GEN ** i] = rhov
             crun = g0 * (1 + rhov) + g1 * rhov + gi * rhov * (1 + rhov)
         for i in unroll(7, NMLV):
@@ -753,9 +952,22 @@ def main():
             chkinv = (1 + req) * ionepr
             assert chkinv == 1
             g0 = (crun + req * g1) * ionepr
-            cv0, cv1 = obs(cv0, cv1, g1)
-            cv0, cv1 = obs(cv0, cv1, gi)
-            rhov, cv0, cv1 = sqz(cv0, cv1)
+            tg_ = StackBuf(2)
+            tg_[0] = g1
+            tg_[1] = DS_SCALAR
+            nb_ = StackBuf(2)
+            blake3(cvb, tg_, nb_)
+            cvb = nb_
+            tg_ = StackBuf(2)
+            tg_[0] = gi
+            tg_[1] = DS_SCALAR
+            nb_ = StackBuf(2)
+            blake3(cvb, tg_, nb_)
+            cvb = nb_
+            nb_ = StackBuf(2)
+            blake3(cvb, zt_, nb_)
+            cvb = nb_
+            rhov = nb_[0]
             zrho[GEN ** i] = rhov
             crun = g0 * (1 + rhov) + g1 * rhov + gi * rhov * (1 + rhov)
         # final: crun == a_eval * b_eval; observe both.
@@ -763,29 +975,78 @@ def main():
         fb = zcf_s[GEN ** 1]
         fchk = fa * fb
         assert crun == fchk
-        cv0, cv1 = obs(cv0, cv1, fa)
-        cv0, cv1 = obs(cv0, cv1, fb)
+        tg_ = StackBuf(2)
+        tg_[0] = fa
+        tg_[1] = DS_SCALAR
+        nb_ = StackBuf(2)
+        blake3(cvb, tg_, nb_)
+        cvb = nb_
+        tg_ = StackBuf(2)
+        tg_[0] = fb
+        tg_[1] = DS_SCALAR
+        nb_ = StackBuf(2)
+        blake3(cvb, tg_, nb_)
+        cvb = nb_
 
         # ---- flock lincheck (matrix evaluation DEFERRED) ----
-        cv0, cv1 = absorb(cv0, cv1, 17, DS_LEN)
-        cv0, cv1 = absorb(cv0, cv1, LCLBLA, DS_BYTE)
-        cv0, cv1 = absorb(cv0, cv1, LCLBLB, DS_BYTE)
-        lal, cv0, cv1 = sqz(cv0, cv1)
-        lbe, cv0, cv1 = sqz(cv0, cv1)
+        tg_ = StackBuf(2)
+        tg_[0] = 17
+        tg_[1] = DS_LEN
+        nb_ = StackBuf(2)
+        blake3(cvb, tg_, nb_)
+        cvb = nb_
+        tg_ = StackBuf(2)
+        tg_[0] = LCLBLA
+        tg_[1] = DS_BYTE
+        nb_ = StackBuf(2)
+        blake3(cvb, tg_, nb_)
+        cvb = nb_
+        tg_ = StackBuf(2)
+        tg_[0] = LCLBLB
+        tg_[1] = DS_BYTE
+        nb_ = StackBuf(2)
+        blake3(cvb, tg_, nb_)
+        cvb = nb_
+        nb_ = StackBuf(2)
+        blake3(cvb, zt_, nb_)
+        cvb = nb_
+        lal = nb_[0]
+        nb_ = StackBuf(2)
+        blake3(cvb, zt_, nb_)
+        cvb = nb_
+        lbe = nb_[0]
         lrun = lal * fa + fb + lbe
         lrr = HeapBuf(LCR)
         for i in unroll(0, LCR):
             e1 = lcr_s[GEN ** (2 * i)]
             ei = lcr_s[GEN ** (2 * i + 1)]
-            cv0, cv1 = obs(cv0, cv1, e1)
-            cv0, cv1 = obs(cv0, cv1, ei)
-            rv, cv0, cv1 = sqz(cv0, cv1)
+            tg_ = StackBuf(2)
+            tg_[0] = e1
+            tg_[1] = DS_SCALAR
+            nb_ = StackBuf(2)
+            blake3(cvb, tg_, nb_)
+            cvb = nb_
+            tg_ = StackBuf(2)
+            tg_[0] = ei
+            tg_[1] = DS_SCALAR
+            nb_ = StackBuf(2)
+            blake3(cvb, tg_, nb_)
+            cvb = nb_
+            nb_ = StackBuf(2)
+            blake3(cvb, zt_, nb_)
+            cvb = nb_
+            rv = nb_[0]
             lrr[GEN ** i] = rv
             e0 = lrun + e1
             c1q = e0 + e1 + ei
             lrun = ei * rv * rv + c1q * rv + e0
         for i in unroll(0, 64):
-            cv0, cv1 = obs(cv0, cv1, lcz_s[GEN ** i])
+            tg_ = StackBuf(2)
+            tg_[0] = lcz_s[GEN ** i]
+            tg_[1] = DS_SCALAR
+            nb_ = StackBuf(2)
+            blake3(cvb, tg_, nb_)
+            cvb = nb_
         # final consistency: running == matpart (DEFERRED) + beta * pin term. The
         # const-pin column folds through the top-variable bindings: weight =
         # prod_j (bit_{klog-1-j}(PINCOL) ? r_j : 1+r_j), surviving z_partial index
@@ -801,7 +1062,10 @@ def main():
         lchk = mp + pinw
         assert lrun == lchk
         # fresh z_skip; w = <lagrange_S(r_inner_skip), z_partial> (phi8 nodes 0..64).
-        lsk, cv0, cv1 = sqz(cv0, cv1)
+        nb_ = StackBuf(2)
+        blake3(cvb, zt_, nb_)
+        cvb = nb_
+        lsk = nb_[0]
         spre = HeapBuf(65)
         spre[GEN ** 0] = GEN ** 0
         for i in unroll(0, 64):
@@ -816,12 +1080,28 @@ def main():
 
         # ---- Phase D checkpoint ----
         cck = cvh_s[GEN ** 3]
-        assert cv0 == cck
+        ccg = cvb[0]
+        assert ccg == cck
 
         # ---- stacked mixed opening: ring-switch fronts + claim combination ----
-        cv0, cv1 = absorb(cv0, cv1, 23, DS_LEN)
-        cv0, cv1 = absorb(cv0, cv1, OBLBLA, DS_BYTE)
-        cv0, cv1 = absorb(cv0, cv1, OBLBLB, DS_BYTE)
+        tg_ = StackBuf(2)
+        tg_[0] = 23
+        tg_[1] = DS_LEN
+        nb_ = StackBuf(2)
+        blake3(cvb, tg_, nb_)
+        cvb = nb_
+        tg_ = StackBuf(2)
+        tg_[0] = OBLBLA
+        tg_[1] = DS_BYTE
+        nb_ = StackBuf(2)
+        blake3(cvb, tg_, nb_)
+        cvb = nb_
+        tg_ = StackBuf(2)
+        tg_[0] = OBLBLB
+        tg_[1] = DS_BYTE
+        nb_ = StackBuf(2)
+        blake3(cvb, tg_, nb_)
+        cvb = nb_
         # Ring-switch claim 0 (ab): value lw, z_skip = lsk, x_outer[0] = lrr[LCR-1]
         # (x_inner_rest is the REVERSED lincheck round vector). Claim 1 (c): value
         # ceval, z_skip = zz, x_outer[0] = zr[6].
@@ -831,11 +1111,31 @@ def main():
         zvb = HeapBuf(2 * QPKDV)
         rdp = HeapBuf(14)
         for rs in unroll(0, 2):
-            cv0, cv1 = absorb(cv0, cv1, 20, DS_LEN)
-            cv0, cv1 = absorb(cv0, cv1, RSLBLA, DS_BYTE)
-            cv0, cv1 = absorb(cv0, cv1, RSLBLB, DS_BYTE)
+            tg_ = StackBuf(2)
+            tg_[0] = 20
+            tg_[1] = DS_LEN
+            nb_ = StackBuf(2)
+            blake3(cvb, tg_, nb_)
+            cvb = nb_
+            tg_ = StackBuf(2)
+            tg_[0] = RSLBLA
+            tg_[1] = DS_BYTE
+            nb_ = StackBuf(2)
+            blake3(cvb, tg_, nb_)
+            cvb = nb_
+            tg_ = StackBuf(2)
+            tg_[0] = RSLBLB
+            tg_[1] = DS_BYTE
+            nb_ = StackBuf(2)
+            blake3(cvb, tg_, nb_)
+            cvb = nb_
             for i in unroll(0, 128):
-                cv0, cv1 = obs(cv0, cv1, shv_s[GEN ** (128 * rs + i)])
+                tg_ = StackBuf(2)
+                tg_[0] = shv_s[GEN ** (128 * rs + i)]
+                tg_[1] = DS_SCALAR
+                nb_ = StackBuf(2)
+                blake3(cvb, tg_, nb_)
+                cvb = nb_
             # claim check: weights[i] = lambda_{i&63}(z_skip) * eq(x_outer0, i>>6).
             if rs == 0:
                 zsk = lsk
@@ -860,7 +1160,10 @@ def main():
             assert cchk == clm
             # r'' (7 samples).
             for i in unroll(0, 7):
-                rv, cv0, cv1 = sqz(cv0, cv1)
+                nb_ = StackBuf(2)
+                blake3(cvb, zt_, nb_)
+                cvb = nb_
+                rv = nb_[0]
                 rdp[GEN ** (7 * rs + i)] = rv
             # w = eq tensor of the seven r'' coords (doubling tree, final 128 at 126).
             wq = HeapBuf(254)
@@ -871,33 +1174,32 @@ def main():
                     pw = wq[GEN ** (2 ** t - 2 + i)]
                     wq[GEN ** (2 ** (t + 1) - 2 + i)] = pw * (1 + rdp[GEN ** (7 * rs + t)])
                     wq[GEN ** (2 ** (t + 1) - 2 + 2 ** t + i)] = pw * rdp[GEN ** (7 * rs + t)]
-            # One runtime loop over the Frobenius levels k computes both
-            # c_k = sum_i w_i * dt[k][i] (stored for the terminal eval_rs_eq)
-            # and the transposed claim T = sum_k c_k * S_k, where
-            # S_k = sum_j x^j * shv_j^(2^k) accumulates by Horner in x and the
-            # s_hat_v powers evolve by squaring.
-            ytab = HeapBuf(129 * 128)
-            for j in unroll(0, 128):
-                ytab[GEN ** j] = shv_s[GEN ** (128 * rs + j)]
+            # c_k = sum_i w_i * dt[k][i], one runtime loop over the levels k.
             ckrow = ckb * GEN ** (128 * rs)
-            tacc = HeapBuf(129)
-            tacc[GEN ** 0] = 0
             for xk in mul_range(1, GEN ** 128):
                 rowd = dt * xk ** 128
-                rowy = ytab * xk ** 128
-                nrowy = rowy * GEN ** 128
                 cacc = 0
                 for i in unroll(0, 128):
                     cacc = cacc + wq[GEN ** (126 + i)] * rowd[GEN ** i]
+                ckrow[xk] = cacc
+            # transposed claim T = sum_j x^j * L_w(shv_j): one runtime pass over
+            # the observed values; per value the Frobenius powers evolve as a
+            # scalar against the c table, and x^j chains through a heap cell.
+            shvrow = shv_s * GEN ** (128 * rs)
+            xpw = HeapBuf(129)
+            xpw[GEN ** 0] = GEN ** 0
+            tacc = HeapBuf(129)
+            tacc[GEN ** 0] = 0
+            for xj in mul_range(1, GEN ** 128):
                 xh = StackBuf(1)
                 xh[0] = 2
-                sk = 0
-                for j in unroll(0, 128):
-                    yv = rowy[GEN ** (127 - j)]
-                    sk = sk * xh[0] + yv
-                    nrowy[GEN ** (127 - j)] = yv * yv
-                ckrow[xk] = cacc
-                tacc[xk * GEN] = tacc[xk] + cacc * sk
+                yp = shvrow[xj]
+                lw = 0
+                for k in unroll(0, 128):
+                    lw = lw + ckrow[GEN ** k] * yp
+                    yp = yp * yp
+                tacc[xj * GEN] = tacc[xj] + xpw[xj] * lw
+                xpw[xj * GEN] = xpw[xj] * xh[0]
             tclv[GEN ** rs] = tacc[GEN ** 128]
             # z_vals for eval_rs_eq (the x_outer tail), used at the opening terminal.
             if rs == 0:
@@ -909,24 +1211,54 @@ def main():
                 for t in unroll(0, QPKDV):
                     zvb[GEN ** (QPKDV + t)] = zr[GEN ** (7 + t)]
         # gamma-combine the two transposed sumcheck claims (computed in-circuit).
-        g0, cv0, cv1 = sqz(cv0, cv1)
-        g1, cv0, cv1 = sqz(cv0, cv1)
+        nb_ = StackBuf(2)
+        blake3(cvb, zt_, nb_)
+        cvb = nb_
+        g0 = nb_[0]
+        nb_ = StackBuf(2)
+        blake3(cvb, zt_, nb_)
+        cvb = nb_
+        g1 = nb_[0]
         target = g0 * tclv[GEN ** 0] + g1 * tclv[GEN ** 1]
         # ...then every pooled point claim, each labeled and observed.
         for j in unroll(0, NCL):
-            cv0, cv1 = absorb(cv0, cv1, 26, DS_LEN)
-            cv0, cv1 = absorb(cv0, cv1, PDLBLA, DS_BYTE)
-            cv0, cv1 = absorb(cv0, cv1, PDLBLB, DS_BYTE)
-            cv0, cv1 = obs(cv0, cv1, clv[GEN ** j])
+            tg_ = StackBuf(2)
+            tg_[0] = 26
+            tg_[1] = DS_LEN
+            nb_ = StackBuf(2)
+            blake3(cvb, tg_, nb_)
+            cvb = nb_
+            tg_ = StackBuf(2)
+            tg_[0] = PDLBLA
+            tg_[1] = DS_BYTE
+            nb_ = StackBuf(2)
+            blake3(cvb, tg_, nb_)
+            cvb = nb_
+            tg_ = StackBuf(2)
+            tg_[0] = PDLBLB
+            tg_[1] = DS_BYTE
+            nb_ = StackBuf(2)
+            blake3(cvb, tg_, nb_)
+            cvb = nb_
+            tg_ = StackBuf(2)
+            tg_[0] = clv[GEN ** j]
+            tg_[1] = DS_SCALAR
+            nb_ = StackBuf(2)
+            blake3(cvb, tg_, nb_)
+            cvb = nb_
         gpd = HeapBuf(NCL)
         for j in unroll(0, NCL):
-            gv, cv0, cv1 = sqz(cv0, cv1)
+            nb_ = StackBuf(2)
+            blake3(cvb, zt_, nb_)
+            cvb = nb_
+            gv = nb_[0]
             gpd[GEN ** j] = gv
             target = target + gv * clv[GEN ** j]
 
         # ---- Phase E1 checkpoint ----
         cck = cvh_s[GEN ** 4]
-        assert cv0 == cck
+        ccg = cvb[0]
+        assert ccg == cck
 
         # ================= the Ligerito opening core (stacked, m = STACK) ========
 
@@ -937,19 +1269,64 @@ def main():
         qfb = HeapBuf(QP_LEN)
         qbp = HeapBuf(QP_LEN)
 
-        cv0, cv1 = absorb(cv0, cv1, 23, DS_LEN)
-        cv0, cv1 = absorb(cv0, cv1, LIGLBLA, DS_BYTE)
-        cv0, cv1 = absorb(cv0, cv1, LIGLBLB, DS_BYTE)
-        cv0, cv1 = obs(cv0, cv1, target)
-        cv0, cv1 = absorb(cv0, cv1, 32, DS_LEN)
-        cv0, cv1 = absorb(cv0, cv1, rt0, DS_BYTE)
-        cv0, cv1 = absorb(cv0, cv1, rt1, DS_BYTE)
+        tg_ = StackBuf(2)
+        tg_[0] = 23
+        tg_[1] = DS_LEN
+        nb_ = StackBuf(2)
+        blake3(cvb, tg_, nb_)
+        cvb = nb_
+        tg_ = StackBuf(2)
+        tg_[0] = LIGLBLA
+        tg_[1] = DS_BYTE
+        nb_ = StackBuf(2)
+        blake3(cvb, tg_, nb_)
+        cvb = nb_
+        tg_ = StackBuf(2)
+        tg_[0] = LIGLBLB
+        tg_[1] = DS_BYTE
+        nb_ = StackBuf(2)
+        blake3(cvb, tg_, nb_)
+        cvb = nb_
+        tg_ = StackBuf(2)
+        tg_[0] = target
+        tg_[1] = DS_SCALAR
+        nb_ = StackBuf(2)
+        blake3(cvb, tg_, nb_)
+        cvb = nb_
+        tg_ = StackBuf(2)
+        tg_[0] = 32
+        tg_[1] = DS_LEN
+        nb_ = StackBuf(2)
+        blake3(cvb, tg_, nb_)
+        cvb = nb_
+        tg_ = StackBuf(2)
+        tg_[0] = rt0
+        tg_[1] = DS_BYTE
+        nb_ = StackBuf(2)
+        blake3(cvb, tg_, nb_)
+        cvb = nb_
+        tg_ = StackBuf(2)
+        tg_[0] = rt1
+        tg_[1] = DS_BYTE
+        nb_ = StackBuf(2)
+        blake3(cvb, tg_, nb_)
+        cvb = nb_
 
         lsp = lsc_s
         lu0 = lsp[GEN ** 0]
-        cv0, cv1 = obs(cv0, cv1, lu0)
+        tg_ = StackBuf(2)
+        tg_[0] = lu0
+        tg_[1] = DS_SCALAR
+        nb_ = StackBuf(2)
+        blake3(cvb, tg_, nb_)
+        cvb = nb_
         lu2 = lsp[GEN ** 1]
-        cv0, cv1 = obs(cv0, cv1, lu2)
+        tg_ = StackBuf(2)
+        tg_[0] = lu2
+        tg_[1] = DS_SCALAR
+        nb_ = StackBuf(2)
+        blake3(cvb, tg_, nb_)
+        cvb = nb_
         lsp = lsp * GEN ** 2
         lqc = lu0
         lqb = target + lu2
@@ -960,14 +1337,11 @@ def main():
             for j in unroll(0, KLVL[lvl]):
                 lg = FOLDBASE[lvl] + j
                 if BITS[lg] != 0:
-                    lpb = StackBuf(2)
-                    lpb[0] = cv0
-                    lpb[1] = cv1
                     lpz = StackBuf(2)
                     lpz[0] = 0
                     lpz[1] = DS_POW
                     lpbase = StackBuf(2)
-                    blake3(lpb, lpz, lpbase)
+                    blake3(cvb, lpz, lpbase)
                     lpn = StackBuf(2)
                     lpn[0] = fnn_s[GEN ** lg]
                     lpn[1] = DS_POW
@@ -981,14 +1355,32 @@ def main():
                         lz1 = lfpb_s[GEN ** (128 * lg + b)]
                         assert lz1 == 0
                     fnv = fnn_s[GEN ** lg]
-                    cv0, cv1 = absorb(cv0, cv1, fnv, DS_POW)
-                lri, cv0, cv1 = sqz(cv0, cv1)
+                    tg_ = StackBuf(2)
+                    tg_[0] = fnv
+                    tg_[1] = DS_POW
+                    nb_ = StackBuf(2)
+                    blake3(cvb, tg_, nb_)
+                    cvb = nb_
+                nb_ = StackBuf(2)
+                blake3(cvb, zt_, nb_)
+                cvb = nb_
+                lri = nb_[0]
                 ris[GEN ** (FOLDBASE[lvl] + j)] = lri
                 tr = lqc + lri * lqb + lri * lri * lqa
                 la = lsp[GEN ** 0]
-                cv0, cv1 = obs(cv0, cv1, la)
+                tg_ = StackBuf(2)
+                tg_[0] = la
+                tg_[1] = DS_SCALAR
+                nb_ = StackBuf(2)
+                blake3(cvb, tg_, nb_)
+                cvb = nb_
                 lb = lsp[GEN ** 1]
-                cv0, cv1 = obs(cv0, cv1, lb)
+                tg_ = StackBuf(2)
+                tg_[0] = lb
+                tg_[1] = DS_SCALAR
+                nb_ = StackBuf(2)
+                blake3(cvb, tg_, nb_)
+                cvb = nb_
                 lsp = lsp * GEN ** 2
                 lqc = la
                 lqb = tr + lb
@@ -996,19 +1388,44 @@ def main():
 
             if lvl == R:
                 for iy in unroll(0, YR_LEN):
-                    cv0, cv1 = obs(cv0, cv1, lyr_s[GEN ** iy])
+                    tg_ = StackBuf(2)
+                    tg_[0] = lyr_s[GEN ** iy]
+                    tg_[1] = DS_SCALAR
+                    nb_ = StackBuf(2)
+                    blake3(cvb, tg_, nb_)
+                    cvb = nb_
             else:
-                cv0, cv1 = absorb(cv0, cv1, 32, DS_LEN)
+                tg_ = StackBuf(2)
+                tg_[0] = 32
+                tg_[1] = DS_LEN
+                nb_ = StackBuf(2)
+                blake3(cvb, tg_, nb_)
+                cvb = nb_
                 nra = rta_s[GEN ** (lvl + 1)]
                 nrb = rtb_s[GEN ** (lvl + 1)]
-                cv0, cv1 = absorb(cv0, cv1, nra, DS_BYTE)
-                cv0, cv1 = absorb(cv0, cv1, nrb, DS_BYTE)
-            cv0, cv1 = absorb(cv0, cv1, 0, DS_POW)
+                tg_ = StackBuf(2)
+                tg_[0] = nra
+                tg_[1] = DS_BYTE
+                nb_ = StackBuf(2)
+                blake3(cvb, tg_, nb_)
+                cvb = nb_
+                tg_ = StackBuf(2)
+                tg_[0] = nrb
+                tg_[1] = DS_BYTE
+                nb_ = StackBuf(2)
+                blake3(cvb, tg_, nb_)
+                cvb = nb_
+            tg_ = StackBuf(2)
+            tg_[0] = 0
+            tg_[1] = DS_POW
+            nb_ = StackBuf(2)
+            blake3(cvb, tg_, nb_)
+            cvb = nb_
 
             c0b = HeapBuf(MAXNSQ + 1)
             c1b = HeapBuf(MAXNSQ + 1)
-            c0b[GEN ** 0] = cv0
-            c1b[GEN ** 0] = cv1
+            c0b[GEN ** 0] = cvb[0]
+            c1b[GEN ** 0] = cvb[1]
             for xs in mul_range(1, GEN ** NSQ[lvl]):
                 chq, nc0, nc1 = sqz(c0b[xs], c1b[xs])
                 c0b[xs * GEN] = nc0
@@ -1016,12 +1433,16 @@ def main():
                 lbp = lsbits_s * GEN ** SBITSOFF[lvl] * xs ** 128
                 lqpp = xs ** PER[lvl]
                 decq(lbp, chq, qfb * GEN ** QPOFF[lvl] * lqpp, qbp * GEN ** QPOFF[lvl] * lqpp, DEPTH[lvl], PER[lvl])
-            cv0 = c0b[GEN ** NSQ[lvl]]
-            cv1 = c1b[GEN ** NSQ[lvl]]
+            cvb = StackBuf(2)
+            cvb[0] = c0b[GEN ** NSQ[lvl]]
+            cvb[1] = c1b[GEN ** NSQ[lvl]]
 
             lalr = HeapBuf(MAXNI)
             for t in unroll(0, ALPHALEN[lvl]):
-                lav, cv0, cv1 = sqz(cv0, cv1)
+                nb_ = StackBuf(2)
+                blake3(cvb, zt_, nb_)
+                cvb = nb_
+                lav = nb_[0]
                 lalr[GEN ** t] = lav
             leqt = HeapBuf(MAXNI)
             for i in unroll(0, NUMINTER[lvl]):
@@ -1091,16 +1512,32 @@ def main():
             lenf[GEN ** lvl] = accE[GEN ** QUERIES[lvl]]
 
             if lvl == R:
-                lbl2, cv0, cv1 = sqz(cv0, cv1)
+                nb_ = StackBuf(2)
+                blake3(cvb, zt_, nb_)
+                cvb = nb_
+                lbl2 = nb_[0]
                 lbet[GEN ** lvl] = lbl2
                 tr = tr + lbl2 * lenf[GEN ** lvl]
             else:
                 liu0 = lsp[GEN ** 0]
-                cv0, cv1 = obs(cv0, cv1, liu0)
+                tg_ = StackBuf(2)
+                tg_[0] = liu0
+                tg_[1] = DS_SCALAR
+                nb_ = StackBuf(2)
+                blake3(cvb, tg_, nb_)
+                cvb = nb_
                 liu2 = lsp[GEN ** 1]
-                cv0, cv1 = obs(cv0, cv1, liu2)
+                tg_ = StackBuf(2)
+                tg_[0] = liu2
+                tg_[1] = DS_SCALAR
+                nb_ = StackBuf(2)
+                blake3(cvb, tg_, nb_)
+                cvb = nb_
                 lsp = lsp * GEN ** 2
-                lbl2, cv0, cv1 = sqz(cv0, cv1)
+                nb_ = StackBuf(2)
+                blake3(cvb, zt_, nb_)
+                cvb = nb_
+                lbl2 = nb_[0]
                 lbet[GEN ** lvl] = lbl2
                 le = lenf[GEN ** lvl]
                 lqc = lqc + lbl2 * liu0
@@ -1119,7 +1556,7 @@ def main():
                 ls = qfb[GEN ** QPOFF[lvl] * xr]
                 wbuf[0] = ls * IVK[SVKOFF[lvl]]
                 for t in unroll(1, LMC[lvl]):
-                    ls = ls * ls + SVK[SVKOFF[lvl] + t - 1] * ls
+                    ls = ls * (ls + SVK[SVKOFF[lvl] + t - 1])
                     wbuf[t] = ls * IVK[SVKOFF[lvl] + t]
                 lprefix = GEN ** 0
                 for t in unroll(0, PREFIXLEN[lvl]):
@@ -1241,41 +1678,118 @@ def main():
     # samples the RLC coefficients, and verifies the two batching sumchecks of
     # doc.tex §Deferred evaluation claims. Only the reduced claims (one per
     # fixed polynomial) reach the public input.
-    h0 = 0
-    h1 = 0
+    hb = StackBuf(2)
+    hb[0] = 0
+    hb[1] = 0
     for sub in unroll(0, NSUB):
-        h0, h1 = obs(h0, h1, spi[GEN ** (2 * sub)])
-        h0, h1 = obs(h0, h1, spi[GEN ** (2 * sub + 1)])
+        tg_ = StackBuf(2)
+        tg_[0] = spi[GEN ** (2 * sub)]
+        tg_[1] = DS_SCALAR
+        nb_ = StackBuf(2)
+        blake3(hb, tg_, nb_)
+        hb = nb_
+        tg_ = StackBuf(2)
+        tg_[0] = spi[GEN ** (2 * sub + 1)]
+        tg_[1] = DS_SCALAR
+        nb_ = StackBuf(2)
+        blake3(hb, tg_, nb_)
+        hb = nb_
         for k in unroll(0, 2 * KBC):
-            h0, h1 = obs(h0, h1, dzt[GEN ** (sub * 2 * KBC + k)])
+            tg_ = StackBuf(2)
+            tg_[0] = dzt[GEN ** (sub * 2 * KBC + k)]
+            tg_[1] = DS_SCALAR
+            nb_ = StackBuf(2)
+            blake3(hb, tg_, nb_)
+            hb = nb_
         for k in unroll(0, 3):
-            h0, h1 = obs(h0, h1, dsb[GEN ** (sub * 3 + k)])
-        h0, h1 = obs(h0, h1, dwb[GEN ** (2 * sub)])
-        h0, h1 = obs(h0, h1, dwb[GEN ** (2 * sub + 1)])
-        h0, h1 = obs(h0, h1, dal[GEN ** sub])
-        h0, h1 = obs(h0, h1, dzz[GEN ** sub])
+            tg_ = StackBuf(2)
+            tg_[0] = dsb[GEN ** (sub * 3 + k)]
+            tg_[1] = DS_SCALAR
+            nb_ = StackBuf(2)
+            blake3(hb, tg_, nb_)
+            hb = nb_
+        tg_ = StackBuf(2)
+        tg_[0] = dwb[GEN ** (2 * sub)]
+        tg_[1] = DS_SCALAR
+        nb_ = StackBuf(2)
+        blake3(hb, tg_, nb_)
+        hb = nb_
+        tg_ = StackBuf(2)
+        tg_[0] = dwb[GEN ** (2 * sub + 1)]
+        tg_[1] = DS_SCALAR
+        nb_ = StackBuf(2)
+        blake3(hb, tg_, nb_)
+        hb = nb_
+        tg_ = StackBuf(2)
+        tg_[0] = dal[GEN ** sub]
+        tg_[1] = DS_SCALAR
+        nb_ = StackBuf(2)
+        blake3(hb, tg_, nb_)
+        hb = nb_
+        tg_ = StackBuf(2)
+        tg_[0] = dzz[GEN ** sub]
+        tg_[1] = DS_SCALAR
+        nb_ = StackBuf(2)
+        blake3(hb, tg_, nb_)
+        hb = nb_
         for k in unroll(0, LCR):
-            h0, h1 = obs(h0, h1, dzr[GEN ** (sub * LCR + k)])
+            tg_ = StackBuf(2)
+            tg_[0] = dzr[GEN ** (sub * LCR + k)]
+            tg_[1] = DS_SCALAR
+            nb_ = StackBuf(2)
+            blake3(hb, tg_, nb_)
+            hb = nb_
         for k in unroll(0, LCR):
-            h0, h1 = obs(h0, h1, dlr[GEN ** (sub * LCR + k)])
+            tg_ = StackBuf(2)
+            tg_[0] = dlr[GEN ** (sub * LCR + k)]
+            tg_[1] = DS_SCALAR
+            nb_ = StackBuf(2)
+            blake3(hb, tg_, nb_)
+            hb = nb_
         for k in unroll(0, 64):
-            h0, h1 = obs(h0, h1, lcz[GEN ** (sub * 64 + k)])
-        h0, h1 = obs(h0, h1, matp[GEN ** sub])
+            tg_ = StackBuf(2)
+            tg_[0] = lcz[GEN ** (sub * 64 + k)]
+            tg_[1] = DS_SCALAR
+            nb_ = StackBuf(2)
+            blake3(hb, tg_, nb_)
+            hb = nb_
+        tg_ = StackBuf(2)
+        tg_[0] = matp[GEN ** sub]
+        tg_[1] = DS_SCALAR
+        nb_ = StackBuf(2)
+        blake3(hb, tg_, nb_)
+        hb = nb_
 
     # ---- bytecode batching sumcheck (KBCV variables, 2*NSUB claims) ----
     gbc = HeapBuf(2 * NSUB)
     brun = 0
     for t in unroll(0, 2 * NSUB):
-        gv, h0, h1 = sqz(h0, h1)
+        nb_ = StackBuf(2)
+        blake3(hb, zt_, nb_)
+        hb = nb_
+        gv = nb_[0]
         gbc[GEN ** t] = gv
         brun = brun + gv * dwb[GEN ** t]
     rbs = HeapBuf(KBCV)
     for rd in unroll(0, KBCV):
         g1v = bscr[GEN ** (2 * rd)]
         giv = bscr[GEN ** (2 * rd + 1)]
-        cv0h, cv1h = obs(h0, h1, g1v)
-        h0, h1 = obs(cv0h, cv1h, giv)
-        rv, h0, h1 = sqz(h0, h1)
+        tg_ = StackBuf(2)
+        tg_[0] = g1v
+        tg_[1] = DS_SCALAR
+        nb_ = StackBuf(2)
+        blake3(hb, tg_, nb_)
+        hb = nb_
+        tg_ = StackBuf(2)
+        tg_[0] = giv
+        tg_[1] = DS_SCALAR
+        nb_ = StackBuf(2)
+        blake3(hb, tg_, nb_)
+        hb = nb_
+        nb_ = StackBuf(2)
+        blake3(hb, zt_, nb_)
+        hb = nb_
+        rv = nb_[0]
         rbs[GEN ** rd] = rv
         g0v = brun + g1v
         c1v = g0v + g1v + giv
@@ -1297,16 +1811,32 @@ def main():
     gmt = HeapBuf(NSUB)
     mrun = 0
     for t in unroll(0, NSUB):
-        gv, h0, h1 = sqz(h0, h1)
+        nb_ = StackBuf(2)
+        blake3(hb, zt_, nb_)
+        hb = nb_
+        gv = nb_[0]
         gmt[GEN ** t] = gv
         mrun = mrun + gv * matp[GEN ** t]
     rms = HeapBuf(2 * KLOG)
     for rd in unroll(0, 2 * KLOG):
         g1v = mscr[GEN ** (2 * rd)]
         giv = mscr[GEN ** (2 * rd + 1)]
-        cv0h, cv1h = obs(h0, h1, g1v)
-        h0, h1 = obs(cv0h, cv1h, giv)
-        rv, h0, h1 = sqz(h0, h1)
+        tg_ = StackBuf(2)
+        tg_[0] = g1v
+        tg_[1] = DS_SCALAR
+        nb_ = StackBuf(2)
+        blake3(hb, tg_, nb_)
+        hb = nb_
+        tg_ = StackBuf(2)
+        tg_[0] = giv
+        tg_[1] = DS_SCALAR
+        nb_ = StackBuf(2)
+        blake3(hb, tg_, nb_)
+        hb = nb_
+        nb_ = StackBuf(2)
+        blake3(hb, zt_, nb_)
+        hb = nb_
+        rv = nb_[0]
         rms[GEN ** rd] = rv
         g0v = mrun + g1v
         c1v = g0v + g1v + giv
@@ -1362,21 +1892,59 @@ def main():
     assert mrun == mchk
 
     # ---- bind the sub statements + the reduced claims to the public input ----
-    e0 = 0
-    e1 = 0
+    eb = StackBuf(2)
+    eb[0] = 0
+    eb[1] = 0
     for sub in unroll(0, NSUB):
-        e0, e1 = obs(e0, e1, spi[GEN ** (2 * sub)])
-        e0, e1 = obs(e0, e1, spi[GEN ** (2 * sub + 1)])
+        tg_ = StackBuf(2)
+        tg_[0] = spi[GEN ** (2 * sub)]
+        tg_[1] = DS_SCALAR
+        nb_ = StackBuf(2)
+        blake3(eb, tg_, nb_)
+        eb = nb_
+        tg_ = StackBuf(2)
+        tg_[0] = spi[GEN ** (2 * sub + 1)]
+        tg_[1] = DS_SCALAR
+        nb_ = StackBuf(2)
+        blake3(eb, tg_, nb_)
+        eb = nb_
     for k in unroll(0, KBCV):
-        e0, e1 = obs(e0, e1, rbs[GEN ** k])
-    e0, e1 = obs(e0, e1, bcstar)
+        tg_ = StackBuf(2)
+        tg_[0] = rbs[GEN ** k]
+        tg_[1] = DS_SCALAR
+        nb_ = StackBuf(2)
+        blake3(eb, tg_, nb_)
+        eb = nb_
+    tg_ = StackBuf(2)
+    tg_[0] = bcstar
+    tg_[1] = DS_SCALAR
+    nb_ = StackBuf(2)
+    blake3(eb, tg_, nb_)
+    eb = nb_
     for k in unroll(0, 2 * KLOG):
-        e0, e1 = obs(e0, e1, rms[GEN ** k])
-    e0, e1 = obs(e0, e1, astar)
-    e0, e1 = obs(e0, e1, mbstar)
+        tg_ = StackBuf(2)
+        tg_[0] = rms[GEN ** k]
+        tg_[1] = DS_SCALAR
+        nb_ = StackBuf(2)
+        blake3(eb, tg_, nb_)
+        eb = nb_
+    tg_ = StackBuf(2)
+    tg_[0] = astar
+    tg_[1] = DS_SCALAR
+    nb_ = StackBuf(2)
+    blake3(eb, tg_, nb_)
+    eb = nb_
+    tg_ = StackBuf(2)
+    tg_[0] = mbstar
+    tg_[1] = DS_SCALAR
+    nb_ = StackBuf(2)
+    blake3(eb, tg_, nb_)
+    eb = nb_
     pp = GEN ** 0
     pia = pp[1]
     pib = pp[GEN]
-    assert pia == e0
-    assert pib == e1
+    ef0 = eb[0]
+    ef1 = eb[1]
+    assert pia == ef0
+    assert pib == ef1
     return
