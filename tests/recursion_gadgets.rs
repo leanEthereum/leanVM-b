@@ -2206,7 +2206,8 @@ fn ring_switch_verify_succinct_full() {
     program.set_witness("s_hat_v", vec![s_hat_v]);
     program.set_witness("bits", vec![bits]);
     let pi = [F128::ZERO, F128::ZERO];
-    let (gproof, _) = prove(&program, pi);
+    let (gproof, stats) = prove(&program, pi);
+    eprintln!("[gadget] {} cycles, {} BLAKE3", stats.cycles, stats.counts[5]);
     verify(&program, &pi, &gproof).expect("full verify_succinct verifies");
 }
 
