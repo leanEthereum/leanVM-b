@@ -330,7 +330,7 @@ pub struct BytecodeClaim {
 
 /// The public (bytecode) coordinate evaluations of a side at its GKR point,
 /// block/coord order, with the bytecode block's `κ`.
-fn public_evals(blocks: &[Block], zeta: &[F128]) -> (usize, Vec<F128>) {
+pub fn public_evals(blocks: &[Block], zeta: &[F128]) -> (usize, Vec<F128>) {
     let mut kappa = 0;
     let mut out = Vec::new();
     for blk in blocks {
@@ -344,9 +344,32 @@ fn public_evals(blocks: &[Block], zeta: &[F128]) -> (usize, Vec<F128>) {
     (kappa, out)
 }
 
+/// The stacked bytecode polynomial as a dense table: the six public encoding
+/// columns along three selector bits (`B̃`'s evaluations on the cube). This is
+/// the polynomial [`BytecodeClaim`]s are claims about; the outermost native
+/// verifier evaluates it here.
+pub fn stacked_bytecode_table(blocks: &[Block]) -> Vec<F128> {
+    let mut kbc = 0;
+    let mut cols: Vec<&Vec<F128>> = Vec::new();
+    for blk in blocks {
+        for c in &blk.coords {
+            if let Coord::Public(vals) = c {
+                kbc = blk.kappa;
+                cols.push(vals);
+            }
+        }
+    }
+    let mut table = vec![F128::ZERO; 8 << kbc];
+    for (c_idx, vals) in cols.iter().enumerate() {
+        assert_eq!(vals.len(), 1 << kbc);
+        table[(c_idx << kbc)..((c_idx + 1) << kbc)].copy_from_slice(vals);
+    }
+    table
+}
+
 /// `Σ_c eq(s, c)·v_c`: one side's public-column evaluations reduced to the
 /// stacked-polynomial value at selector point `s`.
-fn stacked_bytecode_value(evals: &[F128], s: &[F128; 3]) -> F128 {
+pub fn stacked_bytecode_value(evals: &[F128], s: &[F128; 3]) -> F128 {
     let mut acc = F128::ZERO;
     for (c, &v) in evals.iter().enumerate() {
         let mut e = F128::ONE;

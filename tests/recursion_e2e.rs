@@ -69,6 +69,22 @@ impl Walk<'_> {
             other => panic!("expected StreamRaw at {}, got {other:?}", self.i - 1),
         }
     }
+    fn observe(&mut self) -> F128 {
+        let op = &self.ops[self.i];
+        self.i += 1;
+        match op {
+            TraceOp::Observe(x) => *x,
+            other => panic!("expected Observe at {}, got {other:?}", self.i - 1),
+        }
+    }
+    fn absorb(&mut self) -> Vec<u8> {
+        let op = &self.ops[self.i];
+        self.i += 1;
+        match op {
+            TraceOp::AbsorbBytes(b) => b.clone(),
+            other => panic!("expected AbsorbBytes at {}, got {other:?}", self.i - 1),
+        }
+    }
     fn pow(&mut self) -> (u64, u32, F128) {
         let op = &self.ops[self.i];
         self.i += 1;
@@ -173,19 +189,6 @@ struct Reduced {
     v_b: F128,
 }
 
-fn build_eqt(r: &[F128]) -> Vec<F128> {
-    let mut t = vec![F128::ONE];
-    for &c in r {
-        let mut n = vec![F128::ZERO; 2 * t.len()];
-        for (i, &v) in t.iter().enumerate() {
-            n[i] = v * (F128::ONE + c);
-            n[i + t.len()] = v * c;
-        }
-        t = n;
-    }
-    t
-}
-
 fn fold_lsb(t: &mut Vec<F128>, r: F128) {
     let half = t.len() / 2;
     for i in 0..half {
@@ -210,28 +213,16 @@ fn round_msg(pairs: &[(&[F128], &[F128], F128)]) -> (F128, F128) {
     (g1, gi)
 }
 
-/// The stacked bytecode polynomial as a dense table (columns along the top
-/// three selector bits), shared by the prover and the outer check.
-fn stacked_bytecode(program: &Program, proof: &leanvm_b::cpu::Proof, pi: [F128; 2], kbc: usize) -> Vec<F128> {
+/// The stacked bytecode polynomial of the inner program (leaf's canonical
+/// table, built from the real layout).
+fn stacked_bytecode(program: &Program, proof: &leanvm_b::cpu::Proof, pi: [F128; 2]) -> Vec<F128> {
     let l = leanvm_b::cpu::layout(
         &program.prog,
         proof.stream[0].lo as usize,
         [1, 2, 3, 4, 5, 6].map(|i| proof.stream[i].lo as usize),
         pi,
     );
-    let mut stacked = vec![F128::ZERO; 8 << kbc];
-    let mut c_idx = 0;
-    for blk in l.push.iter() {
-        for c in &blk.coords {
-            if let Coord::Public(vals) = c {
-                assert_eq!(vals.len(), 1 << kbc);
-                stacked[(c_idx << kbc)..((c_idx + 1) << kbc)].copy_from_slice(vals);
-                c_idx += 1;
-            }
-        }
-    }
-    assert_eq!(c_idx, 6);
-    stacked
+    leanvm_b::leaf::stacked_bytecode_table(&l.push)
 }
 
 /// The aggregation layer: mirror the guest's aggregation transcript, run the
@@ -279,7 +270,7 @@ fn gen_agg(
 
     // ---- bytecode batching sumcheck (dense, 2^kbcv) ----
     let gbc: Vec<F128> = (0..2 * nsub).map(|_| h.sample()).collect();
-    let mut bt = stacked_bytecode(program, proof0, subs[0].pi, kbc);
+    let mut bt = stacked_bytecode(program, proof0, subs[0].pi);
     let mut wt = vec![F128::ZERO; 1 << kbcv];
     let points: Vec<Vec<F128>> = subs
         .iter()
@@ -291,7 +282,7 @@ fn gen_agg(
         })
         .collect();
     for (t, p) in points.iter().enumerate() {
-        let eqt = build_eqt(p);
+        let eqt = flare::zerocheck::univariate_skip::build_eq(p);
         for (w, &e) in wt.iter_mut().zip(eqt.iter()) {
             *w += gbc[t] * e;
         }
@@ -381,7 +372,7 @@ fn gen_agg(
             fold_lsb(m, r);
         }
     }
-    let eq_rstar = build_eqt(&r_row);
+    let eq_rstar = flare::zerocheck::univariate_skip::build_eq(&r_row);
     let contract_rows = |m: &flare::r1cs::SparseBinaryMatrix| -> Vec<F128> {
         let mut out = vec![F128::ZERO; 1 << klog];
         for (i, row) in m.rows.iter().enumerate() {
@@ -424,8 +415,8 @@ fn gen_agg(
     assert_eq!(mrun, v_a * wa[0] + v_b * wb[0], "matrix sumcheck terminal");
     // sanity for the GUEST's succinct terminal-weight formulas.
     {
-        let eqr = build_eqt(&r_row[..6]);
-        let eqc = build_eqt(&r_col[..6]);
+        let eqr = flare::zerocheck::univariate_skip::build_eq(&r_row[..6]);
+        let eqc = flare::zerocheck::univariate_skip::build_eq(&r_col[..6]);
         let (mut wam, mut wbm) = (F128::ZERO, F128::ZERO);
         for (t, d) in subs.iter().enumerate() {
             let lam = flare::zerocheck::multilinear::lagrange_weights_naive(6, d.zz);
@@ -482,13 +473,13 @@ fn gen_agg(
 
 /// The outermost native verifier's whole remaining duty: evaluate the three
 /// fixed polynomials at the reduced points (one pass each).
-fn check_reduced(program: &Program, proof0: &leanvm_b::cpu::Proof, pi0: [F128; 2], kbc: usize, red: &Reduced) {
-    let stacked = stacked_bytecode(program, proof0, pi0, kbc);
+fn check_reduced(program: &Program, proof0: &leanvm_b::cpu::Proof, pi0: [F128; 2], red: &Reduced) {
+    let stacked = stacked_bytecode(program, proof0, pi0);
     assert_eq!(mle_eval(&stacked, &red.r_bc), red.v_bc, "reduced bytecode claim");
     let (ma, mb) = flock_prover::r1cs_hashes::blake3::build_matrices();
     let klog = flock_prover::r1cs_hashes::blake3::K_LOG;
-    let eq_r = build_eqt(&red.r_m[..klog]);
-    let eq_c = build_eqt(&red.r_m[klog..]);
+    let eq_r = flare::zerocheck::univariate_skip::build_eq(&red.r_m[..klog]);
+    let eq_c = flare::zerocheck::univariate_skip::build_eq(&red.r_m[klog..]);
     let direct = |m: &flare::r1cs::SparseBinaryMatrix| -> F128 {
         let mut acc = F128::ZERO;
         for (i, row) in m.rows.iter().enumerate() {
@@ -562,22 +553,6 @@ fn gen_verify(
     // ---- structural walk: challenges + checkpoint ----
     let seed = Sponge::new(b"leanvm-b", &[pi[0], pi[1], dig[0], dig[1]]);
     let mut w = Walk { ops, i: 0 };
-    let absorb = |w: &mut Walk| -> Vec<u8> {
-        let op = &w.ops[w.i];
-        w.i += 1;
-        match op {
-            TraceOp::AbsorbBytes(b) => b.clone(),
-            other => panic!("expected AbsorbBytes, got {other:?}"),
-        }
-    };
-    let observe = |w: &mut Walk| -> F128 {
-        let op = &w.ops[w.i];
-        w.i += 1;
-        match op {
-            TraceOp::Observe(x) => *x,
-            other => panic!("expected Observe, got {other:?}"),
-        }
-    };
     for _ in 0..9 {
         w.so(); // 7 announced + 2 root words
     }
@@ -610,7 +585,7 @@ fn gen_verify(
         w.so();
     }
     // stacked-bytecode reduction (native protocol): 12 observes + 3 samples.
-    let bcv_trace: Vec<F128> = (0..nbcv).map(|_| observe(&mut w)).collect();
+    let bcv_trace: Vec<F128> = (0..nbcv).map(|_| w.observe()).collect();
     let sb: Vec<F128> = (0..3).map(|_| w.sample()).collect();
     let phase_a_end = w.i;
 
@@ -645,10 +620,10 @@ fn gen_verify(
     }
     assert!(matches!(ops[w.i], TraceOp::Opening));
     w.i += 1;
-    assert_eq!(absorb(&mut w), b"flock-r1cs-v0".to_vec());
-    let sd_bytes = absorb(&mut w); // statement digest (32 bytes)
-    let _root_bytes = absorb(&mut w);
-    assert_eq!(absorb(&mut w), b"flock-zerocheck-v0".to_vec());
+    assert_eq!(w.absorb(), b"flock-r1cs-v0".to_vec());
+    let sd_bytes = w.absorb(); // statement digest (32 bytes)
+    let _root_bytes = w.absorb();
+    assert_eq!(w.absorb(), b"flock-zerocheck-v0".to_vec());
     let n_log_b3 = l.taus[5];
     let m_r1cs = flock_prover::r1cs_hashes::blake3::K_LOG + n_log_b3;
     let n_mlv = m_r1cs - 6;
@@ -664,28 +639,28 @@ fn gen_verify(
     for _ in 0..m_r1cs - 13 {
         zc_r.push(w.sample());
     }
-    let zc1: Vec<F128> = (0..128).map(|_| observe(&mut w)).collect();
+    let zc1: Vec<F128> = (0..128).map(|_| w.observe()).collect();
     let zc_z = w.sample();
     let mut zcr = Vec::new();
     let mut zrho = Vec::new();
     for _ in 0..n_mlv {
-        zcr.push(observe(&mut w));
-        zcr.push(observe(&mut w));
+        zcr.push(w.observe());
+        zcr.push(w.observe());
         zrho.push(w.sample());
     }
-    let zcf = vec![observe(&mut w), observe(&mut w)];
-    assert_eq!(absorb(&mut w), b"flock-lincheck-v0".to_vec());
+    let zcf = vec![w.observe(), w.observe()];
+    assert_eq!(w.absorb(), b"flock-lincheck-v0".to_vec());
     let lc_alpha = w.sample();
     let lc_beta = w.sample();
     let mut lcr = Vec::new();
     let mut lrr = Vec::new();
     let lcrounds = flock_prover::r1cs_hashes::blake3::K_LOG - 6;
     for _ in 0..lcrounds {
-        lcr.push(observe(&mut w));
-        lcr.push(observe(&mut w));
+        lcr.push(w.observe());
+        lcr.push(w.observe());
         lrr.push(w.sample());
     }
-    let lcz: Vec<F128> = (0..64).map(|_| observe(&mut w)).collect();
+    let lcz: Vec<F128> = (0..64).map(|_| w.observe()).collect();
     let _lsk = w.sample();
     let phase_d_end = w.i;
 
@@ -709,12 +684,12 @@ fn gen_verify(
     let matpart = lrun + pinw;
 
     // ---- Phase E1 walk: opening labels, ring-switch fronts, claim combine ----
-    assert_eq!(absorb(&mut w), b"flock-pcs-open-batch-v0".to_vec());
+    assert_eq!(w.absorb(), b"flock-pcs-open-batch-v0".to_vec());
     let mut shv = Vec::new();
     for _ in 0..2 {
-        assert_eq!(absorb(&mut w), b"flock-ring-switch-v0".to_vec());
+        assert_eq!(w.absorb(), b"flock-ring-switch-v0".to_vec());
         for _ in 0..128 {
-            shv.push(observe(&mut w));
+            shv.push(w.observe());
         }
         for _ in 0..7 {
             w.sample(); // r'' (consumed in-circuit by the linearized algebra)
@@ -725,8 +700,8 @@ fn gen_verify(
     let evtot_e: usize = ncol.iter().sum();
     let ncl = nclaims + evtot_e + 1 + 3;
     for _ in 0..ncl {
-        assert_eq!(absorb(&mut w), b"flock-pcs-packed-direct-v0".to_vec());
-        observe(&mut w);
+        assert_eq!(w.absorb(), b"flock-pcs-packed-direct-v0".to_vec());
+        w.observe();
     }
     for _ in 0..ncl {
         w.sample();
@@ -767,12 +742,12 @@ fn gen_verify(
     let mut lig_sc: Vec<F128> = Vec::new();
     let mut lig_raw: Vec<Vec<F128>> = vec![Vec::new(); nlev]; // squeezes per level
     let mut lig_ris: Vec<F128> = Vec::new();
-    assert_eq!(absorb(&mut w), b"flock-ligerito-basis-v0".to_vec());
-    let _walked_target = observe(&mut w);
-    absorb(&mut w); // initial (stack commitment) root
+    assert_eq!(w.absorb(), b"flock-ligerito-basis-v0".to_vec());
+    let _walked_target = w.observe();
+    w.absorb(); // initial (stack commitment) root
     // prologue msg
-    lig_sc.push(observe(&mut w));
-    lig_sc.push(observe(&mut w));
+    lig_sc.push(w.observe());
+    lig_sc.push(w.observe());
     for lvl in 0..nlev {
         for j in 0..klvl[lvl] {
             let bits = (fgb(lvl) - j as i64).max(0) as u32;
@@ -784,15 +759,15 @@ fn gen_verify(
                 fold_pow.push((0, 0, F128::ZERO));
             }
             lig_ris.push(w.sample());
-            lig_sc.push(observe(&mut w));
-            lig_sc.push(observe(&mut w));
+            lig_sc.push(w.observe());
+            lig_sc.push(w.observe());
         }
         if lvl == r {
             for _ in 0..(1usize << yr_log_n) {
-                observe(&mut w);
+                w.observe();
             }
         } else {
-            absorb(&mut w); // next level root
+            w.absorb(); // next level root
         }
         // query-phase grind (0 bits) + squeezes + alphas
         let (_, zero_bits, _) = w.pow();
@@ -805,39 +780,25 @@ fn gen_verify(
             w.sample();
         }
         if lvl != r {
-            lig_sc.push(observe(&mut w));
-            lig_sc.push(observe(&mut w));
+            lig_sc.push(w.observe());
+            lig_sc.push(w.observe());
         }
         w.sample(); // beta
     }
     assert_eq!(w.i, ops.len(), "ligerito walk must consume the whole trace");
 
     // ---- hints ----
-    // bcv: the deferred bytecode evaluations, block/coord order.
-    let mut bcv = Vec::new();
-    let mut kbc = 0usize;
-    for (s, blocks) in sides.iter().enumerate() {
-        for blk in blocks.iter() {
-            for c in &blk.coords {
-                if let Coord::Public(vals) = c {
-                    kbc = blk.kappa;
-                    bcv.push(mle_eval(vals, &zetas[s][..blk.kappa]));
-                }
-            }
-        }
-    }
+    // bcv: the deferred bytecode evaluations (leaf's own scan, block/coord order).
+    let (kbc, bcv_push) = leanvm_b::leaf::public_evals(&l.push, &zetas[0]);
+    let (_, bcv_pull) = leanvm_b::leaf::public_evals(&l.pull, &zetas[1]);
+    let bcv: Vec<F128> = bcv_push.iter().chain(&bcv_pull).copied().collect();
     assert_eq!(bcv.len(), nbcv);
     assert_eq!(bcv, bcv_trace, "layout-computed bytecode evals match the trace");
-    let eq3 = |c: usize| -> F128 {
-        let mut e = F128::ONE;
-        for (t, &s) in sb.iter().enumerate() {
-            e *= if (c >> t) & 1 == 1 { s } else { F128::ONE + s };
-        }
-        e
-    };
-    let wbc: Vec<F128> = (0..2)
-        .map(|s| (0..6).map(|c| eq3(c) * bcv[6 * s + c]).fold(F128::ZERO, |a, x| a + x))
-        .collect();
+    let sb3: [F128; 3] = sb.clone().try_into().unwrap();
+    let wbc = vec![
+        leanvm_b::leaf::stacked_bytecode_value(&bcv[..6], &sb3),
+        leanvm_b::leaf::stacked_bytecode_value(&bcv[6..], &sb3),
+    ];
     let cinv = roots[2].inv();
     // checkpoint cvs after each phase.
     let mut m = seed.clone();
@@ -1310,7 +1271,7 @@ fn run_recursion(nsub: usize) {
     verify(&guest, &gpi, &gproof).expect("outer proof verifies");
     let t_verify = t.elapsed();
     let t = std::time::Instant::now();
-    check_reduced(program0, proof0, *pi0, subs[0].kbc, &reduced);
+    check_reduced(program0, proof0, *pi0, &reduced);
     let t_red = t.elapsed();
     let psize = bincode::serialize(&gproof).expect("serialize outer proof").len();
     eprintln!(
