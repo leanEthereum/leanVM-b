@@ -144,54 +144,66 @@ NCL = NCL_PLACEHOLDER
 # stride slot), the selector, and its residual-cube slot YT.
 LIGLBLA = LIGLBLA_PLACEHOLDER
 LIGLBLB = LIGLBLB_PLACEHOLDER
-NLEVELS = NLEVELS_PLACEHOLDER
-R = R_PLACEHOLDER
 YR_LOG_N = YR_LOG_N_PLACEHOLDER
 YR_LEN = YR_LEN_PLACEHOLDER
 LENRIS = LENRIS_PLACEHOLDER
 # Opening dispatch: baked committed log-size, candidate range, g^-MINM.
 MBAKED = MBAKED_PLACEHOLDER
+MINM = MINM_PLACEHOLDER
+# Per-candidate opening tables (P3b): row (m - MINM) drives that arm.
+MAXLEV = MAXLEV_PLACEHOLDER
+MAXFOLDS = MAXFOLDS_PLACEHOLDER
+MAXSVK = MAXSVK_PLACEHOLDER
+# Global maxima (StackBuf frame sizes are parse-time).
+MAXLMCG = MAXLMCG_PLACEHOLDER
+YRLOGG = YRLOGG_PLACEHOLDER
+NLEV2 = NLEV2_PLACEHOLDER
+R2 = R2_PLACEHOLDER
+YRLOG2 = YRLOG2_PLACEHOLDER
+YRLEN2 = YRLEN2_PLACEHOLDER
+LENRIS2 = LENRIS2_PLACEHOLDER
+MAXQ2 = MAXQ2_PLACEHOLDER
+MAXNSQ2 = MAXNSQ2_PLACEHOLDER
+MAXLMC2 = MAXLMC2_PLACEHOLDER
+MAXNI2 = MAXNI2_PLACEHOLDER
+QPLEN2 = QPLEN2_PLACEHOLDER
+LSCLEN2 = LSCLEN2_PLACEHOLDER
+LROWSLEN2 = LROWSLEN2_PLACEHOLDER
+LPATHSLEN2 = LPATHSLEN2_PLACEHOLDER
+LSBITSLEN2 = LSBITSLEN2_PLACEHOLDER
+LFPBLEN2 = LFPBLEN2_PLACEHOLDER
+QBITS2 = QBITS2_PLACEHOLDER
+QGFULL2 = QGFULL2_PLACEHOLDER
+QGEXTRA2 = QGEXTRA2_PLACEHOLDER
+QUERIES2 = QUERIES2_PLACEHOLDER
+KLVL2 = KLVL2_PLACEHOLDER
+NUMINTER2 = NUMINTER2_PLACEHOLDER
+NBYTES2 = NBYTES2_PLACEHOLDER
+BLOCKS2 = BLOCKS2_PLACEHOLDER
+DEPTH2 = DEPTH2_PLACEHOLDER
+PER2 = PER2_PLACEHOLDER
+NSQ2 = NSQ2_PLACEHOLDER
+QPOFF2 = QPOFF2_PLACEHOLDER
+ALPHALEN2 = ALPHALEN2_PLACEHOLDER
+LMC2 = LMC2_PLACEHOLDER
+RISSTART2 = RISSTART2_PLACEHOLDER
+PREFIXLEN2 = PREFIXLEN2_PLACEHOLDER
+FOLDBASE2 = FOLDBASE2_PLACEHOLDER
+ROWOFF2 = ROWOFF2_PLACEHOLDER
+PATHOFF2 = PATHOFF2_PLACEHOLDER
+SBITSOFF2 = SBITSOFF2_PLACEHOLDER
+SVKOFF2 = SVKOFF2_PLACEHOLDER
+BITS2 = BITS2_PLACEHOLDER
+FULL2 = FULL2_PLACEHOLDER
+EXTRA82 = EXTRA82_PLACEHOLDER
+SVK2 = SVK2_PLACEHOLDER
+IVK2 = IVK2_PLACEHOLDER
 NMCAND = NMCAND_PLACEHOLDER
 IGMIN = IGMIN_PLACEHOLDER
-MAXNI = MAXNI_PLACEHOLDER
-MAXQ = MAXQ_PLACEHOLDER
-MAXNSQ = MAXNSQ_PLACEHOLDER
-MAXLMC = MAXLMC_PLACEHOLDER
-QP_LEN = QP_LEN_PLACEHOLDER
-LSC_LEN = LSC_LEN_PLACEHOLDER
-LROWS_LEN = LROWS_LEN_PLACEHOLDER
-LPATHS_LEN = LPATHS_LEN_PLACEHOLDER
-LSBITS_LEN = LSBITS_LEN_PLACEHOLDER
-LFPB_LEN = LFPB_LEN_PLACEHOLDER
 # Query-phase grinding: QBITS[lvl] leading zero bits checked on the digest
 # before the query indexes are sampled (queries then only cover
 # target - QBITS bits of soundness).
 QBITS = QBITS_PLACEHOLDER
-QGFULL = QGFULL_PLACEHOLDER
-QGEXTRA = QGEXTRA_PLACEHOLDER
-QUERIES = QUERIES_PLACEHOLDER
-KLVL = KLVL_PLACEHOLDER
-NUMINTER = NUMINTER_PLACEHOLDER
-NBYTES = NBYTES_PLACEHOLDER
-BLOCKS = BLOCKS_PLACEHOLDER
-DEPTH = DEPTH_PLACEHOLDER
-PER = PER_PLACEHOLDER
-NSQ = NSQ_PLACEHOLDER
-QPOFF = QPOFF_PLACEHOLDER
-ALPHALEN = ALPHALEN_PLACEHOLDER
-LMC = LMC_PLACEHOLDER
-RISSTART = RISSTART_PLACEHOLDER
-PREFIXLEN = PREFIXLEN_PLACEHOLDER
-FOLDBASE = FOLDBASE_PLACEHOLDER
-ROWOFF = ROWOFF_PLACEHOLDER
-PATHOFF = PATHOFF_PLACEHOLDER
-SBITSOFF = SBITSOFF_PLACEHOLDER
-SVKOFF = SVKOFF_PLACEHOLDER
-BITS = BITS_PLACEHOLDER
-FULL = FULL_PLACEHOLDER
-EXTRA8 = EXTRA8_PLACEHOLDER
-SVK = SVK_PLACEHOLDER
-IVK = IVK_PLACEHOLDER
 # eval_b claim descriptors + the ring-switch selector data.
 CPBUF = CPBUF_PLACEHOLDER
 CPOFF = CPOFF_PLACEHOLDER
@@ -374,34 +386,34 @@ def open_stacked(mi: Const, fs0, fs1, target, commit_root_0, commit_root_1):
     sqz_tag = StackBuf(2)
     sqz_tag[0] = 0
     sqz_tag[1] = DS_SQ
-    lsc = HeapBuf(LSC_LEN)
-    hint_witness(lsc[0:LSC_LEN], "lsc")
-    lrows = HeapBuf(LROWS_LEN)
-    hint_witness(lrows[0:LROWS_LEN], "lrows")
-    lpaths = HeapBuf(LPATHS_LEN)
-    hint_witness(lpaths[0:LPATHS_LEN], "lpaths")
-    lsbits = HeapBuf(LSBITS_LEN)
-    hint_witness(lsbits[0:LSBITS_LEN], "lsbits")
-    fold_grind_bits = HeapBuf(LFPB_LEN)
-    hint_witness(fold_grind_bits[0:LFPB_LEN], "fold_grind_bits")
-    yr = HeapBuf(YR_LEN)
-    hint_witness(yr[0:YR_LEN], "yr")
-    rta = HeapBuf(NLEVELS)
-    hint_witness(rta[0:NLEVELS], "rta")
-    rtb = HeapBuf(NLEVELS)
-    hint_witness(rtb[0:NLEVELS], "rtb")
-    fnn = HeapBuf(LENRIS)
-    hint_witness(fnn[0:LENRIS], "fnn")
-    qnonce = HeapBuf(NLEVELS)
-    hint_witness(qnonce[0:NLEVELS], "qnonce")
-    qgrind = HeapBuf(NLEVELS * 128)
-    hint_witness(qgrind[0:NLEVELS * 128], "qgrind")
-    ris = HeapBuf(LENRIS)
-    betas = HeapBuf(NLEVELS)
-    enforced_sums = HeapBuf(NLEVELS)
-    alpha_weights = HeapBuf(NLEVELS * MAXQ)
-    qfb = HeapBuf(QP_LEN)
-    qbp = HeapBuf(QP_LEN)
+    lsc = HeapBuf(GEN ** (LSCLEN2[mi]))
+    hint_witness(lsc[0:LSCLEN2[mi]], "lsc")
+    lrows = HeapBuf(GEN ** (LROWSLEN2[mi]))
+    hint_witness(lrows[0:LROWSLEN2[mi]], "lrows")
+    lpaths = HeapBuf(GEN ** (LPATHSLEN2[mi]))
+    hint_witness(lpaths[0:LPATHSLEN2[mi]], "lpaths")
+    lsbits = HeapBuf(GEN ** (LSBITSLEN2[mi]))
+    hint_witness(lsbits[0:LSBITSLEN2[mi]], "lsbits")
+    fold_grind_bits = HeapBuf(GEN ** (LFPBLEN2[mi]))
+    hint_witness(fold_grind_bits[0:LFPBLEN2[mi]], "fold_grind_bits")
+    yr = HeapBuf(GEN ** (YRLEN2[mi]))
+    hint_witness(yr[0:YRLEN2[mi]], "yr")
+    rta = HeapBuf(GEN ** (NLEV2[mi]))
+    hint_witness(rta[0:NLEV2[mi]], "rta")
+    rtb = HeapBuf(GEN ** (NLEV2[mi]))
+    hint_witness(rtb[0:NLEV2[mi]], "rtb")
+    fnn = HeapBuf(GEN ** (LENRIS2[mi]))
+    hint_witness(fnn[0:LENRIS2[mi]], "fnn")
+    qnonce = HeapBuf(GEN ** (NLEV2[mi]))
+    hint_witness(qnonce[0:NLEV2[mi]], "qnonce")
+    qgrind = HeapBuf(GEN ** (NLEV2[mi] * 128))
+    hint_witness(qgrind[0:NLEV2[mi] * 128], "qgrind")
+    ris = HeapBuf(GEN ** (LENRIS2[mi]))
+    betas = HeapBuf(GEN ** (NLEV2[mi]))
+    enforced_sums = HeapBuf(GEN ** (NLEV2[mi]))
+    alpha_weights = HeapBuf(GEN ** (NLEV2[mi] * MAXQ2[mi]))
+    qfb = HeapBuf(GEN ** (QPLEN2[mi]))
+    qbp = HeapBuf(GEN ** (QPLEN2[mi]))
 
     fs = absorb(fs, 23, DS_LEN)
     fs = absorb(fs, LIGLBLA, DS_BYTE)
@@ -422,10 +434,10 @@ def open_stacked(mi: Const, fs0, fs1, target, commit_root_0, commit_root_1):
     quad_a = msg_u2
     t_r = target
 
-    for lvl in unroll(0, NLEVELS):
-        for j in unroll(0, KLVL[lvl]):
-            fold_idx = FOLDBASE[lvl] + j
-            if BITS[fold_idx] != 0:
+    for lvl in unroll(0, NLEV2[mi]):
+        for j in unroll(0, KLVL2[mi * MAXLEV + lvl]):
+            fold_idx = FOLDBASE2[mi * MAXLEV + lvl] + j
+            if BITS2[mi * MAXFOLDS + fold_idx] != 0:
                 pow_tag = StackBuf(2)
                 pow_tag[0] = 0
                 pow_tag[1] = DS_POW
@@ -437,17 +449,17 @@ def open_stacked(mi: Const, fs0, fs1, target, commit_root_0, commit_root_1):
                 pow_out = StackBuf(2)
                 blake3(pow_base, pow_nonce, pow_out)
                 dec128(fold_grind_bits * GEN ** (128 * fold_idx), pow_out[0])
-                for b in unroll(0, 8 * FULL[fold_idx]):
+                for b in unroll(0, 8 * FULL2[mi * MAXFOLDS + fold_idx]):
                     zero_bit_lo = fold_grind_bits[GEN ** (128 * fold_idx + b)]
                     assert zero_bit_lo == 0
-                for b in unroll(8 * FULL[fold_idx] + 8 - EXTRA8[fold_idx], 8 * FULL[fold_idx] + 8):
+                for b in unroll(8 * FULL2[mi * MAXFOLDS + fold_idx] + 8 - EXTRA82[mi * MAXFOLDS + fold_idx], 8 * FULL2[mi * MAXFOLDS + fold_idx] + 8):
                     zero_bit_hi = fold_grind_bits[GEN ** (128 * fold_idx + b)]
                     assert zero_bit_hi == 0
                 nonce_v = fnn[GEN ** fold_idx]
                 fs = absorb(fs, nonce_v, DS_POW)
             fs = squeeze(fs, sqz_tag)
             fold_challenge = fs[0]
-            ris[GEN ** (FOLDBASE[lvl] + j)] = fold_challenge
+            ris[GEN ** (FOLDBASE2[mi * MAXLEV + lvl] + j)] = fold_challenge
             t_r = quad_c + fold_challenge * quad_b + fold_challenge * fold_challenge * quad_a
             msg_a = msg_cursor[GEN ** 0]
             fs = obs(fs, msg_a)
@@ -458,8 +470,8 @@ def open_stacked(mi: Const, fs0, fs1, target, commit_root_0, commit_root_1):
             quad_b = t_r + msg_b
             quad_a = msg_b
 
-        if lvl == R:
-            for iy in unroll(0, YR_LEN):
+        if lvl == R2[mi]:
+            for iy in unroll(0, YRLEN2[mi]):
                 fs = obs(fs, yr[GEN ** iy])
         else:
             fs = absorb(fs, 32, DS_LEN)
@@ -467,7 +479,7 @@ def open_stacked(mi: Const, fs0, fs1, target, commit_root_0, commit_root_1):
             next_root_b = rtb[GEN ** (lvl + 1)]
             fs = absorb(fs, next_root_a, DS_BYTE)
             fs = absorb(fs, next_root_b, DS_BYTE)
-        if QBITS[lvl] != 0:
+        if QBITS2[mi * MAXLEV + lvl] != 0:
             pow_tag = StackBuf(2)
             pow_tag[0] = 0
             pow_tag[1] = DS_POW
@@ -479,10 +491,10 @@ def open_stacked(mi: Const, fs0, fs1, target, commit_root_0, commit_root_1):
             pow_out = StackBuf(2)
             blake3(pow_base, pow_nonce, pow_out)
             dec128(qgrind * GEN ** (128 * lvl), pow_out[0])
-            for b in unroll(0, 8 * QGFULL[lvl]):
+            for b in unroll(0, 8 * QGFULL2[mi * MAXLEV + lvl]):
                 zero_bit_lo = qgrind[GEN ** (128 * lvl + b)]
                 assert zero_bit_lo == 0
-            for b in unroll(8 * QGFULL[lvl] + 8 - QGEXTRA[lvl], 8 * QGFULL[lvl] + 8):
+            for b in unroll(8 * QGFULL2[mi * MAXLEV + lvl] + 8 - QGEXTRA2[mi * MAXLEV + lvl], 8 * QGFULL2[mi * MAXLEV + lvl] + 8):
                 zero_bit_hi = qgrind[GEN ** (128 * lvl + b)]
                 assert zero_bit_hi == 0
             q_nonce = qnonce[GEN ** lvl]
@@ -490,56 +502,56 @@ def open_stacked(mi: Const, fs0, fs1, target, commit_root_0, commit_root_1):
         else:
             fs = absorb(fs, 0, DS_POW)
 
-        sqz_chain_0 = HeapBuf(MAXNSQ + 1)
-        sqz_chain_1 = HeapBuf(MAXNSQ + 1)
+        sqz_chain_0 = HeapBuf(GEN ** (MAXNSQ2[mi] + 1))
+        sqz_chain_1 = HeapBuf(GEN ** (MAXNSQ2[mi] + 1))
         sqz_chain_0[GEN ** 0] = fs[0]
         sqz_chain_1[GEN ** 0] = fs[1]
-        for xs in mul_range(1, GEN ** NSQ[lvl]):
+        for xs in mul_range(1, GEN ** NSQ2[mi * MAXLEV + lvl]):
             packed_word, next_c0, next_c1 = sqz(sqz_chain_0[xs], sqz_chain_1[xs])
             sqz_chain_0[xs * GEN] = next_c0
             sqz_chain_1[xs * GEN] = next_c1
-            bits_ptr = lsbits * GEN ** SBITSOFF[lvl] * xs ** 128
-            query_ptr = xs ** PER[lvl]
-            decq(bits_ptr, packed_word, qfb * GEN ** QPOFF[lvl] * query_ptr, qbp * GEN ** QPOFF[lvl] * query_ptr, DEPTH[lvl], PER[lvl])
+            bits_ptr = lsbits * GEN ** SBITSOFF2[mi * MAXLEV + lvl] * xs ** 128
+            query_ptr = xs ** PER2[mi * MAXLEV + lvl]
+            decq(bits_ptr, packed_word, qfb * GEN ** QPOFF2[mi * MAXLEV + lvl] * query_ptr, qbp * GEN ** QPOFF2[mi * MAXLEV + lvl] * query_ptr, DEPTH2[mi * MAXLEV + lvl], PER2[mi * MAXLEV + lvl])
         fs = StackBuf(2)
-        fs[0] = sqz_chain_0[GEN ** NSQ[lvl]]
-        fs[1] = sqz_chain_1[GEN ** NSQ[lvl]]
+        fs[0] = sqz_chain_0[GEN ** NSQ2[mi * MAXLEV + lvl]]
+        fs[1] = sqz_chain_1[GEN ** NSQ2[mi * MAXLEV + lvl]]
 
-        alphas = HeapBuf(MAXNI)
-        for t in unroll(0, ALPHALEN[lvl]):
+        alphas = HeapBuf(GEN ** (MAXNI2[mi]))
+        for t in unroll(0, ALPHALEN2[mi * MAXLEV + lvl]):
             fs = squeeze(fs, sqz_tag)
             lav = fs[0]
             alphas[GEN ** t] = lav
-        eq_tab = HeapBuf(MAXNI)
-        for i in unroll(0, NUMINTER[lvl]):
+        eq_tab = HeapBuf(GEN ** (MAXNI2[mi]))
+        for i in unroll(0, NUMINTER2[mi * MAXLEV + lvl]):
             lp = GEN ** 0
-            for c in unroll(0, KLVL[lvl]):
-                lrc = ris[GEN ** (FOLDBASE[lvl] + c)]
+            for c in unroll(0, KLVL2[mi * MAXLEV + lvl]):
+                lrc = ris[GEN ** (FOLDBASE2[mi * MAXLEV + lvl] + c)]
                 if (i // (2 ** c)) % 2 == 1:
                     lp = lp * lrc
                 else:
                     lp = lp * (1 + lrc)
             eq_tab[GEN ** i] = lp
-        for i in unroll(0, QUERIES[lvl]):
+        for i in unroll(0, QUERIES2[mi * MAXLEV + lvl]):
             lp = GEN ** 0
-            for c in unroll(0, ALPHALEN[lvl]):
+            for c in unroll(0, ALPHALEN2[mi * MAXLEV + lvl]):
                 lac = alphas[GEN ** c]
                 if (i // (2 ** c)) % 2 == 1:
                     lp = lp * lac
                 else:
                     lp = lp * (1 + lac)
-            alpha_weights[GEN ** (lvl * MAXQ + i)] = lp
+            alpha_weights[GEN ** (lvl * MAXQ2[mi] + i)] = lp
 
-        enforced_chain = HeapBuf(MAXQ + 1)
+        enforced_chain = HeapBuf(GEN ** (MAXQ2[mi] + 1))
         enforced_chain[GEN ** 0] = 0
-        for xe in mul_range(1, GEN ** QUERIES[lvl]):
-            row_base = xe ** NUMINTER[lvl]
-            row_ptr = lrows * GEN ** ROWOFF[lvl] * row_base
+        for xe in mul_range(1, GEN ** QUERIES2[mi * MAXLEV + lvl]):
+            row_base = xe ** NUMINTER2[mi * MAXLEV + lvl]
+            row_ptr = lrows * GEN ** ROWOFF2[mi * MAXLEV + lvl] * row_base
             leaf_state = StackBuf(2)
-            leaf_state[0] = GEN ** NBYTES[lvl]
+            leaf_state[0] = GEN ** NBYTES2[mi * MAXLEV + lvl]
             leaf_state[1] = 0
             row_dot = 0
-            for jb in unroll(0, BLOCKS[lvl]):
+            for jb in unroll(0, BLOCKS2[mi * MAXLEV + lvl]):
                 row_pair = StackBuf(2)
                 row_pair[0] = row_ptr[GEN ** (2 * jb)]
                 row_pair[1] = row_ptr[GEN ** (2 * jb + 1)]
@@ -549,11 +561,11 @@ def open_stacked(mi: Const, fs0, fs1, target, commit_root_0, commit_root_1):
                 row_dot = row_dot + row_pair[0] * eq_tab[GEN ** (2 * jb)] + row_pair[1] * eq_tab[GEN ** (2 * jb + 1)]
             node_0 = leaf_state[0]
             node_1 = leaf_state[1]
-            enforced_chain[xe * GEN] = enforced_chain[xe] + alpha_weights[GEN ** (lvl * MAXQ) * xe] * row_dot
-            walk_bits = qbp[GEN ** QPOFF[lvl] * xe]
-            path_base = xe ** (2 * DEPTH[lvl])
-            path_ptr = lpaths * GEN ** PATHOFF[lvl] * path_base
-            for lw2 in unroll(0, DEPTH[lvl]):
+            enforced_chain[xe * GEN] = enforced_chain[xe] + alpha_weights[GEN ** (lvl * MAXQ2[mi]) * xe] * row_dot
+            walk_bits = qbp[GEN ** QPOFF2[mi * MAXLEV + lvl] * xe]
+            path_base = xe ** (2 * DEPTH2[mi * MAXLEV + lvl])
+            path_ptr = lpaths * GEN ** PATHOFF2[mi * MAXLEV + lvl] * path_base
+            for lw2 in unroll(0, DEPTH2[mi * MAXLEV + lvl]):
                 sibling_0 = path_ptr[GEN ** (2 * lw2)]
                 sibling_1 = path_ptr[GEN ** (2 * lw2 + 1)]
                 dir_bit = walk_bits[GEN ** lw2]
@@ -577,9 +589,9 @@ def open_stacked(mi: Const, fs0, fs1, target, commit_root_0, commit_root_1):
                 root_hi = rtb[GEN ** lvl]
                 assert node_0 == right_node
                 assert node_1 == root_hi
-        enforced_sums[GEN ** lvl] = enforced_chain[GEN ** QUERIES[lvl]]
+        enforced_sums[GEN ** lvl] = enforced_chain[GEN ** QUERIES2[mi * MAXLEV + lvl]]
 
-        if lvl == R:
+        if lvl == R2[mi]:
             fs = squeeze(fs, sqz_tag)
             beta_lvl = fs[0]
             betas[GEN ** lvl] = beta_lvl
@@ -600,30 +612,30 @@ def open_stacked(mi: Const, fs0, fs1, target, commit_root_0, commit_root_1):
             t_r = t_r + beta_lvl * enforced
 
     # ---- residual (per level, novel basis) ----
-    inner_chain = HeapBuf(NLEVELS + 1)
+    inner_chain = HeapBuf(GEN ** (NLEV2[mi] + 1))
     inner_chain[GEN ** 0] = 0
-    for lvl in unroll(0, NLEVELS):
-        residual_chain = HeapBuf(MAXQ + 1)
+    for lvl in unroll(0, NLEV2[mi]):
+        residual_chain = HeapBuf(GEN ** (MAXQ2[mi] + 1))
         residual_chain[GEN ** 0] = 0
-        for xr in mul_range(1, GEN ** QUERIES[lvl]):
-            basis_w = StackBuf(MAXLMC)
-            s_chain = qfb[GEN ** QPOFF[lvl] * xr]
-            basis_w[0] = s_chain * IVK[SVKOFF[lvl]]
-            for t in unroll(1, LMC[lvl]):
-                s_chain = s_chain * (s_chain + SVK[SVKOFF[lvl] + t - 1])
-                basis_w[t] = s_chain * IVK[SVKOFF[lvl] + t]
+        for xr in mul_range(1, GEN ** QUERIES2[mi * MAXLEV + lvl]):
+            basis_w = StackBuf(MAXLMCG)
+            s_chain = qfb[GEN ** QPOFF2[mi * MAXLEV + lvl] * xr]
+            basis_w[0] = s_chain * IVK2[mi * MAXSVK + SVKOFF2[mi * MAXLEV + lvl]]
+            for t in unroll(1, LMC2[mi * MAXLEV + lvl]):
+                s_chain = s_chain * (s_chain + SVK2[mi * MAXSVK + SVKOFF2[mi * MAXLEV + lvl] + t - 1])
+                basis_w[t] = s_chain * IVK2[mi * MAXSVK + SVKOFF2[mi * MAXLEV + lvl] + t]
             prefix_eq = GEN ** 0
-            for t in unroll(0, PREFIXLEN[lvl]):
-                lrc = ris[GEN ** (RISSTART[lvl] + t)]
+            for t in unroll(0, PREFIXLEN2[mi * MAXLEV + lvl]):
+                lrc = ris[GEN ** (RISSTART2[mi * MAXLEV + lvl] + t)]
                 prefix_eq = prefix_eq * (1 + lrc * (1 + basis_w[t]))
-            fold_w = StackBuf(2 * YR_LOG_N)
-            for j in unroll(0, YR_LOG_N):
+            fold_w = StackBuf(2 * YRLOGG)
+            for j in unroll(0, YRLOG2[mi]):
                 fold_w[2 * j] = GEN ** 0
-                fold_w[2 * j + 1] = basis_w[PREFIXLEN[lvl] + j]
+                fold_w[2 * j + 1] = basis_w[PREFIXLEN2[mi * MAXLEV + lvl] + j]
             yr_eval = foldyr(yr, fold_w, 0)
-            residual_chain[xr * GEN] = residual_chain[xr] + alpha_weights[GEN ** (lvl * MAXQ) * xr] * prefix_eq * yr_eval
-        inner_chain[GEN ** (lvl + 1)] = inner_chain[GEN ** lvl] + betas[GEN ** lvl] * residual_chain[GEN ** QUERIES[lvl]]
-    return t_r, ris, yr, inner_chain[GEN ** NLEVELS]
+            residual_chain[xr * GEN] = residual_chain[xr] + alpha_weights[GEN ** (lvl * MAXQ2[mi]) * xr] * prefix_eq * yr_eval
+        inner_chain[GEN ** (lvl + 1)] = inner_chain[GEN ** lvl] + betas[GEN ** lvl] * residual_chain[GEN ** QUERIES2[mi * MAXLEV + lvl]]
+    return t_r, ris, yr, inner_chain[GEN ** NLEV2[mi]]
 
 
 def verify_sub(pi_0, pi_1, delta_pows, dout):

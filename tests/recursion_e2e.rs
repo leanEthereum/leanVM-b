@@ -910,42 +910,147 @@ fn gen_verify(
     let yrs = rssel_full >> (lenris - qpkdv);
     let rssel = rssel_full & ((1usize << (lenris - qpkdv)) - 1);
 
+    // ---- per-candidate opening tables (P3b): everything open_stacked
+    // reads, config-only, for each candidate committed log-size m. Row
+    // (m - MINM) of each table drives that match_range arm; per-level
+    // tables flatten with the MAXLEV stride, per-fold with MAXFOLDS,
+    // subspace-vanishing constants with MAXSVK.
+    #[allow(clippy::type_complexity)]
+    let oshape = |m: usize| {
+        let vc = flare::pcs::ligerito::LigeritoSecurityConfig::derive_profile(
+            m + 7,
+            flare::pcs::ligerito::LigeritoProfile::Secure,
+        )
+        .and_then(|s| s.to_prover_verifier_configs())
+        .expect("candidate ligerito config")
+        .1;
+        let sh = vc.level_shapes(m);
+        let (cn, cr) = (sh.levels, vc.level_steps);
+        let (ck, cl, cyr) = (sh.ks.clone(), sh.log_msg_cols.clone(), sh.yr_log_n);
+        let cq = vc.queries.clone();
+        let cd: Vec<usize> = sh.block_len.iter().map(|b| b.trailing_zeros() as usize).collect();
+        let cp: Vec<usize> = cd.iter().map(|&d| 128 / d).collect();
+        let cs: Vec<usize> = (0..cn).map(|i| cq[i].div_ceil(cp[i])).collect();
+        let cni: Vec<usize> = ck.iter().map(|&k| 1usize << k).collect();
+        let cqb: Vec<usize> = (0..cn).map(|lvl| vc.grinding_bits[lvl]).collect();
+        let cfgb = |lvl: usize| vc.fold_grinding_bits.get(lvl).copied().unwrap_or(0) as i64;
+        let mut cfb: Vec<usize> = Vec::new();
+        for lvl in 0..cn {
+            for j in 0..ck[lvl] {
+                cfb.push((cfgb(lvl) - j as i64).max(0) as usize);
+            }
+        }
+        let psum = |f: &dyn Fn(usize) -> usize| -> Vec<usize> {
+            let mut o = Vec::with_capacity(cn);
+            let mut acc = 0;
+            for lv in 0..cn {
+                o.push(acc);
+                acc += f(lv);
+            }
+            o
+        };
+        let c_rowoff = psum(&|lv| cq[lv] * cni[lv]);
+        let c_pathoff = psum(&|lv| cq[lv] * cd[lv] * 2);
+        let c_sbitsoff = psum(&|lv| cs[lv] * 128);
+        let c_qpoff = psum(&|lv| cs[lv] * cp[lv]);
+        let c_svkoff = psum(&|lv| cl[lv] + 1);
+        let c_foldbase = psum(&|lv| ck[lv]);
+        let c_risstart: Vec<usize> = (0..cn).map(|k| c_foldbase[k] + ck[k]).collect();
+        let mut c_svk = Vec::new();
+        let mut c_ivk = Vec::new();
+        for lv in 0..cn {
+            for &v in &flare::pcs::ligerito::eval_sk_at_vks(cl[lv]) {
+                c_svk.push(v);
+                c_ivk.push(if v == F128::ZERO { F128::ZERO } else { v.inv() });
+            }
+        }
+        (cn, cr, cyr, ck, cl, cq, cd, cp, cs, cni, cqb, cfb, c_rowoff, c_pathoff, c_sbitsoff, c_qpoff, c_svkoff, c_foldbase, c_risstart, c_svk, c_ivk)
+    };
+    let (minm, maxm) = (stack_mu, stack_mu); // widened with the P4 terminal work
+    let cands: Vec<_> = (minm..=maxm).map(oshape).collect();
+    let maxlev = cands.iter().map(|c| c.0).max().unwrap();
+    let maxfolds = cands.iter().map(|c| c.11.len()).max().unwrap();
+    let maxsvk = cands.iter().map(|c| c.19.len()).max().unwrap();
+    ps("MAXLEV", maxlev.to_string());
+    ps("MAXFOLDS", maxfolds.to_string());
+    ps("MAXSVK", maxsvk.to_string());
+    ps("MINM", minm.to_string());
+    ps("MAXLMCG", cands.iter().map(|c| *c.4.iter().max().unwrap()).max().unwrap().to_string());
+    ps("YRLOGG", cands.iter().map(|c| c.2).max().unwrap().to_string());
+    {
+        let pad = |v: &[usize], stride: usize| -> Vec<usize> {
+            let mut o = v.to_vec();
+            o.resize(stride, 0);
+            o
+        };
+        let flat = |f: &dyn Fn(&(usize, usize, usize, Vec<usize>, Vec<usize>, Vec<usize>, Vec<usize>, Vec<usize>, Vec<usize>, Vec<usize>, Vec<usize>, Vec<usize>, Vec<usize>, Vec<usize>, Vec<usize>, Vec<usize>, Vec<usize>, Vec<usize>, Vec<usize>, Vec<F128>, Vec<F128>)) -> Vec<usize>, stride: usize| -> Vec<usize> {
+            cands.iter().flat_map(|c| pad(&f(c), stride)).collect()
+        };
+        let scal = |f: &dyn Fn(&(usize, usize, usize, Vec<usize>, Vec<usize>, Vec<usize>, Vec<usize>, Vec<usize>, Vec<usize>, Vec<usize>, Vec<usize>, Vec<usize>, Vec<usize>, Vec<usize>, Vec<usize>, Vec<usize>, Vec<usize>, Vec<usize>, Vec<usize>, Vec<F128>, Vec<F128>)) -> usize| -> Vec<usize> {
+            cands.iter().map(f).collect()
+        };
+        ps("NLEV2", ints(&scal(&|c| c.0)));
+        ps("R2", ints(&scal(&|c| c.1)));
+        ps("YRLOG2", ints(&scal(&|c| c.2)));
+        ps("YRLEN2", ints(&scal(&|c| 1usize << c.2)));
+        ps("LENRIS2", ints(&scal(&|c| c.3.iter().sum())));
+        ps("MAXQ2", ints(&scal(&|c| *c.5.iter().max().unwrap())));
+        ps("MAXNSQ2", ints(&scal(&|c| *c.8.iter().max().unwrap())));
+        ps("MAXLMC2", ints(&scal(&|c| *c.4.iter().max().unwrap())));
+        ps("MAXNI2", ints(&scal(&|c| *c.9.iter().max().unwrap())));
+        ps("QPLEN2", ints(&scal(&|c| (0..c.0).map(|lv| c.8[lv] * c.7[lv]).sum())));
+        // one (u0, u2) pair per fold round plus one carry pair per level
+        ps("LSCLEN2", ints(&scal(&|c| 2 * (c.3.iter().sum::<usize>() + c.0))));
+        ps("LROWSLEN2", ints(&scal(&|c| (0..c.0).map(|lv| c.5[lv] * c.9[lv]).sum())));
+        ps("LPATHSLEN2", ints(&scal(&|c| (0..c.0).map(|lv| c.5[lv] * c.6[lv] * 2).sum())));
+        ps("LSBITSLEN2", ints(&scal(&|c| (0..c.0).map(|lv| c.8[lv] * 128).sum())));
+        ps("LFPBLEN2", ints(&scal(&|c| c.3.iter().sum::<usize>() * 128)));
+        ps("QBITS2", ints(&flat(&|c| c.10.clone(), maxlev)));
+        ps("QGFULL2", ints(&flat(&|c| c.10.iter().map(|&b| b / 8).collect(), maxlev)));
+        ps("QGEXTRA2", ints(&flat(&|c| c.10.iter().map(|&b| b % 8).collect(), maxlev)));
+        ps("QUERIES2", ints(&flat(&|c| c.5.clone(), maxlev)));
+        ps("KLVL2", ints(&flat(&|c| c.3.clone(), maxlev)));
+        ps("NUMINTER2", ints(&flat(&|c| c.9.clone(), maxlev)));
+        ps("NBYTES2", ints(&flat(&|c| c.9.iter().map(|&n| n * 16).collect(), maxlev)));
+        ps("BLOCKS2", ints(&flat(&|c| c.9.iter().map(|&n| n / 2).collect(), maxlev)));
+        ps("DEPTH2", ints(&flat(&|c| c.6.clone(), maxlev)));
+        ps("PER2", ints(&flat(&|c| c.7.clone(), maxlev)));
+        ps("NSQ2", ints(&flat(&|c| c.8.clone(), maxlev)));
+        ps("QPOFF2", ints(&flat(&|c| c.15.clone(), maxlev)));
+        ps("ALPHALEN2", ints(&flat(&|c| c.5.iter().map(|&q| flare::pcs::ligerito::ceil_log2(q)).collect(), maxlev)));
+        ps("LMC2", ints(&flat(&|c| c.4.clone(), maxlev)));
+        ps("RISSTART2", ints(&flat(&|c| c.18.clone(), maxlev)));
+        ps("PREFIXLEN2", ints(&flat(&|c| c.4.iter().map(|&m2| m2 - c.2).collect(), maxlev)));
+        ps("FOLDBASE2", ints(&flat(&|c| c.17.clone(), maxlev)));
+        ps("ROWOFF2", ints(&flat(&|c| c.12.clone(), maxlev)));
+        ps("PATHOFF2", ints(&flat(&|c| c.13.clone(), maxlev)));
+        ps("SBITSOFF2", ints(&flat(&|c| c.14.clone(), maxlev)));
+        ps("SVKOFF2", ints(&flat(&|c| c.16.clone(), maxlev)));
+        ps("BITS2", ints(&flat(&|c| c.11.clone(), maxfolds)));
+        ps("FULL2", ints(&flat(&|c| c.11.iter().map(|&b| b / 8).collect(), maxfolds)));
+        ps("EXTRA82", ints(&flat(&|c| c.11.iter().map(|&b| b % 8).collect(), maxfolds)));
+        let mut svk2 = Vec::new();
+        let mut ivk2 = Vec::new();
+        for c in &cands {
+            let mut s = c.19.clone();
+            let mut iv = c.20.clone();
+            s.resize(maxsvk, F128::ZERO);
+            iv.resize(maxsvk, F128::ZERO);
+            svk2.extend(s);
+            ivk2.extend(iv);
+        }
+        ps("SVK2", flds(&svk2));
+        ps("IVK2", flds(&ivk2));
+    }
     ps("LIGLBLA", u(word16(b"flock-ligerito-basis-v0", 0)).to_string());
     ps("LIGLBLB", u(word16(b"flock-ligerito-basis-v0", 16)).to_string());
-    ps("NLEVELS", nlev.to_string());
-    ps("R", r.to_string());
     ps("YR_LOG_N", yr_log_n.to_string());
     ps("YR_LEN", (1usize << yr_log_n).to_string());
     ps("LENRIS", lenris.to_string());
     ps("MBAKED", stack_mu.to_string());
-    ps("NMCAND", "1".to_string());
-    ps("IGMIN", u(g_pow(stack_mu).inv()).to_string());
-    ps("MAXNI", numinter.iter().max().unwrap().to_string());
-    ps("MAXQ", queries.iter().max().unwrap().to_string());
-    ps("MAXNSQ", nsq.iter().max().unwrap().to_string());
-    ps("MAXLMC", lmc.iter().max().unwrap().to_string());
-    ps("QP_LEN", qp_len.to_string());
-    ps("LSC_LEN", lig_sc.len().to_string());
-    ps("LROWS_LEN", lrows_flat.len().to_string());
-    ps("LPATHS_LEN", lpaths_flat.len().to_string());
-    ps("LSBITS_LEN", lsbits_flat.len().to_string());
-    ps("LFPB_LEN", lfpb_flat.len().to_string());
+    ps("NMCAND", (maxm - minm + 1).to_string());
+    ps("IGMIN", u(g_pow(minm).inv()).to_string());
     ps("QBITS", ints(&qbits.iter().map(|&b| b as usize).collect::<Vec<_>>()));
-    ps("QGFULL", ints(&qbits.iter().map(|&b| (b / 8) as usize).collect::<Vec<_>>()));
-    ps("QGEXTRA", ints(&qbits.iter().map(|&b| (b % 8) as usize).collect::<Vec<_>>()));
-    ps("QUERIES", ints(&queries));
-    ps("KLVL", ints(&klvl));
-    ps("NUMINTER", ints(&numinter));
-    ps("NBYTES", ints(&numinter.iter().map(|&n| n * 16).collect::<Vec<_>>()));
-    ps("BLOCKS", ints(&numinter.iter().map(|&n| n / 2).collect::<Vec<_>>()));
-    ps("DEPTH", ints(&depth));
-    ps("PER", ints(&per));
-    ps("NSQ", ints(&nsq));
-    ps("QPOFF", ints(&qpoff));
-    ps("ALPHALEN", ints(&queries.iter().map(|&q| flare::pcs::ligerito::ceil_log2(q)).collect::<Vec<_>>()));
-    ps("LMC", ints(&lmc));
-    ps("RISSTART", ints(&risstart));
-    ps("PREFIXLEN", ints(&lmc.iter().map(|&m2| m2 - yr_log_n).collect::<Vec<_>>()));
     let mut roota = vec![F128::ZERO];
     let mut rootb = vec![F128::ZERO];
     for lv in 1..nlev {
@@ -957,14 +1062,6 @@ fn gen_verify(
         roota.push(rw[0]);
         rootb.push(rw[1]);
     }
-    ps("FOLDBASE", ints(&foldbase));
-    ps("ROWOFF", ints(&rowoff));
-    ps("PATHOFF", ints(&pathoff));
-    ps("SBITSOFF", ints(&sbitsoff));
-    ps("SVKOFF", ints(&svkoff));
-    ps("BITS", ints(&fold_pow.iter().map(|&(b, _, _)| b as usize).collect::<Vec<_>>()));
-    ps("FULL", ints(&fold_pow.iter().map(|&(b, _, _)| (b / 8) as usize).collect::<Vec<_>>()));
-    ps("EXTRA8", ints(&fold_pow.iter().map(|&(b, _, _)| (b % 8) as usize).collect::<Vec<_>>()));
     let fnv: Vec<F128> = fold_pow.iter().map(|&(_, n, _)| F128::new(n, 0)).collect();
     let mut svk_flat = Vec::new();
     let mut ivk_flat = Vec::new();
@@ -975,8 +1072,6 @@ fn gen_verify(
             ivk_flat.push(if v == F128::ZERO { F128::ZERO } else { v.inv() });
         }
     }
-    ps("SVK", flds(&svk_flat));
-    ps("IVK", flds(&ivk_flat));
     ps("CPBUF", ints(&cpbuf));
     ps("CPOFF", ints(&cpoff));
     ps("CPLEN", ints(&cplen));
