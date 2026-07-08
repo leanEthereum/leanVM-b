@@ -222,6 +222,38 @@ fn bit_transpose_64bytes_scalar(input: &[u8; 64], output: &mut [u8; 64]) {
     }
 }
 
+/// Portable u64 64-byte bit-transpose (Hacker's Delight `transpose8`, the
+/// same 3-round masked bit-swap the NEON path uses, on scalar registers).
+///
+/// Per byte-chunk `b`: gather the 8 strided bytes `input[x*8 + b]` into a
+/// u64 (little-endian, byte x = lane x), transpose the 8×8 bit matrix via
+/// swaps at distances 7/14/28, and store the result contiguously at
+/// `output[b*8..]`. Bit `(x, t)` of the gathered word lands at `(t, x)` —
+/// exactly `output[b*8 + t] bit x = input[x*8 + b] bit t`.
+#[cfg(not(target_arch = "aarch64"))]
+#[inline]
+fn bit_transpose_64bytes_u64(input: &[u8; 64], output: &mut [u8; 64]) {
+    for b_chunk in 0..8 {
+        let mut y = u64::from_le_bytes([
+            input[b_chunk],
+            input[8 + b_chunk],
+            input[16 + b_chunk],
+            input[24 + b_chunk],
+            input[32 + b_chunk],
+            input[40 + b_chunk],
+            input[48 + b_chunk],
+            input[56 + b_chunk],
+        ]);
+        let t = (y ^ (y >> 7)) & 0x00AA00AA00AA00AA;
+        y ^= t ^ (t << 7);
+        let t = (y ^ (y >> 14)) & 0x0000CCCC0000CCCC;
+        y ^= t ^ (t << 14);
+        let t = (y ^ (y >> 28)) & 0x00000000F0F0F0F0;
+        y ^= t ^ (t << 28);
+        output[b_chunk * 8..b_chunk * 8 + 8].copy_from_slice(&y.to_le_bytes());
+    }
+}
+
 /// NEON 64-byte bit-transpose. Two-stage:
 ///   1. `vqtbl4q_u8` reorders the 64 input bytes so each 8-byte group within
 ///      the output is one byte-chunk's worth of `x_small=0..8` bytes.
@@ -302,7 +334,7 @@ pub fn bit_transpose_64bytes(input: &[u8; 64], output: &mut [u8; 64]) {
         bit_transpose_64bytes_neon(input, output)
     }
     #[cfg(not(target_arch = "aarch64"))]
-    bit_transpose_64bytes_scalar(input, output);
+    bit_transpose_64bytes_u64(input, output);
 }
 
 // ---------------------------------------------------------------------------
@@ -701,7 +733,26 @@ fn shift_reduce_inner_ab(
             out,
         );
     }
-    #[cfg(not(target_arch = "aarch64"))]
+    #[cfg(all(target_arch = "x86_64", target_feature = "gfni"))]
+    {
+        // SAFETY: gfni is statically enabled at compile time.
+        unsafe {
+            shift_reduce_inner_ab_gfni(
+                a_packed,
+                b_packed,
+                inv_table,
+                chunk_byte_base,
+                b_med,
+                out,
+                a_col,
+                b_col,
+            )
+        };
+    }
+    #[cfg(not(any(
+        target_arch = "aarch64",
+        all(target_arch = "x86_64", target_feature = "gfni")
+    )))]
     {
         shift_reduce_inner_ab_scalar(
             a_packed,
@@ -713,6 +764,83 @@ fn shift_reduce_inner_ab(
             a_col,
             b_col,
         );
+    }
+}
+
+/// x86 GFNI kernel: same structure as the scalar fallback (SSE2 `apply` into
+/// `a_col`/`b_col`, then vectorized combine), with the per-lane F_8 products
+/// done 16-at-a-time by `gf2p8mulb` (`_mm_gf2p8mul_epi8`).
+///
+/// flock's F_8 is GF(2^8) mod x^8 + x^4 + x^3 + x + 1 (= 0x11B) in standard
+/// bit order — exactly the field `gf2p8mulb` implements, so the instruction
+/// IS the field mul. `gf2p8mulb` returns the reduced product, and reduction
+/// commutes with the `Σ_K x^K · y_K` accumulation (the shifted sum is ≤ 15
+/// bits), so one `gf8_reduce` per lane at the end still matches the scalar
+/// path bit-for-bit.
+///
+/// # Safety
+/// Requires the `gfni` target feature (plus SSE2, baseline on x86_64).
+#[cfg(all(target_arch = "x86_64", target_feature = "gfni"))]
+#[target_feature(enable = "gfni", enable = "sse2")]
+unsafe fn shift_reduce_inner_ab_gfni(
+    a_packed: &[u8],
+    b_packed: &[u8],
+    inv_table: &InvNttTableByteSingleGf8,
+    chunk_byte_base: usize,
+    b_med: usize,
+    out: &mut [u8; 64],
+    a_col: &mut [F8],
+    b_col: &mut [F8],
+) {
+    use core::arch::x86_64::*;
+
+    let byte_base_b = chunk_byte_base + b_med * N_CHUNKS * 8;
+
+    // SAFETY: gfni+sse2 are carried by the function's target features; the
+    // pointer loads/stores stay within a_col/b_col/out (each 64 bytes).
+    unsafe {
+        // 8 u16x8 accumulators = 64 u16 lanes, matching the inv-NTT output.
+        let mut acc = [_mm_setzero_si128(); 8];
+
+        for k in 0..8 {
+            let chunk_off = byte_base_b + k * N_CHUNKS;
+            inv_table.apply(&a_packed[chunk_off..chunk_off + N_CHUNKS], a_col);
+            inv_table.apply(&b_packed[chunk_off..chunk_off + N_CHUNKS], b_col);
+            let a_ptr = a_col.as_ptr() as *const __m128i;
+            let b_ptr = b_col.as_ptr() as *const __m128i;
+            let shift = _mm_cvtsi32_si128(k as i32);
+            let zero = _mm_setzero_si128();
+            for v in 0..4 {
+                let y = _mm_gf2p8mul_epi8(_mm_loadu_si128(a_ptr.add(v)), _mm_loadu_si128(b_ptr.add(v)));
+                // Widen the 16 product bytes to u16 and XOR-accumulate << k.
+                let lo = _mm_unpacklo_epi8(y, zero);
+                let hi = _mm_unpackhi_epi8(y, zero);
+                acc[2 * v] = _mm_xor_si128(acc[2 * v], _mm_sll_epi16(lo, shift));
+                acc[2 * v + 1] = _mm_xor_si128(acc[2 * v + 1], _mm_sll_epi16(hi, shift));
+            }
+        }
+
+        // Vectorized gf8_reduce over u16 lanes: two-step fold of the high
+        // byte h with h ^ (h<<1) ^ (h<<3) ^ (h<<4)  (x^8 ≡ x^4+x^3+x+1).
+        let mask_ff = _mm_set1_epi16(0xff);
+        let fold = |p: __m128i| -> __m128i {
+            let h = _mm_srli_epi16::<8>(p);
+            _mm_xor_si128(
+                _mm_and_si128(p, mask_ff),
+                _mm_xor_si128(
+                    _mm_xor_si128(h, _mm_slli_epi16::<1>(h)),
+                    _mm_xor_si128(_mm_slli_epi16::<3>(h), _mm_slli_epi16::<4>(h)),
+                ),
+            )
+        };
+        let out_ptr = out.as_mut_ptr() as *mut __m128i;
+        for v in 0..4 {
+            // Two folds bring 15-bit accumulators down to 8 bits; the second
+            // fold's high byte is ≤ 0x0f so lanes stay < 256 for packus.
+            let r_lo = _mm_and_si128(fold(fold(acc[2 * v])), mask_ff);
+            let r_hi = _mm_and_si128(fold(fold(acc[2 * v + 1])), mask_ff);
+            _mm_storeu_si128(out_ptr.add(v), _mm_packus_epi16(r_lo, r_hi));
+        }
     }
 }
 
@@ -1576,6 +1704,60 @@ mod tests {
     use super::*;
     use crate::ntt::AdditiveNttGf8;
     use crate::zerocheck::univariate_skip::round1_naive;
+
+    #[cfg(all(target_arch = "x86_64", target_feature = "gfni"))]
+    #[test]
+    fn gfni_inner_matches_scalar_inner() {
+        let mut seed = 0xDEADBEEFu64;
+        let mut next = || {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (seed >> 33) as u8
+        };
+        let ntt_s = AdditiveNttGf8::new(K_SKIP, F8::ZERO);
+        let ntt_l = AdditiveNttGf8::new(K_SKIP, F8(1u8 << K_SKIP));
+        let inv_table = InvNttTableByteSingleGf8::new(&ntt_s, &ntt_l);
+
+        // One medium-position worth of packed bytes: 8 K-rows × N_CHUNKS.
+        let n_bytes = 8 * N_CHUNKS;
+        for _ in 0..16 {
+            let a_packed: Vec<u8> = (0..n_bytes).map(|_| next()).collect();
+            let b_packed: Vec<u8> = (0..n_bytes).map(|_| next()).collect();
+            let mut a_col = vec![F8::ZERO; ELL];
+            let mut b_col = vec![F8::ZERO; ELL];
+
+            let mut out_scalar = [0u8; 64];
+            shift_reduce_inner_ab_scalar(
+                &a_packed, &b_packed, &inv_table, 0, 0, &mut out_scalar, &mut a_col, &mut b_col,
+            );
+            let mut out_gfni = [0u8; 64];
+            // SAFETY: cfg-gated on gfni.
+            unsafe {
+                shift_reduce_inner_ab_gfni(
+                    &a_packed, &b_packed, &inv_table, 0, 0, &mut out_gfni, &mut a_col, &mut b_col,
+                )
+            };
+            assert_eq!(out_scalar, out_gfni);
+        }
+    }
+
+    #[cfg(not(target_arch = "aarch64"))]
+    #[test]
+    fn bit_transpose_u64_matches_scalar() {
+        let mut seed = 0x12345678u64;
+        let mut next = || {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (seed >> 33) as u8
+        };
+        for _ in 0..64 {
+            let mut input = [0u8; 64];
+            input.iter_mut().for_each(|b| *b = next());
+            let mut out_scalar = [0u8; 64];
+            let mut out_u64 = [0u8; 64];
+            bit_transpose_64bytes_scalar(&input, &mut out_scalar);
+            bit_transpose_64bytes_u64(&input, &mut out_u64);
+            assert_eq!(out_scalar, out_u64);
+        }
+    }
 
     /// **Soundness assumption.** Zerocheck and the Ligerito PCS opening at
     /// L0 both depend on the seven "friendly" constants — three small
