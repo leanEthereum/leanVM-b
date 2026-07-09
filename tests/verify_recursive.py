@@ -33,7 +33,7 @@ from snark_lib import *
 #     booleanity + reconstruction against the in-circuit digest + leading-zero
 #     asserts), query_index_bits (query bits: booleanity + reconstruction equal to the
 #     squeezed word), merkle_leaf_rows/merkle_paths (Merkle inclusion against the bound roots);
-#   - shape-certified (the announced sizes are the ground truth): log_gpows
+#   - shape-certified (the announced sizes are the ground truth): dims_g
 #     with count_bits/count_min_inv (the count gadget pins g^tau_t = ceil_log2 of each
 #     announced count, g^log_mem via the exponent-to-word table), block_kappa
 #     (pinned per block to its structural source), annmus with musbits/musinv
@@ -823,12 +823,12 @@ def verify_sub(pi_0, pi_1, delta_pows, defer_out):
     # The stream announced the sizes as integer WORDS; the shape-generic
     # phases need them as G-POWERS (loop bounds, match_range scrutinees), so
     # the g-power forms arrive as hints and are pinned to the words here:
-    #   log_gpows[0]     = g^log_mem, log_gpows[1 + t] = g^tau_t (t = table);
+    #   dims_g[0]     = g^log_mem, dims_g[1 + t] = g^tau_t (t = table);
     #   count_bits       = the 33-bit decomposition of each announced count,
     #                      certifying tau_t = ceil_log2(count) (the gadget);
     #   count_min_inv    = the gadget's minimality-check inverses (count > 2^(tau-1)).
-    log_gpows = HeapBuf(7)
-    hint_witness(log_gpows[0:7], "log_gpows")
+    dims_g = HeapBuf(7)
+    hint_witness(dims_g[0:7], "dims_g")
     count_bits = HeapBuf(198)
     hint_witness(count_bits[0:198], "count_bits")
     count_min_inv = StackBuf(6)
@@ -850,7 +850,7 @@ def verify_sub(pi_0, pi_1, delta_pows, defer_out):
         sq_run *= sq_run
     # log_mem is announced AS a log (an integer word L): T[g^L] == L pins the
     # hinted g-power to it.
-    g_log_mem = log_gpows[GEN ** 0]
+    g_log_mem = dims_g[GEN ** 0]
     assert log(g_log_mem) < 33
     lm_word = exp_word[g_log_mem]
     lm_ann = sizes[0]
@@ -859,7 +859,7 @@ def verify_sub(pi_0, pi_1, delta_pows, defer_out):
     kappa_base[GEN ** 0] = 1
     kappa_base[GEN ** 1] = g_log_mem
     for t in unroll(0, 6):
-        kappa_base[GEN ** (2 + t)] = log_gpows[GEN ** (t + 1)]
+        kappa_base[GEN ** (2 + t)] = dims_g[GEN ** (t + 1)]
     # Per count: 32 hinted bits -> partial sums p[j] = value of the low j
     # bits; p[32] == count binds the bits to the announced word; then
     # p[g^tau] pins count < 2^tau (or count == 2^tau via W), and a
@@ -867,7 +867,7 @@ def verify_sub(pi_0, pi_1, delta_pows, defer_out):
     # floor (BLAKE3 sizes to flock's instance count, ceil_log2(max(n, 8))).
     psums = HeapBuf(6 * 35)
     for t in unroll(0, 6):
-        gtau = log_gpows[GEN ** (t + 1)]
+        gtau = dims_g[GEN ** (t + 1)]
         tau_word, tau_exp = pin_ceil_log(count_bits * GEN ** (33 * t), psums * GEN ** (35 * t), pow_word, g_squares, gtau, count_min_inv[t], FLOORS[t], 33)
         count = sizes[t + 1]
         assert tau_word == count
@@ -1209,7 +1209,7 @@ def verify_sub(pi_0, pi_1, delta_pows, defer_out):
     # rounds (claim starts at 0), then the involved-column evaluations (pooled)
     # and the final AIR check claim == eq_acc * C_t(eta, evals).
     # RUNTIME round counts: tau_t is the certified announced log height
-    # (log_gpows[1 + t]) — the first consumer of the count gadget, no
+    # (dims_g[1 + t]) — the first consumer of the count gadget, no
     # scaffolding needed. Round state threads through heap chains exactly
     # like the GKR trees.
     rho = HeapBuf(6 * TAU_CAP)
@@ -1221,7 +1221,7 @@ def verify_sub(pi_0, pi_1, delta_pows, defer_out):
     zc_round_claim = HeapBuf(6 * (TAU_CAP + 2))
     zc_round_eq = HeapBuf(6 * (TAU_CAP + 2))
     for t in unroll(0, 6):
-        tau_g = log_gpows[GEN ** (t + 1)]
+        tau_g = dims_g[GEN ** (t + 1)]
         fs = squeeze(fs)
         eta = fs[0]
         # the zerocheck point r: tau squeezes, sponge chained by round.
@@ -1323,7 +1323,7 @@ def verify_sub(pi_0, pi_1, delta_pows, defer_out):
     # exactly) forces the all-ones MLE.
     bits5 = count_bits * GEN ** (33 * 5)
     zeta_pin = zeta * GEN ** PIN_ZETA_OFF
-    tau5_g = log_gpows[GEN ** 6]
+    tau5_g = dims_g[GEN ** 6]
     pin_chain = HeapBuf(35)
     pin_chain[GEN ** 0] = 0
     for xk in mul_range(1, tau5_g):
@@ -1351,7 +1351,7 @@ def verify_sub(pi_0, pi_1, delta_pows, defer_out):
     for n in unroll(0, B3TABLEN):
         sd0_tab[GEN ** n] = SD0_TAB[n]
         sd1_tab[GEN ** n] = SD1_TAB[n]
-    tau5_g = log_gpows[GEN ** 6]
+    tau5_g = dims_g[GEN ** 6]
     sd0 = sd0_tab[tau5_g]
     sd1 = sd1_tab[tau5_g]
     fs = absorb(fs, 13, DS_LEN)
@@ -1376,7 +1376,7 @@ def verify_sub(pi_0, pi_1, delta_pows, defer_out):
     for i in unroll(0, 7):
         zerocheck_r[GEN ** (6 + i)] = INNER7[i]
     # outer samples at runtime count: R1CS_M_CAP = K_LOG + tau_5 (certified).
-    mr1cs_g = log_gpows[GEN ** 6] * GEN ** K_LOG
+    mr1cs_g = dims_g[GEN ** 6] * GEN ** K_LOG
     flock_point_fs0 = HeapBuf(R1CS_M_CAP + 2)
     flock_point_fs1 = HeapBuf(R1CS_M_CAP + 2)
     flock_point_fs0[GEN ** 13] = fs[0]
@@ -1430,7 +1430,7 @@ def verify_sub(pi_0, pi_1, delta_pows, defer_out):
         zerocheck_rhos[GEN ** i] = rho_v
         zc_running = gamma_ab * (1 + rho_v) + gamma_c * rho_v + g_inf * rho_v * (1 + rho_v)
     # rounds 7..R1CS_ROUNDS_CAP at runtime count: R1CS_ROUNDS_CAP = K_LOG + tau_5 - 6 (certified).
-    nmlv_g = log_gpows[GEN ** 6] * GEN ** (K_LOG - 6)
+    nmlv_g = dims_g[GEN ** 6] * GEN ** (K_LOG - 6)
     flock_round_fs0 = HeapBuf(R1CS_ROUNDS_CAP + 2)
     flock_round_fs1 = HeapBuf(R1CS_ROUNDS_CAP + 2)
     flock_round_running = HeapBuf(R1CS_ROUNDS_CAP + 2)
@@ -1598,14 +1598,14 @@ def verify_sub(pi_0, pi_1, delta_pows, defer_out):
                 z_vals[GEN ** t] = lincheck_rs[GEN ** (LINCHECK_ROUNDS - 2 - t)]
             zv_lo = z_vals * GEN ** (LINCHECK_ROUNDS - 1)
             zr_hi = zerocheck_rhos * GEN ** LINCHECK_ROUNDS
-            for xt in mul_range(1, log_gpows[GEN ** 6]):
+            for xt in mul_range(1, dims_g[GEN ** 6]):
                 zv_lo[xt] = zr_hi[xt]
         else:
             # row 1 lives at the CAPACITY stride (QPKD_VARS_CAP); its length is the
             # runtime qpkdv.
             zv_hi = z_vals * GEN ** QPKD_VARS_CAP
             zcr7 = zerocheck_r * GEN ** 7
-            for xt in mul_range(1, log_gpows[GEN ** 6] * GEN ** (K_LOG - 7)):
+            for xt in mul_range(1, dims_g[GEN ** 6] * GEN ** (K_LOG - 7)):
                 zv_hi[xt] = zcr7[xt]
     # gamma-combine the two transposed sumcheck claims (computed in-circuit).
     fs = squeeze(fs)
@@ -1731,7 +1731,7 @@ def verify_sub(pi_0, pi_1, delta_pows, defer_out):
     # announced log; the per-k z-power rows chain by a runtime g^qpkdv
     # stride, and the inner passes are runtime loops with product/square
     # state chained per row.
-    qpkdv_g = log_gpows[GEN ** 6] * GEN ** (K_LOG - 7)
+    qpkdv_g = dims_g[GEN ** 6] * GEN ** (K_LOG - 7)
     one_plus_q = HeapBuf(GEN ** (QPKD_VARS_CAP))
     for x_round in mul_range(1, qpkdv_g):
         one_plus_q[x_round] = 1 + fold_challenges[x_round]

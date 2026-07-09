@@ -1309,7 +1309,7 @@ fn gen_verify(
                 (mm_a * mm_b).inv()
             }]
         }),
-        ("log_gpows".to_string(), {
+        ("dims_g".to_string(), {
             let mut v = vec![g_pow(log_mem)];
             v.extend(l.taus.iter().map(|&t| g_pow(t)));
             v
