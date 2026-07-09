@@ -544,6 +544,12 @@ impl Parser {
             }
             return Err("`assert` needs `==` or `log _ < _`".into());
         }
+        // Augmented assignment `x OP= rhs` (Python `*=`, `+=`, `//=`, `%=`,
+        // `-=`) desugars to `x = x OP (rhs)`.
+        let line = match split_aug(&line) {
+            Some((lhs, op, rhs)) => format!("{lhs} = {lhs} {op} ({rhs})"),
+            None => line,
+        };
         // Assignment or bare call.
         if let Some((lhs, rhs)) = split_assign(&line) {
             // `names = match_range(…)` carries lambdas, which `parse_expr`
@@ -658,6 +664,38 @@ impl Parser {
 }
 
 /// Split on a top-level (paren-depth-0) single `=` that is not `==`.
+/// A top-level augmented assignment `lhs OP= rhs` -> `(lhs, "OP", rhs)`, for
+/// OP in `+ - * // %`. Returns `None` for a plain `=`, a comparison (`==`,
+/// `!=`, `<=`, `>=`), or `**=` (unused). The operator's `=` must sit at depth
+/// 0 and be immediately preceded by exactly the operator characters.
+fn split_aug(s: &str) -> Option<(String, &'static str, String)> {
+    let b = s.as_bytes();
+    let mut depth = 0i32;
+    for i in 0..b.len() {
+        match b[i] {
+            b'(' | b'[' => depth += 1,
+            b')' | b']' => depth -= 1,
+            b'=' if depth == 0 => {
+                // not `==` and not a comparison tail (`<=`, `>=`, `!=`)
+                if b.get(i + 1) == Some(&b'=') || matches!(b.get(i.wrapping_sub(1)), Some(b'=' | b'<' | b'>' | b'!')) {
+                    return None;
+                }
+                let (op, plen): (&str, usize) = match b[i - 1] {
+                    b'+' => ("+", 1),
+                    b'-' => ("-", 1),
+                    b'%' => ("%", 1),
+                    b'*' if b[i - 2] != b'*' => ("*", 1),
+                    b'/' if b[i - 2] == b'/' => ("//", 2),
+                    _ => return None,
+                };
+                return Some((s[..i - plen].trim().to_string(), op, s[i + 1..].trim().to_string()));
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 fn split_assign(s: &str) -> Option<(String, String)> {
     let b = s.as_bytes();
     let mut depth = 0i32;
