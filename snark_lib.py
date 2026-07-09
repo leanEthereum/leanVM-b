@@ -51,6 +51,10 @@ def log(x) -> int:
     _ = x
     return 0
 
+# @inline decorator (does nothing in Python execution)
+def inline(fn):
+    return fn
+
 
 def match_range(value: int, *args):
     """A `match` with generated arms: `match_range(log(x), range(a, b),
