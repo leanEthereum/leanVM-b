@@ -648,7 +648,7 @@ fn gen_verify(
     let mut ps = |k: &str, v: String| {
         rep.insert(format!("{k}_PLACEHOLDER"), v);
     };
-    ps("STREAM_LEN", stream_cap.to_string());
+    ps("STREAM_CAP", stream_cap.to_string());
     let ann: Vec<u128> = (0..7).map(|i| u(proof.stream[i])).collect();
     let log_mem = proof.stream[0].lo as usize;
     let mut annlog = vec![log_mem];
@@ -659,16 +659,20 @@ fn gen_verify(
     ps("ILD1", u((F128::ONE + G).inv()).to_string());
     ps("ILD2", u((G * (F128::ONE + G)).inv()).to_string());
     ps("ZOFF", ints(&[0, mumax, 2 * mumax]));
-    ps("MUMAX", mumax.to_string());
-    ps("TRICAP", (mumax * (mumax + 1) / 2 + mumax + 2).to_string());
-    ps("PTSCAP", ((mumax + 1) * mumax).to_string());
-    ps("SBLK", ints(&sblk));
-    ps("NB", bkappa.len().to_string());
-    ps("BC0", ints(&bc0));
-    ps("BCN", ints(&bcn));
-    ps("CT", us(&ct));
-    ps("CVAL", us(&cval));
-    ps("FPV", us(&fpv));
+    ps("MU_CAP", mumax.to_string());
+    ps("GKR_ROUNDS_CAP", (mumax * (mumax + 1) / 2 + mumax + 2).to_string());
+    ps("GKR_POINTS_CAP", ((mumax + 1) * mumax).to_string());
+    ps("SIDE_BLOCK_START", ints(&sblk));
+    ps("N_BLOCKS", bkappa.len().to_string());
+    let bks = leanvm_b::cpu::block_kappa_sources(kbc);
+    assert_eq!(bks.len(), bkappa.len(), "block source map must match the block list");
+    ps("BLOCK_KAPPA_SRC", ints(&bks.iter().map(|&(s, _)| s).collect::<Vec<_>>()));
+    ps("BLOCK_KAPPA_ADJ", ints(&bks.iter().map(|&(_, a)| a).collect::<Vec<_>>()));
+    ps("BLOCK_COORD_OFF", ints(&bc0));
+    ps("BLOCK_COORD_COUNT", ints(&bcn));
+    ps("COORD_TYPE", us(&ct));
+    ps("COORD_CONST", us(&cval));
+    ps("COORD_PAD_VAL", us(&fpv));
     let idxc: Vec<u128> = (0..34)
         .map(|i| {
             let mut g2k = G;
@@ -678,13 +682,13 @@ fn gen_verify(
             u(F128::ONE + g2k)
         })
         .collect();
-    ps("IDXC", us(&idxc));
+    ps("INDEX_MLE_FACTORS", us(&idxc));
     let evtot: usize = ncol.iter().sum();
     // claim pool size: bus coords + constraint evals + the PI claim + 3 pins.
     ps("NCLAIMS", (nclaims + evtot + 1 + 3).to_string());
-    ps("NBCV", nbcv.to_string());
-    ps("NCOL", ints(&ncol));
-    ps("TAUMAX", taumax_cap.to_string());
+    ps("N_BYTECODE_VALS", nbcv.to_string());
+    ps("N_AIR_COLS", ints(&ncol));
+    ps("TAU_CAP", taumax_cap.to_string());
     // The pin point: the first BLAKE3 value-column bus claim. Scan blocks/coords
     // exactly as the claims are ordered to find its side + kappa.
     let sch = leanvm_b::cpu::schema();
@@ -705,9 +709,9 @@ fn gen_verify(
     }
     let (pin_side, pin_kappa) = pin_side_kappa.expect("BLAKE3 value-column claim exists");
     let n_b3 = proof.stream[6].lo as usize; // announced BLAKE3 row count
-    ps("PINZOFF", (pin_side * mumax).to_string());
+    ps("PIN_ZETA_OFF", (pin_side * mumax).to_string());
     let pinv: Vec<u128> = leanvm_b::blake3_flock::pin_constants().iter().map(|&v| u(v)).collect();
-    ps("PINV", us(&pinv));
+    ps("PIN_VALUES", us(&pinv));
     // ---- Phase D placeholders ----
     let word16 = |b: &[u8], o: usize| {
         let mut buf = [0u8; 16];
@@ -751,11 +755,11 @@ fn gen_verify(
     ps("ICMB", flds(&icmb));
     ps("ISDOM", flds(&isdom));
     let mr1cs_cap = flock_prover::r1cs_hashes::blake3::K_LOG + 33;
-    ps("MR1CS", mr1cs_cap.to_string());
-    ps("NMLV", (mr1cs_cap - 6).to_string());
-    ps("LCR", lcrounds.to_string());
-    ps("PINCOL", pincol.to_string());
-    ps("KLOG", flock_prover::r1cs_hashes::blake3::K_LOG.to_string());
+    ps("R1CS_M_CAP", mr1cs_cap.to_string());
+    ps("R1CS_ROUNDS_CAP", (mr1cs_cap - 6).to_string());
+    ps("LINCHECK_ROUNDS", lcrounds.to_string());
+    ps("PIN_COLUMN", pincol.to_string());
+    ps("K_LOG", flock_prover::r1cs_hashes::blake3::K_LOG.to_string());
     ps("OBLBLA", u(word16(b"flock-pcs-open-batch-v0", 0)).to_string());
     ps("OBLBLB", u(word16(b"flock-pcs-open-batch-v0", 16)).to_string());
     ps("RSLBLA", u(word16(b"flock-ring-switch-v0", 0)).to_string());
@@ -916,9 +920,9 @@ fn gen_verify(
 
     // ---- per-candidate opening tables (P3b): everything open_stacked
     // reads, config-only, for each candidate committed log-size m. Row
-    // (m - MINM) of each table drives that match_range arm; per-level
-    // tables flatten with the MAXLEV stride, per-fold with MAXFOLDS,
-    // subspace-vanishing constants with MAXSVK.
+    // (m - LIG_MIN_LOG_SIZE) of each table drives that match_range arm; per-level
+    // tables flatten with the LIG_MAX_LEVELS stride, per-fold with LIG_MAX_TOTAL_FOLDS,
+    // subspace-vanishing constants with LIG_MAX_VANISH_LEN.
     #[allow(clippy::type_complexity)]
     let oshape = |m: usize| {
         let vc = flare::pcs::ligerito::LigeritoSecurityConfig::derive_profile(
@@ -979,17 +983,17 @@ fn gen_verify(
     let maxlev = cands.iter().map(|c| c.0).max().unwrap();
     let maxfolds = cands.iter().map(|c| c.11.len()).max().unwrap();
     let maxsvk = cands.iter().map(|c| c.19.len()).max().unwrap();
-    ps("MAXLEV", maxlev.to_string());
-    ps("MAXFOLDS", maxfolds.to_string());
-    ps("MAXSVK", maxsvk.to_string());
-    ps("MINM", minm.to_string());
+    ps("LIG_MAX_LEVELS", maxlev.to_string());
+    ps("LIG_MAX_TOTAL_FOLDS", maxfolds.to_string());
+    ps("LIG_MAX_VANISH_LEN", maxsvk.to_string());
+    ps("LIG_MIN_LOG_SIZE", minm.to_string());
     let cks: Vec<(usize, usize)> = leanvm_b::cpu::col_kappa_sources(kbc).into_iter().flatten().collect();
-    ps("NCOLK", cks.len().to_string());
-    ps("CKSRC", ints(&cks.iter().map(|&(s, _)| s).collect::<Vec<_>>()));
-    ps("CKADJ", ints(&cks.iter().map(|&(_, a)| a).collect::<Vec<_>>()));
-    ps("MINMU", leanvm_b::pcs::MIN_MU.to_string());
-    ps("MAXLMCG", cands.iter().map(|c| *c.4.iter().max().unwrap()).max().unwrap().to_string());
-    ps("YRLOGG", cands.iter().map(|c| c.2).max().unwrap().to_string());
+    ps("N_COMMITTED_COLS", cks.len().to_string());
+    ps("COL_KAPPA_SRC", ints(&cks.iter().map(|&(s, _)| s).collect::<Vec<_>>()));
+    ps("COL_KAPPA_ADJ", ints(&cks.iter().map(|&(_, a)| a).collect::<Vec<_>>()));
+    ps("PCS_MIN_MU", leanvm_b::pcs::MIN_MU.to_string());
+    ps("LIG_LOG_MSG_COLS_CAP", cands.iter().map(|c| *c.4.iter().max().unwrap()).max().unwrap().to_string());
+    ps("YR_LOG_CAP", cands.iter().map(|c| c.2).max().unwrap().to_string());
     {
         let pad = |v: &[usize], stride: usize| -> Vec<usize> {
             let mut o = v.to_vec();
@@ -1002,46 +1006,46 @@ fn gen_verify(
         let scal = |f: &dyn Fn(&(usize, usize, usize, Vec<usize>, Vec<usize>, Vec<usize>, Vec<usize>, Vec<usize>, Vec<usize>, Vec<usize>, Vec<usize>, Vec<usize>, Vec<usize>, Vec<usize>, Vec<usize>, Vec<usize>, Vec<usize>, Vec<usize>, Vec<usize>, Vec<F128>, Vec<F128>)) -> usize| -> Vec<usize> {
             cands.iter().map(f).collect()
         };
-        ps("NLEV2", ints(&scal(&|c| c.0)));
-        ps("R2", ints(&scal(&|c| c.1)));
-        ps("YRLOG2", ints(&scal(&|c| c.2)));
-        ps("YRLEN2", ints(&scal(&|c| 1usize << c.2)));
-        ps("LENRIS2", ints(&scal(&|c| c.3.iter().sum())));
-        ps("MAXQ2", ints(&scal(&|c| *c.5.iter().max().unwrap())));
-        ps("MAXNSQ2", ints(&scal(&|c| *c.8.iter().max().unwrap())));
-        ps("MAXLMC2", ints(&scal(&|c| *c.4.iter().max().unwrap())));
-        ps("MAXNI2", ints(&scal(&|c| *c.9.iter().max().unwrap())));
-        ps("QPLEN2", ints(&scal(&|c| (0..c.0).map(|lv| c.8[lv] * c.7[lv]).sum())));
+        ps("LIG_N_LEVELS", ints(&scal(&|c| c.0)));
+        ps("LIG_YR_LEVEL", ints(&scal(&|c| c.1)));
+        ps("LIG_YR_LOG_LEN", ints(&scal(&|c| c.2)));
+        ps("LIG_YR_LEN", ints(&scal(&|c| 1usize << c.2)));
+        ps("LIG_TOTAL_FOLDS", ints(&scal(&|c| c.3.iter().sum())));
+        ps("LIG_MAX_QUERIES", ints(&scal(&|c| *c.5.iter().max().unwrap())));
+        ps("LIG_MAX_SQUEEZES", ints(&scal(&|c| *c.8.iter().max().unwrap())));
+        ps("LIG_MAX_LOG_MSG_COLS", ints(&scal(&|c| *c.4.iter().max().unwrap())));
+        ps("LIG_MAX_INTERLEAVE", ints(&scal(&|c| *c.9.iter().max().unwrap())));
+        ps("LIG_POSITIONS_LEN", ints(&scal(&|c| (0..c.0).map(|lv| c.8[lv] * c.7[lv]).sum())));
         // one (u0, u2) pair per fold round plus one carry pair per level
-        ps("LSCLEN2", ints(&scal(&|c| 2 * (c.3.iter().sum::<usize>() + c.0))));
-        ps("LROWSLEN2", ints(&scal(&|c| (0..c.0).map(|lv| c.5[lv] * c.9[lv]).sum())));
-        ps("LPATHSLEN2", ints(&scal(&|c| (0..c.0).map(|lv| c.5[lv] * c.6[lv] * 2).sum())));
-        ps("LSBITSLEN2", ints(&scal(&|c| (0..c.0).map(|lv| c.8[lv] * 128).sum())));
-        ps("LFPBLEN2", ints(&scal(&|c| c.3.iter().sum::<usize>() * 128)));
-        ps("QBITS2", ints(&flat(&|c| c.10.clone(), maxlev)));
-        ps("QGFULL2", ints(&flat(&|c| c.10.iter().map(|&b| b / 8).collect(), maxlev)));
-        ps("QGEXTRA2", ints(&flat(&|c| c.10.iter().map(|&b| b % 8).collect(), maxlev)));
-        ps("QUERIES2", ints(&flat(&|c| c.5.clone(), maxlev)));
-        ps("KLVL2", ints(&flat(&|c| c.3.clone(), maxlev)));
-        ps("NUMINTER2", ints(&flat(&|c| c.9.clone(), maxlev)));
-        ps("NBYTES2", ints(&flat(&|c| c.9.iter().map(|&n| n * 16).collect(), maxlev)));
-        ps("BLOCKS2", ints(&flat(&|c| c.9.iter().map(|&n| n / 2).collect(), maxlev)));
-        ps("DEPTH2", ints(&flat(&|c| c.6.clone(), maxlev)));
-        ps("PER2", ints(&flat(&|c| c.7.clone(), maxlev)));
-        ps("NSQ2", ints(&flat(&|c| c.8.clone(), maxlev)));
-        ps("QPOFF2", ints(&flat(&|c| c.15.clone(), maxlev)));
-        ps("ALPHALEN2", ints(&flat(&|c| c.5.iter().map(|&q| flare::pcs::ligerito::ceil_log2(q)).collect(), maxlev)));
-        ps("LMC2", ints(&flat(&|c| c.4.clone(), maxlev)));
-        ps("RISSTART2", ints(&flat(&|c| c.18.clone(), maxlev)));
-        ps("PREFIXLEN2", ints(&flat(&|c| c.4.iter().map(|&m2| m2 - c.2).collect(), maxlev)));
-        ps("FOLDBASE2", ints(&flat(&|c| c.17.clone(), maxlev)));
-        ps("ROWOFF2", ints(&flat(&|c| c.12.clone(), maxlev)));
-        ps("PATHOFF2", ints(&flat(&|c| c.13.clone(), maxlev)));
-        ps("SBITSOFF2", ints(&flat(&|c| c.14.clone(), maxlev)));
-        ps("SVKOFF2", ints(&flat(&|c| c.16.clone(), maxlev)));
-        ps("BITS2", ints(&flat(&|c| c.11.clone(), maxfolds)));
-        ps("FULL2", ints(&flat(&|c| c.11.iter().map(|&b| b / 8).collect(), maxfolds)));
-        ps("EXTRA82", ints(&flat(&|c| c.11.iter().map(|&b| b % 8).collect(), maxfolds)));
+        ps("LIG_SUMCHECK_LEN", ints(&scal(&|c| 2 * (c.3.iter().sum::<usize>() + c.0))));
+        ps("LIG_ROWS_LEN", ints(&scal(&|c| (0..c.0).map(|lv| c.5[lv] * c.9[lv]).sum())));
+        ps("LIG_PATHS_LEN", ints(&scal(&|c| (0..c.0).map(|lv| c.5[lv] * c.6[lv] * 2).sum())));
+        ps("LIG_QUERY_BITS_LEN", ints(&scal(&|c| (0..c.0).map(|lv| c.8[lv] * 128).sum())));
+        ps("LIG_FOLD_GRIND_LEN", ints(&scal(&|c| c.3.iter().sum::<usize>() * 128)));
+        ps("LIG_QUERY_GRIND_BITS", ints(&flat(&|c| c.10.clone(), maxlev)));
+        ps("LIG_QUERY_GRIND_BYTES", ints(&flat(&|c| c.10.iter().map(|&b| b / 8).collect(), maxlev)));
+        ps("LIG_QUERY_GRIND_EXTRA", ints(&flat(&|c| c.10.iter().map(|&b| b % 8).collect(), maxlev)));
+        ps("LIG_QUERIES", ints(&flat(&|c| c.5.clone(), maxlev)));
+        ps("LIG_FOLDS", ints(&flat(&|c| c.3.clone(), maxlev)));
+        ps("LIG_INTERLEAVE", ints(&flat(&|c| c.9.clone(), maxlev)));
+        ps("LIG_LEAF_BYTES", ints(&flat(&|c| c.9.iter().map(|&n| n * 16).collect(), maxlev)));
+        ps("LIG_LEAF_PAIRS", ints(&flat(&|c| c.9.iter().map(|&n| n / 2).collect(), maxlev)));
+        ps("LIG_TREE_DEPTH", ints(&flat(&|c| c.6.clone(), maxlev)));
+        ps("LIG_POSITIONS_PER_WORD", ints(&flat(&|c| c.7.clone(), maxlev)));
+        ps("LIG_SQUEEZES", ints(&flat(&|c| c.8.clone(), maxlev)));
+        ps("LIG_POSITIONS_OFF", ints(&flat(&|c| c.15.clone(), maxlev)));
+        ps("LIG_LOG_QUERIES", ints(&flat(&|c| c.5.iter().map(|&q| flare::pcs::ligerito::ceil_log2(q)).collect(), maxlev)));
+        ps("LIG_LOG_MSG_COLS", ints(&flat(&|c| c.4.clone(), maxlev)));
+        ps("LIG_RESIDUAL_FOLD_OFF", ints(&flat(&|c| c.18.clone(), maxlev)));
+        ps("LIG_RESIDUAL_PREFIX_LEN", ints(&flat(&|c| c.4.iter().map(|&m2| m2 - c.2).collect(), maxlev)));
+        ps("LIG_FOLDS_OFF", ints(&flat(&|c| c.17.clone(), maxlev)));
+        ps("LIG_ROWS_OFF", ints(&flat(&|c| c.12.clone(), maxlev)));
+        ps("LIG_PATHS_OFF", ints(&flat(&|c| c.13.clone(), maxlev)));
+        ps("LIG_QUERY_BITS_OFF", ints(&flat(&|c| c.14.clone(), maxlev)));
+        ps("LIG_VANISH_OFF", ints(&flat(&|c| c.16.clone(), maxlev)));
+        ps("LIG_FOLD_GRIND_BITS", ints(&flat(&|c| c.11.clone(), maxfolds)));
+        ps("LIG_FOLD_GRIND_BYTES", ints(&flat(&|c| c.11.iter().map(|&b| b / 8).collect(), maxfolds)));
+        ps("LIG_FOLD_GRIND_EXTRA", ints(&flat(&|c| c.11.iter().map(|&b| b % 8).collect(), maxfolds)));
         let mut svk2 = Vec::new();
         let mut ivk2 = Vec::new();
         for c in &cands {
@@ -1052,13 +1056,13 @@ fn gen_verify(
             svk2.extend(s);
             ivk2.extend(iv);
         }
-        ps("SVK2", flds(&svk2));
-        ps("IVK2", flds(&ivk2));
+        ps("LIG_VANISH_VALS", flds(&svk2));
+        ps("LIG_VANISH_INVS", flds(&ivk2));
     }
     ps("LIGLBLA", u(word16(b"flock-ligerito-basis-v0", 0)).to_string());
     ps("LIGLBLB", u(word16(b"flock-ligerito-basis-v0", 16)).to_string());
-    ps("NMCAND", (maxm - minm + 1).to_string());
-    ps("IGMIN", u(g_pow(minm).inv()).to_string());
+    ps("LIG_N_CANDIDATES", (maxm - minm + 1).to_string());
+    ps("LIG_MIN_SHIFT_INV", u(g_pow(minm).inv()).to_string());
     let mut roota = vec![F128::ZERO];
     let mut rootb = vec![F128::ZERO];
     for lv in 1..nlev {
@@ -1080,12 +1084,12 @@ fn gen_verify(
             ivk_flat.push(if v == F128::ZERO { F128::ZERO } else { v.inv() });
         }
     }
-    ps("CPBUF", ints(&cpbuf));
-    ps("CPOFF", ints(&cpoff));
-    ps("QPKDV", (33 + flock_prover::r1cs_hashes::blake3::K_LOG - 7).to_string());
-    ps("KBC", kbc.to_string());
-    ps("DEFSZ", (2 * kbc + 2 * lcrounds + 72).to_string());
-    ps("KBCV", (kbc + 3).to_string());
+    ps("CLAIM_POINT_BUF", ints(&cpbuf));
+    ps("CLAIM_POINT_OFF", ints(&cpoff));
+    ps("QPKD_VARS_CAP", (33 + flock_prover::r1cs_hashes::blake3::K_LOG - 7).to_string());
+    ps("BYTECODE_LOG", kbc.to_string());
+    ps("DEFER_SIZE", (2 * kbc + 2 * lcrounds + 72).to_string());
+    ps("BYTECODE_VARS", (kbc + 3).to_string());
     let label_state = Sponge::new(b"leanvm-b", &[]).state();
     ps("SEEDB0", u(label_state[0]).to_string());
     ps("SEEDB1", u(label_state[1]).to_string());
@@ -1148,17 +1152,17 @@ fn gen_verify(
         ("rtb".to_string(), rootb),
         ("fnn".to_string(), fnv),
         ("annmus".to_string(), smu.iter().map(|&m| g_pow(m)).collect()),
-        ("busg".to_string(), {
+        ("bus_grind".to_string(), {
             let maxmu = *smu.iter().max().unwrap();
             let bits = (gbits as usize / 8, gbits as usize % 8);
             let mut v = vec![g_pow(maxmu), g_pow(bits.0), g_pow(bits.1), g_pow(8 - bits.1)];
             v.extend(smu.iter().map(|&m| g_pow(maxmu - m)));
             v
         }),
-        ("cwqh".to_string(), (0..ncl).map(|j| g_pow(cplen[j] - nover_v[j])).collect()),
-        ("selnh".to_string(), (0..ncl).map(|j| g_pow(seln_v[j])).collect()),
-        ("nlowh".to_string(), (0..ncl).map(|j| g_pow(cplen[j] + if cpbuf[j] == 3 { 7 } else { 0 })).collect()),
-        ("cslotb".to_string(), {
+        ("claim_low_len".to_string(), (0..ncl).map(|j| g_pow(cplen[j] - nover_v[j])).collect()),
+        ("claim_sel_len".to_string(), (0..ncl).map(|j| g_pow(seln_v[j])).collect()),
+        ("claim_low_vars".to_string(), (0..ncl).map(|j| g_pow(cplen[j] + if cpbuf[j] == 3 { 7 } else { 0 })).collect()),
+        ("claim_qpkd_slot_bits".to_string(), {
             let mut v = Vec::new();
             for j in 0..ncl {
                 for k in 0..7 {
@@ -1167,7 +1171,7 @@ fn gen_verify(
             }
             v
         }),
-        ("cselb".to_string(), {
+        ("claim_sel_bits".to_string(), {
             let mut v = Vec::new();
             for j in 0..ncl {
                 for k in 0..33 {
@@ -1176,7 +1180,7 @@ fn gen_verify(
             }
             v
         }),
-        ("maskb".to_string(), {
+        ("claim_overlap_mask".to_string(), {
             let mut v = Vec::new();
             for j in 0..ncl {
                 for k in 0..8 {
@@ -1185,7 +1189,7 @@ fn gen_verify(
             }
             v
         }),
-        ("ythib".to_string(), {
+        ("claim_yslot_bits".to_string(), {
             let mut v = Vec::new();
             for j in 0..ncl {
                 for k in 0..8 {
@@ -1195,15 +1199,37 @@ fn gen_verify(
             }
             v
         }),
-        ("yrsb".to_string(), (0..8).map(|k| F128::new(((yrs >> k) & 1) as u64, 0)).collect()),
-        ("rsqh".to_string(), vec![g_pow(lenris - qpkdv)]),
-        ("rsselb".to_string(), (0..33).map(|k| F128::new(((rssel >> k) & 1) as u64, 0)).collect()),
-        ("bkap".to_string(), bkappa.iter().map(|&k| g_pow(k)).collect()),
-        ("bq".to_string(), {
+        ("rs_yslot_bits".to_string(), (0..8).map(|k| F128::new(((yrs >> k) & 1) as u64, 0)).collect()),
+        ("rs_sel_len".to_string(), vec![g_pow(lenris - qpkdv)]),
+        ("rs_sel_bits".to_string(), (0..33).map(|k| F128::new(((rssel >> k) & 1) as u64, 0)).collect()),
+        ("block_kappa".to_string(), bkappa.iter().map(|&k| g_pow(k)).collect()),
+        ("musbits".to_string(), {
+            let mut v = Vec::new();
+            for s in 0..3 {
+                let total: u64 = (sblk[s]..sblk[s + 1]).map(|b| 1u64 << bkappa[b]).sum();
+                for j in 0..34 {
+                    v.push(F128::new((total >> j) & 1, 0));
+                }
+            }
+            v
+        }),
+        ("musinv".to_string(), {
+            (0..3)
+                .map(|s| {
+                    let total: u64 = (sblk[s]..sblk[s + 1]).map(|b| 1u64 << bkappa[b]).sum();
+                    let m = smu[s];
+                    let mask = (1u64 << (m - 1)) - 1;
+                    let ma = F128::new(total & !mask, 0);
+                    let mb = F128::new(total ^ (1u64 << (m - 1)), 0);
+                    (ma * mb).inv()
+                })
+                .collect()
+        }),
+        ("block_mu_quot".to_string(), {
             let side_of = |b: usize| (0..3).rev().find(|&s| b >= sblk[s]).unwrap();
             bkappa.iter().enumerate().map(|(b, &k)| g_pow(smu[side_of(b)] - k)).collect()
         }),
-        ("bselb".to_string(), {
+        ("block_sel_bits".to_string(), {
             let mut v = Vec::new();
             for &s in &bsel {
                 for k in 0..mumax {
@@ -1212,7 +1238,7 @@ fn gen_verify(
             }
             v
         }),
-        ("bdel".to_string(), {
+        ("block_pad_bits".to_string(), {
             let mut v = Vec::new();
             for &d in &bdelta {
                 for j in 0..33 {

@@ -134,6 +134,28 @@ pub fn col_kappa_sources(log_bytecode: usize) -> Vec<Option<(usize, usize)>> {
     k
 }
 
+/// The bus flush blocks' kappa SOURCES, flattened in side order (push, pull,
+/// count) exactly as the blocks are constructed below: per block
+/// `(source, adj)` with kappa = value(source) + adj, source 0 = the constant
+/// 0, 1 = log_mem, 2 + t = tau_t. For the recursion guest's in-circuit pin
+/// of every hinted block kappa. Keep in lockstep with the block
+/// construction in [`layout`].
+pub fn block_kappa_sources(log_bytecode: usize) -> Vec<(usize, usize)> {
+    let mut push = vec![(0, 0), (1, 0), (0, log_bytecode)];
+    let mut pull = vec![(0, 0), (1, 0), (0, log_bytecode)];
+    let mut count = Vec::new();
+    for (t, table) in tables::tables().iter().enumerate() {
+        let mut fb = tables::FlushBuilder::new();
+        table.flushes(&mut fb);
+        push.extend(std::iter::repeat((2 + t, 0)).take(fb.push.len()));
+        pull.extend(std::iter::repeat((2 + t, 0)).take(fb.pull.len()));
+        count.extend(std::iter::repeat((2 + t, 0)).take(table.count_columns().len()));
+    }
+    push.extend(pull);
+    push.extend(count);
+    push
+}
+
 fn col_kappas(log_mem: usize, log_bytecode: usize, taus: [usize; 6], n_blake3: usize) -> Vec<Option<usize>> {
     let sch = schema();
     let mut k = vec![Some(0usize); sch.n];
