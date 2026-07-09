@@ -37,7 +37,12 @@ const FOLD_MAX: u128 = 1 << 16;
 #[derive(Clone, Copy)]
 enum Alias {
     Cell(Off),
-    Zero,
+    /// A compile-time constant: forwarded at its uses to the pooled cell
+    /// holding that value (`const_cell`), so a constant stored into a
+    /// `blake3` operand cell — the `obs`/`squeeze` tag words, padding
+    /// halves — costs ONE `SET` per distinct value per function, not one
+    /// per store. `Const(0, 0)` routes through the zero pool.
+    Const(u64, u64),
 }
 
 struct FnLower<'a> {
@@ -159,13 +164,15 @@ impl FnLower<'_> {
     /// defer as an [`Alias`] (forwarded at use) instead of emitting.
     fn copy_alias(&self, val: &Expr) -> Option<Alias> {
         match val {
-            Expr::Lit(0) => Some(Alias::Zero),
-            Expr::Var(v) => self.vars.get(v).map(|&c| Alias::Cell(c)),
-            Expr::Index(arr, idx) => {
+            // A live var / stack cell aliases to that cell directly (no new
+            // material); anything else that is a compile-time constant defers
+            // to the pooled const cell.
+            Expr::Var(v) if self.vars.contains_key(v) => self.vars.get(v).map(|&c| Alias::Cell(c)),
+            Expr::Index(arr, idx) if self.stack_of(arr).is_some() => {
                 let (base, _) = self.stack_of(arr)?;
                 Some(Alias::Cell(base + self.try_const_index(idx)?))
             }
-            _ => None,
+            _ => self.try_field_const(val).map(|c| Alias::Const(c.lo, c.hi)),
         }
     }
 
@@ -1017,7 +1024,8 @@ impl FnLower<'_> {
     fn word_src(&mut self, o: Off) -> Off {
         match self.alias.get(&o).copied() {
             Some(Alias::Cell(s)) => self.word_src(s),
-            Some(Alias::Zero) => self.zero(),
+            Some(Alias::Const(0, 0)) => self.zero(),
+            Some(Alias::Const(lo, hi)) => self.const_cell(F128::new(lo, hi)),
             None => o,
         }
     }
