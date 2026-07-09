@@ -405,10 +405,10 @@ fn gen_agg(
     e.observe(v_b);
 
     let hints = vec![
-        ("bscr".to_string(), bscr),
-        ("mscr".to_string(), mscr),
-        ("bst".to_string(), vec![v_bc]),
-        ("mst".to_string(), vec![v_a, v_b]),
+        ("bc_sumcheck_msgs".to_string(), bscr),
+        ("mat_sumcheck_msgs".to_string(), mscr),
+        ("bc_star_hint".to_string(), vec![v_bc]),
+        ("mat_stars_hint".to_string(), vec![v_a, v_b]),
     ];
     (
         hints,
@@ -1123,7 +1123,7 @@ fn gen_verify(
             v
         }),
         ("grind_bits".to_string(), bits_of(gdig)),
-        ("bcv".to_string(), bcv),
+        ("bytecode_vals".to_string(), bcv),
         ("count_root_inv".to_string(), vec![cinv]),
         ("zc_round1".to_string(), zc1),
         ("zc_msgs".to_string(), {
@@ -1147,7 +1147,7 @@ fn gen_verify(
         ("query_index_bits".to_string(), lsbits_flat),
         ("fold_grind_bits".to_string(), lfpb_flat),
         ("final_msg".to_string(), lig.final_proof.yr.clone()),
-        ("spi".to_string(), vec![pi[0], pi[1]]),
+        ("sub_pis".to_string(), vec![pi[0], pi[1]]),
         ("level_roots_0".to_string(), roota),
         ("level_roots_1".to_string(), rootb),
         ("fold_nonces".to_string(), fnv),
@@ -1317,7 +1317,7 @@ fn gen_verify(
             "query_grind_hint".to_string(),
             query_pow.iter().flat_map(|&(_, dig)| bits_of(dig)).collect(),
         ),
-        ("cvh".to_string(), cvh),
+        ("checkpoints".to_string(), cvh),
     ];
     (rep, hints, deferred)
 }
@@ -1375,7 +1375,7 @@ fn run_recursion(inner_iters: &[usize]) {
     let (program0, pi0, proof0, _, _) = &protos[0];
     // spi is main-level (one hint site): merge the statements into one entry.
     let spi_all: Vec<F128> = subs.iter().flat_map(|d| [d.pi[0], d.pi[1]]).collect();
-    let spi_pos = merged.iter().position(|(n, _)| n == "spi").expect("spi hint");
+    let spi_pos = merged.iter().position(|(n, _)| n == "sub_pis").expect("spi hint");
     merged[spi_pos].1 = vec![spi_all];
     let (agg_hints, reduced) = gen_agg(program0, proof0, &subs);
     merged.extend(agg_hints.into_iter().map(|(n, v)| (n, vec![v])));
