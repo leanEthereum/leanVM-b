@@ -159,7 +159,7 @@ NCL = NCL_PLACEHOLDER
 # the certified committed log-size m through match_range: the LIG_* tables
 # below carry one row per candidate m in [LIG_MIN_LOG_SIZE, +LIG_N_CANDIDATES),
 # emitted from the SAME derive_profile/level_shapes the prover uses.
-# Scalars index as TBL[mi]; per-level values as TBL[mi * LIG_MAX_LEVELS + lvl];
+# Scalars index as TBL[m_idx]; per-level values as TBL[m_idx * LIG_MAX_LEVELS + lvl];
 # per-fold grind schedules with the LIG_MAX_TOTAL_FOLDS stride; the subspace
 # vanishing constants with the LIG_MAX_VANISH_LEN stride. The eval_b terminal
 # claim descriptors keep only the FIXED parts baked (CLAIM_POINT_BUF: 0=zeta,
@@ -506,10 +506,11 @@ def eqtree(rp, out, nc: Const):
     return
 
 
-def open_stacked(mi: Const, fs0, fs1, target, commit_root_0, commit_root_1):
-    # The stacked Ligerito opening for candidate log-size index mi (the
-    # match_range arm bakes one specialization per candidate
-    # m = LIG_MIN_LOG_SIZE + mi). All opening proof data is hinted HERE, so
+def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1):
+    # The stacked Ligerito opening. m_idx is the COMMITTED-LOG-SIZE CANDIDATE
+    # INDEX: the certified size is m = LIG_MIN_LOG_SIZE + m_idx, and every
+    # LIG_* table below reads row m_idx (the match_range dispatch bakes one
+    # specialization of this function per candidate). All opening proof data is hinted HERE, so
     # hint lengths specialize per arm; only the executed arm pops its streams.
     #
     # Flow, per level:
@@ -530,34 +531,34 @@ def open_stacked(mi: Const, fs0, fs1, target, commit_root_0, commit_root_1):
     fs = StackBuf(2)
     fs[0] = fs0
     fs[1] = fs1
-    lig_sumcheck_msgs = HeapBuf(GEN ** (LIG_SUMCHECK_LEN[mi]))
-    hint_witness(lig_sumcheck_msgs[0:LIG_SUMCHECK_LEN[mi]], "lig_sumcheck_msgs")
-    merkle_leaf_rows = HeapBuf(GEN ** (LIG_ROWS_LEN[mi]))
-    hint_witness(merkle_leaf_rows[0:LIG_ROWS_LEN[mi]], "merkle_leaf_rows")
-    merkle_paths = HeapBuf(GEN ** (LIG_PATHS_LEN[mi]))
-    hint_witness(merkle_paths[0:LIG_PATHS_LEN[mi]], "merkle_paths")
-    query_index_bits = HeapBuf(GEN ** (LIG_QUERY_BITS_LEN[mi]))
-    hint_witness(query_index_bits[0:LIG_QUERY_BITS_LEN[mi]], "query_index_bits")
-    fold_grind_bits = HeapBuf(GEN ** (LIG_FOLD_GRIND_LEN[mi]))
-    hint_witness(fold_grind_bits[0:LIG_FOLD_GRIND_LEN[mi]], "fold_grind_bits")
-    final_msg = HeapBuf(GEN ** (LIG_YR_LEN[mi]))
-    hint_witness(final_msg[0:LIG_YR_LEN[mi]], "final_msg")
-    level_roots_0 = HeapBuf(GEN ** (LIG_N_LEVELS[mi]))
-    hint_witness(level_roots_0[0:LIG_N_LEVELS[mi]], "level_roots_0")
-    level_roots_1 = HeapBuf(GEN ** (LIG_N_LEVELS[mi]))
-    hint_witness(level_roots_1[0:LIG_N_LEVELS[mi]], "level_roots_1")
-    fold_nonces = HeapBuf(GEN ** (LIG_TOTAL_FOLDS[mi]))
-    hint_witness(fold_nonces[0:LIG_TOTAL_FOLDS[mi]], "fold_nonces")
-    query_nonces = HeapBuf(GEN ** (LIG_N_LEVELS[mi]))
-    hint_witness(query_nonces[0:LIG_N_LEVELS[mi]], "query_nonces")
-    query_grind_hint = HeapBuf(GEN ** (LIG_N_LEVELS[mi] * 128))
-    hint_witness(query_grind_hint[0:LIG_N_LEVELS[mi] * 128], "query_grind_hint")
-    fold_challenges = HeapBuf(GEN ** (LIG_TOTAL_FOLDS[mi]))
-    level_betas = HeapBuf(GEN ** (LIG_N_LEVELS[mi]))
-    level_query_sums = HeapBuf(GEN ** (LIG_N_LEVELS[mi]))
-    alpha_weights = HeapBuf(GEN ** (LIG_N_LEVELS[mi] * LIG_MAX_QUERIES[mi]))
-    query_positions = HeapBuf(GEN ** (LIG_POSITIONS_LEN[mi]))
-    query_bit_ptrs = HeapBuf(GEN ** (LIG_POSITIONS_LEN[mi]))
+    lig_sumcheck_msgs = HeapBuf(GEN ** (LIG_SUMCHECK_LEN[m_idx]))
+    hint_witness(lig_sumcheck_msgs[0:LIG_SUMCHECK_LEN[m_idx]], "lig_sumcheck_msgs")
+    merkle_leaf_rows = HeapBuf(GEN ** (LIG_ROWS_LEN[m_idx]))
+    hint_witness(merkle_leaf_rows[0:LIG_ROWS_LEN[m_idx]], "merkle_leaf_rows")
+    merkle_paths = HeapBuf(GEN ** (LIG_PATHS_LEN[m_idx]))
+    hint_witness(merkle_paths[0:LIG_PATHS_LEN[m_idx]], "merkle_paths")
+    query_index_bits = HeapBuf(GEN ** (LIG_QUERY_BITS_LEN[m_idx]))
+    hint_witness(query_index_bits[0:LIG_QUERY_BITS_LEN[m_idx]], "query_index_bits")
+    fold_grind_bits = HeapBuf(GEN ** (LIG_FOLD_GRIND_LEN[m_idx]))
+    hint_witness(fold_grind_bits[0:LIG_FOLD_GRIND_LEN[m_idx]], "fold_grind_bits")
+    final_msg = HeapBuf(GEN ** (LIG_YR_LEN[m_idx]))
+    hint_witness(final_msg[0:LIG_YR_LEN[m_idx]], "final_msg")
+    level_roots_0 = HeapBuf(GEN ** (LIG_N_LEVELS[m_idx]))
+    hint_witness(level_roots_0[0:LIG_N_LEVELS[m_idx]], "level_roots_0")
+    level_roots_1 = HeapBuf(GEN ** (LIG_N_LEVELS[m_idx]))
+    hint_witness(level_roots_1[0:LIG_N_LEVELS[m_idx]], "level_roots_1")
+    fold_nonces = HeapBuf(GEN ** (LIG_TOTAL_FOLDS[m_idx]))
+    hint_witness(fold_nonces[0:LIG_TOTAL_FOLDS[m_idx]], "fold_nonces")
+    query_nonces = HeapBuf(GEN ** (LIG_N_LEVELS[m_idx]))
+    hint_witness(query_nonces[0:LIG_N_LEVELS[m_idx]], "query_nonces")
+    query_grind_hint = HeapBuf(GEN ** (LIG_N_LEVELS[m_idx] * 128))
+    hint_witness(query_grind_hint[0:LIG_N_LEVELS[m_idx] * 128], "query_grind_hint")
+    fold_challenges = HeapBuf(GEN ** (LIG_TOTAL_FOLDS[m_idx]))
+    level_betas = HeapBuf(GEN ** (LIG_N_LEVELS[m_idx]))
+    level_query_sums = HeapBuf(GEN ** (LIG_N_LEVELS[m_idx]))
+    alpha_weights = HeapBuf(GEN ** (LIG_N_LEVELS[m_idx] * LIG_MAX_QUERIES[m_idx]))
+    query_positions = HeapBuf(GEN ** (LIG_POSITIONS_LEN[m_idx]))
+    query_bit_ptrs = HeapBuf(GEN ** (LIG_POSITIONS_LEN[m_idx]))
 
     fs = absorb(fs, 23, DS_LEN)
     fs = absorb(fs, LIGLBLA, DS_BYTE)
@@ -578,16 +579,16 @@ def open_stacked(mi: Const, fs0, fs1, target, commit_root_0, commit_root_1):
     round_quad_a = msg_u2
     sumcheck_target = target
 
-    for lvl in unroll(0, LIG_N_LEVELS[mi]):
-        for j in unroll(0, LIG_FOLDS[mi * LIG_MAX_LEVELS + lvl]):
-            fold_idx = LIG_FOLDS_OFF[mi * LIG_MAX_LEVELS + lvl] + j
-            if LIG_FOLD_GRIND_BITS[mi * LIG_MAX_TOTAL_FOLDS + fold_idx] != 0:
-                check_pow(fs[0], fs[1], fold_nonces[GEN ** fold_idx], fold_grind_bits * GEN ** (128 * fold_idx), LIG_FOLD_GRIND_BYTES[mi * LIG_MAX_TOTAL_FOLDS + fold_idx], LIG_FOLD_GRIND_EXTRA[mi * LIG_MAX_TOTAL_FOLDS + fold_idx])
+    for lvl in unroll(0, LIG_N_LEVELS[m_idx]):
+        for j in unroll(0, LIG_FOLDS[m_idx * LIG_MAX_LEVELS + lvl]):
+            fold_idx = LIG_FOLDS_OFF[m_idx * LIG_MAX_LEVELS + lvl] + j
+            if LIG_FOLD_GRIND_BITS[m_idx * LIG_MAX_TOTAL_FOLDS + fold_idx] != 0:
+                check_pow(fs[0], fs[1], fold_nonces[GEN ** fold_idx], fold_grind_bits * GEN ** (128 * fold_idx), LIG_FOLD_GRIND_BYTES[m_idx * LIG_MAX_TOTAL_FOLDS + fold_idx], LIG_FOLD_GRIND_EXTRA[m_idx * LIG_MAX_TOTAL_FOLDS + fold_idx])
                 nonce_v = fold_nonces[GEN ** fold_idx]
                 fs = absorb(fs, nonce_v, DS_POW)
             fs = squeeze(fs)
             fold_challenge = fs[0]
-            fold_challenges[GEN ** (LIG_FOLDS_OFF[mi * LIG_MAX_LEVELS + lvl] + j)] = fold_challenge
+            fold_challenges[GEN ** (LIG_FOLDS_OFF[m_idx * LIG_MAX_LEVELS + lvl] + j)] = fold_challenge
             sumcheck_target = round_quad_c + fold_challenge * round_quad_b + fold_challenge * fold_challenge * round_quad_a
             msg_a = msg_cursor[GEN ** 0]
             fs = obs(fs, msg_a)
@@ -598,8 +599,8 @@ def open_stacked(mi: Const, fs0, fs1, target, commit_root_0, commit_root_1):
             round_quad_b = sumcheck_target + msg_b
             round_quad_a = msg_b
 
-        if lvl == LIG_YR_LEVEL[mi]:
-            for iy in unroll(0, LIG_YR_LEN[mi]):
+        if lvl == LIG_YR_LEVEL[m_idx]:
+            for iy in unroll(0, LIG_YR_LEN[m_idx]):
                 fs = obs(fs, final_msg[GEN ** iy])
         else:
             fs = absorb(fs, 32, DS_LEN)
@@ -607,63 +608,63 @@ def open_stacked(mi: Const, fs0, fs1, target, commit_root_0, commit_root_1):
             next_root_b = level_roots_1[GEN ** (lvl + 1)]
             fs = absorb(fs, next_root_a, DS_BYTE)
             fs = absorb(fs, next_root_b, DS_BYTE)
-        if LIG_QUERY_GRIND_BITS[mi * LIG_MAX_LEVELS + lvl] != 0:
-            check_pow(fs[0], fs[1], query_nonces[GEN ** lvl], query_grind_hint * GEN ** (128 * lvl), LIG_QUERY_GRIND_BYTES[mi * LIG_MAX_LEVELS + lvl], LIG_QUERY_GRIND_EXTRA[mi * LIG_MAX_LEVELS + lvl])
+        if LIG_QUERY_GRIND_BITS[m_idx * LIG_MAX_LEVELS + lvl] != 0:
+            check_pow(fs[0], fs[1], query_nonces[GEN ** lvl], query_grind_hint * GEN ** (128 * lvl), LIG_QUERY_GRIND_BYTES[m_idx * LIG_MAX_LEVELS + lvl], LIG_QUERY_GRIND_EXTRA[m_idx * LIG_MAX_LEVELS + lvl])
             q_nonce = query_nonces[GEN ** lvl]
             fs = absorb(fs, q_nonce, DS_POW)
         else:
             fs = absorb(fs, 0, DS_POW)
 
-        sqz_chain_0 = HeapBuf(GEN ** (LIG_MAX_SQUEEZES[mi] + 1))
-        sqz_chain_1 = HeapBuf(GEN ** (LIG_MAX_SQUEEZES[mi] + 1))
+        sqz_chain_0 = HeapBuf(GEN ** (LIG_MAX_SQUEEZES[m_idx] + 1))
+        sqz_chain_1 = HeapBuf(GEN ** (LIG_MAX_SQUEEZES[m_idx] + 1))
         sqz_chain_0[GEN ** 0] = fs[0]
         sqz_chain_1[GEN ** 0] = fs[1]
-        for xs in mul_range(1, GEN ** LIG_SQUEEZES[mi * LIG_MAX_LEVELS + lvl]):
+        for xs in mul_range(1, GEN ** LIG_SQUEEZES[m_idx * LIG_MAX_LEVELS + lvl]):
             packed_word, next_c0, next_c1 = sqz(sqz_chain_0[xs], sqz_chain_1[xs])
             sqz_chain_0[xs * GEN] = next_c0
             sqz_chain_1[xs * GEN] = next_c1
-            bits_ptr = query_index_bits * GEN ** LIG_QUERY_BITS_OFF[mi * LIG_MAX_LEVELS + lvl] * xs ** 128
-            query_ptr = xs ** LIG_POSITIONS_PER_WORD[mi * LIG_MAX_LEVELS + lvl]
-            decq(bits_ptr, packed_word, query_positions * GEN ** LIG_POSITIONS_OFF[mi * LIG_MAX_LEVELS + lvl] * query_ptr, query_bit_ptrs * GEN ** LIG_POSITIONS_OFF[mi * LIG_MAX_LEVELS + lvl] * query_ptr, LIG_TREE_DEPTH[mi * LIG_MAX_LEVELS + lvl], LIG_POSITIONS_PER_WORD[mi * LIG_MAX_LEVELS + lvl])
+            bits_ptr = query_index_bits * GEN ** LIG_QUERY_BITS_OFF[m_idx * LIG_MAX_LEVELS + lvl] * xs ** 128
+            query_ptr = xs ** LIG_POSITIONS_PER_WORD[m_idx * LIG_MAX_LEVELS + lvl]
+            decq(bits_ptr, packed_word, query_positions * GEN ** LIG_POSITIONS_OFF[m_idx * LIG_MAX_LEVELS + lvl] * query_ptr, query_bit_ptrs * GEN ** LIG_POSITIONS_OFF[m_idx * LIG_MAX_LEVELS + lvl] * query_ptr, LIG_TREE_DEPTH[m_idx * LIG_MAX_LEVELS + lvl], LIG_POSITIONS_PER_WORD[m_idx * LIG_MAX_LEVELS + lvl])
         fs = StackBuf(2)
-        fs[0] = sqz_chain_0[GEN ** LIG_SQUEEZES[mi * LIG_MAX_LEVELS + lvl]]
-        fs[1] = sqz_chain_1[GEN ** LIG_SQUEEZES[mi * LIG_MAX_LEVELS + lvl]]
+        fs[0] = sqz_chain_0[GEN ** LIG_SQUEEZES[m_idx * LIG_MAX_LEVELS + lvl]]
+        fs[1] = sqz_chain_1[GEN ** LIG_SQUEEZES[m_idx * LIG_MAX_LEVELS + lvl]]
 
-        query_alphas = HeapBuf(GEN ** (LIG_MAX_INTERLEAVE[mi]))
-        for t in unroll(0, LIG_LOG_QUERIES[mi * LIG_MAX_LEVELS + lvl]):
+        query_alphas = HeapBuf(GEN ** (LIG_MAX_INTERLEAVE[m_idx]))
+        for t in unroll(0, LIG_LOG_QUERIES[m_idx * LIG_MAX_LEVELS + lvl]):
             fs = squeeze(fs)
             lav = fs[0]
             query_alphas[GEN ** t] = lav
-        row_eq_weights = HeapBuf(GEN ** (LIG_MAX_INTERLEAVE[mi]))
-        for i in unroll(0, LIG_INTERLEAVE[mi * LIG_MAX_LEVELS + lvl]):
+        row_eq_weights = HeapBuf(GEN ** (LIG_MAX_INTERLEAVE[m_idx]))
+        for i in unroll(0, LIG_INTERLEAVE[m_idx * LIG_MAX_LEVELS + lvl]):
             lp = GEN ** 0
-            for c in unroll(0, LIG_FOLDS[mi * LIG_MAX_LEVELS + lvl]):
-                lrc = fold_challenges[GEN ** (LIG_FOLDS_OFF[mi * LIG_MAX_LEVELS + lvl] + c)]
+            for c in unroll(0, LIG_FOLDS[m_idx * LIG_MAX_LEVELS + lvl]):
+                lrc = fold_challenges[GEN ** (LIG_FOLDS_OFF[m_idx * LIG_MAX_LEVELS + lvl] + c)]
                 if (i // (2 ** c)) % 2 == 1:
                     lp = lp * lrc
                 else:
                     lp = lp * (1 + lrc)
             row_eq_weights[GEN ** i] = lp
-        for i in unroll(0, LIG_QUERIES[mi * LIG_MAX_LEVELS + lvl]):
+        for i in unroll(0, LIG_QUERIES[m_idx * LIG_MAX_LEVELS + lvl]):
             lp = GEN ** 0
-            for c in unroll(0, LIG_LOG_QUERIES[mi * LIG_MAX_LEVELS + lvl]):
+            for c in unroll(0, LIG_LOG_QUERIES[m_idx * LIG_MAX_LEVELS + lvl]):
                 lac = query_alphas[GEN ** c]
                 if (i // (2 ** c)) % 2 == 1:
                     lp = lp * lac
                 else:
                     lp = lp * (1 + lac)
-            alpha_weights[GEN ** (lvl * LIG_MAX_QUERIES[mi] + i)] = lp
+            alpha_weights[GEN ** (lvl * LIG_MAX_QUERIES[m_idx] + i)] = lp
 
-        query_sum_chain = HeapBuf(GEN ** (LIG_MAX_QUERIES[mi] + 1))
+        query_sum_chain = HeapBuf(GEN ** (LIG_MAX_QUERIES[m_idx] + 1))
         query_sum_chain[GEN ** 0] = 0
-        for xe in mul_range(1, GEN ** LIG_QUERIES[mi * LIG_MAX_LEVELS + lvl]):
-            row_base = xe ** LIG_INTERLEAVE[mi * LIG_MAX_LEVELS + lvl]
-            row_ptr = merkle_leaf_rows * GEN ** LIG_ROWS_OFF[mi * LIG_MAX_LEVELS + lvl] * row_base
+        for xe in mul_range(1, GEN ** LIG_QUERIES[m_idx * LIG_MAX_LEVELS + lvl]):
+            row_base = xe ** LIG_INTERLEAVE[m_idx * LIG_MAX_LEVELS + lvl]
+            row_ptr = merkle_leaf_rows * GEN ** LIG_ROWS_OFF[m_idx * LIG_MAX_LEVELS + lvl] * row_base
             leaf_hash_state = StackBuf(2)
-            leaf_hash_state[0] = GEN ** LIG_LEAF_BYTES[mi * LIG_MAX_LEVELS + lvl]
+            leaf_hash_state[0] = GEN ** LIG_LEAF_BYTES[m_idx * LIG_MAX_LEVELS + lvl]
             leaf_hash_state[1] = 0
             row_dot = 0
-            for jb in unroll(0, LIG_LEAF_PAIRS[mi * LIG_MAX_LEVELS + lvl]):
+            for jb in unroll(0, LIG_LEAF_PAIRS[m_idx * LIG_MAX_LEVELS + lvl]):
                 row_pair = StackBuf(2)
                 row_pair[0] = row_ptr[GEN ** (2 * jb)]
                 row_pair[1] = row_ptr[GEN ** (2 * jb + 1)]
@@ -673,11 +674,11 @@ def open_stacked(mi: Const, fs0, fs1, target, commit_root_0, commit_root_1):
                 row_dot = row_dot + row_pair[0] * row_eq_weights[GEN ** (2 * jb)] + row_pair[1] * row_eq_weights[GEN ** (2 * jb + 1)]
             node_0 = leaf_hash_state[0]
             node_1 = leaf_hash_state[1]
-            query_sum_chain[xe * GEN] = query_sum_chain[xe] + alpha_weights[GEN ** (lvl * LIG_MAX_QUERIES[mi]) * xe] * row_dot
-            direction_bits = query_bit_ptrs[GEN ** LIG_POSITIONS_OFF[mi * LIG_MAX_LEVELS + lvl] * xe]
-            path_base = xe ** (2 * LIG_TREE_DEPTH[mi * LIG_MAX_LEVELS + lvl])
-            path_ptr = merkle_paths * GEN ** LIG_PATHS_OFF[mi * LIG_MAX_LEVELS + lvl] * path_base
-            root_0, root_1 = verify_merkle_path(node_0, node_1, path_ptr, direction_bits, LIG_TREE_DEPTH[mi * LIG_MAX_LEVELS + lvl])
+            query_sum_chain[xe * GEN] = query_sum_chain[xe] + alpha_weights[GEN ** (lvl * LIG_MAX_QUERIES[m_idx]) * xe] * row_dot
+            direction_bits = query_bit_ptrs[GEN ** LIG_POSITIONS_OFF[m_idx * LIG_MAX_LEVELS + lvl] * xe]
+            path_base = xe ** (2 * LIG_TREE_DEPTH[m_idx * LIG_MAX_LEVELS + lvl])
+            path_ptr = merkle_paths * GEN ** LIG_PATHS_OFF[m_idx * LIG_MAX_LEVELS + lvl] * path_base
+            root_0, root_1 = verify_merkle_path(node_0, node_1, path_ptr, direction_bits, LIG_TREE_DEPTH[m_idx * LIG_MAX_LEVELS + lvl])
             if lvl == 0:
                 assert root_0 == commit_root_0
                 assert root_1 == commit_root_1
@@ -686,9 +687,9 @@ def open_stacked(mi: Const, fs0, fs1, target, commit_root_0, commit_root_1):
                 want_root_1 = level_roots_1[GEN ** lvl]
                 assert root_0 == want_root_0
                 assert root_1 == want_root_1
-        level_query_sums[GEN ** lvl] = query_sum_chain[GEN ** LIG_QUERIES[mi * LIG_MAX_LEVELS + lvl]]
+        level_query_sums[GEN ** lvl] = query_sum_chain[GEN ** LIG_QUERIES[m_idx * LIG_MAX_LEVELS + lvl]]
 
-        if lvl == LIG_YR_LEVEL[mi]:
+        if lvl == LIG_YR_LEVEL[m_idx]:
             fs = squeeze(fs)
             beta_lvl = fs[0]
             level_betas[GEN ** lvl] = beta_lvl
@@ -709,30 +710,30 @@ def open_stacked(mi: Const, fs0, fs1, target, commit_root_0, commit_root_1):
             sumcheck_target = sumcheck_target + beta_lvl * level_query_sum
 
     # ---- per-level residuals: novel-basis prefix x final-message fold ----
-    inner_chain = HeapBuf(GEN ** (LIG_N_LEVELS[mi] + 1))
+    inner_chain = HeapBuf(GEN ** (LIG_N_LEVELS[m_idx] + 1))
     inner_chain[GEN ** 0] = 0
-    for lvl in unroll(0, LIG_N_LEVELS[mi]):
-        residual_chain = HeapBuf(GEN ** (LIG_MAX_QUERIES[mi] + 1))
+    for lvl in unroll(0, LIG_N_LEVELS[m_idx]):
+        residual_chain = HeapBuf(GEN ** (LIG_MAX_QUERIES[m_idx] + 1))
         residual_chain[GEN ** 0] = 0
-        for xr in mul_range(1, GEN ** LIG_QUERIES[mi * LIG_MAX_LEVELS + lvl]):
+        for xr in mul_range(1, GEN ** LIG_QUERIES[m_idx * LIG_MAX_LEVELS + lvl]):
             basis_w = StackBuf(LIG_LOG_MSG_COLS_CAP)
-            s_chain = query_positions[GEN ** LIG_POSITIONS_OFF[mi * LIG_MAX_LEVELS + lvl] * xr]
-            basis_w[0] = s_chain * LIG_VANISH_INVS[mi * LIG_MAX_VANISH_LEN + LIG_VANISH_OFF[mi * LIG_MAX_LEVELS + lvl]]
-            for t in unroll(1, LIG_LOG_MSG_COLS[mi * LIG_MAX_LEVELS + lvl]):
-                s_chain = s_chain * (s_chain + LIG_VANISH_VALS[mi * LIG_MAX_VANISH_LEN + LIG_VANISH_OFF[mi * LIG_MAX_LEVELS + lvl] + t - 1])
-                basis_w[t] = s_chain * LIG_VANISH_INVS[mi * LIG_MAX_VANISH_LEN + LIG_VANISH_OFF[mi * LIG_MAX_LEVELS + lvl] + t]
+            s_chain = query_positions[GEN ** LIG_POSITIONS_OFF[m_idx * LIG_MAX_LEVELS + lvl] * xr]
+            basis_w[0] = s_chain * LIG_VANISH_INVS[m_idx * LIG_MAX_VANISH_LEN + LIG_VANISH_OFF[m_idx * LIG_MAX_LEVELS + lvl]]
+            for t in unroll(1, LIG_LOG_MSG_COLS[m_idx * LIG_MAX_LEVELS + lvl]):
+                s_chain = s_chain * (s_chain + LIG_VANISH_VALS[m_idx * LIG_MAX_VANISH_LEN + LIG_VANISH_OFF[m_idx * LIG_MAX_LEVELS + lvl] + t - 1])
+                basis_w[t] = s_chain * LIG_VANISH_INVS[m_idx * LIG_MAX_VANISH_LEN + LIG_VANISH_OFF[m_idx * LIG_MAX_LEVELS + lvl] + t]
             prefix_eq = GEN ** 0
-            for t in unroll(0, LIG_RESIDUAL_PREFIX_LEN[mi * LIG_MAX_LEVELS + lvl]):
-                lrc = fold_challenges[GEN ** (LIG_RESIDUAL_FOLD_OFF[mi * LIG_MAX_LEVELS + lvl] + t)]
+            for t in unroll(0, LIG_RESIDUAL_PREFIX_LEN[m_idx * LIG_MAX_LEVELS + lvl]):
+                lrc = fold_challenges[GEN ** (LIG_RESIDUAL_FOLD_OFF[m_idx * LIG_MAX_LEVELS + lvl] + t)]
                 prefix_eq = prefix_eq * (1 + lrc * (1 + basis_w[t]))
             fold_w = StackBuf(2 * YR_LOG_CAP)
-            for j in unroll(0, LIG_YR_LOG_LEN[mi]):
+            for j in unroll(0, LIG_YR_LOG_LEN[m_idx]):
                 fold_w[2 * j] = GEN ** 0
-                fold_w[2 * j + 1] = basis_w[LIG_RESIDUAL_PREFIX_LEN[mi * LIG_MAX_LEVELS + lvl] + j]
-            yr_eval = foldyr(final_msg, fold_w, 0, LIG_YR_LOG_LEN[mi])
-            residual_chain[xr * GEN] = residual_chain[xr] + alpha_weights[GEN ** (lvl * LIG_MAX_QUERIES[mi]) * xr] * prefix_eq * yr_eval
-        inner_chain[GEN ** (lvl + 1)] = inner_chain[GEN ** lvl] + level_betas[GEN ** lvl] * residual_chain[GEN ** LIG_QUERIES[mi * LIG_MAX_LEVELS + lvl]]
-    return sumcheck_target, fold_challenges, final_msg, inner_chain[GEN ** LIG_N_LEVELS[mi]]
+                fold_w[2 * j + 1] = basis_w[LIG_RESIDUAL_PREFIX_LEN[m_idx * LIG_MAX_LEVELS + lvl] + j]
+            yr_eval = foldyr(final_msg, fold_w, 0, LIG_YR_LOG_LEN[m_idx])
+            residual_chain[xr * GEN] = residual_chain[xr] + alpha_weights[GEN ** (lvl * LIG_MAX_QUERIES[m_idx]) * xr] * prefix_eq * yr_eval
+        inner_chain[GEN ** (lvl + 1)] = inner_chain[GEN ** lvl] + level_betas[GEN ** lvl] * residual_chain[GEN ** LIG_QUERIES[m_idx * LIG_MAX_LEVELS + lvl]]
+    return sumcheck_target, fold_challenges, final_msg, inner_chain[GEN ** LIG_N_LEVELS[m_idx]]
 
 
 def verify_sub(pi_0, pi_1, delta_pows, dout):
@@ -1635,7 +1636,7 @@ def verify_sub(pi_0, pi_1, delta_pows, dout):
     assert m_exp == g_total
     sel = gmv * LIG_MIN_SHIFT_INV
     assert log(sel) < LIG_N_CANDIDATES
-    sumcheck_target, fold_challenges, final_msg, inner_total = match_range(log(sel), range(0, LIG_N_CANDIDATES), lambda mi: open_stacked(mi, fs[0], fs[1], target, commit_root_0, commit_root_1))
+    sumcheck_target, fold_challenges, final_msg, inner_total = match_range(log(sel), range(0, LIG_N_CANDIDATES), lambda m_idx: open_stacked(m_idx, fs[0], fs[1], target, commit_root_0, commit_root_1))
 
     # ---- generalized eval_b terminal (runtime claim shapes) ----
     # Per-claim lengths, selector bits, and slot data are HINTED; the final
