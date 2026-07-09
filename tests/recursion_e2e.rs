@@ -983,6 +983,11 @@ fn gen_verify(
     ps("MAXFOLDS", maxfolds.to_string());
     ps("MAXSVK", maxsvk.to_string());
     ps("MINM", minm.to_string());
+    let cks: Vec<(usize, usize)> = leanvm_b::cpu::col_kappa_sources(kbc).into_iter().flatten().collect();
+    ps("NCOLK", cks.len().to_string());
+    ps("CKSRC", ints(&cks.iter().map(|&(s, _)| s).collect::<Vec<_>>()));
+    ps("CKADJ", ints(&cks.iter().map(|&(_, a)| a).collect::<Vec<_>>()));
+    ps("MINMU", leanvm_b::pcs::MIN_MU.to_string());
     ps("MAXLMCG", cands.iter().map(|c| *c.4.iter().max().unwrap()).max().unwrap().to_string());
     ps("YRLOGG", cands.iter().map(|c| c.2).max().unwrap().to_string());
     {
@@ -1217,6 +1222,40 @@ fn gen_verify(
             v
         }),
         ("annm".to_string(), vec![g_pow(stack_mu)]),
+        ("mbits".to_string(), {
+            let resolve = |s: usize, a: usize| match s {
+                0 => a,
+                1 => log_mem,
+                t => l.taus[t - 2] + a,
+            };
+            let total: u64 = leanvm_b::cpu::col_kappa_sources(kbc)
+                .into_iter()
+                .flatten()
+                .map(|(s, a)| 1u64 << resolve(s, a))
+                .sum();
+            (0..34).map(|j| F128::new((total >> j) & 1, 0)).collect()
+        }),
+        ("minv".to_string(), {
+            let resolve = |s: usize, a: usize| match s {
+                0 => a,
+                1 => log_mem,
+                t => l.taus[t - 2] + a,
+            };
+            let total: u64 = leanvm_b::cpu::col_kappa_sources(kbc)
+                .into_iter()
+                .flatten()
+                .map(|(s, a)| 1u64 << resolve(s, a))
+                .sum();
+            let m = stack_mu;
+            vec![if m == leanvm_b::pcs::MIN_MU {
+                F128::ONE
+            } else {
+                let mask = (1u64 << (m - 1)) - 1;
+                let mm_a = F128::new(total & !mask, 0);
+                let mm_b = F128::new(total ^ (1u64 << (m - 1)), 0);
+                (mm_a * mm_b).inv()
+            }]
+        }),
         ("annexp".to_string(), {
             let mut v = vec![g_pow(log_mem)];
             v.extend(l.taus.iter().map(|&t| g_pow(t)));

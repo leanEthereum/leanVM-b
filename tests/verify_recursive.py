@@ -138,6 +138,12 @@ LIGLBLA = LIGLBLA_PLACEHOLDER
 LIGLBLB = LIGLBLB_PLACEHOLDER
 # Opening dispatch: baked committed log-size, candidate range, g^-MINM.
 MINM = MINM_PLACEHOLDER
+# Committed-column kappa sources (0 = const CKADJ, 1 = log_mem, 2+t = tau_t)
+# and the PCS floor for the stacked size.
+NCOLK = NCOLK_PLACEHOLDER
+CKSRC = CKSRC_PLACEHOLDER
+CKADJ = CKADJ_PLACEHOLDER
+MINMU = MINMU_PLACEHOLDER
 # Per-candidate opening tables (P3b): row (m - MINM) drives that arm.
 MAXLEV = MAXLEV_PLACEHOLDER
 MAXFOLDS = MAXFOLDS_PLACEHOLDER
@@ -1530,6 +1536,55 @@ def verify_sub(pi_0, pi_1, delta_pows, dout):
     g_m = HeapBuf(1)
     hint_witness(g_m[0:1], "annm")
     gmv = g_m[GEN ** 0]
+    # ---- certify g^m: m = max(ceil_log2(sum_cols 2^kappa), MINMU) ----
+    # Integer addition rides the exponent: g^total is a PRODUCT of g^(2^k)
+    # factors over the committed columns (kappas from the certified
+    # announced logs via the baked source map). Hinted total bits reproduce
+    # g^total through the squares-of-g table, and the count-gadget tail
+    # pins g^m against the reconstructed total word, with the MINMU floor
+    # waiving minimality exactly like the per-table tau floors.
+    m_bits = HeapBuf(34)
+    hint_witness(m_bits[0:34], "mbits")
+    m_inv = HeapBuf(1)
+    hint_witness(m_inv[0:1], "minv")
+    sqg = HeapBuf(34)
+    sq_run = GEN
+    for j in unroll(0, 34):
+        sqg[GEN ** j] = sq_run
+        sq_run = sq_run * sq_run
+    ksrc = HeapBuf(8)
+    ksrc[GEN ** 0] = 1
+    ksrc[GEN ** 1] = g_log_mem
+    for t in unroll(0, 6):
+        ksrc[GEN ** (2 + t)] = ann_exp[GEN ** (t + 1)]
+    g_total = GEN ** 0
+    for c in unroll(0, NCOLK):
+        kg_c = ksrc[GEN ** CKSRC[c]] * GEN ** CKADJ[c]
+        g_total = g_total * sqg[kg_c]
+    lhs_total = GEN ** 0
+    tw_psum = HeapBuf(35)
+    tw_psum[GEN ** 0] = 0
+    t_acc = 0
+    for j in unroll(0, 34):
+        mb = m_bits[GEN ** j]
+        assert mb * mb == mb
+        lhs_total = lhs_total * (1 + mb * (sqg[GEN ** j] + 1))
+        t_acc = t_acc + mb * (2 ** j)
+        tw_psum[GEN ** (j + 1)] = t_acc
+    assert lhs_total == g_total
+    assert log(gmv) < 34
+    m_low = tw_psum[gmv]
+    m_dl = m_low + t_acc
+    m_dp = t_acc + pow_word[gmv]
+    assert m_dl * m_low == 0
+    assert m_dl * m_dp == 0
+    if gmv != GEN ** MINMU:
+        m_low1 = tw_psum[gmv * GINV]
+        mm_a = m_low1 + t_acc
+        mm_b = t_acc + pow_word[gmv * GINV]
+        mm_prod = mm_a * mm_b
+        mm_pi = m_inv[GEN ** 0]
+        assert mm_prod * mm_pi == 1
     sel = gmv * IGMIN
     assert log(sel) < NMCAND
     t_r, ris, yr, inner_total = match_range(log(sel), range(0, NMCAND), lambda mi: open_stacked(mi, fs[0], fs[1], target, commit_root_0, commit_root_1))

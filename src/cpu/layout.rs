@@ -103,6 +103,37 @@ pub(crate) struct Witness {
 /// redundant. Their memory-bus claims route directly to `q_pkd` slot evaluations
 /// (see [`slot_claims`] / [`blake3_flock::slot_point`]), which both binds them to
 /// the proven witness AND eliminates the separate value-binding sub-protocol.
+/// The committed columns' kappa SOURCES, for the recursion guest's
+/// in-circuit certification of the stacked size m = max(ceil_log2(sum of
+/// 2^kappa), MIN_MU). Per committed column: `Some((source, adj))` with
+/// kappa = value(source) + adj, where source 0 is the constant 0 (kappa =
+/// adj; used for the fixed-size columns and the program bytecode length,
+/// which the caller passes as `log_bytecode`), source 1 is log_mem, and
+/// source 2 + t is tau_t. `None` = virtual (never committed). Mirrors
+/// [`col_kappas`] exactly; keep the two in lockstep.
+pub fn col_kappa_sources(log_bytecode: usize) -> Vec<Option<(usize, usize)>> {
+    let sch = schema();
+    let mut k = vec![Some((0usize, 0usize)); sch.n];
+    k[MEM] = Some((1, 0));
+    k[MFCNT] = Some((1, 0));
+    k[BFCNT] = Some((0, log_bytecode));
+    // qpkd_kappa(n) = K_LOG + n_blocks_log - LOG_PACKING, and tau_5 IS
+    // n_blocks_log (the announced-size certification uses the same floor).
+    k[QPKD] = Some((
+        2 + tables::BLAKE3_TABLE,
+        flock_prover::r1cs_hashes::blake3::K_LOG - flare::pcs::LOG_PACKING,
+    ));
+    for (t, table) in tables::tables().iter().enumerate() {
+        let base = sch.base[t];
+        k[base..base + table.n_committed_columns()].fill(Some((2 + t, 0)));
+    }
+    let b3 = sch.base[tables::BLAKE3_TABLE];
+    for &c in &tables::BLAKE3_VALUE_COLS {
+        k[b3 + c] = None;
+    }
+    k
+}
+
 fn col_kappas(log_mem: usize, log_bytecode: usize, taus: [usize; 6], n_blake3: usize) -> Vec<Option<usize>> {
     let sch = schema();
     let mut k = vec![Some(0usize); sch.n];
