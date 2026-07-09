@@ -222,6 +222,38 @@ fn bit_transpose_64bytes_scalar(input: &[u8; 64], output: &mut [u8; 64]) {
     }
 }
 
+/// Portable u64 64-byte bit-transpose (Hacker's Delight `transpose8`, the
+/// same 3-round masked bit-swap the NEON path uses, on scalar registers).
+///
+/// Per byte-chunk `b`: gather the 8 strided bytes `input[x*8 + b]` into a
+/// u64 (little-endian, byte x = lane x), transpose the 8×8 bit matrix via
+/// swaps at distances 7/14/28, and store the result contiguously at
+/// `output[b*8..]`. Bit `(x, t)` of the gathered word lands at `(t, x)` —
+/// exactly `output[b*8 + t] bit x = input[x*8 + b] bit t`.
+#[cfg(not(target_arch = "aarch64"))]
+#[inline]
+fn bit_transpose_64bytes_u64(input: &[u8; 64], output: &mut [u8; 64]) {
+    for b_chunk in 0..8 {
+        let mut y = u64::from_le_bytes([
+            input[b_chunk],
+            input[8 + b_chunk],
+            input[16 + b_chunk],
+            input[24 + b_chunk],
+            input[32 + b_chunk],
+            input[40 + b_chunk],
+            input[48 + b_chunk],
+            input[56 + b_chunk],
+        ]);
+        let t = (y ^ (y >> 7)) & 0x00AA00AA00AA00AA;
+        y ^= t ^ (t << 7);
+        let t = (y ^ (y >> 14)) & 0x0000CCCC0000CCCC;
+        y ^= t ^ (t << 14);
+        let t = (y ^ (y >> 28)) & 0x00000000F0F0F0F0;
+        y ^= t ^ (t << 28);
+        output[b_chunk * 8..b_chunk * 8 + 8].copy_from_slice(&y.to_le_bytes());
+    }
+}
+
 /// NEON 64-byte bit-transpose. Two-stage:
 ///   1. `vqtbl4q_u8` reorders the 64 input bytes so each 8-byte group within
 ///      the output is one byte-chunk's worth of `x_small=0..8` bytes.
@@ -302,7 +334,7 @@ pub fn bit_transpose_64bytes(input: &[u8; 64], output: &mut [u8; 64]) {
         bit_transpose_64bytes_neon(input, output)
     }
     #[cfg(not(target_arch = "aarch64"))]
-    bit_transpose_64bytes_scalar(input, output);
+    bit_transpose_64bytes_u64(input, output);
 }
 
 // ---------------------------------------------------------------------------
@@ -701,7 +733,26 @@ fn shift_reduce_inner_ab(
             out,
         );
     }
-    #[cfg(not(target_arch = "aarch64"))]
+    #[cfg(all(target_arch = "x86_64", target_feature = "gfni"))]
+    {
+        // SAFETY: gfni is statically enabled at compile time.
+        unsafe {
+            shift_reduce_inner_ab_gfni(
+                a_packed,
+                b_packed,
+                inv_table,
+                chunk_byte_base,
+                b_med,
+                out,
+                a_col,
+                b_col,
+            )
+        };
+    }
+    #[cfg(not(any(
+        target_arch = "aarch64",
+        all(target_arch = "x86_64", target_feature = "gfni")
+    )))]
     {
         shift_reduce_inner_ab_scalar(
             a_packed,
@@ -713,6 +764,83 @@ fn shift_reduce_inner_ab(
             a_col,
             b_col,
         );
+    }
+}
+
+/// x86 GFNI kernel: same structure as the scalar fallback (SSE2 `apply` into
+/// `a_col`/`b_col`, then vectorized combine), with the per-lane F_8 products
+/// done 16-at-a-time by `gf2p8mulb` (`_mm_gf2p8mul_epi8`).
+///
+/// flock's F_8 is GF(2^8) mod x^8 + x^4 + x^3 + x + 1 (= 0x11B) in standard
+/// bit order — exactly the field `gf2p8mulb` implements, so the instruction
+/// IS the field mul. `gf2p8mulb` returns the reduced product, and reduction
+/// commutes with the `Σ_K x^K · y_K` accumulation (the shifted sum is ≤ 15
+/// bits), so one `gf8_reduce` per lane at the end still matches the scalar
+/// path bit-for-bit.
+///
+/// # Safety
+/// Requires the `gfni` target feature (plus SSE2, baseline on x86_64).
+#[cfg(all(target_arch = "x86_64", target_feature = "gfni"))]
+#[target_feature(enable = "gfni", enable = "sse2")]
+unsafe fn shift_reduce_inner_ab_gfni(
+    a_packed: &[u8],
+    b_packed: &[u8],
+    inv_table: &InvNttTableByteSingleGf8,
+    chunk_byte_base: usize,
+    b_med: usize,
+    out: &mut [u8; 64],
+    a_col: &mut [F8],
+    b_col: &mut [F8],
+) {
+    use core::arch::x86_64::*;
+
+    let byte_base_b = chunk_byte_base + b_med * N_CHUNKS * 8;
+
+    // SAFETY: gfni+sse2 are carried by the function's target features; the
+    // pointer loads/stores stay within a_col/b_col/out (each 64 bytes).
+    unsafe {
+        // 8 u16x8 accumulators = 64 u16 lanes, matching the inv-NTT output.
+        let mut acc = [_mm_setzero_si128(); 8];
+
+        for k in 0..8 {
+            let chunk_off = byte_base_b + k * N_CHUNKS;
+            inv_table.apply(&a_packed[chunk_off..chunk_off + N_CHUNKS], a_col);
+            inv_table.apply(&b_packed[chunk_off..chunk_off + N_CHUNKS], b_col);
+            let a_ptr = a_col.as_ptr() as *const __m128i;
+            let b_ptr = b_col.as_ptr() as *const __m128i;
+            let shift = _mm_cvtsi32_si128(k as i32);
+            let zero = _mm_setzero_si128();
+            for v in 0..4 {
+                let y = _mm_gf2p8mul_epi8(_mm_loadu_si128(a_ptr.add(v)), _mm_loadu_si128(b_ptr.add(v)));
+                // Widen the 16 product bytes to u16 and XOR-accumulate << k.
+                let lo = _mm_unpacklo_epi8(y, zero);
+                let hi = _mm_unpackhi_epi8(y, zero);
+                acc[2 * v] = _mm_xor_si128(acc[2 * v], _mm_sll_epi16(lo, shift));
+                acc[2 * v + 1] = _mm_xor_si128(acc[2 * v + 1], _mm_sll_epi16(hi, shift));
+            }
+        }
+
+        // Vectorized gf8_reduce over u16 lanes: two-step fold of the high
+        // byte h with h ^ (h<<1) ^ (h<<3) ^ (h<<4)  (x^8 ≡ x^4+x^3+x+1).
+        let mask_ff = _mm_set1_epi16(0xff);
+        let fold = |p: __m128i| -> __m128i {
+            let h = _mm_srli_epi16::<8>(p);
+            _mm_xor_si128(
+                _mm_and_si128(p, mask_ff),
+                _mm_xor_si128(
+                    _mm_xor_si128(h, _mm_slli_epi16::<1>(h)),
+                    _mm_xor_si128(_mm_slli_epi16::<3>(h), _mm_slli_epi16::<4>(h)),
+                ),
+            )
+        };
+        let out_ptr = out.as_mut_ptr() as *mut __m128i;
+        for v in 0..4 {
+            // Two folds bring 15-bit accumulators down to 8 bits; the second
+            // fold's high byte is ≤ 0x0f so lanes stay < 256 for packus.
+            let r_lo = _mm_and_si128(fold(fold(acc[2 * v])), mask_ff);
+            let r_hi = _mm_and_si128(fold(fold(acc[2 * v + 1])), mask_ff);
+            _mm_storeu_si128(out_ptr.add(v), _mm_packus_epi16(r_lo, r_hi));
+        }
     }
 }
 
@@ -1569,4 +1697,595 @@ fn round1_shift_reduce_extract_c_packed_serial(
 
     let res_c_lifted = ntt_extend_f128_vec_ghash(&state.local_res_c_s, inv_table);
     (state.local_res_ab.to_vec(), res_c_lifted)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ntt::AdditiveNttGf8;
+    use crate::zerocheck::univariate_skip::round1_naive;
+
+    #[cfg(all(target_arch = "x86_64", target_feature = "gfni"))]
+    #[test]
+    fn gfni_inner_matches_scalar_inner() {
+        let mut seed = 0xDEADBEEFu64;
+        let mut next = || {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (seed >> 33) as u8
+        };
+        let ntt_s = AdditiveNttGf8::new(K_SKIP, F8::ZERO);
+        let ntt_l = AdditiveNttGf8::new(K_SKIP, F8(1u8 << K_SKIP));
+        let inv_table = InvNttTableByteSingleGf8::new(&ntt_s, &ntt_l);
+
+        // One medium-position worth of packed bytes: 8 K-rows × N_CHUNKS.
+        let n_bytes = 8 * N_CHUNKS;
+        for _ in 0..16 {
+            let a_packed: Vec<u8> = (0..n_bytes).map(|_| next()).collect();
+            let b_packed: Vec<u8> = (0..n_bytes).map(|_| next()).collect();
+            let mut a_col = vec![F8::ZERO; ELL];
+            let mut b_col = vec![F8::ZERO; ELL];
+
+            let mut out_scalar = [0u8; 64];
+            shift_reduce_inner_ab_scalar(
+                &a_packed, &b_packed, &inv_table, 0, 0, &mut out_scalar, &mut a_col, &mut b_col,
+            );
+            let mut out_gfni = [0u8; 64];
+            // SAFETY: cfg-gated on gfni.
+            unsafe {
+                shift_reduce_inner_ab_gfni(
+                    &a_packed, &b_packed, &inv_table, 0, 0, &mut out_gfni, &mut a_col, &mut b_col,
+                )
+            };
+            assert_eq!(out_scalar, out_gfni);
+        }
+    }
+
+    #[cfg(not(target_arch = "aarch64"))]
+    #[test]
+    fn bit_transpose_u64_matches_scalar() {
+        let mut seed = 0x12345678u64;
+        let mut next = || {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (seed >> 33) as u8
+        };
+        for _ in 0..64 {
+            let mut input = [0u8; 64];
+            input.iter_mut().for_each(|b| *b = next());
+            let mut out_scalar = [0u8; 64];
+            let mut out_u64 = [0u8; 64];
+            bit_transpose_64bytes_scalar(&input, &mut out_scalar);
+            bit_transpose_64bytes_u64(&input, &mut out_u64);
+            assert_eq!(out_scalar, out_u64);
+        }
+    }
+
+    /// **Soundness assumption.** Zerocheck and the Ligerito PCS opening at
+    /// L0 both depend on the seven "friendly" constants — three small
+    /// (`φ_8(SMALL_CHAL_F8[k])`, k ∈ 0..3) and four medium
+    /// (`γ^{2^i}/(1+γ^{2^i})`, i ∈ 0..4) — being **F₂-linearly independent**
+    /// in F₁₂₈.
+    ///
+    /// Zerocheck needs this so that the prover's URM message can't be
+    /// trivially canceled by a malicious witness aligned with the friendly
+    /// subspace. Ligerito's L0 list-collapse argument (which leans on the
+    /// zerocheck `(r, v)` claim as an OOD-equivalent) also depends on it
+    /// — see the soundness writeup. If any subset of these seven values is
+    /// F₂-dependent, the SZ bound `(m−7)/|F|` for collisions between
+    /// distinct candidate codewords' MLEs at `r` no longer holds, and a
+    /// cheating prover could engineer their witness so two candidates'
+    /// MLEs agree at the friendly point with probability 1.
+    ///
+    /// The check: form the 7×128 binary matrix whose rows are the bit
+    /// representations of the seven constants, Gauss-eliminate over F₂,
+    /// assert rank = 7.
+    #[test]
+    fn friendly_challenges_f2_independent() {
+        // Pack each F₁₂₈ element into a u128 (lo, hi → 128 bits).
+        let mut basis: Vec<u128> = small_challenges_ghash()
+            .iter()
+            .chain(medium_challenges_ghash().iter())
+            .map(|f| ((f.hi as u128) << 64) | (f.lo as u128))
+            .collect();
+        assert_eq!(
+            basis.len(),
+            7,
+            "expected 3 small + 4 medium friendly values"
+        );
+
+        // Row-reduce over F₂. For each column from MSB to LSB, find a row
+        // with that bit set (a pivot), swap it into place, and XOR it into
+        // every other row to clear that column. Final rank = number of
+        // pivots placed.
+        let mut rank = 0usize;
+        for col in (0..128).rev() {
+            let mask = 1u128 << col;
+            let pivot = (rank..basis.len()).find(|&i| basis[i] & mask != 0);
+            if let Some(p) = pivot {
+                basis.swap(rank, p);
+                for i in 0..basis.len() {
+                    if i != rank && basis[i] & mask != 0 {
+                        basis[i] ^= basis[rank];
+                    }
+                }
+                rank += 1;
+            }
+        }
+        assert_eq!(
+            rank, 7,
+            "friendly challenges must be F₂-linearly independent in F₁₂₈; \
+             zerocheck and Ligerito L0 soundness depend on it"
+        );
+    }
+
+    struct Rng(u64);
+    impl Rng {
+        fn new(seed: u64) -> Self {
+            Self(seed)
+        }
+        fn next_u64(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9E3779B97F4A7C15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+            z ^ (z >> 31)
+        }
+        fn bit(&mut self) -> bool {
+            (self.next_u64() & 1) != 0
+        }
+        fn f128(&mut self) -> F128 {
+            F128 {
+                lo: self.next_u64(),
+                hi: self.next_u64(),
+            }
+        }
+        fn bits(&mut self, n: usize) -> Vec<bool> {
+            (0..n).map(|_| self.bit()).collect()
+        }
+        fn f128_vec(&mut self, n: usize) -> Vec<F128> {
+            (0..n).map(|_| self.f128()).collect()
+        }
+    }
+
+    /// Build the full `r` vector with the protocol-fixed constants in the
+    /// small/medium slots. Only `r[k_skip + N_INNER..]` is the actual
+    /// randomness fed to the optimized URM.
+    fn build_protocol_r(m: usize, outer: &[F128]) -> Vec<F128> {
+        assert_eq!(outer.len(), m - K_SKIP - N_INNER);
+        let mut r = vec![F128::ZERO; m];
+        // r[0..K_SKIP]: not used by either function — can be anything.
+        for (i, &small) in small_challenges_ghash().iter().enumerate() {
+            r[K_SKIP + i] = small;
+        }
+        for (i, &med) in medium_challenges_ghash().iter().enumerate() {
+            r[K_SKIP + 3 + i] = med;
+        }
+        for (i, &x) in outer.iter().enumerate() {
+            r[K_SKIP + N_INNER + i] = x;
+        }
+        r
+    }
+
+    fn make_inv_table() -> InvNttTableByteSingleGf8 {
+        let ntt_s = AdditiveNttGf8::new(K_SKIP, F8::ZERO);
+        let ntt_l = AdditiveNttGf8::new(K_SKIP, F8(1u8 << K_SKIP));
+        InvNttTableByteSingleGf8::new(&ntt_s, &ntt_l)
+    }
+
+    #[test]
+    fn output_shape() {
+        let m = 14;
+        let mut rng = Rng::new(1);
+        let a = rng.bits(1 << m);
+        let b = rng.bits(1 << m);
+        let c = rng.bits(1 << m);
+        let outer = rng.f128_vec(m - K_SKIP - N_INNER);
+        let r = build_protocol_r(m, &outer);
+        let table = make_inv_table();
+
+        let (ab, c_l) = round1_shift_reduce_extract_c(&a, &b, &c, m, K_SKIP, &r, &table);
+        assert_eq!(ab.len(), ELL);
+        assert_eq!(c_l.len(), ELL);
+    }
+
+    #[test]
+    fn deterministic() {
+        let m = 14;
+        let mut rng = Rng::new(2);
+        let a = rng.bits(1 << m);
+        let b = rng.bits(1 << m);
+        let c = rng.bits(1 << m);
+        let outer = rng.f128_vec(m - K_SKIP - N_INNER);
+        let r = build_protocol_r(m, &outer);
+        let table = make_inv_table();
+
+        let out1 = round1_shift_reduce_extract_c(&a, &b, &c, m, K_SKIP, &r, &table);
+        let out2 = round1_shift_reduce_extract_c(&a, &b, &c, m, K_SKIP, &r, &table);
+        assert_eq!(out1, out2);
+    }
+
+    /// **The defining cross-check**: `C_s · (opt_AB + opt_C) == naive_AB + naive_C`,
+    /// element-wise on Λ. Verifies all three optimization layers compose
+    /// correctly — geometric small eq, geometric medium eq, and the D⁻¹
+    /// pre-scaling.
+    #[test]
+    fn matches_naive_with_c_s_factor() {
+        let c_s = c_s_f128();
+        for &m in &[13usize, 14, 15] {
+            let mut rng = Rng::new(100 + m as u64);
+            let a = rng.bits(1 << m);
+            let b = rng.bits(1 << m);
+            let c = rng.bits(1 << m);
+            let outer = rng.f128_vec(m - K_SKIP - N_INNER);
+            let r = build_protocol_r(m, &outer);
+            let table = make_inv_table();
+
+            let (naive_ab, naive_c) = round1_naive(&a, &b, &c, m, K_SKIP, &r);
+            let (opt_ab, opt_c) = round1_shift_reduce_extract_c(&a, &b, &c, m, K_SKIP, &r, &table);
+
+            // Combined: C_s · (opt_AB + opt_C) == naive_AB + naive_C
+            for i in 0..ELL {
+                let lhs = naive_ab[i] + naive_c[i];
+                let rhs = c_s * (opt_ab[i] + opt_c[i]);
+                assert_eq!(
+                    lhs, rhs,
+                    "combined mismatch at m={m}, i={i}:\n  naive={lhs:?}\n  C_s·opt={rhs:?}"
+                );
+            }
+
+            // Stronger: the AB and C pieces match independently (the AB-only
+            // shift_reduce and the C bit_transpose both drop the same C_s).
+            for i in 0..ELL {
+                assert_eq!(naive_ab[i], c_s * opt_ab[i], "AB mismatch at i={i}");
+                assert_eq!(naive_c[i], c_s * opt_c[i], "C mismatch at i={i}");
+            }
+        }
+    }
+
+    #[test]
+    fn small_and_medium_challenges_sanity() {
+        // Reach into the constants and verify their structural identities.
+        // Medium: β_i · (1 + γ^{2^{i-1}}) == γ^{2^{i-1}}.
+        let med = medium_challenges_ghash();
+        let powers = [1u64 << 1, 1u64 << 2, 1u64 << 4, 1u64 << 8];
+        for (i, &p) in powers.iter().enumerate() {
+            let g = F128 { lo: p, hi: 0 };
+            assert_eq!(med[i] * (F128::ONE + g), g, "β_{i} identity");
+        }
+
+        // D · D_inv == 1.
+        let d_inv_val = d_inv();
+        let g1 = F128 {
+            lo: 1u64 << 1,
+            hi: 0,
+        };
+        let g2 = F128 {
+            lo: 1u64 << 2,
+            hi: 0,
+        };
+        let g4 = F128 {
+            lo: 1u64 << 4,
+            hi: 0,
+        };
+        let g8 = F128 {
+            lo: 1u64 << 8,
+            hi: 0,
+        };
+        let d = (F128::ONE + g1) * (F128::ONE + g2) * (F128::ONE + g4) * (F128::ONE + g8);
+        assert_eq!(d * d_inv_val, F128::ONE);
+    }
+
+    #[test]
+    fn parallel_matches_serial() {
+        use crate::zerocheck::univariate_skip::pack_bits;
+
+        // At small m the parallel overhead dominates, but the *output* must
+        // still match the serial version bit-for-bit. F128 XOR-sum reduction
+        // is commutative + associative, so any thread-scheduling order yields
+        // the same result.
+        for &m in &[13usize, 14, 15] {
+            let mut rng = Rng::new(0xCAFE_F00D + m as u64);
+            let a = rng.bits(1 << m);
+            let b = rng.bits(1 << m);
+            let c = rng.bits(1 << m);
+            let outer = rng.f128_vec(m - K_SKIP - N_INNER);
+            let r = build_protocol_r(m, &outer);
+            let table = make_inv_table();
+            let a_p = pack_bits(&a);
+            let b_p = pack_bits(&b);
+            let c_p = pack_bits(&c);
+
+            let (par_ab, par_c) =
+                round1_shift_reduce_extract_c_packed(&a_p, &b_p, &c_p, m, K_SKIP, &r, &table);
+            let (ser_ab, ser_c) = round1_shift_reduce_extract_c_packed_serial(
+                &a_p, &b_p, &c_p, m, K_SKIP, &r, &table,
+            );
+
+            assert_eq!(par_ab, ser_ab, "parallel AB ≠ serial AB at m={m}");
+            assert_eq!(par_c, ser_c, "parallel C ≠ serial C at m={m}");
+        }
+    }
+
+    /// **Padding skip is byte-identical to the dense path.** On a witness
+    /// where bits `[useful_bits, 2^k_log)` of every block are honestly zero,
+    /// the padded URM must produce the exact same `(round1_ab, round1_c)`
+    /// vectors as the dense URM — every chunk we skip would have contributed
+    /// a literal zero to the dense sum (the convert table maps φ_8(0) = 0).
+    ///
+    /// Covers the three hash padding shapes:
+    ///   - BLAKE3: k_log=14, useful=15409 → b_med_counts ≈ [16, 15]
+    ///   - SHA-2:  k_log=15, useful=31401 → b_med_counts ≈ [16, 16, 16, 14]
+    ///   - Keccak: k_log=16, useful=42560 → b_med_counts = [16, 16, 16, 16, 16, 4, 0, 0]
+    ///     (this is the only shape that exercises the full-skip case.)
+    #[test]
+    fn padded_matches_dense_with_zero_padding() {
+        use crate::zerocheck::PaddingSpec;
+        use crate::zerocheck::univariate_skip::pack_bits;
+
+        // (k_log, useful_bits, n_blocks_log) — pick n_blocks_log so
+        // m = k_log + n_blocks_log is small enough to keep the test fast
+        // while still exercising the kernel's parallel + boundary paths.
+        let cases = [
+            (14usize, 15_409usize, 0usize), // BLAKE3, m=14
+            (15, 31_401, 0),                // SHA-2,  m=15
+            (16, 42_560, 0),                // Keccak, m=16
+            (16, 42_560, 3),                // Keccak, m=19 (multiple hashes)
+        ];
+
+        for (k_log, useful_bits, n_blocks_log) in cases {
+            let m = k_log + n_blocks_log;
+            assert!(m >= K_SKIP + N_INNER);
+
+            let mut rng = Rng::new(0xBEEF_DEAD_u64.wrapping_add((k_log * 31 + m) as u64));
+            let n_blocks = 1usize << n_blocks_log;
+            let total_bits = 1usize << m;
+            let block_size = 1usize << k_log;
+
+            // Random witness, but force bits [useful_bits, 2^k_log) of every
+            // block to zero (mirrors the hash-module witness layout).
+            let mut a = rng.bits(total_bits);
+            let mut b = rng.bits(total_bits);
+            let mut c = rng.bits(total_bits);
+            for blk in 0..n_blocks {
+                for j in useful_bits..block_size {
+                    let idx = blk * block_size + j;
+                    a[idx] = false;
+                    b[idx] = false;
+                    c[idx] = false;
+                }
+            }
+
+            let outer = rng.f128_vec(m - K_SKIP - N_INNER);
+            let r = build_protocol_r(m, &outer);
+            let table = make_inv_table();
+            let a_p = pack_bits(&a);
+            let b_p = pack_bits(&b);
+            let c_p = pack_bits(&c);
+
+            let (dense_ab, dense_c) =
+                round1_shift_reduce_extract_c_packed(&a_p, &b_p, &c_p, m, K_SKIP, &r, &table);
+            let padding = PaddingSpec {
+                k_log,
+                useful_bits_per_block: useful_bits,
+            };
+            let (padded_ab, padded_c) = round1_shift_reduce_extract_c_packed_padded(
+                &a_p, &b_p, &c_p, m, K_SKIP, &r, &table, &padding,
+            );
+
+            assert_eq!(
+                dense_ab, padded_ab,
+                "AB mismatch: k_log={k_log}, useful={useful_bits}, m={m}"
+            );
+            assert_eq!(
+                dense_c, padded_c,
+                "C mismatch: k_log={k_log}, useful={useful_bits}, m={m}"
+            );
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn neon_bit_transpose_matches_scalar() {
+        let mut rng = Rng::new(0xB17_BB17);
+        for _ in 0..64 {
+            let mut input = [0u8; 64];
+            for byte in input.iter_mut() {
+                *byte = (rng.next_u64() & 0xff) as u8;
+            }
+            let mut out_scalar = [0u8; 64];
+            let mut out_neon = [0u8; 64];
+            bit_transpose_64bytes_scalar(&input, &mut out_scalar);
+            // SAFETY: on aarch64.
+            unsafe { bit_transpose_64bytes_neon(&input, &mut out_neon) };
+            assert_eq!(out_scalar, out_neon, "bit_transpose disagreement");
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn neon_fused_inner_matches_scalar_inner() {
+        // The new register-fused NEON kernel — verify against the same scalar
+        // oracle as the intermediate one.
+        let mut rng = Rng::new(0xF050D);
+        let m = 14;
+        let table = make_inv_table();
+        let a_bits = rng.bits(1 << m);
+        let b_bits = rng.bits(1 << m);
+        let a_packed = super::super::univariate_skip::pack_bits(&a_bits);
+        let b_packed = super::super::univariate_skip::pack_bits(&b_bits);
+
+        let mut a_col = vec![F8::ZERO; ELL];
+        let mut b_col = vec![F8::ZERO; ELL];
+
+        for &(chunk_byte_base, b_med) in &[(0usize, 0usize), (64, 5), (1024, 7), (4096, 15)] {
+            let needed = chunk_byte_base + b_med * N_CHUNKS * 8 + 8 * N_CHUNKS;
+            if needed > a_packed.len() {
+                continue;
+            }
+            let mut out_scalar = [0u8; 64];
+            let mut out_fused = [0u8; 64];
+            shift_reduce_inner_ab_scalar(
+                &a_packed,
+                &b_packed,
+                &table,
+                chunk_byte_base,
+                b_med,
+                &mut out_scalar,
+                &mut a_col,
+                &mut b_col,
+            );
+            shift_reduce_inner_ab_fused_neon(
+                &a_packed,
+                &b_packed,
+                &table,
+                chunk_byte_base,
+                b_med,
+                &mut out_fused,
+            );
+            assert_eq!(
+                out_scalar, out_fused,
+                "fused-neon disagrees with scalar at (base={chunk_byte_base}, b_med={b_med})"
+            );
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn neon_inner_matches_scalar_inner() {
+        // Pin down the NEON kernel directly: same inputs, same output bytes.
+        let mut rng = Rng::new(0x5EED);
+        let m = 14;
+        let table = make_inv_table();
+        let n_chunks = 1 << (K_SKIP / 8); // unused; just sanity
+        let _ = n_chunks;
+        let a_bits = rng.bits(1 << m);
+        let b_bits = rng.bits(1 << m);
+        let a_packed = super::super::univariate_skip::pack_bits(&a_bits);
+        let b_packed = super::super::univariate_skip::pack_bits(&b_bits);
+
+        let mut a_col = vec![F8::ZERO; ELL];
+        let mut b_col = vec![F8::ZERO; ELL];
+
+        // A few representative (chunk_byte_base, b_med) values.
+        for &(chunk_byte_base, b_med) in &[(0usize, 0usize), (64, 5), (1024, 7), (4096, 15)] {
+            // Guard: don't read past the witness.
+            let needed = chunk_byte_base + b_med * N_CHUNKS * 8 + 8 * N_CHUNKS;
+            if needed > a_packed.len() {
+                continue;
+            }
+            let mut out_scalar = [0u8; 64];
+            let mut out_neon = [0u8; 64];
+            shift_reduce_inner_ab_scalar(
+                &a_packed,
+                &b_packed,
+                &table,
+                chunk_byte_base,
+                b_med,
+                &mut out_scalar,
+                &mut a_col,
+                &mut b_col,
+            );
+            shift_reduce_inner_ab_neon(
+                &a_packed,
+                &b_packed,
+                &table,
+                chunk_byte_base,
+                b_med,
+                &mut out_neon,
+                &mut a_col,
+                &mut b_col,
+            );
+            assert_eq!(
+                out_scalar, out_neon,
+                "scalar/neon inner disagree at (base={chunk_byte_base}, b_med={b_med})"
+            );
+        }
+    }
+
+    #[test]
+    fn convert_table_structure() {
+        // convert[b][v] == γ^b · φ_8(v); check at a handful of (b, v).
+        let t = convert_table();
+        let mut g_pow = F128::ONE;
+        for b in 0..16 {
+            for &v in &[0u8, 1, 0x57, 0xFF] {
+                let expected = g_pow * PHI_8_TABLE[v as usize];
+                assert_eq!(t[b * 256 + v as usize], expected, "b={b}, v={v}");
+            }
+            g_pow = mul_by_x(g_pow);
+        }
+    }
+
+    /// The two-bank fusion variant produces `(res_ab, res_c_lifted)` that
+    /// matches the existing optimized output, AND a `s_hat_v_c` that matches
+    /// the scalar-oracle's canonical form.
+    #[test]
+    fn fusion_matches_existing_and_scalar_oracle() {
+        use crate::zerocheck::univariate_skip::round1_extract_c_packed_with_s_hat_v;
+
+        for &m in &[13usize, 14, 15] {
+            let mut rng = Rng::new(0xF00D_u64.wrapping_add(m as u64));
+            let a = pack_bits(&rng.bits(1 << m));
+            let b = pack_bits(&rng.bits(1 << m));
+            let c = pack_bits(&rng.bits(1 << m));
+            let mut r = vec![F128::ZERO; m];
+            // Friendly inner constants must match the optimization's
+            // expectations: 3 small + 4 medium ghash.
+            for i in 0..3 {
+                r[K_SKIP + i] = phi8(F8(SMALL_CHAL_F8[i]));
+            }
+            let medium = crate::zerocheck::univariate_skip_optimized::medium_challenges_ghash();
+            for i in 0..4 {
+                r[K_SKIP + 3 + i] = medium[i];
+            }
+            for i in 0..K_SKIP {
+                r[i] = rng.f128();
+            }
+            for i in (K_SKIP + N_INNER)..m {
+                r[i] = rng.f128();
+            }
+
+            let inv_table = {
+                let ntt_s = crate::ntt::AdditiveNttGf8::new(K_SKIP, F8::ZERO);
+                let ntt_l = crate::ntt::AdditiveNttGf8::new(K_SKIP, F8(1u8 << K_SKIP));
+                InvNttTableByteSingleGf8::new(&ntt_s, &ntt_l)
+            };
+
+            // Reference 1: existing optimized output (no s_hat_v).
+            let (ref_ab, ref_c) = round1_shift_reduce_extract_c_packed_padded(
+                &a,
+                &b,
+                &c,
+                m,
+                K_SKIP,
+                &r,
+                &inv_table,
+                &PaddingSpec::dense(m),
+            );
+
+            // Reference 2: scalar oracle (canonical s_hat_v_c).
+            let (_, _, oracle_s_hat_v) =
+                round1_extract_c_packed_with_s_hat_v(&a, &b, &c, m, K_SKIP, &r, &inv_table);
+
+            // System under test.
+            let (got_ab, got_c, got_s_hat_v) =
+                round1_shift_reduce_extract_c_packed_padded_with_s_hat_v(
+                    &a,
+                    &b,
+                    &c,
+                    m,
+                    K_SKIP,
+                    &r,
+                    &inv_table,
+                    &PaddingSpec::dense(m),
+                );
+
+            assert_eq!(got_ab, ref_ab, "res_ab mismatch at m={m}");
+            assert_eq!(got_c, ref_c, "res_c_lifted mismatch at m={m}");
+            assert_eq!(got_s_hat_v.len(), 2 * ELL, "s_hat_v length at m={m}");
+            assert_eq!(
+                got_s_hat_v, oracle_s_hat_v,
+                "s_hat_v_c mismatch vs scalar oracle at m={m}"
+            );
+        }
+    }
 }

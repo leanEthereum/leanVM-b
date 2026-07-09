@@ -78,12 +78,12 @@ Instruction & Operands & Semantics\\
 \texttt{SET\_CONSTANT} & $[o,k]$         & $\loc{o}=k$\\
 \texttt{DEREF}         & $[\alpha,\beta,\gamma;\,s]$ & $\mem[\loc{\alpha}\cdot\beta]=\srcsel{s}$\\
 \texttt{JUMP}          & $[o_c,o_d,o_f]$ & conditional jump (below)\\
-\texttt{BLAKE3}        & $[o_A,o_B,o_C]$ & $c=\mathrm{BLAKE3}(a,b)$ on four-word operands (below)\\
+\texttt{BLAKE3}        & $[o_0,o_1,o_2,o_3,o_C]$ & $c=\mathrm{BLAKE3}(a,b)$ on independently-addressed two-word chunks (below)\\
 \hline
 \end{tabular}
 \end{center}
 
-\texttt{BLAKE3} compresses $64$ bytes to $32$. Each operand names a $256$-bit value laid out in \emph{four consecutive memory words}: the reference $o$ names the cell at $\fp\cdot o$ and its three successors at $\gen^{k}\cdot\fp\cdot o=\fp\cdot(\gen^{k}\cdot o)$, $k\in\{1,2,3\}$, written $\loc{o},\dots,\loc{\gen^{3}\cdot o}$. The instruction reads the two inputs $a,b$ ($512$ bits, eight cells) and writes the digest to the four cells of $c$ ($256$ bits). The compression is \emph{fully proven}: the BLAKE3 table (\S\ref{sec:tab-blake3}) wires the twelve cells onto the memory, state, and bytecode interactions, and the relation $c=\mathrm{BLAKE3}(a,b)$ is discharged by an R1CS proof of the compression circuit, produced by flock~\cite{flock} (\S\ref{sec:tab-blake3}).
+\texttt{BLAKE3} compresses $64$ bytes to $32$. The four $128$-bit input chunks are addressed \emph{independently} by references $o_0,\dots,o_3$, each chunk spanning \emph{two consecutive memory words}: chunk $i$ occupies $\loc{o_i}=\fp\cdot o_i$ and its successor $\loc{\gen\cdot o_i}$. The two $256$-bit operands are $a=\loc{o_0}\Vert\loc{\gen\cdot o_0}\Vert\loc{o_1}\Vert\loc{\gen\cdot o_1}$ and $b$ likewise from $o_2,o_3$ — so a caller hashing values that live in non-adjacent cells (a tweak in the heap, a public parameter in a register, a zero pad) need not first copy them into consecutive cells. The $256$-bit digest is written to the \emph{four consecutive} cells $\loc{o_C},\dots,\loc{\gen^{3}\cdot o_C}$. The compression is \emph{fully proven}: the BLAKE3 table (\S\ref{sec:tab-blake3}) wires the twelve cells onto the memory, state, and bytecode interactions, and the relation $c=\mathrm{BLAKE3}(a,b)$ is discharged by an R1CS proof of the compression circuit, produced by flock~\cite{flock} (\S\ref{sec:tab-blake3}).
 
 \texttt{DEREF} stores, at the dereferenced address $\loc{\alpha}\cdot\beta$, a value chosen by a \emph{store mode} $s\in\{\texttt{deref\_cell}[\gamma],\texttt{deref\_pc},\texttt{deref\_fp}\}$:
 \[
@@ -389,19 +389,19 @@ Alone among the tables, \texttt{JUMP} commits its successors.
 
 \subsection{\texttt{BLAKE3}}\label{sec:tab-blake3}
 
-Compresses the $64$ input bytes at $a$ and $b$ to the $32$ output bytes at $c$. Each operand names a $256$-bit value in four consecutive words, so the row touches twelve cells: the base addresses $a_A=\fp\cdot o_A$, $a_B=\fp\cdot o_B$, $a_C=\fp\cdot o_C$, and their successors $\gen^{k}\cdot a_X$, $k\in\{1,2,3\}$ (each a virtual $\times\gen^{k}$ of its committed base, \S\ref{sec:prelim}). The eight cells of $a,b$ are read inputs; the four cells of $c$ are the written digest, tied into committed memory like any other access.
+Compresses the $64$ input bytes to the $32$ output bytes at $c$. The four $128$-bit input chunks are addressed \emph{independently} — $a_0=\fp\cdot o_0,\dots,a_3=\fp\cdot o_3$, each chunk spanning the two cells $a_i$, $\gen\cdot a_i$ — so the caller may hash values that live in non-adjacent cells with no assembling copies. The output takes the four consecutive cells $a_C=\fp\cdot o_C$ and its successors $\gen^{k}\cdot a_C$, $k\in\{1,2,3\}$ (each a virtual $\times\gen^{k}$ of the committed base, \S\ref{sec:prelim}), so the row touches twelve cells: the eight input cells are read; the four $c$ cells are the written digest, tied into committed memory like any other access.
 
 The compression $c=\mathrm{BLAKE3}(a,b)$ is \emph{fully proven} by flock~\cite{flock}, which proves a batched R1CS of the compression circuit against a Boolean witness. That witness enters our one stacked commitment (\S\ref{sec:rs-dense}) as the \emph{packed} column $q_\pkd$: $64$ bits per $\K$-word. Its bit-level claims reach the $\K$-commitment through one \emph{ring switching}~\cite{cryptoeprint:2024/504}, $\F_2\to\K$ with packing degree $f=64$ and opening degree $e=128$: each claim splits at the packing boundary into $64$ generalized prefix weights (the $\eq$ tensor for a plain point claim; flock's univariate-skip Lagrange weights for its own claims) against $64$ revealed bit-slice evaluations, and a row-batching challenge in $\E^{7}$ folds the revealed vector into one weighted-sum claim on $q_\pkd$ against a transparent $\E$-valued weight, which joins the batched opening (\S\ref{sec:e2e-unrolled}); the opening sumcheck pairs the $\K$-valued $q_\pkd$ with the $\E$-valued weight (mixed products). flock's zerocheck and lincheck themselves run unchanged in their native GHASH representation of $\F_{2^{128}}$; their two output claims cross into the tower $\E$ through an explicit field isomorphism before the ring switching.
 
 The words $a,b,c$ already sit inside $q_\pkd$: each $64$-bit machine word is one whole packed word, at a fixed word-aligned slot of its compression instance. So we do not re-commit the twelve value cells $v_{A0},\dots,v_{C3}$: each is a point evaluation of $q_\pkd$ at its slot, and a few \emph{pinned} slots (the chaining value fixed to the BLAKE3 IV, the zero counter word, and the block-length/flags word) are checked against their public constants, making the proven compression a real BLAKE3 of the $64$-byte input $a\Vert b$.
 \begin{itemize}
-\item \textbf{Columns:} $\pc,\fp$; operands $o_A,o_B,o_C$; base addresses $a_A,a_B,a_C$; per-word memory counts $r_{A0},\dots,r_{A3}$, $r_{B0},\dots,r_{B3}$, $r_{C0},\dots,r_{C3}$; bytecode count $r_{\mathrm{bc}}$. The twelve values $v_{A0},\dots,v_{C3}$ are committed "inside" $q_\pkd$, see above. The successor addresses $\gen^{k}\cdot a_X$ are virtual.
-\item \textbf{Constraints:} the three base addresses $a_X=\fp\cdot o_X$. The words $v_{X0},\dots,v_{X3}$ carry no constraint here, their correctness (the relation $c=\mathrm{BLAKE3}(a,b)$) is handled by flock.
+\item \textbf{Columns:} $\pc,\fp$; operands $o_0,o_1,o_2,o_3,o_C$; input/output addresses $a_0,a_1,a_2,a_3,a_C$; per-word memory counts $r_{A0},\dots,r_{A3}$, $r_{B0},\dots,r_{B3}$, $r_{C0},\dots,r_{C3}$; bytecode count $r_{\mathrm{bc}}$. The twelve values $v_{A0},\dots,v_{C3}$ are committed "inside" $q_\pkd$, see above. The successor addresses $\gen\cdot a_i$ and $\gen^{k}\cdot a_C$ are virtual. (Independent input chunks cost four address columns where three sufficed for the old contiguous form — no new constraint degree.)
+\item \textbf{Constraints:} the five address bindings $a_i=\fp\cdot o_i$ ($i\in\{0,1,2,3\}$) and $a_C=\fp\cdot o_C$ — all degree $2$. The words $v_{X0},\dots,v_{X3}$ carry no constraint here, their correctness (the relation $c=\mathrm{BLAKE3}(a,b)$) is handled by flock.
 \item \textbf{Flushes:}
   \begin{itemize}
   \item \textbf{State:} \pull\ $\tup{\dsep{ST},\pc,\fp}$, \push\ $\tup{\dsep{ST},\gen\cdot\pc,\fp}$.
-  \item \textbf{Bytecode:} \pull\ $\tup{\dsep{BC},\pc,r_{\mathrm{bc}},\opc{B3},o_A,o_B,o_C,0,0}$, \push\ the same at $\gen\cdot r_{\mathrm{bc}}$.
-  \item \textbf{Memory:} twelve reads, each \pull\ at count $r$ and \push\ at $\gen\cdot r$. For each $X\in\{A,B,C\}$ and $k\in\{0,1,2,3\}$, \pull\ $\tup{\dsep{MEM},\gen^{k}\cdot a_X,r_{Xk},v_{Xk}}$, with the matching \push\ at $\gen\cdot r_{Xk}$.
+  \item \textbf{Bytecode:} \pull\ $\tup{\dsep{BC},\pc,r_{\mathrm{bc}},\opc{B3},o_0,o_1,o_2,o_3,o_C}$, \push\ the same at $\gen\cdot r_{\mathrm{bc}}$.
+  \item \textbf{Memory:} twelve reads, each \pull\ at count $r$ and \push\ at $\gen\cdot r$. Input chunk $i$ \pull s $\tup{\dsep{MEM},a_i,r,v}$ and $\tup{\dsep{MEM},\gen\cdot a_i,r',v'}$ at its own base; the output \pull s $\tup{\dsep{MEM},\gen^{k}\cdot a_C,r_{Ck},v_{Ck}}$, $k\in\{0,\dots,3\}$, with each matching \push\ at $\gen\cdot r$.
   \end{itemize}
 \end{itemize}
 
@@ -427,7 +427,7 @@ Fixed once, public, and shared by prover and verifier: the fields, the bus shape
 
 \subsection{Bytecode encoding}\label{sec:e2e-bc}
 
-The program is public. Instruction $\pc$ fills coordinates $3$ through $8$ of its bytecode tuple $\tup{\dsep{BC},\pc,\cnt,\cdot}$: an opcode in coordinate $3$, three operands in coordinates $4,5,6$, and the two \texttt{DEREF} flags $(f_{\pc},f_{\fp})$ in coordinates $7,8$ ($0$ for every other opcode). Each operand is a $\gen$-power or an immediate.
+The program is public. Instruction $\pc$ fills coordinates $3$ through $8$ of its bytecode tuple $\tup{\dsep{BC},\pc,\cnt,\cdot}$: an opcode in coordinate $3$, three operands in coordinates $4,5,6$, and coordinates $7,8$ carrying the two \texttt{DEREF} flags $(f_{\pc},f_{\fp})$ — or, for \texttt{BLAKE3}, its fourth and fifth operands $(o_3,o_C)$ — ($0$ for every other opcode). Each operand is a $\gen$-power or an immediate.
 \begin{center}
 \begin{tabular}{lllllll}
 \hline
@@ -438,7 +438,7 @@ Instruction & coord.\ $3$ & coord.\ $4$ & coord.\ $5$ & coord.\ $6$ & coord.\ $7
 \texttt{SET\_CONSTANT} & $\opc{SET}$ & $o$   & $k$   & $0$   & $0$ & $0$\\
 \texttt{DEREF}         & $\opc{DRF}$ & $\alpha$ & $\beta$ & $\gamma$ & $f_{\pc}$ & $f_{\fp}$\\
 \texttt{JUMP}          & $\opc{JMP}$ & $o_c$ & $o_d$ & $o_f$ & $0$ & $0$\\
-\texttt{BLAKE3}        & $\opc{B3}$  & $o_A$ & $o_B$ & $o_C$ & $0$ & $0$\\
+\texttt{BLAKE3}        & $\opc{B3}$  & $o_0$ & $o_1$ & $o_2$ & $o_3$ & $o_C$\\
 \hline
 \end{tabular}
 \end{center}

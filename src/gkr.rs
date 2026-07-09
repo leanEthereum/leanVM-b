@@ -7,27 +7,31 @@
 //! into `E` upstream, [`crate::leaf`]).
 
 use crate::PAR_THRESHOLD;
-use crate::field::F128T;
+use crate::field::{F128T, mul_by_g_e};
 use crate::multilinear::lagrange_eval;
 use crate::multilinear::{add3, eq_table, interp, tri_nodes};
 use crate::transcript::{ProverState, VerifierState};
 use rayon::prelude::*;
 
-/// Bind the lowest variable of `table` to `rho`, in parallel for large tables.
+/// Bind the lowest variable of `src` into `dst` (in parallel for large tables):
+/// `dst[i] = interp(src[2i], src[2i+1], rho)`. Writing into a caller-owned
+/// scratch buffer instead of a fresh Vec lets each layer's rounds ping-pong two
+/// allocations instead of allocating (and page-faulting) per round.
 /// Deliberately scalar: pairing adjacent outputs through [`F128T::mul2`]
 /// measures slower (2.14 vs 1.75 ns/output). The mul has the loop-invariant
 /// `rho` on one side, the OoO core already overlaps the independent
 /// iterations, and the pair kernel's third NEON fold outweighs its 2-PMULL
 /// saving once nothing is latency-bound.
-fn par_fold(table: &[F128T], rho: F128T) -> Vec<F128T> {
-    let half = table.len() / 2;
+fn par_fold_into(src: &[F128T], rho: F128T, dst: &mut Vec<F128T>) {
+    let half = src.len() / 2;
     if half >= PAR_THRESHOLD {
         (0..half)
             .into_par_iter()
-            .map(|i| interp(table[2 * i], table[2 * i + 1], rho))
-            .collect()
+            .map(|i| interp(src[2 * i], src[2 * i + 1], rho))
+            .collect_into_vec(dst);
     } else {
-        (0..half).map(|i| interp(table[2 * i], table[2 * i + 1], rho)).collect()
+        dst.clear();
+        dst.extend((0..half).map(|i| interp(src[2 * i], src[2 * i + 1], rho)));
     }
 }
 
@@ -84,7 +88,6 @@ pub fn prove_product(leaves: Vec<F128T>, ps: &mut ProverState) -> (F128T, LeafCl
     let root = layers[mu][0];
     ps.add_scalar(root);
 
-    let nodes = tri_nodes();
     let mut r: Vec<F128T> = Vec::new();
     // Each layer's connecting line at `c` is `Ṽ_0` at the new point, so the last
     // one is `Ṽ_0(r)` — no final re-evaluation of the whole leaf table needed.
@@ -94,16 +97,30 @@ pub fn prove_product(leaves: Vec<F128T>, ps: &mut ProverState) -> (F128T, LeafCl
         let below = &layers[i - 1];
         let k = mu - i; // sumcheck variables this layer
         let width = 1usize << k;
-        let mut even: Vec<F128T> = (0..width).map(|j| below[2 * j]).collect();
-        let mut odd: Vec<F128T> = (0..width).map(|j| below[2 * j + 1]).collect();
+        let strided_copy = |off: usize| -> Vec<F128T> {
+            if width >= PAR_THRESHOLD {
+                (0..width).into_par_iter().map(|j| below[2 * j + off]).collect()
+            } else {
+                (0..width).map(|j| below[2 * j + off]).collect()
+            }
+        };
+        let mut even = strided_copy(0);
+        let mut odd = strided_copy(1);
+        // Ping-pong fold scratch, allocated once per layer, reused every round.
+        let mut even_next: Vec<F128T> = Vec::new();
+        let mut odd_next: Vec<F128T> = Vec::new();
+
+        // `eqr` at round j is eq over the variables after the one bound that
+        // round (the eq-trick keeps the per-row product `eq·even·odd` at degree
+        // 2). Build it ONCE per layer for r[1..]; each later round's table is
+        // the pair-wise XOR fold of the previous one — `eq(r_j,0) + eq(r_j,1)
+        // = 1`, so summing adjacent entries marginalizes the bound variable
+        // with no multiplies (vs rebuilding with ~2^{k-j} muls per round).
+        let mut eqr: Vec<F128T> = if k > 0 { eq_table(&r[1..]) } else { Vec::new() };
 
         let mut rho = Vec::with_capacity(k);
-        for j in 0..k {
+        for _ in 0..k {
             let half = even.len() / 2;
-            let node2 = nodes[2];
-            // `eqr` is eq over the variables after the one bound this round, so the
-            // per-row product `eq·even·odd` is degree 2 (eq-trick).
-            let eqr = eq_table(&r[j + 1..]);
             // Deliberately scalar: batching the row's independent muls through
             // [`F128T::mul2`] (within a row or across two adjacent rows)
             // measures no better or worse (16.7 scalar vs 18.4 / 16.8
@@ -114,8 +131,11 @@ pub fn prove_product(leaves: Vec<F128T>, ps: &mut ProverState) -> (F128T, LeafCl
                 let eq = eqr[idx];
                 let prod0 = eq * even[lo] * odd[lo];
                 let prod1 = eq * even[hi] * odd[hi];
+                // The degree-2 round univariate is sent at nodes {0, 1, g}; node 2
+                // is the generator `g = x`, so `g·diff = mul_by_g_e(diff)` — two
+                // shift-folds, not a carry-less mul (bit-identical to `nodes[2] * diff`).
                 let (even_diff, odd_diff) = (even[lo] + even[hi], odd[lo] + odd[hi]);
-                let (even_at2, odd_at2) = (even[lo] + node2 * even_diff, odd[lo] + node2 * odd_diff);
+                let (even_at2, odd_at2) = (even[lo] + mul_by_g_e(even_diff), odd[lo] + mul_by_g_e(odd_diff));
                 let prod2 = eq * even_at2 * odd_at2;
                 [prod0, prod1, prod2]
             };
@@ -127,8 +147,17 @@ pub fn prove_product(leaves: Vec<F128T>, ps: &mut ProverState) -> (F128T, LeafCl
             ps.add_scalars(&acc);
             let rk = ps.sample();
             rho.push(rk);
-            even = par_fold(&even, rk);
-            odd = par_fold(&odd, rk);
+            par_fold_into(&even, rk, &mut even_next);
+            std::mem::swap(&mut even, &mut even_next);
+            par_fold_into(&odd, rk, &mut odd_next);
+            std::mem::swap(&mut odd, &mut odd_next);
+            // Shrink eq to the next round's suffix table (in place: the read
+            // cursor `2·idx` stays ahead of the write cursor `idx`).
+            let eq_half = eqr.len() / 2;
+            for idx in 0..eq_half {
+                eqr[idx] = eqr[2 * idx] + eqr[2 * idx + 1];
+            }
+            eqr.truncate(eq_half);
         }
 
         let (eval0, eval1) = (even[0], odd[0]);

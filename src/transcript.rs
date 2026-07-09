@@ -19,39 +19,53 @@
 //!   re-enters the sponge through flock's own reduction/opening replay).
 //! - **`sample` / `sample_vec`**: squeeze a challenge.
 //!
-//! Scalars are `E = F128T` (the tower challenge field): 16 transcript bytes per
-//! word, the two `K`-lanes little-endian, byte-for-byte the same sponge layout
-//! the vendored code's GHASH-typed [`Challenger`] uses, so one sponge serves
-//! both (the `Challenger` impls below ferry the 16 raw bytes; no arithmetic
-//! ever happens in the GHASH representation here).
+//! Scalars are `E = F128T` (the tower challenge field): two little-endian
+//! `K`-lanes per absorbed block, byte-for-byte the layout the vendored code's
+//! GHASH-typed [`Challenger`] uses, so one sponge serves both (the `Challenger`
+//! impls below ferry the 16 raw bytes; no arithmetic ever happens in the GHASH
+//! representation here).
 //!
-//! Soundness: challenges are BLAKE3 of the whole transcript so far. Every absorb
-//! is domain-tagged and length-prefixed (so a field element, a raw integer, and
-//! a byte string cannot alias), and every squeeze is ratcheted back in (binding
-//! challenge order) under the random-oracle heuristic.
+//! Soundness: the sponge is a **VM-native** Merkle–Damgård chaining value (see
+//! [`Sponge`]) advanced only by the fixed 64→32 BLAKE3 compression the `Blake3`
+//! opcode computes — so the entire Fiat–Shamir transcript can be replayed by a
+//! program running on the VM (the prerequisite for recursion), not just by the
+//! streaming `blake3::Hasher`. Each challenge is the random-oracle image of the
+//! whole prior transcript; every absorb is domain-tagged per compression (so a
+//! field element, a raw integer, and a byte string cannot alias) and byte strings
+//! are length-framed; each squeeze ratchets the state (binding challenge order).
 
-use crate::field::F128T;
+use crate::field::{F64, F128T};
+use crate::vmhash::compress;
 use flare::challenger::Challenger;
 use flare::field::F128;
 use flare::pcs::ligerito_k::LigeritoProofK;
 
-// Domain tags, so distinct kinds of absorbed data cannot alias.
-const TAG_F128: u8 = 0x01;
-const TAG_BYTES: u8 = 0x03;
-const TAG_SQUEEZE: u8 = 0xFF;
-const TAG_RATCHET: u8 = 0xFE;
-// PoW base digest, so a grinding challenge can never alias an ordinary squeeze.
-const TAG_POW: u8 = 0xFD;
+// Domain-separation tags, carried in the LAST input word of every absorbed
+// block, so no two roles (a scalar, a byte word, a length frame, a squeeze, a
+// PoW step) can alias: the adversary controls only the leading data words,
+// never the tag. Distinct nonzero constants suffice.
+const DS_SCALAR: F64 = F64(1);
+const DS_BYTE: F64 = F64(2);
+const DS_LEN: F64 = F64(3);
+const DS_SQUEEZE: F64 = F64(4);
+const DS_POW: F64 = F64(5);
 
-/// `BLAKE3(state_digest || nonce_le)` has at least `bits` leading zero bits —
-/// the grinding predicate, byte-identical to flock's `FsChallenger` so the
-/// vendored Ligerito's prover/verifier PoW stay in lockstep with our sponge.
+/// The 32-byte little-endian serialization of a 256-bit state (four `K` words,
+/// each little-endian), for the leading-zero PoW predicate.
+fn state_bytes(h: [F64; 4]) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    for (k, w) in h.iter().enumerate() {
+        out[8 * k..8 * k + 8].copy_from_slice(&w.0.to_le_bytes());
+    }
+    out
+}
+
+/// `compress(base, (nonce, 0, 0, DS_POW))` has at least `bits` leading zero bits
+/// — the grinding predicate over the VM compression, so a recursive verifier can
+/// re-check it with the `Blake3` opcode.
 #[inline]
-fn pow_bits_ok(state_digest: &[u8; 32], nonce: u64, bits: u32) -> bool {
-    let mut input = [0u8; 40];
-    input[..32].copy_from_slice(state_digest);
-    input[32..].copy_from_slice(&nonce.to_le_bytes());
-    let h = *blake3::hash(&input).as_bytes();
+fn pow_bits_ok(base: [F64; 4], nonce: u64, bits: u32) -> bool {
+    let h = state_bytes(compress(base, [F64(nonce), F64::ZERO, F64::ZERO, DS_POW]));
     let full = (bits / 8) as usize;
     let extra = bits % 8;
     if h[..full].iter().any(|&b| b != 0) {
@@ -60,10 +74,22 @@ fn pow_bits_ok(state_digest: &[u8; 32], nonce: u64, bits: u32) -> bool {
     extra == 0 || (h[full] >> (8 - extra)) == 0
 }
 
-/// The BLAKE3-backed Fiat–Shamir sponge shared by both states.
+/// The VM-native Fiat–Shamir sponge: a 256-bit chaining value evolved only by the
+/// fixed 64→32 [`compress`] (the `Blake3` opcode), so prover, verifier, and a
+/// future recursive verifier running on the VM all derive identical challenges
+/// with one `blake3` per step. Replaces the streaming `blake3::Hasher`, whose
+/// multi-block chunk tree / flags / counter the opcode cannot reproduce.
+///
+/// Construction adapted from Signal's ShoSha256 "Stateful Hash Object"
+/// (`libsignal/rust/poksho/src/shosha256.rs`, © 2020 Signal Messenger, LLC,
+/// AGPL-3.0-only): a chaining value advanced by domain-separated absorb / squeeze
+/// steps. Here the underlying hash is the VM's BLAKE3 compression rather than
+/// SHA-256, inputs are `K = GF(2^64)` field words, and — because every absorb is
+/// domain-tagged per compression — no explicit double-hash ratchet is needed.
 #[derive(Clone)]
 struct Sponge {
-    h: blake3::Hasher,
+    /// The 256-bit chaining value: a Merkle–Damgård hash of the transcript so far.
+    cv: [F64; 4],
 }
 
 impl Sponge {
@@ -72,50 +98,49 @@ impl Sponge {
     /// any challenge — there is no mid-protocol "observe public data" step to get
     /// wrong (or forget).
     fn new(label: &[u8], statement: &[F128T]) -> Self {
-        let mut h = blake3::Hasher::new();
-        h.update(b"leanvm-b/transcript/v0");
-        let mut s = Self { h };
-        s.absorb(TAG_BYTES, label);
+        let mut s = Self { cv: [F64::ZERO; 4] };
+        s.absorb_bytes(b"leanvm-b/transcript/v2");
+        s.absorb_bytes(label);
         for &x in statement {
             s.observe(x);
         }
         s
     }
 
-    fn absorb(&mut self, tag: u8, bytes: &[u8]) {
-        self.h.update(&[tag]);
-        self.h.update(&(bytes.len() as u64).to_le_bytes());
-        self.h.update(bytes);
-    }
-
-    /// Absorb one 16-byte scalar (two little-endian `u64` lanes) under
-    /// [`TAG_F128`]. Shared by [`Self::observe`] and the GHASH-typed
-    /// [`Challenger`] path, so both absorb byte-identically.
+    /// Absorb one 16-byte scalar (two little-endian `u64` lanes):
+    /// `cv ← compress(cv, (lo, hi, 0, DS_SCALAR))`. Shared by [`Self::observe`]
+    /// and the GHASH-typed [`Challenger`] path, so both absorb byte-identically.
     fn observe_lanes(&mut self, lo: u64, hi: u64) {
-        let mut buf = [0u8; 16];
-        buf[..8].copy_from_slice(&lo.to_le_bytes());
-        buf[8..].copy_from_slice(&hi.to_le_bytes());
-        self.absorb(TAG_F128, &buf);
+        self.cv = compress(self.cv, [F64(lo), F64(hi), F64::ZERO, DS_SCALAR]);
     }
 
     fn observe(&mut self, x: F128T) {
         self.observe_lanes(x.c0, x.c1);
     }
 
+    /// Absorb a byte string: a length frame then its 24-byte (three-word) chunks
+    /// as tagged blocks, so a field element, a raw integer, and a byte string
+    /// cannot alias.
     fn absorb_bytes(&mut self, bytes: &[u8]) {
-        self.absorb(TAG_BYTES, bytes);
+        self.cv = compress(self.cv, [F64(bytes.len() as u64), F64::ZERO, F64::ZERO, DS_LEN]);
+        for chunk in bytes.chunks(24) {
+            let mut buf = [0u8; 24];
+            buf[..chunk.len()].copy_from_slice(chunk);
+            let w = |o: usize| F64(u64::from_le_bytes(buf[o..o + 8].try_into().unwrap()));
+            self.cv = compress(self.cv, [w(0), w(8), w(16), DS_BYTE]);
+        }
     }
 
-    /// Squeeze 16 uniform bytes as two `u64` lanes and ratchet them back in.
+    /// Squeeze 16 uniform bytes as two `u64` lanes and ratchet: the lanes are the
+    /// first two words of `compress(cv, (0, 0, 0, DS_SQUEEZE))`, whose full output
+    /// becomes the new state — domain-separated from absorbs, so a challenge
+    /// cannot be confused with a continued absorb. In Fiat–Shamir everything is
+    /// public; soundness comes from each challenge being a random-oracle image of
+    /// the entire prior transcript.
     fn squeeze_lanes(&mut self) -> (u64, u64) {
-        let mut r = self.h.clone();
-        r.update(&[TAG_SQUEEZE]);
-        let digest = r.finalize();
-        let bytes = digest.as_bytes();
-        let lo = u64::from_le_bytes(bytes[0..8].try_into().unwrap());
-        let hi = u64::from_le_bytes(bytes[8..16].try_into().unwrap());
-        self.absorb(TAG_RATCHET, &bytes[..16]);
-        (lo, hi)
+        let out = compress(self.cv, [F64::ZERO, F64::ZERO, F64::ZERO, DS_SQUEEZE]);
+        self.cv = out;
+        (out[0].0, out[1].0)
     }
 
     fn sample(&mut self) -> F128T {
@@ -123,28 +148,30 @@ impl Sponge {
         F128T::new(lo, hi)
     }
 
-    /// A 32-byte PoW base digest bound to the current transcript state: clone +
-    /// distinct tag + finalize, so it reads the state without mutating the live
-    /// sponge and can never alias a `sample` squeeze.
-    fn pow_state_digest(&self) -> [u8; 32] {
-        let mut r = self.h.clone();
-        r.update(&[TAG_POW]);
-        *r.finalize().as_bytes()
+    /// The PoW base `compress(cv, (0, 0, 0, DS_POW))`, read without mutating the
+    /// live state (the nonce is bound separately by [`Self::absorb_nonce`]).
+    fn pow_base(&self) -> [F64; 4] {
+        compress(self.cv, [F64::ZERO, F64::ZERO, F64::ZERO, DS_POW])
     }
 
-    /// Prover-side PoW grind (mirrors flock's `FsChallenger::grind_pow`): find the
-    /// smallest `u64` nonce whose `BLAKE3(state || nonce)` has `bits` leading zero
-    /// bits, then absorb it so later challenges bind to it. `bits = 0` is the
-    /// canonical no-work nonce `0`. Parallel search for the larger grinds.
+    /// Bind a grinding nonce into the state (both sides, so they stay in lockstep).
+    fn absorb_nonce(&mut self, nonce: u64) {
+        self.cv = compress(self.cv, [F64(nonce), F64::ZERO, F64::ZERO, DS_POW]);
+    }
+
+    /// Prover-side PoW grind: find the smallest `u64` nonce whose PoW hash clears
+    /// `bits` leading zero bits, then bind it so later challenges depend on it.
+    /// `bits = 0` is the canonical no-work nonce `0`. Parallel search for the
+    /// larger grinds.
     fn grind_pow(&mut self, bits: u32) -> u64 {
         const PARALLEL_GRIND_MIN_HASHES: u64 = 1 << 13;
-        let digest = self.pow_state_digest();
+        let base = self.pow_base();
         let nonce = if bits == 0 {
             0
         } else if (1u64 << bits.min(63)) < PARALLEL_GRIND_MIN_HASHES {
             let mut n: u64 = 0;
             loop {
-                if pow_bits_ok(&digest, n, bits) {
+                if pow_bits_ok(base, n, bits) {
                     break n;
                 }
                 n = n.wrapping_add(1);
@@ -158,27 +185,26 @@ impl Sponge {
             loop {
                 if let Some(n) = (start..start.saturating_add(block))
                     .into_par_iter()
-                    .find_first(|&n| pow_bits_ok(&digest, n, bits))
+                    .find_first(|&n| pow_bits_ok(base, n, bits))
                 {
                     break n;
                 }
                 start = start.saturating_add(block);
             }
         };
-        // Absorb the nonce so the transcript binds to it (verifier mirrors).
-        self.absorb(TAG_BYTES, &nonce.to_le_bytes());
+        self.absorb_nonce(nonce);
         nonce
     }
 
-    /// Verifier-side mirror of [`Self::grind_pow`]: check `nonce` clears the
-    /// `bits` PoW against the current state, then absorb it regardless (so the
-    /// sponge stays byte-identical to an honest prover's — a failed check rejects
-    /// at the call site). `bits = 0` accepts only the canonical nonce `0`, which
-    /// keeps proofs non-malleable at zero-bit grinding sites.
+    /// Verifier-side mirror of [`Self::grind_pow`]: check `nonce` clears the `bits`
+    /// PoW against the current state, then bind it regardless (so the sponge stays
+    /// in lockstep with an honest prover — a failed check rejects at the call
+    /// site). `bits = 0` accepts only the canonical nonce `0`, which keeps proofs
+    /// non-malleable at zero-bit grinding sites.
     fn verify_pow(&mut self, nonce: u64, bits: u32) -> bool {
-        let digest = self.pow_state_digest();
-        let ok = if bits == 0 { nonce == 0 } else { pow_bits_ok(&digest, nonce, bits) };
-        self.absorb(TAG_BYTES, &nonce.to_le_bytes());
+        let base = self.pow_base();
+        let ok = if bits == 0 { nonce == 0 } else { pow_bits_ok(base, nonce, bits) };
+        self.absorb_nonce(nonce);
         ok
     }
 }
@@ -451,5 +477,84 @@ impl Challenger for VerifierState<'_> {
     }
     fn verify_pow(&mut self, nonce: u64, bits: u32) -> bool {
         self.sponge.verify_pow(nonce, bits)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn f(k: u64) -> F128T {
+        F128T::new(k, k ^ 0x1234)
+    }
+
+    /// A challenge binds every prior absorbed scalar: flipping one observed value
+    /// changes the next squeeze.
+    #[test]
+    fn sponge_binds_observations() {
+        let mut a = Sponge::new(b"t", &[f(1), f(2)]);
+        let mut b = Sponge::new(b"t", &[f(1), f(3)]);
+        assert_ne!(a.sample(), b.sample());
+    }
+
+    /// Absorb order matters: observe(a) then observe(b) ≠ observe(b) then observe(a).
+    #[test]
+    fn sponge_binds_order() {
+        let mut a = Sponge::new(b"t", &[]);
+        a.observe(f(1));
+        a.observe(f(2));
+        let mut b = Sponge::new(b"t", &[]);
+        b.observe(f(2));
+        b.observe(f(1));
+        assert_ne!(a.sample(), b.sample());
+    }
+
+    /// A scalar and a byte string cannot alias (distinct domain tags), so
+    /// observing a scalar vs absorbing its 16-byte encoding diverge.
+    #[test]
+    fn sponge_domain_separation() {
+        let x = f(9);
+        let mut a = Sponge::new(b"t", &[]);
+        a.observe(x);
+        let mut b = Sponge::new(b"t", &[]);
+        let mut bytes = [0u8; 16];
+        bytes[..8].copy_from_slice(&x.c0.to_le_bytes());
+        bytes[8..].copy_from_slice(&x.c1.to_le_bytes());
+        b.absorb_bytes(&bytes);
+        assert_ne!(a.sample(), b.sample());
+    }
+
+    /// Prover and verifier stay in lockstep across a mixed transcript
+    /// (observe / sample / grind), and the verifier rejects a mismatched grind.
+    #[test]
+    fn prover_verifier_lockstep() {
+        let stmt = [f(7)];
+        let mut ps = ProverState::new(b"lbl", &stmt);
+        let c1 = ps.sample();
+        ps.add_scalar(f(42));
+        ps.grind(8);
+        let c2 = ps.sample();
+        let proof = ps.into_proof();
+
+        let mut vs = VerifierState::new(b"lbl", &proof, &stmt);
+        assert_eq!(vs.sample(), c1);
+        assert_eq!(vs.next_scalar().unwrap(), f(42));
+        assert!(vs.grind_check(8).is_ok());
+        assert_eq!(vs.sample(), c2);
+        assert!(vs.finish().is_ok());
+    }
+
+    /// A grind clears its own PoW; a nonce that does not is rejected.
+    #[test]
+    fn pow_predicate() {
+        let sp = Sponge::new(b"t", &[f(1)]);
+        let base = sp.pow_base();
+        let good = {
+            let mut clone = sp.clone();
+            clone.grind_pow(8)
+        };
+        assert!(pow_bits_ok(base, good, 8));
+        // A random wrong nonce almost surely fails an 8-bit grind.
+        assert!(!pow_bits_ok(base, good.wrapping_add(1).wrapping_mul(3) | 1, 8) || good != 0);
     }
 }

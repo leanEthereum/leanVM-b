@@ -176,25 +176,14 @@ pub const SLOT_BITS: usize = 256; // 2^8, one 256-bit chaining value
 pub const CV_BASE: usize = 0; // input region, slot 0: [0, 256)
 pub const OUT_LO_BASE: usize = SLOT_BITS; // output region, slot 1: [256, 512)
 pub const Z_CONST_POS: usize = 2 * SLOT_BITS; // 512
-// 128-bit packing width: each packed F128 coordinate of the committed witness is
-// 128 contiguous witness bits (`LOG_PACKING = 7`, see `flock_core::pcs::pack`).
-pub const PACK_WIDTH: usize = 128;
-// leanVM-b integration alignment: the VM's BLAKE3 table reads the two 256-bit
-// inputs `a‖b` (= the message `m`) and the 256-bit output `c` (= `out_lo`)
-// directly off the packed witness as whole 128-bit field elements, so each must
-// begin on a packing boundary. `out_lo` already sits at 256 (aligned). `m` would
-// land at `Z_CONST_POS + 1 = 513` (the const wire occupies bit 512), so we bump
-// it up to the next packing boundary (640); bits [513, 640) become forced-0
-// padding (empty R1CS rows). Resulting per-block packed-coordinate (slot) map:
-//   slot 2,3 = out_lo (c0,c1)   slot 5,6 = m[0..8] (a0,a1)   slot 7,8 = m[8..16] (b0,b1)
-pub const M_BASE: usize = (Z_CONST_POS + 1).div_ceil(PACK_WIDTH) * PACK_WIDTH; // 640
-pub const T_LO_BASE: usize = M_BASE + 16 * WORD_BITS; // 1152
-pub const T_HI_BASE: usize = T_LO_BASE + WORD_BITS; // 1184
-pub const BLEN_BASE: usize = T_HI_BASE + WORD_BITS; // 1216
-pub const FLAGS_BASE: usize = BLEN_BASE + WORD_BITS; // 1248
-pub const GS_BASE: usize = FLAGS_BASE + WORD_BITS; // 1280
-pub const OUT_HI_BASE: usize = GS_BASE + N_G * G_STRIDE; // 15,280
-pub const USEFUL_BITS: usize = OUT_HI_BASE + 8 * WORD_BITS; // 15,536
+pub const M_BASE: usize = (Z_CONST_POS + 1).div_ceil(128) * 128; // 640 (128-aligned: leanVM single-PCS)
+pub const T_LO_BASE: usize = M_BASE + 16 * WORD_BITS; // 1025
+pub const T_HI_BASE: usize = T_LO_BASE + WORD_BITS; // 1057
+pub const BLEN_BASE: usize = T_HI_BASE + WORD_BITS; // 1089
+pub const FLAGS_BASE: usize = BLEN_BASE + WORD_BITS; // 1121
+pub const GS_BASE: usize = FLAGS_BASE + WORD_BITS; // 1153
+pub const OUT_HI_BASE: usize = GS_BASE + N_G * G_STRIDE; // 15,153
+pub const USEFUL_BITS: usize = OUT_HI_BASE + 8 * WORD_BITS; // 15,409
 
 // G sub-block: ADD `add_idx` ∈ 0..6 (carry_aux only), then lin-id
 // `which` ∈ 0..2.
@@ -1273,6 +1262,35 @@ pub struct Blake3Setup {
 impl Blake3Setup {
     /// Build a setup for `n_blocks` BLAKE3 compressions with PCS
     /// `log_inv_rate = 1`.
+    /// [`Self::new`] with the **batch-major** witness layout (see
+    /// [`flock_core::r1cs::WitnessLayout`]). The generic matrix provers and
+    /// chain/Merkle wrappers still require row-major.
+    pub fn new_batch_major(n_blocks: usize) -> Self {
+        let mut s = Self::new(n_blocks);
+        s.r1cs.layout = flock_core::r1cs::WitnessLayout::BatchMajor;
+        s
+    }
+
+    /// Fast-path witness generation dispatched on the r1cs's witness layout.
+    fn generate_witness_ab(
+        &self,
+        blocks: &[Compression],
+    ) -> (
+        Vec<flock_core::field::F128>,
+        Vec<flock_core::field::F128>,
+        Vec<flock_core::field::F128>,
+        Vec<u8>,
+    ) {
+        match self.r1cs.layout {
+            flock_core::r1cs::WitnessLayout::RowMajor => {
+                generate_witness_with_ab_packed_and_lincheck(blocks, self.n_blocks_log())
+            }
+            flock_core::r1cs::WitnessLayout::BatchMajor => {
+                generate_witness_batch_major(blocks, self.n_blocks_log())
+            }
+        }
+    }
+
     pub fn new(n_blocks: usize) -> Self {
         Self::with_log_inv_rate(n_blocks, 1)
     }
@@ -1290,7 +1308,10 @@ impl Blake3Setup {
 
     /// Build a setup for a named Ligerito profile (fast/slim/secure);
     /// the PCS rate follows the profile.
-    pub fn with_profile(n_blocks: usize, profile: flock_core::pcs::ligerito::LigeritoProfile) -> Self {
+    pub fn with_profile(
+        n_blocks: usize,
+        profile: flock_core::pcs::ligerito::LigeritoProfile,
+    ) -> Self {
         Self::with_profile_and_rate(n_blocks, profile, profile.log_inv_rate())
     }
 
@@ -1354,8 +1375,7 @@ impl Blake3Setup {
     /// Packed witness trace for the generic (matrix-driven) provers — see
     /// `Sha256HybridSetup::generate_witness_packed`.
     pub fn generate_witness_packed(&self, blocks: &[Compression]) -> Vec<F128> {
-        let (z_packed, _a, _b, _stripe) =
-            generate_witness_with_ab_packed_and_lincheck(blocks, self.n_blocks_log());
+        let (z_packed, _a, _b, _stripe) = self.generate_witness_ab(blocks);
         z_packed
     }
 
@@ -1383,7 +1403,7 @@ impl Blake3Setup {
     ) -> (R1csProof, Commitment, R1csClaim) {
         assert_eq!(blocks.len(), self.n_blocks);
         let (z_packed, a_packed_f128, b_packed_f128, z_packed_lincheck) =
-            generate_witness_with_ab_packed_and_lincheck(blocks, self.n_blocks_log());
+            self.generate_witness_ab(blocks);
         let lc_circuit = self.r1cs.csc_lincheck_circuit();
         crate::prover::prove_fast_from_witness(
             &self.r1cs,
@@ -1416,7 +1436,7 @@ impl Blake3Setup {
         assert_eq!(blocks.len(), self.n_blocks);
         let (codeword, (z_packed, a_packed_f128, b_packed_f128, z_packed_lincheck)) =
             flock_core::pcs::prefault_codeword_during(&self.pcs_params, || {
-                generate_witness_with_ab_packed_and_lincheck(blocks, self.n_blocks_log())
+                self.generate_witness_ab(blocks)
             });
         let lc_circuit = self.r1cs.csc_lincheck_circuit();
         crate::prover::prove_fast_ligerito_from_witness(
@@ -1448,7 +1468,7 @@ impl Blake3Setup {
         assert_eq!(blocks.len(), self.n_blocks);
         let t0 = std::time::Instant::now();
         let (z_packed, a_packed_f128, b_packed_f128, z_packed_lincheck) =
-            generate_witness_with_ab_packed_and_lincheck(blocks, self.n_blocks_log());
+            self.generate_witness_ab(blocks);
         let witness_s = t0.elapsed().as_secs_f64();
         let lc_circuit = self.r1cs.csc_lincheck_circuit();
         let (proof, commitment, claim, mut timings) = crate::prover::prove_fast_ligerito_timed(
@@ -1484,361 +1504,172 @@ impl Blake3Setup {
     }
 }
 
-
-// ---------------------------------------------------------------------------
-// leanVM-b single-PCS integration: discharge flock's R1CS validity claims
-// (ab, c) by a BaseFold over the CALLER'S committed stack, in which `q_pkd` is
-// an aligned sub-block. flock does NOT commit `q_pkd` separately and does NOT
-// run its own FRI — it reduces (zerocheck + lincheck + ring-switch) and the
-// final BaseFold runs over the stack codeword the caller already committed.
-// ---------------------------------------------------------------------------
-
-/// flock's BLAKE3 R1CS validity proof, discharged against the caller's stacked
-/// commitment. `(ab, c)` are recomputed by the verifier from the zerocheck +
-/// lincheck proofs; `open` is the single stacked BaseFold (with the ring-switch
-/// front-end).
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub struct Blake3StackProof {
-    pub zerocheck: flock_core::zerocheck::ZerocheckProof,
-    pub lincheck: flock_core::lincheck::LincheckProof,
-    pub open: flock_core::pcs::BatchOpeningProofLigerito,
-}
-
-/// One claim on the committed packed BLAKE3 witness `q_pkd`, as left by the
-/// Flock reduction and handed to the PCS. `claim` is the `ẑ(point) = value`
-/// evaluation the PCS must discharge; `s_hat_v` is the prover-only ring-switch
-/// tensor weight the packed open consumes (`None` when `k_log < LOG_PACKING`,
-/// and unused on the verifier side, which recovers it from `proof.open`).
-#[derive(Clone, Debug)]
-pub struct WitnessClaim {
-    pub claim: flock_core::proof::ZClaim,
-    pub s_hat_v: Option<Vec<F128>>,
-}
-
-/// The two claims on the committed witness `q_pkd` left by the Flock BLAKE3
-/// zerocheck + lincheck reduction, for the PCS to discharge:
-/// - `ab`: the `A∘B` side, from lincheck.
-/// - `c` : the `C` side, from zerocheck (`C = I`, so a direct z-claim).
-///
-/// This is the clean seam between Flock's reduction and the PCS: the reduction
-/// produces these; the PCS opens them (see [`Blake3Setup::prove_reduction`]).
-#[derive(Clone, Debug)]
-pub struct ReducedClaims {
-    pub ab: WitnessClaim,
-    pub c: WitnessClaim,
-}
-
-impl Blake3Setup {
-    /// **Flock reduction (prover).** Bind the statement, then run the BLAKE3
-    /// zerocheck and lincheck on the shared `challenger`, reducing R1CS validity
-    /// of `blocks` to two evaluation claims on the committed packed witness
-    /// `q_pkd` (see `flock.tex` §zerocheck/§lincheck). Returns:
-    /// - `z_packed`: the regenerated packed witness the PCS later opens against;
-    /// - the transmitted zerocheck / lincheck sub-proofs;
-    /// - the [`ReducedClaims`] `(ab, c)` on `q_pkd`, with ring-switch weights.
-    ///
-    /// This touches the commitment only to *bind* it — it does NOT open the PCS.
-    /// The caller discharges the returned claims (see [`Self::prove_validity_stacked`]).
-    pub fn prove_reduction<Ch: Challenger>(
-        &self,
-        blocks: &[Compression],
-        stack_commitment: &Commitment,
-        challenger: &mut Ch,
-    ) -> (
-        Vec<F128>,
-        flock_core::zerocheck::ZerocheckProof,
-        flock_core::lincheck::LincheckProof,
-        ReducedClaims,
-    ) {
-        assert_eq!(blocks.len(), self.n_blocks);
-        let n_log = self.n_blocks_log();
-        let (z_packed, a_packed_f128, b_packed_f128, z_packed_lincheck) =
-            generate_witness_with_ab_packed_and_lincheck(blocks, n_log);
-
-        flock_core::proof::bind_statement(challenger, &self.r1cs, stack_commitment);
-
-        let padding = flock_core::zerocheck::PaddingSpec {
-            k_log: self.r1cs.k_log,
-            useful_bits_per_block: self.r1cs.useful_bits,
-        };
-        let (zc_proof, zc_claim, s_hat_v_c) = {
-            let a_packed: &[u8] = unsafe {
-                std::slice::from_raw_parts(
-                    a_packed_f128.as_ptr() as *const u8,
-                    a_packed_f128.len() * core::mem::size_of::<F128>(),
-                )
-            };
-            let b_packed: &[u8] = unsafe {
-                std::slice::from_raw_parts(
-                    b_packed_f128.as_ptr() as *const u8,
-                    b_packed_f128.len() * core::mem::size_of::<F128>(),
-                )
-            };
-            let c_packed: &[u8] = unsafe {
-                std::slice::from_raw_parts(
-                    z_packed.as_ptr() as *const u8,
-                    z_packed.len() * core::mem::size_of::<F128>(),
-                )
-            };
-            flock_core::zerocheck::prove_packed_padded_capture_s_hat_v_c(
-                a_packed, b_packed, c_packed, self.r1cs.m, &padding, challenger,
-            )
-        };
-
-        let inner_rest_len = self.r1cs.k_log - self.r1cs.k_skip;
-        let x_ab = flock_core::lincheck::QuirkyPoint {
-            z_skip: zc_claim.z,
-            x_inner_rest: zc_claim.mlv_challenges[..inner_rest_len].to_vec(),
-            x_outer: zc_claim.mlv_challenges[inner_rest_len..].to_vec(),
-        };
-        let (lc_proof, lc_claim, z_vec_pre) = flock_core::lincheck::prove_padded_capture_z_vec(
-            &z_packed_lincheck,
-            self.r1cs.m,
-            self.r1cs.k_log,
-            self.r1cs.k_skip,
-            self.r1cs.useful_bits,
-            self.r1cs.csc_lincheck_circuit(),
-            &x_ab,
-            challenger,
-        );
-
-        let ab = flock_core::proof::ZClaim {
-            point: flock_core::lincheck::QuirkyPoint {
-                z_skip: lc_claim.r_inner_skip,
-                x_inner_rest: lc_claim.r_inner_rest.clone(),
-                x_outer: x_ab.x_outer.clone(),
-            },
-            value: lc_claim.w,
-        };
-        let c = flock_core::proof::ZClaim {
-            point: flock_core::lincheck::QuirkyPoint {
-                z_skip: zc_claim.z,
-                x_inner_rest: zc_claim.r_rest[..inner_rest_len].to_vec(),
-                x_outer: zc_claim.r_rest[inner_rest_len..].to_vec(),
-            },
-            value: zc_claim.c_eval,
-        };
-        let s_hat_v_ab = if self.r1cs.k_log >= flock_core::pcs::LOG_PACKING {
-            Some(flock_core::pcs::ring_switch::s_hat_v_from_z_vec(
-                &z_vec_pre,
-                &lc_claim.r_inner_rest[1..],
-            ))
-        } else {
-            None
-        };
-
-        let reduced = ReducedClaims {
-            ab: WitnessClaim { claim: ab, s_hat_v: s_hat_v_ab },
-            c: WitnessClaim { claim: c, s_hat_v: Some(s_hat_v_c) },
-        };
-        (z_packed, zc_proof, lc_proof, reduced)
-    }
-
-    /// Prove `blocks` are valid compressions in two clean phases:
-    /// 1. [`Self::prove_reduction`] — Flock zerocheck + lincheck → the `(ab, c)`
-    ///    claims on the committed witness `q_pkd`;
-    /// 2. the PCS: discharge those claims *together with* the caller's own
-    ///    `stack_pd` point claims in ONE stacked BaseFold over `stack` (the
-    ///    caller's committed witness, with `q_pkd` the aligned sub-block at
-    ///    `stack_offset`).
-    ///
-    /// `stack_data`/`stack_commitment` are the caller's commit; the transcript
-    /// `challenger` is shared.
-    #[allow(clippy::too_many_arguments)]
-    pub fn prove_validity_stacked<Ch: Challenger>(
-        &self,
-        blocks: &[Compression],
-        stack: &[F128],
-        stack_offset: usize,
-        stack_data: &flock_core::pcs::ProverData,
-        stack_commitment: &Commitment,
-        stack_pd: &[(Vec<F128>, F128)],
-        challenger: &mut Ch,
-    ) -> Blake3StackProof {
-        // Phase 1 — Flock reduction: zerocheck + lincheck → claims on q_pkd.
-        let (z_packed, zerocheck, lincheck, reduced) =
-            self.prove_reduction(blocks, stack_commitment, challenger);
-        debug_assert_eq!(
-            &stack[stack_offset..stack_offset + z_packed.len()],
-            z_packed.as_slice(),
-            "committed q_pkd slice must equal the regenerated packed witness"
-        );
-
-        // Phase 2 — PCS: discharge the reduction's claims (plus the caller's
-        // full-stack point claims) in one stacked BaseFold.
-        let open = self.discharge_reduction_stacked(
-            &z_packed,
-            &reduced,
-            stack,
-            stack_offset,
-            stack_data,
-            stack_commitment,
-            stack_pd,
-            challenger,
-        );
-
-        Blake3StackProof { zerocheck, lincheck, open }
-    }
-
-    /// Phase 2 of [`Self::prove_validity_stacked`]: the PCS open of the
-    /// reduction's `(ab, c)` claims on `q_pkd` (`z_packed`), lifted into the
-    /// caller's `stack` and batched with the caller's `stack_pd` point claims.
-    #[allow(clippy::too_many_arguments)]
-    fn discharge_reduction_stacked<Ch: Challenger>(
-        &self,
-        z_packed: &[F128],
-        reduced: &ReducedClaims,
-        stack: &[F128],
-        stack_offset: usize,
-        stack_data: &flock_core::pcs::ProverData,
-        stack_commitment: &Commitment,
-        stack_pd: &[(Vec<F128>, F128)],
-        challenger: &mut Ch,
-    ) -> flock_core::pcs::BatchOpeningProofLigerito {
-        let padding = flock_core::zerocheck::PaddingSpec {
-            k_log: self.r1cs.k_log,
-            useful_bits_per_block: self.r1cs.useful_bits,
-        };
-        let ab_x = crate::prover::quirky_x_outer_full(&reduced.ab.claim.point);
-        let c_x = crate::prover::quirky_x_outer_full(&reduced.c.claim.point);
-        // This standalone-flock path takes general full-stack point claims.
-        let pd: Vec<flock_core::pcs::StackClaim> = stack_pd
-            .iter()
-            .map(|(point, value)| flock_core::pcs::StackClaim::Point { point, value: *value })
-            .collect();
-        let (lig_config, _) = stacked_lig_configs(stack_commitment);
-        flock_core::pcs::open_batch_mixed_ligerito_stacked(
-            z_packed,
-            &[ab_x.as_slice(), c_x.as_slice()],
-            &[reduced.ab.s_hat_v.as_deref(), reduced.c.s_hat_v.as_deref()],
-            &padding,
-            stack,
-            stack_offset,
-            stack_data,
-            stack_commitment,
-            &pd,
-            &lig_config,
-            challenger,
-        )
-    }
-
-    /// **Flock reduction (verifier).** Bind the statement, then replay the BLAKE3
-    /// zerocheck and lincheck from `zerocheck`/`lincheck` on the shared
-    /// `challenger`, recovering the two `(ab, c)` evaluation claims on the
-    /// committed witness `q_pkd`. Mirror of [`Self::prove_reduction`]; the PCS
-    /// then discharges the returned claims (see [`Self::verify_validity_stacked`]).
-    pub fn verify_reduction<Ch: Challenger>(
-        &self,
-        stack_commitment: &Commitment,
-        zerocheck: &flock_core::zerocheck::ZerocheckProof,
-        lincheck: &flock_core::lincheck::LincheckProof,
-        challenger: &mut Ch,
-    ) -> Result<(flock_core::proof::ZClaim, flock_core::proof::ZClaim), verifier::VerifyError> {
-        flock_core::proof::bind_statement(challenger, &self.r1cs, stack_commitment);
-
-        let zc_claim = flock_core::zerocheck::verify(self.r1cs.m, zerocheck, challenger)
-            .map_err(verifier::VerifyError::Zerocheck)?;
-        let inner_rest_len = self.r1cs.k_log - self.r1cs.k_skip;
-        let x_ab = flock_core::lincheck::QuirkyPoint {
-            z_skip: zc_claim.z,
-            x_inner_rest: zc_claim.mlv_challenges[..inner_rest_len].to_vec(),
-            x_outer: zc_claim.mlv_challenges[inner_rest_len..].to_vec(),
-        };
-        let lc_claim = flock_core::lincheck::verify(
-            self.r1cs.m,
-            self.r1cs.k_log,
-            self.r1cs.k_skip,
-            self.r1cs.csc_lincheck_circuit(),
-            &x_ab,
-            zc_claim.a_eval,
-            zc_claim.b_eval,
-            lincheck,
-            challenger,
-        )
-        .map_err(verifier::VerifyError::Lincheck)?;
-
-        let ab = flock_core::proof::ZClaim {
-            point: flock_core::lincheck::QuirkyPoint {
-                z_skip: lc_claim.r_inner_skip,
-                x_inner_rest: lc_claim.r_inner_rest.clone(),
-                x_outer: x_ab.x_outer.clone(),
-            },
-            value: lc_claim.w,
-        };
-        let c = flock_core::proof::ZClaim {
-            point: flock_core::lincheck::QuirkyPoint {
-                z_skip: zc_claim.z,
-                x_inner_rest: zc_claim.r_rest[..inner_rest_len].to_vec(),
-                x_outer: zc_claim.r_rest[inner_rest_len..].to_vec(),
-            },
-            value: zc_claim.c_eval,
-        };
-        Ok((ab, c))
-    }
-
-    /// Verifier mirror of [`Self::prove_validity_stacked`], in the same two
-    /// phases: (1) [`Self::verify_reduction`] replays zerocheck + lincheck to
-    /// recover the `(ab, c)` claims on `q_pkd`, then (2) the stacked BaseFold
-    /// opening of those claims (and the caller's `stack_pd`) is verified against
-    /// `stack_commitment`. `stack_offset` and the derived `qpkd_vars` locate
-    /// `q_pkd` inside the stack.
-    pub fn verify_validity_stacked<Ch: Challenger>(
-        &self,
-        stack_commitment: &Commitment,
-        stack_offset: usize,
-        stack_pd: &[(Vec<F128>, F128)],
-        proof: &Blake3StackProof,
-        challenger: &mut Ch,
-    ) -> Result<(), verifier::VerifyError> {
-        // Phase 1 — Flock reduction: replay zerocheck + lincheck → (ab, c).
-        let (ab, c) =
-            self.verify_reduction(stack_commitment, &proof.zerocheck, &proof.lincheck, challenger)?;
-
-        // Phase 2 — PCS: verify the stacked opening of (ab, c) + stack_pd.
-        let ab_x = crate::prover::quirky_x_outer_full(&ab.point);
-        let c_x = crate::prover::quirky_x_outer_full(&c.point);
-        let qpkd_vars = self.r1cs.m - flock_core::pcs::LOG_PACKING;
-        let pd: Vec<flock_core::pcs::StackClaim> = stack_pd
-            .iter()
-            .map(|(point, value)| flock_core::pcs::StackClaim::Point { point, value: *value })
-            .collect();
-        let (_, lig_config) = stacked_lig_configs(stack_commitment);
-        flock_core::pcs::verify_opening_batch_mixed_ligerito_stacked(
-            stack_commitment,
-            stack_offset,
-            qpkd_vars,
-            &[ab.value, c.value],
-            &[ab.point.z_skip, c.point.z_skip],
-            &[ab_x.as_slice(), c_x.as_slice()],
-            &pd,
-            &proof.open,
-            &lig_config,
-            challenger,
-        )
-        .map_err(verifier::VerifyError::PcsAb)
-    }
-}
-
-/// The Ligerito (prover, verifier) config pair for a stacked open against
-/// `stack_commitment` — derived from the commitment's own `(m, profile)` params,
-/// so both sides agree by construction.
-fn stacked_lig_configs(
-    stack_commitment: &Commitment,
-) -> (
-    flock_core::pcs::ligerito::ProverConfig,
-    flock_core::pcs::ligerito::VerifierConfig,
-) {
-    flock_core::pcs::ligerito::LigeritoSecurityConfig::derive_profile(
-        stack_commitment.params.m,
-        stack_commitment.params.profile,
-    )
-    .and_then(|sec| sec.to_prover_verifier_configs())
-    .expect("ligerito config for stacked open")
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Batch-major witness producer (WitnessLayout::BatchMajor).
+//
+// V = 8 compressions in lockstep ([u32; 8] lanes); witness fields OR'd
+// V-wide into an L1-resident interleaved row buffer (already batch-major
+// order), NT-flushed per useful 128-bit chunk by the shared driver. See
+// `common::drive_witness_batch_major`.
+// ---------------------------------------------------------------------------
+
+use super::common::{BM_V, BmRow, add_carry_parts_v, or_bit_row, or_u32_row};
+
+#[inline(always)]
+fn bm_xor_rotr(x: &[u32; BM_V], y: &[u32; BM_V], r: u32) -> [u32; BM_V] {
+    std::array::from_fn(|j| (x[j] ^ y[j]).rotate_right(r))
+}
+
+struct BmRows<'a> {
+    z: &'a mut [BmRow],
+    a: &'a mut [BmRow],
+    b: &'a mut [BmRow],
+}
+
+#[inline(always)]
+fn bm_write_lin(rows: &mut BmRows<'_>, bit: usize, vals: &[u32; BM_V]) {
+    or_u32_row(rows.z, bit, vals);
+    or_u32_row(rows.a, bit, vals);
+    or_u32_row(rows.b, bit, &[0xFFFF_FFFF; BM_V]);
+}
+
+#[inline(always)]
+fn bm_add_inline(
+    rows: &mut BmRows<'_>,
+    x: &[u32; BM_V],
+    y: &[u32; BM_V],
+    carry_bit: usize,
+) -> [u32; BM_V] {
+    let (sum, left, right, carry) = add_carry_parts_v(x, y);
+    or_u32_row(rows.z, carry_bit, &carry);
+    or_u32_row(rows.a, carry_bit, &left);
+    or_u32_row(rows.b, carry_bit, &right);
+    sum
+}
+
+/// Build one V = 8 group of compressions into interleaved rows. Mirrors
+/// [`build_block_witness_ab_packed_into`] field-for-field (byte-equality is
+/// pinned by the lockstep test below).
+fn build_group_batch_major(
+    inputs: [&Compression; BM_V],
+    rz: &mut [BmRow],
+    ra: &mut [BmRow],
+    rb: &mut [BmRow],
+) {
+    let mut rows = BmRows {
+        z: rz,
+        a: ra,
+        b: rb,
+    };
+    let cv: [[u32; BM_V]; 8] = std::array::from_fn(|w| std::array::from_fn(|j| inputs[j].0[w]));
+    let m: [[u32; BM_V]; 16] = std::array::from_fn(|i| std::array::from_fn(|j| inputs[j].1[i]));
+    let counter_lo: [u32; BM_V] = std::array::from_fn(|j| inputs[j].2 as u32);
+    let counter_hi: [u32; BM_V] = std::array::from_fn(|j| (inputs[j].2 >> 32) as u32);
+    let block_len: [u32; BM_V] = std::array::from_fn(|j| inputs[j].3);
+    let flags: [u32; BM_V] = std::array::from_fn(|j| inputs[j].4);
+
+    or_bit_row(rows.z, Z_CONST_POS);
+    or_bit_row(rows.a, Z_CONST_POS);
+    or_bit_row(rows.b, Z_CONST_POS);
+
+    for w in 0..8 {
+        bm_write_lin(&mut rows, cv_bit(w, 0), &cv[w]);
+    }
+    for i in 0..16 {
+        bm_write_lin(&mut rows, m_bit(i, 0), &m[i]);
+    }
+    bm_write_lin(&mut rows, T_LO_BASE, &counter_lo);
+    bm_write_lin(&mut rows, T_HI_BASE, &counter_hi);
+    bm_write_lin(&mut rows, BLEN_BASE, &block_len);
+    bm_write_lin(&mut rows, FLAGS_BASE, &flags);
+
+    let mut state: [[u32; BM_V]; 16] = [
+        cv[0],
+        cv[1],
+        cv[2],
+        cv[3],
+        cv[4],
+        cv[5],
+        cv[6],
+        cv[7],
+        [BLAKE3_IV[0]; BM_V],
+        [BLAKE3_IV[1]; BM_V],
+        [BLAKE3_IV[2]; BM_V],
+        [BLAKE3_IV[3]; BM_V],
+        counter_lo,
+        counter_hi,
+        block_len,
+        flags,
+    ];
+    let msg_idx = per_round_msg_idx();
+    for r in 0..N_ROUNDS {
+        for g_in_round in 0..N_G_PER_ROUND {
+            let g = r * N_G_PER_ROUND + g_in_round;
+            let [la, lb, lc, ld] = G_LANES[g_in_round];
+            let [mx_i, my_i] = msg_idx[r][g_in_round];
+            let mx = m[mx_i];
+            let my = m[my_i];
+
+            let a_val = state[la];
+            let b_val = state[lb];
+            let c_val = state[lc];
+            let d_val = state[ld];
+
+            let tmp_0 = bm_add_inline(&mut rows, &a_val, &b_val, g_add_carry_bit(g, ADD_TMP0, 0));
+            let a_1 = bm_add_inline(&mut rows, &tmp_0, &mx, g_add_carry_bit(g, ADD_A1, 0));
+            let d_1 = bm_xor_rotr(&d_val, &a_1, 16);
+            let c_1 = bm_add_inline(&mut rows, &c_val, &d_1, g_add_carry_bit(g, ADD_C1, 0));
+            let b_1 = bm_xor_rotr(&b_val, &c_1, 12);
+            let tmp_1 = bm_add_inline(&mut rows, &a_1, &b_1, g_add_carry_bit(g, ADD_TMP1, 0));
+            let a_2 = bm_add_inline(&mut rows, &tmp_1, &my, g_add_carry_bit(g, ADD_A2, 0));
+            let d_2 = bm_xor_rotr(&d_1, &a_2, 8);
+            let c_2 = bm_add_inline(&mut rows, &c_1, &d_2, g_add_carry_bit(g, ADD_C2, 0));
+            let b_new = bm_xor_rotr(&b_1, &c_2, 7);
+            let d_new = d_2;
+            bm_write_lin(&mut rows, g_lin_bit(g, LIN_B_NEW, 0), &b_new);
+            bm_write_lin(&mut rows, g_lin_bit(g, LIN_D_NEW, 0), &d_new);
+
+            state[la] = a_2;
+            state[lb] = b_new;
+            state[lc] = c_2;
+            state[ld] = d_new;
+        }
+    }
+
+    for w in 0..8 {
+        let lo: [u32; BM_V] = std::array::from_fn(|j| state[w][j] ^ state[w + 8][j]);
+        let hi: [u32; BM_V] = std::array::from_fn(|j| state[w + 8][j] ^ cv[w][j]);
+        bm_write_lin(&mut rows, out_lo_bit(w, 0), &lo);
+        bm_write_lin(&mut rows, out_hi_bit(w, 0), &hi);
+    }
+}
+
+/// Batch-major counterpart of [`generate_witness_with_ab_packed_and_lincheck`]
+/// — `(z, a, b, z_lincheck)` with z/a/b in the batch-major layout. Padding
+/// slots run a compression of the all-zero input (constant wire = 1).
+pub fn generate_witness_batch_major(
+    blocks: &[Compression],
+    n_blocks_log: usize,
+) -> (
+    Vec<flock_core::field::F128>,
+    Vec<flock_core::field::F128>,
+    Vec<flock_core::field::F128>,
+    Vec<u8>,
+) {
+    let padding: Compression = ([0u32; 8], [0u32; 16], 0u64, 0u32, 0u32);
+    super::common::drive_witness_batch_major(
+        blocks,
+        &padding,
+        n_blocks_log,
+        K_LOG,
+        USEFUL_BITS,
+        build_group_batch_major,
+    )
+}
 
 #[cfg(test)]
 mod tests {
@@ -1864,38 +1695,91 @@ mod tests {
     const CHUNK_END: u32 = 1 << 1;
     const ROOT: u32 = 1 << 3;
 
+    /// Batch-major witness equality vs the row-major driver (word-transpose
+    /// + identical stripe), incl. padding slots via a non-power-of-two count.
+    #[test]
+    fn batch_major_witness_matches_row_major_transposed() {
+        for (n_inputs, n_log) in [(8usize, 3usize), (11, 4)] {
+            let mut rng = Rng::new(0xBA7C_B3 + n_log as u64);
+            let inputs: Vec<Compression> = (0..n_inputs)
+                .map(|_| {
+                    let cv: [u32; 8] = std::array::from_fn(|_| rng.next_u32());
+                    let m: [u32; 16] = std::array::from_fn(|_| rng.next_u32());
+                    let counter = ((rng.next_u32() as u64) << 32) | (rng.next_u32() as u64);
+                    (cv, m, counter, 64u32, 11u32)
+                })
+                .collect();
+
+            let (z_r, a_r, b_r, stripe_r) =
+                generate_witness_with_ab_packed_and_lincheck(&inputs, n_log);
+            let (z_b, a_b, b_b, stripe_b) = generate_witness_batch_major(&inputs, n_log);
+
+            assert_eq!(stripe_b, stripe_r, "stripe diverged (n_log={n_log})");
+
+            let chunks_per_block = K / 128;
+            let transpose = |row: &[flock_core::field::F128]| {
+                let mut out = vec![flock_core::field::F128::ZERO; row.len()];
+                for o in 0..1usize << n_log {
+                    for c in 0..chunks_per_block {
+                        out[(c << n_log) + o] = row[o * chunks_per_block + c];
+                    }
+                }
+                out
+            };
+            assert_eq!(z_b, transpose(&z_r), "z diverged (n_log={n_log})");
+            assert_eq!(a_b, transpose(&a_r), "a diverged (n_log={n_log})");
+            assert_eq!(b_b, transpose(&b_r), "b diverged (n_log={n_log})");
+        }
+    }
+
+    /// Batch-major end-to-end roundtrip (BaseFold) + tamper rejection.
+    #[test]
+    fn batch_major_prove_fast_basefold_roundtrip() {
+        use flock_core::challenger::FsChallenger;
+
+        let setup = Blake3Setup::new_batch_major(8);
+        let mut rng = Rng::new(0xBA7C_F013);
+        let inputs: Vec<Compression> = (0..8)
+            .map(|_| {
+                let cv: [u32; 8] = std::array::from_fn(|_| rng.next_u32());
+                let m: [u32; 16] = std::array::from_fn(|_| rng.next_u32());
+                let counter = ((rng.next_u32() as u64) << 32) | (rng.next_u32() as u64);
+                (cv, m, counter, 64u32, 11u32)
+            })
+            .collect();
+
+        let mut ch_p = FsChallenger::new(b"flock-test-v0");
+        let (proof, commitment, claim_p) = setup.prove_fast_basefold(&inputs, &mut ch_p);
+        let mut ch_v = FsChallenger::new(b"flock-test-v0");
+        let claim_v = setup
+            .verify_basefold(&commitment, &proof, &mut ch_v)
+            .unwrap_or_else(|e| panic!("batch-major verifier rejected: {e:?}"));
+        assert_eq!(claim_p, claim_v);
+
+        let mut bad = proof.clone();
+        bad.zerocheck.final_a_eval.lo ^= 1;
+        let mut ch = FsChallenger::new(b"flock-test-v0");
+        assert!(
+            setup.verify_basefold(&commitment, &bad, &mut ch).is_err(),
+            "tampered batch-major proof accepted"
+        );
+    }
+
     #[test]
     fn layout_constants() {
         // I/O-aligned layout: cv in slot 0, out_lo in slot 1 (both 256-bit).
         assert_eq!(CV_BASE, 0);
         assert_eq!(OUT_LO_BASE, 256);
         assert_eq!(Z_CONST_POS, 512);
-        // M_BASE bumped to the next 128-bit packing boundary (was 513) for the
-        // leanVM-b integration (a‖b read as whole packed F128 coordinates).
         assert_eq!(M_BASE, 640);
-        assert_eq!(GS_BASE, 1280);
+        assert_eq!(GS_BASE, 1153);
         assert_eq!(G_STRIDE, 250);
         assert_eq!(N_G, 56);
-        assert_eq!(OUT_HI_BASE, 15_280);
-        assert_eq!(USEFUL_BITS, 15_536);
+        assert_eq!(OUT_HI_BASE, 15_153);
+        assert_eq!(USEFUL_BITS, 15_409);
         assert!(USEFUL_BITS <= K);
         assert_eq!(CV_BASE % SLOT_BITS, 0);
         assert_eq!(OUT_LO_BASE % SLOT_BITS, 0);
-
-        // Packing alignment: each VM-visible 128-bit word must begin on a
-        // PACK_WIDTH boundary so it is exactly one packed F128 coordinate
-        // `q_pkd[slot]`. Per-block packed-slot map the VM relies on:
-        assert_eq!(M_BASE % PACK_WIDTH, 0, "input a‖b not packing-aligned");
-        assert_eq!(OUT_LO_BASE % PACK_WIDTH, 0, "output c not packing-aligned");
-        assert_eq!(out_lo_bit(0, 0) / PACK_WIDTH, 2); // c0
-        assert_eq!(out_lo_bit(4, 0) / PACK_WIDTH, 3); // c1
-        assert_eq!(m_bit(0, 0) / PACK_WIDTH, 5); // a0 = m[0..4]
-        assert_eq!(m_bit(4, 0) / PACK_WIDTH, 6); // a1 = m[4..8]
-        assert_eq!(m_bit(8, 0) / PACK_WIDTH, 7); // b0 = m[8..12]
-        assert_eq!(m_bit(12, 0) / PACK_WIDTH, 8); // b1 = m[12..16]
-        // Each VM word is exactly one full 128-bit slot (does not straddle).
-        assert_eq!(m_bit(4, 0) - m_bit(0, 0), PACK_WIDTH);
-        assert_eq!(out_lo_bit(4, 0) - out_lo_bit(0, 0), PACK_WIDTH);
     }
 
     /// Reference compression matches the `blake3` crate for empty input
@@ -2297,9 +2181,12 @@ mod tests {
         let zeros: Vec<Compression> = vec![([0u32; 8], [0u32; 16], 0u64, 0u32, 0u32); n];
         let (mut z, mut a, mut b, mut zlc) =
             generate_witness_with_ab_packed_and_lincheck(&zeros, setup.n_blocks_log());
-        z.iter_mut().for_each(|v| *v = flock_core::field::F128::ZERO);
-        a.iter_mut().for_each(|v| *v = flock_core::field::F128::ZERO);
-        b.iter_mut().for_each(|v| *v = flock_core::field::F128::ZERO);
+        z.iter_mut()
+            .for_each(|v| *v = flock_core::field::F128::ZERO);
+        a.iter_mut()
+            .for_each(|v| *v = flock_core::field::F128::ZERO);
+        b.iter_mut()
+            .for_each(|v| *v = flock_core::field::F128::ZERO);
         zlc.iter_mut().for_each(|v| *v = 0);
         let circuit = setup.r1cs.csc_lincheck_circuit();
         let mut ch_p = FsChallenger::new(b"poc");
@@ -2351,4 +2238,475 @@ mod tests {
     }
 }
 
-// (Upstream's `chain_e2e_tests` module is dropped with the hash-chain feature.)
+#[cfg(test)]
+mod chain_e2e_tests {
+    use super::*;
+    use flock_core::challenger::FsChallenger;
+
+    struct R(u64);
+    impl R {
+        fn nx(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9E3779B97F4A7C15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+            z ^ (z >> 31)
+        }
+        fn w(&mut self) -> u32 {
+            self.nx() as u32
+        }
+        fn cv(&mut self) -> [u32; 8] {
+            let mut c = [0u32; 8];
+            for x in c.iter_mut() {
+                *x = self.w();
+            }
+            c
+        }
+        fn msg(&mut self) -> [u32; 16] {
+            let mut m = [0u32; 16];
+            for x in m.iter_mut() {
+                *x = self.w();
+            }
+            m
+        }
+    }
+
+    /// The new chaining value out of `compress` is `state[0..8]` = `out_lo`.
+    fn out_cv(block: &Compression) -> [u32; 8] {
+        let (cv, m, ctr, blen, flags) = block;
+        let st = blake3_compress(cv, m, *ctr, *blen, *flags);
+        let mut o = [0u32; 8];
+        o.copy_from_slice(&st[0..8]);
+        o
+    }
+
+    /// Build an honest CV chain: each instance's input cv = previous instance's
+    /// output cv. Messages/counter/flags are arbitrary per instance. Returns the
+    /// blocks plus public endpoints (cv_0, cv_last).
+    fn honest_chain(n: usize, seed: u64) -> (Vec<Compression>, [u32; 8], [u32; 8]) {
+        let mut rng = R(seed);
+        let cv0 = rng.cv();
+        let mut blocks = Vec::with_capacity(n);
+        let mut cur = cv0;
+        for _ in 0..n {
+            let block: Compression = (cur, rng.msg(), rng.nx(), rng.w(), rng.w());
+            cur = out_cv(&block); // next input cv = this output cv
+            blocks.push(block);
+        }
+        let cv_last = cur; // = out_cv(blocks[n-1])
+        (blocks, cv0, cv_last)
+    }
+
+    /// Ligerito-backend chain roundtrip. Needs ≥ 128 blocks (m=21+).
+    #[test]
+    #[ignore]
+    fn chain_prove_verify_ligerito_roundtrip() {
+        // K=256 → n_log=8 → m=22 (smallest Ligerito target with BLAKE3 K_LOG=14).
+        let setup = Blake3Setup::new(256);
+        let n = setup.n_block_slots();
+        let (blocks, cv0, cv_last) = honest_chain(n, 0xB3_511_3E);
+        let mut chp = FsChallenger::new(b"b3-chain-lig");
+        let (proof, comm) = setup.prove_chain(&blocks, &mut chp);
+        let mut chv = FsChallenger::new(b"b3-chain-lig");
+        setup
+            .verify_chain(&comm, &proof, &cv0, &cv_last, &mut chv)
+            .expect("ligerito chain must verify");
+    }
+
+    #[test]
+    fn chain_prove_verify_basefold_roundtrip() {
+        let setup = Blake3Setup::new(8); // n_log = 3, 8 instances, m = 17
+        let n = setup.n_block_slots();
+        let (blocks, cv0, cv_last) = honest_chain(n, 0xB3_C0FFEE);
+
+        let mut chp = FsChallenger::new(b"b3-chain");
+        let (proof, comm) = setup.prove_chain_basefold(&blocks, &mut chp);
+
+        let mut chv = FsChallenger::new(b"b3-chain");
+        setup
+            .verify_chain_basefold(&comm, &proof, &cv0, &cv_last, &mut chv)
+            .expect("honest BLAKE3 chain must verify");
+    }
+
+    #[test]
+    fn chain_wrong_endpoint_rejects() {
+        let setup = Blake3Setup::new(8);
+        let n = setup.n_block_slots();
+        let (blocks, cv0, mut cv_last) = honest_chain(n, 0xB3_1234);
+
+        let mut chp = FsChallenger::new(b"b3-chain");
+        let (proof, comm) = setup.prove_chain_basefold(&blocks, &mut chp);
+
+        cv_last[0] ^= 1; // corrupt the public output endpoint
+        let mut chv = FsChallenger::new(b"b3-chain");
+        assert!(
+            setup
+                .verify_chain_basefold(&comm, &proof, &cv0, &cv_last, &mut chv)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn chain_broken_link_rejects() {
+        let setup = Blake3Setup::new(8);
+        let n = setup.n_block_slots();
+        let (mut blocks, cv0, cv_last) = honest_chain(n, 0xB3_55);
+
+        // Break the chain: instance 2's input cv no longer equals out_cv(block 1).
+        let mut rng = R(0xB3_999);
+        blocks[2].0 = rng.cv();
+
+        let mut chp = FsChallenger::new(b"b3-chain");
+        let (proof, comm) = setup.prove_chain_basefold(&blocks, &mut chp);
+        let mut chv = FsChallenger::new(b"b3-chain");
+        assert!(
+            setup
+                .verify_chain_basefold(&comm, &proof, &cv0, &cv_last, &mut chv)
+                .is_err()
+        );
+    }
+}
+
+// ===== leanVM-b stacked BLAKE3 reduction (grafted) =====
+/// flock's BLAKE3 R1CS validity proof, discharged against the caller's stacked
+/// commitment. `(ab, c)` are recomputed by the verifier from the zerocheck +
+/// lincheck proofs; `open` is the single stacked BaseFold (with the ring-switch
+/// front-end).
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct Blake3StackProof {
+    pub zerocheck: flock_core::zerocheck::ZerocheckProof,
+    pub lincheck: flock_core::lincheck::LincheckProof,
+    pub open: flock_core::pcs::BatchOpeningProofLigerito,
+}
+
+/// One claim on the committed packed BLAKE3 witness `q_pkd`, as left by the
+/// Flock reduction and handed to the PCS. `claim` is the `ẑ(point) = value`
+/// evaluation the PCS must discharge; `s_hat_v` is the prover-only ring-switch
+/// tensor weight the packed open consumes (`None` when `k_log < LOG_PACKING`,
+/// and unused on the verifier side, which recovers it from `proof.open`).
+#[derive(Clone, Debug)]
+pub struct WitnessClaim {
+    pub claim: flock_core::proof::ZClaim,
+    pub s_hat_v: Option<Vec<F128>>,
+}
+
+/// The two claims on the committed witness `q_pkd` left by the Flock BLAKE3
+/// zerocheck + lincheck reduction, for the PCS to discharge:
+/// - `ab`: the `A∘B` side, from lincheck.
+/// - `c` : the `C` side, from zerocheck (`C = I`, so a direct z-claim).
+///
+/// This is the clean seam between Flock's reduction and the PCS: the reduction
+/// produces these; the PCS opens them (see [`Blake3Setup::prove_reduction`]).
+#[derive(Clone, Debug)]
+pub struct ReducedClaims {
+    pub ab: WitnessClaim,
+    pub c: WitnessClaim,
+}
+
+impl Blake3Setup {
+    /// **Flock reduction (prover).** Bind the statement, then run the BLAKE3
+    /// zerocheck and lincheck on the shared `challenger`, reducing R1CS validity
+    /// of `blocks` to two evaluation claims on the committed packed witness
+    /// `q_pkd` (see `flock.tex` §zerocheck/§lincheck). Returns:
+    /// - `z_packed`: the regenerated packed witness the PCS later opens against;
+    /// - the transmitted zerocheck / lincheck sub-proofs;
+    /// - the [`ReducedClaims`] `(ab, c)` on `q_pkd`, with ring-switch weights.
+    ///
+    /// This touches the commitment only to *bind* it — it does NOT open the PCS.
+    /// The caller discharges the returned claims (see [`Self::prove_validity_stacked`]).
+    pub fn prove_reduction<Ch: Challenger>(
+        &self,
+        blocks: &[Compression],
+        stack_commitment: &Commitment,
+        challenger: &mut Ch,
+    ) -> (
+        Vec<F128>,
+        flock_core::zerocheck::ZerocheckProof,
+        flock_core::lincheck::LincheckProof,
+        ReducedClaims,
+    ) {
+        assert_eq!(blocks.len(), self.n_blocks);
+        let n_log = self.n_blocks_log();
+        let (z_packed, a_packed_f128, b_packed_f128, z_packed_lincheck) =
+            generate_witness_with_ab_packed_and_lincheck(blocks, n_log);
+
+        flock_core::proof::bind_statement(challenger, &self.r1cs, stack_commitment);
+
+        let padding = flock_core::zerocheck::PaddingSpec {
+            k_log: self.r1cs.k_log,
+            useful_bits_per_block: self.r1cs.useful_bits,
+        };
+        let (zc_proof, zc_claim, s_hat_v_c) = {
+            let a_packed: &[u8] = unsafe {
+                std::slice::from_raw_parts(
+                    a_packed_f128.as_ptr() as *const u8,
+                    a_packed_f128.len() * core::mem::size_of::<F128>(),
+                )
+            };
+            let b_packed: &[u8] = unsafe {
+                std::slice::from_raw_parts(
+                    b_packed_f128.as_ptr() as *const u8,
+                    b_packed_f128.len() * core::mem::size_of::<F128>(),
+                )
+            };
+            let c_packed: &[u8] = unsafe {
+                std::slice::from_raw_parts(
+                    z_packed.as_ptr() as *const u8,
+                    z_packed.len() * core::mem::size_of::<F128>(),
+                )
+            };
+            flock_core::zerocheck::prove_packed_padded_capture_s_hat_v_c(
+                a_packed, b_packed, c_packed, self.r1cs.m, &padding, challenger,
+            )
+        };
+
+        let inner_rest_len = self.r1cs.k_log - self.r1cs.k_skip;
+        let x_ab = flock_core::lincheck::QuirkyPoint {
+            z_skip: zc_claim.z,
+            x_inner_rest: zc_claim.mlv_challenges[..inner_rest_len].to_vec(),
+            x_outer: zc_claim.mlv_challenges[inner_rest_len..].to_vec(),
+        };
+        let (lc_proof, lc_claim, z_vec_pre) = flock_core::lincheck::prove_padded_capture_z_vec(
+            &z_packed_lincheck,
+            self.r1cs.m,
+            self.r1cs.k_log,
+            self.r1cs.k_skip,
+            self.r1cs.useful_bits,
+            self.r1cs.csc_lincheck_circuit(),
+            &x_ab,
+            challenger,
+        );
+
+        let ab = flock_core::proof::ZClaim {
+            point: flock_core::lincheck::QuirkyPoint {
+                z_skip: lc_claim.r_inner_skip,
+                x_inner_rest: lc_claim.r_inner_rest.clone(),
+                x_outer: x_ab.x_outer.clone(),
+            },
+            value: lc_claim.w,
+        };
+        let c = flock_core::proof::ZClaim {
+            point: flock_core::lincheck::QuirkyPoint {
+                z_skip: zc_claim.z,
+                x_inner_rest: zc_claim.r_rest[..inner_rest_len].to_vec(),
+                x_outer: zc_claim.r_rest[inner_rest_len..].to_vec(),
+            },
+            value: zc_claim.c_eval,
+        };
+        let s_hat_v_ab = if self.r1cs.k_log >= flock_core::pcs::LOG_PACKING {
+            Some(flock_core::pcs::ring_switch::s_hat_v_from_z_vec(
+                &z_vec_pre,
+                &lc_claim.r_inner_rest[1..],
+            ))
+        } else {
+            None
+        };
+
+        let reduced = ReducedClaims {
+            ab: WitnessClaim { claim: ab, s_hat_v: s_hat_v_ab },
+            c: WitnessClaim { claim: c, s_hat_v: Some(s_hat_v_c) },
+        };
+        (z_packed, zc_proof, lc_proof, reduced)
+    }
+
+    /// Prove `blocks` are valid compressions in two clean phases:
+    /// 1. [`Self::prove_reduction`] — Flock zerocheck + lincheck → the `(ab, c)`
+    ///    claims on the committed witness `q_pkd`;
+    /// 2. the PCS: discharge those claims *together with* the caller's own
+    ///    `stack_pd` point claims in ONE stacked BaseFold over `stack` (the
+    ///    caller's committed witness, with `q_pkd` the aligned sub-block at
+    ///    `stack_offset`).
+    ///
+    /// `stack_data`/`stack_commitment` are the caller's commit; the transcript
+    /// `challenger` is shared.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prove_validity_stacked<Ch: Challenger>(
+        &self,
+        blocks: &[Compression],
+        stack: &[F128],
+        stack_offset: usize,
+        stack_data: &flock_core::pcs::ProverData,
+        stack_commitment: &Commitment,
+        stack_pd: &[(Vec<F128>, F128)],
+        challenger: &mut Ch,
+    ) -> Blake3StackProof {
+        // Phase 1 — Flock reduction: zerocheck + lincheck → claims on q_pkd.
+        let (z_packed, zerocheck, lincheck, reduced) =
+            self.prove_reduction(blocks, stack_commitment, challenger);
+        debug_assert_eq!(
+            &stack[stack_offset..stack_offset + z_packed.len()],
+            z_packed.as_slice(),
+            "committed q_pkd slice must equal the regenerated packed witness"
+        );
+
+        // Phase 2 — PCS: discharge the reduction's claims (plus the caller's
+        // full-stack point claims) in one stacked BaseFold.
+        let open = self.discharge_reduction_stacked(
+            &z_packed,
+            &reduced,
+            stack,
+            stack_offset,
+            stack_data,
+            stack_commitment,
+            stack_pd,
+            challenger,
+        );
+
+        Blake3StackProof { zerocheck, lincheck, open }
+    }
+
+    /// Phase 2 of [`Self::prove_validity_stacked`]: the PCS open of the
+    /// reduction's `(ab, c)` claims on `q_pkd` (`z_packed`), lifted into the
+    /// caller's `stack` and batched with the caller's `stack_pd` point claims.
+    #[allow(clippy::too_many_arguments)]
+    fn discharge_reduction_stacked<Ch: Challenger>(
+        &self,
+        z_packed: &[F128],
+        reduced: &ReducedClaims,
+        stack: &[F128],
+        stack_offset: usize,
+        stack_data: &flock_core::pcs::ProverData,
+        stack_commitment: &Commitment,
+        stack_pd: &[(Vec<F128>, F128)],
+        challenger: &mut Ch,
+    ) -> flock_core::pcs::BatchOpeningProofLigerito {
+        let padding = flock_core::zerocheck::PaddingSpec {
+            k_log: self.r1cs.k_log,
+            useful_bits_per_block: self.r1cs.useful_bits,
+        };
+        let ab_x = crate::prover::quirky_x_outer_full(&reduced.ab.claim.point);
+        let c_x = crate::prover::quirky_x_outer_full(&reduced.c.claim.point);
+        // This standalone-flock path takes general full-stack point claims.
+        let pd: Vec<flock_core::pcs::StackClaim> = stack_pd
+            .iter()
+            .map(|(point, value)| flock_core::pcs::StackClaim::Point { point, value: *value })
+            .collect();
+        let (lig_config, _) = stacked_lig_configs(stack_commitment);
+        flock_core::pcs::open_batch_mixed_ligerito_stacked(
+            z_packed,
+            &[ab_x.as_slice(), c_x.as_slice()],
+            &[reduced.ab.s_hat_v.as_deref(), reduced.c.s_hat_v.as_deref()],
+            &padding,
+            stack,
+            stack_offset,
+            stack_data,
+            stack_commitment,
+            &pd,
+            &lig_config,
+            challenger,
+        )
+    }
+
+    /// **Flock reduction (verifier).** Bind the statement, then replay the BLAKE3
+    /// zerocheck and lincheck from `zerocheck`/`lincheck` on the shared
+    /// `challenger`, recovering the two `(ab, c)` evaluation claims on the
+    /// committed witness `q_pkd`. Mirror of [`Self::prove_reduction`]; the PCS
+    /// then discharges the returned claims (see [`Self::verify_validity_stacked`]).
+    pub fn verify_reduction<Ch: Challenger>(
+        &self,
+        stack_commitment: &Commitment,
+        zerocheck: &flock_core::zerocheck::ZerocheckProof,
+        lincheck: &flock_core::lincheck::LincheckProof,
+        challenger: &mut Ch,
+    ) -> Result<(flock_core::proof::ZClaim, flock_core::proof::ZClaim), verifier::VerifyError> {
+        flock_core::proof::bind_statement(challenger, &self.r1cs, stack_commitment);
+
+        let zc_claim = flock_core::zerocheck::verify(self.r1cs.m, zerocheck, challenger)
+            .map_err(verifier::VerifyError::Zerocheck)?;
+        let inner_rest_len = self.r1cs.k_log - self.r1cs.k_skip;
+        let x_ab = flock_core::lincheck::QuirkyPoint {
+            z_skip: zc_claim.z,
+            x_inner_rest: zc_claim.mlv_challenges[..inner_rest_len].to_vec(),
+            x_outer: zc_claim.mlv_challenges[inner_rest_len..].to_vec(),
+        };
+        let lc_claim = flock_core::lincheck::verify(
+            self.r1cs.m,
+            self.r1cs.k_log,
+            self.r1cs.k_skip,
+            self.r1cs.csc_lincheck_circuit(),
+            &x_ab,
+            zc_claim.a_eval,
+            zc_claim.b_eval,
+            lincheck,
+            challenger,
+        )
+        .map_err(verifier::VerifyError::Lincheck)?;
+
+        let ab = flock_core::proof::ZClaim {
+            point: flock_core::lincheck::QuirkyPoint {
+                z_skip: lc_claim.r_inner_skip,
+                x_inner_rest: lc_claim.r_inner_rest.clone(),
+                x_outer: x_ab.x_outer.clone(),
+            },
+            value: lc_claim.w,
+        };
+        let c = flock_core::proof::ZClaim {
+            point: flock_core::lincheck::QuirkyPoint {
+                z_skip: zc_claim.z,
+                x_inner_rest: zc_claim.r_rest[..inner_rest_len].to_vec(),
+                x_outer: zc_claim.r_rest[inner_rest_len..].to_vec(),
+            },
+            value: zc_claim.c_eval,
+        };
+        Ok((ab, c))
+    }
+
+    /// Verifier mirror of [`Self::prove_validity_stacked`], in the same two
+    /// phases: (1) [`Self::verify_reduction`] replays zerocheck + lincheck to
+    /// recover the `(ab, c)` claims on `q_pkd`, then (2) the stacked BaseFold
+    /// opening of those claims (and the caller's `stack_pd`) is verified against
+    /// `stack_commitment`. `stack_offset` and the derived `qpkd_vars` locate
+    /// `q_pkd` inside the stack.
+    pub fn verify_validity_stacked<Ch: Challenger>(
+        &self,
+        stack_commitment: &Commitment,
+        stack_offset: usize,
+        stack_pd: &[(Vec<F128>, F128)],
+        proof: &Blake3StackProof,
+        challenger: &mut Ch,
+    ) -> Result<(), verifier::VerifyError> {
+        // Phase 1 — Flock reduction: replay zerocheck + lincheck → (ab, c).
+        let (ab, c) =
+            self.verify_reduction(stack_commitment, &proof.zerocheck, &proof.lincheck, challenger)?;
+
+        // Phase 2 — PCS: verify the stacked opening of (ab, c) + stack_pd.
+        let ab_x = crate::prover::quirky_x_outer_full(&ab.point);
+        let c_x = crate::prover::quirky_x_outer_full(&c.point);
+        let qpkd_vars = self.r1cs.m - flock_core::pcs::LOG_PACKING;
+        let pd: Vec<flock_core::pcs::StackClaim> = stack_pd
+            .iter()
+            .map(|(point, value)| flock_core::pcs::StackClaim::Point { point, value: *value })
+            .collect();
+        let (_, lig_config) = stacked_lig_configs(stack_commitment);
+        flock_core::pcs::verify_opening_batch_mixed_ligerito_stacked(
+            stack_commitment,
+            stack_offset,
+            qpkd_vars,
+            &[ab.value, c.value],
+            &[ab.point.z_skip, c.point.z_skip],
+            &[ab_x.as_slice(), c_x.as_slice()],
+            &pd,
+            &proof.open,
+            &lig_config,
+            challenger,
+        )
+        .map_err(verifier::VerifyError::PcsAb)
+    }
+}
+
+/// The Ligerito (prover, verifier) config pair for a stacked open against
+/// `stack_commitment` — derived from the commitment's own `(m, profile)` params,
+/// so both sides agree by construction.
+fn stacked_lig_configs(
+    stack_commitment: &Commitment,
+) -> (
+    flock_core::pcs::ligerito::ProverConfig,
+    flock_core::pcs::ligerito::VerifierConfig,
+) {
+    flock_core::pcs::ligerito::LigeritoSecurityConfig::derive_profile(
+        stack_commitment.params.m,
+        stack_commitment.params.profile,
+    )
+    .and_then(|sec| sec.to_prover_verifier_configs())
+    .expect("ligerito config for stacked open")
+}

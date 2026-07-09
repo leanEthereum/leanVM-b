@@ -167,7 +167,7 @@ pub(crate) fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; 6], pi: [F
             Op::Set { o, .. } => o,
             Op::Deref { alpha, beta, gamma, .. } => alpha.max(beta).max(gamma),
             Op::Jump { oc, od, of } => oc.max(od).max(of),
-            Op::Blake3 { a, b, c } => a.max(b).max(c),
+            Op::Blake3 { ins, out } => ins[0].max(ins[1]).max(ins[2]).max(ins[3]).max(out),
         })
         .max()
         .unwrap_or(0) as usize;
@@ -188,16 +188,21 @@ pub(crate) fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; 6], pi: [F
             Op::Set { o, k } => (g_at(o), k, F64::ZERO),
             Op::Deref { alpha, beta, gamma, .. } => (g_at(alpha), g_at(beta), g_at(gamma)),
             Op::Jump { oc, od, of } => (g_at(oc), g_at(od), g_at(of)),
-            Op::Blake3 { a, b, c } => (g_at(a), g_at(b), g_at(c)),
+            // BLAKE3's first three input-word offsets; the last two ride the
+            // fpc/ffp bytecode slots below.
+            Op::Blake3 { ins, .. } => (g_at(ins[0]), g_at(ins[1]), g_at(ins[2])),
         }
     };
-    // The two DEREF store-mode flags, public program fields (0 elsewhere).
+    // The 4th/5th bytecode operand slots: the two DEREF store-mode flags, or
+    // BLAKE3's remaining input word / output base (0 elsewhere).
     let fpc = |op: &Op| match op {
         Op::Deref { mode, .. } => mode.f_pc(),
+        Op::Blake3 { ins, .. } => g_at(ins[3]),
         _ => F64::ZERO,
     };
     let ffp = |op: &Op| match op {
         Op::Deref { mode, .. } => mode.f_fp(),
+        Op::Blake3 { out, .. } => g_at(*out),
         _ => F64::ZERO,
     };
     // The program is PUBLIC (not committed): six public columns over the
@@ -370,6 +375,8 @@ impl Program {
         // built from the executed BLAKE3 rows in order (row j = flock instance j),
         // padded to `2^n_blocks_log(max(count,1))` all-padding instances — so a
         // program with no BLAKE3 still carries a single padding instance.
+        let fill_ms = t_fill.elapsed().as_secs_f64() * 1e3;
+        let t_qpkd = std::time::Instant::now();
         cols[QPKD] = {
             let blocks: Vec<_> = tr
                 .blake3
@@ -378,9 +385,11 @@ impl Program {
                 .collect();
             crate::blake3_flock::build_qpkd(&blocks)
         };
+        let qpkd_ms = t_qpkd.elapsed().as_secs_f64() * 1e3;
 
         if prof {
-            eprintln!("[build] fill cols   : {:>7.2} ms", t_fill.elapsed().as_secs_f64() * 1e3);
+            eprintln!("[build] fill cols   : {fill_ms:>7.2} ms");
+            eprintln!("[build] build q_pkd : {qpkd_ms:>7.2} ms");
         }
 
         // The public layout (flush/count blocks, per-column padding, placements,
@@ -418,7 +427,11 @@ impl Program {
         }
         // (`execute` already asserts the run halts at the sentinel (pc, fp) =
         // (g^{B-1}, 0), exactly the boundary the public layout derives.)
+        let t_stack = std::time::Instant::now();
         let q = witness::stack_q(&cols, &l.placements, l.m);
+        if prof {
+            eprintln!("[build] stack_q     : {:>7.2} ms", t_stack.elapsed().as_secs_f64() * 1e3);
+        }
         Witness {
             cols,
             q,

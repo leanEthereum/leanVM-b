@@ -143,11 +143,17 @@ impl AdditiveNttF128 {
     /// and the buffer is large enough to benefit; otherwise falls back to the
     /// per-layer parallel path or scalar.
     pub fn forward_transform(&self, data: &mut [F128]) {
-        #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
+        #[cfg(any(
+            all(target_arch = "aarch64", target_feature = "aes"),
+            all(target_arch = "x86_64", target_feature = "pclmulqdq")
+        ))]
         {
             self.forward_transform_batched(data);
         }
-        #[cfg(not(all(target_arch = "aarch64", target_feature = "aes")))]
+        #[cfg(not(any(
+            all(target_arch = "aarch64", target_feature = "aes"),
+            all(target_arch = "x86_64", target_feature = "pclmulqdq")
+        )))]
         {
             self.forward_transform_scalar(data);
         }
@@ -197,11 +203,17 @@ impl AdditiveNttF128 {
 
         // Scalar; SIMD/parallel variants below dispatch from `forward_transform_interleaved`
         // on supported targets.
-        #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
+        #[cfg(any(
+            all(target_arch = "aarch64", target_feature = "aes"),
+            all(target_arch = "x86_64", target_feature = "pclmulqdq")
+        ))]
         {
             self.forward_transform_interleaved_parallel_from_layer(data, num_ntts, start_layer);
         }
-        #[cfg(not(all(target_arch = "aarch64", target_feature = "aes")))]
+        #[cfg(not(any(
+            all(target_arch = "aarch64", target_feature = "aes"),
+            all(target_arch = "x86_64", target_feature = "pclmulqdq")
+        )))]
         {
             self.forward_transform_interleaved_scalar_from_layer(data, num_ntts, start_layer);
         }
@@ -255,14 +267,24 @@ impl AdditiveNttF128 {
     /// inputs to avoid rayon overhead; for large inputs it uses an in-place
     /// scalar butterfly per lane (per-lane vectorization is future work — the
     /// big win at large `m` is cache locality + thread parallelism).
-    #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
+    ///
+    /// The body is arch-generic (per-lane scalar `Mul`); gated to targets with
+    /// a hardware carry-less multiply so slow-mul targets keep the plain
+    /// scalar path whose rayon thresholds still make sense.
+    #[cfg(any(
+        all(target_arch = "aarch64", target_feature = "aes"),
+        all(target_arch = "x86_64", target_feature = "pclmulqdq")
+    ))]
     pub fn forward_transform_interleaved_parallel(&self, data: &mut [F128], num_ntts: usize) {
         self.forward_transform_interleaved_parallel_from_layer(data, num_ntts, 0);
     }
 
     /// Parallel interleaved forward NTT from `start_layer` (see
     /// [`Self::forward_transform_interleaved_from_layer`]).
-    #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
+    #[cfg(any(
+        all(target_arch = "aarch64", target_feature = "aes"),
+        all(target_arch = "x86_64", target_feature = "pclmulqdq")
+    ))]
     pub fn forward_transform_interleaved_parallel_from_layer(
         &self,
         data: &mut [F128],
@@ -460,18 +482,21 @@ impl AdditiveNttF128 {
         }
     }
 
-    /// Rayon-parallel + NEON forward transform.
-    #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
+    /// Rayon-parallel + SIMD forward transform.
+    #[cfg(any(
+        all(target_arch = "aarch64", target_feature = "aes"),
+        all(target_arch = "x86_64", target_feature = "pclmulqdq")
+    ))]
     pub fn forward_transform_parallel(&self, data: &mut [F128]) {
         use rayon::prelude::*;
         let log_d = log2_pow2(data.len());
         assert!(log_d <= self.log_domain_size());
 
         // For small data (or shallow layers with few large blocks), the rayon
-        // overhead exceeds the gain — fall back to the NEON single-thread path.
+        // overhead exceeds the gain — fall back to the single-thread path.
         const PARALLEL_THRESHOLD_LOG: usize = 14; // 2^14 = 16K elements (256 KB)
         if log_d <= PARALLEL_THRESHOLD_LOG {
-            self.forward_transform_neon(data);
+            self.forward_transform_single_thread(data);
             return;
         }
 
@@ -481,33 +506,29 @@ impl AdditiveNttF128 {
             let block_size_half = block_size >> 1;
 
             // Parallelize across blocks when there are enough; otherwise process
-            // sequentially with NEON (still fast for small block counts).
+            // sequentially with SIMD (still fast for small block counts).
             if num_blocks >= 4 && block_size_half >= 2 {
                 let twiddles: Vec<F128> = (0..num_blocks).map(|b| self.twiddle(layer, b)).collect();
                 data.par_chunks_mut(block_size)
                     .zip(twiddles.par_iter())
                     .for_each(|(chunk, &twiddle)| {
-                        // SAFETY: aes target feature enabled.
-                        unsafe { butterfly_block_neon(chunk, twiddle, block_size_half) };
+                        butterfly_block_dispatch(chunk, twiddle, block_size_half);
                     });
             } else if block_size_half >= 2 {
-                // Few large blocks — process sequentially with NEON.
-                // SAFETY: aes target feature enabled.
-                unsafe {
-                    for block in 0..num_blocks {
-                        let twiddle = self.twiddle(layer, block);
-                        let block_start = block * block_size;
-                        butterfly_block_neon(
-                            &mut data[block_start..block_start + block_size],
-                            twiddle,
-                            block_size_half,
-                        );
-                    }
+                // Few large blocks — process sequentially with SIMD.
+                for block in 0..num_blocks {
+                    let twiddle = self.twiddle(layer, block);
+                    let block_start = block * block_size;
+                    butterfly_block_dispatch(
+                        &mut data[block_start..block_start + block_size],
+                        twiddle,
+                        block_size_half,
+                    );
                 }
             } else {
                 // Deepest layer (half = 1): need num_blocks ≥ 2 to batch
                 // pairs; if there are at least 2 blocks, batch across them.
-                // (When num_blocks < 2, fall back to NEON-single-thread which
+                // (When num_blocks < 2, fall back to single-thread which
                 // handles the trivial cases.)
                 debug_assert_eq!(block_size_half, 1);
                 if num_blocks >= 2 {
@@ -515,14 +536,11 @@ impl AdditiveNttF128 {
                         (0..num_blocks).map(|b| self.twiddle(layer, b)).collect();
                     data.par_chunks_mut(4).zip(twiddles.par_chunks(2)).for_each(
                         |(chunk, twiddle_pair)| {
-                            // SAFETY: aes target feature enabled.
-                            unsafe {
-                                butterfly_across_blocks_neon_in_chunk(
-                                    chunk,
-                                    twiddle_pair[0],
-                                    twiddle_pair[1],
-                                )
-                            };
+                            butterfly_pair_dispatch_in_chunk(
+                                chunk,
+                                twiddle_pair[0],
+                                twiddle_pair[1],
+                            );
                         },
                     );
                 } else {
@@ -533,6 +551,24 @@ impl AdditiveNttF128 {
                     data[1] = v + new_u;
                 }
             }
+        }
+    }
+
+    /// Single-threaded transform used below rayon thresholds: NEON-batched on
+    /// aarch64, plain scalar elsewhere (scalar `Mul` is CLMUL-backed on x86).
+    #[cfg(any(
+        all(target_arch = "aarch64", target_feature = "aes"),
+        all(target_arch = "x86_64", target_feature = "pclmulqdq")
+    ))]
+    #[inline]
+    fn forward_transform_single_thread(&self, data: &mut [F128]) {
+        #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
+        {
+            self.forward_transform_neon(data);
+        }
+        #[cfg(not(all(target_arch = "aarch64", target_feature = "aes")))]
+        {
+            self.forward_transform_scalar(data);
         }
     }
 
@@ -552,7 +588,10 @@ impl AdditiveNttF128 {
     /// `n_top` is chosen so each sub-NTT is `≈ 2 MB` (= `2^17` F_{2^128} ≈ 2 MB).
     /// For `log_d ≤ 17` the whole NTT fits in cache and we fall back to the
     /// per-layer parallel path.
-    #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
+    #[cfg(any(
+        all(target_arch = "aarch64", target_feature = "aes"),
+        all(target_arch = "x86_64", target_feature = "pclmulqdq")
+    ))]
     pub fn forward_transform_batched(&self, data: &mut [F128]) {
         use rayon::prelude::*;
         let log_d = log2_pow2(data.len());
@@ -578,21 +617,18 @@ impl AdditiveNttF128 {
                 data.par_chunks_mut(block_size)
                     .zip(twiddles.par_iter())
                     .for_each(|(chunk, &t)| {
-                        // SAFETY: aes target feature enabled.
-                        unsafe { butterfly_block_neon(chunk, t, block_size_half) };
+                        butterfly_block_dispatch(chunk, t, block_size_half);
                     });
             } else {
-                // Few large blocks at very top layers: sequential NEON.
-                unsafe {
-                    for block in 0..num_blocks {
-                        let t = self.twiddle(layer, block);
-                        let block_start = block * block_size;
-                        butterfly_block_neon(
-                            &mut data[block_start..block_start + block_size],
-                            t,
-                            block_size_half,
-                        );
-                    }
+                // Few large blocks at very top layers: sequential SIMD.
+                for block in 0..num_blocks {
+                    let t = self.twiddle(layer, block);
+                    let block_start = block * block_size;
+                    butterfly_block_dispatch(
+                        &mut data[block_start..block_start + block_size],
+                        t,
+                        block_size_half,
+                    );
                 }
             }
         }
@@ -613,8 +649,7 @@ impl AdditiveNttF128 {
                         let block_start = block_in_sub * block_size;
                         let block = &mut sub_data[block_start..block_start + block_size];
                         if block_size_half >= 2 {
-                            // SAFETY: aes target feature enabled.
-                            unsafe { butterfly_block_neon(block, twiddle, block_size_half) };
+                            butterfly_block_dispatch(block, twiddle, block_size_half);
                         } else {
                             // Deepest layer: 1 pair per block, scalar.
                             let v = block[1];
@@ -674,12 +709,7 @@ fn butterfly_interleaved_block_par_rows(
     top.par_chunks_mut(num_ntts)
         .zip(bot.par_chunks_mut(num_ntts))
         .for_each(|(top_row, bot_row)| {
-            for lane in 0..num_ntts {
-                let v = bot_row[lane];
-                let new_u = top_row[lane] + v * twiddle;
-                top_row[lane] = new_u;
-                bot_row[lane] = v + new_u;
-            }
+            butterfly_rows(top_row, bot_row, twiddle);
         });
 }
 
@@ -710,6 +740,44 @@ fn butterfly_interleaved_fused_2layer_par_rows(
 
     let do_one =
         |row_a: &mut [F128], row_b: &mut [F128], row_c: &mut [F128], row_d: &mut [F128]| {
+            #[cfg(all(
+                target_arch = "x86_64",
+                target_feature = "vpclmulqdq",
+                target_feature = "avx2"
+            ))]
+            {
+                use crate::field::gf2_128::x86_64::ghash_mul_vec2_clmul;
+                for lane in 0..num_ntts {
+                    let mut a = row_a[lane];
+                    let mut b = row_b[lane];
+                    let c = row_c[lane];
+                    let d = row_d[lane];
+                    // Layer L: both muls share t_outer — one 2-wide CLMUL.
+                    // SAFETY: vpclmulqdq+avx2 statically enabled by the cfg gate.
+                    let prod = unsafe { ghash_mul_vec2_clmul([t_outer, t_outer], [c, d]) };
+                    let new_a = a + prod[0];
+                    let c = c + new_a;
+                    a = new_a;
+                    let new_b = b + prod[1];
+                    let d = d + new_b;
+                    b = new_b;
+                    // Layer L+1: (a, b) with t_inner_a; (c, d) with t_inner_b —
+                    // one 2-wide CLMUL with distinct twiddles per lane.
+                    // SAFETY: as above.
+                    let prod2 = unsafe { ghash_mul_vec2_clmul([t_inner_a, t_inner_b], [b, d]) };
+                    let new_a2 = a + prod2[0];
+                    let new_c2 = c + prod2[1];
+                    row_a[lane] = new_a2;
+                    row_b[lane] = b + new_a2;
+                    row_c[lane] = new_c2;
+                    row_d[lane] = d + new_c2;
+                }
+            }
+            #[cfg(not(all(
+                target_arch = "x86_64",
+                target_feature = "vpclmulqdq",
+                target_feature = "avx2"
+            )))]
             for lane in 0..num_ntts {
                 let mut a = row_a[lane];
                 let mut b = row_b[lane];
@@ -765,18 +833,72 @@ fn butterfly_interleaved_fused_2layer_par_rows(
     }
 }
 
+/// Butterfly `num_ntts` lanes of one (top_row, bot_row) pair with a shared
+/// twiddle: `u += v·t; v += u`. On x86_64 with VPCLMULQDQ the lane muls run
+/// 2-wide (ymm); elsewhere scalar-per-lane (see the ILP note on
+/// [`butterfly_interleaved_block`]).
+#[inline]
+fn butterfly_rows(top_row: &mut [F128], bot_row: &mut [F128], twiddle: F128) {
+    debug_assert_eq!(top_row.len(), bot_row.len());
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "vpclmulqdq",
+        target_feature = "avx2"
+    ))]
+    {
+        use crate::field::gf2_128::x86_64::ghash_mul_vec2_clmul;
+        let n = top_row.len();
+        let mut lane = 0;
+        while lane + 2 <= n {
+            // SAFETY: vpclmulqdq+avx2 statically enabled by the cfg gate.
+            let prod = unsafe {
+                ghash_mul_vec2_clmul([twiddle, twiddle], [bot_row[lane], bot_row[lane + 1]])
+            };
+            let new_u0 = top_row[lane] + prod[0];
+            let new_u1 = top_row[lane + 1] + prod[1];
+            top_row[lane] = new_u0;
+            top_row[lane + 1] = new_u1;
+            bot_row[lane] += new_u0;
+            bot_row[lane + 1] += new_u1;
+            lane += 2;
+        }
+        if lane < n {
+            let v = bot_row[lane];
+            let new_u = top_row[lane] + v * twiddle;
+            top_row[lane] = new_u;
+            bot_row[lane] = v + new_u;
+        }
+    }
+    #[cfg(not(all(
+        target_arch = "x86_64",
+        target_feature = "vpclmulqdq",
+        target_feature = "avx2"
+    )))]
+    {
+        for lane in 0..top_row.len() {
+            let v = bot_row[lane];
+            let new_u = top_row[lane] + v * twiddle;
+            top_row[lane] = new_u;
+            bot_row[lane] = v + new_u;
+        }
+    }
+}
+
 /// Butterfly one block of an interleaved (SoA) buffer with shared twiddle.
 ///
 /// `block` has length `(2 * block_size_half) * num_ntts` and is laid out as
 /// `num_ntts` lanes interleaved per row, `2 * block_size_half` rows total.
 /// Pairs row `r` with row `r + block_size_half` for `r ∈ 0..block_size_half`.
 ///
-/// **Note**: This is scalar-per-lane on purpose. With `num_ntts = 32` and
-/// shared twiddle, the inner loop has 32 independent F_{2^128} muls per row
-/// that the compiler ILPs effectively (each mul uses NEON via the field's
-/// `binius_mul` already). An explicit 2-lane `ghash_mul_vec2_neon` variant was
-/// tried but **regressed** by ~10-30% because the explicit batching prevented
-/// ILP across more than 2 muls and added load/store overhead.
+/// **Note**: On aarch64 this is scalar-per-lane on purpose. With `num_ntts =
+/// 32` and shared twiddle, the inner loop has 32 independent F_{2^128} muls
+/// per row that the compiler ILPs effectively (each mul uses NEON via the
+/// field's `binius_mul` already). An explicit 2-lane `ghash_mul_vec2_neon`
+/// variant was tried but **regressed** by ~10-30% because the explicit
+/// batching prevented ILP across more than 2 muls and added load/store
+/// overhead. On x86_64, `butterfly_rows` batches 2 lanes per 256-bit
+/// VPCLMULQDQ instead — there the batching halves the instruction count on
+/// the same ports, which measured faster than scalar-with-ILP.
 #[inline]
 fn butterfly_interleaved_block(
     block: &mut [F128],
@@ -785,15 +907,14 @@ fn butterfly_interleaved_block(
     num_ntts: usize,
 ) {
     let off_bot = block_size_half * num_ntts;
+    let (top, bot) = block.split_at_mut(off_bot);
     for r in 0..block_size_half {
         let off_top = r * num_ntts;
-        let off_bot_r = off_top + off_bot;
-        for lane in 0..num_ntts {
-            let v = block[off_bot_r + lane];
-            let new_u = block[off_top + lane] + v * twiddle;
-            block[off_top + lane] = new_u;
-            block[off_bot_r + lane] = v + new_u;
-        }
+        butterfly_rows(
+            &mut top[off_top..off_top + num_ntts],
+            &mut bot[off_top..off_top + num_ntts],
+            twiddle,
+        );
     }
 }
 
@@ -804,6 +925,67 @@ fn log2_pow2(n: usize) -> usize {
         "length must be a positive power of 2"
     );
     n.trailing_zeros() as usize
+}
+
+// ---------------------------------------------------------------------------
+// Portable butterfly dispatch — NEON kernels on aarch64; generic loops that
+// lean on the fast scalar `Mul` (CLMUL-backed) on x86_64.
+// ---------------------------------------------------------------------------
+
+/// Butterfly one block (pairs `(i, i + half)` for `i ∈ 0..half`) with a
+/// shared twiddle. Precondition: `half >= 2`.
+#[cfg(any(
+    all(target_arch = "aarch64", target_feature = "aes"),
+    all(target_arch = "x86_64", target_feature = "pclmulqdq")
+))]
+#[inline]
+fn butterfly_block_dispatch(chunk: &mut [F128], twiddle: F128, half: usize) {
+    #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
+    // SAFETY: aes target feature enabled at compile time.
+    unsafe {
+        butterfly_block_neon(chunk, twiddle, half)
+    };
+    #[cfg(not(all(target_arch = "aarch64", target_feature = "aes")))]
+    butterfly_block_generic(chunk, twiddle, half);
+}
+
+/// Generic block butterfly: the two halves are one long (top, bot) row pair,
+/// so [`butterfly_rows`] applies directly (2-wide CLMUL on x86_64 with
+/// VPCLMULQDQ, scalar-with-ILP otherwise).
+#[cfg(all(target_arch = "x86_64", target_feature = "pclmulqdq"))]
+#[inline]
+fn butterfly_block_generic(chunk: &mut [F128], twiddle: F128, half: usize) {
+    debug_assert!(half >= 2);
+    debug_assert_eq!(chunk.len(), 2 * half);
+    let (top, bot) = chunk.split_at_mut(half);
+    butterfly_rows(top, bot, twiddle);
+}
+
+/// Two butterflies on a 4-element chunk `(u_a, v_a, u_b, v_b)` with DIFFERENT
+/// twiddles (deepest layer, across 2 adjacent blocks).
+#[cfg(any(
+    all(target_arch = "aarch64", target_feature = "aes"),
+    all(target_arch = "x86_64", target_feature = "pclmulqdq")
+))]
+#[inline]
+fn butterfly_pair_dispatch_in_chunk(chunk: &mut [F128], t_a: F128, t_b: F128) {
+    #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
+    // SAFETY: aes target feature enabled at compile time.
+    unsafe {
+        butterfly_across_blocks_neon_in_chunk(chunk, t_a, t_b)
+    };
+    #[cfg(not(all(target_arch = "aarch64", target_feature = "aes")))]
+    {
+        debug_assert_eq!(chunk.len(), 4);
+        let v = chunk[1];
+        let new_u = chunk[0] + v * t_a;
+        chunk[0] = new_u;
+        chunk[1] = v + new_u;
+        let v = chunk[3];
+        let new_u = chunk[2] + v * t_b;
+        chunk[2] = new_u;
+        chunk[3] = v + new_u;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -909,4 +1091,231 @@ unsafe fn butterfly_across_blocks_neon_in_chunk(chunk: &mut [F128], t_a: F128, t
     chunk[1] = new_v_a;
     chunk[2] = new_u_b;
     chunk[3] = new_v_b;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Rng(u64);
+    impl Rng {
+        fn new(seed: u64) -> Self {
+            Self(seed)
+        }
+        fn next_u64(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9E3779B97F4A7C15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+            z ^ (z >> 31)
+        }
+        fn f128(&mut self) -> F128 {
+            F128 {
+                lo: self.next_u64(),
+                hi: self.next_u64(),
+            }
+        }
+    }
+
+    fn rand_vec(rng: &mut Rng, n: usize) -> Vec<F128> {
+        (0..n).map(|_| rng.f128()).collect()
+    }
+
+    #[test]
+    fn forward_inverse_roundtrip() {
+        let mut rng = Rng::new(0xAB1);
+        for log_d in [1usize, 2, 3, 4, 6, 8] {
+            let ntt = AdditiveNttF128::standard(log_d);
+            let original = rand_vec(&mut rng, 1 << log_d);
+            let mut v = original.clone();
+            ntt.forward_transform(&mut v);
+            ntt.inverse_transform(&mut v);
+            assert_eq!(v, original, "roundtrip failed at log_d={log_d}");
+        }
+    }
+
+    #[test]
+    fn inverse_forward_roundtrip() {
+        let mut rng = Rng::new(0xAB2);
+        for log_d in [1usize, 2, 3, 4, 6, 8] {
+            let ntt = AdditiveNttF128::standard(log_d);
+            let original = rand_vec(&mut rng, 1 << log_d);
+            let mut v = original.clone();
+            ntt.inverse_transform(&mut v);
+            ntt.forward_transform(&mut v);
+            assert_eq!(
+                v, original,
+                "inverse∘forward roundtrip failed at log_d={log_d}"
+            );
+        }
+    }
+
+    #[test]
+    fn forward_is_linear() {
+        let mut rng = Rng::new(0xAB3);
+        for log_d in [1usize, 2, 3, 5] {
+            let ntt = AdditiveNttF128::standard(log_d);
+            let n = 1 << log_d;
+            let a = rand_vec(&mut rng, n);
+            let b = rand_vec(&mut rng, n);
+            let ab: Vec<F128> = a.iter().zip(&b).map(|(x, y)| *x + *y).collect();
+
+            let mut fa = a.clone();
+            ntt.forward_transform(&mut fa);
+            let mut fb = b.clone();
+            ntt.forward_transform(&mut fb);
+            let mut fab = ab.clone();
+            ntt.forward_transform(&mut fab);
+
+            for i in 0..n {
+                assert_eq!(
+                    fa[i] + fb[i],
+                    fab[i],
+                    "linearity fails at i={i}, log_d={log_d}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn ntt_of_zero_is_zero() {
+        for log_d in [1usize, 2, 3, 6] {
+            let ntt = AdditiveNttF128::standard(log_d);
+            let mut v = vec![F128::ZERO; 1 << log_d];
+            ntt.forward_transform(&mut v);
+            assert!(v.iter().all(|&x| x == F128::ZERO));
+        }
+    }
+
+    #[test]
+    fn twiddle_at_layer_0_uses_full_basis_minus_one() {
+        // At layer 0 (topmost forward butterfly), there's 1 block.
+        // twiddle(0, 0) = 0 (no bits set in block index 0).
+        let ntt = AdditiveNttF128::standard(4);
+        assert_eq!(ntt.twiddle(0, 0), F128::ZERO);
+    }
+
+    /// At layer log_d - 1 (deepest, where FRI starts), pairs are adjacent.
+    /// twiddle should match the "domain points" indexing.
+    #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
+    #[test]
+    fn neon_matches_scalar() {
+        let mut rng = Rng::new(0xBB1);
+        for log_d in 1..=10 {
+            let ntt = AdditiveNttF128::standard(log_d);
+            let original = rand_vec(&mut rng, 1 << log_d);
+            let mut v_scalar = original.clone();
+            ntt.forward_transform_scalar(&mut v_scalar);
+            let mut v_neon = original.clone();
+            ntt.forward_transform_neon(&mut v_neon);
+            assert_eq!(
+                v_neon, v_scalar,
+                "NEON disagrees with scalar at log_d={log_d}"
+            );
+        }
+    }
+
+    #[test]
+    fn interleaved_matches_per_lane() {
+        let mut rng = Rng::new(0xCC1);
+        // For several log_d and num_ntts, verify the interleaved transform
+        // matches running the per-lane scalar transform on each sub-NTT.
+        for log_d in [3usize, 4, 8] {
+            for num_ntts in [1usize, 2, 4, 8] {
+                let ntt = AdditiveNttF128::standard(log_d);
+                let n_total = (1 << log_d) * num_ntts;
+                let original = rand_vec(&mut rng, n_total);
+
+                // Interleaved.
+                let mut v_inter = original.clone();
+                ntt.forward_transform_interleaved_scalar(&mut v_inter, num_ntts);
+
+                // Reference: per-lane, gather + scalar transform + scatter.
+                let mut v_ref = original.clone();
+                for lane in 0..num_ntts {
+                    let mut sub: Vec<F128> = (0..(1 << log_d))
+                        .map(|pos| v_ref[pos * num_ntts + lane])
+                        .collect();
+                    ntt.forward_transform_scalar(&mut sub);
+                    for pos in 0..(1 << log_d) {
+                        v_ref[pos * num_ntts + lane] = sub[pos];
+                    }
+                }
+
+                assert_eq!(
+                    v_inter, v_ref,
+                    "interleaved mismatch at log_d={log_d}, num_ntts={num_ntts}"
+                );
+            }
+        }
+    }
+
+    #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
+    #[test]
+    fn interleaved_parallel_matches_scalar() {
+        let mut rng = Rng::new(0xCC2);
+        for log_d in [4usize, 10, 14, 17, 19] {
+            for &num_ntts in &[2usize, 8, 32] {
+                let ntt = AdditiveNttF128::standard(log_d);
+                let n_total = (1 << log_d) * num_ntts;
+                let original = rand_vec(&mut rng, n_total);
+                let mut v_scalar = original.clone();
+                ntt.forward_transform_interleaved_scalar(&mut v_scalar, num_ntts);
+                let mut v_par = original.clone();
+                ntt.forward_transform_interleaved_parallel(&mut v_par, num_ntts);
+                assert_eq!(
+                    v_par, v_scalar,
+                    "interleaved parallel mismatch at log_d={log_d}, num_ntts={num_ntts}"
+                );
+            }
+        }
+    }
+
+    #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
+    #[test]
+    fn batched_matches_scalar() {
+        let mut rng = Rng::new(0xBB4);
+        // Include sizes above the TARGET_SUB_NTT_LOG threshold (17) so we
+        // exercise the cache-blocked path.
+        for log_d in [4usize, 8, 12, 17, 18, 19, 20] {
+            let ntt = AdditiveNttF128::standard(log_d);
+            let original = rand_vec(&mut rng, 1 << log_d);
+            let mut v_scalar = original.clone();
+            ntt.forward_transform_scalar(&mut v_scalar);
+            let mut v_batched = original.clone();
+            ntt.forward_transform_batched(&mut v_batched);
+            assert_eq!(
+                v_batched, v_scalar,
+                "batched disagrees with scalar at log_d={log_d}"
+            );
+        }
+    }
+
+    #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
+    #[test]
+    fn parallel_matches_scalar() {
+        let mut rng = Rng::new(0xBB2);
+        for log_d in [4usize, 8, 12, 15, 16] {
+            let ntt = AdditiveNttF128::standard(log_d);
+            let original = rand_vec(&mut rng, 1 << log_d);
+            let mut v_scalar = original.clone();
+            ntt.forward_transform_scalar(&mut v_scalar);
+            let mut v_par = original.clone();
+            ntt.forward_transform_parallel(&mut v_par);
+            assert_eq!(
+                v_par, v_scalar,
+                "parallel disagrees with scalar at log_d={log_d}"
+            );
+        }
+    }
+
+    #[test]
+    fn deepest_layer_twiddle_count() {
+        let log_d = 4;
+        let ntt = AdditiveNttF128::standard(log_d);
+        // At layer log_d - 1 = 3, there are 2^3 = 8 blocks. twiddle(3, b) for b ∈ 0..8.
+        for b in 0..8 {
+            let _t = ntt.twiddle(log_d - 1, b);
+        }
+    }
 }

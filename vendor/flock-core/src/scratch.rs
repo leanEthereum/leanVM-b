@@ -138,3 +138,34 @@ pub fn prewarm_prover(m: usize) {
 pub fn clear() {
     POOL.lock().unwrap().clear();
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn take_reuses_given_buffer() {
+        clear();
+        let mut v = take_f128(1024);
+        for slot in v.iter_mut() {
+            *slot = F128 { lo: 7, hi: 9 };
+        }
+        let ptr = v.as_ptr();
+        give_f128(v);
+        // Same capacity request gets the same allocation back.
+        let v2 = take_f128(512);
+        assert_eq!(v2.as_ptr(), ptr);
+        assert_eq!(v2.len(), 512);
+        clear();
+    }
+
+    #[test]
+    fn pool_is_bounded() {
+        clear();
+        for _ in 0..(MAX_POOLED + 4) {
+            give_f128(take_f128(16));
+        }
+        assert!(POOL.lock().unwrap().len() <= MAX_POOLED);
+        clear();
+    }
+}

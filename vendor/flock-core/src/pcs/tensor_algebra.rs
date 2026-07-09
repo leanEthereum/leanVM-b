@@ -148,3 +148,143 @@ fn square_transpose(elems: &mut [F128]) {
     }
     elems.copy_from_slice(&out);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Rng(u64);
+    impl Rng {
+        fn new(seed: u64) -> Self {
+            Self(seed)
+        }
+        fn nx(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9E3779B97F4A7C15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+            z ^ (z >> 31)
+        }
+        fn f128(&mut self) -> F128 {
+            F128 {
+                lo: self.nx(),
+                hi: self.nx(),
+            }
+        }
+        fn ta(&mut self) -> TensorAlgebra {
+            let elems = (0..DEGREE).map(|_| self.f128()).collect();
+            TensorAlgebra { elems }
+        }
+    }
+
+    #[test]
+    fn transpose_involution() {
+        let mut rng = Rng::new(0xC0FFEE);
+        for _ in 0..10 {
+            let t = rng.ta();
+            assert_eq!(t.clone().transpose().transpose(), t);
+        }
+    }
+
+    #[test]
+    fn transpose_bit_semantics() {
+        // bit_j(elems[i]) on input becomes bit_i(elems[j]) on output.
+        let mut rng = Rng::new(42);
+        let original = rng.ta();
+        let transposed = original.clone().transpose();
+
+        fn bit(x: F128, b: usize) -> u64 {
+            if b < 64 {
+                (x.lo >> b) & 1
+            } else {
+                (x.hi >> (b - 64)) & 1
+            }
+        }
+
+        for i in 0..DEGREE {
+            for j in 0..DEGREE {
+                let orig_ij = bit(original.elems[i], j);
+                let trans_ji = bit(transposed.elems[j], i);
+                assert_eq!(orig_ij, trans_ji, "transpose mismatch at (i={i}, j={j})");
+            }
+        }
+    }
+
+    #[test]
+    fn from_vertical_scale_vertical() {
+        // from_vertical(x).scale_vertical(y) should equal from_vertical(x*y).
+        let mut rng = Rng::new(123);
+        for _ in 0..10 {
+            let x = rng.f128();
+            let y = rng.f128();
+            let lhs = TensorAlgebra::from_vertical(x).scale_vertical(y);
+            let rhs = TensorAlgebra::from_vertical(x * y);
+            assert_eq!(lhs, rhs);
+        }
+    }
+
+    #[test]
+    fn scale_horizontal_via_transpose() {
+        // scale_horizontal(s) == transpose.scale_vertical(s).transpose by
+        // construction, but verify the API works end-to-end.
+        let mut rng = Rng::new(456);
+        for _ in 0..10 {
+            let t = rng.ta();
+            let s = rng.f128();
+            let via_api = t.clone().scale_horizontal(s);
+            let manual = t.transpose().scale_vertical(s).transpose();
+            assert_eq!(via_api, manual);
+        }
+    }
+
+    #[test]
+    fn add_is_xor_pairwise() {
+        let mut rng = Rng::new(789);
+        let a = rng.ta();
+        let b = rng.ta();
+        let sum = a.clone() + &b;
+        for i in 0..DEGREE {
+            let expected = F128 {
+                lo: a.elems[i].lo ^ b.elems[i].lo,
+                hi: a.elems[i].hi ^ b.elems[i].hi,
+            };
+            assert_eq!(sum.elems[i], expected);
+        }
+    }
+
+    #[test]
+    fn add_zero_is_identity() {
+        let mut rng = Rng::new(1011);
+        let t = rng.ta();
+        let z = TensorAlgebra::zero();
+        assert_eq!(t.clone() + &z, t);
+    }
+
+    #[test]
+    fn one_from_vertical_one() {
+        assert_eq!(
+            TensorAlgebra::one(),
+            TensorAlgebra::from_vertical(F128::ONE)
+        );
+    }
+
+    #[test]
+    fn scale_vertical_distributes_over_add() {
+        // (a + b) * s == a*s + b*s
+        let mut rng = Rng::new(1213);
+        let a = rng.ta();
+        let b = rng.ta();
+        let s = rng.f128();
+        let lhs = (a.clone() + &b).scale_vertical(s);
+        let rhs = a.scale_vertical(s) + &b.scale_vertical(s);
+        assert_eq!(lhs, rhs);
+    }
+
+    #[test]
+    fn fold_vertical_with_zero_coeffs_is_zero() {
+        let mut rng = Rng::new(1415);
+        let t = rng.ta();
+        let zeros = vec![F128::ZERO; DEGREE];
+        assert_eq!(t.fold_vertical(&zeros), F128::ZERO);
+    }
+}

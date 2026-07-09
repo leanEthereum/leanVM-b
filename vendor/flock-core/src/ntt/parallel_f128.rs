@@ -247,3 +247,120 @@ impl ParallelNttF128 {
         fft_rec_par(data, &self.twiddles, 1, self.num_ntts);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Rng(u64);
+    impl Rng {
+        fn new(seed: u64) -> Self {
+            Self(seed)
+        }
+        fn next_u64(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9E3779B97F4A7C15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+            z ^ (z >> 31)
+        }
+        fn next_f128(&mut self) -> F128 {
+            F128 {
+                lo: self.next_u64(),
+                hi: self.next_u64(),
+            }
+        }
+    }
+
+    fn rand_data(rng: &mut Rng, n: usize) -> Vec<F128> {
+        (0..n).map(|_| rng.next_f128()).collect()
+    }
+
+    #[test]
+    fn neon_matches_scalar_for_random_inputs() {
+        let mut rng = Rng::new(0xBB1);
+        for k in 1..=5 {
+            for &num_ntts in &[2, 4] {
+                let beta = rng.next_f128();
+                let ntt = ParallelNttF128::new(k, beta, num_ntts);
+                let mut v_neon = rand_data(&mut rng, (1 << k) * num_ntts);
+                let mut v_scalar = v_neon.clone();
+
+                ntt.forward(&mut v_neon);
+                {
+                    fn scalar_rec(d: &mut [F128], tw: &[F128], idx: usize, n: usize) {
+                        let rows = d.len() / n;
+                        if rows == 1 {
+                            return;
+                        }
+                        butterfly_scalar(d, tw[idx - 1], n);
+                        let half = (rows >> 1) * n;
+                        let (lo, hi) = d.split_at_mut(half);
+                        scalar_rec(lo, tw, 2 * idx, n);
+                        scalar_rec(hi, tw, 2 * idx + 1, n);
+                    }
+                    scalar_rec(&mut v_scalar, ntt.twiddles(), 1, num_ntts);
+                }
+                assert_eq!(v_neon, v_scalar, "k={k}, num_ntts={num_ntts}");
+            }
+        }
+    }
+
+    #[test]
+    fn forward_is_linear() {
+        let mut rng = Rng::new(0xBB2);
+        for k in 1..=5 {
+            let num_ntts = 2;
+            let n = (1 << k) * num_ntts;
+            let beta = rng.next_f128();
+            let ntt = ParallelNttF128::new(k, beta, num_ntts);
+
+            let a = rand_data(&mut rng, n);
+            let b = rand_data(&mut rng, n);
+            let ab: Vec<F128> = a.iter().zip(&b).map(|(x, y)| *x + *y).collect();
+
+            let mut fa = a.clone();
+            ntt.forward(&mut fa);
+            let mut fb = b.clone();
+            ntt.forward(&mut fb);
+            let mut fab = ab.clone();
+            ntt.forward(&mut fab);
+
+            for i in 0..n {
+                assert_eq!(fa[i] + fb[i], fab[i], "linearity fails at i={i}, k={k}");
+            }
+        }
+    }
+
+    #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
+    #[test]
+    fn parallel_matches_sequential() {
+        let mut rng = Rng::new(0xBB3);
+        for k in 10..=12 {
+            let num_ntts = 4;
+            let n = (1 << k) * num_ntts;
+            let beta = rng.next_f128();
+            let ntt = ParallelNttF128::new(k, beta, num_ntts);
+            let original = rand_data(&mut rng, n);
+            let mut v_seq = original.clone();
+            let mut v_par = original.clone();
+            ntt.forward(&mut v_seq);
+            ntt.forward_parallel(&mut v_par);
+            assert_eq!(v_seq, v_par, "k={k}");
+        }
+    }
+
+    #[test]
+    fn ntt_of_zero_is_zero() {
+        let beta = F128 {
+            lo: 0xCAFE_BABE_DEAD_BEEF,
+            hi: 0x0123_4567_89AB_CDEF,
+        };
+        for k in 1..=5 {
+            let ntt = ParallelNttF128::new(k, beta, 2);
+            let mut v = vec![F128::ZERO; (1 << k) * 2];
+            ntt.forward(&mut v);
+            assert!(v.iter().all(|&x| x == F128::ZERO));
+        }
+    }
+}

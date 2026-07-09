@@ -55,12 +55,11 @@ pub(crate) enum LOp {
         od: Off,
         of: Off,
     },
-    /// `BLAKE3`: the two 256-bit inputs `a = a..a+4`, `b = b..b+4` and output
-    /// `c = c..c+4` each occupy four CONSECUTIVE frame cells (the op reads/writes
-    /// the operand and its `×g`, `×g²`, `×g³` successors).
+    /// `BLAKE3`: the four 128-bit input chunks `ins` are addressed independently,
+    /// each spanning TWO consecutive frame cells (`fp+ins[i]`, `fp+ins[i]+1`);
+    /// the 32-byte output `c = c..c+4` occupies four CONSECUTIVE frame cells.
     Blake3 {
-        a: Off,
-        b: Off,
+        ins: [Off; 4],
         c: Off,
     },
 }
@@ -69,6 +68,10 @@ pub(crate) enum LOp {
 pub(crate) enum Hint {
     /// `m[fp·g^ptr] = g^{fresh base}` — a fresh, disjoint frame for `callee`.
     AllocFrame { ptr: Off, callee: String },
+    /// `AllocFrame` sized to the **largest** of several callees — a shared frame
+    /// for a dispatched call (all `callees` share the arg/return layout; only
+    /// their local count, hence frame size, differs). See [`FnLower::lower_dispatched_call`].
+    AllocFrameMax { ptr: Off, callees: Vec<String> },
     /// `m[fp·g^ptr] = g^{fresh base}` — a fresh, disjoint heap region of `size`
     /// cells (a `HeapBuf(size)`), addressed by g-power offsets from the pointer.
     AllocBuffer { ptr: Off, size: u32 },

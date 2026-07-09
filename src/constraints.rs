@@ -7,8 +7,8 @@
 //! rounds are pure `E`.
 
 use crate::PAR_THRESHOLD;
-use crate::field::{F64, F128T};
-use crate::multilinear::{add3, eq_table, fold_low_inplace, fold_low_k, interp, interp_k, lagrange_eval, tri_nodes};
+use crate::field::{F64, F128T, mul_by_g, mul_by_g_e};
+use crate::multilinear::{add3, eq_table, fold_low_inplace, fold_low_k, lagrange_eval, tri_nodes};
 use crate::transcript::{ProverState, VerifierState};
 use rayon::prelude::*;
 
@@ -39,40 +39,46 @@ pub fn prove<F: Fn(F128T, &[F128T]) -> F128T + Sync>(
     let r = ps.sample_vec(tau);
 
     let ncols = cols.len();
-    let nd = tri_nodes();
     let mut rho = Vec::with_capacity(tau);
 
-    // Round 0 (mixed): the K columns are interpolated against the E nodes via
-    // `interp_k`, then each column folds K-by-E into the E tables the remaining
+    // Round 0 (mixed): the round message is evaluated at the 3 nodes {0, 1, g},
+    // where the interpolation of the K columns to each node is FREE (char-2): at
+    // 0 it is `lo`, at 1 it is `hi`, and at the generator `g = x` it is
+    // `lo + mul_by_g(lo+hi)` — a shift-fold, no PMULL. The three column-vectors
+    // `v0..v2` (one contiguous scratch, split three ways) fill in a single pass
+    // with no interpolation multiplies, then the constraint evaluates at each
+    // node. Afterwards each column folds K-by-E into the E tables the remaining
     // rounds consume. A single-row table (tau = 0) just lifts.
     let mut tables: Vec<Vec<F128T>> = if tau == 0 {
         cols.iter().map(|c| vec![F128T::from(c[0])]).collect()
     } else {
         let half = cols[0].len() / 2;
         let eqr = eq_table(&r[1..]);
-        let summand = |i: usize, vals: &mut [F128T]| -> [F128T; 3] {
-            let mut acc = [F128T::ZERO; 3];
+        let summand = |i: usize, scratch: &mut [F128T]| -> [F128T; 3] {
             let e = eqr[i];
-            for (ti, &tt) in nd.iter().enumerate() {
-                for (ci, c) in cols.iter().enumerate() {
-                    vals[ci] = interp_k(c[2 * i], c[2 * i + 1], tt);
-                }
-                acc[ti] = e * c_eval(eta, vals);
+            let (v0, rest) = scratch.split_at_mut(ncols);
+            let (v1, v2) = rest.split_at_mut(ncols);
+            for (ci, c) in cols.iter().enumerate() {
+                let lo = c[2 * i];
+                let hi = c[2 * i + 1];
+                v0[ci] = F128T::from(lo);
+                v1[ci] = F128T::from(hi);
+                v2[ci] = F128T::from(lo + mul_by_g(lo + hi));
             }
-            acc
+            [e * c_eval(eta, v0), e * c_eval(eta, v1), e * c_eval(eta, v2)]
         };
         let p = if half >= PAR_THRESHOLD {
             (0..half)
                 .into_par_iter()
                 .fold(
-                    || ([F128T::ZERO; 3], vec![F128T::ZERO; ncols]),
-                    |(acc, mut vals), i| (add3(acc, summand(i, &mut vals)), vals),
+                    || ([F128T::ZERO; 3], vec![F128T::ZERO; 3 * ncols]),
+                    |(acc, mut scratch), i| (add3(acc, summand(i, &mut scratch)), scratch),
                 )
                 .map(|(acc, _)| acc)
                 .reduce(|| [F128T::ZERO; 3], add3)
         } else {
-            let mut vals = vec![F128T::ZERO; ncols];
-            (0..half).fold([F128T::ZERO; 3], |acc, i| add3(acc, summand(i, &mut vals)))
+            let mut scratch = vec![F128T::ZERO; 3 * ncols];
+            (0..half).fold([F128T::ZERO; 3], |acc, i| add3(acc, summand(i, &mut scratch)))
         };
         ps.add_scalars(&p);
         let rk = ps.sample();
@@ -84,32 +90,39 @@ pub fn prove<F: Fn(F128T, &[F128T]) -> F128T + Sync>(
     for j in 1..tau {
         let half = tables[0].len() / 2;
         // Round message: the degree-2 product part `Σ_{x'} eq(r_{>j}, x')·C(t, x')`
-        // at the 3 nodes; the verifier multiplies `eq(r_{≤j}, ·)` back. `vals` is a
-        // reused scratch buffer (the columns interpolated to node `tt`).
+        // at the 3 nodes {0, 1, g}; the verifier multiplies `eq(r_{≤j}, ·)` back.
+        // The interpolation to each node is free (char-2): at 0 it is `lo`, at 1
+        // it is `hi`, and at the generator `g = x` it is `lo + mul_by_g_e(lo+hi)`
+        // — two shift-folds, no PMULL. So we fill the three column-vectors
+        // `v0..v2` (one contiguous scratch, split three ways) in a single pass
+        // with no interpolation multiplies, then evaluate the constraint at each
+        // node.
         let eqr = eq_table(&r[j + 1..]);
-        let summand = |i: usize, vals: &mut [F128T]| -> [F128T; 3] {
-            let mut acc = [F128T::ZERO; 3];
+        let summand = |i: usize, scratch: &mut [F128T]| -> [F128T; 3] {
             let e = eqr[i];
-            for (ti, &tt) in nd.iter().enumerate() {
-                for (ci, c) in tables.iter().enumerate() {
-                    vals[ci] = interp(c[2 * i], c[2 * i + 1], tt);
-                }
-                acc[ti] = e * c_eval(eta, vals);
+            let (v0, rest) = scratch.split_at_mut(ncols);
+            let (v1, v2) = rest.split_at_mut(ncols);
+            for (ci, c) in tables.iter().enumerate() {
+                let lo = c[2 * i];
+                let hi = c[2 * i + 1];
+                v0[ci] = lo;
+                v1[ci] = hi;
+                v2[ci] = lo + mul_by_g_e(lo + hi);
             }
-            acc
+            [e * c_eval(eta, v0), e * c_eval(eta, v1), e * c_eval(eta, v2)]
         };
         let p = if half >= PAR_THRESHOLD {
             (0..half)
                 .into_par_iter()
                 .fold(
-                    || ([F128T::ZERO; 3], vec![F128T::ZERO; ncols]),
-                    |(acc, mut vals), i| (add3(acc, summand(i, &mut vals)), vals),
+                    || ([F128T::ZERO; 3], vec![F128T::ZERO; 3 * ncols]),
+                    |(acc, mut scratch), i| (add3(acc, summand(i, &mut scratch)), scratch),
                 )
                 .map(|(acc, _)| acc)
                 .reduce(|| [F128T::ZERO; 3], add3)
         } else {
-            let mut vals = vec![F128T::ZERO; ncols];
-            (0..half).fold([F128T::ZERO; 3], |acc, i| add3(acc, summand(i, &mut vals)))
+            let mut scratch = vec![F128T::ZERO; 3 * ncols];
+            (0..half).fold([F128T::ZERO; 3], |acc, i| add3(acc, summand(i, &mut scratch)))
         };
         ps.add_scalars(&p);
         let rk = ps.sample();

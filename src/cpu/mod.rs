@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use rayon::prelude::*;
 
 use crate::constraints;
-use crate::field::{F64, F128T, G, g_pow};
+use crate::field::{F64, F128T, g_pow};
 use crate::leaf::{self, Block, ColumnClaim, Coord};
 use crate::pcs;
 use crate::tables::{
@@ -34,15 +34,10 @@ pub(crate) use trace::{Brow, Drow, Jrow, Srow, Trace, Xrow};
 /// 256-bit operands `a = va[0..4]`, `b = vb[0..4]` laid out little-endian into
 /// 64 bytes (8 bytes per 64-bit word); the 32-byte digest is split back into the
 /// four output words `c`. The BLAKE3 hash of the 64-byte input — the relation
-/// flock then proves ([`crate::blake3_flock`]).
+/// flock then proves ([`crate::blake3_flock`]). Delegates to
+/// [`crate::vmhash::compress`], THE primitive every VM-native hash chains.
 fn blake3_compress(va: [F64; 4], vb: [F64; 4]) -> [F64; 4] {
-    let mut input = [0u8; 64];
-    for (slot, w) in input.chunks_exact_mut(8).zip(va.into_iter().chain(vb)) {
-        slot.copy_from_slice(&w.0.to_le_bytes());
-    }
-    let digest = blake3::hash(&input);
-    let d = digest.as_bytes();
-    std::array::from_fn(|k| F64(u64::from_le_bytes(d[8 * k..8 * k + 8].try_into().unwrap())))
+    crate::vmhash::compress(va, vb)
 }
 
 /// Data-memory size bounds (doc §Memory): memory is `2^h` cells with
@@ -80,11 +75,19 @@ const MAX_LOG_BYTECODE: usize = 32;
 /// input) — bound up front, so a different program yields a different sponge from
 /// the very first squeeze. Both sides hold the program, so both compute this
 /// identically; the announced sizes ride the stream (`announce_public`).
-fn program_digest(prog: &[Op]) -> [F128T; 2] {
-    let mut h = blake3::Hasher::new();
-    h.update(b"leanvm-b/program/v0");
-    h.update(&(prog.len() as u64).to_le_bytes());
+fn program_digest(prog: &[Op]) -> [F64; 4] {
+    // VM-native: encode the program as a field-element slice and hash it with the
+    // Merkle–Damgård slice hash ([`crate::vmhash::hash_slice`]), so a recursive
+    // verifier can recompute this digest with the `Blake3` opcode alone.
+    let mut words: Vec<F64> = Vec::with_capacity(3 * prog.len() + 2);
+    // Domain/version marker (the MD IV also binds the total length).
+    words.push(F64(prog.len() as u64));
+    words.push(F64(1));
     for op in prog {
+        // Encode every op injectively as (tag, four u32 operands, one field
+        // immediate) → three words: two operand-offset words packed with the tag,
+        // then the immediate. BLAKE3 carries five offsets, so its 4th/5th ride
+        // the (otherwise-zero) immediate word.
         let (tag, a, b, c, k) = match *op {
             Op::Xor { a, b, c } => (0u8, a, b, c, F64::ZERO),
             Op::Mul { a, b, c } => (1, a, b, c, F64::ZERO),
@@ -98,28 +101,27 @@ fn program_digest(prog: &[Op]) -> [F128T; 2] {
                 (3 + mode as u8, alpha, beta, gamma, F64::ZERO) // mode ∈ {Cell,Pc,Fp} ⇒ tag 3/4/5
             }
             Op::Jump { oc, od, of } => (6, oc, od, of, F64::ZERO),
-            Op::Blake3 { a, b, c } => (7, a, b, c, F64::ZERO),
+            Op::Blake3 { ins, out } => {
+                (7, ins[0], ins[1], ins[2], F64(ins[3] as u64 | ((out as u64) << 32)))
+            }
         };
-        h.update(&[tag]);
-        h.update(&a.to_le_bytes());
-        h.update(&b.to_le_bytes());
-        h.update(&c.to_le_bytes());
-        h.update(&k.0.to_le_bytes());
+        words.push(F64(a as u64 | ((b as u64) << 32)));
+        words.push(F64(c as u64 | ((tag as u64) << 32)));
+        words.push(k);
     }
-    let d = *h.finalize().as_bytes();
-    let w = |o: usize| u64::from_le_bytes(d[o..o + 8].try_into().unwrap());
-    [F128T::new(w(0), w(8)), F128T::new(w(16), w(24))]
+    crate::vmhash::hash_slice(&words)
 }
 
 /// The transcript seed: the public statement bound before any challenge — the
 /// public input `pi` followed by the program's stored [`digest`](Program::digest)
 /// (computed once at assembly, not re-hashed here). Both sides build it identically.
 fn transcript_seed(program: &Program, pi: &[F64; 2]) -> [F128T; 4] {
+    let d = program.digest;
     [
         F128T::from(pi[0]),
         F128T::from(pi[1]),
-        program.digest[0],
-        program.digest[1],
+        F128T::new(d[0].0, d[1].0),
+        F128T::new(d[2].0, d[3].0),
     ]
 }
 
@@ -175,7 +177,7 @@ pub struct Program {
     /// program. Trusted to match `prog` — always set by [`Program::assemble`] from
     /// the bytecode, so a `Program` value cannot carry a digest inconsistent with
     /// its own `prog`.
-    pub(crate) digest: [F128T; 2],
+    pub(crate) digest: [F64; 4],
     /// Prover-side frame/buffer allocation hints (keyed by global pc) and the
     /// size of `main`'s frame — the nondeterminism [`Program::execute`] needs to
     /// run the program. Public verification (\S `verify`) ignores them.
@@ -359,6 +361,11 @@ pub struct Stats {
     pub cycles: usize,
     pub counts: [usize; 6],
     pub committed: usize,
+    /// Data memory is `2^log_mem` cells (the padded write-once image).
+    pub log_mem: usize,
+    /// Cells actually touched, before the pad to `2^log_mem` — the real memory
+    /// footprint (`log2` is fractional).
+    pub mem_used: usize,
 }
 
 /// Prove the program on the given public input: run it (witness generation),
@@ -368,7 +375,22 @@ pub struct Stats {
 pub fn prove(program: &Program, public_input: [F64; 2]) -> (Proof, Stats) {
     let prof = std::env::var("LEANVM_PROFILE").is_ok();
     let ms = |t: std::time::Instant| t.elapsed().as_secs_f64() * 1e3;
+    let t = std::time::Instant::now();
     let exec = program.execute(public_input);
+    if prof {
+        eprintln!("[prove] execute     : {:>7.2} ms", ms(t));
+    }
+    // The BLAKE3 R1CS setup (circuit construction) is a ~hundreds-of-ms cost that
+    // depends only on the compression count (the circuit *shape*), not the witness
+    // — but it is otherwise built synchronously inside the final reduction, adding
+    // that latency serially with nothing overlapping it. Now that `execute` has
+    // told us the count, build it on a background thread: it constructs
+    // concurrently with the build/commit/bus/constraint stages (~1 s of work) and
+    // lands in the shared setup cache, so the reduction's `setup_for` is a cache
+    // hit. Pure warm-up — the result is fetched from the cache, nothing here joins
+    // the handle. (A no-BLAKE3 program still warms the size-1 padding shape.)
+    let n_b3_warm = exec.trace.blake3.len().max(1);
+    std::thread::spawn(move || crate::blake3_flock::warm_setup(n_b3_warm));
     let cycles = exec.cycles;
     let w = program.build(&exec);
     let counts = w.row_counts;
@@ -479,6 +501,8 @@ pub fn prove(program: &Program, public_input: [F64; 2]) -> (Proof, Stats) {
             cycles,
             counts,
             committed: committed_size,
+            log_mem: w.log_mem,
+            mem_used: exec.mem_used,
         },
     )
 }
@@ -635,7 +659,7 @@ mod tests {
         for (k, &w) in b.iter().enumerate() {
             prog.push(Op::Set { o: 6 + k as u32, k: w });
         }
-        prog.push(Op::Blake3 { a: 2, b: 6, c: 10 });
+        prog.push(Op::Blake3 { ins: [2, 4, 6, 8], out: 10 });
         // 16 slots: 9 executed so far; 6 filler SETs step the pc to 15 (halt);
         // slot 15 is the never-executed sentinel.
         for k in 0..6u32 {
@@ -681,11 +705,11 @@ mod tests {
         verify(&program, &pi, &proof).expect("BLAKE3 program verifies");
     }
 
-    /// A self-hash `BLAKE3(h, h)` (the hash-chain step) passes the *same* operand
-    /// base as both `a` and `b` (`a == b`), so one 256-bit quad feeds both inputs
-    /// with no copy. The row reads those four cells twice; the running access counts
-    /// thread through and the bus still balances. This is the aliasing the
-    /// consecutive-quad DSL lowering relies on.
+    /// A self-hash `BLAKE3(h, h)` (the hash-chain step) passes the *same* input
+    /// chunks as both `a` and `b` (`ins[0..2] == ins[2..4]`), so one 256-bit quad
+    /// feeds both inputs with no copy. The row reads those four cells twice; the
+    /// running access counts thread through and the bus still balances. This is
+    /// the aliasing the DSL's hash-chain lowering relies on.
     #[test]
     fn blake3_self_hash_aliased_operands() {
         let h: [F64; 4] = [
@@ -700,7 +724,7 @@ mod tests {
         for (k, &w) in h.iter().enumerate() {
             prog.push(Op::Set { o: 2 + k as u32, k: w });
         }
-        prog.push(Op::Blake3 { a: 2, b: 2, c: 6 }); // a == b: hash h ‖ h into cells 6..10
+        prog.push(Op::Blake3 { ins: [2, 4, 2, 4], out: 6 }); // a == b: hash h ‖ h into cells 6..10
         prog.push(Op::Set { o: 12, k: F64::ONE }); // filler
         prog.push(Op::Set { o: 13, k: F64::ONE }); // filler
         prog.push(Op::Xor { a: 0, b: 0, c: 0 }); // sentinel

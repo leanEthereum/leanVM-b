@@ -83,6 +83,52 @@ program in the directory:
 # public_input: GEN ** 89, 101229015297003380629709256178361811305
 ```
 
+## Global constants and placeholders
+
+Above the functions (after the optional `snark_lib` import) a program may
+declare **global constants** — top-level `NAME = <const-expr>`:
+
+```python
+from snark_lib import *
+
+N = 8                    # an integer size / value
+STEP = GEN ** 2          # a g-power constant (index carried in the exponent)
+WIDE = N + 1             # compile-time INTEGER arithmetic (`+ - * / **`);
+                         # references to *earlier* constants are allowed
+
+def main():
+    buf = StackBuf(N)    # a constant is a plain literal: usable as a size,
+    x = GEN ** N         # a `**` exponent, a stack/slice index, an operand,
+    assert log x < N     # an `assert log _ < _` bound, or a `Const` argument
+    return
+```
+
+Each constant is **evaluated to its field value** and substituted, as a single
+literal, everywhere its name appears below — so unlike a `Const` parameter it
+needs no call site and works in every literal position. Constants must precede
+the `def`s and are resolved *before* variables, so a constant name is
+**reserved**: do not reuse it as a parameter or local name. (Being a valid
+Python file, `N = 8` is also just a Python module global.)
+
+**Placeholders** let a host fill values at compile time without editing the
+source. Any identifier may be mapped to replacement text before parsing
+(`compiler::parse_with_replacements` / `parse_file_with_replacements`, taking a
+`BTreeMap<String, String>`); the replacement is identifier-bounded (`FOO` does
+not touch `FOOBAR`). The idiom is a placeholder feeding a constant:
+
+```python
+V = V_PLACEHOLDER        # with replacement  "V_PLACEHOLDER" ↦ "128"
+LOG_LIFETIME = LOG_LIFETIME_PLACEHOLDER
+
+def main():
+    ...                  # V is the constant 128 throughout
+```
+
+so one source template compiles at many sizes. An unfilled placeholder (no
+replacement, no matching constant) is a compile error, not a silent variable.
+A program that uses placeholders only type-checks as Python once its
+placeholders are also defined (e.g. bound in `snark_lib` for tooling).
+
 ## Functions
 
 ```python
@@ -105,8 +151,8 @@ per call. Every non-`main` function must end in an explicit `return`; in
 
 ```python
 def hash_pair(buf, k: Const):
-    h = StackBuf(2)
-    blake3(buf[k * 2:k * 2 + 2], buf[k * 2:k * 2 + 2], h)
+    h = StackBuf(4)
+    blake3(buf[k * 4:k * 4 + 4], buf[k * 4:k * 4 + 4], h)
     return h[0], h[1]
 ```
 
@@ -124,6 +170,35 @@ pairing dispatches a runtime index to a const-indexed helper:
 r = match_range(log(x), range(0, 4), lambda i: hash_pair(buf, i))
 ```
 
+### `@unroll` — inline a function at its call sites
+
+```python
+@unroll
+def combine(a, b, k: Const):
+    s = StackBuf(2)
+    if k % 2 == 0:      # a folded `if` (see below): baked per Const value
+        s[0] = a
+    else:
+        s[0] = b
+    s[1] = a + b
+    return s[k % 2]
+```
+
+An `@unroll` function is **expanded at each call site** instead of emitting a
+real call — no frame, no argument/return `DEREF`s, no call/return `JUMP`s. The
+body must be a single **tail** `return`; it may contain `blake3`, `if`, and
+`unroll`, but not a call to another (user) function, a `for`/`match`, or any
+nested/early `return`. It is never lowered standalone; a call to a
+non-`@unroll` function is unchanged. Named for the DSL's compile-time
+expansion verb (cf. `unroll(a, b)` for loops).
+
+Because the body runs in the *caller's* frame, a `Const` parameter whose `if`s
+fold (below) bakes straight-line, per-case code — the idiom for a `match_range`
+arm that must specialize on the arm value. The trade-off is frame cells: each
+call site gets its own copy, so `@unroll` pays off for small, hot callees;
+inlining a large body at many sites grows the committed witness (more data
+memory), so it is opt-in, not automatic.
+
 ## Variables
 
 Bindings are **immutable**: `x = e` names a fresh cell. Re-binding a name is
@@ -133,6 +208,21 @@ mutation and no compound assignment.
 A name bound to an integer literal (`x = 2`) additionally acts as a
 **compile-time index constant** — usable in stack indexes and slice bounds
 (see below). Any other re-binding clears that role.
+
+Three families of binding are folded and carried **virtually**, costing no
+instruction until used as a value:
+
+- **g-powers and shifted pointers** — a cursor like `s = s * GEN` or a pointer
+  view `p = buf * GEN ** k`. The offset folds into the `DEREF` address of each
+  access; only a scalar use materializes it.
+- **field constants** — a value built from literals / `GEN ** k` by field `+`
+  and `*`, e.g. a running weight `w = w * CHAIN_LENGTH` in an unrolled loop.
+  The arithmetic that advances it is compile-time (zero instructions); each use
+  is one `SET` of the folded constant.
+- **stack-cell copies and zeros** — a store `sa[k] = other` or `sa[k] = 0` is
+  recorded as an alias rather than emitting a `MUL`/`SET`; every read of `sa[k]`
+  forwards to the real source (write-once keeps it valid). This is what makes
+  assembling a `BLAKE3` operand from scattered values free (see "BLAKE3").
 
 ## Memory
 
@@ -152,10 +242,14 @@ v = buf[i]            # m[buf·i]   — i is any runtime g-power (e.g. a loop co
 buf[i * GEN] = v      # the next cell along
 ```
 
-The index is a runtime field element; cell `k` of the buffer lives at address
-`buf · g^k`. A read or store is one `DEREF` (plus one `MUL` for the `buf·i`
-pointer product). There are no bounds checks — the buffer is a region
-convention, not a checked type.
+The index is a field element; cell `k` of the buffer lives at address
+`buf · g^k`. A read or store is one `DEREF`. A **runtime** index costs one
+extra `MUL` for the `buf·i` pointer, but a **compile-time g-power** offset —
+`buf[1]`, `buf[GEN ** k]`, or a cursor advanced by `× GEN ** m` — folds into
+the `DEREF`'s address immediate for free: no `MUL`, no `SET`, and the cursor
+arithmetic itself vanishes (so a `× GEN` walk over consecutive cells is zero
+instructions). There are no bounds checks — the buffer is a region convention,
+not a checked type.
 
 ### `StackBuf(n)` — frame-cell runs, indexed by compile-time integers
 
@@ -164,12 +258,14 @@ sa = StackBuf(3)      # n consecutive cells of the current frame
 sa[0] = 3             # direct frame cell: zero instructions to address
 sa[2] = sa[0] + sa[1]
 x = 1
-v = sa[x + 1]         # indexes: literals, literal-bound names, + and * of those
+v = sa[x + 1]         # indexes: literals, literal-bound names, and + * // % of those
 ```
 
-Stack indexes are **compile-time integers** and index arithmetic is *integer*
-arithmetic (`x + 1` above is 2 — index space, not the field XOR the same
-syntax means elsewhere). Bounds are checked at compile time. A `StackBuf`
+Stack indexes and slice bounds are **compile-time integers**, and index
+arithmetic (`+ * // %`) is *integer* arithmetic (`x + 1` above is 2, `k // 2`
+floor-divides, `k % 2` is a remainder — index space, not the field, where XOR
+is what `+` means and `//`/`%` have no meaning at all: using one as a runtime
+field value is a compile error). Bounds are checked at compile time. A `StackBuf`
 name is a run of cells, not a scalar: using it as one is an error, and it
 cannot be captured into a `for` loop body (carry state through a `HeapBuf`
 instead).
@@ -235,7 +331,7 @@ for i in unroll(0, 7):
 
 def chain(buf, n: Const):
     for i in unroll(0, n):           # a Const parameter as a bound
-        blake3(buf[i * 2:i * 2 + 2], buf[i * 2:i * 2 + 2], buf[i * 2 + 2:i * 2 + 4])
+        blake3(buf[i * 4:i * 4 + 4], buf[i * 4:i * 4 + 4], buf[i * 4 + 4:i * 4 + 8])
     return
 ```
 
@@ -264,6 +360,12 @@ predicates — order facts come from range-check asserts). The lowering is one
 `XOR` plus one conditional `JUMP` on it; the taken jump goes to whichever
 block the test doesn't fall into, so no negation gadget is needed. An `elif`
 is sugar for an `else` holding a nested `if`.
+
+When **both sides are compile-time integers** (e.g. after a `Const` parameter
+is substituted — `if k % 2 == 0:`), the condition is known at compile time and
+the `if` **folds** to just the taken branch: no `XOR`, no `JUMP`, no `self-fp`.
+This is what lets an `@unroll` function bake different straight-line code per
+`Const` value.
 
 Two write-once-flavored rules:
 
@@ -328,6 +430,15 @@ name those cells after the join. Multiple targets take a multi-return call as
 the arm body. The whole call sits on one line (no line continuation), and the
 `match` soundness caveat applies unchanged.
 
+**Dispatched-call fusion.** When *every* arm is a call to the same function
+with identical runtime arguments — the common `lambda k: f(a, b, k)`, where
+only a `Const` argument varies — the compiler builds the callee frame **once**
+and the dispatch jumps straight into the selected specialization's entry, which
+returns past the join. Each taken arm is then just the trampoline's two
+instructions (`SET entry; JUMP`) instead of a full call: no per-arm frame
+setup, call jump, or return jump. (The `walk`-per-digit dispatch in the XMSS
+verifier is the motivating case.)
+
 Statements without effect are rejected.
 
 ## Assertions
@@ -370,23 +481,31 @@ complement's `DEREF` panic ("not a small g-power … a failed range check").
 ## BLAKE3
 
 ```python
-h = StackBuf(2)
+h = StackBuf(4)
 blake3(a, b, h)                    # digest of (a, b) written into h
-blake3(t[0:2], t[x:x + 2], t[4:6])  # slices of one large StackBuf
-blake3(h, hb[0:2], hb[2:4])         # HeapBuf slices, input and output
-blake3(hb[i:i + 2], h, hb[j:j + 2])  # runtime-indexed heap slices (i, j g-powers)
+blake3(t[0:4], t[x:x + 4], t[8:12])  # slices of one large StackBuf
+blake3(h, hb[0:4], hb[4:8])         # HeapBuf slices, input and output
+blake3(hb[i:i + 4], h, hb[j:j + 4])  # runtime-indexed heap slices (i, j g-powers)
 ```
 
 `blake3(a, b, out)` is a **statement**: it compresses the two 256-bit operands
-`a`, `b` (64 bytes) and writes the 32-byte digest into the 2-cell run `out`.
-Operands are size-2 `StackBuf`s or 2-cell slices:
+`a`, `b` (64 bytes) and writes the 32-byte digest into the 4-cell run `out`.
+Operands are size-4 `StackBuf`s or 4-cell slices:
 
 - **stack operands** are read/written in place — zero copies; a self-hash
-  `blake3(h, h, out)` aliases one pair into both inputs;
-- **heap slices** are bridged through the stack (the `BLAKE3` instruction
-  addresses only frame cells): +2 `DEREF`s per heap operand, inputs pulled
-  before the hash, outputs stored after — the same instruction either way,
-  write-once memory fills whichever side is unset.
+  `blake3(h, h, out)` aliases one quad into both inputs;
+- the instruction addresses its **four 128-bit input chunks independently**
+  (each chunk = two consecutive cells), so when a 256-bit operand is
+  *assembled* from values that live in different places — the idiom
+  `p = StackBuf(4); p[0] = t0; p[1] = t1; p[2] = pp0; p[3] = pp1;
+  blake3(p, …)` — the copies vanish: a stack store of a plain copy or a zero
+  is forwarded to its source (see "Variables"), and `BLAKE3` reads each chunk
+  where it already is, provided the pair stays contiguous at the source (a
+  chunk whose two cells forward to non-adjacent places is materialized);
+- **heap slices** are still bridged through the stack for the *input pull* (the
+  operand's words come from the heap): +1 `DEREF` per heap cell, and the output,
+  if a heap slice, is stored after — write-once memory fills whichever side is
+  unset.
 
 If `out` was already written, the statement *asserts* the digest equals it —
 write-once turning the hash into a verification, which is exactly what a
@@ -430,17 +549,17 @@ entry — repeated lines with the same name are its successive entries:
 | `x = <literal>` / `GEN ** k` | 1 `SET` |
 | `a + b` | 1 `XOR` |
 | `a * b` | 1 `MUL` |
-| heap read / store `buf[i]` | 1 `MUL` (pointer) + 1 `DEREF` |
+| heap read / store `buf[i]` | 1 `DEREF`; +1 `MUL` for a *runtime* index (a compile-time g-power offset folds into the `DEREF` — free) |
 | stack read / store `sa[k]` | 0 (direct cell addressing) |
 | `assert a == b` | 2 |
 | `assert log x < k` | 3 (+1 `SET` amortized per bound per frame) |
-| `if a == b: …` | 3 (+2 to skip a non-empty `else`; +2 amortized `self-fp` per branching function) |
+| `if a == b: …` | 3 (+2 to skip a non-empty `else`; +2 amortized `self-fp` per branching function); **0 if the condition is compile-time** |
 | `match log(x): …` | ≈ 7, independent of the case count |
-| `… = match_range(log(x), …)` | the `match`, + 1 `MUL` copy per target |
-| function call | ≈ `n_args + n_returns + 4` |
+| `… = match_range(log(x), …)` | the `match` + the arm; results written into the targets directly. Uniform-call arms (`lambda k: f(a, b, k)`) **fuse**: one shared frame + dispatch to entry, each arm just `SET`+`JUMP` |
+| function call | ≈ `n_args + n_returns + 4` (0 when the callee is `@unroll`) |
 | `mul_range` iteration | body + ≈ 1 `MUL` + 1 `XOR` + call overhead |
 | `unroll` iteration | body only (compile-time replication) |
-| `blake3(a, b, out)` | 1 (+2 `DEREF`s per heap operand, +1 `MUL` per runtime slice start) |
+| `blake3(a, b, out)` | 1; input words read in place (copies/zeros assembling an operand are forwarded, not emitted), +1 `DEREF` per heap input word, +1 `MUL` per runtime slice start |
 | `hint_witness(dest, "name")` | 0 (+1 `MUL` for a runtime slice start) |
 
 ## Example
@@ -472,7 +591,8 @@ def main():
 
 Mutable variables and compound assignment; conditions other than field
 (in)equality; `match` defaults (`case _`) and non-contiguous cases; top-level
-constants; multi-file imports; `@inline`; `Const` parameters as `mul_range`
+constant *arrays* (only scalar constants — see "Global constants and
+placeholders"); multi-file imports; `Const` parameters as `mul_range`
 or range-check bounds (a substituted literal is a bit-pattern element, not
 the g-power a bound needs); runtime slice starts on a `StackBuf`; runtime
 range-check bounds (`assert log a < log b` with runtime `b`); custom hint

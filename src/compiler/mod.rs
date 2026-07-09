@@ -33,11 +33,45 @@ pub use ast::*;
 pub(crate) use ir::*;
 use lower::lower_func;
 pub(crate) use parser::subst_stmts;
-pub use parser::{parse, parse_const, parse_file};
+pub use parser::{
+    apply_replacements, parse, parse_const, parse_file, parse_file_with_replacements,
+    parse_with_replacements,
+};
 
 // ----------------------------------------------------------------------------
 // Layout, resolution, witness generation
 // ----------------------------------------------------------------------------
+
+/// A fast [`std::hash::Hasher`] for the g-power reverse index (`g^k ↦ k`). The
+/// keys are field elements that are effectively uniform, so one multiplicative
+/// mix of the two 64-bit limbs distributes well — far cheaper than the default
+/// SipHash across the interpreter's millions of reverse-index lookups/inserts
+/// (e.g. growing the index to `2^20` on a dynamic allocation).
+#[derive(Default)]
+pub(crate) struct GPowHasher(u64);
+
+impl std::hash::Hasher for GPowHasher {
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        // Fallback for non-u64 writes (F64's derived Hash uses `write_u64`, so
+        // this is not on the hot path).
+        for &b in bytes {
+            self.0 = (self.0 ^ b as u64).wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+    #[inline]
+    fn write_u64(&mut self, i: u64) {
+        // F64 hashes its single limb through here.
+        self.0 = (self.0 ^ i).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    }
+}
+
+/// The g-power reverse index type: `F64 → u32` keyed by [`GPowHasher`].
+pub(crate) type GPowMap = HashMap<crate::field::F64, u32, std::hash::BuildHasherDefault<GPowHasher>>;
 
 /// A hint resolved to concrete offsets/sizes, keyed by global program counter.
 #[derive(Clone, Debug)]
@@ -64,6 +98,7 @@ pub fn compile(ast: &Ast) -> Program {
         .find(|f| f.name == "main")
         .expect("program needs a `main`");
     assert!(!main.const_params.contains(&true), "main cannot take Const parameters");
+    assert!(!main.unroll, "main cannot be `@unroll`");
     queue.push(main.clone());
     for f in &ast.funcs {
         if f.name != "main" {
@@ -79,9 +114,10 @@ pub fn compile(ast: &Ast) -> Program {
     while i < queue.len() {
         let f = queue[i].clone();
         i += 1;
-        // A function with Const parameters is a template: only its call-site
-        // specializations (queued with the constants substituted) are lowered.
-        if f.const_params.contains(&true) {
+        // A function with Const parameters is a template (only its call-site
+        // specializations are lowered); an `@unroll` function is expanded at
+        // each call site ([`FnLower::try_inline`]), never lowered standalone.
+        if f.const_params.contains(&true) || f.unroll {
             continue;
         }
         let low = lower_func(&f, &mut queue, &mut loop_ctr, &defs);
@@ -119,6 +155,10 @@ pub fn compile(ast: &Ast) -> Program {
                         Hint::AllocFrame { ptr, callee } => RHint::Alloc {
                             ptr: *ptr,
                             size: frame_size[callee],
+                        },
+                        Hint::AllocFrameMax { ptr, callees } => RHint::Alloc {
+                            ptr: *ptr,
+                            size: callees.iter().map(|c| frame_size[c]).max().unwrap(),
                         },
                         Hint::AllocBuffer { ptr, size } => RHint::Alloc { ptr: *ptr, size: *size },
                         Hint::AllocBufferDyn { ptr, size } => RHint::AllocDyn { ptr: *ptr, size: *size },
@@ -184,8 +224,11 @@ pub fn disassemble(prog: &[Op]) -> String {
             Op::Jump { oc, od, of } => {
                 format!("JUMP   if fp[{oc}]≠0: pc=fp[{od}], fp=fp[{of}]")
             }
-            Op::Blake3 { a, b, c } => {
-                format!("BLAKE3 fp[{c}..]= H(fp[{a}..], fp[{b}..])")
+            Op::Blake3 { ins, out } => {
+                format!(
+                    "BLAKE3 fp[{out}..]= H(fp[{}], fp[{}] | fp[{}], fp[{}])",
+                    ins[0], ins[1], ins[2], ins[3]
+                )
             }
         };
         out.push_str(&format!("{pc:>4}  {line}\n"));
@@ -245,15 +288,16 @@ fn resolve(op: &LOp, entry: &HashMap<String, u32>, sentinel: u32, base: u32) -> 
             od: *od,
             of: *of,
         },
-        LOp::Blake3 { a, b, c } => Op::Blake3 { a: *a, b: *b, c: *c },
+        LOp::Blake3 { ins, c } => Op::Blake3 { ins: *ins, out: *c },
     }
 }
 
 /// Extend the `g^j` table and its reverse index `g^j ↦ j` to cover index `upto`.
-pub(crate) fn grow_gpow(gpow: &mut Vec<F64>, gmap: &mut HashMap<F64, u32>, upto: usize) {
+pub(crate) fn grow_gpow(gpow: &mut Vec<F64>, gmap: &mut GPowMap, upto: usize) {
     assert!(upto < (1 << 28), "address space overflow (program too large)");
     while gpow.len() <= upto {
-        let next = *gpow.last().unwrap() * crate::field::G;
+        // ×g is ×x = `mul_by_g` (shift+fold), not a PMULL.
+        let next = crate::field::mul_by_g(*gpow.last().unwrap());
         gmap.insert(next, gpow.len() as u32);
         gpow.push(next);
     }

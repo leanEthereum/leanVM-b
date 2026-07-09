@@ -159,13 +159,19 @@ impl InvNttTableSToV8Gf8 {
         }
     }
 
-    /// Dispatch helper — uses NEON when available, scalar otherwise.
+    /// Dispatch helper — NEON on aarch64 / SSE2 on x86_64, scalar otherwise.
     #[inline]
     pub fn apply(&self, bytes: &[u8], out: &mut [F8]) {
         #[cfg(target_arch = "aarch64")]
         if self.ell_out >= 16 {
             // SAFETY: aarch64 statically guarantees NEON; the method validates lengths.
             unsafe { self.apply_neon_unchecked(bytes, out) };
+            return;
+        }
+        #[cfg(target_arch = "x86_64")]
+        if self.ell_out >= 16 {
+            // SAFETY: x86_64 statically guarantees SSE2; the method validates lengths.
+            unsafe { self.apply_sse2_unchecked(bytes, out) };
             return;
         }
         self.apply_scalar(bytes, out);
@@ -215,6 +221,177 @@ impl InvNttTableSToV8Gf8 {
                         vst1q_u8(dst, veorq_u8(vld1q_u8(dst), v));
                     }
                 }
+            }
+        }
+    }
+
+    /// SSE2 variant of `apply` — the x86 twin of [`Self::apply_neon_unchecked`].
+    /// Same 16-byte-chunk structure; the odd-`b` within-chunk half-swap is
+    /// `_mm_shuffle_epi32::<0b01_00_11_10>` (swap the two 64-bit halves).
+    ///
+    /// # Safety
+    /// Uses `core::arch::x86_64` SSE2 intrinsics (baseline on x86_64); only
+    /// call on `x86_64`. Slice lengths must match the table shape (asserted).
+    #[cfg(target_arch = "x86_64")]
+    pub unsafe fn apply_sse2_unchecked(&self, bytes: &[u8], out: &mut [F8]) {
+        use core::arch::x86_64::*;
+        assert_eq!(bytes.len(), self.n_chunks);
+        assert_eq!(out.len(), self.ell_out);
+        let n128 = self.ell_out / 16; // 16 for ell_out = 256
+        let base = self.data.as_ptr() as *const u8;
+        let out_ptr = out.as_mut_ptr() as *mut u8;
+
+        unsafe {
+            // b = 0: straight copy from row 0.
+            let row0 = base.add(bytes[0] as usize * self.ell_out);
+            for c in 0..n128 {
+                _mm_storeu_si128(
+                    out_ptr.add(c * 16) as *mut __m128i,
+                    _mm_loadu_si128(row0.add(c * 16) as *const __m128i),
+                );
+            }
+
+            // b ≥ 1: XOR with table row[bytes[b]], permuted per (b >> 1, b & 1).
+            for b in 1..self.n_chunks {
+                let b_high = b >> 1;
+                let b_odd = (b & 1) != 0;
+                let row_b = base.add(bytes[b] as usize * self.ell_out);
+                if b_odd {
+                    for c in 0..n128 {
+                        let sc = c ^ b_high;
+                        let v = _mm_loadu_si128(row_b.add(sc * 16) as *const __m128i);
+                        let v_swapped = _mm_shuffle_epi32::<0b01_00_11_10>(v);
+                        let dst = out_ptr.add(c * 16) as *mut __m128i;
+                        _mm_storeu_si128(dst, _mm_xor_si128(_mm_loadu_si128(dst), v_swapped));
+                    }
+                } else {
+                    for c in 0..n128 {
+                        let sc = c ^ b_high;
+                        let v = _mm_loadu_si128(row_b.add(sc * 16) as *const __m128i);
+                        let dst = out_ptr.add(c * 16) as *mut __m128i;
+                        _mm_storeu_si128(dst, _mm_xor_si128(_mm_loadu_si128(dst), v));
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Rng(u64);
+    impl Rng {
+        fn new(seed: u64) -> Self {
+            Self(seed)
+        }
+        fn next_u64(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9E3779B97F4A7C15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+            z ^ (z >> 31)
+        }
+    }
+
+    /// Direct NTT path: same math as the table but without the table.
+    /// inv_NTT_S on length-64, zero-pad to 256, fwd_NTT_V₈ on length-256.
+    fn naive_extend(bytes: &[u8], ntt_s: &AdditiveNttGf8, ntt_v8: &AdditiveNttGf8) -> Vec<F8> {
+        let ell_in = 1usize << ntt_s.k();
+        let ell_out = 1usize << ntt_v8.k();
+        let mut buf = vec![F8::ZERO; ell_out];
+        for s in 0..ell_in {
+            let bit = (bytes[s / 8] >> (s % 8)) & 1;
+            buf[s] = F8(bit);
+        }
+        ntt_s.inverse(&mut buf[..ell_in]);
+        // Coefficients at positions ell_in..ell_out are already zero (W_64..W_255).
+        ntt_v8.forward(&mut buf);
+        buf
+    }
+
+    /// Table.apply equals the direct NTT extension on random inputs.
+    #[test]
+    fn apply_matches_naive_random() {
+        let ntt_s = AdditiveNttGf8::new(6, F8::ZERO);
+        let ntt_v8 = AdditiveNttGf8::new(8, F8::ZERO);
+        let table = InvNttTableSToV8Gf8::new(&ntt_s, &ntt_v8);
+
+        let mut rng = Rng::new(0xC0FFEE);
+        for _trial in 0..16 {
+            let bytes: [u8; 8] = [
+                rng.next_u64() as u8,
+                rng.next_u64() as u8,
+                rng.next_u64() as u8,
+                rng.next_u64() as u8,
+                rng.next_u64() as u8,
+                rng.next_u64() as u8,
+                rng.next_u64() as u8,
+                rng.next_u64() as u8,
+            ];
+            let naive = naive_extend(&bytes, &ntt_s, &ntt_v8);
+            let mut got = vec![F8::ZERO; 256];
+            table.apply(&bytes, &mut got);
+            assert_eq!(got, naive, "table.apply ≠ direct NTT on bytes {bytes:?}");
+        }
+    }
+
+    /// `apply` and `apply_scalar` agree (validates the NEON path against the
+    /// scalar reference).
+    #[test]
+    fn apply_matches_apply_scalar() {
+        let ntt_s = AdditiveNttGf8::new(6, F8::ZERO);
+        let ntt_v8 = AdditiveNttGf8::new(8, F8::ZERO);
+        let table = InvNttTableSToV8Gf8::new(&ntt_s, &ntt_v8);
+
+        let mut rng = Rng::new(0xBADCAFE);
+        for _trial in 0..16 {
+            let bytes: [u8; 8] = [
+                rng.next_u64() as u8,
+                rng.next_u64() as u8,
+                rng.next_u64() as u8,
+                rng.next_u64() as u8,
+                rng.next_u64() as u8,
+                rng.next_u64() as u8,
+                rng.next_u64() as u8,
+                rng.next_u64() as u8,
+            ];
+            let mut got_scalar = vec![F8::ZERO; 256];
+            let mut got_dispatch = vec![F8::ZERO; 256];
+            table.apply_scalar(&bytes, &mut got_scalar);
+            table.apply(&bytes, &mut got_dispatch);
+            assert_eq!(
+                got_scalar, got_dispatch,
+                "apply (NEON or scalar) ≠ apply_scalar on bytes {bytes:?}"
+            );
+        }
+    }
+
+    /// First 64 lanes of the output reproduce the input bits exactly.
+    #[test]
+    fn first_64_lanes_match_input_bits() {
+        let ntt_s = AdditiveNttGf8::new(6, F8::ZERO);
+        let ntt_v8 = AdditiveNttGf8::new(8, F8::ZERO);
+        let table = InvNttTableSToV8Gf8::new(&ntt_s, &ntt_v8);
+
+        let mut rng = Rng::new(0xA17);
+        for _trial in 0..8 {
+            let bytes: [u8; 8] = [
+                rng.next_u64() as u8,
+                rng.next_u64() as u8,
+                rng.next_u64() as u8,
+                rng.next_u64() as u8,
+                rng.next_u64() as u8,
+                rng.next_u64() as u8,
+                rng.next_u64() as u8,
+                rng.next_u64() as u8,
+            ];
+            let mut got = vec![F8::ZERO; 256];
+            table.apply(&bytes, &mut got);
+            for s in 0..64 {
+                let expected_bit = (bytes[s / 8] >> (s % 8)) & 1;
+                assert_eq!(got[s], F8(expected_bit), "input bit mismatch at s={s}");
             }
         }
     }

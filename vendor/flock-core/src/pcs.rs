@@ -23,6 +23,7 @@
 
 pub mod basefold;
 pub mod commit;
+pub mod jagged;
 pub mod ligerito;
 pub mod ligerito_k;
 pub mod pack;
@@ -339,303 +340,6 @@ pub fn open_batch_mixed_with_precomputed_s_hat_v<Ch: Challenger>(
     }
 }
 
-/// Open ring-switched claims AND full-stack point claims in ONE BaseFold, when
-/// the committed witness is a larger STACK whose aligned sub-block
-/// `[stack_offset, stack_offset + qpkd.len())` is `qpkd` (the leanVM-b single-PCS
-/// integration: `qpkd` is flock's packed BLAKE3 witness, committed inside
-/// leanVM's one stacked commitment). The ring-switch combined weight is computed
-/// over `qpkd` and LIFTED into the stack domain; each `stack_pd = (point, value)`
-/// is a plain multilinear evaluation of the WHOLE stack (leanVM's bus /
-/// constraint / binding / pinning claims). All are γ-folded into one weight and
-/// the single BaseFold runs over `stack` (`a_init`). `stack_offset` must be a
-/// multiple of `qpkd.len()`.
-/// A point claim folded into the stacked mixed opening ([`open_batch_mixed_ligerito_stacked`]).
-/// Either a **block-sparse** slot claim — weight `eq(low_point,·)` supported on the
-/// aligned sub-block `[offset, offset + 2^low_point.len())`, so the opener builds
-/// `eq` over just the slot instead of the whole `2^m` stack — or a **general**
-/// full-stack point (`eq(point,·)` over all `2^m`). leanVM's point claims are all
-/// `Slot`s (their `eq` is zero outside the slot); `Point` keeps the opener usable
-/// for arbitrary claims.
-pub enum StackClaim<'a> {
-    /// `eq(low_point,·)` on `[offset, offset + 2^low_point.len())`. `offset` must
-    /// be a multiple of `2^low_point.len()` (an aligned slot).
-    Slot { offset: usize, low_point: &'a [F128], value: F128 },
-    /// A **boolean-selector** claim on a packed column, equivalent to a `Slot`
-    /// with `low_point = slot_bits(slot, stride_log) ++ point` but folded sparsely:
-    /// the low `stride_log` block coords are frozen to `slot`'s bits (so the weight
-    /// is nonzero only at `offset + slot + j·2^stride_log`), and `point` is the
-    /// high part. Costs `2^point.len()` instead of `2^(stride_log + point.len())`.
-    /// `offset` must be a multiple of `2^(stride_log + point.len())`.
-    StridedSlot { offset: usize, slot: usize, stride_log: usize, point: &'a [F128], value: F128 },
-    /// `eq(point,·)` over the whole `2^m` stack.
-    Point { point: &'a [F128], value: F128 },
-}
-
-impl StackClaim<'_> {
-    #[inline]
-    fn value(&self) -> F128 {
-        match self {
-            StackClaim::Slot { value, .. }
-            | StackClaim::StridedSlot { value, .. }
-            | StackClaim::Point { value, .. } => *value,
-        }
-    }
-}
-
-/// Fold the γ-weighted point claims into the lifted stack weight `b_stack` and
-/// running `target` (pure — the caller has already observed the claim values and
-/// sampled `gammas_pd` in transcript order). Shared by the BaseFold and Ligerito
-/// stacked openers, so both produce the identical `⟨stack, b_stack⟩ = target`
-/// inner-product claim.
-fn fold_stacked_point_claims(b_stack: &mut [F128], target: &mut F128, stack_pd: &[StackClaim], gammas_pd: &[F128]) {
-    use rayon::prelude::*;
-    // `build_eq` and `build_eq_parallel` produce the identical table and serial
-    // and parallel scatter give the identical result, so the proof is
-    // byte-for-byte unchanged. A `Slot` builds `eq` over ONLY its aligned
-    // sub-block (leanVM's claims — `eq` is zero elsewhere), a `Point` over the
-    // whole stack. Both scatter with `+=`, so overlapping slots (e.g. several
-    // claims on the q_pkd column) accumulate correctly. Small slots use the
-    // serial path: with hundreds of tiny point claims, rayon dispatch would
-    // cost more than the fold itself.
-    const PAR_FOLD_THRESHOLD: usize = 1 << 14;
-    for (claim, g) in stack_pd.iter().zip(gammas_pd.iter()) {
-        let g = *g;
-        match claim {
-            StackClaim::Slot { offset, low_point, value } => {
-                let len = 1usize << low_point.len();
-                let dst = &mut b_stack[*offset..*offset + len];
-                if len < PAR_FOLD_THRESHOLD {
-                    let eq = crate::zerocheck::univariate_skip::build_eq(low_point);
-                    for (bi, ei) in dst.iter_mut().zip(eq.iter()) {
-                        *bi += g * *ei;
-                    }
-                } else {
-                    let eq = ring_switch::build_eq_parallel(low_point);
-                    dst.par_iter_mut().zip(eq.par_iter()).for_each(|(bi, ei)| *bi += g * *ei);
-                }
-                *target += g * *value;
-            }
-            StackClaim::StridedSlot { offset, slot, stride_log, point, value } => {
-                // Sparse: eq over the instance `point` (2^point.len()),
-                // scattered at stride 2^stride_log into the slot's positions.
-                // Identical b_stack contribution to the dense Slot with
-                // low_point = slot_bits ++ point, at ~2^stride_log× less work.
-                let stride = 1usize << stride_log;
-                let base = *offset + *slot;
-                let eq = if point.len() < 14 {
-                    crate::zerocheck::univariate_skip::build_eq(point)
-                } else {
-                    ring_switch::build_eq_parallel(point)
-                };
-                for (j, &ej) in eq.iter().enumerate() {
-                    b_stack[base + j * stride] += g * ej;
-                }
-                *target += g * *value;
-            }
-            StackClaim::Point { point, value } => {
-                let eq = ring_switch::build_eq_parallel(point);
-                b_stack
-                    .par_iter_mut()
-                    .zip(eq.par_iter())
-                    .for_each(|(bi, ei)| *bi += g * *ei);
-                *target += g * *value;
-            }
-        }
-    }
-}
-
-/// The claim's weight `eq(full claim point, x)` at an arbitrary point `x` of the
-/// full stack cube — a `Slot`'s full point is `[low_point, selector_bits]`, a
-/// `StridedSlot`'s is `[slot_bits, point, selector_bits]`; neither is
-/// materialized. Shared by the BaseFold verifier (at the folding challenges) and
-/// the Ligerito verifier (at the residual points).
-fn stack_claim_eq_at(claim: &StackClaim, x: &[F128]) -> F128 {
-    match claim {
-        StackClaim::Slot { offset, low_point, .. } => {
-            let n = low_point.len();
-            let mut e = crate::zerocheck::multilinear::eq_eval(low_point, &x[..n]);
-            let sel = offset >> n;
-            for (k, &xi) in x[n..].iter().enumerate() {
-                e *= if (sel >> k) & 1 == 1 { xi } else { F128::ONE + xi };
-            }
-            e
-        }
-        StackClaim::StridedSlot { offset, slot, stride_log, point, .. } => {
-            let mut e = F128::ONE;
-            for (k, &xi) in x[..*stride_log].iter().enumerate() {
-                e *= if (slot >> k) & 1 == 1 { xi } else { F128::ONE + xi };
-            }
-            let block_vars = stride_log + point.len();
-            e *= crate::zerocheck::multilinear::eq_eval(point, &x[*stride_log..block_vars]);
-            let sel = offset >> block_vars;
-            for (k, &xi) in x[block_vars..].iter().enumerate() {
-                e *= if (sel >> k) & 1 == 1 { xi } else { F128::ONE + xi };
-            }
-            e
-        }
-        StackClaim::Point { point, .. } => crate::zerocheck::multilinear::eq_eval(point, x),
-    }
-}
-
-
-/// **Ligerito**-backend counterpart of [`open_batch_mixed_ligerito_stacked`]: the identical
-/// ring-switch combine + lifted `b_stack` build (same transcript order, same
-/// `⟨stack, b_stack⟩ = target` inner-product claim), discharged by the Ligerito
-/// recursive prover instead of BaseFold, reusing the caller's commit as L0.
-/// `lig_config.initial_k` / `log_inv_rates[0]` must match the commit's params.
-#[allow(clippy::too_many_arguments)]
-pub fn open_batch_mixed_ligerito_stacked<Ch: Challenger>(
-    qpkd: &[F128],
-    x_outers: &[&[F128]],
-    precomputed_s_hat_v: &[Option<&[F128]>],
-    padding: &PaddingSpec,
-    stack: &[F128],
-    stack_offset: usize,
-    stack_data: &ProverData,
-    stack_commitment: &Commitment,
-    stack_pd: &[StackClaim],
-    lig_config: &ligerito::ProverConfig,
-    challenger: &mut Ch,
-) -> BatchOpeningProofLigerito {
-    assert_eq!(
-        lig_config.initial_k, stack_commitment.params.log_batch_size,
-        "ligerito initial_k must match PcsParams.log_batch_size for L0 reuse",
-    );
-    assert_eq!(
-        lig_config.log_inv_rates[0], stack_commitment.params.log_inv_rate,
-        "ligerito log_inv_rates[0] must match PcsParams.log_inv_rate for L0 reuse",
-    );
-
-    let combined = compute_combined_basis_and_target(qpkd, x_outers, precomputed_s_hat_v, &[], padding, challenger, false);
-    let mut b_stack = vec![F128::ZERO; stack.len()];
-    b_stack[stack_offset..stack_offset + combined.b_combined.len()].copy_from_slice(&combined.b_combined);
-    let mut target = combined.target_combined;
-
-    for claim in stack_pd {
-        challenger.observe_label(b"flock-pcs-packed-direct-v0");
-        challenger.observe_f128(claim.value());
-    }
-    let gammas_pd: Vec<F128> = (0..stack_pd.len()).map(|_| challenger.sample_f128()).collect();
-    fold_stacked_point_claims(&mut b_stack, &mut target, stack_pd, &gammas_pd);
-
-    let lig = ligerito::recursive_prover_with_basis(
-        lig_config,
-        stack.to_vec(),
-        b_stack,
-        target,
-        &stack_data.codeword,
-        &stack_data.merkle_tree,
-        challenger,
-    );
-    BatchOpeningProofLigerito {
-        ring_switches: combined.ring_switches,
-        ligerito: lig,
-    }
-}
-
-/// Verifier mirror of [`open_batch_mixed_ligerito_stacked`]: replay the
-/// ring-switch reduction + γ-folds exactly as the BaseFold stacked verifier does,
-/// then drive the SUCCINCT Ligerito verifier with a residual evaluator for the
-/// lifted weight — at each residual point `x = ris ++ y_bits`,
-/// `b(x) = eq(sel, x_hi)·Σ γ_rs·rs_eq(x_lo) + Σ γ_pd·eq(claim, x)` (the same
-/// formula the BaseFold path checks once at its folding point).
-#[allow(clippy::too_many_arguments)]
-pub fn verify_opening_batch_mixed_ligerito_stacked<Ch: Challenger>(
-    stack_commitment: &Commitment,
-    stack_offset: usize,
-    qpkd_vars: usize,
-    claims: &[F128],
-    z_skips: &[F128],
-    x_outers: &[&[F128]],
-    stack_pd: &[StackClaim],
-    proof: &BatchOpeningProofLigerito,
-    lig_config: &ligerito::VerifierConfig,
-    challenger: &mut Ch,
-) -> Result<(), VerifyError> {
-    let n_rs = claims.len();
-    // These are caller (leanVM) invariants.
-    assert_eq!(z_skips.len(), n_rs);
-    assert_eq!(x_outers.len(), n_rs);
-    // `proof` is attacker-controlled (deserialized): validate its shape and return
-    // an Err rather than panicking (verifier DoS). `verify_succinct` internally
-    // asserts `s_hat_v.len() == 2^LOG_PACKING`, so check that here too.
-    let shape_err = || VerifyError::BaseFold(crate::pcs::basefold::VerifyError::InvalidProofShape);
-    if proof.ring_switches.len() != n_rs
-        || proof.ring_switches.iter().any(|rs| rs.s_hat_v.len() != 1 << LOG_PACKING)
-    {
-        return Err(shape_err());
-    }
-    challenger.observe_label(b"flock-pcs-open-batch-v0");
-
-    let mut rs_outputs = Vec::with_capacity(n_rs);
-    for i in 0..n_rs {
-        rs_outputs.push(
-            ring_switch::verify_succinct(claims[i], z_skips[i], x_outers[i], &proof.ring_switches[i], challenger)
-                .map_err(VerifyError::RingSwitch)?,
-        );
-    }
-    let gammas_rs: Vec<F128> = (0..n_rs).map(|_| challenger.sample_f128()).collect();
-    let mut target_combined = F128::ZERO;
-    for (out, g) in rs_outputs.iter().zip(gammas_rs.iter()) {
-        target_combined += *g * out.sumcheck_claim;
-    }
-
-    for claim in stack_pd {
-        challenger.observe_label(b"flock-pcs-packed-direct-v0");
-        challenger.observe_f128(claim.value());
-    }
-    let gammas_pd: Vec<F128> = (0..stack_pd.len()).map(|_| challenger.sample_f128()).collect();
-    for (claim, g) in stack_pd.iter().zip(gammas_pd.iter()) {
-        target_combined += *g * claim.value();
-    }
-
-    // Residual evaluator of the lifted weight: for each y over the residual cube,
-    // evaluate b at the full point `ris ++ y_bits` (low coords = ris, high = y).
-    let log_n = stack_commitment.params.m - LOG_PACKING;
-    let sel = stack_offset >> qpkd_vars;
-    let eval_b_residual = |ris: &[F128], yr_log_n: usize| -> Vec<F128> {
-        use rayon::prelude::*;
-        (0..1usize << yr_log_n)
-            .into_par_iter()
-            .map(|y| {
-                let mut x = Vec::with_capacity(ris.len() + yr_log_n);
-                x.extend_from_slice(ris);
-                for k in 0..yr_log_n {
-                    x.push(F128::new(((y >> k) & 1) as u64, 0));
-                }
-                let (x_lo, x_hi) = x.split_at(qpkd_vars);
-                let mut sel_eq = F128::ONE;
-                for (k, &xi) in x_hi.iter().enumerate() {
-                    sel_eq *= if (sel >> k) & 1 == 1 { xi } else { F128::ONE + xi };
-                }
-                let mut rs_part = F128::ZERO;
-                for (out, (g, x_outer)) in rs_outputs.iter().zip(gammas_rs.iter().zip(x_outers.iter())) {
-                    rs_part += *g * ring_switch::eval_rs_eq(&x_outer[1..], x_lo, &out.eq_r_dprime);
-                }
-                let mut acc = rs_part * sel_eq;
-                for (claim, g) in stack_pd.iter().zip(gammas_pd.iter()) {
-                    acc += *g * stack_claim_eq_at(claim, &x);
-                }
-                acc
-            })
-            .collect()
-    };
-
-    let ok = ligerito::recursive_verifier_with_basis_succinct(
-        lig_config,
-        &proof.ligerito,
-        log_n,
-        target_combined,
-        &stack_commitment.root,
-        eval_b_residual,
-        challenger,
-    );
-    if !ok {
-        return Err(VerifyError::BaseFold(crate::pcs::basefold::VerifyError::InvalidProofShape));
-    }
-    Ok(())
-}
-
 /// Ligerito-backend counterpart to [`open_batch_mixed_with_precomputed_s_hat_v`].
 /// Shares the ring_switch + b_combined computation, then routes to
 /// [`ligerito::recursive_prover_with_basis`] using the existing `prover_data`'s
@@ -835,16 +539,21 @@ fn compute_combined_basis_and_target<Ch: Challenger>(
     //      BaseFold round-0 prime (u_0, u_2 over packed_witness · b_combined).
     let mut b_combined: Vec<F128> = crate::scratch::take_f128(l);
 
-    // Fast path (compression-proof open: claims ab, c): every RS claim is a
-    // fused DeferredDense fold and there are no packed-direct claims. Fold all
-    // claims block-by-block straight into b_combined — each claim's `e_hi`
-    // hoisted once per block, exactly as in `fold_b128_elems_split` — and fuse
-    // the round-0 prime in the same pass. Neither the per-claim `γ_k·B_k` buffer
-    // nor a combine readback is ever materialized (saves ~2·L writes + 2·L reads
-    // of the 2^(m-7) basis).
-    let use_fast = packed_direct.is_empty()
-        && !rs_deferred.is_empty()
-        && rs_deferred.len() == rs_results.len();
+    // Fast path (compression-proof open: claims ab, c; also chain/merkle): every
+    // RS claim is a fused DeferredDense fold and no DENSE packed-direct claim
+    // needs the per-element combine. Fold all claims block-by-block straight into
+    // b_combined — each claim's `e_hi` hoisted once per block, exactly as in
+    // `fold_b128_elems_split` — and fuse the round-0 prime in the same pass.
+    // Neither the per-claim `γ_k·B_k` buffer nor a combine readback is ever
+    // materialized (saves ~2·L writes + 2·L reads of the 2^(m-7) basis).
+    //
+    // SPARSE packed-direct claims (the chain/merkle I/O claim) do NOT disable
+    // this path: they're scatter-added onto b_combined after the fold (with an
+    // incremental round-0 prime adjustment), so they only require
+    // `pd_dense.is_empty()`, not `packed_direct.is_empty()`. This keeps the two
+    // big ab/c claims on the fused fold instead of materializing them.
+    let use_fast =
+        !rs_deferred.is_empty() && rs_deferred.len() == rs_results.len() && pd_dense.is_empty();
 
     let (mut round0_u0, mut round0_u2) = if use_fast {
         let b = rs_deferred[0].0.len(); // eq_lo.len(); shared across claims (same split)
@@ -952,21 +661,14 @@ fn compute_combined_basis_and_target<Ch: Challenger>(
     }
     for (pd, g) in packed_direct.iter().zip(gammas_pd.iter()) {
         if let DirectEqInd::Sparse(eq) = &pd.eq_ind {
-            sparse_scatter_add_parallel(&mut b_combined, eq, *g);
-            let (u0_fix, u2_fix) = b_combined
-                .par_chunks(2)
-                .enumerate()
-                .map(|(i, chunk)| {
-                    let a0 = packed_witness[2 * i];
-                    let a1 = packed_witness[2 * i + 1];
-                    (a0 * chunk[0], (a0 + a1) * (chunk[0] + chunk[1]))
-                })
-                .reduce(
-                    || (F128::ZERO, F128::ZERO),
-                    |(x0, x2), (y0, y2)| (x0 + y0, x2 + y2),
-                );
-            round0_u0 = u0_fix;
-            round0_u2 = u2_fix;
+            // Scatter-add the sparse claim and fold its round-0 prime
+            // contribution in the SAME pass (O(live positions)), instead of a
+            // full O(L) re-pass over b_combined. The prime is linear in
+            // b_combined, so the delta from scattering `g·eq` equals
+            // Σ adjust_prime_for_delta(idx, g·val) over the live positions.
+            let (du0, du2) = sparse_scatter_add_parallel(&mut b_combined, packed_witness, eq, *g);
+            round0_u0 += du0;
+            round0_u2 += du2;
         }
     }
     if trace {
@@ -1003,12 +705,24 @@ fn compute_combined_basis_and_target<Ch: Challenger>(
 /// range of `b_combined`. Splits `b_combined` at the chunk boundaries via
 /// `split_at_mut`, then writes scatter-adds into the disjoint mutable slices —
 /// safe rust, no atomics.
-fn sparse_scatter_add_parallel(b_combined: &mut [F128], eq: &SparseEqTensor, gamma: F128) {
+/// Scatter-add `gamma · eq` into `b_combined` and return the resulting BaseFold
+/// round-0 prime delta `(Δu0, Δu2)`. Because the prime is linear in
+/// `b_combined`, adding `delta = gamma·val` at index `idx` changes the prime by
+/// `Δu0 += a0·delta` (if `idx` even) and `Δu2 += (a0+a1)·delta`, where
+/// `a0 = packed_witness[2·pair]`, `a1 = packed_witness[2·pair+1]`,
+/// `pair = idx/2`. Computing it here (O(live positions)) avoids a full O(L)
+/// re-pass over `b_combined` at the call site.
+fn sparse_scatter_add_parallel(
+    b_combined: &mut [F128],
+    packed_witness: &[F128],
+    eq: &SparseEqTensor,
+    gamma: F128,
+) -> (F128, F128) {
     use rayon::prelude::*;
 
     let c_total = eq.live_tensor.len();
     if c_total == 0 {
-        return;
+        return (F128::ZERO, F128::ZERO);
     }
     let n_threads = rayon::current_num_threads().max(1);
     let c_per_chunk = c_total.div_ceil(n_threads).max(1);
@@ -1044,16 +758,35 @@ fn sparse_scatter_add_parallel(b_combined: &mut [F128], eq: &SparseEqTensor, gam
     slices.push(remaining);
     debug_assert_eq!(slices.len(), actual_n_chunks);
 
-    slices.into_par_iter().enumerate().for_each(|(t, slice)| {
-        let c_lo = t * c_per_chunk;
-        let c_hi = ((t + 1) * c_per_chunk).min(c_total);
-        let b_lo = b_boundaries[t];
-        for c in c_lo..c_hi {
-            let val = eq.live_tensor[c];
-            let idx = eq.scatter_idx(c);
-            slice[idx - b_lo] += gamma * val;
-        }
-    });
+    slices
+        .into_par_iter()
+        .enumerate()
+        .map(|(t, slice)| {
+            let c_lo = t * c_per_chunk;
+            let c_hi = ((t + 1) * c_per_chunk).min(c_total);
+            let b_lo = b_boundaries[t];
+            let mut du0 = F128::ZERO;
+            let mut du2 = F128::ZERO;
+            for c in c_lo..c_hi {
+                let val = eq.live_tensor[c];
+                let idx = eq.scatter_idx(c);
+                let delta = gamma * val;
+                slice[idx - b_lo] += delta;
+                // Round-0 prime delta for this scattered position.
+                let pair = idx / 2;
+                let a0 = packed_witness[2 * pair];
+                let a1 = packed_witness[2 * pair + 1];
+                if idx & 1 == 0 {
+                    du0 += a0 * delta;
+                }
+                du2 += (a0 + a1) * delta;
+            }
+            (du0, du2)
+        })
+        .reduce(
+            || (F128::ZERO, F128::ZERO),
+            |(x0, x2), (y0, y2)| (x0 + y0, x2 + y2),
+        )
 }
 
 /// Verify a batched opening produced by [`open_batch`]. Each `(claim, z_skip,
@@ -1411,5 +1144,758 @@ pub fn verify_opening<Ch: Challenger>(
         return Err(VerifyError::FinalBMismatch);
     }
 
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::challenger::FsChallenger;
+    use crate::zerocheck::multilinear::lagrange_weights_naive;
+    use crate::zerocheck::univariate_skip::build_eq;
+
+    struct Rng(u64);
+    impl Rng {
+        fn new(seed: u64) -> Self {
+            Self(seed)
+        }
+        fn next_u64(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9E3779B97F4A7C15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+            z ^ (z >> 31)
+        }
+        fn bits(&mut self, n: usize) -> Vec<bool> {
+            (0..n).map(|_| self.next_u64() & 1 == 1).collect()
+        }
+        fn f128(&mut self) -> F128 {
+            F128 {
+                lo: self.next_u64(),
+                hi: self.next_u64(),
+            }
+        }
+    }
+
+    fn default_params(m: usize) -> PcsParams {
+        PcsParams {
+            m,
+            log_inv_rate: 1,
+            log_batch_size: 1,
+            profile: Default::default(),
+        }
+    }
+
+    fn zhat_skip_reference(z: &[bool], m: usize, z_skip: F128, x_outer: &[F128]) -> F128 {
+        const K_SKIP: usize = 6;
+        let ell = 1usize << K_SKIP;
+        let lambda = lagrange_weights_naive(K_SKIP, z_skip);
+        let eq_outer = build_eq(x_outer);
+        let mut acc = F128::ZERO;
+        for i_outer in 0..(1usize << (m - K_SKIP)) {
+            let base = i_outer * ell;
+            let mut inner = F128::ZERO;
+            for i_skip in 0..ell {
+                if z[base + i_skip] {
+                    inner += lambda[i_skip];
+                }
+            }
+            acc += eq_outer[i_outer] * inner;
+        }
+        acc
+    }
+
+    /// End-to-end PCS roundtrip: commit, open at a random QuirkyPoint, verify.
+    #[test]
+    fn pcs_open_verify_roundtrip() {
+        let mut rng = Rng::new(0xC0FFEE_42);
+        for &m in &[8usize, 9, 10, 11] {
+            let z = rng.bits(1 << m);
+            let z_skip = rng.f128();
+            let x_outer: Vec<F128> = (0..(m - 6)).map(|_| rng.f128()).collect();
+            let claim = zhat_skip_reference(&z, m, z_skip, &x_outer);
+
+            let params = default_params(m);
+            let z_packed = pack_witness(&z, m);
+            let (commitment, prover_data) = commit(&z_packed, &params);
+
+            let mut ch_p = FsChallenger::new(b"flock-test-v0");
+            let proof = open(&z_packed, &prover_data, &commitment, &x_outer, &mut ch_p);
+
+            let mut ch_v = FsChallenger::new(b"flock-test-v0");
+            verify_opening(&commitment, claim, z_skip, &x_outer, &proof, &mut ch_v)
+                .unwrap_or_else(|e| panic!("verify rejected honest proof at m={m}: {e:?}"));
+        }
+    }
+
+    #[test]
+    fn pcs_verify_rejects_wrong_claim() {
+        let m = 10;
+        let mut rng = Rng::new(0x99);
+        let z = rng.bits(1 << m);
+        let z_skip = rng.f128();
+        let x_outer: Vec<F128> = (0..(m - 6)).map(|_| rng.f128()).collect();
+        let mut claim = zhat_skip_reference(&z, m, z_skip, &x_outer);
+        claim.lo ^= 1;
+
+        let params = default_params(m);
+        let z_packed = pack_witness(&z, m);
+        let (commitment, prover_data) = commit(&z_packed, &params);
+
+        let mut ch_p = FsChallenger::new(b"flock-test-v0");
+        let proof = open(&z_packed, &prover_data, &commitment, &x_outer, &mut ch_p);
+
+        let mut ch_v = FsChallenger::new(b"flock-test-v0");
+        let res = verify_opening(&commitment, claim, z_skip, &x_outer, &proof, &mut ch_v);
+        assert!(matches!(res, Err(VerifyError::RingSwitch(_))));
+    }
+
+    #[test]
+    fn pcs_verify_rejects_mutated_basefold() {
+        let m = 10;
+        let mut rng = Rng::new(0xABCD);
+        let z = rng.bits(1 << m);
+        let z_skip = rng.f128();
+        let x_outer: Vec<F128> = (0..(m - 6)).map(|_| rng.f128()).collect();
+        let claim = zhat_skip_reference(&z, m, z_skip, &x_outer);
+
+        let params = default_params(m);
+        let z_packed = pack_witness(&z, m);
+        let (commitment, prover_data) = commit(&z_packed, &params);
+
+        let mut ch_p = FsChallenger::new(b"flock-test-v0");
+        let mut proof = open(&z_packed, &prover_data, &commitment, &x_outer, &mut ch_p);
+        // Mutate final_a: now caught by either sumcheck or FRI consistency.
+        proof.basefold.final_a.lo ^= 1;
+
+        let mut ch_v = FsChallenger::new(b"flock-test-v0");
+        let res = verify_opening(&commitment, claim, z_skip, &x_outer, &proof, &mut ch_v);
+        assert!(matches!(res, Err(VerifyError::BaseFold(_))));
+    }
+
+    /// SECURITY REGRESSION: a prover that strips FRI queries (down to zero)
+    /// must be rejected. Without the query-count enforcement in
+    /// `basefold::verify`, an empty/truncated query set leaves `final_a`
+    /// unbound to the committed codeword, so any evaluation claim verifies.
+    #[test]
+    fn pcs_verify_rejects_truncated_fri_queries() {
+        let m = 10;
+        let mut rng = Rng::new(0x5EC0_1234);
+        let z = rng.bits(1 << m);
+        let z_skip = rng.f128();
+        let x_outer: Vec<F128> = (0..(m - 6)).map(|_| rng.f128()).collect();
+        let claim = zhat_skip_reference(&z, m, z_skip, &x_outer);
+
+        let params = default_params(m);
+        let z_packed = pack_witness(&z, m);
+        let (commitment, prover_data) = commit(&z_packed, &params);
+
+        let mut ch_p = FsChallenger::new(b"flock-test-v0");
+        let honest = open(&z_packed, &prover_data, &commitment, &x_outer, &mut ch_p);
+
+        // The honest proof must verify (sanity: the enforcement is not over-tight).
+        let mut ch_ok = FsChallenger::new(b"flock-test-v0");
+        assert!(verify_opening(&commitment, claim, z_skip, &x_outer, &honest, &mut ch_ok).is_ok());
+
+        // Attack: truncate the query set to a handful, and to zero. Both must
+        // be rejected on proof shape before any position is sampled.
+        for keep in [0usize, 1, 8] {
+            let mut proof = honest.clone();
+            proof.basefold.queries.truncate(keep);
+            let mut ch_v = FsChallenger::new(b"flock-test-v0");
+            let res = verify_opening(&commitment, claim, z_skip, &x_outer, &proof, &mut ch_v);
+            assert!(
+                matches!(
+                    res,
+                    Err(VerifyError::BaseFold(
+                        basefold::VerifyError::InvalidProofShape
+                    ))
+                ),
+                "truncating to {keep} queries must be rejected, got {res:?}"
+            );
+        }
+    }
+
+    /// Direct multilinear evaluation of `ẑ_packed` (the F_{2^128}-packed
+    /// witness) at a length-L point. Reference computation for the
+    /// packed-direct claim path.
+    fn zhat_packed_reference(z_packed: &[F128], point: &[F128]) -> F128 {
+        let l = point.len();
+        assert_eq!(z_packed.len(), 1usize << l);
+        let eq = build_eq(point);
+        let mut acc = F128::ZERO;
+        for i in 0..z_packed.len() {
+            acc += eq[i] * z_packed[i];
+        }
+        acc
+    }
+
+    /// Roundtrip a single packed-direct claim through `open_batch_mixed` /
+    /// `verify_opening_batch_mixed`. Dense `eq_ind`.
+    #[test]
+    fn pcs_packed_direct_dense_roundtrip() {
+        let mut rng = Rng::new(0xDEAD_BEEF);
+        for &m in &[8usize, 10, 11] {
+            let l = m - LOG_PACKING; // = m - 7
+            let z = rng.bits(1 << m);
+            let z_packed = pack_witness(&z, m);
+
+            let point: Vec<F128> = (0..l).map(|_| rng.f128()).collect();
+            let value = zhat_packed_reference(&z_packed, &point);
+            let eq = build_eq(&point);
+
+            let pd_claim = PackedDirectClaim {
+                point: point.clone(),
+                value,
+                eq_ind: DirectEqInd::Dense(eq),
+            };
+
+            let params = default_params(m);
+            let (commitment, prover_data) = commit(&z_packed, &params);
+
+            let mut ch_p = FsChallenger::new(b"flock-test-v0");
+            let proof = open_batch_mixed(
+                &z_packed,
+                &prover_data,
+                &commitment,
+                &[],
+                std::slice::from_ref(&pd_claim),
+                &PaddingSpec::dense(m),
+                &mut ch_p,
+            );
+
+            let pd_ref = PackedDirectClaimRef {
+                point: &point,
+                value,
+            };
+            let mut ch_v = FsChallenger::new(b"flock-test-v0");
+            verify_opening_batch_mixed(
+                &commitment,
+                &[],
+                &[],
+                &[],
+                std::slice::from_ref(&pd_ref),
+                &proof,
+                &mut ch_v,
+            )
+            .unwrap_or_else(|e| panic!("verify rejected honest packed-direct claim m={m}: {e:?}"));
+
+            // Wrong claim is rejected.
+            let mut bad_value = value;
+            bad_value.lo ^= 1;
+            let pd_bad = PackedDirectClaimRef {
+                point: &point,
+                value: bad_value,
+            };
+            let mut ch_v = FsChallenger::new(b"flock-test-v0");
+            let res = verify_opening_batch_mixed(
+                &commitment,
+                &[],
+                &[],
+                &[],
+                std::slice::from_ref(&pd_bad),
+                &proof,
+                &mut ch_v,
+            );
+            assert!(matches!(
+                res,
+                Err(VerifyError::FinalBMismatch) | Err(VerifyError::BaseFold(_))
+            ));
+        }
+    }
+
+    /// Roundtrip with sparse `eq_ind` (some zero coords in the point).
+    #[test]
+    fn pcs_packed_direct_sparse_roundtrip() {
+        let mut rng = Rng::new(0xFACE_F00D);
+        for &m in &[10usize, 11] {
+            let l = m - LOG_PACKING;
+            let z = rng.bits(1 << m);
+            let z_packed = pack_witness(&z, m);
+
+            // Build a point with the last 2 coords zero (sparse pattern).
+            let mut point: Vec<F128> = (0..l).map(|_| rng.f128()).collect();
+            for slot in point.iter_mut().rev().take(2) {
+                *slot = F128::ZERO;
+            }
+            let value = zhat_packed_reference(&z_packed, &point);
+            let sparse_eq = ring_switch::build_eq_sparse(&point);
+
+            let pd_claim = PackedDirectClaim {
+                point: point.clone(),
+                value,
+                eq_ind: DirectEqInd::Sparse(sparse_eq),
+            };
+
+            let params = default_params(m);
+            let (commitment, prover_data) = commit(&z_packed, &params);
+
+            let mut ch_p = FsChallenger::new(b"flock-test-v0");
+            let proof = open_batch_mixed(
+                &z_packed,
+                &prover_data,
+                &commitment,
+                &[],
+                std::slice::from_ref(&pd_claim),
+                &PaddingSpec::dense(m),
+                &mut ch_p,
+            );
+
+            let pd_ref = PackedDirectClaimRef {
+                point: &point,
+                value,
+            };
+            let mut ch_v = FsChallenger::new(b"flock-test-v0");
+            verify_opening_batch_mixed(
+                &commitment,
+                &[],
+                &[],
+                &[],
+                std::slice::from_ref(&pd_ref),
+                &proof,
+                &mut ch_v,
+            )
+            .unwrap_or_else(|e| panic!("verify rejected honest sparse packed-direct m={m}: {e:?}"));
+        }
+    }
+
+    /// Mixed batch: one ring-switched claim + one packed-direct claim against
+    /// the same commitment must both verify.
+    #[test]
+    fn pcs_mixed_ring_switched_and_packed_direct() {
+        let m = 11usize;
+        let l = m - LOG_PACKING;
+        let mut rng = Rng::new(0xCAFE_BABE);
+        let z = rng.bits(1 << m);
+        let z_packed = pack_witness(&z, m);
+
+        // Ring-switched claim.
+        let z_skip = rng.f128();
+        let x_outer: Vec<F128> = (0..(m - 6)).map(|_| rng.f128()).collect();
+        let rs_claim = zhat_skip_reference(&z, m, z_skip, &x_outer);
+
+        // Packed-direct claim.
+        let pd_point: Vec<F128> = (0..l).map(|_| rng.f128()).collect();
+        let pd_value = zhat_packed_reference(&z_packed, &pd_point);
+        let pd_eq = build_eq(&pd_point);
+        let pd_claim = PackedDirectClaim {
+            point: pd_point.clone(),
+            value: pd_value,
+            eq_ind: DirectEqInd::Dense(pd_eq),
+        };
+
+        let params = default_params(m);
+        let (commitment, prover_data) = commit(&z_packed, &params);
+
+        let mut ch_p = FsChallenger::new(b"flock-test-v0");
+        let proof = open_batch_mixed(
+            &z_packed,
+            &prover_data,
+            &commitment,
+            &[x_outer.as_slice()],
+            std::slice::from_ref(&pd_claim),
+            &PaddingSpec::dense(m),
+            &mut ch_p,
+        );
+
+        let pd_ref = PackedDirectClaimRef {
+            point: &pd_point,
+            value: pd_value,
+        };
+        let mut ch_v = FsChallenger::new(b"flock-test-v0");
+        verify_opening_batch_mixed(
+            &commitment,
+            &[rs_claim],
+            &[z_skip],
+            &[x_outer.as_slice()],
+            std::slice::from_ref(&pd_ref),
+            &proof,
+            &mut ch_v,
+        )
+        .unwrap_or_else(|e| panic!("mixed batch verify rejected honest proof: {e:?}"));
+    }
+
+    /// End-to-end Ligerito backend roundtrip through pcs::open_batch_mixed_ligerito
+    /// and verify_opening_batch_ligerito_mixed. Single ring-switched claim
+    /// (no PD — PD path is task #11).
+    #[test]
+    #[ignore] // Heavier — ~50-100 ms; run with `cargo test pcs_ligerito_roundtrip -- --ignored --nocapture`
+    fn pcs_ligerito_backend_roundtrip() {
+        let m = 22usize;
+        let mut rng = Rng::new(0x11_6E_2170);
+        let z = rng.bits(1 << m);
+        let z_skip = rng.f128();
+        let x_outer: Vec<F128> = (0..(m - 6)).map(|_| rng.f128()).collect();
+        let rs_claim = zhat_skip_reference(&z, m, z_skip, &x_outer);
+
+        // PcsParams MUST set log_batch_size = ligerito_initial_k for L0 reuse.
+        let initial_k = 6;
+        let params = PcsParams {
+            m,
+            log_inv_rate: 1,
+            log_batch_size: initial_k,
+            profile: Default::default(),
+        };
+        let z_packed = pack_witness(&z, m);
+        let (commitment, prover_data) = commit(&z_packed, &params);
+
+        let recursive_ks = vec![3usize, 3, 3];
+        let log_inv_rates = vec![1usize, 3, 4, 6];
+        let queries: Vec<usize> = log_inv_rates
+            .iter()
+            .map(|&r| crate::pcs::ligerito::udr_queries(r))
+            .collect();
+        let grinding_bits = vec![0usize; log_inv_rates.len()];
+        let n_levels = log_inv_rates.len();
+        let lig_p_cfg = crate::pcs::ligerito::ProverConfig {
+            log_inv_rates: log_inv_rates.clone(),
+            recursive_steps: recursive_ks.len(),
+            initial_log_msg_cols: (m - LOG_PACKING) - initial_k,
+            initial_log_num_interleaved: initial_k,
+            initial_k,
+            recursive_log_msg_cols: vec![6, 3, 0],
+            recursive_ks: recursive_ks.clone(),
+            queries: queries.clone(),
+            grinding_bits: grinding_bits.clone(),
+            fold_grinding_bits: vec![0; n_levels],
+            ood_samples: vec![0; n_levels],
+        };
+        let lig_v_cfg = crate::pcs::ligerito::VerifierConfig {
+            log_inv_rates,
+            recursive_steps: recursive_ks.len(),
+            initial_log_msg_cols: (m - LOG_PACKING) - initial_k,
+            initial_log_num_interleaved: initial_k,
+            initial_k,
+            recursive_log_msg_cols: vec![6, 3, 0],
+            recursive_ks,
+            queries,
+            grinding_bits,
+            fold_grinding_bits: vec![0; n_levels],
+            ood_samples: vec![0; n_levels],
+        };
+
+        let mut ch_p = FsChallenger::new(b"flock-test-lig-v0");
+        let proof = open_batch_mixed_ligerito_with_precomputed_s_hat_v(
+            z_packed.clone(),
+            &prover_data,
+            &commitment,
+            &[x_outer.as_slice()],
+            &[],
+            &[],
+            &PaddingSpec::dense(m),
+            &lig_p_cfg,
+            &mut ch_p,
+        );
+
+        let mut ch_v = FsChallenger::new(b"flock-test-lig-v0");
+        verify_opening_batch_ligerito_mixed(
+            &commitment,
+            &[rs_claim],
+            &[z_skip],
+            &[x_outer.as_slice()],
+            &[],
+            &proof,
+            &lig_v_cfg,
+            &mut ch_v,
+        )
+        .unwrap_or_else(|e| panic!("ligerito verify rejected honest proof: {e:?}"));
+    }
+}
+
+// ===== leanVM-b stacked opener (grafted) =====
+/// Open ring-switched claims AND full-stack point claims in ONE BaseFold, when
+/// the committed witness is a larger STACK whose aligned sub-block
+/// `[stack_offset, stack_offset + qpkd.len())` is `qpkd` (the leanVM-b single-PCS
+/// integration: `qpkd` is flock's packed BLAKE3 witness, committed inside
+/// leanVM's one stacked commitment). The ring-switch combined weight is computed
+/// over `qpkd` and LIFTED into the stack domain; each `stack_pd = (point, value)`
+/// is a plain multilinear evaluation of the WHOLE stack (leanVM's bus /
+/// constraint / binding / pinning claims). All are γ-folded into one weight and
+/// the single BaseFold runs over `stack` (`a_init`). `stack_offset` must be a
+/// multiple of `qpkd.len()`.
+/// A point claim folded into the stacked mixed opening ([`open_batch_mixed_ligerito_stacked`]).
+/// Either a **block-sparse** slot claim — weight `eq(low_point,·)` supported on the
+/// aligned sub-block `[offset, offset + 2^low_point.len())`, so the opener builds
+/// `eq` over just the slot instead of the whole `2^m` stack — or a **general**
+/// full-stack point (`eq(point,·)` over all `2^m`). leanVM's point claims are all
+/// `Slot`s (their `eq` is zero outside the slot); `Point` keeps the opener usable
+/// for arbitrary claims.
+pub enum StackClaim<'a> {
+    /// `eq(low_point,·)` on `[offset, offset + 2^low_point.len())`. `offset` must
+    /// be a multiple of `2^low_point.len()` (an aligned slot).
+    Slot { offset: usize, low_point: &'a [F128], value: F128 },
+    /// A **boolean-selector** claim on a packed column, equivalent to a `Slot`
+    /// with `low_point = slot_bits(slot, stride_log) ++ point` but folded sparsely:
+    /// the low `stride_log` block coords are frozen to `slot`'s bits (so the weight
+    /// is nonzero only at `offset + slot + j·2^stride_log`), and `point` is the
+    /// high part. Costs `2^point.len()` instead of `2^(stride_log + point.len())`.
+    /// `offset` must be a multiple of `2^(stride_log + point.len())`.
+    StridedSlot { offset: usize, slot: usize, stride_log: usize, point: &'a [F128], value: F128 },
+    /// `eq(point,·)` over the whole `2^m` stack.
+    Point { point: &'a [F128], value: F128 },
+}
+
+impl StackClaim<'_> {
+    #[inline]
+    fn value(&self) -> F128 {
+        match self {
+            StackClaim::Slot { value, .. }
+            | StackClaim::StridedSlot { value, .. }
+            | StackClaim::Point { value, .. } => *value,
+        }
+    }
+}
+
+/// Fold the γ-weighted point claims into the lifted stack weight `b_stack` and
+/// running `target` (pure — the caller has already observed the claim values and
+/// sampled `gammas_pd` in transcript order). Shared by the BaseFold and Ligerito
+/// stacked openers, so both produce the identical `⟨stack, b_stack⟩ = target`
+/// inner-product claim.
+fn fold_stacked_point_claims(b_stack: &mut [F128], target: &mut F128, stack_pd: &[StackClaim], gammas_pd: &[F128]) {
+    use rayon::prelude::*;
+    // `build_eq` and `build_eq_parallel` produce the identical table and serial
+    // and parallel scatter give the identical result, so the proof is
+    // byte-for-byte unchanged. A `Slot` builds `eq` over ONLY its aligned
+    // sub-block (leanVM's claims — `eq` is zero elsewhere), a `Point` over the
+    // whole stack. Both scatter with `+=`, so overlapping slots (e.g. several
+    // claims on the q_pkd column) accumulate correctly. Small slots use the
+    // serial path: with hundreds of tiny point claims, rayon dispatch would
+    // cost more than the fold itself.
+    const PAR_FOLD_THRESHOLD: usize = 1 << 14;
+    for (claim, g) in stack_pd.iter().zip(gammas_pd.iter()) {
+        let g = *g;
+        match claim {
+            StackClaim::Slot { offset, low_point, value } => {
+                let len = 1usize << low_point.len();
+                let dst = &mut b_stack[*offset..*offset + len];
+                if len < PAR_FOLD_THRESHOLD {
+                    let eq = crate::zerocheck::univariate_skip::build_eq(low_point);
+                    for (bi, ei) in dst.iter_mut().zip(eq.iter()) {
+                        *bi += g * *ei;
+                    }
+                } else {
+                    let eq = ring_switch::build_eq_parallel(low_point);
+                    dst.par_iter_mut().zip(eq.par_iter()).for_each(|(bi, ei)| *bi += g * *ei);
+                }
+                *target += g * *value;
+            }
+            StackClaim::StridedSlot { offset, slot, stride_log, point, value } => {
+                // Sparse: eq over the instance `point` (2^point.len()),
+                // scattered at stride 2^stride_log into the slot's positions.
+                // Identical b_stack contribution to the dense Slot with
+                // low_point = slot_bits ++ point, at ~2^stride_log× less work.
+                let stride = 1usize << stride_log;
+                let base = *offset + *slot;
+                let eq = if point.len() < 14 {
+                    crate::zerocheck::univariate_skip::build_eq(point)
+                } else {
+                    ring_switch::build_eq_parallel(point)
+                };
+                for (j, &ej) in eq.iter().enumerate() {
+                    b_stack[base + j * stride] += g * ej;
+                }
+                *target += g * *value;
+            }
+            StackClaim::Point { point, value } => {
+                let eq = ring_switch::build_eq_parallel(point);
+                b_stack
+                    .par_iter_mut()
+                    .zip(eq.par_iter())
+                    .for_each(|(bi, ei)| *bi += g * *ei);
+                *target += g * *value;
+            }
+        }
+    }
+}
+
+/// The claim's weight `eq(full claim point, x)` at an arbitrary point `x` of the
+/// full stack cube — a `Slot`'s full point is `[low_point, selector_bits]`, a
+/// `StridedSlot`'s is `[slot_bits, point, selector_bits]`; neither is
+/// materialized. Shared by the BaseFold verifier (at the folding challenges) and
+/// the Ligerito verifier (at the residual points).
+fn stack_claim_eq_at(claim: &StackClaim, x: &[F128]) -> F128 {
+    match claim {
+        StackClaim::Slot { offset, low_point, .. } => {
+            let n = low_point.len();
+            let mut e = crate::zerocheck::multilinear::eq_eval(low_point, &x[..n]);
+            let sel = offset >> n;
+            for (k, &xi) in x[n..].iter().enumerate() {
+                e *= if (sel >> k) & 1 == 1 { xi } else { F128::ONE + xi };
+            }
+            e
+        }
+        StackClaim::StridedSlot { offset, slot, stride_log, point, .. } => {
+            let mut e = F128::ONE;
+            for (k, &xi) in x[..*stride_log].iter().enumerate() {
+                e *= if (slot >> k) & 1 == 1 { xi } else { F128::ONE + xi };
+            }
+            let block_vars = stride_log + point.len();
+            e *= crate::zerocheck::multilinear::eq_eval(point, &x[*stride_log..block_vars]);
+            let sel = offset >> block_vars;
+            for (k, &xi) in x[block_vars..].iter().enumerate() {
+                e *= if (sel >> k) & 1 == 1 { xi } else { F128::ONE + xi };
+            }
+            e
+        }
+        StackClaim::Point { point, .. } => crate::zerocheck::multilinear::eq_eval(point, x),
+    }
+}
+
+
+/// **Ligerito**-backend counterpart of [`open_batch_mixed_ligerito_stacked`]: the identical
+/// ring-switch combine + lifted `b_stack` build (same transcript order, same
+/// `⟨stack, b_stack⟩ = target` inner-product claim), discharged by the Ligerito
+/// recursive prover instead of BaseFold, reusing the caller's commit as L0.
+/// `lig_config.initial_k` / `log_inv_rates[0]` must match the commit's params.
+#[allow(clippy::too_many_arguments)]
+pub fn open_batch_mixed_ligerito_stacked<Ch: Challenger>(
+    qpkd: &[F128],
+    x_outers: &[&[F128]],
+    precomputed_s_hat_v: &[Option<&[F128]>],
+    padding: &PaddingSpec,
+    stack: &[F128],
+    stack_offset: usize,
+    stack_data: &ProverData,
+    stack_commitment: &Commitment,
+    stack_pd: &[StackClaim],
+    lig_config: &ligerito::ProverConfig,
+    challenger: &mut Ch,
+) -> BatchOpeningProofLigerito {
+    assert_eq!(
+        lig_config.initial_k, stack_commitment.params.log_batch_size,
+        "ligerito initial_k must match PcsParams.log_batch_size for L0 reuse",
+    );
+    assert_eq!(
+        lig_config.log_inv_rates[0], stack_commitment.params.log_inv_rate,
+        "ligerito log_inv_rates[0] must match PcsParams.log_inv_rate for L0 reuse",
+    );
+
+    let combined = compute_combined_basis_and_target(qpkd, x_outers, precomputed_s_hat_v, &[], padding, challenger, false);
+    let mut b_stack = vec![F128::ZERO; stack.len()];
+    b_stack[stack_offset..stack_offset + combined.b_combined.len()].copy_from_slice(&combined.b_combined);
+    let mut target = combined.target_combined;
+
+    for claim in stack_pd {
+        challenger.observe_label(b"flock-pcs-packed-direct-v0");
+        challenger.observe_f128(claim.value());
+    }
+    let gammas_pd: Vec<F128> = (0..stack_pd.len()).map(|_| challenger.sample_f128()).collect();
+    fold_stacked_point_claims(&mut b_stack, &mut target, stack_pd, &gammas_pd);
+
+    let lig = ligerito::recursive_prover_with_basis(
+        lig_config,
+        stack.to_vec(),
+        b_stack,
+        target,
+        &stack_data.codeword,
+        &stack_data.merkle_tree,
+        challenger,
+    );
+    BatchOpeningProofLigerito {
+        ring_switches: combined.ring_switches,
+        ligerito: lig,
+    }
+}
+
+/// Verifier mirror of [`open_batch_mixed_ligerito_stacked`]: replay the
+/// ring-switch reduction + γ-folds exactly as the BaseFold stacked verifier does,
+/// then drive the SUCCINCT Ligerito verifier with a residual evaluator for the
+/// lifted weight — at each residual point `x = ris ++ y_bits`,
+/// `b(x) = eq(sel, x_hi)·Σ γ_rs·rs_eq(x_lo) + Σ γ_pd·eq(claim, x)` (the same
+/// formula the BaseFold path checks once at its folding point).
+#[allow(clippy::too_many_arguments)]
+pub fn verify_opening_batch_mixed_ligerito_stacked<Ch: Challenger>(
+    stack_commitment: &Commitment,
+    stack_offset: usize,
+    qpkd_vars: usize,
+    claims: &[F128],
+    z_skips: &[F128],
+    x_outers: &[&[F128]],
+    stack_pd: &[StackClaim],
+    proof: &BatchOpeningProofLigerito,
+    lig_config: &ligerito::VerifierConfig,
+    challenger: &mut Ch,
+) -> Result<(), VerifyError> {
+    let n_rs = claims.len();
+    // These are caller (leanVM) invariants.
+    assert_eq!(z_skips.len(), n_rs);
+    assert_eq!(x_outers.len(), n_rs);
+    // `proof` is attacker-controlled (deserialized): validate its shape and return
+    // an Err rather than panicking (verifier DoS). `verify_succinct` internally
+    // asserts `s_hat_v.len() == 2^LOG_PACKING`, so check that here too.
+    let shape_err = || VerifyError::BaseFold(crate::pcs::basefold::VerifyError::InvalidProofShape);
+    if proof.ring_switches.len() != n_rs
+        || proof.ring_switches.iter().any(|rs| rs.s_hat_v.len() != 1 << LOG_PACKING)
+    {
+        return Err(shape_err());
+    }
+    challenger.observe_label(b"flock-pcs-open-batch-v0");
+
+    let mut rs_outputs = Vec::with_capacity(n_rs);
+    for i in 0..n_rs {
+        rs_outputs.push(
+            ring_switch::verify_succinct(claims[i], z_skips[i], x_outers[i], &proof.ring_switches[i], challenger)
+                .map_err(VerifyError::RingSwitch)?,
+        );
+    }
+    let gammas_rs: Vec<F128> = (0..n_rs).map(|_| challenger.sample_f128()).collect();
+    let mut target_combined = F128::ZERO;
+    for (out, g) in rs_outputs.iter().zip(gammas_rs.iter()) {
+        target_combined += *g * out.sumcheck_claim;
+    }
+
+    for claim in stack_pd {
+        challenger.observe_label(b"flock-pcs-packed-direct-v0");
+        challenger.observe_f128(claim.value());
+    }
+    let gammas_pd: Vec<F128> = (0..stack_pd.len()).map(|_| challenger.sample_f128()).collect();
+    for (claim, g) in stack_pd.iter().zip(gammas_pd.iter()) {
+        target_combined += *g * claim.value();
+    }
+
+    // Residual evaluator of the lifted weight: for each y over the residual cube,
+    // evaluate b at the full point `ris ++ y_bits` (low coords = ris, high = y).
+    let log_n = stack_commitment.params.m - LOG_PACKING;
+    let sel = stack_offset >> qpkd_vars;
+    let eval_b_residual = |ris: &[F128], yr_log_n: usize| -> Vec<F128> {
+        use rayon::prelude::*;
+        (0..1usize << yr_log_n)
+            .into_par_iter()
+            .map(|y| {
+                let mut x = Vec::with_capacity(ris.len() + yr_log_n);
+                x.extend_from_slice(ris);
+                for k in 0..yr_log_n {
+                    x.push(F128::new(((y >> k) & 1) as u64, 0));
+                }
+                let (x_lo, x_hi) = x.split_at(qpkd_vars);
+                let mut sel_eq = F128::ONE;
+                for (k, &xi) in x_hi.iter().enumerate() {
+                    sel_eq *= if (sel >> k) & 1 == 1 { xi } else { F128::ONE + xi };
+                }
+                let mut rs_part = F128::ZERO;
+                for (out, (g, x_outer)) in rs_outputs.iter().zip(gammas_rs.iter().zip(x_outers.iter())) {
+                    rs_part += *g * ring_switch::eval_rs_eq(&x_outer[1..], x_lo, &out.eq_r_dprime);
+                }
+                let mut acc = rs_part * sel_eq;
+                for (claim, g) in stack_pd.iter().zip(gammas_pd.iter()) {
+                    acc += *g * stack_claim_eq_at(claim, &x);
+                }
+                acc
+            })
+            .collect()
+    };
+
+    let ok = ligerito::recursive_verifier_with_basis_succinct(
+        lig_config,
+        &proof.ligerito,
+        log_n,
+        target_combined,
+        &stack_commitment.root,
+        eval_b_residual,
+        challenger,
+    );
+    if !ok {
+        return Err(VerifyError::BaseFold(crate::pcs::basefold::VerifyError::InvalidProofShape));
+    }
     Ok(())
 }

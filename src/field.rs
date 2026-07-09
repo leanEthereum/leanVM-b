@@ -18,6 +18,17 @@ pub const fn mul_by_g(a: F64) -> F64 {
     F64((a.0 << 1) ^ (0x1B * carry))
 }
 
+/// Multiply an `E`-element by the base generator `g = x ∈ K`: lane-wise
+/// [`mul_by_g`] on both `K`-coefficients (`(c0 + c1·y)·g = c0·g + (c1·g)·y`) —
+/// two shift+folds, no PMULL.
+#[inline]
+pub const fn mul_by_g_e(a: F128T) -> F128T {
+    F128T {
+        c0: mul_by_g(F64(a.c0)).0,
+        c1: mul_by_g(F64(a.c1)).0,
+    }
+}
+
 /// `[g^0, g^1, …, g^{n-1}]`, built in parallel: each chunk seeds with one g-power
 /// (`x_pow`, `O(log)`) and fills by `mul_by_g`, breaking the serial prefix chain
 /// across cores.
