@@ -345,8 +345,11 @@ def absorb(cb, x, tag):
 
 
 @inline
-def squeeze(cb, zt):
+def squeeze(cb):
     # Ratchet: the compress output is the new state; word 0 is the challenge.
+    zt = StackBuf(2)
+    zt[0] = 0
+    zt[1] = DS_SQ
     nb = StackBuf(2)
     blake3(cb, zt, nb)
     return nb
@@ -397,9 +400,6 @@ def open_stacked(mi: Const, fs0, fs1, target, commit_root_0, commit_root_1):
     fs = StackBuf(2)
     fs[0] = fs0
     fs[1] = fs1
-    sqz_tag = StackBuf(2)
-    sqz_tag[0] = 0
-    sqz_tag[1] = DS_SQ
     lsc = HeapBuf(GEN ** (LIG_SUMCHECK_LEN[mi]))
     hint_witness(lsc[0:LIG_SUMCHECK_LEN[mi]], "lsc")
     lrows = HeapBuf(GEN ** (LIG_ROWS_LEN[mi]))
@@ -471,7 +471,7 @@ def open_stacked(mi: Const, fs0, fs1, target, commit_root_0, commit_root_1):
                     assert zero_bit_hi == 0
                 nonce_v = fnn[GEN ** fold_idx]
                 fs = absorb(fs, nonce_v, DS_POW)
-            fs = squeeze(fs, sqz_tag)
+            fs = squeeze(fs)
             fold_challenge = fs[0]
             ris[GEN ** (LIG_FOLDS_OFF[mi * LIG_MAX_LEVELS + lvl] + j)] = fold_challenge
             t_r = quad_c + fold_challenge * quad_b + fold_challenge * fold_challenge * quad_a
@@ -533,7 +533,7 @@ def open_stacked(mi: Const, fs0, fs1, target, commit_root_0, commit_root_1):
 
         alphas = HeapBuf(GEN ** (LIG_MAX_INTERLEAVE[mi]))
         for t in unroll(0, LIG_LOG_QUERIES[mi * LIG_MAX_LEVELS + lvl]):
-            fs = squeeze(fs, sqz_tag)
+            fs = squeeze(fs)
             lav = fs[0]
             alphas[GEN ** t] = lav
         eq_tab = HeapBuf(GEN ** (LIG_MAX_INTERLEAVE[mi]))
@@ -606,7 +606,7 @@ def open_stacked(mi: Const, fs0, fs1, target, commit_root_0, commit_root_1):
         enforced_sums[GEN ** lvl] = enforced_chain[GEN ** LIG_QUERIES[mi * LIG_MAX_LEVELS + lvl]]
 
         if lvl == LIG_YR_LEVEL[mi]:
-            fs = squeeze(fs, sqz_tag)
+            fs = squeeze(fs)
             beta_lvl = fs[0]
             betas[GEN ** lvl] = beta_lvl
             t_r = t_r + beta_lvl * enforced_sums[GEN ** lvl]
@@ -616,7 +616,7 @@ def open_stacked(mi: Const, fs0, fs1, target, commit_root_0, commit_root_1):
             intro_u2 = msg_cursor[GEN ** 1]
             fs = obs(fs, intro_u2)
             msg_cursor = msg_cursor * GEN ** 2
-            fs = squeeze(fs, sqz_tag)
+            fs = squeeze(fs)
             beta_lvl = fs[0]
             betas[GEN ** lvl] = beta_lvl
             enforced = enforced_sums[GEN ** lvl]
@@ -658,9 +658,6 @@ def verify_sub(pi_0, pi_1, delta_pows, dout):
     # sub-proof's entry of every witness stream, so the body lowers once and
     # main just calls it per statement. `delta_pows` is the shared dual-basis
     # Frobenius table; the deferred-claim data is written to `dout`.
-    sqz_tag = StackBuf(2)
-    sqz_tag[0] = 0
-    sqz_tag[1] = DS_SQ
     cvh = HeapBuf(4)
     hint_witness(cvh[0:4], "cvh")
     stream = HeapBuf(STREAM_CAP)
@@ -792,7 +789,7 @@ def verify_sub(pi_0, pi_1, delta_pows, dout):
     cursor = cursor * GEN
 
     # ---- bus: α, grinding, γ ----
-    fs = squeeze(fs, sqz_tag)
+    fs = squeeze(fs)
     alpha = fs[0]
     # grinding nonce: raw stream word (NOT observed), PoW-checked, then bound.
     nonce = cursor[GEN ** 0]
@@ -843,7 +840,7 @@ def verify_sub(pi_0, pi_1, delta_pows, dout):
         z1 = tail_ptr[xb]
         assert z1 == 0
     fs = absorb(fs, nonce, DS_POW)
-    fs = squeeze(fs, sqz_tag)
+    fs = squeeze(fs)
     gamma = fs[0]
 
     # ---- 3× GKR grand product (push / pull / count), RUNTIME depth ----
@@ -916,10 +913,7 @@ def verify_sub(pi_0, pi_1, delta_pows, dout):
                 rj = rowp[xj]
                 lhs = jeq * ((1 + rj) * m0 + rj * m1)
                 assert lhs == jclaim
-                jtag = StackBuf(2)
-                jtag[0] = 0
-                jtag[1] = DS_SQ
-                jfs = squeeze(jfs, jtag)
+                jfs = squeeze(jfs)
                 rk = jfs[0]
                 nextrow[xj * GEN] = rk
                 jeq = jeq * (1 + rj + rk)
@@ -947,10 +941,7 @@ def verify_sub(pi_0, pi_1, delta_pows, dout):
             tfs = obs(tfs, e1)
             tcur = tcur * GEN ** 2
             assert tclaim == teq * e0 * e1
-            ttag = StackBuf(2)
-            ttag[0] = 0
-            ttag[1] = DS_SQ
-            tfs = squeeze(tfs, ttag)
+            tfs = squeeze(tfs)
             c = tfs[0]
             claim_n = e0 + c * (e0 + e1)
             nextrow[GEN ** 0] = c
@@ -1144,7 +1135,7 @@ def verify_sub(pi_0, pi_1, delta_pows, dout):
         fs = obs(fs, bcv[GEN ** k])
     sb = HeapBuf(3)
     for t in unroll(0, 3):
-        fs = squeeze(fs, sqz_tag)
+        fs = squeeze(fs)
         sv = fs[0]
         sb[GEN ** t] = sv
     wbc = HeapBuf(2)
@@ -1183,7 +1174,7 @@ def verify_sub(pi_0, pi_1, delta_pows, dout):
     zc_round_eq = HeapBuf(6 * (TAU_CAP + 2))
     for t in unroll(0, 6):
         tau_g = ann_exp[GEN ** (t + 1)]
-        fs = squeeze(fs, sqz_tag)
+        fs = squeeze(fs)
         eta = fs[0]
         # the zerocheck point r: tau squeezes, sponge chained by round.
         rr = HeapBuf(TAU_CAP)
@@ -1195,10 +1186,7 @@ def verify_sub(pi_0, pi_1, delta_pows, dout):
             kfs = StackBuf(2)
             kfs[0] = pfs0[xk]
             kfs[1] = pfs1[xk]
-            ktag = StackBuf(2)
-            ktag[0] = 0
-            ktag[1] = DS_SQ
-            kfs = squeeze(kfs, ktag)
+            kfs = squeeze(kfs)
             rr[xk] = kfs[0]
             xkn = xk * GEN
             pfs0[xkn] = kfs[0]
@@ -1235,10 +1223,7 @@ def verify_sub(pi_0, pi_1, delta_pows, dout):
             rj = rr[xk]
             lhs = jeq * ((1 + rj) * p0 + rj * p1)
             assert lhs == jclaim
-            jtag = StackBuf(2)
-            jtag[0] = 0
-            jtag[1] = DS_SQ
-            jfs = squeeze(jfs, jtag)
+            jfs = squeeze(jfs)
             rk = jfs[0]
             rho_t[xk] = rk
             jeq = jeq * (1 + rj + rk)
@@ -1296,7 +1281,7 @@ def verify_sub(pi_0, pi_1, delta_pows, dout):
     assert sponge_state == want_state
 
     # ---- public-input binding claim: MEM(r_m, 0..) = interp(pi0, pi1, r_m) ----
-    fs = squeeze(fs, sqz_tag)
+    fs = squeeze(fs)
     rm = fs[0]
     pi_interp = pi_0 + rm * (pi_0 + pi_1)
     claim_pool[GEN ** ci] = pi_interp
@@ -1349,7 +1334,7 @@ def verify_sub(pi_0, pi_1, delta_pows, dout):
     # the full r vector: 6 sampled skips, 7 fixed inner, R1CS_M_CAP-13 sampled outer.
     zerocheck_r = HeapBuf(R1CS_M_CAP)
     for i in unroll(0, 6):
-        fs = squeeze(fs, sqz_tag)
+        fs = squeeze(fs)
         rv = fs[0]
         zerocheck_r[GEN ** i] = rv
     for i in unroll(0, 7):
@@ -1364,10 +1349,7 @@ def verify_sub(pi_0, pi_1, delta_pows, dout):
         kfs = StackBuf(2)
         kfs[0] = flock_point_fs0[xi]
         kfs[1] = flock_point_fs1[xi]
-        ktag = StackBuf(2)
-        ktag[0] = 0
-        ktag[1] = DS_SQ
-        kfs = squeeze(kfs, ktag)
+        kfs = squeeze(kfs)
         zerocheck_r[xi] = kfs[0]
         xin = xi * GEN
         flock_point_fs0[xin] = kfs[0]
@@ -1378,7 +1360,7 @@ def verify_sub(pi_0, pi_1, delta_pows, dout):
     # observe round-1 messages (ab then c), sample z.
     for i in unroll(0, 128):
         fs = obs(fs, zc_round1[GEN ** i])
-    fs = squeeze(fs, sqz_tag)
+    fs = squeeze(fs)
     zerocheck_z = fs[0]
     # interpolate P^C(z) on the Lambda domain (phi8 nodes 64..128): prefix/
     # suffix numerator products with baked inverse denominators.
@@ -1407,7 +1389,7 @@ def verify_sub(pi_0, pi_1, delta_pows, dout):
         gamma_ab = (zc_running + r_eq * gamma_c) * I7INV[i]
         fs = obs(fs, gamma_c)
         fs = obs(fs, g_inf)
-        fs = squeeze(fs, sqz_tag)
+        fs = squeeze(fs)
         rho_v = fs[0]
         zerocheck_rhos[GEN ** i] = rho_v
         zc_running = gamma_ab * (1 + rho_v) + gamma_c * rho_v + g_inf * rho_v * (1 + rho_v)
@@ -1433,10 +1415,7 @@ def verify_sub(pi_0, pi_1, delta_pows, dout):
         gamma_ab = (jrun + r_eq * gamma_c) * inv_one_plus_r
         jfs = obs(jfs, gamma_c)
         jfs = obs(jfs, g_inf)
-        jtag = StackBuf(2)
-        jtag[0] = 0
-        jtag[1] = DS_SQ
-        jfs = squeeze(jfs, jtag)
+        jfs = squeeze(jfs)
         rho_v = jfs[0]
         zerocheck_rhos[xi] = rho_v
         jrun = gamma_ab * (1 + rho_v) + gamma_c * rho_v + g_inf * rho_v * (1 + rho_v)
@@ -1460,9 +1439,9 @@ def verify_sub(pi_0, pi_1, delta_pows, dout):
     fs = absorb(fs, 17, DS_LEN)
     fs = absorb(fs, LCLBLA, DS_BYTE)
     fs = absorb(fs, LCLBLB, DS_BYTE)
-    fs = squeeze(fs, sqz_tag)
+    fs = squeeze(fs)
     lincheck_alpha = fs[0]
-    fs = squeeze(fs, sqz_tag)
+    fs = squeeze(fs)
     lincheck_beta = fs[0]
     lc_running = lincheck_alpha * a_eval + b_eval + lincheck_beta
     lincheck_rs = HeapBuf(LINCHECK_ROUNDS)
@@ -1471,7 +1450,7 @@ def verify_sub(pi_0, pi_1, delta_pows, dout):
         ei = lincheck_msgs[GEN ** (2 * i + 1)]
         fs = obs(fs, e1)
         fs = obs(fs, ei)
-        fs = squeeze(fs, sqz_tag)
+        fs = squeeze(fs)
         rv = fs[0]
         lincheck_rs[GEN ** i] = rv
         e0 = lc_running + e1
@@ -1494,7 +1473,7 @@ def verify_sub(pi_0, pi_1, delta_pows, dout):
     lincheck_final = matrix_part + pin_term
     assert lc_running == lincheck_final
     # fresh z_skip; w = <lagrange_S(r_inner_skip), z_partial> (phi8 nodes 0..64).
-    fs = squeeze(fs, sqz_tag)
+    fs = squeeze(fs)
     lincheck_z_skip = fs[0]
     skip_nums = StackBuf(64)
     lag64(lincheck_z_skip, skip_nums, 0)
@@ -1545,7 +1524,7 @@ def verify_sub(pi_0, pi_1, delta_pows, dout):
     # sample), so one eq tensor and one linearized coefficient table
     # serve the whole batch.
     for i in unroll(0, 7):
-        fs = squeeze(fs, sqz_tag)
+        fs = squeeze(fs)
         rv = fs[0]
         r_dprime[GEN ** i] = rv
     w_eq = HeapBuf(254)
@@ -1593,9 +1572,9 @@ def verify_sub(pi_0, pi_1, delta_pows, dout):
             for xt in mul_range(1, ann_exp[GEN ** 6] * GEN ** (K_LOG - 7)):
                 zv_hi[xt] = zcr7[xt]
     # gamma-combine the two transposed sumcheck claims (computed in-circuit).
-    fs = squeeze(fs, sqz_tag)
+    fs = squeeze(fs)
     gamma_ab = fs[0]
-    fs = squeeze(fs, sqz_tag)
+    fs = squeeze(fs)
     gamma_c = fs[0]
     target = gamma_ab * transposed_claims[GEN ** 0] + gamma_c * transposed_claims[GEN ** 1]
     # ...then every pooled point claim, each labeled and observed.
@@ -1606,7 +1585,7 @@ def verify_sub(pi_0, pi_1, delta_pows, dout):
         fs = obs(fs, claim_pool[GEN ** j])
     gamma_pool = HeapBuf(NCL)
     for j in unroll(0, NCL):
-        fs = squeeze(fs, sqz_tag)
+        fs = squeeze(fs)
         gv = fs[0]
         gamma_pool[GEN ** j] = gv
         target = target + gv * claim_pool[GEN ** j]
@@ -1839,9 +1818,6 @@ def verify_sub(pi_0, pi_1, delta_pows, dout):
 
 
 def main():
-    sqz_tag = StackBuf(2)
-    sqz_tag[0] = 0
-    sqz_tag[1] = DS_SQ
     spi = HeapBuf(NSUB * 2)
     hint_witness(spi[0:NSUB * 2], "spi")
     bscr = HeapBuf(2 * BYTECODE_VARS)
@@ -1901,7 +1877,7 @@ def main():
     gamma_bc = HeapBuf(2 * NSUB)
     bc_running = 0
     for t in unroll(0, 2 * NSUB):
-        agg_fs = squeeze(agg_fs, sqz_tag)
+        agg_fs = squeeze(agg_fs)
         gv = agg_fs[0]
         gamma_bc[GEN ** t] = gv
         bc_running = bc_running + gv * defer[GEN ** ((t // 2) * DEFER_SIZE + 2 * BYTECODE_LOG + 3 + t % 2)]
@@ -1911,7 +1887,7 @@ def main():
         msg_ginf = bscr[GEN ** (2 * rd + 1)]
         agg_fs = obs(agg_fs, msg_g1)
         agg_fs = obs(agg_fs, msg_ginf)
-        agg_fs = squeeze(agg_fs, sqz_tag)
+        agg_fs = squeeze(agg_fs)
         rv = agg_fs[0]
         bc_point[GEN ** rd] = rv
         g_zero = bc_running + msg_g1
@@ -1934,7 +1910,7 @@ def main():
     gamma_mat = HeapBuf(NSUB)
     mat_running = 0
     for t in unroll(0, NSUB):
-        agg_fs = squeeze(agg_fs, sqz_tag)
+        agg_fs = squeeze(agg_fs)
         gv = agg_fs[0]
         gamma_mat[GEN ** t] = gv
         mat_running = mat_running + gv * defer[GEN ** (t * DEFER_SIZE + 2 * BYTECODE_LOG + 71 + 2 * LINCHECK_ROUNDS)]
@@ -1944,7 +1920,7 @@ def main():
         msg_ginf = mscr[GEN ** (2 * rd + 1)]
         agg_fs = obs(agg_fs, msg_g1)
         agg_fs = obs(agg_fs, msg_ginf)
-        agg_fs = squeeze(agg_fs, sqz_tag)
+        agg_fs = squeeze(agg_fs)
         rv = agg_fs[0]
         mat_point[GEN ** rd] = rv
         g_zero = mat_running + msg_g1
