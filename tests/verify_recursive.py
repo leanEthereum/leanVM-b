@@ -128,8 +128,12 @@ PIN_VALUES = PIN_VALUES_PLACEHOLDER
 # LINCHECK_ROUNDS = k_log - k_skip is protocol-fixed, PIN_COLUMN the
 # const-pin column.
 R1CSLBL = R1CSLBL_PLACEHOLDER
-SD0 = SD0_PLACEHOLDER
-SD1 = SD1_PLACEHOLDER
+# The flock r1cs statement digest, per candidate BLAKE3 log-instance-count
+# (it hashes the matrices, whose size scales with the instance count): the
+# guest reads row tau_5.
+SD0_TAB = SD0_TAB_PLACEHOLDER
+SD1_TAB = SD1_TAB_PLACEHOLDER
+B3TABLEN = B3TABLEN_PLACEHOLDER
 ZCLBLA = ZCLBLA_PLACEHOLDER
 ZCLBLB = ZCLBLB_PLACEHOLDER
 LCLBLA = LCLBLA_PLACEHOLDER
@@ -1336,11 +1340,21 @@ def verify_sub(pi_0, pi_1, delta_pows, defer_out):
     assert sponge_state == want_state
 
     # ---- flock reduction: bind_statement ----
+    # The statement digest is selected by the certified tau_5 (BLAKE3
+    # log-instance-count): read row tau5_g of the baked per-candidate tables.
+    sd0_tab = HeapBuf(B3TABLEN)
+    sd1_tab = HeapBuf(B3TABLEN)
+    for n in unroll(0, B3TABLEN):
+        sd0_tab[GEN ** n] = SD0_TAB[n]
+        sd1_tab[GEN ** n] = SD1_TAB[n]
+    tau5_g = ann_exp[GEN ** 6]
+    sd0 = sd0_tab[tau5_g]
+    sd1 = sd1_tab[tau5_g]
     fs = absorb(fs, 13, DS_LEN)
     fs = absorb(fs, R1CSLBL, DS_BYTE)
     fs = absorb(fs, 32, DS_LEN)
-    fs = absorb(fs, SD0, DS_BYTE)
-    fs = absorb(fs, SD1, DS_BYTE)
+    fs = absorb(fs, sd0, DS_BYTE)
+    fs = absorb(fs, sd1, DS_BYTE)
     fs = absorb(fs, 32, DS_LEN)
     fs = absorb(fs, commit_root_0, DS_BYTE)
     fs = absorb(fs, commit_root_1, DS_BYTE)

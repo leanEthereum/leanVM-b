@@ -39,33 +39,42 @@ fn bits_of(v: F128) -> Vec<F128> {
     out
 }
 
-/// The non-trivial inner program: a BLAKE3 hash chain seeded from the public
-/// input, a `mul_range` product loop with heap traffic, and a final assert tying
-/// them together — exercises every table (XOR/MUL/SET/DEREF/JUMP/BLAKE3).
-fn inner_program(_iters: usize) -> Program {
-    // SIZE-GENERIC inner: the iteration count rides a witness hint (a
-    // g-power bound for the runtime mul_range), so every size shares ONE
-    // program and ONE digest - the shape the recursion guest is generic
-    // over.
+/// The non-trivial inner program: a runtime-bounded BLAKE3 hash chain seeded
+/// from the public input, a runtime-bounded `mul_range` product loop with heap
+/// traffic, and a final assert tying them together. BOTH loop bounds ride
+/// witness hints ("n_hash", "iters"), so a single program (one bytecode, one
+/// digest) proves runs with wildly different opcode profiles and sizes - the
+/// exact genericity the recursion guest is built for. Exercises every table
+/// (XOR/MUL/SET/DEREF/JUMP/BLAKE3).
+fn inner_program() -> Program {
     let src = "from snark_lib import *\n\
-        N = 8\n\
         def main():\n\
         \x20   p = GEN ** 0\n\
-        \x20   st = StackBuf(2)\n\
-        \x20   st[0] = p[1]\n\
-        \x20   st[1] = p[GEN]\n\
-        \x20   for i in unroll(0, N):\n\
-        \x20       nx = StackBuf(2)\n\
-        \x20       blake3(st, st, nx)\n\
-        \x20       st = nx\n\
-        \x20   s1 = 1 * st[1]\n\
+        \x20   nh = HeapBuf(1)\n\
+        \x20   hint_witness(nh[0:1], \"n_hash\")\n\
+        \x20   hbound = nh[GEN ** 0]\n\
+        \x20   assert log(hbound) < 65536\n\
+        \x20   hc0 = HeapBuf(hbound * GEN)\n\
+        \x20   hc1 = HeapBuf(hbound * GEN)\n\
+        \x20   hc0[GEN ** 0] = p[1]\n\
+        \x20   hc1[GEN ** 0] = p[GEN]\n\
+        \x20   for h in mul_range(1, hbound):\n\
+        \x20       cur = StackBuf(2)\n\
+        \x20       cur[0] = hc0[h]\n\
+        \x20       cur[1] = hc1[h]\n\
+        \x20       nxt = StackBuf(2)\n\
+        \x20       blake3(cur, cur, nxt)\n\
+        \x20       hc0[h * GEN] = nxt[0]\n\
+        \x20       hc1[h * GEN] = nxt[1]\n\
+        \x20   st0 = hc0[hbound]\n\
+        \x20   s1 = hc1[hbound]\n\
         \x20   nb = HeapBuf(1)\n\
         \x20   hint_witness(nb[0:1], \"iters\")\n\
         \x20   bound = nb[GEN ** 0]\n\
         \x20   assert log(bound) < 65536\n\
         \x20   buf = HeapBuf(bound)\n\
         \x20   acc = HeapBuf(bound * GEN)\n\
-        \x20   acc[GEN ** 0] = st[0]\n\
+        \x20   acc[GEN ** 0] = st0\n\
         \x20   for x in mul_range(1, bound):\n\
         \x20       buf[x] = acc[x] * acc[x] + s1\n\
         \x20       acc[x * GEN] = buf[x] + x\n\
@@ -78,16 +87,17 @@ fn inner_program(_iters: usize) -> Program {
     compile(&parse(src).expect("parse inner"))
 }
 
-/// Prove the inner program, returning (program, proof).
-fn prove_inner(pi: [F128; 2], iters: usize) -> (Program, leanvm_b::cpu::Proof, usize) {
-    let mut program = inner_program(iters);
-    // The final accumulator must be nonzero for the hinted-inverse assert; the
-    // witness generator computes it, so run once natively to fetch the value.
-    // (Cheap: the inverse hint is the only witness stream.)
-    // First run without the hint to discover `out` would panic; instead compute
-    // `out` by replaying the same arithmetic natively.
+/// Prove one run of the inner program: `hashes` BLAKE3 compressions then
+/// `iters` product-loop steps (both runtime, driven by the witness hints).
+/// The witness generator replays both natively to supply the final-inverse
+/// hint. Returns (program, proof, guest-cycle count).
+fn prove_inner(pi: [F128; 2], hashes: usize, iters: usize) -> (Program, leanvm_b::cpu::Proof, usize) {
+    assert!(hashes >= 1 && iters >= 1, "both loops run at least once");
+    let mut program = inner_program();
+    // Replay natively: the hash chain, then the product loop, to fetch the
+    // final accumulator (nonzero, for the hinted-inverse assert).
     let mut st = [pi[0], pi[1]];
-    for _ in 0..8 {
+    for _ in 0..hashes {
         st = leanvm_b::vmhash::compress(st, st);
     }
     let mut acc = st[0];
@@ -101,6 +111,7 @@ fn prove_inner(pi: [F128; 2], iters: usize) -> (Program, leanvm_b::cpu::Proof, u
     let out = acc;
     assert!(out != F128::ZERO, "inner accumulator must be nonzero");
     program.set_witness("outinv", vec![vec![out.inv()]]);
+    program.set_witness("n_hash", vec![vec![g_pow(hashes)]]);
     program.set_witness("iters", vec![vec![g_pow(iters)]]);
     let (proof, stats) = prove(&program, pi);
     eprintln!(
@@ -723,8 +734,24 @@ fn gen_verify(
         )
     };
     ps("R1CSLBL", u(word16(b"flock-r1cs-v0", 0)).to_string());
-    ps("SD0", u(word16(&sd_bytes, 0)).to_string());
-    ps("SD1", u(word16(&sd_bytes, 16)).to_string());
+    // The flock r1cs statement digest depends on the BLAKE3 instance count
+    // (the matrix sizes scale with it), so it is a pure function of the
+    // certified tau_5: bake a table over candidate log-instance-counts and
+    // let the guest read row tau_5 by deref. [MINB3, MAXB3] must cover every
+    // sub's tau_5; entries below the flock floor (3) are unreachable.
+    const MINB3: usize = 3;
+    const MAXB3: usize = 12;
+    let mut sd0_tab = vec![0u128; MAXB3 + 1];
+    let mut sd1_tab = vec![0u128; MAXB3 + 1];
+    for n in MINB3..=MAXB3 {
+        let d = flock_prover::r1cs_hashes::blake3::build_block_r1cs(n).statement_digest();
+        sd0_tab[n] = u(word16(&d, 0));
+        sd1_tab[n] = u(word16(&d, 16));
+    }
+    assert!((MINB3..=MAXB3).contains(&n_log_b3), "tau_5 {n_log_b3} outside the SD table");
+    ps("SD0_TAB", us(&sd0_tab));
+    ps("SD1_TAB", us(&sd1_tab));
+    ps("B3TABLEN", (MAXB3 + 1).to_string());
     ps("ZCLBLA", u(word16(b"flock-zerocheck-v0", 0)).to_string());
     ps("ZCLBLB", u(word16(b"flock-zerocheck-v0", 16)).to_string());
     ps("LCLBLA", u(word16(b"flock-lincheck-v0", 0)).to_string());
@@ -1322,20 +1349,36 @@ fn gen_verify(
     (rep, hints, deferred)
 }
 
-/// End-to-end N→1 recursion: prove `nsub` inner proofs (same program,
-/// distinct statements), verify all of them inside ONE guest, batch the
-/// deferred claims with the two aggregation sumchecks, prove the guest, and
-/// natively discharge the three reduced claims.
-fn run_recursion(inner_iters: &[usize]) {
-    let nsub = inner_iters.len();
+/// Everything needed to run one N→1 recursion batch EXCEPT compiling the
+/// guest: the placeholder map (identical for every shape of the fixed inner
+/// program), the merged per-sub witness entries, the outer statement, and the
+/// data to discharge the reduced claims. Splitting the build from the compile
+/// lets one compiled guest serve many batches (see `recursion_generic_many`).
+struct Batch {
+    rep: BTreeMap<String, String>,
+    merged: Vec<(String, Vec<Vec<F128>>)>,
+    gpi: [F128; 2],
+    program0: Program,
+    proof0: leanvm_b::cpu::Proof,
+    pi0: [F128; 2],
+    reduced: Reduced,
+    nsub: usize,
+    total_inner_cycles: usize,
+}
+
+/// Prove `inner.len()` inner runs (same program, distinct statements + shapes),
+/// verify each inside the recursion guest, and assemble the aggregation inputs.
+/// `inner[k] = (hashes, iters)` sets sub k's opcode profile.
+fn build_batch(inner: &[(usize, usize)]) -> Batch {
+    let nsub = inner.len();
     let mut total_inner_cycles = 0usize;
     let mut protos = Vec::new();
-    for (k, &iters) in inner_iters.iter().enumerate() {
+    for (k, &(hashes, iters)) in inner.iter().enumerate() {
         let pi = [
             F128::new(0x1111_2222 + k as u64, 0x3333_4444),
             F128::new(0x5555_6666, 0x7777_8888 + k as u64),
         ];
-        let (program, proof, inner_cycles) = prove_inner(pi, iters);
+        let (program, proof, inner_cycles) = prove_inner(pi, hashes, iters);
         total_inner_cycles += inner_cycles;
         trace_start();
         let summary = verify(&program, &pi, &proof).expect("inner verifies");
@@ -1379,13 +1422,23 @@ fn run_recursion(inner_iters: &[usize]) {
     merged[spi_pos].1 = vec![spi_all];
     let (agg_hints, reduced) = gen_agg(program0, proof0, &subs);
     merged.extend(agg_hints.into_iter().map(|(n, v)| (n, vec![v])));
+    let gpi = reduced.outer_pi;
+    // The reduced-claim discharge needs sub 0's program/proof/statement; move
+    // it out (Program is not Clone) now that gen_agg's borrows have ended.
+    let (program0, pi0, proof0, _, _) = protos.swap_remove(0);
+    Batch { rep, merged, gpi, program0, proof0, pi0, reduced, nsub, total_inner_cycles }
+}
 
+/// End-to-end N→1 recursion with the full report: build the batch, compile the
+/// guest, prove it, verify, and natively discharge the three reduced claims.
+fn run_recursion(inner: &[(usize, usize)]) {
+    let batch = build_batch(inner);
+    let Batch { rep, merged, gpi, program0, proof0, pi0, reduced, nsub, total_inner_cycles } = batch;
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/verify_recursive.py");
     let mut guest = compile(&parse_file_with_replacements(path, &rep).expect("parse verify_recursive.py"));
     for (name, entries) in &merged {
         guest.set_witness(name, entries.clone());
     }
-    let gpi = reduced.outer_pi;
     let t = std::time::Instant::now();
     let (gproof, stats) = prove(&guest, gpi);
     let t_prove = t.elapsed();
@@ -1393,7 +1446,7 @@ fn run_recursion(inner_iters: &[usize]) {
     verify(&guest, &gpi, &gproof).expect("outer proof verifies");
     let t_verify = t.elapsed();
     let t = std::time::Instant::now();
-    check_reduced(program0, proof0, *pi0, &reduced);
+    check_reduced(&program0, &proof0, pi0, &reduced);
     let t_red = t.elapsed();
     let proof_bytes = bincode::serialized_size(&gproof).expect("proof is serializable");
     let pow = |x: usize| if x == 0 { "     -".into() } else { format!("2^{:.2}", (x as f64).log2()) };
@@ -1432,7 +1485,7 @@ fn run_recursion(inner_iters: &[usize]) {
 /// natively.
 #[test]
 fn recursion_2to1() {
-    run_recursion(&[1 << 15, 1 << 15]);
+    run_recursion(&[(8, 1 << 15), (8, 1 << 15)]);
 }
 
 /// THE genericity milestone: ONE compiled guest bytecode verifies two inner
@@ -1440,6 +1493,56 @@ fn recursion_2to1() {
 /// placeholder maps are asserted identical in run_recursion).
 #[test]
 fn recursion_2to1_mixed() {
-    run_recursion(&[1 << 13, 1 << 15]);
+    run_recursion(&[(4, 1 << 13), (64, 1 << 15)]);
+}
+
+/// One compiled guest bytecode proves MANY inner runs with wildly different
+/// opcode profiles and sizes, without recompilation. The configs span four
+/// committed sizes (m in {22,23,24,25} - four distinct match_range opening
+/// arms) and four BLAKE3 log-instance-counts (tau_5 in {3,4,5,6} - different
+/// r1cs statement digests, flock reduction sizes, and pin prefixes). The
+/// guest is compiled ONCE from the first shape's placeholder map; every later
+/// shape must produce the IDENTICAL map (asserted) and is verified on the
+/// same Program object. Ignored: ~6 full inner+outer proofs, minutes.
+#[test]
+#[ignore]
+fn recursion_generic_many() {
+    // (hashes, iters) per inner run - deliberately diverse profiles.
+    let configs: &[(usize, usize)] = &[
+        (4, 1 << 12),  // m=22, tau_5=3
+        (8, 1 << 13),  // m=23, tau_5=3
+        (16, 1 << 14), // m=24, tau_5=4
+        (8, 1 << 15),  // m=25, tau_5=3
+        (32, 1 << 13), // m=23, tau_5=5
+        (64, 1 << 13), // m=23, tau_5=6
+    ];
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/verify_recursive.py");
+    let mut guest: Option<Program> = None;
+    let mut rep0: Option<BTreeMap<String, String>> = None;
+    for &cfg in configs {
+        let batch = build_batch(&[cfg]);
+        match &rep0 {
+            None => {
+                rep0 = Some(batch.rep.clone());
+                guest = Some(compile(
+                    &parse_file_with_replacements(path, &batch.rep).expect("parse verify_recursive.py"),
+                ));
+                eprintln!("guest compiled ONCE ({} instrs)", guest.as_ref().unwrap().prog.len());
+            }
+            Some(r0) => assert_eq!(
+                r0, &batch.rep,
+                "shape {cfg:?} would need a DIFFERENT guest bytecode - genericity broken"
+            ),
+        }
+        let g = guest.as_mut().unwrap();
+        for (name, entries) in &batch.merged {
+            g.set_witness(name, entries.clone());
+        }
+        let (gproof, _) = prove(g, batch.gpi);
+        verify(g, &batch.gpi, &gproof).expect("outer proof verifies");
+        check_reduced(&batch.program0, &batch.proof0, batch.pi0, &batch.reduced);
+        eprintln!("  verified: hashes={:>2}, iters=2^{}", cfg.0, (cfg.1 as f64).log2() as u32);
+    }
+    eprintln!("all {} shapes verified by the SAME guest bytecode", configs.len());
 }
 
