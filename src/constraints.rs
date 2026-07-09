@@ -7,8 +7,8 @@
 //! rounds are pure `E`.
 
 use crate::PAR_THRESHOLD;
-use crate::field::{F64, F128T, mul_by_g, mul_by_g_e};
-use crate::multilinear::{add3, eq_table, fold_low_inplace, fold_low_k, lagrange_eval, tri_nodes};
+use crate::field::{F64, F128T, F128TUnreduced, mul_by_g, mul_by_g_e};
+use crate::multilinear::{eq_table, fold_low_inplace, fold_low_k, lagrange_eval, tri_nodes, xor3};
 use crate::transcript::{ProverState, VerifierState};
 use rayon::prelude::*;
 
@@ -54,7 +54,10 @@ pub fn prove<F: Fn(F128T, &[F128T]) -> F128T + Sync>(
     } else {
         let half = cols[0].len() / 2;
         let eqr = eq_table(&r[1..]);
-        let summand = |i: usize, scratch: &mut [F128T]| -> [F128T; 3] {
+        // The outer eq·C products are deferred: XOR-accumulate the unreduced
+        // Karatsuba parts and reduce once per node after the sum (reduction
+        // commutes with XOR — bit-identical round messages).
+        let summand = |i: usize, scratch: &mut [F128T]| -> [F128TUnreduced; 3] {
             let e = eqr[i];
             let (v0, rest) = scratch.split_at_mut(ncols);
             let (v1, v2) = rest.split_at_mut(ncols);
@@ -65,21 +68,26 @@ pub fn prove<F: Fn(F128T, &[F128T]) -> F128T + Sync>(
                 v1[ci] = F128T::from(hi);
                 v2[ci] = F128T::from(lo + mul_by_g(lo + hi));
             }
-            [e * c_eval(eta, v0), e * c_eval(eta, v1), e * c_eval(eta, v2)]
+            [
+                e.mul_unreduced(c_eval(eta, v0)),
+                e.mul_unreduced(c_eval(eta, v1)),
+                e.mul_unreduced(c_eval(eta, v2)),
+            ]
         };
-        let p = if half >= PAR_THRESHOLD {
+        let p_u = if half >= PAR_THRESHOLD {
             (0..half)
                 .into_par_iter()
                 .fold(
-                    || ([F128T::ZERO; 3], vec![F128T::ZERO; 3 * ncols]),
-                    |(acc, mut scratch), i| (add3(acc, summand(i, &mut scratch)), scratch),
+                    || ([F128TUnreduced::ZERO; 3], vec![F128T::ZERO; 3 * ncols]),
+                    |(acc, mut scratch), i| (xor3(acc, summand(i, &mut scratch)), scratch),
                 )
                 .map(|(acc, _)| acc)
-                .reduce(|| [F128T::ZERO; 3], add3)
+                .reduce(|| [F128TUnreduced::ZERO; 3], xor3)
         } else {
             let mut scratch = vec![F128T::ZERO; 3 * ncols];
-            (0..half).fold([F128T::ZERO; 3], |acc, i| add3(acc, summand(i, &mut scratch)))
+            (0..half).fold([F128TUnreduced::ZERO; 3], |acc, i| xor3(acc, summand(i, &mut scratch)))
         };
+        let p = [p_u[0].reduce(), p_u[1].reduce(), p_u[2].reduce()];
         ps.add_scalars(&p);
         let rk = ps.sample();
         rho.push(rk);
@@ -98,7 +106,9 @@ pub fn prove<F: Fn(F128T, &[F128T]) -> F128T + Sync>(
         // with no interpolation multiplies, then evaluate the constraint at each
         // node.
         let eqr = eq_table(&r[j + 1..]);
-        let summand = |i: usize, scratch: &mut [F128T]| -> [F128T; 3] {
+        // Deferred as in round 0: unreduced eq·C accumulation, one reduction
+        // per node per round message.
+        let summand = |i: usize, scratch: &mut [F128T]| -> [F128TUnreduced; 3] {
             let e = eqr[i];
             let (v0, rest) = scratch.split_at_mut(ncols);
             let (v1, v2) = rest.split_at_mut(ncols);
@@ -109,21 +119,26 @@ pub fn prove<F: Fn(F128T, &[F128T]) -> F128T + Sync>(
                 v1[ci] = hi;
                 v2[ci] = lo + mul_by_g_e(lo + hi);
             }
-            [e * c_eval(eta, v0), e * c_eval(eta, v1), e * c_eval(eta, v2)]
+            [
+                e.mul_unreduced(c_eval(eta, v0)),
+                e.mul_unreduced(c_eval(eta, v1)),
+                e.mul_unreduced(c_eval(eta, v2)),
+            ]
         };
-        let p = if half >= PAR_THRESHOLD {
+        let p_u = if half >= PAR_THRESHOLD {
             (0..half)
                 .into_par_iter()
                 .fold(
-                    || ([F128T::ZERO; 3], vec![F128T::ZERO; 3 * ncols]),
-                    |(acc, mut scratch), i| (add3(acc, summand(i, &mut scratch)), scratch),
+                    || ([F128TUnreduced::ZERO; 3], vec![F128T::ZERO; 3 * ncols]),
+                    |(acc, mut scratch), i| (xor3(acc, summand(i, &mut scratch)), scratch),
                 )
                 .map(|(acc, _)| acc)
-                .reduce(|| [F128T::ZERO; 3], add3)
+                .reduce(|| [F128TUnreduced::ZERO; 3], xor3)
         } else {
             let mut scratch = vec![F128T::ZERO; 3 * ncols];
-            (0..half).fold([F128T::ZERO; 3], |acc, i| add3(acc, summand(i, &mut scratch)))
+            (0..half).fold([F128TUnreduced::ZERO; 3], |acc, i| xor3(acc, summand(i, &mut scratch)))
         };
+        let p = [p_u[0].reduce(), p_u[1].reduce(), p_u[2].reduce()];
         ps.add_scalars(&p);
         let rk = ps.sample();
         rho.push(rk);

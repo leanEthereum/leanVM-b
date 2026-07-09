@@ -8,7 +8,7 @@
 //! leaf accumulates via the mixed `mul_base` product (2 PMULL per coordinate).
 
 use crate::PAR_THRESHOLD;
-use crate::field::{F64, F128T, g_pow, index_mle};
+use crate::field::{F64, F128T, F128TBaseUnreduced, g_pow, index_mle};
 use crate::gkr;
 use crate::multilinear::{eq_eval, mle_eval};
 use crate::transcript::{ProverState, VerifierState};
@@ -144,15 +144,19 @@ pub fn build_leaves(blocks: &[Block], lay: &Layout, cols: &[Column], alpha: F128
             alpha_pow *= alpha;
         }
         let row = |z: usize| -> F128T {
-            let mut acc = const_part;
+            // The α-weighted coordinate sum defers its reductions: each mixed
+            // product contributes its two raw lane products (2 PMULL, no
+            // reduction tail), one pair reduction per row at the end —
+            // bit-identical to summing reduced `mul_base` terms.
+            let mut acc = F128TBaseUnreduced::ZERO;
             for t in &terms {
-                acc += match t {
-                    Term::Col(i, c) => c.mul_base(cols[*i][z]),
-                    Term::Index(c) => c.mul_base(gpow[z]),
-                    Term::Public(vals, c) => c.mul_base(vals[z]),
+                acc ^= match t {
+                    Term::Col(i, c) => c.mul_base_unreduced(cols[*i][z]),
+                    Term::Index(c) => c.mul_base_unreduced(gpow[z]),
+                    Term::Public(vals, c) => c.mul_base_unreduced(vals[z]),
                 };
             }
-            acc
+            const_part + acc.reduce()
         };
         let off = lay.offsets[b];
         let rows = 1usize << blk.kappa;

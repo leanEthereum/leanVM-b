@@ -7,9 +7,9 @@
 //! into `E` upstream, [`crate::leaf`]).
 
 use crate::PAR_THRESHOLD;
-use crate::field::{F128T, mul_by_g_e};
+use crate::field::{F128T, F128TUnreduced, mul_by_g_e};
 use crate::multilinear::lagrange_eval;
-use crate::multilinear::{add3, eq_table, interp, tri_nodes};
+use crate::multilinear::{eq_table, interp, tri_nodes, xor3};
 use crate::transcript::{ProverState, VerifierState};
 use rayon::prelude::*;
 
@@ -121,29 +121,30 @@ pub fn prove_product(leaves: Vec<F128T>, ps: &mut ProverState) -> (F128T, LeafCl
         let mut rho = Vec::with_capacity(k);
         for _ in 0..k {
             let half = even.len() / 2;
-            // Deliberately scalar: batching the row's independent muls through
-            // [`F128T::mul2`] (within a row or across two adjacent rows)
-            // measures no better or worse (16.7 scalar vs 18.4 / 16.8
-            // ns/idx); the closure's live values plus the 2-wide dataflow eat
-            // the kernel's small throughput edge.
-            let summand = |idx: usize| -> [F128T; 3] {
+            let summand = |idx: usize| -> [F128TUnreduced; 3] {
                 let (lo, hi) = (2 * idx, 2 * idx + 1);
                 let eq = eqr[idx];
-                let prod0 = eq * even[lo] * odd[lo];
-                let prod1 = eq * even[hi] * odd[hi];
+                let t0 = even[lo] * odd[lo];
+                let t1 = even[hi] * odd[hi];
                 // The degree-2 round univariate is sent at nodes {0, 1, g}; node 2
                 // is the generator `g = x`, so `g·diff = mul_by_g_e(diff)` — two
                 // shift-folds, not a carry-less mul (bit-identical to `nodes[2] * diff`).
                 let (even_diff, odd_diff) = (even[lo] + even[hi], odd[lo] + odd[hi]);
                 let (even_at2, odd_at2) = (even[lo] + mul_by_g_e(even_diff), odd[lo] + mul_by_g_e(odd_diff));
-                let prod2 = eq * even_at2 * odd_at2;
-                [prod0, prod1, prod2]
+                let t2 = even_at2 * odd_at2;
+                // Defer the mod-P reduction of the outer eq·(…) products:
+                // XOR-accumulate the unreduced Karatsuba parts (3 PMULL per
+                // term, no reduction tail) and reduce once per accumulator
+                // after the sum — reduction commutes with XOR, so the round
+                // message is bit-identical.
+                [eq.mul_unreduced(t0), eq.mul_unreduced(t1), eq.mul_unreduced(t2)]
             };
-            let acc = if half >= PAR_THRESHOLD {
-                (0..half).into_par_iter().map(summand).reduce(|| [F128T::ZERO; 3], add3)
+            let acc_u = if half >= PAR_THRESHOLD {
+                (0..half).into_par_iter().map(summand).reduce(|| [F128TUnreduced::ZERO; 3], xor3)
             } else {
-                (0..half).map(summand).fold([F128T::ZERO; 3], add3)
+                (0..half).map(summand).fold([F128TUnreduced::ZERO; 3], xor3)
             };
+            let acc = [acc_u[0].reduce(), acc_u[1].reduce(), acc_u[2].reduce()];
             ps.add_scalars(&acc);
             let rk = ps.sample();
             rho.push(rk);

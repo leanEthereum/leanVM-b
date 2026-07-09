@@ -6,7 +6,7 @@
 //! folding, and the mixed first fold that lifts a `K`-table into `E` via
 //! `mul_base` (2 PMULL per term).
 
-use crate::field::{F64, F128T};
+use crate::field::{F64, F128T, F128TUnreduced};
 
 /// Multilinear interpolation in one variable over `E`: `lo + t·(lo+hi)`, the
 /// char-2 form of `(1−t)·lo + t·hi`.
@@ -116,6 +116,16 @@ pub fn tri_nodes() -> [F128T; 3] {
 pub fn add3(mut x: [F128T; 3], y: [F128T; 3]) -> [F128T; 3] {
     for i in 0..3 {
         x[i] += y[i];
+    }
+    x
+}
+
+/// XOR two 3-slot deferred-reduction accumulators componentwise (the unreduced
+/// counterpart of [`add3`]; XOR IS addition on the unreduced parts).
+#[inline]
+pub fn xor3(mut x: [F128TUnreduced; 3], y: [F128TUnreduced; 3]) -> [F128TUnreduced; 3] {
+    for i in 0..3 {
+        x[i] ^= y[i];
     }
     x
 }

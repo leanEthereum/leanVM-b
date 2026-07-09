@@ -7,7 +7,7 @@
 
 use rayon::prelude::*;
 
-pub use flare::field::{F64, F128T};
+pub use flare::field::{F64, F128T, F128TBaseUnreduced, F128TUnreduced};
 
 /// Multiply by `x` (the generator `g`) in `K = F_2[x]/(x^64 + x^4 + x^3 + x + 1)`:
 /// one shift, one conditional fold of the reduction pentanomial (`0x1B`).

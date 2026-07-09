@@ -21,4 +21,4 @@ pub use iso_f128::{ghash_to_tower, tower_to_ghash};
 pub use gf2_64x3::{F192, F192Unreduced};
 pub use gf2_128::{F128, F256Unreduced, mul_by_x};
 pub use phi8::{PHI_8_TABLE, phi8};
-pub use tower_f128::F128T;
+pub use tower_f128::{F128T, F128TBaseUnreduced, F128TUnreduced};
