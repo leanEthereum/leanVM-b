@@ -43,7 +43,7 @@
 //! its own soundness derivation later. See [`k_configs_for`].
 
 use crate::challenger::Challenger;
-use crate::field::{F64, F128, F128T};
+use crate::field::{F64, F128, F128T, F128TBaseUnreduced, F128TUnreduced};
 use crate::merkle::{self, Hash};
 use crate::ntt::AdditiveNttF64;
 use serde::{Deserialize, Serialize};
@@ -1484,30 +1484,40 @@ fn round_msg_lsb_base(f: &[F64], b: &[F128T]) -> SumcheckMessageK {
 
     const PAR_THRESHOLD: usize = 4096;
     let half = n / 2;
+    // Deferred reduction: XOR-accumulate the raw mul_base lane products
+    // (2 PMULL per term, no reduction tail) and reduce once per accumulator —
+    // reduction commutes with XOR, so the message is bit-identical.
     if half < PAR_THRESHOLD {
-        let mut u_0 = F128T::ZERO;
-        let mut u_2 = F128T::ZERO;
+        let mut u_0 = F128TBaseUnreduced::ZERO;
+        let mut u_2 = F128TBaseUnreduced::ZERO;
         for j in 0..half {
             let f0 = f[2 * j];
             let f1 = f[2 * j + 1];
             let b0 = b[2 * j];
             let b1 = b[2 * j + 1];
-            u_0 += b0.mul_base(f0);
-            u_2 += (b0 + b1).mul_base(f0 + f1);
+            u_0 ^= b0.mul_base_unreduced(f0);
+            u_2 ^= (b0 + b1).mul_base_unreduced(f0 + f1);
         }
-        return SumcheckMessageK { u_0, u_2 };
+        return SumcheckMessageK {
+            u_0: u_0.reduce(),
+            u_2: u_2.reduce(),
+        };
     }
 
     let (u_0, u_2) = (0..half)
         .into_par_iter()
         .with_min_len(PAR_THRESHOLD / 4)
-        .map(|j| {
-            let f0 = f[2 * j];
-            let f1 = f[2 * j + 1];
-            let b0 = b[2 * j];
-            let b1 = b[2 * j + 1];
-            (b0.mul_base(f0), (b0 + b1).mul_base(f0 + f1))
-        })
+        .fold(
+            || (F128TBaseUnreduced::ZERO, F128TBaseUnreduced::ZERO),
+            |(a0, a2), j| {
+                let f0 = f[2 * j];
+                let f1 = f[2 * j + 1];
+                let b0 = b[2 * j];
+                let b1 = b[2 * j + 1];
+                (a0 ^ b0.mul_base_unreduced(f0), a2 ^ (b0 + b1).mul_base_unreduced(f0 + f1))
+            },
+        )
+        .map(|(a0, a2)| (a0.reduce(), a2.reduce()))
         .reduce(
             || (F128T::ZERO, F128T::ZERO),
             |(a0, a2), (b0, b2)| (a0 + b0, a2 + b2),
@@ -1524,30 +1534,39 @@ fn round_msg_lsb_ext(f: &[F128T], b: &[F128T]) -> SumcheckMessageK {
 
     const PAR_THRESHOLD: usize = 4096;
     let half = n / 2;
+    // Deferred reduction: XOR-accumulate the unreduced Karatsuba parts
+    // (3 PMULL per term) and reduce once per accumulator — bit-identical.
     if half < PAR_THRESHOLD {
-        let mut u_0 = F128T::ZERO;
-        let mut u_2 = F128T::ZERO;
+        let mut u_0 = F128TUnreduced::ZERO;
+        let mut u_2 = F128TUnreduced::ZERO;
         for j in 0..half {
             let f0 = f[2 * j];
             let f1 = f[2 * j + 1];
             let b0 = b[2 * j];
             let b1 = b[2 * j + 1];
-            u_0 += f0 * b0;
-            u_2 += (f0 + f1) * (b0 + b1);
+            u_0 ^= f0.mul_unreduced(b0);
+            u_2 ^= (f0 + f1).mul_unreduced(b0 + b1);
         }
-        return SumcheckMessageK { u_0, u_2 };
+        return SumcheckMessageK {
+            u_0: u_0.reduce(),
+            u_2: u_2.reduce(),
+        };
     }
 
     let (u_0, u_2) = (0..half)
         .into_par_iter()
         .with_min_len(PAR_THRESHOLD / 4)
-        .map(|j| {
-            let f0 = f[2 * j];
-            let f1 = f[2 * j + 1];
-            let b0 = b[2 * j];
-            let b1 = b[2 * j + 1];
-            (f0 * b0, (f0 + f1) * (b0 + b1))
-        })
+        .fold(
+            || (F128TUnreduced::ZERO, F128TUnreduced::ZERO),
+            |(a0, a2), j| {
+                let f0 = f[2 * j];
+                let f1 = f[2 * j + 1];
+                let b0 = b[2 * j];
+                let b1 = b[2 * j + 1];
+                (a0 ^ f0.mul_unreduced(b0), a2 ^ (f0 + f1).mul_unreduced(b0 + b1))
+            },
+        )
+        .map(|(a0, a2)| (a0.reduce(), a2.reduce()))
         .reduce(
             || (F128T::ZERO, F128T::ZERO),
             |(a0, a2), (b0, b2)| (a0 + b0, a2 + b2),
@@ -1571,27 +1590,44 @@ fn fold_and_msg_lsb_base(
     let half = n / 2;
     let one_plus_r = F128T::ONE + r;
 
+    // Every 2-product sum defers its reduction: the fold writes pay ONE
+    // reduction instead of two (`(1+r)·x + r·y` accumulated raw), and the
+    // message accumulators reduce once per chunk — bit-identical throughout
+    // (reduction commutes with XOR).
+    let fold_f = |j: usize| -> F128T {
+        (one_plus_r.mul_base_unreduced(f[2 * j]) ^ r.mul_base_unreduced(f[2 * j + 1])).reduce()
+    };
+    let fold_b = |j: usize| -> F128T {
+        (b[2 * j].mul_unreduced(one_plus_r) ^ b[2 * j + 1].mul_unreduced(r)).reduce()
+    };
     const PAR_THRESHOLD: usize = 4096;
     if half < PAR_THRESHOLD {
         let mut nf = Vec::with_capacity(half);
         let mut nb = Vec::with_capacity(half);
         for j in 0..half {
-            nf.push(one_plus_r.mul_base(f[2 * j]) + r.mul_base(f[2 * j + 1]));
-            nb.push(b[2 * j] * one_plus_r + b[2 * j + 1] * r);
+            nf.push(fold_f(j));
+            nb.push(fold_b(j));
         }
-        let mut u_0 = F128T::ZERO;
-        let mut u_2 = F128T::ZERO;
+        let mut u_0 = F128TUnreduced::ZERO;
+        let mut u_2 = F128TUnreduced::ZERO;
         let mut k = 0;
         while k + 1 < half {
             let f0 = nf[k];
             let f1 = nf[k + 1];
             let b0 = nb[k];
             let b1 = nb[k + 1];
-            u_0 += f0 * b0;
-            u_2 += (f0 + f1) * (b0 + b1);
+            u_0 ^= f0.mul_unreduced(b0);
+            u_2 ^= (f0 + f1).mul_unreduced(b0 + b1);
             k += 2;
         }
-        return (nf, nb, SumcheckMessageK { u_0, u_2 });
+        return (
+            nf,
+            nb,
+            SumcheckMessageK {
+                u_0: u_0.reduce(),
+                u_2: u_2.reduce(),
+            },
+        );
     }
 
     // Parallel path: `half` is a power of two >= PAR_THRESHOLD and CHUNK is a
@@ -1607,12 +1643,12 @@ fn fold_and_msg_lsb_base(
         .map(|(ci, (fc, bc))| {
             let base = ci * CHUNK;
             let len = fc.len();
-            let mut u0 = F128T::ZERO;
-            let mut u2 = F128T::ZERO;
+            let mut u0 = F128TUnreduced::ZERO;
+            let mut u2 = F128TUnreduced::ZERO;
             for t in 0..len {
                 let j = base + t;
-                fc[t] = one_plus_r.mul_base(f[2 * j]) + r.mul_base(f[2 * j + 1]);
-                bc[t] = b[2 * j] * one_plus_r + b[2 * j + 1] * r;
+                fc[t] = fold_f(j);
+                bc[t] = fold_b(j);
             }
             let mut k = 0;
             while k + 1 < len {
@@ -1620,11 +1656,11 @@ fn fold_and_msg_lsb_base(
                 let f1 = fc[k + 1];
                 let b0 = bc[k];
                 let b1 = bc[k + 1];
-                u0 += f0 * b0;
-                u2 += (f0 + f1) * (b0 + b1);
+                u0 ^= f0.mul_unreduced(b0);
+                u2 ^= (f0 + f1).mul_unreduced(b0 + b1);
                 k += 2;
             }
-            (u0, u2)
+            (u0.reduce(), u2.reduce())
         })
         .reduce(
             || (F128T::ZERO, F128T::ZERO),
@@ -1647,27 +1683,40 @@ fn fold_and_msg_lsb_ext(
     let half = n / 2;
     let one_plus_r = F128T::ONE + r;
 
+    // Deferred throughout, as in [`fold_and_msg_lsb_base`]: fold writes pay
+    // one reduction instead of two, message accumulators reduce once per
+    // chunk — bit-identical.
+    let fold_pair = |x0: F128T, x1: F128T| -> F128T {
+        (x0.mul_unreduced(one_plus_r) ^ x1.mul_unreduced(r)).reduce()
+    };
     const PAR_THRESHOLD: usize = 4096;
     if half < PAR_THRESHOLD {
         let mut nf = Vec::with_capacity(half);
         let mut nb = Vec::with_capacity(half);
         for j in 0..half {
-            nf.push(f[2 * j] * one_plus_r + f[2 * j + 1] * r);
-            nb.push(b[2 * j] * one_plus_r + b[2 * j + 1] * r);
+            nf.push(fold_pair(f[2 * j], f[2 * j + 1]));
+            nb.push(fold_pair(b[2 * j], b[2 * j + 1]));
         }
-        let mut u_0 = F128T::ZERO;
-        let mut u_2 = F128T::ZERO;
+        let mut u_0 = F128TUnreduced::ZERO;
+        let mut u_2 = F128TUnreduced::ZERO;
         let mut k = 0;
         while k + 1 < half {
             let f0 = nf[k];
             let f1 = nf[k + 1];
             let b0 = nb[k];
             let b1 = nb[k + 1];
-            u_0 += f0 * b0;
-            u_2 += (f0 + f1) * (b0 + b1);
+            u_0 ^= f0.mul_unreduced(b0);
+            u_2 ^= (f0 + f1).mul_unreduced(b0 + b1);
             k += 2;
         }
-        return (nf, nb, SumcheckMessageK { u_0, u_2 });
+        return (
+            nf,
+            nb,
+            SumcheckMessageK {
+                u_0: u_0.reduce(),
+                u_2: u_2.reduce(),
+            },
+        );
     }
 
     const CHUNK: usize = 2048;
@@ -1680,12 +1729,12 @@ fn fold_and_msg_lsb_ext(
         .map(|(ci, (fc, bc))| {
             let base = ci * CHUNK;
             let len = fc.len();
-            let mut u0 = F128T::ZERO;
-            let mut u2 = F128T::ZERO;
+            let mut u0 = F128TUnreduced::ZERO;
+            let mut u2 = F128TUnreduced::ZERO;
             for t in 0..len {
                 let j = base + t;
-                fc[t] = f[2 * j] * one_plus_r + f[2 * j + 1] * r;
-                bc[t] = b[2 * j] * one_plus_r + b[2 * j + 1] * r;
+                fc[t] = fold_pair(f[2 * j], f[2 * j + 1]);
+                bc[t] = fold_pair(b[2 * j], b[2 * j + 1]);
             }
             let mut k = 0;
             while k + 1 < len {
@@ -1693,11 +1742,11 @@ fn fold_and_msg_lsb_ext(
                 let f1 = fc[k + 1];
                 let b0 = bc[k];
                 let b1 = bc[k + 1];
-                u0 += f0 * b0;
-                u2 += (f0 + f1) * (b0 + b1);
+                u0 ^= f0.mul_unreduced(b0);
+                u2 ^= (f0 + f1).mul_unreduced(b0 + b1);
                 k += 2;
             }
-            (u0, u2)
+            (u0.reduce(), u2.reduce())
         })
         .reduce(
             || (F128T::ZERO, F128T::ZERO),
