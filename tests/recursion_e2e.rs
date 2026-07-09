@@ -1309,12 +1309,12 @@ fn gen_verify(
                 (mm_a * mm_b).inv()
             }]
         }),
-        ("annexp".to_string(), {
+        ("log_gpows".to_string(), {
             let mut v = vec![g_pow(log_mem)];
             v.extend(l.taus.iter().map(|&t| g_pow(t)));
             v
         }),
-        ("annbits".to_string(), {
+        ("count_bits".to_string(), {
             let mut v = Vec::with_capacity(198);
             for t in 0..6 {
                 let c = proof.stream[1 + t].lo;
@@ -1324,7 +1324,7 @@ fn gen_verify(
             }
             v
         }),
-        ("anninv".to_string(), {
+        ("count_min_inv".to_string(), {
             let floors = [0usize, 0, 0, 0, 0, 3];
             (0..6)
                 .map(|t| {
