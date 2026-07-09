@@ -52,14 +52,10 @@ from snark_lib import *
 # g-indexed heap buffers (`*_chain`).
 
 STREAM_LEN = STREAM_LEN_PLACEHOLDER
-ANN = ANN_PLACEHOLDER
 # Baked exponents of the certified structural logs (scaffolding, see P1).
-ANNLOG = ANNLOG_PLACEHOLDER
 # Per-table tau floor: BLAKE3 is sized to flock's instance count (>= 2^3).
 FLOORS = [0, 0, 0, 0, 0, 3]
 GINV = GINV_PLACEHOLDER
-GFULL = GFULL_PLACEHOLDER
-GEXTRA = GEXTRA_PLACEHOLDER
 GG = GG_PLACEHOLDER
 ILD0 = ILD0_PLACEHOLDER
 ILD1 = ILD1_PLACEHOLDER
@@ -67,7 +63,6 @@ ILD2 = ILD2_PLACEHOLDER
 
 # GKR sides: 0=push, 1=pull, 2=count. SMU = layer counts; ZOFF = offsets of the
 # per-side final points inside `zeta`; MUMAX = max(SMU)+1 buffer bound.
-SMU = SMU_PLACEHOLDER
 ZOFF = ZOFF_PLACEHOLDER
 MUMAX = MUMAX_PLACEHOLDER
 # GKR runtime-loop chain capacities: per-tree round positions (triangle
@@ -144,7 +139,6 @@ LIGLBLA = LIGLBLA_PLACEHOLDER
 LIGLBLB = LIGLBLB_PLACEHOLDER
 YR_LOG_N = YR_LOG_N_PLACEHOLDER
 # Opening dispatch: baked committed log-size, candidate range, g^-MINM.
-MBAKED = MBAKED_PLACEHOLDER
 MINM = MINM_PLACEHOLDER
 # Per-candidate opening tables (P3b): row (m - MINM) drives that arm.
 MAXLEV = MAXLEV_PLACEHOLDER
@@ -640,6 +634,8 @@ def verify_sub(pi_0, pi_1, delta_pows, dout):
     hint_witness(cvh[0:4], "cvh")
     stream = HeapBuf(STREAM_LEN)
     hint_witness(stream[0:STREAM_LEN], "stream")
+    ann_mus = HeapBuf(3)
+    hint_witness(ann_mus[0:3], "annmus")
     grind_bits = HeapBuf(128)
     hint_witness(grind_bits[0:128], "grind_bits")
     bcv = HeapBuf(NBCV)
@@ -683,7 +679,6 @@ def verify_sub(pi_0, pi_1, delta_pows, dout):
     for i in unroll(0, 7):
         x = cursor[GEN ** 0]
         fs = obs(fs, x)
-        assert x == ANN[i]
         sizes[GEN ** i] = x
         cursor = cursor * GEN
 
@@ -711,7 +706,6 @@ def verify_sub(pi_0, pi_1, delta_pows, dout):
     lm_word = exp_word[g_log_mem]
     lm_ann = sizes[GEN ** 0]
     assert lm_word == lm_ann
-    assert g_log_mem == GEN ** ANNLOG[0]
     # Per count: 32 hinted bits -> partial sums p[j] = value of the low j
     # bits; p[32] == count binds the bits to the announced word; then
     # p[g^tau] pins count < 2^tau (or count == 2^tau via W), and a
@@ -743,7 +737,6 @@ def verify_sub(pi_0, pi_1, delta_pows, dout):
             min_prod = min_a * min_b
             prod_inv = ann_inv[GEN ** t]
             assert min_prod * prod_inv == 1
-        assert gtau == GEN ** ANNLOG[t + 1]
 
     # ---- commitment root (2 words), kept for the opening phase ----
     commit_root_0 = cursor[GEN ** 0]
@@ -770,11 +763,39 @@ def verify_sub(pi_0, pi_1, delta_pows, dout):
     ph = StackBuf(2)
     blake3(pbase, pn, ph)
     dec128(grind_bits, ph[0])
-    for b in unroll(0, 8 * GFULL):
-        z0 = grind_bits[GEN ** b]
+    # Bus grind bits at runtime: bits = max(mu_0, mu_1, mu_2) + 1 +
+    # SECURITY - 128 = maxmu - 7 (leaf::grand_product_grinding_bits: the
+    # side totals are powers of two, so ceil_log2 of their sum is the max
+    # plus one). The hinted max is tied to each mu by a quotient range
+    # check and pinned to one of them by a product of differences; the
+    # hinted byte/bit split ties via f^8 * e == g^bits.
+    busg = HeapBuf(7)
+    hint_witness(busg[0:7], "busg")
+    max_mu = busg[GEN ** 0]
+    for s in unroll(0, 3):
+        dq = busg[GEN ** (4 + s)]
+        assert log(dq) < 34
+        dq_prod = dq * ann_mus[GEN ** s]
+        assert dq_prod == max_mu
+    mm_diff = (max_mu + ann_mus[GEN ** 0]) * (max_mu + ann_mus[GEN ** 1]) * (max_mu + ann_mus[GEN ** 2])
+    assert mm_diff == 0
+    gb_full = busg[GEN ** 1]
+    assert log(gb_full) < 6
+    gb_extra = busg[GEN ** 2]
+    assert log(gb_extra) < 9
+    gb_soff = busg[GEN ** 3]
+    assert log(gb_soff) < 9
+    se_prod = gb_soff * gb_extra
+    assert se_prod == GEN ** 8
+    full8 = gb_full ** 8
+    gb_split = full8 * gb_extra * GEN ** 7
+    assert gb_split == max_mu
+    for xb in mul_range(1, full8):
+        z0 = grind_bits[xb]
         assert z0 == 0
-    for b in unroll(8 * GFULL + 8 - GEXTRA, 8 * GFULL + 8):
-        z1 = grind_bits[GEN ** b]
+    tail_ptr = grind_bits * full8 * gb_soff
+    for xb in mul_range(1, gb_extra):
+        z1 = tail_ptr[xb]
         assert z1 == 0
     fs = absorb(fs, nonce, DS_POW)
     fs = squeeze(fs, sqz_tag)
@@ -789,8 +810,6 @@ def verify_sub(pi_0, pi_1, delta_pows, dout):
     # per-tree position pointer that advances once per round.
     gkr_roots = HeapBuf(3)
     gkr_claims = HeapBuf(3)
-    ann_mus = HeapBuf(3)
-    hint_witness(ann_mus[0:3], "annmus")
     lc_fs0 = HeapBuf(3 * (MUMAX + 2))
     lc_fs1 = HeapBuf(3 * (MUMAX + 2))
     lc_cur = HeapBuf(3 * (MUMAX + 2))
@@ -806,7 +825,6 @@ def verify_sub(pi_0, pi_1, delta_pows, dout):
     for s in unroll(0, 3):
         mu_g = ann_mus[GEN ** s]
         assert log(mu_g) < 33
-        assert mu_g == GEN ** SMU[s]
         rootv = cursor[GEN ** 0]
         fs = obs(fs, rootv)
         cursor = cursor * GEN
@@ -1513,7 +1531,6 @@ def verify_sub(pi_0, pi_1, delta_pows, dout):
     g_m = HeapBuf(1)
     hint_witness(g_m[0:1], "annm")
     gmv = g_m[GEN ** 0]
-    assert gmv == GEN ** MBAKED
     sel = gmv * IGMIN
     assert log(sel) < NMCAND
     t_r, ris, yr, inner_total = match_range(log(sel), range(0, NMCAND), lambda mi: open_stacked(mi, fs[0], fs[1], target, commit_root_0, commit_root_1))

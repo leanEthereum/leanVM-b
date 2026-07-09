@@ -639,19 +639,14 @@ fn gen_verify(
     };
     ps("STREAM_LEN", proof.stream.len().to_string());
     let ann: Vec<u128> = (0..7).map(|i| u(proof.stream[i])).collect();
-    ps("ANN", us(&ann));
     let log_mem = proof.stream[0].lo as usize;
     let mut annlog = vec![log_mem];
     annlog.extend(l.taus.iter().copied());
-    ps("ANNLOG", ints(&annlog));
     ps("GINV", u(G.inv()).to_string());
-    ps("GFULL", (gbits / 8).to_string());
-    ps("GEXTRA", (gbits % 8).to_string());
     ps("GG", u(G).to_string());
     ps("ILD0", u(G.inv()).to_string());
     ps("ILD1", u((F128::ONE + G).inv()).to_string());
     ps("ILD2", u((G * (F128::ONE + G)).inv()).to_string());
-    ps("SMU", ints(&smu));
     ps("ZOFF", ints(&[0, mumax, 2 * mumax]));
     ps("MUMAX", mumax.to_string());
     ps("TRICAP", (mumax * (mumax + 1) / 2 + mumax + 2).to_string());
@@ -1043,7 +1038,6 @@ fn gen_verify(
     ps("LIGLBLA", u(word16(b"flock-ligerito-basis-v0", 0)).to_string());
     ps("LIGLBLB", u(word16(b"flock-ligerito-basis-v0", 16)).to_string());
     ps("YR_LOG_N", yr_log_n.to_string());
-    ps("MBAKED", stack_mu.to_string());
     ps("NMCAND", (maxm - minm + 1).to_string());
     ps("IGMIN", u(g_pow(minm).inv()).to_string());
     ps("QBITS", ints(&qbits.iter().map(|&b| b as usize).collect::<Vec<_>>()));
@@ -1124,6 +1118,13 @@ fn gen_verify(
         ("rtb".to_string(), rootb),
         ("fnn".to_string(), fnv),
         ("annmus".to_string(), smu.iter().map(|&m| g_pow(m)).collect()),
+        ("busg".to_string(), {
+            let maxmu = *smu.iter().max().unwrap();
+            let bits = (gbits as usize / 8, gbits as usize % 8);
+            let mut v = vec![g_pow(maxmu), g_pow(bits.0), g_pow(bits.1), g_pow(8 - bits.1)];
+            v.extend(smu.iter().map(|&m| g_pow(maxmu - m)));
+            v
+        }),
         ("cwqh".to_string(), (0..ncl).map(|j| g_pow(cplen[j] - nover_v[j])).collect()),
         ("selnh".to_string(), (0..ncl).map(|j| g_pow(seln_v[j])).collect()),
         ("nlowh".to_string(), (0..ncl).map(|j| g_pow(cplen[j] + if cpbuf[j] == 3 { 7 } else { 0 })).collect()),
