@@ -42,11 +42,13 @@ fn bits_of(v: F128) -> Vec<F128> {
 /// The non-trivial inner program: a BLAKE3 hash chain seeded from the public
 /// input, a `mul_range` product loop with heap traffic, and a final assert tying
 /// them together — exercises every table (XOR/MUL/SET/DEREF/JUMP/BLAKE3).
-fn inner_program(iters: usize) -> Program {
-    let src = format!(
-        "from snark_lib import *\n\
+fn inner_program(_iters: usize) -> Program {
+    // SIZE-GENERIC inner: the iteration count rides a witness hint (a
+    // g-power bound for the runtime mul_range), so every size shares ONE
+    // program and ONE digest - the shape the recursion guest is generic
+    // over.
+    let src = "from snark_lib import *\n\
         N = 8\n\
-        ITERS = {iters}\n\
         def main():\n\
         \x20   p = GEN ** 0\n\
         \x20   st = StackBuf(2)\n\
@@ -57,20 +59,23 @@ fn inner_program(iters: usize) -> Program {
         \x20       blake3(st, st, nx)\n\
         \x20       st = nx\n\
         \x20   s1 = 1 * st[1]\n\
-        \x20   buf = HeapBuf(ITERS)\n\
-        \x20   acc = HeapBuf(ITERS + 1)\n\
+        \x20   nb = HeapBuf(1)\n\
+        \x20   hint_witness(nb[0:1], \"iters\")\n\
+        \x20   bound = nb[GEN ** 0]\n\
+        \x20   assert log(bound) < 65536\n\
+        \x20   buf = HeapBuf(bound)\n\
+        \x20   acc = HeapBuf(bound * GEN)\n\
         \x20   acc[GEN ** 0] = st[0]\n\
-        \x20   for x in mul_range(1, GEN ** ITERS):\n\
+        \x20   for x in mul_range(1, bound):\n\
         \x20       buf[x] = acc[x] * acc[x] + s1\n\
         \x20       acc[x * GEN] = buf[x] + x\n\
-        \x20   out = acc[GEN ** ITERS]\n\
+        \x20   out = acc[bound]\n\
         \x20   nz = HeapBuf(1)\n\
         \x20   hint_witness(nz[0:1], \"outinv\")\n\
         \x20   prod = out * nz[GEN ** 0]\n\
         \x20   assert prod == 1\n\
-        \x20   return\n"
-    );
-    compile(&parse(&src).expect("parse inner"))
+        \x20   return\n";
+    compile(&parse(src).expect("parse inner"))
 }
 
 /// Prove the inner program, returning (program, proof).
@@ -96,6 +101,7 @@ fn prove_inner(pi: [F128; 2], iters: usize) -> (Program, leanvm_b::cpu::Proof, u
     let out = acc;
     assert!(out != F128::ZERO, "inner accumulator must be nonzero");
     program.set_witness("outinv", vec![vec![out.inv()]]);
+    program.set_witness("iters", vec![vec![g_pow(iters)]]);
     let (proof, stats) = prove(&program, pi);
     eprintln!(
         "[inner] cycles={} committed=2^{:.2}",
@@ -458,7 +464,12 @@ fn gen_verify(
     let sides: [&[Block]; 3] = [&l.push, &l.pull, &l.count];
     let lays: Vec<leanvm_b::leaf::Layout> = sides.iter().map(|b| leanvm_b::leaf::layout(b)).collect();
     let smu: Vec<usize> = lays.iter().map(|x| x.mu).collect();
-    let mumax = *smu.iter().max().unwrap();
+    // Fixed capacities: every buffer/stride placeholder is a global cap so
+    // the placeholder map is SHAPE-INDEPENDENT (the definition of generic).
+    let mumax = 40usize;
+    let taumax_cap = 33usize;
+    let stream_cap = 8192usize;
+    assert!(*smu.iter().max().unwrap() <= mumax && proof.stream.len() <= stream_cap);
 
     // ---- flattened block/coord descriptors ----
     let (mut sblk, mut bkappa, mut bsel, mut bdelta, mut bc0, mut bcn) = (vec![0usize], vec![], vec![], vec![], vec![], vec![]);
@@ -637,7 +648,7 @@ fn gen_verify(
     let mut ps = |k: &str, v: String| {
         rep.insert(format!("{k}_PLACEHOLDER"), v);
     };
-    ps("STREAM_LEN", proof.stream.len().to_string());
+    ps("STREAM_LEN", stream_cap.to_string());
     let ann: Vec<u128> = (0..7).map(|i| u(proof.stream[i])).collect();
     let log_mem = proof.stream[0].lo as usize;
     let mut annlog = vec![log_mem];
@@ -672,9 +683,8 @@ fn gen_verify(
     // claim pool size: bus coords + constraint evals + the PI claim + 3 pins.
     ps("NCLAIMS", (nclaims + evtot + 1 + 3).to_string());
     ps("NBCV", nbcv.to_string());
-    ps("TAU", ints(&taus));
     ps("NCOL", ints(&ncol));
-    ps("TAUMAX", taus.iter().max().unwrap().to_string());
+    ps("TAUMAX", taumax_cap.to_string());
     // The pin point: the first BLAKE3 value-column bus claim. Scan blocks/coords
     // exactly as the claims are ordered to find its side + kappa.
     let sch = leanvm_b::cpu::schema();
@@ -740,8 +750,9 @@ fn gen_verify(
     ps("ILAM", flds(&ilam));
     ps("ICMB", flds(&icmb));
     ps("ISDOM", flds(&isdom));
-    ps("MR1CS", m_r1cs.to_string());
-    ps("NMLV", n_mlv.to_string());
+    let mr1cs_cap = flock_prover::r1cs_hashes::blake3::K_LOG + 33;
+    ps("MR1CS", mr1cs_cap.to_string());
+    ps("NMLV", (mr1cs_cap - 6).to_string());
     ps("LCR", lcrounds.to_string());
     ps("PINCOL", pincol.to_string());
     ps("KLOG", flock_prover::r1cs_hashes::blake3::K_LOG.to_string());
@@ -880,7 +891,7 @@ fn gen_verify(
                 let nvt = 7 + taus[t];
                 push_desc(3, 0, taus[t], slot_i, qpkd_pl.offset >> nvt, nvt);
             } else {
-                push_desc(1, t * taus.iter().max().unwrap(), taus[t], 0, pl.offset >> taus[t], taus[t]);
+                push_desc(1, t * taumax_cap, taus[t], 0, pl.offset >> taus[t], taus[t]);
             }
         }
     }
@@ -959,7 +970,11 @@ fn gen_verify(
         }
         (cn, cr, cyr, ck, cl, cq, cd, cp, cs, cni, cqb, cfb, c_rowoff, c_pathoff, c_sbitsoff, c_qpoff, c_svkoff, c_foldbase, c_risstart, c_svk, c_ivk)
     };
-    let (minm, maxm) = (stack_mu, stack_mu); // widened with the P4 terminal work
+    // The candidate range is a FIXED protocol choice (each arm bakes one
+    // opening specialization); a proof whose committed size falls outside
+    // it is rejected by the dispatch range check.
+    let (minm, maxm) = (22usize, 28usize);
+    assert!((minm..=maxm).contains(&stack_mu));
     let cands: Vec<_> = (minm..=maxm).map(oshape).collect();
     let maxlev = cands.iter().map(|c| c.0).max().unwrap();
     let maxfolds = cands.iter().map(|c| c.11.len()).max().unwrap();
@@ -1037,10 +1052,8 @@ fn gen_verify(
     }
     ps("LIGLBLA", u(word16(b"flock-ligerito-basis-v0", 0)).to_string());
     ps("LIGLBLB", u(word16(b"flock-ligerito-basis-v0", 16)).to_string());
-    ps("YR_LOG_N", yr_log_n.to_string());
     ps("NMCAND", (maxm - minm + 1).to_string());
     ps("IGMIN", u(g_pow(minm).inv()).to_string());
-    ps("QBITS", ints(&qbits.iter().map(|&b| b as usize).collect::<Vec<_>>()));
     let mut roota = vec![F128::ZERO];
     let mut rootb = vec![F128::ZERO];
     for lv in 1..nlev {
@@ -1064,7 +1077,7 @@ fn gen_verify(
     }
     ps("CPBUF", ints(&cpbuf));
     ps("CPOFF", ints(&cpoff));
-    ps("QPKDV", qpkdv.to_string());
+    ps("QPKDV", (33 + flock_prover::r1cs_hashes::blake3::K_LOG - 7).to_string());
     ps("KBC", kbc.to_string());
     ps("DEFSZ", (2 * kbc + 2 * lcrounds + 72).to_string());
     ps("KBCV", (kbc + 3).to_string());
@@ -1095,14 +1108,26 @@ fn gen_verify(
         *item = (F128::ONE + r_rest[i]).inv();
     }
     let hints = vec![
-        ("stream".to_string(), proof.stream.clone()),
+        ("stream".to_string(), {
+            let mut v = proof.stream.clone();
+            v.resize(stream_cap, F128::ZERO);
+            v
+        }),
         ("grind_bits".to_string(), bits_of(gdig)),
         ("bcv".to_string(), bcv),
         ("count_root_inv".to_string(), vec![cinv]),
         ("zc_round1".to_string(), zc1),
-        ("zc_msgs".to_string(), zcr),
+        ("zc_msgs".to_string(), {
+            let mut v = zcr;
+            v.resize(2 * (flock_prover::r1cs_hashes::blake3::K_LOG + 33 - 6), F128::ZERO);
+            v
+        }),
         ("zc_finals".to_string(), zcf.clone()),
-        ("zc_invs".to_string(), zinv),
+        ("zc_invs".to_string(), {
+            let mut v = zinv;
+            v.resize(flock_prover::r1cs_hashes::blake3::K_LOG + 33 - 6, F128::ZERO);
+            v
+        }),
         ("lincheck_msgs".to_string(), lcr.clone()),
         ("z_partial".to_string(), lcz.clone()),
         ("matpart".to_string(), vec![matpart]),
@@ -1236,15 +1261,16 @@ fn gen_verify(
 /// distinct statements), verify all of them inside ONE guest, batch the
 /// deferred claims with the two aggregation sumchecks, prove the guest, and
 /// natively discharge the three reduced claims.
-fn run_recursion(nsub: usize, inner_iters: usize) {
+fn run_recursion(inner_iters: &[usize]) {
+    let nsub = inner_iters.len();
     let mut total_inner_cycles = 0usize;
     let mut protos = Vec::new();
-    for k in 0..nsub {
+    for (k, &iters) in inner_iters.iter().enumerate() {
         let pi = [
             F128::new(0x1111_2222 + k as u64, 0x3333_4444),
             F128::new(0x5555_6666, 0x7777_8888 + k as u64),
         ];
-        let (program, proof, inner_cycles) = prove_inner(pi, inner_iters);
+        let (program, proof, inner_cycles) = prove_inner(pi, iters);
         total_inner_cycles += inner_cycles;
         trace_start();
         let summary = verify(&program, &pi, &proof).expect("inner verifies");
@@ -1258,7 +1284,14 @@ fn run_recursion(nsub: usize, inner_iters: usize) {
         let (rep, hints, defer) = gen_verify(program, *pi, proof, summary, ops);
         match &rep0 {
             None => rep0 = Some(rep),
-            Some(r0) => assert_eq!(r0, &rep, "sub-proof shapes must agree"),
+            Some(r0) => {
+                for (k, v) in &rep {
+                    if r0.get(k) != Some(v) {
+                        eprintln!("MAPDIFF {k}: sub0={:?} subN={:?}", r0.get(k).map(|s| &s[..s.len().min(60)]), Some(&v[..v.len().min(60)]));
+                    }
+                }
+                assert_eq!(r0, &rep, "sub-proof shapes must agree");
+            }
         }
         // one witness ENTRY per sub-proof and stream: verify_sub pops the
         // next entry of every stream on each call.
@@ -1334,6 +1367,14 @@ fn run_recursion(nsub: usize, inner_iters: usize) {
 /// natively.
 #[test]
 fn recursion_2to1() {
-    run_recursion(2, 1 << 15);
+    run_recursion(&[1 << 15, 1 << 15]);
+}
+
+/// THE genericity milestone: ONE compiled guest bytecode verifies two inner
+/// proofs of DIFFERENT sizes in the same aggregation (the per-sub
+/// placeholder maps are asserted identical in run_recursion).
+#[test]
+fn recursion_2to1_mixed() {
+    run_recursion(&[1 << 13, 1 << 15]);
 }
 

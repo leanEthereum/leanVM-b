@@ -90,7 +90,6 @@ IDXC = IDXC_PLACEHOLDER
 NCLAIMS = NCLAIMS_PLACEHOLDER
 NBCV = NBCV_PLACEHOLDER
 # Zerochecks: per-table log row counts, constraint-column counts, eval offsets.
-TAU = TAU_PLACEHOLDER
 NCOL = NCOL_PLACEHOLDER
 TAUMAX = TAUMAX_PLACEHOLDER
 # Phase C: the public input (baked; the seed already binds it), the real BLAKE3
@@ -137,7 +136,6 @@ NCL = NCL_PLACEHOLDER
 # stride slot), the selector, and its residual-cube slot YT.
 LIGLBLA = LIGLBLA_PLACEHOLDER
 LIGLBLB = LIGLBLB_PLACEHOLDER
-YR_LOG_N = YR_LOG_N_PLACEHOLDER
 # Opening dispatch: baked committed log-size, candidate range, g^-MINM.
 MINM = MINM_PLACEHOLDER
 # Per-candidate opening tables (P3b): row (m - MINM) drives that arm.
@@ -193,7 +191,6 @@ IGMIN = IGMIN_PLACEHOLDER
 # Query-phase grinding: QBITS[lvl] leading zero bits checked on the digest
 # before the query indexes are sampled (queries then only cover
 # target - QBITS bits of soundness).
-QBITS = QBITS_PLACEHOLDER
 # eval_b claim descriptors + the ring-switch selector data.
 CPBUF = CPBUF_PLACEHOLDER
 CPOFF = CPOFF_PLACEHOLDER
@@ -1499,7 +1496,9 @@ def verify_sub(pi_0, pi_1, delta_pows, dout):
             for xt in mul_range(1, ann_exp[GEN ** 6]):
                 zv_lo[xt] = zr_hi[xt]
         else:
-            zv_hi = z_vals * (ann_exp[GEN ** 6] * GEN ** (KLOG - 7))
+            # row 1 lives at the CAPACITY stride (QPKDV); its length is the
+            # runtime qpkdv.
+            zv_hi = z_vals * GEN ** QPKDV
             zcr7 = zerocheck_r * GEN ** 7
             for xt in mul_range(1, ann_exp[GEN ** 6] * GEN ** (KLOG - 7)):
                 zv_hi[xt] = zcr7[xt]
