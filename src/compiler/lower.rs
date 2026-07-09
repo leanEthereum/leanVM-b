@@ -719,19 +719,36 @@ impl FnLower<'_> {
                     return self.materialize(ga);
                 }
                 if let Some(&c) = self.fconsts.get(v) {
-                    let o = self.fresh();
-                    self.emit(LOp::Set { o, k: KVal::Const(c) });
-                    return o;
+                    return self.const_cell(c);
                 }
                 *self.vars.get(v).unwrap_or_else(|| panic!("unbound variable `{v}`"))
             }
             Expr::Add(a, b) => {
+                // Identity fold: a compile-time 0 operand contributes nothing
+                // (and, being a constant, has no side effect to preserve), so
+                // `x + 0` lowers to just `x` — no cell, no XOR. Kills the
+                // `acc = 0; acc = acc + t` accumulator seed and similar.
+                if self.try_field_const(a) == Some(F128::ZERO) {
+                    return self.expr(b);
+                }
+                if self.try_field_const(b) == Some(F128::ZERO) {
+                    return self.expr(a);
+                }
                 let (la, lb) = (self.expr(a), self.expr(b));
                 let o = self.fresh();
                 self.emit(LOp::Xor { a: la, b: lb, c: o });
                 o
             }
             Expr::Mul(a, b) => {
+                // Identity fold: a compile-time 1 operand is a no-op multiply,
+                // so `x * 1` lowers to just `x`. Kills the `acc = GEN ** 0`
+                // (= 1) accumulator seed's first `1 * f` in every product loop.
+                if self.try_field_const(a) == Some(F128::ONE) {
+                    return self.expr(b);
+                }
+                if self.try_field_const(b) == Some(F128::ONE) {
+                    return self.expr(a);
+                }
                 let (la, lb) = (self.expr(a), self.expr(b));
                 let o = self.fresh();
                 self.emit(LOp::Mul { a: la, b: lb, c: o });
@@ -1077,12 +1094,26 @@ impl FnLower<'_> {
                 self.copy(v, dst);
             }
             Expr::Add(a, b) => {
-                let (la, lb) = (self.expr(a), self.expr(b));
-                self.emit(LOp::Xor { a: la, b: lb, c: dst });
+                // Identity fold (see the `expr` Add arm): `x + 0` copies `x`.
+                if self.try_field_const(a) == Some(F128::ZERO) {
+                    self.expr_into(b, dst);
+                } else if self.try_field_const(b) == Some(F128::ZERO) {
+                    self.expr_into(a, dst);
+                } else {
+                    let (la, lb) = (self.expr(a), self.expr(b));
+                    self.emit(LOp::Xor { a: la, b: lb, c: dst });
+                }
             }
             Expr::Mul(a, b) => {
-                let (la, lb) = (self.expr(a), self.expr(b));
-                self.emit(LOp::Mul { a: la, b: lb, c: dst });
+                // Identity fold: `x * 1` copies `x`.
+                if self.try_field_const(a) == Some(F128::ONE) {
+                    self.expr_into(b, dst);
+                } else if self.try_field_const(b) == Some(F128::ONE) {
+                    self.expr_into(a, dst);
+                } else {
+                    let (la, lb) = (self.expr(a), self.expr(b));
+                    self.emit(LOp::Mul { a: la, b: lb, c: dst });
+                }
             }
             // A call writes its single return value straight into `dst`.
             Expr::Call(f, args) => self.call_into(f, args, &[dst]),
