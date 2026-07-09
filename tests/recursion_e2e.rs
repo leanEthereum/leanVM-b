@@ -1141,16 +1141,16 @@ fn gen_verify(
         ("z_partial".to_string(), lcz.clone()),
         ("matpart".to_string(), vec![matpart]),
         ("s_hat_v".to_string(), shv.clone()),
-        ("lsc".to_string(), lig_sc.clone()),
-        ("lrows".to_string(), lrows_flat),
-        ("lpaths".to_string(), lpaths_flat),
-        ("lsbits".to_string(), lsbits_flat),
+        ("lig_sumcheck_msgs".to_string(), lig_sc.clone()),
+        ("merkle_leaf_rows".to_string(), lrows_flat),
+        ("merkle_paths".to_string(), lpaths_flat),
+        ("query_index_bits".to_string(), lsbits_flat),
         ("fold_grind_bits".to_string(), lfpb_flat),
-        ("yr".to_string(), lig.final_proof.yr.clone()),
+        ("final_msg".to_string(), lig.final_proof.yr.clone()),
         ("spi".to_string(), vec![pi[0], pi[1]]),
-        ("rta".to_string(), roota),
-        ("rtb".to_string(), rootb),
-        ("fnn".to_string(), fnv),
+        ("level_roots_0".to_string(), roota),
+        ("level_roots_1".to_string(), rootb),
+        ("fold_nonces".to_string(), fnv),
         ("annmus".to_string(), smu.iter().map(|&m| g_pow(m)).collect()),
         ("bus_grind".to_string(), {
             let maxmu = *smu.iter().max().unwrap();
@@ -1312,9 +1312,9 @@ fn gen_verify(
                 })
                 .collect()
         }),
-        ("qnonce".to_string(), query_pow.iter().map(|&(n, _)| F128::new(n, 0)).collect()),
+        ("query_nonces".to_string(), query_pow.iter().map(|&(n, _)| F128::new(n, 0)).collect()),
         (
-            "qgrind".to_string(),
+            "query_grind_hint".to_string(),
             query_pow.iter().flat_map(|&(_, dig)| bits_of(dig)).collect(),
         ),
         ("cvh".to_string(), cvh),
