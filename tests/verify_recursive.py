@@ -233,10 +233,10 @@ LIG_MIN_SHIFT_INV = LIG_MIN_SHIFT_INV_PLACEHOLDER
 CLAIM_POINT_BUF = CLAIM_POINT_BUF_PLACEHOLDER
 CLAIM_POINT_OFF = CLAIM_POINT_OFF_PLACEHOLDER
 QPKD_VARS_CAP = QPKD_VARS_CAP_PLACEHOLDER
-# Ring-switch linearized algebra: the trace-dual basis (bit_i(y) = Tr(delta_i y))
-# (any eq-weighted bit-sum is the linearized
-# polynomial L_w(y) = sum_k c_k y^(2^k), c_k = sum_i w_i delta_i^(2^k); squaring
-# is one MUL, so the tensor transpose and eval_rs_eq run in-circuit.
+# Ring-switch trace-dual basis: bit_i(y) = Tr(DELTA[i] * y). Any eq-weighted
+# bit-sum is then the linearized polynomial L_w(y) = sum_k c_k y^(2^k) with
+# c_k = sum_i w_i DELTA[i]^(2^k); since squaring is one MUL, the tensor
+# transpose and eval_rs_eq run in-circuit (doc.tex, ring-switch section).
 DELTA = DELTA_PLACEHOLDER
 # Phase F: log rows of the bytecode blocks (the deferred bytecode points).
 BYTECODE_LOG = BYTECODE_LOG_PLACEHOLDER
@@ -259,9 +259,10 @@ DS_SQ = 4
 DS_POW = 5
 
 
-
-
 def squeeze_step(state_0, state_1):
+    # Non-inlined sponge ratchet exposing BOTH output words (challenge and the
+    # next state), so a query-squeeze loop can chain the state through a heap
+    # buffer. Returns (challenge, next_state_0, next_state_1).
     a = StackBuf(2)
     a[0] = state_0
     a[1] = state_1
@@ -286,7 +287,8 @@ def dec128(bits_ptr, v):
 
 
 def decode_query_bits(bits_ptr, v, positions_out, bit_ptrs_out, depth: Const, per_word: Const):
-    # dec128 fused with query extraction (see tests/ligerito_recursive.py).
+    # dec128 fused with query extraction: each depth-bit group also becomes a
+    # query position (little-endian), with a pointer to its bit run.
     acc = 0
     for j in unroll(0, per_word):
         position = 0
@@ -1199,19 +1201,16 @@ def verify_sub(pi_0, pi_1, delta_pows, defer_out):
             wv += e * bytecode_vals[GEN ** (6 * s + c)]
         bytecode_reduced[s] = wv
 
-    # ---- Phase A checkpoint: sponge state matches the mirror ----
-    want_state = checkpoints[0]
-    sponge_state = fs[0]
-    assert sponge_state == want_state
+    # ---- checkpoint A: sponge state matches the recorded value (debug) ----
+    assert fs[0] == checkpoints[0]
 
     # ---- 6x per-table zerocheck (XOR, MUL, SET, DEREF, JUMP, BLAKE3) ----
     # For each table: eta, the zerocheck point r (tau samples), tau eq-trick
     # rounds (claim starts at 0), then the involved-column evaluations (pooled)
     # and the final AIR check claim == eq_acc * C_t(eta, evals).
     # RUNTIME round counts: tau_t is the certified announced log height
-    # (dims_g[1 + t]) — the first consumer of the count gadget, no
-    # scaffolding needed. Round state threads through heap chains exactly
-    # like the GKR trees.
+    # (dims_g[1 + t], certified by the count gadget). Round state threads
+    # through heap chains exactly like the GKR trees.
     rho = HeapBuf(6 * TAU_CAP)
     zc_point_fs0 = HeapBuf(6 * (TAU_CAP + 2))
     zc_point_fs1 = HeapBuf(6 * (TAU_CAP + 2))
@@ -1301,10 +1300,8 @@ def verify_sub(pi_0, pi_1, delta_pows, defer_out):
             constraint_eval = (col_evals[6] + col_evals[0] * col_evals[1]) + eta * (col_evals[7] + col_evals[0] * col_evals[2]) + eta * eta * (col_evals[8] + col_evals[0] * col_evals[3]) + eta * eta * eta * (col_evals[9] + col_evals[0] * col_evals[4]) + eta * eta * eta * eta * (col_evals[10] + col_evals[0] * col_evals[5])
         assert claim == eq_acc * constraint_eval
 
-    # ---- Phase B checkpoint ----
-    want_state = checkpoints[1]
-    sponge_state = fs[0]
-    assert sponge_state == want_state
+    # ---- checkpoint B (debug: sponge-state drift guard) ----
+    assert fs[0] == checkpoints[1]
 
     # ---- public-input binding claim: MEM(r_m, 0..) = interp(pi0, pi1, r_m) ----
     fs = squeeze(fs)
@@ -1338,10 +1335,8 @@ def verify_sub(pi_0, pi_1, delta_pows, defer_out):
         claim_pool[GEN ** claim_idx] = PIN_VALUES[pk] * prefix
         claim_idx += 1
 
-    # ---- Phase C checkpoint ----
-    want_state = checkpoints[2]
-    sponge_state = fs[0]
-    assert sponge_state == want_state
+    # ---- checkpoint C (debug: sponge-state drift guard) ----
+    assert fs[0] == checkpoints[2]
 
     # ---- flock reduction: bind_statement ----
     # The statement digest is selected by the certified tau_5 (BLAKE3
@@ -1517,10 +1512,8 @@ def verify_sub(pi_0, pi_1, delta_pows, defer_out):
     for i in unroll(0, 64):
         lincheck_w += skip_nums[i] * ISDOM[i] * z_partial[GEN ** i]
 
-    # ---- Phase D checkpoint ----
-    want_state = checkpoints[3]
-    sponge_state = fs[0]
-    assert sponge_state == want_state
+    # ---- checkpoint D (debug: sponge-state drift guard) ----
+    assert fs[0] == checkpoints[3]
 
     # ---- stacked mixed opening: ring-switch fronts + claim combination ----
     fs = absorb(fs, 23, DS_LEN)
@@ -1833,6 +1826,11 @@ def verify_sub(pi_0, pi_1, delta_pows, defer_out):
 
 
 def main():
+    # NSUB sub-proofs of the fixed inner program: verify each (verify_sub),
+    # then aggregate their deferred claims. The fresh aggregation transcript
+    # RLC-batches the bytecode and matrix claims through two sumchecks; only
+    # the three reduced claims (evaluated natively by the outer verifier)
+    # reach this guest's public input.
     sub_pis = HeapBuf(NSUB * 2)
     hint_witness(sub_pis[0:NSUB * 2], "sub_pis")
     bc_sumcheck_msgs = HeapBuf(2 * BYTECODE_VARS)
