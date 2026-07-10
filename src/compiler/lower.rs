@@ -799,8 +799,8 @@ impl FnLower<'_> {
                 self.emit(LOp::Mul { a: q, b: lb, c: la });
                 q
             }
-            Expr::Call(f, args) if f == "log2_ceil" => {
-                // Computed advice: the prover fills g^log2_ceil of the value in
+            Expr::Call(f, args) if f == "hint_log2_ceil" => {
+                // Computed advice: the prover fills g^log2_ceil (base-2 ceil-log) of the value in
                 // `bits` (a `nbits`-bit buffer), floored at `floor`. Returned
                 // UNCONSTRAINED — the caller (log2_ceil) re-verifies it. Same
                 // "prover computes, circuit checks" pattern as `/`.
@@ -1706,19 +1706,19 @@ impl FnLower<'_> {
             Stmt::LetMatchRange { names, x, arms } => self.lower_match_range(names, x, arms),
             Stmt::Call(f, args) => {
                 // Computed advice fills (prover-side, re-checked by the caller):
-                // `bit_decompose(bits, value, nbits)` writes value's bits into the
-                // buffer; `bit_decompose_sum(bits, kappa, start, count, nbits)`
+                // `hint_decompose_bits(bits, value, nbits)` writes value's bits into the
+                // buffer; `hint_decompose_bits_sum(bits, kappa, start, count, nbits)`
                 // writes the bits of Σ 2^κ over kappa[start..start+count].
-                if f == "bit_decompose" {
-                    assert_eq!(args.len(), 3, "bit_decompose(bits, value, nbits)");
+                if f == "hint_decompose_bits" {
+                    assert_eq!(args.len(), 3, "hint_decompose_bits(bits, value, nbits)");
                     let bits_ptr = self.expr(&args[0]);
                     let value = self.expr(&args[1]);
                     let nbits = self.const_index(&args[2]);
                     self.pending.push(Hint::BitDecompose { value, bits_ptr, nbits });
                     return;
                 }
-                if f == "bit_decompose_sum" {
-                    assert_eq!(args.len(), 5, "bit_decompose_sum(bits, kappa, start, count, nbits)");
+                if f == "hint_decompose_bits_sum" {
+                    assert_eq!(args.len(), 5, "hint_decompose_bits_sum(bits, kappa, start, count, nbits)");
                     let bits_ptr = self.expr(&args[0]);
                     let kappa_ptr = self.expr(&args[1]);
                     let start = self.const_index(&args[2]);

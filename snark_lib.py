@@ -49,21 +49,21 @@ GEN = _Elt()
 """The fixed generator g = x of GF(2^128)^× (order 2^128 - 1)."""
 
 
-def bit_decompose(bits, value, nbits: int) -> None:
+def hint_decompose_bits(bits, value, nbits: int) -> None:
     """Computed advice: the prover writes the `nbits` bits of `value` into the
     `bits` buffer. UNCONSTRAINED — the caller must check booleanity and that the
     bits reconstruct `value` (a range check that `value < 2^nbits`)."""
     _ = bits, value, nbits
 
 
-def bit_decompose_sum(bits, kappa, start: int, count: int, nbits: int) -> None:
+def hint_decompose_bits_sum(bits, kappa, start: int, count: int, nbits: int) -> None:
     """Computed advice: the prover writes the `nbits` bits of `Σ 2^κ` over
     `kappa[start .. start+count]` (each κ a small g-power) into `bits`.
     UNCONSTRAINED — the caller checks the reconstruction against `Π g^(2^κ)`."""
     _ = bits, kappa, start, count, nbits
 
 
-def log2_ceil(bits, nbits: int, floor: int) -> _Elt:
+def hint_log2_ceil(bits, nbits: int, floor: int) -> _Elt:
     """Computed advice: returns `g^max(log2_ceil(v), floor)`, where `v` is the
     integer the `nbits`-cell `bits` buffer decodes to. The prover fills it at
     witness-generation; it is UNCONSTRAINED, so the caller must verify it (see the

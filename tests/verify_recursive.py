@@ -38,7 +38,7 @@ from snark_lib import *
 #   - shape-certified (the announced sizes are the ground truth): dims_g[0]
 #     = g^log_mem (via the exponent-to-word table); the taus, side mus, and
 #     committed size m are log2_ceil's whose BITS are decomposed in-circuit
-#     (bit_decompose / bit_decompose_sum keywords, no bit hints), and each block's
+#     (hint_decompose_bits / hint_decompose_bits_sum keywords, no bit hints), and each block's
 #     kappa is DERIVED from the certified logs (no hint); annmus (push+count,
 #     pull aliased)
 #     pattern over the committed columns), block_pad_bits (the padding surplus, pinned
@@ -350,7 +350,7 @@ def verify_log2_ceil(bits_buf, g_logs_pow2, g_squares, floor: Const, nbits: Cons
     # word = Σ bit_j 2^j, exp_prod = g^word, g_log = g^max(log2_ceil(word), floor).
     # g_log is prover advice, pinned to log2_ceil(word) by psum[g_log] == word
     # (word < 2^log; the == 2^log case via g_logs_pow2) and word > 2^(log-1)
-    # (waived at floor). Callers fill the bits (bit_decompose / bit_decompose_sum)
+    # (waived at floor). Callers fill the bits (hint_decompose_bits / hint_decompose_bits_sum)
     # and tie word or exp_prod to their value. NB: log2 here is base-2 log of the
     # integer word, not the discrete log base g that `log(...)` means.
     psum_buf = HeapBuf(GEN ** (nbits + 1))  # psum_buf[g^j] = value of bits [0, j)
@@ -363,7 +363,7 @@ def verify_log2_ceil(bits_buf, g_logs_pow2, g_squares, floor: Const, nbits: Cons
         exp_prod *= (1 + bit * (g_squares[GEN ** j] + 1))
         word += bit * (2 ** j)
         psum_buf[GEN ** (j + 1)] = word
-    g_log = log2_ceil(bits_buf, nbits, floor)  # prover advice; verified below
+    g_log = hint_log2_ceil(bits_buf, nbits, floor)  # prover advice; verified below
     assert log(g_log) < 34
     low_bits = psum_buf[g_log]                 # value of bits [0, log)
     high_bits = low_bits + word                # value of bits [log, nbits)
@@ -383,10 +383,10 @@ def verify_log2_ceil(bits_buf, g_logs_pow2, g_squares, floor: Const, nbits: Cons
 
 def log2_ceil_word(value, g_logs_pow2, g_squares, floor: Const, nbits: Const):
     # g^log2_ceil(value) for a concrete integer `value`. The bits are hinted HERE
-    # (bit_decompose), not by the caller, then tied back to `value`. Returns
+    # (hint_decompose_bits), not by the caller, then tied back to `value`. Returns
     # (g_log, g^value).
     bits = HeapBuf(GEN ** nbits)
-    bit_decompose(bits, value, nbits)
+    hint_decompose_bits(bits, value, nbits)
     g_log, word, g_value = verify_log2_ceil(bits, g_logs_pow2, g_squares, floor, nbits)
     assert word == value  # the hinted bits are exactly value's bits (so value < 2^nbits)
     return g_log, g_value, bits
@@ -395,9 +395,9 @@ def log2_ceil_word(value, g_logs_pow2, g_squares, floor: Const, nbits: Const):
 def log2_ceil_sum(kappa_ptr, start: Const, count: Const, g_total, g_logs_pow2, g_squares, floor: Const, nbits: Const):
     # g^log2_ceil(Σ 2^κ) over kappa_ptr[start .. start+count] (κ small g-powers),
     # tied to the caller's exponent-domain total g_total = Π g^(2^κ). The bits of
-    # the sum are hinted HERE (bit_decompose_sum), not by the caller.
+    # the sum are hinted HERE (hint_decompose_bits_sum), not by the caller.
     bits = HeapBuf(GEN ** nbits)
-    bit_decompose_sum(bits, kappa_ptr, start, count, nbits)
+    hint_decompose_bits_sum(bits, kappa_ptr, start, count, nbits)
     g_log, word, exp_prod = verify_log2_ceil(bits, g_logs_pow2, g_squares, floor, nbits)
     assert exp_prod == g_total  # the hinted bits reconstruct the true Σ 2^κ
     return g_log
