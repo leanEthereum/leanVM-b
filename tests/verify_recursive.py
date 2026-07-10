@@ -49,7 +49,9 @@ from snark_lib import *
 #     x-part lengths claim_low_len/claim_sel_len/claim_low_vars with
 #     claim_nover (pinned EXACTLY to the claim's certified low dimension
 #     cplen via claim_cplen_g — nlow = cplen + delta, nlow+seln = lenris+nover,
-#     nover*seln = 0, low_len = cplen - nover; the pi claim is bounded);
+#     nover*seln = 0, low_len = cplen - nover), and pi_cplen with
+#     pi_mem_slack/pi_fold_slack (the pi claim's cplen = min(log_mem, lenris),
+#     certified as a min: <= both, == one);
 #   - identity-certified (well-formedness checked here — booleanity, range
 #     checks, quotient ties — with the VALUE pinned by a protocol identity
 #     against committed data): block_mu_quot (sel_len_g * kappa_g == g^mu),
@@ -1736,10 +1738,14 @@ def verify_sub(pi_0, pi_1, delta_pows, g_logs, g_logs_pow2, g_squares, defer_out
     # level_query_sum here. All selector products use eq(b, r) = 1 + b + r.
     claim_low_len = HeapBuf(NCL)
     hint_witness(claim_low_len[0:NCL], "claim_low_len")
-    claim_fold_slack = HeapBuf(NCL)
-    hint_witness(claim_fold_slack[0:NCL], "claim_fold_slack")
     claim_nover = HeapBuf(NCL)
     hint_witness(claim_nover[0:NCL], "claim_nover")
+    pi_cplen = StackBuf(1)
+    hint_witness(pi_cplen[0:1], "pi_cplen")
+    pi_mem_slack = StackBuf(1)
+    hint_witness(pi_mem_slack[0:1], "pi_mem_slack")
+    pi_fold_slack = StackBuf(1)
+    hint_witness(pi_fold_slack[0:1], "pi_fold_slack")
     claim_sel_len = HeapBuf(NCL)
     hint_witness(claim_sel_len[0:NCL], "claim_sel_len")
     claim_low_vars = HeapBuf(NCL)
@@ -1762,13 +1768,6 @@ def verify_sub(pi_0, pi_1, delta_pows, g_logs, g_logs_pow2, g_squares, defer_out
     for j in unroll(0, NCL):
         low_len_g = claim_low_len[GEN ** j]
         assert log(low_len_g) < 34
-        if CLAIM_POINT_BUF[j] == 2:
-            # pi is a single claim: bound (not pin) its low_len <= lenris so
-            # the fold reads stay in range; the one-knob residual is negligible.
-            fold_slack = claim_fold_slack[GEN ** j]
-            assert log(fold_slack) < 34
-            assert fold_cap_g == low_len_g * fold_slack
-        # BUF 0/1/3 are pinned exactly below (after nlow is read).
         low_chain = HeapBuf(35)
         if CLAIM_POINT_BUF[j] == 0:
             zptr = zeta * GEN ** CLAIM_POINT_OFF[j]
@@ -1800,24 +1799,31 @@ def verify_sub(pi_0, pi_1, delta_pows, g_logs, g_logs_pow2, g_squares, defer_out
         assert log(seln) < 34
         nlow = claim_low_vars[GEN ** j]
         assert log(nlow) < 40
-        # EXACT length pin (all claims but pi): tie the three hinted lengths to
-        # the certified low dimension cplen. With nvt = nlow, the pair
+        # EXACT length pin: tie the three hinted lengths to the claim's
+        # certified low dimension cplen. With nvt = nlow, the pair
         # (seln, nover) is forced by nlow + seln == lenris + nover and
-        # nover * seln == 0 (range checks reject the wrong branch), and
-        # low_len = cplen - nover. This removes the residual length freedom (a
-        # deterministic truncation the >= bounds still allowed). pi (BUF 2) is
-        # a single claim and stays bounded, not pinned.
-        if CLAIM_POINT_BUF[j] != 2:
+        # nover * seln == 0 (range checks reject the negative branch), and
+        # low_len = cplen - nover. No length freedom remains.
+        if CLAIM_POINT_BUF[j] == 2:
+            # pi: cplen = min(log_mem, lenris), certified as a min here.
+            cplen_g = pi_cplen[0]
+            assert log(pi_mem_slack[0]) < 34
+            assert g_log_mem == cplen_g * pi_mem_slack[0]      # cplen <= log_mem
+            assert log(pi_fold_slack[0]) < 34
+            assert fold_cap_g == cplen_g * pi_fold_slack[0]    # cplen <= lenris
+            assert (cplen_g + g_log_mem) * (cplen_g + fold_cap_g) == 0  # == one of them
+            assert nlow == cplen_g                             # delta = 0 for pi
+        else:
             cplen_g = claim_cplen_g[GEN ** j]
-            nover_g = claim_nover[GEN ** j]
-            assert log(nover_g) < 34
             if CLAIM_POINT_BUF[j] == 3:
                 assert nlow == cplen_g * GEN ** 7  # nlow = cplen + 7 (qpkd slot)
             else:
                 assert nlow == cplen_g            # nlow = cplen
-            assert nlow * seln == fold_cap_g * nover_g  # nlow + seln = lenris + nover
-            assert (nover_g + 1) * (seln + 1) == 0      # nover == 0 OR seln == 0
-            assert low_len_g * nover_g == cplen_g        # low_len = cplen - nover
+        nover_g = claim_nover[GEN ** j]
+        assert log(nover_g) < 34
+        assert nlow * seln == fold_cap_g * nover_g  # nlow + seln = lenris + nover
+        assert (nover_g + 1) * (seln + 1) == 0      # nover == 0 OR seln == 0
+        assert low_len_g * nover_g == cplen_g        # low_len = cplen - nover
         # selector loop reads fold_challenges[nlow .. nlow+seln); pin the reach
         # so it stays in [0, lenris): either seln == 0 (empty loop) or
         # nlow + seln == lenris (the honest overlap-free case).

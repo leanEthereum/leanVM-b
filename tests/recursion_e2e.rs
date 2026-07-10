@@ -1215,14 +1215,14 @@ fn gen_verify(
         // slacks bounding each claim'"'"'s reads to the written regions (so an
         // over-long hint cannot pull free padding): low_len <= mu_s/tau_t
         // (zeta/rho) and low_len(+7 for qpkd) <= lenris (fold challenges).
-        ("claim_fold_slack".to_string(), (0..ncl).map(|j| {
-            let low = cplen[j] - nover_v[j];
-            let bound = if cpbuf[j] == 3 { lenris - 7 } else { lenris };
-            g_pow(bound - low)
-        }).collect()),
         // per-claim overlap count, for the exact length pin: nover = the
         // amount by which the claim's total vars exceed the fold rounds.
         ("claim_nover".to_string(), (0..ncl).map(|j| g_pow(nover_v[j])).collect()),
+        // the pi claim's low dimension is min(log_mem, lenris); certify it as
+        // a min (<= both, == one) so pi is pinned like every other claim.
+        ("pi_cplen".to_string(), vec![g_pow(log_mem.min(lenris))]),
+        ("pi_mem_slack".to_string(), vec![g_pow(log_mem - log_mem.min(lenris))]),
+        ("pi_fold_slack".to_string(), vec![g_pow(lenris - log_mem.min(lenris))]),
         ("claim_sel_len".to_string(), (0..ncl).map(|j| g_pow(seln_v[j])).collect()),
         ("claim_low_vars".to_string(), (0..ncl).map(|j| g_pow(cplen[j] + if cpbuf[j] == 3 { 7 } else { 0 })).collect()),
         ("claim_qpkd_slot_bits".to_string(), {
@@ -1576,6 +1576,7 @@ fn recursion_soundness_binds() {
         ("rs_yslot_bits", 4, F128::ONE),    // pad coord (k=4 >= yr_log_n=3): over-read weight
         ("claim_low_len", 0, g_pow(33)),    // x-part length past the written region: over-read
         ("claim_nover", 0, g_pow(5)),        // wrong overlap: exact length pin must reject
+        ("pi_cplen", 0, g_pow(2)),           // wrong pi dimension: min-cert must reject
     ];
     for &(stream, idx, val) in tampers {
         let mut merged = batch.merged.clone();
