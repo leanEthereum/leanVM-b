@@ -101,6 +101,7 @@ SIDE_BLOCK_START = SIDE_BLOCK_START_PLACEHOLDER
 N_BLOCKS = N_BLOCKS_PLACEHOLDER
 BLOCK_KAPPA_SRC = BLOCK_KAPPA_SRC_PLACEHOLDER
 BLOCK_KAPPA_ADJ = BLOCK_KAPPA_ADJ_PLACEHOLDER
+BLOCK_REAL_TABLE = BLOCK_REAL_TABLE_PLACEHOLDER
 BLOCK_COORD_OFF = BLOCK_COORD_OFF_PLACEHOLDER
 BLOCK_COORD_COUNT = BLOCK_COORD_COUNT_PLACEHOLDER
 COORD_TYPE = COORD_TYPE_PLACEHOLDER
@@ -533,7 +534,10 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1):
     # Then the per-level residuals (novel-basis prefix x final-message fold)
     # are combined; the caller's eval_b terminal asserts the grand total.
     #
-    # Returns (sumcheck_target, fold_challenges, final_msg, residual_total).
+    # Returns (sumcheck_target, fold_challenges, final_msg, residual_total,
+    # yr_log_n_g = g^yr_log_n, yr_pad_g = g^(YR_LOG_CAP − yr_log_n)): the last
+    # two let the terminal zero-pin residual-slot coordinates beyond
+    # final_msg's 2^yr_log_n cells (positions yr_log_n .. YR_LOG_CAP−1).
     fs = StackBuf(2)
     fs[0] = fs0
     fs[1] = fs1
@@ -739,7 +743,7 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1):
             yr_eval = fold_final_msg(final_msg, fold_w, 0, LIG_YR_LOG_LEN[m_idx])
             residual_chain[xr * GEN] = residual_chain[xr] + alpha_weights[GEN ** (lvl * LIG_MAX_QUERIES[m_idx]) * xr] * prefix_eq * yr_eval
         inner_chain[GEN ** (lvl + 1)] = inner_chain[GEN ** lvl] + level_betas[GEN ** lvl] * residual_chain[GEN ** LIG_QUERIES[m_idx * LIG_MAX_LEVELS + lvl]]  # accumulate beta_lvl * (per-level residual sum) into the grand residual
-    return sumcheck_target, fold_challenges, final_msg, inner_chain[GEN ** LIG_N_LEVELS[m_idx]]
+    return sumcheck_target, fold_challenges, final_msg, inner_chain[GEN ** LIG_N_LEVELS[m_idx]], GEN ** LIG_YR_LOG_LEN[m_idx], GEN ** (YR_LOG_CAP - LIG_YR_LOG_LEN[m_idx])
 
 
 def verify_sub(pi_0, pi_1, delta_pows, defer_out):
@@ -868,11 +872,13 @@ def verify_sub(pi_0, pi_1, delta_pows, defer_out):
     # hinted-inverse nonzero check pins minimality, waived at the table's
     # floor (BLAKE3 sizes to flock's instance count, ceil_log2(max(n, 8))).
     psums = HeapBuf(6 * 35)
+    count_gpows = HeapBuf(6)  # g^count_t, for the padding-surplus certification below
     for t in unroll(0, 6):
         gtau = dims_g[GEN ** (t + 1)]
         tau_word, tau_exp = pin_ceil_log(count_bits * GEN ** (33 * t), psums * GEN ** (35 * t), pow_word, g_squares, gtau, count_min_inv[t], FLOORS[t], 33)
         count = sizes[t + 1]
         assert tau_word == count
+        count_gpows[GEN ** t] = tau_exp  # tau_exp = g^count_t (exponent-domain reconstruction)
 
     # ---- commitment root (2 words), kept for the opening phase ----
     commit_root_0 = cursor[GEN ** 0]
@@ -1079,9 +1085,14 @@ def verify_sub(pi_0, pi_1, delta_pows, defer_out):
         assert side_exp == side_total_g
 
     # ---- balance: push_root · d_pull == pull_root · d_push ----
-    # d_side = Π_b (γ + Σ_i α^i·COORD_PAD_VAL[i])^DELTA_b; the delta exponent rides its
-    # hinted bits through a square-and-multiply ladder (uniform over blocks:
-    # unpadded blocks hint delta = 0 and the ladder is the identity).
+    # d_side = Π_b (γ + Σ_i α^i·COORD_PAD_VAL[i])^DELTA_b, DELTA_b = 2^κ_b − real_b
+    # padding rows. The hinted delta bits drive a square-and-multiply ladder for
+    # the (γ+fp)^DELTA factor AND are CERTIFIED: their exponent-domain product
+    # g^DELTA times g^real_b must equal g^(2^κ_b), i.e. real_b + DELTA_b = 2^κ_b
+    # (integer, in the exponent so no wraparound). real_b is g^count_t for a
+    # per-table block (source ≥ 2) and g^(2^κ) for the shared blocks (whose real
+    # count is the full cube, forcing DELTA = 0). Without this, a free DELTA
+    # forges the balance (GF(2^128)* is smooth → dlog is cheap).
     pad_products = HeapBuf(2)
     for s in unroll(0, 2):
         side_pad_product = GEN ** 0
@@ -1091,13 +1102,21 @@ def verify_sub(pi_0, pi_1, delta_pows, defer_out):
             for i in unroll(0, BLOCK_COORD_COUNT[b]):
                 pad_fp += alpha_pow * COORD_PAD_VAL[BLOCK_COORD_OFF[b] + i]
                 alpha_pow *= alpha
+            g_two_kappa = g_squares[block_kappa[GEN ** b]]  # g^(2^κ_b)
+            if BLOCK_REAL_TABLE[b] == 6:
+                g_real = g_two_kappa  # shared block: real = 2^κ, so DELTA = 0
+            else:
+                g_real = count_gpows[GEN ** BLOCK_REAL_TABLE[b]]  # g^count_t
             ladder = GEN ** 0
             ladder_square = gamma + pad_fp
+            g_delta = GEN ** 0
             for j in unroll(0, 33):
                 pad_bit = block_pad_bits[GEN ** (b * 33 + j)]
                 assert pad_bit * pad_bit == pad_bit
                 ladder *= (1 + pad_bit * (ladder_square + 1))
+                g_delta *= (1 + pad_bit * (g_squares[GEN ** j] + 1))  # g^DELTA
                 ladder_square *= ladder_square
+            assert g_real * g_delta == g_two_kappa  # real_b + DELTA_b == 2^κ_b
             side_pad_product *= ladder
         pad_products[GEN ** s] = side_pad_product
     lhsb = gkr_roots[0] * pad_products[GEN ** 1]  # balance: push_root * d_pull == pull_root * d_push (padding cancels)
@@ -1647,7 +1666,7 @@ def verify_sub(pi_0, pi_1, delta_pows, defer_out):
     assert m_exp == g_total
     sel = gmv * LIG_MIN_SHIFT_INV  # g^(m - MIN): the match_range arm index selecting the opening candidate
     assert log(sel) < LIG_N_CANDIDATES
-    sumcheck_target, fold_challenges, final_msg, inner_total = match_range(log(sel), range(0, LIG_N_CANDIDATES), lambda m_idx: open_stacked(m_idx, fs[0], fs[1], target, commit_root_0, commit_root_1))
+    sumcheck_target, fold_challenges, final_msg, inner_total, yr_log_n_g, yr_pad_g = match_range(log(sel), range(0, LIG_N_CANDIDATES), lambda m_idx: open_stacked(m_idx, fs[0], fs[1], target, commit_root_0, commit_root_1))
 
     # ---- generalized eval_b terminal (runtime claim shapes) ----
     # Per-claim lengths, selector bits, and slot data are HINTED; the final
@@ -1765,11 +1784,12 @@ def verify_sub(pi_0, pi_1, delta_pows, defer_out):
     # inner_sum = sum_y final_msg[y] * eval_b[y]: reordered per claim. Claim j's
     # y-contribution is cw_j times the final_msg MLE at the point (overlap coords
     # || hinted slot bits): coord_k = m_k * ov_k + (1 + m_k) * bit_k with
-    # hinted mask bits m_k = [k < NOVER]. Point bits beyond the shape's
-    # yr_log_n are hinted zero, so the eq tensor zero-pads itself and the
-    # dot over the FULL 2^YR_LOG_CAP range reads deferred zeros past final_msg's end:
-    # everything unrolls at compile time. The ring-switch slot is the same
-    # form with no overlaps and the hinted YRS bits.
+    # hinted mask bits m_k = [k < NOVER]. The dot unrolls over the global cap
+    # 2^YR_LOG_CAP, but final_msg only has 2^yr_log_n cells, so the slot
+    # coordinates at k >= yr_log_n are ASSERTED zero (below): the eq tensor
+    # then puts zero weight on every index >= 2^yr_log_n, so the over-cap dot
+    # terms vanish and never depend on out-of-buffer cells. The ring-switch
+    # slot is the same, with no overlaps and the hinted YRS bits.
     inner_sum = inner_total
     for j in unroll(0, NCL):
         slot_point = HeapBuf(YR_LOG_CAP)
@@ -1783,6 +1803,14 @@ def verify_sub(pi_0, pi_1, delta_pows, defer_out):
             slot_bit = claim_yslot_bits[GEN ** (8 * j + k)]
             assert slot_bit * slot_bit == slot_bit
             slot_point[GEN ** k] = mask_bit * overlap_ptr[GEN ** k] + (1 + mask_bit) * slot_bit
+        # zero-pin coords beyond final_msg's log-length (no over-cap weight):
+        # the pointers below start at position yr_log_n, and the loop covers
+        # the YR_LOG_CAP − yr_log_n padding coords.
+        hi_mask = claim_overlap_mask * GEN ** (8 * j) * yr_log_n_g
+        hi_slot = claim_yslot_bits * GEN ** (8 * j) * yr_log_n_g
+        for xk in mul_range(1, yr_pad_g):
+            assert hi_mask[xk] == 0
+            assert hi_slot[xk] == 0
         slot_eq = HeapBuf(2 ** (YR_LOG_CAP + 1) - 2)
         eqtree(slot_point, slot_eq, YR_LOG_CAP)
         final_msg_dot = 0
@@ -1794,6 +1822,9 @@ def verify_sub(pi_0, pi_1, delta_pows, defer_out):
         yb = rs_yslot_bits[GEN ** k]
         assert yb * yb == yb
         rs_slot_point[GEN ** k] = yb
+    rs_hi = rs_yslot_bits * yr_log_n_g
+    for xk in mul_range(1, yr_pad_g):
+        assert rs_hi[xk] == 0  # zero-pin coords beyond final_msg's log-length
     rs_slot_eq = HeapBuf(2 ** (YR_LOG_CAP + 1) - 2)
     eqtree(rs_slot_point, rs_slot_eq, YR_LOG_CAP)
     rs_msg_dot = 0

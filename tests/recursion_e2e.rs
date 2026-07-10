@@ -679,6 +679,9 @@ fn gen_verify(
     assert_eq!(bks.len(), bkappa.len(), "block source map must match the block list");
     ps("BLOCK_KAPPA_SRC", ints(&bks.iter().map(|&(s, _)| s).collect::<Vec<_>>()));
     ps("BLOCK_KAPPA_ADJ", ints(&bks.iter().map(|&(_, a)| a).collect::<Vec<_>>()));
+    // per block: the table index (0..5) whose count is its real row count, or
+    // 6 for a shared block whose real count is the full 2^kappa cube.
+    ps("BLOCK_REAL_TABLE", ints(&bks.iter().map(|&(s, _)| if s >= 2 { s - 2 } else { 6 }).collect::<Vec<_>>()));
     ps("BLOCK_COORD_OFF", ints(&bc0));
     ps("BLOCK_COORD_COUNT", ints(&bcn));
     ps("COORD_TYPE", us(&ct));
