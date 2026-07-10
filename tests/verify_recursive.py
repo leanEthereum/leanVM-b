@@ -47,19 +47,21 @@ from snark_lib import *
 #     block an offset, and the selector is pinned by (g^sel)^(2^kappa) ==
 #     g^offset alignment), and rs_yslot_bits/claim_yslot_bits/
 #     claim_overlap_mask beyond yr_log_n (asserted zero), and the terminal
-#     x-part lengths claim_low_len/claim_sel_len/claim_low_vars with
-#     claim_nover (pinned EXACTLY to the claim's certified low dimension
-#     cplen via claim_cplen_g — nlow = cplen + delta, nlow+seln = lenris+nover,
-#     nover*seln = 0, low_len = cplen - nover), and pi_cplen with
-#     pi_mem_slack/pi_fold_slack (the pi claim's cplen = min(log_mem, lenris),
-#     certified as a min: <= both, == one);
+#     x-part lengths claim_low_len/claim_sel_len with claim_nover (pinned
+#     EXACTLY to the claim's certified low dimension cplen via claim_cplen_g —
+#     nlow = cplen + delta [DERIVED], nlow+seln = lenris+nover, nover*seln = 0,
+#     low_len = cplen - nover), and pi_cplen with pi_mem_slack/pi_fold_slack
+#     (the pi claim's cplen = min(log_mem, lenris), certified as a min: <= both,
+#     == one);
+#   - derived (computed from already-certified logs, NOT hinted): block_kappa
+#     (structural source + baked offset), block_mu_quot's sel_len = g^mu / g^κ,
+#     claim_low_vars nlow = cplen · g^delta, rs_sel_len = g^lenris / g^qpkdv;
 #   - identity-certified (well-formedness checked here — booleanity, range
-#     checks, quotient ties — with the VALUE pinned by a protocol identity
-#     against committed data): block_mu_quot (sel_len_g * kappa_g == g^mu),
-#     the terminal claim shapes claim_low_len/claim_sel_len/
-#     claim_low_vars/claim_qpkd_slot_bits/claim_sel_bits/claim_overlap_mask/
-#     claim_yslot_bits and rs_sel_len/rs_sel_bits (the eval_b
-#     terminal identity against the opening-bound target);
+#     checks — with the VALUE pinned by a protocol identity against committed
+#     data): the terminal claim shapes claim_low_len/claim_sel_len/
+#     claim_qpkd_slot_bits/claim_sel_bits/claim_overlap_mask/
+#     claim_yslot_bits and rs_sel_bits (the eval_b terminal identity against
+#     the opening-bound target);
 #   - statement-bound (fed to the outer public-input hash): sub_pis (the sub
 #     statements, which also derive the transcript seeds), matpart (with its
 #     complete weight data), and the reduced claims bc_star_hint/mat_stars_hint with their points.
@@ -1017,8 +1019,6 @@ def verify_sub(pi_0, pi_1, delta_pows, g_logs, g_logs_pow2, g_squares, defer_out
     # and the selectors (block_sel_bits) to the packed offset via alignment
     # (decompose section) — neither is left to a single aggregate identity,
     # which does not bind a high-entropy hint in this smooth field.
-    block_mu_quot = HeapBuf(N_BLOCKS)
-    hint_witness(block_mu_quot[0:N_BLOCKS], "block_mu_quot")
     block_sel_bits = HeapBuf(N_BLOCKS * MU_CAP)
     hint_witness(block_sel_bits[0:N_BLOCKS * MU_CAP], "block_sel_bits")
     block_pad_bits = HeapBuf(N_BLOCKS * 33)
@@ -1125,15 +1125,13 @@ def verify_sub(pi_0, pi_1, delta_pows, g_logs, g_logs_pow2, g_squares, defer_out
         smu_gs = ann_mus[GEN ** s]
         zeta_zs = zeta * GEN ** ZOFF[s]
         for b in unroll(SIDE_BLOCK_START[s], SIDE_BLOCK_START[s + 1]):
-            # eq_hi over the ζ coords above κ, against the HINTED selector
-            # bits (eq(s, z) = 1 + s + z in this field); the bound mu_s - κ
-            # rides the hinted quotient, tied by sel_len_g · κg == g^mu_s.
+            # eq_hi over the ζ coords above κ, against the HINTED selector bits
+            # (eq(s, z) = 1 + s + z in this field); the selector length mu_s - κ
+            # is DERIVED, g^mu_s / g^κ, not hinted.
             kappa_g = block_kappa[GEN ** b]
             assert log(kappa_g) < 34
-            sel_len_g = block_mu_quot[GEN ** b]
+            sel_len_g = smu_gs / kappa_g  # g^(mu_s - κ)
             assert log(sel_len_g) < 34
-            qk_prod = sel_len_g * kappa_g  # tie hinted quotient to kappa: q * g^kappa == g^mu (so q = g^(mu-kappa))
-            assert qk_prod == smu_gs
             zeta_hi = zeta_zs * kappa_g
             selrow = block_sel_bits * GEN ** (b * MU_CAP)
             eq_chain = HeapBuf(MU_CAP + 2)
@@ -1705,8 +1703,6 @@ def verify_sub(pi_0, pi_1, delta_pows, g_logs, g_logs_pow2, g_squares, defer_out
     hint_witness(pi_fold_slack[0:1], "pi_fold_slack")
     claim_sel_len = HeapBuf(NCL)
     hint_witness(claim_sel_len[0:NCL], "claim_sel_len")
-    claim_low_vars = HeapBuf(NCL)
-    hint_witness(claim_low_vars[0:NCL], "claim_low_vars")
     claim_qpkd_slot_bits = HeapBuf(7 * NCL)
     hint_witness(claim_qpkd_slot_bits[0:7 * NCL], "claim_qpkd_slot_bits")
     claim_sel_bits = HeapBuf(33 * NCL)
@@ -1717,8 +1713,6 @@ def verify_sub(pi_0, pi_1, delta_pows, g_logs, g_logs_pow2, g_squares, defer_out
     hint_witness(claim_yslot_bits[0:8 * NCL], "claim_yslot_bits")
     rs_yslot_bits = HeapBuf(8)
     hint_witness(rs_yslot_bits[0:8], "rs_yslot_bits")
-    rs_sel_len = StackBuf(1)
-    hint_witness(rs_sel_len[0:1], "rs_sel_len")
     rs_sel_bits = HeapBuf(33)
     hint_witness(rs_sel_bits[0:33], "rs_sel_bits")
     claim_weights = HeapBuf(NCL)
@@ -1754,13 +1748,11 @@ def verify_sub(pi_0, pi_1, delta_pows, g_logs, g_logs_pow2, g_squares, defer_out
         out_fs = low_chain[low_len_g]
         seln = claim_sel_len[GEN ** j]
         assert log(seln) < 34
-        nlow = claim_low_vars[GEN ** j]
-        assert log(nlow) < 40
-        # EXACT length pin: tie the three hinted lengths to the claim's
-        # certified low dimension cplen. With nvt = nlow, the pair
-        # (seln, nover) is forced by nlow + seln == lenris + nover and
-        # nover * seln == 0 (range checks reject the negative branch), and
-        # low_len = cplen - nover. No length freedom remains.
+        # EXACT length pin: tie the hinted lengths to the claim's certified low
+        # dimension cplen. nlow is DERIVED here (cplen times a baked slot delta);
+        # with nvt = nlow the pair (seln, nover) is then forced by nlow + seln ==
+        # lenris + nover and nover * seln == 0 (range checks reject the negative
+        # branch), and low_len = cplen - nover. No length freedom remains.
         if CLAIM_POINT_BUF[j] == 2:
             # pi: cplen = min(log_mem, lenris), certified as a min here.
             cplen_g = pi_cplen[0]
@@ -1769,13 +1761,13 @@ def verify_sub(pi_0, pi_1, delta_pows, g_logs, g_logs_pow2, g_squares, defer_out
             assert log(pi_fold_slack[0]) < 34
             assert fold_cap_g == cplen_g * pi_fold_slack[0]    # cplen <= lenris
             assert (cplen_g + g_log_mem) * (cplen_g + fold_cap_g) == 0  # == one of them
-            assert nlow == cplen_g                             # delta = 0 for pi
+            nlow = cplen_g                             # delta = 0 for pi
         else:
             cplen_g = claim_cplen_g[GEN ** j]
             if CLAIM_POINT_BUF[j] == 3:
-                assert nlow == cplen_g * GEN ** 7  # nlow = cplen + 7 (qpkd slot)
+                nlow = cplen_g * GEN ** 7  # nlow = cplen + 7 (qpkd slot)
             else:
-                assert nlow == cplen_g            # nlow = cplen
+                nlow = cplen_g            # nlow = cplen
         nover_g = claim_nover[GEN ** j]
         assert log(nover_g) < 34
         assert nlow * seln == fold_cap_g * nover_g  # nlow + seln = lenris + nover
@@ -1828,12 +1820,12 @@ def verify_sub(pi_0, pi_1, delta_pows, g_logs, g_logs_pow2, g_squares, defer_out
     # ring-switch weight base over the fold_challenges coords above qpkdv (hinted
     # length and selector bits, identity-certified).
     rs_weight = gamma_ab * rs_eq_vals[0] + gamma_c * rs_eq_vals[1]
-    rs_len_g = rs_sel_len[0]
+    # rs_len = lenris - qpkdv, DERIVED as g^lenris / g^qpkdv (not hinted). The
+    # selector loop then reads fold_challenges[qpkdv .. qpkdv+rs_len) = [qpkdv ..
+    # lenris), inside its written [0, lenris) extent; a qpkdv > lenris would make
+    # rs_len a huge exponent and blow the range check below.
+    rs_len_g = fold_cap_g / qpkdv_g
     assert log(rs_len_g) < 34
-    # reach-pin: qpkdv + rs_len == lenris, so the selector loop below reads
-    # fold_challenges only inside its written [0, lenris) extent (a longer
-    # rs_len would read free cells above lenris). Mirrors the claim reach-pin.
-    assert qpkdv_g * rs_len_g == fold_cap_g
     ris_q = fold_challenges * qpkdv_g
     rsw_chain = HeapBuf(35)
     rsw_chain[GEN ** 0] = rs_weight

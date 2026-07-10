@@ -1202,7 +1202,6 @@ fn gen_verify(
         ("pi_mem_slack".to_string(), vec![g_pow(log_mem - log_mem.min(lenris))]),
         ("pi_fold_slack".to_string(), vec![g_pow(lenris - log_mem.min(lenris))]),
         ("claim_sel_len".to_string(), (0..ncl).map(|j| g_pow(seln_v[j])).collect()),
-        ("claim_low_vars".to_string(), (0..ncl).map(|j| g_pow(cplen[j] + if cpbuf[j] == 3 { 7 } else { 0 })).collect()),
         ("claim_qpkd_slot_bits".to_string(), {
             let mut v = Vec::new();
             for j in 0..ncl {
@@ -1241,7 +1240,6 @@ fn gen_verify(
             v
         }),
         ("rs_yslot_bits".to_string(), (0..8).map(|k| F128::new(((yrs >> k) & 1) as u64, 0)).collect()),
-        ("rs_sel_len".to_string(), vec![g_pow(lenris - qpkdv)]),
         ("rs_sel_bits".to_string(), (0..33).map(|k| F128::new(((rssel >> k) & 1) as u64, 0)).collect()),
         ("sort_order".to_string(), sort_order.clone()),
         ("musbits".to_string(), {
@@ -1253,10 +1251,6 @@ fn gen_verify(
                 }
             }
             v
-        }),
-        ("block_mu_quot".to_string(), {
-            let side_of = |b: usize| (0..3).rev().find(|&s| b >= sblk[s]).unwrap();
-            bkappa.iter().enumerate().map(|(b, &k)| g_pow(smu[side_of(b)] - k)).collect()
         }),
         ("block_sel_bits".to_string(), {
             let mut v = Vec::new();
@@ -1537,14 +1531,6 @@ fn recursion_soundness_binds() {
         let cur = merged[pos].1[0][0];
         merged[pos].1[0][0] = if cur == F128::ONE { F128::ZERO } else { F128::ONE };
         assert!(!run(&mut guest, &merged), "overlap_mask popcount tamper must be rejected");
-    }
-    // rs_sel_len: lengthen the ring-switch selector by one (×g). The reach-pin
-    // qpkdv + rs_len == lenris must reject it before it reads free fold cells.
-    {
-        let mut merged = batch.merged.clone();
-        let pos = merged.iter().position(|(n, _)| n == "rs_sel_len").expect("rs_sel_len");
-        merged[pos].1[0][0] = merged[pos].1[0][0] * G;
-        assert!(!run(&mut guest, &merged), "over-long rs_sel_len must be rejected");
     }
     eprintln!("all layout-hint tamperings correctly rejected");
 }
