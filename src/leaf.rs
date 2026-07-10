@@ -217,18 +217,16 @@ pub fn decompose_formula<F: FnMut(usize, &[F128]) -> F128>(
     acc + (F128::ONE + sel_sum)
 }
 
-/// The number of committed coordinates (`Col`/`GCol`) in a side — how many claim
-/// values flow through the transcript for it.
-fn n_committed(blocks: &[Block]) -> usize {
-    blocks
-        .iter()
-        .flat_map(|b| &b.coords)
-        .filter(|c| matches!(c, Coord::Col(_) | Coord::GCol(_)))
-        .count()
+/// Look up an already-recorded claim on `(col, point)`. Push and pull share
+/// their GKR point, so a column read by both sides (or by two same-κ blocks of
+/// one side) is streamed and opened ONCE; later occurrences reuse the value.
+fn known_claim(claims: &[ColumnClaim], col: usize, point: &[F128]) -> Option<F128> {
+    claims.iter().find(|c| c.col == col && c.point == point).map(|c| c.value)
 }
 
-/// Prover-side decomposition: reads the real columns, writing each committed value
-/// onto the stream and recording the matching claim (block/coord order).
+/// Prover-side decomposition: reads the real columns, writing each FRESH
+/// committed value onto the stream and recording the matching claim
+/// (block/coord order); duplicates reuse the recorded value.
 fn decompose_prove(
     blocks: &[Block],
     lay: &Layout,
@@ -236,10 +234,13 @@ fn decompose_prove(
     zeta: &[F128],
     alpha: F128,
     gamma: F128,
+    claims: &mut Vec<ColumnClaim>,
     ps: &mut ProverState,
-) -> Vec<ColumnClaim> {
-    let mut claims = Vec::new();
+) {
     decompose_formula(blocks, lay, zeta, alpha, gamma, |col, zeta_lo| {
+        if let Some(v) = known_claim(claims, col, zeta_lo) {
+            return v;
+        }
         let v = mle_eval(&cols[col], zeta_lo);
         ps.add_scalar(v);
         claims.push(ColumnClaim {
@@ -249,32 +250,40 @@ fn decompose_prove(
         });
         v
     });
-    claims
 }
 
-/// Verifier-side decomposition: reads the committed values from the stream,
-/// recomputes `Ṽ₀(ζ)`, and records the matching claims.
+/// Verifier-side decomposition: reads each FRESH committed value from the
+/// stream (duplicates reuse the recorded claim), recomputes `Ṽ₀(ζ)`, and
+/// records the fresh claims. A pre-pass mirrors the formula's block/coord scan
+/// so the stream reads stay sequential.
 fn decompose_verify(
     blocks: &[Block],
     lay: &Layout,
     zeta: &[F128],
     alpha: F128,
     gamma: F128,
+    claims: &mut Vec<ColumnClaim>,
     vs: &mut VerifierState,
-) -> Result<(F128, Vec<ColumnClaim>), Error> {
-    let vals = vs.next_scalars(n_committed(blocks)).map_err(|_| Error::Truncated)?;
-    let mut vals_iter = vals.iter().copied();
-    let mut claims = Vec::new();
+) -> Result<F128, Error> {
+    for blk in blocks {
+        let zeta_lo = &zeta[..blk.kappa];
+        for c in &blk.coords {
+            if let Coord::Col(i) | Coord::GCol(i) = c {
+                if known_claim(claims, *i, zeta_lo).is_none() {
+                    let v = vs.next_scalar().map_err(|_| Error::Truncated)?;
+                    claims.push(ColumnClaim {
+                        col: *i,
+                        point: zeta_lo.to_vec(),
+                        value: v,
+                    });
+                }
+            }
+        }
+    }
     let value = decompose_formula(blocks, lay, zeta, alpha, gamma, |col, zeta_lo| {
-        let v = vals_iter.next().expect("n_committed counts every col_val call");
-        claims.push(ColumnClaim {
-            col,
-            point: zeta_lo.to_vec(),
-            value: v,
-        });
-        v
+        known_claim(claims, col, zeta_lo).expect("the pre-pass recorded every coordinate")
     });
-    Ok((value, claims))
+    Ok(value)
 }
 
 /// `base^e` by repeated squaring.
@@ -418,48 +427,31 @@ pub fn prove_balance(
             )
         },
     );
-    let (_, push_claim) = gkr::prove_product(push_leaves, ps);
-    let (_, pull_claim) = gkr::prove_product(pull_leaves, ps);
+    // Push and pull run in LOCKSTEP (equal μ by construction — matched block
+    // pairs), sharing every challenge, so both claims land on ONE point ζ.
+    let ((_, push_claim), (_, pull_claim)) = gkr::prove_product_pair(push_leaves, pull_leaves, ps);
     let (_, count_claim) = gkr::prove_product(count_leaves, ps);
 
-    let mut claims = decompose_prove(push, &push_lay, cols, &push_claim.point, alpha, gamma, ps);
-    claims.extend(decompose_prove(
-        pull,
-        &pull_lay,
-        cols,
-        &pull_claim.point,
-        alpha,
-        gamma,
-        ps,
-    ));
-    claims.extend(decompose_prove(
-        count,
-        &count_lay,
-        cols,
-        &count_claim.point,
-        F128::ONE,
-        F128::ZERO,
-        ps,
-    ));
+    // One shared claim list: push/pull duplicates (same column, same shared
+    // point) are streamed and opened once. The count side has its own point,
+    // so its claims stay distinct.
+    let mut claims: Vec<ColumnClaim> = Vec::new();
+    decompose_prove(push, &push_lay, cols, &push_claim.point, alpha, gamma, &mut claims, ps);
+    decompose_prove(pull, &pull_lay, cols, &pull_claim.point, alpha, gamma, &mut claims, ps);
+    decompose_prove(count, &count_lay, cols, &count_claim.point, F128::ONE, F128::ZERO, &mut claims, ps);
 
-    // Bytecode = ONE polynomial: bind the twelve public-column evaluations,
-    // sample the selector challenges, emit the two reduced claims.
-    let (kbc, pv_push) = public_evals(push, &push_claim.point);
-    let (_, pv_pull) = public_evals(pull, &pull_claim.point);
-    for &v in pv_push.iter().chain(&pv_pull) {
+    // Bytecode = ONE polynomial, and push/pull now share the point ζ, so the
+    // six public columns are opened ONCE: bind the evaluations, sample the
+    // selector challenges, emit the single reduced claim.
+    let (kbc, pv) = public_evals(push, &push_claim.point);
+    for &v in &pv {
         ps.observe_scalar(v);
     }
     let s = [ps.sample(), ps.sample(), ps.sample()];
-    let bytecode_claims = vec![
-        BytecodeClaim {
-            point: [&push_claim.point[..kbc], &s[..]].concat(),
-            value: stacked_bytecode_value(&pv_push, &s),
-        },
-        BytecodeClaim {
-            point: [&pull_claim.point[..kbc], &s[..]].concat(),
-            value: stacked_bytecode_value(&pv_pull, &s),
-        },
-    ];
+    let bytecode_claims = vec![BytecodeClaim {
+        point: [&push_claim.point[..kbc], &s[..]].concat(),
+        value: stacked_bytecode_value(&pv, &s),
+    }];
     (claims, bytecode_claims)
 }
 
@@ -491,8 +483,10 @@ pub fn verify_balance(
         _ => Error::Truncated,
     })?;
     let gamma = vs.sample();
-    let (push_root, cp) = gkr::verify_product(push_lay.mu, vs).map_err(Error::Gkr)?;
-    let (pull_root, cq) = gkr::verify_product(pull_lay.mu, vs).map_err(Error::Gkr)?;
+    // Push and pull verify in LOCKSTEP (their layouts match, see
+    // grand_product_grinding_bits), reducing to claims at ONE shared point.
+    let ((push_root, cp), (pull_root, cq)) =
+        gkr::verify_product_pair(push_lay.mu, vs).map_err(Error::Gkr)?;
     let (count_root, cc) = gkr::verify_product(count_lay.mu, vs).map_err(Error::Gkr)?;
     // Every read count is nonzero iff this product is (§sec:memchan); a zero would
     // let a read self-cancel and free its value from memory.
@@ -507,40 +501,32 @@ pub fn verify_balance(
         return Err(Error::Unbalanced);
     }
 
-    let (vp, mut claims) = decompose_verify(push, &push_lay, &cp.point, alpha, gamma, vs)?;
+    let mut claims: Vec<ColumnClaim> = Vec::new();
+    let vp = decompose_verify(push, &push_lay, &cp.point, alpha, gamma, &mut claims, vs)?;
     if vp != cp.value {
         return Err(Error::Decomposition { side: "push" });
     }
-    let (vq, claims_q) = decompose_verify(pull, &pull_lay, &cq.point, alpha, gamma, vs)?;
+    let vq = decompose_verify(pull, &pull_lay, &cq.point, alpha, gamma, &mut claims, vs)?;
     if vq != cq.value {
         return Err(Error::Decomposition { side: "pull" });
     }
-    claims.extend(claims_q);
-    let (vc, claims_c) = decompose_verify(count, &count_lay, &cc.point, F128::ONE, F128::ZERO, vs)?;
+    let vc = decompose_verify(count, &count_lay, &cc.point, F128::ONE, F128::ZERO, &mut claims, vs)?;
     if vc != cc.value {
         return Err(Error::Decomposition { side: "count" });
     }
-    claims.extend(claims_c);
 
-    // Bytecode = ONE polynomial (mirror of `prove_balance`): bind the twelve
-    // public-column evaluations, sample the selector challenges, emit the two
-    // reduced claims on the stacked bytecode multilinear.
-    let (kbc, pv_push) = public_evals(push, &cp.point);
-    let (_, pv_pull) = public_evals(pull, &cq.point);
-    for &v in pv_push.iter().chain(&pv_pull) {
+    // Bytecode = ONE polynomial (mirror of `prove_balance`); the shared push/
+    // pull point means one set of public-column evaluations and ONE reduced
+    // claim on the stacked bytecode multilinear.
+    let (kbc, pv) = public_evals(push, &cp.point);
+    for &v in &pv {
         vs.observe_scalar(v);
     }
     let s = [vs.sample(), vs.sample(), vs.sample()];
-    let bytecode_claims = vec![
-        BytecodeClaim {
-            point: [&cp.point[..kbc], &s[..]].concat(),
-            value: stacked_bytecode_value(&pv_push, &s),
-        },
-        BytecodeClaim {
-            point: [&cq.point[..kbc], &s[..]].concat(),
-            value: stacked_bytecode_value(&pv_pull, &s),
-        },
-    ];
+    let bytecode_claims = vec![BytecodeClaim {
+        point: [&cp.point[..kbc], &s[..]].concat(),
+        value: stacked_bytecode_value(&pv, &s),
+    }];
     Ok(BusVerify {
         claims,
         bytecode_claims,
