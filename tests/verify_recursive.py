@@ -866,13 +866,11 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
         cursor *= GEN
 
     # ---- certify the hinted structural logs against the announced words ----
-    # The stream announced the sizes as integer WORDS; the shape-generic
-    # phases need them as G-POWERS (loop bounds, match_range scrutinees), so
-    # the g-power forms arrive as hints and are pinned to the words here:
-    #   dims_g[0]     = g^log_mem, dims_g[1 + t] = g^tau_t (t = table);
-    #   count_bits       = the 33-bit decomposition of each announced count,
-    #                      certifying tau_t = ceil_log2(count) (the gadget; the
-    #                      minimality count > 2^(tau-1) is an `assert != 0`).
+    # The stream announced the sizes as integer WORDS; the shape-generic phases
+    # need them as G-POWERS (loop bounds, match_range scrutinees). dims_g[0] =
+    # g^log_mem arrives as a hint pinned to the word; dims_g[1 + t] = g^tau_t is
+    # COMPUTED by the count gadget (tau_t = ceil_log2(count_t), its bits
+    # decomposed in-circuit).
     dims_g = HeapBuf(7)  # dims_g[0] = g^log_mem (hinted below); dims_g[1:7] =
     hint_witness(dims_g[0:1], "dims_g")   # g^tau_t, COMPUTED by the count gadget.
     # log_mem is announced AS a log (an integer word L): the hinted g^L is pinned
