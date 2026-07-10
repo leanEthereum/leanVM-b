@@ -97,10 +97,10 @@ pub(crate) enum Hint {
     /// into the buffer `m[fp·g^bits_ptr]` (bit `j` at offset `j`). The emitting
     /// code re-checks booleanity + reconstruction in-circuit.
     BitDecompose { value: Off, bits_ptr: Off, nbits: u32 },
-    /// Computed advice: write the `nbits` bits of `Σ_{i<count} 2^{κ_i}` into the
-    /// buffer `m[fp·g^bits_ptr]`, where `g^{κ_i} = m[(m[fp·g^kappa_ptr])·g^{start+i}]`
-    /// (each `κ_i` recovered as a small g-power). The emitting code re-checks it.
-    BitDecomposeSum { kappa_ptr: Off, start: u32, count: u32, bits_ptr: Off, nbits: u32 },
+    /// Computed advice: write the `nbits` bits of `n`, where `m[fp·g^value] = g^n`
+    /// (recovered by a bounded discrete log at witness generation), into the
+    /// buffer `m[fp·g^bits_ptr]`. The emitting code re-checks it in-circuit.
+    BitDecomposeExp { value: Off, bits_ptr: Off, nbits: u32 },
 }
 
 pub(crate) struct Lowered {

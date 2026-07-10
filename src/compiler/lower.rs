@@ -1707,8 +1707,8 @@ impl FnLower<'_> {
             Stmt::Call(f, args) => {
                 // Computed advice fills (prover-side, re-checked by the caller):
                 // `hint_decompose_bits(bits, value, nbits)` writes value's bits into the
-                // buffer; `hint_decompose_bits_sum(bits, kappa, start, count, nbits)`
-                // writes the bits of Σ 2^κ over kappa[start..start+count].
+                // buffer; `hint_decompose_bits_exponent(bits, x, nbits)` writes the
+                // bits of n where x = g^n (a bounded dlog at witness generation).
                 if f == "hint_decompose_bits" {
                     assert_eq!(args.len(), 3, "hint_decompose_bits(bits, value, nbits)");
                     let bits_ptr = self.expr(&args[0]);
@@ -1717,14 +1717,12 @@ impl FnLower<'_> {
                     self.pending.push(Hint::BitDecompose { value, bits_ptr, nbits });
                     return;
                 }
-                if f == "hint_decompose_bits_sum" {
-                    assert_eq!(args.len(), 5, "hint_decompose_bits_sum(bits, kappa, start, count, nbits)");
+                if f == "hint_decompose_bits_exponent" {
+                    assert_eq!(args.len(), 3, "hint_decompose_bits_exponent(bits, x, nbits)");
                     let bits_ptr = self.expr(&args[0]);
-                    let kappa_ptr = self.expr(&args[1]);
-                    let start = self.const_index(&args[2]);
-                    let count = self.const_index(&args[3]);
-                    let nbits = self.const_index(&args[4]);
-                    self.pending.push(Hint::BitDecomposeSum { kappa_ptr, start, count, bits_ptr, nbits });
+                    let value = self.expr(&args[1]);
+                    let nbits = self.const_index(&args[2]);
+                    self.pending.push(Hint::BitDecomposeExp { value, bits_ptr, nbits });
                     return;
                 }
                 // `blake3(a, b, out)`: the digest of the two 256-bit operands

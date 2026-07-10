@@ -59,6 +59,8 @@ impl Program {
         // Per-stream cursor into the named witness data (`hint_witness` pops
         // sequentially).
         let mut wit_pos: HashMap<String, usize> = HashMap::new();
+        // Baby-step table for `hint_decompose_bits_exponent`, built on first use.
+        let mut dlog_cache: Option<(crate::compiler::GPowMap, F128)> = None;
 
         // Per-opcode trace rows, accumulated during the walk and assembled into the
         // `Trace` once the run finishes (alongside the final count columns).
@@ -117,6 +119,32 @@ impl Program {
                 written[c] = true;
             }
         }
+        // Bounded discrete log for `hint_decompose_bits_exponent`: find n < 2^nbits
+        // with g^n = x, by baby-step giant-step (baby table g^j for j < 2^17,
+        // built once per run; giant step ×g^(-2^17)). Prover-side only — the
+        // guest re-verifies the hinted bits in-circuit.
+        fn bounded_dlog(cache: &mut Option<(crate::compiler::GPowMap, F128)>, x: F128, nbits: u32) -> u128 {
+            const LOG_BABY: u32 = 17;
+            let (baby, giant) = cache.get_or_insert_with(|| {
+                let mut table = crate::compiler::GPowMap::default();
+                let mut p = F128::ONE;
+                for j in 0..(1u32 << LOG_BABY) {
+                    table.insert(p, j);
+                    p = mul_by_x(p);
+                }
+                (table, p.inv()) // p = g^(2^17); its inverse is the giant step
+            });
+            let mut y = x;
+            let max_giant = if nbits > LOG_BABY { 1u64 << (nbits - LOG_BABY) } else { 1 };
+            for a in 0..max_giant {
+                if let Some(&j) = baby.get(&y) {
+                    return (a as u128) << LOG_BABY | j as u128;
+                }
+                y = y * *giant;
+            }
+            panic!("hint_decompose_bits_exponent: value is not g^n for n < 2^{nbits}")
+        }
+
         // Read the running access count and advance it by ×g (the free increment).
         // ×g is ×x, i.e. `mul_by_x` — a shift+fold, not a PMULL; this runs on every
         // memory access (several million per run), so the cheap form matters.
@@ -238,23 +266,14 @@ impl Program {
                                 put(&mut mem, &mut written, &mut mem_count, bb + j, F128::new(bit, 0));
                             }
                         }
-                        RHint::BitDecomposeSum { kappa_ptr, start, count, bits_ptr, nbits } => {
-                            let kb = *gmap
-                                .get(&get(&mem, &written, fp + kappa_ptr))
-                                .unwrap_or_else(|| panic!("decompose_sum kappa pointer is not a g-power"));
-                            let mut total: u128 = 0;
-                            for i in 0..*count {
-                                let gk = get(&mem, &written, kb + start + i);
-                                let k = *gmap
-                                    .get(&gk)
-                                    .unwrap_or_else(|| panic!("decompose_sum kappa is not a small g-power"));
-                                total += 1u128 << k;
-                            }
+                        RHint::BitDecomposeExp { value, bits_ptr, nbits } => {
+                            let x = get(&mem, &written, fp + value);
+                            let n = bounded_dlog(&mut dlog_cache, x, *nbits);
                             let bb = *gmap
                                 .get(&get(&mem, &written, fp + bits_ptr))
-                                .unwrap_or_else(|| panic!("decompose_sum bits pointer is not a g-power"));
+                                .unwrap_or_else(|| panic!("hint_decompose_bits_exponent bits pointer is not a g-power"));
                             for j in 0..*nbits {
-                                let bit = ((total >> j) & 1) as u64;
+                                let bit = ((n >> j) & 1) as u64;
                                 put(&mut mem, &mut written, &mut mem_count, bb + j, F128::new(bit, 0));
                             }
                         }

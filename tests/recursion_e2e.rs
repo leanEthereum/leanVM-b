@@ -16,6 +16,7 @@
 
 use std::collections::BTreeMap;
 
+use flare::pcs::ligerito::ceil_log2 as log2_ceil; // external API, aliased to our naming
 use leanvm_b::compiler::{compile, parse, parse_file_with_replacements};
 use leanvm_b::cpu::{Program, prove, verify};
 use leanvm_b::field::{g_pow, F128, G};
@@ -1305,7 +1306,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         ps("LIG_POSITIONS_PER_WORD", ints(&flat(&|c| c.7.clone(), maxlev)));
         ps("LIG_SQUEEZES", ints(&flat(&|c| c.8.clone(), maxlev)));
         ps("LIG_POSITIONS_OFF", ints(&flat(&|c| c.15.clone(), maxlev)));
-        ps("LIG_LOG_QUERIES", ints(&flat(&|c| c.5.iter().map(|&q| flare::pcs::ligerito::ceil_log2(q)).collect(), maxlev)));
+        ps("LIG_LOG_QUERIES", ints(&flat(&|c| c.5.iter().map(|&q| log2_ceil(q)).collect(), maxlev)));
         ps("LIG_LOG_MSG_COLS", ints(&flat(&|c| c.4.clone(), maxlev)));
         ps("LIG_RESIDUAL_FOLD_OFF", ints(&flat(&|c| c.18.clone(), maxlev)));
         ps("LIG_RESIDUAL_PREFIX_LEN", ints(&flat(&|c| c.4.iter().map(|&m2| m2 - c.2).collect(), maxlev)));

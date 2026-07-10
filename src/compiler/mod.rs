@@ -90,9 +90,9 @@ pub(crate) enum RHint {
     Log2Ceil { bits_ptr: Off, dst: Off, nbits: u32, floor: u32 },
     /// Write the `nbits` bits of `m[fp+value]` into the buffer `m[fp+bits_ptr]`.
     BitDecompose { value: Off, bits_ptr: Off, nbits: u32 },
-    /// Write the `nbits` bits of `Σ_{i<count} 2^{κ_i}` into `m[fp+bits_ptr]`,
-    /// each `κ_i` recovered from `m[fp+kappa_ptr]`'s buffer at offset `start+i`.
-    BitDecomposeSum { kappa_ptr: Off, start: u32, count: u32, bits_ptr: Off, nbits: u32 },
+    /// Write the `nbits` bits of `n`, where `m[fp+value] = g^n` (a bounded
+    /// discrete log at witness generation), into the buffer `m[fp+bits_ptr]`.
+    BitDecomposeExp { value: Off, bits_ptr: Off, nbits: u32 },
 }
 
 /// Compile an [`Ast`] to a provable [`Program`]. Panics on a malformed program
@@ -204,15 +204,11 @@ pub fn compile(ast: &Ast) -> Program {
                             bits_ptr: *bits_ptr,
                             nbits: *nbits,
                         },
-                        Hint::BitDecomposeSum { kappa_ptr, start, count, bits_ptr, nbits } => {
-                            RHint::BitDecomposeSum {
-                                kappa_ptr: *kappa_ptr,
-                                start: *start,
-                                count: *count,
-                                bits_ptr: *bits_ptr,
-                                nbits: *nbits,
-                            }
-                        }
+                        Hint::BitDecomposeExp { value, bits_ptr, nbits } => RHint::BitDecomposeExp {
+                            value: *value,
+                            bits_ptr: *bits_ptr,
+                            nbits: *nbits,
+                        },
                     })
                     .collect();
                 hints.insert(here, rhs);

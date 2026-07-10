@@ -38,7 +38,7 @@ from snark_lib import *
 #   - shape-certified (the announced sizes are the ground truth): dims_g[0]
 #     = g^log_mem (via the exponent-to-word table); the taus, side mus, and
 #     committed size m are log2_ceil's whose BITS are decomposed in-circuit
-#     (hint_decompose_bits / hint_decompose_bits_sum keywords, no bit hints), and each block's
+#     (hint_decompose_bits / hint_decompose_bits_exponent keywords, no bit hints), and each block's
 #     kappa is DERIVED from the certified logs (no hint); annmus (push+count,
 #     pull aliased)
 #     pattern over the committed columns), block_pad_bits (the padding surplus, pinned
@@ -350,7 +350,7 @@ def verify_log2_ceil(bits_buf, g_logs_pow2, g_squares, floor: Const, nbits: Cons
     # word = Σ bit_j 2^j, exp_prod = g^word, g_log = g^max(log2_ceil(word), floor).
     # g_log is prover advice, pinned to log2_ceil(word) by psum[g_log] == word
     # (word < 2^log; the == 2^log case via g_logs_pow2) and word > 2^(log-1)
-    # (waived at floor). Callers fill the bits (hint_decompose_bits / hint_decompose_bits_sum)
+    # (waived at floor). Callers fill the bits (hint_decompose_bits / hint_decompose_bits_exponent)
     # and tie word or exp_prod to their value. NB: log2 here is base-2 log of the
     # integer word, not the discrete log base g that `log(...)` means.
     psum_buf = HeapBuf(GEN ** (nbits + 1))  # psum_buf[g^j] = value of bits [0, j)
@@ -392,14 +392,14 @@ def log2_ceil_word(value, g_logs_pow2, g_squares, floor: Const, nbits: Const):
     return g_log, g_value, bits
 
 
-def log2_ceil_sum(kappa_ptr, start: Const, count: Const, g_total, g_logs_pow2, g_squares, floor: Const, nbits: Const):
-    # g^log2_ceil(Σ 2^κ) over kappa_ptr[start .. start+count] (κ small g-powers),
-    # tied to the caller's exponent-domain total g_total = Π g^(2^κ). The bits of
-    # the sum are hinted HERE (hint_decompose_bits_sum), not by the caller.
+def log2_ceil_in_the_exponent(g_N, g_logs_pow2, g_squares, floor: Const, nbits: Const):
+    # Return g^log2_ceil(N) given g_N = g^N (N < 2^nbits). There is no in-circuit
+    # log, so the prover hints N's bits (hint_decompose_bits_exponent); they are
+    # verified and tied back: g^(the value the bits decode to) must equal g_N.
     bits = HeapBuf(GEN ** nbits)
-    hint_decompose_bits_sum(bits, kappa_ptr, start, count, nbits)
-    g_log, word, exp_prod = verify_log2_ceil(bits, g_logs_pow2, g_squares, floor, nbits)
-    assert exp_prod == g_total  # the hinted bits reconstruct the true Σ 2^κ
+    hint_decompose_bits_exponent(bits, g_N, nbits)
+    g_log, word, g_bits_value = verify_log2_ceil(bits, g_logs_pow2, g_squares, floor, nbits)
+    assert g_bits_value == g_N  # the hinted bits decode to N
     return g_log
 
 
@@ -1052,8 +1052,7 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
     # gadget tail pins the hinted g^mu (no floor: side totals are >= 2).
     # Push and pull have matched block pairs (identical kappa multisets), so their
     # totals are equal: certify push and count, assert push_total == pull_total,
-    # and lean on the pull-alias ann_mus[1] = ann_mus[0] set above. log2_ceil_sum
-    # decomposes each side's total INTERNALLY from the block kappas (no mus_bits).
+    # and lean on the pull-alias ann_mus[1] = ann_mus[0] set above.
     side_totals = HeapBuf(3)
     for s in unroll(0, 3):
         acc = GEN ** 0
@@ -1063,8 +1062,7 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
     assert side_totals[GEN ** 1] == side_totals[GEN ** 0]  # matched push/pull pairs
     for cert in unroll(0, 2):
         s = 2 * cert  # push (0), then count (2)
-        cnt = SIDE_BLOCK_START[s + 1] - SIDE_BLOCK_START[s]
-        g_mu = log2_ceil_sum(block_kappa, SIDE_BLOCK_START[s], cnt, side_totals[GEN ** s], g_logs_pow2, g_squares, 0, 34)
+        g_mu = log2_ceil_in_the_exponent(side_totals[GEN ** s], g_logs_pow2, g_squares, 0, 34)
         assert g_mu == ann_mus[GEN ** s]        # tie the early-used hint to the computed log
 
     # ---- bus-leaf packing offsets (for the selector certification) ----
@@ -1666,19 +1664,14 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
 
     # ---- stacked Ligerito opening: dispatch on the committed log-size ----
     # ---- certify g^m: m = max(log2_ceil(sum_cols 2^kappa), PCS_MIN_MU) ----
-    # Integer addition rides the exponent: g^total is a PRODUCT of g^(2^k)
-    # factors over the committed columns (kappas from the certified
-    # announced logs via the baked source map). Hinted total bits reproduce
-    # g^total through the squares-of-g table, and the count-gadget tail
-    # pins g^m against the reconstructed total word, with the PCS_MIN_MU floor
-    # waiving minimality exactly like the per-table tau floors.
-    col_kappa = HeapBuf(N_COMMITTED_COLS)  # g^kappa per committed column
+    # Integer addition rides the exponent: g^total = Π g^(2^kappa) over the
+    # committed columns (kappas from the certified announced logs via the baked
+    # source map); log2_ceil_in_the_exponent does the rest, with the PCS_MIN_MU
+    # floor waiving minimality exactly like the per-table tau floors.
     g_total = GEN ** 0
     for c in unroll(0, N_COMMITTED_COLS):
-        kg_c = kappa_base[GEN ** COL_KAPPA_SRC[c]] * GEN ** COL_KAPPA_ADJ[c]
-        col_kappa[GEN ** c] = kg_c
-        g_total *= g_squares[kg_c]  # sum of 2^kappa over committed cols, done as a product in the exponent
-    gmv = log2_ceil_sum(col_kappa, 0, N_COMMITTED_COLS, g_total, g_logs_pow2, g_squares, PCS_MIN_MU, 34)  # g^m
+        g_total *= g_squares[kappa_base[GEN ** COL_KAPPA_SRC[c]] * GEN ** COL_KAPPA_ADJ[c]]
+    gmv = log2_ceil_in_the_exponent(g_total, g_logs_pow2, g_squares, PCS_MIN_MU, 34)  # g^m
     sel = gmv * LIG_MIN_SHIFT_INV  # g^(m - MIN): the match_range arm index selecting the opening candidate
     assert log(sel) < LIG_N_CANDIDATES
     sumcheck_target, fold_challenges, final_msg, inner_total, yr_log_n_g, yr_pad_g, fold_cap_g = match_range(log(sel), range(0, LIG_N_CANDIDATES), lambda m_idx: open_stacked(m_idx, fs[0], fs[1], target, commit_root_0, commit_root_1))
