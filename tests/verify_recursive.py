@@ -339,8 +339,7 @@ def grind_check(state_0, state_1, nonce, bits_ptr, nbits_g):
     blake3(base, nz, out)
     check_128_bits_decomposition(bits_ptr, out[0])
     for xb in mul_range(1, nbits_g):
-        zero_bit = bits_ptr[xb]
-        assert zero_bit == 0
+        assert bits_ptr[xb] == 0
     return
 
 
