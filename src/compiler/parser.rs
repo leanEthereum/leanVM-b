@@ -834,6 +834,29 @@ fn split_once_top(s: &str, op: &str) -> Option<(String, String)> {
 /// `GEN ** k` — returning the exponent `k`. Both uses walk/compare exponents,
 /// so the bound must name `g^k` explicitly (an element that is not a known
 /// power of `g` has no usable exponent).
+/// Fold a compile-time INTEGER expression (literals combined with the usual
+/// operators) to its value; `None` if any leaf is not a literal. Placeholders
+/// are substituted before parsing, so `GEN ** (K_SKIP + 1)`-style exponents
+/// fold here.
+fn const_int_expr(e: &Expr) -> Option<u128> {
+    match e {
+        Expr::Lit(k) => Some(*k),
+        Expr::Add(a, b) => const_int_expr(a)?.checked_add(const_int_expr(b)?),
+        Expr::Sub(a, b) => const_int_expr(a)?.checked_sub(const_int_expr(b)?),
+        Expr::Mul(a, b) => const_int_expr(a)?.checked_mul(const_int_expr(b)?),
+        Expr::Div(a, b) => match const_int_expr(b)? {
+            0 => None,
+            d => Some(const_int_expr(a)? / d),
+        },
+        Expr::Mod(a, b) => match const_int_expr(b)? {
+            0 => None,
+            d => Some(const_int_expr(a)? % d),
+        },
+        Expr::Pow(a, b) => const_int_expr(a)?.checked_pow(u32::try_from(const_int_expr(b)?).ok()?),
+        _ => None,
+    }
+}
+
 fn gpow_bound(e: &Expr) -> Result<u64, String> {
     match e {
         // `1` is the multiplicative identity g^0 — the natural loop start.
@@ -1084,11 +1107,13 @@ fn parse_expr(s: &str) -> Result<Expr, String> {
         let base = parse_expr(&base)?;
         let exp_e = parse_expr(&exp)?;
         return match base {
-            // `GEN ** k`: a bare literal folds to `g^k`; a compile-time integer
-            // expression (e.g. an `unroll` var) becomes `GenPow`, resolved at lowering.
-            Expr::Gen => match exp.trim().parse::<u128>() {
-                Ok(k) => Ok(Expr::GPow(k)),
-                Err(_) => Ok(Expr::GenPow(Box::new(exp_e))),
+            // `GEN ** k`: a compile-time integer exponent (a literal or a
+            // constant expression like `K_SKIP + 1`) folds to `g^k`; a runtime
+            // expression (e.g. an `unroll` var) becomes `GenPow`, resolved at
+            // lowering.
+            Expr::Gen => match const_int_expr(&exp_e) {
+                Some(k) => Ok(Expr::GPow(k)),
+                None => Ok(Expr::GenPow(Box::new(exp_e))),
             },
             // Any other base with a compile-time exponent: square-and-multiply.
             _ => Ok(Expr::Pow(Box::new(base), Box::new(exp_e))),

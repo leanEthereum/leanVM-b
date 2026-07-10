@@ -1167,7 +1167,14 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("NCLAIMS", ncl.to_string());
     ps("N_BYTECODE_VALS", nbcv.to_string());
     ps("N_AIR_COLS", ints(&ncol));
+    ps("AIR_COLS_CAP", (ncol.iter().max().unwrap() + 1).to_string());
+    ps("N_TABLES", l.taus.len().to_string());
     ps("TAU_CAP", taumax_cap.to_string());
+    // g^(push.mu - BUS_GRIND_SHIFT) is the bus PoW window
+    // (leaf::grand_product_grinding_bits: bits = mu - (127 - SECURITY_BITS)).
+    ps("BUS_GRIND_SHIFT", (127 - leanvm_b::SECURITY_BITS).to_string());
+    // Per-claim y-slot hint stride (overlap mask / slot bit rows).
+    ps("YR_SLOT_STRIDE", "8".to_string());
     ps("PIN_ZETA_OFF", (pin_side * mumax).to_string());
     let pinv: Vec<u128> = leanvm_b::blake3_flock::pin_constants().iter().map(|&v| u(v)).collect();
     ps("PIN_VALUES", us(&pinv));
@@ -1190,6 +1197,9 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("LCLBLB", u(word16(b"flock-lincheck-v0", 16)).to_string());
     let inner7: Vec<F128> = flare::zerocheck::univariate_skip_optimized::small_challenges_ghash().into_iter().chain(flare::zerocheck::univariate_skip_optimized::medium_challenges_ghash()).collect();
     ps("INNER7", flds(&inner7));
+    // Flock univariate skip: 6 skipped variables, then the fixed inner rounds.
+    ps("K_SKIP", "6".to_string());
+    ps("N_INNER_ROUNDS", inner7.len().to_string());
     let i7inv: Vec<F128> = inner7.iter().map(|&c| (F128::ONE + c).inv()).collect();
     ps("I7INV", flds(&i7inv));
     let phi: Vec<F128> = flare::field::phi8::PHI_8_TABLE[..128].to_vec();

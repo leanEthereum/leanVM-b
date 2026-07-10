@@ -91,12 +91,16 @@ ILD2 = ILD2_PLACEHOLDER
 PUSH_SIDE = 0
 PULL_SIDE = 1
 COUNT_SIDE = 2
+N_GKR_SIDES = 3
 ZOFF = ZOFF_PLACEHOLDER
 MU_CAP = MU_CAP_PLACEHOLDER
 # GKR runtime-loop chain capacities: per-tree round positions (triangle
 # rounds plus one slot per layer) and the point triangle (rows x MU_CAP).
 GKR_ROUNDS_CAP = GKR_ROUNDS_CAP_PLACEHOLDER
 GKR_POINTS_CAP = GKR_POINTS_CAP_PLACEHOLDER
+# The bus PoW window is g^(push.mu - BUS_GRIND_SHIFT), BUS_GRIND_SHIFT =
+# 127 - SECURITY_BITS (see leaf::grand_product_grinding_bits).
+BUS_GRIND_SHIFT = BUS_GRIND_SHIFT_PLACEHOLDER
 
 # Bus blocks, flattened across the 3 sides (side s covers blocks
 # [SIDE_BLOCK_START[s], SIDE_BLOCK_START[s+1])). The block STRUCTURE is
@@ -138,9 +142,18 @@ N_BYTECODE_VALS = N_BYTECODE_VALS_PLACEHOLDER
 BYTECODE_COLS = BYTECODE_COLS_PLACEHOLDER
 LOG2_BYTECODE_COLS = LOG2_BYTECODE_COLS_PLACEHOLDER
 # Zerochecks: per-table constraint-column counts (round counts are the
-# certified tau_t).
+# certified tau_t); AIR_COLS_CAP caps the evaluation frame.
 N_AIR_COLS = N_AIR_COLS_PLACEHOLDER
+AIR_COLS_CAP = AIR_COLS_CAP_PLACEHOLDER
 TAU_CAP = TAU_CAP_PLACEHOLDER
+# The instruction tables, in schema order:
+TABLE_XOR = 0
+TABLE_MUL = 1
+TABLE_SET = 2
+TABLE_DEREF = 3
+TABLE_JUMP = 4
+TABLE_BLAKE3 = 5
+N_TABLES = N_TABLES_PLACEHOLDER
 # Phase C: the public input (baked; the seed already binds it), the real BLAKE3
 # count + pin-point location, and the three public pin constants.
 PIN_ZETA_OFF = PIN_ZETA_OFF_PLACEHOLDER
@@ -152,6 +165,10 @@ PIN_VALUES = PIN_VALUES_PLACEHOLDER
 # capacities (the runtime sizes are K_LOG + tau_5 and K_LOG + tau_5 - 6);
 # LINCHECK_ROUNDS = k_log - k_skip is protocol-fixed, PIN_COLUMN the
 # const-pin column.
+# Flock univariate skip: K_SKIP variables fold in one skip round (half-domain
+# 2^K_SKIP nodes), then N_INNER_ROUNDS fixed inner rounds (INNER7).
+K_SKIP = K_SKIP_PLACEHOLDER
+N_INNER_ROUNDS = N_INNER_ROUNDS_PLACEHOLDER
 R1CSLBL = R1CSLBL_PLACEHOLDER
 # The flock r1cs statement digest, per candidate BLAKE3 log-instance-count
 # (it hashes the matrices, whose size scales with the instance count): the
@@ -251,6 +268,8 @@ LIG_VANISH_INVS = LIG_VANISH_INVS_PLACEHOLDER
 LIG_N_CANDIDATES = LIG_N_CANDIDATES_PLACEHOLDER
 LIG_MIN_SHIFT_INV = LIG_MIN_SHIFT_INV_PLACEHOLDER
 # eval_b claim descriptors (fixed parts) + the qpkd capacity stride.
+# Per-claim y-slot hint stride (overlap mask / slot bits rows).
+YR_SLOT_STRIDE = YR_SLOT_STRIDE_PLACEHOLDER
 # Which point buffer a pooled claim's x-part lives in (CLAIM_POINT_BUF codes):
 POINT_BUF_ZETA = 0
 POINT_BUF_RHO = 1
@@ -286,6 +305,16 @@ DS_LEN = 3
 DS_SQ = 4
 DS_POW = 5
 
+# Field structure: GF(2^128). Its 128 bits pack into LOG2_FIELD_BITS = 7
+# ring-switch coordinates (the q_pkd slot length, r'' length).
+FIELD_BITS = 128
+LOG2_FIELD_BITS = 7
+# Exponent bit-widths: an announced 32-bit count decomposes into COUNT_BITS
+# bits (count == 2^32 tops); any structural size (sums of 2^kappa, packing
+# offsets) fits SIZE_BITS bits.
+COUNT_BITS = 33
+SIZE_BITS = 34
+
 
 def squeeze_step(state_0, state_1):
     # Non-inlined sponge ratchet exposing BOTH output words (challenge and the
@@ -303,9 +332,9 @@ def squeeze_step(state_0, state_1):
 
 
 def check_128_bits_decomposition(bits_ptr, v):
-    # Boolean-constrain 128 hinted bits and assert they reconstruct v.
+    # Boolean-constrain FIELD_BITS hinted bits and assert they reconstruct v.
     acc = 0
-    for i in unroll(0, 128):
+    for i in unroll(0, FIELD_BITS):
         b = bits_ptr[GEN ** i]
         sq = b * b
         assert sq == b
@@ -328,7 +357,7 @@ def decode_query_bits(bits_ptr, v, positions_out, bit_ptrs_out, depth: Const, pe
         positions_out[GEN ** j] = position
         bit_ptrs_out[GEN ** j] = bits_ptr * GEN ** (j * depth)
         acc += position * GEN ** (j * depth)
-    for i in unroll(per_word * depth, 128):
+    for i in unroll(per_word * depth, FIELD_BITS):
         t = bits_ptr[GEN ** i]
         sq = t * t
         assert sq == t
@@ -381,7 +410,7 @@ def verify_log2_ceil(bits_buf, g_logs_pow2, g_squares, floor: Const, nbits: Cons
         word += bit * (2 ** j)
         psum_buf[GEN ** (j + 1)] = word
     g_log = hint_log2_ceil(bits_buf, nbits, floor)  # prover advice; verified below
-    assert log(g_log) < 34
+    assert log(g_log) < SIZE_BITS
     low_bits = psum_buf[g_log]                 # value of bits [0, log)
     high_bits = low_bits + word                # value of bits [log, nbits)
     word_vs_2log = word + g_logs_pow2[g_log]    # 0 iff word == 2^log
@@ -635,8 +664,8 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1):
     hint_witness(fold_nonces[0:LIG_TOTAL_FOLDS[m_idx]], "fold_nonces")
     query_nonces = HeapBuf(GEN ** (LIG_N_LEVELS[m_idx]))
     hint_witness(query_nonces[0:LIG_N_LEVELS[m_idx]], "query_nonces")
-    query_grind_hint = HeapBuf(GEN ** (LIG_N_LEVELS[m_idx] * 128))
-    hint_witness(query_grind_hint[0:LIG_N_LEVELS[m_idx] * 128], "query_grind_hint")
+    query_grind_hint = HeapBuf(GEN ** (LIG_N_LEVELS[m_idx] * FIELD_BITS))
+    hint_witness(query_grind_hint[0:LIG_N_LEVELS[m_idx] * FIELD_BITS], "query_grind_hint")
     # ...and guest-filled accumulators (one slot per fold / per level / per query):
     fold_challenges = HeapBuf(GEN ** (LIG_TOTAL_FOLDS[m_idx]))
     level_betas = HeapBuf(GEN ** (LIG_N_LEVELS[m_idx]))
@@ -649,7 +678,7 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1):
             fold_idx = LIG_FOLDS_OFF[m_idx * LIG_MAX_LEVELS + lvl] + j
             if LIG_FOLD_GRIND_BITS[m_idx * LIG_MAX_TOTAL_FOLDS + fold_idx] != 0:
                 nonce_v = fold_nonces[GEN ** fold_idx]
-                grind_check(fs[0], fs[1], nonce_v, fold_grind_bits * GEN ** (128 * fold_idx), GEN ** LIG_FOLD_GRIND_BITS[m_idx * LIG_MAX_TOTAL_FOLDS + fold_idx])
+                grind_check(fs[0], fs[1], nonce_v, fold_grind_bits * GEN ** (FIELD_BITS * fold_idx), GEN ** LIG_FOLD_GRIND_BITS[m_idx * LIG_MAX_TOTAL_FOLDS + fold_idx])
                 fs = absorb(fs, nonce_v, DS_POW)
             fs = squeeze(fs)
             fold_challenge = fs[0]
@@ -675,7 +704,7 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1):
             fs = absorb(fs, next_root_b, DS_BYTE)
         if LIG_QUERY_GRIND_BITS[m_idx * LIG_MAX_LEVELS + lvl] != 0:
             q_nonce = query_nonces[GEN ** lvl]
-            grind_check(fs[0], fs[1], q_nonce, query_grind_hint * GEN ** (128 * lvl), GEN ** LIG_QUERY_GRIND_BITS[m_idx * LIG_MAX_LEVELS + lvl])
+            grind_check(fs[0], fs[1], q_nonce, query_grind_hint * GEN ** (FIELD_BITS * lvl), GEN ** LIG_QUERY_GRIND_BITS[m_idx * LIG_MAX_LEVELS + lvl])
             fs = absorb(fs, q_nonce, DS_POW)
         else:
             fs = absorb(fs, 0, DS_POW)
@@ -688,7 +717,7 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1):
             packed_word, next_c0, next_c1 = squeeze_step(sqz_chain_0[xs], sqz_chain_1[xs])
             sqz_chain_0[xs * GEN] = next_c0
             sqz_chain_1[xs * GEN] = next_c1
-            bits_ptr = query_index_bits * GEN ** LIG_QUERY_BITS_OFF[m_idx * LIG_MAX_LEVELS + lvl] * xs ** 128
+            bits_ptr = query_index_bits * GEN ** LIG_QUERY_BITS_OFF[m_idx * LIG_MAX_LEVELS + lvl] * xs ** FIELD_BITS
             query_ptr = xs ** LIG_POSITIONS_PER_WORD[m_idx * LIG_MAX_LEVELS + lvl]
             decode_query_bits(bits_ptr, packed_word, query_positions * GEN ** LIG_POSITIONS_OFF[m_idx * LIG_MAX_LEVELS + lvl] * query_ptr, query_bit_ptrs * GEN ** LIG_POSITIONS_OFF[m_idx * LIG_MAX_LEVELS + lvl] * query_ptr, LIG_TREE_DEPTH[m_idx * LIG_MAX_LEVELS + lvl], LIG_POSITIONS_PER_WORD[m_idx * LIG_MAX_LEVELS + lvl])
         fs = StackBuf(2)
@@ -806,14 +835,14 @@ def exponent_tables():
     # g-power's log (exponent), g_logs_pow2[g^j] = 2^j is 2 raised to that
     # log, and g_squares[g^j] = g^(2^j) turns integer sums of powers of two
     # into field products. Returns the 3 pointers.
-    g_logs = HeapBuf(33)
-    g_logs_pow2 = HeapBuf(33)
-    for j in unroll(0, 33):
+    g_logs = HeapBuf(COUNT_BITS)
+    g_logs_pow2 = HeapBuf(COUNT_BITS)
+    for j in unroll(0, COUNT_BITS):
         g_logs[GEN ** j] = j
         g_logs_pow2[GEN ** j] = 2 ** j
-    g_squares = HeapBuf(34)
+    g_squares = HeapBuf(SIZE_BITS)
     sq_run = GEN
-    for j in unroll(0, 34):
+    for j in unroll(0, SIZE_BITS):
         g_squares[GEN ** j] = sq_run
         sq_run *= sq_run
     return g_logs, g_logs_pow2, g_squares
@@ -856,7 +885,7 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
     # claim's hinted lengths against it.
     claim_cplen_g = HeapBuf(NCL)
     # The three GKR leaf points, stored side by side (ZOFF offsets).
-    zeta = HeapBuf(3 * MU_CAP)
+    zeta = HeapBuf(N_GKR_SIDES * MU_CAP)
 
     # ---- seed (statement pre-bound: hinted sub pi + baked program digest) ----
     fs = StackBuf(2)
@@ -871,8 +900,8 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
     cursor = stream  # the proof stream is replayed word by word; cursor walks it (advance = * g)
 
     # ---- announced sizes: log_mem + 6 row counts (observed, then certified) ----
-    sizes = StackBuf(7)
-    for i in unroll(0, 7):
+    sizes = StackBuf(N_TABLES + 1)
+    for i in unroll(0, N_TABLES + 1):
         x = cursor[GEN ** 0]
         fs = obs(fs, x)
         sizes[i] = x
@@ -883,28 +912,28 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
     # need them as G-POWERS (loop bounds, match_range scrutinees). dims_g[0] =
     # g^log_mem arrives as a hint pinned to the word; dims_g[1 + t] = g^tau_t
     # is computed by the count gadget.
-    dims_g = HeapBuf(7)  # [g^log_mem, g^tau_0 .. g^tau_5]
+    dims_g = HeapBuf(N_TABLES + 1)  # [g^log_mem, g^tau_0 .. g^tau_5]
     hint_witness(dims_g[0:1], "dims_g")
     # log_mem is announced AS a log (an integer word L): the hinted g^L is pinned
     # by T[g^L] == L (g_logs is the g^j -> j table, built once in main).
     g_log_mem = dims_g[GEN ** 0]
-    assert log(g_log_mem) < 33
+    assert log(g_log_mem) < COUNT_BITS
     assert g_logs[g_log_mem] == sizes[0]
     # count gadget: g^tau_t = log2_ceil_word(count_t), which also returns
     # g^count_t (for the padding-surplus certification) and the count's bits.
-    count_gpows = HeapBuf(6)
-    for t in unroll(0, 6):
-        g_tau, g_count, count5_bits = log2_ceil_word(sizes[t + 1], g_logs_pow2, g_squares, FLOORS[t], 33)
+    count_gpows = HeapBuf(N_TABLES)
+    for t in unroll(0, N_TABLES):
+        g_tau, g_count, count5_bits = log2_ceil_word(sizes[t + 1], g_logs_pow2, g_squares, FLOORS[t], COUNT_BITS)
         dims_g[GEN ** (t + 1)] = g_tau
         count_gpows[GEN ** t] = g_count
     # count5_bits keeps the LAST iteration's (table 5 = BLAKE3) count bits for
     # the BLAKE3 constant-pin claim below.
     # kappa_base maps a kappa source index to its certified announced log
     # (source 0 = const via the baked adj); the taus are now in dims_g.
-    kappa_base = HeapBuf(8)
+    kappa_base = HeapBuf(N_TABLES + 2)
     kappa_base[GEN ** 0] = 1
     kappa_base[GEN ** 1] = g_log_mem
-    for t in unroll(0, 6):
+    for t in unroll(0, N_TABLES):
         kappa_base[GEN ** (2 + t)] = dims_g[GEN ** (t + 1)]
 
     # ---- commitment root (2 words), kept for the opening phase ----
@@ -927,13 +956,13 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
     # ann_mus holds g^mu per GKR side (0=push, 1=pull, 2=count): hint push and
     # count, alias pull to push (the pairing is generator-asserted at bake
     # time); each is tied to the block structure at the mus cert below.
-    ann_mus = HeapBuf(3)
+    ann_mus = HeapBuf(N_GKR_SIDES)
     hint_witness(ann_mus[0:1], "annmus_push")
     hint_witness(ann_mus[2:3], "annmus_count")
     ann_mus[GEN ** PULL_SIDE] = ann_mus[GEN ** PUSH_SIDE]
-    grind_bits = HeapBuf(128)
-    hint_witness(grind_bits[0:128], "grind_bits")
-    bus_grind_window = ann_mus[GEN ** PUSH_SIDE] * GINV ** 7  # g^(push.mu - 7): the bus PoW bit count
+    grind_bits = HeapBuf(FIELD_BITS)
+    hint_witness(grind_bits[0:FIELD_BITS], "grind_bits")
+    bus_grind_window = ann_mus[GEN ** PUSH_SIDE] * GINV ** BUS_GRIND_SHIFT  # g^(push.mu - shift): the bus PoW bit count
     grind_check(fs[0], fs[1], nonce, grind_bits, bus_grind_window)
     fs = absorb(fs, nonce, DS_POW)
     fs = squeeze(fs)
@@ -945,23 +974,23 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
     # the sponge, stream cursor, claim, and eq accumulator thread through
     # write-once heap chains: layer state indexed by the layer cursor, round
     # state by a per-tree position pointer advancing per round.
-    gkr_roots = StackBuf(3)
-    gkr_claims = StackBuf(3)
-    gkr_layer_fs0 = HeapBuf(3 * (MU_CAP + 2))
-    gkr_layer_fs1 = HeapBuf(3 * (MU_CAP + 2))
-    gkr_layer_cursor = HeapBuf(3 * (MU_CAP + 2))
-    gkr_layer_claim = HeapBuf(3 * (MU_CAP + 2))
-    gkr_layer_row = HeapBuf(3 * (MU_CAP + 2))
-    gkr_layer_round_pos = HeapBuf(3 * (MU_CAP + 2))
-    gkr_round_fs0 = HeapBuf(3 * GKR_ROUNDS_CAP)
-    gkr_round_fs1 = HeapBuf(3 * GKR_ROUNDS_CAP)
-    gkr_round_cursor = HeapBuf(3 * GKR_ROUNDS_CAP)
-    gkr_round_claim = HeapBuf(3 * GKR_ROUNDS_CAP)
-    gkr_round_eq = HeapBuf(3 * GKR_ROUNDS_CAP)
-    gkr_pts = HeapBuf(3 * GKR_POINTS_CAP)
-    for s in unroll(0, 3):
+    gkr_roots = StackBuf(N_GKR_SIDES)
+    gkr_claims = StackBuf(N_GKR_SIDES)
+    gkr_layer_fs0 = HeapBuf(N_GKR_SIDES * (MU_CAP + 2))
+    gkr_layer_fs1 = HeapBuf(N_GKR_SIDES * (MU_CAP + 2))
+    gkr_layer_cursor = HeapBuf(N_GKR_SIDES * (MU_CAP + 2))
+    gkr_layer_claim = HeapBuf(N_GKR_SIDES * (MU_CAP + 2))
+    gkr_layer_row = HeapBuf(N_GKR_SIDES * (MU_CAP + 2))
+    gkr_layer_round_pos = HeapBuf(N_GKR_SIDES * (MU_CAP + 2))
+    gkr_round_fs0 = HeapBuf(N_GKR_SIDES * GKR_ROUNDS_CAP)
+    gkr_round_fs1 = HeapBuf(N_GKR_SIDES * GKR_ROUNDS_CAP)
+    gkr_round_cursor = HeapBuf(N_GKR_SIDES * GKR_ROUNDS_CAP)
+    gkr_round_claim = HeapBuf(N_GKR_SIDES * GKR_ROUNDS_CAP)
+    gkr_round_eq = HeapBuf(N_GKR_SIDES * GKR_ROUNDS_CAP)
+    gkr_pts = HeapBuf(N_GKR_SIDES * GKR_POINTS_CAP)
+    for s in unroll(0, N_GKR_SIDES):
         mu_g = ann_mus[GEN ** s]
-        assert log(mu_g) < 33
+        assert log(mu_g) < COUNT_BITS
         gkr_root = cursor[GEN ** 0]
         fs = obs(fs, gkr_root)
         cursor *= GEN
@@ -1045,8 +1074,8 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
     # selector bits are advice-decomposed at their use sites (balance and
     # decompose sections) and pinned there — never left to a single aggregate
     # identity, which does not bind a high-entropy hint in this smooth field.
-    idxc_tab = HeapBuf(34)
-    for t in unroll(0, 34):
+    idxc_tab = HeapBuf(SIZE_BITS)
+    for t in unroll(0, SIZE_BITS):
         idxc_tab[GEN ** t] = INDEX_MLE_FACTORS[t]
     # Each block's kappa is DERIVED from its structural source (baked per block:
     # the boundary consts, log_mem, the bytecode log, or tau_t) as a compile-time
@@ -1063,7 +1092,7 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
         side_total = GEN ** 0
         for b in unroll(SIDE_BLOCK_START[s], SIDE_BLOCK_START[s + 1]):
             side_total *= g_squares[block_kappa[GEN ** b]]  # g^(sum of 2^kappa)
-        g_mu = log2_ceil_in_the_exponent(side_total, g_logs_pow2, g_squares, 0, 34)
+        g_mu = log2_ceil_in_the_exponent(side_total, g_logs_pow2, g_squares, 0, SIZE_BITS)
         assert g_mu == ann_mus[GEN ** s]        # tie the early-used hint to the computed log
 
     # ---- bus-leaf packing offsets (for the selector certification) ----
@@ -1080,7 +1109,7 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
     for b in unroll(0, N_BLOCKS):
         block_side_tab[GEN ** b] = BLOCK_SIDE[b]
     block_off_g = HeapBuf(N_BLOCKS)  # g^offset per block, keyed by global index
-    for s in unroll(0, 3):
+    for s in unroll(0, N_GKR_SIDES):
         g_off = GEN ** 0
         for r in unroll(SIDE_BLOCK_START[s], SIDE_BLOCK_START[s + 1]):
             global_g = sort_order[GEN ** r]      # g^{global block index at this rank}
@@ -1114,12 +1143,12 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
             else:
                 g_real = count_gpows[GEN ** BLOCK_REAL_TABLE[b]]  # g^count_t
             g_delta_want = g_two_kappa / g_real  # g^DELTA (feeds the advice below)
-            pad_bits = HeapBuf(GEN ** 33)
-            hint_decompose_bits_exponent(pad_bits, g_delta_want, 33)
+            pad_bits = HeapBuf(GEN ** COUNT_BITS)
+            hint_decompose_bits_exponent(pad_bits, g_delta_want, COUNT_BITS)
             ladder = GEN ** 0
             ladder_square = gamma + pad_fp
             g_delta = GEN ** 0
-            for j in unroll(0, 33):
+            for j in unroll(0, COUNT_BITS):
                 pad_bit = pad_bits[GEN ** j]
                 assert pad_bit * pad_bit == pad_bit
                 ladder *= (1 + pad_bit * (ladder_square + 1))
@@ -1141,7 +1170,7 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
     # claims; Index coordinates use the factored index MLE.
     claim_idx = 0
     bytecode_idx = 0
-    for s in unroll(0, 3):
+    for s in unroll(0, N_GKR_SIDES):
         acc = 0
         selector_sum = 0
         smu_gs = ann_mus[GEN ** s]
@@ -1150,17 +1179,17 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
             # eq_hi over the ζ coords above κ against the selector bits derived
             # below; the selector length is mu_s − κ, i.e. g^mu_s / g^κ.
             kappa_g = block_kappa[GEN ** b]
-            assert log(kappa_g) < 34
+            assert log(kappa_g) < SIZE_BITS
             sel_len_g = smu_gs / kappa_g  # g^(mu_s - κ)
-            assert log(sel_len_g) < 34
+            assert log(sel_len_g) < SIZE_BITS
             zeta_hi = zeta_zs * kappa_g
             # selector bits = offset >> κ: advice-decompose the offset's bits and
             # read them shifted by κ. Rebuilding g^offset from those high bits
             # alone (weights g^(2^(κ+k))) and asserting it equals block_off_g
             # pins the bits AND the κ-alignment in one shot — no (g^sel)^(2^κ)
             # squaring chain. The low κ bit cells are written but never read.
-            offset_bits = HeapBuf(GEN ** 34)
-            hint_decompose_bits_exponent(offset_bits, block_off_g[GEN ** b], 34)
+            offset_bits = HeapBuf(GEN ** SIZE_BITS)
+            hint_decompose_bits_exponent(offset_bits, block_off_g[GEN ** b], SIZE_BITS)
             sel_bits = offset_bits * kappa_g  # bits of sel = offset >> κ
             eq_chain = HeapBuf(MU_CAP + 2)
             goff_chain = HeapBuf(MU_CAP + 2)  # rebuild g^offset from the high bits
@@ -1248,15 +1277,15 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
     # RUNTIME round counts: tau_t is the certified announced log height
     # (dims_g[1 + t], certified by the count gadget). Round state threads
     # through heap chains exactly like the GKR trees.
-    rho = HeapBuf(6 * TAU_CAP)
-    zc_point_fs0 = HeapBuf(6 * (TAU_CAP + 2))
-    zc_point_fs1 = HeapBuf(6 * (TAU_CAP + 2))
-    zc_round_fs0 = HeapBuf(6 * (TAU_CAP + 2))
-    zc_round_fs1 = HeapBuf(6 * (TAU_CAP + 2))
-    zc_round_cursor = HeapBuf(6 * (TAU_CAP + 2))
-    zc_round_claim = HeapBuf(6 * (TAU_CAP + 2))
-    zc_round_eq = HeapBuf(6 * (TAU_CAP + 2))
-    for t in unroll(0, 6):
+    rho = HeapBuf(N_TABLES * TAU_CAP)
+    zc_point_fs0 = HeapBuf(N_TABLES * (TAU_CAP + 2))
+    zc_point_fs1 = HeapBuf(N_TABLES * (TAU_CAP + 2))
+    zc_round_fs0 = HeapBuf(N_TABLES * (TAU_CAP + 2))
+    zc_round_fs1 = HeapBuf(N_TABLES * (TAU_CAP + 2))
+    zc_round_cursor = HeapBuf(N_TABLES * (TAU_CAP + 2))
+    zc_round_claim = HeapBuf(N_TABLES * (TAU_CAP + 2))
+    zc_round_eq = HeapBuf(N_TABLES * (TAU_CAP + 2))
+    for t in unroll(0, N_TABLES):
         tau_g = dims_g[GEN ** (t + 1)]
         fs = squeeze(fs)
         eta = fs[0]
@@ -1305,7 +1334,7 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
         cursor = round_cursor[tau_g]
         claim = round_claim[tau_g]
         eq_acc = round_eq[tau_g]
-        col_evals = StackBuf(16)
+        col_evals = StackBuf(AIR_COLS_CAP)
         for k in unroll(0, N_AIR_COLS[t]):
             e = cursor[GEN ** 0]
             fs = obs(fs, e)
@@ -1316,16 +1345,16 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
             claim_idx += 1
         # the table's AIR constraint at the final point (ev order = the table's
         # constraint_columns order; formulas mirror tables.rs eval_constraint).
-        if t == 0:
+        if t == TABLE_XOR:
             constraint_eval = (col_evals[4] + col_evals[0] * col_evals[1]) + eta * (col_evals[5] + col_evals[0] * col_evals[2]) + eta * eta * (col_evals[6] + col_evals[0] * col_evals[3]) + eta * eta * eta * (col_evals[9] + col_evals[7] + col_evals[8])
-        if t == 1:
+        if t == TABLE_MUL:
             constraint_eval = (col_evals[4] + col_evals[0] * col_evals[1]) + eta * (col_evals[5] + col_evals[0] * col_evals[2]) + eta * eta * (col_evals[6] + col_evals[0] * col_evals[3]) + eta * eta * eta * (col_evals[9] + col_evals[7] * col_evals[8])
-        if t == 2:
+        if t == TABLE_SET:
             constraint_eval = col_evals[2] + col_evals[0] * col_evals[1]
-        if t == 3:
+        if t == TABLE_DEREF:
             src = (1 + col_evals[8] + col_evals[9]) * col_evals[11] + col_evals[8] * (GG * GG * col_evals[12]) + col_evals[9] * col_evals[0]
             constraint_eval = (col_evals[4] + col_evals[0] * col_evals[1]) + eta * (col_evals[5] + col_evals[7] * col_evals[2]) + eta * eta * (col_evals[6] + col_evals[0] * col_evals[3]) + eta * eta * eta * (col_evals[10] + src)
-        if t == 4:
+        if t == TABLE_JUMP:
             ft = GG * col_evals[0]
             addrs = (col_evals[7] + col_evals[1] * col_evals[4]) + eta * (col_evals[8] + col_evals[1] * col_evals[5]) + eta * eta * (col_evals[9] + col_evals[1] * col_evals[6])
             eta3 = eta * eta * eta
@@ -1334,7 +1363,7 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
             sel_pc = eta3 * eta * eta * (col_evals[2] + col_evals[14] * col_evals[11] + (col_evals[14] + 1) * ft)
             sel_fp = eta3 * eta * eta * eta * (col_evals[3] + col_evals[14] * col_evals[12] + (col_evals[14] + 1) * col_evals[1])
             constraint_eval = addrs + ind_def + ind_nz + sel_pc + sel_fp
-        if t == 5:
+        if t == TABLE_BLAKE3:
             constraint_eval = (col_evals[6] + col_evals[0] * col_evals[1]) + eta * (col_evals[7] + col_evals[0] * col_evals[2]) + eta * eta * (col_evals[8] + col_evals[0] * col_evals[3]) + eta * eta * eta * (col_evals[9] + col_evals[0] * col_evals[4]) + eta * eta * eta * eta * (col_evals[10] + col_evals[0] * col_evals[5])
         assert claim == eq_acc * constraint_eval
 
@@ -1355,13 +1384,13 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
     # exactly) forces the all-ones MLE.
     bits5 = count5_bits  # table 5's count bits, from the count gadget above
     zeta_pin = zeta * GEN ** PIN_ZETA_OFF
-    tau5_g = dims_g[GEN ** 6]
+    tau5_g = dims_g[GEN ** N_TABLES]  # the last table's tau (BLAKE3)
     # tau_5 indexes the baked per-candidate SD tables (B3TABLEN rows) and drives
     # the flock loops (R1CS_M_CAP / QPKD_VARS_CAP buffers). The count gadget only
     # bounds it < 34; pin it under the baked extent so it cannot over-read SD0/SD1
     # into free cells (B3TABLEN <= R1CS_M_CAP - K_LOG, so this covers them all).
     assert log(tau5_g) < B3TABLEN
-    pin_chain = HeapBuf(35)
+    pin_chain = HeapBuf(SIZE_BITS + 1)
     pin_chain[GEN ** 0] = 0
     for xk in mul_range(1, tau5_g):
         pv = pin_chain[xk]
@@ -1371,7 +1400,7 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
         pin_chain[xk * GEN] = pn
     b_top = bits5[tau5_g]
     prefix = b_top + (1 + b_top) * pin_chain[tau5_g]
-    for pk in unroll(0, 3):
+    for pk in unroll(0, len(PIN_VALUES)):
         claim_pool[GEN ** claim_idx] = PIN_VALUES[pk] * prefix
         claim_cplen_g[GEN ** claim_idx] = tau5_g  # cplen = tau_5 (BLAKE3 value-col kappa)
         claim_idx += 1
@@ -1396,8 +1425,8 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
     fs = absorb(fs, commit_root_1, DS_BYTE)
 
     # ---- flock zerocheck (univariate skip, k_skip = 6) ----
-    zc_round1 = HeapBuf(128)
-    hint_witness(zc_round1[0:128], "zc_round1")
+    zc_round1 = HeapBuf(2 * 2 ** K_SKIP)
+    hint_witness(zc_round1[0:2 * 2 ** K_SKIP], "zc_round1")
     zc_msgs = HeapBuf(2 * R1CS_ROUNDS_CAP)
     hint_witness(zc_msgs[0:2 * R1CS_ROUNDS_CAP], "zc_msgs")
     zc_finals = StackBuf(2)
@@ -1405,21 +1434,21 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
     fs = absorb(fs, 18, DS_LEN)
     fs = absorb(fs, ZCLBLA, DS_BYTE)
     fs = absorb(fs, ZCLBLB, DS_BYTE)
-    # the full r vector: 6 sampled skips, 7 fixed inner, R1CS_M_CAP-13 sampled outer.
+    # the full r vector: K_SKIP sampled skips, N_INNER_ROUNDS fixed inner, the rest sampled outer.
     zerocheck_r = HeapBuf(R1CS_M_CAP)
-    for i in unroll(0, 6):
+    for i in unroll(0, K_SKIP):
         fs = squeeze(fs)
         rv = fs[0]
         zerocheck_r[GEN ** i] = rv
-    for i in unroll(0, 7):
-        zerocheck_r[GEN ** (6 + i)] = INNER7[i]
+    for i in unroll(0, N_INNER_ROUNDS):
+        zerocheck_r[GEN ** (K_SKIP + i)] = INNER7[i]
     # outer samples at runtime count: R1CS_M_CAP = K_LOG + tau_5 (certified).
     mr1cs_g = tau5_g * GEN ** K_LOG
     flock_point_fs0 = HeapBuf(R1CS_M_CAP + 2)
     flock_point_fs1 = HeapBuf(R1CS_M_CAP + 2)
-    flock_point_fs0[GEN ** 13] = fs[0]
-    flock_point_fs1[GEN ** 13] = fs[1]
-    for xi in mul_range(GEN ** 13, mr1cs_g):
+    flock_point_fs0[GEN ** (K_SKIP + N_INNER_ROUNDS)] = fs[0]
+    flock_point_fs1[GEN ** (K_SKIP + N_INNER_ROUNDS)] = fs[1]
+    for xi in mul_range(GEN ** (K_SKIP + N_INNER_ROUNDS), mr1cs_g):
         point_fs = StackBuf(2)
         point_fs[0] = flock_point_fs0[xi]
         point_fs[1] = flock_point_fs1[xi]
@@ -1432,34 +1461,34 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
     fs[0] = flock_point_fs0[mr1cs_g]
     fs[1] = flock_point_fs1[mr1cs_g]
     # observe round-1 messages (ab then c), sample z.
-    for i in unroll(0, 128):
+    for i in unroll(0, 2 * 2 ** K_SKIP):
         fs = obs(fs, zc_round1[GEN ** i])
     fs = squeeze(fs)
     zerocheck_z = fs[0]
     # interpolate P^C(z) on the Lambda domain (phi8 nodes 64..128): prefix/
     # suffix numerator products with baked inverse denominators.
-    lagrange_nums = StackBuf(64)
-    lag64(zerocheck_z, lagrange_nums, 64)
+    lagrange_nums = StackBuf(2 ** K_SKIP)
+    lag64(zerocheck_z, lagrange_nums, 2 ** K_SKIP)
     c_eval = 0  # P^C(z): Lagrange-interpolate the round-1 message over the Lambda nodes
-    for i in unroll(0, 64):
-        c_eval += lagrange_nums[i] * ILAM[i] * zc_round1[GEN ** (64 + i)]
+    for i in unroll(0, 2 ** K_SKIP):
+        c_eval += lagrange_nums[i] * ILAM[i] * zc_round1[GEN ** (2 ** K_SKIP + i)]
     # combined interpolation at z over ALL 128 phi8 nodes (Lambda values only;
     # the S half is zero by the zerocheck identity). The Lambda-node numerators
     # reuse lagrange_nums: the full-domain product only adds the S-half factor.
     s_half_product = GEN ** 0  # the S-domain half of the combined interpolation (zero by the identity)
-    for i in unroll(0, 64):
+    for i in unroll(0, 2 ** K_SKIP):
         s_half_product *= (zerocheck_z + PHI[i])
     combined_eval = 0
-    for i in unroll(0, 64):
-        combined_eval += lagrange_nums[i] * ICMB[i] * (zc_round1[GEN ** i] + zc_round1[GEN ** (64 + i)])
+    for i in unroll(0, 2 ** K_SKIP):
+        combined_eval += lagrange_nums[i] * ICMB[i] * (zc_round1[GEN ** i] + zc_round1[GEN ** (2 ** K_SKIP + i)])
     combined_eval *= s_half_product
     zc_running = combined_eval + c_eval  # the zerocheck running claim entering the multilinear rounds
     # multilinear rounds.
     zerocheck_rhos = HeapBuf(R1CS_ROUNDS_CAP)
-    for i in unroll(0, 7):
+    for i in unroll(0, N_INNER_ROUNDS):
         gamma_c = zc_msgs[GEN ** (2 * i)]
         g_inf = zc_msgs[GEN ** (2 * i + 1)]
-        r_eq = zerocheck_r[GEN ** (6 + i)]
+        r_eq = zerocheck_r[GEN ** (K_SKIP + i)]
         gamma_ab = (zc_running + r_eq * gamma_c) * I7INV[i]  # recover the g(alpha) evaluation from g(0)+g(1)=claim and the eq weight
         fs = obs(fs, gamma_c)
         fs = obs(fs, g_inf)
@@ -1467,22 +1496,22 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
         rho_v = fs[0]
         zerocheck_rhos[GEN ** i] = rho_v
         zc_running = gamma_ab * (1 + rho_v) + gamma_c * rho_v + g_inf * rho_v * (1 + rho_v)
-    # rounds 7..R1CS_ROUNDS_CAP at runtime count: R1CS_ROUNDS_CAP = K_LOG + tau_5 - 6 (certified).
-    nmlv_g = tau5_g * GEN ** (K_LOG - 6)
+    # rounds N_INNER_ROUNDS.. at runtime count: K_LOG + tau_5 - K_SKIP rounds total (certified).
+    nmlv_g = tau5_g * GEN ** (K_LOG - K_SKIP)
     flock_round_fs0 = HeapBuf(R1CS_ROUNDS_CAP + 2)
     flock_round_fs1 = HeapBuf(R1CS_ROUNDS_CAP + 2)
     flock_round_running = HeapBuf(R1CS_ROUNDS_CAP + 2)
-    flock_round_fs0[GEN ** 7] = fs[0]
-    flock_round_fs1[GEN ** 7] = fs[1]
-    flock_round_running[GEN ** 7] = zc_running
-    for xi in mul_range(GEN ** 7, nmlv_g):
+    flock_round_fs0[GEN ** N_INNER_ROUNDS] = fs[0]
+    flock_round_fs1[GEN ** N_INNER_ROUNDS] = fs[1]
+    flock_round_running[GEN ** N_INNER_ROUNDS] = zc_running
+    for xi in mul_range(GEN ** N_INNER_ROUNDS, nmlv_g):
         round_fs = StackBuf(2)
         round_fs[0] = flock_round_fs0[xi]
         round_fs[1] = flock_round_fs1[xi]
         round_running = flock_round_running[xi]
         gamma_c = zc_msgs[xi * xi]
         g_inf = zc_msgs[xi * xi * GEN]
-        r_eq = zerocheck_r[GEN ** 6 * xi]
+        r_eq = zerocheck_r[GEN ** K_SKIP * xi]
         inv_one_plus_r = 1 / (1 + r_eq)  # 1 + r_eq != 0 (enforced by the division)
         gamma_ab = (round_running + r_eq * gamma_c) * inv_one_plus_r
         round_fs = obs(round_fs, gamma_c)
@@ -1510,8 +1539,8 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
     # ---- flock lincheck (matrix evaluation DEFERRED) ----
     lincheck_msgs = HeapBuf(2 * LINCHECK_ROUNDS)
     hint_witness(lincheck_msgs[0:2 * LINCHECK_ROUNDS], "lincheck_msgs")
-    z_partial = HeapBuf(64)
-    hint_witness(z_partial[0:64], "z_partial")
+    z_partial = HeapBuf(2 ** K_SKIP)
+    hint_witness(z_partial[0:2 ** K_SKIP], "z_partial")
     matrix_eval = StackBuf(1)
     hint_witness(matrix_eval[0:1], "matpart")
     fs = absorb(fs, 17, DS_LEN)
@@ -1534,7 +1563,7 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
         e0 = lc_running + e1
         c1q = e0 + e1 + ei
         lc_running = ei * rv * rv + c1q * rv + e0  # fold the degree-2 round poly at the challenge rv
-    for i in unroll(0, 64):
+    for i in unroll(0, 2 ** K_SKIP):
         fs = obs(fs, z_partial[GEN ** i])
     # final consistency: running == matpart (DEFERRED) + beta * pin term. The
     # const-pin column folds through the top-variable bindings: weight =
@@ -1546,22 +1575,22 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
             pin_term *= lincheck_rs[GEN ** j]
         else:
             pin_term *= (1 + lincheck_rs[GEN ** j])
-    pin_term *= z_partial[GEN ** (PIN_COLUMN % 64)]
+    pin_term *= z_partial[GEN ** (PIN_COLUMN % 2 ** K_SKIP)]
     matrix_part = matrix_eval[0]
     lincheck_final = matrix_part + pin_term  # running == deferred matrix eval + the const-pin column contribution
     assert lc_running == lincheck_final
     # fresh z_skip; w = <lagrange_S(r_inner_skip), z_partial> (phi8 nodes 0..64).
     fs = squeeze(fs)
     lincheck_z_skip = fs[0]
-    skip_nums = StackBuf(64)
+    skip_nums = StackBuf(2 ** K_SKIP)
     lag64(lincheck_z_skip, skip_nums, 0)
     lincheck_w = 0
-    for i in unroll(0, 64):
+    for i in unroll(0, 2 ** K_SKIP):
         lincheck_w += skip_nums[i] * ISDOM[i] * z_partial[GEN ** i]
 
     # ---- stacked mixed opening: ring-switch fronts + claim combination ----
-    s_hat_v = HeapBuf(256)
-    hint_witness(s_hat_v[0:256], "s_hat_v")
+    s_hat_v = HeapBuf(2 * FIELD_BITS)
+    hint_witness(s_hat_v[0:2 * FIELD_BITS], "s_hat_v")
     fs = absorb(fs, 23, DS_LEN)
     fs = absorb(fs, OBLBLA, DS_BYTE)
     fs = absorb(fs, OBLBLB, DS_BYTE)
@@ -1570,15 +1599,15 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
     # c_eval, z_skip = zerocheck_z, x_outer[0] = zerocheck_r[6].
     transposed_claims = StackBuf(2)
     rs_eq_vals = StackBuf(2)
-    c_table = HeapBuf(128)
+    c_table = HeapBuf(FIELD_BITS)
     z_vals = HeapBuf(2 * QPKD_VARS_CAP)
-    r_dprime = HeapBuf(7)
+    r_dprime = HeapBuf(LOG2_FIELD_BITS)
     for rs in unroll(0, 2):
         fs = absorb(fs, 20, DS_LEN)
         fs = absorb(fs, RSLBLA, DS_BYTE)
         fs = absorb(fs, RSLBLB, DS_BYTE)
-        for i in unroll(0, 128):
-            fs = obs(fs, s_hat_v[GEN ** (128 * rs + i)])
+        for i in unroll(0, FIELD_BITS):
+            fs = obs(fs, s_hat_v[GEN ** (FIELD_BITS * rs + i)])
         # claim check: weights[i] = lambda_{i&63}(z_skip) * eq(x_outer0, i>>6).
         if rs == 0:
             claim_z_skip = lincheck_z_skip
@@ -1586,49 +1615,49 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
             claim_val = lincheck_w
         else:
             claim_z_skip = zerocheck_z
-            claim_x_outer_0 = zerocheck_r[GEN ** 6]
+            claim_x_outer_0 = zerocheck_r[GEN ** K_SKIP]
             claim_val = c_eval
-        claim_nums = StackBuf(64)
+        claim_nums = StackBuf(2 ** K_SKIP)
         lag64(claim_z_skip, claim_nums, 0)
         claim_check = 0
-        for i in unroll(0, 64):
+        for i in unroll(0, 2 ** K_SKIP):
             lagrange_w = claim_nums[i] * ISDOM[i]
-            claim_check += lagrange_w * ((1 + claim_x_outer_0) * s_hat_v[GEN ** (128 * rs + i)] + claim_x_outer_0 * s_hat_v[GEN ** (128 * rs + 64 + i)])  # claim = sum_i lambda_i(z_skip) * eq(x_outer0, i>>6) * s_hat_v[i]
+            claim_check += lagrange_w * ((1 + claim_x_outer_0) * s_hat_v[GEN ** (FIELD_BITS * rs + i)] + claim_x_outer_0 * s_hat_v[GEN ** (FIELD_BITS * rs + 2 ** K_SKIP + i)])  # claim = sum_i lambda_i(z_skip) * eq(x_outer0, i>>6) * s_hat_v[i]
         assert claim_check == claim_val
     # ONE r'' shared by both claims (each slice was absorbed before the
     # sample), so one eq tensor and one linearized coefficient table
     # serve the whole batch.
-    for i in unroll(0, 7):
+    for i in unroll(0, LOG2_FIELD_BITS):
         fs = squeeze(fs)
         rv = fs[0]
         r_dprime[GEN ** i] = rv
-    w_eq = HeapBuf(254)
-    eqtree(r_dprime, w_eq, 7)  # w = eq tensor of the 7 shared r'' coords (one batch challenge, both claims)
+    w_eq = HeapBuf(2 ** (LOG2_FIELD_BITS + 1) - 2)
+    eqtree(r_dprime, w_eq, LOG2_FIELD_BITS)  # w = eq tensor of the 7 shared r'' coords (one batch challenge, both claims)
     # c_k = sum_i w_i * delta_pows[k][i], one runtime loop over the levels k.
-    for xk in mul_range(1, GEN ** 128):
-        delta_row = delta_pows * xk ** 128
+    for xk in mul_range(1, GEN ** FIELD_BITS):
+        delta_row = delta_pows * xk ** FIELD_BITS
         c_acc = 0
-        for i in unroll(0, 128):
-            c_acc += w_eq[GEN ** (126 + i)] * delta_row[GEN ** i]  # c_k = sum_i w_i * delta_i^(2^k): the linearized-poly coefficient table
+        for i in unroll(0, FIELD_BITS):
+            c_acc += w_eq[GEN ** (2 ** LOG2_FIELD_BITS - 2 + i)] * delta_row[GEN ** i]  # c_k = sum_i w_i * delta_i^(2^k): the linearized-poly coefficient table
         c_table[xk] = c_acc
     for rs in unroll(0, 2):
         # transposed claim T = sum_j x^j * L_w(shv_j): one runtime pass over
         # the observed values; per value the Frobenius powers evolve as a
         # scalar against the c table, and x^j chains through a heap cell.
-        s_hat_row = s_hat_v * GEN ** (128 * rs)
-        x_pow_chain = HeapBuf(129)
+        s_hat_row = s_hat_v * GEN ** (FIELD_BITS * rs)
+        x_pow_chain = HeapBuf(FIELD_BITS + 1)
         x_pow_chain[GEN ** 0] = GEN ** 0
-        t_chain = HeapBuf(129)
+        t_chain = HeapBuf(FIELD_BITS + 1)
         t_chain[GEN ** 0] = 0
-        for x_round in mul_range(1, GEN ** 128):
+        for x_round in mul_range(1, GEN ** FIELD_BITS):
             y_pow = s_hat_row[x_round]
             lin_eval = 0
-            for k in unroll(0, 128):  # L_w(y) = sum_k c_k y^(2^k); y^(2^k) squares once per step
+            for k in unroll(0, FIELD_BITS):  # L_w(y) = sum_k c_k y^(2^k); y^(2^k) squares once per step
                 lin_eval += c_table[GEN ** k] * y_pow
                 y_pow *= y_pow
             t_chain[x_round * GEN] = t_chain[x_round] + x_pow_chain[x_round] * lin_eval
             x_pow_chain[x_round * GEN] = x_pow_chain[x_round] * 2  # x = the field element 2 (the polynomial x)
-        transposed_claims[rs] = t_chain[GEN ** 128]
+        transposed_claims[rs] = t_chain[GEN ** FIELD_BITS]
         # z_vals for eval_rs_eq (the x_outer tail), used at the opening terminal.
         if rs == 0:
             for t in unroll(0, LINCHECK_ROUNDS - 1):
@@ -1641,8 +1670,8 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
             # row 1 lives at the CAPACITY stride (QPKD_VARS_CAP); its length is the
             # runtime qpkdv.
             zv_hi = z_vals * GEN ** QPKD_VARS_CAP
-            zcr7 = zerocheck_r * GEN ** 7
-            for xt in mul_range(1, tau5_g * GEN ** (K_LOG - 7)):
+            zcr7 = zerocheck_r * GEN ** (K_SKIP + 1)
+            for xt in mul_range(1, tau5_g * GEN ** (K_LOG - LOG2_FIELD_BITS)):
                 zv_hi[xt] = zcr7[xt]
     # gamma-combine the two transposed sumcheck claims (computed in-circuit).
     fs = squeeze(fs)
@@ -1674,7 +1703,7 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
     g_total = GEN ** 0
     for c in unroll(0, N_COMMITTED_COLS):
         g_total *= g_squares[kappa_base[GEN ** COL_KAPPA_SRC[c]] * GEN ** COL_KAPPA_ADJ[c]]
-    gmv = log2_ceil_in_the_exponent(g_total, g_logs_pow2, g_squares, PCS_MIN_MU, 34)  # g^m
+    gmv = log2_ceil_in_the_exponent(g_total, g_logs_pow2, g_squares, PCS_MIN_MU, SIZE_BITS)  # g^m
     sel = gmv * LIG_MIN_SHIFT_INV  # g^(m - MIN): the match_range arm index selecting the opening candidate
     assert log(sel) < LIG_N_CANDIDATES
     sumcheck_target, fold_challenges, final_msg, inner_total, yr_log_n_g, yr_pad_g, fold_cap_g = match_range(log(sel), range(0, LIG_N_CANDIDATES), lambda m_idx: open_stacked(m_idx, fs[0], fs[1], target, commit_root_0, commit_root_1))
@@ -1696,23 +1725,23 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
     hint_witness(pi_fold_slack[0:1], "pi_fold_slack")
     claim_sel_len = HeapBuf(NCL)
     hint_witness(claim_sel_len[0:NCL], "claim_sel_len")
-    claim_qpkd_slot_bits = HeapBuf(7 * NCL)
-    hint_witness(claim_qpkd_slot_bits[0:7 * NCL], "claim_qpkd_slot_bits")
-    claim_sel_bits = HeapBuf(33 * NCL)
-    hint_witness(claim_sel_bits[0:33 * NCL], "claim_sel_bits")
-    claim_overlap_mask = HeapBuf(8 * NCL)
-    hint_witness(claim_overlap_mask[0:8 * NCL], "claim_overlap_mask")
-    claim_yslot_bits = HeapBuf(8 * NCL)
-    hint_witness(claim_yslot_bits[0:8 * NCL], "claim_yslot_bits")
-    rs_yslot_bits = HeapBuf(8)
-    hint_witness(rs_yslot_bits[0:8], "rs_yslot_bits")
-    rs_sel_bits = HeapBuf(33)
-    hint_witness(rs_sel_bits[0:33], "rs_sel_bits")
+    claim_qpkd_slot_bits = HeapBuf(LOG2_FIELD_BITS * NCL)
+    hint_witness(claim_qpkd_slot_bits[0:LOG2_FIELD_BITS * NCL], "claim_qpkd_slot_bits")
+    claim_sel_bits = HeapBuf(COUNT_BITS * NCL)
+    hint_witness(claim_sel_bits[0:COUNT_BITS * NCL], "claim_sel_bits")
+    claim_overlap_mask = HeapBuf(YR_SLOT_STRIDE * NCL)
+    hint_witness(claim_overlap_mask[0:YR_SLOT_STRIDE * NCL], "claim_overlap_mask")
+    claim_yslot_bits = HeapBuf(YR_SLOT_STRIDE * NCL)
+    hint_witness(claim_yslot_bits[0:YR_SLOT_STRIDE * NCL], "claim_yslot_bits")
+    rs_yslot_bits = HeapBuf(YR_SLOT_STRIDE)
+    hint_witness(rs_yslot_bits[0:YR_SLOT_STRIDE], "rs_yslot_bits")
+    rs_sel_bits = HeapBuf(COUNT_BITS)
+    hint_witness(rs_sel_bits[0:COUNT_BITS], "rs_sel_bits")
     claim_weights = HeapBuf(NCL)
     for j in unroll(0, NCL):
         low_len_g = claim_low_len[GEN ** j]
-        assert log(low_len_g) < 34
-        low_chain = HeapBuf(35)
+        assert log(low_len_g) < SIZE_BITS
+        low_chain = HeapBuf(SIZE_BITS + 1)
         if CLAIM_POINT_BUF[j] == POINT_BUF_ZETA:
             zptr = zeta * GEN ** CLAIM_POINT_OFF[j]
             low_chain[GEN ** 0] = 1
@@ -1729,18 +1758,18 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
                 low_chain[xk * GEN] = low_chain[xk] * (1 + fold_challenges[xk])
         if CLAIM_POINT_BUF[j] == POINT_BUF_QPKD:
             qpkd_slot_eq = GEN ** 0
-            for k in unroll(0, 7):
-                sb3 = claim_qpkd_slot_bits[GEN ** (7 * j + k)]
+            for k in unroll(0, LOG2_FIELD_BITS):
+                sb3 = claim_qpkd_slot_bits[GEN ** (LOG2_FIELD_BITS * j + k)]
                 assert sb3 * sb3 == sb3
                 qpkd_slot_eq *= (1 + sb3 + fold_challenges[GEN ** k])
             zptr = zeta * GEN ** CLAIM_POINT_OFF[j]
-            ris7 = fold_challenges * GEN ** 7
+            ris7 = fold_challenges * GEN ** LOG2_FIELD_BITS
             low_chain[GEN ** 0] = qpkd_slot_eq
             for xk in mul_range(1, low_len_g):
                 low_chain[xk * GEN] = low_chain[xk] * (1 + zptr[xk] + ris7[xk])
         low_eq = low_chain[low_len_g]
         seln = claim_sel_len[GEN ** j]
-        assert log(seln) < 34
+        assert log(seln) < SIZE_BITS
         # EXACT length pin: tie the hinted lengths to the claim's certified low
         # dimension cplen. nlow is DERIVED here (cplen times a baked slot delta);
         # with nvt = nlow the pair (seln, nover) is then forced by nlow + seln ==
@@ -1749,20 +1778,20 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
         if CLAIM_POINT_BUF[j] == POINT_BUF_PI:
             # pi: cplen = min(log_mem, lenris), certified as a min here.
             cplen_g = pi_cplen[0]
-            assert log(pi_mem_slack[0]) < 34
+            assert log(pi_mem_slack[0]) < SIZE_BITS
             assert g_log_mem == cplen_g * pi_mem_slack[0]      # cplen <= log_mem
-            assert log(pi_fold_slack[0]) < 34
+            assert log(pi_fold_slack[0]) < SIZE_BITS
             assert fold_cap_g == cplen_g * pi_fold_slack[0]    # cplen <= lenris
             assert (cplen_g + g_log_mem) * (cplen_g + fold_cap_g) == 0  # == one of them
             nlow = cplen_g                             # delta = 0 for pi
         else:
             cplen_g = claim_cplen_g[GEN ** j]
             if CLAIM_POINT_BUF[j] == POINT_BUF_QPKD:
-                nlow = cplen_g * GEN ** 7  # nlow = cplen + 7 (qpkd slot)
+                nlow = cplen_g * GEN ** LOG2_FIELD_BITS  # nlow = cplen + the qpkd slot coords
             else:
                 nlow = cplen_g            # nlow = cplen
         nover_g = claim_nover[GEN ** j]
-        assert log(nover_g) < 34
+        assert log(nover_g) < SIZE_BITS
         assert nlow * seln == fold_cap_g * nover_g  # nlow + seln = lenris + nover
         assert (nover_g + 1) * (seln + 1) == 0      # nover == 0 OR seln == 0
         assert low_len_g * nover_g == cplen_g        # low_len = cplen - nover
@@ -1771,8 +1800,8 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
         # nlow + seln == lenris (the honest overlap-free case).
         assert (nlow * seln + fold_cap_g) * (seln + 1) == 0
         ris_hi = fold_challenges * nlow
-        selrow = claim_sel_bits * GEN ** (33 * j)
-        sel_chain = HeapBuf(35)
+        selrow = claim_sel_bits * GEN ** (COUNT_BITS * j)
+        sel_chain = HeapBuf(SIZE_BITS + 1)
         sel_chain[GEN ** 0] = low_eq
         for xk in mul_range(1, seln):
             sel_bit = selrow[xk]
@@ -1781,24 +1810,24 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
         claim_weights[GEN ** j] = sel_chain[seln] * gamma_pool[GEN ** j]
     # eval_rs_eq per claim: E = sum_k c_k * prod_j (z_j^(2^k) + 1 + ris_j)
     # (the telescoped product formula; z powers evolve by squaring per k).
-    # QPKD_VARS_CAP = tau_5 + (K_LOG - 7), exponent-additive from the certified
+    # QPKD_VARS_CAP = tau_5 + (K_LOG - LOG2_FIELD_BITS), exponent-additive from the certified
     # announced log; the per-k z-power rows chain by a runtime g^qpkdv
     # stride, and the inner passes are runtime loops with product/square
     # state chained per row.
-    qpkdv_g = tau5_g * GEN ** (K_LOG - 7)
+    qpkdv_g = tau5_g * GEN ** (K_LOG - LOG2_FIELD_BITS)
     one_plus_q = HeapBuf(GEN ** (QPKD_VARS_CAP))
     for x_round in mul_range(1, qpkdv_g):
         one_plus_q[x_round] = 1 + fold_challenges[x_round]
     for rs in unroll(0, 2):
-        z_pows = HeapBuf(129 * QPKD_VARS_CAP)
+        z_pows = HeapBuf((FIELD_BITS + 1) * QPKD_VARS_CAP)
         z_row_src = z_vals * GEN ** (QPKD_VARS_CAP * rs)
         for x_round in mul_range(1, qpkdv_g):
             z_pows[x_round] = z_row_src[x_round]
-        e_acc = HeapBuf(129)
+        e_acc = HeapBuf(FIELD_BITS + 1)
         e_acc[GEN ** 0] = 0
-        row_ptr = HeapBuf(129)
+        row_ptr = HeapBuf(FIELD_BITS + 1)
         row_ptr[GEN ** 0] = z_pows
-        for xk in mul_range(1, GEN ** 128):
+        for xk in mul_range(1, GEN ** FIELD_BITS):
             z_row = row_ptr[xk]
             z_row_next = z_row * qpkdv_g
             prod_chain = HeapBuf(GEN ** (QPKD_VARS_CAP + 1))
@@ -1809,7 +1838,7 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
                 z_row_next[x_round] = zv * zv
             e_acc[xk * GEN] = e_acc[xk] + c_table[xk] * prod_chain[qpkdv_g]
             row_ptr[xk * GEN] = z_row_next
-        rs_eq_vals[rs] = e_acc[GEN ** 128]
+        rs_eq_vals[rs] = e_acc[GEN ** FIELD_BITS]
     # ring-switch weight: extend by the selector bits over the fold_challenges
     # coords [qpkdv, lenris).
     rs_weight = gamma_ab * rs_eq_vals[0] + gamma_c * rs_eq_vals[1]
@@ -1818,9 +1847,9 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
     # lenris), inside its written [0, lenris) extent; a qpkdv > lenris would make
     # rs_len a huge exponent and blow the range check below.
     rs_len_g = fold_cap_g / qpkdv_g
-    assert log(rs_len_g) < 34
+    assert log(rs_len_g) < SIZE_BITS
     ris_q = fold_challenges * qpkdv_g
-    rsw_chain = HeapBuf(35)
+    rsw_chain = HeapBuf(SIZE_BITS + 1)
     rsw_chain[GEN ** 0] = rs_weight
     for xk in mul_range(1, rs_len_g):
         rs_bit = rs_sel_bits[xk]
@@ -1854,12 +1883,12 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
         mask_pop = GEN ** 0  # g^(overlap-active coords so far)
         prev_mask = 1        # coord -1 active, so mask[0] is unconstrained
         for k in unroll(0, YR_LOG_CAP):
-            mask_bit = claim_overlap_mask[GEN ** (8 * j + k)]
+            mask_bit = claim_overlap_mask[GEN ** (YR_SLOT_STRIDE * j + k)]
             assert mask_bit * mask_bit == mask_bit
             assert mask_bit * (1 + prev_mask) == 0  # mask[k]=1 forces mask[k-1]=1
             prev_mask = mask_bit
             mask_pop *= 1 + mask_bit * (GEN + 1)     # ×g iff mask_bit == 1
-            slot_bit = claim_yslot_bits[GEN ** (8 * j + k)]
+            slot_bit = claim_yslot_bits[GEN ** (YR_SLOT_STRIDE * j + k)]
             assert slot_bit * slot_bit == slot_bit
             slot_point[GEN ** k] = mask_bit * overlap_ptr[GEN ** k] + (1 + mask_bit) * slot_bit
         assert mask_pop == claim_nover[GEN ** j]  # exactly nover overlap coords
@@ -1868,8 +1897,8 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
         # (else the prefix would collide with hi_mask), so the mask is 0 here too
         # and slot_point is 0, leaving no eq weight on the unwritten final_msg
         # cells past 2^yr_log_n.
-        hi_mask = claim_overlap_mask * GEN ** (8 * j) * yr_log_n_g
-        hi_slot = claim_yslot_bits * GEN ** (8 * j) * yr_log_n_g
+        hi_mask = claim_overlap_mask * GEN ** (YR_SLOT_STRIDE * j) * yr_log_n_g
+        hi_slot = claim_yslot_bits * GEN ** (YR_SLOT_STRIDE * j) * yr_log_n_g
         for xk in mul_range(1, yr_pad_g):
             assert hi_mask[xk] == 0
             assert hi_slot[xk] == 0
@@ -1901,7 +1930,7 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
     # (SEL = LOG2_BYTECODE_COLS, LCR = LINCHECK_ROUNDS):
     #   +0..SEL bytecode_sel | +SEL, +SEL+1 bytecode_reduced | +SEL+2 alpha
     #   | +SEL+3 z_skip | +SEL+4.. zrho | +SEL+4+LCR.. lincheck rs
-    #   | +SEL+4+2*LCR.. z_partial (64) | +SEL+68+2*LCR matpart.
+    #   | +SEL+4+2*LCR.. z_partial (2^K_SKIP) | +SEL+4+2^K_SKIP+2*LCR matpart.
     for k in unroll(0, BYTECODE_LOG):
         defer_out[GEN ** k] = zeta[GEN ** k]
         defer_out[GEN ** (BYTECODE_LOG + k)] = zeta[GEN ** (MU_CAP + k)]
@@ -1914,9 +1943,9 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
     for k in unroll(0, LINCHECK_ROUNDS):
         defer_out[GEN ** (2 * BYTECODE_LOG + LOG2_BYTECODE_COLS + 4 + k)] = zerocheck_rhos[GEN ** k]
         defer_out[GEN ** (2 * BYTECODE_LOG + LOG2_BYTECODE_COLS + 4 + LINCHECK_ROUNDS + k)] = lincheck_rs[GEN ** k]
-    for k in unroll(0, 64):
+    for k in unroll(0, 2 ** K_SKIP):
         defer_out[GEN ** (2 * BYTECODE_LOG + LOG2_BYTECODE_COLS + 4 + 2 * LINCHECK_ROUNDS + k)] = z_partial[GEN ** k]
-    defer_out[GEN ** (2 * BYTECODE_LOG + LOG2_BYTECODE_COLS + 68 + 2 * LINCHECK_ROUNDS)] = matrix_eval[0]
+    defer_out[GEN ** (2 * BYTECODE_LOG + LOG2_BYTECODE_COLS + 4 + 2 ** K_SKIP + 2 * LINCHECK_ROUNDS)] = matrix_eval[0]
     return
 
 
@@ -1943,13 +1972,13 @@ def main():
     hint_witness(mat_stars_hint[0:2], "mat_stars_hint")
     # The dual-basis Frobenius powers delta_pows[128k + i] = DELTA[i]^(2^k) are claim-
     # and sub-independent: build the table once, read-only afterwards.
-    delta_pows = HeapBuf(128 * 128)
-    for i in unroll(0, 128):
+    delta_pows = HeapBuf(FIELD_BITS * FIELD_BITS)
+    for i in unroll(0, FIELD_BITS):
         delta_pows[GEN ** i] = DELTA[i]
-    for xk in mul_range(1, GEN ** 127):
-        delta_row = delta_pows * xk ** 128
-        next_delta_row = delta_row * GEN ** 128
-        for i in unroll(0, 128):
+    for xk in mul_range(1, GEN ** (FIELD_BITS - 1)):
+        delta_row = delta_pows * xk ** FIELD_BITS
+        next_delta_row = delta_row * GEN ** FIELD_BITS
+        for i in unroll(0, FIELD_BITS):
             delta_v = delta_row[GEN ** i]
             next_delta_row[GEN ** i] = delta_v * delta_v
 
@@ -2017,7 +2046,7 @@ def main():
         agg_fs = squeeze(agg_fs)
         gv = agg_fs[0]
         gamma_mat[t] = gv
-        mat_running += gv * defer[GEN ** (t * DEFER_SIZE + 2 * BYTECODE_LOG + LOG2_BYTECODE_COLS + 68 + 2 * LINCHECK_ROUNDS)]
+        mat_running += gv * defer[GEN ** (t * DEFER_SIZE + 2 * BYTECODE_LOG + LOG2_BYTECODE_COLS + 4 + 2 ** K_SKIP + 2 * LINCHECK_ROUNDS)]
     mat_point = HeapBuf(2 * K_LOG)
     for rd in unroll(0, 2 * K_LOG):
         msg_g1 = mat_sumcheck_msgs[GEN ** (2 * rd)]
@@ -2034,24 +2063,24 @@ def main():
     # row_weight = (sum_i L_i(zz_t) eq(r*[0..6], i)) * eq(zrho_t, r*[6..K_LOG]) and
     # col_weight = (sum_i z_partial_t[i] eq(r*[K_LOG..K_LOG+6], i)) * prod_j (1 + lrr_j
     # + r*[2*K_LOG-1-j]) (the lincheck binds column variables top-down).
-    eq_rows = HeapBuf(126)
-    eqtree(mat_point, eq_rows, 6)
-    eq_cols = HeapBuf(126)
-    eqtree(mat_point * GEN ** K_LOG, eq_cols, 6)
+    eq_rows = HeapBuf(2 ** (K_SKIP + 1) - 2)
+    eqtree(mat_point, eq_rows, K_SKIP)
+    eq_cols = HeapBuf(2 ** (K_SKIP + 1) - 2)
+    eqtree(mat_point * GEN ** K_LOG, eq_cols, K_SKIP)
     weight_a = 0
     weight_b = 0
     for t in unroll(0, NSUB):
         z_skip_t = defer[GEN ** (t * DEFER_SIZE + 2 * BYTECODE_LOG + LOG2_BYTECODE_COLS + 3)]
-        row_nums = StackBuf(64)
+        row_nums = StackBuf(2 ** K_SKIP)
         lag64(z_skip_t, row_nums, 0)
         row_weight = 0
-        for i in unroll(0, 64):
-            row_weight += row_nums[i] * ISDOM[i] * eq_rows[GEN ** (62 + i)]
+        for i in unroll(0, 2 ** K_SKIP):
+            row_weight += row_nums[i] * ISDOM[i] * eq_rows[GEN ** (2 ** K_SKIP - 2 + i)]
         for k in unroll(0, LINCHECK_ROUNDS):
-            row_weight *= (1 + defer[GEN ** (t * DEFER_SIZE + 2 * BYTECODE_LOG + LOG2_BYTECODE_COLS + 4 + k)] + mat_point[GEN ** (6 + k)])
+            row_weight *= (1 + defer[GEN ** (t * DEFER_SIZE + 2 * BYTECODE_LOG + LOG2_BYTECODE_COLS + 4 + k)] + mat_point[GEN ** (K_SKIP + k)])
         col_weight = 0
-        for i in unroll(0, 64):
-            col_weight += defer[GEN ** (t * DEFER_SIZE + 2 * BYTECODE_LOG + LOG2_BYTECODE_COLS + 4 + 2 * LINCHECK_ROUNDS + i)] * eq_cols[GEN ** (62 + i)]
+        for i in unroll(0, 2 ** K_SKIP):
+            col_weight += defer[GEN ** (t * DEFER_SIZE + 2 * BYTECODE_LOG + LOG2_BYTECODE_COLS + 4 + 2 * LINCHECK_ROUNDS + i)] * eq_cols[GEN ** (2 ** K_SKIP - 2 + i)]
         for j in unroll(0, LINCHECK_ROUNDS):
             col_weight *= (1 + defer[GEN ** (t * DEFER_SIZE + 2 * BYTECODE_LOG + LOG2_BYTECODE_COLS + 4 + LINCHECK_ROUNDS + j)] + mat_point[GEN ** (2 * K_LOG - 1 - j)])
         weight_u = row_weight * col_weight
