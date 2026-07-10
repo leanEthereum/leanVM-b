@@ -770,11 +770,12 @@ def exponent_tables():
     return g_logs, g_logs_pow2, g_squares
 
 
-def verify_sub(pi_0, pi_1, delta_pows, defer_out):
+def verify_sub(pi_0, pi_1, delta_pows, g_logs, g_logs_pow2, g_squares, defer_out):
     # In-circuit verification of ONE inner proof for the statement
     # (pi_0, pi_1). All proof data is hinted HERE: each call pops the next
     # sub-proof's entry of every witness stream, so the body lowers once and
-    # main just calls it per statement. `delta_pows` is the shared dual-basis
+    # main just calls it per statement. `delta_pows` and the g_logs/g_squares
+    # lookup tables are shared read-only tables built once in main. delta_pows
     # Frobenius table; the deferred-claim data is written to `defer_out`.
     #
     # Flow (mirrors cpu::verify):
@@ -863,10 +864,9 @@ def verify_sub(pi_0, pi_1, delta_pows, defer_out):
     hint_witness(count_bits[0:6 * 33], "count_bits")
     count_min_inv = StackBuf(6)
     hint_witness(count_min_inv[0:6], "count_min_inv")
-    # Exponent-domain lookup tables (see exponent_tables); kappa_base maps a
-    # kappa source index to its certified announced log (source 0 = const,
-    # handled by the baked adj shift alone).
-    g_logs, g_logs_pow2, g_squares = exponent_tables()
+    # Exponent-domain lookup tables (g_logs / g_logs_pow2 / g_squares) are
+    # built once in main and passed in. kappa_base maps a kappa source index
+    # to its certified announced log (source 0 = const, via the baked adj).
     # log_mem is announced AS a log (an integer word L): T[g^L] == L pins the
     # hinted g-power to it.
     g_log_mem = dims_g[GEN ** 0]
@@ -1933,11 +1933,14 @@ def main():
             delta_v = delta_row[GEN ** i]
             next_delta_row[GEN ** i] = delta_v * delta_v
 
+    # exponent-domain lookup tables, shared read-only across every sub-proof.
+    g_logs, g_logs_pow2, g_squares = exponent_tables()
+
     # per-sub deferred-claim regions (layout: see verify_sub's defer_out)
     defer = HeapBuf(NSUB * DEFER_SIZE)
 
     for sub in unroll(0, NSUB):
-        verify_sub(sub_pis[GEN ** (2 * sub)], sub_pis[GEN ** (2 * sub + 1)], delta_pows, defer * GEN ** (sub * DEFER_SIZE))
+        verify_sub(sub_pis[GEN ** (2 * sub)], sub_pis[GEN ** (2 * sub + 1)], delta_pows, g_logs, g_logs_pow2, g_squares, defer * GEN ** (sub * DEFER_SIZE))
 
     # ================= aggregation: batch the deferred claims =================
     # A fresh transcript absorbs every deferred claim (points and values),
