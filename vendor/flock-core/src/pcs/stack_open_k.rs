@@ -158,12 +158,18 @@ pub struct RingSwitchClaimK {
     pub prefix_weights: Vec<F128T>,
     pub suffix_point: Vec<F128T>,
     pub value: F128T,
+    /// Prover-side optional precomputed `s_hat_v` (the 64 bit-slice MLE
+    /// values at `suffix_point`, e.g. captured inside flock's reduction).
+    /// When present, [`super::ring_switch_k::prove`] skips its
+    /// `fold_1b_rows` recomputation; the values are checked against the
+    /// claim (`claim_check`) and the transcript is identical either way.
+    /// Verifier-side bundles leave it `None`.
+    pub s_hat_v: Option<Vec<F128T>>,
 }
 
 /// Prover-side bundle of the ring-switched claims discharged in the same
 /// stacked opening as the [`StackClaimK`]s. K analog of the main crate's
-/// `RingSwitchOpen` (no precomputed `s_hat_v` / padding spec: the K reduction
-/// has no fused variant yet, so both sides carry the same claim data).
+/// `RingSwitchOpen`; each claim may carry its precomputed `s_hat_v`.
 #[derive(Clone, Debug)]
 pub struct RingSwitchOpenK {
     /// q_pkd's offset inside the committed stack; must be a multiple of
@@ -393,6 +399,7 @@ pub fn open_batch_mixed_ligerito_stacked_k<Ch: Challenger>(
             &claim.prefix_weights,
             &claim.suffix_point,
             claim.value,
+            claim.s_hat_v.as_deref(),
             challenger,
         );
         rs_proofs.push(proof);
@@ -761,6 +768,8 @@ mod tests {
                 prefix_weights,
                 suffix_point,
                 value,
+                // Exercise the fold path (no precompute).
+                s_hat_v: None,
             }],
         };
 
@@ -933,6 +942,8 @@ mod tests {
             prefix_weights,
             suffix_point,
             value: rs_value,
+            // Exercise the precomputed path (transcript must be identical).
+            s_hat_v: Some(s_hat_v.clone()),
         }];
 
         // Fixed fallback config so the residual cube size is known: the

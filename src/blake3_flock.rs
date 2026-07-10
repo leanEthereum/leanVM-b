@@ -30,7 +30,7 @@
 use crate::field::{F64, F128T};
 use crate::transcript::{ProverState, VerifierState};
 use flare::field::{F128, ghash_to_tower};
-use flare::pcs::pack_k::LOG_PACKING_K;
+use flare::pcs::pack_k::{LOG_PACKING_K, PACKING_WIDTH_K};
 use flare::zerocheck::multilinear::lagrange_weights_naive;
 use flock_prover::r1cs_hashes::blake3::{
     BLAKE3_IV, Blake3Setup, Compression, K_LOG, ReducedClaims, blake3_compress,
@@ -303,7 +303,7 @@ pub fn verify_reduction(
 /// the tower through the field isomorphism `ghash_to_tower`, under which the
 /// claim identity `value = Σ_i L_i(z_skip)·ŝ_i(suffix)` transports exactly (the
 /// bit-slice MLEs have F2 coefficients, which the isomorphism fixes).
-fn ring_claim(z: &ZClaim, qpkd_vars: usize) -> crate::pcs::RingSwitchClaimK {
+fn ring_claim(z: &ZClaim, s_hat_v128: Option<&[F128]>, qpkd_vars: usize) -> crate::pcs::RingSwitchClaimK {
     let prefix_weights: Vec<F128T> = lagrange_weights_naive(LOG_PACKING_K, z.point.z_skip)
         .into_iter()
         .map(ghash_to_tower)
@@ -317,10 +317,35 @@ fn ring_claim(z: &ZClaim, qpkd_vars: usize) -> crate::pcs::RingSwitchClaimK {
         qpkd_vars,
         "ring-switch suffix must span the q_pkd cube"
     );
+    // Precomputed s_hat_v (prover side): flock's reduction captures the 128
+    // bit-slice MLEs w.r.t. its OWN 128-bit packing, whose prefix absorbs
+    // z_skip AND the first inner-rest coordinate `c`; the 64-bit packing here
+    // keeps `c` in the suffix. The 64-wide values recombine linearly: 64-word
+    // `y = 2y' + b` is the b-half of 128-word `y'`, and bit `i` of that half
+    // is bit `i + 64b` of the 128-word, so
+    //     s64[i] = (1+c)·s128[i] + c·s128[i+64].
+    // Exact field arithmetic under the GHASH→tower isomorphism, so the values
+    // are bit-identical to the fold the opener would otherwise run (and are
+    // hard-checked against the claim in `ring_switch_k::prove`).
+    let s_hat_v = s_hat_v128.and_then(|s128| {
+        if s128.len() != 2 * PACKING_WIDTH_K || z.point.x_inner_rest.is_empty() {
+            return None;
+        }
+        let c = ghash_to_tower(z.point.x_inner_rest[0]);
+        let one_plus_c = F128T::ONE + c;
+        Some(
+            (0..PACKING_WIDTH_K)
+                .map(|i| {
+                    one_plus_c * ghash_to_tower(s128[i]) + c * ghash_to_tower(s128[i + PACKING_WIDTH_K])
+                })
+                .collect(),
+        )
+    });
     crate::pcs::RingSwitchClaimK {
         prefix_weights,
         suffix_point,
         value: ghash_to_tower(z.value),
+        s_hat_v,
     }
 }
 
@@ -334,8 +359,8 @@ pub fn ring_switch_open(n_blocks: usize, offset: usize, reduced: &ReducedClaims)
         offset,
         qpkd_vars,
         claims: vec![
-            ring_claim(&reduced.ab.claim, qpkd_vars),
-            ring_claim(&reduced.c.claim, qpkd_vars),
+            ring_claim(&reduced.ab.claim, reduced.ab.s_hat_v.as_deref(), qpkd_vars),
+            ring_claim(&reduced.c.claim, reduced.c.s_hat_v.as_deref(), qpkd_vars),
         ],
     }
 }
@@ -349,7 +374,7 @@ pub fn ring_switch_verify(n_blocks: usize, offset: usize, ab: ZClaim, c: ZClaim)
     crate::pcs::RingSwitchVerify {
         offset,
         qpkd_vars,
-        claims: vec![ring_claim(&ab, qpkd_vars), ring_claim(&c, qpkd_vars)],
+        claims: vec![ring_claim(&ab, None, qpkd_vars), ring_claim(&c, None, qpkd_vars)],
     }
 }
 

@@ -70,7 +70,7 @@ use crate::challenger::Challenger;
 use crate::field::{F64, F128, F128T};
 use serde::{Deserialize, Serialize};
 
-use super::ligerito_k::{build_eq_table_ext, build_eq_table_ext_parallel, inner_product_base_ext};
+use super::ligerito_k::{build_eq_table_ext, inner_product_base_ext};
 use super::pack_k::{LOG_PACKING_K, PACKING_WIDTH_K};
 use super::tensor_algebra_k::{DEGREE_E, TensorAlgebraE, transpose_s_hat};
 
@@ -379,6 +379,42 @@ fn fold_one_slot_ext(elem: F128T, tables: &[F128T]) -> F128T {
 /// `ring_switch::fold_b128_elems`): 16 lookup tables of 256 E entries each
 /// (64 KiB, L1/L2-resident); per position 16 lookups + 15 XORs, no
 /// data-dependent bit-scan. Rayon across positions.
+/// Split point for the factored eq build: low half sized ~n/2 (min 4, the
+/// point where two factor tables beat one full build). Mirror of the F128
+/// layer's `ring_switch::split_n_lo`.
+pub fn split_n_lo(n: usize) -> usize {
+    (n / 2).clamp(4.min(n), n)
+}
+
+/// Factored eq tensor: `eq(point, y) = eq_lo[y & (2^n_lo - 1)] * eq_hi[y >> n_lo]`
+/// (LSB-first indexing, matching `build_eq_table_ext`). Materializes
+/// `2^n_lo + 2^(n - n_lo)` entries instead of `2^n`; field multiplication is
+/// exact, so the reconstructed entries are bit-identical to the full build.
+/// Mirror of the F128 layer's `ring_switch::build_eq_split`.
+pub fn build_eq_split_ext(point: &[F128T]) -> (Vec<F128T>, Vec<F128T>) {
+    let n_lo = split_n_lo(point.len());
+    (
+        build_eq_table_ext(&point[..n_lo]),
+        build_eq_table_ext(&point[n_lo..]),
+    )
+}
+
+/// [`fold_ext_elems`] over the FACTORED tensor: each entry is reconstructed on
+/// the fly (`eq_lo[a] * eq_hi[b]`, one multiply) and folded — the full
+/// `2^n`-entry tensor is never materialized. Bit-identical output.
+pub fn fold_ext_elems_split(eq_lo: &[F128T], eq_hi: &[F128T], eq_r_dprime: &[F128T]) -> Vec<F128T> {
+    use rayon::prelude::*;
+    let tables = build_fold_byte_table_ext(eq_r_dprime);
+    let n_lo = eq_lo.len();
+    debug_assert!(n_lo.is_power_of_two());
+    let mask = n_lo - 1;
+    let shift = n_lo.trailing_zeros();
+    (0..n_lo * eq_hi.len())
+        .into_par_iter()
+        .map(|y| fold_one_slot_ext(eq_lo[y & mask] * eq_hi[y >> shift], &tables))
+        .collect()
+}
+
 pub fn fold_ext_elems(suffix_tensor: &[F128T], eq_r_dprime: &[F128T]) -> Vec<F128T> {
     use rayon::prelude::*;
     let tables = build_fold_byte_table_ext(eq_r_dprime);
@@ -443,6 +479,7 @@ pub fn prove<Ch: Challenger>(
     prefix_weights: &[F128T],
     suffix_point: &[F128T],
     claim: F128T,
+    precomputed_s_hat_v: Option<&[F128T]>,
     challenger: &mut Ch,
 ) -> (RingSwitchProofK, RingSwitchOutputK) {
     assert_eq!(prefix_weights.len(), PACKING_WIDTH_K);
@@ -457,16 +494,37 @@ pub fn prove<Ch: Challenger>(
     // Optional phase timing, answering to the same env var as the Ligerito-K
     // tracing (one env lookup per prove, no work when unset).
     let trace = std::env::var_os("LIG_K_TRACE").is_some();
+    // Factored eq: `2^(n/2)`-sized halves instead of the full `2^n` tensor
+    // (the full tensor is never materialized — `fold_ext_elems_split`
+    // reconstructs entries on the fly, and the s_hat fold either uses the
+    // caller's precomputed values or the reconstructing fold below).
     let t = std::time::Instant::now();
-    // Parallel eq build: byte-identical to `build_eq_table_ext` (pinned by
-    // ligerito_k's eq_table_parallel_and_seeded_match_serial), and the
-    // dominant prove cost at real q_pkd sizes when built serially.
-    let suffix_tensor = build_eq_table_ext_parallel(suffix_point);
+    let (eq_lo, eq_hi) = build_eq_split_ext(suffix_point);
     let t_tensor = t.elapsed();
 
-    // Compute and send s_hat_v.
+    // s_hat_v: the caller's precomputed values (e.g. captured inside flock's
+    // zerocheck/lincheck reduction — the fold below recomputes exactly these,
+    // so the transcript is identical either way), or the four-Russians fold.
     let t = std::time::Instant::now();
-    let s_hat_v = fold_1b_rows_k(packed_witness, &suffix_tensor);
+    let s_hat_v = match precomputed_s_hat_v {
+        Some(v) => {
+            assert_eq!(v.len(), PACKING_WIDTH_K);
+            v.to_vec()
+        }
+        None => {
+            // Fallback (no precompute): reconstruct the tensor from the
+            // factors (one multiply per entry, the same count the full
+            // doubling build pays) and run the standard four-Russians fold.
+            use rayon::prelude::*;
+            let mask = eq_lo.len() - 1;
+            let shift = eq_lo.len().trailing_zeros();
+            let full: Vec<F128T> = (0..packed_witness.len())
+                .into_par_iter()
+                .map(|y| eq_lo[y & mask] * eq_hi[y >> shift])
+                .collect();
+            fold_1b_rows_k(packed_witness, &full)
+        }
+    };
     let t_fold = t.elapsed();
     assert_eq!(
         claim_check(prefix_weights, &s_hat_v),
@@ -483,13 +541,15 @@ pub fn prove<Ch: Challenger>(
     let s_hat_u = transpose_s_hat(&s_hat_v);
     let sumcheck_claim = inner_product_base_ext(&s_hat_u, &eq_r_dprime);
 
-    // Transparent weight vector rs_eq_ind = Phi(eq(r_suffix, .)).
+    // Transparent weight vector rs_eq_ind = Phi(eq(r_suffix, .)), built
+    // straight off the eq factors.
     let t = std::time::Instant::now();
-    let rs_eq_ind = fold_ext_elems(&suffix_tensor, &eq_r_dprime);
+    let rs_eq_ind = fold_ext_elems_split(&eq_lo, &eq_hi, &eq_r_dprime);
     if trace {
         eprintln!(
-            "[rs-k-prove] suffix tensor: {:6.2} ms, fold_1b_rows: {:6.2} ms, rs_eq_ind fold: {:6.2} ms",
+            "[rs-k-prove] eq split: {:6.2} ms, s_hat ({}): {:6.2} ms, rs_eq_ind fold: {:6.2} ms",
             t_tensor.as_secs_f64() * 1e3,
+            if precomputed_s_hat_v.is_some() { "precomputed" } else { "folded" },
             t_fold.as_secs_f64() * 1e3,
             t.elapsed().as_secs_f64() * 1e3,
         );
@@ -798,7 +858,7 @@ mod tests {
         assert_eq!(claim, direct, "prefix x suffix split must factor the MLE");
 
         let mut ch = FsChallenger::new(b"rs-k-claim-test");
-        let (proof, _out) = prove(&packed, &prefix_weights, suffix_point, claim, &mut ch);
+        let (proof, _out) = prove(&packed, &prefix_weights, suffix_point, claim, None, &mut ch);
 
         let mut ch = FsChallenger::new(b"rs-k-claim-test");
         assert!(verify(claim, &prefix_weights, suffix_point, &proof, &mut ch).is_ok());
@@ -886,7 +946,7 @@ mod tests {
         let claim = claim_check(&prefix_weights, &s_hat_v_reference(&packed, suffix_point));
 
         let mut ch = FsChallenger::new(b"rs-k-identity-test");
-        let (_proof, out) = prove(&packed, &prefix_weights, suffix_point, claim, &mut ch);
+        let (_proof, out) = prove(&packed, &prefix_weights, suffix_point, claim, None, &mut ch);
         assert_eq!(
             inner_product_base_ext(&packed, &out.rs_eq_ind),
             out.sumcheck_claim,
@@ -954,7 +1014,7 @@ mod tests {
         let claim = claim_check(&prefix_weights, &s_hat_v_reference(&packed, &suffix_point));
 
         let mut ch = FsChallenger::new(E2E_DOMAIN);
-        let (rs_proof, out) = prove(&packed, &prefix_weights, &suffix_point, claim, &mut ch);
+        let (rs_proof, out) = prove(&packed, &prefix_weights, &suffix_point, claim, None, &mut ch);
         assert_eq!(inner_product_base_ext(&packed, &out.rs_eq_ind), out.sumcheck_claim);
         let lig_proof = recursive_prover_with_basis_k(
             &pc,
