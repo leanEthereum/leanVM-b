@@ -840,8 +840,8 @@ def verify_sub(pi_0, pi_1, delta_pows, defer_out):
     #   count_min_inv    = the gadget's minimality-check inverses (count > 2^(tau-1)).
     dims_g = HeapBuf(7)
     hint_witness(dims_g[0:7], "dims_g")
-    count_bits = HeapBuf(198)
-    hint_witness(count_bits[0:198], "count_bits")
+    count_bits = HeapBuf(6 * 33)  # 6 row counts x 33 bits
+    hint_witness(count_bits[0:6 * 33], "count_bits")
     count_min_inv = StackBuf(6)
     hint_witness(count_min_inv[0:6], "count_min_inv")
     # Baked tables over exponents: T[g^j] = j and W[g^j] = 2^j (words), the

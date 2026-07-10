@@ -1341,7 +1341,7 @@ fn gen_verify(
             v
         }),
         ("count_bits".to_string(), {
-            let mut v = Vec::with_capacity(198);
+            let mut v = Vec::with_capacity(6 * 33);
             for t in 0..6 {
                 let c = proof.stream[1 + t].lo;
                 for j in 0..33 {
