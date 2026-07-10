@@ -418,8 +418,9 @@ pub fn prove_balance(
             )
         },
     );
-    let (_, push_claim) = gkr::prove_product(push_leaves, ps);
-    let (_, pull_claim) = gkr::prove_product(pull_leaves, ps);
+    // Push and pull run in LOCKSTEP (equal μ by construction — matched block
+    // pairs), sharing every challenge, so both claims land on ONE point ζ.
+    let ((_, push_claim), (_, pull_claim)) = gkr::prove_product_pair(push_leaves, pull_leaves, ps);
     let (_, count_claim) = gkr::prove_product(count_leaves, ps);
 
     let mut claims = decompose_prove(push, &push_lay, cols, &push_claim.point, alpha, gamma, ps);
@@ -442,24 +443,18 @@ pub fn prove_balance(
         ps,
     ));
 
-    // Bytecode = ONE polynomial: bind the twelve public-column evaluations,
-    // sample the selector challenges, emit the two reduced claims.
-    let (kbc, pv_push) = public_evals(push, &push_claim.point);
-    let (_, pv_pull) = public_evals(pull, &pull_claim.point);
-    for &v in pv_push.iter().chain(&pv_pull) {
+    // Bytecode = ONE polynomial, and push/pull now share the point ζ, so the
+    // six public columns are opened ONCE: bind the evaluations, sample the
+    // selector challenges, emit the single reduced claim.
+    let (kbc, pv) = public_evals(push, &push_claim.point);
+    for &v in &pv {
         ps.observe_scalar(v);
     }
     let s = [ps.sample(), ps.sample(), ps.sample()];
-    let bytecode_claims = vec![
-        BytecodeClaim {
-            point: [&push_claim.point[..kbc], &s[..]].concat(),
-            value: stacked_bytecode_value(&pv_push, &s),
-        },
-        BytecodeClaim {
-            point: [&pull_claim.point[..kbc], &s[..]].concat(),
-            value: stacked_bytecode_value(&pv_pull, &s),
-        },
-    ];
+    let bytecode_claims = vec![BytecodeClaim {
+        point: [&push_claim.point[..kbc], &s[..]].concat(),
+        value: stacked_bytecode_value(&pv, &s),
+    }];
     (claims, bytecode_claims)
 }
 
@@ -491,8 +486,10 @@ pub fn verify_balance(
         _ => Error::Truncated,
     })?;
     let gamma = vs.sample();
-    let (push_root, cp) = gkr::verify_product(push_lay.mu, vs).map_err(Error::Gkr)?;
-    let (pull_root, cq) = gkr::verify_product(pull_lay.mu, vs).map_err(Error::Gkr)?;
+    // Push and pull verify in LOCKSTEP (their layouts match, see
+    // grand_product_grinding_bits), reducing to claims at ONE shared point.
+    let ((push_root, cp), (pull_root, cq)) =
+        gkr::verify_product_pair(push_lay.mu, vs).map_err(Error::Gkr)?;
     let (count_root, cc) = gkr::verify_product(count_lay.mu, vs).map_err(Error::Gkr)?;
     // Every read count is nonzero iff this product is (§sec:memchan); a zero would
     // let a read self-cancel and free its value from memory.
@@ -522,25 +519,18 @@ pub fn verify_balance(
     }
     claims.extend(claims_c);
 
-    // Bytecode = ONE polynomial (mirror of `prove_balance`): bind the twelve
-    // public-column evaluations, sample the selector challenges, emit the two
-    // reduced claims on the stacked bytecode multilinear.
-    let (kbc, pv_push) = public_evals(push, &cp.point);
-    let (_, pv_pull) = public_evals(pull, &cq.point);
-    for &v in pv_push.iter().chain(&pv_pull) {
+    // Bytecode = ONE polynomial (mirror of `prove_balance`); the shared push/
+    // pull point means one set of public-column evaluations and ONE reduced
+    // claim on the stacked bytecode multilinear.
+    let (kbc, pv) = public_evals(push, &cp.point);
+    for &v in &pv {
         vs.observe_scalar(v);
     }
     let s = [vs.sample(), vs.sample(), vs.sample()];
-    let bytecode_claims = vec![
-        BytecodeClaim {
-            point: [&cp.point[..kbc], &s[..]].concat(),
-            value: stacked_bytecode_value(&pv_push, &s),
-        },
-        BytecodeClaim {
-            point: [&cq.point[..kbc], &s[..]].concat(),
-            value: stacked_bytecode_value(&pv_pull, &s),
-        },
-    ];
+    let bytecode_claims = vec![BytecodeClaim {
+        point: [&cp.point[..kbc], &s[..]].concat(),
+        value: stacked_bytecode_value(&pv, &s),
+    }];
     Ok(BusVerify {
         claims,
         bytecode_claims,

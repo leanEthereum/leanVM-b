@@ -136,9 +136,9 @@ INDEX_MLE_FACTORS = INDEX_MLE_FACTORS_PLACEHOLDER
 # Committed-coordinate claims (Col/GCol coords across all sides) and the
 # deferred bytecode values (Public coords).
 NCLAIMS = NCLAIMS_PLACEHOLDER
-N_BYTECODE_VALS = N_BYTECODE_VALS_PLACEHOLDER
-# The stacked bytecode: BYTECODE_COLS encoding columns per side, stacked along
-# LOG2_BYTECODE_COLS selector bits into ONE multilinear.
+# The stacked bytecode: BYTECODE_COLS encoding columns, stacked along
+# LOG2_BYTECODE_COLS selector bits into ONE multilinear. Push and pull share
+# their GKR point, so the columns are opened ONCE (BYTECODE_COLS values).
 BYTECODE_COLS = BYTECODE_COLS_PLACEHOLDER
 LOG2_BYTECODE_COLS = LOG2_BYTECODE_COLS_PLACEHOLDER
 # Zerochecks: per-table constraint-column counts (round counts are the
@@ -502,6 +502,41 @@ def sumcheck_round3(state_0, state_1, msg_cursor, claim, eq_acc, prev_challenge)
     return fs[0], fs[1], msg_cursor * GEN ** 3, new_claim, new_eq, round_challenge
 
 
+def sumcheck_round3_pair(state_0, state_1, msg_cursor, claim_a, claim_b, eq_acc, prev_challenge):
+    # One LOCKSTEP sumcheck round for the push/pull GKR pair: the stream
+    # carries push's three round messages then pull's, both running claims are
+    # checked against the SAME eq accumulator and previous challenge, and ONE
+    # squeezed challenge folds both round polynomials ({0, 1, g} basis).
+    fs = StackBuf(2)
+    fs[0] = state_0
+    fs[1] = state_1
+    a0 = msg_cursor[GEN ** 0]
+    fs = obs(fs, a0)
+    a1 = msg_cursor[GEN ** 1]
+    fs = obs(fs, a1)
+    a2 = msg_cursor[GEN ** 2]
+    fs = obs(fs, a2)
+    b0 = msg_cursor[GEN ** 3]
+    fs = obs(fs, b0)
+    b1 = msg_cursor[GEN ** 4]
+    fs = obs(fs, b1)
+    b2 = msg_cursor[GEN ** 5]
+    fs = obs(fs, b2)
+    lhs_a = eq_acc * ((1 + prev_challenge) * a0 + prev_challenge * a1)
+    assert lhs_a == claim_a
+    lhs_b = eq_acc * ((1 + prev_challenge) * b0 + prev_challenge * b1)
+    assert lhs_b == claim_b
+    fs = squeeze(fs)
+    round_challenge = fs[0]
+    new_eq = eq_acc * (1 + prev_challenge + round_challenge)
+    l0 = (round_challenge + 1) * (round_challenge + GG) * ILD0
+    l1 = round_challenge * (round_challenge + GG) * ILD1
+    l2 = round_challenge * (round_challenge + 1) * ILD2
+    new_claim_a = new_eq * (a0 * l0 + a1 * l1 + a2 * l2)
+    new_claim_b = new_eq * (b0 * l0 + b1 * l1 + b2 * l2)
+    return fs[0], fs[1], msg_cursor * GEN ** 6, new_claim_a, new_claim_b, new_eq, round_challenge
+
+
 @inline
 def fold_final_msg(msg, weights, wbase: Const, log_len: Const):
     # Weighted fold of the final_msg multilinear over 2^log_len values (log_len is the
@@ -862,8 +897,8 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
     #   2. announced sizes, then certify every structural log against them
     #      (count gadget log2_ceil: tau per table, log_mem);
     #   3. bind the commitment root; bus grinding (grind_check, runtime
-    #      bit count); 3x GKR grand product at runtime depth
-    #      (sumcheck_round3 per round);
+    #      bit count); GKR grand products at runtime depth: push & pull in
+    #      LOCKSTEP (shared challenges, ONE final point zeta), then count;
     #   4. derive the block kappas, certify the GKR side depths; balance check
     #      with advice-decomposed padding ladders; 3x leaf decomposition
     #      against the GKR claims (pooling the committed-coordinate claims);
@@ -968,102 +1003,199 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
     fs = squeeze(fs)
     gamma = fs[0]
 
-    # ---- 3× GKR grand product (push / pull / count), RUNTIME depth ----
-    # The layer count is g^mu_s from ann_mus, certified against the block
-    # structure at the mus cert below. Both loop levels are runtime mul_range;
-    # the sponge, stream cursor, claim, and eq accumulator thread through
+    # ---- GKR grand products: push & pull in LOCKSTEP, then count ----
+    # Push and pull have equal depth (matched blocks), so their trees run in
+    # parallel: per round the stream carries push's three messages then pull's,
+    # ONE challenge serves both, and both reduce to claims at ONE shared point
+    # zeta (stored once; ZOFF sends the pull-side reads there too). The count
+    # tree runs alone afterwards. Both loop levels are runtime mul_range; the
+    # sponge, stream cursor, claims, and eq accumulator thread through
     # write-once heap chains: layer state indexed by the layer cursor, round
-    # state by a per-tree position pointer advancing per round.
+    # state by a per-tree position pointer advancing per round. The pair
+    # carries a second claim per position (the *_claim_b chains).
     gkr_roots = StackBuf(N_GKR_SIDES)
     gkr_claims = StackBuf(N_GKR_SIDES)
     gkr_layer_fs0 = HeapBuf(N_GKR_SIDES * (MU_CAP + 2))
     gkr_layer_fs1 = HeapBuf(N_GKR_SIDES * (MU_CAP + 2))
     gkr_layer_cursor = HeapBuf(N_GKR_SIDES * (MU_CAP + 2))
     gkr_layer_claim = HeapBuf(N_GKR_SIDES * (MU_CAP + 2))
+    gkr_layer_claim_b = HeapBuf(MU_CAP + 2)
     gkr_layer_row = HeapBuf(N_GKR_SIDES * (MU_CAP + 2))
     gkr_layer_round_pos = HeapBuf(N_GKR_SIDES * (MU_CAP + 2))
     gkr_round_fs0 = HeapBuf(N_GKR_SIDES * GKR_ROUNDS_CAP)
     gkr_round_fs1 = HeapBuf(N_GKR_SIDES * GKR_ROUNDS_CAP)
     gkr_round_cursor = HeapBuf(N_GKR_SIDES * GKR_ROUNDS_CAP)
     gkr_round_claim = HeapBuf(N_GKR_SIDES * GKR_ROUNDS_CAP)
+    gkr_round_claim_b = HeapBuf(GKR_ROUNDS_CAP)
     gkr_round_eq = HeapBuf(N_GKR_SIDES * GKR_ROUNDS_CAP)
     gkr_pts = HeapBuf(N_GKR_SIDES * GKR_POINTS_CAP)
-    for s in unroll(0, N_GKR_SIDES):
-        mu_g = ann_mus[GEN ** s]
-        assert log(mu_g) < COUNT_BITS
-        gkr_root = cursor[GEN ** 0]
-        fs = obs(fs, gkr_root)
-        cursor *= GEN
-        lfs0 = gkr_layer_fs0 * GEN ** (s * (MU_CAP + 2))
-        lfs1 = gkr_layer_fs1 * GEN ** (s * (MU_CAP + 2))
-        lcur = gkr_layer_cursor * GEN ** (s * (MU_CAP + 2))
-        lclaim = gkr_layer_claim * GEN ** (s * (MU_CAP + 2))
-        lrow = gkr_layer_row * GEN ** (s * (MU_CAP + 2))
-        lrnd = gkr_layer_round_pos * GEN ** (s * (MU_CAP + 2))
-        lfs0[GEN ** 0] = fs[0]
-        lfs1[GEN ** 0] = fs[1]
-        lcur[GEN ** 0] = cursor
-        lclaim[GEN ** 0] = gkr_root
-        lrow[GEN ** 0] = gkr_pts * GEN ** (s * GKR_POINTS_CAP)
-        lrnd[GEN ** 0] = GEN ** (s * GKR_ROUNDS_CAP)
-        for x_layer in mul_range(1, mu_g):
-            layer_fs = StackBuf(2)
-            layer_fs[0] = lfs0[x_layer]
-            layer_fs[1] = lfs1[x_layer]
-            layer_cursor = lcur[x_layer]
-            claim_l = lclaim[x_layer]
-            point_row = lrow[x_layer]
-            round_pos = lrnd[x_layer]
-            nextrow = point_row * GEN ** MU_CAP
-            gkr_round_fs0[round_pos] = layer_fs[0]
-            gkr_round_fs1[round_pos] = layer_fs[1]
-            gkr_round_cursor[round_pos] = layer_cursor
-            gkr_round_claim[round_pos] = claim_l
-            gkr_round_eq[round_pos] = 1
-            for x_round in mul_range(1, x_layer):
-                ip = round_pos * x_round
-                nfs0, nfs1, ncur, nclaim, neq, rk = sumcheck_round3(gkr_round_fs0[ip], gkr_round_fs1[ip], gkr_round_cursor[ip], gkr_round_claim[ip], gkr_round_eq[ip], point_row[x_round])
-                nextrow[x_round * GEN] = rk
-                pos_next = ip * GEN
-                gkr_round_fs0[pos_next] = nfs0
-                gkr_round_fs1[pos_next] = nfs1
-                gkr_round_cursor[pos_next] = ncur
-                gkr_round_claim[pos_next] = nclaim
-                gkr_round_eq[pos_next] = neq
-            final_pos = round_pos * x_layer
-            tail_fs = StackBuf(2)
-            tail_fs[0] = gkr_round_fs0[final_pos]
-            tail_fs[1] = gkr_round_fs1[final_pos]
-            tcur = gkr_round_cursor[final_pos]
-            tclaim = gkr_round_claim[final_pos]
-            teq = gkr_round_eq[final_pos]
-            e0 = tcur[GEN ** 0]
-            tail_fs = obs(tail_fs, e0)
-            e1 = tcur[GEN ** 1]
-            tail_fs = obs(tail_fs, e1)
-            tcur *= GEN ** 2
-            assert tclaim == teq * e0 * e1
-            tail_fs = squeeze(tail_fs)
-            layer_challenge = tail_fs[0]
-            next_claim = e0 + layer_challenge * (e0 + e1)
-            nextrow[GEN ** 0] = layer_challenge
-            xln = x_layer * GEN
-            lfs0[xln] = tail_fs[0]
-            lfs1[xln] = tail_fs[1]
-            lcur[xln] = tcur
-            lclaim[xln] = next_claim
-            lrow[xln] = nextrow
-            lrnd[xln] = round_pos * x_layer * GEN
-        fs = StackBuf(2)
-        fs[0] = lfs0[mu_g]
-        fs[1] = lfs1[mu_g]
-        cursor = lcur[mu_g]
-        final_point_row = lrow[mu_g]
-        zeta_s = zeta * GEN ** ZOFF[s]
-        for xt in mul_range(1, mu_g):
-            zeta_s[xt] = final_point_row[xt]
-        gkr_roots[s] = gkr_root
-        gkr_claims[s] = lclaim[mu_g]
+
+    # --- the push/pull pair ---
+    mu_g = ann_mus[GEN ** PUSH_SIDE]  # == pull's depth (aliased above)
+    assert log(mu_g) < COUNT_BITS
+    root_push = cursor[GEN ** 0]
+    fs = obs(fs, root_push)
+    cursor *= GEN
+    root_pull = cursor[GEN ** 0]
+    fs = obs(fs, root_pull)
+    cursor *= GEN
+    lfs0 = gkr_layer_fs0
+    lfs1 = gkr_layer_fs1
+    lcur = gkr_layer_cursor
+    lclaim = gkr_layer_claim
+    lclaim_b = gkr_layer_claim_b
+    lrow = gkr_layer_row
+    lrnd = gkr_layer_round_pos
+    lfs0[GEN ** 0] = fs[0]
+    lfs1[GEN ** 0] = fs[1]
+    lcur[GEN ** 0] = cursor
+    lclaim[GEN ** 0] = root_push
+    lclaim_b[GEN ** 0] = root_pull
+    lrow[GEN ** 0] = gkr_pts
+    lrnd[GEN ** 0] = GEN ** 0
+    for x_layer in mul_range(1, mu_g):
+        layer_fs = StackBuf(2)
+        layer_fs[0] = lfs0[x_layer]
+        layer_fs[1] = lfs1[x_layer]
+        layer_cursor = lcur[x_layer]
+        point_row = lrow[x_layer]
+        round_pos = lrnd[x_layer]
+        nextrow = point_row * GEN ** MU_CAP
+        gkr_round_fs0[round_pos] = layer_fs[0]
+        gkr_round_fs1[round_pos] = layer_fs[1]
+        gkr_round_cursor[round_pos] = layer_cursor
+        gkr_round_claim[round_pos] = lclaim[x_layer]
+        gkr_round_claim_b[round_pos] = lclaim_b[x_layer]
+        gkr_round_eq[round_pos] = 1
+        for x_round in mul_range(1, x_layer):
+            ip = round_pos * x_round
+            nfs0, nfs1, ncur, nclaim_a, nclaim_b, neq, rk = sumcheck_round3_pair(gkr_round_fs0[ip], gkr_round_fs1[ip], gkr_round_cursor[ip], gkr_round_claim[ip], gkr_round_claim_b[ip], gkr_round_eq[ip], point_row[x_round])
+            nextrow[x_round * GEN] = rk
+            pos_next = ip * GEN
+            gkr_round_fs0[pos_next] = nfs0
+            gkr_round_fs1[pos_next] = nfs1
+            gkr_round_cursor[pos_next] = ncur
+            gkr_round_claim[pos_next] = nclaim_a
+            gkr_round_claim_b[pos_next] = nclaim_b
+            gkr_round_eq[pos_next] = neq
+        final_pos = round_pos * x_layer
+        tail_fs = StackBuf(2)
+        tail_fs[0] = gkr_round_fs0[final_pos]
+        tail_fs[1] = gkr_round_fs1[final_pos]
+        tcur = gkr_round_cursor[final_pos]
+        tclaim_push = gkr_round_claim[final_pos]
+        tclaim_pull = gkr_round_claim_b[final_pos]
+        teq = gkr_round_eq[final_pos]
+        e0_push = tcur[GEN ** 0]
+        tail_fs = obs(tail_fs, e0_push)
+        e1_push = tcur[GEN ** 1]
+        tail_fs = obs(tail_fs, e1_push)
+        e0_pull = tcur[GEN ** 2]
+        tail_fs = obs(tail_fs, e0_pull)
+        e1_pull = tcur[GEN ** 3]
+        tail_fs = obs(tail_fs, e1_pull)
+        tcur *= GEN ** 4
+        assert tclaim_push == teq * e0_push * e1_push
+        assert tclaim_pull == teq * e0_pull * e1_pull
+        tail_fs = squeeze(tail_fs)
+        layer_challenge = tail_fs[0]
+        nextrow[GEN ** 0] = layer_challenge
+        xln = x_layer * GEN
+        lfs0[xln] = tail_fs[0]
+        lfs1[xln] = tail_fs[1]
+        lcur[xln] = tcur
+        lclaim[xln] = e0_push + layer_challenge * (e0_push + e1_push)
+        lclaim_b[xln] = e0_pull + layer_challenge * (e0_pull + e1_pull)
+        lrow[xln] = nextrow
+        lrnd[xln] = round_pos * x_layer * GEN
+    fs = StackBuf(2)
+    fs[0] = lfs0[mu_g]
+    fs[1] = lfs1[mu_g]
+    cursor = lcur[mu_g]
+    final_point_row = lrow[mu_g]
+    for xt in mul_range(1, mu_g):
+        zeta[xt] = final_point_row[xt]  # the SHARED point (ZOFF[0] == ZOFF[1] == 0)
+    gkr_roots[PUSH_SIDE] = root_push
+    gkr_roots[PULL_SIDE] = root_pull
+    gkr_claims[PUSH_SIDE] = lclaim[mu_g]
+    gkr_claims[PULL_SIDE] = lclaim_b[mu_g]
+
+    # --- the count tree, alone ---
+    mu_g = ann_mus[GEN ** COUNT_SIDE]
+    assert log(mu_g) < COUNT_BITS
+    gkr_root = cursor[GEN ** 0]
+    fs = obs(fs, gkr_root)
+    cursor *= GEN
+    lfs0 = gkr_layer_fs0 * GEN ** (COUNT_SIDE * (MU_CAP + 2))
+    lfs1 = gkr_layer_fs1 * GEN ** (COUNT_SIDE * (MU_CAP + 2))
+    lcur = gkr_layer_cursor * GEN ** (COUNT_SIDE * (MU_CAP + 2))
+    lclaim = gkr_layer_claim * GEN ** (COUNT_SIDE * (MU_CAP + 2))
+    lrow = gkr_layer_row * GEN ** (COUNT_SIDE * (MU_CAP + 2))
+    lrnd = gkr_layer_round_pos * GEN ** (COUNT_SIDE * (MU_CAP + 2))
+    lfs0[GEN ** 0] = fs[0]
+    lfs1[GEN ** 0] = fs[1]
+    lcur[GEN ** 0] = cursor
+    lclaim[GEN ** 0] = gkr_root
+    lrow[GEN ** 0] = gkr_pts * GEN ** (COUNT_SIDE * GKR_POINTS_CAP)
+    lrnd[GEN ** 0] = GEN ** (COUNT_SIDE * GKR_ROUNDS_CAP)
+    for x_layer in mul_range(1, mu_g):
+        layer_fs = StackBuf(2)
+        layer_fs[0] = lfs0[x_layer]
+        layer_fs[1] = lfs1[x_layer]
+        layer_cursor = lcur[x_layer]
+        claim_l = lclaim[x_layer]
+        point_row = lrow[x_layer]
+        round_pos = lrnd[x_layer]
+        nextrow = point_row * GEN ** MU_CAP
+        gkr_round_fs0[round_pos] = layer_fs[0]
+        gkr_round_fs1[round_pos] = layer_fs[1]
+        gkr_round_cursor[round_pos] = layer_cursor
+        gkr_round_claim[round_pos] = claim_l
+        gkr_round_eq[round_pos] = 1
+        for x_round in mul_range(1, x_layer):
+            ip = round_pos * x_round
+            nfs0, nfs1, ncur, nclaim, neq, rk = sumcheck_round3(gkr_round_fs0[ip], gkr_round_fs1[ip], gkr_round_cursor[ip], gkr_round_claim[ip], gkr_round_eq[ip], point_row[x_round])
+            nextrow[x_round * GEN] = rk
+            pos_next = ip * GEN
+            gkr_round_fs0[pos_next] = nfs0
+            gkr_round_fs1[pos_next] = nfs1
+            gkr_round_cursor[pos_next] = ncur
+            gkr_round_claim[pos_next] = nclaim
+            gkr_round_eq[pos_next] = neq
+        final_pos = round_pos * x_layer
+        tail_fs = StackBuf(2)
+        tail_fs[0] = gkr_round_fs0[final_pos]
+        tail_fs[1] = gkr_round_fs1[final_pos]
+        tcur = gkr_round_cursor[final_pos]
+        tclaim = gkr_round_claim[final_pos]
+        teq = gkr_round_eq[final_pos]
+        e0 = tcur[GEN ** 0]
+        tail_fs = obs(tail_fs, e0)
+        e1 = tcur[GEN ** 1]
+        tail_fs = obs(tail_fs, e1)
+        tcur *= GEN ** 2
+        assert tclaim == teq * e0 * e1
+        tail_fs = squeeze(tail_fs)
+        layer_challenge = tail_fs[0]
+        next_claim = e0 + layer_challenge * (e0 + e1)
+        nextrow[GEN ** 0] = layer_challenge
+        xln = x_layer * GEN
+        lfs0[xln] = tail_fs[0]
+        lfs1[xln] = tail_fs[1]
+        lcur[xln] = tcur
+        lclaim[xln] = next_claim
+        lrow[xln] = nextrow
+        lrnd[xln] = round_pos * x_layer * GEN
+    fs = StackBuf(2)
+    fs[0] = lfs0[mu_g]
+    fs[1] = lfs1[mu_g]
+    cursor = lcur[mu_g]
+    final_point_row = lrow[mu_g]
+    zeta_count = zeta * GEN ** ZOFF[COUNT_SIDE]
+    for xt in mul_range(1, mu_g):
+        zeta_count[xt] = final_point_row[xt]
+    gkr_roots[COUNT_SIDE] = gkr_root
+    gkr_claims[COUNT_SIDE] = lclaim[mu_g]
 
     # ---- count root nonzero ----
     assert gkr_roots[COUNT_SIDE] != 0  # count-tree root nonzero: no read count self-cancels
@@ -1162,20 +1294,20 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
     assert lhsb == rhsb
 
     # ---- 3× leaf decomposition (claims pooled; bytecode Public DEFERRED) ----
-    bytecode_vals = HeapBuf(N_BYTECODE_VALS)
-    hint_witness(bytecode_vals[0:N_BYTECODE_VALS], "bytecode_vals")
+    bytecode_vals = HeapBuf(BYTECODE_COLS)
+    hint_witness(bytecode_vals[0:BYTECODE_COLS], "bytecode_vals")
     # Reconstruct Ṽ₀(ζ) per side and assert it equals the GKR leaf value. The
     # committed-coordinate values ride the stream (observed, pooled); the Public
     # (bytecode) coordinate values are hinted (bytecode_vals) and exported as deferred
     # claims; Index coordinates use the factored index MLE.
     claim_idx = 0
-    bytecode_idx = 0
     for s in unroll(0, N_GKR_SIDES):
         acc = 0
         selector_sum = 0
         smu_gs = ann_mus[GEN ** s]
         zeta_zs = zeta * GEN ** ZOFF[s]
         for b in unroll(SIDE_BLOCK_START[s], SIDE_BLOCK_START[s + 1]):
+            block_public_idx = 0
             # eq_hi over the ζ coords above κ against the selector bits derived
             # below; the selector length is mu_s − κ, i.e. g^mu_s / g^κ.
             kappa_g = block_kappa[GEN ** b]
@@ -1231,8 +1363,10 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
                         idx_chain[xt * GEN] = idx_chain[xt] * (1 + zeta_zs[xt] * idxc_tab[xt])  # Index-coord MLE: prod_t (1 + zeta_t * (1 + g^(2^t)))
                     coord_val = idx_chain[kappa_g]
                 if COORD_TYPE[BLOCK_COORD_OFF[b] + i] == COORD_KIND_PUBLIC:
-                    coord_val = bytecode_vals[GEN ** bytecode_idx]
-                    bytecode_idx += 1
+                    # push and pull share zeta, so BOTH bytecode blocks read the
+                    # same six evaluations (indexed per block, not globally).
+                    coord_val = bytecode_vals[GEN ** block_public_idx]
+                    block_public_idx += 1
                 if s == COUNT_SIDE:
                     inner_sum += coord_val
                 else:
@@ -1248,27 +1382,25 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
     # ---- stacked-bytecode reduction ----
     # The bytecode is ONE multilinear in BYTECODE_LOG + LOG2_BYTECODE_COLS
     # variables (BYTECODE_COLS encoding columns stacked along the selector
-    # bits). Absorb the per-column values, sample the selector challenges, and
-    # reduce each point's claims to B(zeta_lo, sel) = sum_c eq(sel, c) * v_c.
-    for k in unroll(0, N_BYTECODE_VALS):
+    # bits), and push/pull share zeta, so there is ONE opening point: absorb
+    # the values, sample the selector challenges, and reduce to the single
+    # claim B(zeta_lo, sel) = sum_c eq(sel, c) * v_c.
+    for k in unroll(0, BYTECODE_COLS):
         fs = obs(fs, bytecode_vals[GEN ** k])
     bytecode_sel = StackBuf(LOG2_BYTECODE_COLS)
     for t in unroll(0, LOG2_BYTECODE_COLS):
         fs = squeeze(fs)
         sv = fs[0]
         bytecode_sel[t] = sv
-    bytecode_reduced = StackBuf(2)
-    for s in unroll(0, 2):
-        wv = 0
-        for c in unroll(0, BYTECODE_COLS):
-            e = GEN ** 0
-            for t in unroll(0, LOG2_BYTECODE_COLS):
-                if (c // (2 ** t)) % 2 == 1:
-                    e *= bytecode_sel[t]
-                else:
-                    e *= (1 + bytecode_sel[t])
-            wv += e * bytecode_vals[GEN ** (BYTECODE_COLS * s + c)]
-        bytecode_reduced[s] = wv
+    bytecode_reduced = 0
+    for c in unroll(0, BYTECODE_COLS):
+        e = GEN ** 0
+        for t in unroll(0, LOG2_BYTECODE_COLS):
+            if (c // (2 ** t)) % 2 == 1:
+                e *= bytecode_sel[t]
+            else:
+                e *= (1 + bytecode_sel[t])
+        bytecode_reduced += e * bytecode_vals[GEN ** c]
 
     # ---- 6x per-table zerocheck (XOR, MUL, SET, DEREF, JUMP, BLAKE3) ----
     # For each table: eta, the zerocheck point r (tau samples), tau eq-trick
@@ -1926,26 +2058,24 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
 
 
     # ---- export this sub-proof's deferred-claim data to the caller ----
-    # defer_out layout, offsets after the [0..2*KBC) bytecode points
+    # defer_out layout, offsets after the [0..KBC) shared bytecode point
     # (SEL = LOG2_BYTECODE_COLS, LCR = LINCHECK_ROUNDS):
-    #   +0..SEL bytecode_sel | +SEL, +SEL+1 bytecode_reduced | +SEL+2 alpha
-    #   | +SEL+3 z_skip | +SEL+4.. zrho | +SEL+4+LCR.. lincheck rs
-    #   | +SEL+4+2*LCR.. z_partial (2^K_SKIP) | +SEL+4+2^K_SKIP+2*LCR matpart.
+    #   +0..SEL bytecode_sel | +SEL bytecode_reduced | +SEL+1 alpha
+    #   | +SEL+2 z_skip | +SEL+3.. zrho | +SEL+3+LCR.. lincheck rs
+    #   | +SEL+3+2*LCR.. z_partial (2^K_SKIP) | +SEL+3+2^K_SKIP+2*LCR matpart.
     for k in unroll(0, BYTECODE_LOG):
         defer_out[GEN ** k] = zeta[GEN ** k]
-        defer_out[GEN ** (BYTECODE_LOG + k)] = zeta[GEN ** (MU_CAP + k)]
     for k in unroll(0, LOG2_BYTECODE_COLS):
-        defer_out[GEN ** (2 * BYTECODE_LOG + k)] = bytecode_sel[k]
-    defer_out[GEN ** (2 * BYTECODE_LOG + LOG2_BYTECODE_COLS)] = bytecode_reduced[0]
-    defer_out[GEN ** (2 * BYTECODE_LOG + LOG2_BYTECODE_COLS + 1)] = bytecode_reduced[1]
-    defer_out[GEN ** (2 * BYTECODE_LOG + LOG2_BYTECODE_COLS + 2)] = lincheck_alpha
-    defer_out[GEN ** (2 * BYTECODE_LOG + LOG2_BYTECODE_COLS + 3)] = zerocheck_z
+        defer_out[GEN ** (BYTECODE_LOG + k)] = bytecode_sel[k]
+    defer_out[GEN ** (BYTECODE_LOG + LOG2_BYTECODE_COLS)] = bytecode_reduced
+    defer_out[GEN ** (BYTECODE_LOG + LOG2_BYTECODE_COLS + 1)] = lincheck_alpha
+    defer_out[GEN ** (BYTECODE_LOG + LOG2_BYTECODE_COLS + 2)] = zerocheck_z
     for k in unroll(0, LINCHECK_ROUNDS):
-        defer_out[GEN ** (2 * BYTECODE_LOG + LOG2_BYTECODE_COLS + 4 + k)] = zerocheck_rhos[GEN ** k]
-        defer_out[GEN ** (2 * BYTECODE_LOG + LOG2_BYTECODE_COLS + 4 + LINCHECK_ROUNDS + k)] = lincheck_rs[GEN ** k]
+        defer_out[GEN ** (BYTECODE_LOG + LOG2_BYTECODE_COLS + 3 + k)] = zerocheck_rhos[GEN ** k]
+        defer_out[GEN ** (BYTECODE_LOG + LOG2_BYTECODE_COLS + 3 + LINCHECK_ROUNDS + k)] = lincheck_rs[GEN ** k]
     for k in unroll(0, 2 ** K_SKIP):
-        defer_out[GEN ** (2 * BYTECODE_LOG + LOG2_BYTECODE_COLS + 4 + 2 * LINCHECK_ROUNDS + k)] = z_partial[GEN ** k]
-    defer_out[GEN ** (2 * BYTECODE_LOG + LOG2_BYTECODE_COLS + 4 + 2 ** K_SKIP + 2 * LINCHECK_ROUNDS)] = matrix_eval[0]
+        defer_out[GEN ** (BYTECODE_LOG + LOG2_BYTECODE_COLS + 3 + 2 * LINCHECK_ROUNDS + k)] = z_partial[GEN ** k]
+    defer_out[GEN ** (BYTECODE_LOG + LOG2_BYTECODE_COLS + 3 + 2 ** K_SKIP + 2 * LINCHECK_ROUNDS)] = matrix_eval[0]
     return
 
 
@@ -2006,14 +2136,14 @@ def main():
         for k in unroll(0, DEFER_SIZE):
             agg_fs = obs(agg_fs, defer[GEN ** (sub * DEFER_SIZE + k)])
 
-    # ---- bytecode batching sumcheck (BYTECODE_VARS variables, 2*NSUB claims) ----
-    gamma_bc = StackBuf(2 * NSUB)
+    # ---- bytecode batching sumcheck (BYTECODE_VARS variables, NSUB claims) ----
+    gamma_bc = StackBuf(NSUB)
     bc_running = 0
-    for t in unroll(0, 2 * NSUB):
+    for t in unroll(0, NSUB):
         agg_fs = squeeze(agg_fs)
         gv = agg_fs[0]
         gamma_bc[t] = gv
-        bc_running += gv * defer[GEN ** ((t // 2) * DEFER_SIZE + 2 * BYTECODE_LOG + LOG2_BYTECODE_COLS + t % 2)]
+        bc_running += gv * defer[GEN ** (t * DEFER_SIZE + BYTECODE_LOG + LOG2_BYTECODE_COLS)]
     bc_point = HeapBuf(BYTECODE_VARS)
     for rd in unroll(0, BYTECODE_VARS):
         msg_g1 = bc_sumcheck_msgs[GEN ** (2 * rd)]
@@ -2028,12 +2158,12 @@ def main():
         bc_running = msg_ginf * rv * rv + c_one * rv + g_zero  # fold the degree-2 batching-sumcheck round at rv
     # terminal: W(r*) in-circuit; the reduced bytecode claim B(r*) is deferred.
     bc_weight = 0
-    for t in unroll(0, 2 * NSUB):
+    for t in unroll(0, NSUB):
         e = GEN ** 0
         for k in unroll(0, BYTECODE_LOG):
-            e *= (1 + defer[GEN ** ((t // 2) * DEFER_SIZE + (t % 2) * BYTECODE_LOG + k)] + bc_point[GEN ** k])
+            e *= (1 + defer[GEN ** (t * DEFER_SIZE + k)] + bc_point[GEN ** k])
         for k in unroll(0, LOG2_BYTECODE_COLS):
-            e *= (1 + defer[GEN ** ((t // 2) * DEFER_SIZE + 2 * BYTECODE_LOG + k)] + bc_point[GEN ** (BYTECODE_LOG + k)])
+            e *= (1 + defer[GEN ** (t * DEFER_SIZE + BYTECODE_LOG + k)] + bc_point[GEN ** (BYTECODE_LOG + k)])
         bc_weight += gamma_bc[t] * e
     bytecode_star = bc_star_hint[0]
     bc_final = bytecode_star * bc_weight  # terminal: claim == B(r*) * W(r*); B(r*) (bytecode_star) is deferred
@@ -2046,7 +2176,7 @@ def main():
         agg_fs = squeeze(agg_fs)
         gv = agg_fs[0]
         gamma_mat[t] = gv
-        mat_running += gv * defer[GEN ** (t * DEFER_SIZE + 2 * BYTECODE_LOG + LOG2_BYTECODE_COLS + 4 + 2 ** K_SKIP + 2 * LINCHECK_ROUNDS)]
+        mat_running += gv * defer[GEN ** (t * DEFER_SIZE + BYTECODE_LOG + LOG2_BYTECODE_COLS + 3 + 2 ** K_SKIP + 2 * LINCHECK_ROUNDS)]
     mat_point = HeapBuf(2 * K_LOG)
     for rd in unroll(0, 2 * K_LOG):
         msg_g1 = mat_sumcheck_msgs[GEN ** (2 * rd)]
@@ -2070,21 +2200,21 @@ def main():
     weight_a = 0
     weight_b = 0
     for t in unroll(0, NSUB):
-        z_skip_t = defer[GEN ** (t * DEFER_SIZE + 2 * BYTECODE_LOG + LOG2_BYTECODE_COLS + 3)]
+        z_skip_t = defer[GEN ** (t * DEFER_SIZE + BYTECODE_LOG + LOG2_BYTECODE_COLS + 2)]
         row_nums = StackBuf(2 ** K_SKIP)
         lag64(z_skip_t, row_nums, 0)
         row_weight = 0
         for i in unroll(0, 2 ** K_SKIP):
             row_weight += row_nums[i] * ISDOM[i] * eq_rows[GEN ** (2 ** K_SKIP - 2 + i)]
         for k in unroll(0, LINCHECK_ROUNDS):
-            row_weight *= (1 + defer[GEN ** (t * DEFER_SIZE + 2 * BYTECODE_LOG + LOG2_BYTECODE_COLS + 4 + k)] + mat_point[GEN ** (K_SKIP + k)])
+            row_weight *= (1 + defer[GEN ** (t * DEFER_SIZE + BYTECODE_LOG + LOG2_BYTECODE_COLS + 3 + k)] + mat_point[GEN ** (K_SKIP + k)])
         col_weight = 0
         for i in unroll(0, 2 ** K_SKIP):
-            col_weight += defer[GEN ** (t * DEFER_SIZE + 2 * BYTECODE_LOG + LOG2_BYTECODE_COLS + 4 + 2 * LINCHECK_ROUNDS + i)] * eq_cols[GEN ** (2 ** K_SKIP - 2 + i)]
+            col_weight += defer[GEN ** (t * DEFER_SIZE + BYTECODE_LOG + LOG2_BYTECODE_COLS + 3 + 2 * LINCHECK_ROUNDS + i)] * eq_cols[GEN ** (2 ** K_SKIP - 2 + i)]
         for j in unroll(0, LINCHECK_ROUNDS):
-            col_weight *= (1 + defer[GEN ** (t * DEFER_SIZE + 2 * BYTECODE_LOG + LOG2_BYTECODE_COLS + 4 + LINCHECK_ROUNDS + j)] + mat_point[GEN ** (2 * K_LOG - 1 - j)])
+            col_weight *= (1 + defer[GEN ** (t * DEFER_SIZE + BYTECODE_LOG + LOG2_BYTECODE_COLS + 3 + LINCHECK_ROUNDS + j)] + mat_point[GEN ** (2 * K_LOG - 1 - j)])
         weight_u = row_weight * col_weight
-        weight_a += gamma_mat[t] * defer[GEN ** (t * DEFER_SIZE + 2 * BYTECODE_LOG + LOG2_BYTECODE_COLS + 2)] * weight_u
+        weight_a += gamma_mat[t] * defer[GEN ** (t * DEFER_SIZE + BYTECODE_LOG + LOG2_BYTECODE_COLS + 1)] * weight_u
         weight_b += gamma_mat[t] * weight_u
     a_star = mat_stars_hint[0]
     b_star = mat_stars_hint[1]

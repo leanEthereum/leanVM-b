@@ -129,8 +129,7 @@ fn prove_inner(pi: [F128; 2], hashes: usize, iters: usize) -> (Program, leanvm_b
 struct SubDefer {
     pi: [F128; 2],
     kbc: usize,
-    zeta_push: Vec<F128>,
-    zeta_pull: Vec<F128>,
+    zeta: Vec<F128>,
     sb: Vec<F128>,
     wbc: Vec<F128>,
     lc_alpha: F128,
@@ -209,7 +208,7 @@ fn gen_agg(
     for d in subs {
         h.observe(d.pi[0]);
         h.observe(d.pi[1]);
-        for &v in d.zeta_push.iter().chain(&d.zeta_pull) {
+        for &v in &d.zeta {
             h.observe(v);
         }
         for &v in &d.sb {
@@ -232,18 +231,14 @@ fn gen_agg(
         h.observe(d.matpart);
     }
 
-    // ---- bytecode batching sumcheck (dense, 2^kbcv) ----
-    let gbc: Vec<F128> = (0..2 * nsub).map(|_| h.sample()).collect();
+    // ---- bytecode batching sumcheck (dense, 2^kbcv; ONE claim per sub, at
+    // the shared push/pull point) ----
+    let gbc: Vec<F128> = (0..nsub).map(|_| h.sample()).collect();
     let mut bt = stacked_bytecode(program, proof0, subs[0].pi);
     let mut wt = vec![F128::ZERO; 1 << kbcv];
     let points: Vec<Vec<F128>> = subs
         .iter()
-        .flat_map(|d| {
-            [
-                d.zeta_push.iter().chain(&d.sb).copied().collect::<Vec<_>>(),
-                d.zeta_pull.iter().chain(&d.sb).copied().collect::<Vec<_>>(),
-            ]
-        })
+        .map(|d| d.zeta.iter().chain(&d.sb).copied().collect::<Vec<_>>())
         .collect();
     for (t, p) in points.iter().enumerate() {
         let eqt = flare::zerocheck::univariate_skip::build_eq(p);
@@ -251,7 +246,7 @@ fn gen_agg(
             *w += gbc[t] * e;
         }
     }
-    let mut brun: F128 = (0..2 * nsub).map(|t| gbc[t] * subs[t / 2].wbc[t % 2]).fold(F128::ZERO, |a, x| a + x);
+    let mut brun: F128 = (0..nsub).map(|t| gbc[t] * subs[t].wbc[0]).fold(F128::ZERO, |a, x| a + x);
     let mut bscr = Vec::new();
     let mut r_bc = Vec::new();
     for _ in 0..kbcv {
@@ -486,6 +481,8 @@ fn gen_verify(
     // Fixed capacities: every buffer/stride placeholder is a global cap so
     // the placeholder map is SHAPE-INDEPENDENT (the definition of generic).
     let mumax = 40usize;
+    // Push and pull share their GKR point: both sides' claims read zeta region 0.
+    let zoff = [0usize, 0, 2 * mumax];
     let taumax_cap = 33usize;
     let stream_cap = 8192usize;
     assert!(*smu.iter().max().unwrap() <= mumax && proof.stream.len() <= stream_cap);
@@ -545,8 +542,7 @@ fn gen_verify(
 
     // Bus: the bytecode claims carry the push/pull ζ_lo points and sb.
     let kbc = summary.bytecode_claims[0].point.len() - 3;
-    let zeta_push: Vec<F128> = summary.bytecode_claims[0].point[..kbc].to_vec();
-    let zeta_pull: Vec<F128> = summary.bytecode_claims[1].point[..kbc].to_vec();
+    let zeta: Vec<F128> = summary.bytecode_claims[0].point[..kbc].to_vec();
     let sb: Vec<F128> = summary.bytecode_claims[0].point[kbc..].to_vec();
 
     let taus = l.taus;
@@ -643,17 +639,13 @@ fn gen_verify(
     assert!(grinds.next().is_none(), "every grind consumed");
 
     // ---- hints ----
-    // bcv: the deferred bytecode evaluations (leaf's own scan, block/coord order).
-    let (kbc2, bcv_push) = leanvm_b::leaf::public_evals(&l.push, &zeta_push);
-    let (_, bcv_pull) = leanvm_b::leaf::public_evals(&l.pull, &zeta_pull);
+    // bcv: the deferred bytecode evaluations at the SHARED push/pull point
+    // (leaf's own scan, coord order; both bytecode blocks carry the same six).
+    let (kbc2, bcv) = leanvm_b::leaf::public_evals(&l.push, &zeta);
     assert_eq!(kbc2, kbc);
-    let bcv: Vec<F128> = bcv_push.iter().chain(&bcv_pull).copied().collect();
-    assert_eq!(bcv.len(), nbcv);
+    assert_eq!(bcv.len(), nbcv / 2);
     let sb3: [F128; 3] = sb.clone().try_into().unwrap();
-    let wbc = vec![
-        leanvm_b::leaf::stacked_bytecode_value(&bcv[..6], &sb3),
-        leanvm_b::leaf::stacked_bytecode_value(&bcv[6..], &sb3),
-    ];
+    let wbc = vec![leanvm_b::leaf::stacked_bytecode_value(&bcv, &sb3)];
     // checkpoints: the verifier's phase-boundary sponge states (guest cvh).
 
     // ---- per-sub HINT data (the placeholder map is built once, elsewhere) ----
@@ -801,10 +793,10 @@ fn gen_verify(
                     if valcols.contains(i) {
                         let slot_i = leanvm_b::blake3_flock::SLOTS[valcols.iter().position(|v| v == i).unwrap()];
                         let nvt = 7 + blk.kappa;
-                        push_desc(3, s * mumax, blk.kappa, slot_i, qpkd_pl.offset >> nvt, nvt);
+                        push_desc(3, zoff[s], blk.kappa, slot_i, qpkd_pl.offset >> nvt, nvt);
                     } else {
                         let pl = l.placements[*i];
-                        push_desc(0, s * mumax, blk.kappa, 0, pl.offset >> blk.kappa, blk.kappa);
+                        push_desc(0, zoff[s], blk.kappa, 0, pl.offset >> blk.kappa, blk.kappa);
                     }
                 }
             }
@@ -836,7 +828,7 @@ fn gen_verify(
     }
     for &pslot in leanvm_b::blake3_flock::PIN_SLOTS.iter() {
         let nvt = 7 + pin_kappa;
-        push_desc(3, pin_side * mumax, pin_kappa, pslot, qpkd_pl.offset >> nvt, nvt);
+        push_desc(3, zoff[pin_side], pin_kappa, pslot, qpkd_pl.offset >> nvt, nvt);
     }
     assert_eq!(cpbuf.len(), ncl, "descriptor count == pool size");
     let rssel_full = qpkd_pl.offset >> qpkdv;
@@ -867,8 +859,7 @@ fn gen_verify(
     let deferred = SubDefer {
         pi,
         kbc,
-        zeta_push,
-        zeta_pull,
+        zeta,
         sb: sb.clone(),
         wbc: wbc.clone(),
         lc_alpha,
@@ -1051,6 +1042,8 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     let kbc = program.prog.len().trailing_zeros() as usize;
     let sides: [&[Block]; 3] = [&l.push, &l.pull, &l.count];
     let mumax = 40usize;
+    // Push and pull share their GKR point: both sides' claims read zeta region 0.
+    let zoff = [0usize, 0, 2 * mumax];
     let taumax_cap = 33usize;
     let stream_cap = 8192usize;
     let taus = l.taus;
@@ -1106,7 +1099,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
             for c in &blk.coords {
                 if let Coord::Col(i) | Coord::GCol(i) = c {
                     cpbuf.push(if valcols.contains(i) { 3 } else { 0 });
-                    cpoff.push(s * mumax);
+                    cpoff.push(zoff[s]);
                 }
             }
         }
@@ -1119,7 +1112,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         }
     }
     cpbuf.push(2); cpoff.push(0); // PI claim on MEM
-    for _ in leanvm_b::blake3_flock::PIN_SLOTS.iter() { cpbuf.push(3); cpoff.push(pin_side * mumax); }
+    for _ in leanvm_b::blake3_flock::PIN_SLOTS.iter() { cpbuf.push(3); cpoff.push(zoff[pin_side]); }
     assert_eq!(cpbuf.len(), ncl, "descriptor count == pool size");
 
     // ---- the placeholder map ----
@@ -1140,7 +1133,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("ILD0", u(G.inv()).to_string());
     ps("ILD1", u((F128::ONE + G).inv()).to_string());
     ps("ILD2", u((G * (F128::ONE + G)).inv()).to_string());
-    ps("ZOFF", ints(&[0, mumax, 2 * mumax]));
+    ps("ZOFF", ints(&zoff));
     ps("MU_CAP", mumax.to_string());
     ps("GKR_ROUNDS_CAP", (mumax * (mumax + 1) / 2 + mumax + 2).to_string());
     ps("GKR_POINTS_CAP", ((mumax + 1) * mumax).to_string());
@@ -1165,7 +1158,6 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     let idxc: Vec<u128> = (0..34).map(|i| { let mut g2k = G; for _ in 0..i { g2k = g2k * g2k; } u(F128::ONE + g2k) }).collect();
     ps("INDEX_MLE_FACTORS", us(&idxc));
     ps("NCLAIMS", ncl.to_string());
-    ps("N_BYTECODE_VALS", nbcv.to_string());
     ps("N_AIR_COLS", ints(&ncol));
     ps("AIR_COLS_CAP", (ncol.iter().max().unwrap() + 1).to_string());
     ps("N_TABLES", l.taus.len().to_string());
@@ -1175,7 +1167,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("BUS_GRIND_SHIFT", (127 - leanvm_b::SECURITY_BITS).to_string());
     // Per-claim y-slot hint stride (overlap mask / slot bit rows).
     ps("YR_SLOT_STRIDE", "8".to_string());
-    ps("PIN_ZETA_OFF", (pin_side * mumax).to_string());
+    ps("PIN_ZETA_OFF", zoff[pin_side].to_string());
     let pinv: Vec<u128> = leanvm_b::blake3_flock::pin_constants().iter().map(|&v| u(v)).collect();
     ps("PIN_VALUES", us(&pinv));
     ps("R1CSLBL", u(word16(b"flock-r1cs-v0", 0)).to_string());
@@ -1339,7 +1331,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     let log2_bc_cols = log2_ceil(bc_cols);
     ps("BYTECODE_COLS", bc_cols.to_string());
     ps("LOG2_BYTECODE_COLS", log2_bc_cols.to_string());
-    ps("DEFER_SIZE", (2 * kbc + log2_bc_cols + 2 * lcrounds + 69).to_string());
+    ps("DEFER_SIZE", (kbc + log2_bc_cols + 2 * lcrounds + 68).to_string());
     ps("BYTECODE_VARS", (kbc + log2_bc_cols).to_string());
     let label_state = Sponge::new(b"leanvm-b", &[]).state();
     ps("SEEDB0", u(label_state[0]).to_string());
