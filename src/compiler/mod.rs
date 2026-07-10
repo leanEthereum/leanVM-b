@@ -272,6 +272,7 @@ fn resolve(op: &LOp, entry: &HashMap<String, u32>, sentinel: u32, base: u32) -> 
         KVal::Entry(name) => g_pow(entry[name] as usize),
         KVal::EndSentinel => g_pow(sentinel as usize),
         KVal::Local(i) => g_pow((base + i) as usize),
+        KVal::Poison => crate::field::G.inv(), // g^-1: outside the bytecode cube
     };
     match op {
         LOp::Set { o, k: kv } => Op::Set {

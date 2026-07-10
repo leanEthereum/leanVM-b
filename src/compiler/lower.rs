@@ -586,6 +586,40 @@ impl FnLower<'_> {
         }
     }
 
+    /// `assert a != b` — one `XOR` and one conditional `JUMP` on `a + b`. When
+    /// the sides differ (`a + b ≠ 0`) the jump is taken to the continuation, so
+    /// execution proceeds; when they are equal it falls through to a `SET` +
+    /// unconditional `JUMP` to the poison pc `g^-1` ([`KVal::Poison`]), which
+    /// lies outside the committed bytecode cube — the bytecode bus cannot
+    /// balance a read there, so no valid proof continues. Same `JUMP`-nonzero
+    /// primitive as [`Self::lower_if`], no prover hint (unlike `(a-b)·inv == 1`).
+    /// A compile-time-equal pair is a hard compile error.
+    fn lower_assert_ne(&mut self, a: &Expr, b: &Expr) {
+        // Compile-time literals (e.g. after `Const`-arg substitution): a
+        // trivially-true pair emits nothing, an equal pair is a hard error.
+        // Restricted to plain literals so a field value is never confused with a
+        // g-power index (unlike stack-index folding).
+        if let (Expr::Lit(x), Expr::Lit(y)) = (a, b) {
+            assert!(x != y, "assert a != b: sides are the compile-time-equal literal {x}");
+            return;
+        }
+        let (la, lb) = (self.expr(a), self.expr(b));
+        let x = self.fresh();
+        self.emit(LOp::Xor { a: la, b: lb, c: x }); // x = a + b: nonzero ⇔ a != b
+        let sfp = self.self_fp();
+        let one = self.one();
+        // a != b: skip the poison and continue at the join (patched below).
+        let cont = self.fresh();
+        let cset = self.code.len();
+        self.emit(LOp::Set { o: cont, k: KVal::Local(0) });
+        self.emit(LOp::Jump { oc: x, od: cont, of: sfp });
+        // a == b: fall through to the poison jump (g^-1, an unreachable pc).
+        let pd = self.fresh();
+        self.emit(LOp::Set { o: pd, k: KVal::Poison });
+        self.emit(LOp::Jump { oc: one, od: pd, of: sfp });
+        self.patch_local(cset, self.code.len());
+    }
+
     /// The frame cell holding `g^{k-1}` — the range-check product target — set
     /// lazily once per distinct bound `k` and shared by that bound's checks.
     fn bound_cell(&mut self, k: u64) -> Off {
@@ -1634,6 +1668,7 @@ impl FnLower<'_> {
                     k: KVal::Const(F128::ZERO),
                 });
             }
+            Stmt::AssertNe(a, b) => self.lower_assert_ne(a, b),
             Stmt::AssertLt(e, k) => self.lower_assert_lt(e, *k),
             Stmt::HintWitness { dest, name } => self.lower_hint_witness(dest, name),
             Stmt::If {
@@ -1911,7 +1946,12 @@ fn body_inlinable(body: &[Stmt]) -> bool {
 
 fn stmt_inline_safe(s: &Stmt) -> bool {
     match s {
-        Stmt::Let(..) | Stmt::Store(..) | Stmt::HintWitness { .. } | Stmt::AssertEq(..) | Stmt::AssertLt(..) => true,
+        Stmt::Let(..)
+        | Stmt::Store(..)
+        | Stmt::HintWitness { .. }
+        | Stmt::AssertEq(..)
+        | Stmt::AssertNe(..)
+        | Stmt::AssertLt(..) => true,
         Stmt::Call(f, _) => f == "blake3",
         Stmt::If { then, els, .. } => then.iter().all(stmt_inline_safe) && els.iter().all(stmt_inline_safe),
         Stmt::Unroll { body, .. } => body.iter().all(stmt_inline_safe),
@@ -1973,7 +2013,7 @@ fn free_vars_stmt(s: &Stmt, refs: &mut Vec<String>, bound: &mut std::collections
                 bound.insert(n.clone());
             });
         }
-        Stmt::AssertEq(a, b) => {
+        Stmt::AssertEq(a, b) | Stmt::AssertNe(a, b) => {
             free_vars_expr(a, refs);
             free_vars_expr(b, refs);
         }

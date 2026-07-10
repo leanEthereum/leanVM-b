@@ -522,6 +522,9 @@ impl Parser {
             if let Some((a, b)) = split_once_top(rest, "==") {
                 return Ok(Stmt::AssertEq(parse_expr(&a)?, parse_expr(&b)?));
             }
+            if let Some((a, b)) = split_once_top(rest, "!=") {
+                return Ok(Stmt::AssertNe(parse_expr(&a)?, parse_expr(&b)?));
+            }
             // `assert log X < log Y` (`Y` a compile-time g-power) or
             // `assert log X < k` (`k` an integer exponent) — a range check in
             // the exponent: proves `log_g(X) < k`.
@@ -542,7 +545,7 @@ impl Parser {
                 };
                 return Ok(Stmt::AssertLt(parse_expr(x)?, bound));
             }
-            return Err("`assert` needs `==` or `log _ < _`".into());
+            return Err("`assert` needs `==`, `!=`, or `log _ < _`".into());
         }
         // Augmented assignment `x OP= rhs` (Python `*=`, `+=`, `//=`, `%=`,
         // `-=`) desugars to `x = x OP (rhs)`.
@@ -878,6 +881,7 @@ fn subst_stmt(s: &Stmt, name: &str, to: &Expr) -> (Stmt, bool) {
             ns.iter().any(|n| n == name),
         ),
         Stmt::AssertEq(a, b) => (Stmt::AssertEq(e(a), e(b)), false),
+        Stmt::AssertNe(a, b) => (Stmt::AssertNe(e(a), e(b)), false),
         Stmt::AssertLt(a, k) => (Stmt::AssertLt(e(a), *k), false),
         Stmt::Call(f, args) => (Stmt::Call(f.clone(), args.iter().map(e).collect()), false),
         Stmt::HintWitness { dest, name: n } => (

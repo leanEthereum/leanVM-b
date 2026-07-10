@@ -18,6 +18,11 @@ pub(crate) enum KVal {
     /// fixed. Emitted with a placeholder by the `if`/`else` lowering and
     /// backpatched ([`FnLower::patch_local`]).
     Local(u32),
+    /// The poison pc `g^-1`, which lies outside the committed bytecode cube
+    /// `{g^0, …, g^{B-1}}`. A failed `assert a != b` jumps here; since the
+    /// bytecode channel seeds only the cube, a read at `g^-1` has no matching
+    /// push and the bus cannot balance, so no valid proof continues past it.
+    Poison,
 }
 
 #[derive(Clone, Debug)]
