@@ -45,7 +45,9 @@ from snark_lib import *
 #     + sort_order (the bus-leaf packing: a perm-checked ordering gives each
 #     block an offset, and the selector is pinned by (g^sel)^(2^kappa) ==
 #     g^offset alignment), and rs_yslot_bits/claim_yslot_bits/
-#     claim_overlap_mask beyond yr_log_n (asserted zero);
+#     claim_overlap_mask beyond yr_log_n (asserted zero), and the terminal
+#     x-part lengths claim_low_len/claim_sel_len/claim_low_vars (bounded to
+#     the written zeta/rho/fold regions, so no read reaches free padding);
 #   - identity-certified (well-formedness checked here — booleanity, range
 #     checks, quotient ties — with the VALUE pinned by a protocol identity
 #     against committed data): block_mu_quot (sel_len_g * kappa_g == g^mu),
@@ -748,7 +750,7 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1):
             yr_eval = fold_final_msg(final_msg, fold_w, 0, LIG_YR_LOG_LEN[m_idx])
             residual_chain[xr * GEN] = residual_chain[xr] + alpha_weights[GEN ** (lvl * LIG_MAX_QUERIES[m_idx]) * xr] * prefix_eq * yr_eval
         inner_chain[GEN ** (lvl + 1)] = inner_chain[GEN ** lvl] + level_betas[GEN ** lvl] * residual_chain[GEN ** LIG_QUERIES[m_idx * LIG_MAX_LEVELS + lvl]]  # accumulate beta_lvl * (per-level residual sum) into the grand residual
-    return sumcheck_target, fold_challenges, final_msg, inner_chain[GEN ** LIG_N_LEVELS[m_idx]], GEN ** LIG_YR_LOG_LEN[m_idx], GEN ** (YR_LOG_CAP - LIG_YR_LOG_LEN[m_idx])
+    return sumcheck_target, fold_challenges, final_msg, inner_chain[GEN ** LIG_N_LEVELS[m_idx]], GEN ** LIG_YR_LOG_LEN[m_idx], GEN ** (YR_LOG_CAP - LIG_YR_LOG_LEN[m_idx]), GEN ** LIG_TOTAL_FOLDS[m_idx]
 
 
 def exponent_tables():
@@ -1715,7 +1717,7 @@ def verify_sub(pi_0, pi_1, delta_pows, g_logs, g_logs_pow2, g_squares, defer_out
     assert m_exp == g_total
     sel = gmv * LIG_MIN_SHIFT_INV  # g^(m - MIN): the match_range arm index selecting the opening candidate
     assert log(sel) < LIG_N_CANDIDATES
-    sumcheck_target, fold_challenges, final_msg, inner_total, yr_log_n_g, yr_pad_g = match_range(log(sel), range(0, LIG_N_CANDIDATES), lambda m_idx: open_stacked(m_idx, fs[0], fs[1], target, commit_root_0, commit_root_1))
+    sumcheck_target, fold_challenges, final_msg, inner_total, yr_log_n_g, yr_pad_g, fold_cap_g = match_range(log(sel), range(0, LIG_N_CANDIDATES), lambda m_idx: open_stacked(m_idx, fs[0], fs[1], target, commit_root_0, commit_root_1))
 
     # ---- generalized eval_b terminal (runtime claim shapes) ----
     # Per-claim lengths, selector bits, and slot data are HINTED; the final
@@ -1724,6 +1726,10 @@ def verify_sub(pi_0, pi_1, delta_pows, g_logs, g_logs_pow2, g_squares, defer_out
     # level_query_sum here. All selector products use eq(b, r) = 1 + b + r.
     claim_low_len = HeapBuf(NCL)
     hint_witness(claim_low_len[0:NCL], "claim_low_len")
+    claim_zr_slack = HeapBuf(NCL)
+    hint_witness(claim_zr_slack[0:NCL], "claim_zr_slack")
+    claim_fold_slack = HeapBuf(NCL)
+    hint_witness(claim_fold_slack[0:NCL], "claim_fold_slack")
     claim_sel_len = HeapBuf(NCL)
     hint_witness(claim_sel_len[0:NCL], "claim_sel_len")
     claim_low_vars = HeapBuf(NCL)
@@ -1746,6 +1752,24 @@ def verify_sub(pi_0, pi_1, delta_pows, g_logs, g_logs_pow2, g_squares, defer_out
     for j in unroll(0, NCL):
         low_len_g = claim_low_len[GEN ** j]
         assert log(low_len_g) < 34
+        # Bound the low-part reads to their WRITTEN regions, so an over-long
+        # hint cannot pull free (unwritten, prover-committed) padding cells:
+        #  - low_len <= mu_s / tau_t (the zeta/rho written extent), and
+        #  - low_len (+7 for the qpkd slot) <= lenris (the fold-challenge count).
+        fold_slack = claim_fold_slack[GEN ** j]
+        assert log(fold_slack) < 34
+        if CLAIM_POINT_BUF[j] == 3:
+            assert fold_cap_g == low_len_g * GEN ** 7 * fold_slack  # low_len + 7 <= lenris
+        else:
+            assert fold_cap_g == low_len_g * fold_slack  # low_len <= lenris
+        if CLAIM_POINT_BUF[j] != 2:
+            zr_slack = claim_zr_slack[GEN ** j]
+            assert log(zr_slack) < 34
+            if CLAIM_POINT_BUF[j] == 1:
+                zr_g = dims_g[GEN ** (1 + CLAIM_POINT_OFF[j] // TAU_CAP)]
+            else:
+                zr_g = ann_mus[GEN ** (CLAIM_POINT_OFF[j] // MU_CAP)]
+            assert zr_g == low_len_g * zr_slack  # low_len <= mu_s (zeta) / tau_t (rho)
         low_chain = HeapBuf(35)
         if CLAIM_POINT_BUF[j] == 0:
             zptr = zeta * GEN ** CLAIM_POINT_OFF[j]
@@ -1777,6 +1801,10 @@ def verify_sub(pi_0, pi_1, delta_pows, g_logs, g_logs_pow2, g_squares, defer_out
         assert log(seln) < 34
         nlow = claim_low_vars[GEN ** j]
         assert log(nlow) < 40
+        # selector loop reads fold_challenges[nlow .. nlow+seln); pin the reach
+        # so it stays in [0, lenris): either seln == 0 (empty loop) or
+        # nlow + seln == lenris (the honest overlap-free case).
+        assert (nlow * seln + fold_cap_g) * (seln + 1) == 0
         ris_hi = fold_challenges * nlow
         selrow = claim_sel_bits * GEN ** (33 * j)
         sel_chain = HeapBuf(35)
