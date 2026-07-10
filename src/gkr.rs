@@ -194,13 +194,16 @@ pub fn prove_product(leaves: Vec<F128>, ps: &mut ProverState) -> (F128, LeafClai
     (root, LeafClaim { point: r, value })
 }
 
-/// Prove TWO equal-size grand products in lockstep: both roots are bound, then
-/// every layer round sends tree A's message triple, tree B's, and samples ONE
-/// shared challenge (likewise one shared line challenge per layer), so both
-/// trees reduce to leaf claims at the SAME point. Sound by the usual union
-/// bound (two degree-2 differences per shared challenge). Used for the bus
-/// push/pull pair, whose matched blocks give equal μ — the shared point then
-/// needs a single bytecode opening and one ζ buffer.
+/// Prove TWO equal-size grand products as ONE RLC-batched GKR: both roots are
+/// bound, a combiner λ is sampled, and each layer runs a SINGLE sumcheck on
+/// the combined summand `eq·(eᵃ·oᵃ + λ·eᵇ·oᵇ)` (one message triple per round,
+/// one shared challenge), so both trees reduce to leaf claims at the SAME
+/// point. Each layer binds the four tail evaluations and then samples a FRESH
+/// λ for the next layer, which pins the individual values inside the bound
+/// combination (Schwartz–Zippel); the last layer's individuals are pinned by
+/// the decompose identities. Used for the bus push/pull pair, whose matched
+/// blocks give equal μ — the shared point then needs a single bytecode
+/// opening and one ζ buffer.
 pub fn prove_product_pair(
     leaves_a: Vec<F128>,
     leaves_b: Vec<F128>,
@@ -212,6 +215,7 @@ pub fn prove_product_pair(
     let (root_a, root_b) = (layers_a[mu][0], layers_b[mu][0]);
     ps.add_scalar(root_a);
     ps.add_scalar(root_b);
+    let mut lambda = ps.sample();
 
     let mut r: Vec<F128> = Vec::new();
     let (mut value_a, mut value_b) = (root_a, root_b);
@@ -226,8 +230,13 @@ pub fn prove_product_pair(
 
         let mut rho = Vec::with_capacity(k);
         for _ in 0..k {
-            ps.add_scalars(&tree_a.round_message(&eqr));
-            ps.add_scalars(&tree_b.round_message(&eqr));
+            let msg_a = tree_a.round_message(&eqr);
+            let msg_b = tree_b.round_message(&eqr);
+            ps.add_scalars(&[
+                msg_a[0] + lambda * msg_b[0],
+                msg_a[1] + lambda * msg_b[1],
+                msg_a[2] + lambda * msg_b[2],
+            ]);
             let rk = ps.sample();
             rho.push(rk);
             tree_a.fold(rk);
@@ -242,6 +251,7 @@ pub fn prove_product_pair(
         let c = ps.sample();
         value_a = interp(tree_a.even[0], tree_a.odd[0], c);
         value_b = interp(tree_b.even[0], tree_b.odd[0], c);
+        lambda = ps.sample(); // fresh combiner: pins the individual tail values
 
         let mut next_point = Vec::with_capacity(k + 1);
         next_point.push(c);
@@ -296,46 +306,48 @@ pub fn verify_product(mu: usize, vs: &mut VerifierState) -> Result<(F128, LeafCl
     Ok((root, LeafClaim { point: r, value: claim }))
 }
 
-/// Verify a lockstep pair proof ([`prove_product_pair`]): both roots, then per
-/// round both message triples against their own running claims with ONE shared
-/// challenge. Returns the two (root, claim) pairs; the claims share the point.
+/// Verify an RLC-batched pair proof ([`prove_product_pair`]): both roots, a
+/// combiner λ, then per layer ONE standard sumcheck on the combined claim,
+/// four tail evaluations checked as `eq·(e₀ᵃ·e₁ᵃ + λ·e₀ᵇ·e₁ᵇ)`, a line
+/// challenge, and a fresh λ. Returns the two (root, claim) pairs; the claims
+/// share the point.
 pub fn verify_product_pair(
     mu: usize,
     vs: &mut VerifierState,
 ) -> Result<((F128, LeafClaim), (F128, LeafClaim)), GkrError> {
     let root_a = vs.next_scalar().map_err(|_| GkrError::Truncated)?;
     let root_b = vs.next_scalar().map_err(|_| GkrError::Truncated)?;
+    let mut lambda = vs.sample();
     let nodes = tri_nodes();
     let mut r: Vec<F128> = Vec::new();
-    let (mut claim_a, mut claim_b) = (root_a, root_b);
+    let (mut value_a, mut value_b) = (root_a, root_b);
 
     for i in (1..=mu).rev() {
         let k = mu - i;
+        let mut claim = value_a + lambda * value_b;
         let mut rho = Vec::with_capacity(k);
-        let mut eq_acc = F128::ONE; // ∏_{l<round} eq(r_l, ρ_l), shared
+        let mut eq_acc = F128::ONE; // ∏_{l<round} eq(r_l, ρ_l)
         for (round, &rj) in r.iter().enumerate().take(k) {
-            let msg_a = vs.next_scalars(3).map_err(|_| GkrError::Truncated)?;
-            let msg_b = vs.next_scalars(3).map_err(|_| GkrError::Truncated)?;
-            let line = |m: &[F128]| eq_acc * ((F128::ONE + rj) * m[0] + rj * m[1]);
-            if line(&msg_a) != claim_a || line(&msg_b) != claim_b {
+            let msg = vs.next_scalars(3).map_err(|_| GkrError::Truncated)?;
+            if eq_acc * ((F128::ONE + rj) * msg[0] + rj * msg[1]) != claim {
                 return Err(GkrError::SumcheckInconsistent { layer: i, round });
             }
             let rk = vs.sample();
             rho.push(rk);
             eq_acc *= F128::ONE + rj + rk;
-            claim_a = eq_acc * lagrange_eval(&nodes, &msg_a, rk);
-            claim_b = eq_acc * lagrange_eval(&nodes, &msg_b, rk);
+            claim = eq_acc * lagrange_eval(&nodes, &msg, rk);
         }
         let eval0_a = vs.next_scalar().map_err(|_| GkrError::Truncated)?;
         let eval1_a = vs.next_scalar().map_err(|_| GkrError::Truncated)?;
         let eval0_b = vs.next_scalar().map_err(|_| GkrError::Truncated)?;
         let eval1_b = vs.next_scalar().map_err(|_| GkrError::Truncated)?;
-        if claim_a != eq_acc * eval0_a * eval1_a || claim_b != eq_acc * eval0_b * eval1_b {
+        if claim != eq_acc * (eval0_a * eval1_a + lambda * (eval0_b * eval1_b)) {
             return Err(GkrError::LayerMismatch { layer: i });
         }
         let c = vs.sample();
-        claim_a = interp(eval0_a, eval1_a, c);
-        claim_b = interp(eval0_b, eval1_b, c);
+        value_a = interp(eval0_a, eval1_a, c);
+        value_b = interp(eval0_b, eval1_b, c);
+        lambda = vs.sample(); // fresh combiner: pins the individual tail values
 
         let mut next_point = Vec::with_capacity(k + 1);
         next_point.push(c);
@@ -344,7 +356,7 @@ pub fn verify_product_pair(
     }
 
     Ok((
-        (root_a, LeafClaim { point: r.clone(), value: claim_a }),
-        (root_b, LeafClaim { point: r, value: claim_b }),
+        (root_a, LeafClaim { point: r.clone(), value: value_a }),
+        (root_b, LeafClaim { point: r, value: value_b }),
     ))
 }
