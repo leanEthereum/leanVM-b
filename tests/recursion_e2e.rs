@@ -1402,7 +1402,9 @@ fn run_recursion(inner: &[(usize, usize)]) {
     let batch = build_batch(inner);
     let Batch { rep, merged, gpi, program0, proof0, pi0, reduced, nsub, total_inner_cycles } = batch;
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/verify_recursive.py");
+    let t = std::time::Instant::now();
     let mut guest = compile(&parse_file_with_replacements(path, &rep).expect("parse verify_recursive.py"));
+    let t_compile = t.elapsed();
     for (name, entries) in &merged {
         guest.set_witness(name, entries.clone());
     }
@@ -1434,6 +1436,7 @@ fn run_recursion(inner: &[(usize, usize)]) {
         pow(real_instrs),
         guest.prog.len().trailing_zeros()
     );
+    println!("  recursion program compilation : {t_compile:?}");
     println!("  committed witness size      : 2^{:.3}", (stats.committed as f64).log2());
     println!(
         "  data memory                 : 2^{} padded (2^{:.2} used)",
