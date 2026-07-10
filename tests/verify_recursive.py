@@ -40,14 +40,18 @@ from snark_lib import *
 #     (each side's g^mu = ceil_log2 of the side total, summed in the
 #     exponent), annm with mbits/minv (the committed log-size m, same
 #     pattern over the committed columns), bus_grind (max-mu ties + the
-#     byte/bit split relation);
+#     byte/bit split relation), block_pad_bits (the padding surplus, pinned
+#     to 2^kappa - real via g^real * g^delta == g^(2^kappa)), block_sel_bits
+#     + sort_order (the bus-leaf packing: a perm-checked ordering gives each
+#     block an offset, and the selector is pinned by (g^sel)^(2^kappa) ==
+#     g^offset alignment), and rs_yslot_bits/claim_yslot_bits/
+#     claim_overlap_mask beyond yr_log_n (asserted zero);
 #   - identity-certified (well-formedness checked here — booleanity, range
 #     checks, quotient ties — with the VALUE pinned by a protocol identity
-#     against committed data): block_mu_quot (sel_len_g * kappa_g == g^mu), block_sel_bits
-#     and block_pad_bits (balance + decompose identities against the GKR
-#     roots), the terminal claim shapes claim_low_len/claim_sel_len/
+#     against committed data): block_mu_quot (sel_len_g * kappa_g == g^mu),
+#     the terminal claim shapes claim_low_len/claim_sel_len/
 #     claim_low_vars/claim_qpkd_slot_bits/claim_sel_bits/claim_overlap_mask/
-#     claim_yslot_bits and rs_yslot_bits/rs_sel_len/rs_sel_bits (the eval_b
+#     claim_yslot_bits and rs_sel_len/rs_sel_bits (the eval_b
 #     terminal identity against the opening-bound target);
 #   - statement-bound (fed to the outer public-input hash): sub_pis (the sub
 #     statements, which also derive the transcript seeds), matpart (with its
@@ -102,6 +106,7 @@ N_BLOCKS = N_BLOCKS_PLACEHOLDER
 BLOCK_KAPPA_SRC = BLOCK_KAPPA_SRC_PLACEHOLDER
 BLOCK_KAPPA_ADJ = BLOCK_KAPPA_ADJ_PLACEHOLDER
 BLOCK_REAL_TABLE = BLOCK_REAL_TABLE_PLACEHOLDER
+BLOCK_SIDE = BLOCK_SIDE_PLACEHOLDER
 BLOCK_COORD_OFF = BLOCK_COORD_OFF_PLACEHOLDER
 BLOCK_COORD_COUNT = BLOCK_COORD_COUNT_PLACEHOLDER
 COORD_TYPE = COORD_TYPE_PLACEHOLDER
@@ -1044,12 +1049,13 @@ def verify_sub(pi_0, pi_1, delta_pows, defer_out):
     count_product = gkr_roots[2] * count_root_inv[GEN ** 0]  # count-tree root != 0 via a hinted inverse (product == 1 below)
     assert count_product == 1
 
-    # ---- per-block shape data (hinted; the identities certify it) ----
-    # kappa and the side-quotient g^(mu_s - kappa) are range-checked and tied
-    # to each other against the hinted mu_s; selector and padding-delta bits
-    # are boolean-checked. Wrong values cannot satisfy the balance and
-    # decompose identities against the committed bus (and, downstream, the
-    # opening), so no further certification is needed.
+    # ---- per-block shape data (hinted, then CERTIFIED) ----
+    # kappa is pinned to its structural source; the side depth mu and the
+    # selector-length quotient g^(mu-kappa) are certified below. The padding
+    # surplus (block_pad_bits) is pinned to 2^kappa - real (balance section),
+    # and the selectors (block_sel_bits) to the packed offset via alignment
+    # (decompose section) — neither is left to a single aggregate identity,
+    # which does not bind a high-entropy hint in this smooth field.
     block_kappa = HeapBuf(N_BLOCKS)
     hint_witness(block_kappa[0:N_BLOCKS], "block_kappa")
     block_mu_quot = HeapBuf(N_BLOCKS)
@@ -1083,6 +1089,31 @@ def verify_sub(pi_0, pi_1, delta_pows, defer_out):
             side_total_g *= g_squares[block_kappa[GEN ** b]]
         side_word, side_exp = pin_ceil_log(mus_bits * GEN ** (34 * s), mus_psums * GEN ** (35 * s), pow_word, g_squares, ann_mus[GEN ** s], mus_inv[s], 0, 34)
         assert side_exp == side_total_g
+
+    # ---- bus-leaf packing offsets (for the selector certification) ----
+    # The blocks of each side tile the leaf cube; block b's offset is where it
+    # sits. A hinted per-side ordering (sort_order, g^local-index by rank) is
+    # only PERMUTATION-checked (write-once slots + a range check), then offsets
+    # accumulate as a running product g^offset = Π_{earlier} g^(2^κ). The
+    # decompose then pins each selector by (g^sel)^(2^κ) == g^offset — the
+    # alignment that makes the block a sub-cube. This needs no sort/tie-break
+    # check: alignment + consecutive offsets already force a valid tiling, and
+    # the bus grand product is position-independent, so any tiling is sound.
+    sort_order = HeapBuf(N_BLOCKS)
+    hint_witness(sort_order[0:N_BLOCKS], "sort_order")
+    block_side_tab = HeapBuf(N_BLOCKS)  # global block -> its side
+    for b in unroll(0, N_BLOCKS):
+        block_side_tab[GEN ** b] = BLOCK_SIDE[b]
+    block_off_g = HeapBuf(N_BLOCKS)  # g^offset per block, keyed by global index
+    for s in unroll(0, 3):
+        g_off = GEN ** 0
+        for r in unroll(SIDE_BLOCK_START[s], SIDE_BLOCK_START[s + 1]):
+            global_g = sort_order[GEN ** r]      # g^{global block index at this rank}
+            assert log(global_g) < N_BLOCKS      # a valid block index
+            assert block_side_tab[global_g] == s  # ...belonging to THIS side
+            block_off_g[global_g] = g_off        # write-once: a repeat collides;
+            g_off *= g_squares[block_kappa[global_g]]  # an omission fails the
+    #                                              # decompose's offset read.
 
     # ---- balance: push_root · d_pull == pull_root · d_push ----
     # d_side = Π_b (γ + Σ_i α^i·COORD_PAD_VAL[i])^DELTA_b, DELTA_b = 2^κ_b − real_b
@@ -1148,13 +1179,23 @@ def verify_sub(pi_0, pi_1, delta_pows, defer_out):
             zeta_hi = zeta_zs * kappa_g
             selrow = block_sel_bits * GEN ** (b * MU_CAP)
             eq_chain = HeapBuf(MU_CAP + 2)
+            gsel_chain = HeapBuf(MU_CAP + 2)  # rebuild g^sel from the same bits
             eq_chain[GEN ** 0] = 1
+            gsel_chain[GEN ** 0] = 1
             for xk in mul_range(1, sel_len_g):
                 sbit = selrow[xk]
                 assert sbit * sbit == sbit
                 eq_chain[xk * GEN] = eq_chain[xk] * (1 + sbit + zeta_hi[xk])  # eq(sel_bit, zeta) = 1 + sel_bit + zeta over GF(2)
+                gsel_chain[xk * GEN] = gsel_chain[xk] * (1 + sbit * (g_squares[xk] + 1))  # g^sel = Π_k (sbit_k ? g^(2^k) : 1)
             eq_hi = eq_chain[sel_len_g]
             selector_sum += eq_hi
+            # certify the selector: sel = offset >> κ, i.e. (g^sel)^(2^κ) == g^offset
+            # (κ forward squarings — the alignment that makes the block a sub-cube).
+            gsel_shift_chain = HeapBuf(35)
+            gsel_shift_chain[GEN ** 0] = gsel_chain[sel_len_g]
+            for xsq in mul_range(1, kappa_g):
+                gsel_shift_chain[xsq * GEN] = gsel_shift_chain[xsq] * gsel_shift_chain[xsq]
+            assert gsel_shift_chain[kappa_g] == block_off_g[GEN ** b]
             # inner fingerprint Σ_i α^i · coord_i(ζ_lo); count side uses α=1,γ=0.
             inner_sum = 0
             alpha_pow = GEN ** 0

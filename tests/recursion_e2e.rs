@@ -682,6 +682,28 @@ fn gen_verify(
     // per block: the table index (0..5) whose count is its real row count, or
     // 6 for a shared block whose real count is the full 2^kappa cube.
     ps("BLOCK_REAL_TABLE", ints(&bks.iter().map(|&(s, _)| if s >= 2 { s - 2 } else { 6 }).collect::<Vec<_>>()));
+    // side (0/1/2) of each global block, for the packing loop to confirm it
+    // only assigns offsets to blocks of the side it is processing.
+    let mut block_side = Vec::new();
+    for (s, blocks) in sides.iter().enumerate() {
+        block_side.extend(std::iter::repeat(s).take(blocks.len()));
+    }
+    ps("BLOCK_SIDE", ints(&block_side));
+    // Per side, the kappa-descending packing order (as in leaf.rs::layout):
+    // sort_order[side_base + rank] = g^{side-local index of the rank-r block}.
+    // The guest only perm-checks it and derives offsets; any aligned tiling is
+    // sound, so this canonical order just has to match the committed leaf.
+    let mut sort_order: Vec<F128> = Vec::new();
+    let mut gbase = 0usize;
+    for blocks in sides.iter() {
+        let n = blocks.len();
+        let mut order: Vec<usize> = (0..n).collect();
+        order.sort_by(|&a, &b| blocks[b].kappa.cmp(&blocks[a].kappa).then(a.cmp(&b)));
+        for &i in &order {
+            sort_order.push(g_pow(gbase + i)); // g^{global block index}
+        }
+        gbase += n;
+    }
     ps("BLOCK_COORD_OFF", ints(&bc0));
     ps("BLOCK_COORD_COUNT", ints(&bcn));
     ps("COORD_TYPE", us(&ct));
@@ -1233,6 +1255,7 @@ fn gen_verify(
         ("rs_sel_len".to_string(), vec![g_pow(lenris - qpkdv)]),
         ("rs_sel_bits".to_string(), (0..33).map(|k| F128::new(((rssel >> k) & 1) as u64, 0)).collect()),
         ("block_kappa".to_string(), bkappa.iter().map(|&k| g_pow(k)).collect()),
+        ("sort_order".to_string(), sort_order.clone()),
         ("musbits".to_string(), {
             let mut v = Vec::new();
             for s in 0..3 {
@@ -1507,6 +1530,61 @@ fn recursion_2to1_mixed() {
 /// guest is compiled ONCE from the first shape's placeholder map; every later
 /// shape must produce the IDENTICAL map (asserted) and is verified on the
 /// same Program object. Ignored: ~6 full inner+outer proofs, minutes.
+#[test]
+#[ignore]
+fn recursion_soundness_binds() {
+    // Adversarial check that the layout-hint certifications actually BIND:
+    // the honest proof verifies, and corrupting any of the once-free hints
+    // (padding surplus, bus-leaf selectors + their packing order, and the
+    // residual-slot pad coordinates) makes the guest reject. Uses the m=22
+    // candidate, whose yr_log_n (=3) is below YR_LOG_CAP so the slot over-read
+    // path is live. Ignored: several full inner+outer proofs.
+    let cfg: &[(usize, usize)] = &[(4, 1 << 12)];
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/verify_recursive.py");
+    let batch = build_batch(cfg);
+    let mut guest =
+        compile(&parse_file_with_replacements(path, &batch.rep).expect("parse verify_recursive.py"));
+
+    let run = |g: &mut Program, merged: &[(String, Vec<Vec<F128>>)]| -> bool {
+        for (name, entries) in merged {
+            g.set_witness(name, entries.clone());
+        }
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let (proof, _) = prove(g, batch.gpi);
+            verify(g, &batch.gpi, &proof).is_ok()
+        }))
+        .unwrap_or(false)
+    };
+
+    assert!(run(&mut guest, &batch.merged), "honest proof must verify");
+
+    // each tamper flips one hint to a definitely-invalid value.
+    let tampers: &[(&str, usize, F128)] = &[
+        ("block_pad_bits", 0, F128::ONE),   // boundary block delta 0 -> 1: 2^k - real broken
+        ("block_sel_bits", 0, F128::ONE),   // wrong selector: alignment / decompose broken
+        ("rs_yslot_bits", 4, F128::ONE),    // pad coord (k=4 >= yr_log_n=3): over-read weight
+    ];
+    for &(stream, idx, val) in tampers {
+        let mut merged = batch.merged.clone();
+        let pos = merged.iter().position(|(n, _)| n == stream).expect("stream present");
+        let orig = merged[pos].1[0][idx];
+        assert_ne!(orig, val, "{stream}[{idx}] tamper must change it");
+        merged[pos].1[0][idx] = val;
+        assert!(
+            !run(&mut guest, &merged),
+            "tampering {stream}[{idx}] must be rejected by the guest"
+        );
+    }
+    // sort_order: duplicate a rank (break the packing bijection).
+    {
+        let mut merged = batch.merged.clone();
+        let pos = merged.iter().position(|(n, _)| n == "sort_order").expect("sort_order");
+        merged[pos].1[0][0] = merged[pos].1[0][1];
+        assert!(!run(&mut guest, &merged), "duplicated sort_order rank must be rejected");
+    }
+    eprintln!("all layout-hint tamperings correctly rejected");
+}
+
 #[test]
 #[ignore]
 fn recursion_generic_many() {
