@@ -104,7 +104,7 @@ pub(crate) struct Witness {
 /// (see [`slot_claims`] / [`blake3_flock::slot_point`]), which both binds them to
 /// the proven witness AND eliminates the separate value-binding sub-protocol.
 /// The committed columns' kappa SOURCES, for the recursion guest's
-/// in-circuit certification of the stacked size m = max(ceil_log2(sum of
+/// in-circuit certification of the stacked size m = max(log2_ceil(sum of
 /// 2^kappa), MIN_MU). Per committed column: `Some((source, adj))` with
 /// kappa = value(source) + adj, where source 0 is the constant 0 (kappa =
 /// adj; used for the fixed-size columns and the program bytecode length,

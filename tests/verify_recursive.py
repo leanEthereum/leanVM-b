@@ -37,7 +37,7 @@ from snark_lib import *
 #     no inverse hints anywhere now;
 #   - shape-certified (the announced sizes are the ground truth): dims_g[0]
 #     = g^log_mem (via the exponent-to-word table); the taus, side mus, and
-#     committed size m are ceil_log2's whose BITS are decomposed in-circuit
+#     committed size m are log2_ceil's whose BITS are decomposed in-circuit
 #     (decompose / decompose_sum keywords, no bit hints), and each block's
 #     kappa is DERIVED from the certified logs (no hint); annmus (push+count,
 #     pull aliased)
@@ -347,10 +347,10 @@ def grind_check(state_0, state_1, nonce, bits_ptr, nbits_g):
 
 def verify_log2_ceil(bits_row, g_logs_pow2, sq_tab, floor_e: Const, nbits: Const):
     # Verify `nbits` bits ALREADY filled in bits_row and RETURN (g_log, word,
-    # exp_prod): g_log = g^ceil_log2(word), word = Σ bit_j 2^j (an integer),
+    # exp_prod): g_log = g^log2_ceil(word), word = Σ bit_j 2^j (an integer),
     # exp_prod = Π g^(bit_j 2^j) = g^word. Booleanity + partial sums psum[j] =
-    # value of the low j bits; g_log is prover advice (the ceil_log2 keyword)
-    # pinned to ceil_log2(word) via psum[g_log] == word (word < 2^log; == 2^log
+    # value of the low j bits; g_log is prover advice (the log2_ceil keyword)
+    # pinned to log2_ceil(word) via psum[g_log] == word (word < 2^log; == 2^log
     # through g_logs_pow2) and the `!= 0` minimality check, waived at floor_e (a
     # table/PCS minimum that may sit below the ceil-log). Callers fill the bits
     # (decompose / decompose_sum) and tie the returned word or exp_prod to their
@@ -386,7 +386,7 @@ def verify_log2_ceil(bits_row, g_logs_pow2, sq_tab, floor_e: Const, nbits: Const
 
 
 def log2_ceil_word(value, g_logs_pow2, sq_tab, floor_e: Const, nbits: Const):
-    # g^ceil_log2(value) for a concrete integer `value`. The bits are hinted HERE
+    # g^log2_ceil(value) for a concrete integer `value`. The bits are hinted HERE
     # (decompose), not by the caller, then tied back to `value`. Returns
     # (g_log, g^value).
     bits = HeapBuf(GEN ** nbits)
@@ -397,7 +397,7 @@ def log2_ceil_word(value, g_logs_pow2, sq_tab, floor_e: Const, nbits: Const):
 
 
 def log2_ceil_sum(kappa_ptr, start: Const, count: Const, g_total, g_logs_pow2, sq_tab, floor_e: Const, nbits: Const):
-    # g^ceil_log2(Σ 2^κ) over kappa_ptr[start .. start+count] (κ small g-powers),
+    # g^log2_ceil(Σ 2^κ) over kappa_ptr[start .. start+count] (κ small g-powers),
     # tied to the caller's exponent-domain total g_total = Π g^(2^κ). The bits of
     # the sum are hinted HERE (decompose_sum), not by the caller.
     bits = HeapBuf(GEN ** nbits)
@@ -869,7 +869,7 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
     # The stream announced the sizes as integer WORDS; the shape-generic phases
     # need them as G-POWERS (loop bounds, match_range scrutinees). dims_g[0] =
     # g^log_mem arrives as a hint pinned to the word; dims_g[1 + t] = g^tau_t is
-    # COMPUTED by the count gadget (tau_t = ceil_log2(count_t), its bits
+    # COMPUTED by the count gadget (tau_t = log2_ceil(count_t), its bits
     # decomposed in-circuit).
     dims_g = HeapBuf(7)  # dims_g[0] = g^log_mem (hinted below); dims_g[1:7] =
     hint_witness(dims_g[0:1], "dims_g")   # g^tau_t, COMPUTED by the count gadget.
@@ -878,7 +878,7 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
     g_log_mem = dims_g[GEN ** 0]
     assert log(g_log_mem) < 33
     assert g_logs[g_log_mem] == sizes[0]
-    # count gadget: tau_t = ceil_log2(count_t). log2_ceil_word decomposes the
+    # count gadget: tau_t = log2_ceil(count_t). log2_ceil_word decomposes the
     # announced count internally (no count_bits hint) and RETURNS g^tau and
     # g^count; g^count feeds the padding-surplus certification below.
     count_gpows = HeapBuf(6)
@@ -932,7 +932,7 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
 
     # ---- 3× GKR grand product (push / pull / count), RUNTIME depth ----
     # The layer count mu_s is a hinted g-power, certified below (decompose
-    # section) as ceil_log2 of the side's block total. Both loop levels are
+    # section) as log2_ceil of the side's block total. Both loop levels are
     # runtime mul_range; the sponge, stream cursor, claim, and eq accumulator
     # thread through write-once heap chains: layer state indexed by the layer
     # cursor, round state by a per-tree position pointer advancing per round.
@@ -1050,7 +1050,7 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
     block_kappa = HeapBuf(N_BLOCKS)
     for b in unroll(0, N_BLOCKS):
         block_kappa[GEN ** b] = kappa_base[GEN ** BLOCK_KAPPA_SRC[b]] * GEN ** BLOCK_KAPPA_ADJ[b]
-    # And each side's mu is certified as ceil_log2(sum of the side's 2^kappa):
+    # And each side's mu is certified as log2_ceil(sum of the side's 2^kappa):
     # the side total rides the exponent as a product of g^(2^kappa) factors,
     # hinted bits reproduce it and reconstruct the total word, and the count
     # gadget tail pins the hinted g^mu (no floor: side totals are >= 2).
@@ -1669,7 +1669,7 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
     # ================= the Ligerito opening core (stacked, m = STACK) ========
 
     # ---- stacked Ligerito opening: dispatch on the committed log-size ----
-    # ---- certify g^m: m = max(ceil_log2(sum_cols 2^kappa), PCS_MIN_MU) ----
+    # ---- certify g^m: m = max(log2_ceil(sum_cols 2^kappa), PCS_MIN_MU) ----
     # Integer addition rides the exponent: g^total is a PRODUCT of g^(2^k)
     # factors over the committed columns (kappas from the certified
     # announced logs via the baked source map). Hinted total bits reproduce

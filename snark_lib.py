@@ -64,7 +64,7 @@ def decompose_sum(bits, kappa, start: int, count: int, nbits: int) -> None:
 
 
 def log2_ceil(bits, nbits: int, floor: int) -> _Elt:
-    """Computed advice: returns `g^max(ceil_log2(v), floor)`, where `v` is the
+    """Computed advice: returns `g^max(log2_ceil(v), floor)`, where `v` is the
     integer the `nbits`-cell `bits` buffer decodes to. The prover fills it at
     witness-generation; it is UNCONSTRAINED, so the caller must verify it (see the
     log2_ceil_word / log2_ceil_sum wrappers in the recursion guest). log2 = base-2 log of the integer, NOT the

@@ -212,11 +212,11 @@ impl Program {
                                 put(&mut mem, &mut written, &mut mem_count, b + lo + k as u32, v);
                             }
                         }
-                        RHint::CeilLog2 { bits_ptr, dst, nbits, floor } => {
+                        RHint::Log2Ceil { bits_ptr, dst, nbits, floor } => {
                             let p = get(&mem, &written, fp + bits_ptr);
                             let b = *gmap
                                 .get(&p)
-                                .unwrap_or_else(|| panic!("ceil_log2 bits pointer is not a g-power"));
+                                .unwrap_or_else(|| panic!("log2_ceil bits pointer is not a g-power"));
                             let mut word: u128 = 0;
                             for j in 0..*nbits {
                                 if !get(&mem, &written, b + j).is_zero() {
