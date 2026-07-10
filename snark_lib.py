@@ -27,6 +27,12 @@ class _Elt:
 
     __rmul__ = __mul__
 
+    def __truediv__(self, other):  # field division a / b = a · b⁻¹ (single slash)
+        _ = other
+        return _Elt()
+
+    __rtruediv__ = __truediv__
+
     def __pow__(self, k: int):
         _ = k
         return _Elt()
