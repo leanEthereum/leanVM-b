@@ -28,17 +28,19 @@ from snark_lib import *
 #     s_hat_v, lig_sumcheck_msgs, final_msg, the level roots level_roots_0/level_roots_1, the fold nonces fold_nonces, the
 #     aggregation round messages bc_sumcheck_msgs/mat_sumcheck_msgs, and the deferred bytecode values
 #     bytecode_vals (absorbed by the stacked-bytecode reduction before its challenges);
-#   - assert-checked: count_root_inv and zc_invs (hinted inverses, product
+#   - assert-checked: zc_invs (a hinted inverse USED in a division, product
 #     asserted 1), grind_bits/fold_grind_bits/query_grind_hint (grinding digest bits:
 #     booleanity + reconstruction against the in-circuit digest + the low-nbits
 #     zero-window asserts), query_index_bits (query bits: booleanity + reconstruction equal to the
 #     squeezed word), merkle_leaf_rows/merkle_paths (Merkle inclusion against the bound roots);
+#     the count-tree root nonzero and the ceil-log minimality checks are plain
+#     `assert != 0` now (no inverse hint);
 #   - shape-certified (the announced sizes are the ground truth): dims_g
-#     with count_bits/count_min_inv (the count gadget pins g^tau_t = ceil_log2 of each
+#     with count_bits (the count gadget pins g^tau_t = ceil_log2 of each
 #     announced count, g^log_mem via the exponent-to-word table), block_kappa
-#     (pinned per block to its structural source), annmus with musbits/musinv
+#     (pinned per block to its structural source), annmus with musbits
 #     (each side's g^mu = ceil_log2 of the side total, summed in the
-#     exponent), annm with mbits/minv (the committed log-size m, same
+#     exponent), annm with mbits (the committed log-size m, same
 #     pattern over the committed columns), block_pad_bits (the padding surplus, pinned
 #     to 2^kappa - real via g^real * g^delta == g^(2^kappa)), block_sel_bits
 #     + sort_order (the bus-leaf packing: a perm-checked ordering gives each
@@ -342,7 +344,7 @@ def grind_check(state_0, state_1, nonce, bits_ptr, nbits_g):
     return
 
 
-def pin_ceil_log(bits_row, psum_row, g_logs_pow2, sq_tab, g_log, min_inv, floor_e: Const, nbits: Const):
+def pin_ceil_log(bits_row, psum_row, g_logs_pow2, sq_tab, g_log, floor_e: Const, nbits: Const):
     # The ceil-log certification gadget (used for the per-table taus, the GKR
     # side depths, and the committed size m): `nbits` hinted bits are boolean-
     # constrained and folded into partial sums psum_row[j] = value of the low
@@ -350,9 +352,9 @@ def pin_ceil_log(bits_row, psum_row, g_logs_pow2, sq_tab, g_log, min_inv, floor_
     # exponent-domain product prod g^(bit_j 2^j) (for callers that certify
     # against an exponent-summed total). The hinted g_log is then pinned to
     # ceil_log2(word): psum_row[g_log] == word gives word < 2^log (with the
-    # word == 2^log case through g_logs_pow2), and the hinted-inverse nonzero
-    # check gives word > 2^(log-1), waived at the floor (a table or PCS
-    # minimum) where the true log may sit below the count's ceil-log.
+    # word == 2^log case through g_logs_pow2), and the `!= 0` minimality check
+    # gives word > 2^(log-1), waived at the floor (a table or PCS minimum)
+    # where the true log may sit below the count's ceil-log.
     psum_row[GEN ** 0] = 0
     word = 0
     exp_prod = GEN ** 0
@@ -376,8 +378,7 @@ def pin_ceil_log(bits_row, psum_row, g_logs_pow2, sq_tab, g_log, min_inv, floor_
             low_prev = psum_row[g_log * GINV]
             min_a = low_prev + word
             min_b = word + g_logs_pow2[g_log * GINV]
-            min_prod = min_a * min_b
-            assert min_prod * min_inv == 1
+            assert min_a * min_b != 0  # word > 2^(log-1): ceil-log is minimal
     return word, exp_prod
 
 
@@ -811,8 +812,6 @@ def verify_sub(pi_0, pi_1, delta_pows, g_logs, g_logs_pow2, g_squares, defer_out
     hint_witness(grind_bits[0:128], "grind_bits")
     bytecode_vals = HeapBuf(N_BYTECODE_VALS)
     hint_witness(bytecode_vals[0:N_BYTECODE_VALS], "bytecode_vals")
-    count_root_inv = HeapBuf(1)
-    hint_witness(count_root_inv[0:1], "count_root_inv")
     zc_round1 = HeapBuf(128)
     hint_witness(zc_round1[0:128], "zc_round1")
     zc_msgs = HeapBuf(2 * R1CS_ROUNDS_CAP)
@@ -863,14 +862,12 @@ def verify_sub(pi_0, pi_1, delta_pows, g_logs, g_logs_pow2, g_squares, defer_out
     # the g-power forms arrive as hints and are pinned to the words here:
     #   dims_g[0]     = g^log_mem, dims_g[1 + t] = g^tau_t (t = table);
     #   count_bits       = the 33-bit decomposition of each announced count,
-    #                      certifying tau_t = ceil_log2(count) (the gadget);
-    #   count_min_inv    = the gadget's minimality-check inverses (count > 2^(tau-1)).
+    #                      certifying tau_t = ceil_log2(count) (the gadget; the
+    #                      minimality count > 2^(tau-1) is an `assert != 0`).
     dims_g = HeapBuf(7)
     hint_witness(dims_g[0:7], "dims_g")
     count_bits = HeapBuf(6 * 33)  # 6 row counts x 33 bits
     hint_witness(count_bits[0:6 * 33], "count_bits")
-    count_min_inv = StackBuf(6)
-    hint_witness(count_min_inv[0:6], "count_min_inv")
     # Exponent-domain lookup tables (g_logs / g_logs_pow2 / g_squares) are
     # built once in main and passed in. kappa_base maps a kappa source index
     # to its certified announced log (source 0 = const, via the baked adj).
@@ -895,7 +892,7 @@ def verify_sub(pi_0, pi_1, delta_pows, g_logs, g_logs_pow2, g_squares, defer_out
     count_gpows = HeapBuf(6)  # g^count_t, for the padding-surplus certification below
     for t in unroll(0, 6):
         gtau = dims_g[GEN ** (t + 1)]
-        tau_word, tau_exp = pin_ceil_log(count_bits * GEN ** (33 * t), psums * GEN ** (35 * t), g_logs_pow2, g_squares, gtau, count_min_inv[t], FLOORS[t], 33)
+        tau_word, tau_exp = pin_ceil_log(count_bits * GEN ** (33 * t), psums * GEN ** (35 * t), g_logs_pow2, g_squares, gtau, FLOORS[t], 33)
         count = sizes[t + 1]
         assert tau_word == count
         count_gpows[GEN ** t] = tau_exp  # tau_exp = g^count_t (exponent-domain reconstruction)
@@ -1024,8 +1021,7 @@ def verify_sub(pi_0, pi_1, delta_pows, g_logs, g_logs_pow2, g_squares, defer_out
         gkr_claims[s] = lclaim[mu_g]
 
     # ---- count root nonzero (hinted inverse) ----
-    count_product = gkr_roots[2] * count_root_inv[GEN ** 0]  # count-tree root != 0 via a hinted inverse (product == 1 below)
-    assert count_product == 1
+    assert gkr_roots[2] != 0  # count-tree root nonzero: no read count self-cancels
 
     # ---- per-block shape data (hinted, then CERTIFIED) ----
     # kappa is pinned to its structural source; the side depth mu and the
@@ -1058,14 +1054,12 @@ def verify_sub(pi_0, pi_1, delta_pows, g_logs, g_logs_pow2, g_squares, defer_out
     # gadget tail pins the hinted g^mu (no floor: side totals are >= 2).
     mus_bits = HeapBuf(3 * 34)
     hint_witness(mus_bits[0:3 * 34], "musbits")
-    mus_inv = StackBuf(3)
-    hint_witness(mus_inv[0:3], "musinv")
     mus_psums = HeapBuf(3 * 35)
     for s in unroll(0, 3):
         side_total_g = GEN ** 0
         for b in unroll(SIDE_BLOCK_START[s], SIDE_BLOCK_START[s + 1]):
             side_total_g *= g_squares[block_kappa[GEN ** b]]
-        side_word, side_exp = pin_ceil_log(mus_bits * GEN ** (34 * s), mus_psums * GEN ** (35 * s), g_logs_pow2, g_squares, ann_mus[GEN ** s], mus_inv[s], 0, 34)
+        side_word, side_exp = pin_ceil_log(mus_bits * GEN ** (34 * s), mus_psums * GEN ** (35 * s), g_logs_pow2, g_squares, ann_mus[GEN ** s], 0, 34)
         assert side_exp == side_total_g
 
     # ---- bus-leaf packing offsets (for the selector certification) ----
@@ -1683,14 +1677,12 @@ def verify_sub(pi_0, pi_1, delta_pows, g_logs, g_logs_pow2, g_squares, defer_out
     # waiving minimality exactly like the per-table tau floors.
     m_bits = HeapBuf(34)
     hint_witness(m_bits[0:34], "mbits")
-    m_inv = StackBuf(1)
-    hint_witness(m_inv[0:1], "minv")
     g_total = GEN ** 0
     for c in unroll(0, N_COMMITTED_COLS):
         kg_c = kappa_base[GEN ** COL_KAPPA_SRC[c]] * GEN ** COL_KAPPA_ADJ[c]
         g_total *= g_squares[kg_c]  # sum of 2^kappa over committed cols, done as a product in the exponent
     tw_psum = HeapBuf(35)
-    m_word, m_exp = pin_ceil_log(m_bits, tw_psum, g_logs_pow2, g_squares, gmv, m_inv[0], PCS_MIN_MU, 34)
+    m_word, m_exp = pin_ceil_log(m_bits, tw_psum, g_logs_pow2, g_squares, gmv, PCS_MIN_MU, 34)
     assert m_exp == g_total
     sel = gmv * LIG_MIN_SHIFT_INV  # g^(m - MIN): the match_range arm index selecting the opening candidate
     assert log(sel) < LIG_N_CANDIDATES

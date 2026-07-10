@@ -648,7 +648,6 @@ fn gen_verify(
         leanvm_b::leaf::stacked_bytecode_value(&bcv[..6], &sb3),
         leanvm_b::leaf::stacked_bytecode_value(&bcv[6..], &sb3),
     ];
-    let cinv = summary.count_root.inv();
     // checkpoints: the verifier's phase-boundary sponge states (guest cvh).
     let cvh: Vec<F128> = summary.checkpoints.iter().map(|s| s[0]).collect();
 
@@ -1172,7 +1171,6 @@ fn gen_verify(
         }),
         ("grind_bits".to_string(), bits_of(gdig)),
         ("bytecode_vals".to_string(), bcv),
-        ("count_root_inv".to_string(), vec![cinv]),
         ("zc_round1".to_string(), zc1),
         ("zc_msgs".to_string(), {
             let mut v = zcr;
@@ -1266,18 +1264,6 @@ fn gen_verify(
             }
             v
         }),
-        ("musinv".to_string(), {
-            (0..3)
-                .map(|s| {
-                    let total: u64 = (sblk[s]..sblk[s + 1]).map(|b| 1u64 << bkappa[b]).sum();
-                    let m = smu[s];
-                    let mask = (1u64 << (m - 1)) - 1;
-                    let ma = F128::new(total & !mask, 0);
-                    let mb = F128::new(total ^ (1u64 << (m - 1)), 0);
-                    (ma * mb).inv()
-                })
-                .collect()
-        }),
         ("block_mu_quot".to_string(), {
             let side_of = |b: usize| (0..3).rev().find(|&s| b >= sblk[s]).unwrap();
             bkappa.iter().enumerate().map(|(b, &k)| g_pow(smu[side_of(b)] - k)).collect()
@@ -1314,27 +1300,6 @@ fn gen_verify(
                 .sum();
             (0..34).map(|j| F128::new((total >> j) & 1, 0)).collect()
         }),
-        ("minv".to_string(), {
-            let resolve = |s: usize, a: usize| match s {
-                0 => a,
-                1 => log_mem,
-                t => l.taus[t - 2] + a,
-            };
-            let total: u64 = leanvm_b::cpu::col_kappa_sources(kbc)
-                .into_iter()
-                .flatten()
-                .map(|(s, a)| 1u64 << resolve(s, a))
-                .sum();
-            let m = stack_mu;
-            vec![if m == leanvm_b::pcs::MIN_MU {
-                F128::ONE
-            } else {
-                let mask = (1u64 << (m - 1)) - 1;
-                let mm_a = F128::new(total & !mask, 0);
-                let mm_b = F128::new(total ^ (1u64 << (m - 1)), 0);
-                (mm_a * mm_b).inv()
-            }]
-        }),
         ("dims_g".to_string(), {
             let mut v = vec![g_pow(log_mem)];
             v.extend(l.taus.iter().map(|&t| g_pow(t)));
@@ -1349,21 +1314,6 @@ fn gen_verify(
                 }
             }
             v
-        }),
-        ("count_min_inv".to_string(), {
-            let floors = [0usize, 0, 0, 0, 0, 3];
-            (0..6)
-                .map(|t| {
-                    let (c, tau) = (proof.stream[1 + t].lo, l.taus[t]);
-                    if tau == floors[t] {
-                        return F128::ONE; // minimality waived at the floor
-                    }
-                    let mask = (1u64 << (tau - 1)) - 1;
-                    let min_a = F128::new(c & !mask, 0);
-                    let min_b = F128::new(c ^ (1u64 << (tau - 1)), 0);
-                    (min_a * min_b).inv()
-                })
-                .collect()
         }),
         ("query_nonces".to_string(), query_pow.iter().map(|&(n, _)| F128::new(n, 0)).collect()),
         (
