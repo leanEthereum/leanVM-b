@@ -751,6 +751,25 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1):
     return sumcheck_target, fold_challenges, final_msg, inner_chain[GEN ** LIG_N_LEVELS[m_idx]], GEN ** LIG_YR_LOG_LEN[m_idx], GEN ** (YR_LOG_CAP - LIG_YR_LOG_LEN[m_idx])
 
 
+def exponent_tables():
+    # Read-only lookup tables over the exponent domain, ALL indexed at runtime
+    # g-powers (so they must be heap, not stack): exp_word[g^j] = j and
+    # pow_word[g^j] = 2^j map a g-power back to its exponent / to 2^j, and
+    # g_squares[g^j] = g^(2^j) turns integer sums of powers of two into field
+    # products. Built once per sub-proof verification; returns the 3 pointers.
+    exp_word = HeapBuf(33)
+    pow_word = HeapBuf(33)
+    for j in unroll(0, 33):
+        exp_word[GEN ** j] = j
+        pow_word[GEN ** j] = 2 ** j
+    g_squares = HeapBuf(34)
+    sq_run = GEN
+    for j in unroll(0, 34):
+        g_squares[GEN ** j] = sq_run
+        sq_run *= sq_run
+    return exp_word, pow_word, g_squares
+
+
 def verify_sub(pi_0, pi_1, delta_pows, defer_out):
     # In-circuit verification of ONE inner proof for the statement
     # (pi_0, pi_1). All proof data is hinted HERE: each call pops the next
@@ -844,21 +863,10 @@ def verify_sub(pi_0, pi_1, delta_pows, defer_out):
     hint_witness(count_bits[0:6 * 33], "count_bits")
     count_min_inv = StackBuf(6)
     hint_witness(count_min_inv[0:6], "count_min_inv")
-    # Baked tables over exponents: T[g^j] = j and W[g^j] = 2^j (words), the
-    # exponent-doubling table g_squares[g^j] = g^(2^j) (integer sums of powers
-    # of two become field products), and kappa_base mapping a kappa source
-    # index to its certified announced log (source 0 = const, handled by the
-    # baked adj shift alone).
-    exp_word = HeapBuf(33)
-    pow_word = HeapBuf(33)
-    for j in unroll(0, 33):
-        exp_word[GEN ** j] = j
-        pow_word[GEN ** j] = 2 ** j
-    g_squares = HeapBuf(34)
-    sq_run = GEN
-    for j in unroll(0, 34):
-        g_squares[GEN ** j] = sq_run
-        sq_run *= sq_run
+    # Exponent-domain lookup tables (see exponent_tables); kappa_base maps a
+    # kappa source index to its certified announced log (source 0 = const,
+    # handled by the baked adj shift alone).
+    exp_word, pow_word, g_squares = exponent_tables()
     # log_mem is announced AS a log (an integer word L): T[g^L] == L pins the
     # hinted g-power to it.
     g_log_mem = dims_g[GEN ** 0]
