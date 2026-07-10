@@ -37,8 +37,8 @@ from snark_lib import *
 #     no inverse hints anywhere now;
 #   - shape-certified (the announced sizes are the ground truth): dims_g
 #     with count_bits (the count gadget pins g^tau_t = ceil_log2 of each
-#     announced count, g^log_mem via the exponent-to-word table), block_kappa
-#     (pinned per block to its structural source), annmus with musbits
+#     announced count, g^log_mem via the exponent-to-word table); each block's
+#     kappa is then DERIVED from those logs (no hint), annmus with musbits
 #     (each side's g^mu = ceil_log2 of the side total, summed in the
 #     exponent), annm with mbits (the committed log-size m, same
 #     pattern over the committed columns), block_pad_bits (the padding surplus, pinned
@@ -1017,8 +1017,6 @@ def verify_sub(pi_0, pi_1, delta_pows, g_logs, g_logs_pow2, g_squares, defer_out
     # and the selectors (block_sel_bits) to the packed offset via alignment
     # (decompose section) — neither is left to a single aggregate identity,
     # which does not bind a high-entropy hint in this smooth field.
-    block_kappa = HeapBuf(N_BLOCKS)
-    hint_witness(block_kappa[0:N_BLOCKS], "block_kappa")
     block_mu_quot = HeapBuf(N_BLOCKS)
     hint_witness(block_mu_quot[0:N_BLOCKS], "block_mu_quot")
     block_sel_bits = HeapBuf(N_BLOCKS * MU_CAP)
@@ -1028,13 +1026,12 @@ def verify_sub(pi_0, pi_1, delta_pows, g_logs, g_logs_pow2, g_squares, defer_out
     idxc_tab = HeapBuf(34)
     for t in unroll(0, 34):
         idxc_tab[GEN ** t] = INDEX_MLE_FACTORS[t]
-    # Every hinted block kappa is pinned DIRECTLY to its structural source
-    # (baked per block: the boundary consts, log_mem, the bytecode log, or
-    # tau_t) — no identity-chaining needed for the block shapes.
+    # Each block's kappa is DERIVED from its structural source (baked per block:
+    # the boundary consts, log_mem, the bytecode log, or tau_t) as a compile-time
+    # offset off an already-certified log — no hint, nothing left free.
+    block_kappa = HeapBuf(N_BLOCKS)
     for b in unroll(0, N_BLOCKS):
-        kappa_want = kappa_base[GEN ** BLOCK_KAPPA_SRC[b]] * GEN ** BLOCK_KAPPA_ADJ[b]
-        kappa_have = block_kappa[GEN ** b]
-        assert kappa_have == kappa_want
+        block_kappa[GEN ** b] = kappa_base[GEN ** BLOCK_KAPPA_SRC[b]] * GEN ** BLOCK_KAPPA_ADJ[b]
     # And each side's mu is certified as ceil_log2(sum of the side's 2^kappa):
     # the side total rides the exponent as a product of g^(2^kappa) factors,
     # hinted bits reproduce it and reconstruct the total word, and the count

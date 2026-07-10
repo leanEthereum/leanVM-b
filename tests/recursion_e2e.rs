@@ -1243,7 +1243,6 @@ fn gen_verify(
         ("rs_yslot_bits".to_string(), (0..8).map(|k| F128::new(((yrs >> k) & 1) as u64, 0)).collect()),
         ("rs_sel_len".to_string(), vec![g_pow(lenris - qpkdv)]),
         ("rs_sel_bits".to_string(), (0..33).map(|k| F128::new(((rssel >> k) & 1) as u64, 0)).collect()),
-        ("block_kappa".to_string(), bkappa.iter().map(|&k| g_pow(k)).collect()),
         ("sort_order".to_string(), sort_order.clone()),
         ("musbits".to_string(), {
             let mut v = Vec::new();
