@@ -22,7 +22,7 @@ fn ceil_log2_advice_computes_the_log() {
 def main():
     bits = HeapBuf(GEN ** 8)
     hint_witness(bits[0:8], \"bits\")
-    g_mu = ceil_log2(bits, 8, 0)
+    g_mu = log2_ceil(bits, 8, 0)
     p = 1
     p[1] = g_mu
     p[GEN] = 1
@@ -48,7 +48,7 @@ fn ceil_log2_advice_floor() {
 def main():
     bits = HeapBuf(GEN ** 8)
     hint_witness(bits[0:8], \"bits\")
-    g_mu = ceil_log2(bits, 8, 5)
+    g_mu = log2_ceil(bits, 8, 5)
     p = 1
     p[1] = g_mu
     p[GEN] = 1

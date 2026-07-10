@@ -227,6 +227,37 @@ impl Program {
                             let mu = cl.max(*floor);
                             put(&mut mem, &mut written, &mut mem_count, fp + dst, crate::field::g_pow(mu as usize));
                         }
+                        RHint::Decompose { value, bits_ptr, nbits } => {
+                            let v = get(&mem, &written, fp + value);
+                            let word = (v.hi as u128) << 64 | v.lo as u128;
+                            let bb = *gmap
+                                .get(&get(&mem, &written, fp + bits_ptr))
+                                .unwrap_or_else(|| panic!("decompose bits pointer is not a g-power"));
+                            for j in 0..*nbits {
+                                let bit = ((word >> j) & 1) as u64;
+                                put(&mut mem, &mut written, &mut mem_count, bb + j, F128::new(bit, 0));
+                            }
+                        }
+                        RHint::DecomposeSum { kappa_ptr, start, count, bits_ptr, nbits } => {
+                            let kb = *gmap
+                                .get(&get(&mem, &written, fp + kappa_ptr))
+                                .unwrap_or_else(|| panic!("decompose_sum kappa pointer is not a g-power"));
+                            let mut total: u128 = 0;
+                            for i in 0..*count {
+                                let gk = get(&mem, &written, kb + start + i);
+                                let k = *gmap
+                                    .get(&gk)
+                                    .unwrap_or_else(|| panic!("decompose_sum kappa is not a small g-power"));
+                                total += 1u128 << k;
+                            }
+                            let bb = *gmap
+                                .get(&get(&mem, &written, fp + bits_ptr))
+                                .unwrap_or_else(|| panic!("decompose_sum bits pointer is not a g-power"));
+                            for j in 0..*nbits {
+                                let bit = ((total >> j) & 1) as u64;
+                                put(&mut mem, &mut written, &mut mem_count, bb + j, F128::new(bit, 0));
+                            }
+                        }
                     }
                 }
             }

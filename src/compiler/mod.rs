@@ -88,6 +88,11 @@ pub(crate) enum RHint {
     /// Write `g^max(ceil_log2(value), floor)` into `fp+dst`, where `value` is the
     /// integer reconstructed from the `nbits` bits at the buffer `m[fp+bits_ptr]`.
     CeilLog2 { bits_ptr: Off, dst: Off, nbits: u32, floor: u32 },
+    /// Write the `nbits` bits of `m[fp+value]` into the buffer `m[fp+bits_ptr]`.
+    Decompose { value: Off, bits_ptr: Off, nbits: u32 },
+    /// Write the `nbits` bits of `Σ_{i<count} 2^{κ_i}` into `m[fp+bits_ptr]`,
+    /// each `κ_i` recovered from `m[fp+kappa_ptr]`'s buffer at offset `start+i`.
+    DecomposeSum { kappa_ptr: Off, start: u32, count: u32, bits_ptr: Off, nbits: u32 },
 }
 
 /// Compile an [`Ast`] to a provable [`Program`]. Panics on a malformed program
@@ -194,6 +199,20 @@ pub fn compile(ast: &Ast) -> Program {
                             nbits: *nbits,
                             floor: *floor,
                         },
+                        Hint::Decompose { value, bits_ptr, nbits } => RHint::Decompose {
+                            value: *value,
+                            bits_ptr: *bits_ptr,
+                            nbits: *nbits,
+                        },
+                        Hint::DecomposeSum { kappa_ptr, start, count, bits_ptr, nbits } => {
+                            RHint::DecomposeSum {
+                                kappa_ptr: *kappa_ptr,
+                                start: *start,
+                                count: *count,
+                                bits_ptr: *bits_ptr,
+                                nbits: *nbits,
+                            }
+                        }
                     })
                     .collect();
                 hints.insert(here, rhs);

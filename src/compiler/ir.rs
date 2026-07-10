@@ -93,6 +93,14 @@ pub(crate) enum Hint {
     /// `g^max(ceil_log2(value), floor)` into `m[fp·g^dst]`. Nondeterministic
     /// (prover-side); the emitting code re-verifies the result in-circuit.
     CeilLog2 { bits_ptr: Off, dst: Off, nbits: u32, floor: u32 },
+    /// Computed advice: write the `nbits` bits of the value in `m[fp+value]`
+    /// into the buffer `m[fp·g^bits_ptr]` (bit `j` at offset `j`). The emitting
+    /// code re-checks booleanity + reconstruction in-circuit.
+    Decompose { value: Off, bits_ptr: Off, nbits: u32 },
+    /// Computed advice: write the `nbits` bits of `Σ_{i<count} 2^{κ_i}` into the
+    /// buffer `m[fp·g^bits_ptr]`, where `g^{κ_i} = m[(m[fp·g^kappa_ptr])·g^{start+i}]`
+    /// (each `κ_i` recovered as a small g-power). The emitting code re-checks it.
+    DecomposeSum { kappa_ptr: Off, start: u32, count: u32, bits_ptr: Off, nbits: u32 },
 }
 
 pub(crate) struct Lowered {

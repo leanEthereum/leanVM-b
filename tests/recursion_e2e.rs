@@ -964,16 +964,6 @@ fn gen_verify(
         ("rs_yslot_bits".to_string(), (0..8).map(|k| F128::new(((yrs >> k) & 1) as u64, 0)).collect()),
         ("rs_sel_bits".to_string(), (0..33).map(|k| F128::new(((rssel >> k) & 1) as u64, 0)).collect()),
         ("sort_order".to_string(), sort_order.clone()),
-        ("musbits".to_string(), {
-            let mut v = Vec::new();
-            for s in [0usize, 2] {
-                let total: u64 = (sblk[s]..sblk[s + 1]).map(|b| 1u64 << bkappa[b]).sum();
-                for j in 0..34 {
-                    v.push(F128::new((total >> j) & 1, 0));
-                }
-            }
-            v
-        }),
         ("block_sel_bits".to_string(), {
             let mut v = Vec::new();
             for &s in &bsel {
@@ -992,30 +982,7 @@ fn gen_verify(
             }
             v
         }),
-        ("mbits".to_string(), {
-            let resolve = |s: usize, a: usize| match s {
-                0 => a,
-                1 => log_mem,
-                t => l.taus[t - 2] + a,
-            };
-            let total: u64 = leanvm_b::cpu::col_kappa_sources(kbc)
-                .into_iter()
-                .flatten()
-                .map(|(s, a)| 1u64 << resolve(s, a))
-                .sum();
-            (0..34).map(|j| F128::new((total >> j) & 1, 0)).collect()
-        }),
         ("dims_g".to_string(), vec![g_pow(log_mem)]),
-        ("count_bits".to_string(), {
-            let mut v = Vec::with_capacity(6 * 33);
-            for t in 0..6 {
-                let c = proof.stream[1 + t].lo;
-                for j in 0..33 {
-                    v.push(F128::new((c >> j) & 1, 0));
-                }
-            }
-            v
-        }),
         ("query_nonces".to_string(), query_pow.iter().map(|&(n, _)| F128::new(n, 0)).collect()),
         (
             "query_grind_hint".to_string(),

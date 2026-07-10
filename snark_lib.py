@@ -49,11 +49,25 @@ GEN = _Elt()
 """The fixed generator g = x of GF(2^128)^× (order 2^128 - 1)."""
 
 
-def ceil_log2(bits, nbits: int, floor: int) -> _Elt:
+def decompose(bits, value, nbits: int) -> None:
+    """Computed advice: the prover writes the `nbits` bits of `value` into the
+    `bits` buffer. UNCONSTRAINED — the caller must check booleanity and that the
+    bits reconstruct `value` (a range check that `value < 2^nbits`)."""
+    _ = bits, value, nbits
+
+
+def decompose_sum(bits, kappa, start: int, count: int, nbits: int) -> None:
+    """Computed advice: the prover writes the `nbits` bits of `Σ 2^κ` over
+    `kappa[start .. start+count]` (each κ a small g-power) into `bits`.
+    UNCONSTRAINED — the caller checks the reconstruction against `Π g^(2^κ)`."""
+    _ = bits, kappa, start, count, nbits
+
+
+def log2_ceil(bits, nbits: int, floor: int) -> _Elt:
     """Computed advice: returns `g^max(ceil_log2(v), floor)`, where `v` is the
     integer the `nbits`-cell `bits` buffer decodes to. The prover fills it at
-    witness-generation; it is UNCONSTRAINED, so the caller must verify it (this
-    is what `log2_ceil` does). log2 = base-2 log of the integer, NOT the
+    witness-generation; it is UNCONSTRAINED, so the caller must verify it (see the
+    log2_ceil_word / log2_ceil_sum wrappers in the recursion guest). log2 = base-2 log of the integer, NOT the
     discrete log base g that `log(...)` means."""
     _ = bits, nbits, floor
     return _Elt()

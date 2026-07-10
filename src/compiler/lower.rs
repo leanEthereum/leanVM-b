@@ -799,7 +799,7 @@ impl FnLower<'_> {
                 self.emit(LOp::Mul { a: q, b: lb, c: la });
                 q
             }
-            Expr::Call(f, args) if f == "ceil_log2" => {
+            Expr::Call(f, args) if f == "log2_ceil" => {
                 // Computed advice: the prover fills g^ceil_log2 of the value in
                 // `bits` (a `nbits`-bit buffer), floored at `floor`. Returned
                 // UNCONSTRAINED — the caller (log2_ceil) re-verifies it. Same
@@ -1705,6 +1705,28 @@ impl FnLower<'_> {
             Stmt::Match { x, cases } => self.lower_match(x, cases),
             Stmt::LetMatchRange { names, x, arms } => self.lower_match_range(names, x, arms),
             Stmt::Call(f, args) => {
+                // Computed advice fills (prover-side, re-checked by the caller):
+                // `decompose(bits, value, nbits)` writes value's bits into the
+                // buffer; `decompose_sum(bits, kappa, start, count, nbits)`
+                // writes the bits of Σ 2^κ over kappa[start..start+count].
+                if f == "decompose" {
+                    assert_eq!(args.len(), 3, "decompose(bits, value, nbits)");
+                    let bits_ptr = self.expr(&args[0]);
+                    let value = self.expr(&args[1]);
+                    let nbits = self.const_index(&args[2]);
+                    self.pending.push(Hint::Decompose { value, bits_ptr, nbits });
+                    return;
+                }
+                if f == "decompose_sum" {
+                    assert_eq!(args.len(), 5, "decompose_sum(bits, kappa, start, count, nbits)");
+                    let bits_ptr = self.expr(&args[0]);
+                    let kappa_ptr = self.expr(&args[1]);
+                    let start = self.const_index(&args[2]);
+                    let count = self.const_index(&args[3]);
+                    let nbits = self.const_index(&args[4]);
+                    self.pending.push(Hint::DecomposeSum { kappa_ptr, start, count, bits_ptr, nbits });
+                    return;
+                }
                 // `blake3(a, b, out)`: the digest of the two 256-bit operands
                 // lands in the existing 2-cell run `out` (write-once: if `out`
                 // was already written, this asserts the digest equals it). A
