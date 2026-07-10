@@ -491,6 +491,10 @@ fn gen_verify(
     let (mut sblk, mut bkappa, mut bc0, mut bcn) = (vec![0usize], vec![], vec![], vec![]);
     let (mut ct, mut cval, mut fpv) = (vec![], vec![], vec![]);
     let mut nclaims = 0usize;
+    // Claim dedup (mirrors leaf.rs): push/pull share their GKR point, so a
+    // column read by two same-kappa blocks streams/opens once. Key:
+    // (group, col, kappa), group 0 = the push/pull pair, 1 = count.
+    let mut seen_claims: std::collections::HashSet<(usize, usize, usize)> = Default::default();
     let mut nbcv = 0usize;
     for (s, blocks) in sides.iter().enumerate() {
         for (b, blk) in blocks.iter().enumerate() {
@@ -501,11 +505,15 @@ fn gen_verify(
                 let (t, v, f) = match c {
                     Coord::Const(v) => (0u128, *v, *v),
                     Coord::Col(i) => {
-                        nclaims += 1;
+                        if seen_claims.insert((usize::from(s == 2), *i, blk.kappa)) {
+                            nclaims += 1;
+                        }
                         (1, F128::ZERO, l.pad[*i])
                     }
                     Coord::GCol(i) => {
-                        nclaims += 1;
+                        if seen_claims.insert((usize::from(s == 2), *i, blk.kappa)) {
+                            nclaims += 1;
+                        }
                         (2, F128::ZERO, G * l.pad[*i])
                     }
                     Coord::Index => (3, F128::ZERO, F128::ZERO),
@@ -786,10 +794,14 @@ fn gen_verify(
         seln_v.push(seln);
         yt.push(sel_full >> seln);
     };
+    let mut desc_seen: std::collections::HashSet<(usize, usize, usize)> = Default::default();
     for (s, blocks) in sides.iter().enumerate() {
         for blk in blocks.iter() {
             for c in &blk.coords {
                 if let Coord::Col(i) | Coord::GCol(i) = c {
+                    if !desc_seen.insert((usize::from(s == 2), *i, blk.kappa)) {
+                        continue; // deduped: pooled once at its first occurrence
+                    }
                     if valcols.contains(i) {
                         let slot_i = leanvm_b::blake3_flock::SLOTS[valcols.iter().position(|v| v == i).unwrap()];
                         let nvt = 7 + blk.kappa;
@@ -1053,16 +1065,36 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     let (mut sblk, mut bc0, mut bcn) = (vec![0usize], vec![], vec![]);
     let (mut ct, mut cval, mut fpv) = (vec![], vec![], vec![]);
     let (mut nclaims, mut nbcv, mut nblocks) = (0usize, 0usize, 0usize);
-    for blocks in sides.iter() {
+    // Claim dedup (mirrors leaf.rs): per coord, fresh = first (group, col,
+    // kappa) occurrence gets the next pool slot; duplicates point at it.
+    let mut slot_of: std::collections::HashMap<(usize, usize, usize), usize> = Default::default();
+    let (mut coord_fresh, mut coord_slot) = (vec![], vec![]);
+    for (side, blocks) in sides.iter().enumerate() {
         for blk in blocks.iter() {
             bc0.push(ct.len());
             bcn.push(blk.coords.len());
             nblocks += 1;
             for c in &blk.coords {
+                // One COORD_FRESH/COORD_CLAIM_SLOT entry PER coord (the guest
+                // indexes them by global coord offset); only Col/GCol matter.
+                let (mut fresh, mut slot) = (0usize, 0usize);
+                if let Coord::Col(i) | Coord::GCol(i) = c {
+                    let key = (usize::from(side == 2), *i, blk.kappa);
+                    if let Some(&known) = slot_of.get(&key) {
+                        slot = known;
+                    } else {
+                        slot_of.insert(key, nclaims);
+                        fresh = 1;
+                        slot = nclaims;
+                        nclaims += 1;
+                    }
+                }
+                coord_fresh.push(fresh);
+                coord_slot.push(slot);
                 let (t, v, f) = match c {
                     Coord::Const(v) => (0u128, *v, *v),
-                    Coord::Col(i) => { nclaims += 1; (1, F128::ZERO, l.pad[*i]) }
-                    Coord::GCol(i) => { nclaims += 1; (2, F128::ZERO, G * l.pad[*i]) }
+                    Coord::Col(i) => (1, F128::ZERO, l.pad[*i]),
+                    Coord::GCol(i) => (2, F128::ZERO, G * l.pad[*i]),
                     Coord::Index => (3, F128::ZERO, F128::ZERO),
                     Coord::Public(_) => { nbcv += 1; (4, F128::ZERO, F128::ZERO) }
                 };
@@ -1094,10 +1126,14 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     }
     let pin_side = pin_side.expect("BLAKE3 value-column claim exists");
     let (mut cpbuf, mut cpoff) = (vec![], vec![]);
+    let mut desc_seen: std::collections::HashSet<(usize, usize, usize)> = Default::default();
     for (s, blocks) in sides.iter().enumerate() {
         for blk in blocks.iter() {
             for c in &blk.coords {
                 if let Coord::Col(i) | Coord::GCol(i) = c {
+                    if !desc_seen.insert((usize::from(s == 2), *i, blk.kappa)) {
+                        continue; // deduped: pooled once at its first occurrence
+                    }
                     cpbuf.push(if valcols.contains(i) { 3 } else { 0 });
                     cpoff.push(zoff[s]);
                 }
@@ -1155,6 +1191,9 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("COORD_TYPE", us(&ct));
     ps("COORD_CONST", us(&cval));
     ps("COORD_PAD_VAL", us(&fpv));
+    ps("COORD_FRESH", ints(&coord_fresh));
+    ps("COORD_CLAIM_SLOT", ints(&coord_slot));
+    ps("N_BUS_CLAIMS", nclaims.to_string());
     let idxc: Vec<u128> = (0..34).map(|i| { let mut g2k = G; for _ in 0..i { g2k = g2k * g2k; } u(F128::ONE + g2k) }).collect();
     ps("INDEX_MLE_FACTORS", us(&idxc));
     ps("NCLAIMS", ncl.to_string());

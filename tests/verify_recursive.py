@@ -131,6 +131,14 @@ BLOCK_COORD_COUNT = BLOCK_COORD_COUNT_PLACEHOLDER
 COORD_TYPE = COORD_TYPE_PLACEHOLDER
 COORD_CONST = COORD_CONST_PLACEHOLDER
 COORD_PAD_VAL = COORD_PAD_VAL_PLACEHOLDER
+# Claim dedup: push/pull share their GKR point, so a column read by two blocks
+# with the same kappa (across OR within the sides) is streamed and opened ONCE.
+# Per coord: COORD_FRESH = 1 on the first occurrence (read the stream, fill
+# pool slot COORD_CLAIM_SLOT), 0 on a duplicate (reuse that slot). The count
+# side has its own point, so its claims never dedup against the pair's.
+COORD_FRESH = COORD_FRESH_PLACEHOLDER
+COORD_CLAIM_SLOT = COORD_CLAIM_SLOT_PLACEHOLDER
+N_BUS_CLAIMS = N_BUS_CLAIMS_PLACEHOLDER
 # index_mle factor constants: INDEX_MLE_FACTORS[i] = 1 + g^(2^i).
 INDEX_MLE_FACTORS = INDEX_MLE_FACTORS_PLACEHOLDER
 # Committed-coordinate claims (Col/GCol coords across all sides) and the
@@ -1241,7 +1249,11 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
     for b in unroll(0, N_BLOCKS):
         block_side_tab[GEN ** b] = BLOCK_SIDE[b]
     block_off_g = HeapBuf(N_BLOCKS)  # g^offset per block, keyed by global index
-    for s in unroll(0, N_GKR_SIDES):
+    # Pull's blocks mirror push's and share zeta, so the decompose reuses push's
+    # per-block eq_hi outright: only push and count need offsets here (pull's
+    # sort_order slots go unread).
+    for cert in unroll(0, 2):
+        s = COUNT_SIDE * cert  # PUSH_SIDE (0), then COUNT_SIDE (2)
         g_off = GEN ** 0
         for r in unroll(SIDE_BLOCK_START[s], SIDE_BLOCK_START[s + 1]):
             global_g = sort_order[GEN ** r]      # g^{global block index at this rank}
@@ -1300,7 +1312,13 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
     # committed-coordinate values ride the stream (observed, pooled); the Public
     # (bytecode) coordinate values are hinted (bytecode_vals) and exported as deferred
     # claims; Index coordinates use the factored index MLE.
-    claim_idx = 0
+    # Pull's blocks mirror push's (same kappas, same offsets — generator-
+    # asserted pairing) and share zeta, so each pull block REUSES its push
+    # twin's eq_hi and Index-MLE value instead of recomputing them; its column
+    # values are mostly deduped pool reads (COORD_FRESH). The identity check
+    # against pull's own GKR claim still binds everything.
+    block_eq_hi = HeapBuf(N_BLOCKS)      # per push block, reused by its pull twin
+    block_index_mle = HeapBuf(N_BLOCKS)  # per push block with an Index coord
     for s in unroll(0, N_GKR_SIDES):
         acc = 0
         selector_sum = 0
@@ -1308,33 +1326,38 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
         zeta_zs = zeta * GEN ** ZOFF[s]
         for b in unroll(SIDE_BLOCK_START[s], SIDE_BLOCK_START[s + 1]):
             block_public_idx = 0
-            # eq_hi over the ζ coords above κ against the selector bits derived
-            # below; the selector length is mu_s − κ, i.e. g^mu_s / g^κ.
             kappa_g = block_kappa[GEN ** b]
             assert log(kappa_g) < SIZE_BITS
-            sel_len_g = smu_gs / kappa_g  # g^(mu_s - κ)
-            assert log(sel_len_g) < SIZE_BITS
-            zeta_hi = zeta_zs * kappa_g
-            # selector bits = offset >> κ: advice-decompose the offset's bits and
-            # read them shifted by κ. Rebuilding g^offset from those high bits
-            # alone (weights g^(2^(κ+k))) and asserting it equals block_off_g
-            # pins the bits AND the κ-alignment in one shot — no (g^sel)^(2^κ)
-            # squaring chain. The low κ bit cells are written but never read.
-            offset_bits = HeapBuf(GEN ** SIZE_BITS)
-            hint_decompose_bits_exponent(offset_bits, block_off_g[GEN ** b], SIZE_BITS)
-            sel_bits = offset_bits * kappa_g  # bits of sel = offset >> κ
-            eq_chain = HeapBuf(MU_CAP + 2)
-            goff_chain = HeapBuf(MU_CAP + 2)  # rebuild g^offset from the high bits
-            eq_chain[GEN ** 0] = 1
-            goff_chain[GEN ** 0] = 1
-            for xk in mul_range(1, sel_len_g):
-                sbit = sel_bits[xk]
-                assert sbit * sbit == sbit
-                eq_chain[xk * GEN] = eq_chain[xk] * (1 + sbit + zeta_hi[xk])  # eq(sel_bit, zeta) = 1 + sel_bit + zeta over GF(2)
-                goff_chain[xk * GEN] = goff_chain[xk] * (1 + sbit * (g_squares[kappa_g * xk] + 1))  # weight g^(2^(κ+k))
-            eq_hi = eq_chain[sel_len_g]
+            if s == PULL_SIDE:
+                eq_hi = block_eq_hi[GEN ** (b - SIDE_BLOCK_START[PULL_SIDE])]
+            else:
+                # eq_hi over the ζ coords above κ against the selector bits
+                # derived below; the selector length is mu_s − κ = g^mu_s / g^κ.
+                sel_len_g = smu_gs / kappa_g  # g^(mu_s - κ)
+                assert log(sel_len_g) < SIZE_BITS
+                zeta_hi = zeta_zs * kappa_g
+                # selector bits = offset >> κ: advice-decompose the offset's bits
+                # and read them shifted by κ. Rebuilding g^offset from those high
+                # bits alone (weights g^(2^(κ+k))) and asserting it equals
+                # block_off_g pins the bits AND the κ-alignment in one shot.
+                # The low κ bit cells are written but never read.
+                offset_bits = HeapBuf(GEN ** SIZE_BITS)
+                hint_decompose_bits_exponent(offset_bits, block_off_g[GEN ** b], SIZE_BITS)
+                sel_bits = offset_bits * kappa_g  # bits of sel = offset >> κ
+                eq_chain = HeapBuf(MU_CAP + 2)
+                goff_chain = HeapBuf(MU_CAP + 2)  # rebuild g^offset from the high bits
+                eq_chain[GEN ** 0] = 1
+                goff_chain[GEN ** 0] = 1
+                for xk in mul_range(1, sel_len_g):
+                    sbit = sel_bits[xk]
+                    assert sbit * sbit == sbit
+                    eq_chain[xk * GEN] = eq_chain[xk] * (1 + sbit + zeta_hi[xk])  # eq(sel_bit, zeta) = 1 + sel_bit + zeta over GF(2)
+                    goff_chain[xk * GEN] = goff_chain[xk] * (1 + sbit * (g_squares[kappa_g * xk] + 1))  # weight g^(2^(κ+k))
+                eq_hi = eq_chain[sel_len_g]
+                assert goff_chain[sel_len_g] == block_off_g[GEN ** b]  # bits == offset >> κ, κ-aligned
+                if s == PUSH_SIDE:
+                    block_eq_hi[GEN ** b] = eq_hi
             selector_sum += eq_hi
-            assert goff_chain[sel_len_g] == block_off_g[GEN ** b]  # bits == offset >> κ, κ-aligned
             # inner fingerprint Σ_i α^i · coord_i(ζ_lo); count side uses α=1,γ=0.
             inner_sum = 0
             alpha_pow = GEN ** 0
@@ -1342,26 +1365,35 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
                 if COORD_TYPE[BLOCK_COORD_OFF[b] + i] == COORD_KIND_CONST:
                     coord_val = COORD_CONST[BLOCK_COORD_OFF[b] + i]
                 if COORD_TYPE[BLOCK_COORD_OFF[b] + i] == COORD_KIND_COL:
-                    coord_val = cursor[GEN ** 0]
-                    fs = obs(fs, coord_val)
-                    cursor *= GEN
-                    claim_pool[GEN ** claim_idx] = coord_val
-                    claim_cplen_g[GEN ** claim_idx] = kappa_g  # cplen = block kappa
-                    claim_idx += 1
+                    if COORD_FRESH[BLOCK_COORD_OFF[b] + i] == 1:
+                        coord_val = cursor[GEN ** 0]
+                        fs = obs(fs, coord_val)
+                        cursor *= GEN
+                        claim_pool[GEN ** COORD_CLAIM_SLOT[BLOCK_COORD_OFF[b] + i]] = coord_val
+                        claim_cplen_g[GEN ** COORD_CLAIM_SLOT[BLOCK_COORD_OFF[b] + i]] = kappa_g  # cplen = block kappa
+                    else:
+                        coord_val = claim_pool[GEN ** COORD_CLAIM_SLOT[BLOCK_COORD_OFF[b] + i]]
                 if COORD_TYPE[BLOCK_COORD_OFF[b] + i] == COORD_KIND_GCOL:
-                    rawv = cursor[GEN ** 0]
-                    fs = obs(fs, rawv)
-                    cursor *= GEN
-                    claim_pool[GEN ** claim_idx] = rawv
-                    claim_cplen_g[GEN ** claim_idx] = kappa_g  # cplen = block kappa
-                    claim_idx += 1
+                    if COORD_FRESH[BLOCK_COORD_OFF[b] + i] == 1:
+                        rawv = cursor[GEN ** 0]
+                        fs = obs(fs, rawv)
+                        cursor *= GEN
+                        claim_pool[GEN ** COORD_CLAIM_SLOT[BLOCK_COORD_OFF[b] + i]] = rawv
+                        claim_cplen_g[GEN ** COORD_CLAIM_SLOT[BLOCK_COORD_OFF[b] + i]] = kappa_g  # cplen = block kappa
+                    else:
+                        rawv = claim_pool[GEN ** COORD_CLAIM_SLOT[BLOCK_COORD_OFF[b] + i]]
                     coord_val = GG * rawv
                 if COORD_TYPE[BLOCK_COORD_OFF[b] + i] == COORD_KIND_INDEX:
-                    idx_chain = HeapBuf(MU_CAP + 2)
-                    idx_chain[GEN ** 0] = 1
-                    for xt in mul_range(1, kappa_g):
-                        idx_chain[xt * GEN] = idx_chain[xt] * (1 + zeta_zs[xt] * idxc_tab[xt])  # Index-coord MLE: prod_t (1 + zeta_t * (1 + g^(2^t)))
-                    coord_val = idx_chain[kappa_g]
+                    if s == PULL_SIDE:
+                        coord_val = block_index_mle[GEN ** (b - SIDE_BLOCK_START[PULL_SIDE])]
+                    else:
+                        idx_chain = HeapBuf(MU_CAP + 2)
+                        idx_chain[GEN ** 0] = 1
+                        for xt in mul_range(1, kappa_g):
+                            idx_chain[xt * GEN] = idx_chain[xt] * (1 + zeta_zs[xt] * idxc_tab[xt])  # Index-coord MLE: prod_t (1 + zeta_t * (1 + g^(2^t)))
+                        coord_val = idx_chain[kappa_g]
+                        if s == PUSH_SIDE:
+                            block_index_mle[GEN ** b] = coord_val
                 if COORD_TYPE[BLOCK_COORD_OFF[b] + i] == COORD_KIND_PUBLIC:
                     # push and pull share zeta, so BOTH bytecode blocks read the
                     # same six evaluations (indexed per block, not globally).
@@ -1378,6 +1410,7 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
                 acc += eq_hi * (gamma + inner_sum)
         acc += 1 + selector_sum
         assert acc == gkr_claims[s]
+    claim_idx = N_BUS_CLAIMS  # AIR/PI/pin claims pool after the deduped bus claims
 
     # ---- stacked-bytecode reduction ----
     # The bytecode is ONE multilinear in BYTECODE_LOG + LOG2_BYTECODE_COLS
