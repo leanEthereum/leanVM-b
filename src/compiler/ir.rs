@@ -88,6 +88,11 @@ pub(crate) enum Hint {
     /// Pop stream `name`'s next entry (`len` values) into the heap cells
     /// `m[p·g^{lo+k}]`, `k < len`, where `p = m[fp·g^ptr]`.
     WitnessHeap { name: String, ptr: Off, lo: u32, len: u32 },
+    /// Computed advice for `ceil_log2`: read the `nbits` bits already in the
+    /// buffer `m[fp·g^bits_ptr]`, reconstruct their integer value, and write
+    /// `g^max(ceil_log2(value), floor)` into `m[fp·g^dst]`. Nondeterministic
+    /// (prover-side); the emitting code re-verifies the result in-circuit.
+    CeilLog2 { bits_ptr: Off, dst: Off, nbits: u32, floor: u32 },
 }
 
 pub(crate) struct Lowered {

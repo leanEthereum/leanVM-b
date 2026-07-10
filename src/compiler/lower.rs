@@ -799,6 +799,19 @@ impl FnLower<'_> {
                 self.emit(LOp::Mul { a: q, b: lb, c: la });
                 q
             }
+            Expr::Call(f, args) if f == "ceil_log2" => {
+                // Computed advice: the prover fills g^ceil_log2 of the value in
+                // `bits` (a `nbits`-bit buffer), floored at `floor`. Returned
+                // UNCONSTRAINED — the caller (log2_ceil) re-verifies it. Same
+                // "prover computes, circuit checks" pattern as `/`.
+                assert_eq!(args.len(), 3, "ceil_log2(bits, nbits, floor)");
+                let bits_ptr = self.expr(&args[0]);
+                let nbits = self.const_index(&args[1]);
+                let floor = self.const_index(&args[2]);
+                let dst = self.fresh();
+                self.pending.push(Hint::CeilLog2 { bits_ptr, dst, nbits, floor });
+                dst
+            }
             Expr::Call(f, args) => {
                 if let Some(n) = self.const_len(e) {
                     self.const_cell(F128::new(n as u64, 0))

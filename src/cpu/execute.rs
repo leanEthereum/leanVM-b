@@ -212,6 +212,21 @@ impl Program {
                                 put(&mut mem, &mut written, &mut mem_count, b + lo + k as u32, v);
                             }
                         }
+                        RHint::CeilLog2 { bits_ptr, dst, nbits, floor } => {
+                            let p = get(&mem, &written, fp + bits_ptr);
+                            let b = *gmap
+                                .get(&p)
+                                .unwrap_or_else(|| panic!("ceil_log2 bits pointer is not a g-power"));
+                            let mut word: u128 = 0;
+                            for j in 0..*nbits {
+                                if !get(&mem, &written, b + j).is_zero() {
+                                    word |= 1u128 << j;
+                                }
+                            }
+                            let cl = if word <= 1 { 0 } else { u128::BITS - (word - 1).leading_zeros() };
+                            let mu = cl.max(*floor);
+                            put(&mut mem, &mut written, &mut mem_count, fp + dst, crate::field::g_pow(mu as usize));
+                        }
                     }
                 }
             }

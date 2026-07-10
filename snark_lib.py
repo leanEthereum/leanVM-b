@@ -49,6 +49,16 @@ GEN = _Elt()
 """The fixed generator g = x of GF(2^128)^× (order 2^128 - 1)."""
 
 
+def ceil_log2(bits, nbits: int, floor: int) -> _Elt:
+    """Computed advice: returns `g^max(ceil_log2(v), floor)`, where `v` is the
+    integer the `nbits`-cell `bits` buffer decodes to. The prover fills it at
+    witness-generation; it is UNCONSTRAINED, so the caller must verify it (this
+    is what `log2_ceil` does). log2 = base-2 log of the integer, NOT the
+    discrete log base g that `log(...)` means."""
+    _ = bits, nbits, floor
+    return _Elt()
+
+
 def log(x) -> int:
     """The discrete log base GEN: `x = GEN ** log(x)`. Only meaningful inside
     a range-check assert — `assert log(x) < log(GEN ** k)` (equivalently

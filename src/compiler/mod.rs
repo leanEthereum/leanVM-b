@@ -85,6 +85,9 @@ pub(crate) enum RHint {
     WitnessStack { name: String, base: Off, len: u32 },
     /// Pop stream `name`'s next entry (`len` values) into heap cells `m[fp+ptr]·g^{lo+k}`.
     WitnessHeap { name: String, ptr: Off, lo: u32, len: u32 },
+    /// Write `g^max(ceil_log2(value), floor)` into `fp+dst`, where `value` is the
+    /// integer reconstructed from the `nbits` bits at the buffer `m[fp+bits_ptr]`.
+    CeilLog2 { bits_ptr: Off, dst: Off, nbits: u32, floor: u32 },
 }
 
 /// Compile an [`Ast`] to a provable [`Program`]. Panics on a malformed program
@@ -184,6 +187,12 @@ pub fn compile(ast: &Ast) -> Program {
                             ptr: *ptr,
                             lo: *lo,
                             len: *len,
+                        },
+                        Hint::CeilLog2 { bits_ptr, dst, nbits, floor } => RHint::CeilLog2 {
+                            bits_ptr: *bits_ptr,
+                            dst: *dst,
+                            nbits: *nbits,
+                            floor: *floor,
                         },
                     })
                     .collect();
