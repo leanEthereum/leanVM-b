@@ -1398,6 +1398,12 @@ fn run_recursion(inner: &[(usize, usize)]) {
     let t = std::time::Instant::now();
     let mut guest = compile(&parse_file_with_replacements(path, &rep).expect("parse verify_recursive.py"));
     let t_compile = t.elapsed();
+    // The recursion program size + compile time, BEFORE any inner proving.
+    let real_instrs: usize = guest.fn_ranges.iter().map(|(_, _, len)| *len as usize).sum();
+    eprintln!(
+        "recursion program: {real_instrs} instructions (2^{} padded), compiled in {t_compile:?}",
+        guest.prog.len().trailing_zeros()
+    );
     // 3: prove the inner proofs and extract the recursion witness (hints).
     let batch = build_batch(inner);
     let Batch { merged, gpi, program0, proof0, pi0, reduced, nsub, total_inner_cycles } = batch;
@@ -1425,14 +1431,6 @@ fn run_recursion(inner: &[(usize, usize)]) {
     for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3"].iter().zip(&stats.counts) {
         println!("    {name:<6} instructions     : {c:>10} = {:>7}", pow(c));
     }
-    let real_instrs: usize = guest.fn_ranges.iter().map(|(_, _, len)| *len as usize).sum();
-    println!(
-        "  guest bytecode size         : {:>10} = {:>7}   instructions (2^{} padded)",
-        real_instrs,
-        pow(real_instrs),
-        guest.prog.len().trailing_zeros()
-    );
-    println!("  recursion program compilation : {t_compile:?}");
     println!("  committed witness size      : 2^{:.3}", (stats.committed as f64).log2());
     println!(
         "  data memory                 : 2^{} padded (2^{:.2} used)",
