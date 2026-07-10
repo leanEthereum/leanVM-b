@@ -992,7 +992,6 @@ fn gen_verify(
             }
             v
         }),
-        ("annm".to_string(), vec![g_pow(stack_mu)]),
         ("mbits".to_string(), {
             let resolve = |s: usize, a: usize| match s {
                 0 => a,
@@ -1006,11 +1005,7 @@ fn gen_verify(
                 .sum();
             (0..34).map(|j| F128::new((total >> j) & 1, 0)).collect()
         }),
-        ("dims_g".to_string(), {
-            let mut v = vec![g_pow(log_mem)];
-            v.extend(l.taus.iter().map(|&t| g_pow(t)));
-            v
-        }),
+        ("dims_g".to_string(), vec![g_pow(log_mem)]),
         ("count_bits".to_string(), {
             let mut v = Vec::with_capacity(6 * 33);
             for t in 0..6 {
