@@ -35,32 +35,28 @@ from snark_lib import *
 #     the count-tree root nonzero and the ceil-log minimality checks are plain
 #     `assert != 0`, and the flock zerocheck combiner is a `/` (field division) -
 #     no inverse hints anywhere now;
-#   - shape-certified (the announced sizes are the ground truth): dims_g[0]
-#     = g^log_mem (via the exponent-to-word table); the taus, side mus, and
-#     committed size m are log2_ceil's whose BITS are decomposed in-circuit
-#     (hint_decompose_bits / hint_decompose_bits_exponent keywords, no bit
-#     hints); each block's kappa is DERIVED from the certified logs, its padding
-#     surplus (advice-decomposed from g^(2^kappa)/g^real) is pinned by
-#     g^real * g^delta == g^(2^kappa), and its selector (the offset's advice-
-#     decomposed bits read shifted by kappa) by rebuilding g^offset from the
-#     high bits; annmus (push+count, pull aliased) and sort_order (a
-#     perm-checked packing order) remain hinted, plus rs_yslot_bits/claim_yslot_bits/
-#     claim_overlap_mask beyond yr_log_n (asserted zero), and the terminal
-#     x-part lengths claim_low_len/claim_sel_len with claim_nover (pinned
-#     EXACTLY to the claim's certified low dimension cplen via claim_cplen_g —
-#     nlow = cplen + delta [DERIVED], nlow+seln = lenris+nover, nover*seln = 0,
-#     low_len = cplen - nover), and pi_cplen with pi_mem_slack/pi_fold_slack
-#     (the pi claim's cplen = min(log_mem, lenris), certified as a min: <= both,
-#     == one);
-#   - derived (computed from already-certified logs, NOT hinted): block_kappa
-#     (structural source + baked offset), block_mu_quot's sel_len = g^mu / g^κ,
-#     claim_low_vars nlow = cplen · g^delta, rs_sel_len = g^lenris / g^qpkdv;
-#   - identity-certified (well-formedness checked here — booleanity, range
-#     checks — with the VALUE pinned by a protocol identity against committed
-#     data): the terminal claim shapes claim_low_len/claim_sel_len/
-#     claim_qpkd_slot_bits/claim_sel_bits/claim_overlap_mask/
-#     claim_yslot_bits and rs_sel_bits (the eval_b terminal identity against
-#     the opening-bound target);
+#   - shape-certified (the announced sizes are the ground truth): dims_g[0] =
+#     g^log_mem is pinned to the announced word; every other structural
+#     quantity is COMPUTED from certified data, any nondeterministic step
+#     (bit decompositions, log2_ceil results) supplied by hint_* advice
+#     keywords and re-verified in-circuit — the per-table taus, the side mus
+#     (annmus_push/annmus_count hinted early for the bus grind, then tied to
+#     the computed logs; pull aliased to push), the committed size m, each
+#     block's kappa, its padding delta (g^(2^kappa)/g^real, pinned by
+#     g^real * g^delta == g^(2^kappa)), its selector bits (the offset's bits
+#     read shifted by kappa, pinned by rebuilding g^offset), the selector
+#     length g^mu / g^kappa, and rs_sel_len = g^lenris / g^qpkdv; sort_order
+#     (the packing order) is hinted but only permutation-checked — any aligned
+#     tiling is sound;
+#   - identity-certified (booleanity + range checks here; the VALUE pinned by
+#     the eval_b terminal identity against the opening-bound target):
+#     claim_low_len/claim_sel_len/claim_nover under the exact length pin
+#     (nlow = cplen * g^delta derived, nlow+seln == lenris+nover,
+#     nover*seln == 0, low_len = cplen - nover), pi_cplen with
+#     pi_mem_slack/pi_fold_slack (pi's cplen = min(log_mem, lenris), certified
+#     as a min: <= both, == one), claim_qpkd_slot_bits/claim_sel_bits/
+#     claim_yslot_bits/rs_sel_bits/rs_yslot_bits, and claim_overlap_mask (a
+#     prefix of exactly nover ones; slot coords beyond yr_log_n asserted zero);
 #   - statement-bound (fed to the outer public-input hash): inner_digest (the
 #     inner PROGRAM digest, which also seeds every sub transcript), sub_pis (the
 #     sub statements, which also derive the transcript seeds), matpart (with its
@@ -105,9 +101,9 @@ GKR_POINTS_CAP = GKR_POINTS_CAP_PLACEHOLDER
 # +BLOCK_COORD_COUNT), per coord COORD_TYPE (0=const, 1=col, 2=gcol, 3=index,
 # 4=public bytecode), COORD_CONST (the const value, else 0), COORD_PAD_VAL
 # (its default-padding fingerprint value), and the kappa SOURCE map
-# (BLOCK_KAPPA_SRC/ADJ: 0=const adj, 1=log_mem, 2+t=tau_t). The block
-# SHAPES (kappa, selector bits, padding delta) are hinted at runtime:
-# kappa pinned to its source, the rest identity-certified.
+# (BLOCK_KAPPA_SRC/ADJ: 0=const adj, 1=log_mem, 2+t=tau_t). The block SHAPES
+# are all reconstructed at runtime from the certified logs: kappa directly,
+# the padding delta and selector bits by pinned advice-decompositions.
 SIDE_BLOCK_START = SIDE_BLOCK_START_PLACEHOLDER
 N_BLOCKS = N_BLOCKS_PLACEHOLDER
 BLOCK_KAPPA_SRC = BLOCK_KAPPA_SRC_PLACEHOLDER
@@ -121,8 +117,8 @@ COORD_CONST = COORD_CONST_PLACEHOLDER
 COORD_PAD_VAL = COORD_PAD_VAL_PLACEHOLDER
 # index_mle factor constants: INDEX_MLE_FACTORS[i] = 1 + g^(2^i).
 INDEX_MLE_FACTORS = INDEX_MLE_FACTORS_PLACEHOLDER
-# Number of committed-coordinate claims (Col/GCol coords across all sides), the
-# deferred bytecode values (Public coords), and the count-root inverse hint.
+# Committed-coordinate claims (Col/GCol coords across all sides) and the
+# deferred bytecode values (Public coords).
 NCLAIMS = NCLAIMS_PLACEHOLDER
 N_BYTECODE_VALS = N_BYTECODE_VALS_PLACEHOLDER
 # Zerochecks: per-table constraint-column counts (round counts are the
@@ -817,10 +813,10 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
     #   3. bind the commitment root; bus grinding (grind_check, runtime
     #      bit count); 3x GKR grand product at runtime depth
     #      (sumcheck_round3 per round);
-    #   4. certify the block kappas + GKR side depths; balance check with
-    #      hinted padding ladders; 3x leaf decomposition against the GKR
-    #      claims (pooling the committed-coordinate claims); the
-    #      stacked-bytecode reduction (deferred);
+    #   4. derive the block kappas, certify the GKR side depths; balance check
+    #      with advice-decomposed padding ladders; 3x leaf decomposition
+    #      against the GKR claims (pooling the committed-coordinate claims);
+    #      the stacked-bytecode reduction (deferred);
     #   5. six AIR zerochecks at the certified taus (sumcheck_round3);
     #   6. public-input claim + BLAKE3 pin claims (telescoped prefix MLE);
     #   7. flock reduction: univariate-skip zerocheck + lincheck (matrix
@@ -860,29 +856,27 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
         sizes[i] = x
         cursor *= GEN
 
-    # ---- certify the hinted structural logs against the announced words ----
+    # ---- structural logs: certify g^log_mem, compute the taus ----
     # The stream announced the sizes as integer WORDS; the shape-generic phases
     # need them as G-POWERS (loop bounds, match_range scrutinees). dims_g[0] =
-    # g^log_mem arrives as a hint pinned to the word; dims_g[1 + t] = g^tau_t is
-    # COMPUTED by the count gadget (tau_t = log2_ceil(count_t), its bits
-    # decomposed in-circuit).
-    dims_g = HeapBuf(7)  # dims_g[0] = g^log_mem (hinted below); dims_g[1:7] =
-    hint_witness(dims_g[0:1], "dims_g")   # g^tau_t, COMPUTED by the count gadget.
+    # g^log_mem arrives as a hint pinned to the word; dims_g[1 + t] = g^tau_t
+    # is computed by the count gadget.
+    dims_g = HeapBuf(7)  # [g^log_mem, g^tau_0 .. g^tau_5]
+    hint_witness(dims_g[0:1], "dims_g")
     # log_mem is announced AS a log (an integer word L): the hinted g^L is pinned
     # by T[g^L] == L (g_logs is the g^j -> j table, built once in main).
     g_log_mem = dims_g[GEN ** 0]
     assert log(g_log_mem) < 33
     assert g_logs[g_log_mem] == sizes[0]
-    # count gadget: tau_t = log2_ceil(count_t). log2_ceil_word decomposes the
-    # announced count internally (no count_bits hint) and RETURNS g^tau and
-    # g^count; g^count feeds the padding-surplus certification below.
+    # count gadget: g^tau_t = log2_ceil_word(count_t), which also returns
+    # g^count_t (for the padding-surplus certification) and the count's bits.
     count_gpows = HeapBuf(6)
     for t in unroll(0, 6):
         g_tau, g_count, count5_bits = log2_ceil_word(sizes[t + 1], g_logs_pow2, g_squares, FLOORS[t], 33)
         dims_g[GEN ** (t + 1)] = g_tau
         count_gpows[GEN ** t] = g_count
-    # count5_bits holds the LAST iteration's (table 5 = BLAKE3) count bits, which
-    # the BLAKE3 constant-pin claim below reuses (no separate count_bits hint).
+    # count5_bits keeps the LAST iteration's (table 5 = BLAKE3) count bits for
+    # the BLAKE3 constant-pin claim below.
     # kappa_base maps a kappa source index to its certified announced log
     # (source 0 = const via the baked adj); the taus are now in dims_g.
     kappa_base = HeapBuf(8)
@@ -905,18 +899,16 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
     # grinding nonce: raw stream word (NOT observed), PoW-checked, then bound.
     nonce = cursor[GEN ** 0]
     cursor *= GEN
-    # Bus grind bits = push.mu + 1 + SECURITY - 128 = push.mu - 7
-    # (leaf::grand_product_grinding_bits). push.mu IS the max of the three side
-    # depths: push and pull emit their bus blocks in matched pairs (identical
-    # kappa multisets, so equal certified mus), and the count side sums strictly
-    # fewer 2^kappa (each count column rides one push flush; the state flush has
-    # none), so count.mu <= push.mu == pull.mu. ann_mus[0] is push, so the grind
-    # window is nbits = push.mu - 7, i.e. g^nbits = ann_mus[0] * g^-7.
-    ann_mus = HeapBuf(3)  # g^mu per GKR side: 0=push, 1=pull, 2=count. Push and
-    hint_witness(ann_mus[0:1], "annmus_push")   # pull emit bus blocks in matched
-    hint_witness(ann_mus[2:3], "annmus_count")  # pairs, so pull mu == push mu:
-    ann_mus[GEN ** 1] = ann_mus[GEN ** 0]        # alias it (totals asserted equal
-    #                                            # at the mus cert). Reused by GKR.
+    # Bus grind bits = push.mu - 7 (= SECURITY + push.mu + 1 - 128; see
+    # leaf::grand_product_grinding_bits). push.mu is the max side depth: pull
+    # matches push (paired blocks) and count sums strictly fewer 2^kappa.
+    # ann_mus holds g^mu per GKR side (0=push, 1=pull, 2=count): hint push and
+    # count, alias pull to push (the pairing is generator-asserted at bake
+    # time); each is tied to the block structure at the mus cert below.
+    ann_mus = HeapBuf(3)
+    hint_witness(ann_mus[0:1], "annmus_push")
+    hint_witness(ann_mus[2:3], "annmus_count")
+    ann_mus[GEN ** 1] = ann_mus[GEN ** 0]
     grind_bits = HeapBuf(128)
     hint_witness(grind_bits[0:128], "grind_bits")
     bus_grind_window = ann_mus[GEN ** 0] * GINV ** 7  # g^(push.mu - 7): the bus PoW bit count
@@ -926,11 +918,11 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
     gamma = fs[0]
 
     # ---- 3× GKR grand product (push / pull / count), RUNTIME depth ----
-    # The layer count mu_s is a hinted g-power, certified below (decompose
-    # section) as log2_ceil of the side's block total. Both loop levels are
-    # runtime mul_range; the sponge, stream cursor, claim, and eq accumulator
-    # thread through write-once heap chains: layer state indexed by the layer
-    # cursor, round state by a per-tree position pointer advancing per round.
+    # The layer count is g^mu_s from ann_mus, certified against the block
+    # structure at the mus cert below. Both loop levels are runtime mul_range;
+    # the sponge, stream cursor, claim, and eq accumulator thread through
+    # write-once heap chains: layer state indexed by the layer cursor, round
+    # state by a per-tree position pointer advancing per round.
     gkr_roots = StackBuf(3)
     gkr_claims = StackBuf(3)
     gkr_layer_fs0 = HeapBuf(3 * (MU_CAP + 2))
@@ -1022,7 +1014,7 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
         gkr_roots[s] = gkr_root
         gkr_claims[s] = lclaim[mu_g]
 
-    # ---- count root nonzero (hinted inverse) ----
+    # ---- count root nonzero ----
     assert gkr_roots[2] != 0  # count-tree root nonzero: no read count self-cancels
 
     # ---- per-block shape data (derived / advice-decomposed, then CERTIFIED) ----
@@ -1040,14 +1032,10 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
     block_kappa = HeapBuf(N_BLOCKS)
     for b in unroll(0, N_BLOCKS):
         block_kappa[GEN ** b] = kappa_base[GEN ** BLOCK_KAPPA_SRC[b]] * GEN ** BLOCK_KAPPA_ADJ[b]
-    # And each side's mu is certified as log2_ceil(sum of the side's 2^kappa):
-    # the side total rides the exponent as a product of g^(2^kappa) factors,
-    # hinted bits reproduce it and reconstruct the total word, and the count
-    # gadget tail pins the hinted g^mu (no floor: side totals are >= 2).
-    # Push and pull emit their bus blocks in matched pairs, so the two sides'
-    # baked kappa sources are identical and their totals agree BY CONSTRUCTION
-    # (generator-asserted): certify push and count only; pull rides the alias
-    # ann_mus[1] = ann_mus[0] set above.
+    # Each side's depth is mu = log2_ceil(Σ_b 2^κ_b) over its blocks, the total
+    # formed in the exponent. Push and pull emit their blocks in matched pairs
+    # (identical baked kappa sources, generator-asserted), so certify push and
+    # count only; pull rides the alias ann_mus[1] = ann_mus[0] set above.
     for cert in unroll(0, 2):
         s = 2 * cert  # push (0), then count (2)
         side_total = GEN ** 0
@@ -1057,14 +1045,13 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
         assert g_mu == ann_mus[GEN ** s]        # tie the early-used hint to the computed log
 
     # ---- bus-leaf packing offsets (for the selector certification) ----
-    # The blocks of each side tile the leaf cube; block b's offset is where it
-    # sits. A hinted per-side ordering (sort_order, g^local-index by rank) is
-    # only PERMUTATION-checked (write-once slots + a range check), then offsets
-    # accumulate as a running product g^offset = Π_{earlier} g^(2^κ). The
-    # decompose then pins each selector by (g^sel)^(2^κ) == g^offset — the
-    # alignment that makes the block a sub-cube. This needs no sort/tie-break
-    # check: alignment + consecutive offsets already force a valid tiling, and
-    # the bus grand product is position-independent, so any tiling is sound.
+    # Each side's blocks tile its leaf cube; block b sits at offset_b. The
+    # hinted order (sort_order) is only PERMUTATION-checked; offsets then
+    # accumulate as g^offset = Π_{earlier} g^(2^κ). The decompose section pins
+    # each block's selector bits against this offset, forcing κ-alignment — no
+    # sort/tie-break check needed: alignment + consecutive offsets force a
+    # valid tiling, and the grand product is position-independent, so any
+    # tiling is sound.
     sort_order = HeapBuf(N_BLOCKS)
     hint_witness(sort_order[0:N_BLOCKS], "sort_order")
     block_side_tab = HeapBuf(N_BLOCKS)  # global block -> its side
@@ -1082,15 +1069,14 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
     #                                              # decompose's offset read.
 
     # ---- balance: push_root · d_pull == pull_root · d_push ----
-    # d_side = Π_b (γ + Σ_i α^i·COORD_PAD_VAL[i])^DELTA_b, DELTA_b = 2^κ_b − real_b
-    # padding rows. g^DELTA = g^(2^κ)/g^real is computed, its bits are advice-
-    # decomposed (hint_decompose_bits_exponent) to drive the square-and-multiply
-    # ladder for the (γ+fp)^DELTA factor, and CERTIFIED: their exponent-domain
-    # product times g^real_b must equal g^(2^κ_b), i.e. real_b + DELTA_b = 2^κ_b
-    # (integer, in the exponent so no wraparound). real_b is g^count_t for a
-    # per-table block (source ≥ 2) and g^(2^κ) for the shared blocks (whose real
-    # count is the full cube, forcing DELTA = 0). Without this, a free DELTA
-    # forges the balance (GF(2^128)* is smooth → dlog is cheap).
+    # Each side's grand product includes its padding rows: block b contributes
+    # (γ + fp_b)^DELTA_b, where fp_b is the padding row's fingerprint and
+    # DELTA_b = 2^κ − real its row count. Multiplying each root by the OTHER
+    # side's padding product cancels the padding, so the REAL rows must balance.
+    # DELTA's bits (advice-decomposed from g^DELTA = g^(2^κ) / g^real) drive the
+    # (γ+fp)^DELTA ladder and are pinned by g^real · g^DELTA == g^(2^κ); real is
+    # count_t for table blocks, 2^κ for shared blocks (DELTA = 0). An unpinned
+    # DELTA would forge the balance (dlog is cheap in this field).
     pad_products = HeapBuf(2)
     for s in unroll(0, 2):
         side_pad_product = GEN ** 0
@@ -1139,9 +1125,8 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
         smu_gs = ann_mus[GEN ** s]
         zeta_zs = zeta * GEN ** ZOFF[s]
         for b in unroll(SIDE_BLOCK_START[s], SIDE_BLOCK_START[s + 1]):
-            # eq_hi over the ζ coords above κ, against the HINTED selector bits
-            # (eq(s, z) = 1 + s + z in this field); the selector length mu_s - κ
-            # is DERIVED, g^mu_s / g^κ, not hinted.
+            # eq_hi over the ζ coords above κ against the selector bits derived
+            # below; the selector length is mu_s − κ, i.e. g^mu_s / g^κ.
             kappa_g = block_kappa[GEN ** b]
             assert log(kappa_g) < 34
             sel_len_g = smu_gs / kappa_g  # g^(mu_s - κ)
@@ -1673,10 +1658,10 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
     sumcheck_target, fold_challenges, final_msg, inner_total, yr_log_n_g, yr_pad_g, fold_cap_g = match_range(log(sel), range(0, LIG_N_CANDIDATES), lambda m_idx: open_stacked(m_idx, fs[0], fs[1], target, commit_root_0, commit_root_1))
 
     # ---- generalized eval_b terminal (runtime claim shapes) ----
-    # Per-claim lengths, selector bits, and slot data are HINTED; the final
-    # identity inner_sum == sumcheck_target (the opening-bound target) certifies
-    # them (the P4a argument), so only range checks and booleanity are enforced
-    # here. All selector products use eq(b, r) = 1 + b + r.
+    # Per-claim lengths, selector bits, and slot data are HINTED; the closing
+    # identity inner_sum == sumcheck_target (against the opening-bound target)
+    # pins their VALUES, so only range checks and booleanity are enforced here.
+    # All selector products use eq(b, r) = 1 + b + r.
     claim_low_len = HeapBuf(NCL)
     hint_witness(claim_low_len[0:NCL], "claim_low_len")
     claim_nover = HeapBuf(NCL)
@@ -1803,8 +1788,8 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
             e_acc[xk * GEN] = e_acc[xk] + c_table[xk] * prod_chain[qpkdv_g]
             row_ptr[xk * GEN] = z_row_next
         rs_eq_vals[rs] = e_acc[GEN ** 128]
-    # ring-switch weight base over the fold_challenges coords above qpkdv (hinted
-    # length and selector bits, identity-certified).
+    # ring-switch weight: extend by the selector bits over the fold_challenges
+    # coords [qpkdv, lenris).
     rs_weight = gamma_ab * rs_eq_vals[0] + gamma_c * rs_eq_vals[1]
     # rs_len = lenris - qpkdv, DERIVED as g^lenris / g^qpkdv (not hinted). The
     # selector loop then reads fold_challenges[qpkdv .. qpkdv+rs_len) = [qpkdv ..
