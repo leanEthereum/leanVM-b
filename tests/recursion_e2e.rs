@@ -398,8 +398,14 @@ fn gen_agg(
         assert_eq!(mrun, v_a * wam + v_b * wbm, "guest terminal-weight formulas");
     }
 
-    // ---- outer public input: sub statements + the reduced claims ----
+    // ---- outer public input: inner digest + sub statements + reduced claims ----
+    // The inner program is identified by its digest in the recursion's PUBLIC
+    // INPUT (not baked into the guest), so one compiled guest serves any inner
+    // program of this VM.
+    let dig = program.digest();
     let mut e = Sponge::empty();
+    e.observe(dig[0]);
+    e.observe(dig[1]);
     for d in subs {
         e.observe(d.pi[0]);
         e.observe(d.pi[1]);
@@ -416,6 +422,7 @@ fn gen_agg(
     e.observe(v_b);
 
     let hints = vec![
+        ("inner_digest".to_string(), vec![dig[0], dig[1]]),
         ("bc_sumcheck_msgs".to_string(), bscr),
         ("mat_sumcheck_msgs".to_string(), mscr),
         ("bc_star_hint".to_string(), vec![v_bc]),
@@ -1139,8 +1146,6 @@ fn gen_verify(
     let label_state = Sponge::new(b"leanvm-b", &[]).state();
     ps("SEEDB0", u(label_state[0]).to_string());
     ps("SEEDB1", u(label_state[1]).to_string());
-    ps("DIG0", u(dig[0]).to_string());
-    ps("DIG1", u(dig[1]).to_string());
     ps("DELTA", flds(&flare::pcs::ring_switch::trace_dual_basis()[..]));
 
     let deferred = SubDefer {
@@ -1496,6 +1501,7 @@ fn recursion_soundness_binds() {
 
     // each tamper flips one hint to a definitely-invalid value.
     let tampers: &[(&str, usize, F128)] = &[
+        ("inner_digest", 0, F128::ONE),     // wrong inner program: own_pi (public input) must reject
         ("block_pad_bits", 0, F128::ONE),   // boundary block delta 0 -> 1: 2^k - real broken
         ("block_sel_bits", 0, F128::ONE),   // wrong selector: alignment / decompose broken
         ("rs_yslot_bits", 4, F128::ONE),    // pad coord (k=4 >= yr_log_n=3): over-read weight

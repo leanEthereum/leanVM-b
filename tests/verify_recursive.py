@@ -62,8 +62,9 @@ from snark_lib import *
 #     claim_qpkd_slot_bits/claim_sel_bits/claim_overlap_mask/
 #     claim_yslot_bits and rs_sel_bits (the eval_b terminal identity against
 #     the opening-bound target);
-#   - statement-bound (fed to the outer public-input hash): sub_pis (the sub
-#     statements, which also derive the transcript seeds), matpart (with its
+#   - statement-bound (fed to the outer public-input hash): inner_digest (the
+#     inner PROGRAM digest, which also seeds every sub transcript), sub_pis (the
+#     sub statements, which also derive the transcript seeds), matpart (with its
 #     complete weight data), and the reduced claims bc_star_hint/mat_stars_hint with their points.
 # The stream hint itself is transport, never trusted: binding always comes from
 # the sponge absorb of each value read off it. The outer verifier's total
@@ -253,13 +254,14 @@ BYTECODE_LOG = BYTECODE_LOG_PLACEHOLDER
 DEFER_SIZE = DEFER_SIZE_PLACEHOLDER
 # Aggregation: NSUB sub-proofs of the same program; per-sub proof data arrives
 # as hints. The seed sponge state after the two byte-string absorbs is baked
-# (SEEDB), then the hinted sub statement + the baked program digest are bound.
+# (SEEDB), then the hinted sub statement + the inner PROGRAM DIGEST are bound.
+# The digest is NOT baked into the guest: it rides the recursion's PUBLIC INPUT
+# (a hint folded into own_pi in main), so ONE compiled guest verifies proofs of
+# any inner program of this VM — the outer statement fixes which, via own_pi.
 NSUB = NSUB_PLACEHOLDER
 BYTECODE_VARS = BYTECODE_VARS_PLACEHOLDER
 SEEDB0 = SEEDB0_PLACEHOLDER
 SEEDB1 = SEEDB1_PLACEHOLDER
-DIG0 = DIG0_PLACEHOLDER
-DIG1 = DIG1_PLACEHOLDER
 
 DS_SCALAR = 1
 DS_BYTE = 2
@@ -780,7 +782,7 @@ def exponent_tables():
     return g_logs, g_logs_pow2, g_squares
 
 
-def verify_sub(pi_0, pi_1, delta_pows, g_logs, g_logs_pow2, g_squares, defer_out):
+def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squares, defer_out):
     # In-circuit verification of ONE inner proof for the statement
     # (pi_0, pi_1). All proof data is hinted HERE: each call pops the next
     # sub-proof's entry of every witness stream, so the body lowers once and
@@ -824,8 +826,8 @@ def verify_sub(pi_0, pi_1, delta_pows, g_logs, g_logs_pow2, g_squares, defer_out
     fs[1] = SEEDB1
     fs = obs(fs, pi_0)  # bind the sub-proof's statement (its public input word 0)
     fs = obs(fs, pi_1)
-    fs = obs(fs, DIG0)  # bind the inner PROGRAM digest (DIG0/DIG1 = blake3 of its bytecode)
-    fs = obs(fs, DIG1)
+    fs = obs(fs, dig_0)  # bind the inner PROGRAM digest (from the recursion's public input, folded into own_pi)
+    fs = obs(fs, dig_1)
     stream = HeapBuf(STREAM_CAP)
     hint_witness(stream[0:STREAM_CAP], "stream")
     cursor = stream  # the proof stream is replayed word by word; cursor walks it (advance = * g)
@@ -1928,6 +1930,11 @@ def main():
     # reach this guest's public input.
     sub_pis = HeapBuf(NSUB * 2)
     hint_witness(sub_pis[0:NSUB * 2], "sub_pis")
+    # The inner PROGRAM digest rides the recursion's public input: hinted here,
+    # bound into every sub's seed, and folded into own_pi below (so the outer
+    # statement fixes which inner program this run verifies).
+    inner_dig = StackBuf(2)
+    hint_witness(inner_dig[0:2], "inner_digest")
     bc_sumcheck_msgs = HeapBuf(2 * BYTECODE_VARS)
     hint_witness(bc_sumcheck_msgs[0:2 * BYTECODE_VARS], "bc_sumcheck_msgs")
     mat_sumcheck_msgs = HeapBuf(4 * K_LOG)
@@ -1955,7 +1962,7 @@ def main():
     defer = HeapBuf(NSUB * DEFER_SIZE)
 
     for sub in unroll(0, NSUB):
-        verify_sub(sub_pis[GEN ** (2 * sub)], sub_pis[GEN ** (2 * sub + 1)], delta_pows, g_logs, g_logs_pow2, g_squares, defer * GEN ** (sub * DEFER_SIZE))
+        verify_sub(sub_pis[GEN ** (2 * sub)], sub_pis[GEN ** (2 * sub + 1)], inner_dig[0], inner_dig[1], delta_pows, g_logs, g_logs_pow2, g_squares, defer * GEN ** (sub * DEFER_SIZE))
 
     # ================= aggregation: batch the deferred claims =================
     # A fresh transcript absorbs every deferred claim (points and values),
@@ -2057,10 +2064,12 @@ def main():
     mat_final = a_star * weight_a + b_star * weight_b
     assert mat_running == mat_final
 
-    # ---- bind the sub statements + the reduced claims to the public input ----
+    # ---- bind the inner digest + sub statements + reduced claims to the PI ----
     out_fs = StackBuf(2)
     out_fs[0] = 0
     out_fs[1] = 0
+    out_fs = obs(out_fs, inner_dig[0])  # the inner program this run verifies is part of the public statement
+    out_fs = obs(out_fs, inner_dig[1])
     for sub in unroll(0, NSUB):
         out_fs = obs(out_fs, sub_pis[GEN ** (2 * sub)])
         out_fs = obs(out_fs, sub_pis[GEN ** (2 * sub + 1)])
@@ -2076,6 +2085,6 @@ def main():
     own_pi_1 = pub_ptr[GEN]
     out_word_0 = out_fs[0]
     out_word_1 = out_fs[1]
-    assert own_pi_0 == out_word_0  # the guest's OWN public input == blake3 of (sub statements | reduced claims)
+    assert own_pi_0 == out_word_0  # the guest's OWN public input == blake3 of (inner digest | sub statements | reduced claims)
     assert own_pi_1 == out_word_1
     return
