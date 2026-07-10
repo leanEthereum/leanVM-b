@@ -1215,20 +1215,14 @@ fn gen_verify(
         // slacks bounding each claim'"'"'s reads to the written regions (so an
         // over-long hint cannot pull free padding): low_len <= mu_s/tau_t
         // (zeta/rho) and low_len(+7 for qpkd) <= lenris (fold challenges).
-        ("claim_zr_slack".to_string(), (0..ncl).map(|j| {
-            let low = cplen[j] - nover_v[j];
-            let zr = match cpbuf[j] {
-                1 => taus[cpoff[j] / taumax_cap],
-                2 => low, // pi: no zeta/rho read; slack 0
-                _ => smu[cpoff[j] / mumax],
-            };
-            g_pow(zr - low)
-        }).collect()),
         ("claim_fold_slack".to_string(), (0..ncl).map(|j| {
             let low = cplen[j] - nover_v[j];
             let bound = if cpbuf[j] == 3 { lenris - 7 } else { lenris };
             g_pow(bound - low)
         }).collect()),
+        // per-claim overlap count, for the exact length pin: nover = the
+        // amount by which the claim's total vars exceed the fold rounds.
+        ("claim_nover".to_string(), (0..ncl).map(|j| g_pow(nover_v[j])).collect()),
         ("claim_sel_len".to_string(), (0..ncl).map(|j| g_pow(seln_v[j])).collect()),
         ("claim_low_vars".to_string(), (0..ncl).map(|j| g_pow(cplen[j] + if cpbuf[j] == 3 { 7 } else { 0 })).collect()),
         ("claim_qpkd_slot_bits".to_string(), {
@@ -1581,6 +1575,7 @@ fn recursion_soundness_binds() {
         ("block_sel_bits", 0, F128::ONE),   // wrong selector: alignment / decompose broken
         ("rs_yslot_bits", 4, F128::ONE),    // pad coord (k=4 >= yr_log_n=3): over-read weight
         ("claim_low_len", 0, g_pow(33)),    // x-part length past the written region: over-read
+        ("claim_nover", 0, g_pow(5)),        // wrong overlap: exact length pin must reject
     ];
     for &(stream, idx, val) in tampers {
         let mut merged = batch.merged.clone();

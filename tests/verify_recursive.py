@@ -46,8 +46,10 @@ from snark_lib import *
 #     block an offset, and the selector is pinned by (g^sel)^(2^kappa) ==
 #     g^offset alignment), and rs_yslot_bits/claim_yslot_bits/
 #     claim_overlap_mask beyond yr_log_n (asserted zero), and the terminal
-#     x-part lengths claim_low_len/claim_sel_len/claim_low_vars (bounded to
-#     the written zeta/rho/fold regions, so no read reaches free padding);
+#     x-part lengths claim_low_len/claim_sel_len/claim_low_vars with
+#     claim_nover (pinned EXACTLY to the claim's certified low dimension
+#     cplen via claim_cplen_g — nlow = cplen + delta, nlow+seln = lenris+nover,
+#     nover*seln = 0, low_len = cplen - nover; the pi claim is bounded);
 #   - identity-certified (well-formedness checked here — booleanity, range
 #     checks, quotient ties — with the VALUE pinned by a protocol identity
 #     against committed data): block_mu_quot (sel_len_g * kappa_g == g^mu),
@@ -831,6 +833,10 @@ def verify_sub(pi_0, pi_1, delta_pows, g_logs, g_logs_pow2, g_squares, defer_out
     # Claim pool: values of every committed-coordinate claim, in decompose order
     # (their points are the GKR ζ's, resolvable from the baked block structure).
     claim_pool = HeapBuf(NCLAIMS)
+    # certified low dimension (cplen) per pooled claim, filled as the pool is
+    # built (from the in-scope certified kappa/tau); the terminal pins each
+    # claim's hinted lengths against it.
+    claim_cplen_g = HeapBuf(NCL)
     # The three GKR leaf points, stored side by side (ZOFF offsets).
     zeta = HeapBuf(3 * MU_CAP)
 
@@ -1217,12 +1223,14 @@ def verify_sub(pi_0, pi_1, delta_pows, g_logs, g_logs_pow2, g_squares, defer_out
                     fs = obs(fs, coord_val)
                     cursor *= GEN
                     claim_pool[GEN ** claim_idx] = coord_val
+                    claim_cplen_g[GEN ** claim_idx] = kappa_g  # cplen = block kappa
                     claim_idx += 1
                 if COORD_TYPE[BLOCK_COORD_OFF[b] + i] == 2:
                     rawv = cursor[GEN ** 0]
                     fs = obs(fs, rawv)
                     cursor *= GEN
                     claim_pool[GEN ** claim_idx] = rawv
+                    claim_cplen_g[GEN ** claim_idx] = kappa_g  # cplen = block kappa
                     claim_idx += 1
                     coord_val = GG * rawv
                 if COORD_TYPE[BLOCK_COORD_OFF[b] + i] == 3:
@@ -1345,6 +1353,7 @@ def verify_sub(pi_0, pi_1, delta_pows, g_logs, g_logs_pow2, g_squares, defer_out
             cursor *= GEN
             col_evals[k] = e
             claim_pool[GEN ** claim_idx] = e
+            claim_cplen_g[GEN ** claim_idx] = tau_g  # cplen = tau_t
             claim_idx += 1
         # the table's AIR constraint at the final point (ev order = the table's
         # constraint_columns order; formulas mirror tables.rs eval_constraint).
@@ -1403,6 +1412,7 @@ def verify_sub(pi_0, pi_1, delta_pows, g_logs, g_logs_pow2, g_squares, defer_out
     prefix = b_top + (1 + b_top) * pin_chain[tau5_g]
     for pk in unroll(0, 3):
         claim_pool[GEN ** claim_idx] = PIN_VALUES[pk] * prefix
+        claim_cplen_g[GEN ** claim_idx] = tau5_g  # cplen = tau_5 (BLAKE3 value-col kappa)
         claim_idx += 1
 
     # ---- checkpoint C (debug: sponge-state drift guard) ----
@@ -1726,10 +1736,10 @@ def verify_sub(pi_0, pi_1, delta_pows, g_logs, g_logs_pow2, g_squares, defer_out
     # level_query_sum here. All selector products use eq(b, r) = 1 + b + r.
     claim_low_len = HeapBuf(NCL)
     hint_witness(claim_low_len[0:NCL], "claim_low_len")
-    claim_zr_slack = HeapBuf(NCL)
-    hint_witness(claim_zr_slack[0:NCL], "claim_zr_slack")
     claim_fold_slack = HeapBuf(NCL)
     hint_witness(claim_fold_slack[0:NCL], "claim_fold_slack")
+    claim_nover = HeapBuf(NCL)
+    hint_witness(claim_nover[0:NCL], "claim_nover")
     claim_sel_len = HeapBuf(NCL)
     hint_witness(claim_sel_len[0:NCL], "claim_sel_len")
     claim_low_vars = HeapBuf(NCL)
@@ -1752,24 +1762,13 @@ def verify_sub(pi_0, pi_1, delta_pows, g_logs, g_logs_pow2, g_squares, defer_out
     for j in unroll(0, NCL):
         low_len_g = claim_low_len[GEN ** j]
         assert log(low_len_g) < 34
-        # Bound the low-part reads to their WRITTEN regions, so an over-long
-        # hint cannot pull free (unwritten, prover-committed) padding cells:
-        #  - low_len <= mu_s / tau_t (the zeta/rho written extent), and
-        #  - low_len (+7 for the qpkd slot) <= lenris (the fold-challenge count).
-        fold_slack = claim_fold_slack[GEN ** j]
-        assert log(fold_slack) < 34
-        if CLAIM_POINT_BUF[j] == 3:
-            assert fold_cap_g == low_len_g * GEN ** 7 * fold_slack  # low_len + 7 <= lenris
-        else:
-            assert fold_cap_g == low_len_g * fold_slack  # low_len <= lenris
-        if CLAIM_POINT_BUF[j] != 2:
-            zr_slack = claim_zr_slack[GEN ** j]
-            assert log(zr_slack) < 34
-            if CLAIM_POINT_BUF[j] == 1:
-                zr_g = dims_g[GEN ** (1 + CLAIM_POINT_OFF[j] // TAU_CAP)]
-            else:
-                zr_g = ann_mus[GEN ** (CLAIM_POINT_OFF[j] // MU_CAP)]
-            assert zr_g == low_len_g * zr_slack  # low_len <= mu_s (zeta) / tau_t (rho)
+        if CLAIM_POINT_BUF[j] == 2:
+            # pi is a single claim: bound (not pin) its low_len <= lenris so
+            # the fold reads stay in range; the one-knob residual is negligible.
+            fold_slack = claim_fold_slack[GEN ** j]
+            assert log(fold_slack) < 34
+            assert fold_cap_g == low_len_g * fold_slack
+        # BUF 0/1/3 are pinned exactly below (after nlow is read).
         low_chain = HeapBuf(35)
         if CLAIM_POINT_BUF[j] == 0:
             zptr = zeta * GEN ** CLAIM_POINT_OFF[j]
@@ -1801,6 +1800,24 @@ def verify_sub(pi_0, pi_1, delta_pows, g_logs, g_logs_pow2, g_squares, defer_out
         assert log(seln) < 34
         nlow = claim_low_vars[GEN ** j]
         assert log(nlow) < 40
+        # EXACT length pin (all claims but pi): tie the three hinted lengths to
+        # the certified low dimension cplen. With nvt = nlow, the pair
+        # (seln, nover) is forced by nlow + seln == lenris + nover and
+        # nover * seln == 0 (range checks reject the wrong branch), and
+        # low_len = cplen - nover. This removes the residual length freedom (a
+        # deterministic truncation the >= bounds still allowed). pi (BUF 2) is
+        # a single claim and stays bounded, not pinned.
+        if CLAIM_POINT_BUF[j] != 2:
+            cplen_g = claim_cplen_g[GEN ** j]
+            nover_g = claim_nover[GEN ** j]
+            assert log(nover_g) < 34
+            if CLAIM_POINT_BUF[j] == 3:
+                assert nlow == cplen_g * GEN ** 7  # nlow = cplen + 7 (qpkd slot)
+            else:
+                assert nlow == cplen_g            # nlow = cplen
+            assert nlow * seln == fold_cap_g * nover_g  # nlow + seln = lenris + nover
+            assert (nover_g + 1) * (seln + 1) == 0      # nover == 0 OR seln == 0
+            assert low_len_g * nover_g == cplen_g        # low_len = cplen - nover
         # selector loop reads fold_challenges[nlow .. nlow+seln); pin the reach
         # so it stays in [0, lenris): either seln == 0 (empty loop) or
         # nlow + seln == lenris (the honest overlap-free case).
