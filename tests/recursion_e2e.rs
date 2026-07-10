@@ -491,15 +491,13 @@ fn gen_verify(
     assert!(*smu.iter().max().unwrap() <= mumax && proof.stream.len() <= stream_cap);
 
     // ---- flattened block/coord descriptors ----
-    let (mut sblk, mut bkappa, mut bsel, mut bdelta, mut bc0, mut bcn) = (vec![0usize], vec![], vec![], vec![], vec![], vec![]);
+    let (mut sblk, mut bkappa, mut bc0, mut bcn) = (vec![0usize], vec![], vec![], vec![]);
     let (mut ct, mut cval, mut fpv) = (vec![], vec![], vec![]);
     let mut nclaims = 0usize;
     let mut nbcv = 0usize;
     for (s, blocks) in sides.iter().enumerate() {
         for (b, blk) in blocks.iter().enumerate() {
             bkappa.push(blk.kappa);
-            bsel.push(lays[s].offsets[b] >> blk.kappa);
-            bdelta.push((1usize << blk.kappa) - blk.real);
             bc0.push(ct.len());
             bcn.push(blk.coords.len());
             for c in &blk.coords {
@@ -965,24 +963,6 @@ fn gen_verify(
         ("rs_yslot_bits".to_string(), (0..8).map(|k| F128::new(((yrs >> k) & 1) as u64, 0)).collect()),
         ("rs_sel_bits".to_string(), (0..33).map(|k| F128::new(((rssel >> k) & 1) as u64, 0)).collect()),
         ("sort_order".to_string(), sort_order.clone()),
-        ("block_sel_bits".to_string(), {
-            let mut v = Vec::new();
-            for &s in &bsel {
-                for k in 0..mumax {
-                    v.push(F128::new(((s >> k) & 1) as u64, 0));
-                }
-            }
-            v
-        }),
-        ("block_pad_bits".to_string(), {
-            let mut v = Vec::new();
-            for &d in &bdelta {
-                for j in 0..33 {
-                    v.push(F128::new(((d >> j) & 1) as u64, 0));
-                }
-            }
-            v
-        }),
         ("dims_g".to_string(), vec![g_pow(log_mem)]),
         ("query_nonces".to_string(), query_pow.iter().map(|&(n, _)| F128::new(n, 0)).collect()),
         (
@@ -1468,8 +1448,6 @@ fn recursion_soundness_binds() {
     // each tamper flips one hint to a definitely-invalid value.
     let tampers: &[(&str, usize, F128)] = &[
         ("inner_digest", 0, F128::ONE),     // wrong inner program: own_pi (public input) must reject
-        ("block_pad_bits", 0, F128::ONE),   // boundary block delta 0 -> 1: 2^k - real broken
-        ("block_sel_bits", 0, F128::ONE),   // wrong selector: alignment / decompose broken
         ("rs_yslot_bits", 4, F128::ONE),    // pad coord (k=4 >= yr_log_n=3): over-read weight
         ("claim_low_len", 0, g_pow(33)),    // x-part length past the written region: over-read
         ("claim_nover", 0, g_pow(5)),        // wrong overlap: exact length pin must reject

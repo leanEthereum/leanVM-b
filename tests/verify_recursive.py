@@ -38,14 +38,13 @@ from snark_lib import *
 #   - shape-certified (the announced sizes are the ground truth): dims_g[0]
 #     = g^log_mem (via the exponent-to-word table); the taus, side mus, and
 #     committed size m are log2_ceil's whose BITS are decomposed in-circuit
-#     (hint_decompose_bits / hint_decompose_bits_exponent keywords, no bit hints), and each block's
-#     kappa is DERIVED from the certified logs (no hint); annmus (push+count,
-#     pull aliased)
-#     pattern over the committed columns), block_pad_bits (the padding surplus, pinned
-#     to 2^kappa - real via g^real * g^delta == g^(2^kappa)), block_sel_bits
-#     + sort_order (the bus-leaf packing: a perm-checked ordering gives each
-#     block an offset, and the selector is pinned by (g^sel)^(2^kappa) ==
-#     g^offset alignment), and rs_yslot_bits/claim_yslot_bits/
+#     (hint_decompose_bits / hint_decompose_bits_exponent keywords, no bit
+#     hints); each block's kappa is DERIVED from the certified logs, its padding
+#     surplus (advice-decomposed from g^(2^kappa)/g^real) is pinned by
+#     g^real * g^delta == g^(2^kappa), and its selector (the offset's advice-
+#     decomposed bits read shifted by kappa) by rebuilding g^offset from the
+#     high bits; annmus (push+count, pull aliased) and sort_order (a
+#     perm-checked packing order) remain hinted, plus rs_yslot_bits/claim_yslot_bits/
 #     claim_overlap_mask beyond yr_log_n (asserted zero), and the terminal
 #     x-part lengths claim_low_len/claim_sel_len with claim_nover (pinned
 #     EXACTLY to the claim's certified low dimension cplen via claim_cplen_g —
@@ -1026,17 +1025,12 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
     # ---- count root nonzero (hinted inverse) ----
     assert gkr_roots[2] != 0  # count-tree root nonzero: no read count self-cancels
 
-    # ---- per-block shape data (hinted, then CERTIFIED) ----
-    # kappa is pinned to its structural source; the side depth mu and the
-    # selector-length quotient g^(mu-kappa) are certified below. The padding
-    # surplus (block_pad_bits) is pinned to 2^kappa - real (balance section),
-    # and the selectors (block_sel_bits) to the packed offset via alignment
-    # (decompose section) — neither is left to a single aggregate identity,
-    # which does not bind a high-entropy hint in this smooth field.
-    block_sel_bits = HeapBuf(N_BLOCKS * MU_CAP)
-    hint_witness(block_sel_bits[0:N_BLOCKS * MU_CAP], "block_sel_bits")
-    block_pad_bits = HeapBuf(N_BLOCKS * 33)
-    hint_witness(block_pad_bits[0:N_BLOCKS * 33], "block_pad_bits")
+    # ---- per-block shape data (derived / advice-decomposed, then CERTIFIED) ----
+    # kappa derives from its structural source; the side depth mu and the
+    # selector length g^(mu-kappa) are certified below. The padding-surplus and
+    # selector bits are advice-decomposed at their use sites (balance and
+    # decompose sections) and pinned there — never left to a single aggregate
+    # identity, which does not bind a high-entropy hint in this smooth field.
     idxc_tab = HeapBuf(34)
     for t in unroll(0, 34):
         idxc_tab[GEN ** t] = INDEX_MLE_FACTORS[t]
@@ -1089,9 +1083,10 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
 
     # ---- balance: push_root · d_pull == pull_root · d_push ----
     # d_side = Π_b (γ + Σ_i α^i·COORD_PAD_VAL[i])^DELTA_b, DELTA_b = 2^κ_b − real_b
-    # padding rows. The hinted delta bits drive a square-and-multiply ladder for
-    # the (γ+fp)^DELTA factor AND are CERTIFIED: their exponent-domain product
-    # g^DELTA times g^real_b must equal g^(2^κ_b), i.e. real_b + DELTA_b = 2^κ_b
+    # padding rows. g^DELTA = g^(2^κ)/g^real is computed, its bits are advice-
+    # decomposed (hint_decompose_bits_exponent) to drive the square-and-multiply
+    # ladder for the (γ+fp)^DELTA factor, and CERTIFIED: their exponent-domain
+    # product times g^real_b must equal g^(2^κ_b), i.e. real_b + DELTA_b = 2^κ_b
     # (integer, in the exponent so no wraparound). real_b is g^count_t for a
     # per-table block (source ≥ 2) and g^(2^κ) for the shared blocks (whose real
     # count is the full cube, forcing DELTA = 0). Without this, a free DELTA
@@ -1110,11 +1105,14 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
                 g_real = g_two_kappa  # shared block: real = 2^κ, so DELTA = 0
             else:
                 g_real = count_gpows[GEN ** BLOCK_REAL_TABLE[b]]  # g^count_t
+            g_delta_want = g_two_kappa / g_real  # g^DELTA (feeds the advice below)
+            pad_bits = HeapBuf(GEN ** 33)
+            hint_decompose_bits_exponent(pad_bits, g_delta_want, 33)
             ladder = GEN ** 0
             ladder_square = gamma + pad_fp
             g_delta = GEN ** 0
             for j in unroll(0, 33):
-                pad_bit = block_pad_bits[GEN ** (b * 33 + j)]
+                pad_bit = pad_bits[GEN ** j]
                 assert pad_bit * pad_bit == pad_bit
                 ladder *= (1 + pad_bit * (ladder_square + 1))
                 g_delta *= (1 + pad_bit * (g_squares[GEN ** j] + 1))  # g^DELTA
@@ -1149,25 +1147,26 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
             sel_len_g = smu_gs / kappa_g  # g^(mu_s - κ)
             assert log(sel_len_g) < 34
             zeta_hi = zeta_zs * kappa_g
-            selrow = block_sel_bits * GEN ** (b * MU_CAP)
+            # selector bits = offset >> κ: advice-decompose the offset's bits and
+            # read them shifted by κ. Rebuilding g^offset from those high bits
+            # alone (weights g^(2^(κ+k))) and asserting it equals block_off_g
+            # pins the bits AND the κ-alignment in one shot — no (g^sel)^(2^κ)
+            # squaring chain. The low κ bit cells are written but never read.
+            offset_bits = HeapBuf(GEN ** 34)
+            hint_decompose_bits_exponent(offset_bits, block_off_g[GEN ** b], 34)
+            sel_bits = offset_bits * kappa_g  # bits of sel = offset >> κ
             eq_chain = HeapBuf(MU_CAP + 2)
-            gsel_chain = HeapBuf(MU_CAP + 2)  # rebuild g^sel from the same bits
+            goff_chain = HeapBuf(MU_CAP + 2)  # rebuild g^offset from the high bits
             eq_chain[GEN ** 0] = 1
-            gsel_chain[GEN ** 0] = 1
+            goff_chain[GEN ** 0] = 1
             for xk in mul_range(1, sel_len_g):
-                sbit = selrow[xk]
+                sbit = sel_bits[xk]
                 assert sbit * sbit == sbit
                 eq_chain[xk * GEN] = eq_chain[xk] * (1 + sbit + zeta_hi[xk])  # eq(sel_bit, zeta) = 1 + sel_bit + zeta over GF(2)
-                gsel_chain[xk * GEN] = gsel_chain[xk] * (1 + sbit * (g_squares[xk] + 1))  # g^sel = Π_k (sbit_k ? g^(2^k) : 1)
+                goff_chain[xk * GEN] = goff_chain[xk] * (1 + sbit * (g_squares[kappa_g * xk] + 1))  # weight g^(2^(κ+k))
             eq_hi = eq_chain[sel_len_g]
             selector_sum += eq_hi
-            # certify the selector: sel = offset >> κ, i.e. (g^sel)^(2^κ) == g^offset
-            # (κ forward squarings — the alignment that makes the block a sub-cube).
-            gsel_shift_chain = HeapBuf(35)
-            gsel_shift_chain[GEN ** 0] = gsel_chain[sel_len_g]
-            for xsq in mul_range(1, kappa_g):
-                gsel_shift_chain[xsq * GEN] = gsel_shift_chain[xsq] * gsel_shift_chain[xsq]
-            assert gsel_shift_chain[kappa_g] == block_off_g[GEN ** b]
+            assert goff_chain[sel_len_g] == block_off_g[GEN ** b]  # bits == offset >> κ, κ-aligned
             # inner fingerprint Σ_i α^i · coord_i(ζ_lo); count side uses α=1,γ=0.
             inner_sum = 0
             alpha_pow = GEN ** 0
