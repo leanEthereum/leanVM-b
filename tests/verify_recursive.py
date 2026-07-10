@@ -283,7 +283,7 @@ def squeeze_step(state_0, state_1):
     return o[0], o[0], o[1]
 
 
-def dec128(bits_ptr, v):
+def check_128_bits_decomposition(bits_ptr, v):
     # Boolean-constrain 128 hinted bits and assert they reconstruct v.
     acc = 0
     for i in unroll(0, 128):
@@ -296,7 +296,7 @@ def dec128(bits_ptr, v):
 
 
 def decode_query_bits(bits_ptr, v, positions_out, bit_ptrs_out, depth: Const, per_word: Const):
-    # dec128 fused with query extraction: each depth-bit group also becomes a
+    # check_128_bits_decomposition fused with query extraction: each depth-bit group also becomes a
     # query position (little-endian), with a pointer to its bit run.
     acc = 0
     for j in unroll(0, per_word):
@@ -321,7 +321,7 @@ def decode_query_bits(bits_ptr, v, positions_out, bit_ptrs_out, depth: Const, pe
 def grind_check(state_0, state_1, nonce, bits_ptr, nbits_g):
     # The one grinding check, shared by the bus grind and the Ligerito fold /
     # query grinds: digest = H(H(state, (0, POW)), (nonce, POW)); the hinted
-    # digest bits must be boolean and reconstruct digest word 0 (dec128), and its
+    # digest bits must be boolean and reconstruct digest word 0 (check_128_bits_decomposition), and its
     # low nbits bits (nbits_g = g^nbits) must be zero — the CONTIGUOUS PoW window
     # of transcript::pow_bits_ok. The caller absorbs the nonce afterwards.
     st = StackBuf(2)
@@ -337,7 +337,7 @@ def grind_check(state_0, state_1, nonce, bits_ptr, nbits_g):
     nz[1] = DS_POW
     out = StackBuf(2)
     blake3(base, nz, out)
-    dec128(bits_ptr, out[0])
+    check_128_bits_decomposition(bits_ptr, out[0])
     for xb in mul_range(1, nbits_g):
         zero_bit = bits_ptr[xb]
         assert zero_bit == 0
@@ -802,30 +802,6 @@ def verify_sub(pi_0, pi_1, delta_pows, g_logs, g_logs_pow2, g_squares, defer_out
     #      the stacked Ligerito opening (open_stacked), and assert its
     #      eval_b terminal;
     #  10. export the deferred-claim region for the aggregation.
-    checkpoints = StackBuf(4)
-    hint_witness(checkpoints[0:4], "checkpoints")
-    stream = HeapBuf(STREAM_CAP)
-    hint_witness(stream[0:STREAM_CAP], "stream")
-    ann_mus = HeapBuf(3)
-    hint_witness(ann_mus[0:3], "annmus")
-    grind_bits = HeapBuf(128)
-    hint_witness(grind_bits[0:128], "grind_bits")
-    bytecode_vals = HeapBuf(N_BYTECODE_VALS)
-    hint_witness(bytecode_vals[0:N_BYTECODE_VALS], "bytecode_vals")
-    zc_round1 = HeapBuf(128)
-    hint_witness(zc_round1[0:128], "zc_round1")
-    zc_msgs = HeapBuf(2 * R1CS_ROUNDS_CAP)
-    hint_witness(zc_msgs[0:2 * R1CS_ROUNDS_CAP], "zc_msgs")
-    zc_finals = StackBuf(2)
-    hint_witness(zc_finals[0:2], "zc_finals")
-    lincheck_msgs = HeapBuf(2 * LINCHECK_ROUNDS)
-    hint_witness(lincheck_msgs[0:2 * LINCHECK_ROUNDS], "lincheck_msgs")
-    z_partial = HeapBuf(64)
-    hint_witness(z_partial[0:64], "z_partial")
-    matrix_eval = StackBuf(1)
-    hint_witness(matrix_eval[0:1], "matpart")
-    s_hat_v = HeapBuf(256)
-    hint_witness(s_hat_v[0:256], "s_hat_v")
     # Claim pool: values of every committed-coordinate claim, in decompose order
     # (their points are the GKR ζ's, resolvable from the baked block structure).
     claim_pool = HeapBuf(NCLAIMS)
@@ -844,6 +820,8 @@ def verify_sub(pi_0, pi_1, delta_pows, g_logs, g_logs_pow2, g_squares, defer_out
     fs = obs(fs, pi_1)
     fs = obs(fs, DIG0)  # bind the inner PROGRAM digest (DIG0/DIG1 = blake3 of its bytecode)
     fs = obs(fs, DIG1)
+    stream = HeapBuf(STREAM_CAP)
+    hint_witness(stream[0:STREAM_CAP], "stream")
     cursor = stream  # the proof stream is replayed word by word; cursor walks it (advance = * g)
 
     # ---- announced sizes: log_mem + 6 row counts (observed, then certified) ----
@@ -916,7 +894,12 @@ def verify_sub(pi_0, pi_1, delta_pows, g_logs, g_logs_pow2, g_squares, defer_out
     # fewer 2^kappa (each count column rides one push flush; the state flush has
     # none), so count.mu <= push.mu == pull.mu. ann_mus[0] is push, so the grind
     # window is nbits = push.mu - 7, i.e. g^nbits = ann_mus[0] * g^-7.
-    grind_check(fs[0], fs[1], nonce, grind_bits, ann_mus[GEN ** 0] * GINV ** 7)
+    ann_mus = HeapBuf(3)  # g^mu per GKR side (0=push); reused by the GKR loop and mus certs below
+    hint_witness(ann_mus[0:3], "annmus")
+    grind_bits = HeapBuf(128)
+    hint_witness(grind_bits[0:128], "grind_bits")
+    bus_grind_window = ann_mus[GEN ** 0] * GINV ** 7  # g^(push.mu - 7): the bus PoW bit count
+    grind_check(fs[0], fs[1], nonce, grind_bits, bus_grind_window)
     fs = absorb(fs, nonce, DS_POW)
     fs = squeeze(fs)
     gamma = fs[0]
@@ -1125,6 +1108,8 @@ def verify_sub(pi_0, pi_1, delta_pows, g_logs, g_logs_pow2, g_squares, defer_out
     assert lhsb == rhsb
 
     # ---- 3× leaf decomposition (claims pooled; bytecode Public DEFERRED) ----
+    bytecode_vals = HeapBuf(N_BYTECODE_VALS)
+    hint_witness(bytecode_vals[0:N_BYTECODE_VALS], "bytecode_vals")
     # Reconstruct Ṽ₀(ζ) per side and assert it equals the GKR leaf value. The
     # committed-coordinate values ride the stream (observed, pooled); the Public
     # (bytecode) coordinate values are hinted (bytecode_vals) and exported as deferred
@@ -1234,6 +1219,8 @@ def verify_sub(pi_0, pi_1, delta_pows, g_logs, g_logs_pow2, g_squares, defer_out
         bytecode_reduced[s] = wv
 
     # ---- checkpoint A: sponge state matches the recorded value (debug) ----
+    checkpoints = StackBuf(4)
+    hint_witness(checkpoints[0:4], "checkpoints")
     assert fs[0] == checkpoints[0]
 
     # ---- 6x per-table zerocheck (XOR, MUL, SET, DEREF, JUMP, BLAKE3) ----
@@ -1398,6 +1385,12 @@ def verify_sub(pi_0, pi_1, delta_pows, g_logs, g_logs_pow2, g_squares, defer_out
     fs = absorb(fs, commit_root_1, DS_BYTE)
 
     # ---- flock zerocheck (univariate skip, k_skip = 6) ----
+    zc_round1 = HeapBuf(128)
+    hint_witness(zc_round1[0:128], "zc_round1")
+    zc_msgs = HeapBuf(2 * R1CS_ROUNDS_CAP)
+    hint_witness(zc_msgs[0:2 * R1CS_ROUNDS_CAP], "zc_msgs")
+    zc_finals = StackBuf(2)
+    hint_witness(zc_finals[0:2], "zc_finals")
     fs = absorb(fs, 18, DS_LEN)
     fs = absorb(fs, ZCLBLA, DS_BYTE)
     fs = absorb(fs, ZCLBLB, DS_BYTE)
@@ -1504,6 +1497,12 @@ def verify_sub(pi_0, pi_1, delta_pows, g_logs, g_logs_pow2, g_squares, defer_out
     fs = obs(fs, b_eval)
 
     # ---- flock lincheck (matrix evaluation DEFERRED) ----
+    lincheck_msgs = HeapBuf(2 * LINCHECK_ROUNDS)
+    hint_witness(lincheck_msgs[0:2 * LINCHECK_ROUNDS], "lincheck_msgs")
+    z_partial = HeapBuf(64)
+    hint_witness(z_partial[0:64], "z_partial")
+    matrix_eval = StackBuf(1)
+    hint_witness(matrix_eval[0:1], "matpart")
     fs = absorb(fs, 17, DS_LEN)
     fs = absorb(fs, LCLBLA, DS_BYTE)
     fs = absorb(fs, LCLBLB, DS_BYTE)
@@ -1553,6 +1552,8 @@ def verify_sub(pi_0, pi_1, delta_pows, g_logs, g_logs_pow2, g_squares, defer_out
     assert fs[0] == checkpoints[3]
 
     # ---- stacked mixed opening: ring-switch fronts + claim combination ----
+    s_hat_v = HeapBuf(256)
+    hint_witness(s_hat_v[0:256], "s_hat_v")
     fs = absorb(fs, 23, DS_LEN)
     fs = absorb(fs, OBLBLA, DS_BYTE)
     fs = absorb(fs, OBLBLB, DS_BYTE)
