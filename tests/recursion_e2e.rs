@@ -1321,8 +1321,16 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("CLAIM_POINT_OFF", ints(&cpoff));
     ps("QPKD_VARS_CAP", (33 + flock_prover::r1cs_hashes::blake3::K_LOG - 7).to_string());
     ps("BYTECODE_LOG", kbc.to_string());
-    ps("DEFER_SIZE", (2 * kbc + 2 * lcrounds + 72).to_string());
-    ps("BYTECODE_VARS", (kbc + 3).to_string());
+    // The stacked bytecode: nbcv/2 encoding columns per side, packed along
+    // log2_ceil(cols) selector bits. The defer region is 2*kbc points + sel
+    // bits + 2 reduced + alpha + z_skip + 2*lcrounds rounds + 64 z_partial
+    // + 1 matpart.
+    let bc_cols = nbcv / 2;
+    let bc_sel_bits = log2_ceil(bc_cols);
+    ps("BYTECODE_COLS", bc_cols.to_string());
+    ps("BYTECODE_SEL_BITS", bc_sel_bits.to_string());
+    ps("DEFER_SIZE", (2 * kbc + bc_sel_bits + 2 * lcrounds + 69).to_string());
+    ps("BYTECODE_VARS", (kbc + bc_sel_bits).to_string());
     let label_state = Sponge::new(b"leanvm-b", &[]).state();
     ps("SEEDB0", u(label_state[0]).to_string());
     ps("SEEDB1", u(label_state[1]).to_string());
