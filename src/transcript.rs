@@ -43,29 +43,17 @@ const DS_LEN: F128 = F128::new(3, 0);
 const DS_SQUEEZE: F128 = F128::new(4, 0);
 const DS_POW: F128 = F128::new(5, 0);
 
-/// The 32-byte little-endian serialization of a 256-bit state (word 0 lo, word 0
-/// hi, word 1 lo, word 1 hi), for the leading-zero PoW predicate.
-fn state_bytes(h: [F128; 2]) -> [u8; 32] {
-    let mut out = [0u8; 32];
-    out[0..8].copy_from_slice(&h[0].lo.to_le_bytes());
-    out[8..16].copy_from_slice(&h[0].hi.to_le_bytes());
-    out[16..24].copy_from_slice(&h[1].lo.to_le_bytes());
-    out[24..32].copy_from_slice(&h[1].hi.to_le_bytes());
-    out
-}
-
-/// `compress(base, (nonce, DS_POW))` has at least `bits` leading zero bits — the
-/// grinding predicate over the VM compression, so a recursive verifier can
-/// re-check it with the `Blake3` opcode.
+/// `compress(base, (nonce, DS_POW))` has its low `bits` bits zero — the grinding
+/// predicate over the VM compression. A CONTIGUOUS low-bit window (rather than
+/// byte-wise leading zeros) so a recursive verifier re-checks it with a single
+/// loop over the bit decomposition of the digest word (`grind_check` in
+/// `tests/verify_recursive.py`). `bits` is the grand-product soundness deficit
+/// `SECURITY_BITS + push_mu + 1 - 128 <= MU_CAP - 7`, always `< 64`.
 #[inline]
 fn pow_bits_ok(base: [F128; 2], nonce: u64, bits: u32) -> bool {
-    let h = state_bytes(compress(base, [F128::new(nonce, 0), DS_POW]));
-    let full = (bits / 8) as usize;
-    let extra = bits % 8;
-    if h[..full].iter().any(|&b| b != 0) {
-        return false;
-    }
-    extra == 0 || (h[full] >> (8 - extra)) == 0
+    debug_assert!(bits < 64, "grinding deficit fits the digest's low word");
+    let digest = compress(base, [F128::new(nonce, 0), DS_POW])[0];
+    digest.lo & ((1u64 << bits) - 1) == 0
 }
 
 /// The VM-native Fiat–Shamir sponge: a 256-bit chaining value evolved only by the
@@ -178,7 +166,7 @@ impl Sponge {
     }
 
     /// Prover-side PoW grind: find the smallest `u64` nonce whose PoW hash clears
-    /// `bits` leading zero bits, then bind it so later challenges depend on it.
+    /// `bits` low zero bits, then bind it so later challenges depend on it.
     /// `bits = 0` is the canonical no-work nonce `0`. Parallel search for the
     /// larger grinds.
     fn grind_pow(&mut self, bits: u32) -> u64 {

@@ -535,7 +535,7 @@ fn gen_verify(
             _ => None,
         })
         .collect();
-    let (gbits, gdig) = (pows[0].1, pows[0].2);
+    let gdig = pows[0].2;
 
     // Bus: the bytecode claims carry the push/pull ζ_lo points and sb.
     let kbc = summary.bytecode_claims[0].point.len() - 3;
@@ -1075,8 +1075,6 @@ fn gen_verify(
         ps("LIG_QUERY_BITS_LEN", ints(&scal(&|c| (0..c.0).map(|lv| c.8[lv] * 128).sum())));
         ps("LIG_FOLD_GRIND_LEN", ints(&scal(&|c| c.3.iter().sum::<usize>() * 128)));
         ps("LIG_QUERY_GRIND_BITS", ints(&flat(&|c| c.10.clone(), maxlev)));
-        ps("LIG_QUERY_GRIND_BYTES", ints(&flat(&|c| c.10.iter().map(|&b| b / 8).collect(), maxlev)));
-        ps("LIG_QUERY_GRIND_EXTRA", ints(&flat(&|c| c.10.iter().map(|&b| b % 8).collect(), maxlev)));
         ps("LIG_QUERIES", ints(&flat(&|c| c.5.clone(), maxlev)));
         ps("LIG_FOLDS", ints(&flat(&|c| c.3.clone(), maxlev)));
         ps("LIG_INTERLEAVE", ints(&flat(&|c| c.9.clone(), maxlev)));
@@ -1096,8 +1094,6 @@ fn gen_verify(
         ps("LIG_QUERY_BITS_OFF", ints(&flat(&|c| c.14.clone(), maxlev)));
         ps("LIG_VANISH_OFF", ints(&flat(&|c| c.16.clone(), maxlev)));
         ps("LIG_FOLD_GRIND_BITS", ints(&flat(&|c| c.11.clone(), maxfolds)));
-        ps("LIG_FOLD_GRIND_BYTES", ints(&flat(&|c| c.11.iter().map(|&b| b / 8).collect(), maxfolds)));
-        ps("LIG_FOLD_GRIND_EXTRA", ints(&flat(&|c| c.11.iter().map(|&b| b % 8).collect(), maxfolds)));
         let mut svk2 = Vec::new();
         let mut ivk2 = Vec::new();
         for c in &cands {
@@ -1204,12 +1200,6 @@ fn gen_verify(
         ("level_roots_1".to_string(), rootb),
         ("fold_nonces".to_string(), fnv),
         ("annmus".to_string(), smu.iter().map(|&m| g_pow(m)).collect()),
-        ("bus_grind".to_string(), {
-            // max_mu = push.mu (guest reads ann_mus[0]); only the byte/bit split
-            // of the bit count is hinted now: bytes, extra bits, tail shift.
-            let bits = (gbits as usize / 8, gbits as usize % 8);
-            vec![g_pow(bits.0), g_pow(bits.1), g_pow(8 - bits.1)]
-        }),
         ("claim_low_len".to_string(), (0..ncl).map(|j| g_pow(cplen[j] - nover_v[j])).collect()),
         // slacks bounding each claim'"'"'s reads to the written regions (so an
         // over-long hint cannot pull free padding): low_len <= mu_s/tau_t

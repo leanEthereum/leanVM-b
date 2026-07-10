@@ -30,8 +30,8 @@ from snark_lib import *
 #     bytecode_vals (absorbed by the stacked-bytecode reduction before its challenges);
 #   - assert-checked: count_root_inv and zc_invs (hinted inverses, product
 #     asserted 1), grind_bits/fold_grind_bits/query_grind_hint (grinding digest bits:
-#     booleanity + reconstruction against the in-circuit digest + leading-zero
-#     asserts), query_index_bits (query bits: booleanity + reconstruction equal to the
+#     booleanity + reconstruction against the in-circuit digest + the low-nbits
+#     zero-window asserts), query_index_bits (query bits: booleanity + reconstruction equal to the
 #     squeezed word), merkle_leaf_rows/merkle_paths (Merkle inclusion against the bound roots);
 #   - shape-certified (the announced sizes are the ground truth): dims_g
 #     with count_bits/count_min_inv (the count gadget pins g^tau_t = ceil_log2 of each
@@ -39,8 +39,7 @@ from snark_lib import *
 #     (pinned per block to its structural source), annmus with musbits/musinv
 #     (each side's g^mu = ceil_log2 of the side total, summed in the
 #     exponent), annm with mbits/minv (the committed log-size m, same
-#     pattern over the committed columns), bus_grind (max-mu ties + the
-#     byte/bit split relation), block_pad_bits (the padding surplus, pinned
+#     pattern over the committed columns), block_pad_bits (the padding surplus, pinned
 #     to 2^kappa - real via g^real * g^delta == g^(2^kappa)), block_sel_bits
 #     + sort_order (the bus-leaf packing: a perm-checked ordering gives each
 #     block an offset, and the selector is pinned by (g^sel)^(2^kappa) ==
@@ -214,8 +213,6 @@ LIG_PATHS_LEN = LIG_PATHS_LEN_PLACEHOLDER
 LIG_QUERY_BITS_LEN = LIG_QUERY_BITS_LEN_PLACEHOLDER
 LIG_FOLD_GRIND_LEN = LIG_FOLD_GRIND_LEN_PLACEHOLDER
 LIG_QUERY_GRIND_BITS = LIG_QUERY_GRIND_BITS_PLACEHOLDER
-LIG_QUERY_GRIND_BYTES = LIG_QUERY_GRIND_BYTES_PLACEHOLDER
-LIG_QUERY_GRIND_EXTRA = LIG_QUERY_GRIND_EXTRA_PLACEHOLDER
 LIG_QUERIES = LIG_QUERIES_PLACEHOLDER
 LIG_FOLDS = LIG_FOLDS_PLACEHOLDER
 LIG_INTERLEAVE = LIG_INTERLEAVE_PLACEHOLDER
@@ -235,8 +232,6 @@ LIG_PATHS_OFF = LIG_PATHS_OFF_PLACEHOLDER
 LIG_QUERY_BITS_OFF = LIG_QUERY_BITS_OFF_PLACEHOLDER
 LIG_VANISH_OFF = LIG_VANISH_OFF_PLACEHOLDER
 LIG_FOLD_GRIND_BITS = LIG_FOLD_GRIND_BITS_PLACEHOLDER
-LIG_FOLD_GRIND_BYTES = LIG_FOLD_GRIND_BYTES_PLACEHOLDER
-LIG_FOLD_GRIND_EXTRA = LIG_FOLD_GRIND_EXTRA_PLACEHOLDER
 LIG_VANISH_VALS = LIG_VANISH_VALS_PLACEHOLDER
 LIG_VANISH_INVS = LIG_VANISH_INVS_PLACEHOLDER
 LIG_N_CANDIDATES = LIG_N_CANDIDATES_PLACEHOLDER
@@ -321,11 +316,12 @@ def decode_query_bits(bits_ptr, v, positions_out, bit_ptrs_out, depth: Const, pe
     return
 
 
-def check_pow(state_0, state_1, nonce, bits_ptr, full_bytes: Const, extra_bits: Const):
-    # Grinding check: digest = H(H(state, (0, POW)), (nonce, POW)); the hinted
-    # digest bits must be boolean, reconstruct the digest word (dec128), and
-    # lead with 8*full_bytes + extra_bits zero bits (full_bytes bytes, then the top bits of
-    # the next byte). The caller absorbs the nonce afterwards.
+def grind_check(state_0, state_1, nonce, bits_ptr, nbits_g):
+    # The one grinding check, shared by the bus grind and the Ligerito fold /
+    # query grinds: digest = H(H(state, (0, POW)), (nonce, POW)); the hinted
+    # digest bits must be boolean and reconstruct digest word 0 (dec128), and its
+    # low nbits bits (nbits_g = g^nbits) must be zero — the CONTIGUOUS PoW window
+    # of transcript::pow_bits_ok. The caller absorbs the nonce afterwards.
     st = StackBuf(2)
     st[0] = state_0
     st[1] = state_1
@@ -340,12 +336,9 @@ def check_pow(state_0, state_1, nonce, bits_ptr, full_bytes: Const, extra_bits: 
     out = StackBuf(2)
     blake3(base, nz, out)
     dec128(bits_ptr, out[0])
-    for b in unroll(0, 8 * full_bytes):
-        zero_lo = bits_ptr[GEN ** b]
-        assert zero_lo == 0
-    for b in unroll(8 * full_bytes + 8 - extra_bits, 8 * full_bytes + 8):
-        zero_hi = bits_ptr[GEN ** b]
-        assert zero_hi == 0
+    for xb in mul_range(1, nbits_g):
+        zero_bit = bits_ptr[xb]
+        assert zero_bit == 0
     return
 
 
@@ -536,7 +529,7 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1):
     # hint lengths specialize per arm; only the executed arm pops its streams.
     #
     # Flow, per level:
-    #   1. fold rounds: optional grinding (check_pow), squeeze the fold
+    #   1. fold rounds: optional grinding (grind_check), squeeze the fold
     #      challenge, advance the sumcheck round polynomial;
     #   2. bind the next level's Merkle root (or, at the last level, the
     #      final message final_msg);
@@ -608,7 +601,7 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1):
         for j in unroll(0, LIG_FOLDS[m_idx * LIG_MAX_LEVELS + lvl]):
             fold_idx = LIG_FOLDS_OFF[m_idx * LIG_MAX_LEVELS + lvl] + j
             if LIG_FOLD_GRIND_BITS[m_idx * LIG_MAX_TOTAL_FOLDS + fold_idx] != 0:
-                check_pow(fs[0], fs[1], fold_nonces[GEN ** fold_idx], fold_grind_bits * GEN ** (128 * fold_idx), LIG_FOLD_GRIND_BYTES[m_idx * LIG_MAX_TOTAL_FOLDS + fold_idx], LIG_FOLD_GRIND_EXTRA[m_idx * LIG_MAX_TOTAL_FOLDS + fold_idx])
+                grind_check(fs[0], fs[1], fold_nonces[GEN ** fold_idx], fold_grind_bits * GEN ** (128 * fold_idx), GEN ** LIG_FOLD_GRIND_BITS[m_idx * LIG_MAX_TOTAL_FOLDS + fold_idx])
                 nonce_v = fold_nonces[GEN ** fold_idx]
                 fs = absorb(fs, nonce_v, DS_POW)
             fs = squeeze(fs)
@@ -634,7 +627,7 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1):
             fs = absorb(fs, next_root_a, DS_BYTE)
             fs = absorb(fs, next_root_b, DS_BYTE)
         if LIG_QUERY_GRIND_BITS[m_idx * LIG_MAX_LEVELS + lvl] != 0:
-            check_pow(fs[0], fs[1], query_nonces[GEN ** lvl], query_grind_hint * GEN ** (128 * lvl), LIG_QUERY_GRIND_BYTES[m_idx * LIG_MAX_LEVELS + lvl], LIG_QUERY_GRIND_EXTRA[m_idx * LIG_MAX_LEVELS + lvl])
+            grind_check(fs[0], fs[1], query_nonces[GEN ** lvl], query_grind_hint * GEN ** (128 * lvl), GEN ** LIG_QUERY_GRIND_BITS[m_idx * LIG_MAX_LEVELS + lvl])
             q_nonce = query_nonces[GEN ** lvl]
             fs = absorb(fs, q_nonce, DS_POW)
         else:
@@ -792,7 +785,7 @@ def verify_sub(pi_0, pi_1, delta_pows, g_logs, g_logs_pow2, g_squares, defer_out
     #   1. seed the Fiat-Shamir sponge from the statement + program digest;
     #   2. announced sizes, then certify every structural log against them
     #      (count gadget pin_ceil_log: tau per table, log_mem);
-    #   3. bind the commitment root; bus grinding (check_pow-style, runtime
+    #   3. bind the commitment root; bus grinding (grind_check, runtime
     #      bit count); 3x GKR grand product at runtime depth
     #      (sumcheck_round3 per round);
     #   4. certify the block kappas + GKR side depths; balance check with
@@ -921,46 +914,14 @@ def verify_sub(pi_0, pi_1, delta_pows, g_logs, g_logs_pow2, g_squares, defer_out
     # grinding nonce: raw stream word (NOT observed), PoW-checked, then bound.
     nonce = cursor[GEN ** 0]
     cursor *= GEN
-    pz = StackBuf(2)
-    pz[0] = 0
-    pz[1] = DS_POW
-    pbase = StackBuf(2)
-    blake3(fs, pz, pbase)
-    pn = StackBuf(2)
-    pn[0] = nonce
-    pn[1] = DS_POW
-    ph = StackBuf(2)
-    blake3(pbase, pn, ph)
-    dec128(grind_bits, ph[0])
-    # Bus grind bits at runtime: bits = push.mu + 1 + SECURITY - 128 =
-    # push.mu - 7 (leaf::grand_product_grinding_bits). The max over the three
-    # side depths IS push.mu: push and pull emit their bus blocks in matched
-    # pairs (identical kappa multisets, so their certified mus are equal), and
-    # the count side sums strictly fewer 2^kappa than push (each count column
-    # rides one push flush; the state flush has none), so count.mu <= push.mu.
-    # ann_mus[0] is the push side. The hinted byte/bit split of the bit count
-    # ties via f^8 * e == g^bits.
-    bus_grind = StackBuf(3)
-    hint_witness(bus_grind[0:3], "bus_grind")
-    max_mu = ann_mus[GEN ** 0]
-    grind_bytes_g = bus_grind[0]
-    assert log(grind_bytes_g) < 6
-    grind_extra_g = bus_grind[1]
-    assert log(grind_extra_g) < 9
-    grind_tail_shift_g = bus_grind[2]
-    assert log(grind_tail_shift_g) < 9
-    grind_split_tie = grind_tail_shift_g * grind_extra_g  # tail_shift * extra == g^8: they partition the final byte's 8 bits
-    assert grind_split_tie == GEN ** 8
-    grind_full_bits_g = grind_bytes_g ** 8
-    grind_total_tie = grind_full_bits_g * grind_extra_g * GEN ** 7  # 8*full + extra reconstructs the bus bit count, tied to max_mu
-    assert grind_total_tie == max_mu
-    for xb in mul_range(1, grind_full_bits_g):
-        z0 = grind_bits[xb]
-        assert z0 == 0
-    tail_ptr = grind_bits * grind_full_bits_g * grind_tail_shift_g
-    for xb in mul_range(1, grind_extra_g):
-        z1 = tail_ptr[xb]
-        assert z1 == 0
+    # Bus grind bits = push.mu + 1 + SECURITY - 128 = push.mu - 7
+    # (leaf::grand_product_grinding_bits). push.mu IS the max of the three side
+    # depths: push and pull emit their bus blocks in matched pairs (identical
+    # kappa multisets, so equal certified mus), and the count side sums strictly
+    # fewer 2^kappa (each count column rides one push flush; the state flush has
+    # none), so count.mu <= push.mu == pull.mu. ann_mus[0] is push, so the grind
+    # window is nbits = push.mu - 7, i.e. g^nbits = ann_mus[0] * g^-7.
+    grind_check(fs[0], fs[1], nonce, grind_bits, ann_mus[GEN ** 0] * GINV ** 7)
     fs = absorb(fs, nonce, DS_POW)
     fs = squeeze(fs)
     gamma = fs[0]
