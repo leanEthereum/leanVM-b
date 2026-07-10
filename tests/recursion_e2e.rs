@@ -1326,11 +1326,11 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     // bits + 2 reduced + alpha + z_skip + 2*lcrounds rounds + 64 z_partial
     // + 1 matpart.
     let bc_cols = nbcv / 2;
-    let bc_sel_bits = log2_ceil(bc_cols);
+    let log2_bc_cols = log2_ceil(bc_cols);
     ps("BYTECODE_COLS", bc_cols.to_string());
-    ps("BYTECODE_SEL_BITS", bc_sel_bits.to_string());
-    ps("DEFER_SIZE", (2 * kbc + bc_sel_bits + 2 * lcrounds + 69).to_string());
-    ps("BYTECODE_VARS", (kbc + bc_sel_bits).to_string());
+    ps("LOG2_BYTECODE_COLS", log2_bc_cols.to_string());
+    ps("DEFER_SIZE", (2 * kbc + log2_bc_cols + 2 * lcrounds + 69).to_string());
+    ps("BYTECODE_VARS", (kbc + log2_bc_cols).to_string());
     let label_state = Sponge::new(b"leanvm-b", &[]).state();
     ps("SEEDB0", u(label_state[0]).to_string());
     ps("SEEDB1", u(label_state[1]).to_string());

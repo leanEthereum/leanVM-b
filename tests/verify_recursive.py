@@ -134,9 +134,9 @@ INDEX_MLE_FACTORS = INDEX_MLE_FACTORS_PLACEHOLDER
 NCLAIMS = NCLAIMS_PLACEHOLDER
 N_BYTECODE_VALS = N_BYTECODE_VALS_PLACEHOLDER
 # The stacked bytecode: BYTECODE_COLS encoding columns per side, stacked along
-# BYTECODE_SEL_BITS selector bits into ONE multilinear.
+# LOG2_BYTECODE_COLS selector bits into ONE multilinear.
 BYTECODE_COLS = BYTECODE_COLS_PLACEHOLDER
-BYTECODE_SEL_BITS = BYTECODE_SEL_BITS_PLACEHOLDER
+LOG2_BYTECODE_COLS = LOG2_BYTECODE_COLS_PLACEHOLDER
 # Zerochecks: per-table constraint-column counts (round counts are the
 # certified tau_t).
 N_AIR_COLS = N_AIR_COLS_PLACEHOLDER
@@ -266,7 +266,7 @@ QPKD_VARS_CAP = QPKD_VARS_CAP_PLACEHOLDER
 DELTA = DELTA_PLACEHOLDER
 # Phase F: log rows of the bytecode blocks (the deferred bytecode points).
 BYTECODE_LOG = BYTECODE_LOG_PLACEHOLDER
-# One sub-proof's deferred-claim region: 2*BYTECODE_LOG + BYTECODE_SEL_BITS
+# One sub-proof's deferred-claim region: 2*BYTECODE_LOG + LOG2_BYTECODE_COLS
 # + 2*LINCHECK_ROUNDS + 69 words (see verify_sub's defer_out layout).
 DEFER_SIZE = DEFER_SIZE_PLACEHOLDER
 # Aggregation: NSUB sub-proofs of the same program; per-sub proof data arrives
@@ -1217,14 +1217,14 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
         assert acc == gkr_claims[s]
 
     # ---- stacked-bytecode reduction ----
-    # The bytecode is ONE multilinear in BYTECODE_LOG + BYTECODE_SEL_BITS
+    # The bytecode is ONE multilinear in BYTECODE_LOG + LOG2_BYTECODE_COLS
     # variables (BYTECODE_COLS encoding columns stacked along the selector
     # bits). Absorb the per-column values, sample the selector challenges, and
     # reduce each point's claims to B(zeta_lo, sel) = sum_c eq(sel, c) * v_c.
     for k in unroll(0, N_BYTECODE_VALS):
         fs = obs(fs, bytecode_vals[GEN ** k])
-    bytecode_sel = StackBuf(BYTECODE_SEL_BITS)
-    for t in unroll(0, BYTECODE_SEL_BITS):
+    bytecode_sel = StackBuf(LOG2_BYTECODE_COLS)
+    for t in unroll(0, LOG2_BYTECODE_COLS):
         fs = squeeze(fs)
         sv = fs[0]
         bytecode_sel[t] = sv
@@ -1233,7 +1233,7 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
         wv = 0
         for c in unroll(0, BYTECODE_COLS):
             e = GEN ** 0
-            for t in unroll(0, BYTECODE_SEL_BITS):
+            for t in unroll(0, LOG2_BYTECODE_COLS):
                 if (c // (2 ** t)) % 2 == 1:
                     e *= bytecode_sel[t]
                 else:
@@ -1898,25 +1898,25 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
 
     # ---- export this sub-proof's deferred-claim data to the caller ----
     # defer_out layout, offsets after the [0..2*KBC) bytecode points
-    # (SEL = BYTECODE_SEL_BITS, LCR = LINCHECK_ROUNDS):
+    # (SEL = LOG2_BYTECODE_COLS, LCR = LINCHECK_ROUNDS):
     #   +0..SEL bytecode_sel | +SEL, +SEL+1 bytecode_reduced | +SEL+2 alpha
     #   | +SEL+3 z_skip | +SEL+4.. zrho | +SEL+4+LCR.. lincheck rs
     #   | +SEL+4+2*LCR.. z_partial (64) | +SEL+68+2*LCR matpart.
     for k in unroll(0, BYTECODE_LOG):
         defer_out[GEN ** k] = zeta[GEN ** k]
         defer_out[GEN ** (BYTECODE_LOG + k)] = zeta[GEN ** (MU_CAP + k)]
-    for k in unroll(0, BYTECODE_SEL_BITS):
+    for k in unroll(0, LOG2_BYTECODE_COLS):
         defer_out[GEN ** (2 * BYTECODE_LOG + k)] = bytecode_sel[k]
-    defer_out[GEN ** (2 * BYTECODE_LOG + BYTECODE_SEL_BITS)] = bytecode_reduced[0]
-    defer_out[GEN ** (2 * BYTECODE_LOG + BYTECODE_SEL_BITS + 1)] = bytecode_reduced[1]
-    defer_out[GEN ** (2 * BYTECODE_LOG + BYTECODE_SEL_BITS + 2)] = lincheck_alpha
-    defer_out[GEN ** (2 * BYTECODE_LOG + BYTECODE_SEL_BITS + 3)] = zerocheck_z
+    defer_out[GEN ** (2 * BYTECODE_LOG + LOG2_BYTECODE_COLS)] = bytecode_reduced[0]
+    defer_out[GEN ** (2 * BYTECODE_LOG + LOG2_BYTECODE_COLS + 1)] = bytecode_reduced[1]
+    defer_out[GEN ** (2 * BYTECODE_LOG + LOG2_BYTECODE_COLS + 2)] = lincheck_alpha
+    defer_out[GEN ** (2 * BYTECODE_LOG + LOG2_BYTECODE_COLS + 3)] = zerocheck_z
     for k in unroll(0, LINCHECK_ROUNDS):
-        defer_out[GEN ** (2 * BYTECODE_LOG + BYTECODE_SEL_BITS + 4 + k)] = zerocheck_rhos[GEN ** k]
-        defer_out[GEN ** (2 * BYTECODE_LOG + BYTECODE_SEL_BITS + 4 + LINCHECK_ROUNDS + k)] = lincheck_rs[GEN ** k]
+        defer_out[GEN ** (2 * BYTECODE_LOG + LOG2_BYTECODE_COLS + 4 + k)] = zerocheck_rhos[GEN ** k]
+        defer_out[GEN ** (2 * BYTECODE_LOG + LOG2_BYTECODE_COLS + 4 + LINCHECK_ROUNDS + k)] = lincheck_rs[GEN ** k]
     for k in unroll(0, 64):
-        defer_out[GEN ** (2 * BYTECODE_LOG + BYTECODE_SEL_BITS + 4 + 2 * LINCHECK_ROUNDS + k)] = z_partial[GEN ** k]
-    defer_out[GEN ** (2 * BYTECODE_LOG + BYTECODE_SEL_BITS + 68 + 2 * LINCHECK_ROUNDS)] = matrix_eval[0]
+        defer_out[GEN ** (2 * BYTECODE_LOG + LOG2_BYTECODE_COLS + 4 + 2 * LINCHECK_ROUNDS + k)] = z_partial[GEN ** k]
+    defer_out[GEN ** (2 * BYTECODE_LOG + LOG2_BYTECODE_COLS + 68 + 2 * LINCHECK_ROUNDS)] = matrix_eval[0]
     return
 
 
@@ -1984,7 +1984,7 @@ def main():
         agg_fs = squeeze(agg_fs)
         gv = agg_fs[0]
         gamma_bc[t] = gv
-        bc_running += gv * defer[GEN ** ((t // 2) * DEFER_SIZE + 2 * BYTECODE_LOG + BYTECODE_SEL_BITS + t % 2)]
+        bc_running += gv * defer[GEN ** ((t // 2) * DEFER_SIZE + 2 * BYTECODE_LOG + LOG2_BYTECODE_COLS + t % 2)]
     bc_point = HeapBuf(BYTECODE_VARS)
     for rd in unroll(0, BYTECODE_VARS):
         msg_g1 = bc_sumcheck_msgs[GEN ** (2 * rd)]
@@ -2003,7 +2003,7 @@ def main():
         e = GEN ** 0
         for k in unroll(0, BYTECODE_LOG):
             e *= (1 + defer[GEN ** ((t // 2) * DEFER_SIZE + (t % 2) * BYTECODE_LOG + k)] + bc_point[GEN ** k])
-        for k in unroll(0, BYTECODE_SEL_BITS):
+        for k in unroll(0, LOG2_BYTECODE_COLS):
             e *= (1 + defer[GEN ** ((t // 2) * DEFER_SIZE + 2 * BYTECODE_LOG + k)] + bc_point[GEN ** (BYTECODE_LOG + k)])
         bc_weight += gamma_bc[t] * e
     bytecode_star = bc_star_hint[0]
@@ -2017,7 +2017,7 @@ def main():
         agg_fs = squeeze(agg_fs)
         gv = agg_fs[0]
         gamma_mat[t] = gv
-        mat_running += gv * defer[GEN ** (t * DEFER_SIZE + 2 * BYTECODE_LOG + BYTECODE_SEL_BITS + 68 + 2 * LINCHECK_ROUNDS)]
+        mat_running += gv * defer[GEN ** (t * DEFER_SIZE + 2 * BYTECODE_LOG + LOG2_BYTECODE_COLS + 68 + 2 * LINCHECK_ROUNDS)]
     mat_point = HeapBuf(2 * K_LOG)
     for rd in unroll(0, 2 * K_LOG):
         msg_g1 = mat_sumcheck_msgs[GEN ** (2 * rd)]
@@ -2041,21 +2041,21 @@ def main():
     weight_a = 0
     weight_b = 0
     for t in unroll(0, NSUB):
-        z_skip_t = defer[GEN ** (t * DEFER_SIZE + 2 * BYTECODE_LOG + BYTECODE_SEL_BITS + 3)]
+        z_skip_t = defer[GEN ** (t * DEFER_SIZE + 2 * BYTECODE_LOG + LOG2_BYTECODE_COLS + 3)]
         row_nums = StackBuf(64)
         lag64(z_skip_t, row_nums, 0)
         row_weight = 0
         for i in unroll(0, 64):
             row_weight += row_nums[i] * ISDOM[i] * eq_rows[GEN ** (62 + i)]
         for k in unroll(0, LINCHECK_ROUNDS):
-            row_weight *= (1 + defer[GEN ** (t * DEFER_SIZE + 2 * BYTECODE_LOG + BYTECODE_SEL_BITS + 4 + k)] + mat_point[GEN ** (6 + k)])
+            row_weight *= (1 + defer[GEN ** (t * DEFER_SIZE + 2 * BYTECODE_LOG + LOG2_BYTECODE_COLS + 4 + k)] + mat_point[GEN ** (6 + k)])
         col_weight = 0
         for i in unroll(0, 64):
-            col_weight += defer[GEN ** (t * DEFER_SIZE + 2 * BYTECODE_LOG + BYTECODE_SEL_BITS + 4 + 2 * LINCHECK_ROUNDS + i)] * eq_cols[GEN ** (62 + i)]
+            col_weight += defer[GEN ** (t * DEFER_SIZE + 2 * BYTECODE_LOG + LOG2_BYTECODE_COLS + 4 + 2 * LINCHECK_ROUNDS + i)] * eq_cols[GEN ** (62 + i)]
         for j in unroll(0, LINCHECK_ROUNDS):
-            col_weight *= (1 + defer[GEN ** (t * DEFER_SIZE + 2 * BYTECODE_LOG + BYTECODE_SEL_BITS + 4 + LINCHECK_ROUNDS + j)] + mat_point[GEN ** (2 * K_LOG - 1 - j)])
+            col_weight *= (1 + defer[GEN ** (t * DEFER_SIZE + 2 * BYTECODE_LOG + LOG2_BYTECODE_COLS + 4 + LINCHECK_ROUNDS + j)] + mat_point[GEN ** (2 * K_LOG - 1 - j)])
         weight_u = row_weight * col_weight
-        weight_a += gamma_mat[t] * defer[GEN ** (t * DEFER_SIZE + 2 * BYTECODE_LOG + BYTECODE_SEL_BITS + 2)] * weight_u
+        weight_a += gamma_mat[t] * defer[GEN ** (t * DEFER_SIZE + 2 * BYTECODE_LOG + LOG2_BYTECODE_COLS + 2)] * weight_u
         weight_b += gamma_mat[t] * weight_u
     a_star = mat_stars_hint[0]
     b_star = mat_stars_hint[1]
