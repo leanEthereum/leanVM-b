@@ -343,7 +343,7 @@ def check_pow(state_0, state_1, nonce, bits_ptr, full_bytes: Const, extra_bits: 
     return
 
 
-def pin_ceil_log(bits_row, psum_row, gpow_size, sq_tab, g_log, min_inv, floor_e: Const, nbits: Const):
+def pin_ceil_log(bits_row, psum_row, pow_tab, sq_tab, g_log, min_inv, floor_e: Const, nbits: Const):
     # The ceil-log certification gadget (used for the per-table taus, the GKR
     # side depths, and the committed size m): `nbits` hinted bits are boolean-
     # constrained and folded into partial sums psum_row[j] = value of the low
@@ -351,7 +351,7 @@ def pin_ceil_log(bits_row, psum_row, gpow_size, sq_tab, g_log, min_inv, floor_e:
     # exponent-domain product prod g^(bit_j 2^j) (for callers that certify
     # against an exponent-summed total). The hinted g_log is then pinned to
     # ceil_log2(word): psum_row[g_log] == word gives word < 2^log (with the
-    # word == 2^log case through gpow_size), and the hinted-inverse nonzero
+    # word == 2^log case through pow_tab), and the hinted-inverse nonzero
     # check gives word > 2^(log-1), waived at the floor (a table or PCS
     # minimum) where the true log may sit below the count's ceil-log.
     psum_row[GEN ** 0] = 0
@@ -366,13 +366,13 @@ def pin_ceil_log(bits_row, psum_row, gpow_size, sq_tab, g_log, min_inv, floor_e:
     assert log(g_log) < 34
     low = psum_row[g_log]
     diff_low = low + word
-    diff_pow = word + gpow_size[g_log]
+    diff_pow = word + pow_tab[g_log]
     assert diff_low * low == 0  # word < 2^log: low==0 (bits >= log clear) OR low==word (word == 2^log)
     assert diff_low * diff_pow == 0  # ...the second factor pins the count==2^log branch via the g^j->2^j table
     if g_log != GEN ** floor_e:
         low_prev = psum_row[g_log * GINV]
         min_a = low_prev + word
-        min_b = word + gpow_size[g_log * GINV]
+        min_b = word + pow_tab[g_log * GINV]
         min_prod = min_a * min_b
         assert min_prod * min_inv == 1
     return word, exp_prod
@@ -753,21 +753,21 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1):
 
 def exponent_tables():
     # Read-only lookup tables over the exponent domain, ALL indexed at runtime
-    # g-powers (so they must be heap, not stack): gpow_log[g^j] = j recovers
-    # a g-power's exponent (its log), gpow_size[g^j] = 2^j gives the size that
-    # exponent denotes, and g_squares[g^j] = g^(2^j) turns integer sums of
-    # powers of two into field products. Returns the 3 pointers.
-    gpow_log = HeapBuf(33)
-    gpow_size = HeapBuf(33)
+    # g-powers (so they must be heap, not stack): exp_word[g^j] = j and
+    # pow_word[g^j] = 2^j map a g-power back to its exponent / to 2^j, and
+    # g_squares[g^j] = g^(2^j) turns integer sums of powers of two into field
+    # products. Built once per sub-proof verification; returns the 3 pointers.
+    exp_word = HeapBuf(33)
+    pow_word = HeapBuf(33)
     for j in unroll(0, 33):
-        gpow_log[GEN ** j] = j
-        gpow_size[GEN ** j] = 2 ** j
+        exp_word[GEN ** j] = j
+        pow_word[GEN ** j] = 2 ** j
     g_squares = HeapBuf(34)
     sq_run = GEN
     for j in unroll(0, 34):
         g_squares[GEN ** j] = sq_run
         sq_run *= sq_run
-    return gpow_log, gpow_size, g_squares
+    return exp_word, pow_word, g_squares
 
 
 def verify_sub(pi_0, pi_1, delta_pows, defer_out):
@@ -866,12 +866,12 @@ def verify_sub(pi_0, pi_1, delta_pows, defer_out):
     # Exponent-domain lookup tables (see exponent_tables); kappa_base maps a
     # kappa source index to its certified announced log (source 0 = const,
     # handled by the baked adj shift alone).
-    gpow_log, gpow_size, g_squares = exponent_tables()
+    exp_word, pow_word, g_squares = exponent_tables()
     # log_mem is announced AS a log (an integer word L): T[g^L] == L pins the
     # hinted g-power to it.
     g_log_mem = dims_g[GEN ** 0]
     assert log(g_log_mem) < 33
-    lm_word = gpow_log[g_log_mem]
+    lm_word = exp_word[g_log_mem]
     lm_ann = sizes[0]
     assert lm_word == lm_ann
     kappa_base = HeapBuf(8)
@@ -888,7 +888,7 @@ def verify_sub(pi_0, pi_1, delta_pows, defer_out):
     count_gpows = HeapBuf(6)  # g^count_t, for the padding-surplus certification below
     for t in unroll(0, 6):
         gtau = dims_g[GEN ** (t + 1)]
-        tau_word, tau_exp = pin_ceil_log(count_bits * GEN ** (33 * t), psums * GEN ** (35 * t), gpow_size, g_squares, gtau, count_min_inv[t], FLOORS[t], 33)
+        tau_word, tau_exp = pin_ceil_log(count_bits * GEN ** (33 * t), psums * GEN ** (35 * t), pow_word, g_squares, gtau, count_min_inv[t], FLOORS[t], 33)
         count = sizes[t + 1]
         assert tau_word == count
         count_gpows[GEN ** t] = tau_exp  # tau_exp = g^count_t (exponent-domain reconstruction)
@@ -1095,7 +1095,7 @@ def verify_sub(pi_0, pi_1, delta_pows, defer_out):
         side_total_g = GEN ** 0
         for b in unroll(SIDE_BLOCK_START[s], SIDE_BLOCK_START[s + 1]):
             side_total_g *= g_squares[block_kappa[GEN ** b]]
-        side_word, side_exp = pin_ceil_log(mus_bits * GEN ** (34 * s), mus_psums * GEN ** (35 * s), gpow_size, g_squares, ann_mus[GEN ** s], mus_inv[s], 0, 34)
+        side_word, side_exp = pin_ceil_log(mus_bits * GEN ** (34 * s), mus_psums * GEN ** (35 * s), pow_word, g_squares, ann_mus[GEN ** s], mus_inv[s], 0, 34)
         assert side_exp == side_total_g
 
     # ---- bus-leaf packing offsets (for the selector certification) ----
@@ -1711,7 +1711,7 @@ def verify_sub(pi_0, pi_1, delta_pows, defer_out):
         kg_c = kappa_base[GEN ** COL_KAPPA_SRC[c]] * GEN ** COL_KAPPA_ADJ[c]
         g_total *= g_squares[kg_c]  # sum of 2^kappa over committed cols, done as a product in the exponent
     tw_psum = HeapBuf(35)
-    m_word, m_exp = pin_ceil_log(m_bits, tw_psum, gpow_size, g_squares, gmv, m_inv[0], PCS_MIN_MU, 34)
+    m_word, m_exp = pin_ceil_log(m_bits, tw_psum, pow_word, g_squares, gmv, m_inv[0], PCS_MIN_MU, 34)
     assert m_exp == g_total
     sel = gmv * LIG_MIN_SHIFT_INV  # g^(m - MIN): the match_range arm index selecting the opening candidate
     assert log(sel) < LIG_N_CANDIDATES
