@@ -376,11 +376,15 @@ def pin_ceil_log(bits_row, psum_row, g_logs_pow2, sq_tab, g_log, min_inv, floor_
     assert diff_low * low == 0  # word < 2^log: low==0 (bits >= log clear) OR low==word (word == 2^log)
     assert diff_low * diff_pow == 0  # ...the second factor pins the count==2^log branch via the g^j->2^j table
     if g_log != GEN ** floor_e:
-        low_prev = psum_row[g_log * GINV]
-        min_a = low_prev + word
-        min_b = word + g_logs_pow2[g_log * GINV]
-        min_prod = min_a * min_b
-        assert min_prod * min_inv == 1
+        # minimality (word > 2^(log-1)); skip when g_log == g^0: there word is in
+        # {0,1} from the pins above, so its ceil-log 0 is already minimal, and the
+        # read below would land at psum_row[g^-1] (an unwritten, out-of-range cell).
+        if g_log != GEN ** 0:
+            low_prev = psum_row[g_log * GINV]
+            min_a = low_prev + word
+            min_b = word + g_logs_pow2[g_log * GINV]
+            min_prod = min_a * min_b
+            assert min_prod * min_inv == 1
     return word, exp_prod
 
 
@@ -1397,6 +1401,11 @@ def verify_sub(pi_0, pi_1, delta_pows, g_logs, g_logs_pow2, g_squares, defer_out
     bits5 = count_bits * GEN ** (33 * 5)
     zeta_pin = zeta * GEN ** PIN_ZETA_OFF
     tau5_g = dims_g[GEN ** 6]
+    # tau_5 indexes the baked per-candidate SD tables (B3TABLEN rows) and drives
+    # the flock loops (R1CS_M_CAP / QPKD_VARS_CAP buffers). The count gadget only
+    # bounds it < 34; pin it under the baked extent so it cannot over-read SD0/SD1
+    # into free cells (B3TABLEN <= R1CS_M_CAP - K_LOG, so this covers them all).
+    assert log(tau5_g) < B3TABLEN
     pin_chain = HeapBuf(35)
     pin_chain[GEN ** 0] = 0
     for xk in mul_range(1, tau5_g):
@@ -1868,6 +1877,10 @@ def verify_sub(pi_0, pi_1, delta_pows, g_logs, g_logs_pow2, g_squares, defer_out
     rs_weight = gamma_ab * rs_eq_vals[0] + gamma_c * rs_eq_vals[1]
     rs_len_g = rs_sel_len[0]
     assert log(rs_len_g) < 34
+    # reach-pin: qpkdv + rs_len == lenris, so the selector loop below reads
+    # fold_challenges only inside its written [0, lenris) extent (a longer
+    # rs_len would read free cells above lenris). Mirrors the claim reach-pin.
+    assert qpkdv_g * rs_len_g == fold_cap_g
     ris_q = fold_challenges * qpkdv_g
     rsw_chain = HeapBuf(35)
     rsw_chain[GEN ** 0] = rs_weight
@@ -1892,15 +1905,31 @@ def verify_sub(pi_0, pi_1, delta_pows, g_logs, g_logs_pow2, g_squares, defer_out
             overlap_ptr = zeta * GEN ** CLAIM_POINT_OFF[j] * claim_low_len[GEN ** j]
         else:
             overlap_ptr = rho * GEN ** CLAIM_POINT_OFF[j] * claim_low_len[GEN ** j]
+        # overlap_ptr[g^k] reads the claim point at low_len + k, which is written
+        # only for k < nover (the [low_len, cplen) span); at k >= nover it points
+        # into the unwritten point-buffer gap (prover-chosen free cells). Pin the
+        # overlap mask to a prefix of exactly nover ones (booleanity + monotone +
+        # popcount == nover), so no overlap coord reads past cplen. A stray 1 at
+        # k >= nover would read a free cell and hand the sumcheck a linear knob
+        # (a full opening forgery) - the point-reuse analog of the hole b7b470c
+        # closed on the direct y-slot path.
+        mask_pop = GEN ** 0  # g^(overlap-active coords so far)
+        prev_mask = 1        # coord -1 active, so mask[0] is unconstrained
         for k in unroll(0, YR_LOG_CAP):
             mask_bit = claim_overlap_mask[GEN ** (8 * j + k)]
             assert mask_bit * mask_bit == mask_bit
+            assert mask_bit * (1 + prev_mask) == 0  # mask[k]=1 forces mask[k-1]=1
+            prev_mask = mask_bit
+            mask_pop *= 1 + mask_bit * (GEN + 1)     # ×g iff mask_bit == 1
             slot_bit = claim_yslot_bits[GEN ** (8 * j + k)]
             assert slot_bit * slot_bit == slot_bit
             slot_point[GEN ** k] = mask_bit * overlap_ptr[GEN ** k] + (1 + mask_bit) * slot_bit
-        # zero-pin coords beyond final_msg's log-length (no over-cap weight):
-        # the pointers below start at position yr_log_n, and the loop covers
-        # the YR_LOG_CAP − yr_log_n padding coords.
+        assert mask_pop == claim_nover[GEN ** j]  # exactly nover overlap coords
+        # zero-pin coords beyond final_msg's log-length (no over-cap weight): the
+        # pointers start at yr_log_n. The mask pin above forces nover <= yr_log_n
+        # (else the prefix would collide with hi_mask), so the mask is 0 here too
+        # and slot_point is 0, leaving no eq weight on the unwritten final_msg
+        # cells past 2^yr_log_n.
         hi_mask = claim_overlap_mask * GEN ** (8 * j) * yr_log_n_g
         hi_slot = claim_yslot_bits * GEN ** (8 * j) * yr_log_n_g
         for xk in mul_range(1, yr_pad_g):

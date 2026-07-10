@@ -1595,6 +1595,24 @@ fn recursion_soundness_binds() {
         merged[pos].1[0][0] = merged[pos].1[0][1];
         assert!(!run(&mut guest, &merged), "duplicated sort_order rank must be rejected");
     }
+    // claim_overlap_mask: toggle claim 0's first overlap coord. Either it breaks
+    // the prefix or shifts the certified popcount, so the mask pin must reject -
+    // this is the point-reuse y-slot over-read path (finding: eval_b overlap).
+    {
+        let mut merged = batch.merged.clone();
+        let pos = merged.iter().position(|(n, _)| n == "claim_overlap_mask").expect("mask");
+        let cur = merged[pos].1[0][0];
+        merged[pos].1[0][0] = if cur == F128::ONE { F128::ZERO } else { F128::ONE };
+        assert!(!run(&mut guest, &merged), "overlap_mask popcount tamper must be rejected");
+    }
+    // rs_sel_len: lengthen the ring-switch selector by one (×g). The reach-pin
+    // qpkdv + rs_len == lenris must reject it before it reads free fold cells.
+    {
+        let mut merged = batch.merged.clone();
+        let pos = merged.iter().position(|(n, _)| n == "rs_sel_len").expect("rs_sel_len");
+        merged[pos].1[0][0] = merged[pos].1[0][0] * G;
+        assert!(!run(&mut guest, &merged), "over-long rs_sel_len must be rejected");
+    }
     eprintln!("all layout-hint tamperings correctly rejected");
 }
 
