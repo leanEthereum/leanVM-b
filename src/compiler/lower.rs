@@ -1706,25 +1706,25 @@ impl FnLower<'_> {
             Stmt::LetMatchRange { names, x, arms } => self.lower_match_range(names, x, arms),
             Stmt::Call(f, args) => {
                 // Computed advice fills (prover-side, re-checked by the caller):
-                // `decompose(bits, value, nbits)` writes value's bits into the
-                // buffer; `decompose_sum(bits, kappa, start, count, nbits)`
+                // `bit_decompose(bits, value, nbits)` writes value's bits into the
+                // buffer; `bit_decompose_sum(bits, kappa, start, count, nbits)`
                 // writes the bits of Σ 2^κ over kappa[start..start+count].
-                if f == "decompose" {
-                    assert_eq!(args.len(), 3, "decompose(bits, value, nbits)");
+                if f == "bit_decompose" {
+                    assert_eq!(args.len(), 3, "bit_decompose(bits, value, nbits)");
                     let bits_ptr = self.expr(&args[0]);
                     let value = self.expr(&args[1]);
                     let nbits = self.const_index(&args[2]);
-                    self.pending.push(Hint::Decompose { value, bits_ptr, nbits });
+                    self.pending.push(Hint::BitDecompose { value, bits_ptr, nbits });
                     return;
                 }
-                if f == "decompose_sum" {
-                    assert_eq!(args.len(), 5, "decompose_sum(bits, kappa, start, count, nbits)");
+                if f == "bit_decompose_sum" {
+                    assert_eq!(args.len(), 5, "bit_decompose_sum(bits, kappa, start, count, nbits)");
                     let bits_ptr = self.expr(&args[0]);
                     let kappa_ptr = self.expr(&args[1]);
                     let start = self.const_index(&args[2]);
                     let count = self.const_index(&args[3]);
                     let nbits = self.const_index(&args[4]);
-                    self.pending.push(Hint::DecomposeSum { kappa_ptr, start, count, bits_ptr, nbits });
+                    self.pending.push(Hint::BitDecomposeSum { kappa_ptr, start, count, bits_ptr, nbits });
                     return;
                 }
                 // `blake3(a, b, out)`: the digest of the two 256-bit operands

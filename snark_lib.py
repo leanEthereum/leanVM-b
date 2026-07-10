@@ -49,14 +49,14 @@ GEN = _Elt()
 """The fixed generator g = x of GF(2^128)^× (order 2^128 - 1)."""
 
 
-def decompose(bits, value, nbits: int) -> None:
+def bit_decompose(bits, value, nbits: int) -> None:
     """Computed advice: the prover writes the `nbits` bits of `value` into the
     `bits` buffer. UNCONSTRAINED — the caller must check booleanity and that the
     bits reconstruct `value` (a range check that `value < 2^nbits`)."""
     _ = bits, value, nbits
 
 
-def decompose_sum(bits, kappa, start: int, count: int, nbits: int) -> None:
+def bit_decompose_sum(bits, kappa, start: int, count: int, nbits: int) -> None:
     """Computed advice: the prover writes the `nbits` bits of `Σ 2^κ` over
     `kappa[start .. start+count]` (each κ a small g-power) into `bits`.
     UNCONSTRAINED — the caller checks the reconstruction against `Π g^(2^κ)`."""
