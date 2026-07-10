@@ -85,9 +85,12 @@ ILD0 = ILD0_PLACEHOLDER
 ILD1 = ILD1_PLACEHOLDER
 ILD2 = ILD2_PLACEHOLDER
 
-# GKR sides: 0=push, 1=pull, 2=count. The layer counts mu_s are hinted and
-# certified from the block kappas; ZOFF places the per-side final points
-# inside `zeta` at the fixed MU_CAP stride.
+# GKR sides. The layer counts mu_s are hinted and certified from the block
+# kappas; ZOFF places the per-side final points inside `zeta` at the fixed
+# MU_CAP stride.
+PUSH_SIDE = 0
+PULL_SIDE = 1
+COUNT_SIDE = 2
 ZOFF = ZOFF_PLACEHOLDER
 MU_CAP = MU_CAP_PLACEHOLDER
 # GKR runtime-loop chain capacities: per-tree round positions (triangle
@@ -99,11 +102,20 @@ GKR_POINTS_CAP = GKR_POINTS_CAP_PLACEHOLDER
 # [SIDE_BLOCK_START[s], SIDE_BLOCK_START[s+1])). The block STRUCTURE is
 # protocol-fixed and baked: each block's coord range [BLOCK_COORD_OFF,
 # +BLOCK_COORD_COUNT), per coord COORD_TYPE (0=const, 1=col, 2=gcol, 3=index,
-# 4=public bytecode), COORD_CONST (the const value, else 0), COORD_PAD_VAL
+# 4=public bytecode; named COORD_KIND_* below), COORD_CONST (the const value, else 0), COORD_PAD_VAL
 # (its default-padding fingerprint value), and the kappa SOURCE map
 # (BLOCK_KAPPA_SRC/ADJ: 0=const adj, 1=log_mem, 2+t=tau_t). The block SHAPES
 # are all reconstructed at runtime from the certified logs: kappa directly,
 # the padding delta and selector bits by pinned advice-decompositions.
+# Coord kinds (COORD_TYPE codes, mirroring leaf.rs::Coord):
+COORD_KIND_CONST = 0
+COORD_KIND_COL = 1
+COORD_KIND_GCOL = 2
+COORD_KIND_INDEX = 3
+COORD_KIND_PUBLIC = 4
+# BLOCK_REAL_TABLE: the table whose count is the block's real row count, or
+# REAL_IS_FULL_CUBE for the shared blocks (real = 2^kappa, no padding).
+REAL_IS_FULL_CUBE = 6
 SIDE_BLOCK_START = SIDE_BLOCK_START_PLACEHOLDER
 N_BLOCKS = N_BLOCKS_PLACEHOLDER
 BLOCK_KAPPA_SRC = BLOCK_KAPPA_SRC_PLACEHOLDER
@@ -175,8 +187,8 @@ NCL = NCL_PLACEHOLDER
 # Scalars index as TBL[m_idx]; per-level values as TBL[m_idx * LIG_MAX_LEVELS + lvl];
 # per-fold grind schedules with the LIG_MAX_TOTAL_FOLDS stride; the subspace
 # vanishing constants with the LIG_MAX_VANISH_LEN stride. The eval_b terminal
-# claim descriptors keep only the FIXED parts baked (CLAIM_POINT_BUF: 0=zeta,
-# 1=rho, 2=pi, 3=qpkd pin; CLAIM_POINT_OFF into those buffers) — the
+# claim descriptors keep only the FIXED parts baked (CLAIM_POINT_BUF, named
+# POINT_BUF_* below; CLAIM_POINT_OFF into those buffers) — the
 # shape-dependent lengths/selectors are hinted and identity-certified.
 LIGLBLA = LIGLBLA_PLACEHOLDER
 LIGLBLB = LIGLBLB_PLACEHOLDER
@@ -235,6 +247,11 @@ LIG_VANISH_INVS = LIG_VANISH_INVS_PLACEHOLDER
 LIG_N_CANDIDATES = LIG_N_CANDIDATES_PLACEHOLDER
 LIG_MIN_SHIFT_INV = LIG_MIN_SHIFT_INV_PLACEHOLDER
 # eval_b claim descriptors (fixed parts) + the qpkd capacity stride.
+# Which point buffer a pooled claim's x-part lives in (CLAIM_POINT_BUF codes):
+POINT_BUF_ZETA = 0
+POINT_BUF_RHO = 1
+POINT_BUF_PI = 2
+POINT_BUF_QPKD = 3
 CLAIM_POINT_BUF = CLAIM_POINT_BUF_PLACEHOLDER
 CLAIM_POINT_OFF = CLAIM_POINT_OFF_PLACEHOLDER
 QPKD_VARS_CAP = QPKD_VARS_CAP_PLACEHOLDER
@@ -908,10 +925,10 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
     ann_mus = HeapBuf(3)
     hint_witness(ann_mus[0:1], "annmus_push")
     hint_witness(ann_mus[2:3], "annmus_count")
-    ann_mus[GEN ** 1] = ann_mus[GEN ** 0]
+    ann_mus[GEN ** PULL_SIDE] = ann_mus[GEN ** PUSH_SIDE]
     grind_bits = HeapBuf(128)
     hint_witness(grind_bits[0:128], "grind_bits")
-    bus_grind_window = ann_mus[GEN ** 0] * GINV ** 7  # g^(push.mu - 7): the bus PoW bit count
+    bus_grind_window = ann_mus[GEN ** PUSH_SIDE] * GINV ** 7  # g^(push.mu - 7): the bus PoW bit count
     grind_check(fs[0], fs[1], nonce, grind_bits, bus_grind_window)
     fs = absorb(fs, nonce, DS_POW)
     fs = squeeze(fs)
@@ -1015,7 +1032,7 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
         gkr_claims[s] = lclaim[mu_g]
 
     # ---- count root nonzero ----
-    assert gkr_roots[2] != 0  # count-tree root nonzero: no read count self-cancels
+    assert gkr_roots[COUNT_SIDE] != 0  # count-tree root nonzero: no read count self-cancels
 
     # ---- per-block shape data (derived / advice-decomposed, then CERTIFIED) ----
     # kappa derives from its structural source; the side depth mu and the
@@ -1037,7 +1054,7 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
     # (identical baked kappa sources, generator-asserted), so certify push and
     # count only; pull rides the alias ann_mus[1] = ann_mus[0] set above.
     for cert in unroll(0, 2):
-        s = 2 * cert  # push (0), then count (2)
+        s = COUNT_SIDE * cert  # PUSH_SIDE (0), then COUNT_SIDE (2)
         side_total = GEN ** 0
         for b in unroll(SIDE_BLOCK_START[s], SIDE_BLOCK_START[s + 1]):
             side_total *= g_squares[block_kappa[GEN ** b]]  # g^(sum of 2^kappa)
@@ -1087,7 +1104,7 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
                 pad_fp += alpha_pow * COORD_PAD_VAL[BLOCK_COORD_OFF[b] + i]
                 alpha_pow *= alpha
             g_two_kappa = g_squares[block_kappa[GEN ** b]]  # g^(2^κ_b)
-            if BLOCK_REAL_TABLE[b] == 6:
+            if BLOCK_REAL_TABLE[b] == REAL_IS_FULL_CUBE:
                 g_real = g_two_kappa  # shared block: real = 2^κ, so DELTA = 0
             else:
                 g_real = count_gpows[GEN ** BLOCK_REAL_TABLE[b]]  # g^count_t
@@ -1106,8 +1123,8 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
             assert g_real * g_delta == g_two_kappa  # real_b + DELTA_b == 2^κ_b
             side_pad_product *= ladder
         pad_products[GEN ** s] = side_pad_product
-    lhsb = gkr_roots[0] * pad_products[GEN ** 1]  # balance: push_root * d_pull == pull_root * d_push (padding cancels)
-    rhsb = gkr_roots[1] * pad_products[GEN ** 0]
+    lhsb = gkr_roots[PUSH_SIDE] * pad_products[GEN ** PULL_SIDE]  # balance: push_root * d_pull == pull_root * d_push (padding cancels)
+    rhsb = gkr_roots[PULL_SIDE] * pad_products[GEN ** PUSH_SIDE]
     assert lhsb == rhsb
 
     # ---- 3× leaf decomposition (claims pooled; bytecode Public DEFERRED) ----
@@ -1156,16 +1173,16 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
             inner_sum = 0
             alpha_pow = GEN ** 0
             for i in unroll(0, BLOCK_COORD_COUNT[b]):
-                if COORD_TYPE[BLOCK_COORD_OFF[b] + i] == 0:
+                if COORD_TYPE[BLOCK_COORD_OFF[b] + i] == COORD_KIND_CONST:
                     coord_val = COORD_CONST[BLOCK_COORD_OFF[b] + i]
-                if COORD_TYPE[BLOCK_COORD_OFF[b] + i] == 1:
+                if COORD_TYPE[BLOCK_COORD_OFF[b] + i] == COORD_KIND_COL:
                     coord_val = cursor[GEN ** 0]
                     fs = obs(fs, coord_val)
                     cursor *= GEN
                     claim_pool[GEN ** claim_idx] = coord_val
                     claim_cplen_g[GEN ** claim_idx] = kappa_g  # cplen = block kappa
                     claim_idx += 1
-                if COORD_TYPE[BLOCK_COORD_OFF[b] + i] == 2:
+                if COORD_TYPE[BLOCK_COORD_OFF[b] + i] == COORD_KIND_GCOL:
                     rawv = cursor[GEN ** 0]
                     fs = obs(fs, rawv)
                     cursor *= GEN
@@ -1173,21 +1190,21 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
                     claim_cplen_g[GEN ** claim_idx] = kappa_g  # cplen = block kappa
                     claim_idx += 1
                     coord_val = GG * rawv
-                if COORD_TYPE[BLOCK_COORD_OFF[b] + i] == 3:
+                if COORD_TYPE[BLOCK_COORD_OFF[b] + i] == COORD_KIND_INDEX:
                     idx_chain = HeapBuf(MU_CAP + 2)
                     idx_chain[GEN ** 0] = 1
                     for xt in mul_range(1, kappa_g):
                         idx_chain[xt * GEN] = idx_chain[xt] * (1 + zeta_zs[xt] * idxc_tab[xt])  # Index-coord MLE: prod_t (1 + zeta_t * (1 + g^(2^t)))
                     coord_val = idx_chain[kappa_g]
-                if COORD_TYPE[BLOCK_COORD_OFF[b] + i] == 4:
+                if COORD_TYPE[BLOCK_COORD_OFF[b] + i] == COORD_KIND_PUBLIC:
                     coord_val = bytecode_vals[GEN ** bytecode_idx]
                     bytecode_idx += 1
-                if s == 2:
+                if s == COUNT_SIDE:
                     inner_sum += coord_val
                 else:
                     inner_sum += alpha_pow * coord_val
                     alpha_pow *= alpha
-            if s == 2:
+            if s == COUNT_SIDE:
                 acc += eq_hi * inner_sum
             else:
                 acc += eq_hi * (gamma + inner_sum)
@@ -1691,21 +1708,21 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
         low_len_g = claim_low_len[GEN ** j]
         assert log(low_len_g) < 34
         low_chain = HeapBuf(35)
-        if CLAIM_POINT_BUF[j] == 0:
+        if CLAIM_POINT_BUF[j] == POINT_BUF_ZETA:
             zptr = zeta * GEN ** CLAIM_POINT_OFF[j]
             low_chain[GEN ** 0] = 1
             for xk in mul_range(1, low_len_g):
                 low_chain[xk * GEN] = low_chain[xk] * (1 + zptr[xk] + fold_challenges[xk])
-        if CLAIM_POINT_BUF[j] == 1:
+        if CLAIM_POINT_BUF[j] == POINT_BUF_RHO:
             rptr = rho * GEN ** CLAIM_POINT_OFF[j]
             low_chain[GEN ** 0] = 1
             for xk in mul_range(1, low_len_g):
                 low_chain[xk * GEN] = low_chain[xk] * (1 + rptr[xk] + fold_challenges[xk])
-        if CLAIM_POINT_BUF[j] == 2:
+        if CLAIM_POINT_BUF[j] == POINT_BUF_PI:
             low_chain[GEN ** 1] = 1 + rm + fold_challenges[GEN ** 0]
             for xk in mul_range(GEN, low_len_g):
                 low_chain[xk * GEN] = low_chain[xk] * (1 + fold_challenges[xk])
-        if CLAIM_POINT_BUF[j] == 3:
+        if CLAIM_POINT_BUF[j] == POINT_BUF_QPKD:
             qpkd_slot_eq = GEN ** 0
             for k in unroll(0, 7):
                 sb3 = claim_qpkd_slot_bits[GEN ** (7 * j + k)]
@@ -1724,7 +1741,7 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
         # with nvt = nlow the pair (seln, nover) is then forced by nlow + seln ==
         # lenris + nover and nover * seln == 0 (range checks reject the negative
         # branch), and low_len = cplen - nover. No length freedom remains.
-        if CLAIM_POINT_BUF[j] == 2:
+        if CLAIM_POINT_BUF[j] == POINT_BUF_PI:
             # pi: cplen = min(log_mem, lenris), certified as a min here.
             cplen_g = pi_cplen[0]
             assert log(pi_mem_slack[0]) < 34
@@ -1735,7 +1752,7 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
             nlow = cplen_g                             # delta = 0 for pi
         else:
             cplen_g = claim_cplen_g[GEN ** j]
-            if CLAIM_POINT_BUF[j] == 3:
+            if CLAIM_POINT_BUF[j] == POINT_BUF_QPKD:
                 nlow = cplen_g * GEN ** 7  # nlow = cplen + 7 (qpkd slot)
             else:
                 nlow = cplen_g            # nlow = cplen
@@ -1817,7 +1834,7 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
     inner_sum = inner_total
     for j in unroll(0, NCL):
         slot_point = HeapBuf(YR_LOG_CAP)
-        if CLAIM_POINT_BUF[j] == 0:
+        if CLAIM_POINT_BUF[j] == POINT_BUF_ZETA:
             overlap_ptr = zeta * GEN ** CLAIM_POINT_OFF[j] * claim_low_len[GEN ** j]
         else:
             overlap_ptr = rho * GEN ** CLAIM_POINT_OFF[j] * claim_low_len[GEN ** j]
