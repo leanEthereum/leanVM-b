@@ -549,8 +549,33 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1):
     fs = StackBuf(2)
     fs[0] = fs0
     fs[1] = fs1
+
+    fs = absorb(fs, 23, DS_LEN)
+    fs = absorb(fs, LIGLBLA, DS_BYTE)
+    fs = absorb(fs, LIGLBLB, DS_BYTE)
+    fs = obs(fs, target)
+    fs = absorb(fs, 32, DS_LEN)
+    fs = absorb(fs, commit_root_0, DS_BYTE)
+    fs = absorb(fs, commit_root_1, DS_BYTE)
+
+    # sumcheck round messages (hinted, two coeffs per round); msg_cursor walks them.
     lig_sumcheck_msgs = HeapBuf(GEN ** (LIG_SUMCHECK_LEN[m_idx]))
     hint_witness(lig_sumcheck_msgs[0:LIG_SUMCHECK_LEN[m_idx]], "lig_sumcheck_msgs")
+    msg_cursor = lig_sumcheck_msgs
+    msg_u0 = msg_cursor[GEN ** 0]
+    fs = obs(fs, msg_u0)
+    msg_u2 = msg_cursor[GEN ** 1]
+    fs = obs(fs, msg_u2)
+    msg_cursor *= GEN ** 2
+    round_quad_c = msg_u0
+    round_quad_b = target + msg_u2
+    round_quad_a = msg_u2
+    sumcheck_target = target
+
+    # Opening data for every level, all consumed by the level loop below (each
+    # buffer is one flat run indexed by the baked LIG_*_OFF[lvl] offsets). It
+    # lives here, before the loop, because the loop is unrolled per level, so a
+    # per-level decl inside would be replicated. Hinted proof data:
     merkle_leaf_rows = HeapBuf(GEN ** (LIG_ROWS_LEN[m_idx]))
     hint_witness(merkle_leaf_rows[0:LIG_ROWS_LEN[m_idx]], "merkle_leaf_rows")
     merkle_paths = HeapBuf(GEN ** (LIG_PATHS_LEN[m_idx]))
@@ -571,31 +596,13 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1):
     hint_witness(query_nonces[0:LIG_N_LEVELS[m_idx]], "query_nonces")
     query_grind_hint = HeapBuf(GEN ** (LIG_N_LEVELS[m_idx] * 128))
     hint_witness(query_grind_hint[0:LIG_N_LEVELS[m_idx] * 128], "query_grind_hint")
+    # ...and guest-filled accumulators (one slot per fold / per level / per query):
     fold_challenges = HeapBuf(GEN ** (LIG_TOTAL_FOLDS[m_idx]))
     level_betas = HeapBuf(GEN ** (LIG_N_LEVELS[m_idx]))
     level_query_sums = HeapBuf(GEN ** (LIG_N_LEVELS[m_idx]))
     alpha_weights = HeapBuf(GEN ** (LIG_N_LEVELS[m_idx] * LIG_MAX_QUERIES[m_idx]))
     query_positions = HeapBuf(GEN ** (LIG_POSITIONS_LEN[m_idx]))
     query_bit_ptrs = HeapBuf(GEN ** (LIG_POSITIONS_LEN[m_idx]))
-
-    fs = absorb(fs, 23, DS_LEN)
-    fs = absorb(fs, LIGLBLA, DS_BYTE)
-    fs = absorb(fs, LIGLBLB, DS_BYTE)
-    fs = obs(fs, target)
-    fs = absorb(fs, 32, DS_LEN)
-    fs = absorb(fs, commit_root_0, DS_BYTE)
-    fs = absorb(fs, commit_root_1, DS_BYTE)
-
-    msg_cursor = lig_sumcheck_msgs
-    msg_u0 = msg_cursor[GEN ** 0]
-    fs = obs(fs, msg_u0)
-    msg_u2 = msg_cursor[GEN ** 1]
-    fs = obs(fs, msg_u2)
-    msg_cursor *= GEN ** 2
-    round_quad_c = msg_u0
-    round_quad_b = target + msg_u2
-    round_quad_a = msg_u2
-    sumcheck_target = target
 
     for lvl in unroll(0, LIG_N_LEVELS[m_idx]):
         for j in unroll(0, LIG_FOLDS[m_idx * LIG_MAX_LEVELS + lvl]):
