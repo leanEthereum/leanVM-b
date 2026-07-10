@@ -1050,19 +1050,16 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
     # the side total rides the exponent as a product of g^(2^kappa) factors,
     # hinted bits reproduce it and reconstruct the total word, and the count
     # gadget tail pins the hinted g^mu (no floor: side totals are >= 2).
-    # Push and pull have matched block pairs (identical kappa multisets), so their
-    # totals are equal: certify push and count, assert push_total == pull_total,
-    # and lean on the pull-alias ann_mus[1] = ann_mus[0] set above.
-    side_totals = HeapBuf(3)
-    for s in unroll(0, 3):
-        acc = GEN ** 0
-        for b in unroll(SIDE_BLOCK_START[s], SIDE_BLOCK_START[s + 1]):
-            acc *= g_squares[block_kappa[GEN ** b]]
-        side_totals[GEN ** s] = acc
-    assert side_totals[GEN ** 1] == side_totals[GEN ** 0]  # matched push/pull pairs
+    # Push and pull emit their bus blocks in matched pairs, so the two sides'
+    # baked kappa sources are identical and their totals agree BY CONSTRUCTION
+    # (generator-asserted): certify push and count only; pull rides the alias
+    # ann_mus[1] = ann_mus[0] set above.
     for cert in unroll(0, 2):
         s = 2 * cert  # push (0), then count (2)
-        g_mu = log2_ceil_in_the_exponent(side_totals[GEN ** s], g_logs_pow2, g_squares, 0, 34)
+        side_total = GEN ** 0
+        for b in unroll(SIDE_BLOCK_START[s], SIDE_BLOCK_START[s + 1]):
+            side_total *= g_squares[block_kappa[GEN ** b]]  # g^(sum of 2^kappa)
+        g_mu = log2_ceil_in_the_exponent(side_total, g_logs_pow2, g_squares, 0, 34)
         assert g_mu == ann_mus[GEN ** s]        # tie the early-used hint to the computed log
 
     # ---- bus-leaf packing offsets (for the selector certification) ----

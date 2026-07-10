@@ -1167,6 +1167,10 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("SIDE_BLOCK_START", ints(&sblk));
     ps("N_BLOCKS", nblocks.to_string());
     let bks = leanvm_b::cpu::block_kappa_sources(kbc);
+    // Push and pull emit bus blocks in matched pairs, so their baked kappa-source
+    // segments are identical; the guest computes only push's side total and
+    // aliases pull's mu to push's on this basis.
+    assert_eq!(bks[sblk[0]..sblk[1]], bks[sblk[1]..sblk[2]], "push/pull kappa sources must match");
     ps("BLOCK_KAPPA_SRC", ints(&bks.iter().map(|&(s, _)| s).collect::<Vec<_>>()));
     ps("BLOCK_KAPPA_ADJ", ints(&bks.iter().map(|&(_, a)| a).collect::<Vec<_>>()));
     ps("BLOCK_REAL_TABLE", ints(&bks.iter().map(|&(s, _)| if s >= 2 { s - 2 } else { 6 }).collect::<Vec<_>>()));
