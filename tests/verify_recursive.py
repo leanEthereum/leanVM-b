@@ -18,7 +18,7 @@ from snark_lib import *
 #
 # Config-driven by placeholder constants the harness computes from the REAL
 # `cpu::layout` and the transcript trace of a native verify run; all per-proof
-# data (streams, sub statements, level roots, fold nonces, sponge checkpoints)
+# data (streams, sub statements, level roots, fold nonces)
 # arrives as hints (`tests/recursion_e2e.rs::gen_verify`).
 #
 # SOUNDNESS: every hint is untrusted prover input; each is bound one of five
@@ -65,8 +65,6 @@ from snark_lib import *
 #   - statement-bound (fed to the outer public-input hash): sub_pis (the sub
 #     statements, which also derive the transcript seeds), matpart (with its
 #     complete weight data), and the reduced claims bc_star_hint/mat_stars_hint with their points.
-#   checkpoints (sponge checkpoints) is debug-only: self-asserts that localize a
-#   divergence during development, no soundness role.
 # The stream hint itself is transport, never trusted: binding always comes from
 # the sponge absorb of each value read off it. The outer verifier's total
 # obligation is: verify the outer proof, recompute the statement hash from the
@@ -902,8 +900,11 @@ def verify_sub(pi_0, pi_1, delta_pows, g_logs, g_logs_pow2, g_squares, defer_out
     # fewer 2^kappa (each count column rides one push flush; the state flush has
     # none), so count.mu <= push.mu == pull.mu. ann_mus[0] is push, so the grind
     # window is nbits = push.mu - 7, i.e. g^nbits = ann_mus[0] * g^-7.
-    ann_mus = HeapBuf(3)  # g^mu per GKR side (0=push); reused by the GKR loop and mus certs below
-    hint_witness(ann_mus[0:3], "annmus")
+    ann_mus = HeapBuf(3)  # g^mu per GKR side: 0=push, 1=pull, 2=count. Push and
+    hint_witness(ann_mus[0:1], "annmus_push")   # pull emit bus blocks in matched
+    hint_witness(ann_mus[2:3], "annmus_count")  # pairs, so pull mu == push mu:
+    ann_mus[GEN ** 1] = ann_mus[GEN ** 0]        # alias it (totals asserted equal
+    #                                            # at the mus cert). Reused by GKR.
     grind_bits = HeapBuf(128)
     hint_witness(grind_bits[0:128], "grind_bits")
     bus_grind_window = ann_mus[GEN ** 0] * GINV ** 7  # g^(push.mu - 7): the bus PoW bit count
@@ -1036,15 +1037,23 @@ def verify_sub(pi_0, pi_1, delta_pows, g_logs, g_logs_pow2, g_squares, defer_out
     # the side total rides the exponent as a product of g^(2^kappa) factors,
     # hinted bits reproduce it and reconstruct the total word, and the count
     # gadget tail pins the hinted g^mu (no floor: side totals are >= 2).
-    mus_bits = HeapBuf(3 * 34)
-    hint_witness(mus_bits[0:3 * 34], "musbits")
-    mus_psums = HeapBuf(3 * 35)
+    # Push and pull have matched block pairs (identical kappa multisets), so their
+    # totals are equal: certify push and count, assert push_total == pull_total,
+    # and lean on the pull-alias ann_mus[1] = ann_mus[0] set above.
+    mus_bits = HeapBuf(2 * 34)
+    hint_witness(mus_bits[0:2 * 34], "musbits")
+    mus_psums = HeapBuf(2 * 35)
+    side_totals = HeapBuf(3)
     for s in unroll(0, 3):
-        side_total_g = GEN ** 0
+        acc = GEN ** 0
         for b in unroll(SIDE_BLOCK_START[s], SIDE_BLOCK_START[s + 1]):
-            side_total_g *= g_squares[block_kappa[GEN ** b]]
-        side_word, side_exp = pin_ceil_log(mus_bits * GEN ** (34 * s), mus_psums * GEN ** (35 * s), g_logs_pow2, g_squares, ann_mus[GEN ** s], 0, 34)
-        assert side_exp == side_total_g
+            acc *= g_squares[block_kappa[GEN ** b]]
+        side_totals[GEN ** s] = acc
+    assert side_totals[GEN ** 1] == side_totals[GEN ** 0]  # matched push/pull pairs
+    for cert in unroll(0, 2):
+        s = 2 * cert  # push (0), then count (2)
+        _, side_exp = pin_ceil_log(mus_bits * GEN ** (34 * cert), mus_psums * GEN ** (35 * cert), g_logs_pow2, g_squares, ann_mus[GEN ** s], 0, 34)
+        assert side_exp == side_totals[GEN ** s]
 
     # ---- bus-leaf packing offsets (for the selector certification) ----
     # The blocks of each side tile the leaf cube; block b's offset is where it
@@ -1219,11 +1228,6 @@ def verify_sub(pi_0, pi_1, delta_pows, g_logs, g_logs_pow2, g_squares, defer_out
             wv += e * bytecode_vals[GEN ** (6 * s + c)]
         bytecode_reduced[s] = wv
 
-    # ---- checkpoint A: sponge state matches the recorded value (debug) ----
-    checkpoints = StackBuf(4)
-    hint_witness(checkpoints[0:4], "checkpoints")
-    assert fs[0] == checkpoints[0]
-
     # ---- 6x per-table zerocheck (XOR, MUL, SET, DEREF, JUMP, BLAKE3) ----
     # For each table: eta, the zerocheck point r (tau samples), tau eq-trick
     # rounds (claim starts at 0), then the involved-column evaluations (pooled)
@@ -1321,9 +1325,6 @@ def verify_sub(pi_0, pi_1, delta_pows, g_logs, g_logs_pow2, g_squares, defer_out
             constraint_eval = (col_evals[6] + col_evals[0] * col_evals[1]) + eta * (col_evals[7] + col_evals[0] * col_evals[2]) + eta * eta * (col_evals[8] + col_evals[0] * col_evals[3]) + eta * eta * eta * (col_evals[9] + col_evals[0] * col_evals[4]) + eta * eta * eta * eta * (col_evals[10] + col_evals[0] * col_evals[5])
         assert claim == eq_acc * constraint_eval
 
-    # ---- checkpoint B (debug: sponge-state drift guard) ----
-    assert fs[0] == checkpoints[1]
-
     # ---- public-input binding claim: MEM(r_m, 0..) = interp(pi0, pi1, r_m) ----
     fs = squeeze(fs)
     rm = fs[0]
@@ -1361,9 +1362,6 @@ def verify_sub(pi_0, pi_1, delta_pows, g_logs, g_logs_pow2, g_squares, defer_out
         claim_pool[GEN ** claim_idx] = PIN_VALUES[pk] * prefix
         claim_cplen_g[GEN ** claim_idx] = tau5_g  # cplen = tau_5 (BLAKE3 value-col kappa)
         claim_idx += 1
-
-    # ---- checkpoint C (debug: sponge-state drift guard) ----
-    assert fs[0] == checkpoints[2]
 
     # ---- flock reduction: bind_statement ----
     # The statement digest is selected by the certified tau_5 (BLAKE3
@@ -1548,9 +1546,6 @@ def verify_sub(pi_0, pi_1, delta_pows, g_logs, g_logs_pow2, g_squares, defer_out
     lincheck_w = 0
     for i in unroll(0, 64):
         lincheck_w += skip_nums[i] * ISDOM[i] * z_partial[GEN ** i]
-
-    # ---- checkpoint D (debug: sponge-state drift guard) ----
-    assert fs[0] == checkpoints[3]
 
     # ---- stacked mixed opening: ring-switch fronts + claim combination ----
     s_hat_v = HeapBuf(256)

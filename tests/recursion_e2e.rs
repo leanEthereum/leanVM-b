@@ -649,7 +649,6 @@ fn gen_verify(
         leanvm_b::leaf::stacked_bytecode_value(&bcv[6..], &sb3),
     ];
     // checkpoints: the verifier's phase-boundary sponge states (guest cvh).
-    let cvh: Vec<F128> = summary.checkpoints.iter().map(|s| s[0]).collect();
 
     // ---- placeholder map ----
     let ints = |v: &[usize]| format!("[{}]", v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(", "));
@@ -1188,7 +1187,8 @@ fn gen_verify(
         ("level_roots_0".to_string(), roota),
         ("level_roots_1".to_string(), rootb),
         ("fold_nonces".to_string(), fnv),
-        ("annmus".to_string(), smu.iter().map(|&m| g_pow(m)).collect()),
+        ("annmus_push".to_string(), vec![g_pow(smu[0])]),
+        ("annmus_count".to_string(), vec![g_pow(smu[2])]),
         ("claim_low_len".to_string(), (0..ncl).map(|j| g_pow(cplen[j] - nover_v[j])).collect()),
         // slacks bounding each claim'"'"'s reads to the written regions (so an
         // over-long hint cannot pull free padding): low_len <= mu_s/tau_t
@@ -1244,7 +1244,7 @@ fn gen_verify(
         ("sort_order".to_string(), sort_order.clone()),
         ("musbits".to_string(), {
             let mut v = Vec::new();
-            for s in 0..3 {
+            for s in [0usize, 2] {
                 let total: u64 = (sblk[s]..sblk[s + 1]).map(|b| 1u64 << bkappa[b]).sum();
                 for j in 0..34 {
                     v.push(F128::new((total >> j) & 1, 0));
@@ -1304,7 +1304,6 @@ fn gen_verify(
             "query_grind_hint".to_string(),
             query_pow.iter().flat_map(|&(_, dig)| bits_of(dig)).collect(),
         ),
-        ("checkpoints".to_string(), cvh),
     ];
     (rep, hints, deferred)
 }
