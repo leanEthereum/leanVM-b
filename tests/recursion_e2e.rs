@@ -1205,11 +1205,10 @@ fn gen_verify(
         ("fold_nonces".to_string(), fnv),
         ("annmus".to_string(), smu.iter().map(|&m| g_pow(m)).collect()),
         ("bus_grind".to_string(), {
-            let maxmu = *smu.iter().max().unwrap();
+            // max_mu = push.mu (guest reads ann_mus[0]); only the byte/bit split
+            // of the bit count is hinted now: bytes, extra bits, tail shift.
             let bits = (gbits as usize / 8, gbits as usize % 8);
-            let mut v = vec![g_pow(maxmu), g_pow(bits.0), g_pow(bits.1), g_pow(8 - bits.1)];
-            v.extend(smu.iter().map(|&m| g_pow(maxmu - m)));
-            v
+            vec![g_pow(bits.0), g_pow(bits.1), g_pow(8 - bits.1)]
         }),
         ("claim_low_len".to_string(), (0..ncl).map(|j| g_pow(cplen[j] - nover_v[j])).collect()),
         // slacks bounding each claim'"'"'s reads to the written regions (so an

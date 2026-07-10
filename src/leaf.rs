@@ -82,17 +82,26 @@ pub enum Error {
 ///
 /// So `N = max(2^push_mu, 2^pull_mu) + 2^count_mu`, and a false phase passes a
 /// random challenge with probability ≤ `N / 2^128`, i.e. `128 − log2(N)` bits.
-/// Grinding adds that many bits back (the prover must redo the PoW to re-roll
-/// γ), so we grind the deficit up to the target.
+/// Two structural facts collapse this. The push and pull sides emit their bus
+/// blocks in matched pairs — every [`FlushBuilder`] call appends one block to
+/// each side with equal `κ`, and the three framework blocks (boundary, memory,
+/// bytecode) are paired the same way — so the two sides have identical
+/// `κ`-multisets and `push_mu == pull_mu`. And each count column is the count
+/// coordinate of exactly one bytecode/memory flush while the state flush
+/// carries none, so the count side sums strictly fewer `2^κ` than push and
+/// `count_mu ≤ push_mu`. Hence `N = 2^push_mu + 2^count_mu` with
+/// `count_mu ≤ push_mu`, so `⌈log2 N⌉ = push_mu + 1` exactly and the grind is
+/// simply `SECURITY_BITS + push_mu + 1 − 128`. Grinding adds that deficit back
+/// (the prover must redo the PoW to re-roll γ).
 ///
 /// The fingerprint challenge α needs no grind: forging a fingerprint collision
 /// (its `~N·w / 2^128` error) requires a fresh commitment to re-roll α, whose
 /// `≥ 2^MIN_MU` Merkle-hash cost already exceeds the target for every witness
 /// size we admit (`MIN_MU = 15`).
 fn grand_product_grinding_bits(push: &Layout, pull: &Layout, count: &Layout) -> u32 {
-    let n = (1usize << push.mu).max(1usize << pull.mu) + (1usize << count.mu);
-    let ceil_log2_n = crate::log2_ceil_usize(n) as u32;
-    (crate::SECURITY_BITS + ceil_log2_n).saturating_sub(128)
+    assert_eq!(push.mu, pull.mu, "push/pull bus blocks are paired, so their layouts match");
+    assert!(count.mu <= push.mu, "count sums fewer bus messages than push");
+    (crate::SECURITY_BITS + push.mu as u32 + 1).saturating_sub(128)
 }
 
 /// Stack blocks largest-first at aligned offsets; `μ = ⌈log2 Σ 2^{κ_b}⌉`.

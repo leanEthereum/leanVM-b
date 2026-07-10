@@ -928,27 +928,22 @@ def verify_sub(pi_0, pi_1, delta_pows, g_logs, g_logs_pow2, g_squares, defer_out
     ph = StackBuf(2)
     blake3(pbase, pn, ph)
     dec128(grind_bits, ph[0])
-    # Bus grind bits at runtime: bits = max(mu_0, mu_1, mu_2) + 1 +
-    # SECURITY - 128 = maxmu - 7 (leaf::grand_product_grinding_bits: the
-    # side totals are powers of two, so ceil_log2 of their sum is the max
-    # plus one). The hinted max is tied to each mu by a quotient range
-    # check and pinned to one of them by a product of differences; the
-    # hinted byte/bit split ties via f^8 * e == g^bits.
-    bus_grind = StackBuf(7)
-    hint_witness(bus_grind[0:7], "bus_grind")
-    max_mu = bus_grind[0]
-    for s in unroll(0, 3):
-        max_mu_quot = bus_grind[4 + s]
-        assert log(max_mu_quot) < 34
-        max_mu_tie = max_mu_quot * ann_mus[GEN ** s]
-        assert max_mu_tie == max_mu
-    max_mu_pin = (max_mu + ann_mus[GEN ** 0]) * (max_mu + ann_mus[GEN ** 1]) * (max_mu + ann_mus[GEN ** 2])  # max_mu must equal one of the three GKR side depths (a factor is 0)
-    assert max_mu_pin == 0
-    grind_bytes_g = bus_grind[1]
+    # Bus grind bits at runtime: bits = push.mu + 1 + SECURITY - 128 =
+    # push.mu - 7 (leaf::grand_product_grinding_bits). The max over the three
+    # side depths IS push.mu: push and pull emit their bus blocks in matched
+    # pairs (identical kappa multisets, so their certified mus are equal), and
+    # the count side sums strictly fewer 2^kappa than push (each count column
+    # rides one push flush; the state flush has none), so count.mu <= push.mu.
+    # ann_mus[0] is the push side. The hinted byte/bit split of the bit count
+    # ties via f^8 * e == g^bits.
+    bus_grind = StackBuf(3)
+    hint_witness(bus_grind[0:3], "bus_grind")
+    max_mu = ann_mus[GEN ** 0]
+    grind_bytes_g = bus_grind[0]
     assert log(grind_bytes_g) < 6
-    grind_extra_g = bus_grind[2]
+    grind_extra_g = bus_grind[1]
     assert log(grind_extra_g) < 9
-    grind_tail_shift_g = bus_grind[3]
+    grind_tail_shift_g = bus_grind[2]
     assert log(grind_tail_shift_g) < 9
     grind_split_tie = grind_tail_shift_g * grind_extra_g  # tail_shift * extra == g^8: they partition the final byte's 8 bits
     assert grind_split_tie == GEN ** 8
