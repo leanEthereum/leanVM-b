@@ -345,64 +345,60 @@ def grind_check(state_0, state_1, nonce, bits_ptr, nbits_g):
     return
 
 
-def verify_log2_ceil(bits_row, g_logs_pow2, g_squares, floor_e: Const, nbits: Const):
-    # Verify `nbits` bits ALREADY filled in bits_row and RETURN (g_log, word,
-    # exp_prod): g_log = g^log2_ceil(word), word = Σ bit_j 2^j (an integer),
-    # exp_prod = Π g^(bit_j 2^j) = g^word. Booleanity + partial sums psum[j] =
-    # value of the low j bits; g_log is prover advice (the log2_ceil keyword)
-    # pinned to log2_ceil(word) via psum[g_log] == word (word < 2^log; == 2^log
-    # through g_logs_pow2) and the `!= 0` minimality check, waived at floor_e (a
-    # table/PCS minimum that may sit below the ceil-log). Callers fill the bits
-    # (bit_decompose / bit_decompose_sum) and tie the returned word or exp_prod to their
-    # own value. NB: log2 = base-2 log of the INTEGER word, NOT the discrete log
-    # base g (the DSL's `log(...)` range check).
-    psum_row = HeapBuf(GEN ** (nbits + 1))  # scratch: partial sums, one per bit prefix
-    psum_row[GEN ** 0] = 0
+def verify_log2_ceil(bits_buf, g_logs_pow2, g_squares, floor: Const, nbits: Const):
+    # Given `nbits` bits already in bits_buf, return (g_log, word, exp_prod):
+    # word = Σ bit_j 2^j, exp_prod = g^word, g_log = g^max(log2_ceil(word), floor).
+    # g_log is prover advice, pinned to log2_ceil(word) by psum[g_log] == word
+    # (word < 2^log; the == 2^log case via g_logs_pow2) and word > 2^(log-1)
+    # (waived at floor). Callers fill the bits (bit_decompose / bit_decompose_sum)
+    # and tie word or exp_prod to their value. NB: log2 here is base-2 log of the
+    # integer word, not the discrete log base g that `log(...)` means.
+    psum_buf = HeapBuf(GEN ** (nbits + 1))  # psum_buf[g^j] = value of bits [0, j)
+    psum_buf[GEN ** 0] = 0
     word = 0
     exp_prod = GEN ** 0
     for j in unroll(0, nbits):
-        bit = bits_row[GEN ** j]
+        bit = bits_buf[GEN ** j]
         assert bit * bit == bit
         exp_prod *= (1 + bit * (g_squares[GEN ** j] + 1))
         word += bit * (2 ** j)
-        psum_row[GEN ** (j + 1)] = word
-    g_log = log2_ceil(bits_row, nbits, floor_e)  # prover advice; verified just below
+        psum_buf[GEN ** (j + 1)] = word
+    g_log = log2_ceil(bits_buf, nbits, floor)  # prover advice; verified below
     assert log(g_log) < 34
-    low = psum_row[g_log]
-    diff_low = low + word
-    diff_pow = word + g_logs_pow2[g_log]
-    assert diff_low * low == 0  # word < 2^log: low==0 (bits >= log clear) OR low==word (word == 2^log)
-    assert diff_low * diff_pow == 0  # ...the second factor pins the count==2^log branch via the g^j->2^j table
-    if g_log != GEN ** floor_e:
-        # minimality (word > 2^(log-1)); skip when g_log == g^0: there word is in
-        # {0,1} from the pins above, so its ceil-log 0 is already minimal, and the
-        # read below would land at psum_row[g^-1] (an unwritten, out-of-range cell).
+    low_bits = psum_buf[g_log]                 # value of bits [0, log)
+    high_bits = low_bits + word                # value of bits [log, nbits)
+    word_vs_2log = word + g_logs_pow2[g_log]    # 0 iff word == 2^log
+    assert high_bits * low_bits == 0     # word < 2^log (high bits clear) OR word == 2^log
+    assert high_bits * word_vs_2log == 0  # ...the second factor pins the word == 2^log branch
+    if g_log != GEN ** floor:
+        # minimality (word > 2^(log-1)); skip at g_log == g^0 (word is in {0,1},
+        # its ceil-log 0 is already minimal, and psum_buf[g^-1] is out of range).
         if g_log != GEN ** 0:
-            low_prev = psum_row[g_log * GINV]
-            min_a = low_prev + word
-            min_b = word + g_logs_pow2[g_log * GINV]
-            assert min_a * min_b != 0  # word > 2^(log-1): ceil-log is minimal
+            low_bits_prev = psum_buf[g_log * GINV]              # bits [0, log-1)
+            high_bits_prev = low_bits_prev + word               # bits [log-1, nbits)
+            word_vs_2logprev = word + g_logs_pow2[g_log * GINV]  # 0 iff word == 2^(log-1)
+            assert high_bits_prev * word_vs_2logprev != 0  # word > 2^(log-1): minimal
     return g_log, word, exp_prod
 
 
-def log2_ceil_word(value, g_logs_pow2, g_squares, floor_e: Const, nbits: Const):
+def log2_ceil_word(value, g_logs_pow2, g_squares, floor: Const, nbits: Const):
     # g^log2_ceil(value) for a concrete integer `value`. The bits are hinted HERE
     # (bit_decompose), not by the caller, then tied back to `value`. Returns
     # (g_log, g^value).
     bits = HeapBuf(GEN ** nbits)
     bit_decompose(bits, value, nbits)
-    g_log, word, g_value = verify_log2_ceil(bits, g_logs_pow2, g_squares, floor_e, nbits)
+    g_log, word, g_value = verify_log2_ceil(bits, g_logs_pow2, g_squares, floor, nbits)
     assert word == value  # the hinted bits are exactly value's bits (so value < 2^nbits)
     return g_log, g_value, bits
 
 
-def log2_ceil_sum(kappa_ptr, start: Const, count: Const, g_total, g_logs_pow2, g_squares, floor_e: Const, nbits: Const):
+def log2_ceil_sum(kappa_ptr, start: Const, count: Const, g_total, g_logs_pow2, g_squares, floor: Const, nbits: Const):
     # g^log2_ceil(Σ 2^κ) over kappa_ptr[start .. start+count] (κ small g-powers),
     # tied to the caller's exponent-domain total g_total = Π g^(2^κ). The bits of
     # the sum are hinted HERE (bit_decompose_sum), not by the caller.
     bits = HeapBuf(GEN ** nbits)
     bit_decompose_sum(bits, kappa_ptr, start, count, nbits)
-    g_log, word, exp_prod = verify_log2_ceil(bits, g_logs_pow2, g_squares, floor_e, nbits)
+    g_log, word, exp_prod = verify_log2_ceil(bits, g_logs_pow2, g_squares, floor, nbits)
     assert exp_prod == g_total  # the hinted bits reconstruct the true Σ 2^κ
     return g_log
 
