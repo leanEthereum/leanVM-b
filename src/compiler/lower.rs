@@ -788,6 +788,17 @@ impl FnLower<'_> {
                 self.emit(LOp::Mul { a: la, b: lb, c: o });
                 o
             }
+            Expr::FieldDiv(a, b) => {
+                // q = a / b via the MUL write-once back-solve: emit `a = q * b`
+                // with the quotient `q` the unset operand. Witness-gen fills
+                // q = a·b⁻¹, and the MUL constraint pins q·b == a (so b == 0 is
+                // rejected unless a == 0). One MUL, no hint. The dividend cell
+                // `a` must already be written — `self.expr(a)` guarantees it.
+                let (la, lb) = (self.expr(a), self.expr(b));
+                let q = self.fresh();
+                self.emit(LOp::Mul { a: q, b: lb, c: la });
+                q
+            }
             Expr::Call(f, args) => {
                 if let Some(n) = self.const_len(e) {
                     self.const_cell(F128::new(n as u64, 0))
@@ -1983,6 +1994,7 @@ fn free_vars_expr(e: &Expr, refs: &mut Vec<String>) {
         | Expr::Mul(a, b)
         | Expr::Sub(a, b)
         | Expr::Div(a, b)
+        | Expr::FieldDiv(a, b)
         | Expr::Mod(a, b)
         | Expr::Index(a, b)
         | Expr::Pow(a, b) => {

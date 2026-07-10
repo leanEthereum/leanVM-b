@@ -788,8 +788,13 @@ fn split_mul(s: &str) -> (Vec<String>, Vec<u8>) {
             }
             b'/' if depth == 0 && b.get(i + 1) == Some(&b'/') => {
                 segs.push(s[start..i].to_string());
-                ops.push(b'/');
+                ops.push(b'/'); // `//` compile-time floor-division
                 i += 1; // consume the second `/`
+                start = i + 1;
+            }
+            b'/' if depth == 0 => {
+                segs.push(s[start..i].to_string());
+                ops.push(b'd'); // `/` runtime field division
                 start = i + 1;
             }
             b'%' if depth == 0 => {
@@ -978,6 +983,7 @@ fn subst_var(e: &Expr, name: &str, to: &Expr) -> Expr {
         Expr::Mul(a, b) => Expr::Mul(s(a), s(b)),
         Expr::Sub(a, b) => Expr::Sub(s(a), s(b)),
         Expr::Div(a, b) => Expr::Div(s(a), s(b)),
+        Expr::FieldDiv(a, b) => Expr::FieldDiv(s(a), s(b)),
         Expr::Mod(a, b) => Expr::Mod(s(a), s(b)),
         Expr::Index(a, b) => Expr::Index(s(a), s(b)),
         Expr::Slice(a, lo, hi) => Expr::Slice(s(a), s(lo), s(hi)),
@@ -1066,6 +1072,7 @@ fn parse_expr(s: &str) -> Result<Expr, String> {
             acc = match op {
                 b'*' => Expr::Mul(lhs, rhs),
                 b'/' => Expr::Div(lhs, rhs),
+                b'd' => Expr::FieldDiv(lhs, rhs),
                 _ => Expr::Mod(lhs, rhs),
             };
         }

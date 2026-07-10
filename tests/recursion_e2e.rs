@@ -1159,10 +1159,6 @@ fn gen_verify(
         matpart,
     };
 
-    let mut zinv = vec![F128::ONE; n_mlv];
-    for (i, item) in zinv.iter_mut().enumerate().take(n_mlv).skip(7) {
-        *item = (F128::ONE + r_rest[i]).inv();
-    }
     let hints = vec![
         ("stream".to_string(), {
             let mut v = proof.stream.clone();
@@ -1178,11 +1174,6 @@ fn gen_verify(
             v
         }),
         ("zc_finals".to_string(), zcf.clone()),
-        ("zc_invs".to_string(), {
-            let mut v = zinv;
-            v.resize(flock_prover::r1cs_hashes::blake3::K_LOG + 33 - 6, F128::ZERO);
-            v
-        }),
         ("lincheck_msgs".to_string(), lcr.clone()),
         ("z_partial".to_string(), lcz.clone()),
         ("matpart".to_string(), vec![matpart]),

@@ -43,6 +43,14 @@ pub enum Expr {
     /// condition; using one as a runtime field value is an error.
     Div(Box<Expr>, Box<Expr>),
     Mod(Box<Expr>, Box<Expr>),
+    /// Field division `a / b` (single slash) — a **runtime** field operation,
+    /// `a · b⁻¹`. Lowered to one `MUL` whose quotient operand is unset, so the
+    /// write-once back-solve fills it with `a · b⁻¹` and the `MUL` constraint
+    /// pins `quotient · b == a` (§range-check trick). No hint: the inverse is
+    /// nondeterministic but the constraint binds it. `b == 0` is rejected
+    /// (unless `a == 0` too, the undefined `0/0`); `1 / b` therefore also
+    /// enforces `b != 0`. Distinct from the compile-time `//` ([`Expr::Div`]).
+    FieldDiv(Box<Expr>, Box<Expr>),
     /// Single-return function call in expression position.
     Call(String, Vec<Expr>),
     /// `HeapBuf(n)` — allocate a heap buffer of `n` cells; evaluates to its pointer.

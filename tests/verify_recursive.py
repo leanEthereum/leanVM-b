@@ -28,13 +28,13 @@ from snark_lib import *
 #     s_hat_v, lig_sumcheck_msgs, final_msg, the level roots level_roots_0/level_roots_1, the fold nonces fold_nonces, the
 #     aggregation round messages bc_sumcheck_msgs/mat_sumcheck_msgs, and the deferred bytecode values
 #     bytecode_vals (absorbed by the stacked-bytecode reduction before its challenges);
-#   - assert-checked: zc_invs (a hinted inverse USED in a division, product
-#     asserted 1), grind_bits/fold_grind_bits/query_grind_hint (grinding digest bits:
+#   - assert-checked: grind_bits/fold_grind_bits/query_grind_hint (grinding digest bits:
 #     booleanity + reconstruction against the in-circuit digest + the low-nbits
 #     zero-window asserts), query_index_bits (query bits: booleanity + reconstruction equal to the
 #     squeezed word), merkle_leaf_rows/merkle_paths (Merkle inclusion against the bound roots);
 #     the count-tree root nonzero and the ceil-log minimality checks are plain
-#     `assert != 0` now (no inverse hint);
+#     `assert != 0`, and the flock zerocheck combiner is a `/` (field division) -
+#     no inverse hints anywhere now;
 #   - shape-certified (the announced sizes are the ground truth): dims_g
 #     with count_bits (the count gadget pins g^tau_t = ceil_log2 of each
 #     announced count, g^log_mem via the exponent-to-word table), block_kappa
@@ -818,8 +818,6 @@ def verify_sub(pi_0, pi_1, delta_pows, g_logs, g_logs_pow2, g_squares, defer_out
     hint_witness(zc_msgs[0:2 * R1CS_ROUNDS_CAP], "zc_msgs")
     zc_finals = StackBuf(2)
     hint_witness(zc_finals[0:2], "zc_finals")
-    zc_invs = HeapBuf(R1CS_ROUNDS_CAP)
-    hint_witness(zc_invs[0:R1CS_ROUNDS_CAP], "zc_invs")
     lincheck_msgs = HeapBuf(2 * LINCHECK_ROUNDS)
     hint_witness(lincheck_msgs[0:2 * LINCHECK_ROUNDS], "lincheck_msgs")
     z_partial = HeapBuf(64)
@@ -1481,9 +1479,7 @@ def verify_sub(pi_0, pi_1, delta_pows, g_logs, g_logs_pow2, g_squares, defer_out
         gamma_c = zc_msgs[xi * xi]
         g_inf = zc_msgs[xi * xi * GEN]
         r_eq = zerocheck_r[GEN ** 6 * xi]
-        inv_one_plus_r = zc_invs[xi]
-        inv_check = (1 + r_eq) * inv_one_plus_r
-        assert inv_check == 1
+        inv_one_plus_r = 1 / (1 + r_eq)  # 1 + r_eq != 0 (enforced by the division)
         gamma_ab = (round_running + r_eq * gamma_c) * inv_one_plus_r
         round_fs = obs(round_fs, gamma_c)
         round_fs = obs(round_fs, g_inf)
