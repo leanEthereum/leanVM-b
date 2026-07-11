@@ -94,10 +94,10 @@ pub enum Error {
 /// simply `SECURITY_BITS + push_mu + 1 − 128`. Grinding adds that deficit back
 /// (the prover must redo the PoW to re-roll γ).
 ///
-/// The fingerprint challenge α needs no grind: forging a fingerprint collision
-/// (its `~N·w / 2^128` error) requires a fresh commitment to re-roll α, whose
-/// `≥ 2^MIN_MU` Merkle-hash cost already exceeds the target for every witness
-/// size we admit (`MIN_MU = 15`).
+/// The fingerprint challenge α is sampled AFTER the grind, so re-rolling it
+/// also costs the PoW (besides the older argument that a fresh commitment to
+/// re-roll α already costs `≥ 2^MIN_MU` Merkle hashes, above the target for
+/// every admitted witness size).
 fn grand_product_grinding_bits(push: &Layout, pull: &Layout, count: &Layout) -> u32 {
     assert_eq!(push.mu, pull.mu, "push/pull bus blocks are paired, so their layouts match");
     assert!(count.mu <= push.mu, "count sums fewer bus messages than push");
@@ -409,12 +409,13 @@ pub fn prove_balance(
     cols: &[Column],
     ps: &mut ProverState,
 ) -> (Vec<ColumnClaim>, Vec<BytecodeClaim>) {
-    let alpha = ps.sample();
     let push_lay = layout(push);
     let pull_lay = layout(pull);
     let mut count_lay = layout(count);
-    // Grind before γ to lift the grand product to `SECURITY_BITS` ([`grand_product_grinding_bits`]).
+    // Grind FIRST, so the PoW covers both bus challenges α and γ
+    // ([`grand_product_grinding_bits`]): re-rolling either means redoing it.
     ps.grind(grand_product_grinding_bits(&push_lay, &pull_lay, &count_lay));
+    let alpha = ps.sample();
     // Pad the count tree to the pair's depth with identity leaves (the product,
     // blocks, and offsets are unchanged; `build_leaves` fills the cube with `1`
     // and the decompose accounts the padding mass), so all THREE trees share
@@ -477,8 +478,8 @@ pub fn verify_balance(
     pad: &[F128],
     vs: &mut VerifierState,
 ) -> Result<BusVerify, Error> {
-    // Check the pre-γ grinding nonce before sampling γ (mirror of prove_balance).
-    let alpha = vs.sample();
+    // Check the grinding nonce FIRST: the PoW covers both bus challenges
+    // α and γ (mirror of prove_balance).
     let push_lay = layout(push);
     let pull_lay = layout(pull);
     let mut count_lay = layout(count);
@@ -486,6 +487,7 @@ pub fn verify_balance(
         crate::transcript::Error::PowFailed => Error::PowFailed,
         _ => Error::Truncated,
     })?;
+    let alpha = vs.sample();
     // The count tree is padded to the pair's depth (identity leaves), so all
     // three verify as ONE RLC-batched GKR at ONE shared point.
     count_lay.mu = push_lay.mu;

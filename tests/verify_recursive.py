@@ -951,9 +951,7 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
     fs = obs(fs, commit_root_1)
     cursor *= GEN
 
-    # ---- bus: α, grinding, γ ----
-    fs = squeeze(fs)
-    alpha = fs[0]
+    # ---- bus: grinding FIRST, then α and γ (the PoW covers both) ----
     # grinding nonce: raw stream word (NOT observed), PoW-checked, then bound.
     nonce = cursor[GEN ** 0]
     cursor *= GEN
@@ -969,6 +967,8 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
     bus_grind_window = g_bus_mu * GINV ** BUS_GRIND_SHIFT  # g^(push.mu - shift): the bus PoW bit count
     grind_check(fs[0], fs[1], nonce, grind_bits, bus_grind_window)
     fs = absorb(fs, nonce, DS_POW)
+    fs = squeeze(fs)
+    alpha = fs[0]
     fs = squeeze(fs)
     gamma = fs[0]
 
