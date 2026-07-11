@@ -434,27 +434,26 @@ pub fn prove_balance(
     );
     // All three trees run as ONE RLC-batched GKR (equal μ: push/pull match
     // block-for-block, count is padded), so every claim lands on ONE point ζ.
-    let ((_, push_claim), (_, pull_claim), (_, count_claim)) =
-        gkr::prove_product_triple(push_leaves, pull_leaves, count_leaves, ps);
+    let bus_gkr = gkr::prove_product_triple([push_leaves, pull_leaves, count_leaves], ps);
 
     // One shared claim list: push/pull duplicates (same column, same shared
     // point) are streamed and opened once. The count side has its own point,
     // so its claims stay distinct.
     let mut claims: Vec<ColumnClaim> = Vec::new();
-    decompose_prove(push, &push_lay, cols, &push_claim.point, alpha, gamma, &mut claims, ps);
-    decompose_prove(pull, &pull_lay, cols, &pull_claim.point, alpha, gamma, &mut claims, ps);
-    decompose_prove(count, &count_lay, cols, &count_claim.point, F128::ONE, F128::ZERO, &mut claims, ps);
+    decompose_prove(push, &push_lay, cols, &bus_gkr.point, alpha, gamma, &mut claims, ps);
+    decompose_prove(pull, &pull_lay, cols, &bus_gkr.point, alpha, gamma, &mut claims, ps);
+    decompose_prove(count, &count_lay, cols, &bus_gkr.point, F128::ONE, F128::ZERO, &mut claims, ps);
 
     // Bytecode = ONE polynomial, and push/pull now share the point ζ, so the
     // six public columns are opened ONCE: bind the evaluations, sample the
     // selector challenges, emit the single reduced claim.
-    let (kbc, pv) = public_evals(push, &push_claim.point);
+    let (kbc, pv) = public_evals(push, &bus_gkr.point);
     for &v in &pv {
         ps.observe_scalar(v);
     }
     let s = [ps.sample(), ps.sample(), ps.sample()];
     let bytecode_claims = vec![BytecodeClaim {
-        point: [&push_claim.point[..kbc], &s[..]].concat(),
+        point: [&bus_gkr.point[..kbc], &s[..]].concat(),
         value: stacked_bytecode_value(&pv, &s),
     }];
     (claims, bytecode_claims)
@@ -491,8 +490,8 @@ pub fn verify_balance(
     // three verify as ONE RLC-batched GKR at ONE shared point.
     count_lay.mu = push_lay.mu;
     let gamma = vs.sample();
-    let ((push_root, cp), (pull_root, cq), (count_root, cc)) =
-        gkr::verify_product_triple(push_lay.mu, vs).map_err(Error::Gkr)?;
+    let bus_gkr = gkr::verify_product_triple(push_lay.mu, vs).map_err(Error::Gkr)?;
+    let [push_root, pull_root, count_root] = bus_gkr.roots;
     // Every read count is nonzero iff this product is (§sec:memchan); a zero would
     // let a read self-cancel and free its value from memory.
     if count_root == F128::ZERO {
@@ -507,29 +506,29 @@ pub fn verify_balance(
     }
 
     let mut claims: Vec<ColumnClaim> = Vec::new();
-    let vp = decompose_verify(push, &push_lay, &cp.point, alpha, gamma, &mut claims, vs)?;
-    if vp != cp.value {
+    let vp = decompose_verify(push, &push_lay, &bus_gkr.point, alpha, gamma, &mut claims, vs)?;
+    if vp != bus_gkr.values[0] {
         return Err(Error::Decomposition { side: "push" });
     }
-    let vq = decompose_verify(pull, &pull_lay, &cq.point, alpha, gamma, &mut claims, vs)?;
-    if vq != cq.value {
+    let vq = decompose_verify(pull, &pull_lay, &bus_gkr.point, alpha, gamma, &mut claims, vs)?;
+    if vq != bus_gkr.values[1] {
         return Err(Error::Decomposition { side: "pull" });
     }
-    let vc = decompose_verify(count, &count_lay, &cc.point, F128::ONE, F128::ZERO, &mut claims, vs)?;
-    if vc != cc.value {
+    let vc = decompose_verify(count, &count_lay, &bus_gkr.point, F128::ONE, F128::ZERO, &mut claims, vs)?;
+    if vc != bus_gkr.values[2] {
         return Err(Error::Decomposition { side: "count" });
     }
 
     // Bytecode = ONE polynomial (mirror of `prove_balance`); the shared push/
     // pull point means one set of public-column evaluations and ONE reduced
     // claim on the stacked bytecode multilinear.
-    let (kbc, pv) = public_evals(push, &cp.point);
+    let (kbc, pv) = public_evals(push, &bus_gkr.point);
     for &v in &pv {
         vs.observe_scalar(v);
     }
     let s = [vs.sample(), vs.sample(), vs.sample()];
     let bytecode_claims = vec![BytecodeClaim {
-        point: [&cp.point[..kbc], &s[..]].concat(),
+        point: [&bus_gkr.point[..kbc], &s[..]].concat(),
         value: stacked_bytecode_value(&pv, &s),
     }];
     Ok(BusVerify {
