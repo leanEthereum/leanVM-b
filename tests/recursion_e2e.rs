@@ -547,9 +547,7 @@ fn gen_verify(
     let m_r1cs = flock_prover::r1cs_hashes::blake3::K_LOG + n_log_b3;
     let _n_mlv = m_r1cs - 6;
     let lcrounds = flock_prover::r1cs_hashes::blake3::K_LOG - 6;
-    let zc1: Vec<F128> = summary.zerocheck.round1_ab.iter().chain(&summary.zerocheck.round1_c).copied().collect();
-    let zcr: Vec<F128> = summary.zerocheck.multilinear_rounds.iter().flat_map(|&(a, b)| [a, b]).collect();
-    let zcf = vec![summary.zerocheck.final_a_eval, summary.zerocheck.final_b_eval];
+    let zcf = [summary.zerocheck.final_a_eval, summary.zerocheck.final_b_eval];
     let zc_z = summary.zc_claim.z;
     let zrho = summary.zc_claim.mlv_challenges.clone();
     let _r_rest = &summary.zc_claim.r_rest;
@@ -558,12 +556,10 @@ fn gen_verify(
     let lc_alpha = summary.lc_claim.alpha;
     let lc_beta = summary.lc_claim.beta;
     let lrr = summary.lc_claim.r_rounds.clone();
-    let shv: Vec<F128> = summary.ring_switches.iter().flat_map(|rs| rs.s_hat_v.iter().copied()).collect();
 
     // matpart = the deferred weighted matrix evaluation: the lincheck running
     // claim minus (= plus, char 2) the const-pin contribution.
     let r1cs = flock_prover::r1cs_hashes::blake3::build_block_r1cs(n_log_b3);
-    let _sd_bytes = r1cs.statement_digest();
     let pincol = r1cs.const_pin.expect("blake3 r1cs has a const pin");
     let mut lrun = lc_alpha * zcf[0] + zcf[1] + lc_beta;
     for i in 0..lcrounds {
@@ -845,17 +841,7 @@ fn gen_verify(
             v
         }),
         ("bytecode_vals".to_string(), bcv),
-        ("zc_round1".to_string(), zc1),
-        ("zc_msgs".to_string(), {
-            let mut v = zcr;
-            v.resize(2 * (flock_prover::r1cs_hashes::blake3::K_LOG + 33 - 6), F128::ZERO);
-            v
-        }),
-        ("zc_finals".to_string(), zcf.clone()),
-        ("lincheck_msgs".to_string(), lcr.clone()),
-        ("z_partial".to_string(), lcz.clone()),
         ("matpart".to_string(), vec![matpart]),
-        ("s_hat_v".to_string(), shv.clone()),
         ("lig_sumcheck_msgs".to_string(), lig_sc.clone()),
         ("merkle_leaf_rows".to_string(), lrows_flat),
         ("merkle_paths".to_string(), lpaths_flat),

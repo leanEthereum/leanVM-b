@@ -24,8 +24,9 @@ from snark_lib import *
 # SOUNDNESS: every hint is untrusted prover input; each is bound one of five
 # ways, and nothing else enters the computation:
 #   - sponge-bound (observed/absorbed before any challenge that depends on it):
-#     the stream scalars, zc_round1/zc_msgs/zc_finals, lincheck_msgs/z_partial,
-#     s_hat_v, lig_sumcheck_msgs, final_msg, the level roots level_roots_0/level_roots_1, the fold nonces fold_nonces, the
+#     the stream scalars (flock's zerocheck/lincheck/ring-switch words included:
+#     the cursor walks them like any other stream region),
+#     lig_sumcheck_msgs, final_msg, the level roots level_roots_0/level_roots_1, the fold nonces fold_nonces, the
 #     aggregation round messages bc_sumcheck_msgs/mat_sumcheck_msgs, and the deferred bytecode values
 #     bytecode_vals (absorbed by the stacked-bytecode reduction before its challenges);
 #   - assert-checked: the grinding digest bits and the query-index bits are
@@ -1421,12 +1422,12 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     # buffers are sized for that), and q_pkd's committed kappa =
     # LOG2_FIELD_BITS + tau feeds the certified size m, whose opening
     # dispatch bound caps tau well below any baked structure.
-    zc_round1 = HeapBuf(2 * 2 ** K_SKIP)
-    hint_witness(zc_round1[0:2 * 2 ** K_SKIP], "zc_round1")
-    zc_msgs = HeapBuf(2 * R1CS_ROUNDS_CAP)
-    hint_witness(zc_msgs[0:2 * R1CS_ROUNDS_CAP], "zc_msgs")
-    zc_finals = StackBuf(2)
-    hint_witness(zc_finals[0:2], "zc_finals")
+    # flock's sub-proof scalars are ordinary stream words (add_scalar on the
+    # native side), so the cursor just keeps walking: alias each region and
+    # advance past it — no separate hints.
+    zc_round1 = cursor  # round1_ab ‖ round1_c (2 * 2^K_SKIP words)
+    cursor *= GEN ** (2 * 2 ** K_SKIP)
+    zc_msgs = cursor  # (gamma_c, g_inf) per multilinear round; runtime length 2*n_mlv
     fs = absorb(fs, 18, DS_LEN)
     fs = absorb(fs, ZCLBLA, DS_BYTE)
     fs = absorb(fs, ZCLBLB, DS_BYTE)
@@ -1524,19 +1525,22 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     fs[0] = flock_round_fs0[nmlv_g]
     fs[1] = flock_round_fs1[nmlv_g]
     zc_running = flock_round_running[nmlv_g]
-    # final: zc_running == a_eval * b_eval; observe both.
-    a_eval = zc_finals[0]
-    b_eval = zc_finals[1]
+    # final: zc_running == a_eval * b_eval; observe both. The cursor skips the
+    # 2*n_mlv round words (g^(2*n_mlv) = nmlv_g^2) to reach the two finals.
+    cursor *= nmlv_g * nmlv_g
+    a_eval = cursor[GEN ** 0]
+    b_eval = cursor[GEN ** 1]
+    cursor *= GEN ** 2
     ab_product = a_eval * b_eval  # zerocheck closes: running claim == a(r) * b(r)
     assert zc_running == ab_product
     fs = obs(fs, a_eval)
     fs = obs(fs, b_eval)
 
     # ---- flock lincheck (matrix evaluation DEFERRED) ----
-    lincheck_msgs = HeapBuf(2 * LINCHECK_ROUNDS)
-    hint_witness(lincheck_msgs[0:2 * LINCHECK_ROUNDS], "lincheck_msgs")
-    z_partial = HeapBuf(2 ** K_SKIP)
-    hint_witness(z_partial[0:2 ** K_SKIP], "z_partial")
+    lincheck_msgs = cursor  # (e1, e_inf) per round (2 * LINCHECK_ROUNDS words)
+    cursor *= GEN ** (2 * LINCHECK_ROUNDS)
+    z_partial = cursor  # the post-sumcheck collapse (2^K_SKIP words)
+    cursor *= GEN ** (2 ** K_SKIP)
     matrix_eval = StackBuf(1)
     hint_witness(matrix_eval[0:1], "matpart")
     fs = absorb(fs, 17, DS_LEN)
@@ -1585,8 +1589,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
         lincheck_w += skip_nums[i] * ISDOM[i] * z_partial[GEN ** i]
 
     # ---- stacked mixed opening: ring-switch fronts + claim combination ----
-    s_hat_v = HeapBuf(2 * FIELD_BITS)
-    hint_witness(s_hat_v[0:2 * FIELD_BITS], "s_hat_v")
+    s_hat_v = cursor  # the two ring-switch slices (2 * FIELD_BITS words, ends the stream)
     fs = absorb(fs, 23, DS_LEN)
     fs = absorb(fs, OBLBLA, DS_BYTE)
     fs = absorb(fs, OBLBLB, DS_BYTE)
