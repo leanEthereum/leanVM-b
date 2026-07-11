@@ -28,10 +28,10 @@ from snark_lib import *
 #     s_hat_v, lig_sumcheck_msgs, final_msg, the level roots level_roots_0/level_roots_1, the fold nonces fold_nonces, the
 #     aggregation round messages bc_sumcheck_msgs/mat_sumcheck_msgs, and the deferred bytecode values
 #     bytecode_vals (absorbed by the stacked-bytecode reduction before its challenges);
-#   - assert-checked: grind_bits/fold_grind_bits/query_grind_hint (grinding digest bits:
-#     booleanity + reconstruction against the in-circuit digest + the low-nbits
-#     zero-window asserts), query_index_bits (query bits: booleanity + reconstruction equal to the
-#     squeezed word), merkle_leaf_rows/merkle_paths (Merkle inclusion against the bound roots);
+#   - assert-checked: the grinding digest bits and the query-index bits are
+#     advice-decomposed in place (hint_decompose_bits of the in-circuit digest /
+#     squeezed word: booleanity + reconstruction + the low-nbits zero-window
+#     asserts), merkle_leaf_rows/merkle_paths (Merkle inclusion against the bound roots);
 #     the count-tree root nonzero and the ceil-log minimality checks are plain
 #     `assert != 0`, and the flock zerocheck combiner is a `/` (field division) -
 #     no inverse hints anywhere now;
@@ -248,7 +248,6 @@ LIG_POSITIONS_LEN = LIG_POSITIONS_LEN_PLACEHOLDER
 LIG_SUMCHECK_LEN = LIG_SUMCHECK_LEN_PLACEHOLDER
 LIG_ROWS_LEN = LIG_ROWS_LEN_PLACEHOLDER
 LIG_PATHS_LEN = LIG_PATHS_LEN_PLACEHOLDER
-LIG_QUERY_BITS_LEN = LIG_QUERY_BITS_LEN_PLACEHOLDER
 LIG_FOLD_GRIND_LEN = LIG_FOLD_GRIND_LEN_PLACEHOLDER
 LIG_QUERY_GRIND_BITS = LIG_QUERY_GRIND_BITS_PLACEHOLDER
 LIG_QUERIES = LIG_QUERIES_PLACEHOLDER
@@ -267,7 +266,6 @@ LIG_RESIDUAL_PREFIX_LEN = LIG_RESIDUAL_PREFIX_LEN_PLACEHOLDER
 LIG_FOLDS_OFF = LIG_FOLDS_OFF_PLACEHOLDER
 LIG_ROWS_OFF = LIG_ROWS_OFF_PLACEHOLDER
 LIG_PATHS_OFF = LIG_PATHS_OFF_PLACEHOLDER
-LIG_QUERY_BITS_OFF = LIG_QUERY_BITS_OFF_PLACEHOLDER
 LIG_VANISH_OFF = LIG_VANISH_OFF_PLACEHOLDER
 LIG_FOLD_GRIND_BITS = LIG_FOLD_GRIND_BITS_PLACEHOLDER
 LIG_VANISH_VALS = LIG_VANISH_VALS_PLACEHOLDER
@@ -350,9 +348,13 @@ def check_128_bits_decomposition(bits_ptr, v):
     return
 
 
-def decode_query_bits(bits_ptr, v, positions_out, bit_ptrs_out, depth: Const, per_word: Const):
-    # check_128_bits_decomposition fused with query extraction: each depth-bit group also becomes a
-    # query position (little-endian), with a pointer to its bit run.
+def decode_query_bits(v, positions_out, bit_ptrs_out, depth: Const, per_word: Const):
+    # The squeezed word's bits are advice-decomposed HERE, boolean-constrained,
+    # and tied back by reconstruction; each depth-bit group also becomes a query
+    # position (little-endian), with a pointer to its bit run (the Merkle
+    # direction bits).
+    bits_ptr = HeapBuf(GEN ** FIELD_BITS)
+    hint_decompose_bits(bits_ptr, v, FIELD_BITS)
     acc = 0
     for j in unroll(0, per_word):
         position = 0
@@ -373,12 +375,13 @@ def decode_query_bits(bits_ptr, v, positions_out, bit_ptrs_out, depth: Const, pe
     return
 
 
-def grind_check(state_0, state_1, nonce, bits_ptr, nbits_g):
+def grind_check(state_0, state_1, nonce, nbits_g):
     # The one grinding check, shared by the bus grind and the Ligerito fold /
-    # query grinds: digest = H(H(state, (0, POW)), (nonce, POW)); the hinted
-    # digest bits must be boolean and reconstruct digest word 0 (check_128_bits_decomposition), and its
-    # low nbits bits (nbits_g = g^nbits) must be zero — the CONTIGUOUS PoW window
-    # of transcript::pow_bits_ok. The caller absorbs the nonce afterwards.
+    # query grinds: digest = H(H(state, (0, POW)), (nonce, POW)); the digest's
+    # bits are advice-decomposed HERE and verified (booleanity + reconstruction,
+    # check_128_bits_decomposition), and the low nbits (nbits_g = g^nbits) must
+    # be zero — the CONTIGUOUS PoW window of transcript::pow_bits_ok. The
+    # caller absorbs the nonce afterwards.
     st = StackBuf(2)
     st[0] = state_0
     st[1] = state_1
@@ -392,9 +395,11 @@ def grind_check(state_0, state_1, nonce, bits_ptr, nbits_g):
     nz[1] = DS_POW
     out = StackBuf(2)
     blake3(base, nz, out)
-    check_128_bits_decomposition(bits_ptr, out[0])
+    digest_bits = HeapBuf(GEN ** FIELD_BITS)
+    hint_decompose_bits(digest_bits, out[0], FIELD_BITS)
+    check_128_bits_decomposition(digest_bits, out[0])
     for xb in mul_range(1, nbits_g):
-        assert bits_ptr[xb] == 0
+        assert digest_bits[xb] == 0
     return
 
 
@@ -657,10 +662,6 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1):
     hint_witness(merkle_leaf_rows[0:LIG_ROWS_LEN[m_idx]], "merkle_leaf_rows")
     merkle_paths = HeapBuf(GEN ** (LIG_PATHS_LEN[m_idx]))
     hint_witness(merkle_paths[0:LIG_PATHS_LEN[m_idx]], "merkle_paths")
-    query_index_bits = HeapBuf(GEN ** (LIG_QUERY_BITS_LEN[m_idx]))
-    hint_witness(query_index_bits[0:LIG_QUERY_BITS_LEN[m_idx]], "query_index_bits")
-    fold_grind_bits = HeapBuf(GEN ** (LIG_FOLD_GRIND_LEN[m_idx]))
-    hint_witness(fold_grind_bits[0:LIG_FOLD_GRIND_LEN[m_idx]], "fold_grind_bits")
     final_msg = HeapBuf(GEN ** (LIG_YR_LEN[m_idx]))
     hint_witness(final_msg[0:LIG_YR_LEN[m_idx]], "final_msg")
     level_roots_0 = HeapBuf(GEN ** (LIG_N_LEVELS[m_idx]))
@@ -671,8 +672,6 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1):
     hint_witness(fold_nonces[0:LIG_TOTAL_FOLDS[m_idx]], "fold_nonces")
     query_nonces = HeapBuf(GEN ** (LIG_N_LEVELS[m_idx]))
     hint_witness(query_nonces[0:LIG_N_LEVELS[m_idx]], "query_nonces")
-    query_grind_hint = HeapBuf(GEN ** (LIG_N_LEVELS[m_idx] * FIELD_BITS))
-    hint_witness(query_grind_hint[0:LIG_N_LEVELS[m_idx] * FIELD_BITS], "query_grind_hint")
     # ...and guest-filled accumulators (one slot per fold / per level / per query):
     fold_challenges = HeapBuf(GEN ** (LIG_TOTAL_FOLDS[m_idx]))
     level_betas = HeapBuf(GEN ** (LIG_N_LEVELS[m_idx]))
@@ -685,7 +684,7 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1):
             fold_idx = LIG_FOLDS_OFF[m_idx * LIG_MAX_LEVELS + lvl] + j
             if LIG_FOLD_GRIND_BITS[m_idx * LIG_MAX_TOTAL_FOLDS + fold_idx] != 0:
                 nonce_v = fold_nonces[GEN ** fold_idx]
-                grind_check(fs[0], fs[1], nonce_v, fold_grind_bits * GEN ** (FIELD_BITS * fold_idx), GEN ** LIG_FOLD_GRIND_BITS[m_idx * LIG_MAX_TOTAL_FOLDS + fold_idx])
+                grind_check(fs[0], fs[1], nonce_v, GEN ** LIG_FOLD_GRIND_BITS[m_idx * LIG_MAX_TOTAL_FOLDS + fold_idx])
                 fs = absorb(fs, nonce_v, DS_POW)
             fs = squeeze(fs)
             fold_challenge = fs[0]
@@ -711,7 +710,7 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1):
             fs = absorb(fs, next_root_b, DS_BYTE)
         if LIG_QUERY_GRIND_BITS[m_idx * LIG_MAX_LEVELS + lvl] != 0:
             q_nonce = query_nonces[GEN ** lvl]
-            grind_check(fs[0], fs[1], q_nonce, query_grind_hint * GEN ** (FIELD_BITS * lvl), GEN ** LIG_QUERY_GRIND_BITS[m_idx * LIG_MAX_LEVELS + lvl])
+            grind_check(fs[0], fs[1], q_nonce, GEN ** LIG_QUERY_GRIND_BITS[m_idx * LIG_MAX_LEVELS + lvl])
             fs = absorb(fs, q_nonce, DS_POW)
         else:
             fs = absorb(fs, 0, DS_POW)
@@ -724,9 +723,8 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1):
             packed_word, next_c0, next_c1 = squeeze_step(sqz_chain_0[xs], sqz_chain_1[xs])
             sqz_chain_0[xs * GEN] = next_c0
             sqz_chain_1[xs * GEN] = next_c1
-            bits_ptr = query_index_bits * GEN ** LIG_QUERY_BITS_OFF[m_idx * LIG_MAX_LEVELS + lvl] * xs ** FIELD_BITS
             query_ptr = xs ** LIG_POSITIONS_PER_WORD[m_idx * LIG_MAX_LEVELS + lvl]
-            decode_query_bits(bits_ptr, packed_word, query_positions * GEN ** LIG_POSITIONS_OFF[m_idx * LIG_MAX_LEVELS + lvl] * query_ptr, query_bit_ptrs * GEN ** LIG_POSITIONS_OFF[m_idx * LIG_MAX_LEVELS + lvl] * query_ptr, LIG_TREE_DEPTH[m_idx * LIG_MAX_LEVELS + lvl], LIG_POSITIONS_PER_WORD[m_idx * LIG_MAX_LEVELS + lvl])
+            decode_query_bits(packed_word, query_positions * GEN ** LIG_POSITIONS_OFF[m_idx * LIG_MAX_LEVELS + lvl] * query_ptr, query_bit_ptrs * GEN ** LIG_POSITIONS_OFF[m_idx * LIG_MAX_LEVELS + lvl] * query_ptr, LIG_TREE_DEPTH[m_idx * LIG_MAX_LEVELS + lvl], LIG_POSITIONS_PER_WORD[m_idx * LIG_MAX_LEVELS + lvl])
         fs = StackBuf(2)
         fs[0] = sqz_chain_0[GEN ** LIG_SQUEEZES[m_idx * LIG_MAX_LEVELS + lvl]]
         fs[1] = sqz_chain_1[GEN ** LIG_SQUEEZES[m_idx * LIG_MAX_LEVELS + lvl]]
@@ -962,10 +960,8 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
     bus_mu_hint = StackBuf(1)
     hint_witness(bus_mu_hint[0:1], "annmus_push")
     g_bus_mu = bus_mu_hint[0]
-    grind_bits = HeapBuf(FIELD_BITS)
-    hint_witness(grind_bits[0:FIELD_BITS], "grind_bits")
     bus_grind_window = g_bus_mu * GINV ** BUS_GRIND_SHIFT  # g^(push.mu - shift): the bus PoW bit count
-    grind_check(fs[0], fs[1], nonce, grind_bits, bus_grind_window)
+    grind_check(fs[0], fs[1], nonce, bus_grind_window)
     fs = absorb(fs, nonce, DS_POW)
     fs = squeeze(fs)
     alpha = fs[0]

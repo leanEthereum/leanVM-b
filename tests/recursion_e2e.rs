@@ -543,7 +543,7 @@ fn gen_verify(
             _ => None,
         })
         .collect();
-    let gdig = pows[0].2;
+    let _gdig = pows[0].2; // digest bits now advice-decomposed in-guest
 
     // Bus: the bytecode claims carry the push/pull ζ_lo points and sb.
     let kbc = summary.bytecode_claims[0].point.len() - 3;
@@ -748,7 +748,7 @@ fn gen_verify(
         let wd = |o: usize| u64::from_le_bytes(h[o..o + 8].try_into().unwrap());
         [F128::new(wd(0), wd(8)), F128::new(wd(16), wd(24))]
     };
-    let (mut lrows_flat, mut lpaths_flat, mut lsbits_flat) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut lrows_flat, mut lpaths_flat) = (Vec::new(), Vec::new());
     for lv in 0..nlev {
         let (rows_exp, path_exp) =
             flare::pcs::ligerito::expand_level_opening(shapes.block_len[lv], &positions[lv], rows_of(lv), numinter[lv], path_of(lv))
@@ -758,16 +758,6 @@ fn gen_verify(
         }
         for &h in &path_exp {
             lpaths_flat.extend_from_slice(&hb32(h));
-        }
-        assert_eq!(lig_raw[lv].len(), nsq[lv]);
-        for &v in &lig_raw[lv] {
-            lsbits_flat.extend_from_slice(&bits_of(v));
-        }
-    }
-    let mut lfpb_flat = vec![F128::ZERO; total_folds * 128];
-    for (g, &(bits, _n, dig)) in fold_pow.iter().enumerate() {
-        if bits > 0 {
-            lfpb_flat[g * 128..g * 128 + 128].copy_from_slice(&bits_of(dig));
         }
     }
     let qpkdv = l.placements[leanvm_b::cpu::QPKD].n_vars;
@@ -885,7 +875,6 @@ fn gen_verify(
             v.resize(stream_cap, F128::ZERO);
             v
         }),
-        ("grind_bits".to_string(), bits_of(gdig)),
         ("bytecode_vals".to_string(), bcv),
         ("zc_round1".to_string(), zc1),
         ("zc_msgs".to_string(), {
@@ -901,8 +890,6 @@ fn gen_verify(
         ("lig_sumcheck_msgs".to_string(), lig_sc.clone()),
         ("merkle_leaf_rows".to_string(), lrows_flat),
         ("merkle_paths".to_string(), lpaths_flat),
-        ("query_index_bits".to_string(), lsbits_flat),
-        ("fold_grind_bits".to_string(), lfpb_flat),
         ("final_msg".to_string(), lig.final_proof.yr.clone()),
         ("sub_pis".to_string(), vec![pi[0], pi[1]]),
         ("level_roots_0".to_string(), roota),
@@ -964,10 +951,6 @@ fn gen_verify(
         ("sort_order".to_string(), sort_order.clone()),
         ("dims_g".to_string(), vec![g_pow(log_mem)]),
         ("query_nonces".to_string(), query_pow.iter().map(|&(n, _)| F128::new(n, 0)).collect()),
-        (
-            "query_grind_hint".to_string(),
-            query_pow.iter().flat_map(|&(_, dig)| bits_of(dig)).collect(),
-        ),
     ];
     (hints, deferred)
 }
@@ -1312,7 +1295,6 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         ps("LIG_SUMCHECK_LEN", ints(&scal(&|c| 2 * (c.3.iter().sum::<usize>() + c.0))));
         ps("LIG_ROWS_LEN", ints(&scal(&|c| (0..c.0).map(|lv| c.5[lv] * c.9[lv]).sum())));
         ps("LIG_PATHS_LEN", ints(&scal(&|c| (0..c.0).map(|lv| c.5[lv] * c.6[lv] * 2).sum())));
-        ps("LIG_QUERY_BITS_LEN", ints(&scal(&|c| (0..c.0).map(|lv| c.8[lv] * 128).sum())));
         ps("LIG_FOLD_GRIND_LEN", ints(&scal(&|c| c.3.iter().sum::<usize>() * 128)));
         ps("LIG_QUERY_GRIND_BITS", ints(&flat(&|c| c.10.clone(), maxlev)));
         ps("LIG_QUERIES", ints(&flat(&|c| c.5.clone(), maxlev)));
@@ -1331,7 +1313,6 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         ps("LIG_FOLDS_OFF", ints(&flat(&|c| c.17.clone(), maxlev)));
         ps("LIG_ROWS_OFF", ints(&flat(&|c| c.12.clone(), maxlev)));
         ps("LIG_PATHS_OFF", ints(&flat(&|c| c.13.clone(), maxlev)));
-        ps("LIG_QUERY_BITS_OFF", ints(&flat(&|c| c.14.clone(), maxlev)));
         ps("LIG_VANISH_OFF", ints(&flat(&|c| c.16.clone(), maxlev)));
         ps("LIG_FOLD_GRIND_BITS", ints(&flat(&|c| c.11.clone(), maxfolds)));
         let mut svk2 = Vec::new();
