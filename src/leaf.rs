@@ -412,9 +412,14 @@ pub fn prove_balance(
     let alpha = ps.sample();
     let push_lay = layout(push);
     let pull_lay = layout(pull);
-    let count_lay = layout(count);
+    let mut count_lay = layout(count);
     // Grind before γ to lift the grand product to `SECURITY_BITS` ([`grand_product_grinding_bits`]).
     ps.grind(grand_product_grinding_bits(&push_lay, &pull_lay, &count_lay));
+    // Pad the count tree to the pair's depth with identity leaves (the product,
+    // blocks, and offsets are unchanged; `build_leaves` fills the cube with `1`
+    // and the decompose accounts the padding mass), so all THREE trees share
+    // one RLC-batched GKR — and one point ζ.
+    count_lay.mu = push_lay.mu;
     let gamma = ps.sample();
     // Independent leaf vectors; build concurrently. The count channel's leaf is the
     // count itself (a single `Col`, `γ=0`, `α=1`), so its root is the product of all counts.
@@ -427,10 +432,10 @@ pub fn prove_balance(
             )
         },
     );
-    // Push and pull run in LOCKSTEP (equal μ by construction — matched block
-    // pairs), sharing every challenge, so both claims land on ONE point ζ.
-    let ((_, push_claim), (_, pull_claim)) = gkr::prove_product_pair(push_leaves, pull_leaves, ps);
-    let (_, count_claim) = gkr::prove_product(count_leaves, ps);
+    // All three trees run as ONE RLC-batched GKR (equal μ: push/pull match
+    // block-for-block, count is padded), so every claim lands on ONE point ζ.
+    let ((_, push_claim), (_, pull_claim), (_, count_claim)) =
+        gkr::prove_product_triple(push_leaves, pull_leaves, count_leaves, ps);
 
     // One shared claim list: push/pull duplicates (same column, same shared
     // point) are streamed and opened once. The count side has its own point,
@@ -477,17 +482,17 @@ pub fn verify_balance(
     let alpha = vs.sample();
     let push_lay = layout(push);
     let pull_lay = layout(pull);
-    let count_lay = layout(count);
+    let mut count_lay = layout(count);
     vs.grind_check(grand_product_grinding_bits(&push_lay, &pull_lay, &count_lay)).map_err(|e| match e {
         crate::transcript::Error::PowFailed => Error::PowFailed,
         _ => Error::Truncated,
     })?;
+    // The count tree is padded to the pair's depth (identity leaves), so all
+    // three verify as ONE RLC-batched GKR at ONE shared point.
+    count_lay.mu = push_lay.mu;
     let gamma = vs.sample();
-    // Push and pull verify in LOCKSTEP (their layouts match, see
-    // grand_product_grinding_bits), reducing to claims at ONE shared point.
-    let ((push_root, cp), (pull_root, cq)) =
-        gkr::verify_product_pair(push_lay.mu, vs).map_err(Error::Gkr)?;
-    let (count_root, cc) = gkr::verify_product(count_lay.mu, vs).map_err(Error::Gkr)?;
+    let ((push_root, cp), (pull_root, cq), (count_root, cc)) =
+        gkr::verify_product_triple(push_lay.mu, vs).map_err(Error::Gkr)?;
     // Every read count is nonzero iff this product is (§sec:memchan); a zero would
     // let a read self-cancel and free its value from memory.
     if count_root == F128::ZERO {

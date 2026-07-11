@@ -194,53 +194,64 @@ pub fn prove_product(leaves: Vec<F128>, ps: &mut ProverState) -> (F128, LeafClai
     (root, LeafClaim { point: r, value })
 }
 
-/// Prove TWO equal-size grand products as ONE RLC-batched GKR: both roots are
-/// bound, a combiner λ is sampled, and each layer runs a SINGLE sumcheck on
-/// the combined summand `eq·(eᵃ·oᵃ + λ·eᵇ·oᵇ)` (one message triple per round,
-/// one shared challenge), so both trees reduce to leaf claims at the SAME
-/// point. Each layer binds the four tail evaluations and then samples a FRESH
-/// λ for the next layer, which pins the individual values inside the bound
-/// combination (Schwartz–Zippel); the last layer's individuals are pinned by
-/// the decompose identities. Used for the bus push/pull pair, whose matched
-/// blocks give equal μ — the shared point then needs a single bytecode
-/// opening and one ζ buffer.
-pub fn prove_product_pair(
+/// Prove THREE equal-size grand products as ONE RLC-batched GKR: the roots
+/// are bound, a combiner λ is sampled, and each layer runs a SINGLE sumcheck
+/// on the combined summand `eq·(eᵃ·oᵃ + λ·eᵇ·oᵇ + λ²·eᶜ·oᶜ)` (one message
+/// triple per round, one shared challenge), so all trees reduce to leaf
+/// claims at the SAME point. Each layer binds the six tail evaluations and
+/// then samples a FRESH λ for the next layer, which pins the individual
+/// values inside the bound combination (Schwartz–Zippel); the last layer's
+/// individuals are pinned by the decompose identities. Used for the bus
+/// push/pull/count trees: push and pull match block-for-block, and the
+/// caller pads the count tree with identity leaves up to their μ.
+pub fn prove_product_triple(
     leaves_a: Vec<F128>,
     leaves_b: Vec<F128>,
+    leaves_c: Vec<F128>,
     ps: &mut ProverState,
-) -> ((F128, LeafClaim), (F128, LeafClaim)) {
-    assert_eq!(leaves_a.len(), leaves_b.len(), "paired trees must have equal size");
+) -> ((F128, LeafClaim), (F128, LeafClaim), (F128, LeafClaim)) {
+    assert!(
+        leaves_a.len() == leaves_b.len() && leaves_a.len() == leaves_c.len(),
+        "batched trees must have equal size"
+    );
     let mu = crate::log2_strict_usize(leaves_a.len());
-    let (layers_a, layers_b) = rayon::join(|| build_layers(leaves_a), || build_layers(leaves_b));
-    let (root_a, root_b) = (layers_a[mu][0], layers_b[mu][0]);
+    let ((layers_a, layers_b), layers_c) = rayon::join(
+        || rayon::join(|| build_layers(leaves_a), || build_layers(leaves_b)),
+        || build_layers(leaves_c),
+    );
+    let (root_a, root_b, root_c) = (layers_a[mu][0], layers_b[mu][0], layers_c[mu][0]);
     ps.add_scalar(root_a);
     ps.add_scalar(root_b);
+    ps.add_scalar(root_c);
     let mut lambda = ps.sample();
 
     let mut r: Vec<F128> = Vec::new();
-    let (mut value_a, mut value_b) = (root_a, root_b);
+    let (mut value_a, mut value_b, mut value_c) = (root_a, root_b, root_c);
 
     for i in (1..=mu).rev() {
         let k = mu - i;
         let width = 1usize << k;
         let mut tree_a = LayerState::new(&layers_a[i - 1], width);
         let mut tree_b = LayerState::new(&layers_b[i - 1], width);
-        // The challenges are shared, so ONE eq table serves both trees.
+        let mut tree_c = LayerState::new(&layers_c[i - 1], width);
+        // The challenges are shared, so ONE eq table serves all trees.
         let mut eqr: Vec<F128> = if k > 0 { eq_table(&r[1..]) } else { Vec::new() };
 
         let mut rho = Vec::with_capacity(k);
         for _ in 0..k {
             let msg_a = tree_a.round_message(&eqr);
             let msg_b = tree_b.round_message(&eqr);
+            let msg_c = tree_c.round_message(&eqr);
             ps.add_scalars(&[
-                msg_a[0] + lambda * msg_b[0],
-                msg_a[1] + lambda * msg_b[1],
-                msg_a[2] + lambda * msg_b[2],
+                msg_a[0] + lambda * (msg_b[0] + lambda * msg_c[0]),
+                msg_a[1] + lambda * (msg_b[1] + lambda * msg_c[1]),
+                msg_a[2] + lambda * (msg_b[2] + lambda * msg_c[2]),
             ]);
             let rk = ps.sample();
             rho.push(rk);
             tree_a.fold(rk);
             tree_b.fold(rk);
+            tree_c.fold(rk);
             shrink_eq(&mut eqr);
         }
 
@@ -248,9 +259,12 @@ pub fn prove_product_pair(
         ps.add_scalar(tree_a.odd[0]);
         ps.add_scalar(tree_b.even[0]);
         ps.add_scalar(tree_b.odd[0]);
+        ps.add_scalar(tree_c.even[0]);
+        ps.add_scalar(tree_c.odd[0]);
         let c = ps.sample();
         value_a = interp(tree_a.even[0], tree_a.odd[0], c);
         value_b = interp(tree_b.even[0], tree_b.odd[0], c);
+        value_c = interp(tree_c.even[0], tree_c.odd[0], c);
         lambda = ps.sample(); // fresh combiner: pins the individual tail values
 
         let mut next_point = Vec::with_capacity(k + 1);
@@ -261,7 +275,8 @@ pub fn prove_product_pair(
 
     (
         (root_a, LeafClaim { point: r.clone(), value: value_a }),
-        (root_b, LeafClaim { point: r, value: value_b }),
+        (root_b, LeafClaim { point: r.clone(), value: value_b }),
+        (root_c, LeafClaim { point: r, value: value_c }),
     )
 }
 
@@ -306,25 +321,26 @@ pub fn verify_product(mu: usize, vs: &mut VerifierState) -> Result<(F128, LeafCl
     Ok((root, LeafClaim { point: r, value: claim }))
 }
 
-/// Verify an RLC-batched pair proof ([`prove_product_pair`]): both roots, a
-/// combiner λ, then per layer ONE standard sumcheck on the combined claim,
-/// four tail evaluations checked as `eq·(e₀ᵃ·e₁ᵃ + λ·e₀ᵇ·e₁ᵇ)`, a line
-/// challenge, and a fresh λ. Returns the two (root, claim) pairs; the claims
-/// share the point.
-pub fn verify_product_pair(
+/// Verify an RLC-batched triple proof ([`prove_product_triple`]): the roots,
+/// a combiner λ, then per layer ONE standard sumcheck on the combined claim,
+/// six tail evaluations checked as `eq·(e₀ᵃe₁ᵃ + λ·e₀ᵇe₁ᵇ + λ²·e₀ᶜe₁ᶜ)`, a
+/// line challenge, and a fresh λ. Returns the three (root, claim) pairs; the
+/// claims share the point.
+pub fn verify_product_triple(
     mu: usize,
     vs: &mut VerifierState,
-) -> Result<((F128, LeafClaim), (F128, LeafClaim)), GkrError> {
+) -> Result<((F128, LeafClaim), (F128, LeafClaim), (F128, LeafClaim)), GkrError> {
     let root_a = vs.next_scalar().map_err(|_| GkrError::Truncated)?;
     let root_b = vs.next_scalar().map_err(|_| GkrError::Truncated)?;
+    let root_c = vs.next_scalar().map_err(|_| GkrError::Truncated)?;
     let mut lambda = vs.sample();
     let nodes = tri_nodes();
     let mut r: Vec<F128> = Vec::new();
-    let (mut value_a, mut value_b) = (root_a, root_b);
+    let (mut value_a, mut value_b, mut value_c) = (root_a, root_b, root_c);
 
     for i in (1..=mu).rev() {
         let k = mu - i;
-        let mut claim = value_a + lambda * value_b;
+        let mut claim = value_a + lambda * (value_b + lambda * value_c);
         let mut rho = Vec::with_capacity(k);
         let mut eq_acc = F128::ONE; // ∏_{l<round} eq(r_l, ρ_l)
         for (round, &rj) in r.iter().enumerate().take(k) {
@@ -341,12 +357,15 @@ pub fn verify_product_pair(
         let eval1_a = vs.next_scalar().map_err(|_| GkrError::Truncated)?;
         let eval0_b = vs.next_scalar().map_err(|_| GkrError::Truncated)?;
         let eval1_b = vs.next_scalar().map_err(|_| GkrError::Truncated)?;
-        if claim != eq_acc * (eval0_a * eval1_a + lambda * (eval0_b * eval1_b)) {
+        let eval0_c = vs.next_scalar().map_err(|_| GkrError::Truncated)?;
+        let eval1_c = vs.next_scalar().map_err(|_| GkrError::Truncated)?;
+        if claim != eq_acc * (eval0_a * eval1_a + lambda * (eval0_b * eval1_b + lambda * (eval0_c * eval1_c))) {
             return Err(GkrError::LayerMismatch { layer: i });
         }
         let c = vs.sample();
         value_a = interp(eval0_a, eval1_a, c);
         value_b = interp(eval0_b, eval1_b, c);
+        value_c = interp(eval0_c, eval1_c, c);
         lambda = vs.sample(); // fresh combiner: pins the individual tail values
 
         let mut next_point = Vec::with_capacity(k + 1);
@@ -357,6 +376,7 @@ pub fn verify_product_pair(
 
     Ok((
         (root_a, LeafClaim { point: r.clone(), value: value_a }),
-        (root_b, LeafClaim { point: r, value: value_b }),
+        (root_b, LeafClaim { point: r.clone(), value: value_b }),
+        (root_c, LeafClaim { point: r, value: value_c }),
     ))
 }

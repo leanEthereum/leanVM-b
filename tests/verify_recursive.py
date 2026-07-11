@@ -40,8 +40,9 @@ from snark_lib import *
 #     quantity is COMPUTED from certified data, any nondeterministic step
 #     (bit decompositions, log2_ceil results) supplied by hint_* advice
 #     keywords and re-verified in-circuit — the per-table taus, the side mus
-#     (annmus_push/annmus_count hinted early for the bus grind, then tied to
-#     the computed logs; pull aliased to push), the committed size m, each
+#     (annmus_push, the ONE bus depth, hinted early for the bus grind and
+#     tied to the computed log; pull matches by pairing, count is padded to
+#     it), the committed size m, each
 #     block's kappa, its padding delta (g^(2^kappa)/g^real, pinned by
 #     g^real * g^delta == g^(2^kappa)), its selector bits (the offset's bits
 #     read shifted by kappa, pinned by rebuilding g^offset), the selector
@@ -86,13 +87,11 @@ ILD1 = ILD1_PLACEHOLDER
 ILD2 = ILD2_PLACEHOLDER
 
 # GKR sides. The layer counts mu_s are hinted and certified from the block
-# kappas; ZOFF places the per-side final points inside `zeta` at the fixed
-# MU_CAP stride.
+# kappas.
 PUSH_SIDE = 0
 PULL_SIDE = 1
 COUNT_SIDE = 2
 N_GKR_SIDES = 3
-ZOFF = ZOFF_PLACEHOLDER
 MU_CAP = MU_CAP_PLACEHOLDER
 # GKR runtime-loop chain capacities: per-tree round positions (triangle
 # rounds plus one slot per layer) and the point triangle (rows x MU_CAP).
@@ -870,8 +869,8 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
     #   2. announced sizes, then certify every structural log against them
     #      (count gadget log2_ceil: tau per table, log_mem);
     #   3. bind the commitment root; bus grinding (grind_check, runtime
-    #      bit count); GKR grand products at runtime depth: push & pull
-    #      RLC-batched into one sumcheck (ONE shared point zeta), then count;
+    #      bit count); ONE RLC-batched GKR for all three trees (count padded
+    #      to the pair's depth) at runtime depth, ONE shared point zeta;
     #   4. derive the block kappas, certify the GKR side depths; balance check
     #      with advice-decomposed padding ladders; 3x leaf decomposition
     #      against the GKR claims (pooling the committed-coordinate claims);
@@ -892,8 +891,8 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
     # built (from the in-scope certified kappa/tau); the terminal pins each
     # claim's hinted lengths against it.
     claim_cplen_g = HeapBuf(NCL)
-    # The three GKR leaf points, stored side by side (ZOFF offsets).
-    zeta = HeapBuf(N_GKR_SIDES * MU_CAP)
+    # The ONE shared GKR leaf point (all three trees reduce to it).
+    zeta = HeapBuf(MU_CAP)
 
     # ---- seed (statement pre-bound: hinted sub pi + baked program digest) ----
     fs = StackBuf(2)
@@ -959,152 +958,140 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
     nonce = cursor[GEN ** 0]
     cursor *= GEN
     # Bus grind bits = push.mu - 7 (= SECURITY + push.mu + 1 - 128; see
-    # leaf::grand_product_grinding_bits). push.mu is the max side depth: pull
-    # matches push (paired blocks) and count sums strictly fewer 2^kappa.
-    # ann_mus holds g^mu per GKR side (0=push, 1=pull, 2=count): hint push and
-    # count, alias pull to push (the pairing is generator-asserted at bake
-    # time); each is tied to the block structure at the mus cert below.
-    ann_mus = HeapBuf(N_GKR_SIDES)
-    hint_witness(ann_mus[0:1], "annmus_push")
-    hint_witness(ann_mus[2:3], "annmus_count")
-    ann_mus[GEN ** PULL_SIDE] = ann_mus[GEN ** PUSH_SIDE]
+    # leaf::grand_product_grinding_bits). There is ONE bus depth: pull matches
+    # push (paired blocks) and count is padded to it, so g^mu is a single hint,
+    # tied to the block structure at the mus cert below.
+    bus_mu_hint = StackBuf(1)
+    hint_witness(bus_mu_hint[0:1], "annmus_push")
+    g_bus_mu = bus_mu_hint[0]
     grind_bits = HeapBuf(FIELD_BITS)
     hint_witness(grind_bits[0:FIELD_BITS], "grind_bits")
-    bus_grind_window = ann_mus[GEN ** PUSH_SIDE] * GINV ** BUS_GRIND_SHIFT  # g^(push.mu - shift): the bus PoW bit count
+    bus_grind_window = g_bus_mu * GINV ** BUS_GRIND_SHIFT  # g^(push.mu - shift): the bus PoW bit count
     grind_check(fs[0], fs[1], nonce, grind_bits, bus_grind_window)
     fs = absorb(fs, nonce, DS_POW)
     fs = squeeze(fs)
     gamma = fs[0]
 
-    # ---- GKR grand products: push & pull RLC-batched, then count ----
-    # Push and pull have equal depth (matched blocks), so ONE sumcheck serves
-    # both trees: the prover λ-combines their round messages, each layer binds
-    # the four tail evaluations, checks the combined product identity, then
-    # samples the line challenge and a FRESH λ (pinning the individual values
-    # inside the bound combination; the last layer's are pinned by the
-    # decompose identities). Both trees reduce to claims at ONE shared point
-    # zeta. The count tree runs alone (run 1) with the same body — pair-only
-    # steps fold away at compile time. State threads through write-once heap
-    # chains: layer state indexed by the layer cursor, round state by a
-    # position pointer advancing per round.
+    # ---- ONE GKR grand product: push, pull, and count RLC-batched ----
+    # Push and pull have equal depth (matched blocks) and the count tree is
+    # PADDED with identity leaves up to it (product unchanged), so a single
+    # sumcheck serves all three trees: the prover combines their round
+    # messages with weights 1, λ, λ². Each layer binds the six tail
+    # evaluations, checks the combined product identity, samples the line
+    # challenge, then a FRESH λ — pinning the individual values inside the
+    # bound combination (the last layer's are pinned by the decompose
+    # identities). All three trees reduce to claims at ONE shared point zeta.
+    # State threads through write-once heap chains: layer state indexed by the
+    # layer cursor, round state by a position pointer advancing per round.
     gkr_roots = StackBuf(N_GKR_SIDES)
     gkr_claims = StackBuf(N_GKR_SIDES)
-    gkr_layer_fs0 = HeapBuf(N_GKR_SIDES * (MU_CAP + 2))
-    gkr_layer_fs1 = HeapBuf(N_GKR_SIDES * (MU_CAP + 2))
-    gkr_layer_cursor = HeapBuf(N_GKR_SIDES * (MU_CAP + 2))
-    gkr_layer_claim = HeapBuf(N_GKR_SIDES * (MU_CAP + 2))
-    gkr_layer_claim_b = HeapBuf(MU_CAP + 2)  # pair only: pull's running value
-    gkr_layer_lambda = HeapBuf(MU_CAP + 2)   # pair only: the layer's combiner
-    gkr_layer_row = HeapBuf(N_GKR_SIDES * (MU_CAP + 2))
-    gkr_layer_round_pos = HeapBuf(N_GKR_SIDES * (MU_CAP + 2))
-    gkr_round_fs0 = HeapBuf(N_GKR_SIDES * GKR_ROUNDS_CAP)
-    gkr_round_fs1 = HeapBuf(N_GKR_SIDES * GKR_ROUNDS_CAP)
-    gkr_round_cursor = HeapBuf(N_GKR_SIDES * GKR_ROUNDS_CAP)
-    gkr_round_claim = HeapBuf(N_GKR_SIDES * GKR_ROUNDS_CAP)
-    gkr_round_eq = HeapBuf(N_GKR_SIDES * GKR_ROUNDS_CAP)
-    gkr_pts = HeapBuf(N_GKR_SIDES * GKR_POINTS_CAP)
-    for run in unroll(0, 2):
-        s = COUNT_SIDE * run  # run 0 = the push/pull pair, run 1 = count
-        mu_g = ann_mus[GEN ** s]
-        assert log(mu_g) < COUNT_BITS
-        root_a = cursor[GEN ** 0]
-        fs = obs(fs, root_a)
-        cursor *= GEN
-        if run == 0:
-            root_b = cursor[GEN ** 0]
-            fs = obs(fs, root_b)
-            cursor *= GEN
-            fs = squeeze(fs)
-            gkr_layer_lambda[GEN ** 0] = fs[0]  # λ over (root_a, root_b)
-            gkr_layer_claim_b[GEN ** 0] = root_b
-        lfs0 = gkr_layer_fs0 * GEN ** (s * (MU_CAP + 2))
-        lfs1 = gkr_layer_fs1 * GEN ** (s * (MU_CAP + 2))
-        lcur = gkr_layer_cursor * GEN ** (s * (MU_CAP + 2))
-        lclaim = gkr_layer_claim * GEN ** (s * (MU_CAP + 2))
-        lrow = gkr_layer_row * GEN ** (s * (MU_CAP + 2))
-        lrnd = gkr_layer_round_pos * GEN ** (s * (MU_CAP + 2))
-        lfs0[GEN ** 0] = fs[0]
-        lfs1[GEN ** 0] = fs[1]
-        lcur[GEN ** 0] = cursor
-        lclaim[GEN ** 0] = root_a
-        lrow[GEN ** 0] = gkr_pts * GEN ** (s * GKR_POINTS_CAP)
-        lrnd[GEN ** 0] = GEN ** (s * GKR_ROUNDS_CAP)
-        for x_layer in mul_range(1, mu_g):
-            layer_fs = StackBuf(2)
-            layer_fs[0] = lfs0[x_layer]
-            layer_fs[1] = lfs1[x_layer]
-            layer_cursor = lcur[x_layer]
-            if run == 0:
-                lam = gkr_layer_lambda[x_layer]
-                claim_l = lclaim[x_layer] + lam * gkr_layer_claim_b[x_layer]
-            else:
-                claim_l = lclaim[x_layer]
-            point_row = lrow[x_layer]
-            round_pos = lrnd[x_layer]
-            nextrow = point_row * GEN ** MU_CAP
-            gkr_round_fs0[round_pos] = layer_fs[0]
-            gkr_round_fs1[round_pos] = layer_fs[1]
-            gkr_round_cursor[round_pos] = layer_cursor
-            gkr_round_claim[round_pos] = claim_l
-            gkr_round_eq[round_pos] = 1
-            for x_round in mul_range(1, x_layer):
-                ip = round_pos * x_round
-                nfs0, nfs1, ncur, nclaim, neq, rk = sumcheck_round3(gkr_round_fs0[ip], gkr_round_fs1[ip], gkr_round_cursor[ip], gkr_round_claim[ip], gkr_round_eq[ip], point_row[x_round])
-                nextrow[x_round * GEN] = rk
-                pos_next = ip * GEN
-                gkr_round_fs0[pos_next] = nfs0
-                gkr_round_fs1[pos_next] = nfs1
-                gkr_round_cursor[pos_next] = ncur
-                gkr_round_claim[pos_next] = nclaim
-                gkr_round_eq[pos_next] = neq
-            final_pos = round_pos * x_layer
-            tail_fs = StackBuf(2)
-            tail_fs[0] = gkr_round_fs0[final_pos]
-            tail_fs[1] = gkr_round_fs1[final_pos]
-            tcur = gkr_round_cursor[final_pos]
-            tclaim = gkr_round_claim[final_pos]
-            teq = gkr_round_eq[final_pos]
-            e0 = tcur[GEN ** 0]
-            tail_fs = obs(tail_fs, e0)
-            e1 = tcur[GEN ** 1]
-            tail_fs = obs(tail_fs, e1)
-            if run == 0:
-                e0_b = tcur[GEN ** 2]
-                tail_fs = obs(tail_fs, e0_b)
-                e1_b = tcur[GEN ** 3]
-                tail_fs = obs(tail_fs, e1_b)
-                tcur *= GEN ** 4
-                assert tclaim == teq * (e0 * e1 + lam * (e0_b * e1_b))
-            else:
-                tcur *= GEN ** 2
-                assert tclaim == teq * e0 * e1
-            tail_fs = squeeze(tail_fs)
-            layer_challenge = tail_fs[0]
-            nextrow[GEN ** 0] = layer_challenge
-            xln = x_layer * GEN
-            lclaim[xln] = e0 + layer_challenge * (e0 + e1)
-            if run == 0:
-                gkr_layer_claim_b[xln] = e0_b + layer_challenge * (e0_b + e1_b)
-                tail_fs = squeeze(tail_fs)  # fresh λ pins the tail individuals
-                gkr_layer_lambda[xln] = tail_fs[0]
-            lfs0[xln] = tail_fs[0]
-            lfs1[xln] = tail_fs[1]
-            lcur[xln] = tcur
-            lrow[xln] = nextrow
-            lrnd[xln] = round_pos * x_layer * GEN
-        fs = StackBuf(2)
-        fs[0] = lfs0[mu_g]
-        fs[1] = lfs1[mu_g]
-        cursor = lcur[mu_g]
-        final_point_row = lrow[mu_g]
-        zeta_run = zeta * GEN ** ZOFF[s]
-        for xt in mul_range(1, mu_g):
-            zeta_run[xt] = final_point_row[xt]  # run 0 stores the SHARED pair point
-        gkr_roots[s] = root_a
-        gkr_claims[s] = lclaim[mu_g]
-        if run == 0:
-            gkr_roots[PULL_SIDE] = root_b
-            gkr_claims[PULL_SIDE] = gkr_layer_claim_b[mu_g]
+    gkr_layer_fs0 = HeapBuf(MU_CAP + 2)
+    gkr_layer_fs1 = HeapBuf(MU_CAP + 2)
+    gkr_layer_cursor = HeapBuf(MU_CAP + 2)
+    gkr_layer_claim = HeapBuf(MU_CAP + 2)    # push's running value
+    gkr_layer_claim_b = HeapBuf(MU_CAP + 2)  # pull's
+    gkr_layer_claim_c = HeapBuf(MU_CAP + 2)  # count's
+    gkr_layer_lambda = HeapBuf(MU_CAP + 2)   # the layer's combiner
+    gkr_layer_row = HeapBuf(MU_CAP + 2)
+    gkr_layer_round_pos = HeapBuf(MU_CAP + 2)
+    gkr_round_fs0 = HeapBuf(GKR_ROUNDS_CAP)
+    gkr_round_fs1 = HeapBuf(GKR_ROUNDS_CAP)
+    gkr_round_cursor = HeapBuf(GKR_ROUNDS_CAP)
+    gkr_round_claim = HeapBuf(GKR_ROUNDS_CAP)
+    gkr_round_eq = HeapBuf(GKR_ROUNDS_CAP)
+    gkr_pts = HeapBuf(GKR_POINTS_CAP)
+    assert log(g_bus_mu) < COUNT_BITS
+    root_push = cursor[GEN ** 0]
+    fs = obs(fs, root_push)
+    cursor *= GEN
+    root_pull = cursor[GEN ** 0]
+    fs = obs(fs, root_pull)
+    cursor *= GEN
+    root_count = cursor[GEN ** 0]
+    fs = obs(fs, root_count)
+    cursor *= GEN
+    fs = squeeze(fs)
+    gkr_layer_lambda[GEN ** 0] = fs[0]  # λ over the three roots
+    gkr_layer_fs0[GEN ** 0] = fs[0]
+    gkr_layer_fs1[GEN ** 0] = fs[1]
+    gkr_layer_cursor[GEN ** 0] = cursor
+    gkr_layer_claim[GEN ** 0] = root_push
+    gkr_layer_claim_b[GEN ** 0] = root_pull
+    gkr_layer_claim_c[GEN ** 0] = root_count
+    gkr_layer_row[GEN ** 0] = gkr_pts
+    gkr_layer_round_pos[GEN ** 0] = GEN ** 0
+    for x_layer in mul_range(1, g_bus_mu):
+        layer_fs = StackBuf(2)
+        layer_fs[0] = gkr_layer_fs0[x_layer]
+        layer_fs[1] = gkr_layer_fs1[x_layer]
+        lam = gkr_layer_lambda[x_layer]
+        claim_l = gkr_layer_claim[x_layer] + lam * (gkr_layer_claim_b[x_layer] + lam * gkr_layer_claim_c[x_layer])
+        point_row = gkr_layer_row[x_layer]
+        round_pos = gkr_layer_round_pos[x_layer]
+        nextrow = point_row * GEN ** MU_CAP
+        gkr_round_fs0[round_pos] = layer_fs[0]
+        gkr_round_fs1[round_pos] = layer_fs[1]
+        gkr_round_cursor[round_pos] = gkr_layer_cursor[x_layer]
+        gkr_round_claim[round_pos] = claim_l
+        gkr_round_eq[round_pos] = 1
+        for x_round in mul_range(1, x_layer):
+            ip = round_pos * x_round
+            nfs0, nfs1, ncur, nclaim, neq, rk = sumcheck_round3(gkr_round_fs0[ip], gkr_round_fs1[ip], gkr_round_cursor[ip], gkr_round_claim[ip], gkr_round_eq[ip], point_row[x_round])
+            nextrow[x_round * GEN] = rk
+            pos_next = ip * GEN
+            gkr_round_fs0[pos_next] = nfs0
+            gkr_round_fs1[pos_next] = nfs1
+            gkr_round_cursor[pos_next] = ncur
+            gkr_round_claim[pos_next] = nclaim
+            gkr_round_eq[pos_next] = neq
+        final_pos = round_pos * x_layer
+        tail_fs = StackBuf(2)
+        tail_fs[0] = gkr_round_fs0[final_pos]
+        tail_fs[1] = gkr_round_fs1[final_pos]
+        tcur = gkr_round_cursor[final_pos]
+        tclaim = gkr_round_claim[final_pos]
+        teq = gkr_round_eq[final_pos]
+        e0_push = tcur[GEN ** 0]
+        tail_fs = obs(tail_fs, e0_push)
+        e1_push = tcur[GEN ** 1]
+        tail_fs = obs(tail_fs, e1_push)
+        e0_pull = tcur[GEN ** 2]
+        tail_fs = obs(tail_fs, e0_pull)
+        e1_pull = tcur[GEN ** 3]
+        tail_fs = obs(tail_fs, e1_pull)
+        e0_count = tcur[GEN ** 4]
+        tail_fs = obs(tail_fs, e0_count)
+        e1_count = tcur[GEN ** 5]
+        tail_fs = obs(tail_fs, e1_count)
+        tcur *= GEN ** 6
+        assert tclaim == teq * (e0_push * e1_push + lam * (e0_pull * e1_pull + lam * (e0_count * e1_count)))
+        tail_fs = squeeze(tail_fs)
+        layer_challenge = tail_fs[0]
+        nextrow[GEN ** 0] = layer_challenge
+        xln = x_layer * GEN
+        gkr_layer_claim[xln] = e0_push + layer_challenge * (e0_push + e1_push)
+        gkr_layer_claim_b[xln] = e0_pull + layer_challenge * (e0_pull + e1_pull)
+        gkr_layer_claim_c[xln] = e0_count + layer_challenge * (e0_count + e1_count)
+        tail_fs = squeeze(tail_fs)  # fresh λ pins the tail individuals
+        gkr_layer_lambda[xln] = tail_fs[0]
+        gkr_layer_fs0[xln] = tail_fs[0]
+        gkr_layer_fs1[xln] = tail_fs[1]
+        gkr_layer_cursor[xln] = tcur
+        gkr_layer_row[xln] = nextrow
+        gkr_layer_round_pos[xln] = round_pos * x_layer * GEN
+    fs = StackBuf(2)
+    fs[0] = gkr_layer_fs0[g_bus_mu]
+    fs[1] = gkr_layer_fs1[g_bus_mu]
+    cursor = gkr_layer_cursor[g_bus_mu]
+    final_point_row = gkr_layer_row[g_bus_mu]
+    for xt in mul_range(1, g_bus_mu):
+        zeta[xt] = final_point_row[xt]  # the ONE shared point
+    gkr_roots[PUSH_SIDE] = root_push
+    gkr_roots[PULL_SIDE] = root_pull
+    gkr_roots[COUNT_SIDE] = root_count
+    gkr_claims[PUSH_SIDE] = gkr_layer_claim[g_bus_mu]
+    gkr_claims[PULL_SIDE] = gkr_layer_claim_b[g_bus_mu]
+    gkr_claims[COUNT_SIDE] = gkr_layer_claim_c[g_bus_mu]
 
     # ---- count root nonzero ----
     assert gkr_roots[COUNT_SIDE] != 0  # count-tree root nonzero: no read count self-cancels
@@ -1124,17 +1111,14 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
     block_kappa = HeapBuf(N_BLOCKS)
     for b in unroll(0, N_BLOCKS):
         block_kappa[GEN ** b] = kappa_base[GEN ** BLOCK_KAPPA_SRC[b]] * GEN ** BLOCK_KAPPA_ADJ[b]
-    # Each side's depth is mu = log2_ceil(Σ_b 2^κ_b) over its blocks, the total
-    # formed in the exponent. Push and pull emit their blocks in matched pairs
-    # (identical baked kappa sources, generator-asserted), so certify push and
-    # count only; pull rides the alias ann_mus[1] = ann_mus[0] set above.
-    for cert in unroll(0, 2):
-        s = COUNT_SIDE * cert  # PUSH_SIDE (0), then COUNT_SIDE (2)
-        side_total = GEN ** 0
-        for b in unroll(SIDE_BLOCK_START[s], SIDE_BLOCK_START[s + 1]):
-            side_total *= g_squares[block_kappa[GEN ** b]]  # g^(sum of 2^kappa)
-        g_mu = log2_ceil_in_the_exponent(side_total, g_logs_pow2, g_squares, 0, SIZE_BITS)
-        assert g_mu == ann_mus[GEN ** s]        # tie the early-used hint to the computed log
+    # The ONE bus depth: mu = log2_ceil(Σ_b 2^κ_b) over PUSH's blocks (pull
+    # matches by pairing; the count tree is padded to this depth, so no other
+    # side needs a depth cert).
+    side_total = GEN ** 0
+    for b in unroll(SIDE_BLOCK_START[PUSH_SIDE], SIDE_BLOCK_START[PUSH_SIDE + 1]):
+        side_total *= g_squares[block_kappa[GEN ** b]]  # g^(sum of 2^kappa)
+    g_mu_check = log2_ceil_in_the_exponent(side_total, g_logs_pow2, g_squares, 0, SIZE_BITS)
+    assert g_mu_check == g_bus_mu  # tie the early-used hint to the computed log
 
     # ---- bus-leaf packing offsets (for the selector certification) ----
     # Each side's blocks tile its leaf cube; block b sits at offset_b. The
@@ -1223,8 +1207,7 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
     for s in unroll(0, N_GKR_SIDES):
         acc = 0
         selector_sum = 0
-        smu_gs = ann_mus[GEN ** s]
-        zeta_zs = zeta * GEN ** ZOFF[s]
+        zeta_zs = zeta
         for b in unroll(SIDE_BLOCK_START[s], SIDE_BLOCK_START[s + 1]):
             block_public_idx = 0
             kappa_g = block_kappa[GEN ** b]
@@ -1234,7 +1217,7 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
             else:
                 # eq_hi over the ζ coords above κ against the selector bits
                 # derived below; the selector length is mu_s − κ = g^mu_s / g^κ.
-                sel_len_g = smu_gs / kappa_g  # g^(mu_s - κ)
+                sel_len_g = g_bus_mu / kappa_g  # g^(mu - κ)
                 assert log(sel_len_g) < SIZE_BITS
                 zeta_hi = zeta_zs * kappa_g
                 # selector bits = offset >> κ: advice-decompose the offset's bits
