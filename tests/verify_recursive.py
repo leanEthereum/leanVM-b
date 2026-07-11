@@ -1449,10 +1449,6 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
         claim_cplen_g[GEN ** claim_idx] = tau_blake3_g  # cplen = the BLAKE3 value-col kappa
         claim_idx += 1
 
-    # (No flock bind_statement here: the circuit-FAMILY digest seeds the
-    # transcript — baked into SEEDB — the instance count is announced with the
-    # sizes, and the commitment root was bound right after them.)
-
     # ---- flock zerocheck (univariate skip, k_skip = 6) ----
     zc_round1 = HeapBuf(2 * 2 ** K_SKIP)
     hint_witness(zc_round1[0:2 * 2 ** K_SKIP], "zc_round1")
