@@ -895,7 +895,6 @@ fn gen_verify(
         ("level_roots_0".to_string(), roota),
         ("level_roots_1".to_string(), rootb),
         ("fold_nonces".to_string(), fnv),
-        ("annmus_push".to_string(), vec![g_pow(smu[0])]),
         ("claim_low_len".to_string(), (0..ncl).map(|j| g_pow(cplen[j] - nover_v[j])).collect()),
         // slacks bounding each claim'"'"'s reads to the written regions (so an
         // over-long hint cannot pull free padding): low_len <= mu_s/tau_t

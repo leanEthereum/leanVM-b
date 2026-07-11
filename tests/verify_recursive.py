@@ -40,9 +40,8 @@ from snark_lib import *
 #     quantity is COMPUTED from certified data, any nondeterministic step
 #     (bit decompositions, log2_ceil results) supplied by hint_* advice
 #     keywords and re-verified in-circuit — the per-table taus, the side mus
-#     (annmus_push, the ONE bus depth, hinted early for the bus grind and
-#     tied to the computed log; pull matches by pairing, count is padded to
-#     it), the committed size m, each
+#     (the ONE bus depth, computed from the derived block kappas; pull
+#     matches by pairing, count is padded to it), the committed size m, each
 #     block's kappa, its padding delta (g^(2^kappa)/g^real, pinned by
 #     g^real * g^delta == g^(2^kappa)), its selector bits (the offset's bits
 #     read shifted by kappa, pinned by rebuilding g^offset), the selector
@@ -940,6 +939,18 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
     kappa_base[GEN ** 1] = g_log_mem
     for t in unroll(0, N_TABLES):
         kappa_base[GEN ** (2 + t)] = dims_g[GEN ** (t + 1)]
+    # Each block's kappa DERIVES from its structural source (baked per block:
+    # the boundary consts, log_mem, the bytecode log, or tau_t) as a
+    # compile-time offset off a certified log — no hint, nothing left free.
+    block_kappa = HeapBuf(N_BLOCKS)
+    for b in unroll(0, N_BLOCKS):
+        block_kappa[GEN ** b] = kappa_base[GEN ** BLOCK_KAPPA_SRC[b]] * GEN ** BLOCK_KAPPA_ADJ[b]
+    # The ONE bus depth, COMPUTED (not hinted): mu = log2_ceil(Σ_b 2^κ_b) over
+    # PUSH's blocks — pull matches by pairing, the count tree is padded to it.
+    push_total = GEN ** 0
+    for b in unroll(SIDE_BLOCK_START[PUSH_SIDE], SIDE_BLOCK_START[PUSH_SIDE + 1]):
+        push_total *= g_squares[block_kappa[GEN ** b]]  # g^(sum of 2^kappa)
+    g_bus_mu = log2_ceil_in_the_exponent(push_total, g_logs_pow2, g_squares, 0, SIZE_BITS)
 
     # ---- commitment root (2 words), kept for the opening phase ----
     commit_root_0 = cursor[GEN ** 0]
@@ -954,12 +965,8 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
     nonce = cursor[GEN ** 0]
     cursor *= GEN
     # Bus grind bits = push.mu - 7 (= SECURITY + push.mu + 1 - 128; see
-    # leaf::grand_product_grinding_bits). There is ONE bus depth: pull matches
-    # push (paired blocks) and count is padded to it, so g^mu is a single hint,
-    # tied to the block structure at the mus cert below.
-    bus_mu_hint = StackBuf(1)
-    hint_witness(bus_mu_hint[0:1], "annmus_push")
-    g_bus_mu = bus_mu_hint[0]
+    # leaf::grand_product_grinding_bits), with g_bus_mu computed above from the
+    # derived block kappas.
     bus_grind_window = g_bus_mu * GINV ** BUS_GRIND_SHIFT  # g^(push.mu - shift): the bus PoW bit count
     grind_check(fs[0], fs[1], nonce, bus_grind_window)
     fs = absorb(fs, nonce, DS_POW)
@@ -1092,29 +1099,14 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
     # ---- count root nonzero ----
     assert gkr_roots[COUNT_SIDE] != 0  # count-tree root nonzero: no read count self-cancels
 
-    # ---- per-block shape data (derived / advice-decomposed, then CERTIFIED) ----
-    # kappa derives from its structural source; the side depth mu and the
-    # selector length g^(mu-kappa) are certified below. The padding-surplus and
+    # ---- per-block shape data ----
+    # kappa and the bus depth were derived above; the padding-surplus and
     # selector bits are advice-decomposed at their use sites (balance and
     # decompose sections) and pinned there — never left to a single aggregate
     # identity, which does not bind a high-entropy hint in this smooth field.
     idxc_tab = HeapBuf(SIZE_BITS)
     for t in unroll(0, SIZE_BITS):
         idxc_tab[GEN ** t] = INDEX_MLE_FACTORS[t]
-    # Each block's kappa is DERIVED from its structural source (baked per block:
-    # the boundary consts, log_mem, the bytecode log, or tau_t) as a compile-time
-    # offset off an already-certified log — no hint, nothing left free.
-    block_kappa = HeapBuf(N_BLOCKS)
-    for b in unroll(0, N_BLOCKS):
-        block_kappa[GEN ** b] = kappa_base[GEN ** BLOCK_KAPPA_SRC[b]] * GEN ** BLOCK_KAPPA_ADJ[b]
-    # The ONE bus depth: mu = log2_ceil(Σ_b 2^κ_b) over PUSH's blocks (pull
-    # matches by pairing; the count tree is padded to this depth, so no other
-    # side needs a depth cert).
-    side_total = GEN ** 0
-    for b in unroll(SIDE_BLOCK_START[PUSH_SIDE], SIDE_BLOCK_START[PUSH_SIDE + 1]):
-        side_total *= g_squares[block_kappa[GEN ** b]]  # g^(sum of 2^kappa)
-    g_mu_check = log2_ceil_in_the_exponent(side_total, g_logs_pow2, g_squares, 0, SIZE_BITS)
-    assert g_mu_check == g_bus_mu  # tie the early-used hint to the computed log
 
     # ---- bus-leaf packing offsets (for the selector certification) ----
     # Each side's blocks tile its leaf cube; block b sits at offset_b. The
