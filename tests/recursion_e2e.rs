@@ -481,8 +481,6 @@ fn gen_verify(
     // Fixed capacities: every buffer/stride placeholder is a global cap so
     // the placeholder map is SHAPE-INDEPENDENT (the definition of generic).
     let mumax = 40usize;
-    // Push and pull share their GKR point: both sides' claims read zeta region 0.
-    let zoff = [0usize, 0, 2 * mumax];
     let taumax_cap = 33usize;
     let stream_cap = 8192usize;
     assert!(*smu.iter().max().unwrap() <= mumax && proof.stream.len() <= stream_cap);
@@ -491,13 +489,12 @@ fn gen_verify(
     let (mut sblk, mut bkappa, mut bc0, mut bcn) = (vec![0usize], vec![], vec![], vec![]);
     let (mut ct, mut cval, mut fpv) = (vec![], vec![], vec![]);
     let mut nclaims = 0usize;
-    // Claim dedup (mirrors leaf.rs): push/pull share their GKR point, so a
-    // column read by two same-kappa blocks streams/opens once. Key:
-    // (group, col, kappa), group 0 = the push/pull pair, 1 = count.
-    let mut seen_claims: std::collections::HashSet<(usize, usize, usize)> = Default::default();
+    // Claim dedup (mirrors leaf.rs): ALL three trees share their GKR point, so
+    // a column read by two same-kappa blocks streams/opens once. Key: (col, kappa).
+    let mut seen_claims: std::collections::HashSet<(usize, usize)> = Default::default();
     let mut nbcv = 0usize;
-    for (s, blocks) in sides.iter().enumerate() {
-        for (b, blk) in blocks.iter().enumerate() {
+    for (_s, blocks) in sides.iter().enumerate() {
+        for (_b, blk) in blocks.iter().enumerate() {
             bkappa.push(blk.kappa);
             bc0.push(ct.len());
             bcn.push(blk.coords.len());
@@ -505,13 +502,13 @@ fn gen_verify(
                 let (t, v, f) = match c {
                     Coord::Const(v) => (0u128, *v, *v),
                     Coord::Col(i) => {
-                        if seen_claims.insert((usize::from(s == 2), *i, blk.kappa)) {
+                        if seen_claims.insert((*i, blk.kappa)) {
                             nclaims += 1;
                         }
                         (1, F128::ZERO, l.pad[*i])
                     }
                     Coord::GCol(i) => {
-                        if seen_claims.insert((usize::from(s == 2), *i, blk.kappa)) {
+                        if seen_claims.insert((*i, blk.kappa)) {
                             nclaims += 1;
                         }
                         (2, F128::ZERO, G * l.pad[*i])
@@ -794,21 +791,21 @@ fn gen_verify(
         seln_v.push(seln);
         yt.push(sel_full >> seln);
     };
-    let mut desc_seen: std::collections::HashSet<(usize, usize, usize)> = Default::default();
+    let mut desc_seen: std::collections::HashSet<(usize, usize)> = Default::default();
     for (s, blocks) in sides.iter().enumerate() {
         for blk in blocks.iter() {
             for c in &blk.coords {
                 if let Coord::Col(i) | Coord::GCol(i) = c {
-                    if !desc_seen.insert((usize::from(s == 2), *i, blk.kappa)) {
+                    if !desc_seen.insert((*i, blk.kappa)) {
                         continue; // deduped: pooled once at its first occurrence
                     }
                     if valcols.contains(i) {
                         let slot_i = leanvm_b::blake3_flock::SLOTS[valcols.iter().position(|v| v == i).unwrap()];
                         let nvt = 7 + blk.kappa;
-                        push_desc(3, zoff[s], blk.kappa, slot_i, qpkd_pl.offset >> nvt, nvt);
+                        push_desc(3, 0, blk.kappa, slot_i, qpkd_pl.offset >> nvt, nvt);
                     } else {
                         let pl = l.placements[*i];
-                        push_desc(0, zoff[s], blk.kappa, 0, pl.offset >> blk.kappa, blk.kappa);
+                        push_desc(0, 0, blk.kappa, 0, pl.offset >> blk.kappa, blk.kappa);
                     }
                 }
             }
@@ -840,7 +837,7 @@ fn gen_verify(
     }
     for &pslot in leanvm_b::blake3_flock::PIN_SLOTS.iter() {
         let nvt = 7 + pin_kappa;
-        push_desc(3, zoff[pin_side], pin_kappa, pslot, qpkd_pl.offset >> nvt, nvt);
+        push_desc(3, 0, pin_kappa, pslot, qpkd_pl.offset >> nvt, nvt);
     }
     assert_eq!(cpbuf.len(), ncl, "descriptor count == pool size");
     let rssel_full = qpkd_pl.offset >> qpkdv;
@@ -912,7 +909,6 @@ fn gen_verify(
         ("level_roots_1".to_string(), rootb),
         ("fold_nonces".to_string(), fnv),
         ("annmus_push".to_string(), vec![g_pow(smu[0])]),
-        ("annmus_count".to_string(), vec![g_pow(smu[2])]),
         ("claim_low_len".to_string(), (0..ncl).map(|j| g_pow(cplen[j] - nover_v[j])).collect()),
         // slacks bounding each claim'"'"'s reads to the written regions (so an
         // over-long hint cannot pull free padding): low_len <= mu_s/tau_t
@@ -1054,8 +1050,6 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     let kbc = program.prog.len().trailing_zeros() as usize;
     let sides: [&[Block]; 3] = [&l.push, &l.pull, &l.count];
     let mumax = 40usize;
-    // Push and pull share their GKR point: both sides' claims read zeta region 0.
-    let zoff = [0usize, 0, 2 * mumax];
     let taumax_cap = 33usize;
     let stream_cap = 8192usize;
     let taus = l.taus;
@@ -1067,7 +1061,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     let (mut nclaims, mut nbcv, mut nblocks) = (0usize, 0usize, 0usize);
     // Claim dedup (mirrors leaf.rs): per coord, fresh = first (group, col,
     // kappa) occurrence gets the next pool slot; duplicates point at it.
-    let mut slot_of: std::collections::HashMap<(usize, usize, usize), usize> = Default::default();
+    let mut slot_of: std::collections::HashMap<(usize, usize), usize> = Default::default();
     let (mut coord_fresh, mut coord_slot) = (vec![], vec![]);
     for (side, blocks) in sides.iter().enumerate() {
         for blk in blocks.iter() {
@@ -1079,7 +1073,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
                 // indexes them by global coord offset); only Col/GCol matter.
                 let (mut fresh, mut slot) = (0usize, 0usize);
                 if let Coord::Col(i) | Coord::GCol(i) = c {
-                    let key = (usize::from(side == 2), *i, blk.kappa);
+                    let key = (*i, blk.kappa);
                     if let Some(&known) = slot_of.get(&key) {
                         slot = known;
                     } else {
@@ -1126,16 +1120,16 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     }
     let pin_side = pin_side.expect("BLAKE3 value-column claim exists");
     let (mut cpbuf, mut cpoff) = (vec![], vec![]);
-    let mut desc_seen: std::collections::HashSet<(usize, usize, usize)> = Default::default();
-    for (s, blocks) in sides.iter().enumerate() {
+    let mut desc_seen: std::collections::HashSet<(usize, usize)> = Default::default();
+    for (_s, blocks) in sides.iter().enumerate() {
         for blk in blocks.iter() {
             for c in &blk.coords {
                 if let Coord::Col(i) | Coord::GCol(i) = c {
-                    if !desc_seen.insert((usize::from(s == 2), *i, blk.kappa)) {
+                    if !desc_seen.insert((*i, blk.kappa)) {
                         continue; // deduped: pooled once at its first occurrence
                     }
                     cpbuf.push(if valcols.contains(i) { 3 } else { 0 });
-                    cpoff.push(zoff[s]);
+                    cpoff.push(0); // the ONE shared zeta lives at region 0
                 }
             }
         }
@@ -1148,7 +1142,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         }
     }
     cpbuf.push(2); cpoff.push(0); // PI claim on MEM
-    for _ in leanvm_b::blake3_flock::PIN_SLOTS.iter() { cpbuf.push(3); cpoff.push(zoff[pin_side]); }
+    for _ in leanvm_b::blake3_flock::PIN_SLOTS.iter() { cpbuf.push(3); cpoff.push(0); }
     assert_eq!(cpbuf.len(), ncl, "descriptor count == pool size");
 
     // ---- the placeholder map ----
@@ -1169,7 +1163,6 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("ILD0", u(G.inv()).to_string());
     ps("ILD1", u((F128::ONE + G).inv()).to_string());
     ps("ILD2", u((G * (F128::ONE + G)).inv()).to_string());
-    ps("ZOFF", ints(&zoff));
     ps("MU_CAP", mumax.to_string());
     ps("GKR_ROUNDS_CAP", (mumax * (mumax + 1) / 2 + mumax + 2).to_string());
     ps("GKR_POINTS_CAP", ((mumax + 1) * mumax).to_string());
@@ -1206,7 +1199,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("BUS_GRIND_SHIFT", (127 - leanvm_b::SECURITY_BITS).to_string());
     // Per-claim y-slot hint stride (overlap mask / slot bit rows).
     ps("YR_SLOT_STRIDE", "8".to_string());
-    ps("PIN_ZETA_OFF", zoff[pin_side].to_string());
+    ps("PIN_ZETA_OFF", "0".to_string());
     let pinv: Vec<u128> = leanvm_b::blake3_flock::pin_constants().iter().map(|&v| u(v)).collect();
     ps("PIN_VALUES", us(&pinv));
     ps("R1CSLBL", u(word16(b"flock-r1cs-v0", 0)).to_string());
