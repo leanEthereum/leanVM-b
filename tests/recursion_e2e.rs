@@ -1178,9 +1178,9 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         sd0_tab[n] = u(word16(&d, 0));
         sd1_tab[n] = u(word16(&d, 16));
     }
-    ps("SD0_TAB", us(&sd0_tab));
-    ps("SD1_TAB", us(&sd1_tab));
-    ps("B3TABLEN", (MAXB3 + 1).to_string());
+    ps("STATEMENT_DIGEST_TAB_0", us(&sd0_tab));
+    ps("STATEMENT_DIGEST_TAB_1", us(&sd1_tab));
+    ps("STATEMENT_DIGEST_TAB_LEN", (MAXB3 + 1).to_string());
     ps("ZCLBLA", u(word16(b"flock-zerocheck-v0", 0)).to_string());
     ps("ZCLBLB", u(word16(b"flock-zerocheck-v0", 16)).to_string());
     ps("LCLBLA", u(word16(b"flock-lincheck-v0", 0)).to_string());

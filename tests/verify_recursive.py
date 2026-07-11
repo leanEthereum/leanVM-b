@@ -179,9 +179,9 @@ R1CSLBL = R1CSLBL_PLACEHOLDER
 # The flock r1cs statement digest, per candidate BLAKE3 log-instance-count
 # (it hashes the matrices, whose size scales with the instance count): the
 # guest reads row tau_5.
-SD0_TAB = SD0_TAB_PLACEHOLDER
-SD1_TAB = SD1_TAB_PLACEHOLDER
-B3TABLEN = B3TABLEN_PLACEHOLDER
+STATEMENT_DIGEST_TAB_0 = STATEMENT_DIGEST_TAB_0_PLACEHOLDER
+STATEMENT_DIGEST_TAB_1 = STATEMENT_DIGEST_TAB_1_PLACEHOLDER
+STATEMENT_DIGEST_TAB_LEN = STATEMENT_DIGEST_TAB_LEN_PLACEHOLDER
 ZCLBLA = ZCLBLA_PLACEHOLDER
 ZCLBLB = ZCLBLB_PLACEHOLDER
 LCLBLA = LCLBLA_PLACEHOLDER
@@ -939,11 +939,12 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs_pow2, g_squares, def
     # g^count_t (for the padding-surplus certification) and the count's bits.
     count_gpows = HeapBuf(N_TABLES)
     for t in unroll(0, N_TABLES):
-        g_tau, g_count, count5_bits = log2_ceil_word(sizes[t + 1], g_logs_pow2, g_squares, FLOORS[t], COUNT_BITS)
+        g_tau, g_count, count_bits = log2_ceil_word(sizes[t + 1], g_logs_pow2, g_squares, FLOORS[t], COUNT_BITS)
         dims_g[GEN ** (t + 1)] = g_tau
         count_gpows[GEN ** t] = g_count
-    # count5_bits keeps the LAST iteration's (table 5 = BLAKE3) count bits for
-    # the BLAKE3 constant-pin claim below.
+    # count_bits now holds the LAST iteration's (TABLE_BLAKE3's) count bits;
+    # name them for the BLAKE3 constant-pin claim below.
+    blake3_count_bits = count_bits
     # kappa_base maps a kappa source index to its certified announced log
     # (source 0 = const via the baked adj); the taus are now in dims_g.
     kappa_base = HeapBuf(N_TABLES + 2)
@@ -1431,44 +1432,45 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs_pow2, g_squares, def
     # z_k for bit b_k maps P -> (1+z)(b + (1+b)P) + z*b*P (b = 1 fills the
     # z_k = 0 half with the all-ones MLE 1); the top bit (count == 2^tau_5
     # exactly) forces the all-ones MLE.
-    bits5 = count5_bits  # table 5's count bits, from the count gadget above
+
     zeta_pin = zeta * GEN ** PIN_ZETA_OFF
-    tau5_g = dims_g[GEN ** N_TABLES]  # the last table's tau (BLAKE3)
-    # tau_5 indexes the baked per-candidate SD tables (B3TABLEN rows) and drives
-    # the flock loops (R1CS_M_CAP / QPKD_VARS_CAP buffers). The count gadget only
-    # bounds it < 34; pin it under the baked extent so it cannot over-read SD0/SD1
-    # into free cells (B3TABLEN <= R1CS_M_CAP - K_LOG, so this covers them all).
-    assert log(tau5_g) < B3TABLEN
+    tau_blake3_g = dims_g[GEN ** N_TABLES]  # the BLAKE3 table's certified tau
+    # The BLAKE3 tau indexes the baked per-candidate statement-digest tables
+    # (STATEMENT_DIGEST_TAB_LEN rows) and drives the flock loops (R1CS_M_CAP / QPKD_VARS_CAP
+    # buffers). The count gadget only bounds it < 34; pin it under the baked
+    # extent so it cannot over-read the digest tables into free cells (STATEMENT_DIGEST_TAB_LEN <=
+    # R1CS_M_CAP - K_LOG, so this covers them all).
+    assert log(tau_blake3_g) < STATEMENT_DIGEST_TAB_LEN
     pin_chain = HeapBuf(SIZE_BITS + 1)
     pin_chain[GEN ** 0] = 0
-    for xk in mul_range(1, tau5_g):
+    for xk in mul_range(1, tau_blake3_g):
         pv = pin_chain[xk]
-        bk = bits5[xk]
+        bk = blake3_count_bits[xk]
         zk = zeta_pin[xk]
         pn = (1 + zk) * (bk + (1 + bk) * pv) + zk * bk * pv
         pin_chain[xk * GEN] = pn
-    b_top = bits5[tau5_g]
-    prefix = b_top + (1 + b_top) * pin_chain[tau5_g]
+    b_top = blake3_count_bits[tau_blake3_g]
+    prefix = b_top + (1 + b_top) * pin_chain[tau_blake3_g]
     for pk in unroll(0, len(PIN_VALUES)):
         claim_pool[GEN ** claim_idx] = PIN_VALUES[pk] * prefix
-        claim_cplen_g[GEN ** claim_idx] = tau5_g  # cplen = tau_5 (BLAKE3 value-col kappa)
+        claim_cplen_g[GEN ** claim_idx] = tau_blake3_g  # cplen = the BLAKE3 value-col kappa
         claim_idx += 1
 
     # ---- flock reduction: bind_statement ----
     # The statement digest is selected by the certified tau_5 (BLAKE3
-    # log-instance-count): read row tau5_g of the baked per-candidate tables.
-    sd0_tab = HeapBuf(B3TABLEN)
-    sd1_tab = HeapBuf(B3TABLEN)
-    for n in unroll(0, B3TABLEN):
-        sd0_tab[GEN ** n] = SD0_TAB[n]
-        sd1_tab[GEN ** n] = SD1_TAB[n]
-    sd0 = sd0_tab[tau5_g]
-    sd1 = sd1_tab[tau5_g]
+    # log-instance-count): read that row of the baked per-candidate tables.
+    statement_digest_tab_0 = HeapBuf(STATEMENT_DIGEST_TAB_LEN)
+    statement_digest_tab_1 = HeapBuf(STATEMENT_DIGEST_TAB_LEN)
+    for n in unroll(0, STATEMENT_DIGEST_TAB_LEN):
+        statement_digest_tab_0[GEN ** n] = STATEMENT_DIGEST_TAB_0[n]
+        statement_digest_tab_1[GEN ** n] = STATEMENT_DIGEST_TAB_1[n]
+    statement_digest_0 = statement_digest_tab_0[tau_blake3_g]
+    statement_digest_1 = statement_digest_tab_1[tau_blake3_g]
     fs = absorb(fs, 13, DS_LEN)
     fs = absorb(fs, R1CSLBL, DS_BYTE)
     fs = absorb(fs, 32, DS_LEN)
-    fs = absorb(fs, sd0, DS_BYTE)
-    fs = absorb(fs, sd1, DS_BYTE)
+    fs = absorb(fs, statement_digest_0, DS_BYTE)
+    fs = absorb(fs, statement_digest_1, DS_BYTE)
     fs = absorb(fs, 32, DS_LEN)
     fs = absorb(fs, commit_root_0, DS_BYTE)
     fs = absorb(fs, commit_root_1, DS_BYTE)
@@ -1492,7 +1494,7 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs_pow2, g_squares, def
     for i in unroll(0, N_INNER_ROUNDS):
         zerocheck_r[GEN ** (K_SKIP + i)] = INNER7[i]
     # outer samples at runtime count: R1CS_M_CAP = K_LOG + tau_5 (certified).
-    mr1cs_g = tau5_g * GEN ** K_LOG
+    mr1cs_g = tau_blake3_g * GEN ** K_LOG
     flock_point_fs0 = HeapBuf(R1CS_M_CAP + 2)
     flock_point_fs1 = HeapBuf(R1CS_M_CAP + 2)
     flock_point_fs0[GEN ** (K_SKIP + N_INNER_ROUNDS)] = fs[0]
@@ -1546,7 +1548,7 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs_pow2, g_squares, def
         zerocheck_rhos[GEN ** i] = rho_v
         zc_running = gamma_ab * (1 + rho_v) + gamma_c * rho_v + g_inf * rho_v * (1 + rho_v)
     # rounds N_INNER_ROUNDS.. at runtime count: K_LOG + tau_5 - K_SKIP rounds total (certified).
-    nmlv_g = tau5_g * GEN ** (K_LOG - K_SKIP)
+    nmlv_g = tau_blake3_g * GEN ** (K_LOG - K_SKIP)
     flock_round_fs0 = HeapBuf(R1CS_ROUNDS_CAP + 2)
     flock_round_fs1 = HeapBuf(R1CS_ROUNDS_CAP + 2)
     flock_round_running = HeapBuf(R1CS_ROUNDS_CAP + 2)
@@ -1713,14 +1715,14 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs_pow2, g_squares, def
                 z_vals[GEN ** t] = lincheck_rs[GEN ** (LINCHECK_ROUNDS - 2 - t)]
             zv_lo = z_vals * GEN ** (LINCHECK_ROUNDS - 1)
             zr_hi = zerocheck_rhos * GEN ** LINCHECK_ROUNDS
-            for xt in mul_range(1, tau5_g):
+            for xt in mul_range(1, tau_blake3_g):
                 zv_lo[xt] = zr_hi[xt]
         else:
             # row 1 lives at the CAPACITY stride (QPKD_VARS_CAP); its length is the
             # runtime qpkdv.
             zv_hi = z_vals * GEN ** QPKD_VARS_CAP
             zcr7 = zerocheck_r * GEN ** (K_SKIP + 1)
-            for xt in mul_range(1, tau5_g * GEN ** (K_LOG - LOG2_FIELD_BITS)):
+            for xt in mul_range(1, tau_blake3_g * GEN ** (K_LOG - LOG2_FIELD_BITS)):
                 zv_hi[xt] = zcr7[xt]
     # gamma-combine the two transposed sumcheck claims (computed in-circuit).
     fs = squeeze(fs)
@@ -1856,7 +1858,7 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs_pow2, g_squares, def
     # announced log; the per-k z-power rows chain by a runtime g^qpkdv
     # stride, and the inner passes are runtime loops with product/square
     # state chained per row.
-    qpkdv_g = tau5_g * GEN ** (K_LOG - LOG2_FIELD_BITS)
+    qpkdv_g = tau_blake3_g * GEN ** (K_LOG - LOG2_FIELD_BITS)
     one_plus_q = HeapBuf(GEN ** (QPKD_VARS_CAP))
     for x_round in mul_range(1, qpkdv_g):
         one_plus_q[x_round] = 1 + fold_challenges[x_round]
