@@ -25,7 +25,7 @@
 //!     R1csClaim { ab: z-claim from lincheck,  c: z-claim from extract_c }
 //! ```
 
-use flock_core::challenger::Challenger;
+use flock_core::transcript::ProverState;
 use flock_core::field::F128;
 use flock_core::lincheck::{self, QuirkyPoint, pack_z_lincheck_from_packed};
 use flock_core::pcs::{self, Commitment, PcsParams};
@@ -57,14 +57,14 @@ pub(crate) fn quirky_x_outer_full(point: &QuirkyPoint) -> Vec<F128> {
 /// Caller responsibility: each `Some(v)` MUST equal what `fold_1b_rows` would
 /// produce on `z_packed` against the claim's suffix — see
 /// [`pcs::ring_switch::s_hat_v_from_z_vec`] for the AB-claim derivation.
-pub(crate) fn open_claims_with_precomputed<Ch: Challenger>(
+pub(crate) fn open_claims_with_precomputed(
     z_packed: &[F128],
     prover_data: &pcs::ProverData,
     commitment: &Commitment,
     claims: &[ZClaim],
     precomputed_s_hat_v: &[Option<&[F128]>],
     padding: &zerocheck::PaddingSpec,
-    challenger: &mut Ch,
+    ps: &mut ProverState,
 ) -> pcs::BatchOpeningProof {
     let x_fulls: Vec<Vec<F128>> = claims
         .iter()
@@ -78,14 +78,14 @@ pub(crate) fn open_claims_with_precomputed<Ch: Challenger>(
         &x_refs,
         precomputed_s_hat_v,
         padding,
-        challenger,
+        ps,
     )
 }
 
 /// Ligerito-backend counterpart to [`open_claims_with_precomputed`]. Same
 /// transcript shape from the caller's POV; just routes through Ligerito
 /// instead of BaseFold at the final PCS step.
-pub(crate) fn open_claims_with_precomputed_ligerito<Ch: Challenger>(
+pub(crate) fn open_claims_with_precomputed_ligerito(
     z_packed: Vec<F128>,
     prover_data: &pcs::ProverData,
     commitment: &Commitment,
@@ -93,7 +93,7 @@ pub(crate) fn open_claims_with_precomputed_ligerito<Ch: Challenger>(
     precomputed_s_hat_v: &[Option<&[F128]>],
     padding: &zerocheck::PaddingSpec,
     lig_config: &pcs::ligerito::ProverConfig,
-    challenger: &mut Ch,
+    ps: &mut ProverState,
 ) -> pcs::BatchOpeningProofLigerito {
     let x_fulls: Vec<Vec<F128>> = claims
         .iter()
@@ -109,7 +109,7 @@ pub(crate) fn open_claims_with_precomputed_ligerito<Ch: Challenger>(
         &[],
         padding,
         lig_config,
-        challenger,
+        ps,
     )
 }
 
@@ -122,11 +122,11 @@ pub(crate) fn open_claims_with_precomputed_ligerito<Ch: Challenger>(
 ///
 /// Returns the proof bundle, the witness commitment, and the two claims (which
 /// the verifier needs to know to check the openings).
-pub fn prove<Ch: Challenger>(
+pub fn prove(
     r1cs: &BlockR1cs,
     z_packed: &[F128],
     pcs_params: &PcsParams,
-    challenger: &mut Ch,
+    ps: &mut ProverState,
 ) -> (R1csProof, Commitment, R1csClaim) {
     assert_eq!(
         r1cs.layout,
@@ -143,7 +143,7 @@ pub fn prove<Ch: Challenger>(
     let (commitment, prover_data) = pcs::commit(z_packed, pcs_params);
 
     // ---- Bind FS transcript to the statement (R1CS instance + commitment).
-    bind_statement(challenger, r1cs, &commitment);
+    bind_statement(ps.sponge_mut(), r1cs, &commitment);
 
     // ---- Compute a = A·z, b = B·z in packed form. For the circuit-R1CS
     // convention C = I (every production instance), c = C·z = z — alias it
@@ -177,7 +177,7 @@ pub fn prove<Ch: Challenger>(
     // ---- Zerocheck.
     let padding = r1cs.padding_spec();
     let (zc_proof, zc_claim, s_hat_v_c) = zerocheck::prove_packed_padded_capture_s_hat_v_c(
-        a_packed, b_packed, c_packed, r1cs.m, &padding, challenger,
+        a_packed, b_packed, c_packed, r1cs.m, &padding, ps,
     );
 
     // ---- Translate zerocheck output → lincheck input.
@@ -200,7 +200,7 @@ pub fn prove<Ch: Challenger>(
         r1cs.useful_bits,
         lc_circuit,
         &x_ab,
-        challenger,
+        ps,
     );
 
     // ---- Build the two z-claims for the PCS.
@@ -235,7 +235,7 @@ pub fn prove<Ch: Challenger>(
         &[ab.clone(), c.clone()],
         &[pre_ab, pre_c],
         &padding,
-        challenger,
+        ps,
     );
 
     let proof = R1csProof {
@@ -250,11 +250,11 @@ pub fn prove<Ch: Challenger>(
 /// Ligerito-backend mirror of [`prove`]. Drop-in replacement returning
 /// `R1csProofLigerito` instead of `R1csProof`. Same FS protocol upstream
 /// (commit, zerocheck, lincheck); only the final PCS step differs.
-pub fn prove_ligerito<Ch: Challenger>(
+pub fn prove_ligerito(
     r1cs: &BlockR1cs,
     z_packed: Vec<F128>,
     pcs_params: &PcsParams,
-    challenger: &mut Ch,
+    ps: &mut ProverState,
 ) -> (R1csProofLigerito, Commitment, R1csClaim) {
     assert_eq!(
         r1cs.layout,
@@ -272,7 +272,7 @@ pub fn prove_ligerito<Ch: Challenger>(
             .expect("Ligerito default config; bump m or use prove (BaseFold) for tiny instances");
 
     let (commitment, prover_data) = pcs::commit(&z_packed, pcs_params);
-    bind_statement(challenger, r1cs, &commitment);
+    bind_statement(ps.sponge_mut(), r1cs, &commitment);
 
     // a = A·z, b = B·z; for the C = I convention c aliases z (see prove()).
     let a_packed_f128 = r1cs.apply_a_packed(&z_packed);
@@ -296,7 +296,7 @@ pub fn prove_ligerito<Ch: Challenger>(
 
     let padding = r1cs.padding_spec();
     let (zc_proof, zc_claim, s_hat_v_c) = zerocheck::prove_packed_padded_capture_s_hat_v_c(
-        a_packed, b_packed, c_packed, r1cs.m, &padding, challenger,
+        a_packed, b_packed, c_packed, r1cs.m, &padding, ps,
     );
 
     let x_ab = r1cs.x_ab_from_mlv(zc_claim.z, &zc_claim.mlv_challenges);
@@ -311,7 +311,7 @@ pub fn prove_ligerito<Ch: Challenger>(
         r1cs.useful_bits,
         &lc_circuit,
         &x_ab,
-        challenger,
+        ps,
     );
 
     let ab = ZClaim {
@@ -341,7 +341,7 @@ pub fn prove_ligerito<Ch: Challenger>(
         &[pre_ab, pre_c],
         &padding,
         &lig_config,
-        challenger,
+        ps,
     );
 
     let proof = R1csProofLigerito {
@@ -358,7 +358,7 @@ pub fn prove_ligerito<Ch: Challenger>(
 /// `generate_witness_with_ab_packed_and_lincheck` and runs commit → zerocheck
 /// → lincheck → PCS-open. Uses the c-aliasing trick (`C = I` → `c == z`
 /// byte-for-byte).
-pub fn prove_fast_from_witness<Ch: Challenger>(
+pub fn prove_fast_from_witness(
     r1cs: &BlockR1cs,
     pcs_params: &PcsParams,
     z_packed: Vec<F128>,
@@ -366,7 +366,7 @@ pub fn prove_fast_from_witness<Ch: Challenger>(
     b_packed_f128: Vec<F128>,
     z_packed_lincheck: Vec<u8>,
     lincheck_circuit: &dyn lincheck::LincheckCircuit,
-    challenger: &mut Ch,
+    ps: &mut ProverState,
 ) -> (R1csProof, Commitment, R1csClaim) {
     let core = prove_fast_core(
         r1cs,
@@ -376,7 +376,7 @@ pub fn prove_fast_from_witness<Ch: Challenger>(
         b_packed_f128,
         z_packed_lincheck,
         lincheck_circuit,
-        challenger,
+        ps,
     );
 
     // ---- Single batched PCS open over the two base claims. AB-claim's
@@ -392,7 +392,7 @@ pub fn prove_fast_from_witness<Ch: Challenger>(
         &[core.ab.clone(), core.c.clone()],
         &[pre_ab, pre_c],
         &padding,
-        challenger,
+        ps,
     );
 
     let proof = R1csProof {
@@ -411,7 +411,7 @@ pub fn prove_fast_from_witness<Ch: Challenger>(
 
 /// Ligerito-backend mirror of [`prove_fast_from_witness`]. Used by per-hash
 /// modules' `prove_fast_ligerito` methods.
-pub fn prove_fast_ligerito_from_witness<Ch: Challenger>(
+pub fn prove_fast_ligerito_from_witness(
     r1cs: &BlockR1cs,
     pcs_params: &PcsParams,
     z_packed: Vec<F128>,
@@ -420,7 +420,7 @@ pub fn prove_fast_ligerito_from_witness<Ch: Challenger>(
     z_packed_lincheck: Vec<u8>,
     lincheck_circuit: &dyn lincheck::LincheckCircuit,
     prefaulted_codeword: Option<Vec<F128>>,
-    challenger: &mut Ch,
+    ps: &mut ProverState,
 ) -> (R1csProofLigerito, Commitment, R1csClaim) {
     let log_n = r1cs.m - pcs::LOG_PACKING;
     let lig_config =
@@ -448,7 +448,7 @@ pub fn prove_fast_ligerito_from_witness<Ch: Challenger>(
         z_packed_lincheck,
         lincheck_circuit,
         prefaulted_codeword,
-        challenger,
+        ps,
     );
 
     let padding = r1cs.padding_spec();
@@ -462,7 +462,7 @@ pub fn prove_fast_ligerito_from_witness<Ch: Challenger>(
         &[pre_ab, pre_c],
         &padding,
         &lig_config,
-        challenger,
+        ps,
     );
 
     let proof = R1csProofLigerito {
@@ -507,7 +507,7 @@ pub struct ProveCore {
 
 /// Run commit → bind → zerocheck → lincheck and build the base claims, stopping
 /// just before the PCS open. See [`ProveCore`].
-pub fn prove_fast_core<Ch: Challenger>(
+pub fn prove_fast_core(
     r1cs: &BlockR1cs,
     pcs_params: &PcsParams,
     z_packed: Vec<F128>,
@@ -515,7 +515,7 @@ pub fn prove_fast_core<Ch: Challenger>(
     b_packed_f128: Vec<F128>,
     z_packed_lincheck: Vec<u8>,
     lincheck_circuit: &dyn lincheck::LincheckCircuit,
-    challenger: &mut Ch,
+    ps: &mut ProverState,
 ) -> ProveCore {
     prove_fast_core_with_codeword(
         r1cs,
@@ -526,7 +526,7 @@ pub fn prove_fast_core<Ch: Challenger>(
         z_packed_lincheck,
         lincheck_circuit,
         None,
-        challenger,
+        ps,
     )
 }
 
@@ -536,7 +536,7 @@ pub fn prove_fast_core<Ch: Challenger>(
 /// overlapped with witness generation. When `None`, behaves exactly like
 /// [`prove_fast_core`] (commit allocates inline).
 #[allow(clippy::too_many_arguments)]
-pub fn prove_fast_core_with_codeword<Ch: Challenger>(
+pub fn prove_fast_core_with_codeword(
     r1cs: &BlockR1cs,
     pcs_params: &PcsParams,
     z_packed: Vec<F128>,
@@ -545,13 +545,13 @@ pub fn prove_fast_core_with_codeword<Ch: Challenger>(
     z_packed_lincheck: Vec<u8>,
     lincheck_circuit: &dyn lincheck::LincheckCircuit,
     prefaulted_codeword: Option<Vec<F128>>,
-    challenger: &mut Ch,
+    ps: &mut ProverState,
 ) -> ProveCore {
     let (commitment, prover_data) = match prefaulted_codeword {
         Some(buf) => pcs::commit_into(&z_packed, pcs_params, buf),
         None => pcs::commit(&z_packed, pcs_params),
     };
-    bind_statement(challenger, r1cs, &commitment);
+    bind_statement(ps.sponge_mut(), r1cs, &commitment);
 
     let padding = r1cs.padding_spec();
     let (zc_proof, zc_claim, s_hat_v_c) = {
@@ -575,7 +575,7 @@ pub fn prove_fast_core_with_codeword<Ch: Challenger>(
             )
         };
         zerocheck::prove_packed_padded_capture_s_hat_v_c(
-            a_packed, b_packed, c_packed, r1cs.m, &padding, challenger,
+            a_packed, b_packed, c_packed, r1cs.m, &padding, ps,
         )
     };
     // Nothing downstream reads a/b (zerocheck consumed them in rounds 1–2);
@@ -596,7 +596,7 @@ pub fn prove_fast_core_with_codeword<Ch: Challenger>(
         r1cs.useful_bits,
         lincheck_circuit,
         &x_ab,
-        challenger,
+        ps,
     );
     // The lincheck stripe copy of z is dead from here on; free it before the
     // PCS open (2^(m-3) bytes — 64 MB at m = 29).
@@ -659,7 +659,7 @@ pub struct ProvePhaseTimings {
 /// recursive opening --- not a BaseFold-style reconstruction. Kept in lockstep
 /// with `prove_fast_ligerito_from_witness`; benchmark-only.
 #[allow(clippy::too_many_arguments)]
-pub fn prove_fast_ligerito_timed<Ch: Challenger>(
+pub fn prove_fast_ligerito_timed(
     r1cs: &BlockR1cs,
     pcs_params: &PcsParams,
     z_packed: Vec<F128>,
@@ -668,7 +668,7 @@ pub fn prove_fast_ligerito_timed<Ch: Challenger>(
     z_packed_lincheck: Vec<u8>,
     lincheck_circuit: &dyn lincheck::LincheckCircuit,
     prefaulted_codeword: Option<Vec<F128>>,
-    challenger: &mut Ch,
+    ps: &mut ProverState,
 ) -> (R1csProofLigerito, Commitment, R1csClaim, ProvePhaseTimings) {
     use std::time::Instant;
     let mut t = ProvePhaseTimings::default();
@@ -687,7 +687,7 @@ pub fn prove_fast_ligerito_timed<Ch: Challenger>(
         None => pcs::commit(&z_packed, pcs_params),
     };
     t.commit_s = t0.elapsed().as_secs_f64();
-    bind_statement(challenger, r1cs, &commitment);
+    bind_statement(ps.sponge_mut(), r1cs, &commitment);
 
     let padding = r1cs.padding_spec();
 
@@ -713,7 +713,7 @@ pub fn prove_fast_ligerito_timed<Ch: Challenger>(
             )
         };
         zerocheck::prove_packed_padded_capture_s_hat_v_c(
-            a_packed, b_packed, c_packed, r1cs.m, &padding, challenger,
+            a_packed, b_packed, c_packed, r1cs.m, &padding, ps,
         )
     };
     t.zerocheck_s = t0.elapsed().as_secs_f64();
@@ -732,7 +732,7 @@ pub fn prove_fast_ligerito_timed<Ch: Challenger>(
         r1cs.useful_bits,
         lincheck_circuit,
         &x_ab,
-        challenger,
+        ps,
     );
     drop(z_packed_lincheck);
     let ab = ZClaim {
@@ -765,7 +765,7 @@ pub fn prove_fast_ligerito_timed<Ch: Challenger>(
         &[pre_ab, pre_c],
         &padding,
         &lig_config,
-        challenger,
+        ps,
     );
     t.open_s = t0.elapsed().as_secs_f64();
 

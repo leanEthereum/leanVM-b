@@ -16,7 +16,7 @@
 //! is tested on honest witnesses; verify also rejects byte-mutated proofs and
 //! shape-corrupted ones.
 
-use crate::challenger::Challenger;
+use crate::transcript::{ProverState, VerifierState};
 use crate::field::{F8, F128};
 use crate::ntt::{AdditiveNttGf8, InvNttTableByteSingleGf8};
 use serde::{Deserialize, Serialize};
@@ -151,20 +151,20 @@ pub enum VerifyError {
 /// Prove that `a(y) · b(y) ⊕ c(y) = 0` for all `y ∈ {0,1}^m`.
 ///
 /// Inputs are LSB-first bit-packed byte vectors (each of length `2^m / 8`).
-/// `m ≥ K_SKIP + N_INNER` (= 13). `challenger` supplies all verifier
-/// randomness; the prover absorbs each of its messages into the challenger
+/// `m ≥ K_SKIP + N_INNER` (= 13). `sponge` supplies all verifier
+/// randomness; the prover absorbs each of its messages into the sponge
 /// before sampling the next challenge so the verifier (using the same
-/// challenger implementation in lockstep) derives identical challenges.
+/// sponge implementation in lockstep) derives identical challenges.
 ///
 /// Returns:
 ///   - the [`ZerocheckProof`] (raw round messages), and
 ///   - the [`ZerocheckClaim`] the higher-level caller will pass to its PCS.
-pub fn prove_packed<C: Challenger>(
+pub fn prove_packed(
     a_packed: &[u8],
     b_packed: &[u8],
     c_packed: &[u8],
     m: usize,
-    challenger: &mut C,
+    ps: &mut ProverState,
 ) -> (ZerocheckProof, ZerocheckClaim) {
     prove_packed_padded(
         a_packed,
@@ -172,7 +172,7 @@ pub fn prove_packed<C: Challenger>(
         c_packed,
         m,
         &PaddingSpec::dense(m),
-        challenger,
+        ps,
     )
 }
 
@@ -180,16 +180,16 @@ pub fn prove_packed<C: Challenger>(
 /// pattern so URM can skip work for chunks that fall entirely in the zero
 /// padding of every block. Output is byte-identical to the dense path when
 /// the padding bits are honestly zero.
-pub fn prove_packed_padded<C: Challenger>(
+pub fn prove_packed_padded(
     a_packed: &[u8],
     b_packed: &[u8],
     c_packed: &[u8],
     m: usize,
     padding: &PaddingSpec,
-    challenger: &mut C,
+    ps: &mut ProverState,
 ) -> (ZerocheckProof, ZerocheckClaim) {
     let (proof, claim, _) =
-        prove_packed_padded_inner(a_packed, b_packed, c_packed, m, padding, false, challenger);
+        prove_packed_padded_inner(a_packed, b_packed, c_packed, m, padding, false, ps);
     (proof, claim)
 }
 
@@ -200,16 +200,16 @@ pub fn prove_packed_padded<C: Challenger>(
 ///
 /// Wire output `(ZerocheckProof, ZerocheckClaim)` is byte-identical to
 /// [`prove_packed_padded`].
-pub fn prove_packed_padded_capture_s_hat_v_c<C: Challenger>(
+pub fn prove_packed_padded_capture_s_hat_v_c(
     a_packed: &[u8],
     b_packed: &[u8],
     c_packed: &[u8],
     m: usize,
     padding: &PaddingSpec,
-    challenger: &mut C,
+    ps: &mut ProverState,
 ) -> (ZerocheckProof, ZerocheckClaim, Vec<F128>) {
     let (proof, claim, captured) =
-        prove_packed_padded_inner(a_packed, b_packed, c_packed, m, padding, true, challenger);
+        prove_packed_padded_inner(a_packed, b_packed, c_packed, m, padding, true, ps);
     (
         proof,
         claim,
@@ -218,14 +218,14 @@ pub fn prove_packed_padded_capture_s_hat_v_c<C: Challenger>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn prove_packed_padded_inner<C: Challenger>(
+fn prove_packed_padded_inner(
     a_packed: &[u8],
     b_packed: &[u8],
     c_packed: &[u8],
     m: usize,
     padding: &PaddingSpec,
     capture_s_hat_v_c: bool,
-    challenger: &mut C,
+    ps: &mut ProverState,
 ) -> (ZerocheckProof, ZerocheckClaim, Option<Vec<F128>>) {
     let k_skip = K_SKIP;
     const N_INNER: usize = 7; // 3 small + 4 medium fixed-constant eq dims
@@ -240,7 +240,7 @@ fn prove_packed_padded_inner<C: Challenger>(
     assert_eq!(c_packed.len(), expected_bytes);
     let n_mlv = m - k_skip;
 
-    challenger.observe_label(b"flock-zerocheck-v0");
+    ps.absorb_bytes(b"flock-zerocheck-v0");
 
     // ---- 1. Sample r (with protocol-fixed constants in the inner 7 dims) ----
     //
@@ -251,8 +251,8 @@ fn prove_packed_padded_inner<C: Challenger>(
     //   r[k_skip+3..k_skip+7]       — protocol medium-eq constants β_i
     //   r[k_skip+7..m]              — sampled (the "outer" eq weights for
     //                                  the URM and multilinear rounds)
-    let r_skip = challenger.sample_f128_vec(k_skip);
-    let r_outer = challenger.sample_f128_vec(m - k_skip - N_INNER);
+    let r_skip = ps.sample_vec(k_skip);
+    let r_outer = ps.sample_vec(m - k_skip - N_INNER);
     let mut r = vec![F128::ZERO; m];
     r[..k_skip].copy_from_slice(&r_skip);
     for (i, val) in small_challenges_ghash().iter().enumerate() {
@@ -305,9 +305,9 @@ fn prove_packed_padded_inner<C: Challenger>(
     }
 
     // ---- 4. Observe round-1 message, sample z (URM fold point) ----
-    challenger.observe_f128_slice(&round1_ab);
-    challenger.observe_f128_slice(&round1_c);
-    let z = challenger.sample_f128();
+    ps.observe_scalars(&round1_ab);
+    ps.observe_scalars(&round1_c);
+    let z = ps.sample();
 
     // ---- 5. c_eval = ĉ(z, r_rest) via interpolation of round1_c at z ----
     //
@@ -347,10 +347,10 @@ fn prove_packed_padded_inner<C: Challenger>(
     let t_tail = std::time::Instant::now();
     let mut multilinear_msgs = Vec::with_capacity(n_mlv);
     multilinear_msgs.push((msg_1, msg_inf));
-    challenger.observe_f128(msg_1);
-    challenger.observe_f128(msg_inf);
+    ps.observe_scalar(msg_1);
+    ps.observe_scalar(msg_inf);
     let mut mlv_rhos: Vec<F128> = Vec::with_capacity(n_mlv);
-    mlv_rhos.push(challenger.sample_f128());
+    mlv_rhos.push(ps.sample());
 
     // ---- 7. Rounds 3..(n_mlv + 1) — AB only (c is done) ----
     //
@@ -410,9 +410,9 @@ fn prove_packed_padded_inner<C: Challenger>(
         };
 
         multilinear_msgs.push((m1, mi));
-        challenger.observe_f128(m1);
-        challenger.observe_f128(mi);
-        mlv_rhos.push(challenger.sample_f128());
+        ps.observe_scalar(m1);
+        ps.observe_scalar(mi);
+        mlv_rhos.push(ps.sample());
     }
 
     // ---- 8. Final binding at ρ_{n_mlv} (the last challenge) ----
@@ -435,8 +435,8 @@ fn prove_packed_padded_inner<C: Challenger>(
     // (the next one drawn is lincheck's α). `final_c_eval` needs no observe — the
     // verifier recomputes it from the already-absorbed `round1_c`/`z` and rejects
     // on mismatch (see `verify`), so it is already transcript-bound.
-    challenger.observe_f128(final_a_eval);
-    challenger.observe_f128(final_b_eval);
+    ps.observe_scalar(final_a_eval);
+    ps.observe_scalar(final_b_eval);
 
     // Recycle the four tail buffers (the two len-1 survivors still own their
     // full round-2 capacity) for the next phase/prove.
@@ -475,16 +475,16 @@ fn prove_packed_padded_inner<C: Challenger>(
 
 /// Verify a zerocheck proof for an instance over `{0,1}^log_n`.
 ///
-/// Walks the challenger in lockstep with the prover, samples the same
+/// Walks the sponge in lockstep with the prover, samples the same
 /// challenges, and checks every round's consistency equation.
 ///
 /// On accept: returns the [`ZerocheckClaim`] the caller must check against
 /// its PCS opening of `â`, `b̂`, `ĉ`.
 /// On reject: returns a [`VerifyError`] indicating which check failed.
-pub fn verify<C: Challenger>(
+pub fn verify(
     log_n: usize,
     proof: &ZerocheckProof,
-    challenger: &mut C,
+    vs: &mut VerifierState<'_>,
 ) -> Result<ZerocheckClaim, VerifyError> {
     let m = log_n;
     let k_skip = K_SKIP;
@@ -516,11 +516,11 @@ pub fn verify<C: Challenger>(
         });
     }
 
-    challenger.observe_label(b"flock-zerocheck-v0");
+    vs.absorb_bytes(b"flock-zerocheck-v0");
 
     // ---- Re-derive r (in lockstep with prove_packed) ----
-    let r_skip = challenger.sample_f128_vec(k_skip);
-    let r_outer = challenger.sample_f128_vec(m - k_skip - N_INNER);
+    let r_skip = vs.sample_vec(k_skip);
+    let r_outer = vs.sample_vec(m - k_skip - N_INNER);
     let mut r = vec![F128::ZERO; m];
     r[..k_skip].copy_from_slice(&r_skip);
     for (i, val) in small_challenges_ghash().iter().enumerate() {
@@ -532,9 +532,9 @@ pub fn verify<C: Challenger>(
     r[k_skip + N_INNER..].copy_from_slice(&r_outer);
 
     // ---- Observe round-1 messages, sample z ----
-    challenger.observe_f128_slice(&proof.round1_ab);
-    challenger.observe_f128_slice(&proof.round1_c);
-    let z = challenger.sample_f128();
+    vs.observe_scalars(&proof.round1_ab);
+    vs.observe_scalars(&proof.round1_c);
+    let z = vs.sample();
 
     // ---- Reconstruct ĉ(z, r_rest) from round1_c ----
     //
@@ -595,9 +595,9 @@ pub fn verify<C: Challenger>(
         let g_inf = msg_inf;
         let g0 = (c_running + r_eq * g1) * one_plus_r_eq.inv();
 
-        challenger.observe_f128(msg_1);
-        challenger.observe_f128(msg_inf);
-        let rho = challenger.sample_f128();
+        vs.observe_scalar(msg_1);
+        vs.observe_scalar(msg_inf);
+        let rho = vs.sample();
         mlv_rhos.push(rho);
 
         let one_plus_rho = F128::ONE + rho;
@@ -624,8 +624,8 @@ pub fn verify<C: Challenger>(
     // next challenge (lincheck's α) is drawn, so the α-batched reduction of
     // these two claims is sound. `final_c_eval` is already bound via the
     // recompute-and-compare above, so it is not observed.
-    challenger.observe_f128(proof.final_a_eval);
-    challenger.observe_f128(proof.final_b_eval);
+    vs.observe_scalar(proof.final_a_eval);
+    vs.observe_scalar(proof.final_b_eval);
 
     Ok(ZerocheckClaim {
         z,
@@ -640,7 +640,7 @@ pub fn verify<C: Challenger>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::challenger::FsChallenger;
+    
 
     /// SplitMix64 PRNG, deterministic.
     struct Rng(u64);
@@ -672,7 +672,7 @@ mod tests {
     ///
     /// We can't yet check the proof is *accepted* (verify is a stub), but the
     /// structural sanity here catches:
-    ///   - mismatched challenger observe/sample sequence
+    ///   - mismatched sponge observe/sample sequence
     ///   - wrong slice lengths in r / mlv_arg / r_next at any round
     ///   - any unreachable assert in the underlying functions
     #[test]
@@ -685,8 +685,8 @@ mod tests {
             let c: Vec<bool> = a.iter().zip(&b).map(|(x, y)| *x & *y).collect();
 
             let (a_p, b_p, c_p) = pack_abc(&a, &b, &c);
-            let mut challenger = FsChallenger::new(b"flock-test-v0");
-            let (proof, claim) = prove_packed(&a_p, &b_p, &c_p, m, &mut challenger);
+            let mut sponge = crate::transcript::ProverState::new(b"flock-test-v0", &[]);
+            let (proof, claim) = prove_packed(&a_p, &b_p, &c_p, m, &mut sponge);
 
             // Shape checks.
             assert_eq!(proof.round1_ab.len(), 1usize << K_SKIP, "m={m}");
@@ -713,10 +713,10 @@ mod tests {
             let c: Vec<bool> = a.iter().zip(&b).map(|(x, y)| *x & *y).collect();
 
             let (a_p, b_p, c_p) = pack_abc(&a, &b, &c);
-            let mut ch_prove = FsChallenger::new(b"flock-test-v0");
+            let mut ch_prove = crate::transcript::ProverState::new(b"flock-test-v0", &[]);
             let (proof, claim_p) = prove_packed(&a_p, &b_p, &c_p, m, &mut ch_prove);
 
-            let mut ch_verify = FsChallenger::new(b"flock-test-v0");
+            let mut ch_verify = crate::transcript::VerifierState::detached(b"flock-test-v0", &[]);
             let result = verify(m, &proof, &mut ch_verify);
             let claim_v = result.unwrap_or_else(|e| panic!("verify rejected at m={m}: {e:?}"));
 
@@ -737,7 +737,7 @@ mod tests {
 
         let (a_p, b_p, c_p) = pack_abc(&a, &b, &c);
         let _seed: u64 = 0xDEAD_BEEF;
-        let mut ch_prove = FsChallenger::new(b"flock-test-v0");
+        let mut ch_prove = crate::transcript::ProverState::new(b"flock-test-v0", &[]);
         let (proof, _) = prove_packed(&a_p, &b_p, &c_p, m, &mut ch_prove);
 
         // Each closure returns a mutated copy; verify must reject all of them.
@@ -795,7 +795,7 @@ mod tests {
 
         for (label, mutate) in mutations {
             let bad = mutate(&proof);
-            let mut ch = FsChallenger::new(b"flock-test-v0");
+            let mut ch = crate::transcript::VerifierState::detached(b"flock-test-v0", &[]);
             let result = verify(m, &bad, &mut ch);
             assert!(
                 result.is_err(),
@@ -813,13 +813,13 @@ mod tests {
         let b = rng.bits(1 << m);
         let c: Vec<bool> = a.iter().zip(&b).map(|(x, y)| *x & *y).collect();
         let (a_p, b_p, c_p) = pack_abc(&a, &b, &c);
-        let mut ch_prove = FsChallenger::new(b"flock-test-v0");
+        let mut ch_prove = crate::transcript::ProverState::new(b"flock-test-v0", &[]);
         let (proof, _) = prove_packed(&a_p, &b_p, &c_p, m, &mut ch_prove);
 
         // Truncate round1_ab.
         let mut bad = proof.clone();
         bad.round1_ab.pop();
-        let mut ch = FsChallenger::new(b"flock-test-v0");
+        let mut ch = crate::transcript::VerifierState::detached(b"flock-test-v0", &[]);
         assert!(matches!(
             verify(m, &bad, &mut ch),
             Err(VerifyError::BadRound1Length { .. })
@@ -828,14 +828,14 @@ mod tests {
         // Truncate multilinear rounds.
         let mut bad = proof.clone();
         bad.multilinear_rounds.pop();
-        let mut ch = FsChallenger::new(b"flock-test-v0");
+        let mut ch = crate::transcript::VerifierState::detached(b"flock-test-v0", &[]);
         assert!(matches!(
             verify(m, &bad, &mut ch),
             Err(VerifyError::BadMultilinearRoundsLength { .. })
         ));
 
         // log_n too small.
-        let mut ch = FsChallenger::new(b"flock-test-v0");
+        let mut ch = crate::transcript::VerifierState::detached(b"flock-test-v0", &[]);
         assert!(matches!(
             verify(K_SKIP + 6, &proof, &mut ch),
             Err(VerifyError::LogNTooSmall { .. })
@@ -856,10 +856,10 @@ mod tests {
             c[3] = !c[3];
 
             let (a_p, b_p, c_p) = pack_abc(&a, &b, &c);
-            let mut ch_prove = FsChallenger::new(b"flock-test-v0");
+            let mut ch_prove = crate::transcript::ProverState::new(b"flock-test-v0", &[]);
             let (proof, _) = prove_packed(&a_p, &b_p, &c_p, m, &mut ch_prove);
 
-            let mut ch_verify = FsChallenger::new(b"flock-test-v0");
+            let mut ch_verify = crate::transcript::VerifierState::detached(b"flock-test-v0", &[]);
             let res = verify(m, &proof, &mut ch_verify);
             assert!(
                 res.is_err(),
@@ -880,7 +880,7 @@ mod tests {
         let b = rng.bits(1 << m);
         let c: Vec<bool> = a.iter().zip(&b).map(|(x, y)| *x & *y).collect();
         let (a_p, b_p, c_p) = pack_abc(&a, &b, &c);
-        let mut ch_prove = FsChallenger::new(b"flock-test-v0");
+        let mut ch_prove = crate::transcript::ProverState::new(b"flock-test-v0", &[]);
         let (proof, _) = prove_packed(&a_p, &b_p, &c_p, m, &mut ch_prove);
 
         // For each round, flip msg_inf to a different value. Because msg_inf
@@ -889,7 +889,7 @@ mod tests {
         for idx in 0..proof.multilinear_rounds.len() {
             let mut bad = proof.clone();
             bad.multilinear_rounds[idx].1 += F128::ONE;
-            let mut ch = FsChallenger::new(b"flock-test-v0");
+            let mut ch = crate::transcript::VerifierState::detached(b"flock-test-v0", &[]);
             let res = verify(m, &bad, &mut ch);
             assert!(res.is_err(), "msg_inf tamper at round {idx} ACCEPTED");
         }
@@ -907,13 +907,13 @@ mod tests {
         let b = rng.bits(1 << m);
         let c: Vec<bool> = a.iter().zip(&b).map(|(x, y)| *x & *y).collect();
         let (a_p, b_p, c_p) = pack_abc(&a, &b, &c);
-        let mut ch_prove = FsChallenger::new(b"flock-test-v0");
+        let mut ch_prove = crate::transcript::ProverState::new(b"flock-test-v0", &[]);
         let (proof, _) = prove_packed(&a_p, &b_p, &c_p, m, &mut ch_prove);
 
         let last = proof.multilinear_rounds.len() - 1;
         let mut bad = proof.clone();
         bad.multilinear_rounds[last].1 += F128::ONE;
-        let mut ch = FsChallenger::new(b"flock-test-v0");
+        let mut ch = crate::transcript::VerifierState::detached(b"flock-test-v0", &[]);
         assert!(
             verify(m, &bad, &mut ch).is_err(),
             "last-round msg_inf unconstrained"
@@ -946,17 +946,17 @@ mod tests {
         let c: Vec<bool> = a.iter().zip(&b).map(|(x, y)| *x & *y).collect();
         let (a_p, b_p, c_p) = pack_abc(&a, &b, &c);
 
-        let mut ch_prove = FsChallenger::new(b"flock-test-v0");
+        let mut ch_prove = crate::transcript::ProverState::new(b"flock-test-v0", &[]);
         let (proof, _) = prove_packed(&a_p, &b_p, &c_p, m, &mut ch_prove);
 
         // Honest verify, then capture the next challenge the transcript feeds
         // downstream — this is exactly the slot lincheck samples α from.
-        let mut ch_honest = FsChallenger::new(b"flock-test-v0");
+        let mut ch_honest = crate::transcript::VerifierState::detached(b"flock-test-v0", &[]);
         assert!(
             verify(m, &proof, &mut ch_honest).is_ok(),
             "honest verify rejected"
         );
-        let alpha_honest = ch_honest.sample_f128();
+        let alpha_honest = ch_honest.sample();
 
         // Product-preserving tamper: â' = â·t, b̂' = b̂·t⁻¹ ⇒ â'·b̂' = â·b̂, so the
         // zerocheck's `c_running == â·b̂` check still holds for the tampered pair.
@@ -979,12 +979,12 @@ mod tests {
         // The zerocheck's own checks are blind to a product-preserving tamper:
         // verify still ACCEPTS. This is precisely the gap the FS binding closes —
         // the tamper is caught only because the claims now move the transcript.
-        let mut ch_tampered = FsChallenger::new(b"flock-test-v0");
+        let mut ch_tampered = crate::transcript::VerifierState::detached(b"flock-test-v0", &[]);
         assert!(
             verify(m, &bad, &mut ch_tampered).is_ok(),
             "product-preserving tamper rejected by zerocheck's own checks (unexpected)",
         );
-        let alpha_tampered = ch_tampered.sample_f128();
+        let alpha_tampered = ch_tampered.sample();
 
         // The fix: observing â, b̂ makes the downstream challenge depend on them,
         // so lincheck's α (and everything after) diverges and rejects the
@@ -1015,9 +1015,9 @@ mod tests {
                 c[idx] = !c[idx];
             }
             let (a_p, b_p, c_p) = pack_abc(&a, &b, &c);
-            let mut ch_prove = FsChallenger::new(b"flock-test-v0");
+            let mut ch_prove = crate::transcript::ProverState::new(b"flock-test-v0", &[]);
             let (proof, _) = prove_packed(&a_p, &b_p, &c_p, m, &mut ch_prove);
-            let mut ch_verify = FsChallenger::new(b"flock-test-v0");
+            let mut ch_verify = crate::transcript::VerifierState::detached(b"flock-test-v0", &[]);
             let res = verify(m, &proof, &mut ch_verify);
             assert!(
                 res.is_err(),
@@ -1035,12 +1035,12 @@ mod tests {
         let b = rng.bits(1 << m);
         let c: Vec<bool> = a.iter().zip(&b).map(|(x, y)| *x & *y).collect();
         let (a_p, b_p, c_p) = pack_abc(&a, &b, &c);
-        let mut ch_prove = FsChallenger::new(b"flock-test-v0");
+        let mut ch_prove = crate::transcript::ProverState::new(b"flock-test-v0", &[]);
         let (proof, _) = prove_packed(&a_p, &b_p, &c_p, m, &mut ch_prove);
         for idx in 0..proof.multilinear_rounds.len() {
             let mut bad = proof.clone();
             bad.multilinear_rounds[idx].0 += F128::ONE;
-            let mut ch = FsChallenger::new(b"flock-test-v0");
+            let mut ch = crate::transcript::VerifierState::detached(b"flock-test-v0", &[]);
             assert!(
                 verify(m, &bad, &mut ch).is_err(),
                 "msg_1 tamper round {idx} ACCEPTED"
@@ -1048,7 +1048,7 @@ mod tests {
         }
     }
 
-    /// Determinism: same witness + same challenger seed → same proof.
+    /// Determinism: same witness + same sponge seed → same proof.
     #[test]
     fn prove_deterministic() {
         let m = 14;
@@ -1058,8 +1058,8 @@ mod tests {
         let c: Vec<bool> = a.iter().zip(&b).map(|(x, y)| *x & *y).collect();
 
         let (a_p, b_p, c_p) = pack_abc(&a, &b, &c);
-        let mut ch1 = FsChallenger::new(b"flock-test-v0");
-        let mut ch2 = FsChallenger::new(b"flock-test-v0");
+        let mut ch1 = crate::transcript::ProverState::new(b"flock-test-v0", &[]);
+        let mut ch2 = crate::transcript::ProverState::new(b"flock-test-v0", &[]);
         let (proof1, claim1) = prove_packed(&a_p, &b_p, &c_p, m, &mut ch1);
         let (proof2, claim2) = prove_packed(&a_p, &b_p, &c_p, m, &mut ch2);
 

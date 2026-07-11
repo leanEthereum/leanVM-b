@@ -5,7 +5,7 @@
 //! verifier can name them without depending on the prove path. The prover
 //! produces these structs; the verifier consumes them.
 
-use crate::challenger::Challenger;
+use crate::sponge::Sponge;
 use crate::field::F128;
 use crate::lincheck::{self, QuirkyPoint};
 use crate::pcs::{self, Commitment};
@@ -60,12 +60,12 @@ pub struct R1csClaim {
 /// + the PCS commitment root. Call once at the top of every R1CS prove/verify
 /// path, before any sub-protocol challenge is drawn. RandomChallenger ignores
 /// these observations; FsChallenger uses them to defeat statement substitution.
-pub fn bind_statement<Ch: Challenger>(
-    challenger: &mut Ch,
+pub fn bind_statement(
+    sponge: &mut Sponge,
     r1cs: &BlockR1cs,
     commitment: &Commitment,
 ) {
-    challenger.observe_label(b"flock-r1cs-v0");
-    challenger.observe_bytes(&r1cs.statement_digest());
-    challenger.observe_bytes(&commitment.root);
+    sponge.absorb_bytes(b"flock-r1cs-v0");
+    sponge.absorb_bytes(&r1cs.statement_digest());
+    sponge.absorb_bytes(&commitment.root);
 }

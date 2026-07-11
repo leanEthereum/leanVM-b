@@ -58,7 +58,7 @@
 //! of one extra Merkle commit on a 32×-smaller codeword — negligible
 //! prover-side, ~4× smaller proofs.
 
-use crate::challenger::Challenger;
+use crate::transcript::{ProverState, VerifierState};
 use crate::field::F128;
 use crate::merkle::{self, Hash};
 use crate::ntt::AdditiveNttF128;
@@ -341,7 +341,7 @@ fn root_to_f128(root: &Hash) -> F128 {
 // Prover
 // ---------------------------------------------------------------------------
 
-pub fn prove<Ch: Challenger>(
+pub fn prove(
     a_init: &[F128],
     b: Vec<F128>,
     target: F128,
@@ -351,7 +351,7 @@ pub fn prove<Ch: Challenger>(
     log_inv_rate: usize,
     log_batch_size: usize,
     n_queries: usize,
-    challenger: &mut Ch,
+    ps: &mut ProverState,
 ) -> BaseFoldProof {
     prove_with_precomputed_round0_prime(
         a_init,
@@ -364,7 +364,7 @@ pub fn prove<Ch: Challenger>(
         log_batch_size,
         n_queries,
         None,
-        challenger,
+        ps,
     )
 }
 
@@ -374,7 +374,7 @@ pub fn prove<Ch: Challenger>(
 /// b_combined construction (see `pcs::open_batch_mixed`'s fused
 /// combine + prime path).
 #[allow(clippy::too_many_arguments)]
-pub fn prove_with_precomputed_round0_prime<Ch: Challenger>(
+pub fn prove_with_precomputed_round0_prime(
     a_init: &[F128],
     mut b: Vec<F128>,
     target: F128,
@@ -385,7 +385,7 @@ pub fn prove_with_precomputed_round0_prime<Ch: Challenger>(
     log_batch_size: usize,
     n_queries: usize,
     precomputed_round0_prime: Option<(F128, F128)>,
-    challenger: &mut Ch,
+    ps: &mut ProverState,
 ) -> BaseFoldProof {
     assert_eq!(a_init.len(), b.len());
     assert!(a_init.len().is_power_of_two() && !a_init.is_empty());
@@ -396,7 +396,7 @@ pub fn prove_with_precomputed_round0_prime<Ch: Challenger>(
     let num_ntts = 1usize << log_batch_size;
     assert_eq!(initial_codeword.len(), (1 << k_code) * num_ntts);
 
-    challenger.observe_label(b"flock-basefold-v0");
+    ps.absorb_bytes(b"flock-basefold-v0");
 
     let arities = crate::pcs::compute_fri_arities(log_dim);
     debug_assert_eq!(arities.iter().sum::<usize>(), log_dim);
@@ -508,11 +508,11 @@ pub fn prove_with_precomputed_round0_prime<Ch: Challenger>(
         // computed fused with the previous round's fold) and derive r.
         let u_0 = cur_u0;
         let u_2 = cur_u2;
-        challenger.observe_f128(u_0);
-        challenger.observe_f128(u_2);
+        ps.observe_scalar(u_0);
+        ps.observe_scalar(u_2);
         round_messages.push(RoundMessage { u_0, u_2 });
 
-        let r = challenger.sample_f128();
+        let r = ps.sample();
         let u_1 = running_target + u_2;
         running_target = u_0 + r * u_1 + r * r * u_2;
 
@@ -596,7 +596,7 @@ pub fn prove_with_precomputed_round0_prime<Ch: Challenger>(
                     let n_leaves = cw_len / post_row_batch_leaf_f128;
                     post_row_batch_tree = merkle::merkle_tree(cw_bytes, n_leaves);
                     post_row_batch_commit_root = *post_row_batch_tree.last().expect("non-empty");
-                    challenger.observe_f128(root_to_f128(&post_row_batch_commit_root));
+                    ps.observe_scalar(root_to_f128(&post_row_batch_commit_root));
                     post_row_batch_codeword = codeword_active[..cw_len].to_vec();
                     if trace {
                         post_row_batch_merkle_ms += t.elapsed().as_secs_f64() * 1e3;
@@ -639,7 +639,7 @@ pub fn prove_with_precomputed_round0_prime<Ch: Challenger>(
                     };
                     let tree = merkle::merkle_tree(cw_bytes, n_leaves);
                     let root = *tree.last().unwrap();
-                    challenger.observe_f128(root_to_f128(&root));
+                    ps.observe_scalar(root_to_f128(&root));
                     round_commitments.push(RoundCommitment { root });
                     epoch_codewords.push(codeword_active[..cw_len].to_vec());
                     epoch_trees.push(tree);
@@ -672,7 +672,7 @@ pub fn prove_with_precomputed_round0_prime<Ch: Challenger>(
         .collect();
 
     for _ in 0..n_queries {
-        let raw = challenger.sample_f128();
+        let raw = ps.sample();
         let position = (raw.lo as usize) & ((1 << k_code) - 1);
 
         // T1 leaf (= position).
@@ -820,14 +820,14 @@ pub fn prove_with_precomputed_round0_prime<Ch: Challenger>(
 /// BaseFold verifier. Replays sumcheck + multi-arity FRI consistency and
 /// returns the per-round sumcheck challenges so the caller (PCS) can compute
 /// `final_b = b(challenges)` and match it against `proof.final_b`.
-pub fn verify<Ch: Challenger>(
+pub fn verify(
     target: F128,
     proof: &BaseFoldProof,
     initial_codeword_root: &Hash,
     ntt: &AdditiveNttF128,
     log_inv_rate: usize,
     log_batch_size: usize,
-    challenger: &mut Ch,
+    vs: &mut VerifierState<'_>,
 ) -> Result<Vec<F128>, VerifyError> {
     let log_msg_len = proof.round_messages.len();
     if log_batch_size > log_msg_len {
@@ -840,7 +840,7 @@ pub fn verify<Ch: Challenger>(
     let num_epochs = arities.len();
     let num_fri_commits = num_epochs.saturating_sub(1);
 
-    challenger.observe_label(b"flock-basefold-v0");
+    vs.absorb_bytes(b"flock-basefold-v0");
 
     if proof.round_commitments.len() != num_fri_commits {
         return Err(VerifyError::InvalidProofShape);
@@ -865,16 +865,16 @@ pub fn verify<Ch: Challenger>(
     // boundary commits as before.
     for round in 0..log_msg_len {
         let msg = &proof.round_messages[round];
-        challenger.observe_f128(msg.u_0);
-        challenger.observe_f128(msg.u_2);
-        let r = challenger.sample_f128();
+        vs.observe_scalar(msg.u_0);
+        vs.observe_scalar(msg.u_2);
+        let r = vs.sample();
         challenges.push(r);
 
         let u_1 = running_target + msg.u_2;
         running_target = msg.u_0 + r * u_1 + r * r * msg.u_2;
 
         if round + 1 == log_batch_size && !arities.is_empty() {
-            challenger.observe_f128(root_to_f128(&proof.post_row_batch_commit.root));
+            vs.observe_scalar(root_to_f128(&proof.post_row_batch_commit.root));
         }
 
         if round >= log_batch_size {
@@ -883,7 +883,7 @@ pub fn verify<Ch: Challenger>(
                 let is_last_epoch = current_epoch + 1 == num_epochs;
                 if !is_last_epoch {
                     let root = proof.round_commitments[current_epoch].root;
-                    challenger.observe_f128(root_to_f128(&root));
+                    vs.observe_scalar(root_to_f128(&root));
                 }
                 rounds_in_epoch = 0;
                 current_epoch += 1;
@@ -910,11 +910,11 @@ pub fn verify<Ch: Challenger>(
         return Err(VerifyError::SumcheckFriMismatch);
     }
 
-    // Resample query positions (challenger state matches prover).
+    // Resample query positions (vs state matches prover).
     let n_queries = proof.queries.len();
     let mut positions = Vec::with_capacity(n_queries);
     for _ in 0..n_queries {
-        let raw = challenger.sample_f128();
+        let raw = vs.sample();
         positions.push((raw.lo as usize) & ((1 << k_code) - 1));
     }
 

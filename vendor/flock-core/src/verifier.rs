@@ -1,10 +1,10 @@
 // Credit: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
-//! Top-level R1CS verifier: walks the challenger in lockstep with the
+//! Top-level R1CS verifier: walks the sponge in lockstep with the
 //! prover, runs `zerocheck::verify` and `lincheck::verify`, derives the two
 //! ZClaims, and verifies the PCS openings at those points against the
 //! witness commitment.
 
-use crate::challenger::Challenger;
+use crate::transcript::VerifierState;
 use crate::field::F128;
 use crate::lincheck;
 use crate::pcs::{self, Commitment};
@@ -49,12 +49,12 @@ fn verifier_pool() -> &'static rayon::ThreadPool {
     })
 }
 
-pub fn verify<Ch: Challenger>(
+pub fn verify(
     r1cs: &BlockR1cs,
     commitment: &Commitment,
     proof: &R1csProof,
     lincheck_circuit: &dyn lincheck::LincheckCircuit,
-    challenger: &mut Ch,
+    vs: &mut VerifierState<'_>,
 ) -> Result<R1csClaim, VerifyError> {
     // ---- Replay zerocheck + lincheck → the two base claims.
     let (ab, c) = verify_core(
@@ -63,7 +63,7 @@ pub fn verify<Ch: Challenger>(
         &proof.lincheck,
         commitment,
         lincheck_circuit,
-        challenger,
+        vs,
     )?;
 
     // ---- Verify the batched PCS opening covering both z-claims.
@@ -71,7 +71,7 @@ pub fn verify<Ch: Challenger>(
         commitment,
         &[ab.clone(), c.clone()],
         &proof.pcs_open,
-        challenger,
+        vs,
     )
     .map_err(VerifyError::PcsAb)?;
 
@@ -80,13 +80,13 @@ pub fn verify<Ch: Challenger>(
 
 /// Ligerito-backend mirror of [`verify`]. Same FS protocol replay; only the
 /// final PCS verification step differs.
-pub fn verify_ligerito<Ch: Challenger>(
+pub fn verify_ligerito(
     r1cs: &BlockR1cs,
     commitment: &Commitment,
     proof: &R1csProofLigerito,
     lincheck_circuit: &dyn lincheck::LincheckCircuit,
     pcs_params: &crate::pcs::PcsParams,
-    challenger: &mut Ch,
+    vs: &mut VerifierState<'_>,
 ) -> Result<R1csClaim, VerifyError> {
     let (ab, c) = verify_core(
         r1cs,
@@ -94,39 +94,39 @@ pub fn verify_ligerito<Ch: Challenger>(
         &proof.lincheck,
         commitment,
         lincheck_circuit,
-        challenger,
+        vs,
     )?;
     verify_claims_ligerito(
         commitment,
         &[ab.clone(), c.clone()],
         &proof.pcs_open,
         pcs_params,
-        challenger,
+        vs,
     )
     .map_err(VerifyError::PcsAb)?;
     Ok(R1csClaim { ab, c })
 }
 
 /// Ligerito-backend mirror of [`verify_claims`].
-pub fn verify_claims_ligerito<Ch: Challenger>(
+pub fn verify_claims_ligerito(
     commitment: &Commitment,
     claims: &[ZClaim],
     pcs_open: &pcs::BatchOpeningProofLigerito,
     pcs_params: &crate::pcs::PcsParams,
-    challenger: &mut Ch,
+    vs: &mut VerifierState<'_>,
 ) -> Result<(), pcs::VerifyError> {
     // Verification is single-threaded; run the body on the dedicated 1-thread pool.
     verifier_pool().install(move || {
-        verify_claims_ligerito_inner(commitment, claims, pcs_open, pcs_params, challenger)
+        verify_claims_ligerito_inner(commitment, claims, pcs_open, pcs_params, vs)
     })
 }
 
-fn verify_claims_ligerito_inner<Ch: Challenger>(
+fn verify_claims_ligerito_inner(
     commitment: &Commitment,
     claims: &[ZClaim],
     pcs_open: &pcs::BatchOpeningProofLigerito,
     pcs_params: &crate::pcs::PcsParams,
-    challenger: &mut Ch,
+    vs: &mut VerifierState<'_>,
 ) -> Result<(), pcs::VerifyError> {
     let z_skips: Vec<F128> = claims.iter().map(|c| c.point.z_skip).collect();
     let values: Vec<F128> = claims.iter().map(|c| c.value).collect();
@@ -154,7 +154,7 @@ fn verify_claims_ligerito_inner<Ch: Challenger>(
         &[],
         pcs_open,
         &lig_v_config,
-        challenger,
+        vs,
     )
 }
 
@@ -162,13 +162,13 @@ fn verify_claims_ligerito_inner<Ch: Challenger>(
 /// (`ab`, `c`), stopping before the PCS open. Mirror of
 /// `flock_prover::prover::prove_fast_core`; relation wrappers reuse this then call
 /// [`verify_claims`] over `[ab, c, …]`.
-pub fn verify_core<Ch: Challenger>(
+pub fn verify_core(
     r1cs: &BlockR1cs,
     zerocheck_proof: &zerocheck::ZerocheckProof,
     lincheck_proof: &lincheck::LincheckProof,
     commitment: &Commitment,
     lincheck_circuit: &dyn lincheck::LincheckCircuit,
-    challenger: &mut Ch,
+    vs: &mut VerifierState<'_>,
 ) -> Result<(ZClaim, ZClaim), VerifyError> {
     // Verification is single-threaded; run the body on the dedicated 1-thread pool.
     verifier_pool().install(move || {
@@ -178,18 +178,18 @@ pub fn verify_core<Ch: Challenger>(
             lincheck_proof,
             commitment,
             lincheck_circuit,
-            challenger,
+            vs,
         )
     })
 }
 
-fn verify_core_inner<Ch: Challenger>(
+fn verify_core_inner(
     r1cs: &BlockR1cs,
     zerocheck_proof: &zerocheck::ZerocheckProof,
     lincheck_proof: &lincheck::LincheckProof,
     commitment: &Commitment,
     lincheck_circuit: &dyn lincheck::LincheckCircuit,
-    challenger: &mut Ch,
+    vs: &mut VerifierState<'_>,
 ) -> Result<(ZClaim, ZClaim), VerifyError> {
     let trace = std::env::var("VERIFY_TRACE").is_ok();
     let fmt = |s: f64| -> String {
@@ -203,7 +203,7 @@ fn verify_core_inner<Ch: Challenger>(
 
     // ---- Bind FS transcript to the statement (mirrors prover::prove).
     let t = std::time::Instant::now();
-    crate::proof::bind_statement(challenger, r1cs, commitment);
+    crate::proof::bind_statement(vs.sponge_mut(), r1cs, commitment);
     if trace {
         eprintln!(
             "      [vco] bind_statement: {}",
@@ -214,7 +214,7 @@ fn verify_core_inner<Ch: Challenger>(
     // ---- Zerocheck.
     let t = std::time::Instant::now();
     let zc_claim =
-        zerocheck::verify(r1cs.m, zerocheck_proof, challenger).map_err(VerifyError::Zerocheck)?;
+        zerocheck::verify(r1cs.m, zerocheck_proof, vs).map_err(VerifyError::Zerocheck)?;
     if trace {
         eprintln!(
             "      [vco] zerocheck::verify: {}",
@@ -237,7 +237,7 @@ fn verify_core_inner<Ch: Challenger>(
         zc_claim.a_eval,
         zc_claim.b_eval,
         lincheck_proof,
-        challenger,
+        vs,
     )
     .map_err(VerifyError::Lincheck)?;
     if trace {
@@ -266,21 +266,21 @@ fn verify_core_inner<Ch: Challenger>(
 /// mirror of `flock_prover::prover::open_claims`. Relation wrappers (e.g. the hash
 /// chain) reuse this with their own appended claims. Must run at the same
 /// transcript position as the prover's open.
-pub fn verify_claims<Ch: Challenger>(
+pub fn verify_claims(
     commitment: &Commitment,
     claims: &[ZClaim],
     pcs_open: &pcs::BatchOpeningProof,
-    challenger: &mut Ch,
+    vs: &mut VerifierState<'_>,
 ) -> Result<(), pcs::VerifyError> {
     // Verification is single-threaded; run the body on the dedicated 1-thread pool.
-    verifier_pool().install(move || verify_claims_inner(commitment, claims, pcs_open, challenger))
+    verifier_pool().install(move || verify_claims_inner(commitment, claims, pcs_open, vs))
 }
 
-fn verify_claims_inner<Ch: Challenger>(
+fn verify_claims_inner(
     commitment: &Commitment,
     claims: &[ZClaim],
     pcs_open: &pcs::BatchOpeningProof,
-    challenger: &mut Ch,
+    vs: &mut VerifierState<'_>,
 ) -> Result<(), pcs::VerifyError> {
     let z_skips: Vec<F128> = claims.iter().map(|c| c.point.z_skip).collect();
     let values: Vec<F128> = claims.iter().map(|c| c.value).collect();
@@ -293,7 +293,7 @@ fn verify_claims_inner<Ch: Challenger>(
         })
         .collect();
     let x_refs: Vec<&[F128]> = x_fulls.iter().map(|v| v.as_slice()).collect();
-    pcs::verify_opening_batch(commitment, &values, &z_skips, &x_refs, pcs_open, challenger)
+    pcs::verify_opening_batch(commitment, &values, &z_skips, &x_refs, pcs_open, vs)
 }
 
 #[cfg(test)]

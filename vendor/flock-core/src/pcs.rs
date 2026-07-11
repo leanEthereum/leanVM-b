@@ -39,7 +39,7 @@ pub use commit::{
 pub use pack::{LOG_PACKING, pack_witness, unpack_witness};
 pub use ring_switch::{RingSwitchProof, SparseEqTensor};
 
-use crate::challenger::Challenger;
+use crate::transcript::{ProverState, VerifierState};
 use crate::field::F128;
 use crate::zerocheck::PaddingSpec;
 use serde::{Deserialize, Serialize};
@@ -133,15 +133,15 @@ pub struct PackedDirectClaim {
 /// [`commit`] — caller must retain its own copy (it is NOT stored in
 /// `ProverData`). `prover_data` is the output of [`commit`]. `x_outer` is the
 /// multilinear portion of the QuirkyPoint with length `m − 6`.
-pub fn open<Ch: Challenger>(
+pub fn open(
     packed_witness: &[F128],
     prover_data: &ProverData,
     commitment: &Commitment,
     x_outer: &[F128],
-    challenger: &mut Ch,
+    ps: &mut ProverState,
 ) -> OpeningProof {
-    challenger.observe_label(b"flock-pcs-open-v0");
-    let (rs_proof, rs_output) = ring_switch::prove(packed_witness, x_outer, challenger);
+    ps.absorb_bytes(b"flock-pcs-open-v0");
+    let (rs_proof, rs_output) = ring_switch::prove(packed_witness, x_outer, ps);
     let ntt = crate::ntt::AdditiveNttF128::standard(commitment.params.k_code());
     let bf_proof = basefold::prove(
         packed_witness,
@@ -153,7 +153,7 @@ pub fn open<Ch: Challenger>(
         commitment.params.log_inv_rate,
         commitment.params.log_batch_size,
         default_fri_queries(commitment.params.log_inv_rate),
-        challenger,
+        ps,
     );
     OpeningProof {
         ring_switch: rs_proof,
@@ -166,12 +166,12 @@ pub fn open<Ch: Challenger>(
 /// on the random-linear-combination of the per-point `rs_eq_ind` weights.
 ///
 /// At m=29 this roughly halves total open cost vs calling `open` twice.
-pub fn open_batch<Ch: Challenger>(
+pub fn open_batch(
     packed_witness: &[F128],
     prover_data: &ProverData,
     commitment: &Commitment,
     x_outers: &[&[F128]],
-    challenger: &mut Ch,
+    ps: &mut ProverState,
 ) -> BatchOpeningProof {
     open_batch_padded(
         packed_witness,
@@ -179,20 +179,20 @@ pub fn open_batch<Ch: Challenger>(
         commitment,
         x_outers,
         &PaddingSpec::dense(commitment.params.m),
-        challenger,
+        ps,
     )
 }
 
 /// Padding-aware variant of [`open_batch`]. Threads `padding` into
 /// ring-switching's `fold_1b_rows` so per-block padding chunks are skipped.
 /// Byte-identical to the dense path on honestly zero-padded witnesses.
-pub fn open_batch_padded<Ch: Challenger>(
+pub fn open_batch_padded(
     packed_witness: &[F128],
     prover_data: &ProverData,
     commitment: &Commitment,
     x_outers: &[&[F128]],
     padding: &PaddingSpec,
-    challenger: &mut Ch,
+    ps: &mut ProverState,
 ) -> BatchOpeningProof {
     open_batch_mixed(
         packed_witness,
@@ -201,21 +201,21 @@ pub fn open_batch_padded<Ch: Challenger>(
         x_outers,
         &[],
         padding,
-        challenger,
+        ps,
     )
 }
 
 /// Variant of [`open_batch_padded`] that accepts a per-claim optional
 /// precomputed `s_hat_v`. See [`open_batch_mixed_with_precomputed_s_hat_v`].
 #[allow(clippy::too_many_arguments)]
-pub fn open_batch_padded_with_precomputed_s_hat_v<Ch: Challenger>(
+pub fn open_batch_padded_with_precomputed_s_hat_v(
     packed_witness: &[F128],
     prover_data: &ProverData,
     commitment: &Commitment,
     x_outers: &[&[F128]],
     precomputed_s_hat_v: &[Option<&[F128]>],
     padding: &PaddingSpec,
-    challenger: &mut Ch,
+    ps: &mut ProverState,
 ) -> BatchOpeningProof {
     open_batch_mixed_with_precomputed_s_hat_v(
         packed_witness,
@@ -225,7 +225,7 @@ pub fn open_batch_padded_with_precomputed_s_hat_v<Ch: Challenger>(
         precomputed_s_hat_v,
         &[],
         padding,
-        challenger,
+        ps,
     )
 }
 
@@ -243,14 +243,14 @@ pub fn open_batch_padded_with_precomputed_s_hat_v<Ch: Challenger>(
 /// sample `r_dprime_i`) → packed-direct claims (each: `value_k` observed) →
 /// sample γ's (one per total claim, ring-switched first) → BaseFold.
 #[allow(clippy::too_many_arguments)]
-pub fn open_batch_mixed<Ch: Challenger>(
+pub fn open_batch_mixed(
     packed_witness: &[F128],
     prover_data: &ProverData,
     commitment: &Commitment,
     x_outers: &[&[F128]],
     packed_direct: &[PackedDirectClaim],
     padding: &PaddingSpec,
-    challenger: &mut Ch,
+    ps: &mut ProverState,
 ) -> BatchOpeningProof {
     open_batch_mixed_with_precomputed_s_hat_v(
         packed_witness,
@@ -260,7 +260,7 @@ pub fn open_batch_mixed<Ch: Challenger>(
         &[],
         packed_direct,
         padding,
-        challenger,
+        ps,
     )
 }
 
@@ -272,7 +272,7 @@ pub fn open_batch_mixed<Ch: Challenger>(
 ///
 /// `precomputed_s_hat_v` must be `&[]` or have length `x_outers.len()`.
 #[allow(clippy::too_many_arguments)]
-pub fn open_batch_mixed_with_precomputed_s_hat_v<Ch: Challenger>(
+pub fn open_batch_mixed_with_precomputed_s_hat_v(
     packed_witness: &[F128],
     prover_data: &ProverData,
     commitment: &Commitment,
@@ -280,7 +280,7 @@ pub fn open_batch_mixed_with_precomputed_s_hat_v<Ch: Challenger>(
     precomputed_s_hat_v: &[Option<&[F128]>],
     packed_direct: &[PackedDirectClaim],
     padding: &PaddingSpec,
-    challenger: &mut Ch,
+    ps: &mut ProverState,
 ) -> BatchOpeningProof {
     let trace = std::env::var("PCS_TRACE").is_ok();
     let t_total = std::time::Instant::now();
@@ -291,7 +291,7 @@ pub fn open_batch_mixed_with_precomputed_s_hat_v<Ch: Challenger>(
         precomputed_s_hat_v,
         packed_direct,
         padding,
-        challenger,
+        ps,
         trace,
     );
 
@@ -316,7 +316,7 @@ pub fn open_batch_mixed_with_precomputed_s_hat_v<Ch: Challenger>(
         commitment.params.log_batch_size,
         default_fri_queries(commitment.params.log_inv_rate),
         Some(combined.round0_prime),
-        challenger,
+        ps,
     );
     if trace {
         eprintln!(
@@ -343,7 +343,7 @@ pub fn open_batch_mixed_with_precomputed_s_hat_v<Ch: Challenger>(
 /// `lig_config.initial_k` must equal `commitment.params.log_batch_size` so that
 /// `prover_data`'s codeword/tree shape matches what Ligerito expects for L0.
 #[allow(clippy::too_many_arguments)]
-pub fn open_batch_mixed_ligerito_with_precomputed_s_hat_v<Ch: Challenger>(
+pub fn open_batch_mixed_ligerito_with_precomputed_s_hat_v(
     packed_witness: Vec<F128>,
     prover_data: &ProverData,
     commitment: &Commitment,
@@ -352,7 +352,7 @@ pub fn open_batch_mixed_ligerito_with_precomputed_s_hat_v<Ch: Challenger>(
     packed_direct: &[PackedDirectClaim],
     padding: &PaddingSpec,
     lig_config: &ligerito::ProverConfig,
-    challenger: &mut Ch,
+    ps: &mut ProverState,
 ) -> BatchOpeningProofLigerito {
     let trace = std::env::var("PCS_TRACE").is_ok();
     let t_total = std::time::Instant::now();
@@ -374,7 +374,7 @@ pub fn open_batch_mixed_ligerito_with_precomputed_s_hat_v<Ch: Challenger>(
         precomputed_s_hat_v,
         packed_direct,
         padding,
-        challenger,
+        ps,
         trace,
     );
 
@@ -387,7 +387,7 @@ pub fn open_batch_mixed_ligerito_with_precomputed_s_hat_v<Ch: Challenger>(
         &prover_data.codeword,
         &prover_data.merkle_tree,
         combined.round0_prime,
-        challenger,
+        ps,
     );
     if trace {
         eprintln!(
@@ -421,13 +421,13 @@ struct CombinedClaim {
 /// `target_combined`. Also computes the BaseFold round-0 prime as a side
 /// effect (cheap since it shares the b_combined pass).
 #[allow(clippy::too_many_arguments)]
-fn compute_combined_basis_and_target<Ch: Challenger>(
+fn compute_combined_basis_and_target(
     packed_witness: &[F128],
     x_outers: &[&[F128]],
     precomputed_s_hat_v: &[Option<&[F128]>],
     packed_direct: &[PackedDirectClaim],
     padding: &PaddingSpec,
-    challenger: &mut Ch,
+    ps: &mut ProverState,
     trace: bool,
 ) -> CombinedClaim {
     let n_rs = x_outers.len();
@@ -439,7 +439,7 @@ fn compute_combined_basis_and_target<Ch: Challenger>(
         precomputed_s_hat_v.len(),
     );
 
-    challenger.observe_label(b"flock-pcs-open-batch-v0");
+    ps.absorb_bytes(b"flock-pcs-open-batch-v0");
 
     // 1. Ring-switching for all x_outers.
     let t = std::time::Instant::now();
@@ -452,7 +452,7 @@ fn compute_combined_basis_and_target<Ch: Challenger>(
             x_outers,
             precomputed_s_hat_v,
             padding,
-            challenger,
+            ps,
         )
     } else {
         (Vec::new(), Vec::new())
@@ -467,10 +467,10 @@ fn compute_combined_basis_and_target<Ch: Challenger>(
 
     // 2. Observe packed-direct claim values + sample γ_pd.
     for pd in packed_direct {
-        challenger.observe_label(b"flock-pcs-packed-direct-v0");
-        challenger.observe_f128(pd.value);
+        ps.absorb_bytes(b"flock-pcs-packed-direct-v0");
+        ps.observe_scalar(pd.value);
     }
-    let gammas_pd: Vec<F128> = (0..n_pd).map(|_| challenger.sample_f128()).collect();
+    let gammas_pd: Vec<F128> = (0..n_pd).map(|_| ps.sample()).collect();
 
     let t = std::time::Instant::now();
     use rayon::prelude::*;
@@ -788,13 +788,13 @@ fn sparse_scatter_add_parallel(
 /// x_outer)` triple is checked via its own ring-switching message; then the
 /// random-linear-combination of their `rs_eq_ind`s is verified against the
 /// single BaseFold proof.
-pub fn verify_opening_batch<Ch: Challenger>(
+pub fn verify_opening_batch(
     commitment: &Commitment,
     claims: &[F128],
     z_skips: &[F128],
     x_outers: &[&[F128]],
     proof: &BatchOpeningProof,
-    challenger: &mut Ch,
+    vs: &mut VerifierState<'_>,
 ) -> Result<(), VerifyError> {
     verify_opening_batch_mixed(
         commitment,
@@ -803,7 +803,7 @@ pub fn verify_opening_batch<Ch: Challenger>(
         x_outers,
         &[],
         proof,
-        challenger,
+        vs,
     )
 }
 
@@ -819,14 +819,14 @@ pub struct PackedDirectClaimRef<'a> {
 
 /// Verify a mixed-claim batched opening. Mirror of [`open_batch_mixed`].
 #[allow(clippy::too_many_arguments)]
-pub fn verify_opening_batch_mixed<Ch: Challenger>(
+pub fn verify_opening_batch_mixed(
     commitment: &Commitment,
     claims: &[F128],
     z_skips: &[F128],
     x_outers: &[&[F128]],
     packed_direct: &[PackedDirectClaimRef<'_>],
     proof: &BatchOpeningProof,
-    challenger: &mut Ch,
+    vs: &mut VerifierState<'_>,
 ) -> Result<(), VerifyError> {
     let n_rs = claims.len();
     let n_pd = packed_direct.len();
@@ -838,7 +838,7 @@ pub fn verify_opening_batch_mixed<Ch: Challenger>(
         "verify_opening_batch_mixed: need at least one claim"
     );
 
-    challenger.observe_label(b"flock-pcs-open-batch-v0");
+    vs.absorb_bytes(b"flock-pcs-open-batch-v0");
 
     let trace = std::env::var("VERIFY_TRACE").is_ok();
     let fmt = |s: f64| -> String {
@@ -856,12 +856,16 @@ pub fn verify_opening_batch_mixed<Ch: Challenger>(
     //    samples γ_rs at the same transcript point and bakes it into the fold.
     let t = std::time::Instant::now();
     for i in 0..n_rs {
-        ring_switch::verify_bind(claims[i], z_skips[i], x_outers[i], &proof.ring_switches[i], challenger)
+        ring_switch::verify_bind(claims[i], z_skips[i], x_outers[i], &proof.ring_switches[i], vs)
             .map_err(VerifyError::RingSwitch)?;
     }
-    let r_dprime = challenger.sample_f128_vec(LOG_PACKING);
+    // Mirror the prover: with n_rs = 0 the ring-switch batch never runs on the
+    // prover side, so no r'' is sampled there — skip it here too or the two
+    // transcripts diverge (the prover samples r'' inside `prove_batched_*`).
+    let r_dprime = if n_rs > 0 { vs.sample_vec(LOG_PACKING) } else { Vec::new() };
     let eq_r_dprime = crate::zerocheck::univariate_skip::build_eq(&r_dprime);
-    let lin_coeffs = ring_switch::linearized_eq_coeffs(&eq_r_dprime);
+    let lin_coeffs =
+        if n_rs > 0 { ring_switch::linearized_eq_coeffs(&eq_r_dprime) } else { [F128::ZERO; 128] };
     let mut rs_outputs = Vec::with_capacity(n_rs);
     for i in 0..n_rs {
         let out = ring_switch::RingSwitchVerifierOutput {
@@ -871,7 +875,7 @@ pub fn verify_opening_batch_mixed<Ch: Challenger>(
         };
         rs_outputs.push(out);
     }
-    let gammas_rs: Vec<F128> = (0..n_rs).map(|_| challenger.sample_f128()).collect();
+    let gammas_rs: Vec<F128> = (0..n_rs).map(|_| vs.sample()).collect();
     if trace {
         eprintln!(
             "      [pcsv] ring_switch::verify_succinct ×{}: {}",
@@ -883,10 +887,10 @@ pub fn verify_opening_batch_mixed<Ch: Challenger>(
     // 2. Observe packed-direct claim values, then sample γ_pd (Schwartz-
     //    Zippel-sound: γ_pd[k] is sampled after pd.value[k] is observed).
     for pd in packed_direct {
-        challenger.observe_label(b"flock-pcs-packed-direct-v0");
-        challenger.observe_f128(pd.value);
+        vs.absorb_bytes(b"flock-pcs-packed-direct-v0");
+        vs.observe_scalar(pd.value);
     }
-    let gammas_pd: Vec<F128> = (0..n_pd).map(|_| challenger.sample_f128()).collect();
+    let gammas_pd: Vec<F128> = (0..n_pd).map(|_| vs.sample()).collect();
 
     // 4. Combined target: γ_rs · sumcheck_claim_rs + γ_pd · value_pd.
     let mut target_combined = F128::ZERO;
@@ -914,7 +918,7 @@ pub fn verify_opening_batch_mixed<Ch: Challenger>(
         &ntt,
         commitment.params.log_inv_rate,
         commitment.params.log_batch_size,
-        challenger,
+        vs,
     )
     .map_err(VerifyError::BaseFold)?;
     if trace {
@@ -963,7 +967,7 @@ pub fn verify_opening_batch_mixed<Ch: Challenger>(
 /// natural follow-up — would bring verifier cost in line with the basefold
 /// succinct path.
 #[allow(clippy::too_many_arguments)]
-pub fn verify_opening_batch_ligerito_mixed<Ch: Challenger>(
+pub fn verify_opening_batch_ligerito_mixed(
     commitment: &Commitment,
     claims: &[F128],
     z_skips: &[F128],
@@ -971,7 +975,7 @@ pub fn verify_opening_batch_ligerito_mixed<Ch: Challenger>(
     packed_direct: &[PackedDirectClaimRef<'_>],
     proof: &BatchOpeningProofLigerito,
     lig_config: &ligerito::VerifierConfig,
-    challenger: &mut Ch,
+    vs: &mut VerifierState<'_>,
 ) -> Result<(), VerifyError> {
     let n_rs = claims.len();
     let n_pd = packed_direct.len();
@@ -980,18 +984,22 @@ pub fn verify_opening_batch_ligerito_mixed<Ch: Challenger>(
     assert_eq!(proof.ring_switches.len(), n_rs);
     assert!(n_rs + n_pd > 0);
 
-    challenger.observe_label(b"flock-pcs-open-batch-v0");
+    vs.absorb_bytes(b"flock-pcs-open-batch-v0");
 
     // 1. Ring-switch SUCCINCT verify per claim — gets sumcheck_claim and a
     //    length-128 `eq_r_dprime` instead of the dense `rs_eq_ind`. Saves
     //    ~16 MB allocation at m=29.
     for i in 0..n_rs {
-        ring_switch::verify_bind(claims[i], z_skips[i], x_outers[i], &proof.ring_switches[i], challenger)
+        ring_switch::verify_bind(claims[i], z_skips[i], x_outers[i], &proof.ring_switches[i], vs)
             .map_err(VerifyError::RingSwitch)?;
     }
-    let r_dprime = challenger.sample_f128_vec(LOG_PACKING);
+    // Mirror the prover: with n_rs = 0 the ring-switch batch never runs on the
+    // prover side, so no r'' is sampled there — skip it here too or the two
+    // transcripts diverge (the prover samples r'' inside `prove_batched_*`).
+    let r_dprime = if n_rs > 0 { vs.sample_vec(LOG_PACKING) } else { Vec::new() };
     let eq_r_dprime = crate::zerocheck::univariate_skip::build_eq(&r_dprime);
-    let lin_coeffs = ring_switch::linearized_eq_coeffs(&eq_r_dprime);
+    let lin_coeffs =
+        if n_rs > 0 { ring_switch::linearized_eq_coeffs(&eq_r_dprime) } else { [F128::ZERO; 128] };
     let mut rs_outputs = Vec::with_capacity(n_rs);
     for i in 0..n_rs {
         let out = ring_switch::RingSwitchVerifierOutput {
@@ -1001,14 +1009,14 @@ pub fn verify_opening_batch_ligerito_mixed<Ch: Challenger>(
         };
         rs_outputs.push(out);
     }
-    let gammas_rs: Vec<F128> = (0..n_rs).map(|_| challenger.sample_f128()).collect();
+    let gammas_rs: Vec<F128> = (0..n_rs).map(|_| vs.sample()).collect();
 
     // 2. PD claim values + γ_pd.
     for pd in packed_direct {
-        challenger.observe_label(b"flock-pcs-packed-direct-v0");
-        challenger.observe_f128(pd.value);
+        vs.absorb_bytes(b"flock-pcs-packed-direct-v0");
+        vs.observe_scalar(pd.value);
     }
-    let gammas_pd: Vec<F128> = (0..n_pd).map(|_| challenger.sample_f128()).collect();
+    let gammas_pd: Vec<F128> = (0..n_pd).map(|_| vs.sample()).collect();
 
     // 3. target_combined from succinct rs claims + PD values.
     let mut target_combined = F128::ZERO;
@@ -1098,7 +1106,7 @@ pub fn verify_opening_batch_ligerito_mixed<Ch: Challenger>(
         target_combined,
         &commitment.root,
         eval_b_residual,
-        challenger,
+        vs,
     )
     .is_none()
     {
@@ -1110,20 +1118,20 @@ pub fn verify_opening_batch_ligerito_mixed<Ch: Challenger>(
 }
 
 /// Verify an opening proof against the commitment. Returns `Ok(())` iff valid.
-pub fn verify_opening<Ch: Challenger>(
+pub fn verify_opening(
     commitment: &Commitment,
     claim: F128,
     z_skip: F128,
     x_outer: &[F128],
     proof: &OpeningProof,
-    challenger: &mut Ch,
+    vs: &mut VerifierState<'_>,
 ) -> Result<(), VerifyError> {
-    challenger.observe_label(b"flock-pcs-open-v0");
+    vs.absorb_bytes(b"flock-pcs-open-v0");
 
     // Ring-switching (succinct): claim → sumcheck_claim + eq_r_dprime. The
     // dense rs_eq_ind is never materialized on the verifier side.
     let rs_output =
-        ring_switch::verify_succinct(claim, z_skip, x_outer, &proof.ring_switch, challenger)
+        ring_switch::verify_succinct(claim, z_skip, x_outer, &proof.ring_switch, vs)
             .map_err(VerifyError::RingSwitch)?;
 
     // BaseFold sumcheck + FRI: sumcheck_claim → verified final_a · final_b.
@@ -1135,7 +1143,7 @@ pub fn verify_opening<Ch: Challenger>(
         &ntt,
         commitment.params.log_inv_rate,
         commitment.params.log_batch_size,
-        challenger,
+        vs,
     )
     .map_err(VerifyError::BaseFold)?;
 
@@ -1154,7 +1162,7 @@ pub fn verify_opening<Ch: Challenger>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::challenger::FsChallenger;
+    
     use crate::zerocheck::multilinear::lagrange_weights_naive;
     use crate::zerocheck::univariate_skip::build_eq;
 
@@ -1223,10 +1231,10 @@ mod tests {
             let z_packed = pack_witness(&z, m);
             let (commitment, prover_data) = commit(&z_packed, &params);
 
-            let mut ch_p = FsChallenger::new(b"flock-test-v0");
+            let mut ch_p = crate::transcript::ProverState::new(b"flock-test-v0", &[]);
             let proof = open(&z_packed, &prover_data, &commitment, &x_outer, &mut ch_p);
 
-            let mut ch_v = FsChallenger::new(b"flock-test-v0");
+            let mut ch_v = crate::transcript::VerifierState::detached(b"flock-test-v0", &[]);
             verify_opening(&commitment, claim, z_skip, &x_outer, &proof, &mut ch_v)
                 .unwrap_or_else(|e| panic!("verify rejected honest proof at m={m}: {e:?}"));
         }
@@ -1246,10 +1254,10 @@ mod tests {
         let z_packed = pack_witness(&z, m);
         let (commitment, prover_data) = commit(&z_packed, &params);
 
-        let mut ch_p = FsChallenger::new(b"flock-test-v0");
+        let mut ch_p = crate::transcript::ProverState::new(b"flock-test-v0", &[]);
         let proof = open(&z_packed, &prover_data, &commitment, &x_outer, &mut ch_p);
 
-        let mut ch_v = FsChallenger::new(b"flock-test-v0");
+        let mut ch_v = crate::transcript::VerifierState::detached(b"flock-test-v0", &[]);
         let res = verify_opening(&commitment, claim, z_skip, &x_outer, &proof, &mut ch_v);
         assert!(matches!(res, Err(VerifyError::RingSwitch(_))));
     }
@@ -1267,12 +1275,12 @@ mod tests {
         let z_packed = pack_witness(&z, m);
         let (commitment, prover_data) = commit(&z_packed, &params);
 
-        let mut ch_p = FsChallenger::new(b"flock-test-v0");
+        let mut ch_p = crate::transcript::ProverState::new(b"flock-test-v0", &[]);
         let mut proof = open(&z_packed, &prover_data, &commitment, &x_outer, &mut ch_p);
         // Mutate final_a: now caught by either sumcheck or FRI consistency.
         proof.basefold.final_a.lo ^= 1;
 
-        let mut ch_v = FsChallenger::new(b"flock-test-v0");
+        let mut ch_v = crate::transcript::VerifierState::detached(b"flock-test-v0", &[]);
         let res = verify_opening(&commitment, claim, z_skip, &x_outer, &proof, &mut ch_v);
         assert!(matches!(res, Err(VerifyError::BaseFold(_))));
     }
@@ -1294,11 +1302,11 @@ mod tests {
         let z_packed = pack_witness(&z, m);
         let (commitment, prover_data) = commit(&z_packed, &params);
 
-        let mut ch_p = FsChallenger::new(b"flock-test-v0");
+        let mut ch_p = crate::transcript::ProverState::new(b"flock-test-v0", &[]);
         let honest = open(&z_packed, &prover_data, &commitment, &x_outer, &mut ch_p);
 
         // The honest proof must verify (sanity: the enforcement is not over-tight).
-        let mut ch_ok = FsChallenger::new(b"flock-test-v0");
+        let mut ch_ok = crate::transcript::VerifierState::detached(b"flock-test-v0", &[]);
         assert!(verify_opening(&commitment, claim, z_skip, &x_outer, &honest, &mut ch_ok).is_ok());
 
         // Attack: truncate the query set to a handful, and to zero. Both must
@@ -1306,7 +1314,7 @@ mod tests {
         for keep in [0usize, 1, 8] {
             let mut proof = honest.clone();
             proof.basefold.queries.truncate(keep);
-            let mut ch_v = FsChallenger::new(b"flock-test-v0");
+            let mut ch_v = crate::transcript::VerifierState::detached(b"flock-test-v0", &[]);
             let res = verify_opening(&commitment, claim, z_skip, &x_outer, &proof, &mut ch_v);
             assert!(
                 matches!(
@@ -1357,7 +1365,7 @@ mod tests {
             let params = default_params(m);
             let (commitment, prover_data) = commit(&z_packed, &params);
 
-            let mut ch_p = FsChallenger::new(b"flock-test-v0");
+            let mut ch_p = crate::transcript::ProverState::new(b"flock-test-v0", &[]);
             let proof = open_batch_mixed(
                 &z_packed,
                 &prover_data,
@@ -1372,7 +1380,7 @@ mod tests {
                 point: &point,
                 value,
             };
-            let mut ch_v = FsChallenger::new(b"flock-test-v0");
+            let mut ch_v = crate::transcript::VerifierState::detached(b"flock-test-v0", &[]);
             verify_opening_batch_mixed(
                 &commitment,
                 &[],
@@ -1391,7 +1399,7 @@ mod tests {
                 point: &point,
                 value: bad_value,
             };
-            let mut ch_v = FsChallenger::new(b"flock-test-v0");
+            let mut ch_v = crate::transcript::VerifierState::detached(b"flock-test-v0", &[]);
             let res = verify_opening_batch_mixed(
                 &commitment,
                 &[],
@@ -1434,7 +1442,7 @@ mod tests {
             let params = default_params(m);
             let (commitment, prover_data) = commit(&z_packed, &params);
 
-            let mut ch_p = FsChallenger::new(b"flock-test-v0");
+            let mut ch_p = crate::transcript::ProverState::new(b"flock-test-v0", &[]);
             let proof = open_batch_mixed(
                 &z_packed,
                 &prover_data,
@@ -1449,7 +1457,7 @@ mod tests {
                 point: &point,
                 value,
             };
-            let mut ch_v = FsChallenger::new(b"flock-test-v0");
+            let mut ch_v = crate::transcript::VerifierState::detached(b"flock-test-v0", &[]);
             verify_opening_batch_mixed(
                 &commitment,
                 &[],
@@ -1491,7 +1499,7 @@ mod tests {
         let params = default_params(m);
         let (commitment, prover_data) = commit(&z_packed, &params);
 
-        let mut ch_p = FsChallenger::new(b"flock-test-v0");
+        let mut ch_p = crate::transcript::ProverState::new(b"flock-test-v0", &[]);
         let proof = open_batch_mixed(
             &z_packed,
             &prover_data,
@@ -1506,7 +1514,7 @@ mod tests {
             point: &pd_point,
             value: pd_value,
         };
-        let mut ch_v = FsChallenger::new(b"flock-test-v0");
+        let mut ch_v = crate::transcript::VerifierState::detached(b"flock-test-v0", &[]);
         verify_opening_batch_mixed(
             &commitment,
             &[rs_claim],
@@ -1578,7 +1586,7 @@ mod tests {
             ood_samples: vec![0; n_levels],
         };
 
-        let mut ch_p = FsChallenger::new(b"flock-test-lig-v0");
+        let mut ch_p = crate::transcript::ProverState::new(b"flock-test-lig-v0", &[]);
         let proof = open_batch_mixed_ligerito_with_precomputed_s_hat_v(
             z_packed.clone(),
             &prover_data,
@@ -1591,7 +1599,7 @@ mod tests {
             &mut ch_p,
         );
 
-        let mut ch_v = FsChallenger::new(b"flock-test-lig-v0");
+        let mut ch_v = crate::transcript::VerifierState::detached(b"flock-test-lig-v0", &[]);
         verify_opening_batch_ligerito_mixed(
             &commitment,
             &[rs_claim],
@@ -1752,7 +1760,7 @@ fn stack_claim_eq_at(claim: &StackClaim, x: &[F128]) -> F128 {
 /// multilevel prover instead of BaseFold, reusing the caller's commit as L0.
 /// `lig_config.initial_k` / `log_inv_rates[0]` must match the commit's params.
 #[allow(clippy::too_many_arguments)]
-pub fn open_batch_mixed_ligerito_stacked<Ch: Challenger>(
+pub fn open_batch_mixed_ligerito_stacked(
     qpkd: &[F128],
     x_outers: &[&[F128]],
     precomputed_s_hat_v: &[Option<&[F128]>],
@@ -1763,7 +1771,7 @@ pub fn open_batch_mixed_ligerito_stacked<Ch: Challenger>(
     stack_commitment: &Commitment,
     stack_pd: &[StackClaim],
     lig_config: &ligerito::ProverConfig,
-    challenger: &mut Ch,
+    ps: &mut ProverState,
 ) -> BatchOpeningProofLigerito {
     assert_eq!(
         lig_config.initial_k, stack_commitment.params.log_batch_size,
@@ -1774,16 +1782,16 @@ pub fn open_batch_mixed_ligerito_stacked<Ch: Challenger>(
         "ligerito log_inv_rates[0] must match PcsParams.log_inv_rate for L0 reuse",
     );
 
-    let combined = compute_combined_basis_and_target(qpkd, x_outers, precomputed_s_hat_v, &[], padding, challenger, false);
+    let combined = compute_combined_basis_and_target(qpkd, x_outers, precomputed_s_hat_v, &[], padding, ps, false);
     let mut b_stack = vec![F128::ZERO; stack.len()];
     b_stack[stack_offset..stack_offset + combined.b_combined.len()].copy_from_slice(&combined.b_combined);
     let mut target = combined.target_combined;
 
     for claim in stack_pd {
-        challenger.observe_label(b"flock-pcs-packed-direct-v0");
-        challenger.observe_f128(claim.value());
+        ps.absorb_bytes(b"flock-pcs-packed-direct-v0");
+        ps.observe_scalar(claim.value());
     }
-    let gammas_pd: Vec<F128> = (0..stack_pd.len()).map(|_| challenger.sample_f128()).collect();
+    let gammas_pd: Vec<F128> = (0..stack_pd.len()).map(|_| ps.sample()).collect();
     fold_stacked_point_claims(&mut b_stack, &mut target, stack_pd, &gammas_pd);
 
     let lig = ligerito::multilevel_prover_with_basis(
@@ -1793,7 +1801,7 @@ pub fn open_batch_mixed_ligerito_stacked<Ch: Challenger>(
         target,
         &stack_data.codeword,
         &stack_data.merkle_tree,
-        challenger,
+        ps,
     );
     BatchOpeningProofLigerito {
         ring_switches: combined.ring_switches,
@@ -1818,7 +1826,7 @@ pub struct StackedOpeningSummary {
     pub lig: ligerito::LigVerifierSummary,
 }
 
-pub fn verify_opening_batch_mixed_ligerito_stacked<Ch: Challenger>(
+pub fn verify_opening_batch_mixed_ligerito_stacked(
     stack_commitment: &Commitment,
     stack_offset: usize,
     qpkd_vars: usize,
@@ -1828,7 +1836,7 @@ pub fn verify_opening_batch_mixed_ligerito_stacked<Ch: Challenger>(
     stack_pd: &[StackClaim],
     proof: &BatchOpeningProofLigerito,
     lig_config: &ligerito::VerifierConfig,
-    challenger: &mut Ch,
+    vs: &mut VerifierState<'_>,
 ) -> Result<StackedOpeningSummary, VerifyError> {
     let n_rs = claims.len();
     // These are caller (leanVM) invariants.
@@ -1843,17 +1851,21 @@ pub fn verify_opening_batch_mixed_ligerito_stacked<Ch: Challenger>(
     {
         return Err(shape_err());
     }
-    challenger.observe_label(b"flock-pcs-open-batch-v0");
+    vs.absorb_bytes(b"flock-pcs-open-batch-v0");
 
     // Bind + check every claim, then sample ONE shared r'' (sound: every
     // slice is absorbed before the challenge), then form the batched claims.
     for i in 0..n_rs {
-        ring_switch::verify_bind(claims[i], z_skips[i], x_outers[i], &proof.ring_switches[i], challenger)
+        ring_switch::verify_bind(claims[i], z_skips[i], x_outers[i], &proof.ring_switches[i], vs)
             .map_err(VerifyError::RingSwitch)?;
     }
-    let r_dprime = challenger.sample_f128_vec(LOG_PACKING);
+    // Mirror the prover: with n_rs = 0 the ring-switch batch never runs on the
+    // prover side, so no r'' is sampled there — skip it here too or the two
+    // transcripts diverge (the prover samples r'' inside `prove_batched_*`).
+    let r_dprime = if n_rs > 0 { vs.sample_vec(LOG_PACKING) } else { Vec::new() };
     let eq_r_dprime = crate::zerocheck::univariate_skip::build_eq(&r_dprime);
-    let lin_coeffs = ring_switch::linearized_eq_coeffs(&eq_r_dprime);
+    let lin_coeffs =
+        if n_rs > 0 { ring_switch::linearized_eq_coeffs(&eq_r_dprime) } else { [F128::ZERO; 128] };
     let rs_outputs: Vec<ring_switch::RingSwitchVerifierOutput> = (0..n_rs)
         .map(|i| ring_switch::RingSwitchVerifierOutput {
             sumcheck_claim: ring_switch::transposed_claim_linearized(&proof.ring_switches[i].s_hat_v, &lin_coeffs),
@@ -1861,17 +1873,17 @@ pub fn verify_opening_batch_mixed_ligerito_stacked<Ch: Challenger>(
             eq_r_dprime: eq_r_dprime.clone(),
         })
         .collect();
-    let gammas_rs: Vec<F128> = (0..n_rs).map(|_| challenger.sample_f128()).collect();
+    let gammas_rs: Vec<F128> = (0..n_rs).map(|_| vs.sample()).collect();
     let mut target_combined = F128::ZERO;
     for (out, g) in rs_outputs.iter().zip(gammas_rs.iter()) {
         target_combined += *g * out.sumcheck_claim;
     }
 
     for claim in stack_pd {
-        challenger.observe_label(b"flock-pcs-packed-direct-v0");
-        challenger.observe_f128(claim.value());
+        vs.absorb_bytes(b"flock-pcs-packed-direct-v0");
+        vs.observe_scalar(claim.value());
     }
-    let gammas_pd: Vec<F128> = (0..stack_pd.len()).map(|_| challenger.sample_f128()).collect();
+    let gammas_pd: Vec<F128> = (0..stack_pd.len()).map(|_| vs.sample()).collect();
     for (claim, g) in stack_pd.iter().zip(gammas_pd.iter()) {
         target_combined += *g * claim.value();
     }
@@ -1915,7 +1927,7 @@ pub fn verify_opening_batch_mixed_ligerito_stacked<Ch: Challenger>(
         target_combined,
         &stack_commitment.root,
         eval_b_residual,
-        challenger,
+        vs,
     )
     .ok_or(VerifyError::BaseFold(crate::pcs::basefold::VerifyError::InvalidProofShape))?;
     Ok(StackedOpeningSummary {

@@ -1,6 +1,6 @@
 # Credit: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
 # Vendored snapshot of flock's `flock-core` crate (the GF(2^128) field, additive
-# NTT, Merkle, BaseFold/Ligerito PCS, and Fiat–Shamir challenger). Vendored so
+# NTT, Merkle, BaseFold/Ligerito PCS, and the shared Fiat–Shamir sponge). Vendored so
 # leanVM-b does not depend on the external `../binary-fields/flock` tree, which
 # changes underneath us. De-workspaced: the workspace-inherited values are
 # inlined from flock's root Cargo.toml.
@@ -14,7 +14,6 @@ description = "Vendored protocol library and verifier for the Flock PIOP."
 
 [features]
 hash-count = []
-unsound-challenger = []
 
 [dependencies]
 rayon = "1.10"

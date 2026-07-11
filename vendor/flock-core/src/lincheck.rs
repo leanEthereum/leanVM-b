@@ -117,7 +117,7 @@
 //!   `byte_idx` and apply it across all `i_inner` with one lookup + one XOR
 //!   per byte.
 
-use crate::challenger::Challenger;
+use crate::transcript::{ProverState, VerifierState};
 use crate::field::F128;
 use crate::r1cs::SparseBinaryMatrix;
 use crate::zerocheck::multilinear::lagrange_weights_naive;
@@ -1501,15 +1501,15 @@ fn sumcheck_bind_both_and_eval_next(
 /// - `z_packed.len() == 2^m / 8`.
 ///
 /// Returns `(LincheckProof, LincheckClaim)`. The claim's `r_inner` is
-/// sampled from the challenger after the proof vectors are observed.
-pub fn prove<Ch: Challenger>(
+/// sampled from the sponge after the proof vectors are observed.
+pub fn prove(
     z_packed: &[u8],
     m: usize,
     k_log: usize,
     k_skip: usize,
     circuit: &dyn LincheckCircuit,
     x_ab: &QuirkyPoint,
-    challenger: &mut Ch,
+    ps: &mut ProverState,
 ) -> (LincheckProof, LincheckClaim) {
     prove_padded(
         z_packed,
@@ -1519,7 +1519,7 @@ pub fn prove<Ch: Challenger>(
         1usize << k_log,
         circuit,
         x_ab,
-        challenger,
+        ps,
     )
 }
 
@@ -1528,7 +1528,7 @@ pub fn prove<Ch: Challenger>(
 /// `[useful_bits, 2^k_log)` are honest zero padding. The partial-fold over
 /// the outer dimension skips work for those padding rows — byte-identical
 /// proof on a witness with zero-padded blocks.
-pub fn prove_padded<Ch: Challenger>(
+pub fn prove_padded(
     z_packed: &[u8],
     m: usize,
     k_log: usize,
@@ -1536,7 +1536,7 @@ pub fn prove_padded<Ch: Challenger>(
     useful_bits: usize,
     circuit: &dyn LincheckCircuit,
     x_ab: &QuirkyPoint,
-    challenger: &mut Ch,
+    ps: &mut ProverState,
 ) -> (LincheckProof, LincheckClaim) {
     let (proof, claim, _) = prove_padded_inner(
         z_packed,
@@ -1547,7 +1547,7 @@ pub fn prove_padded<Ch: Challenger>(
         circuit,
         x_ab,
         false,
-        challenger,
+        ps,
     );
     (proof, claim)
 }
@@ -1561,7 +1561,7 @@ pub fn prove_padded<Ch: Challenger>(
 /// Pays one extra `2^k_log` F128 clone (~2 MB at k_log=17) before the
 /// sumcheck loop; callers that don't need the reuse should keep using
 /// [`prove_padded`] to avoid that clone.
-pub fn prove_padded_capture_z_vec<Ch: Challenger>(
+pub fn prove_padded_capture_z_vec(
     z_packed: &[u8],
     m: usize,
     k_log: usize,
@@ -1569,7 +1569,7 @@ pub fn prove_padded_capture_z_vec<Ch: Challenger>(
     useful_bits: usize,
     circuit: &dyn LincheckCircuit,
     x_ab: &QuirkyPoint,
-    challenger: &mut Ch,
+    ps: &mut ProverState,
 ) -> (LincheckProof, LincheckClaim, Vec<F128>) {
     let (proof, claim, captured) = prove_padded_inner(
         z_packed,
@@ -1580,7 +1580,7 @@ pub fn prove_padded_capture_z_vec<Ch: Challenger>(
         circuit,
         x_ab,
         true,
-        challenger,
+        ps,
     );
     (
         proof,
@@ -1590,7 +1590,7 @@ pub fn prove_padded_capture_z_vec<Ch: Challenger>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn prove_padded_inner<Ch: Challenger>(
+fn prove_padded_inner(
     z_packed: &[u8],
     m: usize,
     k_log: usize,
@@ -1599,7 +1599,7 @@ fn prove_padded_inner<Ch: Challenger>(
     circuit: &dyn LincheckCircuit,
     x_ab: &QuirkyPoint,
     capture_z_vec: bool,
-    challenger: &mut Ch,
+    ps: &mut ProverState,
 ) -> (LincheckProof, LincheckClaim, Option<Vec<F128>>) {
     let k = 1usize << k_log;
     let n_log = m - k_log;
@@ -1611,12 +1611,12 @@ fn prove_padded_inner<Ch: Challenger>(
     assert_eq!(x_ab.x_inner_rest.len(), inner_rest_len);
     assert_eq!(x_ab.x_outer.len(), n_log);
 
-    challenger.observe_label(b"flock-lincheck-v0");
+    ps.absorb_bytes(b"flock-lincheck-v0");
     let trace = std::env::var("LINCHECK_TRACE").is_ok();
 
     // 1. Sample α (matches verifier's order). Used to batch the two scalar
     //    consistency checks v_a, v_b into a single sumcheck.
-    let alpha = challenger.sample_f128();
+    let alpha = ps.sample();
 
     // 2. Build the α-batched comb_vec via the circuit's per-block fold. For
     //    the sparse-matrix default this is the fused single-pass row-fold;
@@ -1656,7 +1656,7 @@ fn prove_padded_inner<Ch: Challenger>(
     //     docs/const-wire-pin.md.
     let mut beta = F128::ZERO;
     if let Some(col) = circuit.const_pin_col() {
-        beta = challenger.sample_f128();
+        beta = ps.sample();
         comb_vec[col] += beta;
     }
 
@@ -1702,9 +1702,9 @@ fn prove_padded_inner<Ch: Challenger>(
         // next-eval fused into one pass — see `sumcheck_bind_both_and_eval_next`).
         let (mut e1, mut einf) = sumcheck_round_eval_par(&comb_vec, &z_vec);
         for t in 0..inner_rest_len {
-            challenger.observe_f128(e1);
-            challenger.observe_f128(einf);
-            let r = challenger.sample_f128();
+            ps.observe_scalar(e1);
+            ps.observe_scalar(einf);
+            let r = ps.sample();
             rounds.push((e1, einf));
             r_rounds.push(r);
             if t + 1 < inner_rest_len {
@@ -1729,11 +1729,11 @@ fn prove_padded_inner<Ch: Challenger>(
 
     // 6. Send `z_partial` (the post-sumcheck collapsed z_vec). Length 2^k_skip.
     let z_partial = z_vec.clone();
-    challenger.observe_f128_slice(&z_partial);
+    ps.observe_scalars(&z_partial);
 
     // 7. Sample fresh z_skip AFTER observing z_partial — gives Schwartz-Zippel
     //    soundness on the φ8 (univariate-skip) dim.
-    let r_inner_skip = challenger.sample_f128();
+    let r_inner_skip = ps.sample();
 
     // 8. Output claim's value: φ8 Lagrange combination of z_partial at z_skip.
     //    Equals ẑ_φ8(z_skip, r_rest, x_outer) when z_partial is honest; the
@@ -1761,10 +1761,10 @@ fn prove_padded_inner<Ch: Challenger>(
     (proof, claim, captured_z_vec)
 }
 
-/// Verify a lincheck proof. Walks the challenger in lockstep with `prove`,
+/// Verify a lincheck proof. Walks the sponge in lockstep with `prove`,
 /// performs the three scalar consistency checks against `v, v', v''`, and
 /// derives the three output z claims.
-pub fn verify<Ch: Challenger>(
+pub fn verify(
     m: usize,
     k_log: usize,
     k_skip: usize,
@@ -1773,7 +1773,7 @@ pub fn verify<Ch: Challenger>(
     v_a: F128,
     v_b: F128,
     proof: &LincheckProof,
-    challenger: &mut Ch,
+    vs: &mut VerifierState<'_>,
 ) -> Result<LincheckClaim, VerifyError> {
     let k = 1usize << k_log;
     let n_log = m - k_log;
@@ -1821,7 +1821,7 @@ pub fn verify<Ch: Challenger>(
         });
     }
 
-    challenger.observe_label(b"flock-lincheck-v0");
+    vs.absorb_bytes(b"flock-lincheck-v0");
 
     let trace = std::env::var("VERIFY_TRACE").is_ok();
     let fmt = |s: f64| -> String {
@@ -1834,7 +1834,7 @@ pub fn verify<Ch: Challenger>(
     };
 
     // 1. Sample α (matches prover's order).
-    let alpha = challenger.sample_f128();
+    let alpha = vs.sample();
 
     // 2. Build α-batched comb_vec via the circuit's per-block fold (same call
     //    the prover made — sparse default delegates to the fused row-fold;
@@ -1866,16 +1866,16 @@ pub fn verify<Ch: Challenger>(
     let mut target = alpha * v_a + v_b;
     let mut beta = F128::ZERO;
     if let Some(col) = circuit.const_pin_col() {
-        beta = challenger.sample_f128();
+        beta = vs.sample();
         comb_vec[col] += beta;
         target += beta;
     }
     let mut running = target;
     let mut r_rounds = Vec::with_capacity(inner_rest_len);
     for &(e1, einf) in &proof.rounds {
-        challenger.observe_f128(e1);
-        challenger.observe_f128(einf);
-        let r = challenger.sample_f128();
+        vs.observe_scalar(e1);
+        vs.observe_scalar(einf);
+        let r = vs.sample();
         // q(0) = claim + q(1) in char 2; q(X) = einf·X² + c1·X + e0.
         let e0 = running + e1;
         let c1 = e0 + e1 + einf;
@@ -1894,7 +1894,7 @@ pub fn verify<Ch: Challenger>(
     }
 
     // 4. Observe z_partial AFTER the sumcheck rounds (matches prover order).
-    challenger.observe_f128_slice(&proof.z_partial);
+    vs.observe_scalars(&proof.z_partial);
 
     // 5. Final sumcheck consistency: Σ comb_partial[i_skip] · z_partial[i_skip]
     //    must equal the running claim. Ties z_partial to the upstream v_a, v_b.
@@ -1907,7 +1907,7 @@ pub fn verify<Ch: Challenger>(
     }
 
     // 6. Sample fresh z_skip AFTER z_partial — gives SZ on the φ8 dim.
-    let r_inner_skip = challenger.sample_f128();
+    let r_inner_skip = vs.sample();
 
     // 7. Derive output claim value via φ8 Lagrange on z_partial at z_skip.
     //    Equals ẑ_φ8(z_skip, r_rest, x_outer) when z_partial is honest;
@@ -1944,7 +1944,7 @@ pub fn verify<Ch: Challenger>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::challenger::FsChallenger;
+    
 
     /// SplitMix64 PRNG, deterministic.
     struct Rng(u64);
@@ -2423,10 +2423,10 @@ mod tests {
 
             // Prove and verify with matched challengers.
             let circuit = SparseMatrixCircuit::new(&a_0, &b_0);
-            let mut ch_p = FsChallenger::new(b"flock-test-v0");
+            let mut ch_p = crate::transcript::ProverState::new(b"flock-test-v0", &[]);
             let (proof, claim_p) = prove(&z_packed, m, k_log, k_skip, &circuit, &x_ab, &mut ch_p);
 
-            let mut ch_v = FsChallenger::new(b"flock-test-v0");
+            let mut ch_v = crate::transcript::VerifierState::detached(b"flock-test-v0", &[]);
             let claim_v = verify(
                 m, k_log, k_skip, &circuit, &x_ab, v_a, v_b, &proof, &mut ch_v,
             )
@@ -2479,7 +2479,7 @@ mod tests {
 
         let _seed: u64 = 0xFEEDFACE;
         let circuit = SparseMatrixCircuit::new(&a_0, &b_0);
-        let mut ch_p = FsChallenger::new(b"flock-test-v0");
+        let mut ch_p = crate::transcript::ProverState::new(b"flock-test-v0", &[]);
         let (proof, _) = prove(&z_packed, m, k_log, k_skip, &circuit, &x_ab, &mut ch_p);
 
         // Pick a mutation position where BOTH row vectors are nonzero so the
@@ -2516,7 +2516,7 @@ mod tests {
         ];
         for (label, mutate) in mutations {
             let bad = mutate(&proof);
-            let mut ch = FsChallenger::new(b"flock-test-v0");
+            let mut ch = crate::transcript::VerifierState::detached(b"flock-test-v0", &[]);
             let res = verify(m, k_log, k_skip, &circuit, &x_ab, v_a, v_b, &bad, &mut ch);
             assert!(
                 matches!(res, Err(VerifyError::ConsistencyFailed { .. })),
@@ -2544,20 +2544,20 @@ mod tests {
         let v_b = mle_eval_bool_quirky(&b, m, k_log, k_skip, &x_ab);
 
         let circuit = SparseMatrixCircuit::new(&a_0, &b_0);
-        let mut ch_p = FsChallenger::new(b"flock-test-v0");
+        let mut ch_p = crate::transcript::ProverState::new(b"flock-test-v0", &[]);
         let (proof, _) = prove(&z_packed, m, k_log, k_skip, &circuit, &x_ab, &mut ch_p);
 
         // Truncate z_partial.
         let mut bad = proof.clone();
         bad.z_partial.pop();
-        let mut ch = FsChallenger::new(b"flock-test-v0");
+        let mut ch = crate::transcript::VerifierState::detached(b"flock-test-v0", &[]);
         assert!(matches!(
             verify(m, k_log, k_skip, &circuit, &x_ab, v_a, v_b, &bad, &mut ch),
             Err(VerifyError::BadVectorLength { .. })
         ));
 
         // Wrong x_inner_rest length.
-        let mut ch = FsChallenger::new(b"flock-test-v0");
+        let mut ch = crate::transcript::VerifierState::detached(b"flock-test-v0", &[]);
         let bad_x_ab = QuirkyPoint {
             z_skip: x_ab.z_skip,
             x_inner_rest: x_ab.x_inner_rest[..x_ab.x_inner_rest.len() - 1].to_vec(),
@@ -2571,7 +2571,7 @@ mod tests {
         ));
 
         // k_skip > k_log.
-        let mut ch = FsChallenger::new(b"flock-test-v0");
+        let mut ch = crate::transcript::VerifierState::detached(b"flock-test-v0", &[]);
         assert!(matches!(
             verify(
                 m,

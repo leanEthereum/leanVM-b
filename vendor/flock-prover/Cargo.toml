@@ -15,7 +15,6 @@ description = "Vendored BLAKE3 R1CS prover subset for the Flock PIOP."
 
 [features]
 hash-count = ["flock-core/hash-count"]
-unsound-challenger = ["flock-core/unsound-challenger"]
 
 [lib]
 name = "flock_prover"
@@ -30,7 +29,7 @@ bincode = "1.3"
 
 [dev-dependencies]
 # The inline tests use flock-core's insecure RandomChallenger (and FsChallenger).
-flock-core = { path = "../flock-core", features = ["unsound-challenger"] }
+flock-core = { path = "../flock-core" }
 
 # Own (empty) workspace, so this vendored crate is NOT auto-included as a member
 # of leanVM-b's workspace.

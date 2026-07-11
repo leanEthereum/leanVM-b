@@ -41,7 +41,7 @@
 //! bits, zero-padded to `m`), `b = i` (dense index, `m` bits), and
 //! `c = t_{y-1}`, `d = t_y` are the (boolean, constant) cumulative heights.
 
-use crate::challenger::Challenger;
+use crate::transcript::{ProverState, VerifierState};
 use crate::field::F128;
 use crate::lincheck::build_eq_table;
 
@@ -289,19 +289,19 @@ fn generate_f_and_claim(
 /// `area`) and the sparse evaluation point `(z_row, z_col)`, runs the sumcheck
 /// and returns the proof together with the sparse claim value
 /// `v = p̂(z_row, z_col)`.
-pub fn prove<C: Challenger>(
+pub fn prove(
     params: &JaggedParams,
     q: &[F128],
     z_row: &[F128],
     z_col: &[F128],
-    challenger: &mut C,
+    ps: &mut ProverState,
 ) -> (JaggedSumcheckProof, F128) {
     let m = params.m;
     let len = 1usize << m;
     assert_eq!(q.len(), len, "q must have 2^m entries");
     assert_eq!(z_row.len(), params.n);
     assert_eq!(z_col.len(), params.k);
-    challenger.observe_label(b"flock-jagged-v0");
+    ps.absorb_bytes(b"flock-jagged-v0");
 
     // Second sumcheck multilinear B[i] = eq(row_t(i), z_row)·eq(col_t(i), z_col)
     // over the boolean cube (= f̂_t(z_row, z_col, ·) on {0,1}^m), and the claim
@@ -322,9 +322,9 @@ pub fn prove<C: Challenger>(
     let (mut g_one, mut g_inf) = round_msg_par(&a[..cur], &bb[..cur]);
     for _ in 0..m {
         let half = cur / 2;
-        challenger.observe_f128(g_one);
-        challenger.observe_f128(g_inf);
-        let r = challenger.sample_f128();
+        ps.observe_scalar(g_one);
+        ps.observe_scalar(g_inf);
+        let r = ps.sample();
         rounds.push((g_one, g_inf));
         if cur > 2 {
             (g_one, g_inf) =
@@ -349,26 +349,26 @@ pub fn prove<C: Challenger>(
 /// sparse value `claim_v = p̂(z_row, z_col)`, computes `f̂_t` at the final
 /// point through the branching program, and on success returns the reduced
 /// dense claim `q̂(i*) = alpha`. Returns `None` if the proof is rejected.
-pub fn verify<C: Challenger>(
+pub fn verify(
     params: &JaggedParams,
     z_row: &[F128],
     z_col: &[F128],
     claim_v: F128,
     proof: &JaggedSumcheckProof,
-    challenger: &mut C,
+    vs: &mut VerifierState<'_>,
 ) -> Option<DenseClaim> {
     let m = params.m;
     if proof.rounds.len() != m {
         return None;
     }
-    challenger.observe_label(b"flock-jagged-v0");
+    vs.absorb_bytes(b"flock-jagged-v0");
 
     let mut claim = claim_v;
     let mut point = Vec::with_capacity(m);
     for &(g_one, g_inf) in &proof.rounds {
-        challenger.observe_f128(g_one);
-        challenger.observe_f128(g_inf);
-        let r = challenger.sample_f128();
+        vs.observe_scalar(g_one);
+        vs.observe_scalar(g_inf);
+        let r = vs.sample();
         claim = fold_round_claim(claim, g_one, g_inf, r);
         point.push(r);
     }
@@ -542,11 +542,11 @@ fn fold_and_round_oop_par(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::challenger::{FsChallenger, RandomChallenger};
+    use crate::sponge::Sponge;
     use crate::zerocheck::multilinear::fold_in_place_pair;
 
-    fn sample_vec(ch: &mut RandomChallenger, n: usize) -> Vec<F128> {
-        (0..n).map(|_| ch.sample_f128()).collect()
+    fn sample_vec(ch: &mut Sponge, n: usize) -> Vec<F128> {
+        (0..n).map(|_| ch.sample()).collect()
     }
 
     /// Direct MLE of `f_t` in the index variable: brute-force reference for
@@ -579,7 +579,7 @@ mod tests {
 
     /// A small random jagged config + dense data, with total area < 2^m.
     fn random_instance(
-        ch: &mut RandomChallenger,
+        ch: &mut Sponge,
         n: usize,
         k: usize,
         m: usize,
@@ -587,11 +587,11 @@ mod tests {
         let cols = 1usize << k;
         let cap = 1u64 << m;
         let max_h = 1u64 << n;
-        // Pick heights with Σ ≤ 2^m. Pull pseudo-randomness from the challenger.
+        // Pick heights with Σ ≤ 2^m. Pull pseudo-randomness from the sponge.
         let mut heights = vec![0u64; cols];
         let mut remaining = cap;
         for h in heights.iter_mut() {
-            let r = ch.sample_f128().lo % (max_h + 1);
+            let r = ch.sample().lo % (max_h + 1);
             let take = r.min(remaining);
             *h = take;
             remaining -= take;
@@ -600,14 +600,14 @@ mod tests {
         // Dense q: random in [0, area), zero past it.
         let mut q = vec![F128::ZERO; 1usize << m];
         for qi in q.iter_mut().take(params.area() as usize) {
-            *qi = ch.sample_f128();
+            *qi = ch.sample();
         }
         (params, q)
     }
 
     #[test]
     fn f_hat_t_matches_bruteforce() {
-        let mut ch = RandomChallenger::new(0x1A66_ED12);
+        let mut ch = Sponge::new(&(0x1A66_ED12u64).to_le_bytes(), &[]);
         for &(n, k, m) in &[(3usize, 2usize, 5usize), (4, 3, 7), (2, 4, 6), (5, 1, 5)] {
             for _ in 0..8 {
                 let (params, _q) = random_instance(&mut ch, n, k, m);
@@ -624,7 +624,7 @@ mod tests {
     #[test]
     fn f_hat_t_eq4_at_boolean_points() {
         // At a boolean index i < area, f̂_t = eq(row_t(i), z_r)·eq(col_t(i), z_c).
-        let mut ch = RandomChallenger::new(0xB001_2345);
+        let mut ch = Sponge::new(&(0xB001_2345u64).to_le_bytes(), &[]);
         let (params, _q) = random_instance(&mut ch, 4, 3, 7);
         let z_row = sample_vec(&mut ch, 4);
         let z_col = sample_vec(&mut ch, 3);
@@ -641,17 +641,17 @@ mod tests {
 
     #[test]
     fn sumcheck_roundtrip() {
-        let mut ch = RandomChallenger::new(0x5C4E_CC01);
+        let mut ch = Sponge::new(&(0x5C4E_CC01u64).to_le_bytes(), &[]);
         for &(n, k, m) in &[(3usize, 2usize, 5usize), (4, 3, 7), (2, 4, 6)] {
             for _ in 0..5 {
                 let (params, q) = random_instance(&mut ch, n, k, m);
                 let z_row = sample_vec(&mut ch, n);
                 let z_col = sample_vec(&mut ch, k);
 
-                let mut pch = FsChallenger::new(b"flock-jagged-test");
+                let mut pch = crate::transcript::ProverState::new(b"flock-jagged-test", &[]);
                 let (proof, v) = prove(&params, &q, &z_row, &z_col, &mut pch);
 
-                let mut vch = FsChallenger::new(b"flock-jagged-test");
+                let mut vch = crate::transcript::VerifierState::detached(b"flock-jagged-test", &[]);
                 let claim = verify(&params, &z_row, &z_col, v, &proof, &mut vch)
                     .expect("honest proof must verify");
 
@@ -663,15 +663,15 @@ mod tests {
 
     #[test]
     fn sumcheck_rejects_wrong_value() {
-        let mut ch = RandomChallenger::new(0xBAD0_C1A1);
+        let mut ch = Sponge::new(&(0xBAD0_C1A1u64).to_le_bytes(), &[]);
         let (params, q) = random_instance(&mut ch, 4, 3, 7);
         let z_row = sample_vec(&mut ch, 4);
         let z_col = sample_vec(&mut ch, 3);
 
-        let mut pch = FsChallenger::new(b"flock-jagged-test");
+        let mut pch = crate::transcript::ProverState::new(b"flock-jagged-test", &[]);
         let (proof, v) = prove(&params, &q, &z_row, &z_col, &mut pch);
 
-        let mut vch = FsChallenger::new(b"flock-jagged-test");
+        let mut vch = crate::transcript::VerifierState::detached(b"flock-jagged-test", &[]);
         let bad = v + F128::ONE;
         assert!(
             verify(&params, &z_row, &z_col, bad, &proof, &mut vch).is_none(),
@@ -707,7 +707,7 @@ mod tests {
                 hi: (i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15),
             };
         }
-        let mut rc = RandomChallenger::new(0x0B7A_4225);
+        let mut rc = Sponge::new(&(0x0B7A_4225u64).to_le_bytes(), &[]);
         let z_row = sample_vec(&mut rc, n);
         let z_col = sample_vec(&mut rc, k);
 
@@ -758,15 +758,15 @@ mod tests {
         let run_serial = |fused: bool| -> std::time::Duration {
             let mut a = q.clone();
             let mut bb = b.clone();
-            let mut ch = FsChallenger::new(b"flock-jagged-bench");
-            ch.observe_label(b"flock-jagged-v0");
+            let mut ch = Sponge::new(b"flock-jagged-bench", &[]);
+            ch.absorb_bytes(b"flock-jagged-v0");
             let t = Instant::now();
             if fused {
                 let (mut g1, mut gi) = round_msg(&a, &bb);
                 for _ in 0..m {
-                    ch.observe_f128(g1);
-                    ch.observe_f128(gi);
-                    let r = ch.sample_f128();
+                    ch.observe(g1);
+                    ch.observe(gi);
+                    let r = ch.sample();
                     if a.len() > 2 {
                         (g1, gi) = fold_and_round_fused(&mut a, &mut bb, r);
                     } else {
@@ -776,9 +776,9 @@ mod tests {
             } else {
                 for _ in 0..m {
                     let (g1, gi) = round_msg(&a, &bb);
-                    ch.observe_f128(g1);
-                    ch.observe_f128(gi);
-                    let r = ch.sample_f128();
+                    ch.observe(g1);
+                    ch.observe(gi);
+                    let r = ch.sample();
                     fold_in_place_pair(&mut a, &mut bb, r);
                 }
             }
@@ -793,8 +793,8 @@ mod tests {
             let mut sa = vec![F128::ZERO; len / 2];
             let mut sb = vec![F128::ZERO; len / 2];
             let mut cur = len;
-            let mut ch = FsChallenger::new(b"flock-jagged-bench");
-            ch.observe_label(b"flock-jagged-v0");
+            let mut ch = Sponge::new(b"flock-jagged-bench", &[]);
+            ch.absorb_bytes(b"flock-jagged-v0");
             let t = Instant::now();
             let (mut g1, mut gi) = if fused {
                 round_msg_par(&a[..cur], &bb[..cur])
@@ -808,9 +808,9 @@ mod tests {
                     g1 = m1;
                     gi = mi;
                 }
-                ch.observe_f128(g1);
-                ch.observe_f128(gi);
-                let r = ch.sample_f128();
+                ch.observe(g1);
+                ch.observe(gi);
+                let r = ch.sample();
                 if fused && cur > 2 {
                     let (n1, ni) = fold_and_round_oop_par(
                         &a[..cur],
@@ -844,7 +844,7 @@ mod tests {
         }
 
         // --- Verifier f̂_t eval at a random final point. ---
-        let point: Vec<F128> = (0..m).map(|_| rc.sample_f128()).collect();
+        let point: Vec<F128> = (0..m).map(|_| rc.sample()).collect();
         let t2 = Instant::now();
         let beta = f_hat_t(&params, &z_row, &z_col, &point);
         std::hint::black_box(beta);
@@ -1090,16 +1090,16 @@ mod tests {
 
     #[test]
     fn sumcheck_rejects_tampered_proof() {
-        let mut ch = RandomChallenger::new(0xDEAD_BEEF);
+        let mut ch = Sponge::new(&(0xDEAD_BEEFu64).to_le_bytes(), &[]);
         let (params, q) = random_instance(&mut ch, 3, 3, 6);
         let z_row = sample_vec(&mut ch, 3);
         let z_col = sample_vec(&mut ch, 3);
 
-        let mut pch = FsChallenger::new(b"flock-jagged-test");
+        let mut pch = crate::transcript::ProverState::new(b"flock-jagged-test", &[]);
         let (mut proof, v) = prove(&params, &q, &z_row, &z_col, &mut pch);
         proof.q_eval += F128::ONE;
 
-        let mut vch = FsChallenger::new(b"flock-jagged-test");
+        let mut vch = crate::transcript::VerifierState::detached(b"flock-jagged-test", &[]);
         assert!(
             verify(&params, &z_row, &z_col, v, &proof, &mut vch).is_none(),
             "verifier must reject a tampered q_eval"

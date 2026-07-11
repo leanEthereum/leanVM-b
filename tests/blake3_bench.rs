@@ -83,7 +83,7 @@ fn bench_blake3_prove() {
     let mut best_timings = None;
     let mut last = None;
     for _ in 0..reps {
-        let mut ch = flare::challenger::FsChallenger::new(b"flock-blake3-bench");
+        let mut ch = flare::transcript::ProverState::new(b"flock-blake3-bench", &[]);
         let t = Instant::now();
         let (proof, commitment, _claim, timings) = setup.prove_fast_timed(&blocks, &mut ch);
         let secs = t.elapsed().as_secs_f64();
@@ -98,7 +98,7 @@ fn bench_blake3_prove() {
 
     // Verify (correctness gate + a verify timing for reference).
     let (proof, commitment) = last.expect("≥1 rep");
-    let mut ch_v = flare::challenger::FsChallenger::new(b"flock-blake3-bench");
+    let mut ch_v = flare::transcript::VerifierState::detached(b"flock-blake3-bench", &[]);
     let t = Instant::now();
     setup.verify(&commitment, &proof, &mut ch_v).expect("flock BLAKE3 proof must verify");
     let verify = t.elapsed();

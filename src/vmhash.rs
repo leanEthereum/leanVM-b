@@ -11,26 +11,12 @@
 
 use crate::field::{F128, g_pow};
 
-/// `f(a, b) = BLAKE3(a‖b)` on two 256-bit halves laid out little-endian into 64
-/// bytes — *exactly* the `Blake3` opcode (§7.6, `cpu::execute`): 64 input bytes →
-/// 32-byte digest, split back into two field words. THE primitive; every other
-/// hash here is a chain of these, so a zkDSL program reproduces them with one
-/// `blake3(...)` per call.
-pub fn compress(a: [F128; 2], b: [F128; 2]) -> [F128; 2] {
-    let mut input = [0u8; 64];
-    for (slot, w) in input.chunks_exact_mut(16).zip([a[0], a[1], b[0], b[1]]) {
-        slot[..8].copy_from_slice(&w.lo.to_le_bytes());
-        slot[8..].copy_from_slice(&w.hi.to_le_bytes());
-    }
-    let d = *blake3::hash(&input).as_bytes();
-    let word = |b: &[u8]| {
-        F128::new(
-            u64::from_le_bytes(b[..8].try_into().unwrap()),
-            u64::from_le_bytes(b[8..16].try_into().unwrap()),
-        )
-    };
-    [word(&d[..16]), word(&d[16..])]
-}
+/// `f(a, b) = BLAKE3(a‖b)` on two 256-bit halves — *exactly* the `Blake3`
+/// opcode (§7.6, `cpu::execute`): 64 input bytes → 32-byte digest, split back
+/// into two field words. THE primitive; every other hash here is a chain of
+/// these, so a zkDSL program reproduces them with one `blake3(...)` per call.
+/// Lives in [`flare::sponge`] (the shared Fiat–Shamir sponge is built on it).
+pub use flare::sponge::compress;
 
 /// Merkle–Damgård hash of a field-element slice with the **byte length in the
 /// IV** — mirroring the XMSS WOTS-public-key hash (`xmss_aggregate.py`): the

@@ -17,18 +17,22 @@
 //!
 //! Workspace-wide Clippy `allow`s for the hand-tuned numeric kernels are
 //! declared in `[workspace.lints.clippy]` at the repo root.
+//!
+//! Dropped vs. upstream: the standalone `permutation` argument (leanVM-b runs
+//! its own GKR-based bus instead) and the `challenger` abstraction — the whole
+//! stack now draws verifier randomness from the one VM-native [`sponge`].
 
 pub mod bits;
-pub mod challenger;
 pub mod field;
 pub mod lincheck;
 pub mod merkle;
 pub mod ntt;
 pub mod pcs;
-pub mod permutation;
 pub mod proof;
 pub mod r1cs;
 pub mod scratch;
+pub mod sponge;
+pub mod transcript;
 pub mod verifier;
 pub mod zerocheck;
 

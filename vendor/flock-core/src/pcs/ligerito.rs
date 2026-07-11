@@ -11,7 +11,7 @@
 //! Ported from bolt-rs (`ligerito_recursive.rs`) onto Flock primitives:
 //! `F128` (GHASH irreducible), [`AdditiveNttF128`] (LCH novel basis,
 //! byte-identical to bolt-rs's FFT), SHA-256 merkle from [`crate::merkle`],
-//! and the [`Challenger`] trait for Fiat-Shamir.
+//! and the shared [`crate::sponge::Sponge`] for Fiat-Shamir.
 //!
 //! Soundness regimes (our paper App. C.3): unique decoding (Thm `ca-udr`,
 //! BCHKS25 Cor. 1.4, `Secure` profile) and Johnson list decoding with
@@ -30,7 +30,8 @@
 //!    b. Last step: send remaining poly + open f^i.
 //!    c. Else: commit f^{i+2}, open f^{i+1}, induce next basis, glue.
 
-use crate::challenger::Challenger;
+use crate::sponge::Sponge;
+use crate::transcript::{ProverState, VerifierState};
 use crate::field::F128;
 use crate::lincheck::build_eq_table;
 use crate::merkle::{self, Hash};
@@ -646,7 +647,7 @@ pub struct LigeritoSecurityConfig {
     pub analysis_version: String,
     /// Field of the protocol. Example: `"f128"`.
     pub field: String,
-    /// Hash function used by Merkle + FS challenger. Example: `"sha256"`.
+    /// Hash function used by Merkle + FS sponge. Example: `"sha256"`.
     pub hash: String,
     /// Where in the per-level FS transcript grinding is placed.
     pub grinding_step: GrindingStep,
@@ -2827,11 +2828,11 @@ impl SumcheckProver {
 // Prover / Verifier — stubs
 // ===================================================================
 
-/// Sample `count` distinct positions in `[0, block_len)` via the challenger.
+/// Sample `count` distinct positions in `[0, block_len)` via the sponge.
 /// Asserts `count <= block_len` — otherwise no number of samples could satisfy
 /// the distinctness requirement (would infinite-loop).
-fn sample_distinct_queries<Ch: Challenger>(
-    challenger: &mut Ch,
+fn sample_distinct_queries(
+    sponge: &mut Sponge,
     block_len: usize,
     count: usize,
 ) -> Vec<usize> {
@@ -2842,7 +2843,7 @@ fn sample_distinct_queries<Ch: Challenger>(
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::with_capacity(count);
     while out.len() < count {
-        let v = challenger.sample_f128();
+        let v = sponge.sample();
         let q = (v.lo as usize) % block_len;
         if seen.insert(q) {
             out.push(q);
@@ -2887,8 +2888,8 @@ pub struct LigVerifierSummary {
 }
 
 /// [`sample_queries_ordered`], also returning the raw squeezed words.
-fn sample_queries_ordered_with_raw<Ch: Challenger>(
-    challenger: &mut Ch,
+fn sample_queries_ordered_with_raw(
+    sponge: &mut Sponge,
     block_len: usize,
     count: usize,
 ) -> (Vec<usize>, Vec<F128>) {
@@ -2897,7 +2898,7 @@ fn sample_queries_ordered_with_raw<Ch: Challenger>(
     let mut out = Vec::with_capacity(count);
     let mut raw = Vec::with_capacity(count.div_ceil(per));
     while out.len() < count {
-        let v = challenger.sample_f128();
+        let v = sponge.sample();
         raw.push(v);
         let bits = (v.lo as u128) | ((v.hi as u128) << 64);
         for j in 0..per.min(count - out.len()) {
@@ -2907,12 +2908,12 @@ fn sample_queries_ordered_with_raw<Ch: Challenger>(
     (out, raw)
 }
 
-fn sample_queries_ordered<Ch: Challenger>(challenger: &mut Ch, block_len: usize, count: usize) -> Vec<usize> {
+fn sample_queries_ordered(sponge: &mut Sponge, block_len: usize, count: usize) -> Vec<usize> {
     let d = block_len.trailing_zeros() as usize;
     let per = 128 / d;
     let mut out = Vec::with_capacity(count);
     while out.len() < count {
-        let v = challenger.sample_f128();
+        let v = sponge.sample();
         let bits = (v.lo as u128) | ((v.hi as u128) << 64);
         for j in 0..per.min(count - out.len()) {
             out.push(((bits >> (j * d)) as usize) & (block_len - 1));
@@ -3058,12 +3059,12 @@ fn compress_level_opening(
 ///    yr in clear and open the previous commitment; else commit the folded f,
 ///    open the previous commitment, induce a fresh basis from these opens,
 ///    introduce + glue.
-pub fn multilevel_prover<Ch: Challenger>(
+pub fn multilevel_prover(
     config: &ProverConfig,
     poly: &[F128],
     eval_point: &[F128],
     claimed_value: F128,
-    challenger: &mut Ch,
+    ps: &mut ProverState,
 ) -> LigeritoProof {
     let trace = std::env::var("LIGERITO_TRACE").is_ok();
     macro_rules! tlog {
@@ -3088,9 +3089,9 @@ pub fn multilevel_prover<Ch: Challenger>(
     );
     assert!(r >= 1, "level_steps must be ≥ 1");
 
-    challenger.observe_label(b"flock-ligerito-v0");
-    challenger.observe_f128(claimed_value);
-    challenger.observe_f128_slice(eval_point);
+    ps.absorb_bytes(b"flock-ligerito-v0");
+    ps.observe_scalar(claimed_value);
+    ps.observe_scalars(eval_point);
 
     // ---- Initial commit (wtns_0) ----
     let log_inv_rate_0 = config.log_inv_rates[0];
@@ -3107,7 +3108,7 @@ pub fn multilevel_prover<Ch: Challenger>(
         wtns_0,
         eval_point,
         claimed_value,
-        challenger,
+        ps,
         t_total,
         t_commits,
         t_induce,
@@ -3126,14 +3127,14 @@ pub fn multilevel_prover<Ch: Challenger>(
 /// would produce at the same `(log_msg_cols_0 = log_n - initial_k, initial_k,
 /// log_inv_rates[0])`. In practice this means using `PcsParams` with
 /// `log_batch_size = config.initial_k` and `log_inv_rate = config.log_inv_rates[0]`.
-pub fn multilevel_prover_with_l0<Ch: Challenger>(
+pub fn multilevel_prover_with_l0(
     config: &ProverConfig,
     poly: &[F128],
     l0_codeword: Vec<F128>,
     l0_tree: Vec<Hash>,
     eval_point: &[F128],
     claimed_value: F128,
-    challenger: &mut Ch,
+    ps: &mut ProverState,
 ) -> LigeritoProof {
     let trace = std::env::var("LIGERITO_TRACE").is_ok();
     macro_rules! tlog {
@@ -3171,9 +3172,9 @@ pub fn multilevel_prover_with_l0<Ch: Challenger>(
         "external L0 tree wrong size"
     );
 
-    challenger.observe_label(b"flock-ligerito-v0");
-    challenger.observe_f128(claimed_value);
-    challenger.observe_f128_slice(eval_point);
+    ps.absorb_bytes(b"flock-ligerito-v0");
+    ps.observe_scalar(claimed_value);
+    ps.observe_scalars(eval_point);
 
     let wtns_0 = LigeroWitness {
         mat: l0_codeword,
@@ -3189,7 +3190,7 @@ pub fn multilevel_prover_with_l0<Ch: Challenger>(
         wtns_0,
         eval_point,
         claimed_value,
-        challenger,
+        ps,
         t_total,
         t_commits,
         t_induce,
@@ -3209,14 +3210,14 @@ pub fn multilevel_prover_with_l0<Ch: Challenger>(
 /// basis with no single `z`), runs `initial_k` real sumcheck rounds folding
 /// both `f` and `b` together with FS challenges. The folded f becomes wtns_1
 /// and the rest of the protocol proceeds identically.
-pub fn multilevel_prover_with_basis<Ch: Challenger>(
+pub fn multilevel_prover_with_basis(
     config: &ProverConfig,
     packed_witness: Vec<F128>,
     b_initial: Vec<F128>,
     target: F128,
     l0_codeword: &[F128],
     l0_tree: &[Hash],
-    challenger: &mut Ch,
+    ps: &mut ProverState,
 ) -> LigeritoProof {
     multilevel_prover_with_basis_impl(
         config,
@@ -3226,7 +3227,7 @@ pub fn multilevel_prover_with_basis<Ch: Challenger>(
         l0_codeword,
         l0_tree,
         None,
-        challenger,
+        ps,
     )
 }
 
@@ -3236,7 +3237,7 @@ pub fn multilevel_prover_with_basis<Ch: Challenger>(
 /// side effect while building `b_initial` — passing them in here lets
 /// `SumcheckProver::new` skip the redundant 256 MB read pass over (f, b1).
 #[allow(clippy::too_many_arguments)]
-pub fn multilevel_prover_with_basis_precomputed_round0<Ch: Challenger>(
+pub fn multilevel_prover_with_basis_precomputed_round0(
     config: &ProverConfig,
     packed_witness: Vec<F128>,
     b_initial: Vec<F128>,
@@ -3244,7 +3245,7 @@ pub fn multilevel_prover_with_basis_precomputed_round0<Ch: Challenger>(
     l0_codeword: &[F128],
     l0_tree: &[Hash],
     round0_uv: (F128, F128),
-    challenger: &mut Ch,
+    ps: &mut ProverState,
 ) -> LigeritoProof {
     multilevel_prover_with_basis_impl(
         config,
@@ -3257,12 +3258,12 @@ pub fn multilevel_prover_with_basis_precomputed_round0<Ch: Challenger>(
             u_0: round0_uv.0,
             u_2: round0_uv.1,
         }),
-        challenger,
+        ps,
     )
 }
 
 #[allow(clippy::too_many_arguments)]
-fn multilevel_prover_with_basis_impl<Ch: Challenger>(
+fn multilevel_prover_with_basis_impl(
     config: &ProverConfig,
     packed_witness: Vec<F128>,
     b_initial: Vec<F128>,
@@ -3270,7 +3271,7 @@ fn multilevel_prover_with_basis_impl<Ch: Challenger>(
     l0_codeword: &[F128],
     l0_tree: &[Hash],
     first_msg: Option<SumcheckMessage>,
-    challenger: &mut Ch,
+    ps: &mut ProverState,
 ) -> LigeritoProof {
     let log_n = packed_witness.len().trailing_zeros() as usize;
     let r = config.level_steps;
@@ -3300,8 +3301,8 @@ fn multilevel_prover_with_basis_impl<Ch: Challenger>(
 
     let t_total = std::time::Instant::now();
 
-    challenger.observe_label(b"flock-ligerito-basis-v0");
-    challenger.observe_f128(target);
+    ps.absorb_bytes(b"flock-ligerito-basis-v0");
+    ps.observe_scalar(target);
 
     // L0 codeword + tree are borrowed (reused from upstream `pcs::commit`).
     // wtns_0 access reduces to: root (last tree node), row(q), block_len.
@@ -3312,7 +3313,7 @@ fn multilevel_prover_with_basis_impl<Ch: Challenger>(
         let start = q * l0_num_interleaved;
         &l0_codeword[start..start + l0_num_interleaved]
     };
-    challenger.observe_bytes(&initial_root);
+    ps.absorb_bytes(&initial_root);
 
     // L0 takes no explicit OOD samples: it is bound by the opening's own
     // evaluation claim (`target` at the post-commit random point behind
@@ -3334,8 +3335,8 @@ fn multilevel_prover_with_basis_impl<Ch: Challenger>(
         Some(msg) => SumcheckProver::new_with_first_msg(packed_witness, b_initial, target, msg),
         None => SumcheckProver::new(packed_witness, b_initial, target),
     };
-    challenger.observe_f128(start_msg.u_0);
-    challenger.observe_f128(start_msg.u_2);
+    ps.observe_scalar(start_msg.u_0);
+    ps.observe_scalar(start_msg.u_2);
 
     let mut r_lane_fold = Vec::with_capacity(initial_k);
     for j in 0..initial_k {
@@ -3350,12 +3351,12 @@ fn multilevel_prover_with_basis_impl<Ch: Challenger>(
         // Derived from fold_grinding_bits + round index; not stored.
         let bits = fold_bits(0).saturating_sub(j as u32);
         if bits > 0 {
-            fold_grinding_nonces.push(challenger.grind_pow(bits));
+            fold_grinding_nonces.push(ps.grind_pow(bits));
         }
-        let r = challenger.sample_f128();
+        let r = ps.sample();
         let msg = sc_prover.fold(r);
-        challenger.observe_f128(msg.u_0);
-        challenger.observe_f128(msg.u_2);
+        ps.observe_scalar(msg.u_0);
+        ps.observe_scalar(msg.u_2);
         r_lane_fold.push(r);
     }
     if trace {
@@ -3381,7 +3382,7 @@ fn multilevel_prover_with_basis_impl<Ch: Challenger>(
     if trace {
         t_commits += _t.elapsed();
     }
-    challenger.observe_bytes(&wtns_1.root());
+    ps.absorb_bytes(&wtns_1.root());
 
     // OOD binding for the L1 commit: each sample evaluates f1's multilinear
     // extension at a random transcript point z ∈ F^{n1}, sends the claimed
@@ -3391,17 +3392,17 @@ fn multilevel_prover_with_basis_impl<Ch: Challenger>(
     {
         let _t = std::time::Instant::now();
         for _ in 0..ood_count(1) {
-            let z = challenger.sample_f128_vec(n1);
+            let z = ps.sample_vec(n1);
             // Build eq(z, ·) once and fuse the MLE eval `y = f̂1(z)` into the
             // introduce round message (single pass over f1 + eq_z), instead of
             // a separate `mle_eval_inline` fold.
             let eq_z = build_eq_table(&z);
             let (intro, y) = sc_prover.introduce_new_with_eval(eq_z);
-            challenger.observe_f128(y);
+            ps.observe_scalar(y);
             ood_values.push(y);
-            challenger.observe_f128(intro.u_0);
-            challenger.observe_f128(intro.u_2);
-            let beta = challenger.sample_f128();
+            ps.observe_scalar(intro.u_0);
+            ps.observe_scalar(intro.u_2);
+            let beta = ps.sample();
             sc_prover.glue(beta);
         }
         if trace {
@@ -3414,13 +3415,13 @@ fn multilevel_prover_with_basis_impl<Ch: Challenger>(
     // bits here). Verifier mirror checks the nonce; both then proceed to
     // sample query positions. (The proximity-gap shortfall is covered
     // separately by the fold-challenge grinds above.)
-    let pow_nonce_0 = challenger.grind_pow(config.grinding_bits[0] as u32);
+    let pow_nonce_0 = ps.grind_pow(config.grinding_bits[0] as u32);
     let mut grinding_nonces: Vec<u64> = vec![pow_nonce_0];
 
     // Open L0; lane-fold weights = r_lane_fold.
     let num_queries_0 = config.queries[0];
-    let queries_0 = sample_queries_ordered(challenger, l0_block_len, num_queries_0);
-    let alpha_0 = challenger.sample_f128_vec(ceil_log2(num_queries_0));
+    let queries_0 = sample_queries_ordered(ps.sponge_mut(), l0_block_len, num_queries_0);
+    let alpha_0 = ps.sample_vec(ceil_log2(num_queries_0));
     let _t = std::time::Instant::now();
     // `opened_rows_0` stays in transcript (ordered, possibly-duplicate) order for
     // the induce-sumcheck math below; the STORED proof compresses it (index dedup
@@ -3457,9 +3458,9 @@ fn multilevel_prover_with_basis_impl<Ch: Challenger>(
     // Introduce + glue basis_0.
     let _t = std::time::Instant::now();
     let intro_msg_0 = sc_prover.introduce_new(basis_0_induced, enforced_sum_0);
-    challenger.observe_f128(intro_msg_0.u_0);
-    challenger.observe_f128(intro_msg_0.u_2);
-    let beta_0 = challenger.sample_f128();
+    ps.observe_scalar(intro_msg_0.u_0);
+    ps.observe_scalar(intro_msg_0.u_2);
+    let beta_0 = ps.sample();
     sc_prover.glue(beta_0);
     if trace {
         t_intro_glue += _t.elapsed();
@@ -3480,12 +3481,12 @@ fn multilevel_prover_with_basis_impl<Ch: Challenger>(
             // round j needs (fold_bits − j) bits (see L0 loop).
             let bits = fold_bits(i + 1).saturating_sub(j as u32);
             if bits > 0 {
-                fold_grinding_nonces.push(challenger.grind_pow(bits));
+                fold_grinding_nonces.push(ps.grind_pow(bits));
             }
-            let ri = challenger.sample_f128();
+            let ri = ps.sample();
             let msg = sc_prover.fold(ri);
-            challenger.observe_f128(msg.u_0);
-            challenger.observe_f128(msg.u_2);
+            ps.observe_scalar(msg.u_0);
+            ps.observe_scalar(msg.u_2);
             level_rs.push(ri);
         }
         if trace {
@@ -3495,14 +3496,14 @@ fn multilevel_prover_with_basis_impl<Ch: Challenger>(
         if i == r - 1 {
             let yr = sc_prover.f().to_vec();
             for v in &yr {
-                challenger.observe_f128(*v);
+                ps.observe_scalar(*v);
             }
             // PoW grinding for the last level before sampling its queries.
-            let nonce_last = challenger.grind_pow(config.grinding_bits[i + 1] as u32);
+            let nonce_last = ps.grind_pow(config.grinding_bits[i + 1] as u32);
             grinding_nonces.push(nonce_last);
             let num_queries_last = config.queries[i + 1];
             let queries_last =
-                sample_queries_ordered(challenger, wtns_prev.block_len, num_queries_last);
+                sample_queries_ordered(ps.sponge_mut(), wtns_prev.block_len, num_queries_last);
             let _t = std::time::Instant::now();
             // Final level: opened rows are only stored (no induce), so keep just
             // the compressed (deduped + octopus) form.
@@ -3586,21 +3587,21 @@ fn multilevel_prover_with_basis_impl<Ch: Challenger>(
             t_commits += _t.elapsed();
         }
         let root_next = wtns_next.root();
-        challenger.observe_bytes(&root_next);
+        ps.absorb_bytes(&root_next);
         level_roots.push(root_next);
 
         // OOD binding for the L_{i+2} commit (same as the L1 block above).
         {
             let _t = std::time::Instant::now();
             for _ in 0..ood_count(i + 2) {
-                let z = challenger.sample_f128_vec(n_next);
+                let z = ps.sample_vec(n_next);
                 let eq_z = build_eq_table(&z);
                 let (intro, y) = sc_prover.introduce_new_with_eval(eq_z);
-                challenger.observe_f128(y);
+                ps.observe_scalar(y);
                 ood_values.push(y);
-                challenger.observe_f128(intro.u_0);
-                challenger.observe_f128(intro.u_2);
-                let beta = challenger.sample_f128();
+                ps.observe_scalar(intro.u_0);
+                ps.observe_scalar(intro.u_2);
+                let beta = ps.sample();
                 sc_prover.glue(beta);
             }
             if trace {
@@ -3609,11 +3610,11 @@ fn multilevel_prover_with_basis_impl<Ch: Challenger>(
         }
 
         // PoW grinding for this iteration's query phase.
-        let nonce_i = challenger.grind_pow(config.grinding_bits[i + 1] as u32);
+        let nonce_i = ps.grind_pow(config.grinding_bits[i + 1] as u32);
         grinding_nonces.push(nonce_i);
         let num_queries_i = config.queries[i + 1];
-        let queries_i = sample_queries_ordered(challenger, wtns_prev.block_len, num_queries_i);
-        let alpha_i = challenger.sample_f128_vec(ceil_log2(num_queries_i));
+        let queries_i = sample_queries_ordered(ps.sponge_mut(), wtns_prev.block_len, num_queries_i);
+        let alpha_i = ps.sample_vec(ceil_log2(num_queries_i));
         let _t = std::time::Instant::now();
         // `opened_rows_i` stays ordered for the induce-sumcheck; store compressed.
         let opened_rows_i: Vec<Vec<F128>> = queries_i
@@ -3650,9 +3651,9 @@ fn multilevel_prover_with_basis_impl<Ch: Challenger>(
 
         let _t = std::time::Instant::now();
         let intro_msg_i = sc_prover.introduce_new(basis_i_induced, enforced_sum_i);
-        challenger.observe_f128(intro_msg_i.u_0);
-        challenger.observe_f128(intro_msg_i.u_2);
-        let beta_i = challenger.sample_f128();
+        ps.observe_scalar(intro_msg_i.u_0);
+        ps.observe_scalar(intro_msg_i.u_2);
+        let beta_i = ps.sample();
         sc_prover.glue(beta_i);
         if trace {
             t_intro_glue += _t.elapsed();
@@ -3674,17 +3675,16 @@ fn multilevel_prover_with_basis_impl<Ch: Challenger>(
 ///
 /// `log_n` is the original packed-witness log size (= b_initial's logical dim).
 #[allow(clippy::too_many_arguments)]
-pub fn multilevel_verifier_with_basis_succinct<Ch, F>(
+pub fn multilevel_verifier_with_basis_succinct<F>(
     config: &VerifierConfig,
     proof: &LigeritoProof,
     log_n: usize,
     target: F128,
     expected_initial_root: &Hash,
     eval_b_residual: F,
-    challenger: &mut Ch,
+    vs: &mut VerifierState<'_>,
 ) -> Option<LigVerifierSummary>
 where
-    Ch: Challenger,
     // Called ONCE at the residual check with the full ris and yr_log_n.
     // Returns 2^yr_log_n values: eval_b(ris ++ y_bits) for y ∈ [0, 2^yr_log_n).
     // This API allows callers to amortize prefix work across yr positions
@@ -3709,9 +3709,9 @@ where
         return None;
     }
 
-    challenger.observe_label(b"flock-ligerito-basis-v0");
-    challenger.observe_f128(target);
-    challenger.observe_bytes(&proof.initial_root);
+    vs.absorb_bytes(b"flock-ligerito-basis-v0");
+    vs.observe_scalar(target);
+    vs.absorb_bytes(&proof.initial_root);
 
     let log_inv_rate_0 = config.log_inv_rates[0];
     let log_msg_cols_0 = log_n - initial_k;
@@ -3725,8 +3725,8 @@ where
     }
     let start_msg = proof.sumcheck_transcript[tx_idx];
     tx_idx += 1;
-    challenger.observe_f128(start_msg.u_0);
-    challenger.observe_f128(start_msg.u_2);
+    vs.observe_scalar(start_msg.u_0);
+    vs.observe_scalar(start_msg.u_2);
     let mut running_quad = RoundQuad::from_msg(start_msg, t_r);
 
     let fold_bits =
@@ -3755,12 +3755,12 @@ where
             if fold_nonce_idx >= proof.fold_grinding_nonces.len() {
                 return None;
             }
-            if !challenger.verify_pow(proof.fold_grinding_nonces[fold_nonce_idx], bits) {
+            if !vs.verify_pow(proof.fold_grinding_nonces[fold_nonce_idx], bits) {
                 return None;
             }
             fold_nonce_idx += 1;
         }
-        let ri = challenger.sample_f128();
+        let ri = vs.sample();
         r_lane_fold.push(ri);
         t_r = running_quad.eval(ri);
         if tx_idx >= proof.sumcheck_transcript.len() {
@@ -3768,8 +3768,8 @@ where
         }
         let msg = proof.sumcheck_transcript[tx_idx];
         tx_idx += 1;
-        challenger.observe_f128(msg.u_0);
-        challenger.observe_f128(msg.u_2);
+        vs.observe_scalar(msg.u_0);
+        vs.observe_scalar(msg.u_2);
         running_quad = RoundQuad::from_msg(msg, t_r);
     }
 
@@ -3777,28 +3777,28 @@ where
         return None;
     }
     let root_1 = proof.level_roots[0];
-    challenger.observe_bytes(&root_1);
+    vs.absorb_bytes(&root_1);
 
     // OOD binding mirror for the L1 commit: sample z, read the claimed
     // evaluation from the proof, and glue the claim into the running
     // sumcheck exactly like the prover.
     for _ in 0..ood_count(1) {
-        let z = challenger.sample_f128_vec(log_n - initial_k);
+        let z = vs.sample_vec(log_n - initial_k);
         if ood_idx >= proof.ood_values.len() {
             return None;
         }
         let y = proof.ood_values[ood_idx];
         ood_idx += 1;
-        challenger.observe_f128(y);
+        vs.observe_scalar(y);
         if tx_idx >= proof.sumcheck_transcript.len() {
             return None;
         }
         let intro_msg = proof.sumcheck_transcript[tx_idx];
         tx_idx += 1;
-        challenger.observe_f128(intro_msg.u_0);
-        challenger.observe_f128(intro_msg.u_2);
+        vs.observe_scalar(intro_msg.u_0);
+        vs.observe_scalar(intro_msg.u_2);
         let intro_quad = RoundQuad::from_msg(intro_msg, y);
-        let beta = challenger.sample_f128();
+        let beta = vs.sample();
         running_quad = RoundQuad::fold(&running_quad, &intro_quad, beta);
         t_r += beta * y;
         ood_ctxs.push(OodCtx {
@@ -3815,7 +3815,7 @@ where
     if nonce_idx >= proof.grinding_nonces.len() {
         return None;
     }
-    if !challenger.verify_pow(
+    if !vs.verify_pow(
         proof.grinding_nonces[nonce_idx],
         config.grinding_bits[0] as u32,
     ) {
@@ -3825,12 +3825,12 @@ where
 
     let num_queries_0 = config.queries[0];
     let _t = std::time::Instant::now();
-    let (queries_0, raw_0) = sample_queries_ordered_with_raw(challenger, block_len_0, num_queries_0);
+    let (queries_0, raw_0) = sample_queries_ordered_with_raw(vs.sponge_mut(), block_len_0, num_queries_0);
     query_squeezes.push(raw_0);
     if trace {
         t_sample_q += _t.elapsed();
     }
-    let alpha_0 = challenger.sample_f128_vec(ceil_log2(num_queries_0));
+    let alpha_0 = vs.sample_vec(ceil_log2(num_queries_0));
     let _t = std::time::Instant::now();
     // Expand the stored (compressed) opening into the flat per-query form: one
     // row + one full Merkle path per query in transcript order, then verify each
@@ -3879,10 +3879,10 @@ where
     }
     let intro_msg_0 = proof.sumcheck_transcript[tx_idx];
     tx_idx += 1;
-    challenger.observe_f128(intro_msg_0.u_0);
-    challenger.observe_f128(intro_msg_0.u_2);
+    vs.observe_scalar(intro_msg_0.u_0);
+    vs.observe_scalar(intro_msg_0.u_2);
     let intro_quad_0 = RoundQuad::from_msg(intro_msg_0, enforced_sum_0);
-    let beta_0 = challenger.sample_f128();
+    let beta_0 = vs.sample();
     running_quad = RoundQuad::fold(&running_quad, &intro_quad_0, beta_0);
     t_r += beta_0 * enforced_sum_0;
 
@@ -3925,12 +3925,12 @@ where
                 if fold_nonce_idx >= proof.fold_grinding_nonces.len() {
                     return None;
                 }
-                if !challenger.verify_pow(proof.fold_grinding_nonces[fold_nonce_idx], bits) {
+                if !vs.verify_pow(proof.fold_grinding_nonces[fold_nonce_idx], bits) {
                     return None;
                 }
                 fold_nonce_idx += 1;
             }
-            let ri = challenger.sample_f128();
+            let ri = vs.sample();
             ris.push(ri);
             level_rs.push(ri);
             t_r = running_quad.eval(ri);
@@ -3939,8 +3939,8 @@ where
             }
             let msg = proof.sumcheck_transcript[tx_idx];
             tx_idx += 1;
-            challenger.observe_f128(msg.u_0);
-            challenger.observe_f128(msg.u_2);
+            vs.observe_scalar(msg.u_0);
+            vs.observe_scalar(msg.u_2);
             running_quad = RoundQuad::from_msg(msg, t_r);
         }
         n_current -= k_i;
@@ -3959,13 +3959,13 @@ where
                 return None;
             }
             for v in yr {
-                challenger.observe_f128(*v);
+                vs.observe_scalar(*v);
             }
             // PoW grinding check for last level's query phase.
             if nonce_idx >= proof.grinding_nonces.len() {
                 return None;
             }
-            if !challenger.verify_pow(
+            if !vs.verify_pow(
                 proof.grinding_nonces[nonce_idx],
                 config.grinding_bits[i + 1] as u32,
             ) {
@@ -3978,13 +3978,13 @@ where
             let num_queries_last = config.queries[i + 1];
             let _t = std::time::Instant::now();
             let (queries_last, raw_last) =
-                sample_queries_ordered_with_raw(challenger, prev_block_len, num_queries_last);
+                sample_queries_ordered_with_raw(vs.sponge_mut(), prev_block_len, num_queries_last);
             query_squeezes.push(raw_last);
             // Basis-induction challenge for the LAST commitment. Sampled here —
             // after `yr` was observed (top of this branch) and the queries are
             // fixed — so a forged `yr` cannot be adapted to it. Mirrors `alpha_i`
             // at every non-final level (see ~line 3377).
-            let alpha_last = challenger.sample_f128_vec(ceil_log2(num_queries_last));
+            let alpha_last = vs.sample_vec(ceil_log2(num_queries_last));
             if trace {
                 t_sample_q += _t.elapsed();
             }
@@ -4032,7 +4032,7 @@ where
                 &queries_last,
                 &alpha_last,
             );
-            let beta_last = challenger.sample_f128();
+            let beta_last = vs.sample();
             t_r += beta_last * enforced_sum_last;
             level_ctxs.push(LevelCtx {
                 log_msg_cols: n_current,
@@ -4154,26 +4154,26 @@ where
         }
         let root_next = proof.level_roots[next_root_idx];
         next_root_idx += 1;
-        challenger.observe_bytes(&root_next);
+        vs.absorb_bytes(&root_next);
 
         // OOD binding mirror for the L_{i+2} commit.
         for _ in 0..ood_count(i + 2) {
-            let z = challenger.sample_f128_vec(n_current);
+            let z = vs.sample_vec(n_current);
             if ood_idx >= proof.ood_values.len() {
                 return None;
             }
             let y = proof.ood_values[ood_idx];
             ood_idx += 1;
-            challenger.observe_f128(y);
+            vs.observe_scalar(y);
             if tx_idx >= proof.sumcheck_transcript.len() {
                 return None;
             }
             let intro_msg = proof.sumcheck_transcript[tx_idx];
             tx_idx += 1;
-            challenger.observe_f128(intro_msg.u_0);
-            challenger.observe_f128(intro_msg.u_2);
+            vs.observe_scalar(intro_msg.u_0);
+            vs.observe_scalar(intro_msg.u_2);
             let intro_quad = RoundQuad::from_msg(intro_msg, y);
-            let beta = challenger.sample_f128();
+            let beta = vs.sample();
             running_quad = RoundQuad::fold(&running_quad, &intro_quad, beta);
             t_r += beta * y;
             ood_ctxs.push(OodCtx {
@@ -4187,7 +4187,7 @@ where
         if nonce_idx >= proof.grinding_nonces.len() {
             return None;
         }
-        if !challenger.verify_pow(
+        if !vs.verify_pow(
             proof.grinding_nonces[nonce_idx],
             config.grinding_bits[i + 1] as u32,
         ) {
@@ -4199,12 +4199,12 @@ where
         let prev_num_interleaved = 1usize << prev_log_num_interleaved;
         let num_queries_i = config.queries[i + 1];
         let _t = std::time::Instant::now();
-        let (queries_i, raw_i) = sample_queries_ordered_with_raw(challenger, prev_block_len, num_queries_i);
+        let (queries_i, raw_i) = sample_queries_ordered_with_raw(vs.sponge_mut(), prev_block_len, num_queries_i);
         query_squeezes.push(raw_i);
         if trace {
             t_sample_q += _t.elapsed();
         }
-        let alpha_i = challenger.sample_f128_vec(ceil_log2(num_queries_i));
+        let alpha_i = vs.sample_vec(ceil_log2(num_queries_i));
         if level_proof_idx >= proof.level_proofs.len() {
             return None;
         }
@@ -4247,10 +4247,10 @@ where
         }
         let intro_msg_i = proof.sumcheck_transcript[tx_idx];
         tx_idx += 1;
-        challenger.observe_f128(intro_msg_i.u_0);
-        challenger.observe_f128(intro_msg_i.u_2);
+        vs.observe_scalar(intro_msg_i.u_0);
+        vs.observe_scalar(intro_msg_i.u_2);
         let intro_quad_i = RoundQuad::from_msg(intro_msg_i, enforced_sum_i);
-        let beta_i = challenger.sample_f128();
+        let beta_i = vs.sample();
         running_quad = RoundQuad::fold(&running_quad, &intro_quad_i, beta_i);
         t_r += beta_i * enforced_sum_i;
         level_ctxs.push(LevelCtx {
@@ -4278,13 +4278,13 @@ where
 /// `b_initial` recomputed locally (typically from the combined claims) and
 /// `target`. Also supplies the L0 root (from the upstream `Commitment`).
 #[allow(clippy::too_many_arguments)]
-pub fn multilevel_verifier_with_basis<Ch: Challenger>(
+pub fn multilevel_verifier_with_basis(
     config: &VerifierConfig,
     proof: &LigeritoProof,
     b_initial: &[F128],
     target: F128,
     expected_initial_root: &Hash,
-    challenger: &mut Ch,
+    vs: &mut VerifierState<'_>,
 ) -> bool {
     let log_n = b_initial.len().trailing_zeros() as usize;
     let initial_k = config.initial_k;
@@ -4300,9 +4300,9 @@ pub fn multilevel_verifier_with_basis<Ch: Challenger>(
         return false;
     }
 
-    challenger.observe_label(b"flock-ligerito-basis-v0");
-    challenger.observe_f128(target);
-    challenger.observe_bytes(&proof.initial_root);
+    vs.absorb_bytes(b"flock-ligerito-basis-v0");
+    vs.observe_scalar(target);
+    vs.absorb_bytes(&proof.initial_root);
 
     let log_inv_rate_0 = config.log_inv_rates[0];
     let log_msg_cols_0 = log_n - initial_k;
@@ -4317,8 +4317,8 @@ pub fn multilevel_verifier_with_basis<Ch: Challenger>(
     }
     let start_msg = proof.sumcheck_transcript[tx_idx];
     tx_idx += 1;
-    challenger.observe_f128(start_msg.u_0);
-    challenger.observe_f128(start_msg.u_2);
+    vs.observe_scalar(start_msg.u_0);
+    vs.observe_scalar(start_msg.u_2);
     let mut running_quad = RoundQuad::from_msg(start_msg, t_r);
 
     let fold_bits =
@@ -4342,12 +4342,12 @@ pub fn multilevel_verifier_with_basis<Ch: Challenger>(
             if fold_nonce_idx >= proof.fold_grinding_nonces.len() {
                 return false;
             }
-            if !challenger.verify_pow(proof.fold_grinding_nonces[fold_nonce_idx], bits) {
+            if !vs.verify_pow(proof.fold_grinding_nonces[fold_nonce_idx], bits) {
                 return false;
             }
             fold_nonce_idx += 1;
         }
-        let ri = challenger.sample_f128();
+        let ri = vs.sample();
         r_lane_fold.push(ri);
         t_r = running_quad.eval(ri);
         if tx_idx >= proof.sumcheck_transcript.len() {
@@ -4355,8 +4355,8 @@ pub fn multilevel_verifier_with_basis<Ch: Challenger>(
         }
         let msg = proof.sumcheck_transcript[tx_idx];
         tx_idx += 1;
-        challenger.observe_f128(msg.u_0);
-        challenger.observe_f128(msg.u_2);
+        vs.observe_scalar(msg.u_0);
+        vs.observe_scalar(msg.u_2);
         running_quad = RoundQuad::from_msg(msg, t_r);
     }
 
@@ -4365,26 +4365,26 @@ pub fn multilevel_verifier_with_basis<Ch: Challenger>(
         return false;
     }
     let root_1 = proof.level_roots[0];
-    challenger.observe_bytes(&root_1);
+    vs.absorb_bytes(&root_1);
 
     // OOD binding mirror for the L1 commit.
     for _ in 0..ood_count(1) {
-        let z = challenger.sample_f128_vec(log_n - initial_k);
+        let z = vs.sample_vec(log_n - initial_k);
         if ood_idx >= proof.ood_values.len() {
             return false;
         }
         let y = proof.ood_values[ood_idx];
         ood_idx += 1;
-        challenger.observe_f128(y);
+        vs.observe_scalar(y);
         if tx_idx >= proof.sumcheck_transcript.len() {
             return false;
         }
         let intro_msg = proof.sumcheck_transcript[tx_idx];
         tx_idx += 1;
-        challenger.observe_f128(intro_msg.u_0);
-        challenger.observe_f128(intro_msg.u_2);
+        vs.observe_scalar(intro_msg.u_0);
+        vs.observe_scalar(intro_msg.u_2);
         let intro_quad = RoundQuad::from_msg(intro_msg, y);
-        let beta = challenger.sample_f128();
+        let beta = vs.sample();
         running_quad = RoundQuad::fold(&running_quad, &intro_quad, beta);
         t_r += beta * y;
         ood_bases.push((build_eq_table(&z), initial_k, beta));
@@ -4396,7 +4396,7 @@ pub fn multilevel_verifier_with_basis<Ch: Challenger>(
     if nonce_idx >= proof.grinding_nonces.len() {
         return false;
     }
-    if !challenger.verify_pow(
+    if !vs.verify_pow(
         proof.grinding_nonces[nonce_idx],
         config.grinding_bits[0] as u32,
     ) {
@@ -4405,8 +4405,8 @@ pub fn multilevel_verifier_with_basis<Ch: Challenger>(
     nonce_idx += 1;
 
     let num_queries_0 = config.queries[0];
-    let queries_0 = sample_queries_ordered(challenger, block_len_0, num_queries_0);
-    let alpha_0 = challenger.sample_f128_vec(ceil_log2(num_queries_0));
+    let queries_0 = sample_queries_ordered(vs.sponge_mut(), block_len_0, num_queries_0);
+    let alpha_0 = vs.sample_vec(ceil_log2(num_queries_0));
     // Verify the shared octopus multi-proof against the sorted-unique positions
     // (the alignment the deduped `opened_rows` are stored in).
     let sorted_0 = sorted_unique_queries(&queries_0);
@@ -4445,10 +4445,10 @@ pub fn multilevel_verifier_with_basis<Ch: Challenger>(
     }
     let intro_msg_0 = proof.sumcheck_transcript[tx_idx];
     tx_idx += 1;
-    challenger.observe_f128(intro_msg_0.u_0);
-    challenger.observe_f128(intro_msg_0.u_2);
+    vs.observe_scalar(intro_msg_0.u_0);
+    vs.observe_scalar(intro_msg_0.u_2);
     let intro_quad_0 = RoundQuad::from_msg(intro_msg_0, enforced_sum_0);
-    let beta_0 = challenger.sample_f128();
+    let beta_0 = vs.sample();
     running_quad = RoundQuad::fold(&running_quad, &intro_quad_0, beta_0);
     t_r += beta_0 * enforced_sum_0;
 
@@ -4482,12 +4482,12 @@ pub fn multilevel_verifier_with_basis<Ch: Challenger>(
                 if fold_nonce_idx >= proof.fold_grinding_nonces.len() {
                     return false;
                 }
-                if !challenger.verify_pow(proof.fold_grinding_nonces[fold_nonce_idx], bits) {
+                if !vs.verify_pow(proof.fold_grinding_nonces[fold_nonce_idx], bits) {
                     return false;
                 }
                 fold_nonce_idx += 1;
             }
-            let ri = challenger.sample_f128();
+            let ri = vs.sample();
             ris.push(ri);
             level_rs.push(ri);
             t_r = running_quad.eval(ri);
@@ -4496,8 +4496,8 @@ pub fn multilevel_verifier_with_basis<Ch: Challenger>(
             }
             let msg = proof.sumcheck_transcript[tx_idx];
             tx_idx += 1;
-            challenger.observe_f128(msg.u_0);
-            challenger.observe_f128(msg.u_2);
+            vs.observe_scalar(msg.u_0);
+            vs.observe_scalar(msg.u_2);
             running_quad = RoundQuad::from_msg(msg, t_r);
         }
         n_current -= k_i;
@@ -4516,13 +4516,13 @@ pub fn multilevel_verifier_with_basis<Ch: Challenger>(
                 return false;
             }
             for v in yr {
-                challenger.observe_f128(*v);
+                vs.observe_scalar(*v);
             }
             // PoW grinding check for last level (dense verifier).
             if nonce_idx >= proof.grinding_nonces.len() {
                 return false;
             }
-            if !challenger.verify_pow(
+            if !vs.verify_pow(
                 proof.grinding_nonces[nonce_idx],
                 config.grinding_bits[i + 1] as u32,
             ) {
@@ -4534,12 +4534,12 @@ pub fn multilevel_verifier_with_basis<Ch: Challenger>(
             let prev_num_interleaved = 1usize << prev_log_num_interleaved;
             let num_queries_last = config.queries[i + 1];
             let queries_last =
-                sample_queries_ordered(challenger, prev_block_len, num_queries_last);
+                sample_queries_ordered(vs.sponge_mut(), prev_block_len, num_queries_last);
             // Final-level basis-induction challenge — sampled after `yr` and the
             // queries are fixed. Same position as the succinct verifier
             // (multilevel_verifier_with_basis_succinct), which verifies the same
             // proof, so both stay in lockstep.
-            let alpha_last = challenger.sample_f128_vec(ceil_log2(num_queries_last));
+            let alpha_last = vs.sample_vec(ceil_log2(num_queries_last));
             let sorted_last = sorted_unique_queries(&queries_last);
             if !verify_level_opens(
                 &prev_root,
@@ -4571,7 +4571,7 @@ pub fn multilevel_verifier_with_basis<Ch: Challenger>(
                 &queries_last,
                 &alpha_last,
             );
-            let beta_last = challenger.sample_f128();
+            let beta_last = vs.sample();
             t_r += beta_last * enforced_sum_last;
             basis_polys.push(basis_last_induced);
             basis_ris_starts.push(ris.len());
@@ -4618,26 +4618,26 @@ pub fn multilevel_verifier_with_basis<Ch: Challenger>(
         }
         let root_next = proof.level_roots[next_root_idx];
         next_root_idx += 1;
-        challenger.observe_bytes(&root_next);
+        vs.absorb_bytes(&root_next);
 
         // OOD binding mirror for the L_{i+2} commit.
         for _ in 0..ood_count(i + 2) {
-            let z = challenger.sample_f128_vec(n_current);
+            let z = vs.sample_vec(n_current);
             if ood_idx >= proof.ood_values.len() {
                 return false;
             }
             let y = proof.ood_values[ood_idx];
             ood_idx += 1;
-            challenger.observe_f128(y);
+            vs.observe_scalar(y);
             if tx_idx >= proof.sumcheck_transcript.len() {
                 return false;
             }
             let intro_msg = proof.sumcheck_transcript[tx_idx];
             tx_idx += 1;
-            challenger.observe_f128(intro_msg.u_0);
-            challenger.observe_f128(intro_msg.u_2);
+            vs.observe_scalar(intro_msg.u_0);
+            vs.observe_scalar(intro_msg.u_2);
             let intro_quad = RoundQuad::from_msg(intro_msg, y);
-            let beta = challenger.sample_f128();
+            let beta = vs.sample();
             running_quad = RoundQuad::fold(&running_quad, &intro_quad, beta);
             t_r += beta * y;
             ood_bases.push((build_eq_table(&z), ris.len(), beta));
@@ -4647,7 +4647,7 @@ pub fn multilevel_verifier_with_basis<Ch: Challenger>(
         if nonce_idx >= proof.grinding_nonces.len() {
             return false;
         }
-        if !challenger.verify_pow(
+        if !vs.verify_pow(
             proof.grinding_nonces[nonce_idx],
             config.grinding_bits[i + 1] as u32,
         ) {
@@ -4658,8 +4658,8 @@ pub fn multilevel_verifier_with_basis<Ch: Challenger>(
         let prev_block_len = 1usize << (prev_log_msg_cols + prev_log_inv_rate);
         let prev_num_interleaved = 1usize << prev_log_num_interleaved;
         let num_queries_i = config.queries[i + 1];
-        let queries_i = sample_queries_ordered(challenger, prev_block_len, num_queries_i);
-        let alpha_i = challenger.sample_f128_vec(ceil_log2(num_queries_i));
+        let queries_i = sample_queries_ordered(vs.sponge_mut(), prev_block_len, num_queries_i);
+        let alpha_i = vs.sample_vec(ceil_log2(num_queries_i));
         if level_proof_idx >= proof.level_proofs.len() {
             return false;
         }
@@ -4696,10 +4696,10 @@ pub fn multilevel_verifier_with_basis<Ch: Challenger>(
         }
         let intro_msg_i = proof.sumcheck_transcript[tx_idx];
         tx_idx += 1;
-        challenger.observe_f128(intro_msg_i.u_0);
-        challenger.observe_f128(intro_msg_i.u_2);
+        vs.observe_scalar(intro_msg_i.u_0);
+        vs.observe_scalar(intro_msg_i.u_2);
         let intro_quad_i = RoundQuad::from_msg(intro_msg_i, enforced_sum_i);
-        let beta_i = challenger.sample_f128();
+        let beta_i = vs.sample();
         running_quad = RoundQuad::fold(&running_quad, &intro_quad_i, beta_i);
         t_r += beta_i * enforced_sum_i;
         basis_polys.push(basis_i_induced);
@@ -4722,13 +4722,13 @@ pub fn multilevel_verifier_with_basis<Ch: Challenger>(
 /// Shared body — runs after wtns_0 is in hand (whether freshly built or
 /// supplied externally).
 #[allow(clippy::too_many_arguments)]
-fn multilevel_prover_inner<Ch: Challenger>(
+fn multilevel_prover_inner(
     config: &ProverConfig,
     poly: &[F128],
     wtns_0: LigeroWitness,
     eval_point: &[F128],
     claimed_value: F128,
-    challenger: &mut Ch,
+    ps: &mut ProverState,
     t_total: std::time::Instant,
     mut t_commits: std::time::Duration,
     mut t_induce: std::time::Duration,
@@ -4752,7 +4752,7 @@ fn multilevel_prover_inner<Ch: Challenger>(
     let log_inv_rate_0 = config.log_inv_rates[0];
 
     let initial_root = wtns_0.root();
-    challenger.observe_bytes(&initial_root);
+    ps.absorb_bytes(&initial_root);
 
     // ---- Partial-eval at z[0..initial_k] and commit f¹ (wtns_1) ----
     let v_challenges_0 = eval_point[..initial_k].to_vec();
@@ -4774,12 +4774,12 @@ fn multilevel_prover_inner<Ch: Challenger>(
     let t_l1 = t.elapsed();
     t_commits += t_l1;
     tlog!("  [ligerito]   L1 commit: {:.2?}", t_l1);
-    challenger.observe_bytes(&wtns_1.root());
+    ps.absorb_bytes(&wtns_1.root());
 
     // ---- Queries + open wtns_0 ----
     let num_queries_0 = udr_queries(log_inv_rate_0);
-    let queries_0 = sample_distinct_queries(challenger, wtns_0.block_len, num_queries_0);
-    let alpha_0 = challenger.sample_f128_vec(ceil_log2(num_queries_0));
+    let queries_0 = sample_distinct_queries(ps.sponge_mut(), wtns_0.block_len, num_queries_0);
+    let alpha_0 = ps.sample_vec(ceil_log2(num_queries_0));
     let t = std::time::Instant::now();
     let opened_rows_0: Vec<Vec<F128>> = queries_0.iter().map(|&q| wtns_0.row(q).to_vec()).collect();
     let merkle_proof_0 = merkle_multi_proof_for(&wtns_0.tree, wtns_0.block_len, &queries_0);
@@ -4808,14 +4808,14 @@ fn multilevel_prover_inner<Ch: Challenger>(
     let t = std::time::Instant::now();
     let (mut sc_prover, start_msg) = SumcheckProver::new(f1, eq_z_residual, claimed_value);
     t_sumcheck += t.elapsed();
-    challenger.observe_f128(start_msg.u_0);
-    challenger.observe_f128(start_msg.u_2);
+    ps.observe_scalar(start_msg.u_0);
+    ps.observe_scalar(start_msg.u_2);
 
     // ---- Introduce induced basis + glue ----
     let intro_msg_0 = sc_prover.introduce_new(basis_0_induced, enforced_sum_0);
-    challenger.observe_f128(intro_msg_0.u_0);
-    challenger.observe_f128(intro_msg_0.u_2);
-    let beta_0 = challenger.sample_f128();
+    ps.observe_scalar(intro_msg_0.u_0);
+    ps.observe_scalar(intro_msg_0.u_2);
+    let beta_0 = ps.sample();
     sc_prover.glue(beta_0);
 
     // ---- Fold levels ----
@@ -4828,10 +4828,10 @@ fn multilevel_prover_inner<Ch: Challenger>(
         let mut level_rs = Vec::with_capacity(k_i);
         let t = std::time::Instant::now();
         for _ in 0..k_i {
-            let ri = challenger.sample_f128();
+            let ri = ps.sample();
             let msg = sc_prover.fold(ri);
-            challenger.observe_f128(msg.u_0);
-            challenger.observe_f128(msg.u_2);
+            ps.observe_scalar(msg.u_0);
+            ps.observe_scalar(msg.u_2);
             level_rs.push(ri);
         }
         t_sumcheck += t.elapsed();
@@ -4848,12 +4848,12 @@ fn multilevel_prover_inner<Ch: Challenger>(
             // Last iter: send residual yr + open wtns_prev.
             let yr = sc_prover.f().to_vec();
             for v in &yr {
-                challenger.observe_f128(*v);
+                ps.observe_scalar(*v);
             }
             // wtns_prev's rate (= log_inv_rates[i+1] for wtns_{i+1}).
             let num_queries_last = udr_queries(config.log_inv_rates[i + 1]);
             let queries_last =
-                sample_distinct_queries(challenger, wtns_prev.block_len, num_queries_last);
+                sample_distinct_queries(ps.sponge_mut(), wtns_prev.block_len, num_queries_last);
             let opened_rows_last: Vec<Vec<F128>> = queries_last
                 .iter()
                 .map(|&q| wtns_prev.row(q).to_vec())
@@ -4902,13 +4902,13 @@ fn multilevel_prover_inner<Ch: Challenger>(
         t_commits += t_li;
         tlog!("  [ligerito]   L{} commit: {:.2?}", i + 2, t_li);
         let root_next = wtns_next.root();
-        challenger.observe_bytes(&root_next);
+        ps.absorb_bytes(&root_next);
         level_roots.push(root_next);
 
         // Open wtns_prev. wtns_prev = wtns_{i+1} uses log_inv_rates[i+1].
         let num_queries_i = udr_queries(config.log_inv_rates[i + 1]);
-        let queries_i = sample_distinct_queries(challenger, wtns_prev.block_len, num_queries_i);
-        let alpha_i = challenger.sample_f128_vec(ceil_log2(num_queries_i));
+        let queries_i = sample_distinct_queries(ps.sponge_mut(), wtns_prev.block_len, num_queries_i);
+        let alpha_i = ps.sample_vec(ceil_log2(num_queries_i));
         let t = std::time::Instant::now();
         let opened_rows_i: Vec<Vec<F128>> = queries_i
             .iter()
@@ -4935,9 +4935,9 @@ fn multilevel_prover_inner<Ch: Challenger>(
 
         // Introduce + glue.
         let intro_msg_i = sc_prover.introduce_new(basis_i_induced, enforced_sum_i);
-        challenger.observe_f128(intro_msg_i.u_0);
-        challenger.observe_f128(intro_msg_i.u_2);
-        let beta_i = challenger.sample_f128();
+        ps.observe_scalar(intro_msg_i.u_0);
+        ps.observe_scalar(intro_msg_i.u_2);
+        let beta_i = ps.sample();
         sc_prover.glue(beta_i);
 
         wtns_prev = wtns_next;
@@ -4976,12 +4976,12 @@ fn verify_level_opens(
 }
 
 /// Verifier counterpart to [`multilevel_prover`]. Supports arbitrary `R ≥ 1`.
-pub fn multilevel_verifier<Ch: Challenger>(
+pub fn multilevel_verifier(
     config: &VerifierConfig,
     proof: &LigeritoProof,
     eval_point: &[F128],
     claimed_value: F128,
-    challenger: &mut Ch,
+    vs: &mut VerifierState<'_>,
 ) -> bool {
     let log_n = eval_point.len();
     let initial_k = config.initial_k;
@@ -4997,17 +4997,17 @@ pub fn multilevel_verifier<Ch: Challenger>(
         return false;
     }
 
-    challenger.observe_label(b"flock-ligerito-v0");
-    challenger.observe_f128(claimed_value);
-    challenger.observe_f128_slice(eval_point);
+    vs.absorb_bytes(b"flock-ligerito-v0");
+    vs.observe_scalar(claimed_value);
+    vs.observe_scalars(eval_point);
 
     // ---- Roots ----
-    challenger.observe_bytes(&proof.initial_root);
+    vs.absorb_bytes(&proof.initial_root);
     if proof.level_roots.len() != r {
         return false;
     }
     let root_1 = proof.level_roots[0];
-    challenger.observe_bytes(&root_1);
+    vs.absorb_bytes(&root_1);
 
     // ---- Open wtns_0 + α₀ ----
     let log_inv_rate_0 = config.log_inv_rates[0];
@@ -5015,8 +5015,8 @@ pub fn multilevel_verifier<Ch: Challenger>(
     let block_len_0 = 1usize << (log_msg_cols_0 + log_inv_rate_0);
     let num_interleaved_0 = 1usize << initial_k;
     let num_queries_0 = udr_queries(log_inv_rate_0);
-    let queries_0 = sample_distinct_queries(challenger, block_len_0, num_queries_0);
-    let alpha_0 = challenger.sample_f128_vec(ceil_log2(num_queries_0));
+    let queries_0 = sample_distinct_queries(vs.sponge_mut(), block_len_0, num_queries_0);
+    let alpha_0 = vs.sample_vec(ceil_log2(num_queries_0));
 
     if !verify_level_opens(
         &proof.initial_root,
@@ -5059,8 +5059,8 @@ pub fn multilevel_verifier<Ch: Challenger>(
     }
     let start_msg = proof.sumcheck_transcript[tx_idx];
     tx_idx += 1;
-    challenger.observe_f128(start_msg.u_0);
-    challenger.observe_f128(start_msg.u_2);
+    vs.observe_scalar(start_msg.u_0);
+    vs.observe_scalar(start_msg.u_2);
     let mut running_quad = RoundQuad::from_msg(start_msg, t_r);
 
     // ---- Intro basis_0 + glue β₀ ----
@@ -5069,10 +5069,10 @@ pub fn multilevel_verifier<Ch: Challenger>(
     }
     let intro_msg_0 = proof.sumcheck_transcript[tx_idx];
     tx_idx += 1;
-    challenger.observe_f128(intro_msg_0.u_0);
-    challenger.observe_f128(intro_msg_0.u_2);
+    vs.observe_scalar(intro_msg_0.u_0);
+    vs.observe_scalar(intro_msg_0.u_2);
     let intro_quad_0 = RoundQuad::from_msg(intro_msg_0, enforced_sum_0);
-    let beta_0 = challenger.sample_f128();
+    let beta_0 = vs.sample();
     running_quad = RoundQuad::fold(&running_quad, &intro_quad_0, beta_0);
     t_r += beta_0 * enforced_sum_0;
     basis_polys.push(basis_0_induced);
@@ -5095,7 +5095,7 @@ pub fn multilevel_verifier<Ch: Challenger>(
         }
         let mut level_rs = Vec::with_capacity(k_i);
         for _ in 0..k_i {
-            let ri = challenger.sample_f128();
+            let ri = vs.sample();
             ris.push(ri);
             level_rs.push(ri);
             t_r = running_quad.eval(ri);
@@ -5104,8 +5104,8 @@ pub fn multilevel_verifier<Ch: Challenger>(
             }
             let msg = proof.sumcheck_transcript[tx_idx];
             tx_idx += 1;
-            challenger.observe_f128(msg.u_0);
-            challenger.observe_f128(msg.u_2);
+            vs.observe_scalar(msg.u_0);
+            vs.observe_scalar(msg.u_2);
             running_quad = RoundQuad::from_msg(msg, t_r);
         }
         n_current -= k_i;
@@ -5120,15 +5120,15 @@ pub fn multilevel_verifier<Ch: Challenger>(
                 return false;
             }
             for v in yr {
-                challenger.observe_f128(*v);
+                vs.observe_scalar(*v);
             }
             let prev_block_len = 1usize << (prev_log_msg_cols + prev_log_inv_rate);
             let prev_num_interleaved = 1usize << prev_log_num_interleaved;
             let num_queries_last = udr_queries(prev_log_inv_rate);
             let queries_last =
-                sample_distinct_queries(challenger, prev_block_len, num_queries_last);
+                sample_distinct_queries(vs.sponge_mut(), prev_block_len, num_queries_last);
             // Final-level basis-induction challenge (after yr + queries fixed).
-            let alpha_last = challenger.sample_f128_vec(ceil_log2(num_queries_last));
+            let alpha_last = vs.sample_vec(ceil_log2(num_queries_last));
             if !verify_level_opens(
                 &prev_root,
                 prev_block_len,
@@ -5152,7 +5152,7 @@ pub fn multilevel_verifier<Ch: Challenger>(
                 &queries_last,
                 &alpha_last,
             );
-            let beta_last = challenger.sample_f128();
+            let beta_last = vs.sample();
             t_r += beta_last * enforced_sum_last;
             basis_polys.push(basis_last_induced);
             basis_ris_starts.push(ris.len());
@@ -5192,13 +5192,13 @@ pub fn multilevel_verifier<Ch: Challenger>(
         }
         let root_next = proof.level_roots[next_root_idx];
         next_root_idx += 1;
-        challenger.observe_bytes(&root_next);
+        vs.absorb_bytes(&root_next);
 
         let prev_block_len = 1usize << (prev_log_msg_cols + prev_log_inv_rate);
         let prev_num_interleaved = 1usize << prev_log_num_interleaved;
         let num_queries_i = udr_queries(prev_log_inv_rate);
-        let queries_i = sample_distinct_queries(challenger, prev_block_len, num_queries_i);
-        let alpha_i = challenger.sample_f128_vec(ceil_log2(num_queries_i));
+        let queries_i = sample_distinct_queries(vs.sponge_mut(), prev_block_len, num_queries_i);
+        let alpha_i = vs.sample_vec(ceil_log2(num_queries_i));
 
         if level_proof_idx >= proof.level_proofs.len() {
             return false;
@@ -5232,10 +5232,10 @@ pub fn multilevel_verifier<Ch: Challenger>(
         }
         let intro_msg_i = proof.sumcheck_transcript[tx_idx];
         tx_idx += 1;
-        challenger.observe_f128(intro_msg_i.u_0);
-        challenger.observe_f128(intro_msg_i.u_2);
+        vs.observe_scalar(intro_msg_i.u_0);
+        vs.observe_scalar(intro_msg_i.u_2);
         let intro_quad_i = RoundQuad::from_msg(intro_msg_i, enforced_sum_i);
-        let beta_i = challenger.sample_f128();
+        let beta_i = vs.sample();
         running_quad = RoundQuad::fold(&running_quad, &intro_quad_i, beta_i);
         t_r += beta_i * enforced_sum_i;
         basis_polys.push(basis_i_induced);
@@ -5554,15 +5554,15 @@ mod tests {
     /// or the FS state would diverge between prover and verifier).
     #[test]
     fn ligerito_security_config_drives_roundtrip_with_grinding() {
-        use crate::challenger::Challenger;
+        
         let log_n = 14;
         let initial_k = 3;
         let k_0 = 2;
         let log_inv_rate = 1;
 
-        let mut rng = crate::challenger::RandomChallenger::new(0x6817_D146);
-        let poly: Vec<F128> = (0..(1usize << log_n)).map(|_| rng.sample_f128()).collect();
-        let z: Vec<F128> = (0..log_n).map(|_| rng.sample_f128()).collect();
+        let mut rng = crate::sponge::Sponge::new(&(0x6817_D146u64).to_le_bytes(), &[]);
+        let poly: Vec<F128> = (0..(1usize << log_n)).map(|_| rng.sample()).collect();
+        let z: Vec<F128> = (0..log_n).map(|_| rng.sample()).collect();
         let b = build_eq_table(&z);
         let target: F128 = poly
             .iter()
@@ -5594,7 +5594,7 @@ mod tests {
         let wtns_0 = ligero_commit(&poly, log_msg_cols_0, initial_k, log_inv_rate, &ntt_0);
         let initial_root = wtns_0.root();
 
-        let mut p_ch = crate::challenger::FsChallenger::new(b"pow-test");
+        let mut p_ch = crate::transcript::ProverState::new(b"pow-test", &[]);
         let proof = multilevel_prover_with_basis(
             &cfg,
             poly.clone(),
@@ -5619,7 +5619,7 @@ mod tests {
             fold_grinding_bits: vec![0; 2],
             ood_samples: vec![0; 2],
         };
-        let mut v_ch = crate::challenger::FsChallenger::new(b"pow-test");
+        let mut v_ch = crate::transcript::VerifierState::detached(b"pow-test", &[]);
         let ok =
             multilevel_verifier_with_basis(&v_cfg, &proof, &b, target, &initial_root, &mut v_ch);
         assert!(
@@ -5630,7 +5630,7 @@ mod tests {
         // Tampering with the nonce flips the PoW check.
         let mut bad_proof = proof.clone();
         bad_proof.grinding_nonces[0] = bad_proof.grinding_nonces[0].wrapping_add(1);
-        let mut v_ch = crate::challenger::FsChallenger::new(b"pow-test");
+        let mut v_ch = crate::transcript::VerifierState::detached(b"pow-test", &[]);
         let ok =
             multilevel_verifier_with_basis(&v_cfg, &bad_proof, &b, target, &initial_root, &mut v_ch);
         assert!(
@@ -5700,7 +5700,7 @@ mod tests {
     /// the challenge, and confirms the residual inner product matches.
     #[test]
     fn stateful_sumcheck_single_basis_roundtrip() {
-        use crate::challenger::Challenger;
+        
         let n = 5;
         let len = 1usize << n;
         let f: Vec<F128> = (0..len)
@@ -5727,10 +5727,10 @@ mod tests {
 
         // Prover: 1 start message + (n-1) folds, leaving a length-2 residual.
         let (mut prover, _first) = SumcheckProver::new(f.clone(), b.clone(), h);
-        let mut ch = crate::challenger::RandomChallenger::new(0xC0FFEE);
+        let mut ch = crate::transcript::VerifierState::detached(&(0xC0FFEEu64).to_le_bytes(), &[]);
         let mut ris: Vec<F128> = Vec::new();
         for _ in 0..(n - 1) {
-            let r = ch.sample_f128();
+            let r = ch.sample();
             ris.push(r);
             prover.fold(r);
         }
@@ -5741,7 +5741,7 @@ mod tests {
         // (r_0..r_{n-2}) already in ris, plus one new r_last for the final residual.
         let msgs = prover.transcript().to_vec();
         assert_eq!(msgs.len(), n);
-        let r_last = ch.sample_f128();
+        let r_last = ch.sample();
         let mut t_r = h;
         for (i, msg) in msgs.iter().enumerate() {
             let quad = RoundQuad::from_msg(*msg, t_r);
@@ -5762,7 +5762,7 @@ mod tests {
     /// Multi-basis sumcheck: introduce_new + glue mid-protocol. Verifier replays.
     #[test]
     fn stateful_sumcheck_introduce_glue() {
-        use crate::challenger::Challenger;
+        
         let n = 5;
         let len = 1usize << n;
         let mk = |seed: u64| -> Vec<F128> {
@@ -5780,10 +5780,10 @@ mod tests {
             .fold(F128::ZERO, |a, v| a + v);
 
         let (mut prover, _first) = SumcheckProver::new(f.clone(), b1.clone(), h1);
-        let mut ch = crate::challenger::RandomChallenger::new(0xBEEF);
+        let mut ch = crate::transcript::VerifierState::detached(&(0xBEEFu64).to_le_bytes(), &[]);
 
         // Fold once before introducing b2 (must fold at the same dim as the introduced poly).
-        let r0 = ch.sample_f128();
+        let r0 = ch.sample();
         prover.fold(r0);
         // Partial-eval b2 too so it matches the prover's current f dim.
         let mut b2_folded = b2.clone();
@@ -5797,18 +5797,18 @@ mod tests {
             .map(|(&x, &y)| x * y)
             .fold(F128::ZERO, |a, v| a + v);
         prover.introduce_new(b2_folded.clone(), h2_folded);
-        let alpha = ch.sample_f128();
+        let alpha = ch.sample();
         prover.glue(alpha);
 
         // Continue folding to length 2 residual: n total fold-vars used, but
         // we've already used 1 (r0). One more r_last is the verifier's final.
         let mut ris = vec![r0];
         for _ in 0..(n - 2) {
-            let r = ch.sample_f128();
+            let r = ch.sample();
             ris.push(r);
             prover.fold(r);
         }
-        let r_last = ch.sample_f128();
+        let r_last = ch.sample();
         ris.push(r_last);
         assert_eq!(prover.f().len(), 2);
 
@@ -5877,15 +5877,15 @@ mod tests {
     ///      claim that the verifier reduces to a residual eval).
     #[test]
     fn induce_sumcheck_poly_consistent_with_codeword() {
-        use crate::challenger::Challenger;
+        
         let log_msg = 4;
         let log_inv_rate = 1;
         let msg_cols = 1usize << log_msg;
         let block_len = msg_cols << log_inv_rate;
 
         // Single-lane (num_interleaved = 1, no v_challenges).
-        let mut ch = crate::challenger::RandomChallenger::new(0xF00DCAFE);
-        let msg: Vec<F128> = (0..msg_cols).map(|_| ch.sample_f128()).collect();
+        let mut ch = crate::transcript::VerifierState::detached(&(0xF00DCAFEu64).to_le_bytes(), &[]);
+        let msg: Vec<F128> = (0..msg_cols).map(|_| ch.sample()).collect();
 
         // Encode via Flock's NTT (zero-pad to block_len).
         let ntt = AdditiveNttF128::standard(log_msg + log_inv_rate);
@@ -5897,13 +5897,13 @@ mod tests {
         let num_queries = 6;
         let mut queries: Vec<usize> = Vec::new();
         while queries.len() < num_queries {
-            let q = (ch.sample_f128().lo as usize) % block_len;
+            let q = (ch.sample().lo as usize) % block_len;
             if !queries.contains(&q) {
                 queries.push(q);
             }
         }
         let opened_rows: Vec<Vec<F128>> = queries.iter().map(|&q| vec![codeword[q]]).collect();
-        let alpha = ch.sample_f128_vec(ceil_log2(queries.len()));
+        let alpha = ch.sample_vec(ceil_log2(queries.len()));
         let sks_vks = eval_sk_at_vks(log_msg);
 
         let (basis_poly, enforced_sum) =
@@ -5937,7 +5937,7 @@ mod tests {
     /// shapes incl. the real m30_fast level dims.
     #[test]
     fn induce_sumcheck_poly_via_ntt_matches_dense() {
-        use crate::challenger::Challenger;
+        
         let shapes = [
             (4usize, 1usize, 0usize, 6usize),
             (3, 1, 2, 5),
@@ -5950,20 +5950,20 @@ mod tests {
         for (si, &(log_msg, log_inv_rate, log_int, n_queries)) in shapes.iter().enumerate() {
             let block_len = 1usize << (log_msg + log_inv_rate);
             let num_interleaved = 1usize << log_int;
-            let mut ch = crate::challenger::RandomChallenger::new(0xA11CE ^ si as u64);
+            let mut ch = crate::transcript::VerifierState::detached(&(0xA11CEu64 ^ si as u64).to_le_bytes(), &[]);
             let mut queries: Vec<usize> = Vec::new();
             while queries.len() < n_queries.min(block_len) {
-                let q = (ch.sample_f128().lo as usize) % block_len;
+                let q = (ch.sample().lo as usize) % block_len;
                 if !queries.contains(&q) {
                     queries.push(q);
                 }
             }
             let nq = queries.len();
             let opened_rows: Vec<Vec<F128>> = (0..nq)
-                .map(|_| ch.sample_f128_vec(num_interleaved))
+                .map(|_| ch.sample_vec(num_interleaved))
                 .collect();
-            let v_challenges = ch.sample_f128_vec(log_int);
-            let alpha = ch.sample_f128_vec(ceil_log2(nq.max(1)));
+            let v_challenges = ch.sample_vec(log_int);
+            let alpha = ch.sample_vec(ceil_log2(nq.max(1)));
             let sks_vks = eval_sk_at_vks(log_msg);
 
             let dense = induce_sumcheck_poly(
@@ -5991,21 +5991,21 @@ mod tests {
     /// the same scattered input, across sizes (incl. > and < the k=8 prefix gate).
     #[test]
     fn transpose_sparse_matches_dense() {
-        use crate::challenger::Challenger;
+        
         for &log_d in &[6usize, 11, 12, 14, 16, 18] {
             for &nq in &[1usize, 5, 43, 218] {
                 let n = 1usize << log_d;
                 let nq = nq.min(n);
                 let mut ch =
-                    crate::challenger::RandomChallenger::new(0xC0DE ^ (log_d * 131 + nq) as u64);
+                    crate::transcript::VerifierState::detached(&(0xC0DEu64 ^ (log_d * 131 + nq) as u64).to_le_bytes(), &[]);
                 let ntt = AdditiveNttF128::standard(log_d);
                 let mut positions: Vec<usize> = Vec::new();
                 let mut values: Vec<F128> = Vec::new();
                 while positions.len() < nq {
-                    let p = (ch.sample_f128().lo as usize) % n;
+                    let p = (ch.sample().lo as usize) % n;
                     if !positions.contains(&p) {
                         positions.push(p);
-                        values.push(ch.sample_f128());
+                        values.push(ch.sample());
                     }
                 }
                 // Baseline: scatter then dense transpose.
@@ -6024,7 +6024,7 @@ mod tests {
     /// partial-eval challenges used to fold lanes).
     #[test]
     fn induce_sumcheck_poly_with_interleaving_and_v_challenges() {
-        use crate::challenger::Challenger;
+        
         let log_msg = 3; // msg_cols = 8
         let log_interleaved = 2; // num_interleaved = 4
         let log_inv_rate = 1; // block_len = 16
@@ -6033,13 +6033,13 @@ mod tests {
         let block_len = msg_cols << log_inv_rate;
         let poly_len = msg_cols * num_interleaved;
 
-        let mut ch = crate::challenger::RandomChallenger::new(0xDEAD_BEEF);
+        let mut ch = crate::transcript::VerifierState::detached(&(0xDEAD_BEEFu64).to_le_bytes(), &[]);
         // poly[lane * msg_cols + col] convention (matches ligero_commit input).
-        let poly: Vec<F128> = (0..poly_len).map(|_| ch.sample_f128()).collect();
+        let poly: Vec<F128> = (0..poly_len).map(|_| ch.sample()).collect();
 
         // v_challenges fold the lanes after commit. Under the LSB-lane layout,
         // f_folded is just partial_eval_lsb of the poly at v_challenges.
-        let v_challenges: Vec<F128> = (0..log_interleaved).map(|_| ch.sample_f128()).collect();
+        let v_challenges: Vec<F128> = (0..log_interleaved).map(|_| ch.sample()).collect();
         let f_folded = partial_eval_lsb(&poly, &v_challenges);
         assert_eq!(f_folded.len(), msg_cols);
 
@@ -6051,14 +6051,14 @@ mod tests {
         let num_queries = 5;
         let mut queries: Vec<usize> = Vec::new();
         while queries.len() < num_queries {
-            let q = (ch.sample_f128().lo as usize) % block_len;
+            let q = (ch.sample().lo as usize) % block_len;
             if !queries.contains(&q) {
                 queries.push(q);
             }
         }
         let opened_rows: Vec<Vec<F128>> = queries.iter().map(|&q| w.row(q).to_vec()).collect();
 
-        let alpha = ch.sample_f128_vec(ceil_log2(queries.len()));
+        let alpha = ch.sample_vec(ceil_log2(queries.len()));
         let sks_vks = eval_sk_at_vks(log_msg);
         let (basis_poly, enforced_sum) = induce_sumcheck_poly(
             log_msg,
@@ -6085,16 +6085,16 @@ mod tests {
     /// R = 1 (one level step).
     #[test]
     fn ligerito_r1_roundtrip_accepts() {
-        use crate::challenger::Challenger;
+        
         let log_n = 14;
         let initial_k = 3;
         let k_0 = 2;
         let log_inv_rate = 1;
         let num_queries = 0; // unused — kept to silence the moved literal
 
-        let mut rng = crate::challenger::RandomChallenger::new(0xCAFE_F00D);
-        let poly: Vec<F128> = (0..(1usize << log_n)).map(|_| rng.sample_f128()).collect();
-        let z: Vec<F128> = (0..log_n).map(|_| rng.sample_f128()).collect();
+        let mut rng = crate::sponge::Sponge::new(&(0xCAFE_F00Du64).to_le_bytes(), &[]);
+        let poly: Vec<F128> = (0..(1usize << log_n)).map(|_| rng.sample()).collect();
+        let z: Vec<F128> = (0..log_n).map(|_| rng.sample()).collect();
 
         // True value v = poly(z)
         let eq = build_eq_table(&z);
@@ -6136,11 +6136,11 @@ mod tests {
         let _ = num_queries; // queries derived per-level from log_inv_rates now
 
         // Prove
-        let mut p_ch = crate::challenger::FsChallenger::new(b"test");
+        let mut p_ch = crate::transcript::ProverState::new(b"test", &[]);
         let proof = multilevel_prover(&prover_cfg, &poly, &z, v, &mut p_ch);
 
         // Verify
-        let mut v_ch = crate::challenger::FsChallenger::new(b"test");
+        let mut v_ch = crate::transcript::VerifierState::detached(b"test", &[]);
         let ok = multilevel_verifier(&verifier_cfg, &proof, &z, v, &mut v_ch);
         assert!(ok, "verifier rejected a valid proof");
     }
@@ -6155,7 +6155,7 @@ mod tests {
         level_ks: Vec<usize>,
         log_inv_rates: Vec<usize>,
     ) -> usize {
-        use crate::challenger::Challenger;
+        
         use std::time::Instant;
         assert_eq!(log_inv_rates.len(), level_ks.len() + 1);
 
@@ -6169,14 +6169,14 @@ mod tests {
             n_running -= k;
         }
 
-        let mut rng = crate::challenger::RandomChallenger::new(0xBEEFCAFE);
+        let mut rng = crate::sponge::Sponge::new(&(0xBEEFCAFEu64).to_le_bytes(), &[]);
         let queries_per_level: Vec<usize> = log_inv_rates.iter().map(|&r| udr_queries(r)).collect();
         eprintln!(
             "log_n={log_n}  initial_k={initial_k}  ks={:?}  log_inv_rates={:?}  queries={:?}",
             level_ks, log_inv_rates, queries_per_level
         );
-        let poly: Vec<F128> = (0..(1usize << log_n)).map(|_| rng.sample_f128()).collect();
-        let z: Vec<F128> = (0..log_n).map(|_| rng.sample_f128()).collect();
+        let poly: Vec<F128> = (0..(1usize << log_n)).map(|_| rng.sample()).collect();
+        let z: Vec<F128> = (0..log_n).map(|_| rng.sample()).collect();
         let eq = build_eq_table(&z);
         let v: F128 = poly
             .iter()
@@ -6216,11 +6216,11 @@ mod tests {
         // Time the prover, best of 3.
         let mut best = std::time::Duration::from_secs(3600);
         let mut proof = {
-            let mut p_ch = crate::challenger::FsChallenger::new(b"size-test");
+            let mut p_ch = crate::transcript::ProverState::new(b"size-test", &[]);
             multilevel_prover(&cfg, &poly, &z, v, &mut p_ch)
         };
         for _ in 0..3 {
-            let mut p_ch = crate::challenger::FsChallenger::new(b"size-test");
+            let mut p_ch = crate::transcript::ProverState::new(b"size-test", &[]);
             let t = Instant::now();
             proof = multilevel_prover(&cfg, &poly, &z, v, &mut p_ch);
             let el = t.elapsed();
@@ -6235,7 +6235,7 @@ mod tests {
         proof.print_size_breakdown();
 
         // Smoke-check it verifies (so we know the proof is valid, not just plausibly-sized).
-        let mut v_ch = crate::challenger::FsChallenger::new(b"size-test");
+        let mut v_ch = crate::transcript::VerifierState::detached(b"size-test", &[]);
         assert!(multilevel_verifier(&v_cfg, &proof, &z, v, &mut v_ch));
         proof.size_bytes()
     }
@@ -6329,7 +6329,7 @@ mod tests {
         sib_count
     }
 
-    /// Analytical size estimator — runs **only** the challenger-driven query
+    /// Analytical size estimator — runs **only** the sponge-driven query
     /// sampling + merkle-multi-proof counting. Does NOT materialize the
     /// polynomial or any merkle tree, so it scales to m=29, m=30+.
     /// Returns total bytes; prints a per-level breakdown.
@@ -6379,8 +6379,8 @@ mod tests {
             level_ks, log_inv_rates, queries_per_level
         );
 
-        // Drive a challenger-deterministic query sampling, count siblings.
-        let mut ch = crate::challenger::FsChallenger::new(b"estimate");
+        // Drive a sponge-deterministic query sampling, count siblings.
+        let mut ch = Sponge::new(b"estimate", &[]);
         let mut total_opened = 0usize;
         let mut total_merkle = 0usize;
         for i in 0..=r {
@@ -6441,7 +6441,7 @@ mod tests {
         let actual = size_breakdown_at(20, 4, vec![4, 3], vec![1, 2, 4]);
         let diff = estimated.abs_diff(actual);
         eprintln!("estimator={estimated}  actual={actual}  diff={diff}");
-        // Drift is from different challenger seeds producing different query
+        // Drift is from different sponge seeds producing different query
         // positions (and hence slightly different octopus sibling counts).
         // 5% is plenty of room.
         assert!(
@@ -6527,7 +6527,7 @@ mod tests {
     /// Multi-level (R = 2) roundtrip.
     #[test]
     fn ligerito_r2_roundtrip_accepts() {
-        use crate::challenger::Challenger;
+        
         let log_n = 18;
         let initial_k = 3;
         let k_0 = 3;
@@ -6535,9 +6535,9 @@ mod tests {
         let log_inv_rate = 1;
         let num_queries = 0;
 
-        let mut rng = crate::challenger::RandomChallenger::new(0xABCD_1234);
-        let poly: Vec<F128> = (0..(1usize << log_n)).map(|_| rng.sample_f128()).collect();
-        let z: Vec<F128> = (0..log_n).map(|_| rng.sample_f128()).collect();
+        let mut rng = crate::sponge::Sponge::new(&(0xABCD_1234u64).to_le_bytes(), &[]);
+        let poly: Vec<F128> = (0..(1usize << log_n)).map(|_| rng.sample()).collect();
+        let z: Vec<F128> = (0..log_n).map(|_| rng.sample()).collect();
         let eq = build_eq_table(&z);
         let v: F128 = poly
             .iter()
@@ -6578,12 +6578,12 @@ mod tests {
             ood_samples: vec![0; 3],
         };
 
-        let mut p_ch = crate::challenger::FsChallenger::new(b"test-r2");
+        let mut p_ch = crate::transcript::ProverState::new(b"test-r2", &[]);
         let proof = multilevel_prover(&cfg, &poly, &z, v, &mut p_ch);
         assert_eq!(proof.level_roots.len(), 2);
         assert_eq!(proof.level_proofs.len(), 1);
 
-        let mut v_ch = crate::challenger::FsChallenger::new(b"test-r2");
+        let mut v_ch = crate::transcript::VerifierState::detached(b"test-r2", &[]);
         let ok = multilevel_verifier(&v_cfg, &proof, &z, v, &mut v_ch);
         assert!(ok, "R=2 verifier rejected valid proof");
     }
@@ -6591,14 +6591,14 @@ mod tests {
     /// `LigeritoProof` bincode-roundtrips identically.
     #[test]
     fn ligerito_proof_bincode_roundtrip() {
-        use crate::challenger::Challenger;
+        
         let log_n = 14;
         let initial_k = 3;
         let k_0 = 2;
         let log_inv_rate = 1;
-        let mut rng = crate::challenger::RandomChallenger::new(0xDEED_F00D);
-        let poly: Vec<F128> = (0..(1usize << log_n)).map(|_| rng.sample_f128()).collect();
-        let z: Vec<F128> = (0..log_n).map(|_| rng.sample_f128()).collect();
+        let mut rng = crate::sponge::Sponge::new(&(0xDEED_F00Du64).to_le_bytes(), &[]);
+        let poly: Vec<F128> = (0..(1usize << log_n)).map(|_| rng.sample()).collect();
+        let z: Vec<F128> = (0..log_n).map(|_| rng.sample()).collect();
         let eq = build_eq_table(&z);
         let v: F128 = poly
             .iter()
@@ -6620,7 +6620,7 @@ mod tests {
             fold_grinding_bits: vec![0; 2],
             ood_samples: vec![0; 2],
         };
-        let mut p_ch = crate::challenger::FsChallenger::new(b"serde");
+        let mut p_ch = crate::transcript::ProverState::new(b"serde", &[]);
         let proof = multilevel_prover(&cfg, &poly, &z, v, &mut p_ch);
 
         let bytes = bincode::serialize(&proof).expect("serialize");
@@ -6635,15 +6635,15 @@ mod tests {
     /// `target = poly(z)`) — must round-trip cleanly.
     #[test]
     fn multilevel_prover_with_basis_roundtrip_single_claim() {
-        use crate::challenger::Challenger;
+        
         let log_n = 14;
         let initial_k = 3;
         let k_0 = 2;
         let log_inv_rate = 1;
 
-        let mut rng = crate::challenger::RandomChallenger::new(0xBA51_CAFE);
-        let poly: Vec<F128> = (0..(1usize << log_n)).map(|_| rng.sample_f128()).collect();
-        let z: Vec<F128> = (0..log_n).map(|_| rng.sample_f128()).collect();
+        let mut rng = crate::sponge::Sponge::new(&(0xBA51_CAFEu64).to_le_bytes(), &[]);
+        let poly: Vec<F128> = (0..(1usize << log_n)).map(|_| rng.sample()).collect();
+        let z: Vec<F128> = (0..log_n).map(|_| rng.sample()).collect();
         let b = build_eq_table(&z);
         let target: F128 = poly
             .iter()
@@ -6671,7 +6671,7 @@ mod tests {
         let wtns_0 = ligero_commit(&poly, log_msg_cols_0, initial_k, log_inv_rate, &ntt_0);
         let initial_root = wtns_0.root();
 
-        let mut p_ch = crate::challenger::FsChallenger::new(b"basis-test");
+        let mut p_ch = crate::transcript::ProverState::new(b"basis-test", &[]);
         let proof = multilevel_prover_with_basis(
             &cfg,
             poly.clone(),
@@ -6695,7 +6695,7 @@ mod tests {
             fold_grinding_bits: vec![0; 2],
             ood_samples: vec![0; 2],
         };
-        let mut v_ch = crate::challenger::FsChallenger::new(b"basis-test");
+        let mut v_ch = crate::transcript::VerifierState::detached(b"basis-test", &[]);
         let ok =
             multilevel_verifier_with_basis(&v_cfg, &proof, &b, target, &initial_root, &mut v_ch);
         assert!(ok, "basis-based verifier rejected valid proof");
@@ -6705,7 +6705,7 @@ mod tests {
     /// `induce_sumcheck_poly` + `partial_eval_lsb`.
     #[test]
     fn induce_sumcheck_evaluate_at_residual_matches_dense() {
-        use crate::challenger::Challenger;
+        
         let log_msg_cols = 6;
         let yr_log_n = 2;
         let prefix_len = log_msg_cols - yr_log_n;
@@ -6713,18 +6713,18 @@ mod tests {
         let log_num_interleaved = 2;
         let num_queries = 5;
 
-        let mut rng = crate::challenger::RandomChallenger::new(0x2017_5052);
+        let mut rng = crate::sponge::Sponge::new(&(0x2017_5052u64).to_le_bytes(), &[]);
         let queries: Vec<usize> = (0..num_queries).map(|i| (i * 7 + 3) % (1 << 8)).collect();
         let opened_rows: Vec<Vec<F128>> = (0..num_queries)
-            .map(|_| (0..num_interleaved).map(|_| rng.sample_f128()).collect())
+            .map(|_| (0..num_interleaved).map(|_| rng.sample()).collect())
             .collect();
         let v_challenges: Vec<F128> = (0..log_num_interleaved)
-            .map(|_| rng.sample_f128())
+            .map(|_| rng.sample())
             .collect();
         let alpha: Vec<F128> = (0..ceil_log2(num_queries))
-            .map(|_| rng.sample_f128())
+            .map(|_| rng.sample())
             .collect();
-        let ris_for_basis: Vec<F128> = (0..prefix_len).map(|_| rng.sample_f128()).collect();
+        let ris_for_basis: Vec<F128> = (0..prefix_len).map(|_| rng.sample()).collect();
         let sks_vks = eval_sk_at_vks(log_msg_cols);
 
         // Dense path
@@ -6784,16 +6784,16 @@ mod tests {
     /// ever diverged, the honest assertion here would fail.
     #[test]
     fn final_level_binding_pins_yr_to_committed_codeword() {
-        use crate::challenger::Challenger;
+        
         let log_msg_cols = 5; // yr has 32 entries (within the shipped yr_log_n range)
         let log_inv_rate = 1;
         let num_queries = 20;
         let msg_cols = 1usize << log_msg_cols;
         let block_len = msg_cols << log_inv_rate;
 
-        let mut rng = crate::challenger::RandomChallenger::new(0xB19D_1235);
+        let mut rng = crate::sponge::Sponge::new(&(0xB19D_1235u64).to_le_bytes(), &[]);
         // num_interleaved = 1 ⇒ no lane fold (level_rs empty) ⇒ yr == the message.
-        let yr: Vec<F128> = (0..msg_cols).map(|_| rng.sample_f128()).collect();
+        let yr: Vec<F128> = (0..msg_cols).map(|_| rng.sample()).collect();
         let ntt = AdditiveNttF128::standard(log_msg_cols + log_inv_rate);
         let wtns = ligero_commit(&yr, log_msg_cols, 0, log_inv_rate, &ntt);
 
@@ -6810,7 +6810,7 @@ mod tests {
 
         let level_rs: Vec<F128> = Vec::new(); // num_interleaved = 1
         let alpha: Vec<F128> = (0..ceil_log2(num_queries))
-            .map(|_| rng.sample_f128())
+            .map(|_| rng.sample())
             .collect();
 
         // The two quantities the fixed verifier batches into the final check.
@@ -6858,15 +6858,15 @@ mod tests {
     /// `b_initial[idx]` at multilinear `point = bit-decomp(idx)`.
     #[test]
     fn multilevel_verifier_with_basis_succinct_matches_dense() {
-        use crate::challenger::Challenger;
+        
         let log_n = 14;
         let initial_k = 3;
         let k_0 = 2;
         let log_inv_rate = 1;
 
-        let mut rng = crate::challenger::RandomChallenger::new(0x52CC_2017);
-        let poly: Vec<F128> = (0..(1usize << log_n)).map(|_| rng.sample_f128()).collect();
-        let z: Vec<F128> = (0..log_n).map(|_| rng.sample_f128()).collect();
+        let mut rng = crate::sponge::Sponge::new(&(0x52CC_2017u64).to_le_bytes(), &[]);
+        let poly: Vec<F128> = (0..(1usize << log_n)).map(|_| rng.sample()).collect();
+        let z: Vec<F128> = (0..log_n).map(|_| rng.sample()).collect();
         let b = build_eq_table(&z);
         let target: F128 = poly
             .iter()
@@ -6894,7 +6894,7 @@ mod tests {
         let wtns_0 = ligero_commit(&poly, log_msg_cols_0, initial_k, log_inv_rate, &ntt_0);
         let initial_root = wtns_0.root();
 
-        let mut p_ch = crate::challenger::FsChallenger::new(b"succ-cmp");
+        let mut p_ch = crate::transcript::ProverState::new(b"succ-cmp", &[]);
         let proof = multilevel_prover_with_basis(
             &cfg,
             poly.clone(),
@@ -6920,13 +6920,13 @@ mod tests {
         };
 
         // Dense verifier
-        let mut v_ch = crate::challenger::FsChallenger::new(b"succ-cmp");
+        let mut v_ch = crate::transcript::VerifierState::detached(b"succ-cmp", &[]);
         let dense_ok =
             multilevel_verifier_with_basis(&v_cfg, &proof, &b, target, &initial_root, &mut v_ch);
         assert!(dense_ok, "dense verifier must accept");
 
         // Succinct verifier — batch eval_b is just eq(z, ris ++ y_bits) by construction
-        let mut v_ch2 = crate::challenger::FsChallenger::new(b"succ-cmp");
+        let mut v_ch2 = crate::transcript::VerifierState::detached(b"succ-cmp", &[]);
         let eval_b_residual = |ris: &[F128], yr_log_n: usize| -> Vec<F128> {
             let yr_len = 1usize << yr_log_n;
             let mut point = ris.to_vec();
@@ -6953,7 +6953,7 @@ mod tests {
             eval_b_residual,
             &mut v_ch2,
         );
-        assert!(succ_ok, "succinct verifier must accept");
+        assert!(succ_ok.is_some(), "succinct verifier must accept");
     }
 
     /// Build a matching (ProverConfig, VerifierConfig) pair with explicit
@@ -7013,16 +7013,16 @@ mod tests {
     /// reject. Exercises every new prover/verifier code path.
     #[test]
     fn ligerito_ood_and_fold_grinding_roundtrip_and_tamper() {
-        use crate::challenger::Challenger;
+        
         let log_n = 12;
         let initial_k = 2;
         let ks = [2usize, 2];
         // OOD at L1 and L2 (L0 must be 0); 3 fold-grind bits at each level.
         let (p_cfg, v_cfg) = ood_test_configs(log_n, initial_k, &ks, vec![0, 2, 2], vec![3, 3, 3]);
 
-        let mut rng = crate::challenger::RandomChallenger::new(0x00D_7E57);
-        let poly: Vec<F128> = (0..(1usize << log_n)).map(|_| rng.sample_f128()).collect();
-        let z: Vec<F128> = (0..log_n).map(|_| rng.sample_f128()).collect();
+        let mut rng = crate::sponge::Sponge::new(&(0x00D_7E57u64).to_le_bytes(), &[]);
+        let poly: Vec<F128> = (0..(1usize << log_n)).map(|_| rng.sample()).collect();
+        let z: Vec<F128> = (0..log_n).map(|_| rng.sample()).collect();
         let b = build_eq_table(&z);
         let target: F128 = poly
             .iter()
@@ -7035,7 +7035,7 @@ mod tests {
         let wtns_0 = ligero_commit(&poly, log_msg_cols_0, initial_k, 1, &ntt_0);
         let initial_root = wtns_0.root();
 
-        let mut p_ch = crate::challenger::FsChallenger::new(b"ood-test");
+        let mut p_ch = crate::transcript::ProverState::new(b"ood-test", &[]);
         let proof = multilevel_prover_with_basis(
             &p_cfg,
             poly.clone(),
@@ -7052,7 +7052,7 @@ mod tests {
         assert_eq!(proof.fold_grinding_nonces.len(), initial_k + ks[0] + ks[1]);
 
         let dense = |proof: &LigeritoProof| {
-            let mut ch = crate::challenger::FsChallenger::new(b"ood-test");
+            let mut ch = crate::transcript::VerifierState::detached(b"ood-test", &[]);
             multilevel_verifier_with_basis(&v_cfg, proof, &b, target, &initial_root, &mut ch)
         };
         let eval_b_residual = {
@@ -7076,7 +7076,7 @@ mod tests {
             }
         };
         let succinct = |proof: &LigeritoProof| {
-            let mut ch = crate::challenger::FsChallenger::new(b"ood-test");
+            let mut ch = crate::transcript::VerifierState::detached(b"ood-test", &[]);
             multilevel_verifier_with_basis_succinct(
                 &v_cfg,
                 proof,
@@ -7086,6 +7086,7 @@ mod tests {
                 &eval_b_residual,
                 &mut ch,
             )
+            .is_some()
         };
 
         assert!(dense(&proof), "dense verifier must accept OOD proof");
@@ -7117,7 +7118,7 @@ mod tests {
     /// derived TOML, not a hand-built config.
     #[test]
     fn ligerito_fast_profile_m22_roundtrip() {
-        use crate::challenger::Challenger;
+        
         let m = 22usize;
         let log_n = m - crate::pcs::LOG_PACKING;
         let initial_k = 6;
@@ -7129,9 +7130,9 @@ mod tests {
         assert!(p_cfg.ood_samples.iter().skip(1).any(|&s| s > 0));
         assert!(p_cfg.fold_grinding_bits.iter().any(|&g| g > 0));
 
-        let mut rng = crate::challenger::RandomChallenger::new(0xFA57_0022);
-        let poly: Vec<F128> = (0..(1usize << log_n)).map(|_| rng.sample_f128()).collect();
-        let z: Vec<F128> = (0..log_n).map(|_| rng.sample_f128()).collect();
+        let mut rng = crate::sponge::Sponge::new(&(0xFA57_0022u64).to_le_bytes(), &[]);
+        let poly: Vec<F128> = (0..(1usize << log_n)).map(|_| rng.sample()).collect();
+        let z: Vec<F128> = (0..log_n).map(|_| rng.sample()).collect();
         let b = build_eq_table(&z);
         let target: F128 = poly
             .iter()
@@ -7144,7 +7145,7 @@ mod tests {
         let wtns_0 = ligero_commit(&poly, log_msg_cols_0, initial_k, 1, &ntt_0);
         let initial_root = wtns_0.root();
 
-        let mut p_ch = crate::challenger::FsChallenger::new(b"m22-fast");
+        let mut p_ch = crate::transcript::ProverState::new(b"m22-fast", &[]);
         let proof = multilevel_prover_with_basis(
             &p_cfg,
             poly,
@@ -7155,7 +7156,7 @@ mod tests {
             &mut p_ch,
         );
 
-        let mut v_ch = crate::challenger::FsChallenger::new(b"m22-fast");
+        let mut v_ch = crate::transcript::VerifierState::detached(b"m22-fast", &[]);
         assert!(
             multilevel_verifier_with_basis(&v_cfg, &proof, &b, target, &initial_root, &mut v_ch),
             "m22 fast profile proof must verify"
@@ -7167,18 +7168,18 @@ mod tests {
     /// produces.
     #[test]
     fn multilevel_prover_with_basis_roundtrip_batched_claims() {
-        use crate::challenger::Challenger;
+        
         let log_n = 14;
         let initial_k = 3;
         let k_0 = 2;
         let log_inv_rate = 1;
 
-        let mut rng = crate::challenger::RandomChallenger::new(0xBA51_BA51);
-        let poly: Vec<F128> = (0..(1usize << log_n)).map(|_| rng.sample_f128()).collect();
-        let z1: Vec<F128> = (0..log_n).map(|_| rng.sample_f128()).collect();
-        let z2: Vec<F128> = (0..log_n).map(|_| rng.sample_f128()).collect();
-        let g1 = rng.sample_f128();
-        let g2 = rng.sample_f128();
+        let mut rng = crate::sponge::Sponge::new(&(0xBA51_BA51u64).to_le_bytes(), &[]);
+        let poly: Vec<F128> = (0..(1usize << log_n)).map(|_| rng.sample()).collect();
+        let z1: Vec<F128> = (0..log_n).map(|_| rng.sample()).collect();
+        let z2: Vec<F128> = (0..log_n).map(|_| rng.sample()).collect();
+        let g1 = rng.sample();
+        let g2 = rng.sample();
         let b1 = build_eq_table(&z1);
         let b2 = build_eq_table(&z2);
         let b: Vec<F128> = b1
@@ -7218,7 +7219,7 @@ mod tests {
         let wtns_0 = ligero_commit(&poly, log_msg_cols_0, initial_k, log_inv_rate, &ntt_0);
         let initial_root = wtns_0.root();
 
-        let mut p_ch = crate::challenger::FsChallenger::new(b"batched");
+        let mut p_ch = crate::transcript::ProverState::new(b"batched", &[]);
         let proof = multilevel_prover_with_basis(
             &cfg,
             poly.clone(),
@@ -7242,7 +7243,7 @@ mod tests {
             fold_grinding_bits: vec![0; 2],
             ood_samples: vec![0; 2],
         };
-        let mut v_ch = crate::challenger::FsChallenger::new(b"batched");
+        let mut v_ch = crate::transcript::VerifierState::detached(b"batched", &[]);
         let ok =
             multilevel_verifier_with_basis(&v_cfg, &proof, &b, target, &initial_root, &mut v_ch);
         assert!(ok, "batched-basis verifier rejected valid proof");
@@ -7253,15 +7254,15 @@ mod tests {
     /// `multilevel_prover` when given a matching pre-built L0.
     #[test]
     fn multilevel_prover_with_l0_matches_full() {
-        use crate::challenger::Challenger;
+        
         let log_n = 14;
         let initial_k = 3;
         let k_0 = 2;
         let log_inv_rate = 1;
 
-        let mut rng = crate::challenger::RandomChallenger::new(0xACED_BEEF);
-        let poly: Vec<F128> = (0..(1usize << log_n)).map(|_| rng.sample_f128()).collect();
-        let z: Vec<F128> = (0..log_n).map(|_| rng.sample_f128()).collect();
+        let mut rng = crate::sponge::Sponge::new(&(0xACED_BEEFu64).to_le_bytes(), &[]);
+        let poly: Vec<F128> = (0..(1usize << log_n)).map(|_| rng.sample()).collect();
+        let z: Vec<F128> = (0..log_n).map(|_| rng.sample()).collect();
         let eq = build_eq_table(&z);
         let v: F128 = poly
             .iter()
@@ -7285,7 +7286,7 @@ mod tests {
         };
 
         // Path 1: built-in L0 commit.
-        let mut p_ch = crate::challenger::FsChallenger::new(b"l0-test");
+        let mut p_ch = crate::transcript::ProverState::new(b"l0-test", &[]);
         let proof_a = multilevel_prover(&cfg, &poly, &z, v, &mut p_ch);
 
         // Path 2: build L0 externally via ligero_commit, then call _with_l0.
@@ -7293,7 +7294,7 @@ mod tests {
         let ntt_0 = AdditiveNttF128::standard(log_msg_cols_0 + log_inv_rate);
         let mut wtns_0_external =
             ligero_commit(&poly, log_msg_cols_0, initial_k, log_inv_rate, &ntt_0);
-        let mut p_ch_b = crate::challenger::FsChallenger::new(b"l0-test");
+        let mut p_ch_b = crate::transcript::ProverState::new(b"l0-test", &[]);
         let proof_b = multilevel_prover_with_l0(
             &cfg,
             &poly,
@@ -7334,23 +7335,23 @@ mod tests {
             fold_grinding_bits: vec![0; 2],
             ood_samples: vec![0; 2],
         };
-        let mut v_ch = crate::challenger::FsChallenger::new(b"l0-test");
+        let mut v_ch = crate::transcript::VerifierState::detached(b"l0-test", &[]);
         assert!(multilevel_verifier(&v_cfg, &proof_b, &z, v, &mut v_ch));
     }
 
     /// Mutation rejection: change one element of yr → verify should fail.
     #[test]
     fn ligerito_r1_rejects_mutated_yr() {
-        use crate::challenger::Challenger;
+        
         let log_n = 14;
         let initial_k = 3;
         let k_0 = 2;
         let log_inv_rate = 1;
         let num_queries = 0;
 
-        let mut rng = crate::challenger::RandomChallenger::new(0xDEAD_BEEF);
-        let poly: Vec<F128> = (0..(1usize << log_n)).map(|_| rng.sample_f128()).collect();
-        let z: Vec<F128> = (0..log_n).map(|_| rng.sample_f128()).collect();
+        let mut rng = crate::sponge::Sponge::new(&(0xDEAD_BEEFu64).to_le_bytes(), &[]);
+        let poly: Vec<F128> = (0..(1usize << log_n)).map(|_| rng.sample()).collect();
+        let z: Vec<F128> = (0..log_n).map(|_| rng.sample()).collect();
         let eq = build_eq_table(&z);
         let v: F128 = poly
             .iter()
@@ -7387,13 +7388,13 @@ mod tests {
             ood_samples: vec![0; 2],
         };
 
-        let mut p_ch = crate::challenger::FsChallenger::new(b"test-mut");
+        let mut p_ch = crate::transcript::ProverState::new(b"test-mut", &[]);
         let mut proof = multilevel_prover(&prover_cfg, &poly, &z, v, &mut p_ch);
 
         // Mutate yr.
         proof.final_proof.yr[0] += F128::ONE;
 
-        let mut v_ch = crate::challenger::FsChallenger::new(b"test-mut");
+        let mut v_ch = crate::transcript::VerifierState::detached(b"test-mut", &[]);
         let ok = multilevel_verifier(&verifier_cfg, &proof, &z, v, &mut v_ch);
         assert!(!ok, "verifier accepted a proof with mutated yr");
     }
