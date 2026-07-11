@@ -187,8 +187,7 @@ fn verify_core_inner(
 
     // ---- Zerocheck.
     let t = std::time::Instant::now();
-    let (zc_claim, _zc_replay) =
-        zerocheck::verify(r1cs.m, vs).map_err(VerifyError::Zerocheck)?;
+    let zc_claim = zerocheck::verify(r1cs.m, vs).map_err(VerifyError::Zerocheck)?;
     if trace {
         eprintln!(
             "      [vco] zerocheck::verify: {}",
@@ -202,7 +201,7 @@ fn verify_core_inner(
 
     // ---- Lincheck. v_a, v_b come from the zerocheck's final â, b̂ evals.
     let t = std::time::Instant::now();
-    let (lc_claim, _lc_replay) = lincheck::verify(
+    let lc_claim = lincheck::verify(
         r1cs.m,
         r1cs.k_log,
         r1cs.k_skip,

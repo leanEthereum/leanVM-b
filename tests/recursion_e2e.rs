@@ -547,12 +547,15 @@ fn gen_verify(
     let m_r1cs = flock_prover::r1cs_hashes::blake3::K_LOG + n_log_b3;
     let _n_mlv = m_r1cs - 6;
     let lcrounds = flock_prover::r1cs_hashes::blake3::K_LOG - 6;
-    let zcf = [summary.zerocheck.final_a_eval, summary.zerocheck.final_b_eval];
+    let zcf = [summary.zc_claim.a_eval, summary.zc_claim.b_eval];
     let zc_z = summary.zc_claim.z;
     let zrho = summary.zc_claim.mlv_challenges.clone();
     let _r_rest = &summary.zc_claim.r_rest;
-    let lcr: Vec<F128> = summary.lincheck.rounds.iter().flat_map(|&(a, b)| [a, b]).collect();
-    let lcz = summary.lincheck.z_partial.clone();
+    // The lincheck rounds and z_partial sit at fixed offsets from the stream's
+    // tail: [.. (e1,e_inf) x lcrounds | z_partial (64) | s_hat_v (2 x 128)].
+    let ns = proof.stream.len();
+    let lcr: Vec<F128> = proof.stream[ns - 256 - 64 - 2 * lcrounds..ns - 256 - 64].to_vec();
+    let lcz: Vec<F128> = proof.stream[ns - 256 - 64..ns - 256].to_vec();
     let lc_alpha = summary.lc_claim.alpha;
     let lc_beta = summary.lc_claim.beta;
     let lrr = summary.lc_claim.r_rounds.clone();

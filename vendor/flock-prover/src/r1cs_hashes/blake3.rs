@@ -2362,17 +2362,13 @@ pub struct ReducedClaims {
 }
 
 /// Everything [`Blake3Setup::verify_reduction`] recovers: the two `(ab, c)`
-/// z-claims for the PCS, the zerocheck / lincheck claims, and the reassembled
-/// sub-proof records (the scalars as read off the shared stream — for
-/// summaries / recursion harnesses).
+/// z-claims for the PCS and the zerocheck / lincheck claims.
 #[derive(Clone, Debug)]
 pub struct ReductionReplay {
     pub ab: flock_core::proof::ZClaim,
     pub c: flock_core::proof::ZClaim,
     pub zc_claim: flock_core::zerocheck::ZerocheckClaim,
     pub lc_claim: flock_core::lincheck::LincheckClaim,
-    pub zerocheck: flock_core::zerocheck::ZerocheckProof,
-    pub lincheck: flock_core::lincheck::LincheckProof,
 }
 
 impl Blake3Setup {
@@ -2408,7 +2404,7 @@ impl Blake3Setup {
             k_log: self.r1cs.k_log,
             useful_bits_per_block: self.r1cs.useful_bits,
         };
-        let (_zc_proof, zc_claim, s_hat_v_c) = {
+        let (zc_claim, s_hat_v_c) = {
             let a_packed: &[u8] = unsafe {
                 std::slice::from_raw_parts(
                     a_packed_f128.as_ptr() as *const u8,
@@ -2438,7 +2434,7 @@ impl Blake3Setup {
             x_inner_rest: zc_claim.mlv_challenges[..inner_rest_len].to_vec(),
             x_outer: zc_claim.mlv_challenges[inner_rest_len..].to_vec(),
         };
-        let (_lc_proof, lc_claim, z_vec_pre) = flock_core::lincheck::prove_padded_capture_z_vec(
+        let (lc_claim, z_vec_pre) = flock_core::lincheck::prove_padded_capture_z_vec(
             &z_packed_lincheck,
             self.r1cs.m,
             self.r1cs.k_log,
@@ -2580,7 +2576,7 @@ impl Blake3Setup {
         // protocol's seed (family digest) + announced count + commitment root.
         let _ = stack_commitment;
 
-        let (zc_claim, zerocheck) = flock_core::zerocheck::verify(self.r1cs.m, vs)
+        let zc_claim = flock_core::zerocheck::verify(self.r1cs.m, vs)
             .map_err(verifier::VerifyError::Zerocheck)?;
         let inner_rest_len = self.r1cs.k_log - self.r1cs.k_skip;
         let x_ab = flock_core::lincheck::QuirkyPoint {
@@ -2588,7 +2584,7 @@ impl Blake3Setup {
             x_inner_rest: zc_claim.mlv_challenges[..inner_rest_len].to_vec(),
             x_outer: zc_claim.mlv_challenges[inner_rest_len..].to_vec(),
         };
-        let (lc_claim, lincheck) = flock_core::lincheck::verify(
+        let lc_claim = flock_core::lincheck::verify(
             self.r1cs.m,
             self.r1cs.k_log,
             self.r1cs.k_skip,
@@ -2616,7 +2612,7 @@ impl Blake3Setup {
             },
             value: zc_claim.c_eval,
         };
-        Ok(ReductionReplay { ab, c, zc_claim, lc_claim, zerocheck, lincheck })
+        Ok(ReductionReplay { ab, c, zc_claim, lc_claim })
     }
 
     /// Verifier mirror of [`Self::prove_validity_stacked`], in the same two

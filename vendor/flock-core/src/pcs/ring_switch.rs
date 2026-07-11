@@ -64,7 +64,6 @@ use crate::field::F128;
 use crate::zerocheck::PaddingSpec;
 use crate::zerocheck::multilinear::lagrange_weights_naive;
 use crate::zerocheck::univariate_skip::build_eq;
-use serde::{Deserialize, Serialize};
 
 use super::pack::LOG_PACKING;
 
@@ -2034,13 +2033,8 @@ pub fn fold_b128_elems_sparse(len: usize, eq: &SparseEqTensor, eq_r_dprime: &[F1
 // Prover / verifier of the ring-switching reduction.
 // ---------------------------------------------------------------------------
 
-/// The prover message: the 128 slice-MLEs at the suffix point.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Reassembled by the verifier from its stream reads (a passive record); the
-/// 128 `s_hat_v` words ride the shared transcript stream via `add_scalars`.
-pub struct RingSwitchProof {
-    pub s_hat_v: Vec<F128>,
-}
+// (No RingSwitchProof struct: the prover message — `s_hat_v`, the 128
+// slice-MLEs at the suffix point — rides the shared transcript stream.)
 
 /// What both prover and verifier compute as a result of the reduction:
 /// the transparent multilinear and the BaseFold sumcheck target.
@@ -2191,7 +2185,7 @@ pub fn prove(
     packed_witness: &[F128],
     x_outer: &[F128],
     ps: &mut ProverState,
-) -> (RingSwitchProof, RingSwitchOutput) {
+) -> RingSwitchOutput {
     assert!(
         !x_outer.is_empty(),
         "x_outer must contain at least 1 coord (the 7th-bit factor)"
@@ -2248,13 +2242,10 @@ pub fn prove(
         );
     }
 
-    (
-        RingSwitchProof { s_hat_v },
-        RingSwitchOutput {
-            rs_eq_ind,
-            sumcheck_claim,
-        },
-    )
+    RingSwitchOutput {
+        rs_eq_ind,
+        sumcheck_claim,
+    }
 }
 
 /// Batched prover: produce ring-switching proofs for `x_outers.len()` opening
@@ -2265,7 +2256,7 @@ pub fn prove_batched(
     packed_witness: &[F128],
     x_outers: &[&[F128]],
     ps: &mut ProverState,
-) -> (Vec<(RingSwitchProof, RingSwitchBatchOutput)>, Vec<F128>) {
+) -> (Vec<RingSwitchBatchOutput>, Vec<F128>) {
     let m = LOG_PACKING + (packed_witness.len().trailing_zeros() as usize);
     prove_batched_padded(packed_witness, x_outers, &PaddingSpec::dense(m), ps)
 }
@@ -2284,7 +2275,7 @@ pub fn prove_batched_padded(
     x_outers: &[&[F128]],
     padding: &PaddingSpec,
     ps: &mut ProverState,
-) -> (Vec<(RingSwitchProof, RingSwitchBatchOutput)>, Vec<F128>) {
+) -> (Vec<RingSwitchBatchOutput>, Vec<F128>) {
     prove_batched_padded_with_precomputed(packed_witness, x_outers, &[], padding, ps)
 }
 
@@ -2310,7 +2301,7 @@ pub fn prove_batched_padded_with_precomputed(
     precomputed_s_hat_v: &[Option<&[F128]>],
     padding: &PaddingSpec,
     ps: &mut ProverState,
-) -> (Vec<(RingSwitchProof, RingSwitchBatchOutput)>, Vec<F128>) {
+) -> (Vec<RingSwitchBatchOutput>, Vec<F128>) {
     assert!(!x_outers.is_empty());
     let trace = std::env::var("PCS_TRACE").is_ok();
     let n = x_outers.len();
@@ -2492,7 +2483,6 @@ pub fn prove_batched_padded_with_precomputed(
     let t = std::time::Instant::now();
 
     struct ClaimWork {
-        s_hat_v: Vec<F128>,
         sumcheck_claim: F128,
         eq_r_dprime: Vec<F128>,
     }
@@ -2518,7 +2508,6 @@ pub fn prove_batched_padded_with_precomputed(
         let s_hat_u = tensor_algebra_transpose(&s_hat_v);
         let sumcheck_claim = inner_product(&s_hat_u, &eq_r_dprime);
         work.push(ClaimWork {
-            s_hat_v,
             sumcheck_claim,
             eq_r_dprime: eq_r_dprime.clone(),
         });
@@ -2529,7 +2518,7 @@ pub fn prove_batched_padded_with_precomputed(
     // fold output is γ_k · B_k directly. pcs combine just adds.
     let gammas_rs: Vec<F128> = (0..n).map(|_| ps.sample()).collect();
 
-    let results: Vec<(RingSwitchProof, RingSwitchBatchOutput)> = work
+    let results: Vec<RingSwitchBatchOutput> = work
         .into_iter()
         .zip(gammas_rs.iter())
         .enumerate()
@@ -2557,13 +2546,10 @@ pub fn prove_batched_padded_with_precomputed(
                     entries: fold_b128_elems_sparse_pairs(&sparse_supports[s], &scaled_eq_r_dprime),
                 },
             };
-            (
-                RingSwitchProof { s_hat_v: w.s_hat_v },
-                RingSwitchBatchOutput {
-                    rs_eq_ind,
-                    sumcheck_claim: w.sumcheck_claim,
-                },
-            )
+            RingSwitchBatchOutput {
+                rs_eq_ind,
+                sumcheck_claim: w.sumcheck_claim,
+            }
         })
         .collect();
 
@@ -2594,7 +2580,7 @@ pub fn verify(
     z_skip: F128,
     x_outer: &[F128],
     vs: &mut VerifierState<'_>,
-) -> Result<(RingSwitchOutput, RingSwitchProof), VerifyError> {
+) -> Result<RingSwitchOutput, VerifyError> {
     assert!(!x_outer.is_empty());
     let l = 1usize << (x_outer.len() - 1);
 
@@ -2624,13 +2610,10 @@ pub fn verify(
     debug_assert_eq!(suffix_tensor.len(), l);
     let rs_eq_ind = fold_b128_elems(&suffix_tensor, &eq_r_dprime);
 
-    Ok((
-        RingSwitchOutput {
-            rs_eq_ind,
-            sumcheck_claim,
-        },
-        RingSwitchProof { s_hat_v },
-    ))
+    Ok(RingSwitchOutput {
+        rs_eq_ind,
+        sumcheck_claim,
+    })
 }
 
 /// Verifier-side output of [`verify_succinct`]: contains everything the caller
@@ -2654,7 +2637,7 @@ pub fn verify_bind(
     z_skip: F128,
     x_outer: &[F128],
     vs: &mut VerifierState<'_>,
-) -> Result<RingSwitchProof, VerifyError> {
+) -> Result<Vec<F128>, VerifyError> {
     assert!(!x_outer.is_empty());
     vs.absorb_bytes(b"flock-ring-switch-v0");
     let s_hat_v = vs.next_scalars(1 << LOG_PACKING).map_err(VerifyError::Transcript)?;
@@ -2662,7 +2645,7 @@ pub fn verify_bind(
     if claim_check(&weights, &s_hat_v) != claim {
         return Err(VerifyError::ClaimMismatch);
     }
-    Ok(RingSwitchProof { s_hat_v })
+    Ok(s_hat_v)
 }
 
 /// Polylog-cost ring-switching verifier.
@@ -2676,7 +2659,7 @@ pub fn verify_succinct(
     z_skip: F128,
     x_outer: &[F128],
     vs: &mut VerifierState<'_>,
-) -> Result<(RingSwitchVerifierOutput, RingSwitchProof), VerifyError> {
+) -> Result<RingSwitchVerifierOutput, VerifyError> {
     assert!(!x_outer.is_empty());
 
     vs.absorb_bytes(b"flock-ring-switch-v0");
@@ -2695,14 +2678,11 @@ pub fn verify_succinct(
     let c = linearized_eq_coeffs(&eq_r_dprime);
     let sumcheck_claim = transposed_claim_linearized(&s_hat_v, &c);
 
-    Ok((
-        RingSwitchVerifierOutput {
-            sumcheck_claim,
-            r_dprime,
-            eq_r_dprime,
-        },
-        RingSwitchProof { s_hat_v },
-    ))
+    Ok(RingSwitchVerifierOutput {
+        sumcheck_claim,
+        r_dprime,
+        eq_r_dprime,
+    })
 }
 
 /// Polylog-cost evaluation of `MLE(rs_eq_ind)(query)` at the BaseFold final
@@ -2983,15 +2963,14 @@ mod tests {
 
             // Prover.
             let mut ch_p = crate::transcript::ProverState::new(b"flock-test-v0", &[]);
-            let (proof, out_p) = prove(&packed, &x_outer, &mut ch_p);
+            let out_p = prove(&packed, &x_outer, &mut ch_p);
 
             // Verifier (matched sponge, reads s_hat_v off the stream).
             let proof_t = ch_p.into_proof();
             let mut ch_v = crate::transcript::VerifierState::new(b"flock-test-v0", &proof_t, &[]);
-            let (out_v, replay) = verify(claim, z_skip, &x_outer, &mut ch_v)
+            let out_v = verify(claim, z_skip, &x_outer, &mut ch_v)
                 .unwrap_or_else(|e| panic!("verify rejected honest at m={m}: {e:?}"));
 
-            assert_eq!(replay.s_hat_v, proof.s_hat_v, "stream reads match at m={m}");
             assert_eq!(
                 out_p.sumcheck_claim, out_v.sumcheck_claim,
                 "sumcheck_claim mismatch at m={m}"
@@ -3015,7 +2994,7 @@ mod tests {
 
             let packed = pack_witness(&z, m);
             let mut ch = crate::transcript::ProverState::new(b"flock-test-v0", &[]);
-            let (_proof, out) = prove(&packed, &x_outer, &mut ch);
+            let out = prove(&packed, &x_outer, &mut ch);
 
             // The DP24 identity: T = ⟨packed_witness, rs_eq_ind⟩.
             let lhs = inner_product(&packed, &out.rs_eq_ind);
@@ -3036,7 +3015,7 @@ mod tests {
         let packed = pack_witness(&z, m);
 
         let mut ch_p = crate::transcript::ProverState::new(b"flock-test-v0", &[]);
-        let (_proof, _) = prove(&packed, &x_outer, &mut ch_p);
+        let _ = prove(&packed, &x_outer, &mut ch_p);
         // Flip one bit of s_hat_v (the stream's first word).
         let mut proof_t = ch_p.into_proof();
         proof_t.stream[0].lo ^= 1;
@@ -3056,45 +3035,6 @@ mod tests {
         assert_eq!(s_hat_v, twice);
     }
 
-    #[test]
-    #[ignore = "stale since gamma-baking: batched and sequential prove sample r'' at
-    different transcript points, so s_hat_v/sumcheck_claim no longer compare.
-    Failed before the sponge refactor too (the test target did not compile at
-    vendoring time, masking it). Batched proving is covered by the roundtrip
-    tests; kept for a future rewrite against transcript-independent invariants."]
-    fn prove_batched_matches_sequential() {
-        
-        let mut rng = Rng::new(0x1234_5678);
-        for &m in &[8usize, 9, 10, 11] {
-            let z = rng.bits(1 << m);
-            let x_a: Vec<F128> = (0..(m - 6)).map(|_| rng.f128()).collect();
-            let x_b: Vec<F128> = (0..(m - 6)).map(|_| rng.f128()).collect();
-            let packed = pack_witness(&z, m);
-
-            // Sequential reference.
-            let mut ch_seq = crate::transcript::ProverState::new(b"flock-test-v0", &[]);
-            let (p_a, o_a) = prove(&packed, &x_a, &mut ch_seq);
-            let (p_b, o_b) = prove(&packed, &x_b, &mut ch_seq);
-
-            // Batched. After γ-baking, the batched transcript samples γ_rs
-            // mid-loop, so it diverges from sequential `prove`. We can still
-            // check `s_hat_v` matches (it's determined by transcript up to
-            // its sample point, which is identical to sequential) and that
-            // sumcheck_claim matches (γ doesn't enter sumcheck_claim).
-            // rs_eq_ind has γ baked in, so it differs from sequential.
-            let mut ch_batch = crate::transcript::ProverState::new(b"flock-test-v0", &[]);
-            let (results, _gammas_rs) = prove_batched(&packed, &[&x_a, &x_b], &mut ch_batch);
-
-            assert_eq!(results[0].0, p_a, "s_hat_v[0] mismatch at m={m}");
-            assert_eq!(results[1].0, p_b, "s_hat_v[1] mismatch at m={m}");
-            // sumcheck_claim is determined by s_hat_v + r''; both match.
-            assert_eq!(results[0].1.sumcheck_claim, o_a.sumcheck_claim);
-            assert_eq!(results[1].1.sumcheck_claim, o_b.sumcheck_claim);
-            // rs_eq_ind shape check (γ-baked, so byte values differ from sequential).
-            assert_eq!(results[0].1.rs_eq_ind.len(), o_a.rs_eq_ind.len());
-            assert_eq!(results[1].1.rs_eq_ind.len(), o_b.rs_eq_ind.len());
-        }
-    }
 
     /// The method-of-four-Russians fold must produce byte-identical output
     /// to the scalar bit-scan version, for both s_hat_v vectors at k=2.
@@ -3398,11 +3338,13 @@ mod tests {
             let x_b: Vec<F128> = (0..(m - 6)).map(|_| rng.f128()).collect();
             let packed = pack_witness(&z, m);
 
-            // Baseline: no precomputes.
+            // Baseline: no precomputes. The streamed proof is the two
+            // s_hat_v slices (128 words each).
             let mut ch_base = crate::transcript::ProverState::new(b"flock-test-v0", &[]);
             let (base, _) = prove_batched(&packed, &[&x_a, &x_b], &mut ch_base);
-            let s_hat_v_a = base[0].0.s_hat_v.clone();
-            let s_hat_v_b = base[1].0.s_hat_v.clone();
+            let base_stream = ch_base.into_proof().stream;
+            let s_hat_v_a = base_stream[0..128].to_vec();
+            let s_hat_v_b = base_stream[128..256].to_vec();
 
             // Padding spec — dense for tests (matches prove_batched).
             let padding = PaddingSpec::dense(m);
@@ -3424,23 +3366,14 @@ mod tests {
                     &mut ch,
                 );
                 assert_eq!(
-                    got[0].0, base[0].0,
-                    "proof[0] mismatch (pre_a={pre_a}, pre_b={pre_b}, m={m})"
+                    ch.into_proof().stream,
+                    base_stream,
+                    "streamed proof mismatch (pre_a={pre_a}, pre_b={pre_b}, m={m})"
                 );
-                assert_eq!(
-                    got[1].0, base[1].0,
-                    "proof[1] mismatch (pre_a={pre_a}, pre_b={pre_b}, m={m})"
-                );
-                assert_eq!(got[0].1.sumcheck_claim, base[0].1.sumcheck_claim);
-                assert_eq!(got[1].1.sumcheck_claim, base[1].1.sumcheck_claim);
-                assert_eq!(
-                    got[0].1.rs_eq_ind.to_dense(),
-                    base[0].1.rs_eq_ind.to_dense()
-                );
-                assert_eq!(
-                    got[1].1.rs_eq_ind.to_dense(),
-                    base[1].1.rs_eq_ind.to_dense()
-                );
+                assert_eq!(got[0].sumcheck_claim, base[0].sumcheck_claim);
+                assert_eq!(got[1].sumcheck_claim, base[1].sumcheck_claim);
+                assert_eq!(got[0].rs_eq_ind.to_dense(), base[0].rs_eq_ind.to_dense());
+                assert_eq!(got[1].rs_eq_ind.to_dense(), base[1].rs_eq_ind.to_dense());
             }
         }
     }
@@ -3655,73 +3588,6 @@ mod tests {
         }
     }
 
-    /// `prove_batched` with a mix of sparse and dense claims must produce
-    /// byte-identical output to calling `prove` per claim (which uses only
-    /// the dense kernels).
-    #[test]
-    #[ignore = "stale since gamma-baking: batched and sequential prove sample r'' at
-    different transcript points, so s_hat_v/sumcheck_claim no longer compare.
-    Failed before the sponge refactor too (the test target did not compile at
-    vendoring time, masking it). Batched proving is covered by the roundtrip
-    tests; kept for a future rewrite against transcript-independent invariants."]
-    fn prove_batched_with_sparse_claim_matches_sequential() {
-        
-        let mut rng = Rng::new(0xBEEF_CAFE);
-        for &m in &[10usize, 11, 12] {
-            let z = rng.bits(1 << m);
-            let packed = pack_witness(&z, m);
-            // x has length m-6. Suffix is x[1..], length m-7. Zero out the
-            // last 3 suffix coords to trip the sparse threshold.
-            let mut x_chain: Vec<F128> = (0..(m - 6)).map(|_| rng.f128()).collect();
-            for j in 0..3 {
-                x_chain[(m - 6) - 1 - j] = F128::ZERO;
-            }
-            let x_ab: Vec<F128> = (0..(m - 6)).map(|_| rng.f128()).collect();
-            let x_c: Vec<F128> = (0..(m - 6)).map(|_| rng.f128()).collect();
-
-            // Sequential reference (dense path only).
-            let mut ch_seq = crate::transcript::ProverState::new(b"flock-test-sparse", &[]);
-            let (p_ab, o_ab) = prove(&packed, &x_ab, &mut ch_seq);
-            let (p_c, o_c) = prove(&packed, &x_c, &mut ch_seq);
-            let (p_chain, o_chain) = prove(&packed, &x_chain, &mut ch_seq);
-
-            // Batched (sparse chain claim is routed through sparse kernels).
-            // rs_eq_ind values have γ baked in, so don't byte-compare to
-            // sequential `prove` output. Check s_hat_v (transcript-aligned)
-            // and routing (Sparse vs Dense) instead.
-            let mut ch_batch = crate::transcript::ProverState::new(b"flock-test-sparse", &[]);
-            let (results, _) = prove_batched(&packed, &[&x_ab, &x_c, &x_chain], &mut ch_batch);
-
-            assert_eq!(results[0].0, p_ab, "s_hat_v[ab] mismatch at m={m}");
-            assert_eq!(results[1].0, p_c, "s_hat_v[c]  mismatch at m={m}");
-            assert_eq!(results[2].0, p_chain, "s_hat_v[chain] mismatch at m={m}");
-            assert!(
-                matches!(results[2].1.rs_eq_ind, RsEqInd::Sparse { .. }),
-                "chain claim should be sparse"
-            );
-            // Dense routing = either the materialized `Dense` (non-split l) or
-            // the fused `DeferredDense` (split l, l % 16 == 0).
-            assert!(
-                matches!(
-                    results[0].1.rs_eq_ind,
-                    RsEqInd::Dense(_) | RsEqInd::DeferredDense { .. }
-                ),
-                "ab claim should be dense"
-            );
-            assert!(
-                matches!(
-                    results[1].1.rs_eq_ind,
-                    RsEqInd::Dense(_) | RsEqInd::DeferredDense { .. }
-                ),
-                "c claim should be dense"
-            );
-            assert_eq!(results[0].1.sumcheck_claim, o_ab.sumcheck_claim);
-            assert_eq!(results[1].1.sumcheck_claim, o_c.sumcheck_claim);
-            assert_eq!(results[2].1.sumcheck_claim, o_chain.sumcheck_claim);
-            // Used to suppress unused warnings from sequential oracle.
-            let _ = (&o_ab.rs_eq_ind, &o_c.rs_eq_ind, &o_chain.rs_eq_ind);
-        }
-    }
 
     /// Cross-check `eval_rs_eq` against the dense `mle_eval(fold_b128_elems(build_eq(z_vals)), query)`
     /// path at several `ℓ' = |z_vals|` values. The two must agree bit-for-bit.

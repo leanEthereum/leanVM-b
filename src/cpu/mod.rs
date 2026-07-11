@@ -464,18 +464,16 @@ fn bind_pi_claim(r: F128, placements: &[witness::Placement], pi: &[F128; 2]) -> 
 /// was fully consumed. Takes only public inputs — never the prover's witness.
 /// Everything a recursion harness needs from an accepting verify run, named
 /// and typed: the deferred bytecode claims, the count-channel root, the sponge
-/// states at the phase boundaries (guest debug checkpoints), flock's sub-proof
-/// structs and reduction claims, and the stacked-opening summary (ring-switch
-/// challenges + Ligerito fold/query data). Ordinary callers just `?`-discard it.
+/// states at the phase boundaries (guest debug checkpoints), flock's reduction
+/// claims, and the stacked-opening summary (ring-switch challenges + Ligerito
+/// fold/query data). The sub-proof scalars themselves live on `proof.stream`
+/// at fixed offsets from its tail. Ordinary callers just `?`-discard it.
 pub struct VerifySummary {
     pub bytecode_claims: Vec<leaf::BytecodeClaim>,
     pub count_root: F128,
     /// Sponge states after: the bus, the zerochecks, the PI sample, and the
     /// flock reduction.
     pub checkpoints: [[F128; 2]; 4],
-    pub zerocheck: flock_prover::zerocheck::ZerocheckProof,
-    pub ring_switches: Vec<flare::pcs::RingSwitchProof>,
-    pub lincheck: flock_prover::lincheck::LincheckProof,
     pub zc_claim: flare::zerocheck::ZerocheckClaim,
     pub lc_claim: flare::lincheck::LincheckClaim,
     pub opening: flare::pcs::StackedOpeningSummary,
@@ -540,9 +538,6 @@ pub fn verify(
         bytecode_claims: bus.bytecode_claims,
         count_root: bus.count_root,
         checkpoints: [checkpoint_bus, checkpoint_zerochecks, checkpoint_pi, checkpoint_flock],
-        zerocheck: replay.zerocheck,
-        ring_switches: opening.ring_switches.clone(),
-        lincheck: replay.lincheck,
         zc_claim: replay.zc_claim,
         lc_claim: replay.lc_claim,
         opening,

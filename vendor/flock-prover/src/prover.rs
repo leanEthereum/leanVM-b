@@ -176,7 +176,7 @@ pub fn prove(
 
     // ---- Zerocheck.
     let padding = r1cs.padding_spec();
-    let (_zc_proof, zc_claim, s_hat_v_c) = zerocheck::prove_packed_padded_capture_s_hat_v_c(
+    let (zc_claim, s_hat_v_c) = zerocheck::prove_packed_padded_capture_s_hat_v_c(
         a_packed, b_packed, c_packed, r1cs.m, &padding, ps,
     );
 
@@ -192,7 +192,7 @@ pub fn prove(
     // ---- Lincheck. Capture pre-sumcheck z_vec to skip fold_1b_rows for AB
     // at PCS-open time.
     let lc_circuit = r1cs.csc_lincheck_circuit();
-    let (_lc_proof, lc_claim, z_vec_pre) = lincheck::prove_padded_capture_z_vec(
+    let (lc_claim, z_vec_pre) = lincheck::prove_padded_capture_z_vec(
         &z_packed_lincheck,
         r1cs.m,
         r1cs.k_log,
@@ -291,7 +291,7 @@ pub fn prove_ligerito(
     let z_packed_lincheck = pack_z_lincheck_from_packed(&z_packed, r1cs.m, r1cs.k_log);
 
     let padding = r1cs.padding_spec();
-    let (_zc_proof, zc_claim, s_hat_v_c) = zerocheck::prove_packed_padded_capture_s_hat_v_c(
+    let (zc_claim, s_hat_v_c) = zerocheck::prove_packed_padded_capture_s_hat_v_c(
         a_packed, b_packed, c_packed, r1cs.m, &padding, ps,
     );
 
@@ -299,7 +299,7 @@ pub fn prove_ligerito(
 
     let lc_circuit =
         lincheck::SparseMatrixCircuit::new(&r1cs.a_0, &r1cs.b_0).with_const_pin(r1cs.const_pin);
-    let (_lc_proof, lc_claim, z_vec_pre) = lincheck::prove_padded_capture_z_vec(
+    let (lc_claim, z_vec_pre) = lincheck::prove_padded_capture_z_vec(
         &z_packed_lincheck,
         r1cs.m,
         r1cs.k_log,
@@ -418,8 +418,6 @@ pub fn prove_fast_ligerito_from_witness(
             );
 
     let ProveCore {
-        zc_proof: _zc_proof,
-        lc_proof: _lc_proof,
         ab,
         c,
         commitment,
@@ -466,8 +464,6 @@ pub fn prove_fast_ligerito_from_witness(
 /// `open_claims([ab, c])`; a relation wrapper (e.g. the hash chain) runs the
 /// same core, derives extra z-claims, and calls `open_claims([ab, c, …])`.
 pub struct ProveCore {
-    pub zc_proof: zerocheck::ZerocheckProof,
-    pub lc_proof: lincheck::LincheckProof,
     pub ab: ZClaim,
     pub c: ZClaim,
     pub commitment: Commitment,
@@ -538,7 +534,7 @@ pub fn prove_fast_core_with_codeword(
     bind_statement(ps.sponge_mut(), r1cs, &commitment);
 
     let padding = r1cs.padding_spec();
-    let (zc_proof, zc_claim, s_hat_v_c) = {
+    let (zc_claim, s_hat_v_c) = {
         // Zero-cost &[u8] views of the F128 buffers; c aliases z (C = I).
         let a_packed: &[u8] = unsafe {
             std::slice::from_raw_parts(
@@ -572,7 +568,7 @@ pub fn prove_fast_core_with_codeword(
 
     // Capture lincheck's pre-sumcheck z_vec so the PCS open can derive the
     // AB-claim's `s_hat_v` from it (skips fold_1b_rows for AB).
-    let (lc_proof, lc_claim, z_vec_pre) = lincheck::prove_padded_capture_z_vec(
+    let (lc_claim, z_vec_pre) = lincheck::prove_padded_capture_z_vec(
         &z_packed_lincheck,
         r1cs.m,
         r1cs.k_log,
@@ -609,8 +605,6 @@ pub fn prove_fast_core_with_codeword(
     };
 
     ProveCore {
-        zc_proof,
-        lc_proof,
         ab,
         c,
         commitment,
@@ -677,7 +671,7 @@ pub fn prove_fast_ligerito_timed(
 
     // --- zerocheck ---
     let t0 = Instant::now();
-    let (_zc_proof, zc_claim, s_hat_v_c) = {
+    let (zc_claim, s_hat_v_c) = {
         let a_packed: &[u8] = unsafe {
             std::slice::from_raw_parts(
                 a_packed_f128.as_ptr() as *const u8,
@@ -708,7 +702,7 @@ pub fn prove_fast_ligerito_timed(
 
     // --- lincheck + base-claim / s_hat_v setup ---
     let t0 = Instant::now();
-    let (_lc_proof, lc_claim, z_vec_pre) = lincheck::prove_padded_capture_z_vec(
+    let (lc_claim, z_vec_pre) = lincheck::prove_padded_capture_z_vec(
         &z_packed_lincheck,
         r1cs.m,
         r1cs.k_log,

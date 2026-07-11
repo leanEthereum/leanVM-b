@@ -121,7 +121,6 @@ use crate::transcript::{ProverState, VerifierState};
 use crate::field::F128;
 use crate::r1cs::SparseBinaryMatrix;
 use crate::zerocheck::multilinear::lagrange_weights_naive;
-use serde::{Deserialize, Serialize};
 use std::sync::atomic::AtomicBool;
 
 /// Bench-only A/B toggle: when set, [`partial_fold_packed_z_best`] uses the legacy
@@ -362,24 +361,9 @@ pub struct QuirkyPoint {
 /// Lincheck prover message: a partial product-sumcheck that proves the two
 /// scalar consistency equations against `z` partially folded at the shared
 /// outer half `x_ab.x_outer`, without sending the full length-`2^k_log`
-/// `z_vec`. Sumcheck binds the high `k_log − k_skip` multilinear inner dims;
-/// the low `k_skip` (φ8 univariate-skip) dims are handled by sending
-/// `z_partial` (the post-sumcheck length-`2^k_skip` collapsed vector) and
-/// applying a fresh-`z_skip` φ8 Lagrange combination at verify time.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Reassembled by the verifier from its stream reads (a passive record for
-/// summaries / recursion harnesses); the scalars ride the shared transcript
-/// stream, transmitted+bound by `add_scalar` at the protocol points.
-pub struct LincheckProof {
-    /// Per-round messages `(q(1), q(∞))` of the `k_log − k_skip`-round
-    /// product-sumcheck. `q(0)` is recovered from the running claim
-    /// (`q(0) = T_r + q(1)` in char 2). Standard multilinear binding.
-    pub rounds: Vec<(F128, F128)>,
-    /// The length-`2^k_skip` collapse of the prover's `z_vec` over the
-    /// sumcheck-bound `r_rest` dims. Folded against φ8 Lagrange weights at a
-    /// fresh `z_skip` to yield the output claim's value.
-    pub z_partial: Vec<F128>,
-}
+// (No LincheckProof struct: every scalar rides the shared transcript stream —
+// the high multilinear rounds' messages, then `z_partial`, the post-sumcheck
+// length-2^k_skip collapse handled by a fresh-z_skip φ8 Lagrange combination.)
 
 /// Lincheck output: one MLE evaluation claim on `z`, at the quirky inner
 /// point `(r_inner_skip, r_inner_rest)` combined with `x_ab.x_outer`
@@ -1505,7 +1489,8 @@ fn sumcheck_bind_both_and_eval_next(
 /// - `x.len() == x_prime.len() == x_pprime.len() == m`.
 /// - `z_packed.len() == 2^m / 8`.
 ///
-/// Returns `(LincheckProof, LincheckClaim)`. The claim's `r_inner` is
+/// Every message is transmitted+bound on the stream (`add_scalar`); returns
+/// the [`LincheckClaim`]. The claim's `r_inner` is
 /// sampled from the sponge after the proof vectors are observed.
 pub fn prove(
     z_packed: &[u8],
@@ -1515,7 +1500,7 @@ pub fn prove(
     circuit: &dyn LincheckCircuit,
     x_ab: &QuirkyPoint,
     ps: &mut ProverState,
-) -> (LincheckProof, LincheckClaim) {
+) -> LincheckClaim {
     prove_padded(
         z_packed,
         m,
@@ -1542,8 +1527,8 @@ pub fn prove_padded(
     circuit: &dyn LincheckCircuit,
     x_ab: &QuirkyPoint,
     ps: &mut ProverState,
-) -> (LincheckProof, LincheckClaim) {
-    let (proof, claim, _) = prove_padded_inner(
+) -> LincheckClaim {
+    let (claim, _) = prove_padded_inner(
         z_packed,
         m,
         k_log,
@@ -1554,7 +1539,7 @@ pub fn prove_padded(
         false,
         ps,
     );
-    (proof, claim)
+    claim
 }
 
 /// Variant of [`prove_padded`] that also returns the **pre-sumcheck** z_vec
@@ -1575,8 +1560,8 @@ pub fn prove_padded_capture_z_vec(
     circuit: &dyn LincheckCircuit,
     x_ab: &QuirkyPoint,
     ps: &mut ProverState,
-) -> (LincheckProof, LincheckClaim, Vec<F128>) {
-    let (proof, claim, captured) = prove_padded_inner(
+) -> (LincheckClaim, Vec<F128>) {
+    let (claim, captured) = prove_padded_inner(
         z_packed,
         m,
         k_log,
@@ -1587,11 +1572,7 @@ pub fn prove_padded_capture_z_vec(
         true,
         ps,
     );
-    (
-        proof,
-        claim,
-        captured.expect("capture=true must produce z_vec"),
-    )
+    (claim, captured.expect("capture=true must produce z_vec"))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1605,7 +1586,7 @@ fn prove_padded_inner(
     x_ab: &QuirkyPoint,
     capture_z_vec: bool,
     ps: &mut ProverState,
-) -> (LincheckProof, LincheckClaim, Option<Vec<F128>>) {
+) -> (LincheckClaim, Option<Vec<F128>>) {
     let k = 1usize << k_log;
     let n_log = m - k_log;
     assert!(m >= k_log);
@@ -1754,7 +1735,6 @@ fn prove_padded_inner(
     let mut r_inner_rest = r_rounds.clone();
     r_inner_rest.reverse();
 
-    let proof = LincheckProof { rounds, z_partial };
     let claim = LincheckClaim {
         alpha,
         beta,
@@ -1763,7 +1743,7 @@ fn prove_padded_inner(
         r_inner_rest,
         w,
     };
-    (proof, claim, captured_z_vec)
+    (claim, captured_z_vec)
 }
 
 /// Verify a lincheck proof. Walks the sponge in lockstep with `prove`,
@@ -1778,7 +1758,7 @@ pub fn verify(
     v_a: F128,
     v_b: F128,
     vs: &mut VerifierState<'_>,
-) -> Result<(LincheckClaim, LincheckProof), VerifyError> {
+) -> Result<LincheckClaim, VerifyError> {
     let k = 1usize << k_log;
     let n_log = m - k_log;
 
@@ -1918,17 +1898,14 @@ pub fn verify(
     let mut r_inner_rest = r_rounds.clone();
     r_inner_rest.reverse();
 
-    Ok((
-        LincheckClaim {
-            alpha,
-            beta,
-            r_rounds,
-            r_inner_skip,
-            r_inner_rest,
-            w,
-        },
-        LincheckProof { rounds, z_partial },
-    ))
+    Ok(LincheckClaim {
+        alpha,
+        beta,
+        r_rounds,
+        r_inner_skip,
+        r_inner_rest,
+        w,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -2418,18 +2395,16 @@ mod tests {
             // Prove and verify with matched challengers.
             let circuit = SparseMatrixCircuit::new(&a_0, &b_0);
             let mut ch_p = crate::transcript::ProverState::new(b"flock-test-v0", &[]);
-            let (proof, claim_p) = prove(&z_packed, m, k_log, k_skip, &circuit, &x_ab, &mut ch_p);
+            let claim_p = prove(&z_packed, m, k_log, k_skip, &circuit, &x_ab, &mut ch_p);
 
             let proof_t = ch_p.into_proof();
             let mut ch_v = crate::transcript::VerifierState::new(b"flock-test-v0", &proof_t, &[]);
-            let (claim_v, replay) = verify(
+            let claim_v = verify(
                 m, k_log, k_skip, &circuit, &x_ab, v_a, v_b, &mut ch_v,
             )
             .unwrap_or_else(|e| {
                 panic!("verify rejected honest proof at m={m},k_log={k_log},k_skip={k_skip}: {e:?}")
             });
-            assert_eq!(replay.rounds, proof.rounds, "stream reads match the prover record");
-            assert_eq!(replay.z_partial, proof.z_partial);
 
             assert_eq!(
                 claim_p, claim_v,
@@ -2476,7 +2451,7 @@ mod tests {
 
         let circuit = SparseMatrixCircuit::new(&a_0, &b_0);
         let mut ch_p = crate::transcript::ProverState::new(b"flock-test-v0", &[]);
-        let (_, _) = prove(&z_packed, m, k_log, k_skip, &circuit, &x_ab, &mut ch_p);
+        let _ = prove(&z_packed, m, k_log, k_skip, &circuit, &x_ab, &mut ch_p);
         let proof_t = ch_p.into_proof();
 
         // Pick a mutation position where BOTH row vectors are nonzero so the
@@ -2531,7 +2506,7 @@ mod tests {
 
         let circuit = SparseMatrixCircuit::new(&a_0, &b_0);
         let mut ch_p = crate::transcript::ProverState::new(b"flock-test-v0", &[]);
-        let (_, _) = prove(&z_packed, m, k_log, k_skip, &circuit, &x_ab, &mut ch_p);
+        let _ = prove(&z_packed, m, k_log, k_skip, &circuit, &x_ab, &mut ch_p);
         let proof_t = ch_p.into_proof();
 
         // Truncated stream (dropped last z_partial word): a clean Transcript error.

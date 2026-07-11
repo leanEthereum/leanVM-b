@@ -19,7 +19,6 @@
 use crate::transcript::{ProverState, VerifierState};
 use crate::field::{F8, F128};
 use crate::ntt::{AdditiveNttGf8, InvNttTableByteSingleGf8};
-use serde::{Deserialize, Serialize};
 
 pub mod multilinear;
 pub mod univariate_skip;
@@ -105,26 +104,8 @@ pub struct ZerocheckClaim {
     pub c_eval: F128,
 }
 
-/// All round messages the prover sends, in order.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// The verifier reassembles this from its stream reads (a passive record for
-/// summaries / recursion harnesses); the scalars themselves ride the shared
-/// transcript stream, transmitted+bound by `add_scalar` at the protocol points.
-pub struct ZerocheckProof {
-    /// Round 1 (univariate skip): `P^{AB}(λ)` for λ ∈ Λ, length 2^K_SKIP.
-    pub round1_ab: Vec<F128>,
-    /// Round 1 (extract_c): `P^C(λ)` for λ ∈ Λ, length 2^K_SKIP. Sent separately
-    /// from `round1_ab` so the verifier can evaluate the C-claim immediately
-    /// and skip the C-column in all subsequent rounds.
-    pub round1_c: Vec<F128>,
-    /// Multilinear sumcheck rounds: each entry is `(P_r(1), P_r(∞))` via the
-    /// Karatsuba ∞-trick. Length = `m - K_SKIP`.
-    pub multilinear_rounds: Vec<(F128, F128)>,
-    /// Final MLE evaluations sent at the end of the protocol.
-    pub final_a_eval: F128,
-    pub final_b_eval: F128,
-    pub final_c_eval: F128,
-}
+// (No ZerocheckProof struct: every round message rides the shared transcript
+// stream, in protocol order.)
 
 /// Reasons the verifier may reject a proof.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -153,16 +134,15 @@ pub enum VerifyError {
 /// before sampling the next challenge so the verifier (using the same
 /// sponge implementation in lockstep) derives identical challenges.
 ///
-/// Returns:
-///   - the [`ZerocheckProof`] (raw round messages), and
-///   - the [`ZerocheckClaim`] the higher-level caller will pass to its PCS.
+/// Every round message is transmitted+bound on the stream (`add_scalar`);
+/// returns the [`ZerocheckClaim`] the higher-level caller will pass to its PCS.
 pub fn prove_packed(
     a_packed: &[u8],
     b_packed: &[u8],
     c_packed: &[u8],
     m: usize,
     ps: &mut ProverState,
-) -> (ZerocheckProof, ZerocheckClaim) {
+) -> ZerocheckClaim {
     prove_packed_padded(
         a_packed,
         b_packed,
@@ -184,10 +164,9 @@ pub fn prove_packed_padded(
     m: usize,
     padding: &PaddingSpec,
     ps: &mut ProverState,
-) -> (ZerocheckProof, ZerocheckClaim) {
-    let (proof, claim, _) =
-        prove_packed_padded_inner(a_packed, b_packed, c_packed, m, padding, false, ps);
-    (proof, claim)
+) -> ZerocheckClaim {
+    let (claim, _) = prove_packed_padded_inner(a_packed, b_packed, c_packed, m, padding, false, ps);
+    claim
 }
 
 /// Variant of [`prove_packed_padded`] that ALSO returns the canonical
@@ -195,8 +174,7 @@ pub fn prove_packed_padded(
 /// PCS open uses this to skip `fold_1b_rows` for the c-claim — see
 /// [`crate::pcs::ring_switch::round1_shift_reduce_extract_c_packed_padded_with_s_hat_v`].
 ///
-/// Wire output `(ZerocheckProof, ZerocheckClaim)` is byte-identical to
-/// [`prove_packed_padded`].
+/// Wire output is byte-identical to [`prove_packed_padded`].
 pub fn prove_packed_padded_capture_s_hat_v_c(
     a_packed: &[u8],
     b_packed: &[u8],
@@ -204,14 +182,10 @@ pub fn prove_packed_padded_capture_s_hat_v_c(
     m: usize,
     padding: &PaddingSpec,
     ps: &mut ProverState,
-) -> (ZerocheckProof, ZerocheckClaim, Vec<F128>) {
-    let (proof, claim, captured) =
+) -> (ZerocheckClaim, Vec<F128>) {
+    let (claim, captured) =
         prove_packed_padded_inner(a_packed, b_packed, c_packed, m, padding, true, ps);
-    (
-        proof,
-        claim,
-        captured.expect("capture=true must produce s_hat_v_c"),
-    )
+    (claim, captured.expect("capture=true must produce s_hat_v_c"))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -223,7 +197,7 @@ fn prove_packed_padded_inner(
     padding: &PaddingSpec,
     capture_s_hat_v_c: bool,
     ps: &mut ProverState,
-) -> (ZerocheckProof, ZerocheckClaim, Option<Vec<F128>>) {
+) -> (ZerocheckClaim, Option<Vec<F128>>) {
     let k_skip = K_SKIP;
     const N_INNER: usize = 7; // 3 small + 4 medium fixed-constant eq dims
     assert!(
@@ -451,14 +425,6 @@ fn prove_packed_padded_inner(
 
     let r_rest: Vec<F128> = r[k_skip..].to_vec();
 
-    let proof = ZerocheckProof {
-        round1_ab,
-        round1_c,
-        multilinear_rounds: multilinear_msgs,
-        final_a_eval,
-        final_b_eval,
-        final_c_eval,
-    };
     let claim = ZerocheckClaim {
         z,
         mlv_challenges: mlv_rhos,
@@ -467,7 +433,7 @@ fn prove_packed_padded_inner(
         b_eval: final_b_eval,
         c_eval: final_c_eval,
     };
-    (proof, claim, s_hat_v_c)
+    (claim, s_hat_v_c)
 }
 
 /// Verify a zerocheck proof for an instance over `{0,1}^log_n`.
@@ -481,7 +447,7 @@ fn prove_packed_padded_inner(
 pub fn verify(
     log_n: usize,
     vs: &mut VerifierState<'_>,
-) -> Result<(ZerocheckClaim, ZerocheckProof), VerifyError> {
+) -> Result<ZerocheckClaim, VerifyError> {
     let m = log_n;
     let k_skip = K_SKIP;
     const N_INNER: usize = 7;
@@ -598,24 +564,14 @@ pub fn verify(
         return Err(VerifyError::SumcheckFinalFailed);
     }
 
-    Ok((
-        ZerocheckClaim {
-            z,
-            mlv_challenges: mlv_rhos,
-            r_rest,
-            a_eval: final_a_eval,
-            b_eval: final_b_eval,
-            c_eval: final_c_eval,
-        },
-        ZerocheckProof {
-            round1_ab,
-            round1_c,
-            multilinear_rounds,
-            final_a_eval,
-            final_b_eval,
-            final_c_eval,
-        },
-    ))
+    Ok(ZerocheckClaim {
+        z,
+        mlv_challenges: mlv_rhos,
+        r_rest,
+        a_eval: final_a_eval,
+        b_eval: final_b_eval,
+        c_eval: final_c_eval,
+    })
 }
 
 #[cfg(test)]
@@ -667,18 +623,17 @@ mod tests {
 
             let (a_p, b_p, c_p) = pack_abc(&a, &b, &c);
             let mut sponge = crate::transcript::ProverState::new(b"flock-test-v0", &[]);
-            let (proof, claim) = prove_packed(&a_p, &b_p, &c_p, m, &mut sponge);
+            let claim = prove_packed(&a_p, &b_p, &c_p, m, &mut sponge);
 
-            // Shape checks.
-            assert_eq!(proof.round1_ab.len(), 1usize << K_SKIP, "m={m}");
-            assert_eq!(proof.round1_c.len(), 1usize << K_SKIP, "m={m}");
-            assert_eq!(proof.multilinear_rounds.len(), m - K_SKIP, "m={m}");
+            // Shape checks: the streamed proof is round1_ab ‖ round1_c ‖
+            // (m − K_SKIP) message pairs ‖ (final_a, final_b).
+            let stream = sponge.into_proof().stream;
+            assert_eq!(stream.len(), 2 * (1 << K_SKIP) + 2 * (m - K_SKIP) + 2, "m={m}");
             assert_eq!(claim.mlv_challenges.len(), m - K_SKIP, "m={m}");
 
-            // Claim's eval fields agree with the proof's final evals.
-            assert_eq!(claim.a_eval, proof.final_a_eval, "m={m}");
-            assert_eq!(claim.b_eval, proof.final_b_eval, "m={m}");
-            assert_eq!(claim.c_eval, proof.final_c_eval, "m={m}");
+            // Claim's eval fields agree with the streamed final evals.
+            assert_eq!(claim.a_eval, stream[stream.len() - 2], "m={m}");
+            assert_eq!(claim.b_eval, stream[stream.len() - 1], "m={m}");
         }
     }
 
@@ -695,17 +650,14 @@ mod tests {
 
             let (a_p, b_p, c_p) = pack_abc(&a, &b, &c);
             let mut ch_prove = crate::transcript::ProverState::new(b"flock-test-v0", &[]);
-            let (proof, claim_p) = prove_packed(&a_p, &b_p, &c_p, m, &mut ch_prove);
+            let claim_p = prove_packed(&a_p, &b_p, &c_p, m, &mut ch_prove);
 
             let proof_t = ch_prove.into_proof();
             let mut ch_verify = crate::transcript::VerifierState::new(b"flock-test-v0", &proof_t, &[]);
             let result = verify(m, &mut ch_verify);
-            let (claim_v, replay) = result.unwrap_or_else(|e| panic!("verify rejected at m={m}: {e:?}"));
+            let claim_v = result.unwrap_or_else(|e| panic!("verify rejected at m={m}: {e:?}"));
 
             assert_eq!(claim_p, claim_v, "claim mismatch at m={m}");
-            assert_eq!(replay.round1_ab, proof.round1_ab, "stream reads match the prover record");
-            assert_eq!(replay.multilinear_rounds, proof.multilinear_rounds);
-            assert_eq!(replay.final_c_eval, proof.final_c_eval);
         }
     }
 
@@ -722,7 +674,7 @@ mod tests {
 
         let (a_p, b_p, c_p) = pack_abc(&a, &b, &c);
         let mut ch_prove = crate::transcript::ProverState::new(b"flock-test-v0", &[]);
-        let (_, _) = prove_packed(&a_p, &b_p, &c_p, m, &mut ch_prove);
+        let _ = prove_packed(&a_p, &b_p, &c_p, m, &mut ch_prove);
         let proof_t = ch_prove.into_proof();
 
         // Stream layout: round1_ab (64) ‖ round1_c (64) ‖ (m−6)×(e1, einf) ‖
@@ -759,7 +711,7 @@ mod tests {
         let c: Vec<bool> = a.iter().zip(&b).map(|(x, y)| *x & *y).collect();
         let (a_p, b_p, c_p) = pack_abc(&a, &b, &c);
         let mut ch_prove = crate::transcript::ProverState::new(b"flock-test-v0", &[]);
-        let (_, _) = prove_packed(&a_p, &b_p, &c_p, m, &mut ch_prove);
+        let _ = prove_packed(&a_p, &b_p, &c_p, m, &mut ch_prove);
         let proof_t = ch_prove.into_proof();
 
         // Truncated stream: a clean Transcript error, not a panic.
@@ -794,7 +746,7 @@ mod tests {
 
             let (a_p, b_p, c_p) = pack_abc(&a, &b, &c);
             let mut ch_prove = crate::transcript::ProverState::new(b"flock-test-v0", &[]);
-            let (_, _) = prove_packed(&a_p, &b_p, &c_p, m, &mut ch_prove);
+            let _ = prove_packed(&a_p, &b_p, &c_p, m, &mut ch_prove);
             let proof_t = ch_prove.into_proof();
 
             let mut ch_verify = crate::transcript::VerifierState::new(b"flock-test-v0", &proof_t, &[]);
@@ -819,13 +771,13 @@ mod tests {
         let c: Vec<bool> = a.iter().zip(&b).map(|(x, y)| *x & *y).collect();
         let (a_p, b_p, c_p) = pack_abc(&a, &b, &c);
         let mut ch_prove = crate::transcript::ProverState::new(b"flock-test-v0", &[]);
-        let (proof, _) = prove_packed(&a_p, &b_p, &c_p, m, &mut ch_prove);
+        let _ = prove_packed(&a_p, &b_p, &c_p, m, &mut ch_prove);
         let proof_t = ch_prove.into_proof();
 
         // For each round, flip msg_inf (stream word 2·64 + 2·idx + 1). Because
         // the word is bound at read, this reshuffles subsequent rho's; a sound
         // verifier should reject (overwhelming probability).
-        for idx in 0..proof.multilinear_rounds.len() {
+        for idx in 0..(m - K_SKIP) {
             let mut bad = proof_t.clone();
             bad.stream[2 * (1 << K_SKIP) + 2 * idx + 1] += F128::ONE;
             let mut ch = crate::transcript::VerifierState::new(b"flock-test-v0", &bad, &[]);
@@ -847,10 +799,10 @@ mod tests {
         let c: Vec<bool> = a.iter().zip(&b).map(|(x, y)| *x & *y).collect();
         let (a_p, b_p, c_p) = pack_abc(&a, &b, &c);
         let mut ch_prove = crate::transcript::ProverState::new(b"flock-test-v0", &[]);
-        let (proof, _) = prove_packed(&a_p, &b_p, &c_p, m, &mut ch_prove);
+        let _ = prove_packed(&a_p, &b_p, &c_p, m, &mut ch_prove);
         let proof_t = ch_prove.into_proof();
 
-        let last = proof.multilinear_rounds.len() - 1;
+        let last = m - K_SKIP - 1;
         let mut bad = proof_t.clone();
         bad.stream[2 * (1 << K_SKIP) + 2 * last + 1] += F128::ONE;
         let mut ch = crate::transcript::VerifierState::new(b"flock-test-v0", &bad, &[]);
@@ -887,7 +839,7 @@ mod tests {
         let (a_p, b_p, c_p) = pack_abc(&a, &b, &c);
 
         let mut ch_prove = crate::transcript::ProverState::new(b"flock-test-v0", &[]);
-        let (proof, _) = prove_packed(&a_p, &b_p, &c_p, m, &mut ch_prove);
+        let claim_p = prove_packed(&a_p, &b_p, &c_p, m, &mut ch_prove);
         let proof_t = ch_prove.into_proof();
 
         // Honest verify, then capture the next challenge the transcript feeds
@@ -915,7 +867,7 @@ mod tests {
         assert_ne!(bad.stream[n - 1], proof_t.stream[n - 1], "tamper must change b̂");
         assert_eq!(
             bad.stream[n - 2] * bad.stream[n - 1],
-            proof.final_a_eval * proof.final_b_eval,
+            claim_p.a_eval * claim_p.b_eval,
             "tamper must preserve the product",
         );
 
@@ -959,7 +911,7 @@ mod tests {
             }
             let (a_p, b_p, c_p) = pack_abc(&a, &b, &c);
             let mut ch_prove = crate::transcript::ProverState::new(b"flock-test-v0", &[]);
-            let (_, _) = prove_packed(&a_p, &b_p, &c_p, m, &mut ch_prove);
+            let _ = prove_packed(&a_p, &b_p, &c_p, m, &mut ch_prove);
             let proof_t = ch_prove.into_proof();
             let mut ch_verify = crate::transcript::VerifierState::new(b"flock-test-v0", &proof_t, &[]);
             let res = verify(m, &mut ch_verify);
@@ -980,9 +932,9 @@ mod tests {
         let c: Vec<bool> = a.iter().zip(&b).map(|(x, y)| *x & *y).collect();
         let (a_p, b_p, c_p) = pack_abc(&a, &b, &c);
         let mut ch_prove = crate::transcript::ProverState::new(b"flock-test-v0", &[]);
-        let (proof, _) = prove_packed(&a_p, &b_p, &c_p, m, &mut ch_prove);
+        let _ = prove_packed(&a_p, &b_p, &c_p, m, &mut ch_prove);
         let proof_t = ch_prove.into_proof();
-        for idx in 0..proof.multilinear_rounds.len() {
+        for idx in 0..(m - K_SKIP) {
             let mut bad = proof_t.clone();
             bad.stream[2 * (1 << K_SKIP) + 2 * idx] += F128::ONE;
             let mut ch = crate::transcript::VerifierState::new(b"flock-test-v0", &bad, &[]);
@@ -1005,15 +957,10 @@ mod tests {
         let (a_p, b_p, c_p) = pack_abc(&a, &b, &c);
         let mut ch1 = crate::transcript::ProverState::new(b"flock-test-v0", &[]);
         let mut ch2 = crate::transcript::ProverState::new(b"flock-test-v0", &[]);
-        let (proof1, claim1) = prove_packed(&a_p, &b_p, &c_p, m, &mut ch1);
-        let (proof2, claim2) = prove_packed(&a_p, &b_p, &c_p, m, &mut ch2);
+        let claim1 = prove_packed(&a_p, &b_p, &c_p, m, &mut ch1);
+        let claim2 = prove_packed(&a_p, &b_p, &c_p, m, &mut ch2);
 
-        assert_eq!(proof1.round1_ab, proof2.round1_ab);
-        assert_eq!(proof1.round1_c, proof2.round1_c);
-        assert_eq!(proof1.multilinear_rounds, proof2.multilinear_rounds);
-        assert_eq!(proof1.final_a_eval, proof2.final_a_eval);
-        assert_eq!(proof1.final_b_eval, proof2.final_b_eval);
-        assert_eq!(proof1.final_c_eval, proof2.final_c_eval);
+        assert_eq!(ch1.into_proof().stream, ch2.into_proof().stream);
         assert_eq!(claim1.z, claim2.z);
         assert_eq!(claim1.mlv_challenges, claim2.mlv_challenges);
     }

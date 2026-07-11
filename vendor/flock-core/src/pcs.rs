@@ -37,7 +37,7 @@ pub use commit::{
     prefault_codeword_during,
 };
 pub use pack::{LOG_PACKING, pack_witness, unpack_witness};
-pub use ring_switch::{RingSwitchProof, SparseEqTensor};
+pub use ring_switch::SparseEqTensor;
 
 use crate::transcript::{ProverState, VerifierState};
 use crate::field::F128;
@@ -118,7 +118,7 @@ pub fn open(
     ps: &mut ProverState,
 ) -> BaseFoldProof {
     ps.absorb_bytes(b"flock-pcs-open-v0");
-    let (_rs_proof, rs_output) = ring_switch::prove(packed_witness, x_outer, ps);
+    let rs_output = ring_switch::prove(packed_witness, x_outer, ps);
     let ntt = crate::ntt::AdditiveNttF128::standard(commitment.params.k_code());
     let bf_proof = basefold::prove(
         packed_witness,
@@ -411,7 +411,7 @@ fn compute_combined_basis_and_target(
     // 1. Ring-switching for all x_outers.
     let t = std::time::Instant::now();
     let (rs_results, gammas_rs): (
-        Vec<(RingSwitchProof, ring_switch::RingSwitchBatchOutput)>,
+        Vec<ring_switch::RingSwitchBatchOutput>,
         Vec<F128>,
     ) = if n_rs > 0 {
         ring_switch::prove_batched_padded_with_precomputed(
@@ -442,19 +442,19 @@ fn compute_combined_basis_and_target(
     let t = std::time::Instant::now();
     use rayon::prelude::*;
 
-    let l = if let Some((_, out)) = rs_results.first() {
+    let l = if let Some(out) = rs_results.first() {
         out.rs_eq_ind.len()
     } else {
         1usize << packed_direct[0].point.len()
     };
-    debug_assert!(rs_results.iter().all(|(_, o)| o.rs_eq_ind.len() == l));
+    debug_assert!(rs_results.iter().all(|o| o.rs_eq_ind.len() == l));
     debug_assert!(
         packed_direct.iter().all(|pd| 1usize << pd.point.len() == l),
         "all packed-direct claims must share L (= packed witness length)"
     );
 
     let mut target_combined = F128::ZERO;
-    for ((_, output), g) in rs_results.iter().zip(gammas_rs.iter()) {
+    for (output, g) in rs_results.iter().zip(gammas_rs.iter()) {
         target_combined += *g * output.sumcheck_claim;
     }
     for (pd, g) in packed_direct.iter().zip(gammas_pd.iter()) {
@@ -463,7 +463,7 @@ fn compute_combined_basis_and_target(
 
     let rs_baked: Vec<&[F128]> = rs_results
         .iter()
-        .filter_map(|(_, o)| match &o.rs_eq_ind {
+        .filter_map(|o| match &o.rs_eq_ind {
             ring_switch::RsEqInd::Dense(v) => Some(v.as_slice()),
             _ => None,
         })
@@ -474,7 +474,7 @@ fn compute_combined_basis_and_target(
     // claim. Carries (eq_lo, eq_hi, γ-baked table, log₂ B).
     let rs_deferred: Vec<(&[F128], &[F128], &[F128], usize)> = rs_results
         .iter()
-        .filter_map(|(_, o)| match &o.rs_eq_ind {
+        .filter_map(|o| match &o.rs_eq_ind {
             ring_switch::RsEqInd::DeferredDense {
                 eq_lo,
                 eq_hi,
@@ -564,7 +564,7 @@ fn compute_combined_basis_and_target(
         // original behavior.
         let materialized: Vec<Vec<F128>> = rs_results
             .iter()
-            .filter_map(|(_, o)| match &o.rs_eq_ind {
+            .filter_map(|o| match &o.rs_eq_ind {
                 ring_switch::RsEqInd::DeferredDense {
                     eq_lo,
                     eq_hi,
@@ -613,7 +613,7 @@ fn compute_combined_basis_and_target(
         }
         round0_u2 += (a0 + a1) * delta;
     };
-    for (_, output) in rs_results.iter() {
+    for output in rs_results.iter() {
         if let ring_switch::RsEqInd::Sparse { entries, .. } = &output.rs_eq_ind {
             for &(idx, val) in entries {
                 b_combined[idx] += val;
@@ -643,9 +643,9 @@ fn compute_combined_basis_and_target(
         );
     }
 
-    // The per-claim rs_eq_ind (L F128s) dies here — recycle it. (The
-    // RingSwitchProof records were already streamed inside `prove_batched_*`.)
-    for (_, o) in rs_results {
+    // The per-claim rs_eq_ind (L F128s) dies here — recycle it. (The s_hat_v
+    // slices were already streamed inside `prove_batched_*`.)
+    for o in rs_results {
         if let ring_switch::RsEqInd::Dense(v) = o.rs_eq_ind {
             crate::scratch::give_f128(v);
         }
@@ -835,7 +835,7 @@ pub fn verify_opening_batch_mixed(
     let mut rs_outputs = Vec::with_capacity(n_rs);
     for i in 0..n_rs {
         let out = ring_switch::RingSwitchVerifierOutput {
-            sumcheck_claim: ring_switch::transposed_claim_linearized(&rs_proofs[i].s_hat_v, &lin_coeffs),
+            sumcheck_claim: ring_switch::transposed_claim_linearized(&rs_proofs[i], &lin_coeffs),
             r_dprime: r_dprime.clone(),
             eq_r_dprime: eq_r_dprime.clone(),
         };
@@ -971,7 +971,7 @@ pub fn verify_opening_batch_ligerito_mixed(
     let mut rs_outputs = Vec::with_capacity(n_rs);
     for i in 0..n_rs {
         let out = ring_switch::RingSwitchVerifierOutput {
-            sumcheck_claim: ring_switch::transposed_claim_linearized(&rs_proofs[i].s_hat_v, &lin_coeffs),
+            sumcheck_claim: ring_switch::transposed_claim_linearized(&rs_proofs[i], &lin_coeffs),
             r_dprime: r_dprime.clone(),
             eq_r_dprime: eq_r_dprime.clone(),
         };
@@ -1098,10 +1098,8 @@ pub fn verify_opening(
 
     // Ring-switching (succinct): claim → sumcheck_claim + eq_r_dprime. The
     // dense rs_eq_ind is never materialized on the verifier side.
-    let rs_output =
-        ring_switch::verify_succinct(claim, z_skip, x_outer, vs)
-            .map_err(VerifyError::RingSwitch)?
-            .0;
+    let rs_output = ring_switch::verify_succinct(claim, z_skip, x_outer, vs)
+        .map_err(VerifyError::RingSwitch)?;
 
     // BaseFold sumcheck + FRI: sumcheck_claim → verified final_a · final_b.
     let ntt = crate::ntt::AdditiveNttF128::standard(commitment.params.k_code());
@@ -1797,8 +1795,6 @@ pub fn open_batch_mixed_ligerito_stacked(
 pub struct StackedOpeningSummary {
     /// The `r''` shared by every ring-switch claim of the batch.
     pub r_dprime: Vec<F128>,
-    /// The per-claim `s_hat_v` records, as read (and bound) off the stream.
-    pub ring_switches: Vec<RingSwitchProof>,
     pub lig: ligerito::LigVerifierSummary,
 }
 
@@ -1840,7 +1836,7 @@ pub fn verify_opening_batch_mixed_ligerito_stacked(
         if n_rs > 0 { ring_switch::linearized_eq_coeffs(&eq_r_dprime) } else { [F128::ZERO; 128] };
     let rs_outputs: Vec<ring_switch::RingSwitchVerifierOutput> = (0..n_rs)
         .map(|i| ring_switch::RingSwitchVerifierOutput {
-            sumcheck_claim: ring_switch::transposed_claim_linearized(&rs_proofs[i].s_hat_v, &lin_coeffs),
+            sumcheck_claim: ring_switch::transposed_claim_linearized(&rs_proofs[i], &lin_coeffs),
             r_dprime: r_dprime.clone(),
             eq_r_dprime: eq_r_dprime.clone(),
         })
@@ -1904,7 +1900,6 @@ pub fn verify_opening_batch_mixed_ligerito_stacked(
     .ok_or(VerifyError::BaseFold(crate::pcs::basefold::VerifyError::InvalidProofShape))?;
     Ok(StackedOpeningSummary {
         r_dprime,
-        ring_switches: rs_proofs,
         lig,
     })
 }
