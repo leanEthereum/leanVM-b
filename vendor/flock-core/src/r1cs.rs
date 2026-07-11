@@ -352,6 +352,30 @@ impl BlockR1cs {
         })
     }
 
+    /// BLAKE3 hash of the circuit FAMILY: the per-block matrices and the
+    /// shape parameters, explicitly WITHOUT the instance count `m`. The full
+    /// instance is block-diagonal — `m` copies of these matrices — so a
+    /// protocol that binds this digest and `m` separately has bound the whole
+    /// statement; embedding protocols (leanVM-b) seed their transcript with it
+    /// and announce the count, instead of absorbing the per-instance
+    /// [`Self::statement_digest`] mid-proof.
+    pub fn family_digest(&self) -> [u8; 32] {
+        let mut h = blake3::Hasher::new();
+        h.update(b"flock-r1cs-family-v1");
+        h.update(&(self.k_log as u64).to_le_bytes());
+        h.update(&(self.k_skip as u64).to_le_bytes());
+        // The layout determines which polynomial a given witness commits
+        // to — it is part of the statement.
+        h.update(&[match self.layout {
+            WitnessLayout::RowMajor => 0u8,
+            WitnessLayout::BatchMajor => 1u8,
+        }]);
+        absorb_matrix(&mut h, &self.a_0);
+        absorb_matrix(&mut h, &self.b_0);
+        absorb_matrix(&mut h, &self.c_0);
+        *h.finalize().as_bytes()
+    }
+
     /// Check the R1CS constraint `(A·z) ⊙ (B·z) = C·z` over GF(2) on a packed
     /// witness. Per-element check is `a & b == c` bitwise.
     pub fn satisfies_packed(&self, z_packed: &[crate::field::F128]) -> bool {

@@ -2438,7 +2438,12 @@ impl Blake3Setup {
         let (z_packed, a_packed_f128, b_packed_f128, z_packed_lincheck) =
             generate_witness_with_ab_packed_and_lincheck(blocks, n_log);
 
-        flock_core::proof::bind_statement(challenger, &self.r1cs, stack_commitment);
+        // No bind_statement here: the embedding protocol (leanVM-b) seeds its
+        // transcript with the circuit-FAMILY digest and binds the instance
+        // count and commitment root before any challenge, so the statement is
+        // already fully transcript-bound. `_ = stack_commitment` keeps the
+        // symmetric signature.
+        let _ = stack_commitment;
 
         let padding = flock_core::zerocheck::PaddingSpec {
             k_log: self.r1cs.k_log,
@@ -2625,7 +2630,9 @@ impl Blake3Setup {
         ),
         verifier::VerifyError,
     > {
-        flock_core::proof::bind_statement(challenger, &self.r1cs, stack_commitment);
+        // Mirror of prove_reduction: the statement is bound by the embedding
+        // protocol's seed (family digest) + announced count + commitment root.
+        let _ = stack_commitment;
 
         let zc_claim = flock_core::zerocheck::verify(self.r1cs.m, zerocheck, challenger)
             .map_err(verifier::VerifyError::Zerocheck)?;

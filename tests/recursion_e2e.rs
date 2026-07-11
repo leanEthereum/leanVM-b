@@ -383,14 +383,14 @@ fn gen_agg(
         assert_eq!(mrun, v_a * wam + v_b * wbm, "guest terminal-weight formulas");
     }
 
-    // ---- outer public input: inner digest + sub statements + reduced claims ----
-    // The inner program is identified by its digest in the recursion's PUBLIC
-    // INPUT (not baked into the guest), so one compiled guest serves any inner
-    // program of this VM.
-    let dig = program.digest();
+    // ---- outer public input: FS seed + sub statements + reduced claims ----
+    // The inner proving environment (flock circuit family + program bytecode)
+    // is identified by ONE seed digest in the recursion's PUBLIC INPUT (not
+    // baked into the guest), so one compiled guest serves any inner program.
+    let seed = leanvm_b::cpu::fs_seed(program);
     let mut e = Sponge::empty();
-    e.observe(dig[0]);
-    e.observe(dig[1]);
+    e.observe(seed[0]);
+    e.observe(seed[1]);
     for d in subs {
         e.observe(d.pi[0]);
         e.observe(d.pi[1]);
@@ -407,7 +407,7 @@ fn gen_agg(
     e.observe(v_b);
 
     let hints = vec![
-        ("inner_digest".to_string(), vec![dig[0], dig[1]]),
+        ("fs_seed".to_string(), vec![seed[0], seed[1]]),
         ("bc_sumcheck_msgs".to_string(), bscr),
         ("mat_sumcheck_msgs".to_string(), mscr),
         ("bc_star_hint".to_string(), vec![v_bc]),
@@ -457,7 +457,6 @@ fn gen_verify(
     summary: &leanvm_b::cpu::VerifySummary,
     ops: &[TraceOp],
 ) -> (Vec<(String, Vec<F128>)>, SubDefer) {
-    let dig = program.digest();
     let l = leanvm_b::cpu::layout(
         &program.prog,
         proof.stream[0].lo as usize,
@@ -519,7 +518,8 @@ fn gen_verify(
     // ---- typed extraction: proof structs + the verifier's summary ----
     // Drift check: replaying the recorded trace from the seed must reproduce
     // every challenge and grind the native run produced.
-    let seed = Sponge::new(b"leanvm-b", &[pi[0], pi[1], dig[0], dig[1]]);
+    let fs_seed = leanvm_b::cpu::fs_seed(program);
+    let seed = Sponge::new(b"leanvm-b", &[fs_seed[0], fs_seed[1], pi[0], pi[1]]);
     seed.clone().replay(ops);
 
     // Grinding digests are the only trace-borne data (they are functions of
@@ -1168,19 +1168,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("PIN_ZETA_OFF", "0".to_string());
     let pinv: Vec<u128> = leanvm_b::blake3_flock::pin_constants().iter().map(|&v| u(v)).collect();
     ps("PIN_VALUES", us(&pinv));
-    ps("R1CSLBL", u(word16(b"flock-r1cs-v0", 0)).to_string());
     const MINB3: usize = 3;
-    const MAXB3: usize = 12;
-    let mut sd0_tab = vec![0u128; MAXB3 + 1];
-    let mut sd1_tab = vec![0u128; MAXB3 + 1];
-    for n in MINB3..=MAXB3 {
-        let d = flock_prover::r1cs_hashes::blake3::build_block_r1cs(n).statement_digest();
-        sd0_tab[n] = u(word16(&d, 0));
-        sd1_tab[n] = u(word16(&d, 16));
-    }
-    ps("STATEMENT_DIGEST_TAB_0", us(&sd0_tab));
-    ps("STATEMENT_DIGEST_TAB_1", us(&sd1_tab));
-    ps("STATEMENT_DIGEST_TAB_LEN", (MAXB3 + 1).to_string());
     ps("ZCLBLA", u(word16(b"flock-zerocheck-v0", 0)).to_string());
     ps("ZCLBLB", u(word16(b"flock-zerocheck-v0", 16)).to_string());
     ps("LCLBLA", u(word16(b"flock-lincheck-v0", 0)).to_string());
@@ -1453,7 +1441,7 @@ fn recursion_soundness_binds() {
 
     // each tamper flips one hint to a definitely-invalid value.
     let tampers: &[(&str, usize, F128)] = &[
-        ("inner_digest", 0, F128::ONE),     // wrong inner program: own_pi (public input) must reject
+        ("fs_seed", 0, F128::ONE),          // wrong proving environment: own_pi (public input) must reject
         ("rs_yslot_bits", 4, F128::ONE),    // pad coord (k=4 >= yr_log_n=3): over-read weight
         ("claim_nover", 0, g_pow(5)),        // wrong overlap: exact length pin must reject
         ("pi_cplen", 0, g_pow(2)),           // wrong pi dimension: min-cert must reject

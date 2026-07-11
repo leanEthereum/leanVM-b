@@ -101,10 +101,30 @@ fn program_digest(prog: &[Op]) -> [F128; 2] {
 }
 
 /// The transcript seed: the public statement bound before any challenge — the
-/// public input `pi` followed by the program's stored [`digest`](Program::digest)
-/// (computed once at assembly, not re-hashed here). Both sides build it identically.
+/// The Fiat–Shamir seed: ONE 32-byte digest, as two field words, committing
+/// to everything fixed about the proving environment — the flock circuit
+/// family (its per-block R1CS matrices, [`crate::blake3_flock::family_digest`])
+/// and the program's bytecode digest. It leads every transcript, so all
+/// challenges depend on the circuit version and the program before anything
+/// else; a recursion guest carries the INNER program's seed in its public
+/// input, pinning both with one word pair.
+pub fn fs_seed(program: &Program) -> [F128; 2] {
+    let mut h = blake3::Hasher::new();
+    h.update(b"leanvm-b-fs-seed-v1");
+    h.update(&crate::blake3_flock::family_digest());
+    for w in program.digest {
+        h.update(&w.lo.to_le_bytes());
+        h.update(&w.hi.to_le_bytes());
+    }
+    let d = *h.finalize().as_bytes();
+    let word = |o: usize| u64::from_le_bytes(d[o..o + 8].try_into().unwrap());
+    [F128::new(word(0), word(8)), F128::new(word(16), word(24))]
+}
+
+/// public input `pi` prefixed by the [`fs_seed`]. Both sides build it identically.
 fn transcript_seed(program: &Program, pi: &[F128; 2]) -> [F128; 4] {
-    [pi[0], pi[1], program.digest[0], program.digest[1]]
+    let seed = fs_seed(program);
+    [seed[0], seed[1], pi[0], pi[1]]
 }
 
 /// Announce the prover's per-table log-sizes (`log_mem` + the six `row_counts`) by

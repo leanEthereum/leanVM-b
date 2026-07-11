@@ -57,8 +57,9 @@ from snark_lib import *
 #     as a min: <= both, == one), claim_qpkd_slot_bits/claim_sel_bits/
 #     claim_yslot_bits/rs_sel_bits/rs_yslot_bits, and claim_overlap_mask (a
 #     prefix of exactly nover ones; slot coords beyond yr_log_n asserted zero);
-#   - statement-bound (fed to the outer public-input hash): inner_digest (the
-#     inner PROGRAM digest, which also seeds every sub transcript), sub_pis (the
+#   - statement-bound (fed to the outer public-input hash): fs_seed (ONE
+#     digest of the flock circuit family + the inner program bytecode, which
+#     also leads every sub transcript), sub_pis (the
 #     sub statements, which also derive the transcript seeds), matpart (with its
 #     complete weight data), and the reduced claims bc_star_hint/mat_stars_hint with their points.
 # The stream hint itself is transport, never trusted: binding always comes from
@@ -175,13 +176,6 @@ PIN_VALUES = PIN_VALUES_PLACEHOLDER
 # 2^K_SKIP nodes), then N_INNER_ROUNDS fixed inner rounds (INNER7).
 K_SKIP = K_SKIP_PLACEHOLDER
 N_INNER_ROUNDS = N_INNER_ROUNDS_PLACEHOLDER
-R1CSLBL = R1CSLBL_PLACEHOLDER
-# The flock r1cs statement digest, per candidate BLAKE3 log-instance-count
-# (it hashes the matrices, whose size scales with the instance count): the
-# guest reads row tau_5.
-STATEMENT_DIGEST_TAB_0 = STATEMENT_DIGEST_TAB_0_PLACEHOLDER
-STATEMENT_DIGEST_TAB_1 = STATEMENT_DIGEST_TAB_1_PLACEHOLDER
-STATEMENT_DIGEST_TAB_LEN = STATEMENT_DIGEST_TAB_LEN_PLACEHOLDER
 ZCLBLA = ZCLBLA_PLACEHOLDER
 ZCLBLB = ZCLBLB_PLACEHOLDER
 LCLBLA = LCLBLA_PLACEHOLDER
@@ -295,9 +289,10 @@ DEFER_SIZE = DEFER_SIZE_PLACEHOLDER
 # Aggregation: NSUB sub-proofs of the same program; per-sub proof data arrives
 # as hints. The seed sponge state after the two byte-string absorbs is baked
 # (SEEDB), then the hinted sub statement + the inner PROGRAM DIGEST are bound.
-# The digest is NOT baked into the guest: it rides the recursion's PUBLIC INPUT
-# (a hint folded into own_pi in main), so ONE compiled guest verifies proofs of
-# any inner program of this VM — the outer statement fixes which, via own_pi.
+# The seed is NOT baked into the guest: it rides the recursion's PUBLIC INPUT
+# (the fs_seed hint folded into own_pi in main), so ONE compiled guest verifies
+# proofs of any inner program of this VM — the outer statement fixes the whole
+# proving environment (circuit family + program), via own_pi.
 NSUB = NSUB_PLACEHOLDER
 BYTECODE_VARS = BYTECODE_VARS_PLACEHOLDER
 SEEDB0 = SEEDB0_PLACEHOLDER
@@ -865,7 +860,7 @@ def exponent_tables():
     return g_logs_pow2, g_squares
 
 
-def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs_pow2, g_squares, defer_out):
+def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, defer_out):
     # In-circuit verification of ONE inner proof for the statement
     # (pi_0, pi_1). All proof data is hinted HERE: each call pops the next
     # sub-proof's entry of every witness stream, so the body lowers once and
@@ -906,12 +901,12 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs_pow2, g_squares, def
 
     # ---- seed (statement pre-bound: hinted sub pi + baked program digest) ----
     fs = StackBuf(2)
-    fs[0] = SEEDB0  # SEEDB = sponge state after absorbing the b"leanvm-b" domain label
+    fs[0] = SEEDB0  # SEEDB = sponge state after the b"leanvm-b" domain label
     fs[1] = SEEDB1
-    fs = obs(fs, pi_0)  # bind the sub-proof's statement (its public input word 0)
+    fs = obs(fs, seed_0)  # the FS seed: H(flock circuit family, inner program
+    fs = obs(fs, seed_1)  # bytecode, ...) — from the recursion's public input
+    fs = obs(fs, pi_0)   # bind the sub-proof's statement (its public input)
     fs = obs(fs, pi_1)
-    fs = obs(fs, dig_0)  # bind the inner PROGRAM digest (from the recursion's public input, folded into own_pi)
-    fs = obs(fs, dig_1)
     stream = HeapBuf(STREAM_CAP)
     hint_witness(stream[0:STREAM_CAP], "stream")
     cursor = stream  # the proof stream is replayed word by word; cursor walks it (advance = * g)
@@ -1435,12 +1430,10 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs_pow2, g_squares, def
 
     zeta_pin = zeta * GEN ** PIN_ZETA_OFF
     tau_blake3_g = dims_g[GEN ** N_TABLES]  # the BLAKE3 table's certified tau
-    # The BLAKE3 tau indexes the baked per-candidate statement-digest tables
-    # (STATEMENT_DIGEST_TAB_LEN rows) and drives the flock loops (R1CS_M_CAP / QPKD_VARS_CAP
-    # buffers). The count gadget only bounds it < 34; pin it under the baked
-    # extent so it cannot over-read the digest tables into free cells (STATEMENT_DIGEST_TAB_LEN <=
-    # R1CS_M_CAP - K_LOG, so this covers them all).
-    assert log(tau_blake3_g) < STATEMENT_DIGEST_TAB_LEN
+    # tau's reach is bounded without a dedicated pin: the count gadget gives
+    # tau < 34 (all flock buffers are sized for that), and q_pkd's committed
+    # kappa = LOG2_FIELD_BITS + tau feeds the certified size m, whose opening
+    # dispatch bound caps tau well below any baked structure.
     pin_chain = HeapBuf(SIZE_BITS + 1)
     pin_chain[GEN ** 0] = 0
     for xk in mul_range(1, tau_blake3_g):
@@ -1456,24 +1449,9 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs_pow2, g_squares, def
         claim_cplen_g[GEN ** claim_idx] = tau_blake3_g  # cplen = the BLAKE3 value-col kappa
         claim_idx += 1
 
-    # ---- flock reduction: bind_statement ----
-    # The statement digest is selected by the certified tau_5 (BLAKE3
-    # log-instance-count): read that row of the baked per-candidate tables.
-    statement_digest_tab_0 = HeapBuf(STATEMENT_DIGEST_TAB_LEN)
-    statement_digest_tab_1 = HeapBuf(STATEMENT_DIGEST_TAB_LEN)
-    for n in unroll(0, STATEMENT_DIGEST_TAB_LEN):
-        statement_digest_tab_0[GEN ** n] = STATEMENT_DIGEST_TAB_0[n]
-        statement_digest_tab_1[GEN ** n] = STATEMENT_DIGEST_TAB_1[n]
-    statement_digest_0 = statement_digest_tab_0[tau_blake3_g]
-    statement_digest_1 = statement_digest_tab_1[tau_blake3_g]
-    fs = absorb(fs, 13, DS_LEN)
-    fs = absorb(fs, R1CSLBL, DS_BYTE)
-    fs = absorb(fs, 32, DS_LEN)
-    fs = absorb(fs, statement_digest_0, DS_BYTE)
-    fs = absorb(fs, statement_digest_1, DS_BYTE)
-    fs = absorb(fs, 32, DS_LEN)
-    fs = absorb(fs, commit_root_0, DS_BYTE)
-    fs = absorb(fs, commit_root_1, DS_BYTE)
+    # (No flock bind_statement here: the circuit-FAMILY digest seeds the
+    # transcript — baked into SEEDB — the instance count is announced with the
+    # sizes, and the commitment root was bound right after them.)
 
     # ---- flock zerocheck (univariate skip, k_skip = 6) ----
     zc_round1 = HeapBuf(2 * 2 ** K_SKIP)
@@ -1999,11 +1977,13 @@ def main():
     # reach this guest's public input.
     sub_pis = HeapBuf(NSUB * 2)
     hint_witness(sub_pis[0:NSUB * 2], "sub_pis")
-    # The inner PROGRAM digest rides the recursion's public input: hinted here,
-    # bound into every sub's seed, and folded into own_pi below (so the outer
-    # statement fixes which inner program this run verifies).
-    inner_dig = StackBuf(2)
-    hint_witness(inner_dig[0:2], "inner_digest")
+    # The FS seed — ONE digest of everything fixed about the inner environment
+    # (the flock circuit family, the inner program bytecode) — rides the
+    # recursion's public input: hinted here, it leads every sub's transcript
+    # and is folded into own_pi below, so the outer statement fixes the whole
+    # proving environment with one word pair.
+    fs_seed = StackBuf(2)
+    hint_witness(fs_seed[0:2], "fs_seed")
     bc_sumcheck_msgs = HeapBuf(2 * BYTECODE_VARS)
     hint_witness(bc_sumcheck_msgs[0:2 * BYTECODE_VARS], "bc_sumcheck_msgs")
     mat_sumcheck_msgs = HeapBuf(4 * K_LOG)
@@ -2031,7 +2011,7 @@ def main():
     defer = HeapBuf(NSUB * DEFER_SIZE)
 
     for sub in unroll(0, NSUB):
-        verify_sub(sub_pis[GEN ** (2 * sub)], sub_pis[GEN ** (2 * sub + 1)], inner_dig[0], inner_dig[1], delta_pows, g_logs_pow2, g_squares, defer * GEN ** (sub * DEFER_SIZE))
+        verify_sub(sub_pis[GEN ** (2 * sub)], sub_pis[GEN ** (2 * sub + 1)], fs_seed[0], fs_seed[1], delta_pows, g_logs_pow2, g_squares, defer * GEN ** (sub * DEFER_SIZE))
 
     # ================= aggregation: batch the deferred claims =================
     # A fresh transcript absorbs every deferred claim (points and values),
@@ -2133,12 +2113,12 @@ def main():
     mat_final = a_star * weight_a + b_star * weight_b
     assert mat_running == mat_final
 
-    # ---- bind the inner digest + sub statements + reduced claims to the PI ----
+    # ---- bind the FS seed + sub statements + reduced claims to the PI ----
     out_fs = StackBuf(2)
     out_fs[0] = 0
     out_fs[1] = 0
-    out_fs = obs(out_fs, inner_dig[0])  # the inner program this run verifies is part of the public statement
-    out_fs = obs(out_fs, inner_dig[1])
+    out_fs = obs(out_fs, fs_seed[0])  # the inner proving environment is part of the public statement
+    out_fs = obs(out_fs, fs_seed[1])
     for sub in unroll(0, NSUB):
         out_fs = obs(out_fs, sub_pis[GEN ** (2 * sub)])
         out_fs = obs(out_fs, sub_pis[GEN ** (2 * sub + 1)])

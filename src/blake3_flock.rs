@@ -226,6 +226,23 @@ pub fn warm_setup(n_blocks: usize) {
     let _ = setup.r1cs.statement_digest(); // warm the digest cache too
 }
 
+/// The flock BLAKE3 circuit-FAMILY digest: a hash of the per-block R1CS
+/// matrices and shape parameters ([`family_digest`] on the R1CS), independent
+/// of the instance count. The full instance is block-diagonal — the count is
+/// announced and absorbed with the other sizes — so a transcript seeded with
+/// this digest (via [`crate::cpu::fs_seed`]) binds the whole statement,
+/// replacing flock's old mid-protocol `bind_statement` (whose commitment-root
+/// absorb was already redundant: the root binds right after the announced
+/// sizes).
+pub fn family_digest() -> [u8; 32] {
+    static DIGEST: std::sync::OnceLock<[u8; 32]> = std::sync::OnceLock::new();
+    *DIGEST.get_or_init(|| {
+        // The per-block matrices are count-independent; build the smallest
+        // instance just to hold them.
+        flock_prover::r1cs_hashes::blake3::build_block_r1cs(3).family_digest()
+    })
+}
+
 /// **Flock reduction only** (prover): run flock's BLAKE3 zerocheck + lincheck
 /// over `blocks`, binding to `commitment`, and return the two claims
 /// [`ReducedClaims`] on the committed witness `q_pkd` — `ab` (`A∘B`, lincheck)
