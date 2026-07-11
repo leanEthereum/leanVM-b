@@ -225,6 +225,13 @@ GKR walks from the root to the leaves, reducing one claim per layer. Starting fr
 \end{enumerate}
 After $\mu$ layers a single leaf claim $\widetilde V_0(\zeta)$ remains, which \S\ref{sec:leafstack} decomposes into evaluation claims on the committed columns. The bus is accepted when the two sides of \eqref{eq:gp} give equal roots and each leaf claim matches the commitments. Prover work is $O(2^\mu)$, and the proof is $O(\mu^2)$ field elements.
 
+\paragraph{Batching the three trees.} The bus needs three grand products: push, pull, and counts. They are batched in a single GKR pass (verifier-friendliness, good for recursion). Push and pull have equal depth $\mu$ (their blocks come in matched pairs); the count tree, of depth $\mu_c\le\mu$, is padded with $1$-leaves to $2^{\mu}$.
+
+The verifier samples a combiner $\lambda$, and each layer runs a single sumcheck on the $\lambda$-combined layer identity
+\[
+\sum_{t}\lambda^{t}\,\widetilde V^{t}_i(r)\;=\;\sum_{x\in\cube{\mu-i}}\eq(r,x)\,\sum_{t}\lambda^{t}\,\widetilde V^{t}_{i-1}(0,x)\,\widetilde V^{t}_{i-1}(1,x),\qquad t\in\{0,1,2\},
+\]
+
 \subsection{Stacking the leaves}\label{sec:leafstack}
 
 GKR (\S\ref{sec:gkr}) reduces one side of \eqref{eq:gp} to a single evaluation $\widetilde V_0(\zeta)$ of its \emph{leaves}, the product's factors $\gamma-\pi_\alpha(\sigma)$, one per bus tuple $\sigma$. We settle this evaluation against the committed columns.
@@ -238,8 +245,6 @@ GKR (\S\ref{sec:gkr}) reduces one side of \eqref{eq:gp} to a single evaluation $
   \widetilde V_0(\zeta)\;=\;\sum_b \eq(\mathsf{sel}_b,\zeta^{b}_{\mathrm{hi}})\Bigl(\gamma-\sum_{i=0}^{m-1}\alpha^{i}\,\widetilde c_{b,i}(\zeta^{b}_{\mathrm{lo}})\Bigr)\;+\;\Bigl(1-\sum_b\eq(\mathsf{sel}_b,\zeta^{b}_{\mathrm{hi}})\Bigr).
 \]
 The verifier forms the selectors $\eq(\mathsf{sel}_b,\cdot)$ and the constant coordinates itself. Each remaining $\widetilde c_{b,i}(\zeta^{b}_{\mathrm{lo}})$ is settled by its kind: a committed column by a direct opening (\S\ref{sec:prelim}), a virtual column off the committed columns it images (so $\gen\cdot\pc$ adds nothing beyond the $\pc$ opening), the index column by \S\ref{sec:idxcol}. A committed column feeding several equal-size blocks is opened once, at their shared point $\zeta_{\mathrm{lo}}$.
-
-\paragraph{Hand-off.} Each such claim is one evaluation of a committed column, so it joins the local-constraint claims (\S\ref{sec:air}) in the batched witness opening (\S\ref{sec:stacking}). The two sides of \eqref{eq:gp} are two GKR passes over two leaf stacks, plus a third over the count columns (\S\ref{sec:memchan}); the bus is accepted when the side-roots agree after dividing the default surplus (\S\ref{sec:gp}), the count-root is nonzero, and each $\widetilde V_0(\zeta)$ matches the openings.
 
 \subsection{State interaction}\label{sec:state}
 
@@ -459,7 +464,7 @@ We lay out the whole protocol as one ordered sequence. Each reduction below adds
 \begin{enumerate}
 \item \textbf{Verifier.} Sends the fingerprint challenge $\alpha$ and the multiset challenge $\gamma$.
 \item \textbf{Prover.} Forms the push, pull, and \emph{count} leaf vectors (\S\ref{sec:leafstack}; the count leaves are the count columns themselves, \S\ref{sec:memchan}), stacked into blocks and padded with $1$s. Sends the count root $R_c$ and one bus root $R$, the push/pull product after the default surplus is removed (\S\ref{sec:gp}).
-\item \textbf{Prover \& Verifier.} Run GKR (\S\ref{sec:gkr}) on all three. For the bus, the verifier multiplies $R$ by each side's public surplus and checks the side's product against it; one $R$ for both sides is the balance check (\S\ref{sec:gp}). For the counts it checks $R_c\neq0$ (no read self-cancels, \S\ref{sec:memchan}). Each pass yields a leaf claim $\widetilde V_0(\zeta)$.
+\item \textbf{Prover \& Verifier.} Run the one batched GKR (\S\ref{sec:gkr}) over all three trees. For the bus, the verifier multiplies $R$ by each side's public surplus and checks the side's product against it; one $R$ for both sides is the balance check (\S\ref{sec:gp}). For the counts it checks $R_c\neq0$ (no read self-cancels, \S\ref{sec:memchan}). The pass yields three leaf claims $\widetilde V^{t}_0(\zeta)$ at one shared $\zeta$.
 \item \textbf{Prover \& Verifier.} Decompose each leaf claim (\S\ref{sec:leafstack}). The verifier forms the public part: the block selectors; the constant coordinates (separators, the per-table read opcodes, the boundary state $(\pc_0,\fp_0)$ and $(\pc_{\mathrm{final}},\fp_{\mathrm{final}})$); the index column (\S\ref{sec:idxcol}); and the public program columns of the bytecode seed and finalize, whose MLEs it forms directly. The prover supplies each block's committed-column evaluations (one field element each, \S\ref{sec:prelim}); a virtual coordinate such as $\gen\cdot\pc$ is read off its committed source. The verifier checks the decomposition formula against $\widetilde V_0(\zeta)$; the supplied evaluations enter the claim pool. The count channel decomposes likewise (its leaves are the count columns), adding only their evaluations.
 \end{enumerate}
 
