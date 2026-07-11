@@ -12,7 +12,7 @@ use crate::field::F128;
 use crate::transcript::{ProverState, VerifierState};
 
 use flare::pcs::ligerito::{LigeritoProfile, LigeritoSecurityConfig, ProverConfig, VerifierConfig};
-pub use flare::pcs::{BatchOpeningProofLigerito, Commitment, PcsParams, ProverData};
+pub use flare::pcs::{Commitment, PcsParams, ProverData};
 use flare::pcs::{StackClaim, StackedOpeningSummary, open_batch_mixed_ligerito_stacked, verify_opening_batch_mixed_ligerito_stacked};
 use flare::zerocheck::PaddingSpec;
 
@@ -202,7 +202,7 @@ pub struct RingSwitchVerify<'a> {
     pub z_skips: Vec<F128>,
     pub x_outers: Vec<Vec<F128>>,
     /// The stacked mixed opening proof (carried in the BLAKE3 attachment).
-    pub open: &'a BatchOpeningProofLigerito,
+    pub open: &'a flare::pcs::ligerito::LigeritoProof,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -271,7 +271,7 @@ pub fn open(
     q: &[F128],
     points: &[SlotClaim],
     ring: &RingSwitchOpen,
-) -> BatchOpeningProofLigerito {
+) -> flare::pcs::ligerito::LigeritoProof {
     debug_assert_eq!(q.len(), 1usize << c.mu, "witness length must match the commitment");
     // The packed sub-block is exactly the committed slice — no separate copy.
     let qpkd = &q[ring.offset..ring.offset + (1usize << ring.qpkd_vars)];

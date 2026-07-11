@@ -107,6 +107,9 @@ pub struct ZerocheckClaim {
 
 /// All round messages the prover sends, in order.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// The verifier reassembles this from its stream reads (a passive record for
+/// summaries / recursion harnesses); the scalars themselves ride the shared
+/// transcript stream, transmitted+bound by `add_scalar` at the protocol points.
 pub struct ZerocheckProof {
     /// Round 1 (univariate skip): `P^{AB}(λ)` for λ ∈ Λ, length 2^K_SKIP.
     pub round1_ab: Vec<F128>,
@@ -128,14 +131,8 @@ pub struct ZerocheckProof {
 pub enum VerifyError {
     /// `log_n` doesn't satisfy `log_n >= K_SKIP`.
     LogNTooSmall { log_n: usize, k_skip: usize },
-    /// Round-1 messages have the wrong length (expected `2^K_SKIP`).
-    BadRound1Length { expected: usize, got: usize },
-    /// Wrong number of multilinear-round messages (expected `log_n - K_SKIP`).
-    BadMultilinearRoundsLength { expected: usize, got: usize },
-    /// `proof.final_c_eval` doesn't match the verifier's reconstruction
-    /// `C_s · interpolate_at_z_on_lambda(round1_c, k_skip, z)`. Catches
-    /// dishonesty in the round-1 C message or in the final c-eval claim.
-    CEvalMismatch,
+    /// The proof stream ran out while reading a message.
+    Transcript(crate::transcript::Error),
     /// The AB sumcheck final consistency check failed: the inner running
     /// claim after all rounds should equal `final_a_eval · final_b_eval`.
     /// Any inconsistency in `round1_ab`, in a multilinear round's
@@ -304,9 +301,9 @@ fn prove_packed_padded_inner(
         );
     }
 
-    // ---- 4. Observe round-1 message, sample z (URM fold point) ----
-    ps.observe_scalars(&round1_ab);
-    ps.observe_scalars(&round1_c);
+    // ---- 4. Transmit + bind round-1 message on the stream, sample z ----
+    ps.add_scalars(&round1_ab);
+    ps.add_scalars(&round1_c);
     let z = ps.sample();
 
     // ---- 5. c_eval = ĉ(z, r_rest) via interpolation of round1_c at z ----
@@ -347,8 +344,8 @@ fn prove_packed_padded_inner(
     let t_tail = std::time::Instant::now();
     let mut multilinear_msgs = Vec::with_capacity(n_mlv);
     multilinear_msgs.push((msg_1, msg_inf));
-    ps.observe_scalar(msg_1);
-    ps.observe_scalar(msg_inf);
+    ps.add_scalar(msg_1);
+    ps.add_scalar(msg_inf);
     let mut mlv_rhos: Vec<F128> = Vec::with_capacity(n_mlv);
     mlv_rhos.push(ps.sample());
 
@@ -410,8 +407,8 @@ fn prove_packed_padded_inner(
         };
 
         multilinear_msgs.push((m1, mi));
-        ps.observe_scalar(m1);
-        ps.observe_scalar(mi);
+        ps.add_scalar(m1);
+        ps.add_scalar(mi);
         mlv_rhos.push(ps.sample());
     }
 
@@ -432,11 +429,11 @@ fn prove_packed_padded_inner(
     // (v_a, v_b) are committed to the transcript — otherwise a prover that knows
     // α can pick (v_a, v_b) to satisfy the one batched equation while violating
     // the individual checks. So observe them here, before any later challenge
-    // (the next one drawn is lincheck's α). `final_c_eval` needs no observe — the
-    // verifier recomputes it from the already-absorbed `round1_c`/`z` and rejects
-    // on mismatch (see `verify`), so it is already transcript-bound.
-    ps.observe_scalar(final_a_eval);
-    ps.observe_scalar(final_b_eval);
+    // (the next one drawn is lincheck's α). `final_c_eval` is NOT transmitted —
+    // the verifier recomputes it from the already-absorbed `round1_c`/`z`, so it
+    // is already transcript-bound and carrying it would be redundant transport.
+    ps.add_scalar(final_a_eval);
+    ps.add_scalar(final_b_eval);
 
     // Recycle the four tail buffers (the two len-1 survivors still own their
     // full round-2 capacity) for the next phase/prove.
@@ -483,9 +480,8 @@ fn prove_packed_padded_inner(
 /// On reject: returns a [`VerifyError`] indicating which check failed.
 pub fn verify(
     log_n: usize,
-    proof: &ZerocheckProof,
     vs: &mut VerifierState<'_>,
-) -> Result<ZerocheckClaim, VerifyError> {
+) -> Result<(ZerocheckClaim, ZerocheckProof), VerifyError> {
     let m = log_n;
     let k_skip = K_SKIP;
     const N_INNER: usize = 7;
@@ -495,26 +491,6 @@ pub fn verify(
     }
     let n_mlv = m - k_skip;
     let ell = 1usize << k_skip;
-
-    // ---- Shape checks ----
-    if proof.round1_ab.len() != ell {
-        return Err(VerifyError::BadRound1Length {
-            expected: ell,
-            got: proof.round1_ab.len(),
-        });
-    }
-    if proof.round1_c.len() != ell {
-        return Err(VerifyError::BadRound1Length {
-            expected: ell,
-            got: proof.round1_c.len(),
-        });
-    }
-    if proof.multilinear_rounds.len() != n_mlv {
-        return Err(VerifyError::BadMultilinearRoundsLength {
-            expected: n_mlv,
-            got: proof.multilinear_rounds.len(),
-        });
-    }
 
     vs.absorb_bytes(b"flock-zerocheck-v0");
 
@@ -531,9 +507,9 @@ pub fn verify(
     }
     r[k_skip + N_INNER..].copy_from_slice(&r_outer);
 
-    // ---- Observe round-1 messages, sample z ----
-    vs.observe_scalars(&proof.round1_ab);
-    vs.observe_scalars(&proof.round1_c);
+    // ---- Read + bind round-1 messages off the stream, sample z ----
+    let round1_ab = vs.next_scalars(ell).map_err(VerifyError::Transcript)?;
+    let round1_c = vs.next_scalars(ell).map_err(VerifyError::Transcript)?;
     let z = vs.sample();
 
     // ---- Reconstruct ĉ(z, r_rest) from round1_c ----
@@ -542,10 +518,7 @@ pub fn verify(
     // evaluations on Λ uniquely interpolate to z. round1_c is in naive
     // convention (the prover restored the C_s factor before sending), so
     // `ĉ(z, r_rest) = P^C(z)` directly.
-    let computed_c_eval = interpolate_at_z_on_lambda(&proof.round1_c, k_skip, z);
-    if computed_c_eval != proof.final_c_eval {
-        return Err(VerifyError::CEvalMismatch);
-    }
+    let final_c_eval = interpolate_at_z_on_lambda(&round1_c, k_skip, z);
 
     // ---- Reconstruct the initial AB running claim ----
     //
@@ -560,14 +533,13 @@ pub fn verify(
     // If the prover's witness is dishonest the S-zero assumption fails, the
     // reconstructed c_0 is wrong, and the running-claim chain ends at a value
     // inconsistent with `â · b̂`. We catch that at the final sumcheck check.
-    let combined_at_lambda: Vec<F128> = proof
-        .round1_ab
+    let combined_at_lambda: Vec<F128> = round1_ab
         .iter()
-        .zip(&proof.round1_c)
+        .zip(&round1_c)
         .map(|(x, y)| *x + *y)
         .collect();
     let combined_at_z = interpolate_at_z_combined(&combined_at_lambda, k_skip, z);
-    let p_c_at_z = interpolate_at_z_on_lambda(&proof.round1_c, k_skip, z);
+    let p_c_at_z = interpolate_at_z_on_lambda(&round1_c, k_skip, z);
     let mut c_running = combined_at_z + p_c_at_z;
 
     // ---- Multilinear sumcheck chain ----
@@ -587,7 +559,11 @@ pub fn verify(
     //      where `G(X) = G(0)·(1+X) + G(1)·X + G(∞)·X·(X+1)` (char-2 quadratic
     //      interpolation through G(0), G(1), G(∞)).
     let mut mlv_rhos: Vec<F128> = Vec::with_capacity(n_mlv);
-    for (i, &(msg_1, msg_inf)) in proof.multilinear_rounds.iter().enumerate() {
+    let mut multilinear_rounds: Vec<(F128, F128)> = Vec::with_capacity(n_mlv);
+    for i in 0..n_mlv {
+        let msg_1 = vs.next_scalar().map_err(VerifyError::Transcript)?;
+        let msg_inf = vs.next_scalar().map_err(VerifyError::Transcript)?;
+        multilinear_rounds.push((msg_1, msg_inf));
         let r_eq = r[k_skip + i];
         let one_plus_r_eq = F128::ONE + r_eq;
 
@@ -595,8 +571,6 @@ pub fn verify(
         let g_inf = msg_inf;
         let g0 = (c_running + r_eq * g1) * one_plus_r_eq.inv();
 
-        vs.observe_scalar(msg_1);
-        vs.observe_scalar(msg_inf);
         let rho = vs.sample();
         mlv_rhos.push(rho);
 
@@ -612,29 +586,36 @@ pub fn verify(
     //   G_final(ρ_all) = â(z, ρ) · b̂(z, ρ) = final_a_eval · final_b_eval.
     // (The eq factors were absorbed round-by-round into the consistency checks,
     // never accumulating into the running claim.)
+    // Read + bind the final â, b̂ claims off the stream (mirrors
+    // `prove_packed_padded_inner`): binding must land before the next challenge
+    // (lincheck's α) is drawn, so the α-batched reduction of these two claims is
+    // sound. `final_c_eval` is the verifier's OWN interpolation of the
+    // already-bound `round1_c` at `z` — never transported.
     let r_rest: Vec<F128> = r[k_skip..].to_vec();
-    let expected_final = proof.final_a_eval * proof.final_b_eval;
-    if c_running != expected_final {
+    let final_a_eval = vs.next_scalar().map_err(VerifyError::Transcript)?;
+    let final_b_eval = vs.next_scalar().map_err(VerifyError::Transcript)?;
+    if c_running != final_a_eval * final_b_eval {
         return Err(VerifyError::SumcheckFinalFailed);
     }
 
-    // ---- Fiat–Shamir: bind the final â, b̂ claims (mirrors `prove_packed_padded_inner`) ----
-    //
-    // Must observe at the same transcript position as the prover, before the
-    // next challenge (lincheck's α) is drawn, so the α-batched reduction of
-    // these two claims is sound. `final_c_eval` is already bound via the
-    // recompute-and-compare above, so it is not observed.
-    vs.observe_scalar(proof.final_a_eval);
-    vs.observe_scalar(proof.final_b_eval);
-
-    Ok(ZerocheckClaim {
-        z,
-        mlv_challenges: mlv_rhos,
-        r_rest,
-        a_eval: proof.final_a_eval,
-        b_eval: proof.final_b_eval,
-        c_eval: proof.final_c_eval,
-    })
+    Ok((
+        ZerocheckClaim {
+            z,
+            mlv_challenges: mlv_rhos,
+            r_rest,
+            a_eval: final_a_eval,
+            b_eval: final_b_eval,
+            c_eval: final_c_eval,
+        },
+        ZerocheckProof {
+            round1_ab,
+            round1_c,
+            multilinear_rounds,
+            final_a_eval,
+            final_b_eval,
+            final_c_eval,
+        },
+    ))
 }
 
 #[cfg(test)]
@@ -716,11 +697,15 @@ mod tests {
             let mut ch_prove = crate::transcript::ProverState::new(b"flock-test-v0", &[]);
             let (proof, claim_p) = prove_packed(&a_p, &b_p, &c_p, m, &mut ch_prove);
 
-            let mut ch_verify = crate::transcript::VerifierState::detached(b"flock-test-v0", &[]);
-            let result = verify(m, &proof, &mut ch_verify);
-            let claim_v = result.unwrap_or_else(|e| panic!("verify rejected at m={m}: {e:?}"));
+            let proof_t = ch_prove.into_proof();
+            let mut ch_verify = crate::transcript::VerifierState::new(b"flock-test-v0", &proof_t, &[]);
+            let result = verify(m, &mut ch_verify);
+            let (claim_v, replay) = result.unwrap_or_else(|e| panic!("verify rejected at m={m}: {e:?}"));
 
             assert_eq!(claim_p, claim_v, "claim mismatch at m={m}");
+            assert_eq!(replay.round1_ab, proof.round1_ab, "stream reads match the prover record");
+            assert_eq!(replay.multilinear_rounds, proof.multilinear_rounds);
+            assert_eq!(replay.final_c_eval, proof.final_c_eval);
         }
     }
 
@@ -736,67 +721,27 @@ mod tests {
         let c: Vec<bool> = a.iter().zip(&b).map(|(x, y)| *x & *y).collect();
 
         let (a_p, b_p, c_p) = pack_abc(&a, &b, &c);
-        let _seed: u64 = 0xDEAD_BEEF;
         let mut ch_prove = crate::transcript::ProverState::new(b"flock-test-v0", &[]);
-        let (proof, _) = prove_packed(&a_p, &b_p, &c_p, m, &mut ch_prove);
+        let (_, _) = prove_packed(&a_p, &b_p, &c_p, m, &mut ch_prove);
+        let proof_t = ch_prove.into_proof();
 
-        // Each closure returns a mutated copy; verify must reject all of them.
-        let mutations: Vec<(&str, Box<dyn Fn(&ZerocheckProof) -> ZerocheckProof>)> = vec![
-            (
-                "round1_ab[0] bit-flip",
-                Box::new(|p| {
-                    let mut q = p.clone();
-                    q.round1_ab[0].lo ^= 1;
-                    q
-                }),
-            ),
-            (
-                "round1_c[5] bit-flip",
-                Box::new(|p| {
-                    let mut q = p.clone();
-                    q.round1_c[5].lo ^= 1;
-                    q
-                }),
-            ),
-            (
-                "multilinear_rounds[0].0 bit-flip",
-                Box::new(|p| {
-                    let mut q = p.clone();
-                    q.multilinear_rounds[0].0.lo ^= 1;
-                    q
-                }),
-            ),
-            (
-                "multilinear_rounds[2].1 bit-flip",
-                Box::new(|p| {
-                    let mut q = p.clone();
-                    let last = q.multilinear_rounds.len() / 2;
-                    q.multilinear_rounds[last].1.hi ^= 1;
-                    q
-                }),
-            ),
-            (
-                "final_a_eval bit-flip",
-                Box::new(|p| {
-                    let mut q = p.clone();
-                    q.final_a_eval.lo ^= 1;
-                    q
-                }),
-            ),
-            (
-                "final_c_eval bit-flip",
-                Box::new(|p| {
-                    let mut q = p.clone();
-                    q.final_c_eval.hi ^= 1;
-                    q
-                }),
-            ),
+        // Stream layout: round1_ab (64) ‖ round1_c (64) ‖ (m−6)×(e1, einf) ‖
+        // final_a ‖ final_b. Flip one word per region; verify must reject.
+        let ell = 1usize << K_SKIP;
+        let n_mlv = m - K_SKIP;
+        let mutations: [(&str, usize); 6] = [
+            ("round1_ab[0]", 0),
+            ("round1_c[5]", ell + 5),
+            ("multilinear_rounds[0].0", 2 * ell),
+            ("multilinear_rounds[mid].1", 2 * ell + 2 * (n_mlv / 2) + 1),
+            ("final_a_eval", 2 * ell + 2 * n_mlv),
+            ("final_b_eval", 2 * ell + 2 * n_mlv + 1),
         ];
-
-        for (label, mutate) in mutations {
-            let bad = mutate(&proof);
-            let mut ch = crate::transcript::VerifierState::detached(b"flock-test-v0", &[]);
-            let result = verify(m, &bad, &mut ch);
+        for (label, word) in mutations {
+            let mut bad = proof_t.clone();
+            bad.stream[word].lo ^= 1;
+            let mut ch = crate::transcript::VerifierState::new(b"flock-test-v0", &bad, &[]);
+            let result = verify(m, &mut ch);
             assert!(
                 result.is_err(),
                 "verify accepted mutated proof ({label}) — should have rejected"
@@ -804,7 +749,7 @@ mod tests {
         }
     }
 
-    /// Shape rejections: too-short round1, wrong number of multilinear rounds.
+    /// Shape rejections: a truncated stream and a too-small instance.
     #[test]
     fn verify_rejects_shape_errors() {
         let m = 14;
@@ -814,30 +759,22 @@ mod tests {
         let c: Vec<bool> = a.iter().zip(&b).map(|(x, y)| *x & *y).collect();
         let (a_p, b_p, c_p) = pack_abc(&a, &b, &c);
         let mut ch_prove = crate::transcript::ProverState::new(b"flock-test-v0", &[]);
-        let (proof, _) = prove_packed(&a_p, &b_p, &c_p, m, &mut ch_prove);
+        let (_, _) = prove_packed(&a_p, &b_p, &c_p, m, &mut ch_prove);
+        let proof_t = ch_prove.into_proof();
 
-        // Truncate round1_ab.
-        let mut bad = proof.clone();
-        bad.round1_ab.pop();
-        let mut ch = crate::transcript::VerifierState::detached(b"flock-test-v0", &[]);
+        // Truncated stream: a clean Transcript error, not a panic.
+        let mut bad = proof_t.clone();
+        bad.stream.truncate(bad.stream.len() - 3);
+        let mut ch = crate::transcript::VerifierState::new(b"flock-test-v0", &bad, &[]);
         assert!(matches!(
-            verify(m, &bad, &mut ch),
-            Err(VerifyError::BadRound1Length { .. })
-        ));
-
-        // Truncate multilinear rounds.
-        let mut bad = proof.clone();
-        bad.multilinear_rounds.pop();
-        let mut ch = crate::transcript::VerifierState::detached(b"flock-test-v0", &[]);
-        assert!(matches!(
-            verify(m, &bad, &mut ch),
-            Err(VerifyError::BadMultilinearRoundsLength { .. })
+            verify(m, &mut ch),
+            Err(VerifyError::Transcript(_))
         ));
 
         // log_n too small.
-        let mut ch = crate::transcript::VerifierState::detached(b"flock-test-v0", &[]);
+        let mut ch = crate::transcript::VerifierState::new(b"flock-test-v0", &proof_t, &[]);
         assert!(matches!(
-            verify(K_SKIP + 6, &proof, &mut ch),
+            verify(K_SKIP + 6, &mut ch),
             Err(VerifyError::LogNTooSmall { .. })
         ));
     }
@@ -857,10 +794,11 @@ mod tests {
 
             let (a_p, b_p, c_p) = pack_abc(&a, &b, &c);
             let mut ch_prove = crate::transcript::ProverState::new(b"flock-test-v0", &[]);
-            let (proof, _) = prove_packed(&a_p, &b_p, &c_p, m, &mut ch_prove);
+            let (_, _) = prove_packed(&a_p, &b_p, &c_p, m, &mut ch_prove);
+            let proof_t = ch_prove.into_proof();
 
-            let mut ch_verify = crate::transcript::VerifierState::detached(b"flock-test-v0", &[]);
-            let res = verify(m, &proof, &mut ch_verify);
+            let mut ch_verify = crate::transcript::VerifierState::new(b"flock-test-v0", &proof_t, &[]);
+            let res = verify(m, &mut ch_verify);
             assert!(
                 res.is_err(),
                 "verify ACCEPTED a false statement at m={m}: {res:?}"
@@ -882,15 +820,16 @@ mod tests {
         let (a_p, b_p, c_p) = pack_abc(&a, &b, &c);
         let mut ch_prove = crate::transcript::ProverState::new(b"flock-test-v0", &[]);
         let (proof, _) = prove_packed(&a_p, &b_p, &c_p, m, &mut ch_prove);
+        let proof_t = ch_prove.into_proof();
 
-        // For each round, flip msg_inf to a different value. Because msg_inf
-        // is observed into the transcript, this reshuffles subsequent rho's;
-        // a sound verifier should reject (overwhelming probability).
+        // For each round, flip msg_inf (stream word 2·64 + 2·idx + 1). Because
+        // the word is bound at read, this reshuffles subsequent rho's; a sound
+        // verifier should reject (overwhelming probability).
         for idx in 0..proof.multilinear_rounds.len() {
-            let mut bad = proof.clone();
-            bad.multilinear_rounds[idx].1 += F128::ONE;
-            let mut ch = crate::transcript::VerifierState::detached(b"flock-test-v0", &[]);
-            let res = verify(m, &bad, &mut ch);
+            let mut bad = proof_t.clone();
+            bad.stream[2 * (1 << K_SKIP) + 2 * idx + 1] += F128::ONE;
+            let mut ch = crate::transcript::VerifierState::new(b"flock-test-v0", &bad, &[]);
+            let res = verify(m, &mut ch);
             assert!(res.is_err(), "msg_inf tamper at round {idx} ACCEPTED");
         }
     }
@@ -909,13 +848,14 @@ mod tests {
         let (a_p, b_p, c_p) = pack_abc(&a, &b, &c);
         let mut ch_prove = crate::transcript::ProverState::new(b"flock-test-v0", &[]);
         let (proof, _) = prove_packed(&a_p, &b_p, &c_p, m, &mut ch_prove);
+        let proof_t = ch_prove.into_proof();
 
         let last = proof.multilinear_rounds.len() - 1;
-        let mut bad = proof.clone();
-        bad.multilinear_rounds[last].1 += F128::ONE;
-        let mut ch = crate::transcript::VerifierState::detached(b"flock-test-v0", &[]);
+        let mut bad = proof_t.clone();
+        bad.stream[2 * (1 << K_SKIP) + 2 * last + 1] += F128::ONE;
+        let mut ch = crate::transcript::VerifierState::new(b"flock-test-v0", &bad, &[]);
         assert!(
-            verify(m, &bad, &mut ch).is_err(),
+            verify(m, &mut ch).is_err(),
             "last-round msg_inf unconstrained"
         );
     }
@@ -948,12 +888,13 @@ mod tests {
 
         let mut ch_prove = crate::transcript::ProverState::new(b"flock-test-v0", &[]);
         let (proof, _) = prove_packed(&a_p, &b_p, &c_p, m, &mut ch_prove);
+        let proof_t = ch_prove.into_proof();
 
         // Honest verify, then capture the next challenge the transcript feeds
         // downstream — this is exactly the slot lincheck samples α from.
-        let mut ch_honest = crate::transcript::VerifierState::detached(b"flock-test-v0", &[]);
+        let mut ch_honest = crate::transcript::VerifierState::new(b"flock-test-v0", &proof_t, &[]);
         assert!(
-            verify(m, &proof, &mut ch_honest).is_ok(),
+            verify(m, &mut ch_honest).is_ok(),
             "honest verify rejected"
         );
         let alpha_honest = ch_honest.sample();
@@ -965,23 +906,25 @@ mod tests {
             hi: 0xfedc_ba98_7654_3210,
         };
         assert!(t != F128::ZERO && t != F128::ONE, "t must be nontrivial");
-        let mut bad = proof.clone();
-        bad.final_a_eval *= t;
-        bad.final_b_eval *= t.inv();
-        assert_ne!(bad.final_a_eval, proof.final_a_eval, "tamper must change â");
-        assert_ne!(bad.final_b_eval, proof.final_b_eval, "tamper must change b̂");
+        // The finals are the LAST two stream words of this standalone proof.
+        let n = proof_t.stream.len();
+        let mut bad = proof_t.clone();
+        bad.stream[n - 2] *= t;
+        bad.stream[n - 1] *= t.inv();
+        assert_ne!(bad.stream[n - 2], proof_t.stream[n - 2], "tamper must change â");
+        assert_ne!(bad.stream[n - 1], proof_t.stream[n - 1], "tamper must change b̂");
         assert_eq!(
-            bad.final_a_eval * bad.final_b_eval,
+            bad.stream[n - 2] * bad.stream[n - 1],
             proof.final_a_eval * proof.final_b_eval,
             "tamper must preserve the product",
         );
 
         // The zerocheck's own checks are blind to a product-preserving tamper:
         // verify still ACCEPTS. This is precisely the gap the FS binding closes —
-        // the tamper is caught only because the claims now move the transcript.
-        let mut ch_tampered = crate::transcript::VerifierState::detached(b"flock-test-v0", &[]);
+        // the tamper is caught only because the claims move the transcript.
+        let mut ch_tampered = crate::transcript::VerifierState::new(b"flock-test-v0", &bad, &[]);
         assert!(
-            verify(m, &bad, &mut ch_tampered).is_ok(),
+            verify(m, &mut ch_tampered).is_ok(),
             "product-preserving tamper rejected by zerocheck's own checks (unexpected)",
         );
         let alpha_tampered = ch_tampered.sample();
@@ -1016,9 +959,10 @@ mod tests {
             }
             let (a_p, b_p, c_p) = pack_abc(&a, &b, &c);
             let mut ch_prove = crate::transcript::ProverState::new(b"flock-test-v0", &[]);
-            let (proof, _) = prove_packed(&a_p, &b_p, &c_p, m, &mut ch_prove);
-            let mut ch_verify = crate::transcript::VerifierState::detached(b"flock-test-v0", &[]);
-            let res = verify(m, &proof, &mut ch_verify);
+            let (_, _) = prove_packed(&a_p, &b_p, &c_p, m, &mut ch_prove);
+            let proof_t = ch_prove.into_proof();
+            let mut ch_verify = crate::transcript::VerifierState::new(b"flock-test-v0", &proof_t, &[]);
+            let res = verify(m, &mut ch_verify);
             assert!(
                 res.is_err(),
                 "false statement (seed={seed}) ACCEPTED: {res:?}"
@@ -1037,12 +981,13 @@ mod tests {
         let (a_p, b_p, c_p) = pack_abc(&a, &b, &c);
         let mut ch_prove = crate::transcript::ProverState::new(b"flock-test-v0", &[]);
         let (proof, _) = prove_packed(&a_p, &b_p, &c_p, m, &mut ch_prove);
+        let proof_t = ch_prove.into_proof();
         for idx in 0..proof.multilinear_rounds.len() {
-            let mut bad = proof.clone();
-            bad.multilinear_rounds[idx].0 += F128::ONE;
-            let mut ch = crate::transcript::VerifierState::detached(b"flock-test-v0", &[]);
+            let mut bad = proof_t.clone();
+            bad.stream[2 * (1 << K_SKIP) + 2 * idx] += F128::ONE;
+            let mut ch = crate::transcript::VerifierState::new(b"flock-test-v0", &bad, &[]);
             assert!(
-                verify(m, &bad, &mut ch).is_err(),
+                verify(m, &mut ch).is_err(),
                 "msg_1 tamper round {idx} ACCEPTED"
             );
         }

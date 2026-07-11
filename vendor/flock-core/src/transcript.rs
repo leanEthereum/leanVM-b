@@ -14,9 +14,8 @@
 //!   cannot bind-without-transmitting or transmit-without-binding by mistake. A
 //!   challenge is just `sample()`d, bound to everything seeded/sent so far.
 //! - **`hint_*` (prover) / `next_*` (verifier)**: transport that is NOT absorbed
-//!   here — either hash-bearing (the Ligerito `openings`, like leanVM's
-//!   `merkle_paths`) or already bound elsewhere (flock's scalar sub-proof, which
-//!   re-enters the sponge through flock's own reduction/opening replay).
+//!   here — hash-bearing data (the Ligerito `openings`, like leanVM's
+//!   `merkle_paths`) whose binding is the Merkle structure itself.
 //! - **`sample` / `sample_vec`**: squeeze a challenge.
 //!
 //! The [`Sponge`] itself (the VM-native Merkle–Damgård chaining value, its
@@ -33,10 +32,10 @@ pub use crate::sponge::{Sponge, TraceOp, trace_start, trace_take};
 /// A complete proof: the scalar transcript stream plus the Ligerito opening hint
 /// channel — **two** channels, no bolted-on side field. The commitment root and
 /// every transmitted scalar ride `stream`; the hash-bearing Ligerito openings
-/// ride `openings`. flock's BLAKE3 sub-proof is carried the same way: its scalar
-/// reduction (zerocheck / lincheck / ring-switch) rides `stream` as pure
-/// transport ([`ProverState::hint_bytes`] — NOT re-absorbed, since flock's
-/// verifier replay is the sole binder) and its one Ligerito opening rides `openings`.
+/// ride `openings`. flock's BLAKE3 sub-proof is carried the same way: its
+/// zerocheck / lincheck / ring-switch scalars are ordinary `add_scalar` words on
+/// `stream` (transmitted AND bound at their protocol points, like every other
+/// scalar) and its one Ligerito opening rides `openings`.
 ///
 /// `Deserialize` as well as `Serialize`, so a proof round-trips over the wire and
 /// an independent verifier process reconstructs it: everything lives in these two
@@ -122,22 +121,6 @@ impl ProverState {
         self.stream.push(F128::new(nonce, 0));
     }
 
-    /// Transmit length-prefixed bytes on the stream (packed 16 per `F128` word)
-    /// **without** binding them into the sponge — the hint channel for data bound
-    /// elsewhere. Used for flock's BLAKE3 scalar sub-proof, whose values re-enter
-    /// the sponge through the verifier's own reduction/opening replay, so absorbing
-    /// them here too would double-bind and diverge the sponge from the prover.
-    pub fn hint_bytes(&mut self, bytes: &[u8]) {
-        self.stream.push(F128::new(bytes.len() as u64, 0));
-        for chunk in bytes.chunks(16) {
-            let mut buf = [0u8; 16];
-            buf[..chunk.len()].copy_from_slice(chunk);
-            self.stream.push(F128::new(
-                u64::from_le_bytes(buf[..8].try_into().unwrap()),
-                u64::from_le_bytes(buf[8..].try_into().unwrap()),
-            ));
-        }
-    }
 
     /// Prover mirror of [`VerifierState::observe_scalars`].
     pub fn observe_scalars(&mut self, xs: &[F128]) {
@@ -219,7 +202,7 @@ impl<'a> VerifierState<'a> {
     }
 
     /// Advance the stream cursor by one **without** binding into the sponge — the
-    /// read counterpart of [`ProverState::hint_bytes`]'s per-word push.
+    /// read counterpart of the raw nonce push in [`ProverState::grind`].
     fn take_raw(&mut self) -> Result<F128, Error> {
         let x = *self.stream.get(self.offset).ok_or(Error::ExceededStream)?;
         self.offset += 1;
@@ -227,27 +210,6 @@ impl<'a> VerifierState<'a> {
         Ok(x)
     }
 
-    /// Read length-prefixed hint bytes written by [`ProverState::hint_bytes`]:
-    /// consumes stream words but does NOT bind them into the sponge (their binding
-    /// happens via the reduction/opening replay).
-    pub fn next_hint_bytes(&mut self) -> Result<Vec<u8>, Error> {
-        let len = self.take_raw()?.lo as usize;
-        let n_words = len.div_ceil(16);
-        // The bytes come from `n_words` stream words; a malicious `len` cannot make
-        // us reserve more than the actual remaining stream (bounds the allocation
-        // to the proof size and rules out the `n_words * 16` overflow).
-        if n_words > self.stream.len() - self.offset {
-            return Err(Error::ExceededStream);
-        }
-        let mut bytes = Vec::with_capacity(n_words * 16);
-        for _ in 0..n_words {
-            let w = self.take_raw()?;
-            bytes.extend_from_slice(&w.lo.to_le_bytes());
-            bytes.extend_from_slice(&w.hi.to_le_bytes());
-        }
-        bytes.truncate(len);
-        Ok(bytes)
-    }
 
     pub fn sample(&mut self) -> F128 {
         self.sponge.sample()

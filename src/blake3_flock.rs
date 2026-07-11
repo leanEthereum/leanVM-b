@@ -34,7 +34,7 @@ use crate::transcript::{ProverState, VerifierState};
 use flare::pcs::LOG_PACKING;
 use flock_prover::pcs::{Commitment, ProverData};
 use flock_prover::r1cs_hashes::blake3::{
-    Blake3Setup, Blake3StackProof, Compression, K_LOG, ReducedClaims, blake3_compress,
+    Blake3Setup, Compression, K_LOG, ReducedClaims, ReductionReplay, blake3_compress,
     generate_witness_with_ab_packed_and_lincheck, min_n_blocks_log,
 };
 use flock_prover::verifier::VerifyError;
@@ -224,41 +224,32 @@ pub fn family_digest() -> [u8; 32] {
 /// **Flock reduction only** (prover): run flock's BLAKE3 zerocheck + lincheck
 /// over `blocks`, binding to `commitment`, and return the two claims
 /// [`ReducedClaims`] on the committed witness `q_pkd` — `ab` (`A∘B`, lincheck)
-/// and `c` (`C`, zerocheck) — along with the regenerated packed witness and the
-/// transmitted zerocheck / lincheck sub-proofs. Does NOT open the PCS: the
-/// caller discharges the returned claims (see [`prove_validity_stacked`]). This
-/// is the clean seam the PCS builds on.
+/// and `c` (`C`, zerocheck) — along with the regenerated packed witness. The
+/// sub-proof scalars ride the shared transcript stream (`ps.add_scalar` at the
+/// protocol points). Does NOT open the PCS: the caller discharges the returned
+/// claims (see [`prove_validity_stacked`]). This is the clean seam the PCS
+/// builds on.
 pub fn prove_reduction(
     blocks: &[Compression],
     commitment: &Commitment,
     ps: &mut ProverState,
-) -> (
-    Vec<F128>,
-    flock_prover::zerocheck::ZerocheckProof,
-    flock_prover::lincheck::LincheckProof,
-    ReducedClaims,
-) {
+) -> (Vec<F128>, ReducedClaims) {
     setup_for(blocks.len()).prove_reduction(blocks, commitment, ps)
 }
 
 /// **Flock reduction only** (verifier): mirror of [`prove_reduction`]. Rebuild the
-/// stack commitment from `root`/`mu`, replay the `zerocheck` + `lincheck`
-/// sub-proofs (binding to it), and recover the two `(ab, c)` claims on `q_pkd`
-/// for the PCS to discharge. In a full proof these sub-proofs live in
-/// [`Blake3StackProof`] (`proof.zerocheck` / `proof.lincheck`).
+/// stack commitment from `root`/`mu`, replay the zerocheck + lincheck sub-proofs
+/// straight off the shared stream (each scalar bound as it is read), and recover
+/// the two `(ab, c)` claims on `q_pkd` for the PCS to discharge — plus the
+/// reassembled records and reduction claims ([`ReductionReplay`]).
 pub fn verify_reduction(
     n_blocks: usize,
     root: &[u8; 32],
     mu: usize,
-    zerocheck: &flock_prover::zerocheck::ZerocheckProof,
-    lincheck: &flock_prover::lincheck::LincheckProof,
     vs: &mut VerifierState,
-) -> Result<
-    (ZClaim, ZClaim, flare::zerocheck::ZerocheckClaim, flare::lincheck::LincheckClaim),
-    VerifyError,
-> {
+) -> Result<ReductionReplay, VerifyError> {
     let commitment = crate::pcs::commitment_from_root(*root, mu);
-    setup_for(n_blocks).verify_reduction(&commitment, zerocheck, lincheck, vs)
+    setup_for(n_blocks).verify_reduction(&commitment, vs)
 }
 
 /// The multilinear tail `x_inner_rest ++ x_outer` of a quirky point — the
@@ -298,7 +289,7 @@ pub fn ring_switch_verify<'a>(
     offset: usize,
     ab: ZClaim,
     c: ZClaim,
-    open: &'a crate::pcs::BatchOpeningProofLigerito,
+    open: &'a flare::pcs::ligerito::LigeritoProof,
 ) -> crate::pcs::RingSwitchVerify<'a> {
     crate::pcs::RingSwitchVerify {
         offset,
@@ -310,50 +301,9 @@ pub fn ring_switch_verify<'a>(
     }
 }
 
-/// Carry flock's BLAKE3 sub-proof on leanVM's [`crate::transcript::Proof`]
-/// channels — no dedicated field. The scalar reduction (`zerocheck`, `lincheck`,
-/// and the opening's `ring_switches`) is serialized onto the `stream` as pure
-/// transport ([`ProverState::hint_bytes`]: NOT re-absorbed — the verifier's
-/// reduction/opening replay is the sole binder), and the one Merkle-bearing
-/// Ligerito rides the `openings` hint channel like every other PCS opening.
-/// Mirrored by [`read_stack_proof`].
-pub fn write_stack_proof(
-    ps: &mut ProverState,
-    zerocheck: flock_prover::zerocheck::ZerocheckProof,
-    lincheck: flock_prover::lincheck::LincheckProof,
-    open: crate::pcs::BatchOpeningProofLigerito,
-) {
-    let crate::pcs::BatchOpeningProofLigerito { ring_switches, ligerito } = open;
-    let bytes = bincode::serialize(&(zerocheck, lincheck, ring_switches))
-        .expect("flock BLAKE3 sub-proof serializes");
-    ps.hint_bytes(&bytes);
-    ps.hint_opening(ligerito);
-}
-
-/// Verifier side of [`write_stack_proof`]: read flock's scalar reduction back off
-/// the `stream` (raw — not re-absorbed) and its Ligerito off the `openings`
-/// channel, reassembling `(zerocheck, lincheck, open)` for [`verify_reduction`]
-/// and [`ring_switch_verify`].
-#[allow(clippy::type_complexity)]
-pub fn read_stack_proof(
-    vs: &mut VerifierState,
-) -> Result<
-    (
-        flock_prover::zerocheck::ZerocheckProof,
-        flock_prover::lincheck::LincheckProof,
-        crate::pcs::BatchOpeningProofLigerito,
-    ),
-    crate::transcript::Error,
-> {
-    let bytes = vs.next_hint_bytes()?;
-    let (zerocheck, lincheck, ring_switches): (
-        flock_prover::zerocheck::ZerocheckProof,
-        flock_prover::lincheck::LincheckProof,
-        Vec<flare::pcs::RingSwitchProof>,
-    ) = bincode::deserialize(&bytes).map_err(|_| crate::transcript::Error::MissingHint)?;
-    let ligerito = vs.next_opening()?.clone();
-    Ok((zerocheck, lincheck, crate::pcs::BatchOpeningProofLigerito { ring_switches, ligerito }))
-}
+// (No write/read_stack_proof: flock's scalar sub-proof rides the shared stream
+// via add_scalar/next_scalar at its protocol points, exactly like leanVM's own
+// scalars; the one Merkle-bearing Ligerito rides the `openings` hint channel.)
 
 /// Prove `blocks` are valid compressions in two clean phases, discharging the
 /// proof against the caller's already-committed `stack` (with `q_pkd` the aligned
@@ -372,7 +322,7 @@ pub fn prove_validity_stacked(
     commitment: &Commitment,
     stack_pd: &[(Vec<F128>, F128)],
     ps: &mut ProverState,
-) -> Blake3StackProof {
+) -> flare::pcs::ligerito::LigeritoProof {
     setup_for(blocks.len())
         .prove_validity_stacked(blocks, stack, stack_offset, prover_data, commitment, stack_pd, ps)
 }
@@ -387,10 +337,10 @@ pub fn verify_validity_stacked(
     commitment: &Commitment,
     stack_offset: usize,
     stack_pd: &[(Vec<F128>, F128)],
-    proof: &Blake3StackProof,
+    open: &flare::pcs::ligerito::LigeritoProof,
     vs: &mut VerifierState,
 ) -> Result<(), VerifyError> {
-    setup_for(n_blocks).verify_validity_stacked(commitment, stack_offset, stack_pd, proof, vs)
+    setup_for(n_blocks).verify_validity_stacked(commitment, stack_offset, stack_pd, open, vs)
 }
 
 #[cfg(test)]
@@ -532,8 +482,7 @@ mod tests {
         // Prover: commit, then run ONLY the reduction (no PCS open).
         let mut ps = ProverState::new(b"reduce", &[]);
         let committed = crate::pcs::commit(&mut ps, &stacked.q);
-        let (z_packed, zc, lc, reduced) =
-            prove_reduction(&blocks, &committed.commitment, &mut ps);
+        let (z_packed, reduced) = prove_reduction(&blocks, &committed.commitment, &mut ps);
         let bundle = ps.into_proof();
 
         // The reduction regenerates exactly the committed `q_pkd` sub-block.
@@ -543,20 +492,20 @@ mod tests {
         // Verifier: replay the reduction and recover the claims.
         let mut vs = VerifierState::new(b"reduce", &bundle, &[]);
         let root = crate::pcs::read_commitment(&mut vs).unwrap();
-        let (ab, c, _, _) = verify_reduction(blocks.len(), &root, stacked.m, &zc, &lc, &mut vs)
+        let replay = verify_reduction(blocks.len(), &root, stacked.m, &mut vs)
             .expect("reduction verifies");
 
         // Prover and verifier agree on the claims left for the PCS.
-        assert_eq!(reduced.ab.claim, ab, "ab claim mismatch");
-        assert_eq!(reduced.c.claim, c, "c claim mismatch");
+        assert_eq!(reduced.ab.claim, replay.ab, "ab claim mismatch");
+        assert_eq!(reduced.c.claim, replay.c, "c claim mismatch");
 
         // A mismatched transcript domain diverges the sponge, so the recovered
         // claims must NOT match the prover's (the reduction is transcript-bound).
         let mut vs_bad = VerifierState::new(b"different", &bundle, &[]);
         let root_b = crate::pcs::read_commitment(&mut vs_bad).unwrap();
-        if let Ok((ab_b, c_b, _, _)) = verify_reduction(blocks.len(), &root_b, stacked.m, &zc, &lc, &mut vs_bad) {
+        if let Ok(replay_b) = verify_reduction(blocks.len(), &root_b, stacked.m, &mut vs_bad) {
             assert!(
-                ab_b != ab || c_b != c,
+                replay_b.ab != replay.ab || replay_b.c != replay.c,
                 "a diverged sponge must not reproduce the prover's claims"
             );
         }

@@ -412,7 +412,7 @@ pub fn prove(program: &Program, public_input: [F128; 2]) -> (Proof, Stats) {
             .map(|r| crate::blake3_flock::compression([r.va0, r.va1], [r.vb0, r.vb1]))
             .collect()
     };
-    let (_z_packed, zc, lc, reduced) = crate::blake3_flock::prove_reduction(&blocks, &committed.commitment, &mut ps);
+    let (_z_packed, reduced) = crate::blake3_flock::prove_reduction(&blocks, &committed.commitment, &mut ps);
     let offset = w.layout.placements[QPKD].offset;
     let ring = crate::blake3_flock::ring_switch_open(blocks.len(), offset, &reduced);
     if prof {
@@ -423,9 +423,9 @@ pub fn prove(program: &Program, public_input: [F128; 2]) -> (Proof, Stats) {
     if prof {
         eprintln!("[open]  pcs::open   : {:>7.2} ms", ms(t_pcs));
     }
-    // Carry flock's sub-proof on the shared channels: its scalar reduction on the
-    // `stream` (raw transport), its Ligerito on the `openings` hint channel.
-    crate::blake3_flock::write_stack_proof(&mut ps, zc, lc, mixed_open);
+    // flock's scalar sub-proof already rode the shared stream (add_scalar at its
+    // protocol points); only the Merkle-bearing Ligerito needs the hint channel.
+    ps.hint_opening(mixed_open);
     if prof {
         eprintln!("[prove] open        : {:>7.2} ms", ms(t));
     }
@@ -521,33 +521,30 @@ pub fn verify(
     claims.extend(constraint_claims(&table_claims));
     claims.push(bind_pi_claim(vs.sample(), &l.placements, &l.pi));
     let checkpoint_pi = vs.sponge_state();
-    // Read flock's BLAKE3 sub-proof off the shared channels (mirrors prove's
-    // `write_stack_proof`): the scalar reduction from the `stream` as raw transport
-    // (right after the last bound scalar), its Ligerito from `openings`.
-    let (zerocheck, lincheck, open) = crate::blake3_flock::read_stack_proof(&mut vs).map_err(Error::Transcript)?;
     let slots = slot_claims(&l, &claims);
 
-    // Replay flock's reduction to recover its `(ab, c)` validity claims on q_pkd,
-    // then verify them alongside every point claim in the ONE Ligerito opening
+    // Replay flock's reduction straight off the shared stream (each scalar bound
+    // as it is read) to recover its `(ab, c)` validity claims on q_pkd, then
+    // verify them alongside every point claim in the ONE Ligerito opening
     // (mirroring `prove`). `n_blocks = max(n_b3, 1)` — always ≥ 1 instance.
     let n_blocks = n_b3.max(1);
     let offset = l.placements[QPKD].offset;
-    let (ab, c, zc_claim, lc_claim) =
-        crate::blake3_flock::verify_reduction(n_blocks, &root, l.m, &zerocheck, &lincheck, &mut vs)
-            .map_err(Error::Blake3)?;
+    let replay = crate::blake3_flock::verify_reduction(n_blocks, &root, l.m, &mut vs)
+        .map_err(Error::Blake3)?;
     let checkpoint_flock = vs.sponge_state();
-    let ring = crate::blake3_flock::ring_switch_verify(n_blocks, offset, ab, c, &open);
+    let open = vs.next_opening().map_err(Error::Transcript)?.clone();
+    let ring = crate::blake3_flock::ring_switch_verify(n_blocks, offset, replay.ab, replay.c, &open);
     let opening = pcs::verify(&mut vs, &slots, &ring, l.m, &root).map_err(Error::Open)?;
     vs.finish().map_err(Error::Transcript)?;
     Ok(VerifySummary {
         bytecode_claims: bus.bytecode_claims,
         count_root: bus.count_root,
         checkpoints: [checkpoint_bus, checkpoint_zerochecks, checkpoint_pi, checkpoint_flock],
-        zerocheck,
-        ring_switches: open.ring_switches.clone(),
-        lincheck,
-        zc_claim,
-        lc_claim,
+        zerocheck: replay.zerocheck,
+        ring_switches: opening.ring_switches.clone(),
+        lincheck: replay.lincheck,
+        zc_claim: replay.zc_claim,
+        lc_claim: replay.lc_claim,
         opening,
     })
 }

@@ -367,6 +367,9 @@ pub struct QuirkyPoint {
 /// `z_partial` (the post-sumcheck length-`2^k_skip` collapsed vector) and
 /// applying a fresh-`z_skip` φ8 Lagrange combination at verify time.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Reassembled by the verifier from its stream reads (a passive record for
+/// summaries / recursion harnesses); the scalars ride the shared transcript
+/// stream, transmitted+bound by `add_scalar` at the protocol points.
 pub struct LincheckProof {
     /// Per-round messages `(q(1), q(∞))` of the `k_log − k_skip`-round
     /// product-sumcheck. `q(0)` is recovered from the running claim
@@ -434,6 +437,8 @@ pub enum VerifyError {
     /// The scalar consistency check failed for one of (A, B, C).
     /// Detected: `Σ_{i_inner} M̂_0_quirky(z_skip, x_inner_rest, i_inner) · z_x_vec[i_inner] ≠ v`.
     ConsistencyFailed { which: &'static str },
+    /// The proof stream ran out while reading a message.
+    Transcript(crate::transcript::Error),
 }
 
 // ---------------------------------------------------------------------------
@@ -1702,8 +1707,8 @@ fn prove_padded_inner(
         // next-eval fused into one pass — see `sumcheck_bind_both_and_eval_next`).
         let (mut e1, mut einf) = sumcheck_round_eval_par(&comb_vec, &z_vec);
         for t in 0..inner_rest_len {
-            ps.observe_scalar(e1);
-            ps.observe_scalar(einf);
+            ps.add_scalar(e1);
+            ps.add_scalar(einf);
             let r = ps.sample();
             rounds.push((e1, einf));
             r_rounds.push(r);
@@ -1729,7 +1734,7 @@ fn prove_padded_inner(
 
     // 6. Send `z_partial` (the post-sumcheck collapsed z_vec). Length 2^k_skip.
     let z_partial = z_vec.clone();
-    ps.observe_scalars(&z_partial);
+    ps.add_scalars(&z_partial);
 
     // 7. Sample fresh z_skip AFTER observing z_partial — gives Schwartz-Zippel
     //    soundness on the φ8 (univariate-skip) dim.
@@ -1772,9 +1777,8 @@ pub fn verify(
     x_ab: &QuirkyPoint,
     v_a: F128,
     v_b: F128,
-    proof: &LincheckProof,
     vs: &mut VerifierState<'_>,
-) -> Result<LincheckClaim, VerifyError> {
+) -> Result<(LincheckClaim, LincheckProof), VerifyError> {
     let k = 1usize << k_log;
     let n_log = m - k_log;
 
@@ -1806,21 +1810,6 @@ pub fn verify(
             got_cols: circuit.n_cols(),
         });
     }
-    if proof.rounds.len() != inner_rest_len {
-        return Err(VerifyError::BadVectorLength {
-            which: "rounds",
-            expected: inner_rest_len,
-            got: proof.rounds.len(),
-        });
-    }
-    if proof.z_partial.len() != n_skip {
-        return Err(VerifyError::BadVectorLength {
-            which: "z_partial",
-            expected: n_skip,
-            got: proof.z_partial.len(),
-        });
-    }
-
     vs.absorb_bytes(b"flock-lincheck-v0");
 
     let trace = std::env::var("VERIFY_TRACE").is_ok();
@@ -1872,9 +1861,11 @@ pub fn verify(
     }
     let mut running = target;
     let mut r_rounds = Vec::with_capacity(inner_rest_len);
-    for &(e1, einf) in &proof.rounds {
-        vs.observe_scalar(e1);
-        vs.observe_scalar(einf);
+    let mut rounds = Vec::with_capacity(inner_rest_len);
+    for _ in 0..inner_rest_len {
+        let e1 = vs.next_scalar().map_err(VerifyError::Transcript)?;
+        let einf = vs.next_scalar().map_err(VerifyError::Transcript)?;
+        rounds.push((e1, einf));
         let r = vs.sample();
         // q(0) = claim + q(1) in char 2; q(X) = einf·X² + c1·X + e0.
         let e0 = running + e1;
@@ -1893,13 +1884,13 @@ pub fn verify(
         );
     }
 
-    // 4. Observe z_partial AFTER the sumcheck rounds (matches prover order).
-    vs.observe_scalars(&proof.z_partial);
+    // 4. Read + bind z_partial AFTER the sumcheck rounds (matches prover order).
+    let z_partial = vs.next_scalars(n_skip).map_err(VerifyError::Transcript)?;
 
     // 5. Final sumcheck consistency: Σ comb_partial[i_skip] · z_partial[i_skip]
     //    must equal the running claim. Ties z_partial to the upstream v_a, v_b.
     //    Small (length 2^k_skip = 64); sequential.
-    let final_sum = inner_product(&comb_vec, &proof.z_partial);
+    let final_sum = inner_product(&comb_vec, &z_partial);
     if running != final_sum {
         return Err(VerifyError::ConsistencyFailed {
             which: "sumcheck-final",
@@ -1914,7 +1905,7 @@ pub fn verify(
     //    PCS catches mismatches downstream.
     let t = std::time::Instant::now();
     let lambda = lagrange_weights_naive(k_skip, r_inner_skip);
-    let w = inner_product(&lambda, &proof.z_partial);
+    let w = inner_product(&lambda, &z_partial);
     if trace {
         eprintln!(
             "        [lcv] final consistency + lagrange_weights_naive: {}",
@@ -1927,14 +1918,17 @@ pub fn verify(
     let mut r_inner_rest = r_rounds.clone();
     r_inner_rest.reverse();
 
-    Ok(LincheckClaim {
-        alpha,
-        beta,
-        r_rounds,
-        r_inner_skip,
-        r_inner_rest,
-        w,
-    })
+    Ok((
+        LincheckClaim {
+            alpha,
+            beta,
+            r_rounds,
+            r_inner_skip,
+            r_inner_rest,
+            w,
+        },
+        LincheckProof { rounds, z_partial },
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -2426,13 +2420,16 @@ mod tests {
             let mut ch_p = crate::transcript::ProverState::new(b"flock-test-v0", &[]);
             let (proof, claim_p) = prove(&z_packed, m, k_log, k_skip, &circuit, &x_ab, &mut ch_p);
 
-            let mut ch_v = crate::transcript::VerifierState::detached(b"flock-test-v0", &[]);
-            let claim_v = verify(
-                m, k_log, k_skip, &circuit, &x_ab, v_a, v_b, &proof, &mut ch_v,
+            let proof_t = ch_p.into_proof();
+            let mut ch_v = crate::transcript::VerifierState::new(b"flock-test-v0", &proof_t, &[]);
+            let (claim_v, replay) = verify(
+                m, k_log, k_skip, &circuit, &x_ab, v_a, v_b, &mut ch_v,
             )
             .unwrap_or_else(|e| {
                 panic!("verify rejected honest proof at m={m},k_log={k_log},k_skip={k_skip}: {e:?}")
             });
+            assert_eq!(replay.rounds, proof.rounds, "stream reads match the prover record");
+            assert_eq!(replay.z_partial, proof.z_partial);
 
             assert_eq!(
                 claim_p, claim_v,
@@ -2477,10 +2474,10 @@ mod tests {
         let v_a = mle_eval_bool_quirky(&a, m, k_log, k_skip, &x_ab);
         let v_b = mle_eval_bool_quirky(&b, m, k_log, k_skip, &x_ab);
 
-        let _seed: u64 = 0xFEEDFACE;
         let circuit = SparseMatrixCircuit::new(&a_0, &b_0);
         let mut ch_p = crate::transcript::ProverState::new(b"flock-test-v0", &[]);
-        let (proof, _) = prove(&z_packed, m, k_log, k_skip, &circuit, &x_ab, &mut ch_p);
+        let (_, _) = prove(&z_packed, m, k_log, k_skip, &circuit, &x_ab, &mut ch_p);
+        let proof_t = ch_p.into_proof();
 
         // Pick a mutation position where BOTH row vectors are nonzero so the
         // mutation guarantees both checks would diverge.
@@ -2491,36 +2488,25 @@ mod tests {
             .find(|&i| row_a[i] != F128::ZERO || row_b[i] != F128::ZERO)
             .expect("no row-vector slot is nonzero in either A or B — test degenerate");
 
-        // Mutations now target `z_partial` (the post-sumcheck length-2^k_skip
-        // vector). Bit-flipping any entry must cause the sumcheck-final check
-        // to fail (running_claim ≠ Σ comb_partial · z_partial).
+        // Mutations target `z_partial` (the post-sumcheck length-2^k_skip
+        // vector), which rides the stream right after the 2·(k_log − k_skip)
+        // round scalars. Bit-flipping any entry must cause the sumcheck-final
+        // check to fail (running_claim ≠ Σ comb_partial · z_partial).
         let n_skip = 1usize << k_skip;
         let skip_idx = idx % n_skip;
-        let mutations: Vec<(String, Box<dyn Fn(&LincheckProof) -> LincheckProof>)> = vec![
-            (
-                format!("z_partial[{skip_idx}].lo bit-flip"),
-                Box::new(move |p| {
-                    let mut q = p.clone();
-                    q.z_partial[skip_idx].lo ^= 1;
-                    q
-                }),
-            ),
-            (
-                format!("z_partial[{skip_idx}].hi bit-flip"),
-                Box::new(move |p| {
-                    let mut q = p.clone();
-                    q.z_partial[skip_idx].hi ^= 1;
-                    q
-                }),
-            ),
-        ];
-        for (label, mutate) in mutations {
-            let bad = mutate(&proof);
-            let mut ch = crate::transcript::VerifierState::detached(b"flock-test-v0", &[]);
-            let res = verify(m, k_log, k_skip, &circuit, &x_ab, v_a, v_b, &bad, &mut ch);
+        let zp_word = 2 * (k_log - k_skip) + skip_idx;
+        for (label, hi) in [("lo", false), ("hi", true)] {
+            let mut bad = proof_t.clone();
+            if hi {
+                bad.stream[zp_word].hi ^= 1;
+            } else {
+                bad.stream[zp_word].lo ^= 1;
+            }
+            let mut ch = crate::transcript::VerifierState::new(b"flock-test-v0", &bad, &[]);
+            let res = verify(m, k_log, k_skip, &circuit, &x_ab, v_a, v_b, &mut ch);
             assert!(
                 matches!(res, Err(VerifyError::ConsistencyFailed { .. })),
-                "verify did not reject {label}: got {res:?}"
+                "verify did not reject z_partial[{skip_idx}].{label} bit-flip: got {res:?}"
             );
         }
     }
@@ -2545,45 +2531,34 @@ mod tests {
 
         let circuit = SparseMatrixCircuit::new(&a_0, &b_0);
         let mut ch_p = crate::transcript::ProverState::new(b"flock-test-v0", &[]);
-        let (proof, _) = prove(&z_packed, m, k_log, k_skip, &circuit, &x_ab, &mut ch_p);
+        let (_, _) = prove(&z_packed, m, k_log, k_skip, &circuit, &x_ab, &mut ch_p);
+        let proof_t = ch_p.into_proof();
 
-        // Truncate z_partial.
-        let mut bad = proof.clone();
-        bad.z_partial.pop();
-        let mut ch = crate::transcript::VerifierState::detached(b"flock-test-v0", &[]);
+        // Truncated stream (dropped last z_partial word): a clean Transcript error.
+        let mut bad = proof_t.clone();
+        bad.stream.pop();
+        let mut ch = crate::transcript::VerifierState::new(b"flock-test-v0", &bad, &[]);
         assert!(matches!(
-            verify(m, k_log, k_skip, &circuit, &x_ab, v_a, v_b, &bad, &mut ch),
-            Err(VerifyError::BadVectorLength { .. })
+            verify(m, k_log, k_skip, &circuit, &x_ab, v_a, v_b, &mut ch),
+            Err(VerifyError::Transcript(_))
         ));
 
         // Wrong x_inner_rest length.
-        let mut ch = crate::transcript::VerifierState::detached(b"flock-test-v0", &[]);
+        let mut ch = crate::transcript::VerifierState::new(b"flock-test-v0", &proof_t, &[]);
         let bad_x_ab = QuirkyPoint {
             z_skip: x_ab.z_skip,
             x_inner_rest: x_ab.x_inner_rest[..x_ab.x_inner_rest.len() - 1].to_vec(),
             x_outer: x_ab.x_outer.clone(),
         };
         assert!(matches!(
-            verify(
-                m, k_log, k_skip, &circuit, &bad_x_ab, v_a, v_b, &proof, &mut ch
-            ),
+            verify(m, k_log, k_skip, &circuit, &bad_x_ab, v_a, v_b, &mut ch),
             Err(VerifyError::BadInnerRestLength { .. })
         ));
 
         // k_skip > k_log.
-        let mut ch = crate::transcript::VerifierState::detached(b"flock-test-v0", &[]);
+        let mut ch = crate::transcript::VerifierState::new(b"flock-test-v0", &proof_t, &[]);
         assert!(matches!(
-            verify(
-                m,
-                k_log,
-                k_log + 1,
-                &circuit,
-                &x_ab,
-                v_a,
-                v_b,
-                &proof,
-                &mut ch,
-            ),
+            verify(m, k_log, k_log + 1, &circuit, &x_ab, v_a, v_b, &mut ch),
             Err(VerifyError::KSkipExceedsKLog { .. })
         ));
     }

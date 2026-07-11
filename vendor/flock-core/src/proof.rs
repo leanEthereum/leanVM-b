@@ -7,30 +7,26 @@
 
 use crate::sponge::Sponge;
 use crate::field::F128;
-use crate::lincheck::{self, QuirkyPoint};
+use crate::lincheck::QuirkyPoint;
 use crate::pcs::{self, Commitment};
 use crate::r1cs::BlockR1cs;
-use crate::zerocheck;
 use serde::{Deserialize, Serialize};
 
-/// Top-level R1CS proof: zerocheck + lincheck transcripts, plus two PCS
-/// opening proofs (one per ZClaim). BaseFold backend.
+/// Top-level R1CS proof, BaseFold backend: just the hash-bearing PCS opening.
+/// The zerocheck / lincheck / ring-switch scalars ride the shared transcript
+/// stream (`ProverState::add_scalar` / `VerifierState::next_scalar`).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct R1csProof {
-    pub zerocheck: zerocheck::ZerocheckProof,
-    pub lincheck: lincheck::LincheckProof,
     /// Batched PCS opening covering both the `ab` and `c` z-claims via one
     /// shared BaseFold sumcheck + FRI.
-    pub pcs_open: pcs::BatchOpeningProof,
+    pub pcs_open: pcs::BaseFoldProof,
 }
 
-/// Top-level R1CS proof with the **Ligerito** PCS backend. Same zerocheck +
-/// lincheck transcripts; pcs_open uses Ligerito instead of BaseFold.
+/// Top-level R1CS proof with the **Ligerito** PCS backend. Same streamed
+/// scalar transcript; pcs_open uses Ligerito instead of BaseFold.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct R1csProofLigerito {
-    pub zerocheck: zerocheck::ZerocheckProof,
-    pub lincheck: lincheck::LincheckProof,
-    pub pcs_open: pcs::BatchOpeningProofLigerito,
+    pub pcs_open: pcs::ligerito::LigeritoProof,
 }
 
 /// A claim of the form `ẑ(point) = value` for the witness `z`.

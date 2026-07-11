@@ -1850,17 +1850,19 @@ mod tests {
 
         let mut ch_p = flock_core::transcript::ProverState::new(b"flock-test-v0", &[]);
         let (proof, commitment, claim_p) = setup.prove_fast_basefold(&inputs, &mut ch_p);
-        let mut ch_v = flock_core::transcript::VerifierState::detached(b"flock-test-v0", &[]);
+        let proof_t = ch_p.into_proof();
+        let mut ch_v = flock_core::transcript::VerifierState::new(b"flock-test-v0", &proof_t, &[]);
         let claim_v = setup
             .verify_basefold(&commitment, &proof, &mut ch_v)
             .unwrap_or_else(|e| panic!("batch-major verifier rejected: {e:?}"));
         assert_eq!(claim_p, claim_v);
 
-        let mut bad = proof.clone();
-        bad.zerocheck.final_a_eval.lo ^= 1;
-        let mut ch = flock_core::transcript::VerifierState::detached(b"flock-test-v0", &[]);
+        // Tamper a zerocheck stream word: the bound read reshuffles challenges.
+        let mut bad = proof_t.clone();
+        bad.stream[0].lo ^= 1;
+        let mut ch = flock_core::transcript::VerifierState::new(b"flock-test-v0", &bad, &[]);
         assert!(
-            setup.verify_basefold(&commitment, &bad, &mut ch).is_err(),
+            setup.verify_basefold(&commitment, &proof, &mut ch).is_err(),
             "tampered batch-major proof accepted"
         );
     }
@@ -1997,7 +1999,8 @@ mod tests {
         let blocks = vec![pinned_compression(m)];
         let mut ch_p = flock_core::transcript::ProverState::new(b"flock-test-v0", &[]);
         let (proof, commitment, claim_p) = setup.prove(&blocks, &mut ch_p);
-        let mut ch_v = flock_core::transcript::VerifierState::detached(b"flock-test-v0", &[]);
+        let proof_t = ch_p.into_proof();
+        let mut ch_v = flock_core::transcript::VerifierState::new(b"flock-test-v0", &proof_t, &[]);
         let claim_v = setup
             .verify_basefold(&commitment, &proof, &mut ch_v)
             .unwrap_or_else(|e| panic!("verify rejected honest BLAKE3 proof: {e:?}"));
@@ -2020,7 +2023,8 @@ mod tests {
         let z_packed = flock_core::pcs::pack_witness(&z, setup.r1cs.m);
         let (proof, commitment, _) =
             crate::prover::prove(&setup.r1cs, &z_packed, &setup.pcs_params, &mut ch_p);
-        let mut ch_v = flock_core::transcript::VerifierState::detached(b"flock-test-v0", &[]);
+        let proof_t = ch_p.into_proof();
+        let mut ch_v = flock_core::transcript::VerifierState::new(b"flock-test-v0", &proof_t, &[]);
         assert!(
             setup
                 .verify_basefold(&commitment, &proof, &mut ch_v)
@@ -2151,7 +2155,8 @@ mod tests {
             let setup = Blake3Setup::with_profile(256, profile);
             let mut ch_p = flock_core::transcript::ProverState::new(b"flock-blake3-prof", &[]);
             let (proof, commitment, claim_p) = setup.prove_ligerito(&blocks, &mut ch_p);
-            let mut ch_v = flock_core::transcript::VerifierState::detached(b"flock-blake3-prof", &[]);
+            let proof_t = ch_p.into_proof();
+            let mut ch_v = flock_core::transcript::VerifierState::new(b"flock-blake3-prof", &proof_t, &[]);
             let claim_v = setup
                 .verify(&commitment, &proof, &mut ch_v)
                 .unwrap_or_else(|e| {
@@ -2185,7 +2190,8 @@ mod tests {
             .collect();
         let mut ch_p = flock_core::transcript::ProverState::new(b"flock-blake3-lig-v0", &[]);
         let (proof, commitment, claim_p) = setup.prove_fast(&blocks, &mut ch_p);
-        let mut ch_v = flock_core::transcript::VerifierState::detached(b"flock-blake3-lig-v0", &[]);
+        let proof_t = ch_p.into_proof();
+        let mut ch_v = flock_core::transcript::VerifierState::new(b"flock-blake3-lig-v0", &proof_t, &[]);
         let claim_v = setup
             .verify(&commitment, &proof, &mut ch_v)
             .unwrap_or_else(|e| panic!("ligerito verify rejected: {e:?}"));
@@ -2229,7 +2235,8 @@ mod tests {
         let blocks = vec![pinned_compression(m)];
         let mut ch_p = flock_core::transcript::ProverState::new(b"flock-test-v0", &[]);
         let (proof, commitment, claim_p) = setup.prove_fast_basefold(&blocks, &mut ch_p);
-        let mut ch_v = flock_core::transcript::VerifierState::detached(b"flock-test-v0", &[]);
+        let proof_t = ch_p.into_proof();
+        let mut ch_v = flock_core::transcript::VerifierState::new(b"flock-test-v0", &proof_t, &[]);
         let claim_v = setup
             .verify_basefold(&commitment, &proof, &mut ch_v)
             .unwrap_or_else(|e| panic!("prove_fast_basefold: verifier rejected: {e:?}"));
@@ -2257,7 +2264,8 @@ mod tests {
             .collect();
         let mut ch_p = flock_core::transcript::ProverState::new(b"honest", &[]);
         let (proof, commitment, claim_p) = setup.prove_fast_basefold(&blocks, &mut ch_p);
-        let mut ch_v = flock_core::transcript::VerifierState::detached(b"honest", &[]);
+        let proof_t = ch_p.into_proof();
+        let mut ch_v = flock_core::transcript::VerifierState::new(b"honest", &proof_t, &[]);
         let claim_v = setup
             .verify_basefold(&commitment, &proof, &mut ch_v)
             .unwrap_or_else(|e| panic!("honest padded proof rejected: {e:?}"));
@@ -2286,7 +2294,8 @@ mod tests {
             circuit,
             &mut ch_p,
         );
-        let mut ch_v = flock_core::transcript::VerifierState::detached(b"poc", &[]);
+        let proof_t = ch_p.into_proof();
+        let mut ch_v = flock_core::transcript::VerifierState::new(b"poc", &proof_t, &[]);
         let res = setup.verify_basefold(&commitment, &proof, &mut ch_v);
         assert!(
             matches!(res, Err(flock_core::verifier::VerifyError::Lincheck(_))),
@@ -2324,16 +2333,9 @@ mod tests {
 }
 
 // ===== leanVM-b stacked BLAKE3 reduction (grafted) =====
-/// flock's BLAKE3 R1CS validity proof, discharged against the caller's stacked
-/// commitment. `(ab, c)` are recomputed by the verifier from the zerocheck +
-/// lincheck proofs; `open` is the single stacked BaseFold (with the ring-switch
-/// front-end).
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub struct Blake3StackProof {
-    pub zerocheck: flock_core::zerocheck::ZerocheckProof,
-    pub lincheck: flock_core::lincheck::LincheckProof,
-    pub open: flock_core::pcs::BatchOpeningProofLigerito,
-}
+// (No Blake3StackProof struct: the zerocheck / lincheck / ring-switch scalars
+// ride the shared transcript stream, and the one hash-bearing Ligerito rides
+// the caller's opening channel.)
 
 /// One claim on the committed packed BLAKE3 witness `q_pkd`, as left by the
 /// Flock reduction and handed to the PCS. `claim` is the `ẑ(point) = value`
@@ -2359,6 +2361,20 @@ pub struct ReducedClaims {
     pub c: WitnessClaim,
 }
 
+/// Everything [`Blake3Setup::verify_reduction`] recovers: the two `(ab, c)`
+/// z-claims for the PCS, the zerocheck / lincheck claims, and the reassembled
+/// sub-proof records (the scalars as read off the shared stream — for
+/// summaries / recursion harnesses).
+#[derive(Clone, Debug)]
+pub struct ReductionReplay {
+    pub ab: flock_core::proof::ZClaim,
+    pub c: flock_core::proof::ZClaim,
+    pub zc_claim: flock_core::zerocheck::ZerocheckClaim,
+    pub lc_claim: flock_core::lincheck::LincheckClaim,
+    pub zerocheck: flock_core::zerocheck::ZerocheckProof,
+    pub lincheck: flock_core::lincheck::LincheckProof,
+}
+
 impl Blake3Setup {
     /// **Flock reduction (prover).** Bind the statement, then run the BLAKE3
     /// zerocheck and lincheck on the shared `sponge`, reducing R1CS validity
@@ -2375,12 +2391,7 @@ impl Blake3Setup {
         blocks: &[Compression],
         stack_commitment: &Commitment,
         ps: &mut ProverState,
-    ) -> (
-        Vec<F128>,
-        flock_core::zerocheck::ZerocheckProof,
-        flock_core::lincheck::LincheckProof,
-        ReducedClaims,
-    ) {
+    ) -> (Vec<F128>, ReducedClaims) {
         assert_eq!(blocks.len(), self.n_blocks);
         let n_log = self.n_blocks_log();
         let (z_packed, a_packed_f128, b_packed_f128, z_packed_lincheck) =
@@ -2397,7 +2408,7 @@ impl Blake3Setup {
             k_log: self.r1cs.k_log,
             useful_bits_per_block: self.r1cs.useful_bits,
         };
-        let (zc_proof, zc_claim, s_hat_v_c) = {
+        let (_zc_proof, zc_claim, s_hat_v_c) = {
             let a_packed: &[u8] = unsafe {
                 std::slice::from_raw_parts(
                     a_packed_f128.as_ptr() as *const u8,
@@ -2427,7 +2438,7 @@ impl Blake3Setup {
             x_inner_rest: zc_claim.mlv_challenges[..inner_rest_len].to_vec(),
             x_outer: zc_claim.mlv_challenges[inner_rest_len..].to_vec(),
         };
-        let (lc_proof, lc_claim, z_vec_pre) = flock_core::lincheck::prove_padded_capture_z_vec(
+        let (_lc_proof, lc_claim, z_vec_pre) = flock_core::lincheck::prove_padded_capture_z_vec(
             &z_packed_lincheck,
             self.r1cs.m,
             self.r1cs.k_log,
@@ -2467,7 +2478,7 @@ impl Blake3Setup {
             ab: WitnessClaim { claim: ab, s_hat_v: s_hat_v_ab },
             c: WitnessClaim { claim: c, s_hat_v: Some(s_hat_v_c) },
         };
-        (z_packed, zc_proof, lc_proof, reduced)
+        (z_packed, reduced)
     }
 
     /// Prove `blocks` are valid compressions in two clean phases:
@@ -2490,10 +2501,9 @@ impl Blake3Setup {
         stack_commitment: &Commitment,
         stack_pd: &[(Vec<F128>, F128)],
         ps: &mut ProverState,
-    ) -> Blake3StackProof {
+    ) -> flock_core::pcs::ligerito::LigeritoProof {
         // Phase 1 — Flock reduction: zerocheck + lincheck → claims on q_pkd.
-        let (z_packed, zerocheck, lincheck, reduced) =
-            self.prove_reduction(blocks, stack_commitment, ps);
+        let (z_packed, reduced) = self.prove_reduction(blocks, stack_commitment, ps);
         debug_assert_eq!(
             &stack[stack_offset..stack_offset + z_packed.len()],
             z_packed.as_slice(),
@@ -2501,8 +2511,8 @@ impl Blake3Setup {
         );
 
         // Phase 2 — PCS: discharge the reduction's claims (plus the caller's
-        // full-stack point claims) in one stacked BaseFold.
-        let open = self.discharge_reduction_stacked(
+        // full-stack point claims) in one stacked open.
+        self.discharge_reduction_stacked(
             &z_packed,
             &reduced,
             stack,
@@ -2511,9 +2521,7 @@ impl Blake3Setup {
             stack_commitment,
             stack_pd,
             ps,
-        );
-
-        Blake3StackProof { zerocheck, lincheck, open }
+        )
     }
 
     /// Phase 2 of [`Self::prove_validity_stacked`]: the PCS open of the
@@ -2530,7 +2538,7 @@ impl Blake3Setup {
         stack_commitment: &Commitment,
         stack_pd: &[(Vec<F128>, F128)],
         ps: &mut ProverState,
-    ) -> flock_core::pcs::BatchOpeningProofLigerito {
+    ) -> flock_core::pcs::ligerito::LigeritoProof {
         let padding = flock_core::zerocheck::PaddingSpec {
             k_log: self.r1cs.k_log,
             useful_bits_per_block: self.r1cs.useful_bits,
@@ -2566,23 +2574,13 @@ impl Blake3Setup {
     pub fn verify_reduction(
         &self,
         stack_commitment: &Commitment,
-        zerocheck: &flock_core::zerocheck::ZerocheckProof,
-        lincheck: &flock_core::lincheck::LincheckProof,
         vs: &mut VerifierState<'_>,
-    ) -> Result<
-        (
-            flock_core::proof::ZClaim,
-            flock_core::proof::ZClaim,
-            flock_core::zerocheck::ZerocheckClaim,
-            flock_core::lincheck::LincheckClaim,
-        ),
-        verifier::VerifyError,
-    > {
+    ) -> Result<ReductionReplay, verifier::VerifyError> {
         // Mirror of prove_reduction: the statement is bound by the embedding
         // protocol's seed (family digest) + announced count + commitment root.
         let _ = stack_commitment;
 
-        let zc_claim = flock_core::zerocheck::verify(self.r1cs.m, zerocheck, vs)
+        let (zc_claim, zerocheck) = flock_core::zerocheck::verify(self.r1cs.m, vs)
             .map_err(verifier::VerifyError::Zerocheck)?;
         let inner_rest_len = self.r1cs.k_log - self.r1cs.k_skip;
         let x_ab = flock_core::lincheck::QuirkyPoint {
@@ -2590,7 +2588,7 @@ impl Blake3Setup {
             x_inner_rest: zc_claim.mlv_challenges[..inner_rest_len].to_vec(),
             x_outer: zc_claim.mlv_challenges[inner_rest_len..].to_vec(),
         };
-        let lc_claim = flock_core::lincheck::verify(
+        let (lc_claim, lincheck) = flock_core::lincheck::verify(
             self.r1cs.m,
             self.r1cs.k_log,
             self.r1cs.k_skip,
@@ -2598,7 +2596,6 @@ impl Blake3Setup {
             &x_ab,
             zc_claim.a_eval,
             zc_claim.b_eval,
-            lincheck,
             vs,
         )
         .map_err(verifier::VerifyError::Lincheck)?;
@@ -2619,7 +2616,7 @@ impl Blake3Setup {
             },
             value: zc_claim.c_eval,
         };
-        Ok((ab, c, zc_claim, lc_claim))
+        Ok(ReductionReplay { ab, c, zc_claim, lc_claim, zerocheck, lincheck })
     }
 
     /// Verifier mirror of [`Self::prove_validity_stacked`], in the same two
@@ -2633,12 +2630,11 @@ impl Blake3Setup {
         stack_commitment: &Commitment,
         stack_offset: usize,
         stack_pd: &[(Vec<F128>, F128)],
-        proof: &Blake3StackProof,
+        open: &flock_core::pcs::ligerito::LigeritoProof,
         vs: &mut VerifierState<'_>,
     ) -> Result<(), verifier::VerifyError> {
         // Phase 1 — Flock reduction: replay zerocheck + lincheck → (ab, c).
-        let (ab, c, _, _) =
-            self.verify_reduction(stack_commitment, &proof.zerocheck, &proof.lincheck, vs)?;
+        let ReductionReplay { ab, c, .. } = self.verify_reduction(stack_commitment, vs)?;
 
         // Phase 2 — PCS: verify the stacked opening of (ab, c) + stack_pd.
         let ab_x = crate::prover::quirky_x_outer_full(&ab.point);
@@ -2657,7 +2653,7 @@ impl Blake3Setup {
             &[ab.point.z_skip, c.point.z_skip],
             &[ab_x.as_slice(), c_x.as_slice()],
             &pd,
-            &proof.open,
+            open,
             &lig_config,
             vs,
         )

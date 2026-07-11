@@ -2036,6 +2036,8 @@ pub fn fold_b128_elems_sparse(len: usize, eq: &SparseEqTensor, eq_r_dprime: &[F1
 
 /// The prover message: the 128 slice-MLEs at the suffix point.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Reassembled by the verifier from its stream reads (a passive record); the
+/// 128 `s_hat_v` words ride the shared transcript stream via `add_scalars`.
 pub struct RingSwitchProof {
     pub s_hat_v: Vec<F128>,
 }
@@ -2172,6 +2174,8 @@ impl RsEqInd {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VerifyError {
     ClaimMismatch,
+    /// The proof stream ran out while reading `s_hat_v`.
+    Transcript(crate::transcript::Error),
 }
 
 /// Prover side of the ring-switching reduction.
@@ -2224,7 +2228,7 @@ pub fn prove(
             t.elapsed().as_secs_f64() * 1e3
         );
     }
-    ps.observe_scalars(&s_hat_v);
+    ps.add_scalars(&s_hat_v);
 
     // Sample row-batching r''.
     let r_dprime = ps.sample_vec(LOG_PACKING);
@@ -2504,7 +2508,7 @@ pub fn prove_batched_padded_with_precomputed(
             Kind::Dense(d) => dense_s_hat_v[d].clone(),
             Kind::Sparse(s) => sparse_s_hat_v[s].clone(),
         };
-        ps.observe_scalars(&s_hat_v);
+        ps.add_scalars(&s_hat_v);
         slices.push(s_hat_v);
     }
     let r_dprime = ps.sample_vec(LOG_PACKING);
@@ -2589,21 +2593,19 @@ pub fn verify(
     claim: F128,
     z_skip: F128,
     x_outer: &[F128],
-    proof: &RingSwitchProof,
     vs: &mut VerifierState<'_>,
-) -> Result<RingSwitchOutput, VerifyError> {
+) -> Result<(RingSwitchOutput, RingSwitchProof), VerifyError> {
     assert!(!x_outer.is_empty());
     let l = 1usize << (x_outer.len() - 1);
-    assert_eq!(proof.s_hat_v.len(), 1 << LOG_PACKING);
 
     vs.absorb_bytes(b"flock-ring-switch-v0");
 
-    // Verifier observes s_hat_v.
-    vs.observe_scalars(&proof.s_hat_v);
+    // Read + bind s_hat_v off the stream.
+    let s_hat_v = vs.next_scalars(1 << LOG_PACKING).map_err(VerifyError::Transcript)?;
 
     // Check the claim against ν_φ8 ⊗ eq weights.
     let weights = build_claim_weights(z_skip, x_outer[0]);
-    if claim_check(&weights, &proof.s_hat_v) != claim {
+    if claim_check(&weights, &s_hat_v) != claim {
         return Err(VerifyError::ClaimMismatch);
     }
 
@@ -2612,7 +2614,7 @@ pub fn verify(
     let eq_r_dprime = build_eq(&r_dprime);
 
     // Compute BaseFold target.
-    let s_hat_u = tensor_algebra_transpose(&proof.s_hat_v);
+    let s_hat_u = tensor_algebra_transpose(&s_hat_v);
     let sumcheck_claim = inner_product(&s_hat_u, &eq_r_dprime);
 
     // Compute rs_eq_ind (verifier needs it to check BaseFold; reconstructs it
@@ -2622,10 +2624,13 @@ pub fn verify(
     debug_assert_eq!(suffix_tensor.len(), l);
     let rs_eq_ind = fold_b128_elems(&suffix_tensor, &eq_r_dprime);
 
-    Ok(RingSwitchOutput {
-        rs_eq_ind,
-        sumcheck_claim,
-    })
+    Ok((
+        RingSwitchOutput {
+            rs_eq_ind,
+            sumcheck_claim,
+        },
+        RingSwitchProof { s_hat_v },
+    ))
 }
 
 /// Verifier-side output of [`verify_succinct`]: contains everything the caller
@@ -2648,18 +2653,16 @@ pub fn verify_bind(
     claim: F128,
     z_skip: F128,
     x_outer: &[F128],
-    proof: &RingSwitchProof,
     vs: &mut VerifierState<'_>,
-) -> Result<(), VerifyError> {
+) -> Result<RingSwitchProof, VerifyError> {
     assert!(!x_outer.is_empty());
-    assert_eq!(proof.s_hat_v.len(), 1 << LOG_PACKING);
     vs.absorb_bytes(b"flock-ring-switch-v0");
-    vs.observe_scalars(&proof.s_hat_v);
+    let s_hat_v = vs.next_scalars(1 << LOG_PACKING).map_err(VerifyError::Transcript)?;
     let weights = build_claim_weights(z_skip, x_outer[0]);
-    if claim_check(&weights, &proof.s_hat_v) != claim {
+    if claim_check(&weights, &s_hat_v) != claim {
         return Err(VerifyError::ClaimMismatch);
     }
-    Ok(())
+    Ok(RingSwitchProof { s_hat_v })
 }
 
 /// Polylog-cost ring-switching verifier.
@@ -2672,17 +2675,15 @@ pub fn verify_succinct(
     claim: F128,
     z_skip: F128,
     x_outer: &[F128],
-    proof: &RingSwitchProof,
     vs: &mut VerifierState<'_>,
-) -> Result<RingSwitchVerifierOutput, VerifyError> {
+) -> Result<(RingSwitchVerifierOutput, RingSwitchProof), VerifyError> {
     assert!(!x_outer.is_empty());
-    assert_eq!(proof.s_hat_v.len(), 1 << LOG_PACKING);
 
     vs.absorb_bytes(b"flock-ring-switch-v0");
-    vs.observe_scalars(&proof.s_hat_v);
+    let s_hat_v = vs.next_scalars(1 << LOG_PACKING).map_err(VerifyError::Transcript)?;
 
     let weights = build_claim_weights(z_skip, x_outer[0]);
-    if claim_check(&weights, &proof.s_hat_v) != claim {
+    if claim_check(&weights, &s_hat_v) != claim {
         return Err(VerifyError::ClaimMismatch);
     }
 
@@ -2692,13 +2693,16 @@ pub fn verify_succinct(
     // Linearized form (identical value, no bit transpose): the transposed
     // fold against the eq tensor is Σ_j B_j·L_w(s_hat_v[j]).
     let c = linearized_eq_coeffs(&eq_r_dprime);
-    let sumcheck_claim = transposed_claim_linearized(&proof.s_hat_v, &c);
+    let sumcheck_claim = transposed_claim_linearized(&s_hat_v, &c);
 
-    Ok(RingSwitchVerifierOutput {
-        sumcheck_claim,
-        r_dprime,
-        eq_r_dprime,
-    })
+    Ok((
+        RingSwitchVerifierOutput {
+            sumcheck_claim,
+            r_dprime,
+            eq_r_dprime,
+        },
+        RingSwitchProof { s_hat_v },
+    ))
 }
 
 /// Polylog-cost evaluation of `MLE(rs_eq_ind)(query)` at the BaseFold final
@@ -2981,11 +2985,13 @@ mod tests {
             let mut ch_p = crate::transcript::ProverState::new(b"flock-test-v0", &[]);
             let (proof, out_p) = prove(&packed, &x_outer, &mut ch_p);
 
-            // Verifier (matched sponge).
-            let mut ch_v = crate::transcript::VerifierState::detached(b"flock-test-v0", &[]);
-            let out_v = verify(claim, z_skip, &x_outer, &proof, &mut ch_v)
+            // Verifier (matched sponge, reads s_hat_v off the stream).
+            let proof_t = ch_p.into_proof();
+            let mut ch_v = crate::transcript::VerifierState::new(b"flock-test-v0", &proof_t, &[]);
+            let (out_v, replay) = verify(claim, z_skip, &x_outer, &mut ch_v)
                 .unwrap_or_else(|e| panic!("verify rejected honest at m={m}: {e:?}"));
 
+            assert_eq!(replay.s_hat_v, proof.s_hat_v, "stream reads match at m={m}");
             assert_eq!(
                 out_p.sumcheck_claim, out_v.sumcheck_claim,
                 "sumcheck_claim mismatch at m={m}"
@@ -3030,12 +3036,13 @@ mod tests {
         let packed = pack_witness(&z, m);
 
         let mut ch_p = crate::transcript::ProverState::new(b"flock-test-v0", &[]);
-        let (mut proof, _) = prove(&packed, &x_outer, &mut ch_p);
-        // Flip one bit of s_hat_v.
-        proof.s_hat_v[0].lo ^= 1;
+        let (_proof, _) = prove(&packed, &x_outer, &mut ch_p);
+        // Flip one bit of s_hat_v (the stream's first word).
+        let mut proof_t = ch_p.into_proof();
+        proof_t.stream[0].lo ^= 1;
 
-        let mut ch_v = crate::transcript::VerifierState::detached(b"flock-test-v0", &[]);
-        let res = verify(claim, z_skip, &x_outer, &proof, &mut ch_v);
+        let mut ch_v = crate::transcript::VerifierState::new(b"flock-test-v0", &proof_t, &[]);
+        let res = verify(claim, z_skip, &x_outer, &mut ch_v);
         assert!(matches!(res, Err(VerifyError::ClaimMismatch)));
     }
 

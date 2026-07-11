@@ -91,14 +91,14 @@ fn bench_blake3_prove() {
             best = secs;
             best_timings = Some(timings);
         }
-        last = Some((proof, commitment));
+        last = Some((proof, commitment, ch.into_proof()));
     }
     let secs = best;
     let timings = best_timings.expect("≥1 rep");
 
     // Verify (correctness gate + a verify timing for reference).
-    let (proof, commitment) = last.expect("≥1 rep");
-    let mut ch_v = flare::transcript::VerifierState::detached(b"flock-blake3-bench", &[]);
+    let (proof, commitment, stream) = last.expect("≥1 rep");
+    let mut ch_v = flare::transcript::VerifierState::new(b"flock-blake3-bench", &stream, &[]);
     let t = Instant::now();
     setup.verify(&commitment, &proof, &mut ch_v).expect("flock BLAKE3 proof must verify");
     let verify = t.elapsed();

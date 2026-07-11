@@ -56,15 +56,9 @@ pub fn verify(
     lincheck_circuit: &dyn lincheck::LincheckCircuit,
     vs: &mut VerifierState<'_>,
 ) -> Result<R1csClaim, VerifyError> {
-    // ---- Replay zerocheck + lincheck → the two base claims.
-    let (ab, c) = verify_core(
-        r1cs,
-        &proof.zerocheck,
-        &proof.lincheck,
-        commitment,
-        lincheck_circuit,
-        vs,
-    )?;
+    // ---- Replay zerocheck + lincheck → the two base claims (the sub-proof
+    // scalars ride the shared transcript stream).
+    let (ab, c) = verify_core(r1cs, commitment, lincheck_circuit, vs)?;
 
     // ---- Verify the batched PCS opening covering both z-claims.
     verify_claims(
@@ -88,14 +82,7 @@ pub fn verify_ligerito(
     pcs_params: &crate::pcs::PcsParams,
     vs: &mut VerifierState<'_>,
 ) -> Result<R1csClaim, VerifyError> {
-    let (ab, c) = verify_core(
-        r1cs,
-        &proof.zerocheck,
-        &proof.lincheck,
-        commitment,
-        lincheck_circuit,
-        vs,
-    )?;
+    let (ab, c) = verify_core(r1cs, commitment, lincheck_circuit, vs)?;
     verify_claims_ligerito(
         commitment,
         &[ab.clone(), c.clone()],
@@ -111,7 +98,7 @@ pub fn verify_ligerito(
 pub fn verify_claims_ligerito(
     commitment: &Commitment,
     claims: &[ZClaim],
-    pcs_open: &pcs::BatchOpeningProofLigerito,
+    pcs_open: &pcs::ligerito::LigeritoProof,
     pcs_params: &crate::pcs::PcsParams,
     vs: &mut VerifierState<'_>,
 ) -> Result<(), pcs::VerifyError> {
@@ -124,7 +111,7 @@ pub fn verify_claims_ligerito(
 fn verify_claims_ligerito_inner(
     commitment: &Commitment,
     claims: &[ZClaim],
-    pcs_open: &pcs::BatchOpeningProofLigerito,
+    pcs_open: &pcs::ligerito::LigeritoProof,
     pcs_params: &crate::pcs::PcsParams,
     vs: &mut VerifierState<'_>,
 ) -> Result<(), pcs::VerifyError> {
@@ -164,29 +151,16 @@ fn verify_claims_ligerito_inner(
 /// [`verify_claims`] over `[ab, c, …]`.
 pub fn verify_core(
     r1cs: &BlockR1cs,
-    zerocheck_proof: &zerocheck::ZerocheckProof,
-    lincheck_proof: &lincheck::LincheckProof,
     commitment: &Commitment,
     lincheck_circuit: &dyn lincheck::LincheckCircuit,
     vs: &mut VerifierState<'_>,
 ) -> Result<(ZClaim, ZClaim), VerifyError> {
     // Verification is single-threaded; run the body on the dedicated 1-thread pool.
-    verifier_pool().install(move || {
-        verify_core_inner(
-            r1cs,
-            zerocheck_proof,
-            lincheck_proof,
-            commitment,
-            lincheck_circuit,
-            vs,
-        )
-    })
+    verifier_pool().install(move || verify_core_inner(r1cs, commitment, lincheck_circuit, vs))
 }
 
 fn verify_core_inner(
     r1cs: &BlockR1cs,
-    zerocheck_proof: &zerocheck::ZerocheckProof,
-    lincheck_proof: &lincheck::LincheckProof,
     commitment: &Commitment,
     lincheck_circuit: &dyn lincheck::LincheckCircuit,
     vs: &mut VerifierState<'_>,
@@ -213,8 +187,8 @@ fn verify_core_inner(
 
     // ---- Zerocheck.
     let t = std::time::Instant::now();
-    let zc_claim =
-        zerocheck::verify(r1cs.m, zerocheck_proof, vs).map_err(VerifyError::Zerocheck)?;
+    let (zc_claim, _zc_replay) =
+        zerocheck::verify(r1cs.m, vs).map_err(VerifyError::Zerocheck)?;
     if trace {
         eprintln!(
             "      [vco] zerocheck::verify: {}",
@@ -228,7 +202,7 @@ fn verify_core_inner(
 
     // ---- Lincheck. v_a, v_b come from the zerocheck's final â, b̂ evals.
     let t = std::time::Instant::now();
-    let lc_claim = lincheck::verify(
+    let (lc_claim, _lc_replay) = lincheck::verify(
         r1cs.m,
         r1cs.k_log,
         r1cs.k_skip,
@@ -236,7 +210,6 @@ fn verify_core_inner(
         &x_ab,
         zc_claim.a_eval,
         zc_claim.b_eval,
-        lincheck_proof,
         vs,
     )
     .map_err(VerifyError::Lincheck)?;
@@ -269,7 +242,7 @@ fn verify_core_inner(
 pub fn verify_claims(
     commitment: &Commitment,
     claims: &[ZClaim],
-    pcs_open: &pcs::BatchOpeningProof,
+    pcs_open: &pcs::BaseFoldProof,
     vs: &mut VerifierState<'_>,
 ) -> Result<(), pcs::VerifyError> {
     // Verification is single-threaded; run the body on the dedicated 1-thread pool.
@@ -279,7 +252,7 @@ pub fn verify_claims(
 fn verify_claims_inner(
     commitment: &Commitment,
     claims: &[ZClaim],
-    pcs_open: &pcs::BatchOpeningProof,
+    pcs_open: &pcs::BaseFoldProof,
     vs: &mut VerifierState<'_>,
 ) -> Result<(), pcs::VerifyError> {
     let z_skips: Vec<F128> = claims.iter().map(|c| c.point.z_skip).collect();
