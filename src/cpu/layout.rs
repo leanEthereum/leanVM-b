@@ -147,9 +147,9 @@ pub fn block_kappa_sources(log_bytecode: usize) -> Vec<(usize, usize)> {
     for (t, table) in tables::tables().iter().enumerate() {
         let mut fb = tables::FlushBuilder::new();
         table.flushes(&mut fb);
-        push.extend(std::iter::repeat((2 + t, 0)).take(fb.push.len()));
-        pull.extend(std::iter::repeat((2 + t, 0)).take(fb.pull.len()));
-        count.extend(std::iter::repeat((2 + t, 0)).take(table.count_columns().len()));
+        push.extend(std::iter::repeat_n((2 + t, 0), fb.push.len()));
+        pull.extend(std::iter::repeat_n((2 + t, 0), fb.pull.len()));
+        count.extend(std::iter::repeat_n((2 + t, 0), table.count_columns().len()));
     }
     push.extend(pull);
     push.extend(count);

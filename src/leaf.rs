@@ -227,6 +227,7 @@ fn known_claim(claims: &[ColumnClaim], col: usize, point: &[F128]) -> Option<F12
 /// Prover-side decomposition: reads the real columns, writing each FRESH
 /// committed value onto the stream and recording the matching claim
 /// (block/coord order); duplicates reuse the recorded value.
+#[allow(clippy::too_many_arguments)] // the shared dedup context is the 8th
 fn decompose_prove(
     blocks: &[Block],
     lay: &Layout,
@@ -268,8 +269,8 @@ fn decompose_verify(
     for blk in blocks {
         let zeta_lo = &zeta[..blk.kappa];
         for c in &blk.coords {
-            if let Coord::Col(i) | Coord::GCol(i) = c {
-                if known_claim(claims, *i, zeta_lo).is_none() {
+            if let Coord::Col(i) | Coord::GCol(i) = c
+                && known_claim(claims, *i, zeta_lo).is_none() {
                     let v = vs.next_scalar().map_err(|_| Error::Truncated)?;
                     claims.push(ColumnClaim {
                         col: *i,
@@ -277,7 +278,6 @@ fn decompose_verify(
                         value: v,
                     });
                 }
-            }
         }
     }
     let value = decompose_formula(blocks, lay, zeta, alpha, gamma, |col, zeta_lo| {

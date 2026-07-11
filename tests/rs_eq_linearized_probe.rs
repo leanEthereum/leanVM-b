@@ -30,10 +30,10 @@ fn basis(j: usize) -> F128 {
 fn dual_basis() -> Vec<F128> {
     // Gram matrix G[i][j] = Tr(B_i·B_j) over F2, rows as u128 bitmasks.
     let mut g: Vec<u128> = vec![0; 128];
-    for i in 0..128 {
+    for (i, row) in g.iter_mut().enumerate() {
         for j in 0..128 {
             if tr(basis(i) * basis(j)) == F128::ONE {
-                g[i] |= 1u128 << j;
+                *row |= 1u128 << j;
             }
         }
     }
@@ -90,8 +90,8 @@ fn linearized_tensor_identities() {
     // (0) the trace form recovers bits: bit_i(y) == Tr(δ_i·y).
     for _ in 0..4 {
         let y = rng.f128();
-        for i in 0..128 {
-            assert_eq!(tr(delta[i] * y), F128::new(bit(y, i), 0), "dual basis bit {i}");
+        for (i, &d) in delta.iter().enumerate() {
+            assert_eq!(tr(d * y), F128::new(bit(y, i), 0), "dual basis bit {i}");
         }
     }
 

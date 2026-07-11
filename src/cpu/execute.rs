@@ -64,14 +64,12 @@ impl Program {
 
         // Per-opcode trace rows, accumulated during the walk and assembled into the
         // `Trace` once the run finishes (alongside the final count columns).
-        let (mut xor, mut mul, mut set, mut deref, mut jump, mut blake3): (
-            Vec<Xrow>,
-            Vec<Xrow>,
-            Vec<Srow>,
-            Vec<Drow>,
-            Vec<Jrow>,
-            Vec<Brow>,
-        ) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let mut xor: Vec<Xrow> = Vec::new();
+        let mut mul: Vec<Xrow> = Vec::new();
+        let mut set: Vec<Srow> = Vec::new();
+        let mut deref: Vec<Drow> = Vec::new();
+        let mut jump: Vec<Jrow> = Vec::new();
+        let mut blake3: Vec<Brow> = Vec::new();
 
         // `DEREF Cell` touches whose two sides are both still unwritten (the
         // range-check gadget's unconstrained target cells): `(deref row index,
@@ -140,7 +138,7 @@ impl Program {
                 if let Some(&j) = baby.get(&y) {
                     return (a as u128) << LOG_BABY | j as u128;
                 }
-                y = y * *giant;
+                y *= *giant;
             }
             panic!("hint_decompose_bits_exponent: value is not g^n for n < 2^{nbits}")
         }

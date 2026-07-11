@@ -104,6 +104,7 @@ pub(crate) fn alloc_uninit_f128_vec(n: usize) -> Vec<crate::field::F128> {
 /// Cached [`perf_core_count`]. The uncached version may spawn `sysctl`; this
 /// memoizes it so hot paths can cheaply ask "is the current rayon pool the
 /// homogeneous P-core pool?" (i.e. `current_num_threads() <= this`).
+#[cfg_attr(not(target_arch = "aarch64"), allow(dead_code))] // caller is aarch64-only
 pub(crate) fn perf_core_count_cached() -> usize {
     use std::sync::OnceLock;
     static N: OnceLock<usize> = OnceLock::new();

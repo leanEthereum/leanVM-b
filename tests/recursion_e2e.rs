@@ -29,17 +29,6 @@ fn u(f: F128) -> u128 {
     (f.lo as u128) | ((f.hi as u128) << 64)
 }
 
-/// The 128 polynomial-basis coefficients of `v`, LSB first, as 0/1 field values.
-fn bits_of(v: F128) -> Vec<F128> {
-    let mut out = Vec::with_capacity(128);
-    for w in [v.lo, v.hi] {
-        for b in 0..64 {
-            out.push(F128::new((w >> b) & 1, 0));
-        }
-    }
-    out
-}
-
 /// The non-trivial inner program: a runtime-bounded BLAKE3 hash chain seeded
 /// from the public input, a runtime-bounded `mul_range` product loop with heap
 /// traffic, and a final assert tying them together. BOTH loop bounds ride
@@ -296,8 +285,8 @@ fn gen_agg(
     };
     let mut ms: Vec<Vec<F128>> = Vec::new();
     for w in &ws {
-        ms.push(contract_cols(&ma, w));
-        ms.push(contract_cols(&mb, w));
+        ms.push(contract_cols(ma, w));
+        ms.push(contract_cols(mb, w));
     }
     let ga: Vec<F128> = (0..nsub).map(|t| gmt[t] * subs[t].lc_alpha).collect();
     let gb: Vec<F128> = gmt.clone();
@@ -342,8 +331,8 @@ fn gen_agg(
         }
         out
     };
-    let mut acol = contract_rows(&ma);
-    let mut bcol = contract_rows(&mb);
+    let mut acol = contract_rows(ma);
+    let mut bcol = contract_rows(mb);
     let mut wa = vec![F128::ZERO; 1 << klog];
     let mut wb = vec![F128::ZERO; 1 << klog];
     for t in 0..nsub {
@@ -454,8 +443,8 @@ fn check_reduced(program: &Program, proof0: &leanvm_b::cpu::Proof, pi0: [F128; 2
         }
         acc
     };
-    assert_eq!(direct(&ma), red.v_a, "reduced A claim");
-    assert_eq!(direct(&mb), red.v_b, "reduced B claim");
+    assert_eq!(direct(ma), red.v_a, "reduced A claim");
+    assert_eq!(direct(mb), red.v_b, "reduced B claim");
 }
 
 /// Config + hints for the recursion guest (`tests/verify_recursive.py`), built
@@ -493,8 +482,8 @@ fn gen_verify(
     // a column read by two same-kappa blocks streams/opens once. Key: (col, kappa).
     let mut seen_claims: std::collections::HashSet<(usize, usize)> = Default::default();
     let mut nbcv = 0usize;
-    for (_s, blocks) in sides.iter().enumerate() {
-        for (_b, blk) in blocks.iter().enumerate() {
+    for blocks in sides.iter() {
+        for blk in blocks.iter() {
             bkappa.push(blk.kappa);
             bc0.push(ct.len());
             bcn.push(blk.coords.len());
@@ -556,14 +545,14 @@ fn gen_verify(
     // Flock replay data, all named struct fields.
     let n_log_b3 = l.taus[5];
     let m_r1cs = flock_prover::r1cs_hashes::blake3::K_LOG + n_log_b3;
-    let n_mlv = m_r1cs - 6;
+    let _n_mlv = m_r1cs - 6;
     let lcrounds = flock_prover::r1cs_hashes::blake3::K_LOG - 6;
     let zc1: Vec<F128> = summary.zerocheck.round1_ab.iter().chain(&summary.zerocheck.round1_c).copied().collect();
     let zcr: Vec<F128> = summary.zerocheck.multilinear_rounds.iter().flat_map(|&(a, b)| [a, b]).collect();
     let zcf = vec![summary.zerocheck.final_a_eval, summary.zerocheck.final_b_eval];
     let zc_z = summary.zc_claim.z;
     let zrho = summary.zc_claim.mlv_challenges.clone();
-    let r_rest = &summary.zc_claim.r_rest;
+    let _r_rest = &summary.zc_claim.r_rest;
     let lcr: Vec<F128> = summary.lincheck.rounds.iter().flat_map(|&(a, b)| [a, b]).collect();
     let lcz = summary.lincheck.z_partial.clone();
     let lc_alpha = summary.lc_claim.alpha;
@@ -574,7 +563,7 @@ fn gen_verify(
     // matpart = the deferred weighted matrix evaluation: the lincheck running
     // claim minus (= plus, char 2) the const-pin contribution.
     let r1cs = flock_prover::r1cs_hashes::blake3::build_block_r1cs(n_log_b3);
-    let sd_bytes = r1cs.statement_digest();
+    let _sd_bytes = r1cs.statement_digest();
     let pincol = r1cs.const_pin.expect("blake3 r1cs has a const pin");
     let mut lrun = lc_alpha * zcf[0] + zcf[1] + lc_beta;
     for i in 0..lcrounds {
@@ -606,7 +595,7 @@ fn gen_verify(
     let log_n = stack_mu;
     let shapes = vcfg.level_shapes(log_n);
     let (nlev, r) = (shapes.levels, vcfg.level_steps);
-    let (klvl, lmc, yr_log_n) = (shapes.ks, shapes.log_msg_cols, shapes.yr_log_n);
+    let (klvl, lmc, _yr_log_n) = (shapes.ks, shapes.log_msg_cols, shapes.yr_log_n);
     let queries = vcfg.queries.clone();
     // query packing: each squeezed word carries 128/depth positions.
     let depth: Vec<usize> = shapes.block_len.iter().map(|b| b.trailing_zeros() as usize).collect();
@@ -687,7 +676,7 @@ fn gen_verify(
             }
         }
     }
-    let (pin_side, pin_kappa) = pin_side_kappa.expect("BLAKE3 value-column claim exists");
+    let (_pin_side, pin_kappa) = pin_side_kappa.expect("BLAKE3 value-column claim exists");
     let log_mem = proof.stream[0].lo as usize;
 
     // ---- Phase E2 hints (the stacked Ligerito opening) ----
@@ -703,15 +692,15 @@ fn gen_verify(
         }
         o
     };
-    let rowoff = prefix_sum2(&|lv| queries[lv] * numinter[lv]);
-    let pathoff = prefix_sum2(&|lv| queries[lv] * depth[lv] * 2);
-    let sbitsoff = prefix_sum2(&|lv| nsq[lv] * 128);
-    let qpoff = prefix_sum2(&|lv| nsq[lv] * per[lv]);
-    let qp_len: usize = (0..nlev).map(|lv| nsq[lv] * per[lv]).sum();
-    let svkoff = prefix_sum2(&|lv| lmc[lv] + 1);
+    let _rowoff = prefix_sum2(&|lv| queries[lv] * numinter[lv]);
+    let _pathoff = prefix_sum2(&|lv| queries[lv] * depth[lv] * 2);
+    let _sbitsoff = prefix_sum2(&|lv| nsq[lv] * 128);
+    let _qpoff = prefix_sum2(&|lv| nsq[lv] * per[lv]);
+    let _qp_len: usize = (0..nlev).map(|lv| nsq[lv] * per[lv]).sum();
+    let _svkoff = prefix_sum2(&|lv| lmc[lv] + 1);
     let foldbase = prefix_sum2(&|lv| klvl[lv]);
-    let risstart: Vec<usize> = (0..nlev).map(|k| foldbase[k] + klvl[k]).collect();
-    let total_folds: usize = klvl.iter().sum();
+    let _risstart: Vec<usize> = (0..nlev).map(|k| foldbase[k] + klvl[k]).collect();
+    let _total_folds: usize = klvl.iter().sum();
     // positions per level from the packed squeezes.
     let positions: Vec<Vec<usize>> = (0..nlev)
         .map(|lv| {
@@ -782,7 +771,7 @@ fn gen_verify(
         yt.push(sel_full >> seln);
     };
     let mut desc_seen: std::collections::HashSet<(usize, usize)> = Default::default();
-    for (s, blocks) in sides.iter().enumerate() {
+    for blocks in sides.iter() {
         for blk in blocks.iter() {
             for c in &blk.coords {
                 if let Coord::Col(i) | Coord::GCol(i) = c {
@@ -848,8 +837,8 @@ fn gen_verify(
     let fnv: Vec<F128> = fold_pow.iter().map(|&(_, n, _)| F128::new(n, 0)).collect();
     let mut svk_flat = Vec::new();
     let mut ivk_flat = Vec::new();
-    for lv in 0..nlev {
-        let s2 = flare::pcs::ligerito::eval_sk_at_vks(lmc[lv]);
+    for &lmc_lv in lmc.iter().take(nlev) {
+        let s2 = flare::pcs::ligerito::eval_sk_at_vks(lmc_lv);
         for &v in &s2 {
             svk_flat.push(v);
             ivk_flat.push(if v == F128::ZERO { F128::ZERO } else { v.inv() });
@@ -906,27 +895,27 @@ fn gen_verify(
         ("pi_cplen".to_string(), vec![g_pow(log_mem.min(lenris))]),
         ("claim_qpkd_slot_bits".to_string(), {
             let mut v = Vec::new();
-            for j in 0..ncl {
+            for &slot in cslot.iter().take(ncl) {
                 for k in 0..7 {
-                    v.push(F128::new(((cslot[j] >> k) & 1) as u64, 0));
+                    v.push(F128::new(((slot >> k) & 1) as u64, 0));
                 }
             }
             v
         }),
         ("claim_sel_bits".to_string(), {
             let mut v = Vec::new();
-            for j in 0..ncl {
+            for &sel in csel.iter().take(ncl) {
                 for k in 0..33 {
-                    v.push(F128::new(((csel[j] >> k) & 1) as u64, 0));
+                    v.push(F128::new(((sel >> k) & 1) as u64, 0));
                 }
             }
             v
         }),
         ("claim_overlap_mask".to_string(), {
             let mut v = Vec::new();
-            for j in 0..ncl {
+            for &nover in nover_v.iter().take(ncl) {
                 for k in 0..8 {
-                    v.push(F128::new(u64::from(k < nover_v[j]), 0));
+                    v.push(F128::new(u64::from(k < nover), 0));
                 }
             }
             v
@@ -1000,7 +989,7 @@ fn build_batch(inner: &[(usize, usize)]) -> Batch {
         }
         subs.push(defer);
     }
-    let (program0, pi0, proof0, _, _) = &protos[0];
+    let (program0, _pi0, proof0, _, _) = &protos[0];
     // spi is main-level (one hint site): merge the statements into one entry.
     let spi_all: Vec<F128> = subs.iter().flat_map(|d| [d.pi[0], d.pi[1]]).collect();
     let spi_pos = merged.iter().position(|(n, _)| n == "sub_pis").expect("spi hint");
@@ -1040,7 +1029,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     // kappa) occurrence gets the next pool slot; duplicates point at it.
     let mut slot_of: std::collections::HashMap<(usize, usize), usize> = Default::default();
     let (mut coord_fresh, mut coord_slot) = (vec![], vec![]);
-    for (side, blocks) in sides.iter().enumerate() {
+    for blocks in sides.iter() {
         for blk in blocks.iter() {
             bc0.push(ct.len());
             bcn.push(blk.coords.len());
@@ -1095,10 +1084,10 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
             }
         }
     }
-    let pin_side = pin_side.expect("BLAKE3 value-column claim exists");
+    let _pin_side = pin_side.expect("BLAKE3 value-column claim exists");
     let (mut cpbuf, mut cpoff) = (vec![], vec![]);
     let mut desc_seen: std::collections::HashSet<(usize, usize)> = Default::default();
-    for (_s, blocks) in sides.iter().enumerate() {
+    for blocks in sides.iter() {
         for blk in blocks.iter() {
             for c in &blk.coords {
                 if let Coord::Col(i) | Coord::GCol(i) = c {
@@ -1154,7 +1143,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("BLOCK_KAPPA_ADJ", ints(&bks.iter().map(|&(_, a)| a).collect::<Vec<_>>()));
     ps("BLOCK_REAL_TABLE", ints(&bks.iter().map(|&(s, _)| if s >= 2 { s - 2 } else { 6 }).collect::<Vec<_>>()));
     let mut block_side = Vec::new();
-    for (s, blocks) in sides.iter().enumerate() { block_side.extend(std::iter::repeat(s).take(blocks.len())); }
+    for (s, blocks) in sides.iter().enumerate() { block_side.extend(std::iter::repeat_n(s, blocks.len())); }
     ps("BLOCK_SIDE", ints(&block_side));
     ps("BLOCK_COORD_OFF", ints(&bc0));
     ps("BLOCK_COORD_COUNT", ints(&bcn));
@@ -1242,7 +1231,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         let cqb: Vec<usize> = (0..cn).map(|lvl| vc.grinding_bits[lvl]).collect();
         let cfgb = |lvl: usize| vc.fold_grinding_bits.get(lvl).copied().unwrap_or(0) as i64;
         let mut cfb: Vec<usize> = Vec::new();
-        for lvl in 0..cn { for j in 0..ck[lvl] { cfb.push((cfgb(lvl) - j as i64).max(0) as usize); } }
+        for (lvl, &k) in ck.iter().enumerate().take(cn) { for j in 0..k { cfb.push((cfgb(lvl) - j as i64).max(0) as usize); } }
         let psum = |f: &dyn Fn(usize) -> usize| -> Vec<usize> { let mut o = Vec::with_capacity(cn); let mut acc = 0; for lv in 0..cn { o.push(acc); acc += f(lv); } o };
         let c_rowoff = psum(&|lv| cq[lv] * cni[lv]);
         let c_pathoff = psum(&|lv| cq[lv] * cd[lv] * 2);
@@ -1253,7 +1242,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         let c_risstart: Vec<usize> = (0..cn).map(|k| c_foldbase[k] + ck[k]).collect();
         let mut c_svk = Vec::new();
         let mut c_ivk = Vec::new();
-        for lv in 0..cn { for &v in &flare::pcs::ligerito::eval_sk_at_vks(cl[lv]) { c_svk.push(v); c_ivk.push(if v == F128::ZERO { F128::ZERO } else { v.inv() }); } }
+        for &cl_lv in cl.iter().take(cn) { for &v in &flare::pcs::ligerito::eval_sk_at_vks(cl_lv) { c_svk.push(v); c_ivk.push(if v == F128::ZERO { F128::ZERO } else { v.inv() }); } }
         (cn, cr, cyr, ck, cl, cq, cd, cp, cs, cni, cqb, cfb, c_rowoff, c_pathoff, c_sbitsoff, c_qpoff, c_svkoff, c_foldbase, c_risstart, c_svk, c_ivk)
     };
     let (minm, maxm) = (22usize, 28usize);

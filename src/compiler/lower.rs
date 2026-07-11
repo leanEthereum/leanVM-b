@@ -3,6 +3,10 @@
 
 use super::*;
 
+/// [`FnLower::specialized_body`]'s pieces: runtime param names, runtime args,
+/// the `Const`-substituted body, and the callee's return arity.
+type SpecializedBody = (Vec<String>, Vec<Expr>, Vec<Stmt>, usize);
+
 /// A value equal to `pointer(base)·g^exp`, or the pure constant `g^exp` when
 /// `base` is `None`. Heap-address arithmetic — `ptr·gᵏ`, and constant g-power
 /// cursors such as a tweak-table index — is tracked symbolically so a later
@@ -967,7 +971,7 @@ impl FnLower<'_> {
         }
         // Runtime base: square-and-multiply over the compile-time exponent bits.
         let base = self.expr(b);
-        let hi = 31 - (k as u32).leading_zeros(); // top set bit (k >= 1)
+        let hi = 31 - k.leading_zeros(); // top set bit (k >= 1)
         let mut acc = base;
         for bit in (0..hi).rev() {
             let sq = self.fresh();
@@ -1291,13 +1295,11 @@ impl FnLower<'_> {
     /// (`β = 0`) when there is no runtime base or the offset exceeds [`FOLD_MAX`].
     fn heap_base(&mut self, arr: &Expr, extra: u128) -> (Off, u32) {
         self.check_heap_bound(arr, extra, 1);
-        if let Some(ga) = self.gaddr_of(arr) {
-            if let (Some(base), Some(exp)) = (ga.base, ga.exp.checked_add(extra)) {
-                if exp <= FOLD_MAX {
+        if let Some(ga) = self.gaddr_of(arr)
+            && let (Some(base), Some(exp)) = (ga.base, ga.exp.checked_add(extra))
+                && exp <= FOLD_MAX {
                     return (base, exp as u32);
                 }
-            }
-        }
         let a = self.expr(arr);
         if extra == 0 {
             return (a, 0);
@@ -1357,7 +1359,7 @@ impl FnLower<'_> {
     /// The runtime params, runtime args, and `Const`-substituted body of a call
     /// to a user function — the ingredients for inlining. `None` for a builtin/
     /// unknown callee, an arity mismatch, or an unresolved `Const` argument.
-    fn specialized_body(&self, callee: &str, args: &[Expr]) -> Option<(Vec<String>, Vec<Expr>, Vec<Stmt>, usize)> {
+    fn specialized_body(&self, callee: &str, args: &[Expr]) -> Option<SpecializedBody> {
         let def = self.defs.get(callee)?;
         if args.len() != def.params.len() {
             return None;

@@ -280,10 +280,9 @@ fn eval_const_int(s: &str) -> Result<u128, String> {
             let rhs = power(t, p)?;
             acc = if op == Tok::Mul {
                 acc.checked_mul(rhs).ok_or_else(|| "constant overflow in `*`".to_string())?
-            } else if rhs == 0 {
-                return Err("division by zero in constant expression".into());
             } else {
-                acc / rhs
+                acc.checked_div(rhs)
+                    .ok_or_else(|| "division by zero in constant expression".to_string())?
             };
         }
         Ok(acc)
@@ -1076,7 +1075,7 @@ fn parse_expr(s: &str) -> Result<Expr, String> {
     // `+` / `-` at top level (lowest precedence), left-associative. `-` is
     // compile-time integer subtraction (field subtraction is `+` = XOR).
     let (segs, ops) = split_add(s);
-    if ops.len() > 0 {
+    if !ops.is_empty() {
         let mut acc = parse_expr(&segs[0])?;
         for (op, seg) in ops.iter().zip(&segs[1..]) {
             let rhs = Box::new(parse_expr(seg)?);
