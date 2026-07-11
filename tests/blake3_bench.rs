@@ -22,7 +22,7 @@
 use std::time::Instant;
 
 use flare::pcs::ligerito::LigeritoProfile;
-use flock_prover::r1cs_hashes::blake3::{Blake3Setup, Compression};
+use flock_prover::r1cs_hashes::blake3::{Blake3Setup, Compression, pinned_compression};
 
 /// Tiny deterministic xorshift RNG — no `rand` dep, reproducible inputs.
 struct Rng(u64);
@@ -57,15 +57,14 @@ fn bench_blake3_prove() {
     // gives a comparable steady-state number.
     let reps: usize = std::env::var("FLOCK_REPS").ok().and_then(|s| s.parse().ok()).unwrap_or(1).max(1);
 
-    // Deterministic sample compressions (arbitrary cv/message; the prover does
-    // the same work regardless of the values). `(cv, m, counter, block_len, flags)`,
-    // flags = 11 = CHUNK_START|CHUNK_END|ROOT, the single-64B-block config.
+    // Deterministic sample compressions (arbitrary message; the prover does the
+    // same work regardless of the values). cv/counter/blen/flags are pinned by
+    // the circuit's constant rows.
     let mut rng = Rng(0x9E37_79B9_7F4A_7C15 ^ n as u64);
     let blocks: Vec<Compression> = (0..n)
         .map(|_| {
-            let cv: [u32; 8] = std::array::from_fn(|_| rng.next_u32());
             let m: [u32; 16] = std::array::from_fn(|_| rng.next_u32());
-            (cv, m, 0u64, 64u32, 11u32)
+            pinned_compression(m)
         })
         .collect();
 

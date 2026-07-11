@@ -296,71 +296,6 @@ fn blake3_value_slot(col: usize) -> Option<usize> {
         .map(|i| crate::blake3_flock::SLOTS[i])
 }
 
-/// The instance-cube point the BLAKE3 constant pins are checked at: any BLAKE3
-/// value-column bus claim's point (the memory bus's push-side GKR output, an
-/// FS-random, post-commit, `n_log`-dim point). Reusing it avoids a dedicated
-/// binding challenge. `claims` must already hold the bus claims, and BLAKE3 must
-/// have run (so a value-column claim exists). Deterministic and identical across
-/// prove/verify (both build the bus claims in the same order).
-fn blake3_pin_point(claims: &[ColumnClaim]) -> Vec<F128> {
-    claims
-        .iter()
-        .find(|c| blake3_value_slot(c.col).is_some())
-        .expect("BLAKE3 ran ⇒ a value-column bus claim exists")
-        .point
-        .clone()
-}
-
-/// MLE of `[1;n, 0;…]` at `point` (LSB-first), i.e. `Σ_{j<n} eq(j, point)`, in
-/// `O(point.len()²)` — one term per set bit of `n` (an aligned `2^t` block sums to
-/// `eq` of its high bits), never materializing the `2^point.len()` vector.
-fn mle_of_ones_then_zeros(n: usize, point: &[F128]) -> F128 {
-    let l = point.len();
-    debug_assert!(n <= 1usize << l);
-    let mut sum = F128::ZERO;
-    let mut base = 0usize; // low indices already covered
-    // Include t = l so the full cube (n = 2^l, bit l set) is one block whose free
-    // coords all sum to 1; `point[l..]` is then empty ⇒ eq = 1.
-    for t in (0..=l).rev() {
-        if (n >> t) & 1 == 1 {
-            // Block [base, base + 2^t): its high bits (coords t..l) are `base >> t`.
-            let a = base >> t;
-            let mut e = F128::ONE;
-            for (i, &x) in point[t..].iter().enumerate() {
-                e *= if (a >> i) & 1 == 1 { x } else { F128::ONE + x };
-            }
-            sum += e;
-            base += 1 << t;
-        }
-    }
-    sum
-}
-
-/// BLAKE3 `q_pkd` **pin** claims at the instance point `point` (a memory-bus
-/// point, see [`blake3_pin_point`]): per pin slot, `q_pkd(pin_slot‖point) =
-/// pin_col(point)` against the PUBLIC constant column (`cv = IV`,
-/// counter/blen/flags = 0/64/11), pinning the compression to a real
-/// BLAKE3-of-64-bytes. The pin column is `pin[k]` on the first `n_blocks`
-/// instances and `0` on padding, so its MLE is `pin[k] · Σ_{j<n_blocks} eq(j,
-/// point)` — computed in `O(n_log²)` by [`mle_of_ones_then_zeros`], never materialized. The
-/// input/output words are NOT pinned here — they bind via the memory bus routing
-/// to `q_pkd` (see [`blake3_value_slot`]). Values are public; symmetric across
-/// prove/verify.
-fn blake3_pin_claims(point: &[F128], n_blocks: usize) -> Vec<ColumnClaim> {
-    use crate::blake3_flock::{PIN_SLOTS, pin_constants, slot_point};
-    let pin = pin_constants();
-    let prefix = mle_of_ones_then_zeros(n_blocks, point);
-    let mut v = Vec::with_capacity(PIN_SLOTS.len());
-    for (k, &pslot) in PIN_SLOTS.iter().enumerate() {
-        v.push(ColumnClaim {
-            col: QPKD,
-            point: slot_point(pslot, point),
-            value: pin[k] * prefix,
-        });
-    }
-    v
-}
-
 /// Run statistics returned alongside the proof: the cycle count (total executed
 /// instructions), the per-opcode counts `[XOR, MUL, SET, DEREF, JUMP, BLAKE3]`, and the
 /// committed witness size — the sum of the column lengths, i.e. the real data
@@ -457,11 +392,8 @@ pub fn prove(program: &Program, public_input: [F128; 2]) -> (Proof, Stats) {
     claims.extend(constraint_claims(&table_claims));
     claims.push(bind_pi_claim(ps.sample(), &w.layout.placements, &w.layout.pi));
     // The input/output words bind via the memory bus (value columns are virtual and
-    // route to q_pkd, see `slot_claims`); only q_pkd's constant slots need pinning,
-    // at a memory-bus point. The pin prefix uses the REAL BLAKE3 count (0 pins
-    // nothing — padding instances hold 0).
-    let pin_point = blake3_pin_point(&claims);
-    claims.extend(blake3_pin_claims(&pin_point, exec.trace.blake3.len()));
+    // route to q_pkd, see `slot_claims`); cv/counter/blen/flags are constants baked
+    // into flock's per-block matrices, so no pin claims are needed.
     let slots = slot_claims(&w.layout, &claims);
 
     // Run flock's reduction (zerocheck + lincheck) over the executed compressions
@@ -589,11 +521,6 @@ pub fn verify(
     claims.extend(constraint_claims(&table_claims));
     claims.push(bind_pi_claim(vs.sample(), &l.placements, &l.pi));
     let checkpoint_pi = vs.sponge_state();
-    // Value columns are virtual (routed to q_pkd via `slot_claims`); only the
-    // constant pins are added here, at a memory-bus point, mirroring `prove`. The
-    // pin prefix uses the REAL count `n_b3` (0 pins nothing).
-    let pin_point = blake3_pin_point(&claims);
-    claims.extend(blake3_pin_claims(&pin_point, n_b3));
     // Read flock's BLAKE3 sub-proof off the shared channels (mirrors prove's
     // `write_stack_proof`): the scalar reduction from the `stream` as raw transport
     // (right after the last bound scalar), its Ligerito from `openings`.
@@ -631,8 +558,8 @@ pub fn verify(
 /// BLAKE3 value columns are virtual — they have no committed placement. A bus
 /// claim `value_col(r) = v` (at the `n_log`-dim instance point `r`) is re-routed
 /// to the equal `q_pkd` slot evaluation: an ordinary claim on the committed
-/// `QPKD` column at `slot_point(slot, r)` (the packed point freezing the low 7
-/// coords to the slot's bits). No downstream special-casing — it folds into the
+/// `QPKD` column at the point freezing the low 7 coords to the slot's bits and
+/// the high coords to `r`. No downstream special-casing — it folds into the
 /// one opening like every other point claim.
 fn slot_claims(l: &Layout, claims: &[ColumnClaim]) -> Vec<pcs::SlotClaim> {
     claims
@@ -663,30 +590,6 @@ fn slot_claims(l: &Layout, claims: &[ColumnClaim]) -> Vec<pcs::SlotClaim> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The O(n_log²) `mle_of_ones_then_zeros` must equal the naive MLE of the prefix
-    /// indicator `[1;n, 0;…]` — the pin value depends on it, so any mismatch is a
-    /// soundness bug, not just a perf regression.
-    #[test]
-    fn mle_of_ones_then_zeros_matches_dense() {
-        for l in 0..=6usize {
-            let point: Vec<F128> = (0..l)
-                .map(|i| F128::new(0x9e37 * (i as u64 + 1) + 3, 0x51 * i as u64 + 7))
-                .collect();
-            for n in 0..=(1usize << l) {
-                let mut col = vec![F128::ZERO; 1usize << l];
-                for c in col.iter_mut().take(n) {
-                    *c = F128::ONE;
-                }
-                let dense = if l == 0 {
-                    if n >= 1 { F128::ONE } else { F128::ZERO }
-                } else {
-                    crate::multilinear::mle_eval(&col, &point)
-                };
-                assert_eq!(mle_of_ones_then_zeros(n, &point), dense, "l={l} n={n}");
-            }
-        }
-    }
 
     /// A hand-built straight-line program exercising the `BLAKE3` table: set up
     /// the two 256-bit inputs (`a` at cells 2,3 and `b` at cells 4,5), hash them

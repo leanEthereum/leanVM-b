@@ -8,7 +8,7 @@ from snark_lib import *
 # Per sub-proof: seed (hinted statement + baked program digest) → announced
 # sizes → commitment root → bus (grinding, 3× GKR grand product, balance,
 # 3× leaf decomposition with the claim pool, stacked-bytecode reduction) →
-# 6 AIR zerochecks → public-input claim + BLAKE3 pins → flock reduction
+# 6 AIR zerochecks → public-input claim → flock reduction
 # (univariate-skip zerocheck, lincheck with the matrix evaluation DEFERRED) →
 # ring-switch fronts (tensor algebra in-circuit via linearized polynomials) →
 # the stacked Ligerito opening (config-driven levels, fused query passes,
@@ -161,10 +161,6 @@ TABLE_DEREF = 3
 TABLE_JUMP = 4
 TABLE_BLAKE3 = 5
 N_TABLES = N_TABLES_PLACEHOLDER
-# Phase C: the public input (baked; the seed already binds it), the real BLAKE3
-# count + pin-point location, and the three public pin constants.
-PIN_ZETA_OFF = PIN_ZETA_OFF_PLACEHOLDER
-PIN_VALUES = PIN_VALUES_PLACEHOLDER
 # Phase D (flock reduction): the r1cs statement label/digest words, zerocheck +
 # lincheck label words, the seven fixed inner challenges (+ inverses of 1+c),
 # the phi8 node table + baked Lagrange inverse denominators (Lambda domain,
@@ -441,7 +437,7 @@ def log2_ceil_word(value, g_logs_pow2, g_squares, floor: Const, nbits: Const):
     hint_decompose_bits(bits, value, nbits)
     g_log, word, g_value = verify_log2_ceil(bits, g_logs_pow2, g_squares, floor, nbits)
     assert word == value  # the hinted bits are exactly value's bits (so value < 2^nbits)
-    return g_log, g_value, bits
+    return g_log, g_value
 
 
 def g_power_of_word(value, g_squares, nbits: Const):
@@ -931,15 +927,12 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     assert log(g_log_mem) < COUNT_BITS
     dims_g[GEN ** 0] = g_log_mem
     # count gadget: g^tau_t = log2_ceil_word(count_t), which also returns
-    # g^count_t (for the padding-surplus certification) and the count's bits.
+    # g^count_t (for the padding-surplus certification).
     count_gpows = HeapBuf(N_TABLES)
     for t in unroll(0, N_TABLES):
-        g_tau, g_count, count_bits = log2_ceil_word(sizes[t + 1], g_logs_pow2, g_squares, FLOORS[t], COUNT_BITS)
+        g_tau, g_count = log2_ceil_word(sizes[t + 1], g_logs_pow2, g_squares, FLOORS[t], COUNT_BITS)
         dims_g[GEN ** (t + 1)] = g_tau
         count_gpows[GEN ** t] = g_count
-    # count_bits now holds the LAST iteration's (TABLE_BLAKE3's) count bits;
-    # name them for the BLAKE3 constant-pin claim below.
-    blake3_count_bits = count_bits
     # kappa_base maps a kappa source index to its certified announced log
     # (source 0 = const via the baked adj); the taus are now in dims_g.
     kappa_base = HeapBuf(N_TABLES + 2)
@@ -1419,37 +1412,15 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     claim_pool[GEN ** claim_idx] = pi_interp
     claim_idx += 1
 
-    # ---- BLAKE3 constant-pin claims (on q_pkd, at the pin bus point) ----
-    # prefix = MLE of [1;NB3, 0;...] at the pin point (the first BLAKE3
-    # value-column bus claim's ζ_lo: NLOGB3 coords starting at zeta[PIN_ZETA_OFF]):
-    # one eq-term per set bit of NB3, over the aligned block's high bits.
-    # Telescoping over the certified count bits, low to high: adding coord
-    # z_k for bit b_k maps P -> (1+z)(b + (1+b)P) + z*b*P (b = 1 fills the
-    # z_k = 0 half with the all-ones MLE 1); the top bit (count == 2^tau_5
-    # exactly) forces the all-ones MLE.
-
-    zeta_pin = zeta * GEN ** PIN_ZETA_OFF
-    tau_blake3_g = dims_g[GEN ** N_TABLES]  # the BLAKE3 table's certified tau
-    # tau's reach is bounded without a dedicated pin: the count gadget gives
-    # tau < 34 (all flock buffers are sized for that), and q_pkd's committed
-    # kappa = LOG2_FIELD_BITS + tau feeds the certified size m, whose opening
-    # dispatch bound caps tau well below any baked structure.
-    pin_chain = HeapBuf(SIZE_BITS + 1)
-    pin_chain[GEN ** 0] = 0
-    for xk in mul_range(1, tau_blake3_g):
-        pv = pin_chain[xk]
-        bk = blake3_count_bits[xk]
-        zk = zeta_pin[xk]
-        pn = (1 + zk) * (bk + (1 + bk) * pv) + zk * bk * pv
-        pin_chain[xk * GEN] = pn
-    b_top = blake3_count_bits[tau_blake3_g]
-    prefix = b_top + (1 + b_top) * pin_chain[tau_blake3_g]
-    for pk in unroll(0, len(PIN_VALUES)):
-        claim_pool[GEN ** claim_idx] = PIN_VALUES[pk] * prefix
-        claim_cplen_g[GEN ** claim_idx] = tau_blake3_g  # cplen = the BLAKE3 value-col kappa
-        claim_idx += 1
+    # (No BLAKE3 constant-pin claims: cv/counter/blen/flags are constants baked
+    # into flock's per-block matrices, which the fs_seed binds.)
 
     # ---- flock zerocheck (univariate skip, k_skip = 6) ----
+    tau_blake3_g = dims_g[GEN ** N_TABLES]  # the BLAKE3 table's certified tau
+    # tau's reach is bounded: the count gadget gives tau < 34 (all flock
+    # buffers are sized for that), and q_pkd's committed kappa =
+    # LOG2_FIELD_BITS + tau feeds the certified size m, whose opening
+    # dispatch bound caps tau well below any baked structure.
     zc_round1 = HeapBuf(2 * 2 ** K_SKIP)
     hint_witness(zc_round1[0:2 * 2 ** K_SKIP], "zc_round1")
     zc_msgs = HeapBuf(2 * R1CS_ROUNDS_CAP)

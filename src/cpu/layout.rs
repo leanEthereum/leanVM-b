@@ -101,7 +101,7 @@ pub(crate) struct Witness {
 /// The BLAKE3 value columns (`va0..vc1`) are virtual when BLAKE3 ran: `q_pkd`
 /// already holds those words at fixed packed slots, so committing them again is
 /// redundant. Their memory-bus claims route directly to `q_pkd` slot evaluations
-/// (see [`slot_claims`] / [`blake3_flock::slot_point`]), which both binds them to
+/// (see [`slot_claims`]), which both binds them to
 /// the proven witness AND eliminates the separate value-binding sub-protocol.
 /// The committed columns' kappa SOURCES, for the recursion guest's
 /// in-circuit certification of the stacked size m = max(log2_ceil(sum of
@@ -197,7 +197,7 @@ pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; 6], pi: [F128; 2]
     // The BLAKE3 table is ALWAYS sized to flock's `2^n_log` instance count
     // (`max(count,1)`, lincheck floor ≥ 8) so its per-instance (virtual) value
     // columns share `q_pkd`'s instance cube — a value-column bus claim at instance
-    // point `r` maps to the `q_pkd` slot at `slot_point(slot, r)` (`slot_claims`).
+    // point `r` maps to a strided `q_pkd` slot claim at `r` (`slot_claims`).
     taus[tables::BLAKE3_TABLE] = crate::blake3_flock::n_blocks_log(row_counts[tables::BLAKE3_TABLE].max(1));
 
     // Derived boundary: the run starts at (pc,fp) = (0,0) and, by convention, the

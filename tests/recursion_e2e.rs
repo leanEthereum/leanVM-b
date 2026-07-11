@@ -581,7 +581,7 @@ fn gen_verify(
     let matpart = lrun + pinw;
 
     let evtot_e: usize = ncol.iter().sum();
-    let ncl = nclaims + evtot_e + 1 + 3;
+    let ncl = nclaims + evtot_e + 1; // bus + constraint + the PI claim
 
     // ---- the stacked opening: config + the opening summary ----
     let stack_mu = l.m;
@@ -658,25 +658,9 @@ fn gen_verify(
         }
         gbase += n;
     }
-    // The pin point: the first BLAKE3 value-column bus claim. Scan blocks/coords
-    // exactly as the claims are ordered to find its side + kappa.
     let sch = leanvm_b::cpu::schema();
     let b3base = sch.base[5];
     let valcols: Vec<usize> = leanvm_b::tables::BLAKE3_VALUE_COLS.iter().map(|&c| b3base + c).collect();
-    let mut pin_side_kappa: Option<(usize, usize)> = None;
-    'outer: for (s, blocks) in sides.iter().enumerate() {
-        for blk in blocks.iter() {
-            for c in &blk.coords {
-                if let Coord::Col(i) | Coord::GCol(i) = c
-                    && valcols.contains(i)
-                {
-                    pin_side_kappa = Some((s, blk.kappa));
-                    break 'outer;
-                }
-            }
-        }
-    }
-    let (_pin_side, pin_kappa) = pin_side_kappa.expect("BLAKE3 value-column claim exists");
     let log_mem = proof.stream[0].lo as usize;
 
     // ---- Phase E2 hints (the stacked Ligerito opening) ----
@@ -813,10 +797,6 @@ fn gen_verify(
         let folded = pl.n_vars.saturating_sub(lenris);
         let low = pl.n_vars - folded;
         push_desc(2, 0, low, 0, (pl.offset >> pl.n_vars) << folded, low);
-    }
-    for &pslot in leanvm_b::blake3_flock::PIN_SLOTS.iter() {
-        let nvt = 7 + pin_kappa;
-        push_desc(3, 0, pin_kappa, pslot, qpkd_pl.offset >> nvt, nvt);
     }
     assert_eq!(cpbuf.len(), ncl, "descriptor count == pool size");
     let rssel_full = qpkd_pl.offset >> qpkdv;
@@ -1065,26 +1045,12 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     }
     let ncol: Vec<usize> = leanvm_b::tables::tables().iter().map(|t| t.constraint_columns().len()).collect();
     let evtot: usize = ncol.iter().sum();
-    let ncl = nclaims + evtot + 1 + 3;
+    let ncl = nclaims + evtot + 1; // bus + constraint + the PI claim
 
     // ---- claim descriptors: buffer id + offset only (both structural) ----
     let sch = leanvm_b::cpu::schema();
     let b3base = sch.base[5];
     let valcols: Vec<usize> = leanvm_b::tables::BLAKE3_VALUE_COLS.iter().map(|&c| b3base + c).collect();
-    let mut pin_side = None;
-    'outer: for (s, blocks) in sides.iter().enumerate() {
-        for blk in blocks.iter() {
-            for c in &blk.coords {
-                if let Coord::Col(i) | Coord::GCol(i) = c
-                    && valcols.contains(i)
-                {
-                    pin_side = Some(s);
-                    break 'outer;
-                }
-            }
-        }
-    }
-    let _pin_side = pin_side.expect("BLAKE3 value-column claim exists");
     let (mut cpbuf, mut cpoff) = (vec![], vec![]);
     let mut desc_seen: std::collections::HashSet<(usize, usize)> = Default::default();
     for blocks in sides.iter() {
@@ -1108,7 +1074,6 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         }
     }
     cpbuf.push(2); cpoff.push(0); // PI claim on MEM
-    for _ in leanvm_b::blake3_flock::PIN_SLOTS.iter() { cpbuf.push(3); cpoff.push(0); }
     assert_eq!(cpbuf.len(), ncl, "descriptor count == pool size");
 
     // ---- the placeholder map ----
@@ -1165,9 +1130,6 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("BUS_GRIND_SHIFT", (127 - leanvm_b::SECURITY_BITS).to_string());
     // Per-claim y-slot hint stride (overlap mask / slot bit rows).
     ps("YR_SLOT_STRIDE", "8".to_string());
-    ps("PIN_ZETA_OFF", "0".to_string());
-    let pinv: Vec<u128> = leanvm_b::blake3_flock::pin_constants().iter().map(|&v| u(v)).collect();
-    ps("PIN_VALUES", us(&pinv));
     const MINB3: usize = 3;
     ps("ZCLBLA", u(word16(b"flock-zerocheck-v0", 0)).to_string());
     ps("ZCLBLB", u(word16(b"flock-zerocheck-v0", 16)).to_string());

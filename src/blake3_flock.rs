@@ -23,15 +23,18 @@
 //!
 //! ```text
 //!   c0,c1 = slots 2,3     a0,a1 = slots 5,6     b0,b1 = slots 7,8
-//!   cv = slots 0,1 (= IV)    counter‖blen‖flags = slot 9 (pinned constants)
+//!   cv = slots 0,1 (= IV)    counter‖blen‖flags = slot 9
 //! ```
+//!
+//! cv and slot 9 hold constants baked into the per-block matrices (constant
+//! rows), so no claims are needed to pin them.
 
 use crate::field::F128;
 use crate::transcript::{ProverState, VerifierState};
 use flare::pcs::LOG_PACKING;
 use flock_prover::pcs::{Commitment, ProverData};
 use flock_prover::r1cs_hashes::blake3::{
-    BLAKE3_IV, Blake3Setup, Blake3StackProof, Compression, K_LOG, ReducedClaims, blake3_compress,
+    Blake3Setup, Blake3StackProof, Compression, K_LOG, ReducedClaims, blake3_compress,
     generate_witness_with_ab_packed_and_lincheck, min_n_blocks_log,
 };
 use flock_prover::verifier::VerifyError;
@@ -43,8 +46,9 @@ pub use flock_prover::proof::ZClaim;
 
 /// flock flags for a single 64-byte root block: `CHUNK_START(1) | CHUNK_END(2) |
 /// ROOT(8) = 11` — the configuration under which the compression output equals
-/// `blake3::hash` of the 64-byte input.
-pub const FLAGS: u32 = (1 << 0) | (1 << 1) | (1 << 3);
+/// `blake3::hash` of the 64-byte input. Baked into flock's per-block matrices
+/// (constant rows), along with `cv = IV`, `counter = 0` and `block_len = 64`.
+pub const FLAGS: u32 = flock_prover::r1cs_hashes::blake3::PINNED_FLAGS;
 
 /// Packed `F128` coordinates per compression instance: `K / 128 = 2^(K_LOG-7)`.
 /// Instance `j` occupies packed indices `[j*PACKED_PER_INSTANCE, (j+1)*…)`.
@@ -63,10 +67,6 @@ pub const SLOT_B1: usize = 8;
 /// matching `tables::BLAKE3_VALUE_COLS`.
 pub const SLOTS: [usize; 6] = [SLOT_A0, SLOT_A1, SLOT_B0, SLOT_B1, SLOT_C0, SLOT_C1];
 
-/// Within-instance slots pinned to PUBLIC constants: `cv` (slots 0,1 = the IV)
-/// and the packed `counter‖counter_hi‖block_len‖flags` word (slot 9). Pinning
-/// them makes the proven compression a real BLAKE3-of-64-bytes.
-pub const PIN_SLOTS: [usize; 3] = [0, 1, 9];
 
 /// Split a 128-bit field element into the four little-endian `u32` words flock's
 /// message uses (`lo` → words 0,1; `hi` → words 2,3) — the VM memory byte order.
@@ -82,15 +82,16 @@ pub fn pack_words(w: [u32; 4]) -> F128 {
     )
 }
 
-/// The flock [`Compression`] for one VM `BLAKE3(a, b)`: `cv = IV`, message
-/// `m = a‖b`, counter `0`, block length `64`, flags [`FLAGS`].
+/// The flock [`Compression`] for one VM `BLAKE3(a, b)`: message `m = a‖b` under
+/// the pinned configuration (`cv = IV`, counter `0`, block length `64`, flags
+/// [`FLAGS`] — all enforced by the matrices' constant rows).
 pub fn compression(a: [F128; 2], b: [F128; 2]) -> Compression {
     let mut m = [0u32; 16];
     m[0..4].copy_from_slice(&words_of(a[0]));
     m[4..8].copy_from_slice(&words_of(a[1]));
     m[8..12].copy_from_slice(&words_of(b[0]));
     m[12..16].copy_from_slice(&words_of(b[1]));
-    (BLAKE3_IV, m, 0, 64, FLAGS)
+    flock_prover::r1cs_hashes::blake3::pinned_compression(m)
 }
 
 /// The 256-bit digest `c = (c0, c1)` of a compression (= flock's `out_lo` =
@@ -117,56 +118,33 @@ pub fn qpkd_kappa(n: usize) -> usize {
     K_LOG + n_blocks_log(n.max(1)) - LOG_PACKING
 }
 
-/// The all-zero compression `([0;8],[0;16],0,0,0)` — the padding instance flock's
-/// witness generation fills unused slots with. Synthesized as the sole block when
-/// a program executes no BLAKE3, so `q_pkd` and the reduction always have ≥ 1
-/// instance.
+/// The padding instance: the pinned compression of the all-zero message, i.e.
+/// `blake3(0^64)` — what flock's witness generation fills unused slots with.
+/// Synthesized as the sole block when a program executes no BLAKE3, so `q_pkd`
+/// and the reduction always have ≥ 1 instance.
 pub fn padding_compression() -> Compression {
-    ([0u32; 8], [0u32; 16], 0, 0, 0)
+    flock_prover::r1cs_hashes::blake3::padding_block()
 }
 
 /// Build the committed `q_pkd` column (flock's packed witness) for `blocks`, padded
-/// to `2^n_blocks_log(max(blocks.len(),1))` instances (the unused ones all-zero
-/// padding). Deterministic, so it matches what the reduction regenerates. An empty
-/// `blocks` yields one padding cube (all instances are padding).
+/// to `2^n_blocks_log(max(blocks.len(),1))` instances (the unused ones
+/// [`padding_compression`] blocks). Deterministic, so it matches what the reduction
+/// regenerates. An empty `blocks` yields one padding cube (all instances are padding).
 pub fn build_qpkd(blocks: &[Compression]) -> Vec<F128> {
     generate_witness_with_ab_packed_and_lincheck(blocks, n_blocks_log(blocks.len().max(1))).0
 }
 
-/// The output `(c0, c1)` of flock's padding compression — the all-zero input
-/// `([0;8],[0;16],0,0,0)` that fills padding instances (const-wire pin). Its
-/// output is NONZERO, so the VM pads its BLAKE3 output value columns with this.
+/// The digest `(c0, c1)` of [`padding_compression`], i.e. `blake3(0^64)`. It is
+/// NONZERO, so the VM pads its BLAKE3 output value columns with this.
 pub fn padding_digest() -> [F128; 2] {
-    digest(&([0u32; 8], [0u32; 16], 0, 0, 0))
-}
-
-/// The PUBLIC constants the [`PIN_SLOTS`] hold on a real instance, in PIN_SLOTS
-/// order: `cv[0..4]`, `cv[4..8]` (the IV), and `(counter_lo=0, counter_hi=0,
-/// block_len=64, flags=11)` packed. Padding instances hold 0.
-pub fn pin_constants() -> [F128; 3] {
-    [
-        pack_words([BLAKE3_IV[0], BLAKE3_IV[1], BLAKE3_IV[2], BLAKE3_IV[3]]),
-        pack_words([BLAKE3_IV[4], BLAKE3_IV[5], BLAKE3_IV[6], BLAKE3_IV[7]]),
-        pack_words([0, 0, 64, FLAGS]),
-    ]
+    digest(&padding_compression())
 }
 
 /// `log2` of the within-instance packed span (`PACKED_PER_INSTANCE = 2^7`): the
-/// number of low coords in a [`slot_point`] that carry the slot's bits, and the
+/// number of low coords of a `q_pkd` point that carry the slot's bits, and the
 /// stride between consecutive instances' same-slot coords in `q_pkd`. A value
 /// claim on `q_pkd` is thus a boolean-selector (strided) claim with this stride.
 pub const SLOT_STRIDE_LOG: usize = K_LOG - LOG_PACKING;
-
-/// The `q_pkd`-column MLE point selecting within-instance `slot` over the
-/// instance cube `rho`: the low 7 coords are `slot`'s bits (LSB-first), the high
-/// `n_log` coords are `rho`.
-pub fn slot_point(slot: usize, rho: &[F128]) -> Vec<F128> {
-    let mut p: Vec<F128> = (0..SLOT_STRIDE_LOG)
-        .map(|b| if (slot >> b) & 1 == 1 { F128::ONE } else { F128::ZERO })
-        .collect();
-    p.extend_from_slice(rho);
-    p
-}
 
 /// Prove `blocks` are valid compressions, discharging the proof against the
 /// caller's already-committed `stack` (with `q_pkd` the aligned sub-block at
@@ -403,7 +381,7 @@ pub fn prove_validity_stacked(
 /// [`verify_reduction`] (replay zerocheck + lincheck → `(ab, c)` claims), then
 /// verify the SINGLE stacked Ligerito against `commitment` on the shared
 /// transcript. `stack_pd` are all of leanVM's point claims (bus / constraint /
-/// public-input / binding / pinning) folded into the same opening.
+/// public-input / binding) folded into the same opening.
 pub fn verify_validity_stacked(
     n_blocks: usize,
     commitment: &Commitment,
@@ -472,11 +450,12 @@ mod tests {
             assert_eq!(slot(j, SLOT_C0), word(0));
             assert_eq!(slot(j, SLOT_C1), word(16));
         }
-        // Pinned slots: cv = IV on real instances.
-        let pin = pin_constants();
-        assert_eq!(slot(0, PIN_SLOTS[0]), pin[0]);
-        assert_eq!(slot(0, PIN_SLOTS[1]), pin[1]);
-        assert_eq!(slot(0, PIN_SLOTS[2]), pin[2]);
+        // Constant slots (matrix-pinned): cv = IV in slots 0,1 and the packed
+        // counter‖counter_hi‖block_len‖flags word in slot 9.
+        let iv = flock_prover::r1cs_hashes::blake3::BLAKE3_IV;
+        assert_eq!(slot(0, 0), pack_words([iv[0], iv[1], iv[2], iv[3]]));
+        assert_eq!(slot(0, 1), pack_words([iv[4], iv[5], iv[6], iv[7]]));
+        assert_eq!(slot(0, 9), pack_words([0, 0, 64, FLAGS]));
     }
 
     /// flock's validity proof, discharged by a Ligerito over a single committed
