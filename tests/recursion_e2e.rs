@@ -895,7 +895,6 @@ fn gen_verify(
         ("level_roots_0".to_string(), roota),
         ("level_roots_1".to_string(), rootb),
         ("fold_nonces".to_string(), fnv),
-        ("claim_low_len".to_string(), (0..ncl).map(|j| g_pow(cplen[j] - nover_v[j])).collect()),
         // slacks bounding each claim'"'"'s reads to the written regions (so an
         // over-long hint cannot pull free padding): low_len <= mu_s/tau_t
         // (zeta/rho) and low_len(+7 for qpkd) <= lenris (fold challenges).
@@ -905,9 +904,6 @@ fn gen_verify(
         // the pi claim's low dimension is min(log_mem, lenris); certify it as
         // a min (<= both, == one) so pi is pinned like every other claim.
         ("pi_cplen".to_string(), vec![g_pow(log_mem.min(lenris))]),
-        ("pi_mem_slack".to_string(), vec![g_pow(log_mem - log_mem.min(lenris))]),
-        ("pi_fold_slack".to_string(), vec![g_pow(lenris - log_mem.min(lenris))]),
-        ("claim_sel_len".to_string(), (0..ncl).map(|j| g_pow(seln_v[j])).collect()),
         ("claim_qpkd_slot_bits".to_string(), {
             let mut v = Vec::new();
             for j in 0..ncl {
@@ -948,7 +944,6 @@ fn gen_verify(
         ("rs_yslot_bits".to_string(), (0..8).map(|k| F128::new(((yrs >> k) & 1) as u64, 0)).collect()),
         ("rs_sel_bits".to_string(), (0..33).map(|k| F128::new(((rssel >> k) & 1) as u64, 0)).collect()),
         ("sort_order".to_string(), sort_order.clone()),
-        ("dims_g".to_string(), vec![g_pow(log_mem)]),
         ("query_nonces".to_string(), query_pow.iter().map(|&(n, _)| F128::new(n, 0)).collect()),
     ];
     (hints, deferred)
@@ -1471,7 +1466,6 @@ fn recursion_soundness_binds() {
     let tampers: &[(&str, usize, F128)] = &[
         ("inner_digest", 0, F128::ONE),     // wrong inner program: own_pi (public input) must reject
         ("rs_yslot_bits", 4, F128::ONE),    // pad coord (k=4 >= yr_log_n=3): over-read weight
-        ("claim_low_len", 0, g_pow(33)),    // x-part length past the written region: over-read
         ("claim_nover", 0, g_pow(5)),        // wrong overlap: exact length pin must reject
         ("pi_cplen", 0, g_pow(2)),           // wrong pi dimension: min-cert must reject
     ];

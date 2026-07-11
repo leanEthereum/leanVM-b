@@ -449,6 +449,22 @@ def log2_ceil_word(value, g_logs_pow2, g_squares, floor: Const, nbits: Const):
     return g_log, g_value, bits
 
 
+def g_power_of_word(value, g_squares, nbits: Const):
+    # g^value for a concrete integer `value` < 2^nbits: advice-decompose its
+    # bits, tie them back to the word, and assemble Π g^(bit_j·2^j).
+    bits = HeapBuf(GEN ** nbits)
+    hint_decompose_bits(bits, value, nbits)
+    word = 0
+    g_value = GEN ** 0
+    for j in unroll(0, nbits):
+        bit = bits[GEN ** j]
+        assert bit * bit == bit
+        word += bit * (2 ** j)
+        g_value *= (1 + bit * (g_squares[GEN ** j] + 1))
+    assert word == value
+    return g_value
+
+
 def log2_ceil_in_the_exponent(g_N, g_logs_pow2, g_squares, floor: Const, nbits: Const):
     # Return g^log2_ceil(N) given g_N = g^N (N < 2^nbits). There is no in-circuit
     # log, so the prover hints N's bits (hint_decompose_bits_exponent); they are
@@ -834,30 +850,27 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1):
 
 
 def exponent_tables():
-    # Read-only lookup tables over the exponent domain, ALL indexed at runtime
-    # g-powers (so they must be heap, not stack): g_logs[g^j] = j is a
-    # g-power's log (exponent), g_logs_pow2[g^j] = 2^j is 2 raised to that
-    # log, and g_squares[g^j] = g^(2^j) turns integer sums of powers of two
-    # into field products. Returns the 3 pointers.
-    g_logs = HeapBuf(COUNT_BITS)
+    # Read-only lookup tables over the exponent domain, indexed at runtime
+    # g-powers (so they must be heap, not stack): g_logs_pow2[g^j] = 2^j is 2
+    # raised to a g-power's log, and g_squares[g^j] = g^(2^j) turns integer
+    # sums of powers of two into field products. Returns the 2 pointers.
     g_logs_pow2 = HeapBuf(COUNT_BITS)
     for j in unroll(0, COUNT_BITS):
-        g_logs[GEN ** j] = j
         g_logs_pow2[GEN ** j] = 2 ** j
     g_squares = HeapBuf(SIZE_BITS)
     sq_run = GEN
     for j in unroll(0, SIZE_BITS):
         g_squares[GEN ** j] = sq_run
         sq_run *= sq_run
-    return g_logs, g_logs_pow2, g_squares
+    return g_logs_pow2, g_squares
 
 
-def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squares, defer_out):
+def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs_pow2, g_squares, defer_out):
     # In-circuit verification of ONE inner proof for the statement
     # (pi_0, pi_1). All proof data is hinted HERE: each call pops the next
     # sub-proof's entry of every witness stream, so the body lowers once and
     # main just calls it per statement. `delta_pows` (the dual-basis Frobenius
-    # table) and the g_logs/g_logs_pow2/g_squares lookup tables are shared
+    # table) and the g_logs_pow2/g_squares lookup tables are shared
     # read-only tables built once in main; the deferred-claim data is written
     # to `defer_out`.
     #
@@ -916,13 +929,12 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
     # need them as G-POWERS (loop bounds, match_range scrutinees). dims_g[0] =
     # g^log_mem arrives as a hint pinned to the word; dims_g[1 + t] = g^tau_t
     # is computed by the count gadget.
-    dims_g = HeapBuf(N_TABLES + 1)  # [g^log_mem, g^tau_0 .. g^tau_5]
-    hint_witness(dims_g[0:1], "dims_g")
-    # log_mem is announced AS a log (an integer word L): the hinted g^L is pinned
-    # by T[g^L] == L (g_logs is the g^j -> j table, built once in main).
-    g_log_mem = dims_g[GEN ** 0]
+    dims_g = HeapBuf(N_TABLES + 1)  # [g^log_mem, g^tau_0 .. g^tau_5], all computed
+    # log_mem is announced AS a log (an integer word L): g^L is assembled from
+    # L's advice-decomposed bits — no hint, no g^j -> j lookup table.
+    g_log_mem = g_power_of_word(sizes[0], g_squares, COUNT_BITS)
     assert log(g_log_mem) < COUNT_BITS
-    assert g_logs[g_log_mem] == sizes[0]
+    dims_g[GEN ** 0] = g_log_mem
     # count gadget: g^tau_t = log2_ceil_word(count_t), which also returns
     # g^count_t (for the padding-surplus certification) and the count's bits.
     count_gpows = HeapBuf(N_TABLES)
@@ -1750,18 +1762,12 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
     # identity inner_sum == sumcheck_target (against the opening-bound target)
     # pins their VALUES, so only range checks and booleanity are enforced here.
     # All selector products use eq(b, r) = 1 + b + r.
-    claim_low_len = HeapBuf(NCL)
-    hint_witness(claim_low_len[0:NCL], "claim_low_len")
+    claim_low_len = HeapBuf(NCL)  # computed low_len per claim (the y-slot
+    #                             # overlap pointers below re-read it)
     claim_nover = HeapBuf(NCL)
     hint_witness(claim_nover[0:NCL], "claim_nover")
     pi_cplen = StackBuf(1)
     hint_witness(pi_cplen[0:1], "pi_cplen")
-    pi_mem_slack = StackBuf(1)
-    hint_witness(pi_mem_slack[0:1], "pi_mem_slack")
-    pi_fold_slack = StackBuf(1)
-    hint_witness(pi_fold_slack[0:1], "pi_fold_slack")
-    claim_sel_len = HeapBuf(NCL)
-    hint_witness(claim_sel_len[0:NCL], "claim_sel_len")
     claim_qpkd_slot_bits = HeapBuf(LOG2_FIELD_BITS * NCL)
     hint_witness(claim_qpkd_slot_bits[0:LOG2_FIELD_BITS * NCL], "claim_qpkd_slot_bits")
     claim_sel_bits = HeapBuf(COUNT_BITS * NCL)
@@ -1776,8 +1782,38 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
     hint_witness(rs_sel_bits[0:COUNT_BITS], "rs_sel_bits")
     claim_weights = HeapBuf(NCL)
     for j in unroll(0, NCL):
-        low_len_g = claim_low_len[GEN ** j]
+        # EXACT lengths: cplen is certified, nover (the residual-overlap count)
+        # is the ONE hinted branch choice; low_len = cplen - nover and
+        # seln = lenris + nover - nlow are divisions off it, and the range
+        # checks + the product pins below reject any wrong nover.
+        if CLAIM_POINT_BUF[j] == POINT_BUF_PI:
+            # pi: cplen = min(log_mem, lenris), certified as a min (<= both via
+            # the range-checked division slacks, == one via the product).
+            cplen_g = pi_cplen[0]
+            mem_slack = g_log_mem / cplen_g
+            assert log(mem_slack) < SIZE_BITS
+            fold_slack = fold_cap_g / cplen_g
+            assert log(fold_slack) < SIZE_BITS
+            assert (cplen_g + g_log_mem) * (cplen_g + fold_cap_g) == 0  # == one of them
+            nlow = cplen_g                             # delta = 0 for pi
+        else:
+            cplen_g = claim_cplen_g[GEN ** j]
+            if CLAIM_POINT_BUF[j] == POINT_BUF_QPKD:
+                nlow = cplen_g * GEN ** LOG2_FIELD_BITS  # nlow = cplen + the qpkd slot coords
+            else:
+                nlow = cplen_g            # nlow = cplen
+        nover_g = claim_nover[GEN ** j]
+        assert log(nover_g) < SIZE_BITS
+        low_len_g = cplen_g / nover_g              # low_len = cplen - nover
         assert log(low_len_g) < SIZE_BITS
+        claim_low_len[GEN ** j] = low_len_g
+        seln = fold_cap_g * nover_g / nlow         # seln = lenris + nover - nlow
+        assert log(seln) < SIZE_BITS
+        assert (nover_g + 1) * (seln + 1) == 0      # nover == 0 OR seln == 0
+        # selector loop reads fold_challenges[nlow .. nlow+seln); pin the reach
+        # so it stays in [0, lenris): either seln == 0 (empty loop) or
+        # nlow + seln == lenris (the honest overlap-free case).
+        assert (nlow * seln + fold_cap_g) * (seln + 1) == 0
         low_chain = HeapBuf(SIZE_BITS + 1)
         if CLAIM_POINT_BUF[j] == POINT_BUF_ZETA:
             zptr = zeta * GEN ** CLAIM_POINT_OFF[j]
@@ -1805,37 +1841,6 @@ def verify_sub(pi_0, pi_1, dig_0, dig_1, delta_pows, g_logs, g_logs_pow2, g_squa
             for xk in mul_range(1, low_len_g):
                 low_chain[xk * GEN] = low_chain[xk] * (1 + zptr[xk] + ris7[xk])
         low_eq = low_chain[low_len_g]
-        seln = claim_sel_len[GEN ** j]
-        assert log(seln) < SIZE_BITS
-        # EXACT length pin: tie the hinted lengths to the claim's certified low
-        # dimension cplen. nlow is DERIVED here (cplen times a baked slot delta);
-        # with nvt = nlow the pair (seln, nover) is then forced by nlow + seln ==
-        # lenris + nover and nover * seln == 0 (range checks reject the negative
-        # branch), and low_len = cplen - nover. No length freedom remains.
-        if CLAIM_POINT_BUF[j] == POINT_BUF_PI:
-            # pi: cplen = min(log_mem, lenris), certified as a min here.
-            cplen_g = pi_cplen[0]
-            assert log(pi_mem_slack[0]) < SIZE_BITS
-            assert g_log_mem == cplen_g * pi_mem_slack[0]      # cplen <= log_mem
-            assert log(pi_fold_slack[0]) < SIZE_BITS
-            assert fold_cap_g == cplen_g * pi_fold_slack[0]    # cplen <= lenris
-            assert (cplen_g + g_log_mem) * (cplen_g + fold_cap_g) == 0  # == one of them
-            nlow = cplen_g                             # delta = 0 for pi
-        else:
-            cplen_g = claim_cplen_g[GEN ** j]
-            if CLAIM_POINT_BUF[j] == POINT_BUF_QPKD:
-                nlow = cplen_g * GEN ** LOG2_FIELD_BITS  # nlow = cplen + the qpkd slot coords
-            else:
-                nlow = cplen_g            # nlow = cplen
-        nover_g = claim_nover[GEN ** j]
-        assert log(nover_g) < SIZE_BITS
-        assert nlow * seln == fold_cap_g * nover_g  # nlow + seln = lenris + nover
-        assert (nover_g + 1) * (seln + 1) == 0      # nover == 0 OR seln == 0
-        assert low_len_g * nover_g == cplen_g        # low_len = cplen - nover
-        # selector loop reads fold_challenges[nlow .. nlow+seln); pin the reach
-        # so it stays in [0, lenris): either seln == 0 (empty loop) or
-        # nlow + seln == lenris (the honest overlap-free case).
-        assert (nlow * seln + fold_cap_g) * (seln + 1) == 0
         ris_hi = fold_challenges * nlow
         selrow = claim_sel_bits * GEN ** (COUNT_BITS * j)
         sel_chain = HeapBuf(SIZE_BITS + 1)
@@ -2018,13 +2023,13 @@ def main():
             next_delta_row[GEN ** i] = delta_v * delta_v
 
     # exponent-domain lookup tables, shared read-only across every sub-proof.
-    g_logs, g_logs_pow2, g_squares = exponent_tables()
+    g_logs_pow2, g_squares = exponent_tables()
 
     # per-sub deferred-claim regions (layout: see verify_sub's defer_out)
     defer = HeapBuf(NSUB * DEFER_SIZE)
 
     for sub in unroll(0, NSUB):
-        verify_sub(sub_pis[GEN ** (2 * sub)], sub_pis[GEN ** (2 * sub + 1)], inner_dig[0], inner_dig[1], delta_pows, g_logs, g_logs_pow2, g_squares, defer * GEN ** (sub * DEFER_SIZE))
+        verify_sub(sub_pis[GEN ** (2 * sub)], sub_pis[GEN ** (2 * sub + 1)], inner_dig[0], inner_dig[1], delta_pows, g_logs_pow2, g_squares, defer * GEN ** (sub * DEFER_SIZE))
 
     # ================= aggregation: batch the deferred claims =================
     # A fresh transcript absorbs every deferred claim (points and values),
