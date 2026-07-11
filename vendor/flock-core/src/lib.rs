@@ -36,39 +36,6 @@ pub mod transcript;
 pub mod verifier;
 pub mod zerocheck;
 
-/// Configure rayon's global thread pool to use only performance cores on
-/// Apple silicon (excluding efficiency cores).
-///
-/// On M-series chips the 2 efficiency cores run at ~30-40% of perf-core
-/// speed and become stragglers in compute-bound parallel work — the
-/// work-stealing scheduler keeps assigning them tasks that hold up the perf
-/// cores at synchronization barriers. Empirically, 8 threads beats 10 by
-/// ~10-20% on `pcs::commit` and similar parallel-NTT workloads.
-///
-/// Call this **once** at program startup, before any other parallel flock
-/// code runs (rayon's global pool is set on first use; if it's already
-/// created, this call is a no-op).
-///
-/// Respects `RAYON_NUM_THREADS` — if that env var is set, this function
-/// does nothing (so explicit user configuration always wins).
-///
-/// Returns the number of threads the pool was configured with, or `None`
-/// if no change was made (either because the env var was set or because
-/// rayon was already initialized).
-pub fn init_perf_thread_pool() -> Option<usize> {
-    if std::env::var("RAYON_NUM_THREADS").is_ok() {
-        return None;
-    }
-    let n = perf_core_count();
-    match rayon::ThreadPoolBuilder::new()
-        .num_threads(n)
-        .build_global()
-    {
-        Ok(()) => Some(n),
-        Err(_) => None, // pool already built
-    }
-}
-
 /// Allocate a `Vec<T>` of length `n` whose contents are NOT zero-initialized.
 /// Caller MUST write every slot before reading it.
 ///

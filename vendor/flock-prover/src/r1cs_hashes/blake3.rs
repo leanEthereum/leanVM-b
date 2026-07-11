@@ -27,7 +27,7 @@
 //! sums" encoding, so the slow-path
 //! `apply_{a,b,c}_packed` and `sparse_row_fold` are slower per K-block.
 //! But K halves (2^15 → 2^14), which speeds up PCS commit/open and lets
-//! more instances fit at the same `m`. Picks favor `prove_fast` over `prove`.
+//! more instances fit at the same `m`.
 //!
 //! ## Witness layout per compression block (`k_log = 14`, `k = 16,384`)
 //!
@@ -101,8 +101,7 @@
 use super::common::{BitRecord, add_carry_parts, or_bit_at, or_u32_at_bit, xor_dedup};
 use flock_core::transcript::{ProverState, VerifierState};
 use flock_core::field::F128;
-use flock_core::pcs::{Commitment, PcsParams};
-use flock_core::proof::{R1csClaim, R1csProof};
+use flock_core::pcs::Commitment;
 use flock_core::r1cs::{BlockR1cs, SparseBinaryMatrix};
 use flock_core::verifier;
 
@@ -667,206 +666,6 @@ pub fn build_block_r1cs(n_blocks_log: usize) -> BlockR1cs {
 }
 
 // ---------------------------------------------------------------------------
-// Lincheck circuit walker — mirrors `build_matrices`. Same structure as
-// `blake3::Blake3LincheckCircuit` but uses this module's I/O-aligned slot
-// positions (cv_bit/m_bit/etc.).
-// ---------------------------------------------------------------------------
-
-#[inline]
-fn scatter_add_carry_rows(
-    comb: &mut [F128],
-    alpha: F128,
-    eq_inner: &[F128],
-    x: &Word,
-    y: &Word,
-    carry_base: usize,
-) -> Word {
-    for i in 0..CARRY_BITS_PER_ADD {
-        let row = carry_base + i;
-        let e = eq_inner[row];
-        let ea = alpha * e;
-        for &slot in x.bits[i].iter() {
-            comb[slot] += ea;
-        }
-        for j in 0..i {
-            comb[carry_base + j] += ea;
-        }
-        for &slot in y.bits[i].iter() {
-            comb[slot] += e;
-        }
-        for j in 0..i {
-            comb[carry_base + j] += e;
-        }
-    }
-    Word::add_sum(x, y, carry_base)
-}
-
-#[inline]
-fn scatter_lin_id_row(
-    comb: &mut [F128],
-    alpha: F128,
-    eq_inner: &[F128],
-    row: usize,
-    word_bits_i: &[usize],
-) {
-    let e = eq_inner[row];
-    let ea = alpha * e;
-    for &slot in word_bits_i.iter() {
-        comb[slot] += ea;
-    }
-    comb[Z_CONST_POS] += e;
-}
-
-pub struct Blake3LincheckCircuit;
-
-impl flock_core::lincheck::LincheckCircuit for Blake3LincheckCircuit {
-    fn n_cols(&self) -> usize {
-        K
-    }
-
-    fn fold_alpha_batched(&self, alpha: F128, eq_inner: &[F128]) -> Vec<F128> {
-        assert_eq!(eq_inner.len(), K, "eq_inner length must equal n_cols = K");
-        let mut comb = vec![F128::ZERO; K];
-
-        // Const row.
-        let e0 = eq_inner[Z_CONST_POS];
-        comb[Z_CONST_POS] += alpha * e0;
-        comb[Z_CONST_POS] += e0;
-
-        // Free-input self-loops for the message bits m.
-        let input_emit = |comb: &mut [F128], base: usize, len: usize| {
-            for j in 0..len {
-                let s = base + j;
-                let e = eq_inner[s];
-                comb[s] += alpha * e;
-                comb[Z_CONST_POS] += e;
-            }
-        };
-        input_emit(&mut comb, M_BASE, 16 * WORD_BITS);
-
-        // Constant rows for cv/counter/blen/flags (mirrors `build_matrices`):
-        // set bits have A = B = [Z_CONST], clear bits empty rows.
-        let const_emit = |comb: &mut [F128], base: usize, words: &[u32]| {
-            for (w, &val) in words.iter().enumerate() {
-                for j in 0..WORD_BITS {
-                    if (val >> j) & 1 == 1 {
-                        let e = eq_inner[base + w * WORD_BITS + j];
-                        comb[Z_CONST_POS] += alpha * e;
-                        comb[Z_CONST_POS] += e;
-                    }
-                }
-            }
-        };
-        const_emit(&mut comb, CV_BASE, &BLAKE3_IV);
-        const_emit(&mut comb, T_LO_BASE, &[0]);
-        const_emit(&mut comb, T_HI_BASE, &[0]);
-        const_emit(&mut comb, BLEN_BASE, &[PINNED_BLOCK_LEN]);
-        const_emit(&mut comb, FLAGS_BASE, &[PINNED_FLAGS]);
-
-        let msg_idx = per_round_msg_idx();
-        let mut state: [Word; 16] = initial_lane_words();
-
-        for r in 0..N_ROUNDS {
-            for g_in_round in 0..N_G_PER_ROUND {
-                let g = r * N_G_PER_ROUND + g_in_round;
-                let [la, lb, lc, ld] = G_LANES[g_in_round];
-                let [mx_idx, my_idx] = msg_idx[r][g_in_round];
-
-                let a = state[la].clone();
-                let b = state[lb].clone();
-                let c = state[lc].clone();
-                let d = state[ld].clone();
-                let mx = Word::from_slot_base(m_bit(mx_idx, 0));
-                let my = Word::from_slot_base(m_bit(my_idx, 0));
-
-                let tmp_0 = scatter_add_carry_rows(
-                    &mut comb,
-                    alpha,
-                    eq_inner,
-                    &a,
-                    &b,
-                    g_add_carry_bit(g, ADD_TMP0, 0),
-                );
-                let a_1 = scatter_add_carry_rows(
-                    &mut comb,
-                    alpha,
-                    eq_inner,
-                    &tmp_0,
-                    &mx,
-                    g_add_carry_bit(g, ADD_A1, 0),
-                );
-                let d_1 = d.xor(&a_1).dedup().rotr(16);
-                let c_1 = scatter_add_carry_rows(
-                    &mut comb,
-                    alpha,
-                    eq_inner,
-                    &c,
-                    &d_1,
-                    g_add_carry_bit(g, ADD_C1, 0),
-                );
-                let b_1 = b.xor(&c_1).dedup().rotr(12);
-                let tmp_1 = scatter_add_carry_rows(
-                    &mut comb,
-                    alpha,
-                    eq_inner,
-                    &a_1,
-                    &b_1,
-                    g_add_carry_bit(g, ADD_TMP1, 0),
-                );
-                let a_2 = scatter_add_carry_rows(
-                    &mut comb,
-                    alpha,
-                    eq_inner,
-                    &tmp_1,
-                    &my,
-                    g_add_carry_bit(g, ADD_A2, 0),
-                );
-                let d_2 = d_1.xor(&a_2).dedup().rotr(8);
-                let c_2 = scatter_add_carry_rows(
-                    &mut comb,
-                    alpha,
-                    eq_inner,
-                    &c_1,
-                    &d_2,
-                    g_add_carry_bit(g, ADD_C2, 0),
-                );
-
-                let b_new_word = b_1.xor(&c_2).dedup().rotr(7);
-                for i in 0..WORD_BITS {
-                    let s = g_lin_bit(g, LIN_B_NEW, i);
-                    scatter_lin_id_row(&mut comb, alpha, eq_inner, s, &b_new_word.bits[i]);
-                }
-                for i in 0..WORD_BITS {
-                    let s = g_lin_bit(g, LIN_D_NEW, i);
-                    scatter_lin_id_row(&mut comb, alpha, eq_inner, s, &d_2.bits[i]);
-                }
-
-                state[la] = a_2;
-                state[lb] = Word::from_slot_base(g_lin_bit(g, LIN_B_NEW, 0));
-                state[lc] = c_2;
-                state[ld] = Word::from_slot_base(g_lin_bit(g, LIN_D_NEW, 0));
-            }
-        }
-
-        for w in 0..8 {
-            let lo = state[w].xor(&state[w + 8]).dedup();
-            for i in 0..WORD_BITS {
-                let s = out_lo_bit(w, i);
-                scatter_lin_id_row(&mut comb, alpha, eq_inner, s, &lo.bits[i]);
-            }
-            let cv_w = Word::from_slot_base(cv_bit(w, 0));
-            let hi = state[w + 8].xor(&cv_w).dedup();
-            for i in 0..WORD_BITS {
-                let s = out_hi_bit(w, i);
-                scatter_lin_id_row(&mut comb, alpha, eq_inner, s, &hi.bits[i]);
-            }
-        }
-
-        comb
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Witness generation (boolean)
 // ---------------------------------------------------------------------------
 
@@ -1344,76 +1143,17 @@ pub fn generate_witness_with_ab_packed_and_lincheck(
 // Convenience API: Blake3Setup
 // ---------------------------------------------------------------------------
 
-/// Bundles the monolithic BLAKE3 compression R1CS + PCS params sized for
-/// `n_blocks` compressions. Mirrors [`super::sha2::Sha256Setup`].
+/// Bundles the monolithic BLAKE3 compression R1CS sized for `n_blocks`
+/// compressions.
 #[derive(Clone, Debug)]
 pub struct Blake3Setup {
     pub n_blocks: usize,
     pub r1cs: BlockR1cs,
-    pub pcs_params: PcsParams,
 }
 
 impl Blake3Setup {
-    /// Build a setup for `n_blocks` BLAKE3 compressions with PCS
-    /// `log_inv_rate = 1`.
-    /// [`Self::new`] with the **batch-major** witness layout (see
-    /// [`flock_core::r1cs::WitnessLayout`]). The generic matrix provers and
-    /// chain/Merkle wrappers still require row-major.
-    pub fn new_batch_major(n_blocks: usize) -> Self {
-        let mut s = Self::new(n_blocks);
-        s.r1cs.layout = flock_core::r1cs::WitnessLayout::BatchMajor;
-        s
-    }
-
-    /// Fast-path witness generation dispatched on the r1cs's witness layout.
-    fn generate_witness_ab(
-        &self,
-        blocks: &[Compression],
-    ) -> (
-        Vec<flock_core::field::F128>,
-        Vec<flock_core::field::F128>,
-        Vec<flock_core::field::F128>,
-        Vec<u8>,
-    ) {
-        match self.r1cs.layout {
-            flock_core::r1cs::WitnessLayout::RowMajor => {
-                generate_witness_with_ab_packed_and_lincheck(blocks, self.n_blocks_log())
-            }
-            flock_core::r1cs::WitnessLayout::BatchMajor => {
-                generate_witness_batch_major(blocks, self.n_blocks_log())
-            }
-        }
-    }
-
+    /// Build a setup for `n_blocks` BLAKE3 compressions.
     pub fn new(n_blocks: usize) -> Self {
-        Self::with_log_inv_rate(n_blocks, 1)
-    }
-
-    /// Build a setup with a custom PCS `log_inv_rate`.
-    pub fn with_log_inv_rate(n_blocks: usize, log_inv_rate: usize) -> Self {
-        // Rate keys the legacy profiles: 1 -> Fast, 2 -> Slim.
-        let profile = match log_inv_rate {
-            1 => flock_core::pcs::ligerito::LigeritoProfile::Fast,
-            2 => flock_core::pcs::ligerito::LigeritoProfile::Slim,
-            _ => flock_core::pcs::ligerito::LigeritoProfile::Fast, // BaseFold-only rates
-        };
-        Self::with_profile_and_rate(n_blocks, profile, log_inv_rate)
-    }
-
-    /// Build a setup for a named Ligerito profile (fast/slim/secure);
-    /// the PCS rate follows the profile.
-    pub fn with_profile(
-        n_blocks: usize,
-        profile: flock_core::pcs::ligerito::LigeritoProfile,
-    ) -> Self {
-        Self::with_profile_and_rate(n_blocks, profile, profile.log_inv_rate())
-    }
-
-    fn with_profile_and_rate(
-        n_blocks: usize,
-        profile: flock_core::pcs::ligerito::LigeritoProfile,
-        log_inv_rate: usize,
-    ) -> Self {
         assert!(n_blocks >= 1, "n_blocks must be ≥ 1");
         let n_log = min_n_blocks_log(n_blocks);
         let r1cs = build_block_r1cs(n_log);
@@ -1422,17 +1162,7 @@ impl Blake3Setup {
         // the prove-cycle scratch buffers (see scratch::prewarm_prover).
         r1cs.csc_lincheck_circuit();
         flock_core::scratch::prewarm_prover(r1cs.m);
-        let pcs_params = PcsParams {
-            m: r1cs.m,
-            log_inv_rate,
-            log_batch_size: 6,
-            profile,
-        };
-        Self {
-            n_blocks,
-            r1cs,
-            pcs_params,
-        }
+        Self { n_blocks, r1cs }
     }
 
     pub fn m(&self) -> usize {
@@ -1444,336 +1174,11 @@ impl Blake3Setup {
     pub fn n_block_slots(&self) -> usize {
         1usize << self.n_blocks_log()
     }
-
-    pub fn generate_witness(&self, blocks: &[Compression]) -> Vec<bool> {
-        assert_eq!(
-            blocks.len(),
-            self.n_blocks,
-            "expected {} blocks, got {}",
-            self.n_blocks,
-            blocks.len()
-        );
-        generate_witness(blocks, self.n_blocks_log())
-    }
-
-    /// Full prover pipeline.
-    pub fn prove(
-        &self,
-        blocks: &[Compression],
-        ps: &mut ProverState,
-    ) -> (R1csProof, Commitment, R1csClaim) {
-        let z_packed = self.generate_witness_packed(blocks);
-        crate::prover::prove(&self.r1cs, &z_packed, &self.pcs_params, ps)
-    }
-
-    /// Packed witness trace for the generic (matrix-driven) provers — see
-    /// `Sha256HybridSetup::generate_witness_packed`.
-    pub fn generate_witness_packed(&self, blocks: &[Compression]) -> Vec<F128> {
-        let (z_packed, _a, _b, _stripe) = self.generate_witness_ab(blocks);
-        z_packed
-    }
-
-    /// Generic (matrix-driven) prover on the **Ligerito** backend — the
-    /// counterpart of [`Self::prove`] (BaseFold). Same witness path;
-    /// produces a proof byte-identical to [`Self::prove_fast`] and
-    /// verifiable with [`Self::verify`].
-    pub fn prove_ligerito(
-        &self,
-        blocks: &[Compression],
-        ps: &mut ProverState,
-    ) -> (flock_core::proof::R1csProofLigerito, Commitment, R1csClaim) {
-        let z_packed = self.generate_witness_packed(blocks);
-        crate::prover::prove_ligerito(&self.r1cs, z_packed, &self.pcs_params, ps)
-    }
-
-    /// Like [`Self::prove`] but emits `a`, `b`, `c` during witness gen
-    /// directly in F_{2^128}-packed form — no bool intermediates, no
-    /// `pack_witness`, no `apply_block_diag_packed`.
-    ///
-    pub fn prove_fast_basefold(
-        &self,
-        blocks: &[Compression],
-        ps: &mut ProverState,
-    ) -> (R1csProof, Commitment, R1csClaim) {
-        assert_eq!(blocks.len(), self.n_blocks);
-        let (z_packed, a_packed_f128, b_packed_f128, z_packed_lincheck) =
-            self.generate_witness_ab(blocks);
-        let lc_circuit = self.r1cs.csc_lincheck_circuit();
-        crate::prover::prove_fast_from_witness(
-            &self.r1cs,
-            &self.pcs_params,
-            z_packed,
-            a_packed_f128,
-            b_packed_f128,
-            z_packed_lincheck,
-            lc_circuit,
-            ps,
-        )
-    }
-
-    pub fn verify_basefold(
-        &self,
-        commitment: &Commitment,
-        proof: &R1csProof,
-        vs: &mut VerifierState<'_>,
-    ) -> Result<R1csClaim, verifier::VerifyError> {
-        let lc_circuit = self.r1cs.csc_lincheck_circuit();
-        verifier::verify(&self.r1cs, commitment, proof, lc_circuit, vs)
-    }
-
-    /// Ligerito-backend prove. Requires m ≥ ~21.
-    pub fn prove_fast(
-        &self,
-        blocks: &[Compression],
-        ps: &mut ProverState,
-    ) -> (flock_core::proof::R1csProofLigerito, Commitment, R1csClaim) {
-        assert_eq!(blocks.len(), self.n_blocks);
-        let (codeword, (z_packed, a_packed_f128, b_packed_f128, z_packed_lincheck)) =
-            flock_core::pcs::prefault_codeword_during(&self.pcs_params, || {
-                self.generate_witness_ab(blocks)
-            });
-        let lc_circuit = self.r1cs.csc_lincheck_circuit();
-        crate::prover::prove_fast_ligerito_from_witness(
-            &self.r1cs,
-            &self.pcs_params,
-            z_packed,
-            a_packed_f128,
-            b_packed_f128,
-            z_packed_lincheck,
-            lc_circuit,
-            codeword,
-            ps,
-        )
-    }
-
-    /// [`Self::prove_fast`] with a per-phase timing breakdown of the real
-    /// Ligerito prover (witness gen + commit + zerocheck + lincheck + recursive
-    /// open). Benchmark-only.
-    pub fn prove_fast_timed(
-        &self,
-        blocks: &[Compression],
-        ps: &mut ProverState,
-    ) -> (
-        flock_core::proof::R1csProofLigerito,
-        Commitment,
-        R1csClaim,
-        crate::prover::ProvePhaseTimings,
-    ) {
-        assert_eq!(blocks.len(), self.n_blocks);
-        let t0 = std::time::Instant::now();
-        let (z_packed, a_packed_f128, b_packed_f128, z_packed_lincheck) =
-            self.generate_witness_ab(blocks);
-        let witness_s = t0.elapsed().as_secs_f64();
-        let lc_circuit = self.r1cs.csc_lincheck_circuit();
-        let (proof, commitment, claim, mut timings) = crate::prover::prove_fast_ligerito_timed(
-            &self.r1cs,
-            &self.pcs_params,
-            z_packed,
-            a_packed_f128,
-            b_packed_f128,
-            z_packed_lincheck,
-            lc_circuit,
-            None,
-            ps,
-        );
-        timings.witness_s = witness_s;
-        (proof, commitment, claim, timings)
-    }
-
-    pub fn verify(
-        &self,
-        commitment: &Commitment,
-        proof: &flock_core::proof::R1csProofLigerito,
-        vs: &mut VerifierState<'_>,
-    ) -> Result<R1csClaim, verifier::VerifyError> {
-        let lc_circuit = self.r1cs.csc_lincheck_circuit();
-        verifier::verify_ligerito(
-            &self.r1cs,
-            commitment,
-            proof,
-            lc_circuit,
-            &self.pcs_params,
-            vs,
-        )
-    }
 }
 
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// Batch-major witness producer (WitnessLayout::BatchMajor).
-//
-// V = 8 compressions in lockstep ([u32; 8] lanes); witness fields OR'd
-// V-wide into an L1-resident interleaved row buffer (already batch-major
-// order), NT-flushed per useful 128-bit chunk by the shared driver. See
-// `common::drive_witness_batch_major`.
-// ---------------------------------------------------------------------------
-
-use super::common::{BM_V, BmRow, add_carry_parts_v, or_bit_row, or_u32_row};
-
-#[inline(always)]
-fn bm_xor_rotr(x: &[u32; BM_V], y: &[u32; BM_V], r: u32) -> [u32; BM_V] {
-    std::array::from_fn(|j| (x[j] ^ y[j]).rotate_right(r))
-}
-
-struct BmRows<'a> {
-    z: &'a mut [BmRow],
-    a: &'a mut [BmRow],
-    b: &'a mut [BmRow],
-}
-
-#[inline(always)]
-fn bm_write_lin(rows: &mut BmRows<'_>, bit: usize, vals: &[u32; BM_V]) {
-    or_u32_row(rows.z, bit, vals);
-    or_u32_row(rows.a, bit, vals);
-    or_u32_row(rows.b, bit, &[0xFFFF_FFFF; BM_V]);
-}
-
-/// Constant-row counterpart of [`bm_write_lin`]: `a = b = z = val` (see
-/// [`write_const_word_ab_packed`]).
-#[inline(always)]
-fn bm_write_const(rows: &mut BmRows<'_>, bit: usize, vals: &[u32; BM_V]) {
-    or_u32_row(rows.z, bit, vals);
-    or_u32_row(rows.a, bit, vals);
-    or_u32_row(rows.b, bit, vals);
-}
-
-#[inline(always)]
-fn bm_add_inline(
-    rows: &mut BmRows<'_>,
-    x: &[u32; BM_V],
-    y: &[u32; BM_V],
-    carry_bit: usize,
-) -> [u32; BM_V] {
-    let (sum, left, right, carry) = add_carry_parts_v(x, y);
-    or_u32_row(rows.z, carry_bit, &carry);
-    or_u32_row(rows.a, carry_bit, &left);
-    or_u32_row(rows.b, carry_bit, &right);
-    sum
-}
-
-/// Build one V = 8 group of compressions into interleaved rows. Mirrors
-/// [`build_block_witness_ab_packed_into`] field-for-field (byte-equality is
-/// pinned by the lockstep test below).
-fn build_group_batch_major(
-    inputs: [&Compression; BM_V],
-    rz: &mut [BmRow],
-    ra: &mut [BmRow],
-    rb: &mut [BmRow],
-) {
-    let mut rows = BmRows {
-        z: rz,
-        a: ra,
-        b: rb,
-    };
-    let cv: [[u32; BM_V]; 8] = std::array::from_fn(|w| std::array::from_fn(|j| inputs[j].0[w]));
-    let m: [[u32; BM_V]; 16] = std::array::from_fn(|i| std::array::from_fn(|j| inputs[j].1[i]));
-    let counter_lo: [u32; BM_V] = std::array::from_fn(|j| inputs[j].2 as u32);
-    let counter_hi: [u32; BM_V] = std::array::from_fn(|j| (inputs[j].2 >> 32) as u32);
-    let block_len: [u32; BM_V] = std::array::from_fn(|j| inputs[j].3);
-    let flags: [u32; BM_V] = std::array::from_fn(|j| inputs[j].4);
-
-    or_bit_row(rows.z, Z_CONST_POS);
-    or_bit_row(rows.a, Z_CONST_POS);
-    or_bit_row(rows.b, Z_CONST_POS);
-
-    for w in 0..8 {
-        bm_write_const(&mut rows, cv_bit(w, 0), &cv[w]);
-    }
-    for i in 0..16 {
-        bm_write_lin(&mut rows, m_bit(i, 0), &m[i]);
-    }
-    bm_write_const(&mut rows, T_LO_BASE, &counter_lo);
-    bm_write_const(&mut rows, T_HI_BASE, &counter_hi);
-    bm_write_const(&mut rows, BLEN_BASE, &block_len);
-    bm_write_const(&mut rows, FLAGS_BASE, &flags);
-
-    let mut state: [[u32; BM_V]; 16] = [
-        cv[0],
-        cv[1],
-        cv[2],
-        cv[3],
-        cv[4],
-        cv[5],
-        cv[6],
-        cv[7],
-        [BLAKE3_IV[0]; BM_V],
-        [BLAKE3_IV[1]; BM_V],
-        [BLAKE3_IV[2]; BM_V],
-        [BLAKE3_IV[3]; BM_V],
-        counter_lo,
-        counter_hi,
-        block_len,
-        flags,
-    ];
-    let msg_idx = per_round_msg_idx();
-    for r in 0..N_ROUNDS {
-        for g_in_round in 0..N_G_PER_ROUND {
-            let g = r * N_G_PER_ROUND + g_in_round;
-            let [la, lb, lc, ld] = G_LANES[g_in_round];
-            let [mx_i, my_i] = msg_idx[r][g_in_round];
-            let mx = m[mx_i];
-            let my = m[my_i];
-
-            let a_val = state[la];
-            let b_val = state[lb];
-            let c_val = state[lc];
-            let d_val = state[ld];
-
-            let tmp_0 = bm_add_inline(&mut rows, &a_val, &b_val, g_add_carry_bit(g, ADD_TMP0, 0));
-            let a_1 = bm_add_inline(&mut rows, &tmp_0, &mx, g_add_carry_bit(g, ADD_A1, 0));
-            let d_1 = bm_xor_rotr(&d_val, &a_1, 16);
-            let c_1 = bm_add_inline(&mut rows, &c_val, &d_1, g_add_carry_bit(g, ADD_C1, 0));
-            let b_1 = bm_xor_rotr(&b_val, &c_1, 12);
-            let tmp_1 = bm_add_inline(&mut rows, &a_1, &b_1, g_add_carry_bit(g, ADD_TMP1, 0));
-            let a_2 = bm_add_inline(&mut rows, &tmp_1, &my, g_add_carry_bit(g, ADD_A2, 0));
-            let d_2 = bm_xor_rotr(&d_1, &a_2, 8);
-            let c_2 = bm_add_inline(&mut rows, &c_1, &d_2, g_add_carry_bit(g, ADD_C2, 0));
-            let b_new = bm_xor_rotr(&b_1, &c_2, 7);
-            let d_new = d_2;
-            bm_write_lin(&mut rows, g_lin_bit(g, LIN_B_NEW, 0), &b_new);
-            bm_write_lin(&mut rows, g_lin_bit(g, LIN_D_NEW, 0), &d_new);
-
-            state[la] = a_2;
-            state[lb] = b_new;
-            state[lc] = c_2;
-            state[ld] = d_new;
-        }
-    }
-
-    for w in 0..8 {
-        let lo: [u32; BM_V] = std::array::from_fn(|j| state[w][j] ^ state[w + 8][j]);
-        let hi: [u32; BM_V] = std::array::from_fn(|j| state[w + 8][j] ^ cv[w][j]);
-        bm_write_lin(&mut rows, out_lo_bit(w, 0), &lo);
-        bm_write_lin(&mut rows, out_hi_bit(w, 0), &hi);
-    }
-}
-
-/// Batch-major counterpart of [`generate_witness_with_ab_packed_and_lincheck`]
-/// — `(z, a, b, z_lincheck)` with z/a/b in the batch-major layout. Padding
-/// slots run [`padding_block`] (constant wire = 1).
-pub fn generate_witness_batch_major(
-    blocks: &[Compression],
-    n_blocks_log: usize,
-) -> (
-    Vec<flock_core::field::F128>,
-    Vec<flock_core::field::F128>,
-    Vec<flock_core::field::F128>,
-    Vec<u8>,
-) {
-    let padding = padding_block();
-    blocks.iter().for_each(assert_pinned);
-    super::common::drive_witness_batch_major(
-        blocks,
-        &padding,
-        n_blocks_log,
-        K_LOG,
-        USEFUL_BITS,
-        build_group_batch_major,
-    )
-}
 
 #[cfg(test)]
 mod tests {
@@ -1798,74 +1203,6 @@ mod tests {
     const CHUNK_START: u32 = 1 << 0;
     const CHUNK_END: u32 = 1 << 1;
     const ROOT: u32 = 1 << 3;
-
-    /// Batch-major witness equality vs the row-major driver (word-transpose
-    /// + identical stripe), incl. padding slots via a non-power-of-two count.
-    #[test]
-    fn batch_major_witness_matches_row_major_transposed() {
-        for (n_inputs, n_log) in [(8usize, 3usize), (11, 4)] {
-            let mut rng = Rng::new(0xBA7C_B3 + n_log as u64);
-            let inputs: Vec<Compression> = (0..n_inputs)
-                .map(|_| {
-                    let m: [u32; 16] = std::array::from_fn(|_| rng.next_u32());
-                    pinned_compression(m)
-                })
-                .collect();
-
-            let (z_r, a_r, b_r, stripe_r) =
-                generate_witness_with_ab_packed_and_lincheck(&inputs, n_log);
-            let (z_b, a_b, b_b, stripe_b) = generate_witness_batch_major(&inputs, n_log);
-
-            assert_eq!(stripe_b, stripe_r, "stripe diverged (n_log={n_log})");
-
-            let chunks_per_block = K / 128;
-            let transpose = |row: &[flock_core::field::F128]| {
-                let mut out = vec![flock_core::field::F128::ZERO; row.len()];
-                for o in 0..1usize << n_log {
-                    for c in 0..chunks_per_block {
-                        out[(c << n_log) + o] = row[o * chunks_per_block + c];
-                    }
-                }
-                out
-            };
-            assert_eq!(z_b, transpose(&z_r), "z diverged (n_log={n_log})");
-            assert_eq!(a_b, transpose(&a_r), "a diverged (n_log={n_log})");
-            assert_eq!(b_b, transpose(&b_r), "b diverged (n_log={n_log})");
-        }
-    }
-
-    /// Batch-major end-to-end roundtrip (BaseFold) + tamper rejection.
-    #[test]
-    fn batch_major_prove_fast_basefold_roundtrip() {
-        
-
-        let setup = Blake3Setup::new_batch_major(8);
-        let mut rng = Rng::new(0xBA7C_F013);
-        let inputs: Vec<Compression> = (0..8)
-            .map(|_| {
-                let m: [u32; 16] = std::array::from_fn(|_| rng.next_u32());
-                pinned_compression(m)
-            })
-            .collect();
-
-        let mut ch_p = flock_core::transcript::ProverState::new(b"flock-test-v0", &[]);
-        let (proof, commitment, claim_p) = setup.prove_fast_basefold(&inputs, &mut ch_p);
-        let proof_t = ch_p.into_proof();
-        let mut ch_v = flock_core::transcript::VerifierState::new(b"flock-test-v0", &proof_t, &[]);
-        let claim_v = setup
-            .verify_basefold(&commitment, &proof, &mut ch_v)
-            .unwrap_or_else(|e| panic!("batch-major verifier rejected: {e:?}"));
-        assert_eq!(claim_p, claim_v);
-
-        // Tamper a zerocheck stream word: the bound read reshuffles challenges.
-        let mut bad = proof_t.clone();
-        bad.stream[0].lo ^= 1;
-        let mut ch = flock_core::transcript::VerifierState::new(b"flock-test-v0", &bad, &[]);
-        assert!(
-            setup.verify_basefold(&commitment, &proof, &mut ch).is_err(),
-            "tampered batch-major proof accepted"
-        );
-    }
 
     #[test]
     fn layout_constants() {
@@ -1988,118 +1325,8 @@ mod tests {
         );
     }
 
-    /// End-to-end prove/verify for one compression. Slow in debug, fast in
-    /// release.
-    #[test]
-    fn end_to_end_prove_verify() {
-        
-        let setup = Blake3Setup::new(1);
-        let mut rng = Rng::new(0xC0DE_5A55);
-        let m: [u32; 16] = std::array::from_fn(|_| rng.next_u32());
-        let blocks = vec![pinned_compression(m)];
-        let mut ch_p = flock_core::transcript::ProverState::new(b"flock-test-v0", &[]);
-        let (proof, commitment, claim_p) = setup.prove(&blocks, &mut ch_p);
-        let proof_t = ch_p.into_proof();
-        let mut ch_v = flock_core::transcript::VerifierState::new(b"flock-test-v0", &proof_t, &[]);
-        let claim_v = setup
-            .verify_basefold(&commitment, &proof, &mut ch_v)
-            .unwrap_or_else(|e| panic!("verify rejected honest BLAKE3 proof: {e:?}"));
-        assert_eq!(claim_p, claim_v);
-    }
-
-    /// A mutated BLAKE3 witness produces a proof that fails verification.
-    #[test]
-    fn verify_rejects_mutation() {
-        
-        let setup = Blake3Setup::new(1);
-        let mut rng = Rng::new(0xBADD_BEEF);
-        let m: [u32; 16] = std::array::from_fn(|_| rng.next_u32());
-        let blocks = vec![pinned_compression(m)];
-        let mut z = setup.generate_witness(&blocks);
-        assert!(setup.r1cs.satisfies(&z));
-        z[g_add_carry_bit(15, ADD_A2, 3)] ^= true;
-        assert!(!setup.r1cs.satisfies(&z));
-        let mut ch_p = flock_core::transcript::ProverState::new(b"flock-test-v0", &[]);
-        let z_packed = flock_core::pcs::pack_witness(&z, setup.r1cs.m);
-        let (proof, commitment, _) =
-            crate::prover::prove(&setup.r1cs, &z_packed, &setup.pcs_params, &mut ch_p);
-        let proof_t = ch_p.into_proof();
-        let mut ch_v = flock_core::transcript::VerifierState::new(b"flock-test-v0", &proof_t, &[]);
-        assert!(
-            setup
-                .verify_basefold(&commitment, &proof, &mut ch_v)
-                .is_err(),
-            "tampered witness produced an accepted proof"
-        );
-    }
-
-    /// `generate_witness_with_ab_packed` agrees with the matrix-vector
-    /// products `apply_a_packed(z)` and `apply_b_packed(z)`. Also asserts
-    /// `apply_c_packed(z) == z` (C = I), validating the aliasing assumption
-    /// used by prove_fast.
-    #[test]
-    fn generate_witness_with_ab_packed_matches_apply() {
-        for &n_blocks in &[1usize, 4, 8] {
-            let n_log = min_n_blocks_log(n_blocks).max(3);
-            let r1cs = build_block_r1cs(n_log);
-            let mut rng = Rng::new(0xABCD_5A55 + n_blocks as u64);
-            let blocks: Vec<Compression> = (0..n_blocks)
-                .map(|_| {
-                    let m: [u32; 16] = std::array::from_fn(|_| rng.next_u32());
-                    pinned_compression(m)
-                })
-                .collect();
-
-            let (z, a, b) = generate_witness_with_ab_packed(&blocks, n_log);
-            let a_ref = r1cs.apply_a_packed(&z);
-            let b_ref = r1cs.apply_b_packed(&z);
-            let c_ref = r1cs.apply_c_packed(&z);
-            assert_eq!(a, a_ref, "a mismatch at n_blocks={n_blocks}");
-            assert_eq!(b, b_ref, "b mismatch at n_blocks={n_blocks}");
-            // C = I, so c == z. prove_fast relies on this for the c-aliasing.
-            assert_eq!(c_ref, z, "C is not identity at n_blocks={n_blocks}");
-            assert!(r1cs.satisfies_packed(&z));
-        }
-    }
-
     /// The fused generator produces (z, a, b) byte-identical to
     /// `generate_witness_with_ab_packed` AND a lincheck stripe byte-identical
-    /// `Blake3LincheckCircuit` walker matches the sparse fold byte-for-byte
-    /// at random α + random eq_inner.
-    #[test]
-    fn lincheck_circuit_matches_sparse() {
-        use flock_core::lincheck::{LincheckCircuit, SparseMatrixCircuit};
-
-        let mut rng = Rng::new(0xB1A_E3_CCA1);
-        let (a_0, b_0) = build_matrices();
-        let sparse = SparseMatrixCircuit::new(&a_0, &b_0);
-        let walker = Blake3LincheckCircuit;
-        assert_eq!(sparse.n_cols(), walker.n_cols());
-
-        let n_cols = walker.n_cols();
-        let alpha = F128 {
-            lo: ((rng.next_u32() as u64) << 32) | rng.next_u32() as u64,
-            hi: ((rng.next_u32() as u64) << 32) | rng.next_u32() as u64,
-        };
-        let eq_inner: Vec<F128> = (0..n_cols)
-            .map(|_| F128 {
-                lo: ((rng.next_u32() as u64) << 32) | rng.next_u32() as u64,
-                hi: ((rng.next_u32() as u64) << 32) | rng.next_u32() as u64,
-            })
-            .collect();
-
-        let expected = sparse.fold_alpha_batched(alpha, &eq_inner);
-        let got = walker.fold_alpha_batched(alpha, &eq_inner);
-        for c in 0..n_cols {
-            assert_eq!(expected[c], got[c], "comb mismatch at col {c}");
-        }
-
-        // CSC gather (what prove_fast/verify actually use) matches too.
-        let csc = flock_core::lincheck::CscCircuit::from_matrices(&a_0, &b_0);
-        let got_csc = csc.fold_alpha_batched(alpha, &eq_inner);
-        assert_eq!(expected, got_csc, "CSC fold mismatch");
-    }
-
     /// to `pack_z_lincheck_from_packed(z)`.
     #[test]
     fn fused_lincheck_matches_separate() {
@@ -2129,196 +1356,6 @@ mod tests {
         }
     }
 
-    /// Full prove→verify round-trip through the Ligerito PCS for EACH named
-    /// profile (fast = JohnsonOod 100-bit, slim = JohnsonOod 100-bit + query
-    /// grinding, secure = UDR 120-bit). 256 blocks → m=22, the smallest
-    /// embedded config. Drives OOD binding + fold grinding through the real
-    /// R1CS / ring-switch / recursive-sumcheck pipeline end to end.
-    #[test]
-    fn prove_verify_ligerito_all_profiles() {
-        
-        use flock_core::pcs::ligerito::LigeritoProfile;
-        let blocks: Vec<Compression> = {
-            let mut rng = Rng::new(0x9A11_0F11);
-            (0..256)
-                .map(|_| {
-                    let m: [u32; 16] = std::array::from_fn(|_| rng.next_u32());
-                    pinned_compression(m)
-                })
-                .collect()
-        };
-        for profile in [
-            LigeritoProfile::Fast,
-            LigeritoProfile::Slim,
-            LigeritoProfile::Secure,
-        ] {
-            let setup = Blake3Setup::with_profile(256, profile);
-            let mut ch_p = flock_core::transcript::ProverState::new(b"flock-blake3-prof", &[]);
-            let (proof, commitment, claim_p) = setup.prove_ligerito(&blocks, &mut ch_p);
-            let proof_t = ch_p.into_proof();
-            let mut ch_v = flock_core::transcript::VerifierState::new(b"flock-blake3-prof", &proof_t, &[]);
-            let claim_v = setup
-                .verify(&commitment, &proof, &mut ch_v)
-                .unwrap_or_else(|e| {
-                    panic!(
-                        "ligerito verify rejected for profile {}: {e:?}",
-                        profile.as_str()
-                    )
-                });
-            assert_eq!(
-                claim_p,
-                claim_v,
-                "claim mismatch for profile {}",
-                profile.as_str()
-            );
-        }
-    }
-
-    /// Ligerito-backend prove_fast roundtrip. Needs ≥ 256 blocks (m=22) for
-    /// the default Ligerito config at log_batch_size=6.
-    #[test]
-    #[ignore]
-    fn prove_fast_ligerito_roundtrip() {
-        
-        let setup = Blake3Setup::new(256);
-        let mut rng = Rng::new(0xb1a_3211e);
-        let blocks: Vec<Compression> = (0..256)
-            .map(|_| {
-                let m: [u32; 16] = std::array::from_fn(|_| rng.next_u32());
-                pinned_compression(m)
-            })
-            .collect();
-        let mut ch_p = flock_core::transcript::ProverState::new(b"flock-blake3-lig-v0", &[]);
-        let (proof, commitment, claim_p) = setup.prove_fast(&blocks, &mut ch_p);
-        let proof_t = ch_p.into_proof();
-        let mut ch_v = flock_core::transcript::VerifierState::new(b"flock-blake3-lig-v0", &proof_t, &[]);
-        let claim_v = setup
-            .verify(&commitment, &proof, &mut ch_v)
-            .unwrap_or_else(|e| panic!("ligerito verify rejected: {e:?}"));
-        assert_eq!(claim_p, claim_v);
-    }
-
-    /// Generic (matrix-driven) Ligerito prove produces a byte-identical
-    /// proof to the specialized `prove_fast` — pins that the generic path
-    /// (bool trace → pack → apply → prove) and the fused path agree.
-    #[test]
-    fn prove_ligerito_generic_matches_prove_fast() {
-        
-        let setup = Blake3Setup::new(256);
-        let mut rng = Rng::new(0xb1a_63112);
-        let blocks: Vec<Compression> = (0..256)
-            .map(|_| {
-                let m: [u32; 16] = std::array::from_fn(|_| rng.next_u32());
-                pinned_compression(m)
-            })
-            .collect();
-        let mut ch_f = flock_core::transcript::ProverState::new(b"flock-blake3-gvf", &[]);
-        let (proof_f, commit_f, claim_f) = setup.prove_fast(&blocks, &mut ch_f);
-        let mut ch_g = flock_core::transcript::ProverState::new(b"flock-blake3-gvf", &[]);
-        let (proof_g, commit_g, claim_g) = setup.prove_ligerito(&blocks, &mut ch_g);
-        assert_eq!(commit_f.root, commit_g.root);
-        assert_eq!(claim_f, claim_g);
-        assert_eq!(
-            bincode::serialize(&proof_f).unwrap(),
-            bincode::serialize(&proof_g).unwrap(),
-            "generic and fused Ligerito proofs must be byte-identical"
-        );
-    }
-
-    /// `prove_fast_basefold` produces an accepting proof (legacy BaseFold path).
-    #[test]
-    fn prove_fast_basefold_roundtrip() {
-        
-        let setup = Blake3Setup::new(1);
-        let mut rng = Rng::new(0xFA57_5A55);
-        let m: [u32; 16] = std::array::from_fn(|_| rng.next_u32());
-        let blocks = vec![pinned_compression(m)];
-        let mut ch_p = flock_core::transcript::ProverState::new(b"flock-test-v0", &[]);
-        let (proof, commitment, claim_p) = setup.prove_fast_basefold(&blocks, &mut ch_p);
-        let proof_t = ch_p.into_proof();
-        let mut ch_v = flock_core::transcript::VerifierState::new(b"flock-test-v0", &proof_t, &[]);
-        let claim_v = setup
-            .verify_basefold(&commitment, &proof, &mut ch_v)
-            .unwrap_or_else(|e| panic!("prove_fast_basefold: verifier rejected: {e:?}"));
-        assert_eq!(claim_p, claim_v);
-    }
-
-    /// Constant-wire pin (docs/const-wire-pin.md). `new(5)` has padding blocks
-    /// (filled with a valid all-zero-input compression, constant = 1) so the
-    /// honest proof verifies; the all-zero witness must be rejected by the pin.
-    /// (For BLAKE3 the pin lives on the R1CS-built CSC circuit, not the walker.)
-    #[test]
-    fn const_pin_all_zero_rejected() {
-        
-
-        let n = 5; // 3 padding blocks
-        let setup = Blake3Setup::new(n);
-
-        // (1) Honest proof with filled padding verifies.
-        let mut rng = Rng::new(0x5EED_B1A3);
-        let blocks: Vec<Compression> = (0..n)
-            .map(|_| {
-                let m: [u32; 16] = std::array::from_fn(|_| rng.next_u32());
-                pinned_compression(m)
-            })
-            .collect();
-        let mut ch_p = flock_core::transcript::ProverState::new(b"honest", &[]);
-        let (proof, commitment, claim_p) = setup.prove_fast_basefold(&blocks, &mut ch_p);
-        let proof_t = ch_p.into_proof();
-        let mut ch_v = flock_core::transcript::VerifierState::new(b"honest", &proof_t, &[]);
-        let claim_v = setup
-            .verify_basefold(&commitment, &proof, &mut ch_v)
-            .unwrap_or_else(|e| panic!("honest padded proof rejected: {e:?}"));
-        assert_eq!(claim_p, claim_v);
-
-        // (2) All-zero witness must be rejected by the pin. (Generate
-        // correctly-shaped buffers from padding-only blocks, then zero them.)
-        let (mut z, mut a, mut b, mut zlc) =
-            generate_witness_with_ab_packed_and_lincheck(&[], setup.n_blocks_log());
-        z.iter_mut()
-            .for_each(|v| *v = flock_core::field::F128::ZERO);
-        a.iter_mut()
-            .for_each(|v| *v = flock_core::field::F128::ZERO);
-        b.iter_mut()
-            .for_each(|v| *v = flock_core::field::F128::ZERO);
-        zlc.iter_mut().for_each(|v| *v = 0);
-        let circuit = setup.r1cs.csc_lincheck_circuit();
-        let mut ch_p = flock_core::transcript::ProverState::new(b"poc", &[]);
-        let (proof, commitment, _) = crate::prover::prove_fast_from_witness(
-            &setup.r1cs,
-            &setup.pcs_params,
-            z,
-            a,
-            b,
-            zlc,
-            circuit,
-            &mut ch_p,
-        );
-        let proof_t = ch_p.into_proof();
-        let mut ch_v = flock_core::transcript::VerifierState::new(b"poc", &proof_t, &[]);
-        let res = setup.verify_basefold(&commitment, &proof, &mut ch_v);
-        assert!(
-            matches!(res, Err(flock_core::verifier::VerifyError::Lincheck(_))),
-            "all-zero witness must be rejected by the constant-wire pin; got {res:?}"
-        );
-    }
-
-    /// `prove_fast_basefold` matches `prove` (same commitment + claim).
-    #[test]
-    fn prove_fast_basefold_matches_prove() {
-        
-        let setup = Blake3Setup::new(1);
-        let mut rng = Rng::new(0xDEED_1234);
-        let m: [u32; 16] = std::array::from_fn(|_| rng.next_u32());
-        let blocks = vec![pinned_compression(m)];
-        let mut ch1 = flock_core::transcript::ProverState::new(b"flock-test-v0", &[]);
-        let (_p1, c1, claim1) = setup.prove(&blocks, &mut ch1);
-        let mut ch2 = flock_core::transcript::ProverState::new(b"flock-test-v0", &[]);
-        let (_p2, c2, claim2) = setup.prove_fast_basefold(&blocks, &mut ch2);
-        assert_eq!(c1.root, c2.root, "commitments must match");
-        assert_eq!(claim1, claim2, "claims must match");
-    }
-
     #[test]
     fn setup_sizes_correctly() {
         for &(n_blocks, expected_n_log) in
@@ -2329,6 +1366,90 @@ mod tests {
             assert_eq!(setup.m(), K_LOG + expected_n_log);
             assert!(setup.n_block_slots() >= n_blocks);
         }
+    }
+
+    /// Constant-wire pin (docs/const-wire-pin.md): the all-zero witness
+    /// satisfies every R1CS row (0·0 = 0), so the pin carried by the lincheck
+    /// circuit is the ONLY thing rejecting it. Run the kept zerocheck +
+    /// lincheck reduction on zeroed buffers and assert the lincheck verifier
+    /// rejects (the all-ones const column is absent).
+    #[test]
+    fn const_pin_all_zero_rejected() {
+        let setup = Blake3Setup::new(5);
+        let r1cs = &setup.r1cs;
+        let inner_rest_len = r1cs.k_log - r1cs.k_skip;
+
+        // Correctly-shaped buffers (padding-only generation), then zeroed.
+        let (mut z, mut a, mut b, mut zlc) =
+            generate_witness_with_ab_packed_and_lincheck(&[], setup.n_blocks_log());
+        z.fill(F128::ZERO);
+        a.fill(F128::ZERO);
+        b.fill(F128::ZERO);
+        zlc.fill(0);
+
+        // Prover side: the reduction happily runs on the zero witness.
+        let padding = flock_core::zerocheck::PaddingSpec {
+            k_log: r1cs.k_log,
+            useful_bits_per_block: r1cs.useful_bits,
+        };
+        let as_bytes = |v: &[F128]| unsafe {
+            std::slice::from_raw_parts(
+                v.as_ptr() as *const u8,
+                v.len() * core::mem::size_of::<F128>(),
+            )
+        };
+        let mut ps = flock_core::transcript::ProverState::new(b"const-pin-poc", &[]);
+        let (zc_claim, _s_hat_v_c) = flock_core::zerocheck::prove_packed_padded_capture_s_hat_v_c(
+            as_bytes(&a),
+            as_bytes(&b),
+            as_bytes(&z), // C = I, so c == z
+            r1cs.m,
+            &padding,
+            &mut ps,
+        );
+        let x_ab = flock_core::lincheck::QuirkyPoint {
+            z_skip: zc_claim.z,
+            x_inner_rest: zc_claim.mlv_challenges[..inner_rest_len].to_vec(),
+            x_outer: zc_claim.mlv_challenges[inner_rest_len..].to_vec(),
+        };
+        let _ = flock_core::lincheck::prove_padded_capture_z_vec(
+            &zlc,
+            r1cs.m,
+            r1cs.k_log,
+            r1cs.k_skip,
+            r1cs.useful_bits,
+            r1cs.csc_lincheck_circuit(),
+            &x_ab,
+            &mut ps,
+        );
+        let proof_t = ps.into_proof();
+
+        // Verifier side: zerocheck accepts, the lincheck const-wire pin rejects.
+        let mut vs = flock_core::transcript::VerifierState::new(b"const-pin-poc", &proof_t, &[]);
+        let zc = flock_core::zerocheck::verify(r1cs.m, &mut vs)
+            .expect("zerocheck accepts the all-zero witness");
+        let x_ab_v = flock_core::lincheck::QuirkyPoint {
+            z_skip: zc.z,
+            x_inner_rest: zc.mlv_challenges[..inner_rest_len].to_vec(),
+            x_outer: zc.mlv_challenges[inner_rest_len..].to_vec(),
+        };
+        let res = flock_core::lincheck::verify(
+            r1cs.m,
+            r1cs.k_log,
+            r1cs.k_skip,
+            r1cs.csc_lincheck_circuit(),
+            &x_ab_v,
+            zc.a_eval,
+            zc.b_eval,
+            &mut vs,
+        );
+        assert!(
+            matches!(
+                res,
+                Err(flock_core::lincheck::VerifyError::ConsistencyFailed { .. })
+            ),
+            "all-zero witness must be rejected by the constant-wire pin; got {res:?}"
+        );
     }
 }
 
@@ -2369,6 +1490,17 @@ pub struct ReductionReplay {
     pub c: flock_core::proof::ZClaim,
     pub zc_claim: flock_core::zerocheck::ZerocheckClaim,
     pub lc_claim: flock_core::lincheck::LincheckClaim,
+}
+
+/// Construct a multilinear `x_outer_full` of length `m − k_skip` from a
+/// QuirkyPoint: concatenate `x_inner_rest` and `x_outer`. This is the format
+/// the PCS expects (k_skip = 6 absorbed via `z_skip`; everything else is
+/// multilinear).
+fn quirky_x_outer_full(point: &flock_core::lincheck::QuirkyPoint) -> Vec<F128> {
+    let mut v = Vec::with_capacity(point.x_inner_rest.len() + point.x_outer.len());
+    v.extend_from_slice(&point.x_inner_rest);
+    v.extend_from_slice(&point.x_outer);
+    v
 }
 
 impl Blake3Setup {
@@ -2481,7 +1613,7 @@ impl Blake3Setup {
     /// 1. [`Self::prove_reduction`] — Flock zerocheck + lincheck → the `(ab, c)`
     ///    claims on the committed witness `q_pkd`;
     /// 2. the PCS: discharge those claims *together with* the caller's own
-    ///    `stack_pd` point claims in ONE stacked BaseFold over `stack` (the
+    ///    `stack_pd` point claims in ONE stacked Ligerito open over `stack` (the
     ///    caller's committed witness, with `q_pkd` the aligned sub-block at
     ///    `stack_offset`).
     ///
@@ -2539,8 +1671,8 @@ impl Blake3Setup {
             k_log: self.r1cs.k_log,
             useful_bits_per_block: self.r1cs.useful_bits,
         };
-        let ab_x = crate::prover::quirky_x_outer_full(&reduced.ab.claim.point);
-        let c_x = crate::prover::quirky_x_outer_full(&reduced.c.claim.point);
+        let ab_x = quirky_x_outer_full(&reduced.ab.claim.point);
+        let c_x = quirky_x_outer_full(&reduced.c.claim.point);
         // This standalone-flock path takes general full-stack point claims.
         let pd: Vec<flock_core::pcs::StackClaim> = stack_pd
             .iter()
@@ -2617,7 +1749,7 @@ impl Blake3Setup {
 
     /// Verifier mirror of [`Self::prove_validity_stacked`], in the same two
     /// phases: (1) [`Self::verify_reduction`] replays zerocheck + lincheck to
-    /// recover the `(ab, c)` claims on `q_pkd`, then (2) the stacked BaseFold
+    /// recover the `(ab, c)` claims on `q_pkd`, then (2) the stacked Ligerito
     /// opening of those claims (and the caller's `stack_pd`) is verified against
     /// `stack_commitment`. `stack_offset` and the derived `qpkd_vars` locate
     /// `q_pkd` inside the stack.
@@ -2633,8 +1765,8 @@ impl Blake3Setup {
         let ReductionReplay { ab, c, .. } = self.verify_reduction(stack_commitment, vs)?;
 
         // Phase 2 — PCS: verify the stacked opening of (ab, c) + stack_pd.
-        let ab_x = crate::prover::quirky_x_outer_full(&ab.point);
-        let c_x = crate::prover::quirky_x_outer_full(&c.point);
+        let ab_x = quirky_x_outer_full(&ab.point);
+        let c_x = quirky_x_outer_full(&c.point);
         let qpkd_vars = self.r1cs.m - flock_core::pcs::LOG_PACKING;
         let pd: Vec<flock_core::pcs::StackClaim> = stack_pd
             .iter()

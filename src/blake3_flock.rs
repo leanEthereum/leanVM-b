@@ -146,16 +146,12 @@ pub fn padding_digest() -> [F128; 2] {
 /// claim on `q_pkd` is thus a boolean-selector (strided) claim with this stride.
 pub const SLOT_STRIDE_LOG: usize = K_LOG - LOG_PACKING;
 
-/// Prove `blocks` are valid compressions, discharging the proof against the
-/// caller's already-committed `stack` (with `q_pkd` the aligned sub-block at
-/// `stack_offset`), reusing its `prover_data`/`commitment`. On the shared
-/// transcript `ps`.
 /// Memoized BLAKE3 R1CS [`Blake3Setup`], keyed by the executed-instance count.
-/// Building it (the symbolic constraint walk over `2^K_LOG` slots) and its
-/// statement digest cost ~hundreds of ms — fixed per circuit shape, independent
-/// of `N` or the proof. So we build each shape once and reuse it across `prove`,
-/// `verify`, and repeated proofs; the per-setup digest/CSC caches then stay warm,
-/// making verification milliseconds rather than rebuilding the circuit each time.
+/// Building it (the symbolic constraint walk over `2^K_LOG` slots) costs
+/// ~hundreds of ms — fixed per circuit shape, independent of `N` or the proof.
+/// So we build each shape once and reuse it across `prove`, `verify`, and
+/// repeated proofs; the per-setup caches then stay warm, making verification
+/// milliseconds rather than rebuilding the circuit each time.
 ///
 /// The cache is bounded ([`SETUP_CACHE_CAP`]): `verify` calls this with the
 /// PROVER-ANNOUNCED count, so an attacker cycling distinct counts could otherwise
@@ -189,10 +185,9 @@ fn setup_for(n_blocks: usize) -> std::sync::Arc<Blake3Setup> {
     setup
 }
 
-/// Pre-build (and cache) the flock BLAKE3 R1CS setup, warming BOTH the circuit and
-/// the statement-digest caches. This is the fixed, circuit-shape-only cost
-/// (~hundreds of ms, independent of the witness or the number of proofs): building
-/// the `2^K_LOG`-slot R1CS and hashing it.
+/// Pre-build (and cache) the flock BLAKE3 R1CS setup. This is the fixed,
+/// circuit-shape-only cost (~hundreds of ms, independent of the witness or the
+/// number of proofs): building the `2^K_LOG`-slot R1CS.
 ///
 /// Callers pass the number of EXECUTED `BLAKE3` instructions; it is floored at 1
 /// (the padding instance a no-BLAKE3 program still carries), matching
@@ -200,8 +195,7 @@ fn setup_for(n_blocks: usize) -> std::sync::Arc<Blake3Setup> {
 /// reflects steady-state (repeated-proving) performance — the ~hundreds-of-ms
 /// build is a one-time, program-independent cost, not part of proving. Idempotent.
 pub fn warm_setup(n_blocks: usize) {
-    let setup = setup_for(n_blocks.max(1));
-    let _ = setup.r1cs.statement_digest(); // warm the digest cache too
+    let _ = setup_for(n_blocks.max(1));
 }
 
 /// The flock BLAKE3 circuit-FAMILY digest: a hash of the per-block R1CS

@@ -100,7 +100,6 @@ fn program_digest(prog: &[Op]) -> [F128; 2] {
     crate::vmhash::hash_slice(&words)
 }
 
-/// The transcript seed: the public statement bound before any challenge — the
 /// The Fiat–Shamir seed: ONE 32-byte digest, as two field words, committing
 /// to everything fixed about the proving environment — the flock circuit
 /// family (its per-block R1CS matrices, [`crate::blake3_flock::family_digest`])
@@ -121,6 +120,7 @@ pub fn fs_seed(program: &Program) -> [F128; 2] {
     [F128::new(word(0), word(8)), F128::new(word(16), word(24))]
 }
 
+/// The transcript seed: the public statement bound before any challenge, the
 /// public input `pi` prefixed by the [`fs_seed`]. Both sides build it identically.
 fn transcript_seed(program: &Program, pi: &[F128; 2]) -> [F128; 4] {
     let seed = fs_seed(program);
@@ -216,12 +216,6 @@ impl Program {
         }
     }
 
-    /// The program's binding digest ([`program_digest`]) — the recursion
-    /// harness bakes it into the outer guest's transcript seed.
-    pub fn digest(&self) -> [F128; 2] {
-        self.digest
-    }
-
     /// Supply the entries of witness stream `name`: one slice of values per
     /// `hint_witness(dest, "name")` call, popped in order (the same symbol
     /// may be hinted many times). Prover-side data: entirely unconstrained,
@@ -240,13 +234,6 @@ impl Program {
     /// sentinel in its last slot — the run halts on reaching `g^{len-1}` (§state).
     pub fn from_bytecode(prog: Vec<Op>, main_frame: u32) -> Self {
         Self::assemble(prog, 0, 0, HashMap::new(), main_frame)
-    }
-}
-
-/// Render the bytecode as a disassembly listing (also gives `Program::to_string`).
-impl std::fmt::Display for Program {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&crate::compiler::disassemble(&self.prog))
     }
 }
 

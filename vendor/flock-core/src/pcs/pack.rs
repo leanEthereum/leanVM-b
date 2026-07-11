@@ -26,9 +26,6 @@ use crate::field::F128;
 /// `log_2` of the packing width. F_{2^128} holds 128 bits = 2^7.
 pub const LOG_PACKING: usize = 7;
 
-/// Packing width (number of bits per F_{2^128} element).
-pub const PACKING_WIDTH: usize = 1 << LOG_PACKING;
-
 /// Pack a Boolean witness `z` of length `2^m` into `2^(m − LOG_PACKING)`
 /// F_{2^128} elements.
 ///
@@ -78,30 +75,6 @@ pub fn pack_witness(z: &[bool], m: usize) -> Vec<F128> {
     }
 }
 
-/// Inverse of [`pack_witness`]: unpack F_{2^128} elements back to a Boolean
-/// witness of length `2^m`.
-///
-/// Round-trips with [`pack_witness`] by construction.
-pub fn unpack_witness(packed: &[F128], m: usize) -> Vec<bool> {
-    let n_packed = 1usize << (m - LOG_PACKING);
-    assert_eq!(
-        packed.len(),
-        n_packed,
-        "packed length must be 2^(m - LOG_PACKING)"
-    );
-    let mut out = vec![false; 1usize << m];
-    for (i_rest, elem) in packed.iter().enumerate() {
-        let base = i_rest << LOG_PACKING;
-        for r in 0..64 {
-            out[base | r] = (elem.lo >> r) & 1 == 1;
-        }
-        for r in 0..64 {
-            out[base | 64 | r] = (elem.hi >> r) & 1 == 1;
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -120,18 +93,6 @@ mod tests {
         }
         fn bits(&mut self, n: usize) -> Vec<bool> {
             (0..n).map(|_| self.next_u64() & 1 == 1).collect()
-        }
-    }
-
-    #[test]
-    fn pack_unpack_roundtrip() {
-        let mut rng = Rng::new(0xC0FFEE);
-        for m in [7usize, 8, 10, 12, 14] {
-            let z = rng.bits(1 << m);
-            let packed = pack_witness(&z, m);
-            assert_eq!(packed.len(), 1 << (m - LOG_PACKING));
-            let z_back = unpack_witness(&packed, m);
-            assert_eq!(z, z_back, "roundtrip failed at m={m}");
         }
     }
 

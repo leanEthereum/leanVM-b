@@ -133,12 +133,6 @@ pub enum SlotClaim {
 }
 
 impl SlotClaim {
-    pub fn value(&self) -> F128 {
-        match self {
-            SlotClaim::Slot { value, .. } | SlotClaim::Strided { value, .. } => *value,
-        }
-    }
-
     /// This claim as a borrowed flock [`StackClaim`] — `Strided` maps to the sparse
     /// [`StackClaim::StridedSlot`], `Slot` to the dense [`StackClaim::Slot`].
     fn as_stack(&self) -> StackClaim<'_> {

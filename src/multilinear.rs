@@ -40,16 +40,9 @@ pub fn eq_table(r: &[F128]) -> Vec<F128> {
     eq
 }
 
-/// Bind the lowest free variable of `table` to `rho`: `out[i] = interp(table[2i],
-/// table[2i+1], rho)`.
-pub fn fold_low(table: &[F128], rho: F128) -> Vec<F128> {
-    debug_assert_eq!(table.len() % 2, 0);
-    (0..table.len() / 2)
-        .map(|i| interp(table[2 * i], table[2 * i + 1], rho))
-        .collect()
-}
-
-/// In-place [`fold_low`], no reallocation (`i ≤ 2i`, so unread entries survive).
+/// Bind the lowest free variable of `table` to `rho` in place: `table[i] =
+/// interp(table[2i], table[2i+1], rho)` (no reallocation; `i ≤ 2i`, so unread
+/// entries survive).
 pub fn fold_low_inplace(table: &mut Vec<F128>, rho: F128) {
     debug_assert_eq!(table.len() % 2, 0);
     let half = table.len() / 2;

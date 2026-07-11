@@ -109,13 +109,6 @@ impl Sponge {
         self.cv = compress(self.cv, [x, DS_SCALAR]);
     }
 
-    /// Absorb a slice of scalars, in order.
-    pub fn observe_slice(&mut self, xs: &[F128]) {
-        for &x in xs {
-            self.observe(x);
-        }
-    }
-
     /// Absorb a byte string (a protocol label, a Merkle root): a length frame
     /// then its 16-byte words as tagged blocks, so a field element, a raw
     /// integer, and a byte string cannot alias.

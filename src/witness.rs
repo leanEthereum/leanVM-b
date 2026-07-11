@@ -40,21 +40,6 @@ pub struct Stacked {
     pub placements: Vec<Placement>,
 }
 
-impl Stacked {
-    /// The PCS evaluation point for a claim on column `c` at `point` (length `κ_c`):
-    /// the within-column coordinates followed by the column's selector bits (LSB-first).
-    pub fn pcs_point(&self, c: usize, point: &[F128]) -> Vec<F128> {
-        let placement = self.placements[c];
-        debug_assert_eq!(point.len(), placement.n_vars);
-        let mut pcs_point = point.to_vec();
-        let sel = placement.sel();
-        for k in 0..(self.m - placement.n_vars) {
-            pcs_point.push(F128::new(((sel >> k) & 1) as u64, 0));
-        }
-        pcs_point
-    }
-}
-
 /// Per-column placements (offset + n_vars) and stack length `2^m` from the columns'
 /// log-sizes alone, largest-first at aligned offsets. A `None` kappa marks a virtual
 /// (uncommitted) column. Depends only on lengths, so the verifier can reconstruct it.

@@ -134,14 +134,14 @@ pub fn prewarm_prover(m: usize) {
     }
 }
 
-/// Release every pooled buffer back to the OS.
-pub fn clear() {
-    POOL.lock().unwrap().clear();
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Release every pooled buffer (test isolation between assertions).
+    fn clear() {
+        POOL.lock().unwrap().clear();
+    }
 
     #[test]
     fn take_reuses_given_buffer() {

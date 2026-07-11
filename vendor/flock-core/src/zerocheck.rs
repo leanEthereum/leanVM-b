@@ -22,8 +22,6 @@ use crate::ntt::{AdditiveNttGf8, InvNttTableByteSingleGf8};
 
 pub mod multilinear;
 pub mod univariate_skip;
-pub mod univariate_skip_deg4;
-pub mod univariate_skip_deg4_optimized;
 pub mod univariate_skip_optimized;
 
 use multilinear::{
@@ -125,49 +123,6 @@ pub enum VerifyError {
 // ---------------------------------------------------------------------------
 // API: prove / verify.
 // ---------------------------------------------------------------------------
-
-/// Prove that `a(y) · b(y) ⊕ c(y) = 0` for all `y ∈ {0,1}^m`.
-///
-/// Inputs are LSB-first bit-packed byte vectors (each of length `2^m / 8`).
-/// `m ≥ K_SKIP + N_INNER` (= 13). `sponge` supplies all verifier
-/// randomness; the prover absorbs each of its messages into the sponge
-/// before sampling the next challenge so the verifier (using the same
-/// sponge implementation in lockstep) derives identical challenges.
-///
-/// Every round message is transmitted+bound on the stream (`add_scalar`);
-/// returns the [`ZerocheckClaim`] the higher-level caller will pass to its PCS.
-pub fn prove_packed(
-    a_packed: &[u8],
-    b_packed: &[u8],
-    c_packed: &[u8],
-    m: usize,
-    ps: &mut ProverState,
-) -> ZerocheckClaim {
-    prove_packed_padded(
-        a_packed,
-        b_packed,
-        c_packed,
-        m,
-        &PaddingSpec::dense(m),
-        ps,
-    )
-}
-
-/// Same as [`prove_packed`] but lets the caller declare a per-block padding
-/// pattern so URM can skip work for chunks that fall entirely in the zero
-/// padding of every block. Output is byte-identical to the dense path when
-/// the padding bits are honestly zero.
-pub fn prove_packed_padded(
-    a_packed: &[u8],
-    b_packed: &[u8],
-    c_packed: &[u8],
-    m: usize,
-    padding: &PaddingSpec,
-    ps: &mut ProverState,
-) -> ZerocheckClaim {
-    let (claim, _) = prove_packed_padded_inner(a_packed, b_packed, c_packed, m, padding, false, ps);
-    claim
-}
 
 /// Variant of [`prove_packed_padded`] that ALSO returns the canonical
 /// `s_hat_v_c` produced by the fused two-bank round-1 kernel. The downstream
@@ -577,7 +532,27 @@ pub fn verify(
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
+    /// Test shim for the old dense-prove entry: the capture variant with the
+    /// captured `s_hat_v_c` discarded.
+    fn prove_packed(
+        a_packed: &[u8],
+        b_packed: &[u8],
+        c_packed: &[u8],
+        m: usize,
+        ps: &mut crate::transcript::ProverState,
+    ) -> ZerocheckClaim {
+        let (claim, _) = prove_packed_padded_capture_s_hat_v_c(
+            a_packed,
+            b_packed,
+            c_packed,
+            m,
+            &PaddingSpec::dense(m),
+            ps,
+        );
+        claim
+    }
+
 
     /// SplitMix64 PRNG, deterministic.
     struct Rng(u64);

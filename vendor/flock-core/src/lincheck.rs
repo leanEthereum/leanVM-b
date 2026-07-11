@@ -121,16 +121,6 @@ use crate::transcript::{ProverState, VerifierState};
 use crate::field::F128;
 use crate::r1cs::SparseBinaryMatrix;
 use crate::zerocheck::multilinear::lagrange_weights_naive;
-use std::sync::atomic::AtomicBool;
-
-/// Bench-only A/B toggle: when set, [`partial_fold_packed_z_best`] uses the legacy
-/// `i_inner`-partitioned `partial_fold_packed_z_neon_iblock_padded` instead of the
-/// default outer(tile)-partitioned `partial_fold_packed_z_neon_oblock_padded`. The
-/// two are bit-identical (GF(2¹²⁸) add is XOR — associative + commutative), so one
-/// process can time both back-to-back and cancel thermal drift. The oblock default
-/// builds each tile's sum-tables once instead of once per worker, scaling the fold
-/// ~8.5× vs iblock's ~6.5× on 10 P-cores at m=32. See `benches/lincheck.rs` (FOLD_AB=1).
-pub static FOLD_IBLOCK: AtomicBool = AtomicBool::new(false);
 
 // ---------------------------------------------------------------------------
 // LincheckCircuit: the per-block linear structure lincheck consumes
@@ -178,46 +168,6 @@ pub trait LincheckCircuit: Sync {
     /// for circuits without a constant wire.
     fn const_pin_col(&self) -> Option<usize> {
         None
-    }
-}
-
-/// Default `LincheckCircuit` over a pair of sparse binary matrices. Delegates
-/// to the existing fused row-fold kernel. Callers that haven't migrated to a
-/// per-hash circuit walker use this wrapper.
-pub struct SparseMatrixCircuit<'a> {
-    pub a_0: &'a SparseBinaryMatrix,
-    pub b_0: &'a SparseBinaryMatrix,
-    /// Constant-wire pin column (see [`LincheckCircuit::const_pin_col`]).
-    const_pin: Option<usize>,
-}
-
-impl<'a> SparseMatrixCircuit<'a> {
-    pub fn new(a_0: &'a SparseBinaryMatrix, b_0: &'a SparseBinaryMatrix) -> Self {
-        debug_assert_eq!(a_0.num_rows, b_0.num_rows);
-        debug_assert_eq!(a_0.num_cols, b_0.num_cols);
-        Self {
-            a_0,
-            b_0,
-            const_pin: None,
-        }
-    }
-
-    /// Set the constant-wire pin column (see `docs/const-wire-pin.md`).
-    pub fn with_const_pin(mut self, const_pin: Option<usize>) -> Self {
-        self.const_pin = const_pin;
-        self
-    }
-}
-
-impl<'a> LincheckCircuit for SparseMatrixCircuit<'a> {
-    fn n_cols(&self) -> usize {
-        self.a_0.num_cols
-    }
-    fn fold_alpha_batched(&self, alpha: F128, eq_inner: &[F128]) -> Vec<F128> {
-        sparse_row_fold_alpha_batched(alpha, self.a_0, self.b_0, eq_inner)
-    }
-    fn const_pin_col(&self) -> Option<usize> {
-        self.const_pin
     }
 }
 
@@ -456,66 +406,6 @@ pub fn build_eq_table(point: &[F128]) -> Vec<F128> {
     out
 }
 
-/// Fold a sparse boolean matrix's rows against an eq table at the row
-/// coords. Computes the **transposed** matrix-vector product:
-///
-///   `output[col] = Σ_{row: M[row, col] = 1} eq_table[row]`
-///
-/// This is the row-MLE `M̂_0(x_inner, ·)` evaluated at all boolean column
-/// indices — the length-`k` vector the verifier needs for the consistency
-/// check. Cost: `nnz(M)` F128 adds.
-/// Below this matrix row count, the sequential path beats rayon dispatch
-/// overhead. Tuned for `k = 2^14` (BLAKE3) — small matrices stay scalar,
-/// big ones parallelize.
-const SPARSE_ROW_FOLD_PAR_THRESHOLD: usize = 1usize << 12;
-
-pub fn sparse_row_fold(matrix: &SparseBinaryMatrix, eq_table: &[F128]) -> Vec<F128> {
-    assert_eq!(
-        eq_table.len(),
-        matrix.num_rows,
-        "eq_table length must match matrix row count"
-    );
-    let n_cols = matrix.num_cols;
-    if matrix.rows.len() < SPARSE_ROW_FOLD_PAR_THRESHOLD {
-        let mut out = vec![F128::ZERO; n_cols];
-        for (row_idx, row) in matrix.rows.iter().enumerate() {
-            let e = eq_table[row_idx];
-            for &col in row {
-                out[col] += e;
-            }
-        }
-        out
-    } else {
-        // Scatter-reduce: per-thread accumulator, XOR-merge at the end. Each
-        // thread allocates a length-n_cols buffer (~256 KB at k=16384) — fine
-        // vs the witness-scale buffers already in flight.
-        use rayon::prelude::*;
-        matrix
-            .rows
-            .par_iter()
-            .enumerate()
-            .fold(
-                || vec![F128::ZERO; n_cols],
-                |mut acc, (row_idx, row)| {
-                    let e = eq_table[row_idx];
-                    for &col in row {
-                        acc[col] += e;
-                    }
-                    acc
-                },
-            )
-            .reduce(
-                || vec![F128::ZERO; n_cols],
-                |mut a, b| {
-                    for i in 0..n_cols {
-                        a[i] += b[i];
-                    }
-                    a
-                },
-            )
-    }
-}
-
 /// Partial fold of `z` at the outer half of a claim point — single-matrix,
 /// **scalar reference**. Uses the lincheck `z_packed` stripe layout
 /// (see module docs).
@@ -525,6 +415,7 @@ pub fn sparse_row_fold(matrix: &SparseBinaryMatrix, eq_table: &[F128]) -> Vec<F1
 /// Equivalently, `output[i_inner] = ẑ(i_inner_as_F128, x_outer)` for boolean
 /// `i_inner`. Used as the cross-check oracle for the production
 /// `partial_fold_packed_z_triple`.
+#[cfg(test)]
 pub fn partial_fold_packed_z(
     z_packed: &[u8],
     m: usize,
@@ -556,33 +447,6 @@ pub fn partial_fold_packed_z(
         }
     }
     out
-}
-
-/// **Optimized single-matrix partial fold.** Same shape as
-/// [`partial_fold_packed_z`] but uses 256-entry **sum-table lookups** and is
-/// parallelized via rayon. The hot inner kernel does just **1 byte load +
-/// 1 table lookup + 1 XOR** per `(byte_idx, i_inner)` pair.
-///
-/// At m=29 multi-thread this is ~3× faster than the naive scalar
-/// `partial_fold_packed_z` (which we keep as the cross-check reference).
-///
-/// Iteration:
-/// 1. For each `byte_idx ∈ 0..n_outer/8`, build a 256-entry F128 table
-///    where `table[b] = Σ_{r: bit r set in b} eq_outer[8·byte_idx + r]`.
-///    Cost: 255 F128 XORs (doubling construction).
-/// 2. Sweep the `k`-byte stripe at `z_packed[byte_idx·k .. (byte_idx+1)·k]`.
-///    For each `i_inner`, do `out[i_inner] ^= table[z_byte]`.
-///
-/// Parallel: each worker owns a contiguous range of stripes and a private
-/// length-`k` accumulator; results XOR-reduced.
-pub fn partial_fold_packed_z_fast(
-    z_packed: &[u8],
-    m: usize,
-    k_log: usize,
-    eq_outer: &[F128],
-) -> Vec<F128> {
-    let k = 1usize << k_log;
-    partial_fold_packed_z_fast_padded(z_packed, m, k_log, k, eq_outer)
 }
 
 /// Padding-aware variant of [`partial_fold_packed_z_fast`]. Skips rows
@@ -648,121 +512,6 @@ pub fn partial_fold_packed_z_fast_padded(
 /// (`n_stripes / NEON_TILE_T`), but the per-tile sum tables grow
 /// `NEON_TILE_T × 4 KB` and must stay L1-resident.
 const NEON_TILE_T: usize = 8;
-
-/// Single-matrix partial fold with **tiled + NEON-register accumulators**.
-/// Keeps `BLOCK_K = 8` accumulators in NEON registers across a `NEON_TILE_T`
-/// stripe sweep — no per-byte accumulator LD/ST. Hand-rolled aarch64
-/// intrinsics force the F128 XOR to a single `EOR.16B` and pin the 8 accs
-/// in Q registers.
-#[cfg(target_arch = "aarch64")]
-pub fn partial_fold_packed_z_neon_single(
-    z_packed: &[u8],
-    m: usize,
-    k_log: usize,
-    eq_outer: &[F128],
-) -> Vec<F128> {
-    let k = 1usize << k_log;
-    partial_fold_packed_z_neon_single_padded(z_packed, m, k_log, k, eq_outer)
-}
-
-/// Padding-aware variant of [`partial_fold_packed_z_neon_single`]. Rounds
-/// `useful_bits` up to a multiple of `BLOCK_K = 8` and processes only the
-/// covered blocks; the trailing blocks (entirely padding) stay zero in the
-/// accumulator. Any partially-useful boundary block is processed in full —
-/// its padding bytes are zero, table[0] = 0, so they contribute nothing.
-#[cfg(target_arch = "aarch64")]
-pub fn partial_fold_packed_z_neon_single_padded(
-    z_packed: &[u8],
-    m: usize,
-    k_log: usize,
-    useful_bits: usize,
-    eq_outer: &[F128],
-) -> Vec<F128> {
-    use rayon::prelude::*;
-    use std::arch::aarch64::*;
-
-    const TILE_T: usize = NEON_TILE_T;
-    const BLOCK_K: usize = 8;
-
-    let n_log = m - k_log;
-    let k = 1usize << k_log;
-    let n_outer = 1usize << n_log;
-    assert_eq!(z_packed.len(), (1usize << m) / 8);
-    assert_eq!(eq_outer.len(), n_outer);
-    assert!(
-        n_log >= 3 + TILE_T.trailing_zeros() as usize,
-        "need n_outer ≥ 8·TILE_T stripes"
-    );
-    assert!(k_log >= 3, "need k ≥ 8");
-    assert!(useful_bits <= k);
-    let n_stripes = n_outer / 8;
-    assert_eq!(n_stripes % TILE_T, 0);
-    assert_eq!(k % BLOCK_K, 0);
-    let n_tiles = n_stripes / TILE_T;
-    let n_blocks_full = k / BLOCK_K;
-    // Cover only the blocks that touch useful bits. The boundary block
-    // contains padding bytes which are 0 — table[0] = 0 → they contribute
-    // nothing to the per-block XOR chain.
-    let n_blocks = useful_bits.div_ceil(BLOCK_K).min(n_blocks_full);
-
-    let tiles_per_chunk = (n_tiles / 256).max(1);
-    let bytes_per_chunk = tiles_per_chunk * TILE_T * k;
-
-    z_packed
-        .par_chunks(bytes_per_chunk)
-        .enumerate()
-        .fold(
-            || vec![F128::ZERO; k],
-            |mut out, (chunk_idx, chunk_bytes)| {
-                let tile_start = chunk_idx * tiles_per_chunk;
-                // TILE_T × 256 F128 = 32 KB tables. L1 resident.
-                let mut tables = vec![F128::ZERO; TILE_T * 256];
-
-                let n_tiles_in_chunk = chunk_bytes.len() / (TILE_T * k);
-                for tile_rel in 0..n_tiles_in_chunk {
-                    let tile_idx = tile_start + tile_rel;
-                    let stripe_base = tile_idx * TILE_T;
-                    let tile_bytes_ptr = unsafe { chunk_bytes.as_ptr().add(tile_rel * TILE_T * k) };
-
-                    for t in 0..TILE_T {
-                        let byte_idx = stripe_base + t;
-                        let eq_off = 8 * byte_idx;
-                        build_sum_table(
-                            &eq_outer[eq_off..eq_off + 8],
-                            &mut tables[t * 256..(t + 1) * 256],
-                        );
-                    }
-
-                    let tables_ptr = tables.as_ptr() as *const u8;
-
-                    for block_idx in 0..n_blocks {
-                        let bs = block_idx * BLOCK_K;
-                        unsafe {
-                            process_block_neon_single(
-                                tile_bytes_ptr,
-                                k,
-                                bs,
-                                tables_ptr,
-                                out.as_mut_ptr().add(bs),
-                            );
-                        }
-                    }
-                }
-                // Suppress unused variable warning when not aarch64
-                let _ = unsafe { vdupq_n_u8(0) };
-                out
-            },
-        )
-        .reduce(
-            || vec![F128::ZERO; k],
-            |mut a, b| {
-                for (x, y) in a.iter_mut().zip(b.iter()) {
-                    *x += *y;
-                }
-                a
-            },
-        )
-}
 
 /// Single-matrix NEON inner kernel — sweep TILE_T=8 stripes of a stripe-tile
 /// for one BLOCK_K=8 block of i_inner positions, keeping all 8 accumulators
@@ -946,7 +695,7 @@ pub fn partial_fold_packed_z_neon_iblock_padded(
 /// Outer(tile)-partitioned sibling of [`partial_fold_packed_z_neon_iblock_padded`]
 /// — same result, parallelized to remove the redundant per-worker sum-table
 /// rebuilds that cap iblock's multicore scaling. **This is the default fold**
-/// (`partial_fold_packed_z_best`); set [`FOLD_IBLOCK`] to fall back to iblock.
+/// (`partial_fold_packed_z_best`).
 ///
 /// iblock partitions the length-k **output** across workers, so every worker
 /// rebuilds **all** `n_stripes` tile tables — table work is done `p`× and does not
@@ -1071,10 +820,9 @@ fn partial_fold_packed_z_best(
             // at m=32) — BUT its private-partial alloc + XOR-reduce overhead makes it
             // up to ~1.7× SLOWER on small folds. Empirically (M4 Max, 10 P-cores) the
             // crossover sits at n_log ≈ 15–16 across k_log ∈ {11,14}, so gate oblock at
-            // n_log ≥ 16; below that the L1-resident `iblock` wins. `FOLD_IBLOCK` forces
-            // iblock everywhere (bench A/B).
+            // n_log ≥ 16; below that the L1-resident `iblock` wins.
             let n_log = m - k_log;
-            if n_log >= OBLOCK_MIN_N_LOG && !FOLD_IBLOCK.load(std::sync::atomic::Ordering::Relaxed)
+            if n_log >= OBLOCK_MIN_N_LOG
             {
                 return partial_fold_packed_z_neon_oblock_padded(
                     z_packed,
@@ -1139,6 +887,7 @@ fn build_sum_table(eq8: &[F128], table: &mut [F128]) {
 /// `z[i_inner, 8·byte_idx + r]` for `r ∈ 0..8`, with bit `r` within the byte.
 ///
 /// See the module-level docs for the full bit-position decomposition.
+#[cfg(test)]
 pub fn pack_z_lincheck(z_logical: &[bool], m: usize, k_log: usize) -> Vec<u8> {
     let k = 1usize << k_log;
     let n_total = 1usize << m;
@@ -1256,87 +1005,6 @@ fn inner_product(a: &[F128], b: &[F128]) -> F128 {
 /// Length above which the inner product / element-wise kernels split via
 /// rayon. Below it, sequential beats dispatch overhead.
 const SUMCHECK_PAR_THRESHOLD: usize = 1usize << 12;
-
-/// Fused `sparse_row_fold(A) + α-batch + sparse_row_fold(B)`: produces the
-/// `comb_vec[c] = α · (A^T·eq)[c] + (B^T·eq)[c]` in a single pass, halving the
-/// allocations and reduction phases vs. two separate sparse_row_folds + an
-/// α-batch step. Both matrices must be `k × k` and `eq_table.len() == k`.
-fn sparse_row_fold_alpha_batched(
-    alpha: F128,
-    a_0: &SparseBinaryMatrix,
-    b_0: &SparseBinaryMatrix,
-    eq_table: &[F128],
-) -> Vec<F128> {
-    use rayon::prelude::*;
-    let n_cols = a_0.num_cols;
-    debug_assert_eq!(b_0.num_cols, n_cols);
-    debug_assert_eq!(eq_table.len(), a_0.num_rows);
-    debug_assert_eq!(eq_table.len(), b_0.num_rows);
-
-    let total_rows = a_0.num_rows + b_0.num_rows;
-    if total_rows < SPARSE_ROW_FOLD_PAR_THRESHOLD {
-        // Scalar fused path.
-        let mut out = vec![F128::ZERO; n_cols];
-        for (r, row) in a_0.rows.iter().enumerate() {
-            let e = alpha * eq_table[r];
-            for &c in row {
-                out[c] += e;
-            }
-        }
-        for (r, row) in b_0.rows.iter().enumerate() {
-            let e = eq_table[r];
-            for &c in row {
-                out[c] += e;
-            }
-        }
-        return out;
-    }
-
-    // Parallel fused path with a BOUNDED number of accumulators. These base
-    // matrices are dense (e.g. BLAKE3: ~21M nonzeros over 16384 rows), so the
-    // fold is ~21M F128 adds. The natural `par_iter().fold()` form spawns a
-    // fresh length-`n_cols` (256 KB) accumulator per work-steal split and then
-    // tree-reduces all of them — O(n_cols × num_splits) of pure overhead that
-    // doesn't shrink with useful work, which capped scaling at ~1.5×. Here we
-    // split the *rows* into a fixed number of contiguous chunks (rows are
-    // evenly sized, so this load-balances), give each chunk one private
-    // accumulator, then reduce. Overhead is O(n_cols × num_chunks) with
-    // num_chunks ≈ 4× the thread count — negligible vs. the 21M-add body.
-    let n_rows = a_0.num_rows;
-    let p = rayon::current_num_threads().max(1);
-    // ~4 chunks per worker for work-stealing balance, ≥256 rows each to keep
-    // accumulator alloc/reduce overhead amortized.
-    let chunk_rows = (n_rows.div_ceil(p * 4)).max(256);
-    let n_chunks = n_rows.div_ceil(chunk_rows);
-
-    let partials: Vec<Vec<F128>> = (0..n_chunks)
-        .into_par_iter()
-        .map(|ci| {
-            let lo = ci * chunk_rows;
-            let hi = ((ci + 1) * chunk_rows).min(n_rows);
-            let mut acc = vec![F128::ZERO; n_cols];
-            for r in lo..hi {
-                let ea = alpha * eq_table[r];
-                let eb = eq_table[r];
-                for &c in &a_0.rows[r] {
-                    acc[c] += ea;
-                }
-                for &c in &b_0.rows[r] {
-                    acc[c] += eb;
-                }
-            }
-            acc
-        })
-        .collect();
-
-    let mut out = vec![F128::ZERO; n_cols];
-    for acc in &partials {
-        for i in 0..n_cols {
-            out[i] += acc[i];
-        }
-    }
-    out
-}
 
 /// One round of product-sumcheck on `(c, z)`: compute `(q(1), q(∞))` =
 /// `(Σ c_hi·z_hi, Σ (c_hi+c_lo)·(z_hi+z_lo))` over the top-bit split. The
@@ -1479,68 +1147,6 @@ fn sumcheck_bind_both_and_eval_next(
 // ---------------------------------------------------------------------------
 // API
 // ---------------------------------------------------------------------------
-
-/// Prove the lincheck statement for the block-diagonal R1CS instance
-/// `A = I_{2^n_log} ⊗ a_0`, `B = I ⊗ b_0`, `C = I ⊗ c_0`.
-///
-/// Preconditions:
-/// - `m ≥ k_log`, `m = k_log + n_log` (caller's responsibility).
-/// - `a_0, b_0, c_0` are each `k × k` where `k = 2^k_log`.
-/// - `x.len() == x_prime.len() == x_pprime.len() == m`.
-/// - `z_packed.len() == 2^m / 8`.
-///
-/// Every message is transmitted+bound on the stream (`add_scalar`); returns
-/// the [`LincheckClaim`]. The claim's `r_inner` is
-/// sampled from the sponge after the proof vectors are observed.
-pub fn prove(
-    z_packed: &[u8],
-    m: usize,
-    k_log: usize,
-    k_skip: usize,
-    circuit: &dyn LincheckCircuit,
-    x_ab: &QuirkyPoint,
-    ps: &mut ProverState,
-) -> LincheckClaim {
-    prove_padded(
-        z_packed,
-        m,
-        k_log,
-        k_skip,
-        1usize << k_log,
-        circuit,
-        x_ab,
-        ps,
-    )
-}
-
-/// Padding-aware variant of [`prove`]. `useful_bits ≤ 2^k_log` declares how
-/// many rows of each block carry real witness data; rows
-/// `[useful_bits, 2^k_log)` are honest zero padding. The partial-fold over
-/// the outer dimension skips work for those padding rows — byte-identical
-/// proof on a witness with zero-padded blocks.
-pub fn prove_padded(
-    z_packed: &[u8],
-    m: usize,
-    k_log: usize,
-    k_skip: usize,
-    useful_bits: usize,
-    circuit: &dyn LincheckCircuit,
-    x_ab: &QuirkyPoint,
-    ps: &mut ProverState,
-) -> LincheckClaim {
-    let (claim, _) = prove_padded_inner(
-        z_packed,
-        m,
-        k_log,
-        k_skip,
-        useful_bits,
-        circuit,
-        x_ab,
-        false,
-        ps,
-    );
-    claim
-}
 
 /// Variant of [`prove_padded`] that also returns the **pre-sumcheck** z_vec
 /// (`output[i_inner] = ẑ(i_inner, x_ab.x_outer)`, length `2^k_log`). The
@@ -1915,7 +1521,47 @@ pub fn verify(
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
+    /// Test shim for the old dense-prove entry: the capture variant with a
+    /// dense block and the captured `z_vec` discarded.
+    fn prove(
+        z_packed: &[u8],
+        m: usize,
+        k_log: usize,
+        k_skip: usize,
+        circuit: &dyn LincheckCircuit,
+        x_ab: &QuirkyPoint,
+        ps: &mut ProverState,
+    ) -> LincheckClaim {
+        let (claim, _) =
+            prove_padded_capture_z_vec(z_packed, m, k_log, k_skip, 1 << k_log, circuit, x_ab, ps);
+        claim
+    }
+
+    /// Test shim: the padded fast fold with a dense (no-padding) block.
+    fn partial_fold_packed_z_fast_padded_dense(
+        z_packed: &[u8],
+        m: usize,
+        k_log: usize,
+        eq_outer: &[F128],
+    ) -> Vec<F128> {
+        partial_fold_packed_z_fast_padded(z_packed, m, k_log, 1 << k_log, eq_outer)
+    }
+
+    /// Reference fold `M_0^T · eq` (the row-MLE at all boolean column indices),
+    /// used to locate meaningful mutation targets and as a dense oracle.
+    fn sparse_row_fold(matrix: &SparseBinaryMatrix, eq_table: &[F128]) -> Vec<F128> {
+        assert_eq!(eq_table.len(), matrix.num_rows);
+        let mut out = vec![F128::ZERO; matrix.num_cols];
+        for (row_idx, row) in matrix.rows.iter().enumerate() {
+            let e = eq_table[row_idx];
+            for &col in row {
+                out[col] += e;
+            }
+        }
+        out
+    }
+
 
     /// SplitMix64 PRNG, deterministic.
     struct Rng(u64);
@@ -2157,7 +1803,7 @@ mod tests {
             let eq = build_eq_table(&p);
 
             let serial = partial_fold_packed_z(&z_packed, m, k_log, &eq);
-            let fast = partial_fold_packed_z_fast(&z_packed, m, k_log, &eq);
+            let fast = partial_fold_packed_z_fast_padded_dense(&z_packed, m, k_log, &eq);
             assert_eq!(serial, fast, "at m={m}, k_log={k_log}");
         }
     }
@@ -2267,7 +1913,7 @@ mod tests {
             let outer_point = rng.f128_vec(n_log);
             let eq_outer = build_eq_table(&outer_point);
 
-            let dense_fast = partial_fold_packed_z_fast(&z_packed, m, k_log, &eq_outer);
+            let dense_fast = partial_fold_packed_z_fast_padded_dense(&z_packed, m, k_log, &eq_outer);
             let padded_fast =
                 partial_fold_packed_z_fast_padded(&z_packed, m, k_log, useful_bits, &eq_outer);
             assert_eq!(
@@ -2393,7 +2039,7 @@ mod tests {
             let v_b = mle_eval_bool_quirky(&b, m, k_log, k_skip, &x_ab);
 
             // Prove and verify with matched challengers.
-            let circuit = SparseMatrixCircuit::new(&a_0, &b_0);
+            let circuit = CscCircuit::from_matrices(&a_0, &b_0);
             let mut ch_p = crate::transcript::ProverState::new(b"flock-test-v0", &[]);
             let claim_p = prove(&z_packed, m, k_log, k_skip, &circuit, &x_ab, &mut ch_p);
 
@@ -2449,7 +2095,7 @@ mod tests {
         let v_a = mle_eval_bool_quirky(&a, m, k_log, k_skip, &x_ab);
         let v_b = mle_eval_bool_quirky(&b, m, k_log, k_skip, &x_ab);
 
-        let circuit = SparseMatrixCircuit::new(&a_0, &b_0);
+        let circuit = CscCircuit::from_matrices(&a_0, &b_0);
         let mut ch_p = crate::transcript::ProverState::new(b"flock-test-v0", &[]);
         let _ = prove(&z_packed, m, k_log, k_skip, &circuit, &x_ab, &mut ch_p);
         let proof_t = ch_p.into_proof();
@@ -2504,7 +2150,7 @@ mod tests {
         let v_a = mle_eval_bool_quirky(&a, m, k_log, k_skip, &x_ab);
         let v_b = mle_eval_bool_quirky(&b, m, k_log, k_skip, &x_ab);
 
-        let circuit = SparseMatrixCircuit::new(&a_0, &b_0);
+        let circuit = CscCircuit::from_matrices(&a_0, &b_0);
         let mut ch_p = crate::transcript::ProverState::new(b"flock-test-v0", &[]);
         let _ = prove(&z_packed, m, k_log, k_skip, &circuit, &x_ab, &mut ch_p);
         let proof_t = ch_p.into_proof();

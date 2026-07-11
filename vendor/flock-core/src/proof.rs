@@ -1,67 +1,13 @@
 // Credit: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
-//! Shared R1CS proof types and the Fiat-Shamir statement binding.
-//!
-//! These live in a backend-neutral module (rather than in `prover`) so the
-//! verifier can name them without depending on the prove path. The prover
-//! produces these structs; the verifier consumes them.
+//! The evaluation-claim type shared by the zerocheck/lincheck reduction and
+//! the PCS.
 
-use crate::sponge::Sponge;
 use crate::field::F128;
 use crate::lincheck::QuirkyPoint;
-use crate::pcs::{self, Commitment};
-use crate::r1cs::BlockR1cs;
-use serde::{Deserialize, Serialize};
-
-/// Top-level R1CS proof, BaseFold backend: just the hash-bearing PCS opening.
-/// The zerocheck / lincheck / ring-switch scalars ride the shared transcript
-/// stream (`ProverState::add_scalar` / `VerifierState::next_scalar`).
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct R1csProof {
-    /// Batched PCS opening covering both the `ab` and `c` z-claims via one
-    /// shared BaseFold sumcheck + FRI.
-    pub pcs_open: pcs::BaseFoldProof,
-}
-
-/// Top-level R1CS proof with the **Ligerito** PCS backend. Same streamed
-/// scalar transcript; pcs_open uses Ligerito instead of BaseFold.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct R1csProofLigerito {
-    pub pcs_open: pcs::ligerito::LigeritoProof,
-}
 
 /// A claim of the form `ẑ(point) = value` for the witness `z`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ZClaim {
     pub point: QuirkyPoint,
     pub value: F128,
-}
-
-/// Two MLE evaluation claims on `z` that the PCS layer must verify.
-///
-/// Both `point.x_outer` parts differ; both `point.z_skip` and
-/// `point.x_inner_rest` shapes match (one univariate-skip coord + multilinear
-/// inner-rest), so this is "two quirky-shaped openings of `z`."
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct R1csClaim {
-    /// From lincheck: `ẑ(ab.point) = ab.value` — covers both `â` and `b̂` at
-    /// the same point (their lincheck claims collapsed to a shared z-claim
-    /// at a fresh quirky inner point).
-    pub ab: ZClaim,
-    /// From the zerocheck's extract_c interpolation: `ẑ(c.point) = c.value`.
-    /// Bypasses lincheck because `C = I` ⇒ ĉ-claim is a direct z-claim.
-    pub c: ZClaim,
-}
-
-/// Bind the Fiat-Shamir transcript to the statement: the R1CS instance digest
-/// + the PCS commitment root. Call once at the top of every R1CS prove/verify
-/// path, before any sub-protocol challenge is drawn. RandomChallenger ignores
-/// these observations; FsChallenger uses them to defeat statement substitution.
-pub fn bind_statement(
-    sponge: &mut Sponge,
-    r1cs: &BlockR1cs,
-    commitment: &Commitment,
-) {
-    sponge.absorb_bytes(b"flock-r1cs-v0");
-    sponge.absorb_bytes(&r1cs.statement_digest());
-    sponge.absorb_bytes(&commitment.root);
 }

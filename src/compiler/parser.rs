@@ -327,12 +327,7 @@ pub fn parse_const(s: &str) -> Result<F128, String> {
 }
 
 /// Parse a zkDSL source file (a `.py` file — the DSL is Python-shaped, see
-/// [`parse`]).
-pub fn parse_file(path: impl AsRef<std::path::Path>) -> Result<Ast, String> {
-    parse_file_with_replacements(path, &BTreeMap::new())
-}
-
-/// [`parse_file`] with compile-time **placeholder** replacements (see
+/// [`parse`]) with compile-time **placeholder** replacements (see
 /// [`parse_with_replacements`]).
 pub fn parse_file_with_replacements(
     path: impl AsRef<std::path::Path>,

@@ -180,9 +180,9 @@ impl<'a> VerifierState<'a> {
         }
     }
 
-    /// A verifier state with EMPTY transport channels, for standalone flock
-    /// proofs (tests, benches) whose data rides their own structs: only the
-    /// sponge side is meaningful; any `next_*` read fails.
+    /// A verifier state with EMPTY transport channels — a challenge source for
+    /// unit tests that drive sub-protocols without a transmitted stream.
+    #[cfg(test)]
     pub fn detached(label: &[u8], statement: &[F128]) -> VerifierState<'static> {
         static EMPTY: Proof = Proof { stream: Vec::new(), openings: Vec::new() };
         VerifierState::new(label, &EMPTY, statement)

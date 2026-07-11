@@ -21,30 +21,6 @@ use crate::ntt::AdditiveNttF128;
 use crate::pcs::pack::LOG_PACKING;
 use serde::{Deserialize, Serialize};
 
-/// Log of the per-epoch FRI fold arity. `2^LOG_FRI_ARITY` codeword positions
-/// fold together between Merkle commits. Bigger = fewer Merkle trees (cheaper
-/// prover) but bigger query proofs.
-pub const LOG_FRI_ARITY: usize = 6;
-
-/// Decompose `log_dim` FRI rounds into a sequence of epoch arities, each at
-/// most [`LOG_FRI_ARITY`]. The last epoch may be smaller than [`LOG_FRI_ARITY`]
-/// if `log_dim` doesn't divide evenly.
-///
-/// Examples (`LOG_FRI_ARITY = 6`):
-/// - `log_dim = 17` → `[6, 6, 5]`
-/// - `log_dim = 8`  → `[6, 2]`
-/// - `log_dim = 3`  → `[3]`
-pub fn compute_fri_arities(log_dim: usize) -> Vec<usize> {
-    let mut arities = Vec::new();
-    let mut remaining = log_dim;
-    while remaining > 0 {
-        let a = remaining.min(LOG_FRI_ARITY);
-        arities.push(a);
-        remaining -= a;
-    }
-    arities
-}
-
 /// PCS configuration. Polynomial-basis subspace `{1, x, x², …}` for the NTT.
 ///
 /// Interleaved RS: the packed witness is split into `2^log_batch_size`
@@ -94,20 +70,6 @@ impl PcsParams {
     pub fn codeword_len_f128(&self) -> usize {
         self.n_positions() * self.num_ntts()
     }
-    /// Per-epoch FRI arities (e.g. `[6, 6, 5]` for `log_dim = 17`). The first
-    /// entry, `fri_arities()[0]`, sizes the **post-row-batch** Merkle leaf
-    /// (built inside basefold::prove right after the row-batch sumcheck rounds).
-    /// The **initial** Merkle commitment uses small leaves of just
-    /// `2^log_batch_size = num_ntts` F_{2^128} values each — one codeword
-    /// position's row-batch lanes per leaf.
-    pub fn fri_arities(&self) -> Vec<usize> {
-        compute_fri_arities(self.log_dim())
-    }
-    /// Log of the first-epoch FRI arity (= `fri_arities()[0]` if any, else 0).
-    /// Drives the post-row-batch tree's leaf size, NOT the initial tree's.
-    pub fn log_first_fri_arity(&self) -> usize {
-        self.fri_arities().first().copied().unwrap_or(0)
-    }
     /// `log_2` of the F_{2^128} count per **initial** Merkle leaf
     /// (= `log_batch_size`; just the row-batch lanes per position).
     pub fn log_leaf_f128_count(&self) -> usize {
@@ -118,11 +80,6 @@ impl PcsParams {
     pub fn n_leaves(&self) -> usize {
         self.codeword_len_f128() >> self.log_leaf_f128_count()
     }
-    /// Merkle leaf size in bytes = `num_ntts() * 16`.
-    pub fn leaf_size_bytes(&self) -> usize {
-        16usize << self.log_leaf_f128_count()
-    }
-
     fn validate(&self) {
         assert!(
             self.m >= LOG_PACKING + self.log_batch_size,
@@ -205,7 +162,7 @@ pub fn commit(z_packed: &[F128], params: &PcsParams) -> (Commitment, ProverData)
 /// CONTENTS may be arbitrary (uninit/stale) — every slot is written here:
 /// `z_packed` is replicated into all `2^log_inv_rate` sub-blocks (the exact
 /// state after the first `log_inv_rate` NTT layers on `[z, 0, …, 0]`), in
-/// parallel. Buffers from [`prefault_codeword_during`] or the scratch pool
+/// parallel. Buffers from the scratch pool
 /// are already resident, so no write faults.
 pub fn commit_into(
     z_packed: &[F128],
@@ -314,68 +271,6 @@ fn finalize_commit(mut codeword: Vec<F128>, params: &PcsParams) -> (Commitment, 
             merkle_tree,
         },
     )
-}
-
-/// Tag the current thread as background QoS. On macOS the scheduler then
-/// strongly prefers efficiency (E) cores — ideal for the fault/bandwidth-bound
-/// codeword pre-fault, which we want OFF the performance cores running witness
-/// generation. No-op on other platforms.
-#[cfg(target_os = "macos")]
-fn set_background_qos() {
-    // QOS_CLASS_BACKGROUND = 0x09. Declared inline to avoid a libc dependency.
-    unsafe extern "C" {
-        fn pthread_set_qos_class_self_np(qos_class: u32, relative_priority: i32) -> i32;
-    }
-    unsafe {
-        let _ = pthread_set_qos_class_self_np(0x09, 0);
-    }
-}
-#[cfg(not(target_os = "macos"))]
-fn set_background_qos() {}
-
-/// Allocate + zero-fill (pre-fault) the codeword buffer that [`commit_into`]
-/// will consume, on a background-QoS (E-core) thread, **while** `gen` runs on
-/// the caller's performance threads. Returns `(Some(buf), gen_result)`.
-///
-/// The codeword alloc is page-fault-bound (first-touch of a fresh 64–512 MB
-/// buffer) and scales ~1.0×, so overlapping it with witness generation hides it
-/// almost entirely (measured ~99% at m=29 — see `benches/ecore_offload_probe`).
-///
-/// **Gated for honest single-threaded behavior:** when the rayon pool has ≤ 1
-/// thread (i.e. `RAYON_NUM_THREADS=1`), this spawns **zero** OS threads — it
-/// runs `gen` and returns `None`, leaving [`commit`] to allocate inline. The
-/// whole offload is therefore invisible to truly-serial runs.
-pub fn prefault_codeword_during<R>(
-    params: &PcsParams,
-    generate: impl FnOnce() -> R,
-) -> (Option<Vec<F128>>, R) {
-    if rayon::current_num_threads() <= 1 || std::env::var_os("FLOCK_NO_PREFAULT").is_some() {
-        // Truly single-threaded (or explicitly disabled): no extra OS thread;
-        // commit allocates inline. FLOCK_NO_PREFAULT lets benchmarks A/B the
-        // offload and keeps fixed-thread-count sweeps honest.
-        return (None, generate());
-    }
-    let codeword_len = params.n_positions() * params.num_ntts();
-    // Warm path: a pooled buffer is already resident — there is nothing to
-    // pre-fault, and commit_into writes every slot itself. Skip the thread.
-    if let Some(buf) = crate::scratch::try_take_f128(codeword_len) {
-        return (Some(buf), generate());
-    }
-    // Cold path: allocate + first-touch on a background-QoS thread, hidden
-    // under witness generation. (commit_into rewrites all slots, so the
-    // zero values themselves don't matter — the page faults do.)
-    std::thread::scope(|s| {
-        let h = s.spawn(move || {
-            set_background_qos();
-            let mut buf: Vec<F128> = crate::alloc_uninit_f128_vec(codeword_len);
-            unsafe {
-                std::ptr::write_bytes(buf.as_mut_ptr(), 0u8, codeword_len);
-            }
-            buf
-        });
-        let r = generate();
-        (Some(h.join().unwrap()), r)
-    })
 }
 
 #[cfg(test)]

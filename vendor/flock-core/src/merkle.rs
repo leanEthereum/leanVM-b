@@ -30,41 +30,6 @@ use rayon::prelude::*;
 
 pub type Hash = [u8; 32];
 
-/// Global BLAKE3 call/compression counters, enabled with
-/// `--features hash-count` (e.g. by `benches/verifier_hash_count.rs`).
-/// Relaxed atomics — exact totals, no ordering guarantees across threads.
-#[cfg(feature = "hash-count")]
-pub mod hash_count {
-    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
-
-    pub static LEAF_CALLS: AtomicU64 = AtomicU64::new(0);
-    pub static LEAF_COMPRESSIONS: AtomicU64 = AtomicU64::new(0);
-    pub static PAIR_CALLS: AtomicU64 = AtomicU64::new(0);
-
-    /// BLAKE3 compression count for a one-shot hash of `len` bytes: one
-    /// compression per 64-byte block (ceil(len / 64), min 1 — no length pad).
-    #[inline]
-    pub fn blake3_blocks(len: usize) -> u64 {
-        (len.div_ceil(64)).max(1) as u64
-    }
-
-    pub fn reset() {
-        LEAF_CALLS.store(0, Relaxed);
-        LEAF_COMPRESSIONS.store(0, Relaxed);
-        PAIR_CALLS.store(0, Relaxed);
-    }
-
-    /// (leaf_calls, leaf_compressions, pair_calls). Each pair hash is one
-    /// compression (64 B, no length padding block).
-    pub fn snapshot() -> (u64, u64, u64) {
-        (
-            LEAF_CALLS.load(Relaxed),
-            LEAF_COMPRESSIONS.load(Relaxed),
-            PAIR_CALLS.load(Relaxed),
-        )
-    }
-}
-
 /// The VM's 64→32 BLAKE3 compression `f(a, b) = BLAKE3(a‖b)` on two 32-byte
 /// halves — exactly leanVM-b's `Blake3` opcode / `vmhash::compress`. THE
 /// primitive; [`hash_pair`] and the [`hash_leaf`] MD chain are both just this.
@@ -103,12 +68,6 @@ fn g_pow(k: usize) -> F128 {
 /// `blake3::hash`, whose intermediate-block flags the opcode cannot reproduce).
 #[inline]
 pub fn hash_leaf(data: &[u8]) -> Hash {
-    #[cfg(feature = "hash-count")]
-    {
-        use std::sync::atomic::Ordering::Relaxed;
-        hash_count::LEAF_CALLS.fetch_add(1, Relaxed);
-        hash_count::LEAF_COMPRESSIONS.fetch_add((data.len().div_ceil(32)).max(1) as u64, Relaxed);
-    }
     // IV = (g^{num_bytes}, 0) as 32 bytes: g^{num_bytes} in the low F128 word.
     let iv0 = g_pow(data.len());
     let mut cv = [0u8; 32];
@@ -126,19 +85,7 @@ pub fn hash_leaf(data: &[u8]) -> Hash {
 /// which is already exactly the VM opcode.
 #[inline]
 pub fn hash_pair(left: &Hash, right: &Hash) -> Hash {
-    #[cfg(feature = "hash-count")]
-    hash_count::PAIR_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     compress(left, right)
-}
-
-/// Compute the Merkle root of `data` split into `num_leaves` equal-sized leaves.
-///
-/// Multi-threaded via rayon. `num_leaves` must be a power of two and divide
-/// `data.len()`. Returns the 32-byte root. The intermediate tree is allocated
-/// and dropped; if you need it for path opening, use [`merkle_tree`] instead.
-pub fn merkle_root(data: &[u8], num_leaves: usize) -> Hash {
-    let tree = merkle_tree(data, num_leaves);
-    tree[tree.len() - 1]
 }
 
 // The VM `compress` = `blake3::hash(64B)` is a ROOT single-block chunk. blake3's
@@ -264,66 +211,9 @@ pub fn merkle_tree(data: &[u8], num_leaves: usize) -> Vec<Hash> {
     tree
 }
 
-/// Sequential (single-threaded) version of [`merkle_tree`]. Used for
-/// benchmark comparison and as the test oracle.
-pub fn merkle_tree_sequential(data: &[u8], num_leaves: usize) -> Vec<Hash> {
-    assert!(num_leaves.is_power_of_two() && num_leaves > 0);
-    assert_eq!(data.len() % num_leaves, 0);
-
-    let leaf_size = data.len() / num_leaves;
-    let total_nodes = 2 * num_leaves - 1;
-    let mut tree: Vec<Hash> = crate::alloc_uninit_vec(total_nodes);
-
-    for (i, leaf) in data.chunks(leaf_size).enumerate() {
-        tree[i] = hash_leaf(leaf);
-    }
-    let mut read_start = 0usize;
-    let mut read_len = num_leaves;
-    while read_len > 1 {
-        let next_len = read_len >> 1;
-        for i in 0..next_len {
-            let left = tree[read_start + 2 * i];
-            let right = tree[read_start + 2 * i + 1];
-            tree[read_start + read_len + i] = hash_pair(&left, &right);
-        }
-        read_start += read_len;
-        read_len = next_len;
-    }
-    tree
-}
-
 // ---------------------------------------------------------------------------
 // Merkle path opening and verification.
 // ---------------------------------------------------------------------------
-
-/// Build an opening proof for leaf `index`: the sibling hashes from the leaf
-/// level up to (but not including) the root.
-///
-/// `tree` must be the flat tree produced by [`merkle_tree`] or
-/// [`merkle_tree_sequential`] for `num_leaves` leaves. The returned vector has
-/// length `log2(num_leaves)`.
-///
-/// Verify with [`verify_merkle_proof`].
-pub fn merkle_proof(tree: &[Hash], num_leaves: usize, index: usize) -> Vec<Hash> {
-    assert!(num_leaves.is_power_of_two() && num_leaves > 0);
-    assert!(index < num_leaves);
-    assert_eq!(tree.len(), 2 * num_leaves - 1);
-
-    let log_n = num_leaves.trailing_zeros() as usize;
-    let mut proof = Vec::with_capacity(log_n);
-
-    let mut level_start = 0usize;
-    let mut level_len = num_leaves;
-    let mut idx = index;
-    while level_len > 1 {
-        let sibling_idx = idx ^ 1;
-        proof.push(tree[level_start + sibling_idx]);
-        level_start += level_len;
-        level_len >>= 1;
-        idx >>= 1;
-    }
-    proof
-}
 
 /// Verify a Merkle opening: recomputes the root from `leaf_hash`, the path,
 /// and the leaf index. Returns true iff the recomputed root matches `root`.
@@ -602,6 +492,34 @@ mod prune_tests {
 #[cfg(test)]
 mod vmhash_batch_tests {
     use super::*;
+
+    /// Sequential (per-leaf `hash_leaf`) reference for the SIMD-batched
+    /// [`merkle_tree`].
+    fn merkle_tree_sequential(data: &[u8], num_leaves: usize) -> Vec<Hash> {
+    assert!(num_leaves.is_power_of_two() && num_leaves > 0);
+    assert_eq!(data.len() % num_leaves, 0);
+
+    let leaf_size = data.len() / num_leaves;
+    let total_nodes = 2 * num_leaves - 1;
+    let mut tree: Vec<Hash> = crate::alloc_uninit_vec(total_nodes);
+
+    for (i, leaf) in data.chunks(leaf_size).enumerate() {
+        tree[i] = hash_leaf(leaf);
+    }
+    let mut read_start = 0usize;
+    let mut read_len = num_leaves;
+    while read_len > 1 {
+        let next_len = read_len >> 1;
+        for i in 0..next_len {
+            let left = tree[read_start + 2 * i];
+            let right = tree[read_start + 2 * i + 1];
+            tree[read_start + read_len + i] = hash_pair(&left, &right);
+        }
+        read_start += read_len;
+        read_len = next_len;
+    }
+    tree
+}
 
     /// blake3's SIMD `hash_many` with the ROOT flag must reproduce
     /// `blake3::hash(64B)` (the VM `compress`) exactly — the invariant the batched
