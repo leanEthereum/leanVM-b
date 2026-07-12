@@ -301,12 +301,8 @@ def squeeze_step(state_0, state_1):
     # Non-inlined sponge ratchet exposing BOTH output words (challenge and the
     # next state), so a query-squeeze loop can chain the state through a heap
     # buffer. Returns (challenge, next_state_0, next_state_1).
-    a = StackBuf(2)
-    a[0] = state_0
-    a[1] = state_1
-    b = StackBuf(2)
-    b[0] = 0
-    b[1] = DS_SQ
+    a = [state_0, state_1]
+    b = [0, DS_SQ]
     o = StackBuf(2)
     blake3(a, b, o)
     return o[0], o[0], o[1]
@@ -358,17 +354,11 @@ def grind_check(state_0, state_1, nonce, nbits_g):
     # check_128_bits_decomposition), and the low nbits (nbits_g = g^nbits) must
     # be zero — the CONTIGUOUS PoW window of transcript::pow_bits_ok. The
     # caller absorbs the nonce afterwards.
-    st = StackBuf(2)
-    st[0] = state_0
-    st[1] = state_1
-    tag = StackBuf(2)
-    tag[0] = 0
-    tag[1] = DS_POW
+    st = [state_0, state_1]
+    tag = [0, DS_POW]
     base = StackBuf(2)
     blake3(st, tag, base)
-    nz = StackBuf(2)
-    nz[0] = nonce
-    nz[1] = DS_POW
+    nz = [nonce, DS_POW]
     out = StackBuf(2)
     blake3(base, nz, out)
     digest_bits = HeapBuf(GEN ** FIELD_BITS)
@@ -466,12 +456,8 @@ def verify_merkle_path(leaf_0, leaf_1, path_ptr, direction_bits, depth: Const):
         dir_bit = direction_bits[GEN ** level]  # query index bit: 0 keeps the running node left, 1 swaps it right
         diff_0 = node_0 + sibling_0
         diff_1 = node_1 + sibling_1
-        left = StackBuf(2)
-        left[0] = node_0 + dir_bit * diff_0
-        left[1] = node_1 + dir_bit * diff_1
-        right = StackBuf(2)
-        right[0] = diff_0 + left[0]
-        right[1] = diff_1 + left[1]
+        left = [node_0 + dir_bit * diff_0, node_1 + dir_bit * diff_1]
+        right = [diff_0 + left[0], diff_1 + left[1]]
         parent = StackBuf(2)  # parent = blake3(left, right), the running node one level up
         blake3(left, right, parent)
         node_0 = parent[0]
@@ -485,9 +471,7 @@ def sumcheck_round3(state_0, state_1, msg_cursor, claim, eq_acc, prev_challenge)
     # round challenge round_challenge, and evaluate the round polynomial at round_challenge through the
     # {0, 1, g} Lagrange basis (baked inverse denominators). Shared by the
     # GKR layers and the AIR zerocheck rounds.
-    fs = StackBuf(2)
-    fs[0] = state_0
-    fs[1] = state_1
+    fs = [state_0, state_1]
     fs, m0, msg_cursor = fs_next(fs, msg_cursor)
     fs, m1, msg_cursor = fs_next(fs, msg_cursor)
     fs, m2, msg_cursor = fs_next(fs, msg_cursor)
@@ -525,9 +509,7 @@ def fold_final_msg(msg, weights, wbase: Const, log_len: Const):
 def obs(state, x):
     # Bind one scalar into the sponge chain: state <- compress(state, (x, SCALAR)).
     # Returns the successor StackBuf; the call site aliases it (zero copies).
-    tg = StackBuf(2)
-    tg[0] = x
-    tg[1] = DS_SCALAR
+    tg = [x, DS_SCALAR]
     nb = StackBuf(2)
     blake3(state, tg, nb)
     return nb
@@ -543,9 +525,7 @@ def fs_next(state, cursor):
     # cost (state a StackBuf run, cursor a folded g-address), so the usual walk is
     # just `fs, x, cursor = fs_next(fs, cursor)` with no manual cursor arithmetic.
     x = cursor[GEN ** 0]
-    tg = StackBuf(2)
-    tg[0] = x
-    tg[1] = DS_SCALAR
+    tg = [x, DS_SCALAR]
     nb = StackBuf(2)
     blake3(state, tg, nb)
     return nb, x, cursor * GEN
@@ -554,9 +534,7 @@ def fs_next(state, cursor):
 @inline
 def absorb(state, x, tag):
     # Tagged absorb (length frames, byte words, grinding nonces).
-    tg = StackBuf(2)
-    tg[0] = x
-    tg[1] = tag
+    tg = [x, tag]
     nb = StackBuf(2)
     blake3(state, tg, nb)
     return nb
@@ -565,9 +543,7 @@ def absorb(state, x, tag):
 @inline
 def squeeze(state):
     # Ratchet: the compress output is the new state; word 0 is the challenge.
-    zt = StackBuf(2)
-    zt[0] = 0
-    zt[1] = DS_SQ
+    zt = [0, DS_SQ]
     nb = StackBuf(2)
     blake3(state, zt, nb)
     return nb
@@ -635,9 +611,7 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1):
     # residual-slot coordinates beyond final_msg's 2^yr_log_n cells (positions
     # yr_log_n .. YR_LOG_CAP-1); fold_cap_g is the certified total fold count
     # the terminal pins its hinted claim lengths against.
-    fs = StackBuf(2)
-    fs[0] = fs0
-    fs[1] = fs1
+    fs = [fs0, fs1]
 
     fs = obs(fs, target)
     fs = absorb(fs, 32, DS_LEN)
@@ -723,9 +697,7 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1):
             sqz_chain_1[xs * GEN] = next_c1
             query_ptr = xs ** LIG_POSITIONS_PER_WORD[m_idx * LIG_MAX_LEVELS + lvl]
             decode_query_bits(packed_word, query_positions * GEN ** LIG_POSITIONS_OFF[m_idx * LIG_MAX_LEVELS + lvl] * query_ptr, query_bit_ptrs * GEN ** LIG_POSITIONS_OFF[m_idx * LIG_MAX_LEVELS + lvl] * query_ptr, LIG_TREE_DEPTH[m_idx * LIG_MAX_LEVELS + lvl], LIG_POSITIONS_PER_WORD[m_idx * LIG_MAX_LEVELS + lvl])
-        fs = StackBuf(2)
-        fs[0] = sqz_chain_0[GEN ** LIG_SQUEEZES[m_idx * LIG_MAX_LEVELS + lvl]]
-        fs[1] = sqz_chain_1[GEN ** LIG_SQUEEZES[m_idx * LIG_MAX_LEVELS + lvl]]
+        fs = [sqz_chain_0[GEN ** LIG_SQUEEZES[m_idx * LIG_MAX_LEVELS + lvl]], sqz_chain_1[GEN ** LIG_SQUEEZES[m_idx * LIG_MAX_LEVELS + lvl]]]
 
         query_alphas = HeapBuf(GEN ** (LIG_MAX_INTERLEAVE[m_idx]))
         for t in unroll(0, LIG_LOG_QUERIES[m_idx * LIG_MAX_LEVELS + lvl]):
@@ -757,14 +729,10 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1):
         for xe in mul_range(1, GEN ** LIG_QUERIES[m_idx * LIG_MAX_LEVELS + lvl]):
             row_base = xe ** LIG_INTERLEAVE[m_idx * LIG_MAX_LEVELS + lvl]
             row_ptr = merkle_leaf_rows * GEN ** LIG_ROWS_OFF[m_idx * LIG_MAX_LEVELS + lvl] * row_base
-            leaf_hash_state = StackBuf(2)
-            leaf_hash_state[0] = GEN ** LIG_LEAF_BYTES[m_idx * LIG_MAX_LEVELS + lvl]
-            leaf_hash_state[1] = 0
+            leaf_hash_state = [GEN ** LIG_LEAF_BYTES[m_idx * LIG_MAX_LEVELS + lvl], 0]
             row_dot = 0
             for jb in unroll(0, LIG_LEAF_PAIRS[m_idx * LIG_MAX_LEVELS + lvl]):
-                row_pair = StackBuf(2)
-                row_pair[0] = row_ptr[GEN ** (2 * jb)]
-                row_pair[1] = row_ptr[GEN ** (2 * jb + 1)]
+                row_pair = [row_ptr[GEN ** (2 * jb)], row_ptr[GEN ** (2 * jb + 1)]]
                 leaf_digest = StackBuf(2)
                 blake3(leaf_hash_state, row_pair, leaf_digest)  # hash-fold the queried leaf row into the running leaf digest
                 leaf_hash_state = leaf_digest
@@ -885,9 +853,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     zeta = HeapBuf(MU_CAP)
 
     # ---- seed (statement pre-bound: hinted sub pi + baked program digest) ----
-    fs = StackBuf(2)
-    fs[0] = TRANSCRIPT_SEED_0  # TRANSCRIPT_SEED = sponge state after the b"leanvm-b" domain label
-    fs[1] = TRANSCRIPT_SEED_1
+    fs = [TRANSCRIPT_SEED_0, TRANSCRIPT_SEED_1]  # the sponge state after the b"leanvm-b" domain label
     fs = obs(fs, seed_0)  # the FS seed: H(flock circuit family, inner program
     fs = obs(fs, seed_1)  # bytecode, ...) — from the recursion's public input
     fs = obs(fs, pi_0)   # bind the sub-proof's statement (its public input)
@@ -1002,9 +968,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     gkr_layer_row[GEN ** 0] = gkr_pts
     gkr_layer_round_pos[GEN ** 0] = GEN ** 0
     for x_layer in mul_range(1, g_bus_mu):
-        layer_fs = StackBuf(2)
-        layer_fs[0] = gkr_layer_fs0[x_layer]
-        layer_fs[1] = gkr_layer_fs1[x_layer]
+        layer_fs = [gkr_layer_fs0[x_layer], gkr_layer_fs1[x_layer]]
         lam = gkr_layer_lambda[x_layer]
         claim_l = gkr_layer_claim[x_layer] + lam * (gkr_layer_claim_b[x_layer] + lam * gkr_layer_claim_c[x_layer])
         point_row = gkr_layer_row[x_layer]
@@ -1026,9 +990,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
             gkr_round_claim[pos_next] = nclaim
             gkr_round_eq[pos_next] = neq
         final_pos = round_pos * x_layer
-        tail_fs = StackBuf(2)
-        tail_fs[0] = gkr_round_fs0[final_pos]
-        tail_fs[1] = gkr_round_fs1[final_pos]
+        tail_fs = [gkr_round_fs0[final_pos], gkr_round_fs1[final_pos]]
         tcur = gkr_round_cursor[final_pos]
         tclaim = gkr_round_claim[final_pos]
         teq = gkr_round_eq[final_pos]
@@ -1053,9 +1015,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
         gkr_layer_cursor[xln] = tcur
         gkr_layer_row[xln] = nextrow
         gkr_layer_round_pos[xln] = round_pos * x_layer * GEN
-    fs = StackBuf(2)
-    fs[0] = gkr_layer_fs0[g_bus_mu]
-    fs[1] = gkr_layer_fs1[g_bus_mu]
+    fs = [gkr_layer_fs0[g_bus_mu], gkr_layer_fs1[g_bus_mu]]
     cursor = gkr_layer_cursor[g_bus_mu]
     final_point_row = gkr_layer_row[g_bus_mu]
     for xt in mul_range(1, g_bus_mu):
@@ -1300,17 +1260,13 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
         point_fs0[GEN ** 0] = fs[0]
         point_fs1[GEN ** 0] = fs[1]
         for xk in mul_range(1, tau_g):
-            point_fs = StackBuf(2)
-            point_fs[0] = point_fs0[xk]
-            point_fs[1] = point_fs1[xk]
+            point_fs = [point_fs0[xk], point_fs1[xk]]
             point_fs = squeeze(point_fs)
             eq_r[xk] = point_fs[0]
             xkn = xk * GEN
             point_fs0[xkn] = point_fs[0]
             point_fs1[xkn] = point_fs[1]
-        fs = StackBuf(2)
-        fs[0] = point_fs0[tau_g]
-        fs[1] = point_fs1[tau_g]
+        fs = [point_fs0[tau_g], point_fs1[tau_g]]
         # tau eq-trick rounds (claim starts at 0, eq at 1).
         round_fs0 = zc_round_fs0 * GEN ** (t * (TAU_CAP + 2))
         round_fs1 = zc_round_fs1 * GEN ** (t * (TAU_CAP + 2))
@@ -1332,9 +1288,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
             round_cursor[xkn] = ncur
             round_claim[xkn] = nclaim
             round_eq[xkn] = neq
-        fs = StackBuf(2)
-        fs[0] = round_fs0[tau_g]
-        fs[1] = round_fs1[tau_g]
+        fs = [round_fs0[tau_g], round_fs1[tau_g]]
         cursor = round_cursor[tau_g]
         claim = round_claim[tau_g]
         eq_acc = round_eq[tau_g]
@@ -1403,17 +1357,13 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     flock_point_fs0[GEN ** (K_SKIP + N_FIXED_CHALLENGE_ROUNDS)] = fs[0]
     flock_point_fs1[GEN ** (K_SKIP + N_FIXED_CHALLENGE_ROUNDS)] = fs[1]
     for xi in mul_range(GEN ** (K_SKIP + N_FIXED_CHALLENGE_ROUNDS), mr1cs_g):
-        point_fs = StackBuf(2)
-        point_fs[0] = flock_point_fs0[xi]
-        point_fs[1] = flock_point_fs1[xi]
+        point_fs = [flock_point_fs0[xi], flock_point_fs1[xi]]
         point_fs = squeeze(point_fs)
         zerocheck_r[xi] = point_fs[0]
         xin = xi * GEN
         flock_point_fs0[xin] = point_fs[0]
         flock_point_fs1[xin] = point_fs[1]
-    fs = StackBuf(2)
-    fs[0] = flock_point_fs0[mr1cs_g]
-    fs[1] = flock_point_fs1[mr1cs_g]
+    fs = [flock_point_fs0[mr1cs_g], flock_point_fs1[mr1cs_g]]
     # round-1 message (ab ‖ c, 2 * 2^K_SKIP words): fetch + observe each word as
     # it comes off the stream, then sample z.
     zc_round1 = HeapBuf(2 * 2 ** K_SKIP)
@@ -1462,9 +1412,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     flock_round_running[GEN ** N_FIXED_CHALLENGE_ROUNDS] = zc_running
     flock_round_cursor[GEN ** N_FIXED_CHALLENGE_ROUNDS] = cursor
     for xi in mul_range(GEN ** N_FIXED_CHALLENGE_ROUNDS, nmlv_g):
-        round_fs = StackBuf(2)
-        round_fs[0] = flock_round_fs0[xi]
-        round_fs[1] = flock_round_fs1[xi]
+        round_fs = [flock_round_fs0[xi], flock_round_fs1[xi]]
         round_running = flock_round_running[xi]
         r_eq = zerocheck_r[GEN ** K_SKIP * xi]
         cur_i = flock_round_cursor[xi]
@@ -1481,9 +1429,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
         flock_round_fs1[xin] = round_fs[1]
         flock_round_running[xin] = round_running
         flock_round_cursor[xin] = cur_i
-    fs = StackBuf(2)
-    fs[0] = flock_round_fs0[nmlv_g]
-    fs[1] = flock_round_fs1[nmlv_g]
+    fs = [flock_round_fs0[nmlv_g], flock_round_fs1[nmlv_g]]
     zc_running = flock_round_running[nmlv_g]
     cursor = flock_round_cursor[nmlv_g]  # walked past all 2*n_mlv round words, now at a_eval
     # final: zc_running == a_eval * b_eval; observe both.
@@ -1929,9 +1875,7 @@ def main():
     # samples the RLC coefficients, and verifies the two batching sumchecks of
     # doc.tex §Deferred evaluation claims. Only the reduced claims (one per
     # fixed polynomial) reach the public input.
-    agg_fs = StackBuf(2)
-    agg_fs[0] = 0
-    agg_fs[1] = 0
+    agg_fs = [0, 0]
     for sub in unroll(0, NSUB):
         agg_fs = obs(agg_fs, sub_pis[GEN ** (2 * sub)])
         agg_fs = obs(agg_fs, sub_pis[GEN ** (2 * sub + 1)])
@@ -2021,9 +1965,7 @@ def main():
     assert mat_running == mat_final
 
     # ---- bind the FS seed + sub statements + reduced claims to the PI ----
-    out_fs = StackBuf(2)
-    out_fs[0] = 0
-    out_fs[1] = 0
+    out_fs = [0, 0]
     out_fs = obs(out_fs, fs_seed[0])  # the inner proving environment is part of the public statement
     out_fs = obs(out_fs, fs_seed[1])
     for sub in unroll(0, NSUB):

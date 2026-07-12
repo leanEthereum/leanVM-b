@@ -884,6 +884,7 @@ impl FnLower<'_> {
                 panic!("`-`, `//`, `%` are compile-time only (field subtraction is `+`); use them in an index, a bound, or a `Const` argument, got `{e:?}`")
             }
             Expr::Slice(..) => panic!("a slice is not a scalar; it is only a blake3 operand"),
+            Expr::ListLit(..) => panic!("a list literal must be bound to a name: `x = [a, b]`"),
         }
     }
 
@@ -1625,6 +1626,28 @@ impl FnLower<'_> {
                     self.fconsts.remove(name);
                     self.stacks.insert(name.clone(), (base, *n as u32));
                 }
+                // `x = [a, b, …]`: an initialized StackBuf — allocate the run
+                // and write each element in place (each write is the stack-store
+                // path, so copies/constants defer as aliases). Elements are
+                // lowered before `name` rebinds, so they may read its old
+                // binding (`fs = [fs[1], fs[0]]`).
+                Expr::ListLit(es) => {
+                    let base = self.alloc_stack(es.len() as u32);
+                    for (k, el) in es.iter().enumerate() {
+                        let dst = base + k as u32;
+                        if let Some(a) = self.copy_alias(el) {
+                            self.alias.insert(dst, a);
+                        } else {
+                            self.alias.remove(&dst);
+                            self.expr_into(el, dst);
+                        }
+                    }
+                    self.vars.remove(name);
+                    self.consts.remove(name);
+                    self.gaddrs.remove(name);
+                    self.fconsts.remove(name);
+                    self.stacks.insert(name.clone(), (base, es.len() as u32));
+                }
                 // `x = other_stackbuf`: a compile-time alias of the same cell
                 // run (zero instructions) — the chaining-state idiom
                 // `st = sn` of an MD loop.
@@ -2085,7 +2108,7 @@ fn free_vars_expr(e: &Expr, refs: &mut Vec<String>) {
             free_vars_expr(lo, refs);
             free_vars_expr(hi, refs);
         }
-        Expr::Call(_, args) => args.iter().for_each(|a| free_vars_expr(a, refs)),
+        Expr::Call(_, args) | Expr::ListLit(args) => args.iter().for_each(|a| free_vars_expr(a, refs)),
         Expr::HeapBufDyn(sz) | Expr::GenPow(sz) => free_vars_expr(sz, refs),
         Expr::Lit(_) | Expr::Gen | Expr::GPow(_) | Expr::HeapBuf(_) | Expr::StackBuf(_) => {}
     }

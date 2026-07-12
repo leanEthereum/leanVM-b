@@ -230,9 +230,7 @@ likewise. This makes chained-state helpers free, the MD-chain idiom:
 ```python
 @inline
 def obs(cb, x):          # sponge absorb: cb <- compress(cb, (x, SCALAR))
-    tg = StackBuf(2)
-    tg[0] = x
-    tg[1] = DS_SCALAR
+    tg = [x, DS_SCALAR]  # a list literal: an initialized StackBuf(2)
     nb = StackBuf(2)
     blake3(cb, tg, nb)
     return nb            # the call site's `cvb = obs(cvb, v)` aliases nb
@@ -315,7 +313,17 @@ sa[0] = 3             # direct frame cell: zero instructions to address
 sa[2] = sa[0] + sa[1]
 x = 1
 v = sa[x + 1]         # indexes: literals, literal-bound names, and + * // % of those
+tg = [v, 7]           # list literal: an initialized StackBuf, one cell per element
 ```
+
+A **list literal** `x = [a, b, …]` is an initialized `StackBuf`: it allocates
+one cell per element and writes each element in place — exactly the
+alloc-then-store idiom above, in one line. Elements are arbitrary runtime
+expressions; each write goes through the same stack-store path (so copies and
+constants defer as aliases, see "Variables"). It exists only as the RHS of a
+plain assignment inside a function; a *top-level* `NAME = [...]` is a constant
+array (see "Constant arrays"). The elements are lowered before the name rebinds, so
+`s = [s[1], s[0]]` swaps through the old binding.
 
 Stack indexes and slice bounds are **compile-time integers**, and index
 arithmetic (`+ * // %`) is *integer* arithmetic (`x + 1` above is 2, `k // 2`

@@ -77,6 +77,12 @@ pub enum Expr {
     /// exclusive). Only meaningful as a `blake3` operand, where it must span
     /// exactly 2 cells (one 256-bit value).
     Slice(Box<Expr>, Box<Expr>, Box<Expr>),
+    /// `[a, b, …]` — an initialized [`Expr::StackBuf`]: `x = [a, b]` allocates
+    /// a StackBuf of the element count and writes each element in place, sugar
+    /// for the alloc-then-store idiom. Only meaningful as the RHS of a plain
+    /// assignment (inside a function; a *top-level* `NAME = […]` is a constant
+    /// array, see [`Ast::const_arrays`]).
+    ListLit(Vec<Expr>),
 }
 
 /// A statement.

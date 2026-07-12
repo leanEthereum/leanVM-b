@@ -1007,6 +1007,7 @@ fn subst_var(e: &Expr, name: &str, to: &Expr) -> Expr {
         Expr::GenPow(e) => Expr::GenPow(s(e)),
         Expr::Pow(a, b) => Expr::Pow(s(a), s(b)),
         Expr::HeapBufDyn(sz) => Expr::HeapBufDyn(s(sz)),
+        Expr::ListLit(es) => Expr::ListLit(es.iter().map(|a| subst_var(a, name, to)).collect()),
         Expr::Call(f, args) => Expr::Call(f.clone(), args.iter().map(|a| subst_var(a, name, to)).collect()),
         other => other.clone(),
     }
@@ -1122,6 +1123,20 @@ fn parse_expr(s: &str) -> Result<Expr, String> {
     }
     if let Ok(n) = s.parse::<u128>() {
         return Ok(Expr::Lit(n));
+    }
+    // List literal `[a, b, …]` — an initialized StackBuf (only meaningful as
+    // the RHS of an assignment; top-level constant arrays are parsed earlier).
+    if s.starts_with('[') && s.ends_with(']') {
+        let inner = s[1..s.len() - 1].trim();
+        if inner.is_empty() {
+            return Err("a list literal needs at least one element".into());
+        }
+        return Ok(Expr::ListLit(
+            split_top(inner, ',')
+                .iter()
+                .map(|e| parse_expr(e))
+                .collect::<Result<_, _>>()?,
+        ));
     }
     // Index `base[idx]` or slice `base[lo:hi]` (binds tightest, like a call).
     if s.ends_with(']') {

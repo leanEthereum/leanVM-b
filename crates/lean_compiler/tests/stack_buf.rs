@@ -207,6 +207,43 @@ def step(state, cursor):
     verify(&program, &want, &proof).expect("inline advanced-cursor return verifies");
 }
 
+/// `x = [a, b]` — the list-literal StackBuf initializer: allocates the run and
+/// writes the elements in place, sugar for alloc-then-store. The test mixes a
+/// runtime value, a constant, and an expression; feeds the result to blake3;
+/// and swaps a buffer through itself (`s = [s[1], s[0]]` reads the OLD
+/// binding, per the let-rebind rule).
+#[test]
+fn stack_buf_list_literal() {
+    warm_setup(1);
+    let src = "\
+def main():
+    s = [5, 7]
+    s = [s[1], s[0]]
+    t = [s[0] + s[1], 3]
+    out = StackBuf(2)
+    blake3(s, t, out)
+    p = 1
+    p[1] = out[0]
+    p[GEN] = out[1]
+    return
+";
+    let program = compile(&parse(src).expect("parse"));
+    // s = [7, 5] after the swap; t = [7 ^ 5, 3] = [2, 3].
+    let want = compress([F128::new(7, 0), F128::new(5, 0)], [F128::new(2, 0), F128::new(3, 0)]);
+    let (proof, stats) = prove(&program, want);
+    assert_eq!(stats.counts[5], 1, "one BLAKE3 instruction");
+    verify(&program, &want, &proof).expect("list-literal StackBuf verifies");
+}
+
+/// A list literal anywhere but the RHS of an assignment is rejected with a
+/// clear message, not lowered as a phantom scalar.
+#[test]
+#[should_panic(expected = "a list literal must be bound to a name")]
+fn stack_buf_list_literal_as_value_rejected() {
+    let src = "def main():\n    x = 1 + [2, 3]\n    assert x == x\n    return\n";
+    let _ = compile(&parse(src).expect("parse"));
+}
+
 /// A compile-time heap index past the buffer's declared size is a compile
 /// error, not a runtime wild deref.
 #[test]
