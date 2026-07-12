@@ -527,12 +527,12 @@ impl Parser {
                     strip_log(&a).ok_or("a `<` assert compares logs: `assert log X < log Y` or `assert log X < k`")?;
                 let bound = match strip_log(&b) {
                     Some(y) => gpow_bound(&parse_expr(y)?)?, // log GEN ** k = k
-                    None => match parse_expr(&b)? {
-                        Expr::Lit(k) => u64::try_from(k).map_err(|_| format!("log bound {k} does not fit in u64"))?,
-                        other => {
+                    // An integer bound folds like any parse-time size (`CAP + 1`).
+                    None => match const_int_expr(&parse_expr(&b)?) {
+                        Some(k) => u64::try_from(k).map_err(|_| format!("log bound {k} does not fit in u64"))?,
+                        None => {
                             return Err(format!(
-                                "a log bound must be `log GEN ** k` or an integer literal, \
-                                 got `{other:?}`"
+                                "a log bound must be `log GEN ** k` or a parse-time integer, got `{b}`"
                             ));
                         }
                     },

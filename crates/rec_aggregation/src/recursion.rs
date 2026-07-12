@@ -858,15 +858,8 @@ fn gen_verify(
             }
             v
         }),
-        ("claim_overlap_mask".to_string(), {
-            let mut v = Vec::new();
-            for &nover in nover_v.iter().take(ncl) {
-                for k in 0..8 {
-                    v.push(F128::new(u64::from(k < nover), 0));
-                }
-            }
-            v
-        }),
+        // (no overlap-mask stream: the guest bakes every prefix mask and
+        // selects row nover, so the mask is not prover-chosen at all.)
         ("claim_yslot_bits".to_string(), {
             let mut v = Vec::new();
             for j in 0..ncl {
@@ -1376,16 +1369,9 @@ fn recursion_soundness_binds() {
         merged[pos].1[0][0] = merged[pos].1[0][1];
         assert!(!run(&mut guest, &merged), "duplicated sort_order rank must be rejected");
     }
-    // claim_overlap_mask: toggle claim 0's first overlap coord. Either it breaks
-    // the prefix or shifts the certified popcount, so the mask pin must reject -
-    // this is the point-reuse y-slot over-read path (finding: eval_b overlap).
-    {
-        let mut merged = batch.merged.clone();
-        let pos = merged.iter().position(|(n, _)| n == "claim_overlap_mask").expect("mask");
-        let cur = merged[pos].1[0][0];
-        merged[pos].1[0][0] = if cur == F128::ONE { F128::ZERO } else { F128::ONE };
-        assert!(!run(&mut guest, &merged), "overlap_mask popcount tamper must be rejected");
-    }
+    // (The overlap mask is no longer a hint: the guest selects a baked
+    // prefix-mask row by the pinned nover, so the point-reuse y-slot
+    // over-read path is covered by the claim_nover tamper above.)
     eprintln!("all layout-hint tamperings correctly rejected");
 }
 

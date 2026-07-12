@@ -56,8 +56,9 @@ from snark_lib import *
 #     nover*seln == 0, low_len = cplen - nover), pi_cplen with
 #     pi_mem_slack/pi_fold_slack (pi's cplen = min(log_mem, lenris), certified
 #     as a min: <= both, == one), claim_qpkd_slot_bits/claim_sel_bits/
-#     claim_yslot_bits/rs_sel_bits/rs_yslot_bits, and claim_overlap_mask (a
-#     prefix of exactly nover ones; slot coords beyond yr_log_n asserted zero);
+#     claim_yslot_bits/rs_sel_bits/rs_yslot_bits (slot coords beyond yr_log_n
+#     asserted zero); the overlap mask is NOT hinted: the pinned nover selects
+#     a baked prefix-mask row (exactly nover ones) by pointer arithmetic;
 #   - statement-bound (fed to the outer public-input hash): fs_seed (ONE
 #     digest of the flock circuit family + the inner program bytecode, which
 #     also leads every sub transcript), sub_pis (the
@@ -1609,8 +1610,16 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     hint_witness(claim_qpkd_slot_bits[0:LOG2_FIELD_BITS * N_CLAIMS], "claim_qpkd_slot_bits")
     claim_sel_bits = HeapBuf(COUNT_BITS * N_CLAIMS)
     hint_witness(claim_sel_bits[0:COUNT_BITS * N_CLAIMS], "claim_sel_bits")
-    claim_overlap_mask = HeapBuf(YR_SLOT_STRIDE * N_CLAIMS)
-    hint_witness(claim_overlap_mask[0:YR_SLOT_STRIDE * N_CLAIMS], "claim_overlap_mask")
+    # baked prefix-mask table replacing the hinted overlap mask: row t holds
+    # [k < t] for k in [0, YR_LOG_CAP); the y-slot loop below selects row nover
+    # by pointer arithmetic, so the mask is a prefix of exactly nover ones BY
+    # CONSTRUCTION (no hint, no booleanity/monotone/popcount pins).
+    prefix_mask_table = HeapBuf((YR_LOG_CAP + 1) * YR_LOG_CAP)
+    for t in unroll(0, YR_LOG_CAP + 1):
+        for k in unroll(0, t):
+            prefix_mask_table[GEN ** (t * YR_LOG_CAP + k)] = 1
+        for k in unroll(t, YR_LOG_CAP):
+            prefix_mask_table[GEN ** (t * YR_LOG_CAP + k)] = 0
     claim_yslot_bits = HeapBuf(YR_SLOT_STRIDE * N_CLAIMS)
     hint_witness(claim_yslot_bits[0:YR_SLOT_STRIDE * N_CLAIMS], "claim_yslot_bits")
     rs_yslot_bits = HeapBuf(YR_SLOT_STRIDE)
@@ -1640,7 +1649,11 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
             else:
                 nlow = cplen_g            # nlow = cplen
         nover_g = claim_nover[GEN ** j]
-        assert log(nover_g) < SIZE_BITS
+        # nover <= YR_LOG_CAP: honest nover <= yr_log_n <= cap, and the y-slot
+        # loop below selects prefix_mask_table row nover, so its log must be
+        # pinned to the table (subsumes the SIZE_BITS check the division
+        # pins need).
+        assert log(nover_g) < YR_LOG_CAP + 1
         low_len_g = cplen_g / nover_g              # low_len = cplen - nover
         assert log(low_len_g) < SIZE_BITS
         claim_low_len[GEN ** j] = low_len_g
@@ -1738,12 +1751,13 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     # inner_sum = sum_y final_msg[y] * eval_b[y]: reordered per claim. Claim j's
     # y-contribution is cw_j times the final_msg MLE at the point (overlap coords
     # || hinted slot bits): coord_k = m_k * ov_k + (1 + m_k) * bit_k with
-    # hinted mask bits m_k = [k < NOVER]. The dot unrolls over the global cap
-    # 2^YR_LOG_CAP, but final_msg only has 2^yr_log_n cells, so the slot
-    # coordinates at k >= yr_log_n are ASSERTED zero (below): the eq tensor
-    # then puts zero weight on every index >= 2^yr_log_n, so the over-cap dot
-    # terms vanish and never depend on out-of-buffer cells. The ring-switch
-    # slot is the same, with no overlaps and the hinted YRS bits.
+    # mask bits m_k = [k < NOVER], read from the baked prefix-mask row nover.
+    # The dot unrolls over the global cap 2^YR_LOG_CAP, but final_msg only has
+    # 2^yr_log_n cells, so the slot coordinates at k >= yr_log_n are ASSERTED
+    # zero (below): the eq tensor then puts zero weight on every index
+    # >= 2^yr_log_n, so the over-cap dot terms vanish and never depend on
+    # out-of-buffer cells. The ring-switch slot is the same, with no overlaps
+    # and the hinted YRS bits.
     inner_sum = inner_total
     for j in unroll(0, N_CLAIMS):
         slot_point = HeapBuf(YR_LOG_CAP)
@@ -1753,30 +1767,25 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
             overlap_ptr = rho * GEN ** CLAIM_POINT_OFF[j] * claim_low_len[GEN ** j]
         # overlap_ptr[g^k] reads the claim point at low_len + k, which is written
         # only for k < nover (the [low_len, cplen) span); at k >= nover it points
-        # into the unwritten point-buffer gap (prover-chosen free cells). Pin the
-        # overlap mask to a prefix of exactly nover ones (booleanity + monotone +
-        # popcount == nover), so no overlap coord reads past cplen. A stray 1 at
-        # k >= nover would read a free cell and hand the sumcheck a linear knob
-        # (a full opening forgery) - the point-reuse analog of the hole b7b470c
-        # closed on the direct y-slot path.
-        mask_pop = GEN ** 0  # g^(overlap-active coords so far)
-        prev_mask = 1        # coord -1 active, so mask[0] is unconstrained
+        # into the unwritten point-buffer gap (prover-chosen free cells). The
+        # mask row IS the baked prefix of exactly nover ones (selected by the
+        # pinned nover), so no overlap coord can read past cplen by construction;
+        # a mask with a stray 1 at k >= nover would read a free cell and hand
+        # the sumcheck a linear knob (a full opening forgery) - the point-reuse
+        # analog of the hole b7b470c closed on the direct y-slot path.
+        mask_row = prefix_mask_table * claim_nover[GEN ** j] ** YR_LOG_CAP  # row nover: g^(nover * cap)
         for k in unroll(0, YR_LOG_CAP):
-            mask_bit = claim_overlap_mask[GEN ** (YR_SLOT_STRIDE * j + k)]
-            assert mask_bit * mask_bit == mask_bit
-            assert mask_bit * (1 + prev_mask) == 0  # mask[k]=1 forces mask[k-1]=1
-            prev_mask = mask_bit
-            mask_pop *= 1 + mask_bit * (GEN + 1)     # ×g iff mask_bit == 1
+            mask_bit = mask_row[GEN ** k]
             slot_bit = claim_yslot_bits[GEN ** (YR_SLOT_STRIDE * j + k)]
             assert slot_bit * slot_bit == slot_bit
             slot_point[GEN ** k] = mask_bit * overlap_ptr[GEN ** k] + (1 + mask_bit) * slot_bit
-        assert mask_pop == claim_nover[GEN ** j]  # exactly nover overlap coords
         # zero-pin coords beyond final_msg's log-length (no over-cap weight): the
-        # pointers start at yr_log_n. The mask pin above forces nover <= yr_log_n
-        # (else the prefix would collide with hi_mask), so the mask is 0 here too
-        # and slot_point is 0, leaving no eq weight on the unwritten final_msg
-        # cells past 2^yr_log_n.
-        hi_mask = claim_overlap_mask * GEN ** (YR_SLOT_STRIDE * j) * yr_log_n_g
+        # pointers start at yr_log_n. The zero asserts double as the
+        # nover <= yr_log_n pin: a larger nover selects a row whose prefix
+        # reaches into [yr_log_n, cap), failing here. So the mask is 0 in this
+        # span, slot_point is 0, and no eq weight lands on the unwritten
+        # final_msg cells past 2^yr_log_n.
+        hi_mask = mask_row * yr_log_n_g
         hi_slot = claim_yslot_bits * GEN ** (YR_SLOT_STRIDE * j) * yr_log_n_g
         for xk in mul_range(1, yr_pad_g):
             assert hi_mask[xk] == 0
