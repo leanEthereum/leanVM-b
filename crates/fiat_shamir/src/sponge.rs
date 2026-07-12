@@ -60,7 +60,7 @@ const DS_POW: F128 = F128::new(5, 0);
 /// predicate over the VM compression. A CONTIGUOUS low-bit window (rather than
 /// byte-wise leading zeros) so a recursive verifier re-checks it with a single
 /// loop over the bit decomposition of the digest word (`grind_check` in
-/// `guests/verify_recursive.py`). `bits` is always `< 64`.
+/// `guests/recursion.py`). `bits` is always `< 64`.
 #[inline]
 fn pow_bits_ok(base: [F128; 2], nonce: u64, bits: u32) -> bool {
     debug_assert!(bits < 64, "grinding deficit fits the digest's low word");

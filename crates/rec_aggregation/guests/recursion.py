@@ -1413,9 +1413,6 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     claim_pool[GEN ** claim_idx] = pi_interp
     claim_idx += 1
 
-    # (No BLAKE3 constant-pin claims: cv/counter/blen/flags are constants baked
-    # into flock's per-block matrices, which the fs_seed binds.)
-
     # ---- flock zerocheck (univariate skip, k_skip = 6) ----
     tau_blake3_g = dims_g[GEN ** N_TABLES]  # the BLAKE3 table's certified tau
     # tau's reach is bounded: the count gadget gives tau < 34 (all flock

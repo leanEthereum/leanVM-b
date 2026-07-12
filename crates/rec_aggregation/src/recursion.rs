@@ -1,4 +1,4 @@
-//! End-to-end N→1 recursion: one guest program (`guests/verify_recursive.py`)
+//! End-to-end N→1 recursion: one guest program (`guests/recursion.py`)
 //! replays `cpu::verify` for NSUB proofs of a fixed inner program, batches
 //! their deferred claims with the two aggregation sumchecks, and binds the sub
 //! statements + the three reduced claims (stacked bytecode, A0, B0) to its own
@@ -447,7 +447,7 @@ fn check_reduced(program: &Program, proof0: &lean_vm::cpu::Proof, pi0: [F128; 2]
     assert_eq!(direct(mb), red.v_b, "reduced B claim");
 }
 
-/// Config + hints for the recursion guest (`guests/verify_recursive.py`), built
+/// Config + hints for the recursion guest (`guests/recursion.py`), built
 /// from the REAL `cpu::layout` of the inner program and the transcript trace of
 /// a real `cpu::verify` run (zero hand-mirroring drift).
 fn gen_verify(
@@ -1257,7 +1257,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
 /// each entry `(hashes, iters)` shapes one inner proof of the fixed inner
 /// program. Prints the benchmark report. The flow:
 /// 1. compile the inner program (→ its bytecode size);
-/// 2. compile the recursion guest (`guests/verify_recursive.py` — the generic
+/// 2. compile the recursion guest (`guests/recursion.py` — the generic
 ///    map needs only that size);
 /// 3. prove the inner proofs (and extract their hints);
 /// 4. prove the recursion, verify, discharge the three reduced claims.
@@ -1267,9 +1267,9 @@ pub fn run_recursion(inner: &[(usize, usize)]) {
     let program = inner_program();
     let mut rep = placeholder_map(&program);
     rep.insert("NSUB_PLACEHOLDER".to_string(), inner.len().to_string());
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/guests/verify_recursive.py");
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/guests/recursion.py");
     let t = std::time::Instant::now();
-    let mut guest = compile(&parse_file_with_replacements(path, &rep).expect("parse verify_recursive.py"));
+    let mut guest = compile(&parse_file_with_replacements(path, &rep).expect("parse recursion.py"));
     let t_compile = t.elapsed();
     // The recursion program size + compile time, BEFORE any inner proving.
     let real_instrs: usize = guest.fn_ranges.iter().map(|(_, _, len)| *len as usize).sum();
@@ -1351,12 +1351,12 @@ fn recursion_soundness_binds() {
     // candidate, whose yr_log_n (=3) is below YR_LOG_CAP so the slot over-read
     // path is live. Ignored: several full inner+outer proofs.
     let cfg: &[(usize, usize)] = &[(4, 1 << 12)];
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/guests/verify_recursive.py");
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/guests/recursion.py");
     let mut rep = placeholder_map(&inner_program());
     rep.insert("NSUB_PLACEHOLDER".to_string(), cfg.len().to_string());
     let batch = build_batch(cfg);
     let mut guest =
-        compile(&parse_file_with_replacements(path, &rep).expect("parse verify_recursive.py"));
+        compile(&parse_file_with_replacements(path, &rep).expect("parse recursion.py"));
 
     let run = |g: &mut Program, merged: &[(String, Vec<Vec<F128>>)]| -> bool {
         for (name, entries) in merged {
@@ -1421,13 +1421,13 @@ fn recursion_generic_many() {
         (32, 1 << 13), // m=23, tau_5=5
         (64, 1 << 13), // m=23, tau_5=6
     ];
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/guests/verify_recursive.py");
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/guests/recursion.py");
     // The recursion program is generic: compile it ONCE, from the inner program's
     // size alone, BEFORE any inner proof exists. Genericity is then shown directly
     // — every shape below verifies against this one bytecode.
     let mut rep = placeholder_map(&inner_program());
     rep.insert("NSUB_PLACEHOLDER".to_string(), 1.to_string());
-    let mut guest = compile(&parse_file_with_replacements(path, &rep).expect("parse verify_recursive.py"));
+    let mut guest = compile(&parse_file_with_replacements(path, &rep).expect("parse recursion.py"));
     eprintln!("guest compiled ONCE ({} instrs)", guest.prog.len());
     for &cfg in configs {
         let batch = build_batch(&[cfg]);
