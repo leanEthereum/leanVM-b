@@ -90,10 +90,13 @@ struct FnLower<'a> {
     /// cells its tail `return` binds into instead of emitting a return jump.
     /// `None` outside an inlined body.
     inline_ret: Option<Vec<Off>>,
-    /// Set by an inlined tail `return <stackbuf>`: the returned cell run, which
-    /// the caller's `let` binds as a stack alias (the MD-chain idiom
-    /// `cvb = obs(cvb, x)` costs zero copies).
-    inline_stack_ret: Option<(Off, u32)>,
+    /// Set by an inlined tail `return`, one entry per returned value: `Some((base,
+    /// size))` marks a value that is a `StackBuf` — the caller's `let`/tuple binds
+    /// it as a stack alias (the MD-chain idiom `cvb = obs(cvb, x)`, or a fused
+    /// `state, x = read_obs(state, cur)`, at zero copies); `None` marks a scalar,
+    /// already copied into its dst cell. The field is `None` outside an inlined
+    /// return.
+    inline_stack_ret: Option<Vec<Option<(Off, u32)>>>,
     /// Deferred stack-cell copies/zeros ([`Alias`]), forwarded at use.
     alias: HashMap<Off, Alias>,
     /// A cached frame cell holding `0` (for forwarded zero words), set lazily.
@@ -1662,7 +1665,12 @@ impl FnLower<'_> {
                         self.fconsts.insert(name.clone(), F128::new(k as u64, 0));
                     } else {
                         let o = self.expr(e);
-                        if let Some((base, size)) = self.inline_stack_ret.take() {
+                        // A single-value inline return records one slot: a
+                        // `StackBuf` slot aliases its run, a scalar (or a non-call
+                        // `e`, leaving the field None) binds the value cell `o`.
+                        if let Some(slots) = self.inline_stack_ret.take()
+                            && let Some((base, size)) = slots.into_iter().next().flatten()
+                        {
                             self.vars.remove(name);
                             self.gaddrs.remove(name);
                             self.fconsts.remove(name);
@@ -1678,11 +1686,23 @@ impl FnLower<'_> {
             },
             Stmt::LetTuple(names, f, args) => {
                 let dsts = self.call(f, args, names.len());
-                for (n, d) in names.iter().zip(dsts) {
+                // An inlined callee records, per returned value, whether it is a
+                // `StackBuf` (alias its run) or a scalar (bind its dst cell); a
+                // real call leaves the field None, so every name binds scalar.
+                let slots = self.inline_stack_ret.take();
+                for (i, (n, d)) in names.iter().zip(&dsts).enumerate() {
                     self.consts.remove(n);
                     self.gaddrs.remove(n);
                     self.fconsts.remove(n);
-                    self.vars.insert(n.clone(), d);
+                    if let Some(slots) = &slots
+                        && let Some((base, size)) = slots.get(i).copied().flatten()
+                    {
+                        self.vars.remove(n);
+                        self.stacks.insert(n.clone(), (base, size));
+                    } else {
+                        self.stacks.remove(n);
+                        self.vars.insert(n.clone(), *d);
+                    }
                 }
             }
             Stmt::AssertEq(a, b) => {
@@ -1821,18 +1841,22 @@ impl FnLower<'_> {
         // Inlined (`@inline`): bind the return values into the caller's cells
         // and fall through — the body's tail return, so no jump is needed.
         if let Some(dsts) = self.inline_ret.clone() {
-            // `return <stackbuf>` from an `@inline` body: hand the caller the
-            // cell run itself (alias), not copies — the buffer was allocated
-            // in the caller's frame, so it outlives the inline scope.
-            if let [e] = exprs
-                && let Some((base, size)) = self.stack_of(e)
-            {
-                self.inline_stack_ret = Some((base, size));
-                return;
+            // Each returned value is bound into the caller independently: a
+            // `StackBuf` hands over its cell run (alias, not copies — the buffer
+            // was allocated in the caller's frame, so it outlives the inline
+            // scope), a scalar is copied into its dst cell. The per-slot record
+            // lets the caller's `let`/tuple pick the right binding for each, so a
+            // fused `state, x = read_obs(state, cur)` returns a StackBuf and a
+            // scalar together.
+            let mut slots = vec![None; dsts.len()];
+            for (i, (e, &d)) in exprs.iter().zip(&dsts).enumerate() {
+                if let Some((base, size)) = self.stack_of(e) {
+                    slots[i] = Some((base, size));
+                } else {
+                    self.expr_into(e, d);
+                }
             }
-            for (e, &d) in exprs.iter().zip(&dsts) {
-                self.expr_into(e, d);
-            }
+            self.inline_stack_ret = Some(slots);
             return;
         }
         if self.is_main {

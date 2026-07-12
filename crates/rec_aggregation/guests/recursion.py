@@ -503,12 +503,9 @@ def sumcheck_round3(state_0, state_1, msg_cursor, claim, eq_acc, prev_challenge)
     fs = StackBuf(2)
     fs[0] = state_0
     fs[1] = state_1
-    m0 = msg_cursor[GEN ** 0]
-    fs = obs(fs, m0)
-    m1 = msg_cursor[GEN ** 1]
-    fs = obs(fs, m1)
-    m2 = msg_cursor[GEN ** 2]
-    fs = obs(fs, m2)
+    fs, m0 = fs_next(fs, msg_cursor)
+    fs, m1 = fs_next(fs, msg_cursor * GEN)
+    fs, m2 = fs_next(fs, msg_cursor * GEN ** 2)
     lhs = eq_acc * ((1 + prev_challenge) * m0 + prev_challenge * m1)
     assert lhs == claim
     fs = squeeze(fs)
@@ -549,6 +546,23 @@ def obs(state, x):
     nb = StackBuf(2)
     blake3(state, tg, nb)
     return nb
+
+
+@inline
+def fs_next(state, cursor):
+    # Fetch + observe in one act: read the word under `cursor`, fold it into the
+    # sponge, and hand back BOTH the successor state and the word. Reading and
+    # absorbing are inseparable here, so no proof-stream word can enter the
+    # computation unbound — the soundness invariant the whole guest rests on. The
+    # returned StackBuf aliases into the caller (zero copies); the caller keeps
+    # the word and advances the cursor itself (`cursor *= GEN`), a free pointer fold.
+    x = cursor[GEN ** 0]
+    tg = StackBuf(2)
+    tg[0] = x
+    tg[1] = DS_SCALAR
+    nb = StackBuf(2)
+    blake3(state, tg, nb)
+    return nb, x
 
 
 @inline
@@ -651,10 +665,8 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1):
     lig_sumcheck_msgs = HeapBuf(GEN ** (LIG_SUMCHECK_LEN[m_idx]))
     hint_witness(lig_sumcheck_msgs[0:LIG_SUMCHECK_LEN[m_idx]], "lig_sumcheck_msgs")
     msg_cursor = lig_sumcheck_msgs
-    msg_u0 = msg_cursor[GEN ** 0]
-    fs = obs(fs, msg_u0)
-    msg_u2 = msg_cursor[GEN ** 1]
-    fs = obs(fs, msg_u2)
+    fs, msg_u0 = fs_next(fs, msg_cursor)
+    fs, msg_u2 = fs_next(fs, msg_cursor * GEN)
     msg_cursor *= GEN ** 2
     round_quad_c = msg_u0
     round_quad_b = target + msg_u2
@@ -697,10 +709,8 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1):
             fold_challenge = fs[0]
             fold_challenges[GEN ** fold_idx] = fold_challenge
             sumcheck_target = round_quad_c + fold_challenge * round_quad_b + fold_challenge * fold_challenge * round_quad_a  # evaluate this level's folded quadratic at the fold challenge
-            msg_a = msg_cursor[GEN ** 0]
-            fs = obs(fs, msg_a)
-            msg_b = msg_cursor[GEN ** 1]
-            fs = obs(fs, msg_b)
+            fs, msg_a = fs_next(fs, msg_cursor)
+            fs, msg_b = fs_next(fs, msg_cursor * GEN)
             msg_cursor *= GEN ** 2
             round_quad_c = msg_a
             round_quad_b = sumcheck_target + msg_b
@@ -801,10 +811,8 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1):
             level_betas[GEN ** lvl] = beta_lvl
             sumcheck_target += beta_lvl * level_query_sum
         else:
-            intro_u0 = msg_cursor[GEN ** 0]
-            fs = obs(fs, intro_u0)
-            intro_u2 = msg_cursor[GEN ** 1]
-            fs = obs(fs, intro_u2)
+            fs, intro_u0 = fs_next(fs, msg_cursor)
+            fs, intro_u2 = fs_next(fs, msg_cursor * GEN)
             msg_cursor *= GEN ** 2
             fs = squeeze(fs)
             beta_lvl = fs[0]
@@ -911,8 +919,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     # ---- announced sizes: log_mem + 6 row counts (observed, then certified) ----
     sizes = StackBuf(N_TABLES + 1)
     for i in unroll(0, N_TABLES + 1):
-        x = cursor[GEN ** 0]
-        fs = obs(fs, x)
+        fs, x = fs_next(fs, cursor)
         sizes[i] = x
         cursor *= GEN
 
@@ -955,11 +962,9 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     g_bus_mu = log2_ceil_in_the_exponent(push_total, g_logs_pow2, g_squares, 0, SIZE_BITS)
 
     # ---- commitment root (2 words), kept for the opening phase ----
-    commit_root_0 = cursor[GEN ** 0]
-    fs = obs(fs, commit_root_0)
+    fs, commit_root_0 = fs_next(fs, cursor)
     cursor *= GEN
-    commit_root_1 = cursor[GEN ** 0]
-    fs = obs(fs, commit_root_1)
+    fs, commit_root_1 = fs_next(fs, cursor)
     cursor *= GEN
 
     # ---- bus: grinding FIRST, then α and γ (the PoW covers both) ----
@@ -1006,14 +1011,11 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     gkr_round_eq = HeapBuf(GKR_ROUNDS_CAP)
     gkr_pts = HeapBuf(GKR_POINTS_CAP)
     assert log(g_bus_mu) < COUNT_BITS
-    root_push = cursor[GEN ** 0]
-    fs = obs(fs, root_push)
+    fs, root_push = fs_next(fs, cursor)
     cursor *= GEN
-    root_pull = cursor[GEN ** 0]
-    fs = obs(fs, root_pull)
+    fs, root_pull = fs_next(fs, cursor)
     cursor *= GEN
-    root_count = cursor[GEN ** 0]
-    fs = obs(fs, root_count)
+    fs, root_count = fs_next(fs, cursor)
     cursor *= GEN
     fs = squeeze(fs)
     gkr_layer_lambda[GEN ** 0] = fs[0]  # λ over the three roots
@@ -1056,18 +1058,12 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
         tcur = gkr_round_cursor[final_pos]
         tclaim = gkr_round_claim[final_pos]
         teq = gkr_round_eq[final_pos]
-        e0_push = tcur[GEN ** 0]
-        tail_fs = obs(tail_fs, e0_push)
-        e1_push = tcur[GEN ** 1]
-        tail_fs = obs(tail_fs, e1_push)
-        e0_pull = tcur[GEN ** 2]
-        tail_fs = obs(tail_fs, e0_pull)
-        e1_pull = tcur[GEN ** 3]
-        tail_fs = obs(tail_fs, e1_pull)
-        e0_count = tcur[GEN ** 4]
-        tail_fs = obs(tail_fs, e0_count)
-        e1_count = tcur[GEN ** 5]
-        tail_fs = obs(tail_fs, e1_count)
+        tail_fs, e0_push = fs_next(tail_fs, tcur)
+        tail_fs, e1_push = fs_next(tail_fs, tcur * GEN)
+        tail_fs, e0_pull = fs_next(tail_fs, tcur * GEN ** 2)
+        tail_fs, e1_pull = fs_next(tail_fs, tcur * GEN ** 3)
+        tail_fs, e0_count = fs_next(tail_fs, tcur * GEN ** 4)
+        tail_fs, e1_count = fs_next(tail_fs, tcur * GEN ** 5)
         tcur *= GEN ** 6
         assert tclaim == teq * (e0_push * e1_push + lam * (e0_pull * e1_pull + lam * (e0_count * e1_count)))
         tail_fs = squeeze(tail_fs)
@@ -1240,8 +1236,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
                     coord_val = COORD_CONST[BLOCK_COORD_OFF[b] + i]
                 if COORD_TYPE[BLOCK_COORD_OFF[b] + i] == COORD_KIND_COL:
                     if COORD_FRESH[BLOCK_COORD_OFF[b] + i] == 1:
-                        coord_val = cursor[GEN ** 0]
-                        fs = obs(fs, coord_val)
+                        fs, coord_val = fs_next(fs, cursor)
                         cursor *= GEN
                         claim_pool[GEN ** COORD_CLAIM_SLOT[BLOCK_COORD_OFF[b] + i]] = coord_val
                         claim_cplen_g[GEN ** COORD_CLAIM_SLOT[BLOCK_COORD_OFF[b] + i]] = kappa_g  # cplen = block kappa
@@ -1249,8 +1244,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
                         coord_val = claim_pool[GEN ** COORD_CLAIM_SLOT[BLOCK_COORD_OFF[b] + i]]
                 if COORD_TYPE[BLOCK_COORD_OFF[b] + i] == COORD_KIND_GCOL:
                     if COORD_FRESH[BLOCK_COORD_OFF[b] + i] == 1:
-                        rawv = cursor[GEN ** 0]
-                        fs = obs(fs, rawv)
+                        fs, rawv = fs_next(fs, cursor)
                         cursor *= GEN
                         claim_pool[GEN ** COORD_CLAIM_SLOT[BLOCK_COORD_OFF[b] + i]] = rawv
                         claim_cplen_g[GEN ** COORD_CLAIM_SLOT[BLOCK_COORD_OFF[b] + i]] = kappa_g  # cplen = block kappa
@@ -1375,8 +1369,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
         eq_acc = round_eq[tau_g]
         col_evals = StackBuf(AIR_COLS_CAP)
         for k in unroll(0, N_AIR_COLS[t]):
-            e = cursor[GEN ** 0]
-            fs = obs(fs, e)
+            fs, e = fs_next(fs, cursor)
             cursor *= GEN
             col_evals[k] = e
             claim_pool[GEN ** claim_idx] = e
@@ -1480,12 +1473,10 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     # multilinear rounds.
     zerocheck_rhos = HeapBuf(R1CS_ROUNDS_CAP)
     for i in unroll(0, N_INNER_ROUNDS):
-        gamma_c = zc_msgs[GEN ** (2 * i)]
-        g_inf = zc_msgs[GEN ** (2 * i + 1)]
         r_eq = zerocheck_r[GEN ** (K_SKIP + i)]
+        fs, gamma_c = fs_next(fs, zc_msgs * GEN ** (2 * i))
+        fs, g_inf = fs_next(fs, zc_msgs * GEN ** (2 * i + 1))
         gamma_ab = (zc_running + r_eq * gamma_c) * I7INV[i]  # recover the g(alpha) evaluation from g(0)+g(1)=claim and the eq weight
-        fs = obs(fs, gamma_c)
-        fs = obs(fs, g_inf)
         fs = squeeze(fs)
         rho_v = fs[0]
         zerocheck_rhos[GEN ** i] = rho_v
@@ -1503,13 +1494,11 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
         round_fs[0] = flock_round_fs0[xi]
         round_fs[1] = flock_round_fs1[xi]
         round_running = flock_round_running[xi]
-        gamma_c = zc_msgs[xi * xi]
-        g_inf = zc_msgs[xi * xi * GEN]
         r_eq = zerocheck_r[GEN ** K_SKIP * xi]
+        round_fs, gamma_c = fs_next(round_fs, zc_msgs * (xi * xi))
+        round_fs, g_inf = fs_next(round_fs, zc_msgs * (xi * xi) * GEN)
         inv_one_plus_r = 1 / (1 + r_eq)  # 1 + r_eq != 0 (enforced by the division)
         gamma_ab = (round_running + r_eq * gamma_c) * inv_one_plus_r
-        round_fs = obs(round_fs, gamma_c)
-        round_fs = obs(round_fs, g_inf)
         round_fs = squeeze(round_fs)
         rho_v = round_fs[0]
         zerocheck_rhos[xi] = rho_v
@@ -1525,13 +1514,11 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     # final: zc_running == a_eval * b_eval; observe both. The cursor skips the
     # 2*n_mlv round words (g^(2*n_mlv) = nmlv_g^2) to reach the two finals.
     cursor *= nmlv_g * nmlv_g
-    a_eval = cursor[GEN ** 0]
-    b_eval = cursor[GEN ** 1]
+    fs, a_eval = fs_next(fs, cursor)
+    fs, b_eval = fs_next(fs, cursor * GEN)
     cursor *= GEN ** 2
     ab_product = a_eval * b_eval  # zerocheck closes: running claim == a(r) * b(r)
     assert zc_running == ab_product
-    fs = obs(fs, a_eval)
-    fs = obs(fs, b_eval)
 
     # ---- flock lincheck (matrix evaluation DEFERRED) ----
     lincheck_msgs = cursor  # (e1, e_inf) per round (2 * LINCHECK_ROUNDS words)
@@ -1550,10 +1537,8 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     lc_running = lincheck_alpha * a_eval + b_eval + lincheck_beta  # lincheck seed: alpha*a + b + beta (batches the two matrix claims)
     lincheck_rs = HeapBuf(LINCHECK_ROUNDS)
     for i in unroll(0, LINCHECK_ROUNDS):
-        e1 = lincheck_msgs[GEN ** (2 * i)]
-        ei = lincheck_msgs[GEN ** (2 * i + 1)]
-        fs = obs(fs, e1)
-        fs = obs(fs, ei)
+        fs, e1 = fs_next(fs, lincheck_msgs * GEN ** (2 * i))
+        fs, ei = fs_next(fs, lincheck_msgs * GEN ** (2 * i + 1))
         fs = squeeze(fs)
         rv = fs[0]
         lincheck_rs[GEN ** i] = rv
@@ -2005,10 +1990,8 @@ def main():
         bc_running += gv * defer[GEN ** (t * DEFER_SIZE + BYTECODE_LOG + LOG2_BYTECODE_COLS)]
     bc_point = HeapBuf(BYTECODE_VARS)
     for rd in unroll(0, BYTECODE_VARS):
-        msg_g1 = bc_sumcheck_msgs[GEN ** (2 * rd)]
-        msg_ginf = bc_sumcheck_msgs[GEN ** (2 * rd + 1)]
-        agg_fs = obs(agg_fs, msg_g1)
-        agg_fs = obs(agg_fs, msg_ginf)
+        agg_fs, msg_g1 = fs_next(agg_fs, bc_sumcheck_msgs * GEN ** (2 * rd))
+        agg_fs, msg_ginf = fs_next(agg_fs, bc_sumcheck_msgs * GEN ** (2 * rd + 1))
         agg_fs = squeeze(agg_fs)
         rv = agg_fs[0]
         bc_point[GEN ** rd] = rv
@@ -2038,10 +2021,8 @@ def main():
         mat_running += gv * defer[GEN ** (t * DEFER_SIZE + BYTECODE_LOG + LOG2_BYTECODE_COLS + 3 + 2 ** K_SKIP + 2 * LINCHECK_ROUNDS)]
     mat_point = HeapBuf(2 * K_LOG)
     for rd in unroll(0, 2 * K_LOG):
-        msg_g1 = mat_sumcheck_msgs[GEN ** (2 * rd)]
-        msg_ginf = mat_sumcheck_msgs[GEN ** (2 * rd + 1)]
-        agg_fs = obs(agg_fs, msg_g1)
-        agg_fs = obs(agg_fs, msg_ginf)
+        agg_fs, msg_g1 = fs_next(agg_fs, mat_sumcheck_msgs * GEN ** (2 * rd))
+        agg_fs, msg_ginf = fs_next(agg_fs, mat_sumcheck_msgs * GEN ** (2 * rd + 1))
         agg_fs = squeeze(agg_fs)
         rv = agg_fs[0]
         mat_point[GEN ** rd] = rv
