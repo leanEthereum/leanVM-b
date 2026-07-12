@@ -1420,8 +1420,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     for i in unroll(0, 2 * 2 ** K_SKIP):
         fs, w, cursor = fs_next(fs, cursor)
         zc_round1[GEN ** i] = w
-    zc_msgs = cursor  # (gamma_c, g_inf) per multilinear round; runtime length 2*n_mlv
-    fs = squeeze(fs)
+    fs = squeeze(fs)  # cursor now sits at the multilinear round messages, walked below
     zerocheck_z = fs[0]
     # interpolate P^C(z) on the Lambda domain (phi8 nodes 64..128): prefix/
     # suffix numerator products with baked inverse denominators.
@@ -1445,8 +1444,8 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     zerocheck_rhos = HeapBuf(R1CS_ROUNDS_CAP)
     for i in unroll(0, N_FIXED_CHALLENGE_ROUNDS):
         r_eq = zerocheck_r[GEN ** (K_SKIP + i)]
-        fs, gamma_c, c = fs_next(fs, zc_msgs * GEN ** (2 * i))
-        fs, g_inf, c = fs_next(fs, c)
+        fs, gamma_c, cursor = fs_next(fs, cursor)  # (gamma_c, g_inf) per round, walked in order
+        fs, g_inf, cursor = fs_next(fs, cursor)
         gamma_ab = (zc_running + r_eq * gamma_c) * ONE_PLUS_CHALLENGE_INV[i]  # recover the g(alpha) evaluation from g(0)+g(1)=claim and the eq weight
         fs = squeeze(fs)
         rho_v = fs[0]
@@ -1457,17 +1456,20 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     flock_round_fs0 = HeapBuf(R1CS_ROUNDS_CAP + 2)
     flock_round_fs1 = HeapBuf(R1CS_ROUNDS_CAP + 2)
     flock_round_running = HeapBuf(R1CS_ROUNDS_CAP + 2)
+    flock_round_cursor = HeapBuf(R1CS_ROUNDS_CAP + 2)  # the walking cursor, threaded like the fs state
     flock_round_fs0[GEN ** N_FIXED_CHALLENGE_ROUNDS] = fs[0]
     flock_round_fs1[GEN ** N_FIXED_CHALLENGE_ROUNDS] = fs[1]
     flock_round_running[GEN ** N_FIXED_CHALLENGE_ROUNDS] = zc_running
+    flock_round_cursor[GEN ** N_FIXED_CHALLENGE_ROUNDS] = cursor
     for xi in mul_range(GEN ** N_FIXED_CHALLENGE_ROUNDS, nmlv_g):
         round_fs = StackBuf(2)
         round_fs[0] = flock_round_fs0[xi]
         round_fs[1] = flock_round_fs1[xi]
         round_running = flock_round_running[xi]
         r_eq = zerocheck_r[GEN ** K_SKIP * xi]
-        round_fs, gamma_c, c = fs_next(round_fs, zc_msgs * (xi * xi))
-        round_fs, g_inf, c = fs_next(round_fs, c)
+        cur_i = flock_round_cursor[xi]
+        round_fs, gamma_c, cur_i = fs_next(round_fs, cur_i)
+        round_fs, g_inf, cur_i = fs_next(round_fs, cur_i)
         inv_one_plus_r = 1 / (1 + r_eq)  # 1 + r_eq != 0 (enforced by the division)
         gamma_ab = (round_running + r_eq * gamma_c) * inv_one_plus_r
         round_fs = squeeze(round_fs)
@@ -1478,21 +1480,19 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
         flock_round_fs0[xin] = round_fs[0]
         flock_round_fs1[xin] = round_fs[1]
         flock_round_running[xin] = round_running
+        flock_round_cursor[xin] = cur_i
     fs = StackBuf(2)
     fs[0] = flock_round_fs0[nmlv_g]
     fs[1] = flock_round_fs1[nmlv_g]
     zc_running = flock_round_running[nmlv_g]
-    # final: zc_running == a_eval * b_eval; observe both. The cursor skips the
-    # 2*n_mlv round words (g^(2*n_mlv) = nmlv_g^2) to reach the two finals.
-    cursor *= nmlv_g * nmlv_g
+    cursor = flock_round_cursor[nmlv_g]  # walked past all 2*n_mlv round words, now at a_eval
+    # final: zc_running == a_eval * b_eval; observe both.
     fs, a_eval, cursor = fs_next(fs, cursor)
     fs, b_eval, cursor = fs_next(fs, cursor)
     ab_product = a_eval * b_eval  # zerocheck closes: running claim == a(r) * b(r)
     assert zc_running == ab_product
 
     # ---- flock lincheck (matrix evaluation DEFERRED) ----
-    lincheck_msgs = cursor  # (e1, e_inf) per round (2 * LINCHECK_ROUNDS words)
-    cursor *= GEN ** (2 * LINCHECK_ROUNDS)  # cursor now at z_partial, fetched + observed below
     matrix_eval = StackBuf(1)
     hint_witness(matrix_eval[0:1], "matpart")
     fs = squeeze(fs)
@@ -1502,8 +1502,8 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     lc_running = lincheck_alpha * a_eval + b_eval + lincheck_beta  # lincheck seed: alpha*a + b + beta (batches the two matrix claims)
     lincheck_rs = HeapBuf(LINCHECK_ROUNDS)
     for i in unroll(0, LINCHECK_ROUNDS):
-        fs, e1, c = fs_next(fs, lincheck_msgs * GEN ** (2 * i))
-        fs, ei, c = fs_next(fs, c)
+        fs, e1, cursor = fs_next(fs, cursor)  # (e1, e_inf) per round, walked in order
+        fs, ei, cursor = fs_next(fs, cursor)
         fs = squeeze(fs)
         rv = fs[0]
         lincheck_rs[GEN ** i] = rv
