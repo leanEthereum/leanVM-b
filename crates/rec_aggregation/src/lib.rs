@@ -5,6 +5,7 @@
 
 pub mod fibonacci;
 pub mod recursion;
+pub mod signers_cache;
 pub mod xmss_aggregation;
 
 pub use fibonacci::run_fibonacci;

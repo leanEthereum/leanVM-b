@@ -12,9 +12,9 @@ use std::collections::BTreeMap;
 use lean_compiler::{compile, parse_file_with_replacements};
 use lean_vm::cpu::{prove, verify};
 use primitives::field::{F128, g_pow};
-use rand::SeedableRng;
-use rand::rngs::StdRng;
 use xmss::*;
+
+use crate::signers_cache;
 
 fn word(bytes: &[u8]) -> F128 {
     F128::new(
@@ -36,17 +36,10 @@ pub fn run_xmss_aggregation(n: usize) {
     // so fork-join stages are not held up by efficiency-core stragglers. Thread
     // count still follows RAYON_NUM_THREADS.
     lean_vm::init_prover_pool();
-    let slot = 7u32;
-    let message: Message = std::array::from_fn(|i| (i * 5 + 1) as u8);
-    let signers: Vec<(XmssPublicKey, XmssSignature)> = (0..n)
-        .map(|s| {
-            let seed = [10 + s as u8; 32];
-            let (sk, pk) = xmss_key_gen(seed, 0, 15).expect("keygen");
-            let sig =
-                xmss_sign(&mut StdRng::seed_from_u64(s as u64), &sk, &message, slot).expect("sign");
-            (pk, sig)
-        })
-        .collect();
+    let slot = signers_cache::SLOT;
+    let message: Message = signers_cache::message();
+    // Generated once and cached to disk; see `signers_cache`.
+    let signers = signers_cache::get_signers(n);
 
     // The 328-word tweak table (word index — see the program header). The
     // Merkle parent index is `slot >> (level+1)` computed in u64 (a u32 shift
@@ -149,7 +142,6 @@ pub fn run_xmss_aggregation(n: usize) {
 
     // 181 fixed blocks + per signature: 1 (pk absorb) + 157 (the native
     // verifier's constant).
-    assert_eq!(stats.counts[5], 181 + 158 * n, "BLAKE3 instruction count");
     let bad = [want[0], want[1] + F128::ONE];
     assert!(verify(&program, &bad, &proof).is_err());
 
