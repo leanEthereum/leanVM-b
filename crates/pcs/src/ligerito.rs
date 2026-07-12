@@ -2630,7 +2630,6 @@ fn multilevel_prover_with_basis_impl(
 
     let t_total = std::time::Instant::now();
 
-    ps.absorb_bytes(b"flock-ligerito-basis-v0");
     ps.observe_scalar(target);
 
     // L0 codeword + tree are borrowed (reused from upstream `pcs::commit`).
@@ -3038,7 +3037,6 @@ where
         return None;
     }
 
-    vs.absorb_bytes(b"flock-ligerito-basis-v0");
     vs.observe_scalar(target);
     vs.absorb_bytes(&proof.initial_root);
 

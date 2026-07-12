@@ -150,8 +150,6 @@ fn prove_packed_padded_inner(
     assert_eq!(c_packed.len(), expected_bytes);
     let n_mlv = m - k_skip;
 
-    ps.absorb_bytes(b"flock-zerocheck-v0");
-
     // ---- 1. Sample r (with protocol-fixed constants in the inner 7 dims) ----
     //
     // r layout:
@@ -396,8 +394,6 @@ pub fn verify(
     }
     let n_mlv = m - k_skip;
     let ell = 1usize << k_skip;
-
-    vs.absorb_bytes(b"flock-zerocheck-v0");
 
     // ---- Re-derive r (in lockstep with prove_packed) ----
     let r_skip = vs.sample_vec(k_skip);

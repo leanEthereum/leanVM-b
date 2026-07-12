@@ -1190,7 +1190,6 @@ fn prove_padded_inner(
     assert_eq!(x_ab.x_inner_rest.len(), inner_rest_len);
     assert_eq!(x_ab.x_outer.len(), n_log);
 
-    ps.absorb_bytes(b"flock-lincheck-v0");
     let trace = std::env::var("LINCHECK_TRACE").is_ok();
 
     // 1. Sample α (matches verifier's order). Used to batch the two scalar
@@ -1380,7 +1379,6 @@ pub fn verify(
             got_cols: circuit.n_cols(),
         });
     }
-    vs.absorb_bytes(b"flock-lincheck-v0");
 
     let trace = std::env::var("VERIFY_TRACE").is_ok();
     let fmt = |s: f64| -> String {

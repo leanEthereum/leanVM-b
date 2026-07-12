@@ -73,8 +73,6 @@ fn compute_combined_basis_and_target(
         precomputed_s_hat_v.len(),
     );
 
-    ps.absorb_bytes(b"flock-pcs-open-batch-v0");
-
     // 1. Ring-switching for all x_outers.
     let (rs_results, gammas_rs) = ring_switch::prove_batched_padded_with_precomputed(
         packed_witness,
@@ -366,7 +364,6 @@ pub fn open_batch_mixed_ligerito_stacked(
     let mut target = combined.target_combined;
 
     for claim in stack_pd {
-        ps.absorb_bytes(b"flock-pcs-packed-direct-v0");
         ps.observe_scalar(claim.value());
     }
     let gammas_pd: Vec<F128> = (0..stack_pd.len()).map(|_| ps.sample()).collect();
@@ -417,7 +414,6 @@ pub fn verify_opening_batch_mixed_ligerito_stacked(
     assert_eq!(x_outers.len(), n_rs);
     // (The s_hat_v slices ride the stream; `verify_bind` reads exactly
     // 2^LOG_PACKING words per claim, so there is no shape to validate here.)
-    vs.absorb_bytes(b"flock-pcs-open-batch-v0");
 
     // Bind + check every claim, then sample ONE shared r'' (sound: every
     // slice is absorbed before the challenge), then form the batched claims.
@@ -449,7 +445,6 @@ pub fn verify_opening_batch_mixed_ligerito_stacked(
     }
 
     for claim in stack_pd {
-        vs.absorb_bytes(b"flock-pcs-packed-direct-v0");
         vs.observe_scalar(claim.value());
     }
     let gammas_pd: Vec<F128> = (0..stack_pd.len()).map(|_| vs.sample()).collect();

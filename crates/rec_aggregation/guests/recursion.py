@@ -161,8 +161,7 @@ TABLE_DEREF = 3
 TABLE_JUMP = 4
 TABLE_BLAKE3 = 5
 N_TABLES = N_TABLES_PLACEHOLDER
-# Phase D (flock reduction): the r1cs statement label/digest words, zerocheck +
-# lincheck label words, the seven fixed inner challenges (+ inverses of 1+c),
+# Phase D (flock reduction): the seven fixed inner challenges (+ inverses of 1+c),
 # the phi8 node table + baked Lagrange inverse denominators (Lambda domain,
 # combined domain, S domain). R1CS_M_CAP/R1CS_ROUNDS_CAP are buffer
 # capacities (the runtime sizes are K_LOG + tau_5 and K_LOG + tau_5 - 6);
@@ -172,10 +171,6 @@ N_TABLES = N_TABLES_PLACEHOLDER
 # 2^K_SKIP nodes), then N_FIXED_CHALLENGE_ROUNDS fixed inner rounds (FIXED_CHALLENGES).
 K_SKIP = K_SKIP_PLACEHOLDER
 N_FIXED_CHALLENGE_ROUNDS = N_FIXED_CHALLENGE_ROUNDS_PLACEHOLDER
-ZEROCHECK_LABEL_0 = ZEROCHECK_LABEL_0_PLACEHOLDER
-ZEROCHECK_LABEL_1 = ZEROCHECK_LABEL_1_PLACEHOLDER
-LINCHECK_LABEL_0 = LINCHECK_LABEL_0_PLACEHOLDER
-LINCHECK_LABEL_1 = LINCHECK_LABEL_1_PLACEHOLDER
 FIXED_CHALLENGES = FIXED_CHALLENGES_PLACEHOLDER
 ONE_PLUS_CHALLENGE_INV = ONE_PLUS_CHALLENGE_INV_PLACEHOLDER
 PHI8_NODES = PHI8_NODES_PLACEHOLDER
@@ -187,15 +182,9 @@ R1CS_ROUNDS_CAP = R1CS_ROUNDS_CAP_PLACEHOLDER
 LINCHECK_ROUNDS = LINCHECK_ROUNDS_PLACEHOLDER
 PIN_COLUMN = PIN_COLUMN_PLACEHOLDER
 K_LOG = K_LOG_PLACEHOLDER
-# Phase E: the stacked mixed opening. Labels; the two ring-switch fronts
+# Phase E: the stacked mixed opening. The two ring-switch fronts
 # (claim check in-circuit; the tensor transpose + eval_rs_eq DEFERRED); the
 # gamma-combination of the two ring-switch claims and the N_CLAIMS pool claims.
-OPEN_BATCH_LABEL_0 = OPEN_BATCH_LABEL_0_PLACEHOLDER
-OPEN_BATCH_LABEL_1 = OPEN_BATCH_LABEL_1_PLACEHOLDER
-RING_SWITCH_LABEL_0 = RING_SWITCH_LABEL_0_PLACEHOLDER
-RING_SWITCH_LABEL_1 = RING_SWITCH_LABEL_1_PLACEHOLDER
-PACKED_DIRECT_LABEL_0 = PACKED_DIRECT_LABEL_0_PLACEHOLDER
-PACKED_DIRECT_LABEL_1 = PACKED_DIRECT_LABEL_1_PLACEHOLDER
 # Phase E2: the Ligerito opening over the stacked commitment, dispatched by
 # the certified committed log-size m through match_range: the LIG_* tables
 # below carry one row per candidate m in [LIG_MIN_LOG_SIZE, +LIG_N_CANDIDATES),
@@ -206,8 +195,6 @@ PACKED_DIRECT_LABEL_1 = PACKED_DIRECT_LABEL_1_PLACEHOLDER
 # claim descriptors keep only the FIXED parts baked (CLAIM_POINT_BUF, named
 # POINT_BUF_* below; CLAIM_POINT_OFF into those buffers) — the
 # shape-dependent lengths/selectors are hinted and identity-certified.
-LIGERITO_BASIS_LABEL_0 = LIGERITO_BASIS_LABEL_0_PLACEHOLDER
-LIGERITO_BASIS_LABEL_1 = LIGERITO_BASIS_LABEL_1_PLACEHOLDER
 # Opening dispatch: baked committed log-size, candidate range, g^-LIG_MIN_LOG_SIZE.
 LIG_MIN_LOG_SIZE = LIG_MIN_LOG_SIZE_PLACEHOLDER
 # Committed-column kappa sources (0 = const COL_KAPPA_ADJ, 1 = log_mem, 2+t = tau_t)
@@ -651,9 +638,6 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1):
     fs[0] = fs0
     fs[1] = fs1
 
-    fs = absorb(fs, 23, DS_LEN)
-    fs = absorb(fs, LIGERITO_BASIS_LABEL_0, DS_BYTE)
-    fs = absorb(fs, LIGERITO_BASIS_LABEL_1, DS_BYTE)
     fs = obs(fs, target)
     fs = absorb(fs, 32, DS_LEN)
     fs = absorb(fs, commit_root_0, DS_BYTE)
@@ -1416,9 +1400,6 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     zc_round1 = cursor  # round1_ab ‖ round1_c (2 * 2^K_SKIP words)
     cursor *= GEN ** (2 * 2 ** K_SKIP)
     zc_msgs = cursor  # (gamma_c, g_inf) per multilinear round; runtime length 2*n_mlv
-    fs = absorb(fs, 18, DS_LEN)
-    fs = absorb(fs, ZEROCHECK_LABEL_0, DS_BYTE)
-    fs = absorb(fs, ZEROCHECK_LABEL_1, DS_BYTE)
     # the full r vector: K_SKIP sampled skips, N_FIXED_CHALLENGE_ROUNDS fixed inner, the rest sampled outer.
     zerocheck_r = HeapBuf(R1CS_M_CAP)
     for i in unroll(0, K_SKIP):
@@ -1525,9 +1506,6 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     cursor *= GEN ** (2 ** K_SKIP)
     matrix_eval = StackBuf(1)
     hint_witness(matrix_eval[0:1], "matpart")
-    fs = absorb(fs, 17, DS_LEN)
-    fs = absorb(fs, LINCHECK_LABEL_0, DS_BYTE)
-    fs = absorb(fs, LINCHECK_LABEL_1, DS_BYTE)
     fs = squeeze(fs)
     lincheck_alpha = fs[0]
     fs = squeeze(fs)
@@ -1570,9 +1548,6 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
 
     # ---- stacked mixed opening: ring-switch fronts + claim combination ----
     s_hat_v = cursor  # the two ring-switch slices (2 * FIELD_BITS words, ends the stream)
-    fs = absorb(fs, 23, DS_LEN)
-    fs = absorb(fs, OPEN_BATCH_LABEL_0, DS_BYTE)
-    fs = absorb(fs, OPEN_BATCH_LABEL_1, DS_BYTE)
     # Ring-switch claim 0 (ab): value lincheck_w, z_skip = lincheck_z_skip, x_outer[0] = lincheck_rs[LINCHECK_ROUNDS-1]
     # (x_inner_rest is the REVERSED lincheck round vector). Claim 1 (c): value
     # c_eval, z_skip = zerocheck_z, x_outer[0] = zerocheck_r[6].
@@ -1582,9 +1557,6 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     z_vals = HeapBuf(2 * QPKD_VARS_CAP)
     r_dprime = HeapBuf(LOG2_FIELD_BITS)
     for rs in unroll(0, 2):
-        fs = absorb(fs, 20, DS_LEN)
-        fs = absorb(fs, RING_SWITCH_LABEL_0, DS_BYTE)
-        fs = absorb(fs, RING_SWITCH_LABEL_1, DS_BYTE)
         for i in unroll(0, FIELD_BITS):
             fs = obs(fs, s_hat_v[GEN ** (FIELD_BITS * rs + i)])
         # claim check: weights[i] = lambda_{i&63}(z_skip) * eq(x_outer0, i>>6).
@@ -1658,11 +1630,8 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     fs = squeeze(fs)
     gamma_c = fs[0]
     target = gamma_ab * transposed_claims[0] + gamma_c * transposed_claims[1]  # gamma-batch the two ring-switch claims into the opening's target
-    # ...then every pooled point claim, each labeled and observed.
+    # ...then every pooled point claim, each observed.
     for j in unroll(0, N_CLAIMS):
-        fs = absorb(fs, 26, DS_LEN)
-        fs = absorb(fs, PACKED_DIRECT_LABEL_0, DS_BYTE)
-        fs = absorb(fs, PACKED_DIRECT_LABEL_1, DS_BYTE)
         fs = obs(fs, claim_pool[GEN ** j])
     gamma_pool = HeapBuf(N_CLAIMS)
     for j in unroll(0, N_CLAIMS):

@@ -1047,12 +1047,6 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     let ints = |v: &[usize]| format!("[{}]", v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(", "));
     let us = |v: &[u128]| format!("[{}]", v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(", "));
     let flds = |v: &[F128]| format!("[{}]", v.iter().map(|&x| u(x).to_string()).collect::<Vec<_>>().join(", "));
-    let word16 = |b: &[u8], o: usize| {
-        let mut buf = [0u8; 16];
-        let e = (b.len() - o).min(16);
-        buf[..e].copy_from_slice(&b[o..o + e]);
-        F128::new(u64::from_le_bytes(buf[..8].try_into().unwrap()), u64::from_le_bytes(buf[8..].try_into().unwrap()))
-    };
     let mut rep = BTreeMap::new();
     let mut ps = |k: &str, v: String| { rep.insert(format!("{k}_PLACEHOLDER"), v); };
     ps("STREAM_CAP", stream_cap.to_string());
@@ -1097,10 +1091,6 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     // Per-claim y-slot hint stride (overlap mask / slot bit rows).
     ps("YR_SLOT_STRIDE", "8".to_string());
     const MINB3: usize = 3;
-    ps("ZEROCHECK_LABEL_0", u(word16(b"flock-zerocheck-v0", 0)).to_string());
-    ps("ZEROCHECK_LABEL_1", u(word16(b"flock-zerocheck-v0", 16)).to_string());
-    ps("LINCHECK_LABEL_0", u(word16(b"flock-lincheck-v0", 0)).to_string());
-    ps("LINCHECK_LABEL_1", u(word16(b"flock-lincheck-v0", 16)).to_string());
     let fixed_challenges: Vec<F128> = flock::zerocheck::univariate_skip_optimized::small_challenges_ghash().into_iter().chain(flock::zerocheck::univariate_skip_optimized::medium_challenges_ghash()).collect();
     ps("FIXED_CHALLENGES", flds(&fixed_challenges));
     // Flock univariate skip: 6 skipped variables, then the fixed inner rounds.
@@ -1124,12 +1114,6 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     let pincol = flock::blake3::build_block_r1cs(taus[5].max(MINB3)).const_pin.expect("blake3 r1cs has a const pin");
     ps("PIN_COLUMN", pincol.to_string());
     ps("K_LOG", flock::blake3::K_LOG.to_string());
-    ps("OPEN_BATCH_LABEL_0", u(word16(b"flock-pcs-open-batch-v0", 0)).to_string());
-    ps("OPEN_BATCH_LABEL_1", u(word16(b"flock-pcs-open-batch-v0", 16)).to_string());
-    ps("RING_SWITCH_LABEL_0", u(word16(b"flock-ring-switch-v0", 0)).to_string());
-    ps("RING_SWITCH_LABEL_1", u(word16(b"flock-ring-switch-v0", 16)).to_string());
-    ps("PACKED_DIRECT_LABEL_0", u(word16(b"flock-pcs-packed-direct-v0", 0)).to_string());
-    ps("PACKED_DIRECT_LABEL_1", u(word16(b"flock-pcs-packed-direct-v0", 16)).to_string());
 
     // ---- LIG candidate tables (fixed [minm, maxm] range; open_stacked config) ----
     let oshape = |m: usize| {
@@ -1226,8 +1210,6 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         ps("LIG_VANISH_VALS", flds(&svk2));
         ps("LIG_VANISH_INVS", flds(&ivk2));
     }
-    ps("LIGERITO_BASIS_LABEL_0", u(word16(b"flock-ligerito-basis-v0", 0)).to_string());
-    ps("LIGERITO_BASIS_LABEL_1", u(word16(b"flock-ligerito-basis-v0", 16)).to_string());
     ps("LIG_N_CANDIDATES", (maxm - minm + 1).to_string());
     ps("LIG_MIN_SHIFT_INV", u(g_pow(minm).inv()).to_string());
     ps("CLAIM_POINT_BUF", ints(&cpbuf));

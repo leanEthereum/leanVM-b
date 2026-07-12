@@ -1958,7 +1958,6 @@ pub fn prove_batched_padded_with_precomputed(
     // coefficient table for the whole batch.
     let mut slices: Vec<Vec<F128>> = Vec::with_capacity(n);
     for i in 0..n {
-        ps.absorb_bytes(b"flock-ring-switch-v0");
         let s_hat_v: Vec<F128> = match kinds[i] {
             Kind::Dense(d) => dense_s_hat_v[d].clone(),
             Kind::Sparse(s) => sparse_s_hat_v[s].clone(),
@@ -2052,7 +2051,6 @@ pub fn verify_bind(
     vs: &mut VerifierState<'_>,
 ) -> Result<Vec<F128>, VerifyError> {
     assert!(!x_outer.is_empty());
-    vs.absorb_bytes(b"flock-ring-switch-v0");
     let s_hat_v = vs.next_scalars(1 << LOG_PACKING).map_err(VerifyError::Transcript)?;
     let weights = build_claim_weights(z_skip, x_outer[0]);
     if claim_check(&weights, &s_hat_v) != claim {
