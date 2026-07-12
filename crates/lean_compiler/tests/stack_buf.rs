@@ -163,6 +163,50 @@ def step(state, v):
     assert!(verify(&program, &bad, &proof).is_err(), "wrong published state must be rejected");
 }
 
+/// An `@inline` may also alias-return a folded **g-address** among its values:
+/// `fs, x, cur = step(fs, cur)` hands back the sponge state (StackBuf), the
+/// consumed word (scalar), and the ADVANCED cursor (`cursor * GEN`) as a
+/// zero-cost folded pointer, so the caller keeps reading through it with no
+/// manual `cur *= GEN`. This is the shape `fs_next` uses to walk the stream.
+#[test]
+fn inline_returns_advanced_cursor() {
+    warm_setup(1);
+    let src = "\
+def main():
+    hb = HeapBuf(4)
+    hb[1] = 10
+    hb[GEN] = 20
+    hb[GEN ** 2] = 30
+    fs = StackBuf(2)
+    fs[0] = 1
+    fs[1] = 2
+    cur = hb
+    fs, a, cur = step(fs, cur)
+    fs, b, cur = step(fs, cur)
+    v = cur[GEN ** 0]
+    p = 1
+    p[1] = a + b
+    p[GEN] = v
+    return
+
+@inline
+def step(state, cursor):
+    x = cursor[GEN ** 0]
+    tg = StackBuf(2)
+    tg[0] = x
+    tg[1] = 3
+    nb = StackBuf(2)
+    blake3(state, tg, nb)
+    return nb, x, cursor * GEN
+";
+    let program = compile(&parse(src).expect("parse"));
+    // a = hb[0] = 10, b = hb[1] = 20, v = hb[2] = 30 read through the cursor
+    // returned twice-advanced. a + b is XOR: 10 ^ 20 = 30.
+    let want = [F128::new(30, 0), F128::new(30, 0)];
+    let (proof, _) = prove(&program, want);
+    verify(&program, &want, &proof).expect("inline advanced-cursor return verifies");
+}
+
 /// A compile-time heap index past the buffer's declared size is a compile
 /// error, not a runtime wild deref.
 #[test]

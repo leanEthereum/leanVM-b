@@ -49,6 +49,18 @@ enum Alias {
     Const(u64, u64),
 }
 
+/// How an inlined `@inline` tail-return value binds into the caller
+/// ([`FnLower::inline_stack_ret`]): a `StackBuf` hands over its cell run and a
+/// folded g-address hands over its symbolic pointer, both aliased at zero
+/// copies (so `cvb = obs(cvb, x)` and a fused `fs, x, cur = fs_next(fs, cur)`
+/// stay free); a scalar was already copied into its dst cell.
+#[derive(Clone, Copy)]
+enum RetBind {
+    Stack(Off, u32),
+    Gaddr(GAddr),
+    Scalar,
+}
+
 struct FnLower<'a> {
     vars: HashMap<String, Off>,
     /// `StackBuf` bindings: name → (base offset, size). The `size` cells
@@ -90,13 +102,11 @@ struct FnLower<'a> {
     /// cells its tail `return` binds into instead of emitting a return jump.
     /// `None` outside an inlined body.
     inline_ret: Option<Vec<Off>>,
-    /// Set by an inlined tail `return`, one entry per returned value: `Some((base,
-    /// size))` marks a value that is a `StackBuf` — the caller's `let`/tuple binds
-    /// it as a stack alias (the MD-chain idiom `cvb = obs(cvb, x)`, or a fused
-    /// `state, x = read_obs(state, cur)`, at zero copies); `None` marks a scalar,
-    /// already copied into its dst cell. The field is `None` outside an inlined
-    /// return.
-    inline_stack_ret: Option<Vec<Option<(Off, u32)>>>,
+    /// Set by an inlined tail `return`, one [`RetBind`] per returned value,
+    /// telling the caller's `let`/tuple how to bind each (alias a `StackBuf` run
+    /// or a folded g-address, or take the scalar dst cell). `None` outside an
+    /// inlined return.
+    inline_stack_ret: Option<Vec<RetBind>>,
     /// Deferred stack-cell copies/zeros ([`Alias`]), forwarded at use.
     alias: HashMap<Off, Alias>,
     /// A cached frame cell holding `0` (for forwarded zero words), set lazily.
@@ -1665,43 +1675,49 @@ impl FnLower<'_> {
                         self.fconsts.insert(name.clone(), F128::new(k as u64, 0));
                     } else {
                         let o = self.expr(e);
-                        // A single-value inline return records one slot: a
-                        // `StackBuf` slot aliases its run, a scalar (or a non-call
-                        // `e`, leaving the field None) binds the value cell `o`.
-                        if let Some(slots) = self.inline_stack_ret.take()
-                            && let Some((base, size)) = slots.into_iter().next().flatten()
-                        {
-                            self.vars.remove(name);
-                            self.gaddrs.remove(name);
-                            self.fconsts.remove(name);
-                            self.stacks.insert(name.clone(), (base, size));
-                        } else {
-                            self.stacks.remove(name);
-                            self.gaddrs.remove(name);
-                            self.fconsts.remove(name);
-                            self.vars.insert(name.clone(), o);
+                        // A single-value inline return records one RetBind: alias
+                        // its StackBuf run or folded g-address, else (a scalar, or
+                        // a non-call `e` that left the field None) bind cell `o`.
+                        self.vars.remove(name);
+                        self.stacks.remove(name);
+                        self.gaddrs.remove(name);
+                        self.fconsts.remove(name);
+                        match self.inline_stack_ret.take().and_then(|b| b.into_iter().next()) {
+                            Some(RetBind::Stack(base, size)) => {
+                                self.stacks.insert(name.clone(), (base, size));
+                            }
+                            Some(RetBind::Gaddr(ga)) => {
+                                self.gaddrs.insert(name.clone(), ga);
+                            }
+                            _ => {
+                                self.vars.insert(name.clone(), o);
+                            }
                         }
                     }
                 }
             },
             Stmt::LetTuple(names, f, args) => {
                 let dsts = self.call(f, args, names.len());
-                // An inlined callee records, per returned value, whether it is a
-                // `StackBuf` (alias its run) or a scalar (bind its dst cell); a
-                // real call leaves the field None, so every name binds scalar.
-                let slots = self.inline_stack_ret.take();
+                // Each returned value binds per its RetBind (alias a StackBuf run
+                // or folded g-address, else take the scalar dst cell); a real call
+                // leaves the field None, so every name binds its scalar dst.
+                let binds = self.inline_stack_ret.take();
                 for (i, (n, d)) in names.iter().zip(&dsts).enumerate() {
                     self.consts.remove(n);
+                    self.vars.remove(n);
+                    self.stacks.remove(n);
                     self.gaddrs.remove(n);
                     self.fconsts.remove(n);
-                    if let Some(slots) = &slots
-                        && let Some((base, size)) = slots.get(i).copied().flatten()
-                    {
-                        self.vars.remove(n);
-                        self.stacks.insert(n.clone(), (base, size));
-                    } else {
-                        self.stacks.remove(n);
-                        self.vars.insert(n.clone(), *d);
+                    match binds.as_ref().and_then(|b| b.get(i).copied()) {
+                        Some(RetBind::Stack(base, size)) => {
+                            self.stacks.insert(n.clone(), (base, size));
+                        }
+                        Some(RetBind::Gaddr(ga)) => {
+                            self.gaddrs.insert(n.clone(), ga);
+                        }
+                        _ => {
+                            self.vars.insert(n.clone(), *d);
+                        }
                     }
                 }
             }
@@ -1841,22 +1857,26 @@ impl FnLower<'_> {
         // Inlined (`@inline`): bind the return values into the caller's cells
         // and fall through — the body's tail return, so no jump is needed.
         if let Some(dsts) = self.inline_ret.clone() {
-            // Each returned value is bound into the caller independently: a
-            // `StackBuf` hands over its cell run (alias, not copies — the buffer
-            // was allocated in the caller's frame, so it outlives the inline
-            // scope), a scalar is copied into its dst cell. The per-slot record
-            // lets the caller's `let`/tuple pick the right binding for each, so a
-            // fused `state, x = read_obs(state, cur)` returns a StackBuf and a
-            // scalar together.
-            let mut slots = vec![None; dsts.len()];
-            for (i, (e, &d)) in exprs.iter().zip(&dsts).enumerate() {
-                if let Some((base, size)) = self.stack_of(e) {
-                    slots[i] = Some((base, size));
+            // Each returned value is bound into the caller independently, exactly
+            // as a `let name = <that expr>` would: a `StackBuf` or a folded
+            // g-address hands over its run/pointer (alias, not copies — allocated
+            // in the caller's frame, so it outlives the inline scope), a scalar is
+            // copied into its dst cell. The per-slot record lets the caller's
+            // `let`/tuple pick the right binding, so a fused
+            // `fs, x, cur = fs_next(fs, cur)` returns a StackBuf, a scalar, and an
+            // advanced cursor together.
+            let mut binds = Vec::with_capacity(dsts.len());
+            for (e, &d) in exprs.iter().zip(&dsts) {
+                binds.push(if let Some((base, size)) = self.stack_of(e) {
+                    RetBind::Stack(base, size)
+                } else if let Some(ga) = self.gaddr_of(e) {
+                    RetBind::Gaddr(ga)
                 } else {
                     self.expr_into(e, d);
-                }
+                    RetBind::Scalar
+                });
             }
-            self.inline_stack_ret = Some(slots);
+            self.inline_stack_ret = Some(binds);
             return;
         }
         if self.is_main {
