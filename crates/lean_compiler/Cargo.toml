@@ -1,0 +1,17 @@
+[package]
+name = "lean_compiler"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+primitives.workspace = true
+lean_vm.workspace = true
+
+[dev-dependencies]
+fiat_shamir.workspace = true
+flock.workspace = true
+blake3.workspace = true
+bincode.workspace = true

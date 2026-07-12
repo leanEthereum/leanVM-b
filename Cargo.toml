@@ -1,49 +1,54 @@
 [package]
 name = "leanvm-b"
-version = "0.1.0"
-edition = "2024"
-
-[lib]
-name = "leanvm_b"
-path = "src/lib.rs"
+version.workspace = true
+edition.workspace = true
 
 [[bin]]
 name = "leanvm-b"
 path = "src/main.rs"
 
+[lints]
+workspace = true
+
 [dependencies]
+primitives.workspace = true
+lean_vm.workspace = true
+lean_compiler.workspace = true
+rec_aggregation.workspace = true
+clap = { version = "4", features = ["derive"] }
+bincode.workspace = true
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+members = ["crates/*"]
+
+# Hand-tuned numeric kernels (flock, pcs) legitimately index by loop variable,
+# take many arguments, and assert on constants; silence those style lints
+# workspace-wide rather than annotating every kernel.
+[workspace.lints.clippy]
+needless_range_loop = "allow"
+too_many_arguments = "allow"
+assertions_on_constants = "allow"
+explicit_counter_loop = "allow"
+
+[workspace.dependencies]
+primitives = { path = "crates/primitives" }
+fiat_shamir = { path = "crates/fiat_shamir" }
+pcs = { path = "crates/pcs" }
+flock = { path = "crates/flock" }
+lean_vm = { path = "crates/lean_vm" }
+lean_compiler = { path = "crates/lean_compiler" }
+rec_aggregation = { path = "crates/rec_aggregation" }
+xmss = { path = "crates/xmss" }
 rayon = "1.10"
 blake3 = "1.5"
-# Proof types derive `Serialize`/`Deserialize` so a proof can be measured,
-# transmitted, and reconstructed for out-of-process verification.
 serde = { version = "1", features = ["derive"] }
-# GF(2^128), additive NTT, Merkle, BaseFold/Ligerito PCS (§3). VENDORED under
-# `vendor/flock-core` so we do not depend on the external `../binary-fields/flock`
-# tree (which is restructured underneath us). Renamed to `flare` so the imports
-# stay `flare::…`; it is a frozen local snapshot, not a live path dependency.
-flare = { path = "vendor/flock-core", package = "flock-core" }
-# Vendored BLAKE3 R1CS prover subset (the generic R1CS prover + the BLAKE3
-# per-block encoder, re-laid for 128-bit packing alignment). Depends on the SAME
-# vendored `flock-core` as `flare` (path `vendor/flock-core`), so the packed
-# `F128` witness `q_pkd` it produces is the same field type as our committed
-# columns — letting us stack it alongside them (§BLAKE3 integration).
-flock-prover = { path = "vendor/flock-prover" }
-# Measures the serialized proof size (the demo binary and the proof-size test).
 bincode = "1"
-
-[dev-dependencies]
-# The XMSS scheme this VM's flagship program verifies: the `xmss_vm` test
-# signs natively with it and re-verifies inside the VM.
-xmss = { path = "xmss" }
 rand = "0.9"
 
 [profile.release]
 lto = "thin"
 codegen-units = 1
-
-# The standalone XMSS-over-BLAKE3 crate (`xmss/`). The vendored flock crates
-# are their own (empty) workspace roots, so they must be excluded here; they
-# remain plain path deps.
-[workspace]
-members = ["xmss"]
-exclude = ["vendor/flock-core", "vendor/flock-prover"]
