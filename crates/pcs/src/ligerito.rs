@@ -42,14 +42,6 @@ use serde::{Deserialize, Serialize};
 // Config
 // ===================================================================
 
-/// Per-level Reed-Solomon inverse rate (log₂). The CORE Ligerito idea is to
-/// **decrease the rate at deeper levels**: at level i, lower rate ⟹ Johnson
-/// list-decoding per-query error = √ρ ≈ 2^(-log_inv_rate/2) ⟹ fewer queries
-/// needed for the same security ⟹ drastically smaller opened-rows cost at
-/// deeper levels.
-///
-/// `log_inv_rates[i]` is the log inverse rate at commit i (so wtns_0 uses
-/// `log_inv_rates[0]`, wtns_1 uses `log_inv_rates[1]`, …). Length = R + 1.
 /// Named parameter profile for the Ligerito PCS. Decouples "which security
 /// config" from the raw code rate: `Fast` and `Secure` share rate 1/2 but
 /// differ in regime/target, so the rate alone cannot key the config lookup.
@@ -98,8 +90,8 @@ pub struct ProverConfig {
     pub level_log_msg_cols: Vec<usize>,
     pub level_ks: Vec<usize>,
     /// Per-level query counts (L0, L1, ..., L_r). Length = level_steps + 1.
-    /// `default_config` fills these via [`udr_queries`]; for tighter
-    /// (or stronger) per-level numbers, load a [`LigeritoSecurityConfig`].
+    /// [`LigeritoSecurityConfig::derive_profile`] fills these from the
+    /// per-level soundness analysis.
     pub queries: Vec<usize>,
     /// Per-level **query-phase** PoW grinding bits (L0, L1, ..., L_r), ground
     /// post-commit/pre-queries. Length = level_steps + 1. Each bit here
@@ -219,8 +211,7 @@ struct LadderShape {
     yr_log_n: usize,
 }
 
-/// Shared shape derivation behind [`default_config`] and
-/// [`LigeritoSecurityConfig::derive_profile`]: 3-bit level folds with the
+/// Shared shape derivation behind [`LigeritoSecurityConfig::derive_profile`]: 3-bit level folds with the
 /// rate index increasing by ≥ 1 per level, bumped further whenever the block
 /// length couldn't accommodate `queries_at_rate(rate)` distinct queries.
 fn derive_ladder_shape(
@@ -265,7 +256,7 @@ fn derive_ladder_shape(
         rate_running = next_rate;
     }
     if shape.k_levels.len() < 2 {
-        return Err("log_n too small — no fold levels needed (use BaseFold directly)".into());
+        return Err("log_n too small: needs at least 2 fold levels".into());
     }
     shape.yr_log_n = n_running;
     Ok(shape)
@@ -332,11 +323,11 @@ pub struct LigeritoLevelConfig {
     /// the codeword). `log_msg_cols + log_inv_rate = log_2(block_len)`.
     pub log_msg_cols: usize,
     /// Log of lane width per Merkle leaf at this level. For L0 = `initial_k`;
-    /// for L_i (i ≥ 1) = the previous level's k_levels.
+    /// for L_i (i ≥ 1) = the previous level's `k`.
     pub log_num_interleaved: usize,
     /// Number of sumcheck folds taken at this level. For L0 = `initial_k`
     /// (the lane fold); for L_i (i ≥ 1) = the level fold k_{i−1}.
-    pub k_levels: usize,
+    pub k: usize,
     /// Which proximity-gap analysis the (eta, queries, grinding_bits)
     /// tuple was derived under. Determines the formulas the implementation
     /// validates against.
@@ -359,7 +350,7 @@ pub struct LigeritoLevelConfig {
     /// ~1/log₂(1/(1−γ)) queries at this level.
     pub grinding_bits: usize,
     /// **Fold-challenge** PoW grinding bits, ground immediately before EACH
-    /// of this level's `k_levels` fold challenges. Boosts the
+    /// of this level's `k` fold challenges. Boosts the
     /// proximity-gap term (which lives on the fold challenges):
     /// `eps_pg + fold_grinding_bits ≥ target`.
     #[serde(default)]
@@ -401,13 +392,13 @@ pub struct FinalBlockConfig {
 /// `(hash, m)` pair. Designed to round-trip cleanly via serde (TOML/JSON).
 ///
 /// **Validation invariants** (checked by [`Self::validate`]):
-/// 1. `initial_k + Σ levels[1..].k_levels + final_block.yr_log_n == log_n`.
+/// 1. `initial_k + Σ levels[1..].k + final_block.yr_log_n == log_n`.
 /// 2. Each level's `expected_eps_pg_bits` is consistent with the declared
 ///    regime and `eta` (within tolerance).
 /// 3. Each level's `expected_eps_query_bits ≥ target_security_bits −
 ///    grinding_bits` (queries cover what grinding doesn't).
 /// 4. `eta` is `Some` iff regime ∈ {Johnson, JohnsonOod}; `None` for Udr.
-/// 5. `log_msg_cols`, `log_num_interleaved`, `k_levels` match the
+/// 5. `log_msg_cols`, `log_num_interleaved`, `k` match the
 ///    level-shape constraint (each level's input dim equals the
 ///    previous level's `log_msg_cols`).
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -547,7 +538,7 @@ fn udr_per_query_bits(log_inv_rate: usize, log_msg_cols: usize, proximity_loss: 
 
 /// Asymptotic (n → ∞) UDR per-query soundness at `γ = δ/2`, dropping the
 /// finite-length `3/(δ·n)` backoff. Length-agnostic — used for ladder-shape
-/// feasibility and [`udr_queries`]; the shipped per-level configs use the
+/// feasibility (and the test-only `udr_queries`); the per-level configs use the
 /// n-aware [`udr_per_query_bits`]. The dropped backoff slightly *under*-counts
 /// queries, but the per-level block-length check in `derive_profile` (and the
 /// `+5` feasibility padding) catch any shape that wouldn't hold the real,
@@ -710,12 +701,12 @@ impl LigeritoSecurityConfig {
             ));
         }
 
-        // Level shape: initial_k + Σ k_levels (L1+) + yr_log_n = log_n.
-        let levels_level_k_sum: usize = self.levels.iter().skip(1).map(|lv| lv.k_levels).sum();
+        // Level shape: initial_k + Σ k (L1+) + yr_log_n = log_n.
+        let levels_level_k_sum: usize = self.levels.iter().skip(1).map(|lv| lv.k).sum();
         let yr_log_n = self.final_block.yr_log_n;
         if self.initial_k + levels_level_k_sum + yr_log_n != self.log_n {
             return Err(format!(
-                "shape mismatch: initial_k ({}) + Σ k_levels ({}) + yr_log_n ({}) = {} ≠ log_n ({})",
+                "shape mismatch: initial_k ({}) + Σ k ({}) + yr_log_n ({}) = {} ≠ log_n ({})",
                 self.initial_k,
                 levels_level_k_sum,
                 yr_log_n,
@@ -724,15 +715,15 @@ impl LigeritoSecurityConfig {
             ));
         }
 
-        // L0 must have k_levels = initial_k and log_num_interleaved = initial_k.
+        // L0 must have k = initial_k and log_num_interleaved = initial_k.
         let l0 = self
             .levels
             .first()
             .ok_or_else(|| "empty levels".to_string())?;
-        if l0.k_levels != self.initial_k {
+        if l0.k != self.initial_k {
             return Err(format!(
-                "L0.k_levels ({}) must equal initial_k ({})",
-                l0.k_levels, self.initial_k
+                "L0.k ({}) must equal initial_k ({})",
+                l0.k, self.initial_k
             ));
         }
         if l0.log_num_interleaved != self.initial_k {
@@ -905,8 +896,8 @@ impl LigeritoSecurityConfig {
                 ));
             }
 
-            // Advance dim_in for next level: subtract k_levels (the folds at this level).
-            dim_in -= lv.k_levels;
+            // Advance dim_in for next level: subtract k (the folds at this level).
+            dim_in -= lv.k;
         }
 
         if dim_in != yr_log_n {
@@ -1058,7 +1049,7 @@ impl LigeritoSecurityConfig {
                 log_inv_rate: rate,
                 log_msg_cols: cols,
                 log_num_interleaved: ilv,
-                k_levels: shape.k_levels[i],
+                k: shape.k_levels[i],
                 regime,
                 eta,
                 proximity_loss,
@@ -1108,7 +1099,7 @@ impl LigeritoSecurityConfig {
             .levels
             .iter()
             .skip(1)
-            .map(|lv| lv.k_levels)
+            .map(|lv| lv.k)
             .collect();
         let level_log_msg_cols: Vec<usize> = self
             .levels
@@ -1355,6 +1346,17 @@ pub fn induce_sumcheck_enforced_sum(
     sum
 }
 
+/// `⌈log₂ n⌉`. Number of bits needed to index `n` items. Used to size the
+/// per-level `alpha` slice for the eq-tensor basis-induction combination.
+#[inline]
+pub fn log2_ceil(n: usize) -> usize {
+    if n <= 1 {
+        0
+    } else {
+        (n - 1).ilog2() as usize + 1
+    }
+}
+
 /// **Succinct** evaluator for the induced basis poly's MLE at residual points.
 /// Replaces `induce_sumcheck_poly` + `partial_eval_lsb` in the verifier:
 /// instead of materializing the dense `2^log_msg_cols` basis_poly, evaluates
@@ -1370,17 +1372,6 @@ pub fn induce_sumcheck_enforced_sum(
 /// Cost: O(num_queries × yr_log_n × 2^yr_log_n + num_queries × log_msg_cols),
 /// vs the dense path's O(num_queries × log_msg_cols × 2^log_msg_cols). At m=30
 /// L0 with 221 queries, log_msg_cols=17, yr_log_n=4: ~18k ops vs ~500M ops.
-/// `⌈log₂ n⌉`. Number of bits needed to index `n` items. Used to size the
-/// per-level `alpha` slice for the eq-tensor basis-induction combination.
-#[inline]
-pub fn ceil_log2(n: usize) -> usize {
-    if n <= 1 {
-        0
-    } else {
-        (n - 1).ilog2() as usize + 1
-    }
-}
-
 pub fn induce_sumcheck_evaluate_at_residual(
     log_msg_cols: usize,
     sks_vks: &[F128],
@@ -2378,7 +2369,7 @@ impl SumcheckProver {
 }
 
 // ===================================================================
-// Prover / Verifier — stubs
+// Prover / Verifier
 // ===================================================================
 
 // ---------------------------------------------------------------------------
@@ -2391,12 +2382,6 @@ impl SumcheckProver {
 // in-circuit port carries no dedup/sort machinery.
 // ---------------------------------------------------------------------------
 
-/// Sample `count` query positions in transcript order — no dedup, no sort.
-/// `block_len = 2^d`; each squeezed field element yields `⌊128/d⌋` positions —
-/// its disjoint d-bit chunks, low bits first. Positions stay uniform and the
-/// whole squeeze stays transcript-bound; packing them amortizes one squeeze
-/// (and, in the recursive verifier, one 128-bit decomposition) across `128/d`
-/// queries.
 /// What the succinct multilevel verifier hands back on accept: the data a
 /// recursion harness needs to drive an in-circuit replay, all named and typed
 /// (no transcript scraping).
@@ -2411,6 +2396,12 @@ pub struct LigVerifierSummary {
 }
 
 /// [`sample_queries_ordered`], also returning the raw squeezed words.
+/// Sample `count` query positions in transcript order — no dedup, no sort.
+/// `block_len = 2^d`; each squeezed field element yields `⌊128/d⌋` positions —
+/// its disjoint d-bit chunks, low bits first. Positions stay uniform and the
+/// whole squeeze stays transcript-bound; packing them amortizes one squeeze
+/// (and, in the recursive verifier, one 128-bit decomposition) across `128/d`
+/// queries.
 fn sample_queries_ordered_with_raw(
     sponge: &mut Sponge,
     block_len: usize,
@@ -2570,16 +2561,15 @@ fn compress_level_opening(
     (rows, octopus)
 }
 
-/// Drop-in replacement for `basefold::prove`: takes a generic basis poly +
-/// target (typically the combined `Σ γ_k · eq(z_k, ·)` and target produced by
-/// `ring_switch::prove_batched` for batched claims), plus an externally-built
-/// L0 commitment (the existing `pcs::commit` output).
+/// The multilevel Ligerito prover over a generic basis poly + target
+/// (typically the combined `Σ γ_k · eq(z_k, ·)` and target produced by
+/// `ring_switch::prove_batched_padded_with_precomputed`), against an
+/// externally-built L0 commitment (the `pcs::commit` output).
 ///
-/// Differs from [`multilevel_prover`] in the initial step: instead of partial-
-/// evaluating at `z[0..initial_k]` (which doesn't make sense for a combined
-/// basis with no single `z`), runs `initial_k` real sumcheck rounds folding
-/// both `f` and `b` together with FS challenges. The folded f becomes wtns_1
-/// and the rest of the protocol proceeds identically.
+/// The initial step runs `initial_k` real sumcheck rounds folding `f` and `b`
+/// together with FS challenges (a combined basis has no single `z` to
+/// partial-evaluate at); the folded `f` becomes the L1 witness and each later
+/// level re-commits and folds.
 pub fn multilevel_prover_with_basis(
     config: &ProverConfig,
     packed_witness: Vec<F128>,
@@ -2760,7 +2750,7 @@ fn multilevel_prover_with_basis_impl(
     // Open L0; lane-fold weights = r_lane_fold.
     let num_queries_0 = config.queries[0];
     let queries_0 = sample_queries_ordered(ps.sponge_mut(), l0_block_len, num_queries_0);
-    let alpha_0 = ps.sample_vec(ceil_log2(num_queries_0));
+    let alpha_0 = ps.sample_vec(log2_ceil(num_queries_0));
     let _t = std::time::Instant::now();
     // `opened_rows_0` stays in transcript (ordered, possibly-duplicate) order for
     // the induce-sumcheck math below; the STORED proof compresses it (index dedup
@@ -2953,7 +2943,7 @@ fn multilevel_prover_with_basis_impl(
         grinding_nonces.push(nonce_i);
         let num_queries_i = config.queries[i + 1];
         let queries_i = sample_queries_ordered(ps.sponge_mut(), wtns_prev.block_len, num_queries_i);
-        let alpha_i = ps.sample_vec(ceil_log2(num_queries_i));
+        let alpha_i = ps.sample_vec(log2_ceil(num_queries_i));
         let _t = std::time::Instant::now();
         // `opened_rows_i` stays ordered for the induce-sumcheck; store compressed.
         let opened_rows_i: Vec<Vec<F128>> = queries_i
@@ -3009,8 +2999,8 @@ fn multilevel_prover_with_basis_impl(
 /// **closure** `eval_b` that evaluates `b_initial(point)` at any multilinear
 /// point. The verifier calls `eval_b` only `yr.len()` times (at the residual)
 /// — typically a few dozen times, not 2^L. Use this from
-/// `pcs::verify_opening_batch_ligerito_mixed` where the closure is built from
-/// `ring_switch::verify_succinct` outputs + PD claim points.
+/// `pcs::verify_opening_batch_mixed_ligerito_stacked`, where the closure is
+/// built from the `ring_switch::verify_bind` outputs + stacked claim points.
 ///
 /// `log_n` is the original packed-witness log size (= b_initial's logical dim).
 #[allow(clippy::too_many_arguments)]
@@ -3169,7 +3159,7 @@ where
     if trace {
         t_sample_q += _t.elapsed();
     }
-    let alpha_0 = vs.sample_vec(ceil_log2(num_queries_0));
+    let alpha_0 = vs.sample_vec(log2_ceil(num_queries_0));
     let _t = std::time::Instant::now();
     // Expand the stored (compressed) opening into the flat per-query form: one
     // row + one full Merkle path per query in transcript order, then verify each
@@ -3320,7 +3310,7 @@ where
             // after `yr` was observed (top of this branch) and the queries are
             // fixed — so a forged `yr` cannot be adapted to it. Mirrors `alpha_i`
             // at every non-final level (see ~line 3377).
-            let alpha_last = vs.sample_vec(ceil_log2(num_queries_last));
+            let alpha_last = vs.sample_vec(log2_ceil(num_queries_last));
             if trace {
                 t_sample_q += _t.elapsed();
             }
@@ -3537,7 +3527,7 @@ where
         if trace {
             t_sample_q += _t.elapsed();
         }
-        let alpha_i = vs.sample_vec(ceil_log2(num_queries_i));
+        let alpha_i = vs.sample_vec(log2_ceil(num_queries_i));
         if level_proof_idx >= proof.level_proofs.len() {
             return None;
         }
@@ -3938,7 +3928,7 @@ mod tests {
             }
         }
         let opened_rows: Vec<Vec<F128>> = queries.iter().map(|&q| vec![codeword[q]]).collect();
-        let alpha = ch.sample_vec(ceil_log2(queries.len()));
+        let alpha = ch.sample_vec(log2_ceil(queries.len()));
         let sks_vks = eval_sk_at_vks(log_msg);
 
         let (basis_poly, enforced_sum) =
@@ -3998,7 +3988,7 @@ mod tests {
                 .map(|_| ch.sample_vec(num_interleaved))
                 .collect();
             let v_challenges = ch.sample_vec(log_int);
-            let alpha = ch.sample_vec(ceil_log2(nq.max(1)));
+            let alpha = ch.sample_vec(log2_ceil(nq.max(1)));
             let sks_vks = eval_sk_at_vks(log_msg);
 
             let dense = induce_sumcheck_poly(
@@ -4093,7 +4083,7 @@ mod tests {
         }
         let opened_rows: Vec<Vec<F128>> = queries.iter().map(|&q| w.row(q).to_vec()).collect();
 
-        let alpha = ch.sample_vec(ceil_log2(queries.len()));
+        let alpha = ch.sample_vec(log2_ceil(queries.len()));
         let sks_vks = eval_sk_at_vks(log_msg);
         let (basis_poly, enforced_sum) = induce_sumcheck_poly(
             log_msg,
@@ -4136,7 +4126,7 @@ mod tests {
         let v_challenges: Vec<F128> = (0..log_num_interleaved)
             .map(|_| rng.sample())
             .collect();
-        let alpha: Vec<F128> = (0..ceil_log2(num_queries))
+        let alpha: Vec<F128> = (0..log2_ceil(num_queries))
             .map(|_| rng.sample())
             .collect();
         let ris_for_basis: Vec<F128> = (0..prefix_len).map(|_| rng.sample()).collect();
@@ -4224,7 +4214,7 @@ mod tests {
         let opened_rows: Vec<Vec<F128>> = queries.iter().map(|&p| wtns.row(p).to_vec()).collect();
 
         let level_rs: Vec<F128> = Vec::new(); // num_interleaved = 1
-        let alpha: Vec<F128> = (0..ceil_log2(num_queries))
+        let alpha: Vec<F128> = (0..log2_ceil(num_queries))
             .map(|_| rng.sample())
             .collect();
 

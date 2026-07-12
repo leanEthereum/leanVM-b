@@ -38,8 +38,7 @@ pub struct PcsParams {
     /// Ligerito parameter profile (fast/slim/secure). Selects which embedded
     /// security config (queries, OOD samples, grinding schedule) drives the
     /// PCS opening; must agree with `log_inv_rate`
-    /// (`profile.log_inv_rate() == log_inv_rate`). Ignored by the BaseFold
-    /// backend. Defaults to `Fast`.
+    /// (`profile.log_inv_rate() == log_inv_rate`). Defaults to `Fast`.
     #[serde(default)]
     pub profile: crate::ligerito::LigeritoProfile,
 }
@@ -144,15 +143,12 @@ pub fn commit(z_packed: &[F128], params: &PcsParams) -> (Commitment, ProverData)
     let codeword_len = n_positions * num_ntts;
 
     // ---- Codeword buffer (SoA): codeword[pos * num_ntts + lane].
-    // Copy first 2^log_msg_len positions from packed witness; zero-pad the rest.
     //
     // At large m the codeword buffer is huge (128 MB at m=29, 512 MB at m=31).
-    // `vec![F128::ZERO; n]` would eagerly zero all 128 MB upfront, then
-    // immediately overwrite the lower half with `z_packed` — half the zero-fill
-    // is wasted. Instead allocate uninit, write each half exactly once: copy
-    // `z_packed` into the lower half, and zero-fill JUST the upper half (the
-    // RS-encoding zero coefficients that the NTT's first-layer butterfly will
-    // read). Saves ~64 MB of memory writes at m=29 (~9 ms).
+    // `vec![F128::ZERO; n]` would eagerly zero the whole buffer only for every
+    // slot to be overwritten anyway, so take a possibly-stale buffer from the
+    // scratch pool instead: `commit_into` (via `replicate_message_fill`)
+    // writes every slot exactly once.
     let codeword = primitives::scratch::take_f128(codeword_len);
     commit_into(z_packed, params, codeword)
 }
@@ -164,7 +160,7 @@ pub fn commit(z_packed: &[F128], params: &PcsParams) -> (Commitment, ProverData)
 /// state after the first `log_inv_rate` NTT layers on `[z, 0, …, 0]`), in
 /// parallel. Buffers from the scratch pool
 /// are already resident, so no write faults.
-pub fn commit_into(
+pub(crate) fn commit_into(
     z_packed: &[F128],
     params: &PcsParams,
     mut codeword: Vec<F128>,
@@ -250,8 +246,7 @@ fn finalize_commit(mut codeword: Vec<F128>, params: &PcsParams) -> (Commitment, 
     };
     // Initial tree: one leaf per codeword position, each containing the
     // row-batch lanes (num_ntts F_{2^128} values = 2^log_batch_size). The
-    // **post-row-batch** tree is built inside basefold::prove and provides
-    // the multi-arity batching for the first FRI epoch.
+    // Ligerito multilevel prover reuses this initial tree as its L0 tree.
     let merkle_tree = merkle::merkle_tree(codeword_bytes, params.n_leaves());
     let root = *merkle_tree.last().expect("merkle tree non-empty");
     if timing {

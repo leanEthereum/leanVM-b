@@ -34,7 +34,8 @@ impl Placement {
 }
 
 /// The stacked witness and the per-column placements (in input order).
-pub struct Stacked {
+#[cfg(test)]
+pub(crate) struct Stacked {
     pub m: usize,
     pub q: Vec<F128>,
     pub placements: Vec<Placement>,
@@ -93,7 +94,8 @@ pub fn stack_q(cols: &[Column], placements: &[Placement], m: usize) -> Vec<F128>
 }
 
 /// Stack columns largest-first at aligned offsets, zero-padded to `2^m`.
-pub fn stack(cols: &[Column]) -> Stacked {
+#[cfg(test)]
+pub(crate) fn stack(cols: &[Column]) -> Stacked {
     let kappas: Vec<Option<usize>> = cols
         .iter()
         .map(|c| {

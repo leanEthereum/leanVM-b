@@ -17,9 +17,6 @@
 //!
 //! Storage: 256 × ell bytes (16 KB at k=6, 32 KB at k=7) — fits in L1.
 //! Lookups per row: n_chunks (= ell/8), each load is `ell` contiguous bytes.
-//!
-//! Scalar/correctness-first implementation; NEON `apply_triple` and the
-//! unrolled `ntt_and_accum` can be added if the URM hot path needs them.
 
 use primitives::field::F8;
 use crate::ntt::AdditiveNttGf8;
@@ -245,23 +242,6 @@ impl InvNttTableByteSingleGf8 {
             }
         }
     }
-
-    /// Apply M to three byte-packed rows (a, b, c) — matches the C++ hot-path
-    /// signature. Identical math to three `apply` calls; kept separate so the
-    /// future NEON port can batch loads across the three rows.
-    pub fn apply_triple(
-        &self,
-        a_bytes: &[u8],
-        a_out: &mut [F8],
-        b_bytes: &[u8],
-        b_out: &mut [F8],
-        c_bytes: &[u8],
-        c_out: &mut [F8],
-    ) {
-        self.apply(a_bytes, a_out);
-        self.apply(b_bytes, b_out);
-        self.apply(c_bytes, c_out);
-    }
 }
 
 #[cfg(test)]
@@ -415,35 +395,5 @@ mod tests {
                 );
             }
         }
-    }
-
-    #[test]
-    fn apply_triple_matches_three_singles() {
-        let ntt_s = AdditiveNttGf8::new(5, F8::ZERO);
-        let ntt_l = AdditiveNttGf8::new(5, F8(1 << 5));
-        let table = InvNttTableByteSingleGf8::new(&ntt_s, &ntt_l);
-
-        let mut rng = Rng::new(103);
-        let nc = table.n_chunks;
-        let ell = table.ell;
-        let ab: Vec<u8> = (0..nc).map(|_| (rng.next_u64() & 0xff) as u8).collect();
-        let bb: Vec<u8> = (0..nc).map(|_| (rng.next_u64() & 0xff) as u8).collect();
-        let cb: Vec<u8> = (0..nc).map(|_| (rng.next_u64() & 0xff) as u8).collect();
-
-        let mut a1 = vec![F8::ZERO; ell];
-        let mut b1 = vec![F8::ZERO; ell];
-        let mut c1 = vec![F8::ZERO; ell];
-        table.apply(&ab, &mut a1);
-        table.apply(&bb, &mut b1);
-        table.apply(&cb, &mut c1);
-
-        let mut a2 = vec![F8::ZERO; ell];
-        let mut b2 = vec![F8::ZERO; ell];
-        let mut c2 = vec![F8::ZERO; ell];
-        table.apply_triple(&ab, &mut a2, &bb, &mut b2, &cb, &mut c2);
-
-        assert_eq!(a1, a2);
-        assert_eq!(b1, b2);
-        assert_eq!(c1, c2);
     }
 }

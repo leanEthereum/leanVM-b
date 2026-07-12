@@ -11,11 +11,10 @@
 //! with claim `P^{AB}(z)` from round 1. Each subsequent round sends `(P_r(1),
 //! P_r(∞))` via the Karatsuba ∞-trick.
 //!
-//! This module begins with the **naive reference** (separately compute the
-//! Lagrange-weighted fold, then a direct sum for the round-2 message). The
-//! optimized fused-fold-plus-round-2 implementation (`uni_skip_fold_and_compute
-//! _round_pair_ghash` in the C++) will be added next and cross-checked against
-//! these naive functions.
+//! This module holds both the **naive references** (separate Lagrange-weighted
+//! fold, then a direct sum for the round-2 message) and the optimized fused
+//! fold-plus-round-2 implementations, cross-checked against each other in
+//! tests.
 //!
 //! **Index convention** (matches the C++ extract_c pipeline's `sumcheck_round_pair`
 //! and the NEON `fold_in_place_pair`): the **low bit** of the multilinear index
@@ -163,23 +162,6 @@ pub fn eq_eval(r: &[F128], x: &[F128]) -> F128 {
     let mut acc = F128::ONE;
     for i in 0..r.len() {
         acc *= F128::ONE + r[i] + x[i];
-    }
-    acc
-}
-
-/// Specialized variant of [`eq_eval`] for the case where `x` is binary,
-/// encoded as a bitmask. Each factor reduces to `r_i` (bit=1) or `1 + r_i`
-/// (bit=0), saving one F128 add per coord.
-pub fn eq_eval_binary_x(r: &[F128], x_bits: u32) -> F128 {
-    debug_assert!(r.len() <= 32, "x_bits is u32; r > 32 dims not supported");
-    let mut acc = F128::ONE;
-    for (i, &r_i) in r.iter().enumerate() {
-        let factor = if (x_bits >> i) & 1 == 1 {
-            r_i
-        } else {
-            F128::ONE + r_i
-        };
-        acc *= factor;
     }
     acc
 }
@@ -612,32 +594,6 @@ pub fn fold_in_place_single(a: &mut Vec<F128>, challenge: F128) {
         a[x] = a0 + challenge * (a1 + a0);
     }
     a.truncate(half);
-}
-
-/// Fold a packed boolean witness at the univariate-skip challenge `z`,
-/// producing the multilinear table `f_mlv` of length `2^(m − k_skip)` over
-/// F_{2^128}. Uses the precomputed [`UniSkipFoldTable`] so each row costs
-/// `n_chunks` lookups + XORs.
-///
-/// Useful for the prover's `ĉ` track: extract_c handles `c` outside the
-/// multilinear sumcheck, but the prover still needs `ĉ` at the final point
-/// for the claim. This is the per-row fold (Σ_s L_s(z) · c(s, x_rest)) in
-/// packed form.
-pub fn fold_packed_witness_at_z(
-    witness_packed: &[u8],
-    m: usize,
-    k_skip: usize,
-    table: &UniSkipFoldTable,
-) -> Vec<F128> {
-    use rayon::prelude::*;
-    assert_eq!(witness_packed.len(), (1usize << m) / 8);
-    let n_chunks = table.n_chunks;
-    let n_out = 1usize << (m - k_skip);
-    let mut out = vec![F128::ZERO; n_out];
-    out.par_iter_mut().enumerate().for_each(|(x_rest, slot)| {
-        *slot = table.fold_one_row(&witness_packed[x_rest * n_chunks..(x_rest + 1) * n_chunks]);
-    });
-    out
 }
 
 /// In-place fold of a pair `(a, b)` of multilinear polynomial tables at

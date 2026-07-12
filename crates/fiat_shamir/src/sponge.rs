@@ -1,5 +1,5 @@
 //! The VM-native Fiat–Shamir sponge: THE verifier-randomness source for the
-//! whole stack — flock's zerocheck / lincheck, the BaseFold/Ligerito PCS, and
+//! whole stack — flock's zerocheck / lincheck, the Ligerito PCS, and
 //! leanVM-b's own protocol (whose `ProverState` / `VerifierState` wrap this
 //! sponge with the proof transport channels).
 //!
@@ -60,7 +60,7 @@ const DS_POW: F128 = F128::new(5, 0);
 /// predicate over the VM compression. A CONTIGUOUS low-bit window (rather than
 /// byte-wise leading zeros) so a recursive verifier re-checks it with a single
 /// loop over the bit decomposition of the digest word (`grind_check` in
-/// `tests/verify_recursive.py`). `bits` is always `< 64`.
+/// `guests/verify_recursive.py`). `bits` is always `< 64`.
 #[inline]
 fn pow_bits_ok(base: [F128; 2], nonce: u64, bits: u32) -> bool {
     debug_assert!(bits < 64, "grinding deficit fits the digest's low word");
@@ -257,7 +257,7 @@ impl Sponge {
 /// mechanical spec and its checkpoint data.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TraceOp {
-    /// A stream word consumed without binding (hint bytes, nonces).
+    /// A stream word consumed without binding (grinding nonces).
     StreamRaw(F128),
     /// An absorbed scalar (transmitted or derived — the sponge cannot tell).
     Observe(F128),

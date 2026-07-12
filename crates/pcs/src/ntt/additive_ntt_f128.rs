@@ -16,7 +16,7 @@
 //! parallelization added on top. The forward transform maps polynomial
 //! coefficients (in the novel polynomial basis) to evaluations over an
 //! F_2-affine subspace; the inverse reverses this. Used by the PCS commit and
-//! by FRI folding.
+//! by Ligerito's fold.
 //!
 //! ## Convention
 //!
@@ -39,8 +39,8 @@
 //!   2^(log_d − l − 1)`. So at layer 0 pairs are far (N/2 apart), and at the
 //!   deepest layer pairs are adjacent (1 apart) — this is "neighbors-last."
 //!
-//! FRI fold processes layers in **reverse** (deepest first), at which level
-//! pairs are adjacent — matching the standard `fold_pair` formula in DP24.
+//! Ligerito's fold/transpose kernels consume `twiddle` in **reverse** layer
+//! order (deepest first), at which level pairs are adjacent.
 
 use primitives::field::F128;
 
@@ -123,7 +123,7 @@ impl AdditiveNttF128 {
         self.evals.len()
     }
 
-    /// Twiddle at `(layer, block)` for the forward NTT and FRI fold.
+    /// Twiddle at `(layer, block)` for the forward NTT and the Ligerito fold.
     ///
     /// At layer `l` ∈ `[0, ℓ)`, block index `b` ∈ `[0, 2^l)`:
     /// `twiddle(l, b) = Σ_j bit_j(b) · Ŵ_{ℓ-l-1}(β_{ℓ-l+j})`
@@ -142,6 +142,11 @@ impl AdditiveNttF128 {
     /// Dispatches to the cache-blocked batched implementation when available
     /// and the buffer is large enough to benefit; otherwise falls back to the
     /// per-layer parallel path or scalar.
+    ///
+    /// The live commit path uses only the interleaved transform
+    /// ([`Self::forward_transform_interleaved_from_layer`]); this
+    /// non-interleaved family (and its batched/parallel/neon dispatch tiers)
+    /// is retained as test oracles only.
     pub fn forward_transform(&self, data: &mut [F128]) {
         #[cfg(any(
             all(target_arch = "aarch64", target_feature = "aes"),
@@ -172,7 +177,7 @@ impl AdditiveNttF128 {
     /// `(1 << log_d) * num_ntts` for some `log_d ≤ log_domain_size()`.
     ///
     /// This produces the SAME RS code per lane as `forward_transform`, with
-    /// FRI-compatible twiddles. The SoA layout is what makes each Merkle leaf
+    /// fold-compatible twiddles. The SoA layout is what makes each Merkle leaf
     /// = one position across all `num_ntts` lanes (= contiguous slice of
     /// `num_ntts` F_{2^128} elements).
     pub fn forward_transform_interleaved(&self, data: &mut [F128], num_ntts: usize) {
@@ -663,6 +668,7 @@ impl AdditiveNttF128 {
     }
 
     /// Inverse additive NTT in place. Exact inverse of `forward_transform`.
+    /// Test-oracle only, like the rest of the non-interleaved family.
     pub fn inverse_transform(&self, data: &mut [F128]) {
         let log_d = log2_pow2(data.len());
         assert!(log_d <= self.log_domain_size());
@@ -1195,8 +1201,6 @@ mod tests {
         assert_eq!(ntt.twiddle(0, 0), F128::ZERO);
     }
 
-    /// At layer log_d - 1 (deepest, where FRI starts), pairs are adjacent.
-    /// twiddle should match the "domain points" indexing.
     #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
     #[test]
     fn neon_matches_scalar() {

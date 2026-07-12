@@ -76,7 +76,7 @@ pub fn lagrange_eval(nodes: &[F128], values: &[F128], p: F128) -> F128 {
 }
 
 /// The 3 nodes {0, 1, γ} at which a degree-2 sumcheck round univariate is sent
-/// (the eq weight is factored out). Shared by [`crate::constraints`] and [`crate::gkr`].
+/// (the eq weight is factored out). Shared by `lean_vm::constraints` and `lean_vm::gkr`.
 #[inline]
 pub fn tri_nodes() -> [F128; 3] {
     [F128::ZERO, F128::ONE, F128::generator()]

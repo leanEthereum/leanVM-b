@@ -823,11 +823,6 @@ fn split_once_top(s: &str, op: &str) -> Option<(String, String)> {
     None
 }
 
-/// A range bound (`mul_range` bounds and `assert log _ < log _` bounds): a
-/// compile-time power of the generator — `1` (= `g^0`), `GEN` (= `g^1`), or
-/// `GEN ** k` — returning the exponent `k`. Both uses walk/compare exponents,
-/// so the bound must name `g^k` explicitly (an element that is not a known
-/// power of `g` has no usable exponent).
 /// Fold a compile-time INTEGER expression (literals combined with the usual
 /// operators) to its value; `None` if any leaf is not a literal. Placeholders
 /// are substituted before parsing, so `GEN ** (K_SKIP + 1)`-style exponents
@@ -851,6 +846,11 @@ fn const_int_expr(e: &Expr) -> Option<u128> {
     }
 }
 
+/// A range bound (`mul_range` bounds and `assert log _ < log _` bounds): a
+/// compile-time power of the generator — `1` (= `g^0`), `GEN` (= `g^1`), or
+/// `GEN ** k` — returning the exponent `k`. Both uses walk/compare exponents,
+/// so the bound must name `g^k` explicitly (an element that is not a known
+/// power of `g` has no usable exponent).
 fn gpow_bound(e: &Expr) -> Result<u64, String> {
     match e {
         // `1` is the multiplicative identity g^0 — the natural loop start.

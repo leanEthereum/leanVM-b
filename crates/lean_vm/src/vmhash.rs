@@ -15,7 +15,7 @@ use primitives::field::{F128, g_pow};
 /// opcode (§7.6, `cpu::execute`): 64 input bytes → 32-byte digest, split back
 /// into two field words. THE primitive; every other hash here is a chain of
 /// these, so a zkDSL program reproduces them with one `blake3(...)` per call.
-/// Lives in [`flare::sponge`] (the shared Fiat–Shamir sponge is built on it).
+/// Lives in [`fiat_shamir::sponge`] (the shared Fiat–Shamir sponge is built on it).
 pub use fiat_shamir::sponge::compress;
 
 /// Merkle–Damgård hash of a field-element slice with the **byte length in the
@@ -85,7 +85,7 @@ mod tests {
         assert_eq!(one, manual);
     }
 
-    /// The vendored PCS Merkle leaf hash (`::pcs::merkle::hash_leaf`) must equal
+    /// The PCS Merkle leaf hash (`::pcs::merkle::hash_leaf`) must equal
     /// `hash_slice` on the same field words — the invariant that lets a recursive
     /// verifier reuse ONE routine for the transcript/leaf hashing and the PCS
     /// tree. Covers single-word, odd, and full-width (2^6) leaves.

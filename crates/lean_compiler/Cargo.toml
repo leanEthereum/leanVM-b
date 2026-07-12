@@ -11,7 +11,4 @@ primitives.workspace = true
 lean_vm.workspace = true
 
 [dev-dependencies]
-fiat_shamir.workspace = true
-flock.workspace = true
 blake3.workspace = true
-bincode.workspace = true

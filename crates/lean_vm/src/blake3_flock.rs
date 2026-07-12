@@ -1,4 +1,4 @@
-//! Bridge to the vendored flock BLAKE3 prover (`flock_prover`), single-PCS.
+//! Bridge to the flock BLAKE3 prover ([`flock::blake3`]), single-PCS.
 //!
 //! `q_pkd` (flock's packed BLAKE3 witness) is committed as a column in leanVM-b's
 //! ONE stacked witness (§3.1) — no separate flock commitment. The VM's `BLAKE3`
@@ -32,7 +32,9 @@
 use primitives::field::F128;
 use crate::transcript::{ProverState, VerifierState};
 use ::pcs::LOG_PACKING;
-use ::pcs::{Commitment, ProverData};
+use ::pcs::Commitment;
+#[cfg(test)]
+use ::pcs::ProverData;
 use flock::blake3::{
     Blake3Setup, Compression, K_LOG, ReducedClaims, ReductionReplay, blake3_compress,
     generate_witness_with_ab_packed_and_lincheck, min_n_blocks_log,
@@ -41,7 +43,7 @@ use flock::verifier::VerifyError;
 
 /// A `ẑ(point) = value` claim on the committed witness `q_pkd`, recovered by the
 /// Flock zerocheck + lincheck reduction ([`prove_reduction`] / [`verify_reduction`])
-/// and later discharged by the PCS. Re-exported from `flock_prover`.
+/// and later discharged by the PCS. Re-exported from [`flock::proof`].
 pub use flock::proof::ZClaim;
 
 /// flock flags for a single 64-byte root block: `CHUNK_START(1) | CHUNK_END(2) |
@@ -202,10 +204,8 @@ pub fn warm_setup(n_blocks: usize) {
 /// matrices and shape parameters ([`family_digest`] on the R1CS), independent
 /// of the instance count. The full instance is block-diagonal — the count is
 /// announced and absorbed with the other sizes — so a transcript seeded with
-/// this digest (via [`crate::cpu::fs_seed`]) binds the whole statement,
-/// replacing flock's old mid-protocol `bind_statement` (whose commitment-root
-/// absorb was already redundant: the root binds right after the announced
-/// sizes).
+/// this digest (via [`crate::cpu::fs_seed`]) binds the whole statement up
+/// front.
 pub fn family_digest() -> [u8; 32] {
     static DIGEST: std::sync::OnceLock<[u8; 32]> = std::sync::OnceLock::new();
     *DIGEST.get_or_init(|| {
@@ -221,8 +221,8 @@ pub fn family_digest() -> [u8; 32] {
 /// and `c` (`C`, zerocheck) — along with the regenerated packed witness. The
 /// sub-proof scalars ride the shared transcript stream (`ps.add_scalar` at the
 /// protocol points). Does NOT open the PCS: the caller discharges the returned
-/// claims (see [`prove_validity_stacked`]). This is the clean seam the PCS
-/// builds on.
+/// claims via [`crate::pcs::open`] (as [`crate::cpu`]'s prove does). This is
+/// the clean seam the PCS builds on.
 pub fn prove_reduction(
     blocks: &[Compression],
     commitment: &Commitment,
@@ -308,7 +308,8 @@ pub fn ring_switch_verify<'a>(
 /// 2. the PCS: one stacked Ligerito discharging those claims together with the
 ///    caller's `stack_pd` point claims.
 #[allow(clippy::too_many_arguments)]
-pub fn prove_validity_stacked(
+#[cfg(test)]
+pub(crate) fn prove_validity_stacked(
     blocks: &[Compression],
     stack: &[F128],
     stack_offset: usize,
@@ -326,7 +327,8 @@ pub fn prove_validity_stacked(
 /// verify the SINGLE stacked Ligerito against `commitment` on the shared
 /// transcript. `stack_pd` are all of leanVM's point claims (bus / constraint /
 /// public-input / binding) folded into the same opening.
-pub fn verify_validity_stacked(
+#[cfg(test)]
+pub(crate) fn verify_validity_stacked(
     n_blocks: usize,
     commitment: &Commitment,
     stack_offset: usize,

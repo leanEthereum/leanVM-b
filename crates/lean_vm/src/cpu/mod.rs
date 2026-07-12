@@ -178,7 +178,7 @@ pub struct Program {
     pub(crate) digest: [F128; 2],
     /// Prover-side frame/buffer allocation hints (keyed by global pc) and the
     /// size of `main`'s frame — the nondeterminism [`Program::execute`] needs to
-    /// run the program. Public verification (\S `verify`) ignores them.
+    /// run the program. Public verification (§ `verify`) ignores them.
     pub(crate) hints: HashMap<u32, Vec<hints::RHint>>,
     pub(crate) main_frame: u32,
     /// Named prover witness streams for the program's `hint_witness` calls
@@ -446,10 +446,6 @@ fn bind_pi_claim(r: F128, placements: &[witness::Placement], pi: &[F128; 2]) -> 
     }
 }
 
-/// Verify a proof against the public statement (program + public input): replay
-/// the transcript, reconstruct the public layout from the announced sizes, read
-/// every scalar the prover wrote and pull the PCS hints, then assert the stream
-/// was fully consumed. Takes only public inputs — never the prover's witness.
 /// Everything a recursion harness needs from an accepting verify run, named
 /// and typed: the deferred bytecode claims, the count-channel root, the sponge
 /// states at the phase boundaries (guest debug checkpoints), flock's reduction
@@ -467,6 +463,10 @@ pub struct VerifySummary {
     pub opening: pcs::StackedOpeningSummary,
 }
 
+/// Verify a proof against the public statement (program + public input): replay
+/// the transcript, reconstruct the public layout from the announced sizes, read
+/// every scalar the prover wrote and pull the PCS hints, then assert the stream
+/// was fully consumed. Takes only public inputs — never the prover's witness.
 pub fn verify(
     program: &Program,
     public_input: &[F128; 2],
@@ -573,9 +573,10 @@ mod tests {
 
     /// A hand-built straight-line program exercising the `BLAKE3` table: set up
     /// the two 256-bit inputs (`a` at cells 2,3 and `b` at cells 4,5), hash them
-    /// into the output `c` (cells 6,7), and halt at the sentinel. The compression
-    /// is unproven, but the memory / state / bytecode bus interactions must still
-    /// balance, so this proves and verifies end-to-end.
+    /// into the output `c` (cells 6,7), and halt at the sentinel. The flock
+    /// validity sub-proof plus the memory / state / bytecode bus interactions
+    /// are verified end-to-end (the proof carries the Ligerito opening they
+    /// assert on).
     #[test]
     fn blake3_proves_and_verifies() {
         let x0 = F128::new(0x0123_4567_89ab_cdef, 0xfedc_ba98_7654_3210);

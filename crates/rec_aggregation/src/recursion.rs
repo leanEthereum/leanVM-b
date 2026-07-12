@@ -1,4 +1,4 @@
-//! End-to-end N→1 recursion: one guest program (`tests/verify_recursive.py`)
+//! End-to-end N→1 recursion: one guest program (`guests/verify_recursive.py`)
 //! replays `cpu::verify` for NSUB proofs of a fixed inner program, batches
 //! their deferred claims with the two aggregation sumchecks, and binds the sub
 //! statements + the three reduced claims (stacked bytecode, A0, B0) to its own
@@ -16,7 +16,7 @@
 
 use std::collections::BTreeMap;
 
-use pcs::ligerito::ceil_log2 as log2_ceil; // external API, aliased to our naming
+use pcs::ligerito::log2_ceil;
 use lean_compiler::{compile, parse, parse_file_with_replacements};
 use lean_vm::cpu::{Program, prove, verify};
 use primitives::field::{g_pow, F128, G};
@@ -447,7 +447,7 @@ fn check_reduced(program: &Program, proof0: &lean_vm::cpu::Proof, pi0: [F128; 2]
     assert_eq!(direct(mb), red.v_b, "reduced B claim");
 }
 
-/// Config + hints for the recursion guest (`tests/verify_recursive.py`), built
+/// Config + hints for the recursion guest (`guests/verify_recursive.py`), built
 /// from the REAL `cpu::layout` of the inner program and the transcript trace of
 /// a real `cpu::verify` run (zero hand-mirroring drift).
 fn gen_verify(
@@ -544,13 +544,10 @@ fn gen_verify(
 
     // Flock replay data, all named struct fields.
     let n_log_b3 = l.taus[5];
-    let m_r1cs = flock::blake3::K_LOG + n_log_b3;
-    let _n_mlv = m_r1cs - 6;
     let lcrounds = flock::blake3::K_LOG - 6;
     let zcf = [summary.zc_claim.a_eval, summary.zc_claim.b_eval];
     let zc_z = summary.zc_claim.z;
     let zrho = summary.zc_claim.mlv_challenges.clone();
-    let _r_rest = &summary.zc_claim.r_rest;
     // The lincheck rounds and z_partial sit at fixed offsets from the stream's
     // tail: [.. (e1,e_inf) x lcrounds | z_partial (64) | s_hat_v (2 x 128)].
     let ns = proof.stream.len();
@@ -599,7 +596,6 @@ fn gen_verify(
     // query packing: each squeezed word carries 128/depth positions.
     let depth: Vec<usize> = shapes.block_len.iter().map(|b| b.trailing_zeros() as usize).collect();
     let per: Vec<usize> = depth.iter().map(|&d| 128 / d).collect();
-    let nsq: Vec<usize> = (0..nlev).map(|i| queries[i].div_ceil(per[i])).collect();
     let fgb = |lvl: usize| vcfg.fold_grinding_bits.get(lvl).copied().unwrap_or(0) as i64;
 
     let lig_raw = summary.opening.lig.query_squeezes.clone();
@@ -666,24 +662,6 @@ fn gen_verify(
     let lig = &proof.openings[0];
     let numinter: Vec<usize> = klvl.iter().map(|&k| 1usize << k).collect();
     let lenris: usize = klvl.iter().sum();
-    let prefix_sum2 = |f: &dyn Fn(usize) -> usize| -> Vec<usize> {
-        let mut o = Vec::with_capacity(nlev);
-        let mut acc = 0;
-        for lv in 0..nlev {
-            o.push(acc);
-            acc += f(lv);
-        }
-        o
-    };
-    let _rowoff = prefix_sum2(&|lv| queries[lv] * numinter[lv]);
-    let _pathoff = prefix_sum2(&|lv| queries[lv] * depth[lv] * 2);
-    let _sbitsoff = prefix_sum2(&|lv| nsq[lv] * 128);
-    let _qpoff = prefix_sum2(&|lv| nsq[lv] * per[lv]);
-    let _qp_len: usize = (0..nlev).map(|lv| nsq[lv] * per[lv]).sum();
-    let _svkoff = prefix_sum2(&|lv| lmc[lv] + 1);
-    let foldbase = prefix_sum2(&|lv| klvl[lv]);
-    let _risstart: Vec<usize> = (0..nlev).map(|k| foldbase[k] + klvl[k]).collect();
-    let _total_folds: usize = klvl.iter().sum();
     // positions per level from the packed squeezes.
     let positions: Vec<Vec<usize>> = (0..nlev)
         .map(|lv| {
@@ -976,8 +954,8 @@ fn build_batch(inner: &[(usize, usize)]) -> Batch {
 /// generic guest is compiled from), built from the inner program's STRUCTURE and
 /// bytecode SIZE alone — no proof. Dummy layout sizes are fine: `rep` reads only the
 /// size-independent block/coord structure and `kbc = log2(bytecode)`, so the guest
-/// can be compiled BEFORE any inner proof exists. `run_recursion` asserts every real
-/// sub reproduces this identical map, and `gen_verify` re-derives the same thing.
+/// can be compiled BEFORE any inner proof exists. Because the map is a function of
+/// the inner bytecode size alone, one compiled guest serves every shape.
 #[allow(clippy::type_complexity)]
 fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     // Any valid sizes drive the layout — rep depends only on structure + kbc.
@@ -1348,8 +1326,8 @@ fn recursion_2to1() {
 }
 
 /// THE genericity milestone: ONE compiled guest bytecode verifies two inner
-/// proofs of DIFFERENT sizes in the same aggregation (the per-sub
-/// placeholder maps are asserted identical in run_recursion).
+/// proofs of DIFFERENT sizes in the same aggregation (the placeholder map
+/// depends only on the inner bytecode size, so one map covers both shapes).
 #[test]
 fn recursion_2to1_mixed() {
     run_recursion(&[(4, 1 << 13), (64, 1 << 15)]);
@@ -1360,9 +1338,9 @@ fn recursion_2to1_mixed() {
 /// committed sizes (m in {22,23,24,25} - four distinct match_range opening
 /// arms) and four BLAKE3 log-instance-counts (tau_5 in {3,4,5,6} - different
 /// r1cs statement digests, flock reduction sizes, and pin prefixes). The
-/// guest is compiled ONCE from the first shape's placeholder map; every later
-/// shape must produce the IDENTICAL map (asserted) and is verified on the
-/// same Program object. Ignored: ~6 full inner+outer proofs, minutes.
+/// guest is compiled ONCE from the placeholder map, which is a function of the
+/// inner bytecode size alone, so every shape is verified on the same Program
+/// object. Ignored: ~6 full inner+outer proofs, minutes.
 #[test]
 #[ignore]
 fn recursion_soundness_binds() {

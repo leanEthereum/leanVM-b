@@ -24,7 +24,7 @@ pub mod ntt;
 pub mod pack;
 pub mod ring_switch;
 
-pub use commit::{Commitment, PcsParams, ProverData, commit, commit_into};
+pub use commit::{Commitment, PcsParams, ProverData, commit};
 pub use pack::{LOG_PACKING, PaddingSpec, pack_witness};
 
 /// The transcript states, concretized with this crate's opening type: the one
@@ -104,8 +104,8 @@ fn compute_combined_basis_and_target(
     // Deferred-dense claims (fused fast path): the per-claim `γ_k·B_k` buffer
     // was never materialized — fold each slot on the fly below and accumulate
     // straight into `b_combined`, saving a 2^(m-7) materialize + readback per
-    // claim. Carries (eq_lo, eq_hi, γ-baked table, log₂ B).
-    // (eq_lo, eq_hi, γ-baked byte table, log₂ block) per deferred claim.
+    // claim. Carries (eq_lo, eq_hi, γ-baked byte table, log₂ block) per
+    // deferred claim.
     type DeferredFold<'a> = (&'a [F128], &'a [F128], &'a [F128], usize);
     let rs_deferred: Vec<DeferredFold> = rs_results
         .iter()
@@ -203,16 +203,6 @@ fn compute_combined_basis_and_target(
 }
 
 // ===== leanVM-b stacked opener (grafted) =====
-/// Open ring-switched claims AND full-stack point claims in ONE BaseFold, when
-/// the committed witness is a larger STACK whose aligned sub-block
-/// `[stack_offset, stack_offset + qpkd.len())` is `qpkd` (the leanVM-b single-PCS
-/// integration: `qpkd` is flock's packed BLAKE3 witness, committed inside
-/// leanVM's one stacked commitment). The ring-switch combined weight is computed
-/// over `qpkd` and LIFTED into the stack domain; each `stack_pd = (point, value)`
-/// is a plain multilinear evaluation of the WHOLE stack (leanVM's bus /
-/// constraint / binding / pinning claims). All are γ-folded into one weight and
-/// the single BaseFold runs over `stack` (`a_init`). `stack_offset` must be a
-/// multiple of `qpkd.len()`.
 /// A point claim folded into the stacked mixed opening ([`open_batch_mixed_ligerito_stacked`]).
 /// Either a **block-sparse** slot claim — weight `eq(low_point,·)` supported on the
 /// aligned sub-block `[offset, offset + 2^low_point.len())`, so the opener builds
@@ -248,9 +238,9 @@ impl StackClaim<'_> {
 
 /// Fold the γ-weighted point claims into the lifted stack weight `b_stack` and
 /// running `target` (pure — the caller has already observed the claim values and
-/// sampled `gammas_pd` in transcript order). Shared by the BaseFold and Ligerito
-/// stacked openers, so both produce the identical `⟨stack, b_stack⟩ = target`
-/// inner-product claim.
+/// sampled `gammas_pd` in transcript order). Factored out of
+/// [`open_batch_mixed_ligerito_stacked`]; produces the
+/// `⟨stack, b_stack⟩ = target` inner-product claim.
 fn fold_stacked_point_claims(b_stack: &mut [F128], target: &mut F128, stack_pd: &[StackClaim], gammas_pd: &[F128]) {
     use rayon::prelude::*;
     // `build_eq` and `build_eq_parallel` produce the identical table and serial
@@ -311,8 +301,8 @@ fn fold_stacked_point_claims(b_stack: &mut [F128], target: &mut F128, stack_pd: 
 /// The claim's weight `eq(full claim point, x)` at an arbitrary point `x` of the
 /// full stack cube — a `Slot`'s full point is `[low_point, selector_bits]`, a
 /// `StridedSlot`'s is `[slot_bits, point, selector_bits]`; neither is
-/// materialized. Shared by the BaseFold verifier (at the folding challenges) and
-/// the Ligerito verifier (at the residual points).
+/// materialized. Used by the Ligerito verifier's residual evaluator (at the
+/// residual points).
 fn stack_claim_eq_at(claim: &StackClaim, x: &[F128]) -> F128 {
     match claim {
         StackClaim::Slot { offset, low_point, .. } => {
@@ -342,10 +332,10 @@ fn stack_claim_eq_at(claim: &StackClaim, x: &[F128]) -> F128 {
 }
 
 
-/// **Ligerito**-backend counterpart of [`open_batch_mixed_ligerito_stacked`]: the identical
-/// ring-switch combine + lifted `b_stack` build (same transcript order, same
-/// `⟨stack, b_stack⟩ = target` inner-product claim), discharged by the Ligerito
-/// multilevel prover instead of BaseFold, reusing the caller's commit as L0.
+/// Open ring-switched claims and full-stack point claims in ONE Ligerito
+/// opening: ring-switch combine + lifted `b_stack` build, γ-folded into a
+/// single `⟨stack, b_stack⟩ = target` inner-product claim discharged by the
+/// Ligerito multilevel prover, reusing the caller's commit as L0.
 /// `lig_config.initial_k` / `log_inv_rates[0]` must match the commit's params.
 #[allow(clippy::too_many_arguments)]
 pub fn open_batch_mixed_ligerito_stacked(
@@ -394,13 +384,6 @@ pub fn open_batch_mixed_ligerito_stacked(
     )
 }
 
-/// Verifier mirror of [`open_batch_mixed_ligerito_stacked`]: replay the
-/// ring-switch reduction + γ-folds exactly as the BaseFold stacked verifier does,
-/// then drive the SUCCINCT Ligerito verifier with a residual evaluator for the
-/// lifted weight — at each residual point `x = ris ++ y_bits`,
-/// `b(x) = eq(sel, x_hi)·Σ γ_rs·rs_eq(x_lo) + Σ γ_pd·eq(claim, x)` (the same
-/// formula the BaseFold path checks once at its folding point).
-#[allow(clippy::too_many_arguments)]
 /// What the stacked opening verifier hands back on accept: the ring-switch
 /// batching challenges and the Ligerito fold/query data — everything a
 /// recursion harness needs, named and typed.
@@ -411,6 +394,11 @@ pub struct StackedOpeningSummary {
     pub lig: ligerito::LigVerifierSummary,
 }
 
+/// Verifier mirror of [`open_batch_mixed_ligerito_stacked`]: replay the
+/// ring-switch reduction + γ-folds in the prover's transcript order, then
+/// drive the SUCCINCT Ligerito verifier with a residual evaluator for the
+/// lifted weight: at each residual point `x = ris ++ y_bits`,
+/// `b(x) = eq(sel, x_hi)·Σ γ_rs·rs_eq(x_lo) + Σ γ_pd·eq(claim, x)`.
 pub fn verify_opening_batch_mixed_ligerito_stacked(
     stack_commitment: &Commitment,
     stack_offset: usize,

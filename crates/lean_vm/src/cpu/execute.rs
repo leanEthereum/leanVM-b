@@ -506,9 +506,10 @@ impl Program {
                     let vb0 = get(&mem, &written, ab0);
                     let vb1 = get(&mem, &written, ab1);
                     // Compress the 64 input bytes to the 32-byte digest, then write
-                    // it to c's two words. The relation is unproven (no constraint),
-                    // but the prover still computes a definite digest so the output
-                    // cells are consistent for any later read.
+                    // it to c's two words. No table constraint covers the digest (the
+                    // relation is proven by flock, §blake3_flock); the interpreter
+                    // still computes the definite digest so the output cells are
+                    // consistent for any later read.
                     let (vc0, vc1) = blake3_compress(va0, va1, vb0, vb1);
                     put(&mut mem, &mut written, &mut mem_count, ac, vc0);
                     put(&mut mem, &mut written, &mut mem_count, ac + 1, vc1);

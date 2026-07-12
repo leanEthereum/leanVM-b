@@ -514,7 +514,7 @@ and ends in the reduced claims $\widetilde A_0(r^\ast)$ and $\widetilde B_0(r^\a
 
 \section{ISA programming}\label{sec:isa-programming}
 
-How the zkDSL compiler (\texttt{src/compiler.rs}; surface language in \texttt{zkDSL.md}) programs the six-instruction ISA. Two themes run through every pattern: \emph{write-once memory is an assertion mechanism} (a second write of a cell is an equality check, an unwritten cell is prover-chosen), and \emph{indices live in the exponent} (a logical index $i$ is the element $\gen^{i}$, so incrementing, offsetting, and address formation are single field multiplications).
+How the zkDSL compiler (\texttt{crates/lean\_compiler}; surface language in \texttt{crates/lean\_compiler/zkDSL.md}) programs the six-instruction ISA. Two themes run through every pattern: \emph{write-once memory is an assertion mechanism} (a second write of a cell is an equality check, an unwritten cell is prover-chosen), and \emph{indices live in the exponent} (a logical index $i$ is the element $\gen^{i}$, so incrementing, offsetting, and address formation are single field multiplications).
 
 \subsection{Hints}\label{sec:prog-hints}
 

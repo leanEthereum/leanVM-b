@@ -24,7 +24,8 @@ pub fn log2_ceil_usize(n: usize) -> usize {
 /// Caller MUST write every slot before reading it.
 ///
 /// Used to skip the eager zero-init of large ping-pong buffers in hot prover
-/// paths (basefold, Round-2 fold, NTT scratch, lincheck packing). At m=29 the
+/// paths (Ligerito codeword + Merkle tree, zerocheck Round-2 fold, NTT
+/// scratch, lincheck packing). At m=29 the
 /// zero-fill of a fresh 128 MB `vec![T::default(); n]` runs sequentially on
 /// the main thread (~22 ms), which caps the parallel speedup of those phases.
 ///

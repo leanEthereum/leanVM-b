@@ -332,12 +332,13 @@ fn default_surplus(blocks: &[Block], pad: &[F128], alpha: F128, gamma: F128) -> 
 
 /// One reduced claim on the bytecode polynomial. The six public encoding
 /// columns (op, o1, o2, o3, fpc, ffp) stacked along three selector bits form
-/// ONE multilinear polynomial B̃ in `κ_bc + 3` variables; after the three
-/// decompositions both parties absorb the twelve per-column evaluations,
-/// sample three selector challenges `s`, and reduce each bus side's six
-/// values to `B̃(ζ_side_lo, s) = Σ_c eq(s, c)·v_c`. Natively the claim is
+/// ONE multilinear polynomial B̃ in `κ_bc + 3` variables; after the
+/// decompositions both parties absorb the six per-column evaluations (push and
+/// pull share the GKR point ζ, so the columns are evaluated once), sample
+/// three selector challenges `s`, and reduce the six values to
+/// `B̃(ζ_lo, s) = Σ_c eq(s, c)·v_c`. Natively the claim is
 /// true by construction (the verifier evaluated the columns itself); a
-/// recursive verifier defers exactly these two claims to its public input.
+/// recursive verifier defers exactly this one claim to its public input.
 #[derive(Clone, Debug)]
 pub struct BytecodeClaim {
     /// `ζ_side_lo ++ s` — a point in `κ_bc + 3` variables.
@@ -460,8 +461,9 @@ pub fn prove_balance(
     (claims, bytecode_claims)
 }
 
-/// What [`verify_balance`] establishes: the per-column claims to open, the two
-/// reduced bytecode claims, and the count-channel root (nonzero; recursion
+/// What [`verify_balance`] establishes: the per-column claims to open, the
+/// reduced bytecode claim (a one-element vec in practice: push and pull share
+/// ζ), and the count-channel root (nonzero; recursion
 /// guests prove that via a hinted inverse).
 pub struct BusVerify {
     pub claims: Vec<ColumnClaim>,

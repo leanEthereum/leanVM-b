@@ -120,14 +120,6 @@ impl<O> ProverState<O> {
         self.stream.push(F128::new(nonce, 0));
     }
 
-
-    /// Prover mirror of [`VerifierState::observe_scalars`].
-    pub fn observe_scalars(&mut self, xs: &[F128]) {
-        for &x in xs {
-            self.sponge.observe(x);
-        }
-    }
-
     /// Absorb a byte string (a sub-protocol label, a Merkle root) — data both
     /// sides know or that is bound elsewhere, never transmitted here.
     pub fn absorb_bytes(&mut self, bytes: &[u8]) {
@@ -248,13 +240,6 @@ impl<'a, O> VerifierState<'a, O> {
     /// phase-boundary states as guest debug checkpoints).
     pub fn sponge_state(&self) -> [F128; 2] {
         self.sponge.state()
-    }
-
-    /// Absorb derived values in bulk (mirror of [`ProverState::observe_scalars`]).
-    pub fn observe_scalars(&mut self, xs: &[F128]) {
-        for &x in xs {
-            self.sponge.observe(x);
-        }
     }
 
     /// Absorb a byte string (a sub-protocol label, a Merkle root) — mirror of

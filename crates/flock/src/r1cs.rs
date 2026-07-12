@@ -19,28 +19,13 @@ pub struct SparseBinaryMatrix {
 }
 
 /// Memory/variable layout of the committed witness (address bit `i` of the
-/// packed buffer = MLE variable `i`).
-///
-/// - **RowMajor** (legacy): `addr = [k_log inner bits | n_log batch bits]` —
-///   each instance is one contiguous `2^k_log`-bit block.
-/// - **BatchMajor**: `addr = [7 in-word bits | n_log batch | k_log−7 chunk]`
-///   — column-major at 128-bit chunk granularity. The sumcheck binds the
-///   batch dims right after the univariate skip + one in-word round (the
-///   fold-log_n-first order required for jagged multi-table composition),
-///   the batch dims live over the ring-switch suffix (packed words), and
-///   per-block zero padding coalesces into one contiguous buffer suffix.
-///
-/// Convention for **`ZClaim` points under BatchMajor**: `x_inner_rest`
-/// holds only the address-dim-6 coordinate and `x_outer` holds
-/// `[batch…, chunk…]`, so the PCS-side concatenation
-/// `x_inner_rest ++ x_outer` yields the address-ordered suffix for the
-/// committed polynomial. (Lincheck's *semantic* `QuirkyPoint` is unchanged
-/// in both layouts.) Requires `k_log ≥ 7` and `k_skip = 6`.
+/// packed buffer = MLE variable `i`): `addr = [k_log inner bits | n_log batch
+/// bits]`, each instance one contiguous `2^k_log`-bit block. A one-variant
+/// enum so the layout byte stays an explicit part of [`BlockR1cs::family_digest`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum WitnessLayout {
     #[default]
     RowMajor,
-    BatchMajor,
 }
 
 /// Block-diagonal R1CS instance.
@@ -67,15 +52,12 @@ pub struct BlockR1cs {
     pub b_0: SparseBinaryMatrix,
     pub c_0: SparseBinaryMatrix,
     /// Memory/variable layout of the committed witness (see [`WitnessLayout`]).
-    /// Bound into [`Self::statement_digest`]; the prover and verifier derive
-    /// their claim-point assembly from it.
+    /// Bound into [`Self::family_digest`].
     pub layout: WitnessLayout,
     /// Column of a constant-one wire to pin to 1 across all blocks, or `None`.
-    /// Drives the lincheck constant-wire pin for matrix-based encoders whose
-    /// circuit is built from these matrices (BLAKE3, SHA-2 via
-    /// [`Self::csc_lincheck_circuit`]). Walker-based encoders (Keccak) set this
-    /// `None` and carry the pin on their own `LincheckCircuit`. See
-    /// `docs/const-wire-pin.md`.
+    /// Drives the lincheck constant-wire pin (see
+    /// [`crate::lincheck::LincheckCircuit::const_pin_col`]): without it, the
+    /// all-zero witness satisfies every homogeneous constraint row.
     pub const_pin: Option<usize>,
     /// Lazily-cached CSC transpose of `(a_0, b_0)` for lincheck's
     /// `fold_alpha_batched` — see [`Self::csc_lincheck_circuit`]. The matrices
@@ -118,9 +100,7 @@ impl BlockR1cs {
     /// the fastest `fold_alpha_batched` when `a_0`/`b_0` are materialized
     /// (gather per column instead of scatter per row). Built lazily on first
     /// access and cached; call once at setup to keep the build cost (one pass
-    /// over the nonzeros) out of the prove path. NOT meaningful for setups
-    /// whose `BlockR1cs` carries empty matrix stubs (e.g. Keccak) — those
-    /// must keep their circuit walkers.
+    /// over the nonzeros) out of the prove path.
     pub fn csc_lincheck_circuit(&self) -> &crate::lincheck::CscCircuit {
         self.csc_cache.get_or_init(|| {
             crate::lincheck::CscCircuit::from_matrices(&self.a_0, &self.b_0)
@@ -156,28 +136,12 @@ impl BlockR1cs {
             .all(|((ai, bi), ci)| (*ai & *bi) == *ci)
     }
 
-    // -----------------------------------------------------------------------
-    // Packed variants: operate on F_{2^128}-packed witnesses (polynomial-basis
-    // bit layout: bit r of z_packed[i] = logical bit i·128 + r). This is the
-    // canonical witness form throughout the protocol.
-    // -----------------------------------------------------------------------
-
-    // -----------------------------------------------------------------------
-    // Layout-aware protocol bookkeeping — the single source of truth for how
-    // the zerocheck's address-ordered challenges map to lincheck's semantic
-    // quirky point and to the PCS claims' address-ordered points. Shared by
-    // `flock_prover::prover::prove_fast_core` and `verifier::verify_core`
-    // (any divergence between the two is a transcript break, so both call
-    // these).
-    // -----------------------------------------------------------------------
-
     /// BLAKE3 hash of the circuit FAMILY: the per-block matrices and the
     /// shape parameters, explicitly WITHOUT the instance count `m`. The full
     /// instance is block-diagonal — `m` copies of these matrices — so a
     /// protocol that binds this digest and `m` separately has bound the whole
     /// statement; embedding protocols (leanVM-b) seed their transcript with it
-    /// and announce the count, instead of absorbing the per-instance
-    /// [`Self::statement_digest`] mid-proof.
+    /// and announce the count.
     pub fn family_digest(&self) -> [u8; 32] {
         let mut h = blake3::Hasher::new();
         h.update(b"flock-r1cs-family-v1");
@@ -187,7 +151,6 @@ impl BlockR1cs {
         // to — it is part of the statement.
         h.update(&[match self.layout {
             WitnessLayout::RowMajor => 0u8,
-            WitnessLayout::BatchMajor => 1u8,
         }]);
         absorb_matrix(&mut h, &self.a_0);
         absorb_matrix(&mut h, &self.b_0);

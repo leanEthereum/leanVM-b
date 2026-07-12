@@ -19,7 +19,7 @@ from snark_lib import *
 # Config-driven by placeholder constants the harness computes from the REAL
 # `cpu::layout` and the transcript trace of a native verify run; all per-proof
 # data (streams, sub statements, level roots, fold nonces)
-# arrives as hints (`tests/recursion_e2e.rs::gen_verify`).
+# arrives as hints (`src/recursion.rs::gen_verify`).
 #
 # SOUNDNESS: every hint is untrusted prover input; each is bound one of five
 # ways, and nothing else enters the computation:

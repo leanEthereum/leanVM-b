@@ -14,9 +14,6 @@ pub fn run_fibonacci(n: usize) {
     let (src, pi) = fibonacci_program(n);
     let program = compile(&parse(&src).unwrap());
 
-    // println!("SOURCE\n\n{src}\n");
-    // println!("COMPILED\n\n{program}\n");
-
     // Warm the flock BLAKE3 R1CS setup once up front (Fibonacci runs no BLAKE3, so
     // this warms the single padding instance). It is a fixed, one-time,
     // program-independent circuit build — not part of proving — so timing prove/

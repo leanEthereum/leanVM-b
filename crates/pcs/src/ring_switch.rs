@@ -29,7 +29,7 @@
 //!
 //! Resolution: replace the verifier's claim check with **direct** Lagrange
 //! weights (computed via [`lagrange_weights_naive`]); every other component of
-//! the reduction (`s_hat_v`, `s_hat_u`, BaseFold target `T`, `rs_eq_ind`) is
+//! the reduction (`s_hat_v`, `s_hat_u`, the sumcheck target `T`, `rs_eq_ind`) is
 //! independent of the prefix and stays identical to Binius.
 //!
 //! ## Prover vs. verifier paths for `rs_eq_ind`
@@ -154,7 +154,7 @@ pub fn build_claim_weights(z_skip: F128, x_outer_0: F128) -> Vec<F128> {
     weights
 }
 
-/// Padding-aware variant of [`fold_1b_rows_multi`]. Routes the k=2 MFR fast
+/// Padding-aware multi-claim fold. Routes the k=2 MFR fast
 /// paths through their `_padded` kernels; the scalar bit-scan fallback (k ≠ 2
 /// or non-divisible len) is untouched — those `m` are tiny anyway.
 pub fn fold_1b_rows_multi_padded(
@@ -338,18 +338,16 @@ fn subset_sums_4(elems: [F128; 4]) -> [F128; 16] {
     // After processing elem[i], sums[0..2^(i+1)] are populated with the
     // subset sums over elems[0..=i].
     for (i, &e) in elems.iter().enumerate() {
-        let span_log = i + 1;
         let half = 1 << i;
         // sums[half..2*half] = sums[0..half] + e
         for k in 0..half {
             sums[half + k] = sums[k] + e;
         }
-        let _ = span_log;
     }
     sums
 }
 
-/// Padding-aware variant of [`fold_1b_rows_2way_mfr`]. Skips chunks of 4
+/// Padding-aware fused 2-claim MFR fold. Skips chunks of 4
 /// F128s that fall entirely in the zero padding of every block.
 pub fn fold_1b_rows_2way_mfr_padded(
     packed_witness: &[F128],
@@ -471,7 +469,7 @@ pub fn fold_1b_rows_2way_mfr_padded(
     (pair.0, pair.1)
 }
 
-/// Padding-aware variant of [`fold_1b_rows_2way_mfr_8wide`]. Skips chunks of
+/// Padding-aware fused 2-claim 8-wide MFR fold. Skips chunks of
 /// 8 F128s that fall entirely in the zero padding of every block — those
 /// chunks contribute nothing (witness bytes = 0 → subset-sum mask = 0 →
 /// `lookup[0] = 0`).
@@ -1171,6 +1169,7 @@ fn eval_rs_eq_linearized(z_vals: &[F128], query: &[F128], c: &[F128; 128]) -> F1
     acc
 }
 
+/// Standard inner product `Σ_i a[i] · b[i]` over F_{2^128}.
 pub fn inner_product(a: &[F128], b: &[F128]) -> F128 {
     assert_eq!(a.len(), b.len());
     let mut acc = F128::ZERO;
@@ -1192,7 +1191,7 @@ pub fn inner_product(a: &[F128], b: &[F128]) -> F128 {
 ///
 /// Used in the DP24 ring-switching: after computing `s_hat_v` (slice MLEs at
 /// the suffix point), `s_hat_u = transpose(s_hat_v)` is the data viewed with
-/// the "vertical" and "horizontal" dimensions swapped. The BaseFold target is
+/// the "vertical" and "horizontal" dimensions swapped. The opening-sumcheck target is
 /// `T = ⟨s_hat_u, eq_ind(r'')⟩`.
 ///
 /// Naive O(128²) bit-extract implementation. NEON acceleration via bit
@@ -1233,7 +1232,7 @@ pub fn tensor_algebra_transpose(s_hat_v: &[F128]) -> Vec<F128> {
 /// Each `suffix_tensor[i_rest] ∈ F_{2^128}` is treated as 128 F_2-bits in the
 /// polynomial basis; the inner product with `eq_r_dprime` (length 128) produces
 /// one F_{2^128} value per suffix position. This is the transparent multilinear
-/// the BaseFold protocol runs its sumcheck against.
+/// the opening runs its sumcheck against.
 ///
 /// O(128 · 2^L) parallelized across positions via rayon. Output positions are
 /// independent — direct `par_iter` + `collect`.
@@ -1580,9 +1579,8 @@ pub fn fold_1b_rows_sparse(packed_witness: &[F128], eq: &SparseEqTensor) -> Vec<
     // blake3 m=29** (~2.5 ms slower at chain proof level) and roughly break-
     // even on keccak. The subset-sum + transpose overhead doesn't amortize
     // over only 4 entries per group when packed_witness reads are scattered
-    // (stride 128 = 2 KB jumps defeat the prefetcher). Kept the MFR helper +
-    // detector in this module — they may be useful for future protocols with
-    // a larger block_size (≥ 16) — but the dispatch is reverted to scalar.
+    // (stride 128 = 2 KB jumps defeat the prefetcher), so the dispatch is
+    // scalar.
     fold_1b_rows_sparse_scalar(packed_witness, eq)
 }
 
@@ -1597,7 +1595,7 @@ fn fold_1b_rows_sparse_scalar(packed_witness: &[F128], eq: &SparseEqTensor) -> V
         .par_iter()
         .enumerate()
         .fold(zero_acc, |mut acc, (c, &val)| {
-            // Scatter compact c → original index via the per-byte LUT (inlined).
+            // Scatter compact c → original index (inlined bit-deposit).
             let idx = eq.scatter_idx(c);
             let elem = packed_witness[idx];
             let mut lo = elem.lo;
@@ -1667,12 +1665,10 @@ pub fn fold_b128_elems_sparse_pairs(
 // (No RingSwitchProof struct: the prover message — `s_hat_v`, the 128
 // slice-MLEs at the suffix point — rides the shared transcript stream.)
 
-/// Per-claim output of [`prove_batched`]. Mirrors [`RingSwitchOutput`] but lets
-/// the prover skip the dense `2^(m-7)` `rs_eq_ind` allocation for claims whose
-/// suffix tensor is sparse (e.g. the hash-chain claim). Verifier-side
-/// (`ring_switch::verify` + `pcs::verify_opening_batch`) still consumes the
-/// dense [`RingSwitchOutput`].
-#[derive(Clone, Debug)]
+/// Per-claim output of [`prove_batched_padded_with_precomputed`]: the claim's
+/// `rs_eq_ind` weight (dense, deferred-dense, or sparse) and its sumcheck
+/// claim. The verifier recomputes the claim via [`verify_bind`] inside the
+/// stacked verifier (`pcs::verify_opening_batch_mixed_ligerito_stacked`).
 pub struct RingSwitchBatchOutput {
     /// For dense claims this is `γ_k · B_k` — γ is baked into the byte
     /// table during the fold inside `prove_batched_padded_with_precomputed`,
@@ -1748,7 +1744,7 @@ pub enum VerifyError {
     Transcript(fiat_shamir::transcript::Error),
 }
 
-/// Variant of [`prove_batched_padded`] that accepts an optional precomputed
+/// THE batched ring-switching prover. Accepts an optional precomputed
 /// `s_hat_v` per claim. When `precomputed_s_hat_v[i] = Some(v)` for claim `i`,
 /// the prover skips that claim's `fold_1b_rows` work and uses `v` directly as
 /// `s_hat_v` for the per-opening tail (sumcheck_claim, rs_eq_ind, transcript
@@ -1761,7 +1757,7 @@ pub enum VerifyError {
 /// `precomputed_s_hat_v` must be `&[]` (no precomputes) or have length equal
 /// to `x_outers.len()`. Each precomputed slice must be length `2^LOG_PACKING`.
 ///
-/// Output is **byte-identical** to [`prove_batched_padded`] when the precomputed
+/// Output is **byte-identical** to the no-precompute path when the precomputed
 /// `s_hat_v` is honest (matches what `fold_1b_rows` would produce). Transcript
 /// observes the same bytes in the same order.
 pub fn prove_batched_padded_with_precomputed(
@@ -2033,8 +2029,8 @@ pub fn prove_batched_padded_with_precomputed(
     (results, gammas_rs)
 }
 
-/// Verifier-side output of [`verify_succinct`]: contains everything the caller
-/// needs to drive the BaseFold consistency check, *without* materializing the
+/// Verifier-side output of the ring-switch binding (`verify_bind` plus the shared `r''` sample in the stacked verifier): contains everything the caller
+/// needs to drive the opening's consistency check, *without* materializing the
 /// dense `rs_eq_ind` vector of length `2^(m-7)`.
 #[derive(Clone, Debug)]
 pub struct RingSwitchVerifierOutput {
@@ -2042,11 +2038,11 @@ pub struct RingSwitchVerifierOutput {
     /// The sampled `r''` itself (`LOG_PACKING = 7` coordinates).
     pub r_dprime: Vec<F128>,
     /// `eq` tensor of length `2^LOG_PACKING = 128` derived from the verifier's
-    /// sampled `r''`. Used by [`eval_rs_eq`] at the BaseFold final point.
+    /// sampled `r''`. Used by [`eval_rs_eq`] at the opening's final point.
     pub eq_r_dprime: Vec<F128>,
 }
 
-/// The bind + claim-check phase of [`verify_succinct`], for batch callers
+/// The bind + claim-check phase of the ring-switch verifier, for batch callers
 /// that share one `r''` across claims: absorbs the label and slice, checks
 /// the claim, samples nothing.
 pub fn verify_bind(
@@ -2065,23 +2061,19 @@ pub fn verify_bind(
     Ok(s_hat_v)
 }
 
-/// Polylog-cost evaluation of `MLE(rs_eq_ind)(query)` at the BaseFold final
-/// challenge point, following [DP24] §1.3 Figure 3.
+/// Polylog-cost evaluation of `MLE(rs_eq_ind)(query)` at the opening's final
+/// challenge point (DP24 §1.3, in linearized trace form).
 ///
 /// The dense alternative — `mle_eval(&fold_b128_elems(build_eq(z_vals),
 /// eq_r_dprime), query)` — costs `O(2^|z_vals|)` field operations. This
-/// function costs `O(|z_vals| · 2^{2·LOG_PACKING}) = O(|z_vals| · 16384)`
-/// field operations: a length-128 `TensorAlgebra` element is iteratively
-/// updated by `scale_vertical` / `scale_horizontal` over `|z_vals|`
-/// iterations, then folded against `eq_r_dprime` (length 128).
-///
-/// Ports binius64's `crates/verifier/src/ring_switch.rs::eval_rs_eq`.
+/// function costs `O(|z_vals| · 128)`: the tensor recurrence telescopes to
+/// `Σ_k c_k · Π_j (z_j^{2^k} + 1 + q_j)` with `c = linearized_eq_coeffs(w)`.
 ///
 /// ## Arguments
 ///
-/// * `z_vals` — the suffix-side coords, i.e. `x_outer[1..]` from
-///   [`verify_succinct`]. Length `ℓ' = m − 7`.
-/// * `query` — the BaseFold sumcheck final challenges, length `ℓ'`.
+/// * `z_vals` — the suffix-side coords, i.e. `x_outer[1..]` of the claim.
+///   Length `ℓ' = m − 7`.
+/// * `query` — the opening-sumcheck final challenges, length `ℓ'`.
 /// * `eq_r_dprime` — the `eq` tensor over the sampled `r''`, length 128.
 ///
 /// [DP24]: <https://eprint.iacr.org/2024/504>

@@ -131,21 +131,12 @@ use crate::zerocheck::multilinear::lagrange_weights_naive;
 //   `comb_vec[c] = α · ξ_A(c) + ξ_B(c)`
 //
 // where `ξ_M(c) = Σ_r eq_inner[r] · M[r, c]` is the eq-weighted column
-// marginal of base matrix `M ∈ {A_0, B_0}`. Today's `sparse_row_fold_alpha_batched`
-// computes it by scattering `eq_inner[r]` to every column in row r's nonzero
-// set — cost ∝ NNZ.
+// marginal of base matrix `M ∈ {A_0, B_0}` — cost ∝ NNZ.
 //
-// For circuit-shaped R1CS (Keccak, BLAKE3, SHA-256) the same `comb_vec` can be
-// produced by walking the constraint graph in round order — same operations
-// the witness gen already does, just with eq-weights instead of bit values.
-// Per-hash impls can also avoid materializing matrices entirely (relevant for
-// encodings where intermediate state slots are dropped and substitution would
-// otherwise blow up A/B density).
-//
-// `LincheckCircuit` is the seam: `lincheck::prove`/`verify` take
-// `&dyn LincheckCircuit` instead of a pair of matrices. The default impl
-// `SparseMatrixCircuit` wraps the existing fused sparse kernel so callers
-// that haven't ported get identical behavior.
+// `LincheckCircuit` is the seam: the prover and verifier take
+// `&dyn LincheckCircuit` instead of a pair of matrices. The one live impl is
+// [`CscCircuit`] (the cached column-major transpose of BLAKE3's `(A_0, B_0)`,
+// see `BlockR1cs::csc_lincheck_circuit`).
 
 /// Per-block linear structure consumed by lincheck. Implementations produce
 /// the α-batched column marginal `comb_vec[c] = α · ξ_A(c) + ξ_B(c)` either
@@ -163,8 +154,7 @@ pub trait LincheckCircuit: Sync {
     /// comb so the sumcheck also proves that the committed constant column is the
     /// all-ones vector (whose MLE is the constant `1`), closing the all-zero
     /// witness soundness gap. This REQUIRES the witness to set that wire to `1`
-    /// in *every* batched instance — padding included. See
-    /// `docs/const-wire-pin.md`. Default `None` keeps the transcript unchanged
+    /// in *every* batched instance — padding included. Default `None` keeps the transcript unchanged
     /// for circuits without a constant wire.
     fn const_pin_col(&self) -> Option<usize> {
         None
@@ -248,7 +238,7 @@ impl CscCircuit {
         }
     }
 
-    /// Set the constant-wire pin column (see `docs/const-wire-pin.md`).
+    /// Set the constant-wire pin column (see [`LincheckCircuit::const_pin_col`]).
     pub fn with_const_pin(mut self, const_pin: Option<usize>) -> Self {
         self.const_pin = const_pin;
         self
@@ -578,8 +568,7 @@ unsafe fn process_block_neon_single(
     vst1q_u8(o.add(112), a7);
 }
 
-/// **i_inner-partitioned** NEON partial fold. Same result as
-/// [`partial_fold_packed_z_neon_single_padded`] but parallelizes over the
+/// **i_inner-partitioned** NEON partial fold: parallelizes over the
 /// **output** (`i_inner`) instead of over z stripes.
 ///
 /// Why: the stripe-parallel kernel gives every worker its own full length-`k`
@@ -1148,15 +1137,13 @@ fn sumcheck_bind_both_and_eval_next(
 // API
 // ---------------------------------------------------------------------------
 
-/// Variant of [`prove_padded`] that also returns the **pre-sumcheck** z_vec
+/// Variant of the prover that also returns the **pre-sumcheck** z_vec
 /// (`output[i_inner] = ẑ(i_inner, x_ab.x_outer)`, length `2^k_log`). The
 /// downstream PCS reuses this vector to compute the AB-claim's ring-switch
 /// `s_hat_v` via [`pcs::ring_switch::s_hat_v_from_z_vec`], skipping a
 /// `fold_1b_rows` pass at open time.
 ///
 /// Pays one extra `2^k_log` F128 clone (~2 MB at k_log=17) before the
-/// sumcheck loop; callers that don't need the reuse should keep using
-/// [`prove_padded`] to avoid that clone.
 pub fn prove_padded_capture_z_vec(
     z_packed: &[u8],
     m: usize,
@@ -1245,7 +1232,7 @@ fn prove_padded_inner(
     //     also proves z_vec[j*] = 1 (the all-ones constant column). Since j* is a
     //     boolean index, eq(j*, ·) is the one-hot vector and this is a single
     //     entry update. β is sampled after α; the verifier mirrors both. See
-    //     docs/const-wire-pin.md.
+    //     lincheck's `LincheckCircuit::const_pin_col`.
     let mut beta = F128::ZERO;
     if let Some(col) = circuit.const_pin_col() {
         beta = ps.sample();
@@ -1282,11 +1269,9 @@ fn prove_padded_inner(
     };
 
     // 5. Standard multilinear product-sumcheck over the high `inner_rest_len`
-    //    bits of `i`. Each round binds the TOP remaining bit (mirrors
-    //    chain::prove_chain_shift). After `inner_rest_len` rounds, both
+    //    bits of `i`. Each round binds the TOP remaining bit. After `inner_rest_len` rounds, both
     //    tables collapse to length `2^k_skip`. Per-round work is parallel via
     //    rayon when the residual table is large enough.
-    let mut rounds = Vec::with_capacity(inner_rest_len);
     let mut r_rounds = Vec::with_capacity(inner_rest_len);
     if inner_rest_len > 0 {
         // Round 0's message is the only standalone evaluation pass; every later
@@ -1297,7 +1282,6 @@ fn prove_padded_inner(
             ps.add_scalar(e1);
             ps.add_scalar(einf);
             let r = ps.sample();
-            rounds.push((e1, einf));
             r_rounds.push(r);
             if t + 1 < inner_rest_len {
                 // Fused: bind both tables at r AND compute round (t+1)'s message.
@@ -1352,9 +1336,9 @@ fn prove_padded_inner(
     (claim, captured_z_vec)
 }
 
-/// Verify a lincheck proof. Walks the sponge in lockstep with `prove`,
-/// performs the three scalar consistency checks against `v, v', v''`, and
-/// derives the three output z claims.
+/// Verify a lincheck proof. Walks the sponge in lockstep with the prover,
+/// replays the α-batched product sumcheck against `v_a` and `v_b`, and
+/// derives the single output z-claim `w`.
 pub fn verify(
     m: usize,
     k_log: usize,
@@ -1437,7 +1421,7 @@ pub fn verify(
     let t = std::time::Instant::now();
     // Constant-wire pin (mirror of prove): β sampled after α, comb gains +β at
     // the constant column, and the initial target gains +β·1 — the honest
-    // all-ones constant column folds to 1. See docs/const-wire-pin.md.
+    // all-ones constant column folds to 1. See lincheck's `LincheckCircuit::const_pin_col`.
     let mut target = alpha * v_a + v_b;
     let mut beta = F128::ZERO;
     if let Some(col) = circuit.const_pin_col() {
@@ -1447,11 +1431,9 @@ pub fn verify(
     }
     let mut running = target;
     let mut r_rounds = Vec::with_capacity(inner_rest_len);
-    let mut rounds = Vec::with_capacity(inner_rest_len);
     for _ in 0..inner_rest_len {
         let e1 = vs.next_scalar().map_err(VerifyError::Transcript)?;
         let einf = vs.next_scalar().map_err(VerifyError::Transcript)?;
-        rounds.push((e1, einf));
         let r = vs.sample();
         // q(0) = claim + q(1) in char 2; q(X) = einf·X² + c1·X + e0.
         let e0 = running + e1;
@@ -1824,8 +1806,6 @@ mod tests {
             let eq = build_eq_table(&p);
 
             let serial = partial_fold_packed_z(&z_packed, m, k_log, &eq);
-            let neon = partial_fold_packed_z_neon_single(&z_packed, m, k_log, &eq);
-            assert_eq!(serial, neon, "at m={m}, k_log={k_log}");
             let iblock =
                 partial_fold_packed_z_neon_iblock_padded(&z_packed, m, k_log, 1usize << k_log, &eq);
             assert_eq!(serial, iblock, "iblock at m={m}, k_log={k_log}");
@@ -1923,8 +1903,14 @@ mod tests {
 
             #[cfg(target_arch = "aarch64")]
             if n_log_ok_for_tile(m, k_log, NEON_TILE_T) {
-                let dense_neon = partial_fold_packed_z_neon_single(&z_packed, m, k_log, &eq_outer);
-                let padded_neon = partial_fold_packed_z_neon_single_padded(
+                let dense_neon = partial_fold_packed_z_neon_iblock_padded(
+                    &z_packed,
+                    m,
+                    k_log,
+                    1usize << k_log,
+                    &eq_outer,
+                );
+                let padded_neon = partial_fold_packed_z_neon_iblock_padded(
                     &z_packed,
                     m,
                     k_log,

@@ -1,13 +1,11 @@
 // Credit: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
-//! Additive NTT over GF(2^8) (Lin–Chung–Han basis).
+//! Additive NTTs (Lin–Chung–Han novel polynomial basis).
 //!
-//! Evaluation domain `W = β + span{1, 2, …, 2^{k-1}}` (additive coset of an
-//! F_2 subspace of F_{2^8}). Maximum useful `k` is 7 (|W| = 128); going to k=8
-//! exhausts all 256 elements of F_{2^8}.
-//!
-//! Scalar/portable implementation — correctness first. NEON "triple" variants
-//! that batch a/b/c with shared twiddles can be added later if the round-1 URM
-//! hot path needs them.
+//! Two transforms live here:
+//! - [`additive_ntt_f128`] (re-exported as [`AdditiveNttF128`]): the
+//!   F_{2^128} LCH NTT used by the PCS commit and Ligerito.
+//! - [`AdditiveNttGf8`] (this file) plus [`inv_table`]: a small GF(2^8) NTT
+//!   used by flock's univariate-skip zerocheck round.
 
 use primitives::field::F8;
 
@@ -111,6 +109,10 @@ fn ifft_rec(v: &mut [F8], tw: &[F8], idx: usize) {
 }
 
 /// Additive NTT over GF(2^8) with domain of size 2^k.
+///
+/// Evaluation domain `W = β + span{1, 2, …, 2^{k-1}}` (additive coset of an
+/// F_2 subspace of F_{2^8}). Maximum useful `k` is 7 (|W| = 128); k = 8 would
+/// exhaust all 256 elements of F_{2^8}.
 ///
 /// Internal LCH basis: the forward transform maps coefficients in the
 /// Lin–Chung–Han basis to evaluations at the 2^k points of the domain.

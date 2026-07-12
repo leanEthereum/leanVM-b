@@ -206,9 +206,9 @@ pub struct Func {
     /// `@inline` decorator: expand this function at each call site instead of
     /// emitting a real call — no frame, no argument/return plumbing (the
     /// call-convention `DEREF`s and jumps vanish). The body must be a single
-    /// tail `return`; it is never lowered standalone. Named for the DSL's
-    /// inlined body costs nothing at runtime (cf. `unroll(a, b)`, which
-    /// replicates a loop body: that one really does unroll).
+    /// tail `return`; it is never lowered standalone. Named `@inline` because
+    /// the inlined body costs nothing at runtime (cf. `unroll(a, b)`, which
+    /// really does replicate a loop body).
     pub inline: bool,
 }
 

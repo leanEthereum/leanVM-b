@@ -1,6 +1,6 @@
 //! The public column schema and bus layout: the committed-column indices, and
 //! the flush/count blocks the verifier reconstructs from the program + announced
-//! sizes + public input (\S7, \S8). Plus the prover-side witness build.
+//! sizes + public input (§7, §8). Plus the prover-side witness build.
 
 use super::*;
 
@@ -13,11 +13,12 @@ pub const MEM: usize = 0; // the data-memory image
 pub const MFCNT: usize = 1; // per-cell memory access count, g^{A[i]}
 pub const BFCNT: usize = 2; // per-pc bytecode execution count, g^{A[pc]}
 // flock's packed BLAKE3 witness `q_pkd`, committed in the SAME stack as every
-// other column (single PCS). Size `2^(K_LOG+n_log-7)` when the program runs ≥1
-// BLAKE3, else a size-1 dummy (kept in the static schema). It is the SOLE copy of
+// other column (single PCS). Size `2^(K_LOG+n_log-7)`, always ≥ 1 instance (a
+// no-BLAKE3 program commits one full padding instance). It is the SOLE copy of
 // the input/output words: the VM's BLAKE3 value columns are virtual and their
 // memory-bus claims route to `q_pkd` slots (§blake3_flock), so nothing duplicates
-// them. flock's R1CS validity is discharged by a basefold over this commitment.
+// them. flock's R1CS validity is discharged by the single stacked Ligerito
+// opening over this commitment.
 pub const QPKD: usize = 3;
 pub const N_SHARED: usize = 4;
 
@@ -92,17 +93,6 @@ pub(crate) struct Witness {
     pub(crate) row_counts: [usize; 6],
 }
 
-/// Column → log-size (`kappa`) map: the shared MEM/MFCNT columns are `2^log_mem`,
-/// the bytecode finalize count is `2^log_bytecode`, and every column of table `t`
-/// is `2^taus[t]` (its padded log-row-count). `None` marks a **virtual**
-/// (uncommitted) column. Depends only on the public sizes, so the verifier can
-/// reconstruct the placements.
-///
-/// The BLAKE3 value columns (`va0..vc1`) are virtual when BLAKE3 ran: `q_pkd`
-/// already holds those words at fixed packed slots, so committing them again is
-/// redundant. Their memory-bus claims route directly to `q_pkd` slot evaluations
-/// (see [`slot_claims`]), which both binds them to
-/// the proven witness AND eliminates the separate value-binding sub-protocol.
 /// The committed columns' kappa SOURCES, for the recursion guest's
 /// in-circuit certification of the stacked size m = max(log2_ceil(sum of
 /// 2^kappa), MIN_MU). Per committed column: `Some((source, adj))` with
@@ -156,6 +146,17 @@ pub fn block_kappa_sources(log_bytecode: usize) -> Vec<(usize, usize)> {
     push
 }
 
+/// Column → log-size (`kappa`) map: the shared MEM/MFCNT columns are `2^log_mem`,
+/// the bytecode finalize count is `2^log_bytecode`, and every column of table `t`
+/// is `2^taus[t]` (its padded log-row-count). `None` marks a **virtual**
+/// (uncommitted) column. Depends only on the public sizes, so the verifier can
+/// reconstruct the placements.
+///
+/// The BLAKE3 value columns (`va0..vc1`) are always virtual: `q_pkd`
+/// already holds those words at fixed packed slots, so committing them again is
+/// redundant. Their memory-bus claims route directly to `q_pkd` slot evaluations
+/// (see [`slot_claims`]), which both binds them to
+/// the proven witness AND eliminates the separate value-binding sub-protocol.
 fn col_kappas(log_mem: usize, log_bytecode: usize, taus: [usize; 6], n_blake3: usize) -> Vec<Option<usize>> {
     let sch = schema();
     let mut k = vec![Some(0usize); sch.n];

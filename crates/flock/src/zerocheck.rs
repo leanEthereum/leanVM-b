@@ -108,12 +108,12 @@ pub enum VerifyError {
 // API: prove / verify.
 // ---------------------------------------------------------------------------
 
-/// Variant of [`prove_packed_padded`] that ALSO returns the canonical
-/// `s_hat_v_c` produced by the fused two-bank round-1 kernel. The downstream
-/// PCS open uses this to skip `fold_1b_rows` for the c-claim — see
-/// [`pcs::ring_switch::round1_shift_reduce_extract_c_packed_padded_with_s_hat_v`].
-///
-/// Wire output is byte-identical to [`prove_packed_padded`].
+/// THE zerocheck prover entry: proves `a·b ⊕ c = 0` over the padded cube and
+/// ALSO returns the canonical `s_hat_v_c` produced by the fused two-bank
+/// round-1 kernel
+/// ([`univariate_skip_optimized::round1_shift_reduce_extract_c_packed_padded_with_s_hat_v`]),
+/// which the downstream PCS open consumes to skip `fold_1b_rows` for the
+/// c-claim.
 pub fn prove_packed_padded_capture_s_hat_v_c(
     a_packed: &[u8],
     b_packed: &[u8],
@@ -566,7 +566,6 @@ mod tests {
     /// `prove` runs end-to-end at the smallest valid m (= k_skip + N_INNER = 13)
     /// without panicking, and produces output of the right shape.
     ///
-    /// We can't yet check the proof is *accepted* (verify is a stub), but the
     /// structural sanity here catches:
     ///   - mismatched sponge observe/sample sequence
     ///   - wrong slice lengths in r / mlv_arg / r_next at any round

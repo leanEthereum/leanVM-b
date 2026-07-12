@@ -80,8 +80,9 @@ fn lig_configs(mu: usize) -> std::sync::Arc<(ProverConfig, VerifierConfig)> {
 
 /// Rebuild the public [`Commitment`] (root + params) for a witness of `2^mu`
 /// elements. The verifier reconstructs the params from `mu` exactly as `commit`
-/// did, so the BLAKE3↔flock validity open (§blake3_flock) can verify its second
-/// Ligerito against this same commitment.
+/// did, so the single stacked Ligerito opening (which discharges flock's
+/// `(ab, c)` claims together with leanVM's point claims, §blake3_flock) verifies
+/// against this same commitment.
 pub fn commitment_from_root(root: [u8; 32], mu: usize) -> Commitment {
     Commitment {
         root,
@@ -94,9 +95,9 @@ pub fn commitment_from_root(root: [u8; 32], mu: usize) -> Commitment {
 /// [`open`]), so committing costs no extra full-trace copy.
 pub struct Committed {
     pub commitment: Commitment,
-    /// Codeword + Merkle tree retained for opening. Public so the BLAKE3↔flock
-    /// validity open (a second Ligerito over this same commitment, §blake3_flock)
-    /// can reuse it.
+    /// Codeword + Merkle tree retained for opening. Public so the single stacked
+    /// Ligerito opening (which also discharges flock's `(ab, c)` claims over this
+    /// same commitment, §blake3_flock) can reuse it.
     pub prover_data: ProverData,
     /// `log2` of the witness length.
     pub mu: usize,
@@ -204,7 +205,8 @@ pub enum Error {
     Ligerito,
 }
 
-/// Commit a field-valued witness of length `2^μ` (`μ ≥ 2`) and bind its root into
+/// Commit a field-valued witness of length `2^μ` (`μ ≥ MIN_MU`; smaller stacks
+/// are zero-padded up by [`crate::witness::placements_of`]) and bind its root into
 /// the transcript, before any challenge is sampled. The verifier reads it with
 /// [`read_commitment`].
 pub fn commit(ps: &mut ProverState, witness: &[F128]) -> Committed {
@@ -252,10 +254,11 @@ pub fn read_commitment(vs: &mut VerifierState) -> Result<[u8; 32], crate::transc
 /// Open the committed witness: discharge the `points` (leanVM's bus / constraint /
 /// public-input / pin claims, as block-sparse slot evaluations) AND flock's
 /// ring-switched BLAKE3 `(ab, c)` validity (`ring`) in ONE stacked Ligerito. The
-/// points become the opener's `stack_pd`; the returned proof rides the BLAKE3
-/// sub-proof channel (`write_stack_proof`), not the `ps` hint channel. The
-/// commitment root was already bound by [`commit`], and the point *values* rode
-/// the stream during their sub-protocols, so nothing extra is bound here.
+/// points become the opener's `stack_pd`; the returned proof is placed on the
+/// `openings` hint channel by the caller (`ps.hint_opening`), not on the scalar
+/// stream. The commitment root was already bound by [`commit`], and the point
+/// *values* rode the stream during their sub-protocols, so nothing extra is
+/// bound here.
 ///
 /// There is no plain (non-ring-switch) path: the witness ALWAYS carries a `q_pkd`
 /// sub-block (≥ 1 padding instance, §cpu), so every opening is stacked.

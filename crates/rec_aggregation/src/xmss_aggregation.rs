@@ -1,4 +1,4 @@
-//! The in-VM XMSS aggregation verifier (`tests/xmss_aggregate.py`): `n`
+//! The in-VM XMSS aggregation verifier (`guests/xmss_aggregate.py`): `n`
 //! signers (fresh keypairs) sign the same message at the same slot with the
 //! `xmss` crate; the VM absorbs `message | tweaks | merkle_bits | public
 //! keys` into the size-in-IV Merkle-Damgard hash while verifying every

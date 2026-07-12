@@ -128,7 +128,7 @@ const fn clmul8_software(a: u8, b: u8) -> u16 {
 /// Reduce a polynomial of degree ≤ 14 modulo x^8 + x^4 + x^3 + x + 1.
 /// Two-step fold: first turns 15-bit input into ≤12-bit, second into ≤8-bit.
 ///
-/// Exposed `pub(crate)` so the URM shift_reduce inner kernel can reuse it.
+/// Exposed `pub` so flock's URM shift_reduce inner kernel can reuse it.
 #[inline]
 pub const fn gf8_reduce(p: u16) -> u8 {
     let h: u16 = p >> 8;

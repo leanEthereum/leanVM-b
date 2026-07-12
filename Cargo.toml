@@ -11,12 +11,8 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
-primitives.workspace = true
-lean_vm.workspace = true
-lean_compiler.workspace = true
 rec_aggregation.workspace = true
 clap = { version = "4", features = ["derive"] }
-bincode.workspace = true
 
 [workspace.package]
 version = "0.1.0"

@@ -6,8 +6,7 @@
 /// The input holds 8 bytes representing 8 rows of 8 bits each; the output holds
 /// the transposed matrix (bit `r·8 + c` of input → bit `c·8 + r` of output).
 ///
-/// Shared by the lincheck byte-stripe builder (`flock_prover::r1cs_hashes::common`)
-/// and the PCS ring-switch `fold_1b` kernels ([`crate::pcs::ring_switch`]).
+/// Used by the PCS ring-switch `fold_1b` kernels (`pcs::ring_switch`).
 #[inline(always)]
 pub fn transpose_8x8_bits(mut x: u64) -> u64 {
     let t = (x ^ (x >> 7)) & 0x00AA_00AA_00AA_00AAu64;
@@ -25,10 +24,8 @@ pub fn transpose_8x8_bits(mut x: u64) -> u64 {
 /// The 8 LE u64s viewed as 64 bytes are exactly the input shape of the NEON
 /// [`bit_transpose_64bytes`] kernel (input byte `r·8 + c` = byte `c` of lane
 /// `r`; output byte `c·8 + t` bit `r` = that byte's bit `t`), so this delegates
-/// to it — ~5× fewer ops than the scalar per-column loop. Shared by the
-/// lincheck byte-stripe builder (`flock_prover::r1cs_hashes::common`) and the
-/// core R1CS matrix-apply ([`crate::r1cs`]).
-///
+/// to it — ~5× fewer ops than the scalar per-column loop. Used by the
+/// lincheck byte-stripe builder (`flock::blake3_witness`).
 #[inline(always)]
 pub fn transpose_8_u64s_to_64_bytes(lanes: &[u64; 8], out: &mut [u8]) {
     debug_assert_eq!(out.len(), 64);
@@ -182,6 +179,23 @@ pub fn bit_transpose_64bytes(input: &[u8; 64], output: &mut [u8; 64]) {
 mod tests {
     use super::*;
 
+    /// splitmix64 test PRNG (same helper as the gf2_128/gf2_8 test modules).
+    #[cfg(target_arch = "aarch64")]
+    struct Rng(u64);
+    #[cfg(target_arch = "aarch64")]
+    impl Rng {
+        fn new(seed: u64) -> Self {
+            Self(seed)
+        }
+        fn next_u64(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9E3779B97F4A7C15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+            z ^ (z >> 31)
+        }
+    }
+
     /// Scalar reference for [`transpose_8_u64s_to_64_bytes`] — test oracle only.
     #[allow(clippy::erasing_op, clippy::identity_op)]
     fn transpose_8_u64s_to_64_bytes_scalar(lanes: &[u64; 8], out: &mut [u8]) {
@@ -260,6 +274,7 @@ mod tests {
             assert_eq!(got, want, "input={state:016x}");
         }
     }
+    #[cfg(not(target_arch = "aarch64"))]
     #[test]
     fn bit_transpose_u64_matches_scalar() {
         let mut seed = 0x12345678u64;

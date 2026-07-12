@@ -13,7 +13,6 @@ pcs.workspace = true
 flock.workspace = true
 blake3.workspace = true
 rayon.workspace = true
-serde.workspace = true
 
 [dev-dependencies]
 bincode.workspace = true

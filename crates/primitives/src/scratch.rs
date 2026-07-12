@@ -23,10 +23,10 @@ use std::sync::Mutex;
 
 static POOL: Mutex<Vec<Vec<F128>>> = Mutex::new(Vec::new());
 
-/// Max buffers retained. The m=29 prove cycle gives ~18 distinct buffers:
-/// witness z/a/b, the L0 codeword, zerocheck's 2 fold outputs + 2 ping-pong
-/// halves, ring-switch's per-claim rs_eq_ind vectors, b_combined, and
-/// basefold's 5 working buffers + per-epoch codewords. Pooling ALL of the
+/// Max buffers retained. The m=29 prove cycle's distinct buffers: witness
+/// z/a/b, the L0 codeword, zerocheck's 2 fold outputs + 2 ping-pong
+/// halves, ring-switch's per-claim rs_eq_ind vectors, b_combined, and the
+/// Ligerito recursion's per-level codewords. Pooling ALL of the
 /// open stage's transients matters beyond their own reuse: if they were
 /// left to malloc while the earlier phases' buffers sat in the pool, the
 /// open stage would fault fresh pages every prove (the pool denies malloc
@@ -102,11 +102,11 @@ pub fn give_f128(v: Vec<F128>) {
 /// work: a race between fault cost and the hiding window flips sign across
 /// machines; eliminated work doesn't.)
 ///
-/// The set (sizes in F128s): 2^(m-6)-class — L0 codeword, zerocheck round-2
-/// a/b, basefold codeword ping-pong ×2 → 5 buffers; 2^(m-7)-class — witness
-/// z/a/b, zerocheck tail ping-pong ×2, basefold a×2/b, rs_eq_ind ×2,
-/// b_combined → 11 buffers. ~1.1 GB resident at m = 29; release with
-/// [`clear`].
+/// The set (sizes in F128s): 5 buffers of the 2^(m-6) class (L0 codeword,
+/// zerocheck round-2 a/b, headroom for the Ligerito recursion's largest
+/// level codewords) and 11 of the 2^(m-7) class (witness z/a/b, zerocheck
+/// tail ping-pong ×2, rs_eq_ind ×2, b_combined, the smaller Ligerito level
+/// codewords). ~1.1 GB resident at m = 29; release with [`clear`].
 pub fn prewarm_prover(m: usize) {
     use rayon::prelude::*;
     if m < 7 {
@@ -134,14 +134,15 @@ pub fn prewarm_prover(m: usize) {
     }
 }
 
+/// Release every pooled buffer to the OS, e.g. after the last prove of a
+/// batch.
+pub fn clear() {
+    POOL.lock().unwrap().clear();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Release every pooled buffer (test isolation between assertions).
-    fn clear() {
-        POOL.lock().unwrap().clear();
-    }
 
     #[test]
     fn take_reuses_given_buffer() {

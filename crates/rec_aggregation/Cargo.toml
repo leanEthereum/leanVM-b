@@ -8,7 +8,6 @@ workspace = true
 
 [dependencies]
 primitives.workspace = true
-fiat_shamir.workspace = true
 pcs.workspace = true
 flock.workspace = true
 lean_vm.workspace = true

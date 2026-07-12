@@ -108,7 +108,7 @@ pub(crate) fn identity(k: usize) -> SparseBinaryMatrix {
 /// data; the remainder is zero padding (URM can skip work over those).
 ///
 /// `const_pin` is the column of the constant-one wire to pin to 1 across all
-/// blocks (closing the all-zero soundness gap — see `docs/const-wire-pin.md`),
+/// blocks (closing the all-zero soundness gap — see `lincheck's `LincheckCircuit::const_pin_col``),
 /// or `None`. It is propagated into the CSC / sparse `LincheckCircuit` this
 /// R1CS builds. Encoders that set it MUST fill padding blocks with valid
 /// (constant = 1) computations.
@@ -169,7 +169,7 @@ pub(crate) fn build_block_r1cs_with_matrices(
 /// - `None` — leave them all-zero (trivial constraint satisfaction).
 /// - `Some(p)` — build a real block from `p` in every padding slot. Encoders
 ///   that pin a constant wire need this so the constant column is all-ones
-///   across *every* batched instance (see `docs/const-wire-pin.md`).
+///   across *every* batched instance (see `lincheck's `LincheckCircuit::const_pin_col``).
 pub(crate) fn drive_witness_packed_and_lincheck<S: Sync, F>(
     initial_states: &[S],
     padding: Option<&S>,

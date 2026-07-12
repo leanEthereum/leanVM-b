@@ -247,7 +247,8 @@ pub fn verify_merkle_proof(root: &Hash, leaf_hash: &Hash, index: usize, proof: &
 /// most `q · d` hashes (matching `q` independent paths) and typically much
 /// smaller (siblings shared across multiple paths are emitted once).
 ///
-/// Verify with [`verify_merkle_multi_proof`].
+/// Verify by expanding with [`restore_multi_proof`] and checking each restored
+/// path via [`verify_merkle_proof`].
 pub fn merkle_multi_proof(tree: &[Hash], num_leaves: usize, positions: &[usize]) -> Vec<Hash> {
     assert!(num_leaves.is_power_of_two() && num_leaves > 0);
     assert_eq!(tree.len(), 2 * num_leaves - 1);
@@ -291,86 +292,6 @@ pub fn merkle_multi_proof(tree: &[Hash], num_leaves: usize, positions: &[usize])
     }
 
     proof
-}
-
-/// Verify a Merkle multi-proof produced by [`merkle_multi_proof`].
-///
-/// `sorted_unique_positions` and `leaf_hashes` must be aligned and sorted:
-/// `leaf_hashes[i]` is the hash of the leaf at `sorted_unique_positions[i]`,
-/// and the position list is strictly ascending. Returns true iff the
-/// reconstructed root equals `root` and the proof is consumed exactly.
-pub fn verify_merkle_multi_proof(
-    root: &Hash,
-    num_leaves: usize,
-    sorted_unique_positions: &[usize],
-    leaf_hashes: &[Hash],
-    proof: &[Hash],
-) -> bool {
-    if !num_leaves.is_power_of_two() || num_leaves == 0 {
-        return false;
-    }
-    if sorted_unique_positions.len() != leaf_hashes.len() {
-        return false;
-    }
-    if sorted_unique_positions.is_empty() {
-        // Vacuous; nothing to verify. Treat as "ok" iff the proof is empty.
-        return proof.is_empty();
-    }
-    // Verify the position list is sorted strictly ascending + in range.
-    for (i, &p) in sorted_unique_positions.iter().enumerate() {
-        if p >= num_leaves {
-            return false;
-        }
-        if i > 0 && sorted_unique_positions[i - 1] >= p {
-            return false;
-        }
-    }
-    // Edge case: 1-leaf tree, no proof needed.
-    if num_leaves == 1 {
-        return proof.is_empty() && leaf_hashes[0] == *root;
-    }
-
-    let mut active: Vec<(usize, Hash)> = sorted_unique_positions
-        .iter()
-        .copied()
-        .zip(leaf_hashes.iter().copied())
-        .collect();
-    let mut proof_iter = proof.iter().copied();
-    let mut level_len = num_leaves;
-
-    while level_len > 1 {
-        let mut next = Vec::with_capacity(active.len());
-        let mut i = 0;
-        while i < active.len() {
-            let (p, h) = active[i];
-            let sib_active = i + 1 < active.len() && active[i + 1].0 == (p ^ 1);
-            let (left, right) = if sib_active {
-                let (_, h_sib) = active[i + 1];
-                // Sorted strictly ascending → active[i+1].0 = p + 1 (= p ^ 1
-                // since p is even when p ^ 1 = p + 1). So p is LEFT child.
-                debug_assert_eq!(p & 1, 0);
-                i += 2;
-                (h, h_sib)
-            } else {
-                let sib = match proof_iter.next() {
-                    Some(s) => s,
-                    None => return false,
-                };
-                i += 1;
-                if p & 1 == 0 { (h, sib) } else { (sib, h) }
-            };
-            next.push((p >> 1, hash_pair(&left, &right)));
-        }
-        active = next;
-        level_len >>= 1;
-    }
-
-    // After the loop, `active` has exactly one element (the root). Reject
-    // any leftover proof bytes.
-    if proof_iter.next().is_some() {
-        return false;
-    }
-    active.len() == 1 && active[0].1 == *root
 }
 
 /// Reconstruct the full per-query Merkle paths from a *pruned* (octopus) proof —

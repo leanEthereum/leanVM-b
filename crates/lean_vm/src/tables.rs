@@ -556,8 +556,8 @@ impl Table for JumpTable {
 /// contiguity, so a caller hashing e.g. `(tweak, pp)` need not copy them into
 /// adjacent cells. The 32-byte output occupies the two consecutive words `ac`,
 /// `g·ac`. Five address bindings `a_X = fp·o_X` are constrained; the
-/// compression relating output to input words is *unproven* (deferred), so no
-/// constraint links `vc*` to the inputs.
+/// compression relating output to input words carries no table constraint
+/// here: it is proven by flock's R1CS validity via `q_pkd` (§blake3_flock).
 ///
 /// The six value columns are listed in `n_committed_columns` (they need a local
 /// index for the flushes and are filled from the trace for the bus), but `cpu`
@@ -611,8 +611,9 @@ impl Table for Blake3Table {
     }
     fn eval_constraint(&self, eta: F128, cols: &Cols) -> F128 {
         use blake3t::*;
-        // The five address bindings a_X = fp·o_X (degree 2). The compression is
-        // unproven, so the output words carry no constraint (doc §7.6).
+        // The five address bindings a_X = fp·o_X (degree 2). The compression
+        // carries no table constraint here: flock's R1CS validity proves it
+        // via q_pkd (§blake3_flock).
         let bind = |a: usize, o: usize| cols[a] + cols[FP] * cols[o];
         bind(AA0, OA0)
             + eta * bind(AA1, OA1)

@@ -91,7 +91,7 @@
 //! - **Constant pinning**: `cv = IV`, `counter = 0`, `block_len = 64`,
 //!   `flags = CHUNK_START|CHUNK_END|ROOT` via the pinned-const rows (given the
 //!   lincheck const-wire pin forcing `z[Z_CONST] = 1`, see
-//!   `docs/const-wire-pin.md`), so an instance can only be `blake3::hash` of
+//!   `lincheck's `LincheckCircuit::const_pin_col``), so an instance can only be `blake3::hash` of
 //!   one 64-byte block ([`pinned_compression`]).
 //!
 //! ## What this does NOT enforce
@@ -474,16 +474,16 @@ fn initial_lane_words() -> [Word; 16] {
 // Matrix builder
 // ---------------------------------------------------------------------------
 
-/// Build the per-block base matrices `(A_0, B_0)`. `C_0 = I_k` (circuit-shape
-/// R1CS — every z slot is the output of its row).
-/// The fixed per-block R1CS matrices `(A0, B0)`, built once per process and
-/// cached: verifiers (native reduced-claim checks, aggregation provers) treat
-/// them as setup constants, not per-proof work.
+/// The fixed per-block R1CS matrices `(A_0, B_0)`, built once per process and
+/// cached: verifiers and aggregation provers treat them as setup constants,
+/// not per-proof work.
 pub fn matrices() -> &'static (SparseBinaryMatrix, SparseBinaryMatrix) {
     static MATRICES: std::sync::OnceLock<(SparseBinaryMatrix, SparseBinaryMatrix)> = std::sync::OnceLock::new();
     MATRICES.get_or_init(build_matrices)
 }
 
+/// Build the per-block base matrices `(A_0, B_0)`. `C_0 = I_k` (circuit-shape
+/// R1CS: every z slot is the output of its row).
 pub fn build_matrices() -> (SparseBinaryMatrix, SparseBinaryMatrix) {
     let mut a_rows: Vec<Vec<usize>> = vec![Vec::new(); K];
     let mut b_rows: Vec<Vec<usize>> = vec![Vec::new(); K];
@@ -660,7 +660,7 @@ pub fn build_block_r1cs(n_blocks_log: usize) -> BlockR1cs {
         USEFUL_BITS,
         a_0,
         b_0,
-        // Constant-wire pin (docs/const-wire-pin.md): forces z[Z_CONST_POS] = 1
+        // Constant-wire pin (see lincheck's `LincheckCircuit::const_pin_col`): forces z[Z_CONST_POS] = 1
         // in every block. Requires padding blocks filled with valid compressions.
         Some(Z_CONST_POS),
     )
@@ -1068,7 +1068,7 @@ pub fn generate_witness_with_ab_packed(
     let mut a = vec![F128::ZERO; total_f128];
     let mut b = vec![F128::ZERO; total_f128];
 
-    // Constant-wire pin (docs/const-wire-pin.md): padding slots get the pinned
+    // Constant-wire pin (see lincheck's `LincheckCircuit::const_pin_col`): padding slots get the pinned
     // compression of the all-zero message (constant wire = 1), matching
     // [`generate_witness_with_ab_packed_and_lincheck`].
     let padding = padding_block();
@@ -1122,7 +1122,7 @@ pub fn generate_witness_with_ab_packed_and_lincheck(
     Vec<primitives::field::F128>,
     Vec<u8>,
 ) {
-    // Constant-wire pin (docs/const-wire-pin.md): fill padding blocks with the
+    // Constant-wire pin (see lincheck's `LincheckCircuit::const_pin_col`): fill padding blocks with the
     // pinned compression of the all-zero message so the constant cell is 1 in
     // every block. (The chain forbids padding, so this only affects the
     // standalone batch setup.)
@@ -1369,7 +1369,7 @@ mod tests {
         }
     }
 
-    /// Constant-wire pin (docs/const-wire-pin.md): the all-zero witness
+    /// Constant-wire pin (see lincheck's `LincheckCircuit::const_pin_col`): the all-zero witness
     /// satisfies every R1CS row (0·0 = 0), so the pin carried by the lincheck
     /// circuit is the ONLY thing rejecting it. Run the kept zerocheck +
     /// lincheck reduction on zeroed buffers and assert the lincheck verifier
@@ -1505,16 +1505,17 @@ fn quirky_x_outer_full(point: &crate::lincheck::QuirkyPoint) -> Vec<F128> {
 }
 
 impl Blake3Setup {
-    /// **Flock reduction (prover).** Bind the statement, then run the BLAKE3
-    /// zerocheck and lincheck on the shared `sponge`, reducing R1CS validity
-    /// of `blocks` to two evaluation claims on the committed packed witness
-    /// `q_pkd` (see `flock.tex` §zerocheck/§lincheck). Returns:
+    /// **Flock reduction (prover).** Run the BLAKE3 zerocheck and lincheck on
+    /// the shared transcript, reducing R1CS validity of `blocks` to two
+    /// evaluation claims on the committed packed witness `q_pkd`. (The
+    /// statement is already transcript-bound: the embedding protocol seeds
+    /// with the circuit family digest and announces the count.) Returns:
     /// - `z_packed`: the regenerated packed witness the PCS later opens against;
-    /// - the transmitted zerocheck / lincheck sub-proofs;
     /// - the [`ReducedClaims`] `(ab, c)` on `q_pkd`, with ring-switch weights.
     ///
-    /// This touches the commitment only to *bind* it — it does NOT open the PCS.
-    /// The caller discharges the returned claims (see [`Self::prove_validity_stacked`]).
+    /// Does NOT open the PCS; the caller discharges the returned claims in the
+    /// one stacked opening (`lean_vm`'s `pcs::open`, or
+    /// [`Self::prove_validity_stacked`] for a standalone roundtrip).
     pub fn prove_reduction(
         &self,
         blocks: &[Compression],
@@ -1695,11 +1696,10 @@ impl Blake3Setup {
         )
     }
 
-    /// **Flock reduction (verifier).** Bind the statement, then replay the BLAKE3
-    /// zerocheck and lincheck from `zerocheck`/`lincheck` on the shared
-    /// `sponge`, recovering the two `(ab, c)` evaluation claims on the
-    /// committed witness `q_pkd`. Mirror of [`Self::prove_reduction`]; the PCS
-    /// then discharges the returned claims (see [`Self::verify_validity_stacked`]).
+    /// **Flock reduction (verifier).** Replay the BLAKE3 zerocheck and
+    /// lincheck straight off the shared transcript stream, recovering the two
+    /// `(ab, c)` evaluation claims on the committed witness `q_pkd`. Mirror of
+    /// [`Self::prove_reduction`]; the PCS then discharges the returned claims.
     pub fn verify_reduction(
         &self,
         stack_commitment: &Commitment,
@@ -1787,7 +1787,7 @@ impl Blake3Setup {
             vs,
         )
         .map(|_| ())
-        .map_err(verifier::VerifyError::PcsAb)
+        .map_err(verifier::VerifyError::Pcs)
     }
 }
 

@@ -122,7 +122,6 @@ impl FnLower<'_> {
         self.code.push(LInstr { op, hints });
     }
 
-    /// A frame cell holding `1` (always-taken `JUMP` condition), set lazily once.
     /// Materialize a field constant into a frame cell, pooled per function:
     /// frames are write-once, so one cell per distinct constant serves every
     /// use site (`main` alone had ~57k duplicated constant `SET`s before this).
@@ -136,6 +135,7 @@ impl FnLower<'_> {
         o
     }
 
+    /// A frame cell holding `1` (always-taken `JUMP` condition), set lazily once.
     fn one(&mut self) -> Off {
         if let Some(o) = self.one_off {
             return o;
@@ -182,7 +182,7 @@ impl FnLower<'_> {
 
     /// Terminate `main`: jump to the halt sentinel `g^{B-1}` with `fp = g^0`.
     /// The cell holding `1` doubles as the (nonzero) jump condition and the new
-    /// frame pointer `g^0`; the dest cell holds `g^{B-1}` (\S e2e, final state).
+    /// frame pointer `g^0`; the dest cell holds `g^{B-1}` (doc §e2e, final state).
     fn halt(&mut self) {
         let one = self.one();
         let dest = self.fresh();
@@ -808,7 +808,7 @@ impl FnLower<'_> {
                 // `bits` (a `nbits`-bit buffer), floored at `floor`. Returned
                 // UNCONSTRAINED — the caller (log2_ceil) re-verifies it. Same
                 // "prover computes, circuit checks" pattern as `/`.
-                assert_eq!(args.len(), 3, "log2_ceil(bits, nbits, floor)");
+                assert_eq!(args.len(), 3, "hint_log2_ceil(bits, nbits, floor)");
                 let bits_ptr = self.expr(&args[0]);
                 let nbits = self.const_index(&args[1]);
                 let floor = self.const_index(&args[2]);
@@ -1456,7 +1456,7 @@ impl FnLower<'_> {
     }
 
     /// A *conditional* tail call: transfer to `callee(args)` iff `cond != 0`,
-    /// else fall through (`JUMP`'s nonzero test, doc §7.5). The frame setup runs
+    /// else fall through (`JUMP`'s nonzero test, doc §JUMP (sec:tab-jump)). The frame setup runs
     /// either way; when not taken the callee frame is just never entered. Binds
     /// no return values, so the not-taken path continues straight after it.
     fn call_cond(&mut self, callee: &str, args: &[Expr], cond: Off) {

@@ -4,22 +4,22 @@ The zkDSL is a Python-syntax language that compiles to the leanVM-b ISA — six
 instructions (`XOR`, `MUL`, `SET`, `DEREF`, `JUMP`, `BLAKE3`) over the binary
 field GF(2^128), with write-once memory and all indices carried "in the
 exponent" as powers of a fixed generator. For the underlying VM and proving
-system, see [`misc/doc.tex`](misc/doc.tex) (released as `doc.pdf`).
+system, see [`misc/doc.tex`](../../misc/doc.tex) (released as `doc.pdf`).
 
 Source files use the `.py` extension and are **valid Python**: they import the
-[`snark_lib`](snark_lib.py) stub, which defines `GEN`, `log`, `mul_range`,
+[`snark_lib`](../../snark_lib.py) stub, which defines `GEN`, `log`, `mul_range`,
 `HeapBuf`, `StackBuf`, and `blake3` so that editors, linters, and even
 `python3` itself accept the file. The compiler skips the import.
 
-Entry points: `compiler::parse` / `compiler::parse_file` → `compiler::compile`
-→ `cpu::prove` / `cpu::verify`.
+Entry points: `lean_compiler::parse` / `parse_file_with_replacements` →
+`lean_compiler::compile` → `lean_vm::cpu::prove` / `verify`.
 
 ## Dev experience
 
-The repo ships a root [`pyrightconfig.json`](pyrightconfig.json) with
+The repo ships a root [`pyrightconfig.json`](../../pyrightconfig.json) with
 `"extraPaths": ["."]`, so any `.py` program anywhere in the repo resolves
 `snark_lib` when the repo root is opened in the editor. Programs also run as
-plain Python (`PYTHONPATH=. python3 tests/programs/foo.py`) — the stubs are
+plain Python (`PYTHONPATH=. python3 crates/lean_compiler/tests/programs/foo.py`) — the stubs are
 no-ops, so this only checks that the file is well-formed.
 
 ## The field — and indices in the exponent
@@ -117,7 +117,7 @@ Python file, `N = 8` is also just a Python module global.)
 
 **Placeholders** let a host fill values at compile time without editing the
 source. Any identifier may be mapped to replacement text before parsing
-(`compiler::parse_with_replacements` / `parse_file_with_replacements`, taking a
+(`parse_with_replacements` / `parse_file_with_replacements`, taking a
 `BTreeMap<String, String>`); the replacement is identifier-bounded (`FOO` does
 not touch `FOOBAR`). The idiom is a placeholder feeding a constant:
 
@@ -251,7 +251,8 @@ memory), so it is opt-in, not automatic.
 
 Bindings are **immutable**: `x = e` names a fresh cell. Re-binding a name is
 allowed (it's a new cell; the old value is unaffected), but there is no
-mutation and no compound assignment.
+mutation. Compound assignment (`+=`, `-=`, `*=`, `//=`, `%=`) is sugar for a
+re-binding: `x += e` desugars to `x = x + e`.
 
 A name bound to an integer literal (`x = 2`) additionally acts as a
 **compile-time index constant** — usable in stack indexes and slice bounds
@@ -563,8 +564,8 @@ If `out` was already written, the statement *asserts* the digest equals it —
 write-once turning the hash into a verification, which is exactly what a
 signature verifier wants.
 
-The compression is proven by the vendored flock BLAKE3 R1CS (see `doc.pdf`
-§BLAKE3); one instruction per 64→32-byte compression.
+The compression is proven by the flock-derived BLAKE3 R1CS (`crates/flock`,
+see `doc.pdf` §BLAKE3); one instruction per 64→32-byte compression.
 
 ## Hints — `hint_witness(dest, "name")`
 
@@ -593,6 +594,21 @@ entry — repeated lines with the same name are its successive entries:
 # witness r: GEN ** 5, 12
 # witness r: 9
 ```
+
+### Computed-advice hints
+
+Three builtins have the prover compute the values at witness generation
+instead of popping a stream entry. Like `hint_witness`, the results are
+completely unconstrained: the program must re-verify them in-circuit.
+
+- `hint_decompose_bits(bits, value, nbits)`: writes the low `nbits` bits of
+  `value` into the buffer `bits`, one field element (`0`/`1`) per bit.
+- `hint_decompose_bits_exponent(bits, x, nbits)`: writes the `nbits` bits of
+  the exponent `n` where `x = GEN ** n` into `bits` (a bounded dlog at
+  witness generation).
+- `g = hint_log2_ceil(bits, nbits, floor)`: returns `GEN ** log2_ceil(v)` for
+  the value `v` held bitwise in the `nbits`-bit buffer `bits`, floored at
+  `floor`.
 
 ## Cost cheat sheet
 
@@ -641,11 +657,9 @@ def main():
 
 ## Not (yet) supported
 
-Mutable variables and compound assignment; conditions other than field
-(in)equality; `match` defaults (`case _`) and non-contiguous cases; top-level
-constant *arrays* (only scalar constants — see "Global constants and
-placeholders"); multi-file imports; `Const` parameters as `mul_range`
-or range-check bounds (a substituted literal is a bit-pattern element, not
-the g-power a bound needs); runtime slice starts on a `StackBuf`; runtime
-range-check bounds (`assert log a < log b` with runtime `b`); custom hint
-kinds beyond `hint_witness`; precompiles beyond `BLAKE3`.
+Mutable variables; conditions other than field (in)equality; `match` defaults
+(`case _`) and non-contiguous cases; multi-file imports; `Const` parameters as
+`mul_range` or range-check bounds (a substituted literal is a bit-pattern
+element, not the g-power a bound needs); runtime slice starts on a `StackBuf`;
+runtime range-check bounds (`assert log a < log b` with runtime `b`);
+precompiles beyond `BLAKE3`.

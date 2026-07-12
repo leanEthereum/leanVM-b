@@ -250,10 +250,7 @@ checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
 name = "lean_compiler"
 version = "0.1.0"
 dependencies = [
- "bincode",
  "blake3",
- "fiat_shamir",
- "flock",
  "lean_vm",
  "primitives",
 ]
@@ -269,18 +266,13 @@ dependencies = [
  "pcs",
  "primitives",
  "rayon",
- "serde",
 ]
 
 [[package]]
 name = "leanvm-b"
 version = "0.1.0"
 dependencies = [
- "bincode",
  "clap",
- "lean_compiler",
- "lean_vm",
- "primitives",
  "rec_aggregation",
 ]
 
@@ -403,7 +395,6 @@ version = "0.1.0"
 dependencies = [
  "bincode",
  "blake3",
- "fiat_shamir",
  "flock",
  "lean_compiler",
  "lean_vm",

@@ -1,7 +1,7 @@
 //! A minimal GF(2^128) in GHASH form — `x^128 + x^7 + x^2 + x + 1`, bits
 //! little-endian (bit `k` is the coefficient of `x^k`) — just enough to
 //! compute the `g^{num_bytes}` size element of the Merkle-Damgard IV.
-//! Matches the VM's field (leanvm-b's vendored flock `F128`) without
+//! Matches the VM's field (`primitives::field::F128`) without
 //! depending on it.
 
 /// Multiply by `x` (the generator `g`): one shift, one conditional fold of
