@@ -165,14 +165,19 @@ impl BlockR1cs {
 /// little-endian u64, so two matrices with different shapes/contents always
 /// produce different states.
 fn absorb_matrix(h: &mut blake3::Hasher, m: &SparseBinaryMatrix) {
-    h.update(&(m.num_rows as u64).to_le_bytes());
-    h.update(&(m.num_cols as u64).to_le_bytes());
+    // Flatten first: one bulk `update` hashes at full BLAKE3 throughput,
+    // where per-entry 8-byte updates cost ~80 ms per matrix in call overhead.
+    let nnz: usize = m.rows.iter().map(Vec::len).sum();
+    let mut buf = Vec::with_capacity(8 * (2 + m.rows.len() + nnz));
+    buf.extend_from_slice(&(m.num_rows as u64).to_le_bytes());
+    buf.extend_from_slice(&(m.num_cols as u64).to_le_bytes());
     for row in &m.rows {
-        h.update(&(row.len() as u64).to_le_bytes());
+        buf.extend_from_slice(&(row.len() as u64).to_le_bytes());
         for &col in row {
-            h.update(&(col as u64).to_le_bytes());
+            buf.extend_from_slice(&(col as u64).to_le_bytes());
         }
     }
+    h.update(&buf);
 }
 
 /// Block-diagonal `(I_{2^n_log} ⊗ M_0) · z` over GF(2).

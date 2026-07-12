@@ -649,10 +649,24 @@ pub fn build_matrices() -> (SparseBinaryMatrix, SparseBinaryMatrix) {
     (to_mat(a_rows), to_mat(b_rows))
 }
 
+/// [`BlockR1cs::family_digest`] of this module's circuit, baked as a constant:
+/// recomputing it means building and hashing ~21M matrix entries (~300 ms),
+/// which embedding protocols would otherwise pay inside their first prove.
+/// The `family_digest_matches_baked` test recomputes and compares — a circuit
+/// change fails it until this constant is updated alongside.
+pub const FAMILY_DIGEST: [u8; 32] = [
+    0xe8, 0xb4, 0x06, 0x12, 0xd8, 0x17, 0x0e, 0xcf, 0x4a, 0xdf, 0x77, 0x06, 0x57, 0x23, 0xbf,
+    0x88, 0x6e, 0x49, 0xf1, 0x6f, 0x13, 0xaa, 0x62, 0xe9, 0xc2, 0x6f, 0x03, 0x95, 0x48, 0x50,
+    0x17, 0x5e,
+];
+
 /// Build a [`BlockR1cs`] batching `2^n_blocks_log` independent BLAKE3
 /// compressions. `n_blocks_log ≥ 3` is required (lincheck needs `n_outer ≥ 8`).
 pub fn build_block_r1cs(n_blocks_log: usize) -> BlockR1cs {
-    let (a_0, b_0) = build_matrices();
+    // Clone the cached matrices (~ms) instead of re-running the symbolic
+    // builder (~200 ms): setups, family digests and const-pin lookups all
+    // share one build per process.
+    let (a_0, b_0) = matrices().clone();
     crate::blake3_witness::build_block_r1cs_with_matrices(
         n_blocks_log,
         K_LOG,
@@ -1184,6 +1198,15 @@ impl Blake3Setup {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn family_digest_matches_baked() {
+        assert_eq!(
+            build_block_r1cs(3).family_digest(),
+            FAMILY_DIGEST,
+            "circuit family changed - update FAMILY_DIGEST"
+        );
+    }
 
     /// SplitMix64.
     struct Rng(u64);

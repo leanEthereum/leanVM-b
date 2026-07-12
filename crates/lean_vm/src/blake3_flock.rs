@@ -205,14 +205,10 @@ pub fn warm_setup(n_blocks: usize) {
 /// of the instance count. The full instance is block-diagonal — the count is
 /// announced and absorbed with the other sizes — so a transcript seeded with
 /// this digest (via [`crate::cpu::fs_seed`]) binds the whole statement up
-/// front.
+/// front. Baked in flock (test-guarded): recomputing it costs ~300 ms of
+/// matrix building + hashing, which used to land inside the first `prove`.
 pub fn family_digest() -> [u8; 32] {
-    static DIGEST: std::sync::OnceLock<[u8; 32]> = std::sync::OnceLock::new();
-    *DIGEST.get_or_init(|| {
-        // The per-block matrices are count-independent; build the smallest
-        // instance just to hold them.
-        flock::blake3::build_block_r1cs(3).family_digest()
-    })
+    flock::blake3::FAMILY_DIGEST
 }
 
 /// **Flock reduction only** (prover): run flock's BLAKE3 zerocheck + lincheck
