@@ -81,11 +81,10 @@ from snark_lib import *
 STREAM_CAP = STREAM_CAP_PLACEHOLDER
 # Per-table tau floor: BLAKE3 is sized to flock's instance count (>= 2^3).
 FLOORS = [0, 0, 0, 0, 0, 3]
-GINV = GINV_PLACEHOLDER
-GG = GG_PLACEHOLDER
-ILD0 = ILD0_PLACEHOLDER
-ILD1 = ILD1_PLACEHOLDER
-ILD2 = ILD2_PLACEHOLDER
+INV_GEN = INV_GEN_PLACEHOLDER
+LAGRANGE_INV_0 = LAGRANGE_INV_0_PLACEHOLDER
+LAGRANGE_INV_1 = LAGRANGE_INV_1_PLACEHOLDER
+LAGRANGE_INV_2 = LAGRANGE_INV_2_PLACEHOLDER
 
 # GKR sides. The layer counts mu_s are hinted and certified from the block
 # kappas.
@@ -143,7 +142,7 @@ N_BUS_CLAIMS = N_BUS_CLAIMS_PLACEHOLDER
 INDEX_MLE_FACTORS = INDEX_MLE_FACTORS_PLACEHOLDER
 # Committed-coordinate claims (Col/GCol coords across all sides) and the
 # deferred bytecode values (Public coords).
-NCLAIMS = NCLAIMS_PLACEHOLDER
+N_CLAIMS = N_CLAIMS_PLACEHOLDER
 # The stacked bytecode: BYTECODE_COLS encoding columns, stacked along
 # LOG2_BYTECODE_COLS selector bits into ONE multilinear. Push and pull share
 # their GKR point, so the columns are opened ONCE (BYTECODE_COLS values).
@@ -170,19 +169,19 @@ N_TABLES = N_TABLES_PLACEHOLDER
 # LINCHECK_ROUNDS = k_log - k_skip is protocol-fixed, PIN_COLUMN the
 # const-pin column.
 # Flock univariate skip: K_SKIP variables fold in one skip round (half-domain
-# 2^K_SKIP nodes), then N_INNER_ROUNDS fixed inner rounds (INNER7).
+# 2^K_SKIP nodes), then N_FIXED_CHALLENGE_ROUNDS fixed inner rounds (FIXED_CHALLENGES).
 K_SKIP = K_SKIP_PLACEHOLDER
-N_INNER_ROUNDS = N_INNER_ROUNDS_PLACEHOLDER
-ZCLBLA = ZCLBLA_PLACEHOLDER
-ZCLBLB = ZCLBLB_PLACEHOLDER
-LCLBLA = LCLBLA_PLACEHOLDER
-LCLBLB = LCLBLB_PLACEHOLDER
-INNER7 = INNER7_PLACEHOLDER
-I7INV = I7INV_PLACEHOLDER
-PHI = PHI_PLACEHOLDER
-ILAM = ILAM_PLACEHOLDER
-ICMB = ICMB_PLACEHOLDER
-ISDOM = ISDOM_PLACEHOLDER
+N_FIXED_CHALLENGE_ROUNDS = N_FIXED_CHALLENGE_ROUNDS_PLACEHOLDER
+ZEROCHECK_LABEL_0 = ZEROCHECK_LABEL_0_PLACEHOLDER
+ZEROCHECK_LABEL_1 = ZEROCHECK_LABEL_1_PLACEHOLDER
+LINCHECK_LABEL_0 = LINCHECK_LABEL_0_PLACEHOLDER
+LINCHECK_LABEL_1 = LINCHECK_LABEL_1_PLACEHOLDER
+FIXED_CHALLENGES = FIXED_CHALLENGES_PLACEHOLDER
+ONE_PLUS_CHALLENGE_INV = ONE_PLUS_CHALLENGE_INV_PLACEHOLDER
+PHI8_NODES = PHI8_NODES_PLACEHOLDER
+LAGRANGE_INV_LAMBDA = LAGRANGE_INV_LAMBDA_PLACEHOLDER
+LAGRANGE_INV_COMBINED = LAGRANGE_INV_COMBINED_PLACEHOLDER
+LAGRANGE_INV_S = LAGRANGE_INV_S_PLACEHOLDER
 R1CS_M_CAP = R1CS_M_CAP_PLACEHOLDER
 R1CS_ROUNDS_CAP = R1CS_ROUNDS_CAP_PLACEHOLDER
 LINCHECK_ROUNDS = LINCHECK_ROUNDS_PLACEHOLDER
@@ -190,14 +189,13 @@ PIN_COLUMN = PIN_COLUMN_PLACEHOLDER
 K_LOG = K_LOG_PLACEHOLDER
 # Phase E: the stacked mixed opening. Labels; the two ring-switch fronts
 # (claim check in-circuit; the tensor transpose + eval_rs_eq DEFERRED); the
-# gamma-combination of the two ring-switch claims and the NCL pool claims.
-OBLBLA = OBLBLA_PLACEHOLDER
-OBLBLB = OBLBLB_PLACEHOLDER
-RSLBLA = RSLBLA_PLACEHOLDER
-RSLBLB = RSLBLB_PLACEHOLDER
-PDLBLA = PDLBLA_PLACEHOLDER
-PDLBLB = PDLBLB_PLACEHOLDER
-NCL = NCL_PLACEHOLDER
+# gamma-combination of the two ring-switch claims and the N_CLAIMS pool claims.
+OPEN_BATCH_LABEL_0 = OPEN_BATCH_LABEL_0_PLACEHOLDER
+OPEN_BATCH_LABEL_1 = OPEN_BATCH_LABEL_1_PLACEHOLDER
+RING_SWITCH_LABEL_0 = RING_SWITCH_LABEL_0_PLACEHOLDER
+RING_SWITCH_LABEL_1 = RING_SWITCH_LABEL_1_PLACEHOLDER
+PACKED_DIRECT_LABEL_0 = PACKED_DIRECT_LABEL_0_PLACEHOLDER
+PACKED_DIRECT_LABEL_1 = PACKED_DIRECT_LABEL_1_PLACEHOLDER
 # Phase E2: the Ligerito opening over the stacked commitment, dispatched by
 # the certified committed log-size m through match_range: the LIG_* tables
 # below carry one row per candidate m in [LIG_MIN_LOG_SIZE, +LIG_N_CANDIDATES),
@@ -208,8 +206,8 @@ NCL = NCL_PLACEHOLDER
 # claim descriptors keep only the FIXED parts baked (CLAIM_POINT_BUF, named
 # POINT_BUF_* below; CLAIM_POINT_OFF into those buffers) — the
 # shape-dependent lengths/selectors are hinted and identity-certified.
-LIGLBLA = LIGLBLA_PLACEHOLDER
-LIGLBLB = LIGLBLB_PLACEHOLDER
+LIGERITO_BASIS_LABEL_0 = LIGERITO_BASIS_LABEL_0_PLACEHOLDER
+LIGERITO_BASIS_LABEL_1 = LIGERITO_BASIS_LABEL_1_PLACEHOLDER
 # Opening dispatch: baked committed log-size, candidate range, g^-LIG_MIN_LOG_SIZE.
 LIG_MIN_LOG_SIZE = LIG_MIN_LOG_SIZE_PLACEHOLDER
 # Committed-column kappa sources (0 = const COL_KAPPA_ADJ, 1 = log_mem, 2+t = tau_t)
@@ -273,11 +271,11 @@ POINT_BUF_QPKD = 3
 CLAIM_POINT_BUF = CLAIM_POINT_BUF_PLACEHOLDER
 CLAIM_POINT_OFF = CLAIM_POINT_OFF_PLACEHOLDER
 QPKD_VARS_CAP = QPKD_VARS_CAP_PLACEHOLDER
-# Ring-switch trace-dual basis: bit_i(y) = Tr(DELTA[i] * y). Any eq-weighted
+# Ring-switch trace-dual basis: bit_i(y) = Tr(TRACE_DUAL_BASIS[i] * y). Any eq-weighted
 # bit-sum is then the linearized polynomial L_w(y) = sum_k c_k y^(2^k) with
-# c_k = sum_i w_i DELTA[i]^(2^k); since squaring is one MUL, the tensor
+# c_k = sum_i w_i TRACE_DUAL_BASIS[i]^(2^k); since squaring is one MUL, the tensor
 # transpose and eval_rs_eq run in-circuit (doc.tex, ring-switch section).
-DELTA = DELTA_PLACEHOLDER
+TRACE_DUAL_BASIS = TRACE_DUAL_BASIS_PLACEHOLDER
 # Phase F: log rows of the bytecode blocks (the deferred bytecode points).
 BYTECODE_LOG = BYTECODE_LOG_PLACEHOLDER
 # One sub-proof's deferred-claim region: 2*BYTECODE_LOG + LOG2_BYTECODE_COLS
@@ -285,15 +283,15 @@ BYTECODE_LOG = BYTECODE_LOG_PLACEHOLDER
 DEFER_SIZE = DEFER_SIZE_PLACEHOLDER
 # Aggregation: NSUB sub-proofs of the same program; per-sub proof data arrives
 # as hints. The seed sponge state after the two byte-string absorbs is baked
-# (SEEDB), then the hinted sub statement + the inner PROGRAM DIGEST are bound.
+# (TRANSCRIPT_SEED), then the hinted sub statement + the inner PROGRAM DIGEST are bound.
 # The seed is NOT baked into the guest: it rides the recursion's PUBLIC INPUT
 # (the fs_seed hint folded into own_pi in main), so ONE compiled guest verifies
 # proofs of any inner program of this VM — the outer statement fixes the whole
 # proving environment (circuit family + program), via own_pi.
 NSUB = NSUB_PLACEHOLDER
 BYTECODE_VARS = BYTECODE_VARS_PLACEHOLDER
-SEEDB0 = SEEDB0_PLACEHOLDER
-SEEDB1 = SEEDB1_PLACEHOLDER
+TRANSCRIPT_SEED_0 = TRANSCRIPT_SEED_0_PLACEHOLDER
+TRANSCRIPT_SEED_1 = TRANSCRIPT_SEED_1_PLACEHOLDER
 
 DS_SCALAR = 1
 DS_BYTE = 2
@@ -423,9 +421,9 @@ def verify_log2_ceil(bits_buf, g_logs_pow2, g_squares, floor: Const, nbits: Cons
         # minimality (word > 2^(log-1)); skip at g_log == g^0 (word is in {0,1},
         # its ceil-log 0 is already minimal, and psum_buf[g^-1] is out of range).
         if g_log != GEN ** 0:
-            low_bits_prev = psum_buf[g_log * GINV]              # bits [0, log-1)
+            low_bits_prev = psum_buf[g_log * INV_GEN]              # bits [0, log-1)
             high_bits_prev = low_bits_prev + word               # bits [log-1, nbits)
-            word_vs_2logprev = word + g_logs_pow2[g_log * GINV]  # 0 iff word == 2^(log-1)
+            word_vs_2logprev = word + g_logs_pow2[g_log * INV_GEN]  # 0 iff word == 2^(log-1)
             assert high_bits_prev * word_vs_2logprev != 0  # word > 2^(log-1): minimal
     return g_log, word, exp_prod
 
@@ -511,9 +509,9 @@ def sumcheck_round3(state_0, state_1, msg_cursor, claim, eq_acc, prev_challenge)
     fs = squeeze(fs)
     round_challenge = fs[0]
     new_eq = eq_acc * (1 + prev_challenge + round_challenge)
-    l0 = (round_challenge + 1) * (round_challenge + GG) * ILD0
-    l1 = round_challenge * (round_challenge + GG) * ILD1
-    l2 = round_challenge * (round_challenge + 1) * ILD2
+    l0 = (round_challenge + 1) * (round_challenge + GEN) * LAGRANGE_INV_0
+    l1 = round_challenge * (round_challenge + GEN) * LAGRANGE_INV_1
+    l2 = round_challenge * (round_challenge + 1) * LAGRANGE_INV_2
     new_claim = new_eq * (m0 * l0 + m1 * l1 + m2 * l2)
     return fs[0], fs[1], msg_cursor * GEN ** 3, new_claim, new_eq, round_challenge
 
@@ -589,17 +587,17 @@ def squeeze(state):
 
 @inline
 def lag64(z, out, node_base: Const):
-    # The 64 phi8-domain Lagrange NUMERATORS at z, nodes PHI[node_base..node_base+64]:
-    # out[i] = prod_{j != i} (z + PHI[node_base + j]). Callers multiply by their
-    # baked inverse-denominator table (ISDOM / ILAM / ICMB).
+    # The 64 phi8-domain Lagrange NUMERATORS at z, nodes PHI8_NODES[node_base..node_base+64]:
+    # out[i] = prod_{j != i} (z + PHI8_NODES[node_base + j]). Callers multiply by their
+    # baked inverse-denominator table (LAGRANGE_INV_S / LAGRANGE_INV_LAMBDA / LAGRANGE_INV_COMBINED).
     pre = StackBuf(65)
     pre[0] = 1
     for i in unroll(0, 64):
-        pre[i + 1] = pre[i] * (z + PHI[node_base + i])
+        pre[i + 1] = pre[i] * (z + PHI8_NODES[node_base + i])
     suf = StackBuf(65)
     suf[64] = 1
     for i in unroll(0, 64):
-        suf[63 - i] = suf[64 - i] * (z + PHI[node_base + 63 - i])
+        suf[63 - i] = suf[64 - i] * (z + PHI8_NODES[node_base + 63 - i])
     for i in unroll(0, 64):
         out[i] = pre[i] * suf[i + 1]
     return
@@ -654,8 +652,8 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1):
     fs[1] = fs1
 
     fs = absorb(fs, 23, DS_LEN)
-    fs = absorb(fs, LIGLBLA, DS_BYTE)
-    fs = absorb(fs, LIGLBLB, DS_BYTE)
+    fs = absorb(fs, LIGERITO_BASIS_LABEL_0, DS_BYTE)
+    fs = absorb(fs, LIGERITO_BASIS_LABEL_1, DS_BYTE)
     fs = obs(fs, target)
     fs = absorb(fs, 32, DS_LEN)
     fs = absorb(fs, commit_root_0, DS_BYTE)
@@ -896,18 +894,18 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     #  10. export the deferred-claim region for the aggregation.
     # Claim pool: values of every committed-coordinate claim, in decompose order
     # (their points are the GKR ζ's, resolvable from the baked block structure).
-    claim_pool = HeapBuf(NCLAIMS)
+    claim_pool = HeapBuf(N_CLAIMS)
     # certified low dimension (cplen) per pooled claim, filled as the pool is
     # built (from the in-scope certified kappa/tau); the terminal pins each
     # claim's hinted lengths against it.
-    claim_cplen_g = HeapBuf(NCL)
+    claim_cplen_g = HeapBuf(N_CLAIMS)
     # The ONE shared GKR leaf point (all three trees reduce to it).
     zeta = HeapBuf(MU_CAP)
 
     # ---- seed (statement pre-bound: hinted sub pi + baked program digest) ----
     fs = StackBuf(2)
-    fs[0] = SEEDB0  # SEEDB = sponge state after the b"leanvm-b" domain label
-    fs[1] = SEEDB1
+    fs[0] = TRANSCRIPT_SEED_0  # TRANSCRIPT_SEED = sponge state after the b"leanvm-b" domain label
+    fs[1] = TRANSCRIPT_SEED_1
     fs = obs(fs, seed_0)  # the FS seed: H(flock circuit family, inner program
     fs = obs(fs, seed_1)  # bytecode, ...) — from the recursion's public input
     fs = obs(fs, pi_0)   # bind the sub-proof's statement (its public input)
@@ -974,7 +972,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     # Bus grind bits = push.mu - 7 (= SECURITY + push.mu + 1 - 128; see
     # leaf::grand_product_grinding_bits), with g_bus_mu computed above from the
     # derived block kappas.
-    bus_grind_window = g_bus_mu * GINV ** BUS_GRIND_SHIFT  # g^(push.mu - shift): the bus PoW bit count
+    bus_grind_window = g_bus_mu * INV_GEN ** BUS_GRIND_SHIFT  # g^(push.mu - shift): the bus PoW bit count
     grind_check(fs[0], fs[1], nonce, bus_grind_window)
     fs = absorb(fs, nonce, DS_POW)
     fs = squeeze(fs)
@@ -1250,7 +1248,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
                         claim_cplen_g[GEN ** COORD_CLAIM_SLOT[BLOCK_COORD_OFF[b] + i]] = kappa_g  # cplen = block kappa
                     else:
                         rawv = claim_pool[GEN ** COORD_CLAIM_SLOT[BLOCK_COORD_OFF[b] + i]]
-                    coord_val = GG * rawv
+                    coord_val = GEN * rawv
                 if COORD_TYPE[BLOCK_COORD_OFF[b] + i] == COORD_KIND_INDEX:
                     if s == PULL_SIDE:
                         coord_val = block_index_mle[GEN ** (b - SIDE_BLOCK_START[PULL_SIDE])]
@@ -1384,10 +1382,10 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
         if t == TABLE_SET:
             constraint_eval = col_evals[2] + col_evals[0] * col_evals[1]
         if t == TABLE_DEREF:
-            src = (1 + col_evals[8] + col_evals[9]) * col_evals[11] + col_evals[8] * (GG * GG * col_evals[12]) + col_evals[9] * col_evals[0]
+            src = (1 + col_evals[8] + col_evals[9]) * col_evals[11] + col_evals[8] * (GEN * GEN * col_evals[12]) + col_evals[9] * col_evals[0]
             constraint_eval = (col_evals[4] + col_evals[0] * col_evals[1]) + eta * (col_evals[5] + col_evals[7] * col_evals[2]) + eta * eta * (col_evals[6] + col_evals[0] * col_evals[3]) + eta * eta * eta * (col_evals[10] + src)
         if t == TABLE_JUMP:
-            ft = GG * col_evals[0]
+            ft = GEN * col_evals[0]
             addrs = (col_evals[7] + col_evals[1] * col_evals[4]) + eta * (col_evals[8] + col_evals[1] * col_evals[5]) + eta * eta * (col_evals[9] + col_evals[1] * col_evals[6])
             eta3 = eta * eta * eta
             ind_def = eta3 * (col_evals[14] + col_evals[10] * col_evals[13])
@@ -1419,23 +1417,23 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     cursor *= GEN ** (2 * 2 ** K_SKIP)
     zc_msgs = cursor  # (gamma_c, g_inf) per multilinear round; runtime length 2*n_mlv
     fs = absorb(fs, 18, DS_LEN)
-    fs = absorb(fs, ZCLBLA, DS_BYTE)
-    fs = absorb(fs, ZCLBLB, DS_BYTE)
-    # the full r vector: K_SKIP sampled skips, N_INNER_ROUNDS fixed inner, the rest sampled outer.
+    fs = absorb(fs, ZEROCHECK_LABEL_0, DS_BYTE)
+    fs = absorb(fs, ZEROCHECK_LABEL_1, DS_BYTE)
+    # the full r vector: K_SKIP sampled skips, N_FIXED_CHALLENGE_ROUNDS fixed inner, the rest sampled outer.
     zerocheck_r = HeapBuf(R1CS_M_CAP)
     for i in unroll(0, K_SKIP):
         fs = squeeze(fs)
         rv = fs[0]
         zerocheck_r[GEN ** i] = rv
-    for i in unroll(0, N_INNER_ROUNDS):
-        zerocheck_r[GEN ** (K_SKIP + i)] = INNER7[i]
+    for i in unroll(0, N_FIXED_CHALLENGE_ROUNDS):
+        zerocheck_r[GEN ** (K_SKIP + i)] = FIXED_CHALLENGES[i]
     # outer samples at runtime count: R1CS_M_CAP = K_LOG + tau_5 (certified).
     mr1cs_g = tau_blake3_g * GEN ** K_LOG
     flock_point_fs0 = HeapBuf(R1CS_M_CAP + 2)
     flock_point_fs1 = HeapBuf(R1CS_M_CAP + 2)
-    flock_point_fs0[GEN ** (K_SKIP + N_INNER_ROUNDS)] = fs[0]
-    flock_point_fs1[GEN ** (K_SKIP + N_INNER_ROUNDS)] = fs[1]
-    for xi in mul_range(GEN ** (K_SKIP + N_INNER_ROUNDS), mr1cs_g):
+    flock_point_fs0[GEN ** (K_SKIP + N_FIXED_CHALLENGE_ROUNDS)] = fs[0]
+    flock_point_fs1[GEN ** (K_SKIP + N_FIXED_CHALLENGE_ROUNDS)] = fs[1]
+    for xi in mul_range(GEN ** (K_SKIP + N_FIXED_CHALLENGE_ROUNDS), mr1cs_g):
         point_fs = StackBuf(2)
         point_fs[0] = flock_point_fs0[xi]
         point_fs[1] = flock_point_fs1[xi]
@@ -1458,38 +1456,38 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     lag64(zerocheck_z, lagrange_nums, 2 ** K_SKIP)
     c_eval = 0  # P^C(z): Lagrange-interpolate the round-1 message over the Lambda nodes
     for i in unroll(0, 2 ** K_SKIP):
-        c_eval += lagrange_nums[i] * ILAM[i] * zc_round1[GEN ** (2 ** K_SKIP + i)]
+        c_eval += lagrange_nums[i] * LAGRANGE_INV_LAMBDA[i] * zc_round1[GEN ** (2 ** K_SKIP + i)]
     # combined interpolation at z over ALL 128 phi8 nodes (Lambda values only;
     # the S half is zero by the zerocheck identity). The Lambda-node numerators
     # reuse lagrange_nums: the full-domain product only adds the S-half factor.
     s_half_product = GEN ** 0  # the S-domain half of the combined interpolation (zero by the identity)
     for i in unroll(0, 2 ** K_SKIP):
-        s_half_product *= (zerocheck_z + PHI[i])
+        s_half_product *= (zerocheck_z + PHI8_NODES[i])
     combined_eval = 0
     for i in unroll(0, 2 ** K_SKIP):
-        combined_eval += lagrange_nums[i] * ICMB[i] * (zc_round1[GEN ** i] + zc_round1[GEN ** (2 ** K_SKIP + i)])
+        combined_eval += lagrange_nums[i] * LAGRANGE_INV_COMBINED[i] * (zc_round1[GEN ** i] + zc_round1[GEN ** (2 ** K_SKIP + i)])
     combined_eval *= s_half_product
     zc_running = combined_eval + c_eval  # the zerocheck running claim entering the multilinear rounds
     # multilinear rounds.
     zerocheck_rhos = HeapBuf(R1CS_ROUNDS_CAP)
-    for i in unroll(0, N_INNER_ROUNDS):
+    for i in unroll(0, N_FIXED_CHALLENGE_ROUNDS):
         r_eq = zerocheck_r[GEN ** (K_SKIP + i)]
         fs, gamma_c = fs_next(fs, zc_msgs * GEN ** (2 * i))
         fs, g_inf = fs_next(fs, zc_msgs * GEN ** (2 * i + 1))
-        gamma_ab = (zc_running + r_eq * gamma_c) * I7INV[i]  # recover the g(alpha) evaluation from g(0)+g(1)=claim and the eq weight
+        gamma_ab = (zc_running + r_eq * gamma_c) * ONE_PLUS_CHALLENGE_INV[i]  # recover the g(alpha) evaluation from g(0)+g(1)=claim and the eq weight
         fs = squeeze(fs)
         rho_v = fs[0]
         zerocheck_rhos[GEN ** i] = rho_v
         zc_running = gamma_ab * (1 + rho_v) + gamma_c * rho_v + g_inf * rho_v * (1 + rho_v)
-    # rounds N_INNER_ROUNDS.. at runtime count: K_LOG + tau_5 - K_SKIP rounds total (certified).
+    # rounds N_FIXED_CHALLENGE_ROUNDS.. at runtime count: K_LOG + tau_5 - K_SKIP rounds total (certified).
     nmlv_g = tau_blake3_g * GEN ** (K_LOG - K_SKIP)
     flock_round_fs0 = HeapBuf(R1CS_ROUNDS_CAP + 2)
     flock_round_fs1 = HeapBuf(R1CS_ROUNDS_CAP + 2)
     flock_round_running = HeapBuf(R1CS_ROUNDS_CAP + 2)
-    flock_round_fs0[GEN ** N_INNER_ROUNDS] = fs[0]
-    flock_round_fs1[GEN ** N_INNER_ROUNDS] = fs[1]
-    flock_round_running[GEN ** N_INNER_ROUNDS] = zc_running
-    for xi in mul_range(GEN ** N_INNER_ROUNDS, nmlv_g):
+    flock_round_fs0[GEN ** N_FIXED_CHALLENGE_ROUNDS] = fs[0]
+    flock_round_fs1[GEN ** N_FIXED_CHALLENGE_ROUNDS] = fs[1]
+    flock_round_running[GEN ** N_FIXED_CHALLENGE_ROUNDS] = zc_running
+    for xi in mul_range(GEN ** N_FIXED_CHALLENGE_ROUNDS, nmlv_g):
         round_fs = StackBuf(2)
         round_fs[0] = flock_round_fs0[xi]
         round_fs[1] = flock_round_fs1[xi]
@@ -1528,8 +1526,8 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     matrix_eval = StackBuf(1)
     hint_witness(matrix_eval[0:1], "matpart")
     fs = absorb(fs, 17, DS_LEN)
-    fs = absorb(fs, LCLBLA, DS_BYTE)
-    fs = absorb(fs, LCLBLB, DS_BYTE)
+    fs = absorb(fs, LINCHECK_LABEL_0, DS_BYTE)
+    fs = absorb(fs, LINCHECK_LABEL_1, DS_BYTE)
     fs = squeeze(fs)
     lincheck_alpha = fs[0]
     fs = squeeze(fs)
@@ -1568,13 +1566,13 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     lag64(lincheck_z_skip, skip_nums, 0)
     lincheck_w = 0
     for i in unroll(0, 2 ** K_SKIP):
-        lincheck_w += skip_nums[i] * ISDOM[i] * z_partial[GEN ** i]
+        lincheck_w += skip_nums[i] * LAGRANGE_INV_S[i] * z_partial[GEN ** i]
 
     # ---- stacked mixed opening: ring-switch fronts + claim combination ----
     s_hat_v = cursor  # the two ring-switch slices (2 * FIELD_BITS words, ends the stream)
     fs = absorb(fs, 23, DS_LEN)
-    fs = absorb(fs, OBLBLA, DS_BYTE)
-    fs = absorb(fs, OBLBLB, DS_BYTE)
+    fs = absorb(fs, OPEN_BATCH_LABEL_0, DS_BYTE)
+    fs = absorb(fs, OPEN_BATCH_LABEL_1, DS_BYTE)
     # Ring-switch claim 0 (ab): value lincheck_w, z_skip = lincheck_z_skip, x_outer[0] = lincheck_rs[LINCHECK_ROUNDS-1]
     # (x_inner_rest is the REVERSED lincheck round vector). Claim 1 (c): value
     # c_eval, z_skip = zerocheck_z, x_outer[0] = zerocheck_r[6].
@@ -1585,8 +1583,8 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     r_dprime = HeapBuf(LOG2_FIELD_BITS)
     for rs in unroll(0, 2):
         fs = absorb(fs, 20, DS_LEN)
-        fs = absorb(fs, RSLBLA, DS_BYTE)
-        fs = absorb(fs, RSLBLB, DS_BYTE)
+        fs = absorb(fs, RING_SWITCH_LABEL_0, DS_BYTE)
+        fs = absorb(fs, RING_SWITCH_LABEL_1, DS_BYTE)
         for i in unroll(0, FIELD_BITS):
             fs = obs(fs, s_hat_v[GEN ** (FIELD_BITS * rs + i)])
         # claim check: weights[i] = lambda_{i&63}(z_skip) * eq(x_outer0, i>>6).
@@ -1602,7 +1600,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
         lag64(claim_z_skip, claim_nums, 0)
         claim_check = 0
         for i in unroll(0, 2 ** K_SKIP):
-            lagrange_w = claim_nums[i] * ISDOM[i]
+            lagrange_w = claim_nums[i] * LAGRANGE_INV_S[i]
             claim_check += lagrange_w * ((1 + claim_x_outer_0) * s_hat_v[GEN ** (FIELD_BITS * rs + i)] + claim_x_outer_0 * s_hat_v[GEN ** (FIELD_BITS * rs + 2 ** K_SKIP + i)])  # claim = sum_i lambda_i(z_skip) * eq(x_outer0, i>>6) * s_hat_v[i]
         assert claim_check == claim_val
     # ONE r'' shared by both claims (each slice was absorbed before the
@@ -1661,13 +1659,13 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     gamma_c = fs[0]
     target = gamma_ab * transposed_claims[0] + gamma_c * transposed_claims[1]  # gamma-batch the two ring-switch claims into the opening's target
     # ...then every pooled point claim, each labeled and observed.
-    for j in unroll(0, NCL):
+    for j in unroll(0, N_CLAIMS):
         fs = absorb(fs, 26, DS_LEN)
-        fs = absorb(fs, PDLBLA, DS_BYTE)
-        fs = absorb(fs, PDLBLB, DS_BYTE)
+        fs = absorb(fs, PACKED_DIRECT_LABEL_0, DS_BYTE)
+        fs = absorb(fs, PACKED_DIRECT_LABEL_1, DS_BYTE)
         fs = obs(fs, claim_pool[GEN ** j])
-    gamma_pool = HeapBuf(NCL)
-    for j in unroll(0, NCL):
+    gamma_pool = HeapBuf(N_CLAIMS)
+    for j in unroll(0, N_CLAIMS):
         fs = squeeze(fs)
         gv = fs[0]
         gamma_pool[GEN ** j] = gv
@@ -1694,26 +1692,26 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     # identity inner_sum == sumcheck_target (against the opening-bound target)
     # pins their VALUES, so only range checks and booleanity are enforced here.
     # All selector products use eq(b, r) = 1 + b + r.
-    claim_low_len = HeapBuf(NCL)  # computed low_len per claim (the y-slot
+    claim_low_len = HeapBuf(N_CLAIMS)  # computed low_len per claim (the y-slot
     #                             # overlap pointers below re-read it)
-    claim_nover = HeapBuf(NCL)
-    hint_witness(claim_nover[0:NCL], "claim_nover")
+    claim_nover = HeapBuf(N_CLAIMS)
+    hint_witness(claim_nover[0:N_CLAIMS], "claim_nover")
     pi_cplen = StackBuf(1)
     hint_witness(pi_cplen[0:1], "pi_cplen")
-    claim_qpkd_slot_bits = HeapBuf(LOG2_FIELD_BITS * NCL)
-    hint_witness(claim_qpkd_slot_bits[0:LOG2_FIELD_BITS * NCL], "claim_qpkd_slot_bits")
-    claim_sel_bits = HeapBuf(COUNT_BITS * NCL)
-    hint_witness(claim_sel_bits[0:COUNT_BITS * NCL], "claim_sel_bits")
-    claim_overlap_mask = HeapBuf(YR_SLOT_STRIDE * NCL)
-    hint_witness(claim_overlap_mask[0:YR_SLOT_STRIDE * NCL], "claim_overlap_mask")
-    claim_yslot_bits = HeapBuf(YR_SLOT_STRIDE * NCL)
-    hint_witness(claim_yslot_bits[0:YR_SLOT_STRIDE * NCL], "claim_yslot_bits")
+    claim_qpkd_slot_bits = HeapBuf(LOG2_FIELD_BITS * N_CLAIMS)
+    hint_witness(claim_qpkd_slot_bits[0:LOG2_FIELD_BITS * N_CLAIMS], "claim_qpkd_slot_bits")
+    claim_sel_bits = HeapBuf(COUNT_BITS * N_CLAIMS)
+    hint_witness(claim_sel_bits[0:COUNT_BITS * N_CLAIMS], "claim_sel_bits")
+    claim_overlap_mask = HeapBuf(YR_SLOT_STRIDE * N_CLAIMS)
+    hint_witness(claim_overlap_mask[0:YR_SLOT_STRIDE * N_CLAIMS], "claim_overlap_mask")
+    claim_yslot_bits = HeapBuf(YR_SLOT_STRIDE * N_CLAIMS)
+    hint_witness(claim_yslot_bits[0:YR_SLOT_STRIDE * N_CLAIMS], "claim_yslot_bits")
     rs_yslot_bits = HeapBuf(YR_SLOT_STRIDE)
     hint_witness(rs_yslot_bits[0:YR_SLOT_STRIDE], "rs_yslot_bits")
     rs_sel_bits = HeapBuf(COUNT_BITS)
     hint_witness(rs_sel_bits[0:COUNT_BITS], "rs_sel_bits")
-    claim_weights = HeapBuf(NCL)
-    for j in unroll(0, NCL):
+    claim_weights = HeapBuf(N_CLAIMS)
+    for j in unroll(0, N_CLAIMS):
         # EXACT lengths: cplen is certified, nover (the residual-overlap count)
         # is the ONE hinted branch choice; low_len = cplen - nover and
         # seln = lenris + nover - nlow are divisions off it, and the range
@@ -1840,7 +1838,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     # terms vanish and never depend on out-of-buffer cells. The ring-switch
     # slot is the same, with no overlaps and the hinted YRS bits.
     inner_sum = inner_total
-    for j in unroll(0, NCL):
+    for j in unroll(0, N_CLAIMS):
         slot_point = HeapBuf(YR_LOG_CAP)
         if CLAIM_POINT_BUF[j] == POINT_BUF_ZETA:
             overlap_ptr = zeta * GEN ** CLAIM_POINT_OFF[j] * claim_low_len[GEN ** j]
@@ -1944,11 +1942,11 @@ def main():
     hint_witness(bc_star_hint[0:1], "bc_star_hint")
     mat_stars_hint = StackBuf(2)
     hint_witness(mat_stars_hint[0:2], "mat_stars_hint")
-    # The dual-basis Frobenius powers delta_pows[128k + i] = DELTA[i]^(2^k) are claim-
+    # The dual-basis Frobenius powers delta_pows[128k + i] = TRACE_DUAL_BASIS[i]^(2^k) are claim-
     # and sub-independent: build the table once, read-only afterwards.
     delta_pows = HeapBuf(FIELD_BITS * FIELD_BITS)
     for i in unroll(0, FIELD_BITS):
-        delta_pows[GEN ** i] = DELTA[i]
+        delta_pows[GEN ** i] = TRACE_DUAL_BASIS[i]
     for xk in mul_range(1, GEN ** (FIELD_BITS - 1)):
         delta_row = delta_pows * xk ** FIELD_BITS
         next_delta_row = delta_row * GEN ** FIELD_BITS
@@ -2045,7 +2043,7 @@ def main():
         lag64(z_skip_t, row_nums, 0)
         row_weight = 0
         for i in unroll(0, 2 ** K_SKIP):
-            row_weight += row_nums[i] * ISDOM[i] * eq_rows[GEN ** (2 ** K_SKIP - 2 + i)]
+            row_weight += row_nums[i] * LAGRANGE_INV_S[i] * eq_rows[GEN ** (2 ** K_SKIP - 2 + i)]
         for k in unroll(0, LINCHECK_ROUNDS):
             row_weight *= (1 + defer[GEN ** (t * DEFER_SIZE + BYTECODE_LOG + LOG2_BYTECODE_COLS + 3 + k)] + mat_point[GEN ** (K_SKIP + k)])
         col_weight = 0
