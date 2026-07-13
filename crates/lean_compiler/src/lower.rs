@@ -1982,7 +1982,7 @@ impl FnLower<'_> {
                 self.emit(LOp::Xor { a: la, b: lb, c: x });
                 self.call_cond(callee, args, x, true);
             }
-            Stmt::For { var, lo, hi, body } => self.lower_for(var, *lo, hi, body),
+            Stmt::For { var, lo, hi, body, carry } => self.lower_for(var, *lo, hi, body, carry),
             // Compile-time unrolling: emit the body per integer, the counter
             // substituted as its literal. Every copy executes (this is
             // straight-line code, not a branch), so bindings simply rebind —
@@ -2054,7 +2054,7 @@ impl FnLower<'_> {
     /// Free variables of the body that are bound in the enclosing scope are
     /// captured by value as extra helper parameters (e.g. a `HeapBuf` pointer
     /// threaded through the loop).
-    fn lower_for(&mut self, var: &str, lo: u64, hi: &ForBound, body: &[Stmt]) {
+    fn lower_for(&mut self, var: &str, lo: u64, hi: &ForBound, body: &[Stmt], carry: &[String]) {
         let id = *self.loop_ctr;
         *self.loop_ctr += 1;
         let loop_name = format!("__loop{id}");
@@ -2072,6 +2072,14 @@ impl FnLower<'_> {
         let mut referenced = Vec::new();
         let mut bound = std::collections::HashSet::new();
         bound.insert(var.to_string());
+        for c in carry {
+            assert!(
+                self.vars.contains_key(c) || self.gaddrs.contains_key(c) || self.fconsts.contains_key(c),
+                "`carry ({c})`: not a scalar bound in the enclosing scope"
+            );
+            bound.insert(c.clone());
+        }
+        let res_var = format!("__carry_res{id}");
         for s in body {
             free_vars_stmt(s, &mut referenced, &mut bound);
         }
@@ -2106,11 +2114,19 @@ impl FnLower<'_> {
         if runtime {
             params.push(bound_var.clone());
         }
+        if !carry.is_empty() {
+            params.push(res_var.clone());
+            params.extend(carry.iter().cloned());
+        }
         params.extend(captures.iter().cloned());
         let cap_args = |first: Expr, bound: Expr| {
             let mut a = vec![first];
             if runtime {
                 a.push(bound);
+            }
+            if !carry.is_empty() {
+                a.push(Expr::Var(res_var.clone()));
+                a.extend(carry.iter().map(|c| Expr::Var(c.clone())));
             }
             a.extend(captures.iter().map(|c| Expr::Var(c.clone())));
             a
@@ -2131,6 +2147,15 @@ impl FnLower<'_> {
             loop_name.clone(),
             cap_args(Expr::Var(next_var), Expr::Var(bound_var.clone())),
         ));
+        // Loop-carried finals: the code after a TRUE-TAIL recursion runs only
+        // in the final iteration's frame, so each carried value stores once.
+        for (k, c) in carry.iter().enumerate() {
+            loop_body.push(Stmt::Store(
+                Expr::Var(res_var.clone()),
+                Expr::GPow(k as u128),
+                Expr::Var(c.clone()),
+            ));
+        }
         loop_body.push(Stmt::Return(vec![]));
         let const_params = vec![false; params.len()];
         self.queue.push(Func {
@@ -2142,6 +2167,12 @@ impl FnLower<'_> {
             inline: false,
         });
 
+        // A carried loop allocates the finals buffer and must run at least
+        // once (the finals are only written on the exit path): compile-time
+        // rejected for constant bounds, asserted for runtime ones.
+        if !carry.is_empty() {
+            self.stmt(&Stmt::Let(res_var.clone(), Expr::HeapBuf(carry.len() as u64)));
+        }
         // Enter the loop iff it runs at least once: compile-time for constant
         // bounds (an empty range compiles to nothing), a conditional call on
         // `g^lo != stop` for runtime ones.
@@ -2153,17 +2184,30 @@ impl FnLower<'_> {
                         &cap_args(Expr::GPow(lo as u128), Expr::GPow(*hi as u128)),
                         0,
                     );
+                } else {
+                    assert!(carry.is_empty(), "a `carry` loop must run at least once (empty constant range)");
                 }
             }
             ForBound::Runtime(_) => {
+                if !carry.is_empty() {
+                    self.stmt(&Stmt::AssertNe(Expr::GPow(lo as u128), entry_bound.clone()));
+                }
                 let stmt = Stmt::CallIfNe(
                     Expr::GPow(lo as u128),
                     entry_bound.clone(),
-                    loop_name,
+                    loop_name.clone(),
                     cap_args(Expr::GPow(lo as u128), entry_bound),
                 );
                 self.stmt(&stmt);
             }
+        }
+        // Post-loop: each carried name rebinds to its final (write-once cell
+        // stored by the last iteration's exit path).
+        for (k, c) in carry.iter().enumerate() {
+            self.stmt(&Stmt::Let(
+                c.clone(),
+                Expr::Index(Box::new(Expr::Var(res_var.clone())), Box::new(Expr::GPow(k as u128))),
+            ));
         }
     }
 }

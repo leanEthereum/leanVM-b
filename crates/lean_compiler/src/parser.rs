@@ -445,6 +445,17 @@ impl Parser {
                     body,
                 });
             }
+            let (iter, carry) = match iter.split_once(" carry ") {
+                Some((it, c)) => {
+                    let c = c
+                        .trim()
+                        .strip_prefix('(')
+                        .and_then(|s| s.strip_suffix(')'))
+                        .ok_or("`carry` needs a parenthesized name list: `carry (a, b)`")?;
+                    (it, split_top(c, ',').iter().map(|n| n.trim().to_string()).collect())
+                }
+                None => (iter, Vec::new()),
+            };
             let inner = iter
                 .trim()
                 .strip_prefix("mul_range(")
@@ -469,6 +480,7 @@ impl Parser {
             self.i += 1;
             let body = self.block(indent)?;
             return Ok(Stmt::For {
+                carry,
                 var: var.trim().to_string(),
                 lo,
                 hi,
@@ -951,7 +963,7 @@ fn subst_stmt(s: &Stmt, name: &str, to: &Expr) -> (Stmt, bool) {
             Stmt::TailCallIfNe(e(a), e(b), f.clone(), args.iter().map(e).collect()),
             false,
         ),
-        Stmt::For { var, lo, hi, body } => {
+        Stmt::For { var, lo, hi, body, carry } => {
             let hi = match hi {
                 ForBound::Const(k) => ForBound::Const(*k),
                 ForBound::Runtime(b) => ForBound::Runtime(e(b)),
@@ -968,6 +980,7 @@ fn subst_stmt(s: &Stmt, name: &str, to: &Expr) -> (Stmt, bool) {
                     lo: *lo,
                     hi,
                     body,
+                    carry: carry.clone(),
                 },
                 false,
             )
