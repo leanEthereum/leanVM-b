@@ -16,10 +16,10 @@ PUSH_SIDE = 0
 PULL_SIDE = 1
 COUNT_SIDE = 2
 N_GKR_SIDES = 3
-MU_CAP = MU_CAP_PLACEHOLDER
 # GKR runtime-loop chain capacities: per-tree round positions (triangle
 # rounds plus one slot per layer) and the point triangle (rows x MU_CAP).
 GKR_ROUNDS_CAP = GKR_ROUNDS_CAP_PLACEHOLDER
+MU_CAP = MU_CAP_PLACEHOLDER
 GKR_POINTS_CAP = GKR_POINTS_CAP_PLACEHOLDER
 # The bus PoW window is g^(push.mu - BUS_GRIND_SHIFT), BUS_GRIND_SHIFT =
 # 127 - SECURITY_BITS (see leaf::grand_product_grinding_bits).
@@ -87,8 +87,8 @@ TABLE_BLAKE3 = 5
 N_TABLES = N_TABLES_PLACEHOLDER
 # Phase D (flock reduction): the seven fixed inner challenges (+ inverses of 1+c),
 # the phi8 node table + baked Lagrange inverse denominators (Lambda domain,
-# combined domain, S domain). R1CS_M_CAP/R1CS_ROUNDS_CAP are buffer
-# capacities (the runtime sizes are K_LOG + tau_5 and K_LOG + tau_5 - 6);
+# combined domain, S domain). The zerocheck point/round buffers are sized at
+# runtime in the exponent (m = K_LOG + tau_5 and m - 6, both certified);
 # LINCHECK_ROUNDS = k_log - k_skip is protocol-fixed, PIN_COLUMN the
 # const-pin column.
 # Flock univariate skip: K_SKIP variables fold in one skip round (half-domain
@@ -101,8 +101,6 @@ PHI8_NODES = PHI8_NODES_PLACEHOLDER
 LAGRANGE_INV_LAMBDA = LAGRANGE_INV_LAMBDA_PLACEHOLDER
 LAGRANGE_INV_COMBINED = LAGRANGE_INV_COMBINED_PLACEHOLDER
 LAGRANGE_INV_S = LAGRANGE_INV_S_PLACEHOLDER
-R1CS_M_CAP = R1CS_M_CAP_PLACEHOLDER
-R1CS_ROUNDS_CAP = R1CS_ROUNDS_CAP_PLACEHOLDER
 LINCHECK_ROUNDS = LINCHECK_ROUNDS_PLACEHOLDER
 PIN_COLUMN = PIN_COLUMN_PLACEHOLDER
 K_LOG = K_LOG_PLACEHOLDER
@@ -769,7 +767,6 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     # claim's hinted lengths against it.
     claim_cplen_g = HeapBuf(N_CLAIMS)
     # The ONE shared GKR leaf point (all three trees reduce to it).
-    zeta = HeapBuf(MU_CAP)
 
     # ---- seed (statement pre-bound: hinted sub pi + baked program digest) ----
     fs = [TRANSCRIPT_SEED_0, TRANSCRIPT_SEED_1]  # the sponge state after the b"leanvm-b" domain label
@@ -824,6 +821,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     for b in unroll(SIDE_BLOCK_START[PUSH_SIDE], SIDE_BLOCK_START[PUSH_SIDE + 1]):
         push_total *= g_squares[block_kappa[GEN ** b]]  # g^(sum of 2^kappa)
     g_bus_mu = log2_ceil_in_the_exponent(push_total, g_logs_pow2, g_squares, 0, SIZE_BITS)
+    zeta = HeapBuf(g_bus_mu)  # the ONE shared GKR point: exactly mu coords
 
     # ---- commitment root (2 words), kept for the opening phase ----
     fs, commit_root_0, cursor = fs_next(fs, cursor)
@@ -857,15 +855,16 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     # layer cursor, round state by a position pointer advancing per round.
     gkr_roots = StackBuf(N_GKR_SIDES)
     gkr_claims = StackBuf(N_GKR_SIDES)
-    gkr_layer_fs0 = HeapBuf(MU_CAP + 2)
-    gkr_layer_fs1 = HeapBuf(MU_CAP + 2)
-    gkr_layer_cursor = HeapBuf(MU_CAP + 2)
-    gkr_layer_claim = HeapBuf(MU_CAP + 2)    # push's running value
-    gkr_layer_claim_b = HeapBuf(MU_CAP + 2)  # pull's
-    gkr_layer_claim_c = HeapBuf(MU_CAP + 2)  # count's
-    gkr_layer_lambda = HeapBuf(MU_CAP + 2)   # the layer's combiner
-    gkr_layer_row = HeapBuf(MU_CAP + 2)
-    gkr_layer_round_pos = HeapBuf(MU_CAP + 2)
+    gkr_layer_size = g_bus_mu * GEN ** 2  # runtime size in the exponent: mu + 2 slots
+    gkr_layer_fs0 = HeapBuf(gkr_layer_size)
+    gkr_layer_fs1 = HeapBuf(gkr_layer_size)
+    gkr_layer_cursor = HeapBuf(gkr_layer_size)
+    gkr_layer_claim = HeapBuf(gkr_layer_size)    # push's running value
+    gkr_layer_claim_b = HeapBuf(gkr_layer_size)  # pull's
+    gkr_layer_claim_c = HeapBuf(gkr_layer_size)  # count's
+    gkr_layer_lambda = HeapBuf(gkr_layer_size)   # the layer's combiner
+    gkr_layer_row = HeapBuf(gkr_layer_size)
+    gkr_layer_round_pos = HeapBuf(gkr_layer_size)
     gkr_round_fs0 = HeapBuf(GKR_ROUNDS_CAP)
     gkr_round_fs1 = HeapBuf(GKR_ROUNDS_CAP)
     gkr_round_cursor = HeapBuf(GKR_ROUNDS_CAP)
@@ -1256,17 +1255,17 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     # the rest sampled outer. r is the zerocheck eq-randomness the prover builds
     # round-1 FROM, so it is squeezed BEFORE round-1 is fetched (and round-1 before
     # z, which evaluates it).
-    zerocheck_r = HeapBuf(R1CS_M_CAP)
+    mr1cs_g = tau_blake3_g * GEN ** K_LOG  # runtime m = K_LOG + tau_5 (certified) in the exponent
+    zerocheck_r = HeapBuf(mr1cs_g)
     for i in unroll(0, K_SKIP):
         fs = squeeze(fs)
         rv = fs[0]
         zerocheck_r[GEN ** i] = rv
     for i in unroll(0, N_FIXED_CHALLENGE_ROUNDS):
         zerocheck_r[GEN ** (K_SKIP + i)] = FIXED_CHALLENGES[i]
-    # outer samples at runtime count: R1CS_M_CAP = K_LOG + tau_5 (certified).
-    mr1cs_g = tau_blake3_g * GEN ** K_LOG
-    flock_point_fs0 = HeapBuf(R1CS_M_CAP + 2)
-    flock_point_fs1 = HeapBuf(R1CS_M_CAP + 2)
+    # outer samples at runtime count: m = K_LOG + tau_5 (certified).
+    flock_point_fs0 = HeapBuf(mr1cs_g * GEN ** 2)
+    flock_point_fs1 = HeapBuf(mr1cs_g * GEN ** 2)
     flock_point_fs0[GEN ** (K_SKIP + N_FIXED_CHALLENGE_ROUNDS)] = fs[0]
     flock_point_fs1[GEN ** (K_SKIP + N_FIXED_CHALLENGE_ROUNDS)] = fs[1]
     for xi in mul_range(GEN ** (K_SKIP + N_FIXED_CHALLENGE_ROUNDS), mr1cs_g):
@@ -1304,7 +1303,8 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     combined_eval *= s_half_product
     zc_running = combined_eval + c_eval  # the zerocheck running claim entering the multilinear rounds
     # multilinear rounds.
-    zerocheck_rhos = HeapBuf(R1CS_ROUNDS_CAP)
+    mr1cs_rounds_g = mr1cs_g * INV_GEN ** 6  # runtime zerocheck mlv rounds: m - 6
+    zerocheck_rhos = HeapBuf(mr1cs_rounds_g)
     for i in unroll(0, N_FIXED_CHALLENGE_ROUNDS):
         r_eq = zerocheck_r[GEN ** (K_SKIP + i)]
         fs, gamma_c, cursor = fs_next(fs, cursor)  # (gamma_c, g_inf) per round, walked in order
@@ -1316,10 +1316,11 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
         zc_running = gamma_ab * (1 + rho_v) + gamma_c * rho_v + g_inf * rho_v * (1 + rho_v)
     # rounds N_FIXED_CHALLENGE_ROUNDS.. at runtime count: K_LOG + tau_5 - K_SKIP rounds total (certified).
     nmlv_g = tau_blake3_g * GEN ** (K_LOG - K_SKIP)
-    flock_round_fs0 = HeapBuf(R1CS_ROUNDS_CAP + 2)
-    flock_round_fs1 = HeapBuf(R1CS_ROUNDS_CAP + 2)
-    flock_round_running = HeapBuf(R1CS_ROUNDS_CAP + 2)
-    flock_round_cursor = HeapBuf(R1CS_ROUNDS_CAP + 2)  # the walking cursor, threaded like the fs state
+    flock_round_size = mr1cs_rounds_g * GEN ** 2
+    flock_round_fs0 = HeapBuf(flock_round_size)
+    flock_round_fs1 = HeapBuf(flock_round_size)
+    flock_round_running = HeapBuf(flock_round_size)
+    flock_round_cursor = HeapBuf(flock_round_size)  # the walking cursor, threaded like the fs state
     flock_round_fs0[GEN ** N_FIXED_CHALLENGE_ROUNDS] = fs[0]
     flock_round_fs1[GEN ** N_FIXED_CHALLENGE_ROUNDS] = fs[1]
     flock_round_running[GEN ** N_FIXED_CHALLENGE_ROUNDS] = zc_running

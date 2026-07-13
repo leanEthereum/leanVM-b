@@ -1085,9 +1085,6 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("LAGRANGE_INV_LAMBDA", flds(&ilam));
     ps("LAGRANGE_INV_COMBINED", flds(&icmb));
     ps("LAGRANGE_INV_S", flds(&isdom));
-    let mr1cs_cap = flock::blake3::K_LOG + 33;
-    ps("R1CS_M_CAP", mr1cs_cap.to_string());
-    ps("R1CS_ROUNDS_CAP", (mr1cs_cap - 6).to_string());
     ps("LINCHECK_ROUNDS", lcrounds.to_string());
     let pincol = flock::blake3::build_block_r1cs(taus[5].max(MINB3)).const_pin.expect("blake3 r1cs has a const pin");
     ps("PIN_COLUMN", pincol.to_string());
