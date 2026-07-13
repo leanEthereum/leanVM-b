@@ -855,16 +855,6 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     # layer cursor, round state by a position pointer advancing per round.
     gkr_roots = StackBuf(N_GKR_SIDES)
     gkr_claims = StackBuf(N_GKR_SIDES)
-    gkr_layer_size = g_bus_mu * GEN ** 2  # runtime size in the exponent: mu + 2 slots
-    gkr_layer_fs0 = HeapBuf(gkr_layer_size)
-    gkr_layer_fs1 = HeapBuf(gkr_layer_size)
-    gkr_layer_cursor = HeapBuf(gkr_layer_size)
-    gkr_layer_claim = HeapBuf(gkr_layer_size)    # push's running value
-    gkr_layer_claim_b = HeapBuf(gkr_layer_size)  # pull's
-    gkr_layer_claim_c = HeapBuf(gkr_layer_size)  # count's
-    gkr_layer_lambda = HeapBuf(gkr_layer_size)   # the layer's combiner
-    gkr_layer_row = HeapBuf(gkr_layer_size)
-    gkr_layer_round_pos = HeapBuf(gkr_layer_size)
     gkr_round_fs0 = HeapBuf(GKR_ROUNDS_CAP)
     gkr_round_fs1 = HeapBuf(GKR_ROUNDS_CAP)
     gkr_round_cursor = HeapBuf(GKR_ROUNDS_CAP)
@@ -876,25 +866,26 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     fs, root_pull, cursor = fs_next(fs, cursor)
     fs, root_count, cursor = fs_next(fs, cursor)
     fs = squeeze(fs)
-    gkr_layer_lambda[GEN ** 0] = fs[0]  # λ over the three roots
-    gkr_layer_fs0[GEN ** 0] = fs[0]
-    gkr_layer_fs1[GEN ** 0] = fs[1]
-    gkr_layer_cursor[GEN ** 0] = cursor
-    gkr_layer_claim[GEN ** 0] = root_push
-    gkr_layer_claim_b[GEN ** 0] = root_pull
-    gkr_layer_claim_c[GEN ** 0] = root_count
-    gkr_layer_row[GEN ** 0] = gkr_pts
-    gkr_layer_round_pos[GEN ** 0] = GEN ** 0
-    for x_layer in mul_range(1, g_bus_mu):
-        layer_fs = [gkr_layer_fs0[x_layer], gkr_layer_fs1[x_layer]]
-        lam = gkr_layer_lambda[x_layer]
-        claim_l = gkr_layer_claim[x_layer] + lam * (gkr_layer_claim_b[x_layer] + lam * gkr_layer_claim_c[x_layer])
-        point_row = gkr_layer_row[x_layer]
-        round_pos = gkr_layer_round_pos[x_layer]
+    llam = fs[0]  # λ over the three roots
+    lfs0 = fs[0]
+    lfs1 = fs[1]
+    lcur = cursor
+    lclaim = root_push
+    lclaim_b = root_pull
+    lclaim_c = root_count
+    lrow = gkr_pts
+    lpos = GEN ** 0
+    # Layer state rides the loop's own frames (carry): the compiler threads
+    # each rebinding to the next iteration - no hand-rolled heap chains.
+    for x_layer in mul_range(1, g_bus_mu) carry (lfs0, lfs1, lcur, lclaim, lclaim_b, lclaim_c, llam, lrow, lpos):
+        lam = llam
+        claim_l = lclaim + lam * (lclaim_b + lam * lclaim_c)
+        point_row = lrow
+        round_pos = lpos
         nextrow = point_row * GEN ** MU_CAP
-        gkr_round_fs0[round_pos] = layer_fs[0]
-        gkr_round_fs1[round_pos] = layer_fs[1]
-        gkr_round_cursor[round_pos] = gkr_layer_cursor[x_layer]
+        gkr_round_fs0[round_pos] = lfs0
+        gkr_round_fs1[round_pos] = lfs1
+        gkr_round_cursor[round_pos] = lcur
         gkr_round_claim[round_pos] = claim_l
         gkr_round_eq[round_pos] = 1
         for x_round in mul_range(1, x_layer):
@@ -922,28 +913,27 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
         tail_fs = squeeze(tail_fs)
         layer_challenge = tail_fs[0]
         nextrow[GEN ** 0] = layer_challenge
-        xln = x_layer * GEN
-        gkr_layer_claim[xln] = e0_push + layer_challenge * (e0_push + e1_push)
-        gkr_layer_claim_b[xln] = e0_pull + layer_challenge * (e0_pull + e1_pull)
-        gkr_layer_claim_c[xln] = e0_count + layer_challenge * (e0_count + e1_count)
+        lclaim = e0_push + layer_challenge * (e0_push + e1_push)
+        lclaim_b = e0_pull + layer_challenge * (e0_pull + e1_pull)
+        lclaim_c = e0_count + layer_challenge * (e0_count + e1_count)
         tail_fs = squeeze(tail_fs)  # fresh λ pins the tail individuals
-        gkr_layer_lambda[xln] = tail_fs[0]
-        gkr_layer_fs0[xln] = tail_fs[0]
-        gkr_layer_fs1[xln] = tail_fs[1]
-        gkr_layer_cursor[xln] = tcur
-        gkr_layer_row[xln] = nextrow
-        gkr_layer_round_pos[xln] = round_pos * x_layer * GEN
-    fs = [gkr_layer_fs0[g_bus_mu], gkr_layer_fs1[g_bus_mu]]
-    cursor = gkr_layer_cursor[g_bus_mu]
-    final_point_row = gkr_layer_row[g_bus_mu]
+        llam = tail_fs[0]
+        lfs0 = tail_fs[0]
+        lfs1 = tail_fs[1]
+        lcur = tcur
+        lrow = nextrow
+        lpos = round_pos * x_layer * GEN
+    fs = [lfs0, lfs1]
+    cursor = lcur
+    final_point_row = lrow
     for xt in mul_range(1, g_bus_mu):
         zeta[xt] = final_point_row[xt]  # the ONE shared point
     gkr_roots[PUSH_SIDE] = root_push
     gkr_roots[PULL_SIDE] = root_pull
     gkr_roots[COUNT_SIDE] = root_count
-    gkr_claims[PUSH_SIDE] = gkr_layer_claim[g_bus_mu]
-    gkr_claims[PULL_SIDE] = gkr_layer_claim_b[g_bus_mu]
-    gkr_claims[COUNT_SIDE] = gkr_layer_claim_c[g_bus_mu]
+    gkr_claims[PUSH_SIDE] = lclaim
+    gkr_claims[PULL_SIDE] = lclaim_b
+    gkr_claims[COUNT_SIDE] = lclaim_c
 
     # ---- count root nonzero ----
     assert gkr_roots[COUNT_SIDE] != 0  # count-tree root nonzero: no read count self-cancels
@@ -1316,35 +1306,27 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
         zc_running = gamma_ab * (1 + rho_v) + gamma_c * rho_v + g_inf * rho_v * (1 + rho_v)
     # rounds N_FIXED_CHALLENGE_ROUNDS.. at runtime count: K_LOG + tau_5 - K_SKIP rounds total (certified).
     nmlv_g = tau_blake3_g * GEN ** (K_LOG - K_SKIP)
-    flock_round_size = mr1cs_rounds_g * GEN ** 2
-    flock_round_fs0 = HeapBuf(flock_round_size)
-    flock_round_fs1 = HeapBuf(flock_round_size)
-    flock_round_running = HeapBuf(flock_round_size)
-    flock_round_cursor = HeapBuf(flock_round_size)  # the walking cursor, threaded like the fs state
-    flock_round_fs0[GEN ** N_FIXED_CHALLENGE_ROUNDS] = fs[0]
-    flock_round_fs1[GEN ** N_FIXED_CHALLENGE_ROUNDS] = fs[1]
-    flock_round_running[GEN ** N_FIXED_CHALLENGE_ROUNDS] = zc_running
-    flock_round_cursor[GEN ** N_FIXED_CHALLENGE_ROUNDS] = cursor
-    for xi in mul_range(GEN ** N_FIXED_CHALLENGE_ROUNDS, nmlv_g):
-        round_fs = [flock_round_fs0[xi], flock_round_fs1[xi]]
-        round_running = flock_round_running[xi]
+    # Round state rides the loop's own frames (carry); only the rho vector
+    # (read later by the lincheck replay) stays a real array.
+    ffs0 = fs[0]
+    ffs1 = fs[1]
+    frun = zc_running
+    fcur = cursor
+    for xi in mul_range(GEN ** N_FIXED_CHALLENGE_ROUNDS, nmlv_g) carry (ffs0, ffs1, frun, fcur):
+        round_fs = [ffs0, ffs1]
         r_eq = zerocheck_r[GEN ** K_SKIP * xi]
-        cur_i = flock_round_cursor[xi]
-        round_fs, gamma_c, cur_i = fs_next(round_fs, cur_i)
-        round_fs, g_inf, cur_i = fs_next(round_fs, cur_i)
-        gamma_ab = (round_running + r_eq * gamma_c) / (1 + r_eq)
+        round_fs, gamma_c, fcur = fs_next(round_fs, fcur)
+        round_fs, g_inf, fcur = fs_next(round_fs, fcur)
+        gamma_ab = (frun + r_eq * gamma_c) / (1 + r_eq)
         round_fs = squeeze(round_fs)
         rho_v = round_fs[0]
         zerocheck_rhos[xi] = rho_v
-        round_running = gamma_ab * (1 + rho_v) + gamma_c * rho_v + g_inf * rho_v * (1 + rho_v)
-        xin = xi * GEN
-        flock_round_fs0[xin] = round_fs[0]
-        flock_round_fs1[xin] = round_fs[1]
-        flock_round_running[xin] = round_running
-        flock_round_cursor[xin] = cur_i
-    fs = [flock_round_fs0[nmlv_g], flock_round_fs1[nmlv_g]]
-    zc_running = flock_round_running[nmlv_g]
-    cursor = flock_round_cursor[nmlv_g]  # walked past all 2*n_mlv round words, now at a_eval
+        frun = gamma_ab * (1 + rho_v) + gamma_c * rho_v + g_inf * rho_v * (1 + rho_v)
+        ffs0 = round_fs[0]
+        ffs1 = round_fs[1]
+    fs = [ffs0, ffs1]
+    zc_running = frun
+    cursor = fcur  # walked past all 2*n_mlv round words, now at a_eval
     # final: zc_running == a_eval * b_eval; observe both.
     fs, a_eval, cursor = fs_next(fs, cursor)
     fs, b_eval, cursor = fs_next(fs, cursor)
