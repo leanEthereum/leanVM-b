@@ -1,0 +1,16 @@
+[package]
+name = "xmss"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+blake3.workspace = true
+rand.workspace = true
+rayon.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+bincode.workspace = true
