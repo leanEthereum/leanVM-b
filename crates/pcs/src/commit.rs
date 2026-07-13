@@ -35,12 +35,6 @@ pub struct PcsParams {
     pub log_inv_rate: usize,
     /// Number of parallel sub-NTTs = `2^log_batch_size`. Default 5 (= 32 lanes).
     pub log_batch_size: usize,
-    /// Ligerito parameter profile (fast/slim/secure). Selects which embedded
-    /// security config (queries, OOD samples, grinding schedule) drives the
-    /// PCS opening; must agree with `log_inv_rate`
-    /// (`profile.log_inv_rate() == log_inv_rate`). Defaults to `Fast`.
-    #[serde(default)]
-    pub profile: crate::ligerito::LigeritoProfile,
 }
 
 impl PcsParams {
@@ -294,7 +288,6 @@ mod tests {
             m,
             log_inv_rate: 1,
             log_batch_size: 1,
-            profile: Default::default(),
         }
     }
 
@@ -311,8 +304,7 @@ mod tests {
                 m,
                 log_inv_rate,
                 log_batch_size,
-                profile: Default::default(),
-            };
+                };
             let z = rng.bits(1 << m);
             let z_packed = super::super::pack::pack_witness(&z, m);
 

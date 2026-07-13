@@ -5,13 +5,14 @@
 //! `W_λ = Σ_j λ^j eq(point_j,·)` and target `C_λ = Σ_j λ^j value_j`, opened in a
 //! single Ligerito run — the verifier evaluates `W_λ` itself, so it never travels.
 //!
-//! Security: the [`PROFILE`] is Ligerito `Secure` — rate 1/2, unique-decoding
-//! regime (list size 1, no out-of-domain binding), 120-bit round-by-round soundness.
+//! Security: Ligerito's one shipped configuration — rate 1/2, unique-decoding
+//! regime (list size 1, no out-of-domain binding), 120-bit round-by-round soundness
+//! ([`::pcs::ligerito::SECURITY_BITS`]).
 
 use primitives::field::F128;
 use crate::transcript::{ProverState, VerifierState};
 
-use ::pcs::ligerito::{LigeritoProfile, LigeritoSecurityConfig, ProverConfig, VerifierConfig};
+use ::pcs::ligerito::{LigeritoSecurityConfig, ProverConfig, VerifierConfig};
 pub use ::pcs::{Commitment, PcsParams, ProverData, StackedOpeningSummary};
 use ::pcs::{StackClaim, open_batch_mixed_ligerito_stacked, verify_opening_batch_mixed_ligerito_stacked};
 use ::pcs::PaddingSpec;
@@ -21,28 +22,22 @@ use ::pcs::PaddingSpec;
 /// `m = μ + LOG_PACKING`.
 const LOG_PACKING: usize = 7;
 /// Row-batch lanes `2^LOG_BATCH`: also the Merkle leaf width (`2^LOG_BATCH`
-/// F128/leaf) and Ligerito's L0 fold count (`initial_k` — the shipped configs
-/// require exactly 6). Larger ⇒ far fewer Merkle nodes to hash at the cost of
-/// fatter query openings.
+/// F128/leaf) and Ligerito's INITIAL folding factor (must equal
+/// [`::pcs::ligerito::INITIAL_K`], checked below). Larger ⇒ far fewer Merkle
+/// nodes to hash at the cost of fatter query openings.
 const LOG_BATCH: usize = 6;
-/// L0 rate `2^-1` — the `Fast` profile's rate (doc §3).
+const _: () = assert!(LOG_BATCH == ::pcs::ligerito::INITIAL_K);
+/// L0 rate `2^-1` (doc §3) — must equal [`::pcs::ligerito::LOG_INV_RATE_0`].
 pub const LOG_INV_RATE: usize = 1;
-/// Ligerito security profile: rate 1/2, unique-decoding regime (list size 1,
-/// no out-of-domain binding), **120-bit** round-by-round soundness. Same rate
-/// as `Fast` (so `LOG_INV_RATE` is unchanged); the extra soundness comes from
-/// more queries per level, i.e. a somewhat larger proof. Its bit target must
-/// match the crate-wide [`crate::SECURITY_BITS`] (checked below).
-pub const PROFILE: LigeritoProfile = LigeritoProfile::Secure;
-
-// The PCS profile and the bus grinding both target `SECURITY_BITS`; keep them
-// in sync — a stronger profile without bumping the constant (or vice versa)
+const _: () = assert!(LOG_INV_RATE == ::pcs::ligerito::LOG_INV_RATE_0);
+// The PCS and the bus grinding both target `SECURITY_BITS`; keep them in
+// sync — a stronger PCS target without bumping the constant (or vice versa)
 // would leave one round below the intended level.
-const _: () = assert!(PROFILE.security_bits() == crate::SECURITY_BITS as usize);
+const _: () = assert!(::pcs::ligerito::SECURITY_BITS == crate::SECURITY_BITS as usize);
 /// Minimum committed-witness log-size: Ligerito's level ladder needs every level's
-/// block length to accommodate its query count. The `Secure` profile's
-/// unique-decoding regime uses more queries than `Fast`, so its floor is higher
-/// — feasible from `μ = 14` (flock `m = 21`); we set `μ = 15` (`m = 22`, the
-/// shipped-config minimum) for a one-level margin. `witness::placements_of`
+/// block length to accommodate its query count under the unique-decoding
+/// regime's query counts — feasible from `μ = 14` (flock `m = 21`); we set
+/// `μ = 15` (`m = 22`) for a one-level margin. `witness::placements_of`
 /// zero-pads smaller stacks up to this floor (512 KB — negligible; real
 /// workloads are far above it).
 pub const MIN_MU: usize = 15;
@@ -56,13 +51,12 @@ fn params_for(mu: usize) -> PcsParams {
         m: mu + LOG_PACKING,
         log_inv_rate: LOG_INV_RATE,
         log_batch_size: LOG_BATCH,
-        profile: PROFILE,
     }
 }
 
 /// The Ligerito (prover, verifier) config pair for a `2^μ`-element witness,
-/// derived from the [`PROFILE`]'s security analysis and memoized per `μ` (the
-/// derivation is a pure function of `(m, profile)`, so both sides agree).
+/// derived from the security analysis and memoized per `μ` (the derivation is
+/// a pure function of `m`, so both sides agree).
 fn lig_configs(mu: usize) -> std::sync::Arc<(ProverConfig, VerifierConfig)> {
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex, OnceLock};
@@ -71,9 +65,9 @@ fn lig_configs(mu: usize) -> std::sync::Arc<(ProverConfig, VerifierConfig)> {
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     let mut map = cache.lock().expect("ligerito config cache poisoned");
     Arc::clone(map.entry(mu).or_insert_with(|| {
-        let pair = LigeritoSecurityConfig::derive_profile(mu + LOG_PACKING, PROFILE)
+        let pair = LigeritoSecurityConfig::derive_config(mu + LOG_PACKING)
             .and_then(|sec| sec.to_prover_verifier_configs())
-            .unwrap_or_else(|e| panic!("ligerito {PROFILE:?} config for mu={mu}: {e}"));
+            .unwrap_or_else(|e| panic!("ligerito config for mu={mu}: {e}"));
         Arc::new(pair)
     }))
 }

@@ -8,9 +8,9 @@
 //!
 //! `Blake3Setup::new` (circuit construction, one-time preprocessing
 //! independent of the witness) runs OUTSIDE the timed region, matching how
-//! `cpu::prove` warms it off the critical path. The Ligerito profile is
-//! `Secure`, the one leanVM-b commits with, so the numbers are comparable to
-//! the `[open]` / `commit` stages of the xmss benchmark.
+//! `cpu::prove` warms it off the critical path. The Ligerito configuration is
+//! the one leanVM-b commits with, so the numbers are comparable to the
+//! `[open]` / `commit` stages of the xmss benchmark.
 //!
 //! Run (N = number of compressions; the xmss n=820 workload is ~130k = 181 + 158·820):
 //! ```text
@@ -23,7 +23,6 @@ use flock::blake3::{
     Blake3Setup, Compression, K_LOG, generate_witness_with_ab_packed_and_lincheck,
     min_n_blocks_log, pinned_compression,
 };
-use pcs::ligerito::LigeritoProfile;
 use pcs::{Commitment, LOG_PACKING, PcsParams, ProverState, VerifierState};
 use primitives::field::F128;
 
@@ -95,7 +94,6 @@ fn blake3_batch_prove_verify() {
         m: mu + LOG_PACKING,
         log_inv_rate: 1,
         log_batch_size: 6,
-        profile: LigeritoProfile::Secure,
     };
 
     let mut ps = ProverState::new(b"flock-blake3-batch", &[]);
@@ -124,7 +122,7 @@ fn blake3_batch_prove_verify() {
     vs.finish().expect("stream fully consumed");
     let verify_ms = t.elapsed().as_secs_f64() * 1e3;
 
-    println!("\nflock BLAKE3 batch proving (Secure profile), {n} compressions (2^{n_log} slots)");
+    println!("\nflock BLAKE3 batch proving, {n} compressions (2^{n_log} slots)");
     println!("  setup (preprocessing, excluded) : {setup_ms:>8.1} ms");
     println!("  witness-gen                     : {witness_ms:>8.1} ms");
     println!("  commit                          : {commit_ms:>8.1} ms");

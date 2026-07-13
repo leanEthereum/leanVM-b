@@ -1823,10 +1823,7 @@ fn stacked_lig_configs(
     pcs::ligerito::ProverConfig,
     pcs::ligerito::VerifierConfig,
 ) {
-    pcs::ligerito::LigeritoSecurityConfig::derive_profile(
-        stack_commitment.params.m,
-        stack_commitment.params.profile,
-    )
+    pcs::ligerito::LigeritoSecurityConfig::derive_config(stack_commitment.params.m)
     .and_then(|sec| sec.to_prover_verifier_configs())
     .expect("ligerito config for stacked open")
 }

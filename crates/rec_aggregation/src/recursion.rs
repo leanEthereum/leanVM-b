@@ -558,10 +558,7 @@ fn gen_verify(
 
     // ---- the stacked opening: config + the opening summary ----
     let stack_mu = l.m;
-    let vcfg = pcs::ligerito::LigeritoSecurityConfig::derive_profile(
-        stack_mu + 7,
-        pcs::ligerito::LigeritoProfile::Secure,
-    )
+    let vcfg = pcs::ligerito::LigeritoSecurityConfig::derive_config(stack_mu + 7)
     .and_then(|s| s.to_prover_verifier_configs())
     .expect("stack ligerito config")
     .1;
@@ -1098,7 +1095,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
 
     // ---- LIG candidate tables (fixed [minm, maxm] range; open_stacked config) ----
     let oshape = |m: usize| {
-        let vc = pcs::ligerito::LigeritoSecurityConfig::derive_profile(m + 7, pcs::ligerito::LigeritoProfile::Secure)
+        let vc = pcs::ligerito::LigeritoSecurityConfig::derive_config(m + 7)
             .and_then(|s| s.to_prover_verifier_configs()).expect("candidate ligerito config").1;
         let sh = vc.level_shapes(m);
         let (cn, cr) = (sh.levels, vc.level_steps);

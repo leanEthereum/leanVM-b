@@ -14,9 +14,10 @@
 //! and the shared [`fiat_shamir::sponge::Sponge`] for Fiat-Shamir.
 //!
 //! Soundness regimes (our paper App. C.3): unique decoding (Thm `ca-udr`,
-//! BCHKS25 Cor. 1.4, `Secure` profile) and Johnson list decoding with
-//! out-of-domain binding (Thm `ca-johnson`, BCHKS25 Thm 4.6 + Johnson
-//! interleaved list bound, `Fast`/`Slim` profiles). See [`SoundnessRegime`].
+//! BCHKS25 Cor. 1.4 — the ONE shipped configuration, see [`SECURITY_BITS`])
+//! and Johnson list decoding with out-of-domain binding (Thm `ca-johnson`,
+//! BCHKS25 Thm 4.6 + Johnson interleaved list bound — hand-built configs
+//! only). See [`SoundnessRegime`].
 //!
 //! ## Protocol
 //! 1. Commit f^0: reshape into `num_interleaved × msg_cols`, RS-encode each
@@ -42,43 +43,38 @@ use serde::{Deserialize, Serialize};
 // Config
 // ===================================================================
 
-/// Named parameter profile for the Ligerito PCS. Decouples "which security
-/// config" from the raw code rate: `Fast` and `Secure` share rate 1/2 but
-/// differ in regime/target, so the rate alone cannot key the config lookup.
-///
-/// - `Fast`: rate 1/2, Johnson list-decoding regime with OOD binding,
-///   100-bit overall soundness. Default.
-/// - `Slim`: rate 1/4, Johnson + OOD + 16-bit query grinding, 100-bit
-///   overall. Roughly half the proof, ~2x the L0 encoding work.
-/// - `Secure`: rate 1/2, unique-decoding regime (list size 1, no OOD),
-///   120-bit overall soundness. Largest proof, most conservative analysis.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum LigeritoProfile {
-    #[default]
-    Fast,
-    Slim,
-    Secure,
-}
+// The ONE Ligerito configuration this repo ships (the old `Secure` profile):
+// rate-1/2 unique-decoding regime (list size 1, no OOD binding), 120-bit
+// round-by-round soundness. `SoundnessRegime::JohnsonOod` machinery survives
+// only for hand-built configs (analysis / tests).
 
-impl LigeritoProfile {
-    /// L0 code rate index for this profile (`rho_0 = 2^-log_inv_rate`).
-    pub fn log_inv_rate(self) -> usize {
-        match self {
-            Self::Fast | Self::Secure => 1,
-            Self::Slim => 2,
-        }
-    }
-    /// Round-by-round soundness target (bits) the profile's configs are derived
-    /// for: every round must individually clear this level (total security =
-    /// min over rounds, per the Fiat-Shamir / `soundcalc` convention).
-    pub const fn security_bits(self) -> usize {
-        match self {
-            Self::Fast | Self::Slim => 100,
-            Self::Secure => 120,
-        }
-    }
-}
+/// Round-by-round soundness target (bits): every round must individually
+/// clear this level (total security = min over rounds, per the Fiat-Shamir /
+/// `soundcalc` convention).
+pub const SECURITY_BITS: usize = 120;
+
+/// L0 code rate index: `rho_0 = 2^-LOG_INV_RATE_0` (rate 1/2).
+pub const LOG_INV_RATE_0: usize = 1;
+
+/// Query-phase grinding bits: with `g` bits ground, the per-level queries only
+/// need to cover `SECURITY_BITS - g` bits (validation rule 3) — about 15%
+/// fewer queries, which recursion feels directly (the query walk dominates a
+/// guest).
+pub const QUERY_GRINDING_BITS: usize = 18;
+
+/// The INITIAL folding factor: L0 folds the commit's `2^INITIAL_K` interleaved
+/// rows with the first `INITIAL_K` sumcheck challenges. Must equal the
+/// upstream `PcsParams::log_batch_size`, so the L0 commit is reused without
+/// re-committing.
+pub const INITIAL_K: usize = 6;
+
+/// The folding factor of every SUBSEQUENT level: each folds `2^LEVEL_K` rows.
+pub const LEVEL_K: usize = 3;
+
+/// Folding stops once at most this many variables remain: the residual
+/// polynomial (`yr`, at most `2^RESIDUAL_MAX_LOG` coefficients) is sent in
+/// clear instead of committed and folded further.
+pub const RESIDUAL_MAX_LOG: usize = 5;
 
 #[derive(Clone, Debug)]
 pub struct ProverConfig {
@@ -90,7 +86,7 @@ pub struct ProverConfig {
     pub level_log_msg_cols: Vec<usize>,
     pub level_ks: Vec<usize>,
     /// Per-level query counts (L0, L1, ..., L_r). Length = level_steps + 1.
-    /// [`LigeritoSecurityConfig::derive_profile`] fills these from the
+    /// [`LigeritoSecurityConfig::derive_config`] fills these from the
     /// per-level soundness analysis.
     pub queries: Vec<usize>,
     /// Per-level **query-phase** PoW grinding bits (L0, L1, ..., L_r), ground
@@ -211,7 +207,7 @@ struct LadderShape {
     yr_log_n: usize,
 }
 
-/// Shared shape derivation behind [`LigeritoSecurityConfig::derive_profile`]: 3-bit level folds with the
+/// Shared shape derivation behind [`LigeritoSecurityConfig::derive_config`]: [`LEVEL_K`]-bit level folds with the
 /// rate index increasing by ≥ 1 per level, bumped further whenever the block
 /// length couldn't accommodate `queries_at_rate(rate)` distinct queries.
 fn derive_ladder_shape(
@@ -235,8 +231,8 @@ fn derive_ladder_shape(
     if (1usize << (n_running + rate_running)) < queries_at_rate(rate_running) {
         return Err("L0 block_len < queries — log_n too small for chosen rate".into());
     }
-    while n_running > 5 {
-        let k = 3.min(n_running);
+    while n_running > RESIDUAL_MAX_LOG {
+        let k = LEVEL_K.min(n_running);
         let log_msg_cols_next = n_running - k;
         let mut next_rate = rate_running + 1;
         loop {
@@ -540,7 +536,7 @@ fn udr_per_query_bits(log_inv_rate: usize, log_msg_cols: usize, proximity_loss: 
 /// finite-length `3/(δ·n)` backoff. Length-agnostic — used for ladder-shape
 /// feasibility (and the test-only `udr_queries`); the per-level configs use the
 /// n-aware [`udr_per_query_bits`]. The dropped backoff slightly *under*-counts
-/// queries, but the per-level block-length check in `derive_profile` (and the
+/// queries, but the per-level block-length check in `derive_config` (and the
 /// `+5` feasibility padding) catch any shape that wouldn't hold the real,
 /// n-aware query count.
 fn udr_per_query_bits_asymptotic(log_inv_rate: usize) -> f64 {
@@ -914,50 +910,30 @@ impl LigeritoSecurityConfig {
         Ok(())
     }
 
-    /// Derive the security config for a named [`LigeritoProfile`] at witness
-    /// size `m`. Each profile targets its bit level under **round-by-round
-    /// soundness**: every error term (pg + fold grinding, query + query
-    /// grinding, OOD) clears the target individually, and the protocol's
-    /// security is the *minimum* over rounds — the notion that governs
-    /// Fiat-Shamir security (cf. Ethereum's `soundcalc`), not a whole-protocol
-    /// union bound over terms. The three shipped profiles:
-    ///
-    /// - `Fast`: JohnsonOod, rate 1/2, η = 0.02, 100 bits per round.
-    /// - `Slim`: JohnsonOod, rate 1/4, η = 0.02, 16-bit query grinding at
-    ///   every level, 100 bits per round.
-    /// - `Secure`: Udr, rate 1/2, ε* = 1e-3, 120 bits per round.
-    pub fn derive_profile(m: usize, profile: LigeritoProfile) -> Result<Self, String> {
-        /// Johnson slack below the Johnson radius, flat across levels.
-        const JOHNSON_ETA: f64 = 0.02;
-        let target_bits = profile.security_bits();
-        let log_inv_rate = profile.log_inv_rate();
-        // Query-phase grinding trades prover PoW for query count: with g bits
-        // of grinding, the per-level queries only need to cover
-        // `target - g` bits (validation rule 3). Secure: 120-bit rounds with
-        // 18 bits ground, so queries cover 102 — about 15% fewer queries,
-        // which recursion feels directly (the query walk dominates a guest).
-        let query_grind: usize = match profile {
-            LigeritoProfile::Slim => 16,
-            LigeritoProfile::Secure => 18,
-            LigeritoProfile::Fast => 0,
-        };
+    /// Derive THE security config at witness size `m`: Udr regime, rate
+    /// `2^-LOG_INV_RATE_0`, ε* = 1e-3, [`SECURITY_BITS`] bits per round under
+    /// **round-by-round soundness** — every error term (pg + fold grinding,
+    /// query + query grinding) clears the target individually, and the
+    /// protocol's security is the *minimum* over rounds — the notion that
+    /// governs Fiat-Shamir security (cf. Ethereum's `soundcalc`), not a
+    /// whole-protocol union bound over terms.
+    pub fn derive_config(m: usize) -> Result<Self, String> {
+        let target_bits = SECURITY_BITS;
+        let log_inv_rate = LOG_INV_RATE_0;
+        // Query-phase grinding trades prover PoW for query count (see
+        // [`QUERY_GRINDING_BITS`]): 120-bit rounds with 18 bits ground, so
+        // queries cover 102.
+        let query_grind: usize = QUERY_GRINDING_BITS;
         let log_n = m
             .checked_sub(crate::LOG_PACKING)
             .ok_or_else(|| format!("m ({m}) < LOG_PACKING (7)"))?;
-        let initial_k = 6usize;
+        let initial_k = INITIAL_K;
 
         // Length-agnostic per-query estimate for ladder-shape feasibility
         // (the per-level codeword length `n` is not known until the shape is
-        // fixed). UDR uses the asymptotic γ = δ/2; the actual per-level config
-        // below uses the n-aware `udr_per_query_bits`.
-        let per_query_bits_feas = |rate: usize| -> f64 {
-            match profile {
-                LigeritoProfile::Secure => udr_per_query_bits_asymptotic(rate),
-                LigeritoProfile::Fast | LigeritoProfile::Slim => {
-                    paper_per_query_bits(rate, JOHNSON_ETA)
-                }
-            }
-        };
+        // fixed): the asymptotic γ = δ/2; the actual per-level config below
+        // uses the n-aware `udr_per_query_bits`.
+        let per_query_bits_feas = udr_per_query_bits_asymptotic;
 
         // Shape derivation needs per-level query counts for block-length
         // feasibility before the level count (and hence the exact per-term
@@ -987,14 +963,8 @@ impl LigeritoSecurityConfig {
             let rate = shape.log_inv_rates[i];
             let cols = shape.log_msg_cols[i];
             let ilv = shape.log_num_interleaved[i];
-            // Actual per-level per-query bits: n-aware (maximal radius) for
-            // UDR, length-agnostic Johnson otherwise.
-            let per_q = match profile {
-                LigeritoProfile::Secure => udr_per_query_bits(rate, cols, UDR_PROXIMITY_LOSS),
-                LigeritoProfile::Fast | LigeritoProfile::Slim => {
-                    paper_per_query_bits(rate, JOHNSON_ETA)
-                }
-            };
+            // Actual per-level per-query bits: n-aware (maximal radius).
+            let per_q = udr_per_query_bits(rate, cols, UDR_PROXIMITY_LOSS);
             let queries = ((t - query_grind as f64).max(1.0) / per_q).ceil() as usize;
             if queries > (1usize << (cols + rate)) {
                 return Err(format!(
@@ -1004,45 +974,13 @@ impl LigeritoSecurityConfig {
             }
             let eps_query = queries as f64 * per_q;
 
-            let (regime, eta, proximity_loss, eps_pg, ood_samples, eps_ood) = match profile {
-                LigeritoProfile::Secure => {
-                    // No row-union penalty in the unique-decoding regime (list
-                    // size 1): per Diamond and Gruen, MCA-commutes holds with
-                    // error ε directly (vs the Johnson regime's 2^{ℓ-1} factor).
-                    let eps_pg =
-                        ANALYSIS_LOG_Q - paper_thm_1_4_log_a(rate, cols, UDR_PROXIMITY_LOSS);
-                    (
-                        SoundnessRegime::Udr,
-                        None,
-                        Some(UDR_PROXIMITY_LOSS),
-                        eps_pg,
-                        0usize,
-                        None,
-                    )
-                }
-                LigeritoProfile::Fast | LigeritoProfile::Slim => {
-                    let eps_pg = ANALYSIS_LOG_Q - paper_johnson_log_a(rate, JOHNSON_ETA, cols, ilv);
-                    let mu = cols + ilv;
-                    let ood_samples = if i == 0 {
-                        0 // bound by the opening's own evaluation claim
-                    } else {
-                        (1..=8usize)
-                            .find(|&s| paper_ood_bits(rate, JOHNSON_ETA, mu, s) >= t)
-                            .ok_or_else(|| {
-                                format!("L{i}: no OOD sample count reaches {t:.1} bits")
-                            })?
-                    };
-                    let eps_ood = paper_ood_bits(rate, JOHNSON_ETA, mu, ood_samples);
-                    (
-                        SoundnessRegime::JohnsonOod,
-                        Some(JOHNSON_ETA),
-                        None,
-                        eps_pg,
-                        ood_samples,
-                        Some(round1(eps_ood)),
-                    )
-                }
-            };
+            // No row-union penalty in the unique-decoding regime (list size
+            // 1): per Diamond and Gruen, MCA-commutes holds with error ε
+            // directly (vs the Johnson regime's 2^{ℓ-1} factor).
+            let _ = ilv;
+            let eps_pg = ANALYSIS_LOG_Q - paper_thm_1_4_log_a(rate, cols, UDR_PROXIMITY_LOSS);
+            let (regime, eta, proximity_loss, ood_samples, eps_ood) =
+                (SoundnessRegime::Udr, None, Some(UDR_PROXIMITY_LOSS), 0usize, None);
             let fold_grinding_bits = (t - eps_pg).ceil().max(0.0) as usize;
 
             levels.push(LigeritoLevelConfig {
@@ -1064,12 +1002,7 @@ impl LigeritoSecurityConfig {
             });
         }
 
-        let analysis_version = match profile {
-            LigeritoProfile::Secure => "no_row_union_over_ben_sasson_2025_cor_1_4",
-            LigeritoProfile::Fast | LigeritoProfile::Slim => {
-                "johnson_ood_row_union_over_bchks25_thm_4_6"
-            }
-        };
+        let analysis_version = "no_row_union_over_ben_sasson_2025_cor_1_4";
         let cfg = Self {
             m,
             log_n,
@@ -2734,7 +2667,7 @@ fn multilevel_prover_with_basis_impl(
     }
 
     // Query-phase PoW grinding for L0: each ground bit substitutes for
-    // ~1/log₂(1/(1−γ)) queries at this level (the Slim profile grinds 16
+    // ~1/log₂(1/(1−γ)) queries at this level (this config grinds 18
     // bits here). Verifier mirror checks the nonce; both then proceed to
     // sample query positions. (The proximity-gap shortfall is covered
     // separately by the fold-challenge grinds above.)
@@ -3472,10 +3405,10 @@ mod tests {
         );
     }
 
-    /// UDR-regime m=29 example (the Secure profile), the base config the
+    /// UDR-regime m=29 example (the shipped configuration), the base config the
     /// validation tests mutate.
     fn blake3_m29_udr_example() -> LigeritoSecurityConfig {
-        LigeritoSecurityConfig::derive_profile(29, LigeritoProfile::Secure).expect("derive m29")
+        LigeritoSecurityConfig::derive_config(29).expect("derive m29")
     }
 
     /// Schema validates the worked example end to end.

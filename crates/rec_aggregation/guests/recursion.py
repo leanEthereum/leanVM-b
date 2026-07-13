@@ -367,10 +367,6 @@ def log2_ceil_in_the_exponent(g_N, g_logs_pow2, g_squares, floor: Const, nbits: 
 
 
 def verify_merkle_path(leaf_0, leaf_1, path_ptr, direction_bits, depth: Const):
-    # Walk a Merkle authentication path from a leaf digest to the root: at
-    # each level the hinted sibling pair joins the running node, ordered by
-    # the query index bit (bit = 0 puts the running node on the left). The
-    # caller asserts the returned pair against the transcript-bound root.
     node_0 = leaf_0
     node_1 = leaf_1
     for level in unroll(0, depth):
@@ -673,10 +669,8 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
                 assert root_0 == commit_root_0
                 assert root_1 == commit_root_1
             else:
-                want_root_0 = level_roots_0[GEN ** lvl]
-                want_root_1 = level_roots_1[GEN ** lvl]
-                assert root_0 == want_root_0
-                assert root_1 == want_root_1
+                assert root_0 == level_roots_0[GEN ** lvl]
+                assert root_1 == level_roots_1[GEN ** lvl]
         level_query_sum = query_sum_chain[GEN ** LIG_QUERIES[m_idx * LIG_MAX_LEVELS + lvl]]
 
         if lvl == LIG_YR_LEVEL[m_idx]:
