@@ -118,6 +118,9 @@ pub enum Stmt {
     /// hint mechanism, completely unconstrained — the program must constrain
     /// them itself (asserts, range checks, hashes).
     HintWitness { dest: Expr, name: String },
+    /// `print("label", expr)` / `print(expr)`: a prover-side debug print of the
+    /// value at this program point (witness generation only — no constraints).
+    Print { label: String, value: Expr },
     /// `if lhs == rhs:` (`eq`) / `if lhs != rhs:` (`!eq`) with an optional
     /// `else` block (an `elif` parses as an `else` holding a nested `if`).
     /// One conditional `JUMP` on the XOR of the two sides; bindings made

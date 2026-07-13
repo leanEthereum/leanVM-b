@@ -222,6 +222,23 @@ impl Program {
                                 written[cell as usize] = true;
                             }
                         }
+                        RHint::Print { label, cell } => {
+                            let c = fp + cell;
+                            ensure(&mut mem, &mut written, &mut mem_count, c as usize);
+                            if written[c as usize] {
+                                let v = mem[c as usize];
+                                // Small integers and small g-powers overlap (8 = x^3
+                                // = g^3): show every reading that applies.
+                                match (gmap.get(&v), v.hi == 0 && v.lo < 1 << 32) {
+                                    (Some(k), true) => eprintln!("[print] {label} = {} (g^{k})", v.lo),
+                                    (Some(k), false) => eprintln!("[print] {label} = g^{k}"),
+                                    (None, true) => eprintln!("[print] {label} = {}", v.lo),
+                                    (None, false) => eprintln!("[print] {label} = {:#x}:{:#x}", v.hi, v.lo),
+                                }
+                            } else {
+                                eprintln!("[print] {label} = <unwritten>");
+                            }
+                        }
                         RHint::WitnessStack { name, base, len } => {
                             let vals = pop_witness(&mut wit_pos, name, *len);
                             for (k, v) in vals.into_iter().enumerate() {

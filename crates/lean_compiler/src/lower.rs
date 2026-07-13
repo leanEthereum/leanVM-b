@@ -1827,6 +1827,21 @@ impl FnLower<'_> {
             Stmt::AssertNe(a, b) => self.lower_assert_ne(a, b),
             Stmt::AssertLt(e, k) => self.lower_assert_lt(e, *k),
             Stmt::HintWitness { dest, name } => self.lower_hint_witness(dest, name),
+            Stmt::Print { label, value } => {
+                // Prover-side debug print: evaluate the value into a cell, hang
+                // a Print hint on a no-op anchor so it fires exactly here (and
+                // only on this path), at witness generation. No constraints.
+                let cell = self.expr(value);
+                self.pending.push(Hint::Print {
+                    label: label.clone(),
+                    cell,
+                });
+                let o = self.fresh();
+                self.emit(LOp::Set {
+                    o,
+                    k: KVal::Const(F128::ZERO),
+                });
+            }
             Stmt::If {
                 eq,
                 lhs,
@@ -2133,6 +2148,7 @@ fn stmt_inline_safe(s: &Stmt) -> bool {
         Stmt::Let(..)
         | Stmt::Store(..)
         | Stmt::HintWitness { .. }
+        | Stmt::Print { .. }
         | Stmt::AssertEq(..)
         | Stmt::AssertNe(..)
         | Stmt::AssertLt(..) => true,
@@ -2204,6 +2220,7 @@ fn free_vars_stmt(s: &Stmt, refs: &mut Vec<String>, bound: &mut std::collections
         }
         Stmt::AssertLt(e, _) => free_vars_expr(e, refs),
         Stmt::HintWitness { dest, .. } => free_vars_expr(dest, refs),
+        Stmt::Print { value, .. } => free_vars_expr(value, refs),
         Stmt::If {
             lhs, rhs, then, els, ..
         } => {

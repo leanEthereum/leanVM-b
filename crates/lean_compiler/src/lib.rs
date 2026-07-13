@@ -138,6 +138,10 @@ pub fn compile(ast: &Ast) -> Program {
                             lo: *lo,
                             len: *len,
                         },
+                        Hint::Print { label, cell } => RHint::Print {
+                            label: label.clone(),
+                            cell: *cell,
+                        },
                         Hint::Log2Ceil { bits_ptr, dst, nbits, floor } => RHint::Log2Ceil {
                             bits_ptr: *bits_ptr,
                             dst: *dst,

@@ -93,6 +93,8 @@ pub(crate) enum Hint {
     /// `g^max(log2_ceil(value), floor)` into `m[fp·g^dst]`. Nondeterministic
     /// (prover-side); the emitting code re-verifies the result in-circuit.
     Log2Ceil { bits_ptr: Off, dst: Off, nbits: u32, floor: u32 },
+    /// Prover-side debug print of `fp+cell` (witness generation only).
+    Print { label: String, cell: Off },
     /// Computed advice: write the `nbits` bits of the value in `m[fp+value]`
     /// into the buffer `m[fp·g^bits_ptr]` (bit `j` at offset `j`). The emitting
     /// code re-checks booleanity + reconstruction in-circuit.

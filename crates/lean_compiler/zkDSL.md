@@ -277,6 +277,16 @@ instruction until used as a value:
   forwards to the real source (write-once keeps it valid). This is what makes
   assembling a `BLAKE3` operand from scattered values free (see "BLAKE3").
 
+## Debugging
+
+`print(expr)` / `print("label", expr)` displays a value at witness generation
+(prover side only — no constraints, nothing enters the transcript). The label
+defaults to the argument's source text; output goes to stderr as
+`[print] label = ...`, showing the decimal reading for small integers, `g^k`
+when the value is a small g-power (both when they overlap: `8 (g^3)`), or
+`hi:lo` hex otherwise. Each print costs one anchor instruction, so the
+witness differs from a print-free build — strip prints before benchmarking.
+
 ## Memory
 
 All memory is **write-once**: a cell is set once; a second write of the same

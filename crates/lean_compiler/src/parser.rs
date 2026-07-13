@@ -495,6 +495,27 @@ impl Parser {
                     .collect::<Result<_, _>>()?,
             ));
         }
+        // `print(expr)` / `print("label", expr)` — prover-side debug print;
+        // the label defaults to the argument's source text.
+        if let Some(inner) = line.strip_prefix("print(").and_then(|s| s.strip_suffix(')')) {
+            let parts = split_top(inner, ',');
+            let (label, value) = match parts.as_slice() {
+                [l, v] if l.trim().starts_with('"') => {
+                    let l = l
+                        .trim()
+                        .strip_prefix('"')
+                        .and_then(|s| s.strip_suffix('"'))
+                        .ok_or("print's label is a string literal: print(\"label\", expr)")?;
+                    (l.to_string(), v.trim())
+                }
+                [v] => (v.trim().to_string(), v.trim()),
+                _ => return Err("print takes `print(expr)` or `print(\"label\", expr)`".into()),
+            };
+            return Ok(Stmt::Print {
+                label,
+                value: parse_expr(value)?,
+            });
+        }
         // `hint_witness(dest, "name")` — the string literal is not an
         // expression; parsed here.
         if let Some(inner) = line.strip_prefix("hint_witness(").and_then(|s| s.strip_suffix(')')) {
@@ -906,6 +927,13 @@ fn subst_stmt(s: &Stmt, name: &str, to: &Expr) -> (Stmt, bool) {
         Stmt::AssertNe(a, b) => (Stmt::AssertNe(e(a), e(b)), false),
         Stmt::AssertLt(a, k) => (Stmt::AssertLt(e(a), *k), false),
         Stmt::Call(f, args) => (Stmt::Call(f.clone(), args.iter().map(e).collect()), false),
+        Stmt::Print { label, value } => (
+            Stmt::Print {
+                label: label.clone(),
+                value: e(value),
+            },
+            false,
+        ),
         Stmt::HintWitness { dest, name: n } => (
             Stmt::HintWitness {
                 dest: e(dest),

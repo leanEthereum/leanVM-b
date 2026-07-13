@@ -59,6 +59,9 @@ pub enum RHint {
     /// Write the `nbits` bits of `n`, where `m[fp+value] = g^n` (a bounded
     /// discrete log at witness generation), into the buffer `m[fp+bits_ptr]`.
     BitDecomposeExp { value: Off, bits_ptr: Off, nbits: u32 },
+    /// Prover-side debug print (`print(...)` in the zkDSL): display the value
+    /// of `m[fp+cell]` at this program point. Witness generation only.
+    Print { label: String, cell: Off },
 }
 
 /// Extend the `g^j` table and its reverse index `g^j ↦ j` to cover index `upto`.
