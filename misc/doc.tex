@@ -232,6 +232,13 @@ GKR walks from the root to the leaves, reducing one claim per layer. Starting fr
 \end{enumerate}
 After $\mu$ layers a single leaf claim $\widetilde V_0(\zeta)$ remains, which \S\ref{sec:leafstack} decomposes into evaluation claims on the committed columns. The bus is accepted when the two sides of \eqref{eq:gp} give equal roots and each leaf claim matches the commitments. Prover work is $O(2^\mu)$, and the proof is $O(\mu^2)$ field elements.
 
+\paragraph{Batching the three trees.} The bus needs three grand products: push, pull, and counts. They are batched in a single GKR pass (verifier-friendliness, good for recursion). Push and pull have equal depth $\mu$ (their blocks come in matched pairs); the count tree, of depth $\mu_c\le\mu$, is padded with $1$-leaves to $2^{\mu}$.
+
+The verifier samples a combiner $\lambda$, and each layer runs a single sumcheck on the $\lambda$-combined layer identity
+\[
+\sum_{t}\lambda^{t}\,\widetilde V^{t}_i(r)\;=\;\sum_{x\in\cube{\mu-i}}\eq(r,x)\,\sum_{t}\lambda^{t}\,\widetilde V^{t}_{i-1}(0,x)\,\widetilde V^{t}_{i-1}(1,x),\qquad t\in\{0,1,2\},
+\]
+
 \subsection{Stacking the leaves}\label{sec:leafstack}
 
 GKR (\S\ref{sec:gkr}) reduces one side of \eqref{eq:gp} to a single evaluation $\widetilde V_0(\zeta)$ of its \emph{leaves}, the product's factors $\gamma-\pi_\alpha(\sigma)$, one per bus tuple $\sigma$. We settle this evaluation against the committed columns.
@@ -245,8 +252,6 @@ GKR (\S\ref{sec:gkr}) reduces one side of \eqref{eq:gp} to a single evaluation $
   \widetilde V_0(\zeta)\;=\;\sum_b \eq(\mathsf{sel}_b,\zeta^{b}_{\mathrm{hi}})\Bigl(\gamma-\sum_{i=0}^{m-1}\alpha^{i}\,\widetilde c_{b,i}(\zeta^{b}_{\mathrm{lo}})\Bigr)\;+\;\Bigl(1-\sum_b\eq(\mathsf{sel}_b,\zeta^{b}_{\mathrm{hi}})\Bigr).
 \]
 The verifier forms the selectors $\eq(\mathsf{sel}_b,\cdot)$ and the constant coordinates itself. Each remaining $\widetilde c_{b,i}(\zeta^{b}_{\mathrm{lo}})$ is settled by its kind: a committed column by a direct opening (\S\ref{sec:prelim}), a virtual column off the committed columns it images (so $\gen\cdot\pc$ adds nothing beyond the $\pc$ opening), a \texttt{BLAKE3} value coordinate by a point evaluation of $q_\pkd$ at its slot (\S\ref{sec:tab-blake3}), the index column by \S\ref{sec:idxcol}. A committed column feeding several equal-size blocks is opened once, at their shared point $\zeta_{\mathrm{lo}}$.
-
-\paragraph{Hand-off.} Each such claim is one evaluation of a committed column, so it joins the local-constraint claims (\S\ref{sec:air}) in the batched witness opening (\S\ref{sec:stacking}). The two sides of \eqref{eq:gp} are two GKR passes over two leaf stacks, plus a third over the count columns (\S\ref{sec:memchan}); the bus is accepted when the side-roots agree after dividing the default surplus (\S\ref{sec:gp}), the count-root is nonzero, and each $\widetilde V_0(\zeta)$ matches the openings.
 
 \subsection{State interaction}\label{sec:state}
 
@@ -472,7 +477,7 @@ We lay out the whole protocol as one ordered sequence. Each reduction below adds
 \begin{enumerate}
 \item \textbf{Verifier.} Sends the fingerprint challenge $\alpha$ and the multiset challenge $\gamma$.
 \item \textbf{Prover.} Forms the push, pull, and \emph{count} leaf vectors (\S\ref{sec:leafstack}; the count leaves are the count columns themselves, \S\ref{sec:memchan}), stacked into blocks and padded with $1$s. Sends the count root $R_c$ and one bus root $R$, the push/pull product after the default surplus is removed (\S\ref{sec:gp}).
-\item \textbf{Prover \& Verifier.} Run GKR (\S\ref{sec:gkr}) on all three. For the bus, the verifier multiplies $R$ by each side's public surplus and checks the side's product against it; one $R$ for both sides is the balance check (\S\ref{sec:gp}). For the counts it checks $R_c\neq0$ (no read self-cancels, \S\ref{sec:memchan}). Each pass yields a leaf claim $\widetilde V_0(\zeta)$.
+\item \textbf{Prover \& Verifier.} Run the one batched GKR (\S\ref{sec:gkr}) over all three trees. For the bus, the verifier multiplies $R$ by each side's public surplus and checks the side's product against it; one $R$ for both sides is the balance check (\S\ref{sec:gp}). For the counts it checks $R_c\neq0$ (no read self-cancels, \S\ref{sec:memchan}). The pass yields three leaf claims $\widetilde V^{t}_0(\zeta)$ at one shared $\zeta$.
 \item \textbf{Prover \& Verifier.} Decompose each leaf claim (\S\ref{sec:leafstack}). The verifier forms the public part: the block selectors; the constant coordinates (separators, the per-table read opcodes, the boundary state $(\pc_0,\fp_0)$ and $(\pc_{\mathrm{final}},\fp_{\mathrm{final}})$); the index column (\S\ref{sec:idxcol}); and the public program columns of the bytecode seed and finalize, whose MLEs it forms directly. The prover supplies each block's committed-column evaluations (one $\E$-element each, \S\ref{sec:prelim}); a virtual coordinate such as $\gen\cdot\pc$ is read off its committed source, and a \texttt{BLAKE3} value coordinate off $q_\pkd$ at its slot (\S\ref{sec:tab-blake3}). The verifier checks the decomposition formula against $\widetilde V_0(\zeta)$; the supplied evaluations enter the claim pool. The count channel decomposes likewise (its leaves are the count columns), adding only their evaluations.
 \end{enumerate}
 
@@ -501,9 +506,34 @@ We lay out the whole protocol as one ordered sequence. Each reduction below adds
 \item \textbf{Verifier.} Accepts iff the announced sizes passed the caps, the two roots agreed, each leaf decomposition and every sumcheck's final value matched the supplied evaluations, flock's reduction verified, the public-input claim held, and the PCS opening verified.
 \end{enumerate}
 
+\section{Recursive aggregation}\label{sec:recursion}
+
+Proofs compose by running the verifier of \S\ref{sec:e2e-unrolled} \emph{inside} the VM: a guest program replays a sub-proof's transcript, sumchecks, and PCS opening, so many sub-proofs collapse into one. The VM is well suited to this, since the verifier's field arithmetic is the VM's native arithmetic and its hashing is the \texttt{BLAKE3} opcode. One step, however, does not fit.
+
+\subsection{Deferred evaluation claims}\label{sec:deferred-claims}
+
+Twice during verification, a large \emph{fixed} multilinear must be evaluated at a random point:
+\begin{itemize}
+\item \textbf{the bytecode}: during leaf decomposition (\S\ref{sec:e2e-unrolled}, \emph{Bus}), the verifier evaluates the MLEs of the public program columns, a pass over the whole program;
+\item \textbf{the flock matrices}: the \texttt{BLAKE3} relation is proven by flock (\S\ref{sec:tab-blake3}), whose lincheck ends by evaluating $\widetilde A_0$ and $\widetilde B_0$, the per-block R1CS matrices: $28$-variable multilinears with $\approx 21\mathrm{M}$ nonzero Boolean entries between them.
+\end{itemize}
+Either evaluation is one pass over a fixed object. This takes milliseconds natively, but in-circuit it would dwarf the entire remaining verifier, in cycles and in bytecode size alike.
+
+The aggregation program therefore does not check these claims. The polynomials are fixed and public, so each claim (an evaluation point and its claimed value) is forwarded to the public input, to be checked externally.
+
+There are thus three fixed polynomials: the bytecode and the two matrices $A_0, B_0$. A sub-proof may itself be an aggregation carrying deferred claims, so verifying it yields \textbf{two} claims per polynomial: the one read from its public input, and the fresh one produced by the verification itself. Once all $n_{\mathrm{rec}}$ sub-proofs are verified, a fresh Fiat-Shamir transcript is fed with all the points and values, and the $6n_{\mathrm{rec}}$ claims are batched by two sumchecks: one for the bytecode, and one for the matrices, which share their $28$ variables. The three reduced claims are written to the public input, for the next level of recursion (zeros when $n_{\mathrm{rec}}=0$). Only the outermost verifier, which runs natively, ever evaluates the fixed polynomials.
+
+The matrix sumcheck runs over the $28$-variable polynomial
+\[
+  P(x) \;=\; A_0(x)\,W_A(x) \;+\; B_0(x)\,W_B(x),
+  \qquad
+  W_M(x) \;=\; \textstyle\sum_t \gamma_{M,t}\,\eq(r_t,x),
+\]
+and ends in the reduced claims $\widetilde A_0(r^\ast)$ and $\widetilde B_0(r^\ast)$, at a common point. The in-circuit cost is that of the sumcheck verifier: $28$ cheap rounds. The prover exploits sparsity to avoid the $2^{28}$-sized cube. During the first $14$ rounds (the row variables), each claim enters through the column contraction $m_t[i]=\sum_{j\in\mathrm{row}_i}\eq(r_t^{\mathrm{col}},j)$; for the last $14$ rounds, each matrix is contracted once along its rows, at the row point just fixed. Each contraction is a single addition-only pass over the nonzeros (the entries are Boolean), and all remaining work is dense of size $2^{14}$. Batching $t$ claims per matrix therefore costs $t+1$ passes over its nonzeros plus $O(t\cdot2^{14})$ multiplications, against the $O(2^{28})$ field operations and memory of a dense sumcheck. The bytecode sumcheck is the same, only smaller and with a dense polynomial.
+
 \section{ISA programming}\label{sec:isa-programming}
 
-How the zkDSL compiler (\texttt{src/compiler.rs}; surface language in \texttt{zkDSL.md}) programs the six-instruction ISA. Two themes run through every pattern: \emph{write-once memory is an assertion mechanism} (a second write of a cell is an equality check, an unwritten cell is prover-chosen), and \emph{indices live in the exponent} (a logical index $i$ is the element $\gen^{i}$, so incrementing, offsetting, and address formation are single field multiplications).
+How the zkDSL compiler (\texttt{crates/lean\_compiler}; surface language in \texttt{crates/lean\_compiler/zkDSL.md}) programs the six-instruction ISA. Two themes run through every pattern: \emph{write-once memory is an assertion mechanism} (a second write of a cell is an equality check, an unwritten cell is prover-chosen), and \emph{indices live in the exponent} (a logical index $i$ is the element $\gen^{i}$, so incrementing, offsetting, and address formation are single field multiplications).
 
 \subsection{Hints}\label{sec:prog-hints}
 

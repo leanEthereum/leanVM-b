@@ -1,0 +1,16 @@
+[package]
+name = "flock"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+primitives.workspace = true
+fiat_shamir.workspace = true
+pcs.workspace = true
+rayon.workspace = true
+blake3.workspace = true
+
+[dev-dependencies]

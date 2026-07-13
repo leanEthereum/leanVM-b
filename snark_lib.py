@@ -27,6 +27,12 @@ class _Elt:
 
     __rmul__ = __mul__
 
+    def __truediv__(self, other):  # field division a / b = a · b⁻¹ (single slash)
+        _ = other
+        return _Elt()
+
+    __rtruediv__ = __truediv__
+
     def __pow__(self, k: int):
         _ = k
         return _Elt()
@@ -43,6 +49,30 @@ GEN = _Elt()
 """The fixed generator g = x of GF(2^128)^× (order 2^128 - 1)."""
 
 
+def hint_decompose_bits(bits, value, nbits: int) -> None:
+    """Computed advice: the prover writes the `nbits` bits of `value` into the
+    `bits` buffer. UNCONSTRAINED — the caller must check booleanity and that the
+    bits reconstruct `value` (a range check that `value < 2^nbits`)."""
+    _ = bits, value, nbits
+
+
+def hint_decompose_bits_exponent(bits, x, nbits: int) -> None:
+    """Computed advice: the prover writes the `nbits` bits of n, where x = g^n
+    (recovered by a bounded discrete log at witness generation), into `bits`.
+    UNCONSTRAINED — the caller checks booleanity and Π g^(bit_j 2^j) == x."""
+    _ = bits, x, nbits
+
+
+def hint_log2_ceil(bits, nbits: int, floor: int) -> _Elt:
+    """Computed advice: returns `g^max(log2_ceil(v), floor)`, where `v` is the
+    integer the `nbits`-cell `bits` buffer decodes to. The prover fills it at
+    witness-generation; it is UNCONSTRAINED, so the caller must verify it (see the
+    log2_ceil_word / log2_ceil_in_the_exponent wrappers in the recursion guest). log2 = base-2 log of the integer, NOT the
+    discrete log base g that `log(...)` means."""
+    _ = bits, nbits, floor
+    return _Elt()
+
+
 def log(x) -> int:
     """The discrete log base GEN: `x = GEN ** log(x)`. Only meaningful inside
     a range-check assert — `assert log(x) < log(GEN ** k)` (equivalently
@@ -50,6 +80,10 @@ def log(x) -> int:
     or as the scrutinee of `match` / `match_range`."""
     _ = x
     return 0
+
+# @inline decorator (does nothing in Python execution)
+def inline(fn):
+    return fn
 
 
 def match_range(value: int, *args):

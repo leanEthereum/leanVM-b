@@ -1,0 +1,220 @@
+//! Global constants and compile-time placeholders in the zkDSL.
+//!
+//! A top-level `NAME = <const-expr>` is a **global constant**: it is evaluated
+//! to its field value and substituted (as one literal) everywhere its name
+//! appears below — so a constant is usable in every position a literal is,
+//! including `StackBuf`/`HeapBuf` sizes, `**` exponents, and `assert log _ < _`
+//! bounds. A **placeholder** is any identifier text-replaced before parsing via
+//! [`parse_with_replacements`]; the idiom is a placeholder feeding a constant
+//! (`V = V_PLACEHOLDER` with `"V_PLACEHOLDER" ↦ "128"`), as in leanVM.
+
+use std::collections::BTreeMap;
+
+use lean_compiler::{compile, parse, parse_with_replacements};
+
+/// A global constant substitutes exactly like writing its value inline — even
+/// in a `StackBuf` size, which demands a parse-time literal. The two programs
+/// produce identical ASTs.
+#[test]
+fn const_inlines_like_literal() {
+    let with_const = "\
+N = 5
+
+def main():
+    a = StackBuf(N)
+    a[0] = N
+    a[1] = N + 2
+    assert a[0] == 5
+    return
+";
+    let inlined = "\
+def main():
+    a = StackBuf(5)
+    a[0] = 5
+    a[1] = 5 + 2
+    assert a[0] == 5
+    return
+";
+    let ac = parse(with_const).expect("const program parses");
+    let ai = parse(inlined).expect("inlined program parses");
+    assert_eq!(format!("{ac:?}"), format!("{ai:?}"), "constant must inline to its value");
+    let _ = compile(&ac); // and it lowers to a real program
+}
+
+/// A constant may be used as a `**` exponent and an `assert log _ < _` bound —
+/// positions that previously required a bare integer literal.
+#[test]
+fn const_in_literal_only_positions() {
+    let src = "\
+LEN = 3
+BOUND = 8
+
+def main():
+    x = GEN ** LEN
+    assert log x < BOUND
+    return
+";
+    let inlined = "\
+def main():
+    x = GEN ** 3
+    assert log x < 8
+    return
+";
+    assert_eq!(
+        format!("{:?}", parse(src).unwrap()),
+        format!("{:?}", parse(inlined).unwrap()),
+    );
+    let _ = compile(&parse(src).unwrap());
+}
+
+/// A constant may reference an earlier constant (chaining). `B = A` gives `B`
+/// the value of `A`; both are usable as sizes.
+#[test]
+fn const_chains() {
+    let src = "\
+A = 4
+B = A
+
+def main():
+    p = StackBuf(A)
+    q = StackBuf(B)
+    return
+";
+    let inlined = "\
+def main():
+    p = StackBuf(4)
+    q = StackBuf(4)
+    return
+";
+    assert_eq!(
+        format!("{:?}", parse(src).unwrap()),
+        format!("{:?}", parse(inlined).unwrap()),
+    );
+    let _ = compile(&parse(src).unwrap());
+}
+
+/// Constant expressions use **integer** arithmetic (`+ - * / **`), not the
+/// runtime field's XOR/GHASH — so derived sizes/counts come out right. Filled
+/// via placeholders, the whole set of derivations resolves to plain literals.
+#[test]
+fn const_integer_arithmetic_derivations() {
+    let templated = "\
+V = V_PLACEHOLDER
+W = W_PLACEHOLDER
+LOG_LIFETIME = LOG_LIFETIME_PLACEHOLDER
+CHAIN_STEPS = W - 1
+N_TWEAK_WORDS = 2 + CHAIN_STEPS * V + LOG_LIFETIME
+N_TWEAK_BLOCKS = N_TWEAK_WORDS / 2
+FIXED_BLOCKS = 1 + N_TWEAK_BLOCKS + LOG_LIFETIME / 2
+FIXED_BYTES = FIXED_BLOCKS * 32
+N_SIGS_BOUND = 2 ** 16
+
+def main():
+    a = StackBuf(N_TWEAK_WORDS)
+    x = GEN ** FIXED_BYTES
+    assert log x < N_SIGS_BOUND
+    for i in unroll(0, N_TWEAK_BLOCKS):
+        assert a[0] == W
+    return
+";
+    // V = 42, W = 8, LOG_LIFETIME = 32  → the standard XMSS instance.
+    let mut repl = BTreeMap::new();
+    repl.insert("V_PLACEHOLDER".to_string(), "42".to_string());
+    repl.insert("W_PLACEHOLDER".to_string(), "8".to_string());
+    repl.insert("LOG_LIFETIME_PLACEHOLDER".to_string(), "32".to_string());
+    let filled = parse_with_replacements(templated, &repl).expect("derivations resolve");
+
+    // N_TWEAK_WORDS = 2 + 7*42 + 32 = 328, N_TWEAK_BLOCKS = 164,
+    // FIXED_BLOCKS = 1 + 164 + 16 = 181, FIXED_BYTES = 5792, N_SIGS_BOUND = 65536.
+    let concrete = "\
+def main():
+    a = StackBuf(328)
+    x = GEN ** 5792
+    assert log x < 65536
+    for i in unroll(0, 164):
+        assert a[0] == 8
+    return
+";
+    assert_eq!(format!("{filled:?}"), format!("{:?}", parse(concrete).unwrap()));
+    let _ = compile(&filled);
+}
+
+/// A placeholder is text-replaced before parsing; feeding a constant is the
+/// idiom. The filled program equals the one written with the value inline.
+#[test]
+fn placeholder_fills_constant() {
+    let templated = "\
+V = V_PLACEHOLDER
+
+def main():
+    a = StackBuf(V)
+    a[0] = V
+    assert a[0] == 7
+    return
+";
+    let mut repl = BTreeMap::new();
+    repl.insert("V_PLACEHOLDER".to_string(), "7".to_string());
+    let filled = parse_with_replacements(templated, &repl).expect("placeholder fills");
+
+    let concrete = "\
+def main():
+    a = StackBuf(7)
+    a[0] = 7
+    assert a[0] == 7
+    return
+";
+    assert_eq!(format!("{filled:?}"), format!("{:?}", parse(concrete).unwrap()));
+    let _ = compile(&filled);
+}
+
+/// Replacement is identifier-bounded: a key does not match a substring of a
+/// longer identifier.
+#[test]
+fn placeholder_is_identifier_bounded() {
+    let src = "\
+def main():
+    FOOBAR = 1
+    x = FOOBAR
+    assert x == 1
+    return
+";
+    let mut repl = BTreeMap::new();
+    repl.insert("FOO".to_string(), "999".to_string());
+    // `FOO` must NOT rewrite the `FOO` inside `FOOBAR`.
+    assert_eq!(
+        format!("{:?}", parse_with_replacements(src, &repl).unwrap()),
+        format!("{:?}", parse(src).unwrap()),
+    );
+}
+
+/// An unfilled placeholder (or an undeclared constant) is a clear error, and a
+/// constant may not be declared twice.
+#[test]
+fn errors() {
+    let unfilled = "\
+V = V_PLACEHOLDER
+
+def main():
+    return
+";
+    let err = parse(unfilled).expect_err("an unfilled placeholder must fail");
+    assert!(err.contains("V_PLACEHOLDER"), "error should name the placeholder: {err}");
+
+    let dup = "\
+N = 1
+N = 2
+
+def main():
+    return
+";
+    assert!(parse(dup).is_err(), "a constant declared twice must fail");
+
+    // A top-level line that is neither a `def` nor a `NAME = value` is rejected.
+    let junk = "\
+1 + 1
+
+def main():
+    return
+";
+    assert!(parse(junk).is_err(), "malformed top-level line must fail");
+}
