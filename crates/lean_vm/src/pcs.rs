@@ -185,9 +185,10 @@ pub struct RingSwitchOpen {
     pub padding: PaddingSpec,
 }
 
-/// Verifier counterpart of [`RingSwitchOpen`]: the recovered `(ab, c)` claims and
-/// the transmitted mixed opening proof.
-pub struct RingSwitchVerify<'a> {
+/// Verifier counterpart of [`RingSwitchOpen`]: the recovered `(ab, c)` claims.
+/// The Ligerito opening proof travels separately (read off the `openings` hint
+/// channel by the caller and passed to [`verify`] directly).
+pub struct RingSwitchVerify {
     /// `qpkd`'s offset inside the committed stack.
     pub offset: usize,
     /// `log2` of `qpkd`'s length (flock's `m − LOG_PACKING`).
@@ -196,8 +197,6 @@ pub struct RingSwitchVerify<'a> {
     pub values: Vec<F128>,
     pub z_skips: Vec<F128>,
     pub x_outers: Vec<Vec<F128>>,
-    /// The stacked mixed opening proof (carried in the BLAKE3 attachment).
-    pub open: &'a ::pcs::ligerito::LigeritoProof,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -293,11 +292,13 @@ pub fn open(
 
 /// Verify the opening (mirror of [`open`]): flock's ring-switched `(ab, c)` claims
 /// and every `points` slot evaluation are checked together in the ONE stacked
-/// Ligerito against `root`.
+/// Ligerito against `root`. `open` is the transmitted proof, read off the
+/// `openings` hint channel at its protocol point by the caller.
 pub fn verify(
     vs: &mut VerifierState,
     points: &[SlotClaim],
     ring: &RingSwitchVerify,
+    open: &::pcs::ligerito::LigeritoProof,
     mu: usize,
     root: &[u8; 32],
 ) -> Result<StackedOpeningSummary, Error> {
@@ -313,7 +314,7 @@ pub fn verify(
         &ring.z_skips,
         &x_refs,
         &stack_pd,
-        ring.open,
+        open,
         &cfg.1,
         vs,
     )

@@ -272,22 +272,14 @@ pub fn ring_switch_open(n_blocks: usize, offset: usize, reduced: &ReducedClaims)
 }
 
 /// Verifier counterpart of [`ring_switch_open`]: package the recovered `(ab, c)`
-/// claims (from [`verify_reduction`]) plus the transmitted opening as a
-/// [`crate::pcs::RingSwitchVerify`].
-pub fn ring_switch_verify<'a>(
-    n_blocks: usize,
-    offset: usize,
-    ab: ZClaim,
-    c: ZClaim,
-    open: &'a ::pcs::ligerito::LigeritoProof,
-) -> crate::pcs::RingSwitchVerify<'a> {
+/// claims (from [`verify_reduction`]) as a [`crate::pcs::RingSwitchVerify`].
+pub fn ring_switch_verify(n_blocks: usize, offset: usize, ab: ZClaim, c: ZClaim) -> crate::pcs::RingSwitchVerify {
     crate::pcs::RingSwitchVerify {
         offset,
         qpkd_vars: qpkd_kappa(n_blocks),
         values: vec![ab.value, c.value],
         z_skips: vec![ab.point.z_skip, c.point.z_skip],
         x_outers: vec![x_outer_full(&ab.point), x_outer_full(&c.point)],
-        open,
     }
 }
 

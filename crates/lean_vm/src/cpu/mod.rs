@@ -518,9 +518,9 @@ pub fn verify(
     let replay = crate::blake3_flock::verify_reduction(n_blocks, &root, l.m, &mut vs)
         .map_err(Error::Blake3)?;
     let checkpoint_flock = vs.sponge_state();
-    let open = vs.next_opening().map_err(Error::Transcript)?.clone();
-    let ring = crate::blake3_flock::ring_switch_verify(n_blocks, offset, replay.ab, replay.c, &open);
-    let opening = pcs::verify(&mut vs, &slots, &ring, l.m, &root).map_err(Error::Open)?;
+    let open = vs.next_opening().map_err(Error::Transcript)?;
+    let ring = crate::blake3_flock::ring_switch_verify(n_blocks, offset, replay.ab, replay.c);
+    let opening = pcs::verify(&mut vs, &slots, &ring, open, l.m, &root).map_err(Error::Open)?;
     vs.finish().map_err(Error::Transcript)?;
     Ok(VerifySummary {
         bytecode_claims: bus.bytecode_claims,
