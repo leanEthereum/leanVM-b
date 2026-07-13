@@ -1166,7 +1166,6 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         ps("LIG_LEAF_BYTES", ints(&flat(&|c| c.9.iter().map(|&n| n * 16).collect(), maxlev)));
         ps("LIG_LEAF_PAIRS", ints(&flat(&|c| c.9.iter().map(|&n| n / 2).collect(), maxlev)));
         ps("LIG_TREE_DEPTH", ints(&flat(&|c| c.6.clone(), maxlev)));
-        ps("LIG_POSITIONS_PER_WORD", ints(&flat(&|c| c.7.clone(), maxlev)));
         ps("LIG_SQUEEZES", ints(&flat(&|c| c.8.clone(), maxlev)));
         ps("LIG_POSITIONS_OFF", ints(&flat(&|c| c.15.clone(), maxlev)));
         ps("LIG_LOG_QUERIES", ints(&flat(&|c| c.5.iter().map(|&q| log2_ceil(q)).collect(), maxlev)));

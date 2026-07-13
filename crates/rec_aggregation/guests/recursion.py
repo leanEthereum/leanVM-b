@@ -155,7 +155,6 @@ LIG_INTERLEAVE = LIG_INTERLEAVE_PLACEHOLDER
 LIG_LEAF_BYTES = LIG_LEAF_BYTES_PLACEHOLDER
 LIG_LEAF_PAIRS = LIG_LEAF_PAIRS_PLACEHOLDER
 LIG_TREE_DEPTH = LIG_TREE_DEPTH_PLACEHOLDER
-LIG_POSITIONS_PER_WORD = LIG_POSITIONS_PER_WORD_PLACEHOLDER
 LIG_SQUEEZES = LIG_SQUEEZES_PLACEHOLDER
 LIG_POSITIONS_OFF = LIG_POSITIONS_OFF_PLACEHOLDER
 LIG_LOG_QUERIES = LIG_LOG_QUERIES_PLACEHOLDER
@@ -243,11 +242,12 @@ def check_128_bits_decomposition(bits_ptr, v):
     return
 
 
-def decode_query_bits(v, positions_out, bit_ptrs_out, depth: Const, per_word: Const):
+def decode_query_bits(v, positions_out, bit_ptrs_out, depth: Const):
     # The squeezed word's bits are advice-decomposed HERE, boolean-constrained,
     # and tied back by reconstruction; each depth-bit group also becomes a query
     # position (little-endian), with a pointer to its bit run (the Merkle
-    # direction bits).
+    # direction bits). Each 128-bit word packs FIELD_BITS // depth positions.
+    per_word = FIELD_BITS // depth
     bits_ptr = HeapBuf(GEN ** FIELD_BITS)
     hint_decompose_bits(bits_ptr, v, FIELD_BITS)
     acc = 0
@@ -634,8 +634,8 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
             packed_word, next_c0, next_c1 = squeeze_step(sqz_chain_0[xs], sqz_chain_1[xs])
             sqz_chain_0[xs * GEN] = next_c0
             sqz_chain_1[xs * GEN] = next_c1
-            query_ptr = xs ** LIG_POSITIONS_PER_WORD[m_idx * LIG_MAX_LEVELS + lvl]
-            decode_query_bits(packed_word, query_positions * GEN ** LIG_POSITIONS_OFF[m_idx * LIG_MAX_LEVELS + lvl] * query_ptr, query_bit_ptrs * GEN ** LIG_POSITIONS_OFF[m_idx * LIG_MAX_LEVELS + lvl] * query_ptr, LIG_TREE_DEPTH[m_idx * LIG_MAX_LEVELS + lvl], LIG_POSITIONS_PER_WORD[m_idx * LIG_MAX_LEVELS + lvl])
+            query_ptr = xs ** (FIELD_BITS // LIG_TREE_DEPTH[m_idx * LIG_MAX_LEVELS + lvl])
+            decode_query_bits(packed_word, query_positions * GEN ** LIG_POSITIONS_OFF[m_idx * LIG_MAX_LEVELS + lvl] * query_ptr, query_bit_ptrs * GEN ** LIG_POSITIONS_OFF[m_idx * LIG_MAX_LEVELS + lvl] * query_ptr, LIG_TREE_DEPTH[m_idx * LIG_MAX_LEVELS + lvl])
         fs = [sqz_chain_0[GEN ** LIG_SQUEEZES[m_idx * LIG_MAX_LEVELS + lvl]], sqz_chain_1[GEN ** LIG_SQUEEZES[m_idx * LIG_MAX_LEVELS + lvl]]]
 
         query_alphas = HeapBuf(GEN ** (LIG_MAX_INTERLEAVE[m_idx]))
