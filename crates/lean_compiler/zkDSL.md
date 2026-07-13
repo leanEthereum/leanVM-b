@@ -238,6 +238,12 @@ def obs(cb, x):          # sponge absorb: cb <- compress(cb, (x, SCALAR))
 cvb = obs(cvb, v)        # exactly 3 ops: two tag writes + one blake3
 ```
 
+An `@inline` call may also sit in **expression position** — embedded in
+arithmetic, as a store's RHS, or as a single-target `match_range` arm. An
+aliased return (a folded g-address) then materializes into a plain cell (free
+for a var; one `MUL` for a shifted pointer); a multi-cell `StackBuf` return
+still needs a `let` binding, since only a name can alias a cell run.
+
 Because the body runs in the *caller's* frame, a `Const` parameter whose `if`s
 fold (below) bakes straight-line, per-case code — the idiom for a `match_range`
 arm that must specialize on the arm value. The trade-off is frame cells: each

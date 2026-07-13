@@ -491,6 +491,28 @@ def lag64(z, out, node_base: Const):
 
 
 @inline
+def eq_weight(ch, count: Const, idx: Const, msb_span: Const):
+    # The eq-tensor weight of compile-time index `idx` against the challenge
+    # run ch[0..count): prod_c eq(bit(idx), ch[c]), where the bit is bit c of
+    # idx (msb_span == 0) or bit (msb_span - 1 - c) (MSB-first walk over an
+    # msb_span-bit index).
+    w = GEN ** 0
+    for c in unroll(0, count):
+        cv = ch[GEN ** c]
+        if msb_span == 0:
+            if (idx // (2 ** c)) % 2 == 1:
+                w *= cv
+            else:
+                w *= (1 + cv)
+        else:
+            if (idx // (2 ** (msb_span - 1 - c))) % 2 == 1:
+                w *= cv
+            else:
+                w *= (1 + cv)
+    return w
+
+
+@inline
 def eqtree(point_ptr, out, n_coords: Const):
     # The eq tensor of the n_coords challenges at point_ptr[0..n_coords], built by doubling into
     # out (size 2^(n_coords+1) - 2); the final 2^n_coords values start at offset 2^n_coords - 2.
@@ -623,23 +645,9 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
             query_alphas[GEN ** t] = alpha_v
         row_eq_weights = HeapBuf(GEN ** (LIG_MAX_INTERLEAVE[m_idx]))
         for i in unroll(0, LIG_INTERLEAVE[m_idx * LIG_MAX_LEVELS + lvl]):
-            lp = GEN ** 0
-            for c in unroll(0, LIG_FOLDS[m_idx * LIG_MAX_LEVELS + lvl]):
-                fold_c = fold_challenges[GEN ** (LIG_FOLDS_OFF[m_idx * LIG_MAX_LEVELS + lvl] + c)]
-                if (i // (2 ** c)) % 2 == 1:
-                    lp *= fold_c
-                else:
-                    lp *= (1 + fold_c)
-            row_eq_weights[GEN ** i] = lp
+            row_eq_weights[GEN ** i] = eq_weight(fold_challenges * GEN ** LIG_FOLDS_OFF[m_idx * LIG_MAX_LEVELS + lvl], LIG_FOLDS[m_idx * LIG_MAX_LEVELS + lvl], i, 0)
         for i in unroll(0, LIG_QUERIES[m_idx * LIG_MAX_LEVELS + lvl]):
-            lp = GEN ** 0
-            for c in unroll(0, LIG_LOG_QUERIES[m_idx * LIG_MAX_LEVELS + lvl]):
-                lac = query_alphas[GEN ** c]
-                if (i // (2 ** c)) % 2 == 1:
-                    lp *= lac
-                else:
-                    lp *= (1 + lac)
-            alpha_weights[GEN ** (lvl * LIG_MAX_QUERIES[m_idx] + i)] = lp
+            alpha_weights[GEN ** (lvl * LIG_MAX_QUERIES[m_idx] + i)] = eq_weight(query_alphas, LIG_LOG_QUERIES[m_idx * LIG_MAX_LEVELS + lvl], i, 0)
 
         query_sum_chain = HeapBuf(GEN ** (LIG_MAX_QUERIES[m_idx] + 1))
         query_sum_chain[GEN ** 0] = 0
@@ -1136,20 +1144,14 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     # claim B(zeta_lo, sel) = sum_c eq(sel, c) * v_c.
     for k in unroll(0, BYTECODE_COLS):
         fs = obs(fs, bytecode_vals[GEN ** k])
-    bytecode_sel = StackBuf(LOG2_BYTECODE_COLS)
+    bytecode_sel = HeapBuf(LOG2_BYTECODE_COLS)
     for t in unroll(0, LOG2_BYTECODE_COLS):
         fs = squeeze(fs)
         sv = fs[0]
-        bytecode_sel[t] = sv
+        bytecode_sel[GEN ** t] = sv
     bytecode_reduced = 0
     for c in unroll(0, BYTECODE_COLS):
-        e = GEN ** 0
-        for t in unroll(0, LOG2_BYTECODE_COLS):
-            if (c // (2 ** t)) % 2 == 1:
-                e *= bytecode_sel[t]
-            else:
-                e *= (1 + bytecode_sel[t])
-        bytecode_reduced += e * bytecode_vals[GEN ** c]
+        bytecode_reduced += eq_weight(bytecode_sel, LOG2_BYTECODE_COLS, c, 0) * bytecode_vals[GEN ** c]
 
     # ---- 6x per-table zerocheck (XOR, MUL, SET, DEREF, JUMP, BLAKE3) ----
     # For each table: eta, the zerocheck point r (tau samples), tau eq-trick
@@ -1380,12 +1382,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     # const-pin column folds through the top-variable bindings: weight =
     # prod_j (bit_{klog-1-j}(PIN_COLUMN) ? r_j : 1+r_j), surviving z_partial index
     # = PIN_COLUMN low 6 bits.
-    pin_term = lincheck_beta
-    for j in unroll(0, LINCHECK_ROUNDS):
-        if (PIN_COLUMN // (2 ** (K_LOG - 1 - j))) % 2 == 1:
-            pin_term *= lincheck_rs[GEN ** j]
-        else:
-            pin_term *= (1 + lincheck_rs[GEN ** j])
+    pin_term = lincheck_beta * eq_weight(lincheck_rs, LINCHECK_ROUNDS, PIN_COLUMN, K_LOG)
     pin_term *= z_partial[GEN ** (PIN_COLUMN % 2 ** K_SKIP)]
     matrix_part = matrix_eval[0]
     lincheck_final = matrix_part + pin_term  # running == deferred matrix eval + the const-pin column contribution
@@ -1737,7 +1734,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     for k in unroll(0, BYTECODE_LOG):
         defer_out[GEN ** k] = zeta[GEN ** k]
     for k in unroll(0, LOG2_BYTECODE_COLS):
-        defer_out[GEN ** (BYTECODE_LOG + k)] = bytecode_sel[k]
+        defer_out[GEN ** (BYTECODE_LOG + k)] = bytecode_sel[GEN ** k]
     defer_out[GEN ** (BYTECODE_LOG + LOG2_BYTECODE_COLS)] = bytecode_reduced
     defer_out[GEN ** (BYTECODE_LOG + LOG2_BYTECODE_COLS + 1)] = lincheck_alpha
     defer_out[GEN ** (BYTECODE_LOG + LOG2_BYTECODE_COLS + 2)] = zerocheck_z

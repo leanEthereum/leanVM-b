@@ -375,7 +375,25 @@ impl FnLower<'_> {
                             arms[j]
                         );
                     };
+                    s.inline_stack_ret = None;
                     s.call_into(f, cargs, &rcells);
+                    // An @inline arm's aliased returns materialize into the
+                    // shared join cells (a real call wrote them directly).
+                    if let Some(binds) = s.inline_stack_ret.take() {
+                        for (b, &rc) in binds.iter().zip(&rcells) {
+                            match *b {
+                                RetBind::Gaddr(ga) => {
+                                    let c = s.materialize(ga);
+                                    s.copy(c, rc);
+                                }
+                                RetBind::Stack(base, size) => {
+                                    assert_eq!(size, 1, "a multi-cell StackBuf return cannot cross a match_range join");
+                                    s.copy(base, rc);
+                                }
+                                RetBind::Scalar => {}
+                            }
+                        }
+                    }
                 }
             });
         });
@@ -833,7 +851,8 @@ impl FnLower<'_> {
                 if let Some(n) = self.const_len(e) {
                     self.const_cell(F128::new(n as u64, 0))
                 } else {
-                    self.call(f, args, 1)[0]
+                    let d = self.call(f, args, 1)[0];
+                    self.take_inline_ret_cell(d)
                 }
             }
             Expr::HeapBuf(n) => {
@@ -1191,8 +1210,16 @@ impl FnLower<'_> {
                     self.emit(LOp::Mul { a: la, b: lb, c: dst });
                 }
             }
-            // A call writes its single return value straight into `dst`.
-            Expr::Call(f, args) => self.call_into(f, args, &[dst]),
+            // A call writes its single return value straight into `dst` (an
+            // aliased inline return materializes, then copies into `dst`).
+            Expr::Call(f, args) => {
+                self.inline_stack_ret = None;
+                self.call_into(f, args, &[dst]);
+                let v = self.take_inline_ret_cell(dst);
+                if v != dst {
+                    self.copy(v, dst);
+                }
+            }
             _ => {
                 let v = self.expr(e);
                 self.copy(v, dst);
@@ -1328,6 +1355,18 @@ impl FnLower<'_> {
     /// Address `arr[idx]` as `(base_cell, β)`. A constant g-power `idx` folds
     /// into `β` ([`Self::heap_base`]); a runtime index materializes the pointer.
     fn heap_addr(&mut self, arr: &Expr, idx: &Expr) -> (Off, u32) {
+        // A compile-time index that is a plain field constant but NOT a
+        // g-power (`buf[0]`, `buf[2]`, an integer unroll var) can never name
+        // a heap cell — cell k lives at `buf · g^k` — and would deref a wild
+        // address at proving time. Reject it here, where the source is known.
+        if self.gaddr_of(idx).is_none()
+            && let Some(c) = self.try_field_const(idx)
+        {
+            panic!(
+                "heap index folds to the field constant {:#x}:{:#x}, not a g-power —                  heap cell k is addressed as `buf[GEN ** k]` (did an integer index                  leak in from a StackBuf conversion?)",
+                c.hi, c.lo
+            );
+        }
         match self.gaddr_of(idx) {
             Some(GAddr { base: None, exp }) => return self.heap_base(arr, exp),
             // A runtime-base index carrying a constant g-power shift
@@ -1347,6 +1386,24 @@ impl FnLower<'_> {
             None => {}
         }
         (self.array_ptr(arr, idx), 0)
+    }
+
+    /// Consume the [`RetBind`] a single-value inlined tail return recorded,
+    /// for a call in EXPRESSION position (embedded in arithmetic, a store
+    /// RHS, a single-target match arm): there is no name to alias-bind, so an
+    /// aliased return materializes into a plain cell (free for a var / an
+    /// exp-0 g-address; one `MUL` for a shifted pointer). `dst` is the call's
+    /// destination cell — already written by a real call or a plain-scalar
+    /// return, so it is the fallback.
+    fn take_inline_ret_cell(&mut self, dst: Off) -> Off {
+        match self.inline_stack_ret.take().and_then(|b| b.into_iter().next()) {
+            Some(RetBind::Gaddr(ga)) => self.materialize(ga),
+            Some(RetBind::Stack(base, size)) => {
+                assert_eq!(size, 1, "a multi-cell StackBuf return needs a `let` binding, not an expression use");
+                base
+            }
+            _ => dst,
+        }
     }
 
     /// Lower a call; returns the caller offsets bound to the returned values.
@@ -1696,11 +1753,18 @@ impl FnLower<'_> {
                         self.stacks.remove(name);
                         self.gaddrs.remove(name);
                         self.fconsts.insert(name.clone(), F128::new(k as u64, 0));
-                    } else {
-                        let o = self.expr(e);
-                        // A single-value inline return records one RetBind: alias
-                        // its StackBuf run or folded g-address, else (a scalar, or
-                        // a non-call `e` that left the field None) bind cell `o`.
+                    } else if let Expr::Call(cf, cargs) = e
+                        && self.defs.contains_key(cf)
+                    {
+                        // A bare `name = call(...)` of a user function: bind per
+                        // the inlined return's RetBind — alias its StackBuf run
+                        // or folded g-address at zero copies (the `cvb = obs(...)`
+                        // / advanced-cursor idiom), else (a plain scalar, or a
+                        // real call) bind the dst cell. Embedded calls do NOT
+                        // take this path: `expr` materializes theirs
+                        // ([`Self::take_inline_ret_cell`]).
+                        self.inline_stack_ret = None;
+                        let o = self.call(cf, cargs, 1)[0];
                         self.vars.remove(name);
                         self.stacks.remove(name);
                         self.gaddrs.remove(name);
@@ -1716,6 +1780,13 @@ impl FnLower<'_> {
                                 self.vars.insert(name.clone(), o);
                             }
                         }
+                    } else {
+                        let o = self.expr(e);
+                        self.vars.remove(name);
+                        self.stacks.remove(name);
+                        self.gaddrs.remove(name);
+                        self.fconsts.remove(name);
+                        self.vars.insert(name.clone(), o);
                     }
                 }
             },
