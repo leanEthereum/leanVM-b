@@ -188,6 +188,11 @@ pub enum Stmt {
     /// Internal (loop lowering): `if lhs != rhs: callee(args)` — a tail call on
     /// the not-equal branch, dispatched by `JUMP`'s nonzero test.
     CallIfNe(Expr, Expr, String, Vec<Expr>),
+    /// A TRUE TAIL `CallIfNe`: the callee frame inherits the CURRENT frame's
+    /// return pc/fp (cells 0/1) instead of pointing back here, so the callee
+    /// returns straight to the original caller and this frame never resumes.
+    /// Only meaningful as the last real statement of a loop helper.
+    TailCallIfNe(Expr, Expr, String, Vec<Expr>),
 }
 
 /// A `mul_range` stop bound: a compile-time `GEN ** k`, or a runtime g-power

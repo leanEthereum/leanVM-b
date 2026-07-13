@@ -947,6 +947,10 @@ fn subst_stmt(s: &Stmt, name: &str, to: &Expr) -> (Stmt, bool) {
             Stmt::CallIfNe(e(a), e(b), f.clone(), args.iter().map(e).collect()),
             false,
         ),
+        Stmt::TailCallIfNe(a, b, f, args) => (
+            Stmt::TailCallIfNe(e(a), e(b), f.clone(), args.iter().map(e).collect()),
+            false,
+        ),
         Stmt::For { var, lo, hi, body } => {
             let hi = match hi {
                 ForBound::Const(k) => ForBound::Const(*k),

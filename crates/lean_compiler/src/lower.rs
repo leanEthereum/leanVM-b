@@ -1530,8 +1530,8 @@ impl FnLower<'_> {
     /// else fall through (`JUMP`'s nonzero test, doc §JUMP (sec:tab-jump)). The frame setup runs
     /// either way; when not taken the callee frame is just never entered. Binds
     /// no return values, so the not-taken path continues straight after it.
-    fn call_cond(&mut self, callee: &str, args: &[Expr], cond: Off) {
-        self.lower_call(callee, args, 0, Some(cond), None);
+    fn call_cond(&mut self, callee: &str, args: &[Expr], cond: Off, tail: bool) {
+        self.lower_call2(callee, args, 0, Some(cond), None, tail);
     }
 
     /// If `callee` declares `Const` parameters, monomorphize: the constant
@@ -1610,6 +1610,25 @@ impl FnLower<'_> {
         cond: Option<Off>,
         dsts_in: Option<&[Off]>,
     ) -> Vec<Off> {
+        self.lower_call2(callee, args, n_ret, cond, dsts_in, false)
+    }
+
+    /// [`Self::lower_call`] with a `tail` mode: the callee frame inherits THIS
+    /// frame's return pc/fp (cells 0/1 copied) instead of pointing back here,
+    /// so the callee returns straight to the original caller and the code
+    /// after the `JUMP` never runs on the taken path. Used by the loop
+    /// helpers' self-recursion: intermediate iteration frames never resume
+    /// (no unwind jump per iteration), and exit-path effects after the
+    /// recursion run exactly once, in the final frame.
+    fn lower_call2(
+        &mut self,
+        callee: &str,
+        args: &[Expr],
+        n_ret: usize,
+        cond: Option<Off>,
+        dsts_in: Option<&[Off]>,
+        tail: bool,
+    ) -> Vec<Off> {
         let (callee, args) = self.specialize(callee, args);
         let (callee, args) = (callee.as_str(), args.as_slice());
         let arg_offs: Vec<Off> = args.iter().map(|a| self.expr(a)).collect();
@@ -1637,18 +1656,34 @@ impl FnLower<'_> {
                 mode: DerefMode::Cell,
             });
         }
-        self.emit(LOp::Deref {
-            alpha: nfp,
-            beta: 1,
-            gamma: 0,
-            mode: DerefMode::Fp,
-        }); // retfp
-        self.emit(LOp::Deref {
-            alpha: nfp,
-            beta: 0,
-            gamma: 0,
-            mode: DerefMode::Pc,
-        }); // retpc = g²·pc
+        if tail {
+            // Propagate MY return slots: callee[0/1] = fp[0/1] (plain cell copies).
+            self.emit(LOp::Deref {
+                alpha: nfp,
+                beta: 1,
+                gamma: 1,
+                mode: DerefMode::Cell,
+            }); // retfp = fp[1]
+            self.emit(LOp::Deref {
+                alpha: nfp,
+                beta: 0,
+                gamma: 0,
+                mode: DerefMode::Cell,
+            }); // retpc = fp[0]
+        } else {
+            self.emit(LOp::Deref {
+                alpha: nfp,
+                beta: 1,
+                gamma: 0,
+                mode: DerefMode::Fp,
+            }); // retfp
+            self.emit(LOp::Deref {
+                alpha: nfp,
+                beta: 0,
+                gamma: 0,
+                mode: DerefMode::Pc,
+            }); // retpc = g²·pc
+        }
         self.emit(LOp::Jump { oc, od: entry, of: nfp });
 
         let n_args = args.len() as u32;
@@ -1939,7 +1974,13 @@ impl FnLower<'_> {
                 let (la, lb) = (self.expr(lhs), self.expr(rhs));
                 let x = self.fresh();
                 self.emit(LOp::Xor { a: la, b: lb, c: x }); // x = lhs − rhs; x != 0 ⇔ lhs != rhs
-                self.call_cond(callee, args, x);
+                self.call_cond(callee, args, x, false);
+            }
+            Stmt::TailCallIfNe(lhs, rhs, callee, args) => {
+                let (la, lb) = (self.expr(lhs), self.expr(rhs));
+                let x = self.fresh();
+                self.emit(LOp::Xor { a: la, b: lb, c: x });
+                self.call_cond(callee, args, x, true);
             }
             Stmt::For { var, lo, hi, body } => self.lower_for(var, *lo, hi, body),
             // Compile-time unrolling: emit the body per integer, the counter
@@ -2084,7 +2125,7 @@ impl FnLower<'_> {
         let next = Expr::Mul(Box::new(Expr::Var(var.to_string())), Box::new(Expr::Gen));
         let mut loop_body: Vec<Stmt> = body.to_vec();
         loop_body.push(Stmt::Let(next_var.clone(), next));
-        loop_body.push(Stmt::CallIfNe(
+        loop_body.push(Stmt::TailCallIfNe(
             Expr::Var(next_var.clone()),
             exit,
             loop_name.clone(),
@@ -2242,7 +2283,7 @@ fn free_vars_stmt(s: &Stmt, refs: &mut Vec<String>, bound: &mut std::collections
                 bound.insert(n.clone());
             });
         }
-        Stmt::CallIfNe(a, b, _, args) => {
+        Stmt::CallIfNe(a, b, _, args) | Stmt::TailCallIfNe(a, b, _, args) => {
             free_vars_expr(a, refs);
             free_vars_expr(b, refs);
             args.iter().for_each(|e| free_vars_expr(e, refs));
