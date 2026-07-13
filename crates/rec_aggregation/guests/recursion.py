@@ -18,16 +18,16 @@ from snark_lib import *
 #
 # Config-driven by placeholder constants the harness computes from the REAL
 # `cpu::layout` and the transcript trace of a native verify run; all per-proof
-# data (streams, sub statements, level roots, fold nonces)
+# data (the stream, sub statements, opened Merkle rows + paths)
 # arrives as hints (`src/recursion.rs::gen_verify`).
 #
 # SOUNDNESS: every hint is untrusted prover input; each is bound one of five
 # ways, and nothing else enters the computation:
 #   - sponge-bound (observed/absorbed before any challenge that depends on it):
-#     the stream scalars (flock's zerocheck/lincheck/ring-switch words included:
-#     the cursor walks them like any other stream region),
-#     lig_sumcheck_msgs, final_msg, the level roots level_roots_0/level_roots_1, the fold nonces fold_nonces, the
-#     aggregation round messages bc_sumcheck_msgs/mat_sumcheck_msgs, and the deferred bytecode values
+#     the stream scalars (flock's zerocheck/lincheck/ring-switch words AND the
+#     Ligerito opening's sumcheck messages, level roots, grind nonces and final
+#     message included: the cursor walks them like any other stream region),
+#     the aggregation round messages bc_sumcheck_msgs/mat_sumcheck_msgs, and the deferred bytecode values
 #     bytecode_vals (absorbed by the stacked-bytecode reduction before its challenges);
 #   - assert-checked: the grinding digest bits and the query-index bits are
 #     advice-decomposed in place (hint_decompose_bits of the in-circuit digest /
@@ -585,7 +585,7 @@ def eqtree(point_ptr, out, n_coords: Const):
     return
 
 
-def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1):
+def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, cursor):
     # The stacked Ligerito opening. m_idx is the COMMITTED-LOG-SIZE CANDIDATE
     # INDEX: the certified size is m = LIG_MIN_LOG_SIZE + m_idx, and every
     # LIG_* table below reads row m_idx (the match_range dispatch bakes one
@@ -619,10 +619,10 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1):
     fs = absorb(fs, commit_root_0, DS_BYTE)
     fs = absorb(fs, commit_root_1, DS_BYTE)
 
-    # sumcheck round messages (hinted, two coeffs per round); msg_cursor walks them.
-    lig_sumcheck_msgs = HeapBuf(GEN ** (LIG_SUMCHECK_LEN[m_idx]))
-    hint_witness(lig_sumcheck_msgs[0:LIG_SUMCHECK_LEN[m_idx]], "lig_sumcheck_msgs")
-    msg_cursor = lig_sumcheck_msgs
+    # The opening's scalars (sumcheck messages, level roots, nonces, final
+    # message) ride the SHARED stream: msg_cursor is just the main stream
+    # cursor, walked on in protocol order.
+    msg_cursor = cursor
     fs, msg_u0, msg_cursor = fs_next(fs, msg_cursor)
     fs, msg_u2, msg_cursor = fs_next(fs, msg_cursor)
     round_quad_c = msg_u0
@@ -638,16 +638,10 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1):
     hint_witness(merkle_leaf_rows[0:LIG_ROWS_LEN[m_idx]], "merkle_leaf_rows")
     merkle_paths = HeapBuf(GEN ** (LIG_PATHS_LEN[m_idx]))
     hint_witness(merkle_paths[0:LIG_PATHS_LEN[m_idx]], "merkle_paths")
-    final_msg = HeapBuf(GEN ** (LIG_YR_LEN[m_idx]))
-    hint_witness(final_msg[0:LIG_YR_LEN[m_idx]], "final_msg")
+    final_msg = HeapBuf(GEN ** (LIG_YR_LEN[m_idx]))  # filled from the stream at the last level
+    # Stream-bound level roots (filled as each root is read; index = level).
     level_roots_0 = HeapBuf(GEN ** (LIG_N_LEVELS[m_idx]))
-    hint_witness(level_roots_0[0:LIG_N_LEVELS[m_idx]], "level_roots_0")
     level_roots_1 = HeapBuf(GEN ** (LIG_N_LEVELS[m_idx]))
-    hint_witness(level_roots_1[0:LIG_N_LEVELS[m_idx]], "level_roots_1")
-    fold_nonces = HeapBuf(GEN ** (LIG_TOTAL_FOLDS[m_idx]))
-    hint_witness(fold_nonces[0:LIG_TOTAL_FOLDS[m_idx]], "fold_nonces")
-    query_nonces = HeapBuf(GEN ** (LIG_N_LEVELS[m_idx]))
-    hint_witness(query_nonces[0:LIG_N_LEVELS[m_idx]], "query_nonces")
     # ...and guest-filled accumulators (one slot per fold / per level / per query):
     fold_challenges = HeapBuf(GEN ** (LIG_TOTAL_FOLDS[m_idx]))
     level_betas = HeapBuf(GEN ** (LIG_N_LEVELS[m_idx]))
@@ -659,7 +653,8 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1):
         for j in unroll(0, LIG_FOLDS[m_idx * LIG_MAX_LEVELS + lvl]):
             fold_idx = LIG_FOLDS_OFF[m_idx * LIG_MAX_LEVELS + lvl] + j
             if LIG_FOLD_GRIND_BITS[m_idx * LIG_MAX_TOTAL_FOLDS + fold_idx] != 0:
-                nonce_v = fold_nonces[GEN ** fold_idx]
+                nonce_v = msg_cursor[GEN ** 0]  # raw transport word: bound by the DS_POW absorb below
+                msg_cursor = msg_cursor * GEN
                 grind_check(fs[0], fs[1], nonce_v, GEN ** LIG_FOLD_GRIND_BITS[m_idx * LIG_MAX_TOTAL_FOLDS + fold_idx])
                 fs = absorb(fs, nonce_v, DS_POW)
             fs = squeeze(fs)
@@ -674,19 +669,18 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1):
 
         if lvl == LIG_YR_LEVEL[m_idx]:
             for iy in unroll(0, LIG_YR_LEN[m_idx]):
-                fs = obs(fs, final_msg[GEN ** iy])
+                fs, yv, msg_cursor = fs_next(fs, msg_cursor)
+                final_msg[GEN ** iy] = yv
         else:
-            fs = absorb(fs, 32, DS_LEN)
-            next_root_a = level_roots_0[GEN ** (lvl + 1)]
-            next_root_b = level_roots_1[GEN ** (lvl + 1)]
-            fs = absorb(fs, next_root_a, DS_BYTE)
-            fs = absorb(fs, next_root_b, DS_BYTE)
+            fs, next_root_a, msg_cursor = fs_next(fs, msg_cursor)
+            fs, next_root_b, msg_cursor = fs_next(fs, msg_cursor)
+            level_roots_0[GEN ** (lvl + 1)] = next_root_a
+            level_roots_1[GEN ** (lvl + 1)] = next_root_b
+        q_nonce = msg_cursor[GEN ** 0]  # raw transport word: bound by the DS_POW absorb below
+        msg_cursor = msg_cursor * GEN
         if LIG_QUERY_GRIND_BITS[m_idx * LIG_MAX_LEVELS + lvl] != 0:
-            q_nonce = query_nonces[GEN ** lvl]
             grind_check(fs[0], fs[1], q_nonce, GEN ** LIG_QUERY_GRIND_BITS[m_idx * LIG_MAX_LEVELS + lvl])
-            fs = absorb(fs, q_nonce, DS_POW)
-        else:
-            fs = absorb(fs, 0, DS_POW)
+        fs = absorb(fs, q_nonce, DS_POW)
 
         sqz_chain_0 = HeapBuf(GEN ** (LIG_MAX_SQUEEZES[m_idx] + 1))
         sqz_chain_1 = HeapBuf(GEN ** (LIG_MAX_SQUEEZES[m_idx] + 1))
@@ -1593,7 +1587,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     gmv = log2_ceil_in_the_exponent(g_total, g_logs_pow2, g_squares, PCS_MIN_MU, SIZE_BITS)  # g^m
     sel = gmv * LIG_MIN_SHIFT_INV  # g^(m - MIN): the match_range arm index selecting the opening candidate
     assert log(sel) < LIG_N_CANDIDATES
-    sumcheck_target, fold_challenges, final_msg, inner_total, yr_log_n_g, yr_pad_g, fold_cap_g = match_range(log(sel), range(0, LIG_N_CANDIDATES), lambda m_idx: open_stacked(m_idx, fs[0], fs[1], target, commit_root_0, commit_root_1))
+    sumcheck_target, fold_challenges, final_msg, inner_total, yr_log_n_g, yr_pad_g, fold_cap_g = match_range(log(sel), range(0, LIG_N_CANDIDATES), lambda m_idx: open_stacked(m_idx, fs[0], fs[1], target, commit_root_0, commit_root_1, cursor))
 
     # ---- generalized eval_b terminal (runtime claim shapes) ----
     # Per-claim lengths, selector bits, and slot data are HINTED; the closing

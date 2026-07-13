@@ -682,10 +682,12 @@ mod tests {
         let (mut proof, _) = prove(&program, pi);
         verify(&program, &pi, &proof).expect("honest proof verifies");
 
-        // flock's Ligerito opening is the proof's one hint; tamper a sumcheck
-        // round message (the inner-product transcript) — must be rejected.
+        // flock's Ligerito opening is the proof's one hint; tamper an opened
+        // row (the Merkle-bound query data) — must be rejected. (The sumcheck
+        // round messages ride the stream and are covered by the stream-tamper
+        // test below.)
         let lig = proof.openings.last_mut().expect("flock Ligerito opening");
-        lig.sumcheck_transcript[0].u_0 += F128::ONE;
+        lig.initial_proof.opened_rows[0][0] += F128::ONE;
         assert!(
             verify(&program, &pi, &proof).is_err(),
             "tampered BLAKE3 validity proof must be rejected"

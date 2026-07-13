@@ -548,33 +548,10 @@ fn gen_verify(
     let zcf = [summary.zc_claim.a_eval, summary.zc_claim.b_eval];
     let zc_z = summary.zc_claim.z;
     let zrho = summary.zc_claim.mlv_challenges.clone();
-    // The lincheck rounds and z_partial sit at fixed offsets from the stream's
-    // tail: [.. (e1,e_inf) x lcrounds | z_partial (64) | s_hat_v (2 x 128)].
-    let ns = proof.stream.len();
-    let lcr: Vec<F128> = proof.stream[ns - 256 - 64 - 2 * lcrounds..ns - 256 - 64].to_vec();
-    let lcz: Vec<F128> = proof.stream[ns - 256 - 64..ns - 256].to_vec();
     let lc_alpha = summary.lc_claim.alpha;
     let lc_beta = summary.lc_claim.beta;
     let lrr = summary.lc_claim.r_rounds.clone();
 
-    // matpart = the deferred weighted matrix evaluation: the lincheck running
-    // claim minus (= plus, char 2) the const-pin contribution.
-    let r1cs = flock::blake3::build_block_r1cs(n_log_b3);
-    let pincol = r1cs.const_pin.expect("blake3 r1cs has a const pin");
-    let mut lrun = lc_alpha * zcf[0] + zcf[1] + lc_beta;
-    for i in 0..lcrounds {
-        let (e1, ei, rv) = (lcr[2 * i], lcr[2 * i + 1], lrr[i]);
-        let e0 = lrun + e1;
-        let c1q = e0 + e1 + ei;
-        lrun = ei * rv * rv + c1q * rv + e0;
-    }
-    let mut pinw = lc_beta;
-    for (j, &rv) in lrr.iter().enumerate() {
-        let bit = (pincol >> (flock::blake3::K_LOG - 1 - j)) & 1;
-        pinw *= if bit == 1 { rv } else { F128::ONE + rv };
-    }
-    pinw *= lcz[pincol % 64];
-    let matpart = lrun + pinw;
 
     let evtot_e: usize = ncol.iter().sum();
     let ncl = nclaims + evtot_e + 1; // bus + constraint + the PI claim
@@ -598,32 +575,61 @@ fn gen_verify(
     let per: Vec<usize> = depth.iter().map(|&d| 128 / d).collect();
     let fgb = |lvl: usize| vcfg.fold_grinding_bits.get(lvl).copied().unwrap_or(0) as i64;
 
+    // The Ligerito opening's scalars close the stream: start msg (2), per
+    // level the fold (nonce? + msg) words, then root (2) / yr words, one
+    // query-grind nonce, and an intro msg (2) at every non-final level.
+    let lig_stream_words: usize = 2
+        + (0..nlev)
+            .map(|lvl| {
+                let folds: usize =
+                    (0..klvl[lvl]).map(|j| 2 + usize::from(fgb(lvl) - j as i64 > 0)).sum();
+                folds
+                    + if lvl == nlev - 1 { (1 << shapes.yr_log_n) + 1 } else { 2 + 1 + 2 }
+            })
+            .sum::<usize>();
+    // The lincheck rounds and z_partial sit at fixed offsets from the FLOCK
+    // tail (the stream up to the opening): [.. (e1,e_inf) x lcrounds |
+    // z_partial (64) | s_hat_v (2 x 128) | the opening's scalars].
+    let ns = proof.stream.len() - lig_stream_words;
+    let lcr: Vec<F128> = proof.stream[ns - 256 - 64 - 2 * lcrounds..ns - 256 - 64].to_vec();
+    let lcz: Vec<F128> = proof.stream[ns - 256 - 64..ns - 256].to_vec();
+
+    // matpart = the deferred weighted matrix evaluation: the lincheck running
+    // claim minus (= plus, char 2) the const-pin contribution.
+    let r1cs = flock::blake3::build_block_r1cs(n_log_b3);
+    let pincol = r1cs.const_pin.expect("blake3 r1cs has a const pin");
+    let mut lrun = lc_alpha * zcf[0] + zcf[1] + lc_beta;
+    for i in 0..lcrounds {
+        let (e1, ei, rv) = (lcr[2 * i], lcr[2 * i + 1], lrr[i]);
+        let e0 = lrun + e1;
+        let c1q = e0 + e1 + ei;
+        lrun = ei * rv * rv + c1q * rv + e0;
+    }
+    let mut pinw = lc_beta;
+    for (j, &rv) in lrr.iter().enumerate() {
+        let bit = (pincol >> (flock::blake3::K_LOG - 1 - j)) & 1;
+        pinw *= if bit == 1 { rv } else { F128::ONE + rv };
+    }
+    pinw *= lcz[pincol % 64];
+    let matpart = lrun + pinw;
+
     let lig_raw = summary.opening.lig.query_squeezes.clone();
-    let lig_sc: Vec<F128> = proof.openings[0]
-        .sumcheck_transcript
-        .iter()
-        .flat_map(|m| [m.u_0, m.u_2])
-        .collect();
-    // Grinds, in transcript order after the bus grind: per level, the fold
-    // grinds (bits > 0 per the config schedule) then ONE query-phase grind.
+    // Grind sanity: in transcript order after the bus grind — per level, the
+    // fold grinds (bits > 0 per the config schedule) then ONE query-phase
+    // grind. The nonces themselves ride the shared stream now (raw words);
+    // the trace is only cross-checked here.
     let qbits: Vec<u32> = (0..nlev).map(|lvl| vcfg.grinding_bits[lvl] as u32).collect();
-    let mut fold_pow: Vec<(u32, u64, F128)> = Vec::new();
-    let mut query_pow: Vec<(u64, F128)> = Vec::new();
     let mut grinds = pows[1..].iter();
     for lvl in 0..nlev {
         for j in 0..klvl[lvl] {
             let bits = (fgb(lvl) - j as i64).max(0) as u32;
             if bits > 0 {
-                let &(nonce, b2, dig) = grinds.next().expect("fold grind recorded");
+                let &(_, b2, _) = grinds.next().expect("fold grind recorded");
                 assert_eq!(b2, bits);
-                fold_pow.push((bits, nonce, dig));
-            } else {
-                fold_pow.push((0, 0, F128::ZERO));
             }
         }
-        let &(nonce, b2, dig) = grinds.next().expect("query grind recorded");
+        let &(_, b2, _) = grinds.next().expect("query grind recorded");
         assert_eq!(b2, qbits[lvl], "level {lvl} query grind bits");
-        query_pow.push((nonce, dig));
     }
     assert!(grinds.next().is_none(), "every grind consumed");
 
@@ -780,18 +786,6 @@ fn gen_verify(
     let yrs = rssel_full >> (lenris - qpkdv);
     let rssel = rssel_full & ((1usize << (lenris - qpkdv)) - 1);
 
-    let mut roota = vec![F128::ZERO];
-    let mut rootb = vec![F128::ZERO];
-    for lv in 1..nlev {
-        let rw = hb32(if lv - 1 < lig.level_roots.len() {
-            lig.level_roots[lv - 1]
-        } else {
-            panic!("missing level root")
-        });
-        roota.push(rw[0]);
-        rootb.push(rw[1]);
-    }
-    let fnv: Vec<F128> = fold_pow.iter().map(|&(_, n, _)| F128::new(n, 0)).collect();
     let mut svk_flat = Vec::new();
     let mut ivk_flat = Vec::new();
     for &lmc_lv in lmc.iter().take(nlev) {
@@ -823,14 +817,9 @@ fn gen_verify(
         }),
         ("bytecode_vals".to_string(), bcv),
         ("matpart".to_string(), vec![matpart]),
-        ("lig_sumcheck_msgs".to_string(), lig_sc.clone()),
         ("merkle_leaf_rows".to_string(), lrows_flat),
         ("merkle_paths".to_string(), lpaths_flat),
-        ("final_msg".to_string(), lig.final_proof.yr.clone()),
         ("sub_pis".to_string(), vec![pi[0], pi[1]]),
-        ("level_roots_0".to_string(), roota),
-        ("level_roots_1".to_string(), rootb),
-        ("fold_nonces".to_string(), fnv),
         // slacks bounding each claim'"'"'s reads to the written regions (so an
         // over-long hint cannot pull free padding): low_len <= mu_s/tau_t
         // (zeta/rho) and low_len(+7 for qpkd) <= lenris (fold challenges).
@@ -873,7 +862,6 @@ fn gen_verify(
         ("rs_yslot_bits".to_string(), (0..8).map(|k| F128::new(((yrs >> k) & 1) as u64, 0)).collect()),
         ("rs_sel_bits".to_string(), (0..33).map(|k| F128::new(((rssel >> k) & 1) as u64, 0)).collect()),
         ("sort_order".to_string(), sort_order.clone()),
-        ("query_nonces".to_string(), query_pow.iter().map(|&(n, _)| F128::new(n, 0)).collect()),
     ];
     (hints, deferred)
 }

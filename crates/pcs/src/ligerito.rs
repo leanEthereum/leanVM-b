@@ -1158,40 +1158,22 @@ pub struct LevelProof {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FinalProof {
-    /// Remaining polynomial sent in clear at the last level step.
-    pub yr: Vec<F128>,
     /// Same sorted-by-position convention as [`LevelProof`].
     pub opened_rows: Vec<Vec<F128>>,
     pub merkle_proof: Vec<Hash>,
 }
 
+/// The Ligerito opening object: ONLY the hash-bearing hint data (opened rows
+/// plus Merkle multi-proofs), which the verifier checks against roots rather
+/// than observes. Every scalar the verifier must bind (sumcheck messages,
+/// OOD values, the final `yr`, the level roots, the PoW nonces) rides the
+/// shared transcript stream via `add_scalar`/`next_scalar`/`grind`, bound at
+/// its protocol point like every other transmitted value.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LigeritoProof {
-    pub initial_root: Hash,
     pub initial_proof: LevelProof,
-    pub level_roots: Vec<Hash>,
     pub level_proofs: Vec<LevelProof>,
     pub final_proof: FinalProof,
-    pub sumcheck_transcript: Vec<SumcheckMessage>,
-    /// Per-level PoW nonces (one entry per query phase). When all
-    /// `grinding_bits` are 0 (the default config), each entry is just 0
-    /// and the verifier's PoW check is a no-op. `#[serde(default)]` keeps
-    /// older serialized proofs that pre-date this field readable.
-    #[serde(default)]
-    pub grinding_nonces: Vec<u64>,
-    /// Claimed multilinear OOD evaluations, flattened in transcript order
-    /// (level 1's `ood_samples[1]` values, then level 2's, ...). Empty when
-    /// the config takes no OOD samples (UDR profiles, legacy paths).
-    #[serde(default)]
-    pub ood_values: Vec<F128>,
-    /// Fold-challenge PoW nonces, flattened in transcript order — one per
-    /// fold challenge at every level with `fold_grinding_bits > 0`. Empty
-    /// when no level fold-grinds.
-    #[serde(default)]
-    pub fold_grinding_nonces: Vec<u64>,
-}
-
-impl LigeritoProof {
 }
 
 // ===================================================================
@@ -1961,6 +1943,37 @@ pub fn ligero_commit(
 //     Combine the running round-quadratic with the introduced one as
 //     running := running + α·to_glue. New sum-claim becomes T_r + α·h.
 
+/// Send one `(u_0, u_2)` sumcheck message on the stream (bound as written).
+fn add_sumcheck_msg(ps: &mut ProverState, msg: &SumcheckMessage) {
+    ps.add_scalar(msg.u_0);
+    ps.add_scalar(msg.u_2);
+}
+
+/// Read one `(u_0, u_2)` sumcheck message off the stream (bound as read).
+fn next_sumcheck_msg(vs: &mut VerifierState<'_>) -> Option<SumcheckMessage> {
+    let u_0 = vs.next_scalar().ok()?;
+    let u_2 = vs.next_scalar().ok()?;
+    Some(SumcheckMessage { u_0, u_2 })
+}
+
+/// A Merkle root as two field scalars, so it rides the transcript stream
+/// like any other transmitted value (same convention as the commit root).
+fn root_scalars(root: &Hash) -> [F128; 2] {
+    let w = |o: usize| u64::from_le_bytes(root[o..o + 8].try_into().unwrap());
+    [F128::new(w(0), w(8)), F128::new(w(16), w(24))]
+}
+
+/// Read a Merkle root off the stream (two scalars, bound as read).
+fn next_root(vs: &mut VerifierState<'_>) -> Option<Hash> {
+    let s = vs.next_scalars(2).ok()?;
+    let mut root = [0u8; 32];
+    root[0..8].copy_from_slice(&s[0].lo.to_le_bytes());
+    root[8..16].copy_from_slice(&s[0].hi.to_le_bytes());
+    root[16..24].copy_from_slice(&s[1].lo.to_le_bytes());
+    root[24..32].copy_from_slice(&s[1].hi.to_le_bytes());
+    Some(root)
+}
+
 /// (u_0, u_2) per round — what the prover sends.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SumcheckMessage {
@@ -2258,22 +2271,19 @@ pub struct SumcheckProver {
     /// many level intro/glue pairs have happened.
     combined_basis: Vec<F128>,
     t_r: F128,
-    transcript: Vec<SumcheckMessage>,
     pending_glue: Option<(Vec<F128>, F128)>,
 }
 
 impl SumcheckProver {
     pub fn new(f: Vec<F128>, b1: Vec<F128>, h1: F128) -> (Self, SumcheckMessage) {
         assert_eq!(f.len(), b1.len());
-        let mut inst = Self {
+        let inst = Self {
             f,
             combined_basis: b1,
             t_r: h1,
-            transcript: Vec::new(),
             pending_glue: None,
         };
         let msg = round_msg_lsb(&inst.f, &inst.combined_basis);
-        inst.transcript.push(msg);
         (inst, msg)
     }
 
@@ -2289,14 +2299,12 @@ impl SumcheckProver {
         first_msg: SumcheckMessage,
     ) -> (Self, SumcheckMessage) {
         assert_eq!(f.len(), b1.len());
-        let mut inst = Self {
+        let inst = Self {
             f,
             combined_basis: b1,
             t_r: h1,
-            transcript: Vec::new(),
             pending_glue: None,
         };
-        inst.transcript.push(first_msg);
         (inst, first_msg)
     }
 
@@ -2307,7 +2315,6 @@ impl SumcheckProver {
         let (nf, nb, msg) = fold_and_msg_lsb(&self.f, &self.combined_basis, r);
         self.f = nf;
         self.combined_basis = nb;
-        self.transcript.push(msg);
         msg
     }
 
@@ -2316,7 +2323,6 @@ impl SumcheckProver {
     pub fn introduce_new(&mut self, b_new: Vec<F128>, h_new: F128) -> SumcheckMessage {
         assert_eq!(b_new.len(), self.f.len());
         let msg = round_msg_lsb(&self.f, &b_new);
-        self.transcript.push(msg);
         self.pending_glue = Some((b_new, h_new));
         msg
     }
@@ -2330,7 +2336,6 @@ impl SumcheckProver {
     pub fn introduce_new_with_eval(&mut self, b_new: Vec<F128>) -> (SumcheckMessage, F128) {
         assert_eq!(b_new.len(), self.f.len());
         let (msg, h_new) = round_msg_and_eval_lsb(&self.f, &b_new);
-        self.transcript.push(msg);
         self.pending_glue = Some((b_new, h_new));
         (msg, h_new)
     }
@@ -2361,10 +2366,6 @@ impl SumcheckProver {
 
     pub fn f(&self) -> &[F128] {
         &self.f
-    }
-
-    pub fn transcript(&self) -> &[SumcheckMessage] {
-        &self.transcript
     }
 }
 
@@ -2652,8 +2653,6 @@ fn multilevel_prover_with_basis_impl(
         0,
         "L0 must not take explicit OOD samples"
     );
-    let mut ood_values: Vec<F128> = Vec::new();
-    let mut fold_grinding_nonces: Vec<u64> = Vec::new();
     let fold_bits =
         |lvl: usize| -> u32 { config.fold_grinding_bits.get(lvl).copied().unwrap_or(0) as u32 };
     let ood_count = |lvl: usize| -> usize { config.ood_samples.get(lvl).copied().unwrap_or(0) };
@@ -2663,8 +2662,7 @@ fn multilevel_prover_with_basis_impl(
         Some(msg) => SumcheckProver::new_with_first_msg(packed_witness, b_initial, target, msg),
         None => SumcheckProver::new(packed_witness, b_initial, target),
     };
-    ps.observe_scalar(start_msg.u_0);
-    ps.observe_scalar(start_msg.u_2);
+    add_sumcheck_msg(ps, &start_msg);
 
     let mut r_lane_fold = Vec::with_capacity(initial_k);
     for j in 0..initial_k {
@@ -2679,12 +2677,11 @@ fn multilevel_prover_with_basis_impl(
         // Derived from fold_grinding_bits + round index; not stored.
         let bits = fold_bits(0).saturating_sub(j as u32);
         if bits > 0 {
-            fold_grinding_nonces.push(ps.grind_pow(bits));
+            ps.grind(bits);
         }
         let r = ps.sample();
         let msg = sc_prover.fold(r);
-        ps.observe_scalar(msg.u_0);
-        ps.observe_scalar(msg.u_2);
+        add_sumcheck_msg(ps, &msg);
         r_lane_fold.push(r);
     }
     if trace {
@@ -2710,7 +2707,7 @@ fn multilevel_prover_with_basis_impl(
     if trace {
         t_commits += _t.elapsed();
     }
-    ps.absorb_bytes(&wtns_1.root());
+    ps.add_scalars(&root_scalars(&wtns_1.root()));
 
     // OOD binding for the L1 commit: each sample evaluates f1's multilinear
     // extension at a random transcript point z ∈ F^{n1}, sends the claimed
@@ -2726,10 +2723,8 @@ fn multilevel_prover_with_basis_impl(
             // a separate `mle_eval_inline` fold.
             let eq_z = build_eq_table(&z);
             let (intro, y) = sc_prover.introduce_new_with_eval(eq_z);
-            ps.observe_scalar(y);
-            ood_values.push(y);
-            ps.observe_scalar(intro.u_0);
-            ps.observe_scalar(intro.u_2);
+            ps.add_scalar(y);
+            add_sumcheck_msg(ps, &intro);
             let beta = ps.sample();
             sc_prover.glue(beta);
         }
@@ -2743,8 +2738,7 @@ fn multilevel_prover_with_basis_impl(
     // bits here). Verifier mirror checks the nonce; both then proceed to
     // sample query positions. (The proximity-gap shortfall is covered
     // separately by the fold-challenge grinds above.)
-    let pow_nonce_0 = ps.grind_pow(config.grinding_bits[0] as u32);
-    let mut grinding_nonces: Vec<u64> = vec![pow_nonce_0];
+    ps.grind(config.grinding_bits[0] as u32);
 
     // Open L0; lane-fold weights = r_lane_fold.
     let num_queries_0 = config.queries[0];
@@ -2786,8 +2780,7 @@ fn multilevel_prover_with_basis_impl(
     // Introduce + glue basis_0.
     let _t = std::time::Instant::now();
     let intro_msg_0 = sc_prover.introduce_new(basis_0_induced, enforced_sum_0);
-    ps.observe_scalar(intro_msg_0.u_0);
-    ps.observe_scalar(intro_msg_0.u_2);
+    add_sumcheck_msg(ps, &intro_msg_0);
     let beta_0 = ps.sample();
     sc_prover.glue(beta_0);
     if trace {
@@ -2796,7 +2789,6 @@ fn multilevel_prover_with_basis_impl(
 
     // Recursive levels — same as multilevel_prover_inner from here.
     let mut wtns_prev = wtns_1;
-    let mut level_roots: Vec<Hash> = vec![wtns_prev.root()];
     let mut level_proofs: Vec<LevelProof> = Vec::new();
 
     for i in 0..r {
@@ -2809,12 +2801,11 @@ fn multilevel_prover_with_basis_impl(
             // round j needs (fold_bits − j) bits (see L0 loop).
             let bits = fold_bits(i + 1).saturating_sub(j as u32);
             if bits > 0 {
-                fold_grinding_nonces.push(ps.grind_pow(bits));
+                ps.grind(bits);
             }
             let ri = ps.sample();
             let msg = sc_prover.fold(ri);
-            ps.observe_scalar(msg.u_0);
-            ps.observe_scalar(msg.u_2);
+            add_sumcheck_msg(ps, &msg);
             level_rs.push(ri);
         }
         if trace {
@@ -2822,13 +2813,9 @@ fn multilevel_prover_with_basis_impl(
         }
 
         if i == r - 1 {
-            let yr = sc_prover.f().to_vec();
-            for v in &yr {
-                ps.observe_scalar(*v);
-            }
+            ps.add_scalars(sc_prover.f());
             // PoW grinding for the last level before sampling its queries.
-            let nonce_last = ps.grind_pow(config.grinding_bits[i + 1] as u32);
-            grinding_nonces.push(nonce_last);
+            ps.grind(config.grinding_bits[i + 1] as u32);
             let num_queries_last = config.queries[i + 1];
             let queries_last =
                 sample_queries_ordered(ps.sponge_mut(), wtns_prev.block_len, num_queries_last);
@@ -2871,28 +2858,18 @@ fn multilevel_prover_with_basis_impl(
                     "  introduce_new + glue:                          {:.2} ms",
                     t_intro_glue.as_secs_f64() * 1e3
                 );
-                if !ood_values.is_empty() {
-                    eprintln!(
-                        "  OOD samples ({}): MLE evals + glue:            {:.2} ms",
-                        ood_values.len(),
-                        t_ood.as_secs_f64() * 1e3
-                    );
-                }
+                eprintln!(
+                    "  OOD samples: MLE evals + glue:                 {:.2} ms",
+                    t_ood.as_secs_f64() * 1e3
+                );
             }
             return LigeritoProof {
-                initial_root,
                 initial_proof,
-                level_roots,
                 level_proofs,
                 final_proof: FinalProof {
-                    yr,
                     opened_rows: opened_rows_last,
                     merkle_proof: merkle_proof_last,
                 },
-                sumcheck_transcript: sc_prover.transcript().to_vec(),
-                grinding_nonces,
-                ood_values,
-                fold_grinding_nonces,
             };
         }
 
@@ -2914,9 +2891,7 @@ fn multilevel_prover_with_basis_impl(
         if trace {
             t_commits += _t.elapsed();
         }
-        let root_next = wtns_next.root();
-        ps.absorb_bytes(&root_next);
-        level_roots.push(root_next);
+        ps.add_scalars(&root_scalars(&wtns_next.root()));
 
         // OOD binding for the L_{i+2} commit (same as the L1 block above).
         {
@@ -2925,10 +2900,8 @@ fn multilevel_prover_with_basis_impl(
                 let z = ps.sample_vec(n_next);
                 let eq_z = build_eq_table(&z);
                 let (intro, y) = sc_prover.introduce_new_with_eval(eq_z);
-                ps.observe_scalar(y);
-                ood_values.push(y);
-                ps.observe_scalar(intro.u_0);
-                ps.observe_scalar(intro.u_2);
+                ps.add_scalar(y);
+                add_sumcheck_msg(ps, &intro);
                 let beta = ps.sample();
                 sc_prover.glue(beta);
             }
@@ -2938,8 +2911,7 @@ fn multilevel_prover_with_basis_impl(
         }
 
         // PoW grinding for this iteration's query phase.
-        let nonce_i = ps.grind_pow(config.grinding_bits[i + 1] as u32);
-        grinding_nonces.push(nonce_i);
+        ps.grind(config.grinding_bits[i + 1] as u32);
         let num_queries_i = config.queries[i + 1];
         let queries_i = sample_queries_ordered(ps.sponge_mut(), wtns_prev.block_len, num_queries_i);
         let alpha_i = ps.sample_vec(log2_ceil(num_queries_i));
@@ -2979,8 +2951,7 @@ fn multilevel_prover_with_basis_impl(
 
         let _t = std::time::Instant::now();
         let intro_msg_i = sc_prover.introduce_new(basis_i_induced, enforced_sum_i);
-        ps.observe_scalar(intro_msg_i.u_0);
-        ps.observe_scalar(intro_msg_i.u_2);
+        add_sumcheck_msg(ps, &intro_msg_i);
         let beta_i = ps.sample();
         sc_prover.glue(beta_i);
         if trace {
@@ -3033,12 +3004,8 @@ where
     if r < 1 || config.level_ks.len() != r || config.log_inv_rates.len() != r + 1 {
         return None;
     }
-    if &proof.initial_root != expected_initial_root {
-        return None;
-    }
-
     vs.observe_scalar(target);
-    vs.absorb_bytes(&proof.initial_root);
+    vs.absorb_bytes(expected_initial_root);
 
     let log_inv_rate_0 = config.log_inv_rates[0];
     let log_msg_cols_0 = log_n - initial_k;
@@ -3046,14 +3013,7 @@ where
     let num_interleaved_0 = 1usize << initial_k;
 
     let mut t_r = target;
-    let mut tx_idx = 0usize;
-    if tx_idx >= proof.sumcheck_transcript.len() {
-        return None;
-    }
-    let start_msg = proof.sumcheck_transcript[tx_idx];
-    tx_idx += 1;
-    vs.observe_scalar(start_msg.u_0);
-    vs.observe_scalar(start_msg.u_2);
+    let start_msg = next_sumcheck_msg(vs)?;
     let mut running_quad = RoundQuad::from_msg(start_msg, t_r);
 
     let fold_bits =
@@ -3062,8 +3022,6 @@ where
     if config.ood_samples.first().copied().unwrap_or(0) != 0 {
         return None; // L0 must be bound by the opening's own eval claim
     }
-    let mut fold_nonce_idx = 0usize;
-    let mut ood_idx = 0usize;
     // OOD claims glued into the running sumcheck: each contributes
     // `beta · Π_b eq(z_b, r_b) · eq(z_tail, ·)` at the residual.
     struct OodCtx {
@@ -3079,51 +3037,24 @@ where
         // (fold_bits − j) — see the prover's L0 loop.
         let bits = fold_bits(0).saturating_sub(j as u32);
         if bits > 0 {
-            if fold_nonce_idx >= proof.fold_grinding_nonces.len() {
-                return None;
-            }
-            if !vs.verify_pow(proof.fold_grinding_nonces[fold_nonce_idx], bits) {
-                return None;
-            }
-            fold_nonce_idx += 1;
+            vs.grind_check(bits).ok()?;
         }
         let ri = vs.sample();
         r_lane_fold.push(ri);
         t_r = running_quad.eval(ri);
-        if tx_idx >= proof.sumcheck_transcript.len() {
-            return None;
-        }
-        let msg = proof.sumcheck_transcript[tx_idx];
-        tx_idx += 1;
-        vs.observe_scalar(msg.u_0);
-        vs.observe_scalar(msg.u_2);
+        let msg = next_sumcheck_msg(vs)?;
         running_quad = RoundQuad::from_msg(msg, t_r);
     }
 
-    if proof.level_roots.is_empty() {
-        return None;
-    }
-    let root_1 = proof.level_roots[0];
-    vs.absorb_bytes(&root_1);
+    let root_1 = next_root(vs)?;
 
     // OOD binding mirror for the L1 commit: sample z, read the claimed
-    // evaluation from the proof, and glue the claim into the running
+    // evaluation off the stream, and glue the claim into the running
     // sumcheck exactly like the prover.
     for _ in 0..ood_count(1) {
         let z = vs.sample_vec(log_n - initial_k);
-        if ood_idx >= proof.ood_values.len() {
-            return None;
-        }
-        let y = proof.ood_values[ood_idx];
-        ood_idx += 1;
-        vs.observe_scalar(y);
-        if tx_idx >= proof.sumcheck_transcript.len() {
-            return None;
-        }
-        let intro_msg = proof.sumcheck_transcript[tx_idx];
-        tx_idx += 1;
-        vs.observe_scalar(intro_msg.u_0);
-        vs.observe_scalar(intro_msg.u_2);
+        let y = vs.next_scalar().ok()?;
+        let intro_msg = next_sumcheck_msg(vs)?;
         let intro_quad = RoundQuad::from_msg(intro_msg, y);
         let beta = vs.sample();
         running_quad = RoundQuad::fold(&running_quad, &intro_quad, beta);
@@ -3138,17 +3069,7 @@ where
     // PoW grinding check for L0's query phase. With grinding_bits[0]=0 this
     // is a no-op (still absorbs the 0 nonce so the FS state matches the
     // prover side).
-    let mut nonce_idx = 0usize;
-    if nonce_idx >= proof.grinding_nonces.len() {
-        return None;
-    }
-    if !vs.verify_pow(
-        proof.grinding_nonces[nonce_idx],
-        config.grinding_bits[0] as u32,
-    ) {
-        return None;
-    }
-    nonce_idx += 1;
+    vs.grind_check(config.grinding_bits[0] as u32).ok()?;
 
     let num_queries_0 = config.queries[0];
     let _t = std::time::Instant::now();
@@ -3170,7 +3091,7 @@ where
         &proof.initial_proof.merkle_proof,
     )?;
     if !verify_level_opens_perquery(
-        &proof.initial_root,
+        expected_initial_root,
         block_len_0,
         &queries_0,
         &opened_rows_0,
@@ -3198,13 +3119,7 @@ where
         t_enforced += _t.elapsed();
     }
 
-    if tx_idx >= proof.sumcheck_transcript.len() {
-        return None;
-    }
-    let intro_msg_0 = proof.sumcheck_transcript[tx_idx];
-    tx_idx += 1;
-    vs.observe_scalar(intro_msg_0.u_0);
-    vs.observe_scalar(intro_msg_0.u_2);
+    let intro_msg_0 = next_sumcheck_msg(vs)?;
     let intro_quad_0 = RoundQuad::from_msg(intro_msg_0, enforced_sum_0);
     let beta_0 = vs.sample();
     running_quad = RoundQuad::fold(&running_quad, &intro_quad_0, beta_0);
@@ -3231,7 +3146,6 @@ where
     let mut prev_log_num_interleaved = config.level_ks[0];
     let mut prev_log_msg_cols = n1 - prev_log_num_interleaved;
     let mut prev_log_inv_rate = config.log_inv_rates[1];
-    let mut next_root_idx = 1usize;
     let mut level_proof_idx = 0usize;
     let mut n_current = n1;
 
@@ -3246,56 +3160,21 @@ where
             // to (fold_bits − j) — see the prover's L0 loop.
             let bits = fold_bits(i + 1).saturating_sub(j as u32);
             if bits > 0 {
-                if fold_nonce_idx >= proof.fold_grinding_nonces.len() {
-                    return None;
-                }
-                if !vs.verify_pow(proof.fold_grinding_nonces[fold_nonce_idx], bits) {
-                    return None;
-                }
-                fold_nonce_idx += 1;
+                vs.grind_check(bits).ok()?;
             }
             let ri = vs.sample();
             ris.push(ri);
             level_rs.push(ri);
             t_r = running_quad.eval(ri);
-            if tx_idx >= proof.sumcheck_transcript.len() {
-                return None;
-            }
-            let msg = proof.sumcheck_transcript[tx_idx];
-            tx_idx += 1;
-            vs.observe_scalar(msg.u_0);
-            vs.observe_scalar(msg.u_2);
+            let msg = next_sumcheck_msg(vs)?;
             running_quad = RoundQuad::from_msg(msg, t_r);
         }
         n_current -= k_i;
 
         if i == r - 1 {
-            if tx_idx != proof.sumcheck_transcript.len() {
-                return None;
-            }
-            if ood_idx != proof.ood_values.len()
-                || fold_nonce_idx != proof.fold_grinding_nonces.len()
-            {
-                return None;
-            }
-            let yr = &proof.final_proof.yr;
-            if yr.len() != 1 << n_current {
-                return None;
-            }
-            for v in yr {
-                vs.observe_scalar(*v);
-            }
+            let yr = vs.next_scalars(1 << n_current).ok()?;
             // PoW grinding check for last level's query phase.
-            if nonce_idx >= proof.grinding_nonces.len() {
-                return None;
-            }
-            if !vs.verify_pow(
-                proof.grinding_nonces[nonce_idx],
-                config.grinding_bits[i + 1] as u32,
-            ) {
-                return None;
-            }
-            // (last nonce — nonce_idx is not advanced past it)
+            vs.grind_check(config.grinding_bits[i + 1] as u32).ok()?;
 
             let prev_block_len = 1usize << (prev_log_msg_cols + prev_log_inv_rate);
             let prev_num_interleaved = 1usize << prev_log_num_interleaved;
@@ -3427,7 +3306,7 @@ where
             }
             let mut inner = F128::ZERO;
             let _t = std::time::Instant::now();
-            for y in 0..yr_len {
+            for (y, &yr_y) in yr.iter().enumerate() {
                 let mut combined_y = evb_vec[y];
                 for (k, residual) in induced_residuals.iter().enumerate() {
                     combined_y += level_ctxs[k].beta * residual[y];
@@ -3435,7 +3314,7 @@ where
                 for resid in &ood_residuals {
                     combined_y += resid[y];
                 }
-                inner += yr[y] * combined_y;
+                inner += yr_y * combined_y;
             }
             if trace {
                 t_residual += _t.elapsed();
@@ -3470,29 +3349,13 @@ where
             return Some(LigVerifierSummary { ris, query_squeezes });
         }
 
-        if next_root_idx >= proof.level_roots.len() {
-            return None;
-        }
-        let root_next = proof.level_roots[next_root_idx];
-        next_root_idx += 1;
-        vs.absorb_bytes(&root_next);
+        let root_next = next_root(vs)?;
 
         // OOD binding mirror for the L_{i+2} commit.
         for _ in 0..ood_count(i + 2) {
             let z = vs.sample_vec(n_current);
-            if ood_idx >= proof.ood_values.len() {
-                return None;
-            }
-            let y = proof.ood_values[ood_idx];
-            ood_idx += 1;
-            vs.observe_scalar(y);
-            if tx_idx >= proof.sumcheck_transcript.len() {
-                return None;
-            }
-            let intro_msg = proof.sumcheck_transcript[tx_idx];
-            tx_idx += 1;
-            vs.observe_scalar(intro_msg.u_0);
-            vs.observe_scalar(intro_msg.u_2);
+            let y = vs.next_scalar().ok()?;
+            let intro_msg = next_sumcheck_msg(vs)?;
             let intro_quad = RoundQuad::from_msg(intro_msg, y);
             let beta = vs.sample();
             running_quad = RoundQuad::fold(&running_quad, &intro_quad, beta);
@@ -3505,16 +3368,7 @@ where
         }
 
         // PoW grinding check for this iteration's query phase.
-        if nonce_idx >= proof.grinding_nonces.len() {
-            return None;
-        }
-        if !vs.verify_pow(
-            proof.grinding_nonces[nonce_idx],
-            config.grinding_bits[i + 1] as u32,
-        ) {
-            return None;
-        }
-        nonce_idx += 1;
+        vs.grind_check(config.grinding_bits[i + 1] as u32).ok()?;
 
         let prev_block_len = 1usize << (prev_log_msg_cols + prev_log_inv_rate);
         let prev_num_interleaved = 1usize << prev_log_num_interleaved;
@@ -3560,13 +3414,7 @@ where
             t_enforced += _t.elapsed();
         }
 
-        if tx_idx >= proof.sumcheck_transcript.len() {
-            return None;
-        }
-        let intro_msg_i = proof.sumcheck_transcript[tx_idx];
-        tx_idx += 1;
-        vs.observe_scalar(intro_msg_i.u_0);
-        vs.observe_scalar(intro_msg_i.u_2);
+        let intro_msg_i = next_sumcheck_msg(vs)?;
         let intro_quad_i = RoundQuad::from_msg(intro_msg_i, enforced_sum_i);
         let beta_i = vs.sample();
         running_quad = RoundQuad::fold(&running_quad, &intro_quad_i, beta_i);
@@ -3749,20 +3597,20 @@ mod tests {
             .fold(F128::ZERO, |a, v| a + v);
 
         // Prover: 1 start message + (n-1) folds, leaving a length-2 residual.
-        let (mut prover, _first) = SumcheckProver::new(f.clone(), b.clone(), h);
+        let (mut prover, first) = SumcheckProver::new(f.clone(), b.clone(), h);
         let mut ch = crate::VerifierState::detached(&(0xC0FFEEu64).to_le_bytes(), &[]);
         let mut ris: Vec<F128> = Vec::new();
+        let mut msgs = vec![first];
         for _ in 0..(n - 1) {
             let r = ch.sample();
             ris.push(r);
-            prover.fold(r);
+            msgs.push(prover.fold(r));
         }
         assert_eq!(prover.f().len(), 2);
         assert_eq!(prover.combined_basis.len(), 2);
 
         // Verifier replay: n messages (start + n-1 folds), n-1 prover-folds challenges
         // (r_0..r_{n-2}) already in ris, plus one new r_last for the final residual.
-        let msgs = prover.transcript().to_vec();
         assert_eq!(msgs.len(), n);
         let r_last = ch.sample();
         let mut t_r = h;
@@ -3802,12 +3650,13 @@ mod tests {
             .map(|(&x, &y)| x * y)
             .fold(F128::ZERO, |a, v| a + v);
 
-        let (mut prover, _first) = SumcheckProver::new(f.clone(), b1.clone(), h1);
+        let (mut prover, first) = SumcheckProver::new(f.clone(), b1.clone(), h1);
         let mut ch = crate::VerifierState::detached(&(0xBEEFu64).to_le_bytes(), &[]);
+        let mut msgs = vec![first];
 
         // Fold once before introducing b2 (must fold at the same dim as the introduced poly).
         let r0 = ch.sample();
-        prover.fold(r0);
+        msgs.push(prover.fold(r0));
         // Partial-eval b2 too so it matches the prover's current f dim.
         let mut b2_folded = b2.clone();
         partial_eval_lsb_one(&mut b2_folded, r0);
@@ -3819,7 +3668,7 @@ mod tests {
             .zip(prover.f().iter())
             .map(|(&x, &y)| x * y)
             .fold(F128::ZERO, |a, v| a + v);
-        prover.introduce_new(b2_folded.clone(), h2_folded);
+        msgs.push(prover.introduce_new(b2_folded.clone(), h2_folded));
         let alpha = ch.sample();
         prover.glue(alpha);
 
@@ -3829,7 +3678,7 @@ mod tests {
         for _ in 0..(n - 2) {
             let r = ch.sample();
             ris.push(r);
-            prover.fold(r);
+            msgs.push(prover.fold(r));
         }
         let r_last = ch.sample();
         ris.push(r_last);
@@ -3837,9 +3686,8 @@ mod tests {
 
         // Verifier replays: 1 start, 1 fold, 1 introduce_new (no T_r update), 1 glue
         // (combine running quad with introduced, update T_r), then (n-2) folds.
-        let msgs = prover.transcript().to_vec();
         // start (idx 0) + fold(r0) → idx 1 + introduce_new → idx 2 + later folds
-        // Note: glue doesn't add a transcript entry; it just combines internal state.
+        // Note: glue doesn't add a message; it just combines internal state.
         assert_eq!(msgs.len(), 1 + 1 + 1 + (n - 2));
 
         let mut t_r = h1;
@@ -4346,10 +4194,7 @@ mod tests {
             &mut p_ch,
         );
 
-        // Sanity: the new proof fields are populated.
-        assert_eq!(proof.ood_values.len(), 4, "2 OOD samples each at L1 and L2");
-        // 2 lane folds (L0) + 2 + 2 level folds, each with 3 grind bits.
-        assert_eq!(proof.fold_grinding_nonces.len(), initial_k + ks[0] + ks[1]);
+        let bundle = p_ch.into_proof();
 
         let eval_b_residual = {
             let z = z.clone();
@@ -4371,11 +4216,11 @@ mod tests {
                     .collect()
             }
         };
-        let succinct = |proof: &LigeritoProof| {
-            let mut ch = crate::VerifierState::detached(b"ood-test", &[]);
+        let succinct = |bundle: &fiat_shamir::transcript::Proof<LigeritoProof>| {
+            let mut ch = crate::VerifierState::new(b"ood-test", bundle, &[]);
             multilevel_verifier_with_basis_succinct(
                 &v_cfg,
-                proof,
+                &proof,
                 log_n,
                 target,
                 &initial_root,
@@ -4385,18 +4230,23 @@ mod tests {
             .is_some()
         };
 
-        assert!(succinct(&proof), "verifier must accept OOD proof");
+        assert!(succinct(&bundle), "verifier must accept OOD proof");
 
-        // Tamper an OOD value → reject.
-        let mut bad_ood = proof.clone();
-        bad_ood.ood_values[0] += F128::ONE;
+        // Stream layout of the head: [u_0, u_2] start message, then per L0
+        // fold j: one raw fold-grind nonce (bits = 3−j > 0) + [u_0, u_2],
+        // then the L1 root (2 scalars), then per OOD sample: y + [u_0, u_2].
+        let fold_nonce_0_idx = 2;
+        let first_ood_idx = 2 + initial_k * 3 + 2;
+
+        // Tamper the first OOD value → reject.
+        let mut bad_ood = bundle.clone();
+        bad_ood.stream[first_ood_idx] += F128::ONE;
         assert!(!succinct(&bad_ood), "must reject tampered OOD value");
 
-        // Tamper a fold-grinding nonce → reject (PoW fails or the FS state
-        // diverges).
-        let mut bad_nonce = proof.clone();
-        bad_nonce.fold_grinding_nonces[0] ^= 0xDEAD_BEEF;
-        assert!(!bad_nonce.fold_grinding_nonces.is_empty());
+        // Tamper a fold-grinding nonce → reject (PoW fails; the nonce is raw
+        // transport, already bound by the grind itself).
+        let mut bad_nonce = bundle.clone();
+        bad_nonce.stream[fold_nonce_0_idx] += F128::new(0xDEAD_BEEF, 0);
         assert!(!succinct(&bad_nonce), "must reject tampered fold nonce");
     }
 
@@ -4497,7 +4347,8 @@ mod tests {
                 })
                 .collect()
         };
-        let mut v_ch = crate::VerifierState::detached(b"batched", &[]);
+        let bundle = p_ch.into_proof();
+        let mut v_ch = crate::VerifierState::new(b"batched", &bundle, &[]);
         let ok = multilevel_verifier_with_basis_succinct(
             &v_cfg,
             &proof,
