@@ -21,15 +21,13 @@ use ::pcs::PaddingSpec;
 /// `2^(m - LOG_PACKING)`, so for an F-valued witness of `2^μ` elements we set
 /// `m = μ + LOG_PACKING`.
 const LOG_PACKING: usize = 7;
-/// Row-batch lanes `2^LOG_BATCH`: also the Merkle leaf width (`2^LOG_BATCH`
-/// F128/leaf) and Ligerito's INITIAL folding factor (must equal
-/// [`::pcs::ligerito::INITIAL_K`], checked below). Larger ⇒ far fewer Merkle
-/// nodes to hash at the cost of fatter query openings.
-const LOG_BATCH: usize = 6;
-const _: () = assert!(LOG_BATCH == ::pcs::ligerito::INITIAL_K);
-/// L0 rate `2^-1` (doc §3) — must equal [`::pcs::ligerito::LOG_INV_RATE_0`].
-pub const LOG_INV_RATE: usize = 1;
-const _: () = assert!(LOG_INV_RATE == ::pcs::ligerito::LOG_INV_RATE_0);
+/// Row-batch lanes `2^LOG_BATCH`: the Merkle leaf width (`2^LOG_BATCH`
+/// F128/leaf) IS Ligerito's INITIAL folding factor — the L0 commit is reused,
+/// so the two are one knob ([`::pcs::ligerito::INITIAL_K`]). Larger ⇒ far
+/// fewer Merkle nodes to hash at the cost of fatter query openings.
+const LOG_BATCH: usize = ::pcs::ligerito::INITIAL_K;
+/// L0 rate (doc §3) — the one knob [`::pcs::ligerito::LOG_INV_RATE_0`].
+pub const LOG_INV_RATE: usize = ::pcs::ligerito::LOG_INV_RATE_0;
 // The PCS and the bus grinding both target `SECURITY_BITS`; keep them in
 // sync — a stronger PCS target without bumping the constant (or vice versa)
 // would leave one round below the intended level.

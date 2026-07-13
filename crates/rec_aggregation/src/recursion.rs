@@ -1305,7 +1305,7 @@ fn recursion_soundness_binds() {
     // the honest proof verifies, and corrupting any of the once-free hints
     // (padding surplus, bus-leaf selectors + their packing order, and the
     // residual-slot pad coordinates) makes the guest reject. Uses the m=22
-    // candidate, whose yr_log_n (=3) is below YR_LOG_CAP so the slot over-read
+    // candidate, whose yr_log_n is below YR_LOG_CAP so the slot over-read
     // path is live. Ignored: several full inner+outer proofs.
     let cfg: &[(usize, usize)] = &[(4, 1 << 12)];
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/guests/recursion.py");
@@ -1328,14 +1328,37 @@ fn recursion_soundness_binds() {
 
     assert!(run(&mut guest, &batch.merged), "honest proof must verify");
 
+    // The first residual-slot PADDING coordinate (k = yr_log_n), shape-derived
+    // from the fold ladder so the test survives changes to the fold constants
+    // (INITIAL_K / LEVEL_K / RESIDUAL_MAX_LOG). This inner commits a stack of
+    // log-size 22 (flock m = 22 + 7); YR_LOG_CAP is the max residual log over
+    // the guest's dispatch candidates (mu 22..=28, mirroring gen_verify). The
+    // guest only reads YR_LOG_CAP slot coords, so a pad coordinate to tamper
+    // exists only when this candidate's yr_log_n sits BELOW the cap.
+    let yr_log = |mu: usize| {
+        pcs::ligerito::LigeritoSecurityConfig::derive_config(mu + 7)
+            .and_then(|s| s.to_prover_verifier_configs())
+            .expect("stacked opening config")
+            .1
+            .level_shapes(mu)
+            .yr_log_n
+    };
+    let (stack_mu, yr_cap) = (22usize, (22..=28).map(yr_log).max().unwrap());
+    let yr_pad_idx = yr_log(stack_mu);
+
     // each tamper flips one hint to a definitely-invalid value.
-    let tampers: &[(&str, usize, F128)] = &[
+    let mut tampers: Vec<(&str, usize, F128)> = vec![
         ("fs_seed", 0, F128::ONE),          // wrong proving environment: own_pi (public input) must reject
-        ("rs_yslot_bits", 4, F128::ONE),    // pad coord (k=4 >= yr_log_n=3): over-read weight
         ("claim_nover", 0, g_pow(5)),        // wrong overlap: exact length pin must reject
         ("pi_cplen", 0, g_pow(2)),           // wrong pi dimension: min-cert must reject
     ];
-    for &(stream, idx, val) in tampers {
+    if yr_pad_idx < yr_cap {
+        // pad coord (k >= yr_log_n): over-read weight must be zero-pinned
+        tampers.push(("rs_yslot_bits", yr_pad_idx, F128::ONE));
+    } else {
+        eprintln!("rs_yslot_bits tamper skipped: yr_log_n == YR_LOG_CAP (no pad coordinate)");
+    }
+    for &(stream, idx, val) in &tampers {
         let mut merged = batch.merged.clone();
         let pos = merged.iter().position(|(n, _)| n == stream).expect("stream present");
         let orig = merged[pos].1[0][idx];
