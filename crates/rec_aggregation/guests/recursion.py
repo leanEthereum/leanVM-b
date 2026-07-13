@@ -1,82 +1,5 @@
 from snark_lib import *
 
-# The recursion guest: in-circuit replay of leanVM-b's `cpu::verify` for NSUB
-# sub-proofs of one fixed inner program, followed by the aggregation of their
-# deferred claims (doc.tex §Recursive aggregation, §Deferred evaluation claims,
-# §Ring-switch claims via linearized polynomials).
-#
-# Per sub-proof: seed (hinted statement + baked program digest) → announced
-# sizes → commitment root → bus (grinding, 3× GKR grand product, balance,
-# 3× leaf decomposition with the claim pool, stacked-bytecode reduction) →
-# 6 AIR zerochecks → public-input claim → flock reduction
-# (univariate-skip zerocheck, lincheck with the matrix evaluation DEFERRED) →
-# ring-switch fronts (tensor algebra in-circuit via linearized polynomials) →
-# the stacked Ligerito opening (config-driven levels, fused query passes,
-# generalized eval_b terminal). Then the aggregation phase batches the deferred
-# bytecode and matrix claims with two sumchecks and binds the reduced claims to
-# the public input.
-#
-# Config-driven by placeholder constants the harness computes from the REAL
-# `cpu::layout` and the transcript trace of a native verify run; all per-proof
-# data (the stream, sub statements, opened Merkle rows + paths)
-# arrives as hints (`src/recursion.rs::gen_verify`).
-#
-# SOUNDNESS: every hint is untrusted prover input; each is bound one of five
-# ways, and nothing else enters the computation:
-#   - sponge-bound (observed/absorbed before any challenge that depends on it):
-#     the stream scalars (flock's zerocheck/lincheck/ring-switch words AND the
-#     Ligerito opening's sumcheck messages, level roots, grind nonces and final
-#     message included: the cursor walks them like any other stream region),
-#     the aggregation round messages bc_sumcheck_msgs/mat_sumcheck_msgs, and the deferred bytecode values
-#     bytecode_vals (absorbed by the stacked-bytecode reduction before its challenges);
-#   - assert-checked: the grinding digest bits and the query-index bits are
-#     advice-decomposed in place (hint_decompose_bits of the in-circuit digest /
-#     squeezed word: booleanity + reconstruction + the low-nbits zero-window
-#     asserts), merkle_leaf_rows/merkle_paths (Merkle inclusion against the bound roots);
-#     the count-tree root nonzero and the ceil-log minimality checks are plain
-#     `assert != 0`, and the flock zerocheck combiner is a `/` (field division) -
-#     no inverse hints anywhere now;
-#   - shape-certified (the announced sizes are the ground truth): dims_g[0] =
-#     g^log_mem is pinned to the announced word; every other structural
-#     quantity is COMPUTED from certified data, any nondeterministic step
-#     (bit decompositions, log2_ceil results) supplied by hint_* advice
-#     keywords and re-verified in-circuit — the per-table taus, the side mus
-#     (the ONE bus depth, computed from the derived block kappas; pull
-#     matches by pairing, count is padded to it), the committed size m, each
-#     block's kappa, its padding delta (g^(2^kappa)/g^real, pinned by
-#     g^real * g^delta == g^(2^kappa)), its selector bits (the offset's bits
-#     read shifted by kappa, pinned by rebuilding g^offset), the selector
-#     length g^mu / g^kappa, and rs_sel_len = g^lenris / g^qpkdv; sort_order
-#     (the packing order) is hinted but only permutation-checked — any aligned
-#     tiling is sound;
-#   - identity-certified (booleanity + range checks here; the VALUE pinned by
-#     the eval_b terminal identity against the opening-bound target):
-#     claim_low_len/claim_sel_len/claim_nover under the exact length pin
-#     (nlow = cplen * g^delta derived, nlow+seln == lenris+nover,
-#     nover*seln == 0, low_len = cplen - nover), pi_cplen with
-#     pi_mem_slack/pi_fold_slack (pi's cplen = min(log_mem, lenris), certified
-#     as a min: <= both, == one), claim_qpkd_slot_bits/claim_sel_bits/
-#     claim_yslot_bits/rs_sel_bits/rs_yslot_bits (slot coords beyond yr_log_n
-#     asserted zero); the overlap mask is NOT hinted: the pinned nover selects
-#     a baked prefix-mask row (exactly nover ones) by pointer arithmetic;
-#   - statement-bound (fed to the outer public-input hash): fs_seed (ONE
-#     digest of the flock circuit family + the inner program bytecode, which
-#     also leads every sub transcript), sub_pis (the
-#     sub statements, which also derive the transcript seeds), matpart (with its
-#     complete weight data), and the reduced claims bc_star_hint/mat_stars_hint with their points.
-# The stream hint itself is transport, never trusted: binding always comes from
-# the sponge absorb of each value read off it. The outer verifier's total
-# obligation is: verify the outer proof, recompute the statement hash from the
-# claimed sub statements + reduced claims, and evaluate the three fixed
-# polynomials (stacked bytecode, A0, B0) at the reduced points.
-#
-# Conventions: `fs` is the Fiat-Shamir sponge chain (a StackBuf pair aliased
-# forward per compression; `agg_fs` and `out_fs` are the aggregation and
-# public-input chains); `cursor` walks the proof stream (heap pointer, advanced
-# by g per word read); `_s`-suffixed names are this sub-proof's slice of an
-# NSUB-wide hint buffer; chains across runtime loop iterations live in
-# g-indexed heap buffers (`*_chain`).
-
 # The proof stream rides ONE padded witness hint (the guest walks only the
 # prefix the shape dictates); binding always comes from the per-word absorbs.
 STREAM_CAP = STREAM_CAP_PLACEHOLDER
@@ -314,8 +237,7 @@ def check_128_bits_decomposition(bits_ptr, v):
     acc = 0
     for i in unroll(0, FIELD_BITS):
         b = bits_ptr[GEN ** i]
-        sq = b * b
-        assert sq == b
+        assert b * b == b
         acc += b * GEN ** i  # accumulate the g-power encoding: bit i contributes g^i
     assert acc == v
     return
@@ -1413,8 +1335,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
         cur_i = flock_round_cursor[xi]
         round_fs, gamma_c, cur_i = fs_next(round_fs, cur_i)
         round_fs, g_inf, cur_i = fs_next(round_fs, cur_i)
-        inv_one_plus_r = 1 / (1 + r_eq)  # 1 + r_eq != 0 (enforced by the division)
-        gamma_ab = (round_running + r_eq * gamma_c) * inv_one_plus_r
+        gamma_ab = (round_running + r_eq * gamma_c) / (1 + r_eq)
         round_fs = squeeze(round_fs)
         rho_v = round_fs[0]
         zerocheck_rhos[xi] = rho_v
