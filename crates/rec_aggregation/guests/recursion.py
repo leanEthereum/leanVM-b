@@ -620,13 +620,11 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
             grind_check(fs[0], fs[1], q_nonce, GEN ** LIG_QUERY_GRIND_BITS[m_idx * LIG_MAX_LEVELS + lvl])
         fs = absorb(fs, q_nonce, DS_POW)
 
-        sc0 = fs[0]
-        sc1 = fs[1]
         for xs in mul_range(1, GEN ** LIG_SQUEEZES[m_idx * LIG_MAX_LEVELS + lvl]):
-            packed_word, sc0, sc1 = squeeze_step(sc0, sc1)
+            packed_word, next_c0, next_c1 = squeeze_step(fs[0], fs[1])
+            fs = [next_c0, next_c1]
             query_ptr = xs ** (FIELD_BITS // LIG_TREE_DEPTH[m_idx * LIG_MAX_LEVELS + lvl])
             decode_query_bits(packed_word, query_positions * GEN ** LIG_POSITIONS_OFF[m_idx * LIG_MAX_LEVELS + lvl] * query_ptr, query_bit_ptrs * GEN ** LIG_POSITIONS_OFF[m_idx * LIG_MAX_LEVELS + lvl] * query_ptr, LIG_TREE_DEPTH[m_idx * LIG_MAX_LEVELS + lvl])
-        fs = [sc0, sc1]
 
         query_alphas = HeapBuf(GEN ** (LIG_MAX_INTERLEAVE[m_idx]))
         for t in unroll(0, LIG_LOG_QUERIES[m_idx * LIG_MAX_LEVELS + lvl]):
@@ -860,8 +858,6 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     fs, root_count, cursor = fs_next(fs, cursor)
     fs = squeeze(fs)
     lam = fs[0]  # λ over the three roots
-    lfs0 = fs[0]
-    lfs1 = fs[1]
     claim_push = root_push
     claim_pull = root_pull
     claim_count = root_count
@@ -872,8 +868,8 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     for x_layer in mul_range(1, g_bus_mu):
         claim_l = claim_push + lam * (claim_pull + lam * claim_count)
         nextrow = point_row * GEN ** MU_CAP
-        gkr_round_fs0[round_pos] = lfs0
-        gkr_round_fs1[round_pos] = lfs1
+        gkr_round_fs0[round_pos] = fs[0]
+        gkr_round_fs1[round_pos] = fs[1]
         gkr_round_cursor[round_pos] = cursor
         gkr_round_claim[round_pos] = claim_l
         gkr_round_eq[round_pos] = 1
@@ -907,12 +903,10 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
         claim_count = e0_count + layer_challenge * (e0_count + e1_count)
         tail_fs = squeeze(tail_fs)  # fresh λ pins the tail individuals
         lam = tail_fs[0]
-        lfs0 = tail_fs[0]
-        lfs1 = tail_fs[1]
+        fs = tail_fs
         cursor = tcur
         point_row = nextrow
         round_pos = round_pos * x_layer * GEN
-    fs = [lfs0, lfs1]
     for xt in mul_range(1, g_bus_mu):
         zeta[xt] = point_row[xt]  # the ONE shared point
     gkr_roots[PUSH_SIDE] = root_push
@@ -1293,23 +1287,17 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
         zc_running = gamma_ab * (1 + rho_v) + gamma_c * rho_v + g_inf * rho_v * (1 + rho_v)
     # rounds N_FIXED_CHALLENGE_ROUNDS.. at runtime count: K_LOG + tau_5 - K_SKIP rounds total (certified).
     nmlv_g = tau_blake3_g * GEN ** (K_LOG - K_SKIP)
-    # Round state (the running claim, cursor, fs pair) is loop-carried; only
-    # the rho vector (read later by the lincheck replay) stays a real array.
-    ffs0 = fs[0]
-    ffs1 = fs[1]
+    # Round state (the running claim, cursor, the fs pair) is loop-carried;
+    # only the rho vector (read later by the lincheck replay) stays an array.
     for xi in mul_range(GEN ** N_FIXED_CHALLENGE_ROUNDS, nmlv_g):
-        round_fs = [ffs0, ffs1]
         r_eq = zerocheck_r[GEN ** K_SKIP * xi]
-        round_fs, gamma_c, cursor = fs_next(round_fs, cursor)
-        round_fs, g_inf, cursor = fs_next(round_fs, cursor)
+        fs, gamma_c, cursor = fs_next(fs, cursor)
+        fs, g_inf, cursor = fs_next(fs, cursor)
         gamma_ab = (zc_running + r_eq * gamma_c) / (1 + r_eq)
-        round_fs = squeeze(round_fs)
-        rho_v = round_fs[0]
+        fs = squeeze(fs)
+        rho_v = fs[0]
         zerocheck_rhos[xi] = rho_v
         zc_running = gamma_ab * (1 + rho_v) + gamma_c * rho_v + g_inf * rho_v * (1 + rho_v)
-        ffs0 = round_fs[0]
-        ffs1 = round_fs[1]
-    fs = [ffs0, ffs1]
     # cursor walked past all 2*n_mlv round words, now at a_eval
     # final: zc_running == a_eval * b_eval; observe both.
     fs, a_eval, cursor = fs_next(fs, cursor)

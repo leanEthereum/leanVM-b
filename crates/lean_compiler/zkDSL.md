@@ -292,13 +292,17 @@ for xk in mul_range(1, n):
 # here acc is the final product
 ```
 
-Costs one frame-arg write per carried variable per iteration (cheaper than a
-chain's write + read) plus a one-time finals store on exit. Two constraints:
+A rebound `StackBuf` carries too: its cells travel as consecutive helper
+arguments (consecutive frame cells — already a run, zero copies), so the
+MD-chain idiom `fs = squeeze(fs)` works unchanged inside a runtime loop.
+
+Costs one frame-arg write per carried cell per iteration (cheaper than a
+chain's write + read) plus a one-time finals store on exit. One constraint:
 a carrying loop must run at least once (empty constant ranges are a compile
 error; runtime bounds get an inserted nonempty assert, since the finals only
-write on the exit path), and a StackBuf cannot be carried — thread its cells
-as scalars. Values indexed at arbitrary positions later still need a real
-`HeapBuf` array; `if` / match-arm bindings stay branch-local as always.
+write on the exit path). Values indexed at arbitrary positions later still
+need a real `HeapBuf` array; `if` / match-arm bindings stay branch-local as
+always.
 
 ## Debugging
 

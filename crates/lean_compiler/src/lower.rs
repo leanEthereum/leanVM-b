@@ -1592,6 +1592,7 @@ impl FnLower<'_> {
                 params: rt_params,
                 const_params,
                 n_ret: def.n_ret,
+                stack_params: def.stack_params.clone(),
                 body,
                 inline: false,
             });
@@ -2063,20 +2064,22 @@ impl FnLower<'_> {
         let mut assigned = Vec::new();
         assigned_vars_stmts(body, &mut assigned);
         let mut carry: Vec<String> = Vec::new();
+        // A carried StackBuf travels as its cells: `size` consecutive helper
+        // args are consecutive frame cells, i.e. already a run — the helper
+        // binds the name over them with zero copies.
+        let mut carry_stacks: Vec<(String, u32)> = Vec::new();
         for a in assigned {
-            if a == var || carry.contains(&a) {
+            if a == var || carry.contains(&a) || carry_stacks.iter().any(|(n, _)| *n == a) {
                 continue;
             }
-            if self.stacks.contains_key(&a) {
-                panic!(
-                    "loop body rebinds enclosing StackBuf `{a}` — a StackBuf cannot be                      loop-carried; thread its cells as scalars instead"
-                );
-            }
-            if self.vars.contains_key(&a) || self.gaddrs.contains_key(&a) || self.fconsts.contains_key(&a) {
+            if let Some(&(_, size)) = self.stacks.get(&a) {
+                carry_stacks.push((a, size));
+            } else if self.vars.contains_key(&a) || self.gaddrs.contains_key(&a) || self.fconsts.contains_key(&a) {
                 carry.push(a);
             }
         }
         let carry = &carry[..];
+        let has_carry = !carry.is_empty() || !carry_stacks.is_empty();
         let id = *self.loop_ctr;
         *self.loop_ctr += 1;
         let loop_name = format!("__loop{id}");
@@ -2095,6 +2098,9 @@ impl FnLower<'_> {
         let mut bound = std::collections::HashSet::new();
         bound.insert(var.to_string());
         for c in carry {
+            bound.insert(c.clone());
+        }
+        for (c, _) in &carry_stacks {
             bound.insert(c.clone());
         }
         let res_var = format!("__carry_res{id}");
@@ -2132,9 +2138,16 @@ impl FnLower<'_> {
         if runtime {
             params.push(bound_var.clone());
         }
-        if !carry.is_empty() {
+        let mut stack_params: Vec<(String, usize, u32)> = Vec::new();
+        if has_carry {
             params.push(res_var.clone());
             params.extend(carry.iter().cloned());
+            for (name, size) in &carry_stacks {
+                stack_params.push((name.clone(), params.len(), *size));
+                for k in 0..*size {
+                    params.push(format!("__{name}_cell{k}_{id}"));
+                }
+            }
         }
         params.extend(captures.iter().cloned());
         let cap_args = |first: Expr, bound: Expr| {
@@ -2142,9 +2155,17 @@ impl FnLower<'_> {
             if runtime {
                 a.push(bound);
             }
-            if !carry.is_empty() {
+            if has_carry {
                 a.push(Expr::Var(res_var.clone()));
                 a.extend(carry.iter().map(|c| Expr::Var(c.clone())));
+                for (name, size) in &carry_stacks {
+                    for k in 0..*size {
+                        a.push(Expr::Index(
+                            Box::new(Expr::Var(name.clone())),
+                            Box::new(Expr::Lit(k as u128)),
+                        ));
+                    }
+                }
             }
             a.extend(captures.iter().map(|c| Expr::Var(c.clone())));
             a
@@ -2167,12 +2188,24 @@ impl FnLower<'_> {
         ));
         // Loop-carried finals: the code after a TRUE-TAIL recursion runs only
         // in the final iteration's frame, so each carried value stores once.
-        for (k, c) in carry.iter().enumerate() {
+        let mut res_idx = 0u128;
+        for c in carry {
             loop_body.push(Stmt::Store(
                 Expr::Var(res_var.clone()),
-                Expr::GPow(k as u128),
+                Expr::GPow(res_idx),
                 Expr::Var(c.clone()),
             ));
+            res_idx += 1;
+        }
+        for (name, size) in &carry_stacks {
+            for k in 0..*size {
+                loop_body.push(Stmt::Store(
+                    Expr::Var(res_var.clone()),
+                    Expr::GPow(res_idx),
+                    Expr::Index(Box::new(Expr::Var(name.clone())), Box::new(Expr::Lit(k as u128))),
+                ));
+                res_idx += 1;
+            }
         }
         loop_body.push(Stmt::Return(vec![]));
         let const_params = vec![false; params.len()];
@@ -2181,6 +2214,7 @@ impl FnLower<'_> {
             params,
             const_params,
             n_ret: 0,
+            stack_params,
             body: loop_body,
             inline: false,
         });
@@ -2188,8 +2222,9 @@ impl FnLower<'_> {
         // A carried loop allocates the finals buffer and must run at least
         // once (the finals are only written on the exit path): compile-time
         // rejected for constant bounds, asserted for runtime ones.
-        if !carry.is_empty() {
-            self.stmt(&Stmt::Let(res_var.clone(), Expr::HeapBuf(carry.len() as u64)));
+        if has_carry {
+            let n_res = carry.len() as u64 + carry_stacks.iter().map(|(_, s)| *s as u64).sum::<u64>();
+            self.stmt(&Stmt::Let(res_var.clone(), Expr::HeapBuf(n_res)));
         }
         // Enter the loop iff it runs at least once: compile-time for constant
         // bounds (an empty range compiles to nothing), a conditional call on
@@ -2203,11 +2238,11 @@ impl FnLower<'_> {
                         0,
                     );
                 } else {
-                    assert!(carry.is_empty(), "a `carry` loop must run at least once (empty constant range)");
+                    assert!(!has_carry, "a loop with carried state must run at least once (empty constant range)");
                 }
             }
             ForBound::Runtime(_) => {
-                if !carry.is_empty() {
+                if has_carry {
                     self.stmt(&Stmt::AssertNe(Expr::GPow(lo as u128), entry_bound.clone()));
                 }
                 let stmt = Stmt::CallIfNe(
@@ -2220,12 +2255,27 @@ impl FnLower<'_> {
             }
         }
         // Post-loop: each carried name rebinds to its final (write-once cell
-        // stored by the last iteration's exit path).
-        for (k, c) in carry.iter().enumerate() {
+        // stored by the last iteration's exit path); a carried StackBuf
+        // rebinds as a fresh run filled from its final cells.
+        let mut res_idx = 0u128;
+        for c in carry {
             self.stmt(&Stmt::Let(
                 c.clone(),
-                Expr::Index(Box::new(Expr::Var(res_var.clone())), Box::new(Expr::GPow(k as u128))),
+                Expr::Index(Box::new(Expr::Var(res_var.clone())), Box::new(Expr::GPow(res_idx))),
             ));
+            res_idx += 1;
+        }
+        for (name, size) in &carry_stacks {
+            let base = self.alloc_stack(*size);
+            for k in 0..*size {
+                let e = Expr::Index(Box::new(Expr::Var(res_var.clone())), Box::new(Expr::GPow(res_idx + k as u128)));
+                self.expr_into(&e, base + k);
+            }
+            res_idx += *size as u128;
+            self.vars.remove(name);
+            self.gaddrs.remove(name);
+            self.fconsts.remove(name);
+            self.stacks.insert(name.clone(), (base, *size));
         }
     }
 }
@@ -2405,11 +2455,17 @@ pub(crate) fn lower_func(
     for (i, p) in f.params.iter().enumerate() {
         vars.insert(p.clone(), 2 + i as u32);
     }
+    // Carried-StackBuf param groups bind their name over the (consecutive)
+    // arg cells as a run — the args ARE the buffer, zero copies.
+    let mut stacks = HashMap::new();
+    for (name, first, size) in &f.stack_params {
+        stacks.insert(name.clone(), (2 + *first as u32, *size));
+    }
     // Reserve [0,1] retpc/retfp, params, then return slots, then locals.
     let next = 2 + f.params.len() as u32 + f.n_ret as u32;
     let mut lowerer = FnLower {
         vars,
-        stacks: HashMap::new(),
+        stacks,
         consts: HashMap::new(),
         next,
         n_args: f.params.len() as u32,

@@ -216,6 +216,11 @@ pub struct Func {
     /// [`FnLower::specialize`]).
     pub const_params: Vec<bool>,
     pub n_ret: usize,
+    /// Parameter groups that bind as a `StackBuf` run instead of scalars:
+    /// `(name, first param index, size)` — the cells arrive as `size`
+    /// consecutive args (consecutive frame cells, so the run binds with zero
+    /// copies). Used by loop helpers carrying a StackBuf across iterations.
+    pub stack_params: Vec<(String, usize, u32)>,
     pub body: Vec<Stmt>,
     /// `@inline` decorator: expand this function at each call site instead of
     /// emitting a real call — no frame, no argument/return plumbing (the

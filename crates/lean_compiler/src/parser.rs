@@ -391,6 +391,7 @@ impl Parser {
             .max()
             .unwrap_or(0);
         Ok(Func {
+            stack_params: Vec::new(),
             name,
             params,
             const_params,
