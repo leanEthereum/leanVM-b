@@ -169,12 +169,6 @@ pub enum Stmt {
         lo: u64,
         hi: ForBound,
         body: Vec<Stmt>,
-        /// `carry (a, b, ...)`: loop-carried bindings — enclosing-scope names
-        /// whose body REBINDING becomes the next iteration's value; after the
-        /// loop each name holds the final iteration's value. The compiler
-        /// threads them as loop-helper arguments (no hand-rolled write-once
-        /// chains) and requires a provably/asserted nonempty range.
-        carry: Vec<String>,
     },
     /// `for i in unroll(a, b): body` — compile-time replication: the body is
     /// emitted `b − a` times with `i` substituted by each integer literal in

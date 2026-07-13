@@ -16,7 +16,7 @@ def main():
     n = GEN ** 6
     acc = 1
     last = 7
-    for xk in mul_range(1, n) carry (acc, last):
+    for xk in mul_range(1, n):
         acc = acc * (xk + last)
         last = last + acc
     p = 1

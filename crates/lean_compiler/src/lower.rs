@@ -1982,7 +1982,7 @@ impl FnLower<'_> {
                 self.emit(LOp::Xor { a: la, b: lb, c: x });
                 self.call_cond(callee, args, x, true);
             }
-            Stmt::For { var, lo, hi, body, carry } => self.lower_for(var, *lo, hi, body, carry),
+            Stmt::For { var, lo, hi, body } => self.lower_for(var, *lo, hi, body),
             // Compile-time unrolling: emit the body per integer, the counter
             // substituted as its literal. Every copy executes (this is
             // straight-line code, not a branch), so bindings simply rebind —
@@ -2054,7 +2054,29 @@ impl FnLower<'_> {
     /// Free variables of the body that are bound in the enclosing scope are
     /// captured by value as extra helper parameters (e.g. a `HeapBuf` pointer
     /// threaded through the loop).
-    fn lower_for(&mut self, var: &str, lo: u64, hi: &ForBound, body: &[Stmt], carry: &[String]) {
+    fn lower_for(&mut self, var: &str, lo: u64, hi: &ForBound, body: &[Stmt]) {
+        // LOOP-CARRIED bindings, detected automatically: an enclosing-scope
+        // scalar the body REBINDS gets Python semantics — the new value flows
+        // to the next iteration and survives the loop — by riding the loop
+        // helper's arguments (see the `carry` plumbing below). Without this,
+        // a body assignment would silently rebind a helper-local copy.
+        let mut assigned = Vec::new();
+        assigned_vars_stmts(body, &mut assigned);
+        let mut carry: Vec<String> = Vec::new();
+        for a in assigned {
+            if a == var || carry.contains(&a) {
+                continue;
+            }
+            if self.stacks.contains_key(&a) {
+                panic!(
+                    "loop body rebinds enclosing StackBuf `{a}` — a StackBuf cannot be                      loop-carried; thread its cells as scalars instead"
+                );
+            }
+            if self.vars.contains_key(&a) || self.gaddrs.contains_key(&a) || self.fconsts.contains_key(&a) {
+                carry.push(a);
+            }
+        }
+        let carry = &carry[..];
         let id = *self.loop_ctr;
         *self.loop_ctr += 1;
         let loop_name = format!("__loop{id}");
@@ -2073,10 +2095,6 @@ impl FnLower<'_> {
         let mut bound = std::collections::HashSet::new();
         bound.insert(var.to_string());
         for c in carry {
-            assert!(
-                self.vars.contains_key(c) || self.gaddrs.contains_key(c) || self.fconsts.contains_key(c),
-                "`carry ({c})`: not a scalar bound in the enclosing scope"
-            );
             bound.insert(c.clone());
         }
         let res_var = format!("__carry_res{id}");
@@ -2283,6 +2301,26 @@ fn free_vars_expr(e: &Expr, refs: &mut Vec<String>) {
         Expr::Call(_, args) | Expr::ListLit(args) => args.iter().for_each(|a| free_vars_expr(a, refs)),
         Expr::HeapBufDyn(sz) | Expr::GenPow(sz) => free_vars_expr(sz, refs),
         Expr::Lit(_) | Expr::Gen | Expr::GPow(_) | Expr::HeapBuf(_) | Expr::StackBuf(_) => {}
+    }
+}
+
+/// Names a statement list ASSIGNS (order of first assignment), recursing into
+/// nested loop bodies (their carried rebinds propagate outward) but NOT into
+/// `if` / match arms, whose bindings are branch-local by language semantics.
+/// Drives the automatic loop-carry detection in [`FnLower::lower_for`].
+fn assigned_vars_stmts(stmts: &[Stmt], out: &mut Vec<String>) {
+    for s in stmts {
+        match s {
+            Stmt::Let(n, _) => out.push(n.clone()),
+            Stmt::LetTuple(ns, _, _) => out.extend(ns.iter().cloned()),
+            Stmt::LetMatchRange { names, .. } => out.extend(names.iter().cloned()),
+            Stmt::For { var, body, .. } | Stmt::Unroll { var, body, .. } => {
+                let mut inner = Vec::new();
+                assigned_vars_stmts(body, &mut inner);
+                out.extend(inner.into_iter().filter(|n| n != var));
+            }
+            _ => {}
+        }
     }
 }
 

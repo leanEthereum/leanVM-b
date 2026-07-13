@@ -622,7 +622,7 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
 
         sc0 = fs[0]
         sc1 = fs[1]
-        for xs in mul_range(1, GEN ** LIG_SQUEEZES[m_idx * LIG_MAX_LEVELS + lvl]) carry (sc0, sc1):
+        for xs in mul_range(1, GEN ** LIG_SQUEEZES[m_idx * LIG_MAX_LEVELS + lvl]):
             packed_word, sc0, sc1 = squeeze_step(sc0, sc1)
             query_ptr = xs ** (FIELD_BITS // LIG_TREE_DEPTH[m_idx * LIG_MAX_LEVELS + lvl])
             decode_query_bits(packed_word, query_positions * GEN ** LIG_POSITIONS_OFF[m_idx * LIG_MAX_LEVELS + lvl] * query_ptr, query_bit_ptrs * GEN ** LIG_POSITIONS_OFF[m_idx * LIG_MAX_LEVELS + lvl] * query_ptr, LIG_TREE_DEPTH[m_idx * LIG_MAX_LEVELS + lvl])
@@ -640,7 +640,7 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
             alpha_weights[GEN ** (lvl * LIG_MAX_QUERIES[m_idx] + i)] = eq_weight(query_alphas, LIG_LOG_QUERIES[m_idx * LIG_MAX_LEVELS + lvl], i, 0)
 
         level_query_sum = 0
-        for xe in mul_range(1, GEN ** LIG_QUERIES[m_idx * LIG_MAX_LEVELS + lvl]) carry (level_query_sum):
+        for xe in mul_range(1, GEN ** LIG_QUERIES[m_idx * LIG_MAX_LEVELS + lvl]):
             row_base = xe ** LIG_INTERLEAVE[m_idx * LIG_MAX_LEVELS + lvl]
             row_ptr = merkle_leaf_rows * GEN ** LIG_ROWS_OFF[m_idx * LIG_MAX_LEVELS + lvl] * row_base
             leaf_hash_state = [GEN ** LIG_LEAF_BYTES[m_idx * LIG_MAX_LEVELS + lvl], 0]
@@ -868,9 +868,9 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     lclaim_c = root_count
     lrow = gkr_pts
     lpos = GEN ** 0
-    # Layer state rides the loop's own frames (carry): the compiler threads
-    # each rebinding to the next iteration - no hand-rolled heap chains.
-    for x_layer in mul_range(1, g_bus_mu) carry (lfs0, lfs1, lcur, lclaim, lclaim_b, lclaim_c, llam, lrow, lpos):
+    # Layer state is loop-carried: the compiler detects the rebindings and
+    # threads them to the next iteration - no hand-rolled heap chains.
+    for x_layer in mul_range(1, g_bus_mu):
         lam = llam
         claim_l = lclaim + lam * (lclaim_b + lam * lclaim_c)
         point_row = lrow
@@ -1299,13 +1299,13 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
         zc_running = gamma_ab * (1 + rho_v) + gamma_c * rho_v + g_inf * rho_v * (1 + rho_v)
     # rounds N_FIXED_CHALLENGE_ROUNDS.. at runtime count: K_LOG + tau_5 - K_SKIP rounds total (certified).
     nmlv_g = tau_blake3_g * GEN ** (K_LOG - K_SKIP)
-    # Round state rides the loop's own frames (carry); only the rho vector
+    # Round state is loop-carried (auto-detected); only the rho vector
     # (read later by the lincheck replay) stays a real array.
     ffs0 = fs[0]
     ffs1 = fs[1]
     frun = zc_running
     fcur = cursor
-    for xi in mul_range(GEN ** N_FIXED_CHALLENGE_ROUNDS, nmlv_g) carry (ffs0, ffs1, frun, fcur):
+    for xi in mul_range(GEN ** N_FIXED_CHALLENGE_ROUNDS, nmlv_g):
         round_fs = [ffs0, ffs1]
         r_eq = zerocheck_r[GEN ** K_SKIP * xi]
         round_fs, gamma_c, fcur = fs_next(round_fs, fcur)

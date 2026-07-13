@@ -277,6 +277,29 @@ instruction until used as a value:
   forwards to the real source (write-once keeps it valid). This is what makes
   assembling a `BLAKE3` operand from scattered values free (see "BLAKE3").
 
+## Loop-carried state
+
+A runtime loop body that REBINDS an enclosing-scope scalar gets Python
+semantics automatically: the compiler detects the assignment, threads the
+value to the next iteration through the loop helper's own arguments, and the
+name holds the final iteration's value after the loop — no hand-rolled
+write-once chains, no buffers to size.
+
+```python
+acc = 1
+for xk in mul_range(1, n):
+    acc = acc * (xk + 3)   # carried: next iteration sees the new value
+# here acc is the final product
+```
+
+Costs one frame-arg write per carried variable per iteration (cheaper than a
+chain's write + read) plus a one-time finals store on exit. Two constraints:
+a carrying loop must run at least once (empty constant ranges are a compile
+error; runtime bounds get an inserted nonempty assert, since the finals only
+write on the exit path), and a StackBuf cannot be carried — thread its cells
+as scalars. Values indexed at arbitrary positions later still need a real
+`HeapBuf` array; `if` / match-arm bindings stay branch-local as always.
+
 ## Debugging
 
 `print(expr)` / `print("label", expr)` displays a value at witness generation
