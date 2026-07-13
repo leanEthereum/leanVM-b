@@ -859,26 +859,22 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     fs, root_pull, cursor = fs_next(fs, cursor)
     fs, root_count, cursor = fs_next(fs, cursor)
     fs = squeeze(fs)
-    llam = fs[0]  # λ over the three roots
+    lam = fs[0]  # λ over the three roots
     lfs0 = fs[0]
     lfs1 = fs[1]
-    lcur = cursor
-    lclaim = root_push
-    lclaim_b = root_pull
-    lclaim_c = root_count
-    lrow = gkr_pts
-    lpos = GEN ** 0
-    # Layer state is loop-carried: the compiler detects the rebindings and
-    # threads them to the next iteration - no hand-rolled heap chains.
+    claim_push = root_push
+    claim_pull = root_pull
+    claim_count = root_count
+    point_row = gkr_pts
+    round_pos = GEN ** 0
+    # Layer state (the claims, λ, the fs pair, cursor, point row, round
+    # position) is loop-carried: rebindings thread to the next iteration.
     for x_layer in mul_range(1, g_bus_mu):
-        lam = llam
-        claim_l = lclaim + lam * (lclaim_b + lam * lclaim_c)
-        point_row = lrow
-        round_pos = lpos
+        claim_l = claim_push + lam * (claim_pull + lam * claim_count)
         nextrow = point_row * GEN ** MU_CAP
         gkr_round_fs0[round_pos] = lfs0
         gkr_round_fs1[round_pos] = lfs1
-        gkr_round_cursor[round_pos] = lcur
+        gkr_round_cursor[round_pos] = cursor
         gkr_round_claim[round_pos] = claim_l
         gkr_round_eq[round_pos] = 1
         for x_round in mul_range(1, x_layer):
@@ -906,27 +902,25 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
         tail_fs = squeeze(tail_fs)
         layer_challenge = tail_fs[0]
         nextrow[GEN ** 0] = layer_challenge
-        lclaim = e0_push + layer_challenge * (e0_push + e1_push)
-        lclaim_b = e0_pull + layer_challenge * (e0_pull + e1_pull)
-        lclaim_c = e0_count + layer_challenge * (e0_count + e1_count)
+        claim_push = e0_push + layer_challenge * (e0_push + e1_push)
+        claim_pull = e0_pull + layer_challenge * (e0_pull + e1_pull)
+        claim_count = e0_count + layer_challenge * (e0_count + e1_count)
         tail_fs = squeeze(tail_fs)  # fresh λ pins the tail individuals
-        llam = tail_fs[0]
+        lam = tail_fs[0]
         lfs0 = tail_fs[0]
         lfs1 = tail_fs[1]
-        lcur = tcur
-        lrow = nextrow
-        lpos = round_pos * x_layer * GEN
+        cursor = tcur
+        point_row = nextrow
+        round_pos = round_pos * x_layer * GEN
     fs = [lfs0, lfs1]
-    cursor = lcur
-    final_point_row = lrow
     for xt in mul_range(1, g_bus_mu):
-        zeta[xt] = final_point_row[xt]  # the ONE shared point
+        zeta[xt] = point_row[xt]  # the ONE shared point
     gkr_roots[PUSH_SIDE] = root_push
     gkr_roots[PULL_SIDE] = root_pull
     gkr_roots[COUNT_SIDE] = root_count
-    gkr_claims[PUSH_SIDE] = lclaim
-    gkr_claims[PULL_SIDE] = lclaim_b
-    gkr_claims[COUNT_SIDE] = lclaim_c
+    gkr_claims[PUSH_SIDE] = claim_push
+    gkr_claims[PULL_SIDE] = claim_pull
+    gkr_claims[COUNT_SIDE] = claim_count
 
     # ---- count root nonzero ----
     assert gkr_roots[COUNT_SIDE] != 0  # count-tree root nonzero: no read count self-cancels
@@ -1299,27 +1293,24 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
         zc_running = gamma_ab * (1 + rho_v) + gamma_c * rho_v + g_inf * rho_v * (1 + rho_v)
     # rounds N_FIXED_CHALLENGE_ROUNDS.. at runtime count: K_LOG + tau_5 - K_SKIP rounds total (certified).
     nmlv_g = tau_blake3_g * GEN ** (K_LOG - K_SKIP)
-    # Round state is loop-carried (auto-detected); only the rho vector
-    # (read later by the lincheck replay) stays a real array.
+    # Round state (the running claim, cursor, fs pair) is loop-carried; only
+    # the rho vector (read later by the lincheck replay) stays a real array.
     ffs0 = fs[0]
     ffs1 = fs[1]
-    frun = zc_running
-    fcur = cursor
     for xi in mul_range(GEN ** N_FIXED_CHALLENGE_ROUNDS, nmlv_g):
         round_fs = [ffs0, ffs1]
         r_eq = zerocheck_r[GEN ** K_SKIP * xi]
-        round_fs, gamma_c, fcur = fs_next(round_fs, fcur)
-        round_fs, g_inf, fcur = fs_next(round_fs, fcur)
-        gamma_ab = (frun + r_eq * gamma_c) / (1 + r_eq)
+        round_fs, gamma_c, cursor = fs_next(round_fs, cursor)
+        round_fs, g_inf, cursor = fs_next(round_fs, cursor)
+        gamma_ab = (zc_running + r_eq * gamma_c) / (1 + r_eq)
         round_fs = squeeze(round_fs)
         rho_v = round_fs[0]
         zerocheck_rhos[xi] = rho_v
-        frun = gamma_ab * (1 + rho_v) + gamma_c * rho_v + g_inf * rho_v * (1 + rho_v)
+        zc_running = gamma_ab * (1 + rho_v) + gamma_c * rho_v + g_inf * rho_v * (1 + rho_v)
         ffs0 = round_fs[0]
         ffs1 = round_fs[1]
     fs = [ffs0, ffs1]
-    zc_running = frun
-    cursor = fcur  # walked past all 2*n_mlv round words, now at a_eval
+    # cursor walked past all 2*n_mlv round words, now at a_eval
     # final: zc_running == a_eval * b_eval; observe both.
     fs, a_eval, cursor = fs_next(fs, cursor)
     fs, b_eval, cursor = fs_next(fs, cursor)
