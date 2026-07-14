@@ -380,12 +380,8 @@ pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; 6], pi: [F128T; 2
         }
     }
 
-    let (placements, m) = witness::placements_of(&col_kappas(
-        log_mem,
-        log_bytecode,
-        taus,
-        row_counts[tables::BLAKE3_TABLE],
-    ));
+    let (placements, m) =
+        witness::placements_of(&col_kappas(log_mem, log_bytecode, taus, row_counts[tables::BLAKE3_TABLE]));
     Layout {
         push,
         pull,
