@@ -36,6 +36,19 @@ impl F128 {
         Self { lo, hi }
     }
 
+    /// Decode the polynomial-basis bits from their canonical little-endian bytes.
+    #[inline]
+    pub const fn from_le_bytes(bytes: [u8; 16]) -> Self {
+        let value = u128::from_le_bytes(bytes);
+        Self::new(value as u64, (value >> 64) as u64)
+    }
+
+    /// Encode the polynomial-basis bits as canonical little-endian bytes.
+    #[inline]
+    pub const fn to_le_bytes(self) -> [u8; 16] {
+        (self.lo as u128 | (self.hi as u128) << 64).to_le_bytes()
+    }
+
     /// The generator γ (i.e. the element `x`). `mul_by_x` is a fast shift+fold.
     #[inline]
     pub const fn generator() -> Self {
