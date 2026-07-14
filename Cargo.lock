@@ -401,6 +401,7 @@ dependencies = [
  "pcs",
  "primitives",
  "rand",
+ "serde",
  "xmss",
 ]
 

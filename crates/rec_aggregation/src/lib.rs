@@ -9,5 +9,5 @@ pub mod signers_cache;
 pub mod xmss_aggregation;
 
 pub use fibonacci::run_fibonacci;
-pub use recursion::run_recursion;
+pub use recursion::{RecursiveProof, RecursiveVerifyError, run_recursion};
 pub use xmss_aggregation::run_xmss_aggregation;
