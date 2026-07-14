@@ -13,9 +13,12 @@
 //! memoized in-process, so repeated calls within one run touch the disk once.
 //!
 //! Cache location: `<workspace>/target/signers-cache/` (already git-ignored).
-//! The filename carries a footprint of every parameter that determines the
-//! signers, so a change to any of them lands in a fresh file rather than a
-//! stale hit. Bump [`SCHEMA_VERSION`] to force regeneration by hand.
+//! The filename carries a footprint of everything that determines the signers —
+//! not just the declared parameters but a known-answer of the hash construction
+//! itself (see [`hash_fingerprint`]), so a branch that changes the digests
+//! (e.g. a different field width in the Merkle-Damgard IV) without touching a
+//! single constant still lands in a fresh file rather than mis-loading the
+//! other branch's signers. Bump [`SCHEMA_VERSION`] to force regeneration by hand.
 
 use std::collections::hash_map::DefaultHasher;
 use std::fs;
@@ -56,9 +59,31 @@ fn compute_signer(index: usize) -> CachedSignature {
     (pk, sig)
 }
 
+/// A known-answer fingerprint of the *hash construction* the signers are built
+/// from. The declared constants below can stay fixed while the digests change
+/// underneath: switching the Merkle-Damgard IV's size field on another branch
+/// (e.g. GF(2^128) -> GF(2^64)) leaves V, W, DIGEST_LEN, ... untouched yet makes
+/// every signer incompatible. Folding a fixed test vector of the real primitives
+/// into [`footprint`] lands such a change in a *different* cache file, so a run
+/// on one branch never loads (and then panics on) another branch's signers — the
+/// two caches simply coexist. Two BLAKE3 compressions; negligible next to
+/// generating even one signer.
+fn hash_fingerprint() -> [Digest; 2] {
+    let pp = [0xA5u8; PUBLIC_PARAM_LEN];
+    [
+        // Single-block path (chain steps, Merkle nodes).
+        tweak_hash(&pp, TWEAK_TYPE_CHAIN, 1, 2, &[0x5Au8; DIGEST_LEN]),
+        // Multi-block path, whose IV carries the absorbed size in the exponent
+        // of the VM field's generator — precisely the piece that differs across
+        // the field-width branches.
+        md_tweak_hash(&pp, TWEAK_TYPE_ENCODING, 3, 4, &[0x3Cu8; 2 * STATE_LEN]),
+    ]
+}
+
 /// 64-bit fingerprint of everything that determines the signers. Any change
-/// (slot, key range, message, or the XMSS structural constants) yields a new
-/// filename, so stale caches are silently bypassed rather than mis-loaded.
+/// (slot, key range, message, the XMSS structural constants, or the hash
+/// construction itself via [`hash_fingerprint`]) yields a new filename, so stale
+/// caches are silently bypassed rather than mis-loaded.
 fn footprint() -> u64 {
     let mut h = DefaultHasher::new();
     SCHEMA_VERSION.hash(&mut h);
@@ -67,6 +92,7 @@ fn footprint() -> u64 {
     KEY_END.hash(&mut h);
     message().hash(&mut h);
     (V, W, CHAIN_LENGTH, LOG_LIFETIME, TARGET_SUM, RANDOMNESS_LEN).hash(&mut h);
+    hash_fingerprint().hash(&mut h);
     h.finish()
 }
 
