@@ -216,6 +216,51 @@ pub mod x86_64 {
             }
         }
     }
+
+    /// Deferred inner product `Σ aᵢ·bᵢ` via the AVX-512 `VPCLMULQDQ` batched
+    /// Karatsuba accumulator (`B` independent banks) + one binius-tower reduce.
+    /// Four elements fold per CLMUL; the reduce reuses the scalar-tested
+    /// [`super::F128TxyUnreduced::reduce`].
+    ///
+    /// # Safety
+    /// `a.len() == b.len()`; requires vpclmulqdq + avx512f.
+    #[cfg(all(target_feature = "vpclmulqdq", target_feature = "avx512f"))]
+    #[inline]
+    #[target_feature(enable = "vpclmulqdq", enable = "avx512f", enable = "avx2", enable = "sse2")]
+    pub unsafe fn inner_unreduced_vpclmul_kara<const B: usize>(
+        a: &[F128Txy],
+        b: &[F128Txy],
+    ) -> F128Txy {
+        debug_assert_eq!(a.len(), b.len());
+        // SAFETY: F128Txy is repr(C) { c0, c1 }, i.e. two contiguous u64;
+        // features carried.
+        unsafe {
+            let (p0, p1, pm) =
+                crate::field::vpclmul::x86_64::karatsuba_acc::<B>(a.as_ptr().cast(), b.as_ptr().cast(), a.len());
+            F128TxyUnreduced { p0, p1, pm }.reduce()
+        }
+    }
+
+    /// [`inner_unreduced_vpclmul_kara`]'s schoolbook twin (four CLMULs/element,
+    /// no pre-XOR) — the x86 side of the schoolbook-vs-Karatsuba question.
+    ///
+    /// # Safety
+    /// See [`inner_unreduced_vpclmul_kara`].
+    #[cfg(all(target_feature = "vpclmulqdq", target_feature = "avx512f"))]
+    #[inline]
+    #[target_feature(enable = "vpclmulqdq", enable = "avx512f", enable = "avx2", enable = "sse2")]
+    pub unsafe fn inner_unreduced_vpclmul_school<const B: usize>(
+        a: &[F128Txy],
+        b: &[F128Txy],
+    ) -> F128Txy {
+        debug_assert_eq!(a.len(), b.len());
+        // SAFETY: as in `inner_unreduced_vpclmul_kara`.
+        unsafe {
+            let (p0, p1, pm) =
+                crate::field::vpclmul::x86_64::schoolbook_acc::<B>(a.as_ptr().cast(), b.as_ptr().cast(), a.len());
+            F128TxyUnreduced { p0, p1, pm }.reduce()
+        }
+    }
 }
 
 #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
@@ -403,6 +448,37 @@ mod tests {
             // SAFETY: pclmulqdq is statically enabled.
             let got = unsafe { x86_64::mul_unreduced(a, b) }.reduce();
             assert_eq!(got, want);
+        }
+    }
+
+    /// The AVX-512 VPCLMULQDQ batched inner-product kernels (Karatsuba and
+    /// schoolbook, several bank counts) equal the scalar deferred reference
+    /// across a range of lengths — including partial vector groups and the
+    /// scalar `< 4` tail.
+    #[cfg(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx512f"))]
+    #[test]
+    fn vpclmul_inner_matches_scalar() {
+        fn reference(a: &[F128Txy], b: &[F128Txy]) -> F128Txy {
+            let mut acc = F128TxyUnreduced::ZERO;
+            for i in 0..a.len() {
+                acc ^= a[i].mul_unreduced(b[i]);
+            }
+            acc.reduce()
+        }
+        let mut s = 0x1234u64;
+        for &n in &[0usize, 1, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 31, 33, 64, 100, 257, 1024] {
+            let a: Vec<F128Txy> = (0..n).map(|_| rand_e(&mut s)).collect();
+            let b: Vec<F128Txy> = (0..n).map(|_| rand_e(&mut s)).collect();
+            let want = reference(&a, &b);
+            // SAFETY: vpclmulqdq + avx512f statically enabled by the cfg gate.
+            unsafe {
+                assert_eq!(x86_64::inner_unreduced_vpclmul_kara::<1>(&a, &b), want, "kara B=1 n={n}");
+                assert_eq!(x86_64::inner_unreduced_vpclmul_kara::<2>(&a, &b), want, "kara B=2 n={n}");
+                assert_eq!(x86_64::inner_unreduced_vpclmul_kara::<4>(&a, &b), want, "kara B=4 n={n}");
+                assert_eq!(x86_64::inner_unreduced_vpclmul_school::<1>(&a, &b), want, "school B=1 n={n}");
+                assert_eq!(x86_64::inner_unreduced_vpclmul_school::<2>(&a, &b), want, "school B=2 n={n}");
+                assert_eq!(x86_64::inner_unreduced_vpclmul_school::<4>(&a, &b), want, "school B=4 n={n}");
+            }
         }
     }
 

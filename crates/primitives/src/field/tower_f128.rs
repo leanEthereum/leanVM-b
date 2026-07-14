@@ -1177,6 +1177,54 @@ pub mod x86_64 {
         unsafe { reduce_parts(unpack(u.p0), unpack(u.p1), unpack(u.pm)) }
     }
 
+    /// Deferred inner product `Σ aᵢ·bᵢ` via the AVX-512 `VPCLMULQDQ` batched
+    /// Karatsuba accumulator (`B` independent banks) + one Artin–Schreier tower
+    /// reduce. Four elements fold per CLMUL; the reduce reuses the
+    /// scalar-tested [`super::F128TUnreduced::reduce`]. Shares its batched
+    /// accumulator with [`super::super::tower_f128_xy`]'s binius kernel — the
+    /// Karatsuba products are identical, only this reduce differs.
+    ///
+    /// # Safety
+    /// `a.len() == b.len()`; requires vpclmulqdq + avx512f.
+    #[cfg(all(target_feature = "vpclmulqdq", target_feature = "avx512f"))]
+    #[inline]
+    #[target_feature(enable = "vpclmulqdq", enable = "avx512f", enable = "avx2", enable = "sse2")]
+    pub unsafe fn inner_unreduced_vpclmul_kara<const B: usize>(a: &[F128T], b: &[F128T]) -> F128T {
+        debug_assert_eq!(a.len(), b.len());
+        // SAFETY: F128T is repr(C) { c0, c1 }, i.e. two contiguous u64;
+        // features carried.
+        unsafe {
+            let (p0, p1, pm) = crate::field::vpclmul::x86_64::karatsuba_acc::<B>(
+                a.as_ptr().cast(),
+                b.as_ptr().cast(),
+                a.len(),
+            );
+            F128TUnreduced { p0, p1, pm }.reduce()
+        }
+    }
+
+    /// [`inner_unreduced_vpclmul_kara`]'s schoolbook twin (four CLMULs/element,
+    /// no pre-XOR) — the x86 side of the schoolbook-vs-Karatsuba question that
+    /// the aarch64 `inner_unreduced_school` kernel answered on M-series.
+    ///
+    /// # Safety
+    /// See [`inner_unreduced_vpclmul_kara`].
+    #[cfg(all(target_feature = "vpclmulqdq", target_feature = "avx512f"))]
+    #[inline]
+    #[target_feature(enable = "vpclmulqdq", enable = "avx512f", enable = "avx2", enable = "sse2")]
+    pub unsafe fn inner_unreduced_vpclmul_school<const B: usize>(a: &[F128T], b: &[F128T]) -> F128T {
+        debug_assert_eq!(a.len(), b.len());
+        // SAFETY: as in `inner_unreduced_vpclmul_kara`.
+        unsafe {
+            let (p0, p1, pm) = crate::field::vpclmul::x86_64::schoolbook_acc::<B>(
+                a.as_ptr().cast(),
+                b.as_ptr().cast(),
+                a.len(),
+            );
+            F128TUnreduced { p0, p1, pm }.reduce()
+        }
+    }
+
     /// The two unreduced lane products of a mixed K × E multiply (2 CLMUL).
     ///
     /// # Safety
@@ -1392,6 +1440,37 @@ mod tests {
                 assert_eq!(x86_64::mul_unreduced(a, b).reduce(), want);
                 // Deferred K×E mixed product.
                 assert_eq!(x86_64::mul_base_unreduced(a, k).reduce(), want_base);
+            }
+        }
+    }
+
+    /// The AVX-512 VPCLMULQDQ batched inner-product kernels (Karatsuba and
+    /// schoolbook, several bank counts) equal the scalar deferred reference
+    /// across a range of lengths — including partial vector groups and the
+    /// scalar `< 4` tail.
+    #[cfg(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx512f"))]
+    #[test]
+    fn vpclmul_inner_matches_scalar() {
+        fn reference(a: &[F128T], b: &[F128T]) -> F128T {
+            let mut acc = F128TUnreduced::ZERO;
+            for i in 0..a.len() {
+                acc ^= a[i].mul_unreduced(b[i]);
+            }
+            acc.reduce()
+        }
+        let mut s = 0x9E37u64;
+        for &n in &[0usize, 1, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 31, 33, 64, 100, 257, 1024] {
+            let a: Vec<F128T> = (0..n).map(|_| rand_e(&mut s)).collect();
+            let b: Vec<F128T> = (0..n).map(|_| rand_e(&mut s)).collect();
+            let want = reference(&a, &b);
+            // SAFETY: vpclmulqdq + avx512f statically enabled by the cfg gate.
+            unsafe {
+                assert_eq!(x86_64::inner_unreduced_vpclmul_kara::<1>(&a, &b), want, "kara B=1 n={n}");
+                assert_eq!(x86_64::inner_unreduced_vpclmul_kara::<2>(&a, &b), want, "kara B=2 n={n}");
+                assert_eq!(x86_64::inner_unreduced_vpclmul_kara::<4>(&a, &b), want, "kara B=4 n={n}");
+                assert_eq!(x86_64::inner_unreduced_vpclmul_school::<1>(&a, &b), want, "school B=1 n={n}");
+                assert_eq!(x86_64::inner_unreduced_vpclmul_school::<2>(&a, &b), want, "school B=2 n={n}");
+                assert_eq!(x86_64::inner_unreduced_vpclmul_school::<4>(&a, &b), want, "school B=4 n={n}");
             }
         }
     }

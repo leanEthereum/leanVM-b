@@ -21,6 +21,7 @@ pub mod iso_f128;
 pub mod phi8;
 pub mod tower_f128;
 pub mod tower_f128_xy;
+pub mod vpclmul;
 
 pub use gf2_128::{F128, F256Unreduced, mul_by_x};
 pub use gf2_64::F64;
