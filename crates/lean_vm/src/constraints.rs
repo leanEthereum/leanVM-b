@@ -5,7 +5,7 @@
 
 use crate::PAR_THRESHOLD;
 use primitives::field::{F128, mul_by_x};
-use primitives::multilinear::{add3, eq_table, fold_low_inplace, lagrange_eval, tri_nodes};
+use primitives::multilinear::{add3, build_eq, fold_low_inplace, lagrange_eval, tri_nodes};
 use crate::transcript::{ProverState, VerifierState};
 use rayon::prelude::*;
 
@@ -44,7 +44,7 @@ pub fn prove<F: Fn(F128, &[F128]) -> F128 + Sync>(cols: &[Vec<F128>], c_eval: F,
         // a shift-fold, no PMULL. So we fill the three column-vectors `vals[0..3]`
         // (one contiguous scratch, split three ways) in a single pass with no
         // interpolation multiplies, then evaluate the constraint at each node.
-        let eqr = eq_table(&r[j + 1..]);
+        let eqr = build_eq(&r[j + 1..]);
         let summand = |i: usize, scratch: &mut [F128]| -> [F128; 3] {
             let e = eqr[i];
             let (v0, rest) = scratch.split_at_mut(ncols);

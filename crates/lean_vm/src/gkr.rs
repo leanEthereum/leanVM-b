@@ -7,7 +7,7 @@
 use crate::PAR_THRESHOLD;
 use primitives::field::{F128, F256Unreduced, mul_by_x};
 use primitives::multilinear::lagrange_eval;
-use primitives::multilinear::{eq_table, interp, tri_nodes};
+use primitives::multilinear::{build_eq, interp, tri_nodes};
 use crate::transcript::{ProverState, VerifierState};
 use rayon::prelude::*;
 
@@ -168,7 +168,7 @@ pub fn prove_product_triple(leaves: [Vec<F128>; 3], ps: &mut ProverState) -> Pro
         let width = 1usize << k;
         let mut trees = [0, 1, 2].map(|t| LayerState::new(&layers[t][i - 1], width));
         // The challenges are shared, so ONE eq table serves all trees.
-        let mut eqr: Vec<F128> = if k > 0 { eq_table(&r[1..]) } else { Vec::new() };
+        let mut eqr: Vec<F128> = if k > 0 { build_eq(&r[1..]) } else { Vec::new() };
 
         let mut rho = Vec::with_capacity(k);
         for _ in 0..k {

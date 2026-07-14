@@ -23,24 +23,6 @@ pub fn eq_eval(r: &[F128], x: &[F128]) -> F128 {
     acc
 }
 
-/// The `eq(r, ·)` table over `n = r.len()` variables, expanded in place: descending
-/// `i` keeps the unread low half intact while the high half is written from it.
-pub fn eq_table(r: &[F128]) -> Vec<F128> {
-    let mut eq = vec![F128::ZERO; 1usize << r.len()];
-    eq[0] = F128::ONE;
-    let mut half = 1usize;
-    for &rk in r {
-        let one_plus = F128::ONE + rk;
-        for i in (0..half).rev() {
-            let e = eq[i];
-            eq[i + half] = e * rk;
-            eq[i] = e * one_plus;
-        }
-        half <<= 1;
-    }
-    eq
-}
-
 /// Bind the lowest free variable of `table` to `rho` in place: `table[i] =
 /// interp(table[2i], table[2i+1], rho)` (no reallocation; `i ≤ 2i`, so unread
 /// entries survive).

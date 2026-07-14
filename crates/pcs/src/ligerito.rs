@@ -34,7 +34,7 @@
 use fiat_shamir::sponge::Sponge;
 use crate::{ProverState, VerifierState};
 use primitives::field::F128;
-use primitives::multilinear::eq_table as build_eq_table;
+use primitives::multilinear::build_eq;
 use crate::merkle::{self, Hash};
 use crate::ntt::additive_ntt_f128::AdditiveNttF128;
 use serde::{Deserialize, Serialize};
@@ -1120,7 +1120,7 @@ pub struct LigeritoProof {
 /// challenges `rs ∈ F^k`, returns the length-`2^{n-k}` table
 /// `f(rs[0], …, rs[k-1], x_k, …, x_{n-1})`.
 ///
-/// Matches Flock's [`build_eq_table`] LSB-first convention (and bolt-rs's
+/// Matches [`build_eq`] LSB-first convention (and bolt-rs's
 /// `partial_eval` Julia convention).
 #[cfg(test)]
 pub(crate) fn partial_eval_lsb(evals: &[F128], rs: &[F128]) -> Vec<F128> {
@@ -1241,12 +1241,12 @@ pub fn induce_sumcheck_enforced_sum(
     alpha: &[F128],
 ) -> F128 {
     assert_eq!(opened_rows.len(), queries.len());
-    let eq = build_eq_table(v_challenges);
+    let eq = build_eq(v_challenges);
     let n_queries = queries.len();
     let alpha_weights: Vec<F128> = if n_queries == 0 {
         Vec::new()
     } else {
-        build_eq_table(alpha).into_iter().take(n_queries).collect()
+        build_eq(alpha).into_iter().take(n_queries).collect()
     };
     let mut sum = F128::ZERO;
     for (i, row) in opened_rows.iter().enumerate() {
@@ -1295,7 +1295,6 @@ pub fn induce_sumcheck_evaluate_at_residual(
     ris_for_basis: &[F128],
     yr_log_n: usize,
 ) -> Vec<F128> {
-    use primitives::multilinear::eq_table as build_eq_table;
     use rayon::prelude::*;
     assert_eq!(ris_for_basis.len() + yr_log_n, log_msg_cols);
     let n_queries = queries.len();
@@ -1309,7 +1308,7 @@ pub fn induce_sumcheck_evaluate_at_residual(
     let alpha_pows: Vec<F128> = if n_queries == 0 {
         Vec::new()
     } else {
-        let table = build_eq_table(alpha);
+        let table = build_eq(alpha);
         debug_assert!(table.len() >= n_queries);
         table.into_iter().take(n_queries).collect()
     };
@@ -1417,7 +1416,7 @@ pub(crate) fn induce_sumcheck_poly(
             .unwrap_or(0)
     );
 
-    let eq = build_eq_table(v_challenges); // length 2^v_challenges.len() = num_interleaved
+    let eq = build_eq(v_challenges); // length 2^v_challenges.len() = num_interleaved
 
     // Per-query weights are the eq-tensor coefficients `eq(α, i_bin)` for
     // `i ∈ {0,1}^{⌈log₂ n_queries⌉}` (LSB-first), truncated to the first
@@ -1426,7 +1425,7 @@ pub(crate) fn induce_sumcheck_poly(
     let alpha_pows: Vec<F128> = if n_queries == 0 {
         Vec::new()
     } else {
-        let table = build_eq_table(alpha);
+        let table = build_eq(alpha);
         debug_assert!(table.len() >= n_queries);
         table.into_iter().take(n_queries).collect()
     };
@@ -1561,11 +1560,11 @@ pub(crate) fn induce_sumcheck_poly_via_ntt(
     let n_queries = queries.len();
     assert_eq!(opened_rows.len(), n_queries);
 
-    let eq = build_eq_table(v_challenges);
+    let eq = build_eq(v_challenges);
     let alpha_pows: Vec<F128> = if n_queries == 0 {
         Vec::new()
     } else {
-        let table = build_eq_table(alpha);
+        let table = build_eq(alpha);
         debug_assert!(table.len() >= n_queries);
         table.into_iter().take(n_queries).collect()
     };
@@ -2010,7 +2009,7 @@ fn round_msg_lsb(f: &[F128], b: &[F128]) -> SumcheckMessage {
 /// Fused round message + full inner product: returns `round_msg_lsb(f, b)`
 /// alongside `y = Σ_x f(x)·b(x)`, computed in a single pass over `(f, b)`.
 ///
-/// Used by OOD binding, where `b = eq_table(z)` and `y` is the claimed MLE
+/// Used by OOD binding, where `b = build_eq(z)` and `y` is the claimed MLE
 /// eval `f̂(z)`. Folding `f` against `z` separately (`mle_eval_inline`) then
 /// re-reading `f` against `b` in `round_msg_lsb` costs two passes over the
 /// 2^n witness; this collapses them into one (the phase is memory-bandwidth
@@ -2262,7 +2261,7 @@ impl SumcheckProver {
 
     /// Like [`Self::introduce_new`] but also returns the claimed sum
     /// `h_new = Σ_x f(x)·b_new(x)`, computed in the same pass as the round
-    /// message. For OOD binding `b_new = eq_table(z)`, so `h_new` is the MLE
+    /// message. For OOD binding `b_new = build_eq(z)`, so `h_new` is the MLE
     /// eval `f̂(z)` — fusing it here removes the separate `mle_eval_inline`
     /// fold over `f`. Transcript-identical: the caller observes the returned
     /// `h_new` then `(u_0, u_2)`, exactly as the unfused path does.
@@ -2654,7 +2653,7 @@ fn multilevel_prover_with_basis_impl(
             // Build eq(z, ·) once and fuse the MLE eval `y = f̂1(z)` into the
             // introduce round message (single pass over f1 + eq_z), instead of
             // a separate `mle_eval_inline` fold.
-            let eq_z = build_eq_table(&z);
+            let eq_z = build_eq(&z);
             let (intro, y) = sc_prover.introduce_new_with_eval(eq_z);
             ps.add_scalar(y);
             add_sumcheck_msg(ps, &intro);
@@ -2831,7 +2830,7 @@ fn multilevel_prover_with_basis_impl(
             let _t = std::time::Instant::now();
             for _ in 0..ood_count(i + 2) {
                 let z = ps.sample_vec(n_next);
-                let eq_z = build_eq_table(&z);
+                let eq_z = build_eq(&z);
                 let (intro, y) = sc_prover.introduce_new_with_eval(eq_z);
                 ps.add_scalar(y);
                 add_sumcheck_msg(ps, &intro);
@@ -3220,7 +3219,7 @@ where
                 for b in 0..folded {
                     scalar *= F128::ONE + ctx.z[b] + ris[ctx.ris_start + b];
                 }
-                let mut tail = build_eq_table(&ctx.z[folded..]);
+                let mut tail = build_eq(&ctx.z[folded..]);
                 for v in tail.iter_mut() {
                     *v *= scalar;
                 }
@@ -3715,7 +3714,7 @@ mod tests {
         assert_eq!(basis_poly.len(), msg_cols);
 
         // Check 1: enforced_sum = Σ_i eq(α, i_bin) · c[q_i]
-        let alpha_weights: Vec<F128> = primitives::multilinear::eq_table(&alpha)
+        let alpha_weights: Vec<F128> = primitives::multilinear::build_eq(&alpha)
             .into_iter()
             .take(queries.len())
             .collect();
@@ -4104,7 +4103,7 @@ mod tests {
         let mut rng = fiat_shamir::sponge::Sponge::new(&(0x00D_7E57u64).to_le_bytes(), &[]);
         let poly: Vec<F128> = (0..(1usize << log_n)).map(|_| rng.sample()).collect();
         let z: Vec<F128> = (0..log_n).map(|_| rng.sample()).collect();
-        let b = build_eq_table(&z);
+        let b = build_eq(&z);
         let target: F128 = poly
             .iter()
             .zip(b.iter())
@@ -4200,8 +4199,8 @@ mod tests {
         let z2: Vec<F128> = (0..log_n).map(|_| rng.sample()).collect();
         let g1 = rng.sample();
         let g2 = rng.sample();
-        let b1 = build_eq_table(&z1);
-        let b2 = build_eq_table(&z2);
+        let b1 = build_eq(&z1);
+        let b2 = build_eq(&z2);
         let b: Vec<F128> = b1
             .iter()
             .zip(b2.iter())
