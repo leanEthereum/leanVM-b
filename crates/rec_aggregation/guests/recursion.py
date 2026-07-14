@@ -104,6 +104,31 @@ LAGRANGE_INV_S = LAGRANGE_INV_S_PLACEHOLDER
 LINCHECK_ROUNDS = LINCHECK_ROUNDS_PLACEHOLDER
 PIN_COLUMN = PIN_COLUMN_PLACEHOLDER
 K_LOG = K_LOG_PLACEHOLDER
+# Circuit walk (flock, "Circuit walking"): matrix_walk evaluates the lincheck
+# matrix part in-circuit by walking the unsubstituted BLAKE3 cascade, so the
+# claim needs no deferral. The WALK_* tables are the static routing schedule
+# (flock::blake3::walk_schedule): per-G lane sources (a/c lanes: wire-buffer
+# offsets, b/d/mx/my: committed slot bases), the final-state sources, the
+# pinned rows (A = B = [Z_CONST]), the 4 IV words seeding the c lanes, and
+# the slot-layout bases.
+WALK_SRC_A = WALK_SRC_A_PLACEHOLDER
+WALK_SRC_B = WALK_SRC_B_PLACEHOLDER
+WALK_SRC_C = WALK_SRC_C_PLACEHOLDER
+WALK_SRC_D = WALK_SRC_D_PLACEHOLDER
+WALK_MXB = WALK_MXB_PLACEHOLDER
+WALK_MYB = WALK_MYB_PLACEHOLDER
+WALK_FIN_A = WALK_FIN_A_PLACEHOLDER
+WALK_FIN_B = WALK_FIN_B_PLACEHOLDER
+WALK_FIN_C = WALK_FIN_C_PLACEHOLDER
+WALK_FIN_D = WALK_FIN_D_PLACEHOLDER
+WALK_PIN_ROWS = WALK_PIN_ROWS_PLACEHOLDER
+WALK_IV = WALK_IV_PLACEHOLDER
+WALK_GS_BASE = WALK_GS_BASE_PLACEHOLDER
+WALK_G_STRIDE = WALK_G_STRIDE_PLACEHOLDER
+WALK_M_BASE = WALK_M_BASE_PLACEHOLDER
+WALK_OUT_LO_BASE = WALK_OUT_LO_BASE_PLACEHOLDER
+WALK_OUT_HI_BASE = WALK_OUT_HI_BASE_PLACEHOLDER
+WALK_Z_CONST = WALK_Z_CONST_PLACEHOLDER
 # Phase E: the stacked mixed opening. The two ring-switch fronts
 # (claim check in-circuit; the tensor transpose + eval_rs_eq DEFERRED); the
 # gamma-combination of the two ring-switch claims and the N_CLAIMS pool claims.
@@ -521,6 +546,157 @@ def eqtree(point_ptr, out, n_coords: Const):
             out[GEN ** (2 ** (t + 1) - 2 + i)] = pw * one_plus_rt
             out[GEN ** (2 ** (t + 1) - 2 + 2 ** t + i)] = pw * rt
     return
+
+
+@inline
+def walk_add(acc, alpha, x, y, out, ulow, uh, wt, cb: Const):
+    # One 32-bit ADD of the circuit walk: 31 carry rows at rows cb..cb+31
+    # (A-side X[i]+cin, B-side Y[i]+cin, cin the running prefix of the
+    # carry_aux column weights), each weighted on the fly by the row weight
+    # ulow[row % 64] * uh[row // 64]; the sum wires X[i]+Y[i]+cin go to out.
+    cin = 0
+    for i in unroll(0, 31):
+        asd = x[i] + cin
+        bsd = y[i] + cin
+        out[i] = asd + y[i]
+        acc += ulow[(cb + i) % 64] * uh[(cb + i) // 64] * (alpha * asd + bsd)
+        cin = cin + wt[cb + i]
+    out[31] = x[31] + cin + y[31]
+    return acc
+
+
+def matrix_walk(alpha, zz, rhos, rs, zpart):
+    # The lincheck matrix part alpha*A0(r)+B0(r), evaluated IN-CIRCUIT by the
+    # forward circuit walk (flock, "Circuit walking"): thread the unsubstituted
+    # BLAKE3 cascade over field wire values, a committed slot contributing its
+    # column weight, and accumulate each row's u[row]*(alpha*<A_row, w> +
+    # <B_row, w>) where the walk emits that row. O(circuit) ops; the ~21M
+    # substituted nonzeros never appear. Row weight of row r: ulow[r % 64] *
+    # uh[r >> 6] (S-domain Lagrange at the zerocheck skip zz, eq tensor of the
+    # 8 zerocheck rhos, LSB-first). Column weight of slot c: zp[c % 64] *
+    # wh[c >> 6] (the revealed z_partial values, eq tensor of the REVERSED
+    # lincheck challenges).
+    nums = StackBuf(64)
+    lag64(zz, nums, 0)
+    ulow = StackBuf(64)
+    for i in unroll(0, 64):
+        ulow[i] = nums[i] * LAGRANGE_INV_S[i]
+    ur_tree = HeapBuf(510)
+    eqtree(rhos, ur_tree, 8)
+    uh = StackBuf(256)
+    for i in unroll(0, 256):
+        uh[i] = ur_tree[GEN ** (254 + i)]
+    rsrev = HeapBuf(8)
+    for c in unroll(0, 8):
+        rsrev[GEN ** c] = rs[GEN ** (7 - c)]
+    wr_tree = HeapBuf(510)
+    eqtree(rsrev, wr_tree, 8)
+    wh = StackBuf(256)
+    for i in unroll(0, 256):
+        wh[i] = wr_tree[GEN ** (254 + i)]
+    zp = StackBuf(64)
+    for i in unroll(0, 64):
+        zp[i] = zpart[GEN ** i]
+    # The column-weight table over all 2^K_LOG committed slots.
+    wt = StackBuf(16384)
+    for t in unroll(0, 256):
+        for i in unroll(0, 64):
+            wt[t * 64 + i] = wh[t] * zp[i]
+    wc = wt[WALK_Z_CONST]
+    # Wire buffers: 128 initial cells (a: cv words 0..4; c: the IV constant
+    # words), then 32 cells per G (that G's cascading a_2 / c_2).
+    aw = StackBuf(1920)
+    cw = StackBuf(1920)
+    for i in unroll(0, 128):
+        aw[i] = wt[i]
+    for k in unroll(0, 4):
+        for i in unroll(0, 32):
+            if (WALK_IV[k] // 2 ** i) % 2 == 1:
+                cw[k * 32 + i] = wc
+            else:
+                cw[k * 32 + i] = 0
+    acc = 0
+    for g in unroll(0, 56):
+        # Lane views for this G (free aliases through the schedule).
+        xa = StackBuf(32)
+        yb = StackBuf(32)
+        xc = StackBuf(32)
+        yd = StackBuf(32)
+        mxv = StackBuf(32)
+        myv = StackBuf(32)
+        for i in unroll(0, 32):
+            xa[i] = aw[WALK_SRC_A[g] + i]
+            yb[i] = wt[WALK_SRC_B[g] + i]
+            xc[i] = cw[WALK_SRC_C[g] + i]
+            yd[i] = wt[WALK_SRC_D[g] + i]
+            mxv[i] = wt[WALK_MXB[g] + i]
+            myv[i] = wt[WALK_MYB[g] + i]
+        # The six ADDs; rotations are index relabelings (free aliases).
+        t0 = StackBuf(32)
+        acc = walk_add(acc, alpha, xa, yb, t0, ulow, uh, wt, WALK_GS_BASE + WALK_G_STRIDE * g)
+        a1 = StackBuf(32)
+        acc = walk_add(acc, alpha, t0, mxv, a1, ulow, uh, wt, WALK_GS_BASE + WALK_G_STRIDE * g + 31)
+        dx = StackBuf(32)
+        d1 = StackBuf(32)
+        for i in unroll(0, 32):
+            dx[i] = yd[i] + a1[i]
+        for i in unroll(0, 32):
+            d1[i] = dx[(i + 16) % 32]
+        c1 = StackBuf(32)
+        acc = walk_add(acc, alpha, xc, d1, c1, ulow, uh, wt, WALK_GS_BASE + WALK_G_STRIDE * g + 62)
+        bx = StackBuf(32)
+        b1 = StackBuf(32)
+        for i in unroll(0, 32):
+            bx[i] = yb[i] + c1[i]
+        for i in unroll(0, 32):
+            b1[i] = bx[(i + 12) % 32]
+        t1 = StackBuf(32)
+        acc = walk_add(acc, alpha, a1, b1, t1, ulow, uh, wt, WALK_GS_BASE + WALK_G_STRIDE * g + 93)
+        a2 = StackBuf(32)
+        acc = walk_add(acc, alpha, t1, myv, a2, ulow, uh, wt, WALK_GS_BASE + WALK_G_STRIDE * g + 124)
+        d2x = StackBuf(32)
+        d2 = StackBuf(32)
+        for i in unroll(0, 32):
+            d2x[i] = d1[i] + a2[i]
+        for i in unroll(0, 32):
+            d2[i] = d2x[(i + 8) % 32]
+        c2 = StackBuf(32)
+        acc = walk_add(acc, alpha, c1, d2, c2, ulow, uh, wt, WALK_GS_BASE + WALK_G_STRIDE * g + 155)
+        bnx = StackBuf(32)
+        bn = StackBuf(32)
+        for i in unroll(0, 32):
+            bnx[i] = b1[i] + c2[i]
+        for i in unroll(0, 32):
+            bn[i] = bnx[(i + 7) % 32]
+        # Lin-id rows (b_new, d_new) and the cascade write-back.
+        for i in unroll(0, 32):
+            acc += ulow[(WALK_GS_BASE + WALK_G_STRIDE * g + 186 + i) % 64] * uh[(WALK_GS_BASE + WALK_G_STRIDE * g + 186 + i) // 64] * (alpha * bn[i] + wc)
+            acc += ulow[(WALK_GS_BASE + WALK_G_STRIDE * g + 218 + i) % 64] * uh[(WALK_GS_BASE + WALK_G_STRIDE * g + 218 + i) // 64] * (alpha * d2[i] + wc)
+            aw[128 + g * 32 + i] = a2[i]
+            cw[128 + g * 32 + i] = c2[i]
+    # Finalization rows: out_lo[w] = state[w] + state[w+8], out_hi[w] =
+    # state[w+8] + cv[w]; the final b/d lanes are committed slots.
+    fin = StackBuf(512)
+    for k in unroll(0, 4):
+        for i in unroll(0, 32):
+            fin[k * 32 + i] = aw[WALK_FIN_A[k] + i]
+            fin[(4 + k) * 32 + i] = wt[WALK_FIN_B[k] + i]
+            fin[(8 + k) * 32 + i] = cw[WALK_FIN_C[k] + i]
+            fin[(12 + k) * 32 + i] = wt[WALK_FIN_D[k] + i]
+    for k in unroll(0, 8):
+        for i in unroll(0, 32):
+            lo_v = fin[k * 32 + i] + fin[(8 + k) * 32 + i]
+            acc += ulow[(WALK_OUT_LO_BASE + k * 32 + i) % 64] * uh[(WALK_OUT_LO_BASE + k * 32 + i) // 64] * (alpha * lo_v + wc)
+            hi_v = fin[(8 + k) * 32 + i] + wt[k * 32 + i]
+            acc += ulow[(WALK_OUT_HI_BASE + k * 32 + i) % 64] * uh[(WALK_OUT_HI_BASE + k * 32 + i) // 64] * (alpha * hi_v + wc)
+    # Free-input rows (the 512 message bits): A = [slot], B = [Z_CONST].
+    for j in unroll(0, 512):
+        acc += ulow[(WALK_M_BASE + j) % 64] * uh[(WALK_M_BASE + j) // 64] * (alpha * wt[WALK_M_BASE + j] + wc)
+    # Pinned rows (A = B = [Z_CONST]), including the constant row itself.
+    awc = (alpha + 1) * wc
+    for t in unroll(0, len(WALK_PIN_ROWS)):
+        acc += ulow[WALK_PIN_ROWS[t] % 64] * uh[WALK_PIN_ROWS[t] // 64] * awc
+    return acc
 
 
 def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, cursor):
@@ -1373,6 +1549,10 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     for i in unroll(0, 2 ** K_SKIP):
         fs, w, cursor = fs_next(fs, cursor)
         z_partial[GEN ** i] = w
+    # In-circuit matrix evaluation by the circuit walk; must equal the
+    # deferred matpart (stage 1 cross-check, before the deferral dies).
+    matrix_walked = matrix_walk(lincheck_alpha, zerocheck_z, zerocheck_rhos, lincheck_rs, z_partial)
+    assert matrix_walked == matrix_eval[0]
     # final consistency: running == matpart (DEFERRED) + beta * pin term. The
     # const-pin column folds through the top-variable bindings: weight =
     # prod_j (bit_{klog-1-j}(PIN_COLUMN) ? r_j : 1+r_j), surviving z_partial index

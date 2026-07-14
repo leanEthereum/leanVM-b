@@ -1089,6 +1089,27 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     let pincol = flock::blake3::build_block_r1cs(taus[5].max(MINB3)).const_pin.expect("blake3 r1cs has a const pin");
     ps("PIN_COLUMN", pincol.to_string());
     ps("K_LOG", flock::blake3::K_LOG.to_string());
+    // Circuit-walk schedule (guest matrix_walk): per-G lane sources, message
+    // slot bases, final-state sources, pinned rows, IV words, layout bases.
+    let ws = flock::blake3::walk_schedule();
+    ps("WALK_SRC_A", ints(&ws.src_a));
+    ps("WALK_SRC_B", ints(&ws.src_b));
+    ps("WALK_SRC_C", ints(&ws.src_c));
+    ps("WALK_SRC_D", ints(&ws.src_d));
+    ps("WALK_MXB", ints(&ws.mxb));
+    ps("WALK_MYB", ints(&ws.myb));
+    ps("WALK_FIN_A", ints(&ws.fin_a));
+    ps("WALK_FIN_B", ints(&ws.fin_b));
+    ps("WALK_FIN_C", ints(&ws.fin_c));
+    ps("WALK_FIN_D", ints(&ws.fin_d));
+    ps("WALK_PIN_ROWS", ints(&ws.pin_rows));
+    ps("WALK_IV", ints(&flock::blake3::BLAKE3_IV[..4].iter().map(|&v| v as usize).collect::<Vec<_>>()));
+    ps("WALK_GS_BASE", flock::blake3::GS_BASE.to_string());
+    ps("WALK_G_STRIDE", flock::blake3::G_STRIDE.to_string());
+    ps("WALK_M_BASE", flock::blake3::M_BASE.to_string());
+    ps("WALK_OUT_LO_BASE", flock::blake3::OUT_LO_BASE.to_string());
+    ps("WALK_OUT_HI_BASE", flock::blake3::OUT_HI_BASE.to_string());
+    ps("WALK_Z_CONST", flock::blake3::Z_CONST_POS.to_string());
 
     // ---- LIG candidate tables (fixed [minm, maxm] range; open_stacked config) ----
     let oshape = |m: usize| {
