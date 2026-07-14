@@ -3,7 +3,7 @@
 //!   A. `F128`    — GF(2^128), GHASH polynomial basis (main's field)
 //!   B. `F128T`   — GF((2^64)^2) tower, y^2+y+x^61 (Artin-Schreier; the 64-bit
 //!      design's challenge field E)
-//!   C. `F128Txy` — GF((2^64)^2) tower, y^2+x*y+1 (binius64's tower, same base
+//!   C. `F128TArtin` — GF((2^64)^2) tower, y^2+x*y+1 (binius64's tower, same base
 //!      field K as B — the head-to-head that isolates the tower choice)
 //!
 //! Run with:
@@ -30,7 +30,7 @@ use std::ops::{Add, Mul};
 use std::time::Instant;
 
 use primitives::field::{
-    F128, F128T, F128TUnreduced, F128Txy, F128TxyUnreduced, F256Unreduced, ghash_to_tower,
+    F128, F128T, F128TUnreduced, F128TArtin, F128TArtinUnreduced, F256Unreduced, ghash_to_tower,
 };
 
 // ---------------------------------------------------------------------------
@@ -125,15 +125,15 @@ impl BenchField for F128T {
     }
 }
 
-impl BenchField for F128Txy {
+impl BenchField for F128TArtin {
     fn rand(s: &mut u64) -> Self {
-        F128Txy::new(splitmix64(s), splitmix64(s))
+        F128TArtin::new(splitmix64(s), splitmix64(s))
     }
     fn zero() -> Self {
-        F128Txy::ZERO
+        F128TArtin::ZERO
     }
     fn inv(self) -> Self {
-        F128Txy::inv(self)
+        F128TArtin::inv(self)
     }
 }
 
@@ -284,9 +284,9 @@ fn main() {
     println!("correctness pre-flight: ok");
 
     println!("\nfields (all GF(2^128), base K = x^64+x^4+x^3+x+1 for the towers):");
-    println!("  A. F128    = GF(2^128)     GHASH poly, one 256-bit product + one sparse fold");
-    println!("  B. F128T   = GF((2^64)^2)  y^2+y+x^61   (Artin-Schreier tower), per-limb folds");
-    println!("  C. F128Txy = GF((2^64)^2)  y^2+x*y+1     (binius64 tower), fold = shift-by-x");
+    println!("  A. F128       = GF(2^128)     GHASH poly, one 256-bit product + one sparse fold");
+    println!("  B. F128T      = GF((2^64)^2)  y^2+x*y+1   (binius64 tower, shipped), fold = shift-by-x");
+    println!("  C. F128TArtin = GF((2^64)^2)  y^2+y+x^61   (Artin-Schreier tower), per-limb folds");
 
     let mut s = 1u64;
     let rows: Vec<(&str, [f64; 3])> = vec![
@@ -301,8 +301,8 @@ fn main() {
                     let m = F128T::rand(&mut s);
                     move |a| a * m
                 }),
-                lat_chain(F128Txy::rand(&mut s), {
-                    let m = F128Txy::rand(&mut s);
+                lat_chain(F128TArtin::rand(&mut s), {
+                    let m = F128TArtin::rand(&mut s);
                     move |a| a * m
                 }),
             ],
@@ -312,7 +312,7 @@ fn main() {
             [
                 tp_chains::<F128>(|a, m| a * m),
                 tp_chains::<F128T>(|a, m| a * m),
-                tp_chains::<F128Txy>(|a, m| a * m),
+                tp_chains::<F128TArtin>(|a, m| a * m),
             ],
         ),
         (
@@ -320,7 +320,7 @@ fn main() {
             [
                 tp_array::<F128>(|a, m| a * m),
                 tp_array::<F128T>(|a, m| a * m),
-                tp_array::<F128Txy>(|a, m| a * m),
+                tp_array::<F128TArtin>(|a, m| a * m),
             ],
         ),
         (
@@ -328,7 +328,7 @@ fn main() {
             [
                 inner_reduced::<F128>(),
                 inner_reduced::<F128T>(),
-                inner_reduced::<F128Txy>(),
+                inner_reduced::<F128TArtin>(),
             ],
         ),
         (
@@ -336,7 +336,7 @@ fn main() {
             [
                 inner_deferred!(F128, F256Unreduced, 0xA5A5_1001),
                 inner_deferred!(F128T, F128TUnreduced, 0xA5A5_1002),
-                inner_deferred!(F128Txy, F128TxyUnreduced, 0xA5A5_1003),
+                inner_deferred!(F128TArtin, F128TArtinUnreduced, 0xA5A5_1003),
             ],
         ),
         #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
@@ -344,16 +344,21 @@ fn main() {
             "inner prod, NEON kernel",
             [
                 f64::NAN, // no GHASH equivalent wired here; tower-only kernel
+                f64::NAN, // binius F128T's banked NEON kernel is added in a later phase
                 {
+                    // The banked schoolbook kernel lives on the Artin–Schreier
+                    // tower (F128TArtin); the accumulate is tower-independent.
                     let mut s = 0xA5A5_1004u64;
-                    let a: Vec<F128T> = (0..ARR_N).map(|_| F128T::rand(&mut s)).collect();
-                    let b: Vec<F128T> = (0..ARR_N).map(|_| F128T::rand(&mut s)).collect();
+                    let a: Vec<F128TArtin> =
+                        (0..ARR_N).map(|_| F128TArtin::rand(&mut s)).collect();
+                    let b: Vec<F128TArtin> =
+                        (0..ARR_N).map(|_| F128TArtin::rand(&mut s)).collect();
                     let passes = inner_passes();
                     measure(passes * ARR_N as u64, move || {
                         for _ in 0..passes {
                             // SAFETY: aes is statically enabled (cfg above).
                             black_box(unsafe {
-                                primitives::field::tower_f128::aarch64::inner_unreduced_neon(
+                                primitives::field::tower_f128_artin::aarch64::inner_unreduced_neon(
                                     black_box(&a),
                                     black_box(&b),
                                 )
@@ -361,7 +366,6 @@ fn main() {
                         }
                     })
                 },
-                f64::NAN, // F128Txy has no bespoke NEON kernel (x86 CLMUL / software only)
             ],
         ),
         #[cfg(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx512f"))]
@@ -388,14 +392,14 @@ fn main() {
                 },
                 {
                     let mut s = 0xA5A5_1006u64;
-                    let a: Vec<F128Txy> = (0..ARR_N).map(|_| F128Txy::rand(&mut s)).collect();
-                    let b: Vec<F128Txy> = (0..ARR_N).map(|_| F128Txy::rand(&mut s)).collect();
+                    let a: Vec<F128TArtin> = (0..ARR_N).map(|_| F128TArtin::rand(&mut s)).collect();
+                    let b: Vec<F128TArtin> = (0..ARR_N).map(|_| F128TArtin::rand(&mut s)).collect();
                     let passes = inner_passes();
                     measure(passes * ARR_N as u64, move || {
                         for _ in 0..passes {
                             // SAFETY: vpclmulqdq+avx512f statically enabled (cfg above).
                             black_box(unsafe {
-                                primitives::field::tower_f128_xy::x86_64::inner_unreduced_vpclmul_kara::<2>(
+                                primitives::field::tower_f128_artin::x86_64::inner_unreduced_vpclmul_kara::<2>(
                                     black_box(&a),
                                     black_box(&b),
                                 )
@@ -410,7 +414,7 @@ fn main() {
             [
                 lat_chain(F128::rand(&mut s), |a| a.square()),
                 lat_chain(F128T::rand(&mut s), |a| a.square()),
-                lat_chain(F128Txy::rand(&mut s), |a| a.square()),
+                lat_chain(F128TArtin::rand(&mut s), |a| a.square()),
             ],
         ),
         (
@@ -418,18 +422,18 @@ fn main() {
             [
                 tp_array::<F128>(|a, m| a + m),
                 tp_array::<F128T>(|a, m| a + m),
-                tp_array::<F128Txy>(|a, m| a + m),
+                tp_array::<F128TArtin>(|a, m| a + m),
             ],
         ),
         (
             "inverse",
-            [inv_bench::<F128>(), inv_bench::<F128T>(), inv_bench::<F128Txy>()],
+            [inv_bench::<F128>(), inv_bench::<F128T>(), inv_bench::<F128TArtin>()],
         ),
     ];
 
     println!(
         "\n  {:<26} {:>9} {:>9} {:>9} {:>8} {:>8}",
-        "metric (ns/op)", "A:F128", "B:F128T", "C:F128Txy", "B/A", "C/B"
+        "metric (ns/op)", "A:F128", "B:F128T", "C:Artin", "B/A", "C/B"
     );
     println!("  {}", "-".repeat(74));
     for (metric, v) in &rows {
@@ -462,7 +466,7 @@ fn main() {
     println!("  - B/A compares tower vs GHASH; C/B isolates the tower choice (B and C share");
     println!("    base K and the 3-CLMUL Karatsuba — only the degree-2 fold differs).");
     println!("  - 'inner prod, deferred' XOR-accumulates unreduced products and reduces once");
-    println!("    (accumulator: F128 32 B, F128T/F128Txy 48 B) — the sumcheck hot-loop shape.");
+    println!("    (accumulator: F128 32 B, F128T/F128TArtin 48 B) — the sumcheck hot-loop shape.");
     #[cfg(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx512f"))]
     {
         println!("  - 'inner prod, VPCLMUL' is that same sum via the AVX-512 4-wide batched");
@@ -471,15 +475,16 @@ fn main() {
         println!("    of M-series; see the inner_bench binary for the full ranking.");
     }
     println!("  - inverse is Fermat (square-and-multiply); setup-only, shown for completeness.");
-    println!("  - pass --variants for the per-kernel F128T mul comparison.");
+    println!("  - pass --variants for the per-kernel F128TArtin mul comparison.");
 }
 
 /// Per-kernel F128T mul variants (NEON only), with the GHASH default as the
 /// reference row. `--variants` only.
 #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
 fn variants() {
+    // The per-kernel mul variants live on the Artin–Schreier tower (F128TArtin).
     use primitives::field::gf2_128::aarch64 as g128;
-    use primitives::field::tower_f128::aarch64 as t128;
+    use primitives::field::tower_f128_artin::aarch64 as t128;
 
     fn report<T: BenchField>(name: &str, op: impl Fn(T, T) -> T + Copy) {
         let mut s = 7u64;
@@ -492,7 +497,7 @@ fn variants() {
 
     println!(
         "\n  {:<38} {:>8} {:>10} {:>10}",
-        "F128T mul variant (ns/op)", "latency", "tput(8ch)", "tput(arr)"
+        "F128TArtin mul variant (ns/op)", "latency", "tput(8ch)", "tput(arr)"
     );
     println!("  {}", "-".repeat(70));
     // SAFETY (all closures below): variants() is only compiled when the aes
@@ -501,18 +506,20 @@ fn variants() {
     report::<F128>("F128 ghash binius (reference)", |a, b| unsafe {
         g128::ghash_mul_binius(a, b)
     });
-    report::<F128T>("karatsuba parallel-fold (default)", |a, b| unsafe {
+    report::<F128TArtin>("karatsuba parallel-fold (default)", |a, b| unsafe {
         t128::mul_neon(a, b)
     });
-    report::<F128T>("karatsuba shift-tail", |a, b| unsafe { t128::mul_shift_tail(a, b) });
-    report::<F128T>("karatsuba serial-fold", |a, b| unsafe { t128::mul_serial_fold(a, b) });
-    report::<F128T>("karatsuba vector-resident", |a, b| unsafe {
+    report::<F128TArtin>("karatsuba shift-tail", |a, b| unsafe { t128::mul_shift_tail(a, b) });
+    report::<F128TArtin>("karatsuba serial-fold", |a, b| unsafe {
+        t128::mul_serial_fold(a, b)
+    });
+    report::<F128TArtin>("karatsuba vector-resident", |a, b| unsafe {
         t128::mul_karatsuba_vec(a, b)
     });
-    report::<F128T>("schoolbook vector-resident", |a, b| unsafe {
+    report::<F128TArtin>("schoolbook vector-resident", |a, b| unsafe {
         t128::mul_schoolbook(a, b)
     });
-    report::<F128T>("schoolbook vec shift-tail", |a, b| unsafe {
+    report::<F128TArtin>("schoolbook vec shift-tail", |a, b| unsafe {
         t128::mul_schoolbook_shift_tail(a, b)
     });
 }

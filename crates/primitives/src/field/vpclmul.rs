@@ -1,6 +1,6 @@
 //! AVX-512 `VPCLMULQDQ` batched Karatsuba accumulator, shared by the two
 //! degree-2 towers: [`super::tower_f128`]'s Artin–Schreier `F128T` and
-//! [`super::tower_f128_xy`]'s binius64 `F128Txy`.
+//! [`super::tower_f128`]'s binius64 `F128Txy`.
 //!
 //! Both element types are `#[repr(C)] { c0: u64, c1: u64 }`, so a slice of
 //! either reads as interleaved `{c0, c1}` u64 pairs. The three Karatsuba

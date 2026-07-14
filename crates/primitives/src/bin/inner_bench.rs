@@ -136,17 +136,22 @@ fn compare<F: Copy + PartialEq + core::fmt::Debug>(
 
 #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
 fn main() {
-    use primitives::field::F128T;
-    use primitives::field::tower_f128::aarch64 as t;
+    // The banked PMULL kernels this sweep compares live on the Artin–Schreier
+    // tower (F128TArtin); the accumulate is tower-independent so the ranking
+    // carries over to binius F128T.
+    use primitives::field::F128TArtin;
+    use primitives::field::tower_f128_artin::aarch64 as t;
 
     let quick = std::env::args().any(|a| a == "--quick");
     let rounds = if quick { 40 } else { ROUNDS };
 
     let mut s = 1u64;
-    let a: Vec<F128T> = (0..N).map(|_| F128T::new(splitmix64(&mut s), splitmix64(&mut s))).collect();
-    let b: Vec<F128T> = (0..N).map(|_| F128T::new(splitmix64(&mut s), splitmix64(&mut s))).collect();
+    let a: Vec<F128TArtin> =
+        (0..N).map(|_| F128TArtin::new(splitmix64(&mut s), splitmix64(&mut s))).collect();
+    let b: Vec<F128TArtin> =
+        (0..N).map(|_| F128TArtin::new(splitmix64(&mut s), splitmix64(&mut s))).collect();
 
-    type Kernel = unsafe fn(&[F128T], &[F128T]) -> F128T;
+    type Kernel = unsafe fn(&[F128TArtin], &[F128TArtin]) -> F128TArtin;
     let methods: Vec<(&str, Kernel)> = vec![
         ("karatsuba x1", t::inner_unreduced_kara::<1>),
         ("karatsuba x2", t::inner_unreduced_kara::<2>),
@@ -155,15 +160,15 @@ fn main() {
         ("schoolbook x2  (== inner_neon)", t::inner_unreduced_school::<2>),
         ("schoolbook x4", t::inner_unreduced_school::<4>),
     ];
-    compare("F128T inner-product kernels (aarch64 PMULL)", &a, &b, &methods, rounds);
+    compare("F128TArtin inner-product kernels (aarch64 PMULL)", &a, &b, &methods, rounds);
     println!("\n(speedup = fastest.min / this.min; wins = rounds this method was quickest)");
 }
 
 #[cfg(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx512f"))]
 fn main() {
     use primitives::field::tower_f128::x86_64 as t;
-    use primitives::field::tower_f128_xy::x86_64 as txy;
-    use primitives::field::{F128T, F128TUnreduced, F128Txy, F128TxyUnreduced};
+    use primitives::field::tower_f128_artin::x86_64 as txy;
+    use primitives::field::{F128T, F128TArtin, F128TArtinUnreduced, F128TUnreduced};
 
     // The `field_bench` "inner prod, deferred" baseline: per-term scalar
     // pclmulqdq products XOR-accumulated, one reduce at the end.
@@ -174,8 +179,8 @@ fn main() {
         }
         acc.reduce()
     }
-    unsafe fn scalar_txy(a: &[F128Txy], b: &[F128Txy]) -> F128Txy {
-        let mut acc = F128TxyUnreduced::ZERO;
+    unsafe fn scalar_txy(a: &[F128TArtin], b: &[F128TArtin]) -> F128TArtin {
+        let mut acc = F128TArtinUnreduced::ZERO;
         for i in 0..a.len() {
             acc ^= a[i].mul_unreduced(b[i]);
         }
@@ -188,10 +193,10 @@ fn main() {
     let mut s = 1u64;
     let at: Vec<F128T> = (0..N).map(|_| F128T::new(splitmix64(&mut s), splitmix64(&mut s))).collect();
     let bt: Vec<F128T> = (0..N).map(|_| F128T::new(splitmix64(&mut s), splitmix64(&mut s))).collect();
-    // Same coefficients reinterpreted as binius-tower elements: identical input
-    // work, so the two fields' timings are directly comparable.
-    let axy: Vec<F128Txy> = at.iter().map(|e| F128Txy::new(e.c0, e.c1)).collect();
-    let bxy: Vec<F128Txy> = bt.iter().map(|e| F128Txy::new(e.c0, e.c1)).collect();
+    // Same coefficients reinterpreted as Artin–Schreier-tower elements: identical
+    // input work, so the two fields' timings are directly comparable.
+    let axy: Vec<F128TArtin> = at.iter().map(|e| F128TArtin::new(e.c0, e.c1)).collect();
+    let bxy: Vec<F128TArtin> = bt.iter().map(|e| F128TArtin::new(e.c0, e.c1)).collect();
 
     println!("VPCLMULQDQ batched inner product  Σ aᵢ·bᵢ  (N={N} terms, {INNER} products/sample)");
     println!("scalar deferred = field_bench's 'inner prod, deferred' baseline (128-bit pclmulqdq).");
@@ -206,9 +211,10 @@ fn main() {
         ("vpclmul schoolbook x2", t::inner_unreduced_vpclmul_school::<2>),
         ("vpclmul schoolbook x4", t::inner_unreduced_vpclmul_school::<4>),
     ];
-    let (bt_name, bt_min) = compare("B: F128T  (Artin-Schreier, y²+y+x⁶¹)", &at, &bt, &methods_t, rounds);
+    let (bt_name, bt_min) =
+        compare("B: F128T  (binius64, y²+x·y+1)", &at, &bt, &methods_t, rounds);
 
-    type KX = unsafe fn(&[F128Txy], &[F128Txy]) -> F128Txy;
+    type KX = unsafe fn(&[F128TArtin], &[F128TArtin]) -> F128TArtin;
     let methods_x: Vec<(&str, KX)> = vec![
         ("scalar deferred (pclmulqdq)", scalar_txy as KX),
         ("vpclmul karatsuba x1", txy::inner_unreduced_vpclmul_kara::<1>),
@@ -218,13 +224,14 @@ fn main() {
         ("vpclmul schoolbook x2", txy::inner_unreduced_vpclmul_school::<2>),
         ("vpclmul schoolbook x4", txy::inner_unreduced_vpclmul_school::<4>),
     ];
-    let (bx_name, bx_min) = compare("C: F128Txy (binius64, y²+x·y+1)", &axy, &bxy, &methods_x, rounds);
+    let (bx_name, bx_min) =
+        compare("C: F128TArtin (Artin–Schreier, y²+y+x⁶¹)", &axy, &bxy, &methods_x, rounds);
 
     println!("\nhead-to-head — best kernel of each tower (MIN ns/term):");
-    println!("  B: F128T    {bt_min:>7.3}   ({bt_name})");
-    println!("  C: F128Txy  {bx_min:>7.3}   ({bx_name})");
+    println!("  B: F128T (binius)         {bt_min:>7.3}   ({bt_name})");
+    println!("  C: F128TArtin (AS)        {bx_min:>7.3}   ({bx_name})");
     println!(
-        "  C/B = {:.2}x   (<1 → binius wins the batched deferred inner product on x86)",
+        "  C/B = {:.2}x   (<1 → Artin–Schreier faster; >1 → binius faster, on the batched deferred inner product)",
         bx_min / bt_min
     );
     println!("\n(speedup = fastest.min / this.min; wins = rounds this method was quickest)");
