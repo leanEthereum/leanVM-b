@@ -93,7 +93,7 @@ fn blake3_batch_prove_verify() {
     let params = PcsParams {
         m: mu + LOG_PACKING,
         log_inv_rate: pcs::ligerito::LOG_INV_RATE_0,
-        log_batch_size: pcs::ligerito::INITIAL_K,
+        log_batch_size: pcs::ligerito::INITIAL_FOLDING_FATOR,
     };
 
     let mut ps = ProverState::new(b"flock-blake3-batch", &[]);

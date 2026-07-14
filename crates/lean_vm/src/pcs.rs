@@ -29,9 +29,9 @@ use ::pcs::stack_open_k::{open_batch_mixed_ligerito_stacked_k, verify_opening_ba
 pub const LOG_PACKING: usize = ::pcs::pack_k::LOG_PACKING_K;
 /// Row-batch lanes `2^LOG_BATCH`: the Merkle leaf width (`2^LOG_BATCH` F64
 /// = 512 bytes/leaf) IS Ligerito's INITIAL folding factor — the L0 commit is
-/// reused, so the two are one knob ([`::pcs::ligerito::INITIAL_K`]). Larger ⇒
-/// far fewer Merkle nodes to hash at the cost of fatter query openings.
-const LOG_BATCH: usize = ::pcs::ligerito::INITIAL_K;
+/// reused, so the two are one knob ([`::pcs::ligerito::INITIAL_FOLDING_FATOR`]).
+/// Larger ⇒ far fewer Merkle nodes to hash at the cost of fatter query openings.
+const LOG_BATCH: usize = ::pcs::ligerito::INITIAL_FOLDING_FATOR;
 /// L0 rate (doc §3) — the one knob [`::pcs::ligerito::LOG_INV_RATE_0`].
 pub const LOG_INV_RATE: usize = ::pcs::ligerito::LOG_INV_RATE_0;
 // The PCS and the bus grinding both target `SECURITY_BITS`; keep them in
