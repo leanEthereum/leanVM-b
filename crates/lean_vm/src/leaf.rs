@@ -173,18 +173,31 @@ pub fn build_leaves(blocks: &[Block], lay: &Layout, cols: &[Column], alpha: F128
     leaves
 }
 
-/// Recompute `Ṽ₀(ζ)` from the block structure, taking each committed column's value
-/// at `ζ_lo` from `col_val` (block/coord order): the prover reads the real columns,
-/// the verifier replays PCS-certified values.
-pub fn decompose_formula<F: FnMut(usize, &[F128]) -> F128>(
+/// Recompute `Ṽ₀(ζ)` while recording each fresh committed-column claim.
+/// Repeated `(column, point)` coordinates reuse the first value; `fresh` supplies
+/// only values not already present in `claims`.
+fn decompose_formula<F: FnMut(usize, &[F128]) -> Result<F128, Error>>(
     blocks: &[Block],
     lay: &Layout,
     zeta: &[F128],
     alpha: F128,
     gamma: F128,
-    mut col_val: F,
-) -> F128 {
+    claims: &mut Vec<ColumnClaim>,
+    mut fresh: F,
+) -> Result<F128, Error> {
     assert_eq!(zeta.len(), lay.mu);
+    let mut col_val = |col, point: &[F128]| {
+        if let Some(claim) = claims.iter().find(|c| c.col == col && c.point == point) {
+            return Ok(claim.value);
+        }
+        let value = fresh(col, point)?;
+        claims.push(ColumnClaim {
+            col,
+            point: point.to_vec(),
+            value,
+        });
+        Ok(value)
+    };
     let mut acc = F128::ZERO;
     let mut sel_sum = F128::ZERO;
     for (b, blk) in blocks.iter().enumerate() {
@@ -204,8 +217,8 @@ pub fn decompose_formula<F: FnMut(usize, &[F128]) -> F128>(
             let coord_val = match c {
                 Coord::Const(v) => *v,
                 Coord::Index => index_mle(zeta_lo),
-                Coord::Col(i) => col_val(*i, zeta_lo),
-                Coord::GCol(i) => G * col_val(*i, zeta_lo),
+                Coord::Col(i) => col_val(*i, zeta_lo)?,
+                Coord::GCol(i) => G * col_val(*i, zeta_lo)?,
                 Coord::Public(vals) => mle_eval(vals, zeta_lo),
             };
             inner += alpha_pow * coord_val;
@@ -214,14 +227,7 @@ pub fn decompose_formula<F: FnMut(usize, &[F128]) -> F128>(
         acc += eq_hi * (gamma + inner);
     }
     // The padding rows (identity `1`) contribute the leftover mass `1 - Σ_b sel_b`.
-    acc + (F128::ONE + sel_sum)
-}
-
-/// Look up an already-recorded claim on `(col, point)`. Push and pull share
-/// their GKR point, so a column read by both sides (or by two same-κ blocks of
-/// one side) is streamed and opened ONCE; later occurrences reuse the value.
-fn known_claim(claims: &[ColumnClaim], col: usize, point: &[F128]) -> Option<F128> {
-    claims.iter().find(|c| c.col == col && c.point == point).map(|c| c.value)
+    Ok(acc + (F128::ONE + sel_sum))
 }
 
 /// Prover-side decomposition: reads the real columns, writing each FRESH
@@ -238,25 +244,17 @@ fn decompose_prove(
     claims: &mut Vec<ColumnClaim>,
     ps: &mut ProverState,
 ) {
-    decompose_formula(blocks, lay, zeta, alpha, gamma, |col, zeta_lo| {
-        if let Some(v) = known_claim(claims, col, zeta_lo) {
-            return v;
-        }
+    decompose_formula(blocks, lay, zeta, alpha, gamma, claims, |col, zeta_lo| {
         let v = mle_eval(&cols[col], zeta_lo);
         ps.add_scalar(v);
-        claims.push(ColumnClaim {
-            col,
-            point: zeta_lo.to_vec(),
-            value: v,
-        });
-        v
-    });
+        Ok(v)
+    })
+    .expect("prover decomposition is infallible");
 }
 
 /// Verifier-side decomposition: reads each FRESH committed value from the
 /// stream (duplicates reuse the recorded claim), recomputes `Ṽ₀(ζ)`, and
-/// records the fresh claims. A pre-pass mirrors the formula's block/coord scan
-/// so the stream reads stay sequential.
+/// records the fresh claims in one block/coordinate scan.
 fn decompose_verify(
     blocks: &[Block],
     lay: &Layout,
@@ -266,24 +264,9 @@ fn decompose_verify(
     claims: &mut Vec<ColumnClaim>,
     vs: &mut VerifierState,
 ) -> Result<F128, Error> {
-    for blk in blocks {
-        let zeta_lo = &zeta[..blk.kappa];
-        for c in &blk.coords {
-            if let Coord::Col(i) | Coord::GCol(i) = c
-                && known_claim(claims, *i, zeta_lo).is_none() {
-                    let v = vs.next_scalar().map_err(|_| Error::Truncated)?;
-                    claims.push(ColumnClaim {
-                        col: *i,
-                        point: zeta_lo.to_vec(),
-                        value: v,
-                    });
-                }
-        }
-    }
-    let value = decompose_formula(blocks, lay, zeta, alpha, gamma, |col, zeta_lo| {
-        known_claim(claims, col, zeta_lo).expect("the pre-pass recorded every coordinate")
-    });
-    Ok(value)
+    decompose_formula(blocks, lay, zeta, alpha, gamma, claims, |_, _| {
+        vs.next_scalar().map_err(|_| Error::Truncated)
+    })
 }
 
 /// `base^e` by repeated squaring.
