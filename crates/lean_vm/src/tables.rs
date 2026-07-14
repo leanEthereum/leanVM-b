@@ -245,6 +245,21 @@ pub const BLAKE3_VALUE_COLS: [usize; 12] = [
 // 1:1 onto `blake3_flock::SLOTS`.
 const _: () = assert!(blake3t::VB0 == blake3t::VA0 + 4 && blake3t::VC0 == blake3t::VA0 + 8);
 
+/// Declare consecutive local column indices and the resulting column count.
+macro_rules! columns {
+    ($($column:ident),+ $(,)?) => {
+        columns!(@define 0; $($column),+);
+    };
+    (@define $index:expr; $column:ident, $($rest:ident),+) => {
+        pub const $column: usize = $index;
+        columns!(@define $index + 1; $($rest),+);
+    };
+    (@define $index:expr; $column:ident) => {
+        pub const $column: usize = $index;
+        pub const N: usize = $index + 1;
+    };
+}
+
 // ---- XOR / MUL ---------------------------------------------------------------
 
 /// `XOR` and `MUL_NATIVE` share their column layout, flushes, and fill; they
