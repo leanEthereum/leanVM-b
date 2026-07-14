@@ -113,6 +113,17 @@ impl FlushBuilder {
         );
     }
 
+    /// Memory read of a K-valued (single-lane) word: the value's high lane is a
+    /// literal 0, so it carries no committed HI column. Used for words the
+    /// constraints force into K (e.g. the DEREF pointer). Sound because the bus
+    /// balances only if the stored value's HI lane is likewise 0.
+    pub(crate) fn memory_k(&mut self, addr: usize, count: usize, val: usize) {
+        self.pair(
+            vec![Const(SEP_MEM), Col(addr), GCol(count, 1), Col(val), Const(F64::ZERO)],
+            vec![Const(SEP_MEM), Col(addr), Col(count), Col(val), Const(F64::ZERO)],
+        );
+    }
+
     /// Memory access at the free successor address `g^k · col[addr]` (doc §7.6,
     /// `BLAKE3`'s two-cell digest). The address coordinate is the virtual ×g^k of
     /// the committed base address, so no extra committed column.
@@ -441,20 +452,21 @@ mod deref {
     pub const A1: usize = 7;
     pub const A2: usize = 8;
     pub const A3: usize = 9;
-    // The pointer word (two K-lanes); the address constraint a2 = p·obe forces it
-    // into K (a valid g-power).
-    pub const P_LO: usize = 10;
-    pub const P_HI: usize = 11;
+    // The pointer word — a SINGLE K-lane. The address constraint a2 = p·obe
+    // (with a2 a single-lane K column) forces `p` into K, so its high lane is
+    // provably 0: it is NOT committed, and the memory read carries a literal 0
+    // high lane (the bus balances only if the stored value's HI lane is 0 too).
+    pub const P: usize = 10;
     // The store target and the local cell, each a 128-bit word (two K-lanes).
-    pub const V2_LO: usize = 12;
-    pub const V2_HI: usize = 13;
-    pub const V3_LO: usize = 14;
-    pub const V3_HI: usize = 15;
-    pub const R1: usize = 16;
-    pub const R2: usize = 17;
-    pub const R3: usize = 18;
-    pub const RBC: usize = 19;
-    pub const N: usize = 20;
+    pub const V2_LO: usize = 11;
+    pub const V2_HI: usize = 12;
+    pub const V3_LO: usize = 13;
+    pub const V3_HI: usize = 14;
+    pub const R1: usize = 15;
+    pub const R2: usize = 16;
+    pub const R3: usize = 17;
+    pub const RBC: usize = 18;
+    pub const N: usize = 19;
 }
 
 impl Table for DerefTable {
@@ -470,12 +482,12 @@ impl Table for DerefTable {
     }
     fn constraint_columns(&self) -> &'static [usize] {
         use deref::*;
-        &[FP, OAL, OBE, OGA, A1, A2, A3, P_LO, P_HI, FPC, FFP, V2_LO, V2_HI, V3_LO, V3_HI, PC]
+        &[FP, OAL, OBE, OGA, A1, A2, A3, P, FPC, FFP, V2_LO, V2_HI, V3_LO, V3_HI, PC]
     }
     fn eval_constraint(&self, eta: F128T, cols: &Cols) -> F128T {
         use deref::*;
         // The pointer / target / local words as 128-bit E-values.
-        let p = e128(cols[P_LO], cols[P_HI]);
+        let p = cols[P]; // single K-lane pointer; high lane is provably 0
         let v2 = e128(cols[V2_LO], cols[V2_HI]);
         let v3 = e128(cols[V3_LO], cols[V3_HI]);
         // Three addresses (a2 = p·obe is pointer-relative — with a2 a single K
@@ -495,7 +507,7 @@ impl Table for DerefTable {
         use deref::*;
         f.state_step(PC, FP);
         f.bytecode(PC, RBC, OP_DEREF, &[Col(OAL), Col(OBE), Col(OGA), Col(FPC), Col(FFP)]);
-        f.memory(A1, R1, P_LO, P_HI);
+        f.memory_k(A1, R1, P);
         f.memory(A2, R2, V2_LO, V2_HI);
         f.memory(A3, R3, V3_LO, V3_HI);
     }
@@ -512,8 +524,8 @@ impl Table for DerefTable {
         out[A1] = rows.par_iter().map(|r| ctx.g_at(r.a1)).collect();
         out[A2] = rows.par_iter().map(|r| ctx.gpow[r.a2]).collect(); // a2 is a full memory index
         out[A3] = rows.par_iter().map(|r| ctx.g_at(r.a3)).collect();
-        out[P_LO] = rows.par_iter().map(|r| F64(r.p.c0)).collect();
-        out[P_HI] = rows.par_iter().map(|r| F64(r.p.c1)).collect();
+        debug_assert!(rows.iter().all(|r| r.p.c1 == 0), "deref pointer must be K-valued");
+        out[P] = rows.par_iter().map(|r| F64(r.p.c0)).collect();
         out[V2_LO] = rows.par_iter().map(|r| F64(r.v2.c0)).collect();
         out[V2_HI] = rows.par_iter().map(|r| F64(r.v2.c1)).collect();
         out[V3_LO] = rows.par_iter().map(|r| F64(r.v3.c0)).collect();
