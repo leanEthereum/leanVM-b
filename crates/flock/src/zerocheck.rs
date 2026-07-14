@@ -38,6 +38,19 @@ use univariate_skip_optimized::{
 /// |Λ| = 2^K_SKIP = 64 elements; the round-1 prover message is two length-64
 /// vectors of F128.
 pub const K_SKIP: usize = 6;
+const N_INNER: usize = 7; // 3 small + 4 medium fixed-constant eq dimensions
+
+/// Build the zerocheck challenge vector in the shared prover/verifier order:
+/// sampled skip coordinates, fixed inner coordinates, then sampled outer ones.
+fn challenge_vector(m: usize, mut sample_vec: impl FnMut(usize) -> Vec<F128>) -> Vec<F128> {
+    let skip = sample_vec(K_SKIP);
+    let outer = sample_vec(m - K_SKIP - N_INNER);
+    skip.into_iter()
+        .chain(small_challenges_ghash())
+        .chain(medium_challenges_ghash())
+        .chain(outer)
+        .collect()
+}
 
 /// Witness padding descriptor for URM work-skipping.
 ///
@@ -138,7 +151,6 @@ fn prove_packed_padded_inner(
     ps: &mut ProverState,
 ) -> (ZerocheckClaim, Option<Vec<F128>>) {
     let k_skip = K_SKIP;
-    const N_INNER: usize = 7; // 3 small + 4 medium fixed-constant eq dims
     assert!(
         m >= k_skip + N_INNER,
         "prove requires m >= k_skip + N_INNER (= {})",
@@ -159,17 +171,7 @@ fn prove_packed_padded_inner(
     //   r[k_skip+3..k_skip+7]       — protocol medium-eq constants β_i
     //   r[k_skip+7..m]              — sampled (the "outer" eq weights for
     //                                  the URM and multilinear rounds)
-    let r_skip = ps.sample_vec(k_skip);
-    let r_outer = ps.sample_vec(m - k_skip - N_INNER);
-    let mut r = vec![F128::ZERO; m];
-    r[..k_skip].copy_from_slice(&r_skip);
-    for (i, val) in small_challenges_ghash().iter().enumerate() {
-        r[k_skip + i] = *val;
-    }
-    for (i, val) in medium_challenges_ghash().iter().enumerate() {
-        r[k_skip + 3 + i] = *val;
-    }
-    r[k_skip + N_INNER..].copy_from_slice(&r_outer);
+    let r = challenge_vector(m, |n| ps.sample_vec(n));
 
     // ---- 3. Round 1: URM (extract_c, parallel) ----
     //
@@ -387,7 +389,6 @@ pub fn verify(
 ) -> Result<ZerocheckClaim, VerifyError> {
     let m = log_n;
     let k_skip = K_SKIP;
-    const N_INNER: usize = 7;
 
     if m < k_skip + N_INNER {
         return Err(VerifyError::LogNTooSmall { log_n: m, k_skip });
@@ -396,17 +397,7 @@ pub fn verify(
     let ell = 1usize << k_skip;
 
     // ---- Re-derive r (in lockstep with prove_packed) ----
-    let r_skip = vs.sample_vec(k_skip);
-    let r_outer = vs.sample_vec(m - k_skip - N_INNER);
-    let mut r = vec![F128::ZERO; m];
-    r[..k_skip].copy_from_slice(&r_skip);
-    for (i, val) in small_challenges_ghash().iter().enumerate() {
-        r[k_skip + i] = *val;
-    }
-    for (i, val) in medium_challenges_ghash().iter().enumerate() {
-        r[k_skip + 3 + i] = *val;
-    }
-    r[k_skip + N_INNER..].copy_from_slice(&r_outer);
+    let r = challenge_vector(m, |n| vs.sample_vec(n));
 
     // ---- Read + bind round-1 messages off the stream, sample z ----
     let round1_ab = vs.next_scalars(ell).map_err(VerifyError::Transcript)?;

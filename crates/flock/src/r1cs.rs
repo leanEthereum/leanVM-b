@@ -186,29 +186,15 @@ fn apply_block_diag(m_0: &SparseBinaryMatrix, z: &[bool], k_log: usize) -> Vec<b
     assert_eq!(m_0.num_rows, k);
     assert_eq!(m_0.num_cols, k);
     assert_eq!(z.len() % k, 0);
-    let n_outer = z.len() / k;
-    let mut out = vec![false; z.len()];
-    for i_outer in 0..n_outer {
-        let z_block = &z[i_outer * k..(i_outer + 1) * k];
-        let a_block = matrix_vector_product(m_0, z_block);
-        out[i_outer * k..(i_outer + 1) * k].copy_from_slice(&a_block);
+    let mut out = Vec::with_capacity(z.len());
+    for z_block in z.chunks_exact(k) {
+        out.extend(
+            m_0.rows
+                .iter()
+                .map(|row| row.iter().fold(false, |acc, &col| acc ^ z_block[col])),
+        );
     }
     out
-}
-
-/// `out[i] = ⊕_{j: M[i, j] = 1} z[j]` (over GF(2)).
-fn matrix_vector_product(m: &SparseBinaryMatrix, z: &[bool]) -> Vec<bool> {
-    assert_eq!(z.len(), m.num_cols);
-    m.rows
-        .iter()
-        .map(|row| {
-            let mut acc = false;
-            for &col in row {
-                acc ^= z[col];
-            }
-            acc
-        })
-        .collect()
 }
 
 #[cfg(test)]

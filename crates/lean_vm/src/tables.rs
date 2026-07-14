@@ -218,6 +218,21 @@ pub const BLAKE3_VALUE_COLS: [usize; 6] = [
     blake3t::VC1,
 ];
 
+/// Declare consecutive local column indices and the resulting column count.
+macro_rules! columns {
+    ($($column:ident),+ $(,)?) => {
+        columns!(@define 0; $($column),+);
+    };
+    (@define $index:expr; $column:ident, $($rest:ident),+) => {
+        pub const $column: usize = $index;
+        columns!(@define $index + 1; $($rest),+);
+    };
+    (@define $index:expr; $column:ident) => {
+        pub const $column: usize = $index;
+        pub const N: usize = $index + 1;
+    };
+}
+
 // ---- XOR / MUL ---------------------------------------------------------------
 
 /// `XOR` and `MUL_NATIVE` share their column layout, flushes, and fill; they
@@ -228,22 +243,7 @@ struct Arith {
 }
 
 mod arith {
-    pub const PC: usize = 0;
-    pub const FP: usize = 1;
-    pub const OA: usize = 2;
-    pub const OB: usize = 3;
-    pub const OC: usize = 4;
-    pub const AA: usize = 5;
-    pub const AB: usize = 6;
-    pub const AC: usize = 7;
-    pub const VA: usize = 8;
-    pub const VB: usize = 9;
-    pub const VC: usize = 10;
-    pub const RA: usize = 11;
-    pub const RB: usize = 12;
-    pub const RC: usize = 13;
-    pub const RBC: usize = 14;
-    pub const N: usize = 15;
+    columns!(PC, FP, OA, OB, OC, AA, AB, AC, VA, VB, VC, RA, RB, RC, RBC);
 }
 
 impl Table for Arith {
@@ -312,14 +312,7 @@ impl Table for Arith {
 struct SetTable;
 
 mod set {
-    pub const PC: usize = 0;
-    pub const FP: usize = 1;
-    pub const O: usize = 2;
-    pub const K: usize = 3;
-    pub const A: usize = 4;
-    pub const R: usize = 5;
-    pub const RBC: usize = 6;
-    pub const N: usize = 7;
+    columns!(PC, FP, O, K, A, R, RBC);
 }
 
 impl Table for SetTable {
@@ -371,24 +364,7 @@ impl Table for SetTable {
 struct DerefTable;
 
 mod deref {
-    pub const PC: usize = 0;
-    pub const FP: usize = 1;
-    pub const OAL: usize = 2;
-    pub const OBE: usize = 3;
-    pub const OGA: usize = 4;
-    pub const FPC: usize = 5;
-    pub const FFP: usize = 6;
-    pub const A1: usize = 7;
-    pub const A2: usize = 8;
-    pub const A3: usize = 9;
-    pub const P: usize = 10;
-    pub const V2: usize = 11;
-    pub const V3: usize = 12;
-    pub const R1: usize = 13;
-    pub const R2: usize = 14;
-    pub const R3: usize = 15;
-    pub const RBC: usize = 16;
-    pub const N: usize = 17;
+    columns!(PC, FP, OAL, OBE, OGA, FPC, FFP, A1, A2, A3, P, V2, V3, R1, R2, R3, RBC);
 }
 
 impl Table for DerefTable {
@@ -455,28 +431,9 @@ impl Table for DerefTable {
 struct JumpTable;
 
 mod jump {
-    pub const PC: usize = 0;
-    pub const FP: usize = 1;
-    pub const NPC: usize = 2;
-    pub const NFP: usize = 3;
-    pub const OC: usize = 4;
-    pub const OD: usize = 5;
-    pub const OF: usize = 6;
-    pub const AC: usize = 7;
-    pub const AD: usize = 8;
-    pub const AF: usize = 9;
-    pub const C: usize = 10;
-    pub const D: usize = 11;
-    pub const F: usize = 12;
-    pub const RC: usize = 13;
-    pub const RD: usize = 14;
-    pub const RF: usize = 15;
-    pub const RBC: usize = 16;
     // Local witness columns (committed, never flushed): the inverse hint `w` and
     // the taken indicator `b = [c ≠ 0]` it certifies (doc §7.5).
-    pub const W: usize = 17;
-    pub const B: usize = 18;
-    pub const N: usize = 19;
+    columns!(PC, FP, NPC, NFP, OC, OD, OF, AC, AD, AF, C, D, F, RC, RD, RF, RBC, W, B);
 }
 
 impl Table for JumpTable {
@@ -566,32 +523,13 @@ impl Table for JumpTable {
 struct Blake3Table;
 
 mod blake3t {
-    pub const PC: usize = 0;
-    pub const FP: usize = 1;
-    pub const OA0: usize = 2; // operand g-powers (offsets) of the four inputs …
-    pub const OA1: usize = 3;
-    pub const OB0: usize = 4;
-    pub const OB1: usize = 5;
-    pub const OC: usize = 6; // … and the output base
-    pub const AA0: usize = 7; // the four independent input addresses …
-    pub const AA1: usize = 8;
-    pub const AB0: usize = 9;
-    pub const AB1: usize = 10;
-    pub const AC: usize = 11; // … and the output base (word 1 is g·AC)
-    pub const VA0: usize = 12;
-    pub const VA1: usize = 13;
-    pub const VB0: usize = 14;
-    pub const VB1: usize = 15;
-    pub const VC0: usize = 16;
-    pub const VC1: usize = 17;
-    pub const RA0: usize = 18;
-    pub const RA1: usize = 19;
-    pub const RB0: usize = 20;
-    pub const RB1: usize = 21;
-    pub const RC0: usize = 22;
-    pub const RC1: usize = 23;
-    pub const RBC: usize = 24;
-    pub const N: usize = 25;
+    // Operands: four input offsets + output base; addresses mirror that layout,
+    // with word 1 of the output at the free successor g·AC. Values and read
+    // counts then follow in canonical a0/a1/b0/b1/c0/c1 order.
+    columns!(
+        PC, FP, OA0, OA1, OB0, OB1, OC, AA0, AA1, AB0, AB1, AC, VA0, VA1, VB0, VB1, VC0, VC1,
+        RA0, RA1, RB0, RB1, RC0, RC1, RBC,
+    );
 }
 
 impl Table for Blake3Table {
