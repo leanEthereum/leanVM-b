@@ -65,13 +65,49 @@ It remains to compute $B(r')$, where $B(y)=\sum_{w=1}^e\gamma^w A(y,w)$ and $A(y
 \]
 So on the hypercube $B$ is ``compute $\eq(r,y)\in\F_{2^e}$, then apply $\Phi$''.
 
-Now $\eq(r,y)=\prod_{j=1}^m g_j(y_j)$ with $g_j(0)=1-r_j$, $g_j(1)=r_j$, and multiplication by a fixed element of $\F_{2^e}$ is an $e\times e$ matrix $M_j^{(y_j)}$ over $\F_2$; so, on $\{0,1\}^m$, $B$ is a width-$e$ \emph{matrix} branching program: the product $\prod_j M_j^{(y_j)}$ (started from the coordinates of $1$), followed by $\Phi$. Its multilinear extension is then evaluable at $r'$ in $O(m e^2)$ field operations (see~\cite[Section~4.1]{Jagged}, or more generally~\cite{HR18}).
+\paragraph{Closed form.} Two elementary facts do all the work.
+
+\emph{Fact 1 ($\eq$ in characteristic $2$).} In each factor of $\eq$ the two $x_jy_j$ terms cancel:
+\[
+\eq(x,y)=\prod_{j=1}^m\bigl(x_jy_j+(1+x_j)(1+y_j)\bigr)=\prod_{j=1}^m(1+x_j+y_j).
+\]
+
+\emph{Fact 2 (linear maps are sums of squarings).} View $\Phi$ as mapping into $L=\F_{2^{\mathrm{lcm}(e,f)}}$, the smallest field containing both $\F_{2^e}$ and $\F_{2^f}$ (for $e=f$: $L=\F_{2^e}$, nothing to embed). Squaring is additive in characteristic $2$, so any \emph{linearized polynomial}~\cite{WikiLinPoly}
+\[
+a\;\mapsto\;c_0\,a+c_1\,a^2+c_2\,a^4+\dots+c_{e-1}\,a^{2^{e-1}},\qquad c_k\in L,
+\]
+is an $\F_2$-linear map $\F_{2^e}\to L$. We claim $\Phi$ is of this form, and find the $c_k$ by writing out what $\Phi$ must do on the basis, $\Phi(b^E_w)=\gamma^w$:
+\[
+\sum_{k=0}^{e-1}\bigl(b^E_w\bigr)^{2^k}c_k=\gamma^w,\qquad w=1,\dots,e:
+\]
+$e$ linear equations in the $e$ unknowns $c_k$. The coefficient matrix $\bigl((b^E_w)^{2^k}\bigr)_{w,k}$ is a \emph{Moore matrix}, invertible exactly because the $b^E_w$ are $\F_2$-linearly independent~\cite{WikiMoore}, so the $c_k$ exist and are unique; the resulting linearized polynomial agrees with $\Phi$ on an $\F_2$-basis, hence (both being $\F_2$-linear) everywhere. The matrix depends only on the basis, not on $\gamma$: invert it once and for all; each reduction then reads off its $(c_k)_{k<e}$ by one matrix-vector product, $O(e^2)$ multiplications.
+
+Now compute. Squaring respects sums and products and fixes bits ($y_j^2=y_j$), so on the hypercube, by Fact~1,
+\[
+\eq(r,y)^{2^k}=\prod_{j=1}^m(1+r_j+y_j)^{2^k}=\prod_{j=1}^m\bigl(1+r_j^{2^k}+y_j\bigr)=\eq\bigl(r^{2^k},y\bigr),
+\qquad r^{2^k}:=\bigl(r_1^{2^k},\dots,r_m^{2^k}\bigr).
+\]
+Since $B$ is multilinear, evaluating it at $r'$ and expanding with Fact~2:
+\[
+B(r')=\sum_{y\in\{0,1\}^m}B(y)\,\eq(r',y)
+=\sum_{y\in\{0,1\}^m}\Phi\bigl(\eq(r,y)\bigr)\,\eq(r',y)
+=\sum_{k<e}c_k\sum_{y\in\{0,1\}^m}\eq\bigl(r^{2^k},y\bigr)\,\eq(r',y).
+\]
+The inner sum evaluates, at $r'$, the multilinear extension of $y\mapsto\eq(r^{2^k},y)$, which is $\eq(r^{2^k},\cdot\,)$ itself. So it collapses to $\eq(r^{2^k},r')$, and by Fact~1 again:
+\[
+\boxed{\ \
+B(r') \;=\; \sum_{k<e}\, c_k \prod_{j=1}^m
+\bigl( 1 + r_j^{2^k} + r'_j \bigr).
+\ \ }
+\]
+
+\paragraph{Cost.} Level $k$ needs one squaring per coordinate (to get $r_j^{2^k}$ from $r_j^{2^{k-1}}$) and one $m$-factor product: $O(em)$ multiplications in $L$, on top of the $O(e^2)$ for the $c_k$: plain field arithmetic throughout, no bit decompositions.
 
 \section*{Remarks}
 
 \begin{enumerate}
 \item \emph{Small $\F_{2^f}$.} If $2^f$ is too small for the error $(2m+e)/2^f$, sample $\gamma$ (and run the sumcheck) in an extension $L\supseteq\F_{2^f}$: the error becomes $(2m+e)/|L|$, and $P_\pkd$ is just opened at $r'\in L^m$.
-\item \emph{Any field.} Nothing uses characteristic $2$: replace $\F_2$ by any field $K$ and $\F_{2^f},\F_{2^e}$ by degree-$f$ and degree-$e$ extensions of $K$; it still works.
+\item \emph{Any field.} Nothing uses characteristic $2$: replace $\F_2$ by any field $K$ and $\F_{2^f},\F_{2^e}$ by degree-$f$ and degree-$e$ extensions of $K$; the reduction still works, and efficient algorithms for evaluating $B$ exist in general too.
 \end{enumerate}
 
 \section*{Credits}
@@ -81,9 +117,8 @@ The idea comes from Lev Soukhanov, \textit{[[alloc]init]}.
 \begin{thebibliography}{9}
 \bibitem{DP26} Benjamin E. Diamond and Jim Posen. Polylogarithmic proofs for multilinears over binary towers. In \emph{Advances in Cryptology -- EUROCRYPT 2026}, pages 3--32. Springer, 2026.
 \bibitem{Flock} Benedikt B\"unz, Ron Rothblum, and William Wang. Flock: Fast proving for batch Boolean computations. Cryptology ePrint Archive, Paper 2026/1329, 2026. \url{https://eprint.iacr.org/2026/1329}.
-\bibitem{Jagged} Tamir Hemo, Kevin Jue, Eugene Rabinovich, Gyumin Roh, and Ron D. Rothblum. Jagged polynomial commitments (or: How to stack multilinears). Cryptology ePrint Archive, Paper 2025/917, 2025. \url{https://eprint.iacr.org/2025/917}.
-\bibitem{HR18} Justin Holmgren and Ron D. Rothblum. Delegating computations with (almost) minimal time and space overhead. In \emph{59th IEEE Annual Symposium on Foundations of Computer Science, FOCS 2018}, pages 124--135. IEEE, 2018.
-
+\bibitem{WikiLinPoly} Wikipedia. Linearised polynomial. \url{https://en.wikipedia.org/wiki/Linearised_polynomial}.
+\bibitem{WikiMoore} Wikipedia. Moore matrix. \url{https://en.wikipedia.org/wiki/Moore_matrix}.
 \end{thebibliography}
 
 \end{document}

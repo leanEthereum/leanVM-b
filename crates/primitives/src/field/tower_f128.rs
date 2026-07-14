@@ -25,7 +25,7 @@ use core::ops::{Add, AddAssign, BitXor, BitXorAssign, Mul, MulAssign};
 use serde::{Deserialize, Serialize};
 
 use super::gf2_64::F64;
-use super::gf2_64x3::base_reduce_128;
+use super::gf2_64x3::{R64, base_reduce_128};
 
 /// Artin--Schreier constant: c = x^61 (trace 1, so y^2 + y + c is irreducible).
 pub const C61: u64 = 1 << 61;
