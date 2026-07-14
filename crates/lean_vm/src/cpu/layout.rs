@@ -146,36 +146,14 @@ pub fn block_kappa_sources(log_bytecode: usize) -> Vec<(usize, usize)> {
     push
 }
 
-/// Column → log-size (`kappa`) map: the shared MEM/MFCNT columns are `2^log_mem`,
-/// the bytecode finalize count is `2^log_bytecode`, and every column of table `t`
-/// is `2^taus[t]` (its padded log-row-count). `None` marks a **virtual**
-/// (uncommitted) column. Depends only on the public sizes, so the verifier can
-/// reconstruct the placements.
-///
-/// The BLAKE3 value columns (`va0..vc1`) are always virtual: `q_pkd`
-/// already holds those words at fixed packed slots, so committing them again is
-/// redundant. Their memory-bus claims route directly to `q_pkd` slot evaluations
-/// (see [`slot_claims`]), which both binds them to
-/// the proven witness AND eliminates the separate value-binding sub-protocol.
-fn col_kappas(log_mem: usize, log_bytecode: usize, taus: [usize; 6], n_blake3: usize) -> Vec<Option<usize>> {
-    let sch = schema();
-    let mut k = vec![Some(0usize); sch.n];
-    k[MEM] = Some(log_mem);
-    k[MFCNT] = Some(log_mem);
-    k[BFCNT] = Some(log_bytecode);
-    // q_pkd: `2^(K_LOG+n_log-7)` F128 coords, always ≥ 1 instance (`qpkd_kappa`
-    // floors `n_blake3` at 1 — padding instance for a no-BLAKE3 program).
-    k[QPKD] = Some(crate::blake3_flock::qpkd_kappa(n_blake3));
-    for (t, table) in tables::tables().iter().enumerate() {
-        let base = sch.base[t];
-        k[base..base + table.n_committed_columns()].fill(Some(taus[t]));
-    }
-    // BLAKE3 value columns are ALWAYS virtual (read from q_pkd, never committed).
-    let b3 = sch.base[tables::BLAKE3_TABLE];
-    for &c in &tables::BLAKE3_VALUE_COLS {
-        k[b3 + c] = None;
-    }
-    k
+/// Resolve the symbolic column-size sources used by recursion into concrete
+/// log-sizes. `None` marks a virtual (uncommitted) column.
+fn col_kappas(log_mem: usize, log_bytecode: usize, taus: [usize; 6]) -> Vec<Option<usize>> {
+    let values = [0, log_mem, taus[0], taus[1], taus[2], taus[3], taus[4], taus[5]];
+    col_kappa_sources(log_bytecode)
+        .into_iter()
+        .map(|source| source.map(|(index, adjustment)| values[index] + adjustment))
+        .collect()
 }
 
 /// Build the public [`Layout`] from the program, the memory log-size `log_mem`, the
@@ -364,12 +342,7 @@ pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; 6], pi: [F128; 2]
         pad[b3 + tables::BLAKE3_VALUE_COLS[5]] = pc[1]; // c1
     }
 
-    let (placements, m) = witness::placements_of(&col_kappas(
-        log_mem,
-        log_bytecode,
-        taus,
-        row_counts[tables::BLAKE3_TABLE],
-    ));
+    let (placements, m) = witness::placements_of(&col_kappas(log_mem, log_bytecode, taus));
     Layout {
         push,
         pull,
