@@ -246,6 +246,9 @@ pub const BLAKE3_VALUE_COLS: [usize; 12] = [
 const _: () = assert!(blake3t::VB0 == blake3t::VA0 + 4 && blake3t::VC0 == blake3t::VA0 + 8);
 
 /// Declare consecutive local column indices and the resulting column count.
+// Kept from main's table refactor as a tool for future single-lane column sets;
+// this branch's tables use explicit LO/HI constants (128-bit memory words).
+#[allow(unused_macros)]
 macro_rules! columns {
     ($($column:ident),+ $(,)?) => {
         columns!(@define 0; $($column),+);

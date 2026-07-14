@@ -33,7 +33,7 @@
 
 use fiat_shamir::sponge::Sponge;
 use crate::{ProverState, VerifierState};
-use primitives::field::{F128, F128T};
+use primitives::field::F128;
 use primitives::multilinear::build_eq as build_eq_table;
 use crate::merkle::{self, Hash};
 use crate::ntt::additive_ntt_f128::AdditiveNttF128;
