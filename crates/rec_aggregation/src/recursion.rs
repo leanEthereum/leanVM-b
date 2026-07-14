@@ -11,8 +11,8 @@
 //! `cpu::layout` supplies every compile-time shape. `gen_agg` mirrors the
 //! guest's aggregation transcript and runs the two batching-sumcheck provers
 //! (dense for the bytecode, two-phase sparse for the flock matrices).
-//! `check_reduced` is the outer verifier's entire native duty: one evaluation
-//! of each fixed polynomial at its reduced point.
+//! [`RecursiveProof::verify`] is the only public acceptance path: it verifies
+//! the outer VM proof and evaluates every deferred fixed polynomial.
 
 use std::collections::BTreeMap;
 
@@ -132,13 +132,86 @@ struct SubDefer {
 /// The batched reduced claims the aggregation exports: one point + value on
 /// the stacked bytecode polynomial, one point + two values on the flock
 /// matrices (doc.tex §Deferred evaluation claims).
-struct Reduced {
-    outer_pi: [F128; 2],
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct ReducedClaims {
     r_bc: Vec<F128>,
     v_bc: F128,
     r_m: Vec<F128>,
     v_a: F128,
     v_b: F128,
+}
+
+/// Everything committed by the outer public input. Keeping this private makes
+/// the deferred claims an implementation detail of recursive verification.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct RecursiveStatement {
+    sub_statements: Vec<[F128; 2]>,
+    reduced: ReducedClaims,
+}
+
+impl RecursiveStatement {
+    fn public_input(&self, inner_environment: [F128; 2]) -> [F128; 2] {
+        let mut sponge = Sponge::empty();
+        for &v in &inner_environment {
+            sponge.observe(v);
+        }
+        for statement in &self.sub_statements {
+            for &v in statement {
+                sponge.observe(v);
+            }
+        }
+        for &v in &self.reduced.r_bc {
+            sponge.observe(v);
+        }
+        sponge.observe(self.reduced.v_bc);
+        for &v in &self.reduced.r_m {
+            sponge.observe(v);
+        }
+        sponge.observe(self.reduced.v_a);
+        sponge.observe(self.reduced.v_b);
+        sponge.state()
+    }
+}
+
+/// A complete N→1 recursive proof.
+///
+/// Its contents are deliberately opaque. [`RecursiveProof::verify`] is the
+/// only acceptance path and checks both the outer VM proof and the fixed
+/// polynomial evaluations deferred by the recursion guest.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct RecursiveProof {
+    statement: RecursiveStatement,
+    outer_proof: lean_vm::cpu::Proof,
+}
+
+impl RecursiveProof {
+    /// Statements aggregated by this proof, in transcript order.
+    pub fn sub_statements(&self) -> &[[F128; 2]] {
+        &self.statement.sub_statements
+    }
+
+    /// Verify the complete recursive proof against the expected inner program.
+    pub fn verify(&self, inner_program: &Program) -> Result<(), RecursiveVerifyError> {
+        let statement = &self.statement;
+        if statement.sub_statements.is_empty() {
+            return Err(RecursiveVerifyError::EmptyBatch);
+        }
+        let guest = recursion_guest(inner_program, statement.sub_statements.len());
+        let public_input = statement.public_input(lean_vm::cpu::fs_seed(inner_program));
+        verify(&guest, &public_input, &self.outer_proof)
+            .map_err(RecursiveVerifyError::OuterProof)?;
+        check_reduced(inner_program, &statement.reduced)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum RecursiveVerifyError {
+    EmptyBatch,
+    InvalidDeferredShape,
+    OuterProof(lean_vm::cpu::Error),
+    BytecodeClaim,
+    MatrixAClaim,
+    MatrixBClaim,
 }
 
 fn fold_lsb(t: &mut Vec<F128>, r: F128) {
@@ -167,12 +240,15 @@ fn round_msg(pairs: &[(&[F128], &[F128], F128)]) -> (F128, F128) {
 
 /// The stacked bytecode polynomial of the inner program (leaf's canonical
 /// table, built from the real layout).
-fn stacked_bytecode(program: &Program, proof: &lean_vm::cpu::Proof, pi: [F128; 2]) -> Vec<F128> {
+fn stacked_bytecode(program: &Program) -> Vec<F128> {
+    // Public bytecode coordinates depend only on the program. The remaining
+    // layout inputs affect private witness/table shapes, so fixed valid dummy
+    // sizes are sufficient and avoid retaining a representative inner proof.
     let l = lean_vm::cpu::layout(
         &program.prog,
-        proof.stream[0].lo as usize,
-        [1, 2, 3, 4, 5, 6].map(|i| proof.stream[i].lo as usize),
-        pi,
+        20,
+        [1usize << 10; 6],
+        [F128::ZERO; 2],
     );
     lean_vm::leaf::stacked_bytecode_table(&l.push)
 }
@@ -184,9 +260,8 @@ fn stacked_bytecode(program: &Program, proof: &lean_vm::cpu::Proof, pi: [F128; 2
 #[allow(clippy::type_complexity)]
 fn gen_agg(
     program: &Program,
-    proof0: &lean_vm::cpu::Proof,
     subs: &[SubDefer],
-) -> (Vec<(String, Vec<F128>)>, Reduced) {
+) -> (Vec<(String, Vec<F128>)>, [F128; 2], ReducedClaims) {
     let nsub = subs.len();
     let kbc = subs[0].kbc;
     let kbcv = kbc + 3;
@@ -223,7 +298,7 @@ fn gen_agg(
     // ---- bytecode batching sumcheck (dense, 2^kbcv; ONE claim per sub, at
     // the shared push/pull point) ----
     let gbc: Vec<F128> = (0..nsub).map(|_| h.sample()).collect();
-    let mut bt = stacked_bytecode(program, proof0, subs[0].pi);
+    let mut bt = stacked_bytecode(program);
     let mut wt = vec![F128::ZERO; 1 << kbcv];
     let points: Vec<Vec<F128>> = subs
         .iter()
@@ -415,8 +490,8 @@ fn gen_agg(
     ];
     (
         hints,
-        Reduced {
-            outer_pi: e.state(),
+        e.state(),
+        ReducedClaims {
             r_bc,
             v_bc,
             r_m,
@@ -426,13 +501,21 @@ fn gen_agg(
     )
 }
 
-/// The outermost native verifier's whole remaining duty: evaluate the three
-/// fixed polynomials at the reduced points (one pass each).
-fn check_reduced(program: &Program, proof0: &lean_vm::cpu::Proof, pi0: [F128; 2], red: &Reduced) {
-    let stacked = stacked_bytecode(program, proof0, pi0);
-    assert_eq!(mle_eval(&stacked, &red.r_bc), red.v_bc, "reduced bytecode claim");
+/// Discharge the three fixed-polynomial claims deferred by the guest.
+fn check_reduced(program: &Program, red: &ReducedClaims) -> Result<(), RecursiveVerifyError> {
+    let stacked = stacked_bytecode(program);
+    let expected_bc = stacked.len().trailing_zeros() as usize;
+    if red.r_bc.len() != expected_bc {
+        return Err(RecursiveVerifyError::InvalidDeferredShape);
+    }
+    if mle_eval(&stacked, &red.r_bc) != red.v_bc {
+        return Err(RecursiveVerifyError::BytecodeClaim);
+    }
     let (ma, mb) = flock::blake3::matrices();
     let klog = flock::blake3::K_LOG;
+    if red.r_m.len() != 2 * klog {
+        return Err(RecursiveVerifyError::InvalidDeferredShape);
+    }
     let eq_r = primitives::multilinear::build_eq(&red.r_m[..klog]);
     let eq_c = primitives::multilinear::build_eq(&red.r_m[klog..]);
     let direct = |m: &flock::r1cs::SparseBinaryMatrix| -> F128 {
@@ -443,8 +526,13 @@ fn check_reduced(program: &Program, proof0: &lean_vm::cpu::Proof, pi0: [F128; 2]
         }
         acc
     };
-    assert_eq!(direct(ma), red.v_a, "reduced A claim");
-    assert_eq!(direct(mb), red.v_b, "reduced B claim");
+    if direct(ma) != red.v_a {
+        return Err(RecursiveVerifyError::MatrixAClaim);
+    }
+    if direct(mb) != red.v_b {
+        return Err(RecursiveVerifyError::MatrixBClaim);
+    }
+    Ok(())
 }
 
 /// Config + hints for the recursion guest (`guests/recursion.py`), built
@@ -870,19 +958,40 @@ fn gen_verify(
 /// lets one compiled guest serve many batches (see `recursion_generic_many`).
 struct Batch {
     merged: Vec<(String, Vec<Vec<F128>>)>,
-    gpi: [F128; 2],
     program0: Program,
-    proof0: lean_vm::cpu::Proof,
-    pi0: [F128; 2],
-    reduced: Reduced,
+    statement: RecursiveStatement,
     nsub: usize,
     total_inner_cycles: usize,
+}
+
+impl Batch {
+    fn public_input(&self) -> [F128; 2] {
+        self.statement.public_input(lean_vm::cpu::fs_seed(&self.program0))
+    }
+
+    /// Install this batch's generated hints and produce the complete proof
+    /// bundle. Keeping assembly here makes it impossible for tests and callers
+    /// to accidentally omit or mismatch one of the deferred components.
+    fn prove(&self, guest: &mut Program) -> (RecursiveProof, lean_vm::cpu::Stats) {
+        for (name, entries) in &self.merged {
+            guest.set_witness(name, entries.clone());
+        }
+        let (outer_proof, stats) = prove(guest, self.public_input());
+        (
+            RecursiveProof {
+                statement: self.statement.clone(),
+                outer_proof,
+            },
+            stats,
+        )
+    }
 }
 
 /// Prove `inner.len()` inner runs (same program, distinct statements + shapes),
 /// verify each inside the recursion guest, and assemble the aggregation inputs.
 /// `inner[k] = (hashes, iters)` sets sub k's opcode profile.
 fn build_batch(inner: &[(usize, usize)]) -> Batch {
+    assert!(!inner.is_empty(), "a recursion batch cannot be empty");
     let nsub = inner.len();
     let mut total_inner_cycles = 0usize;
     let mut protos = Vec::new();
@@ -914,18 +1023,32 @@ fn build_batch(inner: &[(usize, usize)]) -> Batch {
         }
         subs.push(defer);
     }
-    let (program0, _pi0, proof0, _, _) = &protos[0];
+    let (program0, _, _, _, _) = &protos[0];
     // spi is main-level (one hint site): merge the statements into one entry.
     let spi_all: Vec<F128> = subs.iter().flat_map(|d| [d.pi[0], d.pi[1]]).collect();
     let spi_pos = merged.iter().position(|(n, _)| n == "sub_pis").expect("spi hint");
     merged[spi_pos].1 = vec![spi_all];
-    let (agg_hints, reduced) = gen_agg(program0, proof0, &subs);
+    let (agg_hints, gpi, reduced) = gen_agg(program0, &subs);
     merged.extend(agg_hints.into_iter().map(|(n, v)| (n, vec![v])));
-    let gpi = reduced.outer_pi;
-    // The reduced-claim discharge needs sub 0's program/proof/statement; move
-    // it out (Program is not Clone) now that gen_agg's borrows have ended.
-    let (program0, pi0, proof0, _, _) = protos.swap_remove(0);
-    Batch { merged, gpi, program0, proof0, pi0, reduced, nsub, total_inner_cycles }
+    let statement = RecursiveStatement {
+        sub_statements: subs.iter().map(|d| d.pi).collect(),
+        reduced,
+    };
+    assert_eq!(
+        statement.public_input(lean_vm::cpu::fs_seed(program0)),
+        gpi,
+        "native recursive statement reconstruction must mirror the guest",
+    );
+    // Move the representative Program out (Program is not Clone) now that all
+    // aggregation borrows have ended. No representative proof is retained.
+    let (program0, _, _, _, _) = protos.swap_remove(0);
+    Batch {
+        merged,
+        program0,
+        statement,
+        nsub,
+        total_inner_cycles,
+    }
 }
 
 /// The recursion program's placeholder map (the SHAPE-INDEPENDENT constants the
@@ -1207,6 +1330,18 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     rep
 }
 
+/// Compile the canonical recursion guest for this program and batch arity.
+/// Both proving and verification use this function so they cannot drift.
+fn recursion_guest(inner_program: &Program, nsub: usize) -> Program {
+    let mut replacements = placeholder_map(inner_program);
+    replacements.insert("NSUB_PLACEHOLDER".to_string(), nsub.to_string());
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/guests/recursion.py");
+    compile(
+        &parse_file_with_replacements(path, &replacements)
+            .expect("the repository recursion guest must parse"),
+    )
+}
+
 /// Run an `inner.len()`→1 recursive aggregation and verify the outer proof;
 /// each entry `(hashes, iters)` shapes one inner proof of the fixed inner
 /// program. Prints the benchmark report. The flow:
@@ -1215,15 +1350,12 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
 ///    map needs only that size);
 /// 3. prove the inner proofs (and extract their hints);
 /// 4. prove the recursion, verify, discharge the three reduced claims.
-pub fn run_recursion(inner: &[(usize, usize)]) {
+pub fn run_recursion(inner: &[(usize, usize)]) -> RecursiveProof {
     // 1 + 2: the recursion program is generic — its map needs only the inner
     // bytecode size — so it is compiled FIRST, before any inner proof.
     let program = inner_program();
-    let mut rep = placeholder_map(&program);
-    rep.insert("NSUB_PLACEHOLDER".to_string(), inner.len().to_string());
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/guests/recursion.py");
     let t = std::time::Instant::now();
-    let mut guest = compile(&parse_file_with_replacements(path, &rep).expect("parse recursion.py"));
+    let mut guest = recursion_guest(&program, inner.len());
     let t_compile = t.elapsed();
     // The recursion program size + compile time, BEFORE any inner proving.
     let real_instrs: usize = guest.fn_ranges.iter().map(|(_, _, len)| *len as usize).sum();
@@ -1233,20 +1365,17 @@ pub fn run_recursion(inner: &[(usize, usize)]) {
     );
     // 3: prove the inner proofs and extract the recursion witness (hints).
     let batch = build_batch(inner);
-    let Batch { merged, gpi, program0, proof0, pi0, reduced, nsub, total_inner_cycles } = batch;
-    for (name, entries) in &merged {
-        guest.set_witness(name, entries.clone());
-    }
+    let nsub = batch.nsub;
+    let total_inner_cycles = batch.total_inner_cycles;
     let t = std::time::Instant::now();
-    let (gproof, stats) = prove(&guest, gpi);
+    let (recursive_proof, stats) = batch.prove(&mut guest);
     let t_prove = t.elapsed();
     let t = std::time::Instant::now();
-    verify(&guest, &gpi, &gproof).expect("outer proof verifies");
+    recursive_proof
+        .verify(&batch.program0)
+        .expect("complete recursive proof verifies");
     let t_verify = t.elapsed();
-    let t = std::time::Instant::now();
-    check_reduced(&program0, &proof0, pi0, &reduced);
-    let t_red = t.elapsed();
-    let proof_bytes = bincode::serialized_size(&gproof).expect("proof is serializable");
+    let proof_bytes = bincode::serialized_size(&recursive_proof).expect("recursive proof is serializable");
     let pow = |x: usize| if x == 0 { "     -".into() } else { format!("2^{:.2}", (x as f64).log2()) };
     println!("\nrecursion {nsub}\u{2192}1: {nsub} inner proofs of {} cycles each", total_inner_cycles / nsub);
     println!(
@@ -1264,10 +1393,10 @@ pub fn run_recursion(inner: &[(usize, usize)]) {
         stats.log_mem,
         (stats.mem_used as f64).log2()
     );
-    println!("  outer proof size            : {:.1} KiB", proof_bytes as f64 / 1024.0);
+    println!("  recursive proof size        : {:.1} KiB", proof_bytes as f64 / 1024.0);
     println!("  outer proving               : {t_prove:?}");
-    println!("  outer verifying             : {t_verify:?}");
-    println!("  reduced claims (native)     : {t_red:?}");
+    println!("  complete recursive verify   : {t_verify:?}");
+    recursive_proof
 }
 
 /// THE recursion test: two ~1M-cycle inner proofs (log_mem 21, committed
@@ -1305,20 +1434,17 @@ fn recursion_soundness_binds() {
     // candidate, whose yr_log_n is below YR_LOG_CAP so the slot over-read
     // path is live. Ignored: several full inner+outer proofs.
     let cfg: &[(usize, usize)] = &[(4, 1 << 12)];
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/guests/recursion.py");
-    let mut rep = placeholder_map(&inner_program());
-    rep.insert("NSUB_PLACEHOLDER".to_string(), cfg.len().to_string());
     let batch = build_batch(cfg);
-    let mut guest =
-        compile(&parse_file_with_replacements(path, &rep).expect("parse recursion.py"));
+    let mut guest = recursion_guest(&batch.program0, cfg.len());
+    let public_input = batch.public_input();
 
     let run = |g: &mut Program, merged: &[(String, Vec<Vec<F128>>)]| -> bool {
         for (name, entries) in merged {
             g.set_witness(name, entries.clone());
         }
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let (proof, _) = prove(g, batch.gpi);
-            verify(g, &batch.gpi, &proof).is_ok()
+            let (proof, _) = prove(g, public_input);
+            verify(g, &public_input, &proof).is_ok()
         }))
         .unwrap_or(false)
     };
@@ -1391,24 +1517,18 @@ fn recursion_generic_many() {
         (32, 1 << 13), // m=23, tau_5=5
         (64, 1 << 13), // m=23, tau_5=6
     ];
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/guests/recursion.py");
     // The recursion program is generic: compile it ONCE, from the inner program's
     // size alone, BEFORE any inner proof exists. Genericity is then shown directly
     // — every shape below verifies against this one bytecode.
-    let mut rep = placeholder_map(&inner_program());
-    rep.insert("NSUB_PLACEHOLDER".to_string(), 1.to_string());
-    let mut guest = compile(&parse_file_with_replacements(path, &rep).expect("parse recursion.py"));
+    let mut guest = recursion_guest(&inner_program(), 1);
     eprintln!("guest compiled ONCE ({} instrs)", guest.prog.len());
     for &cfg in configs {
         let batch = build_batch(&[cfg]);
-        for (name, entries) in &batch.merged {
-            guest.set_witness(name, entries.clone());
-        }
-        let (gproof, _) = prove(&guest, batch.gpi);
-        verify(&guest, &batch.gpi, &gproof).expect("outer proof verifies");
-        check_reduced(&batch.program0, &batch.proof0, batch.pi0, &batch.reduced);
+        let (recursive_proof, _) = batch.prove(&mut guest);
+        recursive_proof
+            .verify(&batch.program0)
+            .expect("complete recursive proof verifies");
         eprintln!("  verified: hashes={:>2}, iters=2^{}", cfg.0, (cfg.1 as f64).log2() as u32);
     }
     eprintln!("all {} shapes verified by the SAME guest bytecode", configs.len());
 }
-

@@ -18,7 +18,7 @@ pub mod xmss_aggregation;
 
 pub use fibonacci::run_fibonacci;
 #[cfg(feature = "recursion")]
-pub use recursion::run_recursion;
+pub use recursion::{RecursiveProof, RecursiveVerifyError, run_recursion};
 pub use xmss_aggregation::run_xmss_aggregation;
 
 /// Placeholder for the gated [`recursion`] harness (see the module note): the

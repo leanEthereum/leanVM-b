@@ -120,6 +120,7 @@
 use fiat_shamir::transcript::{ProverState, VerifierState};
 use pcs::{as_e, as_ghash};
 use primitives::field::F128;
+use primitives::multilinear::build_eq;
 use crate::r1cs::SparseBinaryMatrix;
 use crate::zerocheck::multilinear::lagrange_weights_naive;
 
@@ -369,33 +370,6 @@ pub enum VerifyError {
 // ---------------------------------------------------------------------------
 // Core kernels
 // ---------------------------------------------------------------------------
-
-/// Build the eq-MLE table at `point ∈ F^d`. Returns a length-`2^d` vector
-/// where `output[i] = Π_j (1 + point[j] + bit_j(i)) = Π_j eq(point[j], bit_j(i))`.
-///
-/// Standard "doubling-in-half" construction: `O(2^d)` F128 muls, no
-/// inversions. Indexing is LSB-first — `bit_j(i)` is the `j`-th LSB of `i`.
-pub fn build_eq_table(point: &[F128]) -> Vec<F128> {
-    let d = point.len();
-    let mut out: Vec<F128> = Vec::with_capacity(1usize << d);
-    out.push(F128::ONE);
-    for j in 0..d {
-        let r_j = point[j];
-        let one_plus_r_j = F128::ONE + r_j;
-        let len = 1usize << j;
-        out.resize(2 * len, F128::ZERO);
-        // For each existing entry i ∈ [0, len), produce two children:
-        //   out[i]       *= (1 + r_j)     ← new bit_j = 0
-        //   out[i + len]  = out[i] * r_j  ← new bit_j = 1
-        // Forward iteration is safe: the [i] and [i+len] slots are disjoint.
-        for i in 0..len {
-            let v = out[i];
-            out[i + len] = v * r_j;
-            out[i] = v * one_plus_r_j;
-        }
-    }
-    out
-}
 
 /// Partial fold of `z` at the outer half of a claim point — single-matrix,
 /// **scalar reference**. Uses the lincheck `z_packed` stripe layout
@@ -969,7 +943,7 @@ pub fn build_quirky_eq_table(z_skip: F128, x_inner_rest: &[F128], k_skip: usize)
     let ell_skip = 1usize << k_skip;
     let ell_rest = 1usize << x_inner_rest.len();
     let lambda_skip = lagrange_weights_naive(k_skip, z_skip);
-    let eq_rest = build_eq_table(x_inner_rest);
+    let eq_rest = build_eq(x_inner_rest);
     let total = ell_skip * ell_rest;
     let mut out = Vec::with_capacity(total);
     // Layout: index = i_skip + i_inner_rest · 2^k_skip  ⇒  i_skip is low bits.
@@ -1245,7 +1219,7 @@ fn prove_padded_inner<O>(
     } else {
         None
     };
-    let eq_x_outer = build_eq_table(&x_ab.x_outer);
+    let eq_x_outer = build_eq(&x_ab.x_outer);
     let mut z_vec = partial_fold_packed_z_best(z_packed, m, k_log, useful_bits, &eq_x_outer);
     if let Some(t) = t {
         eprintln!(
@@ -1578,7 +1552,7 @@ mod tests {
     fn mle_eval_bool(f: &[bool], point: &[F128]) -> F128 {
         let d = point.len();
         assert_eq!(f.len(), 1 << d);
-        let eq = build_eq_table(point);
+        let eq = build_eq(point);
         let mut acc = F128::ZERO;
         for (i, &b) in f.iter().enumerate() {
             if b {
@@ -1621,8 +1595,8 @@ mod tests {
         assert_eq!(f.len(), 1 << m);
 
         let lambda = crate::zerocheck::multilinear::lagrange_weights_naive(k_skip, point.z_skip);
-        let eq_rest = build_eq_table(&point.x_inner_rest);
-        let eq_outer = build_eq_table(&point.x_outer);
+        let eq_rest = build_eq(&point.x_inner_rest);
+        let eq_outer = build_eq(&point.x_outer);
         debug_assert_eq!(lambda.len(), k_skip_dim);
         debug_assert_eq!(eq_rest.len(), inner_rest_dim);
         debug_assert_eq!(eq_outer.len(), n_outer);
@@ -1699,13 +1673,13 @@ mod tests {
 
     // ---- Unit tests for the kernels ----
 
-    /// `build_eq_table` produces eq(point, i) for all boolean i.
+    /// `build_eq` produces eq(point, i) for all boolean i.
     #[test]
     fn eq_table_matches_direct_formula() {
         for &d in &[1usize, 2, 3, 5, 8] {
             let mut rng = Rng::new(11 + d as u64);
             let point = rng.f128_vec(d);
-            let table = build_eq_table(&point);
+            let table = build_eq(&point);
             assert_eq!(table.len(), 1 << d);
             for i in 0..(1 << d) {
                 let mut expected = F128::ONE;
@@ -1754,7 +1728,7 @@ mod tests {
             let z_packed = pack_z_lincheck(&z, m, k_log);
             let n_log = m - k_log;
             let outer_point = rng.f128_vec(n_log);
-            let eq_outer = build_eq_table(&outer_point);
+            let eq_outer = build_eq(&outer_point);
 
             let got = partial_fold_packed_z(&z_packed, m, k_log, &eq_outer);
 
@@ -1783,7 +1757,7 @@ mod tests {
             let z_packed = pack_z_lincheck(&z, m, k_log);
             let n_log = m - k_log;
             let p = rng.f128_vec(n_log);
-            let eq = build_eq_table(&p);
+            let eq = build_eq(&p);
 
             let serial = partial_fold_packed_z(&z_packed, m, k_log, &eq);
             let fast = partial_fold_packed_z_fast_padded_dense(&z_packed, m, k_log, &eq);
@@ -1804,7 +1778,7 @@ mod tests {
             let z_packed = pack_z_lincheck(&z, m, k_log);
             let n_log = m - k_log;
             let p = rng.f128_vec(n_log);
-            let eq = build_eq_table(&p);
+            let eq = build_eq(&p);
 
             let serial = partial_fold_packed_z(&z_packed, m, k_log, &eq);
             let iblock =
@@ -1846,7 +1820,7 @@ mod tests {
                 }
             }
             let z_packed = pack_z_lincheck(&z, m, k_log);
-            let eq = build_eq_table(&rng.f128_vec(n_log));
+            let eq = build_eq(&rng.f128_vec(n_log));
             let want =
                 partial_fold_packed_z_neon_iblock_padded(&z_packed, m, k_log, useful_bits, &eq);
             let got =
@@ -1892,7 +1866,7 @@ mod tests {
             }
             let z_packed = pack_z_lincheck(&z, m, k_log);
             let outer_point = rng.f128_vec(n_log);
-            let eq_outer = build_eq_table(&outer_point);
+            let eq_outer = build_eq(&outer_point);
 
             let dense_fast = partial_fold_packed_z_fast_padded_dense(&z_packed, m, k_log, &eq_outer);
             let padded_fast =
@@ -1960,7 +1934,7 @@ mod tests {
         let z = rng.bits(1 << m);
         let z_packed = pack_z_lincheck(&z, m, k_log);
         let x_outer = rng.f128_vec(m - k_log);
-        let eq_outer = build_eq_table(&x_outer);
+        let eq_outer = build_eq(&x_outer);
 
         let z_partial = partial_fold_packed_z(&z_packed, m, k_log, &eq_outer);
 
