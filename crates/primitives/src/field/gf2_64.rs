@@ -14,7 +14,7 @@ use core::ops::{Add, AddAssign, Mul, MulAssign};
 
 use serde::{Deserialize, Serialize};
 
-use super::gf2_64x3::base_reduce_128;
+use super::gf2_64x3::{R64, base_reduce_128};
 
 /// A GF(2^64) element; bit i = coefficient of x^i.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
