@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 
 use lean_compiler::{compile, parse_file_with_replacements};
 use lean_vm::cpu::{prove, verify};
-use primitives::field::{F64, g_pow};
+use primitives::field::{F64, F128T, g_pow};
 use xmss::*;
 
 use crate::signers_cache;
@@ -20,14 +20,26 @@ fn word(bytes: &[u8]) -> F64 {
     F64(u64::from_le_bytes(bytes[..8].try_into().unwrap()))
 }
 
-/// A 16-byte native value as its two 64-bit VM words.
-fn pair(b: &[u8]) -> Vec<F64> {
-    vec![word(&b[..8]), word(&b[8..16])]
+/// A single K-value as a 128-bit machine cell (high lane 0) — for the count /
+/// digit hints, which are g-powers.
+fn cell(w: F64) -> F128T {
+    F128T::from(w)
 }
 
-/// A 32-byte hash block as its four 64-bit VM words.
-fn quad(b: &[u8]) -> Vec<F64> {
-    (0..4).map(|k| word(&b[8 * k..8 * k + 8])).collect()
+/// A 16-byte native value as ONE 128-bit cell: low lane bytes 0..8, high lane
+/// bytes 8..16 (the little-endian 16-byte content the BLAKE3 op hashes).
+fn val16(b: &[u8]) -> F128T {
+    F128T::new(word(&b[..8]).0, word(&b[8..16]).0)
+}
+
+/// A 16-byte native value as ONE cell.
+fn pair(b: &[u8]) -> Vec<F128T> {
+    vec![val16(b)]
+}
+
+/// A 32-byte hash block as TWO 128-bit cells.
+fn quad(b: &[u8]) -> Vec<F128T> {
+    vec![val16(&b[..16]), val16(&b[16..32])]
 }
 
 /// Aggregate `n` XMSS signatures inside the VM and verify the proof: signs
@@ -79,7 +91,8 @@ pub fn run_xmss_aggregation(n: usize) {
     let mut iv = [0u8; STATE_LEN];
     iv[..8].copy_from_slice(&gf64::g_pow_bytes(num_bytes));
     let state = md_hash(iv, &data);
-    let want = [word(&state[..8]), word(&state[8..16])];
+    // The guest publishes the final MD state's two 128-bit cells (its 32 bytes).
+    let want = [val16(&state[..16]), val16(&state[16..32])];
 
     // The XMSS instance parameters, injected into the program's placeholders;
     // every derived size (tweak-table width, IV byte counts, …) is computed
@@ -97,7 +110,7 @@ pub fn run_xmss_aggregation(n: usize) {
         )
         .expect("parse"),
     );
-    program.set_witness("n_pks", vec![vec![g_pow(n)]]);
+    program.set_witness("n_pks", vec![vec![cell(g_pow(n))]]);
     program.set_witness("msg", vec![quad(&message)]);
     program.set_witness(
         "tweaks",
@@ -110,7 +123,8 @@ pub fn run_xmss_aggregation(n: usize) {
             })
             .collect(),
     );
-    let bit_word = |l: usize| vec![F64(((slot >> l) & 1) as u64), F64::ZERO];
+    // A merkle slot-bit as one 16-byte cell (bit in the low byte, rest zero).
+    let bit_word = |l: usize| vec![cell(F64(((slot >> l) & 1) as u64))];
     program.set_witness(
         "merkle_bits",
         (0..LOG_LIFETIME / 2)
@@ -140,7 +154,7 @@ pub fn run_xmss_aggregation(n: usize) {
         rnd[..RANDOMNESS_LEN].copy_from_slice(&wots.randomness);
         rand_s.push(quad(&rnd));
         let encoding = wots_encode(&message, slot, &pk.public_param, &wots.randomness).expect("encoding");
-        digits_s.extend(encoding.iter().map(|&e| vec![g_pow(e as usize)]));
+        digits_s.extend(encoding.iter().map(|&e| vec![cell(g_pow(e as usize))]));
         chain_starts_s.extend(wots.chain_tips.iter().map(|t| pair(t)));
         sib_s.extend(sig.merkle_proof.iter().map(|s| pair(s)));
     }
@@ -168,7 +182,7 @@ pub fn run_xmss_aggregation(n: usize) {
     // 181 fixed blocks + per signature: 1 (pk absorb) + 157 (the native
     // verifier's constant).
     assert_eq!(stats.counts[5], 181 + 158 * n, "BLAKE3 instruction count");
-    let bad = [want[0], want[1] + F64::ONE];
+    let bad = [want[0], want[1] + F128T::ONE];
     assert!(verify(&program, &bad, &proof).is_err());
 
     let proof_bytes = bincode::serialized_size(&proof).expect("proof is serializable");

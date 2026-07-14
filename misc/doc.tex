@@ -51,11 +51,11 @@
 
 \section{VM specification}\label{sec:vm}
 
-\paragraph{Field.} The machine works over the binary field $\K=\F_{2^{64}}=\F_2[x]/(x^{64}+x^4+x^3+x+1)$ (the standard low-weight pentanomial). \emph{Every} machine value (a memory word, an address, a register, or a counter) is an element of this field, and the only arithmetic is the field's own: addition is the bitwise \textsc{xor} of two $64$-bit values, and multiplication is the carry-less product folded by the pentanomial (one \texttt{PMULL} plus a fold). The proof system samples its randomness from the degree-2 extension $\E=\K[y]/(y^2+y+x^{61})$ with $|\E|=2^{128}$ (\S\ref{sec:prelim}); the machine itself never touches $\E$.
+\paragraph{Field.} The machine works over two nested binary fields: the base $\K=\F_{2^{64}}=\F_2[x]/(x^{64}+x^4+x^3+x+1)$ (the standard low-weight pentanomial) and the degree-2 tower $\E=\K[y]/(y^2+y+x^{61})$ with $|\E|=2^{128}$ (\S\ref{sec:prelim}). The roles split by kind of quantity. A \emph{memory word} — the content of a cell, an immediate, a hashed value — is a $128$-bit element of $\E$. An \emph{address}, the program counter $\pc$, the frame pointer $\fp$, and every read \emph{counter} is a $64$-bit element of the subfield $\K$. Addition is the bitwise \textsc{xor} of two values ($128$-bit for words, $64$-bit for the $\K$-quantities); multiplication is the field's own product — in $\K$ the carry-less product folded by the pentanomial (one \texttt{PMULL} plus a fold), in $\E$ the degree-2 tower product. Protocol randomness is sampled from $\E$ (\S\ref{sec:prelim}). Keeping addresses and counters in the $\K$-subfield is deliberate: their arithmetic and their commitment (\S\ref{sec:rs}) cost $64$ bits, while only the data words cost $128$.
 
 \paragraph{Addresses as powers of a generator.} Fix a generator $\gen$ of the multiplicative group $\K^{\times}$, of order $2^{64}-1$. Memory addresses and bytecode addresses (the program counter) are powers of $\gen$: the $i$-th address is the field element $\gen^{\,i}$. Its successor is one field multiplication: $\gen^{\,i+1}\;=\;\gen\cdot\gen^{\,i}$.
 
-\paragraph{Memory.} Memory is read-only (write-once): an array of $2^{h}$ cells, each holding one field element, addressed by the $2^{h}$ powers $\gen^{0},\gen^{1},\dots,\gen^{2^{h}-1}$. The size exponent $h$ is fixed per execution, with $16\le h\le 32$. Each cell is set once; every access thereafter reads it.
+\paragraph{Memory.} Memory is read-only (write-once): an array of $2^{h}$ cells, each holding one $128$-bit word (an $\E$-element), addressed by the $2^{h}$ powers $\gen^{0},\gen^{1},\dots,\gen^{2^{h}-1}$ (the addresses are $\K$-elements). The size exponent $h$ is fixed per execution, with $16\le h\le 32$. Each cell is set once; every access thereafter reads it.
 
 \paragraph{Program.} The program is a fixed, public sequence of instructions, addressed like memory by powers of $\gen$: the program counter $\gen^{\,i}$ selects the $i$-th instruction. An instruction is an opcode together with its operands, described below.
 
@@ -73,17 +73,17 @@ Since addresses are exponents of $\gen$, the frame is the contiguous block $\gen
 \hline
 Instruction & Operands & Semantics\\
 \hline
-\texttt{XOR}           & $[o_A,o_B,o_C]$ & $\loc{o_C}=\loc{o_A}+\loc{o_B}$ \quad(field addition, \textsc{xor})\\
-\texttt{MUL\_NATIVE}   & $[o_A,o_B,o_C]$ & $\loc{o_C}=\loc{o_A}\cdot\loc{o_B}$ \quad(field product in $\K$)\\
-\texttt{SET\_CONSTANT} & $[o,k]$         & $\loc{o}=k$\\
+\texttt{XOR}           & $[o_A,o_B,o_C]$ & $\loc{o_C}=\loc{o_A}+\loc{o_B}$ \quad($128$-bit field addition, \textsc{xor})\\
+\texttt{MUL\_NATIVE}   & $[o_A,o_B,o_C]$ & $\loc{o_C}=\loc{o_A}\cdot\loc{o_B}$ \quad(field product in $\E$, the tower product)\\
+\texttt{SET\_CONSTANT} & $[o,k]$         & $\loc{o}=k$ \quad($k$ a $128$-bit immediate)\\
 \texttt{DEREF}         & $[\alpha,\beta,\gamma;\,s]$ & $\mem[\loc{\alpha}\cdot\beta]=\srcsel{s}$\\
 \texttt{JUMP}          & $[o_c,o_d,o_f]$ & conditional jump (below)\\
-\texttt{BLAKE3}        & $[o_0,o_1,o_2,o_3,o_C]$ & $c=\mathrm{BLAKE3}(a,b)$ on independently-addressed two-word chunks (below)\\
+\texttt{BLAKE3}        & $[o_0,o_1,o_2,o_3,o_C]$ & $c=\mathrm{BLAKE3}(a,b)$ on independently-addressed single-cell chunks (below)\\
 \hline
 \end{tabular}
 \end{center}
 
-\texttt{BLAKE3} compresses $64$ bytes to $32$. The four $128$-bit input chunks are addressed \emph{independently} by references $o_0,\dots,o_3$, each chunk spanning \emph{two consecutive memory words}: chunk $i$ occupies $\loc{o_i}=\fp\cdot o_i$ and its successor $\loc{\gen\cdot o_i}$. The two $256$-bit operands are $a=\loc{o_0}\Vert\loc{\gen\cdot o_0}\Vert\loc{o_1}\Vert\loc{\gen\cdot o_1}$ and $b$ likewise from $o_2,o_3$ — so a caller hashing values that live in non-adjacent cells (a tweak in the heap, a public parameter in a register, a zero pad) need not first copy them into consecutive cells. The $256$-bit digest is written to the \emph{four consecutive} cells $\loc{o_C},\dots,\loc{\gen^{3}\cdot o_C}$. The compression is \emph{fully proven}: the BLAKE3 table (\S\ref{sec:tab-blake3}) wires the twelve cells onto the memory, state, and bytecode interactions, and the relation $c=\mathrm{BLAKE3}(a,b)$ is discharged by an R1CS proof of the compression circuit, produced by flock~\cite{flock} (\S\ref{sec:tab-blake3}).
+\texttt{BLAKE3} compresses $64$ bytes to $32$. With $128$-bit words a $128$-bit chunk is one whole cell, so the four input chunks are addressed \emph{independently} by references $o_0,\dots,o_3$, each naming a \emph{single} memory word $\loc{o_i}=\fp\cdot o_i$. The two $256$-bit operands are $a=\loc{o_0}\Vert\loc{o_1}$ and $b=\loc{o_2}\Vert\loc{o_3}$ — so a caller hashing values that live in non-adjacent cells (a tweak in the heap, a public parameter in a register, a zero pad) need not first copy them into consecutive cells. The $256$-bit digest is written to the \emph{two consecutive} cells $\loc{o_C},\loc{\gen\cdot o_C}$. The row thus touches six cells. The compression is \emph{fully proven}: the BLAKE3 table (\S\ref{sec:tab-blake3}) wires those cells onto the memory, state, and bytecode interactions, and the relation $c=\mathrm{BLAKE3}(a,b)$ is discharged by an R1CS proof of the compression circuit, produced by flock~\cite{flock} (\S\ref{sec:tab-blake3}).
 
 \texttt{DEREF} stores, at the dereferenced address $\loc{\alpha}\cdot\beta$, a value chosen by a \emph{store mode} $s\in\{\texttt{deref\_cell}[\gamma],\texttt{deref\_pc},\texttt{deref\_fp}\}$:
 \[
@@ -96,7 +96,9 @@ Instruction & Operands & Semantics\\
 \]
 The \texttt{deref\_pc} and \texttt{deref\_fp} modes let a caller save its return address and frame so a callee can later return and restore them, the basis for function calls. The skip of two is the call's return target: place the \texttt{DEREF} that saves $\gen^{2}\cdot\pc$ immediately before the \texttt{JUMP} that transfers control, and $\gen^{2}\cdot\pc$ names the instruction just after that \texttt{JUMP}.
 
-\texttt{JUMP} reads a condition $c=\loc{o_c}$, an arbitrary field element, and branches on whether it is zero. When $c\neq0$ it transfers control, $\pc\gets\loc{o_d}$ and $\fp\gets\loc{o_f}$; when $c=0$ it falls through, $\pc\gets\gen\cdot\pc$ and $\fp\gets\fp$.
+\texttt{JUMP} reads a condition $c=\loc{o_c}$, an arbitrary $128$-bit word, and branches on whether it is zero. When $c\neq0$ it transfers control, $\pc\gets\loc{o_d}$ and $\fp\gets\loc{o_f}$; when $c=0$ it falls through, $\pc\gets\gen\cdot\pc$ and $\fp\gets\fp$.
+
+\paragraph{Words used as addresses.} A memory word is $128$-bit, but $\pc$, $\fp$, and addresses are $\K$-elements. So the three reads whose value becomes an address or register — the \texttt{DEREF} pointer $\loc{\alpha}$ (which forms $\loc{\alpha}\cdot\beta$), and \texttt{JUMP}'s destination $\loc{o_d}$ and frame $\loc{o_f}$ — must return a word in the $\K$-subfield (high lane zero, so a genuine $\gen$-power). This is enforced two ways: in circuit, the address/selection constraints (\S\ref{sec:tab-deref}, \S\ref{sec:tab-jump}) equate the word (times a $\K$-operand) to a single-lane $\K$ column, which forces its high lane to zero; and during witness generation the interpreter rejects any such word whose high lane is nonzero. An honest program only ever stores $\gen$-powers in those cells, so the condition is automatic.
 
 
 \iffalse % Deferred future instructions (u32, BLAKE3): commented out for now.
@@ -122,7 +124,7 @@ Two fields share the work. Committed data lives in the machine field $\K=\F_{2^{
 \[
   \E\;=\;\K[y]/(y^2+y+x^{61})\;\cong\;\F_{2^{128}}
 \]
-($x^{61}$ has trace $1$, so the polynomial is irreducible), of size $|\E|=2^{128}$: every soundness denominator below is $2^{128}$, unchanged from a design that would commit over $\F_{2^{128}}$ outright. $\K$ sits inside $\E$ as the basis-aligned subfield $e\mapsto e+0\cdot y$, and a product of a $\K$-value with an $\E$-value costs two $\K$-products. This convention is fixed once here and used throughout: columns and their truth tables are $\K$-valued, extensions are evaluated at $\E$-points, and all protocol randomness is sampled from $\E$.
+($x^{61}$ has trace $1$, so the polynomial is irreducible), of size $|\E|=2^{128}$: every soundness denominator below is $2^{128}$, unchanged from a design that would commit over $\F_{2^{128}}$ outright. $\K$ sits inside $\E$ as the basis-aligned subfield $e\mapsto e+0\cdot y$, and a product of a $\K$-value with an $\E$-value costs two $\K$-products. This convention is fixed once here and used throughout: \emph{committed} columns and their truth tables are $\K$-valued, extensions are evaluated at $\E$-points, and all protocol randomness is sampled from $\E$. A $128$-bit \emph{value} column (a memory word: the memory image, a read value, an immediate) is $\E$-valued; it is carried as its \emph{two $\K$-lanes} $V_0,V_1$ (with $V=V_0+V_1 y$), each a committed $\K$-column, so the committed witness stays entirely $\K$-valued. Its $\E$-value is reassembled as $V_0+V_1 y$ only where the protocol needs it (a degree-2 constraint on the lanes, \S\ref{sec:air}; a two-coordinate bus tuple, \S\ref{sec:memchan}), never in the commitment. Address, register, and counter columns are single $\K$-columns.
 
 \textbf{Multilinear extension (MLE).} A function $b:\cube{\ell}\to\K$ (a committed column) or $b:\cube{\ell}\to\E$ (a product-tree layer of \S\ref{sec:gkr}) has a unique multilinear extension $\widetilde b:\E^{\ell}\to\E$, the polynomial of degree at most $1$ in each variable that agrees with $b$ on the boolean hypercube. The equality polynomial $\eq(r,X)=\prod_i(1+r_i+X_i)$ is the multilinear that is $1$ at $X=r$ and $0$ at every other Boolean point.
 
@@ -263,7 +265,7 @@ Both a memory read and a bytecode read are indexed lookups into an array: the co
 
 \subsection{Memory interaction}\label{sec:memchan}
 
-The interaction carries $\tup{\dsep{MEM},\addr,\cnt,\val}$: the address and count are $\gen$-powers, the value a field element. The prover commits the memory $\mem$ ($2^{h}$ cells) and the counts ("in the exponent", i.e. powers of $\gen$). With $A[i]$ the number of reads of address $i$, the flushes are:
+The interaction carries $\tup{\dsep{MEM},\addr,\cnt,\val}$: the address and count are $\gen$-powers ($\K$-elements), the value a $128$-bit word. The word rides \emph{two} tuple coordinates, its two $\K$-lanes $(\val_0,\val_1)$, matching the two-lane committed memory image $M_0,M_1$; both are seeded, both pulled, so balance forces the whole word to match (below I write $\val$ for the pair). The tuple width is unchanged: the widest tuple is still the bytecode one (\S\ref{sec:bytecode}). The prover commits the memory $\mem$ ($2^{h}$ cells, two $\K$-lane columns) and the counts ("in the exponent", i.e. powers of $\gen$). With $A[i]$ the number of reads of address $i$, the flushes are:
 \begin{itemize}
 \item \textbf{Initialize:} for each address $i$, \push\ $\tup{\dsep{MEM},\gen^{i},1,\mem[i]}$ (seed count $\gen^{0}=1$).
 \item \textbf{Read} (value $v$ at address $a$, count $\cnt=\gen^{t}$): \pull\ $\tup{\dsep{MEM},a,\cnt,v}$ and \push\ $\tup{\dsep{MEM},a,\gen\cdot\cnt,v}$.
@@ -271,9 +273,9 @@ The interaction carries $\tup{\dsep{MEM},\addr,\cnt,\val}$: the address and coun
 \end{itemize}
 \paragraph{Counts must be nonzero.} A read multiplies its count by $\gen$, pulling $\tup{\dsep{MEM},a,\cnt,v}$ and pushing $\tup{\dsep{MEM},a,\gen\cdot\cnt,v}$. If $\cnt=0$ these coincide (as $\gen\cdot0=0$) and cancel, so the read disappears from the bus and its $v$ is never checked against $\mem[a]$. Every count must therefore be nonzero, i.e.\ a power of $\gen$. A third grand product, over all count columns (memory and bytecode), enforces this: its root is nonzero iff every count is (\S\ref{sec:gkr}).
 
-\paragraph{Counts must not wrap.} A count is the power $\gen^{t}$ after $t$ reads, so the total number of reads must stay below $\operatorname{ord}(\gen)=2^{64}-1$. At $64$ bits this is not waved through as automatic. The protocol fixes public \emph{instance caps}, and the verifier checks the announced instance against them before running any reduction (\S\ref{sec:e2e-unrolled}): memory size $16\le h\le 32$ (\S\ref{sec:vm}), each table's row count below $2^{32}$, and bytecode length at most $2^{32}$. A row makes at most $13$ reads (the \texttt{BLAKE3} row: twelve memory, one bytecode), so every \emph{admissible} instance performs
+\paragraph{Counts must not wrap.} A count is the power $\gen^{t}$ after $t$ reads, so the total number of reads must stay below $\operatorname{ord}(\gen)=2^{64}-1$. At $64$ bits this is not waved through as automatic. The protocol fixes public \emph{instance caps}, and the verifier checks the announced instance against them before running any reduction (\S\ref{sec:e2e-unrolled}): memory size $16\le h\le 32$ (\S\ref{sec:vm}), each table's row count below $2^{32}$, and bytecode length at most $2^{32}$. A row makes at most $7$ reads (the \texttt{BLAKE3} row: six memory, one bytecode), so every \emph{admissible} instance performs
 \[
-  R\;\le\;13\cdot 6\cdot 2^{32}\;<\;2^{39}
+  R\;\le\;7\cdot 6\cdot 2^{32}\;<\;2^{39}
 \]
 read flushes in total, far below $2^{64}-1$: the powers $\gen^{0},\gen^{1},\dots$ occurring in one address's history are pairwise distinct, and the counting arguments of this section are exact, with no probabilistic term. The caps cost no completeness ($2^{32}$ rows per table is far beyond any provable trace).
 
@@ -311,10 +313,10 @@ Each of the six instructions has its own table.
 
 \subsection{\texttt{XOR}}\label{sec:tab-xor}
 
-Asserts $\loc{o_C}=\loc{o_A}+\loc{o_B}$, the field sum.
+Asserts $\loc{o_C}=\loc{o_A}+\loc{o_B}$, the $128$-bit field sum.
 \begin{itemize}
-\item \textbf{Columns:} $\pc,\fp$; operands $o_A,o_B,o_C$; addresses $a_A,a_B,a_C$; values $v_A,v_B,v_C$; memory counts $r_A,r_B,r_C$; bytecode count $r_{\mathrm{bc}}$.
-\item \textbf{Constraints:} the three addresses $a_X=\fp\cdot o_X$, and the sum $v_C=v_A+v_B$.
+\item \textbf{Columns:} $\pc,\fp$; operands $o_A,o_B,o_C$; addresses $a_A,a_B,a_C$; values $v_A,v_B,v_C$ (each two $\K$-lanes); memory counts $r_A,r_B,r_C$; bytecode count $r_{\mathrm{bc}}$.
+\item \textbf{Constraints:} the three addresses $a_X=\fp\cdot o_X$ ($\K$), and the sum $v_C=v_A+v_B$ (the $\E$-relation on the value lanes, reassembled $v=v_0+v_1 y$; lane-wise it is two $\K$-equations).
 \item \textbf{Flushes:}
   \begin{itemize}
   \item \textbf{State:} \pull\ $\tup{\dsep{ST},\pc,\fp}$, \push\ $\tup{\dsep{ST},\gen\cdot\pc,\fp}$.
@@ -328,7 +330,7 @@ Asserts $\loc{o_C}=\loc{o_A}+\loc{o_B}$, the field sum.
 Identical to \texttt{XOR} but for the product:
 \begin{itemize}
 \item \textbf{Columns:} as \texttt{XOR}.
-\item \textbf{Constraints:} the three addresses, and the product $v_C=v_A\cdot v_B$ (the field product in $\K$).
+\item \textbf{Constraints:} the three addresses, and the product $v_C=v_A\cdot v_B$ (the tower product in $\E$: a single $\E$-relation on the value lanes, still degree $2$ in the lane columns — $v_{C,0}=v_{A,0}v_{B,0}+v_{A,1}v_{B,1}c$ and $v_{C,1}=v_{A,0}v_{B,1}+v_{A,1}v_{B,0}+v_{A,1}v_{B,1}$, with $c=x^{61}$).
 \item \textbf{Flushes:} as \texttt{XOR}, with opcode $\opc{MUL}$.
 \end{itemize}
 
@@ -336,13 +338,13 @@ Identical to \texttt{XOR} but for the product:
 
 Asserts $\loc{o}=k$, how a constant enters the read-only memory: the row ties the committed cell to the bytecode immediate $k$.
 \begin{itemize}
-\item \textbf{Columns:} $\pc,\fp$; operand $o$; immediate $k$; address $a$; memory count $r$; bytecode count $r_{\mathrm{bc}}$.
+\item \textbf{Columns:} $\pc,\fp$; operand $o$; immediate $k$ ($128$-bit, two $\K$-lanes $k_0,k_1$); address $a$; memory count $r$; bytecode count $r_{\mathrm{bc}}$.
 \item \textbf{Constraints:} the address $a=\fp\cdot o$.
 \item \textbf{Flushes:}
   \begin{itemize}
   \item \textbf{State:} \pull\ $\tup{\dsep{ST},\pc,\fp}$, \push\ $\tup{\dsep{ST},\gen\cdot\pc,\fp}$.
-  \item \textbf{Bytecode:} \pull\ $\tup{\dsep{BC},\pc,r_{\mathrm{bc}},\opc{SET},o,k,0,0,0}$, \push\ the same at $\gen\cdot r_{\mathrm{bc}}$.
-  \item \textbf{Memory:} \pull\ $\tup{\dsep{MEM},a,r,k}$, \push\ $\tup{\dsep{MEM},a,\gen\cdot r,k}$ (the value slot is the constant $k$).
+  \item \textbf{Bytecode:} \pull\ $\tup{\dsep{BC},\pc,r_{\mathrm{bc}},\opc{SET},o,k_0,k_1,0,0}$, \push\ the same at $\gen\cdot r_{\mathrm{bc}}$ (the immediate's two lanes ride the spare operand slots $5,6$).
+  \item \textbf{Memory:} \pull\ $\tup{\dsep{MEM},a,r,k}$, \push\ $\tup{\dsep{MEM},a,\gen\cdot r,k}$ (the value slot is the constant $k$, its two lanes).
   \end{itemize}
 \end{itemize}
 
@@ -356,12 +358,12 @@ Asserts $\loc{o}=k$, how a constant enters the read-only memory: the row ties th
 \end{itemize}
 The store asserts that $v_2$ equals the source chosen by the mode $s$ (\S\ref{sec:vm}): the local cell $v_3$, the return address $\gen^{2}\cdot\pc$ (a virtual $\times\gen^{2}$ of $\pc$, \S\ref{sec:prelim}), or the frame pointer $\fp$. The mode is two boolean flags $(f_{\pc},f_{\fp})$: $(0,0)$ for $\texttt{deref\_cell}[\gamma]$, $(1,0)$ for $\texttt{deref\_pc}$, $(0,1)$ for $\texttt{deref\_fp}$.
 \begin{itemize}
-\item \textbf{Columns:} $\pc,\fp$; operands $\alpha,\beta,\gamma$; flags $f_{\pc},f_{\fp}$; addresses $a_1,a_2,a_3$; pointer $p$; values $v_2,v_3$; memory counts $r_1,r_2,r_3$; bytecode count $r_{\mathrm{bc}}$.
+\item \textbf{Columns:} $\pc,\fp$; operands $\alpha,\beta,\gamma$; flags $f_{\pc},f_{\fp}$; addresses $a_1,a_2,a_3$; pointer $p$ (a memory word, two $\K$-lanes); values $v_2,v_3$ (each two $\K$-lanes); memory counts $r_1,r_2,r_3$; bytecode count $r_{\mathrm{bc}}$.
 \item \textbf{Constraints:} the addresses $a_1=\fp\cdot\alpha$, $a_2=p\cdot\beta$, $a_3=\fp\cdot\gamma$, and the store
 \[
   v_2 \;=\; (1+f_{\pc}+f_{\fp})\,v_3 \;+\; f_{\pc}\,(\gen^{2}\cdot\pc) \;+\; f_{\fp}\,\fp ,
 \]
-which gives $v_3$, $\gen^{2}\cdot\pc$, or $\fp$ at the three flag settings (in characteristic $2$ the $v_3$ term zeroes for the last two). The flags need no validity check: the verifier reads them from the public program (\S\ref{sec:e2e-bc}).
+which gives $v_3$, $\gen^{2}\cdot\pc$, or $\fp$ at the three flag settings (in characteristic $2$ the $v_3$ term zeroes for the last two). The store is an $\E$-relation on the value lanes; $a_2=p\cdot\beta$, with $a_2$ a single $\K$ column and $\beta\in\K$, forces the pointer word $p$ into $\K$ (a genuine $\gen$-power). The flags need no validity check: the verifier reads them from the public program (\S\ref{sec:e2e-bc}).
 \item \textbf{Flushes:}
   \begin{itemize}
   \item \textbf{State:} \pull\ $\tup{\dsep{ST},\pc,\fp}$, \push\ $\tup{\dsep{ST},\gen\cdot\pc,\fp}$.
@@ -372,7 +374,7 @@ which gives $v_3$, $\gen^{2}\cdot\pc$, or $\fp$ at the three flag settings (in c
 
 \subsection{\texttt{JUMP}}\label{sec:tab-jump}
 
-A conditional jump on whether the condition $c=\loc{o_c}$ is nonzero, with $c$ an arbitrary field element. It transfers to $\pc\gets d$, $\fp\gets f$ when $c\neq0$ (the destination $d=\loc{o_d}$, a code address, and the new frame $f=\loc{o_f}$), and falls through, $\pc\gets\gen\cdot\pc$, $\fp\gets\fp$, when $c=0$. The branch is taken according to a committed boolean indicator $b=[\,c\neq0\,]$, which a prover-supplied inverse $w$ certifies through the two degree-$2$ constraints
+A conditional jump on whether the condition $c=\loc{o_c}$ is nonzero, with $c$ an arbitrary $128$-bit word. It transfers to $\pc\gets d$, $\fp\gets f$ when $c\neq0$ (the destination $d=\loc{o_d}$, a code address, and the new frame $f=\loc{o_f}$), and falls through, $\pc\gets\gen\cdot\pc$, $\fp\gets\fp$, when $c=0$. The branch is taken according to a committed boolean indicator $b=[\,c\neq0\,]$, which a prover-supplied inverse $w$ certifies through the two degree-$2$ constraints
 \[
   b=c\cdot w,\qquad c\,(b+1)=0 .
 \]
@@ -382,8 +384,8 @@ When $c\neq0$ the second forces $b=1$ and the first then $w=c^{-1}$; when $c=0$ 
 \]
 Alone among the tables, \texttt{JUMP} commits its successors.
 \begin{itemize}
-\item \textbf{Columns:} $\pc,\fp,\mathit{next\_pc},\mathit{next\_fp}$; operands $o_c,o_d,o_f$; addresses $a_c,a_d,a_f$; values $c,d,f$; inverse $w$; indicator $b$; memory counts $r_c,r_d,r_f$; bytecode count $r_{\mathrm{bc}}$. ($w$ and $b$ are witness columns, neither read from memory nor in the bytecode; the fall-through $s=\gen\cdot\pc$ is virtual.)
-\item \textbf{Constraints:} the three addresses $a_X=\fp\cdot o_X$; the indicator pair $b=c\cdot w$ and $c\,(b+1)=0$; and the two selections $\mathit{next\_pc},\mathit{next\_fp}$ above.
+\item \textbf{Columns:} $\pc,\fp$ and $\mathit{next\_pc},\mathit{next\_fp}$ (single $\K$-columns, the next state); operands $o_c,o_d,o_f$; addresses $a_c,a_d,a_f$; the condition $c$ and the destination/frame words $d,f$ (each two $\K$-lanes); inverse $w$ (two $\K$-lanes, $c^{-1}$ in $\E$); indicator $b$ (one $\K$-lane, $0/1$); memory counts $r_c,r_d,r_f$; bytecode count $r_{\mathrm{bc}}$. ($w$ and $b$ are witness columns, neither read from memory nor in the bytecode; the fall-through $s=\gen\cdot\pc$ is virtual.)
+\item \textbf{Constraints:} the three addresses $a_X=\fp\cdot o_X$; the indicator pair $b=c\cdot w$ and $c\,(b+1)=0$ ($\E$-relations on the lanes); and the two selections $\mathit{next\_pc},\mathit{next\_fp}$ above. Since $\mathit{next\_pc},\mathit{next\_fp}$ are single $\K$-columns, the selections force the chosen words $d,f$ into $\K$ on a taken branch.
 \item \textbf{Flushes:}
   \begin{itemize}
   \item \textbf{State:} \pull\ $\tup{\dsep{ST},\pc,\fp}$, \push\ $\tup{\dsep{ST},\mathit{next\_pc},\mathit{next\_fp}}$.
@@ -394,19 +396,19 @@ Alone among the tables, \texttt{JUMP} commits its successors.
 
 \subsection{\texttt{BLAKE3}}\label{sec:tab-blake3}
 
-Compresses the $64$ input bytes to the $32$ output bytes at $c$. The four $128$-bit input chunks are addressed \emph{independently} — $a_0=\fp\cdot o_0,\dots,a_3=\fp\cdot o_3$, each chunk spanning the two cells $a_i$, $\gen\cdot a_i$ — so the caller may hash values that live in non-adjacent cells with no assembling copies. The output takes the four consecutive cells $a_C=\fp\cdot o_C$ and its successors $\gen^{k}\cdot a_C$, $k\in\{1,2,3\}$ (each a virtual $\times\gen^{k}$ of the committed base, \S\ref{sec:prelim}), so the row touches twelve cells: the eight input cells are read; the four $c$ cells are the written digest, tied into committed memory like any other access.
+Compresses the $64$ input bytes to the $32$ output bytes at $c$. With $128$-bit cells a $128$-bit chunk is one whole cell, so the four input chunks are addressed \emph{independently} — $a_0=\fp\cdot o_0,\dots,a_3=\fp\cdot o_3$, one cell each — and the caller may hash values that live in non-adjacent cells with no assembling copies. The output takes the two consecutive cells $a_C=\fp\cdot o_C$ and its successor $\gen\cdot a_C$ (a virtual $\times\gen$ of the committed base, \S\ref{sec:prelim}), so the row touches six cells: the four input cells are read; the two $c$ cells are the written digest, tied into committed memory like any other access.
 
 The compression $c=\mathrm{BLAKE3}(a,b)$ is \emph{fully proven} by flock~\cite{flock}, which proves a batched R1CS of the compression circuit against a Boolean witness. That witness enters our one stacked commitment (\S\ref{sec:rs-dense}) as the \emph{packed} column $q_\pkd$: $64$ bits per $\K$-word. Its bit-level claims reach the $\K$-commitment through one \emph{ring switching}~\cite{cryptoeprint:2024/504}, $\F_2\to\K$ with packing degree $f=64$ and opening degree $e=128$: each claim splits at the packing boundary into $64$ generalized prefix weights (the $\eq$ tensor for a plain point claim; flock's univariate-skip Lagrange weights for its own claims) against $64$ revealed bit-slice evaluations, and a row-batching challenge in $\E^{7}$ folds the revealed vector into one weighted-sum claim on $q_\pkd$ against a transparent $\E$-valued weight, which joins the batched opening (\S\ref{sec:e2e-unrolled}); the opening sumcheck pairs the $\K$-valued $q_\pkd$ with the $\E$-valued weight (mixed products). flock's zerocheck and lincheck themselves run unchanged in their native GHASH representation of $\F_{2^{128}}$; their two output claims cross into the tower $\E$ through an explicit field isomorphism before the ring switching.
 
-The words $a,b,c$ already sit inside $q_\pkd$: each $64$-bit machine word is one whole packed word, at a fixed word-aligned slot of its compression instance. So we do not re-commit the twelve value cells $v_{A0},\dots,v_{C3}$: each is a point evaluation of $q_\pkd$ at its slot, and a few \emph{pinned} slots (the chaining value fixed to the BLAKE3 IV, the zero counter word, and the block-length/flags word) are checked against their public constants, making the proven compression a real BLAKE3 of the $64$-byte input $a\Vert b$.
+The words $a,b,c$ already sit inside $q_\pkd$: each $64$-bit flock word is one whole packed word at a fixed slot of its compression instance, and a $128$-bit value cell is two such words — its two $\K$-lanes. So we do not re-commit the twelve value lanes $v_{A0},\dots,v_{C3}$ (two per cell over the six value cells): each is a point evaluation of $q_\pkd$ at its slot, and a few \emph{pinned} slots (the chaining value fixed to the BLAKE3 IV, the zero counter word, and the block-length/flags word) are checked against their public constants, making the proven compression a real BLAKE3 of the $64$-byte input $a\Vert b$.
 \begin{itemize}
-\item \textbf{Columns:} $\pc,\fp$; operands $o_0,o_1,o_2,o_3,o_C$; input/output addresses $a_0,a_1,a_2,a_3,a_C$; per-word memory counts $r_{A0},\dots,r_{A3}$, $r_{B0},\dots,r_{B3}$, $r_{C0},\dots,r_{C3}$; bytecode count $r_{\mathrm{bc}}$. The twelve values $v_{A0},\dots,v_{C3}$ are committed "inside" $q_\pkd$, see above. The successor addresses $\gen\cdot a_i$ and $\gen^{k}\cdot a_C$ are virtual. (Independent input chunks cost four address columns where three sufficed for the old contiguous form — no new constraint degree.)
-\item \textbf{Constraints:} the five address bindings $a_i=\fp\cdot o_i$ ($i\in\{0,1,2,3\}$) and $a_C=\fp\cdot o_C$ — all degree $2$. The words $v_{X0},\dots,v_{X3}$ carry no constraint here, their correctness (the relation $c=\mathrm{BLAKE3}(a,b)$) is handled by flock.
+\item \textbf{Columns:} $\pc,\fp$; operands $o_0,o_1,o_2,o_3,o_C$; input/output addresses $a_0,a_1,a_2,a_3,a_C$; per-cell memory counts $r_0,\dots,r_3$ (the four input cells) and $r_{C0},r_{C1}$ (the two output cells); bytecode count $r_{\mathrm{bc}}$. The twelve value lanes $v_{A0},\dots,v_{C3}$ (two per value cell) are committed "inside" $q_\pkd$, see above. The successor address $\gen\cdot a_C$ is virtual.
+\item \textbf{Constraints:} the five address bindings $a_i=\fp\cdot o_i$ ($i\in\{0,1,2,3\}$) and $a_C=\fp\cdot o_C$ — all degree $2$ ($\K$-relations). The value lanes carry no constraint here; their correctness (the relation $c=\mathrm{BLAKE3}(a,b)$) is handled by flock.
 \item \textbf{Flushes:}
   \begin{itemize}
   \item \textbf{State:} \pull\ $\tup{\dsep{ST},\pc,\fp}$, \push\ $\tup{\dsep{ST},\gen\cdot\pc,\fp}$.
   \item \textbf{Bytecode:} \pull\ $\tup{\dsep{BC},\pc,r_{\mathrm{bc}},\opc{B3},o_0,o_1,o_2,o_3,o_C}$, \push\ the same at $\gen\cdot r_{\mathrm{bc}}$.
-  \item \textbf{Memory:} twelve reads, each \pull\ at count $r$ and \push\ at $\gen\cdot r$. Input chunk $i$ \pull s $\tup{\dsep{MEM},a_i,r,v}$ and $\tup{\dsep{MEM},\gen\cdot a_i,r',v'}$ at its own base; the output \pull s $\tup{\dsep{MEM},\gen^{k}\cdot a_C,r_{Ck},v_{Ck}}$, $k\in\{0,\dots,3\}$, with each matching \push\ at $\gen\cdot r$.
+  \item \textbf{Memory:} six reads, each \pull\ at count $r$ and \push\ at $\gen\cdot r$, its value the cell's two $\K$-lanes (\S\ref{sec:memchan}). The four input cells \pull\ $\tup{\dsep{MEM},a_i,r_i,v_i}$; the output \pull s $\tup{\dsep{MEM},a_C,r_{C0},v_{C0}}$ and $\tup{\dsep{MEM},\gen\cdot a_C,r_{C1},v_{C1}}$.
   \end{itemize}
 \end{itemize}
 
@@ -432,7 +434,7 @@ Fixed once, public, and shared by prover and verifier: the fields, the bus shape
 
 \subsection{Bytecode encoding}\label{sec:e2e-bc}
 
-The program is public. Instruction $\pc$ fills coordinates $3$ through $8$ of its bytecode tuple $\tup{\dsep{BC},\pc,\cnt,\cdot}$: an opcode in coordinate $3$, three operands in coordinates $4,5,6$, and coordinates $7,8$ carrying the two \texttt{DEREF} flags $(f_{\pc},f_{\fp})$ — or, for \texttt{BLAKE3}, its fourth and fifth operands $(o_3,o_C)$ — ($0$ for every other opcode). Each operand is a $\gen$-power or an immediate.
+The program is public. Instruction $\pc$ fills coordinates $3$ through $8$ of its bytecode tuple $\tup{\dsep{BC},\pc,\cnt,\cdot}$: an opcode in coordinate $3$, three operands in coordinates $4,5,6$, and coordinates $7,8$ carrying the two \texttt{DEREF} flags $(f_{\pc},f_{\fp})$ — or, for \texttt{BLAKE3}, its fourth and fifth operands $(o_3,o_C)$ — ($0$ for every other opcode). Each operand is a $\gen$-power or an immediate; for \texttt{SET\_CONSTANT}, coordinates $5,6$ carry the two $\K$-lanes of the $128$-bit immediate.
 \begin{center}
 \begin{tabular}{lllllll}
 \hline
@@ -440,7 +442,7 @@ Instruction & coord.\ $3$ & coord.\ $4$ & coord.\ $5$ & coord.\ $6$ & coord.\ $7
 \hline
 \texttt{XOR}           & $\opc{XOR}$ & $o_A$ & $o_B$ & $o_C$ & $0$ & $0$\\
 \texttt{MUL\_NATIVE}   & $\opc{MUL}$ & $o_A$ & $o_B$ & $o_C$ & $0$ & $0$\\
-\texttt{SET\_CONSTANT} & $\opc{SET}$ & $o$   & $k$   & $0$   & $0$ & $0$\\
+\texttt{SET\_CONSTANT} & $\opc{SET}$ & $o$   & $k_0$ & $k_1$ & $0$ & $0$\\
 \texttt{DEREF}         & $\opc{DRF}$ & $\alpha$ & $\beta$ & $\gamma$ & $f_{\pc}$ & $f_{\fp}$\\
 \texttt{JUMP}          & $\opc{JMP}$ & $o_c$ & $o_d$ & $o_f$ & $0$ & $0$\\
 \texttt{BLAKE3}        & $\opc{B3}$  & $o_0$ & $o_1$ & $o_2$ & $o_3$ & $o_C$\\
@@ -457,9 +459,9 @@ Each table is padded to a power of two. Padding rows are a fixed default, not al
 
 \subsection{Public input}\label{sec:e2e-pi}
 
-The public input is the first two memory cells $\mem[0],\mem[1]$ ($128$ bits), fixed and agreed by both parties. Cells $0$ and $1$ span the subcube of the address cube $\cube h$ with the $h-1$ high coordinates $0$ and the low one free, so the committed memory MLE $\widetilde M$ (\S\ref{sec:memchan}) restricts there to the line $\widetilde{\mathrm{PI}}(r)=(1-r)\,\mem[0]+r\,\mem[1]$, which the verifier forms itself. It samples $r_m\in\E$ and checks
+The public input is the first two memory cells $\mem[0],\mem[1]$, each a $128$-bit word, fixed and agreed by both parties. Cells $0$ and $1$ span the subcube of the address cube $\cube h$ with the $h-1$ high coordinates $0$ and the low one free, so on \emph{each} committed memory lane $M_\ell$ ($\ell\in\{0,1\}$, \S\ref{sec:memchan}) the MLE restricts there to the line $\widetilde{\mathrm{PI}}_\ell(r)=(1-r)\,\mem[0]_\ell+r\,\mem[1]_\ell$, which the verifier forms itself from the (public) word lanes. It samples $r_m\in\E$ and checks both lanes,
 \[
-  \widetilde M(r_m,0,\dots,0)\;=\;\widetilde{\mathrm{PI}}(r_m).
+  \widetilde M_\ell(r_m,0,\dots,0)\;=\;\widetilde{\mathrm{PI}}_\ell(r_m),\qquad \ell\in\{0,1\}.
 \]
 
 \subsection{The unrolled protocol}\label{sec:e2e-unrolled}
@@ -470,7 +472,7 @@ We lay out the whole protocol as one ordered sequence. Each reduction below adds
 
 \paragraph{Commitment.}
 \begin{enumerate}
-\item \textbf{Prover.} Builds all committed columns ($\K$-valued): each table's state, operands, addresses, read values, and counts (plus $w,b,\mathit{next\_pc},\mathit{next\_fp}$ for \texttt{JUMP}); the memory column $M$; the memory and bytecode finalize counts; and flock's packed witness $q_\pkd$ (\S\ref{sec:tab-blake3}), always present (a program that executes no \texttt{BLAKE3} carries one padding instance, keeping the proof shape uniform). Counts are always committed $\gen$-powers (\S\ref{sec:memchan}); the public program and the virtual increments $\gen\cdot\pc,\gen\cdot\cnt$ are not. It stacks these into $q$, sends the dense commitment (\S\ref{sec:stacking}, \S\ref{sec:rs-dense}), and announces each table's non-padded row count, which the verifier checks against the instance caps (\S\ref{sec:memchan}) and rounds up to a power of two to fix the stack and leaf layouts (\S\ref{sec:leafstack}). Padding rows are a fixed default (\S\ref{sec:e2e-pad}); the announced sizes fix the surplus the verifier later divides out (\S\ref{sec:gp}).
+\item \textbf{Prover.} Builds all committed columns ($\K$-valued; a $128$-bit value is two $\K$-lane columns, \S\ref{sec:prelim}): each table's state, operands, addresses, read-value lanes, and counts (plus $w,b,\mathit{next\_pc},\mathit{next\_fp}$ for \texttt{JUMP}); the two memory lanes $M_0,M_1$; the memory and bytecode finalize counts; and flock's packed witness $q_\pkd$ (\S\ref{sec:tab-blake3}), always present (a program that executes no \texttt{BLAKE3} carries one padding instance, keeping the proof shape uniform). Counts are always committed $\gen$-powers (\S\ref{sec:memchan}); the public program and the virtual increments $\gen\cdot\pc,\gen\cdot\cnt$ are not. It stacks these into $q$, sends the dense commitment (\S\ref{sec:stacking}, \S\ref{sec:rs-dense}), and announces each table's non-padded row count, which the verifier checks against the instance caps (\S\ref{sec:memchan}) and rounds up to a power of two to fix the stack and leaf layouts (\S\ref{sec:leafstack}). Padding rows are a fixed default (\S\ref{sec:e2e-pad}); the announced sizes fix the surplus the verifier later divides out (\S\ref{sec:gp}).
 \end{enumerate}
 
 \paragraph{Bus.}
@@ -489,7 +491,7 @@ We lay out the whole protocol as one ordered sequence. Each reduction below adds
 
 \paragraph{Public input.}
 \begin{enumerate}
-\item \textbf{Verifier.} Sends $r_m$, forms $\widetilde{\mathrm{PI}}(r_m)$ from the public input, and adds to the pool the memory claim $\widetilde M(r_m,0,\dots,0)=\widetilde{\mathrm{PI}}(r_m)$ (\S\ref{sec:e2e-pi}).
+\item \textbf{Verifier.} Sends $r_m$, forms $\widetilde{\mathrm{PI}}_\ell(r_m)$ from the public input, and adds to the pool the two memory-lane claims $\widetilde M_\ell(r_m,0,\dots,0)=\widetilde{\mathrm{PI}}_\ell(r_m)$, $\ell\in\{0,1\}$ (\S\ref{sec:e2e-pi}).
 \end{enumerate}
 
 \paragraph{BLAKE3 validity.}

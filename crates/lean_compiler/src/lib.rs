@@ -24,7 +24,7 @@ use std::collections::HashMap;
 
 use lean_vm::cpu::hints::RHint;
 use lean_vm::cpu::{DerefMode, Op, Program};
-use primitives::field::{F64, g_pow};
+use primitives::field::{F64, F128T, g_pow};
 
 mod ast;
 mod ir;
@@ -167,7 +167,7 @@ pub fn compile(ast: &Ast) -> Program {
     }
 
     // Pad the bytecode to `B` (the sentinel slot g^{B-1} must exist for execution).
-    prog.resize(bytecode_size, Op::Set { o: 0, k: F64::ZERO });
+    prog.resize(bytecode_size, Op::Set { o: 0, k: F128T::ZERO });
     let mut program = Program::assemble(prog, 0, 0, hints, frame_size["main"]);
     program.fn_ranges = lowered.iter().map(|l| (l.name.clone(), entry[&l.name], l.code.len() as u32)).collect();
     program
@@ -184,9 +184,12 @@ pub fn disassemble(prog: &[Op]) -> String {
         gmap.entry(acc).or_insert(j);
         acc *= primitives::field::G;
     }
-    let kfmt = |k: F64| match gmap.get(&k) {
+    // A machine word is 128-bit; K-valued immediates (hi lane 0) may be small
+    // g-powers (code addresses, indices), shown as `gʲ`.
+    let kfmt = |k: F128T| match (k.c1 == 0).then(|| gmap.get(&F64(k.c0))).flatten() {
         Some(j) => format!("g^{j}"),
-        None => format!("0x{:016x}", k.0),
+        None if k.c1 == 0 => format!("0x{:016x}", k.c0),
+        None => format!("0x{:016x}{:016x}", k.c1, k.c0),
     };
 
     let mut out = String::new();
@@ -223,10 +226,11 @@ pub fn disassemble(prog: &[Op]) -> String {
     out
 }
 
-/// A `u128` source literal as a field constant: the value must fit the 64-bit
-/// machine word (the parser's integer range is wider than the field).
-pub(crate) fn lit_field(n: u128) -> F64 {
-    F64(u64::try_from(n).unwrap_or_else(|_| panic!("literal {n} does not fit in 64 bits")))
+/// A `u128` source literal as a 128-bit machine word: its raw bit pattern, low
+/// 64 bits in the K-lane and high 64 bits in the y-lane (so a `≤64`-bit literal
+/// is a K-value with zero high lane, and a full 128-bit literal names any word).
+pub(crate) fn lit_field(n: u128) -> F128T {
+    F128T::new(n as u64, (n >> 64) as u64)
 }
 
 /// `g^e` for a `u128` exponent (square-and-multiply). `field::g_pow` only takes
@@ -246,12 +250,16 @@ fn g_pow_u128(mut e: u128) -> F64 {
 }
 
 fn resolve(op: &LOp, entry: &HashMap<String, u32>, sentinel: u32, base: u32) -> Op {
-    let resolve_kval = |kv: &KVal| match kv {
-        KVal::Const(c) => *c,
-        KVal::Entry(name) => g_pow(entry[name] as usize),
-        KVal::EndSentinel => g_pow(sentinel as usize),
-        KVal::Local(i) => g_pow((base + i) as usize),
-        KVal::Poison => primitives::field::G.inv(), // g^-1: outside the bytecode cube
+    let resolve_kval = |kv: &KVal| -> F128T {
+        match kv {
+            KVal::Const(c) => *c,
+            // Address / entry / sentinel constants are K-valued g-powers; embed
+            // into the 128-bit word (hi lane 0).
+            KVal::Entry(name) => g_pow(entry[name] as usize).into(),
+            KVal::EndSentinel => g_pow(sentinel as usize).into(),
+            KVal::Local(i) => g_pow((base + i) as usize).into(),
+            KVal::Poison => primitives::field::G.inv().into(), // g^-1: outside the bytecode cube
+        }
     };
     match op {
         LOp::Set { o, k: kv } => Op::Set {

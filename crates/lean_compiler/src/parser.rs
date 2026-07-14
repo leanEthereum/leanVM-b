@@ -312,12 +312,13 @@ fn eval_const_int(s: &str) -> Result<u128, String> {
 /// `GEN ** k`, and `+`/`*` combinations of those — to its field element.
 /// Used for the `# public_input: <elt>, <elt>` annotation of `.py` test
 /// programs (see `tests/py_source.rs`).
-pub fn parse_const(s: &str) -> Result<F64, String> {
-    fn eval(e: &Expr) -> Result<F64, String> {
+pub fn parse_const(s: &str) -> Result<F128T, String> {
+    fn eval(e: &Expr) -> Result<F128T, String> {
         match e {
-            Expr::Lit(n) => u64::try_from(*n).map(F64).map_err(|_| format!("literal {n} does not fit in 64 bits")),
-            Expr::Gen => Ok(g_pow(1)),
-            Expr::GPow(k) => Ok(g_pow_u128(*k)),
+            // An integer literal is the raw 128-bit bit pattern of a machine word.
+            Expr::Lit(n) => Ok(F128T::new(*n as u64, (*n >> 64) as u64)),
+            Expr::Gen => Ok(g_pow(1).into()),
+            Expr::GPow(k) => Ok(g_pow_u128(*k).into()),
             Expr::Add(a, b) => Ok(eval(a)? + eval(b)?),
             Expr::Mul(a, b) => Ok(eval(a)? * eval(b)?),
             other => Err(format!("not a constant expression: `{other:?}`")),

@@ -7,7 +7,7 @@
 
 use lean_compiler::{compile, parse};
 use lean_vm::cpu::{prove, verify};
-use primitives::field::{F64, g_pow};
+use primitives::field::{F128T, F64, g_pow};
 
 /// Honest inequality over runtime values: prove + verify pass, and corrupting
 /// the public output is still caught (the assert does not disturb the trace).
@@ -26,11 +26,11 @@ def main():
     return
 ";
     let program = compile(&parse(src).expect("parse"));
-    let want = [g_pow(12), g_pow(5)];
+    let want = [F128T::from(g_pow(12)), F128T::from(g_pow(5))];
     let (proof, _) = prove(&program, want);
     verify(&program, &want, &proof).expect("inequality program verifies");
 
-    let bad = [g_pow(11), g_pow(5)];
+    let bad = [F128T::from(g_pow(11)), F128T::from(g_pow(5))];
     assert!(verify(&program, &bad, &proof).is_err(), "wrong public input must be rejected");
 }
 
@@ -51,10 +51,11 @@ def main():
 ";
     let run = |a: F64, b: F64| -> bool {
         let mut program = compile(&parse(src).expect("parse"));
-        program.set_witness("vals", vec![vec![a, b]]);
+        program.set_witness("vals", vec![vec![F128T::from(a), F128T::from(b)]]);
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let (proof, _) = prove(&program, [a, b]);
-            verify(&program, &[a, b], &proof).is_ok()
+            let pi = [F128T::from(a), F128T::from(b)];
+            let (proof, _) = prove(&program, pi);
+            verify(&program, &pi, &proof).is_ok()
         }))
         .unwrap_or(false)
     };
@@ -78,7 +79,7 @@ def main():
     return
 ";
     let program = compile(&parse(src).expect("parse"));
-    let want = [F64(5), F64(7)];
+    let want = [F128T::from(F64(5)), F128T::from(F64(7))];
     let (proof, _) = prove(&program, want);
     verify(&program, &want, &proof).expect("loop inequality verifies");
 }

@@ -46,8 +46,8 @@ enum Alias {
     /// holding that value (`const_cell`), so a constant stored into a
     /// `blake3` operand cell — the `obs`/`squeeze` tag words, padding
     /// halves — costs ONE `SET` per distinct value per function, not one
-    /// per store. `Const(0)` routes through the zero pool.
-    Const(u64),
+    /// per store. A zero constant routes through the zero pool.
+    Const(F128T),
 }
 
 /// How an inlined `@inline` tail-return value binds into the caller
@@ -94,14 +94,14 @@ struct FnLower<'a> {
     /// Constant cells: field value (as bits) → the frame cell holding it, SET
     /// lazily once per distinct constant ([`Self::const_cell`]). Cells are
     /// write-once and read-many, so one `SET` serves every use in scope.
-    const_cells: HashMap<u64, Off>,
+    const_cells: HashMap<u128, Off>,
     /// Variables bound to a symbolic g-address ([`GAddr`]) — index cursors and
     /// shifted pointers, kept virtual so their offsets fold into `DEREF`'s `β`.
     gaddrs: HashMap<String, GAddr>,
     /// Variables bound to a compile-time *field* constant that isn't a g-power
     /// (e.g. a running weight `CHAIN_LENGTH^i`). Kept virtual — folded through
     /// constant field arithmetic and materialized (one `SET`) only when used.
-    fconsts: HashMap<String, F64>,
+    fconsts: HashMap<String, F128T>,
     /// While inlining an `@inline` call ([`Self::try_inline`]), the destination
     /// cells its tail `return` binds into instead of emitting a return jump.
     /// `None` outside an inlined body.
@@ -150,7 +150,7 @@ impl FnLower<'_> {
         let o = self.fresh();
         self.emit(LOp::Set {
             o,
-            k: KVal::Const(F64::ONE),
+            k: KVal::Const(F128T::ONE),
         });
         self.one_off = Some(o);
         o
@@ -161,16 +161,17 @@ impl FnLower<'_> {
     /// [`Self::one`]'s cell; `main` alone had ~57k duplicated constant `SET`s
     /// before pooling). Branch-local like the other lazy cells: a cache entry
     /// made inside an `if`/`match` arm reverts at the join.
-    fn const_cell(&mut self, v: F64) -> Off {
-        if v == F64::ONE {
+    fn const_cell(&mut self, v: F128T) -> Off {
+        if v == F128T::ONE {
             return self.one();
         }
-        if let Some(&o) = self.const_cells.get(&v.0) {
+        let key = v.c0 as u128 | ((v.c1 as u128) << 64);
+        if let Some(&o) = self.const_cells.get(&key) {
             return o;
         }
         let o = self.fresh();
         self.emit(LOp::Set { o, k: KVal::Const(v) });
-        self.const_cells.insert(v.0, o);
+        self.const_cells.insert(key, o);
         o
     }
 
@@ -183,7 +184,7 @@ impl FnLower<'_> {
         let o = self.fresh();
         self.emit(LOp::Set {
             o,
-            k: KVal::Const(F64::ZERO),
+            k: KVal::Const(F128T::ZERO),
         });
         self.zero_off = Some(o);
         o
@@ -191,6 +192,9 @@ impl FnLower<'_> {
 
     /// Two CONSECUTIVE frame cells both holding `0`, set lazily once — the
     /// source for a forwarded all-zero `BLAKE3` chunk (cells `base`, `base+1`).
+    // Retained for a possible return to two-cell chunk forwarding; a 128-bit
+    // chunk is now one cell, so `blake3_input` uses `word_src` directly.
+    #[allow(dead_code)]
     fn zero_pair(&mut self) -> Off {
         if let Some(o) = self.zero2_off {
             return o;
@@ -199,7 +203,7 @@ impl FnLower<'_> {
         for k in 0..2 {
             self.emit(LOp::Set {
                 o: o + k,
-                k: KVal::Const(F64::ZERO),
+                k: KVal::Const(F128T::ZERO),
             });
         }
         self.zero2_off = Some(o);
@@ -218,7 +222,7 @@ impl FnLower<'_> {
                 let (base, _) = self.stack_of(arr)?;
                 Some(Alias::Cell(base + self.try_const_index(idx)?))
             }
-            _ => self.try_field_const(val).map(|c| Alias::Const(c.0)),
+            _ => self.try_field_const(val).map(Alias::Const),
         }
     }
 
@@ -314,7 +318,7 @@ impl FnLower<'_> {
             let o = self.fresh();
             self.emit(LOp::Set {
                 o,
-                k: KVal::Const(F64::ZERO),
+                k: KVal::Const(F128T::ZERO),
             });
         }
         (
@@ -703,7 +707,7 @@ impl FnLower<'_> {
         let o = self.fresh();
         self.emit(LOp::Set {
             o,
-            k: KVal::Const(g_pow_u128((k - 1) as u128)),
+            k: KVal::Const(g_pow_u128((k - 1) as u128).into()),
         });
         self.bounds.insert(k, o);
         o
@@ -808,11 +812,11 @@ impl FnLower<'_> {
     fn expr(&mut self, e: &Expr) -> Off {
         match e {
             Expr::Lit(n) => self.const_cell(lit_field(*n)),
-            Expr::Gen => self.const_cell(g_pow(1)),
-            Expr::GPow(k) => self.const_cell(g_pow_u128(*k)),
+            Expr::Gen => self.const_cell(g_pow(1).into()),
+            Expr::GPow(k) => self.const_cell(g_pow_u128(*k).into()),
             Expr::GenPow(e) => {
                 let k = self.gpow_exp(e);
-                self.const_cell(g_pow_u128(k as u128))
+                self.const_cell(g_pow_u128(k as u128).into())
             }
             Expr::Pow(b, e) => self.pow_expr(b, e),
             Expr::Var(v) => {
@@ -832,10 +836,10 @@ impl FnLower<'_> {
                 // (and, being a constant, has no side effect to preserve), so
                 // `x + 0` lowers to just `x` — no cell, no XOR. Kills the
                 // `acc = 0; acc = acc + t` accumulator seed and similar.
-                if self.try_field_const(a) == Some(F64::ZERO) {
+                if self.try_field_const(a) == Some(F128T::ZERO) {
                     return self.expr(b);
                 }
-                if self.try_field_const(b) == Some(F64::ZERO) {
+                if self.try_field_const(b) == Some(F128T::ZERO) {
                     return self.expr(a);
                 }
                 let (la, lb) = (self.expr(a), self.expr(b));
@@ -847,10 +851,10 @@ impl FnLower<'_> {
                 // Identity fold: a compile-time 1 operand is a no-op multiply,
                 // so `x * 1` lowers to just `x`. Kills the `acc = GEN ** 0`
                 // (= 1) accumulator seed's first `1 * f` in every product loop.
-                if self.try_field_const(a) == Some(F64::ONE) {
+                if self.try_field_const(a) == Some(F128T::ONE) {
                     return self.expr(b);
                 }
-                if self.try_field_const(b) == Some(F64::ONE) {
+                if self.try_field_const(b) == Some(F128T::ONE) {
                     return self.expr(a);
                 }
                 let (la, lb) = (self.expr(a), self.expr(b));
@@ -884,7 +888,7 @@ impl FnLower<'_> {
             }
             Expr::Call(f, args) => {
                 if let Some(n) = self.const_len(e) {
-                    self.const_cell(F64(n as u64))
+                    self.const_cell(F128T::new(n as u64, 0))
                 } else {
                     let d = self.call(f, args, 1)[0];
                     self.take_inline_ret_cell(d)
@@ -1024,7 +1028,7 @@ impl FnLower<'_> {
             .unwrap_or_else(|| panic!("`**` exponent must be a compile-time integer, got `{e:?}`"));
         // Fully constant → evaluate in the field and emit a single `SET`.
         if let Some(bc) = self.try_field_const(b) {
-            let mut acc = F64::ONE;
+            let mut acc = F128T::ONE;
             for _ in 0..k {
                 acc *= bc;
             }
@@ -1034,7 +1038,7 @@ impl FnLower<'_> {
         }
         if k == 0 {
             let o = self.fresh();
-            self.emit(LOp::Set { o, k: KVal::Const(F64::ONE) });
+            self.emit(LOp::Set { o, k: KVal::Const(F128T::ONE) });
             return o;
         }
         // Runtime base: square-and-multiply over the compile-time exponent bits.
@@ -1115,28 +1119,29 @@ impl FnLower<'_> {
         }
     }
 
-    /// Resolve a `blake3` operand — a size-4 `StackBuf` name, a 4-cell
-    /// `StackBuf` slice `buf[lo:hi]`, or a 4-cell `HeapBuf` slice (cells
-    /// `ptr·g^{lo+k}`, `k < 4`) — with compile-time bounds. Stack operands
-    /// are used in place; heap operands must be bridged through the stack,
-    /// since `BLAKE3` addresses only frame cells (see [`Self::blake3_input`]).
+    /// Resolve a `blake3` operand — a size-2 `StackBuf` name, a 2-cell
+    /// `StackBuf` slice `buf[lo:hi]`, or a 2-cell `HeapBuf` slice (cells
+    /// `ptr·g^{lo+k}`, `k < 2`) — with compile-time bounds. A 256-bit operand is
+    /// two 128-bit cells. Stack operands are used in place; heap operands must be
+    /// bridged through the stack, since `BLAKE3` addresses only frame cells (see
+    /// [`Self::blake3_input`]).
     fn blake3_operand(&mut self, e: &Expr) -> B3Operand {
         match e {
             Expr::Var(_) => {
                 let (base, size) = self
                     .stack_of(e)
-                    .expect("a bare blake3 operand must be a StackBuf; slice a HeapBuf: `buf[lo:lo + 4]`");
+                    .expect("a bare blake3 operand must be a StackBuf; slice a HeapBuf: `buf[lo:lo + 2]`");
                 assert!(
-                    size == 4,
-                    "a whole-StackBuf blake3 operand must have size 4; slice a larger one: `buf[lo:lo + 4]`"
+                    size == 2,
+                    "a whole-StackBuf blake3 operand must have size 2 (two 128-bit cells); slice a larger one: `buf[lo:lo + 2]`"
                 );
                 B3Operand::Stack(base)
             }
             Expr::Slice(arr, lo, hi) => match (self.try_const_index(lo), self.try_const_index(hi)) {
-                // Compile-time bounds: integer cell indexes `lo..lo+4` (frame
+                // Compile-time bounds: integer cell indexes `lo..lo+2` (frame
                 // offsets for a stack, g-power exponents for the heap).
                 (Some(lo), Some(hi)) => {
-                    assert!(hi == lo + 4, "a blake3 slice must span exactly 4 cells, got {lo}:{hi}");
+                    assert!(hi == lo + 2, "a blake3 slice must span exactly 2 cells, got {lo}:{hi}");
                     if let Some((base, size)) = self.stack_of(arr) {
                         assert!(hi <= size, "slice {lo}:{hi} out of bounds (StackBuf size {size})");
                         B3Operand::Stack(base + lo)
@@ -1148,19 +1153,19 @@ impl FnLower<'_> {
                         B3Operand::Heap { ptr, lo }
                     }
                 }
-                // Runtime start (heap only): `buf[i:i + 4]` with a runtime
-                // g-power index `i` names the cells `buf·i·g^k`, k < 4. The
+                // Runtime start (heap only): `buf[i:i + 2]` with a runtime
+                // g-power index `i` names the cells `buf·i·g^k`, k < 2. The
                 // `hi` bound cannot be evaluated, only shape-checked: it must
-                // be syntactically `lo + 4`. One MUL folds `i` into the
-                // pointer; the four-cell bridge is then offsets 0..4 off it.
+                // be syntactically `lo + 2`. One MUL folds `i` into the
+                // pointer; the two-cell bridge is then offsets 0..2 off it.
                 _ => {
                     assert!(
                         self.stack_of(arr).is_none(),
                         "a StackBuf slice needs compile-time bounds (frame offsets are baked into the bytecode)"
                     );
                     assert!(
-                        plus_k(lo, hi) == Some(4),
-                        "a runtime blake3 slice must have the shape `buf[i:i + 4]`, got `{lo:?}:{hi:?}`"
+                        plus_k(lo, hi) == Some(2),
+                        "a runtime blake3 slice must have the shape `buf[i:i + 2]`, got `{lo:?}:{hi:?}`"
                     );
                     let (ptr, lo) = self.heap_addr(arr, lo);
                     B3Operand::Heap { ptr, lo }
@@ -1173,19 +1178,19 @@ impl FnLower<'_> {
     }
 
     /// A `blake3` *input* operand as its two independently-addressed 128-bit
-    /// chunk bases (chunk `i` spanning cells `base_i`, `base_i+1`): stack runs
-    /// in place; a heap slice is pulled into a fresh stack quad first — one
-    /// `DEREF` per cell (`m[ptr·g^{lo+k}] == m[fp+t+k]`, the `β` immediate
-    /// doing the pointer offset). The heap cells must already be written.
+    /// chunk bases (each chunk is ONE 128-bit cell): stack runs in place; a heap
+    /// slice is pulled into a fresh stack pair first — one `DEREF` per cell
+    /// (`m[ptr·g^{lo+k}] == m[fp+t+k]`, the `β` immediate doing the pointer
+    /// offset). The heap cells must already be written.
     fn blake3_input(&mut self, e: &Expr) -> [Off; 2] {
         match self.blake3_operand(e) {
-            // A stack operand: the chunks live at `o, o+2`; forward each chunk's
-            // real source where one is known (a contiguous pair copy or a zero
-            // pair), so a hash of non-adjacent values needs no assembling copies.
-            B3Operand::Stack(o) => [self.chunk_src(o), self.chunk_src(o + 2)],
+            // A stack operand: the two chunk cells are `o, o+1`; forward each
+            // cell's real source where known (a copy or a zero), so a hash of
+            // non-adjacent values needs no assembling copies.
+            B3Operand::Stack(o) => [self.word_src(o), self.word_src(o + 1)],
             B3Operand::Heap { ptr, lo } => {
-                let t = self.alloc_stack(4);
-                for k in 0..4 {
+                let t = self.alloc_stack(2);
+                for k in 0..2 {
                     self.emit(LOp::Deref {
                         alpha: ptr,
                         beta: lo + k,
@@ -1193,7 +1198,7 @@ impl FnLower<'_> {
                         mode: DerefMode::Cell,
                     });
                 }
-                [t, t + 2]
+                [t, t + 1]
             }
         }
     }
@@ -1205,11 +1210,12 @@ impl FnLower<'_> {
     /// adjacent cells `(s, s+1)` forwards to `s`, an all-zero pair to the
     /// shared zero pair. A pair that does not forward as a unit (mixed or
     /// non-adjacent sources) is materialized into its own cells instead.
+    #[allow(dead_code)]
     fn chunk_src(&mut self, o: Off) -> Off {
         match (self.alias.get(&o).copied(), self.alias.get(&(o + 1)).copied()) {
             (None, None) => o,
             (Some(Alias::Cell(s0)), Some(Alias::Cell(s1))) if s1 == s0 + 1 => self.chunk_src(s0),
-            (Some(Alias::Const(0)), Some(Alias::Const(0))) => self.zero_pair(),
+            (Some(Alias::Const(a)), Some(Alias::Const(b))) if a.is_zero() && b.is_zero() => self.zero_pair(),
             _ => {
                 for k in [o, o + 1] {
                     if self.alias.contains_key(&k) {
@@ -1228,8 +1234,8 @@ impl FnLower<'_> {
     fn word_src(&mut self, o: Off) -> Off {
         match self.alias.get(&o).copied() {
             Some(Alias::Cell(s)) => self.word_src(s),
-            Some(Alias::Const(0)) => self.zero(),
-            Some(Alias::Const(v)) => self.const_cell(F64(v)),
+            Some(Alias::Const(v)) if v.is_zero() => self.zero(),
+            Some(Alias::Const(v)) => self.const_cell(v),
             None => o,
         }
     }
@@ -1266,15 +1272,15 @@ impl FnLower<'_> {
             }
             Expr::Gen => self.emit(LOp::Set {
                 o: dst,
-                k: KVal::Const(g_pow(1)),
+                k: KVal::Const(g_pow(1).into()),
             }),
             Expr::GPow(k) => self.emit(LOp::Set {
                 o: dst,
-                k: KVal::Const(g_pow_u128(*k)),
+                k: KVal::Const(g_pow_u128(*k).into()),
             }),
             Expr::GenPow(e) => self.emit(LOp::Set {
                 o: dst,
-                k: KVal::Const(g_pow_u128(self.gpow_exp(e))),
+                k: KVal::Const(g_pow_u128(self.gpow_exp(e)).into()),
             }),
             Expr::Pow(b, e) => {
                 let v = self.pow_expr(b, e);
@@ -1282,9 +1288,9 @@ impl FnLower<'_> {
             }
             Expr::Add(a, b) => {
                 // Identity fold (see the `expr` Add arm): `x + 0` copies `x`.
-                if self.try_field_const(a) == Some(F64::ZERO) {
+                if self.try_field_const(a) == Some(F128T::ZERO) {
                     self.expr_into(b, dst);
-                } else if self.try_field_const(b) == Some(F64::ZERO) {
+                } else if self.try_field_const(b) == Some(F128T::ZERO) {
                     self.expr_into(a, dst);
                 } else {
                     let (la, lb) = (self.expr(a), self.expr(b));
@@ -1293,9 +1299,9 @@ impl FnLower<'_> {
             }
             Expr::Mul(a, b) => {
                 // Identity fold: `x * 1` copies `x`.
-                if self.try_field_const(a) == Some(F64::ONE) {
+                if self.try_field_const(a) == Some(F128T::ONE) {
                     self.expr_into(b, dst);
-                } else if self.try_field_const(b) == Some(F64::ONE) {
+                } else if self.try_field_const(b) == Some(F128T::ONE) {
                     self.expr_into(a, dst);
                 } else {
                     let (la, lb) = (self.expr(a), self.expr(b));
@@ -1373,26 +1379,27 @@ impl FnLower<'_> {
     /// `+`/`*` of those evaluated in the field (XOR / `K`-mul). `None` for a
     /// runtime value, a literal exceeding the 64-bit word, or a compile-time
     /// *integer* op (`//`/`%` are index-only).
-    fn try_field_const(&self, e: &Expr) -> Option<F64> {
+    fn try_field_const(&self, e: &Expr) -> Option<F128T> {
         match e {
-            Expr::Lit(n) => u64::try_from(*n).ok().map(F64),
-            Expr::Gen => Some(g_pow(1)),
-            Expr::GPow(k) => Some(g_pow_u128(*k)),
-            Expr::GenPow(e) => Some(g_pow_u128(self.try_const_index(e)? as u128)),
+            // A literal is the raw 128-bit machine word; g-powers/addresses embed.
+            Expr::Lit(n) => Some(lit_field(*n)),
+            Expr::Gen => Some(g_pow(1).into()),
+            Expr::GPow(k) => Some(g_pow_u128(*k).into()),
+            Expr::GenPow(e) => Some(g_pow_u128(self.try_const_index(e)? as u128).into()),
             Expr::Var(v) => self.fconsts.get(v).copied().or_else(|| match self.gaddrs.get(v) {
-                Some(GAddr { base: None, exp }) => Some(g_pow_u128(*exp)),
+                Some(GAddr { base: None, exp }) => Some(g_pow_u128(*exp).into()),
                 _ => None,
             }),
             Expr::Add(a, b) => Some(self.try_field_const(a)? + self.try_field_const(b)?),
             Expr::Mul(a, b) => Some(self.try_field_const(a)? * self.try_field_const(b)?),
             // A constant-array element `NAME[i]` as a field value, or `len(NAME)`.
             Expr::Index(..) => self.const_array_elem(e).map(lit_field),
-            Expr::Call(..) => self.const_len(e).map(|n| F64(n as u64)),
+            Expr::Call(..) => self.const_len(e).map(|n| F128T::new(n as u64, 0)),
             // `b ** e` as a field constant (constant base, compile-time exponent).
             Expr::Pow(b, e) => {
                 let bc = self.try_field_const(b)?;
                 let k = self.try_const_index(e)?;
-                let mut acc = F64::ONE;
+                let mut acc = F128T::ONE;
                 for _ in 0..k {
                     acc *= bc;
                 }
@@ -1410,7 +1417,7 @@ impl FnLower<'_> {
             GAddr { base: Some(c), exp: 0 } => c,
             GAddr { base, exp } => {
                 let k = self.fresh();
-                self.emit(LOp::Set { o: k, k: KVal::Const(g_pow_u128(exp)) });
+                self.emit(LOp::Set { o: k, k: KVal::Const(g_pow_u128(exp).into()) });
                 let Some(c) = base else { return k };
                 let o = self.fresh();
                 self.emit(LOp::Mul { a: c, b: k, c: o });
@@ -1459,7 +1466,7 @@ impl FnLower<'_> {
             return (a, 0);
         }
         let k = self.fresh();
-        self.emit(LOp::Set { o: k, k: KVal::Const(g_pow_u128(extra)) });
+        self.emit(LOp::Set { o: k, k: KVal::Const(g_pow_u128(extra).into()) });
         let ptr = self.fresh();
         self.emit(LOp::Mul { a, b: k, c: ptr });
         (ptr, 0)
@@ -1476,8 +1483,8 @@ impl FnLower<'_> {
             && let Some(c) = self.try_field_const(idx)
         {
             panic!(
-                "heap index folds to the field constant {:#x}, not a g-power —                  heap cell k is addressed as `buf[GEN ** k]` (did an integer index                  leak in from a StackBuf conversion?)",
-                c.0
+                "heap index folds to the field constant {:#x}:{:#x}, not a g-power —                  heap cell k is addressed as `buf[GEN ** k]` (did an integer index                  leak in from a StackBuf conversion?)",
+                c.c1, c.c0
             );
         }
         match self.gaddr_of(idx) {
@@ -1867,7 +1874,7 @@ impl FnLower<'_> {
                         self.vars.remove(name);
                         self.stacks.remove(name);
                         self.gaddrs.remove(name);
-                        self.fconsts.insert(name.clone(), F64(k as u64));
+                        self.fconsts.insert(name.clone(), lit_field(k as u128));
                     } else if let Expr::Call(cf, cargs) = e
                         && self.defs.contains_key(cf)
                     {
@@ -1936,7 +1943,7 @@ impl FnLower<'_> {
                 self.emit(LOp::Xor { a: la, b: lb, c: t });
                 self.emit(LOp::Set {
                     o: t,
-                    k: KVal::Const(F64::ZERO),
+                    k: KVal::Const(F128T::ZERO),
                 });
             }
             Stmt::AssertNe(a, b) => self.lower_assert_ne(a, b),
@@ -1954,7 +1961,7 @@ impl FnLower<'_> {
                 let o = self.fresh();
                 self.emit(LOp::Set {
                     o,
-                    k: KVal::Const(F64::ZERO),
+                    k: KVal::Const(F128T::ZERO),
                 });
             }
             Stmt::If {
@@ -1988,10 +1995,10 @@ impl FnLower<'_> {
                     return;
                 }
                 // `blake3(a, b, out)`: the digest of the two 256-bit operands
-                // lands in the existing 4-cell run `out` (write-once: if `out`
+                // lands in the existing 2-cell run `out` (write-once: if `out`
                 // was already written, this asserts the digest equals it). A
-                // heap `out` slice takes the digest via a fresh stack quad and
-                // four `DEREF`s after the hash (the store direction is the same
+                // heap `out` slice takes the digest via a fresh stack pair and
+                // two `DEREF`s after the hash (the store direction is the same
                 // instruction as the load — write-once fills the unset side).
                 if f == "blake3" {
                     assert_eq!(args.len(), 3, "blake3 takes (a, b, out)");
@@ -1999,17 +2006,18 @@ impl FnLower<'_> {
                     let b = self.blake3_input(&args[1]);
                     let (c, heap_out) = match self.blake3_operand(&args[2]) {
                         B3Operand::Stack(o) => (o, None),
-                        B3Operand::Heap { ptr, lo } => (self.alloc_stack(4), Some((ptr, lo))),
+                        B3Operand::Heap { ptr, lo } => (self.alloc_stack(2), Some((ptr, lo))),
                     };
-                    // Each operand's two chunks are at `base, base+2` (two cells
-                    // each); the flexible opcode addresses them independently
-                    // (`blake3_input` forwards the real chunk sources where it can).
+                    // Each operand is two 128-bit chunk cells; the flexible opcode
+                    // addresses the four input cells independently (`blake3_input`
+                    // forwards the real chunk sources where it can). The digest
+                    // occupies the two consecutive output cells `c, g·c`.
                     self.emit(LOp::Blake3 {
                         ins: [a[0], a[1], b[0], b[1]],
                         c,
                     });
                     if let Some((ptr, lo)) = heap_out {
-                        for k in 0..4 {
+                        for k in 0..2 {
                             self.emit(LOp::Deref {
                                 alpha: ptr,
                                 beta: lo + k,

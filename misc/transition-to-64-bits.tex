@@ -28,6 +28,22 @@ Moving leanVM-b's data to $\F_{2^{64}}$ inside the degree-2 tower $\F_{2^{128}}=
 64-bit machine words, commitments over $\F_{2^{64}}$, challenges in $\F_{2^{128}}$, one ring switching.
 \end{center}
 
+\begin{center}\fbox{\parbox{0.92\textwidth}{\small
+\textbf{Addendum (shipped design is now hybrid).} This note is the rationale for
+the field \emph{stack} $\K=\F_{2^{64}}\subset\E=\F_{2^{128}}$ and the
+base-field-commit / extension-open PCS, which the machine keeps. But machine
+\emph{words} were subsequently re-widened to $128$ bits (elements of $\E$) so a
+recursion guest can do native $128$-bit field arithmetic: a memory word, an
+immediate, and a hashed value are $\E$-valued, while \emph{addresses, the pc/fp,
+and counters stay in the $64$-bit subfield $\K$}. A word is committed as its two
+$\K$-lanes (two ordinary $\K$-columns), so the commitment layer and $120$-bit
+soundness here are unchanged; \texttt{MUL\_NATIVE} is now the $\E$ tower product,
+and \texttt{BLAKE3} addresses one cell per $128$-bit chunk. Where this note says
+``every VM quantity is a $\K$-element'' (\S\ref{sec:vm-transport}) read
+``addresses/pc/counters are $\K$; data words are $\E$, carried as two $\K$-lanes.''
+The shipped spec is \texttt{misc/doc.tex}.
+}}\end{center}
+
 \tableofcontents
 
 \section{Motivation and summary}\label{sec:summary}
@@ -172,22 +188,29 @@ scale'' remarks (doc \S6.1) must be replaced by these caps.
 
 \subsection{ISA deltas}
 
+(These bullets describe the pure-64-bit step; the shipped hybrid supersedes the
+word-width ones — see the Addendum. Kept for the rationale.)
 \begin{itemize}
 \item \texttt{MUL\_NATIVE} becomes the $\K$-product (one \texttt{PMULL}
   natively; in-circuit constraint $v_C=v_A\cdot v_B$ is now a $\K$-relation,
-  degree 2 as before).
+  degree 2 as before). \emph{[Hybrid: words are $\E$, so this is the $\E$ tower
+  product — still degree $2$ on the value lanes.]}
 \item \texttt{BLAKE3}: a 256-bit value now spans \emph{four} consecutive
   64-bit cells; the instruction touches $3\times4=12$ memory cells (was 6).
   Operand $o$ names cells $\mathbf{fp}\cdot o,\ \gen\cdot\mathbf{fp}\cdot o,\
   \gen^2\cdot\mathbf{fp}\cdot o,\ \gen^3\cdot\mathbf{fp}\cdot o$ (three
   virtual $\times\gen$ successors). Bus traffic per hash row grows
   accordingly; the value cells are still not re-committed but read out of the
-  flock witness (\S\ref{sec:pipeline}).
+  flock witness (\S\ref{sec:pipeline}). \emph{[Hybrid: a $128$-bit chunk is one
+  cell, so a $256$-bit value is \emph{two} cells and the row touches six.]}
 \item Public input: $256$ bits now occupy memory cells $0..3$ (a 2-variable
   subcube); the verifier's line $\widetilde{\mathrm{PI}}$ becomes a
-  square.
+  square. \emph{[Hybrid: the two public-input words are cells $0,1$; the
+  verifier checks the $\widetilde{\mathrm{PI}}$ line on each of the two memory
+  lanes.]}
 \item Compiler/programs: immediates are 64-bit; XMSS digests are 4 words;
   frame layouts, trampolines, range checks are otherwise untouched.
+  \emph{[Hybrid: immediates are $128$-bit; a $256$-bit value is $2$ cells.]}
 \end{itemize}
 
 \subsection{Protocol randomness moves to $\E$}

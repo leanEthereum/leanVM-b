@@ -2,23 +2,19 @@
 # site passes a compile-time constant and gets a monomorphized copy with `k`
 # substituted as the integer literal, usable in compile-time positions (the
 # slice bounds below). The direct call and match_range arm 0 share the k=0
-# specialization. Published: the first two words of H(quad0, quad0) +
-# H(quad1, quad1), word-wise (`+` is XOR) — the direct k=0 digest XORed with
-# the arm the runtime x = GEN selects (k=1).
-# public_input: 6511296279469137273, 8231949928116081769
+# specialization. A 256-bit value is 2 cells under 128-bit machine words.
+# Published: the two 128-bit digest cells of H(quad0, quad0) XOR H(quad1, quad1)
+# — the direct k=0 digest XORed with the arm the runtime x = GEN selects (k=1).
+# public_input: 151852673551549100809121251071251225977, 143253370905495339312277763262351734242
 from snark_lib import *
 
 
 def main():
-    buf = HeapBuf(8)
+    buf = HeapBuf(4)
     buf[1] = 5
-    buf[GEN] = 0
-    buf[GEN ** 2] = 7
-    buf[GEN ** 3] = 0
-    buf[GEN ** 4] = 11
-    buf[GEN ** 5] = 0
-    buf[GEN ** 6] = 13
-    buf[GEN ** 7] = 0
+    buf[GEN] = 7
+    buf[GEN ** 2] = 11
+    buf[GEN ** 3] = 13
     a0, a1 = hash_pair(buf, 0)
     x = GEN
     b0, b1 = match_range(log(x), range(0, 2), lambda i: hash_pair(buf, i))
@@ -29,6 +25,6 @@ def main():
 
 
 def hash_pair(buf, k: Const):
-    h = StackBuf(4)
-    blake3(buf[k * 4:k * 4 + 4], buf[k * 4:k * 4 + 4], h)
+    h = StackBuf(2)
+    blake3(buf[k * 2:k * 2 + 2], buf[k * 2:k * 2 + 2], h)
     return h[0], h[1]

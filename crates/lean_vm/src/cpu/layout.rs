@@ -9,9 +9,11 @@ use super::*;
 // Shared committed columns (indices `0..N_SHARED`). The program (opcode +
 // operands) is PUBLIC, not committed: it rides the bytecode seed/finalize blocks
 // as `Coord::Public`; only the witness-dependent finalize counts are committed.
-pub const MEM: usize = 0; // the data-memory image
-pub const MFCNT: usize = 1; // per-cell memory access count, g^{A[i]}
-pub const BFCNT: usize = 2; // per-pc bytecode execution count, g^{A[pc]}
+// The data-memory image, a 128-bit word per cell committed as two K-lane columns.
+pub const MEM_LO: usize = 0;
+pub const MEM_HI: usize = 1;
+pub const MFCNT: usize = 2; // per-cell memory access count, g^{A[i]}
+pub const BFCNT: usize = 3; // per-pc bytecode execution count, g^{A[pc]}
 // flock's packed BLAKE3 witness `q_pkd`, committed in the SAME stack as every
 // other column (single PCS). Size `2^(K_LOG+n_log-6)` F64 words, always ≥ 1
 // instance (a no-BLAKE3 program commits one full padding instance). It is the
@@ -19,8 +21,8 @@ pub const BFCNT: usize = 2; // per-pc bytecode execution count, g^{A[pc]}
 // virtual and their memory-bus claims route to `q_pkd` slots (§blake3_flock), so
 // nothing duplicates them. flock's R1CS validity is discharged by the single
 // stacked Ligerito-K opening over this commitment.
-pub const QPKD: usize = 3;
-pub const N_SHARED: usize = 4;
+pub const QPKD: usize = 4;
+pub const N_SHARED: usize = 5;
 
 /// Global column indexing: the shared columns occupy `0..N_SHARED`, then each
 /// table `t` (in [`tables::tables`] order) owns the contiguous block `[base[t],
@@ -74,9 +76,9 @@ pub struct Layout {
     pub placements: Vec<witness::Placement>,
     /// `log2` of the stacked witness length.
     pub m: usize,
-    /// Public input: the first two memory cells `m[0], m[1]` (128 bits), bound to
-    /// the committed memory at verification (§8).
-    pub pi: [F64; 2],
+    /// Public input: the first two memory cells `m[0], m[1]` (each a 128-bit
+    /// word), bound to the committed memory at verification (§8).
+    pub pi: [F128T; 2],
     pub taus: [usize; 6], // (xor, mul, set, deref, jump, blake3) log row counts
     /// Real (non-padded) per-table row counts, as announced. `row_counts[5]` is
     /// the executed `BLAKE3` count, which gates the flock sub-proof.
@@ -104,7 +106,8 @@ pub(crate) struct Witness {
 pub fn col_kappa_sources(log_bytecode: usize) -> Vec<Option<(usize, usize)>> {
     let sch = schema();
     let mut k = vec![Some((0usize, 0usize)); sch.n];
-    k[MEM] = Some((1, 0));
+    k[MEM_LO] = Some((1, 0));
+    k[MEM_HI] = Some((1, 0));
     k[MFCNT] = Some((1, 0));
     k[BFCNT] = Some((0, log_bytecode));
     // qpkd_kappa(n) = K_LOG + n_blocks_log - LOG_PACKING, and tau_5 IS
@@ -160,7 +163,8 @@ pub fn block_kappa_sources(log_bytecode: usize) -> Vec<(usize, usize)> {
 fn col_kappas(log_mem: usize, log_bytecode: usize, taus: [usize; 6], n_blake3: usize) -> Vec<Option<usize>> {
     let sch = schema();
     let mut k = vec![Some(0usize); sch.n];
-    k[MEM] = Some(log_mem);
+    k[MEM_LO] = Some(log_mem);
+    k[MEM_HI] = Some(log_mem);
     k[MFCNT] = Some(log_mem);
     k[BFCNT] = Some(log_bytecode);
     // q_pkd: `2^(K_LOG+n_log-6)` F64 words, always ≥ 1 instance (`qpkd_kappa`
@@ -183,7 +187,7 @@ fn col_kappas(log_mem: usize, log_bytecode: usize, taus: [usize; 6], n_blake3: u
 /// blocks reference columns only by INDEX and the program only through its
 /// public columns, so this needs no committed witness — both prover and verifier
 /// reconstruct exactly the same structure (§7, §8).
-pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; 6], pi: [F64; 2]) -> Layout {
+pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; 6], pi: [F128T; 2]) -> Layout {
     let bytecode_size = prog.len();
     let log_bytecode = crate::log2_strict_usize(bytecode_size);
     let cells = 1usize << log_mem;
@@ -238,7 +242,9 @@ pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; 6], pi: [F64; 2])
     let operands = |op: &Op| -> (F64, F64, F64) {
         match *op {
             Op::Xor { a, b, c } | Op::Mul { a, b, c } => (g_at(a), g_at(b), g_at(c)),
-            Op::Set { o, k } => (g_at(o), k, F64::ZERO),
+            // The immediate's two K-lanes ride operand slots o2, o3 (SET has one
+            // operand offset), matching the SET table's bytecode flush.
+            Op::Set { o, k } => (g_at(o), F64(k.c0), F64(k.c1)),
             Op::Deref { alpha, beta, gamma, .. } => (g_at(alpha), g_at(beta), g_at(gamma)),
             Op::Jump { oc, od, of } => (g_at(oc), g_at(od), g_at(of)),
             // BLAKE3's first three input-word offsets; the last two ride the
@@ -292,9 +298,18 @@ pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; 6], pi: [F64; 2])
             Const(g_pow(final_fp as usize)),
         ],
     ));
-    // memory seed + finalize (every address real, no padding).
-    push.push(blk(log_mem, cells, vec![Const(SEP_MEM), Index, Const(one), Col(MEM)]));
-    pull.push(blk(log_mem, cells, vec![Const(SEP_MEM), Index, Col(MFCNT), Col(MEM)]));
+    // memory seed + finalize (every address real, no padding). The value is the
+    // two-lane 128-bit word.
+    push.push(blk(
+        log_mem,
+        cells,
+        vec![Const(SEP_MEM), Index, Const(one), Col(MEM_LO), Col(MEM_HI)],
+    ));
+    pull.push(blk(
+        log_mem,
+        cells,
+        vec![Const(SEP_MEM), Index, Col(MFCNT), Col(MEM_LO), Col(MEM_HI)],
+    ));
     // bytecode seed + finalize (program columns are public; padding entries
     // self-cancel at count 1, so the whole 2^log_bytecode is "real").
     push.push(blk(
@@ -420,8 +435,9 @@ impl Program {
             let (base, n) = (sch.base[t], table.n_committed_columns());
             table.fill(&ctx, &mut cols[base..base + n]);
         }
-        // Shared columns.
-        cols[MEM] = exec.mem.clone();
+        // Shared columns. The 128-bit memory image splits into its two K-lanes.
+        cols[MEM_LO] = exec.mem.par_iter().map(|w| F64(w.c0)).collect();
+        cols[MEM_HI] = exec.mem.par_iter().map(|w| F64(w.c1)).collect();
         cols[MFCNT] = tr.mem_count.clone(); // running counts ended at g^{A[i]}
         cols[BFCNT] = tr.bytecode_count.clone(); // running counts ended at g^{A[pc]}
         // flock's packed BLAKE3 witness q_pkd, ALWAYS committed in this same stack:

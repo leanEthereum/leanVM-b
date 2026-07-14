@@ -8,7 +8,9 @@ pub(crate) type Off = u32;
 /// once entry program counters are fixed.
 #[derive(Clone, Debug)]
 pub(crate) enum KVal {
-    Const(F64),
+    /// A 128-bit machine-word constant (the low lane is a K-value / g-power for
+    /// addresses and 64-bit literals; both lanes may be set for a 128-bit literal).
+    Const(F128T),
     Entry(String),
     /// The halt sentinel pc `g^{B-1}` (last bytecode slot), fixed once the
     /// padded bytecode size `B` is known. `main` jumps here to terminate.

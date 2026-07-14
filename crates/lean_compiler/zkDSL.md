@@ -24,15 +24,27 @@ no-ops, so this only checks that the file is well-formed.
 
 ## The field — and indices in the exponent
 
-Every runtime value is one element of GF(2^128) in GHASH form
-(`F_2[x]/(x^128 + x^7 + x^2 + x + 1)`). There are no runtime integers.
+Machine **words** — the contents of a memory cell, an immediate, a hashed
+value, the `JUMP` condition — are 128-bit elements of the binary field
+`E = GF(2^128)`, realized as the degree-2 tower over `K = GF(2^64)`:
+`E = K[y]/(y^2 + y + x^61)` (**not** the GHASH representation). **Addresses**,
+the program counter, the frame pointer, read counters, operands, opcodes, and
+domain separators live in the 64-bit subfield `K = GF(2^64)`. There are no
+runtime integers.
 
-- `+` is field addition = bitwise **XOR** (so `x + x == 0`),
-- `*` is the field (GHASH) product,
-- an integer literal `n` denotes the field element with bit pattern `n`
-  (bit `k` is the coefficient of `x^k`) — `5` is `1 + x^2`, not "five",
-- `GEN` is the fixed generator `g = x` (multiplicative order `2^128 − 1`),
-- `GEN ** e` is the compile-time constant `g^e` (`**` takes base `GEN` and a
+- `+` is field addition = bitwise **XOR** (128-bit on words, so `x + x == 0`),
+- `*` is the field product in `E` (the tower product); for g-powers and
+  addresses it stays within `K`,
+- an integer literal `n` denotes the machine word whose **raw bit pattern** is
+  `n`, now up to 128 bits: the low 64 bits are the `K`-lane, the high 64 bits
+  the `y`-lane. So `5` is `1 + x^2` (low lane, high lane 0), not "five"; a
+  literal `≥ 2^64` sets the high lane too. In particular `2 ** 64`
+  (`18446744073709551616`) is the tower generator `y` — the word with only bit
+  64 set — so `lo + hi * (2 ** 64)` packs two 64-bit lanes into one 128-bit
+  word,
+- `GEN` is the fixed generator `g = x` of the 64-bit subfield `K^×`
+  (multiplicative order `2^64 − 1`),
+- `GEN ** e` is the compile-time constant `g^e ∈ K` (`**` takes base `GEN` and a
   compile-time integer exponent — a literal, a constant, an `unroll` variable,
   `len(...)`, or index arithmetic of those). So `buf[GEN ** i]` names heap cell
   `i` directly inside an `unroll` loop, with no running-pointer cursor.
@@ -41,10 +53,10 @@ Every runtime value is one element of GF(2^128) in GHASH form
   or field arithmetic in a value position (`x ** k`, e.g. a loop counter `g^i`
   raised to a stride to reach cell `i·stride`). The base may be runtime.
 
-A logical **index** `i` is carried as `g^i`: incrementing is one
-multiplication by `GEN`, and memory/bytecode addresses are g-powers. This is
-the design idiom of the whole VM — loops, heap addressing, and range checks
-below all live in the exponent.
+A logical **index** `i` is carried as `g^i` in the 64-bit subfield (order
+`2^64 − 1`): incrementing is one multiplication by `GEN`, and memory/bytecode
+addresses are g-powers. This is the design idiom of the whole VM — loops, heap
+addressing, and range checks below all live in the exponent, in `K`.
 
 ## Program shape
 
@@ -69,7 +81,8 @@ and blank lines are free. Indentation is block structure, as in Python.
 
 ## Public input
 
-Memory cells `m[0]` and `m[1]` hold the two public-input field elements. A
+Memory cells `m[0]` and `m[1]` hold the two public-input words, each a 128-bit
+machine word. A
 program *publishes* results by asserting them against those cells through the
 write-once heap store (the pointer `g^0` addresses absolute memory):
 
@@ -182,8 +195,8 @@ per call. Every non-`main` function must end in an explicit `return`; in
 
 ```python
 def hash_pair(buf, k: Const):
-    h = StackBuf(4)
-    blake3(buf[k * 4:k * 4 + 4], buf[k * 4:k * 4 + 4], h)
+    h = StackBuf(2)
+    blake3(buf[k * 2:k * 2 + 2], buf[k * 2:k * 2 + 2], h)
     return h[0], h[1]
 ```
 
@@ -411,7 +424,7 @@ for i in unroll(0, 7):
 
 def chain(buf, n: Const):
     for i in unroll(0, n):           # a Const parameter as a bound
-        blake3(buf[i * 4:i * 4 + 4], buf[i * 4:i * 4 + 4], buf[i * 4 + 4:i * 4 + 8])
+        blake3(buf[i * 2:i * 2 + 2], buf[i * 2:i * 2 + 2], buf[i * 2 + 2:i * 2 + 4])
     return
 ```
 
@@ -552,7 +565,7 @@ one amortized `SET` per distinct bound per frame:
    back-solves the complement `y = g^{k-1-e}` (the one unknown operand of a
    known product), and the double-write asserts `x·y = g^{k-1}`;
 3. `DEREF` through `y` — bounds the complement; a "negative" `k-1-e` would
-   wrap to `≈ 2^128`, far beyond any memory size, so together `e ≤ k-1`.
+   wrap to `≈ 2^64`, far beyond any memory size, so together `e ≤ k-1`.
 
 The two `DEREF` target cells are unconstrained touches, back-filled at the end
 of execution. A failing check surfaces at witness generation as the
@@ -561,27 +574,25 @@ complement's `DEREF` panic ("not a small g-power … a failed range check").
 ## BLAKE3
 
 ```python
-h = StackBuf(4)
+h = StackBuf(2)
 blake3(a, b, h)                    # digest of (a, b) written into h
-blake3(t[0:4], t[x:x + 4], t[8:12])  # slices of one large StackBuf
-blake3(h, hb[0:4], hb[4:8])         # HeapBuf slices, input and output
-blake3(hb[i:i + 4], h, hb[j:j + 4])  # runtime-indexed heap slices (i, j g-powers)
+blake3(t[0:2], t[x:x + 2], t[4:6])  # slices of one large StackBuf
+blake3(h, hb[0:2], hb[2:4])         # HeapBuf slices, input and output
+blake3(hb[i:i + 2], h, hb[j:j + 2])  # runtime-indexed heap slices (i, j g-powers)
 ```
 
 `blake3(a, b, out)` is a **statement**: it compresses the two 256-bit operands
-`a`, `b` (64 bytes) and writes the 32-byte digest into the 4-cell run `out`.
-Operands are size-4 `StackBuf`s or 4-cell slices:
+`a`, `b` (64 bytes) and writes the 32-byte digest into the 2-cell run `out`.
+Operands are size-2 `StackBuf`s or 2-cell slices:
 
 - **stack operands** are read/written in place — zero copies; a self-hash
-  `blake3(h, h, out)` aliases one quad into both inputs;
+  `blake3(h, h, out)` aliases one 2-cell pair into both inputs;
 - the instruction addresses its **four 128-bit input chunks independently**
-  (each chunk = two consecutive cells), so when a 256-bit operand is
+  (each chunk = one cell), so when a 256-bit operand is
   *assembled* from values that live in different places — the idiom
-  `p = StackBuf(4); p[0] = t0; p[1] = t1; p[2] = pp0; p[3] = pp1;
-  blake3(p, …)` — the copies vanish: a stack store of a plain copy or a zero
-  is forwarded to its source (see "Variables"), and `BLAKE3` reads each chunk
-  where it already is, provided the pair stays contiguous at the source (a
-  chunk whose two cells forward to non-adjacent places is materialized);
+  `p = StackBuf(2); p[0] = t0; p[1] = t1; blake3(p, …)` — the copies vanish:
+  a stack store of a plain copy or a zero is forwarded to its source (see
+  "Variables"), and `BLAKE3` reads each chunk where it already is;
 - **heap slices** are still bridged through the stack for the *input pull* (the
   operand's words come from the heap): +1 `DEREF` per heap cell, and the output,
   if a heap slice, is stored after — write-once memory fills whichever side is
