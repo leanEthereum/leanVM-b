@@ -550,19 +550,94 @@ def eqtree(point_ptr, out, n_coords: Const):
 
 
 @inline
-def walk_add(acc, alpha, x, y, out, ulow, uh, wt, cb: Const):
-    # One 32-bit ADD of the circuit walk: 31 carry rows at rows cb..cb+31
-    # (A-side X[i]+cin, B-side Y[i]+cin, cin the running prefix of the
-    # carry_aux column weights), each weighted on the fly by the row weight
-    # ulow[row % 64] * uh[row // 64]; the sum wires X[i]+Y[i]+cin go to out.
+def eqtree_stack(point_ptr, out, n_coords: Const, rev: Const):
+    # eqtree into a StackBuf (size 2^(n_coords+1) - 2; the final tensor starts
+    # at offset 2^n_coords - 2): stack addressing makes every read/write free
+    # where the HeapBuf variant pays a DEREF. rev = 1 binds coordinate c to
+    # point_ptr[n_coords - 1 - c] (a reversed tensor, no copy buffer).
+    if rev == 0:
+        r0 = point_ptr[GEN ** 0]
+    else:
+        r0 = point_ptr[GEN ** (n_coords - 1)]
+    out[0] = 1 + r0
+    out[1] = r0
+    for t in unroll(1, n_coords):
+        if rev == 0:
+            rt = point_ptr[GEN ** t]
+        else:
+            rt = point_ptr[GEN ** (n_coords - 1 - t)]
+        one_plus_rt = 1 + rt
+        for i in unroll(0, 2 ** t):
+            pw = out[2 ** t - 2 + i]
+            out[2 ** (t + 1) - 2 + i] = pw * one_plus_rt
+            out[2 ** (t + 1) - 2 + 2 ** t + i] = pw * rt
+    return
+
+
+@inline
+def walk_add(acca, accb, x, y, out, ulow, uh, wt, cb: Const):
+    # One 32-bit ADD of the circuit walk: 31 carry rows at cb..cb+31 (A-side
+    # X[i]+cin, B-side Y[i]+cin, cin the running prefix of the carry_aux
+    # column weights); the sum wires X[i]+Y[i]+cin go to out. Run-factored:
+    # within a 64-aligned row run uh[row // 64] is constant, so the run
+    # accumulates the ulow-weighted A/B sides and uh multiplies once per run
+    # close; alpha touches nothing here (the caller applies it once, at the
+    # very end, to the whole A-side accumulator).
     cin = 0
+    runa = 0
+    runb = 0
     for i in unroll(0, 31):
+        if i != 0:
+            if (cb + i) % 64 == 0:
+                acca += uh[(cb + i - 1) // 64] * runa
+                accb += uh[(cb + i - 1) // 64] * runb
+                runa = 0
+                runb = 0
         asd = x[i] + cin
         bsd = y[i] + cin
         out[i] = asd + y[i]
-        acc += ulow[(cb + i) % 64] * uh[(cb + i) // 64] * (alpha * asd + bsd)
+        runa += ulow[(cb + i) % 64] * asd
+        runb += ulow[(cb + i) % 64] * bsd
         cin = cin + wt[cb + i]
+    acca += uh[(cb + 30) // 64] * runa
+    accb += uh[(cb + 30) // 64] * runb
     out[31] = x[31] + cin + y[31]
+    return acca, accb
+
+
+@inline
+def lin_run(acca, vals, ulow, uh, sl: Const):
+    # A 32-row lin-func run (lin-id / out rows) at rows sl..sl+32, A-side
+    # values in vals, run-factored like walk_add. The B = [Z_CONST] side is
+    # NOT paid per row: it rides the caller's useq set sum.
+    runa = 0
+    for i in unroll(0, 32):
+        if i != 0:
+            if (sl + i) % 64 == 0:
+                acca += uh[(sl + i - 1) // 64] * runa
+                runa = 0
+        runa += ulow[(sl + i) % 64] * vals[i]
+    acca += uh[(sl + 31) // 64] * runa
+    return acca
+
+
+@inline
+def useq(uprefix, uh, base: Const, length: Const):
+    # Sum of the row weights over `length` consecutive rows from `base`: one
+    # uh product per 64-window, the ulow part a prefix-table window sum
+    # (uprefix[k] = ulow[0] + .. + ulow[k-1]).
+    acc = 0
+    for k in unroll(base // 64, (base + length + 63) // 64):
+        if k == base // 64:
+            if k == (base + length - 1) // 64:
+                acc += uh[k] * (uprefix[(base + length - 1) % 64 + 1] + uprefix[base % 64])
+            else:
+                acc += uh[k] * (uprefix[64] + uprefix[base % 64])
+        else:
+            if k == (base + length - 1) // 64:
+                acc += uh[k] * uprefix[(base + length - 1) % 64 + 1]
+            else:
+                acc += uh[k] * uprefix[64]
     return acc
 
 
@@ -570,39 +645,46 @@ def matrix_walk(alpha, zz, rhos, rs, zpart):
     # The lincheck matrix part alpha*A0(r)+B0(r), evaluated IN-CIRCUIT by the
     # forward circuit walk (flock, "Circuit walking"): thread the unsubstituted
     # BLAKE3 cascade over field wire values, a committed slot contributing its
-    # column weight, and accumulate each row's u[row]*(alpha*<A_row, w> +
-    # <B_row, w>) where the walk emits that row. O(circuit) ops; the ~21M
-    # substituted nonzeros never appear. Row weight of row r: ulow[r % 64] *
-    # uh[r >> 6] (S-domain Lagrange at the zerocheck skip zz, eq tensor of the
-    # 8 zerocheck rhos, LSB-first). Column weight of slot c: zp[c % 64] *
-    # wh[c >> 6] (the revealed z_partial values, eq tensor of the REVERSED
-    # lincheck challenges).
+    # column weight, and accumulate each row's contribution where the walk
+    # emits that row. O(circuit) ops; the ~21M substituted nonzeros never
+    # appear. Row weight of row r: ulow[r % 64] * uh[r >> 6] (S-domain
+    # Lagrange at the zerocheck skip zz, eq tensor of the 8 zerocheck rhos,
+    # LSB-first). Column weight of slot c: zp[c % 64] * wh[c >> 6] (the
+    # revealed z_partial values, eq tensor of the REVERSED lincheck
+    # challenges). The A and B sides accumulate separately and alpha
+    # multiplies once at the very end; the mirror of this exact algorithm is
+    # tested against the materialized matrices in
+    # flock::blake3::tests::walk_schedule_drives_the_guest_algorithm.
     nums = StackBuf(64)
     lag64(zz, nums, 0)
     ulow = StackBuf(64)
     for i in unroll(0, 64):
         ulow[i] = nums[i] * LAGRANGE_INV_S[i]
-    ur_tree = HeapBuf(510)
-    eqtree(rhos, ur_tree, 8)
+    uprefix = StackBuf(65)
+    uprefix[0] = 0
+    for k in unroll(0, 64):
+        uprefix[k + 1] = uprefix[k] + ulow[k]
+    utree = StackBuf(510)
+    eqtree_stack(rhos, utree, 8, 0)
     uh = StackBuf(256)
     for i in unroll(0, 256):
-        uh[i] = ur_tree[GEN ** (254 + i)]
-    rsrev = HeapBuf(8)
-    for c in unroll(0, 8):
-        rsrev[GEN ** c] = rs[GEN ** (7 - c)]
-    wr_tree = HeapBuf(510)
-    eqtree(rsrev, wr_tree, 8)
+        uh[i] = utree[254 + i]
+    wtree = StackBuf(510)
+    eqtree_stack(rs, wtree, 8, 1)
     wh = StackBuf(256)
     for i in unroll(0, 256):
-        wh[i] = wr_tree[GEN ** (254 + i)]
+        wh[i] = wtree[254 + i]
     zp = StackBuf(64)
     for i in unroll(0, 64):
         zp[i] = zpart[GEN ** i]
-    # The column-weight table over all 2^K_LOG committed slots.
+    # The column-weight table, skipping the never-read regions (the padding
+    # after the constant column and everything from out_hi on: those columns
+    # appear in no row).
     wt = StackBuf(16384)
-    for t in unroll(0, 256):
-        for i in unroll(0, 64):
-            wt[t * 64 + i] = wh[t] * zp[i]
+    for j in unroll(0, WALK_Z_CONST + 1):
+        wt[j] = wh[j // 64] * zp[j % 64]
+    for j in unroll(WALK_M_BASE, WALK_OUT_HI_BASE):
+        wt[j] = wh[j // 64] * zp[j % 64]
     wc = wt[WALK_Z_CONST]
     # Wire buffers: 128 initial cells (a: cv words 0..4; c: the IV constant
     # words), then 32 cells per G (that G's cascading a_2 / c_2).
@@ -616,7 +698,9 @@ def matrix_walk(alpha, zz, rhos, rs, zpart):
                 cw[k * 32 + i] = wc
             else:
                 cw[k * 32 + i] = 0
-    acc = 0
+    acca = 0
+    accb = 0
+    bset = 0
     for g in unroll(0, 56):
         # Lane views for this G (free aliases through the schedule).
         xa = StackBuf(32)
@@ -634,9 +718,9 @@ def matrix_walk(alpha, zz, rhos, rs, zpart):
             myv[i] = wt[WALK_MYB[g] + i]
         # The six ADDs; rotations are index relabelings (free aliases).
         t0 = StackBuf(32)
-        acc = walk_add(acc, alpha, xa, yb, t0, ulow, uh, wt, WALK_GS_BASE + WALK_G_STRIDE * g)
+        acca, accb = walk_add(acca, accb, xa, yb, t0, ulow, uh, wt, WALK_GS_BASE + WALK_G_STRIDE * g)
         a1 = StackBuf(32)
-        acc = walk_add(acc, alpha, t0, mxv, a1, ulow, uh, wt, WALK_GS_BASE + WALK_G_STRIDE * g + 31)
+        acca, accb = walk_add(acca, accb, t0, mxv, a1, ulow, uh, wt, WALK_GS_BASE + WALK_G_STRIDE * g + 31)
         dx = StackBuf(32)
         d1 = StackBuf(32)
         for i in unroll(0, 32):
@@ -644,7 +728,7 @@ def matrix_walk(alpha, zz, rhos, rs, zpart):
         for i in unroll(0, 32):
             d1[i] = dx[(i + 16) % 32]
         c1 = StackBuf(32)
-        acc = walk_add(acc, alpha, xc, d1, c1, ulow, uh, wt, WALK_GS_BASE + WALK_G_STRIDE * g + 62)
+        acca, accb = walk_add(acca, accb, xc, d1, c1, ulow, uh, wt, WALK_GS_BASE + WALK_G_STRIDE * g + 62)
         bx = StackBuf(32)
         b1 = StackBuf(32)
         for i in unroll(0, 32):
@@ -652,9 +736,9 @@ def matrix_walk(alpha, zz, rhos, rs, zpart):
         for i in unroll(0, 32):
             b1[i] = bx[(i + 12) % 32]
         t1 = StackBuf(32)
-        acc = walk_add(acc, alpha, a1, b1, t1, ulow, uh, wt, WALK_GS_BASE + WALK_G_STRIDE * g + 93)
+        acca, accb = walk_add(acca, accb, a1, b1, t1, ulow, uh, wt, WALK_GS_BASE + WALK_G_STRIDE * g + 93)
         a2 = StackBuf(32)
-        acc = walk_add(acc, alpha, t1, myv, a2, ulow, uh, wt, WALK_GS_BASE + WALK_G_STRIDE * g + 124)
+        acca, accb = walk_add(acca, accb, t1, myv, a2, ulow, uh, wt, WALK_GS_BASE + WALK_G_STRIDE * g + 124)
         d2x = StackBuf(32)
         d2 = StackBuf(32)
         for i in unroll(0, 32):
@@ -662,17 +746,20 @@ def matrix_walk(alpha, zz, rhos, rs, zpart):
         for i in unroll(0, 32):
             d2[i] = d2x[(i + 8) % 32]
         c2 = StackBuf(32)
-        acc = walk_add(acc, alpha, c1, d2, c2, ulow, uh, wt, WALK_GS_BASE + WALK_G_STRIDE * g + 155)
+        acca, accb = walk_add(acca, accb, c1, d2, c2, ulow, uh, wt, WALK_GS_BASE + WALK_G_STRIDE * g + 155)
         bnx = StackBuf(32)
         bn = StackBuf(32)
         for i in unroll(0, 32):
             bnx[i] = b1[i] + c2[i]
         for i in unroll(0, 32):
             bn[i] = bnx[(i + 7) % 32]
-        # Lin-id rows (b_new, d_new) and the cascade write-back.
+        # Lin-id rows (b_new, d_new: A-side run-factored, B-side pooled into
+        # the set sum over their 64 consecutive rows) and the cascade
+        # write-back.
+        acca = lin_run(acca, bn, ulow, uh, WALK_GS_BASE + WALK_G_STRIDE * g + 186)
+        acca = lin_run(acca, d2, ulow, uh, WALK_GS_BASE + WALK_G_STRIDE * g + 218)
+        bset += useq(uprefix, uh, WALK_GS_BASE + WALK_G_STRIDE * g + 186, 64)
         for i in unroll(0, 32):
-            acc += ulow[(WALK_GS_BASE + WALK_G_STRIDE * g + 186 + i) % 64] * uh[(WALK_GS_BASE + WALK_G_STRIDE * g + 186 + i) // 64] * (alpha * bn[i] + wc)
-            acc += ulow[(WALK_GS_BASE + WALK_G_STRIDE * g + 218 + i) % 64] * uh[(WALK_GS_BASE + WALK_G_STRIDE * g + 218 + i) // 64] * (alpha * d2[i] + wc)
             aw[128 + g * 32 + i] = a2[i]
             cw[128 + g * 32 + i] = c2[i]
     # Finalization rows: out_lo[w] = state[w] + state[w+8], out_hi[w] =
@@ -685,19 +772,35 @@ def matrix_walk(alpha, zz, rhos, rs, zpart):
             fin[(8 + k) * 32 + i] = cw[WALK_FIN_C[k] + i]
             fin[(12 + k) * 32 + i] = wt[WALK_FIN_D[k] + i]
     for k in unroll(0, 8):
+        lov = StackBuf(32)
+        hiv = StackBuf(32)
         for i in unroll(0, 32):
-            lo_v = fin[k * 32 + i] + fin[(8 + k) * 32 + i]
-            acc += ulow[(WALK_OUT_LO_BASE + k * 32 + i) % 64] * uh[(WALK_OUT_LO_BASE + k * 32 + i) // 64] * (alpha * lo_v + wc)
-            hi_v = fin[(8 + k) * 32 + i] + wt[k * 32 + i]
-            acc += ulow[(WALK_OUT_HI_BASE + k * 32 + i) % 64] * uh[(WALK_OUT_HI_BASE + k * 32 + i) // 64] * (alpha * hi_v + wc)
-    # Free-input rows (the 512 message bits): A = [slot], B = [Z_CONST].
-    for j in unroll(0, 512):
-        acc += ulow[(WALK_M_BASE + j) % 64] * uh[(WALK_M_BASE + j) // 64] * (alpha * wt[WALK_M_BASE + j] + wc)
-    # Pinned rows (A = B = [Z_CONST]), including the constant row itself.
-    awc = (alpha + 1) * wc
+            lov[i] = fin[k * 32 + i] + fin[(8 + k) * 32 + i]
+            hiv[i] = fin[(8 + k) * 32 + i] + wt[k * 32 + i]
+        acca = lin_run(acca, lov, ulow, uh, WALK_OUT_LO_BASE + k * 32)
+        acca = lin_run(acca, hiv, ulow, uh, WALK_OUT_HI_BASE + k * 32)
+    bset += useq(uprefix, uh, WALK_OUT_LO_BASE, 256)
+    bset += useq(uprefix, uh, WALK_OUT_HI_BASE, 256)
+    # Free-input rows (the 512 message bits): row index == column index, so
+    # the A side factors as (sum ulow*zp) * (sum uh*wh over the m windows).
+    lzs = 0
+    for l in unroll(0, 64):
+        lzs += ulow[l] * zp[l]
+    uwh = 0
+    for h in unroll(WALK_M_BASE // 64, (WALK_M_BASE + 512) // 64):
+        uwh += uh[h] * wh[h]
+    acca += lzs * uwh
+    bset += useq(uprefix, uh, WALK_M_BASE, 512)
+    # Pinned rows (A = B = [Z_CONST], including the constant row): wc times
+    # the set weight, on BOTH sides.
+    upin = 0
     for t in unroll(0, len(WALK_PIN_ROWS)):
-        acc += ulow[WALK_PIN_ROWS[t] % 64] * uh[WALK_PIN_ROWS[t] // 64] * awc
-    return acc
+        upin += ulow[WALK_PIN_ROWS[t] % 64] * uh[WALK_PIN_ROWS[t] // 64]
+    spin = wc * upin
+    acca += spin
+    accb += spin
+    accb += wc * bset
+    return alpha * acca + accb
 
 
 def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, cursor):

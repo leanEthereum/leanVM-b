@@ -1552,17 +1552,49 @@ mod tests {
     /// `bilinear_walk` (itself tested against the materialized matrices
     /// above) validates the schedule and the guest algorithm before the
     /// zkDSL transcription.
+    ///
+    /// The algorithm exploits the weight factorizations the guest gets for
+    /// free: `u[row] = ulow[row % 64] * uh[row >> 6]` and `wt[col] =
+    /// zp[col % 64] * wh[col >> 6]`.
+    ///   - Two global accumulators (A-side, B-side); alpha multiplies ONCE at
+    ///     the very end, so no per-row alpha product.
+    ///   - Every row family is a run of consecutive rows, so `uh` is constant
+    ///     within 64-aligned runs: the inner loops accumulate ulow-weighted
+    ///     terms and `uh` multiplies once per run close.
+    ///   - The B = [Z_CONST] rows (lin-id, out, m) contribute wc * (sum of u
+    ///     over a FIXED row set); with the ulow prefix table `p` each
+    ///     64-window collapses to 1-2 multiplications.
+    ///   - The m rows have row index == column index, so their A-side factors
+    ///     completely: (sum ulow*zp) * (sum uh*wh over the m windows).
     #[test]
     fn walk_schedule_drives_the_guest_algorithm() {
         let s = walk_schedule();
         let mut rng = Rng::new(0x5EED);
         let alpha = rand_f128(&mut rng);
-        let u: Vec<F128> = (0..K).map(|_| rand_f128(&mut rng)).collect();
-        let wt: Vec<F128> = (0..K).map(|_| rand_f128(&mut rng)).collect();
+        let ulow: Vec<F128> = (0..64).map(|_| rand_f128(&mut rng)).collect();
+        let uh: Vec<F128> = (0..256).map(|_| rand_f128(&mut rng)).collect();
+        let zp: Vec<F128> = (0..64).map(|_| rand_f128(&mut rng)).collect();
+        let wh: Vec<F128> = (0..256).map(|_| rand_f128(&mut rng)).collect();
+        let u: Vec<F128> = (0..K).map(|r| ulow[r % 64] * uh[r >> 6]).collect();
+        let w_full: Vec<F128> = (0..K).map(|c| zp[c % 64] * wh[c >> 6]).collect();
 
+        // The column-weight table, skipping the never-read regions
+        // [Z_CONST+1, M_BASE) and [OUT_HI_BASE, K).
+        let mut wt = vec![F128::ZERO; K];
+        for j in (0..=Z_CONST_POS).chain(M_BASE..OUT_HI_BASE) {
+            wt[j] = zp[j % 64] * wh[j >> 6];
+        }
         let wc = wt[Z_CONST_POS];
-        let urow = |row: usize| u[row];
-        let mut acc = F128::ZERO;
+        // ulow prefix sums: p[k] = ulow[0] + .. + ulow[k-1]; t_all = p[64].
+        let mut p = [F128::ZERO; 65];
+        for k in 0..64 {
+            p[k + 1] = p[k] + ulow[k];
+        }
+        let t_all = p[64];
+
+        let mut acca = F128::ZERO; // A-side, alpha-free
+        let mut accb = F128::ZERO; // B-side
+        let mut bset = F128::ZERO; // sum of u over the B = [Z_CONST] row sets
 
         // Wire buffers: 128 initial cells + 32 per G.
         let mut aw = vec![F128::ZERO; 128 + 32 * N_G];
@@ -1574,23 +1606,58 @@ mod tests {
             }
         }
 
-        // One ADD: sums out, carry rows into acc, cin as a running prefix.
-        let walk_add = |acc: &mut F128, x: &[F128], y: &[F128], cb: usize, wt: &[F128]| {
+        // One ADD: sums out, carry rows run-factored into acca/accb.
+        let walk_add = |acca: &mut F128, accb: &mut F128, x: &[F128], y: &[F128], cb: usize, wt: &[F128]| {
             let mut sums = [F128::ZERO; WORD_BITS];
             let mut cin = F128::ZERO;
-            for i in 0..WORD_BITS {
+            let (mut runa, mut runb) = (F128::ZERO, F128::ZERO);
+            for i in 0..CARRY_BITS_PER_ADD {
+                if i != 0 && (cb + i) % 64 == 0 {
+                    *acca += uh[(cb + i - 1) >> 6] * runa;
+                    *accb += uh[(cb + i - 1) >> 6] * runb;
+                    runa = F128::ZERO;
+                    runb = F128::ZERO;
+                }
                 let asd = x[i] + cin;
                 let bsd = y[i] + cin;
                 sums[i] = asd + y[i];
-                if i < CARRY_BITS_PER_ADD {
-                    *acc += urow(cb + i) * (alpha * asd + bsd);
-                    cin += wt[cb + i];
-                }
+                runa += ulow[(cb + i) % 64] * asd;
+                runb += ulow[(cb + i) % 64] * bsd;
+                cin += wt[cb + i];
             }
+            *acca += uh[(cb + 30) >> 6] * runa;
+            *accb += uh[(cb + 30) >> 6] * runb;
+            sums[31] = x[31] + cin + y[31];
             sums
         };
         let rot = |x: &[F128; WORD_BITS], n: usize| -> [F128; WORD_BITS] {
             std::array::from_fn(|i| x[(i + n) % WORD_BITS])
+        };
+        // A run of 32 lin rows at base sl, values from `val`: A-side
+        // run-factored into acca (the B side rides the set sum).
+        let lin_run = |acca: &mut F128, val: &dyn Fn(usize) -> F128, sl: usize| {
+            let mut runa = F128::ZERO;
+            for i in 0..WORD_BITS {
+                if i != 0 && (sl + i) % 64 == 0 {
+                    *acca += uh[(sl + i - 1) >> 6] * runa;
+                    runa = F128::ZERO;
+                }
+                runa += ulow[(sl + i) % 64] * val(i);
+            }
+            *acca += uh[(sl + 31) >> 6] * runa;
+        };
+        // Sum of u over `len` consecutive rows from `base` (64-window
+        // decomposition through the ulow prefix table).
+        let useq = |base: usize, len: usize| -> F128 {
+            let mut acc = F128::ZERO;
+            let (mut r, endr) = (base, base + len);
+            while r < endr {
+                let stop = ((r >> 6) + 1) << 6;
+                let (lo, hi) = (r % 64, if endr < stop { ((endr - 1) % 64) + 1 } else { 64 });
+                acc += uh[r >> 6] * (p[hi] + p[lo]);
+                r = stop;
+            }
+            acc
         };
 
         for g in 0..N_G {
@@ -1602,24 +1669,23 @@ mod tests {
             let mx: [F128; 32] = std::array::from_fn(|i| wt[s.mxb[g] + i]);
             let my: [F128; 32] = std::array::from_fn(|i| wt[s.myb[g] + i]);
 
-            let t0 = walk_add(&mut acc, &xa, &yb, cb, &wt);
-            let a1 = walk_add(&mut acc, &t0, &mx, cb + 31, &wt);
+            let t0 = walk_add(&mut acca, &mut accb, &xa, &yb, cb, &wt);
+            let a1 = walk_add(&mut acca, &mut accb, &t0, &mx, cb + 31, &wt);
             let dx: [F128; 32] = std::array::from_fn(|i| yd[i] + a1[i]);
             let d1 = rot(&dx, 16);
-            let c1 = walk_add(&mut acc, &xc, &d1, cb + 62, &wt);
+            let c1 = walk_add(&mut acca, &mut accb, &xc, &d1, cb + 62, &wt);
             let bx: [F128; 32] = std::array::from_fn(|i| yb[i] + c1[i]);
             let b1 = rot(&bx, 12);
-            let t1 = walk_add(&mut acc, &a1, &b1, cb + 93, &wt);
-            let a2 = walk_add(&mut acc, &t1, &my, cb + 124, &wt);
+            let t1 = walk_add(&mut acca, &mut accb, &a1, &b1, cb + 93, &wt);
+            let a2 = walk_add(&mut acca, &mut accb, &t1, &my, cb + 124, &wt);
             let d2x: [F128; 32] = std::array::from_fn(|i| d1[i] + a2[i]);
             let d2 = rot(&d2x, 8);
-            let c2 = walk_add(&mut acc, &c1, &d2, cb + 155, &wt);
-            let bnx: [F128; 32] = std::array::from_fn(|i| b1[i] + c2[i]);
-            let bn = rot(&bnx, 7);
-            for i in 0..WORD_BITS {
-                acc += urow(cb + 186 + i) * (alpha * bn[i] + wc);
-                acc += urow(cb + 218 + i) * (alpha * d2[i] + wc);
-            }
+            let c2 = walk_add(&mut acca, &mut accb, &c1, &d2, cb + 155, &wt);
+            // Lin-id rows: b_new bit i = (b1 ^ c2)[(i+7) % 32], inline; d_new = d2.
+            lin_run(&mut acca, &|i| b1[(i + 7) % 32] + c2[(i + 7) % 32], cb + 186);
+            lin_run(&mut acca, &|i| d2[i], cb + 218);
+            // Their B = [Z_CONST] side: 64 consecutive rows [cb+186, cb+250).
+            bset += useq(cb + 186, 64);
             for i in 0..WORD_BITS {
                 aw[walk_wire_off(g) + i] = a2[i];
                 cw[walk_wire_off(g) + i] = c2[i];
@@ -1637,23 +1703,30 @@ mod tests {
             }
         }
         for w in 0..8 {
-            for i in 0..WORD_BITS {
-                let lo = fin[w * 32 + i] + fin[(8 + w) * 32 + i];
-                acc += urow(OUT_LO_BASE + w * 32 + i) * (alpha * lo + wc);
-                let hi = fin[(8 + w) * 32 + i] + wt[w * 32 + i];
-                acc += urow(OUT_HI_BASE + w * 32 + i) * (alpha * hi + wc);
-            }
+            lin_run(&mut acca, &|i| fin[w * 32 + i] + fin[(8 + w) * 32 + i], OUT_LO_BASE + w * 32);
+            lin_run(&mut acca, &|i| fin[(8 + w) * 32 + i] + wt[w * 32 + i], OUT_HI_BASE + w * 32);
         }
-        // Free-input rows and pinned rows.
-        for j in 0..16 * WORD_BITS {
-            acc += urow(M_BASE + j) * (alpha * wt[M_BASE + j] + wc);
-        }
-        let awc = (alpha + F128::ONE) * wc;
-        for &row in &s.pin_rows {
-            acc += urow(row) * awc;
-        }
+        bset += useq(OUT_LO_BASE, 256);
+        bset += useq(OUT_HI_BASE, 256);
 
-        assert_eq!(acc, bilinear_walk(alpha, &u, &wt));
+        // Free-input rows: row index == column index, so the A side factors.
+        let lzs: F128 = (0..64).map(|l| ulow[l] * zp[l]).fold(F128::ZERO, |a, x| a + x);
+        let uwh: F128 = (M_BASE >> 6..(M_BASE + 512) >> 6)
+            .map(|h| uh[h] * wh[h])
+            .fold(F128::ZERO, |a, x| a + x);
+        acca += lzs * uwh;
+        bset += useq(M_BASE, 512);
+
+        // Pinned rows: A = B = [Z_CONST], so wc * (sum of u) lands on BOTH sides.
+        let upin: F128 =
+            s.pin_rows.iter().map(|&r| ulow[r % 64] * uh[r >> 6]).fold(F128::ZERO, |a, x| a + x);
+        let spin = wc * upin;
+        acca += spin;
+        accb += spin;
+        accb += wc * bset;
+
+        let acc = alpha * acca + accb;
+        assert_eq!(acc, bilinear_walk(alpha, &u, &w_full));
     }
 
     #[test]
