@@ -104,9 +104,10 @@ LAGRANGE_INV_S = LAGRANGE_INV_S_PLACEHOLDER
 LINCHECK_ROUNDS = LINCHECK_ROUNDS_PLACEHOLDER
 PIN_COLUMN = PIN_COLUMN_PLACEHOLDER
 K_LOG = K_LOG_PLACEHOLDER
-# Circuit walk (flock, "Circuit walking"): matrix_walk evaluates the lincheck
-# matrix part in-circuit by walking the unsubstituted BLAKE3 cascade, so the
-# claim needs no deferral. The WALK_* tables are the static routing schedule
+# Circuit walk (flock, "Circuit walking"): matrix_walk evaluates the batching
+# sumcheck's REDUCED matrix claims in-circuit by walking the unsubstituted
+# BLAKE3 cascade — one walk per aggregation, and nothing matrix-shaped in the
+# public input. The WALK_* tables are the static routing schedule
 # (flock::blake3::walk_schedule): per-G lane sources (a/c lanes: wire-buffer
 # offsets, b/d/mx/my: committed slot bases), the final-state sources, the
 # pinned rows (A = B = [Z_CONST]), the 4 IV words seeding the c lanes, and
@@ -211,9 +212,11 @@ QPKD_VARS_CAP = QPKD_VARS_CAP_PLACEHOLDER
 TRACE_DUAL_BASIS = TRACE_DUAL_BASIS_PLACEHOLDER
 # Phase F: log rows of the bytecode blocks (the deferred bytecode points).
 BYTECODE_LOG = BYTECODE_LOG_PLACEHOLDER
-# One sub-proof's deferred-claim region: BYTECODE_LOG + LOG2_BYTECODE_COLS + 1
-# words, the bytecode claim only (see verify_sub's defer_out layout; the flock
-# matrices are evaluated in-circuit by matrix_walk, never deferred).
+# One sub-proof's deferred-claim region: BYTECODE_LOG + LOG2_BYTECODE_COLS
+# + 2*LINCHECK_ROUNDS + 68 words (see verify_sub's defer_out layout). The
+# matrix part never reaches the public input: the aggregation batches all
+# subs' claims through one sumcheck and walks its reduced claim in-circuit
+# (matrix_walk).
 DEFER_SIZE = DEFER_SIZE_PLACEHOLDER
 # Aggregation: NSUB sub-proofs of the same program; per-sub proof data arrives
 # as hints. The seed sponge state after the two byte-string absorbs is baked
@@ -641,42 +644,45 @@ def useq(uprefix, uh, base: Const, length: Const):
     return acc
 
 
-def matrix_walk(alpha, zz, rhos, rs, zpart):
-    # The lincheck matrix part alpha*A0(r)+B0(r), evaluated IN-CIRCUIT by the
-    # forward circuit walk (flock, "Circuit walking"): thread the unsubstituted
-    # BLAKE3 cascade over field wire values, a committed slot contributing its
-    # column weight, and accumulate each row's contribution where the walk
-    # emits that row. O(circuit) ops; the ~21M substituted nonzeros never
-    # appear. Row weight of row r: ulow[r % 64] * uh[r >> 6] (S-domain
-    # Lagrange at the zerocheck skip zz, eq tensor of the 8 zerocheck rhos,
-    # LSB-first). Column weight of slot c: zp[c % 64] * wh[c >> 6] (the
-    # revealed z_partial values, eq tensor of the REVERSED lincheck
-    # challenges). The A and B sides accumulate separately and alpha
-    # multiplies once at the very end; the mirror of this exact algorithm is
-    # tested against the materialized matrices in
+def matrix_walk(mp):
+    # The REDUCED matrix claims (A0(r*), B0(r*)) of the aggregation's batching
+    # sumcheck, evaluated IN-CIRCUIT by the forward circuit walk (flock,
+    # "Circuit walking"): thread the unsubstituted BLAKE3 cascade over field
+    # wire values, a committed slot contributing its column weight, and
+    # accumulate each row's contribution where the walk emits that row.
+    # O(circuit) ops; the ~21M substituted nonzeros never appear — and ONE
+    # walk settles the whole aggregation, however many sub-proofs. mp is the
+    # 2*K_LOG-coordinate reduced point (rows then columns, LSB-first); both
+    # eq weight vectors factor at the 6/8 split: row weight of row r is
+    # ulow[r % 64] * uh[r >> 6], column weight of slot c is zp[c % 64] *
+    # wh[c >> 6]. The A and B sides accumulate separately (no batching
+    # challenge in here at all); the mirror of this exact algorithm is tested
+    # against the materialized matrices in
     # flock::blake3::tests::walk_schedule_drives_the_guest_algorithm.
-    nums = StackBuf(64)
-    lag64(zz, nums, 0)
+    ult = StackBuf(126)
+    eqtree_stack(mp, ult, 6, 0)
     ulow = StackBuf(64)
     for i in unroll(0, 64):
-        ulow[i] = nums[i] * LAGRANGE_INV_S[i]
+        ulow[i] = ult[62 + i]
     uprefix = StackBuf(65)
     uprefix[0] = 0
     for k in unroll(0, 64):
         uprefix[k + 1] = uprefix[k] + ulow[k]
     utree = StackBuf(510)
-    eqtree_stack(rhos, utree, 8, 0)
+    eqtree_stack(mp * GEN ** 6, utree, 8, 0)
     uh = StackBuf(256)
     for i in unroll(0, 256):
         uh[i] = utree[254 + i]
+    wlt = StackBuf(126)
+    eqtree_stack(mp * GEN ** K_LOG, wlt, 6, 0)
+    zp = StackBuf(64)
+    for i in unroll(0, 64):
+        zp[i] = wlt[62 + i]
     wtree = StackBuf(510)
-    eqtree_stack(rs, wtree, 8, 1)
+    eqtree_stack(mp * GEN ** (K_LOG + 6), wtree, 8, 0)
     wh = StackBuf(256)
     for i in unroll(0, 256):
         wh[i] = wtree[254 + i]
-    zp = StackBuf(64)
-    for i in unroll(0, 64):
-        zp[i] = zpart[GEN ** i]
     # The column-weight table, skipping the never-read regions (the padding
     # after the constant column and everything from out_hi on: those columns
     # appear in no row).
@@ -800,7 +806,7 @@ def matrix_walk(alpha, zz, rhos, rs, zpart):
     acca += spin
     accb += spin
     accb += wc * bset
-    return alpha * acca + accb
+    return acca, accb
 
 
 def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, cursor):
@@ -1631,7 +1637,10 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     ab_product = a_eval * b_eval  # zerocheck closes: running claim == a(r) * b(r)
     assert zc_running == ab_product
 
-    # ---- flock lincheck (matrix evaluated IN-CIRCUIT by the circuit walk) ----
+    # ---- flock lincheck (matrix evaluation DEFERRED to the aggregation,
+    # whose batching sumcheck's reduced claim is walked in-circuit) ----
+    matrix_eval = StackBuf(1)
+    hint_witness(matrix_eval[0:1], "matpart")
     fs = squeeze(fs)
     lincheck_alpha = fs[0]
     fs = squeeze(fs)
@@ -1651,17 +1660,15 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     for i in unroll(0, 2 ** K_SKIP):
         fs, w, cursor = fs_next(fs, cursor)
         z_partial[GEN ** i] = w
-    # The matrix part alpha*A0(r)+B0(r), evaluated right here by the circuit
-    # walk: the claim that used to be deferred to the outer verifier is
-    # settled in-circuit.
-    matrix_part = matrix_walk(lincheck_alpha, zerocheck_z, zerocheck_rhos, lincheck_rs, z_partial)
-    # final consistency: running == matrix part + beta * pin term. The
-    # const-pin column folds through the top-variable bindings: weight =
+    # final consistency: running == matpart (DEFERRED, settled by the
+    # aggregation's batched circuit walk) + beta * pin term. The const-pin
+    # column folds through the top-variable bindings: weight =
     # prod_j (bit_{klog-1-j}(PIN_COLUMN) ? r_j : 1+r_j), surviving z_partial index
     # = PIN_COLUMN low 6 bits.
     pin_term = lincheck_beta * eq_weight(lincheck_rs, LINCHECK_ROUNDS, PIN_COLUMN, K_LOG)
     pin_term *= z_partial[GEN ** (PIN_COLUMN % 2 ** K_SKIP)]
-    lincheck_final = matrix_part + pin_term  # running == walked matrix eval + the const-pin column contribution
+    matrix_part = matrix_eval[0]
+    lincheck_final = matrix_part + pin_term  # running == deferred matrix eval + the const-pin column contribution
     assert lc_running == lincheck_final
     # fresh z_skip; w = <lagrange_S(r_inner_skip), z_partial> (phi8 nodes 0..64).
     fs = squeeze(fs)
@@ -2002,24 +2009,35 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
 
 
     # ---- export this sub-proof's deferred-claim data to the caller ----
-    # defer_out layout: the bytecode claim only (the matrices were settled
-    # in-circuit above): [0..KBC) zeta | +0..SEL bytecode_sel | +SEL
-    # bytecode_reduced (SEL = LOG2_BYTECODE_COLS).
+    # defer_out layout, offsets after the [0..KBC) shared bytecode point
+    # (SEL = LOG2_BYTECODE_COLS, LCR = LINCHECK_ROUNDS):
+    #   +0..SEL bytecode_sel | +SEL bytecode_reduced | +SEL+1 alpha
+    #   | +SEL+2 z_skip | +SEL+3.. zrho | +SEL+3+LCR.. lincheck rs
+    #   | +SEL+3+2*LCR.. z_partial (2^K_SKIP) | +SEL+3+2^K_SKIP+2*LCR matpart.
     for k in unroll(0, BYTECODE_LOG):
         defer_out[GEN ** k] = zeta[GEN ** k]
     for k in unroll(0, LOG2_BYTECODE_COLS):
         defer_out[GEN ** (BYTECODE_LOG + k)] = bytecode_sel[GEN ** k]
     defer_out[GEN ** (BYTECODE_LOG + LOG2_BYTECODE_COLS)] = bytecode_reduced
+    defer_out[GEN ** (BYTECODE_LOG + LOG2_BYTECODE_COLS + 1)] = lincheck_alpha
+    defer_out[GEN ** (BYTECODE_LOG + LOG2_BYTECODE_COLS + 2)] = zerocheck_z
+    for k in unroll(0, LINCHECK_ROUNDS):
+        defer_out[GEN ** (BYTECODE_LOG + LOG2_BYTECODE_COLS + 3 + k)] = zerocheck_rhos[GEN ** k]
+        defer_out[GEN ** (BYTECODE_LOG + LOG2_BYTECODE_COLS + 3 + LINCHECK_ROUNDS + k)] = lincheck_rs[GEN ** k]
+    for k in unroll(0, 2 ** K_SKIP):
+        defer_out[GEN ** (BYTECODE_LOG + LOG2_BYTECODE_COLS + 3 + 2 * LINCHECK_ROUNDS + k)] = z_partial[GEN ** k]
+    defer_out[GEN ** (BYTECODE_LOG + LOG2_BYTECODE_COLS + 3 + 2 ** K_SKIP + 2 * LINCHECK_ROUNDS)] = matrix_eval[0]
     return
 
 
 def main():
     # NSUB sub-proofs of the fixed inner program: verify each (verify_sub),
     # then aggregate their deferred claims. The fresh aggregation transcript
-    # RLC-batches the bytecode claims through one sumcheck; only the reduced
-    # bytecode claim (evaluated natively by the outer verifier) reaches this
-    # guest's public input. (The flock matrix claims are settled inside
-    # verify_sub by the circuit walk.)
+    # RLC-batches the bytecode and matrix claims through two sumchecks; only
+    # the reduced bytecode claim (evaluated natively by the outer verifier)
+    # reaches this guest's public input — the reduced MATRIX claims are
+    # settled right here by one circuit walk (matrix_walk), however many
+    # sub-proofs.
     sub_pis = HeapBuf(NSUB * 2)
     hint_witness(sub_pis[0:NSUB * 2], "sub_pis")
     # The FS seed — ONE digest of everything fixed about the inner environment
@@ -2031,6 +2049,8 @@ def main():
     hint_witness(fs_seed[0:2], "fs_seed")
     bc_sumcheck_msgs = HeapBuf(2 * BYTECODE_VARS)
     hint_witness(bc_sumcheck_msgs[0:2 * BYTECODE_VARS], "bc_sumcheck_msgs")
+    mat_sumcheck_msgs = HeapBuf(4 * K_LOG)
+    hint_witness(mat_sumcheck_msgs[0:4 * K_LOG], "mat_sumcheck_msgs")
     bc_star_hint = StackBuf(1)
     hint_witness(bc_star_hint[0:1], "bc_star_hint")
     # The dual-basis Frobenius powers delta_pows[128k + i] = TRACE_DUAL_BASIS[i]^(2^k) are claim-
@@ -2056,9 +2076,9 @@ def main():
 
     # ================= aggregation: batch the deferred claims =================
     # A fresh transcript absorbs every deferred claim (points and values),
-    # samples the RLC coefficients, and verifies the bytecode batching
-    # sumcheck of doc.tex §Deferred evaluation claims. Only the reduced
-    # bytecode claim reaches the public input.
+    # samples the RLC coefficients, and verifies the two batching sumchecks of
+    # doc.tex §Deferred evaluation claims. The reduced bytecode claim reaches
+    # the public input; the reduced matrix claims are walked in-circuit below.
     agg_fs = [0, 0]
     for sub in unroll(0, NSUB):
         agg_fs = obs(agg_fs, sub_pis[GEN ** (2 * sub)])
@@ -2098,8 +2118,57 @@ def main():
     bc_final = bytecode_star * bc_weight  # terminal: claim == B(r*) * W(r*); B(r*) (bytecode_star) is deferred
     assert bc_running == bc_final
 
-    # (No matrix batching sumcheck: the matrices were evaluated in-circuit by
-    # matrix_walk inside each verify_sub.)
+    # ---- matrix batching sumcheck (2*K_LOG variables, NSUB weighted claims) ----
+    gamma_mat = StackBuf(NSUB)
+    mat_running = 0
+    for t in unroll(0, NSUB):
+        agg_fs = squeeze(agg_fs)
+        gv = agg_fs[0]
+        gamma_mat[t] = gv
+        mat_running += gv * defer[GEN ** (t * DEFER_SIZE + BYTECODE_LOG + LOG2_BYTECODE_COLS + 3 + 2 ** K_SKIP + 2 * LINCHECK_ROUNDS)]
+    mat_point = HeapBuf(2 * K_LOG)
+    for rd in unroll(0, 2 * K_LOG):
+        agg_fs, msg_g1, c = fs_next(agg_fs, mat_sumcheck_msgs * GEN ** (2 * rd))
+        agg_fs, msg_ginf, c = fs_next(agg_fs, c)
+        agg_fs = squeeze(agg_fs)
+        rv = agg_fs[0]
+        mat_point[GEN ** rd] = rv
+        g_zero = mat_running + msg_g1
+        c_one = g_zero + msg_g1 + msg_ginf
+        mat_running = msg_ginf * rv * rv + c_one * rv + g_zero
+    # terminal weights: U_t(r*) = urow_t(r*_row) * wcol_t(r*_col), with
+    # row_weight = (sum_i L_i(zz_t) eq(r*[0..6], i)) * eq(zrho_t, r*[6..K_LOG]) and
+    # col_weight = (sum_i z_partial_t[i] eq(r*[K_LOG..K_LOG+6], i)) * prod_j (1 + lrr_j
+    # + r*[2*K_LOG-1-j]) (the lincheck binds column variables top-down).
+    eq_rows = HeapBuf(2 ** (K_SKIP + 1) - 2)
+    eqtree(mat_point, eq_rows, K_SKIP)
+    eq_cols = HeapBuf(2 ** (K_SKIP + 1) - 2)
+    eqtree(mat_point * GEN ** K_LOG, eq_cols, K_SKIP)
+    weight_a = 0
+    weight_b = 0
+    for t in unroll(0, NSUB):
+        z_skip_t = defer[GEN ** (t * DEFER_SIZE + BYTECODE_LOG + LOG2_BYTECODE_COLS + 2)]
+        row_nums = StackBuf(2 ** K_SKIP)
+        lag64(z_skip_t, row_nums, 0)
+        row_weight = 0
+        for i in unroll(0, 2 ** K_SKIP):
+            row_weight += row_nums[i] * LAGRANGE_INV_S[i] * eq_rows[GEN ** (2 ** K_SKIP - 2 + i)]
+        for k in unroll(0, LINCHECK_ROUNDS):
+            row_weight *= (1 + defer[GEN ** (t * DEFER_SIZE + BYTECODE_LOG + LOG2_BYTECODE_COLS + 3 + k)] + mat_point[GEN ** (K_SKIP + k)])
+        col_weight = 0
+        for i in unroll(0, 2 ** K_SKIP):
+            col_weight += defer[GEN ** (t * DEFER_SIZE + BYTECODE_LOG + LOG2_BYTECODE_COLS + 3 + 2 * LINCHECK_ROUNDS + i)] * eq_cols[GEN ** (2 ** K_SKIP - 2 + i)]
+        for j in unroll(0, LINCHECK_ROUNDS):
+            col_weight *= (1 + defer[GEN ** (t * DEFER_SIZE + BYTECODE_LOG + LOG2_BYTECODE_COLS + 3 + LINCHECK_ROUNDS + j)] + mat_point[GEN ** (2 * K_LOG - 1 - j)])
+        weight_u = row_weight * col_weight
+        weight_a += gamma_mat[t] * defer[GEN ** (t * DEFER_SIZE + BYTECODE_LOG + LOG2_BYTECODE_COLS + 1)] * weight_u
+        weight_b += gamma_mat[t] * weight_u
+    # The reduced claims A0(r*), B0(r*): evaluated RIGHT HERE by the circuit
+    # walk — once per aggregation, not per sub-proof, and nothing matrix-
+    # shaped ever reaches the public input.
+    a_star, b_star = matrix_walk(mat_point)
+    mat_final = a_star * weight_a + b_star * weight_b
+    assert mat_running == mat_final
 
     # ---- bind the FS seed + sub statements + reduced claims to the PI ----
     out_fs = [0, 0]
