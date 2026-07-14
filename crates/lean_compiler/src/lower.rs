@@ -78,7 +78,6 @@ struct FnLower<'a> {
     n_args: u32,
     is_main: bool,
     code: Vec<LInstr>,
-    one_off: Option<Off>,
     const_pool: HashMap<(u64, u64), Off>,
     /// Declared size of each `HeapBuf`, keyed by its pointer cell. Shifted
     /// aliases resolve to the same base cell through their gaddr, so a
@@ -88,9 +87,6 @@ struct FnLower<'a> {
     /// ([`Self::self_fp`]) — local (`if`/`else`) jumps reload the frame
     /// pointer on the taken branch.
     self_fp_off: Option<Off>,
-    /// Range-check product-target cells: bound `k` → the frame cell holding
-    /// `g^{k-1}`, set lazily once and shared by every check of that bound.
-    bounds: HashMap<u64, Off>,
     /// Variables bound to a symbolic g-address ([`GAddr`]) — index cursors and
     /// shifted pointers, kept virtual so their offsets fold into `DEREF`'s `β`.
     gaddrs: HashMap<String, GAddr>,
@@ -109,8 +105,6 @@ struct FnLower<'a> {
     inline_stack_ret: Option<Vec<RetBind>>,
     /// Deferred stack-cell copies/zeros ([`Alias`]), forwarded at use.
     alias: HashMap<Off, Alias>,
-    /// A cached frame cell holding `0` (for forwarded zero words), set lazily.
-    zero_off: Option<Off>,
     /// Hints queued to attach to the next emitted instruction.
     pending: Vec<Hint>,
     queue: &'a mut Vec<Func>,
@@ -150,31 +144,7 @@ impl FnLower<'_> {
 
     /// A frame cell holding `1` (always-taken `JUMP` condition), set lazily once.
     fn one(&mut self) -> Off {
-        if let Some(o) = self.one_off {
-            return o;
-        }
-        let o = self.fresh();
-        self.emit(LOp::Set {
-            o,
-            k: KVal::Const(F128::ONE),
-        });
-        self.one_off = Some(o);
-        o
-    }
-
-    /// A frame cell holding `0`, set lazily once — the source for forwarded zero
-    /// words (a `BLAKE3` padding half).
-    fn zero(&mut self) -> Off {
-        if let Some(o) = self.zero_off {
-            return o;
-        }
-        let o = self.fresh();
-        self.emit(LOp::Set {
-            o,
-            k: KVal::Const(F128::ZERO),
-        });
-        self.zero_off = Some(o);
-        o
+        self.const_cell(F128::ONE)
     }
 
     /// A stack store `sa[k] = val` whose value is a plain copy or a zero, which we
@@ -267,13 +237,10 @@ impl FnLower<'_> {
             self.vars.clone(),
             self.stacks.clone(),
             self.consts.clone(),
-            self.one_off,
             self.self_fp_off,
-            self.bounds.clone(),
             self.gaddrs.clone(),
             self.fconsts.clone(),
             self.alias.clone(),
-            self.zero_off,
             self.const_pool.clone(),
         );
         f(self);
@@ -291,13 +258,10 @@ impl FnLower<'_> {
             self.vars,
             self.stacks,
             self.consts,
-            self.one_off,
             self.self_fp_off,
-            self.bounds,
             self.gaddrs,
             self.fconsts,
             self.alias,
-            self.zero_off,
             self.const_pool,
         ) = saved;
     }
@@ -658,16 +622,7 @@ impl FnLower<'_> {
     /// The frame cell holding `g^{k-1}` — the range-check product target — set
     /// lazily once per distinct bound `k` and shared by that bound's checks.
     fn bound_cell(&mut self, k: u64) -> Off {
-        if let Some(&o) = self.bounds.get(&k) {
-            return o;
-        }
-        let o = self.fresh();
-        self.emit(LOp::Set {
-            o,
-            k: KVal::Const(g_pow_u128((k - 1) as u128)),
-        });
-        self.bounds.insert(k, o);
-        o
+        self.const_cell(g_pow_u128((k - 1) as u128))
     }
 
     /// `hint_witness(dest, "name")` — resolve `dest` to a run of cells and
@@ -771,14 +726,7 @@ impl FnLower<'_> {
             Expr::Lit(n) => self.const_cell(F128::new(*n as u64, (*n >> 64) as u64)),
             Expr::Gen => self.const_cell(g_pow(1)),
             Expr::GPow(k) => self.const_cell(g_pow_u128(*k)),
-            Expr::GenPow(e) => {
-                let o = self.fresh();
-                self.emit(LOp::Set {
-                    o,
-                    k: KVal::Const(g_pow_u128(self.gpow_exp(e))),
-                });
-                o
-            }
+            Expr::GenPow(e) => self.const_cell(g_pow_u128(self.gpow_exp(e))),
             Expr::Pow(b, e) => self.pow_expr(b, e),
             Expr::Var(v) => {
                 if self.stacks.contains_key(v) {
@@ -993,14 +941,10 @@ impl FnLower<'_> {
             for _ in 0..k {
                 acc *= bc;
             }
-            let o = self.fresh();
-            self.emit(LOp::Set { o, k: KVal::Const(acc) });
-            return o;
+            return self.const_cell(acc);
         }
         if k == 0 {
-            let o = self.fresh();
-            self.emit(LOp::Set { o, k: KVal::Const(F128::ONE) });
-            return o;
+            return self.one();
         }
         // Runtime base: square-and-multiply over the compile-time exponent bits.
         let base = self.expr(b);
@@ -1136,7 +1080,7 @@ impl FnLower<'_> {
     fn word_src(&mut self, o: Off) -> Off {
         match self.alias.get(&o).copied() {
             Some(Alias::Cell(s)) => self.word_src(s),
-            Some(Alias::Const(0, 0)) => self.zero(),
+            Some(Alias::Const(0, 0)) => self.const_cell(F128::ZERO),
             Some(Alias::Const(lo, hi)) => self.const_cell(F128::new(lo, hi)),
             None => o,
         }
@@ -1296,8 +1240,7 @@ impl FnLower<'_> {
         match ga {
             GAddr { base: Some(c), exp: 0 } => c,
             GAddr { base, exp } => {
-                let k = self.fresh();
-                self.emit(LOp::Set { o: k, k: KVal::Const(g_pow_u128(exp)) });
+                let k = self.const_cell(g_pow_u128(exp));
                 let Some(c) = base else { return k };
                 let o = self.fresh();
                 self.emit(LOp::Mul { a: c, b: k, c: o });
@@ -1345,8 +1288,7 @@ impl FnLower<'_> {
         if extra == 0 {
             return (a, 0);
         }
-        let k = self.fresh();
-        self.emit(LOp::Set { o: k, k: KVal::Const(g_pow_u128(extra)) });
+        let k = self.const_cell(g_pow_u128(extra));
         let ptr = self.fresh();
         self.emit(LOp::Mul { a, b: k, c: ptr });
         (ptr, 0)
@@ -2292,17 +2234,14 @@ pub(crate) fn lower_func(
         n_args: f.params.len() as u32,
         is_main: f.name == "main",
         code: Vec::new(),
-        one_off: None,
         const_pool: HashMap::new(),
         heap_sizes: HashMap::new(),
         self_fp_off: None,
-        bounds: HashMap::new(),
         gaddrs: HashMap::new(),
         fconsts: HashMap::new(),
         inline_ret: None,
         inline_stack_ret: None,
         alias: HashMap::new(),
-        zero_off: None,
         pending: Vec::new(),
         queue,
         loop_ctr,
