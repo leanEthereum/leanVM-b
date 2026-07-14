@@ -1409,7 +1409,7 @@ mod tests {
             )
         };
         let mut ps = pcs::ProverState::new(b"const-pin-poc", &[]);
-        let (zc_claim, _s_hat_v_c) = crate::zerocheck::prove_packed_padded_capture_s_hat_v_c(
+        let (zc_claim, _s_hat_v_c) = crate::zerocheck::prove_packed_padded(
             as_bytes(&a),
             as_bytes(&b),
             as_bytes(&z), // C = I, so c == z
@@ -1566,7 +1566,7 @@ impl Blake3Setup {
                     z_packed.len() * core::mem::size_of::<F128>(),
                 )
             };
-            crate::zerocheck::prove_packed_padded_capture_s_hat_v_c(
+            crate::zerocheck::prove_packed_padded(
                 a_packed, b_packed, c_packed, self.r1cs.m, &padding, ps,
             )
         };

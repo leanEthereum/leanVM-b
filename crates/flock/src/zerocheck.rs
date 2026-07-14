@@ -30,8 +30,7 @@ use multilinear::{
     uni_skip_fold_and_round_pair_optimized_packed_padded,
 };
 use univariate_skip_optimized::{
-    c_s_f128, medium_challenges_ghash, round1_shift_reduce_extract_c_packed_padded,
-    small_challenges_ghash,
+    c_s_f128, medium_challenges_ghash, small_challenges_ghash,
 };
 
 /// Number of variables folded in round 1 via the additive-NTT univariate skip.
@@ -127,7 +126,8 @@ pub enum VerifyError {
 /// ([`univariate_skip_optimized::round1_shift_reduce_extract_c_packed_padded_with_s_hat_v`]),
 /// which the downstream PCS open consumes to skip `fold_1b_rows` for the
 /// c-claim.
-pub fn prove_packed_padded_capture_s_hat_v_c(
+#[allow(clippy::too_many_arguments)]
+pub fn prove_packed_padded(
     a_packed: &[u8],
     b_packed: &[u8],
     c_packed: &[u8],
@@ -135,21 +135,6 @@ pub fn prove_packed_padded_capture_s_hat_v_c(
     padding: &PaddingSpec,
     ps: &mut ProverState,
 ) -> (ZerocheckClaim, Vec<F128>) {
-    let (claim, captured) =
-        prove_packed_padded_inner(a_packed, b_packed, c_packed, m, padding, true, ps);
-    (claim, captured.expect("capture=true must produce s_hat_v_c"))
-}
-
-#[allow(clippy::too_many_arguments)]
-fn prove_packed_padded_inner(
-    a_packed: &[u8],
-    b_packed: &[u8],
-    c_packed: &[u8],
-    m: usize,
-    padding: &PaddingSpec,
-    capture_s_hat_v_c: bool,
-    ps: &mut ProverState,
-) -> (ZerocheckClaim, Option<Vec<F128>>) {
     let k_skip = K_SKIP;
     assert!(
         m >= k_skip + N_INNER,
@@ -185,25 +170,17 @@ fn prove_packed_padded_inner(
     let ntt_s = AdditiveNttGf8::new(k_skip, F8::ZERO);
     let ntt_l = AdditiveNttGf8::new(k_skip, F8(1u8 << k_skip));
     let inv_table = InvNttTableByteSingleGf8::new(&ntt_s, &ntt_l);
-    let (round1_ab_opt, round1_c_opt, s_hat_v_c) = if capture_s_hat_v_c {
-        let (ab, c, s) =
-            crate::zerocheck::univariate_skip_optimized::round1_shift_reduce_extract_c_packed_padded_with_s_hat_v(
-                a_packed,
-                b_packed,
-                c_packed,
-                m,
-                k_skip,
-                &r,
-                &inv_table,
-                padding,
-            );
-        (ab, c, Some(s))
-    } else {
-        let (ab, c) = round1_shift_reduce_extract_c_packed_padded(
-            a_packed, b_packed, c_packed, m, k_skip, &r, &inv_table, padding,
+    let (round1_ab_opt, round1_c_opt, s_hat_v_c) =
+        crate::zerocheck::univariate_skip_optimized::round1_shift_reduce_extract_c_packed_padded_with_s_hat_v(
+            a_packed,
+            b_packed,
+            c_packed,
+            m,
+            k_skip,
+            &r,
+            &inv_table,
+            padding,
         );
-        (ab, c, None)
-    };
     let c_s = c_s_f128();
     let round1_ab: Vec<F128> = round1_ab_opt.iter().map(|x| c_s * *x).collect();
     let round1_c: Vec<F128> = round1_c_opt.iter().map(|x| c_s * *x).collect();
@@ -479,7 +456,7 @@ pub fn verify(
     // (The eq factors were absorbed round-by-round into the consistency checks,
     // never accumulating into the running claim.)
     // Read + bind the final â, b̂ claims off the stream (mirrors
-    // `prove_packed_padded_inner`): binding must land before the next challenge
+    // `prove_packed_padded`): binding must land before the next challenge
     // (lincheck's α) is drawn, so the α-batched reduction of these two claims is
     // sound. `final_c_eval` is the verifier's OWN interpolation of the
     // already-bound `round1_c` at `z` — never transported.
@@ -514,7 +491,7 @@ mod tests {
         m: usize,
         ps: &mut pcs::ProverState,
     ) -> ZerocheckClaim {
-        let (claim, _) = prove_packed_padded_capture_s_hat_v_c(
+        let (claim, _) = prove_packed_padded(
             a_packed,
             b_packed,
             c_packed,
