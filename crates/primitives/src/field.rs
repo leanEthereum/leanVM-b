@@ -20,6 +20,7 @@ pub mod gf2_8;
 pub mod iso_f128;
 pub mod phi8;
 pub mod tower_f128;
+pub mod tower_f128_xy;
 
 pub use gf2_128::{F128, F256Unreduced, mul_by_x};
 pub use gf2_64::F64;
@@ -28,6 +29,7 @@ pub use gf2_8::F8;
 pub use iso_f128::{ghash_to_tower, tower_to_ghash};
 pub use phi8::{PHI_8_TABLE, phi8};
 pub use tower_f128::{F128T, F128TBaseUnreduced, F128TUnreduced};
+pub use tower_f128_xy::{F128Txy, F128TxyUnreduced};
 
 // ---------------------------------------------------------------------------
 // leanVM g-power helpers: domain separators / opcodes as x^k, and the g-power

@@ -1,8 +1,10 @@
-//! Field-arithmetic benchmark: GF(2^128) in its two representations.
+//! Field-arithmetic benchmark: GF(2^128) across three implementations.
 //!
-//!   A. `F128`  — GF(2^128), GHASH polynomial basis (main's field)
-//!   B. `F128T` — GF((2^64)^2), degree-2 tower over GF(2^64) (the 64-bit
+//!   A. `F128`    — GF(2^128), GHASH polynomial basis (main's field)
+//!   B. `F128T`   — GF((2^64)^2) tower, y^2+y+x^61 (Artin-Schreier; the 64-bit
 //!      design's challenge field E)
+//!   C. `F128Txy` — GF((2^64)^2) tower, y^2+x*y+1 (binius64's tower, same base
+//!      field K as B — the head-to-head that isolates the tower choice)
 //!
 //! Run with:
 //!   cargo run --release --bin field_bench
@@ -27,7 +29,9 @@ use std::hint::black_box;
 use std::ops::{Add, Mul};
 use std::time::Instant;
 
-use primitives::field::{F128, F128T, F128TUnreduced, F256Unreduced, ghash_to_tower};
+use primitives::field::{
+    F128, F128T, F128TUnreduced, F128Txy, F128TxyUnreduced, F256Unreduced, ghash_to_tower,
+};
 
 // ---------------------------------------------------------------------------
 // Harness
@@ -118,6 +122,18 @@ impl BenchField for F128T {
     }
     fn inv(self) -> Self {
         F128T::inv(self)
+    }
+}
+
+impl BenchField for F128Txy {
+    fn rand(s: &mut u64) -> Self {
+        F128Txy::new(splitmix64(s), splitmix64(s))
+    }
+    fn zero() -> Self {
+        F128Txy::ZERO
+    }
+    fn inv(self) -> Self {
+        F128Txy::inv(self)
     }
 }
 
@@ -254,12 +270,13 @@ fn main() {
     preflight();
     println!("correctness pre-flight: ok");
 
-    println!("\nfields (two representations of GF(2^128)):");
-    println!("  A. F128  = GF(2^128)     GHASH poly, one 256-bit product + one sparse fold");
-    println!("  B. F128T = GF((2^64)^2)  y^2+y+x^61 over x^64+x^4+x^3+x+1, per-limb folds");
+    println!("\nfields (all GF(2^128), base K = x^64+x^4+x^3+x+1 for the towers):");
+    println!("  A. F128    = GF(2^128)     GHASH poly, one 256-bit product + one sparse fold");
+    println!("  B. F128T   = GF((2^64)^2)  y^2+y+x^61   (Artin-Schreier tower), per-limb folds");
+    println!("  C. F128Txy = GF((2^64)^2)  y^2+x*y+1     (binius64 tower), fold = shift-by-x");
 
     let mut s = 1u64;
-    let rows: Vec<(&str, [f64; 2])> = vec![
+    let rows: Vec<(&str, [f64; 3])> = vec![
         (
             "mul latency (chain)",
             [
@@ -271,25 +288,42 @@ fn main() {
                     let m = F128T::rand(&mut s);
                     move |a| a * m
                 }),
+                lat_chain(F128Txy::rand(&mut s), {
+                    let m = F128Txy::rand(&mut s);
+                    move |a| a * m
+                }),
             ],
         ),
         (
             "mul tput (8 chains)",
-            [tp_chains::<F128>(|a, m| a * m), tp_chains::<F128T>(|a, m| a * m)],
+            [
+                tp_chains::<F128>(|a, m| a * m),
+                tp_chains::<F128T>(|a, m| a * m),
+                tp_chains::<F128Txy>(|a, m| a * m),
+            ],
         ),
         (
             "mul tput (array 1024)",
-            [tp_array::<F128>(|a, m| a * m), tp_array::<F128T>(|a, m| a * m)],
+            [
+                tp_array::<F128>(|a, m| a * m),
+                tp_array::<F128T>(|a, m| a * m),
+                tp_array::<F128Txy>(|a, m| a * m),
+            ],
         ),
         (
             "inner prod, reduced",
-            [inner_reduced::<F128>(), inner_reduced::<F128T>()],
+            [
+                inner_reduced::<F128>(),
+                inner_reduced::<F128T>(),
+                inner_reduced::<F128Txy>(),
+            ],
         ),
         (
             "inner prod, deferred",
             [
                 inner_deferred!(F128, F256Unreduced, 0xA5A5_1001),
                 inner_deferred!(F128T, F128TUnreduced, 0xA5A5_1002),
+                inner_deferred!(F128Txy, F128TxyUnreduced, 0xA5A5_1003),
             ],
         ),
         #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
@@ -314,6 +348,7 @@ fn main() {
                         }
                     })
                 },
+                f64::NAN, // F128Txy has no bespoke NEON kernel (x86 CLMUL / software only)
             ],
         ),
         (
@@ -321,28 +356,46 @@ fn main() {
             [
                 lat_chain(F128::rand(&mut s), |a| a.square()),
                 lat_chain(F128T::rand(&mut s), |a| a.square()),
+                lat_chain(F128Txy::rand(&mut s), |a| a.square()),
             ],
         ),
         (
             "add tput (array 1024)",
-            [tp_array::<F128>(|a, m| a + m), tp_array::<F128T>(|a, m| a + m)],
+            [
+                tp_array::<F128>(|a, m| a + m),
+                tp_array::<F128T>(|a, m| a + m),
+                tp_array::<F128Txy>(|a, m| a + m),
+            ],
         ),
-        ("inverse", [inv_bench::<F128>(), inv_bench::<F128T>()]),
+        (
+            "inverse",
+            [inv_bench::<F128>(), inv_bench::<F128T>(), inv_bench::<F128Txy>()],
+        ),
     ];
 
     println!(
-        "\n  {:<26} {:>10} {:>10} {:>12}",
-        "metric (ns/op)", "F128", "F128T", "F128T/F128"
+        "\n  {:<26} {:>9} {:>9} {:>9} {:>8} {:>8}",
+        "metric (ns/op)", "A:F128", "B:F128T", "C:F128Txy", "B/A", "C/B"
     );
-    println!("  {}", "-".repeat(62));
+    println!("  {}", "-".repeat(74));
     for (metric, v) in &rows {
         let cell = |x: f64| if x.is_nan() { "-".to_string() } else { format!("{x:.2}") };
-        let ratio = if v[0].is_nan() || v[1].is_nan() {
-            "-".to_string()
-        } else {
-            format!("{:.2}x", v[1] / v[0])
+        let ratio = |num: f64, den: f64| {
+            if num.is_nan() || den.is_nan() {
+                "-".to_string()
+            } else {
+                format!("{:.2}x", num / den)
+            }
         };
-        println!("  {:<26} {:>10} {:>10} {:>12}", metric, cell(v[0]), cell(v[1]), ratio);
+        println!(
+            "  {:<26} {:>9} {:>9} {:>9} {:>8} {:>8}",
+            metric,
+            cell(v[0]),
+            cell(v[1]),
+            cell(v[2]),
+            ratio(v[1], v[0]),
+            ratio(v[2], v[1]),
+        );
     }
 
     #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
@@ -352,8 +405,10 @@ fn main() {
 
     println!("\nnotes:");
     println!("  - latency = serial dependency chain; tput = independent ops (ILP).");
+    println!("  - B/A compares tower vs GHASH; C/B isolates the tower choice (B and C share");
+    println!("    base K and the 3-CLMUL Karatsuba — only the degree-2 fold differs).");
     println!("  - 'inner prod, deferred' XOR-accumulates unreduced products and reduces once");
-    println!("    (accumulator: F128 32 B, F128T 48 B) — the sumcheck hot-loop shape.");
+    println!("    (accumulator: F128 32 B, F128T/F128Txy 48 B) — the sumcheck hot-loop shape.");
     println!("  - inverse is Fermat (square-and-multiply); setup-only, shown for completeness.");
     println!("  - pass --variants for the per-kernel F128T mul comparison.");
 }
