@@ -603,59 +603,24 @@ pub mod aarch64 {
         }
     }
 
-    /// Deferred-reduction inner product `Σ aᵢ·bᵢ` with the three unreduced
-    /// accumulators held in NEON registers across the whole loop: per term
-    /// 2 vector loads, 3 PMULL, and 5 EOR/EXT — no reduction, no GPR
-    /// round-trip, no per-term accumulator store. One [`mul_neon`]-tail
-    /// reduction at the end. The hot-loop form of
-    /// [`super::F128TUnreduced`]-style accumulation.
+    /// Deferred-reduction inner product `Σ aᵢ·bᵢ` with the unreduced
+    /// accumulators held in NEON registers across the whole loop — no per-term
+    /// reduction, GPR round-trip, or accumulator store, one [`mul_neon`]-tail
+    /// reduction at the end. The hot-loop form of [`super::F128TUnreduced`]-style
+    /// accumulation.
+    ///
+    /// Dispatches to the benchmarked-fastest kernel: schoolbook products with 2
+    /// accumulator banks ([`inner_unreduced_school`]). See the `inner_bench`
+    /// binary for the head-to-head against the Karatsuba variants and other
+    /// bank counts (the ranking is measured, not assumed).
     ///
     /// # Safety
     /// Requires the `aes` target feature; see [`mul_neon`].
+    #[inline]
     #[target_feature(enable = "aes")]
     pub unsafe fn inner_unreduced_neon(a: &[F128T], b: &[F128T]) -> F128T {
-        debug_assert_eq!(a.len(), b.len());
-        // SAFETY: function carries the aes target feature; F128T is
-        // repr(C) { c0: u64, c1: u64 }, so a pointer to it reads as one
-        // uint64x2_t lane pair.
-        unsafe {
-            let mut acc0 = vdupq_n_u64(0);
-            let mut acc1 = vdupq_n_u64(0);
-            let mut accm = vdupq_n_u64(0);
-            for i in 0..a.len() {
-                let av = vld1q_u64((&raw const a[i]).cast::<u64>());
-                let bv = vld1q_u64((&raw const b[i]).cast::<u64>());
-                let am = veorq_u64(av, vextq_u64::<1>(av, av)); // lane 0 = a0^a1
-                let bm = veorq_u64(bv, vextq_u64::<1>(bv, bv));
-                acc0 = veorq_u64(acc0, pmull(vgetq_lane_u64::<0>(av), vgetq_lane_u64::<0>(bv)));
-                acc1 = veorq_u64(acc1, pmull_hi(av, bv));
-                accm = veorq_u64(accm, pmull(vgetq_lane_u64::<0>(am), vgetq_lane_u64::<0>(bm)));
-            }
-            // One reduction of the sums: mul_neon's exact tail.
-            let r = vdupq_n_u64(R64);
-            let q = veorq_u64(accm, acc0);
-            let tq = pmull_hi(q, r);
-            let u1 = pmull_hi(tq, r);
-            let c1v = veorq_u64(veorq_u64(q, tq), u1);
-
-            let sl = vshlq_n_u64::<61>(acc1);
-            let sr = vshrq_n_u64::<3>(acc1);
-            let v = veorq_u64(
-                veorq_u64(acc0, sl),
-                vextq_u64::<1>(vdupq_n_u64(0), sr),
-            );
-            let w1 = pmull_hi(v, r);
-            let w2 = pmull_hi(sr, vdupq_n_u64(R128));
-            let x = veorq_u64(w1, w2);
-            let u0 = pmull_hi(x, r);
-            let c0v = veorq_u64(veorq_u64(v, x), u0);
-
-            let res = vtrn1q_u64(c0v, c1v);
-            F128T {
-                c0: vgetq_lane_u64::<0>(res),
-                c1: vgetq_lane_u64::<1>(res),
-            }
-        }
+        // SAFETY: function carries the aes target feature.
+        unsafe { inner_unreduced_school::<2>(a, b) }
     }
 
     /// Vector-resident schoolbook: each operand enters NEON once as a
@@ -925,6 +890,182 @@ pub mod aarch64 {
                 c0: vgetq_lane_u64::<0>(res),
                 c1: vgetq_lane_u64::<1>(res),
             }
+        }
+    }
+
+    /// Reduce the three summed Karatsuba accumulators `{Σp0, Σp1, Σpm}` held in
+    /// NEON registers with [`mul_neon`]'s exact tail (5 PMULL). Shared by the
+    /// banked inner-product kernels.
+    ///
+    /// # Safety
+    /// Requires the `aes` target feature; see [`mul_neon`].
+    #[inline]
+    #[target_feature(enable = "aes")]
+    unsafe fn reduce_acc(acc0: uint64x2_t, acc1: uint64x2_t, accm: uint64x2_t) -> F128T {
+        // SAFETY: function carries the aes target feature.
+        unsafe {
+            let r = vdupq_n_u64(R64);
+            let q = veorq_u64(accm, acc0);
+            let tq = pmull_hi(q, r);
+            let u1 = pmull_hi(tq, r);
+            let c1v = veorq_u64(veorq_u64(q, tq), u1);
+
+            let sl = vshlq_n_u64::<61>(acc1);
+            let sr = vshrq_n_u64::<3>(acc1);
+            let v = veorq_u64(veorq_u64(acc0, sl), vextq_u64::<1>(vdupq_n_u64(0), sr));
+            let w1 = pmull_hi(v, r);
+            let w2 = pmull_hi(sr, vdupq_n_u64(R128));
+            let x = veorq_u64(w1, w2);
+            let u0 = pmull_hi(x, r);
+            let c0v = veorq_u64(veorq_u64(v, x), u0);
+
+            let res = vtrn1q_u64(c0v, c1v);
+            F128T {
+                c0: vgetq_lane_u64::<0>(res),
+                c1: vgetq_lane_u64::<1>(res),
+            }
+        }
+    }
+
+    /// Karatsuba deferred inner product `Σ aᵢ·bᵢ` (3 PMULL/term) with `B`
+    /// independent accumulator banks: term `i` folds into bank `i % B` so the
+    /// loop-carried EOR chains overlap. Banks recombine (a `B`-way EOR tree)
+    /// and reduce once. Benched against [`inner_unreduced_school`] by the
+    /// `inner_bench` comparator — the schoolbook form wins ~1.25× on M-series
+    /// (the per-term `am`/`bm` pre-XOR here, 2 DUP + 2 EOR, costs more than
+    /// schoolbook's one extra PMULL when PMULL throughput is the bound; banking
+    /// changes neither), so this is kept only as the comparison alternate.
+    ///
+    /// # Safety
+    /// Requires the `aes` target feature; see [`mul_neon`].
+    #[inline]
+    #[target_feature(enable = "aes")]
+    pub unsafe fn inner_unreduced_kara<const B: usize>(a: &[F128T], b: &[F128T]) -> F128T {
+        debug_assert_eq!(a.len(), b.len());
+        // SAFETY: function carries the aes target feature; F128T is
+        // repr(C) { c0, c1 }, so each element reads as one uint64x2_t lane pair.
+        unsafe {
+            let mut acc0 = [vdupq_n_u64(0); B];
+            let mut acc1 = [vdupq_n_u64(0); B];
+            let mut accm = [vdupq_n_u64(0); B];
+            let n = a.len();
+            // Raw base pointers: index arithmetic below is in-bounds by the loop
+            // guards, so bypass the slice bounds checks that otherwise branch in
+            // the hot loop (F128T is repr(C) {c0, c1}, i.e. one uint64x2_t).
+            let pa = a.as_ptr().cast::<u64>();
+            let pb = b.as_ptr().cast::<u64>();
+            let mut i = 0;
+            // Main body: B terms per iteration, one per bank (fully unrolled).
+            while i + B <= n {
+                for k in 0..B {
+                    let av = vld1q_u64(pa.add(2 * (i + k)));
+                    let bv = vld1q_u64(pb.add(2 * (i + k)));
+                    let am = veorq_u64(av, vextq_u64::<1>(av, av));
+                    let bm = veorq_u64(bv, vextq_u64::<1>(bv, bv));
+                    acc0[k] = veorq_u64(
+                        acc0[k],
+                        pmull(vgetq_lane_u64::<0>(av), vgetq_lane_u64::<0>(bv)),
+                    );
+                    acc1[k] = veorq_u64(acc1[k], pmull_hi(av, bv));
+                    accm[k] = veorq_u64(
+                        accm[k],
+                        pmull(vgetq_lane_u64::<0>(am), vgetq_lane_u64::<0>(bm)),
+                    );
+                }
+                i += B;
+            }
+            // Tail into bank 0.
+            while i < n {
+                let av = vld1q_u64(pa.add(2 * i));
+                let bv = vld1q_u64(pb.add(2 * i));
+                let am = veorq_u64(av, vextq_u64::<1>(av, av));
+                let bm = veorq_u64(bv, vextq_u64::<1>(bv, bv));
+                acc0[0] = veorq_u64(
+                    acc0[0],
+                    pmull(vgetq_lane_u64::<0>(av), vgetq_lane_u64::<0>(bv)),
+                );
+                acc1[0] = veorq_u64(acc1[0], pmull_hi(av, bv));
+                accm[0] = veorq_u64(
+                    accm[0],
+                    pmull(vgetq_lane_u64::<0>(am), vgetq_lane_u64::<0>(bm)),
+                );
+                i += 1;
+            }
+            let mut s0 = acc0[0];
+            let mut s1 = acc1[0];
+            let mut sm = accm[0];
+            for k in 1..B {
+                s0 = veorq_u64(s0, acc0[k]);
+                s1 = veorq_u64(s1, acc1[k]);
+                sm = veorq_u64(sm, accm[k]);
+            }
+            reduce_acc(s0, s1, sm)
+        }
+    }
+
+    /// Schoolbook deferred inner product (4 PMULL/term), the M-series winner
+    /// and the kernel [`inner_unreduced_neon`] dispatches to (with `B = 2`).
+    /// The four products `{a0b0, a1b1, a0b1, a1b0}` come straight off the lane
+    /// pairs (PMULL low, PMULL2 high, plus one EXT-swapped `b`), dropping
+    /// Karatsuba's per-term `am`/`bm` pre-XOR (2 DUP + 2 EOR) for one extra
+    /// PMULL — a win here because PMULL is not the bottleneck. `B` independent
+    /// accumulator banks overlap the loop-carried EOR chains; the cross term
+    /// `a0b1 + a1b0` is summed separately and folded in once at the end. The
+    /// `inner_bench` comparator measures this ≈1.25× the Karatsuba form; the
+    /// bank count `B` is a wash on M4 (the loop is PMULL-throughput-bound, not
+    /// accumulator-latency-bound), so [`inner_unreduced_neon`] picks `B = 2` as
+    /// a zero-cost hedge for cores with fewer PMULL units.
+    ///
+    /// # Safety
+    /// Requires the `aes` target feature; see [`mul_neon`].
+    #[inline]
+    #[target_feature(enable = "aes")]
+    pub unsafe fn inner_unreduced_school<const B: usize>(a: &[F128T], b: &[F128T]) -> F128T {
+        debug_assert_eq!(a.len(), b.len());
+        // SAFETY: function carries the aes target feature; F128T is
+        // repr(C) { c0, c1 }, one uint64x2_t per element.
+        unsafe {
+            let mut a00 = [vdupq_n_u64(0); B];
+            let mut a11 = [vdupq_n_u64(0); B];
+            let mut a01 = [vdupq_n_u64(0); B];
+            let mut a10 = [vdupq_n_u64(0); B];
+            let n = a.len();
+            let pa = a.as_ptr().cast::<u64>();
+            let pb = b.as_ptr().cast::<u64>();
+            let mut i = 0;
+            while i + B <= n {
+                for k in 0..B {
+                    let av = vld1q_u64(pa.add(2 * (i + k)));
+                    let bv = vld1q_u64(pb.add(2 * (i + k)));
+                    let brev = vextq_u64::<1>(bv, bv); // {b1, b0}
+                    a00[k] = veorq_u64(a00[k], pmull(vgetq_lane_u64::<0>(av), vgetq_lane_u64::<0>(bv)));
+                    a11[k] = veorq_u64(a11[k], pmull_hi(av, bv));
+                    a01[k] = veorq_u64(a01[k], pmull(vgetq_lane_u64::<0>(av), vgetq_lane_u64::<0>(brev)));
+                    a10[k] = veorq_u64(a10[k], pmull_hi(av, brev));
+                }
+                i += B;
+            }
+            while i < n {
+                let av = vld1q_u64(pa.add(2 * i));
+                let bv = vld1q_u64(pb.add(2 * i));
+                let brev = vextq_u64::<1>(bv, bv);
+                a00[0] = veorq_u64(a00[0], pmull(vgetq_lane_u64::<0>(av), vgetq_lane_u64::<0>(bv)));
+                a11[0] = veorq_u64(a11[0], pmull_hi(av, bv));
+                a01[0] = veorq_u64(a01[0], pmull(vgetq_lane_u64::<0>(av), vgetq_lane_u64::<0>(brev)));
+                a10[0] = veorq_u64(a10[0], pmull_hi(av, brev));
+                i += 1;
+            }
+            let mut s00 = a00[0];
+            let mut s11 = a11[0];
+            let mut sc = veorq_u64(a01[0], a10[0]);
+            for k in 1..B {
+                s00 = veorq_u64(s00, a00[k]);
+                s11 = veorq_u64(s11, a11[k]);
+                sc = veorq_u64(sc, veorq_u64(a01[k], a10[k]));
+            }
+            // c1 = reduce(cross ^ p1), c0 = reduce(p0 ^ x^61·p1): feed reduce_acc
+            // an `accm` such that `accm ^ s00 == sc ^ s11`.
+            reduce_acc(s00, s11, veorq_u64(veorq_u64(sc, s11), s00))
         }
     }
 }

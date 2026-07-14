@@ -263,9 +263,14 @@ fn preflight() {
 
 fn main() {
     #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
-    println!("PMULL (aarch64 + aes): ENABLED");
-    #[cfg(not(all(target_arch = "aarch64", target_feature = "aes")))]
-    println!("PMULL (aarch64 + aes): DISABLED — software fallback; numbers not meaningful!");
+    println!("CLMUL backend: aarch64 PMULL (aes) — ENABLED");
+    #[cfg(all(target_arch = "x86_64", target_feature = "pclmulqdq"))]
+    println!("CLMUL backend: x86_64 pclmulqdq — ENABLED (128-bit CLMUL; not VPCLMULQDQ)");
+    #[cfg(not(any(
+        all(target_arch = "aarch64", target_feature = "aes"),
+        all(target_arch = "x86_64", target_feature = "pclmulqdq")
+    )))]
+    println!("CLMUL backend: NONE — software fallback; numbers not meaningful!");
 
     preflight();
     println!("correctness pre-flight: ok");
