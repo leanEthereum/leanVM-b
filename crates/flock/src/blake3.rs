@@ -757,7 +757,7 @@ pub fn bilinear_walk(alpha: F128, u: &[F128], w: &[F128]) -> F128 {
 
     // Pinned-constant rows: a set bit has A = B = [Z_CONST], a clear bit an
     // empty row.
-    let mut const_walk = |acc: &mut F128, base: usize, val: u32| {
+    let const_walk = |acc: &mut F128, base: usize, val: u32| {
         for j in 0..WORD_BITS {
             if (val >> j) & 1 == 1 {
                 *acc += u[base + j] * alpha1_wc;
@@ -913,12 +913,10 @@ pub fn walk_schedule() -> WalkSchedule {
             src[ld] = g_lin_bit(g, LIN_D_NEW, 0);
         }
     }
-    for w in 0..4 {
-        s.fin_a[w] = src[w];
-        s.fin_b[w] = src[4 + w];
-        s.fin_c[w] = src[8 + w];
-        s.fin_d[w] = src[12 + w];
-    }
+    s.fin_a.copy_from_slice(&src[..4]);
+    s.fin_b.copy_from_slice(&src[4..8]);
+    s.fin_c.copy_from_slice(&src[8..12]);
+    s.fin_d.copy_from_slice(&src[12..16]);
 
     // Rows with A = B = [Z_CONST]: the constant row plus every pinned SET
     // bit (mirrors build_matrices' const_emit calls; clear bits have empty

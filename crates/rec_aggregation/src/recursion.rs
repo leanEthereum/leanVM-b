@@ -1,18 +1,20 @@
 //! End-to-end N→1 recursion: one guest program (`guests/recursion.py`)
 //! replays `cpu::verify` for NSUB proofs of a fixed inner program, batches
-//! their deferred claims with the two aggregation sumchecks, and binds the sub
-//! statements + the three reduced claims (stacked bytecode, A0, B0) to its own
-//! public input (doc.tex §Recursive aggregation, §Deferred evaluation claims).
+//! their deferred bytecode claims with one aggregation sumcheck, and binds the
+//! sub statements + the reduced bytecode claim to its own public input
+//! (doc.tex §Recursive aggregation, §Deferred evaluation claims). The flock
+//! matrix claims are NOT deferred: each verify_sub evaluates them in-circuit
+//! by the circuit walk (flock, Circuit walking; guest `matrix_walk`,
+//! `flock::blake3::walk_schedule`).
 //!
 //! Zero hand-mirroring: the transcript trace of a REAL `cpu::verify` run
 //! (`transcript::trace_start`/`trace_take`) is the guest's mechanical spec —
 //! `gen_verify` walks it structurally (a `Walk` cursor; `Sponge::replay` yields
 //! the checkpoint states) to extract every hint value, and the real
 //! `cpu::layout` supplies every compile-time shape. `gen_agg` mirrors the
-//! guest's aggregation transcript and runs the two batching-sumcheck provers
-//! (dense for the bytecode, two-phase sparse for the flock matrices).
-//! `check_reduced` is the outer verifier's entire native duty: one evaluation
-//! of each fixed polynomial at its reduced point.
+//! guest's aggregation transcript and runs the bytecode batching-sumcheck
+//! prover. `check_reduced` is the outer verifier's entire native duty: one
+//! evaluation of the stacked bytecode at the reduced point.
 
 use std::collections::BTreeMap;
 
@@ -114,31 +116,23 @@ fn prove_inner(pi: [F128; 2], hashes: usize, iters: usize) -> (Program, lean_vm:
 
 /// The deferred-claim data the guest binds to the outer public input: the outer
 /// verifier checks each claim natively (doc.tex §Deferred evaluation claims;
-/// n_rec = 1 forwards fresh claims without batching).
+/// n_rec = 1 forwards fresh claims without batching). Only the bytecode claim
+/// remains deferred: the flock matrix evaluation is settled inside the guest
+/// by the circuit walk (flock, Circuit walking; guest `matrix_walk`).
 struct SubDefer {
     pi: [F128; 2],
     kbc: usize,
     zeta: Vec<F128>,
     sb: Vec<F128>,
     wbc: Vec<F128>,
-    lc_alpha: F128,
-    zz: F128,
-    zrho8: Vec<F128>,
-    lrr: Vec<F128>,
-    lcz: Vec<F128>,
-    matpart: F128,
 }
 
-/// The batched reduced claims the aggregation exports: one point + value on
-/// the stacked bytecode polynomial, one point + two values on the flock
-/// matrices (doc.tex §Deferred evaluation claims).
+/// The batched reduced claim the aggregation exports: one point + value on
+/// the stacked bytecode polynomial (doc.tex §Deferred evaluation claims).
 struct Reduced {
     outer_pi: [F128; 2],
     r_bc: Vec<F128>,
     v_bc: F128,
-    r_m: Vec<F128>,
-    v_a: F128,
-    v_b: F128,
 }
 
 fn fold_lsb(t: &mut Vec<F128>, r: F128) {
@@ -178,9 +172,8 @@ fn stacked_bytecode(program: &Program, proof: &lean_vm::cpu::Proof, pi: [F128; 2
 }
 
 /// The aggregation layer: mirror the guest's aggregation transcript, run the
-/// two batching-sumcheck PROVERS (dense bytecode; two-phase sparse matrices),
-/// and return the round-message hints, the terminal hints, the reduced claims,
-/// and the outer public input.
+/// dense bytecode batching-sumcheck PROVER, and return the round-message
+/// hints, the terminal hint, the reduced claim, and the outer public input.
 #[allow(clippy::type_complexity)]
 fn gen_agg(
     program: &Program,
@@ -190,7 +183,6 @@ fn gen_agg(
     let nsub = subs.len();
     let kbc = subs[0].kbc;
     let kbcv = kbc + 3;
-    let klog = flock::blake3::K_LOG;
 
     // ---- the aggregation transcript (mirrors the guest exactly) ----
     let mut h = Sponge::empty();
@@ -206,18 +198,6 @@ fn gen_agg(
         for &v in &d.wbc {
             h.observe(v);
         }
-        h.observe(d.lc_alpha);
-        h.observe(d.zz);
-        for &v in &d.zrho8 {
-            h.observe(v);
-        }
-        for &v in &d.lrr {
-            h.observe(v);
-        }
-        for &v in &d.lcz {
-            h.observe(v);
-        }
-        h.observe(d.matpart);
     }
 
     // ---- bytecode batching sumcheck (dense, 2^kbcv; ONE claim per sub, at
@@ -254,134 +234,8 @@ fn gen_agg(
     let v_bc = bt[0];
     assert_eq!(brun, v_bc * wt[0], "bytecode sumcheck terminal");
 
-    // ---- matrix batching sumcheck (two-phase sparse, per the probe) ----
-    let gmt: Vec<F128> = (0..nsub).map(|_| h.sample()).collect();
-    let (ma, mb) = flock::blake3::matrices();
-    // per-claim dense weight tables: rows = quirky eq, cols = eq(top rounds) x z_partial.
-    let mut us: Vec<Vec<F128>> = subs
-        .iter()
-        .map(|d| flock::lincheck::build_quirky_eq_table(d.zz, &d.zrho8, 6))
-        .collect();
-    let ws: Vec<Vec<F128>> = subs
-        .iter()
-        .map(|d| {
-            (0..1usize << klog)
-                .map(|c| {
-                    let mut w = d.lcz[c & 63];
-                    for (j, &rj) in d.lrr.iter().enumerate() {
-                        let bit = (c >> (klog - 1 - j)) & 1;
-                        w *= if bit == 1 { rj } else { F128::ONE + rj };
-                    }
-                    w
-                })
-                .collect()
-        })
-        .collect();
-    let contract_cols = |m: &flock::r1cs::SparseBinaryMatrix, w: &[F128]| -> Vec<F128> {
-        m.rows
-            .iter()
-            .map(|row| row.iter().map(|&j| w[j]).fold(F128::ZERO, |a, x| a + x))
-            .collect()
-    };
-    let mut ms: Vec<Vec<F128>> = Vec::new();
-    for w in &ws {
-        ms.push(contract_cols(ma, w));
-        ms.push(contract_cols(mb, w));
-    }
-    let ga: Vec<F128> = (0..nsub).map(|t| gmt[t] * subs[t].lc_alpha).collect();
-    let gb: Vec<F128> = gmt.clone();
-    let mut mrun: F128 = (0..nsub).map(|t| gmt[t] * subs[t].matpart).fold(F128::ZERO, |a, x| a + x);
-    // sanity: the deferred matpart equals the bilinear form over the matrices.
-    for (t, d) in subs.iter().enumerate() {
-        let direct = d.lc_alpha
-            * ms[2 * t].iter().zip(&us[t]).map(|(&m, &u)| m * u).fold(F128::ZERO, |a, x| a + x)
-            + ms[2 * t + 1].iter().zip(&us[t]).map(|(&m, &u)| m * u).fold(F128::ZERO, |a, x| a + x);
-        assert_eq!(direct, d.matpart, "matpart bilinear identity, sub {t}");
-    }
-    let mut mscr = Vec::new();
-    let mut r_row = Vec::new();
-    for _ in 0..klog {
-        let pairs: Vec<(&[F128], &[F128], F128)> = (0..nsub)
-            .flat_map(|t| [(&us[t][..], &ms[2 * t][..], ga[t]), (&us[t][..], &ms[2 * t + 1][..], gb[t])])
-            .collect();
-        let (g1, gi) = round_msg(&pairs);
-        h.observe(g1);
-        h.observe(gi);
-        let r = h.sample();
-        mscr.extend([g1, gi]);
-        r_row.push(r);
-        let g0 = mrun + g1;
-        let c1 = g0 + g1 + gi;
-        mrun = gi * r * r + c1 * r + g0;
-        for u in us.iter_mut() {
-            fold_lsb(u, r);
-        }
-        for m in ms.iter_mut() {
-            fold_lsb(m, r);
-        }
-    }
-    let eq_rstar = primitives::multilinear::build_eq(&r_row);
-    let contract_rows = |m: &flock::r1cs::SparseBinaryMatrix| -> Vec<F128> {
-        let mut out = vec![F128::ZERO; 1 << klog];
-        for (i, row) in m.rows.iter().enumerate() {
-            let e = eq_rstar[i];
-            for &j in row {
-                out[j] += e;
-            }
-        }
-        out
-    };
-    let mut acol = contract_rows(ma);
-    let mut bcol = contract_rows(mb);
-    let mut wa = vec![F128::ZERO; 1 << klog];
-    let mut wb = vec![F128::ZERO; 1 << klog];
-    for t in 0..nsub {
-        let (sa, sb2) = (ga[t] * us[t][0], gb[t] * us[t][0]);
-        for j in 0..1 << klog {
-            wa[j] += sa * ws[t][j];
-            wb[j] += sb2 * ws[t][j];
-        }
-    }
-    let mut r_col = Vec::new();
-    for _ in 0..klog {
-        let pairs: Vec<(&[F128], &[F128], F128)> =
-            vec![(&acol, &wa, F128::ONE), (&bcol, &wb, F128::ONE)];
-        let (g1, gi) = round_msg(&pairs);
-        h.observe(g1);
-        h.observe(gi);
-        let r = h.sample();
-        mscr.extend([g1, gi]);
-        r_col.push(r);
-        let g0 = mrun + g1;
-        let c1 = g0 + g1 + gi;
-        mrun = gi * r * r + c1 * r + g0;
-        for tb in [&mut acol, &mut bcol, &mut wa, &mut wb] {
-            fold_lsb(tb, r);
-        }
-    }
-    let (v_a, v_b) = (acol[0], bcol[0]);
-    assert_eq!(mrun, v_a * wa[0] + v_b * wb[0], "matrix sumcheck terminal");
-    // sanity for the GUEST's succinct terminal-weight formulas.
-    {
-        let eqr = primitives::multilinear::build_eq(&r_row[..6]);
-        let eqc = primitives::multilinear::build_eq(&r_col[..6]);
-        let (mut wam, mut wbm) = (F128::ZERO, F128::ZERO);
-        for (t, d) in subs.iter().enumerate() {
-            let lam = flock::zerocheck::multilinear::lagrange_weights_naive(6, d.zz);
-            let mut urow: F128 = (0..64).map(|i| lam[i] * eqr[i]).fold(F128::ZERO, |a, x| a + x);
-            for (k, &z) in d.zrho8.iter().enumerate() {
-                urow *= F128::ONE + z + r_row[6 + k];
-            }
-            let mut wcol: F128 = (0..64).map(|i| d.lcz[i] * eqc[i]).fold(F128::ZERO, |a, x| a + x);
-            for (j, &rj) in d.lrr.iter().enumerate() {
-                wcol *= F128::ONE + rj + r_col[klog - 1 - j];
-            }
-            let u = urow * wcol;
-            wam += ga[t] * u;
-            wbm += gb[t] * u;
-        }
-        assert_eq!(mrun, v_a * wam + v_b * wbm, "guest terminal-weight formulas");
-    }
+    // (No matrix batching sumcheck: the guest evaluates the flock matrices
+    // in-circuit via the circuit walk, so no matrix claim is ever deferred.)
 
     // ---- outer public input: FS seed + sub statements + reduced claims ----
     // The inner proving environment (flock circuit family + program bytecode)
@@ -399,19 +253,11 @@ fn gen_agg(
         e.observe(v);
     }
     e.observe(v_bc);
-    let r_m: Vec<F128> = r_row.iter().chain(&r_col).copied().collect();
-    for &v in &r_m {
-        e.observe(v);
-    }
-    e.observe(v_a);
-    e.observe(v_b);
 
     let hints = vec![
         ("fs_seed".to_string(), vec![seed[0], seed[1]]),
         ("bc_sumcheck_msgs".to_string(), bscr),
-        ("mat_sumcheck_msgs".to_string(), mscr),
         ("bc_star_hint".to_string(), vec![v_bc]),
-        ("mat_stars_hint".to_string(), vec![v_a, v_b]),
     ];
     (
         hints,
@@ -419,32 +265,16 @@ fn gen_agg(
             outer_pi: e.state(),
             r_bc,
             v_bc,
-            r_m,
-            v_a,
-            v_b,
         },
     )
 }
 
-/// The outermost native verifier's whole remaining duty: evaluate the three
-/// fixed polynomials at the reduced points (one pass each).
+/// The outermost native verifier's whole remaining duty: evaluate the ONE
+/// remaining fixed polynomial, the stacked bytecode, at the reduced point.
+/// (The flock matrices are settled inside the guest by the circuit walk.)
 fn check_reduced(program: &Program, proof0: &lean_vm::cpu::Proof, pi0: [F128; 2], red: &Reduced) {
     let stacked = stacked_bytecode(program, proof0, pi0);
     assert_eq!(mle_eval(&stacked, &red.r_bc), red.v_bc, "reduced bytecode claim");
-    let (ma, mb) = flock::blake3::matrices();
-    let klog = flock::blake3::K_LOG;
-    let eq_r = primitives::multilinear::build_eq(&red.r_m[..klog]);
-    let eq_c = primitives::multilinear::build_eq(&red.r_m[klog..]);
-    let direct = |m: &flock::r1cs::SparseBinaryMatrix| -> F128 {
-        let mut acc = F128::ZERO;
-        for (i, row) in m.rows.iter().enumerate() {
-            let s = row.iter().map(|&j| eq_c[j]).fold(F128::ZERO, |a, x| a + x);
-            acc += eq_r[i] * s;
-        }
-        acc
-    };
-    assert_eq!(direct(ma), red.v_a, "reduced A claim");
-    assert_eq!(direct(mb), red.v_b, "reduced B claim");
 }
 
 /// Config + hints for the recursion guest (`guests/recursion.py`), built
@@ -542,17 +372,6 @@ fn gen_verify(
     let taus = l.taus;
     let ncol: Vec<usize> = lean_vm::tables::tables().iter().map(|t| t.constraint_columns().len()).collect();
 
-    // Flock replay data, all named struct fields.
-    let n_log_b3 = l.taus[5];
-    let lcrounds = flock::blake3::K_LOG - 6;
-    let zcf = [summary.zc_claim.a_eval, summary.zc_claim.b_eval];
-    let zc_z = summary.zc_claim.z;
-    let zrho = summary.zc_claim.mlv_challenges.clone();
-    let lc_alpha = summary.lc_claim.alpha;
-    let lc_beta = summary.lc_claim.beta;
-    let lrr = summary.lc_claim.r_rounds.clone();
-
-
     let evtot_e: usize = ncol.iter().sum();
     let ncl = nclaims + evtot_e + 1; // bus + constraint + the PI claim
 
@@ -571,44 +390,6 @@ fn gen_verify(
     let depth: Vec<usize> = shapes.block_len.iter().map(|b| b.trailing_zeros() as usize).collect();
     let per: Vec<usize> = depth.iter().map(|&d| 128 / d).collect();
     let fgb = |lvl: usize| vcfg.fold_grinding_bits.get(lvl).copied().unwrap_or(0) as i64;
-
-    // The Ligerito opening's scalars close the stream: start msg (2), per
-    // level the fold (nonce? + msg) words, then root (2) / yr words, one
-    // query-grind nonce, and an intro msg (2) at every non-final level.
-    let lig_stream_words: usize = 2
-        + (0..nlev)
-            .map(|lvl| {
-                let folds: usize =
-                    (0..klvl[lvl]).map(|j| 2 + usize::from(fgb(lvl) - j as i64 > 0)).sum();
-                folds
-                    + if lvl == nlev - 1 { (1 << shapes.yr_log_n) + 1 } else { 2 + 1 + 2 }
-            })
-            .sum::<usize>();
-    // The lincheck rounds and z_partial sit at fixed offsets from the FLOCK
-    // tail (the stream up to the opening): [.. (e1,e_inf) x lcrounds |
-    // z_partial (64) | s_hat_v (2 x 128) | the opening's scalars].
-    let ns = proof.stream.len() - lig_stream_words;
-    let lcr: Vec<F128> = proof.stream[ns - 256 - 64 - 2 * lcrounds..ns - 256 - 64].to_vec();
-    let lcz: Vec<F128> = proof.stream[ns - 256 - 64..ns - 256].to_vec();
-
-    // matpart = the deferred weighted matrix evaluation: the lincheck running
-    // claim minus (= plus, char 2) the const-pin contribution.
-    let r1cs = flock::blake3::build_block_r1cs(n_log_b3);
-    let pincol = r1cs.const_pin.expect("blake3 r1cs has a const pin");
-    let mut lrun = lc_alpha * zcf[0] + zcf[1] + lc_beta;
-    for i in 0..lcrounds {
-        let (e1, ei, rv) = (lcr[2 * i], lcr[2 * i + 1], lrr[i]);
-        let e0 = lrun + e1;
-        let c1q = e0 + e1 + ei;
-        lrun = ei * rv * rv + c1q * rv + e0;
-    }
-    let mut pinw = lc_beta;
-    for (j, &rv) in lrr.iter().enumerate() {
-        let bit = (pincol >> (flock::blake3::K_LOG - 1 - j)) & 1;
-        pinw *= if bit == 1 { rv } else { F128::ONE + rv };
-    }
-    pinw *= lcz[pincol % 64];
-    let matpart = lrun + pinw;
 
     let lig_raw = summary.opening.lig.query_squeezes.clone();
     // Grind sanity: in transcript order after the bus grind — per level, the
@@ -798,12 +579,6 @@ fn gen_verify(
         zeta,
         sb: sb.clone(),
         wbc: wbc.clone(),
-        lc_alpha,
-        zz: zc_z,
-        zrho8: zrho[..lcrounds].to_vec(),
-        lrr: lrr.clone(),
-        lcz: lcz.clone(),
-        matpart,
     };
 
     let hints = vec![
@@ -813,7 +588,6 @@ fn gen_verify(
             v
         }),
         ("bytecode_vals".to_string(), bcv),
-        ("matpart".to_string(), vec![matpart]),
         ("merkle_leaf_rows".to_string(), lrows_flat),
         ("merkle_paths".to_string(), lpaths_flat),
         ("sub_pis".to_string(), vec![pi[0], pi[1]]),
@@ -1212,14 +986,14 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("QPKD_VARS_CAP", (33 + flock::blake3::K_LOG - 7).to_string());
     ps("BYTECODE_LOG", kbc.to_string());
     // The stacked bytecode: nbcv/2 encoding columns per side, packed along
-    // log2_ceil(cols) selector bits. The defer region is 2*kbc points + sel
-    // bits + 2 reduced + alpha + z_skip + 2*lcrounds rounds + 64 z_partial
-    // + 1 matpart.
+    // log2_ceil(cols) selector bits. The defer region is the bytecode claim
+    // only (point + selector bits + reduced value): the flock matrices are
+    // evaluated in-circuit by the walk, never deferred.
     let bc_cols = nbcv / 2;
     let log2_bc_cols = log2_ceil(bc_cols);
     ps("BYTECODE_COLS", bc_cols.to_string());
     ps("LOG2_BYTECODE_COLS", log2_bc_cols.to_string());
-    ps("DEFER_SIZE", (kbc + log2_bc_cols + 2 * lcrounds + 68).to_string());
+    ps("DEFER_SIZE", (kbc + log2_bc_cols + 1).to_string());
     ps("BYTECODE_VARS", (kbc + log2_bc_cols).to_string());
     let label_state = Sponge::new(b"leanvm-b", &[]).state();
     ps("TRANSCRIPT_SEED_0", u(label_state[0]).to_string());
