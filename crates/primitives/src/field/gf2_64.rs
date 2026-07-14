@@ -75,7 +75,15 @@ impl Mul for F64 {
             // SAFETY: aes target feature is enabled at compile time.
             unsafe { aarch64::mul_neon(self, rhs) }
         }
-        #[cfg(not(all(target_arch = "aarch64", target_feature = "aes")))]
+        #[cfg(all(target_arch = "x86_64", target_feature = "pclmulqdq"))]
+        {
+            // SAFETY: pclmulqdq target feature is enabled at compile time.
+            unsafe { x86_64::mul(self, rhs) }
+        }
+        #[cfg(not(any(
+            all(target_arch = "aarch64", target_feature = "aes"),
+            all(target_arch = "x86_64", target_feature = "pclmulqdq")
+        )))]
         {
             software::mul(self, rhs)
         }
@@ -280,6 +288,58 @@ pub mod aarch64 {
     pub unsafe fn mul_neon(a: F64, b: F64) -> F64 {
         // SAFETY: function carries the aes target feature.
         unsafe { mul_shift_tail(a, b) }
+    }
+}
+
+/// x86-64 `pclmulqdq` path — the twin of [`aarch64`] for AMD/Intel. GF(2^64)
+/// multiply is one CLMUL product plus a two-CLMUL fold by `R64` (= x^64 mod P),
+/// the same reduction as [`base_reduce_128`].
+#[cfg(all(target_arch = "x86_64", target_feature = "pclmulqdq"))]
+pub mod x86_64 {
+    use super::F64;
+    use crate::field::gf2_64x3::R64;
+    use core::arch::x86_64::*;
+
+    /// 64×64 carry-less product as a 128-bit vector `{lo, hi}`.
+    ///
+    /// # Safety
+    /// Requires the `pclmulqdq` target feature; only call where it is
+    /// statically enabled or has been runtime-detected.
+    #[inline]
+    #[target_feature(enable = "pclmulqdq", enable = "sse2")]
+    pub unsafe fn clmul(a: u64, b: u64) -> __m128i {
+        _mm_clmulepi64_si128::<0x00>(_mm_set_epi64x(0, a as i64), _mm_set_epi64x(0, b as i64))
+    }
+
+    /// Reduce a 128-bit carry-less product `{lo, hi}` into GF(2^64): fold the
+    /// high word by `R64` (= x^64 mod P), then fold the ≤5-bit second-order
+    /// overflow once more. Two CLMUL; the exact residue of [`base_reduce_128`].
+    ///
+    /// Credit: binius64 <https://github.com/binius-zk/binius64>
+    /// (`crates/arith-bench/src/monbijou/clmul.rs::reduce`), whose Monbijou
+    /// field is this same GF(2^64) — a `<0x01>` CLMUL fold by `0x1B` applied
+    /// twice, XOR-ing the low halves.
+    ///
+    /// # Safety
+    /// Requires the `pclmulqdq` target feature; see [`clmul`].
+    #[inline]
+    #[target_feature(enable = "pclmulqdq", enable = "sse2")]
+    pub unsafe fn reduce(p: __m128i) -> u64 {
+        let r = _mm_set_epi64x(0, R64 as i64);
+        let t = _mm_clmulepi64_si128::<0x01>(p, r); // clmul(p.hi, R64), ≤68 bits
+        let u = _mm_clmulepi64_si128::<0x01>(t, r); // clmul(t.hi, R64), ≤9 bits
+        _mm_cvtsi128_si64(_mm_xor_si128(_mm_xor_si128(p, t), u)) as u64
+    }
+
+    /// One GF(2^64) multiply: product + reduction (3 CLMUL).
+    ///
+    /// # Safety
+    /// Requires the `pclmulqdq` target feature; see [`clmul`].
+    #[inline]
+    #[target_feature(enable = "pclmulqdq", enable = "sse2")]
+    pub unsafe fn mul(a: F64, b: F64) -> F64 {
+        // SAFETY: function carries the pclmulqdq+sse2 target features.
+        unsafe { F64(reduce(clmul(a.0, b.0))) }
     }
 }
 

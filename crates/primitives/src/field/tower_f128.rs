@@ -69,7 +69,15 @@ impl F128T {
             // SAFETY: aes target feature is enabled at compile time.
             unsafe { aarch64::mul_unreduced_neon(self, rhs) }
         }
-        #[cfg(not(all(target_arch = "aarch64", target_feature = "aes")))]
+        #[cfg(all(target_arch = "x86_64", target_feature = "pclmulqdq"))]
+        {
+            // SAFETY: pclmulqdq target feature is enabled at compile time.
+            unsafe { x86_64::mul_unreduced(self, rhs) }
+        }
+        #[cfg(not(any(
+            all(target_arch = "aarch64", target_feature = "aes"),
+            all(target_arch = "x86_64", target_feature = "pclmulqdq")
+        )))]
         {
             software::mul_unreduced(self, rhs)
         }
@@ -85,7 +93,15 @@ impl F128T {
             // SAFETY: aes target feature is enabled at compile time.
             unsafe { aarch64::mul_base_unreduced_neon(self, k.0) }
         }
-        #[cfg(not(all(target_arch = "aarch64", target_feature = "aes")))]
+        #[cfg(all(target_arch = "x86_64", target_feature = "pclmulqdq"))]
+        {
+            // SAFETY: pclmulqdq target feature is enabled at compile time.
+            unsafe { x86_64::mul_base_unreduced(self, k.0) }
+        }
+        #[cfg(not(any(
+            all(target_arch = "aarch64", target_feature = "aes"),
+            all(target_arch = "x86_64", target_feature = "pclmulqdq")
+        )))]
         {
             software::mul_base_unreduced(self, k)
         }
@@ -117,7 +133,15 @@ impl F128T {
             // SAFETY: aes target feature is enabled at compile time.
             unsafe { aarch64::square_neon(self) }
         }
-        #[cfg(not(all(target_arch = "aarch64", target_feature = "aes")))]
+        #[cfg(all(target_arch = "x86_64", target_feature = "pclmulqdq"))]
+        {
+            // SAFETY: pclmulqdq target feature is enabled at compile time.
+            unsafe { x86_64::square(self) }
+        }
+        #[cfg(not(any(
+            all(target_arch = "aarch64", target_feature = "aes"),
+            all(target_arch = "x86_64", target_feature = "pclmulqdq")
+        )))]
         {
             software::square(self)
         }
@@ -183,7 +207,15 @@ impl F128TUnreduced {
             // SAFETY: aes target feature is enabled at compile time.
             unsafe { aarch64::reduce_unreduced_neon(self) }
         }
-        #[cfg(not(all(target_arch = "aarch64", target_feature = "aes")))]
+        #[cfg(all(target_arch = "x86_64", target_feature = "pclmulqdq"))]
+        {
+            // SAFETY: pclmulqdq target feature is enabled at compile time.
+            unsafe { x86_64::reduce_unreduced(self) }
+        }
+        #[cfg(not(any(
+            all(target_arch = "aarch64", target_feature = "aes"),
+            all(target_arch = "x86_64", target_feature = "pclmulqdq")
+        )))]
         {
             software::reduce_unreduced(self)
         }
@@ -232,7 +264,15 @@ impl F128TBaseUnreduced {
             // SAFETY: aes target feature is enabled at compile time.
             unsafe { aarch64::reduce_base_unreduced_neon(self) }
         }
-        #[cfg(not(all(target_arch = "aarch64", target_feature = "aes")))]
+        #[cfg(all(target_arch = "x86_64", target_feature = "pclmulqdq"))]
+        {
+            // SAFETY: pclmulqdq target feature is enabled at compile time.
+            unsafe { x86_64::reduce_base_unreduced(self) }
+        }
+        #[cfg(not(any(
+            all(target_arch = "aarch64", target_feature = "aes"),
+            all(target_arch = "x86_64", target_feature = "pclmulqdq")
+        )))]
         {
             software::reduce_base_unreduced(self)
         }
@@ -293,7 +333,15 @@ impl Mul for F128T {
             // SAFETY: aes target feature is enabled at compile time.
             unsafe { aarch64::mul_neon(self, rhs) }
         }
-        #[cfg(not(all(target_arch = "aarch64", target_feature = "aes")))]
+        #[cfg(all(target_arch = "x86_64", target_feature = "pclmulqdq"))]
+        {
+            // SAFETY: pclmulqdq target feature is enabled at compile time.
+            unsafe { x86_64::mul(self, rhs) }
+        }
+        #[cfg(not(any(
+            all(target_arch = "aarch64", target_feature = "aes"),
+            all(target_arch = "x86_64", target_feature = "pclmulqdq")
+        )))]
         {
             software::mul(self, rhs)
         }
@@ -881,6 +929,146 @@ pub mod aarch64 {
     }
 }
 
+/// x86-64 `pclmulqdq` path — the twin of [`aarch64`] for AMD/Intel. Mirrors the
+/// software reference exactly: 3 CLMUL Karatsuba sub-products over the scalar
+/// coefficients, then the tower reduction `c0 = reduce(p0) + x^61·reduce(p1)`,
+/// `c1 = reduce(pm + p0)`. Each GF(2^64) reduction is [`crate::field::gf2_64`]'s
+/// two-CLMUL fold.
+///
+/// Credit: binius64 <https://github.com/binius-zk/binius64>
+/// (`crates/arith-bench/src/monbijou/clmul.rs`) for the GF(2^64) base-field
+/// CLMUL and the deferred-reduction structure (the base field is identical).
+/// The degree-2 extension differs — this tower is Artin–Schreier `y²+y+x^61`,
+/// not binius's `y²+xy+1` — so the extension reduction here follows our own
+/// field's algebra rather than theirs.
+#[cfg(all(target_arch = "x86_64", target_feature = "pclmulqdq"))]
+pub mod x86_64 {
+    use super::{C61, F128T, F128TBaseUnreduced, F128TUnreduced};
+    use crate::field::gf2_64::x86_64::{clmul, reduce as kreduce};
+    use core::arch::x86_64::*;
+
+    /// `__m128i` ↔ `u128`: both are 128-bit values; the low lane is bits 0..64.
+    #[inline]
+    #[target_feature(enable = "sse2")]
+    unsafe fn pack(v: __m128i) -> u128 {
+        // SAFETY: __m128i and u128 are both 128-bit values.
+        unsafe { core::mem::transmute::<__m128i, u128>(v) }
+    }
+    #[inline]
+    #[target_feature(enable = "sse2")]
+    unsafe fn unpack(x: u128) -> __m128i {
+        // SAFETY: u128 and __m128i are both 128-bit values.
+        unsafe { core::mem::transmute::<u128, __m128i>(x) }
+    }
+
+    /// The reduction tail of one E×E multiply applied to three carry-less parts
+    /// (each a 128-bit CLMUL product). Mirrors [`super::software::mul`]:
+    /// `c1 = reduce(pm ^ p0)`, `c0 = reduce(p0) ^ x^61·reduce(p1)`.
+    #[inline]
+    #[target_feature(enable = "pclmulqdq", enable = "sse2")]
+    unsafe fn reduce_parts(p0: __m128i, p1: __m128i, pm: __m128i) -> F128T {
+        // SAFETY: function carries the pclmulqdq+sse2 target features.
+        unsafe {
+            let rp0 = kreduce(p0);
+            let rp1 = kreduce(p1);
+            let c1 = kreduce(_mm_xor_si128(pm, p0)); // reduce is F2-linear
+            let c0 = rp0 ^ kreduce(clmul(C61, rp1));
+            F128T { c0, c1 }
+        }
+    }
+
+    /// Full E × E multiply: 3 Karatsuba products + the tower reduction.
+    ///
+    /// # Safety
+    /// Requires the `pclmulqdq` target feature; only call where it is
+    /// statically enabled or has been runtime-detected.
+    #[inline]
+    #[target_feature(enable = "pclmulqdq", enable = "sse2")]
+    pub unsafe fn mul(a: F128T, b: F128T) -> F128T {
+        // SAFETY: function carries the pclmulqdq+sse2 target features.
+        unsafe {
+            reduce_parts(
+                clmul(a.c0, b.c0),
+                clmul(a.c1, b.c1),
+                clmul(a.c0 ^ a.c1, b.c0 ^ b.c1),
+            )
+        }
+    }
+
+    /// Squaring via [`mul`].
+    ///
+    /// # Safety
+    /// Requires the `pclmulqdq` target feature; see [`mul`].
+    #[inline]
+    #[target_feature(enable = "pclmulqdq", enable = "sse2")]
+    pub unsafe fn square(a: F128T) -> F128T {
+        // SAFETY: function carries the pclmulqdq+sse2 target features.
+        unsafe { mul(a, a) }
+    }
+
+    /// The three unreduced Karatsuba sub-products, for deferred accumulation
+    /// (3 CLMUL, no reduction). Reduction is F2-linear, so callers XOR many of
+    /// these and [`reduce_unreduced`] once.
+    ///
+    /// # Safety
+    /// Requires the `pclmulqdq` target feature; see [`mul`].
+    #[inline]
+    #[target_feature(enable = "pclmulqdq", enable = "sse2")]
+    pub unsafe fn mul_unreduced(a: F128T, b: F128T) -> F128TUnreduced {
+        // SAFETY: function carries the pclmulqdq+sse2 target features.
+        unsafe {
+            F128TUnreduced {
+                p0: pack(clmul(a.c0, b.c0)),
+                p1: pack(clmul(a.c1, b.c1)),
+                pm: pack(clmul(a.c0 ^ a.c1, b.c0 ^ b.c1)),
+            }
+        }
+    }
+
+    /// Reduce accumulated unreduced parts: the [`mul`] tail applied to the sums.
+    ///
+    /// # Safety
+    /// Requires the `pclmulqdq` target feature; see [`mul`].
+    #[inline]
+    #[target_feature(enable = "pclmulqdq", enable = "sse2")]
+    pub unsafe fn reduce_unreduced(u: F128TUnreduced) -> F128T {
+        // SAFETY: function carries the pclmulqdq+sse2 target features.
+        unsafe { reduce_parts(unpack(u.p0), unpack(u.p1), unpack(u.pm)) }
+    }
+
+    /// The two unreduced lane products of a mixed K × E multiply (2 CLMUL).
+    ///
+    /// # Safety
+    /// Requires the `pclmulqdq` target feature; see [`mul`].
+    #[inline]
+    #[target_feature(enable = "pclmulqdq", enable = "sse2")]
+    pub unsafe fn mul_base_unreduced(e: F128T, k: u64) -> F128TBaseUnreduced {
+        // SAFETY: function carries the pclmulqdq+sse2 target features.
+        unsafe {
+            F128TBaseUnreduced {
+                p0: pack(clmul(e.c0, k)),
+                p1: pack(clmul(e.c1, k)),
+            }
+        }
+    }
+
+    /// Reduce accumulated mixed-product lanes: one GF(2^64) reduction per lane.
+    ///
+    /// # Safety
+    /// Requires the `pclmulqdq` target feature; see [`mul`].
+    #[inline]
+    #[target_feature(enable = "pclmulqdq", enable = "sse2")]
+    pub unsafe fn reduce_base_unreduced(u: F128TBaseUnreduced) -> F128T {
+        // SAFETY: function carries the pclmulqdq+sse2 target features.
+        unsafe {
+            F128T {
+                c0: kreduce(unpack(u.p0)),
+                c1: kreduce(unpack(u.p1)),
+            }
+        }
+    }
+}
+
 pub mod software {
     use super::{C61, F64, F128T, F128TUnreduced, base_reduce_128};
     use crate::field::gf2_128::software::clmul64;
@@ -1036,6 +1224,33 @@ mod tests {
                 assert_eq!(aarch64::mul_base_pmull4(a, k), want_base);
                 assert_eq!(aarch64::mul_base_shift_tail(a, k), want_base);
                 assert_eq!(aarch64::square_neon(a), software::square(a));
+            }
+        }
+    }
+
+    /// Every x86-64 pclmulqdq kernel agrees with the software reference,
+    /// including the deferred-reduction paths (mul_unreduced/reduce_unreduced
+    /// and mul_base_unreduced/reduce_base_unreduced) the sumcheck loop uses.
+    #[cfg(all(target_arch = "x86_64", target_feature = "pclmulqdq"))]
+    #[test]
+    fn x86_variants_match_software() {
+        let mut s = 17u64;
+        for _ in 0..10_000 {
+            let (a, b) = (rand_e(&mut s), rand_e(&mut s));
+            let k = splitmix64(&mut s);
+            let want = software::mul(a, b);
+            let want_base = F128T {
+                c0: (F64(a.c0) * F64(k)).0,
+                c1: (F64(a.c1) * F64(k)).0,
+            };
+            // SAFETY: pclmulqdq target feature is enabled at compile time.
+            unsafe {
+                assert_eq!(x86_64::mul(a, b), want);
+                assert_eq!(x86_64::square(a), software::square(a));
+                // Deferred E×E: one unreduced product reduces to the product.
+                assert_eq!(x86_64::mul_unreduced(a, b).reduce(), want);
+                // Deferred K×E mixed product.
+                assert_eq!(x86_64::mul_base_unreduced(a, k).reduce(), want_base);
             }
         }
     }
