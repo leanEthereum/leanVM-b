@@ -264,7 +264,15 @@ fn preflight() {
 fn main() {
     #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
     println!("CLMUL backend: aarch64 PMULL (aes) — ENABLED");
-    #[cfg(all(target_arch = "x86_64", target_feature = "pclmulqdq"))]
+    #[cfg(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx512f"))]
+    println!(
+        "CLMUL backend: x86_64 pclmulqdq + VPCLMULQDQ (AVX-512) — ENABLED (4-wide batched inner product)"
+    );
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "pclmulqdq",
+        not(all(target_feature = "vpclmulqdq", target_feature = "avx512f"))
+    ))]
     println!("CLMUL backend: x86_64 pclmulqdq — ENABLED (128-bit CLMUL; not VPCLMULQDQ)");
     #[cfg(not(any(
         all(target_arch = "aarch64", target_feature = "aes"),
@@ -356,6 +364,47 @@ fn main() {
                 f64::NAN, // F128Txy has no bespoke NEON kernel (x86 CLMUL / software only)
             ],
         ),
+        #[cfg(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx512f"))]
+        (
+            "inner prod, VPCLMUL",
+            [
+                f64::NAN, // no batched GHASH kernel wired here
+                {
+                    let mut s = 0xA5A5_1005u64;
+                    let a: Vec<F128T> = (0..ARR_N).map(|_| F128T::rand(&mut s)).collect();
+                    let b: Vec<F128T> = (0..ARR_N).map(|_| F128T::rand(&mut s)).collect();
+                    let passes = inner_passes();
+                    measure(passes * ARR_N as u64, move || {
+                        for _ in 0..passes {
+                            // SAFETY: vpclmulqdq+avx512f statically enabled (cfg above).
+                            black_box(unsafe {
+                                primitives::field::tower_f128::x86_64::inner_unreduced_vpclmul_kara::<2>(
+                                    black_box(&a),
+                                    black_box(&b),
+                                )
+                            });
+                        }
+                    })
+                },
+                {
+                    let mut s = 0xA5A5_1006u64;
+                    let a: Vec<F128Txy> = (0..ARR_N).map(|_| F128Txy::rand(&mut s)).collect();
+                    let b: Vec<F128Txy> = (0..ARR_N).map(|_| F128Txy::rand(&mut s)).collect();
+                    let passes = inner_passes();
+                    measure(passes * ARR_N as u64, move || {
+                        for _ in 0..passes {
+                            // SAFETY: vpclmulqdq+avx512f statically enabled (cfg above).
+                            black_box(unsafe {
+                                primitives::field::tower_f128_xy::x86_64::inner_unreduced_vpclmul_kara::<2>(
+                                    black_box(&a),
+                                    black_box(&b),
+                                )
+                            });
+                        }
+                    })
+                },
+            ],
+        ),
         (
             "square latency (chain)",
             [
@@ -414,6 +463,13 @@ fn main() {
     println!("    base K and the 3-CLMUL Karatsuba — only the degree-2 fold differs).");
     println!("  - 'inner prod, deferred' XOR-accumulates unreduced products and reduces once");
     println!("    (accumulator: F128 32 B, F128T/F128Txy 48 B) — the sumcheck hot-loop shape.");
+    #[cfg(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx512f"))]
+    {
+        println!("  - 'inner prod, VPCLMUL' is that same sum via the AVX-512 4-wide batched");
+        println!("    Karatsuba kernel (B=2 banks): 4 field elements per CLMUL, ~5x the scalar");
+        println!("    'deferred' row. Karatsuba beats schoolbook here (CLMUL-bound), the reverse");
+        println!("    of M-series; see the inner_bench binary for the full ranking.");
+    }
     println!("  - inverse is Fermat (square-and-multiply); setup-only, shown for completeness.");
     println!("  - pass --variants for the per-kernel F128T mul comparison.");
 }
