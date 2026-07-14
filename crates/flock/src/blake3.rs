@@ -649,6 +649,184 @@ pub fn build_matrices() -> (SparseBinaryMatrix, SparseBinaryMatrix) {
     (to_mat(a_rows), to_mat(b_rows))
 }
 
+// ---------------------------------------------------------------------------
+// Circuit-walk evaluation (flock §Circuit walking)
+//
+// Evaluates the alpha-batched bilinear form
+//
+//     alpha·(uᵀ A_0 w) + (uᵀ B_0 w)
+//
+// for arbitrary row weights `u` and column weights `w` (length K each) by
+// walking the UNSUBSTITUTED compression circuit forward: the same cascade
+// `build_matrices` threads symbolically, evaluated over F128 values. A lane
+// is a 32-vector of wire values; a committed slot contributes `w[slot]`, an
+// intermediate wire the running linear combination. Row i's contribution
+// `u[i]·(alpha·⟨A_i, w⟩ + ⟨B_i, w⟩)` is accumulated exactly where
+// `build_matrices` would emit that row, with `⟨row, w⟩` read off the threaded
+// wire values. Cost: O(circuit) field ops, never the ~21M substituted
+// nonzeros. This is what lets a verifier (native or in-circuit) evaluate the
+// matrix MLEs directly instead of deferring the claim.
+// ---------------------------------------------------------------------------
+
+/// One lane's wire values: bit `i` of the word, as the F128 combination
+/// `⟨lin_func_i, w⟩`.
+type WireWord = [F128; WORD_BITS];
+
+#[inline]
+fn wire_from_slot_base(w: &[F128], base: usize) -> WireWord {
+    std::array::from_fn(|i| w[base + i])
+}
+
+/// Constant word: a set bit is the `[Z_CONST]` lin_func, a clear bit empty.
+#[inline]
+fn wire_from_const(w: &[F128], val: u32) -> WireWord {
+    std::array::from_fn(|i| {
+        if (val >> i) & 1 == 1 {
+            w[Z_CONST_POS]
+        } else {
+            F128::ZERO
+        }
+    })
+}
+
+#[inline]
+fn wire_xor(x: &WireWord, y: &WireWord) -> WireWord {
+    std::array::from_fn(|i| x[i] + y[i])
+}
+
+#[inline]
+fn wire_rotr(x: &WireWord, n: usize) -> WireWord {
+    std::array::from_fn(|i| x[(i + n) % WORD_BITS])
+}
+
+/// Walk one 32-bit ADD (mirror of `write_add_carry_rows` + `Word::add_sum`):
+/// accumulate the 31 carry rows into `acc` and return the sum-bit wires.
+///
+///   carry row cb+i:  A = X[i] ⊕ cin[i],  B = Y[i] ⊕ cin[i]
+///   sum[i]         = X[i] ⊕ Y[i] ⊕ cin[i]
+///
+/// with `cin[i] = ⊕_{j<i} carry_aux[cb+j]`, a running prefix of `w` reads.
+fn walk_add(
+    acc: &mut F128,
+    alpha: F128,
+    u: &[F128],
+    w: &[F128],
+    x: &WireWord,
+    y: &WireWord,
+    carry_base: usize,
+) -> WireWord {
+    let mut out = [F128::ZERO; WORD_BITS];
+    let mut cin = F128::ZERO;
+    for i in 0..WORD_BITS {
+        let a_side = x[i] + cin;
+        let b_side = y[i] + cin;
+        out[i] = a_side + y[i];
+        if i < CARRY_BITS_PER_ADD {
+            *acc += u[carry_base + i] * (alpha * a_side + b_side);
+            cin += w[carry_base + i];
+        }
+    }
+    out
+}
+
+/// Walk 32 consecutive `lin_func · 1` rows (lin-id / out_lo / out_hi):
+/// row base+i has `A = <wire bit i>`, `B = [Z_CONST]`.
+fn walk_lin_rows(acc: &mut F128, alpha: F128, u: &[F128], w: &[F128], vals: &WireWord, base: usize) {
+    let wc = w[Z_CONST_POS];
+    for i in 0..WORD_BITS {
+        *acc += u[base + i] * (alpha * vals[i] + wc);
+    }
+}
+
+/// `alpha·(uᵀ A_0 w) + (uᵀ B_0 w)` by the forward circuit walk.
+pub fn bilinear_walk(alpha: F128, u: &[F128], w: &[F128]) -> F128 {
+    assert_eq!(u.len(), K);
+    assert_eq!(w.len(), K);
+    let wc = w[Z_CONST_POS];
+    let alpha1_wc = (alpha + F128::ONE) * wc;
+    let mut acc = F128::ZERO;
+
+    // Constant row: A = B = [Z_CONST].
+    acc += u[Z_CONST_POS] * alpha1_wc;
+
+    // Free-input rows for the 512 message bits: A = [slot], B = [Z_CONST].
+    for j in 0..16 * WORD_BITS {
+        let s = M_BASE + j;
+        acc += u[s] * (alpha * w[s] + wc);
+    }
+
+    // Pinned-constant rows: a set bit has A = B = [Z_CONST], a clear bit an
+    // empty row.
+    let mut const_walk = |acc: &mut F128, base: usize, val: u32| {
+        for j in 0..WORD_BITS {
+            if (val >> j) & 1 == 1 {
+                *acc += u[base + j] * alpha1_wc;
+            }
+        }
+    };
+    for (wd, &val) in BLAKE3_IV.iter().enumerate() {
+        const_walk(&mut acc, CV_BASE + wd * WORD_BITS, val);
+    }
+    const_walk(&mut acc, T_LO_BASE, 0);
+    const_walk(&mut acc, T_HI_BASE, 0);
+    const_walk(&mut acc, BLEN_BASE, PINNED_BLOCK_LEN);
+    const_walk(&mut acc, FLAGS_BASE, PINNED_FLAGS);
+
+    // The G cascade, over wire values.
+    let msg_idx = per_round_msg_idx();
+    let mut state: [WireWord; 16] = std::array::from_fn(|_| [F128::ZERO; WORD_BITS]);
+    for wd in 0..8 {
+        state[wd] = wire_from_slot_base(w, cv_bit(wd, 0));
+    }
+    for i in 0..4 {
+        state[8 + i] = wire_from_const(w, BLAKE3_IV[i]);
+    }
+    state[12] = wire_from_slot_base(w, T_LO_BASE);
+    state[13] = wire_from_slot_base(w, T_HI_BASE);
+    state[14] = wire_from_slot_base(w, BLEN_BASE);
+    state[15] = wire_from_slot_base(w, FLAGS_BASE);
+
+    for r in 0..N_ROUNDS {
+        for g_in_round in 0..N_G_PER_ROUND {
+            let g = r * N_G_PER_ROUND + g_in_round;
+            let [la, lb, lc, ld] = G_LANES[g_in_round];
+            let [mx_idx, my_idx] = msg_idx[r][g_in_round];
+            let (a, b, c, d) = (state[la], state[lb], state[lc], state[ld]);
+            let mx = wire_from_slot_base(w, m_bit(mx_idx, 0));
+            let my = wire_from_slot_base(w, m_bit(my_idx, 0));
+
+            let tmp_0 = walk_add(&mut acc, alpha, u, w, &a, &b, g_add_carry_bit(g, ADD_TMP0, 0));
+            let a_1 = walk_add(&mut acc, alpha, u, w, &tmp_0, &mx, g_add_carry_bit(g, ADD_A1, 0));
+            let d_1 = wire_rotr(&wire_xor(&d, &a_1), 16);
+            let c_1 = walk_add(&mut acc, alpha, u, w, &c, &d_1, g_add_carry_bit(g, ADD_C1, 0));
+            let b_1 = wire_rotr(&wire_xor(&b, &c_1), 12);
+            let tmp_1 = walk_add(&mut acc, alpha, u, w, &a_1, &b_1, g_add_carry_bit(g, ADD_TMP1, 0));
+            let a_2 = walk_add(&mut acc, alpha, u, w, &tmp_1, &my, g_add_carry_bit(g, ADD_A2, 0));
+            let d_2 = wire_rotr(&wire_xor(&d_1, &a_2), 8);
+            let c_2 = walk_add(&mut acc, alpha, u, w, &c_1, &d_2, g_add_carry_bit(g, ADD_C2, 0));
+            let b_new = wire_rotr(&wire_xor(&b_1, &c_2), 7);
+            walk_lin_rows(&mut acc, alpha, u, w, &b_new, g_lin_bit(g, LIN_B_NEW, 0));
+            walk_lin_rows(&mut acc, alpha, u, w, &d_2, g_lin_bit(g, LIN_D_NEW, 0));
+
+            state[la] = a_2;
+            state[lb] = wire_from_slot_base(w, g_lin_bit(g, LIN_B_NEW, 0));
+            state[lc] = c_2;
+            state[ld] = wire_from_slot_base(w, g_lin_bit(g, LIN_D_NEW, 0));
+        }
+    }
+
+    // Finalization rows: out_lo[w] = state[w] ⊕ state[w+8],
+    // out_hi[w] = state[w+8] ⊕ cv[w]. Padding rows are empty: no contribution.
+    for wd in 0..8 {
+        let lo = wire_xor(&state[wd], &state[wd + 8]);
+        walk_lin_rows(&mut acc, alpha, u, w, &lo, out_lo_bit(wd, 0));
+        let cv_w = wire_from_slot_base(w, cv_bit(wd, 0));
+        let hi = wire_xor(&state[wd + 8], &cv_w);
+        walk_lin_rows(&mut acc, alpha, u, w, &hi, out_hi_bit(wd, 0));
+    }
+    acc
+}
+
 /// [`BlockR1cs::family_digest`] of this module's circuit, baked as a constant:
 /// recomputing it means building and hashing ~21M matrix entries (~300 ms),
 /// which embedding protocols would otherwise pay inside their first prove.
@@ -1227,6 +1405,36 @@ mod tests {
     const CHUNK_START: u32 = 1 << 0;
     const CHUNK_END: u32 = 1 << 1;
     const ROOT: u32 = 1 << 3;
+
+    fn rand_f128(rng: &mut Rng) -> F128 {
+        let word = |rng: &mut Rng| ((rng.next_u32() as u64) << 32) | rng.next_u32() as u64;
+        F128::new(word(rng), word(rng))
+    }
+
+    /// The circuit walk computes the same bilinear form as the materialized
+    /// matrices, for fully random (unstructured) row/column weights: any
+    /// missing, extra, or misplaced row contribution would break equality.
+    #[test]
+    fn bilinear_walk_matches_matrices() {
+        let (ma, mb) = matrices();
+        let mut rng = Rng::new(0xC12C);
+        for trial in 0..3 {
+            let alpha = rand_f128(&mut rng);
+            let u: Vec<F128> = (0..K).map(|_| rand_f128(&mut rng)).collect();
+            let w: Vec<F128> = (0..K).map(|_| rand_f128(&mut rng)).collect();
+            let contract = |m: &SparseBinaryMatrix| -> F128 {
+                m.rows
+                    .iter()
+                    .enumerate()
+                    .map(|(i, row)| {
+                        u[i] * row.iter().map(|&j| w[j]).fold(F128::ZERO, |acc, x| acc + x)
+                    })
+                    .fold(F128::ZERO, |acc, x| acc + x)
+            };
+            let direct = alpha * contract(ma) + contract(mb);
+            assert_eq!(bilinear_walk(alpha, &u, &w), direct, "trial {trial}");
+        }
+    }
 
     #[test]
     fn layout_constants() {
