@@ -300,7 +300,6 @@ impl FnLower<'_> {
             self.vars.clone(),
             self.stacks.clone(),
             self.consts.clone(),
-            self.one_off,
             self.self_fp_off,
             self.bounds.clone(),
             self.const_cells.clone(),
@@ -325,7 +324,6 @@ impl FnLower<'_> {
             self.vars,
             self.stacks,
             self.consts,
-            self.one_off,
             self.self_fp_off,
             self.bounds,
             self.const_cells,
@@ -1032,9 +1030,7 @@ impl FnLower<'_> {
             for _ in 0..k {
                 acc *= bc;
             }
-            let o = self.fresh();
-            self.emit(LOp::Set { o, k: KVal::Const(acc) });
-            return o;
+            return self.const_cell(acc);
         }
         if k == 0 {
             let o = self.fresh();
