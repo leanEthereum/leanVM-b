@@ -100,7 +100,7 @@ fn blake3_batch_prove_verify() {
     let t_prove = Instant::now();
     let t = Instant::now();
     let (commitment, prover_data) = pcs::commit(&q_pkd, &params);
-    ps.add_scalars(&root_to_scalars(&commitment.root));
+    ps.add_scalars(&pcs::merkle::hash_to_scalars(&commitment.root));
     let commit_ms = t.elapsed().as_secs_f64() * 1e3;
 
     // Reduction (zerocheck + lincheck) + the one stacked Ligerito open.
@@ -114,7 +114,7 @@ fn blake3_batch_prove_verify() {
     // Verify (correctness gate + a verify timing for reference).
     let t = Instant::now();
     let mut vs = VerifierState::new(b"flock-blake3-batch", &bundle, &[]);
-    let root = scalars_to_root(&vs.next_scalars(2).expect("root scalars"));
+    let root = pcs::merkle::scalars_to_hash(&vs.next_scalars(2).expect("root scalars"));
     let commitment_v = Commitment { root, params };
     setup
         .verify_validity_stacked(&commitment_v, 0, &[], &proof, &mut vs)

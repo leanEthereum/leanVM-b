@@ -25,10 +25,29 @@
 //! an internal node do not share a pre-image shape. A production PCS may still
 //! prefer explicit `0x00`/`0x01` tags.
 
-use primitives::field::F64;
+use primitives::field::{F64, F128T};
 use rayon::prelude::*;
 
 pub type Hash = [u8; 32];
+
+/// Encode a Merkle hash as the two little-endian field words used by transcripts.
+#[inline]
+pub fn hash_to_scalars(hash: &Hash) -> [F128T; 2] {
+    let w = |o: usize| u64::from_le_bytes(hash[o..o + 8].try_into().unwrap());
+    [F128T::new(w(0), w(8)), F128T::new(w(16), w(24))]
+}
+
+/// Decode the two field words used by transcripts back into a Merkle hash.
+#[inline]
+pub fn scalars_to_hash(scalars: &[F128T]) -> Hash {
+    assert_eq!(scalars.len(), 2, "a Merkle hash is exactly two field words");
+    let mut hash = [0u8; 32];
+    hash[0..8].copy_from_slice(&scalars[0].c0.to_le_bytes());
+    hash[8..16].copy_from_slice(&scalars[0].c1.to_le_bytes());
+    hash[16..24].copy_from_slice(&scalars[1].c0.to_le_bytes());
+    hash[24..32].copy_from_slice(&scalars[1].c1.to_le_bytes());
+    hash
+}
 
 /// The VM's 64→32 BLAKE3 compression `f(a, b) = BLAKE3(a‖b)` on two 32-byte
 /// halves — exactly leanVM-b's `Blake3` opcode / `vmhash::compress`. THE

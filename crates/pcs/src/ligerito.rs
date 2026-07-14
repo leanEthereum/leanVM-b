@@ -1991,13 +1991,6 @@ fn next_sumcheck_msg(vs: &mut VerifierState<'_>) -> Option<SumcheckMessage> {
     Some(SumcheckMessage { u_0, u_2 })
 }
 
-/// A Merkle root as two field scalars, so it rides the transcript stream
-/// like any other transmitted value (same convention as the commit root).
-fn root_scalars(root: &Hash) -> [F128T; 2] {
-    let w = |o: usize| u64::from_le_bytes(root[o..o + 8].try_into().unwrap());
-    [F128T::new(w(0), w(8)), F128T::new(w(16), w(24))]
-}
-
 /// Read a Merkle root off the stream (two scalars, bound as read).
 fn next_root(vs: &mut VerifierState<'_>) -> Option<Hash> {
     let s = vs.next_scalars(2).ok()?;
@@ -2742,7 +2735,7 @@ fn multilevel_prover_with_basis_impl(
     if trace {
         t_commits += _t.elapsed();
     }
-    ps.add_scalars(&root_scalars(&wtns_1.root()));
+    ps.add_scalars(&merkle::hash_to_scalars(&wtns_1.root()));
 
     // OOD binding for the L1 commit: each sample evaluates f1's multilinear
     // extension at a random transcript point z ∈ F^{n1}, sends the claimed
@@ -2928,7 +2921,7 @@ fn multilevel_prover_with_basis_impl(
         if trace {
             t_commits += _t.elapsed();
         }
-        ps.add_scalars(&root_scalars(&wtns_next.root()));
+        ps.add_scalars(&merkle::hash_to_scalars(&wtns_next.root()));
 
         // OOD binding for the L_{i+2} commit (same as the L1 block above).
         {
