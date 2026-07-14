@@ -827,6 +827,118 @@ pub fn bilinear_walk(alpha: F128, u: &[F128], w: &[F128]) -> F128 {
     acc
 }
 
+/// Static routing tables for an EXTERNAL circuit walker (the recursion
+/// guest's in-circuit `matrix_walk`): where each G's four lane inputs live,
+/// in the walker's buffer convention.
+///
+/// The walker keeps three value stores:
+///   - `wt`: the length-K column-weight table (index = committed slot);
+///   - `aw`: a-lane wires, 128 initial cells (cv words 0..4, copies of
+///     `wt[0..128]`) then 32 cells per G (that G's `a_2`);
+///   - `cw`: c-lane wires, 128 initial cells (the IV constant words 0..4,
+///     `wt[Z_CONST]` or zero per bit) then 32 cells per G (`c_2`).
+///
+/// `src_a`/`src_c` are offsets into `aw`/`cw`; `src_b`, `src_d`, `mxb`, `myb`
+/// are committed slot bases (indices into `wt`); `fin_*` give the final
+/// state's lane sources per lane group (lanes 0-3 from `aw`, 4-7 and 12-15
+/// from `wt`, 8-11 from `cw`); `pin_rows` lists the rows whose constraint is
+/// `z_const · z_const` (the pinned set bits plus the constant row itself).
+pub struct WalkSchedule {
+    pub src_a: [usize; N_G],
+    pub src_b: [usize; N_G],
+    pub src_c: [usize; N_G],
+    pub src_d: [usize; N_G],
+    pub mxb: [usize; N_G],
+    pub myb: [usize; N_G],
+    pub fin_a: [usize; 4],
+    pub fin_b: [usize; 4],
+    pub fin_c: [usize; 4],
+    pub fin_d: [usize; 4],
+    pub pin_rows: Vec<usize>,
+}
+
+/// Wire-buffer offset of G `g`'s cascade output (after the 128 initial cells).
+pub const fn walk_wire_off(g: usize) -> usize {
+    128 + 32 * g
+}
+
+pub fn walk_schedule() -> WalkSchedule {
+    // Current source per lane, in the walker's convention. Lanes never change
+    // roles (0-3 are always a-positions, 4-7 b, 8-11 c, 12-15 d), so one
+    // usize per lane suffices: an `aw`/`cw` offset for a/c, a slot base for
+    // b/d.
+    let mut src = [0usize; 16];
+    for lane in 0..4 {
+        src[lane] = lane * 32; // aw initial cells = cv words 0..4
+    }
+    for lane in 4..8 {
+        src[lane] = cv_bit(lane, 0); // cv words 4..8, straight wt slots
+    }
+    for lane in 8..12 {
+        src[lane] = (lane - 8) * 32; // cw initial cells = IV const words
+    }
+    src[12] = T_LO_BASE;
+    src[13] = T_HI_BASE;
+    src[14] = BLEN_BASE;
+    src[15] = FLAGS_BASE;
+
+    let msg_idx = per_round_msg_idx();
+    let mut s = WalkSchedule {
+        src_a: [0; N_G],
+        src_b: [0; N_G],
+        src_c: [0; N_G],
+        src_d: [0; N_G],
+        mxb: [0; N_G],
+        myb: [0; N_G],
+        fin_a: [0; 4],
+        fin_b: [0; 4],
+        fin_c: [0; 4],
+        fin_d: [0; 4],
+        pin_rows: Vec::new(),
+    };
+    for r in 0..N_ROUNDS {
+        for g_in_round in 0..N_G_PER_ROUND {
+            let g = r * N_G_PER_ROUND + g_in_round;
+            let [la, lb, lc, ld] = G_LANES[g_in_round];
+            let [mx_idx, my_idx] = msg_idx[r][g_in_round];
+            s.src_a[g] = src[la];
+            s.src_b[g] = src[lb];
+            s.src_c[g] = src[lc];
+            s.src_d[g] = src[ld];
+            s.mxb[g] = m_bit(mx_idx, 0);
+            s.myb[g] = m_bit(my_idx, 0);
+            src[la] = walk_wire_off(g);
+            src[lb] = g_lin_bit(g, LIN_B_NEW, 0);
+            src[lc] = walk_wire_off(g);
+            src[ld] = g_lin_bit(g, LIN_D_NEW, 0);
+        }
+    }
+    for w in 0..4 {
+        s.fin_a[w] = src[w];
+        s.fin_b[w] = src[4 + w];
+        s.fin_c[w] = src[8 + w];
+        s.fin_d[w] = src[12 + w];
+    }
+
+    // Rows with A = B = [Z_CONST]: the constant row plus every pinned SET
+    // bit (mirrors build_matrices' const_emit calls; clear bits have empty
+    // rows and contribute nothing).
+    s.pin_rows.push(Z_CONST_POS);
+    let mut pin_word = |base: usize, val: u32| {
+        for j in 0..WORD_BITS {
+            if (val >> j) & 1 == 1 {
+                s.pin_rows.push(base + j);
+            }
+        }
+    };
+    for (w, &val) in BLAKE3_IV.iter().enumerate() {
+        pin_word(CV_BASE + w * WORD_BITS, val);
+    }
+    pin_word(BLEN_BASE, PINNED_BLOCK_LEN);
+    pin_word(FLAGS_BASE, PINNED_FLAGS);
+    s
+}
+
 /// [`BlockR1cs::family_digest`] of this module's circuit, baked as a constant:
 /// recomputing it means building and hashing ~21M matrix entries (~300 ms),
 /// which embedding protocols would otherwise pay inside their first prove.
@@ -1434,6 +1546,116 @@ mod tests {
             let direct = alpha * contract(ma) + contract(mb);
             assert_eq!(bilinear_walk(alpha, &u, &w), direct, "trial {trial}");
         }
+    }
+
+    /// The table-driven walker below is a Rust transcription of the guest's
+    /// in-circuit `matrix_walk` (guests/recursion.py): same buffers, same
+    /// [`walk_schedule`] routing, same operation order. Equality with
+    /// `bilinear_walk` (itself tested against the materialized matrices
+    /// above) validates the schedule and the guest algorithm before the
+    /// zkDSL transcription.
+    #[test]
+    fn walk_schedule_drives_the_guest_algorithm() {
+        let s = walk_schedule();
+        let mut rng = Rng::new(0x5EED);
+        let alpha = rand_f128(&mut rng);
+        let u: Vec<F128> = (0..K).map(|_| rand_f128(&mut rng)).collect();
+        let wt: Vec<F128> = (0..K).map(|_| rand_f128(&mut rng)).collect();
+
+        let wc = wt[Z_CONST_POS];
+        let urow = |row: usize| u[row];
+        let mut acc = F128::ZERO;
+
+        // Wire buffers: 128 initial cells + 32 per G.
+        let mut aw = vec![F128::ZERO; 128 + 32 * N_G];
+        let mut cw = vec![F128::ZERO; 128 + 32 * N_G];
+        aw[..128].copy_from_slice(&wt[..128]);
+        for (k, &iv) in BLAKE3_IV[..4].iter().enumerate() {
+            for i in 0..WORD_BITS {
+                cw[k * 32 + i] = if (iv >> i) & 1 == 1 { wc } else { F128::ZERO };
+            }
+        }
+
+        // One ADD: sums out, carry rows into acc, cin as a running prefix.
+        let walk_add = |acc: &mut F128, x: &[F128], y: &[F128], cb: usize, wt: &[F128]| {
+            let mut sums = [F128::ZERO; WORD_BITS];
+            let mut cin = F128::ZERO;
+            for i in 0..WORD_BITS {
+                let asd = x[i] + cin;
+                let bsd = y[i] + cin;
+                sums[i] = asd + y[i];
+                if i < CARRY_BITS_PER_ADD {
+                    *acc += urow(cb + i) * (alpha * asd + bsd);
+                    cin += wt[cb + i];
+                }
+            }
+            sums
+        };
+        let rot = |x: &[F128; WORD_BITS], n: usize| -> [F128; WORD_BITS] {
+            std::array::from_fn(|i| x[(i + n) % WORD_BITS])
+        };
+
+        for g in 0..N_G {
+            let cb = GS_BASE + G_STRIDE * g;
+            let xa: [F128; 32] = std::array::from_fn(|i| aw[s.src_a[g] + i]);
+            let yb: [F128; 32] = std::array::from_fn(|i| wt[s.src_b[g] + i]);
+            let xc: [F128; 32] = std::array::from_fn(|i| cw[s.src_c[g] + i]);
+            let yd: [F128; 32] = std::array::from_fn(|i| wt[s.src_d[g] + i]);
+            let mx: [F128; 32] = std::array::from_fn(|i| wt[s.mxb[g] + i]);
+            let my: [F128; 32] = std::array::from_fn(|i| wt[s.myb[g] + i]);
+
+            let t0 = walk_add(&mut acc, &xa, &yb, cb, &wt);
+            let a1 = walk_add(&mut acc, &t0, &mx, cb + 31, &wt);
+            let dx: [F128; 32] = std::array::from_fn(|i| yd[i] + a1[i]);
+            let d1 = rot(&dx, 16);
+            let c1 = walk_add(&mut acc, &xc, &d1, cb + 62, &wt);
+            let bx: [F128; 32] = std::array::from_fn(|i| yb[i] + c1[i]);
+            let b1 = rot(&bx, 12);
+            let t1 = walk_add(&mut acc, &a1, &b1, cb + 93, &wt);
+            let a2 = walk_add(&mut acc, &t1, &my, cb + 124, &wt);
+            let d2x: [F128; 32] = std::array::from_fn(|i| d1[i] + a2[i]);
+            let d2 = rot(&d2x, 8);
+            let c2 = walk_add(&mut acc, &c1, &d2, cb + 155, &wt);
+            let bnx: [F128; 32] = std::array::from_fn(|i| b1[i] + c2[i]);
+            let bn = rot(&bnx, 7);
+            for i in 0..WORD_BITS {
+                acc += urow(cb + 186 + i) * (alpha * bn[i] + wc);
+                acc += urow(cb + 218 + i) * (alpha * d2[i] + wc);
+            }
+            for i in 0..WORD_BITS {
+                aw[walk_wire_off(g) + i] = a2[i];
+                cw[walk_wire_off(g) + i] = c2[i];
+            }
+        }
+
+        // Final state and out_lo / out_hi rows.
+        let mut fin = [F128::ZERO; 512];
+        for w in 0..4 {
+            for i in 0..WORD_BITS {
+                fin[w * 32 + i] = aw[s.fin_a[w] + i];
+                fin[(4 + w) * 32 + i] = wt[s.fin_b[w] + i];
+                fin[(8 + w) * 32 + i] = cw[s.fin_c[w] + i];
+                fin[(12 + w) * 32 + i] = wt[s.fin_d[w] + i];
+            }
+        }
+        for w in 0..8 {
+            for i in 0..WORD_BITS {
+                let lo = fin[w * 32 + i] + fin[(8 + w) * 32 + i];
+                acc += urow(OUT_LO_BASE + w * 32 + i) * (alpha * lo + wc);
+                let hi = fin[(8 + w) * 32 + i] + wt[w * 32 + i];
+                acc += urow(OUT_HI_BASE + w * 32 + i) * (alpha * hi + wc);
+            }
+        }
+        // Free-input rows and pinned rows.
+        for j in 0..16 * WORD_BITS {
+            acc += urow(M_BASE + j) * (alpha * wt[M_BASE + j] + wc);
+        }
+        let awc = (alpha + F128::ONE) * wc;
+        for &row in &s.pin_rows {
+            acc += urow(row) * awc;
+        }
+
+        assert_eq!(acc, bilinear_walk(alpha, &u, &wt));
     }
 
     #[test]
