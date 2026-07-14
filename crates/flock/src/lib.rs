@@ -24,3 +24,6 @@ pub mod proof;
 pub mod r1cs;
 pub mod verifier;
 pub mod zerocheck;
+
+#[cfg(test)]
+pub(crate) mod test_rng;

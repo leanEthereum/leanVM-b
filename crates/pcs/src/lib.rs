@@ -29,6 +29,9 @@ pub mod ring_switch_k;
 pub mod stack_open_k;
 pub mod tensor_algebra_k;
 
+#[cfg(test)]
+pub(crate) mod test_rng;
+
 pub use commit::{Commitment, PcsParams, ProverData, commit};
 pub use pack::{LOG_PACKING, PaddingSpec, pack_witness};
 
