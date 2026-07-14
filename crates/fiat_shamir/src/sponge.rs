@@ -33,16 +33,10 @@ use primitives::field::F128;
 pub fn compress(a: [F128; 2], b: [F128; 2]) -> [F128; 2] {
     let mut input = [0u8; 64];
     for (slot, w) in input.chunks_exact_mut(16).zip([a[0], a[1], b[0], b[1]]) {
-        slot[..8].copy_from_slice(&w.lo.to_le_bytes());
-        slot[8..].copy_from_slice(&w.hi.to_le_bytes());
+        slot.copy_from_slice(&w.to_le_bytes());
     }
     let d = *blake3::hash(&input).as_bytes();
-    let word = |b: &[u8]| {
-        F128::new(
-            u64::from_le_bytes(b[..8].try_into().unwrap()),
-            u64::from_le_bytes(b[8..16].try_into().unwrap()),
-        )
-    };
+    let word = |b: &[u8]| F128::from_le_bytes(b.try_into().unwrap());
     [word(&d[..16]), word(&d[16..])]
 }
 
@@ -122,10 +116,7 @@ impl Sponge {
         for chunk in bytes.chunks(16) {
             let mut buf = [0u8; 16];
             buf[..chunk.len()].copy_from_slice(chunk);
-            let w = F128::new(
-                u64::from_le_bytes(buf[..8].try_into().unwrap()),
-                u64::from_le_bytes(buf[8..].try_into().unwrap()),
-            );
+            let w = F128::from_le_bytes(buf);
             self.cv = compress(self.cv, [w, DS_BYTE]);
         }
     }
@@ -334,9 +325,7 @@ mod tests {
         let mut a = Sponge::new(b"t", &[]);
         a.observe(x);
         let mut b = Sponge::new(b"t", &[]);
-        let mut bytes = [0u8; 16];
-        bytes[..8].copy_from_slice(&x.lo.to_le_bytes());
-        bytes[8..].copy_from_slice(&x.hi.to_le_bytes());
+        let bytes = x.to_le_bytes();
         b.absorb_bytes(&bytes);
         assert_ne!(a.sample(), b.sample());
     }

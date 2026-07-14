@@ -71,8 +71,7 @@ pub fn hash_leaf(data: &[u8]) -> Hash {
     // IV = (g^{num_bytes}, 0) as 32 bytes: g^{num_bytes} in the low F128 word.
     let iv0 = g_pow(data.len());
     let mut cv = [0u8; 32];
-    cv[..8].copy_from_slice(&iv0.lo.to_le_bytes());
-    cv[8..16].copy_from_slice(&iv0.hi.to_le_bytes());
+    cv[..16].copy_from_slice(&iv0.to_le_bytes());
     for block in data.chunks(32) {
         let mut b = [0u8; 32];
         b[..block.len()].copy_from_slice(block);
@@ -112,8 +111,7 @@ fn hash_leaves_batched(data: &[u8], leaf_size: usize, out: &mut [Hash]) {
     // Leaf IV = (g^{leaf_size}, 0) serialized to 32 bytes — same for every leaf.
     let iv0 = g_pow(leaf_size);
     let mut iv = [0u8; 32];
-    iv[..8].copy_from_slice(&iv0.lo.to_le_bytes());
-    iv[8..16].copy_from_slice(&iv0.hi.to_le_bytes());
+    iv[..16].copy_from_slice(&iv0.to_le_bytes());
 
     out.par_chunks_mut(GROUP).enumerate().for_each(|(gi, out_group)| {
         let plat = blake3::platform::Platform::detect();

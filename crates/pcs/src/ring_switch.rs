@@ -385,32 +385,7 @@ pub fn fold_1b_rows_2way_mfr_padded(
                 let lookup1 = subset_sums_4(v1);
 
                 // Cache all 16 bytes of each m element for fast indexed access.
-                let m_bytes: [[u8; 16]; 4] = [
-                    {
-                        let mut b = [0u8; 16];
-                        b[..8].copy_from_slice(&m_chunk[0].lo.to_le_bytes());
-                        b[8..].copy_from_slice(&m_chunk[0].hi.to_le_bytes());
-                        b
-                    },
-                    {
-                        let mut b = [0u8; 16];
-                        b[..8].copy_from_slice(&m_chunk[1].lo.to_le_bytes());
-                        b[8..].copy_from_slice(&m_chunk[1].hi.to_le_bytes());
-                        b
-                    },
-                    {
-                        let mut b = [0u8; 16];
-                        b[..8].copy_from_slice(&m_chunk[2].lo.to_le_bytes());
-                        b[8..].copy_from_slice(&m_chunk[2].hi.to_le_bytes());
-                        b
-                    },
-                    {
-                        let mut b = [0u8; 16];
-                        b[..8].copy_from_slice(&m_chunk[3].lo.to_le_bytes());
-                        b[8..].copy_from_slice(&m_chunk[3].hi.to_le_bytes());
-                        b
-                    },
-                ];
+                let m_bytes: [[u8; 16]; 4] = std::array::from_fn(|e| m_chunk[e].to_le_bytes());
 
                 // For each byte position (16 total = bits [r_byte*8, r_byte*8+8)):
                 //   - Gather the same byte from each of the 4 m elements.
@@ -502,11 +477,7 @@ pub fn fold_1b_rows_2way_mfr_8wide_padded(
                 let t1_lo = subset_sums_4([t1_chunk[0], t1_chunk[1], t1_chunk[2], t1_chunk[3]]);
                 let t1_hi = subset_sums_4([t1_chunk[4], t1_chunk[5], t1_chunk[6], t1_chunk[7]]);
 
-                let mut m_bytes = [[0u8; 16]; 8];
-                for (e, slot) in m_bytes.iter_mut().enumerate() {
-                    slot[..8].copy_from_slice(&m_chunk[e].lo.to_le_bytes());
-                    slot[8..].copy_from_slice(&m_chunk[e].hi.to_le_bytes());
-                }
+                let m_bytes: [[u8; 16]; 8] = std::array::from_fn(|e| m_chunk[e].to_le_bytes());
 
                 for r_byte in 0..16 {
                     let combined: u64 = (m_bytes[0][r_byte] as u64)
@@ -581,11 +552,7 @@ pub fn fold_1b_rows_1way_mfr_16wide_padded(
                 let tbl2 = subset_sums_4([t_chunk[8], t_chunk[9], t_chunk[10], t_chunk[11]]);
                 let tbl3 = subset_sums_4([t_chunk[12], t_chunk[13], t_chunk[14], t_chunk[15]]);
 
-                let mut m_bytes = [[0u8; 16]; 16];
-                for (e, slot) in m_bytes.iter_mut().enumerate() {
-                    slot[..8].copy_from_slice(&m_chunk[e].lo.to_le_bytes());
-                    slot[8..].copy_from_slice(&m_chunk[e].hi.to_le_bytes());
-                }
+                let m_bytes: [[u8; 16]; 16] = std::array::from_fn(|e| m_chunk[e].to_le_bytes());
 
                 for r_byte in 0..16 {
                     let lo8: u64 = (m_bytes[0][r_byte] as u64)
@@ -707,11 +674,7 @@ pub fn fold_1b_rows_split(
                     let m_chunk = &w_block[c * 16..c * 16 + 16];
                     let [tbl0, tbl1, tbl2, tbl3] = &tables[c];
 
-                    let mut m_bytes = [[0u8; 16]; 16];
-                    for (e, slot) in m_bytes.iter_mut().enumerate() {
-                        slot[..8].copy_from_slice(&m_chunk[e].lo.to_le_bytes());
-                        slot[8..].copy_from_slice(&m_chunk[e].hi.to_le_bytes());
-                    }
+                    let m_bytes: [[u8; 16]; 16] = std::array::from_fn(|e| m_chunk[e].to_le_bytes());
 
                     for r_byte in 0..16 {
                         let lo8: u64 = (m_bytes[0][r_byte] as u64)
@@ -870,11 +833,7 @@ pub fn fold_1b_rows_split_2way(
                 let [t0a, t0b, t0c, t0d] = &tables_0[c];
                 let [t1a, t1b, t1c, t1d] = &tables_1[c];
 
-                let mut m_bytes = [[0u8; 16]; 16];
-                for (e, slot) in m_bytes.iter_mut().enumerate() {
-                    slot[..8].copy_from_slice(&m_chunk[e].lo.to_le_bytes());
-                    slot[8..].copy_from_slice(&m_chunk[e].hi.to_le_bytes());
-                }
+                let m_bytes: [[u8; 16]; 16] = std::array::from_fn(|e| m_chunk[e].to_le_bytes());
 
                 for r_byte in 0..16 {
                     let lo8: u64 = (m_bytes[0][r_byte] as u64)
