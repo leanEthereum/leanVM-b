@@ -62,14 +62,8 @@ pub const LOG_INV_RATE_0: usize = 1;
 /// guest).
 pub const QUERY_GRINDING_BITS: usize = 18;
 
-/// The INITIAL folding factor: L0 folds the commit's `2^INITIAL_K` interleaved
-/// rows with the first `INITIAL_K` sumcheck challenges. Must equal the
-/// upstream `PcsParams::log_batch_size`, so the L0 commit is reused without
-/// re-committing.
-pub const INITIAL_K: usize = 6;
-
-/// The folding factor of every SUBSEQUENT level: each folds `2^LEVEL_K` rows.
-pub const LEVEL_K: usize = 3;
+pub const INITIAL_FOLDING_FATOR: usize = 6;
+pub const SUBSEQUENT_FOLDING_FACTORS: usize = 3;
 
 /// Folding stops once at most this many variables remain: the residual
 /// polynomial (`yr`, at most `2^RESIDUAL_MAX_LOG` coefficients) is sent in
@@ -232,7 +226,7 @@ fn derive_ladder_shape(
         return Err("L0 block_len < queries — log_n too small for chosen rate".into());
     }
     while n_running > RESIDUAL_MAX_LOG {
-        let k = LEVEL_K.min(n_running);
+        let k = SUBSEQUENT_FOLDING_FACTORS.min(n_running);
         let log_msg_cols_next = n_running - k;
         let mut next_rate = rate_running + 1;
         loop {
@@ -927,7 +921,7 @@ impl LigeritoSecurityConfig {
         let log_n = m
             .checked_sub(crate::LOG_PACKING)
             .ok_or_else(|| format!("m ({m}) < LOG_PACKING (7)"))?;
-        let initial_k = INITIAL_K;
+        let initial_k = INITIAL_FOLDING_FATOR;
 
         // Length-agnostic per-query estimate for ladder-shape feasibility
         // (the per-level codeword length `n` is not known until the shape is

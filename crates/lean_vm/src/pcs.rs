@@ -25,7 +25,7 @@ const LOG_PACKING: usize = 7;
 /// F128/leaf) IS Ligerito's INITIAL folding factor — the L0 commit is reused,
 /// so the two are one knob ([`::pcs::ligerito::INITIAL_K`]). Larger ⇒ far
 /// fewer Merkle nodes to hash at the cost of fatter query openings.
-const LOG_BATCH: usize = ::pcs::ligerito::INITIAL_K;
+const LOG_BATCH: usize = ::pcs::ligerito::INITIAL_FOLDING_FATOR;
 /// L0 rate (doc §3) — the one knob [`::pcs::ligerito::LOG_INV_RATE_0`].
 pub const LOG_INV_RATE: usize = ::pcs::ligerito::LOG_INV_RATE_0;
 // The PCS and the bus grinding both target `SECURITY_BITS`; keep them in
