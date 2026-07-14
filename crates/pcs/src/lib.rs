@@ -24,6 +24,9 @@ pub mod ntt;
 pub mod pack;
 pub mod ring_switch;
 
+#[cfg(test)]
+pub(crate) mod test_rng;
+
 pub use commit::{Commitment, PcsParams, ProverData, commit};
 pub use pack::{LOG_PACKING, PaddingSpec, pack_witness};
 

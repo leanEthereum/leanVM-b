@@ -1564,6 +1564,7 @@ fn round1_shift_reduce_extract_c_packed_serial(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_rng::Rng;
     use pcs::ntt::AdditiveNttGf8;
     use crate::zerocheck::univariate_skip::round1_naive;
 
@@ -1659,35 +1660,6 @@ mod tests {
             "friendly challenges must be F₂-linearly independent in F₁₂₈; \
              zerocheck and Ligerito L0 soundness depend on it"
         );
-    }
-
-    struct Rng(u64);
-    impl Rng {
-        fn new(seed: u64) -> Self {
-            Self(seed)
-        }
-        fn next_u64(&mut self) -> u64 {
-            self.0 = self.0.wrapping_add(0x9E3779B97F4A7C15);
-            let mut z = self.0;
-            z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
-            z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
-            z ^ (z >> 31)
-        }
-        fn bit(&mut self) -> bool {
-            (self.next_u64() & 1) != 0
-        }
-        fn f128(&mut self) -> F128 {
-            F128 {
-                lo: self.next_u64(),
-                hi: self.next_u64(),
-            }
-        }
-        fn bits(&mut self, n: usize) -> Vec<bool> {
-            (0..n).map(|_| self.bit()).collect()
-        }
-        fn f128_vec(&mut self, n: usize) -> Vec<F128> {
-            (0..n).map(|_| self.f128()).collect()
-        }
     }
 
     /// Build the full `r` vector with the protocol-fixed constants in the
