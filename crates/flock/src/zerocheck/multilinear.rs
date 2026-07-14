@@ -34,6 +34,7 @@
 //! `current_claim = (1+r_now)·G(0) + r_now·G(1)`.
 
 use primitives::field::{F128, F256Unreduced, PHI_8_TABLE};
+pub use primitives::multilinear::eq_eval;
 use crate::zerocheck::PaddingSpec;
 use crate::zerocheck::univariate_skip::{SplitEqGhash, build_eq, pack_bits};
 
@@ -151,17 +152,6 @@ pub fn interpolate_at_z_combined(values_on_lambda: &[F128], k_skip: usize, z: F1
         }
         let weight = num * den.inv();
         acc += weight * values_on_lambda[i];
-    }
-    acc
-}
-
-/// Evaluate the multilinear eq polynomial at a point: `eq(r, x) = Π_i (1 + r_i + x_i)`
-/// for `r, x ∈ F_{2^128}^n` (char-2 simplification of `(1-r)(1-x) + r·x`).
-pub fn eq_eval(r: &[F128], x: &[F128]) -> F128 {
-    assert_eq!(r.len(), x.len());
-    let mut acc = F128::ONE;
-    for i in 0..r.len() {
-        acc *= F128::ONE + r[i] + x[i];
     }
     acc
 }

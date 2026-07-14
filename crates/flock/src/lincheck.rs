@@ -120,7 +120,7 @@
 use fiat_shamir::transcript::{ProverState, VerifierState};
 use pcs::{as_e, as_ghash};
 use primitives::field::F128;
-use primitives::multilinear::build_eq;
+use primitives::multilinear::{build_eq, inner_product};
 use crate::r1cs::SparseBinaryMatrix;
 use crate::zerocheck::multilinear::lagrange_weights_naive;
 
@@ -954,16 +954,6 @@ pub fn build_quirky_eq_table(z_skip: F128, x_inner_rest: &[F128], k_skip: usize)
     }
     debug_assert_eq!(out.len(), total);
     out
-}
-
-/// Dot product of two equal-length F128 slices.
-fn inner_product(a: &[F128], b: &[F128]) -> F128 {
-    assert_eq!(a.len(), b.len());
-    let mut acc = F128::ZERO;
-    for (x, y) in a.iter().zip(b.iter()) {
-        acc += *x * *y;
-    }
-    acc
 }
 
 /// Length above which the inner product / element-wise kernels split via

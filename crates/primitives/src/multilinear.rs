@@ -63,6 +63,13 @@ pub fn fold_low_k(table: &[F64], rho: F128T) -> Vec<F128T> {
         .collect()
 }
 
+/// Standard inner product of two equal-length field vectors.
+#[inline]
+pub fn inner_product(a: &[F128], b: &[F128]) -> F128 {
+    assert_eq!(a.len(), b.len());
+    a.iter().zip(b).fold(F128::ZERO, |acc, (&x, &y)| acc + x * y)
+}
+
 /// Bind the lowest free variable of `table` to `rho` in place: `table[i] =
 /// interp(table[2i], table[2i+1], rho)` (no reallocation; `i ≤ 2i`, so unread
 /// entries survive).

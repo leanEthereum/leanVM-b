@@ -1170,14 +1170,7 @@ fn eval_rs_eq_linearized(z_vals: &[F128], query: &[F128], c: &[F128; 128]) -> F1
 }
 
 /// Standard inner product `Σ_i a[i] · b[i]` over F_{2^128}.
-pub fn inner_product(a: &[F128], b: &[F128]) -> F128 {
-    assert_eq!(a.len(), b.len());
-    let mut acc = F128::ZERO;
-    for (&x, &y) in a.iter().zip(b.iter()) {
-        acc += x * y;
-    }
-    acc
-}
+pub use primitives::multilinear::inner_product;
 
 /// **TensorAlgebra transpose** (a.k.a. "bit transpose" of `s_hat_v`).
 ///
