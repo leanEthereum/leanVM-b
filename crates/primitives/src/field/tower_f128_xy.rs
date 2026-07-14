@@ -53,12 +53,20 @@ impl F128Txy {
     /// [`super::F128TUnreduced`], so the sumcheck hot loop is identical.
     #[inline]
     pub fn mul_unreduced(self, rhs: Self) -> F128TxyUnreduced {
+        #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
+        {
+            // SAFETY: aes target feature is enabled at compile time.
+            unsafe { aarch64::mul_unreduced_neon(self, rhs) }
+        }
         #[cfg(all(target_arch = "x86_64", target_feature = "pclmulqdq"))]
         {
             // SAFETY: pclmulqdq target feature is enabled at compile time.
             unsafe { x86_64::mul_unreduced(self, rhs) }
         }
-        #[cfg(not(all(target_arch = "x86_64", target_feature = "pclmulqdq")))]
+        #[cfg(not(any(
+            all(target_arch = "aarch64", target_feature = "aes"),
+            all(target_arch = "x86_64", target_feature = "pclmulqdq")
+        )))]
         {
             software::mul_unreduced(self, rhs)
         }
@@ -93,7 +101,15 @@ impl Mul for F128Txy {
     type Output = Self;
     #[inline]
     fn mul(self, rhs: Self) -> Self {
-        self.mul_unreduced(rhs).reduce()
+        #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
+        {
+            // SAFETY: aes target feature is enabled at compile time.
+            unsafe { aarch64::mul_neon(self, rhs) }
+        }
+        #[cfg(not(all(target_arch = "aarch64", target_feature = "aes")))]
+        {
+            self.mul_unreduced(rhs).reduce()
+        }
     }
 }
 
@@ -150,6 +166,11 @@ impl BitXorAssign for F128TxyUnreduced {
 /// Reduce a 128-bit carry-less value (deg ≤ 127) mod `x^64 + x^4 + x^3 + x + 1`.
 #[inline]
 fn kreduce_u128(v: u128) -> u64 {
+    #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
+    {
+        // SAFETY: aes target feature is enabled at compile time.
+        unsafe { aarch64::kreduce_u128(v) }
+    }
     #[cfg(all(target_arch = "x86_64", target_feature = "pclmulqdq"))]
     {
         // SAFETY: pclmulqdq target feature is enabled at compile time; u128 and
@@ -158,7 +179,10 @@ fn kreduce_u128(v: u128) -> u64 {
             super::gf2_64::x86_64::reduce(core::mem::transmute::<u128, core::arch::x86_64::__m128i>(v))
         }
     }
-    #[cfg(not(all(target_arch = "x86_64", target_feature = "pclmulqdq")))]
+    #[cfg(not(any(
+        all(target_arch = "aarch64", target_feature = "aes"),
+        all(target_arch = "x86_64", target_feature = "pclmulqdq")
+    )))]
     {
         super::gf2_64x3::base_reduce_128(v as u64, (v >> 64) as u64)
     }
@@ -190,6 +214,107 @@ pub mod x86_64 {
                 p1: pack(clmul(a.c1, b.c1)),
                 pm: pack(clmul(a.c0 ^ a.c1, b.c0 ^ b.c1)),
             }
+        }
+    }
+}
+
+#[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
+pub mod aarch64 {
+    use super::{F128Txy, F128TxyUnreduced};
+    use crate::field::gf2_64::aarch64::{pmull, pmull_hi, reduce_pair};
+    use crate::field::gf2_64x3::R64;
+    use core::arch::aarch64::*;
+
+    /// Karatsuba-2 over K with the binius fold `y² = x·y + 1`, NEON-resident.
+    /// The products are the same 3-PMULL Karatsuba as
+    /// [`super::super::tower_f128::aarch64::mul_neon`], and each output limb
+    /// reduces with the identical two-PMULL tail (`v ^ v.hi·0x1B ^ …`), so this
+    /// kernel isolates the *fold* on NEON exactly as the x86 path does. With
+    /// `y² = x·y + 1`:
+    ///
+    /// ```text
+    ///   c0 = reduce(p0 ^ p1)
+    ///   c1 = reduce((pm ^ p0 ^ p1) ^ (p1 << 1))
+    /// ```
+    ///
+    /// with `p0 = a0b0`, `p1 = a1b1`, `pm = (a0+a1)(b0+b1)`. The lone constant
+    /// scaling is the 128-bit `p1 << 1` — the unreduced multiply-by-`x` — versus
+    /// the Artin–Schreier tower's 192-bit `x^61` fold: binius folds one word
+    /// fewer, so both limbs are plain 128-bit reductions (7 PMULL total vs the
+    /// Artin–Schreier kernel's 8), no GPR round-trips.
+    ///
+    /// # Safety
+    /// Requires the `aes` target feature (compiles to PMULL); only call where
+    /// `aes` is statically enabled or has been runtime-detected.
+    #[inline]
+    #[target_feature(enable = "aes")]
+    pub unsafe fn mul_neon(a: F128Txy, b: F128Txy) -> F128Txy {
+        // SAFETY: function carries the aes target feature.
+        unsafe {
+            let p0 = pmull(a.c0, b.c0);
+            let p1 = pmull(a.c1, b.c1);
+            let pm = pmull(a.c0 ^ a.c1, b.c0 ^ b.c1);
+            let r = vdupq_n_u64(R64);
+
+            // c0 = reduce(p0 ^ p1): PMULL fold + PMULL overflow fold.
+            let e0 = veorq_u64(p0, p1);
+            let t0 = pmull_hi(e0, r);
+            let u0 = pmull_hi(t0, r); // exact ≤8-bit fold, high lane 0
+            let c0v = veorq_u64(veorq_u64(e0, t0), u0);
+
+            // c1 = reduce((pm ^ p0 ^ p1) ^ (p1 << 1)). p1 << 1 across the
+            // 128-bit lane pair: the low-word bit-63 carry lands in the high
+            // word (the unreduced multiply-by-x of a1b1).
+            let p1x = veorq_u64(
+                vshlq_n_u64::<1>(p1),
+                vextq_u64::<1>(vdupq_n_u64(0), vshrq_n_u64::<63>(p1)),
+            );
+            let e1 = veorq_u64(veorq_u64(veorq_u64(pm, p0), p1), p1x);
+            let t1 = pmull_hi(e1, r);
+            let u1 = pmull_hi(t1, r);
+            let c1v = veorq_u64(veorq_u64(e1, t1), u1);
+
+            let res = vtrn1q_u64(c0v, c1v);
+            F128Txy {
+                c0: vgetq_lane_u64::<0>(res),
+                c1: vgetq_lane_u64::<1>(res),
+            }
+        }
+    }
+
+    /// The three unreduced Karatsuba sub-products (3 PMULL, no reduction) — the
+    /// deferred-accumulation term shape, mirroring
+    /// [`super::super::tower_f128::aarch64::mul_unreduced_neon`].
+    ///
+    /// # Safety
+    /// Requires the `aes` target feature; see [`mul_neon`].
+    #[inline]
+    #[target_feature(enable = "aes")]
+    pub unsafe fn mul_unreduced_neon(a: F128Txy, b: F128Txy) -> F128TxyUnreduced {
+        // SAFETY: function carries the aes target feature; uint64x2_t and u128
+        // are both 128-bit values.
+        unsafe {
+            F128TxyUnreduced {
+                p0: core::mem::transmute::<uint64x2_t, u128>(pmull(a.c0, b.c0)),
+                p1: core::mem::transmute::<uint64x2_t, u128>(pmull(a.c1, b.c1)),
+                pm: core::mem::transmute::<uint64x2_t, u128>(pmull(a.c0 ^ a.c1, b.c0 ^ b.c1)),
+            }
+        }
+    }
+
+    /// Reduce a 128-bit carry-less value to GF(2^64) via NEON — one lane of a
+    /// [`reduce_pair`] (the other is discarded) — for the deferred reduce.
+    ///
+    /// # Safety
+    /// Requires the `aes` target feature; see [`mul_neon`].
+    #[inline]
+    #[target_feature(enable = "aes")]
+    pub unsafe fn kreduce_u128(v: u128) -> u64 {
+        // SAFETY: function carries the aes target feature; u128 and uint64x2_t
+        // are both 128-bit values.
+        unsafe {
+            let vv = core::mem::transmute::<u128, uint64x2_t>(v);
+            vgetq_lane_u64::<0>(reduce_pair(vv, vdupq_n_u64(0)))
         }
     }
 }
@@ -278,6 +403,23 @@ mod tests {
             // SAFETY: pclmulqdq is statically enabled.
             let got = unsafe { x86_64::mul_unreduced(a, b) }.reduce();
             assert_eq!(got, want);
+        }
+    }
+
+    /// The NEON paths (fused `mul_neon`, and `mul_unreduced_neon` + reduce)
+    /// agree with the software reference.
+    #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
+    #[test]
+    fn aarch64_matches_software() {
+        let mut s = 9u64;
+        for _ in 0..10_000 {
+            let (a, b) = (rand_e(&mut s), rand_e(&mut s));
+            let want = software::mul_unreduced(a, b).reduce();
+            // SAFETY: the aes target feature is statically enabled.
+            let fused = unsafe { aarch64::mul_neon(a, b) };
+            let deferred = unsafe { aarch64::mul_unreduced_neon(a, b) }.reduce();
+            assert_eq!(fused, want);
+            assert_eq!(deferred, want);
         }
     }
 }
