@@ -24,7 +24,6 @@ use flock::blake3::{
     min_n_blocks_log, pinned_compression,
 };
 use pcs::{Commitment, LOG_PACKING, PcsParams, ProverState, VerifierState};
-use primitives::field::F128;
 
 /// Tiny deterministic xorshift RNG — no `rand` dep, reproducible inputs.
 struct Rng(u64);
@@ -37,22 +36,6 @@ impl Rng {
         self.0 = x;
         (x.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 32) as u32
     }
-}
-
-/// A Merkle root as two field scalars, exactly as leanVM binds it (the root
-/// rides the shared stream before any challenge).
-fn root_to_scalars(root: &[u8; 32]) -> [F128; 2] {
-    let w = |o: usize| u64::from_le_bytes(root[o..o + 8].try_into().unwrap());
-    [F128::new(w(0), w(8)), F128::new(w(16), w(24))]
-}
-
-fn scalars_to_root(s: &[F128]) -> [u8; 32] {
-    let mut root = [0u8; 32];
-    root[0..8].copy_from_slice(&s[0].lo.to_le_bytes());
-    root[8..16].copy_from_slice(&s[0].hi.to_le_bytes());
-    root[16..24].copy_from_slice(&s[1].lo.to_le_bytes());
-    root[24..32].copy_from_slice(&s[1].hi.to_le_bytes());
-    root
 }
 
 #[test]
@@ -100,7 +83,7 @@ fn blake3_batch_prove_verify() {
     let t_prove = Instant::now();
     let t = Instant::now();
     let (commitment, prover_data) = pcs::commit(&q_pkd, &params);
-    ps.add_scalars(&root_to_scalars(&commitment.root));
+    ps.add_scalars(&pcs::merkle::hash_to_scalars(&commitment.root));
     let commit_ms = t.elapsed().as_secs_f64() * 1e3;
 
     // Reduction (zerocheck + lincheck) + the one stacked Ligerito open.
@@ -114,7 +97,7 @@ fn blake3_batch_prove_verify() {
     // Verify (correctness gate + a verify timing for reference).
     let t = Instant::now();
     let mut vs = VerifierState::new(b"flock-blake3-batch", &bundle, &[]);
-    let root = scalars_to_root(&vs.next_scalars(2).expect("root scalars"));
+    let root = pcs::merkle::scalars_to_hash(&vs.next_scalars(2).expect("root scalars"));
     let commitment_v = Commitment { root, params };
     setup
         .verify_validity_stacked(&commitment_v, 0, &[], &proof, &mut vs)

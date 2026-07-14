@@ -205,7 +205,7 @@ pub fn commit(ps: &mut ProverState, witness: &[F128]) -> Committed {
     let mu = crate::log2_strict_usize(n);
     let params = params_for(mu);
     let (commitment, prover_data) = ::pcs::commit(witness, &params);
-    ps.add_scalars(&root_to_scalars(&commitment.root));
+    ps.add_scalars(&::pcs::merkle::hash_to_scalars(&commitment.root));
     Committed {
         commitment,
         prover_data,
@@ -219,27 +219,11 @@ pub fn commit(ps: &mut ProverState, witness: &[F128]) -> Committed {
 // public (reconstructed identically from the announced layout). So `λ` sampled
 // here is already bound to all of them; no re-observe is needed.
 
-/// A Merkle root (32 bytes) as two field scalars, so it travels the transcript
-/// stream like any other transmitted value (leanVM parses its root the same way).
-fn root_to_scalars(root: &[u8; 32]) -> [F128; 2] {
-    let w = |o: usize| u64::from_le_bytes(root[o..o + 8].try_into().unwrap());
-    [F128::new(w(0), w(8)), F128::new(w(16), w(24))]
-}
-
-fn scalars_to_root(s: &[F128]) -> [u8; 32] {
-    let mut root = [0u8; 32];
-    root[0..8].copy_from_slice(&s[0].lo.to_le_bytes());
-    root[8..16].copy_from_slice(&s[0].hi.to_le_bytes());
-    root[16..24].copy_from_slice(&s[1].lo.to_le_bytes());
-    root[24..32].copy_from_slice(&s[1].hi.to_le_bytes());
-    root
-}
-
 /// Verifier counterpart of [`commit`]'s root binding: read the committed root
 /// from the stream at the start of verification, before sampling any challenge.
 pub fn read_commitment(vs: &mut VerifierState) -> Result<[u8; 32], crate::transcript::Error> {
     let root_s = vs.next_scalars(2)?;
-    Ok(scalars_to_root(&root_s))
+    Ok(::pcs::merkle::scalars_to_hash(&root_s))
 }
 
 /// Open the committed witness: discharge the `points` (leanVM's bus / constraint /
