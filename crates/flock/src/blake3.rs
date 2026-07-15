@@ -1689,7 +1689,7 @@ impl Blake3Setup {
             .iter()
             .map(|(point, value)| pcs::StackClaim::Point { point, value: *value })
             .collect();
-        let (lig_config, _) = stacked_lig_configs(stack_commitment);
+        let lig_config = stacked_lig_config(stack_commitment);
         pcs::open_batch_mixed_ligerito_stacked(
             z_packed,
             &[ab_x.as_slice(), c_x.as_slice()],
@@ -1782,7 +1782,7 @@ impl Blake3Setup {
             .iter()
             .map(|(point, value)| pcs::StackClaim::Point { point, value: *value })
             .collect();
-        let (_, lig_config) = stacked_lig_configs(stack_commitment);
+        let lig_config = stacked_lig_config(stack_commitment);
         pcs::verify_opening_batch_mixed_ligerito_stacked(
             stack_commitment,
             stack_offset,
@@ -1800,16 +1800,11 @@ impl Blake3Setup {
     }
 }
 
-/// The Ligerito (prover, verifier) config pair for a stacked open against
+/// The Ligerito config for a stacked open against
 /// `stack_commitment` — derived from the commitment's own `(m, profile)` params,
 /// so both sides agree by construction.
-fn stacked_lig_configs(
-    stack_commitment: &Commitment,
-) -> (
-    pcs::ligerito::ProverConfig,
-    pcs::ligerito::VerifierConfig,
-) {
+fn stacked_lig_config(stack_commitment: &Commitment) -> pcs::ligerito::LigeritoConfig {
     pcs::ligerito::LigeritoSecurityConfig::derive_config(stack_commitment.params.m)
-    .and_then(|sec| sec.to_prover_verifier_configs())
-    .expect("ligerito config for stacked open")
+        .and_then(|sec| sec.to_config())
+        .expect("ligerito config for stacked open")
 }

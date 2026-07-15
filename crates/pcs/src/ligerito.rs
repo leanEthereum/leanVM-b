@@ -71,7 +71,7 @@ pub const SUBSEQUENT_FOLDING_FACTORS: usize = 3;
 pub const RESIDUAL_MAX_LOG: usize = 5;
 
 #[derive(Clone, Debug)]
-pub struct ProverConfig {
+pub struct LigeritoConfig {
     pub log_inv_rates: Vec<usize>,
     pub level_steps: usize,
     pub initial_log_msg_cols: usize,
@@ -100,7 +100,7 @@ pub struct ProverConfig {
     pub ood_samples: Vec<usize>,
 }
 
-/// The per-level shape table a [`VerifierConfig`] implies for a
+/// The per-level shape table a [`LigeritoConfig`] implies for a
 /// `log_n`-variable opening — the numbers every consumer of the multilevel
 /// protocol (the verifier itself, recursion harnesses) otherwise re-derives.
 #[derive(Clone, Debug)]
@@ -118,27 +118,7 @@ pub struct LevelShapes {
     pub yr_log_n: usize,
 }
 
-#[derive(Clone, Debug)]
-pub struct VerifierConfig {
-    pub log_inv_rates: Vec<usize>,
-    pub level_steps: usize,
-    pub initial_log_msg_cols: usize,
-    pub initial_log_num_interleaved: usize,
-    pub initial_k: usize,
-    pub level_log_msg_cols: Vec<usize>,
-    pub level_ks: Vec<usize>,
-    /// Per-level query counts. Length = level_steps + 1.
-    pub queries: Vec<usize>,
-    /// Per-level query-phase PoW grinding bits. Length = level_steps + 1.
-    pub grinding_bits: Vec<usize>,
-    /// Per-level fold-challenge PoW grinding bits (one grind per fold
-    /// challenge of the level). Length = level_steps + 1.
-    pub fold_grinding_bits: Vec<usize>,
-    /// Per-commit-level OOD samples. Length = level_steps + 1.
-    pub ood_samples: Vec<usize>,
-}
-
-impl VerifierConfig {
+impl LigeritoConfig {
     /// See [`LevelShapes`].
     pub fn level_shapes(&self, log_n: usize) -> LevelShapes {
         let r = self.level_steps;
@@ -1015,57 +995,37 @@ impl LigeritoSecurityConfig {
         Ok(cfg)
     }
 
-    /// Build a `(ProverConfig, VerifierConfig)` pair from this security config.
-    /// Drops the security-only fields (eta, queries, grinding, expected_*) but
-    /// preserves the level shape so the existing prover/verifier code path
-    /// works unchanged.
-    pub fn to_prover_verifier_configs(&self) -> Result<(ProverConfig, VerifierConfig), String> {
+    /// Build the protocol configuration from this security config.
+    pub fn to_config(&self) -> Result<LigeritoConfig, String> {
         self.validate()?;
-        let log_inv_rates: Vec<usize> = self.levels.iter().map(|lv| lv.log_inv_rate).collect();
         let level_ks: Vec<usize> = self
             .levels
             .iter()
             .skip(1)
             .map(|lv| lv.k)
             .collect();
-        let level_log_msg_cols: Vec<usize> = self
-            .levels
-            .iter()
-            .skip(1)
-            .map(|lv| lv.log_msg_cols)
-            .collect();
-        let queries: Vec<usize> = self.levels.iter().map(|lv| lv.queries).collect();
-        let grinding_bits: Vec<usize> = self.levels.iter().map(|lv| lv.grinding_bits).collect();
-        let fold_grinding_bits: Vec<usize> =
-            self.levels.iter().map(|lv| lv.fold_grinding_bits).collect();
-        let ood_samples: Vec<usize> = self.levels.iter().map(|lv| lv.ood_samples).collect();
-        let prover = ProverConfig {
-            log_inv_rates: log_inv_rates.clone(),
+        Ok(LigeritoConfig {
+            log_inv_rates: self.levels.iter().map(|lv| lv.log_inv_rate).collect(),
             level_steps: level_ks.len(),
             initial_log_msg_cols: self.levels[0].log_msg_cols,
             initial_log_num_interleaved: self.initial_k,
             initial_k: self.initial_k,
-            level_log_msg_cols: level_log_msg_cols.clone(),
-            level_ks: level_ks.clone(),
-            queries: queries.clone(),
-            grinding_bits: grinding_bits.clone(),
-            fold_grinding_bits: fold_grinding_bits.clone(),
-            ood_samples: ood_samples.clone(),
-        };
-        let verifier = VerifierConfig {
-            log_inv_rates: log_inv_rates.clone(),
-            level_steps: level_ks.len(),
-            initial_log_msg_cols: self.levels[0].log_msg_cols,
-            initial_log_num_interleaved: self.initial_k,
-            initial_k: self.initial_k,
-            level_log_msg_cols,
+            level_log_msg_cols: self
+                .levels
+                .iter()
+                .skip(1)
+                .map(|lv| lv.log_msg_cols)
+                .collect(),
             level_ks,
-            queries,
-            grinding_bits,
-            fold_grinding_bits,
-            ood_samples,
-        };
-        Ok((prover, verifier))
+            queries: self.levels.iter().map(|lv| lv.queries).collect(),
+            grinding_bits: self.levels.iter().map(|lv| lv.grinding_bits).collect(),
+            fold_grinding_bits: self
+                .levels
+                .iter()
+                .map(|lv| lv.fold_grinding_bits)
+                .collect(),
+            ood_samples: self.levels.iter().map(|lv| lv.ood_samples).collect(),
+        })
     }
 }
 
@@ -2485,7 +2445,7 @@ fn compress_level_opening(
 /// partial-evaluate at); the folded `f` becomes the L1 witness and each later
 /// level re-commits and folds.
 pub fn multilevel_prover_with_basis(
-    config: &ProverConfig,
+    config: &LigeritoConfig,
     packed_witness: Vec<F128>,
     b_initial: Vec<F128>,
     target: F128,
@@ -2507,7 +2467,7 @@ pub fn multilevel_prover_with_basis(
 
 #[allow(clippy::too_many_arguments)]
 fn multilevel_prover_with_basis_impl(
-    config: &ProverConfig,
+    config: &LigeritoConfig,
     packed_witness: Vec<F128>,
     b_initial: Vec<F128>,
     target: F128,
@@ -2888,7 +2848,7 @@ fn multilevel_prover_with_basis_impl(
 /// `log_n` is the original packed-witness log size (= b_initial's logical dim).
 #[allow(clippy::too_many_arguments)]
 pub fn multilevel_verifier_with_basis_succinct<F>(
-    config: &VerifierConfig,
+    config: &LigeritoConfig,
     proof: &LigeritoProof,
     log_n: usize,
     target: F128,
@@ -4017,17 +3977,17 @@ mod tests {
         );
     }
 
-    /// Build a matching (ProverConfig, VerifierConfig) pair with explicit
-    /// OOD samples and fold-challenge grinding, for the OOD-path tests below.
+    /// Build a config with explicit OOD samples and fold-challenge grinding
+    /// for the OOD-path tests below.
     /// Shape: L0 (initial_k) → r fold levels of `k`; small query counts
     /// and grind bits keep the test fast while still exercising every path.
-    fn ood_test_configs(
+    fn ood_test_config(
         log_n: usize,
         initial_k: usize,
         ks: &[usize],
         ood_samples: Vec<usize>,
         fold_grinding_bits: Vec<usize>,
-    ) -> (ProverConfig, VerifierConfig) {
+    ) -> LigeritoConfig {
         let r = ks.len();
         let log_inv_rates: Vec<usize> = (0..=r).map(|i| 1 + i).collect();
         let mut level_log_msg_cols = Vec::new();
@@ -4038,20 +3998,7 @@ mod tests {
         }
         let queries = vec![20usize; r + 1];
         let grinding_bits = vec![0usize; r + 1];
-        let p = ProverConfig {
-            log_inv_rates: log_inv_rates.clone(),
-            level_steps: r,
-            initial_log_msg_cols: log_n - initial_k,
-            initial_log_num_interleaved: initial_k,
-            initial_k,
-            level_log_msg_cols: level_log_msg_cols.clone(),
-            level_ks: ks.to_vec(),
-            queries: queries.clone(),
-            grinding_bits: grinding_bits.clone(),
-            fold_grinding_bits: fold_grinding_bits.clone(),
-            ood_samples: ood_samples.clone(),
-        };
-        let v = VerifierConfig {
+        LigeritoConfig {
             log_inv_rates,
             level_steps: r,
             initial_log_msg_cols: log_n - initial_k,
@@ -4063,8 +4010,7 @@ mod tests {
             grinding_bits,
             fold_grinding_bits,
             ood_samples,
-        };
-        (p, v)
+        }
     }
 
     /// End-to-end OOD binding + fold-challenge grinding: a JohnsonOod-shaped
@@ -4079,7 +4025,7 @@ mod tests {
         let initial_k = 2;
         let ks = [2usize, 2];
         // OOD at L1 and L2 (L0 must be 0); 3 fold-grind bits at each level.
-        let (p_cfg, v_cfg) = ood_test_configs(log_n, initial_k, &ks, vec![0, 2, 2], vec![3, 3, 3]);
+        let cfg = ood_test_config(log_n, initial_k, &ks, vec![0, 2, 2], vec![3, 3, 3]);
 
         let mut rng = fiat_shamir::sponge::Sponge::new(&(0x00D_7E57u64).to_le_bytes(), &[]);
         let poly: Vec<F128> = (0..(1usize << log_n)).map(|_| rng.sample()).collect();
@@ -4098,7 +4044,7 @@ mod tests {
 
         let mut p_ch = crate::ProverState::new(b"ood-test", &[]);
         let proof = multilevel_prover_with_basis(
-            &p_cfg,
+            &cfg,
             poly.clone(),
             b.clone(),
             target,
@@ -4132,7 +4078,7 @@ mod tests {
         let succinct = |bundle: &fiat_shamir::transcript::Proof<LigeritoProof>| {
             let mut ch = crate::VerifierState::new(b"ood-test", bundle, &[]);
             multilevel_verifier_with_basis_succinct(
-                &v_cfg,
+                &cfg,
                 &proof,
                 log_n,
                 target,
@@ -4200,7 +4146,7 @@ mod tests {
         let target = g1 * v1 + g2 * v2;
 
         let log_inv_rates = vec![log_inv_rate, log_inv_rate];
-        let cfg = ProverConfig {
+        let cfg = LigeritoConfig {
             log_inv_rates: log_inv_rates.clone(),
             level_steps: 1,
             initial_log_msg_cols: log_n - initial_k,
@@ -4230,19 +4176,6 @@ mod tests {
             &mut p_ch,
         );
 
-        let v_cfg = VerifierConfig {
-            log_inv_rates: log_inv_rates.clone(),
-            level_steps: 1,
-            initial_log_msg_cols: log_n - initial_k,
-            initial_log_num_interleaved: initial_k,
-            initial_k,
-            level_log_msg_cols: vec![log_n - initial_k - k_0],
-            level_ks: vec![k_0],
-            queries: log_inv_rates.iter().map(|&r| udr_queries(r)).collect(),
-            grinding_bits: vec![0; log_inv_rates.len()],
-            fold_grinding_bits: vec![0; 2],
-            ood_samples: vec![0; 2],
-        };
         // Succinct verify: the residual closure evaluates the batched basis
         // `γ₁·eq(z₁,·) + γ₂·eq(z₂,·)` at (ris ++ y) for all y.
         let eval_b_residual = move |ris: &[F128], yr_log_n: usize| -> Vec<F128> {
@@ -4263,7 +4196,7 @@ mod tests {
         let bundle = p_ch.into_proof();
         let mut v_ch = crate::VerifierState::new(b"batched", &bundle, &[]);
         let ok = multilevel_verifier_with_basis_succinct(
-            &v_cfg,
+            &cfg,
             &proof,
             log_n,
             target,

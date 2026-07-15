@@ -647,9 +647,8 @@ fn gen_verify(
     // ---- the stacked opening: config + the opening summary ----
     let stack_mu = l.m;
     let vcfg = pcs::ligerito::LigeritoSecurityConfig::derive_config(stack_mu + 7)
-    .and_then(|s| s.to_prover_verifier_configs())
-    .expect("stack ligerito config")
-    .1;
+        .and_then(|s| s.to_config())
+        .expect("stack ligerito config");
     let log_n = stack_mu;
     let shapes = vcfg.level_shapes(log_n);
     let (nlev, r) = (shapes.levels, vcfg.level_steps);
@@ -1216,7 +1215,8 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     // ---- LIG candidate tables (fixed [minm, maxm] range; open_stacked config) ----
     let oshape = |m: usize| {
         let vc = pcs::ligerito::LigeritoSecurityConfig::derive_config(m + 7)
-            .and_then(|s| s.to_prover_verifier_configs()).expect("candidate ligerito config").1;
+            .and_then(|s| s.to_config())
+            .expect("candidate ligerito config");
         let sh = vc.level_shapes(m);
         let (cn, cr) = (sh.levels, vc.level_steps);
         let (ck, cl, cyr) = (sh.ks.clone(), sh.log_msg_cols.clone(), sh.yr_log_n);
@@ -1460,9 +1460,8 @@ fn recursion_soundness_binds() {
     // exists only when this candidate's yr_log_n sits BELOW the cap.
     let yr_log = |mu: usize| {
         pcs::ligerito::LigeritoSecurityConfig::derive_config(mu + 7)
-            .and_then(|s| s.to_prover_verifier_configs())
+            .and_then(|s| s.to_config())
             .expect("stacked opening config")
-            .1
             .level_shapes(mu)
             .yr_log_n
     };

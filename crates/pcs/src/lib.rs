@@ -349,7 +349,7 @@ pub fn open_batch_mixed_ligerito_stacked(
     stack_data: &ProverData,
     stack_commitment: &Commitment,
     stack_pd: &[StackClaim],
-    lig_config: &ligerito::ProverConfig,
+    lig_config: &ligerito::LigeritoConfig,
     ps: &mut ProverState,
 ) -> ligerito::LigeritoProof {
     assert_eq!(
@@ -408,7 +408,7 @@ pub fn verify_opening_batch_mixed_ligerito_stacked(
     x_outers: &[&[F128]],
     stack_pd: &[StackClaim],
     proof: &ligerito::LigeritoProof,
-    lig_config: &ligerito::VerifierConfig,
+    lig_config: &ligerito::LigeritoConfig,
     vs: &mut VerifierState<'_>,
 ) -> Result<StackedOpeningSummary, VerifyError> {
     let n_rs = claims.len();

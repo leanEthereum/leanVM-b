@@ -12,7 +12,7 @@
 use primitives::field::F128;
 use crate::transcript::{ProverState, VerifierState};
 
-use ::pcs::ligerito::{LigeritoSecurityConfig, ProverConfig, VerifierConfig};
+use ::pcs::ligerito::{LigeritoConfig, LigeritoSecurityConfig};
 pub use ::pcs::{Commitment, PcsParams, ProverData, StackedOpeningSummary};
 use ::pcs::{StackClaim, open_batch_mixed_ligerito_stacked, verify_opening_batch_mixed_ligerito_stacked};
 use ::pcs::PaddingSpec;
@@ -52,21 +52,21 @@ fn params_for(mu: usize) -> PcsParams {
     }
 }
 
-/// The Ligerito (prover, verifier) config pair for a `2^μ`-element witness,
+/// The Ligerito config for a `2^μ`-element witness,
 /// derived from the security analysis and memoized per `μ` (the derivation is
 /// a pure function of `m`, so both sides agree).
-fn lig_configs(mu: usize) -> std::sync::Arc<(ProverConfig, VerifierConfig)> {
+fn lig_config(mu: usize) -> std::sync::Arc<LigeritoConfig> {
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex, OnceLock};
-    type Cache = Mutex<HashMap<usize, Arc<(ProverConfig, VerifierConfig)>>>;
+    type Cache = Mutex<HashMap<usize, Arc<LigeritoConfig>>>;
     static CACHE: OnceLock<Cache> = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     let mut map = cache.lock().expect("ligerito config cache poisoned");
     Arc::clone(map.entry(mu).or_insert_with(|| {
-        let pair = LigeritoSecurityConfig::derive_config(mu + LOG_PACKING)
-            .and_then(|sec| sec.to_prover_verifier_configs())
+        let config = LigeritoSecurityConfig::derive_config(mu + LOG_PACKING)
+            .and_then(|sec| sec.to_config())
             .unwrap_or_else(|e| panic!("ligerito config for mu={mu}: {e}"));
-        Arc::new(pair)
+        Arc::new(config)
     }))
 }
 
@@ -250,7 +250,7 @@ pub fn open(
     let stack_pd: Vec<StackClaim> = points.iter().map(|s| s.as_stack()).collect();
     let x_refs: Vec<&[F128]> = ring.x_outers.iter().map(|v| v.as_slice()).collect();
     let s_refs: Vec<Option<&[F128]>> = ring.s_hat_v.iter().map(|o| o.as_deref()).collect();
-    let cfg = lig_configs(c.mu);
+    let cfg = lig_config(c.mu);
     open_batch_mixed_ligerito_stacked(
         qpkd,
         &x_refs,
@@ -261,7 +261,7 @@ pub fn open(
         &c.prover_data,
         &c.commitment,
         &stack_pd,
-        &cfg.0,
+        &cfg,
         ps,
     )
 }
@@ -281,7 +281,7 @@ pub fn verify(
     let commitment = commitment_from_root(*root, mu);
     let stack_pd: Vec<StackClaim> = points.iter().map(|s| s.as_stack()).collect();
     let x_refs: Vec<&[F128]> = ring.x_outers.iter().map(|v| v.as_slice()).collect();
-    let cfg = lig_configs(mu);
+    let cfg = lig_config(mu);
     verify_opening_batch_mixed_ligerito_stacked(
         &commitment,
         ring.offset,
@@ -291,7 +291,7 @@ pub fn verify(
         &x_refs,
         &stack_pd,
         open,
-        &cfg.1,
+        &cfg,
         vs,
     )
     .map_err(|_| Error::Ligerito)
