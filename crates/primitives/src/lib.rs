@@ -52,6 +52,29 @@ pub fn alloc_uninit_vec<T: Copy>(n: usize) -> Vec<T> {
     v
 }
 
+/// Allocate a zero-filled `Vec<T>` through the global allocator's zeroed path.
+/// Large allocations can therefore start as demand-zero pages instead of
+/// paying an eager single-threaded fill before parallel work begins.
+///
+/// # Safety
+///
+/// The all-zero byte pattern must be a valid value of `T`.
+pub unsafe fn alloc_zeroed_vec<T: Copy>(n: usize) -> Vec<T> {
+    if n == 0 {
+        return Vec::new();
+    }
+    let layout = std::alloc::Layout::array::<T>(n).expect("allocation size overflow");
+    // SAFETY: `layout` is non-empty and was constructed for exactly `n`
+    // elements of `T`.
+    let ptr = unsafe { std::alloc::alloc_zeroed(layout) } as *mut T;
+    if ptr.is_null() {
+        std::alloc::handle_alloc_error(layout);
+    }
+    // SAFETY: the global allocator returned storage for exactly `n` elements;
+    // the caller guarantees that the zero bytes are valid initialized `T`s.
+    unsafe { Vec::from_raw_parts(ptr, n, n) }
+}
+
 /// Cached [`perf_core_count`]. The uncached version may spawn `sysctl`; this
 /// memoizes it so hot paths can cheaply ask "is the current rayon pool the
 /// homogeneous P-core pool?" (i.e. `current_num_threads() <= this`).

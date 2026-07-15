@@ -269,23 +269,24 @@ pub(crate) fn build_eq_parallel(r: &[F128]) -> Vec<F128> {
     const PAR_THRESHOLD: usize = 1 << 12;
     for i in 0..n {
         let r_i = r[i];
-        let one_minus_r = F128::ONE + r_i;
         let half = 1usize << i;
         let (lo, hi_rest) = t.split_at_mut(half);
         let hi = &mut hi_rest[..half];
         if half < PAR_THRESHOLD {
             for (lo_x, hi_x) in lo.iter_mut().zip(hi.iter_mut()) {
                 let old = *lo_x;
-                *hi_x = old * r_i;
-                *lo_x = old * one_minus_r;
+                let high = old * r_i;
+                *hi_x = high;
+                *lo_x = old + high;
             }
         } else {
             lo.par_iter_mut()
                 .zip(hi.par_iter_mut())
                 .for_each(|(lo_x, hi_x)| {
                     let old = *lo_x;
-                    *hi_x = old * r_i;
-                    *lo_x = old * one_minus_r;
+                    let high = old * r_i;
+                    *hi_x = high;
+                    *lo_x = old + high;
                 });
         }
     }

@@ -362,7 +362,10 @@ pub fn open_batch_mixed_ligerito_stacked(
     );
 
     let combined = compute_combined_basis_and_target(qpkd, x_outers, precomputed_s_hat_v, padding, ps);
-    let mut b_stack = vec![F128::ZERO; stack.len()];
+    // SAFETY: F128 is a pair of integer lanes and its all-zero byte pattern is
+    // exactly F128::ZERO. A zeroed allocation leaves untouched padding on
+    // demand-zero pages instead of eagerly writing the entire stack.
+    let mut b_stack: Vec<F128> = unsafe { primitives::alloc_zeroed_vec(stack.len()) };
     b_stack[stack_offset..stack_offset + combined.b_combined.len()].copy_from_slice(&combined.b_combined);
     let mut target = combined.target_combined;
 
