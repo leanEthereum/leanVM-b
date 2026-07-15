@@ -19,8 +19,3 @@ serde.workspace = true
 
 [dev-dependencies]
 blake3.workspace = true
-
-[features]
-# The n→1 recursion harness (src/recursion.rs) predates the 64-bit machine
-# words; enable once the guest + hint builder are ported to `K = GF(2^64)`.
-recursion = []

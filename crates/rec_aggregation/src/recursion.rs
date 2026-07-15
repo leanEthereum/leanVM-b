@@ -29,11 +29,6 @@ fn u(f: F128T) -> u128 {
     (f.c0 as u128) | ((f.c1 as u128) << 64)
 }
 
-/// A `K`-embedded (`F64`) word as the decimal literal (high lane 0).
-fn uk(k: F64) -> u128 {
-    k.0 as u128
-}
-
 /// Native replay of the VM's `blake3(cur, cur, nxt)` over two 128-bit words:
 /// pack the two `F128T` words into the four `F64` lanes the sponge compression
 /// consumes, compress, and unpack.
