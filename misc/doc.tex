@@ -583,7 +583,7 @@ The prover's nondeterminism enters through write-once cells that are still unset
 
 \subsection{Division and inequality}\label{sec:prog-div-ne}
 
-The zkDSL's single-slash division $q=a/b$ uses write-once back-solving: it emits \texttt{MUL\_NATIVE} with $q$ as the one unset input and $a$ as the already-written output. Witness generation fills $q=a\,b^{-1}$, while the ordinary multiplication table proves $q b=a$. It costs one VM instruction and rejects a zero divisor. Double slash \texttt{//} remains compile-time integer floor division for sizes and indices; it is not a field operation.
+The zkDSL's single-slash division $q=a/b$ uses write-once back-solving: it emits \texttt{MUL\_NATIVE} with $q$ as the one unset input and $a$ as the already-written output. Witness generation fills $q=a\,b^{-1}$, while the ordinary multiplication table proves $q b=a$. It costs one VM instruction. Division by zero is undefined. Double slash \texttt{//} remains compile-time integer floor division for sizes and indices; it is not a field operation.
 
 The assertion \texttt{assert a != b} first computes $a+b$ with \texttt{XOR}. A conditional \texttt{JUMP} skips a poison path exactly when this value is nonzero. Equality falls through to a jump to $\gen^{-1}$, outside the committed bytecode cube, so the bytecode bus cannot balance any purported continuation. This proves inequality without an inverse hint.
 
