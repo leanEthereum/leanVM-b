@@ -1730,7 +1730,23 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     );
     ps("TRANSCRIPT_SEED_0_TOP", label_state[0].c2.to_string());
     ps("TRANSCRIPT_SEED_1", u(label_state[1]).to_string());
-    ps("TRACE_DUAL_BASIS", flds(&pcs::ring_switch_k::trace_dual_basis_k()[..]));
+    let trace_dual = pcs::ring_switch_k::trace_dual_basis_k();
+    let trace_dual_base: [F192; 64] = trace_dual[..64]
+        .try_into()
+        .expect("trace-dual base slice has length 64");
+    let d00_inv = trace_dual_base[0].inv();
+    let trace_dual_tower = [F192::ONE, trace_dual[64] * d00_inv, trace_dual[128] * d00_inv];
+    for j in 0..3 {
+        for i in 0..64 {
+            assert_eq!(
+                trace_dual[64 * j + i],
+                trace_dual_base[i] * trace_dual_tower[j],
+                "GF192 trace-dual basis must factor over the 64x3 tower"
+            );
+        }
+    }
+    ps("TRACE_DUAL_BASE", flds(&trace_dual_base));
+    ps("TRACE_DUAL_TOWER", flds(&trace_dual_tower));
     rep
 }
 
