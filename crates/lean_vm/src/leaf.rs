@@ -72,40 +72,20 @@ pub enum Error {
     PowFailed,
 }
 
-/// Proof-of-work bits to grind before the multiset challenge γ, so the bus
-/// grand-product phase clears [`crate::SECURITY_BITS`]. Two Schwartz–Zippel
-/// failure events share this randomness; union-bound over them:
+/// The widest bus tuple has width `m = 9`. The balance identity has total
+/// degree at most `2^push_mu (m - 1)` in `(α, γ)`. The separate count product
+/// contributes at most `2^count_mu`, with `count_mu ≤ push_mu`. Therefore
 ///
-/// - the push/pull **balance** `push_root · d_pull = pull_root · d_push` — one
-///   identity in γ whose difference has degree `max(push factors, pull
-///   factors)` (the larger of the two sides; within a side the default-padding
-///   factors are a single high-multiplicity root, so it is `max` not sum);
-/// - the **count** channel `count_root ≠ 0` — a *separate* grand product of
-///   `count factors`.
+/// `ceil(log2(2^push_mu (m - 1) + 2^count_mu)) = push_mu + 4`.
 ///
-/// So `N = max(2^push_mu, 2^pull_mu) + 2^count_mu`, and a false phase passes a
-/// random challenge with probability ≤ `N / 2^128` (γ is sampled from `E`), i.e.
-/// `128 − log2(N)` bits.
-/// Two structural facts collapse this. The push and pull sides emit their bus
-/// blocks in matched pairs — every [`FlushBuilder`] call appends one block to
-/// each side with equal `κ`, and the three framework blocks (boundary, memory,
-/// bytecode) are paired the same way — so the two sides have identical
-/// `κ`-multisets and `push_mu == pull_mu`. And each count column is the count
-/// coordinate of exactly one bytecode/memory flush while the state flush
-/// carries none, so the count side sums strictly fewer `2^κ` than push and
-/// `count_mu ≤ push_mu`. Hence `N = 2^push_mu + 2^count_mu` with
-/// `count_mu ≤ push_mu`, so `⌈log2 N⌉ = push_mu + 1` exactly and the grind is
-/// simply `SECURITY_BITS + push_mu + 1 − 128`. Grinding adds that deficit back
-/// (the prover must redo the PoW to re-roll γ).
-///
-/// The fingerprint challenge α is sampled AFTER the grind, so re-rolling it
-/// also costs the PoW (besides the older argument that a fresh commitment to
-/// re-roll α already costs `≥ 2^MIN_MU` Merkle hashes, above the target for
-/// every admitted witness size).
+/// Grinding before `α` and `γ` needs
+/// `SECURITY_BITS + push_mu + 4 - 128` bits.
+pub const BUS_GRIND_LOG_OVERHEAD: u32 = 4;
+
 fn grand_product_grinding_bits(push: &Layout, pull: &Layout, count: &Layout) -> u32 {
     assert_eq!(push.mu, pull.mu, "push/pull bus blocks are paired, so their layouts match");
     assert!(count.mu <= push.mu, "count sums fewer bus messages than push");
-    (crate::SECURITY_BITS + push.mu as u32 + 1).saturating_sub(128)
+    (crate::SECURITY_BITS + push.mu as u32 + BUS_GRIND_LOG_OVERHEAD).saturating_sub(128)
 }
 
 /// Stack blocks largest-first at aligned offsets; `μ = ⌈log2 Σ 2^{κ_b}⌉`.
@@ -597,4 +577,23 @@ pub fn verify_balance(
         bytecode_claims,
         count_root,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn grinding_accounts_for_tuple_fingerprint_degree() {
+        let push = Layout {
+            mu: 16,
+            offsets: Vec::new(),
+        };
+        let pull = push.clone();
+        let count = Layout {
+            mu: 15,
+            offsets: Vec::new(),
+        };
+        assert_eq!(grand_product_grinding_bits(&push, &pull, &count), 12);
+    }
 }

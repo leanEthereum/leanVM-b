@@ -229,11 +229,15 @@ each coordinate $\sigma_i$ a committed column value, a virtual column value, or 
 \prod_{\sigma\ \text{pulled}}\bigl(\gamma-\pi_\alpha(\sigma)\bigr).
 \label{eq:gp}
 \end{equation}
-\emph{Completeness and soundness.} If the pushed and pulled multisets agree, the two products in \eqref{eq:gp} have the same factors and are equal for every $\alpha,\gamma$; completeness is immediate. For soundness, read each side as the polynomial $\prod_\sigma\bigl(X-\pi_\alpha(\sigma)\bigr)$ evaluated at $X=\gamma$: its roots are that side's fingerprints, which over the formal $\alpha$ are the tuples themselves, so the polynomial determines that side's multiset. The two sides therefore agree as polynomials in $(\alpha,\gamma)$ exactly when the multisets do. When they differ, Schwartz--Zippel bounds the error by the number of product factors divided by $|\E|$. Before sampling $\alpha$ and $\gamma$, the prover therefore grinds a Fiat--Shamir nonce for
+\emph{Completeness and soundness.} If the pushed and pulled multisets agree, the two products in \eqref{eq:gp} are equal for every $\alpha,\gamma$. Otherwise their difference is a nonzero polynomial in $(\alpha,\gamma)$ of total degree at most $2^\mu(m-1)$. The separate count product contributes at most $2^{\mu_c}/|\E|$, where $\mu_c\leq\mu$. Hence the total error is at most
 \[
-  \max(0,\,120+\mu+1-128)
+  \frac{2^\mu(m-1)+2^{\mu_c}}{2^{128}}.
 \]
-bits, where $2^\mu$ is the padded push/pull tree size. This covers both the bus identity and the separate count product by a union bound and brings the grand-product phase to the same $120$-bit target as the PCS.
+Here $m=9$, so the prover grinds a Fiat--Shamir nonce for
+\[
+  \max(0,\,120+\mu+4-128)
+\]
+bits before sampling $\alpha$ and $\gamma$.
 
 Each side's product is proven by a GKR pass over a product tree (\S\ref{sec:gkr}).
 

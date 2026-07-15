@@ -1288,9 +1288,10 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("AIR_COLS_CAP", (ncol.iter().max().unwrap() + 1).to_string());
     ps("N_TABLES", l.taus.len().to_string());
     ps("TAU_CAP", taumax_cap.to_string());
-    // g^(push.mu - BUS_GRIND_SHIFT) is the bus PoW window
-    // (leaf::grand_product_grinding_bits: bits = mu - (127 - SECURITY_BITS)).
-    ps("BUS_GRIND_SHIFT", (127 - lean_vm::SECURITY_BITS).to_string());
+    // g^(push.mu - BUS_GRIND_SHIFT) is the bus PoW window.
+    let bus_grind_shift =
+        128 - lean_vm::SECURITY_BITS - lean_vm::leaf::BUS_GRIND_LOG_OVERHEAD;
+    ps("BUS_GRIND_SHIFT", bus_grind_shift.to_string());
     // Per-claim y-slot hint stride (overlap mask / slot bit rows).
     ps("YR_SLOT_STRIDE", "8".to_string());
     const MINB3: usize = 3;

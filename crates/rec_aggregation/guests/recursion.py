@@ -21,8 +21,8 @@ N_GKR_SIDES = 3
 GKR_ROUNDS_CAP = GKR_ROUNDS_CAP_PLACEHOLDER
 MU_CAP = MU_CAP_PLACEHOLDER
 GKR_POINTS_CAP = GKR_POINTS_CAP_PLACEHOLDER
-# The bus PoW window is g^(push.mu - BUS_GRIND_SHIFT), BUS_GRIND_SHIFT =
-# 127 - SECURITY_BITS (see leaf::grand_product_grinding_bits).
+# The bus PoW window is g^(push.mu - BUS_GRIND_SHIFT), where
+# BUS_GRIND_SHIFT = 128 - SECURITY_BITS - 4.
 BUS_GRIND_SHIFT = BUS_GRIND_SHIFT_PLACEHOLDER
 
 # Bus blocks, flattened across the 3 sides (side s covers blocks
@@ -864,9 +864,8 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     # grinding nonce: raw stream word (NOT observed), PoW-checked, then bound.
     nonce = cursor[GEN ** 0]
     cursor *= GEN
-    # Bus grind bits = push.mu - 7 (= SECURITY + push.mu + 1 - 128; see
-    # leaf::grand_product_grinding_bits), with g_bus_mu computed above from the
-    # derived block kappas.
+    # Bus grind bits = push.mu - BUS_GRIND_SHIFT, with g_bus_mu computed above
+    # from the derived block kappas.
     bus_grind_window = g_bus_mu * INV_GEN ** BUS_GRIND_SHIFT  # g^(push.mu - shift): the bus PoW bit count
     grind_check(fs[0], fs[1], nonce, bus_grind_window)
     fs = absorb(fs, nonce, DS_POW)
