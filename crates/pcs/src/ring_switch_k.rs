@@ -464,6 +464,67 @@ fn fold_one_slot_ext(elem: F128T, tables: &[F128T]) -> F128T {
     r0 + r1
 }
 
+/// Deferred, gamma-baked ring-switch output used by the stacked opener.
+///
+/// Keeping the split eq factors and the tiny byte table avoids materializing
+/// one full `rs_eq_ind` vector per claim.  The table already contains the
+/// claim's batching scalar, so combining several claims needs only additions.
+pub(crate) struct DeferredRingSwitchOutputK {
+    pub(crate) batched_sumcheck_claim: F128T,
+    eq_lo: Vec<F128T>,
+    eq_hi: Vec<F128T>,
+    table: Vec<F128T>,
+}
+
+/// Finish a ring-switch claim without materializing its dense weight vector.
+/// The batching scalar is baked into both the target and the byte table.
+pub(crate) fn prove_finish_deferred(
+    state: RingSwitchProveState,
+    eq_r_dprime: &[F128T],
+    gamma: F128T,
+) -> DeferredRingSwitchOutputK {
+    let s_hat_u = transpose_s_hat(&state.s_hat_v);
+    let sumcheck_claim = inner_product_base_ext(&s_hat_u, eq_r_dprime);
+    let scaled_eq_r_dprime: Vec<F128T> = eq_r_dprime.iter().map(|&x| gamma * x).collect();
+    DeferredRingSwitchOutputK {
+        batched_sumcheck_claim: gamma * sumcheck_claim,
+        eq_lo: state.eq_lo,
+        eq_hi: state.eq_hi,
+        table: build_fold_byte_table_ext(&scaled_eq_r_dprime),
+    }
+}
+
+/// Fold several deferred claims directly into their final combined dense
+/// basis. Every output slot is written exactly once; no per-claim dense
+/// vectors are allocated or read back.
+pub(crate) fn combine_deferred_into(outputs: &[DeferredRingSwitchOutputK], out: &mut [F128T]) {
+    use rayon::prelude::*;
+
+    assert!(!outputs.is_empty());
+    let block_len = outputs[0].eq_lo.len();
+    assert!(block_len.is_power_of_two());
+    assert!(outputs.iter().all(|o| {
+        o.eq_lo.len() == block_len && o.eq_lo.len() * o.eq_hi.len() == out.len()
+    }));
+
+    out.par_chunks_mut(block_len)
+        .enumerate()
+        .for_each(|(hi, out_block)| {
+            for (claim_idx, claim) in outputs.iter().enumerate() {
+                let e_hi = claim.eq_hi[hi];
+                if claim_idx == 0 {
+                    for (slot, &e_lo) in out_block.iter_mut().zip(&claim.eq_lo) {
+                        *slot = fold_one_slot_ext(e_lo * e_hi, &claim.table);
+                    }
+                } else {
+                    for (slot, &e_lo) in out_block.iter_mut().zip(&claim.eq_lo) {
+                        *slot += fold_one_slot_ext(e_lo * e_hi, &claim.table);
+                    }
+                }
+            }
+        });
+}
+
 /// Bytewise-table accelerated [`fold_ext_elems_naive`] (mirror of
 /// `ring_switch::fold_b128_elems`): 16 lookup tables of 256 E entries each
 /// (64 KiB, L1/L2-resident); per position 16 lookups + 15 XORs, no
@@ -591,6 +652,7 @@ pub fn prove(
 
 /// Prover-side scratch carried between [`prove_observe`] and [`prove_finish`]
 /// (the r''-independent data: the slice-MLE vector and the factored eq tensor).
+#[derive(Clone)]
 pub struct RingSwitchProveState {
     s_hat_v: Vec<F128T>,
     eq_lo: Vec<F128T>,
@@ -852,6 +914,59 @@ mod tests {
         z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
         z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
         z ^ (z >> 31)
+    }
+
+    #[test]
+    fn deferred_batch_matches_materialized_weights() {
+        let mut seed = 0xdec0_de01_2345_6789;
+        let point = (0..10)
+            .map(|_| F128T::new(splitmix64(&mut seed), splitmix64(&mut seed)))
+            .collect::<Vec<_>>();
+        let eq_r_dprime = (0..DEGREE_E)
+            .map(|_| F128T::new(splitmix64(&mut seed), splitmix64(&mut seed)))
+            .collect::<Vec<_>>();
+        let gammas = [
+            F128T::new(splitmix64(&mut seed), splitmix64(&mut seed)),
+            F128T::new(splitmix64(&mut seed), splitmix64(&mut seed)),
+        ];
+        let states = (0..2)
+            .map(|_| {
+                let (eq_lo, eq_hi) = build_eq_split_ext(&point);
+                RingSwitchProveState {
+                    s_hat_v: (0..PACKING_WIDTH_K)
+                        .map(|_| F128T::new(splitmix64(&mut seed), splitmix64(&mut seed)))
+                        .collect(),
+                    eq_lo,
+                    eq_hi,
+                }
+            })
+            .collect::<Vec<_>>();
+
+        let dense = states
+            .iter()
+            .map(|state| prove_finish(state, &eq_r_dprime))
+            .collect::<Vec<_>>();
+        let expected_target = dense
+            .iter()
+            .zip(gammas)
+            .fold(F128T::ZERO, |acc, (out, gamma)| acc + gamma * out.sumcheck_claim);
+        let expected_basis = (0..1usize << point.len())
+            .map(|i| gammas[0] * dense[0].rs_eq_ind[i] + gammas[1] * dense[1].rs_eq_ind[i])
+            .collect::<Vec<_>>();
+
+        let deferred = states
+            .into_iter()
+            .zip(gammas)
+            .map(|(state, gamma)| prove_finish_deferred(state, &eq_r_dprime, gamma))
+            .collect::<Vec<_>>();
+        let deferred_target = deferred
+            .iter()
+            .fold(F128T::ZERO, |acc, out| acc + out.batched_sumcheck_claim);
+        let mut deferred_basis = vec![F128T::ZERO; expected_basis.len()];
+        combine_deferred_into(&deferred, &mut deferred_basis);
+
+        assert_eq!(deferred_target, expected_target);
+        assert_eq!(deferred_basis, expected_basis);
     }
 
     #[test]

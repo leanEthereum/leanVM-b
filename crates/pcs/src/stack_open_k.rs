@@ -415,14 +415,17 @@ pub fn open_batch_mixed_ligerito_stacked_k(
     }
     let r_dprime = sample_ext_vec(sponge, ring_switch_k::LOG_DEGREE_E);
     let eq_r_dprime = build_eq_table_ext(&r_dprime);
-    let rs_outputs: Vec<_> = rs_states
-        .iter()
-        .map(|s| ring_switch_k::prove_finish(s, &eq_r_dprime))
-        .collect();
-    mark("ring-switch proves", &mut t);
     // Per-claim batching gammas, sampled AFTER all ring-switch messages are
     // bound (mirror of the extension-field layer's gamma_rs pattern).
     let gammas_rs = sample_ext_vec(sponge, ring.claims.len());
+    let rs_outputs: Vec<_> = rs_states
+        .into_iter()
+        .zip(gammas_rs)
+        .map(|(state, gamma)| {
+            ring_switch_k::prove_finish_deferred(state, &eq_r_dprime, gamma)
+        })
+        .collect();
+    mark("ring-switch proves", &mut t);
 
     // 2. Observe point-claim values + sample their gammas (Schwartz-Zippel
     //    sound: every gamma_pd is sampled after all values are observed).
@@ -434,35 +437,24 @@ pub fn open_batch_mixed_ligerito_stacked_k(
     // 3. Combined target and lifted stack weight b_stack: the gamma-weighted
     //    rs_eq_ind sum scattered at the q_pkd slice, plus the point-claim
     //    eq tensors scattered at their offsets.
-    let mut target = F128T::ZERO;
-    for (out, g) in rs_outputs.iter().zip(gammas_rs.iter()) {
-        target += *g * out.sumcheck_claim;
-    }
-    // Uninit alloc + parallel zero fill: `vec![F128T::ZERO; n]` does not hit
-    // the calloc zero-page specialization (F128T is not a byte pattern the
-    // allocator recognizes), so at large stacks it is a multi-GB
-    // single-threaded write. The additive scatters below RELY on the zeroed
-    // start; every position is written here before any is read.
+    let mut target = rs_outputs
+        .iter()
+        .fold(F128T::ZERO, |acc, out| acc + out.batched_sumcheck_claim);
+    // Parallel first-touch wins for the tower stack: its many scattered point
+    // claims otherwise pay demand-zero page faults one claim at a time.
     let mut b_stack: Vec<F128T> = primitives::alloc_uninit_vec(stack.len());
     {
         use rayon::prelude::*;
         const ZERO_CHUNK: usize = 1 << 16;
         b_stack
             .par_chunks_mut(ZERO_CHUNK)
-            .for_each(|c| c.fill(F128T::ZERO));
+            .for_each(|chunk| chunk.fill(F128T::ZERO));
     }
     mark("b_stack zero fill", &mut t);
-    {
-        use rayon::prelude::*;
-        let dst = &mut b_stack[ring.offset..ring.offset + qpkd_len];
-        dst.par_iter_mut().enumerate().for_each(|(j, b)| {
-            let mut acc = F128T::ZERO;
-            for (out, g) in rs_outputs.iter().zip(gammas_rs.iter()) {
-                acc += *g * out.rs_eq_ind[j];
-            }
-            *b = acc;
-        });
-    }
+    ring_switch_k::combine_deferred_into(
+        &rs_outputs,
+        &mut b_stack[ring.offset..ring.offset + qpkd_len],
+    );
     mark("rs_eq_ind scatter", &mut t);
     fold_stacked_point_claims_k(&mut b_stack, &mut target, point_claims, &gammas_pd);
     mark("point-claim folds", &mut t);
