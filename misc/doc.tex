@@ -423,7 +423,7 @@ Alone among the tables, \texttt{JUMP} commits its successors.
 
 Compresses $64$ input bytes to the $32$ output bytes at $c$. Each $128$-bit chunk occupies one $192$-bit cell through the canonical embedding with top limb zero. The four input addresses are $a_i=\fp\cdot o_i$ for $i\in\{0,1,2,3\}$ and need not be adjacent. The output occupies $a_C=\fp\cdot o_C$ and $\gen\cdot a_C$. Thus each row accesses four input cells and two output cells.
 
-Flock~\cite{flock} proves $c=\mathrm{BLAKE3}(a,b)$ with a batched R1CS over a Boolean witness. The witness is packed into $q_\pkd$, with $64$ bits per $\K$-element. Ring switching~\cite{cryptoeprint:2024/504} maps its $\F_2$ claims to one $\E$-weighted claim on $q_\pkd$, which joins the batched opening (\S\ref{sec:e2e-unrolled}).
+Flock~\cite{flock} proves $c=\mathrm{BLAKE3}(a,b)$ with a batched R1CS over a Boolean witness. The witness is packed into $q_\pkd$, with $64$ bits per $\K$-element. The concrete ring switch of \S\ref{sec:ringswitch} maps its $\F_2$ claims to one $\E$-weighted claim on $q_\pkd$, which joins the batched opening (\S\ref{sec:e2e-unrolled}).
 
 The words $a,b,c$ are contained in $q_\pkd$. Each $64$-bit flock word occupies one packed slot, and each BLAKE3 cell contributes its two low limbs; the top limb is canonically zero. The twelve limbs $v_{A0},\dots,v_{C3}$ therefore need no separate commitment. Each is a strided point evaluation of $q_\pkd$. Linking these embedded values to the full memory interaction implicitly forces the top limb of every BLAKE3-accessed cell to zero. The R1CS matrices fix the BLAKE3 IV, counter, block length, and flags, so they prove the compression of $a\Vert b$ without separate pin openings.
 \begin{itemize}
@@ -533,7 +533,7 @@ We lay out the whole protocol as one ordered sequence. Each reduction below adds
 \paragraph{BLAKE3 validity.}
 \begin{enumerate}
 \item \textbf{Prover \& Verifier.} Reduce the executed BLAKE3 constraints to two evaluation claims on $q_\pkd$ (\S\ref{sec:tab-blake3}).
-\item \textbf{Prover \& Verifier.} The ring switching (\S\ref{sec:tab-blake3}) reduces each bit-witness claim to a weighted-sum claim on the $q_\pkd$ region of the stack, with a transparent $\E$-valued weight the verifier can evaluate; both join the pool.
+\item \textbf{Prover \& Verifier.} The ring switching of \S\ref{sec:ringswitch} reduces each bit-witness claim to a weighted-sum claim on the $q_\pkd$ region of the stack, with a transparent $\E$-valued weight the verifier can evaluate; both join the pool.
 \end{enumerate}
 
 \paragraph{Opening.}
@@ -621,28 +621,122 @@ The slots are two instructions rather than one because a \texttt{JUMP} reads its
 
 As in leanVM, the matched value must be known to lie in $[0,n)$: a hinted $x$ must be range-checked first (\S\ref{sec:prog-range-checks}); otherwise the dispatch lands at an attacker-chosen program counter.
 
-\iffalse % Deferred annex (u32 addition gadget, ring-switching): commented out for now.
-% NOTE: this annex predates the 64-bit transition and is written for the old
-% F_{2^128} design (D = 128, nu = 7); re-derive over K/E before reviving it.
+\appendix
+
+\section{Ring switching}\label{sec:ringswitch}
+
+Flock's BLAKE3 argument produces claims about Boolean multilinears. The VM packs them into \(\K\)-words for commitment and opens the resulting claims over \(\E\). We use the following specialization of ring switching~\cite{cryptoeprint:2024/504}:
+\[
+  \F_2 \subset \K=\F_{2^{64}} \subset \E=\F_{2^{192}}.
+\]
+
+\paragraph{Packing.} Let \(L\) be the number of Boolean variables left after the six variables that select a bit within a \(64\)-bit word. Write the Boolean polynomial as
+\[
+  Q:\{0,\ldots,63\}\times\cube L\longrightarrow\F_2.
+\]
+Thus \(Q\) has \(L+6\) Boolean variables and \(64\cdot2^L\) values. In the polynomial basis \(1,x,\ldots,x^{63}\) of \(\K/\F_2\), pack each word as
+\[
+  Q_\pkd(y)=\sum_{i=0}^{63}Q(i,y)x^i\in\K,
+  \qquad y\in\cube L.
+\]
+The PCS commits the \(2^L\) values of \(Q_\pkd\), stored in the \(q_\pkd\) region of the witness stack. This represents the Boolean witness with no embedding overhead.
+
+\paragraph{Incoming claim.} Flock supplies \(a\in\E\), \(z\in\E^L\), and verifier-known weights \(p_i\in\E\) for \(0\le i<64\). A valid witness satisfies
+\begin{equation}
+  a=\sum_{i=0}^{63}p_i s_i,
+  \qquad
+  s_i=\sum_{y\in\cube L}\eq(z,y)Q(i,y).
+  \label{eq:rs-incoming}
+\end{equation}
+The \(p_i\) are the Lagrange weights of Flock's univariate skip. The prover sends \(s_0,\ldots,s_{63}\in\E\), and the verifier checks the first equality. It remains to bind these values to the committed \(Q_\pkd\).
+
+\paragraph{Coordinate transpose.} Let \(\vartheta\) be the generator of the cubic extension \(\E/\K\), and let \(e_{64j+i}=x^i\vartheta^j\), for \(0\le i<64\) and \(0\le j<3\), be the resulting basis of \(\E/\F_2\). Write
+\[
+  s_i=\sum_{w=0}^{191}a_{w,i}e_w,
+  \qquad a_{w,i}\in\F_2,
+  \qquad
+  t_w=\sum_{i=0}^{63}a_{w,i}x^i\in\K.
+\]
+The map \((s_i)_{i<64}\mapsto(t_w)_{w<192}\) only transposes a \(192\times64\) bit matrix. Likewise, write
+\[
+  \eq(z,y)=\sum_{w=0}^{191}A_w(y)e_w,
+  \qquad A_w(y)\in\F_2.
+\]
+Taking coordinates in the definition of \(s_i\) gives
+\begin{equation}
+  t_w
+  =\sum_{i=0}^{63}x^i\sum_{y\in\cube L}A_w(y)Q(i,y)
+  =\sum_{y\in\cube L}A_w(y)Q_\pkd(y),
+  \qquad 0\le w<192.
+  \label{eq:rs-coordinate-claim}
+\end{equation}
+
+\paragraph{Batching.} After absorbing all \(s_i\), the verifier samples one \(\rho\leftarrow\E\) and defines the \(\F_2\)-linear map
+\[
+  \Phi_\rho:\E\longrightarrow\E,
+  \qquad
+  \Phi_\rho\!\left(\sum_{w=0}^{191}c_we_w\right)
+  =\sum_{w=0}^{191}c_w\rho^w.
+\]
+Multiplying \eqref{eq:rs-coordinate-claim} by \(\rho^w\) and summing gives
+\begin{equation}
+  T:=\sum_{w=0}^{191}\rho^wt_w
+  =\sum_{y\in\cube L}
+    \underbrace{\Phi_\rho(\eq(z,y))}_{B_{z,\rho}(y)}
+    Q_\pkd(y).
+  \label{eq:rs-batched}
+\end{equation}
+This is directly a weighted opening of the committed \(Q_\pkd\): the target is \(T\in\E\), and \(B_{z,\rho}\) is a transparent \(\E\)-valued weight. No ring-switch sumcheck is needed. Multiple Flock claims share the same \(\rho\); after this reduction, independent \(\E\)-scalars fold their targets and weights into the global stacked opening.
+
+\paragraph{Soundness.} The coordinate transpose is a bijection \(\E^{64}\simeq\K^{192}\) of \(12288\)-dimensional \(\F_2\)-vector spaces. If the transmitted \(s_i\) disagree with the committed witness, transposing their difference yields a nonzero vector \((\Delta_w)_{w<192}\in\K^{192}\). The batched discrepancy
+\[
+  P(\rho)=\sum_{w=0}^{191}\Delta_w\rho^w
+\]
+is then a nonzero polynomial of degree at most \(191\) over \(\E\). Because \(\rho\) is sampled after the \(s_i\), the batching error is
+\[
+  \Pr[P(\rho)=0]\le\frac{191}{2^{192}}<2^{-184}.
+\]
+Sampling \(\rho\) from \(\K\) would provide only about \(56\) bits of soundness; hence \(\rho\) is sampled from \(\E\).
+
+\paragraph{Succinct verification.} At a PCS query point \(r\in\E^L\), the verifier needs
+\[
+  \widehat B_{z,\rho}(r)
+  =\sum_{y\in\cube L}\eq(r,y)\Phi_\rho(\eq(z,y)).
+\]
+In \(\E\otimes_{\F_2}\E\), set
+\[
+  \Theta(r,z)
+  :=\sum_{y\in\cube L}\eq(r,y)\otimes\eq(z,y)
+  =\prod_{j=1}^{L}
+    \left(1\otimes1+r_j\otimes1+1\otimes z_j\right).
+\]
+Applying \(\operatorname{id}\otimes\Phi_\rho\) to \(\Theta\) and multiplying the two tensor factors yields \(\widehat B_{z,\rho}(r)\). The implementation uses \(O(L\cdot192^2)\) bit operations and \(O(L\cdot192)\) multiplications in \(\E\), without constructing the \(2^L\)-entry table.
+
+For recursion, represent \(\Phi_\rho\) by its linearized polynomial
+\[
+  \Phi_\rho(a)=\sum_{k=0}^{191}c_ka^{2^k}.
+\]
+If \(d_w\) is the trace-dual basis element satisfying \(\operatorname{bit}_w(a)=\operatorname{Tr}_{\E/\F_2}(d_wa)\), then
+\[
+  c_k=\sum_{w=0}^{191}\rho^w d_w^{2^k}.
+\]
+The guest computes each \(c_k\) by Horner evaluation in \(\rho\), then evaluates \(\Phi_\rho\) by repeated squaring.
+
+\iffalse % Deferred u32 addition gadget: commented out for now.
+% NOTE: this unused annex has not been re-audited for the current field tower.
 \appendix
 
 \section{The \texttt{u32} addition gadget (deferred)}\label{sec:add}
 
-This appendix is \emph{unused by v1}; it is kept for the deferred integer instructions \texttt{u32\_ADD} and \texttt{IS\_NONZERO} (\S\ref{sec:vm}), which need genuine $32$-bit addition with carries. Over $\F_{2^{128}}$ that integer sum is not the field sum, so it is proven bit-level by the gadget below, run as a single \emph{addition service}: one table proving a batch of additions $a+b=c\bmod2^{32}$ and pulling each proven row as $\tup{\dsep{ADD},a,b,c,e}$ on a fourth domain $\dsep{ADD}$, with $e\in\F_2$ the overflow (carry out of the top bit); consumers push the tuple they need, and balance forces every pushed addition to equal a proven one. Reviving it restores the bit-columns of \S\ref{sec:prelim} (a word as its $32$ bit-columns, materialized $\sum_j x^j\widetilde b_j$) and ring-switching (Appendix~\ref{sec:ringswitch}) to commit them. \texttt{IS\_NONZERO} reads off $e$ from $x+(2^{32}{-}1)$, whose overflow is $[x\neq0]$.
+This appendix is \emph{unused by v1}; it is kept for the deferred integer instructions \texttt{u32\_ADD} and \texttt{IS\_NONZERO} (\S\ref{sec:vm}), which need genuine $32$-bit addition with carries. Over $\E$ that integer sum is not the field sum, so it is proven bit-level by the gadget below, run as a single \emph{addition service}: one table proving a batch of additions $a+b=c\bmod2^{32}$ and pulling each proven row as $\tup{\dsep{ADD},a,b,c,e}$ on a fourth domain $\dsep{ADD}$, with $e\in\F_2$ the overflow (carry out of the top bit); consumers push the tuple they need, and balance forces every pushed addition to equal a proven one. Reviving it restores the bit-columns of \S\ref{sec:prelim} (a word as its $32$ bit-columns, materialized $\sum_j x^j\widetilde b_j$) and the ring switch of \S\ref{sec:ringswitch} to commit them. \texttt{IS\_NONZERO} reads off $e$ from $x+(2^{32}{-}1)$, whose overflow is $[x\neq0]$.
 
-The gadget proves $C=A+B$ word by word, modulo $2^{32}$, for $N=2^n$ words, using the bit-column/oblong machinery (a word column is the $(n+5)$-variate $\widetilde A$ with oblong view $\oA$ over a $5$-dimensional subspace $\D\subset\F_{2^{128}}$, $|\D|=32$). The prover commits the addends $\widetilde A,\widetilde B$ and the carry-out $\widetilde c_{\mathrm{out}}$; two virtual columns are the carry-in $\ocin=\ocout\ll1$ and the sum $\oC=\oA+\oB+\ocin$. The carry is correct exactly when
+The gadget proves $C=A+B$ word by word, modulo $2^{32}$, for $N=2^n$ words, using the bit-column/oblong machinery (a word column is the $(n+5)$-variate $\widetilde A$ with oblong view $\oA$ over a $5$-dimensional subspace $\D\subset\E$, $|\D|=32$). The prover commits the addends $\widetilde A,\widetilde B$ and the carry-out $\widetilde c_{\mathrm{out}}$; two virtual columns are the carry-in $\ocin=\ocout\ll1$ and the sum $\oC=\oA+\oB+\ocin$. The carry is correct exactly when
 \begin{equation}
 \oQ \;=\; \oA\cdot\oB \;+\; \oA\cdot\ocin \;+\; \oB\cdot\ocin \;+\; \ocout \;=\;0
 \quad\text{on } \D\times\cube n,
 \label{eq:Q}
 \end{equation}
-a single $\F_{2^{128}}$-identity of degree $\le2$ in each word variable and $\le62$ in $\II$. Its overflow $e$ is bit $31$ of $\widehat c_{\mathrm{out}}$. The zerocheck for \eqref{eq:Q} runs a univariate skip over the $32$ bit-positions (first round, degree $\le62$, reconstructed from $31$ values off $\D$ since $g$ vanishes on $\D$ when the statement holds) followed by $n$ ordinary degree-$\le3$ rounds; the final check needs $\oA,\oB,\ocout$ and $\ocin$ at $(r_{\II},\rho)$, obtained from one opening per committed column via the oblong reduction $\ocout(r_{\II},\rho)=\sum_{j}L_j(r_{\II})\,\widetilde c_{\mathrm{out}}(j,\rho)$ (the shift $\ocin$ relabels $j\mapsto j+1$). The full derivation and soundness ($O(n)/2^{128}$) are omitted here.
-
-\section{Ring-switching for a Boolean witness (deferred)}\label{sec:ringswitch}
-
-This appendix is \emph{unused by v1}, whose witness is field-valued and committed directly (\S\ref{sec:rs-dense}). It returns only with the bit-columns of Appendix~\ref{sec:add}: a \emph{Boolean} witness $q:\cube{M}\to\F_2$ committed with no embedding overhead, by packing $D=128$ bits per committed field element and bridging to a dense $\F_{2^{128}}$ PCS (DP24).
-
-Pack each block of $D$ bits in the monomial basis, $g(y)=\sum_{w\in\cube\nu}x^{\mathrm{int}(w)}q(y,w)$ with $\nu=\log_2 D=7$ and $m'+\nu=M$; then $g$ takes full field values and the dense PCS commits it at zero overhead. To open $\widehat q(\mathbf r)=\alpha$, split $\mathbf r=(r_{\mathrm{hi}},r_{\mathrm{lo}})$, send the $D$ values $s_w=\widehat q(r_{\mathrm{hi}},w)$ with $\alpha=\sum_w\eq(r_{\mathrm{lo}},w)s_w$, descend to $\F_2$ to get $D$ claims $\widehat s_u=\sum_y A_u(y)\widehat g(y)$ (with $\eq(r_{\mathrm{hi}},y)=\sum_u A_u(y)x^u$), batch them with $\xi$, and run one sumcheck $\sum_y B(y)\widehat g(y)=\beta$ ending in a claim $\widehat g(\mathbf r')$ the dense PCS opens. The concrete PCS opens at an \emph{oblong} point: of the $\nu$ packed variables it fuses the low $k=6$ into one coordinate $\II$ over $\D$ through the Lagrange basis, $\widehat q(\II,r_{\mathrm{rest}})=\sum_{j}L_j(\II)\widehat q(j,r_{\mathrm{rest}})$, the same oblong form as the addition gadget's columns, so the batch's first round is taken as that skip. The full reduction and soundness ($O(M)/2^{128}$) are omitted here.
+a single $\E$-identity of degree $\le2$ in each word variable and $\le62$ in $\II$. Its overflow $e$ is bit $31$ of $\widehat c_{\mathrm{out}}$. The zerocheck for \eqref{eq:Q} runs a univariate skip over the $32$ bit-positions (first round, degree $\le62$, reconstructed from $31$ values off $\D$ since $g$ vanishes on $\D$ when the statement holds) followed by $n$ ordinary degree-$\le3$ rounds; the final check needs $\oA,\oB,\ocout$ and $\ocin$ at $(r_{\II},\rho)$, obtained from one opening per committed column via the oblong reduction $\ocout(r_{\II},\rho)=\sum_{j}L_j(r_{\II})\,\widetilde c_{\mathrm{out}}(j,\rho)$ (the shift $\ocin$ relabels $j\mapsto j+1$). The full derivation and soundness ($O(n)/2^{192}$) are omitted here.
 
 \fi % end deferred annex
 
@@ -664,6 +758,7 @@ Hadas Zeilberger, Binyi Chen, and Benjamin Fisch.
 Benjamin~E. Diamond and Jim Posen.
 \newblock Polylogarithmic Proofs for Multilinears over Binary Towers.
 \newblock Cryptology ePrint Archive, Paper 2024/504, 2024.
+\newblock \url{https://doi.org/10.1007/978-3-032-25336-1_1}
 \newblock \url{https://eprint.iacr.org/2024/504}
 
 \bibitem{cryptoeprint:2024/108}
