@@ -184,6 +184,7 @@ fn read_public(vs: &mut VerifierState, prog: &Program, public_input: &[F128T; 2]
     Ok(l)
 }
 
+#[derive(Clone)]
 pub struct Program {
     pub prog: Vec<Op>, // bytecode (size B, power of two)
     pub pc0: u32,

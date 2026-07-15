@@ -219,7 +219,10 @@ impl RecursiveProof {
         if statement.sub_statements.is_empty() {
             return Err(RecursiveVerifyError::EmptyBatch);
         }
-        let guest = recursion_guest(inner_program, statement.sub_statements.len());
+        // Borrow the process-cached compiled guest: verification only reads
+        // the program (witness streams are prover-side), and the compile is
+        // the dominant cost of this function when uncached.
+        let guest = recursion_guest_arc(inner_program, statement.sub_statements.len());
         let public_input = statement.public_input(lean_vm::cpu::fs_seed(inner_program));
         verify(&guest, &public_input, &self.outer_proof)
             .map_err(RecursiveVerifyError::OuterProof)?;
@@ -1455,14 +1458,56 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
 
 /// Compile the canonical recursion guest for this program and batch arity.
 /// Both proving and verification use this function so they cannot drift.
-fn recursion_guest(inner_program: &Program, nsub: usize) -> Program {
+/// Process-wide cache of compiled recursion guests. The compile (~235 ms)
+/// would otherwise dominate [`RecursiveProof::verify`] (~20 ms of actual proof
+/// checking); a verifier handling many proofs of the same shape pays it once.
+///
+/// Key: `(fs_seed(inner_program), nsub)` — the seed digest binds the flock
+/// circuit family and the exact inner bytecode, and the guest is a pure
+/// function of (bytecode, nsub): `placeholder_map` reads only structural
+/// layout, and `NSUB_PLACEHOLDER` is the one non-structural input. Cached
+/// guests are PRISTINE (no witness streams; those are prover-side data set on
+/// owned clones — see [`recursion_guest`]).
+fn recursion_guest_arc(inner_program: &Program, nsub: usize) -> std::sync::Arc<Program> {
+    use std::sync::{Arc, Mutex, OnceLock};
+    type Key = ([u64; 4], usize);
+    static CACHE: OnceLock<Mutex<std::collections::HashMap<Key, Arc<Program>>>> = OnceLock::new();
+    /// Distinct (inner program, batch size) shapes kept; a guest is ~MBs of
+    /// bytecode, and one process only ever aggregates a handful of shapes.
+    const GUEST_CACHE_CAP: usize = 8;
+
+    let seed = lean_vm::cpu::fs_seed(inner_program);
+    let key = ([seed[0].c0, seed[0].c1, seed[1].c0, seed[1].c1], nsub);
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some(g) = cache.lock().expect("recursion guest cache poisoned").get(&key) {
+        return Arc::clone(g);
+    }
+    // Compile OUTSIDE the lock: a concurrent compile of another shape must not
+    // serialize behind this one (mirrors `blake3_flock::setup_for`).
     let mut replacements = placeholder_map(inner_program);
     replacements.insert("NSUB_PLACEHOLDER".to_string(), nsub.to_string());
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/guests/recursion.py");
-    compile(
+    let guest = Arc::new(compile(
         &parse_file_with_replacements(path, &replacements)
             .expect("the repository recursion guest must parse"),
-    )
+    ));
+    let mut map = cache.lock().expect("recursion guest cache poisoned");
+    // Re-check: another thread may have inserted while we compiled (one wins).
+    if let Some(g) = map.get(&key) {
+        return Arc::clone(g);
+    }
+    if map.len() < GUEST_CACHE_CAP {
+        map.insert(key, Arc::clone(&guest));
+    }
+    guest
+}
+
+/// Owned, mutable copy of the (cached) compiled recursion guest — prover
+/// paths set their witness streams on it. First call per shape compiles and
+/// caches; the clone is a memcpy of the bytecode, orders of magnitude cheaper
+/// than the compile.
+fn recursion_guest(inner_program: &Program, nsub: usize) -> Program {
+    (*recursion_guest_arc(inner_program, nsub)).clone()
 }
 
 /// Run an `inner.len()`→1 recursive aggregation and verify the outer proof;
