@@ -18,7 +18,7 @@ Machine: M4 Max
 ### XMSS aggregation
 
 ```bash
-RAYON_NUM_THREADS=11 cargo run --release -- xmss --n-signatures 820
+RAYON_NUM_THREADS=11 cargo run --release -- xmss --n-signatures 820 --log-inv-rate 1
 ```
 
 ```
@@ -42,7 +42,7 @@ XMSS aggregation, 820 signatures
 
 
 ```bash
-RAYON_NUM_THREADS=11 cargo run --release -- recursion --n 2
+RAYON_NUM_THREADS=11 cargo run --release -- recursion --n 2  --log-inv-rate 2
 ```
 
 ```
@@ -64,7 +64,7 @@ recursion 2→1: 2 inner proofs of 950519 cycles each
 
 ## Security, proof size etc
 
-- security = 128 bits, proven, Johnson list-decoding regime with OOD binding, Ligerito
+- security = 128 bits, proven, Johnson list-decoding regime, Ligerito
 - proof size = BIG (≈ 0.7 MiB)
 
 The proof-size target will be improved further.

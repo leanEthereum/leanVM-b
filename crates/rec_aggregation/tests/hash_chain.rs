@@ -112,7 +112,7 @@ fn blake3_hash_chain() {
     warm_setup(n);
 
     let t = Instant::now();
-    let (proof, stats) = prove(&program, pi);
+    let (proof, stats) = prove(&program, pi, lean_vm::pcs::LOG_INV_RATE);
     let t_prove = t.elapsed();
     let t = Instant::now();
     verify(&program, &pi, &proof).expect("hash-chain proof verifies");

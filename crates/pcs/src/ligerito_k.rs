@@ -200,7 +200,15 @@ fn log2_pow2(n: usize) -> usize {
 /// elements, using the production 128-bit Johnson/OOD profile at
 /// `m = log_n + LOG_PACKING`.
 pub fn k_configs_for(log_n: usize) -> Result<(ProverConfig, VerifierConfig), String> {
-    let sec = LigeritoSecurityConfig::derive_config(log_n + crate::LOG_PACKING)?;
+    k_configs_for_rate(log_n, crate::ligerito::LOG_INV_RATE_0)
+}
+
+/// As [`k_configs_for`], with an explicit L0 inverse-rate logarithm.
+pub fn k_configs_for_rate(
+    log_n: usize,
+    log_inv_rate: usize,
+) -> Result<(ProverConfig, VerifierConfig), String> {
+    let sec = LigeritoSecurityConfig::derive_config_with_log_inv_rate(log_n + crate::LOG_PACKING, log_inv_rate)?;
     sec.to_prover_verifier_configs()
 }
 

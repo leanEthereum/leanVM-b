@@ -45,7 +45,7 @@ fn quad(b: &[u8]) -> Vec<F192> {
 /// natively with the `xmss` crate, runs the in-VM aggregation verifier
 /// (`guests/xmss_aggregate.py`) over all signatures, proves, verifies, and
 /// prints the benchmark report.
-pub fn run_xmss_aggregation(n: usize) {
+pub fn run_xmss_aggregation(n: usize, log_inv_rate: usize) {
     // Pin rayon workers to performance cores (QoS) before any parallel work runs,
     // so fork-join stages are not held up by efficiency-core stragglers. Thread
     // count still follows RAYON_NUM_THREADS.
@@ -172,7 +172,7 @@ pub fn run_xmss_aggregation(n: usize) {
     lean_vm::blake3_flock::warm_setup(181 + 158 * n);
 
     let t = Instant::now();
-    let (proof, stats) = prove(&program, want);
+    let (proof, stats) = prove(&program, want, log_inv_rate);
     let t_prove = t.elapsed();
     let t = Instant::now();
     verify(&program, &want, &proof).expect("XMSS aggregation verifies in-VM");
@@ -237,6 +237,6 @@ mod tests {
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(3);
-        super::run_xmss_aggregation(n);
+        super::run_xmss_aggregation(n, lean_vm::pcs::LOG_INV_RATE);
     }
 }

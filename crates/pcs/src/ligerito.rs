@@ -30,6 +30,20 @@ pub const SECURITY_BITS: usize = 128;
 /// L0 code rate index: `rho_0 = 2^-LOG_INV_RATE_0` (rate 1/2).
 pub const LOG_INV_RATE_0: usize = 1;
 
+/// CLI-selectable L0 rates are `2^-r` for `r = 1, 2, 3, 4`.
+pub const MIN_LOG_INV_RATE: usize = 1;
+pub const MAX_LOG_INV_RATE: usize = 4;
+
+/// Validate a production Ligerito inverse-rate logarithm.
+pub fn validate_log_inv_rate(log_inv_rate: usize) -> Result<(), String> {
+    if !(MIN_LOG_INV_RATE..=MAX_LOG_INV_RATE).contains(&log_inv_rate) {
+        return Err(format!(
+            "log_inv_rate must be in {MIN_LOG_INV_RATE}..={MAX_LOG_INV_RATE}, got {log_inv_rate}"
+        ));
+    }
+    Ok(())
+}
+
 /// Query-phase grinding is unnecessary: the Johnson-radius query count closes
 /// the full 128-bit target directly.
 pub const QUERY_GRINDING_BITS: usize = 0;
@@ -997,8 +1011,15 @@ impl LigeritoSecurityConfig {
     /// governs Fiat-Shamir security (cf. Ethereum's `soundcalc`), not a
     /// whole-protocol union bound over terms.
     pub fn derive_config(m: usize) -> Result<Self, String> {
+        Self::derive_config_with_log_inv_rate(m, LOG_INV_RATE_0)
+    }
+
+    /// Derive a configuration for an explicit L0 rate `2^-log_inv_rate`.
+    /// This side-effect-free entry point is used by parameter tooling and
+    /// tests and production callers that accept a transcript-bound rate.
+    pub fn derive_config_with_log_inv_rate(m: usize, log_inv_rate: usize) -> Result<Self, String> {
+        validate_log_inv_rate(log_inv_rate)?;
         let target_bits = SECURITY_BITS;
-        let log_inv_rate = LOG_INV_RATE_0;
         let query_grind: usize = QUERY_GRINDING_BITS;
         let log_n = m
             .checked_sub(crate::LOG_PACKING)
@@ -1172,21 +1193,54 @@ mod tests {
 
     #[test]
     fn production_profile_is_128_bit_johnson_without_grinding() {
-        for m in 22 + crate::LOG_PACKING..=28 + crate::LOG_PACKING {
-            let cfg = LigeritoSecurityConfig::derive_config(m).unwrap();
-            assert_eq!(cfg.target_security_bits, 128);
-            assert_eq!(cfg.levels[0].ood_samples, 0);
-            for (i, level) in cfg.levels.iter().enumerate() {
-                assert_eq!(level.regime, SoundnessRegime::JohnsonOod);
-                assert_eq!(level.grinding_bits, 0);
-                assert_eq!(level.fold_grinding_bits, 0);
-                assert!(level.expected_eps_query_bits >= 128.0);
-                assert!(level.expected_eps_pg_bits >= 128.0);
-                assert!(level.expected_eps_ood_bits.unwrap() >= 128.0);
-                if i > 0 {
-                    assert_eq!(level.ood_samples, 1);
+        for log_inv_rate in MIN_LOG_INV_RATE..=MAX_LOG_INV_RATE {
+            for m in 22 + crate::LOG_PACKING..=28 + crate::LOG_PACKING {
+                let cfg = LigeritoSecurityConfig::derive_config_with_log_inv_rate(m, log_inv_rate)
+                    .unwrap();
+                assert_eq!(cfg.target_security_bits, 128);
+                assert_eq!(cfg.levels[0].log_inv_rate, log_inv_rate);
+                assert_eq!(cfg.levels[0].ood_samples, 0);
+                for (i, level) in cfg.levels.iter().enumerate() {
+                    assert_eq!(level.regime, SoundnessRegime::JohnsonOod);
+                    assert_eq!(level.grinding_bits, 0);
+                    assert_eq!(level.fold_grinding_bits, 0);
+                    assert!(level.expected_eps_query_bits >= 128.0);
+                    assert!(level.expected_eps_pg_bits >= 128.0);
+                    assert!(level.expected_eps_ood_bits.unwrap() >= 128.0);
+                    if i > 0 {
+                        assert_eq!(level.ood_samples, 1);
+                    }
                 }
             }
+        }
+    }
+
+    /// Parameter-report helper:
+    /// `LIGERITO_LOG_INV_RATE=2 LIGERITO_NUM_VARS=22 cargo test --release -p pcs print_ligerito_query_counts -- --ignored --nocapture`
+    #[test]
+    #[ignore = "manual parameter report; configure it through environment variables"]
+    fn print_ligerito_query_counts() {
+        let env_usize = |name: &str| {
+            std::env::var(name)
+                .unwrap_or_else(|_| panic!("missing {name}"))
+                .parse::<usize>()
+                .unwrap_or_else(|_| panic!("{name} must be a non-negative integer"))
+        };
+        let log_inv_rate = env_usize("LIGERITO_LOG_INV_RATE");
+        let num_vars = env_usize("LIGERITO_NUM_VARS");
+        let cfg = LigeritoSecurityConfig::derive_config_with_log_inv_rate(
+            num_vars + crate::LOG_PACKING,
+            log_inv_rate,
+        )
+        .unwrap();
+
+        println!("num_vars={num_vars}, rate=1/{}", 1usize << log_inv_rate);
+        for (level, params) in cfg.levels.iter().enumerate() {
+            println!(
+                "L{level}: rate=1/{}, queries={}",
+                1usize << params.log_inv_rate,
+                params.queries
+            );
         }
     }
 }

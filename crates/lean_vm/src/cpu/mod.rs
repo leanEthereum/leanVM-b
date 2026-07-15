@@ -156,23 +156,26 @@ fn transcript_seed(program: &Program, pi: &[F192; 2]) -> [F192; 4] {
 /// [`transcript_seed`]). The boundary states and per-table log-sizes (`taus`) are
 /// derived (constants from the program, and `padlen(row_counts)`), so they need no
 /// separate binding.
-fn announce_public(ps: &mut ProverState, log_mem: usize, row_counts: [usize; 6]) {
+fn announce_public(ps: &mut ProverState, log_mem: usize, row_counts: [usize; 6], log_inv_rate: usize) {
     ps.add_scalar(F192::new(log_mem as u64, 0, 0));
     for r in row_counts {
         ps.add_scalar(F192::new(r as u64, 0, 0));
     }
+    ps.add_scalar(F192::new(log_inv_rate as u64, 0, 0));
 }
 
-/// Verifier side of [`announce_public`]: read the seven announced sizes from the
-/// stream, check them against the instance caps, and reconstruct the public
-/// [`Layout`] from the program + sizes + public input. (The public input was
-/// already bound by seeding the transcript.)
-fn read_public(vs: &mut VerifierState, prog: &Program, public_input: &[F192; 2]) -> Result<Layout, Error> {
+/// Verifier side of [`announce_public`]: read the seven announced sizes and PCS
+/// rate from the stream, validate them, and reconstruct the public [`Layout`]
+/// from the program + sizes + public input. (The public input was already bound
+/// by seeding the transcript.)
+fn read_public(vs: &mut VerifierState, prog: &Program, public_input: &[F192; 2]) -> Result<(Layout, usize), Error> {
     let log_mem = vs.next_scalar().map_err(Error::Transcript)?.c0 as usize;
     let mut row_counts = [0usize; 6];
     for r in &mut row_counts {
         *r = vs.next_scalar().map_err(Error::Transcript)?.c0 as usize;
     }
+    let rate_word = vs.next_scalar().map_err(Error::Transcript)?;
+    let log_inv_rate = rate_word.c0 as usize;
     // The instance caps (transition doc §caps): with `ord(g) = 2^64 − 1`, the
     // counting arguments (memory soundness, count non-wrap, exponent range checks)
     // are theorems only when the announced instance keeps the total read-flush
@@ -185,11 +188,13 @@ fn read_public(vs: &mut VerifierState, prog: &Program, public_input: &[F192; 2])
         || bytecode_size > (1usize << MAX_LOG_BYTECODE)
         || !(MIN_LOG_MEM..=MAX_LOG_MEM).contains(&log_mem)
         || row_counts.iter().any(|&r| r >= (1usize << MAX_LOG_ROWS))
+        || rate_word != F192::new(log_inv_rate as u64, 0, 0)
+        || ::pcs::ligerito::validate_log_inv_rate(log_inv_rate).is_err()
     {
         return Err(Error::PublicInput);
     }
     let l = layout(&prog.prog, log_mem, row_counts, *public_input);
-    Ok(l)
+    Ok((l, log_inv_rate))
 }
 
 #[derive(Clone)]
@@ -329,8 +334,10 @@ pub struct Stats {
 /// Prove the program on the given public input: run it (witness generation),
 /// then emit everything the verifier needs through the returned [`Proof`]
 /// (scalar stream + PCS commitment / opening hints). Returns the proof and the
-/// run [`Stats`].
-pub fn prove(program: &Program, public_input: [F192; 2]) -> (Proof, Stats) {
+/// run [`Stats`]. `log_inv_rate` selects the PCS rate and is announced in the
+/// Fiat–Shamir transcript before the commitment.
+pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) -> (Proof, Stats) {
+    ::pcs::ligerito::validate_log_inv_rate(log_inv_rate).expect("valid log_inv_rate");
     let prof = std::env::var("LEANVM_PROFILE").is_ok();
     let ms = |t: std::time::Instant| t.elapsed().as_secs_f64() * 1e3;
     let t = std::time::Instant::now();
@@ -366,9 +373,9 @@ pub fn prove(program: &Program, public_input: [F192; 2]) -> (Proof, Stats) {
     let mut ps = ProverState::new(b"leanvm-b", &transcript_seed(program, &public_input));
 
     // Announce the prover's sizes, then commit, before sampling any challenge.
-    announce_public(&mut ps, w.log_mem, w.row_counts);
+    announce_public(&mut ps, w.log_mem, w.row_counts, log_inv_rate);
     let t = std::time::Instant::now();
-    let committed = pcs::commit(&mut ps, &w.q);
+    let committed = pcs::commit(&mut ps, &w.q, log_inv_rate);
     if prof {
         eprintln!("[prove] commit      : {:>7.2} ms", ms(t));
     }
@@ -511,6 +518,8 @@ fn bind_pi_claim(
 /// fold/query data). The sub-proof scalars themselves live on `proof.stream`
 /// at fixed offsets from its tail. Ordinary callers just `?`-discard it.
 pub struct VerifySummary {
+    /// Transcript-bound inverse-rate logarithm used by this proof's PCS.
+    pub log_inv_rate: usize,
     pub bytecode_claims: Vec<leaf::BytecodeClaim>,
     pub count_root: F192,
     /// Sponge states after: the bus, the zerochecks, the PI sample, and the
@@ -527,7 +536,7 @@ pub struct VerifySummary {
 /// was fully consumed. Takes only public inputs — never the prover's witness.
 pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Result<VerifySummary, Error> {
     let mut vs = VerifierState::new(b"leanvm-b", proof, &transcript_seed(program, public_input));
-    let l = read_public(&mut vs, program, public_input)?;
+    let (l, log_inv_rate) = read_public(&mut vs, program, public_input)?;
     let root = pcs::read_commitment(&mut vs).map_err(Error::Transcript)?;
 
     // BLAKE3 ↔ flock (single PCS): flock's R1CS validity and every leanVM point
@@ -576,7 +585,7 @@ pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Res
     let checkpoint_flock = vs.sponge_state();
     let open = vs.next_opening().map_err(Error::Transcript)?;
     let ring = crate::blake3_flock::ring_switch_verify(n_blocks, offset, replay.ab, replay.c);
-    let opening = pcs::verify(&mut vs, &slots, &ring, open, l.m, &root).map_err(Error::Open)?;
+    let opening = pcs::verify(&mut vs, &slots, &ring, open, l.m, log_inv_rate, &root).map_err(Error::Open)?;
     vs.finish().map_err(Error::Transcript)?;
     Ok(VerifySummary {
         bytecode_claims: bus.bytecode_claims,
@@ -585,6 +594,7 @@ pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Res
         zc_claim: replay.zc_claim,
         lc_claim: replay.lc_claim,
         opening,
+        log_inv_rate,
     })
 }
 
@@ -707,7 +717,7 @@ mod tests {
         assert_eq!(exec.mem[7], cell(d[2], d[3]));
         assert_eq!(exec.trace.blake3.len(), 1);
 
-        let (proof, stats) = prove(&program, pi);
+        let (proof, stats) = prove(&program, pi, pcs::LOG_INV_RATE);
         assert_eq!(stats.counts[5], 1, "one BLAKE3 row");
         // flock's sub-proof rides the shared channels: its Ligerito is the proof's
         // one opening, its scalar reduction trails the `stream`.
@@ -774,7 +784,7 @@ mod tests {
         assert_eq!(exec.mem[4], cell(d[0], d[1]));
         assert_eq!(exec.mem[5], cell(d[2], d[3]));
 
-        let (proof, stats) = prove(&program, pi);
+        let (proof, stats) = prove(&program, pi, pcs::LOG_INV_RATE);
         assert_eq!(stats.counts[5], 1, "one BLAKE3 row");
         verify(&program, &pi, &proof).expect("self-hash BLAKE3 verifies");
     }
@@ -788,7 +798,7 @@ mod tests {
             [F64(0x1111), F64(0x2222), F64(0x3333), F64(0x4444)],
         );
         let pi = [w(7), w(11)];
-        let (mut proof, _) = prove(&program, pi);
+        let (mut proof, _) = prove(&program, pi, pcs::LOG_INV_RATE);
         verify(&program, &pi, &proof).expect("honest proof verifies");
 
         // The stacked opening is the proof's one hint; tamper a sumcheck
@@ -814,7 +824,7 @@ mod tests {
             [F64(0x1111), F64(0x2222), F64(0x3333), F64(0x4444)],
         );
         let pi = [w(7), w(11)];
-        let (proof, _) = prove(&program, pi);
+        let (proof, _) = prove(&program, pi, pcs::LOG_INV_RATE);
         verify(&program, &pi, &proof).expect("honest proof verifies");
 
         // The reduction is serialized onto the stream tail (after the last bound
@@ -843,7 +853,7 @@ mod tests {
         ];
         let program = Program::from_bytecode(prog, 5);
         let pi = [F192::new(1, 2, 3), F192::new(4, 5, 6)];
-        let (proof, stats) = prove(&program, pi);
+        let (proof, stats) = prove(&program, pi, pcs::LOG_INV_RATE);
         assert_eq!(stats.counts[5], 0, "no real BLAKE3 rows");
         // The proof still carries exactly one Ligerito opening (over the padding).
         assert_eq!(proof.openings.len(), 1, "unified path: one opening always");
@@ -866,7 +876,7 @@ mod tests {
         let pi = [w(1), w(2)];
         let exec = program.execute(pi);
         assert_eq!(exec.mem[4], x * y, "MUL computes the E product");
-        let (proof, _) = prove(&program, pi);
+        let (proof, _) = prove(&program, pi, pcs::LOG_INV_RATE);
         verify(&program, &pi, &proof).expect("192-bit MUL verifies");
     }
 
@@ -885,7 +895,7 @@ mod tests {
         ];
         let program = Program::from_bytecode(prog.clone(), 5);
         let pi = [w(1), w(2)];
-        let (proof, _) = prove(&program, pi);
+        let (proof, _) = prove(&program, pi, pcs::LOG_INV_RATE);
         verify(&program, &pi, &proof).expect("honest proof verifies");
 
         // Same shape (4 ops, same opcodes/operands, so identical layout + announced
@@ -913,11 +923,18 @@ mod tests {
             [F64(0x1111), F64(0x2222), F64(0x3333), F64(0x4444)],
         );
         let pi = [w(7), w(11)];
-        let (proof, _) = prove(&program, pi);
+        let (proof, _) = prove(&program, pi, pcs::LOG_INV_RATE);
 
         let bytes = bincode::serialize(&proof).expect("proof serializes");
         let decoded: Proof = bincode::deserialize(&bytes).expect("proof deserializes");
         verify(&program, &pi, &decoded).expect("deserialized BLAKE3 proof verifies");
+
+        let mut bad_rate = decoded.clone();
+        bad_rate.stream[7] = F192::new(5, 0, 0);
+        assert!(
+            matches!(verify(&program, &pi, &bad_rate), Err(Error::PublicInput)),
+            "the transcript-announced PCS rate must be in 1..=4"
+        );
 
         let mut tampered = bytes.clone();
         let i = tampered.len() / 2;

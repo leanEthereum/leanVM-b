@@ -10,7 +10,7 @@ use primitives::field::{F64, F192, g_pow};
 /// Prove and verify Fibonacci-in-the-exponent over a `HeapBuf` (an unrolled
 /// `mul_range` recurrence), binding `g^{F(n)}` as the public input. Prints the
 /// benchmark report.
-pub fn run_fibonacci(n: usize) {
+pub fn run_fibonacci(n: usize, log_inv_rate: usize) {
     let (src, pi) = fibonacci_program(n);
     let program = compile(&parse(&src).unwrap());
 
@@ -21,7 +21,7 @@ pub fn run_fibonacci(n: usize) {
     lean_vm::blake3_flock::warm_setup(0);
 
     let t = Instant::now();
-    let (proof, stats) = prove(&program, pi);
+    let (proof, stats) = prove(&program, pi, log_inv_rate);
     let t_prove = t.elapsed();
     let t = Instant::now();
     verify(&program, &pi, &proof).unwrap();
@@ -111,6 +111,6 @@ fn fibonacci_program(fib_n: usize) -> (String, [F192; 2]) {
 mod tests {
     #[test]
     fn fibonacci() {
-        super::run_fibonacci(200_000);
+        super::run_fibonacci(200_000, lean_vm::pcs::LOG_INV_RATE);
     }
 }

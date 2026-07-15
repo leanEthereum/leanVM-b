@@ -437,7 +437,7 @@ mod tests {
 
         // Prover: commit, then run ONLY the reduction (no PCS open).
         let mut ps = ProverState::new(b"reduce", &[]);
-        let committed = crate::pcs::commit(&mut ps, &stacked.q);
+        let committed = crate::pcs::commit(&mut ps, &stacked.q, crate::pcs::LOG_INV_RATE);
         let (z_packed, reduced) = prove_reduction(&blocks, &committed.commitment, &mut ps);
         let bundle = ps.into_proof();
 
@@ -494,7 +494,7 @@ mod tests {
         }];
 
         let mut ps = ProverState::new(b"vstack", &[]);
-        let committed = crate::pcs::commit(&mut ps, &stacked.q);
+        let committed = crate::pcs::commit(&mut ps, &stacked.q, crate::pcs::LOG_INV_RATE);
         let (_z, reduced) = prove_reduction(&blocks, &committed.commitment, &mut ps);
         let ring = ring_switch_open(blocks.len(), offset, &reduced);
         let open = crate::pcs::open(&mut ps, &committed, &stacked.q, &points, &ring);
@@ -507,7 +507,8 @@ mod tests {
             let replay = verify_reduction(blocks.len(), &root, stacked.m, &mut vs).map_err(|_| "reduction")?;
             let open = vs.next_opening().map_err(|_| "opening hint")?;
             let ring = ring_switch_verify(blocks.len(), offset, replay.ab, replay.c);
-            crate::pcs::verify(&mut vs, points, &ring, open, stacked.m, &root).map_err(|_| "opening")?;
+            crate::pcs::verify(&mut vs, points, &ring, open, stacked.m, crate::pcs::LOG_INV_RATE, &root)
+                .map_err(|_| "opening")?;
             vs.finish().map_err(|_| "leftover")
         };
 

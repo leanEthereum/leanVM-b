@@ -116,9 +116,11 @@ SLOT_STRIDE_LOG = SLOT_STRIDE_LOG_PLACEHOLDER  # = K_LOG - LOG_PACKING_K (=8); t
 # gamma-combination of the two ring-switch claims and the N_CLAIMS pool claims.
 # Phase E2: the Ligerito opening over the stacked commitment, dispatched by
 # the certified committed log-size m through match_range: the LIG_* tables
-# below carry one row per candidate m in [LIG_MIN_LOG_SIZE, +LIG_N_CANDIDATES),
+# below carry one row per (rate, m), with rate in 1..=4 and m in the
+# supported committed-size interval,
 # emitted from the SAME derive_profile/level_shapes the prover uses.
-# Scalars index as TBL[m_idx]; per-level values as TBL[m_idx * LIG_MAX_LEVELS + lvl];
+# Scalars index as TBL[m_idx]; per-level values as TBL[m_idx * LIG_MAX_LEVELS + lvl],
+# where m_idx is the flattened (rate, size) configuration index;
 # per-fold grind schedules with the LIG_MAX_TOTAL_FOLDS stride; the subspace
 # vanishing constants with the LIG_MAX_VANISH_LEN stride. The eval_b terminal
 # claim descriptors keep only the FIXED parts baked (CLAIM_POINT_BUF, named
@@ -126,6 +128,8 @@ SLOT_STRIDE_LOG = SLOT_STRIDE_LOG_PLACEHOLDER  # = K_LOG - LOG_PACKING_K (=8); t
 # shape-dependent lengths/selectors are hinted and identity-certified.
 # Opening dispatch: baked committed log-size, candidate range, g^-LIG_MIN_LOG_SIZE.
 LIG_MIN_LOG_SIZE = LIG_MIN_LOG_SIZE_PLACEHOLDER
+LIG_N_LOG_SIZES = LIG_N_LOG_SIZES_PLACEHOLDER
+LIG_N_RATES = LIG_N_RATES_PLACEHOLDER
 # Committed-column kappa sources (0 = const COL_KAPPA_ADJ, 1 = log_mem, 2+t = tau_t)
 # and the PCS floor for the stacked size.
 N_COMMITTED_COLS = N_COMMITTED_COLS_PLACEHOLDER
@@ -531,9 +535,9 @@ def eqtree(point_ptr, out, n_coords: Const):
 
 
 def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, cursor):
-    # The stacked Ligerito opening. m_idx is the COMMITTED-LOG-SIZE CANDIDATE
-    # INDEX: the certified size is m = LIG_MIN_LOG_SIZE + m_idx, and every
-    # LIG_* table below reads row m_idx (the match_range dispatch bakes one
+    # The stacked Ligerito opening. m_idx is the flattened (rate, committed
+    # log-size) configuration index, and every LIG_* table below reads row
+    # m_idx (the match_range dispatch bakes one
     # specialization of this function per candidate). All opening proof data is hinted HERE, so
     # hint lengths specialize per arm; only the executed arm pops its streams.
     #
@@ -846,11 +850,15 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, base_delta_pows, tower_delta_pows, g_
     hint_witness(stream[0:STREAM_CAP], "stream")
     cursor = stream  # the proof stream is replayed word by word; cursor walks it (advance = * g)
 
-    # ---- announced sizes: log_mem + 6 row counts (observed, then certified) ----
+    # ---- announced layout and PCS rate (observed, then certified) ----
     sizes = StackBuf(N_TABLES + 1)
     for i in unroll(0, N_TABLES + 1):
         fs, x, cursor = fs_next(fs, cursor)
         sizes[i] = x
+    fs, log_inv_rate, cursor = fs_next(fs, cursor)
+    g_log_inv_rate = g_power_of_word(log_inv_rate, g_squares, COUNT_BITS)
+    rate_sel = g_log_inv_rate / GEN  # g^(log_inv_rate - 1)
+    assert log(rate_sel) < LIG_N_RATES
 
     # ---- structural logs: certify g^log_mem, compute the taus ----
     # The stream announced the sizes as integer WORDS; the shape-generic phases
@@ -1661,9 +1669,13 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, base_delta_pows, tower_delta_pows, g_
     for c in unroll(0, N_COMMITTED_COLS):
         g_total *= g_squares[kappa_base[GEN ** COL_KAPPA_SRC[c]] * GEN ** COL_KAPPA_ADJ[c]]
     gmv = log2_ceil_in_the_exponent(g_total, g_logs_pow2, g_squares, PCS_MIN_MU, SIZE_BITS)  # g^m
-    sel = gmv * LIG_MIN_SHIFT_INV  # g^(m - MIN): the match_range arm index selecting the opening candidate
-    assert log(sel) < LIG_N_CANDIDATES
-    sumcheck_target, fold_challenges, final_msg, inner_total, yr_log_n_g, yr_pad_g, fold_cap_g = match_range(log(sel), range(0, LIG_N_CANDIDATES), lambda m_idx: open_stacked(m_idx, fs[0], fs[1], target, commit_root_packed[0], commit_root_packed[1], cursor))
+    size_sel = gmv * LIG_MIN_SHIFT_INV  # g^(m - MIN)
+    assert log(size_sel) < LIG_N_LOG_SIZES
+    # Flatten (rate-1, m-MIN) in rate-major order. Both coordinates are
+    # transcript-bound and range-checked above, so a single compiled guest can
+    # dispatch independently for every inner proof in a mixed-rate batch.
+    config_sel = size_sel * rate_sel ** LIG_N_LOG_SIZES
+    sumcheck_target, fold_challenges, final_msg, inner_total, yr_log_n_g, yr_pad_g, fold_cap_g = match_range(log(config_sel), range(0, LIG_N_CANDIDATES), lambda m_idx: open_stacked(m_idx, fs[0], fs[1], target, commit_root_packed[0], commit_root_packed[1], cursor))
 
     # ---- generalized eval_b terminal (runtime claim shapes) ----
     # Per-claim lengths, selector bits, and slot data are HINTED; the closing

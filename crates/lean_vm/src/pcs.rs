@@ -18,7 +18,7 @@ use crate::transcript::{ProverState, VerifierState};
 use primitives::field::{F64, F192};
 
 use ::pcs::ligerito::{ProverConfig, VerifierConfig};
-use ::pcs::ligerito_k::{CommitmentK, ProverDataK, commit_k, k_configs_for};
+use ::pcs::ligerito_k::{CommitmentK, ProverDataK, commit_k, k_configs_for_rate};
 pub use ::pcs::stack_open_k::{
     BatchOpeningProofK, RingSwitchClaimK, RingSwitchOpenK as RingSwitchOpen, RingSwitchVerifyK as RingSwitchVerify,
     StackClaimK as SlotClaim, StackedOpeningSummaryK as StackedOpeningSummary,
@@ -33,7 +33,7 @@ pub const LOG_PACKING: usize = ::pcs::pack_k::LOG_PACKING_K;
 /// reused, so the two are one knob ([`::pcs::ligerito::INITIAL_FOLDING_FATOR`]).
 /// Larger ⇒ far fewer Merkle nodes to hash at the cost of fatter query openings.
 const LOG_BATCH: usize = ::pcs::ligerito::INITIAL_FOLDING_FATOR;
-/// L0 rate (doc §3) — the one knob [`::pcs::ligerito::LOG_INV_RATE_0`].
+/// Default L0 rate index.
 pub const LOG_INV_RATE: usize = ::pcs::ligerito::LOG_INV_RATE_0;
 // The PCS and the unground F192 bus argument both target `SECURITY_BITS`.
 const _: () = assert!(::pcs::ligerito::SECURITY_BITS == crate::SECURITY_BITS as usize);
@@ -45,21 +45,22 @@ const _: () = assert!(::pcs::ligerito::SECURITY_BITS == crate::SECURITY_BITS as 
 pub const MIN_MU: usize = 15;
 
 /// The Ligerito-K (prover, verifier) config pair for a `2^μ`-word witness,
-/// derived from the security analysis and memoized per `μ` (the derivation is
-/// a pure function of `μ`, so both sides agree).
-fn lig_configs(mu: usize) -> std::sync::Arc<(ProverConfig, VerifierConfig)> {
+/// derived from the security analysis and memoized per `(μ, log_inv_rate)`.
+fn lig_configs(mu: usize, log_inv_rate: usize) -> std::sync::Arc<(ProverConfig, VerifierConfig)> {
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex, OnceLock};
-    type Cache = Mutex<HashMap<usize, Arc<(ProverConfig, VerifierConfig)>>>;
+    type Cache = Mutex<HashMap<(usize, usize), Arc<(ProverConfig, VerifierConfig)>>>;
     static CACHE: OnceLock<Cache> = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     let mut map = cache.lock().expect("ligerito config cache poisoned");
-    Arc::clone(map.entry(mu).or_insert_with(|| {
+    Arc::clone(map.entry((mu, log_inv_rate)).or_insert_with(|| {
         assert!(
             mu >= MIN_MU,
             "witness must be ≥ 2^{MIN_MU} elements (padded by placements_of)"
         );
-        let pair = k_configs_for(mu).unwrap_or_else(|e| panic!("ligerito K config for mu={mu}: {e}"));
+        let pair = k_configs_for_rate(mu, log_inv_rate).unwrap_or_else(|e| {
+            panic!("ligerito K config for mu={mu}, log_inv_rate={log_inv_rate}: {e}")
+        });
         Arc::new(pair)
     }))
 }
@@ -75,6 +76,8 @@ pub struct Committed {
     pub prover_data: ProverDataK,
     /// `log2` of the witness length in F64 words.
     pub mu: usize,
+    /// L0 inverse-rate logarithm bound into the transcript before this commitment.
+    pub log_inv_rate: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -86,19 +89,20 @@ pub enum Error {
 /// are zero-padded up by [`crate::witness::placements_of`]) and bind its root
 /// into the transcript, before any challenge is sampled. The verifier reads it
 /// with [`read_commitment`].
-pub fn commit(ps: &mut ProverState, witness: &[F64]) -> Committed {
+pub fn commit(ps: &mut ProverState, witness: &[F64], log_inv_rate: usize) -> Committed {
     let n = witness.len();
     let mu = crate::log2_strict_usize(n);
     assert!(
         mu >= MIN_MU,
         "witness must be ≥ 2^{MIN_MU} elements (padded by placements_of)"
     );
-    let (commitment, prover_data) = commit_k(witness, LOG_BATCH, LOG_INV_RATE);
+    let (commitment, prover_data) = commit_k(witness, LOG_BATCH, log_inv_rate);
     ps.add_scalars(&root_to_scalars(&commitment.root));
     Committed {
         commitment,
         prover_data,
         mu,
+        log_inv_rate,
     }
 }
 
@@ -151,7 +155,7 @@ pub fn open(
     ring: &RingSwitchOpen,
 ) -> BatchOpeningProofK {
     debug_assert_eq!(q.len(), 1usize << c.mu, "witness length must match the commitment");
-    let cfg = lig_configs(c.mu);
+    let cfg = lig_configs(c.mu, c.log_inv_rate);
     open_batch_mixed_ligerito_stacked_k(ps.sponge_mut(), q, &c.prover_data, &cfg.0, points, ring)
 }
 
@@ -165,9 +169,10 @@ pub fn verify(
     ring: &RingSwitchVerify,
     open: &BatchOpeningProofK,
     mu: usize,
+    log_inv_rate: usize,
     root: &[u8; 32],
 ) -> Result<StackedOpeningSummary, Error> {
-    let cfg = lig_configs(mu);
+    let cfg = lig_configs(mu, log_inv_rate);
     verify_opening_batch_mixed_ligerito_stacked_k(vs.sponge_mut(), &cfg.1, mu, root, points, ring, open)
         .ok_or(Error::Ligerito)
 }
