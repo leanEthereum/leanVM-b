@@ -76,6 +76,11 @@ use super::ligerito_k::{build_eq_table_ext, inner_product_base_ext};
 use super::pack_k::{LOG_PACKING_K, PACKING_WIDTH_K};
 use super::tensor_algebra_k::{DEGREE_E, TensorAlgebraE, transpose_s_hat};
 
+/// Maximum degree of a nonzero ring-switch discrepancy in the univariate
+/// batching challenge. This is a soundness parameter, not merely an
+/// implementation detail.
+pub const RING_SWITCH_SOUNDNESS_DEGREE: usize = DEGREE_E - 1;
+
 /// Build `(1, rho, ..., rho^191)`, in the coordinate order produced by
 /// [`transpose_s_hat`].
 pub fn build_coordinate_weights(rho: F192) -> Vec<F192> {
