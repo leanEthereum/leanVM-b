@@ -222,7 +222,9 @@ impl RecursiveProof {
         if statement.sub_statements.is_empty() {
             return Err(RecursiveVerifyError::EmptyBatch);
         }
-        let guest = recursion_guest(inner_program, statement.sub_statements.len());
+        // Verification only reads the compiled guest; prover witness streams
+        // live on owned clones.
+        let guest = recursion_guest_arc(inner_program, statement.sub_statements.len());
         let public_input = statement.public_input(lean_vm::cpu::fs_seed(inner_program));
         verify(&guest, &public_input, &self.outer_proof).map_err(RecursiveVerifyError::OuterProof)?;
         check_reduced(inner_program, &statement.reduced)
@@ -547,25 +549,17 @@ fn check_reduced(program: &Program, red: &ReducedClaims) -> Result<(), Recursive
     if mle_eval(&stacked, &red.r_bc) != red.v_bc {
         return Err(RecursiveVerifyError::BytecodeClaim);
     }
-    let (ma, mb) = flock::blake3::matrices();
     let klog = flock::blake3::K_LOG;
     if red.r_m.len() != 2 * klog {
         return Err(RecursiveVerifyError::InvalidDeferredShape);
     }
     let eq_r = pcs::ligerito_k::build_eq_table_ext(&red.r_m[..klog]);
     let eq_c = pcs::ligerito_k::build_eq_table_ext(&red.r_m[klog..]);
-    let direct = |m: &flock::r1cs::SparseBinaryMatrix| -> F192 {
-        let mut acc = F192::ZERO;
-        for (i, row) in m.rows.iter().enumerate() {
-            let s = row.iter().map(|&j| eq_c[j]).fold(F192::ZERO, |a, x| a + x);
-            acc += eq_r[i] * s;
-        }
-        acc
-    };
-    if direct(ma) != red.v_a {
+    let (v_a, v_b) = flock::blake3::bilinear_walk_pair(&eq_r, &eq_c);
+    if v_a != red.v_a {
         return Err(RecursiveVerifyError::MatrixAClaim);
     }
-    if direct(mb) != red.v_b {
+    if v_b != red.v_b {
         return Err(RecursiveVerifyError::MatrixBClaim);
     }
     Ok(())
@@ -1740,13 +1734,44 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     rep
 }
 
-/// Compile the canonical recursion guest for this program and batch arity.
-/// Both proving and verification use this function so they cannot drift.
-fn recursion_guest(inner_program: &Program, nsub: usize) -> Program {
+/// Return the process-cached recursion guest for this program and batch arity.
+fn recursion_guest_arc(inner_program: &Program, nsub: usize) -> std::sync::Arc<Program> {
+    use std::sync::{Arc, Mutex, OnceLock};
+
+    type Key = ([u64; 6], usize);
+    static CACHE: OnceLock<Mutex<std::collections::HashMap<Key, Arc<Program>>>> = OnceLock::new();
+    const GUEST_CACHE_CAP: usize = 8;
+
+    let seed = lean_vm::cpu::fs_seed(inner_program);
+    let key = (
+        [seed[0].c0, seed[0].c1, seed[0].c2, seed[1].c0, seed[1].c1, seed[1].c2],
+        nsub,
+    );
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some(guest) = cache.lock().expect("recursion guest cache poisoned").get(&key) {
+        return Arc::clone(guest);
+    }
+
     let mut replacements = placeholder_map(inner_program);
     replacements.insert("NSUB_PLACEHOLDER".to_string(), nsub.to_string());
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/guests/recursion.py");
-    compile(&parse_file_with_replacements(path, &replacements).expect("the repository recursion guest must parse"))
+    let guest = Arc::new(compile(
+        &parse_file_with_replacements(path, &replacements).expect("the repository recursion guest must parse"),
+    ));
+
+    let mut map = cache.lock().expect("recursion guest cache poisoned");
+    if let Some(cached) = map.get(&key) {
+        return Arc::clone(cached);
+    }
+    if map.len() < GUEST_CACHE_CAP {
+        map.insert(key, Arc::clone(&guest));
+    }
+    guest
+}
+
+/// Return an owned guest whose witness streams may be mutated by the prover.
+fn recursion_guest(inner_program: &Program, nsub: usize) -> Program {
+    (*recursion_guest_arc(inner_program, nsub)).clone()
 }
 
 /// Run an `inner.len()`→1 recursive aggregation and verify the outer proof;

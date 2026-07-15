@@ -41,8 +41,8 @@ runtime integers.
   addresses it stays within `K`,
 - `/` is runtime field division, `a / b = a · b⁻¹`. It costs one `MUL`: the
   compiler leaves the quotient cell unset and emits the checked relation
-  `quotient · b == a`, which witness generation back-solves. A zero divisor is
-  rejected. This is distinct from `//`, compile-time integer floor division in
+  `quotient · b == a`, which witness generation back-solves. Division by zero is
+  undefined. This is distinct from `//`, compile-time integer floor division in
   sizes and indices,
 - an integer literal `n` supplies up to 128 raw bits and is embedded as
   `F192(c0, c1, 0)`. This is a source-syntax limit, not the machine-word
@@ -674,7 +674,7 @@ completely unconstrained: the program must re-verify them in-circuit.
 | `x = <literal>` / `GEN ** k` | 1 `SET` |
 | `a + b` | 1 `XOR` |
 | `a * b` | 1 `MUL` |
-| `a / b` | 1 `MUL` (write-once back-solve; rejects `b == 0`) |
+| `a / b` | 1 `MUL` (write-once back-solve; division by zero is undefined) |
 | heap read / store `buf[i]` | 1 `DEREF`; +1 `MUL` for a *runtime* index (a compile-time g-power offset folds into the `DEREF` — free) |
 | stack read / store `sa[k]` | 0 (direct cell addressing) |
 | `assert a == b` | 2 |
