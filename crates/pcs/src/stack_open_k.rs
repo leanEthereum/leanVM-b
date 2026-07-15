@@ -31,7 +31,7 @@
 //! ## Transcript order (identical on both sides)
 //!
 //! label -> per ring-switched claim ([`super::ring_switch_k`]'s own label +
-//! `s_hat_v_i` observed + `r''_i` sampled) -> gamma_rs (one per claim) ->
+//! `s_hat_v_i` observed + shared `rho` sampled) -> gamma_rs (one per claim) ->
 //! per point claim (label + value observed) -> gamma_pd (one per claim) ->
 //! Ligerito-K, with domain-separated labels for every phase.
 //!
@@ -380,8 +380,8 @@ pub fn open_batch_mixed_ligerito_stacked_k(
     };
 
     // 1. Ring-switch reduction: observe EVERY claim's s_hat_v first, then sample
-    //    ONE shared r'' (matches the extension-field opener + the recursion guest), then
-    //    finish each claim's sumcheck/weight against the shared eq tensor.
+    //    ONE shared rho (matches the recursion guest), then
+    //    finish each claim's sumcheck/weight against the shared powers.
     let qpkd = &stack[ring.offset..ring.offset + qpkd_len];
     let mut rs_proofs = Vec::with_capacity(ring.claims.len());
     let mut rs_states = Vec::with_capacity(ring.claims.len());
@@ -402,15 +402,15 @@ pub fn open_batch_mixed_ligerito_stacked_k(
         rs_proofs.push(proof);
         rs_states.push(state);
     }
-    let r_dprime = sample_ext_vec(sponge, ring_switch_k::LOG_DEGREE_E);
-    let eq_r_dprime = ring_switch_k::build_basis_eq(&r_dprime);
+    let rho = sponge.sample();
+    let coordinate_weights = ring_switch_k::build_coordinate_weights(rho);
     // Per-claim batching gammas, sampled AFTER all ring-switch messages are
     // bound (mirror of the extension-field layer's gamma_rs pattern).
     let gammas_rs = sample_ext_vec(sponge, ring.claims.len());
     let rs_outputs: Vec<_> = rs_states
         .into_iter()
         .zip(gammas_rs)
-        .map(|(state, gamma)| ring_switch_k::prove_finish_deferred(state, &eq_r_dprime, gamma))
+        .map(|(state, gamma)| ring_switch_k::prove_finish_deferred(state, &coordinate_weights, gamma))
         .collect();
     mark("ring-switch proves", &mut t);
 
@@ -509,19 +509,19 @@ pub fn verify_opening_batch_mixed_ligerito_stacked_k(
     }
 
     // 1. Ring-switch succinct verify: observe EVERY claim's s_hat_v first, then
-    //    sample ONE shared r'', then finish each claim (mirrors the prover +
-    //    the extension-field opener + the recursion guest).
+    //    sample ONE shared rho, then finish each claim (mirrors the prover
+    //    and the recursion guest).
     for (claim, rs_proof) in ring.claims.iter().zip(proof.ring_switches.iter()) {
         if ring_switch_k::verify_observe(claim.value, &claim.prefix_weights, rs_proof, sponge).is_err() {
             return None;
         }
     }
-    let r_dprime = sample_ext_vec(sponge, ring_switch_k::LOG_DEGREE_E);
-    let eq_r_dprime = ring_switch_k::build_basis_eq(&r_dprime);
+    let rho = sponge.sample();
+    let coordinate_weights = ring_switch_k::build_coordinate_weights(rho);
     let rs_outputs: Vec<_> = proof
         .ring_switches
         .iter()
-        .map(|rs_proof| ring_switch_k::verify_finish(rs_proof, &eq_r_dprime))
+        .map(|rs_proof| ring_switch_k::verify_finish(rs_proof, &coordinate_weights))
         .collect();
     let gammas_rs = sample_ext_vec(sponge, n_rs);
     let mut target = F192::ZERO;
@@ -600,7 +600,7 @@ pub fn verify_opening_batch_mixed_ligerito_stacked_k(
                                 prefix,
                                 &claim.suffix_point[split..],
                                 y_low,
-                                &out.eq_r_dprime,
+                                &out.coordinate_weights,
                             );
                     }
                     acc = rs_part * sel_prefix;

@@ -186,8 +186,8 @@ POINT_BUF_QPKD_RHO = 4
 CLAIM_POINT_BUF = CLAIM_POINT_BUF_PLACEHOLDER
 CLAIM_POINT_OFF = CLAIM_POINT_OFF_PLACEHOLDER
 QPKD_VARS_CAP = QPKD_VARS_CAP_PLACEHOLDER
-# Ring-switch trace-dual basis: bit_i(y) = Tr(TRACE_DUAL_BASIS[i] * y). Any eq-weighted
-# bit-sum is then the linearized polynomial L_w(y) = sum_k c_k y^(2^k) with
+# Ring-switch trace-dual basis: bit_i(y) = Tr(TRACE_DUAL_BASIS[i] * y). Any
+# coordinate-weighted bit-sum is the linearized polynomial L_w(y) = sum_k c_k y^(2^k) with
 # c_k = sum_i w_i TRACE_DUAL_BASIS[i]^(2^k); since squaring is one MUL, the tensor
 # transpose and eval_rs_eq run in-circuit (doc.tex, ring-switch section).
 TRACE_DUAL_BASIS = TRACE_DUAL_BASIS_PLACEHOLDER
@@ -215,11 +215,10 @@ DS_LEN = 3
 DS_SQ = 4
 DS_POW = 5
 
-# Field structure: GF(2^192). Ring switching uses the next power-of-two
-# coordinate cube (256 entries, with the final 64 canonical coordinates zero).
-# ring-switch coordinates (the q_pkd slot length, r'' length).
+# Field structure: GF(2^192), represented as three GF(2^64) tower limbs.
+# One GF192 challenge batches the 192 transposed ring-switch coordinates with
+# univariate powers (1, rho, ..., rho^191).
 FIELD_BITS = 192
-LOG2_FIELD_BITS = 8
 # Exponent bit-widths: an announced 32-bit count decomposes into COUNT_BITS
 # bits (count == 2^32 tops); any structural size (sums of 2^kappa, packing
 # offsets) fits SIZE_BITS bits.
@@ -779,7 +778,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     #   6. public-input claim + BLAKE3 pin claims (telescoped prefix MLE);
     #   7. flock reduction: univariate-skip zerocheck + lincheck (matrix
     #      evaluation deferred);
-    #   8. ring-switch fronts (shared r'', linearized transpose in-circuit);
+    #   8. ring-switch fronts (shared rho, linearized transpose in-circuit);
     #   9. gamma-combine everything, certify the committed size m, dispatch
     #      the stacked Ligerito opening (open_stacked), and assert its
     #      eval_b terminal;
@@ -1346,7 +1345,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     tau_blake3_g = dims_g[GEN ** N_TABLES]  # the BLAKE3 table's certified tau
     # tau's reach is bounded: the count gadget gives tau < 34 (all flock
     # buffers are sized for that), and q_pkd's committed kappa =
-    # LOG2_FIELD_BITS + tau feeds the certified size m, whose opening
+    # K_LOG + tau feeds the certified size m, whose opening
     # dispatch bound caps tau well below any baked structure.
     # flock's sub-proof scalars are ordinary stream words (add_scalar on the
     # native side); the cursor walks them, fetching and observing each in one
@@ -1505,10 +1504,9 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     rs_eq_vals = StackBuf(2)
     c_table = HeapBuf(FIELD_BITS)
     z_vals = HeapBuf(2 * QPKD_VARS_CAP)
-    r_dprime = HeapBuf(LOG2_FIELD_BITS)
     for rs in unroll(0, 2):
         # observe this claim's 64 s_hat_v entries (mirror of verify_observe /
-        # observe_ext_slice) before the claim check and the shared r''.
+        # observe_ext_slice) before the claim check and the shared rho.
         for i in unroll(0, (2 ** K_SKIP)):
             fs = obs(fs, s_hat_v[GEN ** ((2 ** K_SKIP) * rs + i)])
         # claim check: value == sum_i prefix_weights[i] * s_hat_v[i], where
@@ -1525,29 +1523,27 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
         for i in unroll(0, (2 ** K_SKIP)):
             claim_check += claim_nums[i] * LAGRANGE_INV_S[i] * s_hat_v[GEN ** ((2 ** K_SKIP) * rs + i)]
         assert claim_check == claim_val
-    # ONE r'' shared by both claims (each slice was absorbed before the
-    # sample), so one eq tensor and one linearized coefficient table
-    # serve the whole batch.
-    for i in unroll(0, LOG2_FIELD_BITS):
-        fs = squeeze(fs)
-        rv = fs[0]
-        r_dprime[GEN ** i] = rv
-    w_eq = HeapBuf(2 ** (LOG2_FIELD_BITS + 1) - 2)
-    eqtree(r_dprime, w_eq, LOG2_FIELD_BITS)  # eq tensor of the 8 shared r'' coords (one batch challenge, both claims)
-    # c_k = sum_i w_i * delta_pows[k][i], one runtime loop over the levels k.
+    # One rho is shared by both claims after both slices have been absorbed.
+    # The coordinate weights are (1, rho, ..., rho^191). Construct each
+    # linearized coefficient directly by Horner evaluation, so neither the
+    # powers nor an equality tree need to be materialized.
+    fs = squeeze(fs)
+    rs_batch = fs[0]
+    # c_k = sum_i rho^i * delta_pows[k][i], one runtime loop over the levels k.
     for xk in mul_range(1, GEN ** FIELD_BITS):
         delta_row = delta_pows * xk ** FIELD_BITS
-        c_acc = 0
-        for i in unroll(0, FIELD_BITS):
-            c_acc += w_eq[GEN ** (2 ** LOG2_FIELD_BITS - 2 + i)] * delta_row[GEN ** i]  # c_k = sum_i w_i * delta_i^(2^k): the linearized-poly coefficient table
+        c_acc = delta_row[GEN ** (FIELD_BITS - 1)]
+        for i in unroll(1, FIELD_BITS):
+            c_acc = c_acc * rs_batch + delta_row[GEN ** (FIELD_BITS - 1 - i)]
         c_table[xk] = c_acc
     for rs in unroll(0, 2):
         # transposed claim T = sum_j x^j * L_w(shv_j): one runtime pass over
         # the observed values; per value the Frobenius powers evolve as a
         # scalar against the c table, and x^j chains through a heap cell.
-        # T = sum_{i<64} x^i * L(s_hat_v[i]) == sum_w eq_r''[w] * s_hat_u[w]
+        # T = sum_{i<64} x^i * L(s_hat_v[i])
+        #   == sum_{w<192} rho^w * s_hat_u[w]
         # (the bit-transpose s_hat_u[w] = sum_i bit_w(s_hat_v[i])*e_i, so x^i = e_i
-        # for i<64). One term per packing bit (64); L is the 128-dim linearized poly.
+        # for i<64). One term per packing bit (64); L is the 192-dim linearized poly.
         s_hat_row = s_hat_v * GEN ** ((2 ** K_SKIP) * rs)
         x_pow_chain = HeapBuf((2 ** K_SKIP) + 1)
         x_pow_chain[GEN ** 0] = GEN ** 0
@@ -1733,7 +1729,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
         claim_weights[GEN ** j] = sel_chain[seln] * gamma_pool[GEN ** j]
     # eval_rs_eq per claim: E = sum_k c_k * prod_j (z_j^(2^k) + 1 + ris_j)
     # (the telescoped product formula; z powers evolve by squaring per k).
-    # QPKD_VARS_CAP = tau_5 + (K_LOG - LOG2_FIELD_BITS), exponent-additive from the certified
+    # QPKD_VARS_CAP = tau_5 + SLOT_STRIDE_LOG, exponent-additive from the certified
     # announced log; the per-k z-power rows chain by a runtime g^qpkdv
     # stride, and the inner passes are runtime loops with product/square
     # state chained per row.
