@@ -27,7 +27,7 @@ no-ops, so this only checks that the file is well-formed.
 Machine **words** — the contents of a memory cell, an immediate, a hashed
 value, the `JUMP` condition — are 128-bit elements of the binary field
 `E = GF(2^128)`, realized as the degree-2 tower over `K = GF(2^64)`:
-`E = K[y]/(y^2 + y + x^61)` (**not** the GHASH representation). **Addresses**,
+`E = K[y]/(y^2 + y + x^61)` (**not** the legacy polynomial-basis field representation). **Addresses**,
 the program counter, the frame pointer, read counters, operands, opcodes, and
 domain separators live in the 64-bit subfield `K = GF(2^64)`. There are no
 runtime integers.
@@ -625,7 +625,7 @@ critical vulnerability. Runtime-start heap slices (`buf[i:i + k]`, `k` a
 literal) work too.
 
 The prover supplies streams with `program.set_witness("name", entries)`
-(`Vec<Vec<F128>>`); test programs declare them as annotations, one line per
+(`Vec<Vec<extension-field>>`); test programs declare them as annotations, one line per
 entry — repeated lines with the same name are its successive entries:
 
 ```python

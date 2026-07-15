@@ -34,7 +34,7 @@
 //! `(z, ρ-values)`, so lincheck only needs to fold `z` **once** at that
 //! shared point.
 //!
-//! 1. **Prover sends** one length-`k = 2^k_log` F128 vector
+//! 1. **Prover sends** one length-`k = 2^k_log` F128T vector
 //!    `z_vec[i_inner] = ẑ(i_inner, x_ab.x_outer)`.
 //! 2. **Verifier checks** *two* consistency equations against the same
 //!    `z_vec`:
@@ -118,12 +118,10 @@
 //!   per byte.
 
 use fiat_shamir::transcript::{ProverState, VerifierState};
-use primitives::field::{F128, F128T, ghash_to_tower, tower_to_ghash};
-use primitives::multilinear::{build_eq, inner_product, lagrange_weights_naive_t};
-use pcs::ligerito_k::build_eq_table_ext;
+use primitives::field::F128T;
+use primitives::multilinear::{eq_table as build_eq, lagrange_weights_naive};
 use pcs::ring_switch_k::inner_product_ext;
 use crate::r1cs::SparseBinaryMatrix;
-use crate::zerocheck::multilinear::lagrange_weights_naive;
 
 // ---------------------------------------------------------------------------
 // LincheckCircuit: the per-block linear structure lincheck consumes
@@ -150,12 +148,7 @@ pub trait LincheckCircuit: Sync {
 
     /// Compute `comb_vec[c] = α · (eq^T · A_0)[c] + (eq^T · B_0)[c]` over
     /// `c ∈ [0, n_cols())`. `eq_inner.len() == n_cols()`.
-    fn fold_alpha_batched(&self, alpha: F128, eq_inner: &[F128]) -> Vec<F128>;
-
-    /// Tower (`F128T`) twin of [`Self::fold_alpha_batched`], for the verifier.
-    /// The matrices are GF(2), so the fold is the same accumulation over a
-    /// tower-valued `eq_inner`.
-    fn fold_alpha_batched_t(&self, alpha: F128T, eq_inner: &[F128T]) -> Vec<F128T>;
+    fn fold_alpha_batched(&self, alpha: F128T, eq_inner: &[F128T]) -> Vec<F128T>;
 
     /// Column index of a constant-one wire to pin, or `None` if the circuit has
     /// no such wire. When `Some(col)`, lincheck folds one extra `β`-term into the
@@ -260,31 +253,7 @@ impl LincheckCircuit for CscCircuit {
     fn const_pin_col(&self) -> Option<usize> {
         self.const_pin
     }
-    fn fold_alpha_batched(&self, alpha: F128, eq_inner: &[F128]) -> Vec<F128> {
-        use rayon::prelude::*;
-        assert_eq!(eq_inner.len(), self.n_cols);
-        let one_col = |c: usize| {
-            let mut sa = F128::ZERO;
-            for &r in &self.a_rows[self.a_col_ptr[c] as usize..self.a_col_ptr[c + 1] as usize] {
-                sa += eq_inner[r as usize];
-            }
-            let mut sb = F128::ZERO;
-            for &r in &self.b_rows[self.b_col_ptr[c] as usize..self.b_col_ptr[c + 1] as usize] {
-                sb += eq_inner[r as usize];
-            }
-            alpha * sa + sb
-        };
-        if self.n_cols < SUMCHECK_PAR_THRESHOLD {
-            return (0..self.n_cols).map(one_col).collect();
-        }
-        let mut out = vec![F128::ZERO; self.n_cols];
-        out.par_iter_mut()
-            .enumerate()
-            .for_each(|(c, slot)| *slot = one_col(c));
-        out
-    }
-
-    fn fold_alpha_batched_t(&self, alpha: F128T, eq_inner: &[F128T]) -> Vec<F128T> {
+    fn fold_alpha_batched(&self, alpha: F128T, eq_inner: &[F128T]) -> Vec<F128T> {
         use rayon::prelude::*;
         assert_eq!(eq_inner.len(), self.n_cols);
         let one_col = |c: usize| {
@@ -307,6 +276,7 @@ impl LincheckCircuit for CscCircuit {
             .for_each(|(c, slot)| *slot = one_col(c));
         out
     }
+
 }
 
 // ---------------------------------------------------------------------------
@@ -415,8 +385,8 @@ pub fn partial_fold_packed_z(
     z_packed: &[u8],
     m: usize,
     k_log: usize,
-    eq_outer: &[F128],
-) -> Vec<F128> {
+    eq_outer: &[F128T],
+) -> Vec<F128T> {
     let n_log = m - k_log;
     let k = 1usize << k_log;
     let n_outer = 1usize << n_log;
@@ -425,7 +395,7 @@ pub fn partial_fold_packed_z(
     assert!(n_log >= 3, "need n_outer ≥ 8 for byte stripes");
     let n_stripes = n_outer / 8;
 
-    let mut out = vec![F128::ZERO; k];
+    let mut out = vec![F128T::ZERO; k];
     for byte_idx in 0..n_stripes {
         let stripe = &z_packed[byte_idx * k..(byte_idx + 1) * k];
         for (i_inner, &byte) in stripe.iter().enumerate() {
@@ -453,8 +423,8 @@ pub fn partial_fold_packed_z_fast_padded(
     m: usize,
     k_log: usize,
     useful_bits: usize,
-    eq_outer: &[F128],
-) -> Vec<F128> {
+    eq_outer: &[F128T],
+) -> Vec<F128T> {
     use rayon::prelude::*;
 
     let n_log = m - k_log;
@@ -477,10 +447,10 @@ pub fn partial_fold_packed_z_fast_padded(
         .par_chunks(bytes_per_chunk)
         .enumerate()
         .fold(
-            || vec![F128::ZERO; k],
+            || vec![F128T::ZERO; k],
             |mut acc, (chunk_idx, chunk_bytes)| {
                 let stripe_start = chunk_idx * stripes_per_chunk;
-                let mut table = vec![F128::ZERO; 256];
+                let mut table = vec![F128T::ZERO; 256];
                 for (rel_stripe, stripe) in chunk_bytes.chunks(k).enumerate() {
                     let byte_idx = stripe_start + rel_stripe;
                     build_sum_table(&eq_outer[8 * byte_idx..8 * byte_idx + 8], &mut table);
@@ -492,7 +462,7 @@ pub fn partial_fold_packed_z_fast_padded(
             },
         )
         .reduce(
-            || vec![F128::ZERO; k],
+            || vec![F128T::ZERO; k],
             |mut a, b| {
                 for (x, y) in a.iter_mut().zip(b.iter()) {
                     *x += *y;
@@ -515,7 +485,7 @@ const NEON_TILE_T: usize = 8;
 /// # Safety
 /// - `tile_bytes_ptr` must point to at least `TILE_T * k` bytes.
 /// - `tables_ptr` must point to at least `TILE_T * 256 * 16` bytes.
-/// - `out_ptr` must point to at least 8 F128 (128 bytes) of mutable storage.
+/// - `out_ptr` must point to at least 8 F128T (128 bytes) of mutable storage.
 #[cfg(target_arch = "aarch64")]
 #[inline(never)]
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -524,7 +494,7 @@ unsafe fn process_block_neon_single(
     k: usize,
     bs: usize,
     tables_ptr: *const u8,
-    out_ptr: *mut F128,
+    out_ptr: *mut F128T,
 ) {
     use std::arch::aarch64::*;
     const TILE_T: usize = NEON_TILE_T;
@@ -580,11 +550,11 @@ unsafe fn process_block_neon_single(
 /// accumulator (2 MB at k = 2¹⁷). With P workers that's `P · 2 MB` of live
 /// accumulators — past ~3 workers it exceeds L2, so each worker's accumulator
 /// spills and gets re-streamed from **main memory** once per stripe-tile
-/// (≈ `n_tiles · 2·k` F128 of memory traffic). Measured: scaling saturates at
+/// (≈ `n_tiles · 2·k` F128T of memory traffic). Measured: scaling saturates at
 /// ~5× on 10 cores (memory-bound), not ~10×.
 ///
 /// Here the workers own **disjoint** slices of a single shared `out`, so the
-/// total live accumulator is just `k` F128 = 2 MB — it stays L2-resident, never
+/// total live accumulator is just `k` F128T = 2 MB — it stays L2-resident, never
 /// re-streamed from memory, and there is **no final reduction**. Main-memory
 /// traffic drops to one pass over z plus one write of `out`. Each worker still
 /// uses the register-tiled inner kernel (8 accumulators across `TILE_T`
@@ -596,8 +566,8 @@ pub fn partial_fold_packed_z_neon_iblock_padded(
     m: usize,
     k_log: usize,
     useful_bits: usize,
-    eq_outer: &[F128],
-) -> Vec<F128> {
+    eq_outer: &[F128T],
+) -> Vec<F128T> {
     use rayon::prelude::*;
 
     const TILE_T: usize = NEON_TILE_T;
@@ -624,7 +594,7 @@ pub fn partial_fold_packed_z_neon_iblock_padded(
     // contribute nothing. Rows [useful, k) stay zero from the vec init.
     let useful = (useful_bits.div_ceil(BLOCK_K) * BLOCK_K).min(k);
 
-    let mut out = vec![F128::ZERO; k];
+    let mut out = vec![F128T::ZERO; k];
     if useful == 0 {
         return out;
     }
@@ -654,8 +624,8 @@ pub fn partial_fold_packed_z_neon_iblock_padded(
         .for_each(|(ci, out_slice)| {
             let i_base = ci * i_chunk;
             let n_block = out_slice.len() / BLOCK_K;
-            // TILE_T × 256 F128 = 32 KB tables, L1-resident, rebuilt per tile.
-            let mut tables = vec![F128::ZERO; TILE_T * 256];
+            // TILE_T × 256 F128T = 32 KB tables, L1-resident, rebuilt per tile.
+            let mut tables = vec![F128T::ZERO; TILE_T * 256];
             for tile in 0..n_tiles {
                 let stripe_base = tile * TILE_T;
                 for t in 0..TILE_T {
@@ -698,7 +668,7 @@ pub fn partial_fold_packed_z_neon_iblock_padded(
 /// tile tables exactly **once**, folds them into a private length-k partial, and the
 /// `p` partials are XOR-reduced at the end. The partial is the full length-k
 /// (256 KB at k_log=14 ⇒ spills L1 to L2), but the register-tiled inner kernel keeps
-/// 8 F128 accumulators in NEON registers, so the L2 traffic is mild — measured ≈2 %
+/// 8 F128T accumulators in NEON registers, so the L2 traffic is mild — measured ≈2 %
 /// ST cost at m=32, none at m=30 — and far cheaper than iblock's redundant tables:
 /// the fold scales ~8.5× vs iblock's ~6.5× on 10 P-cores at m=32, and the margin
 /// grows with the outer dim (the redundant-table cost it removes is ∝ `n_stripes`).
@@ -710,8 +680,8 @@ pub fn partial_fold_packed_z_neon_oblock_padded(
     m: usize,
     k_log: usize,
     useful_bits: usize,
-    eq_outer: &[F128],
-) -> Vec<F128> {
+    eq_outer: &[F128T],
+) -> Vec<F128T> {
     use rayon::prelude::*;
 
     const TILE_T: usize = NEON_TILE_T;
@@ -737,7 +707,7 @@ pub fn partial_fold_packed_z_neon_oblock_padded(
     // up to BLOCK_K; columns [useful, k) stay zero from the partial init.
     let useful = (useful_bits.div_ceil(BLOCK_K) * BLOCK_K).min(k);
     if useful == 0 {
-        return vec![F128::ZERO; k];
+        return vec![F128T::ZERO; k];
     }
 
     // One private length-k partial per worker; workers own contiguous tile bands,
@@ -746,15 +716,15 @@ pub fn partial_fold_packed_z_neon_oblock_padded(
     let tiles_per_worker = n_tiles.div_ceil(p);
     let n_workers = n_tiles.div_ceil(tiles_per_worker); // ≤ p, every band non-empty
 
-    let mut partials = vec![F128::ZERO; n_workers * k];
+    let mut partials = vec![F128T::ZERO; n_workers * k];
     partials
         .par_chunks_mut(k)
         .enumerate()
         .for_each(|(w, partial)| {
             let tile_lo = w * tiles_per_worker;
             let tile_hi = ((w + 1) * tiles_per_worker).min(n_tiles);
-            // TILE_T × 256 F128 = 32 KB tables, L1-resident, built once per tile.
-            let mut tables = vec![F128::ZERO; TILE_T * 256];
+            // TILE_T × 256 F128T = 32 KB tables, L1-resident, built once per tile.
+            let mut tables = vec![F128T::ZERO; TILE_T * 256];
             for tile in tile_lo..tile_hi {
                 let stripe_base = tile * TILE_T;
                 for t in 0..TILE_T {
@@ -803,8 +773,8 @@ fn partial_fold_packed_z_best(
     m: usize,
     k_log: usize,
     useful_bits: usize,
-    eq_outer: &[F128],
-) -> Vec<F128> {
+    eq_outer: &[F128T],
+) -> Vec<F128T> {
     if n_log_ok_for_tile(m, k_log, NEON_TILE_T) {
         #[cfg(target_arch = "aarch64")]
         {
@@ -854,17 +824,17 @@ fn n_log_ok_for_tile(m: usize, k_log: usize, tile_t: usize) -> bool {
     n_stripes.is_multiple_of(tile_t)
 }
 
-/// Build a 256-entry sum table over 8 F128 values:
+/// Build a 256-entry sum table over 8 F128T values:
 ///   `table[b] = Σ_{r: bit r of b is set}  eq8[r]`
 ///
 /// Doubling construction (255 XORs): for each new bit position `i ∈ 0..8`,
 /// extend the table by XORing `eq8[i]` into each existing entry. This
 /// avoids the naive 8·256 = 2048 operations.
 #[inline]
-fn build_sum_table(eq8: &[F128], table: &mut [F128]) {
+fn build_sum_table(eq8: &[F128T], table: &mut [F128T]) {
     debug_assert_eq!(eq8.len(), 8);
     debug_assert_eq!(table.len(), 256);
-    table[0] = F128::ZERO;
+    table[0] = F128T::ZERO;
     for i in 0..8 {
         let e = eq8[i];
         let len = 1usize << i;
@@ -912,7 +882,7 @@ pub fn pack_z_lincheck(z_logical: &[bool], m: usize, k_log: usize) -> Vec<u8> {
 /// witness (polynomial basis: bit `i` of logical = bit `i % 128` of
 /// `z_packed_f128[i / 128]`).
 pub fn pack_z_lincheck_from_packed(
-    z_packed_f128: &[primitives::field::F128],
+    z_packed_f128: &[primitives::field::F128T],
     m: usize,
     k_log: usize,
 ) -> Vec<u8> {
@@ -941,9 +911,9 @@ pub fn pack_z_lincheck_from_packed(
                     let f128_idx = logical_idx / 128;
                     let local_bit = logical_idx % 128;
                     let bit = if local_bit < 64 {
-                        (z_packed_f128[f128_idx].lo >> local_bit) & 1 == 1
+                        (z_packed_f128[f128_idx].c0 >> local_bit) & 1 == 1
                     } else {
-                        (z_packed_f128[f128_idx].hi >> (local_bit - 64)) & 1 == 1
+                        (z_packed_f128[f128_idx].c1 >> (local_bit - 64)) & 1 == 1
                     };
                     if bit {
                         byte |= 1u8 << r;
@@ -969,7 +939,7 @@ pub fn pack_z_lincheck_from_packed(
 /// inner-rest dims occupy the next bits.
 ///
 /// Cost: 64 (Lagrange) + 32 (eq) + 2048 outer products ≈ tiny.
-pub fn build_quirky_eq_table(z_skip: F128, x_inner_rest: &[F128], k_skip: usize) -> Vec<F128> {
+pub fn build_quirky_eq_table(z_skip: F128T, x_inner_rest: &[F128T], k_skip: usize) -> Vec<F128T> {
     let ell_skip = 1usize << k_skip;
     let ell_rest = 1usize << x_inner_rest.len();
     let lambda_skip = lagrange_weights_naive(k_skip, z_skip);
@@ -986,23 +956,6 @@ pub fn build_quirky_eq_table(z_skip: F128, x_inner_rest: &[F128], k_skip: usize)
     out
 }
 
-/// Tower (`F128T`) twin of [`build_quirky_eq_table`], for the verifier.
-pub fn build_quirky_eq_table_t(z_skip: F128T, x_inner_rest: &[F128T], k_skip: usize) -> Vec<F128T> {
-    let ell_skip = 1usize << k_skip;
-    let ell_rest = 1usize << x_inner_rest.len();
-    let lambda_skip = lagrange_weights_naive_t(k_skip, z_skip);
-    let eq_rest = build_eq_table_ext(x_inner_rest);
-    let total = ell_skip * ell_rest;
-    let mut out = Vec::with_capacity(total);
-    for &er in &eq_rest {
-        for &ls in &lambda_skip {
-            out.push(ls * er);
-        }
-    }
-    debug_assert_eq!(out.len(), total);
-    out
-}
-
 /// Length above which the inner product / element-wise kernels split via
 /// rayon. Below it, sequential beats dispatch overhead.
 const SUMCHECK_PAR_THRESHOLD: usize = 1usize << 12;
@@ -1010,15 +963,15 @@ const SUMCHECK_PAR_THRESHOLD: usize = 1usize << 12;
 /// One round of product-sumcheck on `(c, z)`: compute `(q(1), q(∞))` =
 /// `(Σ c_hi·z_hi, Σ (c_hi+c_lo)·(z_hi+z_lo))` over the top-bit split. The
 /// `len()` of `c` and `z` is even; `half = len/2`.
-fn sumcheck_round_eval_par(c: &[F128], z: &[F128]) -> (F128, F128) {
+fn sumcheck_round_eval_par(c: &[F128T], z: &[F128T]) -> (F128T, F128T) {
     use rayon::prelude::*;
     let half = c.len() / 2;
     debug_assert_eq!(z.len(), c.len());
     let (clo, chi) = c.split_at(half);
     let (zlo, zhi) = z.split_at(half);
     if half < SUMCHECK_PAR_THRESHOLD {
-        let mut e1 = F128::ZERO;
-        let mut einf = F128::ZERO;
+        let mut e1 = F128T::ZERO;
+        let mut einf = F128T::ZERO;
         for i in 0..half {
             e1 += chi[i] * zhi[i];
             einf += (chi[i] + clo[i]) * (zhi[i] + zlo[i]);
@@ -1032,12 +985,12 @@ fn sumcheck_round_eval_par(c: &[F128], z: &[F128]) -> (F128, F128) {
             let einf_i = (chi[i] + clo[i]) * (zhi[i] + zlo[i]);
             (e1_i, einf_i)
         })
-        .reduce(|| (F128::ZERO, F128::ZERO), |a, b| (a.0 + b.0, a.1 + b.1))
+        .reduce(|| (F128T::ZERO, F128T::ZERO), |a, b| (a.0 + b.0, a.1 + b.1))
 }
 
 /// Bind the top remaining variable of `v` at challenge `r`: `v[i] ← v[i] +
 /// r·(v[i+half] + v[i])` for `i ∈ [0, half)`, then truncate to `half`. In-place.
-pub fn sumcheck_bind_top_in_place_par(v: &mut Vec<F128>, r: F128) {
+pub fn sumcheck_bind_top_in_place_par(v: &mut Vec<F128T>, r: F128T) {
     use rayon::prelude::*;
     let half = v.len() / 2;
     if half < SUMCHECK_PAR_THRESHOLD {
@@ -1102,10 +1055,10 @@ pub fn sumcheck_bind_top_in_place_par_t(v: &mut Vec<F128T>, r: F128T) {
 /// later round exists). The returned message is bit-identical to
 /// `sumcheck_round_eval_par` run on the bound tables.
 fn sumcheck_bind_both_and_eval_next(
-    comb: &mut Vec<F128>,
-    z: &mut Vec<F128>,
-    r: F128,
-) -> (F128, F128) {
+    comb: &mut Vec<F128T>,
+    z: &mut Vec<F128T>,
+    r: F128T,
+) -> (F128T, F128T) {
     use rayon::prelude::*;
     let len = comb.len();
     debug_assert_eq!(z.len(), len);
@@ -1122,8 +1075,8 @@ fn sumcheck_bind_both_and_eval_next(
     let (zq2, zq3) = z_hi.split_at(half2);
 
     let (e1, einf) = if half2 < SUMCHECK_PAR_THRESHOLD {
-        let mut e1 = F128::ZERO;
-        let mut einf = F128::ZERO;
+        let mut e1 = F128T::ZERO;
+        let mut einf = F128T::ZERO;
         for i in 0..half2 {
             let lo = cq0[i] + r * (cq2[i] + cq0[i]);
             let hi = cq1[i] + r * (cq3[i] + cq1[i]);
@@ -1157,7 +1110,7 @@ fn sumcheck_bind_both_and_eval_next(
                 *z1 = zhi;
                 (hi * zhi, (hi + lo) * (zhi + zlo))
             })
-            .reduce(|| (F128::ZERO, F128::ZERO), |a, b| (a.0 + b.0, a.1 + b.1))
+            .reduce(|| (F128T::ZERO, F128T::ZERO), |a, b| (a.0 + b.0, a.1 + b.1))
     };
 
     comb.truncate(half);
@@ -1175,7 +1128,7 @@ fn sumcheck_bind_both_and_eval_next(
 /// `s_hat_v` via [`pcs::ring_switch::s_hat_v_from_z_vec`], skipping a
 /// `fold_1b_rows` pass at open time.
 ///
-/// Pays one extra `2^k_log` F128 clone (~2 MB at k_log=17) before the
+/// Pays one extra `2^k_log` F128T clone (~2 MB at k_log=17) before the
 pub fn prove_padded_capture_z_vec<O>(
     z_packed: &[u8],
     m: usize,
@@ -1185,7 +1138,7 @@ pub fn prove_padded_capture_z_vec<O>(
     circuit: &dyn LincheckCircuit,
     x_ab: &QuirkyPoint,
     ps: &mut ProverState<O>,
-) -> (LincheckClaim, Vec<F128>) {
+) -> (LincheckClaim, Vec<F128T>) {
     let (claim, captured) = prove_padded_inner(
         z_packed,
         m,
@@ -1211,7 +1164,7 @@ fn prove_padded_inner<O>(
     x_ab: &QuirkyPoint,
     capture_z_vec: bool,
     ps: &mut ProverState<O>,
-) -> (LincheckClaim, Option<Vec<F128>>) {
+) -> (LincheckClaim, Option<Vec<F128T>>) {
     let k = 1usize << k_log;
     let n_log = m - k_log;
     assert!(m >= k_log);
@@ -1224,17 +1177,14 @@ fn prove_padded_inner<O>(
 
     let trace = std::env::var("LINCHECK_TRACE").is_ok();
 
-    // Prover computes internally in GHASH but consumes an F128T claim point and
-    // emits an F128T claim. Bridge the point in through the real isomorphism, and
-    // (below) route all transcript I/O through it too, so the prover's messages
-    // are the genuine tower values the F128T verifier checks.
-    let z_skip_g = tower_to_ghash(x_ab.z_skip);
-    let x_inner_rest_g: Vec<F128> = x_ab.x_inner_rest.iter().map(|&v| tower_to_ghash(v)).collect();
-    let x_outer_g: Vec<F128> = x_ab.x_outer.iter().map(|&v| tower_to_ghash(v)).collect();
+    // Keep local copies of the tower-valued claim point used throughout the fold.
+    let z_skip_g = x_ab.z_skip;
+    let x_inner_rest_g: Vec<F128T> = x_ab.x_inner_rest.iter().map(|&v| v).collect();
+    let x_outer_g: Vec<F128T> = x_ab.x_outer.iter().map(|&v| v).collect();
 
     // 1. Sample α (matches verifier's order). Used to batch the two scalar
     //    consistency checks v_a, v_b into a single sumcheck.
-    let alpha = tower_to_ghash(ps.sample());
+    let alpha = ps.sample();
 
     // 2. Build the α-batched comb_vec via the circuit's per-block fold. For
     //    the sparse-matrix default this is the fused single-pass row-fold;
@@ -1272,13 +1222,13 @@ fn prove_padded_inner<O>(
     //     boolean index, eq(j*, ·) is the one-hot vector and this is a single
     //     entry update. β is sampled after α; the verifier mirrors both. See
     //     lincheck's `LincheckCircuit::const_pin_col`.
-    let mut beta = F128::ZERO;
+    let mut beta = F128T::ZERO;
     if let Some(col) = circuit.const_pin_col() {
-        beta = tower_to_ghash(ps.sample());
+        beta = ps.sample();
         comb_vec[col] += beta;
     }
 
-    // 3. Partial fold of z at the shared outer half (length-k F128 vector).
+    // 3. Partial fold of z at the shared outer half (length-k F128T vector).
     let t = if trace {
         Some(std::time::Instant::now())
     } else {
@@ -1296,7 +1246,7 @@ fn prove_padded_inner<O>(
     // 3b. Optional capture: clone the pre-sumcheck z_vec for downstream reuse
     //     (PCS open's AB-claim s_hat_v skipping fold_1b_rows). Only pay the
     //     clone when explicitly requested.
-    let captured_z_vec: Option<Vec<F128>> = if capture_z_vec {
+    let captured_z_vec: Option<Vec<F128T>> = if capture_z_vec {
         Some(z_vec.clone())
     } else {
         None
@@ -1318,9 +1268,9 @@ fn prove_padded_inner<O>(
         // next-eval fused into one pass — see `sumcheck_bind_both_and_eval_next`).
         let (mut e1, mut einf) = sumcheck_round_eval_par(&comb_vec, &z_vec);
         for t in 0..inner_rest_len {
-            ps.add_scalar(ghash_to_tower(e1));
-            ps.add_scalar(ghash_to_tower(einf));
-            let r = tower_to_ghash(ps.sample());
+            ps.add_scalar(e1);
+            ps.add_scalar(einf);
+            let r = ps.sample();
             r_rounds.push(r);
             if t + 1 < inner_rest_len {
                 // Fused: bind both tables at r AND compute round (t+1)'s message.
@@ -1345,18 +1295,18 @@ fn prove_padded_inner<O>(
     // 6. Send `z_partial` (the post-sumcheck collapsed z_vec). Length 2^k_skip.
     let z_partial = z_vec.clone();
     for &x in z_partial.iter() {
-        ps.add_scalar(ghash_to_tower(x));
+        ps.add_scalar(x);
     }
 
     // 7. Sample fresh z_skip AFTER observing z_partial — gives Schwartz-Zippel
     //    soundness on the φ8 (univariate-skip) dim.
-    let r_inner_skip = tower_to_ghash(ps.sample());
+    let r_inner_skip = ps.sample();
 
     // 8. Output claim's value: φ8 Lagrange combination of z_partial at z_skip.
     //    Equals ẑ_φ8(z_skip, r_rest, x_outer) when z_partial is honest; the
     //    PCS catches mismatches downstream.
     let lambda = lagrange_weights_naive(k_skip, r_inner_skip);
-    let w = inner_product(&lambda, &z_partial);
+    let w = inner_product_ext(&lambda, &z_partial);
 
     // 9. Convert sumcheck challenges to LSB-first `x_inner_rest` order. The
     //    loop binds the TOP bit each round, so r_rounds[0] bound bit
@@ -1366,14 +1316,13 @@ fn prove_padded_inner<O>(
     let mut r_inner_rest = r_rounds.clone();
     r_inner_rest.reverse();
 
-    // Iso-map the GHASH claim into the tower to match the F128T verifier.
     let claim = LincheckClaim {
-        alpha: ghash_to_tower(alpha),
-        beta: ghash_to_tower(beta),
-        r_rounds: r_rounds.iter().copied().map(ghash_to_tower).collect(),
-        r_inner_skip: ghash_to_tower(r_inner_skip),
-        r_inner_rest: r_inner_rest.iter().copied().map(ghash_to_tower).collect(),
-        w: ghash_to_tower(w),
+        alpha: alpha,
+        beta: beta,
+        r_rounds: r_rounds.iter().copied().collect(),
+        r_inner_skip: r_inner_skip,
+        r_inner_rest: r_inner_rest.iter().copied().collect(),
+        w: w,
     };
     (claim, captured_z_vec)
 }
@@ -1433,15 +1382,14 @@ pub fn verify<O>(
         }
     };
 
-    // 1. Sample α (matches prover's order). The verifier runs over the tower;
-    // the prover iso-maps its GHASH messages so both agree.
+    // 1. Sample α (matches prover's order).
     let alpha = vs.sample();
 
     // 2. Build α-batched comb_vec via the circuit's per-block fold (same call
     //    the prover made — sparse default delegates to the fused row-fold;
     //    per-hash impls walk the constraint graph directly).
     let t = std::time::Instant::now();
-    let eq_inner = build_quirky_eq_table_t(x_ab.z_skip, &x_ab.x_inner_rest, k_skip);
+    let eq_inner = build_quirky_eq_table(x_ab.z_skip, &x_ab.x_inner_rest, k_skip);
     if trace {
         eprintln!(
             "        [lcv] build_quirky_eq_table (2^{k_log}): {}",
@@ -1449,7 +1397,7 @@ pub fn verify<O>(
         );
     }
     let t = std::time::Instant::now();
-    let mut comb_vec = circuit.fold_alpha_batched_t(alpha, &eq_inner);
+    let mut comb_vec = circuit.fold_alpha_batched(alpha, &eq_inner);
     if trace {
         eprintln!(
             "        [lcv] circuit.fold_alpha_batched: {}",
@@ -1514,7 +1462,7 @@ pub fn verify<O>(
     //    Equals ẑ_φ8(z_skip, r_rest, x_outer) when z_partial is honest;
     //    PCS catches mismatches downstream.
     let t = std::time::Instant::now();
-    let lambda = lagrange_weights_naive_t(k_skip, r_inner_skip);
+    let lambda = lagrange_weights_naive(k_skip, r_inner_skip);
     let w = inner_product_ext(&lambda, &z_partial);
     if trace {
         eprintln!(
@@ -1568,16 +1516,16 @@ mod tests {
         z_packed: &[u8],
         m: usize,
         k_log: usize,
-        eq_outer: &[F128],
-    ) -> Vec<F128> {
+        eq_outer: &[F128T],
+    ) -> Vec<F128T> {
         partial_fold_packed_z_fast_padded(z_packed, m, k_log, 1 << k_log, eq_outer)
     }
 
     /// Reference fold `M_0^T · eq` (the row-MLE at all boolean column indices),
     /// used to locate meaningful mutation targets and as a dense oracle.
-    fn sparse_row_fold(matrix: &SparseBinaryMatrix, eq_table: &[F128]) -> Vec<F128> {
+    fn sparse_row_fold(matrix: &SparseBinaryMatrix, eq_table: &[F128T]) -> Vec<F128T> {
         assert_eq!(eq_table.len(), matrix.num_rows);
-        let mut out = vec![F128::ZERO; matrix.num_cols];
+        let mut out = vec![F128T::ZERO; matrix.num_cols];
         for (row_idx, row) in matrix.rows.iter().enumerate() {
             let e = eq_table[row_idx];
             for &col in row {
@@ -1589,11 +1537,11 @@ mod tests {
 
     /// Naive MLE evaluation: `f̂(point) = Σ_i eq(point, i) · f[i]` where i ∈
     /// {0,1}^d and f[i] is given as a bool slice.
-    fn mle_eval_bool(f: &[bool], point: &[F128]) -> F128 {
+    fn mle_eval_bool(f: &[bool], point: &[F128T]) -> F128T {
         let d = point.len();
         assert_eq!(f.len(), 1 << d);
         let eq = build_eq(point);
-        let mut acc = F128::ZERO;
+        let mut acc = F128T::ZERO;
         for (i, &b) in f.iter().enumerate() {
             if b {
                 acc += eq[i];
@@ -1606,9 +1554,9 @@ mod tests {
     /// x_inner_rest of length `k_log − k_skip`, x_outer of length `n_log`.
     fn random_quirky_point(m: usize, k_log: usize, k_skip: usize, rng: &mut Rng) -> QuirkyPoint {
         QuirkyPoint {
-            z_skip: rng.f128t(),
-            x_inner_rest: rng.f128t_vec(k_log - k_skip),
-            x_outer: rng.f128t_vec(m - k_log),
+            z_skip: rng.ext(),
+            x_inner_rest: rng.ext_vec(k_log - k_skip),
+            x_outer: rng.ext_vec(m - k_log),
         }
     }
 
@@ -1636,9 +1584,9 @@ mod tests {
 
         // Tower helpers: the point is F128T (the verifier's field), and the
         // expected value must equal the F128T claim the verifier derives.
-        let lambda = lagrange_weights_naive_t(k_skip, point.z_skip);
-        let eq_rest = build_eq_table_ext(&point.x_inner_rest);
-        let eq_outer = build_eq_table_ext(&point.x_outer);
+        let lambda = lagrange_weights_naive(k_skip, point.z_skip);
+        let eq_rest = build_eq(&point.x_inner_rest);
+        let eq_outer = build_eq(&point.x_outer);
         debug_assert_eq!(lambda.len(), k_skip_dim);
         debug_assert_eq!(eq_rest.len(), inner_rest_dim);
         debug_assert_eq!(eq_outer.len(), n_outer);
@@ -1720,16 +1668,16 @@ mod tests {
     fn eq_table_matches_direct_formula() {
         for &d in &[1usize, 2, 3, 5, 8] {
             let mut rng = Rng::new(11 + d as u64);
-            let point = rng.f128_vec(d);
+            let point = rng.ext_vec(d);
             let table = build_eq(&point);
             assert_eq!(table.len(), 1 << d);
             for i in 0..(1 << d) {
-                let mut expected = F128::ONE;
+                let mut expected = F128T::ONE;
                 for j in 0..d {
                     let bit = ((i >> j) & 1) as u64;
                     // eq(r, bit) = (1 + r) if bit = 0 else r
                     let factor = if bit == 0 {
-                        F128::ONE + point[j]
+                        F128T::ONE + point[j]
                     } else {
                         point[j]
                     };
@@ -1747,12 +1695,12 @@ mod tests {
         let k = 16;
         let nnz = 40;
         let matrix = random_sparse_matrix(k, nnz, &mut rng);
-        let eq_table: Vec<F128> = rng.f128_vec(k);
+        let eq_table: Vec<F128T> = rng.ext_vec(k);
 
         let got = sparse_row_fold(&matrix, &eq_table);
 
         // Brute force: for each col j, sum eq[i] over rows i where M[i,j] = 1.
-        let mut expected = vec![F128::ZERO; k];
+        let mut expected = vec![F128T::ZERO; k];
         for (i, row) in matrix.rows.iter().enumerate() {
             for &j in row {
                 expected[j] += eq_table[i];
@@ -1769,7 +1717,7 @@ mod tests {
             let z = rng.bits(1 << m);
             let z_packed = pack_z_lincheck(&z, m, k_log);
             let n_log = m - k_log;
-            let outer_point = rng.f128_vec(n_log);
+            let outer_point = rng.ext_vec(n_log);
             let eq_outer = build_eq(&outer_point);
 
             let got = partial_fold_packed_z(&z_packed, m, k_log, &eq_outer);
@@ -1777,7 +1725,7 @@ mod tests {
             let k = 1usize << k_log;
             assert_eq!(got.len(), k);
             for i_inner in 0..k {
-                let mut acc = F128::ZERO;
+                let mut acc = F128T::ZERO;
                 for i_outer in 0..(1usize << n_log) {
                     let i = i_inner + i_outer * k;
                     if z[i] {
@@ -1798,7 +1746,7 @@ mod tests {
             let z = rng.bits(1 << m);
             let z_packed = pack_z_lincheck(&z, m, k_log);
             let n_log = m - k_log;
-            let p = rng.f128_vec(n_log);
+            let p = rng.ext_vec(n_log);
             let eq = build_eq(&p);
 
             let serial = partial_fold_packed_z(&z_packed, m, k_log, &eq);
@@ -1819,7 +1767,7 @@ mod tests {
             let z = rng.bits(1 << m);
             let z_packed = pack_z_lincheck(&z, m, k_log);
             let n_log = m - k_log;
-            let p = rng.f128_vec(n_log);
+            let p = rng.ext_vec(n_log);
             let eq = build_eq(&p);
 
             let serial = partial_fold_packed_z(&z_packed, m, k_log, &eq);
@@ -1862,7 +1810,7 @@ mod tests {
                 }
             }
             let z_packed = pack_z_lincheck(&z, m, k_log);
-            let eq = build_eq(&rng.f128_vec(n_log));
+            let eq = build_eq(&rng.ext_vec(n_log));
             let want =
                 partial_fold_packed_z_neon_iblock_padded(&z_packed, m, k_log, useful_bits, &eq);
             let got =
@@ -1907,7 +1855,7 @@ mod tests {
                 }
             }
             let z_packed = pack_z_lincheck(&z, m, k_log);
-            let outer_point = rng.f128_vec(n_log);
+            let outer_point = rng.ext_vec(n_log);
             let eq_outer = build_eq(&outer_point);
 
             let dense_fast = partial_fold_packed_z_fast_padded_dense(&z_packed, m, k_log, &eq_outer);
@@ -1975,7 +1923,7 @@ mod tests {
         let mut rng = Rng::new(44);
         let z = rng.bits(1 << m);
         let z_packed = pack_z_lincheck(&z, m, k_log);
-        let x_outer = rng.f128_vec(m - k_log);
+        let x_outer = rng.ext_vec(m - k_log);
         let eq_outer = build_eq(&x_outer);
 
         let z_partial = partial_fold_packed_z(&z_packed, m, k_log, &eq_outer);
@@ -1988,9 +1936,9 @@ mod tests {
             let mut point = Vec::with_capacity(m);
             for j in 0..k_log {
                 point.push(if (i_inner >> j) & 1 == 1 {
-                    F128::ONE
+                    F128T::ONE
                 } else {
-                    F128::ZERO
+                    F128T::ZERO
                 });
             }
             point.extend_from_slice(&x_outer);
@@ -2104,16 +2052,14 @@ mod tests {
         let proof_t = ch_p.into_proof();
 
         // Pick a mutation position where BOTH row vectors are nonzero so the
-        // mutation guarantees both checks would diverge. This is a diagnostic
-        // (which slot to poke), so run it in GHASH — nonzeroness is preserved
-        // by the isomorphism — by bridging the F128T point back in.
-        let z_skip_g = tower_to_ghash(x_ab.z_skip);
-        let x_inner_rest_g: Vec<F128> = x_ab.x_inner_rest.iter().map(|&v| tower_to_ghash(v)).collect();
+        // mutation guarantees both checks would diverge.
+        let z_skip_g = x_ab.z_skip;
+        let x_inner_rest_g: Vec<F128T> = x_ab.x_inner_rest.iter().map(|&v| v).collect();
         let eq_inner = build_quirky_eq_table(z_skip_g, &x_inner_rest_g, k_skip);
         let row_a = sparse_row_fold(&a_0, &eq_inner);
         let row_b = sparse_row_fold(&b_0, &eq_inner);
         let idx = (0..k)
-            .find(|&i| row_a[i] != F128::ZERO || row_b[i] != F128::ZERO)
+            .find(|&i| row_a[i] != F128T::ZERO || row_b[i] != F128T::ZERO)
             .expect("no row-vector slot is nonzero in either A or B — test degenerate");
 
         // Mutations target `z_partial` (the post-sumcheck length-2^k_skip
@@ -2202,7 +2148,7 @@ mod tests {
         // partial_fold_packed_z's stripe layout.
         let cases: &[(usize, usize)] = &[(13, 10), (15, 11), (17, 13)];
         for &(m, k_log) in cases {
-            assert!(k_log >= pcs::LOG_PACKING);
+            assert!(k_log >= pcs::pack_k::LOG_PACKING_K);
             assert!(k_log >= K_SKIP);
             let n_log = m - k_log;
             assert!(n_log >= 3);
@@ -2210,28 +2156,27 @@ mod tests {
 
             // Boolean witness in standard logical (linear) layout.
             let z = rng.bits(1 << m);
-            let packed = pcs::pack::pack_witness(&z, m);
+            let packed = pcs::pack_k::pack_witness_k(&z, m);
             let z_packed_lincheck = pack_z_lincheck(&z, m, k_log);
 
             // AB-shaped quirky point: x_inner_rest has k_log − K_SKIP coords;
             // x_outer has n_log coords.
-            let x_inner_rest: Vec<F128> = (0..(k_log - K_SKIP)).map(|_| rng.f128()).collect();
-            let x_outer: Vec<F128> = (0..n_log).map(|_| rng.f128()).collect();
+            let x_inner_rest: Vec<F128T> = (0..(k_log - K_SKIP)).map(|_| rng.ext()).collect();
+            let x_outer: Vec<F128T> = (0..n_log).map(|_| rng.ext()).collect();
 
             // Reference: ring-switch's fold_1b_rows over the materialized
             // suffix tensor, exactly the path open_batch hits today.
             let mut x_outer_full = Vec::with_capacity(x_inner_rest.len() + x_outer.len());
             x_outer_full.extend_from_slice(&x_inner_rest);
             x_outer_full.extend_from_slice(&x_outer);
-            let suffix = &x_outer_full[1..];
-            let suffix_tensor = primitives::multilinear::build_eq(suffix);
-            let want = pcs::ring_switch::fold_1b_rows_naive(&packed, &suffix_tensor);
+            let suffix_tensor = primitives::multilinear::eq_table(&x_outer_full);
+            let want = pcs::ring_switch_k::fold_1b_rows_k(&packed, &suffix_tensor);
 
             // New path: lincheck-shaped partial fold of z at x_outer, then a
             // strided fold against the inner-rest tail.
-            let eq_x_outer = primitives::multilinear::build_eq(&x_outer);
+            let eq_x_outer = primitives::multilinear::eq_table(&x_outer);
             let z_vec = partial_fold_packed_z(&z_packed_lincheck, m, k_log, &eq_x_outer);
-            let got = pcs::ring_switch::s_hat_v_from_z_vec(&z_vec, &x_inner_rest[1..]);
+            let got = pcs::ring_switch_k::s_hat_v_from_z_vec(&z_vec, &x_inner_rest);
 
             assert_eq!(got, want, "s_hat_v mismatch at m={m}, k_log={k_log}");
         }

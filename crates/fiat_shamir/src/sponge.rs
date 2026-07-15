@@ -12,10 +12,7 @@
 //! machine has.
 //!
 //! Scalars are `E = F128T` (the tower challenge field): two little-endian
-//! `K = F64` lanes per absorbed block. The GHASH-typed consumers (flock's
-//! zerocheck / lincheck, the F128 Ligerito) ferry their scalars through the
-//! same two lanes — 16 uniform transcript bytes either way, no arithmetic in
-//! either representation happens here.
+//! `K = F64` lanes per absorbed block.
 //!
 //! Construction adapted from Signal's ShoSha256 "Stateful Hash Object"
 //! (`libsignal/rust/poksho/src/shosha256.rs`, © 2020 Signal Messenger, LLC,

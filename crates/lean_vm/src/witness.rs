@@ -59,7 +59,7 @@ pub fn placements_of(kappas: &[Option<usize>]) -> (Vec<Placement>, usize) {
     }
     // Floor at the PCS minimum (Ligerito's level ladder needs room); tiny witnesses
     // zero-pad up. Both sides derive this identically from the kappas. (Note the
-    // K-stack for a given program has one more variable than the old F128 stack:
+    // K-stack for a given program has one more variable than the old extension-field stack:
     // same bytes, half-width words.)
     let m = crate::log2_ceil_usize(off.max(1)).max(crate::pcs::MIN_MU);
     (placements, m)

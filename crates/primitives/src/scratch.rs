@@ -1,5 +1,5 @@
 // Credit: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
-//! Process-global pool for the prover's large transient `F128` buffers.
+//! Process-global pool for the prover's large transient `F128T` buffers.
 //!
 //! Each prove allocates, faults in, and frees several 64–128 MB vectors
 //! (the RS codeword, the round-2 fold outputs, the multilinear tail's
@@ -18,10 +18,10 @@
 //! the m = 29 prove set). Call [`clear`] to release everything to the OS,
 //! e.g. after the last prove of a batch.
 
-use crate::field::F128;
+use crate::field::F128T;
 use std::sync::Mutex;
 
-static POOL: Mutex<Vec<Vec<F128>>> = Mutex::new(Vec::new());
+static POOL: Mutex<Vec<Vec<F128T>>> = Mutex::new(Vec::new());
 
 /// Max buffers retained. The m=29 prove cycle's distinct buffers: witness
 /// z/a/b, the L0 codeword, zerocheck's 2 fold outputs + 2 ping-pong
@@ -34,24 +34,24 @@ static POOL: Mutex<Vec<Vec<F128>>> = Mutex::new(Vec::new());
 /// buffers) — measured as a +24% open_batch regression on M4 before this.
 const MAX_POOLED: usize = 24;
 
-/// Take a length-`n` `F128` vector, preferring a pooled buffer (smallest
+/// Take a length-`n` `F128T` vector, preferring a pooled buffer (smallest
 /// capacity ≥ `n`); falls back to a fresh uninitialized allocation.
 ///
 /// Contents are UNINITIALIZED in both cases — recycled buffers hold stale
 /// data from a previous use. Caller MUST write every slot before reading it
 /// (same contract as [`crate::alloc_uninit_vec`]).
-pub fn take_f128(n: usize) -> Vec<F128> {
-    if let Some(v) = try_take_f128(n) {
+pub fn take_f128t(n: usize) -> Vec<F128T> {
+    if let Some(v) = try_take_f128t(n) {
         return v;
     }
     crate::alloc_uninit_vec(n)
 }
 
-/// Pool-only variant of [`take_f128`]: returns `None` instead of falling
+/// Pool-only variant of [`take_f128t`]: returns `None` instead of falling
 /// back to a fresh allocation. Lets callers branch on warm-vs-cold (e.g.
 /// the commit prefault skips its page-touch thread when the pool can
 /// supply an already-resident buffer).
-pub(crate) fn try_take_f128(n: usize) -> Option<Vec<F128>> {
+pub(crate) fn try_take_f128t(n: usize) -> Option<Vec<F128T>> {
     let mut pool = POOL.lock().unwrap();
     let mut best: Option<usize> = None;
     for (i, v) in pool.iter().enumerate() {
@@ -63,7 +63,7 @@ pub(crate) fn try_take_f128(n: usize) -> Option<Vec<F128>> {
         let mut v = pool.swap_remove(i);
         drop(pool);
         v.clear();
-        // SAFETY: capacity ≥ n was checked above; F128: Copy (no Drop), so
+        // SAFETY: capacity ≥ n was checked above; F128T: Copy (no Drop), so
         // exposing uninit/stale elements is sound to *hold* — the caller
         // upholds write-before-read per this function's contract.
         unsafe { v.set_len(n) };
@@ -76,7 +76,7 @@ pub(crate) fn try_take_f128(n: usize) -> Option<Vec<F128>> {
 /// smallest-capacity buffer is evicted (large buffers are the expensive ones
 /// to re-fault; a run that ramps problem sizes upward must not get its big
 /// buffers crowded out by stale small ones).
-pub fn give_f128(v: Vec<F128>) {
+pub fn give_f128t(v: Vec<F128T>) {
     if v.capacity() == 0 {
         return;
     }
@@ -114,23 +114,23 @@ pub fn prewarm_prover(m: usize) {
     }
     let small = 1usize << (m - 7);
     let large = 1usize << (m - 6);
-    let mut bufs: Vec<Vec<F128>> = Vec::new();
+    let mut bufs: Vec<Vec<F128T>> = Vec::new();
     for _ in 0..5 {
-        bufs.push(take_f128(large));
+        bufs.push(take_f128t(large));
     }
     for _ in 0..11 {
-        bufs.push(take_f128(small));
+        bufs.push(take_f128t(small));
     }
     // First-touch every page of every buffer, all cores. Already-resident
     // (re-warmed) buffers cost a fast memset; fresh ones fault here, once.
     bufs.par_iter_mut().for_each(|b| {
         b.par_chunks_mut(1 << 16).for_each(|chunk| {
-            // SAFETY: F128 is plain bytes (no Drop); zero is a valid pattern.
+            // SAFETY: F128T is plain bytes (no Drop); zero is a valid pattern.
             unsafe { std::ptr::write_bytes(chunk.as_mut_ptr(), 0u8, chunk.len()) }
         });
     });
     for b in bufs {
-        give_f128(b);
+        give_f128t(b);
     }
 }
 
@@ -147,14 +147,14 @@ mod tests {
     #[test]
     fn take_reuses_given_buffer() {
         clear();
-        let mut v = take_f128(1024);
+        let mut v = take_f128t(1024);
         for slot in v.iter_mut() {
-            *slot = F128 { lo: 7, hi: 9 };
+            *slot = F128T::new(7, 9);
         }
         let ptr = v.as_ptr();
-        give_f128(v);
+        give_f128t(v);
         // Same capacity request gets the same allocation back.
-        let v2 = take_f128(512);
+        let v2 = take_f128t(512);
         assert_eq!(v2.as_ptr(), ptr);
         assert_eq!(v2.len(), 512);
         clear();
@@ -164,7 +164,7 @@ mod tests {
     fn pool_is_bounded() {
         clear();
         for _ in 0..(MAX_POOLED + 4) {
-            give_f128(take_f128(16));
+            give_f128t(take_f128t(16));
         }
         assert!(POOL.lock().unwrap().len() <= MAX_POOLED);
         clear();

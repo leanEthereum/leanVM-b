@@ -94,7 +94,7 @@ def main():
 }
 
 /// Constant expressions use **integer** arithmetic (`+ - * / **`), not the
-/// runtime field's XOR/GHASH — so derived sizes/counts come out right. Filled
+/// runtime field's XOR/legacy polynomial-basis field — so derived sizes/counts come out right. Filled
 /// via placeholders, the whole set of derivations resolves to plain literals.
 #[test]
 fn const_integer_arithmetic_derivations() {

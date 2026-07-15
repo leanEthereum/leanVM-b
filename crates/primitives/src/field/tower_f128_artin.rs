@@ -8,7 +8,7 @@
 //! K-values packs into one element by a copy, and every 16-byte string is a
 //! valid element (transcript sampling stays a raw reinterpretation).
 //!
-//! This field is isomorphic to the GHASH [`super::gf2_128::F128`] but in a
+//! This field is isomorphic to the legacy polynomial-basis field [`super::former_field_module::extension-field`] but in a
 //! different representation; the two must never be byte-interchanged.
 //!
 //! Multiplication is a 2-term Karatsuba over K (3 PMULL products) with
@@ -25,7 +25,9 @@ use core::ops::{Add, AddAssign, BitXor, BitXorAssign, Mul, MulAssign};
 use serde::{Deserialize, Serialize};
 
 use super::gf2_64::F64;
-use super::gf2_64x3::{R64, base_reduce_128};
+use super::gf2_64x3::base_reduce_128;
+#[cfg(target_arch = "aarch64")]
+use super::gf2_64x3::R64;
 
 /// Artin--Schreier constant: c = x^61 (trace 1, so y^2 + y + c is irreducible).
 pub const C61: u64 = 1 << 61;
@@ -60,7 +62,7 @@ impl F128TArtin {
     /// once at the end. Reduction and the `y² = y + x^61` fold are
     /// GF(2)-linear, so `Σ (aᵢ·bᵢ) mod P = reduce(Σ parts)` — this defers the
     /// 5-PMULL reduction tail (the majority of a full mul's work) from every
-    /// term to once per sum. The tower analog of GHASH's
+    /// term to once per sum. The tower analog of legacy polynomial-basis field's
     /// [`F256Unreduced`](crate::field::F256Unreduced).
     #[inline]
     pub fn mul_unreduced(self, rhs: Self) -> F128TArtinUnreduced {
@@ -1260,7 +1262,7 @@ pub mod x86_64 {
 
 pub mod software {
     use super::{C61, F64, F128TArtin, F128TArtinUnreduced, base_reduce_128};
-    use crate::field::gf2_128::software::clmul64;
+    use crate::field::gf2_64x3::clmul64;
 
     fn kmul(a: u64, b: u64) -> u64 {
         let (lo, hi) = clmul64(a, b);

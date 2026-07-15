@@ -1,5 +1,3 @@
-use primitives::field::F128;
-
 /// Deterministic SplitMix64 generator shared by the crate's unit tests.
 pub(crate) struct Rng(u64);
 
@@ -16,11 +14,4 @@ impl Rng {
         z ^ (z >> 31)
     }
 
-    pub(crate) fn bits(&mut self, n: usize) -> Vec<bool> {
-        (0..n).map(|_| self.next_u64() & 1 == 1).collect()
-    }
-
-    pub(crate) fn f128(&mut self) -> F128 {
-        F128::new(self.next_u64(), self.next_u64())
-    }
 }

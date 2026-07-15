@@ -7,10 +7,10 @@
 //! 1. **Geometric small-eq + shift_reduce inner** (3 inner-most rest-dims).
 //!    Protocol fixes the three small challenges to
 //!    `r[k_skip..k_skip+3] = φ_8([0xF7, 0x53, 0xB5])`, which makes
-//!    `eq_small[K] = C_s · α^K` (geometric in α, the AES root in GHASH).
+//!    `eq_small[K] = C_s · α^K` (geometric in the embedded AES root α).
 //!    The shift_reduce trick computes
 //!    `Σ_K eq_small[K] · φ_8(y_K)  =  C_s · φ_8(reduce(Σ_K y_K << K))`,
-//!    replacing 8 F128 mults per lane with 8 u16 XOR-shifts + one F_8
+//!    replacing 8 F128T mults per lane with 8 u16 XOR-shifts + one F_8
 //!    reduction.
 //!
 //! 2. **Geometric medium-eq + convert table** (4 next rest-dims).
@@ -18,7 +18,7 @@
 //!    `β_i = γ^{2^{i-1}} / (1 + γ^{2^{i-1}})`, which makes
 //!    `eq_med[b] = γ^b / D` for `D = ∏(1+γ^{2^{i-1}})`.
 //!    Precomputed table `convert[b][v] = γ^b · φ_8(v)` (64 KB) reduces the
-//!    per-lane medium-eq sum from 16 F128 mults to 16 lookups + 16 XORs.
+//!    per-lane medium-eq sum from 16 F128T mults to 16 lookups + 16 XORs.
 //!
 //! 3. **D⁻¹ absorbed into eq_lo.**
 //!    Pre-scale `eq_lo[i] ← eq_lo[i] · D⁻¹` once before the loop; this cancels
@@ -34,11 +34,11 @@
 use std::sync::OnceLock;
 
 use primitives::field::gf2_8::gf8_reduce;
-use primitives::field::{F8, F128, PHI_8_TABLE, mul_by_x, phi8};
+use primitives::field::{F8, F128T, PHI_8_TABLE, phi8};
 use pcs::ntt::InvNttTableByteSingleGf8;
 
 use super::PaddingSpec;
-use super::univariate_skip::{SplitEqGhash, ntt_extend_f128_vec_ghash, pack_bits};
+use super::univariate_skip::{SplitEq, ntt_extend_vec, pack_bits};
 
 // ---------------------------------------------------------------------------
 // Protocol constants — fixed by the optimization design.
@@ -56,7 +56,7 @@ const N_MEDIUM: usize = 4;
 /// Choosing these specific values is what makes `eq_small[K] = C_s · α^K`.
 ///
 /// **Soundness dependency.** These three constants — together with the
-/// four medium constants returned by [`medium_challenges_ghash`] — must be
+/// four medium constants returned by [`medium_challenges`] — must be
 /// **F₂-linearly independent** in F₁₂₈. Zerocheck soundness relies on this
 /// (a witness aligned with the friendly subspace would otherwise let the
 /// prover cancel the URM message), and so does Ligerito's L0 list-collapse
@@ -70,14 +70,14 @@ pub const C_S_F8: u8 = 0x1C;
 
 /// The constant `C_s = φ_8(0x1C) ∈ F_{2^128}` — the relative scaling factor
 /// between this optimized output and the naive output.
-pub fn c_s_f128() -> F128 {
+pub fn c_s() -> F128T {
     phi8(F8(C_S_F8))
 }
 
 /// The three F_128 small challenges (embeddings of [`SMALL_CHAL_F8`]) — caller
 /// must place these at `r[k_skip..k_skip+3]` for the naive cross-check to
 /// produce a result related to the optimized output by exactly `C_s`.
-pub fn small_challenges_ghash() -> [F128; 3] {
+pub fn small_challenges() -> [F128T; 3] {
     [
         phi8(F8(SMALL_CHAL_F8[0])),
         phi8(F8(SMALL_CHAL_F8[1])),
@@ -88,58 +88,22 @@ pub fn small_challenges_ghash() -> [F128; 3] {
 /// The four F_128 medium challenges `β_i = γ^{2^{i-1}} / (1 + γ^{2^{i-1}})`.
 /// Caller must place these at `r[k_skip+3..k_skip+7]` for the naive
 /// cross-check.
-pub fn medium_challenges_ghash() -> [F128; 4] {
-    let g1 = F128 {
-        lo: 1u64 << 1,
-        hi: 0,
-    }; // γ^1
-    let g2 = F128 {
-        lo: 1u64 << 2,
-        hi: 0,
-    }; // γ^2
-    let g4 = F128 {
-        lo: 1u64 << 4,
-        hi: 0,
-    }; // γ^4
-    let g8 = F128 {
-        lo: 1u64 << 8,
-        hi: 0,
-    }; // γ^8
-    [
-        g1 * (F128::ONE + g1).inv(),
-        g2 * (F128::ONE + g2).inv(),
-        g4 * (F128::ONE + g4).inv(),
-        g8 * (F128::ONE + g8).inv(),
-    ]
-}
-
-/// Tower (`F128T`) twins of the fixed inner challenges, for the flock VERIFIER.
-/// Every value is the iso-image of the GHASH version, so prover (GHASH) and
-/// verifier (tower) agree on `r` through `ghash_to_tower`. `phi8_t` is the tower
-/// φ₈; the medium generator is `γ_t = ghash_to_tower(x)`.
-pub fn small_challenges_tower() -> [primitives::field::F128T; 3] {
-    use primitives::field::phi8_t;
-    [
-        phi8_t(F8(SMALL_CHAL_F8[0])),
-        phi8_t(F8(SMALL_CHAL_F8[1])),
-        phi8_t(F8(SMALL_CHAL_F8[2])),
-    ]
-}
-
-pub fn medium_challenges_tower() -> [primitives::field::F128T; 4] {
-    use primitives::field::{F128T, ghash_to_tower};
-    // γ_t = ghash_to_tower(x); g_{2^k} = γ_t^{2^k}. Matches medium_challenges_ghash
-    // under the isomorphism (which fixes the AES/monomial structure).
-    let g1 = ghash_to_tower(F128 { lo: 1u64 << 1, hi: 0 });
-    let g2 = g1 * g1;
-    let g4 = g2 * g2;
-    let g8 = g4 * g4;
+pub fn medium_challenges() -> [F128T; 4] {
+    let g1 = medium_generator();
+    let g2 = g1.square();
+    let g4 = g2.square();
+    let g8 = g4.square();
     [
         g1 * (F128T::ONE + g1).inv(),
         g2 * (F128T::ONE + g2).inv(),
         g4 * (F128T::ONE + g4).inv(),
         g8 * (F128T::ONE + g8).inv(),
     ]
+}
+
+/// Protocol medium-coordinate generator in the tower basis.
+const fn medium_generator() -> F128T {
+    F128T::new(0xd79b_4f29_2e39_763e, 0xa540_d24f_89d2_ce83)
 }
 
 /// `C_2 = (1+r_2)(1+r_3)` where `r_2 = φ_8(0x53)` (= `α^2/(1+α^2)`),
@@ -154,45 +118,33 @@ pub fn medium_challenges_tower() -> [primitives::field::F128T; 4] {
 /// Used in [`round1_shift_reduce_extract_c_packed_padded_with_s_hat_v`] to
 /// post-scale the raw bank values into canonical `s_hat_v_c` (which
 /// `ring_switch::fold_1b_rows` would produce against suffix `r[k_skip+1..m]`).
-pub fn c_2_small_f128() -> F128 {
+pub fn c_2_small() -> F128T {
     let r_2 = phi8(F8(SMALL_CHAL_F8[1]));
     let r_3 = phi8(F8(SMALL_CHAL_F8[2]));
-    (F128::ONE + r_2) * (F128::ONE + r_3)
+    (F128T::ONE + r_2) * (F128T::ONE + r_3)
 }
 
 /// `α⁻¹` in F_128, as a subfield-embedded F_8 element. Used to strip the
 /// extra `α` factor from `s_hat_v_c`'s bank 1 (the K-odd lattice's raw
 /// contribution is `α · α^{2 b_3[1] + 4 b_3[2]}`; canonical wants just
 /// `α^{2 b_3[1] + 4 b_3[2]}`).
-pub fn alpha_inv_f128() -> F128 {
+pub fn alpha_inv() -> F128T {
     // α in F_8 = byte 0x02 (the polynomial generator). Its inverse is α^254;
     // F8::inv computes it via the standard extended Euclidean / power table.
     phi8(F8(0x02).inv())
 }
 
 /// `D = (1+γ)(1+γ^2)(1+γ^4)(1+γ^8)`; `D⁻¹` cancels the medium-eq normalization.
-fn compute_d_inv() -> F128 {
-    let g1 = F128 {
-        lo: 1u64 << 1,
-        hi: 0,
-    };
-    let g2 = F128 {
-        lo: 1u64 << 2,
-        hi: 0,
-    };
-    let g4 = F128 {
-        lo: 1u64 << 4,
-        hi: 0,
-    };
-    let g8 = F128 {
-        lo: 1u64 << 8,
-        hi: 0,
-    };
-    ((F128::ONE + g1) * (F128::ONE + g2) * (F128::ONE + g4) * (F128::ONE + g8)).inv()
+fn compute_d_inv() -> F128T {
+    let g1 = medium_generator();
+    let g2 = g1.square();
+    let g4 = g2.square();
+    let g8 = g4.square();
+    ((F128T::ONE + g1) * (F128T::ONE + g2) * (F128T::ONE + g4) * (F128T::ONE + g8)).inv()
 }
 
-static D_INV_CACHE: OnceLock<F128> = OnceLock::new();
-fn d_inv() -> F128 {
+static D_INV_CACHE: OnceLock<F128T> = OnceLock::new();
+fn d_inv() -> F128T {
     *D_INV_CACHE.get_or_init(compute_d_inv)
 }
 
@@ -203,15 +155,15 @@ fn d_inv() -> F128 {
 
 const CONVERT_TABLE_SIZE: usize = 16 * 256;
 
-static CONVERT_TABLE_CACHE: OnceLock<Vec<F128>> = OnceLock::new();
+static CONVERT_TABLE_CACHE: OnceLock<Vec<F128T>> = OnceLock::new();
 
-fn build_convert_table() -> Vec<F128> {
-    let mut gamma_pow = [F128::ZERO; 16];
-    gamma_pow[0] = F128::ONE;
+fn build_convert_table() -> Vec<F128T> {
+    let mut gamma_pow = [F128T::ZERO; 16];
+    gamma_pow[0] = F128T::ONE;
     for b in 1..16 {
-        gamma_pow[b] = mul_by_x(gamma_pow[b - 1]);
+        gamma_pow[b] = gamma_pow[b - 1] * medium_generator();
     }
-    let mut table = vec![F128::ZERO; CONVERT_TABLE_SIZE];
+    let mut table = vec![F128T::ZERO; CONVERT_TABLE_SIZE];
     for b in 0..16 {
         let g_b = gamma_pow[b];
         for v in 0..256 {
@@ -221,7 +173,7 @@ fn build_convert_table() -> Vec<F128> {
     table
 }
 
-fn convert_table() -> &'static [F128] {
+fn convert_table() -> &'static [F128T] {
     CONVERT_TABLE_CACHE.get_or_init(build_convert_table)
 }
 
@@ -779,8 +731,8 @@ fn shift_reduce_inner_ab_scalar(
 /// - `k_skip == K_SKIP` (= 6)
 /// - `m >= k_skip + N_INNER` (= 13)
 /// - `r.len() == m`. `r[k_skip..k_skip+7]` must hold the protocol-fixed small
-///   and medium constants (see [`small_challenges_ghash`] /
-///   [`medium_challenges_ghash`]) for the naive cross-check to line up. Only
+///   and medium constants (see [`small_challenges`] /
+///   [`medium_challenges`]) for the naive cross-check to line up. Only
 ///   `r[k_skip+7..m]` is used internally.
 /// - `inv_table.k == k_skip`.
 pub fn round1_shift_reduce_extract_c(
@@ -789,9 +741,9 @@ pub fn round1_shift_reduce_extract_c(
     c: &[bool],
     m: usize,
     k_skip: usize,
-    r: &[F128],
+    r: &[F128T],
     inv_table: &InvNttTableByteSingleGf8,
-) -> (Vec<F128>, Vec<F128>) {
+) -> (Vec<F128T>, Vec<F128T>) {
     assert_eq!(a.len(), 1usize << m);
     assert_eq!(b.len(), 1usize << m);
     assert_eq!(c.len(), 1usize << m);
@@ -815,31 +767,31 @@ pub fn round1_shift_reduce_extract_c(
 
 /// Per-worker scratch and local accumulators, with C split into its two banks.
 struct WorkerState {
-    partial_ab: [F128; ELL],
-    partial_c_0: [F128; ELL],
-    partial_c_1: [F128; ELL],
+    partial_ab: [F128T; ELL],
+    partial_c_0: [F128T; ELL],
+    partial_c_1: [F128T; ELL],
     chunk_ab_bytes: [[u8; 64]; 1 << N_MEDIUM],
     chunk_c_bytes: [[u8; 64]; 1 << N_MEDIUM],
     a_col: [F8; ELL],
     b_col: [F8; ELL],
-    local_res_ab: [F128; ELL],
-    local_res_c_s_0: [F128; ELL],
-    local_res_c_s_1: [F128; ELL],
+    local_res_ab: [F128T; ELL],
+    local_res_c_s_0: [F128T; ELL],
+    local_res_c_s_1: [F128T; ELL],
 }
 
 impl WorkerState {
     fn new() -> Self {
         Self {
-            partial_ab: [F128::ZERO; ELL],
-            partial_c_0: [F128::ZERO; ELL],
-            partial_c_1: [F128::ZERO; ELL],
+            partial_ab: [F128T::ZERO; ELL],
+            partial_c_0: [F128T::ZERO; ELL],
+            partial_c_1: [F128T::ZERO; ELL],
             chunk_ab_bytes: [[0u8; 64]; 1 << N_MEDIUM],
             chunk_c_bytes: [[0u8; 64]; 1 << N_MEDIUM],
             a_col: [F8::ZERO; ELL],
             b_col: [F8::ZERO; ELL],
-            local_res_ab: [F128::ZERO; ELL],
-            local_res_c_s_0: [F128::ZERO; ELL],
-            local_res_c_s_1: [F128::ZERO; ELL],
+            local_res_ab: [F128T::ZERO; ELL],
+            local_res_c_s_0: [F128T::ZERO; ELL],
+            local_res_c_s_1: [F128T::ZERO; ELL],
         }
     }
 }
@@ -857,14 +809,14 @@ fn process_one_x_hi(
     b_packed: &[u8],
     c_packed: &[u8],
     inv_table: &InvNttTableByteSingleGf8,
-    eq_lo_scaled: &[F128],
-    eq_hi_val: F128,
-    convert: &[F128],
+    eq_lo_scaled: &[F128T],
+    eq_hi_val: F128T,
+    convert: &[F128T],
     state: &mut WorkerState,
 ) {
-    state.partial_ab.iter_mut().for_each(|p| *p = F128::ZERO);
-    state.partial_c_0.iter_mut().for_each(|p| *p = F128::ZERO);
-    state.partial_c_1.iter_mut().for_each(|p| *p = F128::ZERO);
+    state.partial_ab.iter_mut().for_each(|p| *p = F128T::ZERO);
+    state.partial_c_0.iter_mut().for_each(|p| *p = F128T::ZERO);
+    state.partial_c_1.iter_mut().for_each(|p| *p = F128T::ZERO);
 
     let n_lo = n_lo_and_inner - N_INNER;
 
@@ -925,17 +877,17 @@ fn process_one_x_hi(
                     let cf_ab_u64 = vreinterpretq_u64_u8(cf_ab);
                     let cf_c_0_u64 = vreinterpretq_u64_u8(cf_c_0);
                     let cf_c_1_u64 = vreinterpretq_u64_u8(cf_c_1);
-                    let cf_ab_f = F128 {
-                        lo: vgetq_lane_u64::<0>(cf_ab_u64),
-                        hi: vgetq_lane_u64::<1>(cf_ab_u64),
+                    let cf_ab_f = F128T {
+                        c0: vgetq_lane_u64::<0>(cf_ab_u64),
+                        c1: vgetq_lane_u64::<1>(cf_ab_u64),
                     };
-                    let cf_c_0_f = F128 {
-                        lo: vgetq_lane_u64::<0>(cf_c_0_u64),
-                        hi: vgetq_lane_u64::<1>(cf_c_0_u64),
+                    let cf_c_0_f = F128T {
+                        c0: vgetq_lane_u64::<0>(cf_c_0_u64),
+                        c1: vgetq_lane_u64::<1>(cf_c_0_u64),
                     };
-                    let cf_c_1_f = F128 {
-                        lo: vgetq_lane_u64::<0>(cf_c_1_u64),
-                        hi: vgetq_lane_u64::<1>(cf_c_1_u64),
+                    let cf_c_1_f = F128T {
+                        c0: vgetq_lane_u64::<0>(cf_c_1_u64),
+                        c1: vgetq_lane_u64::<1>(cf_c_1_u64),
                     };
                     state.partial_ab[lane] += cf_ab_f * eq_lo_val;
                     state.partial_c_0[lane] += cf_c_0_f * eq_lo_val;
@@ -945,9 +897,9 @@ fn process_one_x_hi(
             #[cfg(not(target_arch = "aarch64"))]
             {
                 for lane in 0..ELL {
-                    let mut cf_ab = F128::ZERO;
-                    let mut cf_c_0 = F128::ZERO;
-                    let mut cf_c_1 = F128::ZERO;
+                    let mut cf_ab = F128T::ZERO;
+                    let mut cf_c_0 = F128T::ZERO;
+                    let mut cf_c_1 = F128T::ZERO;
                     for b_med in 0..(1 << N_MEDIUM) {
                         let v_ab = state.chunk_ab_bytes[b_med][lane] as usize;
                         let v_c = state.chunk_c_bytes[b_med][lane] as usize;
@@ -1006,17 +958,17 @@ fn process_one_x_hi(
                     let cf_ab_u64 = vreinterpretq_u64_u8(cf_ab);
                     let cf_c_0_u64 = vreinterpretq_u64_u8(cf_c_0);
                     let cf_c_1_u64 = vreinterpretq_u64_u8(cf_c_1);
-                    let cf_ab_f = F128 {
-                        lo: vgetq_lane_u64::<0>(cf_ab_u64),
-                        hi: vgetq_lane_u64::<1>(cf_ab_u64),
+                    let cf_ab_f = F128T {
+                        c0: vgetq_lane_u64::<0>(cf_ab_u64),
+                        c1: vgetq_lane_u64::<1>(cf_ab_u64),
                     };
-                    let cf_c_0_f = F128 {
-                        lo: vgetq_lane_u64::<0>(cf_c_0_u64),
-                        hi: vgetq_lane_u64::<1>(cf_c_0_u64),
+                    let cf_c_0_f = F128T {
+                        c0: vgetq_lane_u64::<0>(cf_c_0_u64),
+                        c1: vgetq_lane_u64::<1>(cf_c_0_u64),
                     };
-                    let cf_c_1_f = F128 {
-                        lo: vgetq_lane_u64::<0>(cf_c_1_u64),
-                        hi: vgetq_lane_u64::<1>(cf_c_1_u64),
+                    let cf_c_1_f = F128T {
+                        c0: vgetq_lane_u64::<0>(cf_c_1_u64),
+                        c1: vgetq_lane_u64::<1>(cf_c_1_u64),
                     };
                     state.partial_ab[lane] += cf_ab_f * eq_lo_val;
                     state.partial_c_0[lane] += cf_c_0_f * eq_lo_val;
@@ -1026,9 +978,9 @@ fn process_one_x_hi(
             #[cfg(not(target_arch = "aarch64"))]
             {
                 for lane in 0..ELL {
-                    let mut cf_ab = F128::ZERO;
-                    let mut cf_c_0 = F128::ZERO;
-                    let mut cf_c_1 = F128::ZERO;
+                    let mut cf_ab = F128T::ZERO;
+                    let mut cf_c_0 = F128T::ZERO;
+                    let mut cf_c_1 = F128T::ZERO;
                     for b_med in 0..n_b_med {
                         let v_ab = state.chunk_ab_bytes[b_med][lane] as usize;
                         let v_c = state.chunk_c_bytes[b_med][lane] as usize;
@@ -1095,7 +1047,7 @@ fn build_b_med_counts(padding: &PaddingSpec) -> (usize, Vec<u8>) {
 /// Packed-input variant of [`round1_shift_reduce_extract_c`]. **Parallel by
 /// default** via rayon — the outer x_hi loop is distributed across workers,
 /// each with its own scratch + local accumulator. Reduction is a per-lane
-/// F128 XOR across workers (commutative + associative).
+/// F128T XOR across workers (commutative + associative).
 ///
 /// To run single-threaded for debugging, set `RAYON_NUM_THREADS=1`.
 pub fn round1_shift_reduce_extract_c_packed(
@@ -1104,9 +1056,9 @@ pub fn round1_shift_reduce_extract_c_packed(
     c_packed: &[u8],
     m: usize,
     k_skip: usize,
-    r: &[F128],
+    r: &[F128T],
     inv_table: &InvNttTableByteSingleGf8,
-) -> (Vec<F128>, Vec<F128>) {
+) -> (Vec<F128T>, Vec<F128T>) {
     round1_shift_reduce_extract_c_packed_padded(
         a_packed,
         b_packed,
@@ -1129,10 +1081,10 @@ pub fn round1_shift_reduce_extract_c_packed_padded(
     c_packed: &[u8],
     m: usize,
     k_skip: usize,
-    r: &[F128],
+    r: &[F128T],
     inv_table: &InvNttTableByteSingleGf8,
     padding: &PaddingSpec,
-) -> (Vec<F128>, Vec<F128>) {
+) -> (Vec<F128T>, Vec<F128T>) {
     let (ab, c, _) = round1_shift_reduce_extract_c_packed_padded_with_s_hat_v(
         a_packed, b_packed, c_packed, m, k_skip, r, inv_table, padding,
     );
@@ -1160,10 +1112,10 @@ pub fn round1_shift_reduce_extract_c_packed_padded_with_s_hat_v(
     c_packed: &[u8],
     m: usize,
     k_skip: usize,
-    r: &[F128],
+    r: &[F128T],
     inv_table: &InvNttTableByteSingleGf8,
     padding: &PaddingSpec,
-) -> (Vec<F128>, Vec<F128>, Vec<F128>) {
+) -> (Vec<F128T>, Vec<F128T>, Vec<F128T>) {
     use rayon::prelude::*;
 
     assert_eq!(k_skip, K_SKIP, "optimized variant is k_skip=6 only");
@@ -1179,13 +1131,13 @@ pub fn round1_shift_reduce_extract_c_packed_padded_with_s_hat_v(
     assert_eq!(r.len(), m);
     assert_eq!(inv_table.k, k_skip);
 
-    let eq = SplitEqGhash::new(&r[k_skip + N_INNER..]);
+    let eq = SplitEq::new(&r[k_skip + N_INNER..]);
     let big_lo_size = 1usize << eq.n_lo;
     let hi_size = 1usize << eq.n_hi;
     let n_lo_and_inner = eq.n_lo + N_INNER;
 
     let d_inv_val = d_inv();
-    let eq_lo_scaled: Vec<F128> = eq.lo.iter().map(|v| *v * d_inv_val).collect();
+    let eq_lo_scaled: Vec<F128T> = eq.lo.iter().map(|v| *v * d_inv_val).collect();
     let convert = convert_table();
     let eq_hi = &eq.hi;
 
@@ -1214,7 +1166,7 @@ pub fn round1_shift_reduce_extract_c_packed_padded_with_s_hat_v(
         })
         .map(|s| (s.local_res_ab, s.local_res_c_s_0, s.local_res_c_s_1))
         .reduce(
-            || ([F128::ZERO; ELL], [F128::ZERO; ELL], [F128::ZERO; ELL]),
+            || ([F128T::ZERO; ELL], [F128T::ZERO; ELL], [F128T::ZERO; ELL]),
             |(mut ab1, mut c0_1, mut c1_1), (ab2, c0_2, c1_2)| {
                 for i in 0..ELL {
                     ab1[i] += ab2[i];
@@ -1227,18 +1179,18 @@ pub fn round1_shift_reduce_extract_c_packed_padded_with_s_hat_v(
 
     // Wire output: bank_0 + bank_1 reconstructs the original `res_c_s` (by
     // F_2-linearity of φ_8 over the masked-byte sum).
-    let mut res_c_s_combined = [F128::ZERO; ELL];
+    let mut res_c_s_combined = [F128T::ZERO; ELL];
     for i in 0..ELL {
         res_c_s_combined[i] = res_c_s_0[i] + res_c_s_1[i];
     }
-    let res_c_lifted = ntt_extend_f128_vec_ghash(&res_c_s_combined, inv_table);
+    let res_c_lifted = ntt_extend_vec(&res_c_s_combined, inv_table);
 
     // s_hat_v_c canonical form: apply residual C_2 (small-eq constant for
     // r[k_skip+1..k_skip+3]) and α⁻¹ (strips bank 1's extra α factor).
-    let c_2 = c_2_small_f128();
-    let alpha_inv = alpha_inv_f128();
+    let c_2 = c_2_small();
+    let alpha_inv = alpha_inv();
     let c_2_alpha_inv = c_2 * alpha_inv;
-    let mut s_hat_v_c = vec![F128::ZERO; 2 * ELL];
+    let mut s_hat_v_c = vec![F128T::ZERO; 2 * ELL];
     for lane in 0..ELL {
         s_hat_v_c[lane] = c_2 * res_c_s_0[lane];
         s_hat_v_c[ELL + lane] = c_2_alpha_inv * res_c_s_1[lane];
@@ -1258,9 +1210,9 @@ fn round1_shift_reduce_extract_c_packed_serial(
     c_packed: &[u8],
     m: usize,
     k_skip: usize,
-    r: &[F128],
+    r: &[F128T],
     inv_table: &InvNttTableByteSingleGf8,
-) -> (Vec<F128>, Vec<F128>) {
+) -> (Vec<F128T>, Vec<F128T>) {
     assert_eq!(k_skip, K_SKIP);
     assert!(m >= k_skip + N_INNER);
     let total_bytes = (1usize << m) / 8;
@@ -1270,13 +1222,13 @@ fn round1_shift_reduce_extract_c_packed_serial(
     assert_eq!(r.len(), m);
     assert_eq!(inv_table.k, k_skip);
 
-    let eq = SplitEqGhash::new(&r[k_skip + N_INNER..]);
+    let eq = SplitEq::new(&r[k_skip + N_INNER..]);
     let big_lo_size = 1usize << eq.n_lo;
     let hi_size = 1usize << eq.n_hi;
     let n_lo_and_inner = eq.n_lo + N_INNER;
 
     let d_inv_val = d_inv();
-    let eq_lo_scaled: Vec<F128> = eq.lo.iter().map(|v| *v * d_inv_val).collect();
+    let eq_lo_scaled: Vec<F128T> = eq.lo.iter().map(|v| *v * d_inv_val).collect();
     let convert = convert_table();
 
     let (within_outer_mask, b_med_counts) = build_b_med_counts(&PaddingSpec::dense(m));
@@ -1300,13 +1252,13 @@ fn round1_shift_reduce_extract_c_packed_serial(
         );
     }
 
-    let res_c_s: Vec<F128> = state
+    let res_c_s: Vec<F128T> = state
         .local_res_c_s_0
         .iter()
         .zip(state.local_res_c_s_1)
         .map(|(a, b)| *a + b)
         .collect();
-    let res_c_lifted = ntt_extend_f128_vec_ghash(&res_c_s, inv_table);
+    let res_c_lifted = ntt_extend_vec(&res_c_s, inv_table);
     (state.local_res_ab.to_vec(), res_c_lifted)
 }
 
@@ -1375,10 +1327,10 @@ mod tests {
     #[test]
     fn friendly_challenges_f2_independent() {
         // Pack each F₁₂₈ element into a u128 (lo, hi → 128 bits).
-        let mut basis: Vec<u128> = small_challenges_ghash()
+        let mut basis: Vec<u128> = small_challenges()
             .iter()
-            .chain(medium_challenges_ghash().iter())
-            .map(|f| ((f.hi as u128) << 64) | (f.lo as u128))
+            .chain(medium_challenges().iter())
+            .map(|f| ((f.c1 as u128) << 64) | (f.c0 as u128))
             .collect();
         assert_eq!(
             basis.len(),
@@ -1414,14 +1366,14 @@ mod tests {
     /// Build the full `r` vector with the protocol-fixed constants in the
     /// small/medium slots. Only `r[k_skip + N_INNER..]` is the actual
     /// randomness fed to the optimized URM.
-    fn build_protocol_r(m: usize, outer: &[F128]) -> Vec<F128> {
+    fn build_protocol_r(m: usize, outer: &[F128T]) -> Vec<F128T> {
         assert_eq!(outer.len(), m - K_SKIP - N_INNER);
-        let mut r = vec![F128::ZERO; m];
+        let mut r = vec![F128T::ZERO; m];
         // r[0..K_SKIP]: not used by either function — can be anything.
-        for (i, &small) in small_challenges_ghash().iter().enumerate() {
+        for (i, &small) in small_challenges().iter().enumerate() {
             r[K_SKIP + i] = small;
         }
-        for (i, &med) in medium_challenges_ghash().iter().enumerate() {
+        for (i, &med) in medium_challenges().iter().enumerate() {
             r[K_SKIP + 3 + i] = med;
         }
         for (i, &x) in outer.iter().enumerate() {
@@ -1443,7 +1395,7 @@ mod tests {
         let a = rng.bits(1 << m);
         let b = rng.bits(1 << m);
         let c = rng.bits(1 << m);
-        let outer = rng.f128_vec(m - K_SKIP - N_INNER);
+        let outer = rng.ext_vec(m - K_SKIP - N_INNER);
         let r = build_protocol_r(m, &outer);
         let table = make_inv_table();
 
@@ -1459,7 +1411,7 @@ mod tests {
         let a = rng.bits(1 << m);
         let b = rng.bits(1 << m);
         let c = rng.bits(1 << m);
-        let outer = rng.f128_vec(m - K_SKIP - N_INNER);
+        let outer = rng.ext_vec(m - K_SKIP - N_INNER);
         let r = build_protocol_r(m, &outer);
         let table = make_inv_table();
 
@@ -1474,13 +1426,13 @@ mod tests {
     /// pre-scaling.
     #[test]
     fn matches_naive_with_c_s_factor() {
-        let c_s = c_s_f128();
+        let c_s = c_s();
         for &m in &[13usize, 14, 15] {
             let mut rng = Rng::new(100 + m as u64);
             let a = rng.bits(1 << m);
             let b = rng.bits(1 << m);
             let c = rng.bits(1 << m);
-            let outer = rng.f128_vec(m - K_SKIP - N_INNER);
+            let outer = rng.ext_vec(m - K_SKIP - N_INNER);
             let r = build_protocol_r(m, &outer);
             let table = make_inv_table();
 
@@ -1510,33 +1462,18 @@ mod tests {
     fn small_and_medium_challenges_sanity() {
         // Reach into the constants and verify their structural identities.
         // Medium: β_i · (1 + γ^{2^{i-1}}) == γ^{2^{i-1}}.
-        let med = medium_challenges_ghash();
-        let powers = [1u64 << 1, 1u64 << 2, 1u64 << 4, 1u64 << 8];
-        for (i, &p) in powers.iter().enumerate() {
-            let g = F128 { lo: p, hi: 0 };
-            assert_eq!(med[i] * (F128::ONE + g), g, "β_{i} identity");
+        let med = medium_challenges();
+        let g1 = medium_generator();
+        let powers = [g1, g1.square(), g1.square().square(), g1.square().square().square()];
+        for (i, &g) in powers.iter().enumerate() {
+            assert_eq!(med[i] * (F128T::ONE + g), g, "β_{i} identity");
         }
 
         // D · D_inv == 1.
         let d_inv_val = d_inv();
-        let g1 = F128 {
-            lo: 1u64 << 1,
-            hi: 0,
-        };
-        let g2 = F128 {
-            lo: 1u64 << 2,
-            hi: 0,
-        };
-        let g4 = F128 {
-            lo: 1u64 << 4,
-            hi: 0,
-        };
-        let g8 = F128 {
-            lo: 1u64 << 8,
-            hi: 0,
-        };
-        let d = (F128::ONE + g1) * (F128::ONE + g2) * (F128::ONE + g4) * (F128::ONE + g8);
-        assert_eq!(d * d_inv_val, F128::ONE);
+        let [g1, g2, g4, g8] = powers;
+        let d = (F128T::ONE + g1) * (F128T::ONE + g2) * (F128T::ONE + g4) * (F128T::ONE + g8);
+        assert_eq!(d * d_inv_val, F128T::ONE);
     }
 
     #[test]
@@ -1544,7 +1481,7 @@ mod tests {
         use crate::zerocheck::univariate_skip::pack_bits;
 
         // At small m the parallel overhead dominates, but the *output* must
-        // still match the serial version bit-for-bit. F128 XOR-sum reduction
+        // still match the serial version bit-for-bit. F128T XOR-sum reduction
         // is commutative + associative, so any thread-scheduling order yields
         // the same result.
         for &m in &[13usize, 14, 15] {
@@ -1552,7 +1489,7 @@ mod tests {
             let a = rng.bits(1 << m);
             let b = rng.bits(1 << m);
             let c = rng.bits(1 << m);
-            let outer = rng.f128_vec(m - K_SKIP - N_INNER);
+            let outer = rng.ext_vec(m - K_SKIP - N_INNER);
             let r = build_protocol_r(m, &outer);
             let table = make_inv_table();
             let a_p = pack_bits(&a);
@@ -1619,7 +1556,7 @@ mod tests {
                 }
             }
 
-            let outer = rng.f128_vec(m - K_SKIP - N_INNER);
+            let outer = rng.ext_vec(m - K_SKIP - N_INNER);
             let r = build_protocol_r(m, &outer);
             let table = make_inv_table();
             let a_p = pack_bits(&a);
@@ -1753,13 +1690,13 @@ mod tests {
     fn convert_table_structure() {
         // convert[b][v] == γ^b · φ_8(v); check at a handful of (b, v).
         let t = convert_table();
-        let mut g_pow = F128::ONE;
+        let mut g_pow = F128T::ONE;
         for b in 0..16 {
             for &v in &[0u8, 1, 0x57, 0xFF] {
                 let expected = g_pow * PHI_8_TABLE[v as usize];
                 assert_eq!(t[b * 256 + v as usize], expected, "b={b}, v={v}");
             }
-            g_pow = mul_by_x(g_pow);
+            g_pow *= medium_generator();
         }
     }
 
@@ -1775,21 +1712,21 @@ mod tests {
             let a = pack_bits(&rng.bits(1 << m));
             let b = pack_bits(&rng.bits(1 << m));
             let c = pack_bits(&rng.bits(1 << m));
-            let mut r = vec![F128::ZERO; m];
+            let mut r = vec![F128T::ZERO; m];
             // Friendly inner constants must match the optimization's
-            // expectations: 3 small + 4 medium ghash.
+            // expectations: 3 small + 4 medium coordinates.
             for i in 0..3 {
                 r[K_SKIP + i] = phi8(F8(SMALL_CHAL_F8[i]));
             }
-            let medium = crate::zerocheck::univariate_skip_optimized::medium_challenges_ghash();
+            let medium = crate::zerocheck::univariate_skip_optimized::medium_challenges();
             for i in 0..4 {
                 r[K_SKIP + 3 + i] = medium[i];
             }
             for i in 0..K_SKIP {
-                r[i] = rng.f128();
+                r[i] = rng.ext();
             }
             for i in (K_SKIP + N_INNER)..m {
-                r[i] = rng.f128();
+                r[i] = rng.ext();
             }
 
             let inv_table = {

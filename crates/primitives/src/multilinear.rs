@@ -7,7 +7,7 @@
 //! folding, and the mixed first fold that lifts a `K`-table into `E` via
 //! `mul_base` (2 PMULL per term).
 
-use crate::field::{F64, F128, F128T, F128TUnreduced};
+use crate::field::{F64, F128T, F128TUnreduced};
 
 /// Multilinear interpolation in one variable over `E`: `lo + t·(lo+hi)`, the
 /// char-2 form of `(1−t)·lo + t·hi`.
@@ -61,13 +61,6 @@ pub fn fold_low_k(table: &[F64], rho: F128T) -> Vec<F128T> {
     (0..table.len() / 2)
         .map(|i| interp_k(table[2 * i], table[2 * i + 1], rho))
         .collect()
-}
-
-/// Standard inner product of two equal-length field vectors.
-#[inline]
-pub fn inner_product(a: &[F128], b: &[F128]) -> F128 {
-    assert_eq!(a.len(), b.len());
-    a.iter().zip(b).fold(F128::ZERO, |acc, (&x, &y)| acc + x * y)
 }
 
 /// Bind the lowest free variable of `table` to `rho` in place: `table[i] =
@@ -153,55 +146,9 @@ pub fn mle_eval(table: &[F64], point: &[F128T]) -> F128T {
     cur[0]
 }
 
-/// Build the multilinear-eq evaluation table over `r`:
-/// `table[x] = ∏_i ((1 + r_i) · (1 ⊕ bit_i(x)) + r_i · bit_i(x))` for `x ∈ {0,1}^n`,
-/// where `n = r.len()`. Standard in-place power-of-two doubling.
-pub fn build_eq(r: &[F128]) -> Vec<F128> {
-    let n = r.len();
-    // Uninit alloc — same invariant as `build_eq_parallel` in ring_switch:
-    // every slot in t[0..2^n] is written exactly once before any read.
-    let mut t = crate::alloc_uninit_vec::<crate::field::F128>(1usize << n);
-    t[0] = F128::ONE;
-    for i in 0..n {
-        let r_i = r[i];
-        let one_minus_r = F128::ONE + r_i;
-        // Iterate downward so we read t[x] before overwriting it as t[x | (1<<i)].
-        for x in (0..(1usize << i)).rev() {
-            t[x | (1 << i)] = t[x] * r_i;
-            t[x] *= one_minus_r;
-        }
-    }
-    t
-}
-
 /// O(2^{2·k_skip}) field multiplies — one-time cost.
-pub fn lagrange_weights_naive(k_skip: usize, z: F128) -> Vec<F128> {
-    let ell = 1usize << k_skip;
-    assert!(ell <= 256, "k_skip > 8 would exceed PHI_8_TABLE");
-    let mut weights = vec![F128::ZERO; ell];
-    for i in 0..ell {
-        let si = crate::field::phi8::PHI_8_TABLE[i];
-        let mut num = F128::ONE;
-        let mut den = F128::ONE;
-        for j in 0..ell {
-            if j == i {
-                continue;
-            }
-            let sj = crate::field::phi8::PHI_8_TABLE[j];
-            num *= z + sj;
-            den *= si + sj;
-        }
-        weights[i] = num * den.inv();
-    }
-    weights
-}
-
-/// Tower (`F128T`) twin of [`lagrange_weights_naive`]: the φ₈ Lagrange weights
-/// over the tower embedding ([`crate::field::phi8_tower`]). Used by the flock
-/// verifier and the PCS ring-switch boundary once flock's claims are `F128T`.
-pub fn lagrange_weights_naive_t(k_skip: usize, z: crate::field::F128T) -> Vec<crate::field::F128T> {
-    use crate::field::F128T;
-    use crate::field::phi8_tower::PHI_8_TABLE;
+pub fn lagrange_weights_naive(k_skip: usize, z: F128T) -> Vec<F128T> {
+    use crate::field::PHI_8_TABLE;
     let ell = 1usize << k_skip;
     assert!(ell <= 256, "k_skip > 8 would exceed PHI_8_TABLE");
     let mut weights = vec![F128T::ZERO; ell];

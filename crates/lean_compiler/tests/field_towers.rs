@@ -5,7 +5,7 @@
 //! `primitives::field::gf2_64x3`; this file keeps the main-workspace
 //! `cargo test` honest about the essentials.
 
-use primitives::field::{F128, F192, F192Unreduced};
+use primitives::field::{F128T, F192, F192Unreduced};
 use rand::Rng;
 
 fn rand_f192(rng: &mut impl Rng) -> F192 {
@@ -45,15 +45,15 @@ fn deferred_reduction_matches_reduced_sums() {
     assert_eq!(acc192.reduce(), want192);
 }
 
-/// The F128 fast-squaring path added alongside the new fields.
+/// The quadratic tower's fast-squaring path.
 #[test]
-fn f128_square_matches_mul() {
+fn tower_square_matches_mul() {
     let mut rng = rand::rng();
     for _ in 0..500 {
-        let a = F128::new(rng.random(), rng.random());
+        let a = F128T::new(rng.random(), rng.random());
         assert_eq!(a.square(), a * a);
         if !a.is_zero() {
-            assert_eq!(a * a.inv(), F128::ONE);
+            assert_eq!(a * a.inv(), F128T::ONE);
         }
     }
 }

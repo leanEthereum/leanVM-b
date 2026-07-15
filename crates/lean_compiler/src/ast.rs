@@ -225,7 +225,7 @@ pub struct Func {
 pub struct Ast {
     pub funcs: Vec<Func>,
     /// Top-level constant arrays `NAME = [a, b, c]` (declaration order). Each
-    /// element is a `u128` (a field value `F128::new(lo,hi)` where used as a
+    /// element is a `u128` (a field value `extension-field::new(lo,hi)` where used as a
     /// value, or a small integer where used as a compile-time index / bound /
     /// `unroll` count). Indexed `NAME[i]` and measured `len(NAME)` at compile
     /// time only (`i` a literal / constant / `unroll` var). Not textually

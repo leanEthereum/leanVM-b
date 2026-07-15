@@ -35,9 +35,9 @@ pub enum WitnessLayout {
 ///
 /// `k_skip` is the zerocheck's univariate-skip dimension (`k_skip ≤ k_log`).
 /// It defines how the m-dim claim point is laid out in the protocol: one
-/// univariate F128 coord binds the LSB `k_skip` bits, `k_log − k_skip`
-/// multilinear F128 coords bind the next inner bits, and `n_log` multilinear
-/// F128 coords bind the outer bits.
+/// univariate F128T coord binds the LSB `k_skip` bits, `k_log − k_skip`
+/// multilinear F128T coords bind the next inner bits, and `n_log` multilinear
+/// F128T coords bind the outer bits.
 #[derive(Debug)]
 pub struct BlockR1cs {
     pub m: usize,

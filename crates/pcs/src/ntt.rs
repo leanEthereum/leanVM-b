@@ -1,18 +1,14 @@
 // Credit: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
 //! Additive NTTs (Lin–Chung–Han novel polynomial basis).
 //!
-//! Two transforms live here:
-//! - [`additive_ntt_f128`] (re-exported as [`AdditiveNttF128`]): the
-//!   F_{2^128} LCH NTT used by the PCS commit and Ligerito.
-//! - [`AdditiveNttGf8`] (this file) plus [`inv_table`]: a small GF(2^8) NTT
+//! Two transforms live here: [`AdditiveNttF64`] for Ligerito commitments and
+//! [`AdditiveNttGf8`] (this file) plus [`inv_table`] for a small GF(2^8) NTT
 //!   used by flock's univariate-skip zerocheck round.
 
 use primitives::field::F8;
 
-pub mod additive_ntt_f128;
 pub mod additive_ntt_f64;
 pub mod inv_table;
-pub use additive_ntt_f128::AdditiveNttF128;
 pub use additive_ntt_f64::AdditiveNttF64;
 pub use inv_table::InvNttTableByteSingleGf8;
 

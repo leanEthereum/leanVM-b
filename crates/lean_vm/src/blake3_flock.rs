@@ -5,7 +5,7 @@
 //! commitment. The VM's `BLAKE3` table binds to it by point-eval equality (its
 //! value columns and `q_pkd`'s slots are point-evals of the same committed
 //! stack), and flock's R1CS validity is discharged by the same stacked Ligerito-K:
-//! the reduction's two claims cross from flock's GHASH world into the tower via
+//! the reduction's two tower-field claims pass through
 //! [`ring_switch_open`] / [`ring_switch_verify`] and join the batch-mixed
 //! opening ([`::pcs::stack_open_k`]).
 //!
@@ -30,10 +30,10 @@
 //! cv and the counter / blen‖flags slots hold constants baked into the
 //! per-block matrices (constant rows), so no claims are needed to pin them.
 
-use primitives::field::{F64, F128, F128T, ghash_to_tower};
+use primitives::field::{F64, F128T};
 use crate::transcript::{ProverState, VerifierState};
 use ::pcs::pack_k::{LOG_PACKING_K, PACKING_WIDTH_K};
-use primitives::multilinear::lagrange_weights_naive_t;
+use primitives::multilinear::lagrange_weights_naive;
 use flock::blake3::{
     Blake3Setup, Compression, K_LOG, ReducedClaims, ReductionReplay, blake3_compress,
     generate_witness_with_ab_packed_and_lincheck, min_n_blocks_log,
@@ -42,8 +42,7 @@ use flock::verifier::VerifyError;
 
 /// A `ẑ(point) = value` claim on the committed witness `q_pkd`, recovered by the
 /// Flock zerocheck + lincheck reduction ([`prove_reduction`] / [`verify_reduction`])
-/// and later discharged by the PCS. Re-exported from [`flock::proof`] (GHASH-
-/// typed; [`ring_switch_verify`] maps it into the tower).
+/// and later discharged by the PCS. Re-exported from [`flock::proof`].
 pub use flock::proof::ZClaim;
 
 /// flock flags for a single 64-byte root block: `CHUNK_START(1) | CHUNK_END(2) |
@@ -136,15 +135,15 @@ pub fn padding_compression() -> Compression {
     flock::blake3::padding_block()
 }
 
-/// Flatten flock's GHASH-packed witness (128 bits per `F128` word, bit `i` at
+/// Flatten flock's packed witness (128 bits per `F128T` word, bit `i` at
 /// position `i`) into the committed `F64` packing (64 bits per word): word `j`
 /// becomes words `2j` (lo lanes, bits 0..64) and `2j+1` (hi lanes, bits
 /// 64..128), which is exactly `pack_witness_k`'s convention on the same bit string.
-fn flatten_packed(packed: Vec<F128>) -> Vec<F64> {
+fn flatten_packed(packed: Vec<F128T>) -> Vec<F64> {
     let mut out = Vec::with_capacity(packed.len() * 2);
     for w in packed {
-        out.push(F64(w.lo));
-        out.push(F64(w.hi));
+        out.push(F64(w.c0));
+        out.push(F64(w.c1));
     }
     out
 }
@@ -237,9 +236,8 @@ pub fn family_digest() -> [u8; 32] {
 /// witness `q_pkd` — `ab` (`A∘B`, lincheck) and `c` (`C`, zerocheck) — along
 /// with the regenerated packed witness (already flattened to the committed
 /// `F64` packing). The sub-proof scalars ride the shared transcript stream
-/// (`ps.add_scalar` at the protocol points); flock runs entirely in its GHASH
-/// world on the shared sponge, only the claims cross into the tower
-/// ([`ring_switch_open`]). Does NOT open the PCS: the caller discharges the
+/// (`ps.add_scalar` at the protocol points); flock runs natively in the tower
+/// field on the shared sponge. Does NOT open the PCS: the caller discharges the
 /// returned claims via [`crate::pcs::open`] (as [`crate::cpu`]'s prove does).
 /// The statement is already transcript-bound (the fs_seed, the announced
 /// sizes, and the commitment root on the stream), so `commitment` is only a
@@ -275,17 +273,10 @@ pub fn verify_reduction(
 /// covers exactly the `k_skip = LOG_PACKING_K = 6` packed variables, so the
 /// packing prefix is the 64 φ8-Lagrange weights at `z_skip`, and the WHOLE
 /// multilinear tail `x_inner_rest ++ x_outer` is the suffix point (`q_pkd` has
-/// `2^(K_LOG + n_log − 6)` words: one more variable than the old F128 stack, and
-/// no coordinate is split off into the prefix). Everything crosses from GHASH to
-/// the tower through the field isomorphism `ghash_to_tower`, under which the
-/// claim identity `value = Σ_i L_i(z_skip)·ŝ_i(suffix)` transports exactly (the
-/// bit-slice MLEs have F2 coefficients, which the isomorphism fixes).
-fn ring_claim(z: &ZClaim, s_hat_v128: Option<&[F128]>, qpkd_vars: usize) -> crate::pcs::RingSwitchClaimK {
-    // flock's claim is now native tower (F128T): its point, value, and the φ₈
-    // weights need no isomorphism. Only `s_hat_v` remains a GHASH capture
-    // (prover-side; the verifier passes `None`), so it alone crosses via
-    // `ghash_to_tower` below.
-    let prefix_weights: Vec<F128T> = lagrange_weights_naive_t(LOG_PACKING_K, z.point.z_skip);
+/// `2^(K_LOG + n_log − 6)` words: one more variable than the old extension-field stack, and
+/// no coordinate is split off into the prefix).
+fn ring_claim(z: &ZClaim, captured: Option<&[F128T]>, qpkd_vars: usize) -> crate::pcs::RingSwitchClaimK {
+    let prefix_weights: Vec<F128T> = lagrange_weights_naive(LOG_PACKING_K, z.point.z_skip);
     let mut suffix_point: Vec<F128T> = z.point.x_inner_rest.clone();
     suffix_point.extend_from_slice(&z.point.x_outer);
     // Length invariant: prefix (6) + suffix == K_LOG + n_blocks_log, i.e. the
@@ -302,22 +293,20 @@ fn ring_claim(z: &ZClaim, s_hat_v128: Option<&[F128]>, qpkd_vars: usize) -> crat
     // `y = 2y' + b` is the b-half of 128-word `y'`, and bit `i` of that half
     // is bit `i + 64b` of the 128-word, so
     //     s64[i] = (1+c)·s128[i] + c·s128[i+64].
-    // Exact field arithmetic under the GHASH→tower isomorphism, so the values
-    // are bit-identical to the fold the opener would otherwise run (and are
-    // hard-checked against the claim in `ring_switch_k::prove`).
-    let s_hat_v = s_hat_v128.and_then(|s128| {
-        if s128.len() != 2 * PACKING_WIDTH_K || z.point.x_inner_rest.is_empty() {
-            return None;
+    // Lincheck already captures the 64 slices expected by the K ring switch.
+    // Zerocheck's fused kernel captures two 64-slice banks around the first
+    // suffix coordinate; fold that coordinate here without rescanning q_pkd.
+    let s_hat_v = captured.and_then(|s| match s.len() {
+        PACKING_WIDTH_K => Some(s.to_vec()),
+        n if n == 2 * PACKING_WIDTH_K && !z.point.x_inner_rest.is_empty() => {
+            let c = z.point.x_inner_rest[0];
+            Some(
+                (0..PACKING_WIDTH_K)
+                    .map(|i| (F128T::ONE + c) * s[i] + c * s[i + PACKING_WIDTH_K])
+                    .collect(),
+            )
         }
-        let c = z.point.x_inner_rest[0];
-        let one_plus_c = F128T::ONE + c;
-        Some(
-            (0..PACKING_WIDTH_K)
-                .map(|i| {
-                    one_plus_c * ghash_to_tower(s128[i]) + c * ghash_to_tower(s128[i + PACKING_WIDTH_K])
-                })
-                .collect(),
-        )
+        _ => None,
     });
     crate::pcs::RingSwitchClaimK {
         prefix_weights,

@@ -9,5 +9,4 @@ use crate::zerocheck;
 pub enum VerifyError {
     Zerocheck(zerocheck::VerifyError),
     Lincheck(lincheck::VerifyError),
-    Pcs(::pcs::VerifyError),
 }

@@ -358,7 +358,7 @@ fn gen_agg(
     // per-claim dense weight tables: rows = quirky eq, cols = eq(top rounds) x z_partial.
     let mut us: Vec<Vec<F128T>> = subs
         .iter()
-        .map(|d| flock::lincheck::build_quirky_eq_table_t(d.zz, &d.zrho8, 6))
+        .map(|d| flock::lincheck::build_quirky_eq_table(d.zz, &d.zrho8, 6))
         .collect();
     let ws: Vec<Vec<F128T>> = subs
         .iter()
@@ -465,7 +465,7 @@ fn gen_agg(
         let eqc = pcs::ligerito_k::build_eq_table_ext(&r_col[..6]);
         let (mut wam, mut wbm) = (F128T::ZERO, F128T::ZERO);
         for (t, d) in subs.iter().enumerate() {
-            let lam = primitives::multilinear::lagrange_weights_naive_t(6, d.zz);
+            let lam = primitives::multilinear::lagrange_weights_naive(6, d.zz);
             let mut urow: F128T = (0..64).map(|i| lam[i] * eqr[i]).fold(F128T::ZERO, |a, x| a + x);
             for (k, &z) in d.zrho8.iter().enumerate() {
                 urow *= F128T::ONE + z + r_row[6 + k];
@@ -669,7 +669,7 @@ fn gen_verify(
 
     // ---- the stacked opening: config + the opening summary ----
     let stack_mu = l.m;
-    let vcfg = pcs::ligerito::LigeritoSecurityConfig::derive_config(stack_mu + 7)
+    let vcfg = pcs::ligerito::LigeritoSecurityConfig::derive_config(stack_mu + pcs::LOG_PACKING)
     .and_then(|s| s.to_prover_verifier_configs())
     .expect("stack ligerito config")
     .1;
@@ -1294,7 +1294,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     // Per-claim y-slot hint stride (overlap mask / slot bit rows).
     ps("YR_SLOT_STRIDE", "8".to_string());
     const MINB3: usize = 3;
-    let fixed_challenges: Vec<F128T> = flock::zerocheck::univariate_skip_optimized::small_challenges_tower().into_iter().chain(flock::zerocheck::univariate_skip_optimized::medium_challenges_tower()).collect();
+    let fixed_challenges: Vec<F128T> = flock::zerocheck::univariate_skip_optimized::small_challenges().into_iter().chain(flock::zerocheck::univariate_skip_optimized::medium_challenges()).collect();
     ps("FIXED_CHALLENGES", flds(&fixed_challenges));
     // Flock univariate skip: 6 skipped variables, then the fixed inner rounds.
     ps("K_SKIP", "6".to_string());
@@ -1319,7 +1319,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     // Coordinate basis e_i of F128T over F2 (spans the WHOLE field): e_i =
     // new(1<<i, 0) for i<64, new(0, 1<<(i-64)) for i>=64. `hint_decompose_bits`
     // emits a word's coordinate bits, so the guest reconstructs Σ b_i·e_i = v
-    // with THIS basis. (In GHASH the field generator's powers g^i coincided
+    // with THIS basis. (In legacy polynomial-basis field the field generator's powers g^i coincided
     // with e_i; in the tower g∈F64 spans only F64, so g^i must NOT be used as
     // the reconstruction weight.)
     let coord_basis: Vec<F128T> = (0..128)
@@ -1338,13 +1338,13 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("PIN_COLUMN", pincol.to_string());
     ps("K_LOG", flock::blake3::K_LOG.to_string());
     // The q_pkd Strided-claim slot stride: K_LOG - LOG_PACKING_K. Coincided with
-    // LOG2_FIELD_BITS (7) under F128 packing; with K=F64 packing (LOG_PACKING_K=6)
+    // LOG2_FIELD_BITS (7) under extension-field packing; with K=F64 packing (LOG_PACKING_K=6)
     // it is now 8, so the qpkd point-claim slot must use THIS, not LOG2_FIELD_BITS.
     ps("SLOT_STRIDE_LOG", lean_vm::blake3_flock::SLOT_STRIDE_LOG.to_string());
 
     // ---- LIG candidate tables (fixed [minm, maxm] range; open_stacked config) ----
     let oshape = |m: usize| {
-        let vc = pcs::ligerito::LigeritoSecurityConfig::derive_config(m + 7)
+        let vc = pcs::ligerito::LigeritoSecurityConfig::derive_config(m + pcs::LOG_PACKING)
             .and_then(|s| s.to_prover_verifier_configs()).expect("candidate ligerito config").1;
         let sh = vc.level_shapes(m);
         let (cn, cr) = (sh.levels, vc.level_steps);
@@ -1444,7 +1444,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("LIG_MIN_SHIFT_INV", u(F128T::new(g_pow(minm).inv().0, 0)).to_string());
     ps("CLAIM_POINT_BUF", ints(&cpbuf));
     ps("CLAIM_POINT_OFF", ints(&cpoff));
-    ps("QPKD_VARS_CAP", (33 + flock::blake3::K_LOG - 7).to_string());
+    ps("QPKD_VARS_CAP", (33 + lean_vm::blake3_flock::SLOT_STRIDE_LOG).to_string());
     ps("BYTECODE_LOG", kbc.to_string());
     // The stacked bytecode: nbcv/2 encoding columns per side, packed along
     // log2_ceil(cols) selector bits. The defer region is 2*kbc points + sel
@@ -1587,12 +1587,12 @@ fn recursion_soundness_binds() {
     // The first residual-slot PADDING coordinate (k = yr_log_n), shape-derived
     // from the fold ladder so the test survives changes to the fold constants
     // (INITIAL_K / LEVEL_K / RESIDUAL_MAX_LOG). This inner commits a stack of
-    // log-size 22 (flock m = 22 + 7); YR_LOG_CAP is the max residual log over
+    // log-size 22; YR_LOG_CAP is the max residual log over
     // the guest's dispatch candidates (mu 22..=28, mirroring gen_verify). The
     // guest only reads YR_LOG_CAP slot coords, so a pad coordinate to tamper
     // exists only when this candidate's yr_log_n sits BELOW the cap.
     let yr_log = |mu: usize| {
-        pcs::ligerito::LigeritoSecurityConfig::derive_config(mu + 7)
+        pcs::ligerito::LigeritoSecurityConfig::derive_config(mu + pcs::LOG_PACKING)
             .and_then(|s| s.to_prover_verifier_configs())
             .expect("stacked opening config")
             .1
