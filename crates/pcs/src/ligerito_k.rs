@@ -92,13 +92,13 @@ pub fn build_eq_table_ext(point: &[F128T]) -> Vec<F128T> {
     out.push(F128T::ONE);
     for j in 0..d {
         let r_j = point[j];
-        let one_plus_r_j = F128T::ONE + r_j;
         let len = 1usize << j;
         out.resize(2 * len, F128T::ZERO);
         for i in 0..len {
             let v = out[i];
-            out[i + len] = v * r_j;
-            out[i] = v * one_plus_r_j;
+            let high = v * r_j;
+            out[i + len] = high;
+            out[i] = v + high;
         }
     }
     out
@@ -137,23 +137,24 @@ pub fn build_eq_table_ext_seeded_into(point: &[F128T], seed: F128T, out: &mut [F
     const PAR_THRESHOLD: usize = 1 << 12;
     for j in 0..n {
         let r_j = point[j];
-        let one_plus_r_j = F128T::ONE + r_j;
         let half = 1usize << j;
         let (lo, hi_rest) = out.split_at_mut(half);
         let hi = &mut hi_rest[..half];
         if half < PAR_THRESHOLD {
             for (lo_x, hi_x) in lo.iter_mut().zip(hi.iter_mut()) {
                 let v = *lo_x;
-                *hi_x = v * r_j;
-                *lo_x = v * one_plus_r_j;
+                let high = v * r_j;
+                *hi_x = high;
+                *lo_x = v + high;
             }
         } else {
             lo.par_iter_mut()
                 .zip(hi.par_iter_mut())
                 .for_each(|(lo_x, hi_x)| {
                     let v = *lo_x;
-                    *hi_x = v * r_j;
-                    *lo_x = v * one_plus_r_j;
+                    let high = v * r_j;
+                    *hi_x = high;
+                    *lo_x = v + high;
                 });
         }
     }
@@ -1587,18 +1588,15 @@ fn fold_and_msg_lsb_base(
     debug_assert!(n.is_power_of_two() && n >= 2);
     debug_assert_eq!(b.len(), n);
     let half = n / 2;
-    let one_plus_r = F128T::ONE + r;
 
-    // Every 2-product sum defers its reduction: the fold writes pay ONE
-    // reduction instead of two (`(1+r)·x + r·y` accumulated raw), and the
-    // message accumulators reduce once per chunk — bit-identical throughout
-    // (reduction commutes with XOR).
+    // Characteristic-two interpolation needs one product rather than two:
+    // `x0·(1+r) + x1·r = x0 + r·(x0+x1)`. The witness uses the mixed K×E
+    // product; the basis uses a full E product. Both are bit-identical to the
+    // two-product form and each still performs just one reduction.
     let fold_f = |j: usize| -> F128T {
-        (one_plus_r.mul_base_unreduced(f[2 * j]) ^ r.mul_base_unreduced(f[2 * j + 1])).reduce()
+        F128T::from(f[2 * j]) + r.mul_base(f[2 * j] + f[2 * j + 1])
     };
-    let fold_b = |j: usize| -> F128T {
-        (b[2 * j].mul_unreduced(one_plus_r) ^ b[2 * j + 1].mul_unreduced(r)).reduce()
-    };
+    let fold_b = |j: usize| -> F128T { b[2 * j] + r * (b[2 * j] + b[2 * j + 1]) };
     const PAR_THRESHOLD: usize = 4096;
     if half < PAR_THRESHOLD {
         let mut nf = Vec::with_capacity(half);
@@ -1680,13 +1678,11 @@ fn fold_and_msg_lsb_ext(
     debug_assert!(n.is_power_of_two() && n >= 2);
     debug_assert_eq!(b.len(), n);
     let half = n / 2;
-    let one_plus_r = F128T::ONE + r;
 
-    // Deferred throughout, as in [`fold_and_msg_lsb_base`]: fold writes pay
-    // one reduction instead of two, message accumulators reduce once per
-    // chunk — bit-identical.
+    // One-multiply characteristic-two interpolation, as in
+    // [`fold_and_msg_lsb_base`].
     let fold_pair = |x0: F128T, x1: F128T| -> F128T {
-        (x0.mul_unreduced(one_plus_r) ^ x1.mul_unreduced(r)).reduce()
+        x0 + r * (x0 + x1)
     };
     const PAR_THRESHOLD: usize = 4096;
     if half < PAR_THRESHOLD {
