@@ -45,7 +45,8 @@ runtime integers.
   rejected. This is distinct from `//`, compile-time integer floor division in
   sizes and indices,
 - an integer literal `n` supplies up to 128 raw bits and is embedded as
-  `F192(c0, c1, 0)`. Thus `5` is `1 + x^2`, not the integer five, and
+  `F192(c0, c1, 0)`. This is a source-syntax limit, not the machine-word
+  width: words have three 64-bit limbs. Thus `5` is `1 + x^2`, not the integer five, and
   `2 ** 64` is the tower element `y`. Full-width constants use
   `f192(c0, c1, c2)`, with each limb an unsigned 64-bit compile-time integer,
 - `GEN` is the fixed generator `g = x` of the 64-bit subfield `K^×`
@@ -605,7 +606,8 @@ Operands are size-2 `StackBuf`s or 2-cell slices:
 - **stack operands** are read/written in place — zero copies; a self-hash
   `blake3(h, h, out)` aliases one 2-cell pair into both inputs;
 - the instruction addresses its **four canonical 128-bit input chunks
-  independently** (each is an F192 cell constrained to `c2 = 0`), so when a 256-bit operand is
+  independently** (each is a full F192 memory cell constrained at this use to
+  the BLAKE3 subspace `c2 = 0`), so when a 256-bit operand is
   *assembled* from values that live in different places — the idiom
   `p = StackBuf(2); p[0] = t0; p[1] = t1; blake3(p, …)` — the copies vanish:
   a stack store of a plain copy or a zero is forwarded to its source (see
