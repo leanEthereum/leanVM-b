@@ -4,8 +4,8 @@
 //! Structure and conventions mirror [`super::additive_ntt_f128`] exactly (see
 //! its module docs for the subspace-polynomial construction, the
 //! neighbors-last layer ordering, and the SoA interleaved layout). The inner
-//! butterfly loops route through a NEON lane-pair kernel (two 1-PMULL
-//! products per iteration with a PMULL-by-0x1B pair fold, no GPR
+//! butterfly loops route through an eight-lane NEON kernel (four independent
+//! lane-pair products with PMULL-by-0x1B folds, no GPR
 //! round-trips); at large sizes the transform is memory-bandwidth bound
 //! either way, like its extension-field twin.
 
@@ -379,10 +379,10 @@ fn butterfly_interleaved_block(
 /// Butterfly all `num_ntts` lanes of one (top row, bottom row) pair with a
 /// shared twiddle: new_u = u + v*t; new_v = v + new_u.
 ///
-/// On NEON this processes two lanes per iteration entirely inside the vector
-/// register file (2 PMULL for the products, one PMULL-by-0x1B pair fold, no
-/// GPR round-trips), which is what makes the F64 NTT beat the extension-field one on
-/// equal bytes; the scalar path is the portable fallback and the odd tail.
+/// On NEON this processes eight lanes per iteration. Four independent pair
+/// reductions stay in the vector register file, exposing their PMULL chains
+/// in parallel and amortizing the loop branch and constant setup. The pair
+/// kernel handles a short even tail, and the scalar path handles an odd tail.
 #[inline]
 fn butterfly_lanes(top: &mut [F64], bot: &mut [F64], twiddle: F64) {
     debug_assert_eq!(top.len(), bot.len());
@@ -413,16 +413,25 @@ fn butterfly_lanes(top: &mut [F64], bot: &mut [F64], twiddle: F64) {
     }
     #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
     {
-        let pairs = top.len() / 2;
+        let vectors = top.len() / 8;
         // SAFETY: aes target feature is enabled at compile time; the kernel
-        // reads/writes exactly lanes [2i, 2i+1] of each row.
+        // reads/writes exactly lanes [8i, 8i+8) of each row.
         unsafe {
-            for i in 0..pairs {
-                butterfly_lane_pair_neon(
-                    top.as_mut_ptr().add(2 * i),
-                    bot.as_mut_ptr().add(2 * i),
+            for i in 0..vectors {
+                butterfly_lanes_neon_8(
+                    top.as_mut_ptr().add(8 * i),
+                    bot.as_mut_ptr().add(8 * i),
                     twiddle.0,
                 );
+            }
+            let mut lane = 8 * vectors;
+            while lane + 2 <= top.len() {
+                butterfly_lane_pair_neon(
+                    top.as_mut_ptr().add(lane),
+                    bot.as_mut_ptr().add(lane),
+                    twiddle.0,
+                );
+                lane += 2;
             }
         }
         if top.len() % 2 == 1 {
@@ -448,6 +457,84 @@ fn butterfly_lanes(top: &mut [F64], bot: &mut [F64], twiddle: F64) {
             top[lane] = new_u;
             bot[lane] = v + new_u;
         }
+    }
+}
+
+/// Eight F64 butterflies as four independent NEON lane-pair reductions.
+/// Loading all four bottom vectors before reducing them gives the out-of-order
+/// core four independent PMULL chains to schedule, while one call amortizes
+/// loop control and the duplicated twiddle/reduction constants over 8 lanes.
+///
+/// # Safety
+/// Requires the `aes` target feature; `top`/`bot` must each point at eight
+/// readable+writable F64 values.
+#[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
+#[inline]
+#[target_feature(enable = "aes")]
+unsafe fn butterfly_lanes_neon_8(top: *mut F64, bot: *mut F64, twiddle: u64) {
+    use core::arch::aarch64::*;
+    use primitives::field::gf2_64::aarch64::reduce_pair_pmull4;
+
+    // SAFETY: caller guarantees the two eight-element regions; F64 is
+    // repr(transparent) over u64 and this function carries the aes feature.
+    unsafe {
+        let v0 = vld1q_u64(bot.cast());
+        let v1 = vld1q_u64(bot.cast::<u64>().add(2));
+        let v2 = vld1q_u64(bot.cast::<u64>().add(4));
+        let v3 = vld1q_u64(bot.cast::<u64>().add(6));
+        let tw = vdupq_n_u64(twiddle);
+
+        let p00: uint64x2_t =
+            core::mem::transmute(vmull_p64(vgetq_lane_u64::<0>(v0), twiddle));
+        let p01: uint64x2_t = core::mem::transmute(vmull_high_p64(
+            core::mem::transmute(v0),
+            core::mem::transmute(tw),
+        ));
+        let p10: uint64x2_t =
+            core::mem::transmute(vmull_p64(vgetq_lane_u64::<0>(v1), twiddle));
+        let p11: uint64x2_t = core::mem::transmute(vmull_high_p64(
+            core::mem::transmute(v1),
+            core::mem::transmute(tw),
+        ));
+        let p20: uint64x2_t =
+            core::mem::transmute(vmull_p64(vgetq_lane_u64::<0>(v2), twiddle));
+        let p21: uint64x2_t = core::mem::transmute(vmull_high_p64(
+            core::mem::transmute(v2),
+            core::mem::transmute(tw),
+        ));
+        let p30: uint64x2_t =
+            core::mem::transmute(vmull_p64(vgetq_lane_u64::<0>(v3), twiddle));
+        let p31: uint64x2_t = core::mem::transmute(vmull_high_p64(
+            core::mem::transmute(v3),
+            core::mem::transmute(tw),
+        ));
+
+        let prod0 = reduce_pair_pmull4(p00, p01);
+        let prod1 = reduce_pair_pmull4(p10, p11);
+        let prod2 = reduce_pair_pmull4(p20, p21);
+        let prod3 = reduce_pair_pmull4(p30, p31);
+
+        let u0 = vld1q_u64(top.cast());
+        let u1 = vld1q_u64(top.cast::<u64>().add(2));
+        let u2 = vld1q_u64(top.cast::<u64>().add(4));
+        let u3 = vld1q_u64(top.cast::<u64>().add(6));
+        let new_u0 = veorq_u64(u0, prod0);
+        let new_u1 = veorq_u64(u1, prod1);
+        let new_u2 = veorq_u64(u2, prod2);
+        let new_u3 = veorq_u64(u3, prod3);
+        let new_v0 = veorq_u64(v0, new_u0);
+        let new_v1 = veorq_u64(v1, new_u1);
+        let new_v2 = veorq_u64(v2, new_u2);
+        let new_v3 = veorq_u64(v3, new_u3);
+
+        vst1q_u64(top.cast(), new_u0);
+        vst1q_u64(top.cast::<u64>().add(2), new_u1);
+        vst1q_u64(top.cast::<u64>().add(4), new_u2);
+        vst1q_u64(top.cast::<u64>().add(6), new_u3);
+        vst1q_u64(bot.cast(), new_v0);
+        vst1q_u64(bot.cast::<u64>().add(2), new_v1);
+        vst1q_u64(bot.cast::<u64>().add(4), new_v2);
+        vst1q_u64(bot.cast::<u64>().add(6), new_v3);
     }
 }
 
@@ -586,22 +673,23 @@ mod tests {
         let mut s = 2u64;
         let log_d = 7;
         let n = 1usize << log_d;
-        let lanes = 4usize;
-        // SoA buffer + per-lane copies.
-        let mut soa = vec![F64::ZERO; n * lanes];
-        let mut per_lane: Vec<Vec<F64>> = vec![vec![F64::ZERO; n]; lanes];
-        for pos in 0..n {
-            for lane in 0..lanes {
-                let v = F64(splitmix64(&mut s));
-                soa[pos * lanes + lane] = v;
-                per_lane[lane][pos] = v;
-            }
-        }
-        ntt.forward_transform_interleaved(&mut soa, lanes);
-        for (lane, lane_data) in per_lane.iter_mut().enumerate() {
-            ntt.forward_transform_scalar(lane_data);
+        for lanes in [1usize, 2, 4, 8, 64] {
+            // SoA buffer + per-lane copies.
+            let mut soa = vec![F64::ZERO; n * lanes];
+            let mut per_lane: Vec<Vec<F64>> = vec![vec![F64::ZERO; n]; lanes];
             for pos in 0..n {
-                assert_eq!(soa[pos * lanes + lane], lane_data[pos]);
+                for lane in 0..lanes {
+                    let v = F64(splitmix64(&mut s));
+                    soa[pos * lanes + lane] = v;
+                    per_lane[lane][pos] = v;
+                }
+            }
+            ntt.forward_transform_interleaved(&mut soa, lanes);
+            for (lane, lane_data) in per_lane.iter_mut().enumerate() {
+                ntt.forward_transform_scalar(lane_data);
+                for pos in 0..n {
+                    assert_eq!(soa[pos * lanes + lane], lane_data[pos]);
+                }
             }
         }
     }
