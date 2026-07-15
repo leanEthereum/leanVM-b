@@ -64,7 +64,7 @@ use serde::{Deserialize, Serialize};
 use super::ligerito::{ProverConfig, VerifierConfig};
 use super::ligerito_k::{
     LigeritoProofK, ProverDataK, build_eq_table_ext, build_eq_table_ext_seeded_into,
-    recursive_prover_with_basis_k, recursive_verifier_with_basis_succinct_k,
+    recursive_prover_with_basis_k, recursive_verifier_with_basis_succinct_k_with_squeezes,
 };
 use super::pack_k::PACKING_WIDTH_K;
 use super::ring_switch_k::{
@@ -396,20 +396,19 @@ pub fn open_batch_mixed_ligerito_stacked_k(
         *t = std::time::Instant::now();
     };
 
-    sponge.absorb_bytes(b"flock-pcs-open-batch-k-v0");
-
-    // 1. Ring-switch reduction per claim, in transcript order (each prove
-    //    observes its own label + s_hat_v and samples its r'').
+    // 1. Ring-switch reduction: observe EVERY claim's s_hat_v first, then sample
+    //    ONE shared r'' (matches the F128 opener + the recursion guest), then
+    //    finish each claim's sumcheck/weight against the shared eq tensor.
     let qpkd = &stack[ring.offset..ring.offset + qpkd_len];
     let mut rs_proofs = Vec::with_capacity(ring.claims.len());
-    let mut rs_outputs = Vec::with_capacity(ring.claims.len());
+    let mut rs_states = Vec::with_capacity(ring.claims.len());
     for claim in &ring.claims {
         assert_eq!(
             claim.suffix_point.len(),
             ring.qpkd_vars,
             "ring-switch suffix point must have qpkd_vars coords"
         );
-        let (proof, out) = ring_switch_k::prove(
+        let (proof, state) = ring_switch_k::prove_observe(
             qpkd,
             &claim.prefix_weights,
             &claim.suffix_point,
@@ -418,8 +417,14 @@ pub fn open_batch_mixed_ligerito_stacked_k(
             sponge,
         );
         rs_proofs.push(proof);
-        rs_outputs.push(out);
+        rs_states.push(state);
     }
+    let r_dprime = sample_ext_vec(sponge, ring_switch_k::LOG_DEGREE_E);
+    let eq_r_dprime = build_eq_table_ext(&r_dprime);
+    let rs_outputs: Vec<_> = rs_states
+        .iter()
+        .map(|s| ring_switch_k::prove_finish(s, &eq_r_dprime))
+        .collect();
     mark("ring-switch proves", &mut t);
     // Per-claim batching gammas, sampled AFTER all ring-switch messages are
     // bound (mirror of the F128 layer's gamma_rs pattern).
@@ -428,7 +433,6 @@ pub fn open_batch_mixed_ligerito_stacked_k(
     // 2. Observe point-claim values + sample their gammas (Schwartz-Zippel
     //    sound: every gamma_pd is sampled after all values are observed).
     for claim in point_claims {
-        sponge.absorb_bytes(b"flock-pcs-packed-direct-k-v0");
         observe_ext(sponge, claim.value());
     }
     let gammas_pd = sample_ext_vec(sponge, point_claims.len());
@@ -539,18 +543,21 @@ pub fn verify_opening_batch_mixed_ligerito_stacked_k(
         return None;
     }
 
-    sponge.absorb_bytes(b"flock-pcs-open-batch-k-v0");
-
-    // 1. Ring-switch succinct verify per claim (no dense rs_eq_ind), then
-    //    the batching gammas at the same transcript point as the prover.
-    let mut rs_outputs = Vec::with_capacity(n_rs);
+    // 1. Ring-switch succinct verify: observe EVERY claim's s_hat_v first, then
+    //    sample ONE shared r'', then finish each claim (mirrors the prover +
+    //    the F128 opener + the recursion guest).
     for (claim, rs_proof) in ring.claims.iter().zip(proof.ring_switches.iter()) {
-        match ring_switch_k::verify_succinct(claim.value, &claim.prefix_weights, rs_proof, sponge)
-        {
-            Ok(out) => rs_outputs.push(out),
-            Err(_) => return None,
+        if ring_switch_k::verify_observe(claim.value, &claim.prefix_weights, rs_proof, sponge).is_err() {
+            return None;
         }
     }
+    let r_dprime = sample_ext_vec(sponge, ring_switch_k::LOG_DEGREE_E);
+    let eq_r_dprime = build_eq_table_ext(&r_dprime);
+    let rs_outputs: Vec<_> = proof
+        .ring_switches
+        .iter()
+        .map(|rs_proof| ring_switch_k::verify_finish(rs_proof, &eq_r_dprime))
+        .collect();
     let gammas_rs = sample_ext_vec(sponge, n_rs);
     let mut target = F128T::ZERO;
     for (out, g) in rs_outputs.iter().zip(gammas_rs.iter()) {
@@ -559,7 +566,6 @@ pub fn verify_opening_batch_mixed_ligerito_stacked_k(
 
     // 2. Point-claim values + gammas; fold into the target.
     for claim in point_claims {
-        sponge.absorb_bytes(b"flock-pcs-packed-direct-k-v0");
         observe_ext(sponge, claim.value());
     }
     let gammas_pd = sample_ext_vec(sponge, point_claims.len());
@@ -642,7 +648,8 @@ pub fn verify_opening_batch_mixed_ligerito_stacked_k(
             .collect()
     };
 
-    recursive_verifier_with_basis_succinct_k(
+    let mut query_squeezes: Vec<Vec<F128T>> = Vec::new();
+    let ok = recursive_verifier_with_basis_succinct_k_with_squeezes(
         config,
         &proof.ligerito,
         log_n,
@@ -650,8 +657,11 @@ pub fn verify_opening_batch_mixed_ligerito_stacked_k(
         root,
         eval_b_residual,
         sponge,
-    )
-    .then(StackedOpeningSummaryK::default)
+        &mut query_squeezes,
+    );
+    ok.then(|| StackedOpeningSummaryK {
+        lig: LigVerifierSummaryK { query_squeezes },
+    })
 }
 
 // ---------------------------------------------------------------------------

@@ -98,12 +98,21 @@ N_FIXED_CHALLENGE_ROUNDS = N_FIXED_CHALLENGE_ROUNDS_PLACEHOLDER
 FIXED_CHALLENGES = FIXED_CHALLENGES_PLACEHOLDER
 ONE_PLUS_CHALLENGE_INV = ONE_PLUS_CHALLENGE_INV_PLACEHOLDER
 PHI8_NODES = PHI8_NODES_PLACEHOLDER
+# Two-lane memory PI: F128T = F64[Y]/(Y^2=XY+1); recover a word's F64 lanes as
+# c1 = (pi + Frob64(pi)) * X_INV, c0 = pi + c1 * Y_TOWER.
+X_INV = X_INV_PLACEHOLDER
+Y_TOWER = Y_TOWER_PLACEHOLDER
+# Coordinate basis e_i of F128T (spans the whole field). hint_decompose_bits
+# emits a word's coordinate bits, so a value reconstructs as Σ b_i·COORD_BASIS[i]
+# = v. (NOT the g-power basis GEN**i, which spans only F64 in the tower.)
+COORD_BASIS = COORD_BASIS_PLACEHOLDER
 LAGRANGE_INV_LAMBDA = LAGRANGE_INV_LAMBDA_PLACEHOLDER
 LAGRANGE_INV_COMBINED = LAGRANGE_INV_COMBINED_PLACEHOLDER
 LAGRANGE_INV_S = LAGRANGE_INV_S_PLACEHOLDER
 LINCHECK_ROUNDS = LINCHECK_ROUNDS_PLACEHOLDER
 PIN_COLUMN = PIN_COLUMN_PLACEHOLDER
 K_LOG = K_LOG_PLACEHOLDER
+SLOT_STRIDE_LOG = SLOT_STRIDE_LOG_PLACEHOLDER  # = K_LOG - LOG_PACKING_K (=8); the q_pkd slot stride
 # Phase E: the stacked mixed opening. The two ring-switch fronts
 # (claim check in-circuit; the tensor transpose + eval_rs_eq DEFERRED); the
 # gamma-combination of the two ring-switch claims and the N_CLAIMS pool claims.
@@ -201,11 +210,16 @@ BYTECODE_VARS = BYTECODE_VARS_PLACEHOLDER
 TRANSCRIPT_SEED_0 = TRANSCRIPT_SEED_0_PLACEHOLDER
 TRANSCRIPT_SEED_1 = TRANSCRIPT_SEED_1_PLACEHOLDER
 
-DS_SCALAR = 1
-DS_BYTE = 2
-DS_LEN = 3
-DS_SQ = 4
-DS_POW = 5
+# Domain-separation tags. The sponge places the tag in the FOURTH compress lane
+# (`compress(cv, [w0, w1, w2, DS])` — the tower layout), i.e. the c1 lane of the
+# second blake3 message word. A blake3 message list `[..., tag]` maps its last
+# element to that word as F128T(tag.c0, tag.c1), so the tag constant must sit in
+# the HIGH lane: `k << 64` decodes to F128T(0, k), landing k in lane 3.
+DS_SCALAR = 18446744073709551616   # 1 << 64  -> F128T(0, 1)
+DS_BYTE = 36893488147419103232     # 2 << 64  -> F128T(0, 2)
+DS_LEN = 55340232221128654848      # 3 << 64  -> F128T(0, 3)
+DS_SQ = 73786976294838206464       # 4 << 64  -> F128T(0, 4)
+DS_POW = 92233720368547758080      # 5 << 64  -> F128T(0, 5)
 
 # Field structure: GF(2^128). Its 128 bits pack into LOG2_FIELD_BITS = 7
 # ring-switch coordinates (the q_pkd slot length, r'' length).
@@ -230,12 +244,13 @@ def squeeze_step(state_0, state_1):
 
 
 def check_128_bits_decomposition(bits_ptr, v):
-    # Boolean-constrain FIELD_BITS hinted bits and assert they reconstruct v.
+    # Boolean-constrain FIELD_BITS hinted bits and assert they reconstruct v in
+    # the F128T COORDINATE basis (hint_decompose_bits emits coordinate bits).
     acc = 0
     for i in unroll(0, FIELD_BITS):
         b = bits_ptr[GEN ** i]
         assert b * b == b
-        acc += b * GEN ** i  # accumulate the g-power encoding: bit i contributes g^i
+        acc += b * COORD_BASIS[i]  # bit i contributes the i-th coordinate basis vector
     assert acc == v
     return
 
@@ -255,15 +270,19 @@ def decode_query_bits(v, positions_out, bit_ptrs_out, depth: Const):
             t = bits_ptr[GEN ** (j * depth + b)]
             sq = t * t
             assert sq == t
-            position += t * GEN ** b
+            # position: the query index (integer). COORD_BASIS[b] = new(2^b, 0)
+            # for b < depth < 64, so position = new(Σ t_b 2^b, 0) — same value
+            # the GHASH g-power encoding produced (g^b = 2^b there).
+            position += t * COORD_BASIS[b]
+            # reconstruction of v in the coordinate basis (bit j*depth+b).
+            acc += t * COORD_BASIS[j * depth + b]
         positions_out[GEN ** j] = position
         bit_ptrs_out[GEN ** j] = bits_ptr * GEN ** (j * depth)
-        acc += position * GEN ** (j * depth)
     for i in unroll(per_word * depth, FIELD_BITS):
         t = bits_ptr[GEN ** i]
         sq = t * t
         assert sq == t
-        acc += t * GEN ** i
+        acc += t * COORD_BASIS[i]
     assert acc == v
     return
 
@@ -552,10 +571,12 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
     # the terminal pins its hinted claim lengths against.
     fs = [fs0, fs1]
 
+    # The K opener binds the initial Merkle root as its two F128T scalars (like
+    # the F128 opener's add_scalars(hash_to_scalars(root))), not as a byte
+    # string. Level roots are likewise scalar-observed (via fs_next below).
     fs = obs(fs, target)
-    fs = absorb(fs, 32, DS_LEN)
-    fs = absorb(fs, commit_root_0, DS_BYTE)
-    fs = absorb(fs, commit_root_1, DS_BYTE)
+    fs = obs(fs, commit_root_0)
+    fs = obs(fs, commit_root_1)
 
     # The opening's scalars (sumcheck messages, level roots, nonces, final
     # message) ride the SHARED stream: msg_cursor is just the main stream
@@ -650,12 +671,29 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
             row_ptr = merkle_leaf_rows * GEN ** LIG_ROWS_OFF[m_idx * LIG_MAX_LEVELS + lvl] * row_base
             leaf_hash_state = [GEN ** LIG_LEAF_BYTES[m_idx * LIG_MAX_LEVELS + lvl], 0]
             row_dot = 0
-            for jb in unroll(0, LIG_LEAF_PAIRS[m_idx * LIG_MAX_LEVELS + lvl]):
-                row_pair = [row_ptr[GEN ** (2 * jb)], row_ptr[GEN ** (2 * jb + 1)]]
-                leaf_digest = StackBuf(2)
-                blake3(leaf_hash_state, row_pair, leaf_digest)  # hash-fold the queried leaf row into the running leaf digest
-                leaf_hash_state = leaf_digest
-                row_dot += row_pair[0] * row_eq_weights[GEN ** (2 * jb)] + row_pair[1] * row_eq_weights[GEN ** (2 * jb + 1)]
+            if lvl == 0:
+                # Level-0 rows are base-field F64, embedded one-per-word (c1=0) for
+                # the E-valued dot. The committed Merkle leaf hashed them PACKED
+                # (four 8-byte lanes per 32-byte block), so re-pack four embedded
+                # lanes into two F128T words (packed = a + b·Y) for the leaf hash;
+                # the dot still consumes the individual embedded lanes.
+                for jb in unroll(0, LIG_INTERLEAVE[m_idx * LIG_MAX_LEVELS + lvl] // 4):
+                    e0 = row_ptr[GEN ** (4 * jb)]
+                    e1 = row_ptr[GEN ** (4 * jb + 1)]
+                    e2 = row_ptr[GEN ** (4 * jb + 2)]
+                    e3 = row_ptr[GEN ** (4 * jb + 3)]
+                    row_pair = [e0 + e1 * Y_TOWER, e2 + e3 * Y_TOWER]
+                    leaf_digest = StackBuf(2)
+                    blake3(leaf_hash_state, row_pair, leaf_digest)
+                    leaf_hash_state = leaf_digest
+                    row_dot += e0 * row_eq_weights[GEN ** (4 * jb)] + e1 * row_eq_weights[GEN ** (4 * jb + 1)] + e2 * row_eq_weights[GEN ** (4 * jb + 2)] + e3 * row_eq_weights[GEN ** (4 * jb + 3)]
+            else:
+                for jb in unroll(0, LIG_LEAF_PAIRS[m_idx * LIG_MAX_LEVELS + lvl]):
+                    row_pair = [row_ptr[GEN ** (2 * jb)], row_ptr[GEN ** (2 * jb + 1)]]
+                    leaf_digest = StackBuf(2)
+                    blake3(leaf_hash_state, row_pair, leaf_digest)  # hash-fold the queried leaf row into the running leaf digest
+                    leaf_hash_state = leaf_digest
+                    row_dot += row_pair[0] * row_eq_weights[GEN ** (2 * jb)] + row_pair[1] * row_eq_weights[GEN ** (2 * jb + 1)]
             node_0 = leaf_hash_state[0]
             node_1 = leaf_hash_state[1]
             query_sum_chain[xe * GEN] = query_sum_chain[xe] + alpha_weights[GEN ** (lvl * LIG_MAX_QUERIES[m_idx]) * xe] * row_dot
@@ -1213,33 +1251,73 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
             claim_idx += 1
         # the table's AIR constraint at the final point (ev order = the table's
         # constraint_columns order; formulas mirror tables.rs eval_constraint).
+        # Memory values are 128-bit E-words e128(lo, hi) = lo + hi·Y (two lane
+        # columns each), per the 64-bit-address / 128-bit-word memory model.
         if t == TABLE_XOR:
-            constraint_eval = (col_evals[4] + col_evals[0] * col_evals[1]) + eta * (col_evals[5] + col_evals[0] * col_evals[2]) + eta * eta * (col_evals[6] + col_evals[0] * col_evals[3]) + eta * eta * eta * (col_evals[9] + col_evals[7] + col_evals[8])
+            # cols: [FP, OA, OB, OC, AA, AB, AC, VA_LO, VA_HI, VB_LO, VB_HI, VC_LO, VC_HI]
+            va = col_evals[7] + col_evals[8] * Y_TOWER
+            vb = col_evals[9] + col_evals[10] * Y_TOWER
+            vc = col_evals[11] + col_evals[12] * Y_TOWER
+            constraint_eval = (col_evals[4] + col_evals[0] * col_evals[1]) + eta * (col_evals[5] + col_evals[0] * col_evals[2]) + eta * eta * (col_evals[6] + col_evals[0] * col_evals[3]) + eta * eta * eta * (vc + va + vb)
         if t == TABLE_MUL:
-            constraint_eval = (col_evals[4] + col_evals[0] * col_evals[1]) + eta * (col_evals[5] + col_evals[0] * col_evals[2]) + eta * eta * (col_evals[6] + col_evals[0] * col_evals[3]) + eta * eta * eta * (col_evals[9] + col_evals[7] * col_evals[8])
+            # same layout as XOR; third = va·vb (the E-product)
+            va = col_evals[7] + col_evals[8] * Y_TOWER
+            vb = col_evals[9] + col_evals[10] * Y_TOWER
+            vc = col_evals[11] + col_evals[12] * Y_TOWER
+            constraint_eval = (col_evals[4] + col_evals[0] * col_evals[1]) + eta * (col_evals[5] + col_evals[0] * col_evals[2]) + eta * eta * (col_evals[6] + col_evals[0] * col_evals[3]) + eta * eta * eta * (vc + va * vb)
         if t == TABLE_SET:
+            # cols: [FP, O, A]  (a = fp·o; no memory value in the constraint)
             constraint_eval = col_evals[2] + col_evals[0] * col_evals[1]
         if t == TABLE_DEREF:
-            src = (1 + col_evals[8] + col_evals[9]) * col_evals[11] + col_evals[8] * (GEN * GEN * col_evals[12]) + col_evals[9] * col_evals[0]
-            constraint_eval = (col_evals[4] + col_evals[0] * col_evals[1]) + eta * (col_evals[5] + col_evals[7] * col_evals[2]) + eta * eta * (col_evals[6] + col_evals[0] * col_evals[3]) + eta * eta * eta * (col_evals[10] + src)
+            # cols: [FP, OAL, OBE, OGA, A1, A2, A3, P, FPC, FFP, V2_LO, V2_HI, V3_LO, V3_HI, PC]
+            p = col_evals[7]  # single K-lane pointer (hi lane provably 0)
+            v2 = col_evals[10] + col_evals[11] * Y_TOWER
+            v3 = col_evals[12] + col_evals[13] * Y_TOWER
+            # src = (1+f_pc+f_fp)·v3 + f_pc·(g²·pc) + f_fp·fp
+            src = (1 + col_evals[8] + col_evals[9]) * v3 + col_evals[8] * (GEN * GEN * col_evals[14]) + col_evals[9] * col_evals[0]
+            constraint_eval = (col_evals[4] + col_evals[0] * col_evals[1]) + eta * (col_evals[5] + p * col_evals[2]) + eta * eta * (col_evals[6] + col_evals[0] * col_evals[3]) + eta * eta * eta * (v2 + src)
         if t == TABLE_JUMP:
-            ft = GEN * col_evals[0]
+            # cols: [PC, FP, NPC, NFP, OC, OD, OF, AC, AD, AF, C_LO, C_HI, D_LO, D_HI, F_LO, F_HI, W_LO, W_HI, B]
+            c = col_evals[10] + col_evals[11] * Y_TOWER
+            d = col_evals[12] + col_evals[13] * Y_TOWER
+            ff = col_evals[14] + col_evals[15] * Y_TOWER
+            w = col_evals[16] + col_evals[17] * Y_TOWER
+            fall_through = GEN * col_evals[0]  # PC·g when branch not taken
             addrs = (col_evals[7] + col_evals[1] * col_evals[4]) + eta * (col_evals[8] + col_evals[1] * col_evals[5]) + eta * eta * (col_evals[9] + col_evals[1] * col_evals[6])
             eta3 = eta * eta * eta
-            ind_def = eta3 * (col_evals[14] + col_evals[10] * col_evals[13])
-            ind_nz = eta3 * eta * (col_evals[10] * (col_evals[14] + 1))
-            sel_pc = eta3 * eta * eta * (col_evals[2] + col_evals[14] * col_evals[11] + (col_evals[14] + 1) * ft)
-            sel_fp = eta3 * eta * eta * eta * (col_evals[3] + col_evals[14] * col_evals[12] + (col_evals[14] + 1) * col_evals[1])
+            ind_def = eta3 * (col_evals[18] + c * w)
+            ind_nz = eta3 * eta * (c * (col_evals[18] + 1))
+            sel_pc = eta3 * eta * eta * (col_evals[2] + col_evals[18] * d + (col_evals[18] + 1) * fall_through)
+            sel_fp = eta3 * eta * eta * eta * (col_evals[3] + col_evals[18] * ff + (col_evals[18] + 1) * col_evals[1])
             constraint_eval = addrs + ind_def + ind_nz + sel_pc + sel_fp
         if t == TABLE_BLAKE3:
+            # cols: [FP, OA0, OA1, OB0, OB1, OC, AA0, AA1, AB0, AB1, AC]  (address bindings only)
             constraint_eval = (col_evals[6] + col_evals[0] * col_evals[1]) + eta * (col_evals[7] + col_evals[0] * col_evals[2]) + eta * eta * (col_evals[8] + col_evals[0] * col_evals[3]) + eta * eta * eta * (col_evals[9] + col_evals[0] * col_evals[4]) + eta * eta * eta * eta * (col_evals[10] + col_evals[0] * col_evals[5])
         assert claim == eq_acc * constraint_eval
 
-    # ---- public-input binding claim: MEM(r_m, 0..) = interp(pi0, pi1, r_m) ----
+    # ---- public-input binding claims: MEM_LO, MEM_HI (two lanes) ----
+    # The VM's bind_pi_claim makes TWO column claims at the same point [rm,0..]:
+    #   MEM_LO = interp_k(pi_0.c0, pi_1.c0, rm),  MEM_HI = interp_k(pi_0.c1, pi_1.c1, rm)
+    # over the F64 LANES. Recover each 128-bit word's lanes by Frobenius
+    # (deterministic from the bound pi ⇒ sound): c1 = (pi + Frob64(pi))*X_INV,
+    # c0 = pi + c1*Y_TOWER. Emitted in bind_pi_claim's [lo, hi] order.
     fs = squeeze(fs)
     rm = fs[0]
-    pi_interp = pi_0 + rm * (pi_0 + pi_1)  # MLE of the 2-cell public memory at the sampled point rm
-    claim_pool[GEN ** claim_idx] = pi_interp
+    fp0 = pi_0
+    for _sq in unroll(0, 64):
+        fp0 = fp0 * fp0
+    b0 = (pi_0 + fp0) * X_INV      # pi_0.c1 (embedded)
+    a0 = pi_0 + b0 * Y_TOWER       # pi_0.c0 (embedded)
+    fp1 = pi_1
+    for _sq in unroll(0, 64):
+        fp1 = fp1 * fp1
+    b1 = (pi_1 + fp1) * X_INV      # pi_1.c1 (embedded)
+    a1 = pi_1 + b1 * Y_TOWER       # pi_1.c0 (embedded)
+    mem_lo = a0 + rm * (a0 + a1)   # interp_k on the c0 lanes
+    mem_hi = b0 + rm * (b0 + b1)   # interp_k on the c1 lanes
+    claim_pool[GEN ** claim_idx] = mem_lo
+    claim_idx += 1
+    claim_pool[GEN ** claim_idx] = mem_hi
     claim_idx += 1
 
     # ---- flock zerocheck (univariate skip, k_skip = 6) ----
@@ -1392,34 +1470,38 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
         lincheck_w += skip_nums[i] * LAGRANGE_INV_S[i] * z_partial[GEN ** i]
 
     # ---- stacked mixed opening: ring-switch fronts + claim combination ----
-    s_hat_v = HeapBuf(2 * FIELD_BITS)  # the two ring-switch slices (end the stream), fetched + observed in the loop below
-    # Ring-switch claim 0 (ab): value lincheck_w, z_skip = lincheck_z_skip, x_outer[0] = lincheck_rs[LINCHECK_ROUNDS-1]
-    # (x_inner_rest is the REVERSED lincheck round vector). Claim 1 (c): value
-    # c_eval, z_skip = zerocheck_z, x_outer[0] = zerocheck_r[6].
+    # The two ring-switch slices (ab, c) each carry PACKING = 2^LOG_PACKING_K = 64
+    # entries (one per packing bit) and live in the opening STRUCT
+    # (RingSwitchProofK), observed into the sponge HERE (never on the stream).
+    # Claim 0 (ab): value lincheck_w, z_skip = lincheck_z_skip. Claim 1 (c):
+    # value c_eval, z_skip = zerocheck_z. (The 128->64 half-fold the prover does
+    # in blake3_flock::ring_claim is already baked into the transmitted 64 values,
+    # so the verifier just checks the plain prefix-weighted inner product.)
+    s_hat_v = HeapBuf(2 * (2 ** K_SKIP))
+    hint_witness(s_hat_v[0 : 2 * (2 ** K_SKIP)], "rs_shatv")
     transposed_claims = StackBuf(2)
     rs_eq_vals = StackBuf(2)
     c_table = HeapBuf(FIELD_BITS)
     z_vals = HeapBuf(2 * QPKD_VARS_CAP)
     r_dprime = HeapBuf(LOG2_FIELD_BITS)
     for rs in unroll(0, 2):
-        for i in unroll(0, FIELD_BITS):
-            fs, w, cursor = fs_next(fs, cursor)
-            s_hat_v[GEN ** (FIELD_BITS * rs + i)] = w
-        # claim check: weights[i] = lambda_{i&63}(z_skip) * eq(x_outer0, i>>6).
+        # observe this claim's 64 s_hat_v entries (mirror of verify_observe /
+        # observe_ext_slice) before the claim check and the shared r''.
+        for i in unroll(0, (2 ** K_SKIP)):
+            fs = obs(fs, s_hat_v[GEN ** ((2 ** K_SKIP) * rs + i)])
+        # claim check: value == sum_i prefix_weights[i] * s_hat_v[i], where
+        # prefix_weights[i] = lambda_i(z_skip) = lag numerator * LAGRANGE_INV_S[i].
         if rs == 0:
             claim_z_skip = lincheck_z_skip
-            claim_x_outer_0 = lincheck_rs[GEN ** (LINCHECK_ROUNDS - 1)]
             claim_val = lincheck_w
         else:
             claim_z_skip = zerocheck_z
-            claim_x_outer_0 = zerocheck_r[GEN ** K_SKIP]
             claim_val = c_eval
-        claim_nums = StackBuf(2 ** K_SKIP)
+        claim_nums = StackBuf((2 ** K_SKIP))
         lag64(claim_z_skip, claim_nums, 0)
         claim_check = 0
-        for i in unroll(0, 2 ** K_SKIP):
-            lagrange_w = claim_nums[i] * LAGRANGE_INV_S[i]
-            claim_check += lagrange_w * ((1 + claim_x_outer_0) * s_hat_v[GEN ** (FIELD_BITS * rs + i)] + claim_x_outer_0 * s_hat_v[GEN ** (FIELD_BITS * rs + 2 ** K_SKIP + i)])  # claim = sum_i lambda_i(z_skip) * eq(x_outer0, i>>6) * s_hat_v[i]
+        for i in unroll(0, (2 ** K_SKIP)):
+            claim_check += claim_nums[i] * LAGRANGE_INV_S[i] * s_hat_v[GEN ** ((2 ** K_SKIP) * rs + i)]
         assert claim_check == claim_val
     # ONE r'' shared by both claims (each slice was absorbed before the
     # sample), so one eq tensor and one linearized coefficient table
@@ -1441,34 +1523,42 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
         # transposed claim T = sum_j x^j * L_w(shv_j): one runtime pass over
         # the observed values; per value the Frobenius powers evolve as a
         # scalar against the c table, and x^j chains through a heap cell.
-        s_hat_row = s_hat_v * GEN ** (FIELD_BITS * rs)
-        x_pow_chain = HeapBuf(FIELD_BITS + 1)
+        # T = sum_{i<64} x^i * L(s_hat_v[i]) == sum_w eq_r''[w] * s_hat_u[w]
+        # (the bit-transpose s_hat_u[w] = sum_i bit_w(s_hat_v[i])*e_i, so x^i = e_i
+        # for i<64). One term per packing bit (64); L is the 128-dim linearized poly.
+        s_hat_row = s_hat_v * GEN ** ((2 ** K_SKIP) * rs)
+        x_pow_chain = HeapBuf((2 ** K_SKIP) + 1)
         x_pow_chain[GEN ** 0] = GEN ** 0
-        t_chain = HeapBuf(FIELD_BITS + 1)
+        t_chain = HeapBuf((2 ** K_SKIP) + 1)
         t_chain[GEN ** 0] = 0
-        for x_round in mul_range(1, GEN ** FIELD_BITS):
+        for x_round in mul_range(1, GEN ** (2 ** K_SKIP)):
             y_pow = s_hat_row[x_round]
             lin_eval = 0
-            for k in unroll(0, FIELD_BITS):  # L_w(y) = sum_k c_k y^(2^k); y^(2^k) squares once per step
+            for k in unroll(0, FIELD_BITS):  # L(y) = sum_k c_k y^(2^k); y^(2^k) squares once per step
                 lin_eval += c_table[GEN ** k] * y_pow
                 y_pow *= y_pow
             t_chain[x_round * GEN] = t_chain[x_round] + x_pow_chain[x_round] * lin_eval
             x_pow_chain[x_round * GEN] = x_pow_chain[x_round] * 2  # x = the field element 2 (the polynomial x)
-        transposed_claims[rs] = t_chain[GEN ** FIELD_BITS]
+        transposed_claims[rs] = t_chain[GEN ** (2 ** K_SKIP)]
         # z_vals for eval_rs_eq (the x_outer tail), used at the opening terminal.
+        # The K (64-bit) packing prefix is exactly the K_SKIP=LOG_PACKING_K skip
+        # domain, so the FIRST inner-rest coord (which the wider F128 prefix
+        # absorbed) stays in the suffix: both suffixes span qpkd_vars = tau +
+        # SLOT_STRIDE_LOG (= inner_rest_len + tau), one coord longer than F128.
         if rs == 0:
-            for t in unroll(0, LINCHECK_ROUNDS - 1):
-                z_vals[GEN ** t] = lincheck_rs[GEN ** (LINCHECK_ROUNDS - 2 - t)]
-            zv_lo = z_vals * GEN ** (LINCHECK_ROUNDS - 1)
+            for t in unroll(0, LINCHECK_ROUNDS):
+                z_vals[GEN ** t] = lincheck_rs[GEN ** (LINCHECK_ROUNDS - 1 - t)]
+            zv_lo = z_vals * GEN ** LINCHECK_ROUNDS
             zr_hi = zerocheck_rhos * GEN ** LINCHECK_ROUNDS
             for xt in mul_range(1, tau_blake3_g):
                 zv_lo[xt] = zr_hi[xt]
         else:
             # row 1 lives at the CAPACITY stride (QPKD_VARS_CAP); its length is the
-            # runtime qpkdv.
+            # runtime qpkdv = tau + SLOT_STRIDE_LOG. The rest starts at K_SKIP
+            # (the coord F128 folded into its prefix stays here).
             zv_hi = z_vals * GEN ** QPKD_VARS_CAP
-            zcr7 = zerocheck_r * GEN ** (K_SKIP + 1)
-            for xt in mul_range(1, tau_blake3_g * GEN ** (K_LOG - LOG2_FIELD_BITS)):
+            zcr7 = zerocheck_r * GEN ** K_SKIP
+            for xt in mul_range(1, tau_blake3_g * GEN ** SLOT_STRIDE_LOG):
                 zv_hi[xt] = zcr7[xt]
     # gamma-combine the two transposed sumcheck claims (computed in-circuit).
     fs = squeeze(fs)
@@ -1513,8 +1603,8 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     hint_witness(claim_nover[0:N_CLAIMS], "claim_nover")
     pi_cplen = StackBuf(1)
     hint_witness(pi_cplen[0:1], "pi_cplen")
-    claim_qpkd_slot_bits = HeapBuf(LOG2_FIELD_BITS * N_CLAIMS)
-    hint_witness(claim_qpkd_slot_bits[0:LOG2_FIELD_BITS * N_CLAIMS], "claim_qpkd_slot_bits")
+    claim_qpkd_slot_bits = HeapBuf(SLOT_STRIDE_LOG * N_CLAIMS)
+    hint_witness(claim_qpkd_slot_bits[0:SLOT_STRIDE_LOG * N_CLAIMS], "claim_qpkd_slot_bits")
     claim_sel_bits = HeapBuf(COUNT_BITS * N_CLAIMS)
     hint_witness(claim_sel_bits[0:COUNT_BITS * N_CLAIMS], "claim_sel_bits")
     # baked prefix-mask table replacing the hinted overlap mask: row t holds
@@ -1552,7 +1642,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
         else:
             cplen_g = claim_cplen_g[GEN ** j]
             if CLAIM_POINT_BUF[j] == POINT_BUF_QPKD:
-                nlow = cplen_g * GEN ** LOG2_FIELD_BITS  # nlow = cplen + the qpkd slot coords
+                nlow = cplen_g * GEN ** SLOT_STRIDE_LOG  # nlow = cplen + the qpkd slot coords
             else:
                 nlow = cplen_g            # nlow = cplen
         nover_g = claim_nover[GEN ** j]
@@ -1588,12 +1678,12 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
                 low_chain[xk * GEN] = low_chain[xk] * (1 + fold_challenges[xk])
         if CLAIM_POINT_BUF[j] == POINT_BUF_QPKD:
             qpkd_slot_eq = GEN ** 0
-            for k in unroll(0, LOG2_FIELD_BITS):
-                sb3 = claim_qpkd_slot_bits[GEN ** (LOG2_FIELD_BITS * j + k)]
+            for k in unroll(0, SLOT_STRIDE_LOG):
+                sb3 = claim_qpkd_slot_bits[GEN ** (SLOT_STRIDE_LOG * j + k)]
                 assert sb3 * sb3 == sb3
                 qpkd_slot_eq *= (1 + sb3 + fold_challenges[GEN ** k])
             zptr = zeta * GEN ** CLAIM_POINT_OFF[j]
-            ris7 = fold_challenges * GEN ** LOG2_FIELD_BITS
+            ris7 = fold_challenges * GEN ** SLOT_STRIDE_LOG
             low_chain[GEN ** 0] = qpkd_slot_eq
             for xk in mul_range(1, low_len_g):
                 low_chain[xk * GEN] = low_chain[xk] * (1 + zptr[xk] + ris7[xk])
@@ -1613,7 +1703,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     # announced log; the per-k z-power rows chain by a runtime g^qpkdv
     # stride, and the inner passes are runtime loops with product/square
     # state chained per row.
-    qpkdv_g = tau_blake3_g * GEN ** (K_LOG - LOG2_FIELD_BITS)
+    qpkdv_g = tau_blake3_g * GEN ** SLOT_STRIDE_LOG
     one_plus_q = HeapBuf(GEN ** (QPKD_VARS_CAP))
     for x_round in mul_range(1, qpkdv_g):
         one_plus_q[x_round] = 1 + fold_challenges[x_round]

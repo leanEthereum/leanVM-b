@@ -72,6 +72,17 @@ fn observe_ext(sponge: &mut Sponge, e: F128T) {
     sponge.observe(e);
 }
 
+
+/// Bind a Merkle root into the transcript as its two `F128T` scalars (mirror of
+/// the F128 opener's `add_scalars(hash_to_scalars(root))`), rather than as a
+/// byte string. Binds the root before any challenge exactly as `absorb_bytes`
+/// would; keeping the scalar form matches the recursion guest's replay.
+fn observe_root(sponge: &mut Sponge, root: &crate::merkle::Hash) {
+    for s in crate::merkle::hash_to_scalars(root) {
+        observe_ext(sponge, s);
+    }
+}
+
 // ===================================================================
 // Multilinear helpers over E
 // ===================================================================
@@ -621,8 +632,10 @@ fn next_s_k(s: F64, s_at_root: F64) -> F64 {
 }
 
 /// `sks_vks[k] = s_k(v_k)` for `k = 0..=log_n`, over K. Mirror of
-/// `ligerito::eval_sk_at_vks`.
-pub(crate) fn eval_sk_at_vks_k(log_n: usize) -> Vec<F64> {
+/// `ligerito::eval_sk_at_vks`. Public for the recursion harness, which dumps
+/// these vanishing-polynomial values as guest hints (base-field, embedded into
+/// the tower with high lane zero).
+pub fn eval_sk_at_vks_k(log_n: usize) -> Vec<F64> {
     let mut sks_vks = vec![F64::ZERO; log_n + 1];
     sks_vks[0] = F64::ONE;
     if log_n == 0 {
@@ -1927,26 +1940,65 @@ impl LigeritoProofK {
 
 /// Sample `count` distinct positions in `[0, block_len)`. Same sponge
 /// pattern as the original (`sample().c0 % block_len`).
-fn sample_distinct_queries(
-    sponge: &mut Sponge,
-    block_len: usize,
-    count: usize,
-) -> Vec<usize> {
-    assert!(
-        count <= block_len,
-        "sample_distinct_queries: count ({count}) > block_len ({block_len}): config is too thin for this query count"
-    );
-    let mut seen = std::collections::HashSet::new();
+/// Sample `count` query positions in transcript order — no dedup, no sort.
+/// `block_len = 2^d`; each squeezed field element yields `⌊128/d⌋` positions as
+/// its disjoint d-bit chunks (low bits first). Mirror of
+/// `ligerito::sample_queries_ordered` so the K opener uses the exact
+/// recursion-friendly scheme the harness/guest re-derive (fixed `128/d` per
+/// squeeze, dup-tolerant — soundness matches the deployed F128 PCS with the same
+/// `config.queries`). Duplicates are harmless: a repeated position re-opens the
+/// same Merkle-authenticated row.
+fn sample_queries_ordered_k(sponge: &mut Sponge, block_len: usize, count: usize) -> Vec<usize> {
+    let d = block_len.trailing_zeros() as usize;
+    let per = 128 / d;
     let mut out = Vec::with_capacity(count);
     while out.len() < count {
         let v = sponge.sample();
-        let q = (v.c0 as usize) % block_len;
-        if seen.insert(q) {
-            out.push(q);
+        let bits = (v.c0 as u128) | ((v.c1 as u128) << 64);
+        for j in 0..per.min(count - out.len()) {
+            out.push(((bits >> (j * d)) as usize) & (block_len - 1));
         }
     }
-    out.sort_unstable();
     out
+}
+
+/// [`sample_queries_ordered_k`] that ALSO returns the raw squeezed words `v`
+/// (as native `F128T`, NOT `as_ghash`-transformed — the recursion harness reads
+/// `.c0/.c1` off them to re-derive positions). One raw word per squeeze.
+fn sample_queries_ordered_with_raw_k(
+    sponge: &mut Sponge,
+    block_len: usize,
+    count: usize,
+) -> (Vec<usize>, Vec<F128T>) {
+    let d = block_len.trailing_zeros() as usize;
+    let per = 128 / d;
+    let mut out = Vec::with_capacity(count);
+    let mut raw = Vec::with_capacity(count.div_ceil(per));
+    while out.len() < count {
+        let v = sponge.sample();
+        raw.push(v);
+        let bits = (v.c0 as u128) | ((v.c1 as u128) << 64);
+        for j in 0..per.min(count - out.len()) {
+            out.push(((bits >> (j * d)) as usize) & (block_len - 1));
+        }
+    }
+    (out, raw)
+}
+
+/// Fan stored sorted-unique rows back to transcript (ordered, dup-possible)
+/// order, so the induce math sees `opened_rows[i]` ↔ `queries[i]`. The rows must
+/// already be authenticated (via the octopus check) against the level root.
+fn fan_rows_to_ordered<T: Clone>(queries: &[usize], rows_sorted: &[Vec<T>]) -> Option<Vec<Vec<T>>> {
+    let sorted = sorted_unique_queries_k(queries);
+    if sorted.len() != rows_sorted.len() {
+        return None;
+    }
+    let mut out = Vec::with_capacity(queries.len());
+    for &q in queries {
+        let slot = sorted.binary_search(&q).ok()?;
+        out.push(rows_sorted[slot].clone());
+    }
+    Some(out)
 }
 
 fn merkle_multi_proof_for(tree: &[Hash], block_len: usize, queries: &[usize]) -> Vec<Hash> {
@@ -2011,7 +2063,9 @@ pub fn recursive_prover_with_basis_k(
     let mut t_intro_glue = std::time::Duration::ZERO;
     let t_total = std::time::Instant::now();
 
-    sponge.absorb_bytes(b"flock-ligerito-k-basis-v0");
+    // (No opener domain-label absorb: the F128 opener has none and the recursion
+    // guest replays a label-free opening transcript; the observed `target` +
+    // outer transcript context provide domain separation.)
     observe_ext(sponge, target);
 
     // L0 codeword + tree are borrowed (reused from `commit_k`).
@@ -2020,7 +2074,7 @@ pub fn recursive_prover_with_basis_k(
         let start = q * num_interleaved_0;
         &l0_codeword[start..start + num_interleaved_0]
     };
-    sponge.absorb_bytes(&initial_root);
+    observe_root(sponge, &initial_root);
 
     let mut fold_grinding_nonces: Vec<u64> = Vec::new();
     let fold_bits =
@@ -2069,7 +2123,7 @@ pub fn recursive_prover_with_basis_k(
     if trace {
         t_commits += _t.elapsed();
     }
-    sponge.absorb_bytes(&wtns_1.root());
+    observe_root(sponge, &wtns_1.root());
 
     // (OOD binding block elided: zero samples asserted above.)
 
@@ -2080,16 +2134,21 @@ pub fn recursive_prover_with_basis_k(
 
     // Open L0; lane-fold weights = r_lane_fold.
     let num_queries_0 = config.queries[0];
-    let queries_0 = sample_distinct_queries(sponge, block_len_0, num_queries_0);
+    let queries_0 = sample_queries_ordered_k(sponge, block_len_0, num_queries_0);
     let alpha_0 = sample_ext_vec(sponge, log2_ceil(num_queries_0));
     let _t = std::time::Instant::now();
+    // Ordered (dup-possible) rows for the local induce math ...
     let opened_rows_0: Vec<Vec<F64>> = queries_0.iter().map(|&q| l0_row(q).to_vec()).collect();
-    let merkle_proof_0 = merkle_multi_proof_for(l0_tree, block_len_0, &queries_0);
+    // ... but the stored proof carries the sorted-unique rows + one octopus over
+    // the sorted-unique positions (the verifier re-fans them to ordered).
+    let sq_0 = sorted_unique_queries_k(&queries_0);
+    let stored_rows_0: Vec<Vec<F64>> = sq_0.iter().map(|&q| l0_row(q).to_vec()).collect();
+    let merkle_proof_0 = merkle_multi_proof_for(l0_tree, block_len_0, &sq_0);
     if trace {
         t_opens += _t.elapsed();
     }
     let initial_proof = InitialProofK {
-        opened_rows: opened_rows_0.clone(),
+        opened_rows: stored_rows_0,
         merkle_proof: merkle_proof_0,
     };
 
@@ -2158,14 +2217,17 @@ pub fn recursive_prover_with_basis_k(
             grinding_nonces.push(nonce_last);
             let num_queries_last = config.queries[i + 1];
             let queries_last =
-                sample_distinct_queries(sponge, wtns_prev.block_len, num_queries_last);
+                sample_queries_ordered_k(sponge, wtns_prev.block_len, num_queries_last);
             let _t = std::time::Instant::now();
-            let opened_rows_last: Vec<Vec<F128T>> = queries_last
+            // Final level: stored (sorted-unique) only — no local induce; the
+            // verifier fans these to ordered for its last-level induce.
+            let sq_last = sorted_unique_queries_k(&queries_last);
+            let opened_rows_last: Vec<Vec<F128T>> = sq_last
                 .iter()
                 .map(|&q| wtns_prev.row(q).to_vec())
                 .collect();
             let merkle_proof_last =
-                merkle_multi_proof_for(&wtns_prev.tree, wtns_prev.block_len, &queries_last);
+                merkle_multi_proof_for(&wtns_prev.tree, wtns_prev.block_len, &sq_last);
             if trace {
                 t_opens += _t.elapsed();
                 let total = t_total.elapsed();
@@ -2229,7 +2291,7 @@ pub fn recursive_prover_with_basis_k(
             t_commits += _t.elapsed();
         }
         let root_next = wtns_next.root();
-        sponge.absorb_bytes(&root_next);
+        observe_root(sponge, &root_next);
         recursive_roots.push(root_next);
 
         // (OOD binding block elided: zero samples asserted above.)
@@ -2238,20 +2300,26 @@ pub fn recursive_prover_with_basis_k(
         let nonce_i = sponge.grind_pow(config.grinding_bits[i + 1] as u32);
         grinding_nonces.push(nonce_i);
         let num_queries_i = config.queries[i + 1];
-        let queries_i = sample_distinct_queries(sponge, wtns_prev.block_len, num_queries_i);
+        let queries_i = sample_queries_ordered_k(sponge, wtns_prev.block_len, num_queries_i);
         let alpha_i = sample_ext_vec(sponge, log2_ceil(num_queries_i));
         let _t = std::time::Instant::now();
+        // Ordered rows for the local induce; sorted-unique rows + octopus stored.
         let opened_rows_i: Vec<Vec<F128T>> = queries_i
             .iter()
             .map(|&q| wtns_prev.row(q).to_vec())
             .collect();
+        let sq_i = sorted_unique_queries_k(&queries_i);
+        let stored_rows_i: Vec<Vec<F128T>> = sq_i
+            .iter()
+            .map(|&q| wtns_prev.row(q).to_vec())
+            .collect();
         let merkle_proof_i =
-            merkle_multi_proof_for(&wtns_prev.tree, wtns_prev.block_len, &queries_i);
+            merkle_multi_proof_for(&wtns_prev.tree, wtns_prev.block_len, &sq_i);
         if trace {
             t_opens += _t.elapsed();
         }
         recursive_proofs.push(RecursiveProofK {
-            opened_rows: opened_rows_i.clone(),
+            opened_rows: stored_rows_i,
             merkle_proof: merkle_proof_i,
         });
 
@@ -2350,6 +2418,86 @@ fn verify_level_opens_ext(
     merkle::verify_merkle_multi_proof(root, block_len, queries, &leaf_hashes, multi_proof)
 }
 
+/// Transcript-order queries with duplicates removed, ascending. The K opening
+/// stores one opened row per distinct query position (sorted); the recursion
+/// harness expands back to per-query order below.
+fn sorted_unique_queries_k(queries: &[usize]) -> Vec<usize> {
+    let mut s = queries.to_vec();
+    s.sort_unstable();
+    s.dedup();
+    s
+}
+
+/// Expand a base-level (`F64`, level 0) [`InitialProofK`] into the flat per-query
+/// form the recursion guest re-hashes: one row and one full Merkle path per
+/// query, in transcript order (duplicates included). Mirror of
+/// [`crate::ligerito::expand_level_opening`] for the K stacked opening's `F64`
+/// leaf level. Authenticates nothing itself; the caller re-checks each restored
+/// path against the root.
+pub fn expand_level_opening_base_k(
+    block_len: usize,
+    queries: &[usize],
+    rows_sorted: &[Vec<F64>],
+    expected_num_interleaved: usize,
+    multi_proof: &[Hash],
+) -> Option<(Vec<Vec<F64>>, Vec<Hash>)> {
+    let sorted = sorted_unique_queries_k(queries);
+    if sorted.len() != rows_sorted.len() {
+        return None;
+    }
+    let mut leaf_hashes = Vec::with_capacity(rows_sorted.len());
+    for row in rows_sorted {
+        if row.len() != expected_num_interleaved {
+            return None;
+        }
+        // SAFETY: F64 is repr(transparent) over u64 (8 bytes, no padding).
+        let bytes: &[u8] = unsafe {
+            core::slice::from_raw_parts(row.as_ptr() as *const u8, row.len() * core::mem::size_of::<F64>())
+        };
+        leaf_hashes.push(merkle::hash_leaf(bytes));
+    }
+    let flat_paths = merkle::restore_multi_proof(block_len, queries, &leaf_hashes, multi_proof)?;
+    let mut rows_ordered = Vec::with_capacity(queries.len());
+    for &q in queries {
+        let slot = sorted.binary_search(&q).ok()?;
+        rows_ordered.push(rows_sorted[slot].clone());
+    }
+    Some((rows_ordered, flat_paths))
+}
+
+/// Extension-level (`F128T`, levels ≥ 1) counterpart of
+/// [`expand_level_opening_base_k`], hashing 16-byte `F128T` leaf rows.
+pub fn expand_level_opening_ext_k(
+    block_len: usize,
+    queries: &[usize],
+    rows_sorted: &[Vec<F128T>],
+    expected_num_interleaved: usize,
+    multi_proof: &[Hash],
+) -> Option<(Vec<Vec<F128T>>, Vec<Hash>)> {
+    let sorted = sorted_unique_queries_k(queries);
+    if sorted.len() != rows_sorted.len() {
+        return None;
+    }
+    let mut leaf_hashes = Vec::with_capacity(rows_sorted.len());
+    for row in rows_sorted {
+        if row.len() != expected_num_interleaved {
+            return None;
+        }
+        // SAFETY: F128T is repr(C) { u64, u64 } (16 bytes, no padding).
+        let bytes: &[u8] = unsafe {
+            core::slice::from_raw_parts(row.as_ptr() as *const u8, row.len() * core::mem::size_of::<F128T>())
+        };
+        leaf_hashes.push(merkle::hash_leaf(bytes));
+    }
+    let flat_paths = merkle::restore_multi_proof(block_len, queries, &leaf_hashes, multi_proof)?;
+    let mut rows_ordered = Vec::with_capacity(queries.len());
+    for &q in queries {
+        let slot = sorted.binary_search(&q).ok()?;
+        rows_ordered.push(rows_sorted[slot].clone());
+    }
+    Some((rows_ordered, flat_paths))
+}
+
 /// Dense verifier for [`recursive_prover_with_basis_k`] (mirror of
 /// `ligerito::recursive_verifier_with_basis`): materializes `b_initial` and
 /// every induced basis poly, replays the transcript, and checks the residual
@@ -2381,9 +2529,11 @@ pub fn recursive_verifier_with_basis_k(
 
     // The L0 root is the caller's statement (not proof data): absorb it in the
     // prover's slot and check L0 opens against it below.
-    sponge.absorb_bytes(b"flock-ligerito-k-basis-v0");
+    // (No opener domain-label absorb: the F128 opener has none and the recursion
+    // guest replays a label-free opening transcript; the observed `target` +
+    // outer transcript context provide domain separation.)
     observe_ext(sponge, target);
-    sponge.absorb_bytes(expected_initial_root);
+    observe_root(sponge, expected_initial_root);
 
     let log_inv_rate_0 = config.log_inv_rates[0];
     let log_msg_cols_0 = log_n - initial_k;
@@ -2437,7 +2587,7 @@ pub fn recursive_verifier_with_basis_k(
         return false;
     }
     let root_1 = proof.recursive_roots[0];
-    sponge.absorb_bytes(&root_1);
+    observe_root(sponge, &root_1);
 
     // (OOD binding mirror elided: zero samples enforced above.)
 
@@ -2456,18 +2606,24 @@ pub fn recursive_verifier_with_basis_k(
     nonce_idx += 1;
 
     let num_queries_0 = config.queries[0];
-    let queries_0 = sample_distinct_queries(sponge, block_len_0, num_queries_0);
+    let queries_0 = sample_queries_ordered_k(sponge, block_len_0, num_queries_0);
     let alpha_0 = sample_ext_vec(sponge, log2_ceil(num_queries_0));
+    let sq_0 = sorted_unique_queries_k(&queries_0);
     if !verify_level_opens_base(
         expected_initial_root,
         block_len_0,
-        &queries_0,
+        &sq_0,
         &proof.initial_proof.opened_rows,
         num_interleaved_0,
         &proof.initial_proof.merkle_proof,
     ) {
         return false;
     }
+    // Fan the authenticated sorted-unique rows back to transcript order for induce.
+    let ordered_rows_0 = match fan_rows_to_ordered(&queries_0, &proof.initial_proof.opened_rows) {
+        Some(x) => x,
+        None => return false,
+    };
 
     // L0 induce with the same auto dispatch as the prover (dense vs sparse
     // transposed-NTT; identical outputs either way).
@@ -2477,7 +2633,7 @@ pub fn recursive_verifier_with_basis_k(
         n1,
         log_inv_rate_0,
         &sks_vks_n1,
-        &proof.initial_proof.opened_rows,
+        &ordered_rows_0,
         &r_lane_fold,
         &queries_0,
         &alpha_0,
@@ -2574,21 +2730,27 @@ pub fn recursive_verifier_with_basis_k(
             let prev_num_interleaved = 1usize << prev_log_num_interleaved;
             let num_queries_last = config.queries[i + 1];
             let queries_last =
-                sample_distinct_queries(sponge, prev_block_len, num_queries_last);
+                sample_queries_ordered_k(sponge, prev_block_len, num_queries_last);
             // Final-level basis-induction challenge: sampled AFTER `yr` was
             // observed and the queries are fixed, so a forged `yr` cannot be
             // adapted to it (mirror of the original).
             let alpha_last = sample_ext_vec(sponge, log2_ceil(num_queries_last));
+            let sq_last = sorted_unique_queries_k(&queries_last);
             if !verify_level_opens_ext(
                 &prev_root,
                 prev_block_len,
-                &queries_last,
+                &sq_last,
                 &proof.final_proof.opened_rows,
                 prev_num_interleaved,
                 &proof.final_proof.merkle_proof,
             ) {
                 return false;
             }
+            let ordered_rows_last =
+                match fan_rows_to_ordered(&queries_last, &proof.final_proof.opened_rows) {
+                    Some(x) => x,
+                    None => return false,
+                };
 
             // Bind the LAST commitment to `yr`: induce its opened rows into
             // the sumcheck like every non-final level, batched with a fresh
@@ -2597,7 +2759,7 @@ pub fn recursive_verifier_with_basis_k(
             let (basis_last_induced, enforced_sum_last) = induce_sumcheck_poly_ext(
                 n_current,
                 &sks_vks_last,
-                &proof.final_proof.opened_rows,
+                &ordered_rows_last,
                 &level_rs,
                 &queries_last,
                 &alpha_last,
@@ -2639,7 +2801,7 @@ pub fn recursive_verifier_with_basis_k(
         }
         let root_next = proof.recursive_roots[next_root_idx];
         next_root_idx += 1;
-        sponge.absorb_bytes(&root_next);
+        observe_root(sponge, &root_next);
 
         // (OOD binding mirror elided.)
 
@@ -2658,7 +2820,8 @@ pub fn recursive_verifier_with_basis_k(
         let prev_block_len = 1usize << (prev_log_msg_cols + prev_log_inv_rate);
         let prev_num_interleaved = 1usize << prev_log_num_interleaved;
         let num_queries_i = config.queries[i + 1];
-        let queries_i = sample_distinct_queries(sponge, prev_block_len, num_queries_i);
+        let queries_i = sample_queries_ordered_k(sponge, prev_block_len, num_queries_i);
+        let sq_i = sorted_unique_queries_k(&queries_i);
         let alpha_i = sample_ext_vec(sponge, log2_ceil(num_queries_i));
         if recursive_proof_idx >= proof.recursive_proofs.len() {
             return false;
@@ -2668,19 +2831,23 @@ pub fn recursive_verifier_with_basis_k(
         if !verify_level_opens_ext(
             &prev_root,
             prev_block_len,
-            &queries_i,
+            &sq_i,
             &rp.opened_rows,
             prev_num_interleaved,
             &rp.merkle_proof,
         ) {
             return false;
         }
+        let ordered_rows_i = match fan_rows_to_ordered(&queries_i, &rp.opened_rows) {
+            Some(x) => x,
+            None => return false,
+        };
 
         let sks_vks_i = eval_sk_at_vks_k(n_current);
         let (basis_i_induced, enforced_sum_i) = induce_sumcheck_poly_ext(
             n_current,
             &sks_vks_i,
-            &rp.opened_rows,
+            &ordered_rows_i,
             &level_rs,
             &queries_i,
             &alpha_i,
@@ -2732,6 +2899,9 @@ pub fn recursive_verifier_with_basis_k(
 /// K-witness log size (b's logical dimension). Transcript replay is
 /// byte-identical to the dense verifier (OOD elided; config must take zero
 /// OOD samples, as asserted by the prover).
+/// Thin wrapper of [`recursive_verifier_with_basis_succinct_k_with_squeezes`]
+/// that discards the query squeezes — the signature every non-recursion caller
+/// uses.
 pub fn recursive_verifier_with_basis_succinct_k<F>(
     config: &VerifierConfig,
     proof: &LigeritoProofK,
@@ -2740,6 +2910,36 @@ pub fn recursive_verifier_with_basis_succinct_k<F>(
     expected_initial_root: &Hash,
     eval_b_residual: F,
     sponge: &mut Sponge,
+) -> bool
+where
+    F: Fn(&[F128T], usize) -> Vec<F128T>,
+{
+    let mut discard = Vec::new();
+    recursive_verifier_with_basis_succinct_k_with_squeezes(
+        config,
+        proof,
+        log_n,
+        target,
+        expected_initial_root,
+        eval_b_residual,
+        sponge,
+        &mut discard,
+    )
+}
+
+/// As [`recursive_verifier_with_basis_succinct_k`], but on accept fills
+/// `query_squeezes_out` with the raw query-sampling squeezes per level in
+/// transcript order (the recursion harness reads `.c0/.c1` off them to re-derive
+/// query positions). Left partially filled on reject; use it only on `true`.
+pub fn recursive_verifier_with_basis_succinct_k_with_squeezes<F>(
+    config: &VerifierConfig,
+    proof: &LigeritoProofK,
+    log_n: usize,
+    target: F128T,
+    expected_initial_root: &Hash,
+    eval_b_residual: F,
+    sponge: &mut Sponge,
+    query_squeezes_out: &mut Vec<Vec<F128T>>,
 ) -> bool
 where
     // Called ONCE at the residual check with the full ris and yr_log_n.
@@ -2757,9 +2957,11 @@ where
 
     // The L0 root is the caller's statement (not proof data): absorb it
     // exactly where the prover absorbed its own.
-    sponge.absorb_bytes(b"flock-ligerito-k-basis-v0");
+    // (No opener domain-label absorb: the F128 opener has none and the recursion
+    // guest replays a label-free opening transcript; the observed `target` +
+    // outer transcript context provide domain separation.)
     observe_ext(sponge, target);
-    sponge.absorb_bytes(expected_initial_root);
+    observe_root(sponge, expected_initial_root);
 
     let log_inv_rate_0 = config.log_inv_rates[0];
     let log_msg_cols_0 = log_n - initial_k;
@@ -2811,7 +3013,7 @@ where
         return false;
     }
     let root_1 = proof.recursive_roots[0];
-    sponge.absorb_bytes(&root_1);
+    observe_root(sponge, &root_1);
 
     // (OOD binding mirror elided: zero samples enforced above.)
 
@@ -2829,24 +3031,31 @@ where
     nonce_idx += 1;
 
     let num_queries_0 = config.queries[0];
-    let queries_0 = sample_distinct_queries(sponge, block_len_0, num_queries_0);
+    let (queries_0, raw_0) =
+        sample_queries_ordered_with_raw_k(sponge, block_len_0, num_queries_0);
+    query_squeezes_out.push(raw_0);
     let alpha_0 = sample_ext_vec(sponge, log2_ceil(num_queries_0));
+    let sq_0 = sorted_unique_queries_k(&queries_0);
     if !verify_level_opens_base(
         expected_initial_root,
         block_len_0,
-        &queries_0,
+        &sq_0,
         &proof.initial_proof.opened_rows,
         num_interleaved_0,
         &proof.initial_proof.merkle_proof,
     ) {
         return false;
     }
+    let ordered_rows_0 = match fan_rows_to_ordered(&queries_0, &proof.initial_proof.opened_rows) {
+        Some(x) => x,
+        None => return false,
+    };
 
     // Compute enforced_sum cheaply at intro time. The induced basis poly's
     // residual evaluations are deferred to the final closed-form check.
     let n1 = log_n - initial_k;
     let enforced_sum_0 = induce_sumcheck_enforced_sum_base(
-        &proof.initial_proof.opened_rows,
+        &ordered_rows_0,
         &r_lane_fold,
         &queries_0,
         &alpha_0,
@@ -2951,29 +3160,36 @@ where
             let prev_block_len = 1usize << (prev_log_msg_cols + prev_log_inv_rate);
             let prev_num_interleaved = 1usize << prev_log_num_interleaved;
             let num_queries_last = config.queries[i + 1];
-            let queries_last =
-                sample_distinct_queries(sponge, prev_block_len, num_queries_last);
+            let (queries_last, raw_last) =
+                sample_queries_ordered_with_raw_k(sponge, prev_block_len, num_queries_last);
+            query_squeezes_out.push(raw_last);
             // Basis-induction challenge for the LAST commitment, sampled after
             // `yr` was observed and the queries are fixed (mirror of the
             // dense verifier, so both stay in lockstep).
             let alpha_last = sample_ext_vec(sponge, log2_ceil(num_queries_last));
+            let sq_last = sorted_unique_queries_k(&queries_last);
             if !verify_level_opens_ext(
                 &prev_root,
                 prev_block_len,
-                &queries_last,
+                &sq_last,
                 &proof.final_proof.opened_rows,
                 prev_num_interleaved,
                 &proof.final_proof.merkle_proof,
             ) {
                 return false;
             }
+            let ordered_rows_last =
+                match fan_rows_to_ordered(&queries_last, &proof.final_proof.opened_rows) {
+                    Some(x) => x,
+                    None => return false,
+                };
 
             // Bind the LAST commitment to `yr` (same tie as the dense
             // verifier): its induced basis is already at the residual
             // dimension (zero further folds), so it joins `combined` below
             // via this LevelCtx.
             let enforced_sum_last = induce_sumcheck_enforced_sum_ext(
-                &proof.final_proof.opened_rows,
+                &ordered_rows_last,
                 &level_rs,
                 &queries_last,
                 &alpha_last,
@@ -3037,7 +3253,7 @@ where
         }
         let root_next = proof.recursive_roots[next_root_idx];
         next_root_idx += 1;
-        sponge.absorb_bytes(&root_next);
+        observe_root(sponge, &root_next);
 
         // (OOD binding mirror elided.)
 
@@ -3056,7 +3272,10 @@ where
         let prev_block_len = 1usize << (prev_log_msg_cols + prev_log_inv_rate);
         let prev_num_interleaved = 1usize << prev_log_num_interleaved;
         let num_queries_i = config.queries[i + 1];
-        let queries_i = sample_distinct_queries(sponge, prev_block_len, num_queries_i);
+        let (queries_i, raw_i) =
+            sample_queries_ordered_with_raw_k(sponge, prev_block_len, num_queries_i);
+        query_squeezes_out.push(raw_i);
+        let sq_i = sorted_unique_queries_k(&queries_i);
         let alpha_i = sample_ext_vec(sponge, log2_ceil(num_queries_i));
         if recursive_proof_idx >= proof.recursive_proofs.len() {
             return false;
@@ -3066,16 +3285,20 @@ where
         if !verify_level_opens_ext(
             &prev_root,
             prev_block_len,
-            &queries_i,
+            &sq_i,
             &rp.opened_rows,
             prev_num_interleaved,
             &rp.merkle_proof,
         ) {
             return false;
         }
+        let ordered_rows_i = match fan_rows_to_ordered(&queries_i, &rp.opened_rows) {
+            Some(x) => x,
+            None => return false,
+        };
 
         let enforced_sum_i =
-            induce_sumcheck_enforced_sum_ext(&rp.opened_rows, &level_rs, &queries_i, &alpha_i);
+            induce_sumcheck_enforced_sum_ext(&ordered_rows_i, &level_rs, &queries_i, &alpha_i);
 
         if tx_idx >= proof.sumcheck_transcript.len() {
             return false;

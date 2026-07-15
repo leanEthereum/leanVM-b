@@ -492,6 +492,38 @@ mod tests {
     use super::*;
     use crate::field::gf2_64::F64;
 
+    #[test]
+    fn frob64_lane_extraction() {
+        // F128T = F64[Y]/(Y^2 = X*Y + 1) with Y = new(0,1); the 2^64-Frobenius is
+        // the nontrivial F64-automorphism, so Frob64(Y) = X + Y (the conjugate
+        // root). Hence for pi = a + b*Y (a,b in F64): pi + Frob64(pi) = b*X, so
+        // b = (pi + Frob64(pi))*X^{-1} (the c1 lane) and a = pi + b*Y (the c0
+        // lane). This is how the recursion guest recovers memory lanes from a
+        // 128-bit public-input word (deterministic ⇒ sound).
+        let y = F128T::new(0, 1);
+        let frob = |z0: F128T| {
+            let mut z = z0;
+            for _ in 0..64 {
+                z = z * z;
+            }
+            z
+        };
+        let x = frob(y) + y; // = X, the F64 generator embedded (c1 must be 0)
+        assert_eq!(x.c1, 0, "X = Frob64(Y)+Y must lie in F64");
+        let x_inv = x.inv();
+        let mut s = 0x1234_5678_9abc_def0u64;
+        for _ in 0..1000 {
+            let a = splitmix64(&mut s);
+            let b = splitmix64(&mut s);
+            let pi = F128T::new(a, b); // = a + b*Y
+            let fp = frob(pi);
+            let b_ext = (pi + fp) * x_inv;
+            let a_ext = pi + b_ext * y;
+            assert_eq!(b_ext, F128T::new(b, 0), "c1 lane extraction failed");
+            assert_eq!(a_ext, F128T::new(a, 0), "c0 lane extraction failed");
+        }
+    }
+
     fn splitmix64(state: &mut u64) -> u64 {
         *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
         let mut z = *state;

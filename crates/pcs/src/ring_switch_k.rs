@@ -132,6 +132,70 @@ pub fn claim_check(prefix_weights: &[F128T], s_hat_v: &[F128T]) -> F128T {
     inner_product_ext(prefix_weights, s_hat_v)
 }
 
+/// Tower (`F128T`) trace-dual basis: `TRACE_DUAL_BASIS[i]` is the unique element
+/// with `bit_i(y) = Tr(TRACE_DUAL_BASIS[i] · y)` for the coordinate bit `i` of
+/// `y ∈ F128T` (c0 bits 0..64, c1 bits 64..128), where `Tr` is the absolute
+/// trace `F128T → F2`. Same construction as the GHASH twin
+/// (`ring_switch::trace_dual_basis`) but over the tower's own coordinate basis
+/// and trace form, so the constants differ (they are NOT the iso-image of the
+/// GHASH ones). The recursion guest replays bit extraction with these.
+pub fn trace_dual_basis_k() -> &'static [F128T; 128] {
+    use std::sync::OnceLock;
+    static DUAL: OnceLock<[F128T; 128]> = OnceLock::new();
+    DUAL.get_or_init(|| {
+        let basis = |j: usize| {
+            if j < 64 {
+                F128T::new(1u64 << j, 0)
+            } else {
+                F128T::new(0, 1u64 << (j - 64))
+            }
+        };
+        // Absolute trace to F2: Tr(x) = Σ_{k=0}^{127} x^{2^k}.
+        let tr = |x: F128T| {
+            let (mut acc, mut p) = (F128T::ZERO, x);
+            for _ in 0..128 {
+                acc += p;
+                p = p * p;
+            }
+            acc
+        };
+        // Gram matrix G[i][j] = Tr(basis(i)·basis(j)) ∈ F2, as bit-packed rows.
+        let mut g: Vec<u128> = vec![0; 128];
+        for (i, gi) in g.iter_mut().enumerate() {
+            for j in 0..128 {
+                if tr(basis(i) * basis(j)) == F128T::ONE {
+                    *gi |= 1u128 << j;
+                }
+            }
+        }
+        // Invert G over F2 by Gauss-Jordan (augmented with identity `inv`).
+        let mut inv: Vec<u128> = (0..128).map(|i| 1u128 << i).collect();
+        for col in 0..128 {
+            let piv = (col..128)
+                .find(|&r| (g[r] >> col) & 1 == 1)
+                .expect("trace Gram matrix is invertible");
+            g.swap(col, piv);
+            inv.swap(col, piv);
+            for r in 0..128 {
+                if r != col && (g[r] >> col) & 1 == 1 {
+                    g[r] ^= g[col];
+                    inv[r] ^= inv[col];
+                }
+            }
+        }
+        // dual[i] = Σ_j inv[i][j] · basis(j).
+        let mut out = [F128T::ZERO; 128];
+        for (i, o) in out.iter_mut().enumerate() {
+            for j in 0..128 {
+                if (inv[i] >> j) & 1 == 1 {
+                    *o += basis(j);
+                }
+            }
+        }
+        out
+    })
+}
+
 /// Compute the slice-MLE vector `s_hat_v` (length 64) from a packed witness
 /// and a tensor-expanded suffix point.
 ///
@@ -485,32 +549,49 @@ pub fn prove(
         "packed witness must have 2^|suffix_point| words"
     );
 
-    sponge.absorb_bytes(b"flock-ring-switch-k-v0");
+    // Single-claim wrapper: observe s_hat_v, sample its own r'', finish. The
+    // STACKED opener instead calls `prove_observe` for every claim, samples ONE
+    // shared r'' after all are observed, then `prove_finish` per claim
+    // (matching the F128 opener + the recursion guest).
+    let (proof, state) = prove_observe(packed_witness, prefix_weights, suffix_point, claim, precomputed_s_hat_v, sponge);
+    let r_dprime = sample_ext_vec(sponge, LOG_DEGREE_E);
+    let eq_r_dprime = build_eq_table_ext(&r_dprime);
+    let out = prove_finish(&state, &eq_r_dprime);
+    (proof, out)
+}
 
-    // Optional phase timing, answering to the same env var as the Ligerito-K
-    // tracing (one env lookup per prove, no work when unset).
-    let trace = std::env::var_os("LIG_K_TRACE").is_some();
-    // Factored eq: `2^(n/2)`-sized halves instead of the full `2^n` tensor
-    // (the full tensor is never materialized — `fold_ext_elems_split`
-    // reconstructs entries on the fly, and the s_hat fold either uses the
-    // caller's precomputed values or the reconstructing fold below).
-    let t = std::time::Instant::now();
+/// Prover-side scratch carried between [`prove_observe`] and [`prove_finish`]
+/// (the r''-independent data: the slice-MLE vector and the factored eq tensor).
+pub struct RingSwitchProveState {
+    s_hat_v: Vec<F128T>,
+    eq_lo: Vec<F128T>,
+    eq_hi: Vec<F128T>,
+}
+
+/// Phase 1 of the ring-switch prover: compute + observe `s_hat_v` (NO domain
+/// label — matches the F128 opener). Returns the proof and the scratch for
+/// [`prove_finish`]. The caller samples the (possibly shared) `r''` afterwards.
+pub fn prove_observe(
+    packed_witness: &[F64],
+    prefix_weights: &[F128T],
+    suffix_point: &[F128T],
+    claim: F128T,
+    precomputed_s_hat_v: Option<&[F128T]>,
+    sponge: &mut Sponge,
+) -> (RingSwitchProofK, RingSwitchProveState) {
+    assert_eq!(prefix_weights.len(), PACKING_WIDTH_K);
+    assert_eq!(
+        packed_witness.len(),
+        1usize << suffix_point.len(),
+        "packed witness must have 2^|suffix_point| words"
+    );
     let (eq_lo, eq_hi) = build_eq_split_ext(suffix_point);
-    let t_tensor = t.elapsed();
-
-    // s_hat_v: the caller's precomputed values (e.g. captured inside flock's
-    // zerocheck/lincheck reduction — the fold below recomputes exactly these,
-    // so the transcript is identical either way), or the four-Russians fold.
-    let t = std::time::Instant::now();
     let s_hat_v = match precomputed_s_hat_v {
         Some(v) => {
             assert_eq!(v.len(), PACKING_WIDTH_K);
             v.to_vec()
         }
         None => {
-            // Fallback (no precompute): reconstruct the tensor from the
-            // factors (one multiply per entry, the same count the full
-            // doubling build pays) and run the standard four-Russians fold.
             use rayon::prelude::*;
             let mask = eq_lo.len() - 1;
             let shift = eq_lo.len().trailing_zeros();
@@ -521,43 +602,25 @@ pub fn prove(
             fold_1b_rows_k(packed_witness, &full)
         }
     };
-    let t_fold = t.elapsed();
     assert_eq!(
         claim_check(prefix_weights, &s_hat_v),
         claim,
         "ring_switch_k::prove: supplied claim does not match the witness"
     );
     observe_ext_slice(sponge, &s_hat_v);
-
-    // Sample row-batching r''; its eq tensor has length 128 = e.
-    let r_dprime = sample_ext_vec(sponge, LOG_DEGREE_E);
-    let eq_r_dprime = build_eq_table_ext(&r_dprime);
-
-    // Batched target: T = sum_w eq_rdp[w] * t_w with t_w = s_hat_u[w] in K.
-    let s_hat_u = transpose_s_hat(&s_hat_v);
-    let sumcheck_claim = inner_product_base_ext(&s_hat_u, &eq_r_dprime);
-
-    // Transparent weight vector rs_eq_ind = Phi(eq(r_suffix, .)), built
-    // straight off the eq factors.
-    let t = std::time::Instant::now();
-    let rs_eq_ind = fold_ext_elems_split(&eq_lo, &eq_hi, &eq_r_dprime);
-    if trace {
-        eprintln!(
-            "[rs-k-prove] eq split: {:6.2} ms, s_hat ({}): {:6.2} ms, rs_eq_ind fold: {:6.2} ms",
-            t_tensor.as_secs_f64() * 1e3,
-            if precomputed_s_hat_v.is_some() { "precomputed" } else { "folded" },
-            t_fold.as_secs_f64() * 1e3,
-            t.elapsed().as_secs_f64() * 1e3,
-        );
-    }
-
     (
-        RingSwitchProofK { s_hat_v },
-        RingSwitchOutputK {
-            rs_eq_ind,
-            sumcheck_claim,
-        },
+        RingSwitchProofK { s_hat_v: s_hat_v.clone() },
+        RingSwitchProveState { s_hat_v, eq_lo, eq_hi },
     )
+}
+
+/// Phase 2 of the ring-switch prover: given the (shared) `eq_r_dprime`, produce
+/// the batched sumcheck claim and the transparent weight vector `rs_eq_ind`.
+pub fn prove_finish(state: &RingSwitchProveState, eq_r_dprime: &[F128T]) -> RingSwitchOutputK {
+    let s_hat_u = transpose_s_hat(&state.s_hat_v);
+    let sumcheck_claim = inner_product_base_ext(&s_hat_u, eq_r_dprime);
+    let rs_eq_ind = fold_ext_elems_split(&state.eq_lo, &state.eq_hi, eq_r_dprime);
+    RingSwitchOutputK { rs_eq_ind, sumcheck_claim }
 }
 
 /// Verifier side of the reduction (dense: materializes `rs_eq_ind`).
@@ -574,7 +637,7 @@ pub fn verify(
     assert_eq!(prefix_weights.len(), PACKING_WIDTH_K);
     assert_eq!(proof.s_hat_v.len(), PACKING_WIDTH_K);
 
-    sponge.absorb_bytes(b"flock-ring-switch-k-v0");
+    // No domain label (matches `prove`'s single-claim wrapper + the F128 opener).
     observe_ext_slice(sponge, &proof.s_hat_v);
 
     if claim_check(prefix_weights, &proof.s_hat_v) != claim {
@@ -606,26 +669,41 @@ pub fn verify_succinct(
     proof: &RingSwitchProofK,
     sponge: &mut Sponge,
 ) -> Result<RingSwitchVerifierOutputK, VerifyErrorK> {
+    // Single-claim wrapper (self-r''); the STACKED verifier uses verify_observe
+    // per claim, one shared r'', then verify_finish per claim.
+    verify_observe(claim, prefix_weights, proof, sponge)?;
+    let r_dprime = sample_ext_vec(sponge, LOG_DEGREE_E);
+    let eq_r_dprime = build_eq_table_ext(&r_dprime);
+    Ok(verify_finish(proof, &eq_r_dprime))
+}
+
+/// Phase 1 of the ring-switch verifier: observe `s_hat_v` (NO domain label —
+/// matches the F128 opener) and check the prefix-weight claim. The caller
+/// samples the (possibly shared) `r''` afterwards.
+pub fn verify_observe(
+    claim: F128T,
+    prefix_weights: &[F128T],
+    proof: &RingSwitchProofK,
+    sponge: &mut Sponge,
+) -> Result<(), VerifyErrorK> {
     assert_eq!(prefix_weights.len(), PACKING_WIDTH_K);
     assert_eq!(proof.s_hat_v.len(), PACKING_WIDTH_K);
-
-    sponge.absorb_bytes(b"flock-ring-switch-k-v0");
     observe_ext_slice(sponge, &proof.s_hat_v);
-
     if claim_check(prefix_weights, &proof.s_hat_v) != claim {
         return Err(VerifyErrorK::ClaimMismatch);
     }
+    Ok(())
+}
 
-    let r_dprime = sample_ext_vec(sponge, LOG_DEGREE_E);
-    let eq_r_dprime = build_eq_table_ext(&r_dprime);
-
+/// Phase 2 of the ring-switch verifier: given the (shared) `eq_r_dprime`,
+/// produce the batched sumcheck claim.
+pub fn verify_finish(proof: &RingSwitchProofK, eq_r_dprime: &[F128T]) -> RingSwitchVerifierOutputK {
     let s_hat_u = transpose_s_hat(&proof.s_hat_v);
-    let sumcheck_claim = inner_product_base_ext(&s_hat_u, &eq_r_dprime);
-
-    Ok(RingSwitchVerifierOutputK {
+    let sumcheck_claim = inner_product_base_ext(&s_hat_u, eq_r_dprime);
+    RingSwitchVerifierOutputK {
         sumcheck_claim,
-        eq_r_dprime,
-    })
+        eq_r_dprime: eq_r_dprime.to_vec(),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -745,6 +823,39 @@ mod tests {
         z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
         z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
         z ^ (z >> 31)
+    }
+
+    #[test]
+    fn trace_dual_basis_k_is_dual() {
+        // Tr(dual[i]·basis(j)) == δ_ij, and bit_i(y) = Tr(dual[i]·y) recovers
+        // coordinate bits of a few random elements.
+        let dual = trace_dual_basis_k();
+        let basis = |j: usize| {
+            if j < 64 { F128T::new(1u64 << j, 0) } else { F128T::new(0, 1u64 << (j - 64)) }
+        };
+        let tr = |x: F128T| {
+            let (mut acc, mut p) = (F128T::ZERO, x);
+            for _ in 0..128 {
+                acc += p;
+                p = p * p;
+            }
+            acc
+        };
+        for i in 0..128 {
+            for j in 0..128 {
+                let want = if i == j { F128T::ONE } else { F128T::ZERO };
+                assert_eq!(tr(dual[i] * basis(j)), want, "duality fails at i={i}, j={j}");
+            }
+        }
+        let mut s = 0xDEAD_BEEF_u64;
+        for _ in 0..8 {
+            let y = F128T::new(splitmix64(&mut s), splitmix64(&mut s));
+            for i in 0..128 {
+                let bit = if i < 64 { (y.c0 >> i) & 1 } else { (y.c1 >> (i - 64)) & 1 };
+                let want = if bit == 1 { F128T::ONE } else { F128T::ZERO };
+                assert_eq!(tr(dual[i] * y), want, "bit {i} extraction wrong");
+            }
+        }
     }
 
     fn rand_ext(s: &mut u64) -> F128T {
