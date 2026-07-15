@@ -45,17 +45,19 @@ pub fn compress(a: [F64; 4], b: [F64; 4]) -> [F64; 4] {
     std::array::from_fn(|k| F64(u64::from_le_bytes(d[8 * k..8 * k + 8].try_into().unwrap())))
 }
 
-// Domain-separation tags, carried in the LAST input word of every absorbed
-// block, so no two roles (a scalar, a byte word, a length frame, a squeeze, a
-// PoW step) can alias: the adversary controls only the leading data words,
-// never the tag. Distinct nonzero constants suffice.
+// Domain-separation tags, carried in the THIRD input word (lane 2) of every
+// absorbed block — after the up-to-two data words, so a recursive verifier
+// binds the tag as the `c0` word of the block's second 128-bit message. No two
+// roles (a scalar, a byte word, a length frame, a squeeze, a PoW step) can
+// alias: the adversary controls only the leading data words, never the tag.
+// Distinct nonzero constants suffice.
 const DS_SCALAR: F64 = F64(1);
 const DS_BYTE: F64 = F64(2);
 const DS_LEN: F64 = F64(3);
 const DS_SQUEEZE: F64 = F64(4);
 const DS_POW: F64 = F64(5);
 
-/// `compress(base, (nonce, 0, 0, DS_POW))` has its low `bits` bits zero — the
+/// `compress(base, (nonce, 0, DS_POW, 0))` has its low `bits` bits zero — the
 /// grinding predicate over the VM compression. A CONTIGUOUS low-bit window
 /// (rather than byte-wise leading zeros) so a recursive verifier re-checks it
 /// with a single loop over the bit decomposition of the digest word
@@ -63,7 +65,7 @@ const DS_POW: F64 = F64(5);
 #[inline]
 fn pow_bits_ok(base: [F64; 4], nonce: u64, bits: u32) -> bool {
     debug_assert!(bits < 64, "grinding deficit fits the digest's low word");
-    let digest = compress(base, [F64(nonce), F64::ZERO, F64::ZERO, DS_POW])[0];
+    let digest = compress(base, [F64(nonce), F64::ZERO, DS_POW, F64::ZERO])[0];
     digest.0 & ((1u64 << bits) - 1) == 0
 }
 
@@ -99,18 +101,21 @@ impl Sponge {
     }
 
     /// Absorb one 16-byte scalar (two little-endian `K` lanes):
-    /// `cv ← compress(cv, (lo, hi, 0, DS_SCALAR))`.
+    /// `cv ← compress(cv, (lo, hi, DS_SCALAR, 0))`. The domain tag sits in the
+    /// THIRD compress lane (right after the scalar's two lanes), so the guest's
+    /// sponge replay binds it as the `c0` word of the second blake3 message.
     pub fn observe(&mut self, x: F128T) {
         self.observe_untraced(x);
         trace(|| TraceOp::Observe(x));
     }
 
     fn observe_untraced(&mut self, x: F128T) {
-        self.cv = compress(self.cv, [F64(x.c0), F64(x.c1), F64::ZERO, DS_SCALAR]);
+        self.cv = compress(self.cv, [F64(x.c0), F64(x.c1), DS_SCALAR, F64::ZERO]);
     }
 
     /// Absorb a byte string (a protocol label, a Merkle root): a length frame
-    /// then its 24-byte (three-word) chunks as tagged blocks, so a field
+    /// then its 16-byte (two-word) chunks as tagged blocks (the domain tag
+    /// occupies the third lane, leaving two data words per block), so a field
     /// element, a raw integer, and a byte string cannot alias.
     pub fn absorb_bytes(&mut self, bytes: &[u8]) {
         self.absorb_bytes_untraced(bytes);
@@ -118,17 +123,17 @@ impl Sponge {
     }
 
     fn absorb_bytes_untraced(&mut self, bytes: &[u8]) {
-        self.cv = compress(self.cv, [F64(bytes.len() as u64), F64::ZERO, F64::ZERO, DS_LEN]);
-        for chunk in bytes.chunks(24) {
-            let mut buf = [0u8; 24];
+        self.cv = compress(self.cv, [F64(bytes.len() as u64), F64::ZERO, DS_LEN, F64::ZERO]);
+        for chunk in bytes.chunks(16) {
+            let mut buf = [0u8; 16];
             buf[..chunk.len()].copy_from_slice(chunk);
             let w = |o: usize| F64(u64::from_le_bytes(buf[o..o + 8].try_into().unwrap()));
-            self.cv = compress(self.cv, [w(0), w(8), w(16), DS_BYTE]);
+            self.cv = compress(self.cv, [w(0), w(8), DS_BYTE, F64::ZERO]);
         }
     }
 
     /// Squeeze a challenge and ratchet: the challenge's two lanes are the first
-    /// two words of `compress(cv, (0, 0, 0, DS_SQUEEZE))`, whose full output
+    /// two words of `compress(cv, (0, 0, DS_SQUEEZE, 0))`, whose full output
     /// becomes the new state — domain-separated from absorbs, so a challenge
     /// cannot be confused with a continued absorb. In Fiat–Shamir everything is
     /// public; soundness comes from each challenge being a random-oracle image
@@ -140,7 +145,7 @@ impl Sponge {
     }
 
     fn sample_untraced(&mut self) -> F128T {
-        let out = compress(self.cv, [F64::ZERO, F64::ZERO, F64::ZERO, DS_SQUEEZE]);
+        let out = compress(self.cv, [F64::ZERO, F64::ZERO, DS_SQUEEZE, F64::ZERO]);
         self.cv = out;
         F128T::new(out[0].0, out[1].0)
     }
@@ -150,10 +155,10 @@ impl Sponge {
         (0..n).map(|_| self.sample()).collect()
     }
 
-    /// The PoW base `compress(cv, (0, 0, 0, DS_POW))`, read without mutating the
+    /// The PoW base `compress(cv, (0, 0, DS_POW, 0))`, read without mutating the
     /// live state (the nonce is bound separately by [`Self::absorb_nonce`]).
     fn pow_base(&self) -> [F64; 4] {
-        compress(self.cv, [F64::ZERO, F64::ZERO, F64::ZERO, DS_POW])
+        compress(self.cv, [F64::ZERO, F64::ZERO, DS_POW, F64::ZERO])
     }
 
     /// The current 256-bit chaining value.
@@ -164,7 +169,7 @@ impl Sponge {
     /// The grinding digest word this state yields for `nonce` (read-only preview;
     /// [`Self::verify_pow`] is the mutating check).
     pub fn pow_digest(&self, nonce: u64) -> F64 {
-        compress(self.pow_base(), [F64(nonce), F64::ZERO, F64::ZERO, DS_POW])[0]
+        compress(self.pow_base(), [F64(nonce), F64::ZERO, DS_POW, F64::ZERO])[0]
     }
 
     /// Re-run recorded verifier transcript ops through this sponge, asserting
@@ -189,7 +194,7 @@ impl Sponge {
 
     /// Bind a grinding nonce into the state (both sides, so they stay in lockstep).
     fn absorb_nonce(&mut self, nonce: u64) {
-        self.cv = compress(self.cv, [F64(nonce), F64::ZERO, F64::ZERO, DS_POW]);
+        self.cv = compress(self.cv, [F64(nonce), F64::ZERO, DS_POW, F64::ZERO]);
     }
 
     /// Prover-side PoW grind: find the smallest `u64` nonce whose PoW hash clears

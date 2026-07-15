@@ -210,16 +210,11 @@ BYTECODE_VARS = BYTECODE_VARS_PLACEHOLDER
 TRANSCRIPT_SEED_0 = TRANSCRIPT_SEED_0_PLACEHOLDER
 TRANSCRIPT_SEED_1 = TRANSCRIPT_SEED_1_PLACEHOLDER
 
-# Domain-separation tags. The sponge places the tag in the FOURTH compress lane
-# (`compress(cv, [w0, w1, w2, DS])` — the tower layout), i.e. the c1 lane of the
-# second blake3 message word. A blake3 message list `[..., tag]` maps its last
-# element to that word as F128T(tag.c0, tag.c1), so the tag constant must sit in
-# the HIGH lane: `k << 64` decodes to F128T(0, k), landing k in lane 3.
-DS_SCALAR = 18446744073709551616   # 1 << 64  -> F128T(0, 1)
-DS_BYTE = 36893488147419103232     # 2 << 64  -> F128T(0, 2)
-DS_LEN = 55340232221128654848      # 3 << 64  -> F128T(0, 3)
-DS_SQ = 73786976294838206464       # 4 << 64  -> F128T(0, 4)
-DS_POW = 92233720368547758080      # 5 << 64  -> F128T(0, 5)
+DS_SCALAR = 1
+DS_BYTE = 2
+DS_LEN = 3
+DS_SQ = 4
+DS_POW = 5
 
 # Field structure: GF(2^128). Its 128 bits pack into LOG2_FIELD_BITS = 7
 # ring-switch coordinates (the q_pkd slot length, r'' length).
