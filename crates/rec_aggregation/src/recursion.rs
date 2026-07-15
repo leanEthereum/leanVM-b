@@ -534,25 +534,21 @@ fn check_reduced(program: &Program, red: &ReducedClaims) -> Result<(), Recursive
     if mle_eval(&stacked, &red.r_bc) != red.v_bc {
         return Err(RecursiveVerifyError::BytecodeClaim);
     }
-    let (ma, mb) = flock::blake3::matrices();
     let klog = flock::blake3::K_LOG;
     if red.r_m.len() != 2 * klog {
         return Err(RecursiveVerifyError::InvalidDeferredShape);
     }
+    // Matrix MLE claims Â₀(r_m) / B̂₀(r_m) via the circuit walk (flock.pdf,
+    // Circuit walking): O(circuit) field ops, instead of contracting the two
+    // eq tables through the ~21M-nonzero substituted matrices (which would
+    // also force building them, ~300 ms on first use).
     let eq_r = pcs::ligerito_k::build_eq_table_ext(&red.r_m[..klog]);
     let eq_c = pcs::ligerito_k::build_eq_table_ext(&red.r_m[klog..]);
-    let direct = |m: &flock::r1cs::SparseBinaryMatrix| -> F128T {
-        let mut acc = F128T::ZERO;
-        for (i, row) in m.rows.iter().enumerate() {
-            let s = row.iter().map(|&j| eq_c[j]).fold(F128T::ZERO, |a, x| a + x);
-            acc += eq_r[i] * s;
-        }
-        acc
-    };
-    if direct(ma) != red.v_a {
+    let (v_a, v_b) = flock::blake3::bilinear_walk_pair(&eq_r, &eq_c);
+    if v_a != red.v_a {
         return Err(RecursiveVerifyError::MatrixAClaim);
     }
-    if direct(mb) != red.v_b {
+    if v_b != red.v_b {
         return Err(RecursiveVerifyError::MatrixBClaim);
     }
     Ok(())

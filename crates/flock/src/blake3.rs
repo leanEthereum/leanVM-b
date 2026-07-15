@@ -647,6 +647,248 @@ pub fn build_matrices() -> (SparseBinaryMatrix, SparseBinaryMatrix) {
     (to_mat(a_rows), to_mat(b_rows))
 }
 
+// ---------------------------------------------------------------------------
+// Circuit-walk evaluation (flock §Circuit walking)
+//
+// Evaluates the two bilinear forms
+//
+//     uᵀ A_0 w   and   uᵀ B_0 w
+//
+// for arbitrary row weights `u` and column weights `w` (length K each) by
+// walking the UNSUBSTITUTED compression circuit forward: the same cascade
+// `build_matrices` threads symbolically, evaluated over F128T values. A lane
+// is a 32-vector of wire values; a committed slot contributes `w[slot]`, an
+// intermediate wire the running linear combination. Row i's contribution
+// `u[i]·⟨A_i, w⟩` / `u[i]·⟨B_i, w⟩` is accumulated exactly where
+// `build_matrices` would emit that row, with `⟨row, w⟩` read off the threaded
+// wire values. Cost: O(circuit) field ops (~50K muls), never the ~21M
+// substituted nonzeros — and the matrices need not be materialized at all.
+// This is what lets a verifier evaluate the matrix MLEs directly instead of
+// paying the sparse-matrix cost (or deferring the claim).
+// ---------------------------------------------------------------------------
+
+/// One lane's wire values: bit `i` of the word, as the F128T combination
+/// `⟨lin_func_i, w⟩`.
+type WireWord = [F128T; WORD_BITS];
+
+#[inline]
+fn wire_from_slot_base(w: &[F128T], base: usize) -> WireWord {
+    std::array::from_fn(|i| w[base + i])
+}
+
+/// Constant word: a set bit is the `[Z_CONST]` lin_func, a clear bit empty.
+#[inline]
+fn wire_from_const(w: &[F128T], val: u32) -> WireWord {
+    std::array::from_fn(|i| {
+        if (val >> i) & 1 == 1 {
+            w[Z_CONST_POS]
+        } else {
+            F128T::ZERO
+        }
+    })
+}
+
+#[inline]
+fn wire_xor(x: &WireWord, y: &WireWord) -> WireWord {
+    std::array::from_fn(|i| x[i] + y[i])
+}
+
+#[inline]
+fn wire_rotr(x: &WireWord, n: usize) -> WireWord {
+    std::array::from_fn(|i| x[(i + n) % WORD_BITS])
+}
+
+/// Pair of accumulators for the A-side and B-side bilinear forms, plus the
+/// running sum of `u` over rows whose B-side is the single `[Z_CONST]` entry
+/// (lin-id / free-input rows) — factored so those rows cost one B-side
+/// F-addition instead of a multiplication each.
+struct WalkAcc {
+    a: F128T,
+    b: F128T,
+    /// Σ u[row] over rows with `B_row = [Z_CONST]`; folded in once at the end
+    /// as `b += w[Z_CONST_POS] · u_bconst`.
+    u_bconst: F128T,
+}
+
+/// Walk one 32-bit ADD (mirror of `write_add_carry_rows` + `Word::add_sum`):
+/// accumulate the 31 carry rows into `acc` and return the sum-bit wires.
+///
+///   carry row cb+i:  A = X[i] ⊕ cin[i],  B = Y[i] ⊕ cin[i]
+///   sum[i]         = X[i] ⊕ Y[i] ⊕ cin[i]
+///
+/// with `cin[i] = ⊕_{j<i} carry_aux[cb+j]`, a running prefix of `w` reads.
+fn walk_add(
+    acc: &mut WalkAcc,
+    u: &[F128T],
+    w: &[F128T],
+    x: &WireWord,
+    y: &WireWord,
+    carry_base: usize,
+) -> WireWord {
+    let mut out = [F128T::ZERO; WORD_BITS];
+    let mut cin = F128T::ZERO;
+    for i in 0..WORD_BITS {
+        let a_side = x[i] + cin;
+        let b_side = y[i] + cin;
+        out[i] = a_side + y[i];
+        if i < CARRY_BITS_PER_ADD {
+            let ui = u[carry_base + i];
+            acc.a += ui * a_side;
+            acc.b += ui * b_side;
+            cin += w[carry_base + i];
+        }
+    }
+    out
+}
+
+/// Walk 32 consecutive `lin_func · 1` rows (lin-id / out_lo / out_hi):
+/// row base+i has `A = <wire bit i>`, `B = [Z_CONST]`.
+fn walk_lin_rows(acc: &mut WalkAcc, u: &[F128T], vals: &WireWord, base: usize) {
+    for i in 0..WORD_BITS {
+        acc.a += u[base + i] * vals[i];
+        acc.u_bconst += u[base + i];
+    }
+}
+
+/// `(uᵀ A_0 w, uᵀ B_0 w)` by the forward circuit walk — the exact matrices
+/// [`build_matrices`] emits, never materialized.
+pub fn bilinear_walk_pair(u: &[F128T], w: &[F128T]) -> (F128T, F128T) {
+    assert_eq!(u.len(), K);
+    assert_eq!(w.len(), K);
+    let wc = w[Z_CONST_POS];
+    let mut acc = WalkAcc {
+        a: F128T::ZERO,
+        b: F128T::ZERO,
+        u_bconst: F128T::ZERO,
+    };
+    // Σ u[row] over rows with A = B = [Z_CONST] (the constant row + pinned
+    // set bits): folded in once at the end on both sides.
+    let mut u_abconst = u[Z_CONST_POS];
+
+    // Free-input rows for the 512 message bits: A = [slot], B = [Z_CONST].
+    for j in 0..16 * WORD_BITS {
+        let s = M_BASE + j;
+        acc.a += u[s] * w[s];
+        acc.u_bconst += u[s];
+    }
+
+    // Pinned-constant rows: a set bit has A = B = [Z_CONST], a clear bit an
+    // empty row.
+    let const_walk = |u_abconst: &mut F128T, base: usize, val: u32| {
+        for j in 0..WORD_BITS {
+            if (val >> j) & 1 == 1 {
+                *u_abconst += u[base + j];
+            }
+        }
+    };
+    for (wd, &val) in BLAKE3_IV.iter().enumerate() {
+        const_walk(&mut u_abconst, CV_BASE + wd * WORD_BITS, val);
+    }
+    const_walk(&mut u_abconst, T_LO_BASE, 0);
+    const_walk(&mut u_abconst, T_HI_BASE, 0);
+    const_walk(&mut u_abconst, BLEN_BASE, PINNED_BLOCK_LEN);
+    const_walk(&mut u_abconst, FLAGS_BASE, PINNED_FLAGS);
+
+    // The G cascade, over wire values (mirrors `initial_lane_words`).
+    let msg_idx = per_round_msg_idx();
+    let mut state: [WireWord; 16] = std::array::from_fn(|_| [F128T::ZERO; WORD_BITS]);
+    for wd in 0..8 {
+        state[wd] = wire_from_slot_base(w, cv_bit(wd, 0));
+    }
+    for i in 0..4 {
+        state[8 + i] = wire_from_const(w, BLAKE3_IV[i]);
+    }
+    state[12] = wire_from_slot_base(w, T_LO_BASE);
+    state[13] = wire_from_slot_base(w, T_HI_BASE);
+    state[14] = wire_from_slot_base(w, BLEN_BASE);
+    state[15] = wire_from_slot_base(w, FLAGS_BASE);
+
+    for r in 0..N_ROUNDS {
+        for g_in_round in 0..N_G_PER_ROUND {
+            let g = r * N_G_PER_ROUND + g_in_round;
+            let [la, lb, lc, ld] = G_LANES[g_in_round];
+            let [mx_idx, my_idx] = msg_idx[r][g_in_round];
+            let (a, b, c, d) = (state[la], state[lb], state[lc], state[ld]);
+            let mx = wire_from_slot_base(w, m_bit(mx_idx, 0));
+            let my = wire_from_slot_base(w, m_bit(my_idx, 0));
+
+            let tmp_0 = walk_add(&mut acc, u, w, &a, &b, g_add_carry_bit(g, ADD_TMP0, 0));
+            let a_1 = walk_add(&mut acc, u, w, &tmp_0, &mx, g_add_carry_bit(g, ADD_A1, 0));
+            let d_1 = wire_rotr(&wire_xor(&d, &a_1), 16);
+            let c_1 = walk_add(&mut acc, u, w, &c, &d_1, g_add_carry_bit(g, ADD_C1, 0));
+            let b_1 = wire_rotr(&wire_xor(&b, &c_1), 12);
+            let tmp_1 = walk_add(&mut acc, u, w, &a_1, &b_1, g_add_carry_bit(g, ADD_TMP1, 0));
+            let a_2 = walk_add(&mut acc, u, w, &tmp_1, &my, g_add_carry_bit(g, ADD_A2, 0));
+            let d_2 = wire_rotr(&wire_xor(&d_1, &a_2), 8);
+            let c_2 = walk_add(&mut acc, u, w, &c_1, &d_2, g_add_carry_bit(g, ADD_C2, 0));
+            let b_new = wire_rotr(&wire_xor(&b_1, &c_2), 7);
+            walk_lin_rows(&mut acc, u, &b_new, g_lin_bit(g, LIN_B_NEW, 0));
+            walk_lin_rows(&mut acc, u, &d_2, g_lin_bit(g, LIN_D_NEW, 0));
+
+            state[la] = a_2;
+            state[lb] = wire_from_slot_base(w, g_lin_bit(g, LIN_B_NEW, 0));
+            state[lc] = c_2;
+            state[ld] = wire_from_slot_base(w, g_lin_bit(g, LIN_D_NEW, 0));
+        }
+    }
+
+    // Finalization rows: out_lo[w] = state[w] ⊕ state[w+8],
+    // out_hi[w] = state[w+8] ⊕ cv[w]. Padding rows are empty: no contribution.
+    for wd in 0..8 {
+        let lo = wire_xor(&state[wd], &state[wd + 8]);
+        walk_lin_rows(&mut acc, u, &lo, out_lo_bit(wd, 0));
+        let cv_w = wire_from_slot_base(w, cv_bit(wd, 0));
+        let hi = wire_xor(&state[wd + 8], &cv_w);
+        walk_lin_rows(&mut acc, u, &hi, out_hi_bit(wd, 0));
+    }
+
+    // Fold in the factored constant-B and constant-A/B row sums.
+    (
+        acc.a + wc * u_abconst,
+        acc.b + wc * (acc.u_bconst + u_abconst),
+    )
+}
+
+/// `α·(uᵀ A_0 w) + (uᵀ B_0 w)` — the α-batched form lincheck's verifier
+/// consumes, by one circuit walk.
+pub fn bilinear_walk(alpha: F128T, u: &[F128T], w: &[F128T]) -> F128T {
+    let (va, vb) = bilinear_walk_pair(u, w);
+    alpha * va + vb
+}
+
+/// Walk-capable [`crate::lincheck::LincheckCircuit`] over the BLAKE3 R1CS:
+/// `bilinear_form` answers lincheck's verifier in O(circuit) field ops via
+/// [`bilinear_walk`], so `lincheck::verify` never materializes the
+/// ~21M-nonzero substituted matrices' column marginal. The prover-side
+/// `fold_alpha_batched` delegates to the (lazily built) CSC fold — the
+/// verifier's fast path never calls it.
+pub struct WalkLincheckCircuit<'a> {
+    r1cs: &'a BlockR1cs,
+}
+
+impl<'a> WalkLincheckCircuit<'a> {
+    pub fn new(r1cs: &'a BlockR1cs) -> Self {
+        Self { r1cs }
+    }
+}
+
+impl crate::lincheck::LincheckCircuit for WalkLincheckCircuit<'_> {
+    fn n_cols(&self) -> usize {
+        K
+    }
+    fn const_pin_col(&self) -> Option<usize> {
+        self.r1cs.const_pin
+    }
+    fn fold_alpha_batched(&self, alpha: F128T, eq_inner: &[F128T]) -> Vec<F128T> {
+        self.r1cs
+            .csc_lincheck_circuit()
+            .fold_alpha_batched(alpha, eq_inner)
+    }
+    fn bilinear_form(&self, alpha: F128T, u: &[F128T], w: &[F128T]) -> Option<F128T> {
+        Some(bilinear_walk(alpha, u, w))
+    }
+}
+
 /// [`BlockR1cs::family_digest`] of this module's circuit, baked as a constant:
 /// recomputing it means building and hashing ~21M matrix entries (~300 ms),
 /// which embedding protocols would otherwise pay inside their first prove.
@@ -1207,6 +1449,99 @@ mod tests {
         );
     }
 
+    /// Timing: the three ways the native verifier can evaluate the A_0/B_0
+    /// bilinear forms. Run with
+    /// `cargo test --release -p flock bench_bilinear -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn bench_bilinear_walk_vs_matrices() {
+        let mut rng = Rng::new(0xBE9C);
+        let u: Vec<F128T> = rng.ext_vec(K);
+        let w: Vec<F128T> = rng.ext_vec(K);
+        let alpha = rng.ext();
+
+        // One-time setup costs the sparse paths pay (process-cached in prod,
+        // but real for a one-shot native verifier).
+        let t = std::time::Instant::now();
+        let (ma, mb) = (build_matrices().0, build_matrices().1);
+        println!("build_matrices (×2 redundant here): {:?}", t.elapsed());
+        let nnz: usize = ma.rows.iter().map(|r| r.len()).sum::<usize>()
+            + mb.rows.iter().map(|r| r.len()).sum::<usize>();
+        println!("total nonzeros (A_0 + B_0): {nnz}");
+        let r1cs = build_block_r1cs(3);
+        let t = std::time::Instant::now();
+        let csc = r1cs.csc_lincheck_circuit();
+        println!("CSC transpose build: {:?}", t.elapsed());
+
+        // (a) check_reduced-style naive contraction, both matrices.
+        let contract = |m: &SparseBinaryMatrix| -> F128T {
+            let mut acc = F128T::ZERO;
+            for (i, row) in m.rows.iter().enumerate() {
+                let s = row.iter().map(|&j| w[j]).fold(F128T::ZERO, |a, x| a + x);
+                acc += u[i] * s;
+            }
+            acc
+        };
+        let t = std::time::Instant::now();
+        let (da, db) = (contract(&ma), contract(&mb));
+        let t_naive = t.elapsed();
+        println!("naive sparse contraction (A + B): {t_naive:?}");
+
+        // (b) lincheck-verifier-style CSC marginal + inner product.
+        use crate::lincheck::LincheckCircuit;
+        let t = std::time::Instant::now();
+        let marginal = csc.fold_alpha_batched(alpha, &u);
+        let form_csc = pcs::ring_switch_k::inner_product_ext(&marginal, &w);
+        let t_csc = t.elapsed();
+        println!("CSC marginal fold + inner product: {t_csc:?}");
+
+        // (c) the circuit walk.
+        let t = std::time::Instant::now();
+        let (wa, wb) = bilinear_walk_pair(&u, &w);
+        let t_walk = t.elapsed();
+        println!("bilinear_walk_pair: {t_walk:?}");
+
+        assert_eq!((wa, wb), (da, db));
+        assert_eq!(alpha * wa + wb, form_csc);
+        println!(
+            "speedup: {:.1}× vs naive, {:.1}× vs CSC",
+            t_naive.as_secs_f64() / t_walk.as_secs_f64(),
+            t_csc.as_secs_f64() / t_walk.as_secs_f64()
+        );
+    }
+
+    /// The circuit walk computes the same bilinear forms as the materialized
+    /// matrices, for fully random (unstructured) row/column weights: any
+    /// missing, extra, or misplaced row contribution would break equality.
+    #[test]
+    fn bilinear_walk_matches_matrices() {
+        let (ma, mb) = matrices();
+        let mut rng = Rng::new(0xC12C);
+        for trial in 0..3 {
+            let alpha = rng.ext();
+            let u: Vec<F128T> = rng.ext_vec(K);
+            let w: Vec<F128T> = rng.ext_vec(K);
+            let contract = |m: &SparseBinaryMatrix| -> F128T {
+                m.rows
+                    .iter()
+                    .enumerate()
+                    .map(|(i, row)| {
+                        u[i] * row.iter().map(|&j| w[j]).fold(F128T::ZERO, |acc, x| acc + x)
+                    })
+                    .fold(F128T::ZERO, |acc, x| acc + x)
+            };
+            let (direct_a, direct_b) = (contract(ma), contract(mb));
+            let (walk_a, walk_b) = bilinear_walk_pair(&u, &w);
+            assert_eq!(walk_a, direct_a, "A-side, trial {trial}");
+            assert_eq!(walk_b, direct_b, "B-side, trial {trial}");
+            assert_eq!(
+                bilinear_walk(alpha, &u, &w),
+                alpha * direct_a + direct_b,
+                "alpha-batched, trial {trial}"
+            );
+        }
+    }
+
     /// BLAKE3 chunk flags (subset).
     const CHUNK_START: u32 = 1 << 0;
     const CHUNK_END: u32 = 1 << 1;
@@ -1623,11 +1958,14 @@ impl Blake3Setup {
             x_inner_rest: zc_claim.mlv_challenges[..inner_rest_len].to_vec(),
             x_outer: zc_claim.mlv_challenges[inner_rest_len..].to_vec(),
         };
+        // Walk-capable circuit: the verifier's lincheck consistency check is
+        // one circuit walk (O(circuit) field ops) instead of the ∝ NNZ CSC
+        // marginal fold. Same transcript, same accept/reject.
         let lc_claim = crate::lincheck::verify(
             self.r1cs.m,
             self.r1cs.k_log,
             self.r1cs.k_skip,
-            self.r1cs.csc_lincheck_circuit(),
+            &WalkLincheckCircuit::new(&self.r1cs),
             &x_ab,
             zc_claim.a_eval,
             zc_claim.b_eval,

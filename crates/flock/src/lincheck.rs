@@ -135,9 +135,11 @@ use crate::r1cs::SparseBinaryMatrix;
 // marginal of base matrix `M ∈ {A_0, B_0}` — cost ∝ NNZ.
 //
 // `LincheckCircuit` is the seam: the prover and verifier take
-// `&dyn LincheckCircuit` instead of a pair of matrices. The one live impl is
+// `&dyn LincheckCircuit` instead of a pair of matrices. Two live impls:
 // [`CscCircuit`] (the cached column-major transpose of BLAKE3's `(A_0, B_0)`,
-// see `BlockR1cs::csc_lincheck_circuit`).
+// see `BlockR1cs::csc_lincheck_circuit`) — the prover's marginal fold — and
+// `blake3::WalkLincheckCircuit`, whose `bilinear_form` lets the verifier skip
+// the marginal entirely via the circuit walk (flock.tex §Circuit walking).
 
 /// Per-block linear structure consumed by lincheck. Implementations produce
 /// the α-batched column marginal `comb_vec[c] = α · ξ_A(c) + ξ_B(c)` either
@@ -158,6 +160,22 @@ pub trait LincheckCircuit: Sync {
     /// in *every* batched instance — padding included. Default `None` keeps the transcript unchanged
     /// for circuits without a constant wire.
     fn const_pin_col(&self) -> Option<usize> {
+        None
+    }
+
+    /// Optional verifier-side fast path (flock.tex §Circuit walking): the
+    /// α-batched bilinear form
+    ///
+    ///   `α·(uᵀ A_0 w) + (uᵀ B_0 w)`
+    ///
+    /// for arbitrary row weights `u` and column weights `w` (length
+    /// `n_cols()` each), WITHOUT materializing the length-k column marginal.
+    /// [`verify`] only ever consumes the marginal through one inner product
+    /// against a column-weight vector, so an implementation that can walk its
+    /// circuit (O(circuit) field ops — see `blake3::bilinear_walk`) answers
+    /// here and never pays the ∝ NNZ marginal. Default `None`: the verifier
+    /// falls back to `fold_alpha_batched`.
+    fn bilinear_form(&self, _alpha: F128T, _u: &[F128T], _w: &[F128T]) -> Option<F128T> {
         None
     }
 }
@@ -1385,9 +1403,12 @@ pub fn verify<O>(
     // 1. Sample α (matches prover's order).
     let alpha = vs.sample();
 
-    // 2. Build α-batched comb_vec via the circuit's per-block fold (same call
-    //    the prover made — sparse default delegates to the fused row-fold;
-    //    per-hash impls walk the constraint graph directly).
+    // 2. Row weights: the quirky eq table over the inner claim point — `u` in
+    //    the final bilinear form. The α-batched column marginal the prover
+    //    materializes (`fold_alpha_batched`, cost ∝ NNZ) is NOT built here:
+    //    the verifier only ever consumes it through one inner product, so
+    //    that work is deferred to step 5 (and walk-capable circuits answer it
+    //    in O(circuit) ops without the marginal at all).
     let t = std::time::Instant::now();
     let eq_inner = build_quirky_eq_table(x_ab.z_skip, &x_ab.x_inner_rest, k_skip);
     if trace {
@@ -1396,27 +1417,19 @@ pub fn verify<O>(
             fmt(t.elapsed().as_secs_f64())
         );
     }
-    let t = std::time::Instant::now();
-    let mut comb_vec = circuit.fold_alpha_batched(alpha, &eq_inner);
-    if trace {
-        eprintln!(
-            "        [lcv] circuit.fold_alpha_batched: {}",
-            fmt(t.elapsed().as_secs_f64())
-        );
-    }
 
-    // 3. Replay the multilinear product-sumcheck (inner_rest_len rounds),
-    //    folding comb_vec in lockstep so we end up with the "comb_partial"
-    //    vector of length 2^k_skip. Parallel fold for the early (large) rounds.
-    let t = std::time::Instant::now();
-    // Constant-wire pin (mirror of prove): β sampled after α, comb gains +β at
-    // the constant column, and the initial target gains +β·1 — the honest
-    // all-ones constant column folds to 1. See lincheck's `LincheckCircuit::const_pin_col`.
+    // 3. Replay the multilinear product-sumcheck (inner_rest_len rounds).
+    //    Only the transcript messages drive the running claim; the prover's
+    //    lockstep comb_vec fold is linear, so its end state is reconstructed
+    //    in step 5 as column weights instead of being folded here.
+    // Constant-wire pin (mirror of prove): β sampled after α, the comb's +β
+    // at the constant column surfaces in step 5 as `+β·w_col[col]`, and the
+    // initial target gains +β·1 — the honest all-ones constant column folds
+    // to 1. See lincheck's `LincheckCircuit::const_pin_col`.
     let mut target = alpha * v_a + v_b;
     let mut beta = F128T::ZERO;
-    if let Some(col) = circuit.const_pin_col() {
+    if circuit.const_pin_col().is_some() {
         beta = vs.sample();
-        comb_vec[col] += beta;
         target += beta;
     }
     let mut running = target;
@@ -1429,26 +1442,51 @@ pub fn verify<O>(
         let e0 = running + e1;
         let c1 = e0 + e1 + einf;
         running = einf * r * r + c1 * r + e0;
-        // Fold comb_vec at the same r (mirrors prover's fold).
-        sumcheck_bind_top_in_place_par_t(&mut comb_vec, r);
         r_rounds.push(r);
-    }
-    debug_assert_eq!(comb_vec.len(), n_skip);
-    if trace {
-        eprintln!(
-            "        [lcv] sumcheck replay + comb_vec fold ({} rounds): {}",
-            inner_rest_len,
-            fmt(t.elapsed().as_secs_f64())
-        );
     }
 
     // 4. Read + bind z_partial AFTER the sumcheck rounds (matches prover order).
     let z_partial: Vec<F128T> = vs.next_scalars(n_skip).map_err(VerifyError::Transcript)?;
 
-    // 5. Final sumcheck consistency: Σ comb_partial[i_skip] · z_partial[i_skip]
-    //    must equal the running claim. Ties z_partial to the upstream v_a, v_b.
-    //    Small (length 2^k_skip = 64); sequential.
-    let final_sum = inner_product_ext(&comb_vec, &z_partial);
+    // Convert sumcheck challenges to LSB-first x_inner_rest order (same
+    // convention as prover; also the eq-ordering of the step-5 column weights).
+    let mut r_inner_rest = r_rounds.clone();
+    r_inner_rest.reverse();
+
+    // 5. Final sumcheck consistency. The prover's comb_partial — comb_vec
+    //    bound MSB-first at r_rounds — satisfies
+    //
+    //      ⟨comb_partial, z_partial⟩ = Σ_c comb_vec[c] · w_col[c],
+    //      w_col[i_skip + i_rest·2^k_skip] = z_partial[i_skip] · eq(r_inner_rest, i_rest),
+    //
+    //    so the whole check collapses to ONE bilinear form
+    //    `eq_innerᵀ·(α·A_0 + B_0)·w_col + β·w_col[pin]` against the running
+    //    claim. Ties z_partial to the upstream v_a, v_b. Walk-capable circuits
+    //    (`bilinear_form`) evaluate it in O(circuit) field ops; the fallback
+    //    materializes the marginal and takes the inner product (identical
+    //    value — exact field arithmetic).
+    let t = std::time::Instant::now();
+    let eq_rest = build_eq(&r_inner_rest);
+    let mut w_col = Vec::with_capacity(k);
+    for &er in &eq_rest {
+        for &zp in &z_partial {
+            w_col.push(zp * er);
+        }
+    }
+    debug_assert_eq!(w_col.len(), k);
+    let mut final_sum = match circuit.bilinear_form(alpha, &eq_inner, &w_col) {
+        Some(v) => v,
+        None => inner_product_ext(&circuit.fold_alpha_batched(alpha, &eq_inner), &w_col),
+    };
+    if let Some(col) = circuit.const_pin_col() {
+        final_sum += beta * w_col[col];
+    }
+    if trace {
+        eprintln!(
+            "        [lcv] final bilinear form (walk or marginal): {}",
+            fmt(t.elapsed().as_secs_f64())
+        );
+    }
     if running != final_sum {
         return Err(VerifyError::ConsistencyFailed {
             which: "sumcheck-final",
@@ -1470,11 +1508,6 @@ pub fn verify<O>(
             fmt(t.elapsed().as_secs_f64())
         );
     }
-
-    // 8. Convert sumcheck challenges to LSB-first x_inner_rest order
-    //    (same convention as prover).
-    let mut r_inner_rest = r_rounds.clone();
-    r_inner_rest.reverse();
 
     Ok(LincheckClaim {
         alpha,
