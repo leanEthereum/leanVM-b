@@ -157,6 +157,74 @@ pub fn interpolate_at_z_combined(values_on_lambda: &[F128], k_skip: usize, z: F1
 }
 
 // ---------------------------------------------------------------------------
+// Tower (F128T) twins of the interpolation helpers, for the flock VERIFIER
+// (which runs over the tower so the recursion guest is single-field). The
+// prover keeps the F128/GHASH versions above. φ₈ is the tower embedding
+// (PHI_8_TABLE_T = iso-image of the GHASH table), so every value here is the
+// iso-image of the F128 computation and the two agree through `ghash_to_tower`.
+// ---------------------------------------------------------------------------
+
+use primitives::field::F128T;
+use primitives::field::phi8_tower::PHI_8_TABLE as PHI_8_TABLE_T;
+
+pub fn lagrange_weights_lambda_naive_t(k_skip: usize, z: F128T) -> Vec<F128T> {
+    let ell = 1usize << k_skip;
+    assert!(2 * ell <= 256, "Λ ∪ S must fit in F_8 (need k_skip ≤ 7)");
+    let mut weights = vec![F128T::ZERO; ell];
+    for i in 0..ell {
+        let si = PHI_8_TABLE_T[ell + i];
+        let mut num = F128T::ONE;
+        let mut den = F128T::ONE;
+        for j in 0..ell {
+            if j == i {
+                continue;
+            }
+            let sj = PHI_8_TABLE_T[ell + j];
+            num *= z + sj;
+            den *= si + sj;
+        }
+        weights[i] = num * den.inv();
+    }
+    weights
+}
+
+pub fn interpolate_at_z_on_lambda_t(values: &[F128T], k_skip: usize, z: F128T) -> F128T {
+    let ell = 1usize << k_skip;
+    assert_eq!(values.len(), ell);
+    let weights = lagrange_weights_lambda_naive_t(k_skip, z);
+    let mut acc = F128T::ZERO;
+    for i in 0..ell {
+        acc += weights[i] * values[i];
+    }
+    acc
+}
+
+pub fn interpolate_at_z_combined_t(values_on_lambda: &[F128T], k_skip: usize, z: F128T) -> F128T {
+    let ell = 1usize << k_skip;
+    assert_eq!(values_on_lambda.len(), ell);
+    assert!(2 * ell <= 256, "Λ ∪ S must fit in F_8 (need k_skip ≤ 7)");
+    let n_total = 2 * ell;
+    let mut acc = F128T::ZERO;
+    for i in 0..ell {
+        let node_idx = ell + i;
+        let si = PHI_8_TABLE_T[node_idx];
+        let mut num = F128T::ONE;
+        let mut den = F128T::ONE;
+        for j in 0..n_total {
+            if j == node_idx {
+                continue;
+            }
+            let sj = PHI_8_TABLE_T[j];
+            num *= z + sj;
+            den *= si + sj;
+        }
+        let weight = num * den.inv();
+        acc += weight * values_on_lambda[i];
+    }
+    acc
+}
+
+// ---------------------------------------------------------------------------
 // Fold a Boolean witness at z.
 // ---------------------------------------------------------------------------
 

@@ -100,9 +100,7 @@
 //!   openings at fixed indices pin them to claimed public inputs.
 
 use crate::blake3_witness::{BitRecord, add_carry_parts, or_bit_at, or_u32_at_bit, xor_dedup};
-use pcs::{ProverState, VerifierState};
 use primitives::field::F128;
-use pcs::Commitment;
 use crate::r1cs::{BlockR1cs, SparseBinaryMatrix};
 use crate::verifier;
 
@@ -1502,17 +1500,6 @@ pub struct ReductionReplay {
     pub lc_claim: crate::lincheck::LincheckClaim,
 }
 
-/// Construct a multilinear `x_outer_full` of length `m − k_skip` from a
-/// QuirkyPoint: concatenate `x_inner_rest` and `x_outer`. This is the format
-/// the PCS expects (k_skip = 6 absorbed via `z_skip`; everything else is
-/// multilinear).
-fn quirky_x_outer_full(point: &crate::lincheck::QuirkyPoint) -> Vec<F128> {
-    let mut v = Vec::with_capacity(point.x_inner_rest.len() + point.x_outer.len());
-    v.extend_from_slice(&point.x_inner_rest);
-    v.extend_from_slice(&point.x_outer);
-    v
-}
-
 impl Blake3Setup {
     /// **Flock reduction (prover).** Run the BLAKE3 zerocheck and lincheck on
     /// the shared transcript, reducing R1CS validity of `blocks` to two
@@ -1601,11 +1588,15 @@ impl Blake3Setup {
             },
             value: zc_claim.c_eval,
         };
+        // s_hat_v stays a GHASH capture (prover-side, from the GHASH z_vec); the
+        // blake3_flock boundary iso-maps it into the tower. lc_claim.r_inner_rest
+        // is now tower-valued, so bridge it back to GHASH for this GHASH kernel.
         let s_hat_v_ab = if self.r1cs.k_log >= pcs::LOG_PACKING {
-            Some(pcs::ring_switch::s_hat_v_from_z_vec(
-                &z_vec_pre,
-                &lc_claim.r_inner_rest[1..],
-            ))
+            let r_ghash: Vec<F128> = lc_claim.r_inner_rest[1..]
+                .iter()
+                .map(|&v| primitives::field::tower_to_ghash(v))
+                .collect();
+            Some(pcs::ring_switch::s_hat_v_from_z_vec(&z_vec_pre, &r_ghash))
         } else {
             None
         };
@@ -1615,91 +1606,6 @@ impl Blake3Setup {
             c: WitnessClaim { claim: c, s_hat_v: Some(s_hat_v_c) },
         };
         (z_packed, reduced)
-    }
-
-    /// Prove `blocks` are valid compressions in two clean phases:
-    /// 1. [`Self::prove_reduction`] — Flock zerocheck + lincheck → the `(ab, c)`
-    ///    claims on the committed witness `q_pkd`;
-    /// 2. the PCS: discharge those claims *together with* the caller's own
-    ///    `stack_pd` point claims in ONE stacked Ligerito open over `stack` (the
-    ///    caller's committed witness, with `q_pkd` the aligned sub-block at
-    ///    `stack_offset`).
-    ///
-    /// `stack_data`/`stack_commitment` are the caller's commit; the transcript
-    /// `sponge` is shared.
-    #[allow(clippy::too_many_arguments)]
-    pub fn prove_validity_stacked(
-        &self,
-        blocks: &[Compression],
-        stack: &[F128],
-        stack_offset: usize,
-        stack_data: &pcs::ProverData,
-        stack_commitment: &Commitment,
-        stack_pd: &[(Vec<F128>, F128)],
-        ps: &mut ProverState,
-    ) -> pcs::ligerito::LigeritoProof {
-        // Phase 1 — Flock reduction: zerocheck + lincheck → claims on q_pkd.
-        let (z_packed, reduced) = self.prove_reduction(blocks, ps);
-        debug_assert_eq!(
-            &stack[stack_offset..stack_offset + z_packed.len()],
-            z_packed.as_slice(),
-            "committed q_pkd slice must equal the regenerated packed witness"
-        );
-
-        // Phase 2 — PCS: discharge the reduction's claims (plus the caller's
-        // full-stack point claims) in one stacked open.
-        self.discharge_reduction_stacked(
-            &z_packed,
-            &reduced,
-            stack,
-            stack_offset,
-            stack_data,
-            stack_commitment,
-            stack_pd,
-            ps,
-        )
-    }
-
-    /// Phase 2 of [`Self::prove_validity_stacked`]: the PCS open of the
-    /// reduction's `(ab, c)` claims on `q_pkd` (`z_packed`), lifted into the
-    /// caller's `stack` and batched with the caller's `stack_pd` point claims.
-    #[allow(clippy::too_many_arguments)]
-    fn discharge_reduction_stacked(
-        &self,
-        z_packed: &[F128],
-        reduced: &ReducedClaims,
-        stack: &[F128],
-        stack_offset: usize,
-        stack_data: &pcs::ProverData,
-        stack_commitment: &Commitment,
-        stack_pd: &[(Vec<F128>, F128)],
-        ps: &mut ProverState,
-    ) -> pcs::ligerito::LigeritoProof {
-        let padding = crate::zerocheck::PaddingSpec {
-            k_log: self.r1cs.k_log,
-            useful_bits_per_block: self.r1cs.useful_bits,
-        };
-        let ab_x = quirky_x_outer_full(&reduced.ab.claim.point);
-        let c_x = quirky_x_outer_full(&reduced.c.claim.point);
-        // This standalone-flock path takes general full-stack point claims.
-        let pd: Vec<pcs::StackClaim> = stack_pd
-            .iter()
-            .map(|(point, value)| pcs::StackClaim::Point { point, value: *value })
-            .collect();
-        let (lig_config, _) = stacked_lig_configs(stack_commitment);
-        pcs::open_batch_mixed_ligerito_stacked(
-            z_packed,
-            &[ab_x.as_slice(), c_x.as_slice()],
-            &[reduced.ab.s_hat_v.as_deref(), reduced.c.s_hat_v.as_deref()],
-            &padding,
-            stack,
-            stack_offset,
-            stack_data,
-            stack_commitment,
-            &pd,
-            &lig_config,
-            ps,
-        )
     }
 
     /// **Flock reduction (verifier).** Replay the BLAKE3 zerocheck and
@@ -1752,59 +1658,4 @@ impl Blake3Setup {
         Ok(ReductionReplay { ab, c, zc_claim, lc_claim })
     }
 
-    /// Verifier mirror of [`Self::prove_validity_stacked`], in the same two
-    /// phases: (1) [`Self::verify_reduction`] replays zerocheck + lincheck to
-    /// recover the `(ab, c)` claims on `q_pkd`, then (2) the stacked Ligerito
-    /// opening of those claims (and the caller's `stack_pd`) is verified against
-    /// `stack_commitment`. `stack_offset` and the derived `qpkd_vars` locate
-    /// `q_pkd` inside the stack.
-    pub fn verify_validity_stacked(
-        &self,
-        stack_commitment: &Commitment,
-        stack_offset: usize,
-        stack_pd: &[(Vec<F128>, F128)],
-        open: &pcs::ligerito::LigeritoProof,
-        vs: &mut VerifierState<'_>,
-    ) -> Result<(), verifier::VerifyError> {
-        // Phase 1 — Flock reduction: replay zerocheck + lincheck → (ab, c).
-        let ReductionReplay { ab, c, .. } = self.verify_reduction(vs)?;
-
-        // Phase 2 — PCS: verify the stacked opening of (ab, c) + stack_pd.
-        let ab_x = quirky_x_outer_full(&ab.point);
-        let c_x = quirky_x_outer_full(&c.point);
-        let qpkd_vars = self.r1cs.m - pcs::LOG_PACKING;
-        let pd: Vec<pcs::StackClaim> = stack_pd
-            .iter()
-            .map(|(point, value)| pcs::StackClaim::Point { point, value: *value })
-            .collect();
-        let (_, lig_config) = stacked_lig_configs(stack_commitment);
-        pcs::verify_opening_batch_mixed_ligerito_stacked(
-            stack_commitment,
-            stack_offset,
-            qpkd_vars,
-            &[ab.value, c.value],
-            &[ab.point.z_skip, c.point.z_skip],
-            &[ab_x.as_slice(), c_x.as_slice()],
-            &pd,
-            open,
-            &lig_config,
-            vs,
-        )
-        .map(|_| ())
-        .map_err(verifier::VerifyError::Pcs)
-    }
-}
-
-/// The Ligerito (prover, verifier) config pair for a stacked open against
-/// `stack_commitment` — derived from the commitment's own `(m, profile)` params,
-/// so both sides agree by construction.
-fn stacked_lig_configs(
-    stack_commitment: &Commitment,
-) -> (
-    pcs::ligerito::ProverConfig,
-    pcs::ligerito::VerifierConfig,
-) {
-    pcs::ligerito::LigeritoSecurityConfig::derive_config(stack_commitment.params.m)
-    .and_then(|sec| sec.to_prover_verifier_configs())
-    .expect("ligerito config for stacked open")
 }

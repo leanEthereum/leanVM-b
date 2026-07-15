@@ -195,3 +195,29 @@ pub fn lagrange_weights_naive(k_skip: usize, z: F128) -> Vec<F128> {
     }
     weights
 }
+
+/// Tower (`F128T`) twin of [`lagrange_weights_naive`]: the φ₈ Lagrange weights
+/// over the tower embedding ([`crate::field::phi8_tower`]). Used by the flock
+/// verifier and the PCS ring-switch boundary once flock's claims are `F128T`.
+pub fn lagrange_weights_naive_t(k_skip: usize, z: crate::field::F128T) -> Vec<crate::field::F128T> {
+    use crate::field::F128T;
+    use crate::field::phi8_tower::PHI_8_TABLE;
+    let ell = 1usize << k_skip;
+    assert!(ell <= 256, "k_skip > 8 would exceed PHI_8_TABLE");
+    let mut weights = vec![F128T::ZERO; ell];
+    for i in 0..ell {
+        let si = PHI_8_TABLE[i];
+        let mut num = F128T::ONE;
+        let mut den = F128T::ONE;
+        for j in 0..ell {
+            if j == i {
+                continue;
+            }
+            let sj = PHI_8_TABLE[j];
+            num *= z + sj;
+            den *= si + sj;
+        }
+        weights[i] = num * den.inv();
+    }
+    weights
+}

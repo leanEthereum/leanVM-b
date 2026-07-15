@@ -113,6 +113,35 @@ pub fn medium_challenges_ghash() -> [F128; 4] {
     ]
 }
 
+/// Tower (`F128T`) twins of the fixed inner challenges, for the flock VERIFIER.
+/// Every value is the iso-image of the GHASH version, so prover (GHASH) and
+/// verifier (tower) agree on `r` through `ghash_to_tower`. `phi8_t` is the tower
+/// φ₈; the medium generator is `γ_t = ghash_to_tower(x)`.
+pub fn small_challenges_tower() -> [primitives::field::F128T; 3] {
+    use primitives::field::phi8_t;
+    [
+        phi8_t(F8(SMALL_CHAL_F8[0])),
+        phi8_t(F8(SMALL_CHAL_F8[1])),
+        phi8_t(F8(SMALL_CHAL_F8[2])),
+    ]
+}
+
+pub fn medium_challenges_tower() -> [primitives::field::F128T; 4] {
+    use primitives::field::{F128T, ghash_to_tower};
+    // γ_t = ghash_to_tower(x); g_{2^k} = γ_t^{2^k}. Matches medium_challenges_ghash
+    // under the isomorphism (which fixes the AES/monomial structure).
+    let g1 = ghash_to_tower(F128 { lo: 1u64 << 1, hi: 0 });
+    let g2 = g1 * g1;
+    let g4 = g2 * g2;
+    let g8 = g4 * g4;
+    [
+        g1 * (F128T::ONE + g1).inv(),
+        g2 * (F128T::ONE + g2).inv(),
+        g4 * (F128T::ONE + g4).inv(),
+        g8 * (F128T::ONE + g8).inv(),
+    ]
+}
+
 /// `C_2 = (1+r_2)(1+r_3)` where `r_2 = φ_8(0x53)` (= `α^2/(1+α^2)`),
 /// `r_3 = φ_8(0xB5)` (= `α^4/(1+α^4)`). This is the residual small-eq
 /// constant after the first small friendly bit (`b_3[0]`, indexed by

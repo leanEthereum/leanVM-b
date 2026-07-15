@@ -33,7 +33,7 @@
 use primitives::field::{F64, F128, F128T, ghash_to_tower};
 use crate::transcript::{ProverState, VerifierState};
 use ::pcs::pack_k::{LOG_PACKING_K, PACKING_WIDTH_K};
-use primitives::multilinear::lagrange_weights_naive;
+use primitives::multilinear::lagrange_weights_naive_t;
 use flock::blake3::{
     Blake3Setup, Compression, K_LOG, ReducedClaims, ReductionReplay, blake3_compress,
     generate_witness_with_ab_packed_and_lincheck, min_n_blocks_log,
@@ -281,12 +281,13 @@ pub fn verify_reduction(
 /// claim identity `value = Σ_i L_i(z_skip)·ŝ_i(suffix)` transports exactly (the
 /// bit-slice MLEs have F2 coefficients, which the isomorphism fixes).
 fn ring_claim(z: &ZClaim, s_hat_v128: Option<&[F128]>, qpkd_vars: usize) -> crate::pcs::RingSwitchClaimK {
-    let prefix_weights: Vec<F128T> = lagrange_weights_naive(LOG_PACKING_K, z.point.z_skip)
-        .into_iter()
-        .map(ghash_to_tower)
-        .collect();
-    let mut suffix_point: Vec<F128T> = z.point.x_inner_rest.iter().copied().map(ghash_to_tower).collect();
-    suffix_point.extend(z.point.x_outer.iter().copied().map(ghash_to_tower));
+    // flock's claim is now native tower (F128T): its point, value, and the φ₈
+    // weights need no isomorphism. Only `s_hat_v` remains a GHASH capture
+    // (prover-side; the verifier passes `None`), so it alone crosses via
+    // `ghash_to_tower` below.
+    let prefix_weights: Vec<F128T> = lagrange_weights_naive_t(LOG_PACKING_K, z.point.z_skip);
+    let mut suffix_point: Vec<F128T> = z.point.x_inner_rest.clone();
+    suffix_point.extend_from_slice(&z.point.x_outer);
     // Length invariant: prefix (6) + suffix == K_LOG + n_blocks_log, i.e. the
     // suffix spans exactly the committed q_pkd cube.
     assert_eq!(
@@ -308,7 +309,7 @@ fn ring_claim(z: &ZClaim, s_hat_v128: Option<&[F128]>, qpkd_vars: usize) -> crat
         if s128.len() != 2 * PACKING_WIDTH_K || z.point.x_inner_rest.is_empty() {
             return None;
         }
-        let c = ghash_to_tower(z.point.x_inner_rest[0]);
+        let c = z.point.x_inner_rest[0];
         let one_plus_c = F128T::ONE + c;
         Some(
             (0..PACKING_WIDTH_K)
@@ -321,7 +322,7 @@ fn ring_claim(z: &ZClaim, s_hat_v128: Option<&[F128]>, qpkd_vars: usize) -> crat
     crate::pcs::RingSwitchClaimK {
         prefix_weights,
         suffix_point,
-        value: ghash_to_tower(z.value),
+        value: z.value,
         s_hat_v,
     }
 }

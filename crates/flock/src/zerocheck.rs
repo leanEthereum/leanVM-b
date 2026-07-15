@@ -17,8 +17,8 @@
 //! shape-corrupted ones.
 
 use fiat_shamir::transcript::{ProverState, VerifierState};
-use pcs::{as_e, as_ghash};
-use primitives::field::{F8, F128};
+use primitives::field::{F8, F128, F128T, ghash_to_tower, tower_to_ghash};
+
 use pcs::ntt::{AdditiveNttGf8, InvNttTableByteSingleGf8};
 
 pub mod multilinear;
@@ -27,12 +27,12 @@ pub mod univariate_skip_optimized;
 
 use multilinear::{
     UniSkipFoldTable, fold_and_compute_round_pair_into, fold_in_place_pair,
-    interpolate_at_z_combined, interpolate_at_z_on_lambda, round_pair_naive,
-    uni_skip_fold_and_round_pair_optimized_packed_padded,
+    interpolate_at_z_combined_t, interpolate_at_z_on_lambda, interpolate_at_z_on_lambda_t,
+    round_pair_naive, uni_skip_fold_and_round_pair_optimized_packed_padded,
 };
 use univariate_skip_optimized::{
-    c_s_f128, medium_challenges_ghash, round1_shift_reduce_extract_c_packed_padded,
-    small_challenges_ghash,
+    c_s_f128, medium_challenges_ghash, medium_challenges_tower,
+    round1_shift_reduce_extract_c_packed_padded, small_challenges_ghash, small_challenges_tower,
 };
 
 /// Number of variables folded in round 1 via the additive-NTT univariate skip.
@@ -49,6 +49,19 @@ fn challenge_vector(m: usize, mut sample_vec: impl FnMut(usize) -> Vec<F128>) ->
     skip.into_iter()
         .chain(small_challenges_ghash())
         .chain(medium_challenges_ghash())
+        .chain(outer)
+        .collect()
+}
+
+/// Tower (`F128T`) twin of [`challenge_vector`], for the verifier. The fixed
+/// inner coordinates are the iso-image of the GHASH ones, so `r_tower =
+/// ghash_to_tower(r_ghash)` holds coordinate-by-coordinate.
+fn challenge_vector_tower(m: usize, mut sample_vec: impl FnMut(usize) -> Vec<F128T>) -> Vec<F128T> {
+    let skip = sample_vec(K_SKIP);
+    let outer = sample_vec(m - K_SKIP - N_INNER);
+    skip.into_iter()
+        .chain(small_challenges_tower())
+        .chain(medium_challenges_tower())
         .chain(outer)
         .collect()
 }
@@ -84,20 +97,21 @@ pub use pcs::pack::PaddingSpec;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ZerocheckClaim {
     /// Univariate-skip challenge sampled after round 1 (binds the K_SKIP
-    /// skip variables).
-    pub z: F128,
+    /// skip variables). Tower-valued: the verifier runs over `F128T`, and the
+    /// prover iso-maps its GHASH result here so both agree.
+    pub z: F128T,
     /// AB sumcheck bind challenges, one per multilinear round; length = `m - K_SKIP`.
-    pub mlv_challenges: Vec<F128>,
+    pub mlv_challenges: Vec<F128T>,
     /// Eq weights for the rest variables = the zerocheck challenge restricted
     /// to `r[K_SKIP..m]`. This is the *rest part of the c-claim's point*.
     /// Length = `m - K_SKIP`.
-    pub r_rest: Vec<F128>,
+    pub r_rest: Vec<F128T>,
     /// `â(z, mlv_challenges)`.
-    pub a_eval: F128,
+    pub a_eval: F128T,
     /// `b̂(z, mlv_challenges)`.
-    pub b_eval: F128,
+    pub b_eval: F128T,
     /// `ĉ(z, r_rest)` — at a *different point* than a_eval, b_eval.
-    pub c_eval: F128,
+    pub c_eval: F128T,
 }
 
 // (No ZerocheckProof struct: every round message rides the shared transcript
@@ -172,7 +186,11 @@ fn prove_packed_padded_inner<O>(
     //   r[k_skip+3..k_skip+7]       — protocol medium-eq constants β_i
     //   r[k_skip+7..m]              — sampled (the "outer" eq weights for
     //                                  the URM and multilinear rounds)
-    let r = challenge_vector(m, |n| ps.sample_vec(n).into_iter().map(as_ghash).collect());
+    // Prover computes internally in GHASH but bridges the transcript through the
+    // real isomorphism (tower_to_ghash on samples, ghash_to_tower on messages),
+    // NOT the bit-copy as_e/as_ghash — so its messages are genuine tower values
+    // that the F128T verifier checks.
+    let r = challenge_vector(m, |n| ps.sample_vec(n).into_iter().map(tower_to_ghash).collect());
 
     // ---- 3. Round 1: URM (extract_c, parallel) ----
     //
@@ -217,12 +235,12 @@ fn prove_packed_padded_inner<O>(
 
     // ---- 4. Transmit + bind round-1 message on the stream, sample z ----
     for &x in round1_ab.iter() {
-        ps.add_scalar(as_e(x));
+        ps.add_scalar(ghash_to_tower(x));
     }
     for &x in round1_c.iter() {
-        ps.add_scalar(as_e(x));
+        ps.add_scalar(ghash_to_tower(x));
     }
-    let z = as_ghash(ps.sample());
+    let z = tower_to_ghash(ps.sample());
 
     // ---- 5. c_eval = ĉ(z, r_rest) via interpolation of round1_c at z ----
     //
@@ -262,10 +280,10 @@ fn prove_packed_padded_inner<O>(
     let t_tail = std::time::Instant::now();
     let mut multilinear_msgs = Vec::with_capacity(n_mlv);
     multilinear_msgs.push((msg_1, msg_inf));
-    ps.add_scalar(as_e(msg_1));
-    ps.add_scalar(as_e(msg_inf));
+    ps.add_scalar(ghash_to_tower(msg_1));
+    ps.add_scalar(ghash_to_tower(msg_inf));
     let mut mlv_rhos: Vec<F128> = Vec::with_capacity(n_mlv);
-    mlv_rhos.push(as_ghash(ps.sample()));
+    mlv_rhos.push(tower_to_ghash(ps.sample()));
 
     // ---- 7. Rounds 3..(n_mlv + 1) — AB only (c is done) ----
     //
@@ -325,9 +343,9 @@ fn prove_packed_padded_inner<O>(
         };
 
         multilinear_msgs.push((m1, mi));
-        ps.add_scalar(as_e(m1));
-        ps.add_scalar(as_e(mi));
-        mlv_rhos.push(as_ghash(ps.sample()));
+        ps.add_scalar(ghash_to_tower(m1));
+        ps.add_scalar(ghash_to_tower(mi));
+        mlv_rhos.push(tower_to_ghash(ps.sample()));
     }
 
     // ---- 8. Final binding at ρ_{n_mlv} (the last challenge) ----
@@ -350,8 +368,8 @@ fn prove_packed_padded_inner<O>(
     // (the next one drawn is lincheck's α). `final_c_eval` is NOT transmitted —
     // the verifier recomputes it from the already-absorbed `round1_c`/`z`, so it
     // is already transcript-bound and carrying it would be redundant transport.
-    ps.add_scalar(as_e(final_a_eval));
-    ps.add_scalar(as_e(final_b_eval));
+    ps.add_scalar(ghash_to_tower(final_a_eval));
+    ps.add_scalar(ghash_to_tower(final_b_eval));
 
     // Recycle the four tail buffers (the two len-1 survivors still own their
     // full round-2 capacity) for the next phase/prove.
@@ -367,15 +385,16 @@ fn prove_packed_padded_inner<O>(
         );
     }
 
-    let r_rest: Vec<F128> = r[k_skip..].to_vec();
-
+    // Iso-map the GHASH claim into the tower so it matches the F128T verifier
+    // (and the downstream PCS, which is already tower). The challenge fields are
+    // ghash_to_tower(tower_to_ghash(sample)) = the original tower samples.
     let claim = ZerocheckClaim {
-        z,
-        mlv_challenges: mlv_rhos,
-        r_rest,
-        a_eval: final_a_eval,
-        b_eval: final_b_eval,
-        c_eval: final_c_eval,
+        z: ghash_to_tower(z),
+        mlv_challenges: mlv_rhos.iter().copied().map(ghash_to_tower).collect(),
+        r_rest: r[k_skip..].iter().copied().map(ghash_to_tower).collect(),
+        a_eval: ghash_to_tower(final_a_eval),
+        b_eval: ghash_to_tower(final_b_eval),
+        c_eval: ghash_to_tower(final_c_eval),
     };
     (claim, s_hat_v_c)
 }
@@ -402,12 +421,15 @@ pub fn verify<O>(
     let ell = 1usize << k_skip;
 
     // ---- Re-derive r (in lockstep with prove_packed) ----
-    let r = challenge_vector(m, |n| vs.sample_vec(n).into_iter().map(as_ghash).collect());
+    // The verifier runs entirely over the tower `F128T` (so the recursion guest
+    // is single-field). It samples tower challenges directly and reads the
+    // prover's tower-valued messages off the stream — no GHASH reinterpretation.
+    let r = challenge_vector_tower(m, |n| vs.sample_vec(n));
 
     // ---- Read + bind round-1 messages off the stream, sample z ----
-    let round1_ab = vs.next_scalars(ell).map_err(VerifyError::Transcript)?.into_iter().map(as_ghash).collect::<Vec<_>>();
-    let round1_c = vs.next_scalars(ell).map_err(VerifyError::Transcript)?.into_iter().map(as_ghash).collect::<Vec<_>>();
-    let z = as_ghash(vs.sample());
+    let round1_ab: Vec<F128T> = vs.next_scalars(ell).map_err(VerifyError::Transcript)?;
+    let round1_c: Vec<F128T> = vs.next_scalars(ell).map_err(VerifyError::Transcript)?;
+    let z = vs.sample();
 
     // ---- Reconstruct ĉ(z, r_rest) from round1_c ----
     //
@@ -415,7 +437,7 @@ pub fn verify<O>(
     // evaluations on Λ uniquely interpolate to z. round1_c is in naive
     // convention (the prover restored the C_s factor before sending), so
     // `ĉ(z, r_rest) = P^C(z)` directly.
-    let final_c_eval = interpolate_at_z_on_lambda(&round1_c, k_skip, z);
+    let final_c_eval = interpolate_at_z_on_lambda_t(&round1_c, k_skip, z);
 
     // ---- Reconstruct the initial AB running claim ----
     //
@@ -430,13 +452,13 @@ pub fn verify<O>(
     // If the prover's witness is dishonest the S-zero assumption fails, the
     // reconstructed c_0 is wrong, and the running-claim chain ends at a value
     // inconsistent with `â · b̂`. We catch that at the final sumcheck check.
-    let combined_at_lambda: Vec<F128> = round1_ab
+    let combined_at_lambda: Vec<F128T> = round1_ab
         .iter()
         .zip(&round1_c)
         .map(|(x, y)| *x + *y)
         .collect();
-    let combined_at_z = interpolate_at_z_combined(&combined_at_lambda, k_skip, z);
-    let p_c_at_z = interpolate_at_z_on_lambda(&round1_c, k_skip, z);
+    let combined_at_z = interpolate_at_z_combined_t(&combined_at_lambda, k_skip, z);
+    let p_c_at_z = interpolate_at_z_on_lambda_t(&round1_c, k_skip, z);
     let mut c_running = combined_at_z + p_c_at_z;
 
     // ---- Multilinear sumcheck chain ----
@@ -455,23 +477,23 @@ pub fn verify<O>(
     //   3. update `c_running ← G(ρ_i)`,
     //      where `G(X) = G(0)·(1+X) + G(1)·X + G(∞)·X·(X+1)` (char-2 quadratic
     //      interpolation through G(0), G(1), G(∞)).
-    let mut mlv_rhos: Vec<F128> = Vec::with_capacity(n_mlv);
-    let mut multilinear_rounds: Vec<(F128, F128)> = Vec::with_capacity(n_mlv);
+    let mut mlv_rhos: Vec<F128T> = Vec::with_capacity(n_mlv);
+    let mut multilinear_rounds: Vec<(F128T, F128T)> = Vec::with_capacity(n_mlv);
     for i in 0..n_mlv {
-        let msg_1 = as_ghash(vs.next_scalar().map_err(VerifyError::Transcript)?);
-        let msg_inf = as_ghash(vs.next_scalar().map_err(VerifyError::Transcript)?);
+        let msg_1 = vs.next_scalar().map_err(VerifyError::Transcript)?;
+        let msg_inf = vs.next_scalar().map_err(VerifyError::Transcript)?;
         multilinear_rounds.push((msg_1, msg_inf));
         let r_eq = r[k_skip + i];
-        let one_plus_r_eq = F128::ONE + r_eq;
+        let one_plus_r_eq = F128T::ONE + r_eq;
 
         let g1 = msg_1;
         let g_inf = msg_inf;
         let g0 = (c_running + r_eq * g1) * one_plus_r_eq.inv();
 
-        let rho = as_ghash(vs.sample());
+        let rho = vs.sample();
         mlv_rhos.push(rho);
 
-        let one_plus_rho = F128::ONE + rho;
+        let one_plus_rho = F128T::ONE + rho;
         // G(ρ) = G(0)·(1+ρ) + G(1)·ρ + G(∞)·ρ·(1+ρ).
         c_running = g0 * one_plus_rho + g1 * rho + g_inf * rho * one_plus_rho;
     }
@@ -488,9 +510,9 @@ pub fn verify<O>(
     // (lincheck's α) is drawn, so the α-batched reduction of these two claims is
     // sound. `final_c_eval` is the verifier's OWN interpolation of the
     // already-bound `round1_c` at `z` — never transported.
-    let r_rest: Vec<F128> = r[k_skip..].to_vec();
-    let final_a_eval = as_ghash(vs.next_scalar().map_err(VerifyError::Transcript)?);
-    let final_b_eval = as_ghash(vs.next_scalar().map_err(VerifyError::Transcript)?);
+    let r_rest: Vec<F128T> = r[k_skip..].to_vec();
+    let final_a_eval = vs.next_scalar().map_err(VerifyError::Transcript)?;
+    let final_b_eval = vs.next_scalar().map_err(VerifyError::Transcript)?;
     if c_running != final_a_eval * final_b_eval {
         return Err(VerifyError::SumcheckFinalFailed);
     }
@@ -563,9 +585,10 @@ mod tests {
             assert_eq!(stream.len(), 2 * (1 << K_SKIP) + 2 * (m - K_SKIP) + 2, "m={m}");
             assert_eq!(claim.mlv_challenges.len(), m - K_SKIP, "m={m}");
 
-            // Claim's eval fields agree with the streamed final evals.
-            assert_eq!(claim.a_eval, as_ghash(stream[stream.len() - 2]), "m={m}");
-            assert_eq!(claim.b_eval, as_ghash(stream[stream.len() - 1]), "m={m}");
+            // Claim's eval fields agree with the streamed final evals (both are
+            // now tower values — the prover streams ghash_to_tower(eval)).
+            assert_eq!(claim.a_eval, stream[stream.len() - 2], "m={m}");
+            assert_eq!(claim.b_eval, stream[stream.len() - 1], "m={m}");
         }
     }
 
@@ -711,7 +734,7 @@ mod tests {
         // verifier should reject (overwhelming probability).
         for idx in 0..(m - K_SKIP) {
             let mut bad = proof_t.clone();
-            bad.stream[2 * (1 << K_SKIP) + 2 * idx + 1] += as_e(F128::ONE);
+            bad.stream[2 * (1 << K_SKIP) + 2 * idx + 1] += F128T::ONE;
             let mut ch = pcs::VerifierState::new(b"flock-test-v0", &bad, &[]);
             let res = verify(m, &mut ch);
             assert!(res.is_err(), "msg_inf tamper at round {idx} ACCEPTED");
@@ -736,7 +759,7 @@ mod tests {
 
         let last = m - K_SKIP - 1;
         let mut bad = proof_t.clone();
-        bad.stream[2 * (1 << K_SKIP) + 2 * last + 1] += as_e(F128::ONE);
+        bad.stream[2 * (1 << K_SKIP) + 2 * last + 1] += F128T::ONE;
         let mut ch = pcs::VerifierState::new(b"flock-test-v0", &bad, &[]);
         assert!(
             verify(m, &mut ch).is_err(),
@@ -785,20 +808,18 @@ mod tests {
 
         // Product-preserving tamper: â' = â·t, b̂' = b̂·t⁻¹ ⇒ â'·b̂' = â·b̂, so the
         // zerocheck's `c_running == â·b̂` check still holds for the tampered pair.
-        let t = F128 {
-            lo: 0x0123_4567_89ab_cdef,
-            hi: 0xfedc_ba98_7654_3210,
-        };
-        assert!(t != F128::ZERO && t != F128::ONE, "t must be nontrivial");
+        // The stream now carries tower (F128T) values, so tamper in F128T.
+        let t = F128T::new(0x0123_4567_89ab_cdef, 0xfedc_ba98_7654_3210);
+        assert!(t != F128T::ZERO && t != F128T::ONE, "t must be nontrivial");
         // The finals are the LAST two stream words of this standalone proof.
         let n = proof_t.stream.len();
         let mut bad = proof_t.clone();
-        bad.stream[n - 2] = as_e(as_ghash(bad.stream[n - 2]) * t);
-        bad.stream[n - 1] = as_e(as_ghash(bad.stream[n - 1]) * t.inv());
+        bad.stream[n - 2] = bad.stream[n - 2] * t;
+        bad.stream[n - 1] = bad.stream[n - 1] * t.inv();
         assert_ne!(bad.stream[n - 2], proof_t.stream[n - 2], "tamper must change â");
         assert_ne!(bad.stream[n - 1], proof_t.stream[n - 1], "tamper must change b̂");
         assert_eq!(
-            as_ghash(bad.stream[n - 2]) * as_ghash(bad.stream[n - 1]),
+            bad.stream[n - 2] * bad.stream[n - 1],
             claim_p.a_eval * claim_p.b_eval,
             "tamper must preserve the product",
         );
@@ -868,7 +889,7 @@ mod tests {
         let proof_t = ch_prove.into_proof();
         for idx in 0..(m - K_SKIP) {
             let mut bad = proof_t.clone();
-            bad.stream[2 * (1 << K_SKIP) + 2 * idx] += as_e(F128::ONE);
+            bad.stream[2 * (1 << K_SKIP) + 2 * idx] += F128T::ONE;
             let mut ch = pcs::VerifierState::new(b"flock-test-v0", &bad, &[]);
             assert!(
                 verify(m, &mut ch).is_err(),

@@ -118,9 +118,10 @@
 //!   per byte.
 
 use fiat_shamir::transcript::{ProverState, VerifierState};
-use pcs::{as_e, as_ghash};
-use primitives::field::F128;
-use primitives::multilinear::{build_eq, inner_product};
+use primitives::field::{F128, F128T, ghash_to_tower, tower_to_ghash};
+use primitives::multilinear::{build_eq, inner_product, lagrange_weights_naive_t};
+use pcs::ligerito_k::build_eq_table_ext;
+use pcs::ring_switch_k::inner_product_ext;
 use crate::r1cs::SparseBinaryMatrix;
 use crate::zerocheck::multilinear::lagrange_weights_naive;
 
@@ -150,6 +151,11 @@ pub trait LincheckCircuit: Sync {
     /// Compute `comb_vec[c] = α · (eq^T · A_0)[c] + (eq^T · B_0)[c]` over
     /// `c ∈ [0, n_cols())`. `eq_inner.len() == n_cols()`.
     fn fold_alpha_batched(&self, alpha: F128, eq_inner: &[F128]) -> Vec<F128>;
+
+    /// Tower (`F128T`) twin of [`Self::fold_alpha_batched`], for the verifier.
+    /// The matrices are GF(2), so the fold is the same accumulation over a
+    /// tower-valued `eq_inner`.
+    fn fold_alpha_batched_t(&self, alpha: F128T, eq_inner: &[F128T]) -> Vec<F128T>;
 
     /// Column index of a constant-one wire to pin, or `None` if the circuit has
     /// no such wire. When `Some(col)`, lincheck folds one extra `β`-term into the
@@ -277,6 +283,30 @@ impl LincheckCircuit for CscCircuit {
             .for_each(|(c, slot)| *slot = one_col(c));
         out
     }
+
+    fn fold_alpha_batched_t(&self, alpha: F128T, eq_inner: &[F128T]) -> Vec<F128T> {
+        use rayon::prelude::*;
+        assert_eq!(eq_inner.len(), self.n_cols);
+        let one_col = |c: usize| {
+            let mut sa = F128T::ZERO;
+            for &r in &self.a_rows[self.a_col_ptr[c] as usize..self.a_col_ptr[c + 1] as usize] {
+                sa += eq_inner[r as usize];
+            }
+            let mut sb = F128T::ZERO;
+            for &r in &self.b_rows[self.b_col_ptr[c] as usize..self.b_col_ptr[c + 1] as usize] {
+                sb += eq_inner[r as usize];
+            }
+            alpha * sa + sb
+        };
+        if self.n_cols < SUMCHECK_PAR_THRESHOLD {
+            return (0..self.n_cols).map(one_col).collect();
+        }
+        let mut out = vec![F128T::ZERO; self.n_cols];
+        out.par_iter_mut()
+            .enumerate()
+            .for_each(|(c, slot)| *slot = one_col(c));
+        out
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -291,13 +321,13 @@ impl LincheckCircuit for CscCircuit {
 /// zerocheck's extract_c output uses.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QuirkyPoint {
-    /// Univariate-skip challenge ∈ F₁₂₈. Binds all `k_skip` skip variables.
-    pub z_skip: F128,
+    /// Univariate-skip challenge ∈ F₁₂₈ (tower). Binds all `k_skip` skip variables.
+    pub z_skip: F128T,
     /// Multilinear coords for the inner dims *after* the skip block. Length
     /// `k_log − k_skip`.
-    pub x_inner_rest: Vec<F128>,
+    pub x_inner_rest: Vec<F128T>,
     /// Multilinear coords for the outer dims. Length `n_log = m − k_log`.
-    pub x_outer: Vec<F128>,
+    pub x_outer: Vec<F128T>,
 }
 
 // Lincheck prover message: a partial product-sumcheck that proves the two
@@ -313,19 +343,19 @@ pub struct QuirkyPoint {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LincheckClaim {
     /// The A/B batching challenge (sampled first).
-    pub alpha: F128,
+    pub alpha: F128T,
     /// The constant-pin challenge (sampled after `alpha`; zero when the
     /// circuit has no pin column).
-    pub beta: F128,
+    pub beta: F128T,
     /// The sumcheck round challenges, in round order (MSB-first binding).
-    pub r_rounds: Vec<F128>,
+    pub r_rounds: Vec<F128T>,
     /// Univariate-skip post-vector random sample.
-    pub r_inner_skip: F128,
+    pub r_inner_skip: F128T,
     /// Multilinear post-vector random sample, length `k_log − k_skip`.
-    pub r_inner_rest: Vec<F128>,
+    pub r_inner_rest: Vec<F128T>,
     /// `ẑ((r_inner_skip, r_inner_rest), x_ab.x_outer)` — the single
     /// `z`-claim derived from the A and B consistency checks.
-    pub w: F128,
+    pub w: F128T,
 }
 
 /// Reasons the verifier may reject.
@@ -956,6 +986,23 @@ pub fn build_quirky_eq_table(z_skip: F128, x_inner_rest: &[F128], k_skip: usize)
     out
 }
 
+/// Tower (`F128T`) twin of [`build_quirky_eq_table`], for the verifier.
+pub fn build_quirky_eq_table_t(z_skip: F128T, x_inner_rest: &[F128T], k_skip: usize) -> Vec<F128T> {
+    let ell_skip = 1usize << k_skip;
+    let ell_rest = 1usize << x_inner_rest.len();
+    let lambda_skip = lagrange_weights_naive_t(k_skip, z_skip);
+    let eq_rest = build_eq_table_ext(x_inner_rest);
+    let total = ell_skip * ell_rest;
+    let mut out = Vec::with_capacity(total);
+    for &er in &eq_rest {
+        for &ls in &lambda_skip {
+            out.push(ls * er);
+        }
+    }
+    debug_assert_eq!(out.len(), total);
+    out
+}
+
 /// Length above which the inner product / element-wise kernels split via
 /// rayon. Below it, sequential beats dispatch overhead.
 const SUMCHECK_PAR_THRESHOLD: usize = 1usize << 12;
@@ -991,6 +1038,26 @@ fn sumcheck_round_eval_par(c: &[F128], z: &[F128]) -> (F128, F128) {
 /// Bind the top remaining variable of `v` at challenge `r`: `v[i] ← v[i] +
 /// r·(v[i+half] + v[i])` for `i ∈ [0, half)`, then truncate to `half`. In-place.
 pub fn sumcheck_bind_top_in_place_par(v: &mut Vec<F128>, r: F128) {
+    use rayon::prelude::*;
+    let half = v.len() / 2;
+    if half < SUMCHECK_PAR_THRESHOLD {
+        for i in 0..half {
+            v[i] = v[i] + r * (v[i + half] + v[i]);
+        }
+    } else {
+        let (lo, hi) = v.split_at_mut(half);
+        let hi = &hi[..half];
+        lo.par_iter_mut()
+            .zip(hi.par_iter())
+            .for_each(|(lo_i, &hi_i)| {
+                *lo_i = *lo_i + r * (hi_i + *lo_i);
+            });
+    }
+    v.truncate(half);
+}
+
+/// Tower (`F128T`) twin of [`sumcheck_bind_top_in_place_par`], for the verifier.
+pub fn sumcheck_bind_top_in_place_par_t(v: &mut Vec<F128T>, r: F128T) {
     use rayon::prelude::*;
     let half = v.len() / 2;
     if half < SUMCHECK_PAR_THRESHOLD {
@@ -1157,9 +1224,17 @@ fn prove_padded_inner<O>(
 
     let trace = std::env::var("LINCHECK_TRACE").is_ok();
 
+    // Prover computes internally in GHASH but consumes an F128T claim point and
+    // emits an F128T claim. Bridge the point in through the real isomorphism, and
+    // (below) route all transcript I/O through it too, so the prover's messages
+    // are the genuine tower values the F128T verifier checks.
+    let z_skip_g = tower_to_ghash(x_ab.z_skip);
+    let x_inner_rest_g: Vec<F128> = x_ab.x_inner_rest.iter().map(|&v| tower_to_ghash(v)).collect();
+    let x_outer_g: Vec<F128> = x_ab.x_outer.iter().map(|&v| tower_to_ghash(v)).collect();
+
     // 1. Sample α (matches verifier's order). Used to batch the two scalar
     //    consistency checks v_a, v_b into a single sumcheck.
-    let alpha = as_ghash(ps.sample());
+    let alpha = tower_to_ghash(ps.sample());
 
     // 2. Build the α-batched comb_vec via the circuit's per-block fold. For
     //    the sparse-matrix default this is the fused single-pass row-fold;
@@ -1170,7 +1245,7 @@ fn prove_padded_inner<O>(
     } else {
         None
     };
-    let eq_inner = build_quirky_eq_table(x_ab.z_skip, &x_ab.x_inner_rest, k_skip);
+    let eq_inner = build_quirky_eq_table(z_skip_g, &x_inner_rest_g, k_skip);
     if let Some(t) = t {
         eprintln!(
             "[lc] {:<26} {:>7.2} ms",
@@ -1199,7 +1274,7 @@ fn prove_padded_inner<O>(
     //     lincheck's `LincheckCircuit::const_pin_col`.
     let mut beta = F128::ZERO;
     if let Some(col) = circuit.const_pin_col() {
-        beta = as_ghash(ps.sample());
+        beta = tower_to_ghash(ps.sample());
         comb_vec[col] += beta;
     }
 
@@ -1209,7 +1284,7 @@ fn prove_padded_inner<O>(
     } else {
         None
     };
-    let eq_x_outer = build_eq(&x_ab.x_outer);
+    let eq_x_outer = build_eq(&x_outer_g);
     let mut z_vec = partial_fold_packed_z_best(z_packed, m, k_log, useful_bits, &eq_x_outer);
     if let Some(t) = t {
         eprintln!(
@@ -1243,9 +1318,9 @@ fn prove_padded_inner<O>(
         // next-eval fused into one pass — see `sumcheck_bind_both_and_eval_next`).
         let (mut e1, mut einf) = sumcheck_round_eval_par(&comb_vec, &z_vec);
         for t in 0..inner_rest_len {
-            ps.add_scalar(as_e(e1));
-            ps.add_scalar(as_e(einf));
-            let r = as_ghash(ps.sample());
+            ps.add_scalar(ghash_to_tower(e1));
+            ps.add_scalar(ghash_to_tower(einf));
+            let r = tower_to_ghash(ps.sample());
             r_rounds.push(r);
             if t + 1 < inner_rest_len {
                 // Fused: bind both tables at r AND compute round (t+1)'s message.
@@ -1270,12 +1345,12 @@ fn prove_padded_inner<O>(
     // 6. Send `z_partial` (the post-sumcheck collapsed z_vec). Length 2^k_skip.
     let z_partial = z_vec.clone();
     for &x in z_partial.iter() {
-        ps.add_scalar(as_e(x));
+        ps.add_scalar(ghash_to_tower(x));
     }
 
     // 7. Sample fresh z_skip AFTER observing z_partial — gives Schwartz-Zippel
     //    soundness on the φ8 (univariate-skip) dim.
-    let r_inner_skip = as_ghash(ps.sample());
+    let r_inner_skip = tower_to_ghash(ps.sample());
 
     // 8. Output claim's value: φ8 Lagrange combination of z_partial at z_skip.
     //    Equals ẑ_φ8(z_skip, r_rest, x_outer) when z_partial is honest; the
@@ -1291,13 +1366,14 @@ fn prove_padded_inner<O>(
     let mut r_inner_rest = r_rounds.clone();
     r_inner_rest.reverse();
 
+    // Iso-map the GHASH claim into the tower to match the F128T verifier.
     let claim = LincheckClaim {
-        alpha,
-        beta,
-        r_rounds,
-        r_inner_skip,
-        r_inner_rest,
-        w,
+        alpha: ghash_to_tower(alpha),
+        beta: ghash_to_tower(beta),
+        r_rounds: r_rounds.iter().copied().map(ghash_to_tower).collect(),
+        r_inner_skip: ghash_to_tower(r_inner_skip),
+        r_inner_rest: r_inner_rest.iter().copied().map(ghash_to_tower).collect(),
+        w: ghash_to_tower(w),
     };
     (claim, captured_z_vec)
 }
@@ -1311,8 +1387,8 @@ pub fn verify<O>(
     k_skip: usize,
     circuit: &dyn LincheckCircuit,
     x_ab: &QuirkyPoint,
-    v_a: F128,
-    v_b: F128,
+    v_a: F128T,
+    v_b: F128T,
     vs: &mut VerifierState<'_, O>,
 ) -> Result<LincheckClaim, VerifyError> {
     let k = 1usize << k_log;
@@ -1357,14 +1433,15 @@ pub fn verify<O>(
         }
     };
 
-    // 1. Sample α (matches prover's order).
-    let alpha = as_ghash(vs.sample());
+    // 1. Sample α (matches prover's order). The verifier runs over the tower;
+    // the prover iso-maps its GHASH messages so both agree.
+    let alpha = vs.sample();
 
     // 2. Build α-batched comb_vec via the circuit's per-block fold (same call
     //    the prover made — sparse default delegates to the fused row-fold;
     //    per-hash impls walk the constraint graph directly).
     let t = std::time::Instant::now();
-    let eq_inner = build_quirky_eq_table(x_ab.z_skip, &x_ab.x_inner_rest, k_skip);
+    let eq_inner = build_quirky_eq_table_t(x_ab.z_skip, &x_ab.x_inner_rest, k_skip);
     if trace {
         eprintln!(
             "        [lcv] build_quirky_eq_table (2^{k_log}): {}",
@@ -1372,7 +1449,7 @@ pub fn verify<O>(
         );
     }
     let t = std::time::Instant::now();
-    let mut comb_vec = circuit.fold_alpha_batched(alpha, &eq_inner);
+    let mut comb_vec = circuit.fold_alpha_batched_t(alpha, &eq_inner);
     if trace {
         eprintln!(
             "        [lcv] circuit.fold_alpha_batched: {}",
@@ -1388,24 +1465,24 @@ pub fn verify<O>(
     // the constant column, and the initial target gains +β·1 — the honest
     // all-ones constant column folds to 1. See lincheck's `LincheckCircuit::const_pin_col`.
     let mut target = alpha * v_a + v_b;
-    let mut beta = F128::ZERO;
+    let mut beta = F128T::ZERO;
     if let Some(col) = circuit.const_pin_col() {
-        beta = as_ghash(vs.sample());
+        beta = vs.sample();
         comb_vec[col] += beta;
         target += beta;
     }
     let mut running = target;
     let mut r_rounds = Vec::with_capacity(inner_rest_len);
     for _ in 0..inner_rest_len {
-        let e1 = as_ghash(vs.next_scalar().map_err(VerifyError::Transcript)?);
-        let einf = as_ghash(vs.next_scalar().map_err(VerifyError::Transcript)?);
-        let r = as_ghash(vs.sample());
+        let e1 = vs.next_scalar().map_err(VerifyError::Transcript)?;
+        let einf = vs.next_scalar().map_err(VerifyError::Transcript)?;
+        let r = vs.sample();
         // q(0) = claim + q(1) in char 2; q(X) = einf·X² + c1·X + e0.
         let e0 = running + e1;
         let c1 = e0 + e1 + einf;
         running = einf * r * r + c1 * r + e0;
         // Fold comb_vec at the same r (mirrors prover's fold).
-        sumcheck_bind_top_in_place_par(&mut comb_vec, r);
+        sumcheck_bind_top_in_place_par_t(&mut comb_vec, r);
         r_rounds.push(r);
     }
     debug_assert_eq!(comb_vec.len(), n_skip);
@@ -1418,12 +1495,12 @@ pub fn verify<O>(
     }
 
     // 4. Read + bind z_partial AFTER the sumcheck rounds (matches prover order).
-    let z_partial = vs.next_scalars(n_skip).map_err(VerifyError::Transcript)?.into_iter().map(as_ghash).collect::<Vec<_>>();
+    let z_partial: Vec<F128T> = vs.next_scalars(n_skip).map_err(VerifyError::Transcript)?;
 
     // 5. Final sumcheck consistency: Σ comb_partial[i_skip] · z_partial[i_skip]
     //    must equal the running claim. Ties z_partial to the upstream v_a, v_b.
     //    Small (length 2^k_skip = 64); sequential.
-    let final_sum = inner_product(&comb_vec, &z_partial);
+    let final_sum = inner_product_ext(&comb_vec, &z_partial);
     if running != final_sum {
         return Err(VerifyError::ConsistencyFailed {
             which: "sumcheck-final",
@@ -1431,14 +1508,14 @@ pub fn verify<O>(
     }
 
     // 6. Sample fresh z_skip AFTER z_partial — gives SZ on the φ8 dim.
-    let r_inner_skip = as_ghash(vs.sample());
+    let r_inner_skip = vs.sample();
 
     // 7. Derive output claim value via φ8 Lagrange on z_partial at z_skip.
     //    Equals ẑ_φ8(z_skip, r_rest, x_outer) when z_partial is honest;
     //    PCS catches mismatches downstream.
     let t = std::time::Instant::now();
-    let lambda = lagrange_weights_naive(k_skip, r_inner_skip);
-    let w = inner_product(&lambda, &z_partial);
+    let lambda = lagrange_weights_naive_t(k_skip, r_inner_skip);
+    let w = inner_product_ext(&lambda, &z_partial);
     if trace {
         eprintln!(
             "        [lcv] final consistency + lagrange_weights_naive: {}",
@@ -1529,9 +1606,9 @@ mod tests {
     /// x_inner_rest of length `k_log − k_skip`, x_outer of length `n_log`.
     fn random_quirky_point(m: usize, k_log: usize, k_skip: usize, rng: &mut Rng) -> QuirkyPoint {
         QuirkyPoint {
-            z_skip: rng.f128(),
-            x_inner_rest: rng.f128_vec(k_log - k_skip),
-            x_outer: rng.f128_vec(m - k_log),
+            z_skip: rng.f128t(),
+            x_inner_rest: rng.f128t_vec(k_log - k_skip),
+            x_outer: rng.f128t_vec(m - k_log),
         }
     }
 
@@ -1549,7 +1626,7 @@ mod tests {
         k_log: usize,
         k_skip: usize,
         point: &QuirkyPoint,
-    ) -> F128 {
+    ) -> F128T {
         let k_skip_dim = 1usize << k_skip;
         let inner_rest_len = k_log - k_skip;
         let inner_rest_dim = 1usize << inner_rest_len;
@@ -1557,14 +1634,16 @@ mod tests {
         let n_outer = 1usize << (m - k_log);
         assert_eq!(f.len(), 1 << m);
 
-        let lambda = crate::zerocheck::multilinear::lagrange_weights_naive(k_skip, point.z_skip);
-        let eq_rest = build_eq(&point.x_inner_rest);
-        let eq_outer = build_eq(&point.x_outer);
+        // Tower helpers: the point is F128T (the verifier's field), and the
+        // expected value must equal the F128T claim the verifier derives.
+        let lambda = lagrange_weights_naive_t(k_skip, point.z_skip);
+        let eq_rest = build_eq_table_ext(&point.x_inner_rest);
+        let eq_outer = build_eq_table_ext(&point.x_outer);
         debug_assert_eq!(lambda.len(), k_skip_dim);
         debug_assert_eq!(eq_rest.len(), inner_rest_dim);
         debug_assert_eq!(eq_outer.len(), n_outer);
 
-        let mut acc = F128::ZERO;
+        let mut acc = F128T::ZERO;
         for i in 0..(1 << m) {
             if !f[i] {
                 continue;
@@ -2025,8 +2104,12 @@ mod tests {
         let proof_t = ch_p.into_proof();
 
         // Pick a mutation position where BOTH row vectors are nonzero so the
-        // mutation guarantees both checks would diverge.
-        let eq_inner = build_quirky_eq_table(x_ab.z_skip, &x_ab.x_inner_rest, k_skip);
+        // mutation guarantees both checks would diverge. This is a diagnostic
+        // (which slot to poke), so run it in GHASH — nonzeroness is preserved
+        // by the isomorphism — by bridging the F128T point back in.
+        let z_skip_g = tower_to_ghash(x_ab.z_skip);
+        let x_inner_rest_g: Vec<F128> = x_ab.x_inner_rest.iter().map(|&v| tower_to_ghash(v)).collect();
+        let eq_inner = build_quirky_eq_table(z_skip_g, &x_inner_rest_g, k_skip);
         let row_a = sparse_row_fold(&a_0, &eq_inner);
         let row_b = sparse_row_fold(&b_0, &eq_inner);
         let idx = (0..k)
