@@ -33,6 +33,7 @@ use std::time::Instant;
 const N: usize = 1024; // inner-product length
 const INNER: u64 = 64; // inner products per timed sample
 const ROUNDS: usize = 400; // interleaved rounds
+type Kernel<F> = unsafe fn(&[F], &[F]) -> F;
 
 #[allow(dead_code)]
 fn splitmix64(state: &mut u64) -> u64 {
@@ -51,7 +52,7 @@ fn compare<F: Copy + PartialEq + core::fmt::Debug>(
     title: &str,
     a: &[F],
     b: &[F],
-    methods: &[(&str, unsafe fn(&[F], &[F]) -> F)],
+    methods: &[(&str, Kernel<F>)],
     rounds: usize,
 ) -> (String, f64) {
     let m = methods.len();

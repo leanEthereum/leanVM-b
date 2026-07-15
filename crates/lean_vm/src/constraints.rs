@@ -7,17 +7,17 @@
 //! rounds are pure `E`.
 
 use crate::PAR_THRESHOLD;
-use primitives::field::{F64, F128T, F128TUnreduced, mul_by_g, mul_by_g_e};
-use primitives::multilinear::{eq_table, fold_low_inplace, fold_low_k, lagrange_eval, tri_nodes, xor3};
 use crate::transcript::{ProverState, VerifierState};
+use primitives::field::{F64, F192, F192Unreduced, mul_by_g, mul_by_g_e};
+use primitives::multilinear::{eq_table, fold_low_inplace, fold_low_k, lagrange_eval, tri_nodes, xor3};
 use rayon::prelude::*;
 
 /// The involved columns' evaluations at the zerocheck point `rho` (fixed column
 /// order), reconstructed identically by prover and verifier.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Claims {
-    pub rho: Vec<F128T>,
-    pub evals: Vec<F128T>,
+    pub rho: Vec<F192>,
+    pub evals: Vec<F192>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -29,11 +29,7 @@ pub enum Error {
 
 /// Prove the batched constraint vanishes on every row. `cols` are the involved
 /// `K`-valued columns (`2^tau` values each, in the order `c_eval` expects).
-pub fn prove<F: Fn(F128T, &[F128T]) -> F128T + Sync>(
-    cols: &[Vec<F64>],
-    c_eval: F,
-    ps: &mut ProverState,
-) -> Claims {
+pub fn prove<F: Fn(F192, &[F192]) -> F192 + Sync>(cols: &[Vec<F64>], c_eval: F, ps: &mut ProverState) -> Claims {
     let tau = crate::log2_strict_usize(cols[0].len());
     let eta = ps.sample();
     let r = ps.sample_vec(tau);
@@ -49,24 +45,24 @@ pub fn prove<F: Fn(F128T, &[F128T]) -> F128T + Sync>(
     // with no interpolation multiplies, then the constraint evaluates at each
     // node. Afterwards each column folds K-by-E into the E tables the remaining
     // rounds consume. A single-row table (tau = 0) just lifts.
-    let mut tables: Vec<Vec<F128T>> = if tau == 0 {
-        cols.iter().map(|c| vec![F128T::from(c[0])]).collect()
+    let mut tables: Vec<Vec<F192>> = if tau == 0 {
+        cols.iter().map(|c| vec![F192::from(c[0])]).collect()
     } else {
         let half = cols[0].len() / 2;
         let eqr = eq_table(&r[1..]);
         // The outer eq·C products are deferred: XOR-accumulate the unreduced
         // Karatsuba parts and reduce once per node after the sum (reduction
         // commutes with XOR — bit-identical round messages).
-        let summand = |i: usize, scratch: &mut [F128T]| -> [F128TUnreduced; 3] {
+        let summand = |i: usize, scratch: &mut [F192]| -> [F192Unreduced; 3] {
             let e = eqr[i];
             let (v0, rest) = scratch.split_at_mut(ncols);
             let (v1, v2) = rest.split_at_mut(ncols);
             for (ci, c) in cols.iter().enumerate() {
                 let lo = c[2 * i];
                 let hi = c[2 * i + 1];
-                v0[ci] = F128T::from(lo);
-                v1[ci] = F128T::from(hi);
-                v2[ci] = F128T::from(lo + mul_by_g(lo + hi));
+                v0[ci] = F192::from(lo);
+                v1[ci] = F192::from(hi);
+                v2[ci] = F192::from(lo + mul_by_g(lo + hi));
             }
             [
                 e.mul_unreduced(c_eval(eta, v0)),
@@ -78,14 +74,14 @@ pub fn prove<F: Fn(F128T, &[F128T]) -> F128T + Sync>(
             (0..half)
                 .into_par_iter()
                 .fold(
-                    || ([F128TUnreduced::ZERO; 3], vec![F128T::ZERO; 3 * ncols]),
+                    || ([F192Unreduced::ZERO; 3], vec![F192::ZERO; 3 * ncols]),
                     |(acc, mut scratch), i| (xor3(acc, summand(i, &mut scratch)), scratch),
                 )
                 .map(|(acc, _)| acc)
-                .reduce(|| [F128TUnreduced::ZERO; 3], xor3)
+                .reduce(|| [F192Unreduced::ZERO; 3], xor3)
         } else {
-            let mut scratch = vec![F128T::ZERO; 3 * ncols];
-            (0..half).fold([F128TUnreduced::ZERO; 3], |acc, i| xor3(acc, summand(i, &mut scratch)))
+            let mut scratch = vec![F192::ZERO; 3 * ncols];
+            (0..half).fold([F192Unreduced::ZERO; 3], |acc, i| xor3(acc, summand(i, &mut scratch)))
         };
         let p = [p_u[0].reduce(), p_u[1].reduce(), p_u[2].reduce()];
         ps.add_scalars(&p);
@@ -108,7 +104,7 @@ pub fn prove<F: Fn(F128T, &[F128T]) -> F128T + Sync>(
         let eqr = eq_table(&r[j + 1..]);
         // Deferred as in round 0: unreduced eq·C accumulation, one reduction
         // per node per round message.
-        let summand = |i: usize, scratch: &mut [F128T]| -> [F128TUnreduced; 3] {
+        let summand = |i: usize, scratch: &mut [F192]| -> [F192Unreduced; 3] {
             let e = eqr[i];
             let (v0, rest) = scratch.split_at_mut(ncols);
             let (v1, v2) = rest.split_at_mut(ncols);
@@ -129,14 +125,14 @@ pub fn prove<F: Fn(F128T, &[F128T]) -> F128T + Sync>(
             (0..half)
                 .into_par_iter()
                 .fold(
-                    || ([F128TUnreduced::ZERO; 3], vec![F128T::ZERO; 3 * ncols]),
+                    || ([F192Unreduced::ZERO; 3], vec![F192::ZERO; 3 * ncols]),
                     |(acc, mut scratch), i| (xor3(acc, summand(i, &mut scratch)), scratch),
                 )
                 .map(|(acc, _)| acc)
-                .reduce(|| [F128TUnreduced::ZERO; 3], xor3)
+                .reduce(|| [F192Unreduced::ZERO; 3], xor3)
         } else {
-            let mut scratch = vec![F128T::ZERO; 3 * ncols];
-            (0..half).fold([F128TUnreduced::ZERO; 3], |acc, i| xor3(acc, summand(i, &mut scratch)))
+            let mut scratch = vec![F192::ZERO; 3 * ncols];
+            (0..half).fold([F192Unreduced::ZERO; 3], |acc, i| xor3(acc, summand(i, &mut scratch)))
         };
         let p = [p_u[0].reduce(), p_u[1].reduce(), p_u[2].reduce()];
         ps.add_scalars(&p);
@@ -147,14 +143,14 @@ pub fn prove<F: Fn(F128T, &[F128T]) -> F128T + Sync>(
         }
     }
 
-    let evals: Vec<F128T> = tables.iter().map(|c| c[0]).collect();
+    let evals: Vec<F192> = tables.iter().map(|c| c[0]).collect();
     ps.add_scalars(&evals);
     Claims { rho, evals }
 }
 
 /// Verify the constraint zerocheck, returning the reconstructed claims (`rho` and
 /// the column evals) for the caller to settle against the commitment.
-pub fn verify<F: Fn(F128T, &[F128T]) -> F128T>(
+pub fn verify<F: Fn(F192, &[F192]) -> F192>(
     tau: usize,
     ncols: usize,
     c_eval: F,
@@ -164,19 +160,19 @@ pub fn verify<F: Fn(F128T, &[F128T]) -> F128T>(
     let r = vs.sample_vec(tau);
 
     let nd = tri_nodes();
-    let mut claim = F128T::ZERO;
+    let mut claim = F192::ZERO;
     let mut rho = Vec::with_capacity(tau);
-    let mut eq_acc = F128T::ONE; // ∏_{l<round} eq(r_l, ρ_l)
+    let mut eq_acc = F192::ONE; // ∏_{l<round} eq(r_l, ρ_l)
     for (round, &rj) in r.iter().enumerate() {
         let p = vs.next_scalars(3).map_err(|_| Error::Truncated)?;
         // The prover sent only the product part; the full round univariate is
         // `q(t) = eq_acc·eq(r_round, t)·p(t)`, so `q(0)+q(1)` must equal the claim.
-        if eq_acc * ((F128T::ONE + rj) * p[0] + rj * p[1]) != claim {
+        if eq_acc * ((F192::ONE + rj) * p[0] + rj * p[1]) != claim {
             return Err(Error::RoundInconsistent { round });
         }
         let rk = vs.sample();
         rho.push(rk);
-        eq_acc *= F128T::ONE + rj + rk;
+        eq_acc *= F192::ONE + rj + rk;
         claim = eq_acc * lagrange_eval(&nd, &p, rk);
     }
     let evals = vs.next_scalars(ncols).map_err(|_| Error::Truncated)?;

@@ -62,7 +62,7 @@ fn compute_signer(index: usize) -> CachedSignature {
 /// A known-answer fingerprint of the *hash construction* the signers are built
 /// from. The declared constants below can stay fixed while the digests change
 /// underneath: switching the Merkle-Damgard IV's size field on another branch
-/// (e.g. GF(2^128) -> GF(2^64)) leaves V, W, DIGEST_LEN, ... untouched yet makes
+/// Changing the field encoding leaves V, W, DIGEST_LEN, ... untouched yet makes
 /// every signer incompatible. Folding a fixed test vector of the real primitives
 /// into [`footprint`] lands such a change in a *different* cache file, so a run
 /// on one branch never loads (and then panics on) another branch's signers — the

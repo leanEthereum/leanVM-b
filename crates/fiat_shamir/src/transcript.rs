@@ -24,9 +24,9 @@
 //! functions take these SAME states (`ps`/`vs`), drawing their challenges from
 //! the one shared sponge while their proof data rides its own structs.
 
-use primitives::field::{F64, F128T};
 use crate::sponge::trace;
 pub use crate::sponge::{Sponge, TraceOp, trace_start, trace_take};
+use primitives::field::{F64, F192};
 
 /// A complete proof: the scalar transcript stream plus the Ligerito opening hint
 /// channel — **two** channels, no bolted-on side field. The commitment root and
@@ -44,7 +44,7 @@ pub use crate::sponge::{Sponge, TraceOp, trace_start, trace_take};
 pub struct Proof<O> {
     /// Every transmitted field scalar, in protocol order (plus flock's scalar
     /// sub-proof as trailing raw transport words).
-    pub stream: Vec<F128T>,
+    pub stream: Vec<F192>,
     /// Ligerito openings (sumcheck messages + Merkle roots/paths), in order.
     pub openings: Vec<O>,
 }
@@ -64,13 +64,13 @@ pub enum Error {
 /// Prover side: writes scalars into the stream and opening hints to the side.
 pub struct ProverState<O> {
     sponge: Sponge,
-    stream: Vec<F128T>,
+    stream: Vec<F192>,
     openings: Vec<O>,
 }
 
 impl<O> ProverState<O> {
     /// `statement` is the public input, seeded into the sponge (see [`Sponge::new`]).
-    pub fn new(label: &[u8], statement: &[F128T]) -> Self {
+    pub fn new(label: &[u8], statement: &[F192]) -> Self {
         Self {
             sponge: Sponge::new(label, statement),
             stream: Vec::new(),
@@ -81,27 +81,27 @@ impl<O> ProverState<O> {
     /// Transmit a scalar into the proof AND bind it into the sponge (the two are
     /// inseparable — you cannot send without binding).
     #[inline]
-    pub fn add_scalar(&mut self, x: F128T) {
+    pub fn add_scalar(&mut self, x: F192) {
         self.sponge.observe(x);
         self.stream.push(x);
     }
 
-    pub fn add_scalars(&mut self, xs: &[F128T]) {
+    pub fn add_scalars(&mut self, xs: &[F192]) {
         for &x in xs {
             self.add_scalar(x);
         }
     }
 
-    pub fn sample(&mut self) -> F128T {
+    pub fn sample(&mut self) -> F192 {
         self.sponge.sample()
     }
 
     /// Prover mirror of [`VerifierState::observe_scalar`].
-    pub fn observe_scalar(&mut self, x: F128T) {
+    pub fn observe_scalar(&mut self, x: F192) {
         self.sponge.observe(x);
     }
 
-    pub fn sample_vec(&mut self, n: usize) -> Vec<F128T> {
+    pub fn sample_vec(&mut self, n: usize) -> Vec<F192> {
         (0..n).map(|_| self.sponge.sample()).collect()
     }
 
@@ -117,7 +117,7 @@ impl<O> ProverState<O> {
     /// no-work nonce `0`.
     pub fn grind(&mut self, bits: u32) {
         let nonce = self.sponge.grind_pow(bits);
-        self.stream.push(F128T::new(nonce, 0));
+        self.stream.push(F192::new(nonce, 0, 0));
     }
 
     /// Absorb a byte string (a sub-protocol label, a Merkle root) — data both
@@ -152,7 +152,7 @@ impl<O> ProverState<O> {
 /// hints in order.
 pub struct VerifierState<'a, O> {
     sponge: Sponge,
-    stream: &'a [F128T],
+    stream: &'a [F192],
     offset: usize,
     openings: &'a [O],
     oi: usize,
@@ -161,7 +161,7 @@ pub struct VerifierState<'a, O> {
 impl<'a, O> VerifierState<'a, O> {
     /// `statement` is the public input, seeded into the sponge (see [`Sponge::new`])
     /// — must match the prover's, or the sponges diverge and verification fails.
-    pub fn new(label: &[u8], proof: &'a Proof<O>, statement: &[F128T]) -> Self {
+    pub fn new(label: &[u8], proof: &'a Proof<O>, statement: &[F192]) -> Self {
         Self {
             sponge: Sponge::new(label, statement),
             stream: &proof.stream,
@@ -174,46 +174,48 @@ impl<'a, O> VerifierState<'a, O> {
     /// A verifier state with EMPTY transport channels — a challenge source for
     /// unit tests that drive sub-protocols without a transmitted stream (leaks
     /// one small allocation; do not use outside tests).
-    pub fn detached(label: &[u8], statement: &[F128T]) -> VerifierState<'static, O> {
-        let empty = Box::leak(Box::new(Proof { stream: Vec::new(), openings: Vec::new() }));
+    pub fn detached(label: &[u8], statement: &[F192]) -> VerifierState<'static, O> {
+        let empty = Box::leak(Box::new(Proof {
+            stream: Vec::new(),
+            openings: Vec::new(),
+        }));
         VerifierState::new(label, empty, statement)
     }
 
     /// Read the next scalar, binding it into the sponge (mirrors `add_scalar`).
     #[inline]
-    pub fn next_scalar(&mut self) -> Result<F128T, Error> {
+    pub fn next_scalar(&mut self) -> Result<F192, Error> {
         let x = *self.stream.get(self.offset).ok_or(Error::ExceededStream)?;
         self.offset += 1;
         self.sponge.observe(x);
         Ok(x)
     }
 
-    pub fn next_scalars(&mut self, n: usize) -> Result<Vec<F128T>, Error> {
+    pub fn next_scalars(&mut self, n: usize) -> Result<Vec<F192>, Error> {
         (0..n).map(|_| self.next_scalar()).collect()
     }
 
     /// Advance the stream cursor by one **without** binding into the sponge — the
     /// read counterpart of the raw nonce push in [`ProverState::grind`].
-    fn take_raw(&mut self) -> Result<F128T, Error> {
+    fn take_raw(&mut self) -> Result<F192, Error> {
         let x = *self.stream.get(self.offset).ok_or(Error::ExceededStream)?;
         self.offset += 1;
         trace(|| TraceOp::StreamRaw(x));
         Ok(x)
     }
 
-
-    pub fn sample(&mut self) -> F128T {
+    pub fn sample(&mut self) -> F192 {
         self.sponge.sample()
     }
 
-    pub fn sample_vec(&mut self, n: usize) -> Vec<F128T> {
+    pub fn sample_vec(&mut self, n: usize) -> Vec<F192> {
         (0..n).map(|_| self.sample()).collect()
     }
 
     /// Absorb a value both parties compute themselves (never transmitted):
     /// protocol steps that bind derived values before sampling, e.g. the
     /// stacked-bytecode claim reduction (`leaf::verify_balance`).
-    pub fn observe_scalar(&mut self, x: F128T) {
+    pub fn observe_scalar(&mut self, x: F192) {
         self.sponge.observe(x);
     }
 
@@ -275,8 +277,8 @@ impl<'a, O> VerifierState<'a, O> {
 mod tests {
     use super::*;
 
-    fn f(k: u64) -> F128T {
-        F128T::new(k, k ^ 0x1234)
+    fn f(k: u64) -> F192 {
+        F192::new(k, k ^ 0x1234, k.rotate_left(17))
     }
 
     /// Prover and verifier stay in lockstep across a mixed transcript
@@ -298,5 +300,4 @@ mod tests {
         assert_eq!(vs.sample(), c2);
         assert!(vs.finish().is_ok());
     }
-
 }

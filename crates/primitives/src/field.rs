@@ -1,16 +1,15 @@
 // Credit: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
 //! `K = F64 = GF(2)[x]/(x^64 + x^4 + x^3 + x + 1)` and
-//! `E = F128T = K[y]/(y^2 + x*y + 1)`. Addresses, pc/fp, counters, and physical
-//! committed columns are K-valued. A machine word is `c0 + c1*y ∈ E` with
-//! `c0,c1 ∈ K`; challenges, sumcheck/GKR values, and transcript scalars are
-//! E-valued.
+//! `E = F192 = K[y]/(y^3 + y + 1)`. Addresses, pc/fp, counters, and physical
+//! committed columns are K-valued. A machine word is `c0 + c1*y + c2*y² ∈ E`
+//! with `c0,c1,c2 ∈ K`; challenges, sumcheck/GKR values, and transcript scalars
+//! are E-valued.
 //!
 //! - [`F64`]   — GF(2^64), polynomial x^64 + x^4 + x^3 + x + 1
-//! - [`F128T`] — GF(2^128) as `K[y]/(y^2 + x*y + 1)`
-//! - [`F128TUnreduced`] / [`F128TBaseUnreduced`] — its deferred-reduction accumulators
 //! - [`F8`]    — GF(2^8) with AES polynomial x^8 + x^4 + x^3 + x + 1
 //! - [`F192`]  — `K[y]/(y^3 + y + 1)`
 //! - [`F192Unreduced`] — its deferred-reduction accumulator
+//! - [`F128T`] — the previous GF(2^128) tower, retained for kernel comparisons
 
 pub mod gf2_64;
 pub mod gf2_64x3;
@@ -20,10 +19,10 @@ pub mod tower_f128;
 pub mod tower_f128_artin;
 pub mod vpclmul;
 
-pub use gf2_64::F64;
-pub use gf2_64x3::{F192, F192Unreduced};
 pub use gf2_8::F8;
-pub use phi8_tower::{PHI_8_TABLE, phi8};
+pub use gf2_64::F64;
+pub use gf2_64x3::{F192, F192BaseUnreduced, F192Unreduced};
+pub use phi8_tower::{PHI_8_TABLE, PHI_8_TABLE_192, phi8, phi8_192};
 pub use tower_f128::{F128T, F128TBaseUnreduced, F128TUnreduced};
 pub use tower_f128_artin::{F128TArtin, F128TArtinBaseUnreduced, F128TArtinUnreduced};
 
@@ -44,13 +43,13 @@ pub const fn mul_by_g(a: F64) -> F64 {
 }
 
 /// Multiply an `E`-element by the base generator `g = x ∈ K`: lane-wise
-/// [`mul_by_g`] on both `K`-coefficients (`(c0 + c1·y)·g = c0·g + (c1·g)·y`) —
-/// two shift+folds, no PMULL.
+/// [`mul_by_g`] on all three `K`-coefficients — three shift+folds, no PMULL.
 #[inline]
-pub const fn mul_by_g_e(a: F128T) -> F128T {
-    F128T {
+pub const fn mul_by_g_e(a: F192) -> F192 {
+    F192 {
         c0: mul_by_g(F64(a.c0)).0,
         c1: mul_by_g(F64(a.c1)).0,
+        c2: mul_by_g(F64(a.c2)).0,
     }
 }
 
@@ -101,11 +100,11 @@ pub fn g_pow(i: usize) -> F64 {
 /// MLE of the index column `[g^0, …, g^{2^n−1}]` over the `n`-variable cube,
 /// evaluated at an `E`-point: `∏_k (1 + ζ_k·(1 + g^{2^k}))` in `O(n)` (§5.3).
 /// The `g^{2^k}` factors are `K`-constants, so each term is one mixed product.
-pub fn index_mle(zeta: &[F128T]) -> F128T {
-    let mut acc = F128T::ONE;
+pub fn index_mle(zeta: &[F192]) -> F192 {
+    let mut acc = F192::ONE;
     let mut g2k = G; // g^{2^0} = g
     for &z in zeta {
-        acc *= F128T::ONE + z.mul_base(F64::ONE + g2k);
+        acc *= F192::ONE + z.mul_base(F64::ONE + g2k);
         g2k = g2k * g2k;
     }
     acc

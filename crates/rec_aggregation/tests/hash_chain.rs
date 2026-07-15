@@ -5,7 +5,8 @@
 //! the Fibonacci demo's strategy: a `mul_range` loop *in the exponent* on the
 //! outside, an unrolled block of `BLAKE3` steps on the inside, with the chain
 //! state carried through a `HeapBuf` (write-once memory). The four 64-bit digest
-//! lanes of the final `h_N` are packed into the two 128-bit public-input cells;
+//! lanes of the final `h_N` are packed into two canonical 128-bit BLAKE3 cells
+//! embedded in the F192 public input;
 //! write-once memory forces the proven result to equal it.
 //!
 //! `N` and the unroll factor are read from the environment (`LEANVM_HASH_N`,
@@ -16,10 +17,10 @@
 
 use std::time::Instant;
 
-use lean_vm::blake3_flock::warm_setup;
 use lean_compiler::{compile, parse};
+use lean_vm::blake3_flock::warm_setup;
 use lean_vm::cpu::{prove, verify};
-use primitives::field::{F64, F128T};
+use primitives::field::{F64, F192};
 
 /// One compression step `c = BLAKE3(a, b)` (the VM's `blake3` builtin): the eight
 /// input words are laid little-endian into 64 bytes, BLAKE3-hashed, and the
@@ -49,7 +50,7 @@ fn chain_source(n: usize, unroll: usize) -> String {
     let two_k = 2 * k;
 
     let mut body = String::new();
-    // Under 128-bit machine words a 256-bit value is TWO cells. Block `j`'s
+    // A 256-bit BLAKE3 value occupies two canonical 128-bit cells. Block `j`'s
     // boundary value sits at cells `g^{2j}..g^{2j+1}`; the loop counter `i = gʲ`
     // is the block index (×g each iteration), so the value base is `b = i²`.
     // Load the current chain value into a size-2 StackBuf (heap read straight
@@ -100,8 +101,8 @@ fn blake3_hash_chain() {
     for _ in 0..n {
         h = compress(h, h);
     }
-    // The two published 128-bit cells of the final value h_N (cell = lo + hi·y).
-    let pi = [F128T::new(h[0].0, h[1].0), F128T::new(h[2].0, h[3].0)];
+    // The two published BLAKE3 cells of h_N (top F192 limb zero).
+    let pi = [F192::new(h[0].0, h[1].0, 0), F192::new(h[2].0, h[3].0, 0)];
 
     let program = compile(&parse(&chain_source(n, unroll)).expect("parse"));
 
@@ -121,7 +122,10 @@ fn blake3_hash_chain() {
 
     println!("\nBLAKE3 hash chain, N = {n}, unroll = {unroll}");
     println!("  cycles (VM steps)           : {}", stats.cycles);
-    for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3"].iter().zip(&stats.counts) {
+    for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3"]
+        .iter()
+        .zip(&stats.counts)
+    {
         let pow = if c == 0 {
             "0".to_string()
         } else {
@@ -144,6 +148,6 @@ fn blake3_hash_chain() {
 
     // A wrong public input must be rejected.
     let mut bad = pi;
-    bad[0] += F128T::ONE;
+    bad[0] += F192::ONE;
     assert!(verify(&program, &bad, &proof).is_err());
 }

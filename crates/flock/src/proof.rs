@@ -2,13 +2,13 @@
 //! The evaluation-claim type shared by the zerocheck/lincheck reduction and
 //! the PCS.
 
-use primitives::field::F128T;
 use crate::lincheck::QuirkyPoint;
+use primitives::field::F192;
 
 /// A claim of the form `ẑ(point) = value` for the witness `z`. Tower-valued:
-/// the flock verifier and the downstream PCS run over `F128T`.
+/// the flock verifier and the downstream PCS run over `F192`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ZClaim {
     pub point: QuirkyPoint,
-    pub value: F128T,
+    pub value: F192,
 }

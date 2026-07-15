@@ -1,18 +1,18 @@
 //! `StackBuf` — a run of consecutive frame (stack) cells in the zkDSL. Indexed
 //! reads/writes go straight to `base+k` (no heap deref), and a size-2 `StackBuf`
-//! is a `blake3` operand: its two 128-bit cells hold the 256-bit value, so
+//! is a `blake3` operand: its two canonical 128-bit cells hold the 256-bit value, so
 //! `blake3(a, b, out)` reads them in place with no copies (a self-hash
 //! `blake3(h, h, out)` aliases one pair into both input operands) and writes
 //! the digest into the pre-allocated pair `out`.
 //!
-//! Since a DSL scalar sets a whole 128-bit cell (low lane = the value, high lane
-//! 0), a `StackBuf(2)` written cell-by-cell holds the flock words `[v0, 0, v1, 0]`
+//! Since these DSL scalars are K-embedded F192 cells, a `StackBuf(2)` written
+//! cell-by-cell holds the flock words `[v0, 0, v1, 0]`
 //! — the reference `compress` below is fed that lane layout.
 
-use lean_vm::blake3_flock::warm_setup;
 use lean_compiler::{compile, parse};
+use lean_vm::blake3_flock::warm_setup;
 use lean_vm::cpu::{prove, verify};
-use primitives::field::{F128T, F64};
+use primitives::field::{F64, F192};
 
 /// `BLAKE3(a, b)` reference (matches `cpu::blake3_compress`): the eight words
 /// laid little-endian into 64 bytes, hashed, digest split into four `F64` words.
@@ -26,11 +26,11 @@ fn compress(a: [F64; 4], b: [F64; 4]) -> [F64; 4] {
     std::array::from_fn(|k| F64(u64::from_le_bytes(d[8 * k..8 * k + 8].try_into().unwrap())))
 }
 
-/// The two 128-bit digest cells of `compress(a, b)` as `F128T`s (lo = word 0/2,
+/// The two 128-bit digest cells of `compress(a, b)` as `F192`s (lo = word 0/2,
 /// hi = word 1/3) — what a `blake3(...)` output `StackBuf(2)` holds cell-by-cell.
-fn digest_cells(a: [F64; 4], b: [F64; 4]) -> [F128T; 2] {
+fn digest_cells(a: [F64; 4], b: [F64; 4]) -> [F192; 2] {
     let d = compress(a, b);
-    [F128T::new(d[0].0, d[1].0), F128T::new(d[2].0, d[3].0)]
+    [F192::new(d[0].0, d[1].0, 0), F192::new(d[2].0, d[3].0, 0)]
 }
 
 /// A size-2 `StackBuf` fed to `blake3` as a self-hash `blake3(h, h)`, then the
@@ -63,7 +63,7 @@ def main():
     verify(&program, &want, &proof).expect("StackBuf self-hash verifies");
 
     let mut bad = want;
-    bad[0] += F128T::ONE;
+    bad[0] += F192::ONE;
     assert!(verify(&program, &bad, &proof).is_err(), "wrong digest must be rejected");
 }
 
@@ -85,7 +85,7 @@ def main():
 ";
     let program = compile(&parse(src).expect("parse"));
     // `+` is XOR: 3 ^ 4 = 7. Published: (sa[2], sa[1]) = (7, 4).
-    let want = [F128T::from(F64(7)), F128T::from(F64(4))];
+    let want = [F192::from(F64(7)), F192::from(F64(4))];
     let (proof, stats) = prove(&program, want);
     assert_eq!(stats.counts[5], 0, "no BLAKE3 here");
     verify(&program, &want, &proof).expect("StackBuf indexing verifies");
@@ -107,7 +107,7 @@ fn stack_buf_index_overflow_rejected() {
 fn stack_buf_rebind_to_scalar() {
     let src = "def main():\n    x = StackBuf(2)\n    x = 5\n    p = 1\n    p[1] = x\n    p[GEN] = x\n    return\n";
     let program = compile(&parse(src).expect("parse"));
-    let want = [F128T::from(F64(5)), F128T::from(F64(5))];
+    let want = [F192::from(F64(5)), F192::from(F64(5))];
     let (proof, _) = prove(&program, want);
     verify(&program, &want, &proof).expect("rebound-scalar program verifies");
 }
@@ -158,15 +158,18 @@ def step(state, v):
     let tag = [F64(9), F64(0), F64(3), F64(0)];
     let s1 = compress([F64(5), F64(0), F64(7), F64(0)], tag);
     let s2 = compress(s1, tag); // the returned StackBuf (holding s1's words) fed back in
-    let want = [F128T::new(s2[0].0, s2[1].0), F128T::new(s2[2].0, s2[3].0)];
+    let want = [F192::new(s2[0].0, s2[1].0, 0), F192::new(s2[2].0, s2[3].0, 0)];
 
     let (proof, stats) = prove(&program, want);
     assert_eq!(stats.counts[5], 2, "two BLAKE3 instructions (one per inlined step)");
     verify(&program, &want, &proof).expect("inline StackBuf+scalar tuple return verifies");
 
     let mut bad = want;
-    bad[1] += F128T::ONE;
-    assert!(verify(&program, &bad, &proof).is_err(), "wrong published state must be rejected");
+    bad[1] += F192::ONE;
+    assert!(
+        verify(&program, &bad, &proof).is_err(),
+        "wrong published state must be rejected"
+    );
 }
 
 /// An `@inline` may also alias-return a folded **g-address** among its values:
@@ -208,7 +211,7 @@ def step(state, cursor):
     let program = compile(&parse(src).expect("parse"));
     // a = hb[0] = 10, b = hb[1] = 20, v = hb[2] = 30 read through the cursor
     // returned twice-advanced. a + b is XOR: 10 ^ 20 = 30.
-    let want = [F128T::from(F64(30)), F128T::from(F64(30))];
+    let want = [F192::from(F64(30)), F192::from(F64(30))];
     let (proof, _) = prove(&program, want);
     verify(&program, &want, &proof).expect("inline advanced-cursor return verifies");
 }
@@ -292,7 +295,7 @@ fn heap_index_boundary_ok() {
     warm_setup(1);
     let src = "def main():\n    hb = HeapBuf(8)\n    hb[GEN ** 7] = 5\n    row = hb * GEN ** 4\n    y = row[GEN ** 3]\n    assert y == 5\n    return\n";
     let program = compile(&parse(src).expect("parse"));
-    let pi = [F128T::from(F64(3)), F128T::from(F64(4))];
+    let pi = [F192::from(F64(3)), F192::from(F64(4))];
     let (proof, _) = prove(&program, pi);
     verify(&program, &pi, &proof).expect("boundary access verifies");
 }

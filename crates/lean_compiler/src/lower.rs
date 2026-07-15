@@ -26,7 +26,10 @@ fn gmul(a: GAddr, b: GAddr) -> Option<GAddr> {
         (None, x) | (x, None) => x,
         (Some(_), Some(_)) => return None,
     };
-    Some(GAddr { base, exp: a.exp.checked_add(b.exp)? })
+    Some(GAddr {
+        base,
+        exp: a.exp.checked_add(b.exp)?,
+    })
 }
 
 /// Cap on a `β`-folded exponent: the operand g-power table is sized to the
@@ -47,7 +50,7 @@ enum Alias {
     /// `blake3` operand cell — the `obs`/`squeeze` tag words, padding
     /// halves — costs ONE `SET` per distinct value per function, not one
     /// per store. A zero constant routes through the zero pool.
-    Const(F128T),
+    Const(F192),
 }
 
 /// How an inlined `@inline` tail-return value binds into the caller
@@ -94,14 +97,14 @@ struct FnLower<'a> {
     /// Constant cells: field value (as bits) → the frame cell holding it, SET
     /// lazily once per distinct constant ([`Self::const_cell`]). Cells are
     /// write-once and read-many, so one `SET` serves every use in scope.
-    const_cells: HashMap<u128, Off>,
+    const_cells: HashMap<[u64; 3], Off>,
     /// Variables bound to a symbolic g-address ([`GAddr`]) — index cursors and
     /// shifted pointers, kept virtual so their offsets fold into `DEREF`'s `β`.
     gaddrs: HashMap<String, GAddr>,
     /// Variables bound to a compile-time *field* constant that isn't a g-power
     /// (e.g. a running weight `CHAIN_LENGTH^i`). Kept virtual — folded through
     /// constant field arithmetic and materialized (one `SET`) only when used.
-    fconsts: HashMap<String, F128T>,
+    fconsts: HashMap<String, F192>,
     /// While inlining an `@inline` call ([`Self::try_inline`]), the destination
     /// cells its tail `return` binds into instead of emitting a return jump.
     /// `None` outside an inlined body.
@@ -127,7 +130,7 @@ struct FnLower<'a> {
     defs: &'a HashMap<String, Func>,
     /// Top-level constant arrays, resolved at compile time: `NAME[i]` yields the
     /// element (a field value or an index), `len(NAME)` its length.
-    const_arrays: &'a HashMap<String, Vec<u128>>,
+    const_arrays: &'a HashMap<String, Vec<F192>>,
 }
 
 impl FnLower<'_> {
@@ -150,7 +153,7 @@ impl FnLower<'_> {
         let o = self.fresh();
         self.emit(LOp::Set {
             o,
-            k: KVal::Const(F128T::ONE),
+            k: KVal::Const(F192::ONE),
         });
         self.one_off = Some(o);
         o
@@ -161,11 +164,11 @@ impl FnLower<'_> {
     /// [`Self::one`]'s cell; `main` alone had ~57k duplicated constant `SET`s
     /// before pooling). Branch-local like the other lazy cells: a cache entry
     /// made inside an `if`/`match` arm reverts at the join.
-    fn const_cell(&mut self, v: F128T) -> Off {
-        if v == F128T::ONE {
+    fn const_cell(&mut self, v: F192) -> Off {
+        if v == F192::ONE {
             return self.one();
         }
-        let key = v.c0 as u128 | ((v.c1 as u128) << 64);
+        let key = [v.c0, v.c1, v.c2];
         if let Some(&o) = self.const_cells.get(&key) {
             return o;
         }
@@ -184,7 +187,7 @@ impl FnLower<'_> {
         let o = self.fresh();
         self.emit(LOp::Set {
             o,
-            k: KVal::Const(F128T::ZERO),
+            k: KVal::Const(F192::ZERO),
         });
         self.zero_off = Some(o);
         o
@@ -203,7 +206,7 @@ impl FnLower<'_> {
         for k in 0..2 {
             self.emit(LOp::Set {
                 o: o + k,
-                k: KVal::Const(F128T::ZERO),
+                k: KVal::Const(F192::ZERO),
             });
         }
         self.zero2_off = Some(o);
@@ -317,7 +320,7 @@ impl FnLower<'_> {
             let o = self.fresh();
             self.emit(LOp::Set {
                 o,
-                k: KVal::Const(F128T::ZERO),
+                k: KVal::Const(F192::ZERO),
             });
         }
         (
@@ -499,7 +502,11 @@ impl FnLower<'_> {
         self.emit(LOp::Mul { a: xo, b: xo, c: x2 });
         let d = self.fresh();
         self.emit(LOp::Mul { a: kcell, b: x2, c: d });
-        self.emit(LOp::Jump { oc: one, od: d, of: sfp });
+        self.emit(LOp::Jump {
+            oc: one,
+            od: d,
+            of: sfp,
+        });
 
         // Trampoline: slot j enters `callees[j]` with fp = nfp; the callee's own
         // `return` jumps to retpc (the join) in the caller frame.
@@ -510,7 +517,11 @@ impl FnLower<'_> {
                 o: c,
                 k: KVal::Entry(callee.clone()),
             });
-            self.emit(LOp::Jump { oc: one, od: c, of: nfp });
+            self.emit(LOp::Jump {
+                oc: one,
+                od: c,
+                of: nfp,
+            });
         }
 
         // Join: read the return values (written by whichever callee ran).
@@ -687,12 +698,23 @@ impl FnLower<'_> {
         // a != b: skip the poison and continue at the join (patched below).
         let cont = self.fresh();
         let cset = self.code.len();
-        self.emit(LOp::Set { o: cont, k: KVal::Local(0) });
-        self.emit(LOp::Jump { oc: x, od: cont, of: sfp });
+        self.emit(LOp::Set {
+            o: cont,
+            k: KVal::Local(0),
+        });
+        self.emit(LOp::Jump {
+            oc: x,
+            od: cont,
+            of: sfp,
+        });
         // a == b: fall through to the poison jump (g^-1, an unreachable pc).
         let pd = self.fresh();
         self.emit(LOp::Set { o: pd, k: KVal::Poison });
-        self.emit(LOp::Jump { oc: one, od: pd, of: sfp });
+        self.emit(LOp::Jump {
+            oc: one,
+            od: pd,
+            of: sfp,
+        });
         self.patch_local(cset, self.code.len());
     }
 
@@ -774,8 +796,8 @@ impl FnLower<'_> {
     ///    unknown operand (leanVM's ADD deduction, multiplicatively);
     /// 3. `DEREF` through `y` — proves `y = g^f` with `f < 2^h`.
     ///
-    /// Then `e + f ≡ k-1 (mod 2^128-1)` with `e, f < 2^h`, and since a negative
-    /// `k-1-e` wraps to `≈ 2^128 ≫ 2^h`, this forces `e ≤ k-1` — for ANY memory
+    /// Then `e + f ≡ k-1 (mod 2^64-1)` with `e, f < 2^h`, and since a negative
+    /// `k-1-e` wraps to `≈ 2^64 ≫ 2^h`, this forces `e ≤ k-1` — for ANY memory
     /// size the prover announces, provided `k ≤ 2^MIN_LOG_MEM`. The two `DEREF`
     /// target cells are unconstrained touches (only the address matters),
     /// back-filled at the end of execution; the constant cell is one amortized
@@ -808,13 +830,16 @@ impl FnLower<'_> {
     }
 
     fn expr(&mut self, e: &Expr) -> Off {
+        if matches!(e, Expr::Call(f, _) if f == "f192") {
+            return self.const_cell(self.try_field_const(e).expect("f192 needs three literal u64 limbs"));
+        }
         match e {
             Expr::Lit(n) => self.const_cell(lit_field(*n)),
             Expr::Gen => self.const_cell(g_pow(1).into()),
             Expr::GPow(k) => self.const_cell(g_pow_u128(*k).into()),
             Expr::GenPow(e) => {
                 let k = self.gpow_exp(e);
-                self.const_cell(g_pow_u128(k as u128).into())
+                self.const_cell(g_pow_u128(k).into())
             }
             Expr::Pow(b, e) => self.pow_expr(b, e),
             Expr::Var(v) => {
@@ -834,10 +859,10 @@ impl FnLower<'_> {
                 // (and, being a constant, has no side effect to preserve), so
                 // `x + 0` lowers to just `x` — no cell, no XOR. Kills the
                 // `acc = 0; acc = acc + t` accumulator seed and similar.
-                if self.try_field_const(a) == Some(F128T::ZERO) {
+                if self.try_field_const(a) == Some(F192::ZERO) {
                     return self.expr(b);
                 }
-                if self.try_field_const(b) == Some(F128T::ZERO) {
+                if self.try_field_const(b) == Some(F192::ZERO) {
                     return self.expr(a);
                 }
                 let (la, lb) = (self.expr(a), self.expr(b));
@@ -849,10 +874,10 @@ impl FnLower<'_> {
                 // Identity fold: a compile-time 1 operand is a no-op multiply,
                 // so `x * 1` lowers to just `x`. Kills the `acc = GEN ** 0`
                 // (= 1) accumulator seed's first `1 * f` in every product loop.
-                if self.try_field_const(a) == Some(F128T::ONE) {
+                if self.try_field_const(a) == Some(F192::ONE) {
                     return self.expr(b);
                 }
-                if self.try_field_const(b) == Some(F128T::ONE) {
+                if self.try_field_const(b) == Some(F192::ONE) {
                     return self.expr(a);
                 }
                 let (la, lb) = (self.expr(a), self.expr(b));
@@ -881,12 +906,17 @@ impl FnLower<'_> {
                 let nbits = self.const_index(&args[1]);
                 let floor = self.const_index(&args[2]);
                 let dst = self.fresh();
-                self.pending.push(Hint::Log2Ceil { bits_ptr, dst, nbits, floor });
+                self.pending.push(Hint::Log2Ceil {
+                    bits_ptr,
+                    dst,
+                    nbits,
+                    floor,
+                });
                 dst
             }
             Expr::Call(f, args) => {
                 if let Some(n) = self.const_len(e) {
-                    self.const_cell(F128T::new(n as u64, 0))
+                    self.const_cell(F192::new(n as u64, 0, 0))
                 } else {
                     let d = self.call(f, args, 1)[0];
                     self.take_inline_ret_cell(d)
@@ -916,7 +946,7 @@ impl FnLower<'_> {
             Expr::Index(arr, idx) => {
                 // Constant-array element `NAME[i]`: a compile-time field value.
                 if let Some(elem) = self.const_array_elem(e) {
-                    return self.const_cell(lit_field(elem));
+                    return self.const_cell(elem);
                 }
                 // Stack read `sa[k]`: the frame cell `base + k` directly (no deref),
                 // forwarded through any deferred copy/zero alias.
@@ -937,7 +967,9 @@ impl FnLower<'_> {
                 dst
             }
             Expr::Sub(..) | Expr::Div(..) | Expr::Mod(..) => {
-                panic!("`-`, `//`, `%` are compile-time only (field subtraction is `+`); use them in an index, a bound, or a `Const` argument, got `{e:?}`")
+                panic!(
+                    "`-`, `//`, `%` are compile-time only (field subtraction is `+`); use them in an index, a bound, or a `Const` argument, got `{e:?}`"
+                )
             }
             Expr::Slice(..) => panic!("a slice is not a scalar; it is only a blake3 operand"),
             Expr::ListLit(..) => panic!("a list literal must be bound to a name: `x = [a, b]`"),
@@ -990,7 +1022,10 @@ impl FnLower<'_> {
             // A constant-array element `NAME[i]` or `len(NAME)` used as an index /
             // bound / `unroll` count. An element too large for an index declines
             // (it is a field value; this evaluator also probes speculatively).
-            Expr::Index(..) => self.const_array_elem(idx).and_then(|e| u32::try_from(e).ok()),
+            Expr::Index(..) => self
+                .const_array_elem(idx)
+                .and_then(|e| (e.c1 == 0 && e.c2 == 0).then_some(e.c0))
+                .and_then(|e| u32::try_from(e).ok()),
             Expr::Call(..) => self.const_len(idx).map(|n| n as u32),
             // Integer power `b ** e` (both compile-time), e.g. `2 ** c` for a bit
             // test. Overflow declines (see the Add/Sub/Mul comment above).
@@ -1026,7 +1061,7 @@ impl FnLower<'_> {
             .unwrap_or_else(|| panic!("`**` exponent must be a compile-time integer, got `{e:?}`"));
         // Fully constant → evaluate in the field and emit a single `SET`.
         if let Some(bc) = self.try_field_const(b) {
-            let mut acc = F128T::ONE;
+            let mut acc = F192::ONE;
             for _ in 0..k {
                 acc *= bc;
             }
@@ -1034,7 +1069,10 @@ impl FnLower<'_> {
         }
         if k == 0 {
             let o = self.fresh();
-            self.emit(LOp::Set { o, k: KVal::Const(F128T::ONE) });
+            self.emit(LOp::Set {
+                o,
+                k: KVal::Const(F192::ONE),
+            });
             return o;
         }
         // Runtime base: square-and-multiply over the compile-time exponent bits.
@@ -1056,7 +1094,7 @@ impl FnLower<'_> {
 
     /// If `e` is `NAME[i]` for a top-level constant array `NAME` with a
     /// compile-time index `i`, its element (a raw `u128`).
-    fn const_array_elem(&self, e: &Expr) -> Option<u128> {
+    fn const_array_elem(&self, e: &Expr) -> Option<F192> {
         if let Expr::Index(arr, idx) = e
             && let Expr::Var(v) = arr.as_ref()
             && let Some(a) = self.const_arrays.get(v)
@@ -1245,7 +1283,7 @@ impl FnLower<'_> {
         if let Some(elem) = self.const_array_elem(e) {
             self.emit(LOp::Set {
                 o: dst,
-                k: KVal::Const(lit_field(elem)),
+                k: KVal::Const(elem),
             });
             return;
         }
@@ -1284,9 +1322,9 @@ impl FnLower<'_> {
             }
             Expr::Add(a, b) => {
                 // Identity fold (see the `expr` Add arm): `x + 0` copies `x`.
-                if self.try_field_const(a) == Some(F128T::ZERO) {
+                if self.try_field_const(a) == Some(F192::ZERO) {
                     self.expr_into(b, dst);
-                } else if self.try_field_const(b) == Some(F128T::ZERO) {
+                } else if self.try_field_const(b) == Some(F192::ZERO) {
                     self.expr_into(a, dst);
                 } else {
                     let (la, lb) = (self.expr(a), self.expr(b));
@@ -1295,9 +1333,9 @@ impl FnLower<'_> {
             }
             Expr::Mul(a, b) => {
                 // Identity fold: `x * 1` copies `x`.
-                if self.try_field_const(a) == Some(F128T::ONE) {
+                if self.try_field_const(a) == Some(F192::ONE) {
                     self.expr_into(b, dst);
-                } else if self.try_field_const(b) == Some(F128T::ONE) {
+                } else if self.try_field_const(b) == Some(F192::ONE) {
                     self.expr_into(a, dst);
                 } else {
                     let (la, lb) = (self.expr(a), self.expr(b));
@@ -1359,7 +1397,10 @@ impl FnLower<'_> {
             Expr::Lit(1) => Some(GAddr { base: None, exp: 0 }),
             Expr::Gen => Some(GAddr { base: None, exp: 1 }),
             Expr::GPow(k) => Some(GAddr { base: None, exp: *k }),
-            Expr::GenPow(e) => Some(GAddr { base: None, exp: self.try_const_index(e)? as u128 }),
+            Expr::GenPow(e) => Some(GAddr {
+                base: None,
+                exp: self.try_const_index(e)? as u128,
+            }),
             Expr::Var(v) => self
                 .gaddrs
                 .get(v)
@@ -1375,9 +1416,9 @@ impl FnLower<'_> {
     /// `+`/`*` of those evaluated in the field (XOR / `K`-mul). `None` for a
     /// runtime value, a literal exceeding the 64-bit word, or a compile-time
     /// *integer* op (`//`/`%` are index-only).
-    fn try_field_const(&self, e: &Expr) -> Option<F128T> {
+    fn try_field_const(&self, e: &Expr) -> Option<F192> {
         match e {
-            // A literal is the raw 128-bit machine word; g-powers/addresses embed.
+            // A source literal fills the low 128 bits; g-powers/addresses embed in K.
             Expr::Lit(n) => Some(lit_field(*n)),
             Expr::Gen => Some(g_pow(1).into()),
             Expr::GPow(k) => Some(g_pow_u128(*k).into()),
@@ -1389,13 +1430,20 @@ impl FnLower<'_> {
             Expr::Add(a, b) => Some(self.try_field_const(a)? + self.try_field_const(b)?),
             Expr::Mul(a, b) => Some(self.try_field_const(a)? * self.try_field_const(b)?),
             // A constant-array element `NAME[i]` as a field value, or `len(NAME)`.
-            Expr::Index(..) => self.const_array_elem(e).map(lit_field),
-            Expr::Call(..) => self.const_len(e).map(|n| F128T::new(n as u64, 0)),
+            Expr::Index(..) => self.const_array_elem(e),
+            Expr::Call(f, args) if f == "f192" && args.len() == 3 => {
+                let limb = |i: usize| match &args[i] {
+                    Expr::Lit(n) => u64::try_from(*n).ok(),
+                    _ => None,
+                };
+                Some(F192::new(limb(0)?, limb(1)?, limb(2)?))
+            }
+            Expr::Call(..) => self.const_len(e).map(|n| F192::new(n as u64, 0, 0)),
             // `b ** e` as a field constant (constant base, compile-time exponent).
             Expr::Pow(b, e) => {
                 let bc = self.try_field_const(b)?;
                 let k = self.try_const_index(e)?;
-                let mut acc = F128T::ONE;
+                let mut acc = F192::ONE;
                 for _ in 0..k {
                     acc *= bc;
                 }
@@ -1413,7 +1461,10 @@ impl FnLower<'_> {
             GAddr { base: Some(c), exp: 0 } => c,
             GAddr { base, exp } => {
                 let k = self.fresh();
-                self.emit(LOp::Set { o: k, k: KVal::Const(g_pow_u128(exp).into()) });
+                self.emit(LOp::Set {
+                    o: k,
+                    k: KVal::Const(g_pow_u128(exp).into()),
+                });
                 let Some(c) = base else { return k };
                 let o = self.fresh();
                 self.emit(LOp::Mul { a: c, b: k, c: o });
@@ -1428,8 +1479,12 @@ impl FnLower<'_> {
     /// indices are not checked (their value is not known here).
     fn check_heap_bound(&self, arr: &Expr, extra: u128, span: u128) {
         let Some(ga) = self.gaddr_of(arr) else { return };
-        let (Some(base), Some(exp)) = (ga.base, ga.exp.checked_add(extra)) else { return };
-        let Some(&size) = self.heap_sizes.get(&base) else { return };
+        let (Some(base), Some(exp)) = (ga.base, ga.exp.checked_add(extra)) else {
+            return;
+        };
+        let Some(&size) = self.heap_sizes.get(&base) else {
+            return;
+        };
         if exp + span > size {
             let name = self
                 .vars
@@ -1454,15 +1509,19 @@ impl FnLower<'_> {
         self.check_heap_bound(arr, extra, 1);
         if let Some(ga) = self.gaddr_of(arr)
             && let (Some(base), Some(exp)) = (ga.base, ga.exp.checked_add(extra))
-                && exp <= FOLD_MAX {
-                    return (base, exp as u32);
-                }
+            && exp <= FOLD_MAX
+        {
+            return (base, exp as u32);
+        }
         let a = self.expr(arr);
         if extra == 0 {
             return (a, 0);
         }
         let k = self.fresh();
-        self.emit(LOp::Set { o: k, k: KVal::Const(g_pow_u128(extra).into()) });
+        self.emit(LOp::Set {
+            o: k,
+            k: KVal::Const(g_pow_u128(extra).into()),
+        });
         let ptr = self.fresh();
         self.emit(LOp::Mul { a, b: k, c: ptr });
         (ptr, 0)
@@ -1517,7 +1576,10 @@ impl FnLower<'_> {
         match self.inline_stack_ret.take().and_then(|b| b.into_iter().next()) {
             Some(RetBind::Gaddr(ga)) => self.materialize(ga),
             Some(RetBind::Stack(base, size)) => {
-                assert_eq!(size, 1, "a multi-cell StackBuf return needs a `let` binding, not an expression use");
+                assert_eq!(
+                    size, 1,
+                    "a multi-cell StackBuf return needs a `let` binding, not an expression use"
+                );
                 base
             }
             _ => dst,
@@ -1588,7 +1650,12 @@ impl FnLower<'_> {
         let (params, rt_args, body, n_ret) = self
             .specialized_body(callee, args)
             .unwrap_or_else(|| panic!("`@inline {callee}`: bad arity or unresolved Const argument"));
-        assert_eq!(n_ret, dsts.len(), "`@inline {callee}` returns {n_ret} values, call binds {}", dsts.len());
+        assert_eq!(
+            n_ret,
+            dsts.len(),
+            "`@inline {callee}` returns {n_ret} values, call binds {}",
+            dsts.len()
+        );
         assert!(
             body_inlinable(&body),
             "`@inline {callee}` must be a single tail `return` with no call/loop/match (see body_inlinable)"
@@ -1939,7 +2006,7 @@ impl FnLower<'_> {
                 self.emit(LOp::Xor { a: la, b: lb, c: t });
                 self.emit(LOp::Set {
                     o: t,
-                    k: KVal::Const(F128T::ZERO),
+                    k: KVal::Const(F192::ZERO),
                 });
             }
             Stmt::AssertNe(a, b) => self.lower_assert_ne(a, b),
@@ -1957,7 +2024,7 @@ impl FnLower<'_> {
                 let o = self.fresh();
                 self.emit(LOp::Set {
                     o,
-                    k: KVal::Const(F128T::ZERO),
+                    k: KVal::Const(F192::ZERO),
                 });
             }
             Stmt::If {
@@ -2011,6 +2078,33 @@ impl FnLower<'_> {
                     self.emit(LOp::Blake3 {
                         ins: [a[0], a[1], b[0], b[1]],
                         c,
+                        packing: Blake3Packing::Bytes128,
+                    });
+                    if let Some((ptr, lo)) = heap_out {
+                        for k in 0..2 {
+                            self.emit(LOp::Deref {
+                                alpha: ptr,
+                                beta: lo + k,
+                                gamma: c + k,
+                                mode: DerefMode::Cell,
+                            });
+                        }
+                    }
+                    return;
+                }
+                if f == "blake3_transcript" {
+                    assert_eq!(args.len(), 4, "blake3_transcript takes (state, scalar, tag, out)");
+                    let state = self.blake3_input(&args[0]);
+                    let scalar = self.expr(&args[1]);
+                    let tag = self.expr(&args[2]);
+                    let (c, heap_out) = match self.blake3_operand(&args[3]) {
+                        B3Operand::Stack(o) => (o, None),
+                        B3Operand::Heap { ptr, lo } => (self.alloc_stack(2), Some((ptr, lo))),
+                    };
+                    self.emit(LOp::Blake3 {
+                        ins: [state[0], state[1], scalar, tag],
+                        c,
+                        packing: Blake3Packing::Transcript192,
                     });
                     if let Some((ptr, lo)) = heap_out {
                         for k in 0..2 {
@@ -2273,7 +2367,7 @@ fn stmt_inline_safe(s: &Stmt) -> bool {
         | Stmt::AssertEq(..)
         | Stmt::AssertNe(..)
         | Stmt::AssertLt(..) => true,
-        Stmt::Call(f, _) => f == "blake3",
+        Stmt::Call(f, _) => f == "blake3" || f == "blake3_transcript",
         Stmt::If { then, els, .. } => then.iter().all(stmt_inline_safe) && els.iter().all(stmt_inline_safe),
         Stmt::Unroll { body, .. } => body.iter().all(stmt_inline_safe),
         // Return (non-tail), For, Match, LetMatchRange, LetTuple, CallIfNe, user Call.
@@ -2397,7 +2491,7 @@ pub(crate) fn lower_func(
     queue: &mut Vec<Func>,
     loop_ctr: &mut usize,
     defs: &HashMap<String, Func>,
-    const_arrays: &HashMap<String, Vec<u128>>,
+    const_arrays: &HashMap<String, Vec<F192>>,
 ) -> Lowered {
     let mut vars = HashMap::new();
     for (i, p) in f.params.iter().enumerate() {

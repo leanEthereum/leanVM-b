@@ -495,9 +495,9 @@ pub struct LigeritoSecurityConfig {
     /// theorem the per-level parameters were derived from. Example:
     /// `"ben_sasson_2025_thm_4_6"`.
     pub analysis_version: String,
-    /// Field of the protocol. Example: `"f128"`.
+    /// Field of the protocol. Example: `"f192"`.
     pub field: String,
-    /// Hash function used by Merkle + FS sponge. Example: `"sha256"`.
+    /// Hash function used by Merkle + FS sponge. Example: `"blake3"`.
     pub hash: String,
     /// Where in the per-level FS transcript grinding is placed.
     pub grinding_step: GrindingStep,
@@ -507,8 +507,8 @@ pub struct LigeritoSecurityConfig {
     pub final_block: FinalBlockConfig,
 }
 
-/// Extension-field size used for soundness analysis: `q = 2^128`.
-const ANALYSIS_LOG_Q: f64 = 128.0;
+/// Extension-field size used for soundness analysis: `q = 2^192`.
+const ANALYSIS_LOG_Q: f64 = 192.0;
 
 /// Round a float to one decimal place. Used to round paper-predicted
 /// soundness diagnostics so the generated TOMLs stay readable.
@@ -682,11 +682,11 @@ fn johnson_interleaved_list_log2(log_inv_rate: usize, eta: f64) -> f64 {
 /// - `ood_samples ≥ 1` (explicit samples): the bad event is two distinct
 ///   list elements agreeing on all `s` random points of `F^μ`
 ///   (Schwartz–Zippel, total degree ≤ μ), union over pairs:
-///   `bits = s·(128 − log₂ μ) − (2·log₂ L_int − 1)`.
+///   `bits = s·(192 − log₂ μ) − (2·log₂ L_int − 1)`.
 /// - `ood_samples = 0` (L0's implicit binding): the opening's own evaluation
 ///   claim at a post-commit random point pins the prover to one claimed
 ///   value, so the union is over the list (not pairs):
-///   `bits = 128 − log₂ L_int − log₂ μ`.
+///   `bits = 192 − log₂ L_int − log₂ μ`.
 fn paper_ood_bits(log_inv_rate: usize, eta: f64, mu_vars: usize, ood_samples: usize) -> f64 {
     let log2_l = johnson_interleaved_list_log2(log_inv_rate, eta);
     let log2_mu = (mu_vars as f64).log2();
@@ -738,7 +738,7 @@ impl LigeritoLevelConfig {
                 // No row-union penalty in the unique-decoding regime: the list
                 // has size 1, so (per Diamond and Gruen) the MCA-commutes step
                 // holds with error ε directly — the Johnson regime's 2^{ℓ-1}
-                // row union is unnecessary. So eps_pg = 128 − log₂ a.
+                // row union is unnecessary. So eps_pg = 192 − log₂ a.
                 let log_a =
                     paper_thm_1_4_log_a(self.log_inv_rate, self.log_msg_cols, proximity_loss);
                 let eps_pg = ANALYSIS_LOG_Q - log_a;
@@ -1088,8 +1088,8 @@ impl LigeritoSecurityConfig {
             initial_k,
             target_security_bits: target_bits,
             analysis_version: analysis_version.into(),
-            field: "f128".into(),
-            hash: "sha256".into(),
+            field: "f192".into(),
+            hash: "blake3".into(),
             grinding_step: GrindingStep::PostCommitPreQueries,
             levels,
             final_block: FinalBlockConfig {

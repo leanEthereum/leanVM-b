@@ -1,6 +1,17 @@
 //! The ISA: the six opcodes and the `DEREF` store modes.
 
-use primitives::field::{F64, F128T};
+use primitives::field::{F64, F192};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Blake3Packing {
+    /// Four canonical 128-bit BLAKE3 cells embedded in F192, two compression
+    /// lanes per cell.
+    Bytes128,
+    /// Two 192+64-bit pairs, three lanes from the first cell and the low lane
+    /// from the second.  Transcript states use this representation so their
+    /// first cell is also the full F192 challenge.
+    Transcript192,
+}
 
 #[derive(Clone, Copy, Debug)]
 pub enum Op {
@@ -16,10 +27,10 @@ pub enum Op {
     },
     Set {
         o: u32,
-        /// The immediate stored into `mem[fp·o]`. A full 128-bit machine word
-        /// (`E = F128T`); K-valued constants (addresses, small ints) ride the
-        /// low lane with `c1 = 0`.
-        k: F128T,
+        /// The immediate stored into `mem[fp·o]`. A full 192-bit machine word
+        /// (`E = F192`); K-valued constants (addresses, small ints) ride the
+        /// low lane with `c1 = c2 = 0`.
+        k: F192,
     },
     Deref {
         alpha: u32,
@@ -41,6 +52,7 @@ pub enum Op {
     Blake3 {
         ins: [u32; 4],
         out: u32,
+        packing: Blake3Packing,
     },
 }
 

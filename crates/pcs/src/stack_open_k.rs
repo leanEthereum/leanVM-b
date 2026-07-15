@@ -51,46 +51,44 @@
 //! rs_eq_ind tensor at the slice offset IS multiplying by the boolean
 //! selector eq).
 
-use fiat_shamir::Sponge;
-use primitives::field::{F64, F128T};
 use crate::merkle::Hash;
+use fiat_shamir::Sponge;
+use primitives::field::{F64, F192};
 use serde::{Deserialize, Serialize};
 
 use super::ligerito::{ProverConfig, VerifierConfig};
 use super::ligerito_k::{
-    LigeritoProofK, ProverDataK, build_eq_table_ext, build_eq_table_ext_seeded_into,
-    recursive_prover_with_basis_k, recursive_verifier_with_basis_succinct_k_with_squeezes,
+    LigeritoProofK, ProverDataK, build_eq_table_ext, build_eq_table_ext_seeded_into, recursive_prover_with_basis_k,
+    recursive_verifier_with_basis_succinct_k_with_squeezes,
 };
 use super::pack_k::PACKING_WIDTH_K;
-use super::ring_switch_k::{
-    self, RingSwitchProofK, eval_rs_eq_finish_from_prefix_binary_q_k, eval_rs_eq_prefix_k,
-};
+use super::ring_switch_k::{self, RingSwitchProofK, eval_rs_eq_finish_from_prefix_binary_q_k, eval_rs_eq_prefix_k};
 use super::tensor_algebra_k::TensorAlgebraE;
 
 // ---------------------------------------------------------------------------
 // Sponge helpers (same convention as ligerito_k): E-scalars straight off
 // the shared Fiat-Shamir sponge.
-// sponge scalars ARE E-elements; the helpers keep call sites uniform; every
-// 16-byte pattern is a valid F128T, so sampling reinterprets bytes and
-// observing ferries the two tower lanes through the transcript.
+// Sponge scalars ARE E-elements; the helpers keep call sites uniform. Every
+// 24-byte pattern is a valid F192, and observing ferries all three limbs
+// through the transcript.
 // ---------------------------------------------------------------------------
 
-fn sample_ext_vec(sponge: &mut Sponge, n: usize) -> Vec<F128T> {
+fn sample_ext_vec(sponge: &mut Sponge, n: usize) -> Vec<F192> {
     sponge.sample_vec(n)
 }
 
 #[inline]
-fn observe_ext(sponge: &mut Sponge, e: F128T) {
+fn observe_ext(sponge: &mut Sponge, e: F192) {
     sponge.observe(e);
 }
 
 /// Multilinear eq at two E-points (char 2: each factor is `1 + r_i + x_i`).
 /// Mirror of `zerocheck::multilinear::eq_eval` retyped to the tower.
-fn eq_eval_ext(r: &[F128T], x: &[F128T]) -> F128T {
+fn eq_eval_ext(r: &[F192], x: &[F192]) -> F192 {
     assert_eq!(r.len(), x.len());
-    let mut acc = F128T::ONE;
+    let mut acc = F192::ONE;
     for (&a, &b) in r.iter().zip(x.iter()) {
-        acc *= F128T::ONE + a + b;
+        acc *= F192::ONE + a + b;
     }
     acc
 }
@@ -109,8 +107,8 @@ pub enum StackClaimK {
     /// `2^|low_point|`.
     Point {
         offset: usize,
-        low_point: Vec<F128T>,
-        value: F128T,
+        low_point: Vec<F192>,
+        value: F192,
     },
     /// A boolean-selector claim on a packed column: the low `stride_log`
     /// in-block coords are frozen to `slot`'s bits (so the weight is nonzero
@@ -123,14 +121,14 @@ pub enum StackClaimK {
         offset: usize,
         slot: usize,
         stride_log: usize,
-        point: Vec<F128T>,
-        value: F128T,
+        point: Vec<F192>,
+        value: F192,
     },
 }
 
 impl StackClaimK {
     #[inline]
-    pub fn value(&self) -> F128T {
+    pub fn value(&self) -> F192 {
         match self {
             StackClaimK::Point { value, .. } | StackClaimK::Strided { value, .. } => *value,
         }
@@ -146,16 +144,16 @@ impl StackClaimK {
 /// univariate-skip claim); `suffix_point` has `qpkd_vars` coords.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RingSwitchClaimK {
-    pub prefix_weights: Vec<F128T>,
-    pub suffix_point: Vec<F128T>,
-    pub value: F128T,
+    pub prefix_weights: Vec<F192>,
+    pub suffix_point: Vec<F192>,
+    pub value: F192,
     /// Prover-side optional precomputed `s_hat_v` (the 64 bit-slice MLE
     /// values at `suffix_point`, e.g. captured inside flock's reduction).
     /// When present, [`super::ring_switch_k::prove`] skips its
     /// `fold_1b_rows` recomputation; the values are checked against the
     /// claim (`claim_check`) and the transcript is identical either way.
     /// Verifier-side bundles leave it `None`.
-    pub s_hat_v: Option<Vec<F128T>>,
+    pub s_hat_v: Option<Vec<F192>>,
 }
 
 /// Prover-side bundle of the ring-switched claims discharged in the same
@@ -207,7 +205,7 @@ pub struct StackedOpeningSummaryK {
 pub struct LigVerifierSummaryK {
     /// The raw query-sampling squeezes, per level in transcript order.
     /// EMPTY until the K verifier surfaces them (recursion-guest port).
-    pub query_squeezes: Vec<Vec<F128T>>,
+    pub query_squeezes: Vec<Vec<F192>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -229,12 +227,7 @@ pub struct LigVerifierSummaryK {
 /// and the serial/parallel splits are exact-field/order-preserving, so
 /// `b_stack`'s bytes (and hence the proof) are unchanged relative to the
 /// build-then-multiply form.
-fn fold_stacked_point_claims_k(
-    b_stack: &mut [F128T],
-    target: &mut F128T,
-    claims: &[StackClaimK],
-    gammas: &[F128T],
-) {
+fn fold_stacked_point_claims_k(b_stack: &mut [F192], target: &mut F192, claims: &[StackClaimK], gammas: &[F192]) {
     use rayon::prelude::*;
     const PAR_FOLD_THRESHOLD: usize = 1 << 14;
     // One reusable eq scratch sized to the largest Point claim: a fresh
@@ -249,7 +242,7 @@ fn fold_stacked_point_claims_k(
         })
         .max()
         .unwrap_or(0);
-    let mut scratch: Vec<F128T> = primitives::alloc_uninit_vec(max_len);
+    let mut scratch: Vec<F192> = primitives::alloc_uninit_vec(max_len);
     for (claim, g) in claims.iter().zip(gammas.iter()) {
         let g = *g;
         match claim {
@@ -271,9 +264,7 @@ fn fold_stacked_point_claims_k(
                         *bi += *ei;
                     }
                 } else {
-                    dst.par_iter_mut()
-                        .zip(eq.par_iter())
-                        .for_each(|(bi, ei)| *bi += *ei);
+                    dst.par_iter_mut().zip(eq.par_iter()).for_each(|(bi, ei)| *bi += *ei);
                 }
                 *target += g * *value;
             }
@@ -310,16 +301,14 @@ fn fold_stacked_point_claims_k(
 /// the full stack cube. A `Point`'s full point is `[low_point, sel_bits]`, a
 /// `Strided`'s is `[slot_bits, point, sel_bits]`; neither is materialized.
 /// Mirror of the extension-field `stack_claim_eq_at`.
-fn stack_claim_eq_at_k(claim: &StackClaimK, x: &[F128T]) -> F128T {
+fn stack_claim_eq_at_k(claim: &StackClaimK, x: &[F192]) -> F192 {
     match claim {
-        StackClaimK::Point {
-            offset, low_point, ..
-        } => {
+        StackClaimK::Point { offset, low_point, .. } => {
             let n = low_point.len();
             let mut e = eq_eval_ext(low_point, &x[..n]);
             let sel = offset >> n;
             for (k, &xi) in x[n..].iter().enumerate() {
-                e *= if (sel >> k) & 1 == 1 { xi } else { F128T::ONE + xi };
+                e *= if (sel >> k) & 1 == 1 { xi } else { F192::ONE + xi };
             }
             e
         }
@@ -330,15 +319,15 @@ fn stack_claim_eq_at_k(claim: &StackClaimK, x: &[F128T]) -> F128T {
             point,
             ..
         } => {
-            let mut e = F128T::ONE;
+            let mut e = F192::ONE;
             for (k, &xi) in x[..*stride_log].iter().enumerate() {
-                e *= if (slot >> k) & 1 == 1 { xi } else { F128T::ONE + xi };
+                e *= if (slot >> k) & 1 == 1 { xi } else { F192::ONE + xi };
             }
             let block_vars = stride_log + point.len();
             e *= eq_eval_ext(point, &x[*stride_log..block_vars]);
             let sel = offset >> block_vars;
             for (k, &xi) in x[block_vars..].iter().enumerate() {
-                e *= if (sel >> k) & 1 == 1 { xi } else { F128T::ONE + xi };
+                e *= if (sel >> k) & 1 == 1 { xi } else { F192::ONE + xi };
             }
             e
         }
@@ -368,7 +357,7 @@ pub fn open_batch_mixed_ligerito_stacked_k(
 ) -> BatchOpeningProofK {
     let qpkd_len = 1usize << ring.qpkd_vars;
     assert!(
-        ring.offset % qpkd_len == 0,
+        ring.offset.is_multiple_of(qpkd_len),
         "q_pkd offset must be 2^qpkd_vars-aligned"
     );
     assert!(
@@ -414,16 +403,14 @@ pub fn open_batch_mixed_ligerito_stacked_k(
         rs_states.push(state);
     }
     let r_dprime = sample_ext_vec(sponge, ring_switch_k::LOG_DEGREE_E);
-    let eq_r_dprime = build_eq_table_ext(&r_dprime);
+    let eq_r_dprime = ring_switch_k::build_basis_eq(&r_dprime);
     // Per-claim batching gammas, sampled AFTER all ring-switch messages are
     // bound (mirror of the extension-field layer's gamma_rs pattern).
     let gammas_rs = sample_ext_vec(sponge, ring.claims.len());
     let rs_outputs: Vec<_> = rs_states
         .into_iter()
         .zip(gammas_rs)
-        .map(|(state, gamma)| {
-            ring_switch_k::prove_finish_deferred(state, &eq_r_dprime, gamma)
-        })
+        .map(|(state, gamma)| ring_switch_k::prove_finish_deferred(state, &eq_r_dprime, gamma))
         .collect();
     mark("ring-switch proves", &mut t);
 
@@ -439,22 +426,19 @@ pub fn open_batch_mixed_ligerito_stacked_k(
     //    eq tensors scattered at their offsets.
     let mut target = rs_outputs
         .iter()
-        .fold(F128T::ZERO, |acc, out| acc + out.batched_sumcheck_claim);
+        .fold(F192::ZERO, |acc, out| acc + out.batched_sumcheck_claim);
     // Parallel first-touch wins for the tower stack: its many scattered point
     // claims otherwise pay demand-zero page faults one claim at a time.
-    let mut b_stack: Vec<F128T> = primitives::alloc_uninit_vec(stack.len());
+    let mut b_stack: Vec<F192> = primitives::alloc_uninit_vec(stack.len());
     {
         use rayon::prelude::*;
         const ZERO_CHUNK: usize = 1 << 16;
         b_stack
             .par_chunks_mut(ZERO_CHUNK)
-            .for_each(|chunk| chunk.fill(F128T::ZERO));
+            .for_each(|chunk| chunk.fill(F192::ZERO));
     }
     mark("b_stack zero fill", &mut t);
-    ring_switch_k::combine_deferred_into(
-        &rs_outputs,
-        &mut b_stack[ring.offset..ring.offset + qpkd_len],
-    );
+    ring_switch_k::combine_deferred_into(&rs_outputs, &mut b_stack[ring.offset..ring.offset + qpkd_len]);
     mark("rs_eq_ind scatter", &mut t);
     fold_stacked_point_claims_k(&mut b_stack, &mut target, point_claims, &gammas_pd);
     mark("point-claim folds", &mut t);
@@ -509,7 +493,7 @@ pub fn verify_opening_batch_mixed_ligerito_stacked_k(
     // Caller (statement) invariants: panic on misuse, like the extension-field layer.
     assert!(qpkd_vars <= log_n);
     assert!(
-        ring.offset % (1usize << qpkd_vars) == 0,
+        ring.offset.is_multiple_of(1usize << qpkd_vars),
         "q_pkd offset must be 2^qpkd_vars-aligned"
     );
     assert!(n_rs > 0, "stacked K opening carries at least one ring-switched claim");
@@ -520,12 +504,7 @@ pub fn verify_opening_batch_mixed_ligerito_stacked_k(
     // `proof` is attacker-controlled (deserialized): validate its shape and
     // reject rather than panicking (`verify_succinct` asserts the
     // s_hat_v length internally).
-    if proof.ring_switches.len() != n_rs
-        || proof
-            .ring_switches
-            .iter()
-            .any(|rs| rs.s_hat_v.len() != PACKING_WIDTH_K)
-    {
+    if proof.ring_switches.len() != n_rs || proof.ring_switches.iter().any(|rs| rs.s_hat_v.len() != PACKING_WIDTH_K) {
         return None;
     }
 
@@ -538,14 +517,14 @@ pub fn verify_opening_batch_mixed_ligerito_stacked_k(
         }
     }
     let r_dprime = sample_ext_vec(sponge, ring_switch_k::LOG_DEGREE_E);
-    let eq_r_dprime = build_eq_table_ext(&r_dprime);
+    let eq_r_dprime = ring_switch_k::build_basis_eq(&r_dprime);
     let rs_outputs: Vec<_> = proof
         .ring_switches
         .iter()
         .map(|rs_proof| ring_switch_k::verify_finish(rs_proof, &eq_r_dprime))
         .collect();
     let gammas_rs = sample_ext_vec(sponge, n_rs);
-    let mut target = F128T::ZERO;
+    let mut target = F192::ZERO;
     for (out, g) in rs_outputs.iter().zip(gammas_rs.iter()) {
         target += *g * out.sumcheck_claim;
     }
@@ -563,7 +542,7 @@ pub fn verify_opening_batch_mixed_ligerito_stacked_k(
     //    Ligerito verifier with the full folded `ris` and the residual cube
     //    log-size; returns b's MLE at `ris ++ y_bits` for every y.
     let sel = ring.offset >> qpkd_vars;
-    let eval_b_residual = |ris: &[F128T], yr_log_n: usize| -> Vec<F128T> {
+    let eval_b_residual = |ris: &[F192], yr_log_n: usize| -> Vec<F192> {
         use rayon::prelude::*;
         debug_assert!(yr_log_n <= 32, "yr_log_n > 32 not supported by binary path");
         let n_ris = ris.len();
@@ -581,9 +560,9 @@ pub fn verify_opening_batch_mixed_ligerito_stacked_k(
 
         // Selector eq over the ris coords above the q_pkd slice (E-valued
         // part; the y-covered selector coords are handled per position).
-        let mut sel_prefix = F128T::ONE;
+        let mut sel_prefix = F192::ONE;
         for (k, &xi) in ris[split..].iter().enumerate() {
-            sel_prefix *= if (sel >> k) & 1 == 1 { xi } else { F128T::ONE + xi };
+            sel_prefix *= if (sel >> k) & 1 == 1 { xi } else { F192::ONE + xi };
         }
 
         (0..1usize << yr_log_n)
@@ -593,7 +572,7 @@ pub fn verify_opening_batch_mixed_ligerito_stacked_k(
                 let mut x = Vec::with_capacity(n_ris + yr_log_n);
                 x.extend_from_slice(ris);
                 for k in 0..yr_log_n {
-                    x.push(if (y >> k) & 1 == 1 { F128T::ONE } else { F128T::ZERO });
+                    x.push(if (y >> k) & 1 == 1 { F192::ONE } else { F192::ZERO });
                 }
 
                 // Selector coords covered by y are binary: an indicator.
@@ -604,12 +583,12 @@ pub fn verify_opening_batch_mixed_ligerito_stacked_k(
                         break;
                     }
                 }
-                let mut acc = F128T::ZERO;
+                let mut acc = F192::ZERO;
                 if sel_ok {
                     // Finish each claim's tensor prefix with the binary
                     // query suffix (the q_pkd coords covered by y).
                     let y_low = (y & ((1usize << n_qpkd_from_y) - 1)) as u32;
-                    let mut rs_part = F128T::ZERO;
+                    let mut rs_part = F192::ZERO;
                     for ((claim, prefix), (g, out)) in ring
                         .claims
                         .iter()
@@ -634,7 +613,7 @@ pub fn verify_opening_batch_mixed_ligerito_stacked_k(
             .collect()
     };
 
-    let mut query_squeezes: Vec<Vec<F128T>> = Vec::new();
+    let mut query_squeezes: Vec<Vec<F192>> = Vec::new();
     let ok = recursive_verifier_with_basis_succinct_k_with_squeezes(
         config,
         &proof.ligerito,
@@ -645,7 +624,7 @@ pub fn verify_opening_batch_mixed_ligerito_stacked_k(
         sponge,
         &mut query_squeezes,
     );
-    ok.then(|| StackedOpeningSummaryK {
+    ok.then_some(StackedOpeningSummaryK {
         lig: LigVerifierSummaryK { query_squeezes },
     })
 }
@@ -670,8 +649,8 @@ mod tests {
         z ^ (z >> 31)
     }
 
-    fn rand_ext(s: &mut u64) -> F128T {
-        F128T::new(splitmix64(s), splitmix64(s))
+    fn rand_ext(s: &mut u64) -> F192 {
+        F192::new(splitmix64(s), splitmix64(s), splitmix64(s))
     }
 
     /// Configs for a K-stack of `2^log_n` words: prefer the production
@@ -734,7 +713,7 @@ mod tests {
         let mut point_claims: Vec<StackClaimK> = (0..3)
             .map(|c| {
                 let offset = c * col_len;
-                let low_point: Vec<F128T> = (0..col_vars).map(|_| rand_ext(&mut s)).collect();
+                let low_point: Vec<F192> = (0..col_vars).map(|_| rand_ext(&mut s)).collect();
                 let eq = build_eq_table_ext(&low_point);
                 let value = inner_product_base_ext(&stack[offset..offset + col_len], &eq);
                 StackClaimK::Point {
@@ -750,9 +729,9 @@ mod tests {
         {
             let stride_log = 3usize;
             let slot = 5usize;
-            let point: Vec<F128T> = (0..qpkd_vars - stride_log).map(|_| rand_ext(&mut s)).collect();
+            let point: Vec<F192> = (0..qpkd_vars - stride_log).map(|_| rand_ext(&mut s)).collect();
             let eq = build_eq_table_ext(&point);
-            let mut value = F128T::ZERO;
+            let mut value = F192::ZERO;
             for (j, &ej) in eq.iter().enumerate() {
                 value += ej.mul_base(stack[qpkd_offset + slot + (j << stride_log)]);
             }
@@ -767,9 +746,9 @@ mod tests {
 
         // One ring-switched claim on q_pkd (plain eq prefix weights).
         let qpkd = &stack[qpkd_offset..qpkd_offset + (1 << qpkd_vars)];
-        let r_prefix: Vec<F128T> = (0..LOG_PACKING_K).map(|_| rand_ext(&mut s)).collect();
+        let r_prefix: Vec<F192> = (0..LOG_PACKING_K).map(|_| rand_ext(&mut s)).collect();
         let prefix_weights = eq_prefix_weights(&r_prefix);
-        let suffix_point: Vec<F128T> = (0..qpkd_vars).map(|_| rand_ext(&mut s)).collect();
+        let suffix_point: Vec<F192> = (0..qpkd_vars).map(|_| rand_ext(&mut s)).collect();
         let s_hat_v = fold_1b_rows_k(qpkd, &build_eq_table_ext(&suffix_point));
         let value = claim_check(&prefix_weights, &s_hat_v);
         let ring = RingSwitchOpenK {
@@ -795,8 +774,7 @@ mod tests {
         );
         let (cm, pd) = commit_k(&stack, pc.initial_k, pc.log_inv_rates[0]);
         let mut ch = Sponge::new(DOMAIN, &[]);
-        let proof =
-            open_batch_mixed_ligerito_stacked_k(&mut ch, &stack, &pd, &pc, &point_claims, &ring);
+        let proof = open_batch_mixed_ligerito_stacked_k(&mut ch, &stack, &pd, &pc, &point_claims, &ring);
 
         Instance {
             vc,
@@ -843,7 +821,7 @@ mod tests {
         // Wrong point-claim value (dense column claim).
         let mut bad_points = inst.point_claims.clone();
         if let StackClaimK::Point { value, .. } = &mut bad_points[0] {
-            *value += F128T::ONE;
+            *value += F192::ONE;
         } else {
             unreachable!()
         }
@@ -855,7 +833,7 @@ mod tests {
         // Wrong strided-claim value.
         let mut bad_points = inst.point_claims.clone();
         if let StackClaimK::Strided { value, .. } = &mut bad_points[3] {
-            *value += F128T::ONE;
+            *value += F192::ONE;
         } else {
             unreachable!()
         }
@@ -866,7 +844,7 @@ mod tests {
 
         // Wrong ring-switched claim value: rejected by the claim check.
         let mut bad_ring = inst.ring.claims.clone();
-        bad_ring[0].value += F128T::ONE;
+        bad_ring[0].value += F192::ONE;
         assert!(
             !verify_instance(&inst, &inst.point_claims, &bad_ring, &inst.proof),
             "tampered ring-switch value accepted"
@@ -934,7 +912,7 @@ mod tests {
         assert_eq!(stack.len(), 1 << log_n);
 
         // One point claim on the low column.
-        let low_point: Vec<F128T> = (0..12).map(|_| rand_ext(&mut s)).collect();
+        let low_point: Vec<F192> = (0..12).map(|_| rand_ext(&mut s)).collect();
         let eq = build_eq_table_ext(&low_point);
         let value = inner_product_base_ext(&stack[..1 << 12], &eq);
         let point_claims = vec![StackClaimK::Point {
@@ -945,9 +923,9 @@ mod tests {
 
         // One ring-switched claim on the wide q_pkd.
         let qpkd = &stack[qpkd_offset..];
-        let r_prefix: Vec<F128T> = (0..LOG_PACKING_K).map(|_| rand_ext(&mut s)).collect();
+        let r_prefix: Vec<F192> = (0..LOG_PACKING_K).map(|_| rand_ext(&mut s)).collect();
         let prefix_weights = eq_prefix_weights(&r_prefix);
-        let suffix_point: Vec<F128T> = (0..qpkd_vars).map(|_| rand_ext(&mut s)).collect();
+        let suffix_point: Vec<F192> = (0..qpkd_vars).map(|_| rand_ext(&mut s)).collect();
         let s_hat_v = fold_1b_rows_k(qpkd, &build_eq_table_ext(&suffix_point));
         let rs_value = claim_check(&prefix_weights, &s_hat_v);
         let claims = vec![RingSwitchClaimK {
@@ -975,8 +953,7 @@ mod tests {
             claims,
         };
         let mut ch = Sponge::new(DOMAIN, &[]);
-        let proof =
-            open_batch_mixed_ligerito_stacked_k(&mut ch, &stack, &pd, &pc, &point_claims, &ring);
+        let proof = open_batch_mixed_ligerito_stacked_k(&mut ch, &stack, &pd, &pc, &point_claims, &ring);
 
         let ring_v = RingSwitchVerifyK {
             offset: qpkd_offset,
@@ -1000,7 +977,7 @@ mod tests {
 
         // And the crossing-regime ring claim is still bound: flip its value.
         let mut bad_ring = ring_v;
-        bad_ring.claims[0].value += F128T::ONE;
+        bad_ring.claims[0].value += F192::ONE;
         let mut ch = Sponge::new(DOMAIN, &[]);
         assert!(
             verify_opening_batch_mixed_ligerito_stacked_k(

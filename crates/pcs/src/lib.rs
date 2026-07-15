@@ -2,7 +2,7 @@
 //! Tower-field polynomial commitment infrastructure.
 //!
 //! Boolean witnesses are packed into `K = GF(2^64)` and Ligerito opens them
-//! over its quadratic extension `E = GF(2^128)`.
+//! over its cubic extension `E = GF(2^192)`.
 
 pub mod ligerito;
 pub mod ligerito_k;

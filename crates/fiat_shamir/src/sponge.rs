@@ -11,8 +11,9 @@
 //! the streaming hasher cannot be reproduced by the one 64-byte compression the
 //! machine has.
 //!
-//! Scalars are `E = F128T` (the tower challenge field): two little-endian
-//! `K = F64` lanes per absorbed block.
+//! Scalars are `E = F192` (the tower challenge field): their three
+//! little-endian `K = F64` limbs occupy the first three compression lanes,
+//! with the scalar domain tag in the fourth.
 //!
 //! Construction adapted from Signal's ShoSha256 "Stateful Hash Object"
 //! (`libsignal/rust/poksho/src/shosha256.rs`, © 2020 Signal Messenger, LLC,
@@ -27,7 +28,7 @@
 //! integer, and a byte string cannot alias), byte strings are length-framed,
 //! and each squeeze ratchets the state (binding challenge order).
 
-use primitives::field::{F64, F128T};
+use primitives::field::{F64, F192};
 
 /// `f(a, b) = BLAKE3(a‖b)` on two 256-bit halves laid out little-endian into 64
 /// bytes — *exactly* the VM's `Blake3` opcode: 64 input bytes → 32-byte digest,
@@ -42,11 +43,9 @@ pub fn compress(a: [F64; 4], b: [F64; 4]) -> [F64; 4] {
     std::array::from_fn(|k| F64(u64::from_le_bytes(d[8 * k..8 * k + 8].try_into().unwrap())))
 }
 
-// Domain-separation tags, carried in the THIRD input word (lane 2) of every
-// absorbed block — after the up-to-two data words, so a recursive verifier
-// binds the tag as the `c0` word of the block's second 128-bit message. No two
-// roles (a scalar, a byte word, a length frame, a squeeze, a PoW step) can
-// alias: the adversary controls only the leading data words, never the tag.
+// Domain-separation tags. Scalar absorbs fill three data lanes and put the tag
+// in lane 3; byte/length/PoW absorbs use at most two data lanes and put the tag
+// in lane 2. No two roles can alias: the adversary never controls the tag.
 // Distinct nonzero constants suffice.
 const DS_SCALAR: F64 = F64(1);
 const DS_BYTE: F64 = F64(2);
@@ -81,7 +80,7 @@ impl Sponge {
     /// any challenge — there is no mid-protocol "observe public data" step to get
     /// wrong (or forget). (Untraced: the seed is the replay STARTING state, not an
     /// op of the recorded transcript.)
-    pub fn new(label: &[u8], statement: &[F128T]) -> Self {
+    pub fn new(label: &[u8], statement: &[F192]) -> Self {
         let mut s = Self { cv: [F64::ZERO; 4] };
         s.absorb_bytes_untraced(b"leanvm-b/transcript/v2");
         s.absorb_bytes_untraced(label);
@@ -97,17 +96,15 @@ impl Sponge {
         Self { cv: [F64::ZERO; 4] }
     }
 
-    /// Absorb one 16-byte scalar (two little-endian `K` lanes):
-    /// `cv ← compress(cv, (lo, hi, DS_SCALAR, 0))`. The domain tag sits in the
-    /// THIRD compress lane (right after the scalar's two lanes), so the guest's
-    /// sponge replay binds it as the `c0` word of the second blake3 message.
-    pub fn observe(&mut self, x: F128T) {
+    /// Absorb one 24-byte scalar (three little-endian `K` limbs):
+    /// `cv ← compress(cv, (c0, c1, c2, DS_SCALAR))`.
+    pub fn observe(&mut self, x: F192) {
         self.observe_untraced(x);
         trace(|| TraceOp::Observe(x));
     }
 
-    fn observe_untraced(&mut self, x: F128T) {
-        self.cv = compress(self.cv, [F64(x.c0), F64(x.c1), DS_SCALAR, F64::ZERO]);
+    fn observe_untraced(&mut self, x: F192) {
+        self.cv = compress(self.cv, [F64(x.c0), F64(x.c1), F64(x.c2), DS_SCALAR]);
     }
 
     /// Absorb a byte string (a protocol label, a Merkle root): a length frame
@@ -129,26 +126,26 @@ impl Sponge {
         }
     }
 
-    /// Squeeze a challenge and ratchet: the challenge's two lanes are the first
-    /// two words of `compress(cv, (0, 0, DS_SQUEEZE, 0))`, whose full output
+    /// Squeeze a challenge and ratchet: the challenge's three limbs are the
+    /// first three words of `compress(cv, (0, 0, DS_SQUEEZE, 0))`, whose full output
     /// becomes the new state — domain-separated from absorbs, so a challenge
     /// cannot be confused with a continued absorb. In Fiat–Shamir everything is
     /// public; soundness comes from each challenge being a random-oracle image
     /// of the entire prior transcript.
-    pub fn sample(&mut self) -> F128T {
+    pub fn sample(&mut self) -> F192 {
         let v = self.sample_untraced();
         trace(|| TraceOp::Sample(v));
         v
     }
 
-    fn sample_untraced(&mut self) -> F128T {
+    fn sample_untraced(&mut self) -> F192 {
         let out = compress(self.cv, [F64::ZERO, F64::ZERO, DS_SQUEEZE, F64::ZERO]);
         self.cv = out;
-        F128T::new(out[0].0, out[1].0)
+        F192::new(out[0].0, out[1].0, out[2].0)
     }
 
     /// Squeeze `n` challenges, in order.
-    pub fn sample_vec(&mut self, n: usize) -> Vec<F128T> {
+    pub fn sample_vec(&mut self, n: usize) -> Vec<F192> {
         (0..n).map(|_| self.sample()).collect()
     }
 
@@ -237,13 +234,21 @@ impl Sponge {
     /// site). `bits = 0` accepts only the canonical nonce `0`, which keeps proofs
     /// non-malleable at zero-bit grinding sites.
     pub fn verify_pow(&mut self, nonce: u64, bits: u32) -> bool {
-        trace(|| TraceOp::Pow { nonce, bits, digest: self.pow_digest(nonce) });
+        trace(|| TraceOp::Pow {
+            nonce,
+            bits,
+            digest: self.pow_digest(nonce),
+        });
         self.verify_pow_untraced(nonce, bits)
     }
 
     fn verify_pow_untraced(&mut self, nonce: u64, bits: u32) -> bool {
         let base = self.pow_base();
-        let ok = if bits == 0 { nonce == 0 } else { pow_bits_ok(base, nonce, bits) };
+        let ok = if bits == 0 {
+            nonce == 0
+        } else {
+            pow_bits_ok(base, nonce, bits)
+        };
         self.absorb_nonce(nonce);
         ok
     }
@@ -259,16 +264,20 @@ impl Sponge {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TraceOp {
     /// A stream word consumed without binding (grinding nonces).
-    StreamRaw(F128T),
+    StreamRaw(F192),
     /// An absorbed scalar (transmitted or derived — the sponge cannot tell).
-    Observe(F128T),
+    Observe(F192),
     /// `absorb_bytes` (labels, roots).
     AbsorbBytes(Vec<u8>),
-    Sample(F128T),
+    Sample(F192),
     /// A grinding check: the nonce, the required bits, and the digest word the
     /// pre-absorb state yields for that nonce (so trace consumers never need
     /// to track sponge state in lockstep).
-    Pow { nonce: u64, bits: u32, digest: F64 },
+    Pow {
+        nonce: u64,
+        bits: u32,
+        digest: F64,
+    },
     /// An opening hint consumed (the Ligerito hint channel).
     Opening,
 }
@@ -302,8 +311,8 @@ pub fn trace(op: impl FnOnce() -> TraceOp) {
 mod tests {
     use super::*;
 
-    fn f(k: u64) -> F128T {
-        F128T::new(k, k ^ 0x1234)
+    fn f(k: u64) -> F192 {
+        F192::new(k, k ^ 0x1234, k.rotate_left(17))
     }
 
     /// A challenge binds every prior absorbed scalar: flipping one observed value
@@ -328,16 +337,17 @@ mod tests {
     }
 
     /// A scalar and a byte string cannot alias (distinct domain tags), so
-    /// observing a scalar vs absorbing its 16-byte encoding diverge.
+    /// observing a scalar vs absorbing its 24-byte encoding diverge.
     #[test]
     fn sponge_domain_separation() {
         let x = f(9);
         let mut a = Sponge::new(b"t", &[]);
         a.observe(x);
         let mut b = Sponge::new(b"t", &[]);
-        let mut bytes = [0u8; 16];
+        let mut bytes = [0u8; 24];
         bytes[..8].copy_from_slice(&x.c0.to_le_bytes());
-        bytes[8..].copy_from_slice(&x.c1.to_le_bytes());
+        bytes[8..16].copy_from_slice(&x.c1.to_le_bytes());
+        bytes[16..].copy_from_slice(&x.c2.to_le_bytes());
         b.absorb_bytes(&bytes);
         assert_ne!(a.sample(), b.sample());
     }

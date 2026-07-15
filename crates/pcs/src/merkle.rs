@@ -25,27 +25,32 @@
 //! an internal node do not share a pre-image shape. A production PCS may still
 //! prefer explicit `0x00`/`0x01` tags.
 
-use primitives::field::{F64, F128T};
+use primitives::field::{F64, F192};
 use rayon::prelude::*;
 
 pub type Hash = [u8; 32];
 
 /// Encode a Merkle hash as the two little-endian field words used by transcripts.
 #[inline]
-pub fn hash_to_scalars(hash: &Hash) -> [F128T; 2] {
+pub fn hash_to_scalars(hash: &Hash) -> [F192; 2] {
     let w = |o: usize| u64::from_le_bytes(hash[o..o + 8].try_into().unwrap());
-    [F128T::new(w(0), w(8)), F128T::new(w(16), w(24))]
+    [F192::new(w(0), w(8), w(16)), F192::new(w(24), 0, 0)]
 }
 
 /// Decode the two field words used by transcripts back into a Merkle hash.
 #[inline]
-pub fn scalars_to_hash(scalars: &[F128T]) -> Hash {
+pub fn scalars_to_hash(scalars: &[F192]) -> Hash {
     assert_eq!(scalars.len(), 2, "a Merkle hash is exactly two field words");
     let mut hash = [0u8; 32];
     hash[0..8].copy_from_slice(&scalars[0].c0.to_le_bytes());
     hash[8..16].copy_from_slice(&scalars[0].c1.to_le_bytes());
-    hash[16..24].copy_from_slice(&scalars[1].c0.to_le_bytes());
-    hash[24..32].copy_from_slice(&scalars[1].c1.to_le_bytes());
+    assert_eq!(
+        (scalars[1].c1, scalars[1].c2),
+        (0, 0),
+        "packed Merkle hash tail must be K-valued"
+    );
+    hash[16..24].copy_from_slice(&scalars[0].c2.to_le_bytes());
+    hash[24..32].copy_from_slice(&scalars[1].c0.to_le_bytes());
     hash
 }
 
@@ -111,7 +116,14 @@ pub fn hash_pair(left: &Hash, right: &Hash) -> Hash {
 // SIMD `hash_many` reproduces it exactly when the last block carries the ROOT
 // flag (verified in tests), so many independent leaf compressions batch 4–16×.
 const B3_IV: [u32; 8] = [
-    0x6a09_e667, 0xbb67_ae85, 0x3c6e_f372, 0xa54f_f53a, 0x510e_527f, 0x9b05_688c, 0x1f83_d9ab, 0x5be0_cd19,
+    0x6a09_e667,
+    0xbb67_ae85,
+    0x3c6e_f372,
+    0xa54f_f53a,
+    0x510e_527f,
+    0x9b05_688c,
+    0x1f83_d9ab,
+    0x5be0_cd19,
 ];
 const B3_CHUNK_START: u8 = 1;
 const B3_CHUNK_END: u8 = 2;
@@ -240,11 +252,7 @@ pub fn verify_merkle_proof(root: &Hash, leaf_hash: &Hash, index: usize, proof: &
     let mut idx = index;
     for sibling in proof {
         // If idx is even, our node is the LEFT child; sibling is on the RIGHT.
-        let (left, right) = if idx & 1 == 0 {
-            (acc, *sibling)
-        } else {
-            (*sibling, acc)
-        };
+        let (left, right) = if idx & 1 == 0 { (acc, *sibling) } else { (*sibling, acc) };
         acc = hash_pair(&left, &right);
         idx >>= 1;
     }
@@ -401,16 +409,6 @@ pub fn verify_merkle_multi_proof(
 /// concatenated flat (one `height`-long path per query, in query order), or `None`
 /// on any inconsistency (wrong sibling count, unresolvable node). It authenticates
 /// nothing itself; the caller verifies each restored path against the root.
-
-/// Reconstruct the full per-query Merkle paths from a *pruned* (octopus) proof —
-/// the inverse of [`merkle_multi_proof`]. Given the ORIGINAL `queries` (unsorted,
-/// possibly duplicate), the distinct leaves' hashes (`leaf_hashes`, aligned with
-/// the sorted-unique query set), and the pruned `sibling_hashes`, it rebuilds for
-/// each query its full `log2(num_leaves)`-sibling path — the *expanded* form the
-/// recursion-friendly [`verify_merkle_proof`] consumes. Returns the paths
-/// concatenated flat (one `height`-long path per query, in query order), or `None`
-/// on any inconsistency (wrong sibling count, unresolvable node). It authenticates
-/// nothing itself; the caller verifies each restored path against the root.
 pub fn restore_multi_proof(
     num_leaves: usize,
     queries: &[usize],
@@ -466,7 +464,10 @@ pub fn restore_multi_proof(
                 .map(|lvl| {
                     let sib = (leaf >> lvl) ^ 1;
                     let level = &known[lvl];
-                    level.binary_search_by_key(&sib, |&(j, _)| j).ok().map(|pos| level[pos].1)
+                    level
+                        .binary_search_by_key(&sib, |&(j, _)| j)
+                        .ok()
+                        .map(|pos| level[pos].1)
                 })
                 .collect::<Option<Vec<_>>>()
         })
@@ -484,6 +485,12 @@ pub fn restore_multi_proof(
 mod prune_tests {
     use super::*;
 
+    #[test]
+    fn packed_hash_scalars_roundtrip() {
+        let hash = std::array::from_fn(|i| (17 * i + 3) as u8);
+        assert_eq!(scalars_to_hash(&hash_to_scalars(&hash)), hash);
+    }
+
     /// `merkle_multi_proof` (prune) then `restore_multi_proof` (expand) reproduces
     /// each query's full path, and every restored path authenticates to the root —
     /// including unsorted, duplicate queries. Extra siblings are rejected.
@@ -500,7 +507,10 @@ mod prune_tests {
         let mut sorted = queries.to_vec();
         sorted.sort_unstable();
         sorted.dedup(); // [1, 3, 5]
-        let leaf_hashes: Vec<Hash> = sorted.iter().map(|&q| hash_leaf(&data[q * leaf_size..(q + 1) * leaf_size])).collect();
+        let leaf_hashes: Vec<Hash> = sorted
+            .iter()
+            .map(|&q| hash_leaf(&data[q * leaf_size..(q + 1) * leaf_size]))
+            .collect();
 
         let pruned = merkle_multi_proof(&tree, num_leaves, &sorted);
         let flat = restore_multi_proof(num_leaves, &queries, &leaf_hashes, &pruned).expect("restore");
@@ -508,7 +518,10 @@ mod prune_tests {
         for (i, &q) in queries.iter().enumerate() {
             let leaf = hash_leaf(&data[q * leaf_size..(q + 1) * leaf_size]);
             let path = &flat[i * height..(i + 1) * height];
-            assert!(verify_merkle_proof(&root, &leaf, q, path), "restored path for query {q} (pos {i}) must verify");
+            assert!(
+                verify_merkle_proof(&root, &leaf, q, path),
+                "restored path for query {q} (pos {i}) must verify"
+            );
         }
 
         // An extra (unconsumed) sibling is a malformed proof.
@@ -525,30 +538,30 @@ mod vmhash_batch_tests {
     /// Sequential (per-leaf `hash_leaf`) reference for the SIMD-batched
     /// [`merkle_tree`].
     fn merkle_tree_sequential(data: &[u8], num_leaves: usize) -> Vec<Hash> {
-    assert!(num_leaves.is_power_of_two() && num_leaves > 0);
-    assert_eq!(data.len() % num_leaves, 0);
+        assert!(num_leaves.is_power_of_two() && num_leaves > 0);
+        assert_eq!(data.len() % num_leaves, 0);
 
-    let leaf_size = data.len() / num_leaves;
-    let total_nodes = 2 * num_leaves - 1;
-    let mut tree: Vec<Hash> = primitives::alloc_uninit_vec(total_nodes);
+        let leaf_size = data.len() / num_leaves;
+        let total_nodes = 2 * num_leaves - 1;
+        let mut tree: Vec<Hash> = primitives::alloc_uninit_vec(total_nodes);
 
-    for (i, leaf) in data.chunks(leaf_size).enumerate() {
-        tree[i] = hash_leaf(leaf);
-    }
-    let mut read_start = 0usize;
-    let mut read_len = num_leaves;
-    while read_len > 1 {
-        let next_len = read_len >> 1;
-        for i in 0..next_len {
-            let left = tree[read_start + 2 * i];
-            let right = tree[read_start + 2 * i + 1];
-            tree[read_start + read_len + i] = hash_pair(&left, &right);
+        for (i, leaf) in data.chunks(leaf_size).enumerate() {
+            tree[i] = hash_leaf(leaf);
         }
-        read_start += read_len;
-        read_len = next_len;
+        let mut read_start = 0usize;
+        let mut read_len = num_leaves;
+        while read_len > 1 {
+            let next_len = read_len >> 1;
+            for i in 0..next_len {
+                let left = tree[read_start + 2 * i];
+                let right = tree[read_start + 2 * i + 1];
+                tree[read_start + read_len + i] = hash_pair(&left, &right);
+            }
+            read_start += read_len;
+            read_len = next_len;
+        }
+        tree
     }
-    tree
-}
 
     /// blake3's SIMD `hash_many` with the ROOT flag must reproduce
     /// `blake3::hash(64B)` (the VM `compress`) exactly — the invariant the batched
@@ -566,7 +579,16 @@ mod vmhash_batch_tests {
         }
         let inputs: [&[u8; 64]; 2] = [&b0, &b1];
         let mut out = [0u8; 64];
-        plat.hash_many::<64>(&inputs, &B3_IV, 0, blake3::IncrementCounter::No, 0, B3_CHUNK_START, B3_CHUNK_END | B3_ROOT, &mut out);
+        plat.hash_many::<64>(
+            &inputs,
+            &B3_IV,
+            0,
+            blake3::IncrementCounter::No,
+            0,
+            B3_CHUNK_START,
+            B3_CHUNK_END | B3_ROOT,
+            &mut out,
+        );
         assert_eq!(&out[..32], blake3::hash(&b0).as_bytes());
         assert_eq!(&out[32..], blake3::hash(&b1).as_bytes());
     }
@@ -577,7 +599,9 @@ mod vmhash_batch_tests {
     #[test]
     fn batched_matches_sequential() {
         for (num_leaves, leaf_size) in [(8usize, 32usize), (16, 1024), (2, 48), (8192, 16), (1, 32)] {
-            let data: Vec<u8> = (0..num_leaves * leaf_size).map(|i| (i.wrapping_mul(131) ^ 0x5a) as u8).collect();
+            let data: Vec<u8> = (0..num_leaves * leaf_size)
+                .map(|i| (i.wrapping_mul(131) ^ 0x5a) as u8)
+                .collect();
             assert_eq!(
                 merkle_tree(&data, num_leaves),
                 merkle_tree_sequential(&data, num_leaves),

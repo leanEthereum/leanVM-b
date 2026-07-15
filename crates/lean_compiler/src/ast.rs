@@ -1,11 +1,12 @@
 //! The surface AST produced by the parser: expressions, statements, functions.
 
+use primitives::field::F192;
+
 /// An expression. Arithmetic is the field's own: `+` is `XOR`, `*` is `MUL`.
 #[derive(Clone, Debug)]
 pub enum Expr {
-    /// Integer / field literal: a raw 128-bit machine-word pattern. Bits 0..64
-    /// are the low K coefficient and bits 64..128 the high coefficient of the
-    /// tower-E element.
+    /// Integer / field literal: the source syntax provides a raw 128-bit value,
+    /// embedded into the low two limbs of the 192-bit tower element (`c2 = 0`).
     Lit(u128),
     /// The generator `g` — written `GEN` in source. A logical index `i` is
     /// carried "in the exponent" as `gⁱ`, so `GEN` is the unit step and
@@ -230,5 +231,5 @@ pub struct Ast {
     /// `unroll` count). Indexed `NAME[i]` and measured `len(NAME)` at compile
     /// time only (`i` a literal / constant / `unroll` var). Not textually
     /// substituted (unlike scalar constants) — resolved at lowering.
-    pub const_arrays: Vec<(String, Vec<u128>)>,
+    pub const_arrays: Vec<(String, Vec<F192>)>,
 }

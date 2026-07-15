@@ -6,17 +6,17 @@
 //
 // Adapted from [`super::tensor_algebra`] (itself a port of binius64's
 // `crates/math/src/tensor_algebra.rs`) for the 64-bit transition:
-// K = F_{2^64} packing, E = GF(2^128) tower opening field.
+// K = F_{2^64} packing, E = GF(2^192) tower opening field.
 
-//! Tensor-algebra helpers for the rectangular (f = 64, e = 128) ring switch.
+//! Tensor-algebra helpers for the rectangular (f = 64, e = 192) ring switch.
 //!
 //! Two pieces live here:
 //!
 //! 1. **The rectangular transpose** [`transpose_s_hat`]: an element of
-//!    `K (x)_F2 E` is a 64x128 F_2 matrix. The prover's message `s_hat_v` is
+//!    `K (x)_F2 E` is a 64x192 F_2 matrix. The prover's message `s_hat_v` is
 //!    its row view: 64 E-elements, `s_hat_v[i]` = the MLE of the i-th
 //!    bit-slice of the witness at the suffix point. The transpose re-packs
-//!    the columns: 128 K-elements `s_hat_u`, where
+//!    the columns: 192 K-elements `s_hat_u`, where
 //!    ```text
 //!        bit i of s_hat_u[w]  ==  bit w of s_hat_v[i]
 //!    ```
@@ -30,44 +30,45 @@
 //!    `sum_y eq(query, y) (x) eq(r_suffix, y)`, which is E-valued on BOTH
 //!    factors (the K packing never appears there because `rs_eq_ind` is
 //!    E-valued). The F_2 coordinates of an E element are the bits of its
-//!    `(c0, c1)` representation.
+//!    `(c0, c1, c2)` representation.
 //!
 //! "Bit w" of an E element means: bit w of `c0` for `w < 64`, bit `w - 64`
-//! of `c1` otherwise (the tower's natural F_2 basis `x^i y^j`, matching the
-//! transcript byte order and the `Phi` map of the reduction).
+//! of `c1` for `w < 128`, and bit `w - 128` of `c2` otherwise.
 
-use primitives::field::{F64, F128T};
 use core::ops::{Add, AddAssign};
+use primitives::field::{F64, F192};
 
 /// The degree of K = F_{2^64} over F_2 (the packing degree f).
 pub const DEGREE_K: usize = 64;
 
-/// The degree of E = GF(2^128) over F_2 (the opening degree e).
-pub const DEGREE_E: usize = 128;
+/// The degree of E = GF(2^192) over F_2 (the opening degree e).
+pub const DEGREE_E: usize = 192;
 
-/// Bit w of an E element in the tower basis (w in 0..128).
+/// Bit w of an E element in the tower basis (w in 0..192).
 #[inline(always)]
-fn ext_bit(e: F128T, w: usize) -> u64 {
+fn ext_bit(e: F192, w: usize) -> u64 {
     if w < 64 {
         (e.c0 >> w) & 1
-    } else {
+    } else if w < 128 {
         (e.c1 >> (w - 64)) & 1
+    } else {
+        (e.c2 >> (w - 128)) & 1
     }
 }
 
 /// Rectangular tensor-algebra transpose: `s_hat_v` (64 E-elements, the row
-/// view of a `K (x)_F2 E` element) to `s_hat_u` (128 K-elements, the column
+/// view of a `K (x)_F2 E` element) to `s_hat_u` (192 K-elements, the column
 /// view).
 ///
 /// ```text
-///     bit i of s_hat_u[w]  ==  bit w of s_hat_v[i],   i in 0..64, w in 0..128
+///     bit i of s_hat_u[w]  ==  bit w of s_hat_v[i],   i in 0..64, w in 0..192
 /// ```
 ///
 /// `s_hat_u[w] = t_w` in the ring-switching-generalized note. Mirror of
-/// [`super::ring_switch::tensor_algebra_transpose`] at the 64x128 shape.
-/// Naive O(64 * 128) bit-scan; the input is a fixed 1 KiB, so this is never
+/// the legacy tensor-algebra transpose, generalized to the 64x192 shape.
+/// Naive O(64 * 192) bit-scan; the input is a fixed 1.5 KiB, so this is never
 /// on a hot path.
-pub fn transpose_s_hat(s_hat_v: &[F128T]) -> Vec<F64> {
+pub fn transpose_s_hat(s_hat_v: &[F192]) -> Vec<F64> {
     assert_eq!(
         s_hat_v.len(),
         DEGREE_K,
@@ -88,45 +89,51 @@ pub fn transpose_s_hat(s_hat_v: &[F128T]) -> Vec<F64> {
             s_hat_u[64 | w].0 |= 1u64 << i;
             c1 &= c1 - 1;
         }
+        let mut c2 = elem.c2;
+        while c2 != 0 {
+            let w = c2.trailing_zeros() as usize;
+            s_hat_u[128 | w].0 |= 1u64 << i;
+            c2 &= c2 - 1;
+        }
     }
     s_hat_u
 }
 
-/// An element of `E (x)_F2 E` (E = the tower GF(2^128)), stored as 128
-/// `F128T` elements: `elems[i]` is the second-factor component attached to
+/// An element of `E (x)_F2 E` (E = the tower GF(2^192)), stored as 192
+/// `F192` elements: `elems[i]` is the second-factor component attached to
 /// the i-th F_2-basis element of the first factor, i.e.
 /// `bit_j(elems[i])` = the coefficient of `b_i (x) b_j`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TensorAlgebraE {
-    /// Length-128 vector; see the struct docs for the indexing convention.
-    pub elems: Vec<F128T>,
+    /// Length-192 vector; see the struct docs for the indexing convention.
+    pub elems: Vec<F192>,
 }
 
 impl TensorAlgebraE {
     /// All-zero element.
     pub fn zero() -> Self {
         Self {
-            elems: vec![F128T::ZERO; DEGREE_E],
+            elems: vec![F192::ZERO; DEGREE_E],
         }
     }
 
     /// Multiplicative identity: `1 (x) 1`.
     pub fn one() -> Self {
-        let mut elems = vec![F128T::ZERO; DEGREE_E];
-        elems[0] = F128T::ONE;
+        let mut elems = vec![F192::ZERO; DEGREE_E];
+        elems[0] = F192::ONE;
         Self { elems }
     }
 
     /// Embed `x` into the vertical subring: returns `1 (x) x`.
-    pub fn from_vertical(x: F128T) -> Self {
-        let mut elems = vec![F128T::ZERO; DEGREE_E];
+    pub fn from_vertical(x: F192) -> Self {
+        let mut elems = vec![F192::ZERO; DEGREE_E];
         elems[0] = x;
         Self { elems }
     }
 
     /// Multiply by an element of the vertical subring (`1 (x) scalar`): each
     /// `elems[i]` is scaled by `scalar` in E.
-    pub fn scale_vertical(mut self, scalar: F128T) -> Self {
+    pub fn scale_vertical(mut self, scalar: F192) -> Self {
         for e in self.elems.iter_mut() {
             *e *= scalar;
         }
@@ -135,12 +142,12 @@ impl TensorAlgebraE {
 
     /// Multiply by an element of the horizontal subring (`scalar (x) 1`).
     /// Implemented as `transpose . scale_vertical . transpose`.
-    pub fn scale_horizontal(self, scalar: F128T) -> Self {
+    pub fn scale_horizontal(self, scalar: F192) -> Self {
         self.transpose().scale_vertical(scalar).transpose()
     }
 
     /// Transpose: swap the two tensor factors. Concretely, after transpose,
-    /// `bit_j(elems'[i]) = bit_i(elems[j])` for all `i, j in [0, 128)`.
+    /// `bit_j(elems'[i]) = bit_i(elems[j])` for all `i, j in [0, 192)`.
     pub fn transpose(mut self) -> Self {
         square_transpose_ext(&mut self.elems);
         self
@@ -152,10 +159,10 @@ impl TensorAlgebraE {
     /// Computes `sum_w coeffs[w] * transpose(self).elems[w]`. With `self =
     /// sum_y eq(query, y) (x) eq(z, y)` and `coeffs = eq(r'')` this is the
     /// MLE of `rs_eq_ind` at `query` (see `ring_switch_k::eval_rs_eq_k`).
-    pub fn fold_vertical(self, coeffs: &[F128T]) -> F128T {
-        assert_eq!(coeffs.len(), DEGREE_E, "fold_vertical: coeffs.len() must be 128");
+    pub fn fold_vertical(self, coeffs: &[F192]) -> F192 {
+        assert_eq!(coeffs.len(), DEGREE_E, "fold_vertical: coeffs.len() must be 192");
         let transposed = self.transpose();
-        let mut acc = F128T::ZERO;
+        let mut acc = F192::ZERO;
         for (e, c) in transposed.elems.iter().zip(coeffs.iter()) {
             acc += *e * *c;
         }
@@ -179,26 +186,30 @@ impl AddAssign<&TensorAlgebraE> for TensorAlgebraE {
     }
 }
 
-/// In-place 128x128 F_2 matrix transpose of the F128T coefficient table.
+/// In-place 192x192 F_2 matrix transpose of the F192 coefficient table.
 ///
-/// On input: `elems[i]` viewed as a 128-bit row; bit `j` (tower basis) is the
+/// On input: `elems[i]` viewed as a 192-bit row; bit `j` (tower basis) is the
 /// F_2 coefficient at position `(i, j)`. On output: bit `j` of `elems[i]`
 /// becomes the old bit `i` of `elems[j]`. Mirror of
-/// `tensor_algebra::square_transpose` with `(c0, c1)` in place of `(lo, hi)`.
-fn square_transpose_ext(elems: &mut [F128T]) {
-    assert_eq!(elems.len(), DEGREE_E, "square_transpose_ext: input must be length 128");
+/// `tensor_algebra::square_transpose`, extended to `(c0, c1, c2)`.
+fn square_transpose_ext(elems: &mut [F192]) {
+    assert_eq!(elems.len(), DEGREE_E, "square_transpose_ext: input must be length 192");
 
-    let mut out = [F128T::ZERO; DEGREE_E];
+    let mut out = [F192::ZERO; DEGREE_E];
     for (j, o) in out.iter_mut().enumerate() {
         let mut c0: u64 = 0;
         let mut c1: u64 = 0;
+        let mut c2: u64 = 0;
         for i in 0..64 {
             c0 |= ext_bit(elems[i], j) << i;
         }
         for i in 64..128 {
             c1 |= ext_bit(elems[i], j) << (i - 64);
         }
-        *o = F128T::new(c0, c1);
+        for i in 128..192 {
+            c2 |= ext_bit(elems[i], j) << (i - 128);
+        }
+        *o = F192::new(c0, c1, c2);
     }
     elems.copy_from_slice(&out);
 }
@@ -215,14 +226,14 @@ mod tests {
         z ^ (z >> 31)
     }
 
-    fn rand_ext(s: &mut u64) -> F128T {
-        F128T::new(splitmix64(s), splitmix64(s))
+    fn rand_ext(s: &mut u64) -> F192 {
+        F192::new(splitmix64(s), splitmix64(s), splitmix64(s))
     }
 
     #[test]
     fn rect_transpose_bit_relation() {
         let mut s = 1u64;
-        let s_hat_v: Vec<F128T> = (0..DEGREE_K).map(|_| rand_ext(&mut s)).collect();
+        let s_hat_v: Vec<F192> = (0..DEGREE_K).map(|_| rand_ext(&mut s)).collect();
         let s_hat_u = transpose_s_hat(&s_hat_v);
         assert_eq!(s_hat_u.len(), DEGREE_E);
         for i in 0..DEGREE_K {
@@ -239,7 +250,7 @@ mod tests {
     #[test]
     fn square_transpose_is_involution() {
         let mut s = 2u64;
-        let orig: Vec<F128T> = (0..DEGREE_E).map(|_| rand_ext(&mut s)).collect();
+        let orig: Vec<F192> = (0..DEGREE_E).map(|_| rand_ext(&mut s)).collect();
         let t = TensorAlgebraE { elems: orig.clone() };
         let tt = t.clone().transpose();
         // Bit relation on a spot-check diagonal band plus full involution.
@@ -257,10 +268,10 @@ mod tests {
     #[test]
     fn fold_vertical_is_phi() {
         let mut s = 3u64;
-        let coeffs: Vec<F128T> = (0..DEGREE_E).map(|_| rand_ext(&mut s)).collect();
+        let coeffs: Vec<F192> = (0..DEGREE_E).map(|_| rand_ext(&mut s)).collect();
         let x = rand_ext(&mut s);
         let folded = TensorAlgebraE::from_vertical(x).fold_vertical(&coeffs);
-        let mut expected = F128T::ZERO;
+        let mut expected = F192::ZERO;
         for (w, &c) in coeffs.iter().enumerate() {
             if ext_bit(x, w) == 1 {
                 expected += c;

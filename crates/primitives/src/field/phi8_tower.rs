@@ -3,12 +3,12 @@
 // Modifications copyright 2026 Succinct Labs, Benedikt Bunz, William Wang.
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! `φ₈: GF(2⁸) → F128T`.
+//! `φ₈: GF(2⁸) → F64`, embedded in either supported extension field.
 //!
-//! `im(φ₈) ⊂ F64`, hence `φ₈(a).c1 = 0`. The eight basis images are generated
+//! `im(φ₈) ⊂ F64`, hence all extension limbs above `c0` are zero. The eight basis images are generated
 //! by `gen_phi8_tower`; the homomorphism is checked exhaustively below.
 
-use super::{F8, F128T};
+use super::{F8, F128T, F192};
 
 /// φ₈(2ᵏ) for k ∈ [0,8): the images of the GF(2⁸) polynomial basis. All in
 /// `F64` (c1 == 0). See module docs for provenance.
@@ -44,9 +44,28 @@ const fn build_phi8_table() -> [F128T; 256] {
 
 pub static PHI_8_TABLE: [F128T; 256] = build_phi8_table();
 
+const fn build_phi8_table_192() -> [F192; 256] {
+    let mut table = [F192::ZERO; 256];
+    let mut value = 0;
+    while value < table.len() {
+        table[value] = F192::new(PHI_8_TABLE[value].c0, 0, 0);
+        value += 1;
+    }
+    table
+}
+
+/// The same unique GF(2^8) subfield embedded in F192. It lies in the common
+/// F64 base, so both higher extension coordinates are zero.
+pub static PHI_8_TABLE_192: [F192; 256] = build_phi8_table_192();
+
 #[inline]
 pub fn phi8(a: F8) -> F128T {
     PHI_8_TABLE[a.0 as usize]
+}
+
+#[inline]
+pub fn phi8_192(a: F8) -> F192 {
+    PHI_8_TABLE_192[a.0 as usize]
 }
 
 #[cfg(test)]

@@ -1,5 +1,5 @@
 # A short BLAKE3 chain over 256-bit stack values: blake3(h, h, h2), twice.
-# With 128-bit machine words a 256-bit value is TWO cells (StackBuf(2)); each
+# A 256-bit BLAKE3 value uses two canonical 128-bit cells (StackBuf(2)); each
 # scalar cell holds one word in its low lane, so `h = [5, 7]` hashes the words
 # [5, 0, 7, 0]. The digest lands in the pre-allocated pair. The public input is
 # the two 128-bit digest cells of the chain's result, BLAKE3(BLAKE3(·)).

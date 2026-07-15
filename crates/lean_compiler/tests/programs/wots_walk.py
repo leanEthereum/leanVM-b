@@ -1,7 +1,7 @@
 # A miniature WOTS-style chain walk bundling the DSL's moving parts: a
 # runtime digit is range-checked (dispatch soundness), then match_range
 # dispatches it to a Const-specialized walker whose BLAKE3 chain is unrolled
-# over heap slices (a 256-bit value is 2 cells under 128-bit machine words);
+# over heap slices (a 256-bit BLAKE3 value occupies two canonical cells);
 # the walker also builds g^{2n} at runtime (unrolled MULs) to read its final
 # pair back through g-power indexing. The recomputation at the end lands on an
 # already-written StackBuf pair, so write-once turns the hash into a digest

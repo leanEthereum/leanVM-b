@@ -1,6 +1,6 @@
 # Runtime slices: `buf[i:i + 2]` with a runtime g-power index `i` names the
 # heap cells `buf·i·g^k`, k < 2 (one MUL folds `i` into the pointer). A BLAKE3
-# chain over heap pairs (256-bit = 2 cells under 128-bit machine words),
+# chain over heap pairs (256-bit BLAKE3 value = two canonical cells),
 # addressed by the loop counter: value k sits at cells g^{2k}..g^{2k+1}, and
 # value k+1 = H(value k, value k). Published: the two 128-bit digest cells of
 # H^3(5, 7).

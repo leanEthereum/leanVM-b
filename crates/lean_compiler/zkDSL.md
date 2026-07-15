@@ -2,7 +2,7 @@
 
 The zkDSL is a Python-syntax language that compiles to the leanVM-b ISA — six
 instructions (`XOR`, `MUL`, `SET`, `DEREF`, `JUMP`, `BLAKE3`) over the binary
-field GF(2^128), with write-once memory and all indices carried "in the
+field GF(2^192), with write-once memory and all indices carried "in the
 exponent" as powers of a fixed generator. For the underlying VM and proving
 system, see [`misc/doc.tex`](../../misc/doc.tex) (released as `doc.pdf`).
 
@@ -27,7 +27,7 @@ no-ops, so this only checks that the file is well-formed.
 The fields are
 
 `K = GF(2)[x]/(x^64 + x^4 + x^3 + x + 1)` and
-`E = K[y]/(y^2 + x·y + 1) = GF(2^128)`.
+`E = K[y]/(y^3 + y + 1) = GF(2^192)`.
 
 Machine **words** — the contents of a memory cell, an immediate, a hashed
 value, the `JUMP` condition — are elements of `E`. **Addresses**,
@@ -35,7 +35,7 @@ the program counter, the frame pointer, read counters, operands, opcodes, and
 domain separators live in the 64-bit subfield `K = GF(2^64)`. There are no
 runtime integers.
 
-- `+` is field addition = bitwise **XOR** (128-bit on words, so `x + x == 0`),
+- `+` is field addition = bitwise **XOR** (192-bit on words, so `x + x == 0`),
 - `*` is multiplication in `E`;
   for g-powers and
   addresses it stays within `K`,
@@ -44,13 +44,10 @@ runtime integers.
   `quotient · b == a`, which witness generation back-solves. A zero divisor is
   rejected. This is distinct from `//`, compile-time integer floor division in
   sizes and indices,
-- an integer literal `n` denotes the machine word whose **raw bit pattern** is
-  `n`, now up to 128 bits: the low 64 bits are the `K`-lane, the high 64 bits
-  the `y`-lane. So `5` is `1 + x^2` (low lane, high lane 0), not "five"; a
-  literal `≥ 2^64` sets the high lane too. In particular `2 ** 64`
-  (`18446744073709551616`) is `y` — the word with only bit
-  64 set — so `lo + hi * (2 ** 64)` packs two 64-bit lanes into one 128-bit
-  word,
+- an integer literal `n` supplies up to 128 raw bits and is embedded as
+  `F192(c0, c1, 0)`. Thus `5` is `1 + x^2`, not the integer five, and
+  `2 ** 64` is the tower element `y`. Full-width constants use
+  `f192(c0, c1, c2)`, with each limb an unsigned 64-bit compile-time integer,
 - `GEN` is the fixed generator `g = x` of the 64-bit subfield `K^×`
   (multiplicative order `2^64 − 1`),
 - `GEN ** e` is the compile-time constant `g^e ∈ K` (`**` takes base `GEN` and a
@@ -90,7 +87,7 @@ and blank lines are free. Indentation is block structure, as in Python.
 
 ## Public input
 
-Memory cells `m[0]` and `m[1]` hold the two public-input words, each a 128-bit
+Memory cells `m[0]` and `m[1]` hold the two public-input words, each an F192
 machine word. A
 program *publishes* results by asserting them against those cells through the
 write-once heap store (the pointer `g^0` addresses absolute memory):
@@ -607,8 +604,8 @@ Operands are size-2 `StackBuf`s or 2-cell slices:
 
 - **stack operands** are read/written in place — zero copies; a self-hash
   `blake3(h, h, out)` aliases one 2-cell pair into both inputs;
-- the instruction addresses its **four 128-bit input chunks independently**
-  (each chunk = one cell), so when a 256-bit operand is
+- the instruction addresses its **four canonical 128-bit input chunks
+  independently** (each is an F192 cell constrained to `c2 = 0`), so when a 256-bit operand is
   *assembled* from values that live in different places — the idiom
   `p = StackBuf(2); p[0] = t0; p[1] = t1; blake3(p, …)` — the copies vanish:
   a stack store of a plain copy or a zero is forwarded to its source (see

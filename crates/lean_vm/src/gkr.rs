@@ -7,22 +7,22 @@
 //! into `E` upstream, [`crate::leaf`]).
 
 use crate::PAR_THRESHOLD;
-use primitives::field::{F128T, F128TUnreduced, mul_by_g_e};
+use crate::transcript::{ProverState, VerifierState};
+use primitives::field::{F192, F192Unreduced, mul_by_g_e};
 use primitives::multilinear::lagrange_eval;
 use primitives::multilinear::{eq_table, interp, tri_nodes, xor3};
-use crate::transcript::{ProverState, VerifierState};
 use rayon::prelude::*;
 
 /// Bind the lowest variable of `src` into `dst` (in parallel for large tables):
 /// `dst[i] = interp(src[2i], src[2i+1], rho)`. Writing into a caller-owned
 /// scratch buffer instead of a fresh Vec lets each layer's rounds ping-pong two
 /// allocations instead of allocating (and page-faulting) per round.
-/// Deliberately scalar: pairing adjacent outputs through [`F128T::mul2`]
+/// Deliberately scalar: pairing adjacent outputs through [`F192::mul2`]
 /// measures slower (2.14 vs 1.75 ns/output). The mul has the loop-invariant
 /// `rho` on one side, the OoO core already overlaps the independent
 /// iterations, and the pair kernel's third NEON fold outweighs its 2-PMULL
 /// saving once nothing is latency-bound.
-fn par_fold_into(src: &[F128T], rho: F128T, dst: &mut Vec<F128T>) {
+fn par_fold_into(src: &[F192], rho: F192, dst: &mut Vec<F192>) {
     let half = src.len() / 2;
     if half >= PAR_THRESHOLD {
         (0..half)
@@ -43,16 +43,16 @@ pub enum GkrError {
 }
 
 /// Build every product-tree layer: `layers[0]` = leaves, `layers[μ]` = `[root]`.
-/// Deliberately scalar: routing adjacent output pairs through [`F128T::mul2`]
+/// Deliberately scalar: routing adjacent output pairs through [`F192::mul2`]
 /// wins ~4% single-threaded but loses ~2% end to end (interleaved A/B: 1339 vs
 /// 1370 ms bus-GKR at `LEANVM_XMSS_N=1024`, 10 threads); at full parallelism
 /// this loop is memory-bandwidth-bound and the paired form only adds overhead.
-fn build_layers(leaves: Vec<F128T>) -> Vec<Vec<F128T>> {
+fn build_layers(leaves: Vec<F192>) -> Vec<Vec<F192>> {
     let mut layers = vec![leaves];
     while layers.last().unwrap().len() > 1 {
         let cur = layers.last().unwrap();
         let half = cur.len() / 2;
-        let next: Vec<F128T> = if half >= PAR_THRESHOLD {
+        let next: Vec<F192> = if half >= PAR_THRESHOLD {
             (0..half).into_par_iter().map(|j| cur[2 * j] * cur[2 * j + 1]).collect()
         } else {
             (0..half).map(|j| cur[2 * j] * cur[2 * j + 1]).collect()
@@ -65,15 +65,15 @@ fn build_layers(leaves: Vec<F128T>) -> Vec<Vec<F128T>> {
 /// One tree's per-layer sumcheck state: the strided even/odd tables plus the
 /// ping-pong fold scratch (allocated once per layer, reused every round).
 struct LayerState {
-    even: Vec<F128T>,
-    odd: Vec<F128T>,
-    even_next: Vec<F128T>,
-    odd_next: Vec<F128T>,
+    even: Vec<F192>,
+    odd: Vec<F192>,
+    even_next: Vec<F192>,
+    odd_next: Vec<F192>,
 }
 
 impl LayerState {
-    fn new(below: &[F128T], width: usize) -> Self {
-        let strided_copy = |off: usize| -> Vec<F128T> {
+    fn new(below: &[F192], width: usize) -> Self {
+        let strided_copy = |off: usize| -> Vec<F192> {
             if width >= PAR_THRESHOLD {
                 (0..width).into_par_iter().map(|j| below[2 * j + off]).collect()
             } else {
@@ -89,10 +89,10 @@ impl LayerState {
     }
 
     /// The layer sumcheck's degree-2 round univariate at nodes `{0, 1, g}`.
-    fn round_message(&self, eqr: &[F128T]) -> [F128T; 3] {
+    fn round_message(&self, eqr: &[F192]) -> [F192; 3] {
         let half = self.even.len() / 2;
         let (even, odd) = (&self.even, &self.odd);
-        let summand = |idx: usize| -> [F128TUnreduced; 3] {
+        let summand = |idx: usize| -> [F192Unreduced; 3] {
             let (lo, hi) = (2 * idx, 2 * idx + 1);
             let eq = eqr[idx];
             let t0 = even[lo] * odd[lo];
@@ -110,15 +110,18 @@ impl LayerState {
             [eq.mul_unreduced(t0), eq.mul_unreduced(t1), eq.mul_unreduced(t2)]
         };
         let acc_u = if half >= PAR_THRESHOLD {
-            (0..half).into_par_iter().map(summand).reduce(|| [F128TUnreduced::ZERO; 3], xor3)
+            (0..half)
+                .into_par_iter()
+                .map(summand)
+                .reduce(|| [F192Unreduced::ZERO; 3], xor3)
         } else {
-            (0..half).map(summand).fold([F128TUnreduced::ZERO; 3], xor3)
+            (0..half).map(summand).fold([F192Unreduced::ZERO; 3], xor3)
         };
         [acc_u[0].reduce(), acc_u[1].reduce(), acc_u[2].reduce()]
     }
 
     /// Bind this round's variable at the (shared) challenge `rk`.
-    fn fold(&mut self, rk: F128T) {
+    fn fold(&mut self, rk: F192) {
         par_fold_into(&self.even, rk, &mut self.even_next);
         std::mem::swap(&mut self.even, &mut self.even_next);
         par_fold_into(&self.odd, rk, &mut self.odd_next);
@@ -130,7 +133,7 @@ impl LayerState {
 /// `2·idx` stays ahead of the write cursor `idx`). `eq(r_j,0) + eq(r_j,1) = 1`,
 /// so summing adjacent entries marginalizes the bound variable with no
 /// multiplies (vs rebuilding with ~2^{k-j} muls per round).
-fn shrink_eq(eqr: &mut Vec<F128T>) {
+fn shrink_eq(eqr: &mut Vec<F192>) {
     let eq_half = eqr.len() / 2;
     for idx in 0..eq_half {
         eqr[idx] = eqr[2 * idx] + eqr[2 * idx + 1];
@@ -142,9 +145,9 @@ fn shrink_eq(eqr: &mut Vec<F128T>) {
 /// the per-tree roots and leaf values, all reduced to ONE shared evaluation
 /// point (`Ṽ_t(point) = values[t]`).
 pub struct ProductTriple {
-    pub roots: [F128T; 3],
-    pub point: Vec<F128T>,
-    pub values: [F128T; 3],
+    pub roots: [F192; 3],
+    pub point: Vec<F192>,
+    pub values: [F192; 3],
 }
 
 /// Prove THREE equal-size grand products as ONE RLC-batched GKR: the roots
@@ -157,9 +160,12 @@ pub struct ProductTriple {
 /// the decompose identities. Used for the bus push/pull/count trees: push and
 /// pull match block-for-block, and the caller pads the count tree with
 /// identity leaves up to their μ.
-pub fn prove_product_triple(leaves: [Vec<F128T>; 3], ps: &mut ProverState) -> ProductTriple {
+pub fn prove_product_triple(leaves: [Vec<F192>; 3], ps: &mut ProverState) -> ProductTriple {
     let mu = crate::log2_strict_usize(leaves[0].len());
-    assert!(leaves.iter().all(|l| l.len() == 1 << mu), "batched trees must have equal size");
+    assert!(
+        leaves.iter().all(|l| l.len() == 1 << mu),
+        "batched trees must have equal size"
+    );
     let layers = leaves.map(build_layers);
     let roots = [layers[0][mu][0], layers[1][mu][0], layers[2][mu][0]];
     for root in roots {
@@ -167,7 +173,7 @@ pub fn prove_product_triple(leaves: [Vec<F128T>; 3], ps: &mut ProverState) -> Pr
     }
     let mut lambda = ps.sample();
 
-    let mut r: Vec<F128T> = Vec::new();
+    let mut r: Vec<F192> = Vec::new();
     let mut values = roots;
 
     for i in (1..=mu).rev() {
@@ -175,7 +181,7 @@ pub fn prove_product_triple(leaves: [Vec<F128T>; 3], ps: &mut ProverState) -> Pr
         let width = 1usize << k;
         let mut trees = [0, 1, 2].map(|t| LayerState::new(&layers[t][i - 1], width));
         // The challenges are shared, so ONE eq table serves all trees.
-        let mut eqr: Vec<F128T> = if k > 0 { eq_table(&r[1..]) } else { Vec::new() };
+        let mut eqr: Vec<F192> = if k > 0 { eq_table(&r[1..]) } else { Vec::new() };
 
         let mut rho = Vec::with_capacity(k);
         for _ in 0..k {
@@ -205,7 +211,11 @@ pub fn prove_product_triple(leaves: [Vec<F128T>; 3], ps: &mut ProverState) -> Pr
         r = next_point;
     }
 
-    ProductTriple { roots, point: r, values }
+    ProductTriple {
+        roots,
+        point: r,
+        values,
+    }
 }
 
 /// Verify an RLC-batched triple proof ([`prove_product_triple`]): the roots,
@@ -213,31 +223,31 @@ pub fn prove_product_triple(leaves: [Vec<F128T>; 3], ps: &mut ProverState) -> Pr
 /// six tail evaluations checked as `eq·Σ_t λᵗ·e₀ᵗ·e₁ᵗ`, a line challenge, and
 /// a fresh λ. Returns the roots and the shared-point leaf claims.
 pub fn verify_product_triple(mu: usize, vs: &mut VerifierState) -> Result<ProductTriple, GkrError> {
-    let mut roots = [F128T::ZERO; 3];
+    let mut roots = [F192::ZERO; 3];
     for root in &mut roots {
         *root = vs.next_scalar().map_err(|_| GkrError::Truncated)?;
     }
     let mut lambda = vs.sample();
     let nodes = tri_nodes();
-    let mut r: Vec<F128T> = Vec::new();
+    let mut r: Vec<F192> = Vec::new();
     let mut values = roots;
 
     for i in (1..=mu).rev() {
         let k = mu - i;
         let mut claim = values[0] + lambda * (values[1] + lambda * values[2]);
         let mut rho = Vec::with_capacity(k);
-        let mut eq_acc = F128T::ONE; // ∏_{l<round} eq(r_l, ρ_l)
+        let mut eq_acc = F192::ONE; // ∏_{l<round} eq(r_l, ρ_l)
         for (round, &rj) in r.iter().enumerate().take(k) {
             let msg = vs.next_scalars(3).map_err(|_| GkrError::Truncated)?;
-            if eq_acc * ((F128T::ONE + rj) * msg[0] + rj * msg[1]) != claim {
+            if eq_acc * ((F192::ONE + rj) * msg[0] + rj * msg[1]) != claim {
                 return Err(GkrError::SumcheckInconsistent { layer: i, round });
             }
             let rk = vs.sample();
             rho.push(rk);
-            eq_acc *= F128T::ONE + rj + rk;
+            eq_acc *= F192::ONE + rj + rk;
             claim = eq_acc * lagrange_eval(&nodes, &msg, rk);
         }
-        let mut evals = [[F128T::ZERO; 2]; 3];
+        let mut evals = [[F192::ZERO; 2]; 3];
         for eval in evals.iter_mut().flatten() {
             *eval = vs.next_scalar().map_err(|_| GkrError::Truncated)?;
         }
@@ -257,5 +267,9 @@ pub fn verify_product_triple(mu: usize, vs: &mut VerifierState) -> Result<Produc
         r = next_point;
     }
 
-    Ok(ProductTriple { roots, point: r, values })
+    Ok(ProductTriple {
+        roots,
+        point: r,
+        values,
+    })
 }

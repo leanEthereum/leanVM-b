@@ -1331,7 +1331,8 @@ mod tests {
 
     /// Independent Python reference vectors: (a0, a1, b0, b1, c0, c1, s0, s1)
     /// with c = a·b and s = a·a.
-    const VECTORS: [(u64, u64, u64, u64, u64, u64, u64, u64); 4] = [
+    type ReferenceVector = (u64, u64, u64, u64, u64, u64, u64, u64);
+    const VECTORS: [ReferenceVector; 4] = [
         (0x837cdbaf0b2b77d0, 0x17db9019a5c7a28d, 0x4a8920a023b4363b, 0xaceebe818a0b1752,
          0x1f9ec82acac5b51b, 0xbf2eab10c28048c4, 0x7f2eea026d898016, 0x5ed13da49f045d8a),
         (0x1cd777cd5ded16c4, 0x64459b0ac86aadf2, 0xb0e421e0d55ad554, 0xcaaf5ef374e4939f,
@@ -1481,7 +1482,7 @@ mod tests {
             let mut want = F128TArtin::ZERO;
             for &(a, b) in &terms {
                 acc ^= a.mul_unreduced(b);
-                want = want + a * b;
+                want += a * b;
             }
             assert_eq!(acc.reduce(), want, "n={n}");
             // The software path agrees term-for-term with the NEON path.

@@ -23,8 +23,8 @@
 use std::collections::HashMap;
 
 use lean_vm::cpu::hints::RHint;
-use lean_vm::cpu::{DerefMode, Op, Program};
-use primitives::field::{F64, F128T, g_pow};
+use lean_vm::cpu::{Blake3Packing, DerefMode, Op, Program};
+use primitives::field::{F64, F192, g_pow};
 
 mod ast;
 mod ir;
@@ -61,7 +61,7 @@ pub fn compile(ast: &Ast) -> Program {
     // Definitions by name, for Const-parameter specialization at call sites.
     let defs: HashMap<String, Func> = ast.funcs.iter().map(|f| (f.name.clone(), f.clone())).collect();
     // Constant arrays by name, resolved at lowering (`NAME[i]`, `len(NAME)`).
-    let const_arrays: HashMap<String, Vec<u128>> = ast.const_arrays.iter().cloned().collect();
+    let const_arrays: HashMap<String, Vec<F192>> = ast.const_arrays.iter().cloned().collect();
     let dbg_lower = std::env::var("DBG_LOWER").is_ok();
 
     let mut loop_ctr = 0usize;
@@ -142,7 +142,12 @@ pub fn compile(ast: &Ast) -> Program {
                             label: label.clone(),
                             cell: *cell,
                         },
-                        Hint::Log2Ceil { bits_ptr, dst, nbits, floor } => RHint::Log2Ceil {
+                        Hint::Log2Ceil {
+                            bits_ptr,
+                            dst,
+                            nbits,
+                            floor,
+                        } => RHint::Log2Ceil {
                             bits_ptr: *bits_ptr,
                             dst: *dst,
                             nbits: *nbits,
@@ -167,9 +172,12 @@ pub fn compile(ast: &Ast) -> Program {
     }
 
     // Pad the bytecode to `B` (the sentinel slot g^{B-1} must exist for execution).
-    prog.resize(bytecode_size, Op::Set { o: 0, k: F128T::ZERO });
+    prog.resize(bytecode_size, Op::Set { o: 0, k: F192::ZERO });
     let mut program = Program::assemble(prog, 0, 0, hints, frame_size["main"]);
-    program.fn_ranges = lowered.iter().map(|l| (l.name.clone(), entry[&l.name], l.code.len() as u32)).collect();
+    program.fn_ranges = lowered
+        .iter()
+        .map(|l| (l.name.clone(), entry[&l.name], l.code.len() as u32))
+        .collect();
     program
 }
 
@@ -184,12 +192,12 @@ pub fn disassemble(prog: &[Op]) -> String {
         gmap.entry(acc).or_insert(j);
         acc *= primitives::field::G;
     }
-    // A machine word is 128-bit; K-valued immediates (hi lane 0) may be small
+    // A machine word is 192-bit; K-valued immediates (both high limbs zero) may be small
     // g-powers (code addresses, indices), shown as `gʲ`.
-    let kfmt = |k: F128T| match (k.c1 == 0).then(|| gmap.get(&F64(k.c0))).flatten() {
+    let kfmt = |k: F192| match (k.c1 == 0 && k.c2 == 0).then(|| gmap.get(&F64(k.c0))).flatten() {
         Some(j) => format!("g^{j}"),
-        None if k.c1 == 0 => format!("0x{:016x}", k.c0),
-        None => format!("0x{:016x}{:016x}", k.c1, k.c0),
+        None if k.c1 == 0 && k.c2 == 0 => format!("0x{:016x}", k.c0),
+        None => format!("0x{:016x}{:016x}{:016x}", k.c2, k.c1, k.c0),
     };
 
     let mut out = String::new();
@@ -214,9 +222,9 @@ pub fn disassemble(prog: &[Op]) -> String {
             Op::Jump { oc, od, of } => {
                 format!("JUMP   if fp[{oc}]≠0: pc=fp[{od}], fp=fp[{of}]")
             }
-            Op::Blake3 { ins, out } => {
+            Op::Blake3 { ins, out, packing } => {
                 format!(
-                    "BLAKE3 fp[{out}..]= H(fp[{}], fp[{}] | fp[{}], fp[{}])",
+                    "BLAKE3/{packing:?} fp[{out}..]= H(fp[{}], fp[{}] | fp[{}], fp[{}])",
                     ins[0], ins[1], ins[2], ins[3]
                 )
             }
@@ -226,11 +234,9 @@ pub fn disassemble(prog: &[Op]) -> String {
     out
 }
 
-/// A `u128` source literal as a 128-bit machine word: its raw bit pattern, low
-/// 64 bits in the K-lane and high 64 bits in the y-lane (so a `≤64`-bit literal
-/// is a K-value with zero high lane, and a full 128-bit literal names any word).
-pub(crate) fn lit_field(n: u128) -> F128T {
-    F128T::new(n as u64, (n >> 64) as u64)
+/// Embed a `u128` source literal into the low 128 bits of a 192-bit machine word.
+pub(crate) fn lit_field(n: u128) -> F192 {
+    F192::new(n as u64, (n >> 64) as u64, 0)
 }
 
 /// `g^e` for a `u128` exponent (square-and-multiply). `field::g_pow` only takes
@@ -250,7 +256,7 @@ fn g_pow_u128(mut e: u128) -> F64 {
 }
 
 fn resolve(op: &LOp, entry: &HashMap<String, u32>, sentinel: u32, base: u32) -> Op {
-    let resolve_kval = |kv: &KVal| -> F128T {
+    let resolve_kval = |kv: &KVal| -> F192 {
         match kv {
             KVal::Const(c) => *c,
             // Address / entry / sentinel constants are K-valued g-powers; embed
@@ -284,7 +290,10 @@ fn resolve(op: &LOp, entry: &HashMap<String, u32>, sentinel: u32, base: u32) -> 
             od: *od,
             of: *of,
         },
-        LOp::Blake3 { ins, c } => Op::Blake3 { ins: *ins, out: *c },
+        LOp::Blake3 { ins, c, packing } => Op::Blake3 {
+            ins: *ins,
+            out: *c,
+            packing: *packing,
+        },
     }
 }
-

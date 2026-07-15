@@ -51,6 +51,7 @@ impl F64 {
     }
 }
 
+#[allow(clippy::suspicious_arithmetic_impl)]
 impl Add for F64 {
     type Output = Self;
     #[inline]
@@ -59,6 +60,7 @@ impl Add for F64 {
     }
 }
 
+#[allow(clippy::suspicious_op_assign_impl)]
 impl AddAssign for F64 {
     #[inline]
     fn add_assign(&mut self, rhs: Self) {

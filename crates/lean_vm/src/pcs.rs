@@ -1,5 +1,5 @@
 //! Witness commitment: an inner-product PCS committing over `K = F_{2^64}` and
-//! opening over `E = F_{2^128}` (doc §3), reusing flock's **Ligerito-K**. An
+//! opening over `E = F_{2^192}` (doc §3), reusing flock's **Ligerito-K**. An
 //! opening proves `Σ_x q(x)·W(x) = C` against any verifier-evaluable `E`-valued
 //! weight `W` (a point evaluation `q̂(r)` is `W = eq(r,·)`). A batch of claims
 //! `q̂(point_j) = value_j` folds with random `γ`s into one weight and target,
@@ -13,8 +13,8 @@
 //! commitment only shrinks the level-0 symbols to 8 bytes; every random
 //! ingredient is sampled from `E` with the same error terms as before.
 
-use primitives::field::{F64, F128T};
 use crate::transcript::{ProverState, VerifierState};
+use primitives::field::{F64, F192};
 
 use ::pcs::ligerito::{ProverConfig, VerifierConfig};
 use ::pcs::ligerito_k::{CommitmentK, ProverDataK, commit_k, k_configs_for};
@@ -34,9 +34,7 @@ pub const LOG_PACKING: usize = ::pcs::pack_k::LOG_PACKING_K;
 const LOG_BATCH: usize = ::pcs::ligerito::INITIAL_FOLDING_FATOR;
 /// L0 rate (doc §3) — the one knob [`::pcs::ligerito::LOG_INV_RATE_0`].
 pub const LOG_INV_RATE: usize = ::pcs::ligerito::LOG_INV_RATE_0;
-// The PCS and the bus grinding both target `SECURITY_BITS`; keep them in
-// sync — a stronger PCS target without bumping the constant (or vice versa)
-// would leave one round below the intended level.
+// The PCS and the unground F192 bus argument both target `SECURITY_BITS`.
 const _: () = assert!(::pcs::ligerito::SECURITY_BITS == crate::SECURITY_BITS as usize);
 /// Minimum committed-witness log-size: Ligerito's level ladder needs every level's
 /// block length to accommodate its query count under the unique-decoding
@@ -111,12 +109,13 @@ pub fn commit(ps: &mut ProverState, witness: &[F64]) -> Committed {
 
 /// A Merkle root (32 bytes) as two field scalars, so it travels the transcript
 /// stream like any other transmitted value (leanVM parses its root the same way).
-fn root_to_scalars(root: &[u8; 32]) -> [F128T; 2] {
+fn root_to_scalars(root: &[u8; 32]) -> [F192; 2] {
     let w = |o: usize| u64::from_le_bytes(root[o..o + 8].try_into().unwrap());
-    [F128T::new(w(0), w(8)), F128T::new(w(16), w(24))]
+    [F192::new(w(0), w(8), 0), F192::new(w(16), w(24), 0)]
 }
 
-fn scalars_to_root(s: &[F128T]) -> [u8; 32] {
+fn scalars_to_root(s: &[F192]) -> [u8; 32] {
+    assert_eq!(s.len(), 2, "a Merkle root is exactly two field words");
     let mut root = [0u8; 32];
     root[0..8].copy_from_slice(&s[0].c0.to_le_bytes());
     root[8..16].copy_from_slice(&s[0].c1.to_le_bytes());

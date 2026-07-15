@@ -70,7 +70,7 @@ pub fn parse_with_replacements(src: &str, replacements: &BTreeMap<String, String
     // positions that demand a parse-time literal (`StackBuf`, `**`, `assert log
     // _ < _`).
     let mut consts: BTreeMap<String, String> = BTreeMap::new();
-    let mut const_arrays: Vec<(String, Vec<u128>)> = Vec::new();
+    let mut const_arrays: Vec<(String, Vec<F192>)> = Vec::new();
     let mut start = 0;
     while start < lines.len() {
         let (indent, line) = &lines[start];
@@ -81,11 +81,16 @@ pub fn parse_with_replacements(src: &str, replacements: &BTreeMap<String, String
             return Err(format!("unexpected indentation at top level: `{line}`"));
         }
         let (lhs, rhs) = split_assign(line).ok_or_else(|| {
-            format!("top level: expected `def`, a global constant `NAME = value`, or the `snark_lib` import, got `{line}`")
+            format!(
+                "top level: expected `def`, a global constant `NAME = value`, or the `snark_lib` import, got `{line}`"
+            )
         })?;
         let name = lhs.trim().to_string();
         if !is_ident(&name) {
-            return Err(format!("global constant name must be a plain identifier: `{}`", lhs.trim()));
+            return Err(format!(
+                "global constant name must be a plain identifier: `{}`",
+                lhs.trim()
+            ));
         }
         if consts.contains_key(&name) || const_arrays.iter().any(|(n, _)| n == &name) {
             return Err(format!("global constant `{name}` is declared twice"));
@@ -103,13 +108,24 @@ pub fn parse_with_replacements(src: &str, replacements: &BTreeMap<String, String
                 if p.is_empty() {
                     continue; // tolerate a trailing comma
                 }
-                elems.push(eval_const_int(p).map_err(|e| format!("global constant array `{name}`: {e}"))?);
+                let elem = if let Some(v) = parse_f192_const(p) {
+                    v.map_err(|e| format!("global constant array `{name}`: {e}"))?
+                } else {
+                    let n = eval_const_int(p).map_err(|e| format!("global constant array `{name}`: {e}"))?;
+                    F192::new(n as u64, (n >> 64) as u64, 0)
+                };
+                elems.push(elem);
             }
             const_arrays.push((name, elems));
         } else {
             // A scalar constant: evaluate it as a compile-time integer.
-            let value = eval_const_int(rhs).map_err(|e| format!("global constant `{name}`: {e}"))?;
-            consts.insert(name, value.to_string());
+            if let Some(value) = parse_f192_const(rhs) {
+                let v = value.map_err(|e| format!("global constant `{name}`: {e}"))?;
+                consts.insert(name, format!("f192({},{},{})", v.c0, v.c1, v.c2));
+            } else {
+                let value = eval_const_int(rhs).map_err(|e| format!("global constant `{name}`: {e}"))?;
+                consts.insert(name, value.to_string());
+            }
         }
         start += 1;
     }
@@ -118,12 +134,31 @@ pub fn parse_with_replacements(src: &str, replacements: &BTreeMap<String, String
         .iter()
         .map(|(ind, l)| (*ind, apply_replacements(l, &consts)))
         .collect();
-    let mut p = Parser { lines: func_lines, i: 0 };
+    let mut p = Parser {
+        lines: func_lines,
+        i: 0,
+    };
     let mut funcs = Vec::new();
     while p.i < p.lines.len() {
         funcs.push(p.func()?);
     }
     Ok(Ast { funcs, const_arrays })
+}
+
+fn parse_f192_const(s: &str) -> Option<Result<F192, String>> {
+    let inner = s.trim().strip_prefix("f192(")?.strip_suffix(')')?;
+    let parts = split_top(inner, ',');
+    Some((|| {
+        if parts.len() != 3 {
+            return Err("f192 needs exactly three limbs".into());
+        }
+        let mut limbs = [0u64; 3];
+        for (i, p) in parts.iter().enumerate() {
+            limbs[i] =
+                u64::try_from(eval_const_int(p.trim())?).map_err(|_| "an f192 limb does not fit in u64".to_string())?;
+        }
+        Ok(F192::new(limbs[0], limbs[1], limbs[2]))
+    })())
 }
 
 /// Apply identifier-level **placeholder** replacements to source text before
@@ -268,7 +303,8 @@ fn eval_const_int(s: &str) -> Result<u128, String> {
             *p += 1;
             let exp = power(t, p)?; // right-associative
             let exp = u32::try_from(exp).map_err(|_| "`**` exponent too large".to_string())?;
-            base.checked_pow(exp).ok_or_else(|| "constant overflow in `**`".to_string())
+            base.checked_pow(exp)
+                .ok_or_else(|| "constant overflow in `**`".to_string())
         } else {
             Ok(base)
         }
@@ -279,7 +315,8 @@ fn eval_const_int(s: &str) -> Result<u128, String> {
             *p += 1;
             let rhs = power(t, p)?;
             acc = if op == Tok::Mul {
-                acc.checked_mul(rhs).ok_or_else(|| "constant overflow in `*`".to_string())?
+                acc.checked_mul(rhs)
+                    .ok_or_else(|| "constant overflow in `*`".to_string())?
             } else {
                 acc.checked_div(rhs)
                     .ok_or_else(|| "division by zero in constant expression".to_string())?
@@ -293,9 +330,11 @@ fn eval_const_int(s: &str) -> Result<u128, String> {
             *p += 1;
             let rhs = term(t, p)?;
             acc = if op == Tok::Add {
-                acc.checked_add(rhs).ok_or_else(|| "constant overflow in `+`".to_string())?
+                acc.checked_add(rhs)
+                    .ok_or_else(|| "constant overflow in `+`".to_string())?
             } else {
-                acc.checked_sub(rhs).ok_or_else(|| "constant is negative (underflow in `-`)".to_string())?
+                acc.checked_sub(rhs)
+                    .ok_or_else(|| "constant is negative (underflow in `-`)".to_string())?
             };
         }
         Ok(acc)
@@ -303,7 +342,10 @@ fn eval_const_int(s: &str) -> Result<u128, String> {
     let mut pos = 0;
     let value = expr(&toks, &mut pos)?;
     if pos != toks.len() {
-        return Err(format!("unexpected trailing tokens in constant expression `{}`", s.trim()));
+        return Err(format!(
+            "unexpected trailing tokens in constant expression `{}`",
+            s.trim()
+        ));
     }
     Ok(value)
 }
@@ -312,11 +354,11 @@ fn eval_const_int(s: &str) -> Result<u128, String> {
 /// `GEN ** k`, and `+`/`*` combinations of those — to its field element.
 /// Used for the `# public_input: <elt>, <elt>` annotation of `.py` test
 /// programs (see `tests/py_source.rs`).
-pub fn parse_const(s: &str) -> Result<F128T, String> {
-    fn eval(e: &Expr) -> Result<F128T, String> {
+pub fn parse_const(s: &str) -> Result<F192, String> {
+    fn eval(e: &Expr) -> Result<F192, String> {
         match e {
             // An integer literal is the raw 128-bit bit pattern of a machine word.
-            Expr::Lit(n) => Ok(F128T::new(*n as u64, (*n >> 64) as u64)),
+            Expr::Lit(n) => Ok(F192::new(*n as u64, (*n >> 64) as u64, 0)),
             Expr::Gen => Ok(g_pow(1).into()),
             Expr::GPow(k) => Ok(g_pow_u128(*k).into()),
             Expr::Add(a, b) => Ok(eval(a)? + eval(b)?),
@@ -353,7 +395,11 @@ impl Parser {
                 return Err(format!("unknown decorator `@{}` (only `@inline`)", dec.trim()));
             }
             self.i += 1;
-            (indent, line) = self.lines.get(self.i).cloned().ok_or("`@inline` must precede a `def`")?;
+            (indent, line) = self
+                .lines
+                .get(self.i)
+                .cloned()
+                .ok_or("`@inline` must precede a `def`")?;
             true
         } else {
             false
@@ -1105,7 +1151,11 @@ fn parse_expr(s: &str) -> Result<Expr, String> {
         for (op, seg) in ops.iter().zip(&segs[1..]) {
             let rhs = Box::new(parse_expr(seg)?);
             let lhs = Box::new(acc);
-            acc = if *op == b'+' { Expr::Add(lhs, rhs) } else { Expr::Sub(lhs, rhs) };
+            acc = if *op == b'+' {
+                Expr::Add(lhs, rhs)
+            } else {
+                Expr::Sub(lhs, rhs)
+            };
         }
         return Ok(acc);
     }

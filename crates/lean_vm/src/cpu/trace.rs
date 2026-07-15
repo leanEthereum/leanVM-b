@@ -1,7 +1,7 @@
 //! Per-opcode trace rows, emitted during execution and assembled into a [`Trace`].
 
 use super::DerefMode;
-use primitives::field::{F64, F128T};
+use primitives::field::{F64, F192};
 
 pub(crate) struct Xrow {
     pub(crate) pc: u32,
@@ -19,7 +19,7 @@ pub(crate) struct Srow {
     pub(crate) fp: u32,
     pub(crate) o: u32,
     pub(crate) a: u32,
-    pub(crate) k: F128T, // the stored immediate, a 128-bit machine word
+    pub(crate) k: F192, // the stored immediate, a 192-bit machine word
     pub(crate) r: F64,
     pub(crate) bytecode_read: F64,
 }
@@ -31,11 +31,11 @@ pub(crate) struct Drow {
     pub(crate) gamma: u32,
     pub(crate) mode: DerefMode,
     pub(crate) a1: u32,
-    pub(crate) p: F128T, // mem[a1], the pointer word (a K-valued address, read as a full word)
+    pub(crate) p: F192, // mem[a1], the pointer word (a K-valued address, read as a full word)
     pub(crate) a2: usize,
     pub(crate) a3: u32,
-    pub(crate) v2: F128T, // mem[a2], the store target
-    pub(crate) v3: F128T, // mem[a3], the local cell
+    pub(crate) v2: F192, // mem[a2], the store target
+    pub(crate) v3: F192, // mem[a3], the local cell
     pub(crate) r1: F64,
     pub(crate) r2: F64,
     pub(crate) r3: F64,
@@ -52,11 +52,11 @@ pub(crate) struct Jrow {
     pub(crate) ac: u32,
     pub(crate) ad: u32,
     pub(crate) af: u32,
-    pub(crate) c: F128T, // condition, an arbitrary 128-bit word
-    pub(crate) d: F128T, // destination word (a K-valued code address, read as a full word)
-    pub(crate) f: F128T, // new frame word (a K-valued frame pointer, read as a full word)
-    pub(crate) w: F128T, // inverse hint (is-nonzero witness): c⁻¹ when c ≠ 0, else 0
-    pub(crate) b: F64,   // taken indicator b = [c ≠ 0]
+    pub(crate) c: F192, // condition, an arbitrary 192-bit word
+    pub(crate) d: F192, // destination word (a K-valued code address, read as a full word)
+    pub(crate) f: F192, // new frame word (a K-valued frame pointer, read as a full word)
+    pub(crate) w: F192, // inverse hint (is-nonzero witness): c⁻¹ when c ≠ 0, else 0
+    pub(crate) b: F64,  // taken indicator b = [c ≠ 0]
     pub(crate) rc: F64,
     pub(crate) rd: F64,
     pub(crate) rf: F64,
@@ -64,7 +64,7 @@ pub(crate) struct Jrow {
 }
 
 /// `BLAKE3` row: the four independent input-chunk addresses `aa0, aa1, ab0, ab1`
-/// (each a single 128-bit cell) and the output base `ac` (spanning two cells),
+/// (each a canonical 128-bit BLAKE3 cell) and output base `ac` (two cells),
 /// the twelve flock words (four inputs `a`, four inputs `b`, four outputs `c` —
 /// two 64-bit lanes per 128-bit cell), and the six per-cell memory access counts.
 pub(crate) struct Brow {
@@ -75,9 +75,11 @@ pub(crate) struct Brow {
     pub(crate) ab0: u32,
     pub(crate) ab1: u32,
     pub(crate) ac: u32,
-    pub(crate) va: [F64; 4], // a's four flock words = cells (aa0, aa1), lanes (lo, hi)
-    pub(crate) vb: [F64; 4], // b's four flock words = cells (ab0, ab1)
-    pub(crate) vc: [F64; 4], // c's four flock words = cells (ac, ac+1)
+    pub(crate) va: [F64; 4],     // a's four flock words = cells (aa0, aa1), lanes (lo, hi)
+    pub(crate) vb: [F64; 4],     // b's four flock words = cells (ab0, ab1)
+    pub(crate) vc: [F64; 4],     // c's four flock words = cells (ac, ac+1)
+    pub(crate) words: [F192; 6], // four input cells followed by two output cells
+    pub(crate) packing: super::Blake3Packing,
     pub(crate) ra: [F64; 2], // per-cell counts for the two a input cells
     pub(crate) rb: [F64; 2], // … the two b input cells
     pub(crate) rc: [F64; 2], // … the two c output cells

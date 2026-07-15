@@ -24,6 +24,8 @@ use core::ops::{Add, AddAssign, BitXor, BitXorAssign, Mul, MulAssign};
 
 use serde::{Deserialize, Serialize};
 
+use super::gf2_64::F64;
+
 /// Reduction constant of the base field: x^64 ≡ x^4 + x^3 + x + 1.
 pub const R64: u64 = 0x1B;
 
@@ -61,9 +63,38 @@ impl F192 {
             // SAFETY: aes target feature is enabled at compile time.
             unsafe { aarch64::mul_unreduced_neon(self, rhs) }
         }
-        #[cfg(not(all(target_arch = "aarch64", target_feature = "aes")))]
+        #[cfg(all(target_arch = "x86_64", target_feature = "pclmulqdq"))]
+        {
+            // SAFETY: pclmulqdq is enabled at compile time.
+            unsafe { x86_64::mul_unreduced(self, rhs) }
+        }
+        #[cfg(not(any(
+            all(target_arch = "aarch64", target_feature = "aes"),
+            all(target_arch = "x86_64", target_feature = "pclmulqdq")
+        )))]
         {
             software::mul_unreduced(self, rhs)
+        }
+    }
+
+    /// Mixed product by a base-field scalar. Since the multiplier has no
+    /// `y` component, the three coefficients multiply independently in K.
+    #[inline]
+    pub fn mul_base(self, k: F64) -> Self {
+        Self {
+            c0: (F64(self.c0) * k).0,
+            c1: (F64(self.c1) * k).0,
+            c2: (F64(self.c2) * k).0,
+        }
+    }
+
+    /// Unreduced mixed product for deferred inner-product accumulation.
+    #[inline]
+    pub fn mul_base_unreduced(self, k: F64) -> F192BaseUnreduced {
+        F192BaseUnreduced {
+            p0: kclmul(self.c0, k.0),
+            p1: kclmul(self.c1, k.0),
+            p2: kclmul(self.c2, k.0),
         }
     }
 
@@ -76,7 +107,15 @@ impl F192 {
             // SAFETY: aes target feature is enabled at compile time.
             unsafe { aarch64::square_neon(self) }
         }
-        #[cfg(not(all(target_arch = "aarch64", target_feature = "aes")))]
+        #[cfg(all(target_arch = "x86_64", target_feature = "pclmulqdq"))]
+        {
+            // SAFETY: pclmulqdq is enabled at compile time.
+            unsafe { x86_64::square(self) }
+        }
+        #[cfg(not(any(
+            all(target_arch = "aarch64", target_feature = "aes"),
+            all(target_arch = "x86_64", target_feature = "pclmulqdq")
+        )))]
         {
             software::square(self)
         }
@@ -116,6 +155,13 @@ impl AddAssign for F192 {
     }
 }
 
+impl From<F64> for F192 {
+    #[inline]
+    fn from(k: F64) -> Self {
+        Self { c0: k.0, c1: 0, c2: 0 }
+    }
+}
+
 impl Mul for F192 {
     type Output = Self;
     #[inline]
@@ -125,7 +171,14 @@ impl Mul for F192 {
             // SAFETY: aes target feature is enabled at compile time.
             unsafe { aarch64::mul_karatsuba(self, rhs) }
         }
-        #[cfg(not(all(target_arch = "aarch64", target_feature = "aes")))]
+        #[cfg(all(target_arch = "x86_64", target_feature = "pclmulqdq"))]
+        {
+            self.mul_unreduced(rhs).reduce()
+        }
+        #[cfg(not(any(
+            all(target_arch = "aarch64", target_feature = "aes"),
+            all(target_arch = "x86_64", target_feature = "pclmulqdq")
+        )))]
         {
             software::mul(self, rhs)
         }
@@ -186,6 +239,87 @@ impl BitXorAssign for F192Unreduced {
         for i in 0..10 {
             self.w[i] ^= rhs.w[i];
         }
+    }
+}
+
+/// Three raw K products from multiplying an F192 element by an F64 scalar.
+/// They can be XOR-accumulated and reduced once per coefficient.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct F192BaseUnreduced {
+    pub p0: u128,
+    pub p1: u128,
+    pub p2: u128,
+}
+
+impl F192BaseUnreduced {
+    pub const ZERO: Self = Self { p0: 0, p1: 0, p2: 0 };
+
+    #[inline]
+    pub fn reduce(self) -> F192 {
+        F192 {
+            c0: kreduce_u128(self.p0),
+            c1: kreduce_u128(self.p1),
+            c2: kreduce_u128(self.p2),
+        }
+    }
+}
+
+impl BitXor for F192BaseUnreduced {
+    type Output = Self;
+
+    #[inline]
+    fn bitxor(self, rhs: Self) -> Self {
+        Self {
+            p0: self.p0 ^ rhs.p0,
+            p1: self.p1 ^ rhs.p1,
+            p2: self.p2 ^ rhs.p2,
+        }
+    }
+}
+
+impl BitXorAssign for F192BaseUnreduced {
+    #[inline]
+    fn bitxor_assign(&mut self, rhs: Self) {
+        self.p0 ^= rhs.p0;
+        self.p1 ^= rhs.p1;
+        self.p2 ^= rhs.p2;
+    }
+}
+
+#[inline]
+fn kclmul(a: u64, b: u64) -> u128 {
+    #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
+    {
+        // SAFETY: aes is enabled at compile time.
+        unsafe {
+            core::mem::transmute::<core::arch::aarch64::uint64x2_t, u128>(crate::field::gf2_64::aarch64::pmull(a, b))
+        }
+    }
+    #[cfg(all(target_arch = "x86_64", target_feature = "pclmulqdq"))]
+    {
+        // SAFETY: pclmulqdq is enabled at compile time.
+        unsafe { core::mem::transmute::<core::arch::x86_64::__m128i, u128>(crate::field::gf2_64::x86_64::clmul(a, b)) }
+    }
+    #[cfg(not(any(
+        all(target_arch = "aarch64", target_feature = "aes"),
+        all(target_arch = "x86_64", target_feature = "pclmulqdq")
+    )))]
+    {
+        let (lo, hi) = clmul64(a, b);
+        lo as u128 | ((hi as u128) << 64)
+    }
+}
+
+#[inline]
+fn kreduce_u128(v: u128) -> u64 {
+    #[cfg(all(target_arch = "x86_64", target_feature = "pclmulqdq"))]
+    {
+        // SAFETY: pclmulqdq is enabled at compile time.
+        unsafe { crate::field::gf2_64::x86_64::reduce(core::mem::transmute::<u128, core::arch::x86_64::__m128i>(v)) }
+    }
+    #[cfg(not(all(target_arch = "x86_64", target_feature = "pclmulqdq")))]
+    {
+        base_reduce_128(v as u64, (v >> 64) as u64)
     }
 }
 
@@ -464,6 +598,92 @@ pub mod aarch64 {
 }
 
 // ---------------------------------------------------------------------------
+// x86-64 + PCLMULQDQ.
+// ---------------------------------------------------------------------------
+
+#[cfg(all(target_arch = "x86_64", target_feature = "pclmulqdq"))]
+pub mod x86_64 {
+    use super::{F192, F192Unreduced};
+    use crate::field::gf2_64::x86_64::clmul;
+    use core::arch::x86_64::__m128i;
+
+    #[inline]
+    #[target_feature(enable = "pclmulqdq", enable = "sse2")]
+    unsafe fn product(a: u64, b: u64) -> u128 {
+        // SAFETY: the function carries pclmulqdq and both representations are 128 bits.
+        unsafe { core::mem::transmute::<__m128i, u128>(clmul(a, b)) }
+    }
+
+    /// Six-product Karatsuba multiplication before either field reduction.
+    ///
+    /// # Safety
+    ///
+    /// The caller must run on a CPU with PCLMULQDQ and SSE2 support.
+    #[inline]
+    #[target_feature(enable = "pclmulqdq", enable = "sse2")]
+    pub unsafe fn mul_unreduced(a: F192, b: F192) -> F192Unreduced {
+        // SAFETY: the function carries pclmulqdq.
+        unsafe {
+            let p0 = product(a.c0, b.c0);
+            let p1 = product(a.c1, b.c1);
+            let p2 = product(a.c2, b.c2);
+            let p01 = product(a.c0 ^ a.c1, b.c0 ^ b.c1);
+            let p02 = product(a.c0 ^ a.c2, b.c0 ^ b.c2);
+            let p12 = product(a.c1 ^ a.c2, b.c1 ^ b.c2);
+
+            let c1 = p01 ^ p0 ^ p1;
+            let c2 = p02 ^ p0 ^ p1 ^ p2;
+            let c3 = p12 ^ p1 ^ p2;
+            F192Unreduced {
+                w: [
+                    p0 as u64,
+                    (p0 >> 64) as u64,
+                    c1 as u64,
+                    (c1 >> 64) as u64,
+                    c2 as u64,
+                    (c2 >> 64) as u64,
+                    c3 as u64,
+                    (c3 >> 64) as u64,
+                    p2 as u64,
+                    (p2 >> 64) as u64,
+                ],
+            }
+        }
+    }
+
+    /// Three carry-less squares followed by the common F192 reduction.
+    ///
+    /// # Safety
+    ///
+    /// The caller must run on a CPU with PCLMULQDQ and SSE2 support.
+    #[inline]
+    #[target_feature(enable = "pclmulqdq", enable = "sse2")]
+    pub unsafe fn square(a: F192) -> F192 {
+        // SAFETY: the function carries pclmulqdq.
+        unsafe {
+            let s0 = product(a.c0, a.c0);
+            let s1 = product(a.c1, a.c1);
+            let s2 = product(a.c2, a.c2);
+            F192Unreduced {
+                w: [
+                    s0 as u64,
+                    (s0 >> 64) as u64,
+                    0,
+                    0,
+                    s1 as u64,
+                    (s1 >> 64) as u64,
+                    0,
+                    0,
+                    s2 as u64,
+                    (s2 >> 64) as u64,
+                ],
+            }
+            .reduce()
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Software fallback: portable, also the reference the NEON path is tested
 // against.
 // ---------------------------------------------------------------------------
@@ -530,7 +750,8 @@ mod tests {
 
     /// Vectors generated by an independent Python implementation
     /// (scratchpad/fieldref.py): (a, b, a·b, a·a).
-    const VECTORS: [([u64; 3], [u64; 3], [u64; 3], [u64; 3]); 4] = [
+    type ReferenceVector = ([u64; 3], [u64; 3], [u64; 3], [u64; 3]);
+    const VECTORS: [ReferenceVector; 4] = [
         (
             [0x950e87d7f5606615, 0x2c61275c9e6b6cf8, 0x1f00bca0042db923],
             [0x6dbca290a9eab706, 0x4c10a4fe30cffdda, 0xf26fff4cc4fd394d],

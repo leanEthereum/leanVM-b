@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 
 use lean_compiler::{compile, parse_file_with_replacements};
 use lean_vm::cpu::{prove, verify};
-use primitives::field::{F64, F128T, g_pow};
+use primitives::field::{F64, F192, g_pow};
 use xmss::*;
 
 use crate::signers_cache;
@@ -20,25 +20,24 @@ fn word(bytes: &[u8]) -> F64 {
     F64(u64::from_le_bytes(bytes[..8].try_into().unwrap()))
 }
 
-/// A single K-value as a 128-bit machine cell (high lane 0) — for the count /
-/// digit hints, which are g-powers.
-fn cell(w: F64) -> F128T {
-    F128T::from(w)
+/// A K-embedded F192 cell for count/digit hints, which are g-powers.
+fn cell(w: F64) -> F192 {
+    F192::from(w)
 }
 
-/// A 16-byte native value as ONE 128-bit cell: low lane bytes 0..8, high lane
-/// bytes 8..16 (the little-endian 16-byte content the BLAKE3 op hashes).
-fn val16(b: &[u8]) -> F128T {
-    F128T::new(word(&b[..8]).0, word(&b[8..16]).0)
+/// A 16-byte native value in the canonical BLAKE3 subspace of F192: `c0`
+/// carries bytes 0..8, `c1` bytes 8..16, and `c2` is zero.
+fn val16(b: &[u8]) -> F192 {
+    F192::new(word(&b[..8]).0, word(&b[8..16]).0, 0)
 }
 
 /// A 16-byte native value as ONE cell.
-fn pair(b: &[u8]) -> Vec<F128T> {
+fn pair(b: &[u8]) -> Vec<F192> {
     vec![val16(b)]
 }
 
-/// A 32-byte hash block as TWO 128-bit cells.
-fn quad(b: &[u8]) -> Vec<F128T> {
+/// A 32-byte hash block as two canonical 128-bit BLAKE3 cells.
+fn quad(b: &[u8]) -> Vec<F192> {
     vec![val16(&b[..16]), val16(&b[16..32])]
 }
 
@@ -182,7 +181,7 @@ pub fn run_xmss_aggregation(n: usize) {
     // 181 fixed blocks + per signature: 1 (pk absorb) + 157 (the native
     // verifier's constant).
     assert_eq!(stats.counts[5], 181 + 158 * n, "BLAKE3 instruction count");
-    let bad = [want[0], want[1] + F128T::ONE];
+    let bad = [want[0], want[1] + F192::ONE];
     assert!(verify(&program, &bad, &proof).is_err());
 
     let proof_bytes = bincode::serialized_size(&proof).expect("proof is serializable");
@@ -201,14 +200,20 @@ pub fn run_xmss_aggregation(n: usize) {
         pow(stats.cycles),
         per(stats.cycles)
     );
-    for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3"].iter().zip(&stats.counts) {
+    for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3"]
+        .iter()
+        .zip(&stats.counts)
+    {
         println!(
             "    {name:<6} instructions       : {c:>10} = {:>7}   ({:>8.1} / XMSS)",
             pow(c),
             per(c)
         );
     }
-    println!("  committed witness size      : 2^{:.3}", (stats.committed as f64).log2());
+    println!(
+        "  committed witness size      : 2^{:.3}",
+        (stats.committed as f64).log2()
+    );
     println!(
         "  data memory                 : 2^{} padded (2^{:.2} used)",
         stats.log_mem,
@@ -228,7 +233,10 @@ mod tests {
     /// Batch size overridable: `LEANVM_XMSS_N=820 cargo test … -- --nocapture`.
     #[test]
     fn aggregate_xmss() {
-        let n = std::env::var("LEANVM_XMSS_N").ok().and_then(|s| s.parse().ok()).unwrap_or(3);
+        let n = std::env::var("LEANVM_XMSS_N")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(3);
         super::run_xmss_aggregation(n);
     }
 }

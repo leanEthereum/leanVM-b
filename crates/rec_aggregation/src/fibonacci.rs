@@ -5,7 +5,7 @@ use std::time::Instant;
 
 use lean_compiler::{compile, parse};
 use lean_vm::cpu::{prove, verify};
-use primitives::field::{F64, F128T, g_pow};
+use primitives::field::{F64, F192, g_pow};
 
 /// Prove and verify Fibonacci-in-the-exponent over a `HeapBuf` (an unrolled
 /// `mul_range` recurrence), binding `g^{F(n)}` as the public input. Prints the
@@ -58,7 +58,7 @@ pub fn run_fibonacci(n: usize) {
 /// unrolled `mul_range` loop over a `HeapBuf`), with the result `g^{F(N)}`
 /// published into cell `m[0]`. Returns the zkDSL source and the public input
 /// `[g^{F(N)}, 0]`.
-fn fibonacci_program(fib_n: usize) -> (String, [F128T; 2]) {
+fn fibonacci_program(fib_n: usize) -> (String, [F192; 2]) {
     const UNROLL: usize = 1000;
     assert!(
         fib_n >= UNROLL && fib_n.is_multiple_of(UNROLL),
@@ -74,7 +74,7 @@ fn fibonacci_program(fib_n: usize) -> (String, [F128T; 2]) {
         a = b;
         b = c; // (a, b) = (g^{F(m)}, g^{F(m+1)})
     }
-    let pi = [F128T::from(a), F128T::ZERO]; // a = g^{F(N)}: the result, then 0
+    let pi = [F192::from(a), F192::ZERO]; // a = g^{F(N)}: the result, then 0
 
     // `K` blocks: each reads its boundary pair into locals, runs `UNROLL`
     // Fibonacci `MUL`s in registers, and writes the next pair (4 DEREFs per

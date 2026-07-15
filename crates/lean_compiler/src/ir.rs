@@ -8,9 +8,9 @@ pub(crate) type Off = u32;
 /// once entry program counters are fixed.
 #[derive(Clone, Debug)]
 pub(crate) enum KVal {
-    /// A 128-bit machine-word constant (the low lane is a K-value / g-power for
-    /// addresses and 64-bit literals; both lanes may be set for a 128-bit literal).
-    Const(F128T),
+    /// A 192-bit machine-word constant. Source literals fill only c0/c1, while
+    /// compiler-generated constants may use the full field.
+    Const(F192),
     Entry(String),
     /// The halt sentinel pc `g^{B-1}` (last bytecode slot), fixed once the
     /// padded bytecode size `B` is known. `main` jumps here to terminate.
@@ -68,6 +68,7 @@ pub(crate) enum LOp {
     Blake3 {
         ins: [Off; 4],
         c: Off,
+        packing: Blake3Packing,
     },
 }
 
@@ -95,7 +96,12 @@ pub(crate) enum Hint {
     /// buffer `m[fp·g^bits_ptr]`, reconstruct their integer value, and write
     /// `g^max(log2_ceil(value), floor)` into `m[fp·g^dst]`. Nondeterministic
     /// (prover-side); the emitting code re-verifies the result in-circuit.
-    Log2Ceil { bits_ptr: Off, dst: Off, nbits: u32, floor: u32 },
+    Log2Ceil {
+        bits_ptr: Off,
+        dst: Off,
+        nbits: u32,
+        floor: u32,
+    },
     /// Prover-side debug print of `fp+cell` (witness generation only).
     Print { label: String, cell: Off },
     /// Computed advice: write the `nbits` bits of the value in `m[fp+value]`

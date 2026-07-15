@@ -100,9 +100,9 @@
 //!   openings at fixed indices pin them to claimed public inputs.
 
 use crate::blake3_witness::{BitRecord, add_carry_parts, or_bit_at, or_u32_at_bit, xor_dedup};
-use primitives::field::F128T;
 use crate::r1cs::{BlockR1cs, SparseBinaryMatrix};
 use crate::verifier;
+use primitives::field::F192;
 
 // ---------------------------------------------------------------------------
 // Public constants
@@ -157,16 +157,8 @@ pub const G_LANES: [[usize; 4]; N_G_PER_ROUND] = [
 
 /// Message-index pairs `(mx, my)` consumed by G index `g` within a round,
 /// indexing into the (already-permuted) per-round message buffer.
-pub const G_MSG_IDX: [[usize; 2]; N_G_PER_ROUND] = [
-    [0, 1],
-    [2, 3],
-    [4, 5],
-    [6, 7],
-    [8, 9],
-    [10, 11],
-    [12, 13],
-    [14, 15],
-];
+pub const G_MSG_IDX: [[usize; 2]; N_G_PER_ROUND] =
+    [[0, 1], [2, 3], [4, 5], [6, 7], [8, 9], [10, 11], [12, 13], [14, 15]];
 
 // ---------------------------------------------------------------------------
 // Layout positions (bit indices into the per-block z slice of length K)
@@ -273,13 +265,7 @@ fn permute(m: &mut [u32; 16]) {
 
 /// BLAKE3 compression function. Returns the full 16-word output state
 /// (post-finalization XOR). For chaining, the new CV is `out[0..8]`.
-pub fn blake3_compress(
-    cv: &[u32; 8],
-    block_words: &[u32; 16],
-    counter: u64,
-    block_len: u32,
-    flags: u32,
-) -> [u32; 16] {
+pub fn blake3_compress(cv: &[u32; 8], block_words: &[u32; 16], counter: u64, block_len: u32, flags: u32) -> [u32; 16] {
     let counter_low = counter as u32;
     let counter_high = (counter >> 32) as u32;
     let mut state = [
@@ -541,59 +527,23 @@ pub fn build_matrices() -> (SparseBinaryMatrix, SparseBinaryMatrix) {
             let my = Word::from_slot_base(m_bit(my_idx, 0));
 
             // tmp_0 = a + b
-            let tmp_0 = write_add_carry_rows(
-                &mut a_rows,
-                &mut b_rows,
-                &a,
-                &b,
-                g_add_carry_bit(g, ADD_TMP0, 0),
-            );
+            let tmp_0 = write_add_carry_rows(&mut a_rows, &mut b_rows, &a, &b, g_add_carry_bit(g, ADD_TMP0, 0));
             // a_1 = tmp_0 + mx
-            let a_1 = write_add_carry_rows(
-                &mut a_rows,
-                &mut b_rows,
-                &tmp_0,
-                &mx,
-                g_add_carry_bit(g, ADD_A1, 0),
-            );
+            let a_1 = write_add_carry_rows(&mut a_rows, &mut b_rows, &tmp_0, &mx, g_add_carry_bit(g, ADD_A1, 0));
             // d_1 = rotr16(d ^ a_1)
             let d_1 = d.xor(&a_1).dedup().rotr(16);
             // c_1 = c + d_1
-            let c_1 = write_add_carry_rows(
-                &mut a_rows,
-                &mut b_rows,
-                &c,
-                &d_1,
-                g_add_carry_bit(g, ADD_C1, 0),
-            );
+            let c_1 = write_add_carry_rows(&mut a_rows, &mut b_rows, &c, &d_1, g_add_carry_bit(g, ADD_C1, 0));
             // b_1 = rotr12(b ^ c_1)
             let b_1 = b.xor(&c_1).dedup().rotr(12);
             // tmp_1 = a_1 + b_1
-            let tmp_1 = write_add_carry_rows(
-                &mut a_rows,
-                &mut b_rows,
-                &a_1,
-                &b_1,
-                g_add_carry_bit(g, ADD_TMP1, 0),
-            );
+            let tmp_1 = write_add_carry_rows(&mut a_rows, &mut b_rows, &a_1, &b_1, g_add_carry_bit(g, ADD_TMP1, 0));
             // a_2 = tmp_1 + my   (= a_new — cascades)
-            let a_2 = write_add_carry_rows(
-                &mut a_rows,
-                &mut b_rows,
-                &tmp_1,
-                &my,
-                g_add_carry_bit(g, ADD_A2, 0),
-            );
+            let a_2 = write_add_carry_rows(&mut a_rows, &mut b_rows, &tmp_1, &my, g_add_carry_bit(g, ADD_A2, 0));
             // d_2 = rotr8(d_1 ^ a_2)
             let d_2 = d_1.xor(&a_2).dedup().rotr(8);
             // c_2 = c_1 + d_2    (= c_new — cascades)
-            let c_2 = write_add_carry_rows(
-                &mut a_rows,
-                &mut b_rows,
-                &c_1,
-                &d_2,
-                g_add_carry_bit(g, ADD_C2, 0),
-            );
+            let c_2 = write_add_carry_rows(&mut a_rows, &mut b_rows, &c_1, &d_2, g_add_carry_bit(g, ADD_C2, 0));
             // b_new = rotr7(b_1 ^ c_2)    (materialized lin-id)
             let b_new_word = b_1.xor(&c_2).dedup().rotr(7);
             for i in 0..WORD_BITS {
@@ -653,9 +603,8 @@ pub fn build_matrices() -> (SparseBinaryMatrix, SparseBinaryMatrix) {
 /// The `family_digest_matches_baked` test recomputes and compares — a circuit
 /// change fails it until this constant is updated alongside.
 pub const FAMILY_DIGEST: [u8; 32] = [
-    0xe8, 0xb4, 0x06, 0x12, 0xd8, 0x17, 0x0e, 0xcf, 0x4a, 0xdf, 0x77, 0x06, 0x57, 0x23, 0xbf,
-    0x88, 0x6e, 0x49, 0xf1, 0x6f, 0x13, 0xaa, 0x62, 0xe9, 0xc2, 0x6f, 0x03, 0x95, 0x48, 0x50,
-    0x17, 0x5e,
+    0xe8, 0xb4, 0x06, 0x12, 0xd8, 0x17, 0x0e, 0xcf, 0x4a, 0xdf, 0x77, 0x06, 0x57, 0x23, 0xbf, 0x88, 0x6e, 0x49, 0xf1,
+    0x6f, 0x13, 0xaa, 0x62, 0xe9, 0xc2, 0x6f, 0x03, 0x95, 0x48, 0x50, 0x17, 0x5e,
 ];
 
 /// Build a [`BlockR1cs`] batching `2^n_blocks_log` independent BLAKE3
@@ -709,13 +658,7 @@ fn write_word(z: &mut [bool], base: usize, val: u32) {
 }
 
 /// Build the witness block for ONE compression. Length = `K`.
-pub fn build_block_witness(
-    cv: &[u32; 8],
-    m: &[u32; 16],
-    counter: u64,
-    block_len: u32,
-    flags: u32,
-) -> Vec<bool> {
+pub fn build_block_witness(cv: &[u32; 8], m: &[u32; 16], counter: u64, block_len: u32, flags: u32) -> Vec<bool> {
     assert_pinned(&(*cv, *m, counter, block_len, flags));
     let mut z = vec![false; K];
     z[Z_CONST_POS] = true;
@@ -773,8 +716,7 @@ pub fn build_block_witness(
             let d_1 = (d ^ a_1).rotate_right(16);
             let c_1 = add_with_witness_carry_only(c, d_1, &mut z, g_add_carry_bit(g, ADD_C1, 0));
             let b_1 = (b ^ c_1).rotate_right(12);
-            let tmp_1 =
-                add_with_witness_carry_only(a_1, b_1, &mut z, g_add_carry_bit(g, ADD_TMP1, 0));
+            let tmp_1 = add_with_witness_carry_only(a_1, b_1, &mut z, g_add_carry_bit(g, ADD_TMP1, 0));
             let a_2 = add_with_witness_carry_only(tmp_1, my, &mut z, g_add_carry_bit(g, ADD_A2, 0));
             let d_2 = (d_1 ^ a_2).rotate_right(8);
             let c_2 = add_with_witness_carry_only(c_1, d_2, &mut z, g_add_carry_bit(g, ADD_C2, 0));
@@ -866,7 +808,7 @@ pub fn generate_witness(blocks: &[Compression], n_blocks_log: usize) -> Vec<bool
 
 // ---------------------------------------------------------------------------
 // Fast witness generation with (a, b, c) — emits the R1CS row-witnesses
-// directly from the BLAKE3 computation, in F_{2^128}-packed form. Skips the
+// directly from the BLAKE3 computation, as 128-bit packed values embedded in F192. Skips the
 // `apply_block_diag_packed` pass downstream.
 //
 // Row-witness semantics (matching `build_matrices`):
@@ -925,7 +867,7 @@ fn write_const_word_ab_packed(bit_off: usize, val: u32, z: &mut [u64], a: &mut [
 }
 
 /// Build the (z, a, b) blocks for ONE compression instance, into u64 views
-/// of the F128T-packed per-block storage. Buffers must be zero on entry.
+/// of the F192-packed per-block storage. Buffers must be zero on entry.
 ///
 /// **No c buffer.** Since `C = I` (this is the circuit-shape R1CS), `c == z`
 /// byte-for-byte; callers use `z_packed` directly as the c-side input to
@@ -1050,7 +992,8 @@ fn build_block_witness_ab_packed_into(
     }
 }
 
-/// **The fast path.** Produces `(z, a, b)` directly as F_{2^128}-packed
+/// **The fast path.** Produces `(z, a, b)` directly as 128-bit packed values
+/// embedded in F192
 /// vectors — no bool intermediates, no `pack_witness` step, no
 /// `apply_block_diag_packed`. Parallel across compression instances via rayon.
 ///
@@ -1060,11 +1003,11 @@ pub fn generate_witness_with_ab_packed(
     blocks: &[Compression],
     n_blocks_log: usize,
 ) -> (
-    Vec<primitives::field::F128T>,
-    Vec<primitives::field::F128T>,
-    Vec<primitives::field::F128T>,
+    Vec<primitives::field::F192>,
+    Vec<primitives::field::F192>,
+    Vec<primitives::field::F192>,
 ) {
-    use primitives::field::F128T;
+    use primitives::field::F192;
     use rayon::prelude::*;
     let n_total = 1usize << n_blocks_log;
     let n_blocks = blocks.len();
@@ -1074,39 +1017,36 @@ pub fn generate_witness_with_ab_packed(
     );
     blocks.iter().for_each(assert_pinned);
 
-    const F128_PER_BLOCK: usize = K / 128;
-    let total_f128 = n_total * F128_PER_BLOCK;
-    let mut z = vec![F128T::ZERO; total_f128];
-    let mut a = vec![F128T::ZERO; total_f128];
-    let mut b = vec![F128T::ZERO; total_f128];
+    const PACKED_PER_BLOCK: usize = K / 128;
+    let total_packed = n_total * PACKED_PER_BLOCK;
+    let mut z = vec![F192::ZERO; total_packed];
+    let mut a = vec![F192::ZERO; total_packed];
+    let mut b = vec![F192::ZERO; total_packed];
 
     // Constant-wire pin (see lincheck's `LincheckCircuit::const_pin_col`): padding slots get the pinned
     // compression of the all-zero message (constant wire = 1), matching
     // [`generate_witness_with_ab_packed_and_lincheck`].
     let padding = padding_block();
 
-    z.par_chunks_mut(F128_PER_BLOCK)
-        .zip(a.par_chunks_mut(F128_PER_BLOCK))
-        .zip(b.par_chunks_mut(F128_PER_BLOCK))
+    z.par_chunks_mut(PACKED_PER_BLOCK)
+        .zip(a.par_chunks_mut(PACKED_PER_BLOCK))
+        .zip(b.par_chunks_mut(PACKED_PER_BLOCK))
         .enumerate()
         .for_each(|(idx, ((z_c, a_c), b_c))| {
-            let (cv, m, t, bl, fl) = if idx < n_blocks {
-                &blocks[idx]
-            } else {
-                &padding
-            };
-            // SAFETY: F128T is repr(C, align(16)) with LE u64 halves — same
-            // byte layout as a u64 pair.
-            let z_u64: &mut [u64] = unsafe {
-                std::slice::from_raw_parts_mut(z_c.as_mut_ptr() as *mut u64, z_c.len() * 2)
-            };
-            let a_u64: &mut [u64] = unsafe {
-                std::slice::from_raw_parts_mut(a_c.as_mut_ptr() as *mut u64, a_c.len() * 2)
-            };
-            let b_u64: &mut [u64] = unsafe {
-                std::slice::from_raw_parts_mut(b_c.as_mut_ptr() as *mut u64, b_c.len() * 2)
-            };
-            build_block_witness_ab_packed_into(cv, m, *t, *bl, *fl, z_u64, a_u64, b_u64);
+            let (cv, m, t, bl, fl) = if idx < n_blocks { &blocks[idx] } else { &padding };
+            let mut z_u64 = vec![0u64; z_c.len() * 2];
+            let mut a_u64 = vec![0u64; a_c.len() * 2];
+            let mut b_u64 = vec![0u64; b_c.len() * 2];
+            build_block_witness_ab_packed_into(cv, m, *t, *bl, *fl, &mut z_u64, &mut a_u64, &mut b_u64);
+            for (dst, words) in z_c.iter_mut().zip(z_u64.chunks_exact(2)) {
+                *dst = F192::new(words[0], words[1], 0);
+            }
+            for (dst, words) in a_c.iter_mut().zip(a_u64.chunks_exact(2)) {
+                *dst = F192::new(words[0], words[1], 0);
+            }
+            for (dst, words) in b_c.iter_mut().zip(b_u64.chunks_exact(2)) {
+                *dst = F192::new(words[0], words[1], 0);
+            }
         });
 
     (z, a, b)
@@ -1129,9 +1069,9 @@ pub fn generate_witness_with_ab_packed_and_lincheck(
     blocks: &[Compression],
     n_blocks_log: usize,
 ) -> (
-    Vec<primitives::field::F128T>,
-    Vec<primitives::field::F128T>,
-    Vec<primitives::field::F128T>,
+    Vec<primitives::field::F192>,
+    Vec<primitives::field::F192>,
+    Vec<primitives::field::F192>,
     Vec<u8>,
 ) {
     // Constant-wire pin (see lincheck's `LincheckCircuit::const_pin_col`): fill padding blocks with the
@@ -1150,6 +1090,18 @@ pub fn generate_witness_with_ab_packed_and_lincheck(
             build_block_witness_ab_packed_into(cv, m, *t, *bl, *fl, z_u64, a_u64, b_u64);
         },
     )
+}
+
+/// Serialize the 128-bit packed-witness subspace of F192. The third limb is
+/// constrained to zero by construction and is not part of Flock's bit cube.
+fn packed_128_bytes(words: &[F192]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(words.len() * 16);
+    for word in words {
+        debug_assert_eq!(word.c2, 0, "packed Flock witness escaped 128-bit subspace");
+        out.extend_from_slice(&word.c0.to_le_bytes());
+        out.extend_from_slice(&word.c1.to_le_bytes());
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -1233,13 +1185,7 @@ mod tests {
     /// (a single root-block, single-chunk, ROOT-flagged compression).
     #[test]
     fn compress_matches_blake3_crate_empty() {
-        let state = blake3_compress(
-            &BLAKE3_IV,
-            &[0u32; 16],
-            0,
-            0,
-            CHUNK_START | CHUNK_END | ROOT,
-        );
+        let state = blake3_compress(&BLAKE3_IV, &[0u32; 16], 0, 0, CHUNK_START | CHUNK_END | ROOT);
         let mut got = [0u8; 32];
         for w in 0..8 {
             got[w * 4..w * 4 + 4].copy_from_slice(&state[w].to_le_bytes());
@@ -1310,10 +1256,7 @@ mod tests {
                 .collect();
             let z = generate_witness(&blocks, n_log);
             assert_eq!(z.len(), r1cs.n());
-            assert!(
-                r1cs.satisfies(&z),
-                "witness for {n_blocks} compressions fails R1CS"
-            );
+            assert!(r1cs.satisfies(&z), "witness for {n_blocks} compressions fails R1CS");
         }
     }
 
@@ -1327,10 +1270,7 @@ mod tests {
         assert!(r1cs.satisfies(&z));
         // Flip a carry_aux bit inside G #10 (middle of round 1).
         z[g_add_carry_bit(10, ADD_A2, 5)] ^= true;
-        assert!(
-            !r1cs.satisfies(&z),
-            "tampered carry bit should violate R1CS"
-        );
+        assert!(!r1cs.satisfies(&z), "tampered carry bit should violate R1CS");
     }
 
     /// The fused generator produces (z, a, b) byte-identical to
@@ -1352,8 +1292,7 @@ mod tests {
 
             let (z1, a1, b1) = generate_witness_with_ab_packed(&blocks, n_log);
             let lincheck_ref = pack_z_lincheck_from_packed(&z1, r1cs.m, r1cs.k_log);
-            let (z2, a2, b2, lincheck_new) =
-                generate_witness_with_ab_packed_and_lincheck(&blocks, n_log);
+            let (z2, a2, b2, lincheck_new) = generate_witness_with_ab_packed_and_lincheck(&blocks, n_log);
             assert_eq!(z1, z2, "z mismatch at n_blocks={n_blocks}");
             assert_eq!(a1, a2, "a mismatch at n_blocks={n_blocks}");
             assert_eq!(b1, b2, "b mismatch at n_blocks={n_blocks}");
@@ -1366,9 +1305,7 @@ mod tests {
 
     #[test]
     fn setup_sizes_correctly() {
-        for &(n_blocks, expected_n_log) in
-            &[(1usize, 3), (8, 3), (9, 4), (16, 4), (17, 5), (1000, 10)]
-        {
+        for &(n_blocks, expected_n_log) in &[(1usize, 3), (8, 3), (9, 4), (16, 4), (17, 5), (1000, 10)] {
             let setup = Blake3Setup::new(n_blocks);
             assert_eq!(setup.n_blocks_log(), expected_n_log, "n_blocks={n_blocks}");
             assert_eq!(setup.m(), K_LOG + expected_n_log);
@@ -1388,11 +1325,10 @@ mod tests {
         let inner_rest_len = r1cs.k_log - r1cs.k_skip;
 
         // Correctly-shaped buffers (padding-only generation), then zeroed.
-        let (mut z, mut a, mut b, mut zlc) =
-            generate_witness_with_ab_packed_and_lincheck(&[], setup.n_blocks_log());
-        z.fill(F128T::ZERO);
-        a.fill(F128T::ZERO);
-        b.fill(F128T::ZERO);
+        let (mut z, mut a, mut b, mut zlc) = generate_witness_with_ab_packed_and_lincheck(&[], setup.n_blocks_log());
+        z.fill(F192::ZERO);
+        a.fill(F192::ZERO);
+        b.fill(F192::ZERO);
         zlc.fill(0);
 
         // Prover side: the reduction happily runs on the zero witness.
@@ -1400,20 +1336,13 @@ mod tests {
             k_log: r1cs.k_log,
             useful_bits_per_block: r1cs.useful_bits,
         };
-        let as_bytes = |v: &[F128T]| unsafe {
-            std::slice::from_raw_parts(
-                v.as_ptr() as *const u8,
-                std::mem::size_of_val(v),
-            )
-        };
+        let a_bytes = packed_128_bytes(&a);
+        let b_bytes = packed_128_bytes(&b);
+        let z_bytes = packed_128_bytes(&z);
         let mut ps = pcs::ProverState::new(b"const-pin-poc", &[]);
         let (zc_claim, _s_hat_v_c) = crate::zerocheck::prove_packed_padded_capture_s_hat_v_c(
-            as_bytes(&a),
-            as_bytes(&b),
-            as_bytes(&z), // C = I, so c == z
-            r1cs.m,
-            &padding,
-            &mut ps,
+            &a_bytes, &b_bytes, &z_bytes, // C = I, so c == z
+            r1cs.m, &padding, &mut ps,
         );
         let x_ab = crate::lincheck::QuirkyPoint {
             z_skip: zc_claim.z,
@@ -1434,8 +1363,7 @@ mod tests {
 
         // Verifier side: zerocheck accepts, the lincheck const-wire pin rejects.
         let mut vs = pcs::VerifierState::new(b"const-pin-poc", &proof_t, &[]);
-        let zc = crate::zerocheck::verify(r1cs.m, &mut vs)
-            .expect("zerocheck accepts the all-zero witness");
+        let zc = crate::zerocheck::verify(r1cs.m, &mut vs).expect("zerocheck accepts the all-zero witness");
         let x_ab_v = crate::lincheck::QuirkyPoint {
             z_skip: zc.z,
             x_inner_rest: zc.mlv_challenges[..inner_rest_len].to_vec(),
@@ -1452,10 +1380,7 @@ mod tests {
             &mut vs,
         );
         assert!(
-            matches!(
-                res,
-                Err(crate::lincheck::VerifyError::ConsistencyFailed { .. })
-            ),
+            matches!(res, Err(crate::lincheck::VerifyError::ConsistencyFailed { .. })),
             "all-zero witness must be rejected by the constant-wire pin; got {res:?}"
         );
     }
@@ -1474,7 +1399,7 @@ mod tests {
 #[derive(Clone, Debug)]
 pub struct WitnessClaim {
     pub claim: crate::proof::ZClaim,
-    pub s_hat_v: Option<Vec<F128T>>,
+    pub s_hat_v: Option<Vec<F192>>,
 }
 
 /// The two claims on the committed witness `q_pkd` left by the Flock BLAKE3
@@ -1516,10 +1441,10 @@ impl Blake3Setup {
         &self,
         blocks: &[Compression],
         ps: &mut fiat_shamir::transcript::ProverState<O>,
-    ) -> (Vec<F128T>, ReducedClaims) {
+    ) -> (Vec<F192>, ReducedClaims) {
         assert_eq!(blocks.len(), self.n_blocks);
         let n_log = self.n_blocks_log();
-        let (z_packed, a_packed_f128, b_packed_f128, z_packed_lincheck) =
+        let (z_packed, a_packed_words, b_packed_words, z_packed_lincheck) =
             generate_witness_with_ab_packed_and_lincheck(blocks, n_log);
 
         // No bind_statement here: the embedding protocol (leanVM-b) seeds its
@@ -1532,26 +1457,16 @@ impl Blake3Setup {
             useful_bits_per_block: self.r1cs.useful_bits,
         };
         let (zc_claim, s_hat_v_c) = {
-            let a_packed: &[u8] = unsafe {
-                std::slice::from_raw_parts(
-                    a_packed_f128.as_ptr() as *const u8,
-                    a_packed_f128.len() * core::mem::size_of::<F128T>(),
-                )
-            };
-            let b_packed: &[u8] = unsafe {
-                std::slice::from_raw_parts(
-                    b_packed_f128.as_ptr() as *const u8,
-                    b_packed_f128.len() * core::mem::size_of::<F128T>(),
-                )
-            };
-            let c_packed: &[u8] = unsafe {
-                std::slice::from_raw_parts(
-                    z_packed.as_ptr() as *const u8,
-                    z_packed.len() * core::mem::size_of::<F128T>(),
-                )
-            };
+            let a_packed = packed_128_bytes(&a_packed_words);
+            let b_packed = packed_128_bytes(&b_packed_words);
+            let c_packed = packed_128_bytes(&z_packed);
             crate::zerocheck::prove_packed_padded_capture_s_hat_v_c(
-                a_packed, b_packed, c_packed, self.r1cs.m, &padding, ps,
+                &a_packed,
+                &b_packed,
+                &c_packed,
+                self.r1cs.m,
+                &padding,
+                ps,
             )
         };
 
@@ -1598,8 +1513,14 @@ impl Blake3Setup {
         };
 
         let reduced = ReducedClaims {
-            ab: WitnessClaim { claim: ab, s_hat_v: s_hat_v_ab },
-            c: WitnessClaim { claim: c, s_hat_v: Some(s_hat_v_c) },
+            ab: WitnessClaim {
+                claim: ab,
+                s_hat_v: s_hat_v_ab,
+            },
+            c: WitnessClaim {
+                claim: c,
+                s_hat_v: Some(s_hat_v_c),
+            },
         };
         (z_packed, reduced)
     }
@@ -1615,8 +1536,7 @@ impl Blake3Setup {
         // Mirror of prove_reduction: the statement is bound by the embedding
         // protocol's seed (family digest) + announced count + commitment root.
 
-        let zc_claim = crate::zerocheck::verify(self.r1cs.m, vs)
-            .map_err(verifier::VerifyError::Zerocheck)?;
+        let zc_claim = crate::zerocheck::verify(self.r1cs.m, vs).map_err(verifier::VerifyError::Zerocheck)?;
         let inner_rest_len = self.r1cs.k_log - self.r1cs.k_skip;
         let x_ab = crate::lincheck::QuirkyPoint {
             z_skip: zc_claim.z,
@@ -1651,7 +1571,11 @@ impl Blake3Setup {
             },
             value: zc_claim.c_eval,
         };
-        Ok(ReductionReplay { ab, c, zc_claim, lc_claim })
+        Ok(ReductionReplay {
+            ab,
+            c,
+            zc_claim,
+            lc_claim,
+        })
     }
-
 }

@@ -2,7 +2,7 @@
 //! Round-1 prover message (univariate skip).
 //!
 //! The round-1 message is `(P^{AB}, P^C)`, each a length-`2^k_skip` vector
-//! of F128T values. They are evaluations on the NTT domain `Λ` of the
+//! of F192 values. They are evaluations on the NTT domain `Λ` of the
 //! polynomial (over λ) defined by
 //!
 //!   P^{AB}(λ) = Σ_{x ∈ {0,1}^{m-k_skip}} eq(r_rest, x) · φ₈(â(λ, x) · b̂(λ, x))
@@ -19,8 +19,8 @@
 //! [`super::univariate_skip_optimized`] drops a constant F₈ factor
 //! `C_s = φ₈(0x1C)` from the eq-on-S weights; this one keeps it.
 
-use primitives::field::{F8, F128T, phi8};
 use pcs::ntt::{AdditiveNttGf8, InvNttTableByteSingleGf8};
+use primitives::field::{F8, F192, phi8_192 as phi8};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -36,7 +36,7 @@ pub use primitives::multilinear::eq_table as build_eq;
 /// inner, no deferred reduction — direct algorithmic translation of the
 /// protocol formula).
 ///
-/// Returns `(p_ab, p_c)`, each a length-`2^k_skip` F128T vector of evaluations
+/// Returns `(p_ab, p_c)`, each a length-`2^k_skip` F192 vector of evaluations
 /// on Λ.
 ///
 /// Preconditions:
@@ -47,14 +47,7 @@ pub use primitives::multilinear::eq_table as build_eq;
 /// Index convention: for index `i ∈ 0..2^m`, the low `k_skip` bits address
 /// the *skip* variables (`y_skip ∈ S`), the high `m - k_skip` bits address
 /// the *rest* variables (`y_rest`).
-pub fn round1_naive(
-    a: &[bool],
-    b: &[bool],
-    c: &[bool],
-    m: usize,
-    k_skip: usize,
-    r: &[F128T],
-) -> (Vec<F128T>, Vec<F128T>) {
+pub fn round1_naive(a: &[bool], b: &[bool], c: &[bool], m: usize, k_skip: usize, r: &[F192]) -> (Vec<F192>, Vec<F192>) {
     assert!(k_skip <= m, "k_skip must be ≤ m");
     assert_eq!(a.len(), 1usize << m);
     assert_eq!(b.len(), 1usize << m);
@@ -72,8 +65,8 @@ pub fn round1_naive(
     // (the skip portion r[0..k_skip] is consumed by the verifier later).
     let eq_full = build_eq(&r[k_skip..]);
 
-    let mut p_ab = vec![F128T::ZERO; ell];
-    let mut p_c = vec![F128T::ZERO; ell];
+    let mut p_ab = vec![F192::ZERO; ell];
+    let mut p_c = vec![F192::ZERO; ell];
 
     let mut a_col = vec![F8::ZERO; ell];
     let mut b_col = vec![F8::ZERO; ell];
@@ -127,19 +120,17 @@ pub fn pack_bits(bits: &[bool]) -> Vec<u8> {
     let mut out = vec![0u8; n_bytes];
     // Each output byte depends on 8 contiguous input bits — disjoint, so
     // process bytes in parallel.
-    out.par_chunks_mut(1)
-        .enumerate()
-        .for_each(|(byte_idx, slot)| {
-            let mut byte = 0u8;
-            let base = byte_idx * 8;
-            for j in 0..8 {
-                let bit_idx = base + j;
-                if bit_idx < bits.len() && bits[bit_idx] {
-                    byte |= 1u8 << j;
-                }
+    out.par_chunks_mut(1).enumerate().for_each(|(byte_idx, slot)| {
+        let mut byte = 0u8;
+        let base = byte_idx * 8;
+        for j in 0..8 {
+            let bit_idx = base + j;
+            if bit_idx < bits.len() && bits[bit_idx] {
+                byte |= 1u8 << j;
             }
-            slot[0] = byte;
-        });
+        }
+        slot[0] = byte;
+    });
     out
 }
 
@@ -149,21 +140,21 @@ pub fn pack_bits(bits: &[bool]) -> Vec<u8> {
 pub struct SplitEq {
     pub n_lo: usize,
     pub n_hi: usize,
-    pub lo: Vec<F128T>,
-    pub hi: Vec<F128T>,
+    pub lo: Vec<F192>,
+    pub hi: Vec<F192>,
 }
 
 impl SplitEq {
-    /// C++-default cap on the hi half size — keeps outer F128T muls cheap.
+    /// C++-default cap on the hi half size — keeps outer F192 muls cheap.
     pub const MAX_N_HI: usize = 7;
 
-    pub fn new(r: &[F128T]) -> Self {
+    pub fn new(r: &[F192]) -> Self {
         let n = r.len();
         let n_hi = n.min(Self::MAX_N_HI);
         Self::with_n_hi(r, n_hi)
     }
 
-    pub fn with_n_hi(r: &[F128T], n_hi: usize) -> Self {
+    pub fn with_n_hi(r: &[F192], n_hi: usize) -> Self {
         let n = r.len();
         let n_hi = n_hi.min(n);
         let n_lo = n - n_hi;
@@ -176,33 +167,34 @@ impl SplitEq {
     }
 }
 
-/// Extend a length-`ell` F128T vector from the input domain S to the extension
-/// domain Λ using bit-plane decomposition: for each of the 128 bit positions
-/// of F128T, run the bit-input NTT (`inv_NTT_S` then `fwd_NTT_Λ` via the
+/// Extend a length-`ell` F192 vector from the input domain S to the extension
+/// domain Λ using bit-plane decomposition: for each of the 192 bit positions
+/// of F192, run the bit-input NTT (`inv_NTT_S` then `fwd_NTT_Λ` via the
 /// precomputed table) on that bit-plane, scale by γ^b, and accumulate.
 ///
 /// Ports `ntt_extend_vec` (scalar form). The NTT is F_2-linear and
 /// φ_8 commutes with that linearity, which is what makes the bit-by-bit
 /// decomposition equal to the direct F_8-valued NTT extension.
-pub fn ntt_extend_vec(in_s: &[F128T], inv_table: &InvNttTableByteSingleGf8) -> Vec<F128T> {
+pub fn ntt_extend_vec(in_s: &[F192], inv_table: &InvNttTableByteSingleGf8) -> Vec<F192> {
     let ell = inv_table.ell;
     assert_eq!(in_s.len(), ell);
     assert_eq!(ell, 1usize << inv_table.k);
 
-    let mut out = vec![F128T::ZERO; ell];
+    let mut out = vec![F192::ZERO; ell];
     let n_chunks = inv_table.n_chunks;
 
     let mut input_bits = vec![0u8; n_chunks];
     let mut out_bytes = vec![F8::ZERO; ell];
 
-    for b in 0..128 {
+    for b in 0..192 {
         // Pack bit b of each in_s[z] into z-indexed LSB-first byte form.
         input_bits.iter_mut().for_each(|x| *x = 0);
         for z in 0..ell {
-            let bit = if b < 64 {
-                (in_s[z].c0 >> b) & 1
-            } else {
-                (in_s[z].c1 >> (b - 64)) & 1
+            let bit = match b / 64 {
+                0 => (in_s[z].c0 >> b) & 1,
+                1 => (in_s[z].c1 >> (b - 64)) & 1,
+                2 => (in_s[z].c2 >> (b - 128)) & 1,
+                _ => unreachable!(),
             };
             if bit != 0 {
                 input_bits[z / 8] |= 1u8 << (z % 8);
@@ -212,10 +204,11 @@ pub fn ntt_extend_vec(in_s: &[F128T], inv_table: &InvNttTableByteSingleGf8) -> V
         // Bit-input NTT.
         inv_table.apply(&input_bits, &mut out_bytes);
 
-        let basis = if b < 64 {
-            F128T::new(1u64 << b, 0)
-        } else {
-            F128T::new(0, 1u64 << (b - 64))
+        let basis = match b / 64 {
+            0 => F192::new(1u64 << b, 0, 0),
+            1 => F192::new(0, 1u64 << (b - 64), 0),
+            2 => F192::new(0, 0, 1u64 << (b - 128)),
+            _ => unreachable!(),
         };
         for lambda in 0..ell {
             out[lambda] += basis * phi8(out_bytes[lambda]);
@@ -228,7 +221,7 @@ pub fn ntt_extend_vec(in_s: &[F128T], inv_table: &InvNttTableByteSingleGf8) -> V
 /// Round-1 prover message (extract_c form, scalar, algorithmically optimized
 /// but without the geometric-eq shift_reduce trick).
 ///
-/// Output: `(res_AB, res_C_lifted)`, each length `2^k_skip` F128T vector.
+/// Output: `(res_AB, res_C_lifted)`, each length `2^k_skip` F192 vector.
 /// Both are evaluations on Λ. Output equals `round1_naive(..)` byte-for-byte
 /// (no C_s factor — see module-level comment).
 pub fn round1_extract_c(
@@ -237,9 +230,9 @@ pub fn round1_extract_c(
     c: &[bool],
     m: usize,
     k_skip: usize,
-    r: &[F128T],
+    r: &[F192],
     inv_table: &InvNttTableByteSingleGf8,
-) -> (Vec<F128T>, Vec<F128T>) {
+) -> (Vec<F192>, Vec<F192>) {
     assert_eq!(a.len(), 1usize << m);
     assert_eq!(b.len(), 1usize << m);
     assert_eq!(c.len(), 1usize << m);
@@ -259,9 +252,9 @@ pub fn round1_extract_c_packed(
     c_packed: &[u8],
     m: usize,
     k_skip: usize,
-    r: &[F128T],
+    r: &[F192],
     inv_table: &InvNttTableByteSingleGf8,
-) -> (Vec<F128T>, Vec<F128T>) {
+) -> (Vec<F192>, Vec<F192>) {
     assert!(k_skip <= m);
     let total_bytes = (1usize << m) / 8;
     assert_eq!(a_packed.len(), total_bytes);
@@ -277,19 +270,19 @@ pub fn round1_extract_c_packed(
     let lo_size = 1usize << eq.n_lo;
     let hi_size = 1usize << eq.n_hi;
 
-    let mut res_ab = vec![F128T::ZERO; ell];
+    let mut res_ab = vec![F192::ZERO; ell];
     // C accumulator stays in S-domain; we NTT-extend once at the end.
-    let mut res_c_s = vec![F128T::ZERO; ell];
+    let mut res_c_s = vec![F192::ZERO; ell];
 
-    let mut partial_ab = vec![F128T::ZERO; ell];
-    let mut partial_c = vec![F128T::ZERO; ell];
+    let mut partial_ab = vec![F192::ZERO; ell];
+    let mut partial_c = vec![F192::ZERO; ell];
 
     let mut a_col = vec![F8::ZERO; ell];
     let mut b_col = vec![F8::ZERO; ell];
 
     for x_hi in 0..hi_size {
-        partial_ab.iter_mut().for_each(|p| *p = F128T::ZERO);
-        partial_c.iter_mut().for_each(|p| *p = F128T::ZERO);
+        partial_ab.iter_mut().for_each(|p| *p = F192::ZERO);
+        partial_c.iter_mut().for_each(|p| *p = F192::ZERO);
 
         for x_lo in 0..lo_size {
             let x_rest = (x_hi << eq.n_lo) | x_lo;
@@ -366,9 +359,9 @@ pub fn round1_extract_c_packed_with_s_hat_v(
     c_packed: &[u8],
     m: usize,
     k_skip: usize,
-    r: &[F128T],
+    r: &[F192],
     inv_table: &InvNttTableByteSingleGf8,
-) -> (Vec<F128T>, Vec<F128T>, Vec<F128T>) {
+) -> (Vec<F192>, Vec<F192>, Vec<F192>) {
     assert!(k_skip <= m);
     let total_bytes = (1usize << m) / 8;
     assert_eq!(a_packed.len(), total_bytes);
@@ -384,23 +377,23 @@ pub fn round1_extract_c_packed_with_s_hat_v(
     let lo_size = 1usize << eq.n_lo;
     let hi_size = 1usize << eq.n_hi;
 
-    let mut res_ab = vec![F128T::ZERO; ell];
+    let mut res_ab = vec![F192::ZERO; ell];
     // Two C banks, one per value of bit 0 of `x_rest` = bit `k_skip` of the
     // flat witness index (= `b_7` in ring-switch's parlance).
-    let mut res_c_s_0 = vec![F128T::ZERO; ell];
-    let mut res_c_s_1 = vec![F128T::ZERO; ell];
+    let mut res_c_s_0 = vec![F192::ZERO; ell];
+    let mut res_c_s_1 = vec![F192::ZERO; ell];
 
-    let mut partial_ab = vec![F128T::ZERO; ell];
-    let mut partial_c_0 = vec![F128T::ZERO; ell];
-    let mut partial_c_1 = vec![F128T::ZERO; ell];
+    let mut partial_ab = vec![F192::ZERO; ell];
+    let mut partial_c_0 = vec![F192::ZERO; ell];
+    let mut partial_c_1 = vec![F192::ZERO; ell];
 
     let mut a_col = vec![F8::ZERO; ell];
     let mut b_col = vec![F8::ZERO; ell];
 
     for x_hi in 0..hi_size {
-        partial_ab.iter_mut().for_each(|p| *p = F128T::ZERO);
-        partial_c_0.iter_mut().for_each(|p| *p = F128T::ZERO);
-        partial_c_1.iter_mut().for_each(|p| *p = F128T::ZERO);
+        partial_ab.iter_mut().for_each(|p| *p = F192::ZERO);
+        partial_c_0.iter_mut().for_each(|p| *p = F192::ZERO);
+        partial_c_1.iter_mut().for_each(|p| *p = F192::ZERO);
 
         for x_lo in 0..lo_size {
             let x_rest = (x_hi << eq.n_lo) | x_lo;
@@ -423,11 +416,7 @@ pub fn round1_extract_c_packed_with_s_hat_v(
             // factor `eq(r[k_skip], b_7)` is implicit in eq_lo because the
             // SplitEq builds the tensor for r[k_skip..]; we strip that
             // factor out at the end via division.
-            let target = if b_7 == 0 {
-                &mut partial_c_0
-            } else {
-                &mut partial_c_1
-            };
+            let target = if b_7 == 0 { &mut partial_c_0 } else { &mut partial_c_1 };
             for s in 0..ell {
                 let c_bit = (c_packed[chunk_offset + s / 8] >> (s % 8)) & 1;
                 if c_bit != 0 {
@@ -447,7 +436,7 @@ pub fn round1_extract_c_packed_with_s_hat_v(
     // Wire output: combined bank sum = original res_c_s. (The eq(r[k_skip], 0)
     // factor (= 1 + r[k_skip]) is baked into bank 0, eq(r[k_skip], 1) (= r[k_skip])
     // into bank 1. Summing reconstitutes the eq(r[k_skip..m], x_rest) sum.)
-    let mut res_c_s = vec![F128T::ZERO; ell];
+    let mut res_c_s = vec![F192::ZERO; ell];
     for s in 0..ell {
         res_c_s[s] = res_c_s_0[s] + res_c_s_1[s];
     }
@@ -456,9 +445,9 @@ pub fn round1_extract_c_packed_with_s_hat_v(
     // s_hat_v_c: strip the eq(r[k_skip], ·) factor from each bank by dividing
     // by 1 + r[k_skip] (bank 0) and r[k_skip] (bank 1). No NTT extension —
     // lanes are already boolean indices, which is what ring-switch consumes.
-    let inv_zero = (F128T::ONE + r[k_skip]).inv();
+    let inv_zero = (F192::ONE + r[k_skip]).inv();
     let inv_one = r[k_skip].inv();
-    let mut s_hat_v_c = vec![F128T::ZERO; 2 * ell];
+    let mut s_hat_v_c = vec![F192::ZERO; 2 * ell];
     for lane in 0..ell {
         s_hat_v_c[lane] = res_c_s_0[lane] * inv_zero;
         s_hat_v_c[ell + lane] = res_c_s_1[lane] * inv_one;
@@ -485,8 +474,8 @@ pub fn round1_evals_on_s(
     c: &[bool],
     m: usize,
     k_skip: usize,
-    r: &[F128T],
-) -> (Vec<F128T>, Vec<F128T>) {
+    r: &[F192],
+) -> (Vec<F192>, Vec<F192>) {
     assert!(k_skip <= m);
     assert_eq!(a.len(), 1usize << m);
     assert_eq!(b.len(), 1usize << m);
@@ -497,8 +486,8 @@ pub fn round1_evals_on_s(
     let n_chunks_x = 1usize << (m - k_skip);
     let eq_full = build_eq(&r[k_skip..]);
 
-    let mut p_ab = vec![F128T::ZERO; ell];
-    let mut p_c = vec![F128T::ZERO; ell];
+    let mut p_ab = vec![F192::ZERO; ell];
+    let mut p_c = vec![F192::ZERO; ell];
 
     for x_rest in 0..n_chunks_x {
         let base = x_rest * ell;
@@ -528,20 +517,20 @@ mod tests {
     #[test]
     fn build_eq_basic() {
         // Empty r → table = [1].
-        assert_eq!(build_eq(&[]), vec![F128T::ONE]);
+        assert_eq!(build_eq(&[]), vec![F192::ONE]);
         // Single r = [r0] → table = [(1+r0), r0].
-        let r0 = F128T::new(0xCAFEBABE, 0x12345678);
+        let r0 = F192::new(0xCAFEBABE, 0x12345678, 0x87654321);
         let t = build_eq(&[r0]);
         assert_eq!(t.len(), 2);
-        assert_eq!(t[0], F128T::ONE + r0);
+        assert_eq!(t[0], F192::ONE + r0);
         assert_eq!(t[1], r0);
         // Sum of all eq values is 1 (a defining property of the multilinear eq).
         let n = 5;
         let mut rng = Rng::new(99);
         let r = rng.ext_vec(n);
         let t = build_eq(&r);
-        let sum: F128T = t.iter().copied().fold(F128T::ZERO, |a, b| a + b);
-        assert_eq!(sum, F128T::ONE, "Σ_x eq(r, x) should be 1");
+        let sum: F192 = t.iter().copied().fold(F192::ZERO, |a, b| a + b);
+        assert_eq!(sum, F192::ONE, "Σ_x eq(r, x) should be 1");
     }
 
     #[test]
@@ -636,7 +625,7 @@ mod tests {
         for s in 0..p_ab_s.len() {
             assert_eq!(
                 p_ab_s[s] + p_c_s[s],
-                F128T::ZERO,
+                F192::ZERO,
                 "P at S should be 0 for honest witness, but failed at s={s}"
             );
         }
@@ -656,7 +645,7 @@ mod tests {
         let r = rng.ext_vec(m);
 
         let (p_ab_s, p_c_s) = round1_evals_on_s(&a, &b, &c, m, k_skip, &r);
-        let combined: Vec<F128T> = p_ab_s.iter().zip(&p_c_s).map(|(x, y)| *x + *y).collect();
+        let combined: Vec<F192> = p_ab_s.iter().zip(&p_c_s).map(|(x, y)| *x + *y).collect();
         let nonzero = combined.iter().any(|v| !v.is_zero());
         assert!(nonzero, "P at S should be nonzero for a random witness");
     }
@@ -711,8 +700,7 @@ mod tests {
             let table = make_inv_table(k_skip);
 
             let (ab_old, c_old) = round1_extract_c_packed(&a, &b, &c, m, k_skip, &r, &table);
-            let (ab_new, c_new, _) =
-                round1_extract_c_packed_with_s_hat_v(&a, &b, &c, m, k_skip, &r, &table);
+            let (ab_new, c_new, _) = round1_extract_c_packed_with_s_hat_v(&a, &b, &c, m, k_skip, &r, &table);
 
             assert_eq!(ab_old, ab_new, "res_ab mismatch m={m} k_skip={k_skip}");
             assert_eq!(c_old, c_new, "res_c_lifted mismatch m={m} k_skip={k_skip}");
@@ -740,8 +728,7 @@ mod tests {
             let r = rng.ext_vec(m);
             let table = make_inv_table(K_SKIP);
 
-            let (_, _, s_hat_v_c) =
-                round1_extract_c_packed_with_s_hat_v(&a, &b, &c, m, K_SKIP, &r, &table);
+            let (_, _, s_hat_v_c) = round1_extract_c_packed_with_s_hat_v(&a, &b, &c, m, K_SKIP, &r, &table);
 
             // Reference: fold_1b_rows on the packed C-witness against the
             // suffix tensor built from r[k_skip + 1 ..].
@@ -752,7 +739,7 @@ mod tests {
 
             let c = r[K_SKIP];
             let folded: Vec<_> = (0..pcs::pack_k::PACKING_WIDTH_K)
-                .map(|i| (F128T::ONE + c) * s_hat_v_c[i] + c * s_hat_v_c[i + pcs::pack_k::PACKING_WIDTH_K])
+                .map(|i| (F192::ONE + c) * s_hat_v_c[i] + c * s_hat_v_c[i + pcs::pack_k::PACKING_WIDTH_K])
                 .collect();
 
             assert_eq!(folded.len(), want.len(), "length mismatch at m={m}");
@@ -823,7 +810,7 @@ mod tests {
 
     #[test]
     fn ntt_extend_round_trips_naive_c_path() {
-        // Sanity for the F128T NTT extension: build a length-ell F128T vector by
+        // Sanity for the F192 NTT extension: build a length-ell F192 vector by
         // applying the naive (eq-weighted) C accumulation at S, then
         // NTT-extending it. Compare to running the naive C path (which does
         // the NTT-extend per row). These must agree because both are linear.

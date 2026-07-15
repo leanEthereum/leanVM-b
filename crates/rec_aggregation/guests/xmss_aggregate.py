@@ -9,8 +9,9 @@
 # all). The IV size element is computed from n directly (the loop absorbs
 # exactly n pk blocks, so it needs no separate hint or consistency check).
 #
-# Machine words are 128-bit, so every 16-byte native value (tweak, digest word
-# pair, chain tip, sibling, pp) is ONE cell, and a 32-byte hash block is TWO.
+# BLAKE3 operands use the canonical 128-bit subspace of F192, so every 16-byte
+# native value (tweak, digest pair, chain tip, sibling, pp) is one cell with a
+# zero top limb, and a 32-byte hash block is two cells.
 # Tweak table layout (tweak index t at cell g^{t}):
 #     0                        : encoding tweak
 #     1 + CHAIN_STEPS·i + s    : chain tweak, chain i < V, step s < CHAIN_STEPS
@@ -29,12 +30,11 @@ CHAIN_LENGTH = 2 ** W               # Winternitz digit base (each e_i < this)
 CHAIN_STEPS = CHAIN_LENGTH - 1      # hash steps / tweaks per chain
 WOTS_PK_PAIRS = V / 2               # tip pairs hashed into the WOTS leaf
 
-WORDS_PER_VALUE = 1                 # a 16-byte native value = ONE 128-bit cell …
+WORDS_PER_VALUE = 1                 # a 16-byte native value = one BLAKE3 cell …
 WORDS_PER_BLOCK = 2                 # … and a 32-byte Merkle-Damgard block = two
 BYTES_PER_BLOCK = 32
 
-# The tower generator y = new(0, 1): the 128-bit word whose bit pattern is 2^64.
-# `acc_lo + acc_hi·Y` packs two 64-bit lanes into one 128-bit cell.
+# The tower generator Y. `acc_lo + acc_hi·Y` embeds 128 BLAKE3 bits in F192.
 Y = 18446744073709551616
 
 # Tweak table (one 1-cell tweak per index): encoding | V·CHAIN_STEPS chain |
