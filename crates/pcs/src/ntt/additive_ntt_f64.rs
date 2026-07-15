@@ -386,6 +386,31 @@ fn butterfly_interleaved_block(
 #[inline]
 fn butterfly_lanes(top: &mut [F64], bot: &mut [F64], twiddle: F64) {
     debug_assert_eq!(top.len(), bot.len());
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "vpclmulqdq",
+        target_feature = "avx512f"
+    ))]
+    {
+        let vectors = top.len() / 8;
+        // SAFETY: the target features are enabled at compile time and each
+        // iteration reads and writes exactly eight elements from both rows.
+        unsafe {
+            for i in 0..vectors {
+                butterfly_lanes_avx512(
+                    top.as_mut_ptr().add(8 * i),
+                    bot.as_mut_ptr().add(8 * i),
+                    twiddle.0,
+                );
+            }
+        }
+        for lane in 8 * vectors..top.len() {
+            let v = bot[lane];
+            let new_u = top[lane] + v * twiddle;
+            top[lane] = new_u;
+            bot[lane] = v + new_u;
+        }
+    }
     #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
     {
         let pairs = top.len() / 2;
@@ -408,7 +433,14 @@ fn butterfly_lanes(top: &mut [F64], bot: &mut [F64], twiddle: F64) {
             bot[last] = v + new_u;
         }
     }
-    #[cfg(not(all(target_arch = "aarch64", target_feature = "aes")))]
+    #[cfg(not(any(
+        all(target_arch = "aarch64", target_feature = "aes"),
+        all(
+            target_arch = "x86_64",
+            target_feature = "vpclmulqdq",
+            target_feature = "avx512f"
+        )
+    )))]
     {
         for lane in 0..top.len() {
             let v = bot[lane];
@@ -416,6 +448,51 @@ fn butterfly_lanes(top: &mut [F64], bot: &mut [F64], twiddle: F64) {
             top[lane] = new_u;
             bot[lane] = v + new_u;
         }
+    }
+}
+
+/// Eight F64 butterflies using the four independent 128-bit lanes of
+/// VPCLMULQDQ. Even and odd u64 lanes are multiplied separately, reduced in
+/// parallel, then packed back into their original order.
+///
+/// # Safety
+/// Requires VPCLMULQDQ + AVX-512F; `top` and `bot` must each address eight
+/// readable and writable F64 values.
+#[cfg(all(
+    target_arch = "x86_64",
+    target_feature = "vpclmulqdq",
+    target_feature = "avx512f"
+))]
+#[inline]
+#[target_feature(enable = "vpclmulqdq", enable = "avx512f", enable = "avx2")]
+unsafe fn butterfly_lanes_avx512(top: *mut F64, bot: *mut F64, twiddle: u64) {
+    use core::arch::x86_64::*;
+
+    #[inline]
+    #[target_feature(enable = "vpclmulqdq", enable = "avx512f")]
+    unsafe fn reduce(p: __m512i, r: __m512i) -> __m512i {
+        let t = _mm512_clmulepi64_epi128::<0x01>(p, r);
+        let u = _mm512_clmulepi64_epi128::<0x01>(t, r);
+        _mm512_xor_si512(_mm512_xor_si512(p, t), u)
+    }
+
+    // SAFETY: the caller supplies valid eight-element rows and the function's
+    // target features cover every intrinsic below.
+    unsafe {
+        let u = _mm512_loadu_si512(top.cast());
+        let v = _mm512_loadu_si512(bot.cast());
+        let tw = _mm512_set1_epi64(twiddle as i64);
+        let r = _mm512_set1_epi64(0x1b);
+
+        let even = reduce(_mm512_clmulepi64_epi128::<0x00>(v, tw), r);
+        let odd = reduce(_mm512_clmulepi64_epi128::<0x11>(v, tw), r);
+        let odd = _mm512_shuffle_epi32::<0x4e>(odd);
+        let product = _mm512_mask_blend_epi64(0xaa, even, odd);
+
+        let new_u = _mm512_xor_si512(u, product);
+        let new_v = _mm512_xor_si512(v, new_u);
+        _mm512_storeu_si512(top.cast(), new_u);
+        _mm512_storeu_si512(bot.cast(), new_v);
     }
 }
 
