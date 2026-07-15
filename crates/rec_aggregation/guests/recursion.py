@@ -98,10 +98,11 @@ N_FIXED_CHALLENGE_ROUNDS = N_FIXED_CHALLENGE_ROUNDS_PLACEHOLDER
 FIXED_CHALLENGES = FIXED_CHALLENGES_PLACEHOLDER
 ONE_PLUS_CHALLENGE_INV = ONE_PLUS_CHALLENGE_INV_PLACEHOLDER
 PHI8_NODES = PHI8_NODES_PLACEHOLDER
-# Two-lane memory PI: F128T = F64[Y]/(Y^2=XY+1); recover a word's F64 lanes as
-# c1 = (pi + Frob64(pi)) * X_INV, c0 = pi + c1 * Y_TOWER.
-X_INV = X_INV_PLACEHOLDER
+# Tower F128T = F64[Y]/(Y^2=XY+1). Y_TOWER embeds Y (reassembling e128(lo,hi)=
+# lo+hi*Y in the AIR eval); Y_INV = Y^-1 deduces a memory word's high lane at the
+# opening boundary: v_hi = (MEM + v_lo)*Y_INV.
 Y_TOWER = Y_TOWER_PLACEHOLDER
+Y_INV = Y_INV_PLACEHOLDER
 # Coordinate basis e_i of F128T (spans the whole field). hint_decompose_bits
 # emits a word's coordinate bits, so a value reconstructs as Σ b_i·COORD_BASIS[i]
 # = v. (NOT the g-power basis GEN**i, which spans only F64 in the tower.)
@@ -1290,26 +1291,17 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
             constraint_eval = (col_evals[6] + col_evals[0] * col_evals[1]) + eta * (col_evals[7] + col_evals[0] * col_evals[2]) + eta * eta * (col_evals[8] + col_evals[0] * col_evals[3]) + eta * eta * eta * (col_evals[9] + col_evals[0] * col_evals[4]) + eta * eta * eta * eta * (col_evals[10] + col_evals[0] * col_evals[5])
         assert claim == eq_acc * constraint_eval
 
-    # ---- public-input binding claims: MEM_LO, MEM_HI (two lanes) ----
-    # The VM's bind_pi_claim makes TWO column claims at the same point [rm,0..]:
-    #   MEM_LO = interp_k(pi_0.c0, pi_1.c0, rm),  MEM_HI = interp_k(pi_0.c1, pi_1.c1, rm)
-    # over the F64 LANES. Recover each 128-bit word's lanes by Frobenius
-    # (deterministic from the bound pi ⇒ sound): c1 = (pi + Frob64(pi))*X_INV,
-    # c0 = pi + c1*Y_TOWER. Emitted in bind_pi_claim's [lo, hi] order.
+    # ---- public-input binding claim: MEM as ONE logical E-column ----
+    # The VM's bind_pi_claim makes a SINGLE E-claim at [rm, 0..]:
+    #   MEM(rm) = interp(pi_0, pi_1, rm) = pi_0 + rm*(pi_0 + pi_1)
+    # over the E-valued public input (no lane splitting, no Frobenius). The
+    # opening-boundary decompose transmits the low lane v_lo; the high lane is
+    # deduced v_hi = (MEM + v_lo)*Y_INV. Emitted in the decompose's [lo, hi] order.
     fs = squeeze(fs)
     rm = fs[0]
-    fp0 = pi_0
-    for _sq in unroll(0, 64):
-        fp0 = fp0 * fp0
-    b0 = (pi_0 + fp0) * X_INV      # pi_0.c1 (embedded)
-    a0 = pi_0 + b0 * Y_TOWER       # pi_0.c0 (embedded)
-    fp1 = pi_1
-    for _sq in unroll(0, 64):
-        fp1 = fp1 * fp1
-    b1 = (pi_1 + fp1) * X_INV      # pi_1.c1 (embedded)
-    a1 = pi_1 + b1 * Y_TOWER       # pi_1.c0 (embedded)
-    mem_lo = a0 + rm * (a0 + a1)   # interp_k on the c0 lanes
-    mem_hi = b0 + rm * (b0 + b1)   # interp_k on the c1 lanes
+    mem = pi_0 + rm * (pi_0 + pi_1)
+    fs, mem_lo, cursor = fs_next(fs, cursor)   # transmitted low lane v_lo
+    mem_hi = (mem + mem_lo) * Y_INV            # deduced high lane
     claim_pool[GEN ** claim_idx] = mem_lo
     claim_idx += 1
     claim_pool[GEN ** claim_idx] = mem_hi

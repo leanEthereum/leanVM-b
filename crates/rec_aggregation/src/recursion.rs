@@ -1303,19 +1303,13 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("ONE_PLUS_CHALLENGE_INV", flds(&one_plus_challenge_inv));
     let phi: Vec<F128T> = primitives::field::phi8_tower::PHI_8_TABLE[..128].to_vec();
     ps("PHI8_NODES", flds(&phi));
-    // Two-lane memory PI: the guest recovers each 128-bit public-input word's
-    // F64 lanes by Frobenius. F128T = F64[Y]/(Y^2=XY+1), Y = new(0,1), so
-    // X = Frob64(Y)+Y (in F64) and c1 = (pi+Frob64(pi))*X_INV, c0 = pi + c1*Y.
+    // Tower F128T = F64[Y]/(Y^2=XY+1), Y = new(0,1). Y_TOWER embeds Y for the
+    // AIR-eval lane reassembly e128(lo,hi)=lo+hi*Y; Y_INV = Y^-1 deduces a memory
+    // word's high lane from the transmitted low lane at the opening boundary:
+    // v_hi = (MEM + v_lo)*Y_INV.
     let y_tower = F128T::new(0, 1);
-    let x_gen = {
-        let mut z = y_tower;
-        for _ in 0..64 {
-            z = z * z;
-        }
-        z + y_tower
-    };
-    ps("X_INV", u(x_gen.inv()).to_string());
     ps("Y_TOWER", u(y_tower).to_string());
+    ps("Y_INV", u(y_tower.inv()).to_string());
     // Coordinate basis e_i of F128T over F2 (spans the WHOLE field): e_i =
     // new(1<<i, 0) for i<64, new(0, 1<<(i-64)) for i>=64. `hint_decompose_bits`
     // emits a word's coordinate bits, so the guest reconstructs Σ b_i·e_i = v

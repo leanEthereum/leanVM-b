@@ -395,7 +395,12 @@ pub fn prove(program: &Program, public_input: [F128T; 2]) -> (Proof, Stats) {
 
     let mut claims = bus_claims;
     claims.extend(constraint_claims(&table_claims));
-    claims.extend(bind_pi_claim(ps.sample(), &w.layout.placements, &w.layout.pi));
+    // The PI binding: transmit the low memory lane, then emit the two physical
+    // K-lane claims (the high lane is deduced from the pi-derived E-value).
+    let r_pi = ps.sample();
+    let pi_lo = primitives::multilinear::interp_k(F64(w.layout.pi[0].c0), F64(w.layout.pi[1].c0), r_pi);
+    ps.add_scalar(pi_lo);
+    claims.extend(bind_pi_claim(r_pi, &w.layout.placements, &w.layout.pi, pi_lo));
     // The input/output words bind via the memory bus (value columns are virtual and
     // route to q_pkd, see `slot_claims`); cv/counter/blen/flags are constants baked
     // into flock's per-block matrices, so no pin claims are needed.
@@ -451,31 +456,22 @@ pub fn prove(program: &Program, public_input: [F128T; 2]) -> (Proof, Stats) {
     )
 }
 
-/// The public-input binding claim (§8): `MEM(r, 0,…,0) = interp(m[0], m[1], r)`.
-/// The value is a deterministic function of the (seeded) public input `pi` and the
-/// challenge `r`, so it is NOT transmitted — both sides compute it, and the single
-/// opening proves the committed `MEM` really evaluates to it (a memory whose first
-/// two cells disagree with `pi` then fails the opening). `pi` is already bound (the
-/// seed), so `r` is sampled directly. `placements`/`pi` come from the prover's or
-/// verifier's layout; both build the byte-identical claim.
-fn bind_pi_claim(r: F128T, placements: &[witness::Placement], pi: &[F128T; 2]) -> [ColumnClaim; 2] {
-    let point = {
-        let mut p = vec![F128T::ZERO; placements[MEM_LO].n_vars];
-        p[0] = r;
-        p
-    };
-    // One claim per memory lane: `MEM_lane(r, 0,…,0) = interp(m[0].lane, m[1].lane, r)`.
-    let lo = ColumnClaim {
-        col: MEM_LO,
-        point: point.clone(),
-        value: primitives::multilinear::interp_k(F64(pi[0].c0), F64(pi[1].c0), r),
-    };
-    let hi = ColumnClaim {
-        col: MEM_HI,
-        point,
-        value: primitives::multilinear::interp_k(F64(pi[0].c1), F64(pi[1].c1), r),
-    };
-    [lo, hi]
+/// The public-input binding (§8): the committed `MEM` at `(r, 0,…,0)` must equal
+/// `interp(pi[0], pi[1], r)`, split into its two physical `K`-lanes. The prover
+/// transmits the low lane `v_lo = MEM_LO(r)`; both sides then deduce the high lane
+/// `v_hi = (MEM(r) + v_lo)·Y⁻¹` from the pi-derived E-value, and the opening
+/// discharges the two claims. `v_lo` is the only transmitted scalar (the values are
+/// otherwise deterministic from the seeded `pi`), so a recursive verifier binds `pi`
+/// without extracting `F64` lanes. `placements`/`pi` come from the prover's or
+/// verifier's layout; both build the byte-identical claims.
+fn bind_pi_claim(r: F128T, placements: &[witness::Placement], pi: &[F128T; 2], v_lo: F128T) -> [ColumnClaim; 2] {
+    let mut point = vec![F128T::ZERO; placements[MEM_LO].n_vars];
+    point[0] = r;
+    let v_hi = (primitives::multilinear::interp(pi[0], pi[1], r) + v_lo) * F128T::Y.inv();
+    [
+        ColumnClaim { col: MEM_LO, point: point.clone(), value: v_lo },
+        ColumnClaim { col: MEM_HI, point, value: v_hi },
+    ]
 }
 
 /// Everything a recursion harness needs from an accepting verify run, named
@@ -537,7 +533,9 @@ pub fn verify(
 
     let mut claims = bus.claims;
     claims.extend(constraint_claims(&table_claims));
-    claims.extend(bind_pi_claim(vs.sample(), &l.placements, &l.pi));
+    let r_pi = vs.sample();
+    let pi_lo = vs.next_scalar().map_err(Error::Transcript)?;
+    claims.extend(bind_pi_claim(r_pi, &l.placements, &l.pi, pi_lo));
     let checkpoint_pi = vs.sponge_state();
     let slots = slot_claims(&l, &claims);
 
