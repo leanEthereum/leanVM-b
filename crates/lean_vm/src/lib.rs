@@ -72,11 +72,10 @@ fn set_qos_user_interactive() {
     }
 }
 
-/// Target soundness of the whole proof, in bits. Every round is designed to clear
-/// this: the PCS runs the Ligerito `Secure` profile ([`pcs::PROFILE`], 120-bit),
-/// and the bus grand product grinds up to it before its multiset challenge
-/// ([`leaf`]). Raising it means bumping BOTH (a stronger profile and more grinding).
-pub const SECURITY_BITS: u32 = 120;
+/// Target soundness of the whole proof, in bits. Every algebraic challenge is
+/// sampled in F192, and the PCS derives a Ligerito configuration whose query,
+/// proximity-gap, and OOD-binding terms each clear this target.
+pub const SECURITY_BITS: u32 = 128;
 
 /// Below this many parallelizable items a pass runs serially: rayon's fan-out
 /// overhead is not worth it for small inputs. Shared by [`constraints`], [`gkr`], [`leaf`].

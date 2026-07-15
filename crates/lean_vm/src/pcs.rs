@@ -7,9 +7,10 @@
 //! so it never travels. flock's ring-switched `q_pkd` claims join the same batch
 //! ([`::pcs::stack_open_k`]).
 //!
-//! Security: the K configs reuse Ligerito's one shipped configuration — rate 1/2,
-//! unique-decoding regime (list size 1, no out-of-domain binding), 120-bit
-//! round-by-round soundness ([`::pcs::ligerito::SECURITY_BITS`]). The base-field
+//! Security: the K configs use rate-1/2 Johnson list decoding with OOD binding
+//! and 128-bit round-by-round soundness ([`::pcs::ligerito::SECURITY_BITS`]).
+//! L0's opening claim supplies its binding evaluation; each deeper commitment
+//! takes one explicit OOD sample. The base-field
 //! commitment only shrinks the level-0 symbols to 8 bytes; every random
 //! ingredient is sampled from `E` with the same error terms as before.
 
@@ -37,8 +38,8 @@ pub const LOG_INV_RATE: usize = ::pcs::ligerito::LOG_INV_RATE_0;
 // The PCS and the unground F192 bus argument both target `SECURITY_BITS`.
 const _: () = assert!(::pcs::ligerito::SECURITY_BITS == crate::SECURITY_BITS as usize);
 /// Minimum committed-witness log-size: Ligerito's level ladder needs every level's
-/// block length to accommodate its query count under the unique-decoding
-/// regime's query counts — feasible from `μ = 14`; we set `μ = 15` for a
+/// block length to accommodate its Johnson-radius query count — feasible from
+/// `μ = 14`; we set `μ = 15` for a
 /// one-level margin. `witness::placements_of` zero-pads smaller stacks up to
 /// this floor (256 KB of F64 — negligible; real workloads are far above it).
 pub const MIN_MU: usize = 15;

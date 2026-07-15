@@ -9,10 +9,9 @@
 //! Field-independent configuration and soundness analysis for Ligerito.
 //!
 //! Soundness regimes (our paper App. C.3): unique decoding (Thm `ca-udr`,
-//! BCHKS25 Cor. 1.4 — the ONE shipped configuration, see [`SECURITY_BITS`])
-//! and Johnson list decoding with out-of-domain binding (Thm `ca-johnson`,
-//! BCHKS25 Thm 4.6 + Johnson interleaved list bound — hand-built configs
-//! only). See [`SoundnessRegime`].
+//! BCHKS25 Cor. 1.4) and the production Johnson list-decoding regime with
+//! out-of-domain binding (Thm `ca-johnson`, BCHKS25 Thm 4.6 + the Johnson
+//! interleaved list bound). See [`SoundnessRegime`].
 //!
 use serde::{Deserialize, Serialize};
 
@@ -20,24 +19,23 @@ use serde::{Deserialize, Serialize};
 // Config
 // ===================================================================
 
-// The ONE Ligerito configuration this repo ships (the old `Secure` profile):
-// rate-1/2 unique-decoding regime (list size 1, no OOD binding), 120-bit
-// round-by-round soundness. `SoundnessRegime::JohnsonOod` machinery survives
-// only for hand-built configs (analysis / tests).
+// The production Ligerito configuration: rate-1/2 Johnson list decoding with
+// OOD binding and 128-bit round-by-round soundness over F192.
 
 /// Round-by-round soundness target (bits): every round must individually
 /// clear this level (total security = min over rounds, per the Fiat-Shamir /
 /// `soundcalc` convention).
-pub const SECURITY_BITS: usize = 120;
+pub const SECURITY_BITS: usize = 128;
 
 /// L0 code rate index: `rho_0 = 2^-LOG_INV_RATE_0` (rate 1/2).
 pub const LOG_INV_RATE_0: usize = 1;
 
-/// Query-phase grinding bits: with `g` bits ground, the per-level queries only
-/// need to cover `SECURITY_BITS - g` bits (validation rule 3) — about 15%
-/// fewer queries, which recursion feels directly (the query walk dominates a
-/// guest).
-pub const QUERY_GRINDING_BITS: usize = 18;
+/// Query-phase grinding is unnecessary: the Johnson-radius query count closes
+/// the full 128-bit target directly.
+pub const QUERY_GRINDING_BITS: usize = 0;
+
+/// Slack below the Johnson radius `1 - sqrt(rho)`.
+pub const JOHNSON_ETA: f64 = 0.02;
 
 pub const INITIAL_FOLDING_FATOR: usize = 6;
 pub const SUBSEQUENT_FOLDING_FACTORS: usize = 3;
@@ -618,6 +616,7 @@ fn udr_per_query_bits(log_inv_rate: usize, log_msg_cols: usize, proximity_loss: 
 /// queries, but the per-level block-length check in `derive_config` (and the
 /// `+5` feasibility padding) catch any shape that wouldn't hold the real,
 /// n-aware query count.
+#[cfg(test)]
 fn udr_per_query_bits_asymptotic(log_inv_rate: usize) -> f64 {
     let rho = (-(log_inv_rate as f64)).exp2();
     let gamma = (1.0 - rho) / 2.0;
@@ -989,8 +988,9 @@ impl LigeritoSecurityConfig {
         Ok(())
     }
 
-    /// Derive THE security config at witness size `m`: Udr regime, rate
-    /// `2^-LOG_INV_RATE_0`, ε* = 1e-3, [`SECURITY_BITS`] bits per round under
+    /// Derive the production security config at witness size `m`: Johnson
+    /// list decoding with OOD binding, rate `2^-LOG_INV_RATE_0`, and
+    /// [`SECURITY_BITS`] bits per round under
     /// **round-by-round soundness** — every error term (pg + fold grinding,
     /// query + query grinding) clears the target individually, and the
     /// protocol's security is the *minimum* over rounds — the notion that
@@ -999,20 +999,14 @@ impl LigeritoSecurityConfig {
     pub fn derive_config(m: usize) -> Result<Self, String> {
         let target_bits = SECURITY_BITS;
         let log_inv_rate = LOG_INV_RATE_0;
-        // Query-phase grinding trades prover PoW for query count (see
-        // [`QUERY_GRINDING_BITS`]): 120-bit rounds with 18 bits ground, so
-        // queries cover 102.
         let query_grind: usize = QUERY_GRINDING_BITS;
         let log_n = m
             .checked_sub(crate::LOG_PACKING)
             .ok_or_else(|| format!("m ({m}) < LOG_PACKING ({})", crate::LOG_PACKING))?;
         let initial_k = INITIAL_FOLDING_FATOR;
 
-        // Length-agnostic per-query estimate for ladder-shape feasibility
-        // (the per-level codeword length `n` is not known until the shape is
-        // fixed): the asymptotic γ = δ/2; the actual per-level config below
-        // uses the n-aware `udr_per_query_bits`.
-        let per_query_bits_feas = udr_per_query_bits_asymptotic;
+        // Johnson per-query soundness depends only on the rate and eta.
+        let per_query_bits_feas = |rate| paper_per_query_bits(rate, JOHNSON_ETA);
 
         // Shape derivation needs per-level query counts for block-length
         // feasibility before the level count (and hence the exact per-term
@@ -1042,8 +1036,7 @@ impl LigeritoSecurityConfig {
             let rate = shape.log_inv_rates[i];
             let cols = shape.log_msg_cols[i];
             let ilv = shape.log_num_interleaved[i];
-            // Actual per-level per-query bits: n-aware (maximal radius).
-            let per_q = udr_per_query_bits(rate, cols, UDR_PROXIMITY_LOSS);
+            let per_q = paper_per_query_bits(rate, JOHNSON_ETA);
             let queries = ((t - query_grind as f64).max(1.0) / per_q).ceil() as usize;
             if queries > (1usize << (cols + rate)) {
                 return Err(format!(
@@ -1053,13 +1046,26 @@ impl LigeritoSecurityConfig {
             }
             let eps_query = queries as f64 * per_q;
 
-            // No row-union penalty in the unique-decoding regime (list size
-            // 1): per Diamond and Gruen, MCA-commutes holds with error ε
-            // directly (vs the Johnson regime's 2^{ℓ-1} factor).
-            let _ = ilv;
-            let eps_pg = ANALYSIS_LOG_Q - paper_thm_1_4_log_a(rate, cols, UDR_PROXIMITY_LOSS);
-            let (regime, eta, proximity_loss, ood_samples, eps_ood) =
-                (SoundnessRegime::Udr, None, Some(UDR_PROXIMITY_LOSS), 0usize, None);
+            let eps_pg = ANALYSIS_LOG_Q - paper_johnson_log_a(rate, JOHNSON_ETA, cols, ilv);
+            let mu = cols + ilv;
+            // L0 is bound by the opening's own post-commit evaluation claim.
+            // Deeper commitments carry the minimum number of explicit random
+            // OOD evaluations needed to bind one Johnson-list candidate.
+            let ood_samples = if i == 0 {
+                0
+            } else {
+                (1..=8usize)
+                    .find(|&s| paper_ood_bits(rate, JOHNSON_ETA, mu, s) >= t)
+                    .ok_or_else(|| format!("L{i}: no OOD sample count reaches {t:.1} bits"))?
+            };
+            let eps_ood = Some(round1(paper_ood_bits(
+                rate,
+                JOHNSON_ETA,
+                mu,
+                ood_samples,
+            )));
+            let (regime, eta, proximity_loss) =
+                (SoundnessRegime::JohnsonOod, Some(JOHNSON_ETA), None);
             let fold_grinding_bits = (t - eps_pg).ceil().max(0.0) as usize;
 
             levels.push(LigeritoLevelConfig {
@@ -1081,7 +1087,7 @@ impl LigeritoSecurityConfig {
             });
         }
 
-        let analysis_version = "no_row_union_over_ben_sasson_2025_cor_1_4";
+        let analysis_version = "johnson_ood_row_union_over_bchks25_thm_4_6";
         let cfg = Self {
             m,
             log_n,
@@ -1158,4 +1164,29 @@ impl LigeritoSecurityConfig {
 #[inline]
 pub fn log2_ceil(n: usize) -> usize {
     if n <= 1 { 0 } else { (n - 1).ilog2() as usize + 1 }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn production_profile_is_128_bit_johnson_without_grinding() {
+        for m in 22 + crate::LOG_PACKING..=28 + crate::LOG_PACKING {
+            let cfg = LigeritoSecurityConfig::derive_config(m).unwrap();
+            assert_eq!(cfg.target_security_bits, 128);
+            assert_eq!(cfg.levels[0].ood_samples, 0);
+            for (i, level) in cfg.levels.iter().enumerate() {
+                assert_eq!(level.regime, SoundnessRegime::JohnsonOod);
+                assert_eq!(level.grinding_bits, 0);
+                assert_eq!(level.fold_grinding_bits, 0);
+                assert!(level.expected_eps_query_bits >= 128.0);
+                assert!(level.expected_eps_pg_bits >= 128.0);
+                assert!(level.expected_eps_ood_bits.unwrap() >= 128.0);
+                if i > 0 {
+                    assert_eq!(level.ood_samples, 1);
+                }
+            }
+        }
+    }
 }

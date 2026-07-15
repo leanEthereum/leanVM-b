@@ -19,10 +19,6 @@
 //!   [`F192::mul_base`] (3 PMULL) instead of a full E multiplication.
 //!
 //! Deliberate divergences from the original (each noted inline too):
-//! - OOD sampling is NOT ported. The `Secure` (UDR) profile that drives this
-//!   port takes zero OOD samples at every level (unique-decoding list size 1);
-//!   the prover/verifier assert `ood_samples == 0` instead of carrying the
-//!   branches.
 //! - Buffers use plain `Vec` allocation where the original recycles through
 //!   `crate::scratch` (no F64/F192 pool exists yet).
 //! - The prover/commit timing instrumentation answers to `LIG_K_TRACE`
@@ -201,9 +197,8 @@ fn log2_pow2(n: usize) -> usize {
 // ===================================================================
 
 /// Derive `(ProverConfig, VerifierConfig)` for a K-witness of `2^log_n` F64
-/// elements, using the UDR `Secure` profile at
-/// `m = log_n + LOG_PACKING`, exactly like the main crate does for packed
-/// witnesses.
+/// elements, using the production 128-bit Johnson/OOD profile at
+/// `m = log_n + LOG_PACKING`.
 pub fn k_configs_for(log_n: usize) -> Result<(ProverConfig, VerifierConfig), String> {
     let sec = LigeritoSecurityConfig::derive_config(log_n + crate::LOG_PACKING)?;
     sec.to_prover_verifier_configs()
@@ -1470,6 +1465,42 @@ fn round_msg_lsb_ext(f: &[F192], b: &[F192]) -> SumcheckMessageK {
     SumcheckMessageK { u_0, u_2 }
 }
 
+/// Build the round message and the full inner product in one pass. For an OOD
+/// basis `b = eq(z, ·)`, the inner product is the claimed MLE evaluation.
+fn round_msg_and_eval_lsb_ext(f: &[F192], b: &[F192]) -> (SumcheckMessageK, F192) {
+    use rayon::prelude::*;
+    let n = f.len();
+    debug_assert!(n.is_power_of_two() && n >= 2);
+    debug_assert_eq!(b.len(), n);
+
+    let term = |j: usize| {
+        let f0 = f[2 * j];
+        let f1 = f[2 * j + 1];
+        let b0 = b[2 * j];
+        let b1 = b[2 * j + 1];
+        let e0 = f0 * b0;
+        (e0, (f0 + f1) * (b0 + b1), e0 + f1 * b1)
+    };
+    const PAR_THRESHOLD: usize = 4096;
+    let half = n / 2;
+    let (u_0, u_2, y) = if half < PAR_THRESHOLD {
+        (0..half).map(term).fold(
+            (F192::ZERO, F192::ZERO, F192::ZERO),
+            |(a0, a2, ay), (b0, b2, by)| (a0 + b0, a2 + b2, ay + by),
+        )
+    } else {
+        (0..half)
+            .into_par_iter()
+            .with_min_len(PAR_THRESHOLD / 4)
+            .map(term)
+            .reduce(
+                || (F192::ZERO, F192::ZERO, F192::ZERO),
+                |(a0, a2, ay), (b0, b2, by)| (a0 + b0, a2 + b2, ay + by),
+            )
+    };
+    (SumcheckMessageK { u_0, u_2 }, y)
+}
+
 /// Fused fold + next-round message for the FIRST fold (mixed phase): the
 /// K-witness folds into E (`(1+r).mul_base(f0) + r.mul_base(f1)`), the basis
 /// folds in E, and the next-round message is built over the freshly folded
@@ -1636,8 +1667,7 @@ enum WitnessK<'a> {
     Ext(Vec<F192>),
 }
 
-/// Mirror of `ligerito::SumcheckProver` with the two-phase witness. The
-/// `introduce_new_with_eval` fusion (OOD-only) is not ported; see module docs.
+/// Mirror of `ligerito::SumcheckProver` with the two-phase witness.
 pub struct SumcheckProverK<'a> {
     f: WitnessK<'a>,
     /// Single combined basis poly: after every `glue(beta)` the introduced
@@ -1690,6 +1720,21 @@ impl<'a> SumcheckProverK<'a> {
         self.transcript.push(msg);
         self.pending_glue = Some((b_new, h_new));
         msg
+    }
+
+    /// Introduce `b_new` and compute its claimed inner product in the same
+    /// pass as the round message. OOD claims only occur after the first fold,
+    /// when the witness has already been lifted from K to E.
+    pub fn introduce_new_with_eval(&mut self, b_new: Vec<F192>) -> (SumcheckMessageK, F192) {
+        let f = match &self.f {
+            WitnessK::Ext(f) => f,
+            WitnessK::Base(_) => panic!("OOD claim introduced before the first fold"),
+        };
+        assert_eq!(b_new.len(), f.len());
+        let (msg, h_new) = round_msg_and_eval_lsb_ext(f, &b_new);
+        self.transcript.push(msg);
+        self.pending_glue = Some((b_new, h_new));
+        (msg, h_new)
     }
 
     /// Combine the introduced basis into `combined_basis` with separation
@@ -1755,8 +1800,7 @@ pub struct FinalProofK {
     pub merkle_proof: Vec<Hash>,
 }
 
-/// Mirror of `LigeritoProof` minus `ood_values` (OOD is not ported; the UDR
-/// profile takes none). The L0 root is the caller's statement, not proof data.
+/// The L0 root is the caller's statement, not proof data.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LigeritoProofK {
     pub initial_proof: InitialProofK,
@@ -1766,6 +1810,9 @@ pub struct LigeritoProofK {
     pub sumcheck_transcript: Vec<SumcheckMessageK>,
     /// Per-level query-phase PoW nonces (0 when the level grinds 0 bits).
     pub grinding_nonces: Vec<u64>,
+    /// Claimed multilinear OOD evaluations, flattened in transcript order.
+    #[serde(default)]
+    pub ood_values: Vec<F192>,
     /// Fold-challenge PoW nonces, flattened in transcript order (one per fold
     /// challenge at every level with `fold_grinding_bits > 0`).
     pub fold_grinding_nonces: Vec<u64>,
@@ -1796,6 +1843,7 @@ impl LigeritoProofK {
                 .sum::<usize>()
             + self.final_proof.merkle_proof.len() * 32;
         total += self.sumcheck_transcript.len() * 2 * EXT;
+        total += self.ood_values.len() * EXT;
         total += (self.grinding_nonces.len() + self.fold_grinding_nonces.len()) * 8;
         total
     }
@@ -1889,10 +1937,9 @@ fn merkle_multi_proof_for(tree: &[Hash], block_len: usize, queries: &[usize]) ->
 /// fold, which lifts it into an owned E-vector), so callers with a large
 /// committed stack pass the slice directly instead of paying a full copy.
 ///
-/// Transcript order is identical to the original (label, target, root,
-/// (u_0, u_2) stream, tapered fold grinds, query grinds, queries, alphas,
-/// betas, `yr` in the clear at the end), with OOD blocks elided because the
-/// config is asserted to take zero OOD samples.
+/// Transcript order is identical to the original (target, roots, OOD claims,
+/// `(u_0, u_2)` stream, tapered fold grinds, query grinds, queries, alphas,
+/// betas, and `yr` in the clear at the end).
 pub fn recursive_prover_with_basis_k(
     config: &ProverConfig,
     witness: &[F64],
@@ -1912,12 +1959,7 @@ pub fn recursive_prover_with_basis_k(
     assert_eq!(config.log_inv_rates.len(), r + 1);
     assert!(r >= 1);
     assert!(initial_k >= 1);
-    // OOD sampling is not ported (module docs): the UDR (`Secure`) profile
-    // takes none at any level.
-    assert!(
-        config.ood_samples.iter().all(|&s| s == 0),
-        "ligerito_k: OOD sampling is not ported; config must take 0 OOD samples"
-    );
+    assert_eq!(config.ood_samples.first().copied().unwrap_or(0), 0);
 
     let log_inv_rate_0 = config.log_inv_rates[0];
     let log_msg_cols_0 = log_n - initial_k;
@@ -1936,6 +1978,7 @@ pub fn recursive_prover_with_basis_k(
     let mut t_induce = std::time::Duration::ZERO;
     let mut t_sumcheck_folds = std::time::Duration::ZERO;
     let mut t_intro_glue = std::time::Duration::ZERO;
+    let mut t_ood = std::time::Duration::ZERO;
     let t_total = std::time::Instant::now();
 
     // (No opener domain-label absorb: the extension-field opener has none and the recursion
@@ -1952,7 +1995,9 @@ pub fn recursive_prover_with_basis_k(
     observe_root(sponge, &initial_root);
 
     let mut fold_grinding_nonces: Vec<u64> = Vec::new();
+    let mut ood_values: Vec<F192> = Vec::new();
     let fold_bits = |lvl: usize| -> u32 { config.fold_grinding_bits.get(lvl).copied().unwrap_or(0) as u32 };
+    let ood_count = |lvl: usize| -> usize { config.ood_samples.get(lvl).copied().unwrap_or(0) };
 
     let _t = std::time::Instant::now();
     let (mut sc_prover, start_msg) = SumcheckProverK::new(witness, b_initial, target);
@@ -1993,9 +2038,23 @@ pub fn recursive_prover_with_basis_k(
     }
     observe_root(sponge, &wtns_1.root());
 
-    // (OOD binding block elided: zero samples asserted above.)
+    // Bind the L1 Johnson list before drawing L0 queries. Each claimed random
+    // MLE evaluation is introduced into the running sumcheck.
+    let _t = std::time::Instant::now();
+    for _ in 0..ood_count(1) {
+        let z = sample_ext_vec(sponge, n1);
+        let (intro, y) = sc_prover.introduce_new_with_eval(build_eq_table_ext_parallel(&z));
+        observe_ext(sponge, y);
+        ood_values.push(y);
+        observe_ext(sponge, intro.u_0);
+        observe_ext(sponge, intro.u_2);
+        sc_prover.glue(sample_ext(sponge));
+    }
+    if trace {
+        t_ood += _t.elapsed();
+    }
 
-    // Query-phase PoW grinding for L0 (0 bits in the Secure profile; the
+    // Query-phase PoW grinding for L0 (0 bits in the production profile; the
     // canonical 0 nonce is still absorbed to keep the transcript in lockstep).
     let pow_nonce_0 = sponge.grind_pow(config.grinding_bits[0] as u32);
     let mut grinding_nonces: Vec<u64> = vec![pow_nonce_0];
@@ -2131,6 +2190,7 @@ pub fn recursive_prover_with_basis_k(
                 },
                 sumcheck_transcript: sc_prover.transcript().to_vec(),
                 grinding_nonces,
+                ood_values,
                 fold_grinding_nonces,
             };
         }
@@ -2157,7 +2217,19 @@ pub fn recursive_prover_with_basis_k(
         observe_root(sponge, &root_next);
         recursive_roots.push(root_next);
 
-        // (OOD binding block elided: zero samples asserted above.)
+        let _t = std::time::Instant::now();
+        for _ in 0..ood_count(i + 2) {
+            let z = sample_ext_vec(sponge, n_next);
+            let (intro, y) = sc_prover.introduce_new_with_eval(build_eq_table_ext_parallel(&z));
+            observe_ext(sponge, y);
+            ood_values.push(y);
+            observe_ext(sponge, intro.u_0);
+            observe_ext(sponge, intro.u_2);
+            sc_prover.glue(sample_ext(sponge));
+        }
+        if trace {
+            t_ood += _t.elapsed();
+        }
 
         // PoW grinding for this iteration's query phase.
         let nonce_i = sponge.grind_pow(config.grinding_bits[i + 1] as u32);
@@ -2362,8 +2434,7 @@ pub fn recursive_verifier_with_basis_k(
     if b_initial.len() != 1usize << log_n {
         return false;
     }
-    // OOD is not ported; reject configs that would require it.
-    if config.ood_samples.iter().any(|&s| s != 0) {
+    if config.ood_samples.first().copied().unwrap_or(0) != 0 {
         return false;
     }
 
@@ -2393,7 +2464,10 @@ pub fn recursive_verifier_with_basis_k(
     let mut running_quad = RoundQuadK::from_msg(start_msg, t_r);
 
     let fold_bits = |lvl: usize| -> u32 { config.fold_grinding_bits.get(lvl).copied().unwrap_or(0) as u32 };
+    let ood_count = |lvl: usize| -> usize { config.ood_samples.get(lvl).copied().unwrap_or(0) };
     let mut fold_nonce_idx = 0usize;
+    let mut ood_idx = 0usize;
+    let mut ood_bases: Vec<(Vec<F192>, usize, F192)> = Vec::new();
 
     let mut r_lane_fold = Vec::with_capacity(initial_k);
     for j in 0..initial_k {
@@ -2428,7 +2502,25 @@ pub fn recursive_verifier_with_basis_k(
     let root_1 = proof.recursive_roots[0];
     observe_root(sponge, &root_1);
 
-    // (OOD binding mirror elided: zero samples enforced above.)
+    for _ in 0..ood_count(1) {
+        let z = sample_ext_vec(sponge, log_n - initial_k);
+        let Some(&y) = proof.ood_values.get(ood_idx) else {
+            return false;
+        };
+        ood_idx += 1;
+        observe_ext(sponge, y);
+        let Some(&intro_msg) = proof.sumcheck_transcript.get(tx_idx) else {
+            return false;
+        };
+        tx_idx += 1;
+        observe_ext(sponge, intro_msg.u_0);
+        observe_ext(sponge, intro_msg.u_2);
+        let intro_quad = RoundQuadK::from_msg(intro_msg, y);
+        let beta = sample_ext(sponge);
+        running_quad = RoundQuadK::fold(&running_quad, &intro_quad, beta);
+        t_r += beta * y;
+        ood_bases.push((build_eq_table_ext(&z), initial_k, beta));
+    }
 
     // PoW grinding check for L0's query phase (no-op at 0 bits but keeps the
     // FS state in lockstep with the prover).
@@ -2540,7 +2632,9 @@ pub fn recursive_verifier_with_basis_k(
             if tx_idx != proof.sumcheck_transcript.len() {
                 return false;
             }
-            if fold_nonce_idx != proof.fold_grinding_nonces.len() {
+            if ood_idx != proof.ood_values.len()
+                || fold_nonce_idx != proof.fold_grinding_nonces.len()
+            {
                 return false;
             }
             let yr = &proof.final_proof.yr;
@@ -2615,6 +2709,15 @@ pub fn recursive_verifier_with_basis_k(
                     *c += sep * rr;
                 }
             }
+            for (basis, start, beta) in &ood_bases {
+                let residual = partial_eval_lsb_ext(basis, &ris[*start..]);
+                if residual.len() != yr_len {
+                    return false;
+                }
+                for (c, &rr) in combined.iter_mut().zip(residual.iter()) {
+                    *c += *beta * rr;
+                }
+            }
             let inner: F192 = yr
                 .iter()
                 .zip(combined.iter())
@@ -2630,7 +2733,25 @@ pub fn recursive_verifier_with_basis_k(
         next_root_idx += 1;
         observe_root(sponge, &root_next);
 
-        // (OOD binding mirror elided.)
+        for _ in 0..ood_count(i + 2) {
+            let z = sample_ext_vec(sponge, n_current);
+            let Some(&y) = proof.ood_values.get(ood_idx) else {
+                return false;
+            };
+            ood_idx += 1;
+            observe_ext(sponge, y);
+            let Some(&intro_msg) = proof.sumcheck_transcript.get(tx_idx) else {
+                return false;
+            };
+            tx_idx += 1;
+            observe_ext(sponge, intro_msg.u_0);
+            observe_ext(sponge, intro_msg.u_2);
+            let intro_quad = RoundQuadK::from_msg(intro_msg, y);
+            let beta = sample_ext(sponge);
+            running_quad = RoundQuadK::fold(&running_quad, &intro_quad, beta);
+            t_r += beta * y;
+            ood_bases.push((build_eq_table_ext(&z), ris.len(), beta));
+        }
 
         // PoW grinding check for this iteration's query phase.
         if nonce_idx >= proof.grinding_nonces.len() {
@@ -2768,8 +2889,7 @@ where
     if r < 1 || config.level_ks.len() != r || config.log_inv_rates.len() != r + 1 {
         return false;
     }
-    // OOD is not ported; reject configs that would require it.
-    if config.ood_samples.iter().any(|&s| s != 0) {
+    if config.ood_samples.first().copied().unwrap_or(0) != 0 {
         return false;
     }
 
@@ -2798,7 +2918,15 @@ where
     let mut running_quad = RoundQuadK::from_msg(start_msg, t_r);
 
     let fold_bits = |lvl: usize| -> u32 { config.fold_grinding_bits.get(lvl).copied().unwrap_or(0) as u32 };
+    let ood_count = |lvl: usize| -> usize { config.ood_samples.get(lvl).copied().unwrap_or(0) };
     let mut fold_nonce_idx = 0usize;
+    let mut ood_idx = 0usize;
+    struct OodCtx {
+        z: Vec<F192>,
+        ris_start: usize,
+        beta: F192,
+    }
+    let mut ood_ctxs: Vec<OodCtx> = Vec::new();
 
     let mut r_lane_fold = Vec::with_capacity(initial_k);
     for j in 0..initial_k {
@@ -2832,7 +2960,29 @@ where
     let root_1 = proof.recursive_roots[0];
     observe_root(sponge, &root_1);
 
-    // (OOD binding mirror elided: zero samples enforced above.)
+    for _ in 0..ood_count(1) {
+        let z = sample_ext_vec(sponge, log_n - initial_k);
+        let Some(&y) = proof.ood_values.get(ood_idx) else {
+            return false;
+        };
+        ood_idx += 1;
+        observe_ext(sponge, y);
+        let Some(&intro_msg) = proof.sumcheck_transcript.get(tx_idx) else {
+            return false;
+        };
+        tx_idx += 1;
+        observe_ext(sponge, intro_msg.u_0);
+        observe_ext(sponge, intro_msg.u_2);
+        let intro_quad = RoundQuadK::from_msg(intro_msg, y);
+        let beta = sample_ext(sponge);
+        running_quad = RoundQuadK::fold(&running_quad, &intro_quad, beta);
+        t_r += beta * y;
+        ood_ctxs.push(OodCtx {
+            z,
+            ris_start: initial_k,
+            beta,
+        });
+    }
 
     // PoW grinding check for L0's query phase.
     let mut nonce_idx = 0usize;
@@ -2943,7 +3093,9 @@ where
             if tx_idx != proof.sumcheck_transcript.len() {
                 return false;
             }
-            if fold_nonce_idx != proof.fold_grinding_nonces.len() {
+            if ood_idx != proof.ood_values.len()
+                || fold_nonce_idx != proof.fold_grinding_nonces.len()
+            {
                 return false;
             }
             let yr = &proof.final_proof.yr;
@@ -3029,6 +3181,25 @@ where
                 }
             }
 
+            let mut ood_residuals = Vec::with_capacity(ood_ctxs.len());
+            for ctx in &ood_ctxs {
+                if ctx.z.len() < yr_log_n
+                    || ctx.ris_start + (ctx.z.len() - yr_log_n) > ris.len()
+                {
+                    return false;
+                }
+                let folded = ctx.z.len() - yr_log_n;
+                let mut scalar = ctx.beta;
+                for b in 0..folded {
+                    scalar *= F192::ONE + ctx.z[b] + ris[ctx.ris_start + b];
+                }
+                let mut tail = build_eq_table_ext(&ctx.z[folded..]);
+                for v in &mut tail {
+                    *v *= scalar;
+                }
+                ood_residuals.push(tail);
+            }
+
             // Batch-evaluate b at all yr positions in one call so the caller
             // can amortize prefix work.
             let evb_vec = eval_b_residual(&ris, yr_log_n);
@@ -3040,6 +3211,9 @@ where
                 let mut combined_y = evb_vec[y];
                 for (k, residual) in induced_residuals.iter().enumerate() {
                     combined_y += level_ctxs[k].beta * residual[y];
+                }
+                for residual in &ood_residuals {
+                    combined_y += residual[y];
                 }
                 inner += yr[y] * combined_y;
             }
@@ -3053,7 +3227,29 @@ where
         next_root_idx += 1;
         observe_root(sponge, &root_next);
 
-        // (OOD binding mirror elided.)
+        for _ in 0..ood_count(i + 2) {
+            let z = sample_ext_vec(sponge, n_current);
+            let Some(&y) = proof.ood_values.get(ood_idx) else {
+                return false;
+            };
+            ood_idx += 1;
+            observe_ext(sponge, y);
+            let Some(&intro_msg) = proof.sumcheck_transcript.get(tx_idx) else {
+                return false;
+            };
+            tx_idx += 1;
+            observe_ext(sponge, intro_msg.u_0);
+            observe_ext(sponge, intro_msg.u_2);
+            let intro_quad = RoundQuadK::from_msg(intro_msg, y);
+            let beta = sample_ext(sponge);
+            running_quad = RoundQuadK::fold(&running_quad, &intro_quad, beta);
+            t_r += beta * y;
+            ood_ctxs.push(OodCtx {
+                z,
+                ris_start: ris.len(),
+                beta,
+            });
+        }
 
         // PoW grinding check for this iteration's query phase.
         if nonce_idx >= proof.grinding_nonces.len() {
@@ -3247,17 +3443,19 @@ mod tests {
         dense
     }
 
-    /// Pin that the log_n = 16 roundtrip exercises the strict Secure-profile
-    /// derivation (not the small-size fallback): the ladder must exist and
-    /// carry the L0 lane fold at initial_k = 6 with nonzero L0 fold grinding.
+    /// Pin the production 128-bit Johnson/OOD profile rather than the small-
+    /// size test fallback.
     #[test]
-    fn k_configs_secure_profile_shape() {
-        let (pc, vc) = k_configs_for(16).expect("Secure profile feasible at log_n = 16");
+    fn k_configs_johnson_profile_shape() {
+        let (pc, vc) = k_configs_for(16).expect("Johnson profile feasible at log_n = 16");
         assert_eq!(pc.initial_k, 6);
         assert!(pc.level_steps >= 1);
         assert_eq!(vc.initial_k, pc.initial_k);
-        assert!(pc.ood_samples.iter().all(|&s| s == 0));
-        // And log_n = 12 is below the Secure ladder's feasibility floor, so
+        assert_eq!(pc.ood_samples[0], 0);
+        assert!(pc.ood_samples.iter().skip(1).all(|&s| s >= 1));
+        assert!(pc.grinding_bits.iter().all(|&b| b == 0));
+        assert!(pc.fold_grinding_bits.iter().all(|&b| b == 0));
+        // And log_n = 12 is below the production ladder's feasibility floor, so
         // the tests there use the default_config fallback.
         assert!(k_configs_for(12).is_err());
     }
@@ -3297,12 +3495,13 @@ mod tests {
         assert!(verify_instance(&inst, &inst.proof), "honest proof rejected");
     }
 
-    /// At log_n = 18 (Secure profile) L0 has log_msg_cols = 12 and ~290
+    /// At log_n = 18 the production profile's L0 has log_msg_cols = 12 and
+    /// enough queries to select the sparse transposed-NTT dispatch in both
     /// queries, which trips the sparse transposed-NTT dispatch in BOTH the
     /// prover and the dense verifier; pin the heuristic, then roundtrip.
     #[test]
     fn roundtrip_log_n_18_sparse_induce() {
-        let (pc, _) = k_configs_for(18).expect("Secure profile feasible at log_n = 18");
+        let (pc, _) = k_configs_for(18).expect("Johnson profile feasible at log_n = 18");
         assert!(
             induce_use_ntt_heuristic(18 - pc.initial_k, pc.log_inv_rates[0], pc.queries[0]),
             "shape must select the sparse transposed-NTT induce at L0"
@@ -3357,8 +3556,8 @@ mod tests {
 
     /// Dense and succinct must return the same verdict on every proof:
     /// honest plus a spread of randomized single-bit tampers, at both a
-    /// fallback-config shape (log_n = 12) and a Secure-profile shape with a
-    /// fold-grinding nonce (log_n = 16).
+    /// fallback-config shape (log_n = 12) and the Johnson/OOD production
+    /// shape (log_n = 16).
     #[test]
     fn dense_and_succinct_agree() {
         for (log_n, seed) in [(12usize, 11u64), (16, 12)] {
@@ -3407,6 +3606,14 @@ mod tests {
                 assert!(
                     !verify_both_agree(&inst, &bad, "fold-grinding nonce"),
                     "tampered fold-grinding nonce accepted at log_n={log_n}"
+                );
+            }
+            if !inst.proof.ood_values.is_empty() {
+                let mut bad = inst.proof.clone();
+                bad.ood_values[0] += F192::ONE;
+                assert!(
+                    !verify_both_agree(&inst, &bad, "OOD value"),
+                    "tampered OOD value accepted at log_n={log_n}"
                 );
             }
         }

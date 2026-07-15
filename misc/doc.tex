@@ -176,7 +176,7 @@ a weighted sum over $\widehat q$ with weight $W(w)=\eq((\zeta,\mathsf{sel}_i),w)
 
 \subsection{Inner-product PCS}\label{sec:rs-dense}
 
-It is Ligerito~\cite{cryptoeprint:2025/1187} in the \emph{Secure} profile: rate $1/2$, unique-decoding regime (list size $1$, no out-of-domain samples), $120$-bit round-by-round soundness. The witness is Reed--Solomon encoded over $\K$; level-0 symbols are $8$ bytes and $2^6$ interleaved symbols form each $512$-byte Merkle leaf. Openings are over $\E$: every row-batching and folding challenge and the opening sumcheck are sampled from $\E$, so the level-0 fold pairs $\K$-symbols with $\E$-challenges and all deeper levels are $\E$-valued.
+It is Ligerito~\cite{cryptoeprint:2025/1187}, instantiated at rate $1/2$ in the Johnson list-decoding regime with slack $\eta=0.02$ and $128$-bit round-by-round soundness. The level-zero opening claim is sampled after its commitment and therefore also binds one element of the nearby-codeword list; no separate out-of-domain evaluation is needed there. Each recursive commitment is bound by one fresh out-of-domain evaluation. Since all challenges lie in $\E=\F_{2^{192}}$, the query, proximity-gap, and binding errors each clear $128$ bits without proof-of-work grinding. The witness is Reed--Solomon encoded over $\K$; level-zero symbols are $8$ bytes and $2^6$ interleaved symbols form each $512$-byte Merkle leaf. Openings are over $\E$: the level-zero fold pairs $\K$-symbols with $\E$-challenges, and all deeper levels are $\E$-valued.
 
 \section{M3 model}\label{sec:m3}
 

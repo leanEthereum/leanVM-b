@@ -64,10 +64,10 @@ recursion 2→1: 2 inner proofs of 950519 cycles each
 
 ## Security, proof size etc
 
-- security = 120 bits, proven, unique-decoding regime, Ligerito
+- security = 128 bits, proven, Johnson list-decoding regime with OOD binding, Ligerito
 - proof size = BIG (≈ 0.7 MiB)
 
-Both will be improved later.
+The proof-size target will be improved further.
 
 ## Credits
 

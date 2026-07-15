@@ -976,7 +976,7 @@ fn gen_verify(
             // ring-switch is struct-observed and no longer advances the cursor.
             let lp = &proof.openings[0].ligerito;
             let fb = |lvl: usize| -> u32 { vcfg.fold_grinding_bits.get(lvl).copied().unwrap_or(0) as u32 };
-            let (mut tx, mut fni, mut qi, mut rri) = (0usize, 0usize, 0usize, 0usize);
+            let (mut tx, mut fni, mut qi, mut rri, mut oi) = (0usize, 0usize, 0usize, 0usize, 0usize);
             let msg = |tx: &mut usize| -> [F192; 2] {
                 let m = lp.sumcheck_transcript[*tx];
                 *tx += 1;
@@ -992,9 +992,15 @@ fn gen_verify(
                 }
                 v.extend_from_slice(&msg(&mut tx));
             }
-            // L0 root, query-grind nonce, intro msg for L1
+            // L1 root, its OOD claims, then the L0 query phase and induced
+            // basis introduction.
             v.extend_from_slice(&pcs::merkle::hash_to_scalars(&lp.recursive_roots[rri]));
             rri += 1;
+            for _ in 0..vcfg.ood_samples[1] {
+                v.push(lp.ood_values[oi]);
+                oi += 1;
+                v.extend_from_slice(&msg(&mut tx));
+            }
             v.push(F192::new(lp.grinding_nonces[qi], 0, 0));
             qi += 1;
             v.extend_from_slice(&msg(&mut tx));
@@ -1015,6 +1021,11 @@ fn gen_verify(
                 } else {
                     v.extend_from_slice(&pcs::merkle::hash_to_scalars(&lp.recursive_roots[rri]));
                     rri += 1;
+                    for _ in 0..vcfg.ood_samples[i + 2] {
+                        v.push(lp.ood_values[oi]);
+                        oi += 1;
+                        v.extend_from_slice(&msg(&mut tx));
+                    }
                     v.push(F192::new(lp.grinding_nonces[qi], 0, 0));
                     qi += 1;
                     v.extend_from_slice(&msg(&mut tx));
@@ -1036,6 +1047,7 @@ fn gen_verify(
                 lp.recursive_roots.len(),
                 "lig_msgs: recursive_roots not fully consumed"
             );
+            assert_eq!(oi, lp.ood_values.len(), "lig_msgs: OOD values not fully consumed");
             assert!(
                 v.len() <= stream_cap,
                 "stream+lig_msgs {} exceeds stream_cap {stream_cap}",
@@ -1533,12 +1545,23 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     };
     let (minm, maxm) = (22usize, 28usize);
     let cands: Vec<_> = (minm..=maxm).map(oshape).collect();
+    let cand_oods: Vec<Vec<usize>> = (minm..=maxm)
+        .map(|m| {
+            pcs::ligerito::LigeritoSecurityConfig::derive_config(m + pcs::LOG_PACKING)
+                .and_then(|s| s.to_prover_verifier_configs())
+                .expect("candidate ligerito config")
+                .1
+                .ood_samples
+        })
+        .collect();
     let maxlev = cands.iter().map(|c| c.0).max().unwrap();
     let maxfolds = cands.iter().map(|c| c.11.len()).max().unwrap();
     let maxsvk = cands.iter().map(|c| c.19.len()).max().unwrap();
+    let maxood = cand_oods.iter().flatten().copied().max().unwrap_or(0);
     ps("LIG_MAX_LEVELS", maxlev.to_string());
     ps("LIG_MAX_TOTAL_FOLDS", maxfolds.to_string());
     ps("LIG_MAX_VANISH_LEN", maxsvk.to_string());
+    ps("LIG_MAX_OOD_SAMPLES", maxood.to_string());
     ps("LIG_MIN_LOG_SIZE", minm.to_string());
     let cks: Vec<(usize, usize)> = lean_vm::cpu::col_kappa_sources(kbc).into_iter().flatten().collect();
     ps("N_COMMITTED_COLS", cks.len().to_string());
@@ -1629,7 +1652,13 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         );
         ps(
             "LIG_SUMCHECK_LEN",
-            ints(&scal(&|c| 2 * (c.3.iter().sum::<usize>() + c.0))),
+            ints(
+                &cands
+                    .iter()
+                    .zip(&cand_oods)
+                    .map(|(c, ood)| 2 * (c.3.iter().sum::<usize>() + c.0 + ood.iter().sum::<usize>()))
+                    .collect::<Vec<_>>(),
+            ),
         );
         ps(
             "LIG_ROWS_LEN",
@@ -1642,6 +1671,15 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
             ints(&scal(&|c| (0..c.0).map(|lv| c.5[lv] * c.6[lv] * 2).sum())),
         );
         ps("LIG_QUERY_GRIND_BITS", ints(&flat(&|c| c.10.clone(), maxlev)));
+        ps(
+            "LIG_OOD_SAMPLES",
+            ints(
+                &cand_oods
+                    .iter()
+                    .flat_map(|v| pad(v, maxlev))
+                    .collect::<Vec<_>>(),
+            ),
+        );
         ps("LIG_QUERIES", ints(&flat(&|c| c.5.clone(), maxlev)));
         ps("LIG_FOLDS", ints(&flat(&|c| c.3.clone(), maxlev)));
         ps("LIG_INTERLEAVE", ints(&flat(&|c| c.9.clone(), maxlev)));

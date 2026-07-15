@@ -136,6 +136,7 @@ PCS_MIN_MU = PCS_MIN_MU_PLACEHOLDER
 LIG_MAX_LEVELS = LIG_MAX_LEVELS_PLACEHOLDER
 LIG_MAX_TOTAL_FOLDS = LIG_MAX_TOTAL_FOLDS_PLACEHOLDER
 LIG_MAX_VANISH_LEN = LIG_MAX_VANISH_LEN_PLACEHOLDER
+LIG_MAX_OOD_SAMPLES = LIG_MAX_OOD_SAMPLES_PLACEHOLDER
 # Global maxima (StackBuf frame sizes are parse-time).
 LIG_LOG_MSG_COLS_CAP = LIG_LOG_MSG_COLS_CAP_PLACEHOLDER
 YR_LOG_CAP = YR_LOG_CAP_PLACEHOLDER
@@ -153,6 +154,7 @@ LIG_SUMCHECK_LEN = LIG_SUMCHECK_LEN_PLACEHOLDER
 LIG_ROWS_LEN = LIG_ROWS_LEN_PLACEHOLDER
 LIG_PATHS_LEN = LIG_PATHS_LEN_PLACEHOLDER
 LIG_QUERY_GRIND_BITS = LIG_QUERY_GRIND_BITS_PLACEHOLDER
+LIG_OOD_SAMPLES = LIG_OOD_SAMPLES_PLACEHOLDER
 LIG_QUERIES = LIG_QUERIES_PLACEHOLDER
 LIG_FOLDS = LIG_FOLDS_PLACEHOLDER
 LIG_INTERLEAVE = LIG_INTERLEAVE_PLACEHOLDER
@@ -593,6 +595,10 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
     alpha_weights = HeapBuf(GEN ** (LIG_N_LEVELS[m_idx] * LIG_MAX_QUERIES[m_idx]))
     query_positions = HeapBuf(GEN ** (LIG_POSITIONS_LEN[m_idx]))
     query_bit_ptrs = HeapBuf(GEN ** (LIG_POSITIONS_LEN[m_idx]))
+    # Explicit OOD claims bind every recursive Johnson-list commitment. L0
+    # needs none: the opening claim itself is its post-commit binding value.
+    ood_z = HeapBuf(GEN ** (LIG_N_LEVELS[m_idx] * LIG_MAX_OOD_SAMPLES * LIG_LOG_MSG_COLS_CAP))
+    ood_betas = HeapBuf(GEN ** (LIG_N_LEVELS[m_idx] * LIG_MAX_OOD_SAMPLES))
 
     for lvl in unroll(0, LIG_N_LEVELS[m_idx]):
         for j in unroll(0, LIG_FOLDS[m_idx * LIG_MAX_LEVELS + lvl]):
@@ -621,6 +627,24 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
             fs, next_root_b, msg_cursor = fs_next(fs, msg_cursor)
             level_roots_0[GEN ** (lvl + 1)] = next_root_a
             level_roots_1[GEN ** (lvl + 1)] = next_root_b
+            # OOD binding for the newly observed level-(lvl+1) commitment.
+            # The random point has the just-folded witness dimension, namely
+            # this level's message-column dimension.
+            for os in unroll(0, LIG_OOD_SAMPLES[m_idx * LIG_MAX_LEVELS + lvl + 1]):
+                oz = ood_z * GEN ** (((lvl + 1) * LIG_MAX_OOD_SAMPLES + os) * LIG_LOG_MSG_COLS_CAP)
+                for t in unroll(0, LIG_LOG_MSG_COLS[m_idx * LIG_MAX_LEVELS + lvl]):
+                    fs = squeeze(fs)
+                    oz[GEN ** t] = fs[0]
+                fs, ood_y, msg_cursor = fs_next(fs, msg_cursor)
+                fs, ood_u0, msg_cursor = fs_next(fs, msg_cursor)
+                fs, ood_u2, msg_cursor = fs_next(fs, msg_cursor)
+                fs = squeeze(fs)
+                ood_beta = fs[0]
+                ood_betas[GEN ** ((lvl + 1) * LIG_MAX_OOD_SAMPLES + os)] = ood_beta
+                round_quad_c += ood_beta * ood_u0
+                round_quad_b += ood_beta * (ood_y + ood_u2)
+                round_quad_a += ood_beta * ood_u2
+                sumcheck_target += ood_beta * ood_y
         q_nonce = msg_cursor[GEN ** 0]  # raw transport word: bound by the DS_POW absorb below
         msg_cursor = msg_cursor * GEN
         if LIG_QUERY_GRIND_BITS[m_idx * LIG_MAX_LEVELS + lvl] != 0:
@@ -737,7 +761,27 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
             yr_eval = fold_final_msg(final_msg, fold_w, 0, LIG_YR_LOG_LEN[m_idx])
             residual_chain[xr * GEN] = residual_chain[xr] + alpha_weights[GEN ** (lvl * LIG_MAX_QUERIES[m_idx]) * xr] * prefix_eq * yr_eval
         inner_chain[GEN ** (lvl + 1)] = inner_chain[GEN ** lvl] + level_betas[GEN ** lvl] * residual_chain[GEN ** LIG_QUERIES[m_idx * LIG_MAX_LEVELS + lvl]]  # accumulate beta_lvl * (per-level residual sum) into the grand residual
-    return sumcheck_target, fold_challenges, final_msg, inner_chain[GEN ** LIG_N_LEVELS[m_idx]], GEN ** LIG_YR_LOG_LEN[m_idx], GEN ** (YR_LOG_CAP - LIG_YR_LOG_LEN[m_idx]), GEN ** LIG_TOTAL_FOLDS[m_idx]
+
+    # Explicit OOD bases are eq(z, ·). Fold their prefixes at all subsequent
+    # sumcheck challenges and evaluate the remaining yr_log_n-coordinate tail
+    # directly against the final message.
+    ood_inner = 0
+    for ood_lvl in unroll(1, LIG_N_LEVELS[m_idx]):
+        z_len = LIG_LOG_MSG_COLS[m_idx * LIG_MAX_LEVELS + ood_lvl - 1]
+        z_folded = z_len - LIG_YR_LOG_LEN[m_idx]
+        ris_start = LIG_FOLDS_OFF[m_idx * LIG_MAX_LEVELS + ood_lvl]
+        for os in unroll(0, LIG_OOD_SAMPLES[m_idx * LIG_MAX_LEVELS + ood_lvl]):
+            oz = ood_z * GEN ** ((ood_lvl * LIG_MAX_OOD_SAMPLES + os) * LIG_LOG_MSG_COLS_CAP)
+            scalar = ood_betas[GEN ** (ood_lvl * LIG_MAX_OOD_SAMPLES + os)]
+            for t in unroll(0, z_folded):
+                scalar *= (1 + oz[GEN ** t] + fold_challenges[GEN ** (ris_start + t)])
+            ood_fold_w = StackBuf(2 * YR_LOG_CAP)
+            for t in unroll(0, LIG_YR_LOG_LEN[m_idx]):
+                zt = oz[GEN ** (z_folded + t)]
+                ood_fold_w[2 * t] = 1 + zt
+                ood_fold_w[2 * t + 1] = zt
+            ood_inner += scalar * fold_final_msg(final_msg, ood_fold_w, 0, LIG_YR_LOG_LEN[m_idx])
+    return sumcheck_target, fold_challenges, final_msg, inner_chain[GEN ** LIG_N_LEVELS[m_idx]] + ood_inner, GEN ** LIG_YR_LOG_LEN[m_idx], GEN ** (YR_LOG_CAP - LIG_YR_LOG_LEN[m_idx]), GEN ** LIG_TOTAL_FOLDS[m_idx]
 
 
 def exponent_tables():
