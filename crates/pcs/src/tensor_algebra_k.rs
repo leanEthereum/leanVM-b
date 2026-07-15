@@ -29,9 +29,8 @@
 //!    `E (x)_F2 E`: the verifier's polylog `eval_rs_eq_k` accumulates
 //!    `sum_y eq(query, y) (x) eq(r_suffix, y)`, which is E-valued on BOTH
 //!    factors (the K packing never appears there because `rs_eq_ind` is
-//!    E-valued). This is [`super::tensor_algebra::TensorAlgebra`] retyped
-//!    from the GHASH F128 to the tower [`F128T`]; the F_2 coordinates of an
-//!    E element are the bits of its `(c0, c1)` tower representation.
+//!    E-valued). The F_2 coordinates of an E element are the bits of its
+//!    `(c0, c1)` tower representation.
 //!
 //! "Bit w" of an E element means: bit w of `c0` for `w < 64`, bit `w - 64`
 //! of `c1` otherwise (the tower's natural F_2 basis `x^i y^j`, matching the

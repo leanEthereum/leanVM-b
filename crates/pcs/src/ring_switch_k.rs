@@ -4,22 +4,21 @@
 // Modifications copyright 2026 Succinct Labs, Benedikt Bunz, William Wang
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 //
-// The DP24 iterative `eval_rs_eq_k` mirrors this crate's F128-era
-// `ring_switch::eval_rs_eq` (itself ported from binius64). The rest of the
-// module is the rectangular (f = 64, e = 128) generalization described in
+// The DP24 iterative `eval_rs_eq_k` is ported from binius64. The module is
+// the rectangular (f = 64, e = 128) generalization described in
 // the ring-switching-generalized note.
 
 //! Ring-switching reduction for the 64-bit transition: F_2 to K = GF(2^64)
 //! packing, opened over E = GF(2^128) (the tower [`F128T`]).
 //!
-//! Rectangular mirror of [`super::ring_switch`] with f = 64 (packing degree
-//! over F_2) and e = 128 (opening degree). Converts one evaluation claim on
+//! With f = 64 (packing degree over F_2) and e = 128 (opening degree), this
+//! converts one evaluation claim on
 //! the bit-witness MLE at an E-point into a Ligerito-K sumcheck claim on the
 //! packed multilinear (a `Vec<F64>`, one word per 64 bits, see
 //! [`super::pack_k`]) against a transparent E-valued weight vector
 //! `rs_eq_ind`.
 //!
-//! ## Differences from the F128-era module
+//! ## Rectangular shape
 //!
 //! - **Rectangular shape**: `s_hat_v` has 64 entries (one per packing bit),
 //!   each an E element; its tensor-algebra transpose `s_hat_u = (t_w)_w` has
@@ -34,7 +33,7 @@
 //!   coords ([`eq_prefix_weights`]); for flock's univariate-skip claim (whose
 //!   first coordinate ranges over the phi_8 Lagrange domain, not the boolean
 //!   cube) the caller passes the 64 phi_8 Lagrange weights
-//!   `lagrange_weights_naive(6, z_skip)` mapped through `ghash_to_tower`.
+//!   `lagrange_weights_naive(6, z_skip)`.
 //!   This module never looks inside the weights, so flock's `z_skip` flows
 //!   through unchanged.
 //!
@@ -80,11 +79,7 @@ pub const LOG_DEGREE_E: usize = 7;
 const _: () = assert!(1 << LOG_DEGREE_E == DEGREE_E);
 
 // ---------------------------------------------------------------------------
-// Sponge helpers (same convention as ligerito_k): the shared sponge
-// speaks GHASH F128 as 16 uniform transcript bytes; every 16-byte pattern is
-// a valid F128T, so sampling reinterprets bytes and observing ferries the
-// two lanes through the (lo, hi) slots. No arithmetic ever happens in the
-// GHASH representation here.
+// Sponge helpers: every 16-byte pattern is a valid F128T.
 // ---------------------------------------------------------------------------
 
 fn sample_ext_vec(sponge: &mut Sponge, n: usize) -> Vec<F128T> {
@@ -135,10 +130,8 @@ pub fn claim_check(prefix_weights: &[F128T], s_hat_v: &[F128T]) -> F128T {
 /// Tower (`F128T`) trace-dual basis: `TRACE_DUAL_BASIS[i]` is the unique element
 /// with `bit_i(y) = Tr(TRACE_DUAL_BASIS[i] · y)` for the coordinate bit `i` of
 /// `y ∈ F128T` (c0 bits 0..64, c1 bits 64..128), where `Tr` is the absolute
-/// trace `F128T → F2`. Same construction as the GHASH twin
-/// (`ring_switch::trace_dual_basis`) but over the tower's own coordinate basis
-/// and trace form, so the constants differ (they are NOT the iso-image of the
-/// GHASH ones). The recursion guest replays bit extraction with these.
+/// trace `F128T → F2`, using the tower's coordinate basis and trace form.
+/// The recursion guest replays bit extraction with these.
 pub fn trace_dual_basis_k() -> &'static [F128T; 128] {
     use std::sync::OnceLock;
     static DUAL: OnceLock<[F128T; 128]> = OnceLock::new();
@@ -221,6 +214,42 @@ pub fn fold_1b_rows_k(packed_witness: &[F64], suffix_tensor: &[F128T]) -> Vec<F1
     }
 }
 
+/// Reuse lincheck's partial fold to derive the 64 slice evaluations needed by
+/// the K ring switch, avoiding a second pass over the packed witness.
+pub fn s_hat_v_from_z_vec(z_vec: &[F128T], inner_rest_tail: &[F128T]) -> Vec<F128T> {
+    use rayon::prelude::*;
+    let n_packed = PACKING_WIDTH_K;
+    let n_tail = 1usize << inner_rest_tail.len();
+    assert_eq!(z_vec.len(), n_packed * n_tail);
+    if inner_rest_tail.is_empty() {
+        return z_vec.to_vec();
+    }
+    build_eq_table_ext(inner_rest_tail)
+        .par_iter()
+        .enumerate()
+        .fold(
+            || vec![F128T::ZERO; n_packed],
+            |mut acc, (k, &weight)| {
+                for (slot, &value) in acc
+                    .iter_mut()
+                    .zip(&z_vec[k * n_packed..(k + 1) * n_packed])
+                {
+                    *slot += weight * value;
+                }
+                acc
+            },
+        )
+        .reduce(
+            || vec![F128T::ZERO; n_packed],
+            |mut acc, part| {
+                for (slot, value) in acc.iter_mut().zip(part) {
+                    *slot += value;
+                }
+                acc
+            },
+        )
+}
+
 /// Scalar reference path of [`fold_1b_rows_k`]: mirror of
 /// `ring_switch::fold_1b_rows_naive` at 64-bit width, a rayon bit-scan with
 /// per-thread length-64 partial accumulators XOR-reduced at the end.
@@ -268,7 +297,7 @@ fn subset_sums_4_ext(elems: [F128T; 4]) -> [F128T; 16] {
     sums
 }
 
-/// Method-of-four-Russians [`fold_1b_rows_k`] kernel: the F128 layer's
+/// Method-of-four-Russians [`fold_1b_rows_k`] kernel: the extension-field layer's
 /// `fold_1b_rows_1way_mfr_8wide_k4` ported to 8-byte K words (where 8 words
 /// per transpose group cover ALL 64 output bits with the 8 byte positions,
 /// no wasted transpose rows).
@@ -440,7 +469,7 @@ fn fold_one_slot_ext(elem: F128T, tables: &[F128T]) -> F128T {
 /// (64 KiB, L1/L2-resident); per position 16 lookups + 15 XORs, no
 /// data-dependent bit-scan. Rayon across positions.
 /// Split point for the factored eq build: low half sized ~n/2 (min 4, the
-/// point where two factor tables beat one full build). Mirror of the F128
+/// point where two factor tables beat one full build). Mirror of the extension-field
 /// layer's `ring_switch::split_n_lo`.
 pub fn split_n_lo(n: usize) -> usize {
     (n / 2).clamp(4.min(n), n)
@@ -450,7 +479,7 @@ pub fn split_n_lo(n: usize) -> usize {
 /// (LSB-first indexing, matching `build_eq_table_ext`). Materializes
 /// `2^n_lo + 2^(n - n_lo)` entries instead of `2^n`; field multiplication is
 /// exact, so the reconstructed entries are bit-identical to the full build.
-/// Mirror of the F128 layer's `ring_switch::build_eq_split`.
+/// Mirror of the extension-field layer's `ring_switch::build_eq_split`.
 pub fn build_eq_split_ext(point: &[F128T]) -> (Vec<F128T>, Vec<F128T>) {
     let n_lo = split_n_lo(point.len());
     (
@@ -524,7 +553,7 @@ pub enum VerifyErrorK {
 ///   [`super::pack_k::pack_witness_k`].
 /// - `prefix_weights`: the 64 per-bit-column weights of the consumed claim
 ///   ([`eq_prefix_weights`] for a plain point; phi_8 Lagrange weights mapped
-///   through `ghash_to_tower` for flock's skip claim).
+///   directly in the tower for flock's skip claim).
 /// - `suffix_point`: the L outer coords (in E) addressing words.
 /// - `claim`: the claimed value `sum_i prefix_weights[i] * s_hat_v[i]`;
 ///   asserted against the witness (an honest caller always passes a
@@ -552,7 +581,7 @@ pub fn prove(
     // Single-claim wrapper: observe s_hat_v, sample its own r'', finish. The
     // STACKED opener instead calls `prove_observe` for every claim, samples ONE
     // shared r'' after all are observed, then `prove_finish` per claim
-    // (matching the F128 opener + the recursion guest).
+    // (matching the extension-field opener + the recursion guest).
     let (proof, state) = prove_observe(packed_witness, prefix_weights, suffix_point, claim, precomputed_s_hat_v, sponge);
     let r_dprime = sample_ext_vec(sponge, LOG_DEGREE_E);
     let eq_r_dprime = build_eq_table_ext(&r_dprime);
@@ -569,7 +598,7 @@ pub struct RingSwitchProveState {
 }
 
 /// Phase 1 of the ring-switch prover: compute + observe `s_hat_v` (NO domain
-/// label — matches the F128 opener). Returns the proof and the scratch for
+/// label — matches the extension-field opener). Returns the proof and the scratch for
 /// [`prove_finish`]. The caller samples the (possibly shared) `r''` afterwards.
 pub fn prove_observe(
     packed_witness: &[F64],
@@ -637,7 +666,7 @@ pub fn verify(
     assert_eq!(prefix_weights.len(), PACKING_WIDTH_K);
     assert_eq!(proof.s_hat_v.len(), PACKING_WIDTH_K);
 
-    // No domain label (matches `prove`'s single-claim wrapper + the F128 opener).
+    // No domain label (matches `prove`'s single-claim wrapper + the extension-field opener).
     observe_ext_slice(sponge, &proof.s_hat_v);
 
     if claim_check(prefix_weights, &proof.s_hat_v) != claim {
@@ -678,7 +707,7 @@ pub fn verify_succinct(
 }
 
 /// Phase 1 of the ring-switch verifier: observe `s_hat_v` (NO domain label —
-/// matches the F128 opener) and check the prefix-weight claim. The caller
+/// matches the extension-field opener) and check the prefix-weight claim. The caller
 /// samples the (possibly shared) `r''` afterwards.
 pub fn verify_observe(
     claim: F128T,

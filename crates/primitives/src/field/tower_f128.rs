@@ -262,7 +262,7 @@ fn kclmul(a: u64, b: u64) -> u128 {
         all(target_arch = "x86_64", target_feature = "pclmulqdq")
     )))]
     {
-        let (lo, hi) = crate::field::gf2_128::software::clmul64(a, b);
+        let (lo, hi) = crate::field::gf2_64x3::clmul64(a, b);
         lo as u128 | ((hi as u128) << 64)
     }
 }
@@ -470,7 +470,7 @@ pub mod aarch64 {
 
 pub mod software {
     use super::{F128T, F128TUnreduced};
-    use crate::field::gf2_128::software::clmul64;
+    use crate::field::gf2_64x3::clmul64;
 
     #[inline]
     fn clmul128(a: u64, b: u64) -> u128 {

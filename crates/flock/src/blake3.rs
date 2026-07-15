@@ -100,7 +100,7 @@
 //!   openings at fixed indices pin them to claimed public inputs.
 
 use crate::blake3_witness::{BitRecord, add_carry_parts, or_bit_at, or_u32_at_bit, xor_dedup};
-use primitives::field::F128;
+use primitives::field::F128T;
 use crate::r1cs::{BlockR1cs, SparseBinaryMatrix};
 use crate::verifier;
 
@@ -925,7 +925,7 @@ fn write_const_word_ab_packed(bit_off: usize, val: u32, z: &mut [u64], a: &mut [
 }
 
 /// Build the (z, a, b) blocks for ONE compression instance, into u64 views
-/// of the F128-packed per-block storage. Buffers must be zero on entry.
+/// of the F128T-packed per-block storage. Buffers must be zero on entry.
 ///
 /// **No c buffer.** Since `C = I` (this is the circuit-shape R1CS), `c == z`
 /// byte-for-byte; callers use `z_packed` directly as the c-side input to
@@ -1060,11 +1060,11 @@ pub fn generate_witness_with_ab_packed(
     blocks: &[Compression],
     n_blocks_log: usize,
 ) -> (
-    Vec<primitives::field::F128>,
-    Vec<primitives::field::F128>,
-    Vec<primitives::field::F128>,
+    Vec<primitives::field::F128T>,
+    Vec<primitives::field::F128T>,
+    Vec<primitives::field::F128T>,
 ) {
-    use primitives::field::F128;
+    use primitives::field::F128T;
     use rayon::prelude::*;
     let n_total = 1usize << n_blocks_log;
     let n_blocks = blocks.len();
@@ -1076,9 +1076,9 @@ pub fn generate_witness_with_ab_packed(
 
     const F128_PER_BLOCK: usize = K / 128;
     let total_f128 = n_total * F128_PER_BLOCK;
-    let mut z = vec![F128::ZERO; total_f128];
-    let mut a = vec![F128::ZERO; total_f128];
-    let mut b = vec![F128::ZERO; total_f128];
+    let mut z = vec![F128T::ZERO; total_f128];
+    let mut a = vec![F128T::ZERO; total_f128];
+    let mut b = vec![F128T::ZERO; total_f128];
 
     // Constant-wire pin (see lincheck's `LincheckCircuit::const_pin_col`): padding slots get the pinned
     // compression of the all-zero message (constant wire = 1), matching
@@ -1095,7 +1095,7 @@ pub fn generate_witness_with_ab_packed(
             } else {
                 &padding
             };
-            // SAFETY: F128 is repr(C, align(16)) with LE u64 halves — same
+            // SAFETY: F128T is repr(C, align(16)) with LE u64 halves — same
             // byte layout as a u64 pair.
             let z_u64: &mut [u64] = unsafe {
                 std::slice::from_raw_parts_mut(z_c.as_mut_ptr() as *mut u64, z_c.len() * 2)
@@ -1129,9 +1129,9 @@ pub fn generate_witness_with_ab_packed_and_lincheck(
     blocks: &[Compression],
     n_blocks_log: usize,
 ) -> (
-    Vec<primitives::field::F128>,
-    Vec<primitives::field::F128>,
-    Vec<primitives::field::F128>,
+    Vec<primitives::field::F128T>,
+    Vec<primitives::field::F128T>,
+    Vec<primitives::field::F128T>,
     Vec<u8>,
 ) {
     // Constant-wire pin (see lincheck's `LincheckCircuit::const_pin_col`): fill padding blocks with the
@@ -1390,9 +1390,9 @@ mod tests {
         // Correctly-shaped buffers (padding-only generation), then zeroed.
         let (mut z, mut a, mut b, mut zlc) =
             generate_witness_with_ab_packed_and_lincheck(&[], setup.n_blocks_log());
-        z.fill(F128::ZERO);
-        a.fill(F128::ZERO);
-        b.fill(F128::ZERO);
+        z.fill(F128T::ZERO);
+        a.fill(F128T::ZERO);
+        b.fill(F128T::ZERO);
         zlc.fill(0);
 
         // Prover side: the reduction happily runs on the zero witness.
@@ -1400,7 +1400,7 @@ mod tests {
             k_log: r1cs.k_log,
             useful_bits_per_block: r1cs.useful_bits,
         };
-        let as_bytes = |v: &[F128]| unsafe {
+        let as_bytes = |v: &[F128T]| unsafe {
             std::slice::from_raw_parts(
                 v.as_ptr() as *const u8,
                 std::mem::size_of_val(v),
@@ -1474,7 +1474,7 @@ mod tests {
 #[derive(Clone, Debug)]
 pub struct WitnessClaim {
     pub claim: crate::proof::ZClaim,
-    pub s_hat_v: Option<Vec<F128>>,
+    pub s_hat_v: Option<Vec<F128T>>,
 }
 
 /// The two claims on the committed witness `q_pkd` left by the Flock BLAKE3
@@ -1516,7 +1516,7 @@ impl Blake3Setup {
         &self,
         blocks: &[Compression],
         ps: &mut fiat_shamir::transcript::ProverState<O>,
-    ) -> (Vec<F128>, ReducedClaims) {
+    ) -> (Vec<F128T>, ReducedClaims) {
         assert_eq!(blocks.len(), self.n_blocks);
         let n_log = self.n_blocks_log();
         let (z_packed, a_packed_f128, b_packed_f128, z_packed_lincheck) =
@@ -1535,19 +1535,19 @@ impl Blake3Setup {
             let a_packed: &[u8] = unsafe {
                 std::slice::from_raw_parts(
                     a_packed_f128.as_ptr() as *const u8,
-                    a_packed_f128.len() * core::mem::size_of::<F128>(),
+                    a_packed_f128.len() * core::mem::size_of::<F128T>(),
                 )
             };
             let b_packed: &[u8] = unsafe {
                 std::slice::from_raw_parts(
                     b_packed_f128.as_ptr() as *const u8,
-                    b_packed_f128.len() * core::mem::size_of::<F128>(),
+                    b_packed_f128.len() * core::mem::size_of::<F128T>(),
                 )
             };
             let c_packed: &[u8] = unsafe {
                 std::slice::from_raw_parts(
                     z_packed.as_ptr() as *const u8,
-                    z_packed.len() * core::mem::size_of::<F128>(),
+                    z_packed.len() * core::mem::size_of::<F128T>(),
                 )
             };
             crate::zerocheck::prove_packed_padded_capture_s_hat_v_c(
@@ -1588,15 +1588,11 @@ impl Blake3Setup {
             },
             value: zc_claim.c_eval,
         };
-        // s_hat_v stays a GHASH capture (prover-side, from the GHASH z_vec); the
-        // blake3_flock boundary iso-maps it into the tower. lc_claim.r_inner_rest
-        // is now tower-valued, so bridge it back to GHASH for this GHASH kernel.
-        let s_hat_v_ab = if self.r1cs.k_log >= pcs::LOG_PACKING {
-            let r_ghash: Vec<F128> = lc_claim.r_inner_rest[1..]
-                .iter()
-                .map(|&v| primitives::field::tower_to_ghash(v))
-                .collect();
-            Some(pcs::ring_switch::s_hat_v_from_z_vec(&z_vec_pre, &r_ghash))
+        let s_hat_v_ab = if self.r1cs.k_log >= pcs::pack_k::LOG_PACKING_K {
+            Some(pcs::ring_switch_k::s_hat_v_from_z_vec(
+                &z_vec_pre,
+                &lc_claim.r_inner_rest,
+            ))
         } else {
             None
         };

@@ -1,10 +1,7 @@
 // Credit: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
 //! Stacked batch-mixed opening for the K-committed PCS (64-bit transition).
 //!
-//! K/F128T analog of the F128-era stacked opener pair
-//! [`super::open_batch_mixed_ligerito_stacked`] /
-//! [`super::verify_opening_batch_mixed_ligerito_stacked`]: the committed
-//! witness is a STACK of `2^log_n` [`F64`] words (committed via
+//! The committed witness is a stack of `2^log_n` [`F64`] words (committed via
 //! [`super::ligerito_k::commit_k`]), and one Ligerito-K run discharges
 //!
 //! - **point claims** ([`StackClaimK`]): plain multilinear evaluations of
@@ -36,9 +33,7 @@
 //! label -> per ring-switched claim ([`super::ring_switch_k`]'s own label +
 //! `s_hat_v_i` observed + `r''_i` sampled) -> gamma_rs (one per claim) ->
 //! per point claim (label + value observed) -> gamma_pd (one per claim) ->
-//! Ligerito-K. This mirrors the F128 stacked opener's order exactly, with
-//! "-k-" domain-separation labels so a K transcript can never be replayed as
-//! an F128 one.
+//! Ligerito-K, with domain-separated labels for every phase.
 //!
 //! ## The combined weight
 //!
@@ -77,8 +72,7 @@ use super::tensor_algebra_k::TensorAlgebraE;
 // the shared Fiat-Shamir sponge.
 // sponge scalars ARE E-elements; the helpers keep call sites uniform; every
 // 16-byte pattern is a valid F128T, so sampling reinterprets bytes and
-// observing ferries the two lanes through the (lo, hi) slots. No arithmetic
-// ever happens in the GHASH representation here.
+// observing ferries the two tower lanes through the transcript.
 // ---------------------------------------------------------------------------
 
 fn sample_ext_vec(sponge: &mut Sponge, n: usize) -> Vec<F128T> {
@@ -105,7 +99,7 @@ fn eq_eval_ext(r: &[F128T], x: &[F128T]) -> F128T {
 // Claim types
 // ---------------------------------------------------------------------------
 
-/// A point claim folded into the stacked mixed opening. K analog of the F128
+/// A point claim folded into the stacked mixed opening. K analog of the extension-field
 /// [`super::StackClaim`] (owning variant, mirroring the main crate's
 /// `SlotClaim` shape).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -148,7 +142,7 @@ impl StackClaimK {
 /// are the 64 bit-slice MLEs of q_pkd at `suffix_point` (see
 /// [`super::ring_switch_k`]). `prefix_weights` has [`PACKING_WIDTH_K`] = 64
 /// entries ([`super::ring_switch_k::eq_prefix_weights`] for a plain point
-/// claim; phi_8 Lagrange weights mapped through `ghash_to_tower` for flock's
+/// claim; phi_8 Lagrange weights for flock's
 /// univariate-skip claim); `suffix_point` has `qpkd_vars` coords.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RingSwitchClaimK {
@@ -199,7 +193,7 @@ pub struct BatchOpeningProofK {
 }
 
 /// What the K stacked-opening verifier hands back on accept — the recursion
-/// harness's hook for the Ligerito fold/query data (mirror of the F128
+/// harness's hook for the Ligerito fold/query data (mirror of the extension-field
 /// `StackedOpeningSummary`). The K verifier does not yet surface its query
 /// squeezes (the sampler rejection-samples and discards the raw words);
 /// porting the recursion guest to the 64-bit field fills this in.
@@ -222,7 +216,7 @@ pub struct LigVerifierSummaryK {
 
 /// Fold the gamma-weighted point claims into the stack weight `b_stack` and
 /// running `target` (pure: the caller has already observed the claim values
-/// and sampled `gammas` in transcript order). Mirror of the F128
+/// and sampled `gammas` in transcript order). Mirror of the extension-field
 /// `fold_stacked_point_claims`: a `Point` builds eq over ONLY its aligned
 /// slice, a `Strided` scatters the eq of its high coords at the slot's
 /// stride. Both scatter with `+=`, so overlapping slices accumulate
@@ -315,7 +309,7 @@ fn fold_stacked_point_claims_k(
 /// The claim's weight `eq(full claim point, x)` at an arbitrary point `x` of
 /// the full stack cube. A `Point`'s full point is `[low_point, sel_bits]`, a
 /// `Strided`'s is `[slot_bits, point, sel_bits]`; neither is materialized.
-/// Mirror of the F128 `stack_claim_eq_at`.
+/// Mirror of the extension-field `stack_claim_eq_at`.
 fn stack_claim_eq_at_k(claim: &StackClaimK, x: &[F128T]) -> F128T {
     match claim {
         StackClaimK::Point {
@@ -397,7 +391,7 @@ pub fn open_batch_mixed_ligerito_stacked_k(
     };
 
     // 1. Ring-switch reduction: observe EVERY claim's s_hat_v first, then sample
-    //    ONE shared r'' (matches the F128 opener + the recursion guest), then
+    //    ONE shared r'' (matches the extension-field opener + the recursion guest), then
     //    finish each claim's sumcheck/weight against the shared eq tensor.
     let qpkd = &stack[ring.offset..ring.offset + qpkd_len];
     let mut rs_proofs = Vec::with_capacity(ring.claims.len());
@@ -427,7 +421,7 @@ pub fn open_batch_mixed_ligerito_stacked_k(
         .collect();
     mark("ring-switch proves", &mut t);
     // Per-claim batching gammas, sampled AFTER all ring-switch messages are
-    // bound (mirror of the F128 layer's gamma_rs pattern).
+    // bound (mirror of the extension-field layer's gamma_rs pattern).
     let gammas_rs = sample_ext_vec(sponge, ring.claims.len());
 
     // 2. Observe point-claim values + sample their gammas (Schwartz-Zippel
@@ -520,7 +514,7 @@ pub fn verify_opening_batch_mixed_ligerito_stacked_k(
 ) -> Option<StackedOpeningSummaryK> {
     let n_rs = ring.claims.len();
     let qpkd_vars = ring.qpkd_vars;
-    // Caller (statement) invariants: panic on misuse, like the F128 layer.
+    // Caller (statement) invariants: panic on misuse, like the extension-field layer.
     assert!(qpkd_vars <= log_n);
     assert!(
         ring.offset % (1usize << qpkd_vars) == 0,
@@ -545,7 +539,7 @@ pub fn verify_opening_batch_mixed_ligerito_stacked_k(
 
     // 1. Ring-switch succinct verify: observe EVERY claim's s_hat_v first, then
     //    sample ONE shared r'', then finish each claim (mirrors the prover +
-    //    the F128 opener + the recursion guest).
+    //    the extension-field opener + the recursion guest).
     for (claim, rs_proof) in ring.claims.iter().zip(proof.ring_switches.iter()) {
         if ring_switch_k::verify_observe(claim.value, &claim.prefix_weights, rs_proof, sponge).is_err() {
             return None;

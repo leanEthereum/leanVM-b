@@ -1,4 +1,4 @@
-//! Shared primitives: the GF(2^128)/GF(2^8) field kernels, bit transposes,
+//! Shared primitives: the binary tower-field kernels, bit transposes,
 //! multilinear helpers, the scratch buffer pool, and small integer utilities.
 
 pub mod bits;
@@ -6,7 +6,7 @@ pub mod field;
 pub mod multilinear;
 pub mod scratch;
 
-pub use field::{F128, F256Unreduced, G, g_pow, g_powers, mul_by_x, x_pow};
+pub use field::{F64, F128T, G, g_pow, g_powers, x_pow};
 
 /// `log2` of a power of two (panics otherwise).
 pub fn log2_strict_usize(n: usize) -> usize {

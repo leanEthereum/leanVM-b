@@ -14,7 +14,9 @@ use core::ops::{Add, AddAssign, Mul, MulAssign};
 
 use serde::{Deserialize, Serialize};
 
-use super::gf2_64x3::{R64, base_reduce_128};
+use super::gf2_64x3::base_reduce_128;
+#[cfg(target_arch = "aarch64")]
+use super::gf2_64x3::R64;
 
 /// A GF(2^64) element; bit i = coefficient of x^i.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -345,7 +347,7 @@ pub mod x86_64 {
 
 pub mod software {
     use super::{F64, base_reduce_128};
-    use crate::field::gf2_128::software::clmul64;
+    use crate::field::gf2_64x3::clmul64;
 
     pub fn mul(a: F64, b: F64) -> F64 {
         let (lo, hi) = clmul64(a.0, b.0);

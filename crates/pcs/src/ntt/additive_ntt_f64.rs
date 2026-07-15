@@ -7,11 +7,11 @@
 //! butterfly loops route through a NEON lane-pair kernel (two 1-PMULL
 //! products per iteration with a PMULL-by-0x1B pair fold, no GPR
 //! round-trips); at large sizes the transform is memory-bandwidth bound
-//! either way, like its F128 twin.
+//! either way, like its extension-field twin.
 
 use primitives::field::F64;
 
-/// Normalized subspace-polynomial evaluation table (see the F128 twin).
+/// Normalized subspace-polynomial evaluation table (see the extension-field twin).
 fn generate_evals_from_subspace(basis: &[F64]) -> Vec<Vec<F64>> {
     let l = basis.len();
     let mut evals: Vec<Vec<F64>> = Vec::with_capacity(l);
@@ -47,7 +47,7 @@ fn span_get(basis: &[F64], idx: usize) -> F64 {
 
 /// Additive NTT over F_{2^64} with the standard polynomial-basis subspace
 /// `{1, x, x², …}`: the F_2-subspace is `{0, 1, …, 2^ℓ−1}` under the natural
-/// integer encoding, exactly as in the F128 version (whose domain already
+/// integer encoding, exactly as in the extension-field version (whose domain already
 /// lived inside this very subfield).
 #[derive(Clone, Debug)]
 pub struct AdditiveNttF64 {
@@ -74,7 +74,7 @@ impl AdditiveNttF64 {
         self.evals.len()
     }
 
-    /// Twiddle at `(layer, block)`; see the F128 twin for the convention.
+    /// Twiddle at `(layer, block)`; see the extension-field twin for the convention.
     pub fn twiddle(&self, layer: usize, block: usize) -> F64 {
         let v = &self.evals[self.log_domain_size() - layer - 1];
         span_get(&v[1..], block)
@@ -110,7 +110,7 @@ impl AdditiveNttF64 {
 
     /// Interleaved (SoA) forward NTT: `num_ntts` independent lanes sharing
     /// the twiddle structure; `data[pos * num_ntts + lane]`. Same layout
-    /// contract as the F128 twin (one Merkle leaf = one position = a
+    /// contract as the extension-field twin (one Merkle leaf = one position = a
     /// contiguous slice of `num_ntts` F_{2^64} elements).
     pub fn forward_transform_interleaved(&self, data: &mut [F64], num_ntts: usize) {
         self.forward_transform_interleaved_from_layer(data, num_ntts, 0);
@@ -167,7 +167,7 @@ impl AdditiveNttF64 {
         }
     }
 
-    /// Parallel interleaved forward NTT, cache-blocked like the F128 twin:
+    /// Parallel interleaved forward NTT, cache-blocked like the extension-field twin:
     /// top layers sweep the full buffer (fused two-layer passes, row-parallel),
     /// deep layers run as cache-resident sub-NTTs in parallel. Constants are
     /// re-derived for 8-byte elements.
@@ -308,7 +308,7 @@ fn butterfly_interleaved_block_par_rows(
         });
 }
 
-/// Fused 2-layer butterfly, row-parallel; see the F128 twin for the shape.
+/// Fused 2-layer butterfly, row-parallel; see the extension-field twin for the shape.
 fn butterfly_interleaved_fused_2layer_par_rows(
     block: &mut [F64],
     t_outer: F64,
@@ -381,7 +381,7 @@ fn butterfly_interleaved_block(
 ///
 /// On NEON this processes two lanes per iteration entirely inside the vector
 /// register file (2 PMULL for the products, one PMULL-by-0x1B pair fold, no
-/// GPR round-trips), which is what makes the F64 NTT beat the F128 one on
+/// GPR round-trips), which is what makes the F64 NTT beat the extension-field one on
 /// equal bytes; the scalar path is the portable fallback and the odd tail.
 #[inline]
 fn butterfly_lanes(top: &mut [F64], bot: &mut [F64], twiddle: F64) {

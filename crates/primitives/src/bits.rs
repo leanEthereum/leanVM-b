@@ -179,7 +179,7 @@ pub fn bit_transpose_64bytes(input: &[u8; 64], output: &mut [u8; 64]) {
 mod tests {
     use super::*;
 
-    /// splitmix64 test PRNG (same helper as the gf2_128/gf2_8 test modules).
+    /// splitmix64 test PRNG (same helper as the former_field_module/gf2_8 test modules).
     #[cfg(target_arch = "aarch64")]
     struct Rng(u64);
     #[cfg(target_arch = "aarch64")]

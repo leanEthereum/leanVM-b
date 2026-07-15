@@ -23,7 +23,7 @@ them).
 Multi-block hashes (WOTS public key: 42 chain tips = 672 bytes; message
 encoding: `msg (32) | randomness (24) | zeros (8)`): a Merkle-Damgard mode
 with the absorbed size in the IV, **in the exponent** of the VM field's
-generator `g` (GF(2^128), GHASH form — the VM's loop counters are g-powers,
+generator `g` (GF(2^128), legacy polynomial-basis field form — the VM's loop counters are g-powers,
 so the size element is free in-circuit):
 
 ```

@@ -1,7 +1,7 @@
 // Credit: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
 //! Bit-witness packing into K = F_{2^64} for the 64-bit transition PCS.
 //!
-//! Mirror of [`super::pack`] at half the stride: the witness
+//! The witness
 //! `z : {0,1}^m -> {0,1}` is laid out as a flat 2^m-length bool array, and
 //! packing groups the **first** `LOG_PACKING_K = 6` boolean coordinates into
 //! one F_{2^64} element, leaving `2^(m-6)` packed words indexed by the
@@ -48,7 +48,7 @@ pub fn pack_witness_k(z: &[bool], m: usize) -> Vec<F64> {
     // little-endian u64 pack to an LSB-first byte with one multiply:
     // byte 7 of `x * 0x0102040810204080` is the sum of b_r * 2^r (each lower
     // product byte sums distinct powers of two <= 0xFE, so nothing carries
-    // into byte 7). Same trick as `pack::pack_witness`.
+    // into byte 7).
     // SAFETY: same length, and any &[bool] is a valid &[u8].
     let bytes: &[u8] = unsafe { core::slice::from_raw_parts(z.as_ptr() as *const u8, z.len()) };
     #[inline]
@@ -134,19 +134,18 @@ mod tests {
         }
     }
 
-    /// Agreement with the F128 packing at the bit level: the K packing is the
-    /// F128 packing split at the 64-bit boundary, so word 2j is the lo half
-    /// and word 2j+1 the hi half of F128 word j.
-    #[test]
-    fn agrees_with_f128_packing() {
-        let m = 10;
-        let z = rand_bits(m, 6);
-        let packed_k = pack_witness_k(&z, m);
-        let packed_128 = crate::pack::pack_witness(&z, m);
-        assert_eq!(packed_k.len(), 2 * packed_128.len());
-        for (j, w) in packed_128.iter().enumerate() {
-            assert_eq!(packed_k[2 * j].0, w.lo, "lo half mismatch at {j}");
-            assert_eq!(packed_k[2 * j + 1].0, w.hi, "hi half mismatch at {j}");
-        }
+}
+
+/// Describes zero padding within each logical witness block.
+#[derive(Clone, Copy, Debug)]
+pub struct PaddingSpec {
+    pub k_log: usize,
+    pub useful_bits_per_block: usize,
+}
+
+impl PaddingSpec {
+    /// Treat every bit as useful.
+    pub fn dense(m: usize) -> Self {
+        Self { k_log: m, useful_bits_per_block: 1usize << m }
     }
 }

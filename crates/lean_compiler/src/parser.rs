@@ -33,7 +33,7 @@ pub fn parse(src: &str) -> Result<Ast, String> {
 /// `def`s, the top level accepts constant declarations `NAME = <int-expr>`,
 /// where `<int-expr>` is a compile-time **integer** — decimal literals combined
 /// with `+ - * / **` and parentheses (ordinary integer arithmetic, *not* the
-/// runtime field's XOR/GHASH), and references to *earlier* constants. So a
+/// runtime field's XOR/legacy polynomial-basis field), and references to *earlier* constants. So a
 /// derived size like `N_TWEAKS = 2 + (W - 1) * V + LOG_LIFETIME` comes out
 /// right. Each constant is evaluated and substituted, as a single decimal
 /// literal, everywhere its name appears in the functions below — so a constant
@@ -168,7 +168,7 @@ fn is_ident(s: &str) -> bool {
 /// combined with `+`, `-`, `*`, `/` (truncating), `**` (power), and
 /// parentheses. This is ordinary integer arithmetic — a global constant is a
 /// count / size / exponent — deliberately *distinct* from the runtime field's
-/// `+` = XOR and `*` = GHASH, so derived sizes like `2 + (W - 1) * V +
+/// `+` = XOR and `*` = legacy polynomial-basis field, so derived sizes like `2 + (W - 1) * V +
 /// LOG_LIFETIME` come out right. All references to earlier constants have
 /// already been substituted to their decimal values, so the input is pure
 /// arithmetic. Overflow, division by zero, and a negative intermediate are

@@ -5,12 +5,10 @@
 
 //! Ligerito over K = GF(2^64): commit in the base field, challenge in the tower.
 //!
-//! A duplicate-and-retype port of [`super::ligerito`] (plus the commit phase of
-//! [`super::commit`]) for the 64-bit transition. The committed message is a
+//! The committed message is a
 //! vector of [`F64`] values; every verifier challenge, sumcheck message, basis
 //! poly, and post-fold witness lives in E = GF(2^128) represented as the
-//! degree-2 tower [`F128T`] over the very same K. The existing F128 (GHASH)
-//! path is untouched; this module is purely additive.
+//! degree-2 tower [`F128T`] over the very same K.
 //!
 //! Type map relative to the original:
 //! - committed message / L0 codeword / L0 opened rows: `F64` (8 bytes)
@@ -35,8 +33,8 @@
 //! ([`induce_sumcheck_poly_via_ntt_base`]), with the SAME auto-dispatch size
 //! heuristic at L0 (deeper levels stay dense, exactly like the original).
 //!
-//! Soundness note: the configs are REUSED from the F128-era derivation
-//! ([`LigeritoSecurityConfig::derive_profile`] with `analysis q = 2^128`).
+//! Soundness note: the configs use [`LigeritoSecurityConfig`] with
+//! `analysis q = 2^128`.
 //! The challenge field here is also 2^128-sized, and the shape parameters are
 //! field-agnostic, so the reuse is coherent; still, the K parameterization
 //! (base-field alphabet in the interleaved code, tower-sampling details) gets
@@ -73,9 +71,8 @@ fn observe_ext(sponge: &mut Sponge, e: F128T) {
 }
 
 
-/// Bind a Merkle root into the transcript as its two `F128T` scalars (mirror of
-/// the F128 opener's `add_scalars(hash_to_scalars(root))`), rather than as a
-/// byte string. Binds the root before any challenge exactly as `absorb_bytes`
+/// Bind a Merkle root into the transcript as two `F128T` scalars rather than
+/// as a byte string. Binds the root before any challenge exactly as `absorb_bytes`
 /// would; keeping the scalar form matches the recursion guest's replay.
 fn observe_root(sponge: &mut Sponge, root: &crate::merkle::Hash) {
     for s in crate::merkle::hash_to_scalars(root) {
@@ -110,7 +107,7 @@ pub fn build_eq_table_ext(point: &[F128T]) -> Vec<F128T> {
 /// Parallel mirror of [`build_eq_table_ext`]: identical LSB-first doubling
 /// recurrence, byte-identical output, with each level's independent
 /// iterations fanned out across rayon threads once the level is large enough
-/// to amortize dispatch. Structure copied from the F128 layer's
+/// to amortize dispatch. Structure copied from the extension-field layer's
 /// `ring_switch::build_eq_parallel`.
 pub fn build_eq_table_ext_parallel(point: &[F128T]) -> Vec<F128T> {
     // Uninit alloc: the doubling below writes every slot before any is read
@@ -136,7 +133,7 @@ pub fn build_eq_table_ext_seeded_into(point: &[F128T], seed: F128T, out: &mut [F
     assert_eq!(out.len(), 1usize << n, "out must have length 2^point.len()");
     out[0] = seed;
     // Threshold below which rayon dispatch overhead beats the parallel work
-    // (same floor as the F128 layer's `build_eq_parallel`).
+    // (same floor as the extension-field layer's `build_eq_parallel`).
     const PAR_THRESHOLD: usize = 1 << 12;
     for j in 0..n {
         let r_j = point[j];
@@ -213,11 +210,11 @@ fn log2_pow2(n: usize) -> usize {
 // ===================================================================
 
 /// Derive `(ProverConfig, VerifierConfig)` for a K-witness of `2^log_n` F64
-/// elements, reusing the F128-era `Secure` profile at `m = log_n + LOG_PACKING`
+/// elements, reusing the extension-field-era `Secure` profile at `m = log_n + LOG_PACKING`
 /// exactly like the main crate does for its packed witnesses.
 ///
 /// NOTE: the soundness constants behind `derive_config` (query counts,
-/// fold-grinding bits, the `q = 2^128` analysis) are F128-era. E here is also
+/// fold-grinding bits, the `q = 2^128` analysis) are extension-field-era. E here is also
 /// 2^128-sized and the config is shape-only, but the K parameterization gets
 /// its own soundness derivation later; treat these numbers as provisional.
 pub fn k_configs_for(log_n: usize) -> Result<(ProverConfig, VerifierConfig), String> {
@@ -230,7 +227,7 @@ pub fn k_configs_for(log_n: usize) -> Result<(ProverConfig, VerifierConfig), Str
 // ===================================================================
 
 /// Public commitment for a K-message: the L0 Merkle root plus the shape
-/// parameters needed to re-derive block lengths. The F128 path's `Commitment`
+/// parameters needed to re-derive block lengths. The extension-field path's `Commitment`
 /// carries a full `PcsParams` (packing- and profile-aware), which does not
 /// apply to a raw K-message, so this port defines its own minimal type.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -244,7 +241,7 @@ pub struct CommitmentK {
 }
 
 /// Prover-side state retained after commit for the opening phase. The message
-/// itself is NOT stored (mirror of the F128 `ProverData` contract).
+/// itself is NOT stored (mirror of the extension-field `ProverData` contract).
 pub struct ProverDataK {
     pub codeword: Vec<F64>,
     pub merkle_tree: Vec<Hash>,
@@ -302,7 +299,7 @@ pub fn commit_k(
     let n_positions = 1usize << k_code;
     let codeword_len = n_positions * num_ntts;
 
-    // Plain allocation: the F128 path routes this buffer through the scratch
+    // Plain allocation: the extension-field path routes this buffer through the scratch
     // pool; no F64 pool exists (yet). Every slot is written by the replicate
     // fill below, so uninit is fine.
     let mut codeword: Vec<F64> = primitives::alloc_uninit_vec(codeword_len);
@@ -619,7 +616,7 @@ fn butterfly_interleaved_ext_block(
 }
 
 // ===================================================================
-// LCH novel-basis evaluations over K (mirror of ligerito's F128 block)
+// LCH novel-basis evaluations over K (mirror of ligerito's extension-field block)
 // ===================================================================
 //
 // The subspace-polynomial recurrence runs entirely over the K evaluation
@@ -1945,7 +1942,7 @@ impl LigeritoProofK {
 /// its disjoint d-bit chunks (low bits first). Mirror of
 /// `ligerito::sample_queries_ordered` so the K opener uses the exact
 /// recursion-friendly scheme the harness/guest re-derive (fixed `128/d` per
-/// squeeze, dup-tolerant — soundness matches the deployed F128 PCS with the same
+/// squeeze, dup-tolerant — soundness matches the deployed extension-field PCS with the same
 /// `config.queries`). Duplicates are harmless: a repeated position re-opens the
 /// same Merkle-authenticated row.
 fn sample_queries_ordered_k(sponge: &mut Sponge, block_len: usize, count: usize) -> Vec<usize> {
@@ -1963,7 +1960,7 @@ fn sample_queries_ordered_k(sponge: &mut Sponge, block_len: usize, count: usize)
 }
 
 /// [`sample_queries_ordered_k`] that ALSO returns the raw squeezed words `v`
-/// (as native `F128T`, NOT `as_ghash`-transformed — the recursion harness reads
+/// (as native `F128T` — the recursion harness reads
 /// `.c0/.c1` off them to re-derive positions). One raw word per squeeze.
 fn sample_queries_ordered_with_raw_k(
     sponge: &mut Sponge,
@@ -2063,7 +2060,7 @@ pub fn recursive_prover_with_basis_k(
     let mut t_intro_glue = std::time::Duration::ZERO;
     let t_total = std::time::Instant::now();
 
-    // (No opener domain-label absorb: the F128 opener has none and the recursion
+    // (No opener domain-label absorb: the extension-field opener has none and the recursion
     // guest replays a label-free opening transcript; the observed `target` +
     // outer transcript context provide domain separation.)
     observe_ext(sponge, target);
@@ -2529,7 +2526,7 @@ pub fn recursive_verifier_with_basis_k(
 
     // The L0 root is the caller's statement (not proof data): absorb it in the
     // prover's slot and check L0 opens against it below.
-    // (No opener domain-label absorb: the F128 opener has none and the recursion
+    // (No opener domain-label absorb: the extension-field opener has none and the recursion
     // guest replays a label-free opening transcript; the observed `target` +
     // outer transcript context provide domain separation.)
     observe_ext(sponge, target);
@@ -2957,7 +2954,7 @@ where
 
     // The L0 root is the caller's statement (not proof data): absorb it
     // exactly where the prover absorbed its own.
-    // (No opener domain-label absorb: the F128 opener has none and the recursion
+    // (No opener domain-label absorb: the extension-field opener has none and the recursion
     // guest replays a label-free opening transcript; the observed `target` +
     // outer transcript context provide domain separation.)
     observe_ext(sponge, target);

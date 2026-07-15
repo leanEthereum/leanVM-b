@@ -267,7 +267,7 @@ def decode_query_bits(v, positions_out, bit_ptrs_out, depth: Const):
             assert sq == t
             # position: the query index (integer). COORD_BASIS[b] = new(2^b, 0)
             # for b < depth < 64, so position = new(Σ t_b 2^b, 0) — same value
-            # the GHASH g-power encoding produced (g^b = 2^b there).
+            # the legacy polynomial-basis field g-power encoding produced (g^b = 2^b there).
             position += t * COORD_BASIS[b]
             # reconstruction of v in the coordinate basis (bit j*depth+b).
             acc += t * COORD_BASIS[j * depth + b]
@@ -567,7 +567,7 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
     fs = [fs0, fs1]
 
     # The K opener binds the initial Merkle root as its two F128T scalars (like
-    # the F128 opener's add_scalars(hash_to_scalars(root))), not as a byte
+    # the extension-field opener's add_scalars(hash_to_scalars(root))), not as a byte
     # string. Level roots are likewise scalar-observed (via fs_next below).
     fs = obs(fs, target)
     fs = obs(fs, commit_root_0)
@@ -1537,9 +1537,9 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
         transposed_claims[rs] = t_chain[GEN ** (2 ** K_SKIP)]
         # z_vals for eval_rs_eq (the x_outer tail), used at the opening terminal.
         # The K (64-bit) packing prefix is exactly the K_SKIP=LOG_PACKING_K skip
-        # domain, so the FIRST inner-rest coord (which the wider F128 prefix
+        # domain, so the FIRST inner-rest coord (which the wider extension-field prefix
         # absorbed) stays in the suffix: both suffixes span qpkd_vars = tau +
-        # SLOT_STRIDE_LOG (= inner_rest_len + tau), one coord longer than F128.
+        # SLOT_STRIDE_LOG (= inner_rest_len + tau), one coord longer than extension-field.
         if rs == 0:
             for t in unroll(0, LINCHECK_ROUNDS):
                 z_vals[GEN ** t] = lincheck_rs[GEN ** (LINCHECK_ROUNDS - 1 - t)]
@@ -1550,7 +1550,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
         else:
             # row 1 lives at the CAPACITY stride (QPKD_VARS_CAP); its length is the
             # runtime qpkdv = tau + SLOT_STRIDE_LOG. The rest starts at K_SKIP
-            # (the coord F128 folded into its prefix stays here).
+            # (the coord extension-field folded into its prefix stays here).
             zv_hi = z_vals * GEN ** QPKD_VARS_CAP
             zcr7 = zerocheck_r * GEN ** K_SKIP
             for xt in mul_range(1, tau_blake3_g * GEN ** SLOT_STRIDE_LOG):

@@ -20,7 +20,7 @@
 //! - base reduction per coefficient: 1 PMULL by 0x1B; the ≤4-bit overflow is
 //!   folded with 3 scalar shift-XORs (0x1B·overflow fits in 8 bits, exact).
 //!
-//! Total: 9 PMULL per mult (vs 6 for F128's GHASH). Squaring drops the cross
+//! Total: 9 PMULL per mult (vs 6 for extension-field's legacy polynomial-basis field). Squaring drops the cross
 //! terms (char 2): 3 PMULL + 3 reduction PMULL = 6.
 //!
 //! Why no packed-lane tricks: PMULL is one 64×64 product per instruction; base
@@ -211,10 +211,23 @@ pub const fn base_reduce_128(lo: u64, hi: u64) -> u64 {
     lo ^ f ^ ov ^ (ov << 1) ^ (ov << 3) ^ (ov << 4)
 }
 
+/// Portable 64×64 carry-less product, used by setup and fallback paths.
+pub(crate) fn clmul64(a: u64, b: u64) -> (u64, u64) {
+    let (mut lo, mut hi) = (0, 0);
+    for i in 0..64 {
+        if (a >> i) & 1 != 0 {
+            lo ^= b << i;
+            if i != 0 {
+                hi ^= b >> (64 - i);
+            }
+        }
+    }
+    (lo, hi)
+}
+
 /// Portable base-field helpers (reference-grade; tests and setup only).
 pub mod base {
-    use super::base_reduce_128;
-    use crate::field::gf2_128::software::clmul64;
+    use super::{base_reduce_128, clmul64};
 
     /// GF(2^64) multiply: carry-less 64×64 then fold.
     pub fn mul(a: u64, b: u64) -> u64 {
@@ -463,8 +476,7 @@ pub mod aarch64 {
 // ---------------------------------------------------------------------------
 
 pub mod software {
-    use super::{F192, F192Unreduced, base_reduce_128};
-    use crate::field::gf2_128::software::clmul64;
+    use super::{F192, F192Unreduced, base_reduce_128, clmul64};
 
     /// Schoolbook 9-product unreduced coefficients.
     pub fn mul_unreduced(a: F192, b: F192) -> F192Unreduced {
