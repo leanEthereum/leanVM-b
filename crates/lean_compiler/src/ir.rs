@@ -63,8 +63,8 @@ pub(crate) enum LOp {
         of: Off,
     },
     /// `BLAKE3`: the four 128-bit input chunks `ins` are addressed independently,
-    /// each spanning TWO consecutive frame cells (`fp+ins[i]`, `fp+ins[i]+1`);
-    /// the 32-byte output `c = c..c+4` occupies four CONSECUTIVE frame cells.
+    /// one frame cell each. The 32-byte output occupies the two consecutive
+    /// 128-bit cells `c, c+1`.
     Blake3 {
         ins: [Off; 4],
         c: Off,
@@ -114,7 +114,7 @@ pub(crate) struct Lowered {
     pub(crate) frame_size: u32,
 }
 
-/// A resolved 4-cell `blake3` operand: a frame (stack) run used in place, or a
+/// A resolved 2-cell `blake3` operand: a frame (stack) run used in place, or a
 /// heap slice — the buffer pointer's cell plus the first g-power offset —
 /// which must be bridged through the stack (`BLAKE3` addresses only frame
 /// cells).

@@ -1,28 +1,19 @@
-//! Investigation variant: the **binius64** degree-2 tower of GF(2^64),
-//! `GF((2^64)^2) = K[y]/(y² + x·y + 1)`, for a head-to-head comparison against
-//! [`super::tower_f128_artin`]'s Artin–Schreier tower `K[y]/(y² + y + x^61)`.
-//!
-//! Same base field K = GF(2^64) (`x^64 + x^4 + x^3 + x + 1`, [`F64`]) — only the
-//! degree-2 extension polynomial differs, so a benchmark of the two isolates the
-//! *tower choice*. The reduction here is cheaper on paper: with `y² = xy + 1`,
+//! `K = GF(2)[x]/(x^64 + x^4 + x^3 + x + 1)` and
+//! `F128T = K[y]/(y² + x·y + 1)`. For `a,b ∈ F128T`,
 //!
 //! ```text
 //!   (a0 + a1·y)(b0 + b1·y) = (a0b0 + a1b1) + (a0b1 + a1b0 + x·a1b1)·y
-//!   c0 = p0 + p1                       ← pure XOR, no constant multiply
-//!   c1 = (a0b1 + a1b0) + x·p1          ← the only scaling is by x (a 1-bit shift)
+//!   c0 = p0 + p1
+//!   c1 = (a0b1 + a1b0) + x·p1
 //! ```
-//!
-//! versus our tower's `c0 = p0 + x^61·p1` (a multiply by `x^61`). The products
-//! are the same 3-CLMUL Karatsuba either way; only the fold differs.
 //!
 //! Credit: binius64 <https://github.com/binius-zk/binius64>
 //! (`crates/arith-bench/src/monbijou/{mod,clmul,soft64}.rs`) for the field and
 //! its CLMUL arithmetic; this is a reimplementation over our [`F64`] base for
 //! apples-to-apples benchmarking, not a vendored copy.
 //!
-//! This module is a benchmarking/exploration aid: it carries only the ops the
-//! comparison needs (eager mul, the deferred-reduction pair, square, inv), not
-//! the full field surface of [`super::tower_f128_artin`].
+//! This is the protocol and machine-word field used throughout the repository;
+//! it also carries the deferred-reduction kernels used by the prover hot paths.
 
 use core::ops::{Add, AddAssign, BitXor, BitXorAssign, Mul};
 
@@ -30,7 +21,7 @@ use serde::{Deserialize, Serialize};
 
 use super::gf2_64::F64;
 
-/// A binius-tower GF(2^128) element `c0 + c1·y`, `y² = x·y + 1`, coeffs in K.
+/// `c0 + c1·y ∈ K[y]/(y² + x·y + 1)`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[repr(C)]
 pub struct F128T {
@@ -80,7 +71,7 @@ impl F128T {
 
     /// Mixed product K × E: two base multiplications (`{c0·k, c1·k}`).
     /// Multiplying by a base-field scalar never reaches `y²`, so this is
-    /// identical for either degree-2 tower.
+    /// independent of the relation for `y²`.
     #[inline]
     pub fn mul_base(self, k: F64) -> Self {
         Self { c0: (F64(self.c0) * k).0, c1: (F64(self.c1) * k).0 }
@@ -374,7 +365,7 @@ pub mod aarch64 {
     use crate::field::gf2_64x3::R64;
     use core::arch::aarch64::*;
 
-    /// Karatsuba-2 over K with the binius fold `y² = x·y + 1`, NEON-resident.
+    /// Karatsuba-2 over K with `y² = x·y + 1`, NEON-resident.
     /// The products are the same 3-PMULL Karatsuba as
     /// [`super::super::tower_f128_artin::aarch64::mul_neon`], and each output limb
     /// reduces with the identical two-PMULL tail (`v ^ v.hi·0x1B ^ …`), so this
@@ -386,11 +377,7 @@ pub mod aarch64 {
     ///   c1 = reduce((pm ^ p0 ^ p1) ^ (p1 << 1))
     /// ```
     ///
-    /// with `p0 = a0b0`, `p1 = a1b1`, `pm = (a0+a1)(b0+b1)`. The lone constant
-    /// scaling is the 128-bit `p1 << 1` — the unreduced multiply-by-`x` — versus
-    /// the Artin–Schreier tower's 192-bit `x^61` fold: binius folds one word
-    /// fewer, so both limbs are plain 128-bit reductions (7 PMULL total vs the
-    /// Artin–Schreier kernel's 8), no GPR round-trips.
+    /// with `p0 = a0b0`, `p1 = a1b1`, `pm = (a0+a1)(b0+b1)`.
     ///
     /// # Safety
     /// Requires the `aes` target feature (compiles to PMULL); only call where
@@ -536,9 +523,7 @@ mod tests {
         F128T::new(splitmix64(s), splitmix64(s))
     }
 
-    /// `y² = x·y + 1` (the defining relation) and the field axioms hold — a
-    /// consistent field (associativity + inverses) confirms `y²+xy+1` is
-    /// irreducible over our K.
+    /// Checks `y² = x·y + 1`, associativity, and inverses.
     #[test]
     fn defining_relation_and_axioms() {
         let y = F128T::Y;

@@ -93,8 +93,8 @@ def main():
     let _ = compile(&parse(src).unwrap());
 }
 
-/// Constant expressions use **integer** arithmetic (`+ - * / **`), not the
-/// runtime field's XOR/legacy polynomial-basis field — so derived sizes/counts come out right. Filled
+/// Constant expressions use **integer** arithmetic (`+ - * / **`), not runtime
+/// field arithmetic, so derived sizes/counts come out right. Filled
 /// via placeholders, the whole set of derivations resolves to plain literals.
 #[test]
 fn const_integer_arithmetic_derivations() {

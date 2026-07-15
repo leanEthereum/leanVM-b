@@ -24,22 +24,31 @@ no-ops, so this only checks that the file is well-formed.
 
 ## The field — and indices in the exponent
 
+The fields are
+
+`K = GF(2)[x]/(x^64 + x^4 + x^3 + x + 1)` and
+`E = K[y]/(y^2 + x·y + 1) = GF(2^128)`.
+
 Machine **words** — the contents of a memory cell, an immediate, a hashed
-value, the `JUMP` condition — are 128-bit elements of the binary field
-`E = GF(2^128)`, realized as the degree-2 tower over `K = GF(2^64)`:
-`E = K[y]/(y^2 + y + x^61)` (**not** the legacy polynomial-basis field representation). **Addresses**,
+value, the `JUMP` condition — are elements of `E`. **Addresses**,
 the program counter, the frame pointer, read counters, operands, opcodes, and
 domain separators live in the 64-bit subfield `K = GF(2^64)`. There are no
 runtime integers.
 
 - `+` is field addition = bitwise **XOR** (128-bit on words, so `x + x == 0`),
-- `*` is the field product in `E` (the tower product); for g-powers and
+- `*` is multiplication in `E`;
+  for g-powers and
   addresses it stays within `K`,
+- `/` is runtime field division, `a / b = a · b⁻¹`. It costs one `MUL`: the
+  compiler leaves the quotient cell unset and emits the checked relation
+  `quotient · b == a`, which witness generation back-solves. A zero divisor is
+  rejected. This is distinct from `//`, compile-time integer floor division in
+  sizes and indices,
 - an integer literal `n` denotes the machine word whose **raw bit pattern** is
   `n`, now up to 128 bits: the low 64 bits are the `K`-lane, the high 64 bits
   the `y`-lane. So `5` is `1 + x^2` (low lane, high lane 0), not "five"; a
   literal `≥ 2^64` sets the high lane too. In particular `2 ** 64`
-  (`18446744073709551616`) is the tower generator `y` — the word with only bit
+  (`18446744073709551616`) is `y` — the word with only bit
   64 set — so `lo + hi * (2 ** 64)` packs two 64-bit lanes into one 128-bit
   word,
 - `GEN` is the fixed generator `g = x` of the 64-bit subfield `K^×`
@@ -541,6 +550,17 @@ Statements without effect are rejected.
 A proof-enforced equality: 2 cycles (`XOR` into a fresh cell + `SET` it to
 zero, using write-once double-write as the assert).
 
+### `assert a != b`
+
+A proof-enforced inequality. The compiler computes `a + b` with one `XOR` and
+conditionally jumps over a poison path when it is nonzero. If the values are
+equal, execution jumps to `GEN ** -1` conceptually—the field element `g⁻¹`,
+outside the committed bytecode cube—so the bytecode bus cannot balance a
+continuing trace. The honest path is 3 executed instructions (`XOR`, target
+`SET`, `JUMP`), plus the same amortized self-frame/constant setup used by other
+branches; no inverse hint is needed. A compile-time assertion such as
+`assert 5 != 5` is rejected while compiling.
+
 ### Range checks: `assert log x < log Y` and `assert log x < k`
 
 The *range check in the exponent*: proves `x ∈ {g^0, g^1, …, g^{k-1}}`, i.e.
@@ -655,9 +675,11 @@ completely unconstrained: the program must re-verify them in-circuit.
 | `x = <literal>` / `GEN ** k` | 1 `SET` |
 | `a + b` | 1 `XOR` |
 | `a * b` | 1 `MUL` |
+| `a / b` | 1 `MUL` (write-once back-solve; rejects `b == 0`) |
 | heap read / store `buf[i]` | 1 `DEREF`; +1 `MUL` for a *runtime* index (a compile-time g-power offset folds into the `DEREF` — free) |
 | stack read / store `sa[k]` | 0 (direct cell addressing) |
 | `assert a == b` | 2 |
+| `assert a != b` | 3 on the accepting path (+ amortized branch setup) |
 | `assert log x < k` | 3 (+1 `SET` amortized per bound per frame) |
 | `if a == b: …` | 3 (+2 to skip a non-empty `else`; +2 amortized `self-fp` per branching function); **0 if the condition is compile-time** |
 | `match log(x): …` | ≈ 7, independent of the case count |

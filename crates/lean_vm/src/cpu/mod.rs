@@ -1,11 +1,12 @@
 //! Whole-program assembly over GF(2^64) (§7, §8): the six instruction tables
 //! sharing the state / memory / bytecode buses, bound to one field-valued
 //! commitment and verified oracle-free. Addresses, the program counter, and read
-//! counts are g-powers, so every increment is a free ×g; arithmetic is the field's
-//! own (XOR = degree-1, MUL_NATIVE = degree-2, both over `K = F64`). `BLAKE3`
+//! counts are g-powers, so every increment is a free ×g. Machine-word arithmetic
+//! is over `E = F128T = K[y]/(y²+x·y+1)` (XOR degree 1, MUL_NATIVE degree 2),
+//! with each word carried by two committed `K = F64` lanes. `BLAKE3`
 //! (§7.6) adds the memory/state/bytecode plumbing for a 64→32-byte compression
 //! whose relation is discharged by flock (see [`crate::blake3_flock`]). All
-//! challenges and transcript scalars live in the tower `E = F128T`.
+//! Challenges and transcript scalars live in the same tower E.
 
 use std::collections::HashMap;
 
@@ -792,7 +793,7 @@ mod tests {
         let program = Program::from_bytecode(prog, 5);
         let pi = [w(1), w(2)];
         let exec = program.execute(pi);
-        assert_eq!(exec.mem[4], x * y, "MUL computes the tower product");
+        assert_eq!(exec.mem[4], x * y, "MUL computes the E product");
         let (proof, _) = prove(&program, pi);
         verify(&program, &pi, &proof).expect("128-bit MUL verifies");
     }

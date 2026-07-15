@@ -3,8 +3,8 @@
 //! size element of the Merkle-Damgard IV. Matches the VM's field
 //! (`primitives::field::F64`) without depending on it.
 
-/// Multiply by `x` (the generator `g`): one shift, one conditional fold of
-/// the reduction pentanomial (`0x1B`).
+/// Multiply by `x = g`, where `x^64 = x^4 + x^3 + x + 1` and
+/// `0x1B = x^4 + x^3 + x + 1`.
 #[inline]
 const fn mul_by_x(z: u64) -> u64 {
     let carry = z >> 63;

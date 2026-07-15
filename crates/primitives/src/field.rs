@@ -1,14 +1,15 @@
 // Credit: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
-//! Binary field arithmetic: the 64-bit field stack the whole tree shares.
-//! `K = F64 = GF(2^64)` (machine words, memory cells, committed data) inside the
-//! degree-2 tower `E = F128T = GF(2^128)` (challenges, sumcheck/GKR values,
-//! transcript scalars).
+//! `K = F64 = GF(2)[x]/(x^64 + x^4 + x^3 + x + 1)` and
+//! `E = F128T = K[y]/(y^2 + x*y + 1)`. Addresses, pc/fp, counters, and physical
+//! committed columns are K-valued. A machine word is `c0 + c1*y ∈ E` with
+//! `c0,c1 ∈ K`; challenges, sumcheck/GKR values, and transcript scalars are
+//! E-valued.
 //!
 //! - [`F64`]   — GF(2^64), polynomial x^64 + x^4 + x^3 + x + 1
-//! - [`F128T`] — GF(2^128) as the degree-2 tower over `F64`
+//! - [`F128T`] — GF(2^128) as `K[y]/(y^2 + x*y + 1)`
 //! - [`F128TUnreduced`] / [`F128TBaseUnreduced`] — its deferred-reduction accumulators
 //! - [`F8`]    — GF(2^8) with AES polynomial x^8 + x^4 + x^3 + x + 1
-//! - [`F192`]  — GF((2^64)^3): degree-3 tower over GF(2^64), for >128-bit security
+//! - [`F192`]  — `K[y]/(y^3 + y + 1)`
 //! - [`F192Unreduced`] — its deferred-reduction accumulator
 
 pub mod gf2_64;
@@ -33,8 +34,8 @@ pub use tower_f128_artin::{F128TArtin, F128TArtinBaseUnreduced, F128TArtinUnredu
 
 use rayon::prelude::*;
 
-/// Multiply by `x` (the generator `g`) in `K = F_2[x]/(x^64 + x^4 + x^3 + x + 1)`:
-/// one shift, one conditional fold of the reduction pentanomial (`0x1B`).
+/// Multiply by `x = g` in `K`, where `x^64 = x^4 + x^3 + x + 1` and
+/// `0x1B = x^4 + x^3 + x + 1`.
 /// `const` so table constants (`g^k` separators, opcodes) evaluate at compile time.
 #[inline]
 pub const fn mul_by_g(a: F64) -> F64 {
@@ -85,8 +86,8 @@ pub fn x_pow(k: usize) -> F64 {
     result
 }
 
-/// The fixed generator `g = x ∈ K`, of multiplicative order `2^64 − 1` (`x` is
-/// primitive; pinned by a field test), larger than every index any admissible
+/// The fixed generator `g = x ∈ K`, with `ord(g) = 2^64 - 1` (pinned by a
+/// field test), larger than every index any admissible
 /// instance uses (the verifier's instance caps, §cpu). For `k < 64`, `g^k` is
 /// the monomial `x^k` (bit `k`), which the XMSS encoding check relies on.
 pub const G: F64 = F64::G;

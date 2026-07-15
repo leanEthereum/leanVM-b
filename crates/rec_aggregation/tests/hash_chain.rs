@@ -4,8 +4,8 @@
 //! h_i)` (the previous value fed as both 256-bit operands). The program mirrors
 //! the Fibonacci demo's strategy: a `mul_range` loop *in the exponent* on the
 //! outside, an unrolled block of `BLAKE3` steps on the inside, with the chain
-//! state carried through a `HeapBuf` (write-once memory). The first two words of
-//! the final `h_N` are published into the public input (`m[0], m[1]`);
+//! state carried through a `HeapBuf` (write-once memory). The four 64-bit digest
+//! lanes of the final `h_N` are packed into the two 128-bit public-input cells;
 //! write-once memory forces the proven result to equal it.
 //!
 //! `N` and the unroll factor are read from the environment (`LEANVM_HASH_N`,
@@ -36,11 +36,10 @@ fn compress(a: [F64; 4], b: [F64; 4]) -> [F64; 4] {
 
 /// Build the zkDSL source for an `n`-step chain unrolled `unroll` per outer
 /// iteration (`k = n / unroll` iterations). Layout in the heap `buff`: the chain
-/// value after `j·unroll` steps sits at cells `4j..4j+4` (g-powers `g^{4j}..`).
-/// Each outer step loads that quad into a size-4 `StackBuf`, runs `unroll`
-/// `BLAKE3`s in the stack — each output quad feeds the next with **no copies**
-/// (a self-hash `blake3(h, h, out)` aliases one quad into both input operands) —
-/// then writes the result quad four cells along.
+/// value after `j·unroll` steps sits at cells `2j, 2j+1`. Each outer step loads
+/// that pair into a size-2 `StackBuf`, runs `unroll` `BLAKE3`s in the stack —
+/// each output pair feeds the next with **no copies** (a self-hash aliases one
+/// pair into both input operands) — then writes the result pair two cells along.
 fn chain_source(n: usize, unroll: usize) -> String {
     assert!(
         unroll >= 1 && n.is_multiple_of(unroll),

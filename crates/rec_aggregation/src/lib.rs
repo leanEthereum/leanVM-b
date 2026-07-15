@@ -5,9 +5,10 @@
 
 pub mod fibonacci;
 // The n→1 recursion harness dissects the proof stream word-for-word to build the
-// guest's hint streams. It is fully ported to the 64-bit machine (extension
-// scalars span two memory words, the sponge state is four `F64` words, and the
-// opening is the stacked Ligerito-K), and the guest (`guests/recursion.py`)
+// guest's hint streams. It is fully ported to the K-committed machine (each
+// extension scalar is one 128-bit memory word / two committed K lanes, the
+// sponge state is four `F64` lanes, and the opening is stacked Ligerito-K), and
+// the guest (`guests/recursion.py`)
 // replays the single-field tower verifier. Verified end-to-end by
 // `recursion_2to1` (honest proofs accept) and `recursion_soundness_binds`
 // (tampered hints reject).

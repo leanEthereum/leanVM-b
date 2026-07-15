@@ -65,8 +65,8 @@ enum RetBind {
 struct FnLower<'a> {
     vars: HashMap<String, Off>,
     /// `StackBuf` bindings: name → (base offset, size). The `size` cells
-    /// `base..base+size` are consecutive frame cells (so a size-4 one, or a
-    /// 4-cell slice of a larger one, is a direct `blake3` operand). Kept
+    /// `base..base+size` are consecutive frame cells (so a size-2 one, or a
+    /// 2-cell slice of a larger one, is a direct `blake3` operand). Kept
     /// separate from `vars` since a stack value is a run of cells, not a
     /// single scalar.
     stacks: HashMap<String, (Off, u32)>,
@@ -1528,7 +1528,7 @@ impl FnLower<'_> {
     fn call(&mut self, callee: &str, args: &[Expr], n_ret: usize) -> Vec<Off> {
         assert!(
             callee != "blake3",
-            "blake3 is a statement: `blake3(a, b, out)` writes the digest into the 4-cell stack run `out`"
+            "blake3 is a statement: `blake3(a, b, out)` writes the digest into the 2-cell stack run `out`"
         );
         let dsts: Vec<Off> = (0..n_ret).map(|_| self.fresh()).collect();
         self.inline_stack_ret = None;

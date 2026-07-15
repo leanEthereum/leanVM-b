@@ -6,8 +6,8 @@
 \usepackage[colorlinks=true, linkcolor=blue!50!black, citecolor=blue!50!black, urlcolor=blue!50!black]{hyperref}
 
 \newcommand{\F}{\mathbb{F}}
-\newcommand{\K}{K}            % F_{2^64}: machine words and committed data
-\newcommand{\E}{E}            % F_{2^128} = K[y]/(y^2+y+x^61): challenges and claims
+\newcommand{\K}{K}            % F_{2^64}: addresses, counters, committed lanes
+\newcommand{\E}{E}            % F_{2^128} = K[y]/(y^2+x y+1): words and challenges
 \newcommand{\pkd}{\mathrm{pkd}}
 \newcommand{\eq}{\operatorname{eq}}
 \newcommand{\cube}[1]{\{0,1\}^{#1}}
@@ -51,7 +51,14 @@
 
 \section{VM specification}\label{sec:vm}
 
-\paragraph{Field.} The machine works over two nested binary fields: the base $\K=\F_{2^{64}}=\F_2[x]/(x^{64}+x^4+x^3+x+1)$ (the standard low-weight pentanomial) and the degree-2 tower $\E=\K[y]/(y^2+y+x^{61})$ with $|\E|=2^{128}$ (\S\ref{sec:prelim}). The roles split by kind of quantity. A \emph{memory word} — the content of a cell, an immediate, a hashed value — is a $128$-bit element of $\E$. An \emph{address}, the program counter $\pc$, the frame pointer $\fp$, and every read \emph{counter} is a $64$-bit element of the subfield $\K$. Addition is the bitwise \textsc{xor} of two values ($128$-bit for words, $64$-bit for the $\K$-quantities); multiplication is the field's own product — in $\K$ the carry-less product folded by the pentanomial (one \texttt{PMULL} plus a fold), in $\E$ the degree-2 tower product. Protocol randomness is sampled from $\E$ (\S\ref{sec:prelim}). Keeping addresses and counters in the $\K$-subfield is deliberate: their arithmetic and their commitment (\S\ref{sec:rs}) cost $64$ bits, while only the data words cost $128$.
+\paragraph{Field.}
+\[
+  \K=\F_{2^{64}}=\F_2[x]/(x^{64}+x^4+x^3+x+1),
+  \qquad
+  \E=\K[y]/(y^2+x y+1),
+  \qquad |\E|=2^{128}.
+\]
+A \emph{memory word}, including a cell value, immediate, or hash value, is an element $v=v_0+v_1y\in\E$ with $v_0,v_1\in\K$. Each address, program counter $\pc$, frame pointer $\fp$, and read counter is in $\K$. Addition is bitwise \textsc{xor}; multiplication is in $\K$ or $\E$. Protocol randomness is sampled from $\E$ (\S\ref{sec:prelim}). Each committed column (\S\ref{sec:rs}) is $\K$-valued, so a data word occupies two columns.
 
 \paragraph{Addresses as powers of a generator.} Fix a generator $\gen$ of the multiplicative group $\K^{\times}$, of order $2^{64}-1$. Memory addresses and bytecode addresses (the program counter) are powers of $\gen$: the $i$-th address is the field element $\gen^{\,i}$. Its successor is one field multiplication: $\gen^{\,i+1}\;=\;\gen\cdot\gen^{\,i}$.
 
@@ -74,7 +81,7 @@ Since addresses are exponents of $\gen$, the frame is the contiguous block $\gen
 Instruction & Operands & Semantics\\
 \hline
 \texttt{XOR}           & $[o_A,o_B,o_C]$ & $\loc{o_C}=\loc{o_A}+\loc{o_B}$ \quad($128$-bit field addition, \textsc{xor})\\
-\texttt{MUL\_NATIVE}   & $[o_A,o_B,o_C]$ & $\loc{o_C}=\loc{o_A}\cdot\loc{o_B}$ \quad(field product in $\E$, the tower product)\\
+\texttt{MUL\_NATIVE}   & $[o_A,o_B,o_C]$ & $\loc{o_C}=\loc{o_A}\cdot\loc{o_B}$ in $\E$\\
 \texttt{SET\_CONSTANT} & $[o,k]$         & $\loc{o}=k$ \quad($k$ a $128$-bit immediate)\\
 \texttt{DEREF}         & $[\alpha,\beta,\gamma;\,s]$ & $\mem[\loc{\alpha}\cdot\beta]=\srcsel{s}$\\
 \texttt{JUMP}          & $[o_c,o_d,o_f]$ & conditional jump (below)\\
@@ -83,7 +90,7 @@ Instruction & Operands & Semantics\\
 \end{tabular}
 \end{center}
 
-\texttt{BLAKE3} compresses $64$ bytes to $32$. With $128$-bit words a $128$-bit chunk is one whole cell, so the four input chunks are addressed \emph{independently} by references $o_0,\dots,o_3$, each naming a \emph{single} memory word $\loc{o_i}=\fp\cdot o_i$. The two $256$-bit operands are $a=\loc{o_0}\Vert\loc{o_1}$ and $b=\loc{o_2}\Vert\loc{o_3}$ — so a caller hashing values that live in non-adjacent cells (a tweak in the heap, a public parameter in a register, a zero pad) need not first copy them into consecutive cells. The $256$-bit digest is written to the \emph{two consecutive} cells $\loc{o_C},\loc{\gen\cdot o_C}$. The row thus touches six cells. The compression is \emph{fully proven}: the BLAKE3 table (\S\ref{sec:tab-blake3}) wires those cells onto the memory, state, and bytecode interactions, and the relation $c=\mathrm{BLAKE3}(a,b)$ is discharged by an R1CS proof of the compression circuit, produced by flock~\cite{flock} (\S\ref{sec:tab-blake3}).
+\texttt{BLAKE3} compresses $64$ bytes to $32$. Each $128$-bit chunk occupies one cell. References $o_0,\dots,o_3$ independently address the four input cells, with $\loc{o_i}=\fp\cdot o_i$. The operands are $a=\loc{o_0}\Vert\loc{o_1}$ and $b=\loc{o_2}\Vert\loc{o_3}$. The input cells need not be adjacent. The digest occupies the consecutive cells $\loc{o_C}$ and $\loc{\gen\cdot o_C}$. Each row therefore accesses six cells. The BLAKE3 table (\S\ref{sec:tab-blake3}) connects them to the memory, state, and bytecode interactions. Flock~\cite{flock} proves $c=\mathrm{BLAKE3}(a,b)$ with an R1CS proof of the compression circuit.
 
 \texttt{DEREF} stores, at the dereferenced address $\loc{\alpha}\cdot\beta$, a value chosen by a \emph{store mode} $s\in\{\texttt{deref\_cell}[\gamma],\texttt{deref\_pc},\texttt{deref\_fp}\}$:
 \[
@@ -98,7 +105,7 @@ The \texttt{deref\_pc} and \texttt{deref\_fp} modes let a caller save its return
 
 \texttt{JUMP} reads a condition $c=\loc{o_c}$, an arbitrary $128$-bit word, and branches on whether it is zero. When $c\neq0$ it transfers control, $\pc\gets\loc{o_d}$ and $\fp\gets\loc{o_f}$; when $c=0$ it falls through, $\pc\gets\gen\cdot\pc$ and $\fp\gets\fp$.
 
-\paragraph{Words used as addresses.} A memory word is $128$-bit, but $\pc$, $\fp$, and addresses are $\K$-elements. So the three reads whose value becomes an address or register — the \texttt{DEREF} pointer $\loc{\alpha}$ (which forms $\loc{\alpha}\cdot\beta$), and \texttt{JUMP}'s destination $\loc{o_d}$ and frame $\loc{o_f}$ — must return a word in the $\K$-subfield (high lane zero, so a genuine $\gen$-power). This is enforced two ways: in circuit, the address/selection constraints (\S\ref{sec:tab-deref}, \S\ref{sec:tab-jump}) equate the word (times a $\K$-operand) to a single-lane $\K$ column, which forces its high lane to zero; and during witness generation the interpreter rejects any such word whose high lane is nonzero. An honest program only ever stores $\gen$-powers in those cells, so the condition is automatic.
+\paragraph{Words used as addresses.} A memory word is $128$-bit, while $\pc$, $\fp$, and addresses are in $\K$. Three reads produce addresses or registers: the \texttt{DEREF} pointer $\loc{\alpha}$, the \texttt{JUMP} destination $\loc{o_d}$, and the \texttt{JUMP} frame $\loc{o_f}$. Each must have high lane zero. The address and selection constraints (\S\ref{sec:tab-deref}, \S\ref{sec:tab-jump}) equate these words, possibly multiplied by a $\K$-operand, to a $\K$ column.
 
 
 \iffalse % Deferred future instructions (u32, BLAKE3): commented out for now.
@@ -120,11 +127,19 @@ Instruction (later) & Operands & Semantics\\
 
 \section{Proving primitives}\label{sec:prelim}
 
-Two fields share the work. Committed data lives in the machine field $\K=\F_{2^{64}}$ (\S\ref{sec:vm}); every challenge, every sumcheck, zerocheck, and GKR value, and every evaluation claim lives in the degree-2 extension
+Every physical committed column is $\K$-valued (\S\ref{sec:vm}); every challenge, sumcheck, zerocheck, GKR value, and evaluation claim is $\E$-valued, where
 \[
-  \E\;=\;\K[y]/(y^2+y+x^{61})\;\cong\;\F_{2^{128}}
+  \K=\F_2[x]/(x^{64}+x^4+x^3+x+1),
+  \qquad
+  \E=\K[y]/(y^2+x y+1)\cong\F_{2^{128}}.
 \]
-($x^{61}$ has trace $1$, so the polynomial is irreducible), of size $|\E|=2^{128}$: every soundness denominator below is $2^{128}$, unchanged from a design that would commit over $\F_{2^{128}}$ outright. $\K$ sits inside $\E$ as the basis-aligned subfield $e\mapsto e+0\cdot y$, and a product of a $\K$-value with an $\E$-value costs two $\K$-products. This convention is fixed once here and used throughout: \emph{committed} columns and their truth tables are $\K$-valued, extensions are evaluated at $\E$-points, and all protocol randomness is sampled from $\E$. A $128$-bit \emph{value} column (a memory word: the memory image, a read value, an immediate) is $\E$-valued; it is carried as its \emph{two $\K$-lanes} $V_0,V_1$ (with $V=V_0+V_1 y$), each a committed $\K$-column, so the committed witness stays entirely $\K$-valued. Its $\E$-value is reassembled as $V_0+V_1 y$ only where the protocol needs it (a degree-2 constraint on the lanes, \S\ref{sec:air}; a two-coordinate bus tuple, \S\ref{sec:memchan}), never in the commitment. Address, register, and counter columns are single $\K$-columns.
+Thus $|\E|=2^{128}$. The embedding and mixed product are
+\[
+  \K\hookrightarrow\E,\quad e\mapsto e+0\cdot y,
+  \qquad
+  k(e_0+e_1y)=ke_0+(ke_1)y.
+\]
+Committed columns and their truth tables are $\K$-valued; extensions are evaluated at $\E$-points; protocol randomness is sampled from $\E$. A $128$-bit \emph{value} column is represented by $V_0,V_1:\cube\ell\to\K$ with $V=V_0+V_1y$. Address, register, and counter columns are single $\K$-columns.
 
 \textbf{Multilinear extension (MLE).} A function $b:\cube{\ell}\to\K$ (a committed column) or $b:\cube{\ell}\to\E$ (a product-tree layer of \S\ref{sec:gkr}) has a unique multilinear extension $\widetilde b:\E^{\ell}\to\E$, the polynomial of degree at most $1$ in each variable that agrees with $b$ on the boolean hypercube. The equality polynomial $\eq(r,X)=\prod_i(1+r_i+X_i)$ is the multilinear that is $1$ at $X=r$ and $0$ at every other Boolean point.
 
@@ -161,7 +176,7 @@ a weighted sum over $\widehat q$ with weight $W(w)=\eq((\zeta,\mathsf{sel}_i),w)
 
 \subsection{Inner-product PCS}\label{sec:rs-dense}
 
-It is Ligerito~\cite{cryptoeprint:2025/1187} in the \emph{Secure} profile: rate $1/2$, unique-decoding regime (list size $1$, no out-of-domain samples), $120$-bit round-by-round soundness. The witness is committed over $\K$ (Reed--Solomon encoded over $\K$, Merkle leaves of $8$-byte symbols) and opened over $\E$: every row-batching and folding challenge and the opening sumcheck are sampled from $\E$, so the level-0 fold pairs $\K$-symbols with $\E$-challenges (mixed products) and all deeper levels are $\E$-valued. This base-field-commit, extension-field-open mode is standard in this PCS family; WHIR~\cite{whir} ships it natively.
+It is Ligerito~\cite{cryptoeprint:2025/1187} in the \emph{Secure} profile: rate $1/2$, unique-decoding regime (list size $1$, no out-of-domain samples), $120$-bit round-by-round soundness. The witness is Reed--Solomon encoded over $\K$; level-0 symbols are $8$ bytes and $2^6$ interleaved symbols form each $512$-byte Merkle leaf. Openings are over $\E$: every row-batching and folding challenge and the opening sumcheck are sampled from $\E$, so the level-0 fold pairs $\K$-symbols with $\E$-challenges and all deeper levels are $\E$-valued.
 
 \section{M3 model}\label{sec:m3}
 
@@ -193,7 +208,7 @@ If some $C_t$ is nonzero on a row, so is $C$ there, except with probability $(s-
 \[
   \sum_{x\in\cube\tau} C(x)\,\eq(r,x)\;=\;0 .
 \]
-Each round sends a univariate of degree at most $d+1$, and after $\tau$ rounds the claim is $C(\rho)\,\eq(r,\rho)$ at a random $\rho\in\E^{\tau}$. (The first rounds pair the $\K$-valued columns with the $\E$-valued $\eq$ tensor: mixed products.)
+The implementation factors the known $\eq$ term out of each round. It sends the degree-$d$ cofactor at the three points $0,1,\gen$ (so three $\E$-elements for $d=2$), and the verifier restores the linear equality factor. After $\tau$ rounds the claim is $C(\rho)\,\eq(r,\rho)$ at a random $\rho\in\E^{\tau}$.
 
 \paragraph{Discharge.} To check the final value $C(\rho)\,\eq(r,\rho)$, the verifier computes $\eq(r,\rho)$ itself and assembles $C(\rho)=\sum_t\eta^{\,t-1}C_t(\rho)$ from the column values at $\rho$: the prover sends one value per committed column, each virtual column read off its source for free. These prover-sent values are checked later against the commitments by the PCS  (\S\ref{sec:stacking}).
 
@@ -214,7 +229,11 @@ each coordinate $\sigma_i$ a committed column value, a virtual column value, or 
 \prod_{\sigma\ \text{pulled}}\bigl(\gamma-\pi_\alpha(\sigma)\bigr).
 \label{eq:gp}
 \end{equation}
-\emph{Completeness and soundness.} If the pushed and pulled multisets agree, the two products in \eqref{eq:gp} have the same factors and are equal for every $\alpha,\gamma$; completeness is immediate. For soundness, read each side as the polynomial $\prod_\sigma\bigl(X-\pi_\alpha(\sigma)\bigr)$ evaluated at $X=\gamma$: its roots are that side's fingerprints, which over the formal $\alpha$ are the tuples themselves, so the polynomial determines that side's multiset. The two sides therefore agree as polynomials in $(\alpha,\gamma)$ exactly when the multisets do. When the multisets differ the sides differ as polynomials, of total degree at most $K(m-1)$ with $K$ the number of tuples on a side, so by Schwartz--Zippel the prover passes at random $\alpha,\gamma$ with probability at most $K(m-1)/|\E|$.
+\emph{Completeness and soundness.} If the pushed and pulled multisets agree, the two products in \eqref{eq:gp} have the same factors and are equal for every $\alpha,\gamma$; completeness is immediate. For soundness, read each side as the polynomial $\prod_\sigma\bigl(X-\pi_\alpha(\sigma)\bigr)$ evaluated at $X=\gamma$: its roots are that side's fingerprints, which over the formal $\alpha$ are the tuples themselves, so the polynomial determines that side's multiset. The two sides therefore agree as polynomials in $(\alpha,\gamma)$ exactly when the multisets do. When they differ, Schwartz--Zippel bounds the error by the number of product factors divided by $|\E|$. Before sampling $\alpha$ and $\gamma$, the prover therefore grinds a Fiat--Shamir nonce for
+\[
+  \max(0,\,120+\mu+1-128)
+\]
+bits, where $2^\mu$ is the padded push/pull tree size. This covers both the bus identity and the separate count product by a union bound and brings the grand-product phase to the same $120$-bit target as the PCS.
 
 Each side's product is proven by a GKR pass over a product tree (\S\ref{sec:gkr}).
 
@@ -330,7 +349,11 @@ Asserts $\loc{o_C}=\loc{o_A}+\loc{o_B}$, the $128$-bit field sum.
 Identical to \texttt{XOR} but for the product:
 \begin{itemize}
 \item \textbf{Columns:} as \texttt{XOR}.
-\item \textbf{Constraints:} the three addresses, and the product $v_C=v_A\cdot v_B$ (the tower product in $\E$: a single $\E$-relation on the value lanes, still degree $2$ in the lane columns — $v_{C,0}=v_{A,0}v_{B,0}+v_{A,1}v_{B,1}c$ and $v_{C,1}=v_{A,0}v_{B,1}+v_{A,1}v_{B,0}+v_{A,1}v_{B,1}$, with $c=x^{61}$).
+\item \textbf{Constraints:} the three addresses and $v_C=v_Av_B$ in $\E$. With $y^2=x y+1$,
+\[
+v_{C,0}=v_{A,0}v_{B,0}+v_{A,1}v_{B,1},\qquad
+v_{C,1}=v_{A,0}v_{B,1}+v_{A,1}v_{B,0}+x\,v_{A,1}v_{B,1}.
+\]
 \item \textbf{Flushes:} as \texttt{XOR}, with opcode $\opc{MUL}$.
 \end{itemize}
 
@@ -396,14 +419,14 @@ Alone among the tables, \texttt{JUMP} commits its successors.
 
 \subsection{\texttt{BLAKE3}}\label{sec:tab-blake3}
 
-Compresses the $64$ input bytes to the $32$ output bytes at $c$. With $128$-bit cells a $128$-bit chunk is one whole cell, so the four input chunks are addressed \emph{independently} — $a_0=\fp\cdot o_0,\dots,a_3=\fp\cdot o_3$, one cell each — and the caller may hash values that live in non-adjacent cells with no assembling copies. The output takes the two consecutive cells $a_C=\fp\cdot o_C$ and its successor $\gen\cdot a_C$ (a virtual $\times\gen$ of the committed base, \S\ref{sec:prelim}), so the row touches six cells: the four input cells are read; the two $c$ cells are the written digest, tied into committed memory like any other access.
+Compresses $64$ input bytes to the $32$ output bytes at $c$. Each $128$-bit chunk occupies one cell. The four input addresses are $a_i=\fp\cdot o_i$ for $i\in\{0,1,2,3\}$ and need not be adjacent. The output occupies $a_C=\fp\cdot o_C$ and $\gen\cdot a_C$. Thus each row accesses four input cells and two output cells.
 
-The compression $c=\mathrm{BLAKE3}(a,b)$ is \emph{fully proven} by flock~\cite{flock}, which proves a batched R1CS of the compression circuit against a Boolean witness. That witness enters our one stacked commitment (\S\ref{sec:rs-dense}) as the \emph{packed} column $q_\pkd$: $64$ bits per $\K$-word. Its bit-level claims reach the $\K$-commitment through one \emph{ring switching}~\cite{cryptoeprint:2024/504}, $\F_2\to\K$ with packing degree $f=64$ and opening degree $e=128$: each claim splits at the packing boundary into $64$ generalized prefix weights (the $\eq$ tensor for a plain point claim; flock's univariate-skip Lagrange weights for its own claims) against $64$ revealed bit-slice evaluations, and a row-batching challenge in $\E^{7}$ folds the revealed vector into one weighted-sum claim on $q_\pkd$ against a transparent $\E$-valued weight, which joins the batched opening (\S\ref{sec:e2e-unrolled}); the opening sumcheck pairs the $\K$-valued $q_\pkd$ with the $\E$-valued weight (mixed products). flock's zerocheck and lincheck themselves run unchanged in their native GHASH representation of $\F_{2^{128}}$; their two output claims cross into the tower $\E$ through an explicit field isomorphism before the ring switching.
+Flock~\cite{flock} proves $c=\mathrm{BLAKE3}(a,b)$ with a batched R1CS over a Boolean witness. The witness is packed into $q_\pkd$, with $64$ bits per $\K$-element. Ring switching~\cite{cryptoeprint:2024/504} maps its $\F_2$ claims to one $\E$-weighted claim on $q_\pkd$, which joins the batched opening (\S\ref{sec:e2e-unrolled}).
 
-The words $a,b,c$ already sit inside $q_\pkd$: each $64$-bit flock word is one whole packed word at a fixed slot of its compression instance, and a $128$-bit value cell is two such words — its two $\K$-lanes. So we do not re-commit the twelve value lanes $v_{A0},\dots,v_{C3}$ (two per cell over the six value cells): each is a point evaluation of $q_\pkd$ at its slot, and a few \emph{pinned} slots (the chaining value fixed to the BLAKE3 IV, the zero counter word, and the block-length/flags word) are checked against their public constants, making the proven compression a real BLAKE3 of the $64$-byte input $a\Vert b$.
+The words $a,b,c$ are contained in $q_\pkd$. Each $64$-bit flock word occupies one packed slot, and each $128$-bit cell occupies two slots. The twelve lanes $v_{A0},\dots,v_{C3}$ therefore need no separate commitment. Each lane is a strided point evaluation of $q_\pkd$. The R1CS matrices fix the BLAKE3 IV, counter, block length, and flags, so they prove the compression of $a\Vert b$ without separate pin openings.
 \begin{itemize}
 \item \textbf{Columns:} $\pc,\fp$; operands $o_0,o_1,o_2,o_3,o_C$; input/output addresses $a_0,a_1,a_2,a_3,a_C$; per-cell memory counts $r_0,\dots,r_3$ (the four input cells) and $r_{C0},r_{C1}$ (the two output cells); bytecode count $r_{\mathrm{bc}}$. The twelve value lanes $v_{A0},\dots,v_{C3}$ (two per value cell) are committed "inside" $q_\pkd$, see above. The successor address $\gen\cdot a_C$ is virtual.
-\item \textbf{Constraints:} the five address bindings $a_i=\fp\cdot o_i$ ($i\in\{0,1,2,3\}$) and $a_C=\fp\cdot o_C$ — all degree $2$ ($\K$-relations). The value lanes carry no constraint here; their correctness (the relation $c=\mathrm{BLAKE3}(a,b)$) is handled by flock.
+\item \textbf{Constraints:} the five degree-$2$ relations $a_i=\fp\cdot o_i$ for $i\in\{0,1,2,3\}$ and $a_C=\fp\cdot o_C$. Flock proves $c=\mathrm{BLAKE3}(a,b)$.
 \item \textbf{Flushes:}
   \begin{itemize}
   \item \textbf{State:} \pull\ $\tup{\dsep{ST},\pc,\fp}$, \push\ $\tup{\dsep{ST},\gen\cdot\pc,\fp}$.
@@ -420,7 +443,13 @@ This section assembles the primitives into the executable protocol, beginning wi
 
 Fixed once, public, and shared by prover and verifier: the fields, the bus shape, and the tags naming interactions and instructions on it.
 
-\paragraph{Fields, generator, and bus.} The machine field is $\K=\F_{2^{64}}=\F_2[x]/(x^{64}+x^4+x^3+x+1)$; challenges live in the tower $\E=\K[y]/(y^2+y+x^{61})$ (\S\ref{sec:prelim}). The generator is $\gen=x$, which is \emph{primitive}: its order is exactly $2^{64}-1$ (verified by checking $x^{(2^{64}-1)/q}\neq1$ for every prime $q\mid2^{64}-1$; a unit test pins this). Every bus tuple has width $m=9$ (the bytecode tuple); shorter tuples are zero-padded in their high coordinates (\S\ref{sec:m3}).
+\paragraph{Fields, generator, and bus.}
+\[
+\K=\F_2[x]/(x^{64}+x^4+x^3+x+1),\qquad
+\E=\K[y]/(y^2+x y+1),\qquad
+\gen=x,\qquad \operatorname{ord}(\gen)=2^{64}-1.
+\]
+Committed columns are $\K$-valued; machine words and challenges are $\E$-valued (\S\ref{sec:prelim}). Every bus tuple has width $m=9$ (the bytecode tuple); shorter tuples are zero-padded in their high coordinates (\S\ref{sec:m3}).
 
 \paragraph{Domain separators.} Coordinate $0$ of every tuple is a domain separator, naming the interaction it belongs to (\S\ref{sec:m3}):
 \[
@@ -434,7 +463,7 @@ Fixed once, public, and shared by prover and verifier: the fields, the bus shape
 
 \subsection{Bytecode encoding}\label{sec:e2e-bc}
 
-The program is public. Instruction $\pc$ fills coordinates $3$ through $8$ of its bytecode tuple $\tup{\dsep{BC},\pc,\cnt,\cdot}$: an opcode in coordinate $3$, three operands in coordinates $4,5,6$, and coordinates $7,8$ carrying the two \texttt{DEREF} flags $(f_{\pc},f_{\fp})$ — or, for \texttt{BLAKE3}, its fourth and fifth operands $(o_3,o_C)$ — ($0$ for every other opcode). Each operand is a $\gen$-power or an immediate; for \texttt{SET\_CONSTANT}, coordinates $5,6$ carry the two $\K$-lanes of the $128$-bit immediate.
+The program is public. Instruction $\pc$ fills coordinates $3$ through $8$ of its bytecode tuple $\tup{\dsep{BC},\pc,\cnt,\cdot}$. Coordinate $3$ holds the opcode, and coordinates $4,5,6$ hold three operands. Coordinates $7,8$ hold the \texttt{DEREF} flags $(f_{\pc},f_{\fp})$, the \texttt{BLAKE3} operands $(o_3,o_C)$, or zero. Each operand is a $\gen$-power or an immediate. For \texttt{SET\_CONSTANT}, coordinates $5,6$ hold the two $\K$-lanes of the immediate.
 \begin{center}
 \begin{tabular}{lllllll}
 \hline
@@ -459,16 +488,21 @@ Each table is padded to a power of two. Padding rows are a fixed default, not al
 
 \subsection{Public input}\label{sec:e2e-pi}
 
-The public input is the first two memory cells $\mem[0],\mem[1]$, each a $128$-bit word, fixed and agreed by both parties. Cells $0$ and $1$ span the subcube of the address cube $\cube h$ with the $h-1$ high coordinates $0$ and the low one free, so on \emph{each} committed memory lane $M_\ell$ ($\ell\in\{0,1\}$, \S\ref{sec:memchan}) the MLE restricts there to the line $\widetilde{\mathrm{PI}}_\ell(r)=(1-r)\,\mem[0]_\ell+r\,\mem[1]_\ell$, which the verifier forms itself from the (public) word lanes. It samples $r_m\in\E$ and checks both lanes,
+The public input is the first two memory cells $\mem[0],\mem[1]$, each a $128$-bit word, fixed and agreed by both parties. Cells $0$ and $1$ span the subcube of the address cube $\cube h$ with the $h-1$ high coordinates $0$ and the low one free, so on \emph{each} committed memory lane $M_\ell$ ($\ell\in\{0,1\}$, \S\ref{sec:memchan}) the MLE restricts there to the line $\widetilde{\mathrm{PI}}_\ell(r)=(1-r)\,\mem[0]_\ell+r\,\mem[1]_\ell$, which the verifier forms itself from the public words. It samples $r_m\in\E$ and checks both lanes,
 \[
   \widetilde M_\ell(r_m,0,\dots,0)\;=\;\widetilde{\mathrm{PI}}_\ell(r_m),\qquad \ell\in\{0,1\}.
 \]
+Writing $P=P_0+P_1y$ for the public-input evaluation, the implementation transmits only $P_0$ and computes
+\[
+P_1=(P+P_0)y^{-1}.
+\]
+The final stacked opening discharges both lane claims.
 
 \subsection{The unrolled protocol}\label{sec:e2e-unrolled}
 
 We lay out the whole protocol as one ordered sequence. Each reduction below adds evaluation claims on committed columns to a shared \emph{claim pool}; the final \textsc{Opening} phase proves all of them with a single PCS opening.
 
-\paragraph{Setup.} Fixed and shared in advance (\S\ref{sec:e2e-const} through \S\ref{sec:e2e-pi}): the fields and constants; the instance caps (\S\ref{sec:memchan}); the program, which is public; the memory size $2^{h}$ and the program length; the initial state $(\pc_0,\fp_0)$ and final state $(\pc_{\mathrm{final}},\fp_{\mathrm{final}})$; and the public input $\mem[0],\mem[1]$.
+\paragraph{Setup and statement binding.} Fixed and shared in advance (\S\ref{sec:e2e-const} through \S\ref{sec:e2e-pi}): the fields and constants; the instance caps (\S\ref{sec:memchan}); the public program and its length; the initial state $(\pc_0,\fp_0)$ and final state $(\pc_{\mathrm{final}},\fp_{\mathrm{final}})$; and the public input $\mem[0],\mem[1]$. Before any challenge, the transcript is seeded by the public input and one environment digest that binds both the exact bytecode and flock's BLAKE3 circuit family. The prover then announces $h$ and the six real opcode-row counts; the verifier checks them against the caps and derives every table, stack, and leaf shape. Thus neither a different program nor an adaptively chosen shape can reuse the proof's later challenges.
 
 \paragraph{Commitment.}
 \begin{enumerate}
@@ -496,8 +530,8 @@ We lay out the whole protocol as one ordered sequence. Each reduction below adds
 
 \paragraph{BLAKE3 validity.}
 \begin{enumerate}
-\item \textbf{Prover \& Verifier.} Run flock's reduction (its zerocheck and lincheck) over the executed compressions on the shared transcript, in flock's native GHASH representation of $\F_{2^{128}}$, binding to the commitment of step \textsc{Commitment}. It outputs two evaluation claims on the bit witness underlying $q_\pkd$, which cross into $\E$ through the field isomorphism (\S\ref{sec:tab-blake3}).
-\item \textbf{Prover \& Verifier.} The ring switching (\S\ref{sec:tab-blake3}) reduces each crossed claim to a weighted-sum claim on the $q_\pkd$ region of the stack, with a transparent $\E$-valued weight the verifier can evaluate; both join the pool.
+\item \textbf{Prover \& Verifier.} Reduce the executed BLAKE3 constraints to two evaluation claims on $q_\pkd$ (\S\ref{sec:tab-blake3}).
+\item \textbf{Prover \& Verifier.} The ring switching (\S\ref{sec:tab-blake3}) reduces each bit-witness claim to a weighted-sum claim on the $q_\pkd$ region of the stack, with a transparent $\E$-valued weight the verifier can evaluate; both join the pool.
 \end{enumerate}
 
 \paragraph{Opening.}
@@ -510,20 +544,22 @@ We lay out the whole protocol as one ordered sequence. Each reduction below adds
 
 \section{Recursive aggregation}\label{sec:recursion}
 
-Proofs compose by running the verifier of \S\ref{sec:e2e-unrolled} \emph{inside} the VM: a guest program replays a sub-proof's transcript, sumchecks, and PCS opening, so many sub-proofs collapse into one. The VM is well suited to this, since the verifier's field arithmetic is the VM's native arithmetic and its hashing is the \texttt{BLAKE3} opcode. One step, however, does not fit.
+The implemented N-to-1 aggregation runs the verifier of \S\ref{sec:e2e-unrolled} \emph{inside} the VM: one compiled guest replays the transcripts, sumchecks, ring switches, and stacked Ligerito-K openings of $n_{\mathrm{rec}}\ge1$ ordinary VM proofs for a fixed inner program. The proofs may have different announced table and commitment sizes; the guest dispatches among the certified shapes without recompilation. The VM is well suited to this because $\E$ is its machine-word field and its Fiat--Shamir hash is the \texttt{BLAKE3} opcode. One class of operations, however, does not fit.
 
 \subsection{Deferred evaluation claims}\label{sec:deferred-claims}
 
 Twice during verification, a large \emph{fixed} multilinear must be evaluated at a random point:
 \begin{itemize}
-\item \textbf{the bytecode}: during leaf decomposition (\S\ref{sec:e2e-unrolled}, \emph{Bus}), the verifier evaluates the MLEs of the public program columns, a pass over the whole program;
+\item \textbf{the bytecode}: during leaf decomposition (\S\ref{sec:e2e-unrolled}, \emph{Bus}), the verifier evaluates the stacked polynomial formed from the six public program columns and three selector variables, a pass over the whole program;
 \item \textbf{the flock matrices}: the \texttt{BLAKE3} relation is proven by flock (\S\ref{sec:tab-blake3}), whose lincheck ends by evaluating $\widetilde A_0$ and $\widetilde B_0$, the per-block R1CS matrices: $28$-variable multilinears with $\approx 21\mathrm{M}$ nonzero Boolean entries between them.
 \end{itemize}
 Either evaluation is one pass over a fixed object. This takes milliseconds natively, but in-circuit it would dwarf the entire remaining verifier, in cycles and in bytecode size alike.
 
-The aggregation program therefore does not check these claims. The polynomials are fixed and public, so each claim (an evaluation point and its claimed value) is forwarded to the public input, to be checked externally.
+The aggregation guest therefore does not evaluate these fixed tables. It verifies every surrounding reduction and exports only the resulting points and claimed values.
 
-There are thus three fixed polynomials: the bytecode and the two matrices $A_0, B_0$. A sub-proof may itself be an aggregation carrying deferred claims, so verifying it yields \textbf{two} claims per polynomial: the one read from its public input, and the fresh one produced by the verification itself. Once all $n_{\mathrm{rec}}$ sub-proofs are verified, a fresh Fiat-Shamir transcript is fed with all the points and values, and the $6n_{\mathrm{rec}}$ claims are batched by two sumchecks: one for the bytecode, and one for the matrices, which share their $28$ variables. The three reduced claims are written to the public input, for the next level of recursion (zeros when $n_{\mathrm{rec}}=0$). Only the outermost verifier, which runs natively, ever evaluates the fixed polynomials.
+There are three fixed polynomials: the stacked bytecode and the two matrices $A_0,B_0$. Verifying each ordinary sub-proof produces one claim on each, for $3n_{\mathrm{rec}}$ claims. A fresh Fiat--Shamir transcript absorbs all sub-statements and claim data, then batches them with two sumchecks: one for bytecode and one for the matrices, which share their $28$ variables. The guest reduces the batch to one bytecode evaluation and a common-point evaluation of each matrix. These three reduced claims, the inner proving-environment digest, and the sub-statements are hashed into the outer VM's two-word public input.
+
+The public \texttt{RecursiveProof::verify} path first verifies that outer VM proof and then evaluates the three fixed polynomials natively at the reduced points. It rejects an empty batch and is the only complete acceptance path. Feeding a \texttt{RecursiveProof} into another aggregation layer (carrying its reduced claims forward rather than checking them natively) is not yet exposed by the current harness.
 
 The matrix sumcheck runs over the $28$-variable polynomial
 \[
@@ -539,7 +575,13 @@ How the zkDSL compiler (\texttt{crates/lean\_compiler}; surface language in \tex
 
 \subsection{Hints}\label{sec:prog-hints}
 
-The prover's nondeterminism enters only through write-once cells that no instruction defines, e.g.\ allocation pointers: a fresh region's base $\gen^{\mathrm{base}}$, written unconstrained.
+The prover's nondeterminism enters through write-once cells that are still unset when execution needs them. Some are explicit advice (a fresh allocation pointer $\gen^{\mathrm{base}}$, a witness stream, a computed-advice builtin); others are back-solved by an instruction whose remaining operands are known. In every case the resulting word is unconstrained except by the instructions and memory equalities that consume it, so a program must check all security-relevant advice.
+
+\subsection{Division and inequality}\label{sec:prog-div-ne}
+
+The zkDSL's single-slash division $q=a/b$ uses write-once back-solving: it emits \texttt{MUL\_NATIVE} with $q$ as the one unset input and $a$ as the already-written output. Witness generation fills $q=a\,b^{-1}$, while the ordinary multiplication table proves $q b=a$. It costs one VM instruction and rejects a zero divisor. Double slash \texttt{//} remains compile-time integer floor division for sizes and indices; it is not a field operation.
+
+The assertion \texttt{assert a != b} first computes $a+b$ with \texttt{XOR}. A conditional \texttt{JUMP} skips a poison path exactly when this value is nonzero. Equality falls through to a jump to $\gen^{-1}$, outside the committed bytecode cube, so the bytecode bus cannot balance any purported continuation. This proves inequality without an inverse hint.
 
 \subsection{Functions}\label{sec:prog-functions}
 

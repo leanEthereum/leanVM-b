@@ -3,16 +3,10 @@
 // Modifications copyright 2026 Succinct Labs, Benedikt Bunz, William Wang.
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! φ₈: GF(2⁸) → `F128T` (binius tower) subfield embedding.
+//! `φ₈: GF(2⁸) → F128T`.
 //!
-//! The tower's unique GF(2⁸) subfield lives inside `F64` (8 | 64), so every
-//! image has `c1 == 0`. The eight basis images are the iso-image of the legacy polynomial-basis field
-//! basis ([`super::phi8::PHI_8_BASIS`]) under the field isomorphism
-//! the tower isomorphism — an isomorphism carries a root of the AES polynomial
-//! `x⁸+x⁴+x³+x+1` to a root, so this is a valid embedding, and it is the
-//! canonical choice (every downstream φ₈-derived value becomes exactly the
-//! iso-image of today's legacy polynomial-basis field value). Generated + checked by the
-//! `gen_phi8_tower` binary; the homomorphism is re-verified exhaustively below.
+//! `im(φ₈) ⊂ F64`, hence `φ₈(a).c1 = 0`. The eight basis images are generated
+//! by `gen_phi8_tower`; the homomorphism is checked exhaustively below.
 
 use super::{F8, F128T};
 

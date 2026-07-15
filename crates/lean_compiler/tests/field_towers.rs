@@ -45,7 +45,7 @@ fn deferred_reduction_matches_reduced_sums() {
     assert_eq!(acc192.reduce(), want192);
 }
 
-/// The quadratic tower's fast-squaring path.
+/// `a.square() = a * a` in `K[y]/(y²+x·y+1)`.
 #[test]
 fn tower_square_matches_mul() {
     let mut rng = rand::rng();

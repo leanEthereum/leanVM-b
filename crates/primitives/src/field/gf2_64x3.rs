@@ -1,13 +1,6 @@
-//! GF((2^64)^3) — a 192-bit binary tower field ("option B" for >128-bit security).
-//!
-//! Base field K = GF(2^64) = GF(2)[x]/(x^64 + x^4 + x^3 + x + 1), the standard
-//! low-weight irreducible pentanomial for degree 64. Its fold constant is
-//! `R64 = 0x1B` (x^4 + x^3 + x + 1), so x^64 ≡ U ^ U<<1 ^ U<<3 ^ U<<4.
-//!
-//! Extension: K[y]/(y^3 + y + 1). y^3 + y + 1 is irreducible over GF(2), and an
-//! irreducible degree-d polynomial over GF(2) splits into gcd(d, k) factors over
-//! GF(2^k) — gcd(3, 64) = 1, so it stays irreducible over K (the tests
-//! re-verify this computationally via Frobenius + gcd).
+//! `K = GF(2)[x]/(x^64 + x^4 + x^3 + x + 1)`,
+//! `R64 = 0x1B = x^4 + x^3 + x + 1`, and
+//! `F192 = K[y]/(y^3 + y + 1)`.
 //!
 //! Layout: coefficients `c0 + c1·y + c2·y²`, each a GF(2^64) element (bit i of
 //! `cj` = coeff of x^i).
@@ -20,8 +13,8 @@
 //! - base reduction per coefficient: 1 PMULL by 0x1B; the ≤4-bit overflow is
 //!   folded with 3 scalar shift-XORs (0x1B·overflow fits in 8 bits, exact).
 //!
-//! Total: 9 PMULL per mult (vs 6 for extension-field's legacy polynomial-basis field). Squaring drops the cross
-//! terms (char 2): 3 PMULL + 3 reduction PMULL = 6.
+//! Total: 9 PMULL per multiplication. Squaring uses 3 PMULL + 3 reduction
+//! PMULL = 6.
 //!
 //! Why no packed-lane tricks: PMULL is one 64×64 product per instruction; base
 //! coefficients already fill the operand exactly, so — unlike GF(2^32) — no
@@ -717,9 +710,8 @@ mod tests {
         a
     }
 
-    /// A cubic is irreducible over K iff it has no root in K, i.e.
-    /// gcd(y^|K| − y, f) = 1. y^(2^64) is computed as 64 Frobenius squarings
-    /// of the element y in the quotient ring (which is exactly F192).
+    /// Checks `gcd(y^|K| - y, y^3+y+1) = 1`; computes `y^(2^64)` by 64
+    /// squarings.
     #[test]
     fn extension_poly_irreducible_over_base() {
         let mut t = F192::Y;

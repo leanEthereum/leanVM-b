@@ -3,9 +3,9 @@
 /// An expression. Arithmetic is the field's own: `+` is `XOR`, `*` is `MUL`.
 #[derive(Clone, Debug)]
 pub enum Expr {
-    /// Integer / field literal: taken as the field element's 64 bits (`5` is
-    /// `F64(5)`; a full 64-bit value names an arbitrary field constant, e.g. a
-    /// digest word). Must fit `u64` — the machine word is 64 bits now.
+    /// Integer / field literal: a raw 128-bit machine-word pattern. Bits 0..64
+    /// are the low K coefficient and bits 64..128 the high coefficient of the
+    /// tower-E element.
     Lit(u128),
     /// The generator `g` — written `GEN` in source. A logical index `i` is
     /// carried "in the exponent" as `gⁱ`, so `GEN` is the unit step and
@@ -46,9 +46,9 @@ pub enum Expr {
     /// `a · b⁻¹`. Lowered to one `MUL` whose quotient operand is unset, so the
     /// write-once back-solve fills it with `a · b⁻¹` and the `MUL` constraint
     /// pins `quotient · b == a` (§range-check trick). No hint: the inverse is
-    /// nondeterministic but the constraint binds it. `b == 0` is rejected
-    /// (unless `a == 0` too, the undefined `0/0`); `1 / b` therefore also
-    /// enforces `b != 0`. Distinct from the compile-time `//` ([`Expr::Div`]).
+    /// nondeterministic but the constraint binds it. `b == 0` is rejected,
+    /// including `0 / 0`; `1 / b` therefore also enforces `b != 0`. Distinct
+    /// from the compile-time `//` ([`Expr::Div`]).
     FieldDiv(Box<Expr>, Box<Expr>),
     /// Single-return function call in expression position.
     Call(String, Vec<Expr>),
@@ -63,8 +63,8 @@ pub enum Expr {
     HeapBufDyn(Box<Expr>),
     /// `StackBuf(n)` — allocate `n` *consecutive* frame (stack) cells, bound as a
     /// stack value. Its cells `sa[0..n]` are written/read directly (no heap deref),
-    /// and a size-4 `StackBuf` is a valid `blake3` operand (the four 64-bit words
-    /// of a 256-bit value live in the four consecutive cells). See [`FnLower`].
+    /// and a size-2 `StackBuf` is a valid `blake3` operand (the four 64-bit hash
+    /// words live as two lanes in each of two consecutive 128-bit cells).
     StackBuf(u64),
     /// `arr[idx]` — read a cell. For a heap `arr` (a pointer): `m[arr·idx]` (idx a
     /// g-power). For a [`Expr::StackBuf`]: the frame cell `base + idx` (idx a
@@ -74,7 +74,7 @@ pub enum Expr {
     /// `base+lo..base+hi`) or of a [`Expr::HeapBuf`] (heap cells
     /// `ptr·g^lo..ptr·g^hi`), with compile-time integer bounds (`hi`
     /// exclusive). Only meaningful as a `blake3` operand, where it must span
-    /// exactly 4 cells (one 256-bit value).
+    /// exactly 2 cells (one 256-bit value).
     Slice(Box<Expr>, Box<Expr>, Box<Expr>),
     /// `[a, b, …]` — an initialized [`Expr::StackBuf`]: `x = [a, b]` allocates
     /// a StackBuf of the element count and writes each element in place, sugar

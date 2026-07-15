@@ -8,7 +8,7 @@
 
 \newcommand{\F}{\mathbb{F}}
 \newcommand{\K}{K}            % F_{2^64}, the data field
-\newcommand{\E}{E}            % F_{2^128}, the proof field (degree-2 tower)
+\newcommand{\E}{E}            % K[y]/(y^2+y+x^61)
 \newcommand{\eq}{\operatorname{eq}}
 \newcommand{\cube}[1]{\{0,1\}^{#1}}
 \newcommand{\gen}{\mathsf{g}}
@@ -24,7 +24,8 @@
 \maketitle
 \vspace{-3em}
 \begin{center}
-Moving leanVM-b's data to $\F_{2^{64}}$ inside the degree-2 tower $\F_{2^{128}}=\F_{2^{64}}[y]$:\\
+Moving leanVM-b's data to $\K=\F_2[x]/(x^{64}+x^4+x^3+x+1)$ inside
+$\E=\K[y]/(y^2+y+x^{61})$:\\
 64-bit machine words, commitments over $\F_{2^{64}}$, challenges in $\F_{2^{128}}$, one ring switching.
 \end{center}
 
@@ -37,7 +38,7 @@ recursion guest can do native $128$-bit field arithmetic: a memory word, an
 immediate, and a hashed value are $\E$-valued, while \emph{addresses, the pc/fp,
 and counters stay in the $64$-bit subfield $\K$}. A word is committed as its two
 $\K$-lanes (two ordinary $\K$-columns), so the commitment layer and $120$-bit
-soundness here are unchanged; \texttt{MUL\_NATIVE} is now the $\E$ tower product,
+soundness here are unchanged; \texttt{MUL\_NATIVE} is multiplication in $\E$,
 and \texttt{BLAKE3} addresses one cell per $128$-bit chunk. Where this note says
 ``every VM quantity is a $\K$-element'' (\S\ref{sec:vm-transport}) read
 ``addresses/pc/counters are $\K$; data words are $\E$, carried as two $\K$-lanes.''
@@ -71,7 +72,7 @@ two levels of a degree-2 \emph{tower}
   \eta,\lambda$, zerocheck points, sumcheck and GKR rounds, PCS folds, and
   the ring-switching batch) is sampled from $\E$, so every interactive
   error term keeps its current form $c/2^{128}$: the security level does
-  not move. Since $\K\subset\E$ is a basis-aligned subfield, $\K$-valued
+  not move. Under $\K\hookrightarrow\E$, $k\mapsto k+0\cdot y$, $\K$-valued
   data combines with $\E$-valued challenges at a fraction of today's cost.
 \item \textbf{One ring switching}~\cite{rsgen}, for flock only: the $\F_2$
   witness packs into $\K$ ($64=2^6$ bits per element) and its claims,
@@ -97,8 +98,8 @@ drops to $c/2^{192}$. This document targets the degree-2 step only.
 \section{The field stack}\label{sec:fields}
 
 \paragraph{The base field $\K$.}
-$\K=\F_{2^{64}}=\F_2[x]/(x^{64}+x^4+x^3+x+1)$, the standard low-weight
-irreducible pentanomial; reduction folds by $\mathtt{0x1B}$. One
+$\K=\F_{2^{64}}=\F_2[x]/(x^{64}+x^4+x^3+x+1)$, with
+$x^{64}=x^4+x^3+x+1$ and $\mathtt{0x1B}=x^4+x^3+x+1$. One
 multiplication is a single \texttt{PMULL} plus a fold. Crucially for the VM
 (\S\ref{sec:vm-transport}), $x$ is \emph{primitive}: its order is exactly
 $2^{64}-1$ (verified by checking $x^{(2^{64}-1)/q}\neq 1$ for every prime
@@ -106,14 +107,10 @@ $q\mid 2^{64}-1=3\cdot5\cdot17\cdot257\cdot641\cdot65537\cdot6700417$; a
 unit test pins this).
 
 \paragraph{The extension $\E$.}
-$\E=\K[y]/(y^2+y+c)$ with $c=x^{61}$. By Artin--Schreier, $y^2+y+c$ is
-irreducible over $\K$ exactly when $\mathrm{Tr}_{\K/\F_2}(c)=1$, and
-$x^{61}$ is the least monomial of trace $1$ ($x^{63}$ is the only other
-one; a unit test pins the choice). Elements are $e_0+e_1y$ with
+$\E=\K[y]/(y^2+y+x^{61})$, with
+$\mathrm{Tr}_{\K/\F_2}(x^{61})=1$. Elements are $e_0+e_1y$ with
 $e_0,e_1\in\K$: two 64-bit lanes, the natural layout for packing pairs of
-$\K$-values. This $\E$ is isomorphic to today's GHASH field but in a
-different representation: transcripts and serialized proofs change bytes,
-not security.
+$\K$-values.
 
 \paragraph{Embeddings and mixed arithmetic.}
 $\F_2\subset\K\subset\E$; the embedding $\K\hookrightarrow\E$ is
@@ -215,8 +212,8 @@ word-width ones — see the Addendum. Kept for the rationale.)
 
 \subsection{Protocol randomness moves to $\E$}
 
-All challenges are sampled from $\E$ (16-byte transcript reads, as today,
-in the tower representation); all sumchecks, zerochecks and GKR passes run
+All challenges are sampled from $\E$ (16-byte transcript reads as $e_0+e_1y$,
+$e_0,e_1\in\K$); all sumchecks, zerochecks and GKR passes run
 over $\E$. Committed columns are $\K$-valued, so:
 \begin{itemize}
 \item the bus fingerprint $\pi_\alpha(\sigma)=\sum_i\alpha^i\sigma_i$ has
@@ -412,7 +409,7 @@ portable references; \texttt{F128T} multiplication on par with GHASH.
 
 \paragraph{\WP{2}: Transcript and challenger.}
 \path{src/transcript.rs} and \path{flock-core}'s \path{challenger.rs}:
-sample $\E$ challenges (16 bytes, tower representation), domain
+sample $\E$ challenges (16 bytes, $e_0+e_1y$ with $e_0,e_1\in\K$), domain
 separation, keep BLAKE3 hashing and PoW grinding.
 \emph{Gate:} transcript vectors regenerate deterministically; grinding test.
 
@@ -496,12 +493,12 @@ port.
   $\K$-codewords must be written down for our concrete Ligerito
   parameters, not assumed; have it reviewed before freezing.
 \item \textbf{Representation swap breadth} (\WP2, \WP4, \WP6). Everything
-  typed \texttt{F128} changes meaning: the GHASH and tower representations
+  typed \texttt{F128} changes meaning: the two representations
   must be distinct types with no byte-level interchange, and every
   representation-sensitive constant (LCH/$\varphi_8$ bases,
   \texttt{rs\_eq} tables, transcript encoding) re-derived. Mechanical, but
   wide; the type system should do the policing.
-\item \textbf{$\E\times\E$ parity} (\WP1). The tower product is expected
+\item \textbf{$\E\times\E$ parity} (\WP1). Multiplication in $\E$ is expected
   on par with GHASH ($3$ Karatsuba \texttt{PMULL} plus folds versus
   GHASH's $6$); confirm on hardware with \texttt{field\_bench} before
   committing to the swap everywhere.

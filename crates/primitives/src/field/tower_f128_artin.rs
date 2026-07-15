@@ -1,15 +1,6 @@
-//! GF(2^128) as a degree-2 tower over GF(2^64): the challenge field of the
-//! 64-bit transition.
-//!
-//! E = K[y]/(y^2 + y + c) with K = GF(2^64) ([`super::gf2_64::F64`]) and
-//! c = x^61. By Artin--Schreier, y^2 + y + c is irreducible over K exactly
-//! when Tr_{K/F_2}(c) = 1, and x^61 is the least monomial of trace 1 (a test
-//! pins this). Elements are `c0 + c1·y`: two 64-bit lanes, so a pair of
-//! K-values packs into one element by a copy, and every 16-byte string is a
-//! valid element (transcript sampling stays a raw reinterpretation).
-//!
-//! This field is isomorphic to the legacy polynomial-basis field [`super::former_field_module::extension-field`] but in a
-//! different representation; the two must never be byte-interchanged.
+//! `K = GF(2)[x]/(x^64 + x^4 + x^3 + x + 1)`, `c = x^61`, and
+//! `F128TArtin = K[y]/(y^2 + y + c)`, retained for kernel comparisons. The
+//! protocol uses [`super::tower_f128::F128T`] instead.
 //!
 //! Multiplication is a 2-term Karatsuba over K (3 PMULL products) with
 //! PMULL-based reductions that never leave the NEON register file: the
@@ -29,7 +20,7 @@ use super::gf2_64x3::base_reduce_128;
 #[cfg(target_arch = "aarch64")]
 use super::gf2_64x3::R64;
 
-/// Artin--Schreier constant: c = x^61 (trace 1, so y^2 + y + c is irreducible).
+/// `c = x^61`, with `Tr_{K/GF(2)}(c) = 1`.
 pub const C61: u64 = 1 << 61;
 
 /// A tower GF(2^128) element `c0 + c1·y`, coefficients in GF(2^64).
@@ -62,8 +53,7 @@ impl F128TArtin {
     /// once at the end. Reduction and the `y² = y + x^61` fold are
     /// GF(2)-linear, so `Σ (aᵢ·bᵢ) mod P = reduce(Σ parts)` — this defers the
     /// 5-PMULL reduction tail (the majority of a full mul's work) from every
-    /// term to once per sum. The tower analog of legacy polynomial-basis field's
-    /// [`F256Unreduced`](crate::field::F256Unreduced).
+    /// term to once per sum.
     #[inline]
     pub fn mul_unreduced(self, rhs: Self) -> F128TArtinUnreduced {
         #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
@@ -182,7 +172,7 @@ impl F128TArtin {
 }
 
 // ---------------------------------------------------------------------------
-// Deferred reduction: unreduced tower products that can be XOR-accumulated.
+// Deferred reduction: unreduced products that can be XOR-accumulated.
 // ---------------------------------------------------------------------------
 
 /// The three unreduced Karatsuba sub-products of one E × E multiply:
@@ -1081,9 +1071,7 @@ pub mod aarch64 {
 /// Credit: binius64 <https://github.com/binius-zk/binius64>
 /// (`crates/arith-bench/src/monbijou/clmul.rs`) for the GF(2^64) base-field
 /// CLMUL and the deferred-reduction structure (the base field is identical).
-/// The degree-2 extension differs — this tower is Artin–Schreier `y²+y+x^61`,
-/// not binius's `y²+xy+1` — so the extension reduction here follows our own
-/// field's algebra rather than theirs.
+/// Here `y² = y + x^61`.
 #[cfg(all(target_arch = "x86_64", target_feature = "pclmulqdq"))]
 pub mod x86_64 {
     use super::{C61, F128TArtin, F128TArtinBaseUnreduced, F128TArtinUnreduced};
@@ -1180,10 +1168,10 @@ pub mod x86_64 {
     }
 
     /// Deferred inner product `Σ aᵢ·bᵢ` via the AVX-512 `VPCLMULQDQ` batched
-    /// Karatsuba accumulator (`B` independent banks) + one Artin–Schreier tower
-    /// reduce. Four elements fold per CLMUL; the reduce reuses the
+    /// Karatsuba accumulator (`B` independent banks) followed by reduction with
+    /// `y² = y + x^61`. Four elements fold per CLMUL; the reduce reuses the
     /// scalar-tested [`super::F128TArtinUnreduced::reduce`]. Shares its batched
-    /// accumulator with [`super::super::tower_f128`]'s binius kernel — the
+    /// accumulator with [`super::super::tower_f128`] — the
     /// Karatsuba products are identical, only this reduce differs.
     ///
     /// # Safety
@@ -1619,8 +1607,7 @@ mod tests {
         assert_eq!(F128TArtin::ZERO.inv(), F128TArtin::ZERO);
     }
 
-    /// Artin--Schreier: y^2 + y + c is irreducible over K iff Tr(c) = 1.
-    /// Compute Tr(c) = Σ_{i<64} c^(2^i) in K and pin the constant choice.
+    /// Checks `Tr(c) = Σ_{i<64} c^(2^i) = 1` in K.
     #[test]
     fn trace_of_c_is_one() {
         let mut t = F64::ZERO;

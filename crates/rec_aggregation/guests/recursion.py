@@ -267,8 +267,7 @@ def decode_query_bits(v, positions_out, bit_ptrs_out, depth: Const):
             sq = t * t
             assert sq == t
             # position: the query index (integer). COORD_BASIS[b] = new(2^b, 0)
-            # for b < depth < 64, so position = new(Σ t_b 2^b, 0) — same value
-            # the legacy polynomial-basis field g-power encoding produced (g^b = 2^b there).
+            # for b < depth < 64, so position = new(Σ t_b 2^b, 0).
             position += t * COORD_BASIS[b]
             # reconstruction of v in the coordinate basis (bit j*depth+b).
             acc += t * COORD_BASIS[j * depth + b]

@@ -1,6 +1,5 @@
-//! AVX-512 `VPCLMULQDQ` batched Karatsuba accumulator, shared by the two
-//! degree-2 towers: [`super::tower_f128`]'s Artin–Schreier `F128T` and
-//! [`super::tower_f128`]'s binius64 `F128Txy`.
+//! AVX-512 `VPCLMULQDQ` batched Karatsuba accumulator shared by
+//! `F128T = K[y]/(y²+x·y+1)` and `F128TArtin = K[y]/(y²+y+x^61)`.
 //!
 //! Both element types are `#[repr(C)] { c0: u64, c1: u64 }`, so a slice of
 //! either reads as interleaved `{c0, c1}` u64 pairs. The three Karatsuba
@@ -20,9 +19,8 @@
 //! CLMUL instruction** — 4× fewer CLMULs than the scalar `pclmulqdq` path.
 //! `BANKS` independent zmm accumulators overlap the CLMUL latency chains.
 //!
-//! Scope: this is exploration/benchmark code. It exists to re-derive, on x86,
-//! the schoolbook-vs-Karatsuba and binius-vs-Artin–Schreier deferred-inner-
-//! product answers that the aarch64 kernels found on M-series (see the
+//! Scope: this is exploration/benchmark code. It compares the two reductions
+//! and schoolbook versus Karatsuba on x86 (see the
 //! `inner_bench` binary). It needs `vpclmulqdq` + `avx512f` (a Zen 4 /
 //! Sapphire-Rapids-class core); `-C target-cpu=native` on such a box enables
 //! both. The CLMUL stays 128-bit-per-lane — this batches four of them, it does

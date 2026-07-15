@@ -1,4 +1,4 @@
-//! Shared primitives: the binary tower-field kernels, bit transposes,
+//! Shared primitives: field kernels, bit transposes,
 //! multilinear helpers, the scratch buffer pool, and small integer utilities.
 
 pub mod bits;

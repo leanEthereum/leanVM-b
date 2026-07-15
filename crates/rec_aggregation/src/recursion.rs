@@ -1313,9 +1313,8 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     // Coordinate basis e_i of F128T over F2 (spans the WHOLE field): e_i =
     // new(1<<i, 0) for i<64, new(0, 1<<(i-64)) for i>=64. `hint_decompose_bits`
     // emits a word's coordinate bits, so the guest reconstructs Σ b_i·e_i = v
-    // with THIS basis. (In legacy polynomial-basis field the field generator's powers g^i coincided
-    // with e_i; in the tower g∈F64 spans only F64, so g^i must NOT be used as
-    // the reconstruction weight.)
+    // with this basis. Since g∈F64, span{g^i} is contained in F64 and cannot be
+    // used as the 128-coordinate reconstruction basis.
     let coord_basis: Vec<F128T> = (0..128)
         .map(|i| if i < 64 { F128T::new(1u64 << i, 0) } else { F128T::new(0, 1u64 << (i - 64)) })
         .collect();

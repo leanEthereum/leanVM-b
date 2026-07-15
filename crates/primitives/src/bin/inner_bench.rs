@@ -136,9 +136,8 @@ fn compare<F: Copy + PartialEq + core::fmt::Debug>(
 
 #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
 fn main() {
-    // The banked PMULL kernels this sweep compares live on the Artin–Schreier
-    // tower (F128TArtin); the accumulate is tower-independent so the ranking
-    // carries over to binius F128T.
+    // This sweep uses F128TArtin = K[y]/(y²+y+x^61); accumulation precedes
+    // reduction and is identical for F128T = K[y]/(y²+x·y+1).
     use primitives::field::F128TArtin;
     use primitives::field::tower_f128_artin::aarch64 as t;
 
@@ -193,8 +192,7 @@ fn main() {
     let mut s = 1u64;
     let at: Vec<F128T> = (0..N).map(|_| F128T::new(splitmix64(&mut s), splitmix64(&mut s))).collect();
     let bt: Vec<F128T> = (0..N).map(|_| F128T::new(splitmix64(&mut s), splitmix64(&mut s))).collect();
-    // Same coefficients reinterpreted as Artin–Schreier-tower elements: identical
-    // input work, so the two fields' timings are directly comparable.
+    // Same coefficients in K[y]/(y²+y+x^61).
     let axy: Vec<F128TArtin> = at.iter().map(|e| F128TArtin::new(e.c0, e.c1)).collect();
     let bxy: Vec<F128TArtin> = bt.iter().map(|e| F128TArtin::new(e.c0, e.c1)).collect();
 
@@ -212,7 +210,7 @@ fn main() {
         ("vpclmul schoolbook x4", t::inner_unreduced_vpclmul_school::<4>),
     ];
     let (bt_name, bt_min) =
-        compare("B: F128T  (binius64, y²+x·y+1)", &at, &bt, &methods_t, rounds);
+        compare("B: F128T  (y²+x·y+1)", &at, &bt, &methods_t, rounds);
 
     type KX = unsafe fn(&[F128TArtin], &[F128TArtin]) -> F128TArtin;
     let methods_x: Vec<(&str, KX)> = vec![
@@ -225,13 +223,13 @@ fn main() {
         ("vpclmul schoolbook x4", txy::inner_unreduced_vpclmul_school::<4>),
     ];
     let (bx_name, bx_min) =
-        compare("C: F128TArtin (Artin–Schreier, y²+y+x⁶¹)", &axy, &bxy, &methods_x, rounds);
+        compare("C: F128TArtin (y²+y+x⁶¹)", &axy, &bxy, &methods_x, rounds);
 
     println!("\nhead-to-head — best kernel of each tower (MIN ns/term):");
-    println!("  B: F128T (binius)         {bt_min:>7.3}   ({bt_name})");
-    println!("  C: F128TArtin (AS)        {bx_min:>7.3}   ({bx_name})");
+    println!("  B: F128T (y²+x·y+1)       {bt_min:>7.3}   ({bt_name})");
+    println!("  C: F128TArtin (y²+y+x⁶¹)  {bx_min:>7.3}   ({bx_name})");
     println!(
-        "  C/B = {:.2}x   (<1 → Artin–Schreier faster; >1 → binius faster, on the batched deferred inner product)",
+        "  C/B = {:.2}x   (<1 → y²+y+x⁶¹ faster; >1 → y²+x·y+1 faster)",
         bx_min / bt_min
     );
     println!("\n(speedup = fastest.min / this.min; wins = rounds this method was quickest)");

@@ -3,12 +3,12 @@
 // Modifications copyright 2026 Succinct Labs, Benedikt Bunz, William Wang
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Ligerito over K = GF(2^64): commit in the base field, challenge in the tower.
+//! Ligerito with `K = GF(2)[x]/(x^64+x^4+x^3+x+1)` and
+//! `E = K[y]/(y^2+x*y+1)`.
 //!
 //! The committed message is a
 //! vector of [`F64`] values; every verifier challenge, sumcheck message, basis
-//! poly, and post-fold witness lives in E = GF(2^128) represented as the
-//! degree-2 tower [`F128T`] over the very same K.
+//! poly, and post-fold witness is [`F128T`]-valued.
 //!
 //! Type map relative to the original:
 //! - committed message / L0 codeword / L0 opened rows: `F64` (8 bytes)

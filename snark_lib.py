@@ -10,10 +10,10 @@ argument; the compiler specializes the function per distinct constant."""
 
 
 class _Elt:
-    """A GF(2^128) element (GHASH form). Indices and addresses are carried as
-    powers of GEN — "in the exponent": `GEN ** k` is the k-th index, `x * GEN`
-    its successor. A heap pointer is an element too, its cells addressed by
-    g-power offsets (`buf[i]` is the cell at `buf * i`, write-once)."""
+    """A 128-bit machine word in E = GF(2^128), represented as a quadratic
+    tower over K = GF(2^64). Indices and addresses are K-valued powers of GEN —
+    "in the exponent": `GEN ** k` is the k-th index and `x * GEN` its successor.
+    A heap pointer is K-valued too; `buf[i]` is the write-once cell at `buf * i`."""
 
     def __add__(self, other):  # field addition = XOR
         _ = other
@@ -21,7 +21,7 @@ class _Elt:
 
     __radd__ = __add__
 
-    def __mul__(self, other):  # field (GHASH) product
+    def __mul__(self, other):  # tower-field product
         _ = other
         return _Elt()
 
@@ -46,7 +46,7 @@ class _Elt:
 
 
 GEN = _Elt()
-"""The fixed generator g = x of GF(2^128)^× (order 2^128 - 1)."""
+"""The fixed generator g = x of K^× = GF(2^64)^× (order 2^64 - 1)."""
 
 
 def hint_decompose_bits(bits, value, nbits: int) -> None:

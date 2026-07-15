@@ -278,7 +278,8 @@ macro_rules! columns {
 
 /// `XOR` and `MUL_NATIVE` share their column layout, flushes, and fill; they
 /// differ only in the opcode tag and the third-operand identity (`vc = va + vb`
-/// for `XOR`, `vc = va·vb` for `MUL` — the `K`-product, degree 2 as before).
+/// for `XOR`, `vc = va·vb` in `E = K[y]/(y²+x·y+1)` for `MUL`, degree 2 in the
+/// committed K-lane columns).
 struct Arith {
     is_xor: bool,
 }
@@ -327,7 +328,7 @@ impl Table for Arith {
         let va = e128(cols[VA_LO], cols[VA_HI]);
         let vb = e128(cols[VB_LO], cols[VB_HI]);
         let vc = e128(cols[VC_LO], cols[VC_HI]);
-        // XOR = E-addition, MUL = E-product (the tower product) — both degree 2
+        // XOR = E-addition, MUL = E-multiplication — both degree 2
         // in the lane columns, so the round univariate stays degree 2.
         let third = if self.is_xor { va + vb } else { va * vb };
         (cols[AA] + cols[FP] * cols[OA])

@@ -1,8 +1,6 @@
-//! GF(2^64), first-class: the data/commitment field of the 64-bit transition.
-//!
-//! K = F_2[x]/(x^64 + x^4 + x^3 + x + 1), the standard low-weight irreducible
-//! pentanomial; fold constant `R64 = 0x1B`. `x` is primitive (order exactly
-//! 2^64 − 1; pinned by a test). One multiplication = 1 product PMULL + 1
+//! `K = GF(2)[x]/(x^64 + x^4 + x^3 + x + 1)`,
+//! `R64 = 0x1B = x^4 + x^3 + x + 1`, and `ord(x) = 2^64 - 1`.
+//! One multiplication = 1 product PMULL + 1
 //! fold PMULL + a ≤4-bit overflow tail; the product and fold never leave
 //! the NEON register file.
 //!
@@ -26,7 +24,7 @@ pub struct F64(pub u64);
 impl F64 {
     pub const ZERO: Self = Self(0);
     pub const ONE: Self = Self(1);
-    /// The generator x — primitive, order 2^64 − 1.
+    /// `x`, with `ord(x) = 2^64 - 1`.
     pub const G: Self = Self(2);
 
     #[inline]
