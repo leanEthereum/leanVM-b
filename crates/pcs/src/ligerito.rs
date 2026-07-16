@@ -47,13 +47,10 @@ pub fn validate_log_inv_rate(log_inv_rate: usize) -> Result<(), String> {
 /// the full 128-bit target directly.
 pub const QUERY_GRINDING_BITS: usize = 0;
 
-/// Slack below the Johnson radius `1 - sqrt(rho)`. `1/160` is the smallest
-/// simple value with comfortable proximity-gap margin across every production
-/// configuration (`log_n = 22..=28`, initial rates 1/2 through 1/16): after
-/// applying BCHKS25 Thm 4.6 exactly, the worst level still has >128.8 bits and
-/// therefore needs no fold grinding. The numerical no-grind boundary is about
-/// 0.00556; staying above it avoids a brittle floating-point/parameter edge.
-pub const JOHNSON_ETA: f64 = 1.0 / 160.0;
+/// Maximum BCHKS25 integer parameter considered by the per-level eta search.
+/// Production configurations hit the proximity-gap boundary far below this;
+/// the generous cap makes the optimizer deterministic even if sizes expand.
+const JOHNSON_ETA_SEARCH_MAX_M: usize = 4096;
 
 pub const INITIAL_FOLDING_FATOR: usize = 6;
 pub const SUBSEQUENT_FOLDING_FACTORS: usize = 3;
@@ -323,7 +320,6 @@ fn derive_ladder_shape(
     log_n: usize,
     initial_k: usize,
     log_inv_rate: usize,
-    queries_at_rate: &dyn Fn(usize) -> usize,
 ) -> Result<LadderShape, String> {
     if log_n <= initial_k {
         return Err("log_n must be > initial_k".into());
@@ -339,9 +335,6 @@ fn derive_ladder_shape(
     let mut rate_running = log_inv_rate;
     let mut fold_running = initial_k;
     let mut domain_reduction = RS_DOMAIN_INITIAL_REDUCTION_FACTOR;
-    if (1usize << (n_running + rate_running)) < queries_at_rate(rate_running) {
-        return Err("L0 block_len < queries — log_n too small for chosen rate".into());
-    }
     while n_running > RESIDUAL_MAX_LOG {
         let k = SUBSEQUENT_FOLDING_FACTORS.min(n_running);
         let log_msg_cols_next = n_running - k;
@@ -351,11 +344,6 @@ fn derive_ladder_shape(
             )
         })?;
         let next_rate = rate_running + rate_increase;
-        if (1usize << (log_msg_cols_next + next_rate)) < queries_at_rate(next_rate) {
-            return Err(format!(
-                "recursive block_len at rate 1/2^{next_rate} cannot accommodate queries under the fixed domain schedule"
-            ));
-        }
         shape.log_inv_rates.push(next_rate);
         shape.log_msg_cols.push(log_msg_cols_next);
         shape.log_num_interleaved.push(k);
@@ -635,14 +623,6 @@ fn paper_per_query_bits(log_inv_rate: usize, log_msg_cols: usize, eta: f64) -> f
     (1.0 / (1.0 - gamma)).log2()
 }
 
-/// Conservative, length-independent query estimate used only while selecting
-/// the recursive ladder shape. Replacing the reduced rate by the larger
-/// nominal rate can only increase the resulting query count.
-fn nominal_johnson_per_query_bits(log_inv_rate: usize, eta: f64) -> f64 {
-    let sqrt_rho = (-(log_inv_rate as f64) / 2.0).exp2();
-    (1.0 / (sqrt_rho + eta)).log2()
-}
-
 /// UDR proximity radius: the **maximum** allowed by our paper's App. C.3
 /// (Theorem `ca-udr`, BCHKS25 Cor. 1.4), whose valid range is
 /// `[δ/3, δ/2 − 3/(δ·n)]`. We take the top of the range,
@@ -745,13 +725,26 @@ fn johnson_interleaved_list_log2(
 /// - 191 for GF64-to-GF192 ring-switch batching;
 /// - `ceil(log2(queries))` for the multilinear query-row batching; and
 /// - 2 for quadratic sumcheck (linear claim batching has degree 1).
-fn johnson_algebraic_bits(level: &LigeritoLevelConfig) -> f64 {
-    let eta = level.eta.expect("JohnsonOod must have eta");
-    let log2_l = johnson_interleaved_list_log2(level.log_inv_rate, level.log_msg_cols, eta);
+fn johnson_algebraic_bits_for(
+    log_inv_rate: usize,
+    log_msg_cols: usize,
+    eta: f64,
+    queries: usize,
+) -> f64 {
+    let log2_l = johnson_interleaved_list_log2(log_inv_rate, log_msg_cols, eta);
     let degree = crate::ring_switch_k::RING_SWITCH_SOUNDNESS_DEGREE
-        .max(log2_ceil(level.queries))
+        .max(log2_ceil(queries))
         .max(2);
     ANALYSIS_LOG_Q - (degree as f64).log2() - log2_l
+}
+
+fn johnson_algebraic_bits(level: &LigeritoLevelConfig) -> f64 {
+    johnson_algebraic_bits_for(
+        level.log_inv_rate,
+        level.log_msg_cols,
+        level.eta.expect("JohnsonOod must have eta"),
+        level.queries,
+    )
 }
 
 /// OOD binding bits for a `JohnsonOod` level. `mu_vars` is the level's
@@ -779,6 +772,114 @@ fn paper_ood_bits(
     } else {
         ood_samples as f64 * (ANALYSIS_LOG_Q - log2_mu) - (2.0 * log2_l - 1.0)
     }
+}
+
+/// Result of the WHIR-style per-level Johnson-slack search. The search
+/// minimizes queries; ties keep the smallest theorem parameter `m`, which has
+/// the largest eta and therefore the smallest list bound.
+struct OptimizedJohnsonLevel {
+    eta: f64,
+    queries: usize,
+    ood_samples: usize,
+    eps_pg: f64,
+    eps_query: f64,
+    eps_ood: f64,
+}
+
+/// Eta at the lower boundary for a fixed BCHKS25 theorem parameter
+/// `m = ceil(sqrt(rho) / eta)`. Moving eta lower would increase `m` and worsen
+/// the proximity-gap bound; this boundary maximizes query soundness for the
+/// given `m`. Step upward by an ulp if floating-point division lands just
+/// below the intended ceil boundary.
+fn johnson_eta_for_m(log_inv_rate: usize, log_msg_cols: usize, m: usize) -> f64 {
+    debug_assert!(m >= 3);
+    let sqrt_rho = reduced_rate(log_inv_rate, log_msg_cols).sqrt();
+    let mut eta = sqrt_rho / m as f64;
+    while johnson_m_param(log_inv_rate, log_msg_cols, eta) > m as f64 {
+        eta = f64::from_bits(eta.to_bits() + 1);
+    }
+    debug_assert_eq!(johnson_m_param(log_inv_rate, log_msg_cols, eta), m as f64);
+    eta
+}
+
+/// Choose eta independently for one recursive level, following leanVM's
+/// discrete `m` search but using this implementation's exact reduced rate and
+/// corrected BCHKS25 parameter. Candidates must satisfy every non-grindable
+/// 128-bit term and the proximity-gap target without fold grinding.
+fn optimize_johnson_level(
+    level: usize,
+    log_inv_rate: usize,
+    log_msg_cols: usize,
+    log_num_interleaved: usize,
+    target_bits: usize,
+    query_grinding_bits: usize,
+) -> Result<OptimizedJohnsonLevel, String> {
+    let target = target_bits as f64;
+    let query_target = target_bits.saturating_sub(query_grinding_bits).max(1) as f64;
+    let mu = log_msg_cols + log_num_interleaved;
+    let block_len = 1usize << (log_msg_cols + log_inv_rate);
+    let mut best: Option<OptimizedJohnsonLevel> = None;
+
+    for m in 3..=JOHNSON_ETA_SEARCH_MAX_M {
+        let eta = johnson_eta_for_m(log_inv_rate, log_msg_cols, m);
+        let max_eta = 1.0 - reduced_rate(log_inv_rate, log_msg_cols).sqrt();
+        if eta >= max_eta {
+            continue;
+        }
+
+        let eps_pg = ANALYSIS_LOG_Q
+            - paper_johnson_log_a(log_inv_rate, eta, log_msg_cols, log_num_interleaved);
+        // At the theorem-parameter boundaries a grows monotonically with m;
+        // no later candidate can recover once the proximity-gap target fails.
+        if eps_pg + 1e-12 < target {
+            break;
+        }
+
+        let per_q = paper_per_query_bits(log_inv_rate, log_msg_cols, eta);
+        if !per_q.is_finite() || per_q <= 0.0 {
+            continue;
+        }
+        let queries = (query_target / per_q).ceil() as usize;
+        if queries > block_len {
+            continue;
+        }
+        let eps_query = queries as f64 * per_q;
+
+        let ood_samples = if level == 0 {
+            0
+        } else {
+            match (1..=8usize).find(|&s| {
+                paper_ood_bits(log_inv_rate, log_msg_cols, eta, mu, s) + 1e-12 >= target
+            }) {
+                Some(samples) => samples,
+                None => continue,
+            }
+        };
+        let eps_ood = paper_ood_bits(log_inv_rate, log_msg_cols, eta, mu, ood_samples);
+        if eps_ood + 1e-12 < target
+            || johnson_algebraic_bits_for(log_inv_rate, log_msg_cols, eta, queries) + 1e-12 < target
+        {
+            continue;
+        }
+
+        let candidate = OptimizedJohnsonLevel {
+            eta,
+            queries,
+            ood_samples,
+            eps_pg,
+            eps_query,
+            eps_ood,
+        };
+        if best.as_ref().is_none_or(|current| candidate.queries < current.queries) {
+            best = Some(candidate);
+        }
+    }
+
+    best.ok_or_else(|| {
+        format!(
+            "L{level}: no eta candidate satisfies {target_bits}-bit Johnson/OOD soundness at rate 1/2^{log_inv_rate}"
+        )
+    })
 }
 
 impl LigeritoLevelConfig {
@@ -1156,18 +1257,10 @@ impl LigeritoSecurityConfig {
             .ok_or_else(|| format!("m ({m}) < LOG_PACKING ({})", crate::LOG_PACKING))?;
         let initial_k = INITIAL_FOLDING_FATOR;
 
-        // Johnson per-query soundness depends only on the rate and eta.
-        let per_query_bits_feas = |rate| nominal_johnson_per_query_bits(rate, JOHNSON_ETA);
-
-        // Shape derivation needs per-level query counts for block-length
-        // feasibility before the level count (and hence the exact per-term
-        // target) is known. Use a conservative target of target_bits + 5
-        // (≥ log₂(3 terms · 10 levels)); the final counts are ≤ this.
-        let t_feas = target_bits as f64 + 5.0;
-        let queries_feas = |rate: usize| -> usize {
-            ((t_feas - query_grind as f64).max(1.0) / per_query_bits_feas(rate)).ceil() as usize
-        };
-        let shape = derive_ladder_shape(log_n, initial_k, log_inv_rate, &queries_feas)?;
+        // The ladder geometry is independent of eta. Exact block-length
+        // feasibility is checked below by the same per-level optimizer that
+        // supplies the production eta and query count.
+        let shape = derive_ladder_shape(log_n, initial_k, log_inv_rate)?;
         let n_levels = shape.log_inv_rates.len();
 
         // Round-by-round target: every verifier-challenge error term (pg,
@@ -1176,45 +1269,14 @@ impl LigeritoSecurityConfig {
         // this configuration targets 128-bit RBR soundness, as required by the
         // Fiat--Shamir analysis, rather than 128-bit interactive soundness after
         // summing every transition probability.
-        let t = target_bits as f64;
-
         let mut levels = Vec::with_capacity(n_levels);
         for i in 0..n_levels {
             let rate = shape.log_inv_rates[i];
             let cols = shape.log_msg_cols[i];
             let ilv = shape.log_num_interleaved[i];
-            let per_q = paper_per_query_bits(rate, cols, JOHNSON_ETA);
-            let queries = ((t - query_grind as f64).max(1.0) / per_q).ceil() as usize;
-            if queries > (1usize << (cols + rate)) {
-                return Err(format!(
-                    "L{i}: {queries} queries exceed block length 2^{}",
-                    cols + rate
-                ));
-            }
-            let eps_query = queries as f64 * per_q;
-
-            let eps_pg = ANALYSIS_LOG_Q - paper_johnson_log_a(rate, JOHNSON_ETA, cols, ilv);
-            let mu = cols + ilv;
-            // L0 is bound by the opening's own post-commit evaluation claim.
-            // Deeper commitments carry the minimum number of explicit random
-            // OOD evaluations needed to bind one Johnson-list candidate.
-            let ood_samples = if i == 0 {
-                0
-            } else {
-                (1..=8usize)
-                    .find(|&s| paper_ood_bits(rate, cols, JOHNSON_ETA, mu, s) >= t)
-                    .ok_or_else(|| format!("L{i}: no OOD sample count reaches {t:.1} bits"))?
-            };
-            let eps_ood = Some(round1(paper_ood_bits(
-                rate,
-                cols,
-                JOHNSON_ETA,
-                mu,
-                ood_samples,
-            )));
+            let optimized = optimize_johnson_level(i, rate, cols, ilv, target_bits, query_grind)?;
             let (regime, eta, proximity_loss) =
-                (SoundnessRegime::JohnsonOod, Some(JOHNSON_ETA), None);
-            let fold_grinding_bits = (t - eps_pg).ceil().max(0.0) as usize;
+                (SoundnessRegime::JohnsonOod, Some(optimized.eta), None);
 
             levels.push(LigeritoLevelConfig {
                 log_inv_rate: rate,
@@ -1224,18 +1286,18 @@ impl LigeritoSecurityConfig {
                 regime,
                 eta,
                 proximity_loss,
-                queries,
+                queries: optimized.queries,
                 grinding_bits: query_grind,
-                fold_grinding_bits,
-                ood_samples,
+                fold_grinding_bits: 0,
+                ood_samples: optimized.ood_samples,
                 target_security_bits: target_bits,
-                expected_eps_pg_bits: round1(eps_pg),
-                expected_eps_query_bits: round1(eps_query),
-                expected_eps_ood_bits: eps_ood,
+                expected_eps_pg_bits: round1(optimized.eps_pg),
+                expected_eps_query_bits: round1(optimized.eps_query),
+                expected_eps_ood_bits: Some(round1(optimized.eps_ood)),
             });
         }
 
-        let analysis_version = "bchks25_thm_4_6_exact_reduced_rate_row_union";
+        let analysis_version = "bchks25_thm_4_6_exact_reduced_rate_row_union_optimized_eta";
         let cfg = Self {
             m,
             log_n,
@@ -1357,7 +1419,10 @@ mod tests {
                 }
             }
         }
-        assert!(min_pg_bits > 128.8, "minimum PG margin: {min_pg_bits}");
+        assert!(
+            (128.0..129.0).contains(&min_pg_bits),
+            "eta search should use, but not exceed, the one-bit PG margin: {min_pg_bits}"
+        );
     }
 
     #[test]
@@ -1373,7 +1438,20 @@ mod tests {
         );
         assert_eq!(
             cfg.levels.iter().map(|level| level.queries).collect::<Vec<_>>(),
-            [263, 66, 44, 34, 27]
+            [259, 65, 43, 33, 26]
+        );
+        assert_eq!(
+            cfg.levels
+                .iter()
+                .map(|level| {
+                    johnson_m_param(
+                        level.log_inv_rate,
+                        level.log_msg_cols,
+                        level.eta.expect("Johnson eta"),
+                    ) as usize
+                })
+                .collect::<Vec<_>>(),
+            [249, 47, 60, 11, 12]
         );
     }
 
@@ -1430,10 +1508,12 @@ mod tests {
 
         println!("num_vars={num_vars}, rate=1/{}", 1usize << log_inv_rate);
         for (level, params) in cfg.levels.iter().enumerate() {
+            let eta = params.eta.expect("production profile uses Johnson eta");
             println!(
-                "L{level}: rate=1/{}, queries={}",
+                "L{level}: rate=1/{}, queries={}, eta={eta:.12e}, m={}",
                 1usize << params.log_inv_rate,
-                params.queries
+                params.queries,
+                johnson_m_param(params.log_inv_rate, params.log_msg_cols, eta) as usize,
             );
         }
     }
