@@ -43,9 +43,10 @@ pub fn validate_log_inv_rate(log_inv_rate: usize) -> Result<(), String> {
     Ok(())
 }
 
-/// Query-phase grinding is unnecessary: the Johnson-radius query count closes
-/// the full 128-bit target directly.
-pub const QUERY_GRINDING_BITS: usize = 0;
+/// Per-level query-phase proof-of-work budget. These bits are ground after the
+/// level commitment and before its query positions are sampled, so the query
+/// count only needs to close the remaining `SECURITY_BITS - 17` bits.
+pub const QUERY_GRINDING_BITS: usize = 17;
 
 /// Maximum BCHKS25 integer parameter considered by the per-level eta search.
 /// Production configurations hit the proximity-gap boundary far below this;
@@ -1392,7 +1393,7 @@ mod tests {
     }
 
     #[test]
-    fn production_profile_is_128_bit_johnson_without_grinding() {
+    fn production_profile_is_128_bit_johnson_with_query_grinding() {
         let mut min_pg_bits = f64::INFINITY;
         for log_inv_rate in MIN_LOG_INV_RATE..=MAX_LOG_INV_RATE {
             for m in 22 + crate::LOG_PACKING..=28 + crate::LOG_PACKING {
@@ -1407,9 +1408,9 @@ mod tests {
                     let algebraic_bits = johnson_algebraic_bits(level);
                     min_pg_bits = min_pg_bits.min(pg_bits);
                     assert_eq!(level.regime, SoundnessRegime::JohnsonOod);
-                    assert_eq!(level.grinding_bits, 0);
+                    assert_eq!(level.grinding_bits, QUERY_GRINDING_BITS);
                     assert_eq!(level.fold_grinding_bits, 0);
-                    assert!(query_bits >= 128.0);
+                    assert!(query_bits + level.grinding_bits as f64 >= 128.0);
                     assert!(pg_bits >= 128.0);
                     assert!(ood_bits >= 128.0);
                     assert!(algebraic_bits >= 128.0);
@@ -1438,7 +1439,7 @@ mod tests {
         );
         assert_eq!(
             cfg.levels.iter().map(|level| level.queries).collect::<Vec<_>>(),
-            [259, 65, 43, 33, 26]
+            [225, 56, 38, 28, 23]
         );
         assert_eq!(
             cfg.levels
@@ -1451,7 +1452,7 @@ mod tests {
                     ) as usize
                 })
                 .collect::<Vec<_>>(),
-            [249, 47, 60, 11, 12]
+            [216, 80, 18, 35, 7]
         );
     }
 

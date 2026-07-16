@@ -3336,7 +3336,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ligerito::{default_config, default_verifier_config};
+    use crate::ligerito::{default_config, default_verifier_config, QUERY_GRINDING_BITS};
 
     fn splitmix64(state: &mut u64) -> u64 {
         *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
@@ -3461,7 +3461,7 @@ mod tests {
         assert_eq!(vc.initial_k, pc.initial_k);
         assert_eq!(pc.ood_samples[0], 0);
         assert!(pc.ood_samples.iter().skip(1).all(|&s| s >= 1));
-        assert!(pc.grinding_bits.iter().all(|&b| b == 0));
+        assert!(pc.grinding_bits.iter().all(|&b| b == QUERY_GRINDING_BITS));
         assert!(pc.fold_grinding_bits.iter().all(|&b| b == 0));
         // And log_n = 12 is below the production ladder's feasibility floor, so
         // the tests there use the default_config fallback.
