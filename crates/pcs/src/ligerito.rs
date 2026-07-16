@@ -58,6 +58,19 @@ pub const JOHNSON_ETA: f64 = 1.0 / 160.0;
 pub const INITIAL_FOLDING_FATOR: usize = 6;
 pub const SUBSEQUENT_FOLDING_FACTORS: usize = 3;
 
+/// Logarithmic reduction of the total Reed--Solomon domain after the initial
+/// fold. With the production six-variable initial fold, `3` changes the
+/// inverse-rate logarithm by `6 - 3 = 3` at the first recursive level.
+pub const RS_DOMAIN_INITIAL_REDUCTION_FACTOR: usize = 3;
+
+/// After each subsequent fold, shrink the total Reed--Solomon domain by one
+/// bit. This mirrors WHIR's recursive-domain schedule; unlike the initial
+/// reduction, it is deliberately fixed rather than a tuning parameter.
+const RS_DOMAIN_SUBSEQUENT_REDUCTION_FACTOR: usize = 1;
+
+const _: () = assert!(RS_DOMAIN_INITIAL_REDUCTION_FACTOR <= INITIAL_FOLDING_FATOR);
+const _: () = assert!(RS_DOMAIN_SUBSEQUENT_REDUCTION_FACTOR <= SUBSEQUENT_FOLDING_FACTORS);
+
 /// Folding stops once at most this many variables remain: the residual
 /// polynomial (`yr`, at most `2^RESIDUAL_MAX_LOG` coefficients) is sent in
 /// clear instead of committed and folded further.
@@ -302,9 +315,10 @@ struct LadderShape {
     yr_log_n: usize,
 }
 
-/// Shared shape derivation behind [`LigeritoSecurityConfig::derive_config`]: [`LEVEL_K`]-bit level folds with the
-/// rate index increasing by ≥ 1 per level, bumped further whenever the block
-/// length couldn't accommodate `queries_at_rate(rate)` distinct queries.
+/// Shared shape derivation behind [`LigeritoSecurityConfig::derive_config`].
+/// The total RS domain loses [`RS_DOMAIN_INITIAL_REDUCTION_FACTOR`] bits after
+/// the initial fold, then exactly one bit per subsequent fold. Consequently a
+/// fold of `k` variables raises the inverse-rate logarithm by `k - reduction`.
 fn derive_ladder_shape(
     log_n: usize,
     initial_k: usize,
@@ -323,21 +337,24 @@ fn derive_ladder_shape(
     };
     let mut n_running = log_n - initial_k;
     let mut rate_running = log_inv_rate;
+    let mut fold_running = initial_k;
+    let mut domain_reduction = RS_DOMAIN_INITIAL_REDUCTION_FACTOR;
     if (1usize << (n_running + rate_running)) < queries_at_rate(rate_running) {
         return Err("L0 block_len < queries — log_n too small for chosen rate".into());
     }
     while n_running > RESIDUAL_MAX_LOG {
         let k = SUBSEQUENT_FOLDING_FACTORS.min(n_running);
         let log_msg_cols_next = n_running - k;
-        let mut next_rate = rate_running + 1;
-        loop {
-            if (1usize << (log_msg_cols_next + next_rate)) >= queries_at_rate(next_rate) {
-                break;
-            }
-            next_rate += 1;
-            if next_rate > 20 {
-                return Err("could not find feasible level rate (level too deep)".into());
-            }
+        let rate_increase = fold_running.checked_sub(domain_reduction).ok_or_else(|| {
+            format!(
+                "folding factor {fold_running} is smaller than RS domain reduction {domain_reduction}"
+            )
+        })?;
+        let next_rate = rate_running + rate_increase;
+        if (1usize << (log_msg_cols_next + next_rate)) < queries_at_rate(next_rate) {
+            return Err(format!(
+                "recursive block_len at rate 1/2^{next_rate} cannot accommodate queries under the fixed domain schedule"
+            ));
         }
         shape.log_inv_rates.push(next_rate);
         shape.log_msg_cols.push(log_msg_cols_next);
@@ -345,6 +362,8 @@ fn derive_ladder_shape(
         shape.k_levels.push(k);
         n_running -= k;
         rate_running = next_rate;
+        fold_running = k;
+        domain_reduction = RS_DOMAIN_SUBSEQUENT_REDUCTION_FACTOR;
     }
     if shape.k_levels.len() < 2 {
         return Err("log_n too small: needs at least 2 fold levels".into());
@@ -897,6 +916,32 @@ impl LigeritoSecurityConfig {
                 ));
             }
 
+            // Folding `lv.k` variables changes the next level's total RS
+            // domain logarithm from `dim_in + rate_i` to
+            // `dim_in - lv.k + rate_{i+1}`. Pin that difference to the public
+            // initial reduction and to one bit at every later transition.
+            if let Some(next) = self.levels.get(i + 1) {
+                let domain_reduction = if i == 0 {
+                    RS_DOMAIN_INITIAL_REDUCTION_FACTOR
+                } else {
+                    RS_DOMAIN_SUBSEQUENT_REDUCTION_FACTOR
+                };
+                let expected_next_rate = lv
+                    .log_inv_rate
+                    .checked_add(lv.k)
+                    .and_then(|r| r.checked_sub(domain_reduction))
+                    .ok_or_else(|| format!("L{i}: invalid RS domain reduction {domain_reduction}"))?;
+                if next.log_inv_rate != expected_next_rate {
+                    return Err(format!(
+                        "L{}: log_inv_rate ({}) does not reduce the preceding RS domain by {} bit(s); expected {}",
+                        i + 1,
+                        next.log_inv_rate,
+                        domain_reduction,
+                        expected_next_rate,
+                    ));
+                }
+            }
+
             // eta presence matches regime.
             match (lv.regime, lv.eta) {
                 (SoundnessRegime::Udr, Some(_)) => {
@@ -1316,16 +1361,52 @@ mod tests {
     }
 
     #[test]
-    fn optimized_eta_query_profile_is_stable() {
+    fn optimized_eta_query_and_rate_profile_is_stable() {
         let cfg = LigeritoSecurityConfig::derive_config_with_log_inv_rate(
             22 + crate::LOG_PACKING,
             1,
         )
         .unwrap();
         assert_eq!(
-            cfg.levels.iter().map(|level| level.queries).collect::<Vec<_>>(),
-            [263, 131, 87, 65, 52]
+            cfg.levels.iter().map(|level| level.log_inv_rate).collect::<Vec<_>>(),
+            [1, 4, 6, 8, 10]
         );
+        assert_eq!(
+            cfg.levels.iter().map(|level| level.queries).collect::<Vec<_>>(),
+            [263, 66, 44, 34, 27]
+        );
+    }
+
+    #[test]
+    fn recursive_rs_domain_reduction_schedule_is_stable() {
+        for starting_rate in MIN_LOG_INV_RATE..=MAX_LOG_INV_RATE {
+            let cfg = LigeritoSecurityConfig::derive_config_with_log_inv_rate(
+                27 + crate::LOG_PACKING,
+                starting_rate,
+            )
+            .unwrap();
+            let mut dim_in = cfg.log_n;
+            let mut previous_domain_log = dim_in + cfg.levels[0].log_inv_rate;
+            for (i, level) in cfg.levels.iter().enumerate() {
+                dim_in -= level.k;
+                if let Some(next) = cfg.levels.get(i + 1) {
+                    let next_domain_log = dim_in + next.log_inv_rate;
+                    let expected_reduction = if i == 0 {
+                        RS_DOMAIN_INITIAL_REDUCTION_FACTOR
+                    } else {
+                        1
+                    };
+                    assert_eq!(
+                        previous_domain_log - next_domain_log,
+                        expected_reduction,
+                        "transition L{i} -> L{} at starting rate 1/{}",
+                        i + 1,
+                        1usize << starting_rate,
+                    );
+                    previous_domain_log = next_domain_log;
+                }
+            }
+        }
     }
 
     /// Parameter-report helper:
