@@ -178,6 +178,15 @@ LIG_VANISH_OFF = LIG_VANISH_OFF_PLACEHOLDER
 LIG_FOLD_GRIND_BITS = LIG_FOLD_GRIND_BITS_PLACEHOLDER
 LIG_VANISH_VALS = LIG_VANISH_VALS_PLACEHOLDER
 LIG_VANISH_INVS = LIG_VANISH_INVS_PLACEHOLDER
+# Residual lookup tables (additive NTT): per (m_idx, lvl), LIG_NTT_HIGH_LOG is
+# the residual domain log-size (tree depth - prefix len) when the one-off
+# per-level table build beats the per-query fold_final_msg, else 0 (fold
+# path); LIG_NTT_BASIS_OFF locates the level's normalized twiddle-basis blob
+# What_{d+k}(beta_{d+c}) inside LIG_NTT_BASIS (blobs dedup across candidates).
+LIG_NTT_HIGH_LOG = LIG_NTT_HIGH_LOG_PLACEHOLDER
+LIG_NTT_BASIS_OFF = LIG_NTT_BASIS_OFF_PLACEHOLDER
+LIG_NTT_BASIS = LIG_NTT_BASIS_PLACEHOLDER
+LIG_NTT_HIGH_CAP = LIG_NTT_HIGH_CAP_PLACEHOLDER  # max baked high log (StackBuf frame sizes are parse-time)
 LIG_N_CANDIDATES = LIG_N_CANDIDATES_PLACEHOLDER
 LIG_MIN_SHIFT_INV = LIG_MIN_SHIFT_INV_PLACEHOLDER
 # eval_b claim descriptors (fixed parts) + the qpkd capacity stride.
@@ -435,6 +444,46 @@ def fold_final_msg(msg, weights, wbase: Const, log_len: Const):
         cursor = nxt
         n = n // 2
     return cursor[0]
+
+
+def build_yr_table(final_msg, yr_table, yr_log: Const, high_log: Const, basis_off: Const):
+    # Additive-NTT (Lin-Chung-Han butterfly) table for the per-level residuals:
+    # yr_table[v] = P(x_v), where P is the order-PREFIXLEN novel-basis
+    # polynomial with coefficients final_msg and x_v ranges over the level's
+    # 2^high_log residual domain. A query's yr_eval is then ONE lookup at its
+    # high position bits (low table-index bit = position bit PREFIXLEN).
+    # Stage twiddles are subset sums of the baked normalized subspace values
+    # LIG_NTT_BASIS[basis_off..], expanded by doubling into a per-stage
+    # StackBuf; specializations share across candidates with equal blobs.
+    msg_vals = StackBuf(2 ** YR_LOG_CAP)
+    for i in unroll(0, 2 ** yr_log):
+        msg_vals[i] = final_msg[GEN ** i]
+    cursor = StackBuf(2 ** LIG_NTT_HIGH_CAP)
+    for v in unroll(0, 2 ** high_log):
+        cursor[v] = msg_vals[v % (2 ** yr_log)]  # tiled init: free stack aliases
+    for s in unroll(0, yr_log):
+        # Stage s folds coefficient bit k = yr_log - 1 - s; a butterfly pairs
+        # v with v + 2^k and its twiddle is indexed by v's bits above k.
+        tws = StackBuf(2 ** LIG_NTT_HIGH_CAP)
+        tws[0] = 0
+        for i in unroll(0, high_log - yr_log + s):
+            for h in unroll(0, 2 ** i):
+                tws[2 ** i + h] = tws[h] + LIG_NTT_BASIS[basis_off + s * (high_log - yr_log) + (s * s - s) // 2 + i]
+        nxt = StackBuf(2 ** LIG_NTT_HIGH_CAP)
+        for h in unroll(0, 2 ** (high_log - yr_log + s)):
+            for l in unroll(0, 2 ** (yr_log - 1 - s)):
+                # butterfly at v = h * 2^(k+1) + l against v + 2^k
+                if h == 0:
+                    nxt[h * (2 ** (yr_log - s)) + l] = cursor[h * (2 ** (yr_log - s)) + l]
+                    nxt[h * (2 ** (yr_log - s)) + l + 2 ** (yr_log - 1 - s)] = cursor[h * (2 ** (yr_log - s)) + l] + cursor[h * (2 ** (yr_log - s)) + l + 2 ** (yr_log - 1 - s)]
+                else:
+                    lo = cursor[h * (2 ** (yr_log - s)) + l] + tws[h] * cursor[h * (2 ** (yr_log - s)) + l + 2 ** (yr_log - 1 - s)]
+                    nxt[h * (2 ** (yr_log - s)) + l] = lo
+                    nxt[h * (2 ** (yr_log - s)) + l + 2 ** (yr_log - 1 - s)] = lo + cursor[h * (2 ** (yr_log - s)) + l + 2 ** (yr_log - 1 - s)]
+        cursor = nxt
+    for v in unroll(0, 2 ** high_log):
+        yr_table[GEN ** v] = cursor[v]
+    return
 
 
 @inline
@@ -742,28 +791,62 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
             sumcheck_target += beta_lvl * level_query_sum
 
     # ---- per-level residuals: novel-basis prefix x final-message fold ----
+    # yr_eval per query is P(What_d(x)) with d = PREFIXLEN: where the baked
+    # LIG_NTT_HIGH_LOG says the table pays, ONE per-level additive-NTT build
+    # (build_yr_table) replaces the per-query 2^yr fold, and each query just
+    # looks up its high position bits; elsewhere the fold path stays.
     inner_chain = HeapBuf(GEN ** (LIG_N_LEVELS[m_idx] + 1))
     inner_chain[GEN ** 0] = 0
     for lvl in unroll(0, LIG_N_LEVELS[m_idx]):
         residual_chain = HeapBuf(GEN ** (LIG_MAX_QUERIES[m_idx] + 1))
         residual_chain[GEN ** 0] = 0
-        for xr in mul_range(1, GEN ** LIG_QUERIES[m_idx * LIG_MAX_LEVELS + lvl]):
-            basis_w = StackBuf(LIG_LOG_MSG_COLS_CAP)
-            basis_chain = query_positions[GEN ** LIG_POSITIONS_OFF[m_idx * LIG_MAX_LEVELS + lvl] * xr]
-            basis_w[0] = basis_chain * LIG_VANISH_INVS[m_idx * LIG_MAX_VANISH_LEN + LIG_VANISH_OFF[m_idx * LIG_MAX_LEVELS + lvl]]
-            for t in unroll(1, LIG_LOG_MSG_COLS[m_idx * LIG_MAX_LEVELS + lvl]):
-                basis_chain *= (basis_chain + LIG_VANISH_VALS[m_idx * LIG_MAX_VANISH_LEN + LIG_VANISH_OFF[m_idx * LIG_MAX_LEVELS + lvl] + t - 1])  # subspace-vanishing recurrence for the novel-basis point
-                basis_w[t] = basis_chain * LIG_VANISH_INVS[m_idx * LIG_MAX_VANISH_LEN + LIG_VANISH_OFF[m_idx * LIG_MAX_LEVELS + lvl] + t]
-            prefix_eq = GEN ** 0
-            for t in unroll(0, LIG_RESIDUAL_PREFIX_LEN[m_idx * LIG_MAX_LEVELS + lvl]):
-                fold_c = fold_challenges[GEN ** (LIG_RESIDUAL_FOLD_OFF[m_idx * LIG_MAX_LEVELS + lvl] + t)]
-                prefix_eq *= (1 + fold_c * (1 + basis_w[t]))
-            fold_w = StackBuf(2 * YR_LOG_CAP)
-            for j in unroll(0, LIG_YR_LOG_LEN[m_idx]):
-                fold_w[2 * j] = GEN ** 0
-                fold_w[2 * j + 1] = basis_w[LIG_RESIDUAL_PREFIX_LEN[m_idx * LIG_MAX_LEVELS + lvl] + j]
-            yr_eval = fold_final_msg(final_msg, fold_w, 0, LIG_YR_LOG_LEN[m_idx])
-            residual_chain[xr * GEN] = residual_chain[xr] + alpha_weights[GEN ** (lvl * LIG_MAX_QUERIES[m_idx]) * xr] * prefix_eq * yr_eval
+        if LIG_NTT_HIGH_LOG[m_idx * LIG_MAX_LEVELS + lvl] != 0:
+            # Table path. The whole query loop is duplicated under the folded
+            # branch so each loop body only captures its own path's buffers.
+            yr_table = HeapBuf(GEN ** (2 ** LIG_NTT_HIGH_LOG[m_idx * LIG_MAX_LEVELS + lvl]))
+            build_yr_table(final_msg, yr_table, LIG_YR_LOG_LEN[m_idx], LIG_NTT_HIGH_LOG[m_idx * LIG_MAX_LEVELS + lvl], LIG_NTT_BASIS_OFF[m_idx * LIG_MAX_LEVELS + lvl])
+            for xr in mul_range(1, GEN ** LIG_QUERIES[m_idx * LIG_MAX_LEVELS + lvl]):
+                # The basis chain stops at the prefix (the yr tail values live
+                # inside the table).
+                basis_w = StackBuf(LIG_LOG_MSG_COLS_CAP)
+                if LIG_RESIDUAL_PREFIX_LEN[m_idx * LIG_MAX_LEVELS + lvl] != 0:
+                    basis_chain = query_positions[GEN ** LIG_POSITIONS_OFF[m_idx * LIG_MAX_LEVELS + lvl] * xr]
+                    basis_w[0] = basis_chain * LIG_VANISH_INVS[m_idx * LIG_MAX_VANISH_LEN + LIG_VANISH_OFF[m_idx * LIG_MAX_LEVELS + lvl]]
+                    for t in unroll(1, LIG_RESIDUAL_PREFIX_LEN[m_idx * LIG_MAX_LEVELS + lvl]):
+                        basis_chain *= (basis_chain + LIG_VANISH_VALS[m_idx * LIG_MAX_VANISH_LEN + LIG_VANISH_OFF[m_idx * LIG_MAX_LEVELS + lvl] + t - 1])  # subspace-vanishing recurrence for the novel-basis point
+                        basis_w[t] = basis_chain * LIG_VANISH_INVS[m_idx * LIG_MAX_VANISH_LEN + LIG_VANISH_OFF[m_idx * LIG_MAX_LEVELS + lvl] + t]
+                prefix_eq = GEN ** 0
+                for t in unroll(0, LIG_RESIDUAL_PREFIX_LEN[m_idx * LIG_MAX_LEVELS + lvl]):
+                    fold_c = fold_challenges[GEN ** (LIG_RESIDUAL_FOLD_OFF[m_idx * LIG_MAX_LEVELS + lvl] + t)]
+                    prefix_eq *= (1 + fold_c * (1 + basis_w[t]))
+                # What_d(x)'s coordinates in the residual domain basis are the
+                # HIGH bits of the query position (the low d bits lie in the
+                # kernel), so build the table pointer g^high_idx from them.
+                dir_bits = query_bit_ptrs[GEN ** LIG_POSITIONS_OFF[m_idx * LIG_MAX_LEVELS + lvl] * xr]
+                high_ptr = GEN ** 0
+                for j in unroll(0, LIG_NTT_HIGH_LOG[m_idx * LIG_MAX_LEVELS + lvl]):
+                    hb = dir_bits[GEN ** (LIG_RESIDUAL_PREFIX_LEN[m_idx * LIG_MAX_LEVELS + lvl] + j)]
+                    high_ptr *= (1 + hb * (GEN ** (2 ** j) + 1))
+                yr_eval = yr_table[high_ptr]
+                residual_chain[xr * GEN] = residual_chain[xr] + alpha_weights[GEN ** (lvl * LIG_MAX_QUERIES[m_idx]) * xr] * prefix_eq * yr_eval
+        else:
+            for xr in mul_range(1, GEN ** LIG_QUERIES[m_idx * LIG_MAX_LEVELS + lvl]):
+                basis_w = StackBuf(LIG_LOG_MSG_COLS_CAP)
+                basis_chain = query_positions[GEN ** LIG_POSITIONS_OFF[m_idx * LIG_MAX_LEVELS + lvl] * xr]
+                basis_w[0] = basis_chain * LIG_VANISH_INVS[m_idx * LIG_MAX_VANISH_LEN + LIG_VANISH_OFF[m_idx * LIG_MAX_LEVELS + lvl]]
+                for t in unroll(1, LIG_LOG_MSG_COLS[m_idx * LIG_MAX_LEVELS + lvl]):
+                    basis_chain *= (basis_chain + LIG_VANISH_VALS[m_idx * LIG_MAX_VANISH_LEN + LIG_VANISH_OFF[m_idx * LIG_MAX_LEVELS + lvl] + t - 1])  # subspace-vanishing recurrence for the novel-basis point
+                    basis_w[t] = basis_chain * LIG_VANISH_INVS[m_idx * LIG_MAX_VANISH_LEN + LIG_VANISH_OFF[m_idx * LIG_MAX_LEVELS + lvl] + t]
+                prefix_eq = GEN ** 0
+                for t in unroll(0, LIG_RESIDUAL_PREFIX_LEN[m_idx * LIG_MAX_LEVELS + lvl]):
+                    fold_c = fold_challenges[GEN ** (LIG_RESIDUAL_FOLD_OFF[m_idx * LIG_MAX_LEVELS + lvl] + t)]
+                    prefix_eq *= (1 + fold_c * (1 + basis_w[t]))
+                fold_w = StackBuf(2 * YR_LOG_CAP)
+                for j in unroll(0, LIG_YR_LOG_LEN[m_idx]):
+                    fold_w[2 * j] = GEN ** 0
+                    fold_w[2 * j + 1] = basis_w[LIG_RESIDUAL_PREFIX_LEN[m_idx * LIG_MAX_LEVELS + lvl] + j]
+                yr_eval = fold_final_msg(final_msg, fold_w, 0, LIG_YR_LOG_LEN[m_idx])
+                residual_chain[xr * GEN] = residual_chain[xr] + alpha_weights[GEN ** (lvl * LIG_MAX_QUERIES[m_idx]) * xr] * prefix_eq * yr_eval
         inner_chain[GEN ** (lvl + 1)] = inner_chain[GEN ** lvl] + level_betas[GEN ** lvl] * residual_chain[GEN ** LIG_QUERIES[m_idx * LIG_MAX_LEVELS + lvl]]  # accumulate beta_lvl * (per-level residual sum) into the grand residual
 
     # Explicit OOD bases are eq(z, ·). Fold their prefixes at all subsequent

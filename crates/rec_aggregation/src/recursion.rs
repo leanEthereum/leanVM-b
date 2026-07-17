@@ -1768,6 +1768,76 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         }
         ps("LIG_VANISH_VALS", flds(&svk2));
         ps("LIG_VANISH_INVS", flds(&ivk2));
+        // Residual lookup tables (additive NTT): per (candidate, level), bake
+        // the residual domain log-size high = depth - prefix and the level's
+        // normalized twiddle-basis blob What_{d+k}(beta_{d+c}) =
+        // s_{d+k}(v_{d+c}) / s_{d+k}(v_{d+k}) (k = 0..yr, c = k+1..high),
+        // whenever the one-off 2^high table build is cheaper than the
+        // per-query fold_final_msg it replaces. Blobs dedup by (d, yr, high).
+        let max_depth = cands
+            .iter()
+            .flat_map(|c| c.6.iter().copied().take(c.0))
+            .max()
+            .unwrap();
+        let sks_vks = pcs::ligerito_k::eval_sk_at_vks_k(max_depth + 1);
+        let s_eval = |j: usize, x: F64| -> F64 {
+            // s_j(x) via the subspace recurrence s_{i+1}(X) = s_i(X)(s_i(X) + s_i(v_i)).
+            let mut s = x;
+            for &vk in &sks_vks[..j] {
+                s = s * (s + vk);
+            }
+            s
+        };
+        let mut ntt_basis: Vec<F192> = Vec::new();
+        let mut blob_offs: std::collections::BTreeMap<(usize, usize, usize), usize> = std::collections::BTreeMap::new();
+        let mut ntt_high: Vec<usize> = Vec::new();
+        let mut ntt_off: Vec<usize> = Vec::new();
+        for c in &cands {
+            let yr = c.2;
+            let mut high_row = vec![0usize; maxlev];
+            let mut off_row = vec![0usize; maxlev];
+            for lv in 0..c.0 {
+                let d = c.4[lv] - yr;
+                let high = c.6[lv] - d;
+                let q = c.5[lv];
+                // Guest cycle estimates: the fold path costs the yr-tail basis
+                // chain plus fold_final_msg per query; the table path costs one
+                // build (msg preload, butterflies, twiddle doubling, table
+                // stores) plus a high-bit pointer walk and lookup per query.
+                // Constants calibrated against DBG_PROF residual-loop cycles of
+                // the (rate 2, m 26) arm: measured per-query saving fits
+                // 296 - 12*high at yr = 5 and measured builds are ~0.9x the
+                // structural count.
+                let fold_per_query = 15 * (1 << (yr - 1)) + 5 * yr + 31;
+                let table_per_query = 4 + 12 * high;
+                let table_build = (((1 << yr) + 3 * yr * (1 << (high - 1)) + 2 * ((1 << high) - (1 << (high - yr))) + (1 << high) + 16) * 9) / 10;
+                if table_build + q * table_per_query < q * fold_per_query {
+                    let off = *blob_offs.entry((d, yr, high)).or_insert_with(|| {
+                        let off = ntt_basis.len();
+                        for s in 0..yr {
+                            let k = yr - 1 - s;
+                            let wkk_inv = s_eval(d + k, F64(1u64 << (d + k))).inv();
+                            for cc in k + 1..high {
+                                let w = s_eval(d + k, F64(1u64 << (d + cc))) * wkk_inv;
+                                ntt_basis.push(F192::new(w.0, 0, 0));
+                            }
+                        }
+                        off
+                    });
+                    high_row[lv] = high;
+                    off_row[lv] = off;
+                }
+            }
+            ntt_high.extend(high_row);
+            ntt_off.extend(off_row);
+        }
+        ps("LIG_NTT_HIGH_LOG", ints(&ntt_high));
+        ps("LIG_NTT_BASIS_OFF", ints(&ntt_off));
+        ps("LIG_NTT_BASIS", flds(&ntt_basis));
+        ps(
+            "LIG_NTT_HIGH_CAP",
+            ntt_high.iter().copied().max().unwrap_or(0).max(1).to_string(),
+        );
     }
     let n_log_sizes = maxm - minm + 1;
     let n_rates = pcs::ligerito::MAX_LOG_INV_RATE - pcs::ligerito::MIN_LOG_INV_RATE + 1;
