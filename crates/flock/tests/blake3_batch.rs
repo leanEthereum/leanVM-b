@@ -18,7 +18,7 @@ use flock::blake3::{
     pinned_compression,
 };
 use flock::proof::ZClaim;
-use pcs::ligerito::{INITIAL_FOLDING_FATOR, LOG_INV_RATE_0};
+use pcs::ligerito::{INITIAL_FOLDING_FACTOR, LOG_INV_RATE_0};
 use pcs::ligerito_k::{commit_k, k_configs_for};
 use pcs::pack_k::{LOG_PACKING_K, PACKING_WIDTH_K};
 use pcs::stack_open_k::{
@@ -138,7 +138,7 @@ fn blake3_batch_prove_verify() {
     let t_prove = Instant::now();
 
     let t = Instant::now();
-    let (commitment, prover_data) = commit_k(&q_pkd, INITIAL_FOLDING_FATOR, LOG_INV_RATE_0);
+    let (commitment, prover_data) = commit_k(&q_pkd, INITIAL_FOLDING_FACTOR, LOG_INV_RATE_0);
     ps.add_scalars(&pcs::merkle::hash_to_scalars(&commitment.root));
     let commit_ms = t.elapsed().as_secs_f64() * 1e3;
 

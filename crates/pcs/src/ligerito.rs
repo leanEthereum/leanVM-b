@@ -8,10 +8,22 @@
 
 //! Field-independent configuration and soundness analysis for Ligerito.
 //!
-//! Soundness regimes (our paper App. C.3): unique decoding (Thm `ca-udr`,
-//! BCHKS25 Cor. 1.4) and the production Johnson list-decoding regime with
-//! out-of-domain binding (Thm `ca-johnson`, BCHKS25 Thm 4.6 + the Johnson
-//! interleaved list bound). See [`SoundnessRegime`].
+//! Source of truth: `misc/pcs.tex` ("A note on WHIR/Ligerito over binary
+//! fields"), Theorem `thm:rbr`. Its per-verifier-message error table maps
+//! onto the per-level checks in [`LigeritoSecurityConfig::validate`]:
+//!
+//! - batching challenges -> [`johnson_algebraic_bits`] (this implementation
+//!   batches with an eq-vector challenge plus scalar glue challenges instead
+//!   of the doc's powers of a single alpha; see that function),
+//! - fold challenge `s_j` -> `2 L/|F| + 2^(l-j) eps`: the MCA part via
+//!   [`paper_johnson_log_a`] (worst round `j = 1`), the `2 L/|F|` part
+//!   under [`johnson_algebraic_bits`],
+//! - OOD challenge -> [`paper_ood_bits`],
+//! - query message -> `(1 - gamma)^t`, plus [`QUERY_GRINDING_BITS`].
+//!
+//! Round-by-round (RBR) soundness means every entry individually clears
+//! [`SECURITY_BITS`]: the Fiat--Shamir error per random-oracle query is the
+//! MAX of the entries, not their sum.
 //!
 use serde::{Deserialize, Serialize};
 
@@ -53,8 +65,8 @@ pub const QUERY_GRINDING_BITS: usize = 17;
 /// the generous cap makes the optimizer deterministic even if sizes expand.
 const JOHNSON_ETA_SEARCH_MAX_M: usize = 4096;
 
-pub const INITIAL_FOLDING_FATOR: usize = 6;
-pub const SUBSEQUENT_FOLDING_FACTORS: usize = 3;
+pub const INITIAL_FOLDING_FACTOR: usize = 6;
+pub const SUBSEQUENT_FOLDING_FACTOR: usize = 3;
 
 /// Logarithmic reduction of the total Reed--Solomon domain after the initial
 /// fold. With the production six-variable initial fold, `3` changes the
@@ -66,8 +78,8 @@ pub const RS_DOMAIN_INITIAL_REDUCTION_FACTOR: usize = 3;
 /// reduction, it is deliberately fixed rather than a tuning parameter.
 const RS_DOMAIN_SUBSEQUENT_REDUCTION_FACTOR: usize = 1;
 
-const _: () = assert!(RS_DOMAIN_INITIAL_REDUCTION_FACTOR <= INITIAL_FOLDING_FATOR);
-const _: () = assert!(RS_DOMAIN_SUBSEQUENT_REDUCTION_FACTOR <= SUBSEQUENT_FOLDING_FACTORS);
+const _: () = assert!(RS_DOMAIN_INITIAL_REDUCTION_FACTOR <= INITIAL_FOLDING_FACTOR);
+const _: () = assert!(RS_DOMAIN_SUBSEQUENT_REDUCTION_FACTOR <= SUBSEQUENT_FOLDING_FACTOR);
 
 /// Folding stops once at most this many variables remain: the residual
 /// polynomial (`yr`, at most `2^RESIDUAL_MAX_LOG` coefficients) is sent in
@@ -165,16 +177,6 @@ impl VerifierConfig {
     }
 }
 
-
-/// Proximity loss `ε*` for the UDR (unique-decoding regime) analysis. It
-/// would back the proximity radius off to `γ = δ/2 − ε*` (δ = 1 − ρ the
-/// code's relative distance); set to `0`, so we decode to the full
-/// unique-decoding radius `γ = δ/2` with no backoff. Per our paper's Appendix
-/// C.3 (Theorem `ca-udr`, BCHKS25 Cor. 1.4) the proximity-gap exceptional set
-/// is then `a = γ·n + 1` — length-dependent (see [`paper_thm_1_4_log_a`]), so
-/// `eps_pg = 128 − log₂ a` shrinks ~1 bit per witness doubling and is
-/// recovered by `fold_grinding_bits`.
-pub const UDR_PROXIMITY_LOSS: f64 = 0.0;
 
 /// Soundness (in bits) the query phase must close on its own at every level
 /// (the "100 bits from queries always" policy).
@@ -337,7 +339,7 @@ fn derive_ladder_shape(
     let mut fold_running = initial_k;
     let mut domain_reduction = RS_DOMAIN_INITIAL_REDUCTION_FACTOR;
     while n_running > RESIDUAL_MAX_LOG {
-        let k = SUBSEQUENT_FOLDING_FACTORS.min(n_running);
+        let k = SUBSEQUENT_FOLDING_FACTOR.min(n_running);
         let log_msg_cols_next = n_running - k;
         let rate_increase = fold_running.checked_sub(domain_reduction).ok_or_else(|| {
             format!(
@@ -371,23 +373,16 @@ fn derive_ladder_shape(
 // TOML/JSON file alongside the prover/verifier code.
 
 /// Which proximity-gap analysis a level's parameters were derived under.
-/// Determines which formulas the implementation should verify against the
-/// declared (η, queries, grinding) tuple.
+/// Single-variant by design: it self-documents the analysis in serialized
+/// configs and rejects configs claiming an analysis this code cannot check.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SoundnessRegime {
-    /// Unique decoding radius: γ = δ/2 (δ = 1 − ρ the code's relative
-    /// distance; no proximity-loss backoff). Theorem `ca-udr` of our paper's
-    /// Appendix C.3 (adapted from Ben-Sasson–Carmon–Haböck–Kopparty–Saraf
-    /// "On Proximity Gaps for Reed–Solomon Codes", 2025, Corollary 1.4): the
-    /// exceptional set is `a = γ·n + 1`, growing with the codeword length `n`,
-    /// so the proximity-gap term is recovered per level by `fold_grinding_bits`
-    /// rather than coming out 0. `eta` is `None` for this regime.
-    Udr,
     /// Johnson radius with explicit slack `η` (γ = (1 − √ρ) − η) **with
-    /// out-of-domain binding**. Theorem 1.5 of the same paper gives the
-    /// proximity-gap exceptional set `a = O_ρ(n / η^5)`; the level's
-    /// `fold_grinding_bits` should be ≥ (target_bits − log₂(q/a)).
+    /// out-of-domain binding** (`misc/pcs.tex`, Thm `thm:rbr`). The MCA
+    /// theorem (`thm:mca-johnson` = BCHKS25 Thm 4.6) gives the proximity-gap
+    /// exceptional set `a = O_ρ(n / η^5)`; the level's `fold_grinding_bits`
+    /// should be ≥ (target_bits − log₂(q/a)).
     /// Binding to a single codeword of the (Johnson-bounded) interleaved list
     /// is via `ood_samples` explicit multilinear OOD evaluations — except at
     /// L0, where the opening's own post-commit random evaluation claim plays
@@ -431,16 +426,8 @@ pub struct LigeritoLevelConfig {
     /// tuple was derived under. Determines the formulas the implementation
     /// validates against.
     pub regime: SoundnessRegime,
-    /// Slack from the Johnson radius. Required for the `JohnsonOod` regime;
-    /// must be `None` for `Udr`.
-    pub eta: Option<f64>,
-    /// Proximity loss `ε*` for the UDR radius `γ = δ/2 − ε*` (our paper
-    /// App. C.3 / BCHKS25 Cor. 1.4); `0` in the shipped configs (full
-    /// unique-decoding radius δ/2, no backoff). Required for `Udr`; must be
-    /// `None` for `JohnsonOod`. The exceptional set is `a = γ·n + 1`,
-    /// length-dependent (see [`paper_thm_1_4_log_a`]).
-    #[serde(default)]
-    pub proximity_loss: Option<f64>,
+    /// Slack from the Johnson radius: γ = (1 − √ρ) − η.
+    pub eta: f64,
     /// Number of codeword position queries opened at this level (the FRI
     /// query phase). Bounds the per-query soundness term `(1−γ)^Q`.
     pub queries: usize,
@@ -455,10 +442,10 @@ pub struct LigeritoLevelConfig {
     #[serde(default)]
     pub fold_grinding_bits: usize,
     /// Out-of-domain samples taken right after this level's commit enters
-    /// the transcript (`JohnsonOod` only). Each binds the prover to a single
-    /// codeword of the interleaved list via a multilinear evaluation claim.
+    /// the transcript. Each binds the prover to a single codeword of the
+    /// interleaved list via a multilinear evaluation claim.
     /// Must be 0 at L0 (bound by the opening's own post-commit evaluation
-    /// claim) and ≥ 1 at deeper `JohnsonOod` levels.
+    /// claim) and ≥ 1 at deeper levels.
     #[serde(default)]
     pub ood_samples: usize,
     /// Security target this level guarantees, post-grinding.
@@ -469,12 +456,11 @@ pub struct LigeritoLevelConfig {
     /// Diagnostic — `Q · log₂(1/(1−γ))`. Should be ≥
     /// `target_security_bits − grinding_bits`.
     pub expected_eps_query_bits: f64,
-    /// Diagnostic — OOD binding bits (`JohnsonOod` only):
-    /// `s·(128 − log₂μ) − (2·log₂L − 1)` for explicit samples, or
-    /// `128 − log₂L − log₂μ` for the implicit L0 binding, where `L` is the
+    /// Diagnostic — OOD binding bits:
+    /// `s·(192 − log₂μ) − (2·log₂L − 1)` for explicit samples, or
+    /// `192 − log₂L − log₂μ` for the implicit L0 binding, where `L` is the
     /// Johnson interleaved list size and `μ` the level's variable count.
-    #[serde(default)]
-    pub expected_eps_ood_bits: Option<f64>,
+    pub expected_eps_ood_bits: f64,
 }
 
 /// Descriptor for the final-residual block (`yr`) sent in the clear at the
@@ -496,7 +482,7 @@ pub struct FinalBlockConfig {
 ///    regime and `eta` (within tolerance).
 /// 3. Each level's `expected_eps_query_bits ≥ target_security_bits −
 ///    grinding_bits` (queries cover what grinding doesn't).
-/// 4. `eta` is `Some` iff regime ∈ {Johnson, JohnsonOod}; `None` for Udr.
+/// 4. `eta` is finite and inside the Johnson range for the level's rate.
 /// 5. `log_msg_cols`, `log_num_interleaved`, `k` match the
 ///    level-shape constraint (each level's input dim equals the
 ///    previous level's `log_msg_cols`).
@@ -556,10 +542,10 @@ fn round1(x: f64) -> f64 {
 const PAPER_COMPAT_TOL_BITS: f64 = 0.6;
 
 /// Proximity-gap exceptional set for the list-decoding (Johnson) regime, per
-/// our paper's Appendix C.3 (Theorem `ca-johnson`, adapted from BCHKS25
-/// Theorem 4.6). For a Reed–Solomon code of rate `ρ`, codeword length `n`,
-/// and Johnson slack `η` (proximity radius `γ = 1 − √ρ − η`), the MCA error is
-/// `a/|F|` with
+/// `misc/pcs.tex` Thm `thm:mca-johnson` = BCHKS25 Theorem 4.6 (list
+/// correlated agreement). For a Reed–Solomon code of (slightly reduced) rate
+/// `ρ`, codeword length `n`, and Johnson slack `η` (proximity radius
+/// `γ = 1 − √ρ − η`), the MCA error is `a/|F|` with
 ///
 ///   `a = [2(m+½)^5 + 3(m+½)·γ·ρ] / (3·ρ^{3/2}) · n + (m+½)/√ρ`,
 ///
@@ -567,7 +553,7 @@ const PAPER_COMPAT_TOL_BITS: f64 = 0.6;
 ///
 /// This is the per-fold-step MCA error, stated for a two-row interleaved word
 /// (`C ∈ F^{2×n}`). The ℓ-round lane fold of a `2^ℓ`-interleaved word adds a
-/// row-union factor via App. C.3's Lemma `mca-commutes`; see
+/// row-union factor via `pcs.tex` Lemma `lem:fold-list`; see
 /// [`paper_johnson_log_a`].
 fn paper_thm_ca_johnson_log_a(log_inv_rate: usize, eta: f64, log_msg_cols: usize) -> f64 {
     let rho = reduced_rate(log_inv_rate, log_msg_cols);
@@ -584,23 +570,28 @@ fn paper_thm_ca_johnson_log_a(log_inv_rate: usize, eta: f64, log_msg_cols: usize
     a.log2()
 }
 
-/// Integer parameter in BCHKS25 Thm 4.6, represented as `f64` for the bound.
+/// Integer parameter `m = max(⌈√ρ/η⌉, 3)` of BCHKS25 Thm 4.6 (list
+/// correlated agreement), represented as `f64` for the bound. Beware: the
+/// plain, non-list Thm 1.5 has the factor-two-smaller `⌈√ρ/(2η)⌉`, and
+/// Flock's Thm 8 quotes Thm 4.6 with that non-list parameter; the list form
+/// costs a factor 2 of slack (see the footnote in `pcs.tex`
+/// Thm `thm:mca-johnson`).
 fn johnson_m_param(log_inv_rate: usize, log_msg_cols: usize, eta: f64) -> f64 {
     let sqrt_rho = reduced_rate(log_inv_rate, log_msg_cols).sqrt();
     ((sqrt_rho / eta).ceil() as usize).max(3) as f64
 }
 
 /// Johnson-regime proximity-gap `log₂ a` for a level, including the row-union
-/// factor from our paper's Appendix C.3 (Lemma `mca-commutes`, "MCA commutes
-/// with list decoding").
+/// factor from `pcs.tex` Lemma `lem:fold-list` ("Folding preserves lists").
 ///
 /// The base MCA error `ε = a_RLC/|F|` from [`paper_thm_ca_johnson_log_a`] is
 /// stated for a two-row interleaved word (one fold step). Folding a
 /// `2^ℓ`-interleaved word (ℓ = `log_num_interleaved`) over its ℓ lane-fold
-/// rounds pays a row union: by the lemma, round `i` incurs `2^{ℓ-i}·ε`, so the
-/// worst round (`i = 1`) pays the factor `2^{ℓ-1}` = (interleaving factor)/2.
-/// We bind the per-level grinding to that worst round, returning
-/// `log₂(2^{ℓ-1}·a_RLC) = log₂ a_RLC + (ℓ-1)`.
+/// rounds pays a row union: `thm:rbr`'s fold row is `2L/|F| + 2^{ℓ-j}·ε` at
+/// round `j`, so the worst round (`j = 1`) pays the factor `2^{ℓ-1}` =
+/// (interleaving factor)/2 (the `2L/|F|` part is checked separately, under
+/// [`johnson_algebraic_bits`]). We bind the per-level grinding to that worst
+/// round, returning `log₂(2^{ℓ-1}·a_RLC) = log₂ a_RLC + (ℓ-1)`.
 ///
 /// `ℓ ≤ 1` (`L ≤ 2`) means no row union; the `(ℓ-1)` penalty clamps to 0.
 fn paper_johnson_log_a(
@@ -624,65 +615,14 @@ fn paper_per_query_bits(log_inv_rate: usize, log_msg_cols: usize, eta: f64) -> f
     (1.0 / (1.0 - gamma)).log2()
 }
 
-/// UDR proximity radius: the **maximum** allowed by our paper's App. C.3
-/// (Theorem `ca-udr`, BCHKS25 Cor. 1.4), whose valid range is
-/// `[δ/3, δ/2 − 3/(δ·n)]`. We take the top of the range,
-///
-///   `γ = δ/2 − 3/(δ·n) − ε*`,
-///
-/// where `δ = 1 − ρ` is the code's relative minimum distance,
-/// `n = 2^(log_msg_cols + log_inv_rate)` the codeword length, and `ε*`
-/// (`proximity_loss`) optional extra slack below the maximum (`0` in shipped
-/// configs → exactly the maximal radius). The `3/(δ·n)` backoff is the
-/// theorem-mandated minimum and shrinks with the codeword length.
-fn udr_gamma(log_inv_rate: usize, log_msg_cols: usize, proximity_loss: f64) -> f64 {
-    let rho = (-(log_inv_rate as f64)).exp2();
-    let delta = 1.0 - rho;
-    let n = ((log_msg_cols + log_inv_rate) as f64).exp2();
-    delta / 2.0 - 3.0 / (delta * n) - proximity_loss
-}
-
-/// Per-query log₂(1/(1−γ)) under the UDR regime at the maximal radius
-/// `γ = δ/2 − 3/(δ·n) − ε*` (see [`udr_gamma`]).
-fn udr_per_query_bits(log_inv_rate: usize, log_msg_cols: usize, proximity_loss: f64) -> f64 {
-    let gamma = udr_gamma(log_inv_rate, log_msg_cols, proximity_loss);
-    (1.0 / (1.0 - gamma)).log2()
-}
-
-/// Asymptotic (n → ∞) UDR per-query soundness at `γ = δ/2`, dropping the
-/// finite-length `3/(δ·n)` backoff. Length-agnostic — used for ladder-shape
-/// feasibility (and the test-only `udr_queries`); the per-level configs use the
-/// n-aware [`udr_per_query_bits`]. The dropped backoff slightly *under*-counts
-/// queries, but the per-level block-length check in `derive_config` (and the
-/// `+5` feasibility padding) catch any shape that wouldn't hold the real,
-/// n-aware query count.
+/// Unique-decoding-regime per-query soundness at `γ = δ/2` (`δ = 1 − ρ`).
+/// Test-support only, backing [`udr_queries`] and the ad-hoc
+/// [`default_config`] shape used by small K PCS tests.
 #[cfg(test)]
 fn udr_per_query_bits_asymptotic(log_inv_rate: usize) -> f64 {
     let rho = (-(log_inv_rate as f64)).exp2();
     let gamma = (1.0 - rho) / 2.0;
     (1.0 / (1.0 - gamma)).log2()
-}
-
-/// UDR proximity-gap exceptional set, per our paper's Appendix C.3
-/// (Theorem `ca-udr`, adapted from BCHKS25 Corollary 1.4): at proximity
-/// radius `γ` (here the maximal `γ = δ/2 − 3/(δ·n)`; see [`udr_gamma`]) the
-/// exceptional set is
-///
-///   `a = γ·n + 1`,
-///
-/// where `n = 2^(log_msg_cols + log_inv_rate)` is the codeword length at this
-/// level. The `log₂ a ≈ log₂(γ·n)` term therefore **grows with the codeword
-/// length**, so larger witnesses give a smaller `eps_pg = 128 − log₂ a` and
-/// need proportionally more `fold_grinding_bits` to hold a fixed target.
-/// Callers add **no** row-union penalty in this regime: the unique-decoding
-/// list has size 1, so (per Diamond and Gruen) MCA-commutes holds with error
-/// ε directly, unlike the Johnson regime's `2^{ℓ-1}` factor. This replaced an
-/// earlier length-independent `a ≤ 2/ε*` form, which did not match the paper's
-/// stated bound.
-fn paper_thm_1_4_log_a(log_inv_rate: usize, log_msg_cols: usize, proximity_loss: f64) -> f64 {
-    let gamma = udr_gamma(log_inv_rate, log_msg_cols, proximity_loss);
-    let n = ((log_msg_cols + log_inv_rate) as f64).exp2();
-    (gamma * n + 1.0).log2()
 }
 
 /// Johnson-bound list size of the *interleaved* RS code at radius
@@ -719,13 +659,21 @@ fn johnson_interleaved_list_log2(
     l_base.log2()
 }
 
-/// Worst algebraic verifier-challenge transition in the production opening.
-/// A degree-`d` identity test unioned over a Johnson list of size `L` fails
-/// with probability at most `dL/|F|`. The relevant degrees are:
+/// Worst algebraic verifier-challenge transition in the production opening —
+/// the implementation's counterpart of `thm:rbr`'s batch row (`(T−1)·L/|F|`
+/// for powers-of-alpha batching) and of the `2L/|F|` part of its fold row.
+/// This codebase batches differently from the doc: the per-level query
+/// consistency claims are combined with a multilinear eq-vector challenge,
+/// and each new claim (OOD, induced) is glued into the single running
+/// sumcheck with a fresh scalar challenge. A degree-`d` identity test
+/// unioned over a Johnson list of size `L` fails with probability at most
+/// `dL/|F|`. The relevant degrees are:
 ///
-/// - 191 for GF64-to-GF192 ring-switch batching;
+/// - 191 for GF64-to-GF192 ring-switch batching (L0 only, but included at
+///   every level so the bound also dominates the eq-vector batch entering
+///   the NEXT level's list, whatever its query count);
 /// - `ceil(log2(queries))` for the multilinear query-row batching; and
-/// - 2 for quadratic sumcheck (linear claim batching has degree 1).
+/// - 2 for quadratic sumcheck (glue challenges have degree 1).
 fn johnson_algebraic_bits_for(
     log_inv_rate: usize,
     log_msg_cols: usize,
@@ -740,25 +688,23 @@ fn johnson_algebraic_bits_for(
 }
 
 fn johnson_algebraic_bits(level: &LigeritoLevelConfig) -> f64 {
-    johnson_algebraic_bits_for(
-        level.log_inv_rate,
-        level.log_msg_cols,
-        level.eta.expect("JohnsonOod must have eta"),
-        level.queries,
-    )
+    johnson_algebraic_bits_for(level.log_inv_rate, level.log_msg_cols, level.eta, level.queries)
 }
 
-/// OOD binding bits for a `JohnsonOod` level. `mu_vars` is the level's
-/// multilinear variable count (`log_msg_cols + log_num_interleaved`).
+/// OOD binding bits for a level. `mu_vars` is the level's multilinear
+/// variable count (`log_msg_cols + log_num_interleaved`).
 ///
-/// - `ood_samples ≥ 1` (explicit samples): the bad event is two distinct
-///   list elements agreeing on all `s` random points of `F^μ`
-///   (Schwartz–Zippel, total degree ≤ μ), union over pairs:
+/// - `ood_samples ≥ 1` (explicit samples): `pcs.tex` Lemma `lem:ood` /
+///   `thm:rbr`'s OOD row `binom(L,2)·μ/|F|`, generalized to `s` samples: the
+///   bad event is two distinct list elements agreeing on all `s` random
+///   points of `F^μ` (Schwartz–Zippel, total degree ≤ μ), union over pairs:
 ///   `bits = s·(192 − log₂ μ) − (2·log₂ L_int − 1)`.
-/// - `ood_samples = 0` (L0's implicit binding): the opening's own evaluation
-///   claim at a post-commit random point pins the prover to one claimed
-///   value, so the union is over the list (not pairs):
-///   `bits = 192 − log₂ L_int − log₂ μ`.
+/// - `ood_samples = 0` (L0): the protocol takes no OOD sample at commitment,
+///   so the PCS itself is only list binding (`pcs.tex`, abstract). What this
+///   term materializes is the OUTER protocol's binding: the opening's own
+///   evaluation claim sits at a post-commit random point, so at most one
+///   list member matches it except with `L·μ/|F|` (union over the list, not
+///   pairs): `bits = 192 − log₂ L_int − log₂ μ`.
 fn paper_ood_bits(
     log_inv_rate: usize,
     log_msg_cols: usize,
@@ -894,66 +840,36 @@ impl LigeritoLevelConfig {
     /// `expected_*_bits` diagnostics are consistent with the regime's
     /// canonical formulas (i.e., the config is compatible with the paper).
     pub fn paper_predicted_bits(&self) -> (f64, f64) {
-        match self.regime {
-            SoundnessRegime::JohnsonOod => {
-                let eta = self.eta.expect("JohnsonOod must have eta");
-                // App. C.3 Lemma `mca-commutes`: the ℓ-round lane fold of a
-                // 2^ℓ-interleaved word (ℓ = log_num_interleaved) pays a
-                // row-union factor 2^{ℓ-i} at round i; the worst round (i=1)
-                // gives 2^{ℓ-1}, on top of the base ca-johnson MCA error.
-                let log_a = paper_johnson_log_a(
-                    self.log_inv_rate,
-                    eta,
-                    self.log_msg_cols,
-                    self.log_num_interleaved,
-                );
-                let eps_pg = ANALYSIS_LOG_Q - log_a;
-                // Per-query soundness WITHOUT a list union bound — the OOD
-                // binding (see `paper_ood_bits`) pins the prover to a single
-                // codeword of the interleaved list before queries are drawn.
-                let per_q = paper_per_query_bits(self.log_inv_rate, self.log_msg_cols, eta);
-                let eps_query = self.queries as f64 * per_q;
-                (eps_pg, eps_query)
-            }
-            SoundnessRegime::Udr => {
-                // App. C.3 Thm `ca-udr` (BCHKS25 Cor. 1.4): a = γ·n + 1 for
-                // radius γ = δ/2 (ε* = 0, no backoff).
-                let proximity_loss = self
-                    .proximity_loss
-                    .expect("Udr regime must carry proximity_loss");
-                // No row-union penalty in the unique-decoding regime: the list
-                // has size 1, so (per Diamond and Gruen) the MCA-commutes step
-                // holds with error ε directly — the Johnson regime's 2^{ℓ-1}
-                // row union is unnecessary. So eps_pg = 192 − log₂ a.
-                let log_a =
-                    paper_thm_1_4_log_a(self.log_inv_rate, self.log_msg_cols, proximity_loss);
-                let eps_pg = ANALYSIS_LOG_Q - log_a;
-                let per_q =
-                    udr_per_query_bits(self.log_inv_rate, self.log_msg_cols, proximity_loss);
-                let eps_query = self.queries as f64 * per_q;
-                (eps_pg, eps_query)
-            }
-        }
+        // Fold row of `thm:rbr`, MCA part: the ℓ-round fold of a
+        // 2^ℓ-interleaved word (ℓ = log_num_interleaved) pays a row-union
+        // factor 2^{ℓ-j} at round j (`lem:fold-list`); the worst round (j=1)
+        // gives 2^{ℓ-1}, on top of the base Thm 4.6 MCA error.
+        let log_a = paper_johnson_log_a(
+            self.log_inv_rate,
+            self.eta,
+            self.log_msg_cols,
+            self.log_num_interleaved,
+        );
+        let eps_pg = ANALYSIS_LOG_Q - log_a;
+        // Per-query soundness WITHOUT a list union bound — the OOD
+        // binding (see `paper_ood_bits`) pins the prover to a single
+        // codeword of the interleaved list before queries are drawn.
+        let per_q = paper_per_query_bits(self.log_inv_rate, self.log_msg_cols, self.eta);
+        let eps_query = self.queries as f64 * per_q;
+        (eps_pg, eps_query)
     }
 
-    /// OOD binding bits this level is expected to deliver (`JohnsonOod`
-    /// only; `None` for `Udr`, where the unique-decoding list has size 1 and
-    /// no binding step exists). See [`paper_ood_bits`].
-    pub fn paper_predicted_ood_bits(&self) -> Option<f64> {
-        match self.regime {
-            SoundnessRegime::JohnsonOod => {
-                let eta = self.eta.expect("JohnsonOod must have eta");
-                let mu = self.log_msg_cols + self.log_num_interleaved;
-                Some(paper_ood_bits(
-                    self.log_inv_rate,
-                    self.log_msg_cols,
-                    eta,
-                    mu,
-                    self.ood_samples,
-                ))
-            }
-            SoundnessRegime::Udr => None,
-        }
+    /// OOD binding bits this level is expected to deliver.
+    /// See [`paper_ood_bits`].
+    pub fn paper_predicted_ood_bits(&self) -> f64 {
+        let mu = self.log_msg_cols + self.log_num_interleaved;
+        paper_ood_bits(
+            self.log_inv_rate,
+            self.log_msg_cols,
+            self.eta,
+            mu,
+            self.ood_samples,
+        )
     }
 }
 
@@ -1044,103 +960,51 @@ impl LigeritoSecurityConfig {
                 }
             }
 
-            // eta presence matches regime.
-            match (lv.regime, lv.eta) {
-                (SoundnessRegime::Udr, Some(_)) => {
-                    return Err(format!("L{i}: regime=udr but eta is set"));
-                }
-                (SoundnessRegime::JohnsonOod, None) => {
-                    return Err(format!("L{i}: regime requires eta but eta is None"));
-                }
-                (SoundnessRegime::JohnsonOod, Some(eta)) => {
-                    let max_eta = 1.0 - reduced_rate(lv.log_inv_rate, lv.log_msg_cols).sqrt();
-                    if !eta.is_finite() || eta <= 0.0 || eta >= max_eta {
-                        return Err(format!(
-                            "L{i}: Johnson eta must be finite and in (0, {max_eta}), got {eta}"
-                        ));
-                    }
-                }
-                _ => {}
+            // eta within the Johnson range for this level's (reduced) rate.
+            let max_eta = 1.0 - reduced_rate(lv.log_inv_rate, lv.log_msg_cols).sqrt();
+            if !lv.eta.is_finite() || lv.eta <= 0.0 || lv.eta >= max_eta {
+                return Err(format!(
+                    "L{i}: Johnson eta must be finite and in (0, {max_eta}), got {}",
+                    lv.eta
+                ));
             }
 
-            // proximity_loss presence matches regime (UDR-only).
-            match (lv.regime, lv.proximity_loss) {
-                (SoundnessRegime::Udr, None) => {
-                    return Err(format!("L{i}: regime=udr but proximity_loss is missing"));
-                }
-                (SoundnessRegime::Udr, Some(eps)) if !eps.is_finite() || eps < 0.0 => {
-                    return Err(format!(
-                        "L{i}: proximity_loss must be finite and ≥ 0, got {eps}"
-                    ));
-                }
-                (SoundnessRegime::JohnsonOod, Some(_)) => {
-                    return Err(format!("L{i}: proximity_loss is only valid for regime=udr"));
-                }
-                _ => {}
-            }
-
-            // OOD samples match regime: UDR has no list, so no OOD; under
-            // JohnsonOod every level past L0 needs explicit samples, while
+            // OOD samples: every level past L0 needs explicit samples, while
             // L0 is bound by the opening's own post-commit evaluation claim.
-            match lv.regime {
-                SoundnessRegime::Udr if lv.ood_samples != 0 => {
-                    return Err(format!(
-                        "L{i}: regime=udr but ood_samples={} (unique decoding \
-                         has list size 1 — no OOD binding step exists)",
-                        lv.ood_samples
-                    ));
-                }
-                SoundnessRegime::JohnsonOod if i == 0 && lv.ood_samples != 0 => {
-                    return Err(format!(
-                        "L0: ood_samples={} but L0 is bound by the opening's \
-                         own evaluation claim (must be 0)",
-                        lv.ood_samples
-                    ));
-                }
-                SoundnessRegime::JohnsonOod if i > 0 && lv.ood_samples == 0 => {
-                    return Err(format!(
-                        "L{i}: regime=johnson_ood requires ood_samples ≥ 1 \
-                         past L0 (the query counts assume single-codeword \
-                         binding)"
-                    ));
-                }
-                _ => {}
+            if i == 0 && lv.ood_samples != 0 {
+                return Err(format!(
+                    "L0: ood_samples={} but L0 is bound by the opening's \
+                     own evaluation claim (must be 0)",
+                    lv.ood_samples
+                ));
+            }
+            if i > 0 && lv.ood_samples == 0 {
+                return Err(format!(
+                    "L{i}: ood_samples ≥ 1 required past L0 (the query \
+                     counts assume single-codeword binding)"
+                ));
             }
 
-            // OOD diagnostic matches regime + formula.
-            match (lv.regime, lv.expected_eps_ood_bits) {
-                (SoundnessRegime::Udr, Some(_)) => {
-                    return Err(format!("L{i}: regime=udr but expected_eps_ood_bits is set"));
-                }
-                (SoundnessRegime::JohnsonOod, None) => {
-                    return Err(format!(
-                        "L{i}: regime=johnson_ood requires expected_eps_ood_bits"
-                    ));
-                }
-                (SoundnessRegime::JohnsonOod, Some(declared)) => {
-                    if !declared.is_finite() {
-                        return Err(format!(
-                            "L{i}: expected_eps_ood_bits must be finite, got {declared}"
-                        ));
-                    }
-                    let ood_pred = lv
-                        .paper_predicted_ood_bits()
-                        .expect("JohnsonOod has an OOD prediction");
-                    if (declared - ood_pred).abs() > PAPER_COMPAT_TOL_BITS {
-                        return Err(format!(
-                            "L{i}: expected_eps_ood_bits ({declared:.2}) doesn't \
-                             match prediction ({ood_pred:.2}); tolerance ±{:.2} bits.",
-                            PAPER_COMPAT_TOL_BITS
-                        ));
-                    }
-                    if ood_pred + 1e-12 < lv.target_security_bits as f64 {
-                        return Err(format!(
-                            "L{i}: OOD binding ({ood_pred:.2} bits) < target ({})",
-                            lv.target_security_bits
-                        ));
-                    }
-                }
-                _ => {}
+            // OOD diagnostic matches the formula and clears the target.
+            let declared = lv.expected_eps_ood_bits;
+            if !declared.is_finite() {
+                return Err(format!(
+                    "L{i}: expected_eps_ood_bits must be finite, got {declared}"
+                ));
+            }
+            let ood_pred = lv.paper_predicted_ood_bits();
+            if (declared - ood_pred).abs() > PAPER_COMPAT_TOL_BITS {
+                return Err(format!(
+                    "L{i}: expected_eps_ood_bits ({declared:.2}) doesn't \
+                     match prediction ({ood_pred:.2}); tolerance ±{:.2} bits.",
+                    PAPER_COMPAT_TOL_BITS
+                ));
+            }
+            if ood_pred + 1e-12 < lv.target_security_bits as f64 {
+                return Err(format!(
+                    "L{i}: OOD binding ({ood_pred:.2} bits) < target ({})",
+                    lv.target_security_bits
+                ));
             }
 
             // Paper-compatibility: the declared expected_*_bits must agree
@@ -1202,14 +1066,12 @@ impl LigeritoSecurityConfig {
             // The largest list-unioned algebraic identity test (currently the
             // degree-191 ring-switch batching) is not grindable and must clear
             // the target.
-            if lv.regime == SoundnessRegime::JohnsonOod {
-                let algebraic = johnson_algebraic_bits(lv);
-                if algebraic + 1e-12 < lv.target_security_bits as f64 {
-                    return Err(format!(
-                        "L{i}: list-unioned algebraic soundness ({algebraic:.2} bits) < target ({})",
-                        lv.target_security_bits
-                    ));
-                }
+            let algebraic = johnson_algebraic_bits(lv);
+            if algebraic + 1e-12 < lv.target_security_bits as f64 {
+                return Err(format!(
+                    "L{i}: list-unioned algebraic soundness ({algebraic:.2} bits) < target ({})",
+                    lv.target_security_bits
+                ));
             }
 
             if lv.target_security_bits < self.target_security_bits {
@@ -1229,9 +1091,10 @@ impl LigeritoSecurityConfig {
             ));
         }
 
-        // Round-by-round soundness: each verifier-challenge transition is
-        // checked against `target_security_bits` in the per-level loop above.
-        // This is the parameter needed by RBR Fiat--Shamir analyses; ordinary
+        // Round-by-round soundness (misc/pcs.tex, Thm `thm:rbr`): each
+        // verifier-challenge transition is checked against
+        // `target_security_bits` in the per-level loop above, so the
+        // Fiat--Shamir error per random-oracle query is their MAX; ordinary
         // interactive soundness may additionally union-bound over transitions.
         Ok(())
     }
@@ -1256,7 +1119,7 @@ impl LigeritoSecurityConfig {
         let log_n = m
             .checked_sub(crate::LOG_PACKING)
             .ok_or_else(|| format!("m ({m}) < LOG_PACKING ({})", crate::LOG_PACKING))?;
-        let initial_k = INITIAL_FOLDING_FATOR;
+        let initial_k = INITIAL_FOLDING_FACTOR;
 
         // The ladder geometry is independent of eta. Exact block-length
         // feasibility is checked below by the same per-level optimizer that
@@ -1276,17 +1139,14 @@ impl LigeritoSecurityConfig {
             let cols = shape.log_msg_cols[i];
             let ilv = shape.log_num_interleaved[i];
             let optimized = optimize_johnson_level(i, rate, cols, ilv, target_bits, query_grind)?;
-            let (regime, eta, proximity_loss) =
-                (SoundnessRegime::JohnsonOod, Some(optimized.eta), None);
 
             levels.push(LigeritoLevelConfig {
                 log_inv_rate: rate,
                 log_msg_cols: cols,
                 log_num_interleaved: ilv,
                 k: shape.k_levels[i],
-                regime,
-                eta,
-                proximity_loss,
+                regime: SoundnessRegime::JohnsonOod,
+                eta: optimized.eta,
                 queries: optimized.queries,
                 grinding_bits: query_grind,
                 fold_grinding_bits: 0,
@@ -1294,7 +1154,7 @@ impl LigeritoSecurityConfig {
                 target_security_bits: target_bits,
                 expected_eps_pg_bits: round1(optimized.eps_pg),
                 expected_eps_query_bits: round1(optimized.eps_query),
-                expected_eps_ood_bits: Some(round1(optimized.eps_ood)),
+                expected_eps_ood_bits: round1(optimized.eps_ood),
             });
         }
 
@@ -1383,8 +1243,10 @@ mod tests {
 
     #[test]
     fn johnson_bound_uses_theorem_parameter_and_reduced_rate() {
-        // BCHKS25 Thm 4.6 uses m = ceil(sqrt(rho) / eta), not the
-        // factor-two-smaller expression used in the local Flock appendix.
+        // BCHKS25 Thm 4.6 (list correlated agreement) uses
+        // m = ceil(sqrt(rho) / eta). The factor-two-smaller ceil(sqrt(rho) / (2 eta))
+        // belongs to the plain, non-list Thm 1.5; Flock's Thm 8 quotes Thm 4.6
+        // with that non-list parameter, which would overstate eps_pg by ~5 bits.
         assert_eq!(johnson_m_param(1, 16, 0.02), 36.0);
 
         // A message of dimension 16 has maximum degree 15, so the theorem's
@@ -1404,10 +1266,9 @@ mod tests {
                 assert_eq!(cfg.levels[0].ood_samples, 0);
                 for (i, level) in cfg.levels.iter().enumerate() {
                     let (pg_bits, query_bits) = level.paper_predicted_bits();
-                    let ood_bits = level.paper_predicted_ood_bits().unwrap();
+                    let ood_bits = level.paper_predicted_ood_bits();
                     let algebraic_bits = johnson_algebraic_bits(level);
                     min_pg_bits = min_pg_bits.min(pg_bits);
-                    assert_eq!(level.regime, SoundnessRegime::JohnsonOod);
                     assert_eq!(level.grinding_bits, QUERY_GRINDING_BITS);
                     assert_eq!(level.fold_grinding_bits, 0);
                     assert!(query_bits + level.grinding_bits as f64 >= 128.0);
@@ -1448,7 +1309,7 @@ mod tests {
                     johnson_m_param(
                         level.log_inv_rate,
                         level.log_msg_cols,
-                        level.eta.expect("Johnson eta"),
+                        level.eta,
                     ) as usize
                 })
                 .collect::<Vec<_>>(),
@@ -1509,7 +1370,7 @@ mod tests {
 
         println!("num_vars={num_vars}, rate=1/{}", 1usize << log_inv_rate);
         for (level, params) in cfg.levels.iter().enumerate() {
-            let eta = params.eta.expect("production profile uses Johnson eta");
+            let eta = params.eta;
             println!(
                 "L{level}: rate=1/{}, queries={}, eta={eta:.12e}, m={}",
                 1usize << params.log_inv_rate,
