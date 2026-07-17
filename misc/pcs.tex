@@ -1,0 +1,440 @@
+% Latest auto-compiled PDF (built by .github/workflows/pcs.yml on every push to main):
+% https://github.com/leanEthereum/leanVM-b/releases/download/pcs-latest/pcs.pdf
+\documentclass[11pt]{article}
+
+\usepackage[margin=1.1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm,mathtools}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage[colorlinks=true,linkcolor=blue!55!black,citecolor=blue!55!black,urlcolor=blue!55!black]{hyperref}
+
+% ---------- macros ----------
+\newcommand{\F}{\mathbb{F}}
+\newcommand{\Ftwo}{\mathbb{F}_2}
+\newcommand{\eq}{\mathrm{eq}}
+\newcommand{\Enc}{\mathrm{Enc}}
+\newcommand{\RS}{\mathrm{RS}}
+\newcommand{\Lam}{\Lambda}
+\newcommand{\cube}[1]{\{0,1\}^{#1}}
+\newcommand{\inner}[2]{\langle #1,\, #2 \rangle}
+\newcommand{\pol}[1]{\widehat{#1}}
+\newcommand{\Wn}[1]{\widehat{W}_{#1}}   % normalized subspace polynomial
+
+\emergencystretch=1.5em
+
+\theoremstyle{plain}
+\newtheorem{theorem}{Theorem}[section]
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{corollary}[theorem]{Corollary}
+\newtheorem{proposition}[theorem]{Proposition}
+\newtheorem{fact}[theorem]{Fact}
+\theoremstyle{definition}
+\newtheorem{definition}[theorem]{Definition}
+\newtheorem{protocol}[theorem]{Protocol}
+\theoremstyle{remark}
+\newtheorem{remark}[theorem]{Remark}
+
+\title{\textbf{Overview of WHIR/Ligerito}}
+\author{}
+\date{July 16, 2026}
+
+\begin{document}
+\maketitle
+
+\begin{center}
+\fbox{\textbf{Warning: AI-assisted writing, some parts have not been properly reviewed yet.}}
+\end{center}
+
+\begin{abstract}
+\noindent
+A self-contained description of the WHIR\slash Ligerito polynomial commitment scheme \cite{ACFY25,NA25} over binary fields, with a round-by-round soundness analysis in the Johnson list-decoding regime (nothing new). The two schemes coincide when WHIR is instantiated with interleaved codes and Ligerito with Reed--Solomon codes; which we describe. Reed--Solomon encoding is by the additive NTT in the novel polynomial basis~\cite{LCH14}, as used in~\cite{DP26}. Following Flock~\cite{Flock26}, we do not use out-of-domain (OOD) sampling at commitment, the PCS is therefore only list binding.
+\end{abstract}
+
+%=====================================================================
+\section{Preliminaries}\label{sec:prelims}
+%=====================================================================
+
+\paragraph{Notation.}
+Throughout, $\F = \F_{2^b}$ is a binary field; $\log$ is base $2$; $[n] := \{1,\dots,n\}$. Query indices are sampled i.i.d.\ uniformly (with replacement).
+
+\subsection{Multilinear extensions}
+
+Every $f : \cube{\mu} \to \F$ has a unique multilinear extension $\pol{f}(x) = \sum_{u \in \cube{\mu}} f(u) \cdot \eq(u, x)$, where $\eq(u, x) := \prod_{i}(u_i x_i + (1-u_i)(1-x_i))$; we call $f$ the \emph{table} of $\pol{f}$ and freely identify a multilinear polynomial with its table.
+
+\begin{fact}[Partial evaluation is a fold of the table]\label{fact:fold}
+For every $f : \cube{\mu} \to \F$, $1 \le \ell \le \mu$, $s \in \F^{\ell}$, and $x \in \cube{\mu - \ell}$: $\ \pol{f}(s, x) = \sum_{u \in \cube{\ell}} \eq(s, u) \cdot f(u, x)$. That is, the table of $\pol{f}(s, \cdot)$ is the $\eq(s, \cdot)$-weighted combination of the rows $f(u, \cdot)$.
+\end{fact}
+
+\begin{fact}[Schwartz--Zippel for multilinears]\label{fact:sz}
+Distinct multilinear $\pol{p} \neq \pol{q}$ in $\mu$ variables satisfy $\Pr_{z \leftarrow \F^{\mu}}[\pol{p}(z) = \pol{q}(z)] \le \mu / |\F|$.
+\end{fact}
+
+\begin{definition}[Weighted claim]\label{def:claim}
+A \emph{weighted claim} about $g : \cube{\mu} \to \F$ is a pair $(w, v)$ asserting $\inner{w}{g} := \sum_{x \in \cube{\mu}} w(x)\, g(x) = v$; the weight $w$ is \emph{MLE-friendly} if $\pol{w}$ is evaluable anywhere in $\mathrm{poly}(\mu)$ operations. An evaluation claim $\pol{g}(y) = v$ is the case $w = \eq(y, \cdot)$.
+\end{definition}
+
+\subsection{Codes, interleaving, and list decoding}\label{sec:codes}
+
+For a domain $S \subseteq \F$, $|S| = n$, and $k \le n$, let $\RS[\F, S, k] := \{ (p(x))_{x \in S} : \deg p < k \}$, of rate $\rho := k/n$. Message lengths are powers of two, $k = 2^{\kappa}$, messages are indexed by $\cube{\kappa}$, and an \emph{encoder} is a linear injection $\Enc : \F^{\cube{\kappa}} \to \F^{S}$ onto the code (fixed concretely in Section~\ref{sec:binary-rs}).
+
+\begin{definition}[Interleaved words, lists, folds]\label{def:interleaved}
+An \emph{interleaved word} is a matrix $C \in \F^{\cube{\nu} \times S}$; it is an \emph{interleaved codeword} if every row $C[u, \cdot]$ is a codeword. $C$ \emph{agrees} with an interleaved codeword $U$ on $A \subseteq S$ if $C[u,x] = U[u,x]$ for all $u$ and all $x \in A$; it is \emph{$\gamma$-close} to $U$ if they agree on some $A$ with $|A| \ge (1-\gamma)n$; and $\Lam_\gamma(C)$ is the set of interleaved codewords $\gamma$-close to $C$. An interleaved codeword $U$ \emph{decodes} to the table $g_U : \cube{\nu + \kappa} \to \F$ with $U[u, \cdot] = \Enc(g_U(u, \cdot))$; distinct $U$ decode to distinct $g_U$, hence distinct $\pol{g_U}$. For $s \in \F^{j}$, $j \le \nu$, the \emph{fold} $C_s \in \F^{\cube{\nu - j} \times S}$ is $C_s[u, x] := \sum_{\varepsilon \in \cube{j}} \eq(s, \varepsilon)\, C[(\varepsilon, u), x]$ (for $j = \nu$, a single word in $\F^{S}$).
+\end{definition}
+
+\begin{fact}[Folding commutes with decoding]\label{fact:fold-decode}
+If $U$ is an interleaved codeword then so is $U_s$, with $\pol{g_{U_s}} = \pol{g_U}(s, \cdot)$ (linearity of $\Enc$ plus Fact~\ref{fact:fold}).
+\end{fact}
+
+\begin{theorem}[Johnson bound]\label{thm:johnson-interleaved}
+For every interleaved word $C$ of $\RS[\F,S,2^\kappa]$ (rate $\rho$) and every $\eta \in (0, 1-\sqrt{\rho})$: $\ |\Lam_{1-\sqrt{\rho}-\eta}(C)| \le \frac{1}{2\eta\sqrt{\rho}}$. (see Appendix~\ref{app:johnson} for a self-contained proof)
+\end{theorem}
+
+\subsection{PCS and round-by-round soundness}\label{sec:iopcs}
+
+\begin{definition}[$L$-list binding, informal]\label{def:listbinding}
+A \emph{polynomial commitment scheme} (PCS) is \emph{$L$-list binding} if every commitment transcript $\mathsf{cm}$ determines a set $S_{\mathsf{cm}}$ of at most $L$ multilinear polynomials, not necessarily efficiently computable, such that for every unbounded prover and every collection of opened claims: if no member of $S_{\mathsf{cm}}$ satisfies all the claims, the verifier rejects except with small probability. $L = 1$ is standard binding.
+\end{definition}
+
+\begin{definition}[RBR soundness, informal; cf.~\cite{CCHLRR19,ACFY25}]\label{def:rbr}
+A public-coin protocol is \emph{round-by-round (RBR) sound with errors} $(\varepsilon_1, \varepsilon_2, \dots)$, one per verifier message, if there is an \emph{invariant} on partial transcripts (not necessarily efficiently computable) marking the positions where a cheating prover has already lost:
+\begin{enumerate}[itemsep=1pt,label=(\roman*)]
+\item on a false statement, the invariant holds before any message is sent;
+\item the prover alone cannot escape it: it survives every prover message;
+\item the $i$-th verifier message lets it escape with probability at most $\varepsilon_i$;
+\item if it survives to the end of the interaction, the verifier rejects.
+\end{enumerate}
+\end{definition}
+
+Interactive soundness error is then at most $\sum_i \varepsilon_i$. After Fiat--Shamir, it is $\max_i \varepsilon_i$ per random-oracle query~\cite{CCHLRR19,BCS16}.
+
+%=====================================================================
+\section{Reed--Solomon codes over binary fields}\label{sec:binary-rs}
+%=====================================================================
+
+For $R \ge 1$ and $\kappa + R \le b$, Appendix~\ref{app:ntt} constructs, following~\cite{LCH14} as presented in~\cite{DP26}, an $\Ftwo$-subspace $S \subseteq \F$ of size $n = 2^{\kappa+R}$ and an encoder $\Enc_{\kappa,R} : \F^{\cube{\kappa}} \to \F^{S}$ onto $\RS[\F, S, 2^{\kappa}]$, of rate $\rho = 2^{-R}$, with the two properties the protocol uses:
+\begin{itemize}[itemsep=2pt]
+\item \emph{fast encoding, for the prover:} $\Enc_{\kappa,R}$ is computed by the additive NTT with $\tfrac12 \kappa n$ multiplications and fewer than $(\kappa + 1)\, n$ additions (Proposition~\ref{prop:ntt});
+\item \emph{MLE-friendly columns, for the verifier:} for every $x \in S$, the weight $g_x : \cube{\kappa} \to \F$, defined by $\Enc_{\kappa,R}(u)[x] = \inner{g_x}{u}$ (the relation being valid for arbitrary $u$), admits an MLE efficiently evaluable ($O(\kappa)$ multiplications and additions (Lemma~\ref{lem:colweight})).
+\end{itemize}
+
+%=====================================================================
+\section{The protocol}\label{sec:protocol}
+%=====================================================================
+
+\begin{protocol}[Whir/Ligerito]\label{fig:protocol}
+\ \par\smallskip
+\emph{Parameters.} The scheme commits to $f : \cube{m} \to \F$ across $r \ge 1$ \emph{levels} $i = 0, \dots, r-1$ plus a plaintext final level $r$: variable counts $m = m_0 > m_1 > \dots > m_r \ge 0$ with fold factors $\ell_i := m_i - m_{i+1} \ge 1$ and $m_r$ small (e.g.\ $m_r \le 5$); per level, a rate $\rho_i = 2^{-R_i}$, $R_i \ge 1$, giving the encoder $\Enc_i := \Enc_{\kappa_i, R_i}$ of Section~\ref{sec:binary-rs} with $\kappa_i := m_{i+1}$, i.e.\ the code $\mathcal{C}_i := \RS[\F, S_i, 2^{\kappa_i}]$ over its domain $S_i$ of size $n_i = 2^{\kappa_i + R_i}$ (requires $b \ge \kappa_i + R_i$); and a query count $t_i$. (The proximity radii $\gamma_i \in (0, 1 - \sqrt{\rho_i})$ appear only in the analysis.)
+
+\smallskip
+\textbf{Commit}$(f : \cube{m} \to \F)$: $\mathbf{P}$ sends the oracle $C^{(0)}[u, \cdot] := \Enc_0(f(u, \cdot))$, $u \in \cube{\ell_0}$. No OOD sample is taken.
+
+\smallskip
+\textbf{Open}$\bigl(\{(w_\tau, v_\tau)\}_{\tau \in [T_0]}\bigr)$, $T_0 \ge 1$ weighted claims about $f$: set $f^{(0)} := f$. For $i = 0, 1, \dots, r - 1$:
+\begin{enumerate}[itemsep=0.5pt,topsep=2pt]
+\item \emph{(batch)} $\mathbf{V}$ sends $\alpha \leftarrow \F$; the \emph{batched claim} is $(w, \sigma_0) := \bigl(\sum_{\tau \in [T_i]} \alpha^{\tau-1} w_\tau,\; \sum_{\tau} \alpha^{\tau-1} v_\tau\bigr)$.
+\item \emph{(sumcheck~\cite{LFKN92})} For $j = 1, \dots, \ell_i$: $\mathbf{P}$ sends $h_j \in \F[X]$ with $\deg h_j \le 2$, honestly $h_j(X) = \sum_{x} \pol{w}(s^{<j}, X, x)\, \pol{f^{(i)}}(s^{<j}, X, x)$ where $s^{<j} := (s_1, \dots, s_{j-1})$; $\mathbf{V}$ checks $h_j(0) + h_j(1) = \sigma_{j-1}$ and sends $s_j \leftarrow \F$; both set $\sigma_j := h_j(s_j)$.\\
+Set $s := (s_1, \dots, s_{\ell_i})$, $\sigma' := \sigma_{\ell_i}$, and, for $x \in \cube{m_{i+1}}$: \ $f^{(i+1)}(x) := \pol{f^{(i)}}(s, x)$, \ $w'(x) := \pol{w}(s, x)$. The \emph{residual claim} $(w', \sigma')$ is a weighted claim about the folded table $f^{(i+1)}$.
+\item If $i < r - 1$:
+\begin{enumerate}[itemsep=0.5pt,topsep=1pt,label=(\alph*)]
+\item \emph{(commit)} $\mathbf{P}$ sends the oracle $C^{(i+1)}[u, \cdot] := \Enc_{i+1}(f^{(i+1)}(u, \cdot))$, $u \in \cube{\ell_{i+1}}$.
+\item \emph{(ood)} $\mathbf{V}$ sends $z \leftarrow \F^{m_{i+1}}$; $\mathbf{P}$ sends $y \in \F$ (honestly $\pol{f^{(i+1)}}(z)$).
+\item \emph{(query)} $\mathbf{V}$ sends $t_i$ i.i.d.\ columns $J_i = (x_q)_{q \in [t_i]} \leftarrow S_i$; it reads $C^{(i)}[\cdot, x_q]$ and computes $c_q := \sum_{u} \eq(s, u)\, C^{(i)}[u, x_q] = C^{(i)}_s[x_q]$; honestly $c_q = \Enc_i(f^{(i+1)})[x_q]$, by Fact~\ref{fact:fold-decode}.
+\item Claims for level $i+1$ (so $T_{i+1} := t_i + 2$): the residual claim $(w', \sigma')$, the OOD claim $(\eq(z, \cdot), y)$, and the $t_i$ \emph{consistency claims} $(g^{(i)}_{x_q}, c_q)$, where $g^{(i)}_x$ are the column weights of $\Enc_i$ (Section~\ref{sec:binary-rs}): the $q$-th asserts $\Enc_i(f^{(i+1)})[x_q] = c_q$.
+\end{enumerate}
+\item If $i = r - 1$: \emph{(final)} $\mathbf{P}$ sends the table $p : \cube{m_r} \to \F$; $\mathbf{V}$ sends $t_{r-1}$ i.i.d.\ columns $J_{r-1} \leftarrow S_{r-1}$, computes $c_q$ from $C^{(r-1)}$ as in 3(c), and checks $\sum_{x \in \cube{m_r}} w'(x)\, p(x) = \sigma'$ and $\Enc_{r-1}(p)[x_q] = c_q$ for all $q \in [t_{r-1}]$.
+\end{enumerate}
+$\mathbf{V}$ accepts iff every check above passed.
+\end{protocol}
+
+All weights in the protocol are MLE-friendly and multilinear, so every sumcheck summand $\pol{w} \cdot \pol{f^{(i)}}$ has individual degree at most $2$.
+
+Completeness is perfect: the honest prover passes every check ($h_j(0) + h_j(1) = \sigma_{j-1}$ by definition of $h_j$, $c_q = \Enc_i(f^{(i+1)})[x_q]$ by Fact~\ref{fact:fold-decode}, the OOD and residual claims by construction, the final checks as identities).
+
+%=====================================================================
+\section{Round-by-round soundness}\label{sec:soundness}
+%=====================================================================
+
+Fix a commitment $\mathsf{cm} = C^{(0)}$ and input claims $\{(w_\tau, v_\tau)\}_\tau$, and define the relation
+\[
+R_{\mathrm{open}} \;:=\; \Bigl\{ \bigl(C^{(0)}, \{(w_\tau, v_\tau)\}_\tau\bigr) \;:\; \exists\, U \in \Lam_{\gamma_0}(C^{(0)}) \text{ with } \inner{w_\tau}{g_U} = v_\tau \text{ for all } \tau \Bigr\}.
+\]
+The commitment binds the prover to the list $S_{\mathsf{cm}} := \{\pol{g_U} : U \in \Lam_{\gamma_0}(C^{(0)})\}$, of size at most $L_0 := \tfrac{1}{2\eta_0\sqrt{\rho_0}}$ for $\gamma_0 = 1 - \sqrt{\rho_0} - \eta_0$, by the Johnson bound (Theorem~\ref{thm:johnson-interleaved}).
+
+\begin{theorem}[RBR soundness, without OOD at commitment]\label{thm:rbr}
+Suppose that for every level $i$: $\gamma_i = 1 - \sqrt{\rho_i} - \eta_i$ with $\eta_i \in (0, 1-\sqrt{\rho_i})$, $L_i := \tfrac{1}{2\eta_i\sqrt{\rho_i}}$, and $\epsilon_i := a_i/|\F|$ is the mutual correlated agreement error of Theorem~\ref{thm:mca-johnson} below for $\mathcal{C}_i$ at radius $\gamma_i$. Then the Protocol~\ref{fig:protocol} is a $L_0$-list binding PCS, and its opening phase $R_{\mathrm{open}}$ has the following RBR soudness error at each verifier message:
+\[
+\begin{array}{llcl}
+\textnormal{batching, level } i: & \varepsilon^{\mathrm{batch}}_i &=& \dfrac{(T_i - 1)\, L_i}{|\F|} , \\[2ex]
+\textnormal{fold challenge } s_j, \textnormal{ level } i: & \varepsilon^{\mathrm{fold}}_{i,j} &=& \dfrac{2 L_i}{|\F|} + 2^{\ell_i - j}\, \epsilon_i , \\[2ex]
+\textnormal{OOD challenge entering level } i \ge 1: & \varepsilon^{\mathrm{ood}}_i &=& \dbinom{L_i}{2} \cdot \dfrac{m_i}{|\F|} , \\[2ex]
+\textnormal{query message } J_i: & \varepsilon^{\mathrm{query}}_i &=& (1 - \gamma_i)^{t_i} .
+\end{array}
+\]
+Here $T_0$ is the number of input claims and $T_i = t_{i-1} + 2$ for $i \ge 1$. The \emph{RBR error}, which governs the Fiat--Shamir compilation (Section~\ref{sec:iopcs}), is the maximum of these entries over all rounds.
+\end{theorem}
+
+The remainder of the section proves the theorem: Section~\ref{sec:tools} states the coding-theoretic tools, Section~\ref{sec:state} the invariant and the round-by-round argument.
+
+\subsection{Proximity tools}\label{sec:tools}
+
+The engine is \emph{mutual correlated agreement} (MCA)~\cite{ACFY25}. For a two-row word $C$, recall $C_s = (1-s)C[0,\cdot] + s\,C[1,\cdot]$.\footnote{\cite{BCHKS25} state the results for the affine line $C[0,\cdot] + s\,C[1,\cdot]$; in characteristic $2$, $C_s = C[0,\cdot] + s(C[0,\cdot] + C[1,\cdot])$, and this invertible change of pair maps codeword pairs to codeword pairs, so the formulations are equivalent.}
+
+\begin{theorem}[MCA up to the Johnson bound; {\cite[Thm.~4.6]{BCHKS25}}]\label{thm:mca-johnson}
+Let $\RS[\F,S,k]$ have block length $n = |S|$ and rate $\rho = k/n$, let $\gamma \in (0, 1-\sqrt{\rho})$, and set $\eta := 1 - \sqrt{\rho} - \gamma$ and $\theta := \max\{\lceil \tfrac{\sqrt{\rho}}{2\eta} \rceil, 3\}$ (denoted $\mu$ in~\cite{BCHKS25}). For every two-row word $C$,
+\[
+\Pr_{s \leftarrow \F}\!\left[\; \exists A \subseteq S,\ |A| \ge (1-\gamma) n :\ \begin{array}{l} C_s \text{ agrees with the code on } A, \text{ and} \\ C \text{ does not agree with the interleaved code on } A \end{array} \right] \;\le\; \frac{a}{|\F|},
+\]
+where
+\[
+a \;=\; \frac{2(\theta + \tfrac12)^5 + 3(\theta + \tfrac12)\gamma\rho}{3\rho^{3/2}} \cdot n \;+\; \frac{\theta + \tfrac12}{\sqrt{\rho}}
+\]
+(``$C_s$ agrees with the code on $A$'' means some codeword equals $C_s$ on $A$; ``$C$ agrees with the interleaved code on $A$'' means some pair of codewords equals the two rows on $A$).
+\end{theorem}
+
+We write $\epsilon := a/|\F|$ for this MCA error at radius $\gamma$. MCA is exactly what Lemma~\ref{lem:fold-list} needs: folding should not create \emph{new} nearby codewords.
+
+\begin{lemma}[Folding preserves lists]\label{lem:fold-list}
+Let $\RS[\F,S,k]$ have rate $\rho$, let $\gamma \in (0, 1-\rho)$, and let $\epsilon$ be an MCA error at radius $\gamma$. For every interleaved word $C \in \F^{\cube{\nu} \times S}$, $\nu \ge 1$:
+\[
+\Pr_{s \leftarrow \F}\Bigl[\, \Lam_\gamma(C_s) \neq \{ U_s : U \in \Lam_\gamma(C) \} \,\Bigr] \;\le\; 2^{\nu-1} \epsilon .
+\]
+\end{lemma}
+
+\begin{proof}
+$\supseteq$ holds always: $U \in \Lam_\gamma(C)$ agreeing with $C$ on $A$ gives $U_s$ agreeing with $C_s$ on $A$. For $\subseteq$: for $u \in \cube{\nu-1}$ let $E_u$ be the MCA event for the two-row word $(C[(0,u),\cdot], C[(1,u),\cdot])$, so $\Pr[\bigcup_u E_u] \le 2^{\nu-1}\epsilon$. Suppose no $E_u$ occurs, and let $V \in \Lam_\gamma(C_s)$ with common agreement set $A$, $|A| \ge (1-\gamma)n$. For each $u$, the row $C_s[u,\cdot]$ agrees on $A$ with the codeword $V[u,\cdot]$, so (as $E_u$ failed) there are, for each $\varepsilon \in \{0,1\}$, codewords $W_{(\varepsilon,u)}$ equal to $C[(\varepsilon,u),\cdot]$ on $A$; the interleaved codeword $W$ with these rows lies in $\Lam_\gamma(C)$ (same $A$ for all $u$). Finally $W_s[u,\cdot]$ agrees with $V[u,\cdot]$ on $A$, and $|A| \ge (1-\gamma)n > k$ while distinct codewords agree on fewer than $k$ points, so $V = W_s$.
+\end{proof}
+
+\begin{lemma}[OOD separation]\label{lem:ood}
+Let $C$ be an interleaved word with $|\Lam_\gamma(C)| \le L$, decoding to $\mu$-variable tables. Then $\Pr_{z \leftarrow \F^{\mu}}[\exists \text{ distinct } U, U' \in \Lam_\gamma(C) : \pol{g_U}(z) = \pol{g_{U'}}(z)] \le \binom{L}{2} \mu / |\F|$.
+\end{lemma}
+
+\begin{proof}
+Distinct interleaved codewords have distinct multilinear extensions; apply Fact~\ref{fact:sz} to each pair and union bound.
+\end{proof}
+
+\subsection{Proof of the main theorem}\label{sec:state}
+
+At level $i$, abbreviate $s^{\le j} := (s_1, \dots, s_j)$ and $s^{<j} := s^{\le j-1}$; thus $s^{\le 0}$ is empty and $C^{(i)}_{s^{\le 0}} = C^{(i)}$. For $0 \le j \le \ell_i$, the \emph{round-$j$ claim} is the weighted claim
+\[
+\bigl(\, \pol{w}(s^{\le j}, \cdot),\; \sigma_j \,\bigr) \qquad \text{about tables } g : \cube{m_i - j} \to \F,
+\]
+where $w$, $\sigma_0$, and $\sigma_j = h_j(s_j)$ are read off the transcript as in Protocol~\ref{fig:protocol}; an interleaved codeword satisfies a claim if its decoded table does. The round-$0$ claim is the batched claim, and the round-$\ell_i$ claim is the residual claim $(w', \sigma')$.
+
+We now define the invariant required by Definition~\ref{def:rbr}, a condition on the partial transcripts of the opening. In one phrase: \emph{every codeword close to the current fold violates the current claim}. Precisely, the list below gives the condition just after each verifier message; a transcript ending with prover messages inherits the condition of its last verifier message. Every condition also includes one implicit disjunct, the \emph{escape clause}: \emph{``some verifier check has already failed''} (such transcripts are rejected no matter what follows).
+\begin{itemize}[itemsep=1pt]
+\item \emph{Start of level $i$} (before any message for $i = 0$, after the query message $J_{i-1}$ otherwise): every $U \in \Lam_{\gamma_i}(C^{(i)})$ violates at least one of the level's $T_i$ claims (the input claims for $i = 0$, the claims of step 3(d) of Protocol~\ref{fig:protocol} otherwise).
+\item \emph{After the batching challenge $\alpha$ of level $i$, and after each of its fold challenges $s_j$:} every $U \in \Lam_{\gamma_i}(C^{(i)}_{s^{\le j}})$ violates the round-$j$ claim ($\alpha$ being the case $j = 0$).
+\item \emph{After the OOD challenge $z$ closing level $i$ ($i < r-1$):} the round-$\ell_i$ instance above holds, and the multilinear extensions decoded from $\Lam_{\gamma_{i+1}}(C^{(i+1)})$ are pairwise distinct at $z$.
+\item \emph{After the final query message $J_{r-1}$ (complete transcript):} the escape clause alone, i.e.\ some verifier check fails, so the verifier rejects.
+\end{itemize}
+Conditions (i), (ii), (iv) of Definition~\ref{def:rbr} hold by inspection: on a false statement, the first item is exactly the failure of $R_{\mathrm{open}}$; a prover message changes nothing an instance depends on, except possibly failing a check, which only switches the escape clause on; and the last item is precisely ``some check failed'', so such a complete transcript is rejected. The separation clause of the OOD instance is there because the query message consumes it: it pins the new oracle's list to at most one candidate consistent with the prover's answer. It remains to bound the escape probabilities (iii); in the proof below we assume all checks so far pass, since otherwise the escape clause already holds.
+
+\begin{proof}[Proof of Theorem~\ref{thm:rbr}]
+If the statement lies outside $R_{\mathrm{open}}$, then before any message is sent every $U \in \Lam_{\gamma_0}(C^{(0)})$ violates at least one input claim, so the invariant holds. We follow the protocol and bound, for each verifier message, the probability that the invariant fails to carry over. Every list below consists of interleaved words of $\mathcal{C}_i$ within radius $\gamma_i$, hence has size at most $L_i$ by Theorem~\ref{thm:johnson-interleaved}.
+
+\medskip\noindent\emph{Batching challenge $\alpha$.}
+Assume that every $U \in \Lam_{\gamma_i}(C^{(i)})$ violates at least one of the $T_i$ claims $(w_\tau, v_\tau)$. Fix such a $U$ and let $d_\tau := \inner{w_\tau}{g_U} - v_\tau$ be its discrepancies, not all zero. Against the batched claim, $U$ has discrepancy
+\[
+\sum_{\tau \in [T_i]} \alpha^{\tau - 1} \bigl( \inner{w_\tau}{g_U} - v_\tau \bigr) \;=\; \sum_{\tau \in [T_i]} \alpha^{\tau - 1} d_\tau ,
+\]
+a nonzero polynomial in $\alpha$ of degree less than $T_i$, which vanishes for at most $T_i - 1$ challenges. Union bound over the at most $L_i$ list members: except with probability $(T_i - 1) L_i / |\F|$, every $U$ violates the round-$0$ claim.
+
+\medskip\noindent\emph{Fold challenge $s_j$.}
+Assume that every $U \in \Lam := \Lam_{\gamma_i}(C^{(i)}_{s^{<j}})$ violates the round-$(j{-}1)$ claim. Since all checks so far pass (otherwise the verifier trivially rejects), $h_j(0) + h_j(1) = \sigma_{j-1}$. For $U \in \Lam$, let
+\[
+H_U(X) \;:=\; \sum_{x \in \cube{m_i - j}} \pol{w}(s^{<j}, X, x)\, \pol{g_U}(X, x)
+\]
+be the honest round polynomial for $U$; it has degree at most $2$, since $\pol{w}$ and $\pol{g_U}$ are multilinear. Summing over $X \in \{0, 1\}$ turns the multilinear evaluations back into table values, so
+\[
+H_U(0) + H_U(1) \;=\; \bigl\langle\, \pol{w}(s^{<j}, \cdot),\; g_U \,\bigr\rangle \;\neq\; \sigma_{j-1} \;=\; h_j(0) + h_j(1),
+\]
+the inequality being the assumed violation; hence $h_j \neq H_U$ as polynomials. Two bad events over $s_j$:
+\begin{itemize}[itemsep=1pt]
+\item $B_1$: $h_j(s_j) = H_U(s_j)$ for some $U \in \Lam$. For each $U$, two distinct polynomials of degree at most $2$ agree on at most $2$ points, so $\Pr[B_1] \le 2 L_i / |\F|$.
+\item $B_2$: $\Lam_{\gamma_i}(C^{(i)}_{s^{\le j}}) \neq \{ U_{s_j} : U \in \Lam \}$, i.e.\ folding does not map the old list onto the new one. The matrix $C^{(i)}_{s^{<j}}$ has $2^{\ell_i - j + 1}$ rows, so Lemma~\ref{lem:fold-list} with $\nu = \ell_i - j + 1$ gives $\Pr[B_2] \le 2^{\ell_i - j} \epsilon_i$.
+\end{itemize}
+If neither occurs, every $V \in \Lam_{\gamma_i}(C^{(i)}_{s^{\le j}})$ is $V = U_{s_j}$ for some $U \in \Lam$, with $\pol{g_V} = \pol{g_U}(s_j, \cdot)$ by Fact~\ref{fact:fold-decode}, so
+\[
+\bigl\langle\, \pol{w}(s^{\le j}, \cdot),\; g_V \,\bigr\rangle
+\;=\; \sum_{x \in \cube{m_i - j}} \pol{w}(s^{<j}, s_j, x)\, \pol{g_U}(s_j, x)
+\;=\; H_U(s_j) \;\neq\; h_j(s_j) \;=\; \sigma_j ,
+\]
+using $\neg B_1$ for the inequality: every $V$ violates the round-$j$ claim. The total error is $2 L_i/|\F| + 2^{\ell_i - j} \epsilon_i$.
+
+\medskip\noindent\emph{The level interface.}
+After the last fold challenge of level $i < r - 1$, we know: every codeword within $\gamma_i$ of the single row $c := C^{(i)}_s \in \F^{S_i}$ violates the residual claim $(w', \sigma')$. The prover now sends the new oracle $C^{(i+1)}$, which nothing yet ties to $c$; the next two verifier messages transfer the violation property to the new oracle's list.
+
+\medskip\noindent\emph{OOD challenge $z$.}
+After $z$, two properties must hold: the one above, which does not involve $z$; and pairwise distinctness at $z$ of the multilinear extensions decoded from $\Lam_{\gamma_{i+1}}(C^{(i+1)})$, a list already determined by the prover's message. The latter fails with probability at most $\binom{L_{i+1}}{2} m_{i+1} / |\F|$ over $z$, by Lemma~\ref{lem:ood}.
+
+\medskip\noindent\emph{Query message $J_i$.}
+Assume both properties of the previous step; the prover has since sent its answer $y$. The values $\pol{g_U}(z)$ are pairwise distinct across $\Lam_{\gamma_{i+1}}(C^{(i+1)})$, so at most one member $U^\ast$ can satisfy $\pol{g_{U^\ast}}(z) = y$: every other member violates the OOD claim $(\eq(z, \cdot),\, y)$, whatever $J_i$ is. If no such $U^\ast$ exists, we are done. Otherwise write $g^\ast := g_{U^\ast}$, a table on $\cube{m_{i+1}}$, and distinguish two cases.
+\begin{itemize}[itemsep=1pt]
+\item \emph{$\Enc_i(g^\ast)$ agrees with $c$ on at least $(1 - \gamma_i) n_i$ coordinates.} Then the codeword $\Enc_i(g^\ast)$ lies in $\Lam_{\gamma_i}(c)$, hence violates the residual claim by assumption: $\inner{w'}{g^\ast} \neq \sigma'$, whatever $J_i$ is.
+\item \emph{Otherwise.} A uniform column $x \leftarrow S_i$ satisfies $\Enc_i(g^\ast)[x] = c[x]$ with probability less than $1 - \gamma_i$, so all $t_i$ i.i.d.\ queries do so simultaneously with probability less than $(1 - \gamma_i)^{t_i}$; and any disagreeing query $x_q$ makes $U^\ast$ violate the consistency claim $(g^{(i)}_{x_q},\, c_q)$, since $c_q = c[x_q]$.
+\end{itemize}
+Except with probability $(1 - \gamma_i)^{t_i}$, every member of $\Lam_{\gamma_{i+1}}(C^{(i+1)})$ thus violates at least one of the $T_{i+1}$ claims, which is exactly the assumption of the batching step at level $i + 1$.
+
+\medskip\noindent\emph{Final level.}
+At level $r - 1$ the fold challenges end as above: every codeword within $\gamma_{r-1}$ of $c := C^{(r-1)}_s$ violates the residual claim. The prover sends the plaintext table $p$. If $\Enc_{r-1}(p)$ agrees with $c$ on at least $(1 - \gamma_{r-1}) n_{r-1}$ coordinates, then $\Enc_{r-1}(p) \in \Lam_{\gamma_{r-1}}(c)$, so $\inner{w'}{p} \neq \sigma'$: the check $\sum_{x \in \cube{m_r}} w'(x)\, p(x) = \sigma'$ fails whatever $J_{r-1}$ is, i.e.\ the escape clause holds and rejection is certain. Otherwise the checks $\Enc_{r-1}(p)[x_q] = c_q$ can all pass only if every one of the $t_{r-1}$ i.i.d.\ queries lands in the agreement set, an event of probability less than $(1 - \gamma_{r-1})^{t_{r-1}}$.
+
+\end{proof}
+
+\appendix
+
+%=====================================================================
+\section{Novel polynomial basis and additive NTT}\label{app:ntt}
+%=====================================================================
+
+Fix an $\Ftwo$-basis $\beta_0, \dots, \beta_{b-1}$ of $\F$ with $\beta_0 = 1$. This appendix constructs the encoder of Section~\ref{sec:binary-rs} and proves its two properties; the material follows~\cite{LCH14} as presented in~\cite{DP26}. For $w \in \cube{\mu}$ we write $\langle w \rangle := \sum_i w_i 2^i$ for the integer with bits $w$ (bit $0$ first).
+
+\subsection{Subspace polynomials, novel basis, encoder}
+
+For $0 \le i \le b$ let $U_i := \langle \beta_0, \dots, \beta_{i-1} \rangle_{\Ftwo}$ and define the \emph{subspace vanishing polynomial} $W_i(X) := \prod_{u \in U_i}(X + u)$, of degree $2^i$.
+
+\begin{lemma}\label{lem:subspace}
+For $i < b$: (i) $W_{i+1}(X) = W_i(X)\bigl(W_i(X) + W_i(\beta_i)\bigr)$ with $W_i(\beta_i) \neq 0$; (ii) $W_i(X + Y) = W_i(X) + W_i(Y)$ as a polynomial identity; in particular the map $W_i : \F \to \F$ is $\Ftwo$-linear.
+\end{lemma}
+
+\begin{proof}
+By induction on $i$; the base case is $W_0(X) = X$. For (i), split the product defining $W_{i+1}$ along $U_{i+1} = U_i \sqcup (\beta_i + U_i)$:
+\[
+W_{i+1}(X) \;=\; \prod_{u \in U_i} (X + u) \cdot \prod_{u \in U_i} \bigl(X + \beta_i + u\bigr) \;=\; W_i(X) \cdot W_i(X + \beta_i) \;=\; W_i(X) \bigl( W_i(X) + W_i(\beta_i) \bigr),
+\]
+where the middle step recognizes the second product as $W_i$ evaluated at $X + \beta_i$, and the last step is the identity (ii) for $W_i$ with $Y = \beta_i$. Moreover $W_i(\beta_i) \neq 0$, since the roots of $W_i$ are exactly $U_i$ and $\beta_i \notin U_i$. For (ii) at $i + 1$, write $W_{i+1} = W_i^2 + W_i(\beta_i)\, W_i$ by (i): the second term satisfies the identity by induction, and so does the first, since in characteristic $2$
+\[
+W_i(X+Y)^2 \;=\; \bigl(W_i(X) + W_i(Y)\bigr)^2 \;=\; W_i(X)^2 + W_i(Y)^2 . \qedhere
+\]
+\end{proof}
+
+Let $\Wn{i} := W_i / W_i(\beta_i)$ (the hat on $W$ denotes normalization, not multilinear extension), so $\Wn{i}(\beta_i) = 1$ and $\Wn{0} = X$ (using $\beta_0 = 1$). By linearity, $\Wn{i}(x) = \sum_c x_c \Wn{i}(\beta_c)$ for $x = \sum_c x_c \beta_c$, so given the table of values $\Wn{i}(\beta_c)$ (precomputed via the recursion (i)), $\Wn{i}$ is evaluated anywhere in $O(b)$ additions.
+
+\begin{definition}[Novel basis and encoder~\cite{LCH14}]\label{def:enc}
+For $0 \le j < 2^{\kappa}$ with bits $j_i$, let $X_j(X) := \prod_i \Wn{i}(X)^{j_i}$; then $\deg X_j = j$, so $(X_j)_{j < 2^\kappa}$ is a (triangular) basis of the polynomials of degree less than $2^{\kappa}$. Let $S := \langle \beta_0, \dots, \beta_{\kappa+R-1} \rangle_{\Ftwo}$ and, for a message $u : \cube{\kappa} \to \F$,
+\[
+P_u(X) := \sum_{w \in \cube{\kappa}} u(w) \cdot X_{\langle w \rangle}(X), \qquad \Enc_{\kappa,R}(u) := \bigl(P_u(x)\bigr)_{x \in S},
+\]
+a linear injection onto $\RS[\F, S, 2^{\kappa}]$ of rate $\rho = 2^{-R}$. (The table is read \emph{directly} as novel-basis coefficients; no conversion is applied.)
+\end{definition}
+
+\begin{lemma}[Column weights are tensors]\label{lem:colweight}
+For $x \in S$ let $g_x(w) := \prod_i \Wn{i}(x)^{w_i}$. Then $\Enc_{\kappa,R}(u)[x] = \inner{g_x}{u} := \sum_w g_x(w) u(w)$, and
+\[
+\pol{g_x}(y) \;=\; \prod_{i=0}^{\kappa-1} \bigl( (1-y_i) + y_i \Wn{i}(x) \bigr),
+\]
+so one evaluation of $\pol{g_x}$ costs $O(\kappa)$ multiplications and additions in total: the values $\Wn{i}(x)$ follow the chain of Lemma~\ref{lem:chain}, $\Wn{0}(x) = x$ and $\Wn{i+1}(x) = q_i\bigl(\Wn{i}(x)\bigr)$, at two multiplications and one addition per step (the constants of the $q_i$ are precomputed once, shared by all levels and queries), and the $\kappa$-factor product costs the same again.
+\end{lemma}
+
+\begin{proof}
+The first identity is Definition~\ref{def:enc} expanded: $P_u(x) = \sum_w u(w) \prod_i \Wn{i}(x)^{w_i} = \inner{g_x}{u}$. For the second, start from the definition of the multilinear extension and factor $\eq$ coordinate-wise:
+\[
+\pol{g_x}(y) \;=\; \sum_{w \in \cube{\kappa}} \eq(w, y)\, g_x(w) \;=\; \sum_{w \in \cube{\kappa}} \prod_{i=0}^{\kappa-1} \eq(w_i, y_i)\, \Wn{i}(x)^{w_i} .
+\]
+Each factor of the summand depends on a single bit $w_i$, so by distributivity the sum over $\cube{\kappa}$ factors into a product of one-bit sums:
+\[
+\pol{g_x}(y) \;=\; \prod_{i=0}^{\kappa-1} \; \sum_{w_i \in \{0,1\}} \eq(w_i, y_i)\, \Wn{i}(x)^{w_i} \;=\; \prod_{i=0}^{\kappa-1} \bigl( (1-y_i) \cdot 1 + y_i \cdot \Wn{i}(x) \bigr),
+\]
+using $\eq(0, y_i) = 1 - y_i$ and $\eq(1, y_i) = y_i$.
+\end{proof}
+
+\subsection{The additive NTT}\label{sec:ntt}
+
+The encoder is computed by the additive NTT of~\cite{LCH14}, a Cooley--Tukey-style butterfly network in which the squaring map is replaced by degree-$2$ linearized maps $q_d$ collapsing the domain, and the twiddles are evaluations of the $\Wn{d}$. For $0 \le d < \kappa$ define
+\[
+q_d(X) \;:=\; \frac{W_d(\beta_d)^2}{W_{d+1}(\beta_{d+1})} \cdot X(X+1).
+\]
+
+\begin{lemma}[Chain structure]\label{lem:chain}
+Each $q_d$ is $\Ftwo$-linear with kernel $\{0,1\}$, and $q_d \circ \Wn{d} = \Wn{d+1}$, hence $\Wn{d} = q_{d-1} \circ \dots \circ q_0$. Setting $S^{(d)} := \Wn{d}(S)$ for $0 \le d \le \kappa$, each $S^{(d)}$ is an $\Ftwo$-subspace of dimension $\kappa + R - d$ containing $1 = \Wn{d}(\beta_d)$, and $q_d$ maps $S^{(d)}$ onto $S^{(d+1)}$ two-to-one with fibers $\{x, x+1\}$.
+\end{lemma}
+
+\begin{proof}
+$X(X+1) = X^2 + X$ is linear with kernel $\{0,1\}$. By Lemma~\ref{lem:subspace}(i), $\Wn{d+1} = \tfrac{W_d (W_d + W_d(\beta_d))}{W_{d+1}(\beta_{d+1})} = \tfrac{W_d(\beta_d)^2}{W_{d+1}(\beta_{d+1})} \Wn{d}(\Wn{d} + 1) = q_d \circ \Wn{d}$; the chain follows from $\Wn{0} = X$. $\Wn{d}|_S$ is linear with kernel $U_d \subseteq S$, so its image has dimension $\kappa + R - d$, and $q_d(S^{(d)}) = \Wn{d+1}(S) = S^{(d+1)}$ with $\ker q_d = \{0,1\} \subseteq S^{(d)}$.
+\end{proof}
+
+\begin{lemma}[Even--odd refinement]\label{lem:evenodd}
+For $0 \le d \le \kappa$ define $\Wn{k}^{(d)} := q_{d+k-1} \circ \dots \circ q_d$ (and $\Wn{0}^{(d)} := X$), and $X^{(d)}_j := \prod_k (\Wn{k}^{(d)})^{j_k}$, so $X^{(0)}_j = X_j$. If $d < \kappa$, $P = \sum_{j < 2^{\kappa-d}} a_j X^{(d)}_j$, and $P_\varepsilon := \sum_j a_{2j+\varepsilon} X^{(d+1)}_j$, then
+\[
+P(X) \;=\; P_0\bigl(q_d(X)\bigr) + X \cdot P_1\bigl(q_d(X)\bigr).
+\]
+\end{lemma}
+
+\begin{proof}
+$\Wn{k+1}^{(d)} = \Wn{k}^{(d+1)} \circ q_d$, so $X^{(d)}_{2j} = X^{(d+1)}_j \circ q_d$ and $X^{(d)}_{2j+1} = X \cdot X^{(d)}_{2j}$; split the sum by parity.
+\end{proof}
+
+\begin{center}
+\fbox{\parbox{0.92\textwidth}{
+\textbf{Additive NTT}~\cite{LCH14}. \emph{Input:} coefficients $a_0, \dots, a_{2^{\kappa}-1}$ of $P = \sum_j a_j X_j$. \emph{Output:} $(P(x))_{x \in S}$, identifying $\cube{\kappa+R} \cong S$ via $v \mapsto x_v := \sum_c v_c \beta_c$.
+\begin{enumerate}[itemsep=1pt]
+\item Initialize $B(v) := a_{\langle (v_0, \dots, v_{\kappa-1}) \rangle}$ for all $v \in \cube{\kappa+R}$ (the coefficient array, tiled $2^R$ times).
+\item For $d = \kappa - 1$ down to $0$: for every $v$ with $v_d = 0$, with $v' := v \oplus e_d$ and twiddle $t := \sum_{c > d} v_c \Wn{d}(\beta_c)$:\quad $B(v) \mathrel{+}= t \cdot B(v')$;\quad then\quad $B(v') \mathrel{+}= B(v)$.
+\item Output $B$; then $B(v) = P(x_v)$.
+\end{enumerate}
+}}
+\end{center}
+
+\begin{proposition}[Correctness and cost]\label{prop:ntt}
+The algorithm computes $\Enc_{\kappa,R}$ with exactly $\tfrac12 \kappa n$ multiplications and $\kappa n$ additions in the butterflies, plus fewer than $n$ additions for the twiddles: $t$ depends only on $(v_c)_{c > d}$, so stage $d$ has $2^{\kappa + R - 1 - d}$ distinct twiddles, shared by the $2^{d}$ butterflies of a block and enumerable with one addition each, $\sum_{d < \kappa} 2^{\kappa + R - 1 - d} < n$ in total.
+\end{proposition}
+
+\begin{proof}[Proof sketch]
+For $\ell \in \cube{d}$ let $P^{(d)}_{\ell} := \sum_{j < 2^{\kappa-d}} a_{\langle \ell \rangle + 2^d j} X^{(d)}_j$ collect the coefficients congruent to $\langle \ell \rangle$ modulo $2^d$. Downward induction on $d$ maintains the invariant that after stages $\kappa-1, \dots, d$, $\ B(v) = P^{(d)}_{(v_0,\dots,v_{d-1})}\bigl(\Wn{d}(x_v)\bigr)$, where by linearity $\Wn{d}(x_v) = v_d + t$ with $t$ the twiddle of the algorithm (coordinates $c < d$ lie in $\ker \Wn{d} = U_d$, and $\Wn{d}(\beta_d) = 1$). The base $d = \kappa$ is the tiled initialization. For the step, let $\ell := (v_0, \dots, v_{d-1})$: the order-$(d{+}1)$ even and odd parts of $P^{(d)}_{\ell}$ are $P^{(d+1)}_{(\ell,0)}$ and $P^{(d+1)}_{(\ell,1)}$ (as $\langle \ell \rangle + 2^d(2j+\varepsilon) = \langle (\ell,\varepsilon) \rangle + 2^{d+1} j$), whose values at $\Wn{d+1}(x_v) = \Wn{d+1}(x_{v'})$ are the pre-stage entries $B(v)$ and $B(v')$; Lemma~\ref{lem:evenodd} at the fiber $\{t, t+1\}$ of $q_d$ over this point (Lemma~\ref{lem:chain}) gives $P^{(d)}_{\ell}(t) = B(v) + t\,B(v')$ and $P^{(d)}_{\ell}(t+1) = P^{(d)}_{\ell}(t) + B(v')$, exactly the butterfly. At $d = 0$, $B(v) = P(x_v)$. Each of the $\kappa$ stages does $n/2$ butterflies of one multiplication and two additions.
+\end{proof}
+
+The verifier never runs the NTT: by Lemma~\ref{lem:colweight} it touches the code only through per-column weight evaluations.
+
+%=====================================================================
+\section{The Johnson bound}\label{app:johnson}
+%=====================================================================
+
+We prove Theorem~\ref{thm:johnson-interleaved} in its general form (arbitrary code).
+
+\begin{theorem}[Johnson bound, agreement form]\label{thm:johnson-general}
+Let $\mathcal{C} \subseteq \Sigma^n$ be a code, over any alphabet $\Sigma$, in which two distinct codewords agree on at most $\rho n$ coordinates, and let $\eta \in (0, 1 - \sqrt{\rho})$. Then every word $w \in \Sigma^n$ has at most $\tfrac{1}{2\eta\sqrt{\rho}}$ codewords agreeing with it on at least $(\sqrt{\rho} + \eta)\, n$ coordinates.
+\end{theorem}
+
+\begin{proof}
+Let $u_1, \dots, u_L$ be distinct codewords, each agreeing with $w$ on at least $(\sqrt{\rho}+\eta) n$ coordinates. For each $j$, fix a set $A_j$ of exactly $a := \lceil (\sqrt{\rho}+\eta) n \rceil$ coordinates on which $u_j$ agrees with $w$, and write $\varphi := a/n$, so $\sqrt{\rho} + \eta \le \varphi \le 1$. For a coordinate $i$, let $d_i := |\{ j : i \in A_j \}|$; then $\sum_i d_i = L a = L \varphi n$.
+
+Wherever two codewords both agree with $w$ they agree with each other, so $|A_j \cap A_{j'}| \le \rho n$ for $j \neq j'$, and counting ordered pairs,
+\[
+\sum_i d_i (d_i - 1) \;=\; \sum_{j \neq j'} |A_j \cap A_{j'}| \;\le\; L(L-1)\, \rho n .
+\]
+Cauchy--Schwarz on the vectors $(d_1, \dots, d_n)$ and $(1, \dots, 1)$ gives $\bigl(\sum_i d_i\bigr)^2 \le n \sum_i d_i^2$, i.e.\ $\sum_i d_i^2 \ge (L \varphi n)^2 / n = L^2 \varphi^2 n$; the left side above, which equals $\sum_i d_i^2 - \sum_i d_i$, is therefore at least $L^2 \varphi^2 n - L \varphi n$. Dividing by $Ln$ and rearranging,
+\[
+L \varphi^2 - \varphi \;\le\; (L-1)\, \rho
+\qquad\Longleftrightarrow\qquad
+L\, (\varphi^2 - \rho) \;\le\; \varphi - \rho .
+\]
+Finally $\varphi^2 - \rho \ge (\sqrt{\rho}+\eta)^2 - \rho = 2\eta\sqrt{\rho} + \eta^2 > 2\eta\sqrt{\rho}$ while $\varphi - \rho \le 1$, so $L \le \tfrac{1}{2\eta\sqrt{\rho}}$.
+\end{proof}
+
+%=====================================================================
+\begin{thebibliography}{CCHLRR19}
+
+\bibitem[ACFY25]{ACFY25} Gal Arnon, Alessandro Chiesa, Giacomo Fenzi, and Eylon Yogev. WHIR: Reed--Solomon proximity testing with super-fast verification. In \emph{EUROCRYPT 2025}, 2025.
+
+\bibitem[BCHKS25]{BCHKS25} Eli Ben-Sasson, Dan Carmon, Ulrich Hab\"ock, Swastik Kopparty, and Shubhangi Saraf. On proximity gaps for Reed--Solomon codes. Cryptology ePrint Archive, Paper 2025/2055, 2025.
+
+\bibitem[BCS16]{BCS16} Eli Ben-Sasson, Alessandro Chiesa, and Nicholas Spooner. Interactive oracle proofs. In \emph{TCC 2016-B}, 2016.
+
+\bibitem[BGKS20]{BGKS20} Eli Ben-Sasson, Lior Goldberg, Swastik Kopparty, and Shubhangi Saraf. DEEP-FRI: Sampling outside the box improves soundness. In \emph{ITCS 2020}, 2020.
+
+\bibitem[CCHLRR19]{CCHLRR19} Ran Canetti, Yilei Chen, Justin Holmgren, Alex Lombardi, Guy N. Rothblum, Ron D. Rothblum, and Daniel Wichs. Fiat--Shamir: From practice to theory. In \emph{STOC 2019}, 2019.
+
+\bibitem[DP26]{DP26} Benjamin E. Diamond and Jim Posen. Polylogarithmic proofs for multilinears over binary towers. In \emph{EUROCRYPT 2026}, 2026.
+
+\bibitem[Flock26]{Flock26} Benedikt B\"unz, Ron Rothblum, and William Wang. Flock: Fast proving for batch Boolean computations. Cryptology ePrint Archive, Paper 2026/1329, 2026.
+
+\bibitem[GRS23]{GRS23} Venkatesan Guruswami, Atri Rudra, and Madhu Sudan. Essential coding theory. Draft textbook, 2023.
+
+\bibitem[LCH14]{LCH14} Sian-Jheng Lin, Wei-Ho Chung, and Yunghsiang S. Han. Novel polynomial basis and its application to Reed--Solomon erasure codes. In \emph{FOCS 2014}, 2014.
+
+\bibitem[LFKN92]{LFKN92} Carsten Lund, Lance Fortnow, Howard Karloff, and Noam Nisan. Algebraic methods for interactive proof systems. \emph{Journal of the ACM}, 39(4), 1992.
+
+\bibitem[NA25]{NA25} Andrija Novakovic and Guillermo Angeris. Ligerito: A small and concretely fast polynomial commitment scheme. Cryptology ePrint Archive, Paper 2025/1187, 2025.
+
+\end{thebibliography}
+
+\end{document}
