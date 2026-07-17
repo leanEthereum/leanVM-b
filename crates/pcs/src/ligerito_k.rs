@@ -1509,6 +1509,24 @@ fn round_msg_and_eval_lsb_ext(f: &[F192], b: &[F192]) -> (SumcheckMessageK, F192
     (SumcheckMessageK { u_0, u_2 }, y)
 }
 
+/// Output buffer for an initial-sumcheck fold. On x86_64 these ~100 MB F192
+/// vectors are drawn from (and later returned to, in [`SumcheckProverK::fold`])
+/// the process-global scratch pool, so repeated proves reuse resident pages
+/// instead of faulting a fresh mapping each round; other targets keep the
+/// fresh-alloc path (pooling measured slower on aarch64). Credit: flock
+/// (flock-core) scratch-pool reuse for the initial-sumcheck fold buffers.
+#[inline]
+fn fold_out_buf(n: usize) -> Vec<F192> {
+    #[cfg(target_arch = "x86_64")]
+    {
+        primitives::scratch::take_f192(n)
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        primitives::alloc_uninit_vec(n)
+    }
+}
+
 /// Fused fold + next-round message for the FIRST fold (mixed phase): the
 /// K-witness folds into E (`(1+r).mul_base(f0) + r.mul_base(f1)`), the basis
 /// folds in E, and the next-round message is built over the freshly folded
@@ -1560,8 +1578,8 @@ fn fold_and_msg_lsb_base(f: &[F64], b: &[F192], r: F192) -> (Vec<F192>, Vec<F192
     // power of two, so every chunk has even length and starts at an even
     // global index (message pairs never straddle a chunk boundary).
     const CHUNK: usize = 2048;
-    let mut nf: Vec<F192> = primitives::alloc_uninit_vec(half);
-    let mut nb: Vec<F192> = primitives::alloc_uninit_vec(half);
+    let mut nf: Vec<F192> = fold_out_buf(half);
+    let mut nb: Vec<F192> = fold_out_buf(half);
     let (u_0, u_2) = nf
         .par_chunks_mut(CHUNK)
         .zip(nb.par_chunks_mut(CHUNK))
@@ -1635,8 +1653,8 @@ fn fold_and_msg_lsb_ext(f: &[F192], b: &[F192], r: F192) -> (Vec<F192>, Vec<F192
     }
 
     const CHUNK: usize = 2048;
-    let mut nf: Vec<F192> = primitives::alloc_uninit_vec(half);
-    let mut nb: Vec<F192> = primitives::alloc_uninit_vec(half);
+    let mut nf: Vec<F192> = fold_out_buf(half);
+    let mut nb: Vec<F192> = fold_out_buf(half);
     let (u_0, u_2) = nf
         .par_chunks_mut(CHUNK)
         .zip(nb.par_chunks_mut(CHUNK))
@@ -1706,8 +1724,25 @@ impl<'a> SumcheckProverK<'a> {
             WitnessK::Base(f) => fold_and_msg_lsb_base(f, &self.combined_basis, r),
             WitnessK::Ext(f) => fold_and_msg_lsb_ext(f, &self.combined_basis, r),
         };
-        self.f = WitnessK::Ext(nf);
-        self.combined_basis = nb;
+        // Swap the freshly folded buffers in and reclaim the consumed ones. On
+        // x86_64 the old E buffers return to the scratch pool so the next
+        // round's `fold_out_buf` reuses resident pages instead of faulting a
+        // fresh mapping (the base witness is borrowed — nothing to reclaim).
+        // Credit: flock (flock-core) scratch-pool reuse.
+        let old_f = std::mem::replace(&mut self.f, WitnessK::Ext(nf));
+        let old_b = std::mem::replace(&mut self.combined_basis, nb);
+        #[cfg(target_arch = "x86_64")]
+        {
+            if let WitnessK::Ext(v) = old_f {
+                primitives::scratch::give_f192(v);
+            }
+            primitives::scratch::give_f192(old_b);
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            drop(old_f);
+            drop(old_b);
+        }
         self.transcript.push(msg);
         msg
     }
