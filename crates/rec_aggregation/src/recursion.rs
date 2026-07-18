@@ -106,13 +106,13 @@ fn inner_program() -> Program {
 /// Prove one run of the inner program: `hashes` BLAKE3 compressions then
 /// `iters` product-loop steps (both runtime, driven by the witness hints).
 /// The witness generator replays both natively to supply the final-inverse
-/// hint. Returns (program, proof, guest-cycle count).
+/// hint. Returns (program, proof, guest-cycle count, committed witness size).
 fn prove_inner(
     pi: [F192; 2],
     hashes: usize,
     iters: usize,
     log_inv_rate: usize,
-) -> (Program, lean_vm::cpu::Proof, usize) {
+) -> (Program, lean_vm::cpu::Proof, usize, usize) {
     assert!(hashes >= 1 && iters >= 1, "both loops run at least once");
     let mut program = inner_program();
     // Replay natively: the hash chain, then the product loop, to fetch the
@@ -135,12 +135,7 @@ fn prove_inner(
     program.set_witness("n_hash", vec![vec![F192::new(g_pow(hashes).0, 0, 0)]]);
     program.set_witness("iters", vec![vec![F192::new(g_pow(iters).0, 0, 0)]]);
     let (proof, stats) = prove(&program, pi, log_inv_rate);
-    eprintln!(
-        "[inner] cycles={} committed=2^{:.2}",
-        stats.cycles,
-        (stats.committed as f64).log2()
-    );
-    (program, proof, stats.cycles)
+    (program, proof, stats.cycles, stats.committed)
 }
 
 /// The deferred-claim data the guest binds to the outer public input: the outer
@@ -1154,6 +1149,7 @@ struct Batch {
     statement: RecursiveStatement,
     nsub: usize,
     total_inner_cycles: usize,
+    inner_stats: Vec<(usize, usize)>,
     outer_log_inv_rate: usize,
 }
 
@@ -1188,14 +1184,16 @@ fn build_batch(inner: &[(usize, usize)], log_inv_rates: &[usize], outer_log_inv_
     assert_eq!(inner.len(), log_inv_rates.len(), "one PCS rate per inner proof");
     let nsub = inner.len();
     let mut total_inner_cycles = 0usize;
+    let mut inner_stats = Vec::with_capacity(nsub);
     let mut protos = Vec::new();
     for (k, (&(hashes, iters), &log_inv_rate)) in inner.iter().zip(log_inv_rates).enumerate() {
         let pi = [
             F192::new(0x1111_2222 + k as u64, 0x3333_4444, 0),
             F192::new(0x5555_6666, 0x7777_8888 + k as u64, 0),
         ];
-        let (program, proof, inner_cycles) = prove_inner(pi, hashes, iters, log_inv_rate);
+        let (program, proof, inner_cycles, inner_committed) = prove_inner(pi, hashes, iters, log_inv_rate);
         total_inner_cycles += inner_cycles;
+        inner_stats.push((inner_cycles, inner_committed));
         trace_start();
         let summary = verify(&program, &pi, &proof).expect("inner verifies");
         let ops = trace_take();
@@ -1242,6 +1240,7 @@ fn build_batch(inner: &[(usize, usize)], log_inv_rates: &[usize], outer_log_inv_
         statement,
         nsub,
         total_inner_cycles,
+        inner_stats,
         outer_log_inv_rate,
     }
 }
@@ -1874,10 +1873,6 @@ fn run_recursion_with_rates(
     let t_compile = t.elapsed();
     // The recursion program size + compile time, BEFORE any inner proving.
     let real_instrs: usize = guest.fn_ranges.iter().map(|(_, _, len)| *len as usize).sum();
-    eprintln!(
-        "recursion program: {real_instrs} instructions (2^{} padded), compiled in {t_compile:?}",
-        guest.prog.len().trailing_zeros()
-    );
     // 3: prove the inner proofs and extract the recursion witness (hints).
     let batch = build_batch(inner, log_inv_rates, outer_log_inv_rate);
     let nsub = batch.nsub;
@@ -1885,7 +1880,8 @@ fn run_recursion_with_rates(
     if enable_tracing {
         primitives::init_tracing();
     }
-    let _span = tracing::info_span!("Recursive aggregation", n = nsub, log_inv_rate = outer_log_inv_rate).entered();
+    let trace_span =
+        tracing::info_span!("Recursive aggregation", n = nsub, log_inv_rate = outer_log_inv_rate).entered();
     let t = std::time::Instant::now();
     let (recursive_proof, stats) = batch.prove(&mut guest);
     let t_prove = t.elapsed();
@@ -1894,6 +1890,17 @@ fn run_recursion_with_rates(
         .verify(&batch.program0)
         .expect("complete recursive proof verifies");
     let t_verify = t.elapsed();
+    // tracing-forest renders a tree when its root span closes. Close it before
+    // printing any benchmark/status output so the complete trace appears first.
+    drop(trace_span);
+
+    println!(
+        "recursion program: {real_instrs} instructions (2^{} padded), compiled in {t_compile:?}",
+        guest.prog.len().trailing_zeros()
+    );
+    for &(cycles, committed) in &batch.inner_stats {
+        println!("[inner] cycles={cycles} committed=2^{:.2}", (committed as f64).log2());
+    }
     let proof_bytes = bincode::serialized_size(&recursive_proof).expect("recursive proof is serializable");
     let pow = |x: usize| {
         if x == 0 {

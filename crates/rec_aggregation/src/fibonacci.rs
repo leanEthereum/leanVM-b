@@ -10,8 +10,9 @@ use primitives::field::{F64, F192, g_pow};
 /// Prove and verify Fibonacci-in-the-exponent over a `HeapBuf` (an unrolled
 /// `mul_range` recurrence), binding `g^{F(n)}` as the public input. Prints the
 /// benchmark report.
-#[tracing::instrument(name = "Fibonacci", skip_all, fields(n, log_inv_rate))]
 pub fn run_fibonacci(n: usize, log_inv_rate: usize) {
+    let trace_span = tracing::info_span!("Fibonacci", n, log_inv_rate).entered();
+
     let (src, pi) = fibonacci_program(n);
     let program = compile(&parse(&src).unwrap());
 
@@ -27,6 +28,11 @@ pub fn run_fibonacci(n: usize, log_inv_rate: usize) {
     let t = Instant::now();
     verify(&program, &pi, &proof).unwrap();
     let t_verify = t.elapsed();
+
+    let proof_bytes = bincode::serialized_size(&proof).expect("proof is serializable");
+    // tracing-forest renders the tree when its root span closes. Close it
+    // before printing the benchmark report so the complete trace appears first.
+    drop(trace_span);
 
     println!("Fibonacci (in the exponent, i.e. modulo 2^64 - 1), N = {n}");
     println!("  cycles (VM steps)           : {}", stats.cycles);
@@ -45,7 +51,6 @@ pub fn run_fibonacci(n: usize, log_inv_rate: usize) {
         "  committed witness size      : 2^{:.3}",
         (stats.committed as f64).log2()
     );
-    let proof_bytes = bincode::serialized_size(&proof).expect("proof is serializable");
     println!("  proof size                  : {:.1} KiB", proof_bytes as f64 / 1024.0);
     println!("  proving (incl. witness gen) : {t_prove:?}");
     println!("  verifying                   : {t_verify:?}");

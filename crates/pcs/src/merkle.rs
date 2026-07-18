@@ -184,6 +184,14 @@ fn hash_leaves_batched(data: &[u8], leaf_size: usize, out: &mut [Hash]) {
 
 /// Compute the full Merkle tree (flat layout, see module docs) for `data`
 /// split into `num_leaves` equal-sized leaves.
+#[tracing::instrument(
+    name = "Hashing",
+    skip_all,
+    fields(
+        num_leaves = num_leaves,
+        leaf_size = data.len().checked_div(num_leaves).unwrap_or(0)
+    )
+)]
 pub fn merkle_tree(data: &[u8], num_leaves: usize) -> Vec<Hash> {
     assert!(
         num_leaves.is_power_of_two() && num_leaves > 0,

@@ -12,6 +12,7 @@ fiat_shamir.workspace = true
 blake3.workspace = true
 rayon.workspace = true
 serde.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 bincode.workspace = true

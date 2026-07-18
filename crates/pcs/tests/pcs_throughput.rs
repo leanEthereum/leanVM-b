@@ -12,9 +12,11 @@
 //! Run:
 //!   PCS_LOG_N=24 PCS_LOG_INV_RATE=1 cargo test --release -p pcs --test pcs_throughput -- --ignored --nocapture
 //!
-//! Set `LIG_K_TRACE=1` as well for the prover's per-phase breakdown. Large
-//! `PCS_LOG_N` needs substantial memory (the RS codeword is `2^log_inv_rate`×
-//! the witness, and the open clones the basis table each sample).
+//! Hierarchical tracing is enabled automatically (`RUST_LOG` adjusts its
+//! verbosity). Set `LIG_K_TRACE=1` as well for the legacy textual per-phase
+//! breakdown. Large `PCS_LOG_N` needs substantial memory (the RS codeword is
+//! `2^log_inv_rate`× the witness, and the open clones the basis table each
+//! sample).
 
 use std::hint::black_box;
 use std::time::Instant;
@@ -35,9 +37,10 @@ fn splitmix64(state: &mut u64) -> u64 {
 }
 
 fn env_usize(key: &str) -> Option<usize> {
-    std::env::var(key)
-        .ok()
-        .map(|s| s.parse().unwrap_or_else(|_| panic!("{key} must be a non-negative integer")))
+    std::env::var(key).ok().map(|s| {
+        s.parse()
+            .unwrap_or_else(|_| panic!("{key} must be a non-negative integer"))
+    })
 }
 
 fn median(mut xs: Vec<f64>) -> f64 {
@@ -48,6 +51,8 @@ fn median(mut xs: Vec<f64>) -> f64 {
 #[test]
 #[ignore = "manual release benchmark; drive with PCS_LOG_N / PCS_LOG_INV_RATE"]
 fn pcs_throughput() {
+    primitives::init_tracing();
+
     let log_n = env_usize("PCS_LOG_N").unwrap_or(22);
     let samples = env_usize("PCS_SAMPLES").unwrap_or(5).max(1);
 
@@ -58,6 +63,7 @@ fn pcs_throughput() {
     }
     .expect("Ligerito-K config feasible (try a larger PCS_LOG_N, e.g. >= 16)");
     let log_inv_rate = pc.log_inv_rates[0];
+    let trace_span = tracing::info_span!("PCS throughput", log_n, log_inv_rate, samples).entered();
 
     // Random F64 witness (the committed polynomial) and a random E evaluation point.
     let mut s = 0x0192_0000u64 ^ log_n as u64;
@@ -71,24 +77,32 @@ fn pcs_throughput() {
 
     let mut commit_times = Vec::with_capacity(samples);
     let mut open_times = Vec::with_capacity(samples);
-    for _ in 0..samples {
-        let t = Instant::now();
-        let (cm, pd) = commit_k(&witness, pc.initial_k, log_inv_rate);
-        commit_times.push(t.elapsed().as_secs_f64());
+    for sample in 0..samples {
+        tracing::info_span!("Sample", sample).in_scope(|| {
+            let ((cm, pd), elapsed) = tracing::info_span!("Commit").in_scope(|| {
+                let t = Instant::now();
+                let committed = commit_k(&witness, pc.initial_k, log_inv_rate);
+                (committed, t.elapsed().as_secs_f64())
+            });
+            commit_times.push(elapsed);
 
-        let mut ch = Sponge::new(b"pcs-throughput", &[]);
-        let t = Instant::now();
-        let proof = recursive_prover_with_basis_k(
-            &pc,
-            &witness,
-            b_initial.clone(),
-            target,
-            &pd.codeword,
-            &pd.merkle_tree,
-            &mut ch,
-        );
-        open_times.push(t.elapsed().as_secs_f64());
-        black_box((cm, proof));
+            let mut ch = Sponge::new(b"pcs-throughput", &[]);
+            let (proof, elapsed) = tracing::info_span!("PCS open").in_scope(|| {
+                let t = Instant::now();
+                let proof = recursive_prover_with_basis_k(
+                    &pc,
+                    &witness,
+                    b_initial.clone(),
+                    target,
+                    &pd.codeword,
+                    &pd.merkle_tree,
+                    &mut ch,
+                );
+                (proof, t.elapsed().as_secs_f64())
+            });
+            open_times.push(elapsed);
+            black_box((cm, proof));
+        });
     }
 
     let commit_s = median(commit_times);
@@ -100,12 +114,27 @@ fn pcs_throughput() {
     let gibps = |secs: f64| (data_bytes / (1u64 << 30) as f64) / secs;
     let codeword_bytes = data_bytes * (1u64 << log_inv_rate) as f64;
 
+    // tracing-forest renders the tree when its root span closes. Close it
+    // before printing the throughput report so the complete trace appears first.
+    drop(trace_span);
+
     println!("\nK-PCS throughput — 2^{log_n} variables, rate 1/2^{log_inv_rate}, median of {samples}");
-    println!("  committed data                  : {:>8.1} MiB  ({n} F64)", mib(data_bytes));
+    println!(
+        "  committed data                  : {:>8.1} MiB  ({n} F64)",
+        mib(data_bytes)
+    );
     println!("  RS codeword (encoded)           : {:>8.1} MiB", mib(codeword_bytes));
     println!("  ------------------------------------------------------------");
-    println!("  commit                          : {:>8.1} ms   ({:>6.2} GiB/s)", commit_s * 1e3, gibps(commit_s));
-    println!("  open                            : {:>8.1} ms   ({:>6.2} GiB/s)", open_s * 1e3, gibps(open_s));
+    println!(
+        "  commit                          : {:>8.1} ms   ({:>6.2} GiB/s)",
+        commit_s * 1e3,
+        gibps(commit_s)
+    );
+    println!(
+        "  open                            : {:>8.1} ms   ({:>6.2} GiB/s)",
+        open_s * 1e3,
+        gibps(open_s)
+    );
     println!("  ------------------------------------------------------------");
     println!(
         "  commit + open                   : {:>8.1} ms   ({:>6.2} GiB/s)",

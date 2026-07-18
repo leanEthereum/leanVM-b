@@ -204,10 +204,7 @@ pub fn k_configs_for(log_n: usize) -> Result<(ProverConfig, VerifierConfig), Str
 }
 
 /// As [`k_configs_for`], with an explicit L0 inverse-rate logarithm.
-pub fn k_configs_for_rate(
-    log_n: usize,
-    log_inv_rate: usize,
-) -> Result<(ProverConfig, VerifierConfig), String> {
+pub fn k_configs_for_rate(log_n: usize, log_inv_rate: usize) -> Result<(ProverConfig, VerifierConfig), String> {
     let sec = LigeritoSecurityConfig::derive_config_with_log_inv_rate(log_n + crate::LOG_PACKING, log_inv_rate)?;
     sec.to_prover_verifier_configs()
 }
@@ -286,8 +283,10 @@ pub fn commit_k(message: &[F64], log_batch_size: usize, log_inv_rate: usize) -> 
     // work when unset.
     let trace = std::env::var_os("LIG_K_TRACE").is_some();
     let t_ntt = std::time::Instant::now();
-    let ntt = AdditiveNttF64::standard(k_code);
-    ntt.forward_transform_interleaved_from_layer(&mut codeword, num_ntts, log_inv_rate);
+    tracing::info_span!("NTT", kind = "base encode", log_domain = k_code, lanes = num_ntts).in_scope(|| {
+        let ntt = AdditiveNttF64::standard(k_code);
+        ntt.forward_transform_interleaved_from_layer(&mut codeword, num_ntts, log_inv_rate);
+    });
     let ntt_elapsed = t_ntt.elapsed();
     let t_merkle = std::time::Instant::now();
 
@@ -1057,6 +1056,13 @@ fn transpose_forward_ntt_sparse_ext(
     values: &[F192],
     log_d: usize,
 ) -> Vec<F192> {
+    let _span = tracing::info_span!(
+        "NTT",
+        kind = "transpose induce",
+        log_domain = log_d,
+        nonzero = positions.len()
+    )
+    .entered();
     use rayon::prelude::*;
     use std::collections::HashMap;
     let n = 1usize << log_d;
@@ -1296,7 +1302,13 @@ pub(crate) fn ligero_commit_ext(
     // commit level, no work when unset.
     let trace = std::env::var_os("LIG_K_TRACE").is_some();
     let t_ntt = std::time::Instant::now();
-    forward_transform_interleaved_ext_from_layer(ntt, &mut mat, num_interleaved, log_inv_rate);
+    tracing::info_span!(
+        "NTT",
+        kind = "extension encode",
+        log_domain = log_block_len,
+        lanes = num_interleaved
+    )
+    .in_scope(|| forward_transform_interleaved_ext_from_layer(ntt, &mut mat, num_interleaved, log_inv_rate));
     let ntt_elapsed = t_ntt.elapsed();
     let t_merkle = std::time::Instant::now();
 
@@ -1492,10 +1504,11 @@ fn round_msg_and_eval_lsb_ext(f: &[F192], b: &[F192]) -> (SumcheckMessageK, F192
     const PAR_THRESHOLD: usize = 4096;
     let half = n / 2;
     let (u_0, u_2, y) = if half < PAR_THRESHOLD {
-        (0..half).map(term).fold(
-            (F192::ZERO, F192::ZERO, F192::ZERO),
-            |(a0, a2, ay), (b0, b2, by)| (a0 + b0, a2 + b2, ay + by),
-        )
+        (0..half)
+            .map(term)
+            .fold((F192::ZERO, F192::ZERO, F192::ZERO), |(a0, a2, ay), (b0, b2, by)| {
+                (a0 + b0, a2 + b2, ay + by)
+            })
     } else {
         (0..half)
             .into_par_iter()
@@ -1701,11 +1714,13 @@ pub struct SumcheckProverK<'a> {
     combined_basis: Vec<F192>,
     t_r: F192,
     transcript: Vec<SumcheckMessageK>,
+    round: usize,
     pending_glue: Option<(Vec<F192>, F192)>,
 }
 
 impl<'a> SumcheckProverK<'a> {
     pub fn new(f: &'a [F64], b1: Vec<F192>, h1: F192) -> (Self, SumcheckMessageK) {
+        let _span = tracing::info_span!("Sumcheck round", round = 0, log_size = f.len().trailing_zeros()).entered();
         assert_eq!(f.len(), b1.len());
         let msg = round_msg_lsb_base(f, &b1);
         let mut inst = Self {
@@ -1713,6 +1728,7 @@ impl<'a> SumcheckProverK<'a> {
             combined_basis: b1,
             t_r: h1,
             transcript: Vec::new(),
+            round: 0,
             pending_glue: None,
         };
         inst.transcript.push(msg);
@@ -1720,6 +1736,12 @@ impl<'a> SumcheckProverK<'a> {
     }
 
     pub fn fold(&mut self, r: F192) -> SumcheckMessageK {
+        self.round += 1;
+        let log_size = match &self.f {
+            WitnessK::Base(f) => f.len().trailing_zeros(),
+            WitnessK::Ext(f) => f.len().trailing_zeros(),
+        };
+        let _span = tracing::info_span!("Sumcheck round", round = self.round, log_size).entered();
         let (nf, nb, msg) = match &self.f {
             WitnessK::Base(f) => fold_and_msg_lsb_base(f, &self.combined_basis, r),
             WitnessK::Ext(f) => fold_and_msg_lsb_ext(f, &self.combined_basis, r),
@@ -2043,7 +2065,8 @@ pub fn recursive_prover_with_basis_k(
     let ood_count = |lvl: usize| -> usize { config.ood_samples.get(lvl).copied().unwrap_or(0) };
 
     let _t = std::time::Instant::now();
-    let (mut sc_prover, start_msg) = SumcheckProverK::new(witness, b_initial, target);
+    let sumcheck_span = tracing::info_span!("Sumcheck");
+    let (mut sc_prover, start_msg) = sumcheck_span.in_scope(|| SumcheckProverK::new(witness, b_initial, target));
     observe_ext(sponge, start_msg.u_0);
     observe_ext(sponge, start_msg.u_2);
 
@@ -2057,11 +2080,12 @@ pub fn recursive_prover_with_basis_k(
             fold_grinding_nonces.push(sponge.grind_pow(bits));
         }
         let r_j = sample_ext(sponge);
-        let msg = sc_prover.fold(r_j);
+        let msg = sumcheck_span.in_scope(|| sc_prover.fold(r_j));
         observe_ext(sponge, msg.u_0);
         observe_ext(sponge, msg.u_2);
         r_lane_fold.push(r_j);
     }
+    drop(sumcheck_span);
     if trace {
         t_init_sumcheck += _t.elapsed();
     }
@@ -2160,6 +2184,7 @@ pub fn recursive_prover_with_basis_k(
         let k_i = config.level_ks[i];
         let mut level_rs = Vec::with_capacity(k_i);
         let _t = std::time::Instant::now();
+        let sumcheck_span = tracing::info_span!("Sumcheck");
         for j in 0..k_i {
             // These folds fold level i+1's commitment; tapered grinding as in
             // the L0 loop.
@@ -2168,11 +2193,12 @@ pub fn recursive_prover_with_basis_k(
                 fold_grinding_nonces.push(sponge.grind_pow(bits));
             }
             let ri = sample_ext(sponge);
-            let msg = sc_prover.fold(ri);
+            let msg = sumcheck_span.in_scope(|| sc_prover.fold(ri));
             observe_ext(sponge, msg.u_0);
             observe_ext(sponge, msg.u_2);
             level_rs.push(ri);
         }
+        drop(sumcheck_span);
         if trace {
             t_sumcheck_folds += _t.elapsed();
         }
@@ -2675,9 +2701,7 @@ pub fn recursive_verifier_with_basis_k(
             if tx_idx != proof.sumcheck_transcript.len() {
                 return false;
             }
-            if ood_idx != proof.ood_values.len()
-                || fold_nonce_idx != proof.fold_grinding_nonces.len()
-            {
+            if ood_idx != proof.ood_values.len() || fold_nonce_idx != proof.fold_grinding_nonces.len() {
                 return false;
             }
             let yr = &proof.final_proof.yr;
@@ -3136,9 +3160,7 @@ where
             if tx_idx != proof.sumcheck_transcript.len() {
                 return false;
             }
-            if ood_idx != proof.ood_values.len()
-                || fold_nonce_idx != proof.fold_grinding_nonces.len()
-            {
+            if ood_idx != proof.ood_values.len() || fold_nonce_idx != proof.fold_grinding_nonces.len() {
                 return false;
             }
             let yr = &proof.final_proof.yr;
@@ -3226,9 +3248,7 @@ where
 
             let mut ood_residuals = Vec::with_capacity(ood_ctxs.len());
             for ctx in &ood_ctxs {
-                if ctx.z.len() < yr_log_n
-                    || ctx.ris_start + (ctx.z.len() - yr_log_n) > ris.len()
-                {
+                if ctx.z.len() < yr_log_n || ctx.ris_start + (ctx.z.len() - yr_log_n) > ris.len() {
                     return false;
                 }
                 let folded = ctx.z.len() - yr_log_n;
@@ -3371,7 +3391,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ligerito::{default_config, default_verifier_config, QUERY_GRINDING_BITS};
+    use crate::ligerito::{QUERY_GRINDING_BITS, default_config, default_verifier_config};
 
     fn splitmix64(state: &mut u64) -> u64 {
         *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
