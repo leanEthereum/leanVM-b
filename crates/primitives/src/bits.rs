@@ -69,6 +69,7 @@ fn bit_transpose_64bytes_scalar(input: &[u8; 64], output: &mut [u8; 64]) {
 /// `output[b*8..]`. Bit `(x, t)` of the gathered word lands at `(t, x)` —
 /// exactly `output[b*8 + t] bit x = input[x*8 + b] bit t`.
 #[cfg(not(target_arch = "aarch64"))]
+#[cfg_attr(all(target_arch = "x86_64", target_feature = "avx512vbmi"), allow(dead_code))]
 #[inline]
 fn bit_transpose_64bytes_u64(input: &[u8; 64], output: &mut [u8; 64]) {
     for b_chunk in 0..8 {
@@ -89,6 +90,43 @@ fn bit_transpose_64bytes_u64(input: &[u8; 64], output: &mut [u8; 64]) {
         let t = (y ^ (y >> 28)) & 0x00000000F0F0F0F0;
         y ^= t ^ (t << 28);
         output[b_chunk * 8..b_chunk * 8 + 8].copy_from_slice(&y.to_le_bytes());
+    }
+}
+
+/// AVX-512VBMI 64-byte bit-transpose. `vpermb` first gathers the eight
+/// strided byte-columns into eight `u64` lanes; three lane-wise masked-swap
+/// rounds then transpose each gathered 8x8 bit matrix in parallel.
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512vbmi"))]
+#[target_feature(enable = "avx512vbmi", enable = "avx512f")]
+unsafe fn bit_transpose_64bytes_avx512vbmi(input: &[u8; 64], output: &mut [u8; 64]) {
+    use core::arch::x86_64::*;
+
+    // Each consecutive eight indices select byte-column b from input rows
+    // x=0..7, producing one gathered u64 lane per column.
+    const IDX: [u8; 64] = [
+        0, 8, 16, 24, 32, 40, 48, 56, 1, 9, 17, 25, 33, 41, 49, 57, 2, 10, 18, 26, 34, 42, 50, 58, 3, 11, 19, 27, 35,
+        43, 51, 59, 4, 12, 20, 28, 36, 44, 52, 60, 5, 13, 21, 29, 37, 45, 53, 61, 6, 14, 22, 30, 38, 46, 54, 62, 7, 15,
+        23, 31, 39, 47, 55, 63,
+    ];
+
+    unsafe {
+        let bytes = _mm512_loadu_si512(input.as_ptr().cast());
+        let indices = _mm512_loadu_si512(IDX.as_ptr().cast());
+        let mut y = _mm512_permutexvar_epi8(indices, bytes);
+
+        let mask1 = _mm512_set1_epi64(0x00AA00AA00AA00AA);
+        let t = _mm512_and_si512(_mm512_xor_si512(y, _mm512_srli_epi64::<7>(y)), mask1);
+        y = _mm512_xor_si512(y, _mm512_xor_si512(t, _mm512_slli_epi64::<7>(t)));
+
+        let mask2 = _mm512_set1_epi64(0x0000CCCC0000CCCC);
+        let t = _mm512_and_si512(_mm512_xor_si512(y, _mm512_srli_epi64::<14>(y)), mask2);
+        y = _mm512_xor_si512(y, _mm512_xor_si512(t, _mm512_slli_epi64::<14>(t)));
+
+        let mask3 = _mm512_set1_epi64(0x00000000F0F0F0F0);
+        let t = _mm512_and_si512(_mm512_xor_si512(y, _mm512_srli_epi64::<28>(y)), mask3);
+        y = _mm512_xor_si512(y, _mm512_xor_si512(t, _mm512_slli_epi64::<28>(t)));
+
+        _mm512_storeu_si512(output.as_mut_ptr().cast(), y);
     }
 }
 
@@ -171,7 +209,12 @@ pub fn bit_transpose_64bytes(input: &[u8; 64], output: &mut [u8; 64]) {
     unsafe {
         bit_transpose_64bytes_neon(input, output)
     }
-    #[cfg(not(target_arch = "aarch64"))]
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx512vbmi"))]
+    // SAFETY: AVX-512VBMI is statically enabled at compile time.
+    unsafe {
+        bit_transpose_64bytes_avx512vbmi(input, output)
+    }
+    #[cfg(not(any(target_arch = "aarch64", all(target_arch = "x86_64", target_feature = "avx512vbmi"))))]
     bit_transpose_64bytes_u64(input, output);
 }
 
@@ -290,6 +333,26 @@ mod tests {
             bit_transpose_64bytes_scalar(&input, &mut out_scalar);
             bit_transpose_64bytes_u64(&input, &mut out_u64);
             assert_eq!(out_scalar, out_u64);
+        }
+    }
+
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx512vbmi"))]
+    #[test]
+    fn avx512vbmi_bit_transpose_matches_scalar() {
+        let mut seed = 0xB17_BB17u64;
+        let mut next = || {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (seed >> 33) as u8
+        };
+        for _ in 0..64 {
+            let mut input = [0u8; 64];
+            input.iter_mut().for_each(|b| *b = next());
+            let mut out_scalar = [0u8; 64];
+            let mut out_avx512vbmi = [0u8; 64];
+            bit_transpose_64bytes_scalar(&input, &mut out_scalar);
+            // SAFETY: this test is compiled only when AVX-512VBMI is enabled.
+            unsafe { bit_transpose_64bytes_avx512vbmi(&input, &mut out_avx512vbmi) };
+            assert_eq!(out_scalar, out_avx512vbmi, "bit_transpose disagreement");
         }
     }
 
