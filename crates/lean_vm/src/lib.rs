@@ -17,10 +17,10 @@
 //! - [`constraints`] — the per-table degree-2 field zerocheck (§4.1).
 //! - [`tables`] — the six instruction tables (columns, flushes, constraints).
 //! - [`cpu`] — whole-program assembly, control flow, and the prove/verify entry points.
-//! - [`blake3_flock`] — the `BLAKE3` glue: flock's R1CS validity proof over the same commitment.
+//! - [`sha256_flock`] — the `SHA256` glue: flock's R1CS validity proof over the same commitment.
 //! - [`vmhash`]: VM-native hashing (the 64→32 compression and the length-in-IV Merkle–Damgård slice hash).
 
-pub mod blake3_flock;
+pub mod sha256_flock;
 pub mod constraints;
 pub mod cpu;
 pub mod gkr;

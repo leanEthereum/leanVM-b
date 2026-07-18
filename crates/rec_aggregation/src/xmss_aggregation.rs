@@ -25,7 +25,7 @@ fn cell(w: F64) -> F192 {
     F192::from(w)
 }
 
-/// A 16-byte native value in the canonical BLAKE3 subspace of F192: `c0`
+/// A 16-byte native value in the canonical SHA256 subspace of F192: `c0`
 /// carries bytes 0..8, `c1` bytes 8..16, and `c2` is zero.
 fn val16(b: &[u8]) -> F192 {
     F192::new(word(&b[..8]).0, word(&b[8..16]).0, 0)
@@ -36,7 +36,7 @@ fn pair(b: &[u8]) -> Vec<F192> {
     vec![val16(b)]
 }
 
-/// A 32-byte hash block as two canonical 128-bit BLAKE3 cells.
+/// A 32-byte hash block as two canonical 128-bit SHA256 cells.
 fn quad(b: &[u8]) -> Vec<F192> {
     vec![val16(&b[..16]), val16(&b[16..32])]
 }
@@ -164,14 +164,14 @@ pub fn run_xmss_aggregation(n: usize, log_inv_rate: usize) {
     program.set_witness("chain_starts", chain_starts_s);
     program.set_witness("siblings", sib_s);
 
-    // Pre-build the BLAKE3 R1CS setup (the circuit-construction cost, ~hundreds of
+    // Pre-build the SHA256 R1CS setup (the circuit-construction cost, ~hundreds of
     // ms) OUTSIDE the timed region. It depends only on the compression count (the
     // circuit shape), not the witness, and in a real deployment is built once per
     // shape and reused across every proof — so it is one-time preprocessing (like a
     // proving key), not part of per-proof proving throughput. Warming it here makes
     // the timing below reflect steady-state repeated proving. The compression count
     // is the asserted `181 + 158·n`.
-    lean_vm::blake3_flock::warm_setup(181 + 158 * n);
+    lean_vm::sha256_flock::warm_setup(181 + 158 * n);
 
     let t = Instant::now();
     let (proof, stats) = prove(&program, want, log_inv_rate);
@@ -182,7 +182,7 @@ pub fn run_xmss_aggregation(n: usize, log_inv_rate: usize) {
 
     // 181 fixed blocks + per signature: 1 (pk absorb) + 157 (the native
     // verifier's constant).
-    assert_eq!(stats.counts[5], 181 + 158 * n, "BLAKE3 instruction count");
+    assert_eq!(stats.counts[5], 181 + 158 * n, "SHA256 instruction count");
     let bad = [want[0], want[1] + F192::ONE];
     assert!(verify(&program, &bad, &proof).is_err());
 
@@ -206,7 +206,7 @@ pub fn run_xmss_aggregation(n: usize, log_inv_rate: usize) {
         pow(stats.cycles),
         per(stats.cycles)
     );
-    for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3"]
+    for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "SHA256"]
         .iter()
         .zip(&stats.counts)
     {

@@ -41,7 +41,7 @@ lean_compiler = { path = "crates/lean_compiler" }
 rec_aggregation = { path = "crates/rec_aggregation" }
 xmss = { path = "crates/xmss" }
 rayon = "1.10"
-blake3 = "1.5"
+sha2 = { version = "0.10", features = ["asm", "compress"] }
 serde = { version = "1", features = ["derive"] }
 bincode = "1"
 rand = "0.9"

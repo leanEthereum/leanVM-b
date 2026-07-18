@@ -23,7 +23,7 @@ pub enum Coord {
     /// A committed column, value `col[z]`.
     Col(usize),
     /// The free increment `g^k · col[z]` (a virtual column, §1): `k = 1` for the
-    /// count/state steps, `k ∈ {1,2,3}` for BLAKE3's consecutive-word successors.
+    /// count/state steps, `k ∈ {1,2,3}` for SHA256's consecutive-word successors.
     GCol(usize, u32),
     /// The index column `g^z` (§5.3), free via the factored MLE.
     Index,

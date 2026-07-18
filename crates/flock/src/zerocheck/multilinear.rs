@@ -1253,7 +1253,7 @@ mod tests {
     /// zero, then asserts the `_padded` kernel produces the same
     /// `(a_mlv, b_mlv, msg_1, msg_inf)` as the dense path.
     ///
-    /// Covers all three hash padding shapes: BLAKE3 (k_log=14, useful=15409),
+    /// Covers all three hash padding shapes: SHA256 (k_log=14, useful=15409),
     /// SHA-2 (k_log=15, useful=31401), Keccak (k_log=16, useful=42560).
     #[test]
     fn uni_skip_fold_round_pair_padded_matches_dense() {

@@ -1,5 +1,5 @@
 // Credit: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
-//! Binary Merkle tree with BLAKE3.
+//! Binary Merkle tree with one fixed-IV, unpadded SHA-256 compression per edge.
 //!
 //! Layout for `num_leaves = 2^k` leaves:
 //!   tree[0..num_leaves]                              = leaf hashes (level k)
@@ -10,14 +10,15 @@
 //! Total nodes: `2·num_leaves − 1`. The flat layout keeps the tree contiguous
 //! in memory for cheap Merkle-path extraction later.
 //!
-//! Hashing is **VM-native** — built only from the fixed 64→32 BLAKE3 compression
-//! `f(a,b) = BLAKE3(a‖b)` that leanVM-b's `Blake3` opcode computes (see
+//! Hashing is **VM-native** — built only from the fixed 64→32 SHA-256 compression
+//! `f(a,b) = SHA256_Compress(IV, a‖b)` that leanVM-b's legacy-named `Sha256`
+//! opcode computes (see
 //! [`compress`]), so every node hash a verifier recomputes can be replayed by a
 //! program running on the VM (the prerequisite for recursion). An internal node
 //! ([`hash_pair`]) is one compression. A leaf ([`hash_leaf`]) is a **Merkle–
 //! Damgård chain with the byte length in the IV** — one compression per 32-byte
-//! block — NOT a one-shot `blake3::hash` (whose multi-block chunk tree, flags,
-//! and counter the opcode cannot express). Bulk hashing (independent leaves,
+//! block — NOT a standard padded SHA-256 hash (which would add another
+//! compression for a 64-byte message). Bulk hashing (independent leaves,
 //! independent nodes within a level) is parallelised across nodes with rayon.
 //!
 //! No domain separation between leaf and internal hashes — but the length-in-IV
@@ -54,15 +55,15 @@ pub fn scalars_to_hash(scalars: &[F192]) -> Hash {
     hash
 }
 
-/// The VM's 64→32 BLAKE3 compression `f(a, b) = BLAKE3(a‖b)` on two 32-byte
-/// halves — exactly leanVM-b's `Blake3` opcode / `vmhash::compress`. THE
+/// The VM's 64→32 SHA-256 compression `f(a,b) = SHA256_Compress(IV,a‖b)` on two 32-byte
+/// halves — exactly leanVM-b's `Sha256` opcode / `vmhash::compress`. THE
 /// primitive; [`hash_pair`] and the [`hash_leaf`] MD chain are both just this.
 #[inline]
 fn compress(a: &[u8; 32], b: &[u8; 32]) -> Hash {
     let mut buf = [0u8; 64];
     buf[..32].copy_from_slice(a);
     buf[32..].copy_from_slice(b);
-    *blake3::hash(&buf).as_bytes()
+    primitives::sha256::compress(&buf)
 }
 
 /// `g^k`, the `K = GF(2^64)` generator to the `k`-th power by square-and-multiply
@@ -89,8 +90,8 @@ fn g_pow(k: usize) -> F64 {
 /// size — non-length-extendable, no finalization block. On K-word leaves (the
 /// callers pass the words serialized little-endian) this is byte-identical to
 /// `vmhash::hash_slice(words)`, so a recursive verifier reproduces every leaf
-/// with the `Blake3` opcode alone. Costs `⌈len/32⌉` compressions (~2× a one-shot
-/// `blake3::hash`, whose intermediate-block flags the opcode cannot reproduce).
+/// with the `Sha256` opcode alone. Costs `⌈len/32⌉` compressions (~2× a one-shot
+/// a standard padded hash, whose padding compression the opcode omits).
 #[inline]
 pub fn hash_leaf(data: &[u8]) -> Hash {
     // IV = (g^{num_bytes}, 0, 0, 0) as 32 bytes: g^{num_bytes} in the low K word.
@@ -112,28 +113,11 @@ pub fn hash_pair(left: &Hash, right: &Hash) -> Hash {
     compress(left, right)
 }
 
-// The VM `compress` = `blake3::hash(64B)` is a ROOT single-block chunk. blake3's
-// SIMD `hash_many` reproduces it exactly when the last block carries the ROOT
-// flag (verified in tests), so many independent leaf compressions batch 4–16×.
-const B3_IV: [u32; 8] = [
-    0x6a09_e667,
-    0xbb67_ae85,
-    0x3c6e_f372,
-    0xa54f_f53a,
-    0x510e_527f,
-    0x9b05_688c,
-    0x1f83_d9ab,
-    0x5be0_cd19,
-];
-const B3_CHUNK_START: u8 = 1;
-const B3_CHUNK_END: u8 = 2;
-const B3_ROOT: u8 = 8;
-
 /// Hash all `out.len()` equal-size leaves with the VM-native MD slice hash, but
-/// SIMD-batch each MD step's `compress` across leaves via blake3's `hash_many`.
+/// SIMD-batch each MD step's `compress` across leaves via the ARM SHA2 kernel.
 /// Byte-identical to calling [`hash_leaf`] per leaf (same IV, same
-/// `⌈len/32⌉`-block chain, last block zero-padded) — only the per-call `blake3::hash`
-/// overhead and the lack of cross-leaf SIMD are removed.
+/// `⌈len/32⌉`-block chain, last block zero-padded) while batching independent
+/// calls through the hardware SHA-256 backend.
 fn hash_leaves_batched(data: &[u8], leaf_size: usize, out: &mut [Hash]) {
     use rayon::prelude::*;
     // Leaves per SIMD group: enough to fill the batch + amortize, small enough to
@@ -146,12 +130,11 @@ fn hash_leaves_batched(data: &[u8], leaf_size: usize, out: &mut [Hash]) {
     iv[..8].copy_from_slice(&iv0.0.to_le_bytes());
 
     out.par_chunks_mut(GROUP).enumerate().for_each(|(gi, out_group)| {
-        let plat = blake3::platform::Platform::detect();
         let n = out_group.len();
         let base = gi * GROUP * leaf_size;
         let mut cvs: Vec<[u8; 32]> = vec![iv; n];
         let mut blocks: Vec<[u8; 64]> = vec![[0u8; 64]; n];
-        let mut hm_out = vec![0u8; n * 32];
+        let mut hm_out = vec![[0u8; 32]; n];
         for j in 0..n_blocks {
             for (i, blk) in blocks.iter_mut().enumerate() {
                 blk[..32].copy_from_slice(&cvs[i]);
@@ -161,19 +144,9 @@ fn hash_leaves_batched(data: &[u8], leaf_size: usize, out: &mut [Hash]) {
                 blk[32..32 + len].copy_from_slice(&data[off..end]);
                 blk[32 + len..].fill(0); // zero-pad an odd tail (matches hash_leaf)
             }
-            let refs: Vec<&[u8; 64]> = blocks.iter().collect();
-            plat.hash_many::<64>(
-                &refs,
-                &B3_IV,
-                0,
-                blake3::IncrementCounter::No,
-                0,
-                B3_CHUNK_START,
-                B3_CHUNK_END | B3_ROOT,
-                &mut hm_out,
-            );
+            primitives::sha256::compress_many(&blocks, &mut hm_out);
             for (i, cv) in cvs.iter_mut().enumerate() {
-                cv.copy_from_slice(&hm_out[i * 32..i * 32 + 32]);
+                *cv = hm_out[i];
             }
         }
         for (o, cv) in out_group.iter_mut().zip(cvs.iter()) {
@@ -211,10 +184,9 @@ pub fn merkle_tree(data: &[u8], num_leaves: usize) -> Vec<Hash> {
     let mut tree: Vec<Hash> = primitives::alloc_uninit_vec(total_nodes);
 
     // 1. Leaves — the VM-native MD slice hash (one `compress` per 32-byte block),
-    // but the per-step compressions are SIMD-batched ACROSS leaves via blake3's
-    // `hash_many` (byte-identical to per-leaf `hash_leaf`, so recursion
-    // reproducibility is preserved) — recovering the one-shot-`blake3::hash` speed
-    // the VM-native chain otherwise loses to per-call overhead + no SIMD.
+    // but the per-step compressions are SIMD-batched ACROSS leaves via the
+    // hardware SHA2 kernel (byte-identical to per-leaf `hash_leaf`, so
+    // recursion reproducibility is preserved).
     hash_leaves_batched(data, leaf_size, &mut tree[..num_leaves]);
 
     // 2. Internal levels — parallel within a level, sequential across levels.
@@ -231,15 +203,23 @@ pub fn merkle_tree(data: &[u8], num_leaves: usize) -> Vec<Hash> {
         let (read, rest) = tree[read_start..].split_at_mut(read_len);
         let write = &mut rest[..next_len];
 
-        if write.len() <= SERIAL_LEVEL_NODES {
-            for (i, out) in write.iter_mut().enumerate() {
-                *out = hash_pair(&read[2 * i], &read[2 * i + 1]);
+        const GROUP: usize = 4096;
+        let hash_group = |base: usize, out: &mut [Hash]| {
+            let mut blocks = vec![[0u8; 64]; out.len()];
+            for (j, block) in blocks.iter_mut().enumerate() {
+                let i = base + j;
+                block[..32].copy_from_slice(&read[2 * i]);
+                block[32..].copy_from_slice(&read[2 * i + 1]);
             }
+            primitives::sha256::compress_many(&blocks, out);
+        };
+        if write.len() <= SERIAL_LEVEL_NODES {
+            hash_group(0, write);
         } else {
             write
-                .par_iter_mut()
+                .par_chunks_mut(GROUP)
                 .enumerate()
-                .for_each(|(i, out)| *out = hash_pair(&read[2 * i], &read[2 * i + 1]));
+                .for_each(|(g, out)| hash_group(g * GROUP, out));
         }
 
         read_start += read_len;
@@ -571,12 +551,9 @@ mod vmhash_batch_tests {
         tree
     }
 
-    /// blake3's SIMD `hash_many` with the ROOT flag must reproduce
-    /// `blake3::hash(64B)` (the VM `compress`) exactly — the invariant the batched
-    /// leaf hasher relies on.
+    /// The multi-buffer SHA-256 kernel must reproduce the single-block primitive.
     #[test]
     fn hash_many_root_matches_hash() {
-        let plat = blake3::platform::Platform::detect();
         let mut b0 = [0u8; 64];
         for (i, x) in b0.iter_mut().enumerate() {
             *x = (i as u8).wrapping_mul(7).wrapping_add(1);
@@ -585,20 +562,11 @@ mod vmhash_batch_tests {
         for (i, x) in b1.iter_mut().enumerate() {
             *x = (i as u8).wrapping_mul(13).wrapping_add(3);
         }
-        let inputs: [&[u8; 64]; 2] = [&b0, &b1];
-        let mut out = [0u8; 64];
-        plat.hash_many::<64>(
-            &inputs,
-            &B3_IV,
-            0,
-            blake3::IncrementCounter::No,
-            0,
-            B3_CHUNK_START,
-            B3_CHUNK_END | B3_ROOT,
-            &mut out,
-        );
-        assert_eq!(&out[..32], blake3::hash(&b0).as_bytes());
-        assert_eq!(&out[32..], blake3::hash(&b1).as_bytes());
+        let inputs = [b0, b1];
+        let mut out = [[0u8; 32]; 2];
+        primitives::sha256::compress_many(&inputs, &mut out);
+        assert_eq!(out[0], primitives::sha256::compress(&b0));
+        assert_eq!(out[1], primitives::sha256::compress(&b1));
     }
 
     /// The SIMD-batched `merkle_tree` must be byte-identical to the per-leaf

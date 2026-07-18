@@ -85,12 +85,12 @@ Instruction & Operands & Semantics\\
 \texttt{SET\_CONSTANT} & $[o,k]$         & $\loc{o}=k$ \quad($k$ a $192$-bit immediate)\\
 \texttt{DEREF}         & $[\alpha,\beta,\gamma;\,s]$ & $\mem[\loc{\alpha}\cdot\beta]=\srcsel{s}$\\
 \texttt{JUMP}          & $[o_c,o_d,o_f]$ & conditional jump (below)\\
-\texttt{BLAKE3}        & $[o_0,o_1,o_2,o_3,o_C]$ & $c=\mathrm{BLAKE3}(a,b)$ on independently-addressed single-cell chunks (below)\\
+\texttt{SHA256}        & $[o_0,o_1,o_2,o_3,o_C]$ & $c=\mathrm{SHA256}(a,b)$ on independently-addressed single-cell chunks (below)\\
 \hline
 \end{tabular}
 \end{center}
 
-\texttt{BLAKE3} compresses $64$ bytes to $32$. Each $128$-bit chunk occupies one full $\E$ memory cell through the canonical embedding $a_0+a_1y\mapsto a_0+a_1y+0y^2$; using a cell as a BLAKE3 input or output therefore constrains its top limb to zero. References $o_0,\dots,o_3$ independently address the four input cells, with $\loc{o_i}=\fp\cdot o_i$. The operands are $a=\loc{o_0}\Vert\loc{o_1}$ and $b=\loc{o_2}\Vert\loc{o_3}$. The input cells need not be adjacent. The digest occupies the consecutive cells $\loc{o_C}$ and $\loc{\gen\cdot o_C}$. Each row therefore accesses six cells. The BLAKE3 table (\S\ref{sec:tab-blake3}) connects them to the memory, state, and bytecode interactions. Flock~\cite{flock} proves $c=\mathrm{BLAKE3}(a,b)$ with an R1CS proof of the compression circuit.
+\texttt{SHA256} compresses $64$ bytes to $32$. Each $128$-bit chunk occupies one full $\E$ memory cell through the canonical embedding $a_0+a_1y\mapsto a_0+a_1y+0y^2$; using a cell as a SHA256 input or output therefore constrains its top limb to zero. References $o_0,\dots,o_3$ independently address the four input cells, with $\loc{o_i}=\fp\cdot o_i$. The operands are $a=\loc{o_0}\Vert\loc{o_1}$ and $b=\loc{o_2}\Vert\loc{o_3}$. The input cells need not be adjacent. The digest occupies the consecutive cells $\loc{o_C}$ and $\loc{\gen\cdot o_C}$. Each row therefore accesses six cells. The SHA256 table (\S\ref{sec:tab-sha256}) connects them to the memory, state, and bytecode interactions. Flock~\cite{flock} proves $c=\mathrm{SHA256}(a,b)$ with an R1CS proof of the compression circuit.
 
 \texttt{DEREF} stores, at the dereferenced address $\loc{\alpha}\cdot\beta$, a value chosen by a \emph{store mode} $s\in\{\texttt{deref\_cell}[\gamma],\texttt{deref\_pc},\texttt{deref\_fp}\}$:
 \[
@@ -108,7 +108,7 @@ The \texttt{deref\_pc} and \texttt{deref\_fp} modes let a caller save its return
 \paragraph{Words used as addresses.} A memory word is $192$-bit, while $\pc$, $\fp$, and addresses are in $\K$. Three reads produce addresses or registers: the \texttt{DEREF} pointer $\loc{\alpha}$, the \texttt{JUMP} destination $\loc{o_d}$, and the \texttt{JUMP} frame $\loc{o_f}$. Each must have both nonconstant tower limbs zero. The address and selection constraints (\S\ref{sec:tab-deref}, \S\ref{sec:tab-jump}) equate these words, possibly multiplied by a $\K$-operand, to a $\K$ column.
 
 
-\iffalse % Deferred future instructions (u32, BLAKE3): commented out for now.
+\iffalse % Deferred future instructions (u32, SHA256): commented out for now.
 \noindent The remaining instructions are listed to fix the eventual ISA but are deferred to a later version.
 \begin{center}
 \begin{tabular}{lll}
@@ -155,7 +155,7 @@ Committed columns and their truth tables are $\K$-valued; extensions are evaluat
 
 \subsection{Stacking}\label{sec:stacking}
 
-No column is committed on its own. The columns are $\K$-valued multilinears over boolean hypercubes of various sizes, concatenated into one witness $q$; one region of the stack is flock's packed Boolean witness $q_\pkd$, $64$ bits per $\K$-word (\S\ref{sec:tab-blake3}). Order the $T$ columns $\widehat P_1,\dots,\widehat P_T$ by size, $\kappa_1\ge\dots\ge\kappa_T$ variables, and lay their truth tables end to end,
+No column is committed on its own. The columns are $\K$-valued multilinears over boolean hypercubes of various sizes, concatenated into one witness $q$; one region of the stack is flock's packed Boolean witness $q_\pkd$, $64$ bits per $\K$-word (\S\ref{sec:tab-sha256}). Order the $T$ columns $\widehat P_1,\dots,\widehat P_T$ by size, $\kappa_1\ge\dots\ge\kappa_T$ variables, and lay their truth tables end to end,
 \[
   q \;=\; P_1 \,\Vert\, P_2 \,\Vert\,\dots\,\Vert\, P_T \,\Vert\, 0,
 \]
@@ -268,7 +268,7 @@ GKR (\S\ref{sec:gkr}) reduces one side of \eqref{eq:gp} to a single evaluation $
 \[
   \widetilde V_0(\zeta)\;=\;\sum_b \eq(\mathsf{sel}_b,\zeta^{b}_{\mathrm{hi}})\Bigl(\gamma-\sum_{i=0}^{m-1}\alpha^{i}\,\widetilde c_{b,i}(\zeta^{b}_{\mathrm{lo}})\Bigr)\;+\;\Bigl(1-\sum_b\eq(\mathsf{sel}_b,\zeta^{b}_{\mathrm{hi}})\Bigr).
 \]
-The verifier forms the selectors $\eq(\mathsf{sel}_b,\cdot)$ and the constant coordinates itself. Each remaining $\widetilde c_{b,i}(\zeta^{b}_{\mathrm{lo}})$ is settled by its kind: a committed column by a direct opening (\S\ref{sec:prelim}), a virtual column off the committed columns it images (so $\gen\cdot\pc$ adds nothing beyond the $\pc$ opening), a \texttt{BLAKE3} value coordinate by a point evaluation of $q_\pkd$ at its slot (\S\ref{sec:tab-blake3}), the index column by \S\ref{sec:idxcol}. A committed column feeding several equal-size blocks is opened once, at their shared point $\zeta_{\mathrm{lo}}$.
+The verifier forms the selectors $\eq(\mathsf{sel}_b,\cdot)$ and the constant coordinates itself. Each remaining $\widetilde c_{b,i}(\zeta^{b}_{\mathrm{lo}})$ is settled by its kind: a committed column by a direct opening (\S\ref{sec:prelim}), a virtual column off the committed columns it images (so $\gen\cdot\pc$ adds nothing beyond the $\pc$ opening), a \texttt{SHA256} value coordinate by a point evaluation of $q_\pkd$ at its slot (\S\ref{sec:tab-sha256}), the index column by \S\ref{sec:idxcol}. A committed column feeding several equal-size blocks is opened once, at their shared point $\zeta_{\mathrm{lo}}$.
 
 \subsection{State interaction}\label{sec:state}
 
@@ -288,7 +288,7 @@ The interaction carries $\tup{\dsep{MEM},\addr,\cnt,\val}$: the address and coun
 \end{itemize}
 \paragraph{Counts must be nonzero.} A read multiplies its count by $\gen$, pulling $\tup{\dsep{MEM},a,\cnt,v}$ and pushing $\tup{\dsep{MEM},a,\gen\cdot\cnt,v}$. If $\cnt=0$ these coincide (as $\gen\cdot0=0$) and cancel, so the read disappears from the bus and its $v$ is never checked against $\mem[a]$. Every count must therefore be nonzero, i.e.\ a power of $\gen$. A third grand product, over all count columns (memory and bytecode), enforces this: its root is nonzero iff every count is (\S\ref{sec:gkr}).
 
-\paragraph{Counts must not wrap.} A count is the power $\gen^{t}$ after $t$ reads, so the total number of reads must stay below $\operatorname{ord}(\gen)=2^{64}-1$. At $64$ bits this is not waved through as automatic. The protocol fixes public \emph{instance caps}, and the verifier checks the announced instance against them before running any reduction (\S\ref{sec:e2e-unrolled}): memory size $16\le h\le 32$ (\S\ref{sec:vm}), each table's row count below $2^{32}$, and bytecode length at most $2^{32}$. A row makes at most $7$ reads (the \texttt{BLAKE3} row: six memory, one bytecode), so every \emph{admissible} instance performs
+\paragraph{Counts must not wrap.} A count is the power $\gen^{t}$ after $t$ reads, so the total number of reads must stay below $\operatorname{ord}(\gen)=2^{64}-1$. At $64$ bits this is not waved through as automatic. The protocol fixes public \emph{instance caps}, and the verifier checks the announced instance against them before running any reduction (\S\ref{sec:e2e-unrolled}): memory size $16\le h\le 32$ (\S\ref{sec:vm}), each table's row count below $2^{32}$, and bytecode length at most $2^{32}$. A row makes at most $7$ reads (the \texttt{SHA256} row: six memory, one bytecode), so every \emph{admissible} instance performs
 \[
   R\;\le\;7\cdot 6\cdot 2^{32}\;<\;2^{39}
 \]
@@ -419,16 +419,16 @@ Alone among the tables, \texttt{JUMP} commits its successors.
   \end{itemize}
 \end{itemize}
 
-\subsection{\texttt{BLAKE3}}\label{sec:tab-blake3}
+\subsection{\texttt{SHA256}}\label{sec:tab-sha256}
 
 Compresses $64$ input bytes to the $32$ output bytes at $c$. Each $128$-bit chunk occupies one $192$-bit cell through the canonical embedding with top limb zero. The four input addresses are $a_i=\fp\cdot o_i$ for $i\in\{0,1,2,3\}$ and need not be adjacent. The output occupies $a_C=\fp\cdot o_C$ and $\gen\cdot a_C$. Thus each row accesses four input cells and two output cells.
 
-Flock~\cite{flock} proves $c=\mathrm{BLAKE3}(a,b)$ with a batched R1CS over a Boolean witness. The witness is packed into $q_\pkd$, with $64$ bits per $\K$-element. The concrete ring switch of \S\ref{sec:ringswitch} maps its $\F_2$ claims to one $\E$-weighted claim on $q_\pkd$, which joins the batched opening (\S\ref{sec:e2e-unrolled}).
+Flock~\cite{flock} proves $c=\mathrm{SHA256}(a,b)$ with a batched R1CS over a Boolean witness. The witness is packed into $q_\pkd$, with $64$ bits per $\K$-element. The concrete ring switch of \S\ref{sec:ringswitch} maps its $\F_2$ claims to one $\E$-weighted claim on $q_\pkd$, which joins the batched opening (\S\ref{sec:e2e-unrolled}).
 
-The words $a,b,c$ are contained in $q_\pkd$. Each $64$-bit flock word occupies one packed slot, and each BLAKE3 cell contributes its two low limbs; the top limb is canonically zero. The twelve limbs $v_{A0},\dots,v_{C3}$ therefore need no separate commitment. Each is a strided point evaluation of $q_\pkd$. Linking these embedded values to the full memory interaction implicitly forces the top limb of every BLAKE3-accessed cell to zero. The R1CS matrices fix the BLAKE3 IV, counter, block length, and flags, so they prove the compression of $a\Vert b$ without separate pin openings.
+The words $a,b,c$ are contained in $q_\pkd$. Each $64$-bit flock word occupies one packed slot, and each SHA256 cell contributes its two low limbs; the top limb is canonically zero. The twelve limbs $v_{A0},\dots,v_{C3}$ therefore need no separate commitment. Each is a strided point evaluation of $q_\pkd$. Linking these embedded values to the full memory interaction implicitly forces the top limb of every SHA256-accessed cell to zero. The R1CS matrices fix the SHA256 IV, counter, block length, and flags, so they prove the compression of $a\Vert b$ without separate pin openings.
 \begin{itemize}
 \item \textbf{Columns:} $\pc,\fp$; operands $o_0,o_1,o_2,o_3,o_C$; input/output addresses $a_0,a_1,a_2,a_3,a_C$; per-cell memory counts $r_0,\dots,r_3$ (the four input cells) and $r_{C0},r_{C1}$ (the two output cells); bytecode count $r_{\mathrm{bc}}$. The twelve nonzero-capable value limbs $v_{A0},\dots,v_{C3}$ (two per value cell) are committed "inside" $q_\pkd$, see above; each cell's third limb is zero. The successor address $\gen\cdot a_C$ is virtual.
-\item \textbf{Constraints:} the five degree-$2$ relations $a_i=\fp\cdot o_i$ for $i\in\{0,1,2,3\}$ and $a_C=\fp\cdot o_C$. Flock proves $c=\mathrm{BLAKE3}(a,b)$.
+\item \textbf{Constraints:} the five degree-$2$ relations $a_i=\fp\cdot o_i$ for $i\in\{0,1,2,3\}$ and $a_C=\fp\cdot o_C$. Flock proves $c=\mathrm{SHA256}(a,b)$.
 \item \textbf{Flushes:}
   \begin{itemize}
   \item \textbf{State:} \pull\ $\tup{\dsep{ST},\pc,\fp}$, \push\ $\tup{\dsep{ST},\gen\cdot\pc,\fp}$.
@@ -465,7 +465,7 @@ Committed columns are $\K$-valued; machine words and challenges are $\E$-valued 
 
 \subsection{Bytecode encoding}\label{sec:e2e-bc}
 
-The program is public. Instruction $\pc$ fills coordinates $3$ through $8$ of its bytecode tuple $\tup{\dsep{BC},\pc,\cnt,\cdot}$. Coordinate $3$ holds the opcode, and coordinates $4,5,6$ hold three operands. Coordinates $7,8$ hold the \texttt{DEREF} flags $(f_{\pc},f_{\fp})$, the \texttt{BLAKE3} operands $(o_3,o_C)$, or zero. Each operand is a $\gen$-power or an immediate. For \texttt{SET\_CONSTANT}, coordinates $5,6$ hold the two $\K$-lanes of the immediate.
+The program is public. Instruction $\pc$ fills coordinates $3$ through $8$ of its bytecode tuple $\tup{\dsep{BC},\pc,\cnt,\cdot}$. Coordinate $3$ holds the opcode, and coordinates $4,5,6$ hold three operands. Coordinates $7,8$ hold the \texttt{DEREF} flags $(f_{\pc},f_{\fp})$, the \texttt{SHA256} operands $(o_3,o_C)$, or zero. Each operand is a $\gen$-power or an immediate. For \texttt{SET\_CONSTANT}, coordinates $5,6$ hold the two $\K$-lanes of the immediate.
 \begin{center}
 \begin{tabular}{lllllll}
 \hline
@@ -476,7 +476,7 @@ Instruction & coord.\ $3$ & coord.\ $4$ & coord.\ $5$ & coord.\ $6$ & coord.\ $7
 \texttt{SET\_CONSTANT} & $\opc{SET}$ & $o$   & $k_0$ & $k_1$ & $k_2$ & $0$\\
 \texttt{DEREF}         & $\opc{DRF}$ & $\alpha$ & $\beta$ & $\gamma$ & $f_{\pc}$ & $f_{\fp}$\\
 \texttt{JUMP}          & $\opc{JMP}$ & $o_c$ & $o_d$ & $o_f$ & $0$ & $0$\\
-\texttt{BLAKE3}        & $\opc{B3}$  & $o_0$ & $o_1$ & $o_2$ & $o_3$ & $o_C$\\
+\texttt{SHA256}        & $\opc{B3}$  & $o_0$ & $o_1$ & $o_2$ & $o_3$ & $o_C$\\
 \hline
 \end{tabular}
 \end{center}
@@ -504,11 +504,11 @@ The final stacked opening discharges all three limb claims.
 
 We lay out the whole protocol as one ordered sequence. Each reduction below adds evaluation claims on committed columns to a shared \emph{claim pool}; the final \textsc{Opening} phase proves all of them with a single PCS opening.
 
-\paragraph{Setup and statement binding.} Fixed and shared in advance (\S\ref{sec:e2e-const} through \S\ref{sec:e2e-pi}): the fields and constants; the instance caps (\S\ref{sec:memchan}); the public program and its length; the initial state $(\pc_0,\fp_0)$ and final state $(\pc_{\mathrm{final}},\fp_{\mathrm{final}})$; and the public input $\mem[0],\mem[1]$. Before any challenge, the transcript is seeded by the public input and one environment digest that binds both the exact bytecode and flock's BLAKE3 circuit family. The prover then announces $h$ and the six real opcode-row counts; the verifier checks them against the caps and derives every table, stack, and leaf shape. Thus neither a different program nor an adaptively chosen shape can reuse the proof's later challenges.
+\paragraph{Setup and statement binding.} Fixed and shared in advance (\S\ref{sec:e2e-const} through \S\ref{sec:e2e-pi}): the fields and constants; the instance caps (\S\ref{sec:memchan}); the public program and its length; the initial state $(\pc_0,\fp_0)$ and final state $(\pc_{\mathrm{final}},\fp_{\mathrm{final}})$; and the public input $\mem[0],\mem[1]$. Before any challenge, the transcript is seeded by the public input and one environment digest that binds both the exact bytecode and flock's SHA256 circuit family. The prover then announces $h$ and the six real opcode-row counts; the verifier checks them against the caps and derives every table, stack, and leaf shape. Thus neither a different program nor an adaptively chosen shape can reuse the proof's later challenges.
 
 \paragraph{Commitment.}
 \begin{enumerate}
-\item \textbf{Prover.} Builds all committed columns ($\K$-valued; a $192$-bit value is three $\K$-limb columns, \S\ref{sec:prelim}): each table's state, operands, addresses, read-value limbs, and counts (plus $w,b,\mathit{next\_pc},\mathit{next\_fp}$ for \texttt{JUMP}); the three memory limbs $M_0,M_1,M_2$; the memory and bytecode finalize counts; and flock's packed witness $q_\pkd$ (\S\ref{sec:tab-blake3}), always present (a program that executes no \texttt{BLAKE3} carries one padding instance, keeping the proof shape uniform). Counts are always committed $\gen$-powers (\S\ref{sec:memchan}); the public program and the virtual increments $\gen\cdot\pc,\gen\cdot\cnt$ are not. It stacks these into $q$, sends the dense commitment (\S\ref{sec:stacking}, \S\ref{sec:rs-dense}), and announces each table's non-padded row count, which the verifier checks against the instance caps (\S\ref{sec:memchan}) and rounds up to a power of two to fix the stack and leaf layouts (\S\ref{sec:leafstack}). Padding rows are a fixed default (\S\ref{sec:e2e-pad}); the announced sizes fix the surplus the verifier later divides out (\S\ref{sec:gp}).
+\item \textbf{Prover.} Builds all committed columns ($\K$-valued; a $192$-bit value is three $\K$-limb columns, \S\ref{sec:prelim}): each table's state, operands, addresses, read-value limbs, and counts (plus $w,b,\mathit{next\_pc},\mathit{next\_fp}$ for \texttt{JUMP}); the three memory limbs $M_0,M_1,M_2$; the memory and bytecode finalize counts; and flock's packed witness $q_\pkd$ (\S\ref{sec:tab-sha256}), always present (a program that executes no \texttt{SHA256} carries one padding instance, keeping the proof shape uniform). Counts are always committed $\gen$-powers (\S\ref{sec:memchan}); the public program and the virtual increments $\gen\cdot\pc,\gen\cdot\cnt$ are not. It stacks these into $q$, sends the dense commitment (\S\ref{sec:stacking}, \S\ref{sec:rs-dense}), and announces each table's non-padded row count, which the verifier checks against the instance caps (\S\ref{sec:memchan}) and rounds up to a power of two to fix the stack and leaf layouts (\S\ref{sec:leafstack}). Padding rows are a fixed default (\S\ref{sec:e2e-pad}); the announced sizes fix the surplus the verifier later divides out (\S\ref{sec:gp}).
 \end{enumerate}
 
 \paragraph{Bus.}
@@ -516,7 +516,7 @@ We lay out the whole protocol as one ordered sequence. Each reduction below adds
 \item \textbf{Verifier.} Sends the fingerprint challenge $\alpha$ and the multiset challenge $\gamma$.
 \item \textbf{Prover.} Forms the push, pull, and \emph{count} leaf vectors (\S\ref{sec:leafstack}; the count leaves are the count columns themselves, \S\ref{sec:memchan}), stacked into blocks and padded with $1$s. Sends the count root $R_c$ and one bus root $R$, the push/pull product after the default surplus is removed (\S\ref{sec:gp}).
 \item \textbf{Prover \& Verifier.} Run the one batched GKR (\S\ref{sec:gkr}) over all three trees. For the bus, the verifier multiplies $R$ by each side's public surplus and checks the side's product against it; one $R$ for both sides is the balance check (\S\ref{sec:gp}). For the counts it checks $R_c\neq0$ (no read self-cancels, \S\ref{sec:memchan}). The pass yields three leaf claims $\widetilde V^{t}_0(\zeta)$ at one shared $\zeta$.
-\item \textbf{Prover \& Verifier.} Decompose each leaf claim (\S\ref{sec:leafstack}). The verifier forms the public part: the block selectors; the constant coordinates (separators, the per-table read opcodes, the boundary state $(\pc_0,\fp_0)$ and $(\pc_{\mathrm{final}},\fp_{\mathrm{final}})$); the index column (\S\ref{sec:idxcol}); and the public program columns of the bytecode seed and finalize, whose MLEs it forms directly. The prover supplies each block's committed-column evaluations (one $\E$-element each, \S\ref{sec:prelim}); a virtual coordinate such as $\gen\cdot\pc$ is read off its committed source, and a \texttt{BLAKE3} value coordinate off $q_\pkd$ at its slot (\S\ref{sec:tab-blake3}). The verifier checks the decomposition formula against $\widetilde V_0(\zeta)$; the supplied evaluations enter the claim pool. The count channel decomposes likewise (its leaves are the count columns), adding only their evaluations.
+\item \textbf{Prover \& Verifier.} Decompose each leaf claim (\S\ref{sec:leafstack}). The verifier forms the public part: the block selectors; the constant coordinates (separators, the per-table read opcodes, the boundary state $(\pc_0,\fp_0)$ and $(\pc_{\mathrm{final}},\fp_{\mathrm{final}})$); the index column (\S\ref{sec:idxcol}); and the public program columns of the bytecode seed and finalize, whose MLEs it forms directly. The prover supplies each block's committed-column evaluations (one $\E$-element each, \S\ref{sec:prelim}); a virtual coordinate such as $\gen\cdot\pc$ is read off its committed source, and a \texttt{SHA256} value coordinate off $q_\pkd$ at its slot (\S\ref{sec:tab-sha256}). The verifier checks the decomposition formula against $\widetilde V_0(\zeta)$; the supplied evaluations enter the claim pool. The count channel decomposes likewise (its leaves are the count columns), adding only their evaluations.
 \end{enumerate}
 
 \paragraph{Local constraints.} Run once per table (\S\ref{sec:air}); the six runs share no challenges.
@@ -530,9 +530,9 @@ We lay out the whole protocol as one ordered sequence. Each reduction below adds
 \item \textbf{Verifier.} Sends $r_m$, forms $\widetilde{\mathrm{PI}}_\ell(r_m)$ from the public input, and adds to the pool the three memory-limb claims $\widetilde M_\ell(r_m,0,\dots,0)=\widetilde{\mathrm{PI}}_\ell(r_m)$, $\ell\in\{0,1,2\}$ (\S\ref{sec:e2e-pi}).
 \end{enumerate}
 
-\paragraph{BLAKE3 validity.}
+\paragraph{SHA256 validity.}
 \begin{enumerate}
-\item \textbf{Prover \& Verifier.} Reduce the executed BLAKE3 constraints to two evaluation claims on $q_\pkd$ (\S\ref{sec:tab-blake3}).
+\item \textbf{Prover \& Verifier.} Reduce the executed SHA256 constraints to two evaluation claims on $q_\pkd$ (\S\ref{sec:tab-sha256}).
 \item \textbf{Prover \& Verifier.} The ring switching of \S\ref{sec:ringswitch} reduces each bit-witness claim to a weighted-sum claim on the $q_\pkd$ region of the stack, with a transparent $\E$-valued weight the verifier can evaluate; both join the pool.
 \end{enumerate}
 
@@ -546,14 +546,14 @@ We lay out the whole protocol as one ordered sequence. Each reduction below adds
 
 \section{Recursive aggregation}\label{sec:recursion}
 
-The implemented N-to-1 aggregation runs the verifier of \S\ref{sec:e2e-unrolled} \emph{inside} the VM: one compiled guest replays the transcripts, sumchecks, ring switches, and stacked Ligerito-K openings of $n_{\mathrm{rec}}\ge1$ ordinary VM proofs for a fixed inner program. The proofs may have different announced table and commitment sizes; the guest dispatches among the certified shapes without recompilation. The VM is well suited to this because $\E$ is its machine-word field and its Fiat--Shamir hash is the \texttt{BLAKE3} opcode. One class of operations, however, does not fit.
+The implemented N-to-1 aggregation runs the verifier of \S\ref{sec:e2e-unrolled} \emph{inside} the VM: one compiled guest replays the transcripts, sumchecks, ring switches, and stacked Ligerito-K openings of $n_{\mathrm{rec}}\ge1$ ordinary VM proofs for a fixed inner program. The proofs may have different announced table and commitment sizes; the guest dispatches among the certified shapes without recompilation. The VM is well suited to this because $\E$ is its machine-word field and its Fiat--Shamir hash is the \texttt{SHA256} opcode. One class of operations, however, does not fit.
 
 \subsection{Deferred evaluation claims}\label{sec:deferred-claims}
 
 Twice during verification, a large \emph{fixed} multilinear must be evaluated at a random point:
 \begin{itemize}
 \item \textbf{the bytecode}: during leaf decomposition (\S\ref{sec:e2e-unrolled}, \emph{Bus}), the verifier evaluates the stacked polynomial formed from the six public program columns and three selector variables, a pass over the whole program;
-\item \textbf{the flock matrices}: the \texttt{BLAKE3} relation is proven by flock (\S\ref{sec:tab-blake3}), whose lincheck ends by evaluating $\widetilde A_0$ and $\widetilde B_0$, the per-block R1CS matrices: $28$-variable multilinears with $\approx 21\mathrm{M}$ nonzero Boolean entries between them.
+\item \textbf{the flock matrices}: the \texttt{SHA256} relation is proven by flock (\S\ref{sec:tab-sha256}), whose lincheck ends by evaluating $\widetilde A_0$ and $\widetilde B_0$, the per-block R1CS matrices: $28$-variable multilinears with $\approx 21\mathrm{M}$ nonzero Boolean entries between them.
 \end{itemize}
 Either evaluation is one pass over a fixed object. This takes milliseconds natively, but in-circuit it would dwarf the entire remaining verifier, in cycles and in bytecode size alike.
 
@@ -625,7 +625,7 @@ As in leanVM, the matched value must be known to lie in $[0,n)$: a hinted $x$ mu
 
 \section{Ring switching}\label{sec:ringswitch}
 
-Flock's BLAKE3 argument produces claims about Boolean multilinears. The VM packs them into \(\K\)-words for commitment and opens the resulting claims over \(\E\). We use the following specialization of ring switching~\cite{cryptoeprint:2024/504}:
+Flock's SHA256 argument produces claims about Boolean multilinears. The VM packs them into \(\K\)-words for commitment and opens the resulting claims over \(\E\). We use the following specialization of ring switching~\cite{cryptoeprint:2024/504}:
 \[
   \F_2 \subset \K=\F_{2^{64}} \subset \E=\F_{2^{192}}.
 \]

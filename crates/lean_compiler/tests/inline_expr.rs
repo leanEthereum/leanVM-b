@@ -7,7 +7,7 @@
 //! `let`.
 
 use lean_compiler::{compile, parse};
-use lean_vm::blake3_flock::warm_setup;
+use lean_vm::sha256_flock::warm_setup;
 use lean_vm::cpu::{prove, verify};
 use primitives::field::{F64, F192};
 

@@ -66,7 +66,7 @@ fn compute_signer(index: usize) -> CachedSignature {
 /// every signer incompatible. Folding a fixed test vector of the real primitives
 /// into [`footprint`] lands such a change in a *different* cache file, so a run
 /// on one branch never loads (and then panics on) another branch's signers — the
-/// two caches simply coexist. Two BLAKE3 compressions; negligible next to
+/// two caches simply coexist. Two SHA256 compressions; negligible next to
 /// generating even one signer.
 fn hash_fingerprint() -> [Digest; 2] {
     let pp = [0xA5u8; PUBLIC_PARAM_LEN];

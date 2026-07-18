@@ -1399,7 +1399,7 @@ mod tests {
     /// a literal zero to the dense sum (the convert table maps φ_8(0) = 0).
     ///
     /// Covers the three hash padding shapes:
-    ///   - BLAKE3: k_log=14, useful=15409 → b_med_counts ≈ [16, 15]
+    ///   - SHA256: k_log=14, useful=15409 → b_med_counts ≈ [16, 15]
     ///   - SHA-2:  k_log=15, useful=31401 → b_med_counts ≈ [16, 16, 16, 14]
     ///   - Keccak: k_log=16, useful=42560 → b_med_counts = [16, 16, 16, 16, 16, 4, 0, 0]
     ///     (this is the only shape that exercises the full-skip case.)
@@ -1412,7 +1412,7 @@ mod tests {
         // m = k_log + n_blocks_log is small enough to keep the test fast
         // while still exercising the kernel's parallel + boundary paths.
         let cases = [
-            (14usize, 15_409usize, 0usize), // BLAKE3, m=14
+            (14usize, 15_409usize, 0usize), // SHA256, m=14
             (15, 31_401, 0),                // SHA-2,  m=15
             (16, 42_560, 0),                // Keccak, m=16
             (16, 42_560, 3),                // Keccak, m=19 (multiple hashes)

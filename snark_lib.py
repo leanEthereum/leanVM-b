@@ -134,7 +134,7 @@ def HeapBuf(n) -> _Elt:
 
 def StackBuf(n: int) -> _Elt:
     """Allocate `n` consecutive frame (stack) cells. A size-2 StackBuf holds a
-    256-bit value and is a valid `blake3` operand."""
+    256-bit value and is a valid `sha256` operand."""
     _ = n
     return _Elt()
 
@@ -150,8 +150,8 @@ def hint_witness(dest, name: str) -> None:
     _ = dest, name
 
 
-def blake3(a, b, out) -> None:
-    """The BLAKE3 compression of the two 256-bit operands `a`, `b`, written
+def sha256(a, b, out) -> None:
+    """The SHA256 compression of the two 256-bit operands `a`, `b`, written
     into the 2-cell run `out` (write-once: if `out` was already written, this
     asserts it equals the digest). Operands are size-2 StackBufs or 2-cell
     slices `buf[lo:hi]` of larger StackBufs or of HeapBufs (heap slices are

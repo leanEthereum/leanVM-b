@@ -1,5 +1,5 @@
 //! The hash layer, built entirely from one primitive — [`compress`]
-//! (`H: {0,1}^512 -> {0,1}^256`, BLAKE3 of exactly 64 bytes, the VM blake3
+//! (`H: {0,1}^512 -> {0,1}^256`, one fixed-IV SHA-256 compression, the VM hash
 //! opcode shape):
 //!
 //! - [`tweak_hash`]: one compression, `H(tweak | pp, payload | 0-pad)`. Used
@@ -19,7 +19,7 @@
 //! The 16-byte tweak makes every call site a distinct hash function
 //! (multi-target separation, as in leanVM) and the public parameter separates
 //! users. Payload lengths are FIXED per tweak type — the single-block hash
-//! zero-pads, so unlike raw BLAKE3 it does not bind the payload length
+//! zero-pads, so the raw compression does not bind the payload length
 //! itself; the multi-block hash binds its total length through the IV.
 //!
 //! Compression counts per call: chain step 1, Merkle node 1, message encoding
@@ -38,7 +38,7 @@ pub const TWEAK_TYPE_ENCODING: u8 = 3;
 pub const TWEAK_LEN: usize = 16;
 pub type Tweak = [u8; TWEAK_LEN];
 
-/// The Merkle-Damgard chaining state / block: a full 32-byte BLAKE3 output.
+/// The Merkle-Damgard chaining state / block: a full 32-byte SHA-256 compression output.
 pub const STATE_LEN: usize = 32;
 pub type State = [u8; STATE_LEN];
 
@@ -74,14 +74,14 @@ pub fn tweak_hash(
     compress(&state, &block)[..DIGEST_LEN].try_into().unwrap()
 }
 
-/// The MD primitive: `H: {0,1}^512 -> {0,1}^256`, BLAKE3 of 64 bytes (one
-/// internal compression; the VM blake3 opcode shape).
+/// The MD primitive: `H: {0,1}^512 -> {0,1}^256`, one fixed-IV, unpadded
+/// SHA-256 compression (the VM opcode shape).
 #[inline]
 pub fn compress(state: &State, block: &State) -> State {
     let mut input = [0u8; 2 * STATE_LEN];
     input[..STATE_LEN].copy_from_slice(state);
     input[STATE_LEN..].copy_from_slice(block);
-    *blake3::hash(&input).as_bytes()
+    primitives::sha256::compress(&input)
 }
 
 /// Merkle-Damgard over 32-byte blocks: `state <- compress(state, block)`,

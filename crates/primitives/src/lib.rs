@@ -5,6 +5,7 @@ pub mod bits;
 pub mod field;
 pub mod multilinear;
 pub mod scratch;
+pub mod sha256;
 
 pub use field::{F64, F192, G, g_pow, g_powers, x_pow};
 

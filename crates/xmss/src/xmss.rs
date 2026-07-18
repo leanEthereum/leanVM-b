@@ -55,18 +55,19 @@ impl XmssPublicKey {
     }
 }
 
-// Prover-side PRF domains (secret derivation and filler nodes; never on the
-// verification path, so not restricted to the 64-to-32 primitive).
+// Prover-side PRF domains (secret derivation and filler nodes). The experimental
+// PRF is one fixed-IV compression of seed || domain || a || b || zero-padding.
 const PRF_DOMAINSEP_WOTS_SECRET_KEY: u32 = 1000;
 const PRF_DOMAINSEP_PUBLIC_PARAM: u32 = 1001;
 const PRF_DOMAINSEP_RANDOM_NODE: u32 = 1002;
 
 fn prf(seed: &[u8; 32], domain: u32, a: u64, b: u64) -> Digest {
-    let mut msg = [0u8; 20];
-    msg[..4].copy_from_slice(&domain.to_le_bytes());
-    msg[4..12].copy_from_slice(&a.to_le_bytes());
-    msg[12..20].copy_from_slice(&b.to_le_bytes());
-    blake3::keyed_hash(seed, &msg).as_bytes()[..DIGEST_LEN].try_into().unwrap()
+    let mut block = [0u8; 64];
+    block[..32].copy_from_slice(seed);
+    block[32..36].copy_from_slice(&domain.to_le_bytes());
+    block[36..44].copy_from_slice(&a.to_le_bytes());
+    block[44..52].copy_from_slice(&b.to_le_bytes());
+    primitives::sha256::compress(&block)[..DIGEST_LEN].try_into().unwrap()
 }
 
 fn gen_wots_secret_key(seed: &[u8; 32], slot: u32, public_param: &PublicParam) -> WotsSecretKey {

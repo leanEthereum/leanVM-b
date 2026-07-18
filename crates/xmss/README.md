@@ -1,14 +1,16 @@
-# XMSS over BLAKE3, specification
+# XMSS over single-block SHA-256 compression, experimental specification
 
 ## Hash functions
 
 Everything is built from one primitive — the compression
 
 ```
-H: {0,1}^512 -> {0,1}^256,   H(x) = BLAKE3(x)
+H: {0,1}^512 -> {0,1}^256,   H(x) = SHA256_Compress(SHA256_IV, x)
 ```
 
-(BLAKE3 of exactly 64 bytes: the VM blake3 opcode shape).
+This is exactly one compression with feed-forward: there is no SHA padding or
+length block. The VM retains the legacy `sha256` opcode spelling for this
+experiment.
 
 Single-block hashes (chain steps, Merkle nodes): one compression,
 
@@ -72,8 +74,8 @@ pseudo-random fillers.
 ## Keys
 
 - Secret key: a 32-byte seed. All secret material (WOTS pre-images, public
-  parameter, filler nodes) is derived from it with a PRF
-  (`blake3::keyed_hash`).
+  parameter, filler nodes) is derived by truncating one compression of
+  `seed (32) | domain (4) | a (8) | b (8) | zeros (12)`.
 - Public key: 32 bytes, `merkle_root (16) | pp (16)`.
 
 ## Verification cost

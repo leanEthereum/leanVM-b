@@ -29,7 +29,7 @@ XMSS aggregation, 820 signatures
     SET    instructions       :     277184 = 2^18.08   (   338.0 / XMSS)
     DEREF  instructions       :     468599 = 2^18.84   (   571.5 / XMSS)
     JUMP   instructions       :     106602 = 2^16.70   (   130.0 / XMSS)
-    BLAKE3 instructions       :     129741 = 2^16.99   (   158.2 / XMSS)
+    SHA256 instructions       :     129741 = 2^16.99   (   158.2 / XMSS)
   committed witness size      : 2^25.648
   data memory                 : 2^22 padded (2^21.57 used)
   proof size                  : 594.2 KiB
@@ -53,7 +53,7 @@ recursion 2→1: 2 inner proofs of 950519 cycles each
     SET    instructions     :     249425 = 2^17.93
     DEREF  instructions     :     819009 = 2^19.64
     JUMP   instructions     :      47982 = 2^15.55
-    BLAKE3 instructions     :      55259 = 2^15.75
+    SHA256 instructions     :      55259 = 2^15.75
   committed witness size      : 2^26.079
   data memory                 : 2^22 padded (2^21.54 used)
   outer proof size            : 643.8 KiB

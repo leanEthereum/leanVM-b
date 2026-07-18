@@ -136,9 +136,9 @@ use primitives::multilinear::{eq_table as build_eq, lagrange_weights_naive};
 //
 // `LincheckCircuit` is the seam: the prover and verifier take
 // `&dyn LincheckCircuit` instead of a pair of matrices. Two live impls:
-// [`CscCircuit`] (the cached column-major transpose of BLAKE3's `(A_0, B_0)`,
+// [`CscCircuit`] (the cached column-major transpose of SHA256's `(A_0, B_0)`,
 // see `BlockR1cs::csc_lincheck_circuit`) — the prover's marginal fold — and
-// `blake3::WalkLincheckCircuit`, whose `bilinear_form` lets the verifier skip
+// `sha256::WalkLincheckCircuit`, whose `bilinear_form` lets the verifier skip
 // the marginal entirely via the circuit walk (flock.tex §Circuit walking).
 
 /// Per-block linear structure consumed by lincheck. Implementations produce
@@ -172,7 +172,7 @@ pub trait LincheckCircuit: Sync {
     /// `n_cols()` each), WITHOUT materializing the length-k column marginal.
     /// [`verify`] only ever consumes the marginal through one inner product
     /// against a column-weight vector, so an implementation that can walk its
-    /// circuit (O(circuit) field ops — see `blake3::bilinear_walk`) answers
+    /// circuit (O(circuit) field ops — see `sha256::bilinear_walk`) answers
     /// here and never pays the ∝ NNZ marginal. Default `None`: the verifier
     /// falls back to `fold_alpha_batched`.
     fn bilinear_form(&self, _alpha: F192, _u: &[F192], _w: &[F192]) -> Option<F192> {
@@ -190,7 +190,7 @@ pub trait LincheckCircuit: Sync {
 ///
 /// On the SHA-256 hybrid matrices (k = 2^15, ~1.3M nonzeros) this measures
 /// ~7× faster than the row-scatter fold and ~100× faster than the symbolic
-/// per-hash walkers; on BLAKE3 (~21M nonzeros) ~1.7× faster than row-scatter.
+/// per-hash walkers; on SHA256 (~21M nonzeros) ~1.7× faster than row-scatter.
 /// Construction costs one pass over the nonzeros (~4 ms / ~40 ms for the
 /// above) — do it once at setup, e.g. via
 /// [`crate::r1cs::BlockR1cs::csc_lincheck_circuit`].
@@ -1747,7 +1747,7 @@ mod tests {
     fn partial_fold_padded_matches_dense() {
         // (m, k_log, useful_bits)
         let cases: &[(usize, usize, usize)] = &[
-            // BLAKE3 (k_log=14, useful=15409 — boundary not byte-aligned).
+            // SHA256 (k_log=14, useful=15409 — boundary not byte-aligned).
             (17, 14, 15_409),
             // SHA-2  (k_log=15, useful=31401 — boundary not byte-aligned).
             (18, 15, 31_401),

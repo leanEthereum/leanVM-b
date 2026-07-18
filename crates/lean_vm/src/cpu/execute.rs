@@ -75,7 +75,7 @@ impl Program {
         let mut set: Vec<Srow> = Vec::new();
         let mut deref: Vec<Drow> = Vec::new();
         let mut jump: Vec<Jrow> = Vec::new();
-        let mut blake3: Vec<Brow> = Vec::new();
+        let mut sha256: Vec<Brow> = Vec::new();
 
         // `DEREF Cell` touches whose two sides are both still unwritten (the
         // range-check gadget's unconstrained target cells): `(deref row index,
@@ -565,24 +565,24 @@ impl Program {
                         pc += 1;
                     }
                 }
-                Op::Blake3 { ins, out, packing } => {
+                Op::Sha256 { ins, out, packing } => {
                     // Four independently-addressed 128-bit input chunks, each a
                     // single cell; the output spans two consecutive cells (ac, ac+1).
                     let (aa0, aa1, ab0, ab1) = (fp + ins[0], fp + ins[1], fp + ins[2], fp + ins[3]);
                     let ac = fp + out;
                     let words = [aa0, aa1, ab0, ab1].map(|a| get(&mem, &written, a));
                     let (va, vb) = match packing {
-                        Blake3Packing::Bytes128 => {
+                        Sha256Packing::Bytes128 => {
                             assert!(
                                 words.iter().all(|w| w.c2 == 0),
-                                "BLAKE3 input cell must be a 128-bit embedding"
+                                "SHA256 input cell must be a 128-bit embedding"
                             );
                             (
                                 [F64(words[0].c0), F64(words[0].c1), F64(words[1].c0), F64(words[1].c1)],
                                 [F64(words[2].c0), F64(words[2].c1), F64(words[3].c0), F64(words[3].c1)],
                             )
                         }
-                        Blake3Packing::Transcript192 => {
+                        Sha256Packing::Transcript192 => {
                             assert_eq!(
                                 (words[1].c1, words[1].c2),
                                 (0, 0),
@@ -597,13 +597,13 @@ impl Program {
                     };
                     // Compress the 64 input bytes to the 32-byte digest, then write
                     // it to c's two cells. No table constraint covers the digest
-                    // (the relation is proven by flock, §blake3_flock); the
+                    // (the relation is proven by flock, §sha256_flock); the
                     // interpreter still computes the definite digest so the output
                     // cells are consistent for any later read.
-                    let vc = blake3_compress(va, vb);
+                    let vc = sha256_compress(va, vb);
                     let outputs = match packing {
-                        Blake3Packing::Bytes128 => [F192::new(vc[0].0, vc[1].0, 0), F192::new(vc[2].0, vc[3].0, 0)],
-                        Blake3Packing::Transcript192 => {
+                        Sha256Packing::Bytes128 => [F192::new(vc[0].0, vc[1].0, 0), F192::new(vc[2].0, vc[3].0, 0)],
+                        Sha256Packing::Transcript192 => {
                             [F192::new(vc[0].0, vc[1].0, vc[2].0), F192::new(vc[3].0, 0, 0)]
                         }
                     };
@@ -621,7 +621,7 @@ impl Program {
                         bump_access_count(&mut mem, &mut written, &mut mem_count, ac),
                         bump_access_count(&mut mem, &mut written, &mut mem_count, ac + 1),
                     ];
-                    blake3.push(Brow {
+                    sha256.push(Brow {
                         pc,
                         fp,
                         aa0,
@@ -728,7 +728,7 @@ impl Program {
             set,
             deref,
             jump,
-            blake3,
+            sha256,
             mem_count,
             bytecode_count,
         };

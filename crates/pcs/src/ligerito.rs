@@ -506,7 +506,7 @@ pub struct LigeritoSecurityConfig {
     pub analysis_version: String,
     /// Field of the protocol. Example: `"f192"`.
     pub field: String,
-    /// Hash function used by Merkle + FS sponge. Example: `"blake3"`.
+    /// Hash function used by Merkle + FS sponge.
     pub hash: String,
     /// Where in the per-level FS transcript grinding is placed.
     pub grinding_step: GrindingStep,
@@ -1166,7 +1166,7 @@ impl LigeritoSecurityConfig {
             target_security_bits: target_bits,
             analysis_version: analysis_version.into(),
             field: "f192".into(),
-            hash: "blake3".into(),
+            hash: "sha256-compress".into(),
             grinding_step: GrindingStep::PostCommitPreQueries,
             levels,
             final_block: FinalBlockConfig {

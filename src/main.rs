@@ -42,7 +42,7 @@ enum Command {
         /// Number of inner proofs to aggregate.
         #[arg(long, default_value = "2")]
         n: usize,
-        /// BLAKE3 compressions per inner proof (inner program shape).
+        /// Single-block SHA-256 compressions per inner proof (inner program shape).
         #[arg(long, default_value = "8")]
         hashes: usize,
         /// MUL iterations per inner proof (inner program shape).

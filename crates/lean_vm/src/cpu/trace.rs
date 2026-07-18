@@ -63,8 +63,8 @@ pub(crate) struct Jrow {
     pub(crate) bytecode_read: F64,
 }
 
-/// `BLAKE3` row: the four independent input-chunk addresses `aa0, aa1, ab0, ab1`
-/// (each a canonical 128-bit BLAKE3 cell) and output base `ac` (two cells),
+/// `SHA256` row: the four independent input-chunk addresses `aa0, aa1, ab0, ab1`
+/// (each a canonical 128-bit SHA256 cell) and output base `ac` (two cells),
 /// the twelve flock words (four inputs `a`, four inputs `b`, four outputs `c` —
 /// two 64-bit lanes per 128-bit cell), and the six per-cell memory access counts.
 pub(crate) struct Brow {
@@ -79,7 +79,7 @@ pub(crate) struct Brow {
     pub(crate) vb: [F64; 4],     // b's four flock words = cells (ab0, ab1)
     pub(crate) vc: [F64; 4],     // c's four flock words = cells (ac, ac+1)
     pub(crate) words: [F192; 6], // four input cells followed by two output cells
-    pub(crate) packing: super::Blake3Packing,
+    pub(crate) packing: super::Sha256Packing,
     pub(crate) ra: [F64; 2], // per-cell counts for the two a input cells
     pub(crate) rb: [F64; 2], // … the two b input cells
     pub(crate) rc: [F64; 2], // … the two c output cells
@@ -92,7 +92,7 @@ pub(crate) struct Trace {
     pub(crate) set: Vec<Srow>,
     pub(crate) deref: Vec<Drow>,
     pub(crate) jump: Vec<Jrow>,
-    pub(crate) blake3: Vec<Brow>,
+    pub(crate) sha256: Vec<Brow>,
     pub(crate) mem_count: Vec<F64>, // per-cell running access count g^{count}; final = g^{A[i]}
     pub(crate) bytecode_count: Vec<F64>, // per-pc running execution count g^{count}; final = g^{A[pc]}
 }

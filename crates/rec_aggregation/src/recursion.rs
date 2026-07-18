@@ -34,12 +34,12 @@ fn f192_literal(f: F192) -> String {
     format!("f192({},{},{})", f.c0, f.c1, f.c2)
 }
 
-/// Native replay of the VM's `blake3(cur, cur, nxt)` over two 128-bit words:
+/// Native replay of the VM's `sha256(cur, cur, nxt)` over two 128-bit words:
 /// pack the two `F192` words into the four `F64` lanes the sponge compression
 /// consumes, compress, and unpack.
 ///
-/// Word→lane packing confirmed against the VM's blake3 opcode (`cpu::mod`
-/// `blake3_self_hash_aliased_operands`): a `[F64;4]` operand loaded from two
+/// Word→lane packing confirmed against the VM's sha256 opcode (`cpu::mod`
+/// `sha256_self_hash_aliased_operands`): a `[F64;4]` operand loaded from two
 /// 128-bit words is `[w0.c0, w0.c1, w1.c0, w1.c1]` (word-major, lo=c0 then
 /// hi=c1), and the two output words pack back the same way
 /// (`mem[out] == cell(d[0], d[1])`, `cell(d[2], d[3])`).
@@ -55,13 +55,13 @@ fn pack_state(s: [F64; 4]) -> [F192; 2] {
     [F192::new(s[0].0, s[1].0, s[2].0), F192::new(s[3].0, 0, 0)]
 }
 
-/// The non-trivial inner program: a runtime-bounded BLAKE3 hash chain seeded
+/// The non-trivial inner program: a runtime-bounded SHA256 hash chain seeded
 /// from the public input, a runtime-bounded `mul_range` product loop with heap
 /// traffic, and a final assert tying them together. BOTH loop bounds ride
 /// witness hints ("n_hash", "iters"), so a single program (one bytecode, one
 /// digest) proves runs with wildly different opcode profiles and sizes - the
 /// exact genericity the recursion guest is built for. Exercises every table
-/// (XOR/MUL/SET/DEREF/JUMP/BLAKE3).
+/// (XOR/MUL/SET/DEREF/JUMP/SHA256).
 fn inner_program() -> Program {
     let src = "from snark_lib import *\n\
         def main():\n\
@@ -79,7 +79,7 @@ fn inner_program() -> Program {
         \x20       cur[0] = hc0[h]\n\
         \x20       cur[1] = hc1[h]\n\
         \x20       nxt = StackBuf(2)\n\
-        \x20       blake3(cur, cur, nxt)\n\
+        \x20       sha256(cur, cur, nxt)\n\
         \x20       hc0[h * GEN] = nxt[0]\n\
         \x20       hc1[h * GEN] = nxt[1]\n\
         \x20   st0 = hc0[hbound]\n\
@@ -103,7 +103,7 @@ fn inner_program() -> Program {
     compile(&parse(src).expect("parse inner"))
 }
 
-/// Prove one run of the inner program: `hashes` BLAKE3 compressions then
+/// Prove one run of the inner program: `hashes` SHA256 compressions then
 /// `iters` product-loop steps (both runtime, driven by the witness hints).
 /// The witness generator replays both natively to supply the final-inverse
 /// hint. Returns (program, proof, guest-cycle count, committed witness size).
@@ -284,7 +284,7 @@ fn gen_agg(program: &Program, subs: &[SubDefer]) -> (Vec<(String, Vec<F192>)>, [
     let nsub = subs.len();
     let kbc = subs[0].kbc;
     let kbcv = kbc + 3;
-    let klog = flock::blake3::K_LOG;
+    let klog = flock::sha256::K_LOG;
 
     // ---- the aggregation transcript (mirrors the guest exactly) ----
     let mut h = Sponge::empty();
@@ -355,7 +355,7 @@ fn gen_agg(program: &Program, subs: &[SubDefer]) -> (Vec<(String, Vec<F192>)>, [
 
     // ---- matrix batching sumcheck (two-phase sparse, per the probe) ----
     let gmt: Vec<F192> = (0..nsub).map(|_| h.sample()).collect();
-    let (ma, mb) = flock::blake3::matrices();
+    let (ma, mb) = flock::sha256::matrices();
     // per-claim dense weight tables: rows = quirky eq, cols = eq(top rounds) x z_partial.
     let mut us: Vec<Vec<F192>> = subs
         .iter()
@@ -549,13 +549,13 @@ fn check_reduced(program: &Program, red: &ReducedClaims) -> Result<(), Recursive
     if mle_eval(&stacked, &red.r_bc) != red.v_bc {
         return Err(RecursiveVerifyError::BytecodeClaim);
     }
-    let klog = flock::blake3::K_LOG;
+    let klog = flock::sha256::K_LOG;
     if red.r_m.len() != 2 * klog {
         return Err(RecursiveVerifyError::InvalidDeferredShape);
     }
     let eq_r = pcs::ligerito_k::build_eq_table_ext(&red.r_m[..klog]);
     let eq_c = pcs::ligerito_k::build_eq_table_ext(&red.r_m[klog..]);
-    let (v_a, v_b) = flock::blake3::bilinear_walk_pair(&eq_r, &eq_c);
+    let (v_a, v_b) = flock::sha256::bilinear_matrix_pair(&eq_r, &eq_c);
     if v_a != red.v_a {
         return Err(RecursiveVerifyError::MatrixAClaim);
     }
@@ -662,7 +662,7 @@ fn gen_verify(
 
     // Flock replay data, all named struct fields.
     let n_log_b3 = l.taus[5];
-    let lcrounds = flock::blake3::K_LOG - 6;
+    let lcrounds = flock::sha256::K_LOG - 6;
     let zcf = [summary.zc_claim.a_eval, summary.zc_claim.b_eval];
     let zc_z = summary.zc_claim.z;
     let zrho = summary.zc_claim.mlv_challenges.clone();
@@ -704,8 +704,8 @@ fn gen_verify(
 
     // matpart = the deferred weighted matrix evaluation: the lincheck running
     // claim minus (= plus, char 2) the const-pin contribution.
-    let r1cs = flock::blake3::build_block_r1cs(n_log_b3);
-    let pincol = r1cs.const_pin.expect("blake3 r1cs has a const pin");
+    let r1cs = flock::sha256::build_block_r1cs(n_log_b3);
+    let pincol = r1cs.const_pin.expect("sha256 r1cs has a const pin");
     let mut lrun = lc_alpha * zcf[0] + zcf[1] + lc_beta;
     for i in 0..lcrounds {
         let (e1, ei, rv) = (lcr[2 * i], lcr[2 * i + 1], lrr[i]);
@@ -715,7 +715,7 @@ fn gen_verify(
     }
     let mut pinw = lc_beta;
     for (j, &rv) in lrr.iter().enumerate() {
-        let bit = (pincol >> (flock::blake3::K_LOG - 1 - j)) & 1;
+        let bit = (pincol >> (flock::sha256::K_LOG - 1 - j)) & 1;
         pinw *= if bit == 1 { rv } else { F192::ONE + rv };
     }
     pinw *= lcz[pincol % 64];
@@ -769,7 +769,7 @@ fn gen_verify(
     }
     let sch = lean_vm::cpu::schema();
     let b3base = sch.base[5];
-    let valcols: Vec<usize> = lean_vm::tables::BLAKE3_VALUE_COLS.iter().map(|&c| b3base + c).collect();
+    let valcols: Vec<usize> = lean_vm::tables::SHA256_VALUE_COLS.iter().map(|&c| b3base + c).collect();
     let log_mem = proof.stream[0].c0 as usize;
 
     // ---- Phase E2 hints (the stacked Ligerito opening) ----
@@ -896,8 +896,8 @@ fn gen_verify(
                         continue; // deduped: pooled once at its first occurrence
                     }
                     if valcols.contains(i) {
-                        let slot_i = lean_vm::blake3_flock::SLOTS[valcols.iter().position(|v| v == i).unwrap()];
-                        let nvt = lean_vm::blake3_flock::SLOT_STRIDE_LOG + blk.kappa;
+                        let slot_i = lean_vm::sha256_flock::SLOTS[valcols.iter().position(|v| v == i).unwrap()];
+                        let nvt = lean_vm::sha256_flock::SLOT_STRIDE_LOG + blk.kappa;
                         push_desc(3, 0, blk.kappa, slot_i, qpkd_pl.offset >> nvt, nvt);
                     } else {
                         let pl = l.placements[*i];
@@ -912,8 +912,8 @@ fn gen_verify(
             let col = sch.base[t] + c;
             let pl = l.placements[col];
             if pl.is_virtual() {
-                let slot_i = lean_vm::blake3_flock::SLOTS[valcols.iter().position(|v| *v == col).unwrap()];
-                let nvt = lean_vm::blake3_flock::SLOT_STRIDE_LOG + taus[t];
+                let slot_i = lean_vm::sha256_flock::SLOTS[valcols.iter().position(|v| *v == col).unwrap()];
+                let nvt = lean_vm::sha256_flock::SLOT_STRIDE_LOG + taus[t];
                 push_desc(4, t * taumax_cap, taus[t], slot_i, qpkd_pl.offset >> nvt, nvt);
             } else {
                 push_desc(1, t * taumax_cap, taus[t], 0, pl.offset >> taus[t], taus[t]);
@@ -1094,7 +1094,7 @@ fn gen_verify(
         ("claim_qpkd_slot_bits".to_string(), {
             let mut v = Vec::new();
             for &slot in cslot.iter().take(ncl) {
-                for k in 0..lean_vm::blake3_flock::SLOT_STRIDE_LOG {
+                for k in 0..lean_vm::sha256_flock::SLOT_STRIDE_LOG {
                     v.push(F192::new(((slot >> k) & 1) as u64, 0, 0));
                 }
             }
@@ -1261,7 +1261,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     let taumax_cap = 33usize;
     let stream_cap = 8192usize;
     let taus = l.taus;
-    let lcrounds = flock::blake3::K_LOG - 6;
+    let lcrounds = flock::sha256::K_LOG - 6;
 
     // ---- flattened block/coord descriptors (structural) ----
     let (mut sblk, mut bc0, mut bcn) = (vec![0usize], vec![], vec![]);
@@ -1320,7 +1320,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     // ---- claim descriptors: buffer id + offset only (both structural) ----
     let sch = lean_vm::cpu::schema();
     let b3base = sch.base[5];
-    let valcols: Vec<usize> = lean_vm::tables::BLAKE3_VALUE_COLS.iter().map(|&c| b3base + c).collect();
+    let valcols: Vec<usize> = lean_vm::tables::SHA256_VALUE_COLS.iter().map(|&c| b3base + c).collect();
     let (mut cpbuf, mut cpoff) = (vec![], vec![]);
     let mut desc_seen: std::collections::HashSet<(usize, usize)> = Default::default();
     for blocks in sides.iter() {
@@ -1489,15 +1489,15 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("LAGRANGE_INV_COMBINED", flds(&icmb));
     ps("LAGRANGE_INV_S", flds(&isdom));
     ps("LINCHECK_ROUNDS", lcrounds.to_string());
-    let pincol = flock::blake3::build_block_r1cs(taus[5].max(MINB3))
+    let pincol = flock::sha256::build_block_r1cs(taus[5].max(MINB3))
         .const_pin
-        .expect("blake3 r1cs has a const pin");
+        .expect("sha256 r1cs has a const pin");
     ps("PIN_COLUMN", pincol.to_string());
-    ps("K_LOG", flock::blake3::K_LOG.to_string());
+    ps("K_LOG", flock::sha256::K_LOG.to_string());
     // The q_pkd Strided-claim slot stride: K_LOG - LOG_PACKING_K. Coincided with
     // LOG2_FIELD_BITS (7) under extension-field packing; with K=F64 packing (LOG_PACKING_K=6)
     // it is now 8, so the qpkd point-claim slot must use THIS, not LOG2_FIELD_BITS.
-    ps("SLOT_STRIDE_LOG", lean_vm::blake3_flock::SLOT_STRIDE_LOG.to_string());
+    ps("SLOT_STRIDE_LOG", lean_vm::sha256_flock::SLOT_STRIDE_LOG.to_string());
 
     // ---- LIG candidate tables (fixed [minm, maxm] range; open_stacked config) ----
     let oshape = |m: usize, log_inv_rate: usize| {
@@ -1764,7 +1764,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("CLAIM_POINT_OFF", ints(&cpoff));
     ps(
         "QPKD_VARS_CAP",
-        (33 + lean_vm::blake3_flock::SLOT_STRIDE_LOG).to_string(),
+        (33 + lean_vm::sha256_flock::SLOT_STRIDE_LOG).to_string(),
     );
     ps("BYTECODE_LOG", kbc.to_string());
     // The stacked bytecode: nbcv/2 encoding columns per side, packed along
@@ -1919,7 +1919,7 @@ fn run_recursion_with_rates(
         pow(stats.cycles),
         stats.cycles as f64 / total_inner_cycles as f64
     );
-    for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3"]
+    for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "SHA256"]
         .iter()
         .zip(&stats.counts)
     {
@@ -1960,7 +1960,7 @@ fn recursion_2to1_mixed() {
 /// One compiled guest bytecode proves MANY inner runs with wildly different
 /// opcode profiles and sizes, without recompilation. The configs span four
 /// committed sizes (m in {22,23,24,25} - four distinct match_range opening
-/// arms) and four BLAKE3 log-instance-counts (tau_5 in {3,4,5,6} - different
+/// arms) and four SHA256 log-instance-counts (tau_5 in {3,4,5,6} - different
 /// r1cs statement digests, flock reduction sizes, and pin prefixes). The
 /// guest is compiled ONCE from the placeholder map, which is a function of the
 /// inner bytecode size alone, so every shape is verified on the same Program

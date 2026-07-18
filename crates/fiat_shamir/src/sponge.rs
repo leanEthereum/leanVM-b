@@ -3,13 +3,13 @@
 //! leanVM-b's own protocol (whose `ProverState` / `VerifierState` wrap this
 //! sponge with the proof transport channels).
 //!
-//! A 256-bit chaining value evolved only by the fixed 64→32 BLAKE3 compression
-//! the VM's `Blake3` opcode computes, so prover, verifier, and a recursive
-//! verifier running on the VM all derive identical challenges with one
-//! `blake3` per step. That is the reason this replaces the streaming
-//! `blake3::Hasher` challenger: the multi-block chunk tree / flags / counter of
-//! the streaming hasher cannot be reproduced by the one 64-byte compression the
-//! machine has.
+//! A 256-bit chaining value evolved only by one fixed-IV, unpadded 64→32
+//! SHA-256 compression (currently carried by the legacy-named `Sha256` opcode),
+//! so prover, verifier, and a recursive
+//! verifier running on the VM all derive identical challenges with one legacy
+//! `sha256` opcode per step. That is the reason this replaces a streaming
+//! standard padded hasher: its extra padding compression cannot be reproduced
+//! by the one-compression opcode.
 //!
 //! Scalars are `E = F192` (the tower challenge field): their three
 //! little-endian `K = F64` limbs occupy the first three compression lanes,
@@ -18,8 +18,8 @@
 //! Construction adapted from Signal's ShoSha256 "Stateful Hash Object"
 //! (`libsignal/rust/poksho/src/shosha256.rs`, © 2020 Signal Messenger, LLC,
 //! AGPL-3.0-only): a chaining value advanced by domain-separated absorb /
-//! squeeze steps. Here the underlying hash is the VM's BLAKE3 compression
-//! rather than SHA-256, inputs are `K = GF(2^64)` field words, and — because
+//! squeeze steps. Here the underlying hash is the VM's raw, fixed-IV SHA-256
+//! compression, inputs are `K = GF(2^64)` field words, and — because
 //! every absorb is domain-tagged per compression — no explicit double-hash
 //! ratchet is needed.
 //!
@@ -30,16 +30,16 @@
 
 use primitives::field::{F64, F192};
 
-/// `f(a, b) = BLAKE3(a‖b)` on two 256-bit halves laid out little-endian into 64
-/// bytes — *exactly* the VM's `Blake3` opcode: 64 input bytes → 32-byte digest,
+/// `f(a, b) = SHA256_Compress(IV, a‖b)` on two 256-bit halves laid out little-endian into 64
+/// bytes — *exactly* the VM's `Sha256` opcode: 64 input bytes → 32-byte digest,
 /// split back into four field words. THE primitive; the sponge is a chain of
-/// these, so a zkDSL program replays it with one `blake3(...)` per step.
+/// these, so a zkDSL program replays it with one `sha256(...)` per step.
 pub fn compress(a: [F64; 4], b: [F64; 4]) -> [F64; 4] {
     let mut input = [0u8; 64];
     for (slot, w) in input.chunks_exact_mut(8).zip(a.into_iter().chain(b)) {
         slot.copy_from_slice(&w.0.to_le_bytes());
     }
-    let d = *blake3::hash(&input).as_bytes();
+    let d = primitives::sha256::compress(&input);
     std::array::from_fn(|k| F64(u64::from_le_bytes(d[8 * k..8 * k + 8].try_into().unwrap())))
 }
 

@@ -16,11 +16,11 @@ pub fn run_fibonacci(n: usize, log_inv_rate: usize) {
     let (src, pi) = fibonacci_program(n);
     let program = compile(&parse(&src).unwrap());
 
-    // Warm the flock BLAKE3 R1CS setup once up front (Fibonacci runs no BLAKE3, so
+    // Warm the flock SHA256 R1CS setup once up front (Fibonacci runs no SHA256, so
     // this warms the single padding instance). It is a fixed, one-time,
     // program-independent circuit build — not part of proving — so timing prove/
     // verify below reflects steady-state performance.
-    lean_vm::blake3_flock::warm_setup(0);
+    lean_vm::sha256_flock::warm_setup(0);
 
     let t = Instant::now();
     let (proof, stats) = prove(&program, pi, log_inv_rate);
@@ -36,7 +36,7 @@ pub fn run_fibonacci(n: usize, log_inv_rate: usize) {
 
     println!("Fibonacci (in the exponent, i.e. modulo 2^64 - 1), N = {n}");
     println!("  cycles (VM steps)           : {}", stats.cycles);
-    for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3"]
+    for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "SHA256"]
         .iter()
         .zip(&stats.counts)
     {

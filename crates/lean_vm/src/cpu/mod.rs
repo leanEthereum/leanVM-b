@@ -3,9 +3,9 @@
 //! commitment and verified oracle-free. Addresses, the program counter, and read
 //! counts are g-powers, so every increment is a free ×g. Machine-word arithmetic
 //! is over `E = F192 = K[y]/(y³+y+1)` (XOR degree 1, MUL_NATIVE degree 2),
-//! with each word carried by three committed `K = F64` limbs. `BLAKE3`
+//! with each word carried by three committed `K = F64` limbs. `SHA256`
 //! (§7.6) adds the memory/state/bytecode plumbing for a 64→32-byte compression
-//! whose relation is discharged by flock (see [`crate::blake3_flock`]). All
+//! whose relation is discharged by flock (see [`crate::sha256_flock`]). All
 //! Challenges and transcript scalars live in the same tower E.
 
 use std::collections::HashMap;
@@ -16,7 +16,7 @@ use crate::constraints;
 use crate::leaf::{self, Block, ColumnClaim, Coord};
 use crate::pcs;
 use crate::tables::{
-    self, FillCtx, FlushBuilder, OP_BLAKE3, OP_DEREF, OP_JUMP, OP_MUL, OP_SET, OP_XOR, SEP_BYTECODE, SEP_MEM, SEP_STATE,
+    self, FillCtx, FlushBuilder, OP_SHA256, OP_DEREF, OP_JUMP, OP_MUL, OP_SET, OP_XOR, SEP_BYTECODE, SEP_MEM, SEP_STATE,
 };
 use crate::transcript::{ProverState, VerifierState};
 use crate::witness::{self, Column};
@@ -28,17 +28,17 @@ mod isa;
 mod layout;
 mod trace;
 pub use execute::Execution;
-pub use isa::{Blake3Packing, DerefMode, Op};
+pub use isa::{Sha256Packing, DerefMode, Op};
 pub use layout::*;
 pub(crate) use trace::{Brow, Drow, Jrow, Srow, Trace, Xrow};
 
-/// Witness-gen `BLAKE3` compression (doc §7.6): the eight input words are the two
+/// Witness-gen `SHA256` compression (doc §7.6): the eight input words are the two
 /// 256-bit operands `a = va[0..4]`, `b = vb[0..4]` laid out little-endian into
 /// 64 bytes (8 bytes per 64-bit word); the 32-byte digest is split back into the
-/// four output words `c`. The BLAKE3 hash of the 64-byte input — the relation
-/// flock then proves ([`crate::blake3_flock`]). Delegates to
+/// four output words `c`. One fixed-IV SHA-256 compression of the 64-byte input — the relation
+/// flock then proves ([`crate::sha256_flock`]). Delegates to
 /// [`crate::vmhash::compress`], THE primitive every VM-native hash chains.
-fn blake3_compress(va: [F64; 4], vb: [F64; 4]) -> [F64; 4] {
+fn sha256_compress(va: [F64; 4], vb: [F64; 4]) -> [F64; 4] {
     crate::vmhash::compress(va, vb)
 }
 
@@ -63,7 +63,7 @@ const MAX_LOG_ROWS: usize = 32;
 /// `2^32` instructions.
 const MAX_LOG_BYTECODE: usize = 32;
 
-/// A binding digest of the program bytecode (BLAKE3 of every instruction's
+/// A binding digest of the program bytecode (SHA256 of every instruction's
 /// canonical encoding — opcode, operands, and the DEREF store-mode), as two field
 /// elements. Seeded into the transcript alongside the public input, so EVERY
 /// challenge depends on the exact program.
@@ -80,7 +80,7 @@ const MAX_LOG_BYTECODE: usize = 32;
 fn program_digest(prog: &[Op]) -> [F64; 4] {
     // VM-native: encode the program as a field-element slice and hash it with the
     // Merkle–Damgård slice hash ([`crate::vmhash::hash_slice`]), so a recursive
-    // verifier can recompute this digest with the `Blake3` opcode alone.
+    // verifier can recompute this digest with the `Sha256` opcode alone.
     let mut words: Vec<F64> = Vec::with_capacity(5 * prog.len() + 2);
     // Domain/version marker (the MD IV also binds the total length).
     words.push(F64(prog.len() as u64));
@@ -88,7 +88,7 @@ fn program_digest(prog: &[Op]) -> [F64; 4] {
     for op in prog {
         // Encode every op injectively as (tag, four u32 operands, one 192-bit
         // immediate) → five words: two operand-offset words packed with the tag,
-        // then the immediate's three lanes. BLAKE3 carries five offsets, so its
+        // then the immediate's three lanes. SHA256 carries five offsets, so its
         // 4th/5th ride the (otherwise-zero) immediate's low lane.
         let (tag, a, b, c, k) = match *op {
             Op::Xor { a, b, c } => (0u8, a, b, c, F192::ZERO),
@@ -103,8 +103,8 @@ fn program_digest(prog: &[Op]) -> [F64; 4] {
                 (3 + mode as u8, alpha, beta, gamma, F192::ZERO) // mode ∈ {Cell,Pc,Fp} ⇒ tag 3/4/5
             }
             Op::Jump { oc, od, of } => (6, oc, od, of, F192::ZERO),
-            Op::Blake3 { ins, out, packing } => {
-                let mode = u64::from(packing == Blake3Packing::Transcript192);
+            Op::Sha256 { ins, out, packing } => {
+                let mode = u64::from(packing == Sha256Packing::Transcript192);
                 (
                     7 + mode as u8,
                     ins[0],
@@ -125,19 +125,21 @@ fn program_digest(prog: &[Op]) -> [F64; 4] {
 
 /// The Fiat–Shamir seed: ONE 32-byte digest, as two field words, committing
 /// to everything fixed about the proving environment — the flock circuit
-/// family (its per-block R1CS matrices, [`crate::blake3_flock::family_digest`])
+/// family (its per-block R1CS matrices, [`crate::sha256_flock::family_digest`])
 /// and the program's bytecode digest. It leads every transcript, so all
 /// challenges depend on the circuit version and the program before anything
 /// else; a recursion guest carries the INNER program's seed in its public
 /// input, pinning both with one word pair.
 pub fn fs_seed(program: &Program) -> [F192; 2] {
-    let mut h = blake3::Hasher::new();
-    h.update(b"leanvm-b-fs-seed-v1");
-    h.update(&crate::blake3_flock::family_digest());
+    const DOMAIN: &[u8] = b"leanvm-b-fs-seed-v2-sha256-compress";
+    const PROGRAM_DIGEST_BYTES: usize = 4 * core::mem::size_of::<u64>();
+    let mut h = primitives::sha256::CompressionHasher::new(DOMAIN.len() + 32 + PROGRAM_DIGEST_BYTES);
+    h.update(DOMAIN);
+    h.update(&crate::sha256_flock::family_digest());
     for w in program.digest {
         h.update(&w.0.to_le_bytes());
     }
-    let d = *h.finalize().as_bytes();
+    let d = h.finalize();
     let word = |o: usize| u64::from_le_bytes(d[o..o + 8].try_into().unwrap());
     [F192::new(word(0), word(8), 0), F192::new(word(16), word(24), 0)]
 }
@@ -281,10 +283,10 @@ pub enum Error {
     Open(pcs::Error),
     PublicInput,
     Transcript(crate::transcript::Error),
-    /// flock's BLAKE3 R1CS validity sub-proof failed to verify. (A missing or
+    /// flock's SHA256 R1CS validity sub-proof failed to verify. (A missing or
     /// malformed sub-proof surfaces as [`Error::Transcript`] when the shared
     /// `stream`/`openings` fail to reconstruct or fully consume.)
-    Blake3(flock::verifier::VerifyError),
+    Sha256(flock::verifier::VerifyError),
 }
 
 /// Lift each table's constraint evals (at its zerocheck point `rho`) to global
@@ -304,20 +306,20 @@ fn constraint_claims(table_claims: &[constraints::Claims]) -> Vec<ColumnClaim> {
     v
 }
 
-/// If `col` is a BLAKE3 **value** column (global index), its `q_pkd` packed slot.
+/// If `col` is a SHA256 **value** column (global index), its `q_pkd` packed slot.
 /// These columns are virtual (uncommitted): their memory-bus evaluation claims
 /// are re-routed to `q_pkd` slot evaluations, which is the whole binding — the
 /// bus-tied value IS the proven `q_pkd` word, no separate check needed.
-fn blake3_value_slot(col: usize) -> Option<usize> {
-    let base = schema().base[tables::BLAKE3_TABLE];
-    tables::BLAKE3_VALUE_COLS
+fn sha256_value_slot(col: usize) -> Option<usize> {
+    let base = schema().base[tables::SHA256_TABLE];
+    tables::SHA256_VALUE_COLS
         .iter()
         .position(|&c| base + c == col)
-        .map(|i| crate::blake3_flock::SLOTS[i])
+        .map(|i| crate::sha256_flock::SLOTS[i])
 }
 
 /// Run statistics returned alongside the proof: the cycle count (total executed
-/// instructions), the per-opcode counts `[XOR, MUL, SET, DEREF, JUMP, BLAKE3]`, and the
+/// instructions), the per-opcode counts `[XOR, MUL, SET, DEREF, JUMP, SHA256]`, and the
 /// committed witness size — the sum of the column lengths, i.e. the real data
 /// before the stacked witness is zero-padded to a power of two `2^m`.
 pub struct Stats {
@@ -346,7 +348,7 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
     if prof {
         eprintln!("[prove] execute     : {:>7.2} ms", ms(t));
     }
-    // The BLAKE3 R1CS setup (circuit construction) is a ~hundreds-of-ms cost that
+    // The SHA256 R1CS setup (circuit construction) is a ~hundreds-of-ms cost that
     // depends only on the compression count (the circuit *shape*), not the witness
     // — but it is otherwise built synchronously inside the final reduction, adding
     // that latency serially with nothing overlapping it. Now that `execute` has
@@ -354,13 +356,13 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
     // concurrently with the build/commit/bus/constraint stages (~1 s of work) and
     // lands in the shared setup cache, so the reduction's `setup_for` is a cache
     // hit. Pure warm-up — the result is fetched from the cache, nothing here joins
-    // the handle. (A no-BLAKE3 program still warms the size-1 padding shape.)
-    let n_b3_warm = exec.trace.blake3.len().max(1);
-    std::thread::spawn(move || crate::blake3_flock::warm_setup(n_b3_warm));
+    // the handle. (A no-SHA256 program still warms the size-1 padding shape.)
+    let n_b3_warm = exec.trace.sha256.len().max(1);
+    std::thread::spawn(move || crate::sha256_flock::warm_setup(n_b3_warm));
     let cycles = exec.cycles;
     let w = tracing::info_span!("Build witness").in_scope(|| program.build(&exec));
     let counts = w.row_counts;
-    // Real committed data, before zero-pad to 2^m. Virtual columns (the BLAKE3
+    // Real committed data, before zero-pad to 2^m. Virtual columns (the SHA256
     // value columns) carry data for the bus but are NOT committed, so exclude them.
     let committed_size: usize = w
         .cols
@@ -381,9 +383,9 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
         eprintln!("[prove] commit      : {:>7.2} ms", ms(t));
     }
 
-    // BLAKE3 ↔ flock (§blake3_flock), single PCS: q_pkd is ALWAYS a column in
-    // `w.q` (≥1 instance — a program with no BLAKE3 carries one padding instance,
-    // so the proof shape is uniform and there is no has/hasn't-BLAKE3 fork). flock's
+    // SHA256 ↔ flock (§sha256_flock), single PCS: q_pkd is ALWAYS a column in
+    // `w.q` (≥1 instance — a program with no SHA256 carries one padding instance,
+    // so the proof shape is uniform and there is no has/hasn't-SHA256 fork). flock's
     // R1CS validity and EVERY leanVM point claim are discharged together by ONE
     // Ligerito over this commitment (below). The input/output words bind via the
     // memory bus (virtual value columns route to q_pkd); the constant pins reuse a
@@ -436,25 +438,25 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
     // SAME Ligerito as every leanVM point claim (the point claims become the
     // opener's `point_claims`).
     let t = std::time::Instant::now();
-    use flock::blake3::Compression;
-    let blocks: Vec<Compression> = if exec.trace.blake3.is_empty() {
-        vec![crate::blake3_flock::padding_compression()]
+    use flock::sha256::Compression;
+    let blocks: Vec<Compression> = if exec.trace.sha256.is_empty() {
+        vec![crate::sha256_flock::padding_compression()]
     } else {
         exec.trace
-            .blake3
+            .sha256
             .iter()
-            .map(|r| crate::blake3_flock::compression(r.va, r.vb))
+            .map(|r| crate::sha256_flock::compression(r.va, r.vb))
             .collect()
     };
     let (_z_packed, reduced) = tracing::info_span!("Flock reduction")
-        .in_scope(|| crate::blake3_flock::prove_reduction(&blocks, &committed.commitment, &mut ps));
+        .in_scope(|| crate::sha256_flock::prove_reduction(&blocks, &committed.commitment, &mut ps));
     if prof {
         eprintln!("[prove]   reduction : {:>7.2} ms", ms(t));
     }
     let t = std::time::Instant::now();
     let offset = w.layout.placements[QPKD].offset;
     let ring = tracing::info_span!("Package ring switch")
-        .in_scope(|| crate::blake3_flock::ring_switch_open(blocks.len(), offset, &reduced));
+        .in_scope(|| crate::sha256_flock::ring_switch_open(blocks.len(), offset, &reduced));
     if prof {
         eprintln!("[prove]   ring pkg  : {:>7.2} ms", ms(t));
     }
@@ -547,14 +549,14 @@ pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Res
     let (l, log_inv_rate) = read_public(&mut vs, program, public_input)?;
     let root = pcs::read_commitment(&mut vs).map_err(Error::Transcript)?;
 
-    // BLAKE3 ↔ flock (single PCS): flock's R1CS validity and every leanVM point
+    // SHA256 ↔ flock (single PCS): flock's R1CS validity and every leanVM point
     // claim are verified together by ONE Ligerito opening at the end. The executed-
-    // BLAKE3 count is public (announced); its flock sub-proof rides the shared
+    // SHA256 count is public (announced); its flock sub-proof rides the shared
     // `stream`/`openings`, and presence is enforced by consumption below plus
     // `vs.finish()` (a proof with `n_b3 = 0` but trailing flock data, or vice versa,
     // fails to fully consume). No dedicated binding challenge: the input/output
     // words bind via the memory bus, the pins reuse a bus point.
-    let n_b3 = l.row_counts[tables::BLAKE3_TABLE];
+    let n_b3 = l.row_counts[tables::SHA256_TABLE];
 
     let bus = leaf::verify_balance(&l.push, &l.pull, &l.count, &l.pad, &mut vs).map_err(Error::Bus)?;
     let checkpoint_bus = vs.sponge_state();
@@ -589,10 +591,10 @@ pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Res
     // (mirroring `prove`). `n_blocks = max(n_b3, 1)` — always ≥ 1 instance.
     let n_blocks = n_b3.max(1);
     let offset = l.placements[QPKD].offset;
-    let replay = crate::blake3_flock::verify_reduction(n_blocks, &root, l.m, &mut vs).map_err(Error::Blake3)?;
+    let replay = crate::sha256_flock::verify_reduction(n_blocks, &root, l.m, &mut vs).map_err(Error::Sha256)?;
     let checkpoint_flock = vs.sponge_state();
     let open = vs.next_opening().map_err(Error::Transcript)?;
-    let ring = crate::blake3_flock::ring_switch_verify(n_blocks, offset, replay.ab, replay.c);
+    let ring = crate::sha256_flock::ring_switch_verify(n_blocks, offset, replay.ab, replay.c);
     let opening = pcs::verify(&mut vs, &slots, &ring, open, l.m, log_inv_rate, &root).map_err(Error::Open)?;
     vs.finish().map_err(Error::Transcript)?;
     Ok(VerifySummary {
@@ -609,7 +611,7 @@ pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Res
 /// Lift `ColumnClaim`s to located PCS claims: a claim on column `c` lives in
 /// the slot at `placements[c].offset`, with the claim's point as the low point.
 ///
-/// BLAKE3 value columns are virtual — they have no committed placement. A bus
+/// SHA256 value columns are virtual — they have no committed placement. A bus
 /// claim `value_col(r) = v` (at the `n_log`-dim instance point `r`) is re-routed
 /// to the equal `q_pkd` slot evaluation: an ordinary claim on the committed
 /// `QPKD` column at the point freezing the low 8 coords to the slot's bits and
@@ -619,15 +621,15 @@ fn slot_claims(l: &Layout, claims: &[ColumnClaim]) -> Vec<pcs::SlotClaim> {
     claims
         .iter()
         .map(|c| {
-            // A virtual BLAKE3 value column (always virtual): its bus claim at
+            // A virtual SHA256 value column (always virtual): its bus claim at
             // instance point `c.point` is the q_pkd slot value — a boolean-selector
             // (strided) claim on QPKD, folded sparsely (2^n_log, not the 2^(8+n_log)
             // dense QPKD block).
-            if let Some(slot) = blake3_value_slot(c.col) {
+            if let Some(slot) = sha256_value_slot(c.col) {
                 return pcs::SlotClaim::Strided {
                     offset: l.placements[QPKD].offset,
                     slot,
-                    stride_log: crate::blake3_flock::SLOT_STRIDE_LOG,
+                    stride_log: crate::sha256_flock::SLOT_STRIDE_LOG,
                     point: c.point.clone(),
                     value: c.value,
                 };
@@ -650,20 +652,20 @@ mod tests {
         F192::new(x, 0, 0)
     }
 
-    /// Pack two 64-bit flock words into the canonical BLAKE3 subspace of F192.
+    /// Pack two 64-bit flock words into the canonical SHA256 subspace of F192.
     fn cell(lo: F64, hi: F64) -> F192 {
         F192::new(lo.0, hi.0, 0)
     }
 
-    /// A hand-built straight-line program with one BLAKE3 row: set up the two
+    /// A hand-built straight-line program with one SHA256 row: set up the two
     /// 256-bit inputs (`a` at cells 2,3, `b` at cells 4,5 — one 128-bit word per
     /// cell), hash them into the output `c` (cells 6,7), pad with filler SETs so
     /// the last executed instruction lands one before the sentinel, and halt
     /// there. The flock validity sub-proof plus the memory / state / bytecode bus
     /// interactions are verified end-to-end (the proof carries the Ligerito
     /// opening they assert on).
-    fn blake3_program(a: [F64; 4], b: [F64; 4]) -> Program {
-        // a → cells 2,3 and b → cells 4,5 (two flock lanes per BLAKE3 cell).
+    fn sha256_program(a: [F64; 4], b: [F64; 4]) -> Program {
+        // a → cells 2,3 and b → cells 4,5 (two flock lanes per SHA256 cell).
         let mut prog = vec![
             Op::Set {
                 o: 2,
@@ -681,10 +683,10 @@ mod tests {
                 o: 5,
                 k: cell(b[2], b[3]),
             },
-            Op::Blake3 {
+            Op::Sha256 {
                 ins: [2, 3, 4, 5],
                 out: 6,
-                packing: Blake3Packing::Bytes128,
+                packing: Sha256Packing::Bytes128,
             },
         ]; // c → cells 6,7
         // 16 slots: 5 executed so far; 10 filler SETs step the pc to 15 (halt);
@@ -701,7 +703,7 @@ mod tests {
     }
 
     #[test]
-    fn blake3_proves_and_verifies() {
+    fn sha256_proves_and_verifies() {
         let a: [F64; 4] = [
             F64(0x0123_4567_89ab_cdef),
             F64(0xfedc_ba98_7654_3210),
@@ -714,32 +716,32 @@ mod tests {
             F64(0x9999_aaaa_bbbb_cccc),
             F64(0xdddd_eeee_ffff_0000),
         ];
-        let program = blake3_program(a, b);
+        let program = sha256_program(a, b);
 
         let pi = [w(7), w(11)];
         let exec = program.execute(pi);
 
         // The output cells hold the digest of the two inputs (two 128-bit words).
-        let d = blake3_compress(a, b);
+        let d = sha256_compress(a, b);
         assert_eq!(exec.mem[6], cell(d[0], d[1]));
         assert_eq!(exec.mem[7], cell(d[2], d[3]));
-        assert_eq!(exec.trace.blake3.len(), 1);
+        assert_eq!(exec.trace.sha256.len(), 1);
 
         let (proof, stats) = prove(&program, pi, pcs::LOG_INV_RATE);
-        assert_eq!(stats.counts[5], 1, "one BLAKE3 row");
+        assert_eq!(stats.counts[5], 1, "one SHA256 row");
         // flock's sub-proof rides the shared channels: its Ligerito is the proof's
         // one opening, its scalar reduction trails the `stream`.
-        assert!(!proof.openings.is_empty(), "BLAKE3 program carries a Ligerito opening");
-        verify(&program, &pi, &proof).expect("BLAKE3 program verifies");
+        assert!(!proof.openings.is_empty(), "SHA256 program carries a Ligerito opening");
+        verify(&program, &pi, &proof).expect("SHA256 program verifies");
     }
 
     /// BLAKE consumes the `(c0,c1,0)` embedding. This is not an extra AIR
     /// constraint: the full three-limb memory bus makes a request carrying a
     /// literal zero in limb 2 match only such a stored word.
     #[test]
-    #[should_panic(expected = "BLAKE3 input cell must be a 128-bit embedding")]
-    fn blake3_requires_zero_third_limb() {
-        let mut program = blake3_program([F64::ZERO; 4], [F64::ZERO; 4]);
+    #[should_panic(expected = "SHA256 input cell must be a 128-bit embedding")]
+    fn sha256_requires_zero_third_limb() {
+        let mut program = sha256_program([F64::ZERO; 4], [F64::ZERO; 4]);
         program.prog[0] = Op::Set {
             o: 2,
             k: F192::new(0, 0, 1),
@@ -747,20 +749,20 @@ mod tests {
         let _ = program.execute([w(7), w(11)]);
     }
 
-    /// A self-hash `BLAKE3(h, h)` (the hash-chain step) passes the *same* input
+    /// A self-hash `SHA256(h, h)` (the hash-chain step) passes the *same* input
     /// chunks as both `a` and `b` (`ins[0..2] == ins[2..4]`), so one 256-bit quad
     /// feeds both inputs with no copy. The row reads those cells twice; the
     /// running access counts thread through and the bus still balances. This is
     /// the aliasing the DSL's hash-chain lowering relies on.
     #[test]
-    fn blake3_self_hash_aliased_operands() {
+    fn sha256_self_hash_aliased_operands() {
         let h: [F64; 4] = [
             F64(0xfeed_face_dead_beef),
             F64(0x0123_4567_89ab_cdef),
             F64(0xcafe_d00d_1337_c0de),
             F64(0x8877_6655_4433_2211),
         ];
-        // 8 slots: 2 SETs (h at cells 2,3), the aliased BLAKE3 (output 4,5),
+        // 8 slots: 2 SETs (h at cells 2,3), the aliased SHA256 (output 4,5),
         // 2 filler SETs stepping the pc to 7 (the sentinel, halt).
         let mut prog = Vec::new();
         prog.push(Op::Set {
@@ -771,10 +773,10 @@ mod tests {
             o: 3,
             k: cell(h[2], h[3]),
         });
-        prog.push(Op::Blake3 {
+        prog.push(Op::Sha256 {
             ins: [2, 3, 2, 3],
             out: 4,
-            packing: Blake3Packing::Bytes128,
+            packing: Sha256Packing::Bytes128,
         }); // a == b: hash h ‖ h into cells 4,5
         for k in 0..4u32 {
             prog.push(Op::Set {
@@ -788,20 +790,20 @@ mod tests {
         let pi = [w(3), w(5)];
 
         let exec = program.execute(pi);
-        let d = blake3_compress(h, h);
+        let d = sha256_compress(h, h);
         assert_eq!(exec.mem[4], cell(d[0], d[1]));
         assert_eq!(exec.mem[5], cell(d[2], d[3]));
 
         let (proof, stats) = prove(&program, pi, pcs::LOG_INV_RATE);
-        assert_eq!(stats.counts[5], 1, "one BLAKE3 row");
-        verify(&program, &pi, &proof).expect("self-hash BLAKE3 verifies");
+        assert_eq!(stats.counts[5], 1, "one SHA256 row");
+        verify(&program, &pi, &proof).expect("self-hash SHA256 verifies");
     }
 
     /// Tampering flock's validity sub-proof (its Ligerito, opened over the same
     /// stacked commitment) must make verification fail.
     #[test]
-    fn blake3_rejects_tampered_validity() {
-        let program = blake3_program(
+    fn sha256_rejects_tampered_validity() {
+        let program = sha256_program(
             [F64(0xABCD), F64(0x1234), F64(0x5678), F64(0x9999)],
             [F64(0x1111), F64(0x2222), F64(0x3333), F64(0x4444)],
         );
@@ -815,7 +817,7 @@ mod tests {
         lig.ligerito.sumcheck_transcript[0].u_0 += F192::ONE;
         assert!(
             verify(&program, &pi, &proof).is_err(),
-            "tampered BLAKE3 validity proof must be rejected"
+            "tampered SHA256 validity proof must be rejected"
         );
     }
 
@@ -823,11 +825,11 @@ mod tests {
     /// `stream` as raw transport, but its VALUES still re-enter the sponge through
     /// the verifier's reduction/opening replay — so tampering a transport word
     /// diverges the recovered `(ab, c)` claims (or breaks decoding) and
-    /// verification must reject. (Complements `blake3_rejects_tampered_validity`,
+    /// verification must reject. (Complements `sha256_rejects_tampered_validity`,
     /// which tampers the Ligerito opening.)
     #[test]
-    fn blake3_rejects_tampered_reduction() {
-        let program = blake3_program(
+    fn sha256_rejects_tampered_reduction() {
+        let program = sha256_program(
             [F64(0xABCD), F64(0x1234), F64(0x5678), F64(0x9999)],
             [F64(0x1111), F64(0x2222), F64(0x3333), F64(0x4444)],
         );
@@ -847,12 +849,12 @@ mod tests {
         );
     }
 
-    /// A program with no BLAKE3 instructions still proves and verifies through the
+    /// A program with no SHA256 instructions still proves and verifies through the
     /// unified path: `q_pkd` carries a single padding instance and the flock
-    /// sub-proof (over that padding) rides the shared channels like any BLAKE3
-    /// program — there is no separate no-BLAKE3 code path.
+    /// sub-proof (over that padding) rides the shared channels like any SHA256
+    /// program — there is no separate no-SHA256 code path.
     #[test]
-    fn non_blake3_program_verifies() {
+    fn non_sha256_program_verifies() {
         let prog = vec![
             Op::Set { o: 2, k: w(5) },
             Op::Set { o: 3, k: w(6) },
@@ -862,10 +864,10 @@ mod tests {
         let program = Program::from_bytecode(prog, 5);
         let pi = [F192::new(1, 2, 3), F192::new(4, 5, 6)];
         let (proof, stats) = prove(&program, pi, pcs::LOG_INV_RATE);
-        assert_eq!(stats.counts[5], 0, "no real BLAKE3 rows");
+        assert_eq!(stats.counts[5], 0, "no real SHA256 rows");
         // The proof still carries exactly one Ligerito opening (over the padding).
         assert_eq!(proof.openings.len(), 1, "unified path: one opening always");
-        verify(&program, &pi, &proof).expect("non-BLAKE3 program verifies");
+        verify(&program, &pi, &proof).expect("non-SHA256 program verifies");
     }
 
     /// A 192-bit-word MUL: the E-product of two full machine words is proven and
@@ -920,13 +922,13 @@ mod tests {
         );
     }
 
-    /// Out-of-process verification: a BLAKE3 proof (whose flock sub-proof rides
+    /// Out-of-process verification: a SHA256 proof (whose flock sub-proof rides
     /// the shared `stream` + `openings`, no side field) serializes to bytes,
     /// deserializes on the other side, and verifies — everything travels in the two
     /// channels, nothing out of band. A flipped encoded byte must not verify.
     #[test]
     fn proof_roundtrips_through_bytes_and_verifies() {
-        let program = blake3_program(
+        let program = sha256_program(
             [F64(0xABCD), F64(0x1234), F64(0x5678), F64(0x9999)],
             [F64(0x1111), F64(0x2222), F64(0x3333), F64(0x4444)],
         );
@@ -935,7 +937,7 @@ mod tests {
 
         let bytes = bincode::serialize(&proof).expect("proof serializes");
         let decoded: Proof = bincode::deserialize(&bytes).expect("proof deserializes");
-        verify(&program, &pi, &decoded).expect("deserialized BLAKE3 proof verifies");
+        verify(&program, &pi, &decoded).expect("deserialized SHA256 proof verifies");
 
         let mut bad_rate = decoded.clone();
         bad_rate.stream[7] = F192::new(5, 0, 0);

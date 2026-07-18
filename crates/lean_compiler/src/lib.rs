@@ -23,7 +23,7 @@
 use std::collections::HashMap;
 
 use lean_vm::cpu::hints::RHint;
-use lean_vm::cpu::{Blake3Packing, DerefMode, Op, Program};
+use lean_vm::cpu::{Sha256Packing, DerefMode, Op, Program};
 use primitives::field::{F64, F192, g_pow};
 
 mod ast;
@@ -222,9 +222,9 @@ pub fn disassemble(prog: &[Op]) -> String {
             Op::Jump { oc, od, of } => {
                 format!("JUMP   if fp[{oc}]≠0: pc=fp[{od}], fp=fp[{of}]")
             }
-            Op::Blake3 { ins, out, packing } => {
+            Op::Sha256 { ins, out, packing } => {
                 format!(
-                    "BLAKE3/{packing:?} fp[{out}..]= H(fp[{}], fp[{}] | fp[{}], fp[{}])",
+                    "SHA256/{packing:?} fp[{out}..]= H(fp[{}], fp[{}] | fp[{}], fp[{}])",
                     ins[0], ins[1], ins[2], ins[3]
                 )
             }
@@ -290,7 +290,7 @@ fn resolve(op: &LOp, entry: &HashMap<String, u32>, sentinel: u32, base: u32) -> 
             od: *od,
             of: *of,
         },
-        LOp::Blake3 { ins, c, packing } => Op::Blake3 {
+        LOp::Sha256 { ins, c, packing } => Op::Sha256 {
             ins: *ins,
             out: *c,
             packing: *packing,

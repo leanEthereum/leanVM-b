@@ -51,8 +51,8 @@ pub(crate) const OP_MUL: F64 = g_pow(1);
 pub(crate) const OP_SET: F64 = g_pow(2);
 pub(crate) const OP_DEREF: F64 = g_pow(3);
 pub(crate) const OP_JUMP: F64 = g_pow(4);
-pub(crate) const OP_BLAKE3: F64 = g_pow(5);
-pub(crate) const OP_BLAKE3_TRANSCRIPT: F64 = g_pow(6);
+pub(crate) const OP_SHA256: F64 = g_pow(5);
+pub(crate) const OP_SHA256_TRANSCRIPT: F64 = g_pow(6);
 
 // ---- flush builder -----------------------------------------------------------
 
@@ -252,7 +252,7 @@ pub trait Table: Sync {
     fn fill(&self, ctx: &FillCtx, out: &mut [Column]);
 }
 
-/// The six tables in fixed order `[XOR, MUL, SET, DEREF, JUMP, BLAKE3]` — the
+/// The six tables in fixed order `[XOR, MUL, SET, DEREF, JUMP, SHA256]` — the
 /// order of `row_counts` / `taus` throughout `cpu`.
 pub fn tables() -> [&'static dyn Table; 6] {
     [
@@ -261,35 +261,35 @@ pub fn tables() -> [&'static dyn Table; 6] {
         &SetTable,
         &DerefTable,
         &JumpTable,
-        &Blake3Table,
+        &Sha256Table,
     ]
 }
 
-/// Index of the BLAKE3 table in [`tables`].
-pub(crate) const BLAKE3_TABLE: usize = 5;
+/// Index of the SHA256 table in [`tables`].
+pub(crate) const SHA256_TABLE: usize = 5;
 
-/// BLAKE3 value-column LOCAL indices in canonical slot order
-/// `[a0..a3, b0..b3, c0..c3]` (matches `blake3_flock::SLOTS`). These columns are
+/// SHA256 value-column LOCAL indices in canonical slot order
+/// `[a0..a3, b0..b3, c0..c3]` (matches `sha256_flock::SLOTS`). These columns are
 /// VIRTUAL (never committed): `q_pkd` already holds those words at fixed packed
 /// slots, so `cpu` routes their memory-bus evaluation claims straight to `q_pkd`
 /// (`slot_claims`) — the value the bus flushes IS the flock-proven word.
-pub const BLAKE3_VALUE_COLS: [usize; 12] = [
-    blake3t::VA0,
-    blake3t::VA0 + 1,
-    blake3t::VA0 + 2,
-    blake3t::VA0 + 3,
-    blake3t::VB0,
-    blake3t::VB0 + 1,
-    blake3t::VB0 + 2,
-    blake3t::VB0 + 3,
-    blake3t::VC0,
-    blake3t::VC0 + 1,
-    blake3t::VC0 + 2,
-    blake3t::VC0 + 3,
+pub const SHA256_VALUE_COLS: [usize; 12] = [
+    sha256t::VA0,
+    sha256t::VA0 + 1,
+    sha256t::VA0 + 2,
+    sha256t::VA0 + 3,
+    sha256t::VB0,
+    sha256t::VB0 + 1,
+    sha256t::VB0 + 2,
+    sha256t::VB0 + 3,
+    sha256t::VC0,
+    sha256t::VC0 + 1,
+    sha256t::VC0 + 2,
+    sha256t::VC0 + 3,
 ];
 // The twelve value lanes are laid out contiguously (VA0..VA0+11), so they map
-// 1:1 onto `blake3_flock::SLOTS`.
-const _: () = assert!(blake3t::VB0 == blake3t::VA0 + 4 && blake3t::VC0 == blake3t::VA0 + 8);
+// 1:1 onto `sha256_flock::SLOTS`.
+const _: () = assert!(sha256t::VB0 == sha256t::VA0 + 4 && sha256t::VC0 == sha256t::VA0 + 8);
 
 /// Declare consecutive local column indices and the resulting column count.
 // Kept from main's table refactor as a tool for future single-lane column sets;
@@ -717,26 +717,26 @@ impl Table for JumpTable {
     }
 }
 
-// ---- BLAKE3 ------------------------------------------------------------------
+// ---- SHA256 ------------------------------------------------------------------
 
-/// `BLAKE3` (doc §7.6): the four 128-bit input chunks are addressed
+/// `SHA256` (doc §7.6): the four 128-bit input chunks are addressed
 /// *independently* at `aa0, aa1, ab0, ab1` (`= fp·g^{ins[i]}`), each a single
 /// 128-bit cell — no forced contiguity between chunks, so a caller hashing e.g.
 /// `(tweak, pp)` need not copy them into adjacent cells. The 32-byte output
 /// occupies the two consecutive words `ac`, `g·ac`, so the row reads six cells in
 /// all. Five address bindings `a_X = fp·o_X` are constrained; the compression
 /// relating output words to input words carries no table constraint here: it is
-/// proven by flock's R1CS validity via `q_pkd` (§blake3_flock).
+/// proven by flock's R1CS validity via `q_pkd` (§sha256_flock).
 ///
 /// A 128-bit cell is two flock 64-bit words (lo, hi lanes), so the twelve flock
 /// words are twelve value LANE columns over six cells. They are listed in
 /// `n_committed_columns` (they need a local index for the flushes and are filled
 /// from the trace for the bus), but `cpu` treats them as VIRTUAL — not committed —
 /// and routes their bus claims to `q_pkd`, which already holds those words (see
-/// [`BLAKE3_VALUE_COLS`]).
-struct Blake3Table;
+/// [`SHA256_VALUE_COLS`]).
+struct Sha256Table;
 
-pub(crate) mod blake3t {
+pub(crate) mod sha256t {
     pub const PC: usize = 0;
     pub const FP: usize = 1;
     pub const OA0: usize = 2; // operand g-powers (offsets) of the four input cells …
@@ -771,19 +771,19 @@ pub(crate) mod blake3t {
     pub const N: usize = 51;
 }
 
-impl Table for Blake3Table {
+impl Table for Sha256Table {
     fn opcode_tag(&self) -> F64 {
-        OP_BLAKE3
+        OP_SHA256
     }
     fn n_committed_columns(&self) -> usize {
-        blake3t::N
+        sha256t::N
     }
     fn count_columns(&self) -> &'static [usize] {
-        use blake3t::*;
+        use sha256t::*;
         &[RA0, RA1, RB0, RB1, RC0, RC1, RBC]
     }
     fn constraint_columns(&self) -> &'static [usize] {
-        use blake3t::*;
+        use sha256t::*;
         &[
             FP,
             OA0,
@@ -831,10 +831,10 @@ impl Table for Blake3Table {
         ]
     }
     fn eval_constraint(&self, eta: F192, cols: &Cols) -> F192 {
-        use blake3t::*;
+        use sha256t::*;
         // The five address bindings a_X = fp·o_X (degree 2). The compression
         // carries no table constraint here: flock's R1CS validity proves it
-        // via q_pkd (§blake3_flock).
+        // via q_pkd (§sha256_flock).
         let bind = |a: usize, o: usize| cols[a] + cols[FP] * cols[o];
         let mut acc = bind(AA0, OA0)
             + eta * bind(AA1, OA1)
@@ -848,7 +848,7 @@ impl Table for Blake3Table {
         };
         let s = cols[PACK];
         add(s * (s + F192::ONE));
-        add(cols[OP] + F192::from(OP_BLAKE3) + s * F192::from(OP_BLAKE3 + OP_BLAKE3_TRANSCRIPT));
+        add(cols[OP] + F192::from(OP_SHA256) + s * F192::from(OP_SHA256 + OP_SHA256_TRANSCRIPT));
         // Input lane serialization. Bytes128: 2+2 lanes. Transcript192: 3+1.
         add(cols[VA0] + cols[MI0]);
         add(cols[VA0 + 1] + cols[MI0 + 1]);
@@ -874,7 +874,7 @@ impl Table for Blake3Table {
         acc
     }
     fn flushes(&self, f: &mut FlushBuilder) {
-        use blake3t::*;
+        use sha256t::*;
         f.state_step(PC, FP);
         f.bytecode_coord(PC, RBC, Col(OP), &[Col(OA0), Col(OA1), Col(OB0), Col(OB1), Col(OC)]);
         // Six cell reads: four independent 128-bit input cells, then the output's
@@ -887,8 +887,8 @@ impl Table for Blake3Table {
         f.memory_succ(AC, 1, RC1, MO0 + 3, MO0 + 4, MO0 + 5);
     }
     fn fill(&self, ctx: &FillCtx, out: &mut [Column]) {
-        use blake3t::*;
-        let rows = &ctx.trace.blake3;
+        use sha256t::*;
+        let rows = &ctx.trace.sha256;
         out[PC] = rows.par_iter().map(|r| ctx.g_at(r.pc)).collect();
         out[FP] = rows.par_iter().map(|r| ctx.g_at(r.fp)).collect();
         out[OA0] = rows.par_iter().map(|r| ctx.g_at(r.aa0 - r.fp)).collect();
@@ -930,15 +930,15 @@ impl Table for Blake3Table {
         }
         out[PACK] = rows
             .par_iter()
-            .map(|r| F64(u64::from(r.packing == crate::cpu::Blake3Packing::Transcript192)))
+            .map(|r| F64(u64::from(r.packing == crate::cpu::Sha256Packing::Transcript192)))
             .collect();
         out[OP] = rows
             .par_iter()
             .map(|r| {
-                if r.packing == crate::cpu::Blake3Packing::Transcript192 {
-                    OP_BLAKE3_TRANSCRIPT
+                if r.packing == crate::cpu::Sha256Packing::Transcript192 {
+                    OP_SHA256_TRANSCRIPT
                 } else {
-                    OP_BLAKE3
+                    OP_SHA256
                 }
             })
             .collect();

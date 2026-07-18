@@ -11,5 +11,4 @@ primitives.workspace = true
 lean_vm.workspace = true
 
 [dev-dependencies]
-blake3.workspace = true
 rand.workspace = true

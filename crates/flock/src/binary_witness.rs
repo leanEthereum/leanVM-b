@@ -1,6 +1,6 @@
 // Credit: https://github.com/succinctlabs/flock (flock-prover), MIT OR Apache-2.0.
 //! Bit-packing and R1CS-row helpers for the monolithic hash R1CS modules
-//! (only `blake3` in this vendored subset).
+//! (only `sha256` in this vendored subset).
 
 use std::sync::OnceLock;
 
@@ -101,7 +101,7 @@ pub(crate) fn identity(k: usize) -> SparseBinaryMatrix {
 }
 
 /// Build a `BlockR1cs` with caller-supplied A_0, B_0 sparse matrices and
-/// C_0 = I_K. Used by BLAKE3 (it materializes real A_0/B_0 via
+/// C_0 = I_K. Used by SHA256 (it materializes real A_0/B_0 via
 /// `build_matrices`).
 ///
 /// `useful_bits ≤ 2^k_log` declares how many rows of each block carry real
@@ -142,7 +142,7 @@ pub(crate) fn build_block_r1cs_with_matrices(
 // ---------------------------------------------------------------------------
 // Generic witness packing driver.
 //
-// All three hash encoders (keccak, blake3, sha2) had identical chunked
+// All three hash encoders (keccak, sha256, sha2) had identical chunked
 // parallel iteration + bit-transpose-to-stripe boilerplate around their
 // per-block witness builder. This driver captures that shape; each hash
 // passes its `per_block` closure that fills 3 length-`U64_PER_BLOCK`
@@ -261,24 +261,4 @@ where
         });
 
     (z, a, b, z_lincheck)
-}
-
-/// Sort `v` and remove pairs of duplicates (GF(2) cancellation). Keeps R1CS
-/// rows in canonical (sorted, square-free) form.
-pub(crate) fn xor_dedup(mut v: Vec<usize>) -> Vec<usize> {
-    v.sort();
-    let mut out = Vec::with_capacity(v.len());
-    let mut i = 0;
-    while i < v.len() {
-        let val = v[i];
-        let mut count = 0;
-        while i < v.len() && v[i] == val {
-            count += 1;
-            i += 1;
-        }
-        if count % 2 == 1 {
-            out.push(val);
-        }
-    }
-    out
 }

@@ -9,7 +9,7 @@
 # all). The IV size element is computed from n directly (the loop absorbs
 # exactly n pk blocks, so it needs no separate hint or consistency check).
 #
-# BLAKE3 operands use the canonical 128-bit subspace of F192, so every 16-byte
+# SHA256 operands use the canonical 128-bit subspace of F192, so every 16-byte
 # native value (tweak, digest pair, chain tip, sibling, pp) is one cell with a
 # zero top limb, and a 32-byte hash block is two cells.
 # Tweak table layout (tweak index t at cell g^{t}):
@@ -30,11 +30,11 @@ CHAIN_LENGTH = 2 ** W               # Winternitz digit base (each e_i < this)
 CHAIN_STEPS = CHAIN_LENGTH - 1      # hash steps / tweaks per chain
 WOTS_PK_PAIRS = V / 2               # tip pairs hashed into the WOTS leaf
 
-WORDS_PER_VALUE = 1                 # a 16-byte native value = one BLAKE3 cell …
+WORDS_PER_VALUE = 1                 # a 16-byte native value = one SHA256 cell …
 WORDS_PER_BLOCK = 2                 # … and a 32-byte Merkle-Damgard block = two
 BYTES_PER_BLOCK = 32
 
-# The tower generator Y. `acc_lo + acc_hi·Y` embeds 128 BLAKE3 bits in F192.
+# The tower generator Y. `acc_lo + acc_hi·Y` embeds 128 SHA256 bits in F192.
 Y = 18446744073709551616
 
 # Tweak table (one 1-cell tweak per index): encoding | V·CHAIN_STEPS chain |
@@ -100,7 +100,7 @@ def main():
     message[1] = msg_block[0]
     message[GEN] = msg_block[1]
     state = StackBuf(WORDS_PER_BLOCK)
-    blake3(iv, msg_block, state)
+    sha256(iv, msg_block, state)
 
     # Block t fills cells g^{2t}..g^{2t+1}: compile-time indexes, so every
     # store is a single DEREF (the offset rides the beta immediate).
@@ -110,7 +110,7 @@ def main():
         tweak_table[GEN ** (WORDS_PER_BLOCK * t)] = block[0]
         tweak_table[GEN ** (WORDS_PER_BLOCK * t + 1)] = block[1]
         next_state = StackBuf(WORDS_PER_BLOCK)
-        blake3(state, block, next_state)
+        sha256(state, block, next_state)
         state = next_state
 
     for u in unroll(0, MERKLE_BIT_BLOCKS):
@@ -119,7 +119,7 @@ def main():
         merkle_bits[GEN ** (WORDS_PER_BLOCK * u)] = block[0]
         merkle_bits[GEN ** (WORDS_PER_BLOCK * u + 1)] = block[1]
         next_state = StackBuf(WORDS_PER_BLOCK)
-        blake3(state, block, next_state)
+        sha256(state, block, next_state)
         state = next_state
 
     # Per-signature buffers, sized in the exponent from n_sigs (see HeapBuf
@@ -137,7 +137,7 @@ def main():
         sig_state = agg_states * slot
         sig_pk = pubkeys * slot
         hint_witness(sig_pk[0:2], "pks")
-        blake3(sig_state[0:2], sig_pk[0:2], sig_state[2:4])
+        sha256(sig_state[0:2], sig_pk[0:2], sig_state[2:4])
         verify_sig(message, tweak_table, merkle_bits, sig_pk)
 
     # Publish the final MD state (two 128-bit cells) = the aggregation public input.
@@ -161,16 +161,16 @@ def verify_sig(message, tweak_table, merkle_bits, pk_ptr):
     tweak_pp[0] = tweak_table[1]
     tweak_pp[1] = pp
     after_tweak = StackBuf(WORDS_PER_BLOCK)
-    blake3(enc_iv, tweak_pp, after_tweak)
+    sha256(enc_iv, tweak_pp, after_tweak)
     msg_block = StackBuf(WORDS_PER_BLOCK)
     msg_block[0] = message[1]
     msg_block[1] = message[GEN]
     after_msg = StackBuf(WORDS_PER_BLOCK)
-    blake3(after_tweak, msg_block, after_msg)
+    sha256(after_tweak, msg_block, after_msg)
     rand_block = StackBuf(WORDS_PER_BLOCK)
     hint_witness(rand_block, "rand")
     digest = StackBuf(WORDS_PER_BLOCK)
-    blake3(after_msg, rand_block, digest)
+    sha256(after_msg, rand_block, digest)
 
     # V WOTS chains. Per chain: the digit is hinted in the exponent (g^{e_i}),
     # range checked, and dispatched once — arm k walks the remaining
@@ -224,10 +224,10 @@ def verify_sig(message, tweak_table, merkle_bits, pk_ptr):
     pk_tweak_pp[0] = tweak_table[GEN ** (WORDS_PER_VALUE * WOTS_PK_TWEAK_IDX)]
     pk_tweak_pp[1] = pp
     leaf = StackBuf(WORDS_PER_BLOCK)
-    blake3(leaf_iv, pk_tweak_pp, leaf)
+    sha256(leaf_iv, pk_tweak_pp, leaf)
     for q in unroll(0, WOTS_PK_PAIRS):
         next_leaf = StackBuf(WORDS_PER_BLOCK)
-        blake3(leaf, tips[WORDS_PER_BLOCK * q:WORDS_PER_BLOCK * q + WORDS_PER_BLOCK], next_leaf)
+        sha256(leaf, tips[WORDS_PER_BLOCK * q:WORDS_PER_BLOCK * q + WORDS_PER_BLOCK], next_leaf)
         leaf = next_leaf
 
     # Merkle path from the leaf to the root: the hinted slot bit orders the
@@ -252,7 +252,7 @@ def verify_sig(message, tweak_table, merkle_bits, pk_ptr):
         merkle_tweak_pp[0] = tweak_table[GEN ** (WORDS_PER_VALUE * (MERKLE_TWEAK_IDX + l))]
         merkle_tweak_pp[1] = pp
         parent = StackBuf(WORDS_PER_BLOCK)
-        blake3(merkle_tweak_pp, children, parent)
+        sha256(merkle_tweak_pp, children, parent)
         node = parent[0]
     assert node == pk_ptr[1]
     return
@@ -270,7 +270,7 @@ def walk(value, chain_tweaks, pp, k: Const):
         step_tweak[0] = chain_tweaks[GEN ** (WORDS_PER_VALUE * s)]
         step_tweak[1] = pp
         out = StackBuf(WORDS_PER_BLOCK)
-        blake3(step_tweak, block, out)
+        sha256(step_tweak, block, out)
         block = StackBuf(WORDS_PER_BLOCK)
         block[0] = out[0]
         block[1] = 0

@@ -39,7 +39,7 @@ const FOLD_MAX: u128 = 1 << 16;
 
 /// A deferred stack-cell store: the cell is a copy of another cell, or a zero.
 /// Recorded instead of emitting the `MUL`/`SET`, and forwarded to the source at
-/// each use ([`FnLower::word_src`], [`FnLower::chunk_src`]) — so `BLAKE3`,
+/// each use ([`FnLower::word_src`], [`FnLower::chunk_src`]) — so `SHA256`,
 /// which addresses its four two-cell input chunks independently, reads them in
 /// place without assembling copies.
 #[derive(Clone, Copy)]
@@ -47,7 +47,7 @@ enum Alias {
     Cell(Off),
     /// A compile-time constant: forwarded at its uses to the pooled cell
     /// holding that value (`const_cell`), so a constant stored into a
-    /// `blake3` operand cell — the `obs`/`squeeze` tag words, padding
+    /// `sha256` operand cell — the `obs`/`squeeze` tag words, padding
     /// halves — costs ONE `SET` per distinct value per function, not one
     /// per store. A zero constant routes through the zero pool.
     Const(F192),
@@ -69,7 +69,7 @@ struct FnLower<'a> {
     vars: HashMap<String, Off>,
     /// `StackBuf` bindings: name → (base offset, size). The `size` cells
     /// `base..base+size` are consecutive frame cells (so a size-2 one, or a
-    /// 2-cell slice of a larger one, is a direct `blake3` operand). Kept
+    /// 2-cell slice of a larger one, is a direct `sha256` operand). Kept
     /// separate from `vars` since a stack value is a run of cells, not a
     /// single scalar.
     stacks: HashMap<String, (Off, u32)>,
@@ -118,7 +118,7 @@ struct FnLower<'a> {
     alias: HashMap<Off, Alias>,
     /// A cached frame cell holding `0` (for forwarded zero words), set lazily.
     zero_off: Option<Off>,
-    /// A cached pair of CONSECUTIVE zero cells (a forwarded zero `BLAKE3`
+    /// A cached pair of CONSECUTIVE zero cells (a forwarded zero `SHA256`
     /// chunk — e.g. a hash-chain padding half), set lazily.
     zero2_off: Option<Off>,
     /// Hints queued to attach to the next emitted instruction.
@@ -179,7 +179,7 @@ impl FnLower<'_> {
     }
 
     /// A frame cell holding `0`, set lazily once — the source for forwarded zero
-    /// words (a `BLAKE3` padding half).
+    /// words (a `SHA256` padding half).
     fn zero(&mut self) -> Off {
         if let Some(o) = self.zero_off {
             return o;
@@ -194,9 +194,9 @@ impl FnLower<'_> {
     }
 
     /// Two CONSECUTIVE frame cells both holding `0`, set lazily once — the
-    /// source for a forwarded all-zero `BLAKE3` chunk (cells `base`, `base+1`).
+    /// source for a forwarded all-zero `SHA256` chunk (cells `base`, `base+1`).
     // Retained for a possible return to two-cell chunk forwarding; a 128-bit
-    // chunk is now one cell, so `blake3_input` uses `word_src` directly.
+    // chunk is now one cell, so `sha256_input` uses `word_src` directly.
     #[allow(dead_code)]
     fn zero_pair(&mut self) -> Off {
         if let Some(o) = self.zero2_off {
@@ -844,7 +844,7 @@ impl FnLower<'_> {
             Expr::Pow(b, e) => self.pow_expr(b, e),
             Expr::Var(v) => {
                 if self.stacks.contains_key(v) {
-                    panic!("StackBuf `{v}` used as a scalar; index it (`{v}[k]`) or pass it to blake3");
+                    panic!("StackBuf `{v}` used as a scalar; index it (`{v}[k]`) or pass it to sha256");
                 }
                 if let Some(&ga) = self.gaddrs.get(v) {
                     return self.materialize(ga);
@@ -971,7 +971,7 @@ impl FnLower<'_> {
                     "`-`, `//`, `%` are compile-time only (field subtraction is `+`); use them in an index, a bound, or a `Const` argument, got `{e:?}`"
                 )
             }
-            Expr::Slice(..) => panic!("a slice is not a scalar; it is only a blake3 operand"),
+            Expr::Slice(..) => panic!("a slice is not a scalar; it is only a sha256 operand"),
             Expr::ListLit(..) => panic!("a list literal must be bound to a name: `x = [a, b]`"),
         }
     }
@@ -995,7 +995,7 @@ impl FnLower<'_> {
     /// A compile-time integer index — a literal, a name bound to a literal,
     /// or `+`/`*`/`//`/`%` of those (evaluated as *integer* arithmetic: this is
     /// index space, not the field). `None` when the expression is a runtime
-    /// value (which a heap slice start may be; see [`Self::blake3_operand`]).
+    /// value (which a heap slice start may be; see [`Self::sha256_operand`]).
     fn try_const_index(&self, idx: &Expr) -> Option<u32> {
         match idx {
             // A literal that fits is an index; a ≥ 2^32 literal is a field value,
@@ -1153,21 +1153,21 @@ impl FnLower<'_> {
         }
     }
 
-    /// Resolve a `blake3` operand — a size-2 `StackBuf` name, a 2-cell
+    /// Resolve a `sha256` operand — a size-2 `StackBuf` name, a 2-cell
     /// `StackBuf` slice `buf[lo:hi]`, or a 2-cell `HeapBuf` slice (cells
     /// `ptr·g^{lo+k}`, `k < 2`) — with compile-time bounds. A 256-bit operand is
     /// two 128-bit cells. Stack operands are used in place; heap operands must be
-    /// bridged through the stack, since `BLAKE3` addresses only frame cells (see
-    /// [`Self::blake3_input`]).
-    fn blake3_operand(&mut self, e: &Expr) -> B3Operand {
+    /// bridged through the stack, since `SHA256` addresses only frame cells (see
+    /// [`Self::sha256_input`]).
+    fn sha256_operand(&mut self, e: &Expr) -> B3Operand {
         match e {
             Expr::Var(_) => {
                 let (base, size) = self
                     .stack_of(e)
-                    .expect("a bare blake3 operand must be a StackBuf; slice a HeapBuf: `buf[lo:lo + 2]`");
+                    .expect("a bare sha256 operand must be a StackBuf; slice a HeapBuf: `buf[lo:lo + 2]`");
                 assert!(
                     size == 2,
-                    "a whole-StackBuf blake3 operand must have size 2 (two 128-bit cells); slice a larger one: `buf[lo:lo + 2]`"
+                    "a whole-StackBuf sha256 operand must have size 2 (two 128-bit cells); slice a larger one: `buf[lo:lo + 2]`"
                 );
                 B3Operand::Stack(base)
             }
@@ -1175,7 +1175,7 @@ impl FnLower<'_> {
                 // Compile-time bounds: integer cell indexes `lo..lo+2` (frame
                 // offsets for a stack, g-power exponents for the heap).
                 (Some(lo), Some(hi)) => {
-                    assert!(hi == lo + 2, "a blake3 slice must span exactly 2 cells, got {lo}:{hi}");
+                    assert!(hi == lo + 2, "a sha256 slice must span exactly 2 cells, got {lo}:{hi}");
                     if let Some((base, size)) = self.stack_of(arr) {
                         assert!(hi <= size, "slice {lo}:{hi} out of bounds (StackBuf size {size})");
                         B3Operand::Stack(base + lo)
@@ -1199,25 +1199,25 @@ impl FnLower<'_> {
                     );
                     assert!(
                         plus_k(lo, hi) == Some(2),
-                        "a runtime blake3 slice must have the shape `buf[i:i + 2]`, got `{lo:?}:{hi:?}`"
+                        "a runtime sha256 slice must have the shape `buf[i:i + 2]`, got `{lo:?}:{hi:?}`"
                     );
                     let (ptr, lo) = self.heap_addr(arr, lo);
                     B3Operand::Heap { ptr, lo }
                 }
             },
             other => {
-                panic!("a blake3 operand must be a StackBuf, a StackBuf slice, or a HeapBuf slice, got `{other:?}`")
+                panic!("a sha256 operand must be a StackBuf, a StackBuf slice, or a HeapBuf slice, got `{other:?}`")
             }
         }
     }
 
-    /// A `blake3` *input* operand as its two independently-addressed 128-bit
+    /// A `sha256` *input* operand as its two independently-addressed 128-bit
     /// chunk bases (each chunk is ONE 128-bit cell): stack runs in place; a heap
     /// slice is pulled into a fresh stack pair first — one `DEREF` per cell
     /// (`m[ptr·g^{lo+k}] == m[fp+t+k]`, the `β` immediate doing the pointer
     /// offset). The heap cells must already be written.
-    fn blake3_input(&mut self, e: &Expr) -> [Off; 2] {
-        match self.blake3_operand(e) {
+    fn sha256_input(&mut self, e: &Expr) -> [Off; 2] {
+        match self.sha256_operand(e) {
             // A stack operand: the two chunk cells are `o, o+1`; forward each
             // cell's real source where known (a copy or a zero), so a hash of
             // non-adjacent values needs no assembling copies.
@@ -1239,7 +1239,7 @@ impl FnLower<'_> {
 
     /// The base of the two-cell chunk holding the values of stack cells `o`,
     /// `o+1`, following recorded copy / zero aliases to their real source when
-    /// the pair stays CONTIGUOUS there (so `BLAKE3` reads the source cells
+    /// the pair stays CONTIGUOUS there (so `SHA256` reads the source cells
     /// directly and the assembling copies are never emitted): a pair aliasing
     /// adjacent cells `(s, s+1)` forwards to `s`, an all-zero pair to the
     /// shared zero pair. A pair that does not forward as a unit (mixed or
@@ -1589,8 +1589,8 @@ impl FnLower<'_> {
     /// Lower a call; returns the caller offsets bound to the returned values.
     fn call(&mut self, callee: &str, args: &[Expr], n_ret: usize) -> Vec<Off> {
         assert!(
-            callee != "blake3",
-            "blake3 is a statement: `blake3(a, b, out)` writes the digest into the 2-cell stack run `out`"
+            callee != "sha256",
+            "sha256 is a statement: `sha256(a, b, out)` writes the digest into the 2-cell stack run `out`"
         );
         let dsts: Vec<Off> = (0..n_ret).map(|_| self.fresh()).collect();
         self.inline_stack_ret = None;
@@ -1601,7 +1601,7 @@ impl FnLower<'_> {
     /// Evaluate `callee(args)` into `dsts` — inlining the callee when it is
     /// `@inline` ([`Self::try_inline`]), else a real call.
     fn call_into(&mut self, callee: &str, args: &[Expr], dsts: &[Off]) {
-        assert!(callee != "blake3", "blake3 is a statement, not a value-returning call");
+        assert!(callee != "sha256", "sha256 is a statement, not a value-returning call");
         if !self.try_inline(callee, args, dsts) {
             self.lower_call(callee, args, dsts.len(), None, Some(dsts));
         }
@@ -2057,28 +2057,28 @@ impl FnLower<'_> {
                     self.pending.push(Hint::BitDecomposeExp { value, bits_ptr, nbits });
                     return;
                 }
-                // `blake3(a, b, out)`: the digest of the two 256-bit operands
+                // `sha256(a, b, out)`: the digest of the two 256-bit operands
                 // lands in the existing 2-cell run `out` (write-once: if `out`
                 // was already written, this asserts the digest equals it). A
                 // heap `out` slice takes the digest via a fresh stack pair and
                 // two `DEREF`s after the hash (the store direction is the same
                 // instruction as the load — write-once fills the unset side).
-                if f == "blake3" {
-                    assert_eq!(args.len(), 3, "blake3 takes (a, b, out)");
-                    let a = self.blake3_input(&args[0]);
-                    let b = self.blake3_input(&args[1]);
-                    let (c, heap_out) = match self.blake3_operand(&args[2]) {
+                if f == "sha256" {
+                    assert_eq!(args.len(), 3, "sha256 takes (a, b, out)");
+                    let a = self.sha256_input(&args[0]);
+                    let b = self.sha256_input(&args[1]);
+                    let (c, heap_out) = match self.sha256_operand(&args[2]) {
                         B3Operand::Stack(o) => (o, None),
                         B3Operand::Heap { ptr, lo } => (self.alloc_stack(2), Some((ptr, lo))),
                     };
                     // Each operand is two 128-bit chunk cells; the flexible opcode
-                    // addresses the four input cells independently (`blake3_input`
+                    // addresses the four input cells independently (`sha256_input`
                     // forwards the real chunk sources where it can). The digest
                     // occupies the two consecutive output cells `c, g·c`.
-                    self.emit(LOp::Blake3 {
+                    self.emit(LOp::Sha256 {
                         ins: [a[0], a[1], b[0], b[1]],
                         c,
-                        packing: Blake3Packing::Bytes128,
+                        packing: Sha256Packing::Bytes128,
                     });
                     if let Some((ptr, lo)) = heap_out {
                         for k in 0..2 {
@@ -2092,19 +2092,19 @@ impl FnLower<'_> {
                     }
                     return;
                 }
-                if f == "blake3_transcript" {
-                    assert_eq!(args.len(), 4, "blake3_transcript takes (state, scalar, tag, out)");
-                    let state = self.blake3_input(&args[0]);
+                if f == "sha256_transcript" {
+                    assert_eq!(args.len(), 4, "sha256_transcript takes (state, scalar, tag, out)");
+                    let state = self.sha256_input(&args[0]);
                     let scalar = self.expr(&args[1]);
                     let tag = self.expr(&args[2]);
-                    let (c, heap_out) = match self.blake3_operand(&args[3]) {
+                    let (c, heap_out) = match self.sha256_operand(&args[3]) {
                         B3Operand::Stack(o) => (o, None),
                         B3Operand::Heap { ptr, lo } => (self.alloc_stack(2), Some((ptr, lo))),
                     };
-                    self.emit(LOp::Blake3 {
+                    self.emit(LOp::Sha256 {
                         ins: [state[0], state[1], scalar, tag],
                         c,
-                        packing: Blake3Packing::Transcript192,
+                        packing: Sha256Packing::Transcript192,
                     });
                     if let Some((ptr, lo)) = heap_out {
                         for k in 0..2 {
@@ -2352,7 +2352,7 @@ fn exprs_eq(a: &[Expr], b: &[Expr]) -> bool {
 /// A body safe to inline: a single **tail** `return`, and no construct whose
 /// lowering needs its own frame or a dispatch — a call to a user function, a
 /// runtime loop, or a match (which would recurse the inliner or reload a frame
-/// pointer that is no longer the callee's). `blake3` is a builtin statement and
+/// pointer that is no longer the callee's). `sha256` is a builtin statement and
 /// is fine; `unroll`/`if` are compile-time / same-frame and recurse into.
 fn body_inlinable(body: &[Stmt]) -> bool {
     matches!(body.split_last(), Some((Stmt::Return(_), rest)) if rest.iter().all(stmt_inline_safe))
@@ -2367,7 +2367,7 @@ fn stmt_inline_safe(s: &Stmt) -> bool {
         | Stmt::AssertEq(..)
         | Stmt::AssertNe(..)
         | Stmt::AssertLt(..) => true,
-        Stmt::Call(f, _) => f == "blake3" || f == "blake3_transcript",
+        Stmt::Call(f, _) => f == "sha256" || f == "sha256_transcript",
         Stmt::If { then, els, .. } => then.iter().all(stmt_inline_safe) && els.iter().all(stmt_inline_safe),
         Stmt::Unroll { body, .. } => body.iter().all(stmt_inline_safe),
         // Return (non-tail), For, Match, LetMatchRange, LetTuple, CallIfNe, user Call.

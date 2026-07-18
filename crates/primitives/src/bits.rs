@@ -25,7 +25,7 @@ pub fn transpose_8x8_bits(mut x: u64) -> u64 {
 /// [`bit_transpose_64bytes`] kernel (input byte `r·8 + c` = byte `c` of lane
 /// `r`; output byte `c·8 + t` bit `r` = that byte's bit `t`), so this delegates
 /// to it — ~5× fewer ops than the scalar per-column loop. Used by the
-/// lincheck byte-stripe builder (`flock::blake3_witness`).
+/// lincheck byte-stripe builder (`flock::binary_witness`).
 #[inline(always)]
 pub fn transpose_8_u64s_to_64_bytes(lanes: &[u64; 8], out: &mut [u8]) {
     debug_assert_eq!(out.len(), 64);

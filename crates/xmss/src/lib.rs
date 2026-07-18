@@ -1,9 +1,10 @@
-//! XMSS over BLAKE3 (inspired by leanVM's `xmss` crate, byte-oriented).
+//! XMSS over the VM's fixed-IV, single-block SHA-256 compression primitive.
 //!
-//! The single-block hashes (chain steps, Merkle nodes) are plain BLAKE3 of
-//! `tweak | pp | payload`, truncated to n = 128 bits ([`tweak_hash`]). The
+//! The single-block hashes (chain steps, Merkle nodes) compress
+//! `tweak | pp | payload | zero-padding`, truncated to n = 128 bits
+//! ([`tweak_hash`]). The
 //! multi-block inputs (the WOTS public key, the message encoding) are hashed
-//! with a Merkle-Damgard mode over 64-byte BLAKE3 compressions
+//! with a Merkle–Damgård mode over the same 64-byte compression
 //! ([`md_tweak_hash`]); see [`hash`] for the constructions and per-call
 //! compression counts.
 

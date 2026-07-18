@@ -62,13 +62,13 @@ pub(crate) enum LOp {
         od: Off,
         of: Off,
     },
-    /// `BLAKE3`: the four 128-bit input chunks `ins` are addressed independently,
+    /// `SHA256`: the four 128-bit input chunks `ins` are addressed independently,
     /// one frame cell each. The 32-byte output occupies the two consecutive
     /// 128-bit cells `c, c+1`.
-    Blake3 {
+    Sha256 {
         ins: [Off; 4],
         c: Off,
-        packing: Blake3Packing,
+        packing: Sha256Packing,
     },
 }
 
@@ -120,9 +120,9 @@ pub(crate) struct Lowered {
     pub(crate) frame_size: u32,
 }
 
-/// A resolved 2-cell `blake3` operand: a frame (stack) run used in place, or a
+/// A resolved 2-cell `sha256` operand: a frame (stack) run used in place, or a
 /// heap slice — the buffer pointer's cell plus the first g-power offset —
-/// which must be bridged through the stack (`BLAKE3` addresses only frame
+/// which must be bridged through the stack (`SHA256` addresses only frame
 /// cells).
 pub(crate) enum B3Operand {
     Stack(Off),

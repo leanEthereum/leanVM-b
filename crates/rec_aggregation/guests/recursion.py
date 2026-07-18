@@ -3,7 +3,7 @@ from snark_lib import *
 # The proof stream rides ONE padded witness hint (the guest walks only the
 # prefix the shape dictates); binding always comes from the per-word absorbs.
 STREAM_CAP = STREAM_CAP_PLACEHOLDER
-# Per-table tau floor: BLAKE3 is sized to flock's instance count (>= 2^3).
+# Per-table tau floor: SHA256 is sized to flock's instance count (>= 2^3).
 FLOORS = [0, 0, 0, 0, 0, 3]
 INV_GEN = INV_GEN_PLACEHOLDER
 LAGRANGE_INV_0 = LAGRANGE_INV_0_PLACEHOLDER
@@ -80,7 +80,7 @@ TABLE_MUL = 1
 TABLE_SET = 2
 TABLE_DEREF = 3
 TABLE_JUMP = 4
-TABLE_BLAKE3 = 5
+TABLE_SHA256 = 5
 N_TABLES = N_TABLES_PLACEHOLDER
 # Phase D (flock reduction): the seven fixed inner challenges (+ inverses of 1+c),
 # the phi8 node table + baked Lagrange inverse denominators (Lambda domain,
@@ -239,7 +239,7 @@ def squeeze_step(state_0, state_1):
     # buffer. Returns (challenge, next_state_0, next_state_1).
     a = [state_0, state_1]
     o = StackBuf(2)
-    blake3_transcript(a, DS_SQ * Y_TOWER * Y_TOWER, 0, o)
+    sha256_transcript(a, DS_SQ * Y_TOWER * Y_TOWER, 0, o)
     return o[0], o[0], o[1]
 
 
@@ -294,9 +294,9 @@ def grind_check(state_0, state_1, nonce, nbits_g):
     # caller absorbs the nonce afterwards.
     st = [state_0, state_1]
     base = StackBuf(2)
-    blake3_transcript(st, DS_POW * Y_TOWER * Y_TOWER, 0, base)
+    sha256_transcript(st, DS_POW * Y_TOWER * Y_TOWER, 0, base)
     out = StackBuf(2)
-    blake3_transcript(base, nonce + DS_POW * Y_TOWER * Y_TOWER, 0, out)
+    sha256_transcript(base, nonce + DS_POW * Y_TOWER * Y_TOWER, 0, out)
     digest_bits = HeapBuf(GEN ** FIELD_BITS)
     hint_decompose_bits(digest_bits, out[0], FIELD_BITS)
     check_field_bits_decomposition(digest_bits, out[0])
@@ -391,7 +391,7 @@ def verify_merkle_path(leaf_0, leaf_1, path_ptr, direction_bits, depth: Const):
         left = [node_0 + dir_bit * diff_0, node_1 + dir_bit * diff_1]
         right = [diff_0 + left[0], diff_1 + left[1]]
         parent = StackBuf(2)  # packed 192+64 representation of the 32-byte parent
-        blake3_transcript(left, right[0], right[1], parent)
+        sha256_transcript(left, right[0], right[1], parent)
         node_0 = parent[0]
         node_1 = parent[1]
     return node_0, node_1
@@ -442,7 +442,7 @@ def obs(state, x):
     # Bind one scalar into the sponge chain: state <- compress(state, (x, SCALAR)).
     # Returns the successor StackBuf; the call site aliases it (zero copies).
     nb = StackBuf(2)
-    blake3_transcript(state, x, DS_SCALAR, nb)
+    sha256_transcript(state, x, DS_SCALAR, nb)
     return nb
 
 
@@ -457,7 +457,7 @@ def fs_next(state, cursor):
     # just `fs, x, cursor = fs_next(fs, cursor)` with no manual cursor arithmetic.
     x = cursor[GEN ** 0]
     nb = StackBuf(2)
-    blake3_transcript(state, x, DS_SCALAR, nb)
+    sha256_transcript(state, x, DS_SCALAR, nb)
     return nb, x, cursor * GEN
 
 
@@ -465,7 +465,7 @@ def fs_next(state, cursor):
 def absorb(state, x, tag):
     # Tagged absorb (length frames, byte words, grinding nonces).
     nb = StackBuf(2)
-    blake3_transcript(state, x + tag * Y_TOWER * Y_TOWER, 0, nb)
+    sha256_transcript(state, x + tag * Y_TOWER * Y_TOWER, 0, nb)
     return nb
 
 
@@ -473,7 +473,7 @@ def absorb(state, x, tag):
 def squeeze(state):
     # Ratchet: the compress output is the new state; word 0 is the challenge.
     nb = StackBuf(2)
-    blake3_transcript(state, DS_SQ * Y_TOWER * Y_TOWER, 0, nb)
+    sha256_transcript(state, DS_SQ * Y_TOWER * Y_TOWER, 0, nb)
     return nb
 
 
@@ -547,7 +547,7 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
     #   2. bind the next level's Merkle root (or, at the last level, the
     #      final message final_msg);
     #   3. query-phase grinding, then squeeze the packed query positions;
-    #   4. per query: hash the leaf row (blake3 chain), accumulate the
+    #   4. per query: hash the leaf row (sha256 chain), accumulate the
     #      alpha-batched row dot against the fold eq weights, and verify the
     #      Merkle authentication path against the bound root
     #      (verify_merkle_path);
@@ -698,14 +698,14 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
                     e3 = row_ptr[GEN ** (4 * jb + 3)]
                     row_pair = [e0 + e1 * Y_TOWER + e2 * Y_TOWER * Y_TOWER, e3]
                     leaf_digest = StackBuf(2)
-                    blake3_transcript(leaf_hash_state, row_pair[0], row_pair[1], leaf_digest)
+                    sha256_transcript(leaf_hash_state, row_pair[0], row_pair[1], leaf_digest)
                     leaf_hash_state = leaf_digest
                     row_dot += e0 * row_eq_weights[GEN ** (4 * jb)] + e1 * row_eq_weights[GEN ** (4 * jb + 1)] + e2 * row_eq_weights[GEN ** (4 * jb + 2)] + e3 * row_eq_weights[GEN ** (4 * jb + 3)]
             else:
                 for jb in unroll(0, LIG_LEAF_PAIRS[m_idx * LIG_MAX_LEVELS + lvl]):
                     row_pair = [row_ptr[GEN ** (4 * jb)] + row_ptr[GEN ** (4 * jb + 1)] * Y_TOWER + row_ptr[GEN ** (4 * jb + 2)] * Y_TOWER * Y_TOWER, row_ptr[GEN ** (4 * jb + 3)]]
                     leaf_digest = StackBuf(2)
-                    blake3_transcript(leaf_hash_state, row_pair[0], row_pair[1], leaf_digest)
+                    sha256_transcript(leaf_hash_state, row_pair[0], row_pair[1], leaf_digest)
                     leaf_hash_state = leaf_digest
                 for jw in unroll(0, LIG_INTERLEAVE[m_idx * LIG_MAX_LEVELS + lvl]):
                     row_word = row_ptr[GEN ** (3 * jw)] + row_ptr[GEN ** (3 * jw + 1)] * Y_TOWER + row_ptr[GEN ** (3 * jw + 2)] * Y_TOWER * Y_TOWER
@@ -823,7 +823,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, base_delta_pows, tower_delta_pows, g_
     #      against the GKR claims (pooling the committed-coordinate claims);
     #      the stacked-bytecode reduction (deferred);
     #   5. six AIR zerochecks at the certified taus (sumcheck_round3);
-    #   6. public-input claim + BLAKE3 pin claims (telescoped prefix MLE);
+    #   6. public-input claim + SHA256 pin claims (telescoped prefix MLE);
     #   7. flock reduction: univariate-skip zerocheck + lincheck (matrix
     #      evaluation deferred);
     #   8. ring-switch fronts (shared rho, linearized transpose in-circuit);
@@ -1219,7 +1219,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, base_delta_pows, tower_delta_pows, g_
     for c in unroll(0, BYTECODE_COLS):
         bytecode_reduced += eq_weight(bytecode_sel, LOG2_BYTECODE_COLS, c, 0) * bytecode_vals[GEN ** c]
 
-    # ---- 6x per-table zerocheck (XOR, MUL, SET, DEREF, JUMP, BLAKE3) ----
+    # ---- 6x per-table zerocheck (XOR, MUL, SET, DEREF, JUMP, SHA256) ----
     # For each table: eta, the zerocheck point r (tau samples), tau eq-trick
     # rounds (claim starts at 0), then the involved-column evaluations (pooled)
     # and the final AIR check claim == eq_acc * C_t(eta, evals).
@@ -1324,7 +1324,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, base_delta_pows, tower_delta_pows, g_
             sel_pc = eta3 * eta * eta * (col_evals[2] + col_evals[22] * d + (col_evals[22] + 1) * fall_through)
             sel_fp = eta3 * eta * eta * eta * (col_evals[3] + col_evals[22] * ff + (col_evals[22] + 1) * col_evals[1])
             constraint_eval = addrs + ind_def + ind_nz + sel_pc + sel_fp
-        if t == TABLE_BLAKE3:
+        if t == TABLE_SHA256:
             # cols: addresses, 12 Flock lanes, 12 input limbs, 6 output limbs, packing bit, opcode.
             constraint_eval = (col_evals[6] + col_evals[0] * col_evals[1]) + eta * (col_evals[7] + col_evals[0] * col_evals[2]) + eta * eta * (col_evals[8] + col_evals[0] * col_evals[3]) + eta * eta * eta * (col_evals[9] + col_evals[0] * col_evals[4]) + eta * eta * eta * eta * (col_evals[10] + col_evals[0] * col_evals[5])
             eta_pow = eta * eta * eta * eta * eta
@@ -1394,7 +1394,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, base_delta_pows, tower_delta_pows, g_
     claim_idx += 1
 
     # ---- flock zerocheck (univariate skip, k_skip = 6) ----
-    tau_blake3_g = dims_g[GEN ** N_TABLES]  # the BLAKE3 table's certified tau
+    tau_sha256_g = dims_g[GEN ** N_TABLES]  # the SHA256 table's certified tau
     # tau's reach is bounded: the count gadget gives tau < 34 (all flock
     # buffers are sized for that), and q_pkd's committed kappa =
     # K_LOG + tau feeds the certified size m, whose opening
@@ -1406,7 +1406,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, base_delta_pows, tower_delta_pows, g_
     # the rest sampled outer. r is the zerocheck eq-randomness the prover builds
     # round-1 FROM, so it is squeezed BEFORE round-1 is fetched (and round-1 before
     # z, which evaluates it).
-    mr1cs_g = tau_blake3_g * GEN ** K_LOG  # runtime m = K_LOG + tau_5 (certified) in the exponent
+    mr1cs_g = tau_sha256_g * GEN ** K_LOG  # runtime m = K_LOG + tau_5 (certified) in the exponent
     zerocheck_r = HeapBuf(mr1cs_g)
     for i in unroll(0, K_SKIP):
         fs = squeeze(fs)
@@ -1466,7 +1466,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, base_delta_pows, tower_delta_pows, g_
         zerocheck_rhos[GEN ** i] = rho_v
         zc_running = gamma_ab * (1 + rho_v) + gamma_c * rho_v + g_inf * rho_v * (1 + rho_v)
     # rounds N_FIXED_CHALLENGE_ROUNDS.. at runtime count: K_LOG + tau_5 - K_SKIP rounds total (certified).
-    nmlv_g = tau_blake3_g * GEN ** (K_LOG - K_SKIP)
+    nmlv_g = tau_sha256_g * GEN ** (K_LOG - K_SKIP)
     flock_round_size = mr1cs_rounds_g * GEN ** 2
     flock_round_fs0 = HeapBuf(flock_round_size)
     flock_round_fs1 = HeapBuf(flock_round_size)
@@ -1548,7 +1548,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, base_delta_pows, tower_delta_pows, g_
     # (RingSwitchProofK), observed into the sponge HERE (never on the stream).
     # Claim 0 (ab): value lincheck_w, z_skip = lincheck_z_skip. Claim 1 (c):
     # value c_eval, z_skip = zerocheck_z. (The 128->64 half-fold the prover does
-    # in blake3_flock::ring_claim is already baked into the transmitted 64 values,
+    # in sha256_flock::ring_claim is already baked into the transmitted 64 values,
     # so the verifier just checks the plain prefix-weighted inner product.)
     s_hat_v = HeapBuf(2 * (2 ** K_SKIP))
     hint_witness(s_hat_v[0 : 2 * (2 ** K_SKIP)], "rs_shatv")
@@ -1635,11 +1635,11 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, base_delta_pows, tower_delta_pows, g_
         z_vals[GEN ** t] = lincheck_rs[GEN ** (LINCHECK_ROUNDS - 1 - t)]
     zv_lo = z_vals * GEN ** LINCHECK_ROUNDS
     zr_hi = zerocheck_rhos * GEN ** LINCHECK_ROUNDS
-    for xt in mul_range(1, tau_blake3_g):
+    for xt in mul_range(1, tau_sha256_g):
         zv_lo[xt] = zr_hi[xt]
     zv_hi = z_vals * GEN ** QPKD_VARS_CAP
     zcr7 = zerocheck_r * GEN ** K_SKIP
-    for xt in mul_range(1, tau_blake3_g * GEN ** SLOT_STRIDE_LOG):
+    for xt in mul_range(1, tau_sha256_g * GEN ** SLOT_STRIDE_LOG):
         zv_hi[xt] = zcr7[xt]
     # gamma-combine the two transposed sumcheck claims (computed in-circuit).
     fs = squeeze(fs)
@@ -1800,7 +1800,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, base_delta_pows, tower_delta_pows, g_
     # announced log; the per-k z-power rows chain by a runtime g^qpkdv
     # stride, and the inner passes are runtime loops with product/square
     # state chained per row.
-    qpkdv_g = tau_blake3_g * GEN ** SLOT_STRIDE_LOG
+    qpkdv_g = tau_sha256_g * GEN ** SLOT_STRIDE_LOG
     one_plus_q = HeapBuf(GEN ** (QPKD_VARS_CAP))
     for x_round in mul_range(1, qpkdv_g):
         one_plus_q[x_round] = 1 + fold_challenges[x_round]
@@ -2115,6 +2115,6 @@ def main():
     own_pi_1 = pub_ptr[GEN]
     out_word_0 = out_fs[0]
     out_word_1 = out_fs[1]
-    assert own_pi_0 == out_word_0  # the guest's OWN public input == blake3 of (inner digest | sub statements | reduced claims)
+    assert own_pi_0 == out_word_0  # the guest's OWN public input == sha256 of (inner digest | sub statements | reduced claims)
     assert own_pi_1 == out_word_1
     return

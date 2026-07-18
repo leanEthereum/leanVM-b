@@ -15,11 +15,11 @@ pub const MEM_HI: usize = 1;
 pub const MEM_TOP: usize = 2;
 pub const MFCNT: usize = 3; // per-cell memory access count, g^{A[i]}
 pub const BFCNT: usize = 4; // per-pc bytecode execution count, g^{A[pc]}
-// flock's packed BLAKE3 witness `q_pkd`, committed in the SAME stack as every
+// flock's packed SHA256 witness `q_pkd`, committed in the SAME stack as every
 // other column (single PCS). Size `2^(K_LOG+n_log-6)` F64 words, always ≥ 1
-// instance (a no-BLAKE3 program commits one full padding instance). It is the
-// SOLE copy of the input/output words: the VM's BLAKE3 value columns are
-// virtual and their memory-bus claims route to `q_pkd` slots (§blake3_flock), so
+// instance (a no-SHA256 program commits one full padding instance). It is the
+// SOLE copy of the input/output words: the VM's SHA256 value columns are
+// virtual and their memory-bus claims route to `q_pkd` slots (§sha256_flock), so
 // nothing duplicates them. flock's R1CS validity is discharged by the single
 // stacked Ligerito-K opening over this commitment.
 pub const QPKD: usize = 5;
@@ -80,9 +80,9 @@ pub struct Layout {
     /// Public input: the first two memory cells `m[0], m[1]` (each a 192-bit
     /// word), bound to the committed memory at verification (§8).
     pub pi: [F192; 2],
-    pub taus: [usize; 6], // (xor, mul, set, deref, jump, blake3) log row counts
+    pub taus: [usize; 6], // (xor, mul, set, deref, jump, sha256) log row counts
     /// Real (non-padded) per-table row counts, as announced. `row_counts[5]` is
-    /// the executed `BLAKE3` count, which gates the flock sub-proof.
+    /// the executed `SHA256` count, which gates the flock sub-proof.
     pub row_counts: [usize; 6],
 }
 
@@ -114,13 +114,13 @@ pub fn col_kappa_sources(log_bytecode: usize) -> Vec<Option<(usize, usize)>> {
     k[BFCNT] = Some((0, log_bytecode));
     // qpkd_kappa(n) = K_LOG + n_blocks_log - LOG_PACKING, and tau_5 IS
     // n_blocks_log (the announced-size certification uses the same floor).
-    k[QPKD] = Some((2 + tables::BLAKE3_TABLE, flock::blake3::K_LOG - ::pcs::LOG_PACKING));
+    k[QPKD] = Some((2 + tables::SHA256_TABLE, flock::sha256::K_LOG - ::pcs::LOG_PACKING));
     for (t, table) in tables::tables().iter().enumerate() {
         let base = sch.base[t];
         k[base..base + table.n_committed_columns()].fill(Some((2 + t, 0)));
     }
-    let b3 = sch.base[tables::BLAKE3_TABLE];
-    for &c in &tables::BLAKE3_VALUE_COLS {
+    let b3 = sch.base[tables::SHA256_TABLE];
+    for &c in &tables::SHA256_VALUE_COLS {
         k[b3 + c] = None;
     }
     k
@@ -154,12 +154,12 @@ pub fn block_kappa_sources(log_bytecode: usize) -> Vec<(usize, usize)> {
 /// (uncommitted) column. Depends only on the public sizes, so the verifier can
 /// reconstruct the placements.
 ///
-/// The BLAKE3 value columns (`va0..vc3`) are always virtual: `q_pkd`
+/// The SHA256 value columns (`va0..vc3`) are always virtual: `q_pkd`
 /// already holds those words at fixed packed slots, so committing them again is
 /// redundant. Their memory-bus claims route directly to `q_pkd` slot evaluations
 /// (see [`slot_claims`]), which both binds them to
 /// the proven witness AND eliminates the separate value-binding sub-protocol.
-fn col_kappas(log_mem: usize, log_bytecode: usize, taus: [usize; 6], n_blake3: usize) -> Vec<Option<usize>> {
+fn col_kappas(log_mem: usize, log_bytecode: usize, taus: [usize; 6], n_sha256: usize) -> Vec<Option<usize>> {
     let sch = schema();
     let mut k = vec![Some(0usize); sch.n];
     k[MEM_LO] = Some(log_mem);
@@ -168,15 +168,15 @@ fn col_kappas(log_mem: usize, log_bytecode: usize, taus: [usize; 6], n_blake3: u
     k[MFCNT] = Some(log_mem);
     k[BFCNT] = Some(log_bytecode);
     // q_pkd: `2^(K_LOG+n_log-6)` F64 words, always ≥ 1 instance (`qpkd_kappa`
-    // floors `n_blake3` at 1 — padding instance for a no-BLAKE3 program).
-    k[QPKD] = Some(crate::blake3_flock::qpkd_kappa(n_blake3));
+    // floors `n_sha256` at 1 — padding instance for a no-SHA256 program).
+    k[QPKD] = Some(crate::sha256_flock::qpkd_kappa(n_sha256));
     for (t, table) in tables::tables().iter().enumerate() {
         let base = sch.base[t];
         k[base..base + table.n_committed_columns()].fill(Some(taus[t]));
     }
-    // BLAKE3 value columns are ALWAYS virtual (read from q_pkd, never committed).
-    let b3 = sch.base[tables::BLAKE3_TABLE];
-    for &c in &tables::BLAKE3_VALUE_COLS {
+    // SHA256 value columns are ALWAYS virtual (read from q_pkd, never committed).
+    let b3 = sch.base[tables::SHA256_TABLE];
+    for &c in &tables::SHA256_VALUE_COLS {
         k[b3 + c] = None;
     }
     k
@@ -199,11 +199,11 @@ pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; 6], pi: [F192; 2]
     for (i, &r) in row_counts.iter().enumerate() {
         taus[i] = crate::log2_ceil_usize(r.max(1));
     }
-    // The BLAKE3 table is ALWAYS sized to flock's `2^n_log` instance count
+    // The SHA256 table is ALWAYS sized to flock's `2^n_log` instance count
     // (`max(count,1)`, lincheck floor ≥ 8) so its per-instance (virtual) value
     // columns share `q_pkd`'s instance cube — a value-column bus claim at instance
     // point `r` maps to a strided `q_pkd` slot claim at `r` (`slot_claims`).
-    taus[tables::BLAKE3_TABLE] = crate::blake3_flock::n_blocks_log(row_counts[tables::BLAKE3_TABLE].max(1));
+    taus[tables::SHA256_TABLE] = crate::sha256_flock::n_blocks_log(row_counts[tables::SHA256_TABLE].max(1));
 
     // Derived boundary: the run starts at (pc,fp) = (0,0) and, by convention, the
     // final pc is the bytecode's last cell g^{B-1} (the compiler emits a halt jump
@@ -224,7 +224,7 @@ pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; 6], pi: [F192; 2]
             Op::Set { o, .. } => o,
             Op::Deref { alpha, beta, gamma, .. } => alpha.max(beta).max(gamma),
             Op::Jump { oc, od, of } => oc.max(od).max(of),
-            Op::Blake3 { ins, out, .. } => ins[0].max(ins[1]).max(ins[2]).max(ins[3]).max(out),
+            Op::Sha256 { ins, out, .. } => ins[0].max(ins[1]).max(ins[2]).max(ins[3]).max(out),
         })
         .max()
         .unwrap_or(0) as usize;
@@ -237,14 +237,14 @@ pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; 6], pi: [F192; 2]
         Op::Set { .. } => OP_SET,
         Op::Deref { .. } => OP_DEREF,
         Op::Jump { .. } => OP_JUMP,
-        Op::Blake3 {
-            packing: crate::cpu::Blake3Packing::Bytes128,
+        Op::Sha256 {
+            packing: crate::cpu::Sha256Packing::Bytes128,
             ..
-        } => OP_BLAKE3,
-        Op::Blake3 {
-            packing: crate::cpu::Blake3Packing::Transcript192,
+        } => OP_SHA256,
+        Op::Sha256 {
+            packing: crate::cpu::Sha256Packing::Transcript192,
             ..
-        } => tables::OP_BLAKE3_TRANSCRIPT,
+        } => tables::OP_SHA256_TRANSCRIPT,
     };
     let operands = |op: &Op| -> (F64, F64, F64) {
         match *op {
@@ -254,22 +254,22 @@ pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; 6], pi: [F192; 2]
             Op::Set { o, k } => (g_at(o), F64(k.c0), F64(k.c1)),
             Op::Deref { alpha, beta, gamma, .. } => (g_at(alpha), g_at(beta), g_at(gamma)),
             Op::Jump { oc, od, of } => (g_at(oc), g_at(od), g_at(of)),
-            // BLAKE3's first three input-word offsets; the last two ride the
+            // SHA256's first three input-word offsets; the last two ride the
             // fpc/ffp bytecode slots below.
-            Op::Blake3 { ins, .. } => (g_at(ins[0]), g_at(ins[1]), g_at(ins[2])),
+            Op::Sha256 { ins, .. } => (g_at(ins[0]), g_at(ins[1]), g_at(ins[2])),
         }
     };
     // The 4th/5th bytecode operand slots: the two DEREF store-mode flags, or
-    // BLAKE3's remaining input word / output base (0 elsewhere).
+    // SHA256's remaining input word / output base (0 elsewhere).
     let fpc = |op: &Op| match op {
         Op::Deref { mode, .. } => mode.f_pc(),
-        Op::Blake3 { ins, .. } => g_at(ins[3]),
+        Op::Sha256 { ins, .. } => g_at(ins[3]),
         Op::Set { k, .. } => F64(k.c2),
         _ => F64::ZERO,
     };
     let ffp = |op: &Op| match op {
         Op::Deref { mode, .. } => mode.f_fp(),
-        Op::Blake3 { out, .. } => g_at(*out),
+        Op::Sha256 { out, .. } => g_at(*out),
         _ => F64::ZERO,
     };
     // The program is PUBLIC (not committed): six public columns over the
@@ -387,32 +387,32 @@ pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; 6], pi: [F192; 2]
             pad[base + c] = F64::ONE;
         }
     }
-    // BLAKE3 padding rows must match flock's padding instance (the all-zero-input
+    // SHA256 padding rows must match flock's padding instance (the all-zero-input
     // compression): zero inputs but a NONZERO output `out_lo`. So the four output
     // value columns pad with that digest, not 0 — the memory bus flushes these
     // (virtual) columns, and their padding rows must equal `q_pkd`'s padding slots
     // so the default-padding surplus divides out and the routed claims agree.
-    // Inputs/counts keep their 0/1 defaults. Always applied (the BLAKE3 table is
-    // always present, all-padding for a no-BLAKE3 program).
+    // Inputs/counts keep their 0/1 defaults. Always applied (the SHA256 table is
+    // always present, all-padding for a no-SHA256 program).
     {
-        let b3 = sch.base[tables::BLAKE3_TABLE];
-        let pc = crate::blake3_flock::padding_digest();
+        let b3 = sch.base[tables::SHA256_TABLE];
+        let pc = crate::sha256_flock::padding_digest();
         for k in 0..4 {
-            pad[b3 + tables::BLAKE3_VALUE_COLS[8 + k]] = pc[k]; // c0..c3
+            pad[b3 + tables::SHA256_VALUE_COLS[8 + k]] = pc[k]; // c0..c3
         }
-        use tables::blake3t::{MO0, OP};
+        use tables::sha256t::{MO0, OP};
         pad[b3 + MO0] = pc[0];
         pad[b3 + MO0 + 1] = pc[1];
         pad[b3 + MO0 + 3] = pc[2];
         pad[b3 + MO0 + 4] = pc[3];
-        pad[b3 + OP] = tables::OP_BLAKE3;
+        pad[b3 + OP] = tables::OP_SHA256;
     }
 
     let (placements, m) = witness::placements_of(&col_kappas(
         log_mem,
         log_bytecode,
         taus,
-        row_counts[tables::BLAKE3_TABLE],
+        row_counts[tables::SHA256_TABLE],
     ));
     Layout {
         push,
@@ -469,19 +469,19 @@ impl Program {
         cols[MEM_TOP] = exec.mem.par_iter().map(|w| F64(w.c2)).collect();
         cols[MFCNT] = tr.mem_count.clone(); // running counts ended at g^{A[i]}
         cols[BFCNT] = tr.bytecode_count.clone(); // running counts ended at g^{A[pc]}
-        // flock's packed BLAKE3 witness q_pkd, ALWAYS committed in this same stack:
-        // built from the executed BLAKE3 rows in order (row j = flock instance j),
+        // flock's packed SHA256 witness q_pkd, ALWAYS committed in this same stack:
+        // built from the executed SHA256 rows in order (row j = flock instance j),
         // padded to `2^n_blocks_log(max(count,1))` all-padding instances — so a
-        // program with no BLAKE3 still carries a single padding instance.
+        // program with no SHA256 still carries a single padding instance.
         let fill_ms = t_fill.elapsed().as_secs_f64() * 1e3;
         let t_qpkd = std::time::Instant::now();
         cols[QPKD] = {
             let blocks: Vec<_> = tr
-                .blake3
+                .sha256
                 .iter()
-                .map(|r| crate::blake3_flock::compression(r.va, r.vb))
+                .map(|r| crate::sha256_flock::compression(r.va, r.vb))
                 .collect();
-            crate::blake3_flock::build_qpkd(&blocks)
+            crate::sha256_flock::build_qpkd(&blocks)
         };
         let qpkd_ms = t_qpkd.elapsed().as_secs_f64() * 1e3;
 
@@ -500,7 +500,7 @@ impl Program {
             tr.set.len(),
             tr.deref.len(),
             tr.jump.len(),
-            tr.blake3.len(),
+            tr.sha256.len(),
         ];
         assert!(
             row_counts.iter().all(|&r| r <= 1 << MAX_LOG_ROWS),
@@ -515,7 +515,7 @@ impl Program {
         // verifier divides them out of the bus product (§sec:gp). The shared
         // columns (MEM, MFCNT, BFCNT) keep their natural 2^h / 2^log_bytecode lengths.
         // Pad to `2^taus[t]` (= `next_pow2(row_counts[t])` for every table except
-        // BLAKE3, which `layout` rounds up to flock's `2^n_log`).
+        // SHA256, which `layout` rounds up to flock's `2^n_log`).
         for (t, table) in tables::tables().iter().enumerate() {
             let n = 1usize << l.taus[t];
             let base = sch.base[t];

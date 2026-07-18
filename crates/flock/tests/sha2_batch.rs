@@ -1,23 +1,24 @@
-//! Standalone batch BLAKE3 proving, isolated from the VM.
+//! Standalone batch SHA-256 compression proving, isolated from the VM.
 //!
-//! This exercises only Flock's BLAKE3 path over `N` compressions: witness
-//! generation, K commitment, zerocheck + lincheck reduction, the stacked
-//! ring-switch/Ligerito-K opening, and verification. Circuit construction is
-//! outside the timed region, matching the VM's warmed-setup convention.
+//! This exercises only Flock's fixed-IV, single-compression SHA-256 path over
+//! `N` blocks: witness generation, K commitment, zerocheck + lincheck
+//! reduction, the stacked ring-switch/Ligerito-K opening, and verification.
+//! Circuit construction is outside the timed region, matching the VM's
+//! warmed-setup convention.
 //!
 //! Run with the XMSS-sized workload:
 //! ```text
-//! RAYON_NUM_THREADS=11 FLOCK_N_LOG=17 cargo test --release -p flock --test blake3_batch -- --ignored --nocapture
+//! RAYON_NUM_THREADS=11 FLOCK_N_LOG=17 cargo test --release -p flock --test sha2_batch -- --ignored --nocapture
 //! ```
 
 use std::time::Instant;
 
 use fiat_shamir::transcript::{ProverState, VerifierState};
-use flock::blake3::{
-    Blake3Setup, Compression, K_LOG, ReducedClaims, generate_witness_with_ab_packed_and_lincheck, min_n_blocks_log,
-    pinned_compression,
-};
 use flock::proof::ZClaim;
+use flock::sha256::{
+    Compression, K_LOG, ReducedClaims, Sha256Setup, generate_witness_with_ab_packed_and_lincheck,
+    min_n_blocks_log, pinned_compression,
+};
 use pcs::ligerito::{INITIAL_FOLDING_FACTOR, LOG_INV_RATE_0};
 use pcs::ligerito_k::{commit_k, k_configs_for};
 use pcs::pack_k::{LOG_PACKING_K, PACKING_WIDTH_K};
@@ -103,8 +104,8 @@ fn verifier_ring(ab: &ZClaim, c: &ZClaim, qpkd_vars: usize) -> RingSwitchVerifyK
 
 #[test]
 #[ignore = "manual release benchmark; needs a large-stack worker and substantial memory"]
-fn blake3_batch_prove_verify() {
-    // The XMSS n=820 workload executes about 2^17 BLAKE3 compressions.
+fn sha2_batch_prove_verify() {
+    // The XMSS n=820 workload executes about 2^17 SHA-256 compressions.
     let requested_n_log: usize = std::env::var("FLOCK_N_LOG")
         .ok()
         .map(|s| s.parse().expect("FLOCK_N_LOG must be an integer"))
@@ -125,7 +126,7 @@ fn blake3_batch_prove_verify() {
         .collect();
 
     let t = Instant::now();
-    let setup = Blake3Setup::new(n);
+    let setup = Sha256Setup::new(n);
     let setup_ms = t.elapsed().as_secs_f64() * 1e3;
 
     let t = Instant::now();
@@ -134,7 +135,7 @@ fn blake3_batch_prove_verify() {
     assert_eq!(q_pkd.len(), 1 << mu);
 
     let (prover_config, verifier_config) = k_configs_for(mu).expect("Ligerito-K configuration");
-    let mut ps = ProverState::<()>::new(b"flock-blake3-batch", &[]);
+    let mut ps = ProverState::<()>::new(b"flock-sha2-batch", &[]);
     let t_prove = Instant::now();
 
     let t = Instant::now();
@@ -153,7 +154,7 @@ fn blake3_batch_prove_verify() {
     let transcript = ps.into_proof();
 
     let t = Instant::now();
-    let mut vs = VerifierState::<()>::new(b"flock-blake3-batch", &transcript, &[]);
+    let mut vs = VerifierState::<()>::new(b"flock-sha2-batch", &transcript, &[]);
     let root = pcs::merkle::scalars_to_hash(&vs.next_scalars(2).expect("commitment root"));
     let replay = setup.verify_reduction(&mut vs).expect("Flock reduction verifies");
     let ring = verifier_ring(&replay.ab, &replay.c, mu);
@@ -162,7 +163,7 @@ fn blake3_batch_prove_verify() {
     vs.finish().expect("transcript fully consumed");
     let verify_ms = t.elapsed().as_secs_f64() * 1e3;
 
-    println!("\nFlock BLAKE3 batch proving, {n} compressions (2^{n_log} slots)");
+    println!("\nFlock SHA-256 batch proving, {n} compressions (2^{n_log} slots)");
     println!("  setup (preprocessing, excluded) : {setup_ms:>8.1} ms");
     println!("  witness-gen                     : {witness_ms:>8.1} ms");
     println!("  commit                          : {commit_ms:>8.1} ms");

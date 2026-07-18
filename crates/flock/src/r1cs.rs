@@ -135,15 +135,23 @@ impl BlockR1cs {
             .all(|((ai, bi), ci)| (*ai & *bi) == *ci)
     }
 
-    /// BLAKE3 hash of the circuit FAMILY: the per-block matrices and the
+    /// Compression-only SHA-256 hash of the circuit FAMILY: the per-block matrices and the
     /// shape parameters, explicitly WITHOUT the instance count `m`. The full
     /// instance is block-diagonal — `m` copies of these matrices — so a
     /// protocol that binds this digest and `m` separately has bound the whole
     /// statement; embedding protocols (leanVM-b) seed their transcript with it
     /// and announce the count.
     pub fn family_digest(&self) -> [u8; 32] {
-        let mut h = blake3::Hasher::new();
-        h.update(b"flock-r1cs-family-v1");
+        const DOMAIN: &[u8] = b"flock-r1cs-family-v2-sha256-compress";
+        let total_len = DOMAIN.len()
+            + 8
+            + 8
+            + 1
+            + matrix_serialized_len(&self.a_0)
+            + matrix_serialized_len(&self.b_0)
+            + matrix_serialized_len(&self.c_0);
+        let mut h = primitives::sha256::CompressionHasher::new(total_len);
+        h.update(DOMAIN);
         h.update(&(self.k_log as u64).to_le_bytes());
         h.update(&(self.k_skip as u64).to_le_bytes());
         // The layout determines which polynomial a given witness commits
@@ -154,19 +162,23 @@ impl BlockR1cs {
         absorb_matrix(&mut h, &self.a_0);
         absorb_matrix(&mut h, &self.b_0);
         absorb_matrix(&mut h, &self.c_0);
-        *h.finalize().as_bytes()
+        h.finalize()
     }
 }
 
-/// Length-prefixed absorption of a sparse matrix into a BLAKE3 hasher.
+fn matrix_serialized_len(m: &SparseBinaryMatrix) -> usize {
+    let nnz: usize = m.rows.iter().map(Vec::len).sum();
+    8 * (2 + m.rows.len() + nnz)
+}
+
+/// Length-prefixed absorption of a sparse matrix into a compression-only SHA-256 hasher.
 /// `(num_rows, num_cols, [(row_len, col_indices...) for each row])`, all
 /// little-endian u64, so two matrices with different shapes/contents always
 /// produce different states.
-fn absorb_matrix(h: &mut blake3::Hasher, m: &SparseBinaryMatrix) {
-    // Flatten first: one bulk `update` hashes at full BLAKE3 throughput,
+fn absorb_matrix(h: &mut primitives::sha256::CompressionHasher, m: &SparseBinaryMatrix) {
+    // Flatten first: one bulk `update` hashes at full SHA256 throughput,
     // where per-entry 8-byte updates cost ~80 ms per matrix in call overhead.
-    let nnz: usize = m.rows.iter().map(Vec::len).sum();
-    let mut buf = Vec::with_capacity(8 * (2 + m.rows.len() + nnz));
+    let mut buf = Vec::with_capacity(matrix_serialized_len(m));
     buf.extend_from_slice(&(m.num_rows as u64).to_le_bytes());
     buf.extend_from_slice(&(m.num_cols as u64).to_le_bytes());
     for row in &m.rows {

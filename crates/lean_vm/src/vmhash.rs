@@ -1,21 +1,22 @@
-//! VM-native hashing: the fixed 64→32 BLAKE3 compression the `Blake3` opcode
+//! VM-native hashing: one fixed-IV, unpadded 64→32 SHA-256 compression (the
+//! legacy-named `Sha256` opcode)
 //! computes, and the Merkle–Damgård slice hash built from it.
 //!
-//! Everything here is expressible by a program running on the VM — one `blake3`
+//! Everything here is expressible by a program running on the VM — one hash
 //! opcode per [`compress`] call — so the Fiat–Shamir transcript
 //! ([`crate::transcript`]) and any slice / leaf hash can be *replayed in-circuit*.
 //! That is the prerequisite for recursion: a proof of `verify()` can only be run
 //! on the VM if every hash the verifier computes decomposes into the one 64-byte
-//! compression the machine has. The streaming `blake3::Hasher` (multi-block chunk
-//! tree, flags, counter) does not; these constructions do.
+//! compression the machine has. A standard padded SHA-256 hash does not; these
+//! constructions do.
 
 use primitives::field::{F64, g_pow};
 
-/// `f(a, b) = BLAKE3(a‖b)` on two 256-bit halves laid out little-endian into 64
-/// bytes — *exactly* the `Blake3` opcode (§7.6, `cpu::execute`): 64 input bytes →
+/// `f(a, b) = SHA256_Compress(IV, a‖b)` on two 256-bit halves laid out little-endian into 64
+/// bytes — *exactly* the `Sha256` opcode (§7.6, `cpu::execute`): 64 input bytes →
 /// 32-byte digest, split back into four field words. THE primitive; every other
 /// hash here is a chain of these, so a zkDSL program reproduces them with one
-/// `blake3(...)` per call.
+/// `sha256(...)` per call.
 /// Lives in [`fiat_shamir::sponge`] (the shared Fiat–Shamir sponge is built on it).
 pub use fiat_shamir::sponge::compress;
 
@@ -28,7 +29,7 @@ pub use fiat_shamir::sponge::compress;
 /// distinguishes a real trailing zero word from padding).
 ///
 /// In the VM the IV is a compile-time constant `SET` (the length is known), so a
-/// program hashes an `n`-word slice with exactly `⌈n/4⌉` `blake3` opcodes.
+/// program hashes an `n`-word slice with exactly `⌈n/4⌉` `sha256` opcodes.
 pub fn hash_slice(data: &[F64]) -> [F64; 4] {
     let num_bytes = data.len() * core::mem::size_of::<u64>(); // 8 bytes / word
     let mut cv = [g_pow(num_bytes), F64::ZERO, F64::ZERO, F64::ZERO];
@@ -49,7 +50,7 @@ mod tests {
     }
 
     /// `hash_slice` is exactly the length-in-IV Merkle–Damgård chain the VM's
-    /// `blake3` opcode would run: IV = (g^{8·n}, 0, 0, 0), then one `compress`
+    /// `sha256` opcode would run: IV = (g^{8·n}, 0, 0, 0), then one `compress`
     /// per 4-word block.
     #[test]
     fn hash_slice_matches_md_chain() {

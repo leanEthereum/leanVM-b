@@ -16,10 +16,6 @@ impl Rng {
         z ^ (z >> 31)
     }
 
-    pub(crate) fn next_u32(&mut self) -> u32 {
-        self.next_u64() as u32
-    }
-
     pub(crate) fn bit(&mut self) -> bool {
         self.next_u64() & 1 != 0
     }

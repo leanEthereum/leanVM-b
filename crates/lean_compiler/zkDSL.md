@@ -1,14 +1,14 @@
 # zkDSL Language Reference (leanVM-b)
 
 The zkDSL is a Python-syntax language that compiles to the leanVM-b ISA — six
-instructions (`XOR`, `MUL`, `SET`, `DEREF`, `JUMP`, `BLAKE3`) over the binary
+instructions (`XOR`, `MUL`, `SET`, `DEREF`, `JUMP`, `SHA256`) over the binary
 field GF(2^192), with write-once memory and all indices carried "in the
 exponent" as powers of a fixed generator. For the underlying VM and proving
 system, see [`misc/doc.tex`](../../misc/doc.tex) (released as `doc.pdf`).
 
 Source files use the `.py` extension and are **valid Python**: they import the
 [`snark_lib`](../../snark_lib.py) stub, which defines `GEN`, `log`, `mul_range`,
-`HeapBuf`, `StackBuf`, and `blake3` so that editors, linters, and even
+`HeapBuf`, `StackBuf`, and `sha256` so that editors, linters, and even
 `python3` itself accept the file. The compiler skips the import.
 
 Entry points: `lean_compiler::parse` / `parse_file_with_replacements` →
@@ -203,7 +203,7 @@ per call. Every non-`main` function must end in an explicit `return`; in
 ```python
 def hash_pair(buf, k: Const):
     h = StackBuf(2)
-    blake3(buf[k * 2:k * 2 + 2], buf[k * 2:k * 2 + 2], h)
+    sha256(buf[k * 2:k * 2 + 2], buf[k * 2:k * 2 + 2], h)
     return h[0], h[1]
 ```
 
@@ -237,7 +237,7 @@ def combine(a, b, k: Const):
 
 An `@inline` function is **expanded at each call site** instead of emitting a
 real call — no frame, no argument/return `DEREF`s, no call/return `JUMP`s. The
-body must be a single **tail** `return`; it may contain `blake3`, `if`, and
+body must be a single **tail** `return`; it may contain `sha256`, `if`, and
 `unroll`, but not a call to another (user) function, a `for`/`match`, or any
 nested/early `return`. It is never lowered standalone; a call to a
 non-`@inline` function is unchanged. (Distinct from `unroll(a, b)`, which
@@ -252,10 +252,10 @@ likewise. This makes chained-state helpers free, the MD-chain idiom:
 def obs(cb, x):          # sponge absorb: cb <- compress(cb, (x, SCALAR))
     tg = [x, DS_SCALAR]  # a list literal: an initialized StackBuf(2)
     nb = StackBuf(2)
-    blake3(cb, tg, nb)
+    sha256(cb, tg, nb)
     return nb            # the call site's `cvb = obs(cvb, v)` aliases nb
 
-cvb = obs(cvb, v)        # exactly 3 ops: two tag writes + one blake3
+cvb = obs(cvb, v)        # exactly 3 ops: two tag writes + one sha256
 ```
 
 An `@inline` call may also sit in **expression position** — embedded in
@@ -295,7 +295,7 @@ instruction until used as a value:
 - **stack-cell copies and zeros** — a store `sa[k] = other` or `sa[k] = 0` is
   recorded as an alias rather than emitting a `MUL`/`SET`; every read of `sa[k]`
   forwards to the real source (write-once keeps it valid). This is what makes
-  assembling a `BLAKE3` operand from scattered values free (see "BLAKE3").
+  assembling a `SHA256` operand from scattered values free (see "SHA256").
 
 ## Debugging
 
@@ -311,7 +311,7 @@ witness differs from a print-free build — strip prints before benchmarking.
 
 All memory is **write-once**: a cell is set once; a second write of the same
 value is a no-op, of a different value a proof failure. This turns stores into
-equality assertions and is used throughout (publishing, `blake3` outputs).
+equality assertions and is used throughout (publishing, `sha256` outputs).
 Reading a cell nobody ever writes yields an unconstrained value (fixed to zero
 at the end of witness generation) — don't.
 
@@ -337,7 +337,7 @@ instructions).
 compile-time exponent and the pointer resolves to a declared `HeapBuf`
 (directly, or through shifted aliases like `row = buf * GEN ** k`), the
 compiler rejects `index >= size` — same for the spans of `hint_witness` and
-`blake3` slices. **Runtime** indices are not checked (their value is unknown
+`sha256` slices. **Runtime** indices are not checked (their value is unknown
 at compile time): there the buffer remains a region convention, and a stray
 access surfaces at proving time as a write-once conflict or wild deref.
 
@@ -373,7 +373,7 @@ instead).
 ### Slices — `buf[lo:hi]`
 
 `buf[lo:hi]` names a run of cells (`hi` exclusive). Slices exist only as
-`blake3` operands and must span exactly 2 cells (one 256-bit value). Two
+`sha256` operands and must span exactly 2 cells (one 256-bit value). Two
 forms:
 
 - **compile-time bounds** (integers, as for stack indexes): frame cells
@@ -431,7 +431,7 @@ for i in unroll(0, 7):
 
 def chain(buf, n: Const):
     for i in unroll(0, n):           # a Const parameter as a bound
-        blake3(buf[i * 2:i * 2 + 2], buf[i * 2:i * 2 + 2], buf[i * 2 + 2:i * 2 + 4])
+        sha256(buf[i * 2:i * 2 + 2], buf[i * 2:i * 2 + 2], buf[i * 2 + 2:i * 2 + 4])
     return
 ```
 
@@ -589,29 +589,29 @@ The two `DEREF` target cells are unconstrained touches, back-filled at the end
 of execution. A failing check surfaces at witness generation as the
 complement's `DEREF` panic ("not a small g-power … a failed range check").
 
-## BLAKE3
+## SHA256
 
 ```python
 h = StackBuf(2)
-blake3(a, b, h)                    # digest of (a, b) written into h
-blake3(t[0:2], t[x:x + 2], t[4:6])  # slices of one large StackBuf
-blake3(h, hb[0:2], hb[2:4])         # HeapBuf slices, input and output
-blake3(hb[i:i + 2], h, hb[j:j + 2])  # runtime-indexed heap slices (i, j g-powers)
+sha256(a, b, h)                    # digest of (a, b) written into h
+sha256(t[0:2], t[x:x + 2], t[4:6])  # slices of one large StackBuf
+sha256(h, hb[0:2], hb[2:4])         # HeapBuf slices, input and output
+sha256(hb[i:i + 2], h, hb[j:j + 2])  # runtime-indexed heap slices (i, j g-powers)
 ```
 
-`blake3(a, b, out)` is a **statement**: it compresses the two 256-bit operands
+`sha256(a, b, out)` is a **statement**: it compresses the two 256-bit operands
 `a`, `b` (64 bytes) and writes the 32-byte digest into the 2-cell run `out`.
 Operands are size-2 `StackBuf`s or 2-cell slices:
 
 - **stack operands** are read/written in place — zero copies; a self-hash
-  `blake3(h, h, out)` aliases one 2-cell pair into both inputs;
+  `sha256(h, h, out)` aliases one 2-cell pair into both inputs;
 - the instruction addresses its **four canonical 128-bit input chunks
   independently** (each is a full F192 memory cell constrained at this use to
-  the BLAKE3 subspace `c2 = 0`), so when a 256-bit operand is
+  the SHA256 subspace `c2 = 0`), so when a 256-bit operand is
   *assembled* from values that live in different places — the idiom
-  `p = StackBuf(2); p[0] = t0; p[1] = t1; blake3(p, …)` — the copies vanish:
+  `p = StackBuf(2); p[0] = t0; p[1] = t1; sha256(p, …)` — the copies vanish:
   a stack store of a plain copy or a zero is forwarded to its source (see
-  "Variables"), and `BLAKE3` reads each chunk where it already is;
+  "Variables"), and `SHA256` reads each chunk where it already is;
 - **heap slices** are still bridged through the stack for the *input pull* (the
   operand's words come from the heap): +1 `DEREF` per heap cell, and the output,
   if a heap slice, is stored after — write-once memory fills whichever side is
@@ -621,8 +621,8 @@ If `out` was already written, the statement *asserts* the digest equals it —
 write-once turning the hash into a verification, which is exactly what a
 signature verifier wants.
 
-The compression is proven by the flock-derived BLAKE3 R1CS (`crates/flock`,
-see `doc.pdf` §BLAKE3); one instruction per 64→32-byte compression.
+The compression is proven by the flock-derived SHA256 R1CS (`crates/flock`,
+see `doc.pdf` §SHA256); one instruction per 64→32-byte compression.
 
 ## Hints — `hint_witness(dest, "name")`
 
@@ -686,7 +686,7 @@ completely unconstrained: the program must re-verify them in-circuit.
 | function call | ≈ `n_args + n_returns + 4` (0 when the callee is `@inline`) |
 | `mul_range` iteration | body + ≈ 1 `MUL` + 1 `XOR` + call overhead |
 | `unroll` iteration | body only (compile-time replication) |
-| `blake3(a, b, out)` | 1; input words read in place (copies/zeros assembling an operand are forwarded, not emitted), +1 `DEREF` per heap input word, +1 `MUL` per runtime slice start |
+| `sha256(a, b, out)` | 1; input words read in place (copies/zeros assembling an operand are forwarded, not emitted), +1 `DEREF` per heap input word, +1 `MUL` per runtime slice start |
 | `hint_witness(dest, "name")` | 0 (+1 `MUL` for a runtime slice start) |
 
 ## Example
@@ -721,4 +721,4 @@ Mutable variables; conditions other than field (in)equality; `match` defaults
 `mul_range` or range-check bounds (a substituted literal is a bit-pattern
 element, not the g-power a bound needs); runtime slice starts on a `StackBuf`;
 runtime range-check bounds (`assert log a < log b` with runtime `b`);
-precompiles beyond `BLAKE3`.
+precompiles beyond `SHA256`.
