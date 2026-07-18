@@ -1,11 +1,11 @@
 //! Witness commitment: an inner-product PCS committing over `K = F_{2^64}` and
-//! opening over `E = F_{2^192}` (doc §3), reusing flock's **Ligerito-K**. An
+//! opening over `E = F_{2^192}` (doc §3), reusing flock's **Ligerito**. An
 //! opening proves `Σ_x q(x)·W(x) = C` against any verifier-evaluable `E`-valued
 //! weight `W` (a point evaluation `q̂(r)` is `W = eq(r,·)`). A batch of claims
 //! `q̂(point_j) = value_j` folds with random `γ`s into one weight and target,
-//! opened in a single Ligerito-K run — the verifier evaluates the weight itself,
+//! opened in a single Ligerito run — the verifier evaluates the weight itself,
 //! so it never travels. flock's ring-switched `q_pkd` claims join the same batch
-//! ([`::pcs::stack_open_k`]).
+//! ([`::pcs::stack_open`]).
 //!
 //! Security: the K configs use rate-1/2 Johnson list decoding with OOD binding
 //! and 128-bit round-by-round soundness ([`::pcs::ligerito::SECURITY_BITS`]).
@@ -18,16 +18,16 @@ use crate::transcript::{ProverState, VerifierState};
 use primitives::field::{F64, F192};
 
 use ::pcs::ligerito::{ProverConfig, VerifierConfig};
-use ::pcs::ligerito_k::{CommitmentK, ProverDataK, commit_k, k_configs_for_rate};
-pub use ::pcs::stack_open_k::{
-    BatchOpeningProofK, RingSwitchClaimK, RingSwitchOpenK as RingSwitchOpen, RingSwitchVerifyK as RingSwitchVerify,
-    StackClaimK as SlotClaim, StackedOpeningSummaryK as StackedOpeningSummary,
+use ::pcs::ligerito::{Commitment, ProverData, commit as ligerito_commit, configs_for_rate};
+pub use ::pcs::stack_open::{
+    BatchOpeningProof, RingSwitchClaim, RingSwitchOpen as RingSwitchOpen, RingSwitchVerify as RingSwitchVerify,
+    StackClaim as SlotClaim, StackedOpeningSummary as StackedOpeningSummary,
 };
-use ::pcs::stack_open_k::{open_batch_mixed_ligerito_stacked_k, verify_opening_batch_mixed_ligerito_stacked_k};
+use ::pcs::stack_open::{open_batch_mixed_ligerito_stacked, verify_opening_batch_mixed_ligerito_stacked};
 
 /// The bit-packing width of `q_pkd` (`2^6` bits per committed `F64` word); only
 /// bookkeeping here, since the K configs take the witness log-size directly.
-pub const LOG_PACKING: usize = ::pcs::pack_k::LOG_PACKING_K;
+pub const LOG_PACKING: usize = ::pcs::pack::LOG_PACKING;
 /// Row-batch lanes `2^LOG_BATCH`: the Merkle leaf width (`2^LOG_BATCH` F64
 /// = 512 bytes/leaf) IS Ligerito's INITIAL folding factor — the L0 commit is
 /// reused, so the two are one knob ([`::pcs::ligerito::INITIAL_FOLDING_FACTOR`]).
@@ -44,7 +44,7 @@ const _: () = assert!(::pcs::ligerito::SECURITY_BITS == crate::SECURITY_BITS as 
 /// this floor (256 KB of F64 — negligible; real workloads are far above it).
 pub const MIN_MU: usize = 15;
 
-/// The Ligerito-K (prover, verifier) config pair for a `2^μ`-word witness,
+/// The Ligerito (prover, verifier) config pair for a `2^μ`-word witness,
 /// derived from the security analysis and memoized per `(μ, log_inv_rate)`.
 fn lig_configs(mu: usize, log_inv_rate: usize) -> std::sync::Arc<(ProverConfig, VerifierConfig)> {
     use std::collections::HashMap;
@@ -58,8 +58,8 @@ fn lig_configs(mu: usize, log_inv_rate: usize) -> std::sync::Arc<(ProverConfig, 
             mu >= MIN_MU,
             "witness must be ≥ 2^{MIN_MU} elements (padded by placements_of)"
         );
-        let pair = k_configs_for_rate(mu, log_inv_rate).unwrap_or_else(|e| {
-            panic!("ligerito K config for mu={mu}, log_inv_rate={log_inv_rate}: {e}")
+        let pair = configs_for_rate(mu, log_inv_rate).unwrap_or_else(|e| {
+            panic!("ligerito config for mu={mu}, log_inv_rate={log_inv_rate}: {e}")
         });
         Arc::new(pair)
     }))
@@ -69,11 +69,11 @@ fn lig_configs(mu: usize, log_inv_rate: usize) -> std::sync::Arc<(ProverConfig, 
 /// itself is not retained (the caller still owns it and passes it back to
 /// [`open`]), so committing costs no extra full-trace copy.
 pub struct Committed {
-    pub commitment: CommitmentK,
+    pub commitment: Commitment,
     /// Codeword + Merkle tree retained for opening. Public so the single stacked
-    /// Ligerito-K opening (which also discharges flock's `(ab, c)` claims over
+    /// Ligerito opening (which also discharges flock's `(ab, c)` claims over
     /// this same commitment, §blake3_flock) can reuse it.
-    pub prover_data: ProverDataK,
+    pub prover_data: ProverData,
     /// `log2` of the witness length in F64 words.
     pub mu: usize,
     /// L0 inverse-rate logarithm bound into the transcript before this commitment.
@@ -96,7 +96,7 @@ pub fn commit(ps: &mut ProverState, witness: &[F64], log_inv_rate: usize) -> Com
         mu >= MIN_MU,
         "witness must be ≥ 2^{MIN_MU} elements (padded by placements_of)"
     );
-    let (commitment, prover_data) = commit_k(witness, LOG_BATCH, log_inv_rate);
+    let (commitment, prover_data) = ligerito_commit(witness, LOG_BATCH, log_inv_rate);
     ps.add_scalars(&root_to_scalars(&commitment.root));
     Committed {
         commitment,
@@ -138,7 +138,7 @@ pub fn read_commitment(vs: &mut VerifierState) -> Result<[u8; 32], crate::transc
 
 /// Open the committed witness: discharge the `points` (leanVM's bus / constraint /
 /// public-input claims, as block-sparse slot evaluations) AND flock's
-/// ring-switched BLAKE3 `(ab, c)` validity (`ring`) in ONE stacked Ligerito-K.
+/// ring-switched BLAKE3 `(ab, c)` validity (`ring`) in ONE stacked Ligerito.
 /// The points become the opener's `point_claims`; the returned proof is placed
 /// on the `openings` hint channel by the caller (`ps.hint_opening`), not on the
 /// scalar stream. The commitment root was already bound by [`commit`], and the
@@ -153,26 +153,26 @@ pub fn open(
     q: &[F64],
     points: &[SlotClaim],
     ring: &RingSwitchOpen,
-) -> BatchOpeningProofK {
+) -> BatchOpeningProof {
     debug_assert_eq!(q.len(), 1usize << c.mu, "witness length must match the commitment");
     let cfg = lig_configs(c.mu, c.log_inv_rate);
-    open_batch_mixed_ligerito_stacked_k(ps.sponge_mut(), q, &c.prover_data, &cfg.0, points, ring)
+    open_batch_mixed_ligerito_stacked(ps.sponge_mut(), q, &c.prover_data, &cfg.0, points, ring)
 }
 
 /// Verify the opening (mirror of [`open`]): flock's ring-switched `(ab, c)` claims
 /// and every `points` slot evaluation are checked together in the ONE stacked
-/// Ligerito-K against `root`. `open` is the transmitted proof, read off the
+/// Ligerito against `root`. `open` is the transmitted proof, read off the
 /// `openings` hint channel at its protocol point by the caller.
 pub fn verify(
     vs: &mut VerifierState,
     points: &[SlotClaim],
     ring: &RingSwitchVerify,
-    open: &BatchOpeningProofK,
+    open: &BatchOpeningProof,
     mu: usize,
     log_inv_rate: usize,
     root: &[u8; 32],
 ) -> Result<StackedOpeningSummary, Error> {
     let cfg = lig_configs(mu, log_inv_rate);
-    verify_opening_batch_mixed_ligerito_stacked_k(vs.sponge_mut(), &cfg.1, mu, root, points, ring, open)
+    verify_opening_batch_mixed_ligerito_stacked(vs.sponge_mut(), &cfg.1, mu, root, points, ring, open)
         .ok_or(Error::Ligerito)
 }

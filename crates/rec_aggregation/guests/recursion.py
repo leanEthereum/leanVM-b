@@ -110,7 +110,7 @@ LAGRANGE_INV_S = LAGRANGE_INV_S_PLACEHOLDER
 LINCHECK_ROUNDS = LINCHECK_ROUNDS_PLACEHOLDER
 PIN_COLUMN = PIN_COLUMN_PLACEHOLDER
 K_LOG = K_LOG_PLACEHOLDER
-SLOT_STRIDE_LOG = SLOT_STRIDE_LOG_PLACEHOLDER  # = K_LOG - LOG_PACKING_K (=8); the q_pkd slot stride
+SLOT_STRIDE_LOG = SLOT_STRIDE_LOG_PLACEHOLDER  # = K_LOG - LOG_PACKING (=8); the q_pkd slot stride
 # Phase E: the stacked mixed opening. The two ring-switch fronts
 # (claim check in-circuit; the tensor transpose + eval_rs_eq DEFERRED); the
 # gamma-combination of the two ring-switch claims and the N_CLAIMS pool claims.
@@ -1543,9 +1543,9 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, base_delta_pows, tower_delta_pows, g_
         lincheck_w += skip_nums[i] * LAGRANGE_INV_S[i] * z_partial[GEN ** i]
 
     # ---- stacked mixed opening: ring-switch fronts + claim combination ----
-    # The two ring-switch slices (ab, c) each carry PACKING = 2^LOG_PACKING_K = 64
+    # The two ring-switch slices (ab, c) each carry PACKING = 2^LOG_PACKING = 64
     # entries (one per packing bit) and live in the opening STRUCT
-    # (RingSwitchProofK), observed into the sponge HERE (never on the stream).
+    # (RingSwitchProof), observed into the sponge HERE (never on the stream).
     # Claim 0 (ab): value lincheck_w, z_skip = lincheck_z_skip. Claim 1 (c):
     # value c_eval, z_skip = zerocheck_z. (The 128->64 half-fold the prover does
     # in blake3_flock::ring_claim is already baked into the transmitted 64 values,

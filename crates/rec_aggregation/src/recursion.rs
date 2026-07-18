@@ -327,7 +327,7 @@ fn gen_agg(program: &Program, subs: &[SubDefer]) -> (Vec<(String, Vec<F192>)>, [
         .map(|d| d.zeta.iter().chain(&d.sb).copied().collect::<Vec<_>>())
         .collect();
     for (t, p) in points.iter().enumerate() {
-        let eqt = pcs::ligerito_k::build_eq_table_ext(p);
+        let eqt = pcs::ligerito::build_eq_table_ext(p);
         for (w, &e) in wt.iter_mut().zip(eqt.iter()) {
             *w += gbc[t] * e;
         }
@@ -434,7 +434,7 @@ fn gen_agg(program: &Program, subs: &[SubDefer]) -> (Vec<(String, Vec<F192>)>, [
             fold_lsb(m, r);
         }
     }
-    let eq_rstar = pcs::ligerito_k::build_eq_table_ext(&r_row);
+    let eq_rstar = pcs::ligerito::build_eq_table_ext(&r_row);
     let contract_rows = |m: &flock::r1cs::SparseBinaryMatrix| -> Vec<F192> {
         let mut out = vec![F192::ZERO; 1 << klog];
         for (i, row) in m.rows.iter().enumerate() {
@@ -476,8 +476,8 @@ fn gen_agg(program: &Program, subs: &[SubDefer]) -> (Vec<(String, Vec<F192>)>, [
     assert_eq!(mrun, v_a * wa[0] + v_b * wb[0], "matrix sumcheck terminal");
     // sanity for the GUEST's succinct terminal-weight formulas.
     {
-        let eqr = pcs::ligerito_k::build_eq_table_ext(&r_row[..6]);
-        let eqc = pcs::ligerito_k::build_eq_table_ext(&r_col[..6]);
+        let eqr = pcs::ligerito::build_eq_table_ext(&r_row[..6]);
+        let eqc = pcs::ligerito::build_eq_table_ext(&r_col[..6]);
         let (mut wam, mut wbm) = (F192::ZERO, F192::ZERO);
         for (t, d) in subs.iter().enumerate() {
             let lam = primitives::multilinear::lagrange_weights_naive(6, d.zz);
@@ -553,8 +553,8 @@ fn check_reduced(program: &Program, red: &ReducedClaims) -> Result<(), Recursive
     if red.r_m.len() != 2 * klog {
         return Err(RecursiveVerifyError::InvalidDeferredShape);
     }
-    let eq_r = pcs::ligerito_k::build_eq_table_ext(&red.r_m[..klog]);
-    let eq_c = pcs::ligerito_k::build_eq_table_ext(&red.r_m[klog..]);
+    let eq_r = pcs::ligerito::build_eq_table_ext(&red.r_m[..klog]);
+    let eq_c = pcs::ligerito::build_eq_table_ext(&red.r_m[klog..]);
     let (v_a, v_b) = flock::blake3::bilinear_walk_pair(&eq_r, &eq_c);
     if v_a != red.v_a {
         return Err(RecursiveVerifyError::MatrixAClaim);
@@ -811,7 +811,7 @@ fn gen_verify(
     let (mut lrows_flat, mut lpaths_flat): (Vec<F192>, Vec<F192>) = (Vec::new(), Vec::new());
     for lv in 0..nlev {
         let path_exp = if lv == 0 {
-            let (rows_exp, path_exp) = pcs::ligerito_k::expand_level_opening_base_k(
+            let (rows_exp, path_exp) = pcs::ligerito::expand_level_opening_base(
                 shapes.block_len[lv],
                 &positions[lv],
                 &lig.ligerito.initial_proof.opened_rows,
@@ -831,7 +831,7 @@ fn gen_verify(
             } else {
                 &lig.ligerito.recursive_proofs[lv - 1].opened_rows
             };
-            let (rows_exp, path_exp) = pcs::ligerito_k::expand_level_opening_ext_k(
+            let (rows_exp, path_exp) = pcs::ligerito::expand_level_opening_ext(
                 shapes.block_len[lv],
                 &positions[lv],
                 rows_ref,
@@ -943,7 +943,7 @@ fn gen_verify(
     let mut svk_flat = Vec::new();
     let mut ivk_flat = Vec::new();
     for &lmc_lv in lmc.iter().take(nlev) {
-        let s2 = pcs::ligerito_k::eval_sk_at_vks_k(lmc_lv);
+        let s2 = pcs::ligerito::eval_sk_at_vks(lmc_lv);
         for &v in &s2 {
             svk_flat.push(F192::new(v.0, 0, 0));
             ivk_flat.push(if v == F64::ZERO {
@@ -971,8 +971,8 @@ fn gen_verify(
         ("stream".to_string(), {
             let mut v = proof.stream.clone();
             // Append the Ligerito opening's msg-cursor sequence, in EXACT
-            // K-verifier order (see ligerito_k::recursive_verifier_with_basis_
-            // succinct_k): the interleaved raw grind nonces + observed scalars
+            // F64-verifier order (see ligerito::recursive_verifier_with_basis_
+            // succinct): the interleaved raw grind nonces + observed scalars
             // (start_msg, per-fold [grind-nonce?, msg u0/u2], level roots as two
             // hash_to_scalars, query-grind nonce, non-final intro msg, final yr).
             // The guest's open_stacked reads these via `msg_cursor = cursor`,
@@ -1062,7 +1062,7 @@ fn gen_verify(
         }),
         ("rs_shatv".to_string(), {
             // The ring-switch slices: each claim's 64-entry s_hat_v, observed from
-            // the opening STRUCT (RingSwitchProofK), not the stream. Order [ab, c].
+            // the opening STRUCT (RingSwitchProof), not the stream. Order [ab, c].
             let lig = &proof.openings[0];
             let mut v = Vec::new();
             for rsw in &lig.ring_switches {
@@ -1494,9 +1494,8 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         .expect("blake3 r1cs has a const pin");
     ps("PIN_COLUMN", pincol.to_string());
     ps("K_LOG", flock::blake3::K_LOG.to_string());
-    // The q_pkd Strided-claim slot stride: K_LOG - LOG_PACKING_K. Coincided with
-    // LOG2_FIELD_BITS (7) under extension-field packing; with K=F64 packing (LOG_PACKING_K=6)
-    // it is now 8, so the qpkd point-claim slot must use THIS, not LOG2_FIELD_BITS.
+    // The q_pkd Strided-claim slot stride is K_LOG - LOG_PACKING (= 8), so the
+    // qpkd point-claim slot must use THIS, not LOG2_FIELD_BITS.
     ps("SLOT_STRIDE_LOG", lean_vm::blake3_flock::SLOT_STRIDE_LOG.to_string());
 
     // ---- LIG candidate tables (fixed [minm, maxm] range; open_stacked config) ----
@@ -1541,7 +1540,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         let mut c_svk = Vec::new();
         let mut c_ivk = Vec::new();
         for &cl_lv in cl.iter().take(cn) {
-            for &v in &pcs::ligerito_k::eval_sk_at_vks_k(cl_lv) {
+            for &v in &pcs::ligerito::eval_sk_at_vks(cl_lv) {
                 c_svk.push(F192::new(v.0, 0, 0));
                 c_ivk.push(if v == F64::ZERO {
                     F192::ZERO
@@ -1784,7 +1783,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     );
     ps("TRANSCRIPT_SEED_0_TOP", label_state[0].c2.to_string());
     ps("TRANSCRIPT_SEED_1", u(label_state[1]).to_string());
-    let trace_dual = pcs::ring_switch_k::trace_dual_basis_k();
+    let trace_dual = pcs::ring_switch::trace_dual_basis();
     let trace_dual_base: [F192; 64] = trace_dual[..64]
         .try_into()
         .expect("trace-dual base slice has length 64");

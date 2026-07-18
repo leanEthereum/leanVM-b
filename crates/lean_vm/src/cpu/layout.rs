@@ -21,7 +21,7 @@ pub const BFCNT: usize = 4; // per-pc bytecode execution count, g^{A[pc]}
 // SOLE copy of the input/output words: the VM's BLAKE3 value columns are
 // virtual and their memory-bus claims route to `q_pkd` slots (§blake3_flock), so
 // nothing duplicates them. flock's R1CS validity is discharged by the single
-// stacked Ligerito-K opening over this commitment.
+// stacked Ligerito opening over this commitment.
 pub const QPKD: usize = 5;
 pub const N_SHARED: usize = 6;
 

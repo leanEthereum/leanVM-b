@@ -59,7 +59,7 @@ fn challenge_vector(m: usize, mut sample_vec: impl FnMut(usize) -> Vec<F192>) ->
 /// from a chunk of all-zero bits are themselves zero, so we can skip those
 /// chunks and produce byte-identical output.
 ///
-pub use pcs::pack_k::PaddingSpec;
+pub use pcs::pack::PaddingSpec;
 
 // ---------------------------------------------------------------------------
 // Public types: claim, proof, error.

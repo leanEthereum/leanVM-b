@@ -1,39 +1,40 @@
 // Credit: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
-//! Stacked batch-mixed opening for the K-committed PCS (64-bit transition).
+//! Stacked batch-mixed opening for the F64-committed PCS.
 //!
 //! The committed witness is a stack of `2^log_n` [`F64`] words (committed via
-//! [`super::ligerito_k::commit_k`]), and one Ligerito-K run discharges
+//! [`super::ligerito::commit`]), and one Ligerito run discharges
 //!
-//! - **point claims** ([`StackClaimK`]): plain multilinear evaluations of
+//! - **point claims** ([`StackClaim`]): plain multilinear evaluations of
 //!   aligned sub-slices of the stack (a `Point` claim's weight is
 //!   `eq(low_point, .)` supported on `[offset, offset + 2^|low_point|)`; a
 //!   `Strided` claim freezes the low `stride_log` in-block coords to `slot`'s
 //!   bits, so its weight is nonzero only at `offset + slot + j * 2^stride_log`),
-//! - **ring-switched claims** ([`RingSwitchOpenK`]): bit-MLE evaluation claims
+//! - **ring-switched claims** ([`RingSwitchOpen`]): bit-MLE evaluation claims
 //!   on the packed sub-block `q_pkd = stack[offset .. offset + 2^qpkd_vars]`,
-//!   reduced per claim by [`super::ring_switch_k::prove`] to an inner-product
+//!   reduced per claim by [`super::ring_switch::prove_observe`] and the
+//!   deferred finish path to an inner-product
 //!   claim `<q_pkd, rs_eq_ind> = sumcheck_claim` against the transparent
 //!   E-valued weight `rs_eq_ind`.
 //!
 //! All claims are gamma-folded into ONE combined weight `b_stack` over the
 //! whole stack plus one `target`, then proved by
-//! [`super::ligerito_k::recursive_prover_with_basis_k`]. The verifier replays
-//! the ring-switch reductions succinctly ([`super::ring_switch_k::verify_succinct`],
-//! no dense `rs_eq_ind`) and drives
-//! [`super::ligerito_k::recursive_verifier_with_basis_succinct_k`] with a
+//! [`super::ligerito::recursive_prover_with_basis`]. The verifier replays
+//! the ring-switch reductions succinctly ([`super::ring_switch::verify_observe`]
+//! and [`super::ring_switch::verify_finish`], with no dense `rs_eq_ind`) and drives
+//! [`super::ligerito::recursive_verifier_with_basis_succinct`] with a
 //! residual evaluator that reconstructs `MLE(b_stack)` at each residual point
 //! in closed form: eq / stride-selector products for the point claims, and the
 //! DP24 tensor-algebra prefix + binary-suffix finish
-//! ([`super::ring_switch_k::eval_rs_eq_prefix_k`] /
-//! [`super::ring_switch_k::eval_rs_eq_finish_from_prefix_binary_q_k`]) for the
+//! ([`super::ring_switch::eval_rs_eq_prefix`] /
+//! [`super::ring_switch::eval_rs_eq_finish_from_prefix_binary_q`]) for the
 //! ring-switched part.
 //!
 //! ## Transcript order (identical on both sides)
 //!
-//! label -> per ring-switched claim ([`super::ring_switch_k`]'s own label +
+//! label -> per ring-switched claim ([`super::ring_switch`]'s own label +
 //! `s_hat_v_i` observed + shared `rho` sampled) -> gamma_rs (one per claim) ->
 //! per point claim (label + value observed) -> gamma_pd (one per claim) ->
-//! Ligerito-K, with domain-separated labels for every phase.
+//! Ligerito, with domain-separated labels for every phase.
 //!
 //! ## The combined weight
 //!
@@ -57,16 +58,16 @@ use primitives::field::{F64, F192};
 use serde::{Deserialize, Serialize};
 
 use super::ligerito::{ProverConfig, VerifierConfig};
-use super::ligerito_k::{
-    LigeritoProofK, ProverDataK, build_eq_table_ext, build_eq_table_ext_seeded_into, recursive_prover_with_basis_k,
-    recursive_verifier_with_basis_succinct_k_with_squeezes,
+use super::ligerito::{
+    LigeritoProof, ProverData, build_eq_table_ext, build_eq_table_ext_seeded_into, recursive_prover_with_basis,
+    recursive_verifier_with_basis_succinct_with_squeezes,
 };
-use super::pack_k::PACKING_WIDTH_K;
-use super::ring_switch_k::{self, RingSwitchProofK, eval_rs_eq_finish_from_prefix_binary_q_k, eval_rs_eq_prefix_k};
-use super::tensor_algebra_k::TensorAlgebraE;
+use super::pack::PACKING_WIDTH;
+use super::ring_switch::{self, RingSwitchProof, eval_rs_eq_finish_from_prefix_binary_q, eval_rs_eq_prefix};
+use super::tensor_algebra::TensorAlgebraE;
 
 // ---------------------------------------------------------------------------
-// Sponge helpers (same convention as ligerito_k): E-scalars straight off
+// Sponge helpers (same convention as ligerito): E-scalars straight off
 // the shared Fiat-Shamir sponge.
 // Sponge scalars ARE E-elements; the helpers keep call sites uniform. Every
 // 24-byte pattern is a valid F192, and observing ferries all three limbs
@@ -97,11 +98,9 @@ fn eq_eval_ext(r: &[F192], x: &[F192]) -> F192 {
 // Claim types
 // ---------------------------------------------------------------------------
 
-/// A point claim folded into the stacked mixed opening. K analog of the extension-field
-/// [`super::StackClaim`] (owning variant, mirroring the main crate's
-/// `SlotClaim` shape).
+/// An owning point claim folded into the stacked mixed opening.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum StackClaimK {
+pub enum StackClaim {
     /// `eq(low_point, .)` on the aligned slice
     /// `[offset, offset + 2^|low_point|)`; `offset` must be a multiple of
     /// `2^|low_point|`.
@@ -126,11 +125,11 @@ pub enum StackClaimK {
     },
 }
 
-impl StackClaimK {
+impl StackClaim {
     #[inline]
     pub fn value(&self) -> F192 {
         match self {
-            StackClaimK::Point { value, .. } | StackClaimK::Strided { value, .. } => *value,
+            StackClaim::Point { value, .. } | StackClaim::Strided { value, .. } => *value,
         }
     }
 }
@@ -138,18 +137,18 @@ impl StackClaimK {
 /// One ring-switched evaluation claim on the q_pkd sub-block: the consumed
 /// claim is `value == sum_i prefix_weights[i] * s_hat_v[i]` where `s_hat_v`
 /// are the 64 bit-slice MLEs of q_pkd at `suffix_point` (see
-/// [`super::ring_switch_k`]). `prefix_weights` has [`PACKING_WIDTH_K`] = 64
-/// entries ([`super::ring_switch_k::eq_prefix_weights`] for a plain point
+/// [`super::ring_switch`]). `prefix_weights` has [`PACKING_WIDTH`] = 64
+/// entries ([`super::ring_switch::eq_prefix_weights`] for a plain point
 /// claim; phi_8 Lagrange weights for flock's
 /// univariate-skip claim); `suffix_point` has `qpkd_vars` coords.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RingSwitchClaimK {
+pub struct RingSwitchClaim {
     pub prefix_weights: Vec<F192>,
     pub suffix_point: Vec<F192>,
     pub value: F192,
     /// Prover-side optional precomputed `s_hat_v` (the 64 bit-slice MLE
     /// values at `suffix_point`, e.g. captured inside flock's reduction).
-    /// When present, [`super::ring_switch_k::prove`] skips its
+    /// When present, [`super::ring_switch::prove_observe`] skips its
     /// `fold_1b_rows` recomputation; the values are checked against the
     /// claim (`claim_check`) and the transcript is identical either way.
     /// Verifier-side bundles leave it `None`.
@@ -157,54 +156,49 @@ pub struct RingSwitchClaimK {
 }
 
 /// Prover-side bundle of the ring-switched claims discharged in the same
-/// stacked opening as the [`StackClaimK`]s. K analog of the main crate's
-/// `RingSwitchOpen`; each claim may carry its precomputed `s_hat_v`.
+/// stacked opening as the [`StackClaim`]s. Each claim may carry its
+/// precomputed `s_hat_v`.
 #[derive(Clone, Debug)]
-pub struct RingSwitchOpenK {
+pub struct RingSwitchOpen {
     /// q_pkd's offset inside the committed stack; must be a multiple of
     /// `2^qpkd_vars` (an aligned slice).
     pub offset: usize,
     /// log2 of q_pkd's length in F64 words; the opener slices
     /// `q_pkd = stack[offset .. offset + 2^qpkd_vars]` (no separate copy).
     pub qpkd_vars: usize,
-    pub claims: Vec<RingSwitchClaimK>,
+    pub claims: Vec<RingSwitchClaim>,
 }
 
-/// Verifier counterpart of [`RingSwitchOpenK`]: identical statement data
-/// (the proof travels separately as [`BatchOpeningProofK`]).
+/// Verifier counterpart of [`RingSwitchOpen`]: identical statement data
+/// (the proof travels separately as [`BatchOpeningProof`]).
 #[derive(Clone, Debug)]
-pub struct RingSwitchVerifyK {
+pub struct RingSwitchVerify {
     /// q_pkd's offset inside the committed stack.
     pub offset: usize,
     /// log2 of q_pkd's length in F64 words.
     pub qpkd_vars: usize,
-    pub claims: Vec<RingSwitchClaimK>,
+    pub claims: Vec<RingSwitchClaim>,
 }
 
 /// Batched stacked opening proof: one ring-switch message per ring-switched
-/// claim plus ONE Ligerito-K proof over the combined claim. K analog of
-/// [`super::BatchOpeningProofLigerito`].
+/// claim plus one Ligerito proof over the combined claim.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BatchOpeningProofK {
-    pub ring_switches: Vec<RingSwitchProofK>,
-    pub ligerito: LigeritoProofK,
+pub struct BatchOpeningProof {
+    pub ring_switches: Vec<RingSwitchProof>,
+    pub ligerito: LigeritoProof,
 }
 
-/// What the K stacked-opening verifier hands back on accept — the recursion
-/// harness's hook for the Ligerito fold/query data (mirror of the extension-field
-/// `StackedOpeningSummary`). The K verifier does not yet surface its query
-/// squeezes (the sampler rejection-samples and discards the raw words);
-/// porting the recursion guest to the 64-bit field fills this in.
+/// What the stacked-opening verifier hands back on accept—the recursion
+/// harness's hook for the Ligerito fold/query data.
 #[derive(Clone, Debug, Default)]
-pub struct StackedOpeningSummaryK {
-    pub lig: LigVerifierSummaryK,
+pub struct StackedOpeningSummary {
+    pub lig: LigVerifierSummary,
 }
 
-/// See [`StackedOpeningSummaryK`].
+/// See [`StackedOpeningSummary`].
 #[derive(Clone, Debug, Default)]
-pub struct LigVerifierSummaryK {
+pub struct LigVerifierSummary {
     /// The raw query-sampling squeezes, per level in transcript order.
-    /// EMPTY until the K verifier surfaces them (recursion-guest port).
     pub query_squeezes: Vec<Vec<F192>>,
 }
 
@@ -227,7 +221,7 @@ pub struct LigVerifierSummaryK {
 /// and the serial/parallel splits are exact-field/order-preserving, so
 /// `b_stack`'s bytes (and hence the proof) are unchanged relative to the
 /// build-then-multiply form.
-fn fold_stacked_point_claims_k(b_stack: &mut [F192], target: &mut F192, claims: &[StackClaimK], gammas: &[F192]) {
+fn fold_stacked_point_claims(b_stack: &mut [F192], target: &mut F192, claims: &[StackClaim], gammas: &[F192]) {
     use rayon::prelude::*;
     const PAR_FOLD_THRESHOLD: usize = 1 << 14;
     // One reusable eq scratch sized to the largest Point claim: a fresh
@@ -237,8 +231,8 @@ fn fold_stacked_point_claims_k(b_stack: &mut [F192], target: &mut F192, claims: 
     let max_len = claims
         .iter()
         .map(|c| match c {
-            StackClaimK::Point { low_point, .. } => 1usize << low_point.len(),
-            StackClaimK::Strided { .. } => 0,
+            StackClaim::Point { low_point, .. } => 1usize << low_point.len(),
+            StackClaim::Strided { .. } => 0,
         })
         .max()
         .unwrap_or(0);
@@ -246,7 +240,7 @@ fn fold_stacked_point_claims_k(b_stack: &mut [F192], target: &mut F192, claims: 
     for (claim, g) in claims.iter().zip(gammas.iter()) {
         let g = *g;
         match claim {
-            StackClaimK::Point {
+            StackClaim::Point {
                 offset,
                 low_point,
                 value,
@@ -254,7 +248,7 @@ fn fold_stacked_point_claims_k(b_stack: &mut [F192], target: &mut F192, claims: 
                 let len = 1usize << low_point.len();
                 assert!(
                     offset % len == 0,
-                    "StackClaimK::Point: offset must be 2^|low_point|-aligned"
+                    "StackClaim::Point: offset must be 2^|low_point|-aligned"
                 );
                 build_eq_table_ext_seeded_into(low_point, g, &mut scratch[..len]);
                 let eq = &scratch[..len];
@@ -268,7 +262,7 @@ fn fold_stacked_point_claims_k(b_stack: &mut [F192], target: &mut F192, claims: 
                 }
                 *target += g * *value;
             }
-            StackClaimK::Strided {
+            StackClaim::Strided {
                 offset,
                 slot,
                 stride_log,
@@ -281,10 +275,10 @@ fn fold_stacked_point_claims_k(b_stack: &mut [F192], target: &mut F192, claims: 
                 // low_point = slot_bits ++ point, at ~2^stride_log x less work.
                 let stride = 1usize << stride_log;
                 let block = 1usize << (stride_log + point.len());
-                assert!(*slot < stride, "StackClaimK::Strided: slot must fit the stride");
+                assert!(*slot < stride, "StackClaim::Strided: slot must fit the stride");
                 assert!(
                     offset % block == 0,
-                    "StackClaimK::Strided: offset must be 2^(stride_log + |point|)-aligned"
+                    "StackClaim::Strided: offset must be 2^(stride_log + |point|)-aligned"
                 );
                 let base = *offset + *slot;
                 let eq = build_eq_table_ext(point);
@@ -301,9 +295,9 @@ fn fold_stacked_point_claims_k(b_stack: &mut [F192], target: &mut F192, claims: 
 /// the full stack cube. A `Point`'s full point is `[low_point, sel_bits]`, a
 /// `Strided`'s is `[slot_bits, point, sel_bits]`; neither is materialized.
 /// Mirror of the extension-field `stack_claim_eq_at`.
-fn stack_claim_eq_at_k(claim: &StackClaimK, x: &[F192]) -> F192 {
+fn stack_claim_eq_at(claim: &StackClaim, x: &[F192]) -> F192 {
     match claim {
-        StackClaimK::Point { offset, low_point, .. } => {
+        StackClaim::Point { offset, low_point, .. } => {
             let n = low_point.len();
             let mut e = eq_eval_ext(low_point, &x[..n]);
             let sel = offset >> n;
@@ -312,7 +306,7 @@ fn stack_claim_eq_at_k(claim: &StackClaimK, x: &[F192]) -> F192 {
             }
             e
         }
-        StackClaimK::Strided {
+        StackClaim::Strided {
             offset,
             slot,
             stride_log,
@@ -338,23 +332,22 @@ fn stack_claim_eq_at_k(claim: &StackClaimK, x: &[F192]) -> F192 {
 // Prover
 // ---------------------------------------------------------------------------
 
-/// Open the committed K-stack: discharge every `point_claims` slice
-/// evaluation AND the ring-switched q_pkd claims (`ring`) in ONE Ligerito-K
-/// run, reusing the caller's [`super::ligerito_k::commit_k`] output as L0.
-/// K analog of [`super::open_batch_mixed_ligerito_stacked`].
+/// Open the committed `F64` stack: discharge every `point_claims` slice
+/// evaluation AND the ring-switched q_pkd claims (`ring`) in ONE Ligerito
+/// run, reusing the caller's [`super::ligerito::commit`] output as L0.
 ///
 /// `stack` is the committed message (the caller retains it; it is not stored
-/// in [`ProverDataK`]); `config.initial_k` / `config.log_inv_rates[0]` must
+/// in [`ProverData`]); `config.initial_k` / `config.log_inv_rates[0]` must
 /// match the commit's `log_batch_size` / `log_inv_rate` (enforced by shape
 /// asserts inside the Ligerito prover).
-pub fn open_batch_mixed_ligerito_stacked_k(
+pub fn open_batch_mixed_ligerito_stacked(
     sponge: &mut Sponge,
     stack: &[F64],
-    prover_data: &ProverDataK,
+    prover_data: &ProverData,
     config: &ProverConfig,
-    point_claims: &[StackClaimK],
-    ring: &RingSwitchOpenK,
-) -> BatchOpeningProofK {
+    point_claims: &[StackClaim],
+    ring: &RingSwitchOpen,
+) -> BatchOpeningProof {
     let qpkd_len = 1usize << ring.qpkd_vars;
     assert!(
         ring.offset.is_multiple_of(qpkd_len),
@@ -366,11 +359,11 @@ pub fn open_batch_mixed_ligerito_stacked_k(
     );
     assert!(
         !ring.claims.is_empty(),
-        "stacked K opening carries at least one ring-switched claim"
+        "stacked PCS opening carries at least one ring-switched claim"
     );
-    // Optional phase timing, answering to the same env var as the Ligerito-K
+    // Optional phase timing, answering to the same env var as the Ligerito
     // prover/commit tracing (one env lookup per open, no work when unset).
-    let trace = std::env::var_os("LIG_K_TRACE").is_some();
+    let trace = std::env::var_os("LIGERITO_TRACE").is_some();
     let mut t = std::time::Instant::now();
     let mark = |label: &str, t: &mut std::time::Instant| {
         if trace {
@@ -391,7 +384,7 @@ pub fn open_batch_mixed_ligerito_stacked_k(
             ring.qpkd_vars,
             "ring-switch suffix point must have qpkd_vars coords"
         );
-        let (proof, state) = ring_switch_k::prove_observe(
+        let (proof, state) = ring_switch::prove_observe(
             qpkd,
             &claim.prefix_weights,
             &claim.suffix_point,
@@ -403,14 +396,14 @@ pub fn open_batch_mixed_ligerito_stacked_k(
         rs_states.push(state);
     }
     let rho = sponge.sample();
-    let coordinate_weights = ring_switch_k::build_coordinate_weights(rho);
+    let coordinate_weights = ring_switch::build_coordinate_weights(rho);
     // Per-claim batching gammas, sampled AFTER all ring-switch messages are
     // bound (mirror of the extension-field layer's gamma_rs pattern).
     let gammas_rs = sample_ext_vec(sponge, ring.claims.len());
     let rs_outputs: Vec<_> = rs_states
         .into_iter()
         .zip(gammas_rs)
-        .map(|(state, gamma)| ring_switch_k::prove_finish_deferred(state, &coordinate_weights, gamma))
+        .map(|(state, gamma)| ring_switch::prove_finish_deferred(state, &coordinate_weights, gamma))
         .collect();
     mark("ring-switch proves", &mut t);
 
@@ -438,14 +431,14 @@ pub fn open_batch_mixed_ligerito_stacked_k(
             .for_each(|chunk| chunk.fill(F192::ZERO));
     }
     mark("b_stack zero fill", &mut t);
-    ring_switch_k::combine_deferred_into(&rs_outputs, &mut b_stack[ring.offset..ring.offset + qpkd_len]);
+    ring_switch::combine_deferred_into(&rs_outputs, &mut b_stack[ring.offset..ring.offset + qpkd_len]);
     mark("rs_eq_ind scatter", &mut t);
-    fold_stacked_point_claims_k(&mut b_stack, &mut target, point_claims, &gammas_pd);
+    fold_stacked_point_claims(&mut b_stack, &mut target, point_claims, &gammas_pd);
     mark("point-claim folds", &mut t);
 
-    // 4. One Ligerito-K over the full stack against the combined claim (the
+    // 4. One Ligerito over the full stack against the combined claim (the
     //    stack is borrowed by the prover; no copy).
-    let ligerito = recursive_prover_with_basis_k(
+    let ligerito = recursive_prover_with_basis(
         config,
         stack,
         b_stack,
@@ -454,7 +447,7 @@ pub fn open_batch_mixed_ligerito_stacked_k(
         &prover_data.merkle_tree,
         sponge,
     );
-    BatchOpeningProofK {
+    BatchOpeningProof {
         ring_switches: rs_proofs,
         ligerito,
     }
@@ -464,11 +457,11 @@ pub fn open_batch_mixed_ligerito_stacked_k(
 // Verifier
 // ---------------------------------------------------------------------------
 
-/// Verifier mirror of [`open_batch_mixed_ligerito_stacked_k`]: replay the
+/// Verifier mirror of [`open_batch_mixed_ligerito_stacked`]: replay the
 /// ring-switch reductions succinctly, recompute the combined target, then
-/// drive the succinct Ligerito-K verifier with a residual evaluator for the
+/// drive the succinct Ligerito verifier with a residual evaluator for the
 /// lifted weight. `log_n` is the committed stack's log size in F64 words and
-/// `root` the L0 commitment root ([`super::ligerito_k::CommitmentK::root`]).
+/// `root` the L0 commitment root ([`super::ligerito::Commitment::root`]).
 ///
 /// Residual evaluator: at each residual point `x = ris ++ y_bits` the
 /// ring-switch part is `eq(sel, x_hi) * sum_i gamma_i * MLE(rs_eq_ind_i)(x_lo)`
@@ -478,16 +471,16 @@ pub fn open_batch_mixed_ligerito_stacked_k(
 /// bits are binary, so they contribute an exact indicator (only matching `y`
 /// positions get a nonzero ring-switch part, which also caps the number of
 /// tensor finishes at `2^(qpkd coords covered by y)`). Point-claim weights
-/// are evaluated per position in closed form via [`stack_claim_eq_at_k`].
-pub fn verify_opening_batch_mixed_ligerito_stacked_k(
+/// are evaluated per position in closed form via [`stack_claim_eq_at`].
+pub fn verify_opening_batch_mixed_ligerito_stacked(
     sponge: &mut Sponge,
     config: &VerifierConfig,
     log_n: usize,
     root: &Hash,
-    point_claims: &[StackClaimK],
-    ring: &RingSwitchVerifyK,
-    proof: &BatchOpeningProofK,
-) -> Option<StackedOpeningSummaryK> {
+    point_claims: &[StackClaim],
+    ring: &RingSwitchVerify,
+    proof: &BatchOpeningProof,
+) -> Option<StackedOpeningSummary> {
     let n_rs = ring.claims.len();
     let qpkd_vars = ring.qpkd_vars;
     // Caller (statement) invariants: panic on misuse, like the extension-field layer.
@@ -496,15 +489,15 @@ pub fn verify_opening_batch_mixed_ligerito_stacked_k(
         ring.offset.is_multiple_of(1usize << qpkd_vars),
         "q_pkd offset must be 2^qpkd_vars-aligned"
     );
-    assert!(n_rs > 0, "stacked K opening carries at least one ring-switched claim");
+    assert!(n_rs > 0, "stacked PCS opening carries at least one ring-switched claim");
     for claim in &ring.claims {
-        assert_eq!(claim.prefix_weights.len(), PACKING_WIDTH_K);
+        assert_eq!(claim.prefix_weights.len(), PACKING_WIDTH);
         assert_eq!(claim.suffix_point.len(), qpkd_vars);
     }
     // `proof` is attacker-controlled (deserialized): validate its shape and
     // reject rather than panicking (`verify_succinct` asserts the
     // s_hat_v length internally).
-    if proof.ring_switches.len() != n_rs || proof.ring_switches.iter().any(|rs| rs.s_hat_v.len() != PACKING_WIDTH_K) {
+    if proof.ring_switches.len() != n_rs || proof.ring_switches.iter().any(|rs| rs.s_hat_v.len() != PACKING_WIDTH) {
         return None;
     }
 
@@ -512,16 +505,16 @@ pub fn verify_opening_batch_mixed_ligerito_stacked_k(
     //    sample ONE shared rho, then finish each claim (mirrors the prover
     //    and the recursion guest).
     for (claim, rs_proof) in ring.claims.iter().zip(proof.ring_switches.iter()) {
-        if ring_switch_k::verify_observe(claim.value, &claim.prefix_weights, rs_proof, sponge).is_err() {
+        if ring_switch::verify_observe(claim.value, &claim.prefix_weights, rs_proof, sponge).is_err() {
             return None;
         }
     }
     let rho = sponge.sample();
-    let coordinate_weights = ring_switch_k::build_coordinate_weights(rho);
+    let coordinate_weights = ring_switch::build_coordinate_weights(rho);
     let rs_outputs: Vec<_> = proof
         .ring_switches
         .iter()
-        .map(|rs_proof| ring_switch_k::verify_finish(rs_proof, &coordinate_weights))
+        .map(|rs_proof| ring_switch::verify_finish(rs_proof, &coordinate_weights))
         .collect();
     let gammas_rs = sample_ext_vec(sponge, n_rs);
     let mut target = F192::ZERO;
@@ -555,7 +548,7 @@ pub fn verify_opening_batch_mixed_ligerito_stacked_k(
         let rs_prefixes: Vec<TensorAlgebraE> = ring
             .claims
             .iter()
-            .map(|c| eval_rs_eq_prefix_k(&c.suffix_point, &ris[..split]))
+            .map(|c| eval_rs_eq_prefix(&c.suffix_point, &ris[..split]))
             .collect();
 
         // Selector eq over the ris coords above the q_pkd slice (E-valued
@@ -596,7 +589,7 @@ pub fn verify_opening_batch_mixed_ligerito_stacked_k(
                         .zip(gammas_rs.iter().zip(rs_outputs.iter()))
                     {
                         rs_part += *g
-                            * eval_rs_eq_finish_from_prefix_binary_q_k(
+                            * eval_rs_eq_finish_from_prefix_binary_q(
                                 prefix,
                                 &claim.suffix_point[split..],
                                 y_low,
@@ -606,7 +599,7 @@ pub fn verify_opening_batch_mixed_ligerito_stacked_k(
                     acc = rs_part * sel_prefix;
                 }
                 for (claim, g) in point_claims.iter().zip(gammas_pd.iter()) {
-                    acc += *g * stack_claim_eq_at_k(claim, &x);
+                    acc += *g * stack_claim_eq_at(claim, &x);
                 }
                 acc
             })
@@ -614,7 +607,7 @@ pub fn verify_opening_batch_mixed_ligerito_stacked_k(
     };
 
     let mut query_squeezes: Vec<Vec<F192>> = Vec::new();
-    let ok = recursive_verifier_with_basis_succinct_k_with_squeezes(
+    let ok = recursive_verifier_with_basis_succinct_with_squeezes(
         config,
         &proof.ligerito,
         log_n,
@@ -624,8 +617,8 @@ pub fn verify_opening_batch_mixed_ligerito_stacked_k(
         sponge,
         &mut query_squeezes,
     );
-    ok.then_some(StackedOpeningSummaryK {
-        lig: LigVerifierSummaryK { query_squeezes },
+    ok.then_some(StackedOpeningSummary {
+        lig: LigVerifierSummary { query_squeezes },
     })
 }
 
@@ -637,9 +630,9 @@ pub fn verify_opening_batch_mixed_ligerito_stacked_k(
 mod tests {
     use super::*;
     use crate::ligerito::{default_config, default_verifier_config};
-    use crate::ligerito_k::{commit_k, inner_product_base_ext, k_configs_for};
-    use crate::pack_k::{LOG_PACKING_K, pack_witness_k};
-    use crate::ring_switch_k::{claim_check, eq_prefix_weights, fold_1b_rows_k};
+    use crate::ligerito::{commit, inner_product_base_ext, configs_for};
+    use crate::pack::{LOG_PACKING, pack_witness};
+    use crate::ring_switch::{claim_check, eq_prefix_weights, fold_1b_rows};
 
     fn splitmix64(state: &mut u64) -> u64 {
         *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
@@ -657,8 +650,8 @@ mod tests {
     /// Secure-profile derivation; fall back to the ad-hoc default_config
     /// shape below its feasibility floor (same fallback the sibling K test
     /// modules use).
-    fn configs_for(log_n: usize) -> (ProverConfig, VerifierConfig) {
-        match k_configs_for(log_n) {
+    fn test_configs_for(log_n: usize) -> (ProverConfig, VerifierConfig) {
+        match configs_for(log_n) {
             Ok(pv) => pv,
             Err(_) => {
                 let pc = default_config(log_n, 5, 1).unwrap();
@@ -668,19 +661,19 @@ mod tests {
         }
     }
 
-    const DOMAIN: &[u8] = b"stack-open-k-test";
+    const DOMAIN: &[u8] = b"stack-open-test";
 
     struct Instance {
         vc: VerifierConfig,
         log_n: usize,
         root: Hash,
-        point_claims: Vec<StackClaimK>,
-        ring: RingSwitchOpenK,
-        proof: BatchOpeningProofK,
+        point_claims: Vec<StackClaim>,
+        ring: RingSwitchOpen,
+        proof: BatchOpeningProof,
     }
 
     /// Synthetic stack of 2^14 F64 words: three aligned 2^12-word columns
-    /// plus a q_pkd region (a random bit-witness packed by pack_k) at the
+    /// plus a q_pkd region (a random bit-witness packed by pack) at the
     /// top slice, padded with random filler. Pool: one point claim per
     /// column at a random E point, one strided claim into q_pkd, one
     /// ring-switched claim with plain eq prefix weights.
@@ -700,23 +693,23 @@ mod tests {
 
         // Three random columns, the packed bit-witness region, then filler.
         let mut stack: Vec<F64> = (0..3 * col_len).map(|_| F64(splitmix64(&mut s))).collect();
-        let bits: Vec<bool> = (0..1usize << (qpkd_vars + LOG_PACKING_K))
+        let bits: Vec<bool> = (0..1usize << (qpkd_vars + LOG_PACKING))
             .map(|_| splitmix64(&mut s) & 1 == 1)
             .collect();
-        stack.extend(pack_witness_k(&bits, qpkd_vars + LOG_PACKING_K));
+        stack.extend(pack_witness(&bits, qpkd_vars + LOG_PACKING));
         while stack.len() < 1 << log_n {
             stack.push(F64(splitmix64(&mut s)));
         }
         assert_eq!(stack.len(), 1 << log_n);
 
         // One point claim per column, at a random E point.
-        let mut point_claims: Vec<StackClaimK> = (0..3)
+        let mut point_claims: Vec<StackClaim> = (0..3)
             .map(|c| {
                 let offset = c * col_len;
                 let low_point: Vec<F192> = (0..col_vars).map(|_| rand_ext(&mut s)).collect();
                 let eq = build_eq_table_ext(&low_point);
                 let value = inner_product_base_ext(&stack[offset..offset + col_len], &eq);
-                StackClaimK::Point {
+                StackClaim::Point {
                     offset,
                     low_point,
                     value,
@@ -735,7 +728,7 @@ mod tests {
             for (j, &ej) in eq.iter().enumerate() {
                 value += ej.mul_base(stack[qpkd_offset + slot + (j << stride_log)]);
             }
-            point_claims.push(StackClaimK::Strided {
+            point_claims.push(StackClaim::Strided {
                 offset: qpkd_offset,
                 slot,
                 stride_log,
@@ -746,15 +739,15 @@ mod tests {
 
         // One ring-switched claim on q_pkd (plain eq prefix weights).
         let qpkd = &stack[qpkd_offset..qpkd_offset + (1 << qpkd_vars)];
-        let r_prefix: Vec<F192> = (0..LOG_PACKING_K).map(|_| rand_ext(&mut s)).collect();
+        let r_prefix: Vec<F192> = (0..LOG_PACKING).map(|_| rand_ext(&mut s)).collect();
         let prefix_weights = eq_prefix_weights(&r_prefix);
         let suffix_point: Vec<F192> = (0..qpkd_vars).map(|_| rand_ext(&mut s)).collect();
-        let s_hat_v = fold_1b_rows_k(qpkd, &build_eq_table_ext(&suffix_point));
+        let s_hat_v = fold_1b_rows(qpkd, &build_eq_table_ext(&suffix_point));
         let value = claim_check(&prefix_weights, &s_hat_v);
-        let ring = RingSwitchOpenK {
+        let ring = RingSwitchOpen {
             offset: qpkd_offset,
             qpkd_vars,
-            claims: vec![RingSwitchClaimK {
+            claims: vec![RingSwitchClaim {
                 prefix_weights,
                 suffix_point,
                 value,
@@ -763,7 +756,7 @@ mod tests {
             }],
         };
 
-        let (pc, vc) = configs_for(log_n);
+        let (pc, vc) = test_configs_for(log_n);
         // Pin the intended residual regime: the residual cube must sit
         // entirely above the q_pkd coords, with at least one selector coord
         // covered by ris (the E-valued sel prefix) and the rest by y bits.
@@ -772,9 +765,9 @@ mod tests {
             qpkd_vars < log_n - yr_log_n,
             "test shape must keep the residual cube above q_pkd (yr_log_n = {yr_log_n})"
         );
-        let (cm, pd) = commit_k(&stack, pc.initial_k, pc.log_inv_rates[0]);
+        let (cm, pd) = commit(&stack, pc.initial_k, pc.log_inv_rates[0]);
         let mut ch = Sponge::new(DOMAIN, &[]);
-        let proof = open_batch_mixed_ligerito_stacked_k(&mut ch, &stack, &pd, &pc, &point_claims, &ring);
+        let proof = open_batch_mixed_ligerito_stacked(&mut ch, &stack, &pd, &pc, &point_claims, &ring);
 
         Instance {
             vc,
@@ -788,17 +781,17 @@ mod tests {
 
     fn verify_instance(
         inst: &Instance,
-        point_claims: &[StackClaimK],
-        ring_claims: &[RingSwitchClaimK],
-        proof: &BatchOpeningProofK,
+        point_claims: &[StackClaim],
+        ring_claims: &[RingSwitchClaim],
+        proof: &BatchOpeningProof,
     ) -> bool {
-        let ring = RingSwitchVerifyK {
+        let ring = RingSwitchVerify {
             offset: inst.ring.offset,
             qpkd_vars: inst.ring.qpkd_vars,
             claims: ring_claims.to_vec(),
         };
         let mut ch = Sponge::new(DOMAIN, &[]);
-        verify_opening_batch_mixed_ligerito_stacked_k(
+        verify_opening_batch_mixed_ligerito_stacked(
             &mut ch,
             &inst.vc,
             inst.log_n,
@@ -820,7 +813,7 @@ mod tests {
 
         // Wrong point-claim value (dense column claim).
         let mut bad_points = inst.point_claims.clone();
-        if let StackClaimK::Point { value, .. } = &mut bad_points[0] {
+        if let StackClaim::Point { value, .. } = &mut bad_points[0] {
             *value += F192::ONE;
         } else {
             unreachable!()
@@ -832,7 +825,7 @@ mod tests {
 
         // Wrong strided-claim value.
         let mut bad_points = inst.point_claims.clone();
-        if let StackClaimK::Strided { value, .. } = &mut bad_points[3] {
+        if let StackClaim::Strided { value, .. } = &mut bad_points[3] {
             *value += F192::ONE;
         } else {
             unreachable!()
@@ -905,17 +898,17 @@ mod tests {
         let mut s = 3u64;
 
         let mut stack: Vec<F64> = (0..1usize << 13).map(|_| F64(splitmix64(&mut s))).collect();
-        let bits: Vec<bool> = (0..1usize << (qpkd_vars + LOG_PACKING_K))
+        let bits: Vec<bool> = (0..1usize << (qpkd_vars + LOG_PACKING))
             .map(|_| splitmix64(&mut s) & 1 == 1)
             .collect();
-        stack.extend(pack_witness_k(&bits, qpkd_vars + LOG_PACKING_K));
+        stack.extend(pack_witness(&bits, qpkd_vars + LOG_PACKING));
         assert_eq!(stack.len(), 1 << log_n);
 
         // One point claim on the low column.
         let low_point: Vec<F192> = (0..12).map(|_| rand_ext(&mut s)).collect();
         let eq = build_eq_table_ext(&low_point);
         let value = inner_product_base_ext(&stack[..1 << 12], &eq);
-        let point_claims = vec![StackClaimK::Point {
+        let point_claims = vec![StackClaim::Point {
             offset: 0,
             low_point,
             value,
@@ -923,12 +916,12 @@ mod tests {
 
         // One ring-switched claim on the wide q_pkd.
         let qpkd = &stack[qpkd_offset..];
-        let r_prefix: Vec<F192> = (0..LOG_PACKING_K).map(|_| rand_ext(&mut s)).collect();
+        let r_prefix: Vec<F192> = (0..LOG_PACKING).map(|_| rand_ext(&mut s)).collect();
         let prefix_weights = eq_prefix_weights(&r_prefix);
         let suffix_point: Vec<F192> = (0..qpkd_vars).map(|_| rand_ext(&mut s)).collect();
-        let s_hat_v = fold_1b_rows_k(qpkd, &build_eq_table_ext(&suffix_point));
+        let s_hat_v = fold_1b_rows(qpkd, &build_eq_table_ext(&suffix_point));
         let rs_value = claim_check(&prefix_weights, &s_hat_v);
-        let claims = vec![RingSwitchClaimK {
+        let claims = vec![RingSwitchClaim {
             prefix_weights,
             suffix_point,
             value: rs_value,
@@ -946,23 +939,23 @@ mod tests {
             "test shape must exercise the crossing regime (yr_log_n = {yr_log_n})"
         );
 
-        let (cm, pd) = commit_k(&stack, pc.initial_k, pc.log_inv_rates[0]);
-        let ring = RingSwitchOpenK {
+        let (cm, pd) = commit(&stack, pc.initial_k, pc.log_inv_rates[0]);
+        let ring = RingSwitchOpen {
             offset: qpkd_offset,
             qpkd_vars,
             claims,
         };
         let mut ch = Sponge::new(DOMAIN, &[]);
-        let proof = open_batch_mixed_ligerito_stacked_k(&mut ch, &stack, &pd, &pc, &point_claims, &ring);
+        let proof = open_batch_mixed_ligerito_stacked(&mut ch, &stack, &pd, &pc, &point_claims, &ring);
 
-        let ring_v = RingSwitchVerifyK {
+        let ring_v = RingSwitchVerify {
             offset: qpkd_offset,
             qpkd_vars,
             claims: ring.claims.clone(),
         };
         let mut ch = Sponge::new(DOMAIN, &[]);
         assert!(
-            verify_opening_batch_mixed_ligerito_stacked_k(
+            verify_opening_batch_mixed_ligerito_stacked(
                 &mut ch,
                 &vc,
                 log_n,
@@ -980,7 +973,7 @@ mod tests {
         bad_ring.claims[0].value += F192::ONE;
         let mut ch = Sponge::new(DOMAIN, &[]);
         assert!(
-            verify_opening_batch_mixed_ligerito_stacked_k(
+            verify_opening_batch_mixed_ligerito_stacked(
                 &mut ch,
                 &vc,
                 log_n,

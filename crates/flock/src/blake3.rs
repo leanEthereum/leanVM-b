@@ -1431,7 +1431,7 @@ mod tests {
         use crate::lincheck::LincheckCircuit;
         let t = std::time::Instant::now();
         let marginal = csc.fold_alpha_batched(alpha, &u);
-        let form_csc = pcs::ring_switch_k::inner_product_ext(&marginal, &w);
+        let form_csc = pcs::ring_switch::inner_product_ext(&marginal, &w);
         let t_csc = t.elapsed();
         println!("CSC marginal fold + inner product: {t_csc:?}");
 
@@ -1824,8 +1824,8 @@ impl Blake3Setup {
             },
             value: zc_claim.c_eval,
         };
-        let s_hat_v_ab = if self.r1cs.k_log >= pcs::pack_k::LOG_PACKING_K {
-            Some(pcs::ring_switch_k::s_hat_v_from_z_vec(
+        let s_hat_v_ab = if self.r1cs.k_log >= pcs::pack::LOG_PACKING {
+            Some(pcs::ring_switch::s_hat_v_from_z_vec(
                 &z_vec_pre,
                 &lc_claim.r_inner_rest,
             ))

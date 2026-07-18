@@ -3,7 +3,7 @@
 //!
 //! The witness
 //! `z : {0,1}^m -> {0,1}` is laid out as a flat 2^m-length bool array, and
-//! packing groups the **first** `LOG_PACKING_K = 6` boolean coordinates into
+//! packing groups the **first** `LOG_PACKING = 6` boolean coordinates into
 //! one F_{2^64} element, leaving `2^(m-6)` packed words indexed by the
 //! remaining m-6 outer coords.
 //!
@@ -15,18 +15,18 @@
 //! polynomial-basis decomposition (bit i of the u64, little-endian).
 //!
 //! This matches the packing basis of the generalized ring-switching reduction
-//! ([`super::ring_switch_k`]): `s_hat_v[i]` is the MLE of the i-th bit-slice
+//! ([`super::ring_switch`]): `s_hat_v[i]` is the MLE of the i-th bit-slice
 //! of the witness, and the i-th bit-slice is exactly bit i of every word.
 
 use primitives::field::F64;
 
 /// `log_2` of the packing width. F_{2^64} holds 64 bits = 2^6.
-pub const LOG_PACKING_K: usize = 6;
+pub const LOG_PACKING: usize = 6;
 
 /// Packing width (number of bits per F_{2^64} element).
-pub const PACKING_WIDTH_K: usize = 1 << LOG_PACKING_K;
+pub const PACKING_WIDTH: usize = 1 << LOG_PACKING;
 
-/// Pack a Boolean witness `z` of length `2^m` into `2^(m - LOG_PACKING_K)`
+/// Pack a Boolean witness `z` of length `2^m` into `2^(m - LOG_PACKING)`
 /// F_{2^64} elements.
 ///
 /// See module docs for the layout convention.
@@ -34,15 +34,15 @@ pub const PACKING_WIDTH_K: usize = 1 << LOG_PACKING_K;
 /// # Panics
 ///
 /// - if `z.len() != 1 << m`
-/// - if `m < LOG_PACKING_K`
-pub fn pack_witness_k(z: &[bool], m: usize) -> Vec<F64> {
+/// - if `m < LOG_PACKING`
+pub fn pack_witness(z: &[bool], m: usize) -> Vec<F64> {
     use rayon::prelude::*;
     assert_eq!(z.len(), 1usize << m, "z length must be 2^m");
     assert!(
-        m >= LOG_PACKING_K,
-        "witness too small to pack: m = {m} < LOG_PACKING_K = {LOG_PACKING_K}",
+        m >= LOG_PACKING,
+        "witness too small to pack: m = {m} < LOG_PACKING = {LOG_PACKING}",
     );
-    let n_packed = 1usize << (m - LOG_PACKING_K);
+    let n_packed = 1usize << (m - LOG_PACKING);
 
     // `bool` is guaranteed 1 byte holding 0x00/0x01, so 8 bools read as one
     // little-endian u64 pack to an LSB-first byte with one multiply:
@@ -61,8 +61,8 @@ pub fn pack_witness_k(z: &[bool], m: usize) -> Vec<F64> {
         w
     }
     let one = |i_rest: usize| {
-        let base = i_rest << LOG_PACKING_K;
-        F64(pack64(&bytes[base..base + PACKING_WIDTH_K]))
+        let base = i_rest << LOG_PACKING;
+        F64(pack64(&bytes[base..base + PACKING_WIDTH]))
     };
     // Parallel for real witnesses; sequential below the dispatch-overhead
     // floor (tiny test instances).
@@ -73,17 +73,18 @@ pub fn pack_witness_k(z: &[bool], m: usize) -> Vec<F64> {
     }
 }
 
-/// Inverse of [`pack_witness_k`]: unpack F_{2^64} elements back to a Boolean
+/// Inverse of [`pack_witness`]: unpack F_{2^64} elements back to a Boolean
 /// witness of length `2^m`.
 ///
-/// Round-trips with [`pack_witness_k`] by construction.
-pub fn unpack_witness_k(packed: &[F64], m: usize) -> Vec<bool> {
-    let n_packed = 1usize << (m - LOG_PACKING_K);
-    assert_eq!(packed.len(), n_packed, "packed length must be 2^(m - LOG_PACKING_K)");
+/// Round-trips with [`pack_witness`] by construction.
+#[cfg(test)]
+pub fn unpack_witness(packed: &[F64], m: usize) -> Vec<bool> {
+    let n_packed = 1usize << (m - LOG_PACKING);
+    assert_eq!(packed.len(), n_packed, "packed length must be 2^(m - LOG_PACKING)");
     let mut out = vec![false; 1usize << m];
     for (i_rest, elem) in packed.iter().enumerate() {
-        let base = i_rest << LOG_PACKING_K;
-        for r in 0..PACKING_WIDTH_K {
+        let base = i_rest << LOG_PACKING;
+        for r in 0..PACKING_WIDTH {
             out[base | r] = (elem.0 >> r) & 1 == 1;
         }
     }
@@ -111,9 +112,9 @@ mod tests {
     fn roundtrip() {
         for (m, seed) in [(6usize, 1u64), (7, 2), (10, 3), (13, 4)] {
             let z = rand_bits(m, seed);
-            let packed = pack_witness_k(&z, m);
-            assert_eq!(packed.len(), 1 << (m - LOG_PACKING_K));
-            assert_eq!(unpack_witness_k(&packed, m), z, "roundtrip failed at m={m}");
+            let packed = pack_witness(&z, m);
+            assert_eq!(packed.len(), 1 << (m - LOG_PACKING));
+            assert_eq!(unpack_witness(&packed, m), z, "roundtrip failed at m={m}");
         }
     }
 
@@ -122,12 +123,12 @@ mod tests {
     fn bit_layout() {
         let m = 9;
         let z = rand_bits(m, 5);
-        let packed = pack_witness_k(&z, m);
+        let packed = pack_witness(&z, m);
         for i_rest in 0..packed.len() {
-            for i in 0..PACKING_WIDTH_K {
+            for i in 0..PACKING_WIDTH {
                 assert_eq!(
                     (packed[i_rest].0 >> i) & 1 == 1,
-                    z[(i_rest << LOG_PACKING_K) | i],
+                    z[(i_rest << LOG_PACKING) | i],
                     "bit ({i_rest}, {i}) disagrees with the flat layout"
                 );
             }

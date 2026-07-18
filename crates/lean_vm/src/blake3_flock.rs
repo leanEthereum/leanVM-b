@@ -1,13 +1,13 @@
 //! Bridge to the flock BLAKE3 prover ([`flock::blake3`]), single-PCS.
 //!
 //! `q_pkd` (flock's packed BLAKE3 witness, 64 bits per `F64` word) is committed
-//! as a column in leanVM-b's ONE stacked `K`-witness (§3.1) — no separate flock
+//! as a column in leanVM-b's ONE stacked `F64` witness (§3.1) — no separate flock
 //! commitment. The VM's `BLAKE3` table binds to it by point-eval equality (its
 //! value columns and `q_pkd`'s slots are point-evals of the same committed
-//! stack), and flock's R1CS validity is discharged by the same stacked Ligerito-K:
+//! stack), and flock's R1CS validity is discharged by the same stacked Ligerito:
 //! the reduction's two tower-field claims pass through
 //! [`ring_switch_open`] / [`ring_switch_verify`] and join the batch-mixed
-//! opening ([`::pcs::stack_open_k`]).
+//! opening ([`::pcs::stack_open`]).
 //!
 //! ## The mapping
 //!
@@ -31,7 +31,7 @@
 //! per-block matrices (constant rows), so no claims are needed to pin them.
 
 use crate::transcript::{ProverState, VerifierState};
-use ::pcs::pack_k::{LOG_PACKING_K, PACKING_WIDTH_K};
+use ::pcs::pack::{LOG_PACKING, PACKING_WIDTH};
 use flock::blake3::{
     Blake3Setup, Compression, K_LOG, ReducedClaims, ReductionReplay, blake3_compress,
     generate_witness_with_ab_packed_and_lincheck, min_n_blocks_log,
@@ -53,7 +53,7 @@ pub const FLAGS: u32 = flock::blake3::PINNED_FLAGS;
 
 /// Packed `F64` words per compression instance: `K / 64 = 2^(K_LOG-6)`.
 /// Instance `j` occupies packed indices `[j*PACKED_PER_INSTANCE, (j+1)*…)`.
-pub const PACKED_PER_INSTANCE: usize = 1 << (K_LOG - LOG_PACKING_K);
+pub const PACKED_PER_INSTANCE: usize = 1 << (K_LOG - LOG_PACKING);
 
 // Within-instance packed-word (slot) indices of the VM-visible words, fixed by
 // the aligned flock layout (bit bases asserted by `layout_constants` there):
@@ -123,7 +123,7 @@ pub fn n_blocks_log(n: usize) -> usize {
 /// executed compressions: `K_LOG + n_blocks_log(max(n,1)) - 6`. Always ≥ 1
 /// instance — `n = 0` still commits one padding instance (uniform proof shape).
 pub fn qpkd_kappa(n: usize) -> usize {
-    K_LOG + n_blocks_log(n.max(1)) - LOG_PACKING_K
+    K_LOG + n_blocks_log(n.max(1)) - LOG_PACKING
 }
 
 /// The padding instance: the pinned compression of the all-zero message, i.e.
@@ -137,7 +137,7 @@ pub fn padding_compression() -> Compression {
 /// Flatten flock's packed witness (128 bits per `F192` word, bit `i` at
 /// position `i`) into the committed `F64` packing (64 bits per word): word `j`
 /// becomes words `2j` (lo lanes, bits 0..64) and `2j+1` (hi lanes, bits
-/// 64..128), which is exactly `pack_witness_k`'s convention on the same bit string.
+/// 64..128), which is exactly `pack_witness`'s convention on the same bit string.
 fn flatten_packed(packed: Vec<F192>) -> Vec<F64> {
     let mut out = Vec::with_capacity(packed.len() * 2);
     for w in packed {
@@ -166,7 +166,7 @@ pub fn padding_digest() -> [F64; 4] {
 /// number of low coords of a `q_pkd` point that carry the slot's bits, and the
 /// stride between consecutive instances' same-slot words in `q_pkd`. A value
 /// claim on `q_pkd` is thus a boolean-selector (strided) claim with this stride.
-pub const SLOT_STRIDE_LOG: usize = K_LOG - LOG_PACKING_K;
+pub const SLOT_STRIDE_LOG: usize = K_LOG - LOG_PACKING;
 
 /// Memoized BLAKE3 R1CS [`Blake3Setup`], keyed by the executed-instance count.
 /// Building it (the symbolic constraint walk over `2^K_LOG` slots) costs
@@ -244,7 +244,7 @@ pub fn family_digest() -> [u8; 32] {
 /// symmetry witness that the caller committed first.
 pub fn prove_reduction(
     blocks: &[Compression],
-    commitment: &::pcs::ligerito_k::CommitmentK,
+    commitment: &::pcs::ligerito::Commitment,
     ps: &mut ProverState,
 ) -> (Vec<F64>, ReducedClaims) {
     let _ = commitment;
@@ -268,15 +268,15 @@ pub fn verify_reduction(
     setup_for(n_blocks).verify_reduction(vs)
 }
 
-/// One flock claim as a tower [`crate::pcs::RingSwitchClaimK`]: the quirky point
+/// One flock claim as a tower [`crate::pcs::RingSwitchClaim`]: the quirky point
 /// splits at the packing boundary. Its univariate-skip coordinate `z_skip`
-/// covers exactly the `k_skip = LOG_PACKING_K = 6` packed variables, so the
+/// covers exactly the `k_skip = LOG_PACKING = 6` packed variables, so the
 /// packing prefix is the 64 φ8-Lagrange weights at `z_skip`, and the WHOLE
 /// multilinear tail `x_inner_rest ++ x_outer` is the suffix point (`q_pkd` has
-/// `2^(K_LOG + n_log − 6)` words: one more variable than the old extension-field stack, and
-/// no coordinate is split off into the prefix).
-fn ring_claim(z: &ZClaim, captured: Option<&[F192]>, qpkd_vars: usize) -> crate::pcs::RingSwitchClaimK {
-    let prefix_weights: Vec<F192> = lagrange_weights_naive(LOG_PACKING_K, z.point.z_skip);
+/// `2^(K_LOG + n_log − 6)` words, and no coordinate is split off into the
+/// prefix).
+fn ring_claim(z: &ZClaim, captured: Option<&[F192]>, qpkd_vars: usize) -> crate::pcs::RingSwitchClaim {
+    let prefix_weights: Vec<F192> = lagrange_weights_naive(LOG_PACKING, z.point.z_skip);
     let mut suffix_point: Vec<F192> = z.point.x_inner_rest.clone();
     suffix_point.extend_from_slice(&z.point.x_outer);
     // Length invariant: prefix (6) + suffix == K_LOG + n_blocks_log, i.e. the
@@ -297,18 +297,18 @@ fn ring_claim(z: &ZClaim, captured: Option<&[F192]>, qpkd_vars: usize) -> crate:
     // Zerocheck's fused kernel captures two 64-slice banks around the first
     // suffix coordinate; fold that coordinate here without rescanning q_pkd.
     let s_hat_v = captured.and_then(|s| match s.len() {
-        PACKING_WIDTH_K => Some(s.to_vec()),
-        n if n == 2 * PACKING_WIDTH_K && !z.point.x_inner_rest.is_empty() => {
+        PACKING_WIDTH => Some(s.to_vec()),
+        n if n == 2 * PACKING_WIDTH && !z.point.x_inner_rest.is_empty() => {
             let c = z.point.x_inner_rest[0];
             Some(
-                (0..PACKING_WIDTH_K)
-                    .map(|i| (F192::ONE + c) * s[i] + c * s[i + PACKING_WIDTH_K])
+                (0..PACKING_WIDTH)
+                    .map(|i| (F192::ONE + c) * s[i] + c * s[i + PACKING_WIDTH])
                     .collect(),
             )
         }
         _ => None,
     });
-    crate::pcs::RingSwitchClaimK {
+    crate::pcs::RingSwitchClaim {
         prefix_weights,
         suffix_point,
         value: z.value,
@@ -466,7 +466,7 @@ mod tests {
         }
     }
 
-    /// flock's validity claims, discharged by ONE stacked Ligerito-K over a
+    /// flock's validity claims, discharged by ONE stacked Ligerito over a
     /// hand-stacked witness containing `q_pkd` (plus a dummy column) together
     /// with an ordinary point claim: the full prove_reduction → ring-switch →
     /// stack_open seam without the VM pipeline. Proves and verifies on the

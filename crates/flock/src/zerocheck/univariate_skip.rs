@@ -712,8 +712,8 @@ mod tests {
     /// suffix `r[k_skip + 1 ..]` (everything past `prefix0 = r[k_skip]`).
     #[test]
     fn extract_c_with_s_hat_v_matches_fold_1b_rows() {
-        use pcs::pack_k::pack_witness_k;
-        use pcs::ring_switch_k::fold_1b_rows_k;
+        use pcs::pack::pack_witness;
+        use pcs::ring_switch::fold_1b_rows;
         // K_SKIP = 6 is the production setup (LOG_PACKING = 7, so 2 · 2^K_SKIP
         // = 128 matches s_hat_v's length). The kernel needs m >= K_SKIP + 1 =
         // 7 for pack_witness, plus the SplitEq's n_lo + n_hi machinery
@@ -732,14 +732,14 @@ mod tests {
 
             // Reference: fold_1b_rows on the packed C-witness against the
             // suffix tensor built from r[k_skip + 1 ..].
-            let packed_c = pack_witness_k(&z_bits, m);
+            let packed_c = pack_witness(&z_bits, m);
             let suffix = &r[K_SKIP..];
             let suffix_tensor = build_eq(suffix);
-            let want = fold_1b_rows_k(&packed_c, &suffix_tensor);
+            let want = fold_1b_rows(&packed_c, &suffix_tensor);
 
             let c = r[K_SKIP];
-            let folded: Vec<_> = (0..pcs::pack_k::PACKING_WIDTH_K)
-                .map(|i| (F192::ONE + c) * s_hat_v_c[i] + c * s_hat_v_c[i + pcs::pack_k::PACKING_WIDTH_K])
+            let folded: Vec<_> = (0..pcs::pack::PACKING_WIDTH)
+                .map(|i| (F192::ONE + c) * s_hat_v_c[i] + c * s_hat_v_c[i + pcs::pack::PACKING_WIDTH])
                 .collect();
 
             assert_eq!(folded.len(), want.len(), "length mismatch at m={m}");

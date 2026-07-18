@@ -26,7 +26,7 @@
 //!    coordinate of `eq(r_suffix, y)`.
 //!
 //! 2. **The square E-tensor algebra** [`TensorAlgebraE`] over
-//!    `E (x)_F2 E`: the verifier's polylog `eval_rs_eq_k` accumulates
+//!    `E (x)_F2 E`: the verifier's polylog `eval_rs_eq` accumulates
 //!    `sum_y eq(query, y) (x) eq(r_suffix, y)`, which is E-valued on BOTH
 //!    factors (the K packing never appears there because `rs_eq_ind` is
 //!    E-valued). The F_2 coordinates of an E element are the bits of its
@@ -39,7 +39,7 @@ use core::ops::{Add, AddAssign};
 use primitives::field::{F64, F192};
 
 /// The degree of K = F_{2^64} over F_2 (the packing degree f).
-pub const DEGREE_K: usize = 64;
+pub const DEGREE: usize = 64;
 
 /// The degree of E = GF(2^192) over F_2 (the opening degree e).
 pub const DEGREE_E: usize = 192;
@@ -71,7 +71,7 @@ fn ext_bit(e: F192, w: usize) -> u64 {
 pub fn transpose_s_hat(s_hat_v: &[F192]) -> Vec<F64> {
     assert_eq!(
         s_hat_v.len(),
-        DEGREE_K,
+        DEGREE,
         "transpose_s_hat: s_hat_v must have one entry per packing bit (64)"
     );
     let mut s_hat_u = vec![F64::ZERO; DEGREE_E];
@@ -158,7 +158,7 @@ impl TensorAlgebraE {
     ///
     /// Computes `sum_w coeffs[w] * transpose(self).elems[w]`. With `self =
     /// sum_y eq(query, y) (x) eq(z, y)` and `coeffs = eq(r'')` this is the
-    /// MLE of `rs_eq_ind` at `query` (see `ring_switch_k::eval_rs_eq_k`).
+    /// MLE of `rs_eq_ind` at `query` (see `ring_switch::eval_rs_eq`).
     pub fn fold_vertical(self, coeffs: &[F192]) -> F192 {
         assert_eq!(coeffs.len(), DEGREE_E, "fold_vertical: coeffs.len() must be 192");
         let transposed = self.transpose();
@@ -233,10 +233,10 @@ mod tests {
     #[test]
     fn rect_transpose_bit_relation() {
         let mut s = 1u64;
-        let s_hat_v: Vec<F192> = (0..DEGREE_K).map(|_| rand_ext(&mut s)).collect();
+        let s_hat_v: Vec<F192> = (0..DEGREE).map(|_| rand_ext(&mut s)).collect();
         let s_hat_u = transpose_s_hat(&s_hat_v);
         assert_eq!(s_hat_u.len(), DEGREE_E);
-        for i in 0..DEGREE_K {
+        for i in 0..DEGREE {
             for w in 0..DEGREE_E {
                 assert_eq!(
                     (s_hat_u[w].0 >> i) & 1,

@@ -4,7 +4,7 @@
 // Modifications copyright 2026 Succinct Labs, Benedikt Bunz, William Wang
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 //
-// The DP24 iterative `eval_rs_eq_k` is ported from binius64. The module is
+// The DP24 iterative `eval_rs_eq` is ported from binius64. The module is
 // the rectangular (f = 64, e = 192) generalization described in
 // the ring-switching-generalized note.
 
@@ -13,9 +13,9 @@
 //!
 //! With f = 64 (packing degree over F_2) and e = 192 (opening degree), this
 //! converts one evaluation claim on
-//! the bit-witness MLE at an E-point into a Ligerito-K sumcheck claim on the
+//! the bit-witness MLE at an E-point into a Ligerito sumcheck claim on the
 //! packed multilinear (a `Vec<F64>`, one word per 64 bits, see
-//! [`super::pack_k`]) against a transparent E-valued weight vector
+//! [`super::pack`]) against a transparent E-valued weight vector
 //! `rs_eq_ind`.
 //!
 //! ## Rectangular shape
@@ -45,13 +45,13 @@
 //! 2. Verifier checks `claim == sum_i prefix_weights[i] * s_hat_v[i]`.
 //! 3. Sample `rho in E`; define `coord_weights[i] = rho^i`. Transpose
 //!    `s_hat_v` to `t_i = s_hat_u[i] in K` (see
-//!    [`super::tensor_algebra_k::transpose_s_hat`]); the batched target is
+//!    [`super::tensor_algebra::transpose_s_hat`]); the batched target is
 //!    `sumcheck_claim = sum_i rho^i * t_i` (K x E via `mul_base`).
 //! 4. Both sides define the transparent weights
 //!    `rs_eq_ind[y] = Phi(eq(r_suffix, y))` where `Phi : E -> E` is the
 //!    F_2-linear map sending basis coordinate `i` to `rho^i`. Completeness:
 //!    `sum_y rs_eq_ind[y] * packed[y] == sumcheck_claim`, which is exactly
-//!    the claim shape [`super::ligerito_k::recursive_prover_with_basis_k`]
+//!    the claim shape [`super::ligerito::recursive_prover_with_basis`]
 //!    proves (with `b_initial = rs_eq_ind`, `target = sumcheck_claim`).
 //!    Soundness follows because any nonzero discrepancy gives a nonzero
 //!    polynomial in `rho` of degree at most 191.
@@ -60,7 +60,7 @@
 //!
 //! - [`prove`] / [`verify`] materialize `rs_eq_ind` densely via
 //!   [`fold_ext_elems`] (bytewise-table fold, rayon), `2^(m-6)` E entries.
-//! - [`verify_succinct`] + [`eval_rs_eq_k`] never materialize it: the MLE of
+//! - [`verify_succinct`] + [`eval_rs_eq`] never materialize it: the MLE of
 //!   `rs_eq_ind` at the Ligerito final point is evaluated in
 //!   `O((m-6) * 192^2)` bit-ops plus `O((m-6) * 192)` E-multiplications via
 //!   the DP24 tensor-algebra iterative algorithm (DP24 section 1.3 Figure 3).
@@ -72,9 +72,9 @@ use primitives::bits::transpose_8x8_bits;
 use primitives::field::{F64, F192};
 use serde::{Deserialize, Serialize};
 
-use super::ligerito_k::{build_eq_table_ext, inner_product_base_ext};
-use super::pack_k::{LOG_PACKING_K, PACKING_WIDTH_K};
-use super::tensor_algebra_k::{DEGREE_E, TensorAlgebraE, transpose_s_hat};
+use super::ligerito::{build_eq_table_ext, inner_product_base_ext};
+use super::pack::{LOG_PACKING, PACKING_WIDTH};
+use super::tensor_algebra::{DEGREE_E, TensorAlgebraE, transpose_s_hat};
 
 /// Maximum degree of a nonzero ring-switch discrepancy in the univariate
 /// batching challenge. This is a soundness parameter, not merely an
@@ -118,8 +118,8 @@ fn observe_ext_slice(sponge: &mut Sponge, values: &[F192]) {
 pub fn eq_prefix_weights(r_prefix: &[F192]) -> Vec<F192> {
     assert_eq!(
         r_prefix.len(),
-        LOG_PACKING_K,
-        "eq_prefix_weights: prefix must have LOG_PACKING_K = 6 coords"
+        LOG_PACKING,
+        "eq_prefix_weights: prefix must have LOG_PACKING = 6 coords"
     );
     build_eq_table_ext(r_prefix)
 }
@@ -144,7 +144,7 @@ pub fn claim_check(prefix_weights: &[F192], s_hat_v: &[F192]) -> F192 {
 /// `y ∈ F192` (c0 bits 0..64, c1 bits 64..128, c2 bits 128..192), where `Tr` is the absolute
 /// trace `F192 → F2`, using the tower's coordinate basis and trace form.
 /// The recursion guest replays bit extraction with these.
-pub fn trace_dual_basis_k() -> &'static [F192; 192] {
+pub fn trace_dual_basis() -> &'static [F192; 192] {
     use std::sync::OnceLock;
     static DUAL: OnceLock<[F192; 192]> = OnceLock::new();
     DUAL.get_or_init(|| {
@@ -213,17 +213,17 @@ pub fn trace_dual_basis_k() -> &'static [F192; 192] {
 /// for `i in 0..64` (bit i = polynomial-basis coordinate of the u64).
 ///
 /// Dispatch: the method-of-four-Russians kernel
-/// ([`fold_1b_rows_k_mfr_8wide`]) for lengths divisible by 8 (any real
+/// ([`fold_1b_rows_mfr_8wide`]) for lengths divisible by 8 (any real
 /// witness), the scalar bit-scan otherwise (tiny test instances). Both
 /// compute the same per-bit XOR-sums, only regrouped, and GF(2^192)
 /// addition is XOR (commutative, associative, exact), so the output and
 /// hence the transcript are byte-identical either way.
-pub fn fold_1b_rows_k(packed_witness: &[F64], suffix_tensor: &[F192]) -> Vec<F192> {
+pub fn fold_1b_rows(packed_witness: &[F64], suffix_tensor: &[F192]) -> Vec<F192> {
     assert_eq!(packed_witness.len(), suffix_tensor.len());
     if !packed_witness.is_empty() && packed_witness.len().is_multiple_of(8) {
-        fold_1b_rows_k_mfr_8wide(packed_witness, suffix_tensor)
+        fold_1b_rows_mfr_8wide(packed_witness, suffix_tensor)
     } else {
-        fold_1b_rows_k_scalar(packed_witness, suffix_tensor)
+        fold_1b_rows_scalar(packed_witness, suffix_tensor)
     }
 }
 
@@ -231,7 +231,7 @@ pub fn fold_1b_rows_k(packed_witness: &[F64], suffix_tensor: &[F192]) -> Vec<F19
 /// the K ring switch, avoiding a second pass over the packed witness.
 pub fn s_hat_v_from_z_vec(z_vec: &[F192], inner_rest_tail: &[F192]) -> Vec<F192> {
     use rayon::prelude::*;
-    let n_packed = PACKING_WIDTH_K;
+    let n_packed = PACKING_WIDTH;
     let n_tail = 1usize << inner_rest_tail.len();
     assert_eq!(z_vec.len(), n_packed * n_tail);
     if inner_rest_tail.is_empty() {
@@ -260,15 +260,15 @@ pub fn s_hat_v_from_z_vec(z_vec: &[F192], inner_rest_tail: &[F192]) -> Vec<F192>
         )
 }
 
-/// Scalar reference path of [`fold_1b_rows_k`]: mirror of
+/// Scalar reference path of [`fold_1b_rows`]: mirror of
 /// `ring_switch::fold_1b_rows_naive` at 64-bit width, a rayon bit-scan with
 /// per-thread length-64 partial accumulators XOR-reduced at the end.
 /// Data-dependent cost: `trailing_zeros` + RMW + branch per set bit
 /// (~32/word on a random witness).
-fn fold_1b_rows_k_scalar(packed_witness: &[F64], suffix_tensor: &[F192]) -> Vec<F192> {
+fn fold_1b_rows_scalar(packed_witness: &[F64], suffix_tensor: &[F192]) -> Vec<F192> {
     use rayon::prelude::*;
     assert_eq!(packed_witness.len(), suffix_tensor.len());
-    let n = PACKING_WIDTH_K;
+    let n = PACKING_WIDTH;
     let zero_acc = || vec![F192::ZERO; n];
 
     packed_witness
@@ -307,7 +307,7 @@ fn subset_sums_4_ext(elems: [F192; 4]) -> [F192; 16] {
     sums
 }
 
-/// Method-of-four-Russians [`fold_1b_rows_k`] kernel: the extension-field layer's
+/// Method-of-four-Russians [`fold_1b_rows`] kernel: the extension-field layer's
 /// `fold_1b_rows_1way_mfr_8wide_k4` ported to 8-byte K words (where 8 words
 /// per transpose group cover ALL 64 output bits with the 8 byte positions,
 /// no wasted transpose rows).
@@ -322,9 +322,9 @@ fn subset_sums_4_ext(elems: [F192; 4]) -> [F192; 16] {
 /// accumulator RMW, regardless of bit density: a constant ~12 adds + 8 RMWs
 /// per word vs the scalar path's ~32 data-dependent conditional adds.
 /// Per-thread accumulators via rayon fold/reduce (no shared cache lines).
-fn fold_1b_rows_k_mfr_8wide(packed_witness: &[F64], suffix_tensor: &[F192]) -> Vec<F192> {
+fn fold_1b_rows_mfr_8wide(packed_witness: &[F64], suffix_tensor: &[F192]) -> Vec<F192> {
     use rayon::prelude::*;
-    let n = PACKING_WIDTH_K;
+    let n = PACKING_WIDTH;
     assert_eq!(packed_witness.len(), suffix_tensor.len());
     assert!(packed_witness.len().is_multiple_of(8));
     let zero_acc = || vec![F192::ZERO; n];
@@ -374,6 +374,7 @@ fn fold_1b_rows_k_mfr_8wide(packed_witness: &[F64], suffix_tensor: &[F192]) -> V
 ///
 /// Naive reference: rayon per-position bit-scan over the three 64-bit limbs.
 /// See [`fold_ext_elems`] for the bytewise-table production version.
+#[cfg(test)]
 pub fn fold_ext_elems_naive(suffix_tensor: &[F192], coordinate_weights: &[F192]) -> Vec<F192> {
     use rayon::prelude::*;
     assert_eq!(coordinate_weights.len(), DEGREE_E);
@@ -453,7 +454,7 @@ fn fold_one_slot_ext(elem: F192, tables: &[F192]) -> F192 {
 /// Keeping the split eq factors and the tiny byte table avoids materializing
 /// one full `rs_eq_ind` vector per claim.  The table already contains the
 /// claim's batching scalar, so combining several claims needs only additions.
-pub(crate) struct DeferredRingSwitchOutputK {
+pub(crate) struct DeferredRingSwitchOutput {
     pub(crate) batched_sumcheck_claim: F192,
     eq_lo: Vec<F192>,
     eq_hi: Vec<F192>,
@@ -466,11 +467,11 @@ pub(crate) fn prove_finish_deferred(
     state: RingSwitchProveState,
     coordinate_weights: &[F192],
     gamma: F192,
-) -> DeferredRingSwitchOutputK {
+) -> DeferredRingSwitchOutput {
     let s_hat_u = transpose_s_hat(&state.s_hat_v);
     let sumcheck_claim = inner_product_base_ext(&s_hat_u, coordinate_weights);
     let scaled_weights: Vec<F192> = coordinate_weights.iter().map(|&x| gamma * x).collect();
-    DeferredRingSwitchOutputK {
+    DeferredRingSwitchOutput {
         batched_sumcheck_claim: gamma * sumcheck_claim,
         eq_lo: state.eq_lo,
         eq_hi: state.eq_hi,
@@ -481,7 +482,7 @@ pub(crate) fn prove_finish_deferred(
 /// Fold several deferred claims directly into their final combined dense
 /// basis. Every output slot is written exactly once; no per-claim dense
 /// vectors are allocated or read back.
-pub(crate) fn combine_deferred_into(outputs: &[DeferredRingSwitchOutputK], out: &mut [F192]) {
+pub(crate) fn combine_deferred_into(outputs: &[DeferredRingSwitchOutput], out: &mut [F192]) {
     use rayon::prelude::*;
 
     assert!(!outputs.is_empty());
@@ -509,8 +510,8 @@ pub(crate) fn combine_deferred_into(outputs: &[DeferredRingSwitchOutputK], out: 
     });
 }
 
-/// Bytewise-table accelerated [`fold_ext_elems_naive`] (mirror of
-/// the legacy extension fold): 24 lookup tables of 256 E entries each;
+/// Bytewise-table accelerated [`fold_ext_elems_naive`]: 24 lookup tables of
+/// 256 E entries each;
 /// per position 24 lookups + 23 XORs, no
 /// data-dependent bit-scan. Rayon across positions.
 /// Split point for the factored eq build: low half sized ~n/2 (min 4, the
@@ -533,6 +534,7 @@ pub fn build_eq_split_ext(point: &[F192]) -> (Vec<F192>, Vec<F192>) {
 /// [`fold_ext_elems`] over the FACTORED tensor: each entry is reconstructed on
 /// the fly (`eq_lo[a] * eq_hi[b]`, one multiply) and folded — the full
 /// `2^n`-entry tensor is never materialized. Bit-identical output.
+#[cfg(test)]
 pub fn fold_ext_elems_split(eq_lo: &[F192], eq_hi: &[F192], coordinate_weights: &[F192]) -> Vec<F192> {
     use rayon::prelude::*;
     let tables = build_fold_byte_table_ext(coordinate_weights);
@@ -546,6 +548,7 @@ pub fn fold_ext_elems_split(eq_lo: &[F192], eq_hi: &[F192], coordinate_weights: 
         .collect()
 }
 
+#[cfg(test)]
 pub fn fold_ext_elems(suffix_tensor: &[F192], coordinate_weights: &[F192]) -> Vec<F192> {
     use rayon::prelude::*;
     let tables = build_fold_byte_table_ext(coordinate_weights);
@@ -561,30 +564,31 @@ pub fn fold_ext_elems(suffix_tensor: &[F192], coordinate_weights: &[F192]) -> Ve
 
 /// The prover message: the 64 bit-slice MLEs at the suffix point.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RingSwitchProofK {
+pub struct RingSwitchProof {
     pub s_hat_v: Vec<F192>,
 }
 
 /// What both prover and (dense) verifier compute as a result of the
-/// reduction: the transparent weight vector and the Ligerito-K target.
+/// reduction: the transparent weight vector and the Ligerito target.
+#[cfg(test)]
 #[derive(Clone, Debug)]
-pub struct RingSwitchOutputK {
+pub struct RingSwitchOutput {
     pub rs_eq_ind: Vec<F192>,
     pub sumcheck_claim: F192,
 }
 
 /// Verifier-side output of [`verify_succinct`]: everything needed to drive
-/// the Ligerito-K consistency check without materializing `rs_eq_ind`.
+/// the Ligerito consistency check without materializing `rs_eq_ind`.
 #[derive(Clone, Debug)]
-pub struct RingSwitchVerifierOutputK {
+pub struct RingSwitchVerifierOutput {
     pub sumcheck_claim: F192,
     /// Univariate powers derived from the batching challenge; feed them to
-    /// [`eval_rs_eq_k`] at the Ligerito final point.
+    /// [`eval_rs_eq`] at the Ligerito final point.
     pub coordinate_weights: Vec<F192>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum VerifyErrorK {
+pub enum VerifyError {
     ClaimMismatch,
 }
 
@@ -592,7 +596,7 @@ pub enum VerifyErrorK {
 ///
 /// Inputs:
 /// - `packed_witness`: `2^L` K words (L = m - 6), from
-///   [`super::pack_k::pack_witness_k`].
+///   [`super::pack::pack_witness`].
 /// - `prefix_weights`: the 64 per-bit-column weights of the consumed claim
 ///   ([`eq_prefix_weights`] for a plain point; phi_8 Lagrange weights mapped
 ///   directly in the tower for flock's skip claim).
@@ -602,9 +606,10 @@ pub enum VerifyErrorK {
 ///   consistent claim, so this is a cheap integration check, 64 E-mults).
 /// - `sponge` for sampling the row-batching challenge `rho`.
 ///
-/// Output: the proof message `s_hat_v` (64 E values) plus the Ligerito-K
+/// Output: the proof message `s_hat_v` (64 E values) plus the Ligerito
 /// inputs `(rs_eq_ind, sumcheck_claim)`; open with
-/// `recursive_prover_with_basis_k(config, packed, rs_eq_ind, sumcheck_claim, ..)`.
+/// `recursive_prover_with_basis(config, packed, rs_eq_ind, sumcheck_claim, ..)`.
+#[cfg(test)]
 pub fn prove(
     packed_witness: &[F64],
     prefix_weights: &[F192],
@@ -612,8 +617,8 @@ pub fn prove(
     claim: F192,
     precomputed_s_hat_v: Option<&[F192]>,
     sponge: &mut Sponge,
-) -> (RingSwitchProofK, RingSwitchOutputK) {
-    assert_eq!(prefix_weights.len(), PACKING_WIDTH_K);
+) -> (RingSwitchProof, RingSwitchOutput) {
+    assert_eq!(prefix_weights.len(), PACKING_WIDTH);
     assert_eq!(
         packed_witness.len(),
         1usize << suffix_point.len(),
@@ -657,8 +662,8 @@ pub fn prove_observe(
     claim: F192,
     precomputed_s_hat_v: Option<&[F192]>,
     sponge: &mut Sponge,
-) -> (RingSwitchProofK, RingSwitchProveState) {
-    assert_eq!(prefix_weights.len(), PACKING_WIDTH_K);
+) -> (RingSwitchProof, RingSwitchProveState) {
+    assert_eq!(prefix_weights.len(), PACKING_WIDTH);
     assert_eq!(
         packed_witness.len(),
         1usize << suffix_point.len(),
@@ -667,7 +672,7 @@ pub fn prove_observe(
     let (eq_lo, eq_hi) = build_eq_split_ext(suffix_point);
     let s_hat_v = match precomputed_s_hat_v {
         Some(v) => {
-            assert_eq!(v.len(), PACKING_WIDTH_K);
+            assert_eq!(v.len(), PACKING_WIDTH);
             v.to_vec()
         }
         None => {
@@ -678,17 +683,17 @@ pub fn prove_observe(
                 .into_par_iter()
                 .map(|y| eq_lo[y & mask] * eq_hi[y >> shift])
                 .collect();
-            fold_1b_rows_k(packed_witness, &full)
+            fold_1b_rows(packed_witness, &full)
         }
     };
     assert_eq!(
         claim_check(prefix_weights, &s_hat_v),
         claim,
-        "ring_switch_k::prove: supplied claim does not match the witness"
+        "ring_switch::prove: supplied claim does not match the witness"
     );
     observe_ext_slice(sponge, &s_hat_v);
     (
-        RingSwitchProofK {
+        RingSwitchProof {
             s_hat_v: s_hat_v.clone(),
         },
         RingSwitchProveState { s_hat_v, eq_lo, eq_hi },
@@ -697,11 +702,12 @@ pub fn prove_observe(
 
 /// Phase 2 of the ring-switch prover: given the shared coordinate weights, produce
 /// the batched sumcheck claim and the transparent weight vector `rs_eq_ind`.
-pub fn prove_finish(state: &RingSwitchProveState, coordinate_weights: &[F192]) -> RingSwitchOutputK {
+#[cfg(test)]
+pub fn prove_finish(state: &RingSwitchProveState, coordinate_weights: &[F192]) -> RingSwitchOutput {
     let s_hat_u = transpose_s_hat(&state.s_hat_v);
     let sumcheck_claim = inner_product_base_ext(&s_hat_u, coordinate_weights);
     let rs_eq_ind = fold_ext_elems_split(&state.eq_lo, &state.eq_hi, coordinate_weights);
-    RingSwitchOutputK {
+    RingSwitchOutput {
         rs_eq_ind,
         sumcheck_claim,
     }
@@ -711,21 +717,22 @@ pub fn prove_finish(state: &RingSwitchProveState, coordinate_weights: &[F192]) -
 ///
 /// Mirrors [`prove`]'s transcript exactly; returns `ClaimMismatch` if
 /// `sum_i prefix_weights[i] * s_hat_v[i] != claim`.
+#[cfg(test)]
 pub fn verify(
     claim: F192,
     prefix_weights: &[F192],
     suffix_point: &[F192],
-    proof: &RingSwitchProofK,
+    proof: &RingSwitchProof,
     sponge: &mut Sponge,
-) -> Result<RingSwitchOutputK, VerifyErrorK> {
-    assert_eq!(prefix_weights.len(), PACKING_WIDTH_K);
-    assert_eq!(proof.s_hat_v.len(), PACKING_WIDTH_K);
+) -> Result<RingSwitchOutput, VerifyError> {
+    assert_eq!(prefix_weights.len(), PACKING_WIDTH);
+    assert_eq!(proof.s_hat_v.len(), PACKING_WIDTH);
 
     // No domain label (matches `prove`'s single-claim wrapper + the extension-field opener).
     observe_ext_slice(sponge, &proof.s_hat_v);
 
     if claim_check(prefix_weights, &proof.s_hat_v) != claim {
-        return Err(VerifyErrorK::ClaimMismatch);
+        return Err(VerifyError::ClaimMismatch);
     }
 
     let rho = sponge.sample();
@@ -737,22 +744,23 @@ pub fn verify(
     let suffix_tensor = build_eq_table_ext(suffix_point);
     let rs_eq_ind = fold_ext_elems(&suffix_tensor, &coordinate_weights);
 
-    Ok(RingSwitchOutputK {
+    Ok(RingSwitchOutput {
         rs_eq_ind,
         sumcheck_claim,
     })
 }
 
 /// Polylog-cost verifier: same transcript as [`verify`] but does NOT build
-/// the dense `rs_eq_ind`. Pair with [`eval_rs_eq_k`] at the Ligerito final
-/// point (e.g. inside `recursive_verifier_with_basis_succinct_k`'s
+/// the dense `rs_eq_ind`. Pair with [`eval_rs_eq`] at the Ligerito final
+/// point (e.g. inside `recursive_verifier_with_basis_succinct`'s
 /// `eval_b_residual` closure).
+#[cfg(test)]
 pub fn verify_succinct(
     claim: F192,
     prefix_weights: &[F192],
-    proof: &RingSwitchProofK,
+    proof: &RingSwitchProof,
     sponge: &mut Sponge,
-) -> Result<RingSwitchVerifierOutputK, VerifyErrorK> {
+) -> Result<RingSwitchVerifierOutput, VerifyError> {
     // Single-claim wrapper (self-rho); the STACKED verifier uses
     // verify_observe per claim, one shared rho, then verify_finish per claim.
     verify_observe(claim, prefix_weights, proof, sponge)?;
@@ -767,24 +775,24 @@ pub fn verify_succinct(
 pub fn verify_observe(
     claim: F192,
     prefix_weights: &[F192],
-    proof: &RingSwitchProofK,
+    proof: &RingSwitchProof,
     sponge: &mut Sponge,
-) -> Result<(), VerifyErrorK> {
-    assert_eq!(prefix_weights.len(), PACKING_WIDTH_K);
-    assert_eq!(proof.s_hat_v.len(), PACKING_WIDTH_K);
+) -> Result<(), VerifyError> {
+    assert_eq!(prefix_weights.len(), PACKING_WIDTH);
+    assert_eq!(proof.s_hat_v.len(), PACKING_WIDTH);
     observe_ext_slice(sponge, &proof.s_hat_v);
     if claim_check(prefix_weights, &proof.s_hat_v) != claim {
-        return Err(VerifyErrorK::ClaimMismatch);
+        return Err(VerifyError::ClaimMismatch);
     }
     Ok(())
 }
 
 /// Phase 2 of the ring-switch verifier: given the shared coordinate weights,
 /// produce the batched sumcheck claim.
-pub fn verify_finish(proof: &RingSwitchProofK, coordinate_weights: &[F192]) -> RingSwitchVerifierOutputK {
+pub fn verify_finish(proof: &RingSwitchProof, coordinate_weights: &[F192]) -> RingSwitchVerifierOutput {
     let s_hat_u = transpose_s_hat(&proof.s_hat_v);
     let sumcheck_claim = inner_product_base_ext(&s_hat_u, coordinate_weights);
-    RingSwitchVerifierOutputK {
+    RingSwitchVerifierOutput {
         sumcheck_claim,
         coordinate_weights: coordinate_weights.to_vec(),
     }
@@ -828,17 +836,17 @@ pub fn verify_finish(proof: &RingSwitchProofK, coordinate_weights: &[F192]) -> R
 ///   length L = m - 6.
 /// * `query`: the Ligerito final challenges, length L, same coordinate order.
 /// * `coordinate_weights`: the 192 univariate batching weights (from
-///   [`RingSwitchVerifierOutputK`]).
-pub fn eval_rs_eq_k(z_vals: &[F192], query: &[F192], coordinate_weights: &[F192]) -> F192 {
+///   [`RingSwitchVerifierOutput`]).
+pub fn eval_rs_eq(z_vals: &[F192], query: &[F192], coordinate_weights: &[F192]) -> F192 {
     assert_eq!(
         z_vals.len(),
         query.len(),
-        "eval_rs_eq_k: z_vals and query must have equal length"
+        "eval_rs_eq: z_vals and query must have equal length"
     );
     assert_eq!(
         coordinate_weights.len(),
         DEGREE_E,
-        "eval_rs_eq_k: coordinate_weights length must be 192"
+        "eval_rs_eq: coordinate_weights length must be 192"
     );
 
     let mut eval = TensorAlgebraE::from_vertical(F192::ONE);
@@ -851,11 +859,11 @@ pub fn eval_rs_eq_k(z_vals: &[F192], query: &[F192], coordinate_weights: &[F192]
     eval.fold_vertical(coordinate_weights)
 }
 
-/// Prefix-only variant of [`eval_rs_eq_k`]: walks `query_prefix.len()` of
+/// Prefix-only variant of [`eval_rs_eq`]: walks `query_prefix.len()` of
 /// the (z, query) pairs and returns the partially-evolved tensor element.
-/// Pair with [`eval_rs_eq_finish_from_prefix_binary_q_k`] to share the
+/// Pair with [`eval_rs_eq_finish_from_prefix_binary_q`] to share the
 /// prefix across many residual positions (the succinct Ligerito closure).
-pub fn eval_rs_eq_prefix_k(z_vals: &[F192], query_prefix: &[F192]) -> TensorAlgebraE {
+pub fn eval_rs_eq_prefix(z_vals: &[F192], query_prefix: &[F192]) -> TensorAlgebraE {
     assert!(query_prefix.len() <= z_vals.len());
     let mut eval = TensorAlgebraE::from_vertical(F192::ONE);
     for (&z_i, &q_i) in z_vals.iter().zip(query_prefix.iter()) {
@@ -867,12 +875,12 @@ pub fn eval_rs_eq_prefix_k(z_vals: &[F192], query_prefix: &[F192]) -> TensorAlge
     eval
 }
 
-/// Finish [`eval_rs_eq_k`] from a precomputed prefix when the query suffix
+/// Finish [`eval_rs_eq`] from a precomputed prefix when the query suffix
 /// is **binary** (bit j of `y_bits` is the j-th suffix coord). With
 /// `q_j in {0, 1}` the general step collapses (char 2) to a single vertical
 /// scale: `q_j = 0` gives `(1 + z_j) * eval`, `q_j = 1` gives `z_j * eval`.
 /// Mirror of `ring_switch::eval_rs_eq_finish_from_prefix_binary_q`.
-pub fn eval_rs_eq_finish_from_prefix_binary_q_k(
+pub fn eval_rs_eq_finish_from_prefix_binary_q(
     prefix: &TensorAlgebraE,
     z_vals_suffix: &[F192],
     y_bits: u32,
@@ -894,12 +902,12 @@ pub fn eval_rs_eq_finish_from_prefix_binary_q_k(
 mod tests {
     use super::*;
     use crate::ligerito::{ProverConfig, VerifierConfig, default_config, default_verifier_config};
-    use crate::ligerito_k::{
-        LigeritoProofK, commit_k, k_configs_for, recursive_prover_with_basis_k, recursive_verifier_with_basis_k,
-        recursive_verifier_with_basis_succinct_k,
+    use crate::ligerito::{
+        LigeritoProof, commit, configs_for, recursive_prover_with_basis, recursive_verifier_with_basis,
+        recursive_verifier_with_basis_succinct,
     };
     use crate::merkle::Hash;
-    use crate::pack_k::pack_witness_k;
+    use crate::pack::pack_witness;
 
     fn splitmix64(state: &mut u64) -> u64 {
         *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
@@ -926,7 +934,7 @@ mod tests {
             .map(|_| {
                 let (eq_lo, eq_hi) = build_eq_split_ext(&point);
                 RingSwitchProveState {
-                    s_hat_v: (0..PACKING_WIDTH_K)
+                    s_hat_v: (0..PACKING_WIDTH)
                         .map(|_| F192::new(splitmix64(&mut seed), splitmix64(&mut seed), splitmix64(&mut seed)))
                         .collect(),
                     eq_lo,
@@ -963,10 +971,10 @@ mod tests {
     }
 
     #[test]
-    fn trace_dual_basis_k_is_dual() {
+    fn trace_dual_basis_is_dual() {
         // Tr(dual[i]·basis(j)) == δ_ij, and bit_i(y) = Tr(dual[i]·y) recovers
         // coordinate bits of a few random elements.
-        let dual = trace_dual_basis_k();
+        let dual = trace_dual_basis();
         let basis = |j: usize| {
             if j < 64 {
                 F192::new(1u64 << j, 0, 0)
@@ -1032,7 +1040,7 @@ mod tests {
     /// MLE at the suffix point (direct bit-extract loop, no fold kernel).
     fn s_hat_v_reference(packed: &[F64], suffix_point: &[F192]) -> Vec<F192> {
         let eq_suffix = build_eq_table_ext(suffix_point);
-        (0..PACKING_WIDTH_K)
+        (0..PACKING_WIDTH)
             .map(|i| {
                 let mut acc = F192::ZERO;
                 for (word, &w) in packed.iter().zip(eq_suffix.iter()) {
@@ -1053,18 +1061,18 @@ mod tests {
         let m = 9;
         let mut s = 1u64;
         let bits = rand_bits(m, &mut s);
-        let packed = pack_witness_k(&bits, m);
-        let suffix_point: Vec<F192> = (0..m - LOG_PACKING_K).map(|_| rand_ext(&mut s)).collect();
+        let packed = pack_witness(&bits, m);
+        let suffix_point: Vec<F192> = (0..m - LOG_PACKING).map(|_| rand_ext(&mut s)).collect();
         let eq_suffix = build_eq_table_ext(&suffix_point);
 
-        let s_hat_v = fold_1b_rows_k(&packed, &eq_suffix);
-        assert_eq!(s_hat_v.len(), PACKING_WIDTH_K);
+        let s_hat_v = fold_1b_rows(&packed, &eq_suffix);
+        assert_eq!(s_hat_v.len(), PACKING_WIDTH);
 
         // From the flat bit layout: column i is z[y * 64 + i].
-        for i in 0..PACKING_WIDTH_K {
+        for i in 0..PACKING_WIDTH {
             let mut expected = F192::ZERO;
             for (y, &w) in eq_suffix.iter().enumerate() {
-                if bits[(y << LOG_PACKING_K) | i] {
+                if bits[(y << LOG_PACKING) | i] {
                     expected += w;
                 }
             }
@@ -1084,17 +1092,17 @@ mod tests {
             let len = 1usize << log_len;
             let packed: Vec<F64> = (0..len).map(|_| F64(splitmix64(&mut s))).collect();
             let tensor: Vec<F192> = (0..len).map(|_| rand_ext(&mut s)).collect();
-            let mfr = fold_1b_rows_k_mfr_8wide(&packed, &tensor);
-            let scalar = fold_1b_rows_k_scalar(&packed, &tensor);
+            let mfr = fold_1b_rows_mfr_8wide(&packed, &tensor);
+            let scalar = fold_1b_rows_scalar(&packed, &tensor);
             assert_eq!(mfr, scalar, "MFR/scalar split at len={len}");
-            assert_eq!(fold_1b_rows_k(&packed, &tensor), mfr, "dispatcher at len={len}");
+            assert_eq!(fold_1b_rows(&packed, &tensor), mfr, "dispatcher at len={len}");
         }
         for len in [1usize, 2, 4] {
             let packed: Vec<F64> = (0..len).map(|_| F64(splitmix64(&mut s))).collect();
             let tensor: Vec<F192> = (0..len).map(|_| rand_ext(&mut s)).collect();
             assert_eq!(
-                fold_1b_rows_k(&packed, &tensor),
-                fold_1b_rows_k_scalar(&packed, &tensor),
+                fold_1b_rows(&packed, &tensor),
+                fold_1b_rows_scalar(&packed, &tensor),
                 "scalar fallback at len={len}"
             );
         }
@@ -1107,10 +1115,10 @@ mod tests {
         let m = 10;
         let mut s = 2u64;
         let bits = rand_bits(m, &mut s);
-        let packed = pack_witness_k(&bits, m);
+        let packed = pack_witness(&bits, m);
         let point: Vec<F192> = (0..m).map(|_| rand_ext(&mut s)).collect();
-        let prefix_weights = eq_prefix_weights(&point[..LOG_PACKING_K]);
-        let suffix_point = &point[LOG_PACKING_K..];
+        let prefix_weights = eq_prefix_weights(&point[..LOG_PACKING]);
+        let suffix_point = &point[LOG_PACKING..];
 
         // Honest claim from the reference partials; sanity: it equals the
         // full bit-MLE evaluated with the full eq table.
@@ -1125,32 +1133,32 @@ mod tests {
         }
         assert_eq!(claim, direct, "prefix x suffix split must factor the MLE");
 
-        let mut ch = Sponge::new(b"rs-k-claim-test", &[]);
+        let mut ch = Sponge::new(b"rs-claim-test", &[]);
         let (proof, _out) = prove(&packed, &prefix_weights, suffix_point, claim, None, &mut ch);
 
-        let mut ch = Sponge::new(b"rs-k-claim-test", &[]);
+        let mut ch = Sponge::new(b"rs-claim-test", &[]);
         assert!(verify(claim, &prefix_weights, suffix_point, &proof, &mut ch).is_ok());
 
         // Wrong claim value.
         let bad_claim = claim + F192::ONE;
-        let mut ch = Sponge::new(b"rs-k-claim-test", &[]);
+        let mut ch = Sponge::new(b"rs-claim-test", &[]);
         assert_eq!(
             verify(bad_claim, &prefix_weights, suffix_point, &proof, &mut ch).unwrap_err(),
-            VerifyErrorK::ClaimMismatch
+            VerifyError::ClaimMismatch
         );
-        let mut ch = Sponge::new(b"rs-k-claim-test", &[]);
+        let mut ch = Sponge::new(b"rs-claim-test", &[]);
         assert_eq!(
             verify_succinct(bad_claim, &prefix_weights, &proof, &mut ch).unwrap_err(),
-            VerifyErrorK::ClaimMismatch
+            VerifyError::ClaimMismatch
         );
 
         // Tampered s_hat_v.
         let mut bad = proof.clone();
         bad.s_hat_v[17].c0 ^= 1;
-        let mut ch = Sponge::new(b"rs-k-claim-test", &[]);
+        let mut ch = Sponge::new(b"rs-claim-test", &[]);
         assert_eq!(
             verify(claim, &prefix_weights, suffix_point, &bad, &mut ch).unwrap_err(),
-            VerifyErrorK::ClaimMismatch
+            VerifyError::ClaimMismatch
         );
     }
 
@@ -1167,7 +1175,7 @@ mod tests {
         );
     }
 
-    /// eval_rs_eq_k must agree with the dense evaluation: materialize
+    /// eval_rs_eq must agree with the dense evaluation: materialize
     /// rs_eq_ind, evaluate its MLE at a random query with the eq table.
     /// Also pins the prefix + binary-q variant against the full path.
     #[test]
@@ -1182,20 +1190,20 @@ mod tests {
         let eq_query = build_eq_table_ext(&query);
         let dense = inner_product_ext(&rs_eq_ind, &eq_query);
 
-        assert_eq!(eval_rs_eq_k(&z, &query, &coordinate_weights), dense);
+        assert_eq!(eval_rs_eq(&z, &query, &coordinate_weights), dense);
 
         // Prefix + binary-q path: replace the last 3 query coords by the
         // bits of y and compare against the general path.
         let split = l - 3;
-        let prefix = eval_rs_eq_prefix_k(&z, &query[..split]);
+        let prefix = eval_rs_eq_prefix(&z, &query[..split]);
         for y in 0..8u32 {
             let mut q_bin = query[..split].to_vec();
             for j in 0..3 {
                 q_bin.push(if (y >> j) & 1 == 1 { F192::ONE } else { F192::ZERO });
             }
             assert_eq!(
-                eval_rs_eq_finish_from_prefix_binary_q_k(&prefix, &z[split..], y, &coordinate_weights),
-                eval_rs_eq_k(&z, &q_bin, &coordinate_weights),
+                eval_rs_eq_finish_from_prefix_binary_q(&prefix, &z[split..], y, &coordinate_weights),
+                eval_rs_eq(&z, &q_bin, &coordinate_weights),
                 "binary-q finish mismatch at y={y}"
             );
         }
@@ -1209,13 +1217,13 @@ mod tests {
         let m = 12;
         let mut s = 5u64;
         let bits = rand_bits(m, &mut s);
-        let packed = pack_witness_k(&bits, m);
+        let packed = pack_witness(&bits, m);
         let point: Vec<F192> = (0..m).map(|_| rand_ext(&mut s)).collect();
-        let prefix_weights = eq_prefix_weights(&point[..LOG_PACKING_K]);
-        let suffix_point = &point[LOG_PACKING_K..];
+        let prefix_weights = eq_prefix_weights(&point[..LOG_PACKING]);
+        let suffix_point = &point[LOG_PACKING..];
         let claim = claim_check(&prefix_weights, &s_hat_v_reference(&packed, suffix_point));
 
-        let mut ch = Sponge::new(b"rs-k-identity-test", &[]);
+        let mut ch = Sponge::new(b"rs-identity-test", &[]);
         let (_proof, out) = prove(&packed, &prefix_weights, suffix_point, claim, None, &mut ch);
         assert_eq!(
             inner_product_base_ext(&packed, &out.rs_eq_ind),
@@ -1224,14 +1232,14 @@ mod tests {
         );
     }
 
-    // -- end-to-end: reduction + ligerito_k opening --------------------------
+    // -- end-to-end: reduction + ligerito opening --------------------------
 
     /// Configs for a K-witness of `2^log_n` words: prefer the production
     /// Secure-profile derivation; fall back to the ad-hoc default_config
     /// shape at test sizes below its feasibility floor (same fallback the
-    /// ligerito_k tests use).
-    fn configs_for(log_n: usize) -> (ProverConfig, VerifierConfig) {
-        if let Ok(pv) = k_configs_for(log_n) {
+    /// ligerito tests use).
+    fn test_configs_for(log_n: usize) -> (ProverConfig, VerifierConfig) {
+        if let Ok(pv) = configs_for(log_n) {
             return pv;
         }
         for bs in (1..=5).rev() {
@@ -1244,7 +1252,7 @@ mod tests {
                 }
             }
         }
-        panic!("no feasible ligerito_k config at log_n = {log_n}");
+        panic!("no feasible ligerito config at log_n = {log_n}");
     }
 
     struct E2e {
@@ -1254,31 +1262,31 @@ mod tests {
         suffix_point: Vec<F192>,
         claim: F192,
         root: Hash,
-        rs_proof: RingSwitchProofK,
-        lig_proof: LigeritoProofK,
+        rs_proof: RingSwitchProof,
+        lig_proof: LigeritoProof,
     }
 
-    const E2E_DOMAIN: &[u8] = b"ring-switch-k-e2e-test";
+    const E2E_DOMAIN: &[u8] = b"ring-switch-e2e-test";
 
     /// Full prover pipeline: random bit witness, pack, commit, ring switch
     /// (plain-point eq weights or a caller-supplied generalized weight
-    /// vector), then the ligerito_k opening on (rs_eq_ind, sumcheck_claim),
+    /// vector), then the ligerito opening on (rs_eq_ind, sumcheck_claim),
     /// all over one continuous transcript.
     fn prove_e2e(m: usize, seed: u64, generalized_weights: bool) -> E2e {
         let mut s = seed;
         let bits = rand_bits(m, &mut s);
-        let packed = pack_witness_k(&bits, m);
-        let log_n = m - LOG_PACKING_K;
-        let (pc, vc) = configs_for(log_n);
-        let (cm, pd) = commit_k(&packed, pc.initial_k, pc.log_inv_rates[0]);
+        let packed = pack_witness(&bits, m);
+        let log_n = m - LOG_PACKING;
+        let (pc, vc) = test_configs_for(log_n);
+        let (cm, pd) = commit(&packed, pc.initial_k, pc.log_inv_rates[0]);
 
         let suffix_point: Vec<F192> = (0..log_n).map(|_| rand_ext(&mut s)).collect();
         let prefix_weights: Vec<F192> = if generalized_weights {
             // Synthetic non-eq weights (e.g. standing in for phi_8 Lagrange
             // weights): any 64 E-values work.
-            (0..PACKING_WIDTH_K).map(|_| rand_ext(&mut s)).collect()
+            (0..PACKING_WIDTH).map(|_| rand_ext(&mut s)).collect()
         } else {
-            let r_prefix: Vec<F192> = (0..LOG_PACKING_K).map(|_| rand_ext(&mut s)).collect();
+            let r_prefix: Vec<F192> = (0..LOG_PACKING).map(|_| rand_ext(&mut s)).collect();
             eq_prefix_weights(&r_prefix)
         };
         let claim = claim_check(&prefix_weights, &s_hat_v_reference(&packed, &suffix_point));
@@ -1286,7 +1294,7 @@ mod tests {
         let mut ch = Sponge::new(E2E_DOMAIN, &[]);
         let (rs_proof, out) = prove(&packed, &prefix_weights, &suffix_point, claim, None, &mut ch);
         assert_eq!(inner_product_base_ext(&packed, &out.rs_eq_ind), out.sumcheck_claim);
-        let lig_proof = recursive_prover_with_basis_k(
+        let lig_proof = recursive_prover_with_basis(
             &pc,
             &packed,
             out.rs_eq_ind,
@@ -1308,14 +1316,14 @@ mod tests {
     }
 
     /// Dense verification: ring-switch verify (rebuilds rs_eq_ind), then the
-    /// dense ligerito_k verifier with b_initial = rs_eq_ind.
+    /// dense ligerito verifier with b_initial = rs_eq_ind.
     fn verify_e2e_dense(e: &E2e) -> bool {
         let mut ch = Sponge::new(E2E_DOMAIN, &[]);
         let out = match verify(e.claim, &e.prefix_weights, &e.suffix_point, &e.rs_proof, &mut ch) {
             Ok(o) => o,
             Err(_) => return false,
         };
-        recursive_verifier_with_basis_k(
+        recursive_verifier_with_basis(
             &e.vc,
             &e.lig_proof,
             &out.rs_eq_ind,
@@ -1326,8 +1334,8 @@ mod tests {
     }
 
     /// Succinct verification: verify_succinct (no rs_eq_ind), then the
-    /// succinct ligerito_k verifier whose eval_b_residual closure evaluates
-    /// MLE(rs_eq_ind) polylog via eval_rs_eq_k (shared prefix + binary-q
+    /// succinct ligerito verifier whose eval_b_residual closure evaluates
+    /// MLE(rs_eq_ind) polylog via eval_rs_eq (shared prefix + binary-q
     /// residual finish).
     fn verify_e2e_succinct(e: &E2e) -> bool {
         let mut ch = Sponge::new(E2E_DOMAIN, &[]);
@@ -1337,7 +1345,7 @@ mod tests {
         };
         let z = e.suffix_point.clone();
         let coordinate_weights = out.coordinate_weights.clone();
-        recursive_verifier_with_basis_succinct_k(
+        recursive_verifier_with_basis_succinct(
             &e.vc,
             &e.lig_proof,
             e.log_n,
@@ -1346,9 +1354,9 @@ mod tests {
             |ris, yr_log_n| {
                 let split = z.len() - yr_log_n;
                 assert_eq!(ris.len(), split, "closure gets the full folded ris");
-                let prefix = eval_rs_eq_prefix_k(&z, ris);
+                let prefix = eval_rs_eq_prefix(&z, ris);
                 (0..1u32 << yr_log_n)
-                    .map(|y| eval_rs_eq_finish_from_prefix_binary_q_k(&prefix, &z[split..], y, &coordinate_weights))
+                    .map(|y| eval_rs_eq_finish_from_prefix_binary_q(&prefix, &z[split..], y, &coordinate_weights))
                     .collect()
             },
             &mut ch,

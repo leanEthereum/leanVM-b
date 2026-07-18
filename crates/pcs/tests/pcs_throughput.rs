@@ -1,4 +1,4 @@
-//! Dedicated K-PCS throughput benchmark (manual; `#[ignore]`d so it never runs
+//! Dedicated PCS throughput benchmark (manual; `#[ignore]`d so it never runs
 //! in a normal `cargo test`).
 //!
 //! Commits and opens a random witness of `2^PCS_LOG_N` GF(2^64) elements at
@@ -13,7 +13,7 @@
 //!   PCS_LOG_N=24 PCS_LOG_INV_RATE=1 cargo test --release -p pcs --test pcs_throughput -- --ignored --nocapture
 //!
 //! Hierarchical tracing is enabled automatically (`RUST_LOG` adjusts its
-//! verbosity). Set `LIG_K_TRACE=1` as well for the legacy textual per-phase
+//! verbosity). Set `LIGERITO_TRACE=1` as well for the legacy textual per-phase
 //! breakdown. Large `PCS_LOG_N` needs substantial memory (the RS codeword is
 //! `2^log_inv_rate`× the witness, and the open clones the basis table each
 //! sample).
@@ -22,9 +22,9 @@ use std::hint::black_box;
 use std::time::Instant;
 
 use fiat_shamir::Sponge;
-use pcs::ligerito_k::{
-    build_eq_table_ext, commit_k, inner_product_base_ext, k_configs_for, k_configs_for_rate,
-    recursive_prover_with_basis_k,
+use pcs::ligerito::{
+    build_eq_table_ext, commit, inner_product_base_ext, configs_for, configs_for_rate,
+    recursive_prover_with_basis,
 };
 use primitives::field::{F64, F192};
 
@@ -58,10 +58,10 @@ fn pcs_throughput() {
 
     // Honour PCS_LOG_INV_RATE if set, else the production profile's L0 rate.
     let (pc, _vc) = match env_usize("PCS_LOG_INV_RATE") {
-        Some(r) => k_configs_for_rate(log_n, r),
-        None => k_configs_for(log_n),
+        Some(r) => configs_for_rate(log_n, r),
+        None => configs_for(log_n),
     }
-    .expect("Ligerito-K config feasible (try a larger PCS_LOG_N, e.g. >= 16)");
+    .expect("Ligerito config feasible (try a larger PCS_LOG_N, e.g. >= 16)");
     let log_inv_rate = pc.log_inv_rates[0];
     let trace_span = tracing::info_span!("PCS throughput", log_n, log_inv_rate, samples).entered();
 
@@ -81,7 +81,7 @@ fn pcs_throughput() {
         tracing::info_span!("Sample", sample).in_scope(|| {
             let ((cm, pd), elapsed) = tracing::info_span!("Commit").in_scope(|| {
                 let t = Instant::now();
-                let committed = commit_k(&witness, pc.initial_k, log_inv_rate);
+                let committed = commit(&witness, pc.initial_k, log_inv_rate);
                 (committed, t.elapsed().as_secs_f64())
             });
             commit_times.push(elapsed);
@@ -89,7 +89,7 @@ fn pcs_throughput() {
             let mut ch = Sponge::new(b"pcs-throughput", &[]);
             let (proof, elapsed) = tracing::info_span!("PCS open").in_scope(|| {
                 let t = Instant::now();
-                let proof = recursive_prover_with_basis_k(
+                let proof = recursive_prover_with_basis(
                     &pc,
                     &witness,
                     b_initial.clone(),
@@ -118,7 +118,7 @@ fn pcs_throughput() {
     // before printing the throughput report so the complete trace appears first.
     drop(trace_span);
 
-    println!("\nK-PCS throughput — 2^{log_n} variables, rate 1/2^{log_inv_rate}, median of {samples}");
+    println!("\nPCS throughput — 2^{log_n} variables, rate 1/2^{log_inv_rate}, median of {samples}");
     println!(
         "  committed data                  : {:>8.1} MiB  ({n} F64)",
         mib(data_bytes)

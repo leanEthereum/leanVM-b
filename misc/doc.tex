@@ -546,7 +546,7 @@ We lay out the whole protocol as one ordered sequence. Each reduction below adds
 
 \section{Recursive aggregation}\label{sec:recursion}
 
-The implemented N-to-1 aggregation runs the verifier of \S\ref{sec:e2e-unrolled} \emph{inside} the VM: one compiled guest replays the transcripts, sumchecks, ring switches, and stacked Ligerito-K openings of $n_{\mathrm{rec}}\ge1$ ordinary VM proofs for a fixed inner program. The proofs may have different announced table and commitment sizes; the guest dispatches among the certified shapes without recompilation. The VM is well suited to this because $\E$ is its machine-word field and its Fiat--Shamir hash is the \texttt{BLAKE3} opcode. One class of operations, however, does not fit.
+The implemented N-to-1 aggregation runs the verifier of \S\ref{sec:e2e-unrolled} \emph{inside} the VM: one compiled guest replays the transcripts, sumchecks, ring switches, and stacked Ligerito openings of $n_{\mathrm{rec}}\ge1$ ordinary VM proofs for a fixed inner program. The proofs may have different announced table and commitment sizes; the guest dispatches among the certified shapes without recompilation. The VM is well suited to this because $\E$ is its machine-word field and its Fiat--Shamir hash is the \texttt{BLAKE3} opcode. One class of operations, however, does not fit.
 
 \subsection{Deferred evaluation claims}\label{sec:deferred-claims}
 

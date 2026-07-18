@@ -10,7 +10,7 @@
 //! scalars live in E, so interactive error terms keep their `c/2^128` form.
 //!
 //! - [`transcript`] — the shared Fiat–Shamir transcript (re-exported from `fiat_shamir`).
-//! - [`pcs`] — `K`-committed witness, `E`-opened, via the stacked Ligerito-K (§3).
+//! - [`pcs`] — `K`-committed witness, `E`-opened, via the stacked Ligerito (§3).
 //! - [`witness`] — `K`-valued columns stacked into one committed witness.
 //! - [`gkr`] — the grand product via GKR (§4.3), balancing the bus.
 //! - [`leaf`] — the shared bus: grand-product balance, decomposed to per-column claims (§4.2–§4.4, §5).

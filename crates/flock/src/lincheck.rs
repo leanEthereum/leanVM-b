@@ -119,7 +119,7 @@
 
 use crate::r1cs::SparseBinaryMatrix;
 use fiat_shamir::transcript::{ProverState, VerifierState};
-use pcs::ring_switch_k::inner_product_ext;
+use pcs::ring_switch::inner_product_ext;
 use primitives::field::F192;
 use primitives::multilinear::{eq_table as build_eq, lagrange_weights_naive};
 
@@ -2034,7 +2034,7 @@ mod tests {
         // partial_fold_packed_z's stripe layout.
         let cases: &[(usize, usize)] = &[(13, 10), (15, 11), (17, 13)];
         for &(m, k_log) in cases {
-            assert!(k_log >= pcs::pack_k::LOG_PACKING_K);
+            assert!(k_log >= pcs::pack::LOG_PACKING);
             assert!(k_log >= K_SKIP);
             let n_log = m - k_log;
             assert!(n_log >= 3);
@@ -2042,7 +2042,7 @@ mod tests {
 
             // Boolean witness in standard logical (linear) layout.
             let z = rng.bits(1 << m);
-            let packed = pcs::pack_k::pack_witness_k(&z, m);
+            let packed = pcs::pack::pack_witness(&z, m);
             let z_packed_lincheck = pack_z_lincheck(&z, m, k_log);
 
             // AB-shaped quirky point: x_inner_rest has k_log − K_SKIP coords;
@@ -2056,13 +2056,13 @@ mod tests {
             x_outer_full.extend_from_slice(&x_inner_rest);
             x_outer_full.extend_from_slice(&x_outer);
             let suffix_tensor = primitives::multilinear::eq_table(&x_outer_full);
-            let want = pcs::ring_switch_k::fold_1b_rows_k(&packed, &suffix_tensor);
+            let want = pcs::ring_switch::fold_1b_rows(&packed, &suffix_tensor);
 
             // New path: lincheck-shaped partial fold of z at x_outer, then a
             // strided fold against the inner-rest tail.
             let eq_x_outer = primitives::multilinear::eq_table(&x_outer);
             let z_vec = partial_fold_packed_z(&z_packed_lincheck, m, k_log, &eq_x_outer);
-            let got = pcs::ring_switch_k::s_hat_v_from_z_vec(&z_vec, &x_inner_rest);
+            let got = pcs::ring_switch::s_hat_v_from_z_vec(&z_vec, &x_inner_rest);
 
             assert_eq!(got, want, "s_hat_v mismatch at m={m}, k_log={k_log}");
         }

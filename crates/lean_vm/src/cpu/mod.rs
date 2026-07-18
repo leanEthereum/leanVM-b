@@ -811,7 +811,7 @@ mod tests {
 
         // The stacked opening is the proof's one hint; tamper a sumcheck
         // round message (the inner-product transcript) — must be rejected.
-        let lig = proof.openings.last_mut().expect("stacked Ligerito-K opening");
+        let lig = proof.openings.last_mut().expect("stacked Ligerito opening");
         lig.ligerito.sumcheck_transcript[0].u_0 += F192::ONE;
         assert!(
             verify(&program, &pi, &proof).is_err(),
