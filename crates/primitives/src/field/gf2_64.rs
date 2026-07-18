@@ -4,9 +4,8 @@
 //! fold PMULL + a ≤4-bit overflow tail; the product and fold never leave
 //! the NEON register file.
 //!
-//! This is the same base field as [`super::gf2_64x3`] (F192's tower base) and
-//! [`super::tower_f128`] (F128T's tower base); the reduction helper
-//! [`super::gf2_64x3::base_reduce_128`] is shared.
+//! This is the base field for [`super::gf2_64x3`] (F192's tower base); the
+//! reduction helper [`super::gf2_64x3::base_reduce_128`] is shared.
 
 use core::ops::{Add, AddAssign, Mul, MulAssign};
 

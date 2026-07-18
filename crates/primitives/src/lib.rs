@@ -6,7 +6,7 @@ pub mod field;
 pub mod multilinear;
 pub mod scratch;
 
-pub use field::{F64, F128T, F192, G, g_pow, g_powers, x_pow};
+pub use field::{F64, F192, G, g_pow, g_powers, x_pow};
 
 /// `log2` of a power of two (panics otherwise).
 pub fn log2_strict_usize(n: usize) -> usize {

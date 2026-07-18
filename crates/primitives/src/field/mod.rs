@@ -9,22 +9,16 @@
 //! - [`F8`]    — GF(2^8) with AES polynomial x^8 + x^4 + x^3 + x + 1
 //! - [`F192`]  — `K[y]/(y^3 + y + 1)`
 //! - [`F192Unreduced`] — its deferred-reduction accumulator
-//! - [`F128T`] — the previous GF(2^128) tower, retained for kernel comparisons
 
 pub mod gf2_64;
 pub mod gf2_64x3;
 pub mod gf2_8;
 pub mod phi8_tower;
-pub mod tower_f128;
-pub mod tower_f128_artin;
-pub mod vpclmul;
 
 pub use gf2_8::F8;
 pub use gf2_64::F64;
 pub use gf2_64x3::{F192, F192BaseUnreduced, F192Unreduced};
-pub use phi8_tower::{PHI_8_TABLE, PHI_8_TABLE_192, phi8, phi8_192};
-pub use tower_f128::{F128T, F128TBaseUnreduced, F128TUnreduced};
-pub use tower_f128_artin::{F128TArtin, F128TArtinBaseUnreduced, F128TArtinUnreduced};
+pub use phi8_tower::{PHI_8_TABLE_192, phi8_192};
 
 // ---------------------------------------------------------------------------
 // leanVM g-power helpers: domain separators / opcodes as x^k, and the g-power
