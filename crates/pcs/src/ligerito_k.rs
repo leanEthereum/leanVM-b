@@ -490,12 +490,7 @@ fn butterfly_interleaved_ext_block_par_rows(block: &mut [F192], twiddle: F64, bl
     top.par_chunks_mut(num_ntts)
         .zip(bot.par_chunks_mut(num_ntts))
         .for_each(|(top_row, bot_row)| {
-            for lane in 0..num_ntts {
-                let v = bot_row[lane];
-                let new_u = top_row[lane] + v.mul_base(twiddle);
-                top_row[lane] = new_u;
-                bot_row[lane] = v + new_u;
-            }
+            butterfly_ext_lanes(top_row, bot_row, twiddle);
         });
 }
 
@@ -514,28 +509,7 @@ fn butterfly_interleaved_ext_fused_2layer_par_rows(
     debug_assert_eq!(block.len(), 4 * stride);
 
     let do_one = |row_a: &mut [F192], row_b: &mut [F192], row_c: &mut [F192], row_d: &mut [F192]| {
-        for lane in 0..num_ntts {
-            let mut a = row_a[lane];
-            let mut b = row_b[lane];
-            let mut c = row_c[lane];
-            let mut d = row_d[lane];
-            let new_a = a + c.mul_base(t_outer);
-            c += new_a;
-            a = new_a;
-            let new_b = b + d.mul_base(t_outer);
-            d += new_b;
-            b = new_b;
-            let new_a2 = a + b.mul_base(t_inner_a);
-            b += new_a2;
-            a = new_a2;
-            let new_c2 = c + d.mul_base(t_inner_b);
-            d += new_c2;
-            c = new_c2;
-            row_a[lane] = a;
-            row_b[lane] = b;
-            row_c[lane] = c;
-            row_d[lane] = d;
-        }
+        butterfly_ext_fused_lanes(row_a, row_b, row_c, row_d, t_outer, t_inner_a, t_inner_b);
     };
 
     let (top_half, bot_half) = block.split_at_mut(2 * stride);
@@ -564,16 +538,346 @@ fn butterfly_interleaved_ext_fused_2layer_par_rows(
 
 #[inline]
 fn butterfly_interleaved_ext_block(block: &mut [F192], twiddle: F64, block_size_half: usize, num_ntts: usize) {
-    let off_bot = block_size_half * num_ntts;
+    let half_offset = block_size_half * num_ntts;
+    let (top, bot) = block.split_at_mut(half_offset);
     for r in 0..block_size_half {
-        let off_top = r * num_ntts;
-        let off_bot_r = off_top + off_bot;
-        for lane in 0..num_ntts {
-            let v = block[off_bot_r + lane];
-            let new_u = block[off_top + lane] + v.mul_base(twiddle);
-            block[off_top + lane] = new_u;
-            block[off_bot_r + lane] = v + new_u;
+        let off = r * num_ntts;
+        butterfly_ext_lanes(
+            &mut top[off..off + num_ntts],
+            &mut bot[off..off + num_ntts],
+            twiddle,
+        );
+    }
+}
+
+/// Butterfly all extension-field lanes in a row pair. The production layout
+/// has eight interleaved NTTs, which the AVX-512 path transposes from eight
+/// AoS `F192`s into three coefficient vectors before multiplying.
+#[inline]
+fn butterfly_ext_lanes(top: &mut [F192], bot: &mut [F192], twiddle: F64) {
+    debug_assert_eq!(top.len(), bot.len());
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "vpclmulqdq",
+        target_feature = "avx512f"
+    ))]
+    {
+        let vectors = top.len() / 8;
+        // SAFETY: target features are enabled at compile time and every call
+        // addresses exactly eight readable and writable F192 values.
+        unsafe {
+            for i in 0..vectors {
+                butterfly_ext_lanes_avx512(
+                    top.as_mut_ptr().add(8 * i),
+                    bot.as_mut_ptr().add(8 * i),
+                    twiddle.0,
+                );
+            }
         }
+        for lane in 8 * vectors..top.len() {
+            let v = bot[lane];
+            let new_u = top[lane] + v.mul_base(twiddle);
+            top[lane] = new_u;
+            bot[lane] = v + new_u;
+        }
+    }
+    #[cfg(not(all(
+        target_arch = "x86_64",
+        target_feature = "vpclmulqdq",
+        target_feature = "avx512f"
+    )))]
+    {
+        for lane in 0..top.len() {
+            let v = bot[lane];
+            let new_u = top[lane] + v.mul_base(twiddle);
+            top[lane] = new_u;
+            bot[lane] = v + new_u;
+        }
+    }
+}
+
+#[inline]
+fn butterfly_ext_fused_lanes(
+    row_a: &mut [F192],
+    row_b: &mut [F192],
+    row_c: &mut [F192],
+    row_d: &mut [F192],
+    t_outer: F64,
+    t_inner_a: F64,
+    t_inner_b: F64,
+) {
+    debug_assert_eq!(row_a.len(), row_b.len());
+    debug_assert_eq!(row_a.len(), row_c.len());
+    debug_assert_eq!(row_a.len(), row_d.len());
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "vpclmulqdq",
+        target_feature = "avx512f"
+    ))]
+    {
+        let vectors = row_a.len() / 8;
+        // SAFETY: target features are enabled at compile time and every call
+        // addresses exactly eight elements in each of four disjoint rows.
+        unsafe {
+            for i in 0..vectors {
+                butterfly_ext_fused_lanes_avx512(
+                    row_a.as_mut_ptr().add(8 * i),
+                    row_b.as_mut_ptr().add(8 * i),
+                    row_c.as_mut_ptr().add(8 * i),
+                    row_d.as_mut_ptr().add(8 * i),
+                    t_outer.0,
+                    t_inner_a.0,
+                    t_inner_b.0,
+                );
+            }
+        }
+        for lane in 8 * vectors..row_a.len() {
+            let mut a = row_a[lane];
+            let mut b = row_b[lane];
+            let mut c = row_c[lane];
+            let mut d = row_d[lane];
+            let new_a = a + c.mul_base(t_outer);
+            c += new_a;
+            a = new_a;
+            let new_b = b + d.mul_base(t_outer);
+            d += new_b;
+            b = new_b;
+            let new_a2 = a + b.mul_base(t_inner_a);
+            b += new_a2;
+            a = new_a2;
+            let new_c2 = c + d.mul_base(t_inner_b);
+            d += new_c2;
+            c = new_c2;
+            row_a[lane] = a;
+            row_b[lane] = b;
+            row_c[lane] = c;
+            row_d[lane] = d;
+        }
+    }
+    #[cfg(not(all(
+        target_arch = "x86_64",
+        target_feature = "vpclmulqdq",
+        target_feature = "avx512f"
+    )))]
+    {
+        butterfly_ext_lanes(row_a, row_c, t_outer);
+        butterfly_ext_lanes(row_b, row_d, t_outer);
+        butterfly_ext_lanes(row_a, row_b, t_inner_a);
+        butterfly_ext_lanes(row_c, row_d, t_inner_b);
+    }
+}
+
+#[cfg(all(
+    target_arch = "x86_64",
+    target_feature = "vpclmulqdq",
+    target_feature = "avx512f"
+))]
+#[derive(Clone, Copy)]
+struct F192x8 {
+    c0: core::arch::x86_64::__m512i,
+    c1: core::arch::x86_64::__m512i,
+    c2: core::arch::x86_64::__m512i,
+}
+
+#[cfg(all(
+    target_arch = "x86_64",
+    target_feature = "vpclmulqdq",
+    target_feature = "avx512f"
+))]
+#[inline]
+#[target_feature(enable = "avx512f")]
+unsafe fn load_f192x8_avx512(ptr: *const F192) -> F192x8 {
+    use core::arch::x86_64::*;
+
+    // The 24 coefficients occupy three contiguous ZMM registers. Each result
+    // first selects from the first two registers, then fills its tail from the
+    // third register.
+    unsafe {
+        let p = ptr.cast::<u64>();
+        let x0 = _mm512_loadu_si512(p.cast());
+        let x1 = _mm512_loadu_si512(p.add(8).cast());
+        let x2 = _mm512_loadu_si512(p.add(16).cast());
+
+        let c0_head = _mm512_permutex2var_epi64(
+            x0,
+            _mm512_set_epi64(0, 0, 15, 12, 9, 6, 3, 0),
+            x1,
+        );
+        let c0_tail = _mm512_permutexvar_epi64(_mm512_set_epi64(5, 2, 0, 0, 0, 0, 0, 0), x2);
+        let c1_head = _mm512_permutex2var_epi64(
+            x0,
+            _mm512_set_epi64(0, 0, 0, 13, 10, 7, 4, 1),
+            x1,
+        );
+        let c1_tail = _mm512_permutexvar_epi64(_mm512_set_epi64(6, 3, 0, 0, 0, 0, 0, 0), x2);
+        let c2_head = _mm512_permutex2var_epi64(
+            x0,
+            _mm512_set_epi64(0, 0, 0, 14, 11, 8, 5, 2),
+            x1,
+        );
+        let c2_tail = _mm512_permutexvar_epi64(_mm512_set_epi64(7, 4, 1, 0, 0, 0, 0, 0), x2);
+
+        F192x8 {
+            c0: _mm512_mask_mov_epi64(c0_head, 0xc0, c0_tail),
+            c1: _mm512_mask_mov_epi64(c1_head, 0xe0, c1_tail),
+            c2: _mm512_mask_mov_epi64(c2_head, 0xe0, c2_tail),
+        }
+    }
+}
+
+#[cfg(all(
+    target_arch = "x86_64",
+    target_feature = "vpclmulqdq",
+    target_feature = "avx512f"
+))]
+#[inline]
+#[target_feature(enable = "avx512f")]
+unsafe fn store_f192x8_avx512(ptr: *mut F192, value: F192x8) {
+    use core::arch::x86_64::*;
+
+    unsafe {
+        let x0_head = _mm512_permutex2var_epi64(
+            value.c0,
+            _mm512_set_epi64(10, 2, 0, 9, 1, 0, 8, 0),
+            value.c1,
+        );
+        let x0_tail = _mm512_permutexvar_epi64(_mm512_set_epi64(0, 0, 1, 0, 0, 0, 0, 0), value.c2);
+
+        let x1_head = _mm512_permutex2var_epi64(
+            value.c0,
+            _mm512_set_epi64(5, 0, 12, 4, 0, 11, 3, 0),
+            value.c1,
+        );
+        let x1_tail = _mm512_permutexvar_epi64(_mm512_set_epi64(0, 4, 0, 0, 3, 0, 0, 2), value.c2);
+
+        let x2_head = _mm512_permutex2var_epi64(
+            value.c0,
+            _mm512_set_epi64(0, 15, 7, 0, 14, 6, 0, 13),
+            value.c1,
+        );
+        let x2_tail = _mm512_permutexvar_epi64(_mm512_set_epi64(7, 0, 0, 6, 0, 0, 5, 0), value.c2);
+
+        let p = ptr.cast::<u64>();
+        _mm512_storeu_si512(p.cast(), _mm512_mask_mov_epi64(x0_head, 0x24, x0_tail));
+        _mm512_storeu_si512(p.add(8).cast(), _mm512_mask_mov_epi64(x1_head, 0x49, x1_tail));
+        _mm512_storeu_si512(p.add(16).cast(), _mm512_mask_mov_epi64(x2_head, 0x92, x2_tail));
+    }
+}
+
+#[cfg(all(
+    target_arch = "x86_64",
+    target_feature = "vpclmulqdq",
+    target_feature = "avx512f"
+))]
+#[inline]
+#[target_feature(enable = "vpclmulqdq", enable = "avx512f")]
+unsafe fn mul_base_f192x8_avx512(value: F192x8, twiddle: u64) -> F192x8 {
+    use core::arch::x86_64::*;
+
+    #[inline]
+    #[target_feature(enable = "vpclmulqdq", enable = "avx512f")]
+    unsafe fn mul_coeff(value: __m512i, tw: __m512i, r: __m512i) -> __m512i {
+        let even = _mm512_clmulepi64_epi128::<0x00>(value, tw);
+        let even_t = _mm512_clmulepi64_epi128::<0x01>(even, r);
+        let even_u = _mm512_clmulepi64_epi128::<0x01>(even_t, r);
+        let even = _mm512_xor_si512(_mm512_xor_si512(even, even_t), even_u);
+
+        let odd = _mm512_clmulepi64_epi128::<0x11>(value, tw);
+        let odd_t = _mm512_clmulepi64_epi128::<0x01>(odd, r);
+        let odd_u = _mm512_clmulepi64_epi128::<0x01>(odd_t, r);
+        let odd = _mm512_shuffle_epi32::<0x4e>(_mm512_xor_si512(_mm512_xor_si512(odd, odd_t), odd_u));
+        _mm512_mask_blend_epi64(0xaa, even, odd)
+    }
+
+    unsafe {
+        let tw = _mm512_set1_epi64(twiddle as i64);
+        let r = _mm512_set1_epi64(0x1b);
+        F192x8 {
+            c0: mul_coeff(value.c0, tw, r),
+            c1: mul_coeff(value.c1, tw, r),
+            c2: mul_coeff(value.c2, tw, r),
+        }
+    }
+}
+
+#[cfg(all(
+    target_arch = "x86_64",
+    target_feature = "vpclmulqdq",
+    target_feature = "avx512f"
+))]
+#[inline]
+#[target_feature(enable = "avx512f")]
+unsafe fn butterfly_f192x8_avx512(top: &mut F192x8, bot: &mut F192x8, twiddle: u64) {
+    use core::arch::x86_64::_mm512_xor_si512;
+
+    unsafe {
+        let product = mul_base_f192x8_avx512(*bot, twiddle);
+        top.c0 = _mm512_xor_si512(top.c0, product.c0);
+        top.c1 = _mm512_xor_si512(top.c1, product.c1);
+        top.c2 = _mm512_xor_si512(top.c2, product.c2);
+        bot.c0 = _mm512_xor_si512(bot.c0, top.c0);
+        bot.c1 = _mm512_xor_si512(bot.c1, top.c1);
+        bot.c2 = _mm512_xor_si512(bot.c2, top.c2);
+    }
+}
+
+/// Eight F192 butterflies with a shared base-field twiddle.
+///
+/// # Safety
+/// Requires VPCLMULQDQ + AVX-512F; `top` and `bot` must each address eight
+/// readable and writable F192 values.
+#[cfg(all(
+    target_arch = "x86_64",
+    target_feature = "vpclmulqdq",
+    target_feature = "avx512f"
+))]
+#[inline]
+#[target_feature(enable = "vpclmulqdq", enable = "avx512f")]
+unsafe fn butterfly_ext_lanes_avx512(top: *mut F192, bot: *mut F192, twiddle: u64) {
+    unsafe {
+        let mut u = load_f192x8_avx512(top);
+        let mut v = load_f192x8_avx512(bot);
+        butterfly_f192x8_avx512(&mut u, &mut v, twiddle);
+        store_f192x8_avx512(top, u);
+        store_f192x8_avx512(bot, v);
+    }
+}
+
+/// Fused two-layer butterfly over eight F192 lanes. Four rows stay in SoA ZMM
+/// form across both layers, so each row pays the AoS transpose only once.
+///
+/// # Safety
+/// Requires VPCLMULQDQ + AVX-512F; each pointer must address eight readable
+/// and writable F192 values, and the four regions must be disjoint.
+#[cfg(all(
+    target_arch = "x86_64",
+    target_feature = "vpclmulqdq",
+    target_feature = "avx512f"
+))]
+#[inline]
+#[target_feature(enable = "vpclmulqdq", enable = "avx512f")]
+unsafe fn butterfly_ext_fused_lanes_avx512(
+    row_a: *mut F192,
+    row_b: *mut F192,
+    row_c: *mut F192,
+    row_d: *mut F192,
+    t_outer: u64,
+    t_inner_a: u64,
+    t_inner_b: u64,
+) {
+    unsafe {
+        let mut a = load_f192x8_avx512(row_a);
+        let mut b = load_f192x8_avx512(row_b);
+        let mut c = load_f192x8_avx512(row_c);
+        let mut d = load_f192x8_avx512(row_d);
+        butterfly_f192x8_avx512(&mut a, &mut c, t_outer);
+        butterfly_f192x8_avx512(&mut b, &mut d, t_outer);
+        butterfly_f192x8_avx512(&mut a, &mut b, t_inner_a);
+        butterfly_f192x8_avx512(&mut c, &mut d, t_inner_b);
+        store_f192x8_avx512(row_a, a);
+        store_f192x8_avx512(row_b, b);
+        store_f192x8_avx512(row_c, c);
+        store_f192x8_avx512(row_d, d);
     }
 }
 
@@ -3403,6 +3707,47 @@ mod tests {
 
     fn rand_ext(s: &mut u64) -> F192 {
         F192::new(splitmix64(s), splitmix64(s), splitmix64(s))
+    }
+
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "vpclmulqdq",
+        target_feature = "avx512f"
+    ))]
+    #[test]
+    fn fused_ext_butterfly_avx512_matches_scalar() {
+        let mut s = 0x56c8_1b92_d4a7_30efu64;
+        for _ in 0..100 {
+            let mut a: [F192; 8] = std::array::from_fn(|_| rand_ext(&mut s));
+            let mut b: [F192; 8] = std::array::from_fn(|_| rand_ext(&mut s));
+            let mut c: [F192; 8] = std::array::from_fn(|_| rand_ext(&mut s));
+            let mut d: [F192; 8] = std::array::from_fn(|_| rand_ext(&mut s));
+            let (mut want_a, mut want_b, mut want_c, mut want_d) = (a, b, c, d);
+            let t_outer = F64(splitmix64(&mut s));
+            let t_inner_a = F64(splitmix64(&mut s));
+            let t_inner_b = F64(splitmix64(&mut s));
+
+            for lane in 0..8 {
+                let new_a = want_a[lane] + want_c[lane].mul_base(t_outer);
+                want_c[lane] += new_a;
+                want_a[lane] = new_a;
+                let new_b = want_b[lane] + want_d[lane].mul_base(t_outer);
+                want_d[lane] += new_b;
+                want_b[lane] = new_b;
+                let new_a = want_a[lane] + want_b[lane].mul_base(t_inner_a);
+                want_b[lane] += new_a;
+                want_a[lane] = new_a;
+                let new_c = want_c[lane] + want_d[lane].mul_base(t_inner_b);
+                want_d[lane] += new_c;
+                want_c[lane] = new_c;
+            }
+
+            butterfly_ext_fused_lanes(&mut a, &mut b, &mut c, &mut d, t_outer, t_inner_a, t_inner_b);
+            assert_eq!(a, want_a);
+            assert_eq!(b, want_b);
+            assert_eq!(c, want_c);
+            assert_eq!(d, want_d);
+        }
     }
 
     /// Configs for a K-witness of `2^log_n` elements. Prefers the strict
