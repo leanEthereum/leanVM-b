@@ -72,7 +72,7 @@ fn all_py_programs() {
         for (stream, entries) in witness(&src) {
             program.set_witness(stream, entries);
         }
-        let (proof, _) = prove(&program, want);
+        let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
         verify(&program, &want, &proof).unwrap_or_else(|e| panic!("{name}: verify: {e:?}"));
         println!("{name}: ok");
     }

@@ -27,7 +27,7 @@ def main():
     let program = compile(&parse(src).expect("parse"));
     // q·b must reproduce a = g^20; r·b must be 1.
     let want = [F192::from(g_pow(20)), F192::from(F64::ONE)];
-    let (proof, _) = prove(&program, want);
+    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
     verify(&program, &want, &proof).expect("division program verifies");
 
     let bad = [F192::from(g_pow(21)), F192::from(F64::ONE)];
@@ -55,7 +55,7 @@ def main():
     let program = compile(&parse(src).expect("parse"));
     // q = g^6 / g^2 = g^4 (runtime `/`); z = g^(6//2) = g^3 (compile-time `//`).
     let want = [F192::from(g_pow(4)), F192::from(g_pow(3))];
-    let (proof, _) = prove(&program, want);
+    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
     verify(&program, &want, &proof).expect("mixed //-and-/ program verifies");
 }
 
@@ -77,7 +77,11 @@ def main():
         let mut program = compile(&parse(src).expect("parse"));
         program.set_witness("den", vec![vec![F192::from(den)]]);
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let (proof, _) = prove(&program, [F192::from(F64::ONE), F192::from(F64::ONE)]);
+            let (proof, _) = prove(
+                &program,
+                [F192::from(F64::ONE), F192::from(F64::ONE)],
+                lean_vm::pcs::LOG_INV_RATE,
+            );
             verify(&program, &[F192::from(F64::ONE), F192::from(F64::ONE)], &proof).is_ok()
         }))
         .unwrap_or(false)

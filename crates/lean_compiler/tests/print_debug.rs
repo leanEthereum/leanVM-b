@@ -25,6 +25,6 @@ def main():
     let program = compile(&parse(src).expect("parse"));
     warm_setup(1);
     let want = [F192::from(F64(5) * primitives::field::g_pow(1)), F192::from(F64(3))];
-    let (proof, _) = prove(&program, want);
+    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
     verify(&program, &want, &proof).expect("prints must not disturb proving");
 }
