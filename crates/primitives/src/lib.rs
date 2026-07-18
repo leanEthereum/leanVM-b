@@ -8,6 +8,25 @@ pub mod scratch;
 
 pub use field::{F64, F192, G, g_pow, g_powers, x_pow};
 
+/// Install the hierarchical tracing subscriber used by benchmark binaries.
+///
+/// The default level is `INFO`; `RUST_LOG` can override it. Repeated calls are
+/// harmless: if another global subscriber is already installed, this leaves it
+/// unchanged.
+pub fn init_tracing() {
+    use tracing_forest::{ForestLayer, util::LevelFilter};
+    use tracing_subscriber::{EnvFilter, Registry, layer::SubscriberExt, util::SubscriberInitExt};
+
+    let env_filter = EnvFilter::builder()
+        .with_default_directive(LevelFilter::INFO.into())
+        .from_env_lossy();
+
+    let _ = Registry::default()
+        .with(env_filter)
+        .with(ForestLayer::default())
+        .try_init();
+}
+
 /// `log2` of a power of two (panics otherwise).
 pub fn log2_strict_usize(n: usize) -> usize {
     assert!(n.is_power_of_two(), "not a power of two: {n}");

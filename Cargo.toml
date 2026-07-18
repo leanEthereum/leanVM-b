@@ -11,6 +11,7 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
+primitives.workspace = true
 rec_aggregation.workspace = true
 clap = { version = "4", features = ["derive"] }
 
@@ -44,6 +45,9 @@ blake3 = "1.5"
 serde = { version = "1", features = ["derive"] }
 bincode = "1"
 rand = "0.9"
+tracing = "0.1.26"
+tracing-forest = { version = "0.3.0", features = ["ansi", "smallvec"] }
+tracing-subscriber = { version = "0.3.23", features = ["std", "env-filter"] }
 
 [profile.release]
 lto = "thin"

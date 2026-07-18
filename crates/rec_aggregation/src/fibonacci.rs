@@ -10,6 +10,7 @@ use primitives::field::{F64, F192, g_pow};
 /// Prove and verify Fibonacci-in-the-exponent over a `HeapBuf` (an unrolled
 /// `mul_range` recurrence), binding `g^{F(n)}` as the public input. Prints the
 /// benchmark report.
+#[tracing::instrument(name = "Fibonacci", skip_all, fields(n, log_inv_rate))]
 pub fn run_fibonacci(n: usize, log_inv_rate: usize) {
     let (src, pi) = fibonacci_program(n);
     let program = compile(&parse(&src).unwrap());

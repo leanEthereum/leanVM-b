@@ -21,6 +21,10 @@ struct Cli {
     )]
     log_inv_rate: usize,
 
+    /// Enable hierarchical timing traces. Use RUST_LOG to adjust verbosity.
+    #[arg(long, global = true)]
+    tracing: bool,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -68,12 +72,20 @@ fn main() {
     let cli = Cli::parse();
     match cli.command {
         Command::Xmss { n_signatures } => {
-            rec_aggregation::run_xmss_aggregation(n_signatures, cli.log_inv_rate)
+            if cli.tracing {
+                primitives::init_tracing();
+            }
+            rec_aggregation::run_xmss_aggregation(n_signatures, cli.log_inv_rate);
         }
         Command::Recursion { n, hashes, iters } => {
             let inner: Vec<(usize, usize)> = (0..n).map(|_| (hashes, iters)).collect();
-            rec_aggregation::run_recursion(&inner, cli.log_inv_rate);
+            rec_aggregation::run_recursion(&inner, cli.log_inv_rate, cli.tracing);
         }
-        Command::Fibonacci { n } => rec_aggregation::run_fibonacci(n, cli.log_inv_rate),
+        Command::Fibonacci { n } => {
+            if cli.tracing {
+                primitives::init_tracing();
+            }
+            rec_aggregation::run_fibonacci(n, cli.log_inv_rate);
+        }
     }
 }

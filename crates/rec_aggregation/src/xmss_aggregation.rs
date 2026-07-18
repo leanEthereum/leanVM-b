@@ -45,6 +45,7 @@ fn quad(b: &[u8]) -> Vec<F192> {
 /// natively with the `xmss` crate, runs the in-VM aggregation verifier
 /// (`guests/xmss_aggregate.py`) over all signatures, proves, verifies, and
 /// prints the benchmark report.
+#[tracing::instrument(name = "XMSS aggregation", skip_all, fields(n, log_inv_rate))]
 pub fn run_xmss_aggregation(n: usize, log_inv_rate: usize) {
     // Pin rayon workers to performance cores (QoS) before any parallel work runs,
     // so fork-join stages are not held up by efficiency-core stragglers. Thread

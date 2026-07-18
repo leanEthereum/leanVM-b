@@ -336,12 +336,13 @@ pub struct Stats {
 /// (scalar stream + PCS commitment / opening hints). Returns the proof and the
 /// run [`Stats`]. `log_inv_rate` selects the PCS rate and is announced in the
 /// Fiat–Shamir transcript before the commitment.
+#[tracing::instrument(name = "Prove", skip_all, fields(log_inv_rate))]
 pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) -> (Proof, Stats) {
     ::pcs::ligerito::validate_log_inv_rate(log_inv_rate).expect("valid log_inv_rate");
     let prof = std::env::var("LEANVM_PROFILE").is_ok();
     let ms = |t: std::time::Instant| t.elapsed().as_secs_f64() * 1e3;
     let t = std::time::Instant::now();
-    let exec = program.execute(public_input);
+    let exec = tracing::info_span!("Execute program").in_scope(|| program.execute(public_input));
     if prof {
         eprintln!("[prove] execute     : {:>7.2} ms", ms(t));
     }
@@ -357,7 +358,7 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
     let n_b3_warm = exec.trace.blake3.len().max(1);
     std::thread::spawn(move || crate::blake3_flock::warm_setup(n_b3_warm));
     let cycles = exec.cycles;
-    let w = program.build(&exec);
+    let w = tracing::info_span!("Build witness").in_scope(|| program.build(&exec));
     let counts = w.row_counts;
     // Real committed data, before zero-pad to 2^m. Virtual columns (the BLAKE3
     // value columns) carry data for the bus but are NOT committed, so exclude them.
@@ -375,7 +376,7 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
     // Announce the prover's sizes, then commit, before sampling any challenge.
     announce_public(&mut ps, w.log_mem, w.row_counts, log_inv_rate);
     let t = std::time::Instant::now();
-    let committed = pcs::commit(&mut ps, &w.q, log_inv_rate);
+    let committed = tracing::info_span!("Commit").in_scope(|| pcs::commit(&mut ps, &w.q, log_inv_rate));
     if prof {
         eprintln!("[prove] commit      : {:>7.2} ms", ms(t));
     }
@@ -389,23 +390,27 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
     // bus point, so no dedicated binding challenge is drawn. Mirrored in `verify`.
     let t = std::time::Instant::now();
     let l = &w.layout;
-    let (bus_claims, _bytecode_claims) = leaf::prove_balance(&l.push, &l.pull, &l.count, &w.cols, &mut ps);
+    let (bus_claims, _bytecode_claims) = tracing::info_span!("Prove bus")
+        .in_scope(|| leaf::prove_balance(&l.push, &l.pull, &l.count, &w.cols, &mut ps));
     if prof {
         eprintln!("[prove] bus(grand-p): {:>7.2} ms", ms(t));
     }
     let t = std::time::Instant::now();
-    let sch = schema();
-    let mut table_claims = Vec::new();
-    for (ti, table) in tables::tables().iter().enumerate() {
-        let involved = table.constraint_columns();
-        let position = tables::column_positions(involved);
-        let cols: Vec<Column> = involved.iter().map(|&c| w.cols[sch.base[ti] + c].clone()).collect();
-        table_claims.push(constraints::prove(
-            &cols,
-            |eta, vals| table.eval_constraint(eta, &tables::Cols::new(vals, &position)),
-            &mut ps,
-        ));
-    }
+    let table_claims = tracing::info_span!("Prove constraints").in_scope(|| {
+        let sch = schema();
+        let mut table_claims = Vec::new();
+        for (ti, table) in tables::tables().iter().enumerate() {
+            let involved = table.constraint_columns();
+            let position = tables::column_positions(involved);
+            let cols: Vec<Column> = involved.iter().map(|&c| w.cols[sch.base[ti] + c].clone()).collect();
+            table_claims.push(constraints::prove(
+                &cols,
+                |eta, vals| table.eval_constraint(eta, &tables::Cols::new(vals, &position)),
+                &mut ps,
+            ));
+        }
+        table_claims
+    });
     if prof {
         eprintln!("[prove] constraints : {:>7.2} ms", ms(t));
     }
@@ -441,18 +446,20 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
             .map(|r| crate::blake3_flock::compression(r.va, r.vb))
             .collect()
     };
-    let (_z_packed, reduced) = crate::blake3_flock::prove_reduction(&blocks, &committed.commitment, &mut ps);
+    let (_z_packed, reduced) = tracing::info_span!("Flock reduction")
+        .in_scope(|| crate::blake3_flock::prove_reduction(&blocks, &committed.commitment, &mut ps));
     if prof {
         eprintln!("[prove]   reduction : {:>7.2} ms", ms(t));
     }
     let t = std::time::Instant::now();
     let offset = w.layout.placements[QPKD].offset;
-    let ring = crate::blake3_flock::ring_switch_open(blocks.len(), offset, &reduced);
+    let ring = tracing::info_span!("Package ring switch")
+        .in_scope(|| crate::blake3_flock::ring_switch_open(blocks.len(), offset, &reduced));
     if prof {
         eprintln!("[prove]   ring pkg  : {:>7.2} ms", ms(t));
     }
     let t = std::time::Instant::now();
-    let mixed_open = pcs::open(&mut ps, &committed, &w.q, &slots, &ring);
+    let mixed_open = tracing::info_span!("PCS open").in_scope(|| pcs::open(&mut ps, &committed, &w.q, &slots, &ring));
     if prof {
         eprintln!("[prove]   stack open: {:>7.2} ms", ms(t));
     }
@@ -534,6 +541,7 @@ pub struct VerifySummary {
 /// the transcript, reconstruct the public layout from the announced sizes, read
 /// every scalar the prover wrote and pull the PCS hints, then assert the stream
 /// was fully consumed. Takes only public inputs — never the prover's witness.
+#[tracing::instrument(name = "Verify", skip_all)]
 pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Result<VerifySummary, Error> {
     let mut vs = VerifierState::new(b"leanvm-b", proof, &transcript_seed(program, public_input));
     let (l, log_inv_rate) = read_public(&mut vs, program, public_input)?;

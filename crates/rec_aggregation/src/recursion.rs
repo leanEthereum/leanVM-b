@@ -684,9 +684,9 @@ fn gen_verify(
         stack_mu + pcs::LOG_PACKING,
         summary.log_inv_rate,
     )
-        .and_then(|s| s.to_prover_verifier_configs())
-        .expect("stack ligerito config")
-        .1;
+    .and_then(|s| s.to_prover_verifier_configs())
+    .expect("stack ligerito config")
+    .1;
     let log_n = stack_mu;
     let shapes = vcfg.level_shapes(log_n);
     let (nlev, r) = (shapes.levels, vcfg.level_steps);
@@ -1183,11 +1183,7 @@ impl Batch {
 /// Prove `inner.len()` inner runs (same program, distinct statements + shapes),
 /// verify each inside the recursion guest, and assemble the aggregation inputs.
 /// `inner[k] = (hashes, iters)` sets sub k's opcode profile.
-fn build_batch(
-    inner: &[(usize, usize)],
-    log_inv_rates: &[usize],
-    outer_log_inv_rate: usize,
-) -> Batch {
+fn build_batch(inner: &[(usize, usize)], log_inv_rates: &[usize], outer_log_inv_rate: usize) -> Batch {
     assert!(!inner.is_empty(), "a recursion batch cannot be empty");
     assert_eq!(inner.len(), log_inv_rates.len(), "one PCS rate per inner proof");
     let nsub = inner.len();
@@ -1506,13 +1502,11 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
 
     // ---- LIG candidate tables (fixed [minm, maxm] range; open_stacked config) ----
     let oshape = |m: usize, log_inv_rate: usize| {
-        let vc = pcs::ligerito::LigeritoSecurityConfig::derive_config_with_log_inv_rate(
-            m + pcs::LOG_PACKING,
-            log_inv_rate,
-        )
-            .and_then(|s| s.to_prover_verifier_configs())
-            .expect("candidate ligerito config")
-            .1;
+        let vc =
+            pcs::ligerito::LigeritoSecurityConfig::derive_config_with_log_inv_rate(m + pcs::LOG_PACKING, log_inv_rate)
+                .and_then(|s| s.to_prover_verifier_configs())
+                .expect("candidate ligerito config")
+                .1;
         let sh = vc.level_shapes(m);
         let (cn, cr) = (sh.levels, vc.level_steps);
         let (ck, cl, cyr) = (sh.ks.clone(), sh.log_msg_cols.clone(), sh.yr_log_n);
@@ -1571,10 +1565,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     let cand_oods: Vec<Vec<usize>> = rates
         .flat_map(|r| (minm..=maxm).map(move |m| (m, r)))
         .map(|(m, r)| {
-            pcs::ligerito::LigeritoSecurityConfig::derive_config_with_log_inv_rate(
-                m + pcs::LOG_PACKING,
-                r,
-            )
+            pcs::ligerito::LigeritoSecurityConfig::derive_config_with_log_inv_rate(m + pcs::LOG_PACKING, r)
                 .and_then(|s| s.to_prover_verifier_configs())
                 .expect("candidate ligerito config")
                 .1
@@ -1700,12 +1691,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         ps("LIG_QUERY_GRIND_BITS", ints(&flat(&|c| c.10.clone(), maxlev)));
         ps(
             "LIG_OOD_SAMPLES",
-            ints(
-                &cand_oods
-                    .iter()
-                    .flat_map(|v| pad(v, maxlev))
-                    .collect::<Vec<_>>(),
-            ),
+            ints(&cand_oods.iter().flat_map(|v| pad(v, maxlev)).collect::<Vec<_>>()),
         );
         ps("LIG_QUERIES", ints(&flat(&|c| c.5.clone(), maxlev)));
         ps("LIG_FOLDS", ints(&flat(&|c| c.3.clone(), maxlev)));
@@ -1867,9 +1853,9 @@ fn recursion_guest(inner_program: &Program, nsub: usize) -> Program {
 ///    map needs only that size);
 /// 3. prove the inner proofs (and extract their hints);
 /// 4. prove the recursion, verify, discharge the three reduced claims.
-pub fn run_recursion(inner: &[(usize, usize)], log_inv_rate: usize) -> RecursiveProof {
+pub fn run_recursion(inner: &[(usize, usize)], log_inv_rate: usize, enable_tracing: bool) -> RecursiveProof {
     let rates = vec![log_inv_rate; inner.len()];
-    run_recursion_with_rates(inner, &rates, log_inv_rate)
+    run_recursion_with_rates(inner, &rates, log_inv_rate, enable_tracing)
 }
 
 /// Run recursion with one transcript-bound PCS rate per inner proof. The guest
@@ -1878,6 +1864,7 @@ fn run_recursion_with_rates(
     inner: &[(usize, usize)],
     log_inv_rates: &[usize],
     outer_log_inv_rate: usize,
+    enable_tracing: bool,
 ) -> RecursiveProof {
     // 1 + 2: the recursion program is generic — its map needs only the inner
     // bytecode size — so it is compiled FIRST, before any inner proof.
@@ -1895,6 +1882,10 @@ fn run_recursion_with_rates(
     let batch = build_batch(inner, log_inv_rates, outer_log_inv_rate);
     let nsub = batch.nsub;
     let total_inner_cycles = batch.total_inner_cycles;
+    if enable_tracing {
+        primitives::init_tracing();
+    }
+    let _span = tracing::info_span!("Recursive aggregation", n = nsub, log_inv_rate = outer_log_inv_rate).entered();
     let t = std::time::Instant::now();
     let (recursive_proof, stats) = batch.prove(&mut guest);
     let t_prove = t.elapsed();
@@ -1948,7 +1939,7 @@ fn run_recursion_with_rates(
 /// natively.
 #[test]
 fn recursion_2to1() {
-    run_recursion(&[(8, 1 << 15), (8, 1 << 15)], lean_vm::pcs::LOG_INV_RATE);
+    run_recursion(&[(8, 1 << 15), (8, 1 << 15)], lean_vm::pcs::LOG_INV_RATE, false);
 }
 
 /// THE genericity milestone: ONE compiled guest bytecode verifies two inner
@@ -1956,7 +1947,7 @@ fn recursion_2to1() {
 /// map depends only on the inner bytecode size, so one map covers both shapes).
 #[test]
 fn recursion_2to1_mixed() {
-    run_recursion_with_rates(&[(4, 1 << 13), (64, 1 << 15)], &[1, 4], 3);
+    run_recursion_with_rates(&[(4, 1 << 13), (64, 1 << 15)], &[1, 4], 3, false);
 }
 
 /// One compiled guest bytecode proves MANY inner runs with wildly different
@@ -1977,11 +1968,7 @@ fn recursion_soundness_binds() {
     // candidate, whose yr_log_n is below YR_LOG_CAP so the slot over-read
     // path is live. Ignored: several full inner+outer proofs.
     let cfg: &[(usize, usize)] = &[(4, 1 << 12)];
-    let batch = build_batch(
-        cfg,
-        &[lean_vm::pcs::LOG_INV_RATE],
-        lean_vm::pcs::LOG_INV_RATE,
-    );
+    let batch = build_batch(cfg, &[lean_vm::pcs::LOG_INV_RATE], lean_vm::pcs::LOG_INV_RATE);
     let mut guest = recursion_guest(&batch.program0, cfg.len());
     let public_input = batch.public_input();
 
@@ -2070,11 +2057,7 @@ fn recursion_generic_many() {
     let mut guest = recursion_guest(&inner_program(), 1);
     eprintln!("guest compiled ONCE ({} instrs)", guest.prog.len());
     for &cfg in configs {
-        let batch = build_batch(
-            &[cfg],
-            &[lean_vm::pcs::LOG_INV_RATE],
-            lean_vm::pcs::LOG_INV_RATE,
-        );
+        let batch = build_batch(&[cfg], &[lean_vm::pcs::LOG_INV_RATE], lean_vm::pcs::LOG_INV_RATE);
         let (recursive_proof, _) = batch.prove(&mut guest);
         recursive_proof
             .verify(&batch.program0)
