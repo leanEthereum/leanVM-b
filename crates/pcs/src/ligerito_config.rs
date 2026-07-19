@@ -158,7 +158,9 @@ impl VerifierConfig {
     /// See [`LevelShapes`].
     pub fn level_shapes(&self, log_n: usize) -> LevelShapes {
         let r = self.level_steps;
-        let ks: Vec<usize> = std::iter::once(self.initial_k).chain(self.level_ks.iter().copied()).collect();
+        let ks: Vec<usize> = std::iter::once(self.initial_k)
+            .chain(self.level_ks.iter().copied())
+            .collect();
         let mut log_msg_cols = vec![log_n - self.initial_k];
         for i in 0..r {
             log_msg_cols.push(log_msg_cols[i] - self.level_ks[i]);
@@ -176,7 +178,6 @@ impl VerifierConfig {
         }
     }
 }
-
 
 /// Soundness (in bits) the query phase must close on its own at every level
 /// (the "100 bits from queries always" policy).
@@ -211,11 +212,7 @@ pub fn udr_queries(log_inv_rate: usize) -> usize {
 /// feasibility floor, where they fall back to this shape. Production callers
 /// use `derive_config` (the audited, per-level-sound path).
 #[cfg(test)]
-pub fn default_config(
-    log_n: usize,
-    log_batch_size: usize,
-    log_inv_rate: usize,
-) -> Result<ProverConfig, &'static str> {
+pub fn default_config(log_n: usize, log_batch_size: usize, log_inv_rate: usize) -> Result<ProverConfig, &'static str> {
     let initial_k = log_batch_size;
     if log_n <= initial_k {
         return Err("log_n must be > initial_k");
@@ -319,11 +316,7 @@ struct LadderShape {
 /// The total RS domain loses [`RS_DOMAIN_INITIAL_REDUCTION_FACTOR`] bits after
 /// the initial fold, then exactly one bit per subsequent fold. Consequently a
 /// fold of `k` variables raises the inverse-rate logarithm by `k - reduction`.
-fn derive_ladder_shape(
-    log_n: usize,
-    initial_k: usize,
-    log_inv_rate: usize,
-) -> Result<LadderShape, String> {
+fn derive_ladder_shape(log_n: usize, initial_k: usize, log_inv_rate: usize) -> Result<LadderShape, String> {
     if log_n <= initial_k {
         return Err("log_n must be > initial_k".into());
     }
@@ -342,9 +335,7 @@ fn derive_ladder_shape(
         let k = SUBSEQUENT_FOLDING_FACTOR.min(n_running);
         let log_msg_cols_next = n_running - k;
         let rate_increase = fold_running.checked_sub(domain_reduction).ok_or_else(|| {
-            format!(
-                "folding factor {fold_running} is smaller than RS domain reduction {domain_reduction}"
-            )
+            format!("folding factor {fold_running} is smaller than RS domain reduction {domain_reduction}")
         })?;
         let next_rate = rate_running + rate_increase;
         shape.log_inv_rates.push(next_rate);
@@ -594,12 +585,7 @@ fn johnson_m_param(log_inv_rate: usize, log_msg_cols: usize, eta: f64) -> f64 {
 /// round, returning `log₂(2^{ℓ-1}·a_RLC) = log₂ a_RLC + (ℓ-1)`.
 ///
 /// `ℓ ≤ 1` (`L ≤ 2`) means no row union; the `(ℓ-1)` penalty clamps to 0.
-fn paper_johnson_log_a(
-    log_inv_rate: usize,
-    eta: f64,
-    log_msg_cols: usize,
-    log_num_interleaved: usize,
-) -> f64 {
+fn paper_johnson_log_a(log_inv_rate: usize, eta: f64, log_msg_cols: usize, log_num_interleaved: usize) -> f64 {
     let base = paper_thm_ca_johnson_log_a(log_inv_rate, eta, log_msg_cols);
     // Row-union factor 2^{ℓ-1} (worst round i=1 of the ℓ-round lane fold),
     // ℓ = log_num_interleaved. In bits: (ℓ-1), clamped ≥ 0.
@@ -644,15 +630,8 @@ fn udr_per_query_bits_asymptotic(log_inv_rate: usize) -> f64 {
 /// `θ = 1 − √ρ − η`, strictly below the Johnson radius by slack `η > 0`, so
 /// that regime never applies and the plain Johnson bound is both correct and
 /// far tighter (it dominates GGR throughout the regime RS can reach).
-fn johnson_interleaved_list_log2(
-    log_inv_rate: usize,
-    log_msg_cols: usize,
-    eta: f64,
-) -> f64 {
-    debug_assert!(
-        eta > 0.0,
-        "η must be > 0 to stay strictly below the Johnson radius"
-    );
+fn johnson_interleaved_list_log2(log_inv_rate: usize, log_msg_cols: usize, eta: f64) -> f64 {
+    debug_assert!(eta > 0.0, "η must be > 0 to stay strictly below the Johnson radius");
     let rho = reduced_rate(log_inv_rate, log_msg_cols);
     let sqrt_rho = rho.sqrt();
     let l_base = 1.0 / (2.0 * eta * sqrt_rho);
@@ -674,12 +653,7 @@ fn johnson_interleaved_list_log2(
 ///   the NEXT level's list, whatever its query count);
 /// - `ceil(log2(queries))` for the multilinear query-row batching; and
 /// - 2 for quadratic sumcheck (glue challenges have degree 1).
-fn johnson_algebraic_bits_for(
-    log_inv_rate: usize,
-    log_msg_cols: usize,
-    eta: f64,
-    queries: usize,
-) -> f64 {
+fn johnson_algebraic_bits_for(log_inv_rate: usize, log_msg_cols: usize, eta: f64, queries: usize) -> f64 {
     let log2_l = johnson_interleaved_list_log2(log_inv_rate, log_msg_cols, eta);
     let degree = crate::ring_switch::RING_SWITCH_SOUNDNESS_DEGREE
         .max(log2_ceil(queries))
@@ -705,13 +679,7 @@ fn johnson_algebraic_bits(level: &LigeritoLevelConfig) -> f64 {
 ///   evaluation claim sits at a post-commit random point, so at most one
 ///   list member matches it except with `L·μ/|F|` (union over the list, not
 ///   pairs): `bits = 192 − log₂ L_int − log₂ μ`.
-fn paper_ood_bits(
-    log_inv_rate: usize,
-    log_msg_cols: usize,
-    eta: f64,
-    mu_vars: usize,
-    ood_samples: usize,
-) -> f64 {
+fn paper_ood_bits(log_inv_rate: usize, log_msg_cols: usize, eta: f64, mu_vars: usize, ood_samples: usize) -> f64 {
     let log2_l = johnson_interleaved_list_log2(log_inv_rate, log_msg_cols, eta);
     let log2_mu = (mu_vars as f64).log2();
     if ood_samples == 0 {
@@ -774,8 +742,7 @@ fn optimize_johnson_level(
             continue;
         }
 
-        let eps_pg = ANALYSIS_LOG_Q
-            - paper_johnson_log_a(log_inv_rate, eta, log_msg_cols, log_num_interleaved);
+        let eps_pg = ANALYSIS_LOG_Q - paper_johnson_log_a(log_inv_rate, eta, log_msg_cols, log_num_interleaved);
         // At the theorem-parameter boundaries a grows monotonically with m;
         // no later candidate can recover once the proximity-gap target fails.
         if eps_pg + 1e-12 < target {
@@ -795,9 +762,7 @@ fn optimize_johnson_level(
         let ood_samples = if level == 0 {
             0
         } else {
-            match (1..=8usize).find(|&s| {
-                paper_ood_bits(log_inv_rate, log_msg_cols, eta, mu, s) + 1e-12 >= target
-            }) {
+            match (1..=8usize).find(|&s| paper_ood_bits(log_inv_rate, log_msg_cols, eta, mu, s) + 1e-12 >= target) {
                 Some(samples) => samples,
                 None => continue,
             }
@@ -844,12 +809,7 @@ impl LigeritoLevelConfig {
         // 2^ℓ-interleaved word (ℓ = log_num_interleaved) pays a row-union
         // factor 2^{ℓ-j} at round j (`lem:fold-list`); the worst round (j=1)
         // gives 2^{ℓ-1}, on top of the base Thm 4.6 MCA error.
-        let log_a = paper_johnson_log_a(
-            self.log_inv_rate,
-            self.eta,
-            self.log_msg_cols,
-            self.log_num_interleaved,
-        );
+        let log_a = paper_johnson_log_a(self.log_inv_rate, self.eta, self.log_msg_cols, self.log_num_interleaved);
         let eps_pg = ANALYSIS_LOG_Q - log_a;
         // Per-query soundness WITHOUT a list union bound — the OOD
         // binding (see `paper_ood_bits`) pins the prover to a single
@@ -863,13 +823,7 @@ impl LigeritoLevelConfig {
     /// See [`paper_ood_bits`].
     pub fn paper_predicted_ood_bits(&self) -> f64 {
         let mu = self.log_msg_cols + self.log_num_interleaved;
-        paper_ood_bits(
-            self.log_inv_rate,
-            self.log_msg_cols,
-            self.eta,
-            mu,
-            self.ood_samples,
-        )
+        paper_ood_bits(self.log_inv_rate, self.log_msg_cols, self.eta, mu, self.ood_samples)
     }
 }
 
@@ -880,7 +834,9 @@ impl LigeritoSecurityConfig {
         if self.log_n + crate::LOG_PACKING != self.m {
             return Err(format!(
                 "log_n ({}) + LOG_PACKING ({}) != m ({})",
-                self.log_n, crate::LOG_PACKING, self.m
+                self.log_n,
+                crate::LOG_PACKING,
+                self.m
             ));
         }
 
@@ -899,15 +855,9 @@ impl LigeritoSecurityConfig {
         }
 
         // L0 must have k = initial_k and log_num_interleaved = initial_k.
-        let l0 = self
-            .levels
-            .first()
-            .ok_or_else(|| "empty levels".to_string())?;
+        let l0 = self.levels.first().ok_or_else(|| "empty levels".to_string())?;
         if l0.k != self.initial_k {
-            return Err(format!(
-                "L0.k ({}) must equal initial_k ({})",
-                l0.k, self.initial_k
-            ));
+            return Err(format!("L0.k ({}) must equal initial_k ({})", l0.k, self.initial_k));
         }
         if l0.log_num_interleaved != self.initial_k {
             return Err(format!(
@@ -988,9 +938,7 @@ impl LigeritoSecurityConfig {
             // OOD diagnostic matches the formula and clears the target.
             let declared = lv.expected_eps_ood_bits;
             if !declared.is_finite() {
-                return Err(format!(
-                    "L{i}: expected_eps_ood_bits must be finite, got {declared}"
-                ));
+                return Err(format!("L{i}: expected_eps_ood_bits must be finite, got {declared}"));
             }
             let ood_pred = lv.paper_predicted_ood_bits();
             if (declared - ood_pred).abs() > PAPER_COMPAT_TOL_BITS {
@@ -1054,9 +1002,7 @@ impl LigeritoSecurityConfig {
             // reach target. (The pg bad event lives on the fold challenges,
             // so only the fold grind — done before each fold challenge —
             // boosts it; the query-phase grind does not.)
-            if pg_pred + lv.fold_grinding_bits as f64 + 1e-12
-                < lv.target_security_bits as f64
-            {
+            if pg_pred + lv.fold_grinding_bits as f64 + 1e-12 < lv.target_security_bits as f64 {
                 return Err(format!(
                     "L{i}: proximity-gap soundness ({pg_pred:.2} bits) + fold_grinding ({}) < target ({})",
                     lv.fold_grinding_bits, lv.target_security_bits
@@ -1184,22 +1130,11 @@ impl LigeritoSecurityConfig {
     pub fn to_prover_verifier_configs(&self) -> Result<(ProverConfig, VerifierConfig), String> {
         self.validate()?;
         let log_inv_rates: Vec<usize> = self.levels.iter().map(|lv| lv.log_inv_rate).collect();
-        let level_ks: Vec<usize> = self
-            .levels
-            .iter()
-            .skip(1)
-            .map(|lv| lv.k)
-            .collect();
-        let level_log_msg_cols: Vec<usize> = self
-            .levels
-            .iter()
-            .skip(1)
-            .map(|lv| lv.log_msg_cols)
-            .collect();
+        let level_ks: Vec<usize> = self.levels.iter().skip(1).map(|lv| lv.k).collect();
+        let level_log_msg_cols: Vec<usize> = self.levels.iter().skip(1).map(|lv| lv.log_msg_cols).collect();
         let queries: Vec<usize> = self.levels.iter().map(|lv| lv.queries).collect();
         let grinding_bits: Vec<usize> = self.levels.iter().map(|lv| lv.grinding_bits).collect();
-        let fold_grinding_bits: Vec<usize> =
-            self.levels.iter().map(|lv| lv.fold_grinding_bits).collect();
+        let fold_grinding_bits: Vec<usize> = self.levels.iter().map(|lv| lv.fold_grinding_bits).collect();
         let ood_samples: Vec<usize> = self.levels.iter().map(|lv| lv.ood_samples).collect();
         let prover = ProverConfig {
             log_inv_rates: log_inv_rates.clone(),
@@ -1260,8 +1195,7 @@ mod tests {
         let mut min_pg_bits = f64::INFINITY;
         for log_inv_rate in MIN_LOG_INV_RATE..=MAX_LOG_INV_RATE {
             for m in 22 + crate::LOG_PACKING..=28 + crate::LOG_PACKING {
-                let cfg = LigeritoSecurityConfig::derive_config_with_log_inv_rate(m, log_inv_rate)
-                    .unwrap();
+                let cfg = LigeritoSecurityConfig::derive_config_with_log_inv_rate(m, log_inv_rate).unwrap();
                 assert_eq!(cfg.target_security_bits, 128);
                 assert_eq!(cfg.levels[0].log_inv_rate, log_inv_rate);
                 assert_eq!(cfg.levels[0].ood_samples, 0);
@@ -1290,11 +1224,7 @@ mod tests {
 
     #[test]
     fn optimized_eta_query_and_rate_profile_is_stable() {
-        let cfg = LigeritoSecurityConfig::derive_config_with_log_inv_rate(
-            22 + crate::LOG_PACKING,
-            1,
-        )
-        .unwrap();
+        let cfg = LigeritoSecurityConfig::derive_config_with_log_inv_rate(22 + crate::LOG_PACKING, 1).unwrap();
         assert_eq!(
             cfg.levels.iter().map(|level| level.log_inv_rate).collect::<Vec<_>>(),
             [1, 4, 6, 8, 10]
@@ -1306,13 +1236,7 @@ mod tests {
         assert_eq!(
             cfg.levels
                 .iter()
-                .map(|level| {
-                    johnson_m_param(
-                        level.log_inv_rate,
-                        level.log_msg_cols,
-                        level.eta,
-                    ) as usize
-                })
+                .map(|level| { johnson_m_param(level.log_inv_rate, level.log_msg_cols, level.eta,) as usize })
                 .collect::<Vec<_>>(),
             [216, 80, 18, 35, 7]
         );
@@ -1321,22 +1245,15 @@ mod tests {
     #[test]
     fn recursive_rs_domain_reduction_schedule_is_stable() {
         for starting_rate in MIN_LOG_INV_RATE..=MAX_LOG_INV_RATE {
-            let cfg = LigeritoSecurityConfig::derive_config_with_log_inv_rate(
-                27 + crate::LOG_PACKING,
-                starting_rate,
-            )
-            .unwrap();
+            let cfg = LigeritoSecurityConfig::derive_config_with_log_inv_rate(27 + crate::LOG_PACKING, starting_rate)
+                .unwrap();
             let mut dim_in = cfg.log_n;
             let mut previous_domain_log = dim_in + cfg.levels[0].log_inv_rate;
             for (i, level) in cfg.levels.iter().enumerate() {
                 dim_in -= level.k;
                 if let Some(next) = cfg.levels.get(i + 1) {
                     let next_domain_log = dim_in + next.log_inv_rate;
-                    let expected_reduction = if i == 0 {
-                        RS_DOMAIN_INITIAL_REDUCTION_FACTOR
-                    } else {
-                        1
-                    };
+                    let expected_reduction = if i == 0 { RS_DOMAIN_INITIAL_REDUCTION_FACTOR } else { 1 };
                     assert_eq!(
                         previous_domain_log - next_domain_log,
                         expected_reduction,
@@ -1363,11 +1280,8 @@ mod tests {
         };
         let log_inv_rate = env_usize("LIGERITO_LOG_INV_RATE");
         let num_vars = env_usize("LIGERITO_NUM_VARS");
-        let cfg = LigeritoSecurityConfig::derive_config_with_log_inv_rate(
-            num_vars + crate::LOG_PACKING,
-            log_inv_rate,
-        )
-        .unwrap();
+        let cfg = LigeritoSecurityConfig::derive_config_with_log_inv_rate(num_vars + crate::LOG_PACKING, log_inv_rate)
+            .unwrap();
 
         println!(
             "num_vars={}, rate=1/{}",
@@ -1381,9 +1295,7 @@ mod tests {
                 pretty_integer(level),
                 pretty_integer(1usize << params.log_inv_rate),
                 pretty_integer(params.queries),
-                pretty_integer(
-                    johnson_m_param(params.log_inv_rate, params.log_msg_cols, eta) as usize
-                ),
+                pretty_integer(johnson_m_param(params.log_inv_rate, params.log_msg_cols, eta) as usize),
             );
         }
     }

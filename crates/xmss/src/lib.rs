@@ -67,10 +67,7 @@ pub mod array_serialization {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
     use std::marker::PhantomData;
 
-    pub fn serialize<S: Serializer, T: Serialize, const N: usize>(
-        data: &[T; N],
-        ser: S,
-    ) -> Result<S::Ok, S::Error> {
+    pub fn serialize<S: Serializer, T: Serialize, const N: usize>(data: &[T; N], ser: S) -> Result<S::Ok, S::Error> {
         let mut tup = ser.serialize_tuple(N)?;
         for elem in data {
             tup.serialize_element(elem)?;

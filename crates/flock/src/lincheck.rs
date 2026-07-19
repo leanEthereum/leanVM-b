@@ -1340,7 +1340,7 @@ pub fn verify<O>(
         // q(0) = claim + q(1) in char 2; q(X) = einf·X² + c1·X + e0.
         let e0 = running + e1;
         let c1 = e0 + e1 + einf;
-        running = einf * r * r + c1 * r + e0;
+        running = (einf * r + c1) * r + e0;
         r_rounds.push(r);
     }
 

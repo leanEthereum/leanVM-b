@@ -17,11 +17,11 @@
 use crate::transcript::{ProverState, VerifierState};
 use primitives::field::{F64, F192};
 
-use ::pcs::ligerito::{ProverConfig, VerifierConfig};
 use ::pcs::ligerito::{Commitment, ProverData, commit as ligerito_commit, configs_for_rate};
+use ::pcs::ligerito::{ProverConfig, VerifierConfig};
 pub use ::pcs::stack_open::{
-    BatchOpeningProof, RingSwitchClaim, RingSwitchOpen as RingSwitchOpen, RingSwitchVerify as RingSwitchVerify,
-    StackClaim as SlotClaim, StackedOpeningSummary as StackedOpeningSummary,
+    BatchOpeningProof, RingSwitchClaim, RingSwitchOpen, RingSwitchVerify, StackClaim as SlotClaim,
+    StackedOpeningSummary,
 };
 use ::pcs::stack_open::{open_batch_mixed_ligerito_stacked, verify_opening_batch_mixed_ligerito_stacked};
 
@@ -58,9 +58,8 @@ fn lig_configs(mu: usize, log_inv_rate: usize) -> std::sync::Arc<(ProverConfig, 
             mu >= MIN_MU,
             "witness must be ≥ 2^{MIN_MU} elements (padded by placements_of)"
         );
-        let pair = configs_for_rate(mu, log_inv_rate).unwrap_or_else(|e| {
-            panic!("ligerito config for mu={mu}, log_inv_rate={log_inv_rate}: {e}")
-        });
+        let pair = configs_for_rate(mu, log_inv_rate)
+            .unwrap_or_else(|e| panic!("ligerito config for mu={mu}, log_inv_rate={log_inv_rate}: {e}"));
         Arc::new(pair)
     }))
 }

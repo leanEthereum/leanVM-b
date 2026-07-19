@@ -453,9 +453,8 @@ pub fn verify<O>(log_n: usize, vs: &mut VerifierState<'_, O>) -> Result<Zerochec
         let rho = vs.sample();
         mlv_rhos.push(rho);
 
-        let one_plus_rho = F192::ONE + rho;
         // G(ρ) = G(0)·(1+ρ) + G(1)·ρ + G(∞)·ρ·(1+ρ).
-        c_running = g0 * one_plus_rho + g1 * rho + g_inf * rho * one_plus_rho;
+        c_running = g0 + rho * (g0 + g1 + (F192::ONE + rho) * g_inf);
     }
 
     // ---- AB sumcheck final consistency ----

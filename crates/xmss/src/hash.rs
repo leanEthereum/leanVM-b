@@ -58,13 +58,7 @@ pub fn make_tweak(tweak_type: u8, sub_position: u32, index: u32) -> Tweak {
 /// block the payload, zero-padded to 32 bytes (the payload length is fixed
 /// per tweak type). The hash for chain steps (16-byte payload) and Merkle
 /// nodes (32 bytes).
-pub fn tweak_hash(
-    pp: &PublicParam,
-    tweak_type: u8,
-    sub_position: u32,
-    index: u32,
-    payload: &[u8],
-) -> Digest {
+pub fn tweak_hash(pp: &PublicParam, tweak_type: u8, sub_position: u32, index: u32, payload: &[u8]) -> Digest {
     assert!(payload.len() <= STATE_LEN, "single-block payload exceeds 32 bytes");
     let mut state = [0u8; STATE_LEN];
     state[..TWEAK_LEN].copy_from_slice(&make_tweak(tweak_type, sub_position, index));
@@ -98,13 +92,7 @@ pub fn md_hash(iv: State, data: &[u8]) -> State {
 /// (GF(2^64), [`gf64::g_pow_bytes`]); the first block is `tweak | pp`,
 /// then `data`. Truncates the final state to a digest. Costs
 /// `1 + data.len() / 32` compressions.
-pub fn md_tweak_hash(
-    pp: &PublicParam,
-    tweak_type: u8,
-    sub_position: u32,
-    index: u32,
-    data: &[u8],
-) -> Digest {
+pub fn md_tweak_hash(pp: &PublicParam, tweak_type: u8, sub_position: u32, index: u32, data: &[u8]) -> Digest {
     let num_bytes = STATE_LEN + data.len();
     let mut iv = [0u8; STATE_LEN];
     iv[..8].copy_from_slice(&crate::gf64::g_pow_bytes(num_bytes));

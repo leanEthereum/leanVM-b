@@ -119,12 +119,7 @@ impl AdditiveNttF64 {
     /// Interleaved forward NTT starting at `start_layer` (the RS-encoding
     /// caller replicates the message into all `2^rate` sub-blocks, which IS
     /// the exact post-layer-`rate` state, and skips those layers here).
-    pub fn forward_transform_interleaved_from_layer(
-        &self,
-        data: &mut [F64],
-        num_ntts: usize,
-        start_layer: usize,
-    ) {
+    pub fn forward_transform_interleaved_from_layer(&self, data: &mut [F64], num_ntts: usize, start_layer: usize) {
         assert!(num_ntts.is_power_of_two() && num_ntts > 0);
         let n_total = data.len();
         assert_eq!(n_total % num_ntts, 0);
@@ -287,12 +282,7 @@ impl AdditiveNttF64 {
     }
 }
 
-fn butterfly_interleaved_block_par_rows(
-    block: &mut [F64],
-    twiddle: F64,
-    block_size_half: usize,
-    num_ntts: usize,
-) {
+fn butterfly_interleaved_block_par_rows(block: &mut [F64], twiddle: F64, block_size_half: usize, num_ntts: usize) {
     use rayon::prelude::*;
     const PARALLEL_ROW_THRESHOLD: usize = 1024;
     if block_size_half < PARALLEL_ROW_THRESHOLD {
@@ -322,15 +312,14 @@ fn butterfly_interleaved_fused_2layer_par_rows(
     let stride = quarter * num_ntts;
     debug_assert_eq!(block.len(), 4 * stride);
 
-    let do_one =
-        |row_a: &mut [F64], row_b: &mut [F64], row_c: &mut [F64], row_d: &mut [F64]| {
-            // Layer L butterflies (a,c) and (b,d), then layer L+1 (a,b) and
-            // (c,d); each stage runs the NEON lane-pair kernel over the rows.
-            butterfly_lanes(row_a, row_c, t_outer);
-            butterfly_lanes(row_b, row_d, t_outer);
-            butterfly_lanes(row_a, row_b, t_inner_a);
-            butterfly_lanes(row_c, row_d, t_inner_b);
-        };
+    let do_one = |row_a: &mut [F64], row_b: &mut [F64], row_c: &mut [F64], row_d: &mut [F64]| {
+        // Layer L butterflies (a,c) and (b,d), then layer L+1 (a,b) and
+        // (c,d); each stage runs the NEON lane-pair kernel over the rows.
+        butterfly_lanes(row_a, row_c, t_outer);
+        butterfly_lanes(row_b, row_d, t_outer);
+        butterfly_lanes(row_a, row_b, t_inner_a);
+        butterfly_lanes(row_c, row_d, t_inner_b);
+    };
 
     let (top_half, bot_half) = block.split_at_mut(2 * stride);
     let (q1, q2) = top_half.split_at_mut(stride);
@@ -357,24 +346,14 @@ fn butterfly_interleaved_fused_2layer_par_rows(
 }
 
 #[inline]
-fn butterfly_interleaved_block(
-    block: &mut [F64],
-    twiddle: F64,
-    block_size_half: usize,
-    num_ntts: usize,
-) {
+fn butterfly_interleaved_block(block: &mut [F64], twiddle: F64, block_size_half: usize, num_ntts: usize) {
     let half_offset = block_size_half * num_ntts;
     let (top, bot) = block.split_at_mut(half_offset);
     for r in 0..block_size_half {
         let off = r * num_ntts;
-        butterfly_lanes(
-            &mut top[off..off + num_ntts],
-            &mut bot[off..off + num_ntts],
-            twiddle,
-        );
+        butterfly_lanes(&mut top[off..off + num_ntts], &mut bot[off..off + num_ntts], twiddle);
     }
 }
-
 
 /// Butterfly all `num_ntts` lanes of one (top row, bottom row) pair with a
 /// shared twiddle: new_u = u + v*t; new_v = v + new_u.
@@ -386,22 +365,14 @@ fn butterfly_interleaved_block(
 #[inline]
 fn butterfly_lanes(top: &mut [F64], bot: &mut [F64], twiddle: F64) {
     debug_assert_eq!(top.len(), bot.len());
-    #[cfg(all(
-        target_arch = "x86_64",
-        target_feature = "vpclmulqdq",
-        target_feature = "avx512f"
-    ))]
+    #[cfg(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx512f"))]
     {
         let vectors = top.len() / 8;
         // SAFETY: the target features are enabled at compile time and each
         // iteration reads and writes exactly eight elements from both rows.
         unsafe {
             for i in 0..vectors {
-                butterfly_lanes_avx512(
-                    top.as_mut_ptr().add(8 * i),
-                    bot.as_mut_ptr().add(8 * i),
-                    twiddle.0,
-                );
+                butterfly_lanes_avx512(top.as_mut_ptr().add(8 * i), bot.as_mut_ptr().add(8 * i), twiddle.0);
             }
         }
         for lane in 8 * vectors..top.len() {
@@ -418,19 +389,11 @@ fn butterfly_lanes(top: &mut [F64], bot: &mut [F64], twiddle: F64) {
         // reads/writes exactly lanes [8i, 8i+8) of each row.
         unsafe {
             for i in 0..vectors {
-                butterfly_lanes_neon_8(
-                    top.as_mut_ptr().add(8 * i),
-                    bot.as_mut_ptr().add(8 * i),
-                    twiddle.0,
-                );
+                butterfly_lanes_neon_8(top.as_mut_ptr().add(8 * i), bot.as_mut_ptr().add(8 * i), twiddle.0);
             }
             let mut lane = 8 * vectors;
             while lane + 2 <= top.len() {
-                butterfly_lane_pair_neon(
-                    top.as_mut_ptr().add(lane),
-                    bot.as_mut_ptr().add(lane),
-                    twiddle.0,
-                );
+                butterfly_lane_pair_neon(top.as_mut_ptr().add(lane), bot.as_mut_ptr().add(lane), twiddle.0);
                 lane += 2;
             }
         }
@@ -444,11 +407,7 @@ fn butterfly_lanes(top: &mut [F64], bot: &mut [F64], twiddle: F64) {
     }
     #[cfg(not(any(
         all(target_arch = "aarch64", target_feature = "aes"),
-        all(
-            target_arch = "x86_64",
-            target_feature = "vpclmulqdq",
-            target_feature = "avx512f"
-        )
+        all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx512f")
     )))]
     {
         for lane in 0..top.len() {
@@ -484,30 +443,14 @@ unsafe fn butterfly_lanes_neon_8(top: *mut F64, bot: *mut F64, twiddle: u64) {
         let v3 = vld1q_u64(bot.cast::<u64>().add(6));
         let tw = vdupq_n_u64(twiddle);
 
-        let p00: uint64x2_t =
-            core::mem::transmute(vmull_p64(vgetq_lane_u64::<0>(v0), twiddle));
-        let p01: uint64x2_t = core::mem::transmute(vmull_high_p64(
-            core::mem::transmute(v0),
-            core::mem::transmute(tw),
-        ));
-        let p10: uint64x2_t =
-            core::mem::transmute(vmull_p64(vgetq_lane_u64::<0>(v1), twiddle));
-        let p11: uint64x2_t = core::mem::transmute(vmull_high_p64(
-            core::mem::transmute(v1),
-            core::mem::transmute(tw),
-        ));
-        let p20: uint64x2_t =
-            core::mem::transmute(vmull_p64(vgetq_lane_u64::<0>(v2), twiddle));
-        let p21: uint64x2_t = core::mem::transmute(vmull_high_p64(
-            core::mem::transmute(v2),
-            core::mem::transmute(tw),
-        ));
-        let p30: uint64x2_t =
-            core::mem::transmute(vmull_p64(vgetq_lane_u64::<0>(v3), twiddle));
-        let p31: uint64x2_t = core::mem::transmute(vmull_high_p64(
-            core::mem::transmute(v3),
-            core::mem::transmute(tw),
-        ));
+        let p00: uint64x2_t = core::mem::transmute(vmull_p64(vgetq_lane_u64::<0>(v0), twiddle));
+        let p01: uint64x2_t = core::mem::transmute(vmull_high_p64(core::mem::transmute(v0), core::mem::transmute(tw)));
+        let p10: uint64x2_t = core::mem::transmute(vmull_p64(vgetq_lane_u64::<0>(v1), twiddle));
+        let p11: uint64x2_t = core::mem::transmute(vmull_high_p64(core::mem::transmute(v1), core::mem::transmute(tw)));
+        let p20: uint64x2_t = core::mem::transmute(vmull_p64(vgetq_lane_u64::<0>(v2), twiddle));
+        let p21: uint64x2_t = core::mem::transmute(vmull_high_p64(core::mem::transmute(v2), core::mem::transmute(tw)));
+        let p30: uint64x2_t = core::mem::transmute(vmull_p64(vgetq_lane_u64::<0>(v3), twiddle));
+        let p31: uint64x2_t = core::mem::transmute(vmull_high_p64(core::mem::transmute(v3), core::mem::transmute(tw)));
 
         let prod0 = reduce_pair_pmull4(p00, p01);
         let prod1 = reduce_pair_pmull4(p10, p11);
@@ -545,11 +488,7 @@ unsafe fn butterfly_lanes_neon_8(top: *mut F64, bot: *mut F64, twiddle: u64) {
 /// # Safety
 /// Requires VPCLMULQDQ + AVX-512F; `top` and `bot` must each address eight
 /// readable and writable F64 values.
-#[cfg(all(
-    target_arch = "x86_64",
-    target_feature = "vpclmulqdq",
-    target_feature = "avx512f"
-))]
+#[cfg(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx512f"))]
 #[inline]
 #[target_feature(enable = "vpclmulqdq", enable = "avx512f", enable = "avx2")]
 unsafe fn butterfly_lanes_avx512(top: *mut F64, bot: *mut F64, twiddle: u64) {
@@ -596,8 +535,8 @@ unsafe fn butterfly_lanes_avx512(top: *mut F64, bot: *mut F64, twiddle: u64) {
 #[inline]
 #[target_feature(enable = "aes")]
 unsafe fn butterfly_lane_pair_neon(top: *mut F64, bot: *mut F64, twiddle: u64) {
-    use primitives::field::gf2_64::aarch64::reduce_pair_pmull4;
     use core::arch::aarch64::*;
+    use primitives::field::gf2_64::aarch64::reduce_pair_pmull4;
     // SAFETY: caller guarantees the pointees; F64 is repr(transparent) u64.
     unsafe {
         let u = vld1q_u64(top as *const u64);
@@ -605,12 +544,8 @@ unsafe fn butterfly_lane_pair_neon(top: *mut F64, bot: *mut F64, twiddle: u64) {
         // Products v_lane * twiddle: PMULL on the low lanes, PMULL2 on the
         // highs (the dup is loop-invariant and hoisted after inlining).
         let tw = vdupq_n_u64(twiddle);
-        let p0: uint64x2_t =
-            core::mem::transmute(vmull_p64(vgetq_lane_u64::<0>(v), twiddle));
-        let p1: uint64x2_t = core::mem::transmute(vmull_high_p64(
-            core::mem::transmute(v),
-            core::mem::transmute(tw),
-        ));
+        let p0: uint64x2_t = core::mem::transmute(vmull_p64(vgetq_lane_u64::<0>(v), twiddle));
+        let p1: uint64x2_t = core::mem::transmute(vmull_high_p64(core::mem::transmute(v), core::mem::transmute(tw)));
         let prod = reduce_pair_pmull4(p0, p1);
         let new_u = veorq_u64(u, prod);
         let new_v = veorq_u64(v, new_u);
@@ -621,10 +556,7 @@ unsafe fn butterfly_lane_pair_neon(top: *mut F64, bot: *mut F64, twiddle: u64) {
 
 #[inline]
 fn log2_pow2(n: usize) -> usize {
-    assert!(
-        n.is_power_of_two() && n > 0,
-        "length must be a positive power of 2"
-    );
+    assert!(n.is_power_of_two() && n > 0, "length must be a positive power of 2");
     n.trailing_zeros() as usize
 }
 

@@ -360,7 +360,7 @@ fn gen_agg(program: &Program, subs: &[SubDefer]) -> (Vec<(String, Vec<F192>)>, [
         r_bc.push(r);
         let g0 = brun + g1;
         let c1 = g0 + g1 + gi;
-        brun = gi * r * r + c1 * r + g0;
+        brun = (gi * r + c1) * r + g0;
         fold_lsb(&mut bt, r);
         fold_lsb(&mut wt, r);
     }
@@ -440,7 +440,7 @@ fn gen_agg(program: &Program, subs: &[SubDefer]) -> (Vec<(String, Vec<F192>)>, [
         r_row.push(r);
         let g0 = mrun + g1;
         let c1 = g0 + g1 + gi;
-        mrun = gi * r * r + c1 * r + g0;
+        mrun = (gi * r + c1) * r + g0;
         for u in us.iter_mut() {
             fold_lsb(u, r);
         }
@@ -481,7 +481,7 @@ fn gen_agg(program: &Program, subs: &[SubDefer]) -> (Vec<(String, Vec<F192>)>, [
         r_col.push(r);
         let g0 = mrun + g1;
         let c1 = g0 + g1 + gi;
-        mrun = gi * r * r + c1 * r + g0;
+        mrun = (gi * r + c1) * r + g0;
         for tb in [&mut acol, &mut bcol, &mut wa, &mut wb] {
             fold_lsb(tb, r);
         }
@@ -725,7 +725,7 @@ fn gen_verify(
         let (e1, ei, rv) = (lcr[2 * i], lcr[2 * i + 1], lrr[i]);
         let e0 = lrun + e1;
         let c1q = e0 + e1 + ei;
-        lrun = ei * rv * rv + c1q * rv + e0;
+        lrun = (ei * rv + c1q) * rv + e0;
     }
     let mut pinw = lc_beta;
     for (j, &rv) in lrr.iter().enumerate() {

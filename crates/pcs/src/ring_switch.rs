@@ -901,11 +901,11 @@ pub fn eval_rs_eq_finish_from_prefix_binary_q(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ligerito::{ProverConfig, VerifierConfig, default_config, default_verifier_config};
     use crate::ligerito::{
         LigeritoProof, commit, configs_for, recursive_prover_with_basis, recursive_verifier_with_basis,
         recursive_verifier_with_basis_succinct,
     };
+    use crate::ligerito::{ProverConfig, VerifierConfig, default_config, default_verifier_config};
     use crate::merkle::Hash;
     use crate::pack::pack_witness;
 

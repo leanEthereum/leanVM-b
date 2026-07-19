@@ -316,16 +316,8 @@ mod tests {
         // xtime: a · 0x02 (used by MixColumns), exhaustively cross-check
         // against the spec'd formula: xtime(a) = (a << 1) ^ (0x1B if a high bit).
         for a in 0u8..=255 {
-            let expected = if a & 0x80 != 0 {
-                (a << 1) ^ 0x1b
-            } else {
-                a << 1
-            };
-            assert_eq!(
-                (F8(a) * F8(0x02)).0,
-                expected,
-                "xtime mismatch at a=0x{a:02x}"
-            );
+            let expected = if a & 0x80 != 0 { (a << 1) ^ 0x1b } else { a << 1 };
+            assert_eq!((F8(a) * F8(0x02)).0, expected, "xtime mismatch at a=0x{a:02x}");
         }
     }
 

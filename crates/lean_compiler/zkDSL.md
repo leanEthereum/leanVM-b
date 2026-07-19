@@ -638,7 +638,7 @@ hint_f192_limbs(limbs, scalar)  # advice: scalar's three K coordinates
 block = StackBuf(2)
 pack64x2_into(limbs[0], limbs[1], block[0])
 pack64x2_into(limbs[2], tail, block[1])
-assert scalar == limbs[0] + limbs[1] * Y + limbs[2] * Y * Y
+assert scalar == limbs[0] + Y * (limbs[1] + Y * limbs[2])
 blake3(state, block, out)
 ```
 

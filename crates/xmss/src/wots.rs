@@ -87,13 +87,7 @@ impl WotsPublicKey {
 
 /// One chain step (1 compression). The position `chain_index * CHAIN_LENGTH +
 /// step` identifies the edge from chain value `step` to `step + 1`.
-pub fn chain_step(
-    public_param: &PublicParam,
-    slot: u32,
-    chain_index: usize,
-    step: usize,
-    x: &Digest,
-) -> Digest {
+pub fn chain_step(public_param: &PublicParam, slot: u32, chain_index: usize, step: usize, x: &Digest) -> Digest {
     let position = (chain_index * CHAIN_LENGTH + step) as u32;
     tweak_hash(public_param, TWEAK_TYPE_CHAIN, position, slot, x)
 }
@@ -107,7 +101,9 @@ pub fn iterate_hash(
     chain_index: usize,
     start_step: usize,
 ) -> Digest {
-    (0..n).fold(*a, |acc, j| chain_step(public_param, slot, chain_index, start_step + j, &acc))
+    (0..n).fold(*a, |acc, j| {
+        chain_step(public_param, slot, chain_index, start_step + j, &acc)
+    })
 }
 
 pub fn find_randomness_for_wots_encoding(

@@ -542,11 +542,7 @@ fn butterfly_interleaved_ext_block(block: &mut [F192], twiddle: F64, block_size_
     let (top, bot) = block.split_at_mut(half_offset);
     for r in 0..block_size_half {
         let off = r * num_ntts;
-        butterfly_ext_lanes(
-            &mut top[off..off + num_ntts],
-            &mut bot[off..off + num_ntts],
-            twiddle,
-        );
+        butterfly_ext_lanes(&mut top[off..off + num_ntts], &mut bot[off..off + num_ntts], twiddle);
     }
 }
 
@@ -556,22 +552,14 @@ fn butterfly_interleaved_ext_block(block: &mut [F192], twiddle: F64, block_size_
 #[inline]
 fn butterfly_ext_lanes(top: &mut [F192], bot: &mut [F192], twiddle: F64) {
     debug_assert_eq!(top.len(), bot.len());
-    #[cfg(all(
-        target_arch = "x86_64",
-        target_feature = "vpclmulqdq",
-        target_feature = "avx512f"
-    ))]
+    #[cfg(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx512f"))]
     {
         let vectors = top.len() / 8;
         // SAFETY: target features are enabled at compile time and every call
         // addresses exactly eight readable and writable F192 values.
         unsafe {
             for i in 0..vectors {
-                butterfly_ext_lanes_avx512(
-                    top.as_mut_ptr().add(8 * i),
-                    bot.as_mut_ptr().add(8 * i),
-                    twiddle.0,
-                );
+                butterfly_ext_lanes_avx512(top.as_mut_ptr().add(8 * i), bot.as_mut_ptr().add(8 * i), twiddle.0);
             }
         }
         for lane in 8 * vectors..top.len() {
@@ -581,11 +569,7 @@ fn butterfly_ext_lanes(top: &mut [F192], bot: &mut [F192], twiddle: F64) {
             bot[lane] = v + new_u;
         }
     }
-    #[cfg(not(all(
-        target_arch = "x86_64",
-        target_feature = "vpclmulqdq",
-        target_feature = "avx512f"
-    )))]
+    #[cfg(not(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx512f")))]
     {
         for lane in 0..top.len() {
             let v = bot[lane];
@@ -609,11 +593,7 @@ fn butterfly_ext_fused_lanes(
     debug_assert_eq!(row_a.len(), row_b.len());
     debug_assert_eq!(row_a.len(), row_c.len());
     debug_assert_eq!(row_a.len(), row_d.len());
-    #[cfg(all(
-        target_arch = "x86_64",
-        target_feature = "vpclmulqdq",
-        target_feature = "avx512f"
-    ))]
+    #[cfg(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx512f"))]
     {
         let vectors = row_a.len() / 8;
         // SAFETY: target features are enabled at compile time and every call
@@ -654,11 +634,7 @@ fn butterfly_ext_fused_lanes(
             row_d[lane] = d;
         }
     }
-    #[cfg(not(all(
-        target_arch = "x86_64",
-        target_feature = "vpclmulqdq",
-        target_feature = "avx512f"
-    )))]
+    #[cfg(not(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx512f")))]
     {
         butterfly_ext_lanes(row_a, row_c, t_outer);
         butterfly_ext_lanes(row_b, row_d, t_outer);
@@ -667,11 +643,7 @@ fn butterfly_ext_fused_lanes(
     }
 }
 
-#[cfg(all(
-    target_arch = "x86_64",
-    target_feature = "vpclmulqdq",
-    target_feature = "avx512f"
-))]
+#[cfg(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx512f"))]
 #[derive(Clone, Copy)]
 struct F192x8 {
     c0: core::arch::x86_64::__m512i,
@@ -679,11 +651,7 @@ struct F192x8 {
     c2: core::arch::x86_64::__m512i,
 }
 
-#[cfg(all(
-    target_arch = "x86_64",
-    target_feature = "vpclmulqdq",
-    target_feature = "avx512f"
-))]
+#[cfg(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx512f"))]
 #[inline]
 #[target_feature(enable = "avx512f")]
 unsafe fn load_f192x8_avx512(ptr: *const F192) -> F192x8 {
@@ -698,23 +666,11 @@ unsafe fn load_f192x8_avx512(ptr: *const F192) -> F192x8 {
         let x1 = _mm512_loadu_si512(p.add(8).cast());
         let x2 = _mm512_loadu_si512(p.add(16).cast());
 
-        let c0_head = _mm512_permutex2var_epi64(
-            x0,
-            _mm512_set_epi64(0, 0, 15, 12, 9, 6, 3, 0),
-            x1,
-        );
+        let c0_head = _mm512_permutex2var_epi64(x0, _mm512_set_epi64(0, 0, 15, 12, 9, 6, 3, 0), x1);
         let c0_tail = _mm512_permutexvar_epi64(_mm512_set_epi64(5, 2, 0, 0, 0, 0, 0, 0), x2);
-        let c1_head = _mm512_permutex2var_epi64(
-            x0,
-            _mm512_set_epi64(0, 0, 0, 13, 10, 7, 4, 1),
-            x1,
-        );
+        let c1_head = _mm512_permutex2var_epi64(x0, _mm512_set_epi64(0, 0, 0, 13, 10, 7, 4, 1), x1);
         let c1_tail = _mm512_permutexvar_epi64(_mm512_set_epi64(6, 3, 0, 0, 0, 0, 0, 0), x2);
-        let c2_head = _mm512_permutex2var_epi64(
-            x0,
-            _mm512_set_epi64(0, 0, 0, 14, 11, 8, 5, 2),
-            x1,
-        );
+        let c2_head = _mm512_permutex2var_epi64(x0, _mm512_set_epi64(0, 0, 0, 14, 11, 8, 5, 2), x1);
         let c2_tail = _mm512_permutexvar_epi64(_mm512_set_epi64(7, 4, 1, 0, 0, 0, 0, 0), x2);
 
         F192x8 {
@@ -725,36 +681,20 @@ unsafe fn load_f192x8_avx512(ptr: *const F192) -> F192x8 {
     }
 }
 
-#[cfg(all(
-    target_arch = "x86_64",
-    target_feature = "vpclmulqdq",
-    target_feature = "avx512f"
-))]
+#[cfg(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx512f"))]
 #[inline]
 #[target_feature(enable = "avx512f")]
 unsafe fn store_f192x8_avx512(ptr: *mut F192, value: F192x8) {
     use core::arch::x86_64::*;
 
     unsafe {
-        let x0_head = _mm512_permutex2var_epi64(
-            value.c0,
-            _mm512_set_epi64(10, 2, 0, 9, 1, 0, 8, 0),
-            value.c1,
-        );
+        let x0_head = _mm512_permutex2var_epi64(value.c0, _mm512_set_epi64(10, 2, 0, 9, 1, 0, 8, 0), value.c1);
         let x0_tail = _mm512_permutexvar_epi64(_mm512_set_epi64(0, 0, 1, 0, 0, 0, 0, 0), value.c2);
 
-        let x1_head = _mm512_permutex2var_epi64(
-            value.c0,
-            _mm512_set_epi64(5, 0, 12, 4, 0, 11, 3, 0),
-            value.c1,
-        );
+        let x1_head = _mm512_permutex2var_epi64(value.c0, _mm512_set_epi64(5, 0, 12, 4, 0, 11, 3, 0), value.c1);
         let x1_tail = _mm512_permutexvar_epi64(_mm512_set_epi64(0, 4, 0, 0, 3, 0, 0, 2), value.c2);
 
-        let x2_head = _mm512_permutex2var_epi64(
-            value.c0,
-            _mm512_set_epi64(0, 15, 7, 0, 14, 6, 0, 13),
-            value.c1,
-        );
+        let x2_head = _mm512_permutex2var_epi64(value.c0, _mm512_set_epi64(0, 15, 7, 0, 14, 6, 0, 13), value.c1);
         let x2_tail = _mm512_permutexvar_epi64(_mm512_set_epi64(7, 0, 0, 6, 0, 0, 5, 0), value.c2);
 
         let p = ptr.cast::<u64>();
@@ -764,11 +704,7 @@ unsafe fn store_f192x8_avx512(ptr: *mut F192, value: F192x8) {
     }
 }
 
-#[cfg(all(
-    target_arch = "x86_64",
-    target_feature = "vpclmulqdq",
-    target_feature = "avx512f"
-))]
+#[cfg(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx512f"))]
 #[inline]
 #[target_feature(enable = "vpclmulqdq", enable = "avx512f")]
 unsafe fn mul_base_f192x8_avx512(value: F192x8, twiddle: u64) -> F192x8 {
@@ -800,11 +736,7 @@ unsafe fn mul_base_f192x8_avx512(value: F192x8, twiddle: u64) -> F192x8 {
     }
 }
 
-#[cfg(all(
-    target_arch = "x86_64",
-    target_feature = "vpclmulqdq",
-    target_feature = "avx512f"
-))]
+#[cfg(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx512f"))]
 #[inline]
 #[target_feature(enable = "avx512f")]
 unsafe fn butterfly_f192x8_avx512(top: &mut F192x8, bot: &mut F192x8, twiddle: u64) {
@@ -826,11 +758,7 @@ unsafe fn butterfly_f192x8_avx512(top: &mut F192x8, bot: &mut F192x8, twiddle: u
 /// # Safety
 /// Requires VPCLMULQDQ + AVX-512F; `top` and `bot` must each address eight
 /// readable and writable F192 values.
-#[cfg(all(
-    target_arch = "x86_64",
-    target_feature = "vpclmulqdq",
-    target_feature = "avx512f"
-))]
+#[cfg(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx512f"))]
 #[inline]
 #[target_feature(enable = "vpclmulqdq", enable = "avx512f")]
 unsafe fn butterfly_ext_lanes_avx512(top: *mut F192, bot: *mut F192, twiddle: u64) {
@@ -849,11 +777,7 @@ unsafe fn butterfly_ext_lanes_avx512(top: *mut F192, bot: *mut F192, twiddle: u6
 /// # Safety
 /// Requires VPCLMULQDQ + AVX-512F; each pointer must address eight readable
 /// and writable F192 values, and the four regions must be disjoint.
-#[cfg(all(
-    target_arch = "x86_64",
-    target_feature = "vpclmulqdq",
-    target_feature = "avx512f"
-))]
+#[cfg(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx512f"))]
 #[inline]
 #[target_feature(enable = "vpclmulqdq", enable = "avx512f")]
 unsafe fn butterfly_ext_fused_lanes_avx512(
@@ -1682,7 +1606,7 @@ impl RoundQuad {
     }
     #[inline]
     fn eval(&self, r: F192) -> F192 {
-        self.c + r * self.b + r * r * self.a
+        (self.a * r + self.b) * r + self.c
     }
     #[inline]
     fn fold(p1: &Self, p2: &Self, alpha: F192) -> Self {
@@ -3711,11 +3635,7 @@ mod tests {
         F192::new(splitmix64(s), splitmix64(s), splitmix64(s))
     }
 
-    #[cfg(all(
-        target_arch = "x86_64",
-        target_feature = "vpclmulqdq",
-        target_feature = "avx512f"
-    ))]
+    #[cfg(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx512f"))]
     #[test]
     fn fused_ext_butterfly_avx512_matches_scalar() {
         let mut s = 0x56c8_1b92_d4a7_30efu64;

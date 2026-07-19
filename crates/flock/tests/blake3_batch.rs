@@ -149,8 +149,7 @@ fn blake3_batch_prove_verify() {
     let (reduced_witness, reduced) = setup.prove_reduction(&blocks, &mut ps);
     assert_eq!(flatten_packed(reduced_witness), q_pkd);
     let ring = prover_ring(&reduced, mu);
-    let opening =
-        open_batch_mixed_ligerito_stacked(ps.sponge_mut(), &q_pkd, &prover_data, &prover_config, &[], &ring);
+    let opening = open_batch_mixed_ligerito_stacked(ps.sponge_mut(), &q_pkd, &prover_data, &prover_config, &[], &ring);
     let open_ms = t.elapsed().as_secs_f64() * 1e3;
     let prove_s = t_prove.elapsed().as_secs_f64();
     let transcript = ps.into_proof();

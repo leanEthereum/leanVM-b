@@ -23,8 +23,7 @@ use std::time::Instant;
 
 use fiat_shamir::Sponge;
 use pcs::ligerito::{
-    build_eq_table_ext, commit, inner_product_base_ext, configs_for, configs_for_rate,
-    recursive_prover_with_basis,
+    build_eq_table_ext, commit, configs_for, configs_for_rate, inner_product_base_ext, recursive_prover_with_basis,
 };
 use primitives::{
     field::{F64, F192},

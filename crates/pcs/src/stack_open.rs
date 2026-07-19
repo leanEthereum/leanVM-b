@@ -57,11 +57,11 @@ use fiat_shamir::Sponge;
 use primitives::field::{F64, F192};
 use serde::{Deserialize, Serialize};
 
-use super::ligerito::{ProverConfig, VerifierConfig};
 use super::ligerito::{
     LigeritoProof, ProverData, build_eq_table_ext, build_eq_table_ext_seeded_into, recursive_prover_with_basis,
     recursive_verifier_with_basis_succinct_with_squeezes,
 };
+use super::ligerito::{ProverConfig, VerifierConfig};
 use super::pack::PACKING_WIDTH;
 use super::ring_switch::{self, RingSwitchProof, eval_rs_eq_finish_from_prefix_binary_q, eval_rs_eq_prefix};
 use super::tensor_algebra::TensorAlgebraE;
@@ -629,8 +629,8 @@ pub fn verify_opening_batch_mixed_ligerito_stacked(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ligerito::{commit, configs_for, inner_product_base_ext};
     use crate::ligerito::{default_config, default_verifier_config};
-    use crate::ligerito::{commit, inner_product_base_ext, configs_for};
     use crate::pack::{LOG_PACKING, pack_witness};
     use crate::ring_switch::{claim_check, eq_prefix_weights, fold_1b_rows};
 
@@ -955,16 +955,8 @@ mod tests {
         };
         let mut ch = Sponge::new(DOMAIN, &[]);
         assert!(
-            verify_opening_batch_mixed_ligerito_stacked(
-                &mut ch,
-                &vc,
-                log_n,
-                &cm.root,
-                &point_claims,
-                &ring_v,
-                &proof,
-            )
-            .is_some(),
+            verify_opening_batch_mixed_ligerito_stacked(&mut ch, &vc, log_n, &cm.root, &point_claims, &ring_v, &proof,)
+                .is_some(),
             "honest crossing-regime opening rejected"
         );
 

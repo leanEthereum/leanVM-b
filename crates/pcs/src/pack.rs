@@ -134,7 +134,6 @@ mod tests {
             }
         }
     }
-
 }
 
 /// Describes zero padding within each logical witness block.
@@ -147,6 +146,9 @@ pub struct PaddingSpec {
 impl PaddingSpec {
     /// Treat every bit as useful.
     pub fn dense(m: usize) -> Self {
-        Self { k_log: m, useful_bits_per_block: 1usize << m }
+        Self {
+            k_log: m,
+            useful_bits_per_block: 1usize << m,
+        }
     }
 }

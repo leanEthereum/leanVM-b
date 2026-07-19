@@ -1826,10 +1826,7 @@ impl Blake3Setup {
             value: zc_claim.c_eval,
         };
         let s_hat_v_ab = if self.r1cs.k_log >= pcs::pack::LOG_PACKING {
-            Some(pcs::ring_switch::s_hat_v_from_z_vec(
-                &z_vec_pre,
-                &lc_claim.r_inner_rest,
-            ))
+            Some(pcs::ring_switch::s_hat_v_from_z_vec(&z_vec_pre, &lc_claim.r_inner_rest))
         } else {
             None
         };

@@ -24,7 +24,24 @@ use primitives::field::{F64, F192, G, mul_by_g};
 /// `E`-column values).
 #[inline]
 fn e192(c0: F192, c1: F192, c2: F192) -> F192 {
-    c0 + c1 * F192::Y + c2 * (F192::Y * F192::Y)
+    c0 + F192::Y * (c1 + F192::Y * c2)
+}
+
+/// Evaluate coefficients in ascending degree order using Horner's rule.
+///
+/// Table constraints are random linear combinations `c_0 + eta*c_1 + ...`;
+/// spelling out every power of `eta` both obscures that structure and repeats
+/// multiplications. This form uses exactly `N - 1` field multiplications.
+#[inline(always)]
+fn eval_poly<const N: usize>(x: F192, coefficients: [F192; N]) -> F192 {
+    assert!(N > 0, "a constraint polynomial must have a coefficient");
+    let mut i = N - 1;
+    let mut acc = coefficients[i];
+    while i > 0 {
+        i -= 1;
+        acc = acc * x + coefficients[i];
+    }
+    acc
 }
 
 // ---- shared bus vocabulary ---------------------------------------------------
@@ -397,10 +414,15 @@ impl Table for Arith {
         // XOR = E-addition, MUL = E-multiplication — both degree 2
         // in the lane columns, so the round univariate stays degree 2.
         let third = if self.is_xor { va + vb } else { va * vb };
-        (cols[AA] + cols[FP] * cols[OA])
-            + eta * (cols[AB] + cols[FP] * cols[OB])
-            + eta * eta * (cols[AC] + cols[FP] * cols[OC])
-            + eta * eta * eta * (vc + third)
+        eval_poly(
+            eta,
+            [
+                cols[AA] + cols[FP] * cols[OA],
+                cols[AB] + cols[FP] * cols[OB],
+                cols[AC] + cols[FP] * cols[OC],
+                vc + third,
+            ],
+        )
     }
     fn flushes(&self, f: &mut FlushBuilder) {
         use arith::*;
@@ -572,10 +594,15 @@ impl Table for DerefTable {
         // return target g²·pc (a free ×g² of the committed pc), so no column.
         let src =
             (F192::ONE + cols[FPC] + cols[FFP]) * v3 + cols[FPC] * cols[PC].mul_base(G * G) + cols[FFP] * cols[FP];
-        (cols[A1] + cols[FP] * cols[OAL])
-            + eta * (cols[A2] + p * cols[OBE])
-            + eta * eta * (cols[A3] + cols[FP] * cols[OGA])
-            + eta * eta * eta * (v2 + src)
+        eval_poly(
+            eta,
+            [
+                cols[A1] + cols[FP] * cols[OAL],
+                cols[A2] + p * cols[OBE],
+                cols[A3] + cols[FP] * cols[OGA],
+                v2 + src,
+            ],
+        )
     }
     fn flushes(&self, f: &mut FlushBuilder) {
         use deref::*;
@@ -683,19 +710,22 @@ impl Table for JumpTable {
         let ff = e192(cols[F_LO], cols[F_HI], cols[F_TOP]);
         let w = e192(cols[W_LO], cols[W_HI], cols[W_TOP]);
         let fall_through = cols[PC].mul_base(G); // next pc when the branch is not taken
-        let addrs = (cols[AC] + cols[FP] * cols[OC])
-            + eta * (cols[AD] + cols[FP] * cols[OD])
-            + eta * eta * (cols[AF] + cols[FP] * cols[OF]);
-        let eta3 = eta * eta * eta;
         // `b = cond·w` and `cond·(b+1) = 0` together force `b = [cond ≠ 0]` (doc §7.5),
         // now over E: when `cond ≠ 0` the second gives `b = 1` (and the first
         // `w = cond⁻¹` in E); when `cond = 0` the first gives `b = 0`. NPC/NFP are
         // single K columns, so the selections force the chosen word (d or f) into K.
-        let ind_def = eta3 * (cols[B] + c * w);
-        let ind_nz = eta3 * eta * (c * (cols[B] + one));
-        let sel_pc = eta3 * eta * eta * (cols[NPC] + cols[B] * d + (cols[B] + one) * fall_through);
-        let sel_fp = eta3 * eta * eta * eta * (cols[NFP] + cols[B] * ff + (cols[B] + one) * cols[FP]);
-        addrs + ind_def + ind_nz + sel_pc + sel_fp
+        eval_poly(
+            eta,
+            [
+                cols[AC] + cols[FP] * cols[OC],
+                cols[AD] + cols[FP] * cols[OD],
+                cols[AF] + cols[FP] * cols[OF],
+                cols[B] + c * w,
+                c * (cols[B] + one),
+                cols[NPC] + cols[B] * d + (cols[B] + one) * fall_through,
+                cols[NFP] + cols[B] * ff + (cols[B] + one) * cols[FP],
+            ],
+        )
     }
     fn flushes(&self, f: &mut FlushBuilder) {
         use jump::*;
@@ -791,9 +821,14 @@ impl Table for Pack64x2Table {
 
     fn eval_constraint(&self, eta: F192, cols: &Cols) -> F192 {
         use pack64::*;
-        (cols[AA] + cols[FP] * cols[OA])
-            + eta * (cols[AB] + cols[FP] * cols[OB])
-            + eta * eta * (cols[AC] + cols[FP] * cols[OC])
+        eval_poly(
+            eta,
+            [
+                cols[AA] + cols[FP] * cols[OA],
+                cols[AB] + cols[FP] * cols[OB],
+                cols[AC] + cols[FP] * cols[OC],
+            ],
+        )
     }
 
     fn flushes(&self, f: &mut FlushBuilder) {
@@ -898,11 +933,16 @@ impl Table for Blake3Table {
         // carries no table constraint here: flock's R1CS validity proves it
         // via q_pkd (§blake3_flock).
         let bind = |a: usize, o: usize| cols[a] + cols[FP] * cols[o];
-        bind(AA0, OA0)
-            + eta * bind(AA1, OA1)
-            + eta * eta * bind(AB0, OB0)
-            + eta * eta * eta * bind(AB1, OB1)
-            + eta * eta * eta * eta * bind(AC, OC)
+        eval_poly(
+            eta,
+            [
+                bind(AA0, OA0),
+                bind(AA1, OA1),
+                bind(AB0, OB0),
+                bind(AB1, OB1),
+                bind(AC, OC),
+            ],
+        )
     }
     fn flushes(&self, f: &mut FlushBuilder) {
         use blake3t::*;

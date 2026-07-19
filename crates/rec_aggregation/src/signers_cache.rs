@@ -185,8 +185,7 @@ mod tests {
 
         let msg = message();
         for (i, (pk, sig)) in large.iter().enumerate() {
-            xmss_verify(pk, &msg, sig, SLOT)
-                .unwrap_or_else(|e| panic!("cached signer {i} failed to verify: {e:?}"));
+            xmss_verify(pk, &msg, sig, SLOT).unwrap_or_else(|e| panic!("cached signer {i} failed to verify: {e:?}"));
         }
     }
 }

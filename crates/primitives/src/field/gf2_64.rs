@@ -11,9 +11,9 @@ use core::ops::{Add, AddAssign, Mul, MulAssign};
 
 use serde::{Deserialize, Serialize};
 
-use super::gf2_64x3::base_reduce_128;
 #[cfg(target_arch = "aarch64")]
 use super::gf2_64x3::R64;
+use super::gf2_64x3::base_reduce_128;
 
 /// A GF(2^64) element; bit i = coefficient of x^i.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -203,10 +203,7 @@ pub mod aarch64 {
             // of the ≤4-bit overflow, ready to XOR into lane 0.
             let u0 = pmull_hi(t0, r);
             let u1 = pmull_hi(t1, r);
-            vtrn1q_u64(
-                veorq_u64(veorq_u64(p0, t0), u0),
-                veorq_u64(veorq_u64(p1, t1), u1),
-            )
+            vtrn1q_u64(veorq_u64(veorq_u64(p0, t0), u0), veorq_u64(veorq_u64(p1, t1), u1))
         }
     }
 
@@ -385,7 +382,11 @@ mod tests {
     fn neon_matches_software_and_axioms() {
         let mut s = 1u64;
         for _ in 0..10_000 {
-            let (a, b, c) = (F64(splitmix64(&mut s)), F64(splitmix64(&mut s)), F64(splitmix64(&mut s)));
+            let (a, b, c) = (
+                F64(splitmix64(&mut s)),
+                F64(splitmix64(&mut s)),
+                F64(splitmix64(&mut s)),
+            );
             assert_eq!(a * b, software::mul(a, b));
             assert_eq!(a * b, b * a);
             assert_eq!((a * b) * c, a * (b * c));

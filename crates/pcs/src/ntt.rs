@@ -141,11 +141,7 @@ impl AdditiveNttGf8 {
     }
 
     pub fn forward(&self, v: &mut [F8]) {
-        assert_eq!(
-            v.len(),
-            self.domain_size(),
-            "forward: input length must be 2^k"
-        );
+        assert_eq!(v.len(), self.domain_size(), "forward: input length must be 2^k");
         if v.len() <= 1 {
             return;
         }
@@ -153,11 +149,7 @@ impl AdditiveNttGf8 {
     }
 
     pub fn inverse(&self, v: &mut [F8]) {
-        assert_eq!(
-            v.len(),
-            self.domain_size(),
-            "inverse: input length must be 2^k"
-        );
+        assert_eq!(v.len(), self.domain_size(), "inverse: input length must be 2^k");
         if v.len() <= 1 {
             return;
         }
