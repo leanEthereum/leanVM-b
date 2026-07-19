@@ -52,10 +52,16 @@ fn vmhash_compress2(st: [F192; 2]) -> [F192; 2] {
     [F192::new(out[0].0, out[1].0, 0), F192::new(out[2].0, out[3].0, 0)]
 }
 
-/// Pack the sponge's four-lane state as one full F192 scalar plus one
-/// K-embedded tail scalar, matching the guest's transcript packing.
+/// Pack the sponge's four K lanes as two canonical 128-bit VM cells.
 fn pack_state(s: [F64; 4]) -> [F192; 2] {
-    [F192::new(s[0].0, s[1].0, s[2].0), F192::new(s[3].0, 0, 0)]
+    [F192::new(s[0].0, s[1].0, 0), F192::new(s[2].0, s[3].0, 0)]
+}
+
+/// Pack a 32-byte Merkle node as the same canonical 128+128 cell pair used by
+/// the VM's sole BLAKE3 representation.
+fn pack_hash_state(hash: &[u8; 32]) -> [F192; 2] {
+    let w = |o: usize| u64::from_le_bytes(hash[o..o + 8].try_into().unwrap());
+    [F192::new(w(0), w(8), 0), F192::new(w(16), w(24), 0)]
 }
 
 /// The non-trivial inner program: a runtime-bounded BLAKE3 hash chain seeded
@@ -855,21 +861,10 @@ fn gen_verify(
             path_exp
         };
         for &h in &path_exp {
-            lpaths_flat.extend_from_slice(&pcs::merkle::hash_to_scalars(&h));
+            lpaths_flat.extend_from_slice(&pack_hash_state(&h));
         }
     }
     let qpkdv = l.placements[lean_vm::cpu::QPKD].n_vars;
-    let commit_root_packed = {
-        // log_mem, all per-table row counts, then log_inv_rate precede the root.
-        let root_offset = 2 + l.row_counts.len();
-        let s = &proof.stream[root_offset..root_offset + 2];
-        let mut h = [0u8; 32];
-        h[0..8].copy_from_slice(&s[0].c0.to_le_bytes());
-        h[8..16].copy_from_slice(&s[0].c1.to_le_bytes());
-        h[16..24].copy_from_slice(&s[1].c0.to_le_bytes());
-        h[24..32].copy_from_slice(&s[1].c1.to_le_bytes());
-        pcs::merkle::hash_to_scalars(&h).to_vec()
-    };
 
     // claim descriptors, in exact clv order.
     let (mut cpbuf, mut cpoff, mut cplen, mut cslot, mut csel, mut yt) =
@@ -1082,7 +1077,6 @@ fn gen_verify(
         ("matpart".to_string(), vec![matpart]),
         ("merkle_leaf_rows".to_string(), lrows_flat),
         ("merkle_paths".to_string(), lpaths_flat),
-        ("commit_root_packed".to_string(), commit_root_packed),
         ("sub_pis".to_string(), vec![pi[0], pi[1]]),
         // slacks bounding each claim'"'"'s reads to the written regions (so an
         // over-long hint cannot pull free padding): low_len <= mu_s/tau_t
@@ -1791,11 +1785,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("DEFER_SIZE", (kbc + log2_bc_cols + 2 * lcrounds + 68).to_string());
     ps("BYTECODE_VARS", (kbc + log2_bc_cols).to_string());
     let label_state = pack_state(Sponge::new(b"leanvm-b", &[]).state());
-    ps(
-        "TRANSCRIPT_SEED_0_LO",
-        u(F192::new(label_state[0].c0, label_state[0].c1, 0)).to_string(),
-    );
-    ps("TRANSCRIPT_SEED_0_TOP", label_state[0].c2.to_string());
+    ps("TRANSCRIPT_SEED_0", u(label_state[0]).to_string());
     ps("TRANSCRIPT_SEED_1", u(label_state[1]).to_string());
     let trace_dual = pcs::ring_switch::trace_dual_basis();
     let trace_dual_base: [F192; 64] = trace_dual[..64]

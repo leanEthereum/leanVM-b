@@ -75,11 +75,9 @@ pub(crate) struct Brow {
     pub(crate) ab0: u32,
     pub(crate) ab1: u32,
     pub(crate) ac: u32,
-    pub(crate) va: [F64; 4],     // a's four flock words = cells (aa0, aa1), lanes (lo, hi)
-    pub(crate) vb: [F64; 4],     // b's four flock words = cells (ab0, ab1)
-    pub(crate) vc: [F64; 4],     // c's four flock words = cells (ac, ac+1)
-    pub(crate) words: [F192; 6], // four input cells followed by two output cells
-    pub(crate) packing: super::Blake3Packing,
+    pub(crate) va: [F64; 4], // a's four flock words = cells (aa0, aa1), lanes (lo, hi)
+    pub(crate) vb: [F64; 4], // b's four flock words = cells (ab0, ab1)
+    pub(crate) vc: [F64; 4], // c's four flock words = cells (ac, ac+1)
     pub(crate) ra: [F64; 2], // per-cell counts for the two a input cells
     pub(crate) rb: [F64; 2], // … the two b input cells
     pub(crate) rc: [F64; 2], // … the two c output cells

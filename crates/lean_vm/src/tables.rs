@@ -52,8 +52,7 @@ pub(crate) const OP_SET: F64 = g_pow(2);
 pub(crate) const OP_DEREF: F64 = g_pow(3);
 pub(crate) const OP_JUMP: F64 = g_pow(4);
 pub(crate) const OP_BLAKE3: F64 = g_pow(5);
-pub(crate) const OP_BLAKE3_TRANSCRIPT: F64 = g_pow(6);
-pub(crate) const OP_PACK64X2: F64 = g_pow(7);
+pub(crate) const OP_PACK64X2: F64 = g_pow(6);
 
 // ---- flush builder -----------------------------------------------------------
 
@@ -171,23 +170,24 @@ impl FlushBuilder {
         );
     }
 
-    pub(crate) fn memory_succ(&mut self, addr: usize, k: u32, count: usize, val0: usize, val1: usize, val2: usize) {
+    /// Memory access to the successor of `addr`, carrying `(lo, hi, 0)`.
+    pub(crate) fn memory_128_succ(&mut self, addr: usize, count: usize, lo: usize, hi: usize) {
         self.pair(
             vec![
                 Const(SEP_MEM),
-                GCol(addr, k),
+                GCol(addr, 1),
                 GCol(count, 1),
-                Col(val0),
-                Col(val1),
-                Col(val2),
+                Col(lo),
+                Col(hi),
+                Const(F64::ZERO),
             ],
             vec![
                 Const(SEP_MEM),
-                GCol(addr, k),
+                GCol(addr, 1),
                 Col(count),
-                Col(val0),
-                Col(val1),
-                Col(val2),
+                Col(lo),
+                Col(hi),
+                Const(F64::ZERO),
             ],
         );
     }
@@ -874,14 +874,7 @@ pub(crate) mod blake3t {
     pub const RC0: usize = 28; // … two c cells.
     pub const RC1: usize = 29;
     pub const RBC: usize = 30;
-    // Actual three-limb memory words.  Flock byte lanes above are virtual;
-    // these committed columns let the AIR select the serialization mode and
-    // bind every physical memory limb to the corresponding Flock lane.
-    pub const MI0: usize = 31; // 4 inputs * 3 limbs
-    pub const MO0: usize = 43; // 2 outputs * 3 limbs
-    pub const PACK: usize = 49;
-    pub const OP: usize = 50;
-    pub const N: usize = 51;
+    pub const N: usize = 31;
 }
 
 impl Table for Blake3Table {
@@ -897,51 +890,7 @@ impl Table for Blake3Table {
     }
     fn constraint_columns(&self) -> &'static [usize] {
         use blake3t::*;
-        &[
-            FP,
-            OA0,
-            OA1,
-            OB0,
-            OB1,
-            OC,
-            AA0,
-            AA1,
-            AB0,
-            AB1,
-            AC,
-            VA0,
-            VA0 + 1,
-            VA0 + 2,
-            VA0 + 3,
-            VB0,
-            VB0 + 1,
-            VB0 + 2,
-            VB0 + 3,
-            VC0,
-            VC0 + 1,
-            VC0 + 2,
-            VC0 + 3,
-            MI0,
-            MI0 + 1,
-            MI0 + 2,
-            MI0 + 3,
-            MI0 + 4,
-            MI0 + 5,
-            MI0 + 6,
-            MI0 + 7,
-            MI0 + 8,
-            MI0 + 9,
-            MI0 + 10,
-            MI0 + 11,
-            MO0,
-            MO0 + 1,
-            MO0 + 2,
-            MO0 + 3,
-            MO0 + 4,
-            MO0 + 5,
-            PACK,
-            OP,
-        ]
+        &[FP, OA0, OA1, OB0, OB1, OC, AA0, AA1, AB0, AB1, AC]
     }
     fn eval_constraint(&self, eta: F192, cols: &Cols) -> F192 {
         use blake3t::*;
@@ -949,55 +898,24 @@ impl Table for Blake3Table {
         // carries no table constraint here: flock's R1CS validity proves it
         // via q_pkd (§blake3_flock).
         let bind = |a: usize, o: usize| cols[a] + cols[FP] * cols[o];
-        let mut acc = bind(AA0, OA0)
+        bind(AA0, OA0)
             + eta * bind(AA1, OA1)
             + eta * eta * bind(AB0, OB0)
             + eta * eta * eta * bind(AB1, OB1)
-            + eta * eta * eta * eta * bind(AC, OC);
-        let mut ep = eta * eta * eta * eta * eta;
-        let mut add = |v: F192| {
-            acc += ep * v;
-            ep *= eta;
-        };
-        let s = cols[PACK];
-        add(s * (s + F192::ONE));
-        add(cols[OP] + F192::from(OP_BLAKE3) + s * F192::from(OP_BLAKE3 + OP_BLAKE3_TRANSCRIPT));
-        // Input lane serialization. Bytes128: 2+2 lanes. Transcript192: 3+1.
-        add(cols[VA0] + cols[MI0]);
-        add(cols[VA0 + 1] + cols[MI0 + 1]);
-        add(cols[VA0 + 2] + (F192::ONE + s) * cols[MI0 + 3] + s * cols[MI0 + 2]);
-        add(cols[VA0 + 3] + (F192::ONE + s) * cols[MI0 + 4] + s * cols[MI0 + 3]);
-        add(cols[VB0] + cols[MI0 + 6]);
-        add(cols[VB0 + 1] + cols[MI0 + 7]);
-        add(cols[VB0 + 2] + (F192::ONE + s) * cols[MI0 + 9] + s * cols[MI0 + 8]);
-        add(cols[VB0 + 3] + (F192::ONE + s) * cols[MI0 + 10] + s * cols[MI0 + 9]);
-        add((F192::ONE + s) * cols[MI0 + 2]);
-        add(s * cols[MI0 + 4]);
-        add(cols[MI0 + 5]);
-        add((F192::ONE + s) * cols[MI0 + 8]);
-        add(s * cols[MI0 + 10]);
-        add(cols[MI0 + 11]);
-        // Digest serialization: canonical 128+128 or transcript 192+64.
-        add(cols[MO0] + cols[VC0]);
-        add(cols[MO0 + 1] + cols[VC0 + 1]);
-        add(cols[MO0 + 2] + s * cols[VC0 + 2]);
-        add(cols[MO0 + 3] + (F192::ONE + s) * cols[VC0 + 2] + s * cols[VC0 + 3]);
-        add(cols[MO0 + 4] + (F192::ONE + s) * cols[VC0 + 3]);
-        add(cols[MO0 + 5]);
-        acc
+            + eta * eta * eta * eta * bind(AC, OC)
     }
     fn flushes(&self, f: &mut FlushBuilder) {
         use blake3t::*;
         f.state_step(PC, FP);
-        f.bytecode_coord(PC, RBC, Col(OP), &[Col(OA0), Col(OA1), Col(OB0), Col(OB1), Col(OC)]);
+        f.bytecode(PC, RBC, OP_BLAKE3, &[Col(OA0), Col(OA1), Col(OB0), Col(OB1), Col(OC)]);
         // Six cell reads: four independent 128-bit input cells, then the output's
         // two consecutive cells (AC, g·AC). Each carries its word's two lanes.
-        f.memory(AA0, RA0, MI0, MI0 + 1, MI0 + 2);
-        f.memory(AA1, RA1, MI0 + 3, MI0 + 4, MI0 + 5);
-        f.memory(AB0, RB0, MI0 + 6, MI0 + 7, MI0 + 8);
-        f.memory(AB1, RB1, MI0 + 9, MI0 + 10, MI0 + 11);
-        f.memory(AC, RC0, MO0, MO0 + 1, MO0 + 2);
-        f.memory_succ(AC, 1, RC1, MO0 + 3, MO0 + 4, MO0 + 5);
+        f.memory_128(AA0, RA0, VA0, VA0 + 1);
+        f.memory_128(AA1, RA1, VA0 + 2, VA0 + 3);
+        f.memory_128(AB0, RB0, VB0, VB0 + 1);
+        f.memory_128(AB1, RB1, VB0 + 2, VB0 + 3);
+        f.memory_128(AC, RC0, VC0, VC0 + 1);
+        f.memory_128_succ(AC, RC1, VC0 + 2, VC0 + 3);
     }
     fn fill(&self, ctx: &FillCtx, out: &mut [Column]) {
         use blake3t::*;
@@ -1019,42 +937,6 @@ impl Table for Blake3Table {
             out[VB0 + k] = rows.par_iter().map(|r| r.vb[k]).collect();
             out[VC0 + k] = rows.par_iter().map(|r| r.vc[k]).collect();
         }
-        for word in 0..4 {
-            for limb in 0..3 {
-                out[MI0 + 3 * word + limb] = rows
-                    .par_iter()
-                    .map(|r| {
-                        let w = r.words[word];
-                        F64([w.c0, w.c1, w.c2][limb])
-                    })
-                    .collect();
-            }
-        }
-        for word in 0..2 {
-            for limb in 0..3 {
-                out[MO0 + 3 * word + limb] = rows
-                    .par_iter()
-                    .map(|r| {
-                        let w = r.words[4 + word];
-                        F64([w.c0, w.c1, w.c2][limb])
-                    })
-                    .collect();
-            }
-        }
-        out[PACK] = rows
-            .par_iter()
-            .map(|r| F64(u64::from(r.packing == crate::cpu::Blake3Packing::Transcript192)))
-            .collect();
-        out[OP] = rows
-            .par_iter()
-            .map(|r| {
-                if r.packing == crate::cpu::Blake3Packing::Transcript192 {
-                    OP_BLAKE3_TRANSCRIPT
-                } else {
-                    OP_BLAKE3
-                }
-            })
-            .collect();
         out[RA0] = rows.par_iter().map(|r| r.ra[0]).collect();
         out[RA1] = rows.par_iter().map(|r| r.ra[1]).collect();
         out[RB0] = rows.par_iter().map(|r| r.rb[0]).collect();

@@ -23,7 +23,7 @@
 use std::collections::HashMap;
 
 use lean_vm::cpu::hints::RHint;
-use lean_vm::cpu::{Blake3Packing, DerefMode, Op, Program};
+use lean_vm::cpu::{DerefMode, Op, Program};
 use primitives::{
     field::{F64, F192, g_pow},
     pretty_integer,
@@ -167,6 +167,11 @@ pub fn compile(ast: &Ast) -> Program {
                             bits_ptr: *bits_ptr,
                             nbits: *nbits,
                         },
+                        Hint::FieldLimbs { value, base, len } => RHint::FieldLimbs {
+                            value: *value,
+                            base: *base,
+                            len: *len,
+                        },
                     })
                     .collect();
                 hints.insert(here, rhs);
@@ -229,9 +234,9 @@ pub fn disassemble(prog: &[Op]) -> String {
             Op::Pack64x2 { a, b, c } => {
                 format!("PACK64X2 fp[{c}] = pack64(fp[{a}], fp[{b}])")
             }
-            Op::Blake3 { ins, out, packing } => {
+            Op::Blake3 { ins, out } => {
                 format!(
-                    "BLAKE3/{packing:?} fp[{out}..]= H(fp[{}], fp[{}] | fp[{}], fp[{}])",
+                    "BLAKE3 fp[{out}..]= H(fp[{}], fp[{}] | fp[{}], fp[{}])",
                     ins[0], ins[1], ins[2], ins[3]
                 )
             }
@@ -298,10 +303,6 @@ fn resolve(op: &LOp, entry: &HashMap<String, u32>, sentinel: u32, base: u32) -> 
             of: *of,
         },
         LOp::Pack64x2 { a, b, c } => Op::Pack64x2 { a: *a, b: *b, c: *c },
-        LOp::Blake3 { ins, c, packing } => Op::Blake3 {
-            ins: *ins,
-            out: *c,
-            packing: *packing,
-        },
+        LOp::Blake3 { ins, c } => Op::Blake3 { ins: *ins, out: *c },
     }
 }

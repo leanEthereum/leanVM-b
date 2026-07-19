@@ -230,7 +230,7 @@ pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; tables::N_TABLES]
             Op::Deref { alpha, beta, gamma, .. } => alpha.max(beta).max(gamma),
             Op::Jump { oc, od, of } => oc.max(od).max(of),
             Op::Pack64x2 { a, b, c } => a.max(b).max(c),
-            Op::Blake3 { ins, out, .. } => ins[0].max(ins[1]).max(ins[2]).max(ins[3]).max(out),
+            Op::Blake3 { ins, out } => ins[0].max(ins[1]).max(ins[2]).max(ins[3]).max(out),
         })
         .max()
         .unwrap_or(0) as usize;
@@ -244,14 +244,7 @@ pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; tables::N_TABLES]
         Op::Deref { .. } => OP_DEREF,
         Op::Jump { .. } => OP_JUMP,
         Op::Pack64x2 { .. } => tables::OP_PACK64X2,
-        Op::Blake3 {
-            packing: crate::cpu::Blake3Packing::Bytes128,
-            ..
-        } => OP_BLAKE3,
-        Op::Blake3 {
-            packing: crate::cpu::Blake3Packing::Transcript192,
-            ..
-        } => tables::OP_BLAKE3_TRANSCRIPT,
+        Op::Blake3 { .. } => OP_BLAKE3,
     };
     let operands = |op: &Op| -> (F64, F64, F64) {
         match *op {
@@ -408,12 +401,6 @@ pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; tables::N_TABLES]
         for k in 0..4 {
             pad[b3 + tables::BLAKE3_VALUE_COLS[8 + k]] = pc[k]; // c0..c3
         }
-        use tables::blake3t::{MO0, OP};
-        pad[b3 + MO0] = pc[0];
-        pad[b3 + MO0 + 1] = pc[1];
-        pad[b3 + MO0 + 3] = pc[2];
-        pad[b3 + MO0 + 4] = pc[3];
-        pad[b3 + OP] = tables::OP_BLAKE3;
     }
 
     let (placements, m) = witness::placements_of(&col_kappas(

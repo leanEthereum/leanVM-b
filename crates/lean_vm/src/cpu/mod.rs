@@ -28,7 +28,7 @@ mod isa;
 mod layout;
 mod trace;
 pub use execute::Execution;
-pub use isa::{Blake3Packing, DerefMode, Op};
+pub use isa::{DerefMode, Op};
 pub use layout::*;
 pub(crate) use trace::{Brow, Drow, Jrow, Srow, Trace, Xrow};
 
@@ -104,16 +104,13 @@ fn program_digest(prog: &[Op]) -> [F64; 4] {
             }
             Op::Jump { oc, od, of } => (6, oc, od, of, F192::ZERO),
             Op::Pack64x2 { a, b, c } => (9, a, b, c, F192::ZERO),
-            Op::Blake3 { ins, out, packing } => {
-                let mode = u64::from(packing == Blake3Packing::Transcript192);
-                (
-                    7 + mode as u8,
-                    ins[0],
-                    ins[1],
-                    ins[2],
-                    F192::new(ins[3] as u64 | ((out as u64) << 32), 0, 0),
-                )
-            }
+            Op::Blake3 { ins, out } => (
+                7,
+                ins[0],
+                ins[1],
+                ins[2],
+                F192::new(ins[3] as u64 | ((out as u64) << 32), 0, 0),
+            ),
         };
         words.push(F64(a as u64 | ((b as u64) << 32)));
         words.push(F64(c as u64 | ((tag as u64) << 32)));
@@ -392,8 +389,8 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
     // bus point, so no dedicated binding challenge is drawn. Mirrored in `verify`.
     let t = std::time::Instant::now();
     let l = &w.layout;
-    let (bus_claims, _bytecode_claims) = tracing::info_span!("Prove bus")
-        .in_scope(|| leaf::prove_balance(&l.push, &l.pull, &l.count, &w.cols, &mut ps));
+    let (bus_claims, _bytecode_claims) =
+        tracing::info_span!("Prove bus").in_scope(|| leaf::prove_balance(&l.push, &l.pull, &l.count, &w.cols, &mut ps));
     if prof {
         eprintln!("[prove] bus(grand-p): {:>7.2} ms", ms(t));
     }
@@ -686,7 +683,6 @@ mod tests {
             Op::Blake3 {
                 ins: [2, 3, 4, 5],
                 out: 6,
-                packing: Blake3Packing::Bytes128,
             },
         ]; // c → cells 6,7
         // 16 slots: 5 executed so far; 10 filler SETs step the pc to 15 (halt);
@@ -739,7 +735,7 @@ mod tests {
     /// constraint: the full three-limb memory bus makes a request carrying a
     /// literal zero in limb 2 match only such a stored word.
     #[test]
-    #[should_panic(expected = "BLAKE3 input cell must be a 128-bit embedding")]
+    #[should_panic(expected = "BLAKE3 input cell must be a canonical 128-bit embedding")]
     fn blake3_requires_zero_third_limb() {
         let mut program = blake3_program([F64::ZERO; 4], [F64::ZERO; 4]);
         program.prog[0] = Op::Set {
@@ -776,7 +772,6 @@ mod tests {
         prog.push(Op::Blake3 {
             ins: [2, 3, 2, 3],
             out: 4,
-            packing: Blake3Packing::Bytes128,
         }); // a == b: hash h ‖ h into cells 4,5
         for k in 0..4u32 {
             prog.push(Op::Set {

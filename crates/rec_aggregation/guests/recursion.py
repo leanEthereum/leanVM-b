@@ -212,8 +212,7 @@ DEFER_SIZE = DEFER_SIZE_PLACEHOLDER
 # proving environment (circuit family + program), via own_pi.
 NSUB = NSUB_PLACEHOLDER
 BYTECODE_VARS = BYTECODE_VARS_PLACEHOLDER
-TRANSCRIPT_SEED_0_LO = TRANSCRIPT_SEED_0_LO_PLACEHOLDER
-TRANSCRIPT_SEED_0_TOP = TRANSCRIPT_SEED_0_TOP_PLACEHOLDER
+TRANSCRIPT_SEED_0 = TRANSCRIPT_SEED_0_PLACEHOLDER
 TRANSCRIPT_SEED_1 = TRANSCRIPT_SEED_1_PLACEHOLDER
 
 DS_SCALAR = 1
@@ -234,14 +233,73 @@ COUNT_BITS = 33
 SIZE_BITS = 34
 
 
+@inline
+def challenge_from_state(state):
+    # Exact lowering for state = [(d0,d1,0), (d2,d3,0)]:
+    #   hints lo=[d0,d1], hi=[d2,d3]
+    #   PACK64X2(lo[0],lo[1]) -> state[0]  (in-place equality check)
+    #   PACK64X2(hi[0],hi[1]) -> state[1]  (in-place equality check)
+    #   return d0 + d1*Y + d2*Y^2
+    # Write-once memory makes both PACK rows assertions, so all four digest
+    # lanes are proven to be in K; d3 is constrained but not used.
+    lo = StackBuf(2)
+    hi = StackBuf(2)
+    hint_f192_limbs(lo, state[0])
+    hint_f192_limbs(hi, state[1])
+    pack64x2_into(lo[0], lo[1], state[0])
+    pack64x2_into(hi[0], hi[1], state[1])
+    return lo[0] + lo[1] * Y_TOWER + hi[0] * Y_TOWER * Y_TOWER
+
+
+@inline
+def sponge_compress(state, scalar, tail, out):
+    # Serialize scalar.c0, scalar.c1, scalar.c2, tail as two canonical cells.
+    # The hints only provide the decomposition; PACK64X2 proves all four lanes
+    # are in K, and the equality binds the first three back to scalar.
+    limbs = StackBuf(3)
+    hint_f192_limbs(limbs, scalar)
+    block = StackBuf(2)
+    pack64x2_into(limbs[0], limbs[1], block[0])
+    pack64x2_into(limbs[2], tail, block[1])
+    assert scalar == limbs[0] + limbs[1] * Y_TOWER + limbs[2] * Y_TOWER * Y_TOWER
+    blake3(state, block, out)
+    return
+
+
+@inline
+def hash_state_to_words(cell_0, cell_1):
+    # Convert canonical BLAKE3 cells (d0,d1,0), (d2,d3,0) to the two scalar
+    # words used when Ligerito observes a Merkle root: (d0,d1,d2), (d3,0,0).
+    lo = StackBuf(2)
+    hi = StackBuf(2)
+    hint_f192_limbs(lo, cell_0)
+    hint_f192_limbs(hi, cell_1)
+    pack64x2_into(lo[0], lo[1], cell_0)
+    pack64x2_into(hi[0], hi[1], cell_1)
+    return lo[0] + lo[1] * Y_TOWER + hi[0] * Y_TOWER * Y_TOWER, hi[1]
+
+
+@inline
+def hash_words_to_state(word_0, word_1):
+    # Inverse of hash_state_to_words. PACK64X2 also proves word_1 is in K.
+    limbs = StackBuf(3)
+    hint_f192_limbs(limbs, word_0)
+    state = StackBuf(2)
+    pack64x2_into(limbs[0], limbs[1], state[0])
+    pack64x2_into(limbs[2], word_1, state[1])
+    assert word_0 == limbs[0] + limbs[1] * Y_TOWER + limbs[2] * Y_TOWER * Y_TOWER
+    return state
+
+
 def squeeze_step(state_0, state_1):
     # Non-inlined sponge ratchet exposing BOTH output words (challenge and the
     # next state), so a query-squeeze loop can chain the state through a heap
     # buffer. Returns (challenge, next_state_0, next_state_1).
     a = [state_0, state_1]
     o = StackBuf(2)
-    blake3_transcript(a, DS_SQ * Y_TOWER * Y_TOWER, 0, o)
-    return o[0], o[0], o[1]
+    sponge_compress(a, DS_SQ * Y_TOWER * Y_TOWER, 0, o)
+    challenge = challenge_from_state(o)
+    return challenge, o[0], o[1]
 
 
 def check_field_bits_decomposition(bits_ptr, v):
@@ -290,14 +348,14 @@ def decode_query_bits(v, positions_out, bit_ptrs_out, depth: Const):
 def grind_check(state_0, state_1, nonce, nbits_g):
     # Ligerito fold/query grinding: digest = H(H(state, (0, POW)), (nonce, POW)); the digest's
     # bits are advice-decomposed HERE and verified (booleanity + reconstruction,
-    # check_128_bits_decomposition), and the low nbits (nbits_g = g^nbits) must
+    # check_field_bits_decomposition), and the low nbits (nbits_g = g^nbits) must
     # be zero — the CONTIGUOUS PoW window of transcript::pow_bits_ok. The
     # caller absorbs the nonce afterwards.
     st = [state_0, state_1]
     base = StackBuf(2)
-    blake3_transcript(st, DS_POW * Y_TOWER * Y_TOWER, 0, base)
+    sponge_compress(st, DS_POW * Y_TOWER * Y_TOWER, 0, base)
     out = StackBuf(2)
-    blake3_transcript(base, nonce + DS_POW * Y_TOWER * Y_TOWER, 0, out)
+    sponge_compress(base, nonce + DS_POW * Y_TOWER * Y_TOWER, 0, out)
     digest_bits = HeapBuf(GEN ** FIELD_BITS)
     hint_decompose_bits(digest_bits, out[0], FIELD_BITS)
     check_field_bits_decomposition(digest_bits, out[0])
@@ -391,8 +449,8 @@ def verify_merkle_path(leaf_0, leaf_1, path_ptr, direction_bits, depth: Const):
         diff_1 = node_1 + sibling_1
         left = [node_0 + dir_bit * diff_0, node_1 + dir_bit * diff_1]
         right = [diff_0 + left[0], diff_1 + left[1]]
-        parent = StackBuf(2)  # packed 192+64 representation of the 32-byte parent
-        blake3_transcript(left, right[0], right[1], parent)
+        parent = StackBuf(2)
+        blake3(left, right, parent)
         node_0 = parent[0]
         node_1 = parent[1]
     return node_0, node_1
@@ -410,8 +468,7 @@ def sumcheck_round3(state_0, state_1, msg_cursor, claim, eq_acc, prev_challenge)
     fs, m2, msg_cursor = fs_next(fs, msg_cursor)
     lhs = eq_acc * ((1 + prev_challenge) * m0 + prev_challenge * m1)
     assert lhs == claim
-    fs = squeeze(fs)
-    round_challenge = fs[0]
+    fs, round_challenge = squeeze(fs)
     new_eq = eq_acc * (1 + prev_challenge + round_challenge)
     l0 = ((round_challenge + 1) * (round_challenge + GEN)) * LAGRANGE_INV_0
     l1 = (round_challenge * (round_challenge + GEN)) * LAGRANGE_INV_1
@@ -443,7 +500,7 @@ def obs(state, x):
     # Bind one scalar into the sponge chain: state <- compress(state, (x, SCALAR)).
     # Returns the successor StackBuf; the call site aliases it (zero copies).
     nb = StackBuf(2)
-    blake3_transcript(state, x, DS_SCALAR, nb)
+    sponge_compress(state, x, DS_SCALAR, nb)
     return nb
 
 
@@ -458,7 +515,7 @@ def fs_next(state, cursor):
     # just `fs, x, cursor = fs_next(fs, cursor)` with no manual cursor arithmetic.
     x = cursor[GEN ** 0]
     nb = StackBuf(2)
-    blake3_transcript(state, x, DS_SCALAR, nb)
+    sponge_compress(state, x, DS_SCALAR, nb)
     return nb, x, cursor * GEN
 
 
@@ -466,16 +523,18 @@ def fs_next(state, cursor):
 def absorb(state, x, tag):
     # Tagged absorb (length frames, byte words, grinding nonces).
     nb = StackBuf(2)
-    blake3_transcript(state, x + tag * Y_TOWER * Y_TOWER, 0, nb)
+    sponge_compress(state, x + tag * Y_TOWER * Y_TOWER, 0, nb)
     return nb
 
 
 @inline
 def squeeze(state):
-    # Ratchet: the compress output is the new state; word 0 is the challenge.
+    # Ratchet: the canonical 128+128 digest is the new state; its first three
+    # K lanes are reassembled as the F192 challenge.
     nb = StackBuf(2)
-    blake3_transcript(state, DS_SQ * Y_TOWER * Y_TOWER, 0, nb)
-    return nb
+    sponge_compress(state, DS_SQ * Y_TOWER * Y_TOWER, 0, nb)
+    challenge = challenge_from_state(nb)
+    return nb, challenge
 
 
 @inline
@@ -567,9 +626,10 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
     # The K opener binds the initial Merkle root as its two F192 scalars (like
     # the extension-field opener's add_scalars(hash_to_scalars(root))), not as a byte
     # string. Level roots are likewise scalar-observed (via fs_next below).
+    commit_root_word_0, commit_root_word_1 = hash_state_to_words(commit_root_0, commit_root_1)
     fs = obs(fs, target)
-    fs = obs(fs, commit_root_0)
-    fs = obs(fs, commit_root_1)
+    fs = obs(fs, commit_root_word_0)
+    fs = obs(fs, commit_root_word_1)
 
     # The opening's scalars (sumcheck messages, level roots, nonces, final
     # message) ride the SHARED stream: msg_cursor is just the main stream
@@ -613,8 +673,7 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
                 msg_cursor = msg_cursor * GEN
                 grind_check(fs[0], fs[1], nonce_v, GEN ** LIG_FOLD_GRIND_BITS[m_idx * LIG_MAX_TOTAL_FOLDS + fold_idx])
                 fs = absorb(fs, nonce_v, DS_POW)
-            fs = squeeze(fs)
-            fold_challenge = fs[0]
+            fs, fold_challenge = squeeze(fs)
             fold_challenges[GEN ** fold_idx] = fold_challenge
             sumcheck_target = round_quad_c + fold_challenge * round_quad_b + fold_challenge * fold_challenge * round_quad_a  # evaluate this level's folded quadratic at the fold challenge
             fs, msg_a, msg_cursor = fs_next(fs, msg_cursor)
@@ -630,21 +689,21 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
         else:
             fs, next_root_a, msg_cursor = fs_next(fs, msg_cursor)
             fs, next_root_b, msg_cursor = fs_next(fs, msg_cursor)
-            level_roots_0[GEN ** (lvl + 1)] = next_root_a
-            level_roots_1[GEN ** (lvl + 1)] = next_root_b
+            next_root = hash_words_to_state(next_root_a, next_root_b)
+            level_roots_0[GEN ** (lvl + 1)] = next_root[0]
+            level_roots_1[GEN ** (lvl + 1)] = next_root[1]
             # OOD binding for the newly observed level-(lvl+1) commitment.
             # The random point has the just-folded witness dimension, namely
             # this level's message-column dimension.
             for os in unroll(0, LIG_OOD_SAMPLES[m_idx * LIG_MAX_LEVELS + lvl + 1]):
                 oz = ood_z * GEN ** (((lvl + 1) * LIG_MAX_OOD_SAMPLES + os) * LIG_LOG_MSG_COLS_CAP)
                 for t in unroll(0, LIG_LOG_MSG_COLS[m_idx * LIG_MAX_LEVELS + lvl]):
-                    fs = squeeze(fs)
-                    oz[GEN ** t] = fs[0]
+                    fs, oz_challenge = squeeze(fs)
+                    oz[GEN ** t] = oz_challenge
                 fs, ood_y, msg_cursor = fs_next(fs, msg_cursor)
                 fs, ood_u0, msg_cursor = fs_next(fs, msg_cursor)
                 fs, ood_u2, msg_cursor = fs_next(fs, msg_cursor)
-                fs = squeeze(fs)
-                ood_beta = fs[0]
+                fs, ood_beta = squeeze(fs)
                 ood_betas[GEN ** ((lvl + 1) * LIG_MAX_OOD_SAMPLES + os)] = ood_beta
                 round_quad_c += ood_beta * ood_u0
                 round_quad_b += ood_beta * (ood_y + ood_u2)
@@ -670,8 +729,7 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
 
         query_alphas = HeapBuf(GEN ** (LIG_MAX_INTERLEAVE[m_idx]))
         for t in unroll(0, LIG_LOG_QUERIES[m_idx * LIG_MAX_LEVELS + lvl]):
-            fs = squeeze(fs)
-            alpha_v = fs[0]
+            fs, alpha_v = squeeze(fs)
             query_alphas[GEN ** t] = alpha_v
         row_eq_weights = HeapBuf(GEN ** (LIG_MAX_INTERLEAVE[m_idx]))
         for i in unroll(0, LIG_INTERLEAVE[m_idx * LIG_MAX_LEVELS + lvl]):
@@ -691,7 +749,7 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
             row_dot = 0
             if lvl == 0:
                 # Level-0 rows are base-field F64, embedded one-per word. Pack
-                # four lanes as one 192+64 block for the leaf hash.
+                # four lanes as two canonical 128-bit cells for the leaf hash.
                 for jb in unroll(0, LIG_INTERLEAVE[m_idx * LIG_MAX_LEVELS + lvl] // 4):
                     e0 = row_ptr[GEN ** (4 * jb)]
                     e1 = row_ptr[GEN ** (4 * jb + 1)]
@@ -701,13 +759,12 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
                     # `(lo, 0, 0)`. Two packs therefore prove all four hinted
                     # level-0 values are genuinely F64 before they enter the
                     # hash or row_dot. The packed outputs need not feed the
-                    # hash: its existing transcript 192+64 byte layout remains
-                    # unchanged.
+                    # hash: they are exactly its two canonical 128-bit cells.
                     packed01 = pack64x2(e0, e1)
                     packed23 = pack64x2(e2, e3)
-                    row_pair = [e0 + e1 * Y_TOWER + e2 * Y_TOWER * Y_TOWER, e3]
+                    row_pair = [packed01, packed23]
                     leaf_digest = StackBuf(2)
-                    blake3_transcript(leaf_hash_state, row_pair[0], row_pair[1], leaf_digest)
+                    blake3(leaf_hash_state, row_pair, leaf_digest)
                     leaf_hash_state = leaf_digest
                     row_dot += e0 * row_eq_weights[GEN ** (4 * jb)] + e1 * row_eq_weights[GEN ** (4 * jb + 1)] + e2 * row_eq_weights[GEN ** (4 * jb + 2)] + e3 * row_eq_weights[GEN ** (4 * jb + 3)]
             else:
@@ -720,9 +777,9 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
                     # constrain every serialized limb before reassembly.
                     packed01 = pack64x2(e0, e1)
                     packed23 = pack64x2(e2, e3)
-                    row_pair = [e0 + e1 * Y_TOWER + e2 * Y_TOWER * Y_TOWER, e3]
+                    row_pair = [packed01, packed23]
                     leaf_digest = StackBuf(2)
-                    blake3_transcript(leaf_hash_state, row_pair[0], row_pair[1], leaf_digest)
+                    blake3(leaf_hash_state, row_pair, leaf_digest)
                     leaf_hash_state = leaf_digest
                 for jw in unroll(0, LIG_INTERLEAVE[m_idx * LIG_MAX_LEVELS + lvl]):
                     row_word = row_ptr[GEN ** (3 * jw)] + row_ptr[GEN ** (3 * jw + 1)] * Y_TOWER + row_ptr[GEN ** (3 * jw + 2)] * Y_TOWER * Y_TOWER
@@ -743,15 +800,13 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
         level_query_sum = query_sum_chain[GEN ** LIG_QUERIES[m_idx * LIG_MAX_LEVELS + lvl]]
 
         if lvl == LIG_YR_LEVEL[m_idx]:
-            fs = squeeze(fs)
-            beta_lvl = fs[0]
+            fs, beta_lvl = squeeze(fs)
             level_betas[GEN ** lvl] = beta_lvl
             sumcheck_target += beta_lvl * level_query_sum
         else:
             fs, intro_u0, msg_cursor = fs_next(fs, msg_cursor)
             fs, intro_u2, msg_cursor = fs_next(fs, msg_cursor)
-            fs = squeeze(fs)
-            beta_lvl = fs[0]
+            fs, beta_lvl = squeeze(fs)
             level_betas[GEN ** lvl] = beta_lvl
             round_quad_c += beta_lvl * intro_u0
             round_quad_b += beta_lvl * (level_query_sum + intro_u2)
@@ -858,7 +913,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, base_delta_pows, tower_delta_pows, g_
     # The ONE shared GKR leaf point (all three trees reduce to it).
 
     # ---- seed (statement pre-bound: hinted sub pi + baked program digest) ----
-    fs = [TRANSCRIPT_SEED_0_LO + TRANSCRIPT_SEED_0_TOP * Y_TOWER * Y_TOWER, TRANSCRIPT_SEED_1]
+    fs = [TRANSCRIPT_SEED_0, TRANSCRIPT_SEED_1]
     fs = obs(fs, seed_0)  # the FS seed: H(flock circuit family, inner program
     fs = obs(fs, seed_1)  # bytecode, ...) — from the recursion's public input
     fs = obs(fs, pi_0)   # bind the sub-proof's statement (its public input)
@@ -919,14 +974,10 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, base_delta_pows, tower_delta_pows, g_
     # ---- commitment root (2 words), kept for the opening phase ----
     fs, commit_root_0, cursor = fs_next(fs, cursor)
     fs, commit_root_1, cursor = fs_next(fs, cursor)
-    commit_root_packed = StackBuf(2)
-    hint_witness(commit_root_packed[0:2], "commit_root_packed")
 
     # ---- bus challenges (F192 provides the soundness margin without grinding) ----
-    fs = squeeze(fs)
-    alpha = fs[0]
-    fs = squeeze(fs)
-    gamma = fs[0]
+    fs, alpha = squeeze(fs)
+    fs, gamma = squeeze(fs)
 
     # ---- ONE GKR grand product: push, pull, and count RLC-batched ----
     # Push and pull have equal depth (matched blocks) and the count tree is
@@ -961,8 +1012,8 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, base_delta_pows, tower_delta_pows, g_
     fs, root_push, cursor = fs_next(fs, cursor)
     fs, root_pull, cursor = fs_next(fs, cursor)
     fs, root_count, cursor = fs_next(fs, cursor)
-    fs = squeeze(fs)
-    gkr_layer_lambda[GEN ** 0] = fs[0]  # λ over the three roots
+    fs, initial_layer_lambda = squeeze(fs)
+    gkr_layer_lambda[GEN ** 0] = initial_layer_lambda  # λ over the three roots
     gkr_layer_fs0[GEN ** 0] = fs[0]
     gkr_layer_fs1[GEN ** 0] = fs[1]
     gkr_layer_cursor[GEN ** 0] = cursor
@@ -1009,15 +1060,14 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, base_delta_pows, tower_delta_pows, g_
         tail_product_count = e0_count * e1_count
         tail_combined = tail_product_push + lam * tail_product_pull + lam * lam * tail_product_count
         assert tclaim == teq * tail_combined
-        tail_fs = squeeze(tail_fs)
-        layer_challenge = tail_fs[0]
+        tail_fs, layer_challenge = squeeze(tail_fs)
         nextrow[GEN ** 0] = layer_challenge
         xln = x_layer * GEN
         gkr_layer_claim[xln] = e0_push + layer_challenge * (e0_push + e1_push)
         gkr_layer_claim_b[xln] = e0_pull + layer_challenge * (e0_pull + e1_pull)
         gkr_layer_claim_c[xln] = e0_count + layer_challenge * (e0_count + e1_count)
-        tail_fs = squeeze(tail_fs)  # fresh λ pins the tail individuals
-        gkr_layer_lambda[xln] = tail_fs[0]
+        tail_fs, tail_lambda = squeeze(tail_fs)  # fresh λ pins the tail individuals
+        gkr_layer_lambda[xln] = tail_lambda
         gkr_layer_fs0[xln] = tail_fs[0]
         gkr_layer_fs1[xln] = tail_fs[1]
         gkr_layer_cursor[xln] = tcur
@@ -1229,8 +1279,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, base_delta_pows, tower_delta_pows, g_
         fs = obs(fs, bytecode_vals[GEN ** k])
     bytecode_sel = HeapBuf(LOG2_BYTECODE_COLS)
     for t in unroll(0, LOG2_BYTECODE_COLS):
-        fs = squeeze(fs)
-        sv = fs[0]
+        fs, sv = squeeze(fs)
         bytecode_sel[GEN ** t] = sv
     bytecode_reduced = 0
     for c in unroll(0, BYTECODE_COLS):
@@ -1253,8 +1302,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, base_delta_pows, tower_delta_pows, g_
     zc_round_eq = HeapBuf(N_TABLES * (TAU_CAP + 2))
     for t in unroll(0, N_TABLES):
         tau_g = dims_g[GEN ** (t + 1)]
-        fs = squeeze(fs)
-        eta = fs[0]
+        fs, eta = squeeze(fs)
         # the zerocheck point r: tau squeezes, sponge chained by round.
         eq_r = HeapBuf(TAU_CAP)
         point_fs0 = zc_point_fs0 * GEN ** (t * (TAU_CAP + 2))
@@ -1263,8 +1311,8 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, base_delta_pows, tower_delta_pows, g_
         point_fs1[GEN ** 0] = fs[1]
         for xk in mul_range(1, tau_g):
             point_fs = [point_fs0[xk], point_fs1[xk]]
-            point_fs = squeeze(point_fs)
-            eq_r[xk] = point_fs[0]
+            point_fs, point_challenge = squeeze(point_fs)
+            eq_r[xk] = point_challenge
             xkn = xk * GEN
             point_fs0[xkn] = point_fs[0]
             point_fs1[xkn] = point_fs[1]
@@ -1342,53 +1390,10 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, base_delta_pows, tower_delta_pows, g_
             sel_fp = eta3 * eta * eta * eta * (col_evals[3] + col_evals[22] * ff + (col_evals[22] + 1) * col_evals[1])
             constraint_eval = addrs + ind_def + ind_nz + sel_pc + sel_fp
         if t == TABLE_BLAKE3:
-            # cols: addresses, 12 Flock lanes, 12 input limbs, 6 output limbs, packing bit, opcode.
+            # cols: [FP, OA0, OA1, OB0, OB1, OC, AA0, AA1, AB0, AB1, AC].
+            # All six values use the sole canonical 128-bit memory encoding;
+            # the bus binds their two lanes directly to Flock and fixes c2=0.
             constraint_eval = (col_evals[6] + col_evals[0] * col_evals[1]) + eta * (col_evals[7] + col_evals[0] * col_evals[2]) + eta * eta * (col_evals[8] + col_evals[0] * col_evals[3]) + eta * eta * eta * (col_evals[9] + col_evals[0] * col_evals[4]) + eta * eta * eta * eta * (col_evals[10] + col_evals[0] * col_evals[5])
-            eta_pow = eta * eta * eta * eta * eta
-            pack = col_evals[41]
-            constraint_eval += eta_pow * pack * (pack + 1)
-            eta_pow *= eta
-            constraint_eval += eta_pow * (col_evals[42] + GEN ** 5 + pack * (GEN ** 5 + GEN ** 6))
-            eta_pow *= eta
-            constraint_eval += eta_pow * (col_evals[11] + col_evals[23])
-            eta_pow *= eta
-            constraint_eval += eta_pow * (col_evals[12] + col_evals[24])
-            eta_pow *= eta
-            constraint_eval += eta_pow * (col_evals[13] + (1 + pack) * col_evals[26] + pack * col_evals[25])
-            eta_pow *= eta
-            constraint_eval += eta_pow * (col_evals[14] + (1 + pack) * col_evals[27] + pack * col_evals[26])
-            eta_pow *= eta
-            constraint_eval += eta_pow * (col_evals[15] + col_evals[29])
-            eta_pow *= eta
-            constraint_eval += eta_pow * (col_evals[16] + col_evals[30])
-            eta_pow *= eta
-            constraint_eval += eta_pow * (col_evals[17] + (1 + pack) * col_evals[32] + pack * col_evals[31])
-            eta_pow *= eta
-            constraint_eval += eta_pow * (col_evals[18] + (1 + pack) * col_evals[33] + pack * col_evals[32])
-            eta_pow *= eta
-            constraint_eval += eta_pow * ((1 + pack) * col_evals[25])
-            eta_pow *= eta
-            constraint_eval += eta_pow * (pack * col_evals[27])
-            eta_pow *= eta
-            constraint_eval += eta_pow * col_evals[28]
-            eta_pow *= eta
-            constraint_eval += eta_pow * ((1 + pack) * col_evals[31])
-            eta_pow *= eta
-            constraint_eval += eta_pow * (pack * col_evals[33])
-            eta_pow *= eta
-            constraint_eval += eta_pow * col_evals[34]
-            eta_pow *= eta
-            constraint_eval += eta_pow * (col_evals[35] + col_evals[19])
-            eta_pow *= eta
-            constraint_eval += eta_pow * (col_evals[36] + col_evals[20])
-            eta_pow *= eta
-            constraint_eval += eta_pow * (col_evals[37] + pack * col_evals[21])
-            eta_pow *= eta
-            constraint_eval += eta_pow * (col_evals[38] + (1 + pack) * col_evals[21] + pack * col_evals[22])
-            eta_pow *= eta
-            constraint_eval += eta_pow * (col_evals[39] + (1 + pack) * col_evals[22])
-            eta_pow *= eta
-            constraint_eval += eta_pow * col_evals[40]
         if t == TABLE_PACK64X2:
             # cols: [FP, OA, OB, OC, AA, AB, AC]. Source K-membership and
             # destination packing are enforced exactly by the memory bus
@@ -1403,8 +1408,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, base_delta_pows, tower_delta_pows, g_
     # over the E-valued public input (no lane splitting, no Frobenius). The
     # opening-boundary decompose transmits v_lo and v_hi; the top lane is
     # deduced from MEM = v_lo + Y*v_hi + Y²*v_top.
-    fs = squeeze(fs)
-    rm = fs[0]
+    fs, rm = squeeze(fs)
     mem = pi_0 + rm * (pi_0 + pi_1)
     fs, mem_lo, cursor = fs_next(fs, cursor)
     fs, mem_hi, cursor = fs_next(fs, cursor)
@@ -1432,8 +1436,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, base_delta_pows, tower_delta_pows, g_
     mr1cs_g = tau_blake3_g * GEN ** K_LOG  # runtime m = K_LOG + tau_5 (certified) in the exponent
     zerocheck_r = HeapBuf(mr1cs_g)
     for i in unroll(0, K_SKIP):
-        fs = squeeze(fs)
-        rv = fs[0]
+        fs, rv = squeeze(fs)
         zerocheck_r[GEN ** i] = rv
     for i in unroll(0, N_FIXED_CHALLENGE_ROUNDS):
         zerocheck_r[GEN ** (K_SKIP + i)] = FIXED_CHALLENGES[i]
@@ -1444,8 +1447,8 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, base_delta_pows, tower_delta_pows, g_
     flock_point_fs1[GEN ** (K_SKIP + N_FIXED_CHALLENGE_ROUNDS)] = fs[1]
     for xi in mul_range(GEN ** (K_SKIP + N_FIXED_CHALLENGE_ROUNDS), mr1cs_g):
         point_fs = [flock_point_fs0[xi], flock_point_fs1[xi]]
-        point_fs = squeeze(point_fs)
-        zerocheck_r[xi] = point_fs[0]
+        point_fs, zerocheck_challenge = squeeze(point_fs)
+        zerocheck_r[xi] = zerocheck_challenge
         xin = xi * GEN
         flock_point_fs0[xin] = point_fs[0]
         flock_point_fs1[xin] = point_fs[1]
@@ -1456,8 +1459,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, base_delta_pows, tower_delta_pows, g_
     for i in unroll(0, 2 * 2 ** K_SKIP):
         fs, w, cursor = fs_next(fs, cursor)
         zc_round1[GEN ** i] = w
-    fs = squeeze(fs)  # cursor now sits at the multilinear round messages, walked below
-    zerocheck_z = fs[0]
+    fs, zerocheck_z = squeeze(fs)  # cursor now sits at the multilinear round messages, walked below
     # interpolate P^C(z) on the Lambda domain (phi8 nodes 64..128): prefix/
     # suffix numerator products with baked inverse denominators.
     lagrange_nums = StackBuf(2 ** K_SKIP)
@@ -1484,8 +1486,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, base_delta_pows, tower_delta_pows, g_
         fs, gamma_c, cursor = fs_next(fs, cursor)  # (gamma_c, g_inf) per round, walked in order
         fs, g_inf, cursor = fs_next(fs, cursor)
         gamma_ab = (zc_running + r_eq * gamma_c) * ONE_PLUS_CHALLENGE_INV[i]  # recover the g(alpha) evaluation from g(0)+g(1)=claim and the eq weight
-        fs = squeeze(fs)
-        rho_v = fs[0]
+        fs, rho_v = squeeze(fs)
         zerocheck_rhos[GEN ** i] = rho_v
         zc_running = gamma_ab * (1 + rho_v) + gamma_c * rho_v + g_inf * rho_v * (1 + rho_v)
     # rounds N_FIXED_CHALLENGE_ROUNDS.. at runtime count: K_LOG + tau_5 - K_SKIP rounds total (certified).
@@ -1507,8 +1508,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, base_delta_pows, tower_delta_pows, g_
         round_fs, gamma_c, cur_i = fs_next(round_fs, cur_i)
         round_fs, g_inf, cur_i = fs_next(round_fs, cur_i)
         gamma_ab = (round_running + r_eq * gamma_c) / (1 + r_eq)
-        round_fs = squeeze(round_fs)
-        rho_v = round_fs[0]
+        round_fs, rho_v = squeeze(round_fs)
         zerocheck_rhos[xi] = rho_v
         round_running = gamma_ab * (1 + rho_v) + gamma_c * rho_v + g_inf * rho_v * (1 + rho_v)
         xin = xi * GEN
@@ -1528,17 +1528,14 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, base_delta_pows, tower_delta_pows, g_
     # ---- flock lincheck (matrix evaluation DEFERRED) ----
     matrix_eval = StackBuf(1)
     hint_witness(matrix_eval[0:1], "matpart")
-    fs = squeeze(fs)
-    lincheck_alpha = fs[0]
-    fs = squeeze(fs)
-    lincheck_beta = fs[0]
+    fs, lincheck_alpha = squeeze(fs)
+    fs, lincheck_beta = squeeze(fs)
     lc_running = lincheck_alpha * a_eval + b_eval + lincheck_beta  # lincheck seed: alpha*a + b + beta (batches the two matrix claims)
     lincheck_rs = HeapBuf(LINCHECK_ROUNDS)
     for i in unroll(0, LINCHECK_ROUNDS):
         fs, e1, cursor = fs_next(fs, cursor)  # (e1, e_inf) per round, walked in order
         fs, ei, cursor = fs_next(fs, cursor)
-        fs = squeeze(fs)
-        rv = fs[0]
+        fs, rv = squeeze(fs)
         lincheck_rs[GEN ** i] = rv
         e0 = lc_running + e1
         c1q = e0 + e1 + ei
@@ -1557,8 +1554,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, base_delta_pows, tower_delta_pows, g_
     lincheck_final = matrix_part + pin_term  # running == deferred matrix eval + the const-pin column contribution
     assert lc_running == lincheck_final
     # fresh z_skip; w = <lagrange_S(r_inner_skip), z_partial> (phi8 nodes 0..64).
-    fs = squeeze(fs)
-    lincheck_z_skip = fs[0]
+    fs, lincheck_z_skip = squeeze(fs)
     skip_nums = StackBuf(2 ** K_SKIP)
     lag64(lincheck_z_skip, skip_nums, 0)
     lincheck_w = 0
@@ -1602,8 +1598,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, base_delta_pows, tower_delta_pows, g_
     # The coordinate weights are (1, rho, ..., rho^191). Construct each
     # linearized coefficient directly by Horner evaluation, so neither the
     # powers nor an equality tree need to be materialized.
-    fs = squeeze(fs)
-    rs_batch = fs[0]
+    fs, rs_batch = squeeze(fs)
     # dual[64*j+i] = base[i] * tower[j], hence
     #   c_k = (sum_i rho^i base[i]^(2^k))
     #         * (sum_j rho^(64j) tower[j]^(2^k)).
@@ -1665,18 +1660,15 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, base_delta_pows, tower_delta_pows, g_
     for xt in mul_range(1, tau_blake3_g * GEN ** SLOT_STRIDE_LOG):
         zv_hi[xt] = zcr7[xt]
     # gamma-combine the two transposed sumcheck claims (computed in-circuit).
-    fs = squeeze(fs)
-    gamma_ab = fs[0]
-    fs = squeeze(fs)
-    gamma_c = fs[0]
+    fs, gamma_ab = squeeze(fs)
+    fs, gamma_c = squeeze(fs)
     target = gamma_ab * transposed_claims[0] + gamma_c * transposed_claims[1]  # gamma-batch the two ring-switch claims into the opening's target
     # ...then every pooled point claim, each observed.
     for j in unroll(0, N_CLAIMS):
         fs = obs(fs, claim_pool[GEN ** j])
     gamma_pool = HeapBuf(N_CLAIMS)
     for j in unroll(0, N_CLAIMS):
-        fs = squeeze(fs)
-        gv = fs[0]
+        fs, gv = squeeze(fs)
         gamma_pool[GEN ** j] = gv
         target += gv * claim_pool[GEN ** j]
 
@@ -1698,7 +1690,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, base_delta_pows, tower_delta_pows, g_
     # transcript-bound and range-checked above, so a single compiled guest can
     # dispatch independently for every inner proof in a mixed-rate batch.
     config_sel = size_sel * rate_sel ** LIG_N_LOG_SIZES
-    sumcheck_target, fold_challenges, final_msg, inner_total, yr_log_n_g, yr_pad_g, fold_cap_g = match_range(log(config_sel), range(0, LIG_N_CANDIDATES), lambda m_idx: open_stacked(m_idx, fs[0], fs[1], target, commit_root_packed[0], commit_root_packed[1], cursor))
+    sumcheck_target, fold_challenges, final_msg, inner_total, yr_log_n_g, yr_pad_g, fold_cap_g = match_range(log(config_sel), range(0, LIG_N_CANDIDATES), lambda m_idx: open_stacked(m_idx, fs[0], fs[1], target, commit_root_0, commit_root_1, cursor))
 
     # ---- generalized eval_b terminal (runtime claim shapes) ----
     # Per-claim lengths, selector bits, and slot data are HINTED; the closing
@@ -2042,16 +2034,14 @@ def main():
     gamma_bc = StackBuf(NSUB)
     bc_running = 0
     for t in unroll(0, NSUB):
-        agg_fs = squeeze(agg_fs)
-        gv = agg_fs[0]
+        agg_fs, gv = squeeze(agg_fs)
         gamma_bc[t] = gv
         bc_running += gv * defer[GEN ** (t * DEFER_SIZE + BYTECODE_LOG + LOG2_BYTECODE_COLS)]
     bc_point = HeapBuf(BYTECODE_VARS)
     for rd in unroll(0, BYTECODE_VARS):
         agg_fs, msg_g1, c = fs_next(agg_fs, bc_sumcheck_msgs * GEN ** (2 * rd))
         agg_fs, msg_ginf, c = fs_next(agg_fs, c)
-        agg_fs = squeeze(agg_fs)
-        rv = agg_fs[0]
+        agg_fs, rv = squeeze(agg_fs)
         bc_point[GEN ** rd] = rv
         g_zero = bc_running + msg_g1
         c_one = g_zero + msg_g1 + msg_ginf
@@ -2073,16 +2063,14 @@ def main():
     gamma_mat = StackBuf(NSUB)
     mat_running = 0
     for t in unroll(0, NSUB):
-        agg_fs = squeeze(agg_fs)
-        gv = agg_fs[0]
+        agg_fs, gv = squeeze(agg_fs)
         gamma_mat[t] = gv
         mat_running += gv * defer[GEN ** (t * DEFER_SIZE + BYTECODE_LOG + LOG2_BYTECODE_COLS + 3 + 2 ** K_SKIP + 2 * LINCHECK_ROUNDS)]
     mat_point = HeapBuf(2 * K_LOG)
     for rd in unroll(0, 2 * K_LOG):
         agg_fs, msg_g1, c = fs_next(agg_fs, mat_sumcheck_msgs * GEN ** (2 * rd))
         agg_fs, msg_ginf, c = fs_next(agg_fs, c)
-        agg_fs = squeeze(agg_fs)
-        rv = agg_fs[0]
+        agg_fs, rv = squeeze(agg_fs)
         mat_point[GEN ** rd] = rv
         g_zero = mat_running + msg_g1
         c_one = g_zero + msg_g1 + msg_ginf

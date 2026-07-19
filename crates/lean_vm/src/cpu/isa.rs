@@ -2,17 +2,6 @@
 
 use primitives::field::{F64, F192};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Blake3Packing {
-    /// Four canonical 128-bit BLAKE3 cells embedded in F192, two compression
-    /// lanes per cell.
-    Bytes128,
-    /// Two 192+64-bit pairs, three lanes from the first cell and the low lane
-    /// from the second.  Transcript states use this representation so their
-    /// first cell is also the full F192 challenge.
-    Transcript192,
-}
-
 #[derive(Clone, Copy, Debug)]
 pub enum Op {
     Xor {
@@ -61,7 +50,6 @@ pub enum Op {
     Blake3 {
         ins: [u32; 4],
         out: u32,
-        packing: Blake3Packing,
     },
 }
 

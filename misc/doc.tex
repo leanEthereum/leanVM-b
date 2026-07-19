@@ -477,9 +477,8 @@ Committed columns are $\K$-valued; machine words and challenges are $\E$-valued 
 
 \paragraph{Opcodes.} Coordinate $3$ of every bytecode tuple is an opcode, naming the instruction stored at that program counter (\S\ref{sec:bytecode}):
 \[
-  \opc{XOR}=1,\quad \opc{MUL}=\gen,\quad \opc{SET}=\gen^{2},\quad \opc{DRF}=\gen^{3},\quad \opc{JMP}=\gen^{4},\quad \opc{B3}=\gen^{5},\quad \opc{PACK}=\gen^{7}.
+  \opc{XOR}=1,\quad \opc{MUL}=\gen,\quad \opc{SET}=\gen^{2},\quad \opc{DRF}=\gen^{3},\quad \opc{JMP}=\gen^{4},\quad \opc{B3}=\gen^{5},\quad \opc{PACK}=\gen^{6}.
 \]
-The internal transcript-packing variant of \texttt{BLAKE3} uses the reserved tag $\gen^6$, so \texttt{PACK64X2} uses $\gen^7$.
 
 \subsection{Bytecode encoding}\label{sec:e2e-bc}
 

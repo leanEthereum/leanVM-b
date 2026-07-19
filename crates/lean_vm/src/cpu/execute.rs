@@ -60,6 +60,9 @@ impl Program {
             /// Debug: the pc of the currently executing instruction, so the
             /// write-once panic can report where the conflict happened.
             static DBG_PC: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+            /// Name of the currently executing computed-advice hint, if the
+            /// conflicting write came from a hint rather than an instruction.
+            static DBG_HINT: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };
         }
         // `DBG_PROF=1`: per-pc step counts, printed as a per-function cycle
         // profile after the run (needs `fn_ranges`, i.e. a compiled program).
@@ -118,8 +121,9 @@ impl Program {
             if written[c] {
                 assert!(
                     mem[c] == v,
-                    "write-once conflict at cell {cell} (pc {}): had {:x}:{:x}:{:x}, new {:x}:{:x}:{:x}",
+                    "write-once conflict at cell {cell} (pc {}, hint {:?}): had {:x}:{:x}:{:x}, new {:x}:{:x}:{:x}",
                     DBG_PC.with(|p| p.get()),
+                    DBG_HINT.with(|h| h.get()),
                     mem[c].c2,
                     mem[c].c1,
                     mem[c].c0,
@@ -208,6 +212,19 @@ impl Program {
                     entry.clone()
                 };
                 for h in hs {
+                    DBG_HINT.with(|slot| {
+                        slot.set(Some(match h {
+                            RHint::Alloc { .. } => "Alloc",
+                            RHint::AllocDyn { .. } => "AllocDyn",
+                            RHint::WitnessStack { .. } => "WitnessStack",
+                            RHint::WitnessHeap { .. } => "WitnessHeap",
+                            RHint::Log2Ceil { .. } => "Log2Ceil",
+                            RHint::BitDecompose { .. } => "BitDecompose",
+                            RHint::BitDecomposeExp { .. } => "BitDecomposeExp",
+                            RHint::FieldLimbs { .. } => "FieldLimbs",
+                            RHint::Print { .. } => "Print",
+                        }))
+                    });
                     match h {
                         // A fresh region: write its base `g^{next_free}` into the
                         // pointer cell (once) and reserve `size` cells. `AllocDyn`
@@ -348,7 +365,22 @@ impl Program {
                                 put(&mut mem, &mut written, &mut mem_count, bb + j, F192::new(bit, 0, 0));
                             }
                         }
+                        RHint::FieldLimbs { value, base, len } => {
+                            assert!((1..=3).contains(len), "an F192 value has three K limbs");
+                            let v = get(&mem, &written, fp + value);
+                            let limbs = [v.c0, v.c1, v.c2];
+                            for j in 0..*len {
+                                put(
+                                    &mut mem,
+                                    &mut written,
+                                    &mut mem_count,
+                                    fp + base + j,
+                                    F192::new(limbs[j as usize], 0, 0),
+                                );
+                            }
+                        }
                     }
+                    DBG_HINT.with(|slot| slot.set(None));
                 }
             }
             // Cover the g-powers this step may index (g²·pc return target, g^fp).
@@ -600,48 +632,25 @@ impl Program {
                     });
                     pc += 1;
                 }
-                Op::Blake3 { ins, out, packing } => {
+                Op::Blake3 { ins, out } => {
                     // Four independently-addressed 128-bit input chunks, each a
                     // single cell; the output spans two consecutive cells (ac, ac+1).
                     let (aa0, aa1, ab0, ab1) = (fp + ins[0], fp + ins[1], fp + ins[2], fp + ins[3]);
                     let ac = fp + out;
                     let words = [aa0, aa1, ab0, ab1].map(|a| get(&mem, &written, a));
-                    let (va, vb) = match packing {
-                        Blake3Packing::Bytes128 => {
-                            assert!(
-                                words.iter().all(|w| w.c2 == 0),
-                                "BLAKE3 input cell must be a 128-bit embedding"
-                            );
-                            (
-                                [F64(words[0].c0), F64(words[0].c1), F64(words[1].c0), F64(words[1].c1)],
-                                [F64(words[2].c0), F64(words[2].c1), F64(words[3].c0), F64(words[3].c1)],
-                            )
-                        }
-                        Blake3Packing::Transcript192 => {
-                            assert_eq!(
-                                (words[1].c1, words[1].c2),
-                                (0, 0),
-                                "transcript state tail must be K-valued"
-                            );
-                            assert_eq!((words[3].c1, words[3].c2), (0, 0), "transcript tag must be K-valued");
-                            (
-                                [F64(words[0].c0), F64(words[0].c1), F64(words[0].c2), F64(words[1].c0)],
-                                [F64(words[2].c0), F64(words[2].c1), F64(words[2].c2), F64(words[3].c0)],
-                            )
-                        }
-                    };
+                    assert!(
+                        words.iter().all(|w| w.c2 == 0),
+                        "BLAKE3 input cell must be a canonical 128-bit embedding"
+                    );
+                    let va = [F64(words[0].c0), F64(words[0].c1), F64(words[1].c0), F64(words[1].c1)];
+                    let vb = [F64(words[2].c0), F64(words[2].c1), F64(words[3].c0), F64(words[3].c1)];
                     // Compress the 64 input bytes to the 32-byte digest, then write
                     // it to c's two cells. No table constraint covers the digest
                     // (the relation is proven by flock, §blake3_flock); the
                     // interpreter still computes the definite digest so the output
                     // cells are consistent for any later read.
                     let vc = blake3_compress(va, vb);
-                    let outputs = match packing {
-                        Blake3Packing::Bytes128 => [F192::new(vc[0].0, vc[1].0, 0), F192::new(vc[2].0, vc[3].0, 0)],
-                        Blake3Packing::Transcript192 => {
-                            [F192::new(vc[0].0, vc[1].0, vc[2].0), F192::new(vc[3].0, 0, 0)]
-                        }
-                    };
+                    let outputs = [F192::new(vc[0].0, vc[1].0, 0), F192::new(vc[2].0, vc[3].0, 0)];
                     put(&mut mem, &mut written, &mut mem_count, ac, outputs[0]);
                     put(&mut mem, &mut written, &mut mem_count, ac + 1, outputs[1]);
                     let ra = [
@@ -667,8 +676,6 @@ impl Program {
                         va,
                         vb,
                         vc,
-                        words: [words[0], words[1], words[2], words[3], outputs[0], outputs[1]],
-                        packing,
                         ra,
                         rb,
                         rc,

@@ -237,11 +237,13 @@ def combine(a, b, k: Const):
 
 An `@inline` function is **expanded at each call site** instead of emitting a
 real call — no frame, no argument/return `DEREF`s, no call/return `JUMP`s. The
-body must be a single **tail** `return`; it may contain `blake3`, `if`, and
-`unroll`, but not a call to another (user) function, a `for`/`match`, or any
-nested/early `return`. It is never lowered standalone; a call to a
-non-`@inline` function is unchanged. (Distinct from `unroll(a, b)`, which
-replicates a loop body: that one really does unroll.)
+body must be a single **tail** `return`; it may contain builtins, calls to other
+`@inline` functions, `if`, and `unroll`, but not a call to a non-inline user
+function, a `for`/`match`, or any nested/early `return`. Nested inline calls
+expand recursively; direct or indirect recursive inline calls are rejected.
+An inline function is never lowered standalone; a call to a non-`@inline`
+function is unchanged. (Distinct from `unroll(a, b)`, which replicates a loop
+body: that one really does unroll.)
 
 An `@inline` function may also **return a `StackBuf`**: the caller's binding
 aliases the returned cell run (zero copies), and `StackBuf` arguments alias
@@ -605,6 +607,45 @@ source with either upper limb nonzero cannot satisfy the memory permutation.
 This is useful before treating values supplied as GF(2^192) hints as serialized
 64-bit limbs. The returned packed word may be ignored when only the range
 assertion is needed.
+
+The recursion transcript uses `challenge_from_state(state)` to reinterpret the
+first three 64-bit lanes of a canonical two-cell BLAKE3 digest as one extension
+field challenge. For `state = [s0, s1]`, it lowers exactly as follows (the
+limb hints cost no cycles, but are not trusted):
+
+```python
+lo = StackBuf(2)
+hi = StackBuf(2)
+hint_f192_limbs(lo, s0)       # advice: [d0, d1]
+hint_f192_limbs(hi, s1)       # advice: [d2, d3]
+pack64x2_into(lo[0], lo[1], s0)
+pack64x2_into(hi[0], hi[1], s1)
+challenge = lo[0] + lo[1] * f192(0, 1, 0) + hi[0] * f192(0, 0, 1)
+```
+
+The two in-place `PACK64X2` instructions prove through write-once memory that
+`s0 = (d0,d1,0)` and `s1 = (d2,d3,0)`. Consequently all four digest lanes are
+really in GF(2^64); the challenge is `d0 + d1·Y + d2·Y²`, while `d3` is checked
+but deliberately discarded. `challenge_from_state` is not a compiler
+intrinsic: this is the complete `@inline` helper used by the recursion guest.
+
+Likewise, the recursion guest's `sponge_compress(state, scalar, tail, out)` is
+ordinary straight-line zkDSL:
+
+```python
+limbs = StackBuf(3)
+hint_f192_limbs(limbs, scalar)  # advice: scalar's three K coordinates
+block = StackBuf(2)
+pack64x2_into(limbs[0], limbs[1], block[0])
+pack64x2_into(limbs[2], tail, block[1])
+assert scalar == limbs[0] + limbs[1] * Y + limbs[2] * Y * Y
+blake3(state, block, out)
+```
+
+The first two rows range-check all four serialized lanes and form the exact
+64-byte BLAKE3 block `[scalar.c0, scalar.c1, scalar.c2, tail]`; the equality
+prevents the advice from changing `scalar`. The final row is the VM's sole,
+canonical `BLAKE3` instruction.
 
 ## BLAKE3
 

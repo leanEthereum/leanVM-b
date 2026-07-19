@@ -123,6 +123,10 @@ struct FnLower<'a> {
     zero2_off: Option<Off>,
     /// Hints queued to attach to the next emitted instruction.
     pending: Vec<Hint>,
+    /// Active `@inline` expansion stack. Nested inline helpers are allowed,
+    /// but direct or indirect recursion would otherwise recurse forever in
+    /// the compiler.
+    inline_calls: Vec<String>,
     queue: &'a mut Vec<Func>,
     loop_ctr: &'a mut usize,
     /// The program's function definitions by name, for `Const`-parameter
@@ -1665,8 +1669,13 @@ impl FnLower<'_> {
             dsts.len()
         );
         assert!(
-            body_inlinable(&body),
-            "`@inline {callee}` must be a single tail `return` with no call/loop/match (see body_inlinable)"
+            body_inlinable(&body, self.defs),
+            "`@inline {callee}` must be a single tail `return` with only builtin or @inline calls, and no loop/match"
+        );
+        assert!(
+            !self.inline_calls.iter().any(|f| f == callee),
+            "recursive @inline expansion is not supported: {} -> {callee}",
+            self.inline_calls.join(" -> ")
         );
         // Bind the params from the caller-scope arguments (symbolically where we
         // can, so a shifted-pointer arg keeps folding into `β`; a `StackBuf` arg
@@ -1711,9 +1720,12 @@ impl FnLower<'_> {
             }
         }
         let saved_ret = self.inline_ret.replace(dsts.to_vec());
+        self.inline_calls.push(callee.to_string());
         for s in &body {
             self.stmt(s);
         }
+        let popped = self.inline_calls.pop();
+        debug_assert_eq!(popped.as_deref(), Some(callee));
         self.inline_ret = saved_ret;
         (self.vars, self.stacks, self.consts, self.gaddrs, self.fconsts) = saved;
         true
@@ -2086,7 +2098,6 @@ impl FnLower<'_> {
                     self.emit(LOp::Blake3 {
                         ins: [a[0], a[1], b[0], b[1]],
                         c,
-                        packing: Blake3Packing::Bytes128,
                     });
                     if let Some((ptr, lo)) = heap_out {
                         for k in 0..2 {
@@ -2100,30 +2111,26 @@ impl FnLower<'_> {
                     }
                     return;
                 }
-                if f == "blake3_transcript" {
-                    assert_eq!(args.len(), 4, "blake3_transcript takes (state, scalar, tag, out)");
-                    let state = self.blake3_input(&args[0]);
-                    let scalar = self.expr(&args[1]);
-                    let tag = self.expr(&args[2]);
-                    let (c, heap_out) = match self.blake3_operand(&args[3]) {
-                        B3Operand::Stack(o) => (o, None),
-                        B3Operand::Heap { ptr, lo } => (self.alloc_stack(2), Some((ptr, lo))),
-                    };
-                    self.emit(LOp::Blake3 {
-                        ins: [state[0], state[1], scalar, tag],
-                        c,
-                        packing: Blake3Packing::Transcript192,
-                    });
-                    if let Some((ptr, lo)) = heap_out {
-                        for k in 0..2 {
-                            self.emit(LOp::Deref {
-                                alpha: ptr,
-                                beta: lo + k,
-                                gamma: c + k,
-                                mode: DerefMode::Cell,
-                            });
-                        }
-                    }
+                if f == "pack64x2_into" {
+                    assert_eq!(args.len(), 3, "pack64x2_into(a, b, out) takes three scalar cells");
+                    let a = self.expr(&args[0]);
+                    let b = self.expr(&args[1]);
+                    let c = self.expr(&args[2]);
+                    self.emit(LOp::Pack64x2 { a, b, c });
+                    return;
+                }
+                if f == "hint_f192_limbs" {
+                    assert_eq!(args.len(), 2, "hint_f192_limbs(dest, value)");
+                    let (base, len) = self
+                        .stack_of(&args[0])
+                        .expect("hint_f192_limbs destination must be a StackBuf");
+                    assert!(
+                        (1..=3).contains(&len),
+                        "hint_f192_limbs destination must have 1..=3 cells"
+                    );
+                    let value = self.expr(&args[1]);
+                    let value = self.word_src(value);
+                    self.pending.push(Hint::FieldLimbs { value, base, len });
                     return;
                 }
                 self.call(f, args, 0);
@@ -2358,15 +2365,15 @@ fn exprs_eq(a: &[Expr], b: &[Expr]) -> bool {
 }
 
 /// A body safe to inline: a single **tail** `return`, and no construct whose
-/// lowering needs its own frame or a dispatch — a call to a user function, a
-/// runtime loop, or a match (which would recurse the inliner or reload a frame
-/// pointer that is no longer the callee's). `blake3` is a builtin statement and
-/// is fine; `unroll`/`if` are compile-time / same-frame and recurse into.
-fn body_inlinable(body: &[Stmt]) -> bool {
-    matches!(body.split_last(), Some((Stmt::Return(_), rest)) if rest.iter().all(stmt_inline_safe))
+/// lowering needs its own frame or a dispatch — a non-inline user call, a
+/// runtime loop, or a match (which would reload a frame pointer that is no
+/// longer the callee's). Builtins and nested `@inline` calls are fine;
+/// `unroll`/`if` are compile-time / same-frame and recurse into.
+fn body_inlinable(body: &[Stmt], defs: &HashMap<String, Func>) -> bool {
+    matches!(body.split_last(), Some((Stmt::Return(_), rest)) if rest.iter().all(|s| stmt_inline_safe(s, defs)))
 }
 
-fn stmt_inline_safe(s: &Stmt) -> bool {
+fn stmt_inline_safe(s: &Stmt, defs: &HashMap<String, Func>) -> bool {
     match s {
         Stmt::Let(..)
         | Stmt::Store(..)
@@ -2375,9 +2382,13 @@ fn stmt_inline_safe(s: &Stmt) -> bool {
         | Stmt::AssertEq(..)
         | Stmt::AssertNe(..)
         | Stmt::AssertLt(..) => true,
-        Stmt::Call(f, _) => f == "blake3" || f == "blake3_transcript",
-        Stmt::If { then, els, .. } => then.iter().all(stmt_inline_safe) && els.iter().all(stmt_inline_safe),
-        Stmt::Unroll { body, .. } => body.iter().all(stmt_inline_safe),
+        Stmt::Call(f, _) => {
+            f == "blake3" || f == "pack64x2_into" || f == "hint_f192_limbs" || defs.get(f).is_some_and(|d| d.inline)
+        }
+        Stmt::If { then, els, .. } => {
+            then.iter().all(|s| stmt_inline_safe(s, defs)) && els.iter().all(|s| stmt_inline_safe(s, defs))
+        }
+        Stmt::Unroll { body, .. } => body.iter().all(|s| stmt_inline_safe(s, defs)),
         // Return (non-tail), For, Match, LetMatchRange, LetTuple, CallIfNe, user Call.
         _ => false,
     }
@@ -2528,6 +2539,7 @@ pub(crate) fn lower_func(
         zero_off: None,
         zero2_off: None,
         pending: Vec::new(),
+        inline_calls: Vec::new(),
         queue,
         loop_ctr,
         defs,

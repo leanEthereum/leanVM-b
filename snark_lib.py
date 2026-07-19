@@ -158,6 +158,19 @@ def pack64x2(a, b) -> _Elt:
     return _Elt()
 
 
+def pack64x2_into(a, b, out) -> None:
+    """The destination-target form of `pack64x2`: assert that `out` is the
+    canonical packing `(a.c0, b.c0, 0)`. All three arguments are scalar cells."""
+    _ = a, b, out
+
+
+def hint_f192_limbs(dest, value) -> None:
+    """Computed advice: write the first `len(dest)` GF(2^64) coordinate limbs
+    of `value` into a 1-to-3-cell StackBuf. UNCONSTRAINED; callers bind the
+    result with `PACK64X2` and/or field reconstruction."""
+    _ = dest, value
+
+
 def blake3(a, b, out) -> None:
     """The BLAKE3 compression of the two 256-bit operands `a`, `b`, written
     into the 2-cell run `out` (write-once: if `out` was already written, this

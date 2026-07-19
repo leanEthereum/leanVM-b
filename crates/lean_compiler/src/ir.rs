@@ -75,7 +75,6 @@ pub(crate) enum LOp {
     Blake3 {
         ins: [Off; 4],
         c: Off,
-        packing: Blake3Packing,
     },
 }
 
@@ -119,6 +118,9 @@ pub(crate) enum Hint {
     /// (recovered by a bounded discrete log at witness generation), into the
     /// buffer `m[fp·g^bits_ptr]`. The emitting code re-checks it in-circuit.
     BitDecomposeExp { value: Off, bits_ptr: Off, nbits: u32 },
+    /// Computed advice: write the first `len` K-coordinate limbs of an F192
+    /// value into consecutive frame cells. The guest must constrain them.
+    FieldLimbs { value: Off, base: Off, len: u32 },
 }
 
 pub(crate) struct Lowered {
