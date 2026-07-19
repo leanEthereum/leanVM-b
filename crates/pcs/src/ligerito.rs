@@ -644,12 +644,12 @@ fn udr_per_query_bits(log_inv_rate: usize, log_msg_cols: usize, proximity_loss: 
 }
 
 /// Asymptotic (n → ∞) UDR per-query soundness at `γ = δ/2`, dropping the
-/// finite-length `3/(δ·n)` backoff. Length-agnostic — used for ladder-shape
-/// feasibility (and the test-only `udr_queries`); the per-level configs use the
-/// n-aware [`udr_per_query_bits`]. The dropped backoff slightly *under*-counts
-/// queries, but the per-level block-length check in `derive_config` (and the
-/// `+5` feasibility padding) catch any shape that wouldn't hold the real,
-/// n-aware query count.
+/// finite-length `3/(δ·n)` backoff. Length-agnostic; the per-level configs use
+/// the n-aware [`udr_per_query_bits`]. Backs the test-only `udr_queries`
+/// reference table — the dropped backoff slightly *under*-counts queries, but
+/// the per-level block-length check in `derive_config` catches any shape that
+/// wouldn't hold the real, n-aware query count.
+#[cfg(test)]
 fn udr_per_query_bits_asymptotic(log_inv_rate: usize) -> f64 {
     let rho = (-(log_inv_rate as f64)).exp2();
     let gamma = (1.0 - rho) / 2.0;
@@ -1131,11 +1131,6 @@ impl LigeritoSecurityConfig {
     /// both verifiers execute both regimes.
     pub fn derive_config(m: usize) -> Result<Self, String> {
         let target_bits = SECURITY_BITS;
-        // TEMPORARY: the OOD prover/verifier port has a completeness bug (honest
-        // Johnson-level proofs fail to verify), so the shipped default stays
-        // all-UDR (green) until it's fixed. Set to `true` to reproduce the bug
-        // via the roundtrip tests. All the UDR/LDR machinery below is in place.
-        let allow_johnson = false;
         let log_inv_rate = LOG_INV_RATE_0;
         // Query-phase grinding trades prover PoW for query count (see
         // [`QUERY_GRINDING_BITS`]): 120-bit rounds with 18 bits ground, so
@@ -1183,7 +1178,7 @@ impl LigeritoSecurityConfig {
             let john = best_johnson_candidate(
                 i, rate, cols, ilv, target_bits, query_grind, MAX_FOLD_GRINDING_BITS,
             );
-            let use_john = allow_johnson && john.as_ref().is_some_and(|j| j.queries < udr_queries);
+            let use_john = john.as_ref().is_some_and(|j| j.queries < udr_queries);
 
             let (
                 regime,

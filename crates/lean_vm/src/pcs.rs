@@ -7,11 +7,13 @@
 //! so it never travels. flock's ring-switched `q_pkd` claims join the same batch
 //! ([`::pcs::stack_open_k`]).
 //!
-//! Security: the K configs reuse Ligerito's one shipped configuration — rate 1/2,
-//! unique-decoding regime (list size 1, no out-of-domain binding), 120-bit
-//! round-by-round soundness ([`::pcs::ligerito::SECURITY_BITS`]). The base-field
-//! commitment only shrinks the level-0 symbols to 8 bytes; every random
-//! ingredient is sampled from `E` with the same error terms as before.
+//! Security: the K configs reuse Ligerito's one shipped configuration — a
+//! UDR/LDR hybrid (unique-decoding for the low-rate early levels, Johnson
+//! list-decoding with a single OOD-challenge-ground out-of-domain sample for the
+//! deep high-rate levels), 120-bit round-by-round soundness
+//! ([`::pcs::ligerito::SECURITY_BITS`]). The base-field commitment only shrinks
+//! the level-0 symbols to 8 bytes; every random ingredient is sampled from `E`
+//! with the same error terms as before.
 
 use primitives::field::{F64, F128T};
 use crate::transcript::{ProverState, VerifierState};

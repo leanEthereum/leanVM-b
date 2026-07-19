@@ -2550,8 +2550,8 @@ pub fn recursive_verifier_with_basis_k(
     if b_initial.len() != 1usize << log_n {
         return false;
     }
-    // OOD is not ported; reject configs that would require it.
-    if config.ood_samples.iter().any(|&s| s != 0) {
+    // OOD IS ported: L0 takes no sample; Johnson levels take exactly one.
+    if config.ood_samples[0] != 0 || config.ood_samples.iter().any(|&s| s > 1) {
         return false;
     }
 
@@ -3009,8 +3009,8 @@ where
     if r < 1 || config.level_ks.len() != r || config.log_inv_rates.len() != r + 1 {
         return false;
     }
-    // OOD is not ported; reject configs that would require it.
-    if config.ood_samples.iter().any(|&s| s != 0) {
+    // OOD IS ported: L0 takes no sample; Johnson levels take exactly one.
+    if config.ood_samples[0] != 0 || config.ood_samples.iter().any(|&s| s > 1) {
         return false;
     }
 
