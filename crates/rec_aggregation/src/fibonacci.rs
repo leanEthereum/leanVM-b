@@ -6,7 +6,7 @@ use std::time::Instant;
 use lean_compiler::{compile, parse};
 use lean_vm::cpu::{prove, verify};
 use primitives::{
-    field::{F64, F192, g_pow},
+    field::{F64, g_pow},
     pretty_integer,
 };
 
@@ -42,7 +42,7 @@ pub fn run_fibonacci(n: usize, log_inv_rate: usize) {
         pretty_integer(n)
     );
     println!("  cycles (VM steps)           : {}", pretty_integer(stats.cycles));
-    for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3", "PACK64X2"]
+    for (name, &c) in ["ADD", "MUL", "ADD_EXT", "MUL_EXT", "SET", "DEREF", "JUMP", "BLAKE3"]
         .iter()
         .zip(&stats.counts)
     {
@@ -71,7 +71,7 @@ pub fn run_fibonacci(n: usize, log_inv_rate: usize) {
 /// unrolled `mul_range` loop over a `HeapBuf`), with the result `g^{F(N)}`
 /// published into cell `m[0]`. Returns the zkDSL source and the public input
 /// `[g^{F(N)}, 0]`.
-fn fibonacci_program(fib_n: usize) -> (String, [F192; 2]) {
+fn fibonacci_program(fib_n: usize) -> (String, [F64; 4]) {
     const UNROLL: usize = 1000;
     assert!(
         fib_n >= UNROLL && fib_n.is_multiple_of(UNROLL),
@@ -87,7 +87,7 @@ fn fibonacci_program(fib_n: usize) -> (String, [F192; 2]) {
         a = b;
         b = c; // (a, b) = (g^{F(m)}, g^{F(m+1)})
     }
-    let pi = [F192::from(a), F192::ZERO]; // a = g^{F(N)}: the result, then 0
+    let pi = [a, F64::ZERO, F64::ZERO, F64::ZERO];
 
     // `K` blocks: each reads its boundary pair into locals, runs `UNROLL`
     // Fibonacci `MUL`s in registers, and writes the next pair (4 DEREFs per

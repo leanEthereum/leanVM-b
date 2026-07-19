@@ -1,6 +1,6 @@
 //! The ISA and the `DEREF` store modes.
 
-use primitives::field::{F64, F192};
+use primitives::field::F64;
 
 #[derive(Clone, Copy, Debug)]
 pub enum Op {
@@ -14,12 +14,24 @@ pub enum Op {
         b: u32,
         c: u32,
     },
+    /// Extension-field addition on three consecutive base-field words:
+    /// `mem[c..c+3] = mem[a..a+3] + mem[b..b+3]` in F2^192.
+    AddExt {
+        a: u32,
+        b: u32,
+        c: u32,
+    },
+    /// Extension-field multiplication on three consecutive base-field words:
+    /// `mem[c..c+3] = mem[a..a+3] * mem[b..b+3]` in F2^192.
+    MulExt {
+        a: u32,
+        b: u32,
+        c: u32,
+    },
     Set {
         o: u32,
-        /// The immediate stored into `mem[fp·o]`. A full 192-bit machine word
-        /// (`E = F192`); K-valued constants (addresses, small ints) ride the
-        /// low lane with `c1 = c2 = 0`.
-        k: F192,
+        /// The 64-bit base-field immediate stored into `mem[fp·o]`.
+        k: F64,
     },
     Deref {
         alpha: u32,
@@ -32,24 +44,12 @@ pub enum Op {
         od: u32,
         of: u32,
     },
-    /// Read two K-valued (64-bit) cells and pack them canonically into one
-    /// 128-bit cell: `c = (a.c0, b.c0, 0)`. The memory bus reads the sources as
-    /// `(lo, 0, 0)`, so executing this instruction also proves both source
-    /// words lie in K = F64.
-    Pack64x2 {
+    /// `BLAKE3`: compress the two 256-bit operands at the four-word runs
+    /// `a..a+4` and `b..b+4`, writing the digest to `c..c+4`.
+    Blake3 {
         a: u32,
         b: u32,
         c: u32,
-    },
-    /// `BLAKE3` (§7.6): compresses the 64-byte input `ins[0]‖ins[1]‖ins[2]‖ins[3]`
-    /// (each `ins[i]` names a 128-bit chunk in ONE 128-bit memory word `fp+ins[i]`)
-    /// and writes the 32-byte digest to the TWO consecutive words `out, out+1`.
-    /// Each input chunk is addressed independently — no forced contiguity, so the
-    /// caller need not assemble its operands into adjacent cells. The compression
-    /// relation is proven by flock.
-    Blake3 {
-        ins: [u32; 4],
-        out: u32,
     },
 }
 

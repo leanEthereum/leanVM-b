@@ -20,10 +20,7 @@ use std::time::Instant;
 use lean_compiler::{compile, parse};
 use lean_vm::blake3_flock::warm_setup;
 use lean_vm::cpu::{prove, verify};
-use primitives::{
-    field::{F64, F192},
-    pretty_integer,
-};
+use primitives::{field::F64, pretty_integer};
 
 /// One compression step `c = BLAKE3(a, b)` (the VM's `blake3` builtin): the eight
 /// input words are laid little-endian into 64 bytes, BLAKE3-hashed, and the
@@ -50,7 +47,7 @@ fn chain_source(n: usize, unroll: usize) -> String {
         "N must be a positive multiple of UNROLL"
     );
     let k = n / unroll;
-    let two_k = 2 * k;
+    let four_k = 4 * k;
 
     let mut body = String::new();
     // A 256-bit BLAKE3 value occupies two canonical 128-bit cells. Block `j`'s
@@ -58,19 +55,21 @@ fn chain_source(n: usize, unroll: usize) -> String {
     // is the block index (×g each iteration), so the value base is `b = i²`.
     // Load the current chain value into a size-2 StackBuf (heap read straight
     // into the two consecutive stack cells).
-    body.push_str("        b = i * i\n");
-    body.push_str("        h0 = StackBuf(2)\n");
-    body.push_str("        h0[0] = buff[b]\n");
-    body.push_str("        h0[1] = buff[b * GEN]\n");
+    body.push_str("        i2 = i * i\n");
+    body.push_str("        b = i2 * i2\n");
+    body.push_str("        h0 = StackBuf(4)\n");
+    for w in 0..4 {
+        body.push_str(&format!("        h0[{w}] = buff[b * GEN ** {w}]\n"));
+    }
     // `unroll` self-hashes; each `blake3` reads its operand stack in place and
     // writes into the next pre-allocated size-2 stack — no copies between steps.
     for s in 1..=unroll {
-        body.push_str(&format!("        h{s} = StackBuf(2)\n"));
+        body.push_str(&format!("        h{s} = StackBuf(4)\n"));
         body.push_str(&format!("        blake3(h{p}, h{p}, h{s})\n", p = s - 1));
     }
     // Write the block's result back to the next value (two cells along).
-    for w in 0..2 {
-        body.push_str(&format!("        buff[b * GEN ** {}] = h{unroll}[{w}]\n", 2 + w));
+    for w in 0..4 {
+        body.push_str(&format!("        buff[b * GEN ** {}] = h{unroll}[{w}]\n", 4 + w));
     }
 
     format!(
@@ -78,14 +77,20 @@ fn chain_source(n: usize, unroll: usize) -> String {
         \x20   buff = HeapBuf({size})\n\
         \x20   buff[1] = 0\n\
         \x20   buff[GEN] = 0\n\
+        \x20   buff[GEN ** 2] = 0\n\
+        \x20   buff[GEN ** 3] = 0\n\
         \x20   for i in mul_range(1, GEN ** {k}):\n\
         {body}\
         \x20   p = 1\n\
-        \x20   p[1] = buff[GEN ** {two_k}]\n\
-        \x20   p[GEN] = buff[GEN ** {two_k_1}]\n\
+        \x20   p[1] = buff[GEN ** {four_k}]\n\
+        \x20   p[GEN] = buff[GEN ** {four_k_1}]\n\
+        \x20   p[GEN ** 2] = buff[GEN ** {four_k_2}]\n\
+        \x20   p[GEN ** 3] = buff[GEN ** {four_k_3}]\n\
         \x20   return\n",
-        size = 2 * k + 2,
-        two_k_1 = two_k + 1,
+        size = 4 * k + 4,
+        four_k_1 = four_k + 1,
+        four_k_2 = four_k + 2,
+        four_k_3 = four_k + 3,
     )
 }
 
@@ -105,7 +110,7 @@ fn blake3_hash_chain() {
         h = compress(h, h);
     }
     // The two published BLAKE3 cells of h_N (top F192 limb zero).
-    let pi = [F192::new(h[0].0, h[1].0, 0), F192::new(h[2].0, h[3].0, 0)];
+    let pi = h;
 
     let program = compile(&parse(&chain_source(n, unroll)).expect("parse"));
 
@@ -121,7 +126,7 @@ fn blake3_hash_chain() {
     verify(&program, &pi, &proof).expect("hash-chain proof verifies");
     let t_verify = t.elapsed();
 
-    assert_eq!(stats.counts[5], n, "one BLAKE3 row per chain step");
+    assert_eq!(stats.counts[7], n, "one BLAKE3 row per chain step");
 
     println!(
         "\nBLAKE3 hash chain, N = {}, unroll = {}",
@@ -129,7 +134,7 @@ fn blake3_hash_chain() {
         pretty_integer(unroll)
     );
     println!("  cycles (VM steps)           : {}", pretty_integer(stats.cycles));
-    for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3", "PACK64X2"]
+    for (name, &c) in ["ADD", "MUL", "ADD_EXT", "MUL_EXT", "SET", "DEREF", "JUMP", "BLAKE3"]
         .iter()
         .zip(&stats.counts)
     {
@@ -156,6 +161,6 @@ fn blake3_hash_chain() {
 
     // A wrong public input must be rejected.
     let mut bad = pi;
-    bad[0] += F192::ONE;
+    bad[0] += F64::ONE;
     assert!(verify(&program, &bad, &proof).is_err());
 }

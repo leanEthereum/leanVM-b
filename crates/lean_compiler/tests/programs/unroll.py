@@ -5,7 +5,7 @@
 # heap slices indexed by `i` (a 256-bit BLAKE3 value is two canonical cells).
 # Published: the two 128-bit digest cells of H^3(5, 7) — same chain as
 # blake3_heap_chain.py, unrolled instead of looped.
-# public_input: 259899574965733219954697446670390340005, 71594800443637044304569228067009621691
+# public_input: 9179625039470602661, 14089184190295358934, 1788154028250263227, 3881161908982872004
 from snark_lib import *
 
 
@@ -15,17 +15,21 @@ def main():
     for i in unroll(0, 7):
         sb[i + 1] = sb[i] * GEN  # sb[k] = g^k
     assert sb[7] == GEN ** 7
-    buf = HeapBuf(8)
+    buf = HeapBuf(16)
     buf[1] = 5
-    buf[GEN] = 7
+    buf[GEN] = 0
+    buf[GEN ** 2] = 7
+    buf[GEN ** 3] = 0
     chain(buf, 3)
     p = GEN ** 0
-    p[1] = buf[GEN ** 6]
-    p[GEN] = buf[GEN ** 7]
+    p[1] = buf[GEN ** 12]
+    p[GEN] = buf[GEN ** 13]
+    p[GEN ** 2] = buf[GEN ** 14]
+    p[GEN ** 3] = buf[GEN ** 15]
     return
 
 
 def chain(buf, n: Const):
     for i in unroll(0, n):
-        blake3(buf[i * 2:i * 2 + 2], buf[i * 2:i * 2 + 2], buf[i * 2 + 2:i * 2 + 4])
+        blake3(buf[i * 4:i * 4 + 4], buf[i * 4:i * 4 + 4], buf[i * 4 + 4:i * 4 + 8])
     return

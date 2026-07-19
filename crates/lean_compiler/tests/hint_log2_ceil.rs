@@ -6,7 +6,11 @@
 
 use lean_compiler::{compile, parse};
 use lean_vm::cpu::{prove, verify};
-use primitives::field::{F64, F192, g_pow};
+use primitives::field::{F64, g_pow};
+
+fn pi2(a: F64, b: F64) -> [F64; 4] {
+    [a, b, F64::ZERO, F64::ZERO]
+}
 
 fn log2_ceil_of(v: u128) -> usize {
     if v <= 1 {
@@ -30,12 +34,12 @@ def main():
 ";
     for v in [1u128, 2, 3, 4, 5, 7, 8, 200] {
         let mut program = compile(&parse(src).expect("parse"));
-        let bits: Vec<F192> = (0..8).map(|j| F192::from(F64(((v >> j) & 1) as u64))).collect();
+        let bits: Vec<F64> = (0..8).map(|j| F64(((v >> j) & 1) as u64)).collect();
         program.set_witness("bits", vec![bits]);
-        let want = [F192::from(g_pow(log2_ceil_of(v))), F192::from(F64::ONE)];
+        let want = pi2(g_pow(log2_ceil_of(v)), F64::ONE);
         let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
         verify(&program, &want, &proof).unwrap_or_else(|_| panic!("v={v}: log2_ceil advice must verify"));
-        let bad = [F192::from(g_pow(log2_ceil_of(v) + 1)), F192::from(F64::ONE)];
+        let bad = pi2(g_pow(log2_ceil_of(v) + 1), F64::ONE);
         assert!(
             verify(&program, &bad, &proof).is_err(),
             "v={v}: wrong g_mu must be rejected"
@@ -59,9 +63,9 @@ def main():
 ";
     for (v, mu) in [(2u128, 5usize), (4, 5), (64, 6), (200, 8)] {
         let mut program = compile(&parse(src).expect("parse"));
-        let bits: Vec<F192> = (0..8).map(|j| F192::from(F64(((v >> j) & 1) as u64))).collect();
+        let bits: Vec<F64> = (0..8).map(|j| F64(((v >> j) & 1) as u64)).collect();
         program.set_witness("bits", vec![bits]);
-        let want = [F192::from(g_pow(mu)), F192::from(F64::ONE)];
+        let want = pi2(g_pow(mu), F64::ONE);
         let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
         verify(&program, &want, &proof).unwrap_or_else(|_| panic!("v={v}: floored log2_ceil must verify"));
     }

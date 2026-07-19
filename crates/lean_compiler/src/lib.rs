@@ -30,7 +30,7 @@ use std::collections::HashMap;
 use lean_vm::cpu::hints::RHint;
 use lean_vm::cpu::{DerefMode, Op, Program};
 use primitives::{
-    field::{F64, F192, g_pow},
+    field::{F64, g_pow},
     pretty_integer,
 };
 
@@ -69,7 +69,7 @@ pub fn compile(ast: &Ast) -> Program {
     // Definitions by name, for Const-parameter specialization at call sites.
     let defs: HashMap<String, Func> = ast.funcs.iter().map(|f| (f.name.clone(), f.clone())).collect();
     // Constant arrays by name, resolved at lowering (`NAME[i]`, `len(NAME)`).
-    let const_arrays: HashMap<String, Vec<F192>> = ast.const_arrays.iter().cloned().collect();
+    let const_arrays: HashMap<String, Vec<F64>> = ast.const_arrays.iter().cloned().collect();
     let dbg_lower = std::env::var("DBG_LOWER").is_ok();
 
     let mut loop_ctr = 0usize;
@@ -172,11 +172,6 @@ pub fn compile(ast: &Ast) -> Program {
                             bits_ptr: *bits_ptr,
                             nbits: *nbits,
                         },
-                        Hint::FieldLimbs { value, base, len } => RHint::FieldLimbs {
-                            value: *value,
-                            base: *base,
-                            len: *len,
-                        },
                     })
                     .collect();
                 hints.insert(here, rhs);
@@ -186,7 +181,7 @@ pub fn compile(ast: &Ast) -> Program {
     }
 
     // Pad the bytecode to `B` (the sentinel slot g^{B-1} must exist for execution).
-    prog.resize(bytecode_size, Op::Set { o: 0, k: F192::ZERO });
+    prog.resize(bytecode_size, Op::Set { o: 0, k: F64::ZERO });
     let mut program = Program::assemble(prog, 0, 0, hints, frame_size["main"]);
     program.fn_ranges = lowered
         .iter()
@@ -206,12 +201,9 @@ pub fn disassemble(prog: &[Op]) -> String {
         gmap.entry(acc).or_insert(j);
         acc *= primitives::field::G;
     }
-    // A machine word is 192-bit; K-valued immediates (both high limbs zero) may be small
-    // g-powers (code addresses, indices), shown as `gʲ`.
-    let kfmt = |k: F192| match (k.c1 == 0 && k.c2 == 0).then(|| gmap.get(&F64(k.c0))).flatten() {
+    let kfmt = |k: F64| match gmap.get(&k) {
         Some(j) => format!("g^{j}"),
-        None if k.c1 == 0 && k.c2 == 0 => format!("0x{:016x}", k.c0),
-        None => format!("0x{:016x}{:016x}{:016x}", k.c2, k.c1, k.c0),
+        None => format!("0x{:016x}", k.0),
     };
 
     let mut out = String::new();
@@ -220,6 +212,8 @@ pub fn disassemble(prog: &[Op]) -> String {
             Op::Set { o, k } => format!("SET    fp[{o}] = {}", kfmt(*k)),
             Op::Xor { a, b, c } => format!("XOR    fp[{c}] = fp[{a}] ^ fp[{b}]"),
             Op::Mul { a, b, c } => format!("MUL    fp[{c}] = fp[{a}] * fp[{b}]"),
+            Op::AddExt { a, b, c } => format!("ADD_EXT fp[{c}..+3] = fp[{a}..+3] + fp[{b}..+3]"),
+            Op::MulExt { a, b, c } => format!("MUL_EXT fp[{c}..+3] = fp[{a}..+3] * fp[{b}..+3]"),
             Op::Deref {
                 alpha,
                 beta,
@@ -236,24 +230,15 @@ pub fn disassemble(prog: &[Op]) -> String {
             Op::Jump { oc, od, of } => {
                 format!("JUMP   if fp[{oc}]≠0: pc=fp[{od}], fp=fp[{of}]")
             }
-            Op::Pack64x2 { a, b, c } => {
-                format!("PACK64X2 fp[{c}] = pack64(fp[{a}], fp[{b}])")
-            }
-            Op::Blake3 { ins, out } => {
-                format!(
-                    "BLAKE3 fp[{out}..]= H(fp[{}], fp[{}] | fp[{}], fp[{}])",
-                    ins[0], ins[1], ins[2], ins[3]
-                )
-            }
+            Op::Blake3 { a, b, c } => format!("BLAKE3 fp[{c}..+4] = H(fp[{a}..+4], fp[{b}..+4])"),
         };
         out.push_str(&format!("{:>6}  {line}\n", pretty_integer(pc)));
     }
     out
 }
 
-/// Embed a `u128` source literal into the low 128 bits of a 192-bit machine word.
-pub(crate) fn lit_field(n: u128) -> F192 {
-    F192::new(n as u64, (n >> 64) as u64, 0)
+pub(crate) fn lit_field(n: u128) -> F64 {
+    F64(u64::try_from(n).expect("source literal exceeds a 64-bit memory word"))
 }
 
 /// `g^e` for a `u128` exponent (square-and-multiply). `field::g_pow` only takes
@@ -273,15 +258,15 @@ fn g_pow_u128(mut e: u128) -> F64 {
 }
 
 fn resolve(op: &LOp, entry: &HashMap<String, u32>, sentinel: u32, base: u32) -> Op {
-    let resolve_kval = |kv: &KVal| -> F192 {
+    let resolve_kval = |kv: &KVal| -> F64 {
         match kv {
             KVal::Const(c) => *c,
             // Address / entry / sentinel constants are K-valued g-powers; embed
             // into the 128-bit word (hi lane 0).
-            KVal::Entry(name) => g_pow(entry[name] as usize).into(),
-            KVal::EndSentinel => g_pow(sentinel as usize).into(),
-            KVal::Local(i) => g_pow((base + i) as usize).into(),
-            KVal::Poison => primitives::field::G.inv().into(), // g^-1: outside the bytecode cube
+            KVal::Entry(name) => g_pow(entry[name] as usize),
+            KVal::EndSentinel => g_pow(sentinel as usize),
+            KVal::Local(i) => g_pow((base + i) as usize),
+            KVal::Poison => primitives::field::G.inv(),
         }
     };
     match op {
@@ -291,6 +276,8 @@ fn resolve(op: &LOp, entry: &HashMap<String, u32>, sentinel: u32, base: u32) -> 
         },
         LOp::Xor { a, b, c } => Op::Xor { a: *a, b: *b, c: *c },
         LOp::Mul { a, b, c } => Op::Mul { a: *a, b: *b, c: *c },
+        LOp::AddExt { a, b, c } => Op::AddExt { a: *a, b: *b, c: *c },
+        LOp::MulExt { a, b, c } => Op::MulExt { a: *a, b: *b, c: *c },
         LOp::Deref {
             alpha,
             beta,
@@ -307,7 +294,6 @@ fn resolve(op: &LOp, entry: &HashMap<String, u32>, sentinel: u32, base: u32) -> 
             od: *od,
             of: *of,
         },
-        LOp::Pack64x2 { a, b, c } => Op::Pack64x2 { a: *a, b: *b, c: *c },
-        LOp::Blake3 { ins, c } => Op::Blake3 { ins: *ins, out: *c },
+        LOp::Blake3 { a, b, c } => Op::Blake3 { a: *a, b: *b, c: *c },
     }
 }

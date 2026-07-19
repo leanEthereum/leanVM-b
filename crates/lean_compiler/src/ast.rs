@@ -1,6 +1,6 @@
 //! The surface AST produced by the parser: expressions, statements, functions.
 
-use primitives::field::F192;
+use primitives::field::F64;
 
 /// An expression. Arithmetic is the field's own: `+` is `XOR`, `*` is `MUL`.
 #[derive(Clone, Debug)]
@@ -231,6 +231,9 @@ pub struct Func {
     /// with the parameter substituted by its literal (see
     /// [`FnLower::specialize`]).
     pub const_params: Vec<bool>,
+    /// Per-parameter `Ext` marker. An extension parameter occupies three
+    /// consecutive ABI cells and is bound as a `StackBuf(3)` in the callee.
+    pub ext_params: Vec<bool>,
     /// Number of source-level return values (tuple arity).
     pub n_ret: usize,
     /// Compile-time shape of each source-level return value. Stack buffers use
@@ -256,5 +259,5 @@ pub struct Ast {
     /// `unroll` count). Indexed `NAME[i]` and measured `len(NAME)` at compile
     /// time only (`i` a literal / constant / `unroll` var). Not textually
     /// substituted (unlike scalar constants) — resolved at lowering.
-    pub const_arrays: Vec<(String, Vec<F192>)>,
+    pub const_arrays: Vec<(String, Vec<F64>)>,
 }

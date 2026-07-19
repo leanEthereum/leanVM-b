@@ -70,7 +70,7 @@ pub fn parse_with_replacements(src: &str, replacements: &BTreeMap<String, String
     // positions that demand a parse-time literal (`StackBuf`, `**`, `assert log
     // _ < _`).
     let mut consts: BTreeMap<String, String> = BTreeMap::new();
-    let mut const_arrays: Vec<(String, Vec<F192>)> = Vec::new();
+    let mut const_arrays: Vec<(String, Vec<F64>)> = Vec::new();
     let mut start = 0;
     while start < lines.len() {
         let (indent, line) = &lines[start];
@@ -108,24 +108,17 @@ pub fn parse_with_replacements(src: &str, replacements: &BTreeMap<String, String
                 if p.is_empty() {
                     continue; // tolerate a trailing comma
                 }
-                let elem = if let Some(v) = parse_f192_const(p) {
-                    v.map_err(|e| format!("global constant array `{name}`: {e}"))?
-                } else {
-                    let n = eval_const_int(p).map_err(|e| format!("global constant array `{name}`: {e}"))?;
-                    F192::new(n as u64, (n >> 64) as u64, 0)
-                };
+                let n = eval_const_int(p).map_err(|e| format!("global constant array `{name}`: {e}"))?;
+                let elem =
+                    F64(u64::try_from(n).map_err(|_| format!("global constant array `{name}`: value exceeds u64"))?);
                 elems.push(elem);
             }
             const_arrays.push((name, elems));
         } else {
             // A scalar constant: evaluate it as a compile-time integer.
-            if let Some(value) = parse_f192_const(rhs) {
-                let v = value.map_err(|e| format!("global constant `{name}`: {e}"))?;
-                consts.insert(name, format!("f192({},{},{})", v.c0, v.c1, v.c2));
-            } else {
-                let value = eval_const_int(rhs).map_err(|e| format!("global constant `{name}`: {e}"))?;
-                consts.insert(name, value.to_string());
-            }
+            let value = eval_const_int(rhs).map_err(|e| format!("global constant `{name}`: {e}"))?;
+            u64::try_from(value).map_err(|_| format!("global constant `{name}` exceeds a 64-bit memory word"))?;
+            consts.insert(name, value.to_string());
         }
         start += 1;
     }
@@ -235,22 +228,6 @@ fn infer_return_shapes(funcs: &mut [Func]) {
             .remove(&f.name)
             .unwrap_or_else(|| vec![ReturnShape::Scalar; f.n_ret]);
     }
-}
-
-fn parse_f192_const(s: &str) -> Option<Result<F192, String>> {
-    let inner = s.trim().strip_prefix("f192(")?.strip_suffix(')')?;
-    let parts = split_top(inner, ',');
-    Some((|| {
-        if parts.len() != 3 {
-            return Err("f192 needs exactly three limbs".into());
-        }
-        let mut limbs = [0u64; 3];
-        for (i, p) in parts.iter().enumerate() {
-            limbs[i] =
-                u64::try_from(eval_const_int(p.trim())?).map_err(|_| "an f192 limb does not fit in u64".to_string())?;
-        }
-        Ok(F192::new(limbs[0], limbs[1], limbs[2]))
-    })())
 }
 
 /// Apply identifier-level **placeholder** replacements to source text before
@@ -446,13 +423,13 @@ fn eval_const_int(s: &str) -> Result<u128, String> {
 /// `GEN ** k`, and `+`/`*` combinations of those — to its field element.
 /// Used for the `# public_input: <elt>, <elt>` annotation of `.py` test
 /// programs (see `tests/py_source.rs`).
-pub fn parse_const(s: &str) -> Result<F192, String> {
-    fn eval(e: &Expr) -> Result<F192, String> {
+pub fn parse_const(s: &str) -> Result<F64, String> {
+    fn eval(e: &Expr) -> Result<F64, String> {
         match e {
             // An integer literal is the raw 128-bit bit pattern of a machine word.
-            Expr::Lit(n) => Ok(F192::new(*n as u64, (*n >> 64) as u64, 0)),
-            Expr::Gen => Ok(g_pow(1).into()),
-            Expr::GPow(k) => Ok(g_pow_u128(*k).into()),
+            Expr::Lit(n) => Ok(F64(u64::try_from(*n).map_err(|_| "literal exceeds u64")?)),
+            Expr::Gen => Ok(g_pow(1)),
+            Expr::GPow(k) => Ok(g_pow_u128(*k)),
             Expr::Add(a, b) => Ok(eval(a)? + eval(b)?),
             Expr::Mul(a, b) => Ok(eval(a)? * eval(b)?),
             other => Err(format!("not a constant expression: `{other:?}`")),
@@ -503,22 +480,31 @@ impl Parser {
         let open = header.find('(').ok_or("function header needs `(`")?;
         let name = header[..open].trim().to_string();
         let params_str = header[open + 1..header.rfind(')').ok_or("missing `)`")?].trim();
-        let (mut params, mut const_params) = (Vec::new(), Vec::new());
+        let (mut params, mut const_params, mut ext_params) = (Vec::new(), Vec::new(), Vec::new());
         if !params_str.is_empty() {
             for part in params_str.split(',') {
                 // `x` (runtime) or `x: Const` (compile-time, specialized).
                 if let Some((n, ann)) = part.split_once(':') {
-                    if ann.trim() != "Const" {
-                        return Err(format!(
-                            "unsupported parameter annotation `{}` (only `Const`)",
-                            ann.trim()
-                        ));
-                    }
                     params.push(n.trim().to_string());
-                    const_params.push(true);
+                    match ann.trim() {
+                        "Const" => {
+                            const_params.push(true);
+                            ext_params.push(false);
+                        }
+                        "Ext" => {
+                            const_params.push(false);
+                            ext_params.push(true);
+                        }
+                        other => {
+                            return Err(format!(
+                                "unsupported parameter annotation `{other}` (expected `Const` or `Ext`)"
+                            ));
+                        }
+                    }
                 } else {
                     params.push(part.trim().to_string());
                     const_params.push(false);
+                    ext_params.push(false);
                 }
             }
         }
@@ -533,6 +519,7 @@ impl Parser {
             name,
             params,
             const_params,
+            ext_params,
             n_ret,
             return_shapes: vec![ReturnShape::Scalar; n_ret],
             body,

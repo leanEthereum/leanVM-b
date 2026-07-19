@@ -5,26 +5,32 @@
 # specialization. A 256-bit BLAKE3 value occupies two canonical cells.
 # Published: the two 128-bit digest cells of H(quad0, quad0) XOR H(quad1, quad1)
 # — the direct k=0 digest XORed with the arm the runtime x = GEN selects (k=1).
-# public_input: 151852673551549100809121251071251225977, 143253370905495339312277763262351734242
+# public_input: 6511296279469137273, 8231949928116081769, 17875594366007965154, 7765780797580490018
 from snark_lib import *
 
 
 def main():
-    buf = HeapBuf(4)
+    buf = HeapBuf(8)
     buf[1] = 5
-    buf[GEN] = 7
-    buf[GEN ** 2] = 11
-    buf[GEN ** 3] = 13
-    a0, a1 = hash_pair(buf, 0)
+    buf[GEN] = 0
+    buf[GEN ** 2] = 7
+    buf[GEN ** 3] = 0
+    buf[GEN ** 4] = 11
+    buf[GEN ** 5] = 0
+    buf[GEN ** 6] = 13
+    buf[GEN ** 7] = 0
+    a0, a1, a2, a3 = hash_pair(buf, 0)
     x = GEN
-    b0, b1 = match_range(log(x), range(0, 2), lambda i: hash_pair(buf, i))
+    b0, b1, b2, b3 = match_range(log(x), range(0, 2), lambda i: hash_pair(buf, i))
     p = GEN ** 0
     p[1] = a0 + b0
     p[GEN] = a1 + b1
+    p[GEN ** 2] = a2 + b2
+    p[GEN ** 3] = a3 + b3
     return
 
 
 def hash_pair(buf, k: Const):
-    h = StackBuf(2)
-    blake3(buf[k * 2:k * 2 + 2], buf[k * 2:k * 2 + 2], h)
-    return h[0], h[1]
+    h = StackBuf(4)
+    blake3(buf[k * 4:k * 4 + 4], buf[k * 4:k * 4 + 4], h)
+    return h[0], h[1], h[2], h[3]

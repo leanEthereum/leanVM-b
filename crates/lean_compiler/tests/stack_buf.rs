@@ -12,7 +12,7 @@
 use lean_compiler::{compile, parse};
 use lean_vm::blake3_flock::warm_setup;
 use lean_vm::cpu::{prove, verify};
-use primitives::field::{F64, F192};
+use primitives::field::F64;
 
 /// `BLAKE3(a, b)` reference (matches `cpu::blake3_compress`): the eight words
 /// laid little-endian into 64 bytes, hashed, digest split into four `F64` words.
@@ -28,9 +28,8 @@ fn compress(a: [F64; 4], b: [F64; 4]) -> [F64; 4] {
 
 /// The two 128-bit digest cells of `compress(a, b)` as `F192`s (lo = word 0/2,
 /// hi = word 1/3) — what a `blake3(...)` output `StackBuf(2)` holds cell-by-cell.
-fn digest_cells(a: [F64; 4], b: [F64; 4]) -> [F192; 2] {
-    let d = compress(a, b);
-    [F192::new(d[0].0, d[1].0, 0), F192::new(d[2].0, d[3].0, 0)]
+fn pi2(a: F64, b: F64) -> [F64; 4] {
+    [a, b, F64::ZERO, F64::ZERO]
 }
 
 /// A size-2 `StackBuf` fed to `blake3` as a self-hash `blake3(h, h)`, then the
@@ -41,29 +40,33 @@ fn digest_cells(a: [F64; 4], b: [F64; 4]) -> [F192; 2] {
 fn stack_buf_blake3_self_hash() {
     let src = "\
 def main():
-    a = StackBuf(2)
+    a = StackBuf(4)
     a[0] = 5
     a[1] = 7
-    c = StackBuf(2)
+    a[2] = 11
+    a[3] = 13
+    c = StackBuf(4)
     blake3(a, a, c)
     p = 1
     p[1] = c[0]
     p[GEN] = c[1]
+    p[GEN ** 2] = c[2]
+    p[GEN ** 3] = c[3]
     return
 ";
     let program = compile(&parse(src).expect("parse"));
     warm_setup(1);
 
     // Each cell holds one scalar in its low lane, so the hashed words are [5,0,7,0].
-    let h = [F64(5), F64(0), F64(7), F64(0)];
-    let want = digest_cells(h, h);
+    let h = [F64(5), F64(7), F64(11), F64(13)];
+    let want = compress(h, h);
 
     let (proof, stats) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
-    assert_eq!(stats.counts[5], 1, "one BLAKE3 instruction");
+    assert_eq!(stats.counts[7], 1, "one BLAKE3 instruction");
     verify(&program, &want, &proof).expect("StackBuf self-hash verifies");
 
     let mut bad = want;
-    bad[0] += F192::ONE;
+    bad[0] += F64::ONE;
     assert!(verify(&program, &bad, &proof).is_err(), "wrong digest must be rejected");
 }
 
@@ -85,9 +88,9 @@ def main():
 ";
     let program = compile(&parse(src).expect("parse"));
     // `+` is XOR: 3 ^ 4 = 7. Published: (sa[2], sa[1]) = (7, 4).
-    let want = [F192::from(F64(7)), F192::from(F64(4))];
+    let want = pi2(F64(7), F64(4));
     let (proof, stats) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
-    assert_eq!(stats.counts[5], 0, "no BLAKE3 here");
+    assert_eq!(stats.counts[7], 0, "no BLAKE3 here");
     verify(&program, &want, &proof).expect("StackBuf indexing verifies");
 }
 
@@ -117,7 +120,7 @@ def make(v):
 ";
     let program = compile(&parse(src).expect("parse"));
     // Field addition is XOR: 5 ^ (5 ^ 3) == 3.
-    program.execute([F192::from(F64(3)), F192::from(F64(11))]);
+    program.execute(pi2(F64(3), F64(11)));
 }
 
 /// Tuple returns retain their source-level arity even though a StackBuf member
@@ -137,7 +140,7 @@ def make(v):
     return out, v + 1
 ";
     let program = compile(&parse(src).expect("parse"));
-    program.execute([F192::from(F64(15)), F192::from(F64(8))]);
+    program.execute(pi2(F64(15), F64(8)));
 }
 
 /// HeapBuf already crosses a normal call as its one-cell pointer. Allocation
@@ -160,7 +163,7 @@ def make():
     return out
 ";
     let program = compile(&parse(src).expect("parse"));
-    program.execute([F192::from(F64(17)), F192::from(F64(23))]);
+    program.execute(pi2(F64(17), F64(23)));
 }
 
 /// A StackBuf index literal that does not fit `u32` is rejected at compile time,
@@ -179,7 +182,7 @@ fn stack_buf_index_overflow_rejected() {
 fn stack_buf_rebind_to_scalar() {
     let src = "def main():\n    x = StackBuf(2)\n    x = 5\n    p = 1\n    p[1] = x\n    p[GEN] = x\n    return\n";
     let program = compile(&parse(src).expect("parse"));
-    let want = [F192::from(F64(5)), F192::from(F64(5))];
+    let want = pi2(F64(5), F64(5));
     let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
     verify(&program, &want, &proof).expect("rebound-scalar program verifies");
 }
@@ -204,22 +207,28 @@ fn inline_returns_stackbuf_and_scalar() {
     warm_setup(1);
     let src = "\
 def main():
-    s = StackBuf(2)
+    s = StackBuf(4)
     s[0] = 5
     s[1] = 7
+    s[2] = 11
+    s[3] = 13
     s, x = step(s, 9)
     s, y = step(s, x)
     p = 1
     p[1] = s[0]
     p[GEN] = s[1]
+    p[GEN ** 2] = s[2]
+    p[GEN ** 3] = s[3]
     return
 
 @inline
 def step(state, v):
-    tg = StackBuf(2)
+    tg = StackBuf(4)
     tg[0] = v
     tg[1] = 3
-    nb = StackBuf(2)
+    tg[2] = 4
+    tg[3] = 5
+    nb = StackBuf(4)
     blake3(state, tg, nb)
     return nb, v
 ";
@@ -227,17 +236,17 @@ def step(state, v):
 
     // Each cell = one scalar in its low lane, so a StackBuf(2) hashes words
     // [c0, 0, c1, 0]. x == v == 9 (the scalar return), so both steps use tag 9.
-    let tag = [F64(9), F64(0), F64(3), F64(0)];
-    let s1 = compress([F64(5), F64(0), F64(7), F64(0)], tag);
+    let tag = [F64(9), F64(3), F64(4), F64(5)];
+    let s1 = compress([F64(5), F64(7), F64(11), F64(13)], tag);
     let s2 = compress(s1, tag); // the returned StackBuf (holding s1's words) fed back in
-    let want = [F192::new(s2[0].0, s2[1].0, 0), F192::new(s2[2].0, s2[3].0, 0)];
+    let want = s2;
 
     let (proof, stats) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
-    assert_eq!(stats.counts[5], 2, "two BLAKE3 instructions (one per inlined step)");
+    assert_eq!(stats.counts[7], 2, "two BLAKE3 instructions (one per inlined step)");
     verify(&program, &want, &proof).expect("inline StackBuf+scalar tuple return verifies");
 
     let mut bad = want;
-    bad[1] += F192::ONE;
+    bad[1] += F64::ONE;
     assert!(
         verify(&program, &bad, &proof).is_err(),
         "wrong published state must be rejected"
@@ -258,9 +267,11 @@ def main():
     hb[1] = 10
     hb[GEN] = 20
     hb[GEN ** 2] = 30
-    fs = StackBuf(2)
+    fs = StackBuf(4)
     fs[0] = 1
     fs[1] = 2
+    fs[2] = 3
+    fs[3] = 4
     cur = hb
     fs, a, cur = step(fs, cur)
     fs, b, cur = step(fs, cur)
@@ -273,17 +284,19 @@ def main():
 @inline
 def step(state, cursor):
     x = cursor[GEN ** 0]
-    tg = StackBuf(2)
+    tg = StackBuf(4)
     tg[0] = x
     tg[1] = 3
-    nb = StackBuf(2)
+    tg[2] = 4
+    tg[3] = 5
+    nb = StackBuf(4)
     blake3(state, tg, nb)
     return nb, x, cursor * GEN
 ";
     let program = compile(&parse(src).expect("parse"));
     // a = hb[0] = 10, b = hb[1] = 20, v = hb[2] = 30 read through the cursor
     // returned twice-advanced. a + b is XOR: 10 ^ 20 = 30.
-    let want = [F192::from(F64(30)), F192::from(F64(30))];
+    let want = pi2(F64(30), F64(30));
     let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
     verify(&program, &want, &proof).expect("inline advanced-cursor return verifies");
 }
@@ -298,21 +311,23 @@ fn stack_buf_list_literal() {
     warm_setup(1);
     let src = "\
 def main():
-    s = [5, 7]
-    s = [s[1], s[0]]
-    t = [s[0] + s[1], 3]
-    out = StackBuf(2)
+    s = [5, 7, 11, 13]
+    s = [s[1], s[0], s[3], s[2]]
+    t = [s[0] + s[1], 3, s[2] + s[3], 17]
+    out = StackBuf(4)
     blake3(s, t, out)
     p = 1
     p[1] = out[0]
     p[GEN] = out[1]
+    p[GEN ** 2] = out[2]
+    p[GEN ** 3] = out[3]
     return
 ";
     let program = compile(&parse(src).expect("parse"));
     // s = [7, 5] after the swap → words [7,0,5,0]; t = [7 ^ 5, 3] = [2, 3] → [2,0,3,0].
-    let want = digest_cells([F64(7), F64(0), F64(5), F64(0)], [F64(2), F64(0), F64(3), F64(0)]);
+    let want = compress([F64(7), F64(5), F64(13), F64(11)], [F64(2), F64(3), F64(6), F64(17)]);
     let (proof, stats) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
-    assert_eq!(stats.counts[5], 1, "one BLAKE3 instruction");
+    assert_eq!(stats.counts[7], 1, "one BLAKE3 instruction");
     verify(&program, &want, &proof).expect("list-literal StackBuf verifies");
 }
 
@@ -355,9 +370,9 @@ fn heap_hint_slice_oob_rejected() {
 /// operand `hb[7:9]` is two 128-bit cells, so the bound check trips at
 /// `7 + 2 = 9 > 8`.
 #[test]
-#[should_panic(expected = "heap slice 7:9 out of bounds for `hb` (HeapBuf size 8)")]
+#[should_panic(expected = "heap slice 5:9 out of bounds for `hb` (HeapBuf size 8)")]
 fn heap_blake3_slice_oob_rejected() {
-    let src = "def main():\n    hb = HeapBuf(8)\n    hb[GEN ** 7] = 5\n    out = StackBuf(2)\n    blake3(hb[7:9], hb[7:9], out)\n    return\n";
+    let src = "def main():\n    hb = HeapBuf(8)\n    hb[GEN ** 7] = 5\n    out = StackBuf(4)\n    blake3(hb[5:9], hb[5:9], out)\n    return\n";
     let _ = compile(&parse(src).expect("parse"));
 }
 
@@ -367,7 +382,7 @@ fn heap_index_boundary_ok() {
     warm_setup(1);
     let src = "def main():\n    hb = HeapBuf(8)\n    hb[GEN ** 7] = 5\n    row = hb * GEN ** 4\n    y = row[GEN ** 3]\n    assert y == 5\n    return\n";
     let program = compile(&parse(src).expect("parse"));
-    let pi = [F192::from(F64(3)), F192::from(F64(4))];
+    let pi = pi2(F64(3), F64(4));
     let (proof, _) = prove(&program, pi, lean_vm::pcs::LOG_INV_RATE);
     verify(&program, &pi, &proof).expect("boundary access verifies");
 }

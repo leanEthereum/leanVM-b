@@ -8,7 +8,11 @@
 
 use lean_compiler::{compile, parse};
 use lean_vm::cpu::{prove, verify};
-use primitives::field::{F64, F192, g_pow};
+use primitives::field::{F64, g_pow};
+
+fn pi2(a: F64, b: F64) -> [F64; 4] {
+    [a, b, F64::ZERO, F64::ZERO]
+}
 
 /// Both bound forms (`log GEN ** k` and a plain integer exponent) with the
 /// boundary elements (`g^{k-1}`, `1 = g^0`), end-to-end: prove + verify, and a
@@ -31,13 +35,13 @@ def main():
     return
 ";
     let program = compile(&parse(src).expect("parse"));
-    let want = [F192::from(g_pow(12)), F192::from(g_pow(5))];
+    let want = pi2(g_pow(12), g_pow(5));
     let (proof, stats) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
     // 2 DEREFs per range check (4 checks) + 2 publishing stores.
-    assert_eq!(stats.counts[3], 10, "DEREF count");
+    assert_eq!(stats.counts[5], 10, "DEREF count");
     verify(&program, &want, &proof).expect("range-checked program verifies");
 
-    let bad = [F192::from(g_pow(12)), F192::from(g_pow(6))];
+    let bad = pi2(g_pow(12), g_pow(6));
     assert!(
         verify(&program, &bad, &proof).is_err(),
         "wrong public input must be rejected"
@@ -59,7 +63,7 @@ def main():
     return
 ";
     let program = compile(&parse(src).expect("parse"));
-    let want = [F192::from(g_pow(300)), F192::from(g_pow(300))];
+    let want = pi2(g_pow(300), g_pow(300));
     let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
     verify(&program, &want, &proof).expect("deferred-fill program verifies");
 }
@@ -80,10 +84,10 @@ def main():
     return
 ";
     let program = compile(&parse(src).expect("parse"));
-    let want = [F192::from(F64(5)), F192::from(F64(7))];
+    let want = pi2(F64(5), F64(7));
     let (proof, stats) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
     // 6 iterations × 2 range-check DEREFs, plus call/publish plumbing.
-    assert!(stats.counts[3] >= 12, "at least the 12 range-check DEREFs");
+    assert!(stats.counts[5] >= 12, "at least the 12 range-check DEREFs");
     verify(&program, &want, &proof).expect("loop range checks verify");
 }
 
@@ -95,7 +99,7 @@ def main():
 fn range_check_at_bound_rejected() {
     let src = "def main():\n    x = GEN ** 8\n    assert log x < 8\n    return\n";
     let program = compile(&parse(src).expect("parse"));
-    program.execute([F192::ZERO, F192::ZERO]);
+    program.execute([F64::ZERO; 4]);
 }
 
 /// A value that is no small g-power at all (5 = x^2 + 1) fails at the first
@@ -105,7 +109,7 @@ fn range_check_at_bound_rejected() {
 fn range_check_non_g_power_rejected() {
     let src = "def main():\n    x = 5\n    assert log x < 8\n    return\n";
     let program = compile(&parse(src).expect("parse"));
-    program.execute([F192::ZERO, F192::ZERO]);
+    program.execute([F64::ZERO; 4]);
 }
 
 /// Bound 0 names the empty set — rejected at compile time.

@@ -8,10 +8,12 @@ Const = Any
 """Parameter annotation: `def f(k: Const, x):` — `k` is a compile-time
 argument; the compiler specializes the function per distinct constant."""
 
+Ext = Any
+"""Parameter annotation for a three-word extension-field value."""
+
 
 class _Elt:
-    """A 192-bit machine word in E = GF(2^192), represented as a cubic tower
-    over K = GF(2^64). Indices and addresses are K-valued powers of GEN —
+    """A 64-bit machine word in K = GF(2^64). Indices and addresses are powers of GEN —
     "in the exponent": `GEN ** k` is the k-th index and `x * GEN` its successor.
     A heap pointer is K-valued too; `buf[i]` is the write-once cell at `buf * i`."""
 
@@ -43,12 +45,6 @@ class _Elt:
 
     def __setitem__(self, idx, value):  # heap store m[self · idx] (write-once)
         _ = idx, value
-
-
-def f192(c0: int, c1: int, c2: int) -> _Elt:
-    """Construct a field constant from its three little-endian GF(2^64) limbs."""
-    _ = c0, c1, c2
-    return _Elt()
 
 
 GEN = _Elt()
@@ -133,7 +129,7 @@ def HeapBuf(n) -> _Elt:
 
 
 def StackBuf(n: int) -> _Elt:
-    """Allocate `n` consecutive frame (stack) cells. A size-2 StackBuf holds a
+    """Allocate `n` consecutive frame (stack) cells. A size-4 StackBuf holds a
     256-bit value and is a valid `blake3` operand."""
     _ = n
     return _Elt()
@@ -150,31 +146,30 @@ def hint_witness(dest, name: str) -> None:
     _ = dest, name
 
 
-def pack64x2(a, b) -> _Elt:
-    """Prove that `a` and `b` are GF(2^64)-valued machine words and return
-    their canonical 128-bit packing `(a.c0, b.c0, 0)` as one GF(2^192) word.
-    This is one VM instruction."""
-    _ = a, b
-    return _Elt()
-
-
-def pack64x2_into(a, b, out) -> None:
-    """The destination-target form of `pack64x2`: assert that `out` is the
-    canonical packing `(a.c0, b.c0, 0)`. All three arguments are scalar cells."""
+def add_ext(a, b, out) -> None:
+    """Add two three-word extension-field StackBufs into `out`."""
     _ = a, b, out
 
 
-def hint_f192_limbs(dest, value) -> None:
-    """Computed advice: write the first `len(dest)` GF(2^64) coordinate limbs
-    of `value` into a 1-to-3-cell StackBuf. UNCONSTRAINED; callers bind the
-    result with `PACK64X2` and/or field reconstruction."""
-    _ = dest, value
+def sub_ext(a, b, out) -> None:
+    """Subtract extension values (the same operation as addition in characteristic two)."""
+    _ = a, b, out
+
+
+def mul_ext(a, b, out) -> None:
+    """Multiply two three-word extension-field StackBufs into `out`."""
+    _ = a, b, out
+
+
+def div_ext(a, b, out) -> None:
+    """Divide two three-word extension-field StackBufs into `out`."""
+    _ = a, b, out
 
 
 def blake3(a, b, out) -> None:
     """The BLAKE3 compression of the two 256-bit operands `a`, `b`, written
-    into the 2-cell run `out` (write-once: if `out` was already written, this
-    asserts it equals the digest). Operands are size-2 StackBufs or 2-cell
+    into the 4-word run `out` (write-once: if `out` was already written, this
+    asserts it equals the digest). Operands are size-4 StackBufs or 4-word
     slices `buf[lo:hi]` of larger StackBufs or of HeapBufs (heap slices are
     bridged through the stack, one DEREF per cell)."""
     _ = a, b, out

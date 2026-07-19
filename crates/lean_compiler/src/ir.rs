@@ -8,9 +8,7 @@ pub(crate) type Off = u32;
 /// once entry program counters are fixed.
 #[derive(Clone, Debug)]
 pub(crate) enum KVal {
-    /// A 192-bit machine-word constant. Source literals fill only c0/c1, while
-    /// compiler-generated constants may use the full field.
-    Const(F192),
+    Const(F64),
     Entry(String),
     /// The halt sentinel pc `g^{B-1}` (last bytecode slot), fixed once the
     /// padded bytecode size `B` is known. `main` jumps here to terminate.
@@ -51,6 +49,16 @@ pub(crate) enum LOp {
         b: Off,
         c: Off,
     },
+    AddExt {
+        a: Off,
+        b: Off,
+        c: Off,
+    },
+    MulExt {
+        a: Off,
+        b: Off,
+        c: Off,
+    },
     Deref {
         alpha: Off,
         beta: Off,
@@ -62,18 +70,10 @@ pub(crate) enum LOp {
         od: Off,
         of: Off,
     },
-    /// Pack two K-valued source cells into one canonical 128-bit cell. The VM
-    /// memory bus enforces that both inputs have zero extension limbs.
-    Pack64x2 {
+    /// `BLAKE3`: two four-word input runs and one four-word output run.
+    Blake3 {
         a: Off,
         b: Off,
-        c: Off,
-    },
-    /// `BLAKE3`: the four 128-bit input chunks `ins` are addressed independently,
-    /// one frame cell each. The 32-byte output occupies the two consecutive
-    /// 128-bit cells `c, c+1`.
-    Blake3 {
-        ins: [Off; 4],
         c: Off,
     },
 }
@@ -118,9 +118,6 @@ pub(crate) enum Hint {
     /// (recovered by a bounded discrete log at witness generation), into the
     /// buffer `m[fp·g^bits_ptr]`. The emitting code re-checks it in-circuit.
     BitDecomposeExp { value: Off, bits_ptr: Off, nbits: u32 },
-    /// Computed advice: write the first `len` K-coordinate limbs of an F192
-    /// value into consecutive frame cells. The guest must constrain them.
-    FieldLimbs { value: Off, base: Off, len: u32 },
 }
 
 pub(crate) struct Lowered {
@@ -129,7 +126,7 @@ pub(crate) struct Lowered {
     pub(crate) frame_size: u32,
 }
 
-/// A resolved 2-cell `blake3` operand: a frame (stack) run used in place, or a
+/// A resolved 4-cell `blake3` operand: a frame (stack) run used in place, or a
 /// heap slice — the buffer pointer's cell plus the first g-power offset —
 /// which must be bridged through the stack (`BLAKE3` addresses only frame
 /// cells).
