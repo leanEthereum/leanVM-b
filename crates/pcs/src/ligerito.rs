@@ -20,10 +20,12 @@ use serde::{Deserialize, Serialize};
 // Config
 // ===================================================================
 
-// The ONE Ligerito configuration this repo ships (the old `Secure` profile):
-// rate-1/2 unique-decoding regime (list size 1, no OOD binding), 120-bit
-// round-by-round soundness. `SoundnessRegime::JohnsonOod` machinery survives
-// only for hand-built configs (analysis / tests).
+// The ONE Ligerito configuration this repo ships: a UDR/LDR hybrid at 120-bit
+// round-by-round soundness. Rounds 1–2 are unique-decoding (L0 rate 1/2, L1
+// rate 1/16); from round 3 the levels are Johnson list-decoding with one
+// OOD-challenge-ground out-of-domain sample, at the lowest rate whose fold grind
+// fits `max_fold_grind`. See `LigeritoSecurityConfig::derive_config` and
+// `level_log_inv_rate`.
 
 /// Round-by-round soundness target (bits): every round must individually
 /// clear this level (total security = min over rounds, per the Fiat-Shamir /
@@ -41,28 +43,6 @@ pub const QUERY_GRINDING_BITS: usize = 18;
 
 pub const INITIAL_FOLDING_FATOR: usize = 6;
 pub const SUBSEQUENT_FOLDING_FACTORS: usize = 3;
-
-/// Per-level Reed–Solomon domain schedule (mirrors `small-proof` and WHIR).
-/// Folding `f` variables at a level would raise the inverse-rate logarithm by
-/// `f` if the RS evaluation domain were kept; instead we shrink the domain by
-/// `d` bits, so the inverse rate rises by `f − d`. Thus these constants set the
-/// rate schedule explicitly:
-///
-/// - `RS_DOMAIN_INITIAL_REDUCTION_FACTOR` — after the `INITIAL_FOLDING_FATOR`
-///   fold (L0 → L1). With `initial=3` and a six-var fold, L1 rises by `6−3=3`
-///   (rate 1/2 → 1/16).
-/// - `RS_DOMAIN_SUBSEQUENT_REDUCTION_FACTOR` — after each `SUBSEQUENT_FOLDING_
-///   FACTORS` fold. With `subsequent=1` and a three-var fold, each later level
-///   rises by `3−1=2`.
-///
-/// The rate is now pinned by these knobs rather than emerging from a `+1`
-/// heuristic, so any target schedule (e.g. round 3 at a chosen rate) is set
-/// here. `derive_ladder_shape` never lowers the inverse rate, so schedules must
-/// be non-decreasing.
-pub const RS_DOMAIN_INITIAL_REDUCTION_FACTOR: usize = 3;
-pub const RS_DOMAIN_SUBSEQUENT_REDUCTION_FACTOR: usize = 1;
-const _: () = assert!(RS_DOMAIN_INITIAL_REDUCTION_FACTOR <= INITIAL_FOLDING_FATOR);
-const _: () = assert!(RS_DOMAIN_SUBSEQUENT_REDUCTION_FACTOR <= SUBSEQUENT_FOLDING_FACTORS);
 
 /// Folding stops once at most this many variables remain: the residual
 /// polynomial (`yr`, at most `2^RESIDUAL_MAX_LOG` coefficients) is sent in
@@ -314,48 +294,40 @@ struct LadderShape {
     yr_log_n: usize,
 }
 
-/// Shared shape derivation behind [`LigeritoSecurityConfig::derive_config`]: [`LEVEL_K`]-bit level folds with the
-/// rate index increasing by ≥ 1 per level, bumped further whenever the block
-/// length couldn't accommodate `queries_at_rate(rate)` distinct queries.
+/// Shared shape derivation behind [`LigeritoSecurityConfig::derive_config`]:
+/// `SUBSEQUENT_FOLDING_FACTORS`-bit level folds with the per-level inverse-rate
+/// index supplied by `rate_for_level` (index 0 = L0). Unlike a monotone rate
+/// ladder, the caller picks each level's rate directly — the shipped schedule
+/// (see [`level_log_inv_rate`]) descends to a very low rate on the deep Johnson
+/// levels, where the list-decoding radius is near-maximal (few queries) and the
+/// larger block comfortably holds them. Query-feasibility (queries ≤ block
+/// length) is enforced per level in `derive_config`.
 fn derive_ladder_shape(
     log_n: usize,
     initial_k: usize,
-    log_inv_rate: usize,
+    rate_for_level: impl Fn(usize) -> usize,
 ) -> Result<LadderShape, String> {
     if log_n <= initial_k {
         return Err("log_n must be > initial_k".into());
     }
     let mut shape = LadderShape {
-        log_inv_rates: vec![log_inv_rate],
+        log_inv_rates: vec![rate_for_level(0)],
         log_msg_cols: vec![log_n - initial_k],
         log_num_interleaved: vec![initial_k],
         k_levels: vec![initial_k],
         yr_log_n: 0,
     };
     let mut n_running = log_n - initial_k;
-    let mut rate_running = log_inv_rate;
-    let mut fold_running = initial_k;
-    let mut domain_reduction = RS_DOMAIN_INITIAL_REDUCTION_FACTOR;
+    let mut level = 0usize;
     while n_running > RESIDUAL_MAX_LOG {
+        level += 1;
         let k = SUBSEQUENT_FOLDING_FACTORS.min(n_running);
         let log_msg_cols_next = n_running - k;
-        // Inverse-rate rises by (fold − domain reduction): folding `fold`
-        // variables would raise it by `fold` if the RS domain were kept, but we
-        // shrink the domain by `domain_reduction` bits, so the increase is
-        // `fold − domain_reduction`. Query-feasibility (queries ≤ block length)
-        // is enforced per level in `derive_config_inner`.
-        let rate_increase = fold_running.checked_sub(domain_reduction).ok_or_else(|| {
-            format!("fold factor {fold_running} < RS domain reduction {domain_reduction}")
-        })?;
-        let next_rate = rate_running + rate_increase;
-        shape.log_inv_rates.push(next_rate);
+        shape.log_inv_rates.push(rate_for_level(level));
         shape.log_msg_cols.push(log_msg_cols_next);
         shape.log_num_interleaved.push(k);
         shape.k_levels.push(k);
         n_running -= k;
-        rate_running = next_rate;
-        fold_running = k;
-        domain_reduction = RS_DOMAIN_SUBSEQUENT_REDUCTION_FACTOR;
     }
     if shape.k_levels.len() < 2 {
         return Err("log_n too small: needs at least 2 fold levels".into());
@@ -363,6 +335,52 @@ fn derive_ladder_shape(
     shape.yr_log_n = n_running;
     Ok(shape)
 }
+
+/// Round-2 (L1) inverse-rate index: 1/16. A low-rate unique-decoding proximity
+/// round after the initial commit (L0 = [`LOG_INV_RATE_0`], 1/2).
+const ROUND2_LOG_INV_RATE: usize = 4;
+
+/// The shipped regime by level: unique-decoding for rounds 1–2 (L0, L1),
+/// Johnson list-decoding from round 3 (L2) on.
+fn level_is_johnson(level_idx: usize) -> bool {
+    level_idx >= 2
+}
+
+/// Shipped inverse-rate for a level of `cols` message columns and `ilv`
+/// interleaved lanes, the heart of the UDR/LDR hybrid:
+///   L0 (round 1): 1/2   — the initial commit's rate.
+///   L1 (round 2): 1/16  — a low-rate unique-decoding proximity round.
+///   L2+ (round 3+): the **lowest** rate (largest Johnson radius γ ≈ 1−√ρ,
+///        hence fewest queries) whose length-dependent fold grind still fits
+///        `MAX_FOLD_GRINDING_BITS`. Because the proximity-gap set grows like
+///        `2^(cols + 2.5·log_inv_rate)`, the wide early Johnson levels are held
+///        to a higher rate and the deep (small-`cols`) levels are pushed to
+///        very low rates (1/64, 1/128 …) where a handful of queries suffice and
+///        the large block trivially holds them.
+/// Returns `None` for a Johnson level where no rate fits the grind cap.
+fn level_log_inv_rate(
+    level_idx: usize,
+    cols: usize,
+    ilv: usize,
+    target_bits: usize,
+    query_grind: usize,
+) -> Option<usize> {
+    if level_idx == 0 {
+        return Some(LOG_INV_RATE_0);
+    }
+    if !level_is_johnson(level_idx) {
+        return Some(ROUND2_LOG_INV_RATE);
+    }
+    // Highest inverse-rate index (lowest rate ⇒ fewest queries) that is Johnson-
+    // feasible: fold/OOD grind within cap AND query count within the block.
+    (1..=MAX_LOG_INV_RATE).rev().find(|&lir| {
+        best_johnson_candidate(level_idx, lir, cols, ilv, target_bits, query_grind, max_fold_grind(level_idx))
+            .is_some_and(|j| j.queries <= (1usize << (cols + lir)))
+    })
+}
+
+/// Ceiling on the inverse-rate index the deep-level rate search will consider.
+const MAX_LOG_INV_RATE: usize = 12;
 
 // ===================================================================
 // Security configuration schema
@@ -729,12 +747,27 @@ fn paper_ood_bits(log_inv_rate: usize, eta: f64, mu_vars: usize, ood_samples: us
     }
 }
 
-/// Largest per-level fold-challenge PoW we will spend to make a Johnson
-/// (list-decoding + OOD) level viable. Johnson buys a bigger proximity radius —
-/// hence fewer queries — than UDR at high rate, but its length-dependent
-/// proximity-gap term (plus the `2^{ℓ-1}` row union) must be ground back up to
-/// target. We only switch a level to Johnson when that grinding fits here.
+/// Absolute ceiling on any per-level grinding (fold or OOD). The per-round
+/// Johnson fold-grind budgets ([`max_fold_grind`]) sit at or below this; it also
+/// bounds the OOD grind and backs the `validate` sanity assert.
 pub const MAX_FOLD_GRINDING_BITS: usize = 24;
+
+/// Per-round fold-challenge PoW budget for a Johnson (round 3+) level. Johnson
+/// buys a bigger proximity radius — hence fewer queries — but its
+/// length-dependent proximity-gap term must be ground back to target, and that
+/// grinding is real prover work (a PoW before every fold challenge).
+///
+/// This budget is the pivotal proof-size lever: the deep-level rate search
+/// ([`level_log_inv_rate`]) takes the *lowest* rate whose grind fits here, and
+/// lower rate ⇒ far fewer queries. Because the proximity-gap set grows like
+/// `2^(cols + 2.5·log_inv_rate)`, one bit of budget at a wide level is worth a
+/// large rate step: at round 3 (cols≈15) a 24-bit budget affords rate 1/4
+/// (~130 queries) while 22 bits forces rate 1/2 (~370 queries). We therefore
+/// spend the full [`MAX_FOLD_GRINDING_BITS`] on every Johnson level — that is
+/// what buys the small proof.
+fn max_fold_grind(_level_idx: usize) -> usize {
+    MAX_FOLD_GRINDING_BITS
+}
 
 /// Best Johnson (list-decoding + OOD) analysis for one recursive level: the
 /// slack `η` minimizing the query count whose fold-grinding stays within
@@ -773,17 +806,20 @@ fn best_johnson_candidate(
     let max_eta = 1.0 - sqrt_rho;
     let mut best: Option<JohnsonCandidate> = None;
 
-    // Sweep the Johnson slack η over its whole range (0, 1−√ρ). Smaller η is a
-    // larger radius γ = 1−√ρ−η (fewer queries) but a larger Johnson list
-    // L = 1/(2η√ρ). We keep exactly one OOD sample and *grind* the OOD
-    // challenge to make up its binding deficit, so a big list (few queries) is
-    // fine as long as the OOD grind fits the cap. We take the fewest-query η
-    // whose fold-grind, OOD-grind, and query count all fit. A fine grid
-    // suffices — the terms are smooth in η.
+    // Sweep the Johnson slack η over (η_knee, 1−√ρ). The proximity-gap set is
+    //   a ∝ (m+½)^5,   m = ⌈√ρ/(2η)⌉ (floored at 3),
+    // so shrinking η below the point where `m` bottoms out at 3 (η_knee = √ρ/6)
+    // buys only a few fewer queries while exploding `a` — hence the fold grind.
+    // We therefore floor the sweep at the knee: there, `m = 3` and the grind is
+    // at its plateau minimum, and (since queries fall with radius) min-queries
+    // lands right at the knee. Above the knee the list L = 1/(2η√ρ) is small and
+    // one OOD sample (grinding its challenge by target − eps_ood) binds it. A
+    // fine grid suffices — the terms are smooth in η.
+    let eta_knee = sqrt_rho / 6.0;
     const STEPS: usize = 4000;
     for k in 1..STEPS {
         let eta = max_eta * (k as f64) / (STEPS as f64);
-        if eta <= 0.0 || eta >= max_eta {
+        if eta < eta_knee || eta >= max_eta {
             continue;
         }
         let eps_pg =
@@ -1117,18 +1153,20 @@ impl LigeritoSecurityConfig {
         Ok(())
     }
 
-    /// Derive THE security config at witness size `m`: Udr regime, rate
-    /// `2^-LOG_INV_RATE_0`, ε* = 1e-3, [`SECURITY_BITS`] bits per round under
-    /// **round-by-round soundness** — every error term (pg + fold grinding,
-    /// query + query grinding) clears the target individually, and the
-    /// protocol's security is the *minimum* over rounds — the notion that
-    /// governs Fiat-Shamir security (cf. Ethereum's `soundcalc`), not a
-    /// whole-protocol union bound over terms.
-    /// The shipped configuration: a UDR/LDR hybrid — unique-decoding for the
-    /// early low-rate levels, Johnson list-decoding (one OOD sample bound by an
-    /// OOD-challenge grind) for the deep levels where its larger radius cuts the
-    /// query count within `MAX_FOLD_GRINDING_BITS` of grinding. The prover and
-    /// both verifiers execute both regimes.
+    /// Derive THE security config at witness size `m`: a UDR/LDR hybrid targeting
+    /// [`SECURITY_BITS`] bits per round under **round-by-round soundness** — every
+    /// error term (pg + fold grinding, query + query grinding, and the OOD bind on
+    /// Johnson levels) clears the target individually, and the protocol's security
+    /// is the *minimum* over rounds — the notion that governs Fiat-Shamir security
+    /// (cf. Ethereum's `soundcalc`), not a whole-protocol union bound over terms.
+    ///
+    /// The shipped schedule (see [`level_log_inv_rate`]): rounds 1–2 (L0 at 1/2,
+    /// L1 at 1/16) are unique-decoding proximity rounds; from round 3 on, Johnson
+    /// list-decoding (one OOD sample bound by an OOD-challenge grind) takes the
+    /// *lowest* rate whose fold grind fits [`max_fold_grind`] — so the wide early
+    /// Johnson levels sit at a moderate rate and the deep levels descend to very
+    /// low rates (1/64, 1/128 …) where the near-maximal radius needs a handful of
+    /// queries. The prover and both verifiers execute both regimes.
     pub fn derive_config(m: usize) -> Result<Self, String> {
         let target_bits = SECURITY_BITS;
         let log_inv_rate = LOG_INV_RATE_0;
@@ -1141,10 +1179,23 @@ impl LigeritoSecurityConfig {
             .ok_or_else(|| format!("m ({m}) < LOG_PACKING ({})", crate::LOG_PACKING))?;
         let initial_k = INITIAL_FOLDING_FATOR;
 
-        // The rate schedule is now pinned by the RS-domain reduction factors
-        // (see `derive_ladder_shape`); per-level query-feasibility is enforced
-        // below when the exact per-level query counts are known.
-        let shape = derive_ladder_shape(log_n, initial_k, log_inv_rate)?;
+        // The fold structure (columns per level) is rate-independent, so derive
+        // it with a placeholder rate, then assign each level's shipped rate from
+        // its column count via `level_log_inv_rate` (L0 = LOG_INV_RATE_0, L1 =
+        // ROUND2, L2+ = the lowest Johnson-feasible rate for that width).
+        let mut shape = derive_ladder_shape(log_n, initial_k, |_| log_inv_rate)?;
+        for i in 0..shape.log_inv_rates.len() {
+            let cols = shape.log_msg_cols[i];
+            let ilv = shape.log_num_interleaved[i];
+            shape.log_inv_rates[i] = level_log_inv_rate(i, cols, ilv, target_bits, query_grind)
+                .ok_or_else(|| {
+                    format!(
+                        "L{i}: no Johnson-feasible rate within {}-bit fold \
+                         grind cap (cols={cols}); the round-3+ list-decoding tail cannot be placed.",
+                        max_fold_grind(i)
+                    )
+                })?;
+        }
         let n_levels = shape.log_inv_rates.len();
 
         // Round-by-round target: every error term (pg, query, ood) at every
@@ -1171,14 +1222,25 @@ impl LigeritoSecurityConfig {
             let udr_eps_pg = ANALYSIS_LOG_Q - paper_thm_1_4_log_a(rate, cols, UDR_PROXIMITY_LOSS);
             let udr_fold_grind = (t - udr_eps_pg).ceil().max(0.0) as usize;
 
-            // Johnson candidate: the far larger radius (`γ = 1 − √ρ − η`) cuts
-            // the query count at high rate; we take it only where the extra
-            // fold-grinding fits `MAX_FOLD_GRINDING_BITS` and it actually saves
-            // queries. This is the UDR-early / Johnson-late hybrid.
-            let john = best_johnson_candidate(
-                i, rate, cols, ilv, target_bits, query_grind, MAX_FOLD_GRINDING_BITS,
-            );
-            let use_john = john.as_ref().is_some_and(|j| j.queries < udr_queries);
+            // The regime is fixed by round (see `level_is_johnson`): UDR for
+            // rounds 1–2, Johnson from round 3. Johnson's far larger radius
+            // (`γ = 1 − √ρ − η`, near-maximal at the deep levels' low rate) cuts
+            // the query count; its length-dependent fold grind must fit
+            // `MAX_FOLD_GRINDING_BITS`, else the schedule is infeasible here.
+            let john = if level_is_johnson(i) {
+                best_johnson_candidate(i, rate, cols, ilv, target_bits, query_grind, max_fold_grind(i))
+            } else {
+                None
+            };
+            let use_john = level_is_johnson(i)
+                && john.as_ref().is_some_and(|j| j.queries <= (1usize << (cols + rate)));
+            if level_is_johnson(i) && !use_john {
+                return Err(format!(
+                    "L{i}: Johnson infeasible at rate 1/2^{rate} (cols={cols}): no η within \
+                     {}-bit fold grind holds a block-fitting query count.",
+                    max_fold_grind(i)
+                ));
+            }
 
             let (
                 regime,
