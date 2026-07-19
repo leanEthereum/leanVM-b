@@ -10,8 +10,13 @@
 //! | 0      | `retpc` — return program counter |
 //! | 1      | `retfp` — caller frame pointer |
 //! | 2 .. 2+nargs            | arguments |
-//! | 2+nargs .. 2+nargs+nret | return values |
+//! | 2+nargs .. 2+nargs+nretcells | flattened return cells |
 //! | rest                    | locals / temporaries / frame-pointer hints |
+//!
+//! A scalar or `HeapBuf` pointer occupies one return cell. A returned
+//! `StackBuf(n)` occupies `n` consecutive cells and is copied into a consecutive
+//! run in the caller; source-level tuple arity therefore differs from physical
+//! return-cell count when a tuple contains a stack buffer.
 //!
 //! A **call** is `DEREF`-then-`JUMP`: the callee frame pointer is a fresh
 //! prover-hinted cell; the args and `retfp` are stored with `DEREF`(`Cell`/`Fp`),

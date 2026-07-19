@@ -142,7 +142,99 @@ pub fn parse_with_replacements(src: &str, replacements: &BTreeMap<String, String
     while p.i < p.lines.len() {
         funcs.push(p.func()?);
     }
+    infer_return_shapes(&mut funcs);
     Ok(Ast { funcs, const_arrays })
+}
+
+/// Infer the compile-time representation of each tail-return value. The DSL's
+/// StackBuf constructor makes its size static. HeapBuf remains an ordinary
+/// one-cell pointer: its allocation hint already ran in the creating function,
+/// so no allocation metadata needs to cross the call. Iterate to a fixed point
+/// so a wrapper may return a stack buffer produced by a later function.
+fn infer_return_shapes(funcs: &mut [Func]) {
+    fn expr_shape(
+        e: &Expr,
+        locals: &HashMap<String, ReturnShape>,
+        known: &HashMap<String, Vec<ReturnShape>>,
+    ) -> ReturnShape {
+        match e {
+            Expr::Var(v) => locals.get(v).copied().unwrap_or(ReturnShape::Scalar),
+            Expr::StackBuf(n) => ReturnShape::StackBuf((*n).try_into().expect("StackBuf size does not fit in u32")),
+            Expr::ListLit(es) => ReturnShape::StackBuf(es.len().try_into().expect("StackBuf size does not fit in u32")),
+            Expr::Call(f, _) => known
+                .get(f)
+                .filter(|r| r.len() == 1)
+                .and_then(|r| r.first())
+                .copied()
+                .unwrap_or(ReturnShape::Scalar),
+            _ => ReturnShape::Scalar,
+        }
+    }
+
+    fn scan(
+        body: &[Stmt],
+        params: &[String],
+        known: &HashMap<String, Vec<ReturnShape>>,
+        n_ret: usize,
+    ) -> Vec<ReturnShape> {
+        let mut locals: HashMap<String, ReturnShape> =
+            params.iter().map(|p| (p.clone(), ReturnShape::Scalar)).collect();
+        let mut returns = vec![ReturnShape::Scalar; n_ret];
+        for stmt in body {
+            match stmt {
+                Stmt::Let(name, e) => {
+                    locals.insert(name.clone(), expr_shape(e, &locals, known));
+                }
+                Stmt::LetTuple(names, f, _) => {
+                    let shapes = known.get(f);
+                    for (i, name) in names.iter().enumerate() {
+                        let shape = shapes.and_then(|s| s.get(i)).copied().unwrap_or(ReturnShape::Scalar);
+                        locals.insert(name.clone(), shape);
+                    }
+                }
+                // `unroll` is straight-line expansion, so a binding in its last
+                // copy remains visible afterward. One symbolic scan is enough
+                // for representation shapes (the iteration value is scalar).
+                Stmt::Unroll { var, body, .. } => {
+                    locals.insert(var.clone(), ReturnShape::Scalar);
+                    for inner in body {
+                        if let Stmt::Let(name, e) = inner {
+                            locals.insert(name.clone(), expr_shape(e, &locals, known));
+                        }
+                    }
+                }
+                Stmt::Return(es) => {
+                    returns = es.iter().map(|e| expr_shape(e, &locals, known)).collect();
+                }
+                _ => {}
+            }
+        }
+        returns
+    }
+
+    let mut known: HashMap<String, Vec<ReturnShape>> = funcs
+        .iter()
+        .map(|f| (f.name.clone(), vec![ReturnShape::Scalar; f.n_ret]))
+        .collect();
+    // A shape can only move from Scalar to one of the finite constructor
+    // shapes (or acquire one through a call), so `funcs.len() + 1` rounds are
+    // sufficient for the longest acyclic wrapper chain.
+    for _ in 0..=funcs.len() {
+        let next: HashMap<String, Vec<ReturnShape>> = funcs
+            .iter()
+            .map(|f| (f.name.clone(), scan(&f.body, &f.params, &known, f.n_ret)))
+            .collect();
+        if next == known {
+            known = next;
+            break;
+        }
+        known = next;
+    }
+    for f in funcs {
+        f.return_shapes = known
+            .remove(&f.name)
+            .unwrap_or_else(|| vec![ReturnShape::Scalar; f.n_ret]);
+    }
 }
 
 fn parse_f192_const(s: &str) -> Option<Result<F192, String>> {
@@ -442,6 +534,7 @@ impl Parser {
             params,
             const_params,
             n_ret,
+            return_shapes: vec![ReturnShape::Scalar; n_ret],
             body,
             inline,
         })

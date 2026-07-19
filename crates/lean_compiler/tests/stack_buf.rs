@@ -91,6 +91,78 @@ def main():
     verify(&program, &want, &proof).expect("StackBuf indexing verifies");
 }
 
+/// A normal (non-`@inline`) function may return a StackBuf. Its cells cross the
+/// call boundary through consecutive return slots and bind as a StackBuf in the
+/// caller, including through another normal wrapper function.
+#[test]
+fn normal_function_returns_stackbuf() {
+    let src = "\
+def main():
+    out = forward(5)
+    p = 1
+    p[1] = out[0] + out[1]
+    p[GEN] = out[2]
+    return
+
+def forward(v):
+    out = make(v)
+    return out
+
+def make(v):
+    out = StackBuf(3)
+    out[0] = v
+    out[1] = v + 3
+    out[2] = 11
+    return out
+";
+    let program = compile(&parse(src).expect("parse"));
+    // Field addition is XOR: 5 ^ (5 ^ 3) == 3.
+    program.execute([F192::from(F64(3)), F192::from(F64(11))]);
+}
+
+/// Tuple returns retain their source-level arity even though a StackBuf member
+/// occupies several physical return cells.
+#[test]
+fn normal_function_returns_stackbuf_and_scalar() {
+    let src = "\
+def main():
+    out, x = make(9)
+    p = 1
+    p[1] = out[0] + out[1]
+    p[GEN] = x
+    return
+
+def make(v):
+    out = [v, 6]
+    return out, v + 1
+";
+    let program = compile(&parse(src).expect("parse"));
+    program.execute([F192::from(F64(15)), F192::from(F64(8))]);
+}
+
+/// HeapBuf already crosses a normal call as its one-cell pointer. Allocation
+/// happened in the callee, so the caller needs no size metadata to dereference
+/// and use the returned buffer.
+#[test]
+fn normal_function_returns_heapbuf_pointer() {
+    let src = "\
+def main():
+    out = make()
+    p = 1
+    p[1] = out[1]
+    p[GEN] = out[GEN]
+    return
+
+def make():
+    out = HeapBuf(2)
+    out[1] = 17
+    out[GEN] = 23
+    return out
+";
+    let program = compile(&parse(src).expect("parse"));
+    program.execute([F192::from(F64(17)), F192::from(F64(23))]);
+}
+
 /// A StackBuf index literal that does not fit `u32` is rejected at compile time,
 /// not silently truncated modulo 2^32 (which would resolve `sa[2^32]` to `sa[0]`).
 #[test]

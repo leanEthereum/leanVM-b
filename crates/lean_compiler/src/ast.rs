@@ -199,6 +199,27 @@ pub enum ForBound {
     Runtime(Expr),
 }
 
+/// Compile-time representation of one source-level return value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReturnShape {
+    /// One ordinary field element or address cell. Heap buffers use this shape:
+    /// allocation happens in the callee and only their pointer is returned.
+    Scalar,
+    /// A compile-time-sized run of consecutive frame cells.
+    StackBuf(u32),
+}
+
+impl ReturnShape {
+    /// Number of physical call-frame return cells occupied by this source-level
+    /// return value.
+    pub(crate) fn cells(self) -> u32 {
+        match self {
+            Self::StackBuf(n) => n,
+            Self::Scalar => 1,
+        }
+    }
+}
+
 /// A function definition. `main` is the entry point.
 #[derive(Clone, Debug)]
 pub struct Func {
@@ -210,7 +231,11 @@ pub struct Func {
     /// with the parameter substituted by its literal (see
     /// [`FnLower::specialize`]).
     pub const_params: Vec<bool>,
+    /// Number of source-level return values (tuple arity).
     pub n_ret: usize,
+    /// Compile-time shape of each source-level return value. Stack buffers use
+    /// multiple physical ABI cells; everything else uses one cell.
+    pub return_shapes: Vec<ReturnShape>,
     pub body: Vec<Stmt>,
     /// `@inline` decorator: expand this function at each call site instead of
     /// emitting a real call — no frame, no argument/return plumbing (the

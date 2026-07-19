@@ -80,6 +80,9 @@ struct FnLower<'a> {
     consts: HashMap<String, u32>,
     next: Off,
     n_args: u32,
+    /// Source-level return shapes for this function. Their physical cell widths
+    /// determine the reserved return area immediately after the arguments.
+    return_shapes: Vec<ReturnShape>,
     is_main: bool,
     code: Vec<LInstr>,
     one_off: Option<Off>,
@@ -378,6 +381,16 @@ impl FnLower<'_> {
     /// cells shared by every arm (write-once: exactly one arm executes);
     /// `names` bind to those cells at the join.
     fn lower_match_range(&mut self, names: &[String], x: &Expr, arms: &[Expr]) {
+        for arm in arms {
+            if let Expr::Call(f, _) = arm
+                && self
+                    .defs
+                    .get(f)
+                    .is_some_and(|d| !d.inline && d.return_shapes.iter().any(|s| matches!(s, ReturnShape::StackBuf(_))))
+            {
+                panic!("a normal function's StackBuf return cannot cross a match_range join; bind it with `let`");
+            }
+        }
         // Fusion: when every arm is a direct call to the same function with
         // identical runtime args (differing only in `Const` args — the usual
         // `lambda k: f(a, b, k)`), set up one shared callee frame and dispatch
@@ -1598,16 +1611,56 @@ impl FnLower<'_> {
         }
     }
 
-    /// Lower a call; returns the caller offsets bound to the returned values.
+    /// Lower a call; returns one caller offset per source-level return value.
+    /// A real-call StackBuf return is flattened into consecutive ABI cells and
+    /// copied into a fresh consecutive run in the caller. `inline_stack_ret`
+    /// describes those logical bindings to the surrounding let/tuple lowering.
     fn call(&mut self, callee: &str, args: &[Expr], n_ret: usize) -> Vec<Off> {
         assert!(
             callee != "blake3",
             "blake3 is a statement: `blake3(a, b, out)` writes the digest into the 2-cell stack run `out`"
         );
-        let dsts: Vec<Off> = (0..n_ret).map(|_| self.fresh()).collect();
         self.inline_stack_ret = None;
-        self.call_into(callee, args, &dsts);
-        dsts
+        if self.defs.get(callee).is_some_and(|d| d.inline) {
+            let dsts: Vec<Off> = (0..n_ret).map(|_| self.fresh()).collect();
+            self.call_into(callee, args, &dsts);
+            return dsts;
+        }
+
+        let shapes = self
+            .defs
+            .get(callee)
+            .map(|d| d.return_shapes.clone())
+            .unwrap_or_else(|| vec![ReturnShape::Scalar; n_ret]);
+        assert_eq!(
+            shapes.len(),
+            n_ret,
+            "`{callee}` returns {} values, call binds {n_ret}",
+            shapes.len()
+        );
+        let mut logical = Vec::with_capacity(n_ret);
+        let mut physical = Vec::new();
+        let mut binds = Vec::with_capacity(n_ret);
+        for shape in shapes {
+            match shape {
+                ReturnShape::Scalar => {
+                    let dst = self.fresh();
+                    logical.push(dst);
+                    physical.push(dst);
+                    binds.push(RetBind::Scalar);
+                }
+                ReturnShape::StackBuf(size) => {
+                    assert!(size > 0, "a returned StackBuf must not be empty");
+                    let base = self.alloc_stack(size);
+                    logical.push(base);
+                    physical.extend(base..base + size);
+                    binds.push(RetBind::Stack(base, size));
+                }
+            }
+        }
+        self.lower_call(callee, args, physical.len(), None, Some(&physical));
+        self.inline_stack_ret = Some(binds);
+        logical
     }
 
     /// Evaluate `callee(args)` into `dsts` — inlining the callee when it is
@@ -1615,6 +1668,19 @@ impl FnLower<'_> {
     fn call_into(&mut self, callee: &str, args: &[Expr], dsts: &[Off]) {
         assert!(callee != "blake3", "blake3 is a statement, not a value-returning call");
         if !self.try_inline(callee, args, dsts) {
+            if let Some(def) = self.defs.get(callee) {
+                assert_eq!(
+                    def.return_shapes.len(),
+                    dsts.len(),
+                    "`{callee}` returns {} values, call binds {}",
+                    def.return_shapes.len(),
+                    dsts.len()
+                );
+                assert!(
+                    def.return_shapes.iter().all(|s| *s == ReturnShape::Scalar),
+                    "a normal function's multi-cell StackBuf return needs a `let` binding"
+                );
+            }
             self.lower_call(callee, args, dsts.len(), None, Some(dsts));
         }
     }
@@ -1797,6 +1863,7 @@ impl FnLower<'_> {
                 params: rt_params,
                 const_params,
                 n_ret: def.n_ret,
+                return_shapes: def.return_shapes.clone(),
                 body,
                 inline: false,
             });
@@ -2220,10 +2287,32 @@ impl FnLower<'_> {
             return; // a `return` in main is a no-op; main halts via the trailing sentinel jump (lower_func).
         }
         let ret_base = 2 + self.n_args;
-        // Each value lands straight in its return slot (the slots are never
-        // variable homes, so an earlier slot write cannot feed a later value).
-        for (i, e) in exprs.iter().enumerate() {
-            self.expr_into(e, ret_base + i as u32);
+        assert_eq!(
+            exprs.len(),
+            self.return_shapes.len(),
+            "function returns {} values here, but its ABI declares {}",
+            exprs.len(),
+            self.return_shapes.len()
+        );
+        // Each logical value lands straight in its flattened return area. A
+        // StackBuf is copied cell-by-cell because its callee-frame offsets are
+        // not meaningful after control returns to the caller.
+        let mut ret = ret_base;
+        for (e, shape) in exprs.iter().zip(self.return_shapes.clone()) {
+            match shape {
+                ReturnShape::Scalar => self.expr_into(e, ret),
+                ReturnShape::StackBuf(size) => {
+                    let (base, actual) = self
+                        .stack_of(e)
+                        .unwrap_or_else(|| panic!("expected a StackBuf({size}) return, got `{e:?}`"));
+                    assert_eq!(actual, size, "returned StackBuf has size {actual}, expected {size}");
+                    for k in 0..size {
+                        let src = self.word_src(base + k);
+                        self.copy(src, ret + k);
+                    }
+                }
+            }
+            ret += shape.cells();
         }
         let one = self.one();
         self.emit(LOp::Jump { oc: one, od: 0, of: 1 });
@@ -2327,6 +2416,7 @@ impl FnLower<'_> {
             params,
             const_params,
             n_ret: 0,
+            return_shapes: vec![],
             body: loop_body,
             inline: false,
         });
@@ -2516,14 +2606,17 @@ pub(crate) fn lower_func(
     for (i, p) in f.params.iter().enumerate() {
         vars.insert(p.clone(), 2 + i as u32);
     }
-    // Reserve [0,1] retpc/retfp, params, then return slots, then locals.
-    let next = 2 + f.params.len() as u32 + f.n_ret as u32;
+    // Reserve [0,1] retpc/retfp, params, then the flattened return area, then
+    // locals. A StackBuf(n) return occupies n consecutive physical slots.
+    let n_ret_cells: u32 = f.return_shapes.iter().map(|s| s.cells()).sum();
+    let next = 2 + f.params.len() as u32 + n_ret_cells;
     let mut lowerer = FnLower {
         vars,
         stacks: HashMap::new(),
         consts: HashMap::new(),
         next,
         n_args: f.params.len() as u32,
+        return_shapes: f.return_shapes.clone(),
         is_main: f.name == "main",
         code: Vec::new(),
         one_off: None,
