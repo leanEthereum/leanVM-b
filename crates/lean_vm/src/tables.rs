@@ -16,8 +16,7 @@ use crate::leaf::Coord::{self, Col, Const, GCol};
 use crate::witness::Column;
 use primitives::field::{F64, F192, G, mul_by_g};
 
-/// Reassemble a 192-bit machine word from its three `K`-limbs (as folded
-/// `E`-column values).
+/// Reassemble a three-word extension value from its folded `K`-column values.
 #[inline]
 fn e192(c0: F192, c1: F192, c2: F192) -> F192 {
     c0 + F192::Y * (c1 + F192::Y * c2)
@@ -735,17 +734,14 @@ impl Table for JumpTable {
 
 // ---- BLAKE3 ------------------------------------------------------------------
 
-/// `BLAKE3` (doc §7.6): the four 128-bit input chunks are addressed
-/// *independently* at `aa0, aa1, ab0, ab1` (`= fp·g^{ins[i]}`), each a single
-/// 128-bit cell — no forced contiguity between chunks, so a caller hashing e.g.
-/// `(tweak, pp)` need not copy them into adjacent cells. The 32-byte output
-/// occupies the two consecutive words `ac`, `g·ac`, so the row reads six cells in
-/// all. Five address bindings `a_X = fp·o_X` are constrained; the compression
+/// `BLAKE3` (doc §7.6): each 256-bit operand and output is four consecutive
+/// base-field words. Their committed starting addresses are `aa`, `ab`, and
+/// `ac`; the remaining addresses are virtual multiples by `g`, `g²`, `g³`, so
+/// the row reads twelve cells in all. Three address bindings are constrained; the compression
 /// relating output words to input words carries no table constraint here: it is
 /// proven by flock's R1CS validity via `q_pkd` (§blake3_flock).
 ///
-/// A 128-bit cell is two flock 64-bit words (lo, hi lanes), so the twelve flock
-/// words are twelve value LANE columns over six cells. They are listed in
+/// The twelve flock words are twelve virtual value columns. They are listed in
 /// `n_committed_columns` (they need a local index for the flushes and are filled
 /// from the trace for the bus), but `cpu` treats them as VIRTUAL — not committed —
 /// and routes their bus claims to `q_pkd`, which already holds those words (see

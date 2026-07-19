@@ -37,10 +37,10 @@ fn compress(a: [F64; 4], b: [F64; 4]) -> [F64; 4] {
 
 /// Build the zkDSL source for an `n`-step chain unrolled `unroll` per outer
 /// iteration (`k = n / unroll` iterations). Layout in the heap `buff`: the chain
-/// value after `j·unroll` steps sits at cells `2j, 2j+1`. Each outer step loads
-/// that pair into a size-2 `StackBuf`, runs `unroll` `BLAKE3`s in the stack —
+/// value after `j·unroll` steps sits at cells `4j..4j+4`. Each outer step loads
+/// that run into a size-4 `StackBuf`, runs `unroll` `BLAKE3`s in the stack —
 /// each output pair feeds the next with **no copies** (a self-hash aliases one
-/// pair into both input operands) — then writes the result pair two cells along.
+/// run into both input operands) — then writes the result four cells along.
 fn chain_source(n: usize, unroll: usize) -> String {
     assert!(
         unroll >= 1 && n.is_multiple_of(unroll),
@@ -50,11 +50,9 @@ fn chain_source(n: usize, unroll: usize) -> String {
     let four_k = 4 * k;
 
     let mut body = String::new();
-    // A 256-bit BLAKE3 value occupies two canonical 128-bit cells. Block `j`'s
-    // boundary value sits at cells `g^{2j}..g^{2j+1}`; the loop counter `i = gʲ`
-    // is the block index (×g each iteration), so the value base is `b = i²`.
-    // Load the current chain value into a size-2 StackBuf (heap read straight
-    // into the two consecutive stack cells).
+    // A 256-bit BLAKE3 value occupies four F64 cells. Block `j`'s boundary
+    // value starts at cell `g^{4j}`; with loop counter `i = gʲ`, its base is i⁴.
+    // Load it into a size-4 StackBuf.
     body.push_str("        i2 = i * i\n");
     body.push_str("        b = i2 * i2\n");
     body.push_str("        h0 = StackBuf(4)\n");
@@ -62,12 +60,12 @@ fn chain_source(n: usize, unroll: usize) -> String {
         body.push_str(&format!("        h0[{w}] = buff[b * GEN ** {w}]\n"));
     }
     // `unroll` self-hashes; each `blake3` reads its operand stack in place and
-    // writes into the next pre-allocated size-2 stack — no copies between steps.
+    // writes into the next pre-allocated size-4 stack — no copies between steps.
     for s in 1..=unroll {
         body.push_str(&format!("        h{s} = StackBuf(4)\n"));
         body.push_str(&format!("        blake3(h{p}, h{p}, h{s})\n", p = s - 1));
     }
-    // Write the block's result back to the next value (two cells along).
+    // Write the block's result back to the next value (four cells along).
     for w in 0..4 {
         body.push_str(&format!("        buff[b * GEN ** {}] = h{unroll}[{w}]\n", 4 + w));
     }

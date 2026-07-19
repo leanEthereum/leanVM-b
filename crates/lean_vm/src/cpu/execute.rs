@@ -541,7 +541,13 @@ impl Program {
                             let has3 = (a3 as usize) < written.len() && written[a3 as usize];
                             match (has2, has3) {
                                 (true, true) => {
-                                    assert!(mem[a2] == get(&mem, &written, a3), "DEREF mismatch")
+                                    let v3 = get(&mem, &written, a3);
+                                    assert!(
+                                        mem[a2] == v3,
+                                        "DEREF mismatch at pc {pc}: mem[{a2}]={:016x}, fp[{gamma}] (cell {a3})={:016x}",
+                                        mem[a2].0,
+                                        v3.0
+                                    )
                                 }
                                 (true, false) => {
                                     let v = mem[a2];

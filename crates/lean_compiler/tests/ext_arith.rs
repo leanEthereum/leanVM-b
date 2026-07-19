@@ -46,3 +46,26 @@ fn extension_operand_width_is_checked() {
     let src = "def main():\n    a = StackBuf(2)\n    b = StackBuf(3)\n    c = StackBuf(3)\n    add_ext(a, b, c)\n    return\n";
     let _ = compile(&parse(src).expect("parse"));
 }
+
+#[test]
+fn inline_stackbuf_alias_crosses_ext_call_abi() {
+    let src = r#"
+def main():
+    value = make_ext(5)
+    check_ext(value)
+    return
+
+@inline
+def make_ext(x):
+    value = [x, x + 3, x + 6]
+    return value
+
+def check_ext(value: Ext):
+    assert value[0] == 5
+    assert value[1] == 6
+    assert value[2] == 3
+    return
+"#;
+    let program = compile(&parse(src).expect("parse"));
+    program.execute([F64::ZERO; 4]);
+}

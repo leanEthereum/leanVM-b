@@ -1,8 +1,7 @@
-# Runtime slices: `buf[i:i + 2]` with a runtime g-power index `i` names the
-# heap cells `buf·i·g^k`, k < 2 (one MUL folds `i` into the pointer). A BLAKE3
-# chain over heap pairs (256-bit BLAKE3 value = two canonical cells),
-# addressed by the loop counter: value k sits at cells g^{2k}..g^{2k+1}, and
-# value k+1 = H(value k, value k). Published: the two 128-bit digest cells of
+# Runtime slices: `buf[i:i + 4]` with a runtime g-power index `i` names four
+# heap cells starting at `buf·i` (one MUL folds `i` into the pointer). A BLAKE3
+# chain over four-word heap values, addressed by the loop counter: value k
+# starts at cell g^{4k}, and value k+1 = H(value k, value k). Published: the four digest words of
 # H^3(5, 7).
 # public_input: 9179625039470602661, 14089184190295358934, 1788154028250263227, 3881161908982872004
 from snark_lib import *

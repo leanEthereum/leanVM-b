@@ -1,14 +1,14 @@
 # zkDSL Language Reference (leanVM-b)
 
-The zkDSL is a Python-syntax language that compiles to the leanVM-b ISA — seven
-instructions (`XOR`, `MUL`, `SET`, `DEREF`, `JUMP`, `BLAKE3`, `PACK64X2`) over the binary
-field GF(2^192), with write-once memory and all indices carried "in the
+The zkDSL is a Python-syntax language that compiles to the leanVM-b ISA — eight
+instructions (`ADD`, `MUL`, `ADD_EXT`, `MUL_EXT`, `SET`, `DEREF`, `JUMP`,
+`BLAKE3`) with write-once 64-bit memory and all indices carried "in the
 exponent" as powers of a fixed generator. For the underlying VM and proving
 system, see [`misc/doc.tex`](../../misc/doc.tex) (released as `doc.pdf`).
 
 Source files use the `.py` extension and are **valid Python**: they import the
 [`snark_lib`](../../snark_lib.py) stub, which defines `GEN`, `log`, `mul_range`,
-`HeapBuf`, `StackBuf`, `pack64x2`, and `blake3` so that editors, linters, and even
+`HeapBuf`, `StackBuf`, the extension arithmetic helpers, and `blake3` so that editors, linters, and even
 `python3` itself accept the file. The compiler skips the import.
 
 Entry points: `lean_compiler::parse` / `parse_file_with_replacements` →
@@ -29,26 +29,21 @@ The fields are
 `K = GF(2)[x]/(x^64 + x^4 + x^3 + x + 1)` and
 `E = K[y]/(y^3 + y + 1) = GF(2^192)`.
 
-Machine **words** — the contents of a memory cell, an immediate, a hashed
-value, the `JUMP` condition — are elements of `E`. **Addresses**,
-the program counter, the frame pointer, read counters, operands, opcodes, and
-domain separators live in the 64-bit subfield `K = GF(2^64)`. There are no
-runtime integers.
+Every machine **word**—a memory cell, immediate, hash lane, `JUMP` condition,
+address, program counter, frame pointer, or counter—is in the 64-bit base field
+`K`. An extension value in `E` is represented by a three-cell `StackBuf(3)` in
+tower-coordinate order `[c0, c1, c2]`; in heap memory it occupies three
+consecutive addresses `p`, `p·GEN`, and `p·GEN²`.
 
-- `+` is field addition = bitwise **XOR** (192-bit on words, so `x + x == 0`),
-- `*` is multiplication in `E`;
-  for g-powers and
-  addresses it stays within `K`,
-- `/` is runtime field division, `a / b = a · b⁻¹`. It costs one `MUL`: the
+- `+` is base-field addition = bitwise 64-bit **XOR**,
+- `*` is multiplication in `K`,
+- `/` is runtime base-field division, `a / b = a · b⁻¹`. It costs one `MUL`: the
   compiler leaves the quotient cell unset and emits the checked relation
   `quotient · b == a`, which witness generation back-solves. Division by zero is
   undefined. This is distinct from `//`, compile-time integer floor division in
   sizes and indices,
-- an integer literal `n` supplies up to 128 raw bits and is embedded as
-  `F192(c0, c1, 0)`. This is a source-syntax limit, not the machine-word
-  width: words have three 64-bit limbs. Thus `5` is `1 + x^2`, not the integer five, and
-  `2 ** 64` is the tower element `y`. Full-width constants use
-  `f192(c0, c1, c2)`, with each limb an unsigned 64-bit compile-time integer,
+- an integer literal supplies one raw 64-bit `K` word (larger value literals
+  are rejected). Thus `5` is the polynomial `1 + x²`, not integer arithmetic,
 - `GEN` is the fixed generator `g = x` of the 64-bit subfield `K^×`
   (multiplicative order `2^64 − 1`),
 - `GEN ** e` is the compile-time constant `g^e ∈ K` (`**` takes base `GEN` and a
@@ -95,8 +90,7 @@ was created, so no size metadata needs to cross the call.
 
 ## Public input
 
-Memory cells `m[0]` and `m[1]` hold the two public-input words, each an F192
-machine word. A
+Memory cells `m[0]` through `m[3]` hold the four public-input `K` words. A
 program *publishes* results by asserting them against those cells through the
 write-once heap store (the pointer `g^0` addresses absolute memory):
 
@@ -104,15 +98,17 @@ write-once heap store (the pointer `g^0` addresses absolute memory):
 p = GEN ** 0
 p[1] = result_a     # m[p·1]  = m[0] — an equality assert against the public input
 p[GEN] = result_b   # m[p·g] = m[1]
+p[GEN ** 2] = result_c
+p[GEN ** 3] = result_d
 ```
 
 Test programs under `tests/programs/` declare the public input they expect
-with a top-of-file annotation of two constant elements (or omit it to run with
-two zeros); the generic harness `tests/py_source.rs` proves and verifies every
+with a top-of-file annotation of four constant elements (or omit it to run with
+four zeros); the generic harness `tests/py_source.rs` proves and verifies every
 program in the directory:
 
 ```python
-# public_input: GEN ** 89, 101229015297003380629709256178361811305
+# public_input: GEN ** 89, GEN ** 89, 0, 0
 ```
 
 ## Global constants and placeholders
@@ -209,9 +205,9 @@ per call. Every non-`main` function must end in an explicit `return`; in
 
 ```python
 def hash_pair(buf, k: Const):
-    h = StackBuf(2)
-    blake3(buf[k * 2:k * 2 + 2], buf[k * 2:k * 2 + 2], h)
-    return h[0], h[1]
+    h = StackBuf(4)
+    blake3(buf[k * 4:k * 4 + 4], buf[k * 4:k * 4 + 4], h)
+    return h
 ```
 
 `k: Const` marks a **compile-time parameter**: the call site must pass a
@@ -259,12 +255,12 @@ likewise. This makes chained-state helpers free, the MD-chain idiom:
 ```python
 @inline
 def obs(cb, x):          # sponge absorb: cb <- compress(cb, (x, SCALAR))
-    tg = [x, DS_SCALAR]  # a list literal: an initialized StackBuf(2)
-    nb = StackBuf(2)
+    tg = [x, DS_SCALAR, 0, 0]
+    nb = StackBuf(4)
     blake3(cb, tg, nb)
     return nb            # the call site's `cvb = obs(cvb, v)` aliases nb
 
-cvb = obs(cvb, v)        # exactly 3 ops: two tag writes + one blake3
+cvb = obs(cvb, v)        # one BLAKE3 plus any non-aliased tag setup
 ```
 
 An `@inline` call may also sit in **expression position** — embedded in
@@ -375,28 +371,28 @@ arithmetic (`+ * // %`) is *integer* arithmetic (`x + 1` above is 2, `k // 2`
 floor-divides, `k % 2` is a remainder — index space, not the field, where XOR
 is what `+` means and `//`/`%` have no meaning at all: using one as a runtime
 field value is a compile error). Bounds are checked at compile time. A `StackBuf`
-name is a run of cells, not a scalar: using it as one is an error, and it
-cannot be captured into a `for` loop body (carry state through a `HeapBuf`
-instead).
+name is a run of cells, not a scalar: using it as one is an error. A
+`StackBuf(3)` can be captured by a runtime loop as an extension value; other
+sizes must remain frame-local or be carried through a `HeapBuf`.
 
 ### Slices — `buf[lo:hi]`
 
 `buf[lo:hi]` names a run of cells (`hi` exclusive). Slices exist only as
-`blake3` operands and must span exactly 2 cells (one 256-bit value). Two
+`blake3` operands (4 cells) or extension operands (3 cells). Two
 forms:
 
 - **compile-time bounds** (integers, as for stack indexes): frame cells
   `base+lo .. base+hi` of a `StackBuf`, or heap cells `ptr·g^lo .. ptr·g^hi`
-  of a `HeapBuf` — `hb[2:4]` is the pair `g^2, g^3`;
-- **runtime start, heap only**: `buf[i:i + 2]` with a runtime g-power index
-  `i` (e.g. a loop counter) names the cells `buf·i`, `buf·i·g` — one `MUL`
+  of a `HeapBuf` — `hb[2:6]` is the four-word run `g²,…,g⁵`;
+- **runtime start, heap only**: `buf[i:i + 4]` with a runtime g-power index
+  `i` (e.g. a loop counter) names four cells starting at `buf·i` — one `MUL`
   folds `i` into the pointer. The `hi` bound cannot be evaluated, only
-  shape-checked: it must be syntactically `lo + 2`
-  (`buf[b * GEN ** 2 : b * GEN ** 2 + 2]` is fine). A `StackBuf` slice cannot
+  shape-checked: it must be syntactically `lo + width`
+  (`buf[b * GEN ** 4 : b * GEN ** 4 + 4]` is fine). A `StackBuf` slice cannot
   have a runtime start — frame offsets are baked into the bytecode operands.
 
 Note the two index spaces, consistent with plain indexing: compile-time
-bounds are integer exponents (`hb[2:4]` ≡ `hb[GEN ** 2 : GEN ** 2 + 2]`),
+bounds are integer exponents (`hb[2:6]` addresses logical cells 2 through 5),
 runtime starts are g-power elements.
 
 ## Control flow
@@ -429,8 +425,9 @@ an extra parameter (+1 argument per iteration call); entry itself is the same
 Lowering: the body becomes a tail-recursive helper function whose exit test is
 folded into the recursion's `JUMP` condition — one call per iteration, no
 separate is-zero gadget. Free variables of the body are captured **by value**
-as extra parameters; a `HeapBuf` pointer threads through fine, a `StackBuf`
-does not (compile error).
+as extra parameters; a `HeapBuf` pointer threads through fine, and a
+three-cell extension `StackBuf(3)` uses the flattened `Ext` ABI. Other
+`StackBuf` sizes cannot be captured.
 
 ### `for i in unroll(a, b)` — compile-time unrolling
 
@@ -440,7 +437,7 @@ for i in unroll(0, 7):
 
 def chain(buf, n: Const):
     for i in unroll(0, n):           # a Const parameter as a bound
-        blake3(buf[i * 2:i * 2 + 2], buf[i * 2:i * 2 + 2], buf[i * 2 + 2:i * 2 + 4])
+        blake3(buf[i * 4:i * 4 + 4], buf[i * 4:i * 4 + 4], buf[i * 4 + 4:i * 4 + 8])
     return
 ```
 
@@ -598,83 +595,54 @@ The two `DEREF` target cells are unconstrained touches, back-filled at the end
 of execution. A failing check surfaces at witness generation as the
 complement's `DEREF` panic ("not a small g-power … a failed range check").
 
-## Packing two 64-bit cells — `pack64x2`
+## Extension-field arithmetic
+
+Extension values are exactly three consecutive stack words. The explicit
+operations write into an existing `StackBuf(3)` (or a three-word StackBuf
+slice):
 
 ```python
-packed = pack64x2(lo, hi)
+a = [a0, a1, a2]
+b = [b0, b1, b2]
+c = StackBuf(3)
+add_ext(a, b, c)       # c = a + b in E
+sub_ext(a, b, c)       # same as add_ext in characteristic two
+mul_ext(a, b, c)       # c = a · b in E
+div_ext(a, b, c)       # c · b = a; b must be nonzero
 ```
 
-`pack64x2(a, b)` is an expression that takes one VM cycle. It proves that both
-source memory words are in the base field GF(2^64), then returns their canonical
-128-bit packing `(a.c0, b.c0, 0)` as one GF(2^192) word. The proof comes from
-the memory bus itself: the two source accesses use literal-zero upper limbs,
-and the destination access uses the tuple `(a.c0, b.c0, 0)`. Consequently a
-source with either upper limb nonzero cannot satisfy the memory permutation.
+`add_ext` and `mul_ext` are one VM instruction each. `sub_ext` is sugar for
+`add_ext`; `div_ext` uses one checked `MUL_EXT`, with witness generation
+back-solving the quotient. The ordinary infix operators remain base-field
+operations and never implicitly reinterpret three words as an extension.
 
-This is useful before treating values supplied as GF(2^192) hints as serialized
-64-bit limbs. The returned packed word may be ignored when only the range
-assertion is needed.
-
-The recursion transcript uses `challenge_from_state(state)` to reinterpret the
-first three 64-bit lanes of a canonical two-cell BLAKE3 digest as one extension
-field challenge. For `state = [s0, s1]`, it lowers exactly as follows (the
-limb hints cost no cycles, but are not trusted):
-
-```python
-lo = StackBuf(2)
-hi = StackBuf(2)
-hint_f192_limbs(lo, s0)       # advice: [d0, d1]
-hint_f192_limbs(hi, s1)       # advice: [d2, d3]
-pack64x2_into(lo[0], lo[1], s0)
-pack64x2_into(hi[0], hi[1], s1)
-challenge = lo[0] + lo[1] * f192(0, 1, 0) + hi[0] * f192(0, 0, 1)
-```
-
-The two in-place `PACK64X2` instructions prove through write-once memory that
-`s0 = (d0,d1,0)` and `s1 = (d2,d3,0)`. Consequently all four digest lanes are
-really in GF(2^64); the challenge is `d0 + d1·Y + d2·Y²`, while `d3` is checked
-but deliberately discarded. `challenge_from_state` is not a compiler
-intrinsic: this is the complete `@inline` helper used by the recursion guest.
-
-Likewise, the recursion guest's `sponge_compress(state, scalar, tail, out)` is
-ordinary straight-line zkDSL:
-
-```python
-limbs = StackBuf(3)
-hint_f192_limbs(limbs, scalar)  # advice: scalar's three K coordinates
-block = StackBuf(2)
-pack64x2_into(limbs[0], limbs[1], block[0])
-pack64x2_into(limbs[2], tail, block[1])
-assert scalar == limbs[0] + Y * (limbs[1] + Y * limbs[2])
-blake3(state, block, out)
-```
-
-The first two rows range-check all four serialized lanes and form the exact
-64-byte BLAKE3 block `[scalar.c0, scalar.c1, scalar.c2, tail]`; the equality
-prevents the advice from changing `scalar`. The final row is the VM's sole,
-canonical `BLAKE3` instruction.
+Normal functions declare extension parameters with `: Ext`; the call ABI
+flattens each one into three cells. The argument must be a `StackBuf(3)`, a
+three-cell StackBuf slice, a list literal of length three, or a helper call
+returning that shape. A returned extension is an ordinary compile-time-sized
+StackBuf return.
 
 ## BLAKE3
 
 ```python
-h = StackBuf(2)
+h = StackBuf(4)
 blake3(a, b, h)                    # digest of (a, b) written into h
-blake3(t[0:2], t[x:x + 2], t[4:6])  # slices of one large StackBuf
-blake3(h, hb[0:2], hb[2:4])         # HeapBuf slices, input and output
-blake3(hb[i:i + 2], h, hb[j:j + 2])  # runtime-indexed heap slices (i, j g-powers)
+blake3(t[0:4], t[4:8], t[8:12])    # slices of one large StackBuf
+blake3(h, hb[0:4], hb[4:8])        # HeapBuf slices, input and output
+blake3(hb[i:i + 4], h, hb[j:j + 4])  # runtime-indexed heap slices
 ```
 
 `blake3(a, b, out)` is a **statement**: it compresses the two 256-bit operands
-`a`, `b` (64 bytes) and writes the 32-byte digest into the 2-cell run `out`.
-Operands are size-2 `StackBuf`s or 2-cell slices:
+`a`, `b` (64 bytes) and writes the 32-byte digest into the 4-cell run `out`.
+Operands are size-4 `StackBuf`s or 4-cell slices; each cell is one F64 lane:
 
 - **stack operands** are read/written in place — zero copies; a self-hash
-  `blake3(h, h, out)` aliases one 2-cell pair into both inputs;
-- the instruction addresses its **four canonical 128-bit input chunks
-  independently** (each is a full F192 memory cell constrained at this use to
-  the BLAKE3 subspace `c2 = 0`), so when a 256-bit operand is
+  `blake3(h, h, out)` aliases one four-word run into both inputs;
+- the instruction addresses the first word of each operand; the remaining
+  three addresses are virtual successors obtained by multiplying by `GEN`,
+  `GEN²`, and `GEN³`. When a 256-bit operand is
   *assembled* from values that live in different places — the idiom
-  `p = StackBuf(2); p[0] = t0; p[1] = t1; blake3(p, …)` — the copies vanish:
+  `p = [t0, t1, t2, t3]; blake3(p, …)` — plain-copy aliases can be forwarded:
   a stack store of a plain copy or a zero is forwarded to its source (see
   "Variables"), and `BLAKE3` reads each chunk where it already is;
 - **heap slices** are still bridged through the stack for the *input pull* (the
@@ -692,7 +660,7 @@ see `doc.pdf` §BLAKE3); one instruction per 64→32-byte compression.
 ## Hints — `hint_witness(dest, "name")`
 
 ```python
-sb = StackBuf(2)
+sb = StackBuf(4)
 hint_witness(sb, "r")        # fill the whole StackBuf
 hint_witness(hb[0:3], "h")   # or any StackBuf/HeapBuf slice (any length)
 assert log(sb[0]) < 8        # hinted values are UNCONSTRAINED: pin them down
@@ -709,7 +677,7 @@ critical vulnerability. Runtime-start heap slices (`buf[i:i + k]`, `k` a
 literal) work too.
 
 The prover supplies streams with `program.set_witness("name", entries)`
-(`Vec<Vec<extension-field>>`); test programs declare them as annotations, one line per
+(`Vec<Vec<F64>>`); test programs declare them as annotations, one line per
 entry — repeated lines with the same name are its successive entries:
 
 ```python
@@ -737,9 +705,11 @@ completely unconstrained: the program must re-verify them in-circuit.
 | construct | instructions |
 |---|---|
 | `x = <literal>` / `GEN ** k` | 1 `SET` |
-| `a + b` | 1 `XOR` |
+| `a + b` | 1 base `ADD` |
 | `a * b` | 1 `MUL` |
 | `a / b` | 1 `MUL` (write-once back-solve; division by zero is undefined) |
+| `add_ext(a, b, out)` / `sub_ext(...)` | 1 `ADD_EXT` |
+| `mul_ext(a, b, out)` / `div_ext(...)` | 1 `MUL_EXT` |
 | heap read / store `buf[i]` | 1 `DEREF`; +1 `MUL` for a *runtime* index (a compile-time g-power offset folds into the `DEREF` — free) |
 | stack read / store `sa[k]` | 0 (direct cell addressing) |
 | `assert a == b` | 2 |
@@ -760,7 +730,7 @@ Fibonacci in the exponent (`tests/programs/fibonacci.py`): `fib[g^k]` holds
 `GEN ** F_k`, so one field `MUL` is one Fibonacci step.
 
 ```python
-# public_input: GEN ** 89, GEN ** 89
+# public_input: GEN ** 89, GEN ** 89, 0, 0
 from snark_lib import *
 
 
@@ -776,6 +746,8 @@ def main():
     p = GEN ** 0
     p[1] = out
     p[GEN] = out
+    p[GEN ** 2] = 0
+    p[GEN ** 3] = 0
     return
 ```
 
@@ -786,4 +758,4 @@ Mutable variables; conditions other than field (in)equality; `match` defaults
 `mul_range` or range-check bounds (a substituted literal is a bit-pattern
 element, not the g-power a bound needs); runtime slice starts on a `StackBuf`;
 runtime range-check bounds (`assert log a < log b` with runtime `b`);
-precompiles beyond `BLAKE3` and `PACK64X2`.
+precompiles beyond `BLAKE3`.

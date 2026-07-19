@@ -197,7 +197,7 @@ def verify_sig(message, tweak_table, merkle_bits, pk_ptr):
         assert log(digit[0]) < CHAIN_LENGTH
         chain_start = StackBuf(WORDS_PER_VALUE)
         hint_witness(chain_start, "chain_starts")
-        t0, t1, e = match_range(log(digit[0]), range(0, CHAIN_LENGTH), lambda k: walk(chain_start, chain_tweaks, pp_0, pp_1, k))
+        t0, t1, e = match_range(log(digit[0]), range(0, CHAIN_LENGTH), lambda k: walk(chain_start[0], chain_start[1], chain_tweaks, pp_0, pp_1, k))
         tips[WORDS_PER_VALUE * i] = t0
         tips[WORDS_PER_VALUE * i + 1] = t1
         digit_product = digit_product * digit[0]
@@ -212,7 +212,7 @@ def verify_sig(message, tweak_table, merkle_bits, pk_ptr):
         assert log(digit[0]) < CHAIN_LENGTH
         chain_start = StackBuf(WORDS_PER_VALUE)
         hint_witness(chain_start, "chain_starts")
-        t0, t1, e = match_range(log(digit[0]), range(0, CHAIN_LENGTH), lambda k: walk(chain_start, chain_tweaks, pp_0, pp_1, k))
+        t0, t1, e = match_range(log(digit[0]), range(0, CHAIN_LENGTH), lambda k: walk(chain_start[0], chain_start[1], chain_tweaks, pp_0, pp_1, k))
         tips[WORDS_PER_VALUE * i] = t0
         tips[WORDS_PER_VALUE * i + 1] = t1
         digit_product = digit_product * digit[0]
@@ -279,13 +279,13 @@ def verify_sig(message, tweak_table, merkle_bits, pk_ptr):
     return
 
 
-def walk(value, chain_tweaks, pp_0, pp_1, k: Const):
+def walk(value_0, value_1, chain_tweaks, pp_0, pp_1, k: Const):
     # Walk WOTS chain steps k..CHAIN_STEPS-1: value' = H(tweak|pp, value|0).
     # Step s reads its tweak at cell s off the chain's subtable: a compile-time
     # (beta) offset, one DEREF each; no cursor to advance.
     block = StackBuf(WORDS_PER_BLOCK)
-    block[0] = value[0]
-    block[1] = value[1]
+    block[0] = value_0
+    block[1] = value_1
     block[2] = 0
     block[3] = 0
     for s in unroll(k, CHAIN_STEPS):

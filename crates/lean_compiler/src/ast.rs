@@ -2,11 +2,11 @@
 
 use primitives::field::F64;
 
-/// An expression. Arithmetic is the field's own: `+` is `XOR`, `*` is `MUL`.
+/// An expression. Infix arithmetic is over F64: `+` is `ADD`/XOR, `*` is `MUL`.
 #[derive(Clone, Debug)]
 pub enum Expr {
-    /// Integer / field literal: the source syntax provides a raw 128-bit value,
-    /// embedded into the low two limbs of the 192-bit tower element (`c2 = 0`).
+    /// Integer / field literal. Value positions must fit one raw 64-bit word;
+    /// the wider AST integer also serves compile-time sizes and exponents.
     Lit(u128),
     /// The generator `g` — written `GEN` in source. A logical index `i` is
     /// carried "in the exponent" as `gⁱ`, so `GEN` is the unit step and
@@ -64,8 +64,8 @@ pub enum Expr {
     HeapBufDyn(Box<Expr>),
     /// `StackBuf(n)` — allocate `n` *consecutive* frame (stack) cells, bound as a
     /// stack value. Its cells `sa[0..n]` are written/read directly (no heap deref),
-    /// and a size-2 `StackBuf` is a valid `blake3` operand (the four 64-bit hash
-    /// words live as two lanes in each of two consecutive 128-bit cells).
+    /// and a size-4 `StackBuf` is a valid `blake3` operand (one 64-bit hash
+    /// word per cell).
     StackBuf(u64),
     /// `arr[idx]` — read a cell. For a heap `arr` (a pointer): `m[arr·idx]` (idx a
     /// g-power). For a [`Expr::StackBuf`]: the frame cell `base + idx` (idx a
@@ -75,7 +75,8 @@ pub enum Expr {
     /// `base+lo..base+hi`) or of a [`Expr::HeapBuf`] (heap cells
     /// `ptr·g^lo..ptr·g^hi`), with compile-time integer bounds (`hi`
     /// exclusive). Only meaningful as a `blake3` operand, where it must span
-    /// exactly 2 cells (one 256-bit value).
+    /// exactly 4 cells (one 256-bit value), or as an extension operand, where
+    /// it must span exactly 3 cells.
     Slice(Box<Expr>, Box<Expr>, Box<Expr>),
     /// `[a, b, …]` — an initialized [`Expr::StackBuf`]: `x = [a, b]` allocates
     /// a StackBuf of the element count and writes each element in place, sugar
@@ -254,8 +255,7 @@ pub struct Func {
 pub struct Ast {
     pub funcs: Vec<Func>,
     /// Top-level constant arrays `NAME = [a, b, c]` (declaration order). Each
-    /// element is a `u128` (a field value `extension-field::new(lo,hi)` where used as a
-    /// value, or a small integer where used as a compile-time index / bound /
+    /// element is an F64 value (or a small integer where used as a compile-time index / bound /
     /// `unroll` count). Indexed `NAME[i]` and measured `len(NAME)` at compile
     /// time only (`i` a literal / constant / `unroll` var). Not textually
     /// substituted (unlike scalar constants) — resolved at lowering.

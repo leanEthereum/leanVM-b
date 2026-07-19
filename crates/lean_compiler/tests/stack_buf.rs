@@ -1,13 +1,9 @@
 //! `StackBuf` — a run of consecutive frame (stack) cells in the zkDSL. Indexed
-//! reads/writes go straight to `base+k` (no heap deref), and a size-2 `StackBuf`
-//! is a `blake3` operand: its two canonical 128-bit cells hold the 256-bit value, so
+//! reads/writes go straight to `base+k` (no heap deref), and a size-4 `StackBuf`
+//! is a `blake3` operand: its four F64 cells hold the 256-bit value, so
 //! `blake3(a, b, out)` reads them in place with no copies (a self-hash
-//! `blake3(h, h, out)` aliases one pair into both input operands) and writes
-//! the digest into the pre-allocated pair `out`.
-//!
-//! Since these DSL scalars are K-embedded F192 cells, a `StackBuf(2)` written
-//! cell-by-cell holds the flock words `[v0, 0, v1, 0]`
-//! — the reference `compress` below is fed that lane layout.
+//! `blake3(h, h, out)` aliases one run into both input operands) and writes
+//! the digest into the pre-allocated four-word run `out`.
 
 use lean_compiler::{compile, parse};
 use lean_vm::blake3_flock::warm_setup;
@@ -26,14 +22,12 @@ fn compress(a: [F64; 4], b: [F64; 4]) -> [F64; 4] {
     std::array::from_fn(|k| F64(u64::from_le_bytes(d[8 * k..8 * k + 8].try_into().unwrap())))
 }
 
-/// The two 128-bit digest cells of `compress(a, b)` as `F192`s (lo = word 0/2,
-/// hi = word 1/3) — what a `blake3(...)` output `StackBuf(2)` holds cell-by-cell.
 fn pi2(a: F64, b: F64) -> [F64; 4] {
     [a, b, F64::ZERO, F64::ZERO]
 }
 
-/// A size-2 `StackBuf` fed to `blake3` as a self-hash `blake3(h, h)`, then the
-/// digest's two 128-bit cells published to `m[0], m[1]`. Proves and verifies, and
+/// A size-4 `StackBuf` fed to `blake3` as a self-hash `blake3(h, h)`, then its
+/// four digest words are published. Proves and verifies, and
 /// a wrong published digest is rejected — so the whole path (StackBuf load →
 /// aliased blake3 → stack read → publish) is exercised end-to-end.
 #[test]
@@ -57,7 +51,7 @@ def main():
     let program = compile(&parse(src).expect("parse"));
     warm_setup(1);
 
-    // Each cell holds one scalar in its low lane, so the hashed words are [5,0,7,0].
+    // Each cell holds one F64 word.
     let h = [F64(5), F64(7), F64(11), F64(13)];
     let want = compress(h, h);
 
@@ -234,8 +228,7 @@ def step(state, v):
 ";
     let program = compile(&parse(src).expect("parse"));
 
-    // Each cell = one scalar in its low lane, so a StackBuf(2) hashes words
-    // [c0, 0, c1, 0]. x == v == 9 (the scalar return), so both steps use tag 9.
+    // x == v == 9 (the scalar return), so both steps use tag 9.
     let tag = [F64(9), F64(3), F64(4), F64(5)];
     let s1 = compress([F64(5), F64(7), F64(11), F64(13)], tag);
     let s2 = compress(s1, tag); // the returned StackBuf (holding s1's words) fed back in
@@ -366,9 +359,7 @@ fn heap_hint_slice_oob_rejected() {
     let _ = compile(&parse(src).expect("parse"));
 }
 
-/// A blake3 heap slice straddling the buffer end is rejected. The 256-bit
-/// operand `hb[7:9]` is two 128-bit cells, so the bound check trips at
-/// `7 + 2 = 9 > 8`.
+/// A four-word BLAKE3 heap slice straddling the buffer end is rejected.
 #[test]
 #[should_panic(expected = "heap slice 5:9 out of bounds for `hb` (HeapBuf size 8)")]
 fn heap_blake3_slice_oob_rejected() {

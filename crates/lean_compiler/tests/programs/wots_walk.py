@@ -1,12 +1,12 @@
 # A miniature WOTS-style chain walk bundling the DSL's moving parts: a
 # runtime digit is range-checked (dispatch soundness), then match_range
 # dispatches it to a Const-specialized walker whose BLAKE3 chain is unrolled
-# over heap slices (a 256-bit BLAKE3 value occupies two canonical cells);
+# over heap slices (a 256-bit BLAKE3 value occupies four F64 cells);
 # the walker also builds g^{2n} at runtime (unrolled MULs) to read its final
-# pair back through g-power indexing. The recomputation at the end lands on an
-# already-written StackBuf pair, so write-once turns the hash into a digest
+# value back through g-power indexing. The recomputation at the end lands on an
+# already-written StackBuf run, so write-once turns the hash into a digest
 # assertion; the dead `if` branch holds an impossible assert that must never
-# execute. Published: the two 128-bit digest cells of H^2(5, 7).
+# execute. Published: the four digest words of H^2(5, 7).
 # public_input: 6435064747262329193, 5487635915178971307, 11033477629434050085, 10814665273705721660
 from snark_lib import *
 

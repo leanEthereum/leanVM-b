@@ -1,9 +1,8 @@
-# BLAKE3 over slices: `buf[lo:hi]` (2 cells) is a 256-bit operand under 128-bit
+# BLAKE3 over slices: `buf[lo:hi]` (4 cells) is a 256-bit operand under 64-bit
 # machine words, with compile-time bounds — literals, literal-bound names, and
-# their integer arithmetic (`x:x + 2`). Slices work on a large StackBuf (in
+# their integer arithmetic (`x:x + 4`). Slices work on a large StackBuf (in
 # place) and on a HeapBuf (bridged through the stack, one DEREF per cell), as
-# inputs and as the output. Published: the two 128-bit digest cells of
-# H(H(a[0:2], hb[0:2]), a[0:2]) read back from the heap.
+# inputs and as the output. Published: the four digest words read back from the heap.
 # public_input: 2910646302306008541, 3971110100326522597, 12274690806251735658, 11991957982951544561
 from snark_lib import *
 

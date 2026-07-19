@@ -68,8 +68,8 @@ enum RetBind {
 struct FnLower<'a> {
     vars: HashMap<String, Off>,
     /// `StackBuf` bindings: name → (base offset, size). The `size` cells
-    /// `base..base+size` are consecutive frame cells (so a size-2 one, or a
-    /// 2-cell slice of a larger one, is a direct `blake3` operand). Kept
+    /// `base..base+size` are consecutive frame cells (so a size-4 one, or a
+    /// 4-cell slice of a larger one, is a direct `blake3` operand). Kept
     /// separate from `vars` since a stack value is a run of cells, not a
     /// single scalar.
     stacks: HashMap<String, (Off, u32)>,
@@ -1005,6 +1005,24 @@ impl FnLower<'_> {
         base
     }
 
+    /// Materialize an inline list literal as a consecutive stack run. This is
+    /// the unnamed equivalent of `tmp = [a, b, ...]`, used for StackBuf
+    /// arguments such as `mul_ext(a, [1, 0, 0], out)`.
+    fn materialize_list(&mut self, es: &[Expr]) -> (Off, u32) {
+        let size = es.len() as u32;
+        let base = self.alloc_stack(size);
+        for (k, el) in es.iter().enumerate() {
+            let dst = base + k as u32;
+            if let Some(a) = self.copy_alias(el) {
+                self.alias.insert(dst, a);
+            } else {
+                self.alias.remove(&dst);
+                self.expr_into(el, dst);
+            }
+        }
+        (base, size)
+    }
+
     /// If `e` names a `StackBuf` variable, its `(base, size)`.
     fn stack_of(&self, e: &Expr) -> Option<(Off, u32)> {
         match e {
@@ -1192,7 +1210,7 @@ impl FnLower<'_> {
                 B3Operand::Stack(base)
             }
             Expr::Slice(arr, lo, hi) => match (self.try_const_index(lo), self.try_const_index(hi)) {
-                // Compile-time bounds: integer cell indexes `lo..lo+2` (frame
+                // Compile-time bounds: integer cell indexes `lo..lo+4` (frame
                 // offsets for a stack, g-power exponents for the heap).
                 (Some(lo), Some(hi)) => {
                     assert!(hi == lo + 4, "a blake3 slice must span exactly 4 cells, got {lo}:{hi}");
@@ -1201,17 +1219,17 @@ impl FnLower<'_> {
                         B3Operand::Stack(base + lo)
                     } else {
                         // A heap slice: fold `arr`'s shift and `lo` into the
-                        // pointer offset, checking the 2-cell span.
+                        // pointer offset, checking the 4-cell span.
                         self.check_heap_bound(arr, lo as u128, 4);
                         let (ptr, lo) = self.heap_base(arr, lo as u128);
                         B3Operand::Heap { ptr, lo }
                     }
                 }
-                // Runtime start (heap only): `buf[i:i + 2]` with a runtime
-                // g-power index `i` names the cells `buf·i·g^k`, k < 2. The
+                // Runtime start (heap only): `buf[i:i + 4]` with a runtime
+                // g-power index `i` names the cells `buf·i·g^k`, k < 4. The
                 // `hi` bound cannot be evaluated, only shape-checked: it must
-                // be syntactically `lo + 2`. One MUL folds `i` into the
-                // pointer; the two-cell bridge is then offsets 0..2 off it.
+                // be syntactically `lo + 4`. One MUL folds `i` into the
+                // pointer; the four-cell bridge is then offsets 0..4 off it.
                 _ => {
                     assert!(
                         self.stack_of(arr).is_none(),
@@ -1474,7 +1492,7 @@ impl FnLower<'_> {
     /// *integer* op (`//`/`%` are index-only).
     fn try_field_const(&self, e: &Expr) -> Option<F64> {
         match e {
-            // A source literal fills the low 128 bits; g-powers/addresses embed in K.
+            // A source value literal fills one F64 word.
             Expr::Lit(n) => Some(lit_field(*n)),
             Expr::Gen => Some(g_pow(1).into()),
             Expr::GPow(k) => Some(g_pow_u128(*k).into()),
@@ -1643,7 +1661,7 @@ impl FnLower<'_> {
     fn call(&mut self, callee: &str, args: &[Expr], n_ret: usize) -> Vec<Off> {
         assert!(
             callee != "blake3",
-            "blake3 is a statement: `blake3(a, b, out)` writes the digest into the 2-cell stack run `out`"
+            "blake3 is a statement: `blake3(a, b, out)` writes the digest into the 4-cell stack run `out`"
         );
         self.inline_stack_ret = None;
         if self.defs.get(callee).is_some_and(|d| d.inline) {
@@ -1783,8 +1801,24 @@ impl FnLower<'_> {
         for (p, a) in params.iter().zip(&rt_args) {
             let b = if let Some((base, size)) = self.stack_of(a) {
                 Bind::Stack(base, size)
+            } else if let Expr::ListLit(es) = a {
+                let (base, size) = self.materialize_list(es);
+                Bind::Stack(base, size)
             } else if let Some(ga) = self.gaddr_of(a) {
                 Bind::Addr(ga)
+            } else if let Expr::Call(f, cargs) = a
+                && self.defs.contains_key(f)
+            {
+                // A StackBuf-returning helper can feed another helper directly
+                // (`eadd(emul(a, b), c)`). Evaluate it once and pass the
+                // returned run by alias, just as a named intermediate would.
+                self.inline_stack_ret = None;
+                let cell = self.call(f, cargs, 1)[0];
+                match self.inline_stack_ret.take().and_then(|v| v.into_iter().next()) {
+                    Some(RetBind::Stack(base, size)) => Bind::Stack(base, size),
+                    Some(RetBind::Gaddr(ga)) => Bind::Addr(ga),
+                    _ => Bind::Cell(cell),
+                }
             } else {
                 Bind::Cell(self.expr(a))
             };
@@ -1835,8 +1869,15 @@ impl FnLower<'_> {
     /// into a copy of the callee — queued once per distinct constant tuple,
     /// named `callee__L5_G3`-style — and only the runtime arguments remain.
     fn specialize(&mut self, callee: &str, args: &[Expr]) -> (String, Vec<Expr>, Vec<bool>) {
-        let defs: &HashMap<String, Func> = self.defs;
-        let Some(def) = defs.get(callee) else {
+        // Generated runtime-loop helpers live in `queue`, not the source
+        // definition map. Clone the metadata so their Ext captures use the
+        // same flattened call ABI on both the entry and recursive calls.
+        let Some(def) = self
+            .defs
+            .get(callee)
+            .cloned()
+            .or_else(|| self.queue.iter().find(|f| f.name == callee).cloned())
+        else {
             return (callee.to_string(), args.to_vec(), vec![false; args.len()]);
         };
         if !def.const_params.contains(&true) {
@@ -1914,11 +1955,28 @@ impl FnLower<'_> {
         let mut arg_offs = Vec::new();
         for (arg, &is_ext) in args.iter().zip(&ext_params) {
             if is_ext {
-                let (base, len) = self
-                    .stack_of(arg)
-                    .unwrap_or_else(|| panic!("Ext argument to `{callee}` must be a StackBuf(3)"));
+                let stack = if let Some(run) = self.stack_of(arg) {
+                    Some(run)
+                } else if let Expr::ListLit(es) = arg {
+                    Some(self.materialize_list(es))
+                } else if let Expr::Call(f, cargs) = arg
+                    && self.defs.contains_key(f)
+                {
+                    self.inline_stack_ret = None;
+                    let _ = self.call(f, cargs, 1);
+                    match self.inline_stack_ret.take().and_then(|v| v.into_iter().next()) {
+                        Some(RetBind::Stack(base, size)) => Some((base, size)),
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+                let (base, len) = stack.unwrap_or_else(|| panic!("Ext argument to `{callee}` must be a StackBuf(3)"));
                 assert_eq!(len, 3, "Ext argument to `{callee}` must be a StackBuf(3)");
-                arg_offs.extend([base, base + 1, base + 2]);
+                // Initialized StackBufs are commonly represented as deferred
+                // aliases. A real-call ABI must pass their values, not the
+                // unwritten alias destination cells.
+                arg_offs.extend((0..3).map(|k| self.word_src(base + k)));
             } else {
                 arg_offs.push(self.expr(arg));
             }
@@ -2300,6 +2358,21 @@ impl FnLower<'_> {
                     RetBind::Stack(base, size)
                 } else if let Some(ga) = self.gaddr_of(e) {
                     RetBind::Gaddr(ga)
+                } else if let Expr::Call(f, args) = e
+                    && self.defs.contains_key(f)
+                {
+                    // Tail-returning a StackBuf helper is the expression form
+                    // of `tmp = helper(...); return tmp`; preserve the run.
+                    self.inline_stack_ret = None;
+                    let cell = self.call(f, args, 1)[0];
+                    match self.inline_stack_ret.take().and_then(|v| v.into_iter().next()) {
+                        Some(RetBind::Stack(base, size)) => RetBind::Stack(base, size),
+                        Some(RetBind::Gaddr(ga)) => RetBind::Gaddr(ga),
+                        _ => {
+                            self.copy(cell, d);
+                            RetBind::Scalar
+                        }
+                    }
                 } else {
                     self.expr_into(e, d);
                     RetBind::Scalar
@@ -2384,17 +2457,20 @@ impl FnLower<'_> {
             if bound.contains(r) {
                 continue;
             }
-            // A StackBuf is a run of cells, not a single scalar arg, and the
-            // tail-recursive loop helper can't thread one across iterations — so a
-            // StackBuf from the enclosing scope can't be captured. Reject with a
-            // clear error (not the misleading "unbound variable" the capture drop
-            // would otherwise trigger). Keep it inside the loop body, or carry
-            // state through a `HeapBuf`.
-            if self.stacks.contains_key(r) {
-                panic!(
-                    "StackBuf `{r}` cannot be captured into a `for` loop; \
-                     define it inside the loop body or carry state via a `HeapBuf`"
+            if let Some(&(_, size)) = self.stacks.get(r) {
+                // Extension values are exactly three physical cells and have a
+                // first-class call ABI, so a generated loop helper can thread
+                // them across recursive iterations just like an explicit
+                // `Ext` parameter. Larger scratch StackBufs remain frame-local.
+                assert_eq!(
+                    size, 3,
+                    "StackBuf `{r}` (size {size}) cannot be captured into a `for` loop; \
+                     only three-cell extension values may be captured"
                 );
+                if seen.insert(r.clone()) {
+                    captures.push(r.clone());
+                }
+                continue;
             }
             if (self.vars.contains_key(r) || self.gaddrs.contains_key(r)) && seen.insert(r.clone()) {
                 captures.push(r.clone());
@@ -2436,7 +2512,11 @@ impl FnLower<'_> {
         ));
         loop_body.push(Stmt::Return(vec![]));
         let const_params = vec![false; params.len()];
-        let ext_params = vec![false; params.len()];
+        let mut ext_params = vec![false; params.len()];
+        let capture_start = 1 + usize::from(runtime);
+        for (i, name) in captures.iter().enumerate() {
+            ext_params[capture_start + i] = self.stacks.get(name).is_some_and(|(_, size)| *size == 3);
+        }
         self.queue.push(Func {
             name: loop_name.clone(),
             params,

@@ -27,41 +27,40 @@ use primitives::{
     pretty_integer,
 };
 
-/// A field element as the decimal `u128` literal the zkDSL parser accepts.
-fn u(f: F192) -> u128 {
-    assert_eq!(f.c2, 0, "u128 DSL literal cannot encode the top F192 limb");
-    (f.c0 as u128) | ((f.c1 as u128) << 64)
+/// A base-field element as a zkDSL literal.
+fn u(f: F192) -> u64 {
+    assert_eq!((f.c1, f.c2), (0, 0), "base-field DSL literal expected");
+    f.c0
 }
 
 fn f192_literal(f: F192) -> String {
-    format!("f192({},{},{})", f.c0, f.c1, f.c2)
+    format!("[{}, {}, {}]", f.c0, f.c1, f.c2)
 }
 
-/// Native replay of the VM's `blake3(cur, cur, nxt)` over two 128-bit words:
-/// pack the two `F192` words into the four `F64` lanes the sponge compression
-/// consumes, compress, and unpack.
-///
-/// Word→lane packing confirmed against the VM's blake3 opcode (`cpu::mod`
-/// `blake3_self_hash_aliased_operands`): a `[F64;4]` operand loaded from two
-/// 128-bit words is `[w0.c0, w0.c1, w1.c0, w1.c1]` (word-major, lo=c0 then
-/// hi=c1), and the two output words pack back the same way
-/// (`mem[out] == cell(d[0], d[1])`, `cell(d[2], d[3])`).
-fn vmhash_compress2(st: [F192; 2]) -> [F192; 2] {
-    let inb = [F64(st[0].c0), F64(st[0].c1), F64(st[1].c0), F64(st[1].c1)];
-    let out = lean_vm::vmhash::compress(inb, inb);
-    [F192::new(out[0].0, out[1].0, 0), F192::new(out[2].0, out[3].0, 0)]
+fn ext_words(values: impl IntoIterator<Item = F192>) -> Vec<F64> {
+    values
+        .into_iter()
+        .flat_map(|v| [F64(v.c0), F64(v.c1), F64(v.c2)])
+        .collect()
 }
 
-/// Pack the sponge's four K lanes as two canonical 128-bit VM cells.
-fn pack_state(s: [F64; 4]) -> [F192; 2] {
-    [F192::new(s[0].0, s[1].0, 0), F192::new(s[2].0, s[3].0, 0)]
+fn base_words(values: impl IntoIterator<Item = F192>) -> Vec<F64> {
+    values
+        .into_iter()
+        .map(|v| {
+            assert_eq!((v.c1, v.c2), (0, 0), "base-field witness expected");
+            F64(v.c0)
+        })
+        .collect()
 }
 
-/// Pack a 32-byte Merkle node as the same canonical 128+128 cell pair used by
-/// the VM's sole BLAKE3 representation.
-fn pack_hash_state(hash: &[u8; 32]) -> [F192; 2] {
+fn vmhash_compress4(st: [F64; 4]) -> [F64; 4] {
+    lean_vm::vmhash::compress(st, st)
+}
+
+fn hash_words(hash: &[u8; 32]) -> [F64; 4] {
     let w = |o: usize| u64::from_le_bytes(hash[o..o + 8].try_into().unwrap());
-    [F192::new(w(0), w(8), 0), F192::new(w(16), w(24), 0)]
+    [F64(w(0)), F64(w(8)), F64(w(16)), F64(w(24))]
 }
 
 /// The non-trivial inner program: a runtime-bounded BLAKE3 hash chain seeded
@@ -70,7 +69,7 @@ fn pack_hash_state(hash: &[u8; 32]) -> [F192; 2] {
 /// witness hints ("n_hash", "iters"), so a single program (one bytecode, one
 /// digest) proves runs with wildly different opcode profiles and sizes - the
 /// exact genericity the recursion guest is built for. Exercises every table
-/// (XOR/MUL/SET/DEREF/JUMP/BLAKE3/PACK64X2).
+/// (ADD/MUL/ADD_EXT/MUL_EXT/SET/DEREF/JUMP/BLAKE3).
 fn inner_program() -> Program {
     let src = "from snark_lib import *\n\
         def main():\n\
@@ -81,16 +80,24 @@ fn inner_program() -> Program {
         \x20   assert log(hbound) < 65536\n\
         \x20   hc0 = HeapBuf(hbound * GEN)\n\
         \x20   hc1 = HeapBuf(hbound * GEN)\n\
+        \x20   hc2 = HeapBuf(hbound * GEN)\n\
+        \x20   hc3 = HeapBuf(hbound * GEN)\n\
         \x20   hc0[GEN ** 0] = p[1]\n\
         \x20   hc1[GEN ** 0] = p[GEN]\n\
+        \x20   hc2[GEN ** 0] = p[GEN ** 2]\n\
+        \x20   hc3[GEN ** 0] = p[GEN ** 3]\n\
         \x20   for h in mul_range(1, hbound):\n\
-        \x20       cur = StackBuf(2)\n\
+        \x20       cur = StackBuf(4)\n\
         \x20       cur[0] = hc0[h]\n\
         \x20       cur[1] = hc1[h]\n\
-        \x20       nxt = StackBuf(2)\n\
+        \x20       cur[2] = hc2[h]\n\
+        \x20       cur[3] = hc3[h]\n\
+        \x20       nxt = StackBuf(4)\n\
         \x20       blake3(cur, cur, nxt)\n\
         \x20       hc0[h * GEN] = nxt[0]\n\
         \x20       hc1[h * GEN] = nxt[1]\n\
+        \x20       hc2[h * GEN] = nxt[2]\n\
+        \x20       hc3[h * GEN] = nxt[3]\n\
         \x20   st0 = hc0[hbound]\n\
         \x20   s1 = hc1[hbound]\n\
         \x20   nb = HeapBuf(1)\n\
@@ -117,7 +124,7 @@ fn inner_program() -> Program {
 /// The witness generator replays both natively to supply the final-inverse
 /// hint. Returns (program, proof, guest-cycle count, committed witness size).
 fn prove_inner(
-    pi: [F192; 2],
+    pi: [F64; 4],
     hashes: usize,
     iters: usize,
     log_inv_rate: usize,
@@ -126,23 +133,23 @@ fn prove_inner(
     let mut program = inner_program();
     // Replay natively: the hash chain, then the product loop, to fetch the
     // final accumulator (nonzero, for the hinted-inverse assert).
-    let mut st = [pi[0], pi[1]];
+    let mut st = pi;
     for _ in 0..hashes {
-        st = vmhash_compress2(st);
+        st = vmhash_compress4(st);
     }
     let mut acc = st[0];
-    let mut x = F192::ONE;
-    let g = F192::new(primitives::field::g_pow(1).0, 0, 0); // embedded base generator
+    let mut x = F64::ONE;
+    let g = g_pow(1);
     for _ in 0..iters {
         let b = acc * acc + st[1];
         acc = b + x;
         x *= g;
     }
     let out = acc;
-    assert!(out != F192::ZERO, "inner accumulator must be nonzero");
+    assert!(out != F64::ZERO, "inner accumulator must be nonzero");
     program.set_witness("outinv", vec![vec![out.inv()]]);
-    program.set_witness("n_hash", vec![vec![F192::new(g_pow(hashes).0, 0, 0)]]);
-    program.set_witness("iters", vec![vec![F192::new(g_pow(iters).0, 0, 0)]]);
+    program.set_witness("n_hash", vec![vec![g_pow(hashes)]]);
+    program.set_witness("iters", vec![vec![g_pow(iters)]]);
     let (proof, stats) = prove(&program, pi, log_inv_rate);
     (program, proof, stats.cycles, stats.committed)
 }
@@ -151,7 +158,7 @@ fn prove_inner(
 /// verifier checks each claim natively (doc.tex §Deferred evaluation claims;
 /// n_rec = 1 forwards fresh claims without batching).
 struct SubDefer {
-    pi: [F192; 2],
+    pi: [F64; 4],
     kbc: usize,
     zeta: Vec<F192>,
     sb: Vec<F192>,
@@ -180,19 +187,19 @@ struct ReducedClaims {
 /// the deferred claims an implementation detail of recursive verification.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct RecursiveStatement {
-    sub_statements: Vec<[F192; 2]>,
+    sub_statements: Vec<[F64; 4]>,
     reduced: ReducedClaims,
 }
 
 impl RecursiveStatement {
-    fn public_input(&self, inner_environment: [F192; 2]) -> [F192; 2] {
+    fn public_input(&self, inner_environment: [F64; 4]) -> [F64; 4] {
         let mut sponge = Sponge::empty();
         for &v in &inner_environment {
-            sponge.observe(v);
+            sponge.observe(v.into());
         }
         for statement in &self.sub_statements {
             for &v in statement {
-                sponge.observe(v);
+                sponge.observe(v.into());
             }
         }
         for &v in &self.reduced.r_bc {
@@ -204,7 +211,7 @@ impl RecursiveStatement {
         }
         sponge.observe(self.reduced.v_a);
         sponge.observe(self.reduced.v_b);
-        pack_state(sponge.state())
+        sponge.state()
     }
 }
 
@@ -221,7 +228,7 @@ pub struct RecursiveProof {
 
 impl RecursiveProof {
     /// Statements aggregated by this proof, in transcript order.
-    pub fn sub_statements(&self) -> &[[F192; 2]] {
+    pub fn sub_statements(&self) -> &[[F64; 4]] {
         &self.statement.sub_statements
     }
 
@@ -284,7 +291,7 @@ fn stacked_bytecode(program: &Program) -> Vec<F64> {
         &program.prog,
         20,
         [1usize << 10; lean_vm::tables::N_TABLES],
-        [F192::ZERO; 2],
+        [F64::ZERO; 4],
     );
     lean_vm::leaf::stacked_bytecode_table(&l.push)
 }
@@ -294,7 +301,7 @@ fn stacked_bytecode(program: &Program) -> Vec<F64> {
 /// and return the round-message hints, the terminal hints, the reduced claims,
 /// and the outer public input.
 #[allow(clippy::type_complexity)]
-fn gen_agg(program: &Program, subs: &[SubDefer]) -> (Vec<(String, Vec<F192>)>, [F192; 2], ReducedClaims) {
+fn gen_agg(program: &Program, subs: &[SubDefer]) -> (Vec<(String, Vec<F64>)>, [F64; 4], ReducedClaims) {
     let nsub = subs.len();
     let kbc = subs[0].kbc;
     let kbcv = kbc + 3;
@@ -303,8 +310,9 @@ fn gen_agg(program: &Program, subs: &[SubDefer]) -> (Vec<(String, Vec<F192>)>, [
     // ---- the aggregation transcript (mirrors the guest exactly) ----
     let mut h = Sponge::empty();
     for d in subs {
-        h.observe(d.pi[0]);
-        h.observe(d.pi[1]);
+        for &word in &d.pi {
+            h.observe(word.into());
+        }
         for &v in &d.zeta {
             h.observe(v);
         }
@@ -516,11 +524,13 @@ fn gen_agg(program: &Program, subs: &[SubDefer]) -> (Vec<(String, Vec<F192>)>, [
     // baked into the guest), so one compiled guest serves any inner program.
     let seed = lean_vm::cpu::fs_seed(program);
     let mut e = Sponge::empty();
-    e.observe(seed[0]);
-    e.observe(seed[1]);
+    for &word in &seed {
+        e.observe(word.into());
+    }
     for d in subs {
-        e.observe(d.pi[0]);
-        e.observe(d.pi[1]);
+        for &word in &d.pi {
+            e.observe(word.into());
+        }
     }
     for &v in &r_bc {
         e.observe(v);
@@ -534,15 +544,15 @@ fn gen_agg(program: &Program, subs: &[SubDefer]) -> (Vec<(String, Vec<F192>)>, [
     e.observe(v_b);
 
     let hints = vec![
-        ("fs_seed".to_string(), vec![seed[0], seed[1]]),
-        ("bc_sumcheck_msgs".to_string(), bscr),
-        ("mat_sumcheck_msgs".to_string(), mscr),
-        ("bc_star_hint".to_string(), vec![v_bc]),
-        ("mat_stars_hint".to_string(), vec![v_a, v_b]),
+        ("fs_seed".to_string(), seed.to_vec()),
+        ("bc_sumcheck_msgs".to_string(), ext_words(bscr)),
+        ("mat_sumcheck_msgs".to_string(), ext_words(mscr)),
+        ("bc_star_hint".to_string(), ext_words([v_bc])),
+        ("mat_stars_hint".to_string(), ext_words([v_a, v_b])),
     ];
     (
         hints,
-        pack_state(e.state()),
+        e.state(),
         ReducedClaims {
             r_bc,
             v_bc,
@@ -584,11 +594,11 @@ fn check_reduced(program: &Program, red: &ReducedClaims) -> Result<(), Recursive
 /// a real `cpu::verify` run (zero hand-mirroring drift).
 fn gen_verify(
     program: &Program,
-    pi: [F192; 2],
+    pi: [F64; 4],
     proof: &lean_vm::cpu::Proof,
     summary: &lean_vm::cpu::VerifySummary,
     ops: &[TraceOp],
-) -> (Vec<(String, Vec<F192>)>, SubDefer) {
+) -> (Vec<(String, Vec<F64>)>, SubDefer) {
     let l = lean_vm::cpu::layout(
         &program.prog,
         proof.stream[0].c0 as usize,
@@ -620,18 +630,18 @@ fn gen_verify(
             bcn.push(blk.coords.len());
             for c in &blk.coords {
                 let (t, v, f) = match c {
-                    Coord::Const(v) => (0u128, F192::new(v.0, 0, 0), F192::new(v.0, 0, 0)),
+                    Coord::Const(v) => (0u64, F192::new(v.0, 0, 0), F192::new(v.0, 0, 0)),
                     Coord::Col(i) => {
                         if seen_claims.insert((*i, blk.kappa)) {
                             nclaims += 1;
                         }
                         (1, F192::ZERO, F192::new(l.pad[*i].0, 0, 0))
                     }
-                    Coord::GCol(i, _) => {
+                    Coord::GCol(i, k) => {
                         if seen_claims.insert((*i, blk.kappa)) {
                             nclaims += 1;
                         }
-                        (2, F192::ZERO, F192::new((G * l.pad[*i]).0, 0, 0))
+                        (2, F192::ZERO, F192::new((g_pow(*k as usize) * l.pad[*i]).0, 0, 0))
                     }
                     Coord::Index => (3, F192::ZERO, F192::ZERO),
                     Coord::Public(_) => {
@@ -651,7 +661,8 @@ fn gen_verify(
     // Drift check: replaying the recorded trace from the seed must reproduce
     // every challenge and grind the native run produced.
     let fs_seed = lean_vm::cpu::fs_seed(program);
-    let seed = Sponge::new(b"leanvm-b", &[fs_seed[0], fs_seed[1], pi[0], pi[1]]);
+    let transcript_seed: Vec<F192> = fs_seed.into_iter().chain(pi).map(F192::from).collect();
+    let seed = Sponge::new(b"leanvm-b", &transcript_seed);
     seed.clone().replay(ops);
 
     // Ligerito grinding digests are trace-borne functions of sponge states;
@@ -675,7 +686,7 @@ fn gen_verify(
         .collect();
 
     // Flock replay data, all named struct fields.
-    let n_log_b3 = l.taus[5];
+    let n_log_b3 = l.taus[lean_vm::tables::BLAKE3_TABLE];
     let lcrounds = flock::blake3::K_LOG - 6;
     let zcf = [summary.zc_claim.a_eval, summary.zc_claim.b_eval];
     let zc_z = summary.zc_claim.z;
@@ -685,7 +696,7 @@ fn gen_verify(
     let lrr = summary.lc_claim.r_rounds.clone();
 
     let evtot_e: usize = ncol.iter().sum();
-    let ncl = nclaims + evtot_e + 3; // bus + constraint + the three PI memory-limb claims
+    let ncl = nclaims + evtot_e + 1;
 
     // ---- the stacked opening: config + the opening summary ----
     let stack_mu = l.m;
@@ -782,7 +793,7 @@ fn gen_verify(
         gbase += n;
     }
     let sch = lean_vm::cpu::schema();
-    let b3base = sch.base[5];
+    let b3base = sch.base[lean_vm::tables::BLAKE3_TABLE];
     let valcols: Vec<usize> = lean_vm::tables::BLAKE3_VALUE_COLS.iter().map(|&c| b3base + c).collect();
     let log_mem = proof.stream[0].c0 as usize;
 
@@ -861,7 +872,7 @@ fn gen_verify(
             path_exp
         };
         for &h in &path_exp {
-            lpaths_flat.extend_from_slice(&pack_hash_state(&h));
+            lpaths_flat.extend(hash_words(&h).map(F192::from));
         }
     }
     let qpkdv = l.placements[lean_vm::cpu::QPKD].n_vars;
@@ -924,19 +935,14 @@ fn gen_verify(
         }
     }
     {
-        // PI claims on MEM: three lanes (MEM_LO, MEM_HI, MEM_TOP) at the SAME
-        // point [r_m, 0, 0, ...] but different columns. bind_pi_claim orders
-        // them [lo, hi, top]; the proof streams lo/hi and the guest derives top.
-        // Coords beyond lenris are const
+        // The PI claim is one claim on the base-word memory column. Coords beyond lenris are const
         // zero, so they fold into the y pattern (required-zero bits) instead of
         // runtime overlap factors: cap the low span at lenris and shift the
         // selector pattern left by the folded coord count.
-        for &col in &[lean_vm::cpu::MEM_LO, lean_vm::cpu::MEM_HI, lean_vm::cpu::MEM_TOP] {
-            let pl = l.placements[col];
-            let folded = pl.n_vars.saturating_sub(lenris);
-            let low = pl.n_vars - folded;
-            push_desc(2, 0, low, 0, (pl.offset >> pl.n_vars) << folded, low);
-        }
+        let pl = l.placements[lean_vm::cpu::MEM];
+        let folded = pl.n_vars.saturating_sub(lenris);
+        let low = pl.n_vars - folded;
+        push_desc(2, 0, low, 0, (pl.offset >> pl.n_vars) << folded, low);
     }
     assert_eq!(cpbuf.len(), ncl, "descriptor count == pool size");
     let rssel_full = qpkd_pl.offset >> qpkdv;
@@ -1061,7 +1067,7 @@ fn gen_verify(
                 v.len()
             );
             v.resize(stream_cap, F192::ZERO);
-            v
+            ext_words(v)
         }),
         ("rs_shatv".to_string(), {
             // The ring-switch slices: each claim's 64-entry s_hat_v, observed from
@@ -1071,33 +1077,27 @@ fn gen_verify(
             for rsw in &lig.ring_switches {
                 v.extend_from_slice(&rsw.s_hat_v);
             }
-            v
+            ext_words(v)
         }),
-        ("bytecode_vals".to_string(), bcv),
-        ("matpart".to_string(), vec![matpart]),
-        ("merkle_leaf_rows".to_string(), lrows_flat),
-        ("merkle_paths".to_string(), lpaths_flat),
-        ("sub_pis".to_string(), vec![pi[0], pi[1]]),
+        ("bytecode_vals".to_string(), ext_words(bcv)),
+        ("matpart".to_string(), ext_words([matpart])),
+        ("merkle_leaf_rows".to_string(), base_words(lrows_flat)),
+        ("merkle_paths".to_string(), base_words(lpaths_flat)),
+        ("sub_pis".to_string(), pi.to_vec()),
         // slacks bounding each claim'"'"'s reads to the written regions (so an
         // over-long hint cannot pull free padding): low_len <= mu_s/tau_t
         // (zeta/rho) and low_len(+7 for qpkd) <= lenris (fold challenges).
         // per-claim overlap count, for the exact length pin: nover = the
         // amount by which the claim's total vars exceed the fold rounds.
-        (
-            "claim_nover".to_string(),
-            (0..ncl).map(|j| F192::new(g_pow(nover_v[j]).0, 0, 0)).collect(),
-        ),
+        ("claim_nover".to_string(), (0..ncl).map(|j| g_pow(nover_v[j])).collect()),
         // the pi claim's low dimension is min(log_mem, lenris); certify it as
         // a min (<= both, == one) so pi is pinned like every other claim.
-        (
-            "pi_cplen".to_string(),
-            vec![F192::new(g_pow(log_mem.min(lenris)).0, 0, 0)],
-        ),
+        ("pi_cplen".to_string(), vec![g_pow(log_mem.min(lenris))]),
         ("claim_qpkd_slot_bits".to_string(), {
             let mut v = Vec::new();
             for &slot in cslot.iter().take(ncl) {
                 for k in 0..lean_vm::blake3_flock::SLOT_STRIDE_LOG {
-                    v.push(F192::new(((slot >> k) & 1) as u64, 0, 0));
+                    v.push(F64(((slot >> k) & 1) as u64));
                 }
             }
             v
@@ -1106,7 +1106,7 @@ fn gen_verify(
             let mut v = Vec::new();
             for &sel in csel.iter().take(ncl) {
                 for k in 0..33 {
-                    v.push(F192::new(((sel >> k) & 1) as u64, 0, 0));
+                    v.push(F64(((sel >> k) & 1) as u64));
                 }
             }
             v
@@ -1122,20 +1122,20 @@ fn gen_verify(
                     } else {
                         (yt[j] >> (k - nover_v[j])) & 1
                     };
-                    v.push(F192::new(b as u64, 0, 0));
+                    v.push(F64(b as u64));
                 }
             }
             v
         }),
         (
             "rs_yslot_bits".to_string(),
-            (0..8).map(|k| F192::new(((yrs >> k) & 1) as u64, 0, 0)).collect(),
+            (0..8).map(|k| F64(((yrs >> k) & 1) as u64)).collect(),
         ),
         (
             "rs_sel_bits".to_string(),
-            (0..33).map(|k| F192::new(((rssel >> k) & 1) as u64, 0, 0)).collect(),
+            (0..33).map(|k| F64(((rssel >> k) & 1) as u64)).collect(),
         ),
-        ("sort_order".to_string(), sort_order.clone()),
+        ("sort_order".to_string(), base_words(sort_order.clone())),
     ];
     (hints, deferred)
 }
@@ -1146,7 +1146,7 @@ fn gen_verify(
 /// data to discharge the reduced claims. Splitting the build from the compile
 /// lets one compiled guest serve many batches (see `recursion_generic_many`).
 struct Batch {
-    merged: Vec<(String, Vec<Vec<F192>>)>,
+    merged: Vec<(String, Vec<Vec<F64>>)>,
     program0: Program,
     statement: RecursiveStatement,
     nsub: usize,
@@ -1156,7 +1156,7 @@ struct Batch {
 }
 
 impl Batch {
-    fn public_input(&self) -> [F192; 2] {
+    fn public_input(&self) -> [F64; 4] {
         self.statement.public_input(lean_vm::cpu::fs_seed(&self.program0))
     }
 
@@ -1190,8 +1190,10 @@ fn build_batch(inner: &[(usize, usize)], log_inv_rates: &[usize], outer_log_inv_
     let mut protos = Vec::new();
     for (k, (&(hashes, iters), &log_inv_rate)) in inner.iter().zip(log_inv_rates).enumerate() {
         let pi = [
-            F192::new(0x1111_2222 + k as u64, 0x3333_4444, 0),
-            F192::new(0x5555_6666, 0x7777_8888 + k as u64, 0),
+            F64(0x1111_2222 + k as u64),
+            F64(0x3333_4444),
+            F64(0x5555_6666),
+            F64(0x7777_8888 + k as u64),
         ];
         let (program, proof, inner_cycles, inner_committed) = prove_inner(pi, hashes, iters, log_inv_rate);
         total_inner_cycles += inner_cycles;
@@ -1201,7 +1203,7 @@ fn build_batch(inner: &[(usize, usize)], log_inv_rates: &[usize], outer_log_inv_
         let ops = trace_take();
         protos.push((program, pi, proof, summary, ops));
     }
-    let mut merged: Vec<(String, Vec<Vec<F192>>)> = Vec::new();
+    let mut merged: Vec<(String, Vec<Vec<F64>>)> = Vec::new();
     let mut subs = Vec::new();
     for (program, pi, proof, summary, ops) in &protos {
         let (hints, defer) = gen_verify(program, *pi, proof, summary, ops);
@@ -1219,7 +1221,7 @@ fn build_batch(inner: &[(usize, usize)], log_inv_rates: &[usize], outer_log_inv_
     }
     let (program0, _, _, _, _) = &protos[0];
     // spi is main-level (one hint site): merge the statements into one entry.
-    let spi_all: Vec<F192> = subs.iter().flat_map(|d| [d.pi[0], d.pi[1]]).collect();
+    let spi_all: Vec<F64> = subs.iter().flat_map(|d| d.pi).collect();
     let spi_pos = merged.iter().position(|(n, _)| n == "sub_pis").expect("spi hint");
     merged[spi_pos].1 = vec![spi_all];
     let (agg_hints, gpi, reduced) = gen_agg(program0, &subs);
@@ -1260,7 +1262,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         &program.prog,
         20,
         [1usize << 10; lean_vm::tables::N_TABLES],
-        [F192::ZERO, F192::ZERO],
+        [F64::ZERO; 4],
     );
     let kbc = program.prog.len().trailing_zeros() as usize;
     let sides: [&[Block]; 3] = [&l.push, &l.pull, &l.count];
@@ -1272,7 +1274,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
 
     // ---- flattened block/coord descriptors (structural) ----
     let (mut sblk, mut bc0, mut bcn) = (vec![0usize], vec![], vec![]);
-    let (mut ct, mut cval, mut fpv) = (vec![], vec![], vec![]);
+    let (mut ct, mut cgpow, mut cval, mut fpv) = (vec![], vec![], vec![], vec![]);
     let (mut nclaims, mut nbcv, mut nblocks) = (0usize, 0usize, 0usize);
     // Claim dedup (mirrors leaf.rs): per coord, fresh = first (group, col,
     // kappa) occurrence gets the next pool slot; duplicates point at it.
@@ -1300,17 +1302,23 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
                 }
                 coord_fresh.push(fresh);
                 coord_slot.push(slot);
-                let (t, v, f) = match c {
-                    Coord::Const(v) => (0u128, F192::new(v.0, 0, 0), F192::new(v.0, 0, 0)),
-                    Coord::Col(i) => (1, F192::ZERO, F192::new(l.pad[*i].0, 0, 0)),
-                    Coord::GCol(i, _) => (2, F192::ZERO, F192::new((G * l.pad[*i]).0, 0, 0)),
-                    Coord::Index => (3, F192::ZERO, F192::ZERO),
+                let (t, gp, v, f) = match c {
+                    Coord::Const(v) => (0u64, 0usize, F192::new(v.0, 0, 0), F192::new(v.0, 0, 0)),
+                    Coord::Col(i) => (1, 0, F192::ZERO, F192::new(l.pad[*i].0, 0, 0)),
+                    Coord::GCol(i, k) => (
+                        2,
+                        *k as usize,
+                        F192::ZERO,
+                        F192::new((g_pow(*k as usize) * l.pad[*i]).0, 0, 0),
+                    ),
+                    Coord::Index => (3, 0, F192::ZERO, F192::ZERO),
                     Coord::Public(_) => {
                         nbcv += 1;
-                        (4, F192::ZERO, F192::ZERO)
+                        (4, 0, F192::ZERO, F192::ZERO)
                     }
                 };
                 ct.push(t);
+                cgpow.push(gp);
                 cval.push(u(v));
                 fpv.push(u(f));
             }
@@ -1322,11 +1330,11 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         .map(|t| t.constraint_columns().len())
         .collect();
     let evtot: usize = ncol.iter().sum();
-    let ncl = nclaims + evtot + 3; // bus + constraint + the three PI memory-limb claims
+    let ncl = nclaims + evtot + 1;
 
     // ---- claim descriptors: buffer id + offset only (both structural) ----
     let sch = lean_vm::cpu::schema();
-    let b3base = sch.base[5];
+    let b3base = sch.base[lean_vm::tables::BLAKE3_TABLE];
     let valcols: Vec<usize> = lean_vm::tables::BLAKE3_VALUE_COLS.iter().map(|&c| b3base + c).collect();
     let (mut cpbuf, mut cpoff) = (vec![], vec![]);
     let mut desc_seen: std::collections::HashSet<(usize, usize)> = Default::default();
@@ -1356,20 +1364,20 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         }
     }
     cpbuf.push(2);
-    cpoff.push(0); // PI claim on MEM_LO
-    cpbuf.push(2);
-    cpoff.push(0); // PI claim on MEM_HI
-    cpbuf.push(2);
-    cpoff.push(0); // PI claim on MEM_TOP
+    cpoff.push(0); // PI claim on MEM
     assert_eq!(cpbuf.len(), ncl, "descriptor count == pool size");
 
     // ---- the placeholder map ----
     let ints = |v: &[usize]| format!("[{}]", v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(", "));
-    let us = |v: &[u128]| format!("[{}]", v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(", "));
+    let us = |v: &[u64]| format!("[{}]", v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(", "));
     let flds = |v: &[F192]| {
         format!(
             "[{}]",
-            v.iter().map(|&x| f192_literal(x)).collect::<Vec<_>>().join(", ")
+            v.iter()
+                .flat_map(|x| [x.c0, x.c1, x.c2])
+                .map(|x| x.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
         )
     };
     let mut rep = BTreeMap::new();
@@ -1423,12 +1431,13 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("BLOCK_COORD_OFF", ints(&bc0));
     ps("BLOCK_COORD_COUNT", ints(&bcn));
     ps("COORD_TYPE", us(&ct));
+    ps("COORD_GCOL_POW", ints(&cgpow));
     ps("COORD_CONST", us(&cval));
     ps("COORD_PAD_VAL", us(&fpv));
     ps("COORD_FRESH", ints(&coord_fresh));
     ps("COORD_CLAIM_SLOT", ints(&coord_slot));
     ps("N_BUS_CLAIMS", nclaims.to_string());
-    let idxc: Vec<u128> = (0..34)
+    let idxc: Vec<u64> = (0..34)
         .map(|i| {
             let mut g2k = F192::new(G.0, 0, 0);
             for _ in 0..i {
@@ -1461,7 +1470,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     // Tower F192 = F64[Y]/(Y^3+Y+1), Y = new(0,1,0). Y_TOWER embeds Y for
     // AIR lane reassembly; Y_INV helps derive the top PI-memory limb.
     let y_tower = F192::new(0, 1, 0);
-    ps("Y_TOWER", u(y_tower).to_string());
+    ps("Y_TOWER", f192_literal(y_tower));
     ps("Y_INV", f192_literal(y_tower.inv()));
     // Coordinate basis e_i of F192 over F2 (spans the WHOLE field): e_i =
     // new(1<<i, 0) for i<64, new(0, 1<<(i-64)) for i>=64. `hint_decompose_bits`
@@ -1497,7 +1506,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("LAGRANGE_INV_COMBINED", flds(&icmb));
     ps("LAGRANGE_INV_S", flds(&isdom));
     ps("LINCHECK_ROUNDS", lcrounds.to_string());
-    let pincol = flock::blake3::build_block_r1cs(taus[5].max(MINB3))
+    let pincol = flock::blake3::build_block_r1cs(taus[lean_vm::tables::BLAKE3_TABLE].max(MINB3))
         .const_pin
         .expect("blake3 r1cs has a const pin");
     ps("PIN_COLUMN", pincol.to_string());
@@ -1539,7 +1548,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
             o
         };
         let c_rowoff = psum(&|lv| cq[lv] * cni[lv] * if lv == 0 { 1 } else { 3 });
-        let c_pathoff = psum(&|lv| cq[lv] * cd[lv] * 2);
+        let c_pathoff = psum(&|lv| cq[lv] * cd[lv] * 4);
         let c_sbitsoff = psum(&|lv| cs[lv] * 192);
         let c_qpoff = psum(&|lv| cs[lv] * cp[lv]);
         let c_svkoff = psum(&|lv| cl[lv] + 1);
@@ -1692,7 +1701,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         );
         ps(
             "LIG_PATHS_LEN",
-            ints(&scal(&|c| (0..c.0).map(|lv| c.5[lv] * c.6[lv] * 2).sum())),
+            ints(&scal(&|c| (0..c.0).map(|lv| c.5[lv] * c.6[lv] * 4).sum())),
         );
         ps("LIG_QUERY_GRIND_BITS", ints(&flat(&|c| c.10.clone(), maxlev)));
         ps(
@@ -1784,9 +1793,11 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("LOG2_BYTECODE_COLS", log2_bc_cols.to_string());
     ps("DEFER_SIZE", (kbc + log2_bc_cols + 2 * lcrounds + 68).to_string());
     ps("BYTECODE_VARS", (kbc + log2_bc_cols).to_string());
-    let label_state = pack_state(Sponge::new(b"leanvm-b", &[]).state());
-    ps("TRANSCRIPT_SEED_0", u(label_state[0]).to_string());
-    ps("TRANSCRIPT_SEED_1", u(label_state[1]).to_string());
+    let label_state = Sponge::new(b"leanvm-b", &[]).state();
+    ps("TRANSCRIPT_SEED_0", label_state[0].0.to_string());
+    ps("TRANSCRIPT_SEED_1", label_state[1].0.to_string());
+    ps("TRANSCRIPT_SEED_2", label_state[2].0.to_string());
+    ps("TRANSCRIPT_SEED_3", label_state[3].0.to_string());
     let trace_dual = pcs::ring_switch::trace_dual_basis();
     let trace_dual_base: [F192; 64] = trace_dual[..64]
         .try_into()
@@ -1811,15 +1822,12 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
 fn recursion_guest_arc(inner_program: &Program, nsub: usize) -> std::sync::Arc<Program> {
     use std::sync::{Arc, Mutex, OnceLock};
 
-    type Key = ([u64; 6], usize);
+    type Key = ([u64; 4], usize);
     static CACHE: OnceLock<Mutex<std::collections::HashMap<Key, Arc<Program>>>> = OnceLock::new();
     const GUEST_CACHE_CAP: usize = 8;
 
     let seed = lean_vm::cpu::fs_seed(inner_program);
-    let key = (
-        [seed[0].c0, seed[0].c1, seed[0].c2, seed[1].c0, seed[1].c1, seed[1].c2],
-        nsub,
-    );
+    let key = (seed.map(|word| word.0), nsub);
     let cache = CACHE.get_or_init(Default::default);
     if let Some(guest) = cache.lock().expect("recursion guest cache poisoned").get(&key) {
         return Arc::clone(guest);
@@ -1928,7 +1936,7 @@ fn run_recursion_with_rates(
         pow(stats.cycles),
         stats.cycles as f64 / total_inner_cycles as f64
     );
-    for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3", "PACK64X2"]
+    for (name, &c) in ["ADD", "MUL", "ADD_EXT", "MUL_EXT", "SET", "DEREF", "JUMP", "BLAKE3"]
         .iter()
         .zip(&stats.counts)
     {
@@ -1954,6 +1962,12 @@ fn run_recursion_with_rates(
 /// 2^24.6, an m=33 stacked opening each), verified and aggregated by one
 /// guest into one outer proof, whose three reduced claims are then discharged
 /// natively.
+#[test]
+fn recursion_guest_compiles() {
+    let guest = recursion_guest(&inner_program(), 1);
+    assert!(!guest.prog.is_empty());
+}
+
 #[test]
 fn recursion_2to1() {
     run_recursion(&[(8, 1 << 15), (8, 1 << 15)], lean_vm::pcs::LOG_INV_RATE, false);
@@ -1989,7 +2003,7 @@ fn recursion_soundness_binds() {
     let mut guest = recursion_guest(&batch.program0, cfg.len());
     let public_input = batch.public_input();
 
-    let run = |g: &mut Program, merged: &[(String, Vec<Vec<F192>>)]| -> bool {
+    let run = |g: &mut Program, merged: &[(String, Vec<Vec<F64>>)]| -> bool {
         for (name, entries) in merged {
             g.set_witness(name, entries.clone());
         }
@@ -2021,14 +2035,14 @@ fn recursion_soundness_binds() {
     let yr_pad_idx = yr_log(stack_mu);
 
     // each tamper flips one hint to a definitely-invalid value.
-    let mut tampers: Vec<(&str, usize, F192)> = vec![
-        ("fs_seed", 0, F192::ONE), // wrong proving environment: own_pi (public input) must reject
-        ("claim_nover", 0, g_pow(5).into()), // wrong overlap: exact length pin must reject
-        ("pi_cplen", 0, g_pow(2).into()), // wrong pi dimension: min-cert must reject
+    let mut tampers: Vec<(&str, usize, F64)> = vec![
+        ("fs_seed", 0, F64::ONE),     // wrong proving environment: own_pi (public input) must reject
+        ("claim_nover", 0, g_pow(5)), // wrong overlap: exact length pin must reject
+        ("pi_cplen", 0, g_pow(2)),    // wrong pi dimension: min-cert must reject
     ];
     if yr_pad_idx < yr_cap {
         // pad coord (k >= yr_log_n): over-read weight must be zero-pinned
-        tampers.push(("rs_yslot_bits", yr_pad_idx, F192::ONE));
+        tampers.push(("rs_yslot_bits", yr_pad_idx, F64::ONE));
     } else {
         eprintln!("rs_yslot_bits tamper skipped: yr_log_n == YR_LOG_CAP (no pad coordinate)");
     }
