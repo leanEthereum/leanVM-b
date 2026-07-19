@@ -42,7 +42,7 @@ pub fn run_fibonacci(n: usize, log_inv_rate: usize) {
         pretty_integer(n)
     );
     println!("  cycles (VM steps)           : {}", pretty_integer(stats.cycles));
-    for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3"]
+    for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3", "PACK64X2"]
         .iter()
         .zip(&stats.counts)
     {

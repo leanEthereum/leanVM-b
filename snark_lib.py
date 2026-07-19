@@ -150,6 +150,14 @@ def hint_witness(dest, name: str) -> None:
     _ = dest, name
 
 
+def pack64x2(a, b) -> _Elt:
+    """Prove that `a` and `b` are GF(2^64)-valued machine words and return
+    their canonical 128-bit packing `(a.c0, b.c0, 0)` as one GF(2^192) word.
+    This is one VM instruction."""
+    _ = a, b
+    return _Elt()
+
+
 def blake3(a, b, out) -> None:
     """The BLAKE3 compression of the two 256-bit operands `a`, `b`, written
     into the 2-cell run `out` (write-once: if `out` was already written, this

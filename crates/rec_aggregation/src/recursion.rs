@@ -64,7 +64,7 @@ fn pack_state(s: [F64; 4]) -> [F192; 2] {
 /// witness hints ("n_hash", "iters"), so a single program (one bytecode, one
 /// digest) proves runs with wildly different opcode profiles and sizes - the
 /// exact genericity the recursion guest is built for. Exercises every table
-/// (XOR/MUL/SET/DEREF/JUMP/BLAKE3).
+/// (XOR/MUL/SET/DEREF/JUMP/BLAKE3/PACK64X2).
 fn inner_program() -> Program {
     let src = "from snark_lib import *\n\
         def main():\n\
@@ -274,7 +274,12 @@ fn stacked_bytecode(program: &Program) -> Vec<F64> {
     // Public bytecode coordinates depend only on the program. The remaining
     // layout inputs affect private witness/table shapes, so fixed valid dummy
     // sizes are sufficient and avoid retaining a representative inner proof.
-    let l = lean_vm::cpu::layout(&program.prog, 20, [1usize << 10; 6], [F192::ZERO; 2]);
+    let l = lean_vm::cpu::layout(
+        &program.prog,
+        20,
+        [1usize << 10; lean_vm::tables::N_TABLES],
+        [F192::ZERO; 2],
+    );
     lean_vm::leaf::stacked_bytecode_table(&l.push)
 }
 
@@ -581,7 +586,7 @@ fn gen_verify(
     let l = lean_vm::cpu::layout(
         &program.prog,
         proof.stream[0].c0 as usize,
-        [1, 2, 3, 4, 5, 6].map(|i| proof.stream[i].c0 as usize),
+        std::array::from_fn(|i| proof.stream[1 + i].c0 as usize),
         pi,
     );
     let sides: [&[Block]; 3] = [&l.push, &l.pull, &l.count];
@@ -855,7 +860,7 @@ fn gen_verify(
     }
     let qpkdv = l.placements[lean_vm::cpu::QPKD].n_vars;
     let commit_root_packed = {
-        // log_mem, six row counts, then log_inv_rate precede the root.
+        // log_mem, all per-table row counts, then log_inv_rate precede the root.
         let root_offset = 2 + l.row_counts.len();
         let s = &proof.stream[root_offset..root_offset + 2];
         let mut h = [0u8; 32];
@@ -1257,7 +1262,12 @@ fn build_batch(inner: &[(usize, usize)], log_inv_rates: &[usize], outer_log_inv_
 #[allow(clippy::type_complexity)]
 fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     // Any valid sizes drive the layout — rep depends only on structure + kbc.
-    let l = lean_vm::cpu::layout(&program.prog, 20, [1usize << 10; 6], [F192::ZERO, F192::ZERO]);
+    let l = lean_vm::cpu::layout(
+        &program.prog,
+        20,
+        [1usize << 10; lean_vm::tables::N_TABLES],
+        [F192::ZERO, F192::ZERO],
+    );
     let kbc = program.prog.len().trailing_zeros() as usize;
     let sides: [&[Block]; 3] = [&l.push, &l.pull, &l.count];
     let mumax = 40usize;
@@ -1381,6 +1391,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         f192_literal((F192::new(G.0, 0, 0) * (F192::ONE + F192::new(G.0, 0, 0))).inv()),
     );
     ps("MU_CAP", mumax.to_string());
+    ps("REAL_IS_FULL_CUBE", l.taus.len().to_string());
     ps("GKR_ROUNDS_CAP", (mumax * (mumax + 1) / 2 + mumax + 2).to_string());
     ps("GKR_POINTS_CAP", ((mumax + 1) * mumax).to_string());
     ps("SIDE_BLOCK_START", ints(&sblk));
@@ -1406,7 +1417,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         "BLOCK_REAL_TABLE",
         ints(
             &bks.iter()
-                .map(|&(s, _)| if s >= 2 { s - 2 } else { 6 })
+                .map(|&(s, _)| if s >= 2 { s - 2 } else { l.taus.len() })
                 .collect::<Vec<_>>(),
         ),
     );
@@ -1927,7 +1938,7 @@ fn run_recursion_with_rates(
         pow(stats.cycles),
         stats.cycles as f64 / total_inner_cycles as f64
     );
-    for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3"]
+    for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3", "PACK64X2"]
         .iter()
         .zip(&stats.counts)
     {

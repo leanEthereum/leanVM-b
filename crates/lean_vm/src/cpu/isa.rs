@@ -1,4 +1,4 @@
-//! The ISA: the six opcodes and the `DEREF` store modes.
+//! The ISA and the `DEREF` store modes.
 
 use primitives::field::{F64, F192};
 
@@ -42,6 +42,15 @@ pub enum Op {
         oc: u32,
         od: u32,
         of: u32,
+    },
+    /// Read two K-valued (64-bit) cells and pack them canonically into one
+    /// 128-bit cell: `c = (a.c0, b.c0, 0)`. The memory bus reads the sources as
+    /// `(lo, 0, 0)`, so executing this instruction also proves both source
+    /// words lie in K = F64.
+    Pack64x2 {
+        a: u32,
+        b: u32,
+        c: u32,
     },
     /// `BLAKE3` (§7.6): compresses the 64-byte input `ins[0]‖ins[1]‖ins[2]‖ins[3]`
     /// (each `ins[i]` names a 128-bit chunk in ONE 128-bit memory word `fp+ins[i]`)

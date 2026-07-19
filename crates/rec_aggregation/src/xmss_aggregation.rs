@@ -209,7 +209,7 @@ pub fn run_xmss_aggregation(n: usize, log_inv_rate: usize) {
         pow(stats.cycles),
         per(stats.cycles)
     );
-    for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3"]
+    for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3", "PACK64X2"]
         .iter()
         .zip(&stats.counts)
     {

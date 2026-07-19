@@ -1,4 +1,4 @@
-//! Whole-program assembly over GF(2^64) (§7, §8): the six instruction tables
+//! Whole-program assembly over GF(2^64) (§7, §8): the instruction tables
 //! sharing the state / memory / bytecode buses, bound to one field-valued
 //! commitment and verified oracle-free. Addresses, the program counter, and read
 //! counts are g-powers, so every increment is a free ×g. Machine-word arithmetic
@@ -103,6 +103,7 @@ fn program_digest(prog: &[Op]) -> [F64; 4] {
                 (3 + mode as u8, alpha, beta, gamma, F192::ZERO) // mode ∈ {Cell,Pc,Fp} ⇒ tag 3/4/5
             }
             Op::Jump { oc, od, of } => (6, oc, od, of, F192::ZERO),
+            Op::Pack64x2 { a, b, c } => (9, a, b, c, F192::ZERO),
             Op::Blake3 { ins, out, packing } => {
                 let mode = u64::from(packing == Blake3Packing::Transcript192);
                 (
@@ -149,14 +150,14 @@ fn transcript_seed(program: &Program, pi: &[F192; 2]) -> [F192; 4] {
     [seed[0], seed[1], pi[0], pi[1]]
 }
 
-/// Announce the prover's per-table log-sizes (`log_mem` + the six `row_counts`) by
+/// Announce the prover's per-table log-sizes (`log_mem` + all `row_counts`) by
 /// writing them onto the scalar stream (which binds them into the sponge and lets
 /// the verifier reconstruct the layout). The public statement (program + input) is
 /// not announced here — it seeds the transcript at construction (see
 /// [`transcript_seed`]). The boundary states and per-table log-sizes (`taus`) are
 /// derived (constants from the program, and `padlen(row_counts)`), so they need no
 /// separate binding.
-fn announce_public(ps: &mut ProverState, log_mem: usize, row_counts: [usize; 6], log_inv_rate: usize) {
+fn announce_public(ps: &mut ProverState, log_mem: usize, row_counts: [usize; tables::N_TABLES], log_inv_rate: usize) {
     ps.add_scalar(F192::new(log_mem as u64, 0, 0));
     for r in row_counts {
         ps.add_scalar(F192::new(r as u64, 0, 0));
@@ -164,13 +165,13 @@ fn announce_public(ps: &mut ProverState, log_mem: usize, row_counts: [usize; 6],
     ps.add_scalar(F192::new(log_inv_rate as u64, 0, 0));
 }
 
-/// Verifier side of [`announce_public`]: read the seven announced sizes and PCS
+/// Verifier side of [`announce_public`]: read the announced sizes and PCS
 /// rate from the stream, validate them, and reconstruct the public [`Layout`]
 /// from the program + sizes + public input. (The public input was already bound
 /// by seeding the transcript.)
 fn read_public(vs: &mut VerifierState, prog: &Program, public_input: &[F192; 2]) -> Result<(Layout, usize), Error> {
     let log_mem = vs.next_scalar().map_err(Error::Transcript)?.c0 as usize;
-    let mut row_counts = [0usize; 6];
+    let mut row_counts = [0usize; tables::N_TABLES];
     for r in &mut row_counts {
         *r = vs.next_scalar().map_err(Error::Transcript)?.c0 as usize;
     }
@@ -317,12 +318,13 @@ fn blake3_value_slot(col: usize) -> Option<usize> {
 }
 
 /// Run statistics returned alongside the proof: the cycle count (total executed
-/// instructions), the per-opcode counts `[XOR, MUL, SET, DEREF, JUMP, BLAKE3]`, and the
+/// instructions), the per-opcode counts
+/// `[XOR, MUL, SET, DEREF, JUMP, BLAKE3, PACK64X2]`, and the
 /// committed witness size — the sum of the column lengths, i.e. the real data
 /// before the stacked witness is zero-padded to a power of two `2^m`.
 pub struct Stats {
     pub cycles: usize,
-    pub counts: [usize; 6],
+    pub counts: [usize; tables::N_TABLES],
     pub committed: usize,
     /// Data memory is `2^log_mem` cells (the padded write-once image).
     pub log_mem: usize,
@@ -938,7 +940,7 @@ mod tests {
         verify(&program, &pi, &decoded).expect("deserialized BLAKE3 proof verifies");
 
         let mut bad_rate = decoded.clone();
-        bad_rate.stream[7] = F192::new(5, 0, 0);
+        bad_rate.stream[1 + tables::N_TABLES] = F192::new(5, 0, 0);
         assert!(
             matches!(verify(&program, &pi, &bad_rate), Err(Error::PublicInput)),
             "the transcript-announced PCS rate must be in 1..=4"

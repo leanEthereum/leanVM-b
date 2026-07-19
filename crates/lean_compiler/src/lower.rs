@@ -914,6 +914,14 @@ impl FnLower<'_> {
                 });
                 dst
             }
+            Expr::Call(f, args) if f == "pack64x2" => {
+                assert_eq!(args.len(), 2, "pack64x2(a, b) takes two scalar cells");
+                let a = self.expr(&args[0]);
+                let b = self.expr(&args[1]);
+                let c = self.fresh();
+                self.emit(LOp::Pack64x2 { a, b, c });
+                c
+            }
             Expr::Call(f, args) => {
                 if let Some(n) = self.const_len(e) {
                     self.const_cell(F192::new(n as u64, 0, 0))

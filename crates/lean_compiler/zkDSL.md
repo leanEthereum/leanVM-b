@@ -1,14 +1,14 @@
 # zkDSL Language Reference (leanVM-b)
 
-The zkDSL is a Python-syntax language that compiles to the leanVM-b ISA — six
-instructions (`XOR`, `MUL`, `SET`, `DEREF`, `JUMP`, `BLAKE3`) over the binary
+The zkDSL is a Python-syntax language that compiles to the leanVM-b ISA — seven
+instructions (`XOR`, `MUL`, `SET`, `DEREF`, `JUMP`, `BLAKE3`, `PACK64X2`) over the binary
 field GF(2^192), with write-once memory and all indices carried "in the
 exponent" as powers of a fixed generator. For the underlying VM and proving
 system, see [`misc/doc.tex`](../../misc/doc.tex) (released as `doc.pdf`).
 
 Source files use the `.py` extension and are **valid Python**: they import the
 [`snark_lib`](../../snark_lib.py) stub, which defines `GEN`, `log`, `mul_range`,
-`HeapBuf`, `StackBuf`, and `blake3` so that editors, linters, and even
+`HeapBuf`, `StackBuf`, `pack64x2`, and `blake3` so that editors, linters, and even
 `python3` itself accept the file. The compiler skips the import.
 
 Entry points: `lean_compiler::parse` / `parse_file_with_replacements` →
@@ -589,6 +589,23 @@ The two `DEREF` target cells are unconstrained touches, back-filled at the end
 of execution. A failing check surfaces at witness generation as the
 complement's `DEREF` panic ("not a small g-power … a failed range check").
 
+## Packing two 64-bit cells — `pack64x2`
+
+```python
+packed = pack64x2(lo, hi)
+```
+
+`pack64x2(a, b)` is an expression that takes one VM cycle. It proves that both
+source memory words are in the base field GF(2^64), then returns their canonical
+128-bit packing `(a.c0, b.c0, 0)` as one GF(2^192) word. The proof comes from
+the memory bus itself: the two source accesses use literal-zero upper limbs,
+and the destination access uses the tuple `(a.c0, b.c0, 0)`. Consequently a
+source with either upper limb nonzero cannot satisfy the memory permutation.
+
+This is useful before treating values supplied as GF(2^192) hints as serialized
+64-bit limbs. The returned packed word may be ignored when only the range
+assertion is needed.
+
 ## BLAKE3
 
 ```python
@@ -721,4 +738,4 @@ Mutable variables; conditions other than field (in)equality; `match` defaults
 `mul_range` or range-check bounds (a substituted literal is a bit-pattern
 element, not the g-power a bound needs); runtime slice starts on a `StackBuf`;
 runtime range-check bounds (`assert log a < log b` with runtime `b`);
-precompiles beyond `BLAKE3`.
+precompiles beyond `BLAKE3` and `PACK64X2`.

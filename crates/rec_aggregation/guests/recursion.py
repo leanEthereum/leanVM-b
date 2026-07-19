@@ -4,7 +4,7 @@ from snark_lib import *
 # prefix the shape dictates); binding always comes from the per-word absorbs.
 STREAM_CAP = STREAM_CAP_PLACEHOLDER
 # Per-table tau floor: BLAKE3 is sized to flock's instance count (>= 2^3).
-FLOORS = [0, 0, 0, 0, 0, 3]
+FLOORS = [0, 0, 0, 0, 0, 3, 0]
 INV_GEN = INV_GEN_PLACEHOLDER
 LAGRANGE_INV_0 = LAGRANGE_INV_0_PLACEHOLDER
 LAGRANGE_INV_1 = LAGRANGE_INV_1_PLACEHOLDER
@@ -39,7 +39,7 @@ COORD_KIND_INDEX = 3
 COORD_KIND_PUBLIC = 4
 # BLOCK_REAL_TABLE: the table whose count is the block's real row count, or
 # REAL_IS_FULL_CUBE for the shared blocks (real = 2^kappa, no padding).
-REAL_IS_FULL_CUBE = 6
+REAL_IS_FULL_CUBE = REAL_IS_FULL_CUBE_PLACEHOLDER
 SIDE_BLOCK_START = SIDE_BLOCK_START_PLACEHOLDER
 N_BLOCKS = N_BLOCKS_PLACEHOLDER
 BLOCK_KAPPA_SRC = BLOCK_KAPPA_SRC_PLACEHOLDER
@@ -81,6 +81,7 @@ TABLE_SET = 2
 TABLE_DEREF = 3
 TABLE_JUMP = 4
 TABLE_BLAKE3 = 5
+TABLE_PACK64X2 = 6
 N_TABLES = N_TABLES_PLACEHOLDER
 # Phase D (flock reduction): the seven fixed inner challenges (+ inverses of 1+c),
 # the phi8 node table + baked Lagrange inverse denominators (Lambda domain,
@@ -696,6 +697,14 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
                     e1 = row_ptr[GEN ** (4 * jb + 1)]
                     e2 = row_ptr[GEN ** (4 * jb + 2)]
                     e3 = row_ptr[GEN ** (4 * jb + 3)]
+                    # PACK64X2 reads both source cells through the memory bus as
+                    # `(lo, 0, 0)`. Two packs therefore prove all four hinted
+                    # level-0 values are genuinely F64 before they enter the
+                    # hash or row_dot. The packed outputs need not feed the
+                    # hash: its existing transcript 192+64 byte layout remains
+                    # unchanged.
+                    packed01 = pack64x2(e0, e1)
+                    packed23 = pack64x2(e2, e3)
                     row_pair = [e0 + e1 * Y_TOWER + e2 * Y_TOWER * Y_TOWER, e3]
                     leaf_digest = StackBuf(2)
                     blake3_transcript(leaf_hash_state, row_pair[0], row_pair[1], leaf_digest)
@@ -703,7 +712,15 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
                     row_dot += e0 * row_eq_weights[GEN ** (4 * jb)] + e1 * row_eq_weights[GEN ** (4 * jb + 1)] + e2 * row_eq_weights[GEN ** (4 * jb + 2)] + e3 * row_eq_weights[GEN ** (4 * jb + 3)]
             else:
                 for jb in unroll(0, LIG_LEAF_PAIRS[m_idx * LIG_MAX_LEVELS + lvl]):
-                    row_pair = [row_ptr[GEN ** (4 * jb)] + row_ptr[GEN ** (4 * jb + 1)] * Y_TOWER + row_ptr[GEN ** (4 * jb + 2)] * Y_TOWER * Y_TOWER, row_ptr[GEN ** (4 * jb + 3)]]
+                    e0 = row_ptr[GEN ** (4 * jb)]
+                    e1 = row_ptr[GEN ** (4 * jb + 1)]
+                    e2 = row_ptr[GEN ** (4 * jb + 2)]
+                    e3 = row_ptr[GEN ** (4 * jb + 3)]
+                    # Higher-level F192 rows arrive as flat F64 tower limbs;
+                    # constrain every serialized limb before reassembly.
+                    packed01 = pack64x2(e0, e1)
+                    packed23 = pack64x2(e2, e3)
+                    row_pair = [e0 + e1 * Y_TOWER + e2 * Y_TOWER * Y_TOWER, e3]
                     leaf_digest = StackBuf(2)
                     blake3_transcript(leaf_hash_state, row_pair[0], row_pair[1], leaf_digest)
                     leaf_hash_state = leaf_digest
@@ -822,7 +839,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, base_delta_pows, tower_delta_pows, g_
     #      with advice-decomposed padding ladders; 3x leaf decomposition
     #      against the GKR claims (pooling the committed-coordinate claims);
     #      the stacked-bytecode reduction (deferred);
-    #   5. six AIR zerochecks at the certified taus (sumcheck_round3);
+    #   5. one AIR zerocheck per instruction table at the certified taus;
     #   6. public-input claim + BLAKE3 pin claims (telescoped prefix MLE);
     #   7. flock reduction: univariate-skip zerocheck + lincheck (matrix
     #      evaluation deferred);
@@ -865,7 +882,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, base_delta_pows, tower_delta_pows, g_
     # need them as G-POWERS (loop bounds, match_range scrutinees). dims_g[0] =
     # g^log_mem arrives as a hint pinned to the word; dims_g[1 + t] = g^tau_t
     # is computed by the count gadget.
-    dims_g = HeapBuf(N_TABLES + 1)  # [g^log_mem, g^tau_0 .. g^tau_5], all computed
+    dims_g = HeapBuf(N_TABLES + 1)  # [g^log_mem, g^tau_0 .. g^tau_{N_TABLES-1}]
     # log_mem is announced AS a log (an integer word L): g^L is assembled from
     # L's advice-decomposed bits — no hint, no g^j -> j lookup table.
     g_log_mem = g_power_of_word(sizes[0], g_squares, COUNT_BITS)
@@ -1219,7 +1236,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, base_delta_pows, tower_delta_pows, g_
     for c in unroll(0, BYTECODE_COLS):
         bytecode_reduced += eq_weight(bytecode_sel, LOG2_BYTECODE_COLS, c, 0) * bytecode_vals[GEN ** c]
 
-    # ---- 6x per-table zerocheck (XOR, MUL, SET, DEREF, JUMP, BLAKE3) ----
+    # ---- per-table zerochecks ------------------------------------------------
     # For each table: eta, the zerocheck point r (tau samples), tau eq-trick
     # rounds (claim starts at 0), then the involved-column evaluations (pooled)
     # and the final AIR check claim == eq_acc * C_t(eta, evals).
@@ -1372,6 +1389,12 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, base_delta_pows, tower_delta_pows, g_
             constraint_eval += eta_pow * (col_evals[39] + (1 + pack) * col_evals[22])
             eta_pow *= eta
             constraint_eval += eta_pow * col_evals[40]
+        if t == TABLE_PACK64X2:
+            # cols: [FP, OA, OB, OC, AA, AB, AC]. Source K-membership and
+            # destination packing are enforced exactly by the memory bus
+            # coordinates (`memory_k`, `memory_128`), so AIR only binds the
+            # three fp-relative addresses.
+            constraint_eval = (col_evals[4] + col_evals[0] * col_evals[1]) + eta * (col_evals[5] + col_evals[0] * col_evals[2]) + eta * eta * (col_evals[6] + col_evals[0] * col_evals[3])
         assert claim == eq_acc * constraint_eval
 
     # ---- public-input binding claim: MEM as ONE logical E-column ----
@@ -1394,7 +1417,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, base_delta_pows, tower_delta_pows, g_
     claim_idx += 1
 
     # ---- flock zerocheck (univariate skip, k_skip = 6) ----
-    tau_blake3_g = dims_g[GEN ** N_TABLES]  # the BLAKE3 table's certified tau
+    tau_blake3_g = dims_g[GEN ** (TABLE_BLAKE3 + 1)]  # the BLAKE3 table's certified tau
     # tau's reach is bounded: the count gadget gives tau < 34 (all flock
     # buffers are sized for that), and q_pkd's committed kappa =
     # K_LOG + tau feeds the certified size m, whose opening

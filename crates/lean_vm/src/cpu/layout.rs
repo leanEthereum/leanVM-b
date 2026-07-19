@@ -30,7 +30,7 @@ pub const N_SHARED: usize = 6;
 /// base[t] + n_committed_columns_t)`. Both prover and verifier derive this identically
 /// from the table set, so every column claim lines up.
 pub struct Schema {
-    pub base: [usize; 6],
+    pub base: [usize; tables::N_TABLES],
     pub n: usize,
 }
 
@@ -38,7 +38,7 @@ pub struct Schema {
 pub fn schema() -> &'static Schema {
     static SCHEMA: std::sync::OnceLock<Schema> = std::sync::OnceLock::new();
     SCHEMA.get_or_init(|| {
-        let mut base = [0usize; 6];
+        let mut base = [0usize; tables::N_TABLES];
         let mut next = N_SHARED;
         for (t, table) in tables::tables().iter().enumerate() {
             base[t] = next;
@@ -80,10 +80,10 @@ pub struct Layout {
     /// Public input: the first two memory cells `m[0], m[1]` (each a 192-bit
     /// word), bound to the committed memory at verification (§8).
     pub pi: [F192; 2],
-    pub taus: [usize; 6], // (xor, mul, set, deref, jump, blake3) log row counts
+    pub taus: [usize; tables::N_TABLES],
     /// Real (non-padded) per-table row counts, as announced. `row_counts[5]` is
     /// the executed `BLAKE3` count, which gates the flock sub-proof.
-    pub row_counts: [usize; 6],
+    pub row_counts: [usize; tables::N_TABLES],
 }
 
 /// The prover's witness bundle: the committed column values + their stacked
@@ -93,7 +93,7 @@ pub(crate) struct Witness {
     pub(crate) q: Vec<F64>,
     pub(crate) layout: Layout,
     pub(crate) log_mem: usize,
-    pub(crate) row_counts: [usize; 6],
+    pub(crate) row_counts: [usize; tables::N_TABLES],
 }
 
 /// The committed columns' kappa SOURCES, for the recursion guest's
@@ -159,7 +159,12 @@ pub fn block_kappa_sources(log_bytecode: usize) -> Vec<(usize, usize)> {
 /// redundant. Their memory-bus claims route directly to `q_pkd` slot evaluations
 /// (see [`slot_claims`]), which both binds them to
 /// the proven witness AND eliminates the separate value-binding sub-protocol.
-fn col_kappas(log_mem: usize, log_bytecode: usize, taus: [usize; 6], n_blake3: usize) -> Vec<Option<usize>> {
+fn col_kappas(
+    log_mem: usize,
+    log_bytecode: usize,
+    taus: [usize; tables::N_TABLES],
+    n_blake3: usize,
+) -> Vec<Option<usize>> {
     let sch = schema();
     let mut k = vec![Some(0usize); sch.n];
     k[MEM_LO] = Some(log_mem);
@@ -183,11 +188,11 @@ fn col_kappas(log_mem: usize, log_bytecode: usize, taus: [usize; 6], n_blake3: u
 }
 
 /// Build the public [`Layout`] from the program, the memory log-size `log_mem`, the
-/// six tables' real row counts `row_counts`, and the public input `pi`. The flush
+/// instruction tables' real row counts `row_counts`, and the public input `pi`. The flush
 /// blocks reference columns only by INDEX and the program only through its
 /// public columns, so this needs no committed witness — both prover and verifier
 /// reconstruct exactly the same structure (§7, §8).
-pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; 6], pi: [F192; 2]) -> Layout {
+pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; tables::N_TABLES], pi: [F192; 2]) -> Layout {
     let bytecode_size = prog.len();
     let log_bytecode = crate::log2_strict_usize(bytecode_size);
     let cells = 1usize << log_mem;
@@ -195,7 +200,7 @@ pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; 6], pi: [F192; 2]
     // Per-table padded log-row-counts (the boundary block is fixed). The real
     // (non-padded) `row_counts[t]` tell each flush how many of its 2^kappa rows
     // are padding (default rows divided out of the bus, §sec:gp).
-    let mut taus = [0usize; 6];
+    let mut taus = [0usize; tables::N_TABLES];
     for (i, &r) in row_counts.iter().enumerate() {
         taus[i] = crate::log2_ceil_usize(r.max(1));
     }
@@ -224,6 +229,7 @@ pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; 6], pi: [F192; 2]
             Op::Set { o, .. } => o,
             Op::Deref { alpha, beta, gamma, .. } => alpha.max(beta).max(gamma),
             Op::Jump { oc, od, of } => oc.max(od).max(of),
+            Op::Pack64x2 { a, b, c } => a.max(b).max(c),
             Op::Blake3 { ins, out, .. } => ins[0].max(ins[1]).max(ins[2]).max(ins[3]).max(out),
         })
         .max()
@@ -237,6 +243,7 @@ pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; 6], pi: [F192; 2]
         Op::Set { .. } => OP_SET,
         Op::Deref { .. } => OP_DEREF,
         Op::Jump { .. } => OP_JUMP,
+        Op::Pack64x2 { .. } => tables::OP_PACK64X2,
         Op::Blake3 {
             packing: crate::cpu::Blake3Packing::Bytes128,
             ..
@@ -254,6 +261,7 @@ pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; 6], pi: [F192; 2]
             Op::Set { o, k } => (g_at(o), F64(k.c0), F64(k.c1)),
             Op::Deref { alpha, beta, gamma, .. } => (g_at(alpha), g_at(beta), g_at(gamma)),
             Op::Jump { oc, od, of } => (g_at(oc), g_at(od), g_at(of)),
+            Op::Pack64x2 { a, b, c } => (g_at(a), g_at(b), g_at(c)),
             // BLAKE3's first three input-word offsets; the last two ride the
             // fpc/ffp bytecode slots below.
             Op::Blake3 { ins, .. } => (g_at(ins[0]), g_at(ins[1]), g_at(ins[2])),
@@ -501,6 +509,7 @@ impl Program {
             tr.deref.len(),
             tr.jump.len(),
             tr.blake3.len(),
+            tr.pack64x2.len(),
         ];
         assert!(
             row_counts.iter().all(|&r| r <= 1 << MAX_LOG_ROWS),
