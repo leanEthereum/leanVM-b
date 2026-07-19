@@ -25,8 +25,11 @@ use pcs::stack_open::{
     RingSwitchClaim, RingSwitchOpen, RingSwitchVerify, open_batch_mixed_ligerito_stacked,
     verify_opening_batch_mixed_ligerito_stacked,
 };
-use primitives::field::{F64, F192};
 use primitives::multilinear::lagrange_weights_naive;
+use primitives::{
+    field::{F64, F192},
+    pretty_integer,
+};
 
 /// Tiny deterministic xorshift RNG: reproducible inputs without another dep.
 struct Rng(u64);
@@ -162,7 +165,10 @@ fn blake3_batch_prove_verify() {
     vs.finish().expect("transcript fully consumed");
     let verify_ms = t.elapsed().as_secs_f64() * 1e3;
 
-    println!("\nFlock BLAKE3 batch proving, {n} compressions (2^{n_log} slots)");
+    println!(
+        "\nFlock BLAKE3 batch proving, {} compressions (2^{n_log} slots)",
+        pretty_integer(n)
+    );
     println!("  setup (preprocessing, excluded) : {setup_ms:>8.1} ms");
     println!("  witness-gen                     : {witness_ms:>8.1} ms");
     println!("  commit                          : {commit_ms:>8.1} ms");
@@ -170,9 +176,10 @@ fn blake3_batch_prove_verify() {
     println!("  ------------------------------------------");
     println!("  prove TOTAL (witness excluded)  : {:>8.1} ms", prove_s * 1e3);
     println!("  verify                          : {verify_ms:>8.1} ms");
+    let compressions_per_second = (n as f64 / prove_s).round() as u64;
     println!(
-        "  throughput                      : {:>10.0} compressions/s",
-        n as f64 / prove_s
+        "  throughput                      : {:>14} compressions/s",
+        pretty_integer(compressions_per_second)
     );
     println!(
         "  (~{:.1} XMSS/s equivalent at 158 compressions/signature)",

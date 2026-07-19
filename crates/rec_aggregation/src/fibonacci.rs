@@ -5,7 +5,10 @@ use std::time::Instant;
 
 use lean_compiler::{compile, parse};
 use lean_vm::cpu::{prove, verify};
-use primitives::field::{F64, F192, g_pow};
+use primitives::{
+    field::{F64, F192, g_pow},
+    pretty_integer,
+};
 
 /// Prove and verify Fibonacci-in-the-exponent over a `HeapBuf` (an unrolled
 /// `mul_range` recurrence), binding `g^{F(n)}` as the public input. Prints the
@@ -34,8 +37,11 @@ pub fn run_fibonacci(n: usize, log_inv_rate: usize) {
     // before printing the benchmark report so the complete trace appears first.
     drop(trace_span);
 
-    println!("Fibonacci (in the exponent, i.e. modulo 2^64 - 1), N = {n}");
-    println!("  cycles (VM steps)           : {}", stats.cycles);
+    println!(
+        "Fibonacci (in the exponent, i.e. modulo 2^64 - 1), N = {}",
+        pretty_integer(n)
+    );
+    println!("  cycles (VM steps)           : {}", pretty_integer(stats.cycles));
     for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3"]
         .iter()
         .zip(&stats.counts)
@@ -54,9 +60,10 @@ pub fn run_fibonacci(n: usize, log_inv_rate: usize) {
     println!("  proof size                  : {:.1} KiB", proof_bytes as f64 / 1024.0);
     println!("  proving (incl. witness gen) : {t_prove:?}");
     println!("  verifying                   : {t_verify:?}");
+    let cycles_per_second = (stats.cycles as f64 / t_prove.as_secs_f64()).round() as u64;
     println!(
-        "  throughput                  : {:.0} cycles/s",
-        stats.cycles as f64 / t_prove.as_secs_f64()
+        "  throughput                  : {} cycles/s",
+        pretty_integer(cycles_per_second)
     );
 }
 

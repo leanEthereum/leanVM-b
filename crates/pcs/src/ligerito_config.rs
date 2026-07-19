@@ -1240,6 +1240,7 @@ pub fn log2_ceil(n: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use primitives::pretty_integer;
 
     #[test]
     fn johnson_bound_uses_theorem_parameter_and_reduced_rate() {
@@ -1368,14 +1369,21 @@ mod tests {
         )
         .unwrap();
 
-        println!("num_vars={num_vars}, rate=1/{}", 1usize << log_inv_rate);
+        println!(
+            "num_vars={}, rate=1/{}",
+            pretty_integer(num_vars),
+            pretty_integer(1usize << log_inv_rate)
+        );
         for (level, params) in cfg.levels.iter().enumerate() {
             let eta = params.eta;
             println!(
-                "L{level}: rate=1/{}, queries={}, eta={eta:.12e}, m={}",
-                1usize << params.log_inv_rate,
-                params.queries,
-                johnson_m_param(params.log_inv_rate, params.log_msg_cols, eta) as usize,
+                "L{}: rate=1/{}, queries={}, eta={eta:.12e}, m={}",
+                pretty_integer(level),
+                pretty_integer(1usize << params.log_inv_rate),
+                pretty_integer(params.queries),
+                pretty_integer(
+                    johnson_m_param(params.log_inv_rate, params.log_msg_cols, eta) as usize
+                ),
             );
         }
     }

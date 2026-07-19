@@ -35,7 +35,10 @@
 use crate::merkle::{self, Hash};
 use crate::ntt::AdditiveNttF64;
 use fiat_shamir::Sponge;
-use primitives::field::{F64, F192, F192BaseUnreduced, F192Unreduced};
+use primitives::{
+    field::{F64, F192, F192BaseUnreduced, F192Unreduced},
+    pretty_integer,
+};
 use serde::{Deserialize, Serialize};
 
 pub use super::ligerito_config::*;
@@ -299,6 +302,8 @@ pub fn commit(message: &[F64], log_batch_size: usize, log_inv_rate: usize) -> (C
     let merkle_tree = merkle::merkle_tree(codeword_bytes, n_positions);
     let root = *merkle_tree.last().expect("merkle tree non-empty");
     if trace {
+        let k_code = pretty_integer(k_code);
+        let num_ntts = pretty_integer(num_ntts);
         eprintln!(
             "[lig-commit] k_code={k_code} lanes={num_ntts}: ntt = {:.4} s, merkle = {:.4} s",
             ntt_elapsed.as_secs_f64(),
@@ -1622,6 +1627,8 @@ pub(crate) fn ligero_commit_ext(
     debug_assert_eq!(data_bytes.len(), block_len * leaf_size_bytes);
     let tree = merkle::merkle_tree(data_bytes, block_len);
     if trace {
+        let log_block_len = pretty_integer(log_block_len);
+        let num_interleaved = pretty_integer(num_interleaved);
         eprintln!(
             "[lig] recursive_commit(log_block={log_block_len}, lanes={num_interleaved}): \
              ntt = {:.4} s, merkle = {:.4} s",

@@ -20,7 +20,10 @@ use std::time::Instant;
 use lean_compiler::{compile, parse};
 use lean_vm::blake3_flock::warm_setup;
 use lean_vm::cpu::{prove, verify};
-use primitives::field::{F64, F192};
+use primitives::{
+    field::{F64, F192},
+    pretty_integer,
+};
 
 /// One compression step `c = BLAKE3(a, b)` (the VM's `blake3` builtin): the eight
 /// input words are laid little-endian into 64 bytes, BLAKE3-hashed, and the
@@ -120,8 +123,12 @@ fn blake3_hash_chain() {
 
     assert_eq!(stats.counts[5], n, "one BLAKE3 row per chain step");
 
-    println!("\nBLAKE3 hash chain, N = {n}, unroll = {unroll}");
-    println!("  cycles (VM steps)           : {}", stats.cycles);
+    println!(
+        "\nBLAKE3 hash chain, N = {}, unroll = {}",
+        pretty_integer(n),
+        pretty_integer(unroll)
+    );
+    println!("  cycles (VM steps)           : {}", pretty_integer(stats.cycles));
     for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3"]
         .iter()
         .zip(&stats.counts)
@@ -141,9 +148,10 @@ fn blake3_hash_chain() {
     println!("  proof size                  : {:.1} KiB", proof_bytes as f64 / 1024.0);
     println!("  proving (incl. witness gen) : {t_prove:?}");
     println!("  verifying                   : {t_verify:?}");
+    let hashes_per_second = (n as f64 / t_prove.as_secs_f64()).round() as u64;
     println!(
-        "  throughput                  : {:.0} hashes/s",
-        n as f64 / t_prove.as_secs_f64()
+        "  throughput                  : {} hashes/s",
+        pretty_integer(hashes_per_second)
     );
 
     // A wrong public input must be rejected.

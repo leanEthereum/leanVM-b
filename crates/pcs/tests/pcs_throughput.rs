@@ -26,7 +26,10 @@ use pcs::ligerito::{
     build_eq_table_ext, commit, inner_product_base_ext, configs_for, configs_for_rate,
     recursive_prover_with_basis,
 };
-use primitives::field::{F64, F192};
+use primitives::{
+    field::{F64, F192},
+    pretty_integer,
+};
 
 fn splitmix64(state: &mut u64) -> u64 {
     *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
@@ -118,10 +121,14 @@ fn pcs_throughput() {
     // before printing the throughput report so the complete trace appears first.
     drop(trace_span);
 
-    println!("\nPCS throughput — 2^{log_n} variables, rate 1/2^{log_inv_rate}, median of {samples}");
     println!(
-        "  committed data                  : {:>8.1} MiB  ({n} F64)",
-        mib(data_bytes)
+        "\nPCS throughput — 2^{log_n} variables, rate 1/2^{log_inv_rate}, median of {}",
+        pretty_integer(samples)
+    );
+    println!(
+        "  committed data                  : {:>8.1} MiB  ({:>13} F64)",
+        mib(data_bytes),
+        pretty_integer(n)
     );
     println!("  RS codeword (encoded)           : {:>8.1} MiB", mib(codeword_bytes));
     println!("  ------------------------------------------------------------");

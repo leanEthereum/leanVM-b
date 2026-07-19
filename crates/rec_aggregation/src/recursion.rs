@@ -21,8 +21,11 @@ use lean_vm::cpu::{Program, prove, verify};
 use lean_vm::leaf::{Block, Coord};
 use lean_vm::transcript::{Sponge, TraceOp, trace_start, trace_take};
 use pcs::ligerito::log2_ceil;
-use primitives::field::{F64, F192, G, g_pow};
 use primitives::multilinear::mle_eval;
+use primitives::{
+    field::{F64, F192, G, g_pow},
+    pretty_integer,
+};
 
 /// A field element as the decimal `u128` literal the zkDSL parser accepts.
 fn u(f: F192) -> u128 {
@@ -1894,11 +1897,16 @@ fn run_recursion_with_rates(
     drop(trace_span);
 
     println!(
-        "recursion program: {real_instrs} instructions (2^{} padded), compiled in {t_compile:?}",
+        "recursion program: {} instructions (2^{} padded), compiled in {t_compile:?}",
+        pretty_integer(real_instrs),
         guest.prog.len().trailing_zeros()
     );
     for &(cycles, committed) in &batch.inner_stats {
-        println!("[inner] cycles={cycles} committed=2^{:.2}", (committed as f64).log2());
+        println!(
+            "[inner] cycles={} committed=2^{:.2}",
+            pretty_integer(cycles),
+            (committed as f64).log2()
+        );
     }
     let proof_bytes = bincode::serialized_size(&recursive_proof).expect("recursive proof is serializable");
     let pow = |x: usize| {
@@ -1908,13 +1916,14 @@ fn run_recursion_with_rates(
             format!("2^{:.2}", (x as f64).log2())
         }
     };
+    let nsub_pretty = pretty_integer(nsub);
     println!(
-        "\nrecursion {nsub}\u{2192}1: {nsub} inner proofs of {} cycles each",
-        total_inner_cycles / nsub
+        "\nrecursion {nsub_pretty}\u{2192}1: {nsub_pretty} inner proofs of {} cycles each",
+        pretty_integer(total_inner_cycles / nsub)
     );
+    let guest_cycles = pretty_integer(stats.cycles);
     println!(
-        "  guest cycles (VM steps)     : {:>10} = {:>7}   ({:.2} / inner cycle)",
-        stats.cycles,
+        "  guest cycles (VM steps)     : {guest_cycles:>14} = {:>7}   ({:.2} / inner cycle)",
         pow(stats.cycles),
         stats.cycles as f64 / total_inner_cycles as f64
     );
@@ -1922,7 +1931,8 @@ fn run_recursion_with_rates(
         .iter()
         .zip(&stats.counts)
     {
-        println!("    {name:<6} instructions     : {c:>10} = {:>7}", pow(c));
+        let count = pretty_integer(c);
+        println!("    {name:<6} instructions     : {count:>14} = {:>7}", pow(c));
     }
     println!(
         "  committed witness size      : 2^{:.3}",
@@ -2061,7 +2071,7 @@ fn recursion_generic_many() {
     // size alone, BEFORE any inner proof exists. Genericity is then shown directly
     // — every shape below verifies against this one bytecode.
     let mut guest = recursion_guest(&inner_program(), 1);
-    eprintln!("guest compiled ONCE ({} instrs)", guest.prog.len());
+    eprintln!("guest compiled ONCE ({} instrs)", pretty_integer(guest.prog.len()));
     for &cfg in configs {
         let batch = build_batch(&[cfg], &[lean_vm::pcs::LOG_INV_RATE], lean_vm::pcs::LOG_INV_RATE);
         let (recursive_proof, _) = batch.prove(&mut guest);
@@ -2070,9 +2080,12 @@ fn recursion_generic_many() {
             .expect("complete recursive proof verifies");
         eprintln!(
             "  verified: hashes={:>2}, iters=2^{}",
-            cfg.0,
+            pretty_integer(cfg.0),
             (cfg.1 as f64).log2() as u32
         );
     }
-    eprintln!("all {} shapes verified by the SAME guest bytecode", configs.len());
+    eprintln!(
+        "all {} shapes verified by the SAME guest bytecode",
+        pretty_integer(configs.len())
+    );
 }

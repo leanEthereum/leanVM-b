@@ -61,6 +61,7 @@ const _: () = assert!((V / 2) * W + 1 == 64);
 /// Serde for `[T; N]` with N > 32 (serde only derives arrays up to 32):
 /// serialized as a fixed-length tuple, exactly like the native array impls.
 pub mod array_serialization {
+    use primitives::pretty_integer;
     use serde::de::{Error, SeqAccess, Visitor};
     use serde::ser::SerializeTuple;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -83,7 +84,7 @@ pub mod array_serialization {
         type Value = [T; N];
 
         fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-            write!(f, "an array of length {N}")
+            write!(f, "an array of length {}", pretty_integer(N))
         }
 
         fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<[T; N], A::Error> {

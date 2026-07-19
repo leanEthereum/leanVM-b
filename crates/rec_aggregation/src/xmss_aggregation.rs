@@ -11,7 +11,10 @@ use std::collections::BTreeMap;
 
 use lean_compiler::{compile, parse_file_with_replacements};
 use lean_vm::cpu::{prove, verify};
-use primitives::field::{F64, F192, g_pow};
+use primitives::{
+    field::{F64, F192, g_pow},
+    pretty_integer,
+};
 use xmss::*;
 
 use crate::signers_cache;
@@ -199,10 +202,10 @@ pub fn run_xmss_aggregation(n: usize, log_inv_rate: usize) {
     // before printing the benchmark report so the complete trace appears first.
     drop(trace_span);
 
-    println!("\nXMSS aggregation, {n} signatures");
+    println!("\nXMSS aggregation, {} signatures", pretty_integer(n));
+    let cycles = pretty_integer(stats.cycles);
     println!(
-        "  cycles (VM steps)           : {:>10} = {:>7}   ({:>8.1} / XMSS)",
-        stats.cycles,
+        "  cycles (VM steps)           : {cycles:>14} = {:>7}   ({:>8.1} / XMSS)",
         pow(stats.cycles),
         per(stats.cycles)
     );
@@ -210,8 +213,9 @@ pub fn run_xmss_aggregation(n: usize, log_inv_rate: usize) {
         .iter()
         .zip(&stats.counts)
     {
+        let count = pretty_integer(c);
         println!(
-            "    {name:<6} instructions       : {c:>10} = {:>7}   ({:>8.1} / XMSS)",
+            "    {name:<6} instructions       : {count:>14} = {:>7}   ({:>8.1} / XMSS)",
             pow(c),
             per(c)
         );

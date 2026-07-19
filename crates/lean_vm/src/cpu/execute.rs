@@ -4,7 +4,10 @@
 use std::collections::HashMap;
 
 use super::*;
-use primitives::field::{F64, F192, mul_by_g};
+use primitives::{
+    field::{F64, F192, mul_by_g},
+    pretty_integer,
+};
 
 pub struct Execution {
     pub mem: Vec<F192>,      // data memory after the run, write-once (size cells, power of two)
@@ -249,9 +252,17 @@ impl Program {
                                 let k = as_addr(v).and_then(|lo| gmap.get(&lo).copied());
                                 let small = v.c2 == 0 && v.c1 == 0 && v.c0 < 1 << 32;
                                 match (k, small) {
-                                    (Some(k), true) => eprintln!("[print] {label} = {} (g^{k})", v.c0),
-                                    (Some(k), false) => eprintln!("[print] {label} = g^{k}"),
-                                    (None, true) => eprintln!("[print] {label} = {}", v.c0),
+                                    (Some(k), true) => eprintln!(
+                                        "[print] {label} = {} (g^{})",
+                                        pretty_integer(v.c0),
+                                        pretty_integer(k)
+                                    ),
+                                    (Some(k), false) => {
+                                        eprintln!("[print] {label} = g^{}", pretty_integer(k))
+                                    }
+                                    (None, true) => {
+                                        eprintln!("[print] {label} = {}", pretty_integer(v.c0))
+                                    }
                                     (None, false) => {
                                         eprintln!("[print] {label} = {:#x}:{:#x}:{:#x}", v.c2, v.c1, v.c0)
                                     }
@@ -657,9 +668,10 @@ impl Program {
                 })
                 .collect();
             rows.sort_by_key(|(_, c)| std::cmp::Reverse(*c));
-            eprintln!("== DBG_PROF: cycles by function ({steps} total) ==");
+            eprintln!("== DBG_PROF: cycles by function ({} total) ==", pretty_integer(steps));
             for (name, c) in rows.iter().filter(|(_, c)| *c > 0) {
-                eprintln!("  {c:>9}  {:>5.1}%  {name}", 100.0 * *c as f64 / steps as f64);
+                let count = pretty_integer(c);
+                eprintln!("  {count:>13}  {:>5.1}%  {name}", 100.0 * *c as f64 / steps as f64);
             }
         }
 

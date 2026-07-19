@@ -1379,6 +1379,7 @@ impl Blake3Setup {
 mod tests {
     use super::*;
     use crate::test_rng::Rng;
+    use primitives::pretty_integer;
 
     #[test]
     fn family_digest_matches_baked() {
@@ -1407,7 +1408,7 @@ mod tests {
         println!("build_matrices (×2 redundant here): {:?}", t.elapsed());
         let nnz: usize =
             ma.rows.iter().map(|r| r.len()).sum::<usize>() + mb.rows.iter().map(|r| r.len()).sum::<usize>();
-        println!("total nonzeros (A_0 + B_0): {nnz}");
+        println!("total nonzeros (A_0 + B_0): {}", pretty_integer(nnz));
         let r1cs = build_block_r1cs(3);
         let t = std::time::Instant::now();
         let csc = r1cs.csc_lincheck_circuit();

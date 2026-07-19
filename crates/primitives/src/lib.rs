@@ -122,6 +122,42 @@ pub fn init_tracing() {
         .try_init();
 }
 
+/// Format an integer with comma-separated groups of three decimal digits.
+///
+/// This accepts every standard signed and unsigned integer type through its
+/// [`ToString`] representation. A leading sign is preserved.
+///
+/// ```
+/// use primitives::pretty_integer;
+///
+/// assert_eq!(pretty_integer(16_769_432), "16,769,432");
+/// assert_eq!(pretty_integer(-12_345), "-12,345");
+/// ```
+pub fn pretty_integer(value: impl ToString) -> String {
+    let raw = value.to_string();
+    let (sign, digits) = match raw.as_bytes().first() {
+        Some(b'+' | b'-') => raw.split_at(1),
+        _ => ("", raw.as_str()),
+    };
+
+    // Keep misuse benign: callers are expected to pass integers, but returning
+    // the original representation is more useful than mangling another type.
+    if !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return raw;
+    }
+
+    let separators = digits.len().saturating_sub(1) / 3;
+    let mut out = String::with_capacity(raw.len() + separators);
+    out.push_str(sign);
+    for (i, byte) in digits.bytes().enumerate() {
+        if i != 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(byte as char);
+    }
+    out
+}
+
 /// `log2` of a power of two (panics otherwise).
 pub fn log2_strict_usize(n: usize) -> usize {
     assert!(n.is_power_of_two(), "not a power of two: {n}");
@@ -217,4 +253,28 @@ fn perf_core_count() -> usize {
         }
     }
     std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)
+}
+
+#[cfg(test)]
+mod formatting_tests {
+    use super::pretty_integer;
+
+    #[test]
+    fn pretty_integer_groups_decimal_digits() {
+        assert_eq!(pretty_integer(0), "0");
+        assert_eq!(pretty_integer(12), "12");
+        assert_eq!(pretty_integer(999), "999");
+        assert_eq!(pretty_integer(1_000), "1,000");
+        assert_eq!(pretty_integer(16_769_432), "16,769,432");
+        assert_eq!(
+            pretty_integer(u128::MAX),
+            "340,282,366,920,938,463,463,374,607,431,768,211,455"
+        );
+    }
+
+    #[test]
+    fn pretty_integer_preserves_sign() {
+        assert_eq!(pretty_integer(-12_345), "-12,345");
+        assert_eq!(pretty_integer("+123456"), "+123,456");
+    }
 }

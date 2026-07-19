@@ -744,6 +744,7 @@ version = "0.1.0"
 dependencies = [
  "bincode",
  "blake3",
+ "primitives",
  "rand",
  "rayon",
  "serde",

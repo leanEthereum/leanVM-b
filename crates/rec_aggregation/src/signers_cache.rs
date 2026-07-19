@@ -28,6 +28,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Instant;
 
+use primitives::pretty_integer;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use xmss::*;
@@ -131,11 +132,16 @@ fn generate_range(start: usize, end: usize) -> Vec<CachedSignature> {
     let mut out = Vec::with_capacity(total);
     for (done, index) in (start..end).enumerate() {
         out.push(compute_signer(index));
-        print!("\r  generating XMSS signers (one-time, then cached): {}/{total}", done + 1);
+        print!(
+            "\r  generating XMSS signers (one-time, then cached): {}/{}",
+            pretty_integer(done + 1),
+            pretty_integer(total)
+        );
         let _ = std::io::stdout().flush();
     }
     println!(
-        "\r  generated {total} XMSS in {:.2}s (cached to disk)                ",
+        "\r  generated {} XMSS in {:.2}s (cached to disk)                ",
+        pretty_integer(total),
         t.elapsed().as_secs_f32()
     );
     out
