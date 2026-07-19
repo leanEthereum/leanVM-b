@@ -230,7 +230,9 @@ pub fn disassemble(prog: &[Op]) -> String {
             Op::Jump { oc, od, of } => {
                 format!("JUMP   if fp[{oc}]≠0: pc=fp[{od}], fp=fp[{of}]")
             }
-            Op::Blake3 { a, b, c } => format!("BLAKE3 fp[{c}..+4] = H(fp[{a}..+4], fp[{b}..+4])"),
+            Op::Blake3 { a0, a1, b0, b1, c } => {
+                format!("BLAKE3 fp[{c}..+4] = H((fp[{a0}..+2], fp[{a1}..+2]), (fp[{b0}..+2], fp[{b1}..+2]))")
+            }
         };
         out.push_str(&format!("{:>6}  {line}\n", pretty_integer(pc)));
     }
@@ -294,6 +296,12 @@ fn resolve(op: &LOp, entry: &HashMap<String, u32>, sentinel: u32, base: u32) -> 
             od: *od,
             of: *of,
         },
-        LOp::Blake3 { a, b, c } => Op::Blake3 { a: *a, b: *b, c: *c },
+        LOp::Blake3 { a0, a1, b0, b1, c } => Op::Blake3 {
+            a0: *a0,
+            a1: *a1,
+            b0: *b0,
+            b1: *b1,
+            c: *c,
+        },
     }
 }

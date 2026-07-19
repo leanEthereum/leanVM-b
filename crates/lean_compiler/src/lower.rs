@@ -40,7 +40,7 @@ const FOLD_MAX: u128 = 1 << 16;
 /// A deferred stack-cell store: the cell is a copy of another cell, or a zero.
 /// Recorded instead of emitting the `MUL`/`SET`, and forwarded to the source at
 /// each use ([`FnLower::word_src`], [`FnLower::chunk_src`]) — so `BLAKE3`,
-/// which addresses its four two-cell input chunks independently, reads them in
+/// which addresses its four two-word input chunks independently, reads them in
 /// place without assembling copies.
 #[derive(Clone, Copy)]
 enum Alias {
@@ -202,9 +202,6 @@ impl FnLower<'_> {
 
     /// Two CONSECUTIVE frame cells both holding `0`, set lazily once — the
     /// source for a forwarded all-zero `BLAKE3` chunk (cells `base`, `base+1`).
-    // Retained for a possible return to two-cell chunk forwarding; a 128-bit
-    // chunk is now one cell, so `blake3_input` uses `word_src` directly.
-    #[allow(dead_code)]
     fn zero_pair(&mut self) -> Off {
         if let Some(o) = self.zero2_off {
             return o;
@@ -1249,16 +1246,14 @@ impl FnLower<'_> {
         }
     }
 
-    /// A `blake3` operand as a four-word stack run. A heap slice is bridged into
-    /// a fresh stack run — one `DEREF` per cell
+    /// A `blake3` operand as two independently addressed 128-bit chunks. Stack
+    /// chunks forward through adjacent aliases without copies. A heap slice is
+    /// bridged into a fresh stack run — one `DEREF` per cell
     /// (`m[ptr·g^{lo+k}] == m[fp+t+k]`, the `β` immediate doing the pointer
     /// offset). The heap cells must already be written.
-    fn blake3_input(&mut self, e: &Expr) -> Off {
+    fn blake3_input(&mut self, e: &Expr) -> [Off; 2] {
         match self.blake3_operand(e) {
-            B3Operand::Stack(o) => {
-                self.materialize_run(o, 4);
-                o
-            }
+            B3Operand::Stack(o) => [self.chunk_src(o), self.chunk_src(o + 2)],
             B3Operand::Heap { ptr, lo } => {
                 let t = self.alloc_stack(4);
                 for k in 0..4 {
@@ -1269,7 +1264,7 @@ impl FnLower<'_> {
                         mode: DerefMode::Cell,
                     });
                 }
-                t
+                [t, t + 2]
             }
         }
     }
@@ -1318,7 +1313,6 @@ impl FnLower<'_> {
     /// adjacent cells `(s, s+1)` forwards to `s`, an all-zero pair to the
     /// shared zero pair. A pair that does not forward as a unit (mixed or
     /// non-adjacent sources) is materialized into its own cells instead.
-    #[allow(dead_code)]
     fn chunk_src(&mut self, o: Off) -> Off {
         match (self.alias.get(&o).copied(), self.alias.get(&(o + 1)).copied()) {
             (None, None) => o,
@@ -2243,19 +2237,19 @@ impl FnLower<'_> {
                 // `blake3(a, b, out)`: the digest of the two 256-bit operands
                 // lands in the existing 4-cell run `out` (write-once: if `out`
                 // was already written, this asserts the digest equals it). A
-                // heap `out` slice takes the digest via a fresh stack pair and
-                // two `DEREF`s after the hash (the store direction is the same
-                // instruction as the load — write-once fills the unset side).
+                // heap `out` slice takes the digest via a fresh four-word stack
+                // run and four `DEREF`s after the hash (the store direction is
+                // the same instruction as the load — write-once fills the unset side).
                 if f == "blake3" {
                     assert_eq!(args.len(), 3, "blake3 takes (a, b, out)");
-                    let a = self.blake3_input(&args[0]);
-                    let b = self.blake3_input(&args[1]);
+                    let [a0, a1] = self.blake3_input(&args[0]);
+                    let [b0, b1] = self.blake3_input(&args[1]);
                     let (c, heap_out) = match self.blake3_operand(&args[2]) {
                         B3Operand::Stack(o) => (o, None),
                         B3Operand::Heap { ptr, lo } => (self.alloc_stack(4), Some((ptr, lo))),
                     };
                     self.materialize_run(c, 4);
-                    self.emit(LOp::Blake3 { a, b, c });
+                    self.emit(LOp::Blake3 { a0, a1, b0, b1, c });
                     if let Some((ptr, lo)) = heap_out {
                         for k in 0..4 {
                             self.emit(LOp::Deref {

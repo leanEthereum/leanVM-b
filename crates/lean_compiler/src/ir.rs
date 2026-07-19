@@ -70,10 +70,13 @@ pub(crate) enum LOp {
         od: Off,
         of: Off,
     },
-    /// `BLAKE3`: two four-word input runs and one four-word output run.
+    /// `BLAKE3`: four independently addressed two-word input chunks and one
+    /// four-word output run.
     Blake3 {
-        a: Off,
-        b: Off,
+        a0: Off,
+        a1: Off,
+        b0: Off,
+        b1: Off,
         c: Off,
     },
 }

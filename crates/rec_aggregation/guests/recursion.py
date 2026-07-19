@@ -271,13 +271,13 @@ def ediv(a: Ext, b: Ext):
 
 
 @inline
-def epoly3(x: Ext, c0: Ext, c1: Ext, c2: Ext):
-    return eadd(c0, emul(x, eadd(c1, emul(x, c2))))
+def epoly4(x: Ext, c0: Ext, c1: Ext, c2: Ext, c3: Ext):
+    return eadd(c0, emul(x, eadd(c1, emul(x, eadd(c2, emul(x, c3))))))
 
 
 @inline
-def epoly4(x: Ext, c0: Ext, c1: Ext, c2: Ext, c3: Ext):
-    return eadd(c0, emul(x, eadd(c1, emul(x, eadd(c2, emul(x, c3))))))
+def epoly5(x: Ext, c0: Ext, c1: Ext, c2: Ext, c3: Ext, c4: Ext):
+    return eadd(c0, emul(x, eadd(c1, emul(x, eadd(c2, emul(x, eadd(c3, emul(x, c4))))))))
 
 
 @inline
@@ -1660,10 +1660,12 @@ def verify_sub(pi_0, pi_1, pi_2, pi_3, seed_0, seed_1, seed_2, seed_3, base_delt
             constraint_eval = epoly7(eta, c0, c1, c2, c3, c4, c5, c6)
         if t == TABLE_BLAKE3:
             fp = sload(col_evals, 0)
-            c0 = eadd(sload(col_evals, 4), emul(fp, sload(col_evals, 1)))
-            c1 = eadd(sload(col_evals, 5), emul(fp, sload(col_evals, 2)))
-            c2 = eadd(sload(col_evals, 6), emul(fp, sload(col_evals, 3)))
-            constraint_eval = epoly3(eta, c0, c1, c2)
+            c0 = eadd(sload(col_evals, 6), emul(fp, sload(col_evals, 1)))
+            c1 = eadd(sload(col_evals, 7), emul(fp, sload(col_evals, 2)))
+            c2 = eadd(sload(col_evals, 8), emul(fp, sload(col_evals, 3)))
+            c3 = eadd(sload(col_evals, 9), emul(fp, sload(col_evals, 4)))
+            c4 = eadd(sload(col_evals, 10), emul(fp, sload(col_evals, 5)))
+            constraint_eval = epoly5(eta, c0, c1, c2, c3, c4)
         ext_assert_eq(claim, emul(eq_acc, constraint_eval))
 
     # ---- public-input binding claim: one base-word MEM column ----

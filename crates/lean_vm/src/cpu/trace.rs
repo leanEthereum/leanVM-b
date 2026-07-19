@@ -77,12 +77,15 @@ pub(crate) struct Erow {
     pub(crate) bytecode_read: F64,
 }
 
-/// `BLAKE3` row: three four-word runs and twelve per-cell memory counts.
+/// `BLAKE3` row: four two-word input chunks, one four-word output run, and
+/// twelve per-cell memory counts.
 pub(crate) struct Brow {
     pub(crate) pc: u32,
     pub(crate) fp: u32,
-    pub(crate) aa: u32,
-    pub(crate) ab: u32,
+    pub(crate) aa0: u32,
+    pub(crate) aa1: u32,
+    pub(crate) ab0: u32,
+    pub(crate) ab1: u32,
     pub(crate) ac: u32,
     pub(crate) va: [F64; 4],
     pub(crate) vb: [F64; 4],

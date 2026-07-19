@@ -183,6 +183,14 @@ impl Program {
             mem_count[cell_idx] = mul_by_g(count);
             count
         }
+        fn bump_run<const N: usize>(
+            mem: &mut Vec<F64>,
+            written: &mut Vec<bool>,
+            mem_count: &mut Vec<F64>,
+            base: u32,
+        ) -> [F64; N] {
+            std::array::from_fn(|k| bump_access_count(mem, written, mem_count, base + k as u32))
+        }
 
         while pc != ending_pc {
             assert!(steps < 100_000_000, "step limit exceeded (runaway recursion?)");
@@ -654,12 +662,22 @@ impl Program {
                         pc += 1;
                     }
                 }
-                Op::Blake3 { a, b, c } => {
-                    let (aa, ab, ac) = (fp + a, fp + b, fp + c);
-                    let va = std::array::from_fn(|k| get(&mem, &written, aa + k as u32));
-                    let vb = std::array::from_fn(|k| get(&mem, &written, ab + k as u32));
+                Op::Blake3 { a0, a1, b0, b1, c } => {
+                    let (aa0, aa1, ab0, ab1, ac) = (fp + a0, fp + a1, fp + b0, fp + b1, fp + c);
+                    let va = [
+                        get(&mem, &written, aa0),
+                        get(&mem, &written, aa0 + 1),
+                        get(&mem, &written, aa1),
+                        get(&mem, &written, aa1 + 1),
+                    ];
+                    let vb = [
+                        get(&mem, &written, ab0),
+                        get(&mem, &written, ab0 + 1),
+                        get(&mem, &written, ab1),
+                        get(&mem, &written, ab1 + 1),
+                    ];
                     // Compress the 64 input bytes to the 32-byte digest, then write
-                    // it to c's two cells. No table constraint covers the digest
+                    // it to c's four cells. No table constraint covers the digest
                     // (the relation is proven by flock, §blake3_flock); the
                     // interpreter still computes the definite digest so the output
                     // cells are consistent for any later read.
@@ -667,19 +685,20 @@ impl Program {
                     for (k, v) in vc.into_iter().enumerate() {
                         put(&mut mem, &mut written, &mut mem_count, ac + k as u32, v);
                     }
-                    let mut bump4 = |base| {
-                        std::array::from_fn(|k| {
-                            bump_access_count(&mut mem, &mut written, &mut mem_count, base + k as u32)
-                        })
-                    };
-                    let ra = bump4(aa);
-                    let rb = bump4(ab);
-                    let rc = bump4(ac);
+                    let ra0 = bump_run::<2>(&mut mem, &mut written, &mut mem_count, aa0);
+                    let ra1 = bump_run::<2>(&mut mem, &mut written, &mut mem_count, aa1);
+                    let rb0 = bump_run::<2>(&mut mem, &mut written, &mut mem_count, ab0);
+                    let rb1 = bump_run::<2>(&mut mem, &mut written, &mut mem_count, ab1);
+                    let rc = bump_run::<4>(&mut mem, &mut written, &mut mem_count, ac);
+                    let ra = [ra0[0], ra0[1], ra1[0], ra1[1]];
+                    let rb = [rb0[0], rb0[1], rb1[0], rb1[1]];
                     blake3.push(Brow {
                         pc,
                         fp,
-                        aa,
-                        ab,
+                        aa0,
+                        aa1,
+                        ab0,
+                        ab1,
                         ac,
                         va,
                         vb,

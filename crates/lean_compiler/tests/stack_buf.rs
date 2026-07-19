@@ -7,7 +7,7 @@
 
 use lean_compiler::{compile, parse};
 use lean_vm::blake3_flock::warm_setup;
-use lean_vm::cpu::{prove, verify};
+use lean_vm::cpu::{Op, prove, verify};
 use primitives::field::F64;
 
 /// `BLAKE3(a, b)` reference (matches `cpu::blake3_compress`): the eight words
@@ -62,6 +62,42 @@ def main():
     let mut bad = want;
     bad[0] += F64::ONE;
     assert!(verify(&program, &bad, &proof).is_err(), "wrong digest must be rejected");
+}
+
+/// Copy aliases assembling a hash input are forwarded in 128-bit pairs. The
+/// second hash reads the first hash's output chunks directly instead of copying
+/// all four words into `t`.
+#[test]
+fn blake3_forwards_two_word_chunks() {
+    let src = "\
+def main():
+    a = [5, 7, 11, 13]
+    h = StackBuf(4)
+    blake3(a, a, h)
+    t = [h[0], h[1], h[2], h[3]]
+    out = StackBuf(4)
+    blake3(t, t, out)
+    return
+";
+    let program = compile(&parse(src).expect("parse"));
+    let hashes: Vec<Op> = program
+        .prog
+        .iter()
+        .copied()
+        .filter(|op| matches!(op, Op::Blake3 { .. }))
+        .collect();
+    assert_eq!(hashes.len(), 2);
+    let first_out = match hashes[0] {
+        Op::Blake3 { c, .. } => c,
+        _ => unreachable!(),
+    };
+    match hashes[1] {
+        Op::Blake3 { a0, a1, b0, b1, .. } => {
+            assert_eq!((a0, a1), (first_out, first_out + 2));
+            assert_eq!((b0, b1), (first_out, first_out + 2));
+        }
+        _ => unreachable!(),
+    }
 }
 
 /// A general (non-blake3) `StackBuf(3)`: indexed writes, an indexed read feeding

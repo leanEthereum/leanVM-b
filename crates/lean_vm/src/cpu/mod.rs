@@ -64,9 +64,9 @@ const MAX_LOG_ROWS: usize = 32;
 const MAX_LOG_BYTECODE: usize = 32;
 
 /// A binding digest of the program bytecode (BLAKE3 of every instruction's
-/// canonical encoding — opcode, operands, and the DEREF store-mode), as two field
-/// elements. Seeded into the transcript alongside the public input, so EVERY
-/// challenge depends on the exact program.
+/// canonical encoding — opcode, five operand slots, and immediate), as four
+/// field elements. Seeded into the transcript alongside the public input, so
+/// EVERY challenge depends on the exact program.
 ///
 /// Without this the program's instruction content would enter verification only
 /// through the bytecode bus's `Public`-coordinate MLE evaluation at the GKR point
@@ -81,30 +81,31 @@ fn program_digest(prog: &[Op]) -> [F64; 4] {
     // VM-native: encode the program as a field-element slice and hash it with the
     // Merkle–Damgård slice hash ([`crate::vmhash::hash_slice`]), so a recursive
     // verifier can recompute this digest with the `Blake3` opcode alone.
-    let mut words: Vec<F64> = Vec::with_capacity(3 * prog.len() + 2);
+    let mut words: Vec<F64> = Vec::with_capacity(4 * prog.len() + 2);
     // Domain/version marker (the MD IV also binds the total length).
     words.push(F64(prog.len() as u64));
-    words.push(F64(2));
+    words.push(F64(3));
     for op in prog {
-        // Encode every op injectively as a tag, three u32 operands, and one
-        // base-field immediate.
-        let (tag, a, b, c, k) = match *op {
-            Op::Xor { a, b, c } => (0u8, a, b, c, F64::ZERO),
-            Op::Mul { a, b, c } => (1, a, b, c, F64::ZERO),
-            Op::AddExt { a, b, c } => (2, a, b, c, F64::ZERO),
-            Op::MulExt { a, b, c } => (3, a, b, c, F64::ZERO),
-            Op::Set { o, k } => (4, o, 0, 0, k),
+        // Encode every op injectively as a tag, five u32 operand slots, and
+        // one base-field immediate. BLAKE3 uses all five slots.
+        let (tag, a, b, c, d, e, k) = match *op {
+            Op::Xor { a, b, c } => (0u8, a, b, c, 0, 0, F64::ZERO),
+            Op::Mul { a, b, c } => (1, a, b, c, 0, 0, F64::ZERO),
+            Op::AddExt { a, b, c } => (2, a, b, c, 0, 0, F64::ZERO),
+            Op::MulExt { a, b, c } => (3, a, b, c, 0, 0, F64::ZERO),
+            Op::Set { o, k } => (4, o, 0, 0, 0, 0, k),
             Op::Deref {
                 alpha,
                 beta,
                 gamma,
                 mode,
-            } => (5 + mode as u8, alpha, beta, gamma, F64::ZERO),
-            Op::Jump { oc, od, of } => (8, oc, od, of, F64::ZERO),
-            Op::Blake3 { a, b, c } => (9, a, b, c, F64::ZERO),
+            } => (5 + mode as u8, alpha, beta, gamma, 0, 0, F64::ZERO),
+            Op::Jump { oc, od, of } => (8, oc, od, of, 0, 0, F64::ZERO),
+            Op::Blake3 { a0, a1, b0, b1, c } => (9, a0, a1, b0, b1, c, F64::ZERO),
         };
         words.push(F64(a as u64 | ((b as u64) << 32)));
-        words.push(F64(c as u64 | ((tag as u64) << 32)));
+        words.push(F64(c as u64 | ((d as u64) << 32)));
+        words.push(F64(e as u64 | ((tag as u64) << 32)));
         words.push(k);
     }
     crate::vmhash::hash_slice(&words)
@@ -612,8 +613,8 @@ mod tests {
     }
 
     /// A hand-built straight-line program with one BLAKE3 row: set up the two
-    /// 256-bit inputs (`a` at cells 2,3, `b` at cells 4,5 — one 128-bit word per
-    /// cell), hash them into the output `c` (cells 6,7), pad with filler SETs so
+    /// 256-bit inputs (`a` at cells 4..8, `b` at cells 8..12), hash them into
+    /// the output `c` (cells 12..16), pad with filler SETs so
     /// the last executed instruction lands one before the sentinel, and halt
     /// there. The flock validity sub-proof plus the memory / state / bytecode bus
     /// interactions are verified end-to-end (the proof carries the Ligerito
@@ -629,7 +630,13 @@ mod tests {
                     .map(|(k, v)| Op::Set { o: 8 + k as u32, k: v }),
             )
             .collect();
-        prog.push(Op::Blake3 { a: 4, b: 8, c: 12 });
+        prog.push(Op::Blake3 {
+            a0: 4,
+            a1: 6,
+            b0: 8,
+            b1: 10,
+            c: 12,
+        });
         // 16 slots: 9 executed so far; 6 filler SETs step the pc to 15 (halt);
         // slot 15 is the never-executed sentinel.
         for k in 0..6u32 {
@@ -689,7 +696,13 @@ mod tests {
             .enumerate()
             .map(|(k, v)| Op::Set { o: 4 + k as u32, k: v })
             .collect();
-        prog.push(Op::Blake3 { a: 4, b: 4, c: 8 });
+        prog.push(Op::Blake3 {
+            a0: 4,
+            a1: 6,
+            b0: 4,
+            b1: 6,
+            c: 8,
+        });
         for k in 0..10u32 {
             prog.push(Op::Set { o: 12 + k, k: F64::ONE }); // fillers step pc to the sentinel
         }
@@ -764,12 +777,12 @@ mod tests {
     #[test]
     fn non_blake3_program_verifies() {
         let prog = vec![
-            Op::Set { o: 2, k: w(5) },
-            Op::Set { o: 3, k: w(6) },
-            Op::Xor { a: 2, b: 3, c: 4 },
+            Op::Set { o: 4, k: w(5) },
+            Op::Set { o: 5, k: w(6) },
+            Op::Xor { a: 4, b: 5, c: 6 },
             Op::Xor { a: 0, b: 0, c: 0 }, // sentinel
         ];
-        let program = Program::from_bytecode(prog, 5);
+        let program = Program::from_bytecode(prog, 7);
         let pi = pi();
         let (proof, stats) = prove(&program, pi, pcs::LOG_INV_RATE);
         assert_eq!(stats.counts[tables::BLAKE3_TABLE], 0, "no real BLAKE3 rows");
@@ -810,21 +823,21 @@ mod tests {
     #[test]
     fn proof_bound_to_program() {
         let prog = vec![
-            Op::Set { o: 2, k: w(5) },
-            Op::Set { o: 3, k: w(6) },
-            Op::Xor { a: 2, b: 3, c: 4 },
+            Op::Set { o: 4, k: w(5) },
+            Op::Set { o: 5, k: w(6) },
+            Op::Xor { a: 4, b: 5, c: 6 },
             Op::Xor { a: 0, b: 0, c: 0 }, // sentinel
         ];
-        let program = Program::from_bytecode(prog.clone(), 5);
+        let program = Program::from_bytecode(prog.clone(), 7);
         let pi = pi();
         let (proof, _) = prove(&program, pi, pcs::LOG_INV_RATE);
         verify(&program, &pi, &proof).expect("honest proof verifies");
 
         // Same shape (4 ops, same opcodes/operands, so identical layout + announced
-        // sizes) but only the SET constant's third limb changed. Must be rejected.
+        // sizes) but only the SET constant changed. Must be rejected.
         let mut prog2 = prog;
-        prog2[0] = Op::Set { o: 2, k: F64(7) };
-        let program2 = Program::from_bytecode(prog2, 5);
+        prog2[0] = Op::Set { o: 4, k: F64(7) };
+        let program2 = Program::from_bytecode(prog2, 7);
         assert!(
             verify(&program2, &pi, &proof).is_err(),
             "a proof must not verify against a different program"

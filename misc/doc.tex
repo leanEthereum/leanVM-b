@@ -87,14 +87,14 @@ Instruction & Operands & Semantics\\
 \texttt{SET\_CONSTANT} & $[o,k]$         & $\loc{o}=k$ \quad($k\in\K$)\\
 \texttt{DEREF}         & $[\alpha,\beta,\gamma;\,s]$ & $\mem[\loc{\alpha}\cdot\beta]=\srcsel{s}$\\
 \texttt{JUMP}          & $[o_c,o_d,o_f]$ & conditional jump (below)\\
-\texttt{BLAKE3}        & $[o_A,o_B,o_C]$ & $c=\mathrm{BLAKE3}(a,b)$ on four-word operands (below)\\
+\texttt{BLAKE3}        & $[o_{A,0},o_{A,1},o_{B,0},o_{B,1},o_C]$ & $c=\mathrm{BLAKE3}(a,b)$ (below)\\
 \hline
 \end{tabular}
 \end{center}
 
 For \texttt{ADD\_EXT} and \texttt{MUL\_EXT}, each operand reference names its first coordinate. If $a_A=\fp o_A$, the other two addresses are the virtual columns $\gen a_A$ and $\gen^2a_A$; only $a_A$ is committed. The same convention applies to $B$ and $C$.
 
-\texttt{BLAKE3} compresses $64$ bytes to $32$. Each operand is four consecutive $\K$ words (256 bits): $a$ begins at $\loc{o_A}$, $b$ at $\loc{o_B}$, and the digest $c$ at $\loc{o_C}$. Only each run's first address is committed; its remaining addresses are virtual multiples by $\gen,\gen^2,\gen^3$. Each row accesses twelve memory words. The BLAKE3 table (\S\ref{sec:tab-blake3}) connects them to the memory, state, and bytecode interactions, while Flock~\cite{flock} proves the compression relation.
+\texttt{BLAKE3} compresses $64$ bytes to $32$. Each 256-bit input is split into two independently addressed 128-bit chunks: $a$ begins at $\loc{o_{A,0}}$ and $\loc{o_{A,1}}$, and $b$ at $\loc{o_{B,0}}$ and $\loc{o_{B,1}}$. Each chunk contains two consecutive $\K$ words, so its second address is the virtual multiple by $\gen$. The digest $c$ is four consecutive words beginning at $\loc{o_C}$, with its remaining addresses virtual multiples by $\gen,\gen^2,\gen^3$. Each row therefore commits five starting addresses and accesses twelve memory words. The BLAKE3 table (\S\ref{sec:tab-blake3}) connects them to the memory, state, and bytecode interactions, while Flock~\cite{flock} proves the compression relation.
 
 \texttt{DEREF} stores, at the dereferenced address $\loc{\alpha}\cdot\beta$, a value chosen by a \emph{store mode} $s\in\{\texttt{deref\_cell}[\gamma],\texttt{deref\_pc},\texttt{deref\_fp}\}$:
 \[
@@ -429,11 +429,13 @@ Alone among the tables, \texttt{JUMP} commits its successors.
 
 \subsection{\texttt{BLAKE3}}\label{sec:tab-blake3}
 
-Compresses two 256-bit operands to a 256-bit digest. Each value is four
-consecutive $\K$ words. The committed starting addresses are
-$a_A=\fp o_A$, $a_B=\fp o_B$, and $a_C=\fp o_C$; addresses at offsets
-$1,2,3$ are virtual multiples by $\gen,\gen^2,\gen^3$. Thus each row accesses
-twelve memory cells while committing only three address columns.
+Compresses two 256-bit operands to a 256-bit digest. Each input is two
+independently addressed 128-bit chunks. Their committed starting addresses are
+$a_{A,i}=\fp o_{A,i}$ and $a_{B,i}=\fp o_{B,i}$ for $i\in\{0,1\}$; the second
+word of each chunk is at the virtual address $\gen a_{X,i}$. The four-word
+output starts at the committed address $a_C=\fp o_C$, with successor addresses
+$\gen^j a_C$ for $j\in\{1,2,3\}$. Thus each row accesses twelve memory cells
+while committing five address columns.
 
 Flock~\cite{flock} proves $c=\mathrm{BLAKE3}(a,b)$ with a batched R1CS over a Boolean witness. The witness is packed into $q_\pkd$, with $64$ bits per $\K$-element. The concrete ring switch of \S\ref{sec:ringswitch} maps its $\F_2$ claims to one $\E$-weighted claim on $q_\pkd$, which joins the batched opening (\S\ref{sec:e2e-unrolled}).
 
@@ -442,13 +444,13 @@ separate value-column commitment. Each is a strided point evaluation of
 $q_\pkd$ and is linked directly to its single-word memory interaction. The
 R1CS matrices fix the BLAKE3 IV, counter, block length, and flags.
 \begin{itemize}
-\item \textbf{Columns:} $\pc,\fp$; operands $o_A,o_B,o_C$; starting addresses $a_A,a_B,a_C$; twelve per-word memory counts; bytecode count $r_{\mathrm{bc}}$. The twelve values live in $q_\pkd$.
-\item \textbf{Constraints:} the three address relations $a_X=\fp o_X$. Flock proves $c=\mathrm{BLAKE3}(a,b)$.
+\item \textbf{Columns:} $\pc,\fp$; operands $o_{A,0},o_{A,1},o_{B,0},o_{B,1},o_C$; their five starting addresses; twelve per-word memory counts; bytecode count $r_{\mathrm{bc}}$. The twelve values live in $q_\pkd$.
+\item \textbf{Constraints:} the five address relations $a_X=\fp o_X$. Flock proves $c=\mathrm{BLAKE3}(a,b)$.
 \item \textbf{Flushes:}
   \begin{itemize}
   \item \textbf{State:} \pull\ $\tup{\dsep{ST},\pc,\fp}$, \push\ $\tup{\dsep{ST},\gen\cdot\pc,\fp}$.
-  \item \textbf{Bytecode:} \pull\ $\tup{\dsep{BC},\pc,r_{\mathrm{bc}},\opc{B3},o_A,o_B,o_C,0,0}$, \push\ the same at $\gen\cdot r_{\mathrm{bc}}$.
-  \item \textbf{Memory:} twelve reads, at $\gen^j a_X$ for $X\in\{A,B,C\}$ and $j\in\{0,1,2,3\}$, each paired with the count multiplied by $\gen$.
+  \item \textbf{Bytecode:} \pull\ $\tup{\dsep{BC},\pc,r_{\mathrm{bc}},\opc{B3},o_{A,0},o_{A,1},o_{B,0},o_{B,1},o_C}$, \push\ the same at $\gen\cdot r_{\mathrm{bc}}$.
+  \item \textbf{Memory:} twelve reads: two at $a_{X,i},\gen a_{X,i}$ for each input chunk, and four at $\gen^j a_C$ for $j\in\{0,1,2,3\}$, each paired with the count multiplied by $\gen$.
   \end{itemize}
 \end{itemize}
 
@@ -493,11 +495,11 @@ Instruction & coord.\ $3$ & coord.\ $4$ & coord.\ $5$ & coord.\ $6$ & coord.\ $7
 \texttt{SET\_CONSTANT} & $\opc{SET}$ & $o$   & $k$ & $0$ & $0$ & $0$\\
 \texttt{DEREF}         & $\opc{DRF}$ & $\alpha$ & $\beta$ & $\gamma$ & $f_{\pc}$ & $f_{\fp}$\\
 \texttt{JUMP}          & $\opc{JMP}$ & $o_c$ & $o_d$ & $o_f$ & $0$ & $0$\\
-\texttt{BLAKE3}        & $\opc{B3}$  & $o_A$ & $o_B$ & $o_C$ & $0$ & $0$\\
+\texttt{BLAKE3}        & $\opc{B3}$  & $o_{A,0}$ & $o_{A,1}$ & $o_{B,0}$ & $o_{B,1}$ & $o_C$\\
 \hline
 \end{tabular}
 \end{center}
-So the program is six public columns (opcode, three operands, two flags), whose MLEs the verifier forms itself. Writing $\mathit{instr}$ for the six, the bytecode seed at $\pc$ pushes $\tup{\dsep{BC},\pc,1,\mathit{instr}}$ and an instruction table pulls it with its opcode hardcoded (\S\ref{sec:tables}); balance then forces each table's operands \emph{and} flags to match the program at its $\pc$.
+So the program is six public columns (opcode and five operand slots), whose MLEs the verifier forms itself. For \texttt{DEREF}, the final two slots are the store-mode flags; for \texttt{BLAKE3}, all five are addresses. Writing $\mathit{instr}$ for the six, the bytecode seed at $\pc$ pushes $\tup{\dsep{BC},\pc,1,\mathit{instr}}$ and an instruction table pulls it with its opcode hardcoded (\S\ref{sec:tables}); balance then forces each table's operands to match the program at its $\pc$.
 
 The program is padded to a power of two (\S\ref{sec:idxcol}). A padding entry is never executed: no table pulls it, so its seed push and finalize pull (both at count $1$) cancel.
 

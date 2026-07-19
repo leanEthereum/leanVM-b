@@ -734,10 +734,11 @@ impl Table for JumpTable {
 
 // ---- BLAKE3 ------------------------------------------------------------------
 
-/// `BLAKE3` (doc §7.6): each 256-bit operand and output is four consecutive
-/// base-field words. Their committed starting addresses are `aa`, `ab`, and
-/// `ac`; the remaining addresses are virtual multiples by `g`, `g²`, `g³`, so
-/// the row reads twelve cells in all. Three address bindings are constrained; the compression
+/// `BLAKE3` (doc §7.6): each 256-bit input is addressed as two independent
+/// 128-bit chunks (`aa0`, `aa1` and `ab0`, `ab1`), each covering two
+/// consecutive base-field words. The output is four consecutive words at
+/// `ac`. Five start addresses are committed and bound to bytecode operands;
+/// the other seven addresses are virtual generator multiples. The compression
 /// relating output words to input words carries no table constraint here: it is
 /// proven by flock's R1CS validity via `q_pkd` (§blake3_flock).
 ///
@@ -751,20 +752,24 @@ struct Blake3Table;
 pub(crate) mod blake3t {
     pub const PC: usize = 0;
     pub const FP: usize = 1;
-    pub const OA: usize = 2;
-    pub const OB: usize = 3;
-    pub const OC: usize = 4;
-    pub const AA: usize = 5;
-    pub const AB: usize = 6;
-    pub const AC: usize = 7;
-    pub const VA0: usize = 8;
-    pub const VB0: usize = 12;
-    pub const VC0: usize = 16;
-    pub const RA0: usize = 20;
-    pub const RB0: usize = 24;
-    pub const RC0: usize = 28;
-    pub const RBC: usize = 32;
-    pub const N: usize = 33;
+    pub const OA0: usize = 2;
+    pub const OA1: usize = 3;
+    pub const OB0: usize = 4;
+    pub const OB1: usize = 5;
+    pub const OC: usize = 6;
+    pub const AA0: usize = 7;
+    pub const AA1: usize = 8;
+    pub const AB0: usize = 9;
+    pub const AB1: usize = 10;
+    pub const AC: usize = 11;
+    pub const VA0: usize = 12;
+    pub const VB0: usize = 16;
+    pub const VC0: usize = 20;
+    pub const RA0: usize = 24;
+    pub const RB0: usize = 28;
+    pub const RC0: usize = 32;
+    pub const RBC: usize = 36;
+    pub const N: usize = 37;
 }
 
 impl Table for Blake3Table {
@@ -794,30 +799,37 @@ impl Table for Blake3Table {
     }
     fn constraint_columns(&self) -> &'static [usize] {
         use blake3t::*;
-        &[FP, OA, OB, OC, AA, AB, AC]
+        &[FP, OA0, OA1, OB0, OB1, OC, AA0, AA1, AB0, AB1, AC]
     }
     fn eval_constraint(&self, eta: F192, cols: &Cols) -> F192 {
         use blake3t::*;
-        // The three address bindings a_X = fp·o_X (degree 2). The compression
+        // The five address bindings a_X = fp·o_X (degree 2). The compression
         // carries no table constraint here: flock's R1CS validity proves it
         // via q_pkd (§blake3_flock).
         let bind = |a: usize, o: usize| cols[a] + cols[FP] * cols[o];
-        eval_poly(eta, [bind(AA, OA), bind(AB, OB), bind(AC, OC)])
+        eval_poly(
+            eta,
+            [
+                bind(AA0, OA0),
+                bind(AA1, OA1),
+                bind(AB0, OB0),
+                bind(AB1, OB1),
+                bind(AC, OC),
+            ],
+        )
     }
     fn flushes(&self, f: &mut FlushBuilder) {
         use blake3t::*;
         f.state_step(PC, FP);
-        f.bytecode(
-            PC,
-            RBC,
-            OP_BLAKE3,
-            &[Col(OA), Col(OB), Col(OC), Const(F64::ZERO), Const(F64::ZERO)],
-        );
+        f.bytecode(PC, RBC, OP_BLAKE3, &[Col(OA0), Col(OA1), Col(OB0), Col(OB1), Col(OC)]);
         for k in 0usize..4 {
-            let addr = |base| if k == 0 { Col(base) } else { GCol(base, k as u32) };
-            f.memory(addr(AA), RA0 + k, VA0 + k);
-            f.memory(addr(AB), RB0 + k, VB0 + k);
-            f.memory(addr(AC), RC0 + k, VC0 + k);
+            let chunk_addr = |base| if k % 2 == 0 { Col(base) } else { GCol(base, 1) };
+            let aa = if k < 2 { AA0 } else { AA1 };
+            let ab = if k < 2 { AB0 } else { AB1 };
+            let out = if k == 0 { Col(AC) } else { GCol(AC, k as u32) };
+            f.memory(chunk_addr(aa), RA0 + k, VA0 + k);
+            f.memory(chunk_addr(ab), RB0 + k, VB0 + k);
+            f.memory(out, RC0 + k, VC0 + k);
         }
     }
     fn fill(&self, ctx: &FillCtx, out: &mut [Column]) {
@@ -825,11 +837,15 @@ impl Table for Blake3Table {
         let rows = &ctx.trace.blake3;
         out[PC] = rows.par_iter().map(|r| ctx.g_at(r.pc)).collect();
         out[FP] = rows.par_iter().map(|r| ctx.g_at(r.fp)).collect();
-        out[OA] = rows.par_iter().map(|r| ctx.g_at(r.aa - r.fp)).collect();
-        out[OB] = rows.par_iter().map(|r| ctx.g_at(r.ab - r.fp)).collect();
+        out[OA0] = rows.par_iter().map(|r| ctx.g_at(r.aa0 - r.fp)).collect();
+        out[OA1] = rows.par_iter().map(|r| ctx.g_at(r.aa1 - r.fp)).collect();
+        out[OB0] = rows.par_iter().map(|r| ctx.g_at(r.ab0 - r.fp)).collect();
+        out[OB1] = rows.par_iter().map(|r| ctx.g_at(r.ab1 - r.fp)).collect();
         out[OC] = rows.par_iter().map(|r| ctx.g_at(r.ac - r.fp)).collect();
-        out[AA] = rows.par_iter().map(|r| ctx.g_at(r.aa)).collect();
-        out[AB] = rows.par_iter().map(|r| ctx.g_at(r.ab)).collect();
+        out[AA0] = rows.par_iter().map(|r| ctx.g_at(r.aa0)).collect();
+        out[AA1] = rows.par_iter().map(|r| ctx.g_at(r.aa1)).collect();
+        out[AB0] = rows.par_iter().map(|r| ctx.g_at(r.ab0)).collect();
+        out[AB1] = rows.par_iter().map(|r| ctx.g_at(r.ab1)).collect();
         out[AC] = rows.par_iter().map(|r| ctx.g_at(r.ac)).collect();
         for k in 0..4 {
             out[VA0 + k] = rows.par_iter().map(|r| r.va[k]).collect();

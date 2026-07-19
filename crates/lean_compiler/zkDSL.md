@@ -638,13 +638,15 @@ Operands are size-4 `StackBuf`s or 4-cell slices; each cell is one F64 lane:
 
 - **stack operands** are read/written in place — zero copies; a self-hash
   `blake3(h, h, out)` aliases one four-word run into both inputs;
-- the instruction addresses the first word of each operand; the remaining
-  three addresses are virtual successors obtained by multiplying by `GEN`,
-  `GEN²`, and `GEN³`. When a 256-bit operand is
+- each input operand is addressed as two independent 128-bit chunks (two
+  pointers per 256-bit input). Within each chunk, the second word is the
+  virtual `GEN` successor. The output uses one pointer and virtual successors
+  `GEN`, `GEN²`, and `GEN³`. When a 256-bit operand is
   *assembled* from values that live in different places — the idiom
   `p = [t0, t1, t2, t3]; blake3(p, …)` — plain-copy aliases can be forwarded:
-  a stack store of a plain copy or a zero is forwarded to its source (see
-  "Variables"), and `BLAKE3` reads each chunk where it already is;
+  a pair of adjacent plain-copy aliases or two zeros is forwarded as one
+  128-bit chunk (see "Variables"), and `BLAKE3` reads it where it already is.
+  Mixed or non-adjacent pairs are materialized;
 - **heap slices** are still bridged through the stack for the *input pull* (the
   operand's words come from the heap): +1 `DEREF` per heap cell, and the output,
   if a heap slice, is stored after — write-once memory fills whichever side is

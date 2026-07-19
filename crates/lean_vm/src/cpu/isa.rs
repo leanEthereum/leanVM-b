@@ -44,11 +44,14 @@ pub enum Op {
         od: u32,
         of: u32,
     },
-    /// `BLAKE3`: compress the two 256-bit operands at the four-word runs
-    /// `a..a+4` and `b..b+4`, writing the digest to `c..c+4`.
+    /// `BLAKE3`: compress two 256-bit operands addressed as four independent
+    /// 128-bit chunks. Each input pointer names two consecutive base-field
+    /// words; the output pointer names one consecutive four-word run.
     Blake3 {
-        a: u32,
-        b: u32,
+        a0: u32,
+        a1: u32,
+        b0: u32,
+        b1: u32,
         c: u32,
     },
 }

@@ -218,11 +218,10 @@ pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; tables::N_TABLES]
     let max_op = prog
         .iter()
         .map(|op| match *op {
-            Op::Xor { a, b, c }
-            | Op::Mul { a, b, c }
-            | Op::AddExt { a, b, c }
-            | Op::MulExt { a, b, c }
-            | Op::Blake3 { a, b, c } => a.max(b).max(c),
+            Op::Xor { a, b, c } | Op::Mul { a, b, c } | Op::AddExt { a, b, c } | Op::MulExt { a, b, c } => {
+                a.max(b).max(c)
+            }
+            Op::Blake3 { a0, a1, b0, b1, c } => a0.max(a1).max(b0).max(b1).max(c),
             Op::Set { o, .. } => o,
             Op::Deref { alpha, beta, gamma, .. } => alpha.max(beta).max(gamma),
             Op::Jump { oc, od, of } => oc.max(od).max(of),
@@ -242,36 +241,30 @@ pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; tables::N_TABLES]
         Op::Jump { .. } => OP_JUMP,
         Op::Blake3 { .. } => OP_BLAKE3,
     };
-    let operands = |op: &Op| -> (F64, F64, F64) {
+    let operands = |op: &Op| -> [F64; 5] {
         match *op {
-            Op::Xor { a, b, c }
-            | Op::Mul { a, b, c }
-            | Op::AddExt { a, b, c }
-            | Op::MulExt { a, b, c }
-            | Op::Blake3 { a, b, c } => (g_at(a), g_at(b), g_at(c)),
-            Op::Set { o, k } => (g_at(o), k, F64::ZERO),
-            Op::Deref { alpha, beta, gamma, .. } => (g_at(alpha), g_at(beta), g_at(gamma)),
-            Op::Jump { oc, od, of } => (g_at(oc), g_at(od), g_at(of)),
+            Op::Xor { a, b, c } | Op::Mul { a, b, c } | Op::AddExt { a, b, c } | Op::MulExt { a, b, c } => {
+                [g_at(a), g_at(b), g_at(c), F64::ZERO, F64::ZERO]
+            }
+            Op::Set { o, k } => [g_at(o), k, F64::ZERO, F64::ZERO, F64::ZERO],
+            Op::Deref {
+                alpha,
+                beta,
+                gamma,
+                mode,
+            } => [g_at(alpha), g_at(beta), g_at(gamma), mode.f_pc(), mode.f_fp()],
+            Op::Jump { oc, od, of } => [g_at(oc), g_at(od), g_at(of), F64::ZERO, F64::ZERO],
+            Op::Blake3 { a0, a1, b0, b1, c } => [g_at(a0), g_at(a1), g_at(b0), g_at(b1), g_at(c)],
         }
-    };
-    // The 4th/5th bytecode operand slots: the two DEREF store-mode flags, or
-    // BLAKE3's remaining input word / output base (0 elsewhere).
-    let fpc = |op: &Op| match op {
-        Op::Deref { mode, .. } => mode.f_pc(),
-        _ => F64::ZERO,
-    };
-    let ffp = |op: &Op| match op {
-        Op::Deref { mode, .. } => mode.f_fp(),
-        _ => F64::ZERO,
     };
     // The program is PUBLIC (not committed): six public columns over the
     // program cube, embedded in the bytecode seed/finalize blocks below.
     let prog_op: Vec<F64> = prog.par_iter().map(opcode).collect();
-    let prog_o1: Vec<F64> = prog.par_iter().map(|o| operands(o).0).collect();
-    let prog_o2: Vec<F64> = prog.par_iter().map(|o| operands(o).1).collect();
-    let prog_o3: Vec<F64> = prog.par_iter().map(|o| operands(o).2).collect();
-    let prog_fpc: Vec<F64> = prog.par_iter().map(fpc).collect();
-    let prog_ffp: Vec<F64> = prog.par_iter().map(ffp).collect();
+    let prog_o1: Vec<F64> = prog.par_iter().map(|o| operands(o)[0]).collect();
+    let prog_o2: Vec<F64> = prog.par_iter().map(|o| operands(o)[1]).collect();
+    let prog_o3: Vec<F64> = prog.par_iter().map(|o| operands(o)[2]).collect();
+    let prog_fpc: Vec<F64> = prog.par_iter().map(|o| operands(o)[3]).collect();
+    let prog_ffp: Vec<F64> = prog.par_iter().map(|o| operands(o)[4]).collect();
 
     // ---- bus blocks ----
     use Coord::{Col, Const, Index, Public};
