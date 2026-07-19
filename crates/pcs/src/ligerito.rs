@@ -697,6 +697,93 @@ fn paper_ood_bits(log_inv_rate: usize, eta: f64, mu_vars: usize, ood_samples: us
     }
 }
 
+/// Largest per-level fold-challenge PoW we will spend to make a Johnson
+/// (list-decoding + OOD) level viable. Johnson buys a bigger proximity radius —
+/// hence fewer queries — than UDR at high rate, but its length-dependent
+/// proximity-gap term (plus the `2^{ℓ-1}` row union) must be ground back up to
+/// target. We only switch a level to Johnson when that grinding fits here.
+pub const MAX_FOLD_GRINDING_BITS: usize = 24;
+
+/// Best Johnson (list-decoding + OOD) analysis for one recursive level: the
+/// slack `η` minimizing the query count whose fold-grinding stays within
+/// `grind_cap` and whose OOD term clears `target_bits`. Returns `None` when no
+/// `η` fits (the caller then keeps the level's UDR analysis). Level 0 is never
+/// a Johnson candidate: it carries no OOD sample (bound by the opening's own
+/// evaluation claim), and UDR is both cheaper and list-size-1 there.
+struct JohnsonCandidate {
+    eta: f64,
+    queries: usize,
+    ood_samples: usize,
+    fold_grinding_bits: usize,
+    eps_pg: f64,
+    eps_query: f64,
+    eps_ood: f64,
+}
+
+fn best_johnson_candidate(
+    level_idx: usize,
+    log_inv_rate: usize,
+    log_msg_cols: usize,
+    log_num_interleaved: usize,
+    target_bits: usize,
+    query_grind: usize,
+    grind_cap: usize,
+) -> Option<JohnsonCandidate> {
+    if level_idx == 0 {
+        return None;
+    }
+    let target = target_bits as f64;
+    let query_target = target_bits.saturating_sub(query_grind).max(1) as f64;
+    let mu = log_msg_cols + log_num_interleaved;
+    let block_len = 1usize << (log_msg_cols + log_inv_rate);
+    let sqrt_rho = (-(log_inv_rate as f64)).exp2().sqrt();
+    let max_eta = 1.0 - sqrt_rho;
+    let mut best: Option<JohnsonCandidate> = None;
+
+    // BCHKS25 parameter `m = ⌈√ρ/(2η)⌉`: candidate η sit at the lower band edge
+    // η = √ρ/(2m) (largest γ, fewest queries, for that m). Larger m → larger γ
+    // (fewer queries) but a larger proximity-gap constant (more fold grinding),
+    // which is monotone, so once fold-grind exceeds the cap we can stop.
+    for m in 3..=64usize {
+        let eta = sqrt_rho / (2.0 * m as f64);
+        if eta <= 0.0 || eta >= max_eta {
+            continue;
+        }
+        let eps_pg =
+            ANALYSIS_LOG_Q - paper_johnson_log_a(log_inv_rate, eta, log_msg_cols, log_num_interleaved);
+        let fold_grinding_bits = (target - eps_pg).ceil().max(0.0) as usize;
+        if fold_grinding_bits > grind_cap {
+            break;
+        }
+        let per_q = paper_per_query_bits(log_inv_rate, eta);
+        if !per_q.is_finite() || per_q <= 0.0 {
+            continue;
+        }
+        let queries = (query_target / per_q).ceil() as usize;
+        if queries > block_len {
+            continue;
+        }
+        let ood_samples =
+            match (1..=8usize).find(|&s| paper_ood_bits(log_inv_rate, eta, mu, s) + 1e-9 >= target) {
+                Some(s) => s,
+                None => continue,
+            };
+        let cand = JohnsonCandidate {
+            eta,
+            queries,
+            ood_samples,
+            fold_grinding_bits,
+            eps_pg,
+            eps_query: queries as f64 * per_q,
+            eps_ood: paper_ood_bits(log_inv_rate, eta, mu, ood_samples),
+        };
+        if best.as_ref().is_none_or(|b| cand.queries < b.queries) {
+            best = Some(cand);
+        }
+    }
+    best
+}
+
 impl LigeritoLevelConfig {
     /// Compute the proximity-gap and per-query soundness bits this level is
     /// expected to deliver under its declared regime. Returns
@@ -997,6 +1084,24 @@ impl LigeritoSecurityConfig {
     /// governs Fiat-Shamir security (cf. Ethereum's `soundcalc`), not a
     /// whole-protocol union bound over terms.
     pub fn derive_config(m: usize) -> Result<Self, String> {
+        // Shipped, prover-compatible path: unique-decoding regime at every
+        // level (list size 1, zero OOD samples — the prover asserts this).
+        Self::derive_config_inner(m, false)
+    }
+
+    /// Analysis-only hybrid: UDR for the early low-rate levels, Johnson
+    /// (list-decoding + OOD) for the deep high-rate levels, where the larger
+    /// radius cuts the query count within `MAX_FOLD_GRINDING_BITS` of fold
+    /// grinding. The result is a sound config (passes [`Self::validate`]) that
+    /// commits fewer queries than the all-UDR profile, but it is **not**
+    /// executable by the current prover, which does not implement OOD sampling
+    /// (see `ligerito_k` module docs). Use it to size proofs and to scope the
+    /// OOD-sampling prover work the hybrid would need.
+    pub fn derive_config_hybrid(m: usize) -> Result<Self, String> {
+        Self::derive_config_inner(m, true)
+    }
+
+    fn derive_config_inner(m: usize, allow_johnson: bool) -> Result<Self, String> {
         let target_bits = SECURITY_BITS;
         let log_inv_rate = LOG_INV_RATE_0;
         // Query-phase grinding trades prover PoW for query count (see
@@ -1042,25 +1147,64 @@ impl LigeritoSecurityConfig {
             let rate = shape.log_inv_rates[i];
             let cols = shape.log_msg_cols[i];
             let ilv = shape.log_num_interleaved[i];
-            // Actual per-level per-query bits: n-aware (maximal radius).
-            let per_q = udr_per_query_bits(rate, cols, UDR_PROXIMITY_LOSS);
-            let queries = ((t - query_grind as f64).max(1.0) / per_q).ceil() as usize;
-            if queries > (1usize << (cols + rate)) {
-                return Err(format!(
-                    "L{i}: {queries} queries exceed block length 2^{}",
-                    cols + rate
-                ));
-            }
-            let eps_query = queries as f64 * per_q;
+            // UDR candidate: list size 1 (no OOD, no `2^{ℓ-1}` row union),
+            // cheapest fold-grinding, but a modest radius (`γ = δ/2`).
+            let udr_per_q = udr_per_query_bits(rate, cols, UDR_PROXIMITY_LOSS);
+            let udr_queries = ((t - query_grind as f64).max(1.0) / udr_per_q).ceil() as usize;
+            let udr_eps_pg = ANALYSIS_LOG_Q - paper_thm_1_4_log_a(rate, cols, UDR_PROXIMITY_LOSS);
+            let udr_fold_grind = (t - udr_eps_pg).ceil().max(0.0) as usize;
 
-            // No row-union penalty in the unique-decoding regime (list size
-            // 1): per Diamond and Gruen, MCA-commutes holds with error ε
-            // directly (vs the Johnson regime's 2^{ℓ-1} factor).
-            let _ = ilv;
-            let eps_pg = ANALYSIS_LOG_Q - paper_thm_1_4_log_a(rate, cols, UDR_PROXIMITY_LOSS);
-            let (regime, eta, proximity_loss, ood_samples, eps_ood) =
-                (SoundnessRegime::Udr, None, Some(UDR_PROXIMITY_LOSS), 0usize, None);
-            let fold_grinding_bits = (t - eps_pg).ceil().max(0.0) as usize;
+            // Johnson candidate: the far larger radius (`γ = 1 − √ρ − η`) cuts
+            // the query count at high rate; we take it only where the extra
+            // fold-grinding fits `MAX_FOLD_GRINDING_BITS` and it actually saves
+            // queries. This is the UDR-early / Johnson-late hybrid.
+            let john = best_johnson_candidate(
+                i, rate, cols, ilv, target_bits, query_grind, MAX_FOLD_GRINDING_BITS,
+            );
+            let use_john = allow_johnson && john.as_ref().is_some_and(|j| j.queries < udr_queries);
+
+            let (
+                regime,
+                eta,
+                proximity_loss,
+                queries,
+                ood_samples,
+                fold_grinding_bits,
+                eps_pg,
+                eps_query,
+                eps_ood,
+            ) = if use_john {
+                let j = john.unwrap();
+                (
+                    SoundnessRegime::JohnsonOod,
+                    Some(j.eta),
+                    None,
+                    j.queries,
+                    j.ood_samples,
+                    j.fold_grinding_bits,
+                    j.eps_pg,
+                    j.eps_query,
+                    Some(j.eps_ood),
+                )
+            } else {
+                if udr_queries > (1usize << (cols + rate)) {
+                    return Err(format!(
+                        "L{i}: {udr_queries} queries exceed block length 2^{}",
+                        cols + rate
+                    ));
+                }
+                (
+                    SoundnessRegime::Udr,
+                    None,
+                    Some(UDR_PROXIMITY_LOSS),
+                    udr_queries,
+                    0usize,
+                    udr_fold_grind,
+                    udr_eps_pg,
+                    udr_queries as f64 * udr_per_q,
+                    None,
+                )
+            };
 
             levels.push(LigeritoLevelConfig {
                 log_inv_rate: rate,
@@ -1077,7 +1221,7 @@ impl LigeritoSecurityConfig {
                 target_security_bits: target_bits,
                 expected_eps_pg_bits: round1(eps_pg),
                 expected_eps_query_bits: round1(eps_query),
-                expected_eps_ood_bits: eps_ood,
+                expected_eps_ood_bits: eps_ood.map(round1),
             });
         }
 
@@ -1158,4 +1302,72 @@ impl LigeritoSecurityConfig {
 #[inline]
 pub fn log2_ceil(n: usize) -> usize {
     if n <= 1 { 0 } else { (n - 1).ilog2() as usize + 1 }
+}
+
+#[cfg(test)]
+mod hybrid_tests {
+    use super::*;
+
+    fn print_schedule(tag: &str, cfg: &LigeritoSecurityConfig) -> (usize, usize) {
+        eprintln!(
+            "\n[{tag}] m={}: {} levels, target {} bits (field 2^{})",
+            cfg.m,
+            cfg.levels.len(),
+            cfg.target_security_bits,
+            ANALYSIS_LOG_Q as usize,
+        );
+        eprintln!(
+            "  {:>2} {:>6} {:>5} {:>4} {:>10} {:>8} {:>8} {:>8}",
+            "L", "rate", "cols", "ilv", "regime", "queries", "foldgrd", "eps_pg"
+        );
+        for (i, lv) in cfg.levels.iter().enumerate() {
+            eprintln!(
+                "  {:>2} 1/{:<4} {:>5} {:>4} {:>10?} {:>8} {:>8} {:>8?}",
+                i,
+                1usize << lv.log_inv_rate,
+                lv.log_msg_cols,
+                lv.log_num_interleaved,
+                lv.regime,
+                lv.queries,
+                lv.fold_grinding_bits,
+                lv.expected_eps_pg_bits,
+            );
+        }
+        let total_q: usize = cfg.levels.iter().map(|l| l.queries).sum();
+        let max_fg = cfg.levels.iter().map(|l| l.fold_grinding_bits).max().unwrap_or(0);
+        eprintln!("  total queries {total_q}, max fold-grind {max_fg} bits");
+        (total_q, max_fg)
+    }
+
+    /// The UDR-early / Johnson-late hybrid is sound (validates at the target)
+    /// and commits fewer queries than the shipped all-UDR profile, at the cost
+    /// of fold grinding bounded by `MAX_FOLD_GRINDING_BITS`.
+    #[test]
+    fn hybrid_saves_queries_within_grind_budget() {
+        let m = 26usize;
+        // derive_config validates internally; both must succeed.
+        let udr = LigeritoSecurityConfig::derive_config(m).expect("all-UDR config derives");
+        let hybrid = LigeritoSecurityConfig::derive_config_hybrid(m).expect("hybrid config derives");
+
+        let (udr_q, udr_fg) = print_schedule("all-UDR (shipped)", &udr);
+        let (hyb_q, hyb_fg) = print_schedule("hybrid (analysis)", &hybrid);
+
+        // Shipped profile stays all-UDR (prover requires zero OOD samples).
+        assert!(udr.levels.iter().all(|l| l.regime == SoundnessRegime::Udr));
+        assert!(udr.levels.iter().all(|l| l.ood_samples == 0));
+
+        // Hybrid switches deep levels to Johnson and cuts the query count.
+        assert!(
+            hybrid.levels.iter().any(|l| l.regime == SoundnessRegime::JohnsonOod),
+            "hybrid should use Johnson on at least one level"
+        );
+        assert!(hyb_q < udr_q, "hybrid should commit fewer queries ({hyb_q} vs {udr_q})");
+        assert!(
+            hyb_fg <= MAX_FOLD_GRINDING_BITS,
+            "hybrid fold grind {hyb_fg} exceeds cap {MAX_FOLD_GRINDING_BITS}"
+        );
+        // The shipped profile pays little grinding; the hybrid trades more
+        // grinding (bounded above) for the smaller query count.
+        assert!(udr_fg <= hyb_fg);
+    }
 }
