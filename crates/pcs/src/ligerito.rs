@@ -42,6 +42,28 @@ pub const QUERY_GRINDING_BITS: usize = 18;
 pub const INITIAL_FOLDING_FATOR: usize = 6;
 pub const SUBSEQUENT_FOLDING_FACTORS: usize = 3;
 
+/// Per-level Reed–Solomon domain schedule (mirrors `small-proof` and WHIR).
+/// Folding `f` variables at a level would raise the inverse-rate logarithm by
+/// `f` if the RS evaluation domain were kept; instead we shrink the domain by
+/// `d` bits, so the inverse rate rises by `f − d`. Thus these constants set the
+/// rate schedule explicitly:
+///
+/// - `RS_DOMAIN_INITIAL_REDUCTION_FACTOR` — after the `INITIAL_FOLDING_FATOR`
+///   fold (L0 → L1). With `initial=3` and a six-var fold, L1 rises by `6−3=3`
+///   (rate 1/2 → 1/16).
+/// - `RS_DOMAIN_SUBSEQUENT_REDUCTION_FACTOR` — after each `SUBSEQUENT_FOLDING_
+///   FACTORS` fold. With `subsequent=1` and a three-var fold, each later level
+///   rises by `3−1=2`.
+///
+/// The rate is now pinned by these knobs rather than emerging from a `+1`
+/// heuristic, so any target schedule (e.g. round 3 at a chosen rate) is set
+/// here. `derive_ladder_shape` never lowers the inverse rate, so schedules must
+/// be non-decreasing.
+pub const RS_DOMAIN_INITIAL_REDUCTION_FACTOR: usize = 3;
+pub const RS_DOMAIN_SUBSEQUENT_REDUCTION_FACTOR: usize = 1;
+const _: () = assert!(RS_DOMAIN_INITIAL_REDUCTION_FACTOR <= INITIAL_FOLDING_FATOR);
+const _: () = assert!(RS_DOMAIN_SUBSEQUENT_REDUCTION_FACTOR <= SUBSEQUENT_FOLDING_FACTORS);
+
 /// Folding stops once at most this many variables remain: the residual
 /// polynomial (`yr`, at most `2^RESIDUAL_MAX_LOG` coefficients) is sent in
 /// clear instead of committed and folded further.
@@ -293,7 +315,6 @@ fn derive_ladder_shape(
     log_n: usize,
     initial_k: usize,
     log_inv_rate: usize,
-    queries_at_rate: &dyn Fn(usize) -> usize,
 ) -> Result<LadderShape, String> {
     if log_n <= initial_k {
         return Err("log_n must be > initial_k".into());
@@ -307,28 +328,28 @@ fn derive_ladder_shape(
     };
     let mut n_running = log_n - initial_k;
     let mut rate_running = log_inv_rate;
-    if (1usize << (n_running + rate_running)) < queries_at_rate(rate_running) {
-        return Err("L0 block_len < queries — log_n too small for chosen rate".into());
-    }
+    let mut fold_running = initial_k;
+    let mut domain_reduction = RS_DOMAIN_INITIAL_REDUCTION_FACTOR;
     while n_running > RESIDUAL_MAX_LOG {
         let k = SUBSEQUENT_FOLDING_FACTORS.min(n_running);
         let log_msg_cols_next = n_running - k;
-        let mut next_rate = rate_running + 1;
-        loop {
-            if (1usize << (log_msg_cols_next + next_rate)) >= queries_at_rate(next_rate) {
-                break;
-            }
-            next_rate += 1;
-            if next_rate > 20 {
-                return Err("could not find feasible level rate (level too deep)".into());
-            }
-        }
+        // Inverse-rate rises by (fold − domain reduction): folding `fold`
+        // variables would raise it by `fold` if the RS domain were kept, but we
+        // shrink the domain by `domain_reduction` bits, so the increase is
+        // `fold − domain_reduction`. Query-feasibility (queries ≤ block length)
+        // is enforced per level in `derive_config_inner`.
+        let rate_increase = fold_running.checked_sub(domain_reduction).ok_or_else(|| {
+            format!("fold factor {fold_running} < RS domain reduction {domain_reduction}")
+        })?;
+        let next_rate = rate_running + rate_increase;
         shape.log_inv_rates.push(next_rate);
         shape.log_msg_cols.push(log_msg_cols_next);
         shape.log_num_interleaved.push(k);
         shape.k_levels.push(k);
         n_running -= k;
         rate_running = next_rate;
+        fold_running = k;
+        domain_reduction = RS_DOMAIN_SUBSEQUENT_REDUCTION_FACTOR;
     }
     if shape.k_levels.len() < 2 {
         return Err("log_n too small: needs at least 2 fold levels".into());
@@ -1113,21 +1134,10 @@ impl LigeritoSecurityConfig {
             .ok_or_else(|| format!("m ({m}) < LOG_PACKING ({})", crate::LOG_PACKING))?;
         let initial_k = INITIAL_FOLDING_FATOR;
 
-        // Length-agnostic per-query estimate for ladder-shape feasibility
-        // (the per-level codeword length `n` is not known until the shape is
-        // fixed): the asymptotic γ = δ/2; the actual per-level config below
-        // uses the n-aware `udr_per_query_bits`.
-        let per_query_bits_feas = udr_per_query_bits_asymptotic;
-
-        // Shape derivation needs per-level query counts for block-length
-        // feasibility before the level count (and hence the exact per-term
-        // target) is known. Use a conservative target of target_bits + 5
-        // (≥ log₂(3 terms · 10 levels)); the final counts are ≤ this.
-        let t_feas = target_bits as f64 + 5.0;
-        let queries_feas = |rate: usize| -> usize {
-            ((t_feas - query_grind as f64).max(1.0) / per_query_bits_feas(rate)).ceil() as usize
-        };
-        let shape = derive_ladder_shape(log_n, initial_k, log_inv_rate, &queries_feas)?;
+        // The rate schedule is now pinned by the RS-domain reduction factors
+        // (see `derive_ladder_shape`); per-level query-feasibility is enforced
+        // below when the exact per-level query counts are known.
+        let shape = derive_ladder_shape(log_n, initial_k, log_inv_rate)?;
         let n_levels = shape.log_inv_rates.len();
 
         // Round-by-round target: every error term (pg, query, ood) at every
