@@ -179,6 +179,22 @@ The remainder of the section proves the theorem: Section~\ref{sec:tools} states 
 
 The engine is \emph{mutual correlated agreement} (MCA)~\cite{ACFY25}. For a two-row word $C$, recall $C_s = (1-s)C[0,\cdot] + s\,C[1,\cdot]$.\footnote{\cite{BCHKS25} state the results for the affine line $C[0,\cdot] + s\,C[1,\cdot]$; in characteristic $2$, $C_s = C[0,\cdot] + s(C[0,\cdot] + C[1,\cdot])$, and this invertible change of pair maps codeword pairs to codeword pairs, so the formulations are equivalent.}
 
+\begin{theorem}[MCA in the unique-decoding regime; adapted from {\cite[Cor.~1.4]{BCHKS25}}]\label{thm:mca-udr}
+Let $\RS[\F,S,k]$ have block length $n = |S|$ and relative minimum distance $\delta := 1 - (k-1)/n$. Suppose
+\[
+\delta \ge 3\sqrt{\frac{2}{n}}
+\qquad\text{and}\qquad
+\gamma \in \left[\frac{\delta}{3},\,\frac{\delta}{2} - \frac{3}{\delta n}\right].
+\]
+Then, for every two-row word $C$,
+\[
+\Pr_{s \leftarrow \F}\!\left[\; \exists A \subseteq S,\ |A| \ge (1-\gamma) n :\ \begin{array}{l} C_s \text{ agrees with the code on } A, \text{ and} \\ C \text{ does not agree with the interleaved code on } A \end{array} \right]
+\;\le\; \frac{\gamma n + 1}{|\F|}.
+\]
+\end{theorem}
+
+We record Theorem~\ref{thm:mca-udr} only for comparison, we don't need it in the List-Decoding Regime, we instead need:
+
 \begin{theorem}[MCA up to the Johnson bound; {\cite[Thm.~4.6]{BCHKS25}}]\label{thm:mca-johnson}
 Let $\RS[\F,S,k]$ have block length $n = |S|$ and set $\rho := (k-1)/n$, the \emph{slightly reduced rate} (\cite{BCHKS25} parametrize by the degree bound $k - 1$, not the dimension $k$). Let $\gamma \in (0, 1-\sqrt{\rho})$, and set $\eta := 1 - \sqrt{\rho} - \gamma$ and $\theta := \max\{\lceil \tfrac{\sqrt{\rho}}{\eta} \rceil, 3\}$ (denoted $m$ in~\cite{BCHKS25}). For every two-row word $C$,
 \[
