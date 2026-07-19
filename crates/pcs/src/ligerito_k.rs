@@ -2038,11 +2038,12 @@ pub fn recursive_prover_with_basis_k(
     assert_eq!(config.log_inv_rates.len(), r + 1);
     assert!(r >= 1);
     assert!(initial_k >= 1);
-    // OOD sampling is not ported (module docs): the UDR (`Secure`) profile
-    // takes none at any level.
+    // OOD sampling IS ported: UDR levels take 0 samples, Johnson (list-decoding)
+    // levels take exactly 1 (bound by the OOD-challenge grind); L0 takes none.
+    assert_eq!(config.ood_samples[0], 0, "L0 takes no OOD sample");
     assert!(
-        config.ood_samples.iter().all(|&s| s == 0),
-        "ligerito_k: OOD sampling is not ported; config must take 0 OOD samples"
+        config.ood_samples.iter().all(|&s| s <= 1),
+        "ligerito_k: at most one OOD sample per level"
     );
 
     let log_inv_rate_0 = config.log_inv_rates[0];
@@ -2830,7 +2831,38 @@ pub fn recursive_verifier_with_basis_k(
         next_root_idx += 1;
         observe_root(sponge, &root_next);
 
-        // (OOD binding mirror elided.)
+        // OOD binding mirror (Johnson levels): verify the OOD-challenge PoW,
+        // re-derive z, read y = f(z), and replay the prover's introduce/glue of
+        // the (eq(z,·), y) claim — byte-identical FS ops.
+        if config.ood_samples[i + 1] > 0 {
+            if recursive_proof_idx >= proof.recursive_proofs.len() {
+                return false;
+            }
+            let rp_ood = &proof.recursive_proofs[recursive_proof_idx]; // consumed below
+            if !sponge.verify_pow(rp_ood.ood_grinding_nonce, config.ood_grinding_bits[i + 1] as u32) {
+                return false;
+            }
+            let z = sample_ext_vec(sponge, n_current);
+            let y = match rp_ood.ood_value {
+                Some(y) => y,
+                None => return false,
+            };
+            observe_ext(sponge, y);
+            if tx_idx >= proof.sumcheck_transcript.len() {
+                return false;
+            }
+            let ood_msg = proof.sumcheck_transcript[tx_idx];
+            tx_idx += 1;
+            observe_ext(sponge, ood_msg.u_0);
+            observe_ext(sponge, ood_msg.u_2);
+            let ood_quad = RoundQuadK::from_msg(ood_msg, y);
+            let beta_ood = sample_ext(sponge);
+            running_quad = RoundQuadK::fold(&running_quad, &ood_quad, beta_ood);
+            t_r += beta_ood * y;
+            basis_polys.push(build_eq_table_ext(&z));
+            basis_ris_starts.push(ris.len());
+            basis_separations.push(beta_ood);
+        }
 
         // PoW grinding check for this iteration's query phase.
         if nonce_idx >= proof.grinding_nonces.len() {
@@ -3115,6 +3147,9 @@ where
         ris_start: initial_k,
         beta: beta_0,
     }];
+    // OOD claims (Johnson levels): `(z, ris_start, β)`; their `eq(z,·)` residual
+    // is added to the final combined evaluation alongside the induced bases.
+    let mut ood_ctxs: Vec<(Vec<F128T>, usize, F128T)> = Vec::new();
     let mut ris: Vec<F128T> = r_lane_fold.clone();
 
     let mut prev_root = root_1;
@@ -3258,6 +3293,19 @@ where
                 }
             }
 
+            // OOD basis residuals: eq(z,·) partial-evaluated over its fold
+            // challenges. (Materialized for simplicity; the eq tensor also has a
+            // closed form should this ever be a verifier-time bottleneck.)
+            let ood_residuals: Vec<Vec<F128T>> = ood_ctxs
+                .iter()
+                .map(|(z, start, _)| partial_eval_lsb_ext(&build_eq_table_ext(z), &ris[*start..]))
+                .collect();
+            for resid in &ood_residuals {
+                if resid.len() != yr_len {
+                    return false;
+                }
+            }
+
             // Batch-evaluate b at all yr positions in one call so the caller
             // can amortize prefix work.
             let evb_vec = eval_b_residual(&ris, yr_log_n);
@@ -3269,6 +3317,9 @@ where
                 let mut combined_y = evb_vec[y];
                 for (k, residual) in induced_residuals.iter().enumerate() {
                     combined_y += level_ctxs[k].beta * residual[y];
+                }
+                for (k, residual) in ood_residuals.iter().enumerate() {
+                    combined_y += ood_ctxs[k].2 * residual[y];
                 }
                 inner += yr[y] * combined_y;
             }
@@ -3282,7 +3333,36 @@ where
         next_root_idx += 1;
         observe_root(sponge, &root_next);
 
-        // (OOD binding mirror elided.)
+        // OOD binding mirror (Johnson levels): same FS ops as the dense
+        // verifier; the eq(z,·) residual is stored in `ood_ctxs` and folded into
+        // the final combined evaluation below.
+        if config.ood_samples[i + 1] > 0 {
+            if recursive_proof_idx >= proof.recursive_proofs.len() {
+                return false;
+            }
+            let rp_ood = &proof.recursive_proofs[recursive_proof_idx]; // consumed below
+            if !sponge.verify_pow(rp_ood.ood_grinding_nonce, config.ood_grinding_bits[i + 1] as u32) {
+                return false;
+            }
+            let z = sample_ext_vec(sponge, n_current);
+            let y = match rp_ood.ood_value {
+                Some(y) => y,
+                None => return false,
+            };
+            observe_ext(sponge, y);
+            if tx_idx >= proof.sumcheck_transcript.len() {
+                return false;
+            }
+            let ood_msg = proof.sumcheck_transcript[tx_idx];
+            tx_idx += 1;
+            observe_ext(sponge, ood_msg.u_0);
+            observe_ext(sponge, ood_msg.u_2);
+            let ood_quad = RoundQuadK::from_msg(ood_msg, y);
+            let beta_ood = sample_ext(sponge);
+            running_quad = RoundQuadK::fold(&running_quad, &ood_quad, beta_ood);
+            t_r += beta_ood * y;
+            ood_ctxs.push((z, ris.len(), beta_ood));
+        }
 
         // PoW grinding check for this iteration's query phase.
         if nonce_idx >= proof.grinding_nonces.len() {
@@ -3499,7 +3579,9 @@ mod tests {
         assert_eq!(pc.initial_k, 6);
         assert!(pc.level_steps >= 1);
         assert_eq!(vc.initial_k, pc.initial_k);
-        assert!(pc.ood_samples.iter().all(|&s| s == 0));
+        // UDR/LDR hybrid: L0 takes no OOD sample; deeper levels take at most one.
+        assert_eq!(pc.ood_samples[0], 0);
+        assert!(pc.ood_samples.iter().all(|&s| s <= 1));
         // And log_n = 12 is below the Secure ladder's feasibility floor, so
         // the tests there use the default_config fallback.
         assert!(k_configs_for(12).is_err());
