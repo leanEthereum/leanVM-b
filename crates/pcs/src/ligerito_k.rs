@@ -1870,6 +1870,14 @@ pub struct InitialProofK {
 pub struct RecursiveProofK {
     pub opened_rows: Vec<Vec<F128T>>,
     pub merkle_proof: Vec<Hash>,
+    /// Out-of-domain evaluation `y = f^{(i+1)}(z)` for a Johnson (list-decoding)
+    /// level, binding the folded witness to a single codeword of the list.
+    /// `None` for unique-decoding levels (list size 1 — no OOD needed).
+    pub ood_value: Option<F128T>,
+    /// PoW nonce for this level's OOD challenge (0 when it grinds 0 bits or the
+    /// level is UDR); one sample binds the large list only after this grind.
+    #[serde(default)]
+    pub ood_grinding_nonce: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -2287,7 +2295,31 @@ pub fn recursive_prover_with_basis_k(
         observe_root(sponge, &root_next);
         recursive_roots.push(root_next);
 
-        // (OOD binding block elided: zero samples asserted above.)
+        // OOD binding (Johnson / list-decoding levels): one out-of-domain point
+        // z ← E^{n_next}; the prover sends y = f^{(i+1)}(z) and introduces the
+        // claim (eq(z,·), y) into the running sumcheck, binding the folded
+        // witness to a single codeword of the Johnson list. UDR levels take no
+        // sample (list size 1). Mirror of the query-claim introduce/glue below.
+        let (ood_value, ood_grinding_nonce): (Option<F128T>, u64) = if config.ood_samples[i + 1] > 0 {
+            // Grind the OOD challenge so one sample binds the whole Johnson list.
+            let ood_nonce = sponge.grind_pow(config.ood_grinding_bits[i + 1] as u32);
+            let z = sample_ext_vec(sponge, n_next);
+            let eq_z = build_eq_table_ext(&z);
+            let mut acc = F128TUnreduced::ZERO;
+            for (fx, ez) in f_evals.iter().zip(&eq_z) {
+                acc ^= fx.mul_unreduced(*ez);
+            }
+            let y = acc.reduce();
+            observe_ext(sponge, y);
+            let ood_msg = sc_prover.introduce_new(eq_z, y);
+            observe_ext(sponge, ood_msg.u_0);
+            observe_ext(sponge, ood_msg.u_2);
+            let beta_ood = sample_ext(sponge);
+            sc_prover.glue(beta_ood);
+            (Some(y), ood_nonce)
+        } else {
+            (None, 0)
+        };
 
         // PoW grinding for this iteration's query phase.
         let nonce_i = sponge.grind_pow(config.grinding_bits[i + 1] as u32);
@@ -2314,6 +2346,8 @@ pub fn recursive_prover_with_basis_k(
         recursive_proofs.push(RecursiveProofK {
             opened_rows: stored_rows_i,
             merkle_proof: merkle_proof_i,
+            ood_value,
+            ood_grinding_nonce,
         });
 
         let sks_vks_i = eval_sk_at_vks_k(n_next);

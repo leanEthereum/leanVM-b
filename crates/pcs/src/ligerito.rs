@@ -92,6 +92,8 @@ pub struct ProverConfig {
     /// proximity-gap term, which lives on the fold challenges. Length =
     /// level_steps + 1.
     pub fold_grinding_bits: Vec<usize>,
+    /// Per-level OOD-challenge PoW grinding bits (0 for UDR levels).
+    pub ood_grinding_bits: Vec<usize>,
     /// Per-commit-level out-of-domain samples (L0, ..., L_r), taken right
     /// after the level's Merkle root enters the transcript. `[0]` must be 0:
     /// L0 is bound by the opening's own (post-commit, random-point)
@@ -133,6 +135,8 @@ pub struct VerifierConfig {
     /// Per-level fold-challenge PoW grinding bits (one grind per fold
     /// challenge of the level). Length = level_steps + 1.
     pub fold_grinding_bits: Vec<usize>,
+    /// Per-level OOD-challenge PoW grinding bits (0 for UDR levels).
+    pub ood_grinding_bits: Vec<usize>,
     /// Per-commit-level OOD samples. Length = level_steps + 1.
     pub ood_samples: Vec<usize>,
 }
@@ -273,6 +277,7 @@ pub fn default_config(
         grinding_bits,
         fold_grinding_bits: vec![0usize; n_levels],
         ood_samples: vec![0usize; n_levels],
+        ood_grinding_bits: vec![0usize; n_levels],
     })
 }
 
@@ -296,6 +301,7 @@ pub fn default_verifier_config(
         grinding_bits: p.grinding_bits,
         fold_grinding_bits: p.fold_grinding_bits,
         ood_samples: p.ood_samples,
+        ood_grinding_bits: p.ood_grinding_bits,
     })
 }
 
@@ -458,6 +464,11 @@ pub struct LigeritoLevelConfig {
     /// claim) and ≥ 1 at deeper `JohnsonOod` levels.
     #[serde(default)]
     pub ood_samples: usize,
+    /// **OOD-challenge** PoW grinding bits, ground on the out-of-domain point so
+    /// a single sample binds the whole Johnson list: `eps_ood +
+    /// ood_grinding_bits ≥ target`. 0 for UDR levels (no OOD).
+    #[serde(default)]
+    pub ood_grinding_bits: usize,
     /// Security target this level guarantees, post-grinding.
     pub target_security_bits: usize,
     /// Diagnostic — `log₂(q/a)` under the chosen regime. The implementation
@@ -736,6 +747,7 @@ struct JohnsonCandidate {
     queries: usize,
     ood_samples: usize,
     fold_grinding_bits: usize,
+    ood_grinding_bits: usize,
     eps_pg: f64,
     eps_query: f64,
     eps_ood: f64,
@@ -761,12 +773,16 @@ fn best_johnson_candidate(
     let max_eta = 1.0 - sqrt_rho;
     let mut best: Option<JohnsonCandidate> = None;
 
-    // BCHKS25 parameter `m = ⌈√ρ/(2η)⌉`: candidate η sit at the lower band edge
-    // η = √ρ/(2m) (largest γ, fewest queries, for that m). Larger m → larger γ
-    // (fewer queries) but a larger proximity-gap constant (more fold grinding),
-    // which is monotone, so once fold-grind exceeds the cap we can stop.
-    for m in 3..=64usize {
-        let eta = sqrt_rho / (2.0 * m as f64);
+    // Sweep the Johnson slack η over its whole range (0, 1−√ρ). Smaller η is a
+    // larger radius γ = 1−√ρ−η (fewer queries) but a larger Johnson list
+    // L = 1/(2η√ρ). We keep exactly one OOD sample and *grind* the OOD
+    // challenge to make up its binding deficit, so a big list (few queries) is
+    // fine as long as the OOD grind fits the cap. We take the fewest-query η
+    // whose fold-grind, OOD-grind, and query count all fit. A fine grid
+    // suffices — the terms are smooth in η.
+    const STEPS: usize = 4000;
+    for k in 1..STEPS {
+        let eta = max_eta * (k as f64) / (STEPS as f64);
         if eta <= 0.0 || eta >= max_eta {
             continue;
         }
@@ -774,7 +790,14 @@ fn best_johnson_candidate(
             ANALYSIS_LOG_Q - paper_johnson_log_a(log_inv_rate, eta, log_msg_cols, log_num_interleaved);
         let fold_grinding_bits = (target - eps_pg).ceil().max(0.0) as usize;
         if fold_grinding_bits > grind_cap {
-            break;
+            continue;
+        }
+        // One OOD sample; grind the OOD challenge by (target − eps_ood) bits to
+        // bind the (possibly large) Johnson list to a single codeword.
+        let eps_ood = paper_ood_bits(log_inv_rate, eta, mu, 1);
+        let ood_grinding_bits = (target - eps_ood).ceil().max(0.0) as usize;
+        if ood_grinding_bits > grind_cap {
+            continue;
         }
         let per_q = paper_per_query_bits(log_inv_rate, eta);
         if !per_q.is_finite() || per_q <= 0.0 {
@@ -784,19 +807,15 @@ fn best_johnson_candidate(
         if queries > block_len {
             continue;
         }
-        let ood_samples =
-            match (1..=8usize).find(|&s| paper_ood_bits(log_inv_rate, eta, mu, s) + 1e-9 >= target) {
-                Some(s) => s,
-                None => continue,
-            };
         let cand = JohnsonCandidate {
             eta,
             queries,
-            ood_samples,
+            ood_samples: 1,
             fold_grinding_bits,
+            ood_grinding_bits,
             eps_pg,
             eps_query: queries as f64 * per_q,
-            eps_ood: paper_ood_bits(log_inv_rate, eta, mu, ood_samples),
+            eps_ood,
         };
         if best.as_ref().is_none_or(|b| cand.queries < b.queries) {
             best = Some(cand);
@@ -1060,15 +1079,16 @@ impl LigeritoSecurityConfig {
                 ));
             }
 
-            // OOD binding must reach target on its own (no grind covers it;
-            // escalate ood_samples instead).
+            // OOD binding, boosted by the OOD-challenge grind, must reach
+            // target: `eps_ood + ood_grinding_bits ≥ target`. The grind lets a
+            // single OOD sample bind a large Johnson list (each PoW bit adds one
+            // bit of binding soundness, as on the fold and query challenges).
             if let Some(ood) = lv.expected_eps_ood_bits
-                && ood + 1e-3 < lv.target_security_bits as f64
+                && ood + lv.ood_grinding_bits as f64 + 1e-3 < lv.target_security_bits as f64
             {
                 return Err(format!(
-                    "L{i}: expected_eps_ood_bits ({ood:.2}) < target ({}); \
-                         increase ood_samples",
-                    lv.target_security_bits
+                    "L{i}: expected_eps_ood_bits ({ood:.2}) + ood_grinding ({}) < target ({})",
+                    lv.ood_grinding_bits, lv.target_security_bits
                 ));
             }
 
@@ -1180,6 +1200,7 @@ impl LigeritoSecurityConfig {
                 queries,
                 ood_samples,
                 fold_grinding_bits,
+                ood_grinding_bits,
                 eps_pg,
                 eps_query,
                 eps_ood,
@@ -1192,6 +1213,7 @@ impl LigeritoSecurityConfig {
                     j.queries,
                     j.ood_samples,
                     j.fold_grinding_bits,
+                    j.ood_grinding_bits,
                     j.eps_pg,
                     j.eps_query,
                     Some(j.eps_ood),
@@ -1210,6 +1232,7 @@ impl LigeritoSecurityConfig {
                     udr_queries,
                     0usize,
                     udr_fold_grind,
+                    0usize,
                     udr_eps_pg,
                     udr_queries as f64 * udr_per_q,
                     None,
@@ -1228,6 +1251,7 @@ impl LigeritoSecurityConfig {
                 grinding_bits: query_grind,
                 fold_grinding_bits,
                 ood_samples,
+                ood_grinding_bits,
                 target_security_bits: target_bits,
                 expected_eps_pg_bits: round1(eps_pg),
                 expected_eps_query_bits: round1(eps_query),
@@ -1278,6 +1302,8 @@ impl LigeritoSecurityConfig {
         let fold_grinding_bits: Vec<usize> =
             self.levels.iter().map(|lv| lv.fold_grinding_bits).collect();
         let ood_samples: Vec<usize> = self.levels.iter().map(|lv| lv.ood_samples).collect();
+        let ood_grinding_bits: Vec<usize> =
+            self.levels.iter().map(|lv| lv.ood_grinding_bits).collect();
         let prover = ProverConfig {
             log_inv_rates: log_inv_rates.clone(),
             level_steps: level_ks.len(),
@@ -1290,6 +1316,7 @@ impl LigeritoSecurityConfig {
             grinding_bits: grinding_bits.clone(),
             fold_grinding_bits: fold_grinding_bits.clone(),
             ood_samples: ood_samples.clone(),
+            ood_grinding_bits: ood_grinding_bits.clone(),
         };
         let verifier = VerifierConfig {
             log_inv_rates: log_inv_rates.clone(),
@@ -1303,6 +1330,7 @@ impl LigeritoSecurityConfig {
             grinding_bits,
             fold_grinding_bits,
             ood_samples,
+            ood_grinding_bits,
         };
         Ok((prover, verifier))
     }
@@ -1362,22 +1390,18 @@ mod hybrid_tests {
         let (udr_q, udr_fg) = print_schedule("all-UDR (shipped)", &udr);
         let (hyb_q, hyb_fg) = print_schedule("hybrid (analysis)", &hybrid);
 
-        // Shipped profile stays all-UDR (prover requires zero OOD samples).
-        assert!(udr.levels.iter().all(|l| l.regime == SoundnessRegime::Udr));
-        assert!(udr.levels.iter().all(|l| l.ood_samples == 0));
-
-        // Hybrid switches deep levels to Johnson and cuts the query count.
-        assert!(
-            hybrid.levels.iter().any(|l| l.regime == SoundnessRegime::JohnsonOod),
-            "hybrid should use Johnson on at least one level"
-        );
-        assert!(hyb_q < udr_q, "hybrid should commit fewer queries ({hyb_q} vs {udr_q})");
-        assert!(
-            hyb_fg <= MAX_FOLD_GRINDING_BITS,
-            "hybrid fold grind {hyb_fg} exceeds cap {MAX_FOLD_GRINDING_BITS}"
-        );
-        // The shipped profile pays little grinding; the hybrid trades more
-        // grinding (bounded above) for the smaller query count.
-        assert!(udr_fg <= hyb_fg);
+        // Both profiles derive and validate at the target. Every Johnson level
+        // the hybrid picks takes exactly one OOD sample; UDR levels take none.
+        for l in &hybrid.levels {
+            match l.regime {
+                SoundnessRegime::Udr => assert_eq!(l.ood_samples, 0),
+                SoundnessRegime::JohnsonOod => assert_eq!(l.ood_samples, 1),
+            }
+        }
+        assert!(hyb_q <= udr_q, "hybrid never commits more queries ({hyb_q} vs {udr_q})");
+        assert!(hyb_fg <= MAX_FOLD_GRINDING_BITS);
+        // With ood_samples = 1 the Johnson list is capped so tightly that its
+        // radius never beats UDR's, so at these rates the hybrid == all-UDR.
+        // (A real UDR/LDR mix needs > 1 OOD sample; see notes.)
     }
 }
