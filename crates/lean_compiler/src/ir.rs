@@ -65,6 +65,11 @@ pub(crate) enum LOp {
         gamma: Off,
         mode: DerefMode,
     },
+    DerefExt {
+        alpha: Off,
+        beta: Off,
+        gamma: Off,
+    },
     Jump {
         oc: Off,
         od: Off,

@@ -166,6 +166,12 @@ def div_ext(a, b, out) -> None:
     _ = a, b, out
 
 
+def deref_ext(ptr, value) -> None:
+    """Equate three consecutive heap words at `ptr` with a StackBuf(3).
+    Write-once execution fills whichever side is unset."""
+    _ = ptr, value
+
+
 def blake3(a, b, out) -> None:
     """The BLAKE3 compression of the two 256-bit operands `a`, `b`, written
     into the 4-word run `out` (write-once: if `out` was already written, this

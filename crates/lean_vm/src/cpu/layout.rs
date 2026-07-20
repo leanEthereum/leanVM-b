@@ -78,8 +78,9 @@ pub struct Layout {
     /// Public input: the first four 64-bit memory words.
     pub pi: [F64; 4],
     pub taus: [usize; tables::N_TABLES],
-    /// Real (non-padded) per-table row counts, as announced. `row_counts[5]` is
-    /// the executed `BLAKE3` count, which gates the flock sub-proof.
+    /// Real (non-padded) per-table row counts, as announced.
+    /// `row_counts[tables::BLAKE3_TABLE]` is the executed `BLAKE3` count,
+    /// which gates the flock sub-proof.
     pub row_counts: [usize; tables::N_TABLES],
 }
 
@@ -224,6 +225,7 @@ pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; tables::N_TABLES]
             Op::Blake3 { a0, a1, b0, b1, c } => a0.max(a1).max(b0).max(b1).max(c),
             Op::Set { o, .. } => o,
             Op::Deref { alpha, beta, gamma, .. } => alpha.max(beta).max(gamma),
+            Op::DerefExt { alpha, beta, gamma } => alpha.max(beta).max(gamma),
             Op::Jump { oc, od, of } => oc.max(od).max(of),
         })
         .max()
@@ -238,6 +240,7 @@ pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; tables::N_TABLES]
         Op::MulExt { .. } => tables::OP_MUL_EXT,
         Op::Set { .. } => OP_SET,
         Op::Deref { .. } => OP_DEREF,
+        Op::DerefExt { .. } => tables::OP_DEREF_EXT,
         Op::Jump { .. } => OP_JUMP,
         Op::Blake3 { .. } => OP_BLAKE3,
     };
@@ -253,6 +256,7 @@ pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; tables::N_TABLES]
                 gamma,
                 mode,
             } => [g_at(alpha), g_at(beta), g_at(gamma), mode.f_pc(), mode.f_fp()],
+            Op::DerefExt { alpha, beta, gamma } => [g_at(alpha), g_at(beta), g_at(gamma), F64::ZERO, F64::ZERO],
             Op::Jump { oc, od, of } => [g_at(oc), g_at(od), g_at(of), F64::ZERO, F64::ZERO],
             Op::Blake3 { a0, a1, b0, b1, c } => [g_at(a0), g_at(a1), g_at(b0), g_at(b1), g_at(c)],
         }
@@ -455,6 +459,7 @@ impl Program {
             tr.mul_ext.len(),
             tr.set.len(),
             tr.deref.len(),
+            tr.deref_ext.len(),
             tr.jump.len(),
             tr.blake3.len(),
         ];

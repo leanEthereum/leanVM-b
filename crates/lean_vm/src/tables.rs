@@ -66,6 +66,7 @@ pub(crate) const OP_JUMP: F64 = g_pow(4);
 pub(crate) const OP_BLAKE3: F64 = g_pow(5);
 pub(crate) const OP_ADD_EXT: F64 = g_pow(6);
 pub(crate) const OP_MUL_EXT: F64 = g_pow(7);
+pub(crate) const OP_DEREF_EXT: F64 = g_pow(8);
 
 // ---- flush builder -----------------------------------------------------------
 
@@ -212,9 +213,10 @@ pub trait Table: Sync {
     fn fill(&self, ctx: &FillCtx, out: &mut [Column]);
 }
 
-/// The tables in fixed order `[ADD, MUL, ADD_EXT, MUL_EXT, SET, DEREF, JUMP, BLAKE3]` — the
+/// The tables in fixed order `[ADD, MUL, ADD_EXT, MUL_EXT, SET, DEREF,
+/// DEREF_EXT, JUMP, BLAKE3]` — the
 /// order of `row_counts` / `taus` throughout `cpu`.
-pub const N_TABLES: usize = 8;
+pub const N_TABLES: usize = 9;
 
 pub fn tables() -> [&'static dyn Table; N_TABLES] {
     [
@@ -224,13 +226,14 @@ pub fn tables() -> [&'static dyn Table; N_TABLES] {
         &ExtArith { is_add: false },
         &SetTable,
         &DerefTable,
+        &DerefExtTable,
         &JumpTable,
         &Blake3Table,
     ]
 }
 
 /// Index of the BLAKE3 table in [`tables`].
-pub const BLAKE3_TABLE: usize = 7;
+pub const BLAKE3_TABLE: usize = 8;
 
 /// BLAKE3 value-column LOCAL indices in canonical slot order
 /// `[a0..a3, b0..b3, c0..c3]` (matches `blake3_flock::SLOTS`). These columns are
@@ -627,6 +630,112 @@ impl Table for DerefTable {
         out[R1] = rows.par_iter().map(|r| r.r1).collect();
         out[R2] = rows.par_iter().map(|r| r.r2).collect();
         out[R3] = rows.par_iter().map(|r| r.r3).collect();
+        out[RBC] = rows.par_iter().map(|r| r.bytecode_read).collect();
+    }
+}
+
+// ---- three-word extension DEREF ---------------------------------------------
+
+struct DerefExtTable;
+
+mod deref_ext {
+    pub const PC: usize = 0;
+    pub const FP: usize = 1;
+    pub const OAL: usize = 2;
+    pub const OBE: usize = 3;
+    pub const OGA: usize = 4;
+    pub const A1: usize = 5;
+    pub const A2: usize = 6;
+    pub const A3: usize = 7;
+    pub const P: usize = 8;
+    pub const V20: usize = 9;
+    pub const V30: usize = 12;
+    pub const R1: usize = 15;
+    pub const R20: usize = 16;
+    pub const R30: usize = 19;
+    pub const RBC: usize = 22;
+    pub const N: usize = 23;
+}
+
+impl Table for DerefExtTable {
+    fn opcode_tag(&self) -> F64 {
+        OP_DEREF_EXT
+    }
+    fn n_committed_columns(&self) -> usize {
+        deref_ext::N
+    }
+    fn count_columns(&self) -> &'static [usize] {
+        use deref_ext::*;
+        &[R1, R20, R20 + 1, R20 + 2, R30, R30 + 1, R30 + 2, RBC]
+    }
+    fn constraint_columns(&self) -> &'static [usize] {
+        use deref_ext::*;
+        &[
+            FP,
+            OAL,
+            OBE,
+            OGA,
+            A1,
+            A2,
+            A3,
+            P,
+            V20,
+            V20 + 1,
+            V20 + 2,
+            V30,
+            V30 + 1,
+            V30 + 2,
+        ]
+    }
+    fn eval_constraint(&self, eta: F192, cols: &Cols) -> F192 {
+        use deref_ext::*;
+        let v2 = e192(cols[V20], cols[V20 + 1], cols[V20 + 2]);
+        let v3 = e192(cols[V30], cols[V30 + 1], cols[V30 + 2]);
+        eval_poly(
+            eta,
+            [
+                cols[A1] + cols[FP] * cols[OAL],
+                cols[A2] + cols[P] * cols[OBE],
+                cols[A3] + cols[FP] * cols[OGA],
+                v2 + v3,
+            ],
+        )
+    }
+    fn flushes(&self, f: &mut FlushBuilder) {
+        use deref_ext::*;
+        f.state_step(PC, FP);
+        f.bytecode(
+            PC,
+            RBC,
+            OP_DEREF_EXT,
+            &[Col(OAL), Col(OBE), Col(OGA), Const(F64::ZERO), Const(F64::ZERO)],
+        );
+        f.memory(Col(A1), R1, P);
+        for k in 0usize..3 {
+            let addr = |base| if k == 0 { Col(base) } else { GCol(base, k as u32) };
+            f.memory(addr(A2), R20 + k, V20 + k);
+            f.memory(addr(A3), R30 + k, V30 + k);
+        }
+    }
+    fn fill(&self, ctx: &FillCtx, out: &mut [Column]) {
+        use deref_ext::*;
+        let rows = &ctx.trace.deref_ext;
+        out[PC] = rows.par_iter().map(|r| ctx.g_at(r.pc)).collect();
+        out[FP] = rows.par_iter().map(|r| ctx.g_at(r.fp)).collect();
+        out[OAL] = rows.par_iter().map(|r| ctx.g_at(r.alpha)).collect();
+        out[OBE] = rows.par_iter().map(|r| ctx.g_at(r.beta)).collect();
+        out[OGA] = rows.par_iter().map(|r| ctx.g_at(r.gamma)).collect();
+        out[A1] = rows.par_iter().map(|r| ctx.g_at(r.a1)).collect();
+        out[A2] = rows.par_iter().map(|r| ctx.gpow[r.a2]).collect();
+        out[A3] = rows.par_iter().map(|r| ctx.g_at(r.a3)).collect();
+        out[P] = rows.par_iter().map(|r| r.p).collect();
+        for k in 0..3 {
+            out[V20 + k] = rows.par_iter().map(|r| r.v2[k]).collect();
+            out[V30 + k] = rows.par_iter().map(|r| r.v3[k]).collect();
+            out[R20 + k] = rows.par_iter().map(|r| r.r2[k]).collect();
+            out[R30 + k] = rows.par_iter().map(|r| r.r3[k]).collect();
+        }
+        out[R1] = rows.par_iter().map(|r| r.r1).collect();
         out[RBC] = rows.par_iter().map(|r| r.bytecode_read).collect();
     }
 }

@@ -80,6 +80,7 @@ impl Program {
         let mut mul_ext: Vec<Erow> = Vec::new();
         let mut set: Vec<Srow> = Vec::new();
         let mut deref: Vec<Drow> = Vec::new();
+        let mut deref_ext: Vec<EDrow> = Vec::new();
         let mut jump: Vec<Jrow> = Vec::new();
         let mut blake3: Vec<Brow> = Vec::new();
 
@@ -89,6 +90,7 @@ impl Program {
         // order-independent, so the value can be decided at the end (leanVM's
         // end-of-execution deref-hint resolution).
         let mut deferred: Vec<(usize, usize, u32)> = Vec::new();
+        let mut deferred_ext: Vec<(usize, usize, u32)> = Vec::new();
 
         // Attribution aid: LEANVM_PC_HISTO=1 dumps per-pc execution counts
         // alongside the disassembly after the run, tying cycles to source.
@@ -610,6 +612,81 @@ impl Program {
                     });
                     pc += 1;
                 }
+                Op::DerefExt { alpha, beta, gamma } => {
+                    let a1 = fp + alpha;
+                    let p = get(&mem, &written, a1);
+                    let p_addr = as_addr(p).expect("DEREF_EXT pointer is not a base-field word");
+                    let base = match gmap.get(&p_addr) {
+                        Some(&b) => b,
+                        None => {
+                            grow_gpow(&mut gpow, &mut gmap, 1 << MIN_LOG_MEM);
+                            *gmap.get(&p_addr).unwrap_or_else(|| {
+                                panic!(
+                                    "DEREF_EXT pointer is not a small g-power at pc {pc}: 0x{:016x}",
+                                    p_addr.0
+                                )
+                            })
+                        }
+                    };
+                    let a2 = (base + beta) as usize;
+                    let a3 = fp + gamma;
+                    ensure(&mut mem, &mut written, &mut mem_count, a2 + 2);
+                    ensure(&mut mem, &mut written, &mut mem_count, a3 as usize + 2);
+                    let mut unresolved = false;
+                    for k in 0..3 {
+                        let h2 = written[a2 + k];
+                        let h3 = written[a3 as usize + k];
+                        match (h2, h3) {
+                            (true, true) => assert_eq!(
+                                mem[a2 + k],
+                                mem[a3 as usize + k],
+                                "DEREF_EXT mismatch at pc {pc}, limb {k}"
+                            ),
+                            (true, false) => {
+                                let v = mem[a2 + k];
+                                put(&mut mem, &mut written, &mut mem_count, a3 + k as u32, v);
+                            }
+                            (false, true) => {
+                                let v = mem[a3 as usize + k];
+                                put(&mut mem, &mut written, &mut mem_count, a2 as u32 + k as u32, v);
+                            }
+                            (false, false) => unresolved = true,
+                        }
+                    }
+                    if unresolved {
+                        deferred_ext.push((deref_ext.len(), a2, a3));
+                    }
+                    let v2e = get_ext(&mem, &written, a2 as u32);
+                    let v3e = get_ext(&mem, &written, a3);
+                    let v2 = [F64(v2e.c0), F64(v2e.c1), F64(v2e.c2)];
+                    let v3 = [F64(v3e.c0), F64(v3e.c1), F64(v3e.c2)];
+                    let r1 = bump_access_count(&mut mem, &mut written, &mut mem_count, a1);
+                    let mut bump3 = |base: u32| {
+                        std::array::from_fn(|k| {
+                            bump_access_count(&mut mem, &mut written, &mut mem_count, base + k as u32)
+                        })
+                    };
+                    let r2 = bump3(a2 as u32);
+                    let r3 = bump3(a3);
+                    deref_ext.push(EDrow {
+                        pc,
+                        fp,
+                        alpha,
+                        beta,
+                        gamma,
+                        a1,
+                        p,
+                        a2,
+                        a3,
+                        v2,
+                        v3,
+                        r1,
+                        r2,
+                        r3,
+                        bytecode_read,
+                    });
+                    pc += 1;
+                }
                 Op::Jump { oc, od, of } => {
                     let (ac, ad, af) = (fp + oc, fp + od, fp + of);
                     let c = get(&mem, &written, ac);
@@ -738,26 +815,94 @@ impl Program {
         // writes are fixed to ZERO. The rows' values are patched in place (their
         // access counts were already bumped during the walk — the memory bus is
         // order-independent, it only needs every access to agree on the value).
-        while {
-            let before = deferred.len();
+        loop {
+            let mut progress = false;
             deferred.retain(|&(i, a2, a3)| {
-                if written[a2] {
-                    let v = mem[a2];
-                    put(&mut mem, &mut written, &mut mem_count, a3, v);
+                let h2 = written[a2];
+                let h3 = written[a3 as usize];
+                let v = match (h2, h3) {
+                    (true, true) => {
+                        assert_eq!(mem[a2], mem[a3 as usize], "deferred DEREF mismatch");
+                        Some(mem[a2])
+                    }
+                    (true, false) => {
+                        let v = mem[a2];
+                        put(&mut mem, &mut written, &mut mem_count, a3, v);
+                        progress = true;
+                        Some(v)
+                    }
+                    (false, true) => {
+                        let v = mem[a3 as usize];
+                        put(&mut mem, &mut written, &mut mem_count, a2 as u32, v);
+                        progress = true;
+                        Some(v)
+                    }
+                    (false, false) => None,
+                };
+                if let Some(v) = v {
                     deref[i].v2 = v;
                     deref[i].v3 = v;
-                    false
-                } else {
-                    true
                 }
+                v.is_none()
             });
-            deferred.len() < before
-        } {}
-        for (_, a2, a3) in deferred {
-            // Never written: the cells are genuinely unconstrained; fix them (and
-            // the rows, already ZERO) to ZERO.
-            put(&mut mem, &mut written, &mut mem_count, a2 as u32, F64::ZERO);
-            put(&mut mem, &mut written, &mut mem_count, a3, F64::ZERO);
+            deferred_ext.retain(|&(i, a2, a3)| {
+                let mut unresolved = false;
+                for k in 0..3 {
+                    let h2 = written[a2 + k];
+                    let h3 = written[a3 as usize + k];
+                    let v = match (h2, h3) {
+                        (true, true) => {
+                            assert_eq!(
+                                mem[a2 + k],
+                                mem[a3 as usize + k],
+                                "deferred DEREF_EXT mismatch, limb {k}"
+                            );
+                            Some(mem[a2 + k])
+                        }
+                        (true, false) => {
+                            let v = mem[a2 + k];
+                            put(&mut mem, &mut written, &mut mem_count, a3 + k as u32, v);
+                            progress = true;
+                            Some(v)
+                        }
+                        (false, true) => {
+                            let v = mem[a3 as usize + k];
+                            put(&mut mem, &mut written, &mut mem_count, a2 as u32 + k as u32, v);
+                            progress = true;
+                            Some(v)
+                        }
+                        (false, false) => {
+                            unresolved = true;
+                            None
+                        }
+                    };
+                    if let Some(v) = v {
+                        deref_ext[i].v2[k] = v;
+                        deref_ext[i].v3[k] = v;
+                    }
+                }
+                unresolved
+            });
+            if !progress {
+                // An all-unwritten equality component is unconstrained. Seed
+                // one cell with zero, then let the same fixpoint propagate it
+                // through scalar and extension dereferences before choosing a
+                // seed for the next component.
+                if let Some(&(_, a2, _)) = deferred.first() {
+                    put(&mut mem, &mut written, &mut mem_count, a2 as u32, F64::ZERO);
+                    continue;
+                }
+                let seed = deferred_ext.iter().find_map(|&(_, a2, a3)| {
+                    (0..3)
+                        .find(|&k| !written[a2 + k] && !written[a3 as usize + k])
+                        .map(|k| a2 + k)
+                });
+                if let Some(cell) = seed {
+                    put(&mut mem, &mut written, &mut mem_count, cell as u32, F64::ZERO);
+                    continue;
+                }
+                break;
+            }
         }
 
         // Fill the deferred JUMP inverse hints `w = c⁻¹` (the is-nonzero witness)
@@ -799,6 +944,7 @@ impl Program {
             mul_ext,
             set,
             deref,
+            deref_ext,
             jump,
             blake3,
             mem_count,

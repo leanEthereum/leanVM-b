@@ -30,7 +30,7 @@ mod trace;
 pub use execute::Execution;
 pub use isa::{DerefMode, Op};
 pub use layout::*;
-pub(crate) use trace::{Brow, Drow, Erow, Jrow, Srow, Trace, Xrow};
+pub(crate) use trace::{Brow, Drow, EDrow, Erow, Jrow, Srow, Trace, Xrow};
 
 /// Witness-gen `BLAKE3` compression (doc §7.6): the eight input words are the two
 /// 256-bit operands `a = va[0..4]`, `b = vb[0..4]` laid out little-endian into
@@ -84,7 +84,7 @@ fn program_digest(prog: &[Op]) -> [F64; 4] {
     let mut words: Vec<F64> = Vec::with_capacity(4 * prog.len() + 2);
     // Domain/version marker (the MD IV also binds the total length).
     words.push(F64(prog.len() as u64));
-    words.push(F64(3));
+    words.push(F64(4));
     for op in prog {
         // Encode every op injectively as a tag, five u32 operand slots, and
         // one base-field immediate. BLAKE3 uses all five slots.
@@ -100,6 +100,7 @@ fn program_digest(prog: &[Op]) -> [F64; 4] {
                 gamma,
                 mode,
             } => (5 + mode as u8, alpha, beta, gamma, 0, 0, F64::ZERO),
+            Op::DerefExt { alpha, beta, gamma } => (10, alpha, beta, gamma, 0, 0, F64::ZERO),
             Op::Jump { oc, od, of } => (8, oc, od, of, 0, 0, F64::ZERO),
             Op::Blake3 { a0, a1, b0, b1, c } => (9, a0, a1, b0, b1, c, F64::ZERO),
         };
@@ -306,7 +307,7 @@ fn blake3_value_slot(col: usize) -> Option<usize> {
 
 /// Run statistics returned alongside the proof: the cycle count (total executed
 /// instructions), the per-opcode counts
-/// `[ADD, MUL, ADD_EXT, MUL_EXT, SET, DEREF, JUMP, BLAKE3]`, and the
+/// `[ADD, MUL, ADD_EXT, MUL_EXT, SET, DEREF, DEREF_EXT, JUMP, BLAKE3]`, and the
 /// committed witness size — the sum of the column lengths, i.e. the real data
 /// before the stacked witness is zero-padded to a power of two `2^m`.
 pub struct Stats {

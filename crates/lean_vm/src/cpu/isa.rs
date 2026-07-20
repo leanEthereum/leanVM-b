@@ -39,6 +39,13 @@ pub enum Op {
         gamma: u32,
         mode: DerefMode,
     },
+    /// Equality between three consecutive heap words at
+    /// `mem[mem[fp+alpha]·g^beta .. +3]` and `mem[fp+gamma .. +3]`.
+    DerefExt {
+        alpha: u32,
+        beta: u32,
+        gamma: u32,
+    },
     Jump {
         oc: u32,
         od: u32,

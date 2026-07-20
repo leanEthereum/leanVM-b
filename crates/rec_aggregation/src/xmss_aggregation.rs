@@ -173,7 +173,7 @@ pub fn run_xmss_aggregation(n: usize, log_inv_rate: usize) {
 
     // 181 fixed blocks + per signature: 1 (pk absorb) + 157 (the native
     // verifier's constant).
-    assert_eq!(stats.counts[7], 181 + 158 * n, "BLAKE3 instruction count");
+    assert_eq!(stats.counts[8], 181 + 158 * n, "BLAKE3 instruction count");
     let mut bad = want;
     bad[3] += F64::ONE;
     assert!(verify(&program, &bad, &proof).is_err());

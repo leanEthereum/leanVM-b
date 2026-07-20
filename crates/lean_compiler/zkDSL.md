@@ -1,7 +1,7 @@
 # zkDSL Language Reference (leanVM-b)
 
-The zkDSL is a Python-syntax language that compiles to the leanVM-b ISA — eight
-instructions (`ADD`, `MUL`, `ADD_EXT`, `MUL_EXT`, `SET`, `DEREF`, `JUMP`,
+The zkDSL is a Python-syntax language that compiles to the leanVM-b ISA — nine
+instructions (`ADD`, `MUL`, `ADD_EXT`, `MUL_EXT`, `SET`, `DEREF`, `DEREF_EXT`, `JUMP`,
 `BLAKE3`) with write-once 64-bit memory and all indices carried "in the
 exponent" as powers of a fixed generator. For the underlying VM and proving
 system, see [`misc/doc.tex`](../../misc/doc.tex) (released as `doc.pdf`).
@@ -83,10 +83,12 @@ and blank lines are free. Indentation is block structure, as in Python.
 
 Ordinary functions may return scalars, `HeapBuf` pointers, and `StackBuf`
 values, including mixtures in a tuple return. A returned `StackBuf(n)` has a
-compile-time-known size: its `n` cells are copied through `n` consecutive return
-slots and the caller binds the result as a new `StackBuf(n)`. A `HeapBuf` return
-is just its one-cell pointer; the allocation hint already ran where the buffer
-was created, so no size metadata needs to cross the call.
+compile-time-known size: its `n` cells cross consecutive return slots and the
+caller binds the result as a new `StackBuf(n)`. The call ABI coalesces each
+physically contiguous three-cell run into one `DEREF_EXT` rather than three
+scalar transfers. A `HeapBuf` return is just its one-cell pointer; the
+allocation hint already ran where the buffer was created, so no size metadata
+needs to cross the call.
 
 ## Public input
 
@@ -197,9 +199,11 @@ f(p, q)                   # statement: returns discarded
 Functions may recurse. Each call gets a **fresh frame**: the frame pointer is
 prover-hinted (write-once memory makes an unconstrained cell prover-chosen),
 arguments and the return address/frame are stored with `DEREF`s, and control
-transfers with one `JUMP`. Cost: about `n_args + n_returns + 4` instructions
-per call. Every non-`main` function must end in an explicit `return`; in
-`main`, `return` is a no-op (main halts at a sentinel automatically).
+transfers with one `JUMP`. Three adjacent physical argument or return cells use
+one `DEREF_EXT`, so each such triple saves two rows relative to the scalar cost
+of about `n_arg_cells + n_return_cells + 4`. Every non-`main` function must end
+in an explicit `return`; in `main`, `return` is a no-op (main halts at a
+sentinel automatically).
 
 ### `Const` parameters
 
@@ -616,11 +620,24 @@ div_ext(a, b, c)       # c · b = a; b must be nonzero
 back-solving the quotient. The ordinary infix operators remain base-field
 operations and never implicitly reinterpret three words as an extension.
 
+Three consecutive extension words can be transferred between heap and stack in
+one instruction:
+
+```python
+value = StackBuf(3)
+deref_ext(ptr, value)  # load if the heap run is set; store if `value` is set
+```
+
+`DEREF_EXT` has the same write-once equality semantics as cell-mode `DEREF`.
+It commits only the base heap and stack addresses; the other two addresses are
+their virtual `GEN` and `GEN ** 2` multiples.
+
 Normal functions declare extension parameters with `: Ext`; the call ABI
-flattens each one into three cells. The argument must be a `StackBuf(3)`, a
-three-cell StackBuf slice, a list literal of length three, or a helper call
-returning that shape. A returned extension is an ordinary compile-time-sized
-StackBuf return.
+flattens each one into three cells and transfers a contiguous run with one
+`DEREF_EXT`. The argument must be a `StackBuf(3)`, a three-cell StackBuf slice,
+a list literal of length three, or a helper call returning that shape. A
+returned extension is an ordinary compile-time-sized StackBuf return and uses
+the same packed transfer when its physical cells are contiguous.
 
 ## BLAKE3
 
@@ -712,6 +729,7 @@ completely unconstrained: the program must re-verify them in-circuit.
 | `a / b` | 1 `MUL` (write-once back-solve; division by zero is undefined) |
 | `add_ext(a, b, out)` / `sub_ext(...)` | 1 `ADD_EXT` |
 | `mul_ext(a, b, out)` / `div_ext(...)` | 1 `MUL_EXT` |
+| `deref_ext(ptr, value)` | 1 `DEREF_EXT` for three consecutive heap words |
 | heap read / store `buf[i]` | 1 `DEREF`; +1 `MUL` for a *runtime* index (a compile-time g-power offset folds into the `DEREF` — free) |
 | stack read / store `sa[k]` | 0 (direct cell addressing) |
 | `assert a == b` | 2 |
@@ -720,7 +738,7 @@ completely unconstrained: the program must re-verify them in-circuit.
 | `if a == b: …` | 3 (+2 to skip a non-empty `else`; +2 amortized `self-fp` per branching function); **0 if the condition is compile-time** |
 | `match log(x): …` | ≈ 7, independent of the case count |
 | `… = match_range(log(x), …)` | the `match` + the arm; results written into the targets directly. Uniform-call arms (`lambda k: f(a, b, k)`) **fuse**: one shared frame + dispatch to entry, each arm just `SET`+`JUMP` |
-| function call | ≈ `n_args + n_returns + 4` (0 when the callee is `@inline`) |
+| function call | ≈ `n_arg_cells + n_return_cells + 4`, minus 2 for each adjacent physical triple coalesced into `DEREF_EXT` (0 when the callee is `@inline`) |
 | `mul_range` iteration | body + ≈ 1 `MUL` + 1 `XOR` + call overhead |
 | `unroll` iteration | body only (compile-time replication) |
 | `blake3(a, b, out)` | 1; input words read in place (copies/zeros assembling an operand are forwarded, not emitted), +1 `DEREF` per heap input word, +1 `MUL` per runtime slice start |

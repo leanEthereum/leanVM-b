@@ -41,6 +41,25 @@ pub(crate) struct Drow {
     pub(crate) r3: F64,
     pub(crate) bytecode_read: F64,
 }
+/// Three-word pointer dereference. Only the base heap/frame addresses are
+/// committed; their two successors are virtual ×g/×g² addresses.
+pub(crate) struct EDrow {
+    pub(crate) pc: u32,
+    pub(crate) fp: u32,
+    pub(crate) alpha: u32,
+    pub(crate) beta: u32,
+    pub(crate) gamma: u32,
+    pub(crate) a1: u32,
+    pub(crate) p: F64,
+    pub(crate) a2: usize,
+    pub(crate) a3: u32,
+    pub(crate) v2: [F64; 3],
+    pub(crate) v3: [F64; 3],
+    pub(crate) r1: F64,
+    pub(crate) r2: [F64; 3],
+    pub(crate) r3: [F64; 3],
+    pub(crate) bytecode_read: F64,
+}
 pub(crate) struct Jrow {
     pub(crate) pc: u32,
     pub(crate) fp: u32,
@@ -103,6 +122,7 @@ pub(crate) struct Trace {
     pub(crate) mul_ext: Vec<Erow>,
     pub(crate) set: Vec<Srow>,
     pub(crate) deref: Vec<Drow>,
+    pub(crate) deref_ext: Vec<EDrow>,
     pub(crate) jump: Vec<Jrow>,
     pub(crate) blake3: Vec<Brow>,
     pub(crate) mem_count: Vec<F64>, // per-cell running access count g^{count}; final = g^{A[i]}

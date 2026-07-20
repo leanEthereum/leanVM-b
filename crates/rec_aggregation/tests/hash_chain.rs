@@ -124,7 +124,7 @@ fn blake3_hash_chain() {
     verify(&program, &pi, &proof).expect("hash-chain proof verifies");
     let t_verify = t.elapsed();
 
-    assert_eq!(stats.counts[7], n, "one BLAKE3 row per chain step");
+    assert_eq!(stats.counts[8], n, "one BLAKE3 row per chain step");
 
     println!(
         "\nBLAKE3 hash chain, N = {}, unroll = {}",

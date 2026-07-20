@@ -1936,9 +1936,19 @@ fn run_recursion_with_rates(
         pow(stats.cycles),
         stats.cycles as f64 / total_inner_cycles as f64
     );
-    for (name, &c) in ["ADD", "MUL", "ADD_EXT", "MUL_EXT", "SET", "DEREF", "JUMP", "BLAKE3"]
-        .iter()
-        .zip(&stats.counts)
+    for (name, &c) in [
+        "ADD",
+        "MUL",
+        "ADD_EXT",
+        "MUL_EXT",
+        "SET",
+        "DEREF",
+        "DEREF_EXT",
+        "JUMP",
+        "BLAKE3",
+    ]
+    .iter()
+    .zip(&stats.counts)
     {
         let count = pretty_integer(c);
         println!("    {name:<6} instructions     : {count:>14} = {:>7}", pow(c));

@@ -56,7 +56,7 @@ def main():
     let want = compress(h, h);
 
     let (proof, stats) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
-    assert_eq!(stats.counts[7], 1, "one BLAKE3 instruction");
+    assert_eq!(stats.counts[8], 1, "one BLAKE3 instruction");
     verify(&program, &want, &proof).expect("StackBuf self-hash verifies");
 
     let mut bad = want;
@@ -100,6 +100,43 @@ def main():
     }
 }
 
+/// Each four-word heap bridge uses the three-word bundled dereference plus one
+/// scalar tail access, both for BLAKE3 inputs and its heap output.
+#[test]
+fn blake3_heap_bridges_bundle_three_word_prefixes() {
+    let src = "\
+def main():
+    a = HeapBuf(4)
+    a[1] = 5
+    a[GEN] = 7
+    a[GEN ** 2] = 11
+    a[GEN ** 3] = 13
+    out = HeapBuf(4)
+    blake3(a[0:4], a[0:4], out[0:4])
+    return
+";
+    let program = compile(&parse(src).expect("parse"));
+    assert_eq!(
+        program
+            .prog
+            .iter()
+            .filter(|op| matches!(op, Op::DerefExt { .. }))
+            .count(),
+        3,
+        "two input prefixes and one output prefix"
+    );
+    assert_eq!(
+        program.prog.iter().filter(|op| matches!(op, Op::Deref { .. })).count(),
+        7,
+        "four initialization stores plus three bridge tails"
+    );
+    assert_eq!(
+        program.prog.iter().filter(|op| matches!(op, Op::Blake3 { .. })).count(),
+        1
+    );
+    program.execute([F64::ZERO; 4]);
+}
+
 /// A general (non-blake3) `StackBuf(3)`: indexed writes, an indexed read feeding
 /// an arithmetic write into another slot, then two slots published. Confirms the
 /// stack cells are plain consecutive frame cells addressable by index.
@@ -120,7 +157,7 @@ def main():
     // `+` is XOR: 3 ^ 4 = 7. Published: (sa[2], sa[1]) = (7, 4).
     let want = pi2(F64(7), F64(4));
     let (proof, stats) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
-    assert_eq!(stats.counts[7], 0, "no BLAKE3 here");
+    assert_eq!(stats.counts[8], 0, "no BLAKE3 here");
     verify(&program, &want, &proof).expect("StackBuf indexing verifies");
 }
 
@@ -271,7 +308,7 @@ def step(state, v):
     let want = s2;
 
     let (proof, stats) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
-    assert_eq!(stats.counts[7], 2, "two BLAKE3 instructions (one per inlined step)");
+    assert_eq!(stats.counts[8], 2, "two BLAKE3 instructions (one per inlined step)");
     verify(&program, &want, &proof).expect("inline StackBuf+scalar tuple return verifies");
 
     let mut bad = want;
@@ -356,7 +393,7 @@ def main():
     // s = [7, 5] after the swap → words [7,0,5,0]; t = [7 ^ 5, 3] = [2, 3] → [2,0,3,0].
     let want = compress([F64(7), F64(5), F64(13), F64(11)], [F64(2), F64(3), F64(6), F64(17)]);
     let (proof, stats) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
-    assert_eq!(stats.counts[7], 1, "one BLAKE3 instruction");
+    assert_eq!(stats.counts[8], 1, "one BLAKE3 instruction");
     verify(&program, &want, &proof).expect("list-literal StackBuf verifies");
 }
 

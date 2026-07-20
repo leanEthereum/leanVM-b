@@ -227,6 +227,9 @@ pub fn disassemble(prog: &[Op]) -> String {
                 };
                 format!("DEREF  *(fp[{alpha}]·g^{beta}) = {src}  [{mode:?}]")
             }
+            Op::DerefExt { alpha, beta, gamma } => {
+                format!("DEREF_EXT *(fp[{alpha}]·g^{beta})[..3] = fp[{gamma}..+3]")
+            }
             Op::Jump { oc, od, of } => {
                 format!("JUMP   if fp[{oc}]≠0: pc=fp[{od}], fp=fp[{of}]")
             }
@@ -290,6 +293,11 @@ fn resolve(op: &LOp, entry: &HashMap<String, u32>, sentinel: u32, base: u32) -> 
             beta: *beta,
             gamma: *gamma,
             mode: *mode,
+        },
+        LOp::DerefExt { alpha, beta, gamma } => Op::DerefExt {
+            alpha: *alpha,
+            beta: *beta,
+            gamma: *gamma,
         },
         LOp::Jump { oc, od, of } => Op::Jump {
             oc: *oc,

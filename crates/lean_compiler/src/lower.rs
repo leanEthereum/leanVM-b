@@ -101,6 +101,14 @@ struct FnLower<'a> {
     /// lazily once per distinct constant ([`Self::const_cell`]). Cells are
     /// write-once and read-many, so one `SET` serves every use in scope.
     const_cells: HashMap<u64, Off>,
+    /// Fully constant three-word extension runs, pooled for extension
+    /// instructions just like scalar constants. Without this, every use of a
+    /// literal such as `[1, 0, 0]` is assembled with three MUL-by-one copies.
+    ext_const_runs: HashMap<[u64; 3], Off>,
+    /// Fully constant 128-bit BLAKE3 chunks. BLAKE3 addresses each two-word
+    /// chunk by one base offset, so independently pooled scalar constants are
+    /// not sufficient to forward a pair without copies.
+    chunk_const_runs: HashMap<[u64; 2], Off>,
     /// Variables bound to a symbolic g-address ([`GAddr`]) — index cursors and
     /// shifted pointers, kept virtual so their offsets fold into `DEREF`'s `β`.
     gaddrs: HashMap<String, GAddr>,
@@ -121,9 +129,6 @@ struct FnLower<'a> {
     alias: HashMap<Off, Alias>,
     /// A cached frame cell holding `0` (for forwarded zero words), set lazily.
     zero_off: Option<Off>,
-    /// A cached pair of CONSECUTIVE zero cells (a forwarded zero `BLAKE3`
-    /// chunk — e.g. a hash-chain padding half), set lazily.
-    zero2_off: Option<Off>,
     /// Hints queued to attach to the next emitted instruction.
     pending: Vec<Hint>,
     /// Active `@inline` expansion stack. Nested inline helpers are allowed,
@@ -185,6 +190,43 @@ impl FnLower<'_> {
         o
     }
 
+    /// Three consecutive cells holding one compile-time extension constant.
+    /// Extension instructions address a run by its base, so scalar constant
+    /// pooling is insufficient when the three independently pooled cells are
+    /// not adjacent.
+    fn ext_const_run(&mut self, values: [F64; 3]) -> Off {
+        let key = [values[0].0, values[1].0, values[2].0];
+        if let Some(&o) = self.ext_const_runs.get(&key) {
+            return o;
+        }
+        let o = self.alloc_stack(3);
+        for (k, value) in values.into_iter().enumerate() {
+            self.emit(LOp::Set {
+                o: o + k as u32,
+                k: KVal::Const(value),
+            });
+        }
+        self.ext_const_runs.insert(key, o);
+        o
+    }
+
+    /// Two consecutive cells holding a compile-time BLAKE3 chunk.
+    fn chunk_const_run(&mut self, values: [F64; 2]) -> Off {
+        let key = [values[0].0, values[1].0];
+        if let Some(&o) = self.chunk_const_runs.get(&key) {
+            return o;
+        }
+        let o = self.alloc_stack(2);
+        for (k, value) in values.into_iter().enumerate() {
+            self.emit(LOp::Set {
+                o: o + k as u32,
+                k: KVal::Const(value),
+            });
+        }
+        self.chunk_const_runs.insert(key, o);
+        o
+    }
+
     /// A frame cell holding `0`, set lazily once — the source for forwarded zero
     /// words (a `BLAKE3` padding half).
     fn zero(&mut self) -> Off {
@@ -197,23 +239,6 @@ impl FnLower<'_> {
             k: KVal::Const(F64::ZERO),
         });
         self.zero_off = Some(o);
-        o
-    }
-
-    /// Two CONSECUTIVE frame cells both holding `0`, set lazily once — the
-    /// source for a forwarded all-zero `BLAKE3` chunk (cells `base`, `base+1`).
-    fn zero_pair(&mut self) -> Off {
-        if let Some(o) = self.zero2_off {
-            return o;
-        }
-        let o = self.alloc_stack(2);
-        for k in 0..2 {
-            self.emit(LOp::Set {
-                o: o + k,
-                k: KVal::Const(F64::ZERO),
-            });
-        }
-        self.zero2_off = Some(o);
         o
     }
 
@@ -310,11 +335,12 @@ impl FnLower<'_> {
             self.self_fp_off,
             self.bounds.clone(),
             self.const_cells.clone(),
+            self.ext_const_runs.clone(),
+            self.chunk_const_runs.clone(),
             self.gaddrs.clone(),
             self.fconsts.clone(),
             self.alias.clone(),
             self.zero_off,
-            self.zero2_off,
         );
         f(self);
         // A hint pending at the end of a branch (e.g. a trailing
@@ -334,11 +360,12 @@ impl FnLower<'_> {
             self.self_fp_off,
             self.bounds,
             self.const_cells,
+            self.ext_const_runs,
+            self.chunk_const_runs,
             self.gaddrs,
             self.fconsts,
             self.alias,
             self.zero_off,
-            self.zero2_off,
         ) = saved;
     }
 
@@ -1248,22 +1275,25 @@ impl FnLower<'_> {
 
     /// A `blake3` operand as two independently addressed 128-bit chunks. Stack
     /// chunks forward through adjacent aliases without copies. A heap slice is
-    /// bridged into a fresh stack run — one `DEREF` per cell
-    /// (`m[ptr·g^{lo+k}] == m[fp+t+k]`, the `β` immediate doing the pointer
-    /// offset). The heap cells must already be written.
+    /// bridged into a fresh stack run with one `DEREF_EXT` for its three-word
+    /// prefix and one scalar `DEREF` for its tail. The `β` immediates fold in
+    /// the heap offsets. The heap cells must already be written.
     fn blake3_input(&mut self, e: &Expr) -> [Off; 2] {
         match self.blake3_operand(e) {
             B3Operand::Stack(o) => [self.chunk_src(o), self.chunk_src(o + 2)],
             B3Operand::Heap { ptr, lo } => {
                 let t = self.alloc_stack(4);
-                for k in 0..4 {
-                    self.emit(LOp::Deref {
-                        alpha: ptr,
-                        beta: lo + k,
-                        gamma: t + k,
-                        mode: DerefMode::Cell,
-                    });
-                }
+                self.emit(LOp::DerefExt {
+                    alpha: ptr,
+                    beta: lo,
+                    gamma: t,
+                });
+                self.emit(LOp::Deref {
+                    alpha: ptr,
+                    beta: lo + 3,
+                    gamma: t + 3,
+                    mode: DerefMode::Cell,
+                });
                 [t, t + 2]
             }
         }
@@ -1302,8 +1332,29 @@ impl FnLower<'_> {
             }
             other => panic!("extension operands must be StackBuf values or slices, got `{other:?}`"),
         };
-        self.materialize_run(base, 3);
-        base
+        self.ext_src(base)
+    }
+
+    /// Follow a deferred three-cell alias when it already names one contiguous
+    /// extension run. Extension instructions consume only the run's FP-relative
+    /// base, so forwarding the base is equivalent to materializing three copies.
+    /// Mixed/scattered aliases still need their own concrete run.
+    fn ext_src(&mut self, o: Off) -> Off {
+        match (
+            self.alias.get(&o).copied(),
+            self.alias.get(&(o + 1)).copied(),
+            self.alias.get(&(o + 2)).copied(),
+        ) {
+            (None, None, None) => o,
+            (Some(Alias::Cell(s0)), Some(Alias::Cell(s1)), Some(Alias::Cell(s2))) if s1 == s0 + 1 && s2 == s0 + 2 => {
+                self.ext_src(s0)
+            }
+            (Some(Alias::Const(a)), Some(Alias::Const(b)), Some(Alias::Const(c))) => self.ext_const_run([a, b, c]),
+            _ => {
+                self.materialize_run(o, 3);
+                o
+            }
+        }
     }
 
     /// The base of the two-cell chunk holding the values of stack cells `o`,
@@ -1317,7 +1368,7 @@ impl FnLower<'_> {
         match (self.alias.get(&o).copied(), self.alias.get(&(o + 1)).copied()) {
             (None, None) => o,
             (Some(Alias::Cell(s0)), Some(Alias::Cell(s1))) if s1 == s0 + 1 => self.chunk_src(s0),
-            (Some(Alias::Const(a)), Some(Alias::Const(b))) if a.is_zero() && b.is_zero() => self.zero_pair(),
+            (Some(Alias::Const(a)), Some(Alias::Const(b))) => self.chunk_const_run([a, b]),
             _ => {
                 for k in [o, o + 1] {
                     if self.alias.contains_key(&k) {
@@ -1991,13 +2042,27 @@ impl FnLower<'_> {
             ptr: nfp,
             callee: callee.to_string(),
         });
-        for (i, &ao) in arg_offs.iter().enumerate() {
-            self.emit(LOp::Deref {
-                alpha: nfp,
-                beta: 2 + i as u32,
-                gamma: ao,
-                mode: DerefMode::Cell,
-            });
+        // Transfer an adjacent three-word source run with the packed memory
+        // relation. This covers both Ext arguments and contiguous prefixes of
+        // wider physical values.
+        let mut i = 0;
+        while i < arg_offs.len() {
+            if i + 2 < arg_offs.len() && arg_offs[i + 1] == arg_offs[i] + 1 && arg_offs[i + 2] == arg_offs[i] + 2 {
+                self.emit(LOp::DerefExt {
+                    alpha: nfp,
+                    beta: 2 + i as u32,
+                    gamma: arg_offs[i],
+                });
+                i += 3;
+            } else {
+                self.emit(LOp::Deref {
+                    alpha: nfp,
+                    beta: 2 + i as u32,
+                    gamma: arg_offs[i],
+                    mode: DerefMode::Cell,
+                });
+                i += 1;
+            }
         }
         self.emit(LOp::Deref {
             alpha: nfp,
@@ -2018,13 +2083,28 @@ impl FnLower<'_> {
             Some(d) => d.to_vec(),
             None => (0..n_ret).map(|_| self.fresh()).collect(),
         };
-        for (i, &d) in dsts.iter().enumerate() {
-            self.emit(LOp::Deref {
-                alpha: nfp,
-                beta: 2 + n_args + i as u32,
-                gamma: d,
-                mode: DerefMode::Cell,
-            });
+        // Return cells have the same flattened ABI. Pack any consecutive
+        // caller destination triple into one DEREF_EXT; this covers StackBuf(3)
+        // returns and three-word prefixes without changing logical return
+        // shapes or requiring a new calling convention.
+        let mut i = 0;
+        while i < dsts.len() {
+            if i + 2 < dsts.len() && dsts[i + 1] == dsts[i] + 1 && dsts[i + 2] == dsts[i] + 2 {
+                self.emit(LOp::DerefExt {
+                    alpha: nfp,
+                    beta: 2 + n_args + i as u32,
+                    gamma: dsts[i],
+                });
+                i += 3;
+            } else {
+                self.emit(LOp::Deref {
+                    alpha: nfp,
+                    beta: 2 + n_args + i as u32,
+                    gamma: dsts[i],
+                    mode: DerefMode::Cell,
+                });
+                i += 1;
+            }
         }
         dsts
     }
@@ -2238,8 +2318,9 @@ impl FnLower<'_> {
                 // lands in the existing 4-cell run `out` (write-once: if `out`
                 // was already written, this asserts the digest equals it). A
                 // heap `out` slice takes the digest via a fresh four-word stack
-                // run and four `DEREF`s after the hash (the store direction is
-                // the same instruction as the load — write-once fills the unset side).
+                // run, one `DEREF_EXT` for the three-word prefix, and one scalar
+                // `DEREF` for the tail after the hash (the store direction is the
+                // same instruction as the load — write-once fills the unset side).
                 if f == "blake3" {
                     assert_eq!(args.len(), 3, "blake3 takes (a, b, out)");
                     let [a0, a1] = self.blake3_input(&args[0]);
@@ -2251,14 +2332,17 @@ impl FnLower<'_> {
                     self.materialize_run(c, 4);
                     self.emit(LOp::Blake3 { a0, a1, b0, b1, c });
                     if let Some((ptr, lo)) = heap_out {
-                        for k in 0..4 {
-                            self.emit(LOp::Deref {
-                                alpha: ptr,
-                                beta: lo + k,
-                                gamma: c + k,
-                                mode: DerefMode::Cell,
-                            });
-                        }
+                        self.emit(LOp::DerefExt {
+                            alpha: ptr,
+                            beta: lo,
+                            gamma: c,
+                        });
+                        self.emit(LOp::Deref {
+                            alpha: ptr,
+                            beta: lo + 3,
+                            gamma: c + 3,
+                            mode: DerefMode::Cell,
+                        });
                     }
                     return;
                 }
@@ -2275,6 +2359,17 @@ impl FnLower<'_> {
                         "div_ext" => self.emit(LOp::MulExt { a: c, b, c: a }),
                         _ => unreachable!(),
                     }
+                    return;
+                }
+                if f == "deref_ext" {
+                    assert_eq!(
+                        args.len(),
+                        2,
+                        "deref_ext(ptr, value) takes a heap pointer and StackBuf(3)"
+                    );
+                    let (alpha, beta) = self.heap_addr(&args[0], &Expr::Lit(1));
+                    let gamma = self.ext_operand(&args[1]);
+                    self.emit(LOp::DerefExt { alpha, beta, gamma });
                     return;
                 }
                 self.call(f, args, 0);
@@ -2386,25 +2481,75 @@ impl FnLower<'_> {
             exprs.len(),
             self.return_shapes.len()
         );
-        // Each logical value lands straight in its flattened return area. A
-        // StackBuf is copied cell-by-cell because its callee-frame offsets are
-        // not meaningful after control returns to the caller.
-        let mut ret = ret_base;
+        // Flatten logical returns into physical source words first. Plain
+        // scalar expressions still lower directly into their ABI cell; stack
+        // aliases expose their source offsets so adjacent triples can cross the
+        // boundary with DEREF_EXT.
+        enum ReturnWord {
+            Expr(Expr),
+            Cell(Off),
+        }
+        let mut words = Vec::new();
         for (e, shape) in exprs.iter().zip(self.return_shapes.clone()) {
             match shape {
-                ReturnShape::Scalar => self.expr_into(e, ret),
+                ReturnShape::Scalar => match self.copy_alias(e) {
+                    Some(Alias::Cell(src)) => words.push(ReturnWord::Cell(self.word_src(src))),
+                    _ => words.push(ReturnWord::Expr(e.clone())),
+                },
                 ReturnShape::StackBuf(size) => {
                     let (base, actual) = self
                         .stack_of(e)
                         .unwrap_or_else(|| panic!("expected a StackBuf({size}) return, got `{e:?}`"));
                     assert_eq!(actual, size, "returned StackBuf has size {actual}, expected {size}");
                     for k in 0..size {
-                        let src = self.word_src(base + k);
-                        self.copy(src, ret + k);
+                        words.push(ReturnWord::Cell(self.word_src(base + k)));
                     }
                 }
             }
-            ret += shape.cells();
+        }
+
+        let is_run = |i: usize, words: &[ReturnWord]| {
+            matches!(
+                words.get(i..i + 3),
+                Some([ReturnWord::Cell(a), ReturnWord::Cell(b), ReturnWord::Cell(c)])
+                    if *b == *a + 1 && *c == *a + 2
+            )
+        };
+        let mut probe = 0;
+        let mut runs = 0;
+        while probe < words.len() {
+            if is_run(probe, &words) {
+                runs += 1;
+                probe += 3;
+            } else {
+                probe += 1;
+            }
+        }
+        // Reading this function's own FP costs two rows. Therefore one packed
+        // triple merely breaks even with three MUL-by-one copies; use the
+        // packed return path when FP is already live or when at least two runs
+        // amortize that setup.
+        let pack_runs = self.self_fp_off.is_some() || runs >= 2;
+        let mut i = 0;
+        while i < words.len() {
+            if pack_runs && is_run(i, &words) {
+                let ReturnWord::Cell(src) = words[i] else {
+                    unreachable!()
+                };
+                let sfp = self.self_fp();
+                self.emit(LOp::DerefExt {
+                    alpha: sfp,
+                    beta: ret_base + i as u32,
+                    gamma: src,
+                });
+                i += 3;
+                continue;
+            }
+            match &words[i] {
+                ReturnWord::Expr(e) => self.expr_into(e, ret_base + i as u32),
+                ReturnWord::Cell(src) => self.copy(*src, ret_base + i as u32),
+            }
+            i += 1;
         }
         let one = self.one();
         self.emit(LOp::Jump { oc: one, od: 0, of: 1 });
@@ -2574,8 +2719,10 @@ fn stmt_inline_safe(s: &Stmt, defs: &HashMap<String, Func>) -> bool {
         | Stmt::AssertNe(..)
         | Stmt::AssertLt(..) => true,
         Stmt::Call(f, _) => {
-            matches!(f.as_str(), "blake3" | "add_ext" | "sub_ext" | "mul_ext" | "div_ext")
-                || defs.get(f).is_some_and(|d| d.inline)
+            matches!(
+                f.as_str(),
+                "blake3" | "add_ext" | "sub_ext" | "mul_ext" | "div_ext" | "deref_ext"
+            ) || defs.get(f).is_some_and(|d| d.inline)
         }
         Stmt::If { then, els, .. } => {
             then.iter().all(|s| stmt_inline_safe(s, defs)) && els.iter().all(|s| stmt_inline_safe(s, defs))
@@ -2739,13 +2886,14 @@ pub(crate) fn lower_func(
         self_fp_off: None,
         bounds: HashMap::new(),
         const_cells: HashMap::new(),
+        ext_const_runs: HashMap::new(),
+        chunk_const_runs: HashMap::new(),
         gaddrs: HashMap::new(),
         fconsts: HashMap::new(),
         inline_ret: None,
         inline_stack_ret: None,
         alias: HashMap::new(),
         zero_off: None,
-        zero2_off: None,
         pending: Vec::new(),
         inline_calls: Vec::new(),
         queue,
