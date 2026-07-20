@@ -1533,20 +1533,63 @@ impl Blake3Setup {
     ) -> (Vec<F128>, ReducedClaims) {
         assert_eq!(blocks.len(), self.n_blocks);
         let n_log = self.n_blocks_log();
+        let t_witness = std::time::Instant::now();
         let (z_packed, a_packed_f128, b_packed_f128, z_packed_lincheck) =
             generate_witness_with_ab_packed_and_lincheck(blocks, n_log);
+        if std::env::var_os("FLOCK_PROVE_TRACE").is_some() {
+            eprintln!(
+                "[flock prove] witness:   {:.2} ms",
+                t_witness.elapsed().as_secs_f64() * 1e3,
+            );
+        }
+        let reduced = self.prove_reduction_precomputed(
+            &z_packed,
+            &a_packed_f128,
+            &b_packed_f128,
+            &z_packed_lincheck,
+            ps,
+        );
+        // The embedding protocol has already transcript-bound the commitment.
+        let _ = stack_commitment;
+        (z_packed, reduced)
+    }
+
+    /// **Flock reduction from a prepared witness (prover).** This is the
+    /// witness-generation-free counterpart of [`Self::prove_reduction`] for
+    /// embedders that already generated `q_pkd` together with its `A·z`, `B·z`,
+    /// and lincheck-stripe buffers before committing it. Reusing those buffers
+    /// avoids repeating the fused witness pass after commitment.
+    pub fn prove_reduction_precomputed(
+        &self,
+        z_packed: &[F128],
+        a_packed_f128: &[F128],
+        b_packed_f128: &[F128],
+        z_packed_lincheck: &[u8],
+        ps: &mut ProverState,
+    ) -> ReducedClaims {
+        let trace = std::env::var_os("FLOCK_PROVE_TRACE").is_some();
+        let t_reduction = std::time::Instant::now();
+
+        let packed_len = 1usize << (self.r1cs.m - pcs::LOG_PACKING);
+        assert_eq!(z_packed.len(), packed_len, "wrong packed witness length");
+        assert_eq!(a_packed_f128.len(), packed_len, "wrong packed A·z length");
+        assert_eq!(b_packed_f128.len(), packed_len, "wrong packed B·z length");
+        assert_eq!(
+            z_packed_lincheck.len(),
+            packed_len * core::mem::size_of::<F128>(),
+            "wrong lincheck stripe length"
+        );
 
         // No bind_statement here: the embedding protocol (leanVM-b) seeds its
         // transcript with the circuit-FAMILY digest and binds the instance
         // count and commitment root before any challenge, so the statement is
-        // already fully transcript-bound. `_ = stack_commitment` keeps the
-        // symmetric signature.
-        let _ = stack_commitment;
+        // already fully transcript-bound.
 
         let padding = crate::zerocheck::PaddingSpec {
             k_log: self.r1cs.k_log,
             useful_bits_per_block: self.r1cs.useful_bits,
         };
+        let t_zerocheck = std::time::Instant::now();
         let (zc_claim, s_hat_v_c) = {
             let a_packed: &[u8] = unsafe {
                 std::slice::from_raw_parts(
@@ -1570,6 +1613,7 @@ impl Blake3Setup {
                 a_packed, b_packed, c_packed, self.r1cs.m, &padding, ps,
             )
         };
+        let zerocheck_time = t_zerocheck.elapsed();
 
         let inner_rest_len = self.r1cs.k_log - self.r1cs.k_skip;
         let x_ab = crate::lincheck::QuirkyPoint {
@@ -1577,8 +1621,9 @@ impl Blake3Setup {
             x_inner_rest: zc_claim.mlv_challenges[..inner_rest_len].to_vec(),
             x_outer: zc_claim.mlv_challenges[inner_rest_len..].to_vec(),
         };
+        let t_lincheck = std::time::Instant::now();
         let (lc_claim, z_vec_pre) = crate::lincheck::prove_padded_capture_z_vec(
-            &z_packed_lincheck,
+            z_packed_lincheck,
             self.r1cs.m,
             self.r1cs.k_log,
             self.r1cs.k_skip,
@@ -1587,6 +1632,7 @@ impl Blake3Setup {
             &x_ab,
             ps,
         );
+        let lincheck_time = t_lincheck.elapsed();
 
         let ab = crate::proof::ZClaim {
             point: crate::lincheck::QuirkyPoint {
@@ -1617,7 +1663,18 @@ impl Blake3Setup {
             ab: WitnessClaim { claim: ab, s_hat_v: s_hat_v_ab },
             c: WitnessClaim { claim: c, s_hat_v: Some(s_hat_v_c) },
         };
-        (z_packed, reduced)
+        if trace {
+            let reduction_time = t_reduction.elapsed();
+            let glue_time = reduction_time.saturating_sub(zerocheck_time + lincheck_time);
+            eprintln!(
+                "[flock prove] reduction: {:.2} ms (zerocheck: {:.2} ms, lincheck: {:.2} ms, glue: {:.2} ms)",
+                reduction_time.as_secs_f64() * 1e3,
+                zerocheck_time.as_secs_f64() * 1e3,
+                lincheck_time.as_secs_f64() * 1e3,
+                glue_time.as_secs_f64() * 1e3,
+            );
+        }
+        reduced
     }
 
     /// Prove `blocks` are valid compressions in two clean phases:
@@ -1641,8 +1698,13 @@ impl Blake3Setup {
         stack_pd: &[(Vec<F128>, F128)],
         ps: &mut ProverState,
     ) -> pcs::ligerito::LigeritoProof {
+        let trace = std::env::var_os("FLOCK_PROVE_TRACE").is_some();
+        let t_total = std::time::Instant::now();
+
         // Phase 1 — Flock reduction: zerocheck + lincheck → claims on q_pkd.
+        let t_reduction = std::time::Instant::now();
         let (z_packed, reduced) = self.prove_reduction(blocks, stack_commitment, ps);
+        let reduction_time = t_reduction.elapsed();
         debug_assert_eq!(
             &stack[stack_offset..stack_offset + z_packed.len()],
             z_packed.as_slice(),
@@ -1651,7 +1713,8 @@ impl Blake3Setup {
 
         // Phase 2 — PCS: discharge the reduction's claims (plus the caller's
         // full-stack point claims) in one stacked open.
-        self.discharge_reduction_stacked(
+        let t_open = std::time::Instant::now();
+        let proof = self.discharge_reduction_stacked(
             &z_packed,
             &reduced,
             stack,
@@ -1660,14 +1723,23 @@ impl Blake3Setup {
             stack_commitment,
             stack_pd,
             ps,
-        )
+        );
+        if trace {
+            eprintln!(
+                "[flock prove] stacked:   {:.2} ms (reduction: {:.2} ms, open: {:.2} ms)",
+                t_total.elapsed().as_secs_f64() * 1e3,
+                reduction_time.as_secs_f64() * 1e3,
+                t_open.elapsed().as_secs_f64() * 1e3,
+            );
+        }
+        proof
     }
 
     /// Phase 2 of [`Self::prove_validity_stacked`]: the PCS open of the
     /// reduction's `(ab, c)` claims on `q_pkd` (`z_packed`), lifted into the
     /// caller's `stack` and batched with the caller's `stack_pd` point claims.
     #[allow(clippy::too_many_arguments)]
-    fn discharge_reduction_stacked(
+    pub fn discharge_reduction_stacked(
         &self,
         z_packed: &[F128],
         reduced: &ReducedClaims,

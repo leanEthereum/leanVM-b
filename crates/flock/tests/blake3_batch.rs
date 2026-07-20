@@ -69,7 +69,8 @@ fn blake3_batch_prove_verify() {
 
     // The committed stack is q_pkd itself (offset 0, no other columns).
     let t = Instant::now();
-    let q_pkd = generate_witness_with_ab_packed_and_lincheck(&blocks, n_log).0;
+    let (q_pkd, a_packed, b_packed, z_lincheck) =
+        generate_witness_with_ab_packed_and_lincheck(&blocks, n_log);
     let witness_ms = t.elapsed().as_secs_f64() * 1e3;
     assert_eq!(q_pkd.len(), 1 << mu);
 
@@ -88,8 +89,24 @@ fn blake3_batch_prove_verify() {
 
     // Reduction (zerocheck + lincheck) + the one stacked Ligerito open.
     let t = Instant::now();
-    let proof =
-        setup.prove_validity_stacked(&blocks, &q_pkd, 0, &prover_data, &commitment, &[], &mut ps);
+    let reduced = setup.prove_reduction_precomputed(
+        &q_pkd,
+        &a_packed,
+        &b_packed,
+        &z_lincheck,
+        &mut ps,
+    );
+    drop((a_packed, b_packed, z_lincheck));
+    let proof = setup.discharge_reduction_stacked(
+        &q_pkd,
+        &reduced,
+        &q_pkd,
+        0,
+        &prover_data,
+        &commitment,
+        &[],
+        &mut ps,
+    );
     let open_ms = t.elapsed().as_secs_f64() * 1e3;
     let prove_s = t_prove.elapsed().as_secs_f64();
     let bundle = ps.into_proof();

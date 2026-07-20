@@ -91,6 +91,9 @@ pub(crate) struct Witness {
     pub(crate) layout: Layout,
     pub(crate) log_mem: usize,
     pub(crate) row_counts: [usize; 6],
+    /// `Option` lets `prove` take and free the large reduction-only buffers
+    /// immediately after reduction, before the mixed PCS opening.
+    pub(crate) flock_reduction: Option<crate::blake3_flock::PreparedReductionWitness>,
 }
 
 /// The committed columns' kappa SOURCES, for the recursion guest's
@@ -402,14 +405,15 @@ impl Program {
         // program with no BLAKE3 still carries a single padding instance.
         let fill_ms = t_fill.elapsed().as_secs_f64() * 1e3;
         let t_qpkd = std::time::Instant::now();
-        cols[QPKD] = {
+        let (q_pkd, flock_reduction) = {
             let blocks: Vec<_> = tr
                 .blake3
                 .iter()
                 .map(|r| crate::blake3_flock::compression([r.va0, r.va1], [r.vb0, r.vb1]))
                 .collect();
-            crate::blake3_flock::build_qpkd(&blocks)
+            crate::blake3_flock::build_qpkd_prepared(&blocks)
         };
+        cols[QPKD] = q_pkd;
         let qpkd_ms = t_qpkd.elapsed().as_secs_f64() * 1e3;
 
         if prof {
@@ -463,6 +467,7 @@ impl Program {
             layout: l,
             log_mem,
             row_counts,
+            flock_reduction: Some(flock_reduction),
         }
     }
 }

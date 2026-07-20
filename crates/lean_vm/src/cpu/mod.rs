@@ -323,7 +323,7 @@ pub fn prove(program: &Program, public_input: [F128; 2]) -> (Proof, Stats) {
     let n_b3_warm = exec.trace.blake3.len().max(1);
     std::thread::spawn(move || crate::blake3_flock::warm_setup(n_b3_warm));
     let cycles = exec.cycles;
-    let w = program.build(&exec);
+    let mut w = program.build(&exec);
     let counts = w.row_counts;
     // Real committed data, before zero-pad to 2^m. Virtual columns (the BLAKE3
     // value columns) carry data for the bus but are NOT committed, so exclude them.
@@ -384,25 +384,21 @@ pub fn prove(program: &Program, public_input: [F128; 2]) -> (Proof, Stats) {
     // into flock's per-block matrices, so no pin claims are needed.
     let slots = slot_claims(&w.layout, &claims);
 
-    // Run flock's reduction (zerocheck + lincheck) over the executed compressions
-    // (or a single padding instance when none ran); it returns the `(ab, c)`
+    // Run flock's reduction (zerocheck + lincheck) over the prepared witness
+    // layouts retained from the fused q_pkd build pass; it returns the `(ab, c)`
     // validity claims on the committed `q_pkd`, discharged by the PCS below in the
     // SAME Ligerito as every leanVM point claim (the point claims become the
     // opener's `stack_pd`).
     let t = std::time::Instant::now();
-    use flock::blake3::Compression;
-    let blocks: Vec<Compression> = if exec.trace.blake3.is_empty() {
-        vec![crate::blake3_flock::padding_compression()]
-    } else {
-        exec.trace
-            .blake3
-            .iter()
-            .map(|r| crate::blake3_flock::compression([r.va0, r.va1], [r.vb0, r.vb1]))
-            .collect()
-    };
-    let (_z_packed, reduced) = crate::blake3_flock::prove_reduction(&blocks, &committed.commitment, &mut ps);
+    let flock_reduction = w
+        .flock_reduction
+        .take()
+        .expect("prepared flock reduction witness is present");
+    let reduced = flock_reduction.prove(&w.cols[QPKD], &mut ps);
+    let n_blocks = flock_reduction.n_blocks();
+    drop(flock_reduction);
     let offset = w.layout.placements[QPKD].offset;
-    let ring = crate::blake3_flock::ring_switch_open(blocks.len(), offset, &reduced);
+    let ring = crate::blake3_flock::ring_switch_open(n_blocks, offset, &reduced);
     if prof {
         eprintln!("[open]  reduction   : {:>7.2} ms", ms(t));
     }

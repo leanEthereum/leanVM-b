@@ -56,6 +56,42 @@ pub const FLAGS: u32 = flock::blake3::PINNED_FLAGS;
 /// Instance `j` occupies packed indices `[j*PACKED_PER_INSTANCE, (j+1)*…)`.
 pub const PACKED_PER_INSTANCE: usize = 1 << (K_LOG - LOG_PACKING);
 
+/// Reduction-side buffers emitted in the same fused pass as the committed
+/// `q_pkd`. They stay prover-local and are retained only until flock consumes
+/// them after the stack commitment.
+///
+/// At `2^17` compression slots these three buffers total 768 MiB. Reuse does
+/// not increase peak memory—the legacy reduction allocated the same buffers
+/// while the committed stack was live—but it deliberately extends their
+/// lifetime across commit, bus, and constraint proving to save one witness
+/// generation pass.
+pub(crate) struct PreparedReductionWitness {
+    n_blocks: usize,
+    a_packed: Vec<F128>,
+    b_packed: Vec<F128>,
+    z_lincheck: Vec<u8>,
+}
+
+impl PreparedReductionWitness {
+    pub(crate) fn n_blocks(&self) -> usize {
+        self.n_blocks
+    }
+
+    pub(crate) fn prove(
+        &self,
+        q_pkd: &[F128],
+        ps: &mut ProverState,
+    ) -> ReducedClaims {
+        setup_for(self.n_blocks).prove_reduction_precomputed(
+            q_pkd,
+            &self.a_packed,
+            &self.b_packed,
+            &self.z_lincheck,
+            ps,
+        )
+    }
+}
+
 // Within-instance packed-coordinate (slot) indices of the VM-visible words,
 // fixed by the aligned flock layout (asserted by `layout_constants` there).
 pub const SLOT_C0: usize = 2;
@@ -133,7 +169,26 @@ pub fn padding_compression() -> Compression {
 /// [`padding_compression`] blocks). Deterministic, so it matches what the reduction
 /// regenerates. An empty `blocks` yields one padding cube (all instances are padding).
 pub fn build_qpkd(blocks: &[Compression]) -> Vec<F128> {
-    generate_witness_with_ab_packed_and_lincheck(blocks, n_blocks_log(blocks.len().max(1))).0
+    build_qpkd_prepared(blocks).0
+}
+
+/// Build `q_pkd` and retain the `A·z`, `B·z`, and lincheck layouts produced by
+/// that same witness pass, so the reduction does not regenerate them later.
+pub(crate) fn build_qpkd_prepared(
+    blocks: &[Compression],
+) -> (Vec<F128>, PreparedReductionWitness) {
+    let n_blocks = blocks.len().max(1);
+    let (q_pkd, a_packed, b_packed, z_lincheck) =
+        generate_witness_with_ab_packed_and_lincheck(blocks, n_blocks_log(n_blocks));
+    (
+        q_pkd,
+        PreparedReductionWitness {
+            n_blocks,
+            a_packed,
+            b_packed,
+            z_lincheck,
+        },
+    )
 }
 
 /// The digest `(c0, c1)` of [`padding_compression`], i.e. `blake3(0^64)`. It is
