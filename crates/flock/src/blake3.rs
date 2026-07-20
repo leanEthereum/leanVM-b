@@ -1766,8 +1766,47 @@ impl Blake3Setup {
     ) -> (Vec<F192>, ReducedClaims) {
         assert_eq!(blocks.len(), self.n_blocks);
         let n_log = self.n_blocks_log();
+        let t_witness = std::time::Instant::now();
         let (z_packed, a_packed_words, b_packed_words, z_packed_lincheck) =
             generate_witness_with_ab_packed_and_lincheck(blocks, n_log);
+        if std::env::var_os("FLOCK_PROVE_TRACE").is_some() {
+            eprintln!(
+                "[flock prove] witness:   {:.2} ms",
+                t_witness.elapsed().as_secs_f64() * 1e3,
+            );
+        }
+        let reduced = self.prove_reduction_precomputed(
+            &z_packed,
+            &a_packed_words,
+            &b_packed_words,
+            &z_packed_lincheck,
+            ps,
+        );
+        (z_packed, reduced)
+    }
+
+    /// **Flock reduction from a prepared witness (prover).** This is the
+    /// witness-generation-free counterpart of [`Self::prove_reduction`] for
+    /// embedders that already generated the packed `z`, `A·z`, `B·z`, and
+    /// lincheck-stripe buffers before committing the flattened witness.
+    pub fn prove_reduction_precomputed<O>(
+        &self,
+        z_packed: &[F192],
+        a_packed_words: &[F192],
+        b_packed_words: &[F192],
+        z_packed_lincheck: &[u8],
+        ps: &mut fiat_shamir::transcript::ProverState<O>,
+    ) -> ReducedClaims {
+        let trace = std::env::var_os("FLOCK_PROVE_TRACE").is_some();
+        let t_reduction = std::time::Instant::now();
+
+        // The fused generator packs 128 Boolean coordinates in each F192
+        // container; the third tower limb is constrained to zero.
+        let packed_len = 1usize << (self.r1cs.m - 7);
+        assert_eq!(z_packed.len(), packed_len, "wrong packed witness length");
+        assert_eq!(a_packed_words.len(), packed_len, "wrong packed A·z length");
+        assert_eq!(b_packed_words.len(), packed_len, "wrong packed B·z length");
+        assert_eq!(z_packed_lincheck.len(), packed_len * 16, "wrong lincheck stripe length");
 
         // No bind_statement here: the embedding protocol (leanVM-b) seeds its
         // transcript with the circuit-FAMILY digest and binds the instance
@@ -1778,6 +1817,7 @@ impl Blake3Setup {
             k_log: self.r1cs.k_log,
             useful_bits_per_block: self.r1cs.useful_bits,
         };
+        let t_zerocheck = std::time::Instant::now();
         let (zc_claim, s_hat_v_c) = {
             let a_packed = packed_128_bytes(&a_packed_words);
             let b_packed = packed_128_bytes(&b_packed_words);
@@ -1791,6 +1831,7 @@ impl Blake3Setup {
                 ps,
             )
         };
+        let zerocheck_time = t_zerocheck.elapsed();
 
         let inner_rest_len = self.r1cs.k_log - self.r1cs.k_skip;
         let x_ab = crate::lincheck::QuirkyPoint {
@@ -1798,8 +1839,9 @@ impl Blake3Setup {
             x_inner_rest: zc_claim.mlv_challenges[..inner_rest_len].to_vec(),
             x_outer: zc_claim.mlv_challenges[inner_rest_len..].to_vec(),
         };
+        let t_lincheck = std::time::Instant::now();
         let (lc_claim, z_vec_pre) = crate::lincheck::prove_padded_capture_z_vec(
-            &z_packed_lincheck,
+            z_packed_lincheck,
             self.r1cs.m,
             self.r1cs.k_log,
             self.r1cs.k_skip,
@@ -1808,6 +1850,7 @@ impl Blake3Setup {
             &x_ab,
             ps,
         );
+        let lincheck_time = t_lincheck.elapsed();
 
         let ab = crate::proof::ZClaim {
             point: crate::lincheck::QuirkyPoint {
@@ -1841,7 +1884,18 @@ impl Blake3Setup {
                 s_hat_v: Some(s_hat_v_c),
             },
         };
-        (z_packed, reduced)
+        if trace {
+            let reduction_time = t_reduction.elapsed();
+            let glue_time = reduction_time.saturating_sub(zerocheck_time + lincheck_time);
+            eprintln!(
+                "[flock prove] reduction: {:.2} ms (zerocheck: {:.2} ms, lincheck: {:.2} ms, glue: {:.2} ms)",
+                reduction_time.as_secs_f64() * 1e3,
+                zerocheck_time.as_secs_f64() * 1e3,
+                lincheck_time.as_secs_f64() * 1e3,
+                glue_time.as_secs_f64() * 1e3,
+            );
+        }
+        reduced
     }
 
     /// **Flock reduction (verifier).** Replay the BLAKE3 zerocheck and

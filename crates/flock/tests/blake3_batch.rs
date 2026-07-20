@@ -47,7 +47,7 @@ impl Rng {
 
 /// Split the two K coefficients of each packed tower element. Flock's fused
 /// witness generator uses 128-bit containers; the PCS commits 64 bits/word.
-fn flatten_packed(packed: Vec<F192>) -> Vec<F64> {
+fn flatten_packed(packed: &[F192]) -> Vec<F64> {
     let mut out = Vec::with_capacity(2 * packed.len());
     for value in packed {
         out.push(F64(value.c0));
@@ -132,7 +132,9 @@ fn blake3_batch_prove_verify() {
     let setup_ms = t.elapsed().as_secs_f64() * 1e3;
 
     let t = Instant::now();
-    let q_pkd = flatten_packed(generate_witness_with_ab_packed_and_lincheck(&blocks, n_log).0);
+    let (z_packed, a_packed, b_packed, z_lincheck) =
+        generate_witness_with_ab_packed_and_lincheck(&blocks, n_log);
+    let q_pkd = flatten_packed(&z_packed);
     let witness_ms = t.elapsed().as_secs_f64() * 1e3;
     assert_eq!(q_pkd.len(), 1 << mu);
 
@@ -146,8 +148,14 @@ fn blake3_batch_prove_verify() {
     let commit_ms = t.elapsed().as_secs_f64() * 1e3;
 
     let t = Instant::now();
-    let (reduced_witness, reduced) = setup.prove_reduction(&blocks, &mut ps);
-    assert_eq!(flatten_packed(reduced_witness), q_pkd);
+    let reduced = setup.prove_reduction_precomputed(
+        &z_packed,
+        &a_packed,
+        &b_packed,
+        &z_lincheck,
+        &mut ps,
+    );
+    drop((z_packed, a_packed, b_packed, z_lincheck));
     let ring = prover_ring(&reduced, mu);
     let opening = open_batch_mixed_ligerito_stacked(ps.sponge_mut(), &q_pkd, &prover_data, &prover_config, &[], &ring);
     let open_ms = t.elapsed().as_secs_f64() * 1e3;

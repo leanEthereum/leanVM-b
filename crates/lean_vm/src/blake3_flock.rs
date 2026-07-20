@@ -55,6 +55,38 @@ pub const FLAGS: u32 = flock::blake3::PINNED_FLAGS;
 /// Instance `j` occupies packed indices `[j*PACKED_PER_INSTANCE, (j+1)*…)`.
 pub const PACKED_PER_INSTANCE: usize = 1 << (K_LOG - LOG_PACKING);
 
+/// Flock-native reduction buffers emitted in the same fused pass as the
+/// committed, flattened `q_pkd`. They stay prover-local until reduction.
+///
+/// At `2^17` compression slots these buffers total 1.375 GiB: three packed
+/// `F192` vectors (`z`, `A·z`, `B·z`) plus the byte-striped lincheck layout.
+/// Reuse does not increase peak memory—the legacy reduction allocated the same
+/// buffers while the committed stack was live—but it extends their lifetime
+/// across commit, bus, and constraint proving to save one witness pass.
+pub(crate) struct PreparedReductionWitness {
+    n_blocks: usize,
+    z_packed: Vec<F192>,
+    a_packed: Vec<F192>,
+    b_packed: Vec<F192>,
+    z_lincheck: Vec<u8>,
+}
+
+impl PreparedReductionWitness {
+    pub(crate) fn n_blocks(&self) -> usize {
+        self.n_blocks
+    }
+
+    pub(crate) fn prove(&self, ps: &mut ProverState) -> ReducedClaims {
+        setup_for(self.n_blocks).prove_reduction_precomputed(
+            &self.z_packed,
+            &self.a_packed,
+            &self.b_packed,
+            &self.z_lincheck,
+            ps,
+        )
+    }
+}
+
 // Within-instance packed-word (slot) indices of the VM-visible words, fixed by
 // the aligned flock layout (bit bases asserted by `layout_constants` there):
 // `OUT_LO_BASE = 256` → c words 4..8, `M_BASE = 640` → a words 10..14 and
@@ -138,7 +170,7 @@ pub fn padding_compression() -> Compression {
 /// position `i`) into the committed `F64` packing (64 bits per word): word `j`
 /// becomes words `2j` (lo lanes, bits 0..64) and `2j+1` (hi lanes, bits
 /// 64..128), which is exactly `pack_witness`'s convention on the same bit string.
-fn flatten_packed(packed: Vec<F192>) -> Vec<F64> {
+fn flatten_packed(packed: &[F192]) -> Vec<F64> {
     let mut out = Vec::with_capacity(packed.len() * 2);
     for w in packed {
         debug_assert_eq!(w.c2, 0, "Flock's 128-bit packed witness escaped its subspace");
@@ -153,7 +185,28 @@ fn flatten_packed(packed: Vec<F192>) -> Vec<F64> {
 /// [`padding_compression`] blocks). Deterministic, so it matches what the reduction
 /// regenerates. An empty `blocks` yields one padding cube (all instances are padding).
 pub fn build_qpkd(blocks: &[Compression]) -> Vec<F64> {
-    flatten_packed(generate_witness_with_ab_packed_and_lincheck(blocks, n_blocks_log(blocks.len().max(1))).0)
+    build_qpkd_prepared(blocks).0
+}
+
+/// Build the committed `q_pkd` and retain the Flock-native layouts produced by
+/// that same fused pass so reduction does not regenerate them later.
+pub(crate) fn build_qpkd_prepared(
+    blocks: &[Compression],
+) -> (Vec<F64>, PreparedReductionWitness) {
+    let n_blocks = blocks.len().max(1);
+    let (z_packed, a_packed, b_packed, z_lincheck) =
+        generate_witness_with_ab_packed_and_lincheck(blocks, n_blocks_log(n_blocks));
+    let q_pkd = flatten_packed(&z_packed);
+    (
+        q_pkd,
+        PreparedReductionWitness {
+            n_blocks,
+            z_packed,
+            a_packed,
+            b_packed,
+            z_lincheck,
+        },
+    )
 }
 
 /// The digest `(c0..c3)` of [`padding_compression`], i.e. `blake3(0^64)`. It is
@@ -249,7 +302,7 @@ pub fn prove_reduction(
 ) -> (Vec<F64>, ReducedClaims) {
     let _ = commitment;
     let (z_packed, reduced) = setup_for(blocks.len()).prove_reduction(blocks, ps);
-    (flatten_packed(z_packed), reduced)
+    (flatten_packed(&z_packed), reduced)
 }
 
 /// **Flock reduction only** (verifier): mirror of [`prove_reduction`]. Replay
