@@ -58,6 +58,9 @@ COORD_PAD_VAL = COORD_PAD_VAL_PLACEHOLDER
 # side has its own point, so its claims never dedup against the pair's.
 COORD_FRESH = COORD_FRESH_PLACEHOLDER
 COORD_CLAIM_SLOT = COORD_CLAIM_SLOT_PLACEHOLDER
+COORD_CLAIM_KAPPA_SRC = COORD_CLAIM_KAPPA_SRC_PLACEHOLDER
+COORD_CLAIM_KAPPA_ADJ = COORD_CLAIM_KAPPA_ADJ_PLACEHOLDER
+COORD_CLAIM_SHORT = COORD_CLAIM_SHORT_PLACEHOLDER
 N_BUS_CLAIMS = N_BUS_CLAIMS_PLACEHOLDER
 # index_mle factor constants: INDEX_MLE_FACTORS[i] = 1 + g^(2^i).
 INDEX_MLE_FACTORS = INDEX_MLE_FACTORS_PLACEHOLDER
@@ -72,6 +75,9 @@ LOG2_BYTECODE_COLS = LOG2_BYTECODE_COLS_PLACEHOLDER
 # Zerochecks: per-table constraint-column counts (round counts are the
 # certified tau_t); AIR_COLS_CAP caps the evaluation frame.
 N_AIR_COLS = N_AIR_COLS_PLACEHOLDER
+AIR_COL_KAPPA_SRC = AIR_COL_KAPPA_SRC_PLACEHOLDER
+AIR_COL_KAPPA_ADJ = AIR_COL_KAPPA_ADJ_PLACEHOLDER
+AIR_COL_SHORT = AIR_COL_SHORT_PLACEHOLDER
 AIR_COLS_CAP = AIR_COLS_CAP_PLACEHOLDER
 TAU_CAP = TAU_CAP_PLACEHOLDER
 # The instruction tables, in schema order:
@@ -237,6 +243,19 @@ SIZE_BITS = 34
 def f192_from_limbs(c0, c1, c2):
     # Horner form saves one multiplication over c0 + c1*Y + c2*Y^2.
     return c0 + Y_TOWER * (c1 + Y_TOWER * c2)
+
+
+def zero_suffix_lift(point, lo, hi):
+    # MLE of a 2^lo prefix followed by zeroes in a 2^hi table:
+    # short_eval * prod_{j=lo}^{hi-1} (1 + point[j]).
+    span = hi / lo  # g^(hi_log - lo_log)
+    assert log(span) < COUNT_BITS
+    suffix = point * lo
+    chain = HeapBuf(GEN ** (COUNT_BITS + 1))
+    chain[GEN ** 0] = 1
+    for x in mul_range(1, span):
+        chain[x * GEN] = chain[x] * (1 + suffix[x])
+    return chain[span]
 
 
 @inline
@@ -933,6 +952,10 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, base_delta_pows, tower_delta_pows, g_
     for i in unroll(0, N_TABLES + 1):
         fs, x, cursor = fs_next(fs, cursor)
         sizes[i] = x
+    ext_logs = StackBuf(2)
+    for i in unroll(0, 2):
+        fs, x, cursor = fs_next(fs, cursor)
+        ext_logs[i] = x
     fs, log_inv_rate, cursor = fs_next(fs, cursor)
     g_log_inv_rate = g_power_of_word(log_inv_rate, g_squares, COUNT_BITS)
     rate_sel = g_log_inv_rate / GEN  # g^(log_inv_rate - 1)
@@ -956,13 +979,22 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, base_delta_pows, tower_delta_pows, g_
         g_tau, g_count = log2_ceil_word(sizes[t + 1], g_logs_pow2, g_squares, FLOORS[t], COUNT_BITS)
         dims_g[GEN ** (t + 1)] = g_tau
         count_gpows[GEN ** t] = g_count
+    ext_dims_g = HeapBuf(2)
+    for t in unroll(0, 2):
+        g_ext_tau = g_power_of_word(ext_logs[t], g_squares, COUNT_BITS)
+        # tau_t - ext_tau_t is a small nonnegative exponent. If the cutoff
+        # exceeds the table height, this quotient wraps and fails the range check.
+        assert log(dims_g[GEN ** (t + 1)] / g_ext_tau) < COUNT_BITS
+        ext_dims_g[GEN ** t] = g_ext_tau
     # kappa_base maps a kappa source index to its certified announced log
     # (source 0 = const via the baked adj); the taus are now in dims_g.
-    kappa_base = HeapBuf(N_TABLES + 2)
+    kappa_base = HeapBuf(N_TABLES + 4)
     kappa_base[GEN ** 0] = 1
     kappa_base[GEN ** 1] = g_log_mem
     for t in unroll(0, N_TABLES):
         kappa_base[GEN ** (2 + t)] = dims_g[GEN ** (t + 1)]
+    for t in unroll(0, 2):
+        kappa_base[GEN ** (2 + N_TABLES + t)] = ext_dims_g[GEN ** t]
     # Each block's kappa DERIVES from its structural source (baked per block:
     # the boundary consts, log_mem, the bytecode log, or tau_t) as a
     # compile-time offset off a certified log — no hint, nothing left free.
@@ -1229,24 +1261,32 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, base_delta_pows, tower_delta_pows, g_
             inner_sum = 0
             alpha_pow = GEN ** 0
             for i in unroll(0, BLOCK_COORD_COUNT[b]):
-                if COORD_TYPE[BLOCK_COORD_OFF[b] + i] == COORD_KIND_CONST:
-                    coord_val = COORD_CONST[BLOCK_COORD_OFF[b] + i]
-                if COORD_TYPE[BLOCK_COORD_OFF[b] + i] == COORD_KIND_COL:
-                    if COORD_FRESH[BLOCK_COORD_OFF[b] + i] == 1:
-                        fs, coord_val, cursor = fs_next(fs, cursor)
-                        claim_pool[GEN ** COORD_CLAIM_SLOT[BLOCK_COORD_OFF[b] + i]] = coord_val
-                        claim_cplen_g[GEN ** COORD_CLAIM_SLOT[BLOCK_COORD_OFF[b] + i]] = kappa_g  # cplen = block kappa
-                    else:
-                        coord_val = claim_pool[GEN ** COORD_CLAIM_SLOT[BLOCK_COORD_OFF[b] + i]]
-                if COORD_TYPE[BLOCK_COORD_OFF[b] + i] == COORD_KIND_GCOL:
-                    if COORD_FRESH[BLOCK_COORD_OFF[b] + i] == 1:
+                ci = BLOCK_COORD_OFF[b] + i
+                if COORD_TYPE[ci] == COORD_KIND_CONST:
+                    coord_val = COORD_CONST[ci]
+                if COORD_TYPE[ci] == COORD_KIND_COL:
+                    claim_kappa_g = kappa_base[GEN ** COORD_CLAIM_KAPPA_SRC[ci]] * GEN ** COORD_CLAIM_KAPPA_ADJ[ci]
+                    if COORD_FRESH[ci] == 1:
                         fs, rawv, cursor = fs_next(fs, cursor)
-                        claim_pool[GEN ** COORD_CLAIM_SLOT[BLOCK_COORD_OFF[b] + i]] = rawv
-                        claim_cplen_g[GEN ** COORD_CLAIM_SLOT[BLOCK_COORD_OFF[b] + i]] = kappa_g  # cplen = block kappa
+                        claim_pool[GEN ** COORD_CLAIM_SLOT[ci]] = rawv
+                        claim_cplen_g[GEN ** COORD_CLAIM_SLOT[ci]] = claim_kappa_g
                     else:
-                        rawv = claim_pool[GEN ** COORD_CLAIM_SLOT[BLOCK_COORD_OFF[b] + i]]
+                        rawv = claim_pool[GEN ** COORD_CLAIM_SLOT[ci]]
+                    coord_val = rawv
+                    if COORD_CLAIM_SHORT[ci] == 1:
+                        coord_val = rawv * zero_suffix_lift(zeta_zs, claim_kappa_g, kappa_g)
+                if COORD_TYPE[ci] == COORD_KIND_GCOL:
+                    claim_kappa_g = kappa_base[GEN ** COORD_CLAIM_KAPPA_SRC[ci]] * GEN ** COORD_CLAIM_KAPPA_ADJ[ci]
+                    if COORD_FRESH[ci] == 1:
+                        fs, rawv, cursor = fs_next(fs, cursor)
+                        claim_pool[GEN ** COORD_CLAIM_SLOT[ci]] = rawv
+                        claim_cplen_g[GEN ** COORD_CLAIM_SLOT[ci]] = claim_kappa_g
+                    else:
+                        rawv = claim_pool[GEN ** COORD_CLAIM_SLOT[ci]]
+                    if COORD_CLAIM_SHORT[ci] == 1:
+                        rawv = rawv * zero_suffix_lift(zeta_zs, claim_kappa_g, kappa_g)
                     coord_val = GEN * rawv
-                if COORD_TYPE[BLOCK_COORD_OFF[b] + i] == COORD_KIND_INDEX:
+                if COORD_TYPE[ci] == COORD_KIND_INDEX:
                     if s == PULL_SIDE:
                         coord_val = block_index_mle[GEN ** (b - SIDE_BLOCK_START[PULL_SIDE])]
                     else:
@@ -1257,7 +1297,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, base_delta_pows, tower_delta_pows, g_
                         coord_val = idx_chain[kappa_g]
                         if s == PUSH_SIDE:
                             block_index_mle[GEN ** b] = coord_val
-                if COORD_TYPE[BLOCK_COORD_OFF[b] + i] == COORD_KIND_PUBLIC:
+                if COORD_TYPE[ci] == COORD_KIND_PUBLIC:
                     # push and pull share zeta, so BOTH bytecode blocks read the
                     # same six evaluations (indexed per block, not globally).
                     coord_val = bytecode_vals[GEN ** block_public_idx]
@@ -1350,10 +1390,15 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, base_delta_pows, tower_delta_pows, g_
         eq_acc = round_eq[tau_g]
         col_evals = StackBuf(AIR_COLS_CAP)
         for k in unroll(0, N_AIR_COLS[t]):
-            fs, e, cursor = fs_next(fs, cursor)
+            fs, rawv, cursor = fs_next(fs, cursor)
+            ak = t * AIR_COLS_CAP + k
+            claim_kappa_g = kappa_base[GEN ** AIR_COL_KAPPA_SRC[ak]] * GEN ** AIR_COL_KAPPA_ADJ[ak]
+            e = rawv
+            if AIR_COL_SHORT[ak] == 1:
+                e = rawv * zero_suffix_lift(rho_t, claim_kappa_g, tau_g)
             col_evals[k] = e
-            claim_pool[GEN ** claim_idx] = e
-            claim_cplen_g[GEN ** claim_idx] = tau_g  # cplen = tau_t
+            claim_pool[GEN ** claim_idx] = rawv
+            claim_cplen_g[GEN ** claim_idx] = claim_kappa_g
             claim_idx += 1
         # the table's AIR constraint at the final point (ev order = the table's
         # constraint_columns order; formulas mirror tables.rs eval_constraint).

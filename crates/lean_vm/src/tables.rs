@@ -295,6 +295,8 @@ pub trait Table: Sync {
 /// The tables in fixed order `[XOR, MUL, SET, DEREF, JUMP, BLAKE3, PACK64X2]` — the
 /// order of `row_counts` / `taus` throughout `cpu`.
 pub const N_TABLES: usize = 7;
+pub const XOR_TABLE: usize = 0;
+pub const MUL_TABLE: usize = 1;
 
 pub fn tables() -> [&'static dyn Table; N_TABLES] {
     [
@@ -329,6 +331,18 @@ pub const BLAKE3_VALUE_COLS: [usize; 12] = [
     blake3t::VC0 + 1,
     blake3t::VC0 + 2,
     blake3t::VC0 + 3,
+];
+
+/// Arithmetic value limbs that vanish on base-field-only rows. The arithmetic
+/// trace orders every row needing a full F192 word first, so these six columns
+/// can be committed only through the announced extension-prefix length.
+pub const ARITH_HIGH_COLS: [usize; 6] = [
+    arith::VA_HI,
+    arith::VA_TOP,
+    arith::VB_HI,
+    arith::VB_TOP,
+    arith::VC_HI,
+    arith::VC_TOP,
 ];
 // The twelve value lanes are laid out contiguously (VA0..VA0+11), so they map
 // 1:1 onto `blake3_flock::SLOTS`.

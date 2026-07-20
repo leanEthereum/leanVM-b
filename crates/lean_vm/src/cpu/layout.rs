@@ -81,6 +81,9 @@ pub struct Layout {
     /// word), bound to the committed memory at verification (§8).
     pub pi: [F192; 2],
     pub taus: [usize; tables::N_TABLES],
+    /// Padded log-length of the prefix containing every arithmetic row whose
+    /// operands/result need extension limbs, in `[XOR, MUL]` order.
+    pub ext_taus: [usize; 2],
     /// Real (non-padded) per-table row counts, as announced. `row_counts[5]` is
     /// the executed `BLAKE3` count, which gates the flock sub-proof.
     pub row_counts: [usize; tables::N_TABLES],
@@ -119,6 +122,12 @@ pub fn col_kappa_sources(log_bytecode: usize) -> Vec<Option<(usize, usize)>> {
         let base = sch.base[t];
         k[base..base + table.n_committed_columns()].fill(Some((2 + t, 0)));
     }
+    for (slot, &t) in [tables::XOR_TABLE, tables::MUL_TABLE].iter().enumerate() {
+        let base = sch.base[t];
+        for &c in &tables::ARITH_HIGH_COLS {
+            k[base + c] = Some((2 + tables::N_TABLES + slot, 0));
+        }
+    }
     let b3 = sch.base[tables::BLAKE3_TABLE];
     for &c in &tables::BLAKE3_VALUE_COLS {
         k[b3 + c] = None;
@@ -149,8 +158,10 @@ pub fn block_kappa_sources(log_bytecode: usize) -> Vec<(usize, usize)> {
 }
 
 /// Column → log-size (`kappa`) map: the shared MEM/MFCNT columns are `2^log_mem`,
-/// the bytecode finalize count is `2^log_bytecode`, and every column of table `t`
-/// is `2^taus[t]` (its padded log-row-count). `None` marks a **virtual**
+/// the bytecode finalize count is `2^log_bytecode`, and ordinary columns of table
+/// `t` are `2^taus[t]` (its padded log-row-count). The six upper value limbs of
+/// XOR and MUL use their table's announced `2^ext_taus[slot]` prefix; their
+/// omitted full-table suffix is virtual zero. `None` marks a wholly **virtual**
 /// (uncommitted) column. Depends only on the public sizes, so the verifier can
 /// reconstruct the placements.
 ///
@@ -163,6 +174,7 @@ fn col_kappas(
     log_mem: usize,
     log_bytecode: usize,
     taus: [usize; tables::N_TABLES],
+    ext_taus: [usize; 2],
     n_blake3: usize,
 ) -> Vec<Option<usize>> {
     let sch = schema();
@@ -179,6 +191,12 @@ fn col_kappas(
         let base = sch.base[t];
         k[base..base + table.n_committed_columns()].fill(Some(taus[t]));
     }
+    for (slot, &t) in [tables::XOR_TABLE, tables::MUL_TABLE].iter().enumerate() {
+        let base = sch.base[t];
+        for &c in &tables::ARITH_HIGH_COLS {
+            k[base + c] = Some(ext_taus[slot]);
+        }
+    }
     // BLAKE3 value columns are ALWAYS virtual (read from q_pkd, never committed).
     let b3 = sch.base[tables::BLAKE3_TABLE];
     for &c in &tables::BLAKE3_VALUE_COLS {
@@ -188,11 +206,18 @@ fn col_kappas(
 }
 
 /// Build the public [`Layout`] from the program, the memory log-size `log_mem`, the
-/// instruction tables' real row counts `row_counts`, and the public input `pi`. The flush
-/// blocks reference columns only by INDEX and the program only through its
-/// public columns, so this needs no committed witness — both prover and verifier
+/// instruction tables' real row counts `row_counts`, the two announced arithmetic
+/// upper-limb prefix logs `ext_taus`, and the public input `pi`. The flush blocks
+/// reference columns only by INDEX and the program only through its public
+/// columns, so this needs no committed witness — both prover and verifier
 /// reconstruct exactly the same structure (§7, §8).
-pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; tables::N_TABLES], pi: [F192; 2]) -> Layout {
+pub fn layout(
+    prog: &[Op],
+    log_mem: usize,
+    row_counts: [usize; tables::N_TABLES],
+    ext_taus: [usize; 2],
+    pi: [F192; 2],
+) -> Layout {
     let bytecode_size = prog.len();
     let log_bytecode = crate::log2_strict_usize(bytecode_size);
     let cells = 1usize << log_mem;
@@ -209,6 +234,7 @@ pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; tables::N_TABLES]
     // columns share `q_pkd`'s instance cube — a value-column bus claim at instance
     // point `r` maps to a strided `q_pkd` slot claim at `r` (`slot_claims`).
     taus[tables::BLAKE3_TABLE] = crate::blake3_flock::n_blocks_log(row_counts[tables::BLAKE3_TABLE].max(1));
+    assert!(ext_taus[0] <= taus[tables::XOR_TABLE] && ext_taus[1] <= taus[tables::MUL_TABLE]);
 
     // Derived boundary: the run starts at (pc,fp) = (0,0) and, by convention, the
     // final pc is the bytecode's last cell g^{B-1} (the compiler emits a halt jump
@@ -407,6 +433,7 @@ pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; tables::N_TABLES]
         log_mem,
         log_bytecode,
         taus,
+        ext_taus,
         row_counts[tables::BLAKE3_TABLE],
     ));
     Layout {
@@ -418,6 +445,7 @@ pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; tables::N_TABLES]
         m,
         pi,
         taus,
+        ext_taus,
         row_counts,
     }
 }
@@ -498,12 +526,24 @@ impl Program {
             tr.blake3.len(),
             tr.pack64x2.len(),
         ];
+        let extension_prefix_log = |rows: &[Xrow]| {
+            let n = rows
+                .iter()
+                .take_while(|r| {
+                    [r.aa, r.ab, r.ac]
+                        .into_iter()
+                        .any(|a| exec.mem[a as usize].c1 != 0 || exec.mem[a as usize].c2 != 0)
+                })
+                .count();
+            crate::log2_ceil_usize(n.max(1))
+        };
+        let ext_taus = [extension_prefix_log(&tr.xor), extension_prefix_log(&tr.mul)];
         assert!(
             row_counts.iter().all(|&r| r <= 1 << MAX_LOG_ROWS),
             "a table exceeds 2^{MAX_LOG_ROWS} rows"
         );
         let pi = [exec.mem[0], exec.mem[1]];
-        let l = layout(&self.prog, log_mem, row_counts, pi);
+        let l = layout(&self.prog, log_mem, row_counts, ext_taus, pi);
 
         // Pad each per-opcode table to its power-of-two row count: count columns
         // with g^0 = 1, every other column with 0 (§e2e-pad). A default padding

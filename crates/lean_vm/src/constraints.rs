@@ -17,7 +17,11 @@ use rayon::prelude::*;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Claims {
     pub rho: Vec<F192>,
+    /// Full-table evaluations used by the AIR formula (short committed columns
+    /// are multiplied by their zero-suffix selector).
     pub evals: Vec<F192>,
+    /// Evaluations actually opened against each committed column prefix.
+    pub opening_evals: Vec<F192>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -27,10 +31,18 @@ pub enum Error {
     FinalMismatch,
 }
 
-/// Prove the batched constraint vanishes on every row. `cols` are the involved
-/// `K`-valued columns (`2^tau` values each, in the order `c_eval` expects).
-pub fn prove<F: Fn(F192, &[F192]) -> F192 + Sync>(cols: &[Vec<F64>], c_eval: F, ps: &mut ProverState) -> Claims {
+/// Prove the batched constraint vanishes on every row. `cols` are full-table,
+/// zero-extended `K`-valued views (`2^tau` values each, in the order `c_eval`
+/// expects); `claim_kappas` records the possibly shorter committed prefixes.
+pub fn prove<F: Fn(F192, &[F192]) -> F192 + Sync>(
+    cols: &[Vec<F64>],
+    claim_kappas: &[usize],
+    c_eval: F,
+    ps: &mut ProverState,
+) -> Claims {
     let tau = crate::log2_strict_usize(cols[0].len());
+    assert_eq!(cols.len(), claim_kappas.len());
+    assert!(claim_kappas.iter().all(|&k| k <= tau));
     let eta = ps.sample();
     let r = ps.sample_vec(tau);
 
@@ -143,9 +155,23 @@ pub fn prove<F: Fn(F192, &[F192]) -> F192 + Sync>(cols: &[Vec<F64>], c_eval: F, 
         }
     }
 
-    let evals: Vec<F192> = tables.iter().map(|c| c[0]).collect();
-    ps.add_scalars(&evals);
-    Claims { rho, evals }
+    let opening_evals: Vec<F192> = cols
+        .iter()
+        .zip(claim_kappas)
+        .map(|(c, &k)| primitives::multilinear::mle_eval(&c[..1 << k], &rho[..k]))
+        .collect();
+    let evals: Vec<F192> = opening_evals
+        .iter()
+        .zip(claim_kappas)
+        .map(|(&v, &k)| rho[k..].iter().fold(v, |acc, &r| acc * (F192::ONE + r)))
+        .collect();
+    debug_assert_eq!(evals, tables.iter().map(|c| c[0]).collect::<Vec<_>>());
+    ps.add_scalars(&opening_evals);
+    Claims {
+        rho,
+        evals,
+        opening_evals,
+    }
 }
 
 /// Verify the constraint zerocheck, returning the reconstructed claims (`rho` and
@@ -153,9 +179,13 @@ pub fn prove<F: Fn(F192, &[F192]) -> F192 + Sync>(cols: &[Vec<F64>], c_eval: F, 
 pub fn verify<F: Fn(F192, &[F192]) -> F192>(
     tau: usize,
     ncols: usize,
+    claim_kappas: &[usize],
     c_eval: F,
     vs: &mut VerifierState,
 ) -> Result<Claims, Error> {
+    if claim_kappas.len() != ncols || claim_kappas.iter().any(|&k| k > tau) {
+        return Err(Error::FinalMismatch);
+    }
     let eta = vs.sample();
     let r = vs.sample_vec(tau);
 
@@ -175,9 +205,18 @@ pub fn verify<F: Fn(F192, &[F192]) -> F192>(
         eq_acc *= F192::ONE + rj + rk;
         claim = eq_acc * lagrange_eval(&nd, &p, rk);
     }
-    let evals = vs.next_scalars(ncols).map_err(|_| Error::Truncated)?;
+    let opening_evals = vs.next_scalars(ncols).map_err(|_| Error::Truncated)?;
+    let evals: Vec<F192> = opening_evals
+        .iter()
+        .zip(claim_kappas)
+        .map(|(&v, &k)| rho[k..].iter().fold(v, |acc, &r| acc * (F192::ONE + r)))
+        .collect();
     if claim != eq_acc * c_eval(eta, &evals) {
         return Err(Error::FinalMismatch);
     }
-    Ok(Claims { rho, evals })
+    Ok(Claims {
+        rho,
+        evals,
+        opening_evals,
+    })
 }

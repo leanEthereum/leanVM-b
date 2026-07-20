@@ -11,6 +11,7 @@ use crate::PAR_THRESHOLD;
 use crate::gkr;
 use crate::transcript::{ProverState, VerifierState};
 use crate::witness::Column;
+use crate::witness::Placement;
 use primitives::field::{F64, F192, F192BaseUnreduced, g_pow, index_mle};
 use primitives::multilinear::{eq_eval, mle_eval};
 use rayon::prelude::*;
@@ -236,6 +237,20 @@ fn known_claim(claims: &[ColumnClaim], col: usize, point: &[F192]) -> Option<F19
         .map(|c| c.value)
 }
 
+/// A column shorter than its containing bus block represents a prefix followed
+/// by virtual zeroes. Its full-cube MLE is the committed short-column MLE times
+/// the equality polynomial selecting zero on every omitted high index bit.
+fn committed_point_and_lift<'a>(placements: &[Placement], col: usize, full_point: &'a [F192]) -> (&'a [F192], F192) {
+    let p = placements[col];
+    if p.is_virtual() || p.n_vars >= full_point.len() {
+        return (full_point, F192::ONE);
+    }
+    let lift = full_point[p.n_vars..]
+        .iter()
+        .fold(F192::ONE, |acc, &r| acc * (F192::ONE + r));
+    (&full_point[..p.n_vars], lift)
+}
+
 /// Prover-side decomposition: reads the real columns, writing each FRESH
 /// committed value onto the stream and recording the matching claim
 /// (block/coord order); duplicates reuse the recorded value.
@@ -252,6 +267,7 @@ fn decompose_prove(
     blocks: &[Block],
     lay: &Layout,
     cols: &[Column],
+    placements: &[Placement],
     zeta: &[F192],
     alpha: F192,
     gamma: F192,
@@ -266,36 +282,43 @@ fn decompose_prove(
     for blk in blocks {
         for c in &blk.coords {
             if let Coord::Col(i) | Coord::GCol(i, _) = c {
-                let fresh = known_claim(claims, *i, &zeta[..blk.kappa]).is_none() && !jobs.contains(&(*i, blk.kappa));
+                let full_point = &zeta[..blk.kappa];
+                let (point, _) = committed_point_and_lift(placements, *i, full_point);
+                let fresh = known_claim(claims, *i, point).is_none() && !jobs.contains(&(*i, point.len()));
                 if fresh {
-                    jobs.push((*i, blk.kappa));
+                    jobs.push((*i, point.len()));
                 }
             }
         }
     }
     let vals: Vec<F192> = jobs
         .par_iter()
-        .map(|&(col, kappa)| mle_eval(&cols[col], &zeta[..kappa]))
+        .map(|&(col, kappa)| mle_eval(&cols[col][..1 << kappa], &zeta[..kappa]))
         .collect();
 
     // Pass 2: replay in the original order; duplicates reuse the recorded claim.
     let mut fresh_iter = jobs.iter().zip(vals.iter());
     decompose_formula(blocks, lay, zeta, alpha, gamma, |col, zeta_lo| {
-        if let Some(v) = known_claim(claims, col, zeta_lo) {
-            return v;
+        let (point, lift) = committed_point_and_lift(placements, col, zeta_lo);
+        if let Some(v) = known_claim(claims, col, point) {
+            return lift * v;
         }
         let (&(jc, jk), &v) = fresh_iter
             .next()
             .expect("job enumeration matches decompose_formula's col_val order");
-        debug_assert_eq!((jc, jk), (col, zeta_lo.len()), "job/coord order drift");
-        debug_assert_eq!(v, mle_eval(&cols[col], zeta_lo), "job/coord order drift");
+        debug_assert_eq!((jc, jk), (col, point.len()), "job/coord order drift");
+        debug_assert_eq!(
+            v,
+            mle_eval(&cols[col][..1 << point.len()], point),
+            "job/coord order drift"
+        );
         ps.add_scalar(v);
         claims.push(ColumnClaim {
             col,
-            point: zeta_lo.to_vec(),
+            point: point.to_vec(),
             value: v,
         });
-        v
+        lift * v
     });
 }
 
@@ -307,6 +330,7 @@ fn decompose_verify(
     blocks: &[Block],
     lay: &Layout,
     zeta: &[F192],
+    placements: &[Placement],
     alpha: F192,
     gamma: F192,
     claims: &mut Vec<ColumnClaim>,
@@ -315,20 +339,23 @@ fn decompose_verify(
     for blk in blocks {
         let zeta_lo = &zeta[..blk.kappa];
         for c in &blk.coords {
-            if let Coord::Col(i) | Coord::GCol(i, _) = c
-                && known_claim(claims, *i, zeta_lo).is_none()
-            {
+            if let Coord::Col(i) | Coord::GCol(i, _) = c {
+                let (point, _) = committed_point_and_lift(placements, *i, zeta_lo);
+                if known_claim(claims, *i, point).is_some() {
+                    continue;
+                }
                 let v = vs.next_scalar().map_err(|_| Error::Truncated)?;
                 claims.push(ColumnClaim {
                     col: *i,
-                    point: zeta_lo.to_vec(),
+                    point: point.to_vec(),
                     value: v,
                 });
             }
         }
     }
     let value = decompose_formula(blocks, lay, zeta, alpha, gamma, |col, zeta_lo| {
-        known_claim(claims, col, zeta_lo).expect("the pre-pass recorded every coordinate")
+        let (point, lift) = committed_point_and_lift(placements, col, zeta_lo);
+        lift * known_claim(claims, col, point).expect("the pre-pass recorded every coordinate")
     });
     Ok(value)
 }
@@ -455,6 +482,7 @@ pub fn prove_balance(
     pull: &[Block],
     count: &[Block],
     cols: &[Column],
+    placements: &[Placement],
     ps: &mut ProverState,
 ) -> (Vec<ColumnClaim>, Vec<BytecodeClaim>) {
     let push_lay = layout(push);
@@ -497,12 +525,33 @@ pub fn prove_balance(
     // point) are streamed and opened once. The count side has its own weights,
     // so its claims stay distinct only where the columns differ.
     let mut claims: Vec<ColumnClaim> = Vec::new();
-    decompose_prove(push, &push_lay, cols, &bus_gkr.point, alpha, gamma, &mut claims, ps);
-    decompose_prove(pull, &pull_lay, cols, &bus_gkr.point, alpha, gamma, &mut claims, ps);
+    decompose_prove(
+        push,
+        &push_lay,
+        cols,
+        placements,
+        &bus_gkr.point,
+        alpha,
+        gamma,
+        &mut claims,
+        ps,
+    );
+    decompose_prove(
+        pull,
+        &pull_lay,
+        cols,
+        placements,
+        &bus_gkr.point,
+        alpha,
+        gamma,
+        &mut claims,
+        ps,
+    );
     decompose_prove(
         count,
         &count_lay,
         cols,
+        placements,
         &bus_gkr.point,
         F192::ONE,
         F192::ZERO,
@@ -545,6 +594,7 @@ pub fn verify_balance(
     pull: &[Block],
     count: &[Block],
     pad: &[F64],
+    placements: &[Placement],
     vs: &mut VerifierState,
 ) -> Result<BusVerify, Error> {
     let push_lay = layout(push);
@@ -572,11 +622,29 @@ pub fn verify_balance(
     }
 
     let mut claims: Vec<ColumnClaim> = Vec::new();
-    let vp = decompose_verify(push, &push_lay, &bus_gkr.point, alpha, gamma, &mut claims, vs)?;
+    let vp = decompose_verify(
+        push,
+        &push_lay,
+        &bus_gkr.point,
+        placements,
+        alpha,
+        gamma,
+        &mut claims,
+        vs,
+    )?;
     if vp != bus_gkr.values[0] {
         return Err(Error::Decomposition { side: "push" });
     }
-    let vq = decompose_verify(pull, &pull_lay, &bus_gkr.point, alpha, gamma, &mut claims, vs)?;
+    let vq = decompose_verify(
+        pull,
+        &pull_lay,
+        &bus_gkr.point,
+        placements,
+        alpha,
+        gamma,
+        &mut claims,
+        vs,
+    )?;
     if vq != bus_gkr.values[1] {
         return Err(Error::Decomposition { side: "pull" });
     }
@@ -584,6 +652,7 @@ pub fn verify_balance(
         count,
         &count_lay,
         &bus_gkr.point,
+        placements,
         F192::ONE,
         F192::ZERO,
         &mut claims,

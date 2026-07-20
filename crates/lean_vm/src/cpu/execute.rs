@@ -758,6 +758,18 @@ impl Program {
             }
         }
 
+        // Arithmetic rows are a multiset: their physical order is irrelevant to
+        // the state, memory, and bytecode buses. Put every row that needs any
+        // extension limb first. The remaining suffix has all three values in
+        // embedded F64, allowing its six upper-limb columns to be virtual zeroes.
+        let is_base_row = |r: &Xrow| {
+            [r.aa, r.ab, r.ac]
+                .into_iter()
+                .all(|a| mem[a as usize].c1 == 0 && mem[a as usize].c2 == 0)
+        };
+        xor.sort_by_key(|r| is_base_row(r));
+        mul.sort_by_key(|r| is_base_row(r));
+
         // Pad memory to a power of two (the boundary tables read a dense image),
         // at least 2^MIN_LOG_MEM cells (doc §Memory).
         let mem_used = mem.len();

@@ -6,7 +6,8 @@
 
 use primitives::field::F64;
 
-/// A committed column: `2^κ` `K`-elements.
+/// A column's full logical `K`-valued view. Its [`Placement`] may commit only a
+/// shorter `2^κ` prefix when the remaining suffix is fixed to zero.
 pub type Column = Vec<F64>;
 
 /// Where a column sits in the stacked witness. A [`Placement::VIRTUAL`] column is
@@ -82,7 +83,7 @@ pub fn stack_q(cols: &[Column], placements: &[Placement], m: usize) -> Vec<F64> 
         }
         let offset = placement.offset;
         let dst = &mut q[offset..offset + (1 << placement.n_vars)];
-        let src = &cols[i];
+        let src = &cols[i][..1 << placement.n_vars];
         if src.len() >= crate::PAR_THRESHOLD {
             dst.par_chunks_mut(COPY_CHUNK)
                 .zip(src.par_chunks(COPY_CHUNK))

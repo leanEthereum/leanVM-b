@@ -60,6 +60,13 @@ runtime integers.
   or field arithmetic in a value position (`x ** k`, e.g. a loop counter `g^i`
   raised to a stride to reach cell `i·stride`). The base may be runtime.
 
+The ISA still has one `XOR` and one `MUL`, both with full `E` semantics. As a
+commitment optimization only, witness generation places rows whose three values
+need either upper limb before rows whose values all lie in `K`. The prover
+then commits the six upper-limb columns only through that first, power-of-two
+prefix; the omitted suffix is fixed to zero. This changes neither zkDSL
+arithmetic nor the program's execution order.
+
 A logical **index** `i` is carried as `g^i` in the 64-bit subfield (order
 `2^64 − 1`): incrementing is one multiplication by `GEN`, and memory/bytecode
 addresses are g-powers. This is the design idiom of the whole VM — loops, heap

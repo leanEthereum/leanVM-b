@@ -147,17 +147,26 @@ fn transcript_seed(program: &Program, pi: &[F192; 2]) -> [F192; 4] {
     [seed[0], seed[1], pi[0], pi[1]]
 }
 
-/// Announce the prover's per-table log-sizes (`log_mem` + all `row_counts`) by
-/// writing them onto the scalar stream (which binds them into the sponge and lets
-/// the verifier reconstruct the layout). The public statement (program + input) is
-/// not announced here — it seeds the transcript at construction (see
-/// [`transcript_seed`]). The boundary states and per-table log-sizes (`taus`) are
-/// derived (constants from the program, and `padlen(row_counts)`), so they need no
-/// separate binding.
-fn announce_public(ps: &mut ProverState, log_mem: usize, row_counts: [usize; tables::N_TABLES], log_inv_rate: usize) {
+/// Announce the prover's public shape (`log_mem`, all `row_counts`, and the XOR
+/// and MUL upper-limb prefix logs) by writing it onto the scalar stream. This
+/// binds the shape into the sponge and lets the verifier reconstruct the layout.
+/// The public statement (program + input) is not announced here — it seeds the
+/// transcript at construction (see [`transcript_seed`]). The boundary states and
+/// full per-table log-sizes (`taus`) are derived (constants from the program, and
+/// `padlen(row_counts)`), so they need no separate binding.
+fn announce_public(
+    ps: &mut ProverState,
+    log_mem: usize,
+    row_counts: [usize; tables::N_TABLES],
+    ext_taus: [usize; 2],
+    log_inv_rate: usize,
+) {
     ps.add_scalar(F192::new(log_mem as u64, 0, 0));
     for r in row_counts {
         ps.add_scalar(F192::new(r as u64, 0, 0));
+    }
+    for tau in ext_taus {
+        ps.add_scalar(F192::new(tau as u64, 0, 0));
     }
     ps.add_scalar(F192::new(log_inv_rate as u64, 0, 0));
 }
@@ -171,6 +180,12 @@ fn read_public(vs: &mut VerifierState, prog: &Program, public_input: &[F192; 2])
     let mut row_counts = [0usize; tables::N_TABLES];
     for r in &mut row_counts {
         *r = vs.next_scalar().map_err(Error::Transcript)?.c0 as usize;
+    }
+    let mut ext_tau_words = [F192::ZERO; 2];
+    let mut ext_taus = [0usize; 2];
+    for (word, tau) in ext_tau_words.iter_mut().zip(&mut ext_taus) {
+        *word = vs.next_scalar().map_err(Error::Transcript)?;
+        *tau = word.c0 as usize;
     }
     let rate_word = vs.next_scalar().map_err(Error::Transcript)?;
     let log_inv_rate = rate_word.c0 as usize;
@@ -186,12 +201,15 @@ fn read_public(vs: &mut VerifierState, prog: &Program, public_input: &[F192; 2])
         || bytecode_size > (1usize << MAX_LOG_BYTECODE)
         || !(MIN_LOG_MEM..=MAX_LOG_MEM).contains(&log_mem)
         || row_counts.iter().any(|&r| r >= (1usize << MAX_LOG_ROWS))
+        || ext_tau_words != ext_taus.map(|tau| F192::new(tau as u64, 0, 0))
+        || ext_taus[0] > crate::log2_ceil_usize(row_counts[tables::XOR_TABLE].max(1))
+        || ext_taus[1] > crate::log2_ceil_usize(row_counts[tables::MUL_TABLE].max(1))
         || rate_word != F192::new(log_inv_rate as u64, 0, 0)
         || ::pcs::ligerito::validate_log_inv_rate(log_inv_rate).is_err()
     {
         return Err(Error::PublicInput);
     }
-    let l = layout(&prog.prog, log_mem, row_counts, *public_input);
+    let l = layout(&prog.prog, log_mem, row_counts, ext_taus, *public_input);
     Ok((l, log_inv_rate))
 }
 
@@ -287,15 +305,22 @@ pub enum Error {
 
 /// Lift each table's constraint evals (at its zerocheck point `rho`) to global
 /// column claims, offsetting the table's local constraint columns by its base.
-fn constraint_claims(table_claims: &[constraints::Claims]) -> Vec<ColumnClaim> {
+fn constraint_claims(l: &Layout, table_claims: &[constraints::Claims]) -> Vec<ColumnClaim> {
     let sch = schema();
     let mut v = Vec::new();
     for (t, table) in tables::tables().iter().enumerate() {
         for (k, &c) in table.constraint_columns().iter().enumerate() {
+            let col = sch.base[t] + c;
+            let placement = l.placements[col];
+            let claim_kappa = if placement.is_virtual() {
+                table_claims[t].rho.len()
+            } else {
+                placement.n_vars
+            };
             v.push(ColumnClaim {
-                col: sch.base[t] + c,
-                point: table_claims[t].rho.clone(),
-                value: table_claims[t].evals[k],
+                col,
+                point: table_claims[t].rho[..claim_kappa].to_vec(),
+                value: table_claims[t].opening_evals[k],
             });
         }
     }
@@ -323,6 +348,9 @@ pub struct Stats {
     pub cycles: usize,
     pub counts: [usize; tables::N_TABLES],
     pub committed: usize,
+    /// Announced log-lengths of the committed arithmetic upper-limb prefixes,
+    /// in `[XOR, MUL]` order.
+    pub ext_taus: [usize; 2],
     /// Data memory is `2^log_mem` cells (the padded write-once image).
     pub log_mem: usize,
     /// Cells actually touched, before the pad to `2^log_mem` — the real memory
@@ -362,18 +390,18 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
     // Real committed data, before zero-pad to 2^m. Virtual columns (the BLAKE3
     // value columns) carry data for the bus but are NOT committed, so exclude them.
     let committed_size: usize = w
-        .cols
+        .layout
+        .placements
         .iter()
-        .zip(&w.layout.placements)
-        .filter(|(_, p)| !p.is_virtual())
-        .map(|(c, _)| c.len())
+        .filter(|p| !p.is_virtual())
+        .map(|p| 1usize << p.n_vars)
         .sum();
     // The public statement (program digest + input) seeds the transcript, so
     // every challenge depends on the exact program and public input.
     let mut ps = ProverState::new(b"leanvm-b", &transcript_seed(program, &public_input));
 
     // Announce the prover's sizes, then commit, before sampling any challenge.
-    announce_public(&mut ps, w.log_mem, w.row_counts, log_inv_rate);
+    announce_public(&mut ps, w.log_mem, w.row_counts, w.layout.ext_taus, log_inv_rate);
     let t = std::time::Instant::now();
     let committed = tracing::info_span!("Commit").in_scope(|| pcs::commit(&mut ps, &w.q, log_inv_rate));
     if prof {
@@ -389,8 +417,8 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
     // bus point, so no dedicated binding challenge is drawn. Mirrored in `verify`.
     let t = std::time::Instant::now();
     let l = &w.layout;
-    let (bus_claims, _bytecode_claims) =
-        tracing::info_span!("Prove bus").in_scope(|| leaf::prove_balance(&l.push, &l.pull, &l.count, &w.cols, &mut ps));
+    let (bus_claims, _bytecode_claims) = tracing::info_span!("Prove bus")
+        .in_scope(|| leaf::prove_balance(&l.push, &l.pull, &l.count, &w.cols, &l.placements, &mut ps));
     if prof {
         eprintln!("[prove] bus(grand-p): {:>7.2} ms", ms(t));
     }
@@ -402,8 +430,16 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
             let involved = table.constraint_columns();
             let position = tables::column_positions(involved);
             let cols: Vec<Column> = involved.iter().map(|&c| w.cols[sch.base[ti] + c].clone()).collect();
+            let claim_kappas: Vec<usize> = involved
+                .iter()
+                .map(|&c| {
+                    let p = w.layout.placements[sch.base[ti] + c];
+                    if p.is_virtual() { w.layout.taus[ti] } else { p.n_vars }
+                })
+                .collect();
             table_claims.push(constraints::prove(
                 &cols,
+                &claim_kappas,
                 |eta, vals| table.eval_constraint(eta, &tables::Cols::new(vals, &position)),
                 &mut ps,
             ));
@@ -415,7 +451,7 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
     }
 
     let mut claims = bus_claims;
-    claims.extend(constraint_claims(&table_claims));
+    claims.extend(constraint_claims(&w.layout, &table_claims));
     // The PI binding transmits the low/high memory-limb evaluations. The full
     // F192 public-input interpolation then determines the top-limb evaluation.
     let r_pi = ps.sample();
@@ -475,6 +511,7 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
             cycles,
             counts,
             committed: committed_size,
+            ext_taus: w.layout.ext_taus,
             log_mem: w.log_mem,
             mem_used: exec.mem_used,
         },
@@ -555,16 +592,24 @@ pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Res
     // words bind via the memory bus, the pins reuse a bus point.
     let n_b3 = l.row_counts[tables::BLAKE3_TABLE];
 
-    let bus = leaf::verify_balance(&l.push, &l.pull, &l.count, &l.pad, &mut vs).map_err(Error::Bus)?;
+    let bus = leaf::verify_balance(&l.push, &l.pull, &l.count, &l.pad, &l.placements, &mut vs).map_err(Error::Bus)?;
     let checkpoint_bus = vs.sponge_state();
 
     let mut table_claims = Vec::new();
     for (ti, table) in tables::tables().iter().enumerate() {
         let involved = table.constraint_columns();
         let position = tables::column_positions(involved);
+        let claim_kappas: Vec<usize> = involved
+            .iter()
+            .map(|&c| {
+                let p = l.placements[schema().base[ti] + c];
+                if p.is_virtual() { l.taus[ti] } else { p.n_vars }
+            })
+            .collect();
         let cl = constraints::verify(
             l.taus[ti],
             involved.len(),
+            &claim_kappas,
             |eta, vals| table.eval_constraint(eta, &tables::Cols::new(vals, &position)),
             &mut vs,
         )
@@ -574,7 +619,7 @@ pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Res
     let checkpoint_zerochecks = vs.sponge_state();
 
     let mut claims = bus.claims;
-    claims.extend(constraint_claims(&table_claims));
+    claims.extend(constraint_claims(&l, &table_claims));
     let r_pi = vs.sample();
     let pi_lo = vs.next_scalar().map_err(Error::Transcript)?;
     let pi_hi = vs.next_scalar().map_err(Error::Transcript)?;
@@ -860,6 +905,10 @@ mod tests {
         let pi = [F192::new(1, 2, 3), F192::new(4, 5, 6)];
         let (proof, stats) = prove(&program, pi, pcs::LOG_INV_RATE);
         assert_eq!(stats.counts[5], 0, "no real BLAKE3 rows");
+        assert_eq!(
+            stats.ext_taus[0], 0,
+            "a base-only XOR table commits one zero upper-limb slot"
+        );
         // The proof still carries exactly one Ligerito opening (over the padding).
         assert_eq!(proof.openings.len(), 1, "unified path: one opening always");
         verify(&program, &pi, &proof).expect("non-BLAKE3 program verifies");
@@ -883,6 +932,64 @@ mod tests {
         assert_eq!(exec.mem[4], x * y, "MUL computes the E product");
         let (proof, _) = prove(&program, pi, pcs::LOG_INV_RATE);
         verify(&program, &pi, &proof).expect("192-bit MUL verifies");
+    }
+
+    #[test]
+    fn arithmetic_upper_limbs_commit_only_extension_prefix() {
+        let x = F192::new(7, 11, 13);
+        let mut prog = vec![
+            Op::Set { o: 2, k: x },
+            // Three extension-valued rows.
+            Op::Xor { a: 2, b: 0, c: 4 },
+            Op::Xor { a: 2, b: 1, c: 5 },
+            Op::Xor { a: 4, b: 1, c: 6 },
+            // Five base-only rows.
+            Op::Xor { a: 0, b: 1, c: 7 },
+            Op::Xor { a: 0, b: 0, c: 8 },
+            Op::Xor { a: 1, b: 1, c: 9 },
+            Op::Xor { a: 7, b: 0, c: 10 },
+            Op::Xor { a: 7, b: 1, c: 11 },
+        ];
+        for o in 12..18 {
+            prog.push(Op::Set { o, k: F192::ZERO });
+        }
+        prog.push(Op::Xor { a: 0, b: 0, c: 0 }); // sentinel
+        assert_eq!(prog.len(), 16);
+        let program = Program::from_bytecode(prog, 20);
+        let pi = [w(3), w(5)];
+
+        let exec = program.execute(pi);
+        assert_eq!(exec.trace.xor.len(), 8);
+        assert!(exec.trace.xor[..3].iter().all(|r| {
+            [r.aa, r.ab, r.ac]
+                .into_iter()
+                .any(|a| exec.mem[a as usize].c1 != 0 || exec.mem[a as usize].c2 != 0)
+        }));
+        assert!(exec.trace.xor[3..].iter().all(|r| {
+            [r.aa, r.ab, r.ac]
+                .into_iter()
+                .all(|a| exec.mem[a as usize].c1 == 0 && exec.mem[a as usize].c2 == 0)
+        }));
+
+        let witness = program.build(&exec);
+        assert_eq!(witness.layout.taus[tables::XOR_TABLE], 3);
+        assert_eq!(witness.layout.ext_taus[0], 2);
+        let base = schema().base[tables::XOR_TABLE];
+        for &c in &tables::ARITH_HIGH_COLS {
+            assert_eq!(witness.layout.placements[base + c].n_vars, 2);
+            assert!(witness.cols[base + c][1 << 2..].iter().all(|&v| v == F64::ZERO));
+        }
+
+        let (proof, stats) = prove(&program, pi, pcs::LOG_INV_RATE);
+        assert_eq!(stats.ext_taus[0], 2);
+        verify(&program, &pi, &proof).expect("short arithmetic columns verify");
+
+        // The cutoff is transcript-bound and cannot be understated to omit a
+        // genuinely nonzero upper limb. The first scalar is log_mem, followed
+        // by the seven row counts and then the XOR cutoff.
+        let mut understated = proof.clone();
+        understated.stream[1 + tables::N_TABLES] = F192::new(1, 0, 0);
+        assert!(verify(&program, &pi, &understated).is_err());
     }
 
     /// A proof is bound to its exact program: presenting it against a *different*

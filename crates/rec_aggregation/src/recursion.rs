@@ -284,6 +284,7 @@ fn stacked_bytecode(program: &Program) -> Vec<F64> {
         &program.prog,
         20,
         [1usize << 10; lean_vm::tables::N_TABLES],
+        [10; 2],
         [F192::ZERO; 2],
     );
     lean_vm::leaf::stacked_bytecode_table(&l.push)
@@ -593,6 +594,7 @@ fn gen_verify(
         &program.prog,
         proof.stream[0].c0 as usize,
         std::array::from_fn(|i| proof.stream[1 + i].c0 as usize),
+        std::array::from_fn(|i| proof.stream[1 + lean_vm::tables::N_TABLES + i].c0 as usize),
         pi,
     );
     let sides: [&[Block]; 3] = [&l.push, &l.pull, &l.count];
@@ -895,7 +897,9 @@ fn gen_verify(
         for blk in blocks.iter() {
             for c in &blk.coords {
                 if let Coord::Col(i) | Coord::GCol(i, _) = c {
-                    if !desc_seen.insert((*i, blk.kappa)) {
+                    let pl = l.placements[*i];
+                    let claim_kappa = if pl.is_virtual() { blk.kappa } else { pl.n_vars };
+                    if !desc_seen.insert((*i, claim_kappa)) {
                         continue; // deduped: pooled once at its first occurrence
                     }
                     if valcols.contains(i) {
@@ -903,8 +907,7 @@ fn gen_verify(
                         let nvt = lean_vm::blake3_flock::SLOT_STRIDE_LOG + blk.kappa;
                         push_desc(3, 0, blk.kappa, slot_i, qpkd_pl.offset >> nvt, nvt);
                     } else {
-                        let pl = l.placements[*i];
-                        push_desc(0, 0, blk.kappa, 0, pl.offset >> blk.kappa, blk.kappa);
+                        push_desc(0, 0, claim_kappa, 0, pl.offset >> claim_kappa, claim_kappa);
                     }
                 }
             }
@@ -919,7 +922,7 @@ fn gen_verify(
                 let nvt = lean_vm::blake3_flock::SLOT_STRIDE_LOG + taus[t];
                 push_desc(4, t * taumax_cap, taus[t], slot_i, qpkd_pl.offset >> nvt, nvt);
             } else {
-                push_desc(1, t * taumax_cap, taus[t], 0, pl.offset >> taus[t], taus[t]);
+                push_desc(1, t * taumax_cap, pl.n_vars, 0, pl.offset >> pl.n_vars, pl.n_vars);
             }
         }
     }
@@ -1260,6 +1263,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         &program.prog,
         20,
         [1usize << 10; lean_vm::tables::N_TABLES],
+        [10; 2],
         [F192::ZERO, F192::ZERO],
     );
     let kbc = program.prog.len().trailing_zeros() as usize;
@@ -1269,6 +1273,8 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     let stream_cap = 8192usize;
     let taus = l.taus;
     let lcrounds = flock::blake3::K_LOG - 6;
+    let col_kappa_sources = lean_vm::cpu::col_kappa_sources(kbc);
+    let block_kappa_sources = lean_vm::cpu::block_kappa_sources(kbc);
 
     // ---- flattened block/coord descriptors (structural) ----
     let (mut sblk, mut bc0, mut bcn) = (vec![0usize], vec![], vec![]);
@@ -1276,19 +1282,23 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     let (mut nclaims, mut nbcv, mut nblocks) = (0usize, 0usize, 0usize);
     // Claim dedup (mirrors leaf.rs): per coord, fresh = first (group, col,
     // kappa) occurrence gets the next pool slot; duplicates point at it.
-    let mut slot_of: std::collections::HashMap<(usize, usize), usize> = Default::default();
+    let mut slot_of: std::collections::HashMap<(usize, usize, usize), usize> = Default::default();
     let (mut coord_fresh, mut coord_slot) = (vec![], vec![]);
+    let (mut coord_ksrc, mut coord_kadj, mut coord_short) = (vec![], vec![], vec![]);
     for blocks in sides.iter() {
         for blk in blocks.iter() {
             bc0.push(ct.len());
             bcn.push(blk.coords.len());
+            let block_source = block_kappa_sources[nblocks];
             nblocks += 1;
             for c in &blk.coords {
                 // One COORD_FRESH/COORD_CLAIM_SLOT entry PER coord (the guest
                 // indexes them by global coord offset); only Col/GCol matter.
                 let (mut fresh, mut slot) = (0usize, 0usize);
+                let mut claim_source = block_source;
                 if let Coord::Col(i) | Coord::GCol(i, _) = c {
-                    let key = (*i, blk.kappa);
+                    claim_source = col_kappa_sources[*i].unwrap_or(block_source);
+                    let key = (*i, claim_source.0, claim_source.1);
                     if let Some(&known) = slot_of.get(&key) {
                         slot = known;
                     } else {
@@ -1300,6 +1310,9 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
                 }
                 coord_fresh.push(fresh);
                 coord_slot.push(slot);
+                coord_ksrc.push(claim_source.0);
+                coord_kadj.push(claim_source.1);
+                coord_short.push(usize::from(claim_source != block_source));
                 let (t, v, f) = match c {
                     Coord::Const(v) => (0u128, F192::new(v.0, 0, 0), F192::new(v.0, 0, 0)),
                     Coord::Col(i) => (1, F192::ZERO, F192::new(l.pad[*i].0, 0, 0)),
@@ -1323,9 +1336,22 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         .collect();
     let evtot: usize = ncol.iter().sum();
     let ncl = nclaims + evtot + 3; // bus + constraint + the three PI memory-limb claims
+    let mut air_ksrc = vec![0usize; lean_vm::tables::N_TABLES * (ncol.iter().max().unwrap() + 1)];
+    let mut air_kadj = air_ksrc.clone();
+    let mut air_short = air_ksrc.clone();
+    let air_stride = ncol.iter().max().unwrap() + 1;
+    let sch = lean_vm::cpu::schema();
+    for (t, table) in lean_vm::tables::tables().iter().enumerate() {
+        let full = (2 + t, 0usize);
+        for (k, &c) in table.constraint_columns().iter().enumerate() {
+            let source = col_kappa_sources[sch.base[t] + c].unwrap_or(full);
+            air_ksrc[t * air_stride + k] = source.0;
+            air_kadj[t * air_stride + k] = source.1;
+            air_short[t * air_stride + k] = usize::from(source != full);
+        }
+    }
 
     // ---- claim descriptors: buffer id + offset only (both structural) ----
-    let sch = lean_vm::cpu::schema();
     let b3base = sch.base[5];
     let valcols: Vec<usize> = lean_vm::tables::BLAKE3_VALUE_COLS.iter().map(|&c| b3base + c).collect();
     let (mut cpbuf, mut cpoff) = (vec![], vec![]);
@@ -1390,7 +1416,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("GKR_POINTS_CAP", ((mumax + 1) * mumax).to_string());
     ps("SIDE_BLOCK_START", ints(&sblk));
     ps("N_BLOCKS", nblocks.to_string());
-    let bks = lean_vm::cpu::block_kappa_sources(kbc);
+    let bks = block_kappa_sources;
     // Push and pull emit bus blocks in matched pairs, so their baked kappa-source
     // segments are identical; the guest computes only push's side total and
     // aliases pull's mu to push's on this basis.
@@ -1427,6 +1453,9 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("COORD_PAD_VAL", us(&fpv));
     ps("COORD_FRESH", ints(&coord_fresh));
     ps("COORD_CLAIM_SLOT", ints(&coord_slot));
+    ps("COORD_CLAIM_KAPPA_SRC", ints(&coord_ksrc));
+    ps("COORD_CLAIM_KAPPA_ADJ", ints(&coord_kadj));
+    ps("COORD_CLAIM_SHORT", ints(&coord_short));
     ps("N_BUS_CLAIMS", nclaims.to_string());
     let idxc: Vec<u128> = (0..34)
         .map(|i| {
@@ -1441,6 +1470,9 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("N_CLAIMS", ncl.to_string());
     ps("N_AIR_COLS", ints(&ncol));
     ps("AIR_COLS_CAP", (ncol.iter().max().unwrap() + 1).to_string());
+    ps("AIR_COL_KAPPA_SRC", ints(&air_ksrc));
+    ps("AIR_COL_KAPPA_ADJ", ints(&air_kadj));
+    ps("AIR_COL_SHORT", ints(&air_short));
     ps("N_TABLES", l.taus.len().to_string());
     ps("TAU_CAP", taumax_cap.to_string());
     // Per-claim y-slot hint stride (overlap mask / slot bit rows).
