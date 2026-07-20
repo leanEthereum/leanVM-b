@@ -434,6 +434,11 @@ pub fn open_batch_mixed_ligerito_stacked(
     ring_switch::combine_deferred_into(&rs_outputs, &mut b_stack[ring.offset..ring.offset + qpkd_len]);
     mark("rs_eq_ind scatter", &mut t);
     fold_stacked_point_claims(&mut b_stack, &mut target, point_claims, &gammas_pd);
+    debug_assert_eq!(
+        super::ligerito::inner_product_base_ext(stack, &b_stack),
+        target,
+        "stacked opening claims must match the committed stack"
+    );
     mark("point-claim folds", &mut t);
 
     // 4. One Ligerito over the full stack against the combined claim (the
@@ -618,6 +623,91 @@ pub fn verify_opening_batch_mixed_ligerito_stacked(
         &mut query_squeezes,
     );
     ok.then_some(StackedOpeningSummary {
+        lig: LigVerifierSummary { query_squeezes },
+    })
+}
+
+/// Point-only counterpart of [`open_batch_mixed_ligerito_stacked`]. Its domain
+/// tag is absorbed into the caller's current transcript state; it does not fork
+/// or clone that state. The proof carries no synthetic ring-switch data.
+pub fn open_batch_ligerito_stacked(
+    sponge: &mut Sponge,
+    stack: &[F64],
+    prover_data: &ProverData,
+    config: &ProverConfig,
+    point_claims: &[StackClaim],
+) -> BatchOpeningProof {
+    assert!(!point_claims.is_empty(), "point-only opening needs a claim");
+    sponge.absorb_bytes(b"stack-open-points-v1");
+    for claim in point_claims {
+        observe_ext(sponge, claim.value());
+    }
+    let gammas = sample_ext_vec(sponge, point_claims.len());
+    let mut target = F192::ZERO;
+    let mut weight = vec![F192::ZERO; stack.len()];
+    fold_stacked_point_claims(&mut weight, &mut target, point_claims, &gammas);
+    let ligerito = recursive_prover_with_basis(
+        config,
+        stack,
+        weight,
+        target,
+        &prover_data.codeword,
+        &prover_data.merkle_tree,
+        sponge,
+    );
+    BatchOpeningProof {
+        ring_switches: Vec::new(),
+        ligerito,
+    }
+}
+
+/// Verify [`open_batch_ligerito_stacked`].
+pub fn verify_opening_batch_ligerito_stacked(
+    sponge: &mut Sponge,
+    config: &VerifierConfig,
+    log_n: usize,
+    root: &Hash,
+    point_claims: &[StackClaim],
+    proof: &BatchOpeningProof,
+) -> Option<StackedOpeningSummary> {
+    if point_claims.is_empty() || !proof.ring_switches.is_empty() {
+        return None;
+    }
+    sponge.absorb_bytes(b"stack-open-points-v1");
+    for claim in point_claims {
+        observe_ext(sponge, claim.value());
+    }
+    let gammas = sample_ext_vec(sponge, point_claims.len());
+    let target = point_claims
+        .iter()
+        .zip(&gammas)
+        .fold(F192::ZERO, |acc, (claim, gamma)| acc + *gamma * claim.value());
+    let eval_weight = |ris: &[F192], yr_log_n: usize| -> Vec<F192> {
+        (0..1usize << yr_log_n)
+            .map(|y| {
+                let mut x = ris.to_vec();
+                x.extend((0..yr_log_n).map(|k| if (y >> k) & 1 == 1 { F192::ONE } else { F192::ZERO }));
+                point_claims
+                    .iter()
+                    .zip(&gammas)
+                    .fold(F192::ZERO, |acc, (claim, gamma)| {
+                        acc + *gamma * stack_claim_eq_at(claim, &x)
+                    })
+            })
+            .collect()
+    };
+    let mut query_squeezes = Vec::new();
+    recursive_verifier_with_basis_succinct_with_squeezes(
+        config,
+        &proof.ligerito,
+        log_n,
+        target,
+        root,
+        eval_weight,
+        sponge,
+        &mut query_squeezes,
+    )
+    .then_some(StackedOpeningSummary {
         lig: LigVerifierSummary { query_squeezes },
     })
 }

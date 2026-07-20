@@ -1,6 +1,5 @@
-//! The bus: a single shared channel balanced by a grand product (§4.2–§4.4). Each
-//! interaction wires a table's columns into width-`m` tuples and flushes them in a
-//! direction; the bus balances when pushed and pulled tuples form the same
+//! The state bus, balanced by a grand product (§4.2–§4.4). Each instruction
+//! wires `(pc, fp)` and its successor into tuples; the bus balances when pushed and pulled tuples form the same
 //! multiset, proven by two GKR passes over the leaf vectors `γ − π_α(σ)`. Each pass
 //! reduces to a leaf claim `Ṽ₀(ζ)`, decomposed into evaluation claims on the
 //! committed columns. Tuple coordinates `σ_i` are `K`-valued (column entries,
@@ -54,6 +53,8 @@ pub struct Layout {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ColumnClaim {
     pub col: usize,
+    /// First row of the aligned source slice. Ordinary whole-column claims use 0.
+    pub start: usize,
     pub point: Vec<F192>,
     pub value: F192,
 }
@@ -62,46 +63,16 @@ pub struct ColumnClaim {
 pub enum Error {
     Truncated,
     Unbalanced,
-    /// A read count is zero, so a read self-cancels on the bus (§sec:memchan).
-    ZeroCount,
     Gkr(gkr::GkrError),
-    Decomposition {
-        side: &'static str,
-    },
+    Decomposition { side: &'static str },
 }
 
-/// Check that the 192-bit field alone supplies the target bus soundness. The bus
-/// grand-product phase clears [`crate::SECURITY_BITS`]. Two Schwartz–Zippel
-/// failure events share this randomness; union-bound over them:
-///
-/// - the push/pull **balance** `push_root · d_pull = pull_root · d_push` — one
-///   identity in γ whose difference has degree `max(push factors, pull
-///   factors)` (the larger of the two sides; within a side the default-padding
-///   factors are a single high-multiplicity root, so it is `max` not sum);
-/// - the **count** channel `count_root ≠ 0` — a *separate* grand product of
-///   `count factors`.
-///
-/// So `N = max(2^push_mu, 2^pull_mu) + 2^count_mu`, and a false phase passes a
-/// random challenge with probability ≤ `N / 2^192` (γ is sampled from `E`), i.e.
-/// `192 − log2(N)` bits.
-/// Two structural facts collapse this. The push and pull sides emit their bus
-/// blocks in matched pairs — every [`FlushBuilder`] call appends one block to
-/// each side with equal `κ`, and the three framework blocks (boundary, memory,
-/// bytecode) are paired the same way — so the two sides have identical
-/// `κ`-multisets and `push_mu == pull_mu`. And each count column is the count
-/// coordinate of exactly one bytecode/memory flush while the state flush
-/// carries none, so the count side sums strictly fewer `2^κ` than push and
-/// `count_mu ≤ push_mu`. Hence `N = 2^push_mu + 2^count_mu` with
-/// `count_mu ≤ push_mu`, so `⌈log2 N⌉ = push_mu + 1` exactly and the grind is
-/// unnecessary whenever `SECURITY_BITS + push_mu + 1 ≤ 192`, asserted below.
-/// No nonce is transmitted or absorbed. The independent fingerprint challenge
-/// α remains protected by the commitment needed to re-roll it.
-fn assert_grinding_unnecessary(push: &Layout, pull: &Layout, count: &Layout) {
+/// Check that the state grand product fits the native field's soundness budget.
+fn assert_grinding_unnecessary(push: &Layout, pull: &Layout) {
     assert_eq!(
         push.mu, pull.mu,
         "push/pull bus blocks are paired, so their layouts match"
     );
-    assert!(count.mu <= push.mu, "count sums fewer bus messages than push");
     assert!(
         crate::SECURITY_BITS + (push.mu as u32) < 192,
         "bus layout exceeds the unground F192 soundness budget"
@@ -292,6 +263,7 @@ fn decompose_prove(
         ps.add_scalar(v);
         claims.push(ColumnClaim {
             col,
+            start: 0,
             point: zeta_lo.to_vec(),
             value: v,
         });
@@ -321,6 +293,7 @@ fn decompose_verify(
                 let v = vs.next_scalar().map_err(|_| Error::Truncated)?;
                 claims.push(ColumnClaim {
                     col: *i,
+                    start: 0,
                     point: zeta_lo.to_vec(),
                     value: v,
                 });
@@ -346,8 +319,8 @@ fn fpow(base: F192, mut e: usize) -> F192 {
     r
 }
 
-/// `π_α` of a block's padding-row tuple (every column zero but the read counts,
-/// value `1`). Only padded blocks are queried, and those carry only `Const`/`Col`/`GCol`.
+/// `π_α` of a block's padding-row tuple. Only padded state blocks are
+/// queried, and those carry only `Const`/`Col`/`GCol` coordinates.
 fn default_fingerprint(block: &Block, pad: &[F64], alpha: F192) -> F192 {
     let mut fingerprint = F192::ZERO;
     let mut alpha_pow = F192::ONE;
@@ -377,192 +350,55 @@ fn default_surplus(blocks: &[Block], pad: &[F64], alpha: F192, gamma: F192) -> F
     acc
 }
 
-/// One reduced claim on the bytecode polynomial. The six public encoding
-/// columns (op, o1, o2, o3, fpc, ffp) stacked along three selector bits form
-/// ONE multilinear polynomial B̃ in `κ_bc + 3` variables; after the
-/// decompositions both parties absorb the six per-column evaluations (push and
-/// pull share the GKR point ζ, so the columns are evaluated once), sample
-/// three selector challenges `s`, and reduce the six values to
-/// `B̃(ζ_lo, s) = Σ_c eq(s, c)·v_c`. Natively the claim is
-/// true by construction (the verifier evaluated the columns itself); a
-/// recursive verifier defers exactly this one claim to its public input.
-#[derive(Clone, Debug)]
-pub struct BytecodeClaim {
-    /// `ζ_side_lo ++ s` — a point in `κ_bc + 3` variables.
-    pub point: Vec<F192>,
-    /// `B̃(point)`.
-    pub value: F192,
-}
-
-/// The public (bytecode) coordinate evaluations of a side at its GKR point,
-/// block/coord order, with the bytecode block's `κ`.
-pub fn public_evals(blocks: &[Block], zeta: &[F192]) -> (usize, Vec<F192>) {
-    let mut kappa = 0;
-    let mut out = Vec::new();
-    for blk in blocks {
-        for c in &blk.coords {
-            if let Coord::Public(vals) = c {
-                kappa = blk.kappa;
-                out.push(mle_eval(vals, &zeta[..blk.kappa]));
-            }
-        }
-    }
-    (kappa, out)
-}
-
-/// The stacked bytecode polynomial as a dense table: the six public encoding
-/// columns along three selector bits (`B̃`'s evaluations on the cube). This is
-/// the polynomial [`BytecodeClaim`]s are claims about; the outermost native
-/// verifier evaluates it here.
-pub fn stacked_bytecode_table(blocks: &[Block]) -> Vec<F64> {
-    let mut kbc = 0;
-    let mut cols: Vec<&Vec<F64>> = Vec::new();
-    for blk in blocks {
-        for c in &blk.coords {
-            if let Coord::Public(vals) = c {
-                kbc = blk.kappa;
-                cols.push(vals);
-            }
-        }
-    }
-    let mut table = vec![F64::ZERO; 8 << kbc];
-    for (c_idx, vals) in cols.iter().enumerate() {
-        assert_eq!(vals.len(), 1 << kbc);
-        table[(c_idx << kbc)..((c_idx + 1) << kbc)].copy_from_slice(vals);
-    }
-    table
-}
-
-/// `Σ_c eq(s, c)·v_c`: one side's public-column evaluations reduced to the
-/// stacked-polynomial value at selector point `s`.
-pub fn stacked_bytecode_value(evals: &[F192], s: &[F192; 3]) -> F192 {
-    let mut acc = F192::ZERO;
-    for (c, &v) in evals.iter().enumerate() {
-        let mut e = F192::ONE;
-        for (t, &st) in s.iter().enumerate() {
-            e *= if (c >> t) & 1 == 1 { st } else { F192::ONE + st };
-        }
-        acc += e * v;
-    }
-    acc
-}
-
 /// Prove the bus balances; returns the per-column claims to open (§4.4). `alpha`/
 /// `gamma` follow the witness commitment (the only ordering the grand product
 /// needs), and the block structure is public, so no shape is observed.
-pub fn prove_balance(
-    push: &[Block],
-    pull: &[Block],
-    count: &[Block],
-    cols: &[Column],
-    ps: &mut ProverState,
-) -> (Vec<ColumnClaim>, Vec<BytecodeClaim>) {
+pub fn prove_balance(push: &[Block], pull: &[Block], cols: &[Column], ps: &mut ProverState) -> Vec<ColumnClaim> {
     let push_lay = layout(push);
     let pull_lay = layout(pull);
-    let mut count_lay = layout(count);
-    assert_grinding_unnecessary(&push_lay, &pull_lay, &count_lay);
+    assert_grinding_unnecessary(&push_lay, &pull_lay);
     let alpha = ps.sample();
-    // Pad the count tree to the pair's depth with identity leaves (the product,
-    // blocks, and offsets are unchanged; `build_leaves` fills the cube with `1`
-    // and the decompose accounts the padding mass), so all THREE trees share
-    // one RLC-batched GKR — and one point ζ.
-    count_lay.mu = push_lay.mu;
     let gamma = ps.sample();
-    // Independent leaf vectors; build concurrently. The count channel's leaf is the
-    // count itself (a single `Col`, `γ=0`, `α=1`), so its root is the product of all counts.
     let prof = std::env::var("LEANVM_PROFILE").is_ok();
     let t0 = std::time::Instant::now();
-    let (push_leaves, (pull_leaves, count_leaves)) = rayon::join(
+    let (push_leaves, pull_leaves) = rayon::join(
         || build_leaves(push, &push_lay, cols, alpha, gamma),
-        || {
-            rayon::join(
-                || build_leaves(pull, &pull_lay, cols, alpha, gamma),
-                || build_leaves(count, &count_lay, cols, F192::ONE, F192::ZERO),
-            )
-        },
+        || build_leaves(pull, &pull_lay, cols, alpha, gamma),
     );
     if prof {
         eprintln!("[bus]   leaves    : {:>7.2} ms", t0.elapsed().as_secs_f64() * 1e3);
     }
     let t0 = std::time::Instant::now();
-    // All three trees run as ONE RLC-batched GKR (equal μ: push/pull match
-    // block-for-block, count is padded), so every claim lands on ONE point ζ.
-    let bus_gkr = gkr::prove_product_triple([push_leaves, pull_leaves, count_leaves], ps);
+    let bus_gkr = gkr::prove_product_pair([push_leaves, pull_leaves], ps);
     if prof {
         eprintln!("[bus]   gkr       : {:>7.2} ms", t0.elapsed().as_secs_f64() * 1e3);
     }
     let t0 = std::time::Instant::now();
 
-    // One shared claim list: push/pull duplicates (same column, same shared
-    // point) are streamed and opened once. The count side has its own weights,
-    // so its claims stay distinct only where the columns differ.
     let mut claims: Vec<ColumnClaim> = Vec::new();
     decompose_prove(push, &push_lay, cols, &bus_gkr.point, alpha, gamma, &mut claims, ps);
     decompose_prove(pull, &pull_lay, cols, &bus_gkr.point, alpha, gamma, &mut claims, ps);
-    decompose_prove(
-        count,
-        &count_lay,
-        cols,
-        &bus_gkr.point,
-        F192::ONE,
-        F192::ZERO,
-        &mut claims,
-        ps,
-    );
     if prof {
         eprintln!("[bus]   decompose : {:>7.2} ms", t0.elapsed().as_secs_f64() * 1e3);
     }
 
-    // Bytecode = ONE polynomial, and push/pull now share the point ζ, so the
-    // six public columns are opened ONCE: bind the evaluations, sample the
-    // selector challenges, emit the single reduced claim.
-    let (kbc, pv) = public_evals(push, &bus_gkr.point);
-    for &v in &pv {
-        ps.observe_scalar(v);
-    }
-    let s = [ps.sample(), ps.sample(), ps.sample()];
-    let bytecode_claims = vec![BytecodeClaim {
-        point: [&bus_gkr.point[..kbc], &s[..]].concat(),
-        value: stacked_bytecode_value(&pv, &s),
-    }];
-    (claims, bytecode_claims)
+    claims
 }
 
-/// What [`verify_balance`] establishes: the per-column claims to open, the
-/// reduced bytecode claim (a one-element vec in practice: push and pull share
-/// ζ), and the count-channel root (nonzero; recursion
-/// guests prove that via a hinted inverse).
 pub struct BusVerify {
     pub claims: Vec<ColumnClaim>,
-    pub bytecode_claims: Vec<BytecodeClaim>,
-    pub count_root: F192,
 }
 
 /// Verify the bus balances, oracle-free (the prover's committed values arrive on
 /// the stream and are certified by `pcs`). Returns the per-column claims to open.
-pub fn verify_balance(
-    push: &[Block],
-    pull: &[Block],
-    count: &[Block],
-    pad: &[F64],
-    vs: &mut VerifierState,
-) -> Result<BusVerify, Error> {
+pub fn verify_balance(push: &[Block], pull: &[Block], pad: &[F64], vs: &mut VerifierState) -> Result<BusVerify, Error> {
     let push_lay = layout(push);
     let pull_lay = layout(pull);
-    let mut count_lay = layout(count);
-    assert_grinding_unnecessary(&push_lay, &pull_lay, &count_lay);
+    assert_grinding_unnecessary(&push_lay, &pull_lay);
     let alpha = vs.sample();
-    // The count tree is padded to the pair's depth (identity leaves), so all
-    // three verify as ONE RLC-batched GKR at ONE shared point.
-    count_lay.mu = push_lay.mu;
     let gamma = vs.sample();
-    let bus_gkr = gkr::verify_product_triple(push_lay.mu, vs).map_err(Error::Gkr)?;
-    let [push_root, pull_root, count_root] = bus_gkr.roots;
-    // Every read count is nonzero iff this product is (§sec:memchan); a zero would
-    // let a read self-cancel and free its value from memory.
-    if count_root == F192::ZERO {
-        return Err(Error::ZeroCount);
-    }
+    let bus_gkr = gkr::verify_product_pair(push_lay.mu, vs).map_err(Error::Gkr)?;
+    let [push_root, pull_root] = bus_gkr.roots;
     // The two sides differ by the default-padding surplus; divide each out
     // (cross-multiplied) before comparing.
     let d_push = default_surplus(push, pad, alpha, gamma);
@@ -580,34 +416,5 @@ pub fn verify_balance(
     if vq != bus_gkr.values[1] {
         return Err(Error::Decomposition { side: "pull" });
     }
-    let vc = decompose_verify(
-        count,
-        &count_lay,
-        &bus_gkr.point,
-        F192::ONE,
-        F192::ZERO,
-        &mut claims,
-        vs,
-    )?;
-    if vc != bus_gkr.values[2] {
-        return Err(Error::Decomposition { side: "count" });
-    }
-
-    // Bytecode = ONE polynomial (mirror of `prove_balance`); the shared push/
-    // pull point means one set of public-column evaluations and ONE reduced
-    // claim on the stacked bytecode multilinear.
-    let (kbc, pv) = public_evals(push, &bus_gkr.point);
-    for &v in &pv {
-        vs.observe_scalar(v);
-    }
-    let s = [vs.sample(), vs.sample(), vs.sample()];
-    let bytecode_claims = vec![BytecodeClaim {
-        point: [&bus_gkr.point[..kbc], &s[..]].concat(),
-        value: stacked_bytecode_value(&pv, &s),
-    }];
-    Ok(BusVerify {
-        claims,
-        bytecode_claims,
-        count_root,
-    })
+    Ok(BusVerify { claims })
 }

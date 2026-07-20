@@ -1,11 +1,11 @@
 //! leanVM-b — arithmetization of a minimal zkVM (see `doc.tex` and
 //! `misc/transition-to-64-bits.tex`).
 //!
-//! Machine words are `c0 + c1*y ∈ E = K[y]/(y^2 + x*y + 1)`.
-//! Addresses, pc/fp, read counters, and logical indices live in
+//! Machine words are `c0 + c1*y + c2*y^2 ∈ E = K[y]/(y^3 + y + 1)`.
+//! Addresses, pc/fp, and logical indices live in
 //! `K = GF(2^64)`; indices are powers of a fixed generator `g`, so incrementing
 //! one is a multiplication by `g`, a free virtual operation. Every physical
-//! witness column is K-valued (an E-valued word is two K-lane columns) and is
+//! witness column is K-valued (an E-valued word is three K-lane columns) and is
 //! committed directly by a dense multilinear PCS. Challenges and transcript
 //! scalars live in E, so interactive error terms keep their `c/2^128` form.
 //!
@@ -13,6 +13,7 @@
 //! - [`pcs`] — `K`-committed witness, `E`-opened, via the stacked Ligerito (§3).
 //! - [`witness`] — `K`-valued columns stacked into one committed witness.
 //! - [`gkr`] — the grand product via GKR (§4.3), balancing the bus.
+//! - [`frac_gkr`] and [`logup_star`] — indexed memory and bytecode lookups.
 //! - [`leaf`] — the shared bus: grand-product balance, decomposed to per-column claims (§4.2–§4.4, §5).
 //! - [`constraints`] — the per-table degree-2 field zerocheck (§4.1).
 //! - [`tables`] — the instruction tables (columns, flushes, constraints).
@@ -23,8 +24,10 @@
 pub mod blake3_flock;
 pub mod constraints;
 pub mod cpu;
+pub mod frac_gkr;
 pub mod gkr;
 pub mod leaf;
+pub mod logup_star;
 pub mod pcs;
 pub mod tables;
 pub mod transcript;

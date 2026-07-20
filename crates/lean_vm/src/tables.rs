@@ -1,10 +1,10 @@
 //! Per-instruction tables (§7). Each opcode is one [`Table`] impl that declares,
-//! in one place, its committed columns, how to fill them from the trace, its bus
-//! interactions (flushes), the read-count columns that feed the count channel,
-//! and its degree-2 constraint. Column indices here are *local* (`0..n_committed_columns`);
+//! in one place, its logical columns, how to fill them from the trace, its state
+//! logup* access declarations, and its degree-2 constraint. Column indices here
+//! are *local* (`0..n_committed_columns`);
 //! `cpu`'s schema offsets them to global witness columns.
 //!
-//! Columns are `K`-valued (`F64`). Addresses, the pc/fp, operands, counts,
+//! Columns are `K`-valued (`F64`). Addresses, the pc/fp, and operands,
 //! opcodes and separators are single `K`-columns; a **machine word** (memory
 //! value) is 192-bit (`E = F192`), committed as THREE `K`-lane columns. A
 //! constraint is evaluated at an `E`-point, so `eval_constraint` receives
@@ -73,10 +73,8 @@ pub(crate) const OP_PACK64X2: F64 = g_pow(6);
 
 // ---- flush builder -----------------------------------------------------------
 
-/// Collects a table's push/pull bus interactions in *local* column indices. The
-/// push/pull of a memory-checked entry differ only by one coordinate carrying the
-/// post-increment `g·count` (`GCol`) instead of the pre-increment (`Col`); these
-/// helpers encode that pairing so each table reads declaratively.
+/// Collects a table's state transitions and indexed lookup declarations in
+/// local column indices.
 pub struct FlushBuilder {
     pub(crate) push: Vec<Vec<Coord>>,
     pub(crate) pull: Vec<Vec<Coord>>,
@@ -111,101 +109,50 @@ impl FlushBuilder {
         );
     }
 
-    /// Bytecode read at `pc`: the program tuple (opcode + five operand slots),
-    /// with the per-pc execution count advanced by ×g on the push side.
-    pub(crate) fn bytecode(&mut self, pc: usize, count: usize, opcode: F64, operands: &[Coord]) {
-        self.bytecode_coord(pc, count, Const(opcode), operands);
+    /// Bytecode read at `pc`: the program tuple (opcode + five operand slots).
+    pub(crate) fn bytecode(&mut self, pc: usize, opcode: F64, operands: &[Coord]) {
+        self.bytecode_coord(pc, Const(opcode), operands);
     }
 
-    pub(crate) fn bytecode_coord(&mut self, pc: usize, count: usize, opcode: Coord, operands: &[Coord]) {
-        let mut push = vec![Const(SEP_BYTECODE), Col(pc), GCol(count, 1), opcode.clone()];
-        let mut pull = vec![Const(SEP_BYTECODE), Col(pc), Col(count), opcode];
+    pub(crate) fn bytecode_coord(&mut self, pc: usize, opcode: Coord, operands: &[Coord]) {
+        let mut push = vec![Const(SEP_BYTECODE), Col(pc), opcode.clone()];
+        let mut pull = vec![Const(SEP_BYTECODE), Col(pc), opcode];
         push.extend_from_slice(operands);
         pull.extend_from_slice(operands);
         self.pair(push, pull);
     }
 
-    /// Memory access: read the three-limb word at `addr`, advancing the cell's
-    /// access count by ×g.
-    pub(crate) fn memory(&mut self, addr: usize, count: usize, val0: usize, val1: usize, val2: usize) {
+    /// Memory access: read the three-limb word at `addr`.
+    pub(crate) fn memory(&mut self, addr: usize, val0: usize, val1: usize, val2: usize) {
         self.pair(
-            vec![
-                Const(SEP_MEM),
-                Col(addr),
-                GCol(count, 1),
-                Col(val0),
-                Col(val1),
-                Col(val2),
-            ],
-            vec![Const(SEP_MEM), Col(addr), Col(count), Col(val0), Col(val1), Col(val2)],
+            vec![Const(SEP_MEM), Col(addr), Col(val0), Col(val1), Col(val2)],
+            vec![Const(SEP_MEM), Col(addr), Col(val0), Col(val1), Col(val2)],
         );
     }
 
     /// Memory read of a K-valued word: both higher limbs are literal zero. Used for words the
     /// constraints force into K (e.g. the DEREF pointer). Sound because the bus
     /// balances only if the stored value's HI lane is likewise 0.
-    pub(crate) fn memory_k(&mut self, addr: usize, count: usize, val: usize) {
+    pub(crate) fn memory_k(&mut self, addr: usize, val: usize) {
         self.pair(
-            vec![
-                Const(SEP_MEM),
-                Col(addr),
-                GCol(count, 1),
-                Col(val),
-                Const(F64::ZERO),
-                Const(F64::ZERO),
-            ],
-            vec![
-                Const(SEP_MEM),
-                Col(addr),
-                Col(count),
-                Col(val),
-                Const(F64::ZERO),
-                Const(F64::ZERO),
-            ],
+            vec![Const(SEP_MEM), Col(addr), Col(val), Const(F64::ZERO), Const(F64::ZERO)],
+            vec![Const(SEP_MEM), Col(addr), Col(val), Const(F64::ZERO), Const(F64::ZERO)],
         );
     }
 
     /// Memory access to a canonical 128-bit word `(lo, hi, 0)`.
-    pub(crate) fn memory_128(&mut self, addr: usize, count: usize, lo: usize, hi: usize) {
+    pub(crate) fn memory_128(&mut self, addr: usize, lo: usize, hi: usize) {
         self.pair(
-            vec![
-                Const(SEP_MEM),
-                Col(addr),
-                GCol(count, 1),
-                Col(lo),
-                Col(hi),
-                Const(F64::ZERO),
-            ],
-            vec![
-                Const(SEP_MEM),
-                Col(addr),
-                Col(count),
-                Col(lo),
-                Col(hi),
-                Const(F64::ZERO),
-            ],
+            vec![Const(SEP_MEM), Col(addr), Col(lo), Col(hi), Const(F64::ZERO)],
+            vec![Const(SEP_MEM), Col(addr), Col(lo), Col(hi), Const(F64::ZERO)],
         );
     }
 
     /// Memory access to the successor of `addr`, carrying `(lo, hi, 0)`.
-    pub(crate) fn memory_128_succ(&mut self, addr: usize, count: usize, lo: usize, hi: usize) {
+    pub(crate) fn memory_128_succ(&mut self, addr: usize, lo: usize, hi: usize) {
         self.pair(
-            vec![
-                Const(SEP_MEM),
-                GCol(addr, 1),
-                GCol(count, 1),
-                Col(lo),
-                Col(hi),
-                Const(F64::ZERO),
-            ],
-            vec![
-                Const(SEP_MEM),
-                GCol(addr, 1),
-                Col(count),
-                Col(lo),
-                Col(hi),
-                Const(F64::ZERO),
-            ],
+            vec![Const(SEP_MEM), GCol(addr, 1), Col(lo), Col(hi), Const(F64::ZERO)],
+            vec![Const(SEP_MEM), GCol(addr, 1), Col(lo), Col(hi), Const(F64::ZERO)],
         );
     }
 }
@@ -264,20 +211,16 @@ pub(crate) fn column_positions(columns: &[usize]) -> Vec<usize> {
 
 // ---- the trait ---------------------------------------------------------------
 
-/// One instruction table. Indices in [`flushes`](Table::flushes),
-/// [`count_columns`](Table::count_columns), and
+/// One instruction table. Indices in [`flushes`](Table::flushes) and
 /// [`constraint_columns`](Table::constraint_columns) are local to this table.
 pub trait Table: Sync {
     /// Distinct opcode tag (coordinate 3 of the bytecode tuple).
     fn opcode_tag(&self) -> F64;
-    /// Number of committed columns (local indices `0..n_committed_columns`).
+    /// Number of logical columns (local indices `0..n_committed_columns`). Some
+    /// access-value columns are later assigned virtual PCS placements.
     fn n_committed_columns(&self) -> usize;
-    /// Local indices of this table's read-count columns — the `g^{count}` values
-    /// recording how many times each accessed cell (and the pc) was read. The
-    /// framework treats them specially: each gets its own single-column "count"
-    /// bus block, and padding rows fill them with `1` (= g^0) instead of `0`.
-    fn count_columns(&self) -> &'static [usize];
-    /// The committed columns this constraint reads, opened at its zerocheck point.
+    /// The columns this constraint reads at its zerocheck point. Committed
+    /// evaluations go to the PCS; virtual access values go to logup*.
     /// Order is irrelevant — `eval_constraint` indexes them by name through [`Cols`].
     fn constraint_columns(&self) -> &'static [usize];
     /// Evaluate the table's degree-2 constraint at one row, reading column values
@@ -381,11 +324,7 @@ mod arith {
     pub const VC_LO: usize = 14;
     pub const VC_HI: usize = 15;
     pub const VC_TOP: usize = 16;
-    pub const RA: usize = 17;
-    pub const RB: usize = 18;
-    pub const RC: usize = 19;
-    pub const RBC: usize = 20;
-    pub const N: usize = 21;
+    pub const N: usize = 17;
 }
 
 impl Table for Arith {
@@ -394,10 +333,6 @@ impl Table for Arith {
     }
     fn n_committed_columns(&self) -> usize {
         arith::N
-    }
-    fn count_columns(&self) -> &'static [usize] {
-        use arith::*;
-        &[RA, RB, RC, RBC]
     }
     fn constraint_columns(&self) -> &'static [usize] {
         use arith::*;
@@ -429,13 +364,12 @@ impl Table for Arith {
         f.state_step(PC, FP);
         f.bytecode(
             PC,
-            RBC,
             self.opcode_tag(),
             &[Col(OA), Col(OB), Col(OC), Const(F64::ZERO), Const(F64::ZERO)],
         );
-        f.memory(AA, RA, VA_LO, VA_HI, VA_TOP);
-        f.memory(AB, RB, VB_LO, VB_HI, VB_TOP);
-        f.memory(AC, RC, VC_LO, VC_HI, VC_TOP);
+        f.memory(AA, VA_LO, VA_HI, VA_TOP);
+        f.memory(AB, VB_LO, VB_HI, VB_TOP);
+        f.memory(AC, VC_LO, VC_HI, VC_TOP);
     }
     fn fill(&self, ctx: &FillCtx, out: &mut [Column]) {
         use arith::*;
@@ -457,10 +391,6 @@ impl Table for Arith {
         out[VC_LO] = rows.par_iter().map(|r| F64(ctx.mem[r.ac as usize].c0)).collect();
         out[VC_HI] = rows.par_iter().map(|r| F64(ctx.mem[r.ac as usize].c1)).collect();
         out[VC_TOP] = rows.par_iter().map(|r| F64(ctx.mem[r.ac as usize].c2)).collect();
-        out[RA] = rows.par_iter().map(|r| r.ra).collect();
-        out[RB] = rows.par_iter().map(|r| r.rb).collect();
-        out[RC] = rows.par_iter().map(|r| r.rc).collect();
-        out[RBC] = rows.par_iter().map(|r| r.bytecode_read).collect();
     }
 }
 
@@ -477,9 +407,7 @@ mod set {
     pub const K_HI: usize = 4;
     pub const K_TOP: usize = 5;
     pub const A: usize = 6;
-    pub const R: usize = 7;
-    pub const RBC: usize = 8;
-    pub const N: usize = 9;
+    pub const N: usize = 7;
 }
 
 impl Table for SetTable {
@@ -488,10 +416,6 @@ impl Table for SetTable {
     }
     fn n_committed_columns(&self) -> usize {
         set::N
-    }
-    fn count_columns(&self) -> &'static [usize] {
-        use set::*;
-        &[R, RBC]
     }
     fn constraint_columns(&self) -> &'static [usize] {
         use set::*;
@@ -509,11 +433,10 @@ impl Table for SetTable {
         // (matching layout::operands for SET).
         f.bytecode(
             PC,
-            RBC,
             OP_SET,
             &[Col(O), Col(K_LO), Col(K_HI), Col(K_TOP), Const(F64::ZERO)],
         );
-        f.memory(A, R, K_LO, K_HI, K_TOP); // the stored constant K is the cell's value
+        f.memory(A, K_LO, K_HI, K_TOP); // the stored constant K is the cell's value
     }
     fn fill(&self, ctx: &FillCtx, out: &mut [Column]) {
         use set::*;
@@ -525,8 +448,6 @@ impl Table for SetTable {
         out[K_HI] = rows.par_iter().map(|r| F64(r.k.c1)).collect();
         out[K_TOP] = rows.par_iter().map(|r| F64(r.k.c2)).collect();
         out[A] = rows.par_iter().map(|r| ctx.g_at(r.a)).collect();
-        out[R] = rows.par_iter().map(|r| r.r).collect();
-        out[RBC] = rows.par_iter().map(|r| r.bytecode_read).collect();
     }
 }
 
@@ -557,11 +478,7 @@ mod deref {
     pub const V3_LO: usize = 14;
     pub const V3_HI: usize = 15;
     pub const V3_TOP: usize = 16;
-    pub const R1: usize = 17;
-    pub const R2: usize = 18;
-    pub const R3: usize = 19;
-    pub const RBC: usize = 20;
-    pub const N: usize = 21;
+    pub const N: usize = 17;
 }
 
 impl Table for DerefTable {
@@ -570,10 +487,6 @@ impl Table for DerefTable {
     }
     fn n_committed_columns(&self) -> usize {
         deref::N
-    }
-    fn count_columns(&self) -> &'static [usize] {
-        use deref::*;
-        &[R1, R2, R3, RBC]
     }
     fn constraint_columns(&self) -> &'static [usize] {
         use deref::*;
@@ -607,10 +520,10 @@ impl Table for DerefTable {
     fn flushes(&self, f: &mut FlushBuilder) {
         use deref::*;
         f.state_step(PC, FP);
-        f.bytecode(PC, RBC, OP_DEREF, &[Col(OAL), Col(OBE), Col(OGA), Col(FPC), Col(FFP)]);
-        f.memory_k(A1, R1, P);
-        f.memory(A2, R2, V2_LO, V2_HI, V2_TOP);
-        f.memory(A3, R3, V3_LO, V3_HI, V3_TOP);
+        f.bytecode(PC, OP_DEREF, &[Col(OAL), Col(OBE), Col(OGA), Col(FPC), Col(FFP)]);
+        f.memory_k(A1, P);
+        f.memory(A2, V2_LO, V2_HI, V2_TOP);
+        f.memory(A3, V3_LO, V3_HI, V3_TOP);
     }
     fn fill(&self, ctx: &FillCtx, out: &mut [Column]) {
         use deref::*;
@@ -636,10 +549,6 @@ impl Table for DerefTable {
         out[V3_LO] = rows.par_iter().map(|r| F64(r.v3.c0)).collect();
         out[V3_HI] = rows.par_iter().map(|r| F64(r.v3.c1)).collect();
         out[V3_TOP] = rows.par_iter().map(|r| F64(r.v3.c2)).collect();
-        out[R1] = rows.par_iter().map(|r| r.r1).collect();
-        out[R2] = rows.par_iter().map(|r| r.r2).collect();
-        out[R3] = rows.par_iter().map(|r| r.r3).collect();
-        out[RBC] = rows.par_iter().map(|r| r.bytecode_read).collect();
     }
 }
 
@@ -659,7 +568,7 @@ mod jump {
     pub const AD: usize = 8;
     pub const AF: usize = 9;
     // The condition is an arbitrary F192 word. Destination/frame words are
-    // K-valued addresses read through the full three-limb memory bus.
+    // K-valued addresses read through the full three-limb memory lookup.
     pub const C_LO: usize = 10;
     pub const C_HI: usize = 11;
     pub const C_TOP: usize = 12;
@@ -669,18 +578,14 @@ mod jump {
     pub const F_LO: usize = 16;
     pub const F_HI: usize = 17;
     pub const F_TOP: usize = 18;
-    pub const RC: usize = 19;
-    pub const RD: usize = 20;
-    pub const RF: usize = 21;
-    pub const RBC: usize = 22;
     // Local witness columns (committed, never flushed): the inverse hint `w`
     // (192-bit: c⁻¹ in E) and the taken indicator `b = [c ≠ 0]` it certifies
     // (doc §7.5). `b` is a single K-lane (0/1).
-    pub const W_LO: usize = 23;
-    pub const W_HI: usize = 24;
-    pub const W_TOP: usize = 25;
-    pub const B: usize = 26;
-    pub const N: usize = 27;
+    pub const W_LO: usize = 19;
+    pub const W_HI: usize = 20;
+    pub const W_TOP: usize = 21;
+    pub const B: usize = 22;
+    pub const N: usize = 23;
 }
 
 impl Table for JumpTable {
@@ -689,10 +594,6 @@ impl Table for JumpTable {
     }
     fn n_committed_columns(&self) -> usize {
         jump::N
-    }
-    fn count_columns(&self) -> &'static [usize] {
-        use jump::*;
-        &[RC, RD, RF, RBC]
     }
     fn constraint_columns(&self) -> &'static [usize] {
         use jump::*;
@@ -732,13 +633,12 @@ impl Table for JumpTable {
         f.state_jump(PC, FP, NPC, NFP);
         f.bytecode(
             PC,
-            RBC,
             OP_JUMP,
             &[Col(OC), Col(OD), Col(OF), Const(F64::ZERO), Const(F64::ZERO)],
         );
-        f.memory(AC, RC, C_LO, C_HI, C_TOP);
-        f.memory(AD, RD, D_LO, D_HI, D_TOP);
-        f.memory(AF, RF, F_LO, F_HI, F_TOP);
+        f.memory(AC, C_LO, C_HI, C_TOP);
+        f.memory(AD, D_LO, D_HI, D_TOP);
+        f.memory(AF, F_LO, F_HI, F_TOP);
     }
     fn fill(&self, ctx: &FillCtx, out: &mut [Column]) {
         use jump::*;
@@ -766,10 +666,6 @@ impl Table for JumpTable {
         out[W_HI] = rows.par_iter().map(|r| F64(r.w.c1)).collect();
         out[W_TOP] = rows.par_iter().map(|r| F64(r.w.c2)).collect();
         out[B] = rows.par_iter().map(|r| r.b).collect();
-        out[RC] = rows.par_iter().map(|r| r.rc).collect();
-        out[RD] = rows.par_iter().map(|r| r.rd).collect();
-        out[RF] = rows.par_iter().map(|r| r.rf).collect();
-        out[RBC] = rows.par_iter().map(|r| r.bytecode_read).collect();
     }
 }
 
@@ -793,11 +689,7 @@ mod pack64 {
     pub const AC: usize = 7;
     pub const VA: usize = 8;
     pub const VB: usize = 9;
-    pub const RA: usize = 10;
-    pub const RB: usize = 11;
-    pub const RC: usize = 12;
-    pub const RBC: usize = 13;
-    pub const N: usize = 14;
+    pub const N: usize = 10;
 }
 
 impl Table for Pack64x2Table {
@@ -807,11 +699,6 @@ impl Table for Pack64x2Table {
 
     fn n_committed_columns(&self) -> usize {
         pack64::N
-    }
-
-    fn count_columns(&self) -> &'static [usize] {
-        use pack64::*;
-        &[RA, RB, RC, RBC]
     }
 
     fn constraint_columns(&self) -> &'static [usize] {
@@ -836,13 +723,12 @@ impl Table for Pack64x2Table {
         f.state_step(PC, FP);
         f.bytecode(
             PC,
-            RBC,
             OP_PACK64X2,
             &[Col(OA), Col(OB), Col(OC), Const(F64::ZERO), Const(F64::ZERO)],
         );
-        f.memory_k(AA, RA, VA);
-        f.memory_k(AB, RB, VB);
-        f.memory_128(AC, RC, VA, VB);
+        f.memory_k(AA, VA);
+        f.memory_k(AB, VB);
+        f.memory_128(AC, VA, VB);
     }
 
     fn fill(&self, ctx: &FillCtx, out: &mut [Column]) {
@@ -858,10 +744,6 @@ impl Table for Pack64x2Table {
         out[AC] = rows.par_iter().map(|r| ctx.g_at(r.ac)).collect();
         out[VA] = rows.par_iter().map(|r| F64(ctx.mem[r.aa as usize].c0)).collect();
         out[VB] = rows.par_iter().map(|r| F64(ctx.mem[r.ab as usize].c0)).collect();
-        out[RA] = rows.par_iter().map(|r| r.ra).collect();
-        out[RB] = rows.par_iter().map(|r| r.rb).collect();
-        out[RC] = rows.par_iter().map(|r| r.rc).collect();
-        out[RBC] = rows.par_iter().map(|r| r.bytecode_read).collect();
     }
 }
 
@@ -902,14 +784,7 @@ pub(crate) mod blake3t {
     pub const VA0: usize = 12; // AA0.lo, AA0.hi, AA1.lo, AA1.hi
     pub const VB0: usize = 16; // AB0.lo, AB0.hi, AB1.lo, AB1.hi
     pub const VC0: usize = 20; // AC.lo, AC.hi, (g·AC).lo, (g·AC).hi
-    pub const RA0: usize = 24; // per-cell read counts (two a cells) …
-    pub const RA1: usize = 25;
-    pub const RB0: usize = 26; // … two b cells …
-    pub const RB1: usize = 27;
-    pub const RC0: usize = 28; // … two c cells.
-    pub const RC1: usize = 29;
-    pub const RBC: usize = 30;
-    pub const N: usize = 31;
+    pub const N: usize = 24;
 }
 
 impl Table for Blake3Table {
@@ -918,10 +793,6 @@ impl Table for Blake3Table {
     }
     fn n_committed_columns(&self) -> usize {
         blake3t::N
-    }
-    fn count_columns(&self) -> &'static [usize] {
-        use blake3t::*;
-        &[RA0, RA1, RB0, RB1, RC0, RC1, RBC]
     }
     fn constraint_columns(&self) -> &'static [usize] {
         use blake3t::*;
@@ -947,15 +818,15 @@ impl Table for Blake3Table {
     fn flushes(&self, f: &mut FlushBuilder) {
         use blake3t::*;
         f.state_step(PC, FP);
-        f.bytecode(PC, RBC, OP_BLAKE3, &[Col(OA0), Col(OA1), Col(OB0), Col(OB1), Col(OC)]);
+        f.bytecode(PC, OP_BLAKE3, &[Col(OA0), Col(OA1), Col(OB0), Col(OB1), Col(OC)]);
         // Six cell reads: four independent 128-bit input cells, then the output's
         // two consecutive cells (AC, g·AC). Each carries its word's two lanes.
-        f.memory_128(AA0, RA0, VA0, VA0 + 1);
-        f.memory_128(AA1, RA1, VA0 + 2, VA0 + 3);
-        f.memory_128(AB0, RB0, VB0, VB0 + 1);
-        f.memory_128(AB1, RB1, VB0 + 2, VB0 + 3);
-        f.memory_128(AC, RC0, VC0, VC0 + 1);
-        f.memory_128_succ(AC, RC1, VC0 + 2, VC0 + 3);
+        f.memory_128(AA0, VA0, VA0 + 1);
+        f.memory_128(AA1, VA0 + 2, VA0 + 3);
+        f.memory_128(AB0, VB0, VB0 + 1);
+        f.memory_128(AB1, VB0 + 2, VB0 + 3);
+        f.memory_128(AC, VC0, VC0 + 1);
+        f.memory_128_succ(AC, VC0 + 2, VC0 + 3);
     }
     fn fill(&self, ctx: &FillCtx, out: &mut [Column]) {
         use blake3t::*;
@@ -977,12 +848,5 @@ impl Table for Blake3Table {
             out[VB0 + k] = rows.par_iter().map(|r| r.vb[k]).collect();
             out[VC0 + k] = rows.par_iter().map(|r| r.vc[k]).collect();
         }
-        out[RA0] = rows.par_iter().map(|r| r.ra[0]).collect();
-        out[RA1] = rows.par_iter().map(|r| r.ra[1]).collect();
-        out[RB0] = rows.par_iter().map(|r| r.rb[0]).collect();
-        out[RB1] = rows.par_iter().map(|r| r.rb[1]).collect();
-        out[RC0] = rows.par_iter().map(|r| r.rc[0]).collect();
-        out[RC1] = rows.par_iter().map(|r| r.rc[1]).collect();
-        out[RBC] = rows.par_iter().map(|r| r.bytecode_read).collect();
     }
 }

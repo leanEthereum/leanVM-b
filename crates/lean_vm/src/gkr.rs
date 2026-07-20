@@ -141,33 +141,35 @@ fn shrink_eq(eqr: &mut Vec<F192>) {
     eqr.truncate(eq_half);
 }
 
-/// The result of a batched grand-product proof ([`prove_product_triple`]):
-/// the per-tree roots and leaf values, all reduced to ONE shared evaluation
-/// point (`Ṽ_t(point) = values[t]`).
-pub struct ProductTriple {
-    pub roots: [F192; 3],
+/// The result of a batched grand-product proof: the per-tree roots and leaf
+/// values, all reduced to one shared evaluation point.
+pub struct ProductBatch<const N: usize> {
+    pub roots: [F192; N],
     pub point: Vec<F192>,
-    pub values: [F192; 3],
+    pub values: [F192; N],
 }
 
-/// Prove THREE equal-size grand products as ONE RLC-batched GKR: the roots
+fn combine<const N: usize>(values: &[F192; N], lambda: F192) -> F192 {
+    values.iter().rev().fold(F192::ZERO, |acc, &value| value + lambda * acc)
+}
+
+/// Prove equal-size grand products as one RLC-batched GKR: the roots
 /// are bound, a combiner λ is sampled, and each layer runs a SINGLE sumcheck
 /// on the combined summand `eq·Σ_t λᵗ·eᵗ·oᵗ` (one message triple per round,
 /// one shared challenge), so all trees reduce to leaf claims at the SAME
-/// point. Each layer binds the six tail evaluations and then samples a FRESH
+/// point. Each layer binds the tail evaluations and then samples a FRESH
 /// λ for the next layer, which pins the individual values inside the bound
 /// combination (Schwartz–Zippel); the last layer's individuals are pinned by
-/// the decompose identities. Used for the bus push/pull/count trees: push and
-/// pull match block-for-block, and the caller pads the count tree with
-/// identity leaves up to their μ.
-pub fn prove_product_triple(leaves: [Vec<F192>; 3], ps: &mut ProverState) -> ProductTriple {
+/// the decompose identities.
+pub fn prove_product_batch<const N: usize>(leaves: [Vec<F192>; N], ps: &mut ProverState) -> ProductBatch<N> {
+    assert!(N > 0, "a product batch must contain at least one tree");
     let mu = crate::log2_strict_usize(leaves[0].len());
     assert!(
         leaves.iter().all(|l| l.len() == 1 << mu),
         "batched trees must have equal size"
     );
     let layers = leaves.map(build_layers);
-    let roots = [layers[0][mu][0], layers[1][mu][0], layers[2][mu][0]];
+    let roots = std::array::from_fn(|t| layers[t][mu][0]);
     for root in roots {
         ps.add_scalar(root);
     }
@@ -179,14 +181,18 @@ pub fn prove_product_triple(leaves: [Vec<F192>; 3], ps: &mut ProverState) -> Pro
     for i in (1..=mu).rev() {
         let k = mu - i;
         let width = 1usize << k;
-        let mut trees = [0, 1, 2].map(|t| LayerState::new(&layers[t][i - 1], width));
+        let mut trees: [LayerState; N] = std::array::from_fn(|t| LayerState::new(&layers[t][i - 1], width));
         // The challenges are shared, so ONE eq table serves all trees.
         let mut eqr: Vec<F192> = if k > 0 { eq_table(&r[1..]) } else { Vec::new() };
 
         let mut rho = Vec::with_capacity(k);
         for _ in 0..k {
-            let msgs = [0, 1, 2].map(|t| trees[t].round_message(&eqr));
-            ps.add_scalars(&[0, 1, 2].map(|n| msgs[0][n] + lambda * (msgs[1][n] + lambda * msgs[2][n])));
+            let msgs: [[F192; 3]; N] = std::array::from_fn(|t| trees[t].round_message(&eqr));
+            let combined: [F192; 3] = std::array::from_fn(|n| {
+                let values: [F192; N] = std::array::from_fn(|t| msgs[t][n]);
+                combine(&values, lambda)
+            });
+            ps.add_scalars(&combined);
             let rk = ps.sample();
             rho.push(rk);
             for tree in &mut trees {
@@ -211,19 +217,20 @@ pub fn prove_product_triple(leaves: [Vec<F192>; 3], ps: &mut ProverState) -> Pro
         r = next_point;
     }
 
-    ProductTriple {
+    ProductBatch {
         roots,
         point: r,
         values,
     }
 }
 
-/// Verify an RLC-batched triple proof ([`prove_product_triple`]): the roots,
-/// a combiner λ, then per layer ONE standard sumcheck on the combined claim,
-/// six tail evaluations checked as `eq·Σ_t λᵗ·e₀ᵗ·e₁ᵗ`, a line challenge, and
+/// Verify an RLC-batched product proof: the roots, a combiner λ, then per layer
+/// one standard sumcheck on the combined claim, tail evaluations checked as
+/// `eq·Σ_t λᵗ·e₀ᵗ·e₁ᵗ`, a line challenge, and
 /// a fresh λ. Returns the roots and the shared-point leaf claims.
-pub fn verify_product_triple(mu: usize, vs: &mut VerifierState) -> Result<ProductTriple, GkrError> {
-    let mut roots = [F192::ZERO; 3];
+pub fn verify_product_batch<const N: usize>(mu: usize, vs: &mut VerifierState) -> Result<ProductBatch<N>, GkrError> {
+    assert!(N > 0, "a product batch must contain at least one tree");
+    let mut roots = [F192::ZERO; N];
     for root in &mut roots {
         *root = vs.next_scalar().map_err(|_| GkrError::Truncated)?;
     }
@@ -234,7 +241,7 @@ pub fn verify_product_triple(mu: usize, vs: &mut VerifierState) -> Result<Produc
 
     for i in (1..=mu).rev() {
         let k = mu - i;
-        let mut claim = values[0] + lambda * (values[1] + lambda * values[2]);
+        let mut claim = combine(&values, lambda);
         let mut rho = Vec::with_capacity(k);
         let mut eq_acc = F192::ONE; // ∏_{l<round} eq(r_l, ρ_l)
         for (round, &rj) in r.iter().enumerate().take(k) {
@@ -247,12 +254,12 @@ pub fn verify_product_triple(mu: usize, vs: &mut VerifierState) -> Result<Produc
             eq_acc *= F192::ONE + rj + rk;
             claim = eq_acc * lagrange_eval(&nodes, &msg, rk);
         }
-        let mut evals = [[F192::ZERO; 2]; 3];
+        let mut evals = [[F192::ZERO; 2]; N];
         for eval in evals.iter_mut().flatten() {
             *eval = vs.next_scalar().map_err(|_| GkrError::Truncated)?;
         }
         let products = evals.map(|[e0, e1]| e0 * e1);
-        if claim != eq_acc * (products[0] + lambda * (products[1] + lambda * products[2])) {
+        if claim != eq_acc * combine(&products, lambda) {
             return Err(GkrError::LayerMismatch { layer: i });
         }
         let c = vs.sample();
@@ -267,9 +274,19 @@ pub fn verify_product_triple(mu: usize, vs: &mut VerifierState) -> Result<Produc
         r = next_point;
     }
 
-    Ok(ProductTriple {
+    Ok(ProductBatch {
         roots,
         point: r,
         values,
     })
+}
+
+pub type ProductPair = ProductBatch<2>;
+
+pub fn prove_product_pair(leaves: [Vec<F192>; 2], ps: &mut ProverState) -> ProductPair {
+    prove_product_batch(leaves, ps)
+}
+
+pub fn verify_product_pair(mu: usize, vs: &mut VerifierState) -> Result<ProductPair, GkrError> {
+    verify_product_batch(mu, vs)
 }

@@ -154,6 +154,8 @@ struct SubDefer {
     pi: [F192; 2],
     kbc: usize,
     zeta: Vec<F192>,
+    /// Bytecode-column RLC challenge (stored as a one-element run for the
+    /// existing aggregation transcript plumbing).
     sb: Vec<F192>,
     wbc: Vec<F192>,
     lc_alpha: F192,
@@ -274,8 +276,8 @@ fn round_msg(pairs: &[(&[F192], &[F192], F192)]) -> (F192, F192) {
     (g1, gi)
 }
 
-/// The stacked bytecode polynomial of the inner program (leaf's canonical
-/// table, built from the real layout).
+/// The six public bytecode columns, padded to eight and stacked above the row
+/// variables. This fixed polynomial aggregates logup*'s RLC claims.
 fn stacked_bytecode(program: &Program) -> Vec<F64> {
     // Public bytecode coordinates depend only on the program. The remaining
     // layout inputs affect private witness/table shapes, so fixed valid dummy
@@ -286,7 +288,14 @@ fn stacked_bytecode(program: &Program) -> Vec<F64> {
         [1usize << 10; lean_vm::tables::N_TABLES],
         [F192::ZERO; 2],
     );
-    lean_vm::leaf::stacked_bytecode_table(&l.push)
+    let kbc = program.prog.len().trailing_zeros() as usize;
+    let mut table = vec![F64::ZERO; 8 << kbc];
+    for (row, values) in l.bytecode_rows.iter().enumerate() {
+        for (column, &value) in values.iter().enumerate() {
+            table[(column << kbc) + row] = value;
+        }
+    }
+    table
 }
 
 /// The aggregation layer: mirror the guest's aggregation transcript, run the
@@ -336,14 +345,14 @@ fn gen_agg(program: &Program, subs: &[SubDefer]) -> (Vec<(String, Vec<F192>)>, [
         .map(|x| F192::new(x.0, 0, 0))
         .collect();
     let mut wt = vec![F192::ZERO; 1 << kbcv];
-    let points: Vec<Vec<F192>> = subs
-        .iter()
-        .map(|d| d.zeta.iter().chain(&d.sb).copied().collect::<Vec<_>>())
-        .collect();
-    for (t, p) in points.iter().enumerate() {
-        let eqt = pcs::ligerito::build_eq_table_ext(p);
-        for (w, &e) in wt.iter_mut().zip(eqt.iter()) {
-            *w += gbc[t] * e;
+    for (t, defer) in subs.iter().enumerate() {
+        let eq_rows = pcs::ligerito::build_eq_table_ext(&defer.zeta);
+        let mut power = F192::ONE;
+        for column in 0..6 {
+            for (row, &eq) in eq_rows.iter().enumerate() {
+                wt[(column << kbc) + row] += gbc[t] * power * eq;
+            }
+            power *= defer.sb[0];
         }
     }
     let mut brun: F192 = (0..nsub)
@@ -595,7 +604,7 @@ fn gen_verify(
         std::array::from_fn(|i| proof.stream[1 + i].c0 as usize),
         pi,
     );
-    let sides: [&[Block]; 3] = [&l.push, &l.pull, &l.count];
+    let sides: [&[Block]; 2] = [&l.push, &l.pull];
     let lays: Vec<lean_vm::leaf::Layout> = sides.iter().map(|b| lean_vm::leaf::layout(b)).collect();
     let smu: Vec<usize> = lays.iter().map(|x| x.mu).collect();
     // Fixed capacities: every buffer/stride placeholder is a global cap so
@@ -609,10 +618,9 @@ fn gen_verify(
     let (mut sblk, mut bkappa, mut bc0, mut bcn) = (vec![0usize], vec![], vec![], vec![]);
     let (mut ct, mut cval, mut fpv) = (vec![], vec![], vec![]);
     let mut nclaims = 0usize;
-    // Claim dedup (mirrors leaf.rs): ALL three trees share their GKR point, so
+    // Claim dedup (mirrors leaf.rs): both trees share their GKR point, so
     // a column read by two same-kappa blocks streams/opens once. Key: (col, kappa).
     let mut seen_claims: std::collections::HashSet<(usize, usize)> = Default::default();
-    let mut nbcv = 0usize;
     for blocks in sides.iter() {
         for blk in blocks.iter() {
             bkappa.push(blk.kappa);
@@ -634,10 +642,7 @@ fn gen_verify(
                         (2, F192::ZERO, F192::new((G * l.pad[*i]).0, 0, 0))
                     }
                     Coord::Index => (3, F192::ZERO, F192::ZERO),
-                    Coord::Public(_) => {
-                        nbcv += 1;
-                        (4, F192::ZERO, F192::ZERO)
-                    }
+                    Coord::Public(_) => (4, F192::ZERO, F192::ZERO),
                 };
                 ct.push(t);
                 cval.push(u(v));
@@ -663,10 +668,10 @@ fn gen_verify(
             _ => None,
         })
         .collect();
-    // Bus: the bytecode claims carry the push/pull ζ_lo points and sb.
-    let kbc = summary.bytecode_claims[0].point.len() - 3;
-    let zeta: Vec<F192> = summary.bytecode_claims[0].point[..kbc].to_vec();
-    let sb: Vec<F192> = summary.bytecode_claims[0].point[kbc..].to_vec();
+    // logup*: public RLC-bytecode table evaluation deferred to aggregation.
+    let kbc = summary.bytecode_claim.0.len();
+    let zeta = summary.bytecode_claim.0.clone();
+    let sb = vec![summary.bytecode_rlc];
 
     let taus = l.taus;
     let ncol: Vec<usize> = lean_vm::tables::tables()
@@ -756,13 +761,13 @@ fn gen_verify(
     assert!(grinds.next().is_none(), "every grind consumed");
 
     // ---- hints ----
-    // bcv: the deferred bytecode evaluations at the SHARED push/pull point
-    // (leaf's own scan, coord order; both bytecode blocks carry the same six).
-    let (kbc2, bcv) = lean_vm::leaf::public_evals(&l.push, &zeta);
-    assert_eq!(kbc2, kbc);
-    assert_eq!(bcv.len(), nbcv / 2);
-    let sb3: [F192; 3] = sb.clone().try_into().unwrap();
-    let wbc = vec![lean_vm::leaf::stacked_bytecode_value(&bcv, &sb3)];
+    let wbc = vec![summary.bytecode_claim.1];
+    let bcv: Vec<F192> = (0..6)
+        .map(|column| {
+            let values: Vec<F64> = l.bytecode_rows.iter().map(|row| row[column]).collect();
+            mle_eval(&values, &zeta)
+        })
+        .collect();
     // checkpoints: the verifier's phase-boundary sponge states (guest cvh).
 
     // ---- per-sub HINT data (the placeholder map is built once, elsewhere) ----
@@ -1263,7 +1268,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         [F192::ZERO, F192::ZERO],
     );
     let kbc = program.prog.len().trailing_zeros() as usize;
-    let sides: [&[Block]; 3] = [&l.push, &l.pull, &l.count];
+    let sides: [&[Block]; 2] = [&l.push, &l.pull];
     let mumax = 40usize;
     let taumax_cap = 33usize;
     let stream_cap = 8192usize;
@@ -1273,7 +1278,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     // ---- flattened block/coord descriptors (structural) ----
     let (mut sblk, mut bc0, mut bcn) = (vec![0usize], vec![], vec![]);
     let (mut ct, mut cval, mut fpv) = (vec![], vec![], vec![]);
-    let (mut nclaims, mut nbcv, mut nblocks) = (0usize, 0usize, 0usize);
+    let (mut nclaims, mut nblocks) = (0usize, 0usize);
     // Claim dedup (mirrors leaf.rs): per coord, fresh = first (group, col,
     // kappa) occurrence gets the next pool slot; duplicates point at it.
     let mut slot_of: std::collections::HashMap<(usize, usize), usize> = Default::default();
@@ -1305,10 +1310,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
                     Coord::Col(i) => (1, F192::ZERO, F192::new(l.pad[*i].0, 0, 0)),
                     Coord::GCol(i, _) => (2, F192::ZERO, F192::new((G * l.pad[*i]).0, 0, 0)),
                     Coord::Index => (3, F192::ZERO, F192::ZERO),
-                    Coord::Public(_) => {
-                        nbcv += 1;
-                        (4, F192::ZERO, F192::ZERO)
-                    }
+                    Coord::Public(_) => (4, F192::ZERO, F192::ZERO),
                 };
                 ct.push(t);
                 cval.push(u(v));
@@ -1774,11 +1776,11 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         (33 + lean_vm::blake3_flock::SLOT_STRIDE_LOG).to_string(),
     );
     ps("BYTECODE_LOG", kbc.to_string());
-    // The stacked bytecode: nbcv/2 encoding columns per side, packed along
+    // The stacked bytecode: six encoding columns, packed along
     // log2_ceil(cols) selector bits. The defer region is 2*kbc points + sel
     // bits + 2 reduced + alpha + z_skip + 2*lcrounds rounds + 64 z_partial
     // + 1 matpart.
-    let bc_cols = nbcv / 2;
+    let bc_cols = 6;
     let log2_bc_cols = log2_ceil(bc_cols);
     ps("BYTECODE_COLS", bc_cols.to_string());
     ps("LOG2_BYTECODE_COLS", log2_bc_cols.to_string());

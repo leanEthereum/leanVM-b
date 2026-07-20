@@ -33,7 +33,7 @@ pub enum Op {
         of: u32,
     },
     /// Read two K-valued (64-bit) cells and pack them canonically into one
-    /// 128-bit cell: `c = (a.c0, b.c0, 0)`. The memory bus reads the sources as
+    /// 128-bit cell: `c = (a.c0, b.c0, 0)`. The memory lookup reads the sources as
     /// `(lo, 0, 0)`, so executing this instruction also proves both source
     /// words lie in K = F64.
     Pack64x2 {

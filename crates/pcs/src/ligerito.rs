@@ -2442,6 +2442,13 @@ pub fn recursive_prover_with_basis(
             grinding_nonces.push(nonce_last);
             let num_queries_last = config.queries[i + 1];
             let queries_last = sample_queries_ordered(sponge, wtns_prev.block_len, num_queries_last);
+            // The verifier samples these two challenges to bind the final
+            // commitment into its residual check.  The prover does not need
+            // their values to construct another message, but it must still
+            // consume them so a subsequent protocol continues from the same
+            // Fiat--Shamir state.
+            let _alpha_last = sample_ext_vec(sponge, log2_ceil(num_queries_last));
+            let _beta_last = sample_ext(sponge);
             let _t = std::time::Instant::now();
             // Final level: stored (sorted-unique) only — no local induce; the
             // verifier fans these to ordered for its last-level induce.

@@ -6,12 +6,13 @@
 
 use primitives::field::F64;
 
-/// A committed column: `2^κ` `K`-elements.
+/// A logical prover column: `2^κ` `K`-elements. Its placement determines
+/// whether it is committed or retained only as a virtual AIR/logup* witness.
 pub type Column = Vec<F64>;
 
 /// Where a column sits in the stacked witness. A [`Placement::VIRTUAL`] column is
-/// NOT committed: it carries data for the bus, but its evaluation claims settle
-/// against some other committed column (e.g. the BLAKE3 value columns route to `q_pkd`).
+/// NOT committed: its evaluations are discharged by logup*, or against another
+/// committed column (BLAKE3 value columns route to `q_pkd`).
 #[derive(Clone, Copy, Debug)]
 pub struct Placement {
     pub n_vars: usize,

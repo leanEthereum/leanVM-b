@@ -23,6 +23,7 @@ pub use ::pcs::stack_open::{
     BatchOpeningProof, RingSwitchClaim, RingSwitchOpen, RingSwitchVerify, StackClaim as SlotClaim,
     StackedOpeningSummary,
 };
+use ::pcs::stack_open::{open_batch_ligerito_stacked, verify_opening_batch_ligerito_stacked};
 use ::pcs::stack_open::{open_batch_mixed_ligerito_stacked, verify_opening_batch_mixed_ligerito_stacked};
 
 /// The bit-packing width of `q_pkd` (`2^6` bits per committed `F64` word); only
@@ -174,4 +175,39 @@ pub fn verify(
     let cfg = lig_configs(mu, log_inv_rate);
     verify_opening_batch_mixed_ligerito_stacked(vs.sponge_mut(), &cfg.1, mu, root, points, ring, open)
         .ok_or(Error::Ligerito)
+}
+
+/// Open a stack that has ordinary point claims but no ring-switched region.
+/// This is used by logup*'s independently committed pushforward stack.
+pub fn open_plain(ps: &mut ProverState, c: &Committed, q: &[F64], points: &[SlotClaim]) -> BatchOpeningProof {
+    #[cfg(debug_assertions)]
+    for claim in points {
+        match claim {
+            SlotClaim::Point {
+                offset,
+                low_point,
+                value,
+            } => {
+                let actual =
+                    primitives::multilinear::mle_eval(&q[*offset..*offset + (1 << low_point.len())], low_point);
+                debug_assert_eq!(actual, *value, "invalid point claim passed to pushforward opener");
+            }
+            SlotClaim::Strided { .. } => unreachable!("pushforward claims are dense points"),
+        }
+    }
+    let cfg = lig_configs(c.mu, c.log_inv_rate);
+    open_batch_ligerito_stacked(ps.sponge_mut(), q, &c.prover_data, &cfg.0, points)
+}
+
+/// Verify [`open_plain`].
+pub fn verify_plain(
+    vs: &mut VerifierState,
+    points: &[SlotClaim],
+    open: &BatchOpeningProof,
+    mu: usize,
+    log_inv_rate: usize,
+    root: &[u8; 32],
+) -> Result<StackedOpeningSummary, Error> {
+    let cfg = lig_configs(mu, log_inv_rate);
+    verify_opening_batch_ligerito_stacked(vs.sponge_mut(), &cfg.1, mu, root, points, open).ok_or(Error::Ligerito)
 }

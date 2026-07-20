@@ -1,9 +1,10 @@
-//! Whole-program assembly over GF(2^64) (§7, §8): the instruction tables
-//! sharing the state / memory / bytecode buses, bound to one field-valued
-//! commitment and verified oracle-free. Addresses, the program counter, and read
-//! counts are g-powers, so every increment is a free ×g. Machine-word arithmetic
+//! Whole-program assembly over GF(2^64) (§7, §8): instruction tables share a
+//! state grand-product bus and two logup* indexed lookups for memory and
+//! bytecode. Addresses and the program counter are g-powers, so every increment
+//! is a free ×g. Machine-word arithmetic
 //! is over `E = F192 = K[y]/(y³+y+1)` (XOR degree 1, MUL_NATIVE degree 2),
-//! with each word carried by three committed `K = F64` limbs. `BLAKE3`
+//! with each word represented by three `K = F64` limbs; access-side limbs are
+//! virtual and only memory-table limbs are committed. `BLAKE3`
 //! (§7.6) adds the memory/state/bytecode plumbing for a 64→32-byte compression
 //! whose relation is discharged by flock (see [`crate::blake3_flock`]). All
 //! Challenges and transcript scalars live in the same tower E.
@@ -14,6 +15,7 @@ use rayon::prelude::*;
 
 use crate::constraints;
 use crate::leaf::{self, Block, ColumnClaim, Coord};
+use crate::logup_star::{self, Family};
 use crate::pcs;
 use crate::tables::{
     self, FillCtx, FlushBuilder, OP_BLAKE3, OP_DEREF, OP_JUMP, OP_MUL, OP_SET, OP_XOR, SEP_BYTECODE, SEP_MEM, SEP_STATE,
@@ -53,10 +55,9 @@ const MAX_LOG_MEM: usize = 32;
 
 /// Each per-opcode table holds at most `2^MAX_LOG_ROWS` rows (executed
 /// instructions of that opcode). Together with `MAX_LOG_MEM` and the bytecode
-/// cap these are the *instance caps* (transition doc §caps): at `ord(g) = 2^64−1`
-/// the memory-soundness and count-non-wrap counting arguments are theorems only
-/// for instances whose total read-flush count stays far below `2^64`, so the
-/// verifier rejects any announcement exceeding them before running a reduction.
+/// cap these are the *instance caps* (transition doc §caps). They keep every
+/// generator-power index distinct and the reduction degrees within the stated
+/// soundness budget, so the verifier rejects oversized announcements up front.
 const MAX_LOG_ROWS: usize = 32;
 
 /// Bytecode-length instance cap (see [`MAX_LOG_ROWS`]): programs are at most
@@ -69,8 +70,8 @@ const MAX_LOG_BYTECODE: usize = 32;
 /// challenge depends on the exact program.
 ///
 /// Without this the program's instruction content would enter verification only
-/// through the bytecode bus's `Public`-coordinate MLE evaluation at the GKR point
-/// `ζ` — a single point an attacker recovers from a finished proof. It could then
+/// through the public bytecode-table evaluation produced by logup* — a single
+/// point an attacker recovers from a finished proof. It could then
 /// craft a different program `P'` agreeing with `P`'s bytecode columns at that one
 /// `ζ` and re-present the same proof for `P'` (adaptive-statement forgery). Seeding
 /// `H(program)` before any challenge makes the whole statement — (program, public
@@ -277,6 +278,9 @@ pub enum Error {
     Bus(leaf::Error),
     Constraint(usize, constraints::Error),
     Open(pcs::Error),
+    OpenPush(pcs::Error),
+    Logup(logup_star::Error),
+    LookupValue,
     PublicInput,
     Transcript(crate::transcript::Error),
     /// flock's BLAKE3 R1CS validity sub-proof failed to verify. (A missing or
@@ -294,12 +298,160 @@ fn constraint_claims(table_claims: &[constraints::Claims]) -> Vec<ColumnClaim> {
         for (k, &c) in table.constraint_columns().iter().enumerate() {
             v.push(ColumnClaim {
                 col: sch.base[t] + c,
+                start: 0,
                 point: table_claims[t].rho.clone(),
                 value: table_claims[t].evals[k],
             });
         }
     }
     v
+}
+
+type EvalMaps = Vec<std::collections::HashMap<usize, F192>>;
+
+fn constraint_eval_maps(table_claims: &[constraints::Claims]) -> EvalMaps {
+    let sch = schema();
+    tables::tables()
+        .iter()
+        .enumerate()
+        .map(|(t, table)| {
+            table
+                .constraint_columns()
+                .iter()
+                .copied()
+                .zip(table_claims[t].evals.iter().copied())
+                .map(|(col, value)| (sch.base[t] + col, value))
+                .collect()
+        })
+        .collect()
+}
+
+fn openable_claim(layout: &Layout, claim: &ColumnClaim) -> bool {
+    !layout.placements[claim.col].is_virtual() || blake3_value_slot(claim.col).is_some()
+}
+
+fn complete_value_evals_prove(
+    layout: &Layout,
+    table_claims: &[constraints::Claims],
+    cols: &[Column],
+    ps: &mut ProverState,
+) -> (EvalMaps, Vec<ColumnClaim>) {
+    let mut maps = constraint_eval_maps(table_claims);
+    let mut claims = Vec::new();
+    for lookup in [&layout.memory_lookup, &layout.bytecode_lookup] {
+        for site in &lookup.sites {
+            if site.real == 0 {
+                continue;
+            }
+            for coord in &site.values {
+                let col = match coord {
+                    Coord::Col(col) | Coord::GCol(col, _) => *col,
+                    Coord::Const(_) => continue,
+                    _ => panic!("unsupported lookup value coordinate"),
+                };
+                if maps[site.table].contains_key(&col) {
+                    continue;
+                }
+                let point = &table_claims[site.table].rho;
+                let value = primitives::multilinear::mle_eval(&cols[col], point);
+                ps.add_scalar(value);
+                maps[site.table].insert(col, value);
+                let claim = ColumnClaim {
+                    col,
+                    start: 0,
+                    point: point.clone(),
+                    value,
+                };
+                if openable_claim(layout, &claim) {
+                    claims.push(claim);
+                }
+            }
+        }
+    }
+    (maps, claims)
+}
+
+fn complete_value_evals_verify(
+    layout: &Layout,
+    table_claims: &[constraints::Claims],
+    vs: &mut VerifierState,
+) -> Result<(EvalMaps, Vec<ColumnClaim>), Error> {
+    let mut maps = constraint_eval_maps(table_claims);
+    let mut claims = Vec::new();
+    for lookup in [&layout.memory_lookup, &layout.bytecode_lookup] {
+        for site in &lookup.sites {
+            if site.real == 0 {
+                continue;
+            }
+            for coord in &site.values {
+                let col = match coord {
+                    Coord::Col(col) | Coord::GCol(col, _) => *col,
+                    Coord::Const(_) => continue,
+                    _ => return Err(Error::LookupValue),
+                };
+                if maps[site.table].contains_key(&col) {
+                    continue;
+                }
+                let value = vs.next_scalar().map_err(Error::Transcript)?;
+                maps[site.table].insert(col, value);
+                let claim = ColumnClaim {
+                    col,
+                    start: 0,
+                    point: table_claims[site.table].rho.clone(),
+                    value,
+                };
+                if openable_claim(layout, &claim) {
+                    claims.push(claim);
+                }
+            }
+        }
+    }
+    Ok((maps, claims))
+}
+
+fn lookup_site_values(
+    lookup: &logup_star::AccessLayout,
+    table_claims: &[constraints::Claims],
+    maps: &EvalMaps,
+    pad: &[F64],
+    theta: F192,
+) -> Vec<F192> {
+    lookup
+        .sites
+        .iter()
+        .map(|site| {
+            if site.real == 0 {
+                return F192::ZERO;
+            }
+            let prefix = logup_star::real_prefix_weight(&table_claims[site.table].rho, site.real);
+            let mut value = F192::ZERO;
+            let mut theta_power = F192::ONE;
+            for coord in &site.values {
+                let (full, padding) = match coord {
+                    Coord::Const(v) => (F192::from(*v), *v),
+                    Coord::Col(col) => (maps[site.table][col], pad[*col]),
+                    Coord::GCol(col, k) => (
+                        maps[site.table][col].mul_base(primitives::field::g_pow(*k as usize)),
+                        pad[*col] * primitives::field::g_pow(*k as usize),
+                    ),
+                    _ => panic!("unsupported lookup value coordinate"),
+                };
+                let real = full + F192::from(padding) * (F192::ONE + prefix);
+                value += theta_power * real;
+                theta_power *= theta;
+            }
+            value
+        })
+        .collect()
+}
+
+fn memory_table(memory: &[F192], theta: F192) -> Vec<F192> {
+    memory
+        .iter()
+        .map(|word| {
+            F192::new(word.c0, 0, 0) + theta * F192::new(word.c1, 0, 0) + theta * theta * F192::new(word.c2, 0, 0)
+        })
+        .collect()
 }
 
 /// If `col` is a BLAKE3 **value** column (global index), its `q_pkd` packed slot.
@@ -359,9 +511,9 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
     let cycles = exec.cycles;
     let w = tracing::info_span!("Build witness").in_scope(|| program.build(&exec));
     let counts = w.row_counts;
-    // Real committed data, before zero-pad to 2^m. Virtual columns (the BLAKE3
-    // value columns) carry data for the bus but are NOT committed, so exclude them.
-    let committed_size: usize = w
+    // Real committed data, before zero-pad to 2^m. Virtual access-value and
+    // operand columns are filled for AIR/logup* but excluded from the PCS.
+    let mut committed_size: usize = w
         .cols
         .iter()
         .zip(&w.layout.placements)
@@ -379,18 +531,18 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
     if prof {
         eprintln!("[prove] commit      : {:>7.2} ms", ms(t));
     }
+    let l = &w.layout;
 
     // BLAKE3 ↔ flock (§blake3_flock), single PCS: q_pkd is ALWAYS a column in
     // `w.q` (≥1 instance — a program with no BLAKE3 carries one padding instance,
     // so the proof shape is uniform and there is no has/hasn't-BLAKE3 fork). flock's
     // R1CS validity and EVERY leanVM point claim are discharged together by ONE
     // Ligerito over this commitment (below). The input/output words bind via the
-    // memory bus (virtual value columns route to q_pkd); the constant pins reuse a
+    // memory lookup (virtual value columns route to q_pkd); the constant pins reuse a
     // bus point, so no dedicated binding challenge is drawn. Mirrored in `verify`.
     let t = std::time::Instant::now();
-    let l = &w.layout;
-    let (bus_claims, _bytecode_claims) =
-        tracing::info_span!("Prove bus").in_scope(|| leaf::prove_balance(&l.push, &l.pull, &l.count, &w.cols, &mut ps));
+    let bus_claims =
+        tracing::info_span!("Prove state bus").in_scope(|| leaf::prove_balance(&l.push, &l.pull, &w.cols, &mut ps));
     if prof {
         eprintln!("[prove] bus(grand-p): {:>7.2} ms", ms(t));
     }
@@ -414,8 +566,70 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
         eprintln!("[prove] constraints : {:>7.2} ms", ms(t));
     }
 
-    let mut claims = bus_claims;
-    claims.extend(constraint_claims(&table_claims));
+    // The access-side value/operand columns are not committed. Their AIR-point
+    // evaluations ride the transcript first; only then do we sample the value
+    // RLC and per-site batching challenges. This makes the two transparent
+    // numerators bind every virtual value claim without a value-column PCS.
+    let (value_maps, mut value_source_claims) = complete_value_evals_prove(l, &table_claims, &w.cols, &mut ps);
+    let theta = ps.sample();
+    let table_points: Vec<Vec<F192>> = table_claims.iter().map(|claim| claim.rho.clone()).collect();
+    let mem_site_values = lookup_site_values(&l.memory_lookup, &table_claims, &value_maps, &l.pad, theta);
+    let bc_site_values = lookup_site_values(&l.bytecode_lookup, &table_claims, &value_maps, &l.pad, theta);
+    let mem_gammas = ps.sample_vec(l.memory_lookup.sites.len());
+    let bc_gammas = ps.sample_vec(l.bytecode_lookup.sites.len());
+    let mem_batched = l
+        .memory_lookup
+        .batch_values(&table_points, &mem_site_values, &mem_gammas);
+    let bc_batched = l
+        .bytecode_lookup
+        .batch_values(&table_points, &bc_site_values, &bc_gammas);
+    let memory_table = memory_table(&exec.mem, theta);
+    let bytecode_table = logup_star::bytecode_table(&l.bytecode_rows, theta);
+    let memory_access = l.memory_lookup.materialize(&w.cols, 1usize << w.log_mem);
+    let bytecode_access = l.bytecode_lookup.materialize(&w.cols, l.bytecode_rows.len());
+    let y_mem = memory_access.pushforward(&mem_batched.weights, 1usize << w.log_mem);
+    let y_bc = bytecode_access.pushforward(&bc_batched.weights, l.bytecode_rows.len());
+    let push_witness = logup_star::PushforwardWitness::new(&y_mem, &y_bc);
+    committed_size += push_witness.cols.iter().map(Vec::len).sum::<usize>();
+    let push_committed =
+        tracing::info_span!("Commit pushforwards").in_scope(|| pcs::commit(&mut ps, &push_witness.q, log_inv_rate));
+    let mem_lookup = logup_star::prove_lookup(
+        Family::Memory,
+        &l.memory_lookup,
+        &memory_access,
+        &mem_batched,
+        memory_table,
+        &y_mem,
+        &push_witness,
+        theta,
+        F192::ONE,
+        &w.cols,
+        &mut ps,
+    );
+    let bc_lookup = logup_star::prove_lookup(
+        Family::Bytecode,
+        &l.bytecode_lookup,
+        &bytecode_access,
+        &bc_batched,
+        bytecode_table,
+        &y_bc,
+        &push_witness,
+        theta,
+        F192::ONE,
+        &w.cols,
+        &mut ps,
+    );
+
+    let mut claims = constraint_claims(&table_claims)
+        .into_iter()
+        .filter(|claim| openable_claim(l, claim))
+        .collect::<Vec<_>>();
+    claims.append(&mut value_source_claims);
+    claims.extend(mem_lookup.main_claims);
+    claims.extend(bc_lookup.main_claims);
+    claims.extend(bus_claims);
+    let mut push_claims = mem_lookup.push_claims;
+    push_claims.extend(bc_lookup.push_claims);
     // The PI binding transmits the low/high memory-limb evaluations. The full
     // F192 public-input interpolation then determines the top-limb evaluation.
     let r_pi = ps.sample();
@@ -424,7 +638,7 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
     ps.add_scalar(pi_lo);
     ps.add_scalar(pi_hi);
     claims.extend(bind_pi_claim(r_pi, &w.layout.placements, &w.layout.pi, pi_lo, pi_hi));
-    // The input/output words bind via the memory bus (value columns are virtual and
+    // The input/output words bind via the memory lookup (value columns are virtual and
     // route to q_pkd, see `slot_claims`); cv/counter/blen/flags are constants baked
     // into flock's per-block matrices, so no pin claims are needed.
     let slots = slot_claims(&w.layout, &claims);
@@ -466,6 +680,9 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
     // protocol points); only the Merkle-bearing stacked opening needs the hint
     // channel.
     ps.hint_opening(mixed_open);
+    let push_open = tracing::info_span!("Pushforward PCS open")
+        .in_scope(|| pcs::open_plain(&mut ps, &push_committed, &push_witness.q, &push_claims));
+    ps.hint_opening(push_open);
     if prof {
         eprintln!("[prove] open        : {:>7.2} ms", ms(t));
     }
@@ -501,39 +718,42 @@ fn bind_pi_claim(
     [
         ColumnClaim {
             col: MEM_LO,
+            start: 0,
             point: point.clone(),
             value: v_lo,
         },
         ColumnClaim {
             col: MEM_HI,
+            start: 0,
             point: point.clone(),
             value: v_hi,
         },
         ColumnClaim {
             col: MEM_TOP,
+            start: 0,
             point,
             value: v_top,
         },
     ]
 }
 
-/// Everything a recursion harness needs from an accepting verify run, named
-/// and typed: the deferred bytecode claims, the count-channel root, the sponge
-/// states at the phase boundaries (guest debug checkpoints), flock's reduction
-/// claims, and the stacked-opening summary (ring-switch challenges + Ligerito
-/// fold/query data). The sub-proof scalars themselves live on `proof.stream`
-/// at fixed offsets from its tail. Ordinary callers just `?`-discard it.
+/// Everything a recursion harness needs from an accepting verify run: the
+/// deferred bytecode RLC claim, phase-boundary sponge states, flock reductions,
+/// and summaries of both PCS openings.
 pub struct VerifySummary {
     /// Transcript-bound inverse-rate logarithm used by this proof's PCS.
     pub log_inv_rate: usize,
-    pub bytecode_claims: Vec<leaf::BytecodeClaim>,
-    pub count_root: F192,
+    /// Evaluation of the public, RLC-batched bytecode table produced by logup*.
+    pub bytecode_claim: (Vec<F192>, F192),
+    /// RLC challenge for the bytecode columns.
+    pub bytecode_rlc: F192,
     /// Sponge states after: the bus, the zerochecks, the PI sample, and the
     /// flock reduction.
     pub checkpoints: [[F64; 4]; 4],
     pub zc_claim: flock::zerocheck::ZerocheckClaim,
     pub lc_claim: flock::lincheck::LincheckClaim,
     pub opening: pcs::StackedOpeningSummary,
+    pub push_opening: pcs::StackedOpeningSummary,
 }
 
 /// Verify a proof against the public statement (program + public input): replay
@@ -552,10 +772,10 @@ pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Res
     // `stream`/`openings`, and presence is enforced by consumption below plus
     // `vs.finish()` (a proof with `n_b3 = 0` but trailing flock data, or vice versa,
     // fails to fully consume). No dedicated binding challenge: the input/output
-    // words bind via the memory bus, the pins reuse a bus point.
+    // words bind via the memory lookup, while the pins reuse committed q_pkd data.
     let n_b3 = l.row_counts[tables::BLAKE3_TABLE];
 
-    let bus = leaf::verify_balance(&l.push, &l.pull, &l.count, &l.pad, &mut vs).map_err(Error::Bus)?;
+    let bus = leaf::verify_balance(&l.push, &l.pull, &l.pad, &mut vs).map_err(Error::Bus)?;
     let checkpoint_bus = vs.sponge_state();
 
     let mut table_claims = Vec::new();
@@ -573,8 +793,58 @@ pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Res
     }
     let checkpoint_zerochecks = vs.sponge_state();
 
-    let mut claims = bus.claims;
-    claims.extend(constraint_claims(&table_claims));
+    let (value_maps, mut value_source_claims) = complete_value_evals_verify(&l, &table_claims, &mut vs)?;
+    let theta = vs.sample();
+    let table_points: Vec<Vec<F192>> = table_claims.iter().map(|claim| claim.rho.clone()).collect();
+    let mem_site_values = lookup_site_values(&l.memory_lookup, &table_claims, &value_maps, &l.pad, theta);
+    let bc_site_values = lookup_site_values(&l.bytecode_lookup, &table_claims, &value_maps, &l.pad, theta);
+    let mem_gammas = vs.sample_vec(l.memory_lookup.sites.len());
+    let bc_gammas = vs.sample_vec(l.bytecode_lookup.sites.len());
+    let mem_batched = l
+        .memory_lookup
+        .batch_values(&table_points, &mem_site_values, &mem_gammas);
+    let bc_batched = l
+        .bytecode_lookup
+        .batch_values(&table_points, &bc_site_values, &bc_gammas);
+    let bytecode_table = logup_star::bytecode_table(&l.bytecode_rows, theta);
+    let push_layout =
+        logup_star::PushforwardLayout::new(l.placements[MEM_LO].n_vars, l.bytecode_rows.len().ilog2() as usize);
+    let push_root = pcs::read_commitment(&mut vs).map_err(Error::Transcript)?;
+    let mem_lookup = logup_star::verify_lookup(
+        Family::Memory,
+        &l.memory_lookup,
+        &mem_batched,
+        &[],
+        l.placements[MEM_LO].n_vars,
+        &push_layout,
+        theta,
+        F192::ONE,
+        &mut vs,
+    )
+    .map_err(Error::Logup)?;
+    let bc_lookup = logup_star::verify_lookup(
+        Family::Bytecode,
+        &l.bytecode_lookup,
+        &bc_batched,
+        &bytecode_table,
+        l.bytecode_rows.len().ilog2() as usize,
+        &push_layout,
+        theta,
+        F192::ONE,
+        &mut vs,
+    )
+    .map_err(Error::Logup)?;
+
+    let mut claims = constraint_claims(&table_claims)
+        .into_iter()
+        .filter(|claim| openable_claim(&l, claim))
+        .collect::<Vec<_>>();
+    claims.append(&mut value_source_claims);
+    claims.extend(mem_lookup.main_claims);
+    claims.extend(bc_lookup.main_claims);
+    claims.extend(bus.claims);
+    let mut push_claims = mem_lookup.push_claims;
+    push_claims.extend(bc_lookup.push_claims);
     let r_pi = vs.sample();
     let pi_lo = vs.next_scalar().map_err(Error::Transcript)?;
     let pi_hi = vs.next_scalar().map_err(Error::Transcript)?;
@@ -593,14 +863,27 @@ pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Res
     let open = vs.next_opening().map_err(Error::Transcript)?;
     let ring = crate::blake3_flock::ring_switch_verify(n_blocks, offset, replay.ab, replay.c);
     let opening = pcs::verify(&mut vs, &slots, &ring, open, l.m, log_inv_rate, &root).map_err(Error::Open)?;
+    let push_open = vs.next_opening().map_err(Error::Transcript)?;
+    let push_opening = pcs::verify_plain(
+        &mut vs,
+        &push_claims,
+        push_open,
+        push_layout.mu,
+        log_inv_rate,
+        &push_root,
+    )
+    .map_err(Error::OpenPush)?;
     vs.finish().map_err(Error::Transcript)?;
     Ok(VerifySummary {
-        bytecode_claims: bus.bytecode_claims,
-        count_root: bus.count_root,
+        bytecode_claim: bc_lookup
+            .bytecode_table_claim
+            .expect("bytecode lookup yields a public-table claim"),
+        bytecode_rlc: theta,
         checkpoints: [checkpoint_bus, checkpoint_zerochecks, checkpoint_pi, checkpoint_flock],
         zc_claim: replay.zc_claim,
         lc_claim: replay.lc_claim,
         opening,
+        push_opening,
         log_inv_rate,
     })
 }
@@ -608,7 +891,7 @@ pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Res
 /// Lift `ColumnClaim`s to located PCS claims: a claim on column `c` lives in
 /// the slot at `placements[c].offset`, with the claim's point as the low point.
 ///
-/// BLAKE3 value columns are virtual — they have no committed placement. A bus
+/// BLAKE3 value columns are virtual — they have no committed placement. A
 /// claim `value_col(r) = v` (at the `n_log`-dim instance point `r`) is re-routed
 /// to the equal `q_pkd` slot evaluation: an ordinary claim on the committed
 /// `QPKD` column at the point freezing the low 8 coords to the slot's bits and
@@ -618,13 +901,13 @@ fn slot_claims(l: &Layout, claims: &[ColumnClaim]) -> Vec<pcs::SlotClaim> {
     claims
         .iter()
         .map(|c| {
-            // A virtual BLAKE3 value column (always virtual): its bus claim at
+            // A virtual BLAKE3 value column: its lookup-source claim at
             // instance point `c.point` is the q_pkd slot value — a boolean-selector
             // (strided) claim on QPKD, folded sparsely (2^n_log, not the 2^(8+n_log)
             // dense QPKD block).
             if let Some(slot) = blake3_value_slot(c.col) {
                 return pcs::SlotClaim::Strided {
-                    offset: l.placements[QPKD].offset,
+                    offset: l.placements[QPKD].offset + (c.start << crate::blake3_flock::SLOT_STRIDE_LOG),
                     slot,
                     stride_log: crate::blake3_flock::SLOT_STRIDE_LOG,
                     point: c.point.clone(),
@@ -632,7 +915,7 @@ fn slot_claims(l: &Layout, claims: &[ColumnClaim]) -> Vec<pcs::SlotClaim> {
                 };
             }
             pcs::SlotClaim::Point {
-                offset: l.placements[c.col].offset,
+                offset: l.placements[c.col].offset + c.start,
                 low_point: c.point.clone(),
                 value: c.value,
             }
@@ -649,6 +932,23 @@ mod tests {
         F192::new(x, 0, 0)
     }
 
+    #[test]
+    fn access_value_columns_are_absent_from_the_pcs() {
+        let virtual_values = lookup_value_columns();
+        let sources = col_kappa_sources(3);
+        assert!(virtual_values.iter().filter(|&&v| v).count() > 40);
+        for (col, &is_value) in virtual_values.iter().enumerate() {
+            if is_value {
+                assert!(
+                    sources[col].is_none(),
+                    "access value column {col} was assigned a PCS region"
+                );
+            }
+        }
+        assert!(sources[MEM_LO].is_some() && sources[MEM_HI].is_some() && sources[MEM_TOP].is_some());
+        assert!(sources[QPKD].is_some());
+    }
+
     /// Pack two 64-bit flock words into the canonical BLAKE3 subspace of F192.
     fn cell(lo: F64, hi: F64) -> F192 {
         F192::new(lo.0, hi.0, 0)
@@ -658,8 +958,8 @@ mod tests {
     /// 256-bit inputs (`a` at cells 2,3, `b` at cells 4,5 — one 128-bit word per
     /// cell), hash them into the output `c` (cells 6,7), pad with filler SETs so
     /// the last executed instruction lands one before the sentinel, and halt
-    /// there. The flock validity sub-proof plus the memory / state / bytecode bus
-    /// interactions are verified end-to-end (the proof carries the Ligerito
+    /// there. The flock validity sub-proof, memory/bytecode lookups, and state bus
+    /// are verified end-to-end (the proof carries the Ligerito
     /// opening they assert on).
     fn blake3_program(a: [F64; 4], b: [F64; 4]) -> Program {
         // a → cells 2,3 and b → cells 4,5 (two flock lanes per BLAKE3 cell).
@@ -732,7 +1032,7 @@ mod tests {
     }
 
     /// BLAKE consumes the `(c0,c1,0)` embedding. This is not an extra AIR
-    /// constraint: the full three-limb memory bus makes a request carrying a
+    /// constraint: the full three-limb memory lookup makes a request carrying a
     /// literal zero in limb 2 match only such a stored word.
     #[test]
     #[should_panic(expected = "BLAKE3 input cell must be a canonical 128-bit embedding")]
@@ -748,8 +1048,8 @@ mod tests {
     /// A self-hash `BLAKE3(h, h)` (the hash-chain step) passes the *same* input
     /// chunks as both `a` and `b` (`ins[0..2] == ins[2..4]`), so one 256-bit quad
     /// feeds both inputs with no copy. The row reads those cells twice; the
-    /// running access counts thread through and the bus still balances. This is
-    /// the aliasing the DSL's hash-chain lowering relies on.
+    /// logup* naturally permits those repeated indexed accesses. This is the
+    /// aliasing the DSL's hash-chain lowering relies on.
     #[test]
     fn blake3_self_hash_aliased_operands() {
         let h: [F64; 4] = [
@@ -806,9 +1106,8 @@ mod tests {
         let (mut proof, _) = prove(&program, pi, pcs::LOG_INV_RATE);
         verify(&program, &pi, &proof).expect("honest proof verifies");
 
-        // The stacked opening is the proof's one hint; tamper a sumcheck
-        // round message (the inner-product transcript) — must be rejected.
-        let lig = proof.openings.last_mut().expect("stacked Ligerito opening");
+        // The ordinary-witness opening is first; tamper its sumcheck transcript.
+        let lig = proof.openings.first_mut().expect("ordinary stacked Ligerito opening");
         lig.ligerito.sumcheck_transcript[0].u_0 += F192::ONE;
         assert!(
             verify(&program, &pi, &proof).is_err(),
@@ -860,9 +1159,27 @@ mod tests {
         let pi = [F192::new(1, 2, 3), F192::new(4, 5, 6)];
         let (proof, stats) = prove(&program, pi, pcs::LOG_INV_RATE);
         assert_eq!(stats.counts[5], 0, "no real BLAKE3 rows");
-        // The proof still carries exactly one Ligerito opening (over the padding).
-        assert_eq!(proof.openings.len(), 1, "unified path: one opening always");
+        // The ordinary witness and the logup* pushforwards are opened separately.
+        assert_eq!(proof.openings.len(), 2, "one opening per PCS commitment");
         verify(&program, &pi, &proof).expect("non-BLAKE3 program verifies");
+    }
+
+    #[test]
+    fn rejects_tampered_pushforward_opening() {
+        let prog = vec![
+            Op::Set { o: 2, k: w(5) },
+            Op::Set { o: 3, k: w(6) },
+            Op::Xor { a: 2, b: 3, c: 4 },
+            Op::Xor { a: 0, b: 0, c: 0 },
+        ];
+        let program = Program::from_bytecode(prog, 5);
+        let pi = [F192::new(1, 2, 3), F192::new(4, 5, 6)];
+        let (mut proof, _) = prove(&program, pi, pcs::LOG_INV_RATE);
+        proof.openings[1].ligerito.sumcheck_transcript[0].u_0 += F192::ONE;
+        assert!(
+            verify(&program, &pi, &proof).is_err(),
+            "tampered pushforward PCS opening must be rejected"
+        );
     }
 
     /// A 192-bit-word MUL: the E-product of two full machine words is proven and
