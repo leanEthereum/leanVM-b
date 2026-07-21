@@ -1960,12 +1960,14 @@ fn run_recursion_with_rates(
         pow(stats.cycles),
         stats.cycles as f64 / total_inner_cycles as f64
     );
-    for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3", "PACK64X2"]
+    for (table, (name, &c)) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3", "PACK64X2"]
         .iter()
         .zip(&stats.counts)
+        .enumerate()
     {
         let count = pretty_integer(c);
-        println!("    {name:<6} instructions     : {count:>14} = {:>7}", pow(c));
+        let width = crate::arithmetic_width_suffix(&stats, table);
+        println!("    {name:<6} instructions     : {count:>14} = {:>7}{width}", pow(c));
     }
     println!(
         "  committed witness size      : 2^{:.3}",

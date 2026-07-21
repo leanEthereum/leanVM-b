@@ -348,6 +348,9 @@ pub struct Stats {
     pub cycles: usize,
     pub counts: [usize; tables::N_TABLES],
     pub committed: usize,
+    /// Real arithmetic rows with at least one operand/result outside the
+    /// embedded base field, in `[XOR, MUL]` order. Padding is excluded.
+    pub ext_rows: [usize; 2],
     /// Announced log-lengths of the committed arithmetic upper-limb prefixes,
     /// in `[XOR, MUL]` order.
     pub ext_taus: [usize; 2],
@@ -511,6 +514,7 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
             cycles,
             counts,
             committed: committed_size,
+            ext_rows: w.ext_rows,
             ext_taus: w.layout.ext_taus,
             log_mem: w.log_mem,
             mem_used: exec.mem_used,
@@ -909,6 +913,7 @@ mod tests {
             stats.ext_taus[0], 0,
             "a base-only XOR table commits one zero upper-limb slot"
         );
+        assert_eq!(stats.ext_rows[0], 0);
         // The proof still carries exactly one Ligerito opening (over the padding).
         assert_eq!(proof.openings.len(), 1, "unified path: one opening always");
         verify(&program, &pi, &proof).expect("non-BLAKE3 program verifies");
@@ -981,6 +986,7 @@ mod tests {
         }
 
         let (proof, stats) = prove(&program, pi, pcs::LOG_INV_RATE);
+        assert_eq!(stats.ext_rows[0], 3);
         assert_eq!(stats.ext_taus[0], 2);
         verify(&program, &pi, &proof).expect("short arithmetic columns verify");
 

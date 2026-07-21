@@ -209,13 +209,15 @@ pub fn run_xmss_aggregation(n: usize, log_inv_rate: usize) {
         pow(stats.cycles),
         per(stats.cycles)
     );
-    for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3", "PACK64X2"]
+    for (table, (name, &c)) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3", "PACK64X2"]
         .iter()
         .zip(&stats.counts)
+        .enumerate()
     {
         let count = pretty_integer(c);
+        let width = crate::arithmetic_width_suffix(&stats, table);
         println!(
-            "    {name:<6} instructions       : {count:>14} = {:>7}   ({:>8.1} / XMSS)",
+            "    {name:<6} instructions       : {count:>14} = {:>7}   ({:>8.1} / XMSS){width}",
             pow(c),
             per(c)
         );

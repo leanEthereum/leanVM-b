@@ -19,3 +19,18 @@ pub mod xmss_aggregation;
 pub use fibonacci::run_fibonacci;
 pub use recursion::{RecursiveProof, RecursiveVerifyError, run_recursion};
 pub use xmss_aggregation::run_xmss_aggregation;
+
+fn arithmetic_width_suffix(stats: &lean_vm::cpu::Stats, table: usize) -> String {
+    let slot = match table {
+        lean_vm::tables::XOR_TABLE => 0,
+        lean_vm::tables::MUL_TABLE => 1,
+        _ => return String::new(),
+    };
+    let total = stats.counts[table];
+    let percentage = if total == 0 {
+        0
+    } else {
+        (100.0 * stats.ext_rows[slot] as f64 / total as f64).round() as usize
+    };
+    format!(" ({percentage}% 192-bits)")
+}

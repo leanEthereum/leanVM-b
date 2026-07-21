@@ -97,6 +97,7 @@ pub(crate) struct Witness {
     pub(crate) layout: Layout,
     pub(crate) log_mem: usize,
     pub(crate) row_counts: [usize; tables::N_TABLES],
+    pub(crate) ext_rows: [usize; 2],
 }
 
 /// The committed columns' kappa SOURCES, for the recursion guest's
@@ -526,18 +527,17 @@ impl Program {
             tr.blake3.len(),
             tr.pack64x2.len(),
         ];
-        let extension_prefix_log = |rows: &[Xrow]| {
-            let n = rows
-                .iter()
+        let extension_prefix_len = |rows: &[Xrow]| {
+            rows.iter()
                 .take_while(|r| {
                     [r.aa, r.ab, r.ac]
                         .into_iter()
                         .any(|a| exec.mem[a as usize].c1 != 0 || exec.mem[a as usize].c2 != 0)
                 })
-                .count();
-            crate::log2_ceil_usize(n.max(1))
+                .count()
         };
-        let ext_taus = [extension_prefix_log(&tr.xor), extension_prefix_log(&tr.mul)];
+        let ext_rows = [extension_prefix_len(&tr.xor), extension_prefix_len(&tr.mul)];
+        let ext_taus = ext_rows.map(|n| crate::log2_ceil_usize(n.max(1)));
         assert!(
             row_counts.iter().all(|&r| r <= 1 << MAX_LOG_ROWS),
             "a table exceeds 2^{MAX_LOG_ROWS} rows"
@@ -575,6 +575,7 @@ impl Program {
             layout: l,
             log_mem,
             row_counts,
+            ext_rows,
         }
     }
 }

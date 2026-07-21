@@ -42,16 +42,18 @@ pub fn run_fibonacci(n: usize, log_inv_rate: usize) {
         pretty_integer(n)
     );
     println!("  cycles (VM steps)           : {}", pretty_integer(stats.cycles));
-    for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3", "PACK64X2"]
+    for (table, (name, &c)) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3", "PACK64X2"]
         .iter()
         .zip(&stats.counts)
+        .enumerate()
     {
         let pow = if c == 0 {
             "0".to_string()
         } else {
             format!("2^{:.3}", (c as f64).log2())
         };
-        println!("    {name:<5} instructions        : {pow}");
+        let width = crate::arithmetic_width_suffix(&stats, table);
+        println!("    {name:<5} instructions        : {pow}{width}");
     }
     println!(
         "  committed witness size      : 2^{:.3}",
