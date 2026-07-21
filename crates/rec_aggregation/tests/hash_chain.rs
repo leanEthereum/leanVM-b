@@ -121,7 +121,7 @@ fn blake3_hash_chain() {
 
     println!("\nBLAKE3 hash chain, N = {n}, unroll = {unroll}");
     println!("  cycles (VM steps)           : {}", stats.cycles);
-    for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3"].iter().zip(&stats.counts) {
+    for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3", "PACK64X2"].iter().zip(&stats.counts) {
         let pow = if c == 0 {
             "0".to_string()
         } else {

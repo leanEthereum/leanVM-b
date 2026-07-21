@@ -74,7 +74,7 @@ A \emph{memory word}, including a cell value, immediate, or hash value, is an el
 \]
 Since addresses are exponents of $\gen$, the frame is the contiguous block $\gen^{\mathrm{base}},\gen^{\mathrm{base}+1},\dots$, and adding the offset $j$ to the base exponent is, in the field, a single multiplication $\fp\cdot o$.
 
-\paragraph{Instruction set.} The machine implements six instructions. Below, $o,o_A,\dots$ are fp-relative references and $k$ an immediate operand.
+\paragraph{Instruction set.} The machine implements seven instructions. Below, $o,o_A,\dots$ are fp-relative references and $k$ an immediate operand.
 \begin{center}
 \begin{tabular}{lll}
 \hline
@@ -85,10 +85,13 @@ Instruction & Operands & Semantics\\
 \texttt{SET\_CONSTANT} & $[o,k]$         & $\loc{o}=k$ \quad($k$ a $128$-bit immediate)\\
 \texttt{DEREF}         & $[\alpha,\beta,\gamma;\,s]$ & $\mem[\loc{\alpha}\cdot\beta]=\srcsel{s}$\\
 \texttt{JUMP}          & $[o_c,o_d,o_f]$ & conditional jump (below)\\
+\texttt{PACK64X2}      & $[o_A,o_B,o_C]$ & $\loc{o_C}=a_0+b_0y$ for $\loc{o_A}=a_0,\loc{o_B}=b_0\in\K$\\
 \texttt{BLAKE3}        & $[o_0,o_1,o_2,o_3,o_C]$ & $c=\mathrm{BLAKE3}(a,b)$ on independently-addressed single-cell chunks (below)\\
 \hline
 \end{tabular}
 \end{center}
+
+\texttt{PACK64X2} groups two $64$-bit cells into one canonical $128$-bit cell. Its memory interactions read the sources as $(a_0,0)$ and $(b_0,0)$ and the destination as $(a_0,b_0)$. Bus balance therefore proves that both source words lie in $\K$; this is not merely a witness-generation check. The instruction is useful when a program receives serialized $\K$-limbs through an $\E$-valued interface.
 
 \texttt{BLAKE3} compresses $64$ bytes to $32$. Each $128$-bit chunk occupies one cell. References $o_0,\dots,o_3$ independently address the four input cells, with $\loc{o_i}=\fp\cdot o_i$. The operands are $a=\loc{o_0}\Vert\loc{o_1}$ and $b=\loc{o_2}\Vert\loc{o_3}$. The input cells need not be adjacent. The digest occupies the consecutive cells $\loc{o_C}$ and $\loc{\gen\cdot o_C}$. Each row therefore accesses six cells. The BLAKE3 table (\S\ref{sec:tab-blake3}) connects them to the memory, state, and bytecode interactions. Flock~\cite{flock} proves $c=\mathrm{BLAKE3}(a,b)$ with an R1CS proof of the compression circuit.
 
@@ -332,7 +335,7 @@ each factor $1$ at $\zeta_k=0$ and $\gen^{2^{k}}$ at $\zeta_k=1$. The verifier e
 
 \section{The instruction tables}\label{sec:tables}
 
-Each of the six instructions has its own table.
+Each instruction has its own table.
 
 \subsection{\texttt{XOR}}\label{sec:tab-xor}
 
@@ -421,6 +424,20 @@ Alone among the tables, \texttt{JUMP} commits its successors.
   \end{itemize}
 \end{itemize}
 
+\subsection{\texttt{PACK64X2}}\label{sec:tab-pack64x2}
+
+Asserts that two source cells are $\K$-valued and packs them into one canonical $128$-bit word.
+\begin{itemize}
+\item \textbf{Columns:} $\pc,\fp$; operands $o_A,o_B,o_C$; addresses $a_A,a_B,a_C$; source limbs $v_A,v_B\in\K$; memory counts $r_A,r_B,r_C$; bytecode count $r_{\mathrm{bc}}$.
+\item \textbf{Constraints:} the three addresses $a_X=\fp\cdot o_X$. Value validity is enforced by the memory interactions rather than separate AIR equations.
+\item \textbf{Flushes:}
+  \begin{itemize}
+  \item \textbf{State:} \pull\ $\tup{\dsep{ST},\pc,\fp}$, \push\ $\tup{\dsep{ST},\gen\cdot\pc,\fp}$.
+  \item \textbf{Bytecode:} \pull\ $\tup{\dsep{BC},\pc,r_{\mathrm{bc}},\opc{PACK},o_A,o_B,o_C,0,0}$, \push\ the same at $\gen\cdot r_{\mathrm{bc}}$.
+  \item \textbf{Memory:} read $\tup{\dsep{MEM},a_A,r_A,v_A,0}$ and $\tup{\dsep{MEM},a_B,r_B,v_B,0}$, then read the destination as $\tup{\dsep{MEM},a_C,r_C,v_A,v_B}$; each pull is paired with the corresponding push at count $\gen\cdot r$. The literal zeros make the two source range assertions and the destination packing exact through bus balance.
+  \end{itemize}
+\end{itemize}
+
 \subsection{\texttt{BLAKE3}}\label{sec:tab-blake3}
 
 Compresses $64$ input bytes to the $32$ output bytes at $c$. Each $128$-bit chunk occupies one cell. The four input addresses are $a_i=\fp\cdot o_i$ for $i\in\{0,1,2,3\}$ and need not be adjacent. The output occupies $a_C=\fp\cdot o_C$ and $\gen\cdot a_C$. Thus each row accesses four input cells and two output cells.
@@ -462,7 +479,7 @@ Committed columns are $\K$-valued; machine words and challenges are $\E$-valued 
 
 \paragraph{Opcodes.} Coordinate $3$ of every bytecode tuple is an opcode, naming the instruction stored at that program counter (\S\ref{sec:bytecode}):
 \[
-  \opc{XOR}=1,\quad \opc{MUL}=\gen,\quad \opc{SET}=\gen^{2},\quad \opc{DRF}=\gen^{3},\quad \opc{JMP}=\gen^{4},\quad \opc{B3}=\gen^{5}.
+  \opc{XOR}=1,\quad \opc{MUL}=\gen,\quad \opc{SET}=\gen^{2},\quad \opc{DRF}=\gen^{3},\quad \opc{JMP}=\gen^{4},\quad \opc{B3}=\gen^{5},\quad \opc{PACK}=\gen^{6}.
 \]
 
 \subsection{Bytecode encoding}\label{sec:e2e-bc}
@@ -478,6 +495,7 @@ Instruction & coord.\ $3$ & coord.\ $4$ & coord.\ $5$ & coord.\ $6$ & coord.\ $7
 \texttt{SET\_CONSTANT} & $\opc{SET}$ & $o$   & $k_0$ & $k_1$ & $0$ & $0$\\
 \texttt{DEREF}         & $\opc{DRF}$ & $\alpha$ & $\beta$ & $\gamma$ & $f_{\pc}$ & $f_{\fp}$\\
 \texttt{JUMP}          & $\opc{JMP}$ & $o_c$ & $o_d$ & $o_f$ & $0$ & $0$\\
+\texttt{PACK64X2}      & $\opc{PACK}$ & $o_A$ & $o_B$ & $o_C$ & $0$ & $0$\\
 \texttt{BLAKE3}        & $\opc{B3}$  & $o_0$ & $o_1$ & $o_2$ & $o_3$ & $o_C$\\
 \hline
 \end{tabular}
@@ -506,7 +524,7 @@ The final stacked opening discharges both lane claims.
 
 We lay out the whole protocol as one ordered sequence. Each reduction below adds evaluation claims on committed columns to a shared \emph{claim pool}; the final \textsc{Opening} phase proves all of them with a single PCS opening.
 
-\paragraph{Setup and statement binding.} Fixed and shared in advance (\S\ref{sec:e2e-const} through \S\ref{sec:e2e-pi}): the fields and constants; the instance caps (\S\ref{sec:memchan}); the public program and its length; the initial state $(\pc_0,\fp_0)$ and final state $(\pc_{\mathrm{final}},\fp_{\mathrm{final}})$; and the public input $\mem[0],\mem[1]$. Before any challenge, the transcript is seeded by the public input and one environment digest that binds both the exact bytecode and flock's BLAKE3 circuit family. The prover then announces $h$ and the six real opcode-row counts; the verifier checks them against the caps and derives every table, stack, and leaf shape. Thus neither a different program nor an adaptively chosen shape can reuse the proof's later challenges.
+\paragraph{Setup and statement binding.} Fixed and shared in advance (\S\ref{sec:e2e-const} through \S\ref{sec:e2e-pi}): the fields and constants; the instance caps (\S\ref{sec:memchan}); the public program and its length; the initial state $(\pc_0,\fp_0)$ and final state $(\pc_{\mathrm{final}},\fp_{\mathrm{final}})$; and the public input $\mem[0],\mem[1]$. Before any challenge, the transcript is seeded by the public input and one environment digest that binds both the exact bytecode and flock's BLAKE3 circuit family. The prover then announces $h$ and the seven real opcode-row counts; the verifier checks them against the caps and derives every table, stack, and leaf shape. Thus neither a different program nor an adaptively chosen shape can reuse the proof's later challenges.
 
 \paragraph{Commitment.}
 \begin{enumerate}
@@ -521,7 +539,7 @@ We lay out the whole protocol as one ordered sequence. Each reduction below adds
 \item \textbf{Prover \& Verifier.} Decompose each leaf claim (\S\ref{sec:leafstack}). The verifier forms the public part: the block selectors; the constant coordinates (separators, the per-table read opcodes, the boundary state $(\pc_0,\fp_0)$ and $(\pc_{\mathrm{final}},\fp_{\mathrm{final}})$); the index column (\S\ref{sec:idxcol}); and the public program columns of the bytecode seed and finalize, whose MLEs it forms directly. The prover supplies each block's committed-column evaluations (one $\E$-element each, \S\ref{sec:prelim}); a virtual coordinate such as $\gen\cdot\pc$ is read off its committed source, and a \texttt{BLAKE3} value coordinate off $q_\pkd$ at its slot (\S\ref{sec:tab-blake3}). The verifier checks the decomposition formula against $\widetilde V_0(\zeta)$; the supplied evaluations enter the claim pool. The count channel decomposes likewise (its leaves are the count columns), adding only their evaluations.
 \end{enumerate}
 
-\paragraph{Local constraints.} Run once per table (\S\ref{sec:air}); the six runs share no challenges.
+\paragraph{Local constraints.} Run once per table (\S\ref{sec:air}); the seven runs share no challenges.
 \begin{enumerate}
 \item \textbf{Verifier.} For the table, sends the constraint-batch challenge $\eta\in\E$ and the zerocheck point $r\in\E^{\tau}$, where $2^{\tau}$ is its row count.
 \item \textbf{Prover \& Verifier.} Run the table's zerocheck, a $\tau$-round sumcheck on the $\eta$-batched constraint $\sum_x C(x)\,\eq(r,x)=0$. Its end needs that table's (committed) column evaluations at the random point, which enter the pool.
@@ -575,7 +593,7 @@ and ends in the reduced claims $\widetilde A_0(r^\ast)$ and $\widetilde B_0(r^\a
 
 \section{ISA programming}\label{sec:isa-programming}
 
-How the zkDSL compiler (\texttt{crates/lean\_compiler}; surface language in \texttt{crates/lean\_compiler/zkDSL.md}) programs the six-instruction ISA. Two themes run through every pattern: \emph{write-once memory is an assertion mechanism} (a second write of a cell is an equality check, an unwritten cell is prover-chosen), and \emph{indices live in the exponent} (a logical index $i$ is the element $\gen^{i}$, so incrementing, offsetting, and address formation are single field multiplications).
+How the zkDSL compiler (\texttt{crates/lean\_compiler}; surface language in \texttt{crates/lean\_compiler/zkDSL.md}) programs the seven-instruction ISA. Two themes run through every pattern: \emph{write-once memory is an assertion mechanism} (a second write of a cell is an equality check, an unwritten cell is prover-chosen), and \emph{indices live in the exponent} (a logical index $i$ is the element $\gen^{i}$, so incrementing, offsetting, and address formation are single field multiplications).
 
 \subsection{Hints}\label{sec:prog-hints}
 

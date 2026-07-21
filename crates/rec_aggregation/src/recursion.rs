@@ -58,7 +58,9 @@ fn pack_state(s: [F64; 4]) -> [F128T; 2] {
 /// witness hints ("n_hash", "iters"), so a single program (one bytecode, one
 /// digest) proves runs with wildly different opcode profiles and sizes - the
 /// exact genericity the recursion guest is built for. Exercises every table
-/// (XOR/MUL/SET/DEREF/JUMP/BLAKE3).
+/// except PACK64X2 (XOR/MUL/SET/DEREF/JUMP/BLAKE3); the guest itself packs
+/// every level-0 leaf row, so aggregation levels verify nonzero PACK64X2
+/// counts regardless.
 fn inner_program() -> Program {
     let src = "from snark_lib import *\n\
         def main():\n\
@@ -273,7 +275,7 @@ fn stacked_bytecode(program: &Program) -> Vec<F64> {
     let l = lean_vm::cpu::layout(
         &program.prog,
         20,
-        [1usize << 10; 6],
+        [1usize << 10; lean_vm::tables::N_TABLES],
         [F128T::ZERO; 2],
     );
     lean_vm::leaf::stacked_bytecode_table(&l.push)
@@ -570,7 +572,7 @@ fn gen_verify(
     let l = lean_vm::cpu::layout(
         &program.prog,
         proof.stream[0].c0 as usize,
-        [1, 2, 3, 4, 5, 6].map(|i| proof.stream[i].c0 as usize),
+        std::array::from_fn(|i| proof.stream[1 + i].c0 as usize),
         pi,
     );
     let sides: [&[Block]; 3] = [&l.push, &l.pull, &l.count];
@@ -1160,7 +1162,12 @@ fn build_batch(inner: &[(usize, usize)]) -> Batch {
 #[allow(clippy::type_complexity)]
 fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     // Any valid sizes drive the layout — rep depends only on structure + kbc.
-    let l = lean_vm::cpu::layout(&program.prog, 20, [1usize << 10; 6], [F128T::ZERO, F128T::ZERO]);
+    let l = lean_vm::cpu::layout(
+        &program.prog,
+        20,
+        [1usize << 10; lean_vm::tables::N_TABLES],
+        [F128T::ZERO, F128T::ZERO],
+    );
     let kbc = program.prog.len().trailing_zeros() as usize;
     let sides: [&[Block]; 3] = [&l.push, &l.pull, &l.count];
     let mumax = 40usize;
@@ -1268,7 +1275,8 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     assert_eq!(bks[sblk[0]..sblk[1]], bks[sblk[1]..sblk[2]], "push/pull kappa sources must match");
     ps("BLOCK_KAPPA_SRC", ints(&bks.iter().map(|&(s, _)| s).collect::<Vec<_>>()));
     ps("BLOCK_KAPPA_ADJ", ints(&bks.iter().map(|&(_, a)| a).collect::<Vec<_>>()));
-    ps("BLOCK_REAL_TABLE", ints(&bks.iter().map(|&(s, _)| if s >= 2 { s - 2 } else { 6 }).collect::<Vec<_>>()));
+    let real_table: Vec<usize> = bks.iter().map(|&(s, _)| if s >= 2 { s - 2 } else { l.taus.len() }).collect();
+    ps("BLOCK_REAL_TABLE", ints(&real_table));
     let mut block_side = Vec::new();
     for (s, blocks) in sides.iter().enumerate() { block_side.extend(std::iter::repeat_n(s, blocks.len())); }
     ps("BLOCK_SIDE", ints(&block_side));
@@ -1286,6 +1294,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("N_AIR_COLS", ints(&ncol));
     ps("AIR_COLS_CAP", (ncol.iter().max().unwrap() + 1).to_string());
     ps("N_TABLES", l.taus.len().to_string());
+    ps("REAL_IS_FULL_CUBE", l.taus.len().to_string());
     ps("TAU_CAP", taumax_cap.to_string());
     // g^(push.mu - BUS_GRIND_SHIFT) is the bus PoW window.
     let bus_grind_shift =
@@ -1552,8 +1561,8 @@ pub fn run_recursion(inner: &[(usize, usize)]) -> RecursiveProof {
         pow(stats.cycles),
         stats.cycles as f64 / total_inner_cycles as f64
     );
-    for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3"].iter().zip(&stats.counts) {
-        println!("    {name:<6} instructions     : {c:>10} = {:>7}", pow(c));
+    for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3", "PACK64X2"].iter().zip(&stats.counts) {
+        println!("    {name:<8} instructions   : {c:>10} = {:>7}", pow(c));
     }
     println!("  committed witness size      : 2^{:.3}", (stats.committed as f64).log2());
     println!(

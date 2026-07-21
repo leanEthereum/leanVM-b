@@ -77,6 +77,7 @@ impl Program {
         let mut deref: Vec<Drow> = Vec::new();
         let mut jump: Vec<Jrow> = Vec::new();
         let mut blake3: Vec<Brow> = Vec::new();
+        let mut pack64x2: Vec<Xrow> = Vec::new();
 
         // `DEREF Cell` touches whose two sides are both still unwritten (the
         // range-check gadget's unconstrained target cells): `(deref row index,
@@ -546,6 +547,29 @@ impl Program {
                         pc += 1;
                     }
                 }
+                Op::Pack64x2 { a, b, c } => {
+                    let (aa, ab, ac) = (fp + a, fp + b, fp + c);
+                    let va = get(&mem, &written, aa);
+                    let vb = get(&mem, &written, ab);
+                    assert_eq!(va.c1, 0, "PACK64X2 first input must be K-valued");
+                    assert_eq!(vb.c1, 0, "PACK64X2 second input must be K-valued");
+                    put(&mut mem, &mut written, &mut mem_count, ac, F128T::new(va.c0, vb.c0));
+                    let ra = bump_access_count(&mut mem, &mut written, &mut mem_count, aa);
+                    let rb = bump_access_count(&mut mem, &mut written, &mut mem_count, ab);
+                    let rc = bump_access_count(&mut mem, &mut written, &mut mem_count, ac);
+                    pack64x2.push(Xrow {
+                        pc,
+                        fp,
+                        aa,
+                        ab,
+                        ac,
+                        ra,
+                        rb,
+                        rc,
+                        bytecode_read,
+                    });
+                    pc += 1;
+                }
                 Op::Blake3 { ins, out } => {
                     // Four independently-addressed 128-bit input chunks, each a
                     // single cell; the output spans two consecutive cells (ac, ac+1).
@@ -688,6 +712,7 @@ impl Program {
             deref,
             jump,
             blake3,
+            pack64x2,
             mem_count,
             bytecode_count,
         };

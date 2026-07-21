@@ -214,6 +214,9 @@ pub fn disassemble(prog: &[Op]) -> String {
             Op::Jump { oc, od, of } => {
                 format!("JUMP   if fp[{oc}]≠0: pc=fp[{od}], fp=fp[{of}]")
             }
+            Op::Pack64x2 { a, b, c } => {
+                format!("PACK64X2 fp[{c}] = pack64(fp[{a}], fp[{b}])")
+            }
             Op::Blake3 { ins, out } => {
                 format!(
                     "BLAKE3 fp[{out}..]= H(fp[{}], fp[{}] | fp[{}], fp[{}])",
@@ -284,6 +287,7 @@ fn resolve(op: &LOp, entry: &HashMap<String, u32>, sentinel: u32, base: u32) -> 
             od: *od,
             of: *of,
         },
+        LOp::Pack64x2 { a, b, c } => Op::Pack64x2 { a: *a, b: *b, c: *c },
         LOp::Blake3 { ins, c } => Op::Blake3 { ins: *ins, out: *c },
     }
 }

@@ -2024,6 +2024,18 @@ impl FnLower<'_> {
                     }
                     return;
                 }
+                // `pack64x2_into(a, b, out)`: one `PACK64X2` instruction. Proves
+                // both sources are K-valued and writes their canonical packing
+                // `(a.c0, b.c0)` into `out` (write-once: an already-written `out`
+                // asserts equality with the packing).
+                if f == "pack64x2_into" {
+                    assert_eq!(args.len(), 3, "pack64x2_into(a, b, out) takes three scalar cells");
+                    let a = self.expr(&args[0]);
+                    let b = self.expr(&args[1]);
+                    let c = self.expr(&args[2]);
+                    self.emit(LOp::Pack64x2 { a, b, c });
+                    return;
+                }
                 self.call(f, args, 0);
             }
             Stmt::Store(arr, idx, val) => {
@@ -2273,7 +2285,7 @@ fn stmt_inline_safe(s: &Stmt) -> bool {
         | Stmt::AssertEq(..)
         | Stmt::AssertNe(..)
         | Stmt::AssertLt(..) => true,
-        Stmt::Call(f, _) => f == "blake3",
+        Stmt::Call(f, _) => f == "blake3" || f == "pack64x2_into",
         Stmt::If { then, els, .. } => then.iter().all(stmt_inline_safe) && els.iter().all(stmt_inline_safe),
         Stmt::Unroll { body, .. } => body.iter().all(stmt_inline_safe),
         // Return (non-tail), For, Match, LetMatchRange, LetTuple, CallIfNe, user Call.

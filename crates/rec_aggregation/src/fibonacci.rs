@@ -29,7 +29,7 @@ pub fn run_fibonacci(n: usize) {
 
     println!("Fibonacci (in the exponent, i.e. modulo 2^64 - 1), N = {n}");
     println!("  cycles (VM steps)           : {}", stats.cycles);
-    for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3"]
+    for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3", "PACK64X2"]
         .iter()
         .zip(&stats.counts)
     {

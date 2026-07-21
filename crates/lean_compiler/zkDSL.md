@@ -591,6 +591,30 @@ The two `DEREF` target cells are unconstrained touches, back-filled at the end
 of execution. A failing check surfaces at witness generation as the
 complement's `DEREF` panic ("not a small g-power … a failed range check").
 
+## Packing two 64-bit cells — `pack64x2_into`
+
+```python
+packed = StackBuf(2)
+pack64x2_into(lo0, hi0, packed[0])
+pack64x2_into(lo1, hi1, packed[1])
+```
+
+`pack64x2_into(a, b, out)` is a statement that takes one VM cycle. It proves
+that both source memory words are in the base field GF(2^64), then writes their
+canonical 128-bit packing `(a.c0, b.c0)` into the scalar cell `out` (write-once:
+an already-written `out` asserts equality with the packing). The proof comes
+from the memory bus itself: the two source accesses use a literal-zero HI lane,
+and the destination access uses the two-lane tuple `(a.c0, b.c0)`. Consequently
+a source with a nonzero HI lane cannot satisfy the memory permutation.
+
+This is useful before treating hinted 128-bit words as serialized 64-bit
+limbs. The recursion guest packs each queried level-0 Merkle leaf row this way:
+the four hinted F64 lanes feed the row dot product individually, and the two
+`PACK64X2` rows both range-check them and assemble the exact leaf cells that
+the committed Merkle root binds. Assembling with arithmetic instead
+(`e0 + e1 * Y`) would hash the same word for many non-canonical `(e0, e1)`
+pairs and leave the dot product unconstrained.
+
 ## BLAKE3
 
 ```python

@@ -45,13 +45,14 @@ pub(crate) const SEP_STATE: F64 = g_pow(0);
 pub(crate) const SEP_MEM: F64 = g_pow(1);
 pub(crate) const SEP_BYTECODE: F64 = g_pow(2);
 
-// Opcodes (coordinate 3 of a bytecode tuple): the g-powers g^0..g^5.
+// Opcodes (coordinate 3 of a bytecode tuple): the g-powers g^0..g^6.
 pub(crate) const OP_XOR: F64 = g_pow(0);
 pub(crate) const OP_MUL: F64 = g_pow(1);
 pub(crate) const OP_SET: F64 = g_pow(2);
 pub(crate) const OP_DEREF: F64 = g_pow(3);
 pub(crate) const OP_JUMP: F64 = g_pow(4);
 pub(crate) const OP_BLAKE3: F64 = g_pow(5);
+pub(crate) const OP_PACK64X2: F64 = g_pow(6);
 
 // ---- flush builder -----------------------------------------------------------
 
@@ -217,9 +218,11 @@ pub trait Table: Sync {
     fn fill(&self, ctx: &FillCtx, out: &mut [Column]);
 }
 
-/// The six tables in fixed order `[XOR, MUL, SET, DEREF, JUMP, BLAKE3]` — the
-/// order of `row_counts` / `taus` throughout `cpu`.
-pub fn tables() -> [&'static dyn Table; 6] {
+/// The tables in fixed order `[XOR, MUL, SET, DEREF, JUMP, BLAKE3, PACK64X2]` —
+/// the order of `row_counts` / `taus` throughout `cpu`.
+pub const N_TABLES: usize = 7;
+
+pub fn tables() -> [&'static dyn Table; N_TABLES] {
     [
         &Arith { is_xor: true },
         &Arith { is_xor: false },
@@ -227,6 +230,7 @@ pub fn tables() -> [&'static dyn Table; 6] {
         &DerefTable,
         &JumpTable,
         &Blake3Table,
+        &Pack64x2Table,
     ]
 }
 
@@ -650,6 +654,94 @@ impl Table for JumpTable {
         out[RC] = rows.par_iter().map(|r| r.rc).collect();
         out[RD] = rows.par_iter().map(|r| r.rd).collect();
         out[RF] = rows.par_iter().map(|r| r.rf).collect();
+        out[RBC] = rows.par_iter().map(|r| r.bytecode_read).collect();
+    }
+}
+
+// ---- PACK64X2 ----------------------------------------------------------------
+
+/// Pack two K-valued memory cells into one canonical 128-bit cell. There are
+/// deliberately no source HI-lane columns: `memory_k` puts literal zeros in
+/// those bus coordinates, so the global memory permutation can balance only
+/// when the actual source words are in K. Likewise the plain `memory` flush
+/// reads the destination as the two-lane word `(va, vb)` directly through the
+/// bus, so the packing itself needs no AIR equation.
+struct Pack64x2Table;
+
+mod pack64 {
+    pub const PC: usize = 0;
+    pub const FP: usize = 1;
+    pub const OA: usize = 2;
+    pub const OB: usize = 3;
+    pub const OC: usize = 4;
+    pub const AA: usize = 5;
+    pub const AB: usize = 6;
+    pub const AC: usize = 7;
+    pub const VA: usize = 8;
+    pub const VB: usize = 9;
+    pub const RA: usize = 10;
+    pub const RB: usize = 11;
+    pub const RC: usize = 12;
+    pub const RBC: usize = 13;
+    pub const N: usize = 14;
+}
+
+impl Table for Pack64x2Table {
+    fn opcode_tag(&self) -> F64 {
+        OP_PACK64X2
+    }
+
+    fn n_committed_columns(&self) -> usize {
+        pack64::N
+    }
+
+    fn count_columns(&self) -> &'static [usize] {
+        use pack64::*;
+        &[RA, RB, RC, RBC]
+    }
+
+    fn constraint_columns(&self) -> &'static [usize] {
+        use pack64::*;
+        &[FP, OA, OB, OC, AA, AB, AC]
+    }
+
+    fn eval_constraint(&self, eta: F128T, cols: &Cols) -> F128T {
+        use pack64::*;
+        (cols[AA] + cols[FP] * cols[OA])
+            + eta * (cols[AB] + cols[FP] * cols[OB])
+            + eta * eta * (cols[AC] + cols[FP] * cols[OC])
+    }
+
+    fn flushes(&self, f: &mut FlushBuilder) {
+        use pack64::*;
+        f.state_step(PC, FP);
+        f.bytecode(
+            PC,
+            RBC,
+            OP_PACK64X2,
+            &[Col(OA), Col(OB), Col(OC), Const(F64::ZERO), Const(F64::ZERO)],
+        );
+        f.memory_k(AA, RA, VA);
+        f.memory_k(AB, RB, VB);
+        f.memory(AC, RC, VA, VB);
+    }
+
+    fn fill(&self, ctx: &FillCtx, out: &mut [Column]) {
+        use pack64::*;
+        let rows = &ctx.trace.pack64x2;
+        out[PC] = rows.par_iter().map(|r| ctx.g_at(r.pc)).collect();
+        out[FP] = rows.par_iter().map(|r| ctx.g_at(r.fp)).collect();
+        out[OA] = rows.par_iter().map(|r| ctx.g_at(r.aa - r.fp)).collect();
+        out[OB] = rows.par_iter().map(|r| ctx.g_at(r.ab - r.fp)).collect();
+        out[OC] = rows.par_iter().map(|r| ctx.g_at(r.ac - r.fp)).collect();
+        out[AA] = rows.par_iter().map(|r| ctx.g_at(r.aa)).collect();
+        out[AB] = rows.par_iter().map(|r| ctx.g_at(r.ab)).collect();
+        out[AC] = rows.par_iter().map(|r| ctx.g_at(r.ac)).collect();
+        out[VA] = rows.par_iter().map(|r| F64(ctx.mem[r.aa as usize].c0)).collect();
+        out[VB] = rows.par_iter().map(|r| F64(ctx.mem[r.ab as usize].c0)).collect();
+        out[RA] = rows.par_iter().map(|r| r.ra).collect();
+        out[RB] = rows.par_iter().map(|r| r.rb).collect();
+        out[RC] = rows.par_iter().map(|r| r.rc).collect();
         out[RBC] = rows.par_iter().map(|r| r.bytecode_read).collect();
     }
 }

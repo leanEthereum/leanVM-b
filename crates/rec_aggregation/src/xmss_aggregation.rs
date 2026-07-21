@@ -201,9 +201,9 @@ pub fn run_xmss_aggregation(n: usize) {
         pow(stats.cycles),
         per(stats.cycles)
     );
-    for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3"].iter().zip(&stats.counts) {
+    for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3", "PACK64X2"].iter().zip(&stats.counts) {
         println!(
-            "    {name:<6} instructions       : {c:>10} = {:>7}   ({:>8.1} / XMSS)",
+            "    {name:<8} instructions     : {c:>10} = {:>7}   ({:>8.1} / XMSS)",
             pow(c),
             per(c)
         );

@@ -144,6 +144,14 @@ def hint_witness(dest, name: str) -> None:
     _ = dest, name
 
 
+def pack64x2_into(a, b, out) -> None:
+    """Prove that `a` and `b` are GF(2^64)-valued machine words and write
+    their canonical 128-bit packing `(a.c0, b.c0)` into the scalar cell `out`
+    (write-once: if `out` was already written, this asserts it equals the
+    packing). All three arguments are scalar cells; one VM instruction."""
+    _ = a, b, out
+
+
 def blake3(a, b, out) -> None:
     """The BLAKE3 compression of the two 256-bit operands `a`, `b`, written
     into the 2-cell run `out` (write-once: if `out` was already written, this
