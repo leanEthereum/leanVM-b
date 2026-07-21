@@ -214,12 +214,20 @@ fn finalize_commit(mut codeword: Vec<F128>, params: &PcsParams) -> (Commitment, 
     // sub-NTTs with shared twiddles. Each sub-NTT operates on its lane of the
     // SoA buffer. The first `log_inv_rate` layers were pre-applied by the
     // caller's replicate-fill (commit_into), so start past them.
-    let ntt = AdditiveNttF128::standard(params.k_code());
-    ntt.forward_transform_interleaved_from_layer(
-        &mut codeword,
-        params.num_ntts(),
-        params.log_inv_rate,
-    );
+    tracing::info_span!(
+        "NTT",
+        kind = "extension encode",
+        log_domain = params.k_code(),
+        lanes = params.num_ntts()
+    )
+    .in_scope(|| {
+        let ntt = AdditiveNttF128::standard(params.k_code());
+        ntt.forward_transform_interleaved_from_layer(
+            &mut codeword,
+            params.num_ntts(),
+            params.log_inv_rate,
+        );
+    });
     if timing {
         eprintln!(
             "[commit-timing] ntt: {:.2} ms",

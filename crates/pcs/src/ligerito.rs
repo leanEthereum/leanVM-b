@@ -1608,6 +1608,13 @@ fn transpose_forward_ntt_sparse(
     values: &[F128],
     log_d: usize,
 ) -> Vec<F128> {
+    let _span = tracing::info_span!(
+        "NTT",
+        kind = "transpose induce",
+        log_domain = log_d,
+        nonzero = positions.len()
+    )
+    .entered();
     use rayon::prelude::*;
     use std::collections::HashMap;
     let n = 1usize << log_d;
@@ -1788,7 +1795,15 @@ pub fn ligero_commit(
     super::commit::replicate_message_fill(&mut mat, poly);
 
     // RS-encode every lane in one call (each lane is one independent NTT).
-    ntt.forward_transform_interleaved_from_layer(&mut mat, num_interleaved, log_inv_rate);
+    tracing::info_span!(
+        "NTT",
+        kind = "extension encode",
+        log_domain = log_block_len,
+        lanes = num_interleaved
+    )
+    .in_scope(|| {
+        ntt.forward_transform_interleaved_from_layer(&mut mat, num_interleaved, log_inv_rate)
+    });
 
     // Merkle over rows. One leaf = `num_interleaved` consecutive F128 = 16·num_interleaved bytes.
     let leaf_size_bytes = num_interleaved * core::mem::size_of::<F128>();
@@ -2531,10 +2546,17 @@ fn multilevel_prover_with_basis_impl(
     let ood_count = |lvl: usize| -> usize { config.ood_samples.get(lvl).copied().unwrap_or(0) };
 
     let _t = std::time::Instant::now();
-    let (mut sc_prover, start_msg) = match first_msg {
-        Some(msg) => SumcheckProver::new_with_first_msg(packed_witness, b_initial, target, msg),
-        None => SumcheckProver::new(packed_witness, b_initial, target),
-    };
+    let sumcheck_span = tracing::info_span!("Sumcheck");
+    let initial_log_size = packed_witness.len().trailing_zeros();
+    let (mut sc_prover, start_msg) = sumcheck_span.in_scope(|| {
+        tracing::info_span!("Sumcheck round", round = 0, log_size = initial_log_size)
+            .in_scope(|| match first_msg {
+                Some(msg) => {
+                    SumcheckProver::new_with_first_msg(packed_witness, b_initial, target, msg)
+                }
+                None => SumcheckProver::new(packed_witness, b_initial, target),
+            })
+    });
     add_sumcheck_msg(ps, &start_msg);
 
     let mut r_lane_fold = Vec::with_capacity(initial_k);
@@ -2553,10 +2575,15 @@ fn multilevel_prover_with_basis_impl(
             ps.grind(bits);
         }
         let r = ps.sample();
-        let msg = sc_prover.fold(r);
+        let log_size = sc_prover.f().len().trailing_zeros();
+        let msg = sumcheck_span.in_scope(|| {
+            tracing::info_span!("Sumcheck round", round = j + 1, log_size)
+                .in_scope(|| sc_prover.fold(r))
+        });
         add_sumcheck_msg(ps, &msg);
         r_lane_fold.push(r);
     }
+    drop(sumcheck_span);
     if trace {
         t_init_sumcheck += _t.elapsed();
     }
@@ -2668,6 +2695,7 @@ fn multilevel_prover_with_basis_impl(
         let k_i = config.level_ks[i];
         let mut level_rs = Vec::with_capacity(k_i);
         let _t = std::time::Instant::now();
+        let sumcheck_span = tracing::info_span!("Sumcheck");
         for j in 0..k_i {
             // These folds fold level i+1's commitment — fold-challenge
             // grinding guards its proximity-gap term. Tapered per round:
@@ -2677,10 +2705,15 @@ fn multilevel_prover_with_basis_impl(
                 ps.grind(bits);
             }
             let ri = ps.sample();
-            let msg = sc_prover.fold(ri);
+            let log_size = sc_prover.f().len().trailing_zeros();
+            let msg = sumcheck_span.in_scope(|| {
+                tracing::info_span!("Sumcheck round", round = j, log_size)
+                    .in_scope(|| sc_prover.fold(ri))
+            });
             add_sumcheck_msg(ps, &msg);
             level_rs.push(ri);
         }
+        drop(sumcheck_span);
         if trace {
             t_sumcheck_folds += _t.elapsed();
         }

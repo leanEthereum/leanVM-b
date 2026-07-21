@@ -1350,7 +1350,9 @@ fn recursion_guest(inner_program: &Program, nsub: usize) -> Program {
 ///    map needs only that size);
 /// 3. prove the inner proofs (and extract their hints);
 /// 4. prove the recursion, verify, discharge the three reduced claims.
-pub fn run_recursion(inner: &[(usize, usize)]) -> RecursiveProof {
+/// When `enable_tracing` is true, tracing starts after the inner proofs so the
+/// emitted tree profiles the recursive aggregation itself.
+pub fn run_recursion(inner: &[(usize, usize)], enable_tracing: bool) -> RecursiveProof {
     // 1 + 2: the recursion program is generic — its map needs only the inner
     // bytecode size — so it is compiled FIRST, before any inner proof.
     let program = inner_program();
@@ -1367,6 +1369,10 @@ pub fn run_recursion(inner: &[(usize, usize)]) -> RecursiveProof {
     let batch = build_batch(inner);
     let nsub = batch.nsub;
     let total_inner_cycles = batch.total_inner_cycles;
+    if enable_tracing {
+        primitives::init_tracing();
+    }
+    let trace_span = tracing::info_span!("Recursive aggregation", n = nsub).entered();
     let t = std::time::Instant::now();
     let (recursive_proof, stats) = batch.prove(&mut guest);
     let t_prove = t.elapsed();
@@ -1376,6 +1382,10 @@ pub fn run_recursion(inner: &[(usize, usize)]) -> RecursiveProof {
         .expect("complete recursive proof verifies");
     let t_verify = t.elapsed();
     let proof_bytes = bincode::serialized_size(&recursive_proof).expect("recursive proof is serializable");
+    // tracing-forest renders the tree when its root span closes. Close it
+    // before printing the benchmark report so the complete trace appears first.
+    drop(trace_span);
+
     let pow = |x: usize| if x == 0 { "     -".into() } else { format!("2^{:.2}", (x as f64).log2()) };
     println!("\nrecursion {nsub}\u{2192}1: {nsub} inner proofs of {} cycles each", total_inner_cycles / nsub);
     println!(
@@ -1405,7 +1415,7 @@ pub fn run_recursion(inner: &[(usize, usize)]) -> RecursiveProof {
 /// natively.
 #[test]
 fn recursion_2to1() {
-    run_recursion(&[(8, 1 << 15), (8, 1 << 15)]);
+    run_recursion(&[(8, 1 << 15), (8, 1 << 15)], false);
 }
 
 /// THE genericity milestone: ONE compiled guest bytecode verifies two inner
@@ -1413,7 +1423,7 @@ fn recursion_2to1() {
 /// depends only on the inner bytecode size, so one map covers both shapes).
 #[test]
 fn recursion_2to1_mixed() {
-    run_recursion(&[(4, 1 << 13), (64, 1 << 15)]);
+    run_recursion(&[(4, 1 << 13), (64, 1 << 15)], false);
 }
 
 /// One compiled guest bytecode proves MANY inner runs with wildly different

@@ -303,11 +303,12 @@ pub struct Stats {
 /// then emit everything the verifier needs through the returned [`Proof`]
 /// (scalar stream + PCS commitment / opening hints). Returns the proof and the
 /// run [`Stats`].
+#[tracing::instrument(name = "Prove", skip_all)]
 pub fn prove(program: &Program, public_input: [F128; 2]) -> (Proof, Stats) {
     let prof = std::env::var("LEANVM_PROFILE").is_ok();
     let ms = |t: std::time::Instant| t.elapsed().as_secs_f64() * 1e3;
     let t = std::time::Instant::now();
-    let exec = program.execute(public_input);
+    let exec = tracing::info_span!("Execute program").in_scope(|| program.execute(public_input));
     if prof {
         eprintln!("[prove] execute     : {:>7.2} ms", ms(t));
     }
@@ -323,7 +324,7 @@ pub fn prove(program: &Program, public_input: [F128; 2]) -> (Proof, Stats) {
     let n_b3_warm = exec.trace.blake3.len().max(1);
     std::thread::spawn(move || crate::blake3_flock::warm_setup(n_b3_warm));
     let cycles = exec.cycles;
-    let mut w = program.build(&exec);
+    let mut w = tracing::info_span!("Build witness").in_scope(|| program.build(&exec));
     let counts = w.row_counts;
     // Real committed data, before zero-pad to 2^m. Virtual columns (the BLAKE3
     // value columns) carry data for the bus but are NOT committed, so exclude them.
@@ -341,7 +342,7 @@ pub fn prove(program: &Program, public_input: [F128; 2]) -> (Proof, Stats) {
     // Announce the prover's sizes, then commit, before sampling any challenge.
     announce_public(&mut ps, w.log_mem, w.row_counts);
     let t = std::time::Instant::now();
-    let committed = pcs::commit(&mut ps, &w.q);
+    let committed = tracing::info_span!("Commit").in_scope(|| pcs::commit(&mut ps, &w.q));
     if prof {
         eprintln!("[prove] commit      : {:>7.2} ms", ms(t));
     }
@@ -355,23 +356,27 @@ pub fn prove(program: &Program, public_input: [F128; 2]) -> (Proof, Stats) {
     // bus point, so no dedicated binding challenge is drawn. Mirrored in `verify`.
     let t = std::time::Instant::now();
     let l = &w.layout;
-    let (bus_claims, _bytecode_claims) = leaf::prove_balance(&l.push, &l.pull, &l.count, &w.cols, &mut ps);
+    let (bus_claims, _bytecode_claims) = tracing::info_span!("Prove bus")
+        .in_scope(|| leaf::prove_balance(&l.push, &l.pull, &l.count, &w.cols, &mut ps));
     if prof {
         eprintln!("[prove] bus(grand-p): {:>7.2} ms", ms(t));
     }
     let t = std::time::Instant::now();
-    let sch = schema();
-    let mut table_claims = Vec::new();
-    for (ti, table) in tables::tables().iter().enumerate() {
-        let involved = table.constraint_columns();
-        let position = tables::column_positions(involved);
-        let cols: Vec<Column> = involved.iter().map(|&c| w.cols[sch.base[ti] + c].clone()).collect();
-        table_claims.push(constraints::prove(
-            &cols,
-            |eta, vals| table.eval_constraint(eta, &tables::Cols::new(vals, &position)),
-            &mut ps,
-        ));
-    }
+    let table_claims = tracing::info_span!("Prove constraints").in_scope(|| {
+        let sch = schema();
+        let mut table_claims = Vec::new();
+        for (ti, table) in tables::tables().iter().enumerate() {
+            let involved = table.constraint_columns();
+            let position = tables::column_positions(involved);
+            let cols: Vec<Column> = involved.iter().map(|&c| w.cols[sch.base[ti] + c].clone()).collect();
+            table_claims.push(constraints::prove(
+                &cols,
+                |eta, vals| table.eval_constraint(eta, &tables::Cols::new(vals, &position)),
+                &mut ps,
+            ));
+        }
+        table_claims
+    });
     if prof {
         eprintln!("[prove] constraints : {:>7.2} ms", ms(t));
     }
@@ -394,16 +399,19 @@ pub fn prove(program: &Program, public_input: [F128; 2]) -> (Proof, Stats) {
         .flock_reduction
         .take()
         .expect("prepared flock reduction witness is present");
-    let reduced = flock_reduction.prove(&w.cols[QPKD], &mut ps);
+    let reduced = tracing::info_span!("Flock reduction")
+        .in_scope(|| flock_reduction.prove(&w.cols[QPKD], &mut ps));
     let n_blocks = flock_reduction.n_blocks();
     drop(flock_reduction);
     let offset = w.layout.placements[QPKD].offset;
-    let ring = crate::blake3_flock::ring_switch_open(n_blocks, offset, &reduced);
+    let ring = tracing::info_span!("Package ring switch")
+        .in_scope(|| crate::blake3_flock::ring_switch_open(n_blocks, offset, &reduced));
     if prof {
         eprintln!("[open]  reduction   : {:>7.2} ms", ms(t));
     }
     let t_pcs = std::time::Instant::now();
-    let mixed_open = pcs::open(&mut ps, &committed, &w.q, &slots, &ring);
+    let mixed_open = tracing::info_span!("PCS open")
+        .in_scope(|| pcs::open(&mut ps, &committed, &w.q, &slots, &ring));
     if prof {
         eprintln!("[open]  pcs::open   : {:>7.2} ms", ms(t_pcs));
     }
@@ -463,6 +471,7 @@ pub struct VerifySummary {
 /// the transcript, reconstruct the public layout from the announced sizes, read
 /// every scalar the prover wrote and pull the PCS hints, then assert the stream
 /// was fully consumed. Takes only public inputs — never the prover's witness.
+#[tracing::instrument(name = "Verify", skip_all)]
 pub fn verify(
     program: &Program,
     public_input: &[F128; 2],

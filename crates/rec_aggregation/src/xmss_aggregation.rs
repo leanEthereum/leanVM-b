@@ -32,6 +32,8 @@ fn pair(a: &[u8], b: &[u8]) -> Vec<F128> {
 /// (`guests/xmss_aggregate.py`) over all signatures, proves, verifies, and
 /// prints the benchmark report.
 pub fn run_xmss_aggregation(n: usize) {
+    let trace_span = tracing::info_span!("XMSS aggregation", n).entered();
+
     // Pin rayon workers to performance cores (QoS) before any parallel work runs,
     // so fork-join stages are not held up by efficiency-core stragglers. Thread
     // count still follows RAYON_NUM_THREADS.
@@ -148,6 +150,10 @@ pub fn run_xmss_aggregation(n: usize) {
     let proof_bytes = bincode::serialized_size(&proof).expect("proof is serializable");
     let per = |x: usize| x as f64 / n as f64;
     let pow = |x: usize| if x == 0 { "     -".into() } else { format!("2^{:.2}", (x as f64).log2()) };
+    // tracing-forest renders the tree when its root span closes. Close it
+    // before printing the benchmark report so the complete trace appears first.
+    drop(trace_span);
+
     println!("\nXMSS aggregation, {n} signatures");
     println!(
         "  cycles (VM steps)           : {:>10} = {:>7}   ({:>8.1} / XMSS)",
