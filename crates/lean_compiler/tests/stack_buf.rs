@@ -59,7 +59,7 @@ def main():
     let want = digest_cells(h, h);
 
     let (proof, stats) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
-    assert_eq!(stats.counts[5], 1, "one BLAKE3 instruction");
+    assert_eq!(stats.counts[lean_vm::tables::BLAKE3_TABLE], 1, "one BLAKE3 instruction");
     verify(&program, &want, &proof).expect("StackBuf self-hash verifies");
 
     let mut bad = want;
@@ -87,7 +87,7 @@ def main():
     // `+` is XOR: 3 ^ 4 = 7. Published: (sa[2], sa[1]) = (7, 4).
     let want = [F192::from(F64(7)), F192::from(F64(4))];
     let (proof, stats) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
-    assert_eq!(stats.counts[5], 0, "no BLAKE3 here");
+    assert_eq!(stats.counts[lean_vm::tables::BLAKE3_TABLE], 0, "no BLAKE3 here");
     verify(&program, &want, &proof).expect("StackBuf indexing verifies");
 }
 
@@ -233,7 +233,11 @@ def step(state, v):
     let want = [F192::new(s2[0].0, s2[1].0, 0), F192::new(s2[2].0, s2[3].0, 0)];
 
     let (proof, stats) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
-    assert_eq!(stats.counts[5], 2, "two BLAKE3 instructions (one per inlined step)");
+    assert_eq!(
+        stats.counts[lean_vm::tables::BLAKE3_TABLE],
+        2,
+        "two BLAKE3 instructions (one per inlined step)"
+    );
     verify(&program, &want, &proof).expect("inline StackBuf+scalar tuple return verifies");
 
     let mut bad = want;
@@ -312,7 +316,7 @@ def main():
     // s = [7, 5] after the swap → words [7,0,5,0]; t = [7 ^ 5, 3] = [2, 3] → [2,0,3,0].
     let want = digest_cells([F64(7), F64(0), F64(5), F64(0)], [F64(2), F64(0), F64(3), F64(0)]);
     let (proof, stats) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
-    assert_eq!(stats.counts[5], 1, "one BLAKE3 instruction");
+    assert_eq!(stats.counts[lean_vm::tables::BLAKE3_TABLE], 1, "one BLAKE3 instruction");
     verify(&program, &want, &proof).expect("list-literal StackBuf verifies");
 }
 

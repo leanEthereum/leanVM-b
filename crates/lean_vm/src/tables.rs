@@ -62,9 +62,11 @@ pub(crate) const SEP_STATE: F64 = g_pow(0);
 pub(crate) const SEP_MEM: F64 = g_pow(1);
 pub(crate) const SEP_BYTECODE: F64 = g_pow(2);
 
-// Opcodes (coordinate 3 of a bytecode tuple).
-pub(crate) const OP_XOR: F64 = g_pow(0);
-pub(crate) const OP_MUL: F64 = g_pow(1);
+// Opcodes (coordinate 3 of a bytecode tuple). ADD/XOR and MUL use the bits 0
+// and 1 so the unified arithmetic table's `is_mul` column is also its opcode
+// coordinate; the remaining tags stay distinct fixed g-powers.
+pub(crate) const OP_XOR: F64 = F64::ZERO;
+pub(crate) const OP_MUL: F64 = F64::ONE;
 pub(crate) const OP_SET: F64 = g_pow(2);
 pub(crate) const OP_DEREF: F64 = g_pow(3);
 pub(crate) const OP_JUMP: F64 = g_pow(4);
@@ -268,7 +270,9 @@ pub(crate) fn column_positions(columns: &[usize]) -> Vec<usize> {
 /// [`count_columns`](Table::count_columns), and
 /// [`constraint_columns`](Table::constraint_columns) are local to this table.
 pub trait Table: Sync {
-    /// Distinct opcode tag (coordinate 3 of the bytecode tuple).
+    /// Fixed opcode tag (coordinate 3 of the bytecode tuple). The shared
+    /// arithmetic table uses its selector column instead; its return value here
+    /// is only the ADD tag and is never used to build its bytecode flush.
     fn opcode_tag(&self) -> F64;
     /// Number of committed columns (local indices `0..n_committed_columns`).
     fn n_committed_columns(&self) -> usize;
@@ -292,24 +296,21 @@ pub trait Table: Sync {
     fn fill(&self, ctx: &FillCtx, out: &mut [Column]);
 }
 
-/// The tables in fixed order `[XOR, MUL, SET, DEREF, JUMP, BLAKE3, PACK64X2]` — the
+/// The tables in fixed order `[ARITH, SET, DEREF, JUMP, BLAKE3, PACK64X2]` — the
 /// order of `row_counts` / `taus` throughout `cpu`.
-pub const N_TABLES: usize = 7;
+pub const N_TABLES: usize = 6;
 
 pub fn tables() -> [&'static dyn Table; N_TABLES] {
-    [
-        &Arith { is_xor: true },
-        &Arith { is_xor: false },
-        &SetTable,
-        &DerefTable,
-        &JumpTable,
-        &Blake3Table,
-        &Pack64x2Table,
-    ]
+    [&Arith, &SetTable, &DerefTable, &JumpTable, &Blake3Table, &Pack64x2Table]
 }
 
-/// Index of the BLAKE3 table in [`tables`].
-pub(crate) const BLAKE3_TABLE: usize = 5;
+/// Stable table indices in [`tables`].
+pub const ARITH_TABLE: usize = 0;
+pub const SET_TABLE: usize = 1;
+pub const DEREF_TABLE: usize = 2;
+pub const JUMP_TABLE: usize = 3;
+pub const BLAKE3_TABLE: usize = 4;
+pub const PACK64X2_TABLE: usize = 5;
 
 /// BLAKE3 value-column LOCAL indices in canonical slot order
 /// `[a0..a3, b0..b3, c0..c3]` (matches `blake3_flock::SLOTS`). These columns are
@@ -354,15 +355,12 @@ macro_rules! columns {
 
 // ---- XOR / MUL ---------------------------------------------------------------
 
-/// `XOR` and `MUL_NATIVE` share their column layout, flushes, and fill; they
-/// differ only in the opcode tag and the third-operand identity (`vc = va + vb`
-/// for `XOR`, `vc = va·vb` in `E = K[y]/(y³+y+1)` for `MUL`, degree 2 in the
-/// committed K-lane columns).
-struct Arith {
-    is_xor: bool,
-}
+/// Unified ADD/XOR and MUL table. `IS_MUL` is both a boolean operation selector
+/// and the bytecode opcode coordinate. `PROD = VA * VB` is materialized so the
+/// selected result identity remains degree two.
+struct Arith;
 
-mod arith {
+pub(crate) mod arith {
     pub const PC: usize = 0;
     pub const FP: usize = 1;
     pub const OA: usize = 2;
@@ -381,16 +379,20 @@ mod arith {
     pub const VC_LO: usize = 14;
     pub const VC_HI: usize = 15;
     pub const VC_TOP: usize = 16;
-    pub const RA: usize = 17;
-    pub const RB: usize = 18;
-    pub const RC: usize = 19;
-    pub const RBC: usize = 20;
-    pub const N: usize = 21;
+    pub const PROD_LO: usize = 17;
+    pub const PROD_HI: usize = 18;
+    pub const PROD_TOP: usize = 19;
+    pub const IS_MUL: usize = 20;
+    pub const RA: usize = 21;
+    pub const RB: usize = 22;
+    pub const RC: usize = 23;
+    pub const RBC: usize = 24;
+    pub const N: usize = 25;
 }
 
 impl Table for Arith {
     fn opcode_tag(&self) -> F64 {
-        if self.is_xor { OP_XOR } else { OP_MUL }
+        OP_XOR
     }
     fn n_committed_columns(&self) -> usize {
         arith::N
@@ -402,7 +404,8 @@ impl Table for Arith {
     fn constraint_columns(&self) -> &'static [usize] {
         use arith::*;
         &[
-            FP, OA, OB, OC, AA, AB, AC, VA_LO, VA_HI, VA_TOP, VB_LO, VB_HI, VB_TOP, VC_LO, VC_HI, VC_TOP,
+            FP, OA, OB, OC, AA, AB, AC, VA_LO, VA_HI, VA_TOP, VB_LO, VB_HI, VB_TOP, VC_LO, VC_HI, VC_TOP, PROD_LO,
+            PROD_HI, PROD_TOP, IS_MUL,
         ]
     }
     fn eval_constraint(&self, eta: F192, cols: &Cols) -> F192 {
@@ -411,26 +414,27 @@ impl Table for Arith {
         let va = e192(cols[VA_LO], cols[VA_HI], cols[VA_TOP]);
         let vb = e192(cols[VB_LO], cols[VB_HI], cols[VB_TOP]);
         let vc = e192(cols[VC_LO], cols[VC_HI], cols[VC_TOP]);
-        // XOR = E-addition, MUL = E-multiplication — both degree 2
-        // in the lane columns, so the round univariate stays degree 2.
-        let third = if self.is_xor { va + vb } else { va * vb };
+        let prod = e192(cols[PROD_LO], cols[PROD_HI], cols[PROD_TOP]);
+        let is_mul = cols[IS_MUL];
         eval_poly(
             eta,
             [
                 cols[AA] + cols[FP] * cols[OA],
                 cols[AB] + cols[FP] * cols[OB],
                 cols[AC] + cols[FP] * cols[OC],
-                vc + third,
+                is_mul * (is_mul + F192::ONE),
+                prod + va * vb,
+                vc + is_mul * prod + (F192::ONE + is_mul) * (va + vb),
             ],
         )
     }
     fn flushes(&self, f: &mut FlushBuilder) {
         use arith::*;
         f.state_step(PC, FP);
-        f.bytecode(
+        f.bytecode_coord(
             PC,
             RBC,
-            self.opcode_tag(),
+            Col(IS_MUL),
             &[Col(OA), Col(OB), Col(OC), Const(F64::ZERO), Const(F64::ZERO)],
         );
         f.memory(AA, RA, VA_LO, VA_HI, VA_TOP);
@@ -439,7 +443,7 @@ impl Table for Arith {
     }
     fn fill(&self, ctx: &FillCtx, out: &mut [Column]) {
         use arith::*;
-        let rows = if self.is_xor { &ctx.trace.xor } else { &ctx.trace.mul };
+        let rows = &ctx.trace.arith;
         out[PC] = rows.par_iter().map(|r| ctx.g_at(r.pc)).collect();
         out[FP] = rows.par_iter().map(|r| ctx.g_at(r.fp)).collect();
         out[OA] = rows.par_iter().map(|r| ctx.g_at(r.aa - r.fp)).collect();
@@ -457,6 +461,14 @@ impl Table for Arith {
         out[VC_LO] = rows.par_iter().map(|r| F64(ctx.mem[r.ac as usize].c0)).collect();
         out[VC_HI] = rows.par_iter().map(|r| F64(ctx.mem[r.ac as usize].c1)).collect();
         out[VC_TOP] = rows.par_iter().map(|r| F64(ctx.mem[r.ac as usize].c2)).collect();
+        let products: Vec<F192> = rows
+            .par_iter()
+            .map(|r| ctx.mem[r.aa as usize] * ctx.mem[r.ab as usize])
+            .collect();
+        out[PROD_LO] = products.par_iter().map(|v| F64(v.c0)).collect();
+        out[PROD_HI] = products.par_iter().map(|v| F64(v.c1)).collect();
+        out[PROD_TOP] = products.par_iter().map(|v| F64(v.c2)).collect();
+        out[IS_MUL] = rows.par_iter().map(|r| r.is_mul).collect();
         out[RA] = rows.par_iter().map(|r| r.ra).collect();
         out[RB] = rows.par_iter().map(|r| r.rb).collect();
         out[RC] = rows.par_iter().map(|r| r.rc).collect();

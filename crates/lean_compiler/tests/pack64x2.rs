@@ -19,7 +19,11 @@ def main():
     warm_setup(1);
     let want = [F192::new(5, 7, 0), F192::new(5, 7, 0)];
     let (proof, stats) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
-    assert_eq!(stats.counts[6], 1, "one PACK64X2 instruction");
+    assert_eq!(
+        stats.counts[lean_vm::tables::PACK64X2_TABLE],
+        1,
+        "one PACK64X2 instruction"
+    );
     verify(&program, &want, &proof).expect("PACK64X2 program verifies");
 }
 

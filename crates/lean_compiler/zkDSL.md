@@ -14,6 +14,12 @@ Source files use the `.py` extension and are **valid Python**: they import the
 Entry points: `lean_compiler::parse` / `parse_file_with_replacements` →
 `lean_compiler::compile` → `lean_vm::cpu::prove` / `verify`.
 
+`XOR` and `MUL` remain distinct bytecode instructions, but their execution rows
+share one arithmetic AIR table. Its boolean `is_mul` column is `0` for `XOR`
+and `1` for `MUL`; a materialized product word keeps the selected result
+constraint quadratic. This proving layout does not change source semantics or
+instruction costs.
+
 ## Dev experience
 
 The repo ships a root [`pyrightconfig.json`](../../pyrightconfig.json) with

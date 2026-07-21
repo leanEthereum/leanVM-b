@@ -30,7 +30,7 @@ mod trace;
 pub use execute::Execution;
 pub use isa::{DerefMode, Op};
 pub use layout::*;
-pub(crate) use trace::{Brow, Drow, Jrow, Srow, Trace, Xrow};
+pub(crate) use trace::{Arow, Brow, Drow, Jrow, Srow, Trace, Xrow};
 
 /// Witness-gen `BLAKE3` compression (doc §7.6): the eight input words are the two
 /// 256-bit operands `a = va[0..4]`, `b = vb[0..4]` laid out little-endian into
@@ -316,7 +316,7 @@ fn blake3_value_slot(col: usize) -> Option<usize> {
 
 /// Run statistics returned alongside the proof: the cycle count (total executed
 /// instructions), the per-opcode counts
-/// `[XOR, MUL, SET, DEREF, JUMP, BLAKE3, PACK64X2]`, and the
+/// `[ARITH, SET, DEREF, JUMP, BLAKE3, PACK64X2]`, and the
 /// committed witness size — the sum of the column lengths, i.e. the real data
 /// before the stacked witness is zero-padded to a power of two `2^m`.
 pub struct Stats {
@@ -719,7 +719,7 @@ mod tests {
         assert_eq!(exec.trace.blake3.len(), 1);
 
         let (proof, stats) = prove(&program, pi, pcs::LOG_INV_RATE);
-        assert_eq!(stats.counts[5], 1, "one BLAKE3 row");
+        assert_eq!(stats.counts[tables::BLAKE3_TABLE], 1, "one BLAKE3 row");
         // flock's sub-proof rides the shared channels: its Ligerito is the proof's
         // one opening, its scalar reduction trails the `stream`.
         assert!(!proof.openings.is_empty(), "BLAKE3 program carries a Ligerito opening");
@@ -785,7 +785,7 @@ mod tests {
         assert_eq!(exec.mem[5], cell(d[2], d[3]));
 
         let (proof, stats) = prove(&program, pi, pcs::LOG_INV_RATE);
-        assert_eq!(stats.counts[5], 1, "one BLAKE3 row");
+        assert_eq!(stats.counts[tables::BLAKE3_TABLE], 1, "one BLAKE3 row");
         verify(&program, &pi, &proof).expect("self-hash BLAKE3 verifies");
     }
 
@@ -854,7 +854,7 @@ mod tests {
         let program = Program::from_bytecode(prog, 5);
         let pi = [F192::new(1, 2, 3), F192::new(4, 5, 6)];
         let (proof, stats) = prove(&program, pi, pcs::LOG_INV_RATE);
-        assert_eq!(stats.counts[5], 0, "no real BLAKE3 rows");
+        assert_eq!(stats.counts[tables::BLAKE3_TABLE], 0, "no real BLAKE3 rows");
         // The proof still carries exactly one Ligerito opening (over the padding).
         assert_eq!(proof.openings.len(), 1, "unified path: one opening always");
         verify(&program, &pi, &proof).expect("non-BLAKE3 program verifies");
@@ -878,6 +878,42 @@ mod tests {
         assert_eq!(exec.mem[4], x * y, "MUL computes the E product");
         let (proof, _) = prove(&program, pi, pcs::LOG_INV_RATE);
         verify(&program, &pi, &proof).expect("192-bit MUL verifies");
+    }
+
+    #[test]
+    fn add_and_mul_share_one_arithmetic_table() {
+        use crate::tables::arith;
+
+        let x = F192::new(7, 11, 13);
+        let y = F192::new(17, 19, 23);
+        let program = Program::from_bytecode(
+            vec![
+                Op::Set { o: 2, k: x },
+                Op::Set { o: 3, k: y },
+                Op::Xor { a: 2, b: 3, c: 4 },
+                Op::Mul { a: 2, b: 3, c: 5 },
+                Op::Set { o: 6, k: F192::ZERO },
+                Op::Set { o: 7, k: F192::ZERO },
+                Op::Set { o: 8, k: F192::ZERO },
+                Op::Xor { a: 0, b: 0, c: 0 }, // sentinel
+            ],
+            9,
+        );
+        let pi = [F192::ONE, F192::Y];
+        let exec = program.execute(pi);
+        let witness = program.build(&exec);
+        assert_eq!(witness.row_counts[tables::ARITH_TABLE], 2);
+
+        let base = schema().base[tables::ARITH_TABLE];
+        assert_eq!(witness.cols[base + arith::IS_MUL][..2], [F64::ZERO, F64::ONE]);
+        let prod = x * y;
+        assert_eq!(witness.cols[base + arith::PROD_LO][..2], [F64(prod.c0); 2]);
+        assert_eq!(witness.cols[base + arith::PROD_HI][..2], [F64(prod.c1); 2]);
+        assert_eq!(witness.cols[base + arith::PROD_TOP][..2], [F64(prod.c2); 2]);
+
+        let (proof, stats) = prove(&program, pi, pcs::LOG_INV_RATE);
+        assert_eq!(stats.counts[tables::ARITH_TABLE], 2);
+        verify(&program, &pi, &proof).expect("merged arithmetic table verifies");
     }
 
     /// A proof is bound to its exact program: presenting it against a *different*

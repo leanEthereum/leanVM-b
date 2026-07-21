@@ -14,6 +14,18 @@ pub(crate) struct Xrow {
     pub(crate) rc: F64,
     pub(crate) bytecode_read: F64,
 }
+pub(crate) struct Arow {
+    pub(crate) pc: u32,
+    pub(crate) fp: u32,
+    pub(crate) aa: u32,
+    pub(crate) ab: u32,
+    pub(crate) ac: u32,
+    pub(crate) is_mul: F64,
+    pub(crate) ra: F64,
+    pub(crate) rb: F64,
+    pub(crate) rc: F64,
+    pub(crate) bytecode_read: F64,
+}
 pub(crate) struct Srow {
     pub(crate) pc: u32,
     pub(crate) fp: u32,
@@ -85,8 +97,7 @@ pub(crate) struct Brow {
 }
 
 pub(crate) struct Trace {
-    pub(crate) xor: Vec<Xrow>,
-    pub(crate) mul: Vec<Xrow>,
+    pub(crate) arith: Vec<Arow>,
     pub(crate) set: Vec<Srow>,
     pub(crate) deref: Vec<Drow>,
     pub(crate) jump: Vec<Jrow>,

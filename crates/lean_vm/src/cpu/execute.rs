@@ -76,8 +76,7 @@ impl Program {
 
         // Per-opcode trace rows, accumulated during the walk and assembled into the
         // `Trace` once the run finishes (alongside the final count columns).
-        let mut xor: Vec<Xrow> = Vec::new();
-        let mut mul: Vec<Xrow> = Vec::new();
+        let mut arith: Vec<Arow> = Vec::new();
         let mut set: Vec<Srow> = Vec::new();
         let mut deref: Vec<Drow> = Vec::new();
         let mut jump: Vec<Jrow> = Vec::new();
@@ -425,22 +424,18 @@ impl Program {
                     let ra = bump_access_count(&mut mem, &mut written, &mut mem_count, aa);
                     let rb = bump_access_count(&mut mem, &mut written, &mut mem_count, ab);
                     let rc = bump_access_count(&mut mem, &mut written, &mut mem_count, ac);
-                    let row = Xrow {
+                    arith.push(Arow {
                         pc,
                         fp,
                         aa,
                         ab,
                         ac,
+                        is_mul: if is_xor { F64::ZERO } else { F64::ONE },
                         ra,
                         rb,
                         rc,
                         bytecode_read,
-                    };
-                    if is_xor {
-                        xor.push(row);
-                    } else {
-                        mul.push(row);
-                    }
+                    });
                     pc += 1;
                 }
                 Op::Set { o, k } => {
@@ -766,8 +761,7 @@ impl Program {
         mem.resize(cells, F192::ZERO);
         mem_count.resize(cells, F64::ONE);
         let trace = Trace {
-            xor,
-            mul,
+            arith,
             set,
             deref,
             jump,

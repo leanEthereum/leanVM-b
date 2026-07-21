@@ -4,7 +4,7 @@ from snark_lib import *
 # prefix the shape dictates); binding always comes from the per-word absorbs.
 STREAM_CAP = STREAM_CAP_PLACEHOLDER
 # Per-table tau floor: BLAKE3 is sized to flock's instance count (>= 2^3).
-FLOORS = [0, 0, 0, 0, 0, 3, 0]
+FLOORS = [0, 0, 0, 0, 3, 0]
 INV_GEN = INV_GEN_PLACEHOLDER
 LAGRANGE_INV_0 = LAGRANGE_INV_0_PLACEHOLDER
 LAGRANGE_INV_1 = LAGRANGE_INV_1_PLACEHOLDER
@@ -75,13 +75,12 @@ N_AIR_COLS = N_AIR_COLS_PLACEHOLDER
 AIR_COLS_CAP = AIR_COLS_CAP_PLACEHOLDER
 TAU_CAP = TAU_CAP_PLACEHOLDER
 # The instruction tables, in schema order:
-TABLE_XOR = 0
-TABLE_MUL = 1
-TABLE_SET = 2
-TABLE_DEREF = 3
-TABLE_JUMP = 4
-TABLE_BLAKE3 = 5
-TABLE_PACK64X2 = 6
+TABLE_ARITH = 0
+TABLE_SET = 1
+TABLE_DEREF = 2
+TABLE_JUMP = 3
+TABLE_BLAKE3 = 4
+TABLE_PACK64X2 = 5
 N_TABLES = N_TABLES_PLACEHOLDER
 # Phase D (flock reduction): the seven fixed inner challenges (+ inverses of 1+c),
 # the phi8 node table + baked Lagrange inverse denominators (Lambda domain,
@@ -1358,26 +1357,21 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, base_delta_pows, tower_delta_pows, g_
         # the table's AIR constraint at the final point (ev order = the table's
         # constraint_columns order; formulas mirror tables.rs eval_constraint).
         # Memory values are full E-words e192(lo, hi, top) = lo + hi·Y + top·Y².
-        if t == TABLE_XOR:
-            # cols: [FP, OA, OB, OC, AA, AB, AC, VA[3], VB[3], VC[3]]
+        if t == TABLE_ARITH:
+            # cols: [FP, OA, OB, OC, AA, AB, AC, VA[3], VB[3],
+            #        VC[3], PROD[3], IS_MUL]
             va = f192_from_limbs(col_evals[7], col_evals[8], col_evals[9])
             vb = f192_from_limbs(col_evals[10], col_evals[11], col_evals[12])
             vc = f192_from_limbs(col_evals[13], col_evals[14], col_evals[15])
+            prod = f192_from_limbs(col_evals[16], col_evals[17], col_evals[18])
+            is_mul = col_evals[19]
             c0 = col_evals[4] + col_evals[0] * col_evals[1]
             c1 = col_evals[5] + col_evals[0] * col_evals[2]
             c2 = col_evals[6] + col_evals[0] * col_evals[3]
-            c3 = vc + va + vb
-            constraint_eval = c0 + eta * (c1 + eta * (c2 + eta * c3))
-        if t == TABLE_MUL:
-            # same layout as XOR; third = va·vb (the E-product)
-            va = f192_from_limbs(col_evals[7], col_evals[8], col_evals[9])
-            vb = f192_from_limbs(col_evals[10], col_evals[11], col_evals[12])
-            vc = f192_from_limbs(col_evals[13], col_evals[14], col_evals[15])
-            c0 = col_evals[4] + col_evals[0] * col_evals[1]
-            c1 = col_evals[5] + col_evals[0] * col_evals[2]
-            c2 = col_evals[6] + col_evals[0] * col_evals[3]
-            c3 = vc + va * vb
-            constraint_eval = c0 + eta * (c1 + eta * (c2 + eta * c3))
+            c3 = is_mul * (is_mul + 1)
+            c4 = prod + va * vb
+            c5 = vc + is_mul * prod + (1 + is_mul) * (va + vb)
+            constraint_eval = c0 + eta * (c1 + eta * (c2 + eta * (c3 + eta * (c4 + eta * c5))))
         if t == TABLE_SET:
             # cols: [FP, O, A]  (a = fp·o; no memory value in the constraint)
             constraint_eval = col_evals[2] + col_evals[0] * col_evals[1]

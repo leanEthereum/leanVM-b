@@ -675,7 +675,7 @@ fn gen_verify(
         .collect();
 
     // Flock replay data, all named struct fields.
-    let n_log_b3 = l.taus[5];
+    let n_log_b3 = l.taus[lean_vm::tables::BLAKE3_TABLE];
     let lcrounds = flock::blake3::K_LOG - 6;
     let zcf = [summary.zc_claim.a_eval, summary.zc_claim.b_eval];
     let zc_z = summary.zc_claim.z;
@@ -782,7 +782,7 @@ fn gen_verify(
         gbase += n;
     }
     let sch = lean_vm::cpu::schema();
-    let b3base = sch.base[5];
+    let b3base = sch.base[lean_vm::tables::BLAKE3_TABLE];
     let valcols: Vec<usize> = lean_vm::tables::BLAKE3_VALUE_COLS.iter().map(|&c| b3base + c).collect();
     let log_mem = proof.stream[0].c0 as usize;
 
@@ -1326,7 +1326,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
 
     // ---- claim descriptors: buffer id + offset only (both structural) ----
     let sch = lean_vm::cpu::schema();
-    let b3base = sch.base[5];
+    let b3base = sch.base[lean_vm::tables::BLAKE3_TABLE];
     let valcols: Vec<usize> = lean_vm::tables::BLAKE3_VALUE_COLS.iter().map(|&c| b3base + c).collect();
     let (mut cpbuf, mut cpoff) = (vec![], vec![]);
     let mut desc_seen: std::collections::HashSet<(usize, usize)> = Default::default();
@@ -1497,7 +1497,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("LAGRANGE_INV_COMBINED", flds(&icmb));
     ps("LAGRANGE_INV_S", flds(&isdom));
     ps("LINCHECK_ROUNDS", lcrounds.to_string());
-    let pincol = flock::blake3::build_block_r1cs(taus[5].max(MINB3))
+    let pincol = flock::blake3::build_block_r1cs(taus[lean_vm::tables::BLAKE3_TABLE].max(MINB3))
         .const_pin
         .expect("blake3 r1cs has a const pin");
     ps("PIN_COLUMN", pincol.to_string());
@@ -1928,7 +1928,7 @@ fn run_recursion_with_rates(
         pow(stats.cycles),
         stats.cycles as f64 / total_inner_cycles as f64
     );
-    for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3", "PACK64X2"]
+    for (name, &c) in ["ARITH", "SET", "DEREF", "JUMP", "BLAKE3", "PACK64X2"]
         .iter()
         .zip(&stats.counts)
     {

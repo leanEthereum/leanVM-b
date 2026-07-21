@@ -34,7 +34,7 @@ def main():
     let want = [F192::from(g_pow(12)), F192::from(g_pow(5))];
     let (proof, stats) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
     // 2 DEREFs per range check (4 checks) + 2 publishing stores.
-    assert_eq!(stats.counts[3], 10, "DEREF count");
+    assert_eq!(stats.counts[lean_vm::tables::DEREF_TABLE], 10, "DEREF count");
     verify(&program, &want, &proof).expect("range-checked program verifies");
 
     let bad = [F192::from(g_pow(12)), F192::from(g_pow(6))];
@@ -83,7 +83,10 @@ def main():
     let want = [F192::from(F64(5)), F192::from(F64(7))];
     let (proof, stats) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
     // 6 iterations × 2 range-check DEREFs, plus call/publish plumbing.
-    assert!(stats.counts[3] >= 12, "at least the 12 range-check DEREFs");
+    assert!(
+        stats.counts[lean_vm::tables::DEREF_TABLE] >= 12,
+        "at least the 12 range-check DEREFs"
+    );
     verify(&program, &want, &proof).expect("loop range checks verify");
 }
 

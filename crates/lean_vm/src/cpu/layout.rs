@@ -81,7 +81,7 @@ pub struct Layout {
     /// word), bound to the committed memory at verification (§8).
     pub pi: [F192; 2],
     pub taus: [usize; tables::N_TABLES],
-    /// Real (non-padded) per-table row counts, as announced. `row_counts[5]` is
+    /// Real (non-padded) per-table row counts, as announced. `row_counts[4]` is
     /// the executed `BLAKE3` count, which gates the flock sub-proof.
     pub row_counts: [usize; tables::N_TABLES],
 }
@@ -494,8 +494,7 @@ impl Program {
         // public input, with no committed witness; reconstruct it here so the
         // prover and verifier share exactly the same structure (§7, §8).
         let row_counts = [
-            tr.xor.len(),
-            tr.mul.len(),
+            tr.arith.len(),
             tr.set.len(),
             tr.deref.len(),
             tr.jump.len(),
