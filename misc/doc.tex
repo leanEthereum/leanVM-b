@@ -84,7 +84,7 @@ Instruction & Operands & Semantics\\
 \[
   \mu=\mathit{counter}_{64}\;\Vert\;\mathit{block\_len}_{32}\;\Vert\;\mathit{flags}_{32}.
 \]
-For a one-block $64$-byte hash, the chaining value is the standard IV and $\mu=(0,64,\textsc{chunk-start}|\textsc{chunk-end}|\textsc{root})$. Longer standard BLAKE3 hashes pass each compression result back through $o_V$ and choose the counter, length, and flags prescribed by BLAKE3. Tthe BLAKE3 table (\S\ref{sec:tab-blake3}) wires its memory and bytecode operands into a flock~\cite{flock} R1CS proof.
+For a one-block $64$-byte hash, the chaining value is the standard IV and $\mu=(0,64,\textsc{chunk-start}|\textsc{chunk-end}|\textsc{root})$. Within one $1024$-byte chunk, a longer standard BLAKE3 hash passes each compression result back through $o_V$ and chooses the length and flags prescribed by BLAKE3. Still longer inputs additionally use BLAKE3's chunk counters and binary tree of parent compressions. The BLAKE3 table (\S\ref{sec:tab-blake3}) wires its memory and bytecode operands into a flock~\cite{flock} R1CS proof.
 
 \texttt{DEREF} stores, at the dereferenced address $\loc{\alpha}\cdot\beta$, a value chosen by a \emph{store mode} $s\in\{\texttt{deref\_cell}[\gamma],\texttt{deref\_pc},\texttt{deref\_fp}\}$:
 \[

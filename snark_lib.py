@@ -165,10 +165,12 @@ def blake3(
 
     With no keywords this hashes exactly 64 bytes using the standard IV,
     counter zero, block length 64, and CHUNK_START | CHUNK_END | ROOT. `cv`
-    selects a 2-cell chaining value; `counter`/`chunk`, `block_len`, and
+    selects a 2-cell chaining value and requires an explicit structured-mode
+    keyword such as `step` or `flags`; `counter`/`chunk`, `block_len`, and
     `flags` set the compile-time metadata directly. In inferred-flag mode,
     `step=0` marks CHUNK_START, while `end`, `root`, and `parent` add the
-    corresponding BLAKE3 flags.
+    corresponding BLAKE3 flags. Bytes after `block_len` must be zero-filled by
+    the program.
 
     Message, chaining-value, and output operands are size-2 StackBufs or
     2-cell slices `buf[lo:hi]` of larger StackBufs or HeapBufs (heap inputs are

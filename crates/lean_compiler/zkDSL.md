@@ -583,8 +583,10 @@ Every compression also has a 256-bit chaining value and a compile-time 128-bit
 metadata immediate. The optional keywords are:
 
 - `cv=<pair>` — a consecutive 2-cell chaining value; omitting it selects the
-  standard BLAKE3 IV. A function that uses the default IV emits two `SET`s on
-  its first such hash only and reuses those cells thereafter;
+  standard BLAKE3 IV. On each runtime path, a function emits two `SET`s at its
+  first such hash only and reuses those cells thereafter. Supplying `cv=` also
+  requires `step=`, `flags=`, or another structured metadata keyword so a
+  chained block cannot accidentally inherit the one-shot root flags;
 - `counter=<u64>` (or `chunk=<u64>`) — BLAKE3's chunk counter;
 - `block_len=<0..64>` — the number of bytes in this message block;
 - `flags=<u32>` — an explicit flag word;
@@ -595,7 +597,9 @@ metadata immediate. The optional keywords are:
 
 The metadata is packed as
 `counter:u64 | block_len:u32 | flags:u32`, little-endian, and is part of the
-public bytecode. A partial final block must set its exact `block_len`. For a
+public bytecode. A partial final block must set its exact `block_len`, and every
+message byte after `block_len` must be zero: the compression circuit still sees
+the complete 64-byte block and does not enforce this padding rule. For a
 multi-block chunk, feed each result back with `cv=...`, set `step=0` on the
 first block, and set `end=1` on the last; set `root=1` only when that output is
 the hash root. Parent-node compressions use `parent=1`, the standard IV, and a
@@ -610,6 +614,9 @@ Operands are size-2 `StackBuf`s or 2-cell slices:
   the idiom `p = StackBuf(2); p[0] = tweak; p[1] = pp; blake3(p, …)` — the
   copies vanish: a stack store of a plain copy or a zero is forwarded to its
   source (see "Variables"), and `BLAKE3` reads each word where it already is;
+- the chaining value has only one opcode offset and therefore must be
+  consecutive. If a 2-cell `cv` was assembled from non-adjacent copied words,
+  the compiler materializes those two words into a fresh consecutive run;
 - **heap slices** are still bridged through the stack for the *input pull* (the
   operand's word comes from the heap): +1 `DEREF` per heap word, and the output,
   if a heap slice, is stored after — write-once memory fills whichever side is

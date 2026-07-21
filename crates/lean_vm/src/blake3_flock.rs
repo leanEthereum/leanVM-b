@@ -160,8 +160,8 @@ pub fn compression(a: [F128; 2], b: [F128; 2], cv: [F128; 2], meta: F128) -> Com
     (cv_words, m, counter, block_len, flags)
 }
 
-/// The 256-bit digest `c = (c0, c1)` of a compression (= flock's `out_lo` =
-/// `blake3::hash(a‖b)`).
+/// The low 256-bit output `c = (c0, c1)` of an arbitrary compression. This is
+/// `blake3::hash(a‖b)` only for the standard IV and one-block root metadata.
 pub fn digest(block: &Compression) -> [F128; 2] {
     let st = blake3_compress(&block.0, &block.1, block.2, block.3, block.4);
     [

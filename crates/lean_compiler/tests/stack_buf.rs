@@ -5,7 +5,7 @@
 //! `blake3(h, h, out)` aliases one pair into both input operands) and writes
 //! the digest into the pre-allocated pair `out`.
 
-use lean_vm::blake3_flock::warm_setup;
+use lean_vm::blake3_flock::{compression, digest, metadata, warm_setup};
 use lean_compiler::{compile, parse};
 use lean_vm::cpu::{prove, verify};
 use primitives::field::F128;
@@ -94,6 +94,117 @@ def main():
     let (proof, stats) = prove(&program, want);
     assert_eq!(stats.counts[5], 2);
     verify(&program, &want, &proof).expect("standard two-block BLAKE3 verifies");
+}
+
+/// A default IV first materialized in an untaken runtime branch must not leak
+/// into the post-join lowering state. Both executions must initialize the IV
+/// on the path that reaches the second hash.
+#[test]
+fn blake3_default_iv_after_runtime_branch() {
+    let src = "\
+def main():
+    flag = StackBuf(1)
+    hint_witness(flag, \"flag\")
+    a = [1, 2, 3, 4]
+    if flag[0] == 1:
+        ignored = StackBuf(2)
+        blake3(a[0:2], a[2:4], ignored)
+    out = StackBuf(2)
+    blake3(a[0:2], a[2:4], out)
+    p = 1
+    p[1] = out[0]
+    p[GEN] = out[1]
+    return
+";
+    let want = compress(
+        [F128::new(1, 0), F128::new(2, 0)],
+        [F128::new(3, 0), F128::new(4, 0)],
+    );
+    warm_setup(2);
+    for flag in [0, 1] {
+        let mut program = compile(&parse(src).expect("parse"));
+        program.set_witness("flag", vec![vec![F128::new(flag, 0)]]);
+        let (proof, _) = prove(&program, want);
+        verify(&program, &want, &proof).expect("post-join default IV is initialized on both paths");
+    }
+}
+
+/// Each mutually exclusive branch gets a path-local IV initialization when no
+/// dominating default-IV hash exists before the branch.
+#[test]
+fn blake3_default_iv_in_both_runtime_branches() {
+    let src = "\
+def main():
+    flag = StackBuf(1)
+    hint_witness(flag, \"flag\")
+    a = [1, 2, 3, 4]
+    out = StackBuf(2)
+    if flag[0] == 1:
+        blake3(a[0:2], a[2:4], out)
+    else:
+        blake3(a[0:2], a[2:4], out)
+    p = 1
+    p[1] = out[0]
+    p[GEN] = out[1]
+    return
+";
+    let want = compress(
+        [F128::new(1, 0), F128::new(2, 0)],
+        [F128::new(3, 0), F128::new(4, 0)],
+    );
+    warm_setup(1);
+    for flag in [0, 1] {
+        let mut program = compile(&parse(src).expect("parse"));
+        program.set_witness("flag", vec![vec![F128::new(flag, 0)]]);
+        let (proof, _) = prove(&program, want);
+        verify(&program, &want, &proof).expect("each branch initializes its default IV");
+    }
+}
+
+/// Deferred aliases may expose non-adjacent source words for a syntactically
+/// consecutive CV StackBuf. The compiler must materialize that pair because
+/// the BLAKE3 opcode carries only one CV base offset.
+#[test]
+fn blake3_materializes_aliased_cv_pair() {
+    let src = "\
+def main():
+    msg = [1, 2, 3, 4]
+    sources = [5, 99, 6]
+    cv = [sources[0], sources[2]]
+    out = StackBuf(2)
+    blake3(msg[0:2], msg[2:4], out, cv=cv, flags=10)
+    p = 1
+    p[1] = out[0]
+    p[GEN] = out[1]
+    return
+";
+    let program = compile(&parse(src).expect("parse"));
+    let block = compression(
+        [F128::new(1, 0), F128::new(2, 0)],
+        [F128::new(3, 0), F128::new(4, 0)],
+        [F128::new(5, 0), F128::new(6, 0)],
+        metadata(0, 64, 10),
+    );
+    let want = digest(&block);
+    warm_setup(1);
+    let (proof, _) = prove(&program, want);
+    verify(&program, &want, &proof).expect("materialized custom CV verifies");
+}
+
+/// A custom CV with the one-shot default flags is not a standard chained
+/// block. Require the caller to select structured metadata explicitly.
+#[test]
+#[should_panic(expected = "blake3 with cv= requires")]
+fn blake3_cv_alone_is_rejected() {
+    let src = "\
+def main():
+    msg = [1, 2, 3, 4]
+    cv = [5, 6]
+    out = StackBuf(2)
+    blake3(msg[0:2], msg[2:4], out, cv=cv)
+    return
+";
+    let _ = compile(&parse(src).expect("parse"));
 }
 
 /// A general (non-blake3) `StackBuf(3)`: indexed writes, an indexed read feeding

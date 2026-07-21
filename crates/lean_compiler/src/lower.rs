@@ -108,7 +108,8 @@ struct FnLower<'a> {
     /// Hints queued to attach to the next emitted instruction.
     pending: Vec<Hint>,
     /// Two consecutive frame cells holding the standard BLAKE3 IV, emitted
-    /// lazily on this frame's first default-IV compression.
+    /// lazily at the first dominating default-IV compression in this
+    /// control-flow scope. [`Self::scoped`] restores this cache at branch joins.
     blake3_iv: Option<Off>,
     queue: &'a mut Vec<Func>,
     loop_ctr: &'a mut usize,
@@ -248,9 +249,9 @@ impl FnLower<'_> {
     }
 
     /// Run `f` with branch-local scope: bindings AND the lazily cached cells
-    /// (`one`, `self_fp`, range-check bounds) revert afterwards — a cell
-    /// whose `SET` sits inside a conditionally-executed region must not be
-    /// trusted outside it.
+    /// (`one`, `self_fp`, range-check bounds, default BLAKE3 IV) revert
+    /// afterwards — a cell whose `SET` sits inside a conditionally-executed
+    /// region must not be trusted outside it.
     fn scoped(&mut self, f: impl FnOnce(&mut Self)) {
         let saved = (
             self.vars.clone(),
@@ -261,6 +262,7 @@ impl FnLower<'_> {
             self.fconsts.clone(),
             self.alias.clone(),
             self.const_pool.clone(),
+            self.blake3_iv,
         );
         f(self);
         // A hint pending at the end of a branch (e.g. a trailing
@@ -282,6 +284,7 @@ impl FnLower<'_> {
             self.fconsts,
             self.alias,
             self.const_pool,
+            self.blake3_iv,
         ) = saved;
     }
 
@@ -1092,6 +1095,22 @@ impl FnLower<'_> {
         }
     }
 
+    /// A BLAKE3 chaining value must occupy two consecutive frame cells because
+    /// the opcode carries one base offset for both words. Preserve a genuine
+    /// consecutive pair, including a heap pair already bridged by
+    /// [`Self::blake3_input`]; if deferred copy forwarding exposes two
+    /// non-adjacent sources, materialize them into a fresh consecutive run.
+    fn blake3_cv(&mut self, e: &Expr) -> Off {
+        let pair = self.blake3_input(e);
+        if pair[1] == pair[0] + 1 {
+            return pair[0];
+        }
+        let cv = self.alloc_stack(2);
+        self.copy(pair[0], cv);
+        self.copy(pair[1], cv + 1);
+        cv
+    }
+
     /// The cell holding the value of stack cell `o`, following a recorded copy /
     /// zero alias to its real source (so `BLAKE3` reads the source directly and
     /// the assembling copy is never emitted). Returns `o` when it holds a genuine
@@ -1859,6 +1878,13 @@ impl FnLower<'_> {
                     }
                     let allowed = ["cv", "counter", "chunk", "block_len", "flags", "step", "end", "root", "parent"];
                     assert!(kwargs.keys().all(|k| allowed.contains(k)), "unknown {f} keyword");
+                    let customized = kwargs.keys().any(|k| {
+                        matches!(*k, "counter" | "chunk" | "flags" | "step" | "end" | "root" | "parent")
+                    });
+                    assert!(
+                        !kwargs.contains_key("cv") || customized,
+                        "blake3 with cv= requires step=, flags=, or another structured metadata keyword"
+                    );
 
                     let a = self.blake3_input(&args[0]);
                     let b = self.blake3_input(&args[1]);
@@ -1867,9 +1893,7 @@ impl FnLower<'_> {
                         B3Operand::Heap { ptr, lo } => (self.alloc_stack(2), Some((ptr, lo))),
                     };
                     let cv = if let Some(value) = kwargs.get("cv") {
-                        let pair = self.blake3_input(value);
-                        assert_eq!(pair[1], pair[0] + 1, "the cv operand must occupy two consecutive frame cells");
-                        pair[0]
+                        self.blake3_cv(value)
                     } else {
                         self.default_blake3_cv()
                     };
@@ -1888,9 +1912,6 @@ impl FnLower<'_> {
                     assert!(counter <= u64::MAX as u128, "BLAKE3 counter does not fit in u64");
                     let block_len = const_kw(self, "block_len", 64);
                     assert!(block_len <= 64, "BLAKE3 block_len must be at most 64");
-                    let customized = kwargs.keys().any(|k| {
-                        matches!(*k, "counter" | "chunk" | "flags" | "step" | "end" | "root" | "parent")
-                    });
                     let step = kwargs.get("step").map(|e| self.const_index(e));
                     if let Some(step) = step {
                         assert!(step < 16, "BLAKE3 step must be in 0..16");

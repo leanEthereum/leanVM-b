@@ -1226,6 +1226,10 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         let cs: Vec<usize> = (0..cn).map(|i| cq[i].div_ceil(cp[i])).collect();
         let cni: Vec<usize> = ck.iter().map(|&k| 1usize << k).collect();
         let cqb: Vec<usize> = (0..cn).map(|lvl| vc.grinding_bits[lvl]).collect();
+        assert!(
+            cni.iter().all(|&n| n <= 64),
+            "recursive Ligerito guest supports Merkle rows of at most one 1024-byte BLAKE3 chunk"
+        );
         let cfgb = |lvl: usize| vc.fold_grinding_bits.get(lvl).copied().unwrap_or(0) as i64;
         let mut cfb: Vec<usize> = Vec::new();
         for (lvl, &k) in ck.iter().enumerate().take(cn) { for j in 0..k { cfb.push((cfgb(lvl) - j as i64).max(0) as usize); } }
