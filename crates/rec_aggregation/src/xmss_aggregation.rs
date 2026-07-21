@@ -11,7 +11,10 @@ use std::collections::BTreeMap;
 
 use lean_compiler::{compile, parse_file_with_replacements};
 use lean_vm::cpu::{prove, verify};
-use primitives::field::{F128, g_pow};
+use primitives::{
+    field::{F128, g_pow},
+    pretty_f64, pretty_integer,
+};
 use xmss::*;
 
 use crate::signers_cache;
@@ -47,7 +50,7 @@ fn aggregate_binding(mut state: [u8; STATE_LEN], data: &[u8]) -> [u8; STATE_LEN]
 /// (`guests/xmss_aggregate.py`) over all signatures, proves, verifies, and
 /// prints the benchmark report.
 pub fn run_xmss_aggregation(n: usize) {
-    let trace_span = tracing::info_span!("XMSS aggregation", n).entered();
+    let trace_span = tracing::info_span!("XMSS aggregation", n = %pretty_integer(n)).entered();
 
     // Pin rayon workers to performance cores (QoS) before any parallel work runs,
     // so fork-join stages are not held up by efficiency-core stragglers. Thread
@@ -165,38 +168,54 @@ pub fn run_xmss_aggregation(n: usize) {
     assert!(verify(&program, &bad, &proof).is_err());
 
     let proof_bytes = bincode::serialized_size(&proof).expect("proof is serializable");
-    let per = |x: usize| x as f64 / n as f64;
-    let pow = |x: usize| if x == 0 { "     -".into() } else { format!("2^{:.2}", (x as f64).log2()) };
+    let per = |x: usize| pretty_f64(x as f64 / n as f64);
+    let pow = |x: usize| {
+        if x == 0 {
+            "     -".into()
+        } else {
+            format!("2^{}", pretty_f64((x as f64).log2()))
+        }
+    };
     // tracing-forest renders the tree when its root span closes. Close it
     // before printing the benchmark report so the complete trace appears first.
     drop(trace_span);
 
-    println!("\nXMSS aggregation, {n} signatures");
+    println!("\nXMSS aggregation, {} signatures", pretty_integer(n));
     println!(
-        "  cycles (VM steps)           : {:>10} = {:>7}   ({:>8.1} / XMSS)",
-        stats.cycles,
+        "  cycles (VM steps)           : {:>14} = {:>9}   ({:>12} / XMSS)",
+        pretty_integer(stats.cycles),
         pow(stats.cycles),
         per(stats.cycles)
     );
     for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3"].iter().zip(&stats.counts) {
         println!(
-            "    {name:<6} instructions       : {c:>10} = {:>7}   ({:>8.1} / XMSS)",
+            "    {name:<6} instructions       : {:>14} = {:>9}   ({:>12} / XMSS)",
+            pretty_integer(c),
             pow(c),
             per(c)
         );
     }
-    println!("  committed witness size      : 2^{:.3}", (stats.committed as f64).log2());
     println!(
-        "  data memory                 : 2^{} padded (2^{:.2} used)",
-        stats.log_mem,
-        (stats.mem_used as f64).log2()
+        "  committed witness size      : 2^{}",
+        pretty_f64((stats.committed as f64).log2())
     );
-    println!("  proof size                  : {:.1} KiB", proof_bytes as f64 / 1024.0);
-    println!("  proving (incl. witness gen) : {t_prove:?}");
-    println!("  verifying                   : {t_verify:?}");
     println!(
-        "  throughput                  : {:.1} XMSS/s",
-        n as f64 / t_prove.as_secs_f64()
+        "  data memory                 : 2^{} padded (2^{} used)",
+        pretty_integer(stats.log_mem),
+        pretty_f64((stats.mem_used as f64).log2())
+    );
+    println!(
+        "  proof size                  : {} KiB",
+        pretty_f64(proof_bytes as f64 / 1024.0)
+    );
+    println!(
+        "  proving (incl. witness gen) : {} s",
+        pretty_f64(t_prove.as_secs_f64())
+    );
+    println!("  verifying                   : {} s", pretty_f64(t_verify.as_secs_f64()));
+    println!(
+        "  throughput                  : {} XMSS/s",
+        pretty_f64(n as f64 / t_prove.as_secs_f64())
     );
 }
 

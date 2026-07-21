@@ -19,10 +19,13 @@ use std::collections::BTreeMap;
 use pcs::ligerito::log2_ceil;
 use lean_compiler::{compile, parse, parse_file_with_replacements};
 use lean_vm::cpu::{Program, prove, verify};
-use primitives::field::{g_pow, F128, G};
 use lean_vm::leaf::{Block, Coord};
-use primitives::multilinear::mle_eval;
 use lean_vm::transcript::{Sponge, TraceOp, trace_start, trace_take};
+use primitives::{
+    field::{F128, G, g_pow},
+    multilinear::mle_eval,
+    pretty_f64, pretty_integer,
+};
 
 /// A field element as the decimal `u128` literal the zkDSL parser accepts.
 fn u(f: F128) -> u128 {
@@ -105,9 +108,9 @@ fn prove_inner(pi: [F128; 2], hashes: usize, iters: usize) -> (Program, lean_vm:
     program.set_witness("iters", vec![vec![g_pow(iters)]]);
     let (proof, stats) = prove(&program, pi);
     eprintln!(
-        "[inner] cycles={} committed=2^{:.2}",
-        stats.cycles,
-        (stats.committed as f64).log2()
+        "[inner] cycles={} committed=2^{}",
+        pretty_integer(stats.cycles),
+        pretty_f64((stats.committed as f64).log2())
     );
     (program, proof, stats.cycles)
 }
@@ -1366,8 +1369,10 @@ pub fn run_recursion(inner: &[(usize, usize)], enable_tracing: bool) -> Recursiv
     // The recursion program size + compile time, BEFORE any inner proving.
     let real_instrs: usize = guest.fn_ranges.iter().map(|(_, _, len)| *len as usize).sum();
     eprintln!(
-        "recursion program: {real_instrs} instructions (2^{} padded), compiled in {t_compile:?}",
-        guest.prog.len().trailing_zeros()
+        "recursion program: {} instructions (2^{} padded), compiled in {} s",
+        pretty_integer(real_instrs),
+        pretty_integer(guest.prog.len().trailing_zeros()),
+        pretty_f64(t_compile.as_secs_f64())
     );
     // 3: prove the inner proofs and extract the recursion witness (hints).
     let batch = build_batch(inner);
@@ -1376,7 +1381,8 @@ pub fn run_recursion(inner: &[(usize, usize)], enable_tracing: bool) -> Recursiv
     if enable_tracing {
         primitives::init_tracing();
     }
-    let trace_span = tracing::info_span!("Recursive aggregation", n = nsub).entered();
+    let trace_span =
+        tracing::info_span!("Recursive aggregation", n = %pretty_integer(nsub)).entered();
     let t = std::time::Instant::now();
     let (recursive_proof, stats) = batch.prove(&mut guest);
     let t_prove = t.elapsed();
@@ -1390,26 +1396,53 @@ pub fn run_recursion(inner: &[(usize, usize)], enable_tracing: bool) -> Recursiv
     // before printing the benchmark report so the complete trace appears first.
     drop(trace_span);
 
-    let pow = |x: usize| if x == 0 { "     -".into() } else { format!("2^{:.2}", (x as f64).log2()) };
-    println!("\nrecursion {nsub}\u{2192}1: {nsub} inner proofs of {} cycles each", total_inner_cycles / nsub);
+    let pow = |x: usize| {
+        if x == 0 {
+            "     -".into()
+        } else {
+            format!("2^{}", pretty_f64((x as f64).log2()))
+        }
+    };
     println!(
-        "  guest cycles (VM steps)     : {:>10} = {:>7}   ({:.2} / inner cycle)",
-        stats.cycles,
+        "\nrecursion {}\u{2192}1: {} inner proofs of {} cycles each",
+        pretty_integer(nsub),
+        pretty_integer(nsub),
+        pretty_integer(total_inner_cycles / nsub)
+    );
+    println!(
+        "  guest cycles (VM steps)     : {:>14} = {:>9}   ({} / inner cycle)",
+        pretty_integer(stats.cycles),
         pow(stats.cycles),
-        stats.cycles as f64 / total_inner_cycles as f64
+        pretty_f64(stats.cycles as f64 / total_inner_cycles as f64)
     );
     for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3"].iter().zip(&stats.counts) {
-        println!("    {name:<6} instructions     : {c:>10} = {:>7}", pow(c));
+        println!(
+            "    {name:<6} instructions     : {:>14} = {:>9}",
+            pretty_integer(c),
+            pow(c)
+        );
     }
-    println!("  committed witness size      : 2^{:.3}", (stats.committed as f64).log2());
     println!(
-        "  data memory                 : 2^{} padded (2^{:.2} used)",
-        stats.log_mem,
-        (stats.mem_used as f64).log2()
+        "  committed witness size      : 2^{}",
+        pretty_f64((stats.committed as f64).log2())
     );
-    println!("  recursive proof size        : {:.1} KiB", proof_bytes as f64 / 1024.0);
-    println!("  outer proving               : {t_prove:?}");
-    println!("  complete recursive verify   : {t_verify:?}");
+    println!(
+        "  data memory                 : 2^{} padded (2^{} used)",
+        pretty_integer(stats.log_mem),
+        pretty_f64((stats.mem_used as f64).log2())
+    );
+    println!(
+        "  recursive proof size        : {} KiB",
+        pretty_f64(proof_bytes as f64 / 1024.0)
+    );
+    println!(
+        "  outer proving               : {} s",
+        pretty_f64(t_prove.as_secs_f64())
+    );
+    println!(
+        "  complete recursive verify   : {} s",
+        pretty_f64(t_verify.as_secs_f64())
+    );
     recursive_proof
 }
 
@@ -1534,14 +1567,21 @@ fn recursion_generic_many() {
     // size alone, BEFORE any inner proof exists. Genericity is then shown directly
     // — every shape below verifies against this one bytecode.
     let mut guest = recursion_guest(&inner_program(), 1);
-    eprintln!("guest compiled ONCE ({} instrs)", guest.prog.len());
+    eprintln!("guest compiled ONCE ({} instrs)", pretty_integer(guest.prog.len()));
     for &cfg in configs {
         let batch = build_batch(&[cfg]);
         let (recursive_proof, _) = batch.prove(&mut guest);
         recursive_proof
             .verify(&batch.program0)
             .expect("complete recursive proof verifies");
-        eprintln!("  verified: hashes={:>2}, iters=2^{}", cfg.0, (cfg.1 as f64).log2() as u32);
+        eprintln!(
+            "  verified: hashes={:>2}, iters=2^{}",
+            pretty_integer(cfg.0),
+            pretty_integer((cfg.1 as f64).log2() as u32)
+        );
     }
-    eprintln!("all {} shapes verified by the SAME guest bytecode", configs.len());
+    eprintln!(
+        "all {} shapes verified by the SAME guest bytecode",
+        pretty_integer(configs.len())
+    );
 }

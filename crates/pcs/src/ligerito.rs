@@ -33,8 +33,7 @@
 
 use fiat_shamir::sponge::Sponge;
 use crate::{ProverState, VerifierState};
-use primitives::field::F128;
-use primitives::multilinear::build_eq;
+use primitives::{field::F128, multilinear::build_eq, pretty_integer};
 use crate::merkle::{self, Hash};
 use crate::ntt::additive_ntt_f128::AdditiveNttF128;
 use serde::{Deserialize, Serialize};
@@ -1611,8 +1610,8 @@ fn transpose_forward_ntt_sparse(
     let _span = tracing::info_span!(
         "NTT",
         kind = "transpose induce",
-        log_domain = log_d,
-        nonzero = positions.len()
+        log_domain = %pretty_integer(log_d),
+        nonzero = %pretty_integer(positions.len())
     )
     .entered();
     use rayon::prelude::*;
@@ -1798,8 +1797,8 @@ pub fn ligero_commit(
     tracing::info_span!(
         "NTT",
         kind = "extension encode",
-        log_domain = log_block_len,
-        lanes = num_interleaved
+        log_domain = %pretty_integer(log_block_len),
+        lanes = %pretty_integer(num_interleaved)
     )
     .in_scope(|| {
         ntt.forward_transform_interleaved_from_layer(&mut mat, num_interleaved, log_inv_rate)
@@ -2549,7 +2548,11 @@ fn multilevel_prover_with_basis_impl(
     let sumcheck_span = tracing::info_span!("Sumcheck");
     let initial_log_size = packed_witness.len().trailing_zeros();
     let (mut sc_prover, start_msg) = sumcheck_span.in_scope(|| {
-        tracing::info_span!("Sumcheck round", round = 0, log_size = initial_log_size)
+        tracing::info_span!(
+            "Sumcheck round",
+            round = %pretty_integer(0),
+            log_size = %pretty_integer(initial_log_size)
+        )
             .in_scope(|| match first_msg {
                 Some(msg) => {
                     SumcheckProver::new_with_first_msg(packed_witness, b_initial, target, msg)
@@ -2577,7 +2580,11 @@ fn multilevel_prover_with_basis_impl(
         let r = ps.sample();
         let log_size = sc_prover.f().len().trailing_zeros();
         let msg = sumcheck_span.in_scope(|| {
-            tracing::info_span!("Sumcheck round", round = j + 1, log_size)
+            tracing::info_span!(
+                "Sumcheck round",
+                round = %pretty_integer(j + 1),
+                log_size = %pretty_integer(log_size)
+            )
                 .in_scope(|| sc_prover.fold(r))
         });
         add_sumcheck_msg(ps, &msg);
@@ -2707,7 +2714,11 @@ fn multilevel_prover_with_basis_impl(
             let ri = ps.sample();
             let log_size = sc_prover.f().len().trailing_zeros();
             let msg = sumcheck_span.in_scope(|| {
-                tracing::info_span!("Sumcheck round", round = j, log_size)
+                tracing::info_span!(
+                    "Sumcheck round",
+                    round = %pretty_integer(j),
+                    log_size = %pretty_integer(log_size)
+                )
                     .in_scope(|| sc_prover.fold(ri))
             });
             add_sumcheck_msg(ps, &msg);

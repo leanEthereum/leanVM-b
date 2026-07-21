@@ -5,13 +5,16 @@ use std::time::Instant;
 
 use lean_compiler::{compile, parse};
 use lean_vm::cpu::{prove, verify};
-use primitives::field::{F128, g_pow};
+use primitives::{
+    field::{F128, g_pow},
+    pretty_f64, pretty_integer,
+};
 
 /// Prove and verify Fibonacci-in-the-exponent over a `HeapBuf` (an unrolled
 /// `mul_range` recurrence), binding `g^{F(n)}` as the public input. Prints the
 /// benchmark report.
 pub fn run_fibonacci(n: usize) {
-    let trace_span = tracing::info_span!("Fibonacci", n).entered();
+    let trace_span = tracing::info_span!("Fibonacci", n = %pretty_integer(n)).entered();
 
     let (src, pi) = fibonacci_program(n);
     let program = compile(&parse(&src).unwrap());
@@ -34,8 +37,11 @@ pub fn run_fibonacci(n: usize) {
     // before printing the benchmark report so the complete trace appears first.
     drop(trace_span);
 
-    println!("Fibonacci (in the exponent, i.e. modulo 2^128 - 1), N = {n}");
-    println!("  cycles (VM steps)           : {}", stats.cycles);
+    println!(
+        "Fibonacci (in the exponent, i.e. modulo 2^128 - 1), N = {}",
+        pretty_integer(n)
+    );
+    println!("  cycles (VM steps)           : {}", pretty_integer(stats.cycles));
     for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3"]
         .iter()
         .zip(&stats.counts)
@@ -43,20 +49,26 @@ pub fn run_fibonacci(n: usize) {
         let pow = if c == 0 {
             "0".to_string()
         } else {
-            format!("2^{:.3}", (c as f64).log2())
+            format!("2^{}", pretty_f64((c as f64).log2()))
         };
         println!("    {name:<5} instructions        : {pow}");
     }
     println!(
-        "  committed witness size      : 2^{:.3}",
-        (stats.committed as f64).log2()
+        "  committed witness size      : 2^{}",
+        pretty_f64((stats.committed as f64).log2())
     );
-    println!("  proof size                  : {:.1} KiB", proof_bytes as f64 / 1024.0);
-    println!("  proving (incl. witness gen) : {t_prove:?}");
-    println!("  verifying                   : {t_verify:?}");
     println!(
-        "  throughput                  : {:.0} cycles/s",
-        stats.cycles as f64 / t_prove.as_secs_f64()
+        "  proof size                  : {} KiB",
+        pretty_f64(proof_bytes as f64 / 1024.0)
+    );
+    println!(
+        "  proving (incl. witness gen) : {} s",
+        pretty_f64(t_prove.as_secs_f64())
+    );
+    println!("  verifying                   : {} s", pretty_f64(t_verify.as_secs_f64()));
+    println!(
+        "  throughput                  : {} cycles/s",
+        pretty_f64(stats.cycles as f64 / t_prove.as_secs_f64())
     );
 }
 

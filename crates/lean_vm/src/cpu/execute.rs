@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use super::*;
-use primitives::field::mul_by_x;
+use primitives::{field::mul_by_x, pretty_f64, pretty_integer};
 
 pub struct Execution {
     pub mem: Vec<F128>,      // data memory after the run, write-once (size cells, power of two)
@@ -230,9 +230,17 @@ impl Program {
                                 // Small integers and small g-powers overlap (8 = x^3
                                 // = g^3): show every reading that applies.
                                 match (gmap.get(&v), v.hi == 0 && v.lo < 1 << 32) {
-                                    (Some(k), true) => eprintln!("[print] {label} = {} (g^{k})", v.lo),
-                                    (Some(k), false) => eprintln!("[print] {label} = g^{k}"),
-                                    (None, true) => eprintln!("[print] {label} = {}", v.lo),
+                                    (Some(k), true) => eprintln!(
+                                        "[print] {label} = {} (g^{})",
+                                        pretty_integer(v.lo),
+                                        pretty_integer(k)
+                                    ),
+                                    (Some(k), false) => {
+                                        eprintln!("[print] {label} = g^{}", pretty_integer(k))
+                                    }
+                                    (None, true) => {
+                                        eprintln!("[print] {label} = {}", pretty_integer(v.lo))
+                                    }
                                     (None, false) => eprintln!("[print] {label} = {:#x}:{:#x}", v.hi, v.lo),
                                 }
                             } else {
@@ -587,9 +595,16 @@ impl Program {
                 })
                 .collect();
             rows.sort_by_key(|(_, c)| std::cmp::Reverse(*c));
-            eprintln!("== DBG_PROF: cycles by function ({steps} total) ==");
+            eprintln!(
+                "== DBG_PROF: cycles by function ({} total) ==",
+                pretty_integer(steps)
+            );
             for (name, c) in rows.iter().filter(|(_, c)| *c > 0) {
-                eprintln!("  {c:>9}  {:>5.1}%  {name}", 100.0 * *c as f64 / steps as f64);
+                eprintln!(
+                    "  {:>12}  {:>7}%  {name}",
+                    pretty_integer(c),
+                    pretty_f64(100.0 * *c as f64 / steps as f64)
+                );
             }
         }
 

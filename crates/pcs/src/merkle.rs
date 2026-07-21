@@ -18,7 +18,7 @@
 //! independent `blake3::hash` per leaf. Other sizes use the ordinary one-shot
 //! API. Internal 64-byte child pairs always take the batched path.
 
-use primitives::field::F128;
+use primitives::{field::F128, pretty_integer};
 use rayon::prelude::*;
 
 pub type Hash = [u8; 32];
@@ -178,8 +178,8 @@ fn hash_pairs_level(
     name = "Hashing",
     skip_all,
     fields(
-        num_leaves = num_leaves,
-        leaf_size = data.len().checked_div(num_leaves).unwrap_or(0)
+        num_leaves = %pretty_integer(num_leaves),
+        leaf_size = %pretty_integer(data.len().checked_div(num_leaves).unwrap_or(0))
     )
 )]
 pub fn merkle_tree(data: &[u8], num_leaves: usize) -> Vec<Hash> {

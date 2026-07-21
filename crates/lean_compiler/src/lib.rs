@@ -24,7 +24,10 @@ use std::collections::HashMap;
 
 use lean_vm::cpu::hints::RHint;
 use lean_vm::cpu::{DerefMode, Op, Program};
-use primitives::field::{F128, g_pow};
+use primitives::{
+    field::{F128, g_pow},
+    pretty_integer,
+};
 
 mod ast;
 mod ir;
@@ -78,9 +81,9 @@ pub fn compile(ast: &Ast) -> Program {
         }
         let low = lower_func(&f, &mut queue, &mut loop_ctr, &defs, &const_arrays);
         if dbg_lower {
-            eprintln!("== fn {} (frame {}) ==", low.name, low.frame_size);
+            eprintln!("== fn {} (frame {}) ==", low.name, pretty_integer(low.frame_size));
             for (i, ins) in low.code.iter().enumerate() {
-                eprintln!("  {i:>3}: {:?}", ins.op);
+                eprintln!("  {:>3}: {:?}", pretty_integer(i), ins.op);
             }
         }
         lowered.push(low);
@@ -218,7 +221,7 @@ pub fn disassemble(prog: &[Op]) -> String {
                 )
             }
         };
-        out.push_str(&format!("{pc:>4}  {line}\n"));
+        out.push_str(&format!("{:>6}  {line}\n", pretty_integer(pc)));
     }
     out
 }

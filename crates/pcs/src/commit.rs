@@ -15,7 +15,7 @@
 //! The codeword is a flat sequence of `2^k_code` F_{2^128} elements. Each
 //! Merkle leaf is **one** F_{2^128} element = 16 bytes.
 
-use primitives::field::F128;
+use primitives::{field::F128, pretty_integer};
 use crate::merkle::{self, Hash};
 use crate::ntt::AdditiveNttF128;
 use crate::pack::LOG_PACKING;
@@ -217,8 +217,8 @@ fn finalize_commit(mut codeword: Vec<F128>, params: &PcsParams) -> (Commitment, 
     tracing::info_span!(
         "NTT",
         kind = "extension encode",
-        log_domain = params.k_code(),
-        lanes = params.num_ntts()
+        log_domain = %pretty_integer(params.k_code()),
+        lanes = %pretty_integer(params.num_ntts())
     )
     .in_scope(|| {
         let ntt = AdditiveNttF128::standard(params.k_code());

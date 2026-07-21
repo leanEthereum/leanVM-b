@@ -30,6 +30,7 @@ use std::time::Instant;
 
 use rand::SeedableRng;
 use rand::rngs::StdRng;
+use primitives::{pretty_f64, pretty_integer};
 use xmss::*;
 
 /// A cached signer: its public key and one signature over [`message`] at [`SLOT`].
@@ -129,12 +130,17 @@ fn generate_range(start: usize, end: usize) -> Vec<CachedSignature> {
     let mut out = Vec::with_capacity(total);
     for (done, index) in (start..end).enumerate() {
         out.push(compute_signer(index));
-        print!("\r  generating XMSS signers (one-time, then cached): {}/{total}", done + 1);
+        print!(
+            "\r  generating XMSS signers (one-time, then cached): {}/{}",
+            pretty_integer(done + 1),
+            pretty_integer(total)
+        );
         let _ = std::io::stdout().flush();
     }
     println!(
-        "\r  generated {total} XMSS in {:.2}s (cached to disk)                ",
-        t.elapsed().as_secs_f32()
+        "\r  generated {} XMSS in {} s (cached to disk)                ",
+        pretty_integer(total),
+        pretty_f64(t.elapsed().as_secs_f64())
     );
     out
 }
