@@ -22,20 +22,20 @@ RAYON_NUM_THREADS=11 cargo run --release -- xmss --n-signatures 890
 ```
 
 ```
-XMSS aggregation, 820 signatures
-  cycles (VM steps)           :    1370002 = 2^20.39   (  1670.7 / XMSS)
-    XOR    instructions       :     115621 = 2^16.82   (   141.0 / XMSS)
-    MUL    instructions       :     272255 = 2^18.05   (   332.0 / XMSS)
-    SET    instructions       :     277184 = 2^18.08   (   338.0 / XMSS)
-    DEREF  instructions       :     468599 = 2^18.84   (   571.5 / XMSS)
-    JUMP   instructions       :     106602 = 2^16.70   (   130.0 / XMSS)
-    BLAKE3 instructions       :     129741 = 2^16.99   (   158.2 / XMSS)
-  committed witness size      : 2^25.648
-  data memory                 : 2^22 padded (2^21.57 used)
-  proof size                  : 594.2 KiB
-  proving (incl. witness gen) : 1.435920916s
-  verifying                   : 13.987917ms
-  throughput                  : 571.1 XMSS/s
+XMSS aggregation, 890 signatures
+  cycles (VM steps)           :    1529572 = 2^20.54   (  1718.6 / XMSS)
+    XOR    instructions       :     125491 = 2^16.94   (   141.0 / XMSS)
+    MUL    instructions       :     295495 = 2^18.17   (   332.0 / XMSS)
+    SET    instructions       :     354194 = 2^18.43   (   398.0 / XMSS)
+    DEREF  instructions       :     508569 = 2^18.96   (   571.4 / XMSS)
+    JUMP   instructions       :     115702 = 2^16.82   (   130.0 / XMSS)
+    BLAKE3 instructions       :     130121 = 2^16.99   (   146.2 / XMSS)
+  committed witness size      : 2^25.662
+  data memory                 : 2^22 padded (2^21.71 used)
+  proof size                  : 593.3 KiB
+  proving (incl. witness gen) : 1.401495542s
+  verifying                   : 13.522416ms
+  throughput                  : 635.0 XMSS/s
 ```
 
 ### Recursion
@@ -46,20 +46,18 @@ RAYON_NUM_THREADS=11 cargo run --release -- recursion --n 2
 ```
 
 ```
-recursion 2→1: 2 inner proofs of 950519 cycles each
-  guest cycles (VM steps)     :    2537008 = 2^21.27   (1.33 / inner cycle)
-    XOR    instructions     :     577877 = 2^19.14
-    MUL    instructions     :     787456 = 2^19.59
-    SET    instructions     :     249425 = 2^17.93
-    DEREF  instructions     :     819009 = 2^19.64
-    JUMP   instructions     :      47982 = 2^15.55
-    BLAKE3 instructions     :      55259 = 2^15.75
-  committed witness size      : 2^26.079
-  data memory                 : 2^22 padded (2^21.54 used)
-  outer proof size            : 643.8 KiB
-  outer proving               : 2.421577375s
-  outer verifying             : 18.431417ms
-  reduced claims (native)     : 9.111375ms
+recursion 2→1: 2 inner proofs of 917755 cycles each
+  guest cycles (VM steps)     :    2516723 = 2^21.26   (1.37 / inner cycle)
+    XOR    instructions     :     573243 = 2^19.13
+    MUL    instructions     :     786042 = 2^19.58
+    SET    instructions     :     196196 = 2^17.58
+    DEREF  instructions     :     868775 = 2^19.73
+    JUMP   instructions     :      48646 = 2^15.57
+    BLAKE3 instructions     :      43821 = 2^15.42
+  committed witness size      : 2^26.085
+  data memory                 : 2^22 padded (2^21.53 used)
+  recursive proof size        : 648.2 KiB
+  outer proving               : 2.186834667s
 ```
 
 ## Security, proof size etc
