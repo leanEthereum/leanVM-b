@@ -75,12 +75,16 @@ Instruction & Operands & Semantics\\
 \texttt{SET\_CONSTANT} & $[o,k]$         & $\loc{o}=k$\\
 \texttt{DEREF}         & $[\alpha,\beta,\gamma;\,s]$ & $\mem[\loc{\alpha}\cdot\beta]=\srcsel{s}$\\
 \texttt{JUMP}          & $[o_c,o_d,o_f]$ & conditional jump (below)\\
-\texttt{BLAKE3}        & $[o_0,o_1,o_2,o_3,o_C]$ & $\bigl(\loc{o_C},\loc{\gen\cdot o_C}\bigr)=\mathrm{BLAKE3}\bigl(\loc{o_0},\loc{o_1},\loc{o_2},\loc{o_3}\bigr)$ (below)\\
+\texttt{BLAKE3}        & $[o_0,o_1,o_2,o_3,o_V,o_C,\mu]$ & $\bigl(\loc{o_C},\loc{\gen\cdot o_C}\bigr)=\mathrm{Compress}\bigl(\loc{o_V},\loc{\gen\cdot o_V};\loc{o_0},\ldots,\loc{o_3};\mu\bigr)$ (below)\\
 \hline
 \end{tabular}
 \end{center}
 
-\texttt{BLAKE3} compresses $64$ bytes to $32$. The four $128$-bit input words are addressed \emph{independently} by references $o_0,\dots,o_3$ (word $i$ at $\loc{o_i}=\fp\cdot o_i$) — the two $256$-bit operands are $\loc{o_0}\Vert\loc{o_1}$ and $\loc{o_2}\Vert\loc{o_3}$ — so a caller hashing values that live in non-adjacent cells (a tweak in the heap, a public parameter in a register, a zero pad) need not first copy them into consecutive cells. The $256$-bit digest is written to the two \emph{consecutive} cells of $c$, $\loc{o_C}$ and $\loc{\gen\cdot o_C}$. The compression is \emph{fully proven}: the BLAKE3 table (\S\ref{sec:tab-blake3}) wires the six cells onto the memory, state, and bytecode interactions, and the relation is discharged by an R1CS proof of the compression circuit, produced by flock~\cite{flock} (\S\ref{sec:tab-blake3}).
+\texttt{BLAKE3} is the standard BLAKE3 compression, consuming a $64$-byte message block and a $32$-byte chaining value and producing $32$ bytes. The four $128$-bit message words are addressed \emph{independently} by references $o_0,\dots,o_3$ (word $i$ at $\loc{o_i}=\fp\cdot o_i$), while $o_V$ names two \emph{consecutive} chaining-value words $\loc{o_V},\loc{\gen\cdot o_V}$. The $256$-bit result is written to the consecutive cells $\loc{o_C},\loc{\gen\cdot o_C}$. The immediate $\mu\in\F_{2^{128}}$ packs the standard compression metadata in little-endian order,
+\[
+  \mu=\mathit{counter}_{64}\;\Vert\;\mathit{block\_len}_{32}\;\Vert\;\mathit{flags}_{32}.
+\]
+For a one-block $64$-byte hash, the chaining value is the standard IV and $\mu=(0,64,\textsc{chunk-start}|\textsc{chunk-end}|\textsc{root})$. Longer standard BLAKE3 hashes pass each compression result back through $o_V$ and choose the counter, length, and flags prescribed by BLAKE3. Tthe BLAKE3 table (\S\ref{sec:tab-blake3}) wires its memory and bytecode operands into a flock~\cite{flock} R1CS proof.
 
 \texttt{DEREF} stores, at the dereferenced address $\loc{\alpha}\cdot\beta$, a value chosen by a \emph{store mode} $s\in\{\texttt{deref\_cell}[\gamma],\texttt{deref\_pc},\texttt{deref\_fp}\}$:
 \[
@@ -160,7 +164,7 @@ The arithmetization follows the M3 model (multi-multiset matching)~\cite{m3}. Th
 
 \paragraph{Constraints.} A constraint is a polynomial in the columns that must vanish on every row, including the padding rows.
 
-\paragraph{The bus.} All interactions share a single \emph{bus}, a channel carrying tuples of $m$ field elements. A table flushes by wiring its columns into a tuple and either \emph{pushing} it onto the bus or \emph{pulling} it off, once per row. A few fixed \emph{boundary} tuples, belonging to no table, are pushed or pulled directly. The width $m$ is that of the widest tuple, nine (the bytecode tuple: separator, $\pc$, count, opcode, three operands, and two \texttt{DEREF} flags); shorter tuples are zero-padded.
+\paragraph{The bus.} All interactions share a single \emph{bus}, a channel carrying tuples of $m$ field elements. A table flushes by wiring its columns into a tuple and either \emph{pushing} it onto the bus or \emph{pulling} it off, once per row. A few fixed \emph{boundary} tuples, belonging to no table, are pushed or pulled directly. The width $m$ is that of the widest tuple, eleven (the bytecode tuple: separator, $\pc$, count, opcode, and seven operand/immediate slots); shorter tuples are zero-padded.
 
 \paragraph{Domain separation.} The first coordinate of every tuple is a \emph{domain separator}, a fixed constant naming its interaction: $\dsep{ST}$ for state, $\dsep{MEM}$ for memory, $\dsep{BC}$ for bytecode. Since everything shares the one bus, the separators are what keep the three kinds of tuple from cancelling against one another: a memory tuple can never meet a bytecode tuple. The interactions below are three uses of this one channel, told apart by this coordinate.
 
@@ -278,7 +282,7 @@ This multiset of counts is thus invariant under multiplication by $\gen$. But th
 
 \subsection{Bytecode interaction}\label{sec:bytecode}
 
-Instruction fetch is the same as the memory construction (\S\ref{sec:memchan}) with the \emph{public} program for the committed memory and the program counter for the address. The tuple is $\tup{\dsep{BC},\pc,\cnt,\mathit{instr}}$, where $\mathit{instr}$ is the encoded instruction: an opcode, three operand slots, and the two \texttt{DEREF} flags $(f_{\pc},f_{\fp})$, both $0$ for every opcode but \texttt{DEREF}.
+Instruction fetch is the same as the memory construction (\S\ref{sec:memchan}) with the \emph{public} program for the committed memory and the program counter for the address. The tuple is $\tup{\dsep{BC},\pc,\cnt,\mathit{instr}}$, where $\mathit{instr}$ is the encoded instruction: an opcode and seven operand/immediate slots. Shorter instructions zero their unused high slots.
 
 \subsection{The index column}\label{sec:idxcol}
 
@@ -383,17 +387,17 @@ Alone among the tables, \texttt{JUMP} commits its successors.
 
 \subsection{\texttt{BLAKE3}}\label{sec:tab-blake3}
 
-Compresses the $64$ input bytes (four $128$-bit words) to the $32$ output bytes at $c$. The four input words are addressed \emph{independently}: $a_0=\fp\cdot o_0$, $a_1=\fp\cdot o_1$, $a_2=\fp\cdot o_2$, $a_3=\fp\cdot o_3$, so the caller may hash values that live in non-adjacent cells with no assembling copies. The output takes the two consecutive cells $a_C=\fp\cdot o_C$ and its successor $\gen\cdot a_C$ (a virtual $\times\gen$ of the committed base, \S\ref{sec:prelim}). The four input cells are read; the two $c$ cells are the written digest, tied into committed memory like any other access.
+Compresses a $64$-byte message block (four $128$-bit words) under a $32$-byte chaining value to the $32$-byte result at $c$. The message words are addressed independently at $a_i=\fp\cdot o_i$, while $a_V=\fp\cdot o_V$ is the base of the two consecutive chaining-value cells $a_V,\gen a_V$. The output similarly occupies $a_C=\fp\cdot o_C$ and $\gen a_C$. The immediate $\mu$ packs the $64$-bit counter, $32$-bit block length, and $32$-bit flags required by the BLAKE3 specification.
 
-The compression $c=\mathrm{BLAKE3}(a,b)$ is \emph{fully proven} by flock~\cite{flock}, which proves a batched R1CS of the circuit against a committed Boolean witness $w$. We commit flock's ring-switched~\cite{cryptoeprint:2024/504} witness $\widehat w$ over $\F_{2^{128}}$ alongside our own columns, in one stacked commitment (\S\ref{sec:rs-dense}). The words $a,b,c$ therefore already sit inside $\widehat w$, at fixed byte-aligned slots, so we do not re-commit the six value cells $v_{A0},\dots,v_{C1}$: each is a read from $\widehat w$ with appropriate boolean-selection.
+The compression is \emph{proven} by flock~\cite{flock}, which proves a batched R1CS of the circuit against a committed Boolean witness $w$. We commit flock's ring-switched~\cite{cryptoeprint:2024/504} witness $\widehat w$ over $\F_{2^{128}}$ alongside our own columns, in one stacked commitment (\S\ref{sec:rs-dense}). The message, result, chaining value, and metadata already sit inside $\widehat w$ at fixed $128$-bit-aligned slots. Consequently the nine virtual value columns $v_{A0},v_{A1},v_{B0},v_{B1},v_{C0},v_{C1},v_{V0},v_{V1},v_\mu$ are not materialized in the AIR commitment: their opening claims are routed to the aligned packed coordinates of $q_{\mathrm{pkd}}$.
 \begin{itemize}
-\item \textbf{Columns:} $\pc,\fp$; operands $o_0,o_1,o_2,o_3,o_C$; input/output addresses $a_0,a_1,a_2,a_3,a_C$; memory counts $r_{A0},r_{A1},r_{B0},r_{B1},r_{C0},r_{C1}$; bytecode count $r_{\mathrm{bc}}$. The six values $v_{A0},v_{A1},v_{B0},v_{B1},v_{C0},v_{C1}$ are committed "inside" $w$, see above. Only the output successor address $\gen\cdot a_C$ is virtual. (Independent input words cost four address columns where three sufficed for the old contiguous form — no new constraint degree.)
-\item \textbf{Constraints:} the five address bindings $a_i=\fp\cdot o_i$ ($i\in\{0,1,2,3\}$) and $a_C=\fp\cdot o_C$ — all degree $2$. The words $v_{X0},v_{X1}$ carry no constraint here, their correctness (the relation $c=\mathrm{BLAKE3}(a,b)$) is handled by Flock.
+\item \textbf{Columns:} $\pc,\fp$; operands $o_0,o_1,o_2,o_3,o_V,o_C$; base addresses $a_0,a_1,a_2,a_3,a_V,a_C$; memory counts $r_{A0},r_{A1},r_{B0},r_{B1},r_{V0},r_{V1},r_{C0},r_{C1}$; bytecode count $r_{\mathrm{bc}}$. The nine values above are virtual columns backed by $q_{\mathrm{pkd}}$. The successor addresses $\gen a_V$ and $\gen a_C$ are virtual.
+\item \textbf{Constraints:} the six address bindings $a_i=\fp\cdot o_i$ ($i\in\{0,1,2,3\}$), $a_V=\fp\cdot o_V$, and $a_C=\fp\cdot o_C$ — all degree $2$. The compression relation itself is handled by flock.
 \item \textbf{Flushes:}
   \begin{itemize}
   \item \textbf{State:} \pull\ $\tup{\dsep{ST},\pc,\fp}$, \push\ $\tup{\dsep{ST},\gen\cdot\pc,\fp}$.
-  \item \textbf{Bytecode:} \pull\ $\tup{\dsep{BC},\pc,r_{\mathrm{bc}},\opc{B3},o_0,o_1,o_2,o_3,o_C}$, \push\ the same at $\gen\cdot r_{\mathrm{bc}}$.
-  \item \textbf{Memory:} six reads, each \pull\ at count $r$ and \push\ at $\gen\cdot r$. The four inputs \pull\ $\tup{\dsep{MEM},a_i,r,v}$ at their own addresses; the output \pull\ $\tup{\dsep{MEM},a_C,r_{C0},v_{C0}}$ and $\tup{\dsep{MEM},\gen\cdot a_C,r_{C1},v_{C1}}$.
+  \item \textbf{Bytecode:} \pull\ $\tup{\dsep{BC},\pc,r_{\mathrm{bc}},\opc{B3},o_0,o_1,o_2,o_3,o_V,o_C,v_\mu}$, \push\ the same at $\gen\cdot r_{\mathrm{bc}}$.
+  \item \textbf{Memory:} eight reads, each \pull\ at count $r$ and \push\ at $\gen\cdot r$: four independently addressed message words, the chaining value at $a_V,\gen a_V$, and the result at $a_C,\gen a_C$.
   \end{itemize}
 \end{itemize}
 
@@ -405,7 +409,7 @@ This section assembles the primitives into the executable protocol, beginning wi
 
 Fixed once, public, and shared by prover and verifier: the field, the bus shape, and the tags naming interactions and instructions on it.
 
-\paragraph{Field, generator, and bus.} The field is $\F_{2^{128}}$ in the GHASH representation $\F_2[x]/(x^{128}+x^7+x^2+x+1)$. The generator is $\gen=x$ (has order $2^{128}-1$). Every bus tuple has width $m=9$ (the bytecode tuple); shorter tuples are zero-padded in their high coordinates (\S\ref{sec:m3}).
+\paragraph{Field, generator, and bus.} The field is $\F_{2^{128}}$ in the GHASH representation $\F_2[x]/(x^{128}+x^7+x^2+x+1)$. The generator is $\gen=x$ (has order $2^{128}-1$). Every bus tuple has width $m=11$ (the bytecode tuple); shorter tuples are zero-padded in their high coordinates (\S\ref{sec:m3}).
 
 \paragraph{Domain separators.} Coordinate $0$ of every tuple is a domain separator, naming the interaction it belongs to (\S\ref{sec:m3}):
 \[
@@ -419,22 +423,22 @@ Fixed once, public, and shared by prover and verifier: the field, the bus shape,
 
 \subsection{Bytecode encoding}\label{sec:e2e-bc}
 
-The program is public. Instruction $\pc$ fills coordinates $3$ through $8$ of its bytecode tuple $\tup{\dsep{BC},\pc,\cnt,\cdot}$: an opcode in coordinate $3$, three operands in coordinates $4,5,6$, and coordinates $7,8$ carrying the two \texttt{DEREF} flags $(f_{\pc},f_{\fp})$ — or, for \texttt{BLAKE3}, its fourth and fifth operands $(o_3,o_C)$ — ($0$ for every other opcode). Each operand is a $\gen$-power or an immediate.
+The program is public. Instruction $\pc$ fills coordinates $3$ through $10$ of its bytecode tuple $\tup{\dsep{BC},\pc,\cnt,\cdot}$: an opcode in coordinate $3$ and seven operand/immediate slots in coordinates $4,\ldots,10$. Each reference operand is a $\gen$-power; constants and $\mu$ are field immediates.
 \begin{center}
-\begin{tabular}{lllllll}
+\begin{tabular}{lllllllll}
 \hline
-Instruction & coord.\ $3$ & coord.\ $4$ & coord.\ $5$ & coord.\ $6$ & coord.\ $7$ & coord.\ $8$\\
+Instruction & $3$ & $4$ & $5$ & $6$ & $7$ & $8$ & $9$ & $10$\\
 \hline
-\texttt{XOR}           & $\opc{XOR}$ & $o_A$ & $o_B$ & $o_C$ & $0$ & $0$\\
-\texttt{MUL\_NATIVE}   & $\opc{MUL}$ & $o_A$ & $o_B$ & $o_C$ & $0$ & $0$\\
-\texttt{SET\_CONSTANT} & $\opc{SET}$ & $o$   & $k$   & $0$   & $0$ & $0$\\
-\texttt{DEREF}         & $\opc{DRF}$ & $\alpha$ & $\beta$ & $\gamma$ & $f_{\pc}$ & $f_{\fp}$\\
-\texttt{JUMP}          & $\opc{JMP}$ & $o_c$ & $o_d$ & $o_f$ & $0$ & $0$\\
-\texttt{BLAKE3}        & $\opc{B3}$  & $o_0$ & $o_1$ & $o_2$ & $o_3$ & $o_C$\\
+\texttt{XOR}           & $\opc{XOR}$ & $o_A$ & $o_B$ & $o_C$ & $0$ & $0$ & $0$ & $0$\\
+\texttt{MUL\_NATIVE}   & $\opc{MUL}$ & $o_A$ & $o_B$ & $o_C$ & $0$ & $0$ & $0$ & $0$\\
+\texttt{SET\_CONSTANT} & $\opc{SET}$ & $o$   & $k$   & $0$   & $0$ & $0$ & $0$ & $0$\\
+\texttt{DEREF}         & $\opc{DRF}$ & $\alpha$ & $\beta$ & $\gamma$ & $f_{\pc}$ & $f_{\fp}$ & $0$ & $0$\\
+\texttt{JUMP}          & $\opc{JMP}$ & $o_c$ & $o_d$ & $o_f$ & $0$ & $0$ & $0$ & $0$\\
+\texttt{BLAKE3}        & $\opc{B3}$  & $o_0$ & $o_1$ & $o_2$ & $o_3$ & $o_V$ & $o_C$ & $\mu$\\
 \hline
 \end{tabular}
 \end{center}
-So the program is six public columns (opcode, three operands, two flags), whose MLEs the verifier forms itself. Writing $\mathit{instr}$ for the six, the bytecode seed at $\pc$ pushes $\tup{\dsep{BC},\pc,1,\mathit{instr}}$ and an instruction table pulls it with its opcode hardcoded (\S\ref{sec:tables}); balance then forces each table's operands \emph{and} flags to match the program at its $\pc$.
+So the program is eight public columns (opcode plus seven slots), whose MLEs the verifier forms itself. Writing $\mathit{instr}$ for the eight, the bytecode seed at $\pc$ pushes $\tup{\dsep{BC},\pc,1,\mathit{instr}}$ and an instruction table pulls it with its opcode hardcoded (\S\ref{sec:tables}); balance then forces every operand, flag, and immediate to match the program at its $\pc$.
 
 The program is padded to a power of two (\S\ref{sec:idxcol}). A padding entry is never executed: no table pulls it, so its seed push and finalize pull (both at count $1$) cancel.
 

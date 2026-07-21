@@ -63,9 +63,9 @@ pub(crate) struct Jrow {
     pub(crate) bytecode_read: F128,
 }
 
-/// `BLAKE3` row: the four independent input-word addresses `aa0, aa1, ab0, ab1`
-/// and the output base `ac` (spanning two words), the six word values (four
-/// inputs, two outputs `c`), and the six per-word memory access counts.
+/// `BLAKE3` row: four independent message-word addresses, the chaining-value
+/// base `acv`, and the output base `ac`. CV and output each span two consecutive
+/// words; all eight memory words carry independent offline-memory counts.
 pub(crate) struct Brow {
     pub(crate) pc: u32,
     pub(crate) fp: u32,
@@ -73,17 +73,23 @@ pub(crate) struct Brow {
     pub(crate) aa1: u32,
     pub(crate) ab0: u32,
     pub(crate) ab1: u32,
+    pub(crate) acv: u32,
     pub(crate) ac: u32,
     pub(crate) va0: F128,
     pub(crate) va1: F128,
     pub(crate) vb0: F128,
     pub(crate) vb1: F128,
+    pub(crate) vcv0: F128,
+    pub(crate) vcv1: F128,
+    pub(crate) metadata: F128,
     pub(crate) vc0: F128,
     pub(crate) vc1: F128,
     pub(crate) ra0: F128,
     pub(crate) ra1: F128,
     pub(crate) rb0: F128,
     pub(crate) rb1: F128,
+    pub(crate) rcv0: F128,
+    pub(crate) rcv1: F128,
     pub(crate) rc0: F128,
     pub(crate) rc1: F128,
     pub(crate) bytecode_read: F128,

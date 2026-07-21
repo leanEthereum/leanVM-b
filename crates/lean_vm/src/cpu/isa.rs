@@ -29,7 +29,7 @@ pub enum Op {
         od: u32,
         of: u32,
     },
-    /// `BLAKE3` (§7.6): compresses the four 64-byte input words `ins` (the two
+    /// `BLAKE3` (§7.6): compresses the four 16-byte input words `ins` (the two
     /// 256-bit operands `ins[0]‖ins[1]` and `ins[2]‖ins[3]`) and writes the
     /// 32-byte digest to the two consecutive words `out`, `out+1`. Each input
     /// word is addressed independently (`fp+ins[i]`) — no forced contiguity, so
@@ -37,7 +37,11 @@ pub enum Op {
     /// compression relation is proven by flock.
     Blake3 {
         ins: [u32; 4],
+        /// Base of two consecutive words holding the 256-bit chaining value.
+        cv: u32,
         out: u32,
+        /// `counter:u64 | block_len:u32 | flags:u32`, little-endian.
+        metadata: F128,
     },
 }
 

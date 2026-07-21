@@ -18,7 +18,7 @@ Machine: M4 Max
 ### XMSS aggregation
 
 ```bash
-RAYON_NUM_THREADS=11 cargo run --release -- xmss --n-signatures 820
+RAYON_NUM_THREADS=11 cargo run --release -- xmss --n-signatures 890
 ```
 
 ```

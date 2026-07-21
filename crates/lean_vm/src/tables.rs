@@ -77,7 +77,7 @@ impl FlushBuilder {
         );
     }
 
-    /// Bytecode read at `pc`: the program tuple (opcode + five operand slots),
+    /// Bytecode read at `pc`: the program tuple (opcode + seven operand slots),
     /// with the per-pc execution count advanced by ×g on the push side.
     pub(crate) fn bytecode(&mut self, pc: usize, count: usize, opcode: F128, operands: &[Coord]) {
         let mut push = vec![Const(SEP_BYTECODE), Col(pc), GCol(count), Const(opcode)];
@@ -204,18 +204,22 @@ pub fn tables() -> [&'static dyn Table; 6] {
 /// Index of the BLAKE3 table in [`tables`].
 pub(crate) const BLAKE3_TABLE: usize = 5;
 
-/// BLAKE3 value-column LOCAL indices in canonical slot order
-/// `[a0, a1, b0, b1, c0, c1]` (matches `blake3_flock::SLOTS`). These columns are
+/// BLAKE3 virtual-column LOCAL indices in canonical slot order
+/// `[a0, a1, b0, b1, c0, c1, cv0, cv1, metadata]` (matches
+/// `blake3_flock::VM_SLOTS`). These columns are
 /// VIRTUAL (never committed): `q_pkd` already holds those words at fixed packed
 /// slots, so `cpu` routes their memory-bus evaluation claims straight to `q_pkd`
 /// (`slot_claims`) — the value the bus flushes IS the flock-proven word.
-pub const BLAKE3_VALUE_COLS: [usize; 6] = [
+pub const BLAKE3_VALUE_COLS: [usize; 9] = [
     blake3t::VA0,
     blake3t::VA1,
     blake3t::VB0,
     blake3t::VB1,
     blake3t::VC0,
     blake3t::VC1,
+    blake3t::VCV0,
+    blake3t::VCV1,
+    blake3t::METADATA,
 ];
 
 /// Declare consecutive local column indices and the resulting column count.
@@ -508,27 +512,29 @@ impl Table for JumpTable {
 
 // ---- BLAKE3 ------------------------------------------------------------------
 
-/// `BLAKE3` (doc §7.6): the four 64-byte input words are addressed
+/// `BLAKE3` (doc §7.6): the four 16-byte input words are addressed
 /// *independently* at `aa0, aa1, ab0, ab1` (`= fp·g^{ins[i]}`) — no forced
 /// contiguity, so a caller hashing e.g. `(tweak, pp)` need not copy them into
-/// adjacent cells. The 32-byte output occupies the two consecutive words `ac`,
-/// `g·ac`. Five address bindings `a_X = fp·o_X` are constrained; the
+/// adjacent cells. The chaining value and 32-byte output each occupy two
+/// consecutive words, based at `acv` and `ac`. Six address bindings
+/// `a_X = fp·o_X` are constrained; the
 /// compression relating output to input words carries no table constraint
 /// here: it is proven by flock's R1CS validity via `q_pkd` (§blake3_flock).
 ///
-/// The six value columns are listed in `n_committed_columns` (they need a local
+/// The nine value columns are listed in `n_committed_columns` (they need a local
 /// index for the flushes and are filled from the trace for the bus), but `cpu`
 /// treats them as VIRTUAL — not committed — and routes their bus claims to
 /// `q_pkd`, which already holds those words (see [`BLAKE3_VALUE_COLS`]).
 struct Blake3Table;
 
 mod blake3t {
-    // Operands: four input offsets + output base; addresses mirror that layout,
+    // Operands: four input offsets + cv base + output base; addresses mirror that layout,
     // with word 1 of the output at the free successor g·AC. Values and read
     // counts then follow in canonical a0/a1/b0/b1/c0/c1 order.
     columns!(
-        PC, FP, OA0, OA1, OB0, OB1, OC, AA0, AA1, AB0, AB1, AC, VA0, VA1, VB0, VB1, VC0, VC1,
-        RA0, RA1, RB0, RB1, RC0, RC1, RBC,
+        PC, FP, OA0, OA1, OB0, OB1, OCV, OC, AA0, AA1, AB0, AB1, ACV, AC,
+        VA0, VA1, VB0, VB1, VC0, VC1, VCV0, VCV1, METADATA,
+        RA0, RA1, RB0, RB1, RCV0, RCV1, RC0, RC1, RBC,
     );
 }
 
@@ -541,15 +547,15 @@ impl Table for Blake3Table {
     }
     fn count_columns(&self) -> &'static [usize] {
         use blake3t::*;
-        &[RA0, RA1, RB0, RB1, RC0, RC1, RBC]
+        &[RA0, RA1, RB0, RB1, RCV0, RCV1, RC0, RC1, RBC]
     }
     fn constraint_columns(&self) -> &'static [usize] {
         use blake3t::*;
-        &[FP, OA0, OA1, OB0, OB1, OC, AA0, AA1, AB0, AB1, AC]
+        &[FP, OA0, OA1, OB0, OB1, OCV, OC, AA0, AA1, AB0, AB1, ACV, AC]
     }
     fn eval_constraint(&self, eta: F128, cols: &Cols) -> F128 {
         use blake3t::*;
-        // The five address bindings a_X = fp·o_X (degree 2). The compression
+        // The six address bindings a_X = fp·o_X (degree 2). The compression
         // carries no table constraint here: flock's R1CS validity proves it
         // via q_pkd (§blake3_flock).
         let bind = |a: usize, o: usize| cols[a] + cols[FP] * cols[o];
@@ -557,18 +563,26 @@ impl Table for Blake3Table {
             + eta * bind(AA1, OA1)
             + eta * eta * bind(AB0, OB0)
             + eta * eta * eta * bind(AB1, OB1)
-            + eta * eta * eta * eta * bind(AC, OC)
+            + eta * eta * eta * eta * bind(ACV, OCV)
+            + eta * eta * eta * eta * eta * bind(AC, OC)
     }
     fn flushes(&self, f: &mut FlushBuilder) {
         use blake3t::*;
         f.state_step(PC, FP);
-        f.bytecode(PC, RBC, OP_BLAKE3, &[Col(OA0), Col(OA1), Col(OB0), Col(OB1), Col(OC)]);
+        f.bytecode(
+            PC,
+            RBC,
+            OP_BLAKE3,
+            &[Col(OA0), Col(OA1), Col(OB0), Col(OB1), Col(OCV), Col(OC), Col(METADATA)],
+        );
         // Four independent input reads; the output occupies two consecutive words
         // (base and the free successor g·AC).
         f.memory(AA0, RA0, VA0);
         f.memory(AA1, RA1, VA1);
         f.memory(AB0, RB0, VB0);
         f.memory(AB1, RB1, VB1);
+        f.memory(ACV, RCV0, VCV0);
+        f.memory_succ(ACV, RCV1, VCV1);
         f.memory(AC, RC0, VC0);
         f.memory_succ(AC, RC1, VC1);
     }
@@ -581,11 +595,13 @@ impl Table for Blake3Table {
         out[OA1] = rows.par_iter().map(|r| ctx.g_at(r.aa1 - r.fp)).collect();
         out[OB0] = rows.par_iter().map(|r| ctx.g_at(r.ab0 - r.fp)).collect();
         out[OB1] = rows.par_iter().map(|r| ctx.g_at(r.ab1 - r.fp)).collect();
+        out[OCV] = rows.par_iter().map(|r| ctx.g_at(r.acv - r.fp)).collect();
         out[OC] = rows.par_iter().map(|r| ctx.g_at(r.ac - r.fp)).collect();
         out[AA0] = rows.par_iter().map(|r| ctx.g_at(r.aa0)).collect();
         out[AA1] = rows.par_iter().map(|r| ctx.g_at(r.aa1)).collect();
         out[AB0] = rows.par_iter().map(|r| ctx.g_at(r.ab0)).collect();
         out[AB1] = rows.par_iter().map(|r| ctx.g_at(r.ab1)).collect();
+        out[ACV] = rows.par_iter().map(|r| ctx.g_at(r.acv)).collect();
         out[AC] = rows.par_iter().map(|r| ctx.g_at(r.ac)).collect();
         out[VA0] = rows.par_iter().map(|r| r.va0).collect();
         out[VA1] = rows.par_iter().map(|r| r.va1).collect();
@@ -593,10 +609,15 @@ impl Table for Blake3Table {
         out[VB1] = rows.par_iter().map(|r| r.vb1).collect();
         out[VC0] = rows.par_iter().map(|r| r.vc0).collect();
         out[VC1] = rows.par_iter().map(|r| r.vc1).collect();
+        out[VCV0] = rows.par_iter().map(|r| r.vcv0).collect();
+        out[VCV1] = rows.par_iter().map(|r| r.vcv1).collect();
+        out[METADATA] = rows.par_iter().map(|r| r.metadata).collect();
         out[RA0] = rows.par_iter().map(|r| r.ra0).collect();
         out[RA1] = rows.par_iter().map(|r| r.ra1).collect();
         out[RB0] = rows.par_iter().map(|r| r.rb0).collect();
         out[RB1] = rows.par_iter().map(|r| r.rb1).collect();
+        out[RCV0] = rows.par_iter().map(|r| r.rcv0).collect();
+        out[RCV1] = rows.par_iter().map(|r| r.rcv1).collect();
         out[RC0] = rows.par_iter().map(|r| r.rc0).collect();
         out[RC1] = rows.par_iter().map(|r| r.rc1).collect();
         out[RBC] = rows.par_iter().map(|r| r.bytecode_read).collect();

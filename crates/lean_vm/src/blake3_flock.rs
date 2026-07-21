@@ -10,10 +10,10 @@
 //!
 //! ## The mapping
 //!
-//! The VM's `BLAKE3(a, b) -> c` is a flock single-block compression with the
-//! chaining value fixed to the BLAKE3 IV, counter `0`, block length `64`, flags
-//! `CHUNK_START | CHUNK_END | ROOT` (= [`FLAGS`]) — exactly `blake3::hash` of the
-//! 64-byte message `a‖b`, matching `cpu::blake3_compress`.
+//! The VM's `BLAKE3(a, b, cv, metadata) -> c` is one standard BLAKE3
+//! compression. `metadata` packs `counter:u64 | block_len:u32 | flags:u32` in
+//! little-endian order. All inputs are witness values in `q_pkd`; memory binds
+//! `a`, `b`, and `cv`, while the bytecode interaction binds `metadata`.
 //!
 //! ## The layout (after the alignment re-layout, `M_BASE = 640`)
 //!
@@ -23,11 +23,10 @@
 //!
 //! ```text
 //!   c0,c1 = slots 2,3     a0,a1 = slots 5,6     b0,b1 = slots 7,8
-//!   cv = slots 0,1 (= IV)    counter‖blen‖flags = slot 9
+//!   cv = slots 0,1           counter‖blen‖flags = slot 9
 //! ```
 //!
-//! cv and slot 9 hold constants baked into the per-block matrices (constant
-//! rows), so no claims are needed to pin them.
+//! The VM routes claims on all nine aligned words directly to these slots.
 
 use primitives::field::F128;
 use crate::transcript::{ProverState, VerifierState};
@@ -46,10 +45,8 @@ use flock::verifier::VerifyError;
 /// and later discharged by the PCS. Re-exported from [`flock::proof`].
 pub use flock::proof::ZClaim;
 
-/// flock flags for a single 64-byte root block: `CHUNK_START(1) | CHUNK_END(2) |
-/// ROOT(8) = 11` — the configuration under which the compression output equals
-/// `blake3::hash` of the 64-byte input. Baked into flock's per-block matrices
-/// (constant rows), along with `cv = IV`, `counter = 0` and `block_len = 64`.
+/// Default flags for a single 64-byte root block: `CHUNK_START(1) |
+/// CHUNK_END(2) | ROOT(8) = 11`.
 pub const FLAGS: u32 = flock::blake3::PINNED_FLAGS;
 
 /// Packed `F128` coordinates per compression instance: `K / 128 = 2^(K_LOG-7)`.
@@ -96,14 +93,27 @@ impl PreparedReductionWitness {
 // fixed by the aligned flock layout (asserted by `layout_constants` there).
 pub const SLOT_C0: usize = 2;
 pub const SLOT_C1: usize = 3;
+pub const SLOT_CV0: usize = 0;
+pub const SLOT_CV1: usize = 1;
 pub const SLOT_A0: usize = 5;
 pub const SLOT_A1: usize = 6;
 pub const SLOT_B0: usize = 7;
 pub const SLOT_B1: usize = 8;
+pub const SLOT_METADATA: usize = 9;
 
-/// The six within-instance value slots in canonical order `[a0,a1,b0,b1,c0,c1]`,
-/// matching `tables::BLAKE3_VALUE_COLS`.
-pub const SLOTS: [usize; 6] = [SLOT_A0, SLOT_A1, SLOT_B0, SLOT_B1, SLOT_C0, SLOT_C1];
+/// The nine VM-visible packed slots in canonical table order
+/// `[a0,a1,b0,b1,c0,c1,cv0,cv1,metadata]`.
+pub const VM_SLOTS: [usize; 9] = [
+    SLOT_A0,
+    SLOT_A1,
+    SLOT_B0,
+    SLOT_B1,
+    SLOT_C0,
+    SLOT_C1,
+    SLOT_CV0,
+    SLOT_CV1,
+    SLOT_METADATA,
+];
 
 
 /// Split a 128-bit field element into the four little-endian `u32` words flock's
@@ -120,16 +130,34 @@ pub fn pack_words(w: [u32; 4]) -> F128 {
     )
 }
 
-/// The flock [`Compression`] for one VM `BLAKE3(a, b)`: message `m = a‖b` under
-/// the pinned configuration (`cv = IV`, counter `0`, block length `64`, flags
-/// [`FLAGS`] — all enforced by the matrices' constant rows).
-pub fn compression(a: [F128; 2], b: [F128; 2]) -> Compression {
+/// Pack BLAKE3's compression metadata as one little-endian `F128`.
+pub const fn metadata(counter: u64, block_len: u32, flags: u32) -> F128 {
+    F128::new(counter, (block_len as u64) | ((flags as u64) << 32))
+}
+
+/// Unpack `counter:u64 | block_len:u32 | flags:u32` from one `F128`.
+pub const fn unpack_metadata(x: F128) -> (u64, u32, u32) {
+    (x.lo, x.hi as u32, (x.hi >> 32) as u32)
+}
+
+/// BLAKE3's standard IV as the two VM memory words used for a chaining value.
+pub const IV: [F128; 2] = [
+    F128::new(0xbb67_ae85_6a09_e667, 0xa54f_f53a_3c6e_f372),
+    F128::new(0x9b05_688c_510e_527f, 0x5be0_cd19_1f83_d9ab),
+];
+
+/// The flock [`Compression`] for one VM instruction.
+pub fn compression(a: [F128; 2], b: [F128; 2], cv: [F128; 2], meta: F128) -> Compression {
     let mut m = [0u32; 16];
     m[0..4].copy_from_slice(&words_of(a[0]));
     m[4..8].copy_from_slice(&words_of(a[1]));
     m[8..12].copy_from_slice(&words_of(b[0]));
     m[12..16].copy_from_slice(&words_of(b[1]));
-    flock::blake3::pinned_compression(m)
+    let mut cv_words = [0u32; 8];
+    cv_words[0..4].copy_from_slice(&words_of(cv[0]));
+    cv_words[4..8].copy_from_slice(&words_of(cv[1]));
+    let (counter, block_len, flags) = unpack_metadata(meta);
+    (cv_words, m, counter, block_len, flags)
 }
 
 /// The 256-bit digest `c = (c0, c1)` of a compression (= flock's `out_lo` =
@@ -396,6 +424,8 @@ mod tests {
                 compression(
                     [f(0x11 * (i + 1), 0x22 * (i + 1)), f(0x33 * (i + 1), 0x44 * (i + 1))],
                     [f(0x55 * (i + 1), 0x66 * (i + 1)), f(0x77 * (i + 1), 0x88 * (i + 1))],
+                    IV,
+                    metadata(0, 64, FLAGS),
                 )
             })
             .collect()
@@ -413,7 +443,10 @@ mod tests {
                 )
             })
             .collect();
-        let blocks: Vec<Compression> = inputs.iter().map(|&(a, b)| compression(a, b)).collect();
+        let blocks: Vec<Compression> = inputs
+            .iter()
+            .map(|&(a, b)| compression(a, b, IV, metadata(0, 64, FLAGS)))
+            .collect();
         let q_pkd = build_qpkd(&blocks);
         assert_eq!(q_pkd.len(), 1 << qpkd_kappa(blocks.len()));
 
@@ -439,7 +472,7 @@ mod tests {
             assert_eq!(slot(j, SLOT_C0), word(0));
             assert_eq!(slot(j, SLOT_C1), word(16));
         }
-        // Constant slots (matrix-pinned): cv = IV in slots 0,1 and the packed
+        // Input slots for this default-root test: cv = IV in slots 0,1 and the packed
         // counter‖counter_hi‖block_len‖flags word in slot 9.
         let iv = flock::blake3::BLAKE3_IV;
         assert_eq!(slot(0, 0), pack_words([iv[0], iv[1], iv[2], iv[3]]));

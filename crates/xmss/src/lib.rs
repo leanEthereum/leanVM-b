@@ -1,15 +1,11 @@
 //! XMSS over BLAKE3 (inspired by leanVM's `xmss` crate, byte-oriented).
 //!
-//! The single-block hashes (chain steps, Merkle nodes) are plain BLAKE3 of
-//! `tweak | pp | payload`, truncated to n = 128 bits ([`tweak_hash`]). The
-//! multi-block inputs (the WOTS public key, the message encoding) are hashed
-//! with a Merkle-Damgard mode over 64-byte BLAKE3 compressions
-//! ([`md_tweak_hash`]); see [`hash`] for the constructions and per-call
-//! compression counts.
+//! Every hash is standard BLAKE3 of the exact byte string
+//! `tweak | pp | payload`, truncated to n = 128 bits. See [`hash`] for the
+//! constructions and per-call compression counts.
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
-pub mod gf128;
 mod hash;
 pub use hash::*;
 mod wots;

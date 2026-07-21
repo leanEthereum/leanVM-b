@@ -12,7 +12,7 @@
 //! the one leanVM-b commits with, so the numbers are comparable to the
 //! `[open]` / `commit` stages of the xmss benchmark.
 //!
-//! Run (N = number of compressions; the xmss n=820 workload is ~130k = 181 + 158·820):
+//! Run (N = number of compressions; the xmss n=820 workload is ~120k = 181 + 146·820):
 //! ```text
 //!   RAYON_NUM_THREADS=11 FLOCK_N=131072 cargo test --release -p flock --test blake3_batch -- --nocapture
 //! ```
@@ -131,5 +131,5 @@ fn blake3_batch_prove_verify() {
     println!("  prove TOTAL (witness excluded)  : {:>8.1} ms", prove_s * 1e3);
     println!("  verify                          : {verify_ms:>8.1} ms");
     println!("  throughput                      : {:>10.0} compressions/s", n as f64 / prove_s);
-    println!("  (~{:.0} XMSS/s equiv @ 158 compressions/sig)", n as f64 / prove_s / 158.0);
+    println!("  (~{:.0} XMSS/s equiv @ 146 compressions/sig)", n as f64 / prove_s / 146.0);
 }

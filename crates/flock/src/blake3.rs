@@ -36,15 +36,15 @@
 //! fill one clean 256-bit slot.
 //!
 //! ```text
-//!   z[0      ..    256)        = cv[0..8]   (8 × 32-bit words, PINNED = IV)
+//!   z[0      ..    256)        = cv[0..8]   (8 × 32-bit words, free input)
 //!   z[256    ..    512)        = out_lo[0..8] = state[0..8] ^ state[8..16]
 //!   z[512]                     = 1                    (constant wire)
 //!   z[513    ..    640)        = padding (forced to 0 by empty rows)
 //!   z[640    ..  1,152)        = m[0..16]   (16 × 32-bit words, free)
-//!   z[1,152  ..  1,184)        = counter_lo (PINNED = 0)
-//!   z[1,184  ..  1,216)        = counter_hi (PINNED = 0)
-//!   z[1,216  ..  1,248)        = block_len  (PINNED = 64)
-//!   z[1,248  ..  1,280)        = flags      (PINNED = CHUNK_START|CHUNK_END|ROOT)
+//!   z[1,152  ..  1,184)        = counter_lo (free input)
+//!   z[1,184  ..  1,216)        = counter_hi (free input)
+//!   z[1,216  ..  1,248)        = block_len  (free input)
+//!   z[1,248  ..  1,280)        = flags      (free input)
 //!   z[1,280  .. 15,280)        = 56 G blocks × 250 bits each
 //!   z[15,280 .. 15,536)        = out_hi[0..8] = state[8..16] ^ cv[0..8]
 //!   z[15,536 .. 16,384)        = padding (forced to 0 by empty rows)
@@ -88,16 +88,13 @@
 //! - `b_new`, `d_new` lin-id slots equal the right XOR-rotate of prior values.
 //! - `out_lo[w] = state[w] ^ state[w+8]` and `out_hi[w] = state[w+8] ^ cv[w]`
 //!   (BLAKE3 finalization).
-//! - **Constant pinning**: `cv = IV`, `counter = 0`, `block_len = 64`,
-//!   `flags = CHUNK_START|CHUNK_END|ROOT` via the pinned-const rows (given the
-//!   lincheck const-wire pin forcing `z[Z_CONST] = 1`, see
-//!   `lincheck's `LincheckCircuit::const_pin_col``), so an instance can only be `blake3::hash` of
-//!   one 64-byte block ([`pinned_compression`]).
+//! - `cv`, `m`, `counter`, `block_len`, and `flags` are free input slots. The
+//!   embedding protocol binds them to VM memory / bytecode with PCS openings.
 //!
 //! ## What this does NOT enforce
 //!
-//! - **Message binding**: the 512 `m` bits are free witness bits. PCS-level
-//!   openings at fixed indices pin them to claimed public inputs.
+//! - **Input binding**: all compression inputs are free witness bits. PCS-level
+//!   openings at fixed indices pin them to claimed memory and bytecode values.
 
 use crate::blake3_witness::{BitRecord, add_carry_parts, or_bit_at, or_u32_at_bit, xor_dedup};
 use pcs::{ProverState, VerifierState};
@@ -492,8 +489,9 @@ pub fn build_matrices() -> (SparseBinaryMatrix, SparseBinaryMatrix) {
     a_rows[Z_CONST_POS] = vec![Z_CONST_POS];
     b_rows[Z_CONST_POS] = vec![Z_CONST_POS];
 
-    // Free-input rows for the 512 message bits m (unconstrained when the
-    // constant wire is 1).
+    // Free-input rows for cv, message, counter, block length, and flags
+    // (unconstrained when the constant wire is 1). The embedding protocol
+    // binds these aligned slots to memory / bytecode claims.
     let mut input_emit = |base: usize, len: usize| {
         for j in 0..len {
             let s = base + j;
@@ -501,28 +499,11 @@ pub fn build_matrices() -> (SparseBinaryMatrix, SparseBinaryMatrix) {
             b_rows[s] = vec![Z_CONST_POS];
         }
     };
+    input_emit(CV_BASE, 8 * WORD_BITS);
     input_emit(M_BASE, 16 * WORD_BITS);
-
-    // Constant rows pin cv/counter/block_len/flags to the root-block
-    // configuration: a set bit gets `z_const · z_const = z_s` (= 1 once the
-    // lincheck const-wire pin forces z_const = 1), a clear bit keeps the empty
-    // rows (`0·0 = z_s`).
-    let mut const_emit = |base: usize, words: &[u32]| {
-        for (w, &val) in words.iter().enumerate() {
-            for j in 0..WORD_BITS {
-                if (val >> j) & 1 == 1 {
-                    let s = base + w * WORD_BITS + j;
-                    a_rows[s] = vec![Z_CONST_POS];
-                    b_rows[s] = vec![Z_CONST_POS];
-                }
-            }
-        }
-    };
-    const_emit(CV_BASE, &BLAKE3_IV);
-    const_emit(T_LO_BASE, &[0]);
-    const_emit(T_HI_BASE, &[0]);
-    const_emit(BLEN_BASE, &[PINNED_BLOCK_LEN]);
-    const_emit(FLAGS_BASE, &[PINNED_FLAGS]);
+    input_emit(T_LO_BASE, 2 * WORD_BITS);
+    input_emit(BLEN_BASE, WORD_BITS);
+    input_emit(FLAGS_BASE, WORD_BITS);
 
     let msg_idx = per_round_msg_idx();
     let mut state: [Word; 16] = initial_lane_words();
@@ -655,9 +636,9 @@ pub fn build_matrices() -> (SparseBinaryMatrix, SparseBinaryMatrix) {
 /// The `family_digest_matches_baked` test recomputes and compares — a circuit
 /// change fails it until this constant is updated alongside.
 pub const FAMILY_DIGEST: [u8; 32] = [
-    0xe8, 0xb4, 0x06, 0x12, 0xd8, 0x17, 0x0e, 0xcf, 0x4a, 0xdf, 0x77, 0x06, 0x57, 0x23, 0xbf,
-    0x88, 0x6e, 0x49, 0xf1, 0x6f, 0x13, 0xaa, 0x62, 0xe9, 0xc2, 0x6f, 0x03, 0x95, 0x48, 0x50,
-    0x17, 0x5e,
+    0xaf, 0xed, 0x74, 0x72, 0xc6, 0xf7, 0x71, 0xa8, 0x57, 0x59, 0x92, 0x72, 0xff, 0x33, 0xa4,
+    0xda, 0x86, 0xb2, 0x1f, 0x26, 0x00, 0xf0, 0x57, 0xfa, 0x0d, 0xa7, 0x97, 0xd1, 0x58, 0x63,
+    0xeb, 0x58,
 ];
 
 /// Build a [`BlockR1cs`] batching `2^n_blocks_log` independent BLAKE3
@@ -718,7 +699,6 @@ pub fn build_block_witness(
     block_len: u32,
     flags: u32,
 ) -> Vec<bool> {
-    assert_pinned(&(*cv, *m, counter, block_len, flags));
     let mut z = vec![false; K];
     z[Z_CONST_POS] = true;
     // Inputs.
@@ -812,37 +792,26 @@ pub fn min_n_blocks_log(n_blocks: usize) -> usize {
 /// One BLAKE3 compression input: `(cv, m, counter, block_len, flags)`.
 pub type Compression = ([u32; 8], [u32; 16], u64, u32, u32);
 
-/// The pinned block length: one full 64-byte block.
+/// The default one-block hash length: one full 64-byte block.
 pub const PINNED_BLOCK_LEN: u32 = 64;
-/// The pinned flags: `CHUNK_START(1) | CHUNK_END(2) | ROOT(8)` — the single
+/// The default flags: `CHUNK_START(1) | CHUNK_END(2) | ROOT(8)` — the single
 /// 64-byte root block, under which the compression output equals
 /// `blake3::hash` of the input.
 pub const PINNED_FLAGS: u32 = (1 << 0) | (1 << 1) | (1 << 3);
 
-/// The [`Compression`] of message `m` under the pinned configuration
-/// (`cv = IV`, `counter = 0`, [`PINNED_BLOCK_LEN`], [`PINNED_FLAGS`]) — the
-/// only shape satisfying the matrices' constant rows.
+/// A convenient one-block standard hash [`Compression`] of `m`
+/// (`cv = IV`, `counter = 0`, [`PINNED_BLOCK_LEN`], [`PINNED_FLAGS`]). The
+/// circuit itself accepts arbitrary chaining values and metadata.
 pub fn pinned_compression(m: [u32; 16]) -> Compression {
     (BLAKE3_IV, m, 0, PINNED_BLOCK_LEN, PINNED_FLAGS)
 }
 
-/// The padding instance: the pinned compression of the all-zero message,
+/// The padding instance: a default compression of the all-zero message,
 /// i.e. `blake3(0^64)`. Fills unused trailing slots so every batched block —
 /// padding included — is a valid instance with constant wire 1, as the
 /// lincheck const-wire pin requires.
 pub fn padding_block() -> Compression {
     pinned_compression([0u32; 16])
-}
-
-/// Panic unless `block` matches the pinned configuration (only `m` is free) —
-/// witness generation calls this so a non-conforming block fails fast instead
-/// of surfacing as a zerocheck mismatch.
-pub fn assert_pinned(block: &Compression) {
-    let &(cv, _, counter, block_len, flags) = block;
-    assert!(
-        cv == BLAKE3_IV && counter == 0 && block_len == PINNED_BLOCK_LEN && flags == PINNED_FLAGS,
-        "compression violates the pinned root-block configuration"
-    );
 }
 
 /// Generate the boolean witness vector for `blocks.len()` independent BLAKE3
@@ -917,15 +886,6 @@ fn write_lin_word_ab_packed(bit_off: usize, val: u32, z: &mut [u64], a: &mut [u6
     or_u32_at_bit(b, bit_off, 0xFFFF_FFFF);
 }
 
-/// Constant-row word (cv/counter/blen/flags): set bits have `A = B =
-/// [Z_CONST]`, so `(z, a, b) = (1, 1, 1)`; clear bits have empty rows, so
-/// `(z, a, b) = (0, 0, 0)`. I.e. `a = b = z = val`.
-fn write_const_word_ab_packed(bit_off: usize, val: u32, z: &mut [u64], a: &mut [u64], b: &mut [u64]) {
-    or_u32_at_bit(z, bit_off, val);
-    or_u32_at_bit(a, bit_off, val);
-    or_u32_at_bit(b, bit_off, val);
-}
-
 /// Build the (z, a, b) blocks for ONE compression instance, into u64 views
 /// of the F128-packed per-block storage. Buffers must be zero on entry.
 ///
@@ -952,19 +912,19 @@ fn build_block_witness_ab_packed_into(
     or_bit_at(a, Z_CONST_POS);
     or_bit_at(b, Z_CONST_POS);
 
-    // Free-input rows (m) and constant rows (cv/counter/blen/flags).
+    // Free-input rows.
     let counter_lo = counter as u32;
     let counter_hi = (counter >> 32) as u32;
     for w in 0..8 {
-        write_const_word_ab_packed(cv_bit(w, 0), cv[w], z, a, b);
+        write_lin_word_ab_packed(cv_bit(w, 0), cv[w], z, a, b);
     }
     for i in 0..16 {
         write_lin_word_ab_packed(m_bit(i, 0), m[i], z, a, b);
     }
-    write_const_word_ab_packed(T_LO_BASE, counter_lo, z, a, b);
-    write_const_word_ab_packed(T_HI_BASE, counter_hi, z, a, b);
-    write_const_word_ab_packed(BLEN_BASE, block_len, z, a, b);
-    write_const_word_ab_packed(FLAGS_BASE, flags, z, a, b);
+    write_lin_word_ab_packed(T_LO_BASE, counter_lo, z, a, b);
+    write_lin_word_ab_packed(T_HI_BASE, counter_hi, z, a, b);
+    write_lin_word_ab_packed(BLEN_BASE, block_len, z, a, b);
+    write_lin_word_ab_packed(FLAGS_BASE, flags, z, a, b);
 
     // BLAKE3 state evolution.
     let mut state: [u32; 16] = [
@@ -1074,7 +1034,6 @@ pub fn generate_witness_with_ab_packed(
         n_blocks <= n_total,
         "{n_blocks} compressions > 2^{n_blocks_log} = {n_total} slots"
     );
-    blocks.iter().for_each(assert_pinned);
 
     const F128_PER_BLOCK: usize = K / 128;
     let total_f128 = n_total * F128_PER_BLOCK;
@@ -1141,7 +1100,6 @@ pub fn generate_witness_with_ab_packed_and_lincheck(
     // every block. (The chain forbids padding, so this only affects the
     // standalone batch setup.)
     let padding = padding_block();
-    blocks.iter().for_each(assert_pinned);
     crate::blake3_witness::drive_witness_packed_and_lincheck(
         blocks,
         Some(&padding),
@@ -1306,8 +1264,9 @@ mod tests {
             let r1cs = build_block_r1cs(n_log);
             let blocks: Vec<Compression> = (0..n_blocks)
                 .map(|_| {
+                    let cv: [u32; 8] = std::array::from_fn(|_| rng.next_u32());
                     let m: [u32; 16] = std::array::from_fn(|_| rng.next_u32());
-                    pinned_compression(m)
+                    (cv, m, rng.next_u32() as u64 | ((rng.next_u32() as u64) << 32), rng.next_u32() % 65, rng.next_u32())
                 })
                 .collect();
             let z = generate_witness(&blocks, n_log);

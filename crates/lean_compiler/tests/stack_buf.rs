@@ -63,6 +63,39 @@ def main():
     assert!(verify(&program, &bad, &proof).is_err(), "wrong digest must be rejected");
 }
 
+/// Optional BLAKE3 metadata and a memory-supplied chaining value reproduce a
+/// standard two-block (80-byte) BLAKE3 hash.
+#[test]
+fn blake3_keywords_standard_multiblock() {
+    let src = "\
+def main():
+    block0 = [1, 2, 3, 4]
+    tail = [5, 0, 0, 0]
+    cv = StackBuf(2)
+    blake3(block0[0:2], block0[2:4], cv, step=0)
+    out = StackBuf(2)
+    blake3(tail[0:2], tail[2:4], out, cv=cv, step=1, end=1, root=1, block_len=16)
+    p = 1
+    p[1] = out[0]
+    p[GEN] = out[1]
+    return
+";
+    let program = compile(&parse(src).expect("parse"));
+    warm_setup(2);
+    let mut input = Vec::new();
+    for value in 1u64..=5 {
+        input.extend_from_slice(&F128::new(value, 0).to_le_bytes());
+    }
+    let digest = blake3::hash(&input);
+    let want = [
+        F128::from_le_bytes(digest.as_bytes()[..16].try_into().unwrap()),
+        F128::from_le_bytes(digest.as_bytes()[16..].try_into().unwrap()),
+    ];
+    let (proof, stats) = prove(&program, want);
+    assert_eq!(stats.counts[5], 2);
+    verify(&program, &want, &proof).expect("standard two-block BLAKE3 verifies");
+}
+
 /// A general (non-blake3) `StackBuf(3)`: indexed writes, an indexed read feeding
 /// an arithmetic write into another slot, then two slots published. Confirms the
 /// stack cells are plain consecutive frame cells addressable by index.

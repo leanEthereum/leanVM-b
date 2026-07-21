@@ -17,6 +17,4 @@ rand.workspace = true
 bincode.workspace = true
 serde.workspace = true
 tracing.workspace = true
-
-[dev-dependencies]
 blake3.workspace = true

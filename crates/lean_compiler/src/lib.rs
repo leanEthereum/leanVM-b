@@ -211,10 +211,10 @@ pub fn disassemble(prog: &[Op]) -> String {
             Op::Jump { oc, od, of } => {
                 format!("JUMP   if fp[{oc}]≠0: pc=fp[{od}], fp=fp[{of}]")
             }
-            Op::Blake3 { ins, out } => {
+            Op::Blake3 { ins, cv, out, metadata } => {
                 format!(
-                    "BLAKE3 fp[{out}..]= H(fp[{}], fp[{}] | fp[{}], fp[{}])",
-                    ins[0], ins[1], ins[2], ins[3]
+                    "BLAKE3 fp[{out}..]= compress(cv=fp[{cv}..], m=fp[{}],fp[{}],fp[{}],fp[{}], meta={})",
+                    ins[0], ins[1], ins[2], ins[3], kfmt(*metadata)
                 )
             }
         };
@@ -270,7 +270,11 @@ fn resolve(op: &LOp, entry: &HashMap<String, u32>, sentinel: u32, base: u32) -> 
             od: *od,
             of: *of,
         },
-        LOp::Blake3 { ins, c } => Op::Blake3 { ins: *ins, out: *c },
+        LOp::Blake3 { ins, cv, c, metadata } => Op::Blake3 {
+            ins: *ins,
+            cv: *cv,
+            out: *c,
+            metadata: *metadata,
+        },
     }
 }
-

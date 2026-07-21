@@ -30,12 +30,26 @@ pub use isa::{DerefMode, Op};
 pub use layout::*;
 pub(crate) use trace::{Brow, Drow, Jrow, Srow, Trace, Xrow};
 
-/// Witness-gen `BLAKE3` compression (doc §7.6): the four input words are the two
-/// 256-bit operands `a = (va0, va1)`, `b = (vb0, vb1)` laid out little-endian into
-/// 64 bytes; the 32-byte digest is split back into `c = (vc0, vc1)`. The BLAKE3
-/// hash of the 64-byte input — the relation flock then proves ([`crate::blake3_flock`]).
-fn blake3_compress(va0: F128, va1: F128, vb0: F128, vb1: F128) -> (F128, F128) {
-    let [c0, c1] = crate::vmhash::compress([va0, va1], [vb0, vb1]);
+/// Witness-gen `BLAKE3` compression (doc §7.6): the four message words are laid
+/// out little-endian into 64 bytes, combined with the supplied chaining value
+/// and metadata, and split back into `c = (vc0, vc1)`. Flock proves this same
+/// compression relation ([`crate::blake3_flock`]).
+fn blake3_compress(
+    va0: F128,
+    va1: F128,
+    vb0: F128,
+    vb1: F128,
+    cv0: F128,
+    cv1: F128,
+    metadata: F128,
+) -> (F128, F128) {
+    let block = crate::blake3_flock::compression(
+        [va0, va1],
+        [vb0, vb1],
+        [cv0, cv1],
+        metadata,
+    );
+    let [c0, c1] = crate::blake3_flock::digest(&block);
     (c0, c1)
 }
 
@@ -67,36 +81,37 @@ const MAX_LOG_ROWS: usize = 32;
 /// the very first squeeze. Both sides hold the program, so both compute this
 /// identically; the announced sizes ride the stream (`announce_public`).
 fn program_digest(prog: &[Op]) -> [F128; 2] {
-    // VM-native: encode the program as a field-element slice and hash it with the
-    // Merkle–Damgård slice hash ([`crate::vmhash::hash_slice`]), so a recursive
-    // verifier can recompute this digest with the `Blake3` opcode alone.
-    let mut words: Vec<F128> = Vec::with_capacity(2 * prog.len() + 1);
-    // Domain/version marker (the MD IV also binds the total length).
+    // VM-native: encode the program as a field-element slice and hash its exact
+    // little-endian bytes with standard BLAKE3 ([`crate::vmhash::hash_slice`]).
+    let mut words: Vec<F128> = Vec::with_capacity(4 * prog.len() + 1);
+    // Domain/version marker; standard BLAKE3 binds the total byte length.
     words.push(F128::new(prog.len() as u64, 1));
     for op in prog {
-        // Encode every op injectively as (tag, four u32 operands, one field
-        // immediate) → two words: the tag + three offsets packed, then the
-        // immediate. BLAKE3 carries five offsets, so its 4th/5th ride the
-        // immediate's two 64-bit limbs.
-        let (tag, a, b, c, k) = match *op {
-            Op::Xor { a, b, c } => (0u8, a, b, c, F128::ZERO),
-            Op::Mul { a, b, c } => (1, a, b, c, F128::ZERO),
-            Op::Set { o, k } => (2, o, 0, 0, k),
+        // Fixed four-word encoding per instruction. The final two words carry
+        // BLAKE3's remaining offsets; they are zero for other opcodes.
+        let (tag, a, b, c, k, x, y) = match *op {
+            Op::Xor { a, b, c } => (0u8, a, b, c, F128::ZERO, F128::ZERO, F128::ZERO),
+            Op::Mul { a, b, c } => (1, a, b, c, F128::ZERO, F128::ZERO, F128::ZERO),
+            Op::Set { o, k } => (2, o, 0, 0, k, F128::ZERO, F128::ZERO),
             Op::Deref {
                 alpha,
                 beta,
                 gamma,
                 mode,
             } => {
-                (3 + mode as u8, alpha, beta, gamma, F128::ZERO) // mode ∈ {Cell,Pc,Fp} ⇒ tag 3/4/5
+                (3 + mode as u8, alpha, beta, gamma, F128::ZERO, F128::ZERO, F128::ZERO)
             }
-            Op::Jump { oc, od, of } => (6, oc, od, of, F128::ZERO),
-            Op::Blake3 { ins, out } => (7, ins[0], ins[1], ins[2], F128::new(ins[3] as u64, out as u64)),
+            Op::Jump { oc, od, of } => (6, oc, od, of, F128::ZERO, F128::ZERO, F128::ZERO),
+            Op::Blake3 { ins, cv, out, metadata } => {
+                (7, ins[0], ins[1], ins[2], metadata, F128::new(ins[3] as u64, cv as u64), F128::new(out as u64, 0))
+            }
         };
         let lo = a as u64 | ((b as u64) << 32);
         let hi = c as u64 | ((tag as u64) << 32);
         words.push(F128::new(lo, hi));
         words.push(k);
+        words.push(x);
+        words.push(y);
     }
     crate::vmhash::hash_slice(&words)
 }
@@ -281,7 +296,7 @@ fn blake3_value_slot(col: usize) -> Option<usize> {
     tables::BLAKE3_VALUE_COLS
         .iter()
         .position(|&c| base + c == col)
-        .map(|i| crate::blake3_flock::SLOTS[i])
+        .map(|i| crate::blake3_flock::VM_SLOTS[i])
 }
 
 /// Run statistics returned alongside the proof: the cycle count (total executed
@@ -598,18 +613,23 @@ mod tests {
             Op::Set { o: 4, k: y0 },
             Op::Set { o: 5, k: y1 },
             Op::Set { o: 8, k: F128::ONE },
-            Op::Blake3 { ins: [2, 3, 4, 5], out: 6 },
+            Op::Blake3 {
+                ins: [2, 3, 4, 5],
+                cv: 0,
+                out: 6,
+                metadata: crate::blake3_flock::metadata(0, 64, crate::blake3_flock::FLAGS),
+            },
             Op::Set { o: 9, k: F128::ONE },
             Op::Xor { a: 0, b: 0, c: 0 }, // sentinel (never executed)
         ];
         let program = Program::assemble(prog, 0, 0, HashMap::new(), 10);
 
-        let pi = [F128::new(7, 0), F128::new(11, 0)];
+        let pi = crate::blake3_flock::IV;
         let exec = program.execute(pi);
 
         // The output cells hold the digest of the two inputs (the prover computes
         // a definite value even though nothing constrains it).
-        let (d0, d1) = blake3_compress(x0, x1, y0, y1);
+        let (d0, d1) = blake3_compress(x0, x1, y0, y1, pi[0], pi[1], crate::blake3_flock::metadata(0, 64, crate::blake3_flock::FLAGS));
         assert_eq!(exec.mem[6], d0);
         assert_eq!(exec.mem[7], d1);
         assert_eq!(exec.trace.blake3.len(), 1);
@@ -639,15 +659,20 @@ mod tests {
             Op::Set { o: 8, k: F128::ONE },  // filler
             Op::Set { o: 9, k: F128::ONE },  // filler
             Op::Set { o: 10, k: F128::ONE }, // filler
-            Op::Blake3 { ins: [2, 3, 2, 3], out: 6 }, // a == b: hash h ‖ h into cells 6,7
+            Op::Blake3 {
+                ins: [2, 3, 2, 3],
+                cv: 0,
+                out: 6,
+                metadata: crate::blake3_flock::metadata(0, 64, crate::blake3_flock::FLAGS),
+            }, // a == b: hash h ‖ h into cells 6,7
             Op::Set { o: 11, k: F128::ONE }, // filler
             Op::Xor { a: 0, b: 0, c: 0 },    // sentinel
         ];
         let program = Program::from_bytecode(prog, 16);
-        let pi = [F128::new(3, 0), F128::new(5, 0)];
+        let pi = crate::blake3_flock::IV;
 
         let exec = program.execute(pi);
-        let (d0, d1) = blake3_compress(h0, h1, h0, h1);
+        let (d0, d1) = blake3_compress(h0, h1, h0, h1, pi[0], pi[1], crate::blake3_flock::metadata(0, 64, crate::blake3_flock::FLAGS));
         assert_eq!(exec.mem[6], d0);
         assert_eq!(exec.mem[7], d1);
 
@@ -678,12 +703,15 @@ mod tests {
                 k: F128::new(0x3333, 0x4444),
             },
             Op::Set { o: 8, k: F128::ONE },
-            Op::Blake3 { ins: [2, 3, 4, 5], out: 6 },
+            Op::Blake3 {
+                ins: [2, 3, 4, 5], cv: 0, out: 6,
+                metadata: crate::blake3_flock::metadata(0, 64, crate::blake3_flock::FLAGS),
+            },
             Op::Set { o: 9, k: F128::ONE },
             Op::Xor { a: 0, b: 0, c: 0 }, // sentinel
         ];
         let program = Program::from_bytecode(prog, 10);
-        let pi = [F128::new(7, 0), F128::new(11, 0)];
+        let pi = crate::blake3_flock::IV;
         let (mut proof, _) = prove(&program, pi);
         verify(&program, &pi, &proof).expect("honest proof verifies");
 
@@ -725,12 +753,15 @@ mod tests {
                 k: F128::new(0x3333, 0x4444),
             },
             Op::Set { o: 8, k: F128::ONE },
-            Op::Blake3 { ins: [2, 3, 4, 5], out: 6 },
+            Op::Blake3 {
+                ins: [2, 3, 4, 5], cv: 0, out: 6,
+                metadata: crate::blake3_flock::metadata(0, 64, crate::blake3_flock::FLAGS),
+            },
             Op::Set { o: 9, k: F128::ONE },
             Op::Xor { a: 0, b: 0, c: 0 }, // sentinel
         ];
         let program = Program::from_bytecode(prog, 10);
-        let pi = [F128::new(7, 0), F128::new(11, 0)];
+        let pi = crate::blake3_flock::IV;
         let (proof, _) = prove(&program, pi);
         verify(&program, &pi, &proof).expect("honest proof verifies");
 
@@ -835,12 +866,15 @@ mod tests {
                 k: F128::new(0x3333, 0x4444),
             },
             Op::Set { o: 8, k: F128::ONE },
-            Op::Blake3 { ins: [2, 3, 4, 5], out: 6 },
+            Op::Blake3 {
+                ins: [2, 3, 4, 5], cv: 0, out: 6,
+                metadata: crate::blake3_flock::metadata(0, 64, crate::blake3_flock::FLAGS),
+            },
             Op::Set { o: 9, k: F128::ONE },
             Op::Xor { a: 0, b: 0, c: 0 }, // sentinel
         ];
         let program = Program::from_bytecode(prog, 10);
-        let pi = [F128::new(7, 0), F128::new(11, 0)];
+        let pi = crate::blake3_flock::IV;
         let (proof, _) = prove(&program, pi);
 
         let bytes = bincode::serialize(&proof).expect("proof serializes");

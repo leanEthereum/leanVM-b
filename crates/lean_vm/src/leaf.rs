@@ -313,12 +313,12 @@ fn default_surplus(blocks: &[Block], pad: &[F128], alpha: F128, gamma: F128) -> 
     acc
 }
 
-/// One reduced claim on the bytecode polynomial. The six public encoding
-/// columns (op, o1, o2, o3, fpc, ffp) stacked along three selector bits form
+/// One reduced claim on the bytecode polynomial. The eight public encoding
+/// columns (opcode plus seven operand/immediate slots), stacked along three selector bits, form
 /// ONE multilinear polynomial B̃ in `κ_bc + 3` variables; after the
-/// decompositions both parties absorb the six per-column evaluations (push and
+/// decompositions both parties absorb the eight per-column evaluations (push and
 /// pull share the GKR point ζ, so the columns are evaluated once), sample
-/// three selector challenges `s`, and reduce the six values to
+/// three selector challenges `s`, and reduce the eight values to
 /// `B̃(ζ_lo, s) = Σ_c eq(s, c)·v_c`. Natively the claim is
 /// true by construction (the verifier evaluated the columns itself); a
 /// recursive verifier defers exactly this one claim to its public input.
@@ -346,7 +346,7 @@ pub fn public_evals(blocks: &[Block], zeta: &[F128]) -> (usize, Vec<F128>) {
     (kappa, out)
 }
 
-/// The stacked bytecode polynomial as a dense table: the six public encoding
+/// The stacked bytecode polynomial as a dense table: the eight public encoding
 /// columns along three selector bits (`B̃`'s evaluations on the cube). This is
 /// the polynomial [`BytecodeClaim`]s are claims about; the outermost native
 /// verifier evaluates it here.
@@ -430,7 +430,7 @@ pub fn prove_balance(
     decompose_prove(count, &count_lay, cols, &bus_gkr.point, F128::ONE, F128::ZERO, &mut claims, ps);
 
     // Bytecode = ONE polynomial, and push/pull now share the point ζ, so the
-    // six public columns are opened ONCE: bind the evaluations, sample the
+    // eight public columns are opened ONCE: bind the evaluations, sample the
     // selector challenges, emit the single reduced claim.
     let (kbc, pv) = public_evals(push, &bus_gkr.point);
     for &v in &pv {

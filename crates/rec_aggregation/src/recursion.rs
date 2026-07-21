@@ -830,7 +830,7 @@ fn gen_verify(
                         continue; // deduped: pooled once at its first occurrence
                     }
                     if valcols.contains(i) {
-                        let slot_i = lean_vm::blake3_flock::SLOTS[valcols.iter().position(|v| v == i).unwrap()];
+                        let slot_i = lean_vm::blake3_flock::VM_SLOTS[valcols.iter().position(|v| v == i).unwrap()];
                         let nvt = 7 + blk.kappa;
                         push_desc(3, 0, blk.kappa, slot_i, qpkd_pl.offset >> nvt, nvt);
                     } else {
@@ -846,7 +846,7 @@ fn gen_verify(
             let col = sch.base[t] + c;
             let pl = l.placements[col];
             if pl.is_virtual() {
-                let slot_i = lean_vm::blake3_flock::SLOTS
+                let slot_i = lean_vm::blake3_flock::VM_SLOTS
                     [valcols.iter().position(|v| *v == col).unwrap()];
                 let nvt = 7 + taus[t];
                 push_desc(3, 0, taus[t], slot_i, qpkd_pl.offset >> nvt, nvt);
@@ -1280,8 +1280,8 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         ps("LIG_QUERIES", ints(&flat(&|c| c.5.clone(), maxlev)));
         ps("LIG_FOLDS", ints(&flat(&|c| c.3.clone(), maxlev)));
         ps("LIG_INTERLEAVE", ints(&flat(&|c| c.9.clone(), maxlev)));
-        ps("LIG_LEAF_BYTES", ints(&flat(&|c| c.9.iter().map(|&n| n * 16).collect(), maxlev)));
         ps("LIG_LEAF_PAIRS", ints(&flat(&|c| c.9.iter().map(|&n| n / 2).collect(), maxlev)));
+        ps("LIG_LEAF_BLOCKS", ints(&flat(&|c| c.9.iter().map(|&n| n / 4).collect(), maxlev)));
         ps("LIG_TREE_DEPTH", ints(&flat(&|c| c.6.clone(), maxlev)));
         ps("LIG_SQUEEZES", ints(&flat(&|c| c.8.clone(), maxlev)));
         ps("LIG_POSITIONS_OFF", ints(&flat(&|c| c.15.clone(), maxlev)));

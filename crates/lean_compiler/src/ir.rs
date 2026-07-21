@@ -64,7 +64,9 @@ pub(crate) enum LOp {
     /// the 32-bit output `c = (c, c+1)` occupies two CONSECUTIVE frame cells.
     Blake3 {
         ins: [Off; 4],
+        cv: Off,
         c: Off,
+        metadata: F128,
     },
 }
 

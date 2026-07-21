@@ -1191,7 +1191,17 @@ fn parse_expr(s: &str) -> Result<Expr, String> {
         } else {
             split_top(args_str, ',')
                 .iter()
-                .map(|a| parse_expr(a))
+                .map(|a| {
+                    if let Some((key, value)) = split_once_top(a, "=") {
+                        let key = key.trim();
+                        if key.is_empty() || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                            return Err(format!("invalid keyword argument `{key}`"));
+                        }
+                        Ok(Expr::Call(format!("__kw_{key}"), vec![parse_expr(&value)?]))
+                    } else {
+                        parse_expr(a)
+                    }
+                })
                 .collect::<Result<_, _>>()?
         };
         // `HeapBuf(n)` / `StackBuf(n)` are allocations, not ordinary calls. A size

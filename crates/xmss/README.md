@@ -2,37 +2,17 @@
 
 ## Hash functions
 
-Everything is built from one primitive — the compression
+Every XMSS hash is standard BLAKE3 of an exact byte string:
 
 ```
-H: {0,1}^512 -> {0,1}^256,   H(x) = BLAKE3(x)
+H(tweak, pp, payload) = BLAKE3(tweak | pp | payload)[..16]
 ```
 
-(BLAKE3 of exactly 64 bytes: the VM blake3 opcode shape).
-
-Single-block hashes (chain steps, Merkle nodes): one compression,
-
-```
-H(tweak | pp, payload | 0-pad)[..16]
-```
-
-with payloads of 16 bytes (chain step, zero-padded) and 32 bytes (Merkle
-node). Payload lengths are fixed per tweak type (the padding does not bind
-them).
-
-Multi-block hashes (WOTS public key: 42 chain tips = 672 bytes; message
-encoding: `msg (32) | randomness (24) | zeros (8)`): a Merkle-Damgard mode
-with the absorbed size in the IV, **in the exponent** of the VM field's
-generator `g` (GF(2^128), GHASH form — the VM's loop counters are g-powers,
-so the size element is free in-circuit):
-
-```
-IV = g^num_bytes (16) | zeros (16)
-state <- H(state | block)  over  tweak | pp (32) | data...
-```
-
-where `num_bytes` counts everything absorbed (the tweak/pp block included);
-the final state is truncated to 16 bytes.
+The 48-byte chain-step input takes one compression; the 64-byte Merkle-node
+input takes one; the 96-byte message-encoding input takes two; and the
+704-byte WOTS public-key input takes eleven. The VM supplies the standard IV,
+chaining value, chunk position, exact block length, and flags to each BLAKE3
+compression instruction.
 
 The 16-byte tweak, little-endian:
 
@@ -56,7 +36,7 @@ chain position or the Merkle level. Tweak types: `chain = 0`, `wots_pk = 1`,
 - `v = 42` chains, `w = 3`, `chain_length = 2^w = 8`
 - `target_sum = 194`
 
-Encoding: `D = MD(msg | randomness)` under the encoding tweak. `D`'s 128 bits,
+Encoding: `D = H(tweak_encoding, pp, msg | randomness | zeros(8))`. `D`'s 128 bits,
 split little-endian into 42 chunks of 3 bits, are the encoding
 `(e_0, .., e_41)`; valid iff the 2 leftover top bits (126, 127) are zero and
 `sum(e_i) = 194`. The signer grinds the randomness until valid (~2^14
@@ -77,8 +57,8 @@ pseudo-random fillers.
 
 ## Verification cost
 
-A constant 157 compressions per signature: 3 (encoding) + 100 (chain walks,
-fixed by the target sum) + 22 (WOTS public-key hash) + 32 (Merkle path).
+A constant 145 compressions per signature: 2 (encoding) + 100 (chain walks,
+fixed by the target sum) + 11 (WOTS public-key hash) + 32 (Merkle path).
 
 ## Signature size
 
