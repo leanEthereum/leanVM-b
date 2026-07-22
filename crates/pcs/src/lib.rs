@@ -18,6 +18,7 @@
 //! Ligerito paper.
 
 pub mod commit;
+pub mod jagged;
 pub mod ligerito;
 pub mod merkle;
 pub mod ntt;
