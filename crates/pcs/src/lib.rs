@@ -432,7 +432,18 @@ pub fn open_batch_mixed_ligerito_stacked(
     for claim in stack_pd {
         ps.observe_scalar(claim.value());
     }
-    let gammas_pd: Vec<F128> = (0..stack_pd.len()).map(|_| ps.sample()).collect();
+    // Every value is bound before this point, so one random linear-combination
+    // challenge suffices. Powers lose at most `stack_pd.len() / |F|` soundness
+    // (well below the target for F128) and make same-table claims tensorable.
+    let gamma = ps.sample();
+    let mut gamma_power = F128::ONE;
+    let gammas_pd: Vec<F128> = (0..stack_pd.len())
+        .map(|_| {
+            let out = gamma_power;
+            gamma_power *= gamma;
+            out
+        })
+        .collect();
     fold_stacked_point_claims(&mut b_stack, &mut target, stack_pd, &gammas_pd);
 
     
@@ -513,7 +524,15 @@ pub fn verify_opening_batch_mixed_ligerito_stacked(
     for claim in stack_pd {
         vs.observe_scalar(claim.value());
     }
-    let gammas_pd: Vec<F128> = (0..stack_pd.len()).map(|_| vs.sample()).collect();
+    let gamma = vs.sample();
+    let mut gamma_power = F128::ONE;
+    let gammas_pd: Vec<F128> = (0..stack_pd.len())
+        .map(|_| {
+            let out = gamma_power;
+            gamma_power *= gamma;
+            out
+        })
+        .collect();
     for (claim, g) in stack_pd.iter().zip(gammas_pd.iter()) {
         target_combined += *g * claim.value();
     }

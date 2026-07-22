@@ -1817,11 +1817,13 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     for j in unroll(0, N_CLAIMS):
         fs = obs(fs, opening_claim_values[GEN ** j])
     gamma_pool = HeapBuf(N_CLAIMS)
+    fs = squeeze(fs)
+    gamma = fs[0]
+    gv = 1
     for j in unroll(0, N_CLAIMS):
-        fs = squeeze(fs)
-        gv = fs[0]
         gamma_pool[GEN ** j] = gv
         target += gv * opening_claim_values[GEN ** j]
+        gv *= gamma
 
     # ================= the Ligerito opening core (Jagged dense q) ===========
 
