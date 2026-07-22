@@ -159,6 +159,36 @@ fn col_kappas(log_mem: usize, log_bytecode: usize, taus: [usize; 6]) -> Vec<Opti
         .collect()
 }
 
+/// Real Jagged heights for the committed columns. Shared memory/bytecode data
+/// and flock's `q_pkd` remain full power-of-two columns. Per-opcode columns
+/// commit only their executed-row prefix; their fixed padding is reconstructed
+/// publicly when claims are routed to the PCS.
+fn col_heights(
+    log_mem: usize,
+    log_bytecode: usize,
+    row_counts: [usize; 6],
+    kappas: &[Option<usize>],
+) -> Vec<usize> {
+    let sch = schema();
+    let mut heights = vec![0usize; sch.n];
+    heights[MEM] = 1usize << log_mem;
+    heights[MFCNT] = 1usize << log_mem;
+    heights[BFCNT] = 1usize << log_bytecode;
+    heights[QPKD] = 1usize << kappas[QPKD].expect("q_pkd is committed");
+    for (t, table) in tables::tables().iter().enumerate() {
+        let base = sch.base[t];
+        for height in &mut heights[base..base + table.n_committed_columns()] {
+            *height = row_counts[t];
+        }
+    }
+    for (height, kappa) in heights.iter_mut().zip(kappas) {
+        if kappa.is_none() {
+            *height = 0;
+        }
+    }
+    heights
+}
+
 /// Build the public [`Layout`] from the program, the memory log-size `log_mem`, the
 /// six tables' real row counts `row_counts`, and the public input `pi`. The flush
 /// blocks reference columns only by INDEX and the program only through its
@@ -362,7 +392,12 @@ pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; 6], pi: [F128; 2]
         pad[b3 + tables::BLAKE3_VALUE_COLS[8]] = crate::blake3_flock::metadata(0, 64, crate::blake3_flock::FLAGS);
     }
 
-    let (placements, m) = witness::placements_of(&col_kappas(log_mem, log_bytecode, taus));
+    let kappas = col_kappas(log_mem, log_bytecode, taus);
+    let heights = col_heights(log_mem, log_bytecode, row_counts, &kappas);
+    // q_pkd stays at offset zero so its ring-switched weight remains an aligned
+    // subcube. Every ordinary column after it is packed tightly and opened via
+    // the Jagged indicator.
+    let (placements, m) = witness::placements_of(&kappas, &heights, Some(QPKD));
     Layout {
         push,
         pull,

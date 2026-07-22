@@ -206,13 +206,20 @@ fn compute_combined_basis_and_target(
 
 // ===== leanVM-b stacked opener (grafted) =====
 /// A point claim folded into the stacked mixed opening ([`open_batch_mixed_ligerito_stacked`]).
-/// Either a **block-sparse** slot claim — weight `eq(low_point,·)` supported on the
-/// aligned sub-block `[offset, offset + 2^low_point.len())`, so the opener builds
-/// `eq` over just the slot instead of the whole `2^m` stack — or a **general**
-/// full-stack point (`eq(point,·)` over all `2^m`). leanVM's point claims are all
-/// `Slot`s (their `eq` is zero outside the slot); `Point` keeps the opener usable
-/// for arbitrary claims.
+/// Either a Jagged claim on a tightly packed, arbitrary-height column, a legacy
+/// aligned slot claim, or a general full-stack point.  The prover builds every
+/// weight only over its support; the verifier evaluates the same weight at the
+/// dense PCS's residual point.
 pub enum StackClaim<'a> {
+    /// A column occupying the arbitrary interval `[offset, offset + height)` in
+    /// the dense commitment. `row_point` evaluates the column after its real
+    /// prefix has been zero-padded to `2^row_point.len()` rows.
+    Jagged {
+        offset: usize,
+        height: usize,
+        row_point: &'a [F128],
+        value: F128,
+    },
     /// `eq(low_point,·)` on `[offset, offset + 2^low_point.len())`. `offset` must
     /// be a multiple of `2^low_point.len()` (an aligned slot).
     Slot { offset: usize, low_point: &'a [F128], value: F128 },
@@ -231,7 +238,8 @@ impl StackClaim<'_> {
     #[inline]
     fn value(&self) -> F128 {
         match self {
-            StackClaim::Slot { value, .. }
+            StackClaim::Jagged { value, .. }
+            | StackClaim::Slot { value, .. }
             | StackClaim::StridedSlot { value, .. }
             | StackClaim::Point { value, .. } => *value,
         }
@@ -257,6 +265,31 @@ fn fold_stacked_point_claims(b_stack: &mut [F128], target: &mut F128, stack_pd: 
     for (claim, g) in stack_pd.iter().zip(gammas_pd.iter()) {
         let g = *g;
         match claim {
+            StackClaim::Jagged {
+                offset,
+                height,
+                row_point,
+                value,
+            } => {
+                if *height != 0 {
+                    let eq = if row_point.len() < 14 {
+                        primitives::multilinear::build_eq(row_point)
+                    } else {
+                        ring_switch::build_eq_parallel(row_point)
+                    };
+                    let dst = &mut b_stack[*offset..*offset + *height];
+                    if *height < PAR_FOLD_THRESHOLD {
+                        for (bi, ei) in dst.iter_mut().zip(eq.iter()) {
+                            *bi += g * *ei;
+                        }
+                    } else {
+                        dst.par_iter_mut()
+                            .zip(eq[..*height].par_iter())
+                            .for_each(|(bi, ei)| *bi += g * *ei);
+                    }
+                }
+                *target += g * *value;
+            }
             StackClaim::Slot { offset, low_point, value } => {
                 let len = 1usize << low_point.len();
                 let dst = &mut b_stack[*offset..*offset + len];
@@ -307,6 +340,12 @@ fn fold_stacked_point_claims(b_stack: &mut [F128], target: &mut F128, stack_pd: 
 /// residual points).
 fn stack_claim_eq_at(claim: &StackClaim, x: &[F128]) -> F128 {
     match claim {
+        StackClaim::Jagged {
+            offset,
+            height,
+            row_point,
+            ..
+        } => jagged::indicator_eval(row_point, *offset, *offset + *height, x),
         StackClaim::Slot { offset, low_point, .. } => {
             let n = low_point.len();
             let mut e = primitives::multilinear::eq_eval(low_point, &x[..n]);

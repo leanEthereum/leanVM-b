@@ -95,13 +95,10 @@ pub struct Committed {
     pub mu: usize,
 }
 
-/// An evaluation claim located in a sub-cube (column slot) of the witness:
-/// `q̂(low_point, sel) = value`, where the slot occupies `[offset, offset +
-/// 2^{low_point.len()})` and `sel = offset >> low_point.len()` are its (boolean)
-/// high-bit selector coordinates. Because the selector is boolean, the claim's
-/// weight `eq(point,·)` is supported only inside the slot, where it equals
-/// `eq(low_point,·)` — so W_λ is built block-sparsely in O(Σ_j 2^{n_vars_j})
-/// rather than O(J·2^μ).
+/// An evaluation claim on a logical column of the Jagged witness. Ordinary
+/// columns occupy arbitrary dense intervals and carry their real height plus
+/// padded row point. Their weight is the Jagged indicator, supported only on
+/// the committed real prefix.
 ///
 /// A [`SlotClaim::Strided`] is a further-sparse special case for **boolean-selector
 /// slots on a packed column** (a BLAKE3 value word inside `q_pkd`): the low
@@ -111,9 +108,10 @@ pub struct Committed {
 /// with `low_point = slot_bits ++ point`.
 #[derive(Clone, Debug)]
 pub enum SlotClaim {
-    Slot {
+    Jagged {
         offset: usize,
-        low_point: Vec<F128>,
+        height: usize,
+        row_point: Vec<F128>,
         value: F128,
     },
     Strided {
@@ -126,17 +124,18 @@ pub enum SlotClaim {
 }
 
 impl SlotClaim {
-    /// This claim as a borrowed flock [`StackClaim`] — `Strided` maps to the sparse
-    /// [`StackClaim::StridedSlot`], `Slot` to the dense [`StackClaim::Slot`].
+    /// This claim as a borrowed underlying-PCS [`StackClaim`].
     fn as_stack(&self) -> StackClaim<'_> {
         match self {
-            SlotClaim::Slot {
+            SlotClaim::Jagged {
                 offset,
-                low_point,
+                height,
+                row_point,
                 value,
-            } => StackClaim::Slot {
+            } => StackClaim::Jagged {
                 offset: *offset,
-                low_point,
+                height: *height,
+                row_point,
                 value: *value,
             },
             SlotClaim::Strided {

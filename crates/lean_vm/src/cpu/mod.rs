@@ -301,8 +301,8 @@ fn blake3_value_slot(col: usize) -> Option<usize> {
 
 /// Run statistics returned alongside the proof: the cycle count (total executed
 /// instructions), the per-opcode counts `[XOR, MUL, SET, DEREF, JUMP, BLAKE3]`, and the
-/// committed witness size — the sum of the column lengths, i.e. the real data
-/// before the stacked witness is zero-padded to a power of two `2^m`.
+/// committed witness size — the sum of the Jagged real-prefix heights before
+/// the dense witness is zero-padded to a power of two `2^m`.
 pub struct Stats {
     pub cycles: usize,
     pub counts: [usize; 6],
@@ -344,11 +344,11 @@ pub fn prove(program: &Program, public_input: [F128; 2]) -> (Proof, Stats) {
     // Real committed data, before zero-pad to 2^m. Virtual columns (the BLAKE3
     // value columns) carry data for the bus but are NOT committed, so exclude them.
     let committed_size: usize = w
-        .cols
+        .layout
+        .placements
         .iter()
-        .zip(&w.layout.placements)
-        .filter(|(_, p)| !p.is_virtual())
-        .map(|(c, _)| c.len())
+        .filter(|p| !p.is_virtual())
+        .map(|p| p.height)
         .sum();
     // The public statement (program digest + input) seeds the transcript, so
     // every challenge depends on the exact program and public input.
@@ -578,10 +578,19 @@ fn slot_claims(l: &Layout, claims: &[ColumnClaim]) -> Vec<pcs::SlotClaim> {
                     value: c.value,
                 };
             }
-            pcs::SlotClaim::Slot {
-                offset: l.placements[c.col].offset,
-                low_point: c.point.clone(),
-                value: c.value,
+            let placement = l.placements[c.col];
+            debug_assert_eq!(c.point.len(), placement.n_vars);
+            // The arithmetization evaluates the full power-of-two column,
+            // including its fixed public padding. Jagged commits only the real
+            // prefix, so remove the padding MLE before opening the dense data.
+            let suffix = F128::ONE
+                + ::pcs::jagged::prefix_indicator_eval(placement.height, &c.point);
+            let jagged_value = c.value + l.pad[c.col] * suffix;
+            pcs::SlotClaim::Jagged {
+                offset: placement.offset,
+                height: placement.height,
+                row_point: c.point.clone(),
+                value: jagged_value,
             }
         })
         .collect()
