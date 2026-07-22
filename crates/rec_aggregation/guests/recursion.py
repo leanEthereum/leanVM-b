@@ -596,10 +596,45 @@ def jagged_prefix_fixed(row_index_weights, start_bits, end_bits, nbits: Const):
     return s0, s1, s2, s3
 
 
+def jagged_reverse_zero(v0, v1, v2, v3, w0, w1, w2, w3, start_bit, end_bit):
+    # Contract both Boolean choices of one index coordinate at once. Residual
+    # row coordinates are certified zero once per shared row below.
+    if start_bit == 0:
+        if end_bit == 0:
+            return v0, w0, v2, w0
+        return v2, w0, v2, w2
+    if end_bit == 0:
+        return w0, v1, w0, v3
+    return w0, v3, w2, v3
+
+
+def jagged_reverse_zero_leaf(v2, w2, start_bit, end_bit):
+    # The first reverse layer starts from (0, 0, msg[y], 0) leaves. Avoid
+    # transporting the six known-zero arguments through the call ABI.
+    if start_bit == 0:
+        if end_bit == 0:
+            return 0, v2, 0
+        return v2, v2, w2
+    if end_bit == 0:
+        return 0, 0, 0
+    return 0, w2, 0
+
+
+def jagged_reverse_zero_no1(v0, v2, v3, w0, w2, w3, start_bit, end_bit):
+    # State one is identically zero after the sparse leaf layer. The second
+    # reverse layer therefore need not pass v1/w1 through the call frame.
+    if start_bit == 0:
+        if end_bit == 0:
+            return v0, w0, v2, w0
+        return v2, w0, v2, w2
+    if end_bit == 0:
+        return w0, 0, w0, v3
+    return w0, v3, w2, v3
+
+
 def jagged_reverse_step(v0, v1, v2, v3, w0, w1, w2, w3, row_bit, start_bit, end_bit):
-    # Contract both Boolean choices of one index coordinate at once. `v` is
-    # the continuation for index bit zero and `w` for index bit one; the output
-    # is the continuation as seen by each of the four incoming ROBP states.
+    # General residual transition, retained for row points whose residual
+    # coordinates are not all zero.
     if row_bit == 0:
         if start_bit == 0:
             if end_bit == 0:
@@ -626,9 +661,40 @@ def jagged_reverse_step(v0, v1, v2, v3, w0, w1, w2, w3, row_bit, start_bit, end_
     return row_bit * v3 + one_plus_row * w0, one_plus_row * v3 + row_bit * w1, row_bit * v3 + one_plus_row * w2, one_plus_row * v3 + row_bit * w3
 
 
-def jagged_contract(final_msg, row_point, start_bits, end_bits, fold_bits: Const, log_len: Const, init0, init1, init2, init3):
+def jagged_contract_zero(final_msg, start_bits, end_bits, fold_bits: Const, log_len: Const, init0, init1, init2, init3):
     # Reverse-contract the residual Boolean-index ROBP against final_msg. The
     # layers contain fewer than 2 * 2^log_len width-four vectors in total.
+    layers = StackBuf(8 * 2 ** YR_LOG_CAP)
+    for y in unroll(0, 2 ** log_len):
+        layers[4 * y + 2] = final_msg[GEN ** y]
+    layer_off = 0
+    layer_len = 2 ** log_len
+    next_off = 4 * layer_len
+    for stage in unroll(0, log_len):
+        bit = log_len - 1 - stage
+        next_len = 2 ** bit
+        for t in unroll(0, next_len):
+            v = layer_off + 4 * t
+            w = layer_off + 4 * (t + next_len)
+            out = next_off + 4 * t
+            if stage == 0:
+                o0, o2, o3 = jagged_reverse_zero_leaf(layers[v + 2], layers[w + 2], start_bits[GEN ** (fold_bits + bit)], end_bits[GEN ** (fold_bits + bit)])
+                o1 = 0
+            elif stage == 1:
+                o0, o1, o2, o3 = jagged_reverse_zero_no1(layers[v], layers[v + 2], layers[v + 3], layers[w], layers[w + 2], layers[w + 3], start_bits[GEN ** (fold_bits + bit)], end_bits[GEN ** (fold_bits + bit)])
+            else:
+                o0, o1, o2, o3 = jagged_reverse_zero(layers[v], layers[v + 1], layers[v + 2], layers[v + 3], layers[w], layers[w + 1], layers[w + 2], layers[w + 3], start_bits[GEN ** (fold_bits + bit)], end_bits[GEN ** (fold_bits + bit)])
+            layers[out] = o0
+            layers[out + 1] = o1
+            layers[out + 2] = o2
+            layers[out + 3] = o3
+        layer_off = next_off
+        layer_len = next_len
+        next_off = next_off + 4 * next_len
+    return init0 * layers[layer_off] + init1 * layers[layer_off + 1] + init2 * layers[layer_off + 2] + init3 * layers[layer_off + 3]
+
+
+def jagged_contract_general(final_msg, row_point, start_bits, end_bits, fold_bits: Const, log_len: Const, init0, init1, init2, init3):
     layers = StackBuf(8 * 2 ** YR_LOG_CAP)
     for y in unroll(0, 2 ** log_len):
         layers[4 * y] = 0
@@ -658,6 +724,7 @@ def jagged_contract(final_msg, row_point, start_bits, end_bits, fold_bits: Const
 
 def jagged_terminal(m_idx: Const, fold_challenges, final_msg, claim_rows, col_start_bits, col_end_bits, gamma_pool):
     row_index_weights = HeapBuf(4 * N_CLAIM_ROWS * SIZE_BITS)
+    residual_zero = HeapBuf(N_CLAIM_ROWS)
     for group in unroll(0, N_CLAIM_ROWS):
         row = claim_rows * GEN ** (SIZE_BITS * group)
         weights = row_index_weights * GEN ** (4 * SIZE_BITS * group)
@@ -669,6 +736,19 @@ def jagged_terminal(m_idx: Const, fold_challenges, final_msg, claim_rows, col_st
             weights[GEN ** (4 * bit + 1)] = row_bit + rx
             weights[GEN ** (4 * bit + 2)] = index_bit + rx
             weights[GEN ** (4 * bit + 3)] = rx
+        if LIG_YR_LOG_LEN[m_idx] == 3:
+            if row[GEN ** LIG_TOTAL_FOLDS[m_idx]] == 0:
+                if row[GEN ** (LIG_TOTAL_FOLDS[m_idx] + 1)] == 0:
+                    if row[GEN ** (LIG_TOTAL_FOLDS[m_idx] + 2)] == 0:
+                        residual_zero[GEN ** group] = 1
+                    else:
+                        residual_zero[GEN ** group] = 0
+                else:
+                    residual_zero[GEN ** group] = 0
+            else:
+                residual_zero[GEN ** group] = 0
+        else:
+            residual_zero[GEN ** group] = 0
     total = 0
     for j in unroll(0, N_CLAIMS):
         if CLAIM_POINT_BUF[j] != POINT_BUF_QPKD:
@@ -677,7 +757,12 @@ def jagged_terminal(m_idx: Const, fold_challenges, final_msg, claim_rows, col_st
             end_bits = col_end_bits * GEN ** (SIZE_BITS * CLAIM_COL[j])
             weights = row_index_weights * GEN ** (4 * SIZE_BITS * CLAIM_ROW_GROUP[j])
             p0, p1, p2, p3 = jagged_prefix_fixed(weights, start_bits, end_bits, LIG_TOTAL_FOLDS[m_idx])
-            folded = jagged_contract(final_msg, row, start_bits, end_bits, LIG_TOTAL_FOLDS[m_idx], LIG_YR_LOG_LEN[m_idx], p0, p1, p2, p3)
+            folded_out = StackBuf(1)
+            if residual_zero[GEN ** CLAIM_ROW_GROUP[j]] == 1:
+                folded_out[0] = jagged_contract_zero(final_msg, start_bits, end_bits, LIG_TOTAL_FOLDS[m_idx], LIG_YR_LOG_LEN[m_idx], p0, p1, p2, p3)
+            else:
+                folded_out[0] = jagged_contract_general(final_msg, row, start_bits, end_bits, LIG_TOTAL_FOLDS[m_idx], LIG_YR_LOG_LEN[m_idx], p0, p1, p2, p3)
+            folded = folded_out[0]
             total += gamma_pool[GEN ** j] * folded
     return total
 
