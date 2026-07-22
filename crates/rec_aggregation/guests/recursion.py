@@ -543,62 +543,131 @@ def prefix_indicator(point, height_bits):
         equal = states[2 * rev + 1]
         x = point[GEN ** bit]
         h = height_bits[GEN ** bit]
-        states[2 * (rev + 1)] = less + h * equal * (1 + x)
-        states[2 * (rev + 1) + 1] = equal * ((1 + h) * (1 + x) + h * x)
+        equal_zero = equal * (1 + x)
+        states[2 * (rev + 1)] = less + h * equal_zero
+        states[2 * (rev + 1) + 1] = equal * (1 + h + x)
     return states[2 * SIZE_BITS]
 
 
 @inline
-def four_bit_eq_weight(row_bit, index_bit, start_bit, end_bit, symbol: Const):
-    weight = row_bit
-    if symbol % 2 == 0:
-        weight = 1 + row_bit
-    if (symbol // 2) % 2 == 1:
-        weight *= index_bit
+def jagged_step(s0, s1, s2, s3, row_bit, index_bit_point, start_bit_point, end_bit_point):
+    # Endpoint bits are Boolean-constrained public interval data, so select one
+    # of the four fixed transition matrices instead of evaluating a redundant
+    # four-variable tensor. The row/index eq tensor itself needs one product.
+    rx = row_bit * index_bit_point
+    w0 = 1 + row_bit + index_bit_point + rx
+    w1 = row_bit + rx
+    w2 = index_bit_point + rx
+    w3 = rx
+    out = StackBuf(4)
+    if start_bit_point == 0:
+        if end_bit_point == 0:
+            out[0] = s0 * (w0 + w3) + s1 * w2 + s2 * w3 + s3 * w2
+            out[1] = s1 * w1
+            out[2] = s2 * w0
+            out[3] = s3 * w1
+        else:
+            out[0] = s0 * w3 + s1 * w2
+            out[1] = 0
+            out[2] = s0 * w0 + s2 * (w0 + w3) + s3 * w2
+            out[3] = (s1 + s3) * w1
     else:
-        weight *= 1 + index_bit
-    if (symbol // 4) % 2 == 1:
-        weight *= start_bit
-    else:
-        weight *= 1 + start_bit
-    if (symbol // 8) % 2 == 1:
-        weight *= end_bit
-    else:
-        weight *= 1 + end_bit
-    return weight
+        if end_bit_point == 0:
+            out[0] = (s0 + s2) * w2
+            out[1] = s0 * w1 + s1 * (w0 + w3) + s3 * w3
+            out[2] = 0
+            out[3] = s2 * w1 + s3 * w0
+        else:
+            out[0] = s0 * w2
+            out[1] = s1 * w3
+            out[2] = s2 * w2
+            out[3] = (s0 + s2) * w1 + s1 * w0 + s3 * (w0 + w3)
+    return out[0], out[1], out[2], out[3]
 
 
-def jagged_indicator(row_point, index_point, start_bits, end_bits):
-    # Width-four ROBP for [index = start + row] AND [index < end]. State is
-    # (addition carry, comparison-so-far), read LSB first. At each layer the
-    # 16 four-bit symbols are MLE-weighted, then grouped by their deterministic
-    # transition; this is the Basic Jagged indicator evaluation.
-    states = StackBuf(4 * (SIZE_BITS + 1))
-    states[0] = 1
-    states[1] = 0
-    states[2] = 0
-    states[3] = 0
-    for bit in unroll(0, SIZE_BITS):
-        row_bit = row_point[GEN ** bit]
-        index_bit_point = index_point[GEN ** bit]
-        start_bit_point = start_bits[GEN ** bit]
-        end_bit_point = end_bits[GEN ** bit]
-        for next_state in unroll(0, 4):
-            next_weight = 0
-            for old_state in unroll(0, 4):
-                transition_weight = 0
-                for symbol in unroll(0, 16):
-                    if (symbol // 2) % 2 == (symbol % 2 + old_state % 2 + (symbol // 4) % 2) % 2:
-                        if (symbol // 2) % 2 == (symbol // 8) % 2:
-                            if next_state == (symbol % 2 + old_state % 2 + (symbol // 4) % 2) // 2 + 2 * (old_state // 2):
-                                transition_weight += four_bit_eq_weight(row_bit, index_bit_point, start_bit_point, end_bit_point, symbol)
-                        else:
-                            if next_state == (symbol % 2 + old_state % 2 + (symbol // 4) % 2) // 2 + 2 * ((symbol // 8) % 2):
-                                transition_weight += four_bit_eq_weight(row_bit, index_bit_point, start_bit_point, end_bit_point, symbol)
-                next_weight += states[4 * bit + old_state] * transition_weight
-            states[4 * (bit + 1) + next_state] = next_weight
-    # carry = 0 and comparison = 1.
-    return states[4 * SIZE_BITS + 2]
+def jagged_prefix_fixed(row_point, index_point, start_bits, end_bits, nbits: Const):
+    # Candidate-specialized straight-line prefix. Keeping the four states in a
+    # scalar chain avoids both recursive VM frames and intermediate memory.
+    s0 = 1
+    s1 = 0
+    s2 = 0
+    s3 = 0
+    for bit in unroll(0, nbits):
+        s0, s1, s2, s3 = jagged_step(s0, s1, s2, s3, row_point[GEN ** bit], index_point[GEN ** bit], start_bits[GEN ** bit], end_bits[GEN ** bit])
+    return s0, s1, s2, s3
+
+
+def jagged_reverse_step(v0, v1, v2, v3, w0, w1, w2, w3, row_bit, start_bit, end_bit):
+    # Contract both Boolean choices of one index coordinate at once. `v` is
+    # the continuation for index bit zero and `w` for index bit one; the output
+    # is the continuation as seen by each of the four incoming ROBP states.
+    if row_bit == 0:
+        if start_bit == 0:
+            if end_bit == 0:
+                return v0, w0, v2, w0
+            return v2, w0, v2, w2
+        if end_bit == 0:
+            return w0, v1, w0, v3
+        return w0, v3, w2, v3
+    if row_bit == 1:
+        if start_bit == 0:
+            if end_bit == 0:
+                return w0, v1, w0, v3
+            return w0, v3, w2, v3
+        if end_bit == 0:
+            return v1, w1, v3, w1
+        return v3, w1, v3, w3
+    one_plus_row = 1 + row_bit
+    if start_bit == 0:
+        if end_bit == 0:
+            return one_plus_row * v0 + row_bit * w0, row_bit * v1 + one_plus_row * w0, one_plus_row * v2 + row_bit * w0, row_bit * v3 + one_plus_row * w0
+        return one_plus_row * v2 + row_bit * w0, row_bit * v3 + one_plus_row * w0, one_plus_row * v2 + row_bit * w2, row_bit * v3 + one_plus_row * w2
+    if end_bit == 0:
+        return row_bit * v1 + one_plus_row * w0, one_plus_row * v1 + row_bit * w1, row_bit * v3 + one_plus_row * w0, one_plus_row * v3 + row_bit * w1
+    return row_bit * v3 + one_plus_row * w0, one_plus_row * v3 + row_bit * w1, row_bit * v3 + one_plus_row * w2, one_plus_row * v3 + row_bit * w3
+
+
+def jagged_contract(final_msg, row_point, start_bits, end_bits, fold_bits: Const, log_len: Const, init0, init1, init2, init3):
+    # Reverse-contract the residual Boolean-index ROBP against final_msg. The
+    # layers contain fewer than 2 * 2^log_len width-four vectors in total.
+    layers = StackBuf(8 * 2 ** YR_LOG_CAP)
+    for y in unroll(0, 2 ** log_len):
+        layers[4 * y] = 0
+        layers[4 * y + 1] = 0
+        layers[4 * y + 2] = final_msg[GEN ** y]
+        layers[4 * y + 3] = 0
+    layer_off = 0
+    layer_len = 2 ** log_len
+    next_off = 4 * layer_len
+    for stage in unroll(0, log_len):
+        bit = log_len - 1 - stage
+        next_len = 2 ** bit
+        for t in unroll(0, next_len):
+            v = layer_off + 4 * t
+            w = layer_off + 4 * (t + next_len)
+            o0, o1, o2, o3 = jagged_reverse_step(layers[v], layers[v + 1], layers[v + 2], layers[v + 3], layers[w], layers[w + 1], layers[w + 2], layers[w + 3], row_point[GEN ** (fold_bits + bit)], start_bits[GEN ** (fold_bits + bit)], end_bits[GEN ** (fold_bits + bit)])
+            out = next_off + 4 * t
+            layers[out] = o0
+            layers[out + 1] = o1
+            layers[out + 2] = o2
+            layers[out + 3] = o3
+        layer_off = next_off
+        layer_len = next_len
+        next_off = next_off + 4 * next_len
+    return init0 * layers[layer_off] + init1 * layers[layer_off + 1] + init2 * layers[layer_off + 2] + init3 * layers[layer_off + 3]
+
+
+def jagged_terminal(m_idx: Const, fold_challenges, final_msg, claim_rows, col_start_bits, col_end_bits, gamma_pool):
+    total = 0
+    for j in unroll(0, N_CLAIMS):
+        if CLAIM_POINT_BUF[j] != POINT_BUF_QPKD:
+            row = claim_rows * GEN ** (SIZE_BITS * j)
+            start_bits = col_start_bits * GEN ** (SIZE_BITS * CLAIM_COL[j])
+            end_bits = col_end_bits * GEN ** (SIZE_BITS * CLAIM_COL[j])
+            p0, p1, p2, p3 = jagged_prefix_fixed(row, fold_challenges, start_bits, end_bits, LIG_TOTAL_FOLDS[m_idx])
+            folded = jagged_contract(final_msg, row, start_bits, end_bits, LIG_TOTAL_FOLDS[m_idx], LIG_YR_LOG_LEN[m_idx], p0, p1, p2, p3)
+            total += gamma_pool[GEN ** j] * folded
+    return total
 
 
 def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, cursor):
@@ -1636,9 +1705,12 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
                 row[GEN ** bit] = 0
             opening_claim_values[GEN ** j] = claim_pool[GEN ** j]
         else:
-            height_bits = col_height_bits * GEN ** (SIZE_BITS * CLAIM_COL[j])
-            real_prefix = prefix_indicator(row, height_bits)
-            opening_claim_values[GEN ** j] = claim_pool[GEN ** j] + CLAIM_PAD[j] * (1 + real_prefix)
+            if CLAIM_PAD[j] == 0:
+                opening_claim_values[GEN ** j] = claim_pool[GEN ** j]
+            else:
+                height_bits = col_height_bits * GEN ** (SIZE_BITS * CLAIM_COL[j])
+                real_prefix = prefix_indicator(row, height_bits)
+                opening_claim_values[GEN ** j] = claim_pool[GEN ** j] + CLAIM_PAD[j] * (1 + real_prefix)
 
     # Every adjusted Jagged claim value is observed before its batching scalar,
     # exactly as in the native verifier.
@@ -1728,43 +1800,13 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
                 selector_chain[xk * GEN] = selector_chain[xk] * (1 + q_hi[xk])
             qpkd_claim_weight += gamma_pool[GEN ** j] * selector_chain[q_hi_len_g]
 
-    # Evaluate each Basic Jagged indicator at x = ris || y and take its inner
-    # product with the final Ligerito message. A baked bit table supplies the
-    # Boolean residual coordinates for the runtime-length y loop.
-    y_bits_table = HeapBuf((2 ** YR_LOG_CAP) * YR_LOG_CAP)
-    for y in unroll(0, 2 ** YR_LOG_CAP):
-        for bit in unroll(0, YR_LOG_CAP):
-            if (y // (2 ** bit)) % 2 == 1:
-                y_bits_table[GEN ** (y * YR_LOG_CAP + bit)] = 1
-            else:
-                y_bits_table[GEN ** (y * YR_LOG_CAP + bit)] = 0
-    yr_len_g = g_squares[yr_log_n_g]
-    jagged_sum_chain = HeapBuf(2 ** YR_LOG_CAP + 1)
-    index_points = HeapBuf((2 ** YR_LOG_CAP) * SIZE_BITS)
-    jagged_sum_chain[GEN ** 0] = 0
-    for xy in mul_range(1, yr_len_g):
-        y_row = y_bits_table * (xy ** YR_LOG_CAP)
-        index_point = index_points * (xy ** SIZE_BITS)
-        for xk in mul_range(1, fold_cap_g):
-            index_point[xk] = fold_challenges[xk]
-        y_dst = index_point * fold_cap_g
-        y_len_g = gmv / fold_cap_g
-        for xk in mul_range(1, y_len_g):
-            y_dst[xk] = y_row[xk]
-        zero_ptr = index_point * gmv
-        zero_len_g = GEN ** SIZE_BITS / gmv
-        for xk in mul_range(1, zero_len_g):
-            zero_ptr[xk] = 0
-        eval_b = 0
-        for j in unroll(0, N_CLAIMS):
-            if CLAIM_POINT_BUF[j] != POINT_BUF_QPKD:
-                row = claim_rows * GEN ** (SIZE_BITS * j)
-                start_bits = col_start_bits * GEN ** (SIZE_BITS * CLAIM_COL[j])
-                end_bits = col_end_bits * GEN ** (SIZE_BITS * CLAIM_COL[j])
-                eval_b += gamma_pool[GEN ** j] * jagged_indicator(row, index_point, start_bits, end_bits)
-        jagged_sum_chain[xy * GEN] = jagged_sum_chain[xy] + final_msg[xy] * eval_b
+    # Contract every Basic Jagged indicator with the final Ligerito message.
+    # A second dispatch on the already-certified commitment size bakes both
+    # the folded prefix length and the residual-message shape into straight-
+    # line width-four contractions.
+    jagged_sum = match_range(log(sel), range(0, LIG_N_CANDIDATES), lambda m_idx: jagged_terminal(m_idx, fold_challenges, final_msg, claim_rows, col_start_bits, col_end_bits, gamma_pool))
     # q_pkd occupies [0, 2^qpkdv), hence its residual y selector is zero.
-    inner_sum = inner_total + jagged_sum_chain[yr_len_g] + (rs_weight + qpkd_claim_weight) * final_msg[GEN ** 0]
+    inner_sum = inner_total + jagged_sum + (rs_weight + qpkd_claim_weight) * final_msg[GEN ** 0]
     assert inner_sum == sumcheck_target
 
 

@@ -1349,10 +1349,18 @@ pub fn run_recursion(inner: &[(usize, usize)], enable_tracing: bool) -> Recursiv
     recursive_proof
 }
 
-/// Minimum-shape end-to-end recursion smoke test.
+/// Minimum-shape recursion-guest execution smoke test. The full integration
+/// test below additionally proves and verifies the outer execution.
 #[test]
 fn recursion_1to1_smoke() {
-    run_recursion(&[(4, 1 << 12)], false);
+    let cfg = [(4, 1 << 12)];
+    let batch = build_batch(&cfg);
+    let mut guest = recursion_guest(&batch.program0, cfg.len());
+    for (name, entries) in &batch.merged {
+        guest.set_witness(name, entries.clone());
+    }
+    let exec = guest.execute(batch.public_input());
+    eprintln!("recursion smoke guest cycles: {}", pretty_integer(exec.cycles));
 }
 
 /// Two ~1M-cycle inner proofs, verified and aggregated by one guest into one
