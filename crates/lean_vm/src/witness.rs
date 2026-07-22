@@ -20,6 +20,11 @@ pub struct Placement {
     /// Number of real entries committed for this column (not necessarily a
     /// power of two and possibly zero).
     pub height: usize,
+    /// Log2 number of equal-height columns interleaved row-major in this
+    /// Jagged block. Zero is the ordinary one-column layout.
+    pub block_width_log: usize,
+    /// This column's low-bit selector inside its block.
+    pub slot: usize,
 }
 
 impl Placement {
@@ -27,6 +32,8 @@ impl Placement {
         n_vars: usize::MAX,
         offset: 0,
         height: 0,
+        block_width_log: 0,
+        slot: 0,
     };
 
     pub fn is_virtual(&self) -> bool {
@@ -59,18 +66,47 @@ pub fn placements_of(
     let mut order: Vec<usize> = first.into_iter().collect();
     order.extend((0..n).filter(|&i| kappas[i].is_some() && Some(i) != first));
 
+    let blocks: Vec<Vec<usize>> = order.into_iter().map(|i| vec![i]).collect();
+    placements_of_blocks(kappas, heights, &blocks)
+}
+
+/// Place explicit power-of-two, equal-height column blocks row-major. The
+/// blocks must cover every committed column exactly once; virtual columns are
+/// omitted. A width-`2^c` block occupies one tight Jagged interval of length
+/// `2^c * height`, and column `slot` lives at `offset + slot + row * 2^c`.
+pub fn placements_of_blocks(
+    kappas: &[Option<usize>],
+    heights: &[usize],
+    blocks: &[Vec<usize>],
+) -> (Vec<Placement>, usize) {
+    let n = kappas.len();
+    assert_eq!(heights.len(), n);
     let mut placements = vec![Placement::VIRTUAL; n];
+    let mut seen = vec![false; n];
     let mut off = 0usize;
-    for &i in &order {
-        let k = kappas[i].unwrap();
-        assert!(heights[i] <= 1usize << k, "column height exceeds its padded MLE");
-        placements[i] = Placement {
-            n_vars: k,
-            offset: off,
-            height: heights[i],
-        };
-        off += heights[i];
+    for block in blocks {
+        assert!(!block.is_empty() && block.len().is_power_of_two(), "Jagged block width must be a nonzero power of two");
+        let width_log = block.len().trailing_zeros() as usize;
+        let first = block[0];
+        let k = kappas[first].expect("Jagged blocks cannot contain virtual columns");
+        let height = heights[first];
+        assert!(height <= 1usize << k, "column height exceeds its padded MLE");
+        for (slot, &i) in block.iter().enumerate() {
+            assert!(i < n && !seen[i], "Jagged blocks must cover columns exactly once");
+            assert_eq!(kappas[i], Some(k), "Jagged block columns must have equal padded height");
+            assert_eq!(heights[i], height, "Jagged block columns must have equal real height");
+            seen[i] = true;
+            placements[i] = Placement {
+                n_vars: k,
+                offset: off,
+                height,
+                block_width_log: width_log,
+                slot,
+            };
+        }
+        off += height * block.len();
     }
+    assert!(kappas.iter().enumerate().all(|(i, k)| k.is_some() == seen[i]), "Jagged blocks must cover every committed column");
     // Floor at the PCS minimum (Ligerito's level ladder needs room); tiny witnesses
     // zero-pad up. Both sides derive this identically from the kappas.
     let m = crate::log2_ceil_usize(off.max(1)).max(crate::pcs::MIN_MU);
@@ -94,15 +130,19 @@ pub fn stack_q(cols: &[Column], placements: &[Placement], m: usize) -> Vec<F128>
         if placement.is_virtual() {
             continue;
         }
-        let offset = placement.offset;
-        let dst = &mut q[offset..offset + placement.height];
         let src = &cols[i][..placement.height];
-        if src.len() >= crate::PAR_THRESHOLD {
+        if placement.block_width_log == 0 && src.len() >= crate::PAR_THRESHOLD {
+            let dst = &mut q[placement.offset..placement.offset + placement.height];
             dst.par_chunks_mut(COPY_CHUNK)
                 .zip(src.par_chunks(COPY_CHUNK))
                 .for_each(|(d, s)| d.copy_from_slice(s));
+        } else if placement.block_width_log == 0 {
+            q[placement.offset..placement.offset + placement.height].copy_from_slice(src);
         } else {
-            dst.copy_from_slice(src);
+            let width = 1usize << placement.block_width_log;
+            for (row, &value) in src.iter().enumerate() {
+                q[placement.offset + placement.slot + row * width] = value;
+            }
         }
     }
     q
@@ -156,5 +196,30 @@ mod tests {
         assert_eq!(&q[5..8], &cols[0][..3]);
         assert_eq!(&q[8..10], &cols[3][..2]);
         assert!(q[10..].iter().all(|&x| x == F128::ZERO));
+    }
+
+    #[test]
+    fn row_major_block_is_one_multilinear_claim() {
+        let kappas = vec![Some(2), Some(2)];
+        let heights = vec![3, 3];
+        let (placements, m) = placements_of_blocks(&kappas, &heights, &[vec![0, 1]]);
+        let cols = vec![
+            vec![F128::new(2, 0), F128::new(3, 0), F128::new(5, 0), F128::ZERO],
+            vec![F128::new(7, 0), F128::new(11, 0), F128::new(13, 0), F128::ZERO],
+        ];
+        let q = stack_q(&cols, &placements, m);
+        assert_eq!(&q[..6], &[cols[0][0], cols[1][0], cols[0][1], cols[1][1], cols[0][2], cols[1][2]]);
+
+        let z_col = F128::new(17, 0);
+        let row_point = [F128::new(19, 0), F128::new(23, 0)];
+        let mut block_point = vec![z_col];
+        block_point.extend(row_point);
+        let block_eq = primitives::multilinear::build_eq(&block_point);
+        let block_eval = q[..6].iter().zip(&block_eq).fold(F128::ZERO, |acc, (&v, &e)| acc + v * e);
+
+        let row_eq = primitives::multilinear::build_eq(&row_point);
+        let eval0 = cols[0].iter().zip(&row_eq).fold(F128::ZERO, |acc, (&v, &e)| acc + v * e);
+        let eval1 = cols[1].iter().zip(&row_eq).fold(F128::ZERO, |acc, (&v, &e)| acc + v * e);
+        assert_eq!(block_eval, (F128::ONE + z_col) * eval0 + z_col * eval1);
     }
 }
