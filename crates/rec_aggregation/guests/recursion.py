@@ -560,7 +560,7 @@ def jagged_step(s0, s1, s2, s3, w0, w1, w2, w3, start_bit_point, end_bit_point):
     out = StackBuf(4)
     if start_bit_point == 0:
         if end_bit_point == 0:
-            out[0] = s0 * (w0 + w3) + s1 * w2 + s2 * w3 + s3 * w2
+            out[0] = s0 * (w0 + w3) + (s1 + s3) * w2 + s2 * w3
             out[1] = s1 * w1
             out[2] = s2 * w0
             out[3] = s3 * w1
