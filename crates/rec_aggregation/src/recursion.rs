@@ -1149,6 +1149,12 @@ fn gen_verify(
 /// program), the merged per-sub witness entries, the outer statement, and the
 /// data to discharge the reduced claims. Splitting the build from the compile
 /// lets one compiled guest serve many batches (see `recursion_generic_many`).
+/// The guest's stacked-size dispatch range: one `match_range` opening arm per
+/// candidate `mu` in `MU_MIN..=MU_MAX` (mirrored by the soundness test's
+/// residual-log cap).
+const MU_MIN: usize = 22;
+const MU_MAX: usize = 28;
+
 struct Batch {
     merged: Vec<(String, Vec<Vec<F192>>)>,
     program0: Program,
@@ -1156,6 +1162,9 @@ struct Batch {
     nsub: usize,
     total_inner_cycles: usize,
     inner_stats: Vec<(usize, usize)>,
+    /// Per-sub stacked-witness log-size `m` (the dispatch candidate the guest
+    /// selects), derived from each inner proof's announced sizes.
+    stack_mus: Vec<usize>,
     outer_log_inv_rate: usize,
 }
 
@@ -1191,6 +1200,7 @@ fn build_batch(inner: &[(usize, usize)], log_inv_rates: &[usize], outer_log_inv_
     let nsub = inner.len();
     let mut total_inner_cycles = 0usize;
     let mut inner_stats = Vec::with_capacity(nsub);
+    let mut stack_mus = Vec::with_capacity(nsub);
     let mut protos = Vec::new();
     for (k, (&(hashes, iters), &log_inv_rate)) in inner.iter().zip(log_inv_rates).enumerate() {
         let pi = [
@@ -1200,6 +1210,15 @@ fn build_batch(inner: &[(usize, usize)], log_inv_rates: &[usize], outer_log_inv_
         let (program, proof, inner_cycles, inner_committed) = prove_inner(pi, hashes, iters, log_inv_rate);
         total_inner_cycles += inner_cycles;
         inner_stats.push((inner_cycles, inner_committed));
+        stack_mus.push(
+            lean_vm::cpu::layout(
+                &program.prog,
+                proof.stream[0].c0 as usize,
+                std::array::from_fn(|i| proof.stream[1 + i].c0 as usize),
+                pi,
+            )
+            .m,
+        );
         trace_start();
         let summary = verify(&program, &pi, &proof).expect("inner verifies");
         let ops = trace_take();
@@ -1247,6 +1266,7 @@ fn build_batch(inner: &[(usize, usize)], log_inv_rates: &[usize], outer_log_inv_
         nsub,
         total_inner_cycles,
         inner_stats,
+        stack_mus,
         outer_log_inv_rate,
     }
 }
@@ -1573,7 +1593,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
             c_foldbase, c_risstart, c_svk, c_ivk,
         )
     };
-    let (minm, maxm) = (22usize, 28usize);
+    let (minm, maxm) = (MU_MIN, MU_MAX);
     let rates = pcs::ligerito::MIN_LOG_INV_RATE..=pcs::ligerito::MAX_LOG_INV_RATE;
     let cands: Vec<_> = rates
         .clone()
@@ -2002,7 +2022,7 @@ fn recursion_2to1_mixed() {
 
 /// One compiled guest bytecode proves MANY inner runs with wildly different
 /// opcode profiles and sizes, without recompilation. The configs span four
-/// committed sizes (m in {22,23,24,25} - four distinct match_range opening
+/// committed sizes (m in {23,24,25,26} - four distinct match_range opening
 /// arms) and four BLAKE3 log-instance-counts (tau_5 in {3,4,5,6} - different
 /// r1cs statement digests, flock reduction sizes, and pin prefixes). The
 /// guest is compiled ONCE from the placeholder map, which is a function of the
@@ -2014,10 +2034,12 @@ fn recursion_soundness_binds() {
     // Adversarial check that the layout-hint certifications actually BIND:
     // the honest proof verifies, and corrupting any of the once-free hints
     // (padding surplus, bus-leaf selectors + their packing order, and the
-    // residual-slot pad coordinates) makes the guest reject. Uses the m=22
-    // candidate, whose yr_log_n is below YR_LOG_CAP so the slot over-read
-    // path is live. Ignored: several full inner+outer proofs.
-    let cfg: &[(usize, usize)] = &[(4, 1 << 12)];
+    // residual-slot pad coordinates) makes the guest reject. The config is
+    // chosen so the candidate's yr_log_n sits below YR_LOG_CAP and the slot
+    // over-read path stays live (asserted below, so a shape drift that parks
+    // yr_log_n at the cap fails loudly instead of silently skipping the
+    // tamper). Ignored: several full inner+outer proofs.
+    let cfg: &[(usize, usize)] = &[(8, 1 << 13)];
     let batch = build_batch(cfg, &[lean_vm::pcs::LOG_INV_RATE], lean_vm::pcs::LOG_INV_RATE);
     let mut guest = recursion_guest(&batch.program0, cfg.len());
     let public_input = batch.public_input();
@@ -2037,11 +2059,13 @@ fn recursion_soundness_binds() {
 
     // The first residual-slot PADDING coordinate (k = yr_log_n), shape-derived
     // from the fold ladder so the test survives changes to the fold constants
-    // (INITIAL_K / LEVEL_K / RESIDUAL_MAX_LOG). This inner commits a stack of
-    // log-size 22; YR_LOG_CAP is the max residual log over
-    // the guest's dispatch candidates (mu 22..=28, mirroring gen_verify). The
-    // guest only reads YR_LOG_CAP slot coords, so a pad coordinate to tamper
-    // exists only when this candidate's yr_log_n sits BELOW the cap.
+    // (INITIAL_K / LEVEL_K / RESIDUAL_MAX_LOG). The inner proof's stacked
+    // log-size is taken from the batch (NOT hardcoded: the committed stack
+    // grows as tables and lanes evolve); YR_LOG_CAP is the max residual log
+    // over the guest's dispatch candidates (MU_MIN..=MU_MAX, mirroring
+    // gen_verify). The guest only reads YR_LOG_CAP slot coords, so a pad
+    // coordinate to tamper exists only when this candidate's yr_log_n sits
+    // BELOW the cap.
     let yr_log = |mu: usize| {
         pcs::ligerito::LigeritoSecurityConfig::derive_config(mu + pcs::LOG_PACKING)
             .and_then(|s| s.to_prover_verifier_configs())
@@ -2050,7 +2074,7 @@ fn recursion_soundness_binds() {
             .level_shapes(mu)
             .yr_log_n
     };
-    let (stack_mu, yr_cap) = (22usize, (22..=28).map(yr_log).max().unwrap());
+    let (stack_mu, yr_cap) = (batch.stack_mus[0], (MU_MIN..=MU_MAX).map(yr_log).max().unwrap());
     let yr_pad_idx = yr_log(stack_mu);
 
     // each tamper flips one hint to a definitely-invalid value.
@@ -2059,12 +2083,13 @@ fn recursion_soundness_binds() {
         ("claim_nover", 0, g_pow(5).into()), // wrong overlap: exact length pin must reject
         ("pi_cplen", 0, g_pow(2).into()), // wrong pi dimension: min-cert must reject
     ];
-    if yr_pad_idx < yr_cap {
-        // pad coord (k >= yr_log_n): over-read weight must be zero-pinned
-        tampers.push(("rs_yslot_bits", yr_pad_idx, F192::ONE));
-    } else {
-        eprintln!("rs_yslot_bits tamper skipped: yr_log_n == YR_LOG_CAP (no pad coordinate)");
-    }
+    // pad coord (k >= yr_log_n): over-read weight must be zero-pinned. Pick a
+    // config above whose yr_log_n is below the cap so this path is exercised.
+    assert!(
+        yr_pad_idx < yr_cap,
+        "test config's yr_log_n ({yr_pad_idx}) reached YR_LOG_CAP ({yr_cap}): pick a config with a pad coordinate"
+    );
+    tampers.push(("rs_yslot_bits", yr_pad_idx, F192::ONE));
     for &(stream, idx, val) in &tampers {
         let mut merged = batch.merged.clone();
         let pos = merged.iter().position(|(n, _)| n == stream).expect("stream present");
@@ -2094,12 +2119,12 @@ fn recursion_soundness_binds() {
 fn recursion_generic_many() {
     // (hashes, iters) per inner run - deliberately diverse profiles.
     let configs: &[(usize, usize)] = &[
-        (4, 1 << 12),  // m=22, tau_5=3
-        (8, 1 << 13),  // m=23, tau_5=3
-        (16, 1 << 14), // m=24, tau_5=4
-        (8, 1 << 15),  // m=25, tau_5=3
-        (32, 1 << 13), // m=23, tau_5=5
-        (64, 1 << 13), // m=23, tau_5=6
+        (4, 1 << 12),  // m=23, tau_5=3
+        (8, 1 << 13),  // m=24, tau_5=3
+        (16, 1 << 14), // m=25, tau_5=4
+        (8, 1 << 15),  // m=26, tau_5=3
+        (32, 1 << 13), // m=24, tau_5=5
+        (64, 1 << 13), // m=24, tau_5=6
     ];
     // The recursion program is generic: compile it ONCE, from the inner program's
     // size alone, BEFORE any inner proof exists. Genericity is then shown directly
