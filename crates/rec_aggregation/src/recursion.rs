@@ -961,9 +961,11 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     let col_order = lean_vm::cpu::jagged_column_order(kbc);
     let col_index: std::collections::HashMap<usize, usize> =
         col_order.iter().enumerate().map(|(i, &c)| (c, i)).collect();
-    let (mut cpbuf, mut cpoff, mut cpcol, mut cppad, mut cpslot) =
-        (vec![], vec![], vec![], vec![], vec![]);
+    let bks_for_claims = lean_vm::cpu::block_kappa_sources(kbc);
+    let (mut cpbuf, mut cpoff, mut cpcol, mut cppad, mut cpslot, mut cprowkey) =
+        (vec![], vec![], vec![], vec![], vec![], vec![]);
     let mut desc_seen: std::collections::HashSet<(usize, usize)> = Default::default();
+    let mut block_idx = 0usize;
     for blocks in sides.iter() {
         for blk in blocks.iter() {
             for c in &blk.coords {
@@ -983,8 +985,15 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
                             .map(|p| lean_vm::blake3_flock::VM_SLOTS[p])
                             .unwrap_or(0),
                     );
+                    cprowkey.push(if valcols.contains(i) {
+                        (3usize, 0usize, 0usize)
+                    } else {
+                        let (source, adjustment) = bks_for_claims[block_idx];
+                        (0, source, adjustment)
+                    });
                 }
             }
+            block_idx += 1;
         }
     }
     for (t, table) in lean_vm::tables::tables().iter().enumerate() {
@@ -997,12 +1006,14 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
                 cppad.push(F128::ZERO);
                 let p = valcols.iter().position(|&v| v == col).unwrap();
                 cpslot.push(lean_vm::blake3_flock::VM_SLOTS[p]);
+                cprowkey.push((3, 0, 0));
             } else {
                 cpbuf.push(1);
                 cpoff.push(t * taumax_cap);
                 cpcol.push(col_index[&col]);
                 cppad.push(l.pad[col]);
                 cpslot.push(0);
+                cprowkey.push((1, t, 0));
             }
         }
     }
@@ -1011,7 +1022,22 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     cpcol.push(col_index[&lean_vm::cpu::MEM]);
     cppad.push(l.pad[lean_vm::cpu::MEM]);
     cpslot.push(0);
+    cprowkey.push((2, 0, 0));
     assert_eq!(cpbuf.len(), ncl, "descriptor count == pool size");
+    let mut row_ids = std::collections::HashMap::new();
+    let mut claim_row_group = vec![0usize; ncl];
+    let mut claim_row_rep = Vec::new();
+    for j in 0..ncl {
+        if cpbuf[j] == 3 {
+            continue;
+        }
+        let next = row_ids.len();
+        let group = *row_ids.entry(cprowkey[j]).or_insert_with(|| {
+            claim_row_rep.push(j);
+            next
+        });
+        claim_row_group[j] = group;
+    }
 
     // ---- the placeholder map ----
     let ints = |v: &[usize]| format!("[{}]", v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(", "));
@@ -1221,6 +1247,9 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("CLAIM_COL", ints(&cpcol));
     ps("CLAIM_PAD", flds(&cppad));
     ps("CLAIM_QPKD_SLOT", ints(&cpslot));
+    ps("N_CLAIM_ROWS", claim_row_rep.len().to_string());
+    ps("CLAIM_ROW_GROUP", ints(&claim_row_group));
+    ps("CLAIM_ROW_REP", ints(&claim_row_rep));
     ps("QPKD_VARS_CAP", (33 + flock::blake3::K_LOG - 7).to_string());
     ps("BYTECODE_LOG", kbc.to_string());
     // The stacked bytecode: nbcv/2 encoding columns per side, packed along

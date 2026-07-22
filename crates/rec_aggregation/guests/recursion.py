@@ -185,6 +185,9 @@ CLAIM_POINT_OFF = CLAIM_POINT_OFF_PLACEHOLDER
 CLAIM_COL = CLAIM_COL_PLACEHOLDER
 CLAIM_PAD = CLAIM_PAD_PLACEHOLDER
 CLAIM_QPKD_SLOT = CLAIM_QPKD_SLOT_PLACEHOLDER
+N_CLAIM_ROWS = N_CLAIM_ROWS_PLACEHOLDER
+CLAIM_ROW_GROUP = CLAIM_ROW_GROUP_PLACEHOLDER
+CLAIM_ROW_REP = CLAIM_ROW_REP_PLACEHOLDER
 QPKD_VARS_CAP = QPKD_VARS_CAP_PLACEHOLDER
 # Ring-switch trace-dual basis: bit_i(y) = Tr(TRACE_DUAL_BASIS[i] * y). Any eq-weighted
 # bit-sum is then the linearized polynomial L_w(y) = sum_k c_k y^(2^k) with
@@ -550,15 +553,10 @@ def prefix_indicator(point, height_bits):
 
 
 @inline
-def jagged_step(s0, s1, s2, s3, row_bit, index_bit_point, start_bit_point, end_bit_point):
+def jagged_step(s0, s1, s2, s3, w0, w1, w2, w3, start_bit_point, end_bit_point):
     # Endpoint bits are Boolean-constrained public interval data, so select one
     # of the four fixed transition matrices instead of evaluating a redundant
-    # four-variable tensor. The row/index eq tensor itself needs one product.
-    rx = row_bit * index_bit_point
-    w0 = 1 + row_bit + index_bit_point + rx
-    w1 = row_bit + rx
-    w2 = index_bit_point + rx
-    w3 = rx
+    # four-variable tensor. The row/index eq tensor is shared by row groups.
     out = StackBuf(4)
     if start_bit_point == 0:
         if end_bit_point == 0:
@@ -585,7 +583,7 @@ def jagged_step(s0, s1, s2, s3, row_bit, index_bit_point, start_bit_point, end_b
     return out[0], out[1], out[2], out[3]
 
 
-def jagged_prefix_fixed(row_point, index_point, start_bits, end_bits, nbits: Const):
+def jagged_prefix_fixed(row_index_weights, start_bits, end_bits, nbits: Const):
     # Candidate-specialized straight-line prefix. Keeping the four states in a
     # scalar chain avoids both recursive VM frames and intermediate memory.
     s0 = 1
@@ -593,7 +591,8 @@ def jagged_prefix_fixed(row_point, index_point, start_bits, end_bits, nbits: Con
     s2 = 0
     s3 = 0
     for bit in unroll(0, nbits):
-        s0, s1, s2, s3 = jagged_step(s0, s1, s2, s3, row_point[GEN ** bit], index_point[GEN ** bit], start_bits[GEN ** bit], end_bits[GEN ** bit])
+        weights = row_index_weights * GEN ** (4 * bit)
+        s0, s1, s2, s3 = jagged_step(s0, s1, s2, s3, weights[GEN ** 0], weights[GEN ** 1], weights[GEN ** 2], weights[GEN ** 3], start_bits[GEN ** bit], end_bits[GEN ** bit])
     return s0, s1, s2, s3
 
 
@@ -658,13 +657,26 @@ def jagged_contract(final_msg, row_point, start_bits, end_bits, fold_bits: Const
 
 
 def jagged_terminal(m_idx: Const, fold_challenges, final_msg, claim_rows, col_start_bits, col_end_bits, gamma_pool):
+    row_index_weights = HeapBuf(4 * N_CLAIM_ROWS * SIZE_BITS)
+    for group in unroll(0, N_CLAIM_ROWS):
+        row = claim_rows * GEN ** (SIZE_BITS * group)
+        weights = row_index_weights * GEN ** (4 * SIZE_BITS * group)
+        for bit in unroll(0, LIG_TOTAL_FOLDS[m_idx]):
+            row_bit = row[GEN ** bit]
+            index_bit = fold_challenges[GEN ** bit]
+            rx = row_bit * index_bit
+            weights[GEN ** (4 * bit)] = 1 + row_bit + index_bit + rx
+            weights[GEN ** (4 * bit + 1)] = row_bit + rx
+            weights[GEN ** (4 * bit + 2)] = index_bit + rx
+            weights[GEN ** (4 * bit + 3)] = rx
     total = 0
     for j in unroll(0, N_CLAIMS):
         if CLAIM_POINT_BUF[j] != POINT_BUF_QPKD:
-            row = claim_rows * GEN ** (SIZE_BITS * j)
+            row = claim_rows * GEN ** (SIZE_BITS * CLAIM_ROW_GROUP[j])
             start_bits = col_start_bits * GEN ** (SIZE_BITS * CLAIM_COL[j])
             end_bits = col_end_bits * GEN ** (SIZE_BITS * CLAIM_COL[j])
-            p0, p1, p2, p3 = jagged_prefix_fixed(row, fold_challenges, start_bits, end_bits, LIG_TOTAL_FOLDS[m_idx])
+            weights = row_index_weights * GEN ** (4 * SIZE_BITS * CLAIM_ROW_GROUP[j])
+            p0, p1, p2, p3 = jagged_prefix_fixed(weights, start_bits, end_bits, LIG_TOTAL_FOLDS[m_idx])
             folded = jagged_contract(final_msg, row, start_bits, end_bits, LIG_TOTAL_FOLDS[m_idx], LIG_YR_LOG_LEN[m_idx], p0, p1, p2, p3)
             total += gamma_pool[GEN ** j] * folded
     return total
@@ -1669,45 +1681,48 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
         assert height_g == col_heights[GEN ** c]
         assert end_g == col_bounds[GEN ** (c + 1)]
 
-    # Materialize every logical row point with zero high coordinates. This also
-    # computes the public-padding correction: Jagged commits only the real
-    # prefix, while the arithmetization's claim includes its fixed pad suffix.
-    claim_rows = HeapBuf(SIZE_BITS * N_CLAIMS)
-    opening_claim_values = HeapBuf(N_CLAIMS)
-    for j in unroll(0, N_CLAIMS):
-        row = claim_rows * GEN ** (SIZE_BITS * j)
-        if CLAIM_POINT_BUF[j] == POINT_BUF_ZETA:
-            cplen_g = claim_cplen_g[GEN ** j]
-            src = zeta * GEN ** CLAIM_POINT_OFF[j]
+    # Claims share only a handful of logical row points. Materialize each
+    # distinct source/length once, with explicit zero high coordinates.
+    claim_rows = HeapBuf(SIZE_BITS * N_CLAIM_ROWS)
+    for group in unroll(0, N_CLAIM_ROWS):
+        rep = CLAIM_ROW_REP[group]
+        row = claim_rows * GEN ** (SIZE_BITS * group)
+        if CLAIM_POINT_BUF[rep] == POINT_BUF_ZETA:
+            cplen_g = claim_cplen_g[GEN ** rep]
+            src = zeta * GEN ** CLAIM_POINT_OFF[rep]
             for xk in mul_range(1, cplen_g):
                 row[xk] = src[xk]
             zero_ptr = row * cplen_g
             zero_len_g = GEN ** SIZE_BITS / cplen_g
             for xk in mul_range(1, zero_len_g):
                 zero_ptr[xk] = 0
-        if CLAIM_POINT_BUF[j] == POINT_BUF_RHO:
-            cplen_g = claim_cplen_g[GEN ** j]
-            src = rho * GEN ** CLAIM_POINT_OFF[j]
+        if CLAIM_POINT_BUF[rep] == POINT_BUF_RHO:
+            cplen_g = claim_cplen_g[GEN ** rep]
+            src = rho * GEN ** CLAIM_POINT_OFF[rep]
             for xk in mul_range(1, cplen_g):
                 row[xk] = src[xk]
             zero_ptr = row * cplen_g
             zero_len_g = GEN ** SIZE_BITS / cplen_g
             for xk in mul_range(1, zero_len_g):
                 zero_ptr[xk] = 0
-        if CLAIM_POINT_BUF[j] == POINT_BUF_PI:
+        if CLAIM_POINT_BUF[rep] == POINT_BUF_PI:
             row[GEN ** 0] = rm
             for bit in unroll(1, SIZE_BITS):
                 row[GEN ** bit] = 0
+
+    # Compute the public-padding correction: Jagged commits only the real
+    # prefix, while the arithmetization's claim includes its fixed pad suffix.
+    opening_claim_values = HeapBuf(N_CLAIMS)
+    for j in unroll(0, N_CLAIMS):
         if CLAIM_POINT_BUF[j] == POINT_BUF_QPKD:
             # q_pkd remains the one aligned subcube for flock's ring-switch and
             # its strided VM-value claims; it has no public padding correction.
-            for bit in unroll(0, SIZE_BITS):
-                row[GEN ** bit] = 0
             opening_claim_values[GEN ** j] = claim_pool[GEN ** j]
         else:
             if CLAIM_PAD[j] == 0:
                 opening_claim_values[GEN ** j] = claim_pool[GEN ** j]
             else:
+                row = claim_rows * GEN ** (SIZE_BITS * CLAIM_ROW_GROUP[j])
                 height_bits = col_height_bits * GEN ** (SIZE_BITS * CLAIM_COL[j])
                 real_prefix = prefix_indicator(row, height_bits)
                 opening_claim_values[GEN ** j] = claim_pool[GEN ** j] + CLAIM_PAD[j] * (1 + real_prefix)
