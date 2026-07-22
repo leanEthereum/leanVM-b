@@ -262,6 +262,34 @@ fn fold_stacked_point_claims(b_stack: &mut [F128], target: &mut F128, stack_pd: 
     // serial path: with hundreds of tiny point claims, rayon dispatch would
     // cost more than the fold itself.
     const PAR_FOLD_THRESHOLD: usize = 1 << 14;
+    // Bus and constraint claims heavily reuse their challenge points (e.g. all
+    // columns of one table share rho). Build each equality tensor once instead
+    // of once per column. This also covers q_pkd's strided slot claims, which
+    // commonly share the bus point with many ordinary Jagged claims.
+    let mut eq_tables: Vec<(&[F128], Vec<F128>)> = Vec::new();
+    for claim in stack_pd {
+        let point = match claim {
+            StackClaim::Jagged { row_point, .. } => *row_point,
+            StackClaim::Slot { low_point, .. } => *low_point,
+            StackClaim::StridedSlot { point, .. } | StackClaim::Point { point, .. } => *point,
+        };
+        if eq_tables.iter().any(|(cached, _)| *cached == point) {
+            continue;
+        }
+        let eq = if point.len() < 14 {
+            primitives::multilinear::build_eq(point)
+        } else {
+            ring_switch::build_eq_parallel(point)
+        };
+        eq_tables.push((point, eq));
+    }
+    let eq_for = |point: &[F128]| -> &[F128] {
+        eq_tables
+            .iter()
+            .find(|(cached, _)| *cached == point)
+            .map(|(_, eq)| eq.as_slice())
+            .expect("claim equality tensor was cached")
+    };
     for (claim, g) in stack_pd.iter().zip(gammas_pd.iter()) {
         let g = *g;
         match claim {
@@ -272,11 +300,7 @@ fn fold_stacked_point_claims(b_stack: &mut [F128], target: &mut F128, stack_pd: 
                 value,
             } => {
                 if *height != 0 {
-                    let eq = if row_point.len() < 14 {
-                        primitives::multilinear::build_eq(row_point)
-                    } else {
-                        ring_switch::build_eq_parallel(row_point)
-                    };
+                    let eq = eq_for(row_point);
                     let dst = &mut b_stack[*offset..*offset + *height];
                     if *height < PAR_FOLD_THRESHOLD {
                         for (bi, ei) in dst.iter_mut().zip(eq.iter()) {
@@ -294,12 +318,12 @@ fn fold_stacked_point_claims(b_stack: &mut [F128], target: &mut F128, stack_pd: 
                 let len = 1usize << low_point.len();
                 let dst = &mut b_stack[*offset..*offset + len];
                 if len < PAR_FOLD_THRESHOLD {
-                    let eq = primitives::multilinear::build_eq(low_point);
+                    let eq = eq_for(low_point);
                     for (bi, ei) in dst.iter_mut().zip(eq.iter()) {
                         *bi += g * *ei;
                     }
                 } else {
-                    let eq = ring_switch::build_eq_parallel(low_point);
+                    let eq = eq_for(low_point);
                     dst.par_iter_mut().zip(eq.par_iter()).for_each(|(bi, ei)| *bi += g * *ei);
                 }
                 *target += g * *value;
@@ -311,18 +335,14 @@ fn fold_stacked_point_claims(b_stack: &mut [F128], target: &mut F128, stack_pd: 
                 // low_point = slot_bits ++ point, at ~2^stride_log× less work.
                 let stride = 1usize << stride_log;
                 let base = *offset + *slot;
-                let eq = if point.len() < 14 {
-                    primitives::multilinear::build_eq(point)
-                } else {
-                    ring_switch::build_eq_parallel(point)
-                };
+                let eq = eq_for(point);
                 for (j, &ej) in eq.iter().enumerate() {
                     b_stack[base + j * stride] += g * ej;
                 }
                 *target += g * *value;
             }
             StackClaim::Point { point, value } => {
-                let eq = ring_switch::build_eq_parallel(point);
+                let eq = eq_for(point);
                 b_stack
                     .par_iter_mut()
                     .zip(eq.par_iter())
