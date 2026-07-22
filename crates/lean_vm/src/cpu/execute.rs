@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use super::*;
 use primitives::{
     field::{F64, F192, mul_by_g},
-    pretty_integer,
+    pretty_f64, pretty_integer,
 };
 
 pub struct Execution {
@@ -266,7 +266,7 @@ impl Program {
                                 let v = mem[c as usize];
                                 // Small integers and small g-powers overlap (8 = x^3
                                 // = g^3): show every reading that applies. Only a
-                                // K-valued word (hi lane 0) can be a g-power.
+                                // K-valued word (extension limbs 0) can be a g-power.
                                 let k = as_addr(v).and_then(|lo| gmap.get(&lo).copied());
                                 let small = v.c2 == 0 && v.c1 == 0 && v.c0 < 1 << 32;
                                 match (k, small) {
@@ -632,24 +632,27 @@ impl Program {
                     });
                     pc += 1;
                 }
-                Op::Blake3 { ins, out } => {
-                    // Four independently-addressed 128-bit input chunks, each a
-                    // single cell; the output spans two consecutive cells (ac, ac+1).
+                Op::Blake3 { ins, cv, out, metadata } => {
+                    // Four independently-addressed 128-bit message chunks, each a
+                    // single cell; the chaining value and the output each span two
+                    // consecutive cells.
                     let (aa0, aa1, ab0, ab1) = (fp + ins[0], fp + ins[1], fp + ins[2], fp + ins[3]);
+                    let acv = fp + cv;
                     let ac = fp + out;
-                    let words = [aa0, aa1, ab0, ab1].map(|a| get(&mem, &written, a));
+                    let words = [aa0, aa1, ab0, ab1, acv, acv + 1].map(|a| get(&mem, &written, a));
                     assert!(
                         words.iter().all(|w| w.c2 == 0),
                         "BLAKE3 input cell must be a canonical 128-bit embedding"
                     );
                     let va = [F64(words[0].c0), F64(words[0].c1), F64(words[1].c0), F64(words[1].c1)];
                     let vb = [F64(words[2].c0), F64(words[2].c1), F64(words[3].c0), F64(words[3].c1)];
-                    // Compress the 64 input bytes to the 32-byte digest, then write
-                    // it to c's two cells. No table constraint covers the digest
-                    // (the relation is proven by flock, §blake3_flock); the
+                    let vcv = [F64(words[4].c0), F64(words[4].c1), F64(words[5].c0), F64(words[5].c1)];
+                    // Compress the 64 message bytes to the 32-byte result, then
+                    // write it to c's two cells. No table constraint covers the
+                    // digest (the relation is proven by flock, §blake3_flock); the
                     // interpreter still computes the definite digest so the output
                     // cells are consistent for any later read.
-                    let vc = blake3_compress(va, vb);
+                    let vc = blake3_compress(va, vb, vcv, metadata);
                     let outputs = [F192::new(vc[0].0, vc[1].0, 0), F192::new(vc[2].0, vc[3].0, 0)];
                     put(&mut mem, &mut written, &mut mem_count, ac, outputs[0]);
                     put(&mut mem, &mut written, &mut mem_count, ac + 1, outputs[1]);
@@ -660,6 +663,10 @@ impl Program {
                     let rb = [
                         bump_access_count(&mut mem, &mut written, &mut mem_count, ab0),
                         bump_access_count(&mut mem, &mut written, &mut mem_count, ab1),
+                    ];
+                    let rcv = [
+                        bump_access_count(&mut mem, &mut written, &mut mem_count, acv),
+                        bump_access_count(&mut mem, &mut written, &mut mem_count, acv + 1),
                     ];
                     let rc = [
                         bump_access_count(&mut mem, &mut written, &mut mem_count, ac),
@@ -672,12 +679,16 @@ impl Program {
                         aa1,
                         ab0,
                         ab1,
+                        acv,
                         ac,
                         va,
                         vb,
+                        vcv,
                         vc,
+                        metadata,
                         ra,
                         rb,
+                        rcv,
                         rc,
                         bytecode_read,
                     });
@@ -701,8 +712,11 @@ impl Program {
             rows.sort_by_key(|(_, c)| std::cmp::Reverse(*c));
             eprintln!("== DBG_PROF: cycles by function ({} total) ==", pretty_integer(steps));
             for (name, c) in rows.iter().filter(|(_, c)| *c > 0) {
-                let count = pretty_integer(c);
-                eprintln!("  {count:>13}  {:>5.1}%  {name}", 100.0 * *c as f64 / steps as f64);
+                eprintln!(
+                    "  {:>13}  {:>7}%  {name}",
+                    pretty_integer(c),
+                    pretty_f64(100.0 * *c as f64 / steps as f64)
+                );
             }
         }
 

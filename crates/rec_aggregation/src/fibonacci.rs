@@ -7,7 +7,7 @@ use lean_compiler::{compile, parse};
 use lean_vm::cpu::{prove, verify};
 use primitives::{
     field::{F64, F192, g_pow},
-    pretty_integer,
+    pretty_f64, pretty_integer,
 };
 
 /// Prove and verify Fibonacci-in-the-exponent over a `HeapBuf` (an unrolled
@@ -49,13 +49,13 @@ pub fn run_fibonacci(n: usize, log_inv_rate: usize) {
         let pow = if c == 0 {
             "0".to_string()
         } else {
-            format!("2^{:.3}", (c as f64).log2())
+            format!("2^{}", pretty_f64((c as f64).log2()))
         };
         println!("    {name:<5} instructions        : {pow}");
     }
     println!(
-        "  committed witness size      : 2^{:.3}",
-        (stats.committed as f64).log2()
+        "  committed witness size      : 2^{}",
+        pretty_f64((stats.committed as f64).log2())
     );
     println!("  proof size                  : {:.1} KiB", proof_bytes as f64 / 1024.0);
     println!("  proving (incl. witness gen) : {t_prove:?}");

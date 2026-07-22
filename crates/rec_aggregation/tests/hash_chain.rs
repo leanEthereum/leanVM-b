@@ -22,7 +22,7 @@ use lean_vm::blake3_flock::warm_setup;
 use lean_vm::cpu::{prove, verify};
 use primitives::{
     field::{F64, F192},
-    pretty_integer,
+    pretty_f64, pretty_integer,
 };
 
 /// One compression step `c = BLAKE3(a, b)` (the VM's `blake3` builtin): the eight
@@ -136,7 +136,7 @@ fn blake3_hash_chain() {
         let pow = if c == 0 {
             "0".to_string()
         } else {
-            format!("2^{:.3}", (c as f64).log2())
+            format!("2^{}", pretty_f64((c as f64).log2()))
         };
         println!("    {name:<6} instructions       : {pow}");
     }

@@ -1,5 +1,5 @@
-# The in-VM XMSS aggregation verifier. The public input is the first 32-byte
-# Merkle-Damgard state (IV = g^{num_bytes} | 0^24) of
+# The in-VM XMSS aggregation verifier. The public input is the full 32-byte
+# protocol-specific streaming accumulator (IV = g^{num_bytes} | 0^24) of
 #     message | tweaks | merkle_bits | public keys,
 # num_bytes = FIXED_BYTES + 32·n, with n (the signature count) hinted in the
 # exponent and range checked. The fixed part (FIXED_BLOCKS blocks) is hinted,
@@ -31,7 +31,7 @@ CHAIN_STEPS = CHAIN_LENGTH - 1      # hash steps / tweaks per chain
 WOTS_PK_PAIRS = V / 2               # tip pairs hashed into the WOTS leaf
 
 WORDS_PER_VALUE = 1                 # a 16-byte native value = one BLAKE3 cell …
-WORDS_PER_BLOCK = 2                 # … and a 32-byte Merkle-Damgard block = two
+WORDS_PER_BLOCK = 2                 # … and a 32-byte accumulator block = two
 BYTES_PER_BLOCK = 32
 
 # The tower generator Y. `acc_lo + acc_hi·Y` embeds 128 BLAKE3 bits in F192.
@@ -52,15 +52,13 @@ MERKLE_BIT_BLOCKS = LOG_LIFETIME / 2
 FIXED_BLOCKS = 1 + N_TWEAK_BLOCKS + MERKLE_BIT_BLOCKS
 FIXED_BYTES = FIXED_BLOCKS * BYTES_PER_BLOCK
 
-# Sub-hash IV byte counts (num_bytes = #blocks · 32).
-ENC_IV_BYTES = 3 * BYTES_PER_BLOCK                        # tweak | msg | rand
-WOTS_PK_IV_BYTES = (1 + WOTS_PK_PAIRS) * BYTES_PER_BLOCK  # pk-tweak | V/2 tip pairs
-
 # Digits packed per digest lane: W bits each in GF(2^64)'s monomial budget
 # (the lane's leftover top bits are ground to zero by the signer).
 DIGITS_PER_WORD = V / 2
 
 TIP_CELLS = WORDS_PER_VALUE * V    # the V chain tips, one cell each
+
+WOTS_PK_BLOCKS = (2 + V) / 4  # prefix (tweak, pp) + V tips, four cells per BLAKE3 block
 
 N_SIGS_BOUND = 2 ** 16             # range cap for the hinted batch count
 
@@ -74,7 +72,7 @@ def main():
     n_sigs = n_sigs_hint[0]
     assert log(n_sigs) < N_SIGS_BOUND
 
-    # IV of the top-level Merkle-Damgard hash: g^{num_bytes} | 0, with
+    # IV of the top-level runtime-length accumulator: g^{num_bytes} | 0, with
     # num_bytes = FIXED_BYTES + 32·n_sigs computed straight from n_sigs — the
     # loop absorbs exactly n_sigs 32-byte pk blocks, so ×32 in the exponent is
     # n_sigs squared five times (n_sigs^32); no hint, no separate check.
@@ -153,24 +151,24 @@ def verify_sig(message, tweak_table, merkle_bits, pk_ptr):
     # (one 128-bit cell each).
     pp = pk_ptr[GEN]
 
-    # Encoding digest D = MD(tweak|pp, msg, randomness): IV = g^ENC_IV_BYTES | 0.
-    enc_iv = StackBuf(WORDS_PER_BLOCK)
-    enc_iv[0] = GEN ** ENC_IV_BYTES
-    enc_iv[1] = 0
+    # Encoding digest D = BLAKE3(tweak | pp | msg | randomness | zero-pad), 96 bytes:
+    # one full 64-byte block followed by a 32-byte final block (24 bytes of
+    # randomness and the specified 8-byte zero pad).
     tweak_pp = StackBuf(WORDS_PER_BLOCK)
     tweak_pp[0] = tweak_table[1]
     tweak_pp[1] = pp
-    after_tweak = StackBuf(WORDS_PER_BLOCK)
-    blake3(enc_iv, tweak_pp, after_tweak)
     msg_block = StackBuf(WORDS_PER_BLOCK)
     msg_block[0] = message[1]
     msg_block[1] = message[GEN]
     after_msg = StackBuf(WORDS_PER_BLOCK)
-    blake3(after_tweak, msg_block, after_msg)
+    blake3(tweak_pp, msg_block, after_msg, step=0)
     rand_block = StackBuf(WORDS_PER_BLOCK)
     hint_witness(rand_block, "rand")
     digest = StackBuf(WORDS_PER_BLOCK)
-    blake3(after_msg, rand_block, digest)
+    zero_block = StackBuf(WORDS_PER_BLOCK)
+    zero_block[0] = 0
+    zero_block[1] = 0
+    blake3(rand_block, zero_block, digest, cv=after_msg, step=1, end=1, root=1, block_len=32)
 
     # V WOTS chains. Per chain: the digit is hinted in the exponent (g^{e_i}),
     # range checked, and dispatched once — arm k walks the remaining
@@ -215,19 +213,16 @@ def verify_sig(message, tweak_table, merkle_bits, pk_ptr):
     # Both lanes packed into D's first 128-bit cell.
     assert acc_lo + acc_hi * Y == digest[0]
 
-    # WOTS public-key hash: MD over the V tips, IV = g^WOTS_PK_IV_BYTES | 0 —
-    # the leaf.
-    leaf_iv = StackBuf(WORDS_PER_BLOCK)
-    leaf_iv[0] = GEN ** WOTS_PK_IV_BYTES
-    leaf_iv[1] = 0
+    # WOTS public-key leaf = standard BLAKE3 over prefix + 42 tips (704 bytes):
+    # 11 full blocks, carrying the chaining value between instructions.
     pk_tweak_pp = StackBuf(WORDS_PER_BLOCK)
     pk_tweak_pp[0] = tweak_table[GEN ** (WORDS_PER_VALUE * WOTS_PK_TWEAK_IDX)]
     pk_tweak_pp[1] = pp
     leaf = StackBuf(WORDS_PER_BLOCK)
-    blake3(leaf_iv, pk_tweak_pp, leaf)
-    for q in unroll(0, WOTS_PK_PAIRS):
+    blake3(pk_tweak_pp, tips[0:2], leaf, step=0)
+    for q in unroll(1, WOTS_PK_BLOCKS):
         next_leaf = StackBuf(WORDS_PER_BLOCK)
-        blake3(leaf, tips[WORDS_PER_BLOCK * q:WORDS_PER_BLOCK * q + WORDS_PER_BLOCK], next_leaf)
+        blake3(tips[4 * q - 2:4 * q], tips[4 * q:4 * q + 2], next_leaf, cv=leaf, step=q, end=(q + 1) // WOTS_PK_BLOCKS, root=(q + 1) // WOTS_PK_BLOCKS)
         leaf = next_leaf
 
     # Merkle path from the leaf to the root: the hinted slot bit orders the
@@ -270,7 +265,7 @@ def walk(value, chain_tweaks, pp, k: Const):
         step_tweak[0] = chain_tweaks[GEN ** (WORDS_PER_VALUE * s)]
         step_tweak[1] = pp
         out = StackBuf(WORDS_PER_BLOCK)
-        blake3(step_tweak, block, out)
+        blake3(step_tweak, block, out, block_len=48)
         block = StackBuf(WORDS_PER_BLOCK)
         block[0] = out[0]
         block[1] = 0

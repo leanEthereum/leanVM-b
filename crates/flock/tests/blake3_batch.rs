@@ -189,7 +189,7 @@ fn blake3_batch_prove_verify() {
         pretty_integer(compressions_per_second)
     );
     println!(
-        "  (~{:.1} XMSS/s equivalent at 158 compressions/signature)",
-        n as f64 / prove_s / 158.0
+        "  (~{:.1} XMSS/s equivalent at 146 compressions/signature)",
+        n as f64 / prove_s / 146.0
     );
 }

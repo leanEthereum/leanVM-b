@@ -662,21 +662,59 @@ blake3(a, b, h)                    # digest of (a, b) written into h
 blake3(t[0:2], t[x:x + 2], t[4:6])  # slices of one large StackBuf
 blake3(h, hb[0:2], hb[2:4])         # HeapBuf slices, input and output
 blake3(hb[i:i + 2], h, hb[j:j + 2])  # runtime-indexed heap slices (i, j g-powers)
+
+# Blocks after the first in one BLAKE3 chunk. Keyword values are compile-time.
+blake3(a, b, next_cv, cv=cv, step=4)
+blake3(a, b, digest, cv=next_cv, step=15, end=1, root=1)
 ```
 
-`blake3(a, b, out)` is a **statement**: it compresses the two 256-bit operands
-`a`, `b` (64 bytes) and writes the 32-byte digest into the 2-cell run `out`.
+The three positional arguments form a **statement**: one standard BLAKE3
+compression consumes the two 256-bit message
+operands `a`, `b` (64 bytes) and writes its 32-byte result into the 2-cell run
+`out`. With no keywords it computes the standard hash of exactly 64 bytes:
+standard IV, counter 0, block length 64, and
+`CHUNK_START | CHUNK_END | ROOT` flags.
+
+Every compression also has a 256-bit chaining value and a compile-time 128-bit
+metadata immediate. The optional keywords are:
+
+- `cv=<pair>` — a consecutive 2-cell chaining value; omitting it selects the
+  standard BLAKE3 IV. On each runtime path, a function emits two `SET`s at its
+  first such hash only and reuses those cells thereafter. Supplying `cv=` also
+  requires `step=`, `flags=`, or another structured metadata keyword so a
+  chained block cannot accidentally inherit the one-shot root flags;
+- `counter=<u64>` (or `chunk=<u64>`) — BLAKE3's chunk counter;
+- `block_len=<0..64>` — the number of bytes in this message block;
+- `flags=<u32>` — an explicit flag word;
+- `step=<0..15>` — the block index within a 1024-byte chunk. In the inferred
+  flag mode, `step=0` sets `CHUNK_START`; later steps do not;
+- `end=1`, `root=1`, `parent=1` — OR `CHUNK_END`, `ROOT`, or `PARENT` into
+  the flags.
+
+The metadata is packed as
+`counter:u64 | block_len:u32 | flags:u32`, little-endian, and is part of the
+public bytecode. A partial final block must set its exact `block_len`, and every
+message byte after `block_len` must be zero: the compression circuit still sees
+the complete 64-byte block and does not enforce this padding rule. For a
+multi-block chunk, feed each result back with `cv=...`, set `step=0` on the
+first block, and set `end=1` on the last; set `root=1` only when that output is
+the hash root. Parent-node compressions use `parent=1`, the standard IV, and a
+64-byte block containing the two child chaining values.
+
 Operands are size-2 `StackBuf`s or 2-cell slices:
 
 - **stack operands** are read/written in place — zero copies; a self-hash
   `blake3(h, h, out)` aliases one 2-cell pair into both inputs;
-- the instruction addresses its **four canonical 128-bit input chunks
+- the instruction addresses its **four canonical 128-bit message chunks
   independently** (each is a full F192 memory cell constrained at this use to
   the BLAKE3 subspace `c2 = 0`), so when a 256-bit operand is
   *assembled* from values that live in different places — the idiom
   `p = StackBuf(2); p[0] = t0; p[1] = t1; blake3(p, …)` — the copies vanish:
   a stack store of a plain copy or a zero is forwarded to its source (see
   "Variables"), and `BLAKE3` reads each chunk where it already is;
+- the chaining value has only one opcode offset and therefore must be
+  consecutive. If a 2-cell `cv` was assembled from non-adjacent copied cells,
+  the compiler materializes those two cells into a fresh consecutive run;
 - **heap slices** are still bridged through the stack for the *input pull* (the
   operand's words come from the heap): +1 `DEREF` per heap cell, and the output,
   if a heap slice, is stored after — write-once memory fills whichever side is
@@ -686,8 +724,9 @@ If `out` was already written, the statement *asserts* the digest equals it —
 write-once turning the hash into a verification, which is exactly what a
 signature verifier wants.
 
-The compression is proven by the flock-derived BLAKE3 R1CS (`crates/flock`,
-see `doc.pdf` §BLAKE3); one instruction per 64→32-byte compression.
+The compression, including its chaining value and metadata, is proven by the
+flock-derived BLAKE3 R1CS (`crates/flock`, see `doc.pdf` §BLAKE3); one
+instruction is one 64-byte-block compression.
 
 ## Hints — `hint_witness(dest, "name")`
 
@@ -751,7 +790,7 @@ completely unconstrained: the program must re-verify them in-circuit.
 | function call | ≈ `n_args + n_returns + 4` (0 when the callee is `@inline`) |
 | `mul_range` iteration | body + ≈ 1 `MUL` + 1 `XOR` + call overhead |
 | `unroll` iteration | body only (compile-time replication) |
-| `blake3(a, b, out)` | 1; input words read in place (copies/zeros assembling an operand are forwarded, not emitted), +1 `DEREF` per heap input word, +1 `MUL` per runtime slice start |
+| `blake3(a, b, out, ...)` | 1; plus two `SET`s once per frame when `cv` is omitted; message/CV words are read in place, +1 `DEREF` per heap input or CV word, +1 `MUL` per runtime slice start |
 | `hint_witness(dest, "name")` | 0 (+1 `MUL` for a runtime slice start) |
 
 ## Example

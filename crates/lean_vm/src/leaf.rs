@@ -377,12 +377,12 @@ fn default_surplus(blocks: &[Block], pad: &[F64], alpha: F192, gamma: F192) -> F
     acc
 }
 
-/// One reduced claim on the bytecode polynomial. The six public encoding
-/// columns (op, o1, o2, o3, fpc, ffp) stacked along three selector bits form
+/// One reduced claim on the bytecode polynomial. The eight public encoding
+/// columns (opcode plus seven operand/immediate slots), stacked along three selector bits, form
 /// ONE multilinear polynomial B̃ in `κ_bc + 3` variables; after the
-/// decompositions both parties absorb the six per-column evaluations (push and
+/// decompositions both parties absorb the eight per-column evaluations (push and
 /// pull share the GKR point ζ, so the columns are evaluated once), sample
-/// three selector challenges `s`, and reduce the six values to
+/// three selector challenges `s`, and reduce the eight values to
 /// `B̃(ζ_lo, s) = Σ_c eq(s, c)·v_c`. Natively the claim is
 /// true by construction (the verifier evaluated the columns itself); a
 /// recursive verifier defers exactly this one claim to its public input.
@@ -410,7 +410,7 @@ pub fn public_evals(blocks: &[Block], zeta: &[F192]) -> (usize, Vec<F192>) {
     (kappa, out)
 }
 
-/// The stacked bytecode polynomial as a dense table: the six public encoding
+/// The stacked bytecode polynomial as a dense table: the eight public encoding
 /// columns along three selector bits (`B̃`'s evaluations on the cube). This is
 /// the polynomial [`BytecodeClaim`]s are claims about; the outermost native
 /// verifier evaluates it here.
@@ -425,7 +425,8 @@ pub fn stacked_bytecode_table(blocks: &[Block]) -> Vec<F64> {
             }
         }
     }
-    let mut table = vec![F64::ZERO; 8 << kbc];
+    assert!(cols.len() <= 1 << N_BYTECODE_SELECTORS);
+    let mut table = vec![F64::ZERO; 1 << (N_BYTECODE_SELECTORS + kbc)];
     for (c_idx, vals) in cols.iter().enumerate() {
         assert_eq!(vals.len(), 1 << kbc);
         table[(c_idx << kbc)..((c_idx + 1) << kbc)].copy_from_slice(vals);
@@ -434,8 +435,14 @@ pub fn stacked_bytecode_table(blocks: &[Block]) -> Vec<F64> {
 }
 
 /// `Σ_c eq(s, c)·v_c`: one side's public-column evaluations reduced to the
+/// Selector bits of the stacked bytecode polynomial: the public encoding
+/// columns (opcode + eight operand/immediate slots = nine) stack along
+/// `2^N_BYTECODE_SELECTORS` slots.
+pub const N_BYTECODE_SELECTORS: usize = 4;
+
 /// stacked-polynomial value at selector point `s`.
-pub fn stacked_bytecode_value(evals: &[F192], s: &[F192; 3]) -> F192 {
+pub fn stacked_bytecode_value(evals: &[F192], s: &[F192]) -> F192 {
+    debug_assert_eq!(s.len(), N_BYTECODE_SELECTORS);
     let mut acc = F192::ZERO;
     for (c, &v) in evals.iter().enumerate() {
         let mut e = F192::ONE;
@@ -514,13 +521,13 @@ pub fn prove_balance(
     }
 
     // Bytecode = ONE polynomial, and push/pull now share the point ζ, so the
-    // six public columns are opened ONCE: bind the evaluations, sample the
+    // eight public columns are opened ONCE: bind the evaluations, sample the
     // selector challenges, emit the single reduced claim.
     let (kbc, pv) = public_evals(push, &bus_gkr.point);
     for &v in &pv {
         ps.observe_scalar(v);
     }
-    let s = [ps.sample(), ps.sample(), ps.sample()];
+    let s: Vec<F192> = (0..N_BYTECODE_SELECTORS).map(|_| ps.sample()).collect();
     let bytecode_claims = vec![BytecodeClaim {
         point: [&bus_gkr.point[..kbc], &s[..]].concat(),
         value: stacked_bytecode_value(&pv, &s),
@@ -600,7 +607,7 @@ pub fn verify_balance(
     for &v in &pv {
         vs.observe_scalar(v);
     }
-    let s = [vs.sample(), vs.sample(), vs.sample()];
+    let s: Vec<F192> = (0..N_BYTECODE_SELECTORS).map(|_| vs.sample()).collect();
     let bytecode_claims = vec![BytecodeClaim {
         point: [&bus_gkr.point[..kbc], &s[..]].concat(),
         value: stacked_bytecode_value(&pv, &s),

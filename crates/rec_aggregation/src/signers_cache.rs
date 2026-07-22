@@ -16,9 +16,16 @@
 //! The filename carries a footprint of everything that determines the signers —
 //! not just the declared parameters but a known-answer of the hash construction
 //! itself (see [`hash_fingerprint`]), so a branch that changes the digests
-//! (e.g. a different field width in the Merkle-Damgard IV) without touching a
+//! (e.g. a change to the standard BLAKE3 input encoding) without touching a
 //! single constant still lands in a fresh file rather than mis-loading the
-//! other branch's signers. Bump [`SCHEMA_VERSION`] to force regeneration by hand.
+//! other branch's signers. The WOTS encoding *predicate* is fingerprinted the
+//! same way (see [`encoding_fingerprint`]): two branches can agree on every
+//! constant and every hash digest yet lay the digest out into digits
+//! differently, which silently invalidates every ground randomness. As a last
+//! line of defense, loaded signers are re-verified and the pool truncated at
+//! the first invalid one ([`try_load_cache`]), so a stale cache that slips
+//! past the footprint regenerates instead of panicking downstream. Bump
+//! [`SCHEMA_VERSION`] to force regeneration by hand.
 
 use std::collections::hash_map::DefaultHasher;
 use std::fs;
@@ -28,9 +35,9 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Instant;
 
-use primitives::pretty_integer;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
+use primitives::{pretty_f64, pretty_integer};
 use xmss::*;
 
 /// A cached signer: its public key and one signature over [`message`] at [`SLOT`].
@@ -62,8 +69,8 @@ fn compute_signer(index: usize) -> CachedSignature {
 
 /// A known-answer fingerprint of the *hash construction* the signers are built
 /// from. The declared constants below can stay fixed while the digests change
-/// underneath: switching the Merkle-Damgard IV's size field on another branch
-/// Changing the field encoding leaves V, W, DIGEST_LEN, ... untouched yet makes
+/// underneath: changing the exact encoded input leaves V, W, DIGEST_LEN, ...
+/// untouched yet makes
 /// every signer incompatible. Folding a fixed test vector of the real primitives
 /// into [`footprint`] lands such a change in a *different* cache file, so a run
 /// on one branch never loads (and then panics on) another branch's signers — the
@@ -74,17 +81,40 @@ fn hash_fingerprint() -> [Digest; 2] {
     [
         // Single-block path (chain steps, Merkle nodes).
         tweak_hash(&pp, TWEAK_TYPE_CHAIN, 1, 2, &[0x5Au8; DIGEST_LEN]),
-        // Multi-block path, whose IV carries the absorbed size in the exponent
-        // of the VM field's generator — precisely the piece that differs across
-        // the field-width branches.
-        md_tweak_hash(&pp, TWEAK_TYPE_ENCODING, 3, 4, &[0x3Cu8; 2 * STATE_LEN]),
+        // Multi-block standard BLAKE3 path.
+        tweak_hash_many(&pp, TWEAK_TYPE_ENCODING, 3, 4, &[0x3Cu8; 2 * STATE_LEN]),
     ]
 }
 
+/// A known-answer of the WOTS encoding *predicate*. [`hash_fingerprint`]
+/// covers the digests but not what `wots_encode` builds on top of them: two
+/// branches can share every constant and every hash byte-for-byte yet slice
+/// the digest into digits differently (e.g. 42 contiguous 3-bit chunks of a
+/// 128-bit digest vs 21 chunks per 64-bit word with the top bit of each word
+/// ground to zero). A randomness ground on one branch then almost never
+/// encodes on the other, and every cached signature is invalid. Grinding a
+/// deterministic counter randomness until it encodes captures the layout,
+/// the validity bits, and the target-sum rule in one value. ~2^14 attempts
+/// of 2 compressions each — on the order of generating one signer's chains,
+/// still negligible against a whole pool.
+fn encoding_fingerprint() -> (u64, [u8; V]) {
+    let pp = [0xA5u8; PUBLIC_PARAM_LEN];
+    let msg = message();
+    for counter in 0u64.. {
+        let mut randomness = [0u8; RANDOMNESS_LEN];
+        randomness[..8].copy_from_slice(&counter.to_le_bytes());
+        if let Some(digits) = wots_encode(&msg, SLOT, &pp, &randomness) {
+            return (counter, digits);
+        }
+    }
+    unreachable!("some counter randomness encodes")
+}
+
 /// 64-bit fingerprint of everything that determines the signers. Any change
-/// (slot, key range, message, the XMSS structural constants, or the hash
-/// construction itself via [`hash_fingerprint`]) yields a new filename, so stale
-/// caches are silently bypassed rather than mis-loaded.
+/// (slot, key range, message, the XMSS structural constants, the hash
+/// construction via [`hash_fingerprint`], or the encoding predicate via
+/// [`encoding_fingerprint`]) yields a new filename, so stale caches are
+/// silently bypassed rather than mis-loaded.
 fn footprint() -> u64 {
     let mut h = DefaultHasher::new();
     SCHEMA_VERSION.hash(&mut h);
@@ -94,6 +124,7 @@ fn footprint() -> u64 {
     message().hash(&mut h);
     (V, W, CHAIN_LENGTH, LOG_LIFETIME, TARGET_SUM, RANDOMNESS_LEN).hash(&mut h);
     hash_fingerprint().hash(&mut h);
+    encoding_fingerprint().hash(&mut h);
     h.finish()
 }
 
@@ -107,11 +138,31 @@ fn cache_path() -> PathBuf {
 }
 
 /// Load the pool from disk, treating any failure (missing file, read error,
-/// decode error, schema mismatch) as an empty cache.
+/// decode error, schema mismatch) as an empty cache. Every loaded signer is
+/// re-verified against the current code (~145 compressions each, milliseconds
+/// for a full pool) and the pool truncated at the first invalid one: a stale
+/// cache the footprint failed to segregate regenerates from the surviving
+/// prefix instead of panicking mid-benchmark.
 fn try_load_cache() -> Option<Vec<CachedSignature>> {
     let bytes = fs::read(cache_path()).ok()?;
-    let (version, signers): (u32, Vec<CachedSignature>) = bincode::deserialize(&bytes).ok()?;
-    (version == SCHEMA_VERSION).then_some(signers)
+    let (version, mut signers): (u32, Vec<CachedSignature>) = bincode::deserialize(&bytes).ok()?;
+    if version != SCHEMA_VERSION {
+        return None;
+    }
+    let msg = message();
+    let valid = signers
+        .iter()
+        .take_while(|(pk, sig)| xmss_verify(pk, &msg, sig, SLOT).is_ok())
+        .count();
+    if valid < signers.len() {
+        eprintln!(
+            "warning: signers cache {} is stale (signer {valid} of {} no longer verifies); regenerating from there",
+            cache_path().display(),
+            signers.len()
+        );
+        signers.truncate(valid);
+    }
+    Some(signers)
 }
 
 fn save_cache(signers: &[CachedSignature]) {
@@ -140,9 +191,9 @@ fn generate_range(start: usize, end: usize) -> Vec<CachedSignature> {
         let _ = std::io::stdout().flush();
     }
     println!(
-        "\r  generated {} XMSS in {:.2}s (cached to disk)                ",
+        "\r  generated {} XMSS in {} s (cached to disk)                ",
         pretty_integer(total),
-        t.elapsed().as_secs_f32()
+        pretty_f64(t.elapsed().as_secs_f64())
     );
     out
 }

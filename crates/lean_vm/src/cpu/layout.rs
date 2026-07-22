@@ -233,7 +233,7 @@ pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; tables::N_TABLES]
             Op::Deref { alpha, beta, gamma, .. } => alpha.max(beta).max(gamma),
             Op::Jump { oc, od, of } => oc.max(od).max(of),
             Op::Pack64x2 { a, b, c } => a.max(b).max(c),
-            Op::Blake3 { ins, out } => ins[0].max(ins[1]).max(ins[2]).max(ins[3]).max(out),
+            Op::Blake3 { ins, cv, out, .. } => ins[0].max(ins[1]).max(ins[2]).max(ins[3]).max(cv).max(out),
         })
         .max()
         .unwrap_or(0) as usize;
@@ -264,7 +264,7 @@ pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; tables::N_TABLES]
         }
     };
     // The 4th/5th bytecode operand slots: the two DEREF store-mode flags, or
-    // BLAKE3's remaining input word / output base (0 elsewhere).
+    // BLAKE3's remaining input word / chaining-value base (0 elsewhere).
     let fpc = |op: &Op| match op {
         Op::Deref { mode, .. } => mode.f_pc(),
         Op::Blake3 { ins, .. } => g_at(ins[3]),
@@ -273,10 +273,24 @@ pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; tables::N_TABLES]
     };
     let ffp = |op: &Op| match op {
         Op::Deref { mode, .. } => mode.f_fp(),
+        Op::Blake3 { cv, .. } => g_at(*cv),
+        _ => F64::ZERO,
+    };
+    // The 6th/7th/8th bytecode operand slots: BLAKE3's output base and the two
+    // K-lanes of its metadata immediate (0 elsewhere).
+    let extra0 = |op: &Op| match op {
         Op::Blake3 { out, .. } => g_at(*out),
         _ => F64::ZERO,
     };
-    // The program is PUBLIC (not committed): six public columns over the
+    let extra1 = |op: &Op| match op {
+        Op::Blake3 { metadata, .. } => F64(metadata.c0),
+        _ => F64::ZERO,
+    };
+    let extra2 = |op: &Op| match op {
+        Op::Blake3 { metadata, .. } => F64(metadata.c1),
+        _ => F64::ZERO,
+    };
+    // The program is PUBLIC (not committed): nine public columns over the
     // program cube, embedded in the bytecode seed/finalize blocks below.
     let prog_op: Vec<F64> = prog.par_iter().map(opcode).collect();
     let prog_o1: Vec<F64> = prog.par_iter().map(|o| operands(o).0).collect();
@@ -284,6 +298,9 @@ pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; tables::N_TABLES]
     let prog_o3: Vec<F64> = prog.par_iter().map(|o| operands(o).2).collect();
     let prog_fpc: Vec<F64> = prog.par_iter().map(fpc).collect();
     let prog_ffp: Vec<F64> = prog.par_iter().map(ffp).collect();
+    let prog_extra0: Vec<F64> = prog.par_iter().map(extra0).collect();
+    let prog_extra1: Vec<F64> = prog.par_iter().map(extra1).collect();
+    let prog_extra2: Vec<F64> = prog.par_iter().map(extra2).collect();
 
     // ---- bus blocks ----
     use Coord::{Col, Const, Index, Public};
@@ -351,6 +368,9 @@ pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; tables::N_TABLES]
             Public(prog_o3.clone()),
             Public(prog_fpc.clone()),
             Public(prog_ffp.clone()),
+            Public(prog_extra0.clone()),
+            Public(prog_extra1.clone()),
+            Public(prog_extra2.clone()),
         ],
     ));
     pull.push(blk(
@@ -366,6 +386,9 @@ pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; tables::N_TABLES]
             Public(prog_o3),
             Public(prog_fpc),
             Public(prog_ffp),
+            Public(prog_extra0),
+            Public(prog_extra1),
+            Public(prog_extra2),
         ],
     ));
 
@@ -401,9 +424,13 @@ pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; tables::N_TABLES]
     {
         let b3 = sch.base[tables::BLAKE3_TABLE];
         let pc = crate::blake3_flock::padding_digest();
+        let md = crate::blake3_flock::metadata(0, 64, crate::blake3_flock::FLAGS);
         for k in 0..4 {
             pad[b3 + tables::BLAKE3_VALUE_COLS[8 + k]] = pc[k]; // c0..c3
+            pad[b3 + tables::BLAKE3_VALUE_COLS[12 + k]] = crate::blake3_flock::IV[k]; // cv0..cv3
         }
+        pad[b3 + tables::BLAKE3_VALUE_COLS[16]] = F64(md.c0); // metadata counter lane
+        pad[b3 + tables::BLAKE3_VALUE_COLS[17]] = F64(md.c1); // metadata blen‖flags lane
     }
 
     let (placements, m) = witness::placements_of(&col_kappas(
@@ -477,7 +504,7 @@ impl Program {
             let blocks: Vec<_> = tr
                 .blake3
                 .iter()
-                .map(|r| crate::blake3_flock::compression(r.va, r.vb))
+                .map(|r| crate::blake3_flock::compression(r.va, r.vb, r.vcv, r.metadata))
                 .collect();
             crate::blake3_flock::build_qpkd_prepared(&blocks)
         };

@@ -32,14 +32,13 @@ pub use isa::{DerefMode, Op};
 pub use layout::*;
 pub(crate) use trace::{Brow, Drow, Jrow, Srow, Trace, Xrow};
 
-/// Witness-gen `BLAKE3` compression (doc §7.6): the eight input words are the two
-/// 256-bit operands `a = va[0..4]`, `b = vb[0..4]` laid out little-endian into
-/// 64 bytes (8 bytes per 64-bit word); the 32-byte digest is split back into the
-/// four output words `c`. The BLAKE3 hash of the 64-byte input — the relation
-/// flock then proves ([`crate::blake3_flock`]). Delegates to
-/// [`crate::vmhash::compress`], THE primitive every VM-native hash chains.
-fn blake3_compress(va: [F64; 4], vb: [F64; 4]) -> [F64; 4] {
-    crate::vmhash::compress(va, vb)
+/// Witness-gen `BLAKE3` compression (doc §7.6): the four message cells' eight
+/// words are laid out little-endian into 64 bytes, combined with the supplied
+/// chaining value and metadata, and the 32-byte result is split back into the
+/// four output words `c`. Flock proves this same compression relation
+/// ([`crate::blake3_flock`]).
+fn blake3_compress(va: [F64; 4], vb: [F64; 4], vcv: [F64; 4], metadata: F192) -> [F64; 4] {
+    crate::blake3_flock::digest(&crate::blake3_flock::compression(va, vb, vcv, metadata))
 }
 
 /// Data-memory size bounds (doc §Memory): memory is `2^h` cells with
@@ -78,45 +77,47 @@ const MAX_LOG_BYTECODE: usize = 32;
 /// the very first squeeze. Both sides hold the program, so both compute this
 /// identically; the announced sizes ride the stream (`announce_public`).
 fn program_digest(prog: &[Op]) -> [F64; 4] {
-    // VM-native: encode the program as a field-element slice and hash it with the
-    // Merkle–Damgård slice hash ([`crate::vmhash::hash_slice`]), so a recursive
-    // verifier can recompute this digest with the `Blake3` opcode alone.
-    let mut words: Vec<F64> = Vec::with_capacity(5 * prog.len() + 2);
-    // Domain/version marker (the MD IV also binds the total length).
+    // VM-native: encode the program as a field-element slice and hash its exact
+    // little-endian bytes with standard BLAKE3 ([`crate::vmhash::hash_slice`]).
+    let mut words: Vec<F64> = Vec::with_capacity(7 * prog.len() + 2);
+    // Domain/version marker; standard BLAKE3 binds the total byte length.
     words.push(F64(prog.len() as u64));
-    words.push(F64(2));
+    words.push(F64(3));
     for op in prog {
-        // Encode every op injectively as (tag, four u32 operands, one 192-bit
-        // immediate) → five words: two operand-offset words packed with the tag,
-        // then the immediate's three lanes. BLAKE3 carries five offsets, so its
-        // 4th/5th ride the (otherwise-zero) immediate's low lane.
-        let (tag, a, b, c, k) = match *op {
-            Op::Xor { a, b, c } => (0u8, a, b, c, F192::ZERO),
-            Op::Mul { a, b, c } => (1, a, b, c, F192::ZERO),
-            Op::Set { o, k } => (2, o, 0, 0, k),
+        // Fixed seven-word encoding per instruction: two operand-offset words
+        // packed with the tag, the 192-bit immediate's three lanes, then two
+        // words for BLAKE3's remaining offsets (zero for other opcodes).
+        let (tag, a, b, c, k, x, y) = match *op {
+            Op::Xor { a, b, c } => (0u8, a, b, c, F192::ZERO, 0u64, 0u64),
+            Op::Mul { a, b, c } => (1, a, b, c, F192::ZERO, 0, 0),
+            Op::Set { o, k } => (2, o, 0, 0, k, 0, 0),
             Op::Deref {
                 alpha,
                 beta,
                 gamma,
                 mode,
             } => {
-                (3 + mode as u8, alpha, beta, gamma, F192::ZERO) // mode ∈ {Cell,Pc,Fp} ⇒ tag 3/4/5
+                (3 + mode as u8, alpha, beta, gamma, F192::ZERO, 0, 0) // mode ∈ {Cell,Pc,Fp} ⇒ tag 3/4/5
             }
-            Op::Jump { oc, od, of } => (6, oc, od, of, F192::ZERO),
-            Op::Pack64x2 { a, b, c } => (9, a, b, c, F192::ZERO),
-            Op::Blake3 { ins, out } => (
+            Op::Jump { oc, od, of } => (6, oc, od, of, F192::ZERO, 0, 0),
+            Op::Blake3 { ins, cv, out, metadata } => (
                 7,
                 ins[0],
                 ins[1],
                 ins[2],
-                F192::new(ins[3] as u64 | ((out as u64) << 32), 0, 0),
+                metadata,
+                ins[3] as u64 | ((cv as u64) << 32),
+                out as u64,
             ),
+            Op::Pack64x2 { a, b, c } => (9, a, b, c, F192::ZERO, 0, 0),
         };
         words.push(F64(a as u64 | ((b as u64) << 32)));
         words.push(F64(c as u64 | ((tag as u64) << 32)));
         words.push(F64(k.c0));
         words.push(F64(k.c1));
         words.push(F64(k.c2));
+        words.push(F64(x));
+        words.push(F64(y));
     }
     crate::vmhash::hash_slice(&words)
 }
@@ -649,6 +650,16 @@ mod tests {
         F192::new(lo.0, hi.0, 0)
     }
 
+    /// The default one-block-root metadata for a hand-built BLAKE3 op.
+    fn md() -> F192 {
+        crate::blake3_flock::metadata(0, 64, crate::blake3_flock::FLAGS)
+    }
+
+    /// The four chaining-value lanes of the two cv cells.
+    fn cv_lanes(cv0: F192, cv1: F192) -> [F64; 4] {
+        [F64(cv0.c0), F64(cv0.c1), F64(cv1.c0), F64(cv1.c1)]
+    }
+
     /// A hand-built straight-line program with one BLAKE3 row: set up the two
     /// 256-bit inputs (`a` at cells 2,3, `b` at cells 4,5 — one 128-bit word per
     /// cell), hash them into the output `c` (cells 6,7), pad with filler SETs so
@@ -675,9 +686,13 @@ mod tests {
                 o: 5,
                 k: cell(b[2], b[3]),
             },
+            // The chaining value reads cells 0,1 (the public input); any
+            // canonical cv is legal.
             Op::Blake3 {
                 ins: [2, 3, 4, 5],
+                cv: 0,
                 out: 6,
+                metadata: crate::blake3_flock::metadata(0, 64, crate::blake3_flock::FLAGS),
             },
         ]; // c → cells 6,7
         // 16 slots: 5 executed so far; 10 filler SETs step the pc to 15 (halt);
@@ -712,8 +727,9 @@ mod tests {
         let pi = [w(7), w(11)];
         let exec = program.execute(pi);
 
-        // The output cells hold the digest of the two inputs (two 128-bit words).
-        let d = blake3_compress(a, b);
+        // The output cells hold the compression of the two inputs under the
+        // pi-supplied chaining value (two 128-bit chunks).
+        let d = blake3_compress(a, b, cv_lanes(pi[0], pi[1]), md());
         assert_eq!(exec.mem[6], cell(d[0], d[1]));
         assert_eq!(exec.mem[7], cell(d[2], d[3]));
         assert_eq!(exec.trace.blake3.len(), 1);
@@ -766,7 +782,9 @@ mod tests {
         });
         prog.push(Op::Blake3 {
             ins: [2, 3, 2, 3],
+            cv: 0,
             out: 4,
+            metadata: crate::blake3_flock::metadata(0, 64, crate::blake3_flock::FLAGS),
         }); // a == b: hash h ‖ h into cells 4,5
         for k in 0..4u32 {
             prog.push(Op::Set {
@@ -780,7 +798,7 @@ mod tests {
         let pi = [w(3), w(5)];
 
         let exec = program.execute(pi);
-        let d = blake3_compress(h, h);
+        let d = blake3_compress(h, h, cv_lanes(pi[0], pi[1]), md());
         assert_eq!(exec.mem[4], cell(d[0], d[1]));
         assert_eq!(exec.mem[5], cell(d[2], d[3]));
 

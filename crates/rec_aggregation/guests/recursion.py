@@ -163,8 +163,9 @@ LIG_OOD_SAMPLES = LIG_OOD_SAMPLES_PLACEHOLDER
 LIG_QUERIES = LIG_QUERIES_PLACEHOLDER
 LIG_FOLDS = LIG_FOLDS_PLACEHOLDER
 LIG_INTERLEAVE = LIG_INTERLEAVE_PLACEHOLDER
-LIG_LEAF_BYTES = LIG_LEAF_BYTES_PLACEHOLDER
 LIG_LEAF_PAIRS = LIG_LEAF_PAIRS_PLACEHOLDER
+LIG_LEAF_BLOCKS = LIG_LEAF_BLOCKS_PLACEHOLDER
+LIG_PACKED_ROW_CAP = LIG_PACKED_ROW_CAP_PLACEHOLDER
 LIG_TREE_DEPTH = LIG_TREE_DEPTH_PLACEHOLDER
 LIG_SQUEEZES = LIG_SQUEEZES_PLACEHOLDER
 LIG_POSITIONS_OFF = LIG_POSITIONS_OFF_PLACEHOLDER
@@ -751,45 +752,46 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
             else:
                 row_base = xe ** (3 * LIG_INTERLEAVE[m_idx * LIG_MAX_LEVELS + lvl])
             row_ptr = merkle_leaf_rows * GEN ** LIG_ROWS_OFF[m_idx * LIG_MAX_LEVELS + lvl] * row_base
-            leaf_hash_state = [GEN ** LIG_LEAF_BYTES[m_idx * LIG_MAX_LEVELS + lvl], 0]
             row_dot = 0
+            packed_row = StackBuf(LIG_PACKED_ROW_CAP)
             if lvl == 0:
                 # Level-0 rows are base-field F64, embedded one-per word. Pack
-                # four lanes as two canonical 128-bit cells for the leaf hash.
+                # the lanes into a contiguous run of canonical 128-bit cells for
+                # the standard leaf hash; the dot consumes the individual lanes.
+                # PACK64X2 reads both source cells through the memory bus as
+                # `(lo, 0, 0)`, so the packs also prove every hinted lane is
+                # genuinely F64 before it enters the hash or row_dot.
                 for jb in unroll(0, LIG_INTERLEAVE[m_idx * LIG_MAX_LEVELS + lvl] // 4):
                     e0 = row_ptr[GEN ** (4 * jb)]
                     e1 = row_ptr[GEN ** (4 * jb + 1)]
                     e2 = row_ptr[GEN ** (4 * jb + 2)]
                     e3 = row_ptr[GEN ** (4 * jb + 3)]
-                    # PACK64X2 reads both source cells through the memory bus as
-                    # `(lo, 0, 0)`. Two packs therefore prove all four hinted
-                    # level-0 values are genuinely F64 before they enter the
-                    # hash or row_dot. The packed outputs need not feed the
-                    # hash: they are exactly its two canonical 128-bit cells.
-                    packed01 = pack64x2(e0, e1)
-                    packed23 = pack64x2(e2, e3)
-                    row_pair = [packed01, packed23]
-                    leaf_digest = StackBuf(2)
-                    blake3(leaf_hash_state, row_pair, leaf_digest)
-                    leaf_hash_state = leaf_digest
+                    pack64x2_into(e0, e1, packed_row[2 * jb])
+                    pack64x2_into(e2, e3, packed_row[2 * jb + 1])
                     row_dot += e0 * row_eq_weights[GEN ** (4 * jb)] + e1 * row_eq_weights[GEN ** (4 * jb + 1)] + e2 * row_eq_weights[GEN ** (4 * jb + 2)] + e3 * row_eq_weights[GEN ** (4 * jb + 3)]
             else:
+                # Higher-level F192 rows arrive as flat F64 tower limbs (three
+                # per word); constrain every serialized limb before reassembly
+                # and pack them into the contiguous 24-byte-per-word byte image
+                # the committed leaf hashes.
                 for jb in unroll(0, LIG_LEAF_PAIRS[m_idx * LIG_MAX_LEVELS + lvl]):
                     e0 = row_ptr[GEN ** (4 * jb)]
                     e1 = row_ptr[GEN ** (4 * jb + 1)]
                     e2 = row_ptr[GEN ** (4 * jb + 2)]
                     e3 = row_ptr[GEN ** (4 * jb + 3)]
-                    # Higher-level F192 rows arrive as flat F64 tower limbs;
-                    # constrain every serialized limb before reassembly.
-                    packed01 = pack64x2(e0, e1)
-                    packed23 = pack64x2(e2, e3)
-                    row_pair = [packed01, packed23]
-                    leaf_digest = StackBuf(2)
-                    blake3(leaf_hash_state, row_pair, leaf_digest)
-                    leaf_hash_state = leaf_digest
+                    pack64x2_into(e0, e1, packed_row[2 * jb])
+                    pack64x2_into(e2, e3, packed_row[2 * jb + 1])
                 for jw in unroll(0, LIG_INTERLEAVE[m_idx * LIG_MAX_LEVELS + lvl]):
                     row_word = f192_from_limbs(row_ptr[GEN ** (3 * jw)], row_ptr[GEN ** (3 * jw + 1)], row_ptr[GEN ** (3 * jw + 2)])
                     row_dot += row_word * row_eq_weights[GEN ** jw]
+            # Standard BLAKE3 of the packed row (a power of two of full 64-byte
+            # blocks, within one 1024-byte chunk).
+            leaf_hash_state = StackBuf(2)
+            blake3(packed_row[0:2], packed_row[2:4], leaf_hash_state, step=0, end=1 // LIG_LEAF_BLOCKS[m_idx * LIG_MAX_LEVELS + lvl], root=1 // LIG_LEAF_BLOCKS[m_idx * LIG_MAX_LEVELS + lvl])
+            for jb in unroll(1, LIG_LEAF_BLOCKS[m_idx * LIG_MAX_LEVELS + lvl]):
+                leaf_digest = StackBuf(2)
+                blake3(packed_row[4 * jb:4 * jb + 2], packed_row[4 * jb + 2:4 * jb + 4], leaf_digest, cv=leaf_hash_state, step=jb, end=(jb + 1) // LIG_LEAF_BLOCKS[m_idx * LIG_MAX_LEVELS + lvl], root=(jb + 1) // LIG_LEAF_BLOCKS[m_idx * LIG_MAX_LEVELS + lvl])
+                leaf_hash_state = leaf_digest
             node_0 = leaf_hash_state[0]
             node_1 = leaf_hash_state[1]
             query_sum_chain[xe * GEN] = query_sum_chain[xe] + alpha_weights[GEN ** (lvl * LIG_MAX_QUERIES[m_idx]) * xe] * row_dot
@@ -1409,15 +1411,16 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, base_delta_pows, tower_delta_pows, g_
             c6 = col_evals[3] + col_evals[22] * ff + (col_evals[22] + 1) * col_evals[1]
             constraint_eval = c0 + eta * (c1 + eta * (c2 + eta * (c3 + eta * (c4 + eta * (c5 + eta * c6)))))
         if t == TABLE_BLAKE3:
-            # cols: [FP, OA0, OA1, OB0, OB1, OC, AA0, AA1, AB0, AB1, AC].
-            # All six values use the sole canonical 128-bit memory encoding;
+            # cols: [FP, OA0, OA1, OB0, OB1, OCV, OC, AA0, AA1, AB0, AB1, ACV, AC].
+            # All eight memory values use the sole canonical 128-bit encoding;
             # the bus binds their two lanes directly to Flock and fixes c2=0.
-            c0 = col_evals[6] + col_evals[0] * col_evals[1]
-            c1 = col_evals[7] + col_evals[0] * col_evals[2]
-            c2 = col_evals[8] + col_evals[0] * col_evals[3]
-            c3 = col_evals[9] + col_evals[0] * col_evals[4]
-            c4 = col_evals[10] + col_evals[0] * col_evals[5]
-            constraint_eval = c0 + eta * (c1 + eta * (c2 + eta * (c3 + eta * c4)))
+            c0 = col_evals[7] + col_evals[0] * col_evals[1]
+            c1 = col_evals[8] + col_evals[0] * col_evals[2]
+            c2 = col_evals[9] + col_evals[0] * col_evals[3]
+            c3 = col_evals[10] + col_evals[0] * col_evals[4]
+            c4 = col_evals[11] + col_evals[0] * col_evals[5]
+            c5 = col_evals[12] + col_evals[0] * col_evals[6]
+            constraint_eval = c0 + eta * (c1 + eta * (c2 + eta * (c3 + eta * (c4 + eta * c5))))
         if t == TABLE_PACK64X2:
             # cols: [FP, OA, OB, OC, AA, AB, AC]. Source K-membership and
             # destination packing are enforced exactly by the memory bus

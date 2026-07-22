@@ -239,10 +239,10 @@ pub fn disassemble(prog: &[Op]) -> String {
             Op::Pack64x2 { a, b, c } => {
                 format!("PACK64X2 fp[{c}] = pack64(fp[{a}], fp[{b}])")
             }
-            Op::Blake3 { ins, out } => {
+            Op::Blake3 { ins, cv, out, metadata } => {
                 format!(
-                    "BLAKE3 fp[{out}..]= H(fp[{}], fp[{}] | fp[{}], fp[{}])",
-                    ins[0], ins[1], ins[2], ins[3]
+                    "BLAKE3 fp[{out}..]= compress(cv=fp[{cv}..], m=fp[{}],fp[{}],fp[{}],fp[{}], meta={})",
+                    ins[0], ins[1], ins[2], ins[3], kfmt(*metadata)
                 )
             }
         };
@@ -308,6 +308,11 @@ fn resolve(op: &LOp, entry: &HashMap<String, u32>, sentinel: u32, base: u32) -> 
             of: *of,
         },
         LOp::Pack64x2 { a, b, c } => Op::Pack64x2 { a: *a, b: *b, c: *c },
-        LOp::Blake3 { ins, c } => Op::Blake3 { ins: *ins, out: *c },
+        LOp::Blake3 { ins, cv, c, metadata } => Op::Blake3 {
+            ins: *ins,
+            cv: *cv,
+            out: *c,
+            metadata: *metadata,
+        },
     }
 }

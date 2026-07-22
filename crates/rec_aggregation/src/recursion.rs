@@ -24,7 +24,7 @@ use pcs::ligerito::log2_ceil;
 use primitives::multilinear::mle_eval;
 use primitives::{
     field::{F64, F192, G, g_pow},
-    pretty_integer,
+    pretty_f64, pretty_integer,
 };
 
 /// A field element as the decimal `u128` literal the zkDSL parser accepts.
@@ -144,6 +144,11 @@ fn prove_inner(
     program.set_witness("n_hash", vec![vec![F192::new(g_pow(hashes).0, 0, 0)]]);
     program.set_witness("iters", vec![vec![F192::new(g_pow(iters).0, 0, 0)]]);
     let (proof, stats) = prove(&program, pi, log_inv_rate);
+    eprintln!(
+        "[inner] cycles={} committed=2^{}",
+        pretty_integer(stats.cycles),
+        pretty_f64((stats.committed as f64).log2())
+    );
     (program, proof, stats.cycles, stats.committed)
 }
 
@@ -297,7 +302,7 @@ fn stacked_bytecode(program: &Program) -> Vec<F64> {
 fn gen_agg(program: &Program, subs: &[SubDefer]) -> (Vec<(String, Vec<F192>)>, [F192; 2], ReducedClaims) {
     let nsub = subs.len();
     let kbc = subs[0].kbc;
-    let kbcv = kbc + 3;
+    let kbcv = kbc + lean_vm::leaf::N_BYTECODE_SELECTORS;
     let klog = flock::blake3::K_LOG;
 
     // ---- the aggregation transcript (mirrors the guest exactly) ----
@@ -664,7 +669,7 @@ fn gen_verify(
         })
         .collect();
     // Bus: the bytecode claims carry the push/pull ζ_lo points and sb.
-    let kbc = summary.bytecode_claims[0].point.len() - 3;
+    let kbc = summary.bytecode_claims[0].point.len() - lean_vm::leaf::N_BYTECODE_SELECTORS;
     let zeta: Vec<F192> = summary.bytecode_claims[0].point[..kbc].to_vec();
     let sb: Vec<F192> = summary.bytecode_claims[0].point[kbc..].to_vec();
 
@@ -761,8 +766,7 @@ fn gen_verify(
     let (kbc2, bcv) = lean_vm::leaf::public_evals(&l.push, &zeta);
     assert_eq!(kbc2, kbc);
     assert_eq!(bcv.len(), nbcv / 2);
-    let sb3: [F192; 3] = sb.clone().try_into().unwrap();
-    let wbc = vec![lean_vm::leaf::stacked_bytecode_value(&bcv, &sb3)];
+    let wbc = vec![lean_vm::leaf::stacked_bytecode_value(&bcv, &sb)];
     // checkpoints: the verifier's phase-boundary sponge states (guest cvh).
 
     // ---- per-sub HINT data (the placeholder map is built once, elsewhere) ----
@@ -1522,6 +1526,13 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         let cs: Vec<usize> = (0..cn).map(|i| cq[i].div_ceil(cp[i])).collect();
         let cni: Vec<usize> = ck.iter().map(|&k| 1usize << k).collect();
         let cqb: Vec<usize> = (0..cn).map(|lvl| vc.grinding_bits[lvl]).collect();
+        assert!(
+            cni.iter().enumerate().all(|(lv, &n)| {
+                let (bytes, whole_blocks) = if lv == 0 { (8 * n, n % 8 == 0) } else { (24 * n, (3 * n) % 8 == 0) };
+                bytes <= 1024 && whole_blocks
+            }),
+            "recursive Ligerito guest supports whole-block Merkle rows of at most one 1024-byte BLAKE3 chunk"
+        );
         let cfgb = |lvl: usize| vc.fold_grinding_bits.get(lvl).copied().unwrap_or(0) as i64;
         let mut cfb: Vec<usize> = Vec::new();
         for (lvl, &k) in ck.iter().enumerate().take(cn) {
@@ -1670,6 +1681,15 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         ps("LIG_MAX_SQUEEZES", ints(&scal(&|c| *c.8.iter().max().unwrap())));
         ps("LIG_MAX_LOG_MSG_COLS", ints(&scal(&|c| *c.4.iter().max().unwrap())));
         ps("LIG_MAX_INTERLEAVE", ints(&scal(&|c| *c.9.iter().max().unwrap())));
+        // StackBuf cap for the packed leaf row: level 0 packs 2 lanes per cell,
+        // deeper levels pack 3 limbs per word into 3n/2 cells.
+        let packed_cells = |c: &Vec<usize>| -> usize {
+            c.iter().enumerate().map(|(lv, &n)| if lv == 0 { n / 2 } else { 3 * n / 2 }).max().unwrap()
+        };
+        ps(
+            "LIG_PACKED_ROW_CAP",
+            cands.iter().map(|c| packed_cells(&c.9)).max().unwrap().to_string(),
+        );
         ps(
             "LIG_POSITIONS_LEN",
             ints(&scal(&|c| (0..c.0).map(|lv| c.8[lv] * c.7[lv]).sum())),
@@ -1702,22 +1722,6 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         ps("LIG_QUERIES", ints(&flat(&|c| c.5.clone(), maxlev)));
         ps("LIG_FOLDS", ints(&flat(&|c| c.3.clone(), maxlev)));
         ps("LIG_INTERLEAVE", ints(&flat(&|c| c.9.clone(), maxlev)));
-        // Leaf byte length feeds the MD leaf IV (g^{num_bytes}). Level 0's
-        // committed rows are base-field F64 (8 bytes/lane); deeper levels are
-        // native F192 (24 bytes/word). The guest receives deeper rows as three
-        // embedded K limbs per word and packs four limbs per 32-byte block.
-        ps(
-            "LIG_LEAF_BYTES",
-            ints(&flat(
-                &|c| {
-                    c.9.iter()
-                        .enumerate()
-                        .map(|(lv, &n)| if lv == 0 { n * 8 } else { n * 24 })
-                        .collect()
-                },
-                maxlev,
-            )),
-        );
         ps(
             "LIG_LEAF_PAIRS",
             ints(&flat(
@@ -1725,6 +1729,22 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
                     c.9.iter()
                         .enumerate()
                         .map(|(lv, &n)| if lv == 0 { n / 4 } else { 3 * n / 4 })
+                        .collect()
+                },
+                maxlev,
+            )),
+        );
+        // 64-byte BLAKE3 blocks per leaf row: level 0's committed rows are
+        // base-field F64 (8 bytes/lane); deeper levels are native F192
+        // (24 bytes/word, received as three embedded K limbs each). Rows are
+        // whole blocks only (asserted at candidate construction).
+        ps(
+            "LIG_LEAF_BLOCKS",
+            ints(&flat(
+                &|c| {
+                    c.9.iter()
+                        .enumerate()
+                        .map(|(lv, &n)| if lv == 0 { n / 8 } else { 3 * n / 8 })
                         .collect()
                 },
                 maxlev,
@@ -1926,7 +1946,7 @@ fn run_recursion_with_rates(
     println!(
         "  guest cycles (VM steps)     : {guest_cycles:>14} = {:>7}   ({:.2} / inner cycle)",
         pow(stats.cycles),
-        stats.cycles as f64 / total_inner_cycles as f64
+        pretty_f64(stats.cycles as f64 / total_inner_cycles as f64)
     );
     for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3", "PACK64X2"]
         .iter()
@@ -1940,13 +1960,26 @@ fn run_recursion_with_rates(
         (stats.committed as f64).log2()
     );
     println!(
-        "  data memory                 : 2^{} padded (2^{:.2} used)",
-        stats.log_mem,
-        (stats.mem_used as f64).log2()
+        "  committed witness size      : 2^{}",
+        pretty_f64((stats.committed as f64).log2())
     );
-    println!("  recursive proof size        : {:.1} KiB", proof_bytes as f64 / 1024.0);
-    println!("  outer proving               : {t_prove:?}");
-    println!("  complete recursive verify   : {t_verify:?}");
+    println!(
+        "  data memory                 : 2^{} padded (2^{} used)",
+        pretty_integer(stats.log_mem),
+        pretty_f64((stats.mem_used as f64).log2())
+    );
+    println!(
+        "  recursive proof size        : {} KiB",
+        pretty_f64(proof_bytes as f64 / 1024.0)
+    );
+    println!(
+        "  outer proving               : {} s",
+        pretty_f64(t_prove.as_secs_f64())
+    );
+    println!(
+        "  complete recursive verify   : {} s",
+        pretty_f64(t_verify.as_secs_f64())
+    );
     recursive_proof
 }
 

@@ -1,9 +1,9 @@
 //! The in-VM XMSS aggregation verifier (`guests/xmss_aggregate.py`): `n`
 //! signers (fresh keypairs) sign the same message at the same slot with the
 //! `xmss` crate; the VM absorbs `message | tweaks | merkle_bits | public
-//! keys` into the size-in-IV Merkle-Damgard hash while verifying every
-//! signature against the bound data, and publishes the final state's first
-//! two 64-bit words — compared against the natively computed aggregation hash.
+//! keys` into a protocol-specific runtime-length accumulator while verifying every
+//! signature against the bound data, and publishes the final 32-byte state —
+//! compared against the natively computed aggregation hash.
 
 use std::time::Instant;
 
@@ -13,7 +13,7 @@ use lean_compiler::{compile, parse_file_with_replacements};
 use lean_vm::cpu::{prove, verify};
 use primitives::{
     field::{F64, F192, g_pow},
-    pretty_integer,
+    pretty_f64, pretty_integer,
 };
 use xmss::*;
 
@@ -42,6 +42,21 @@ fn pair(b: &[u8]) -> Vec<F192> {
 /// A 32-byte hash block as two canonical 128-bit BLAKE3 cells.
 fn quad(b: &[u8]) -> Vec<F192> {
     vec![val16(&b[..16]), val16(&b[16..32])]
+}
+
+/// Protocol-specific streaming binding used only by the runtime-sized XMSS
+/// aggregation benchmark. Unlike XMSS/PCS slice hashing, this is not exposed
+/// as a general hash construction: a runtime chunk counter cannot be placed in
+/// the VM's deliberately compile-time BLAKE3 metadata immediate.
+fn aggregate_binding(mut state: [u8; STATE_LEN], data: &[u8]) -> [u8; STATE_LEN] {
+    assert!(data.len().is_multiple_of(STATE_LEN));
+    for block in data.chunks_exact(STATE_LEN) {
+        let mut input = [0u8; 2 * STATE_LEN];
+        input[..STATE_LEN].copy_from_slice(&state);
+        input[STATE_LEN..].copy_from_slice(block);
+        state = *blake3::hash(&input).as_bytes();
+    }
+    state
 }
 
 /// Aggregate `n` XMSS signatures inside the VM and verify the proof: signs
@@ -93,9 +108,9 @@ pub fn run_xmss_aggregation(n: usize, log_inv_rate: usize) {
     let num_bytes = data.len();
     assert_eq!(num_bytes, 5792 + 32 * n);
     let mut iv = [0u8; STATE_LEN];
-    iv[..8].copy_from_slice(&gf64::g_pow_bytes(num_bytes));
-    let state = md_hash(iv, &data);
-    // The guest publishes the final MD state's two 128-bit cells (its 32 bytes).
+    iv[..8].copy_from_slice(&g_pow(num_bytes).0.to_le_bytes());
+    let state = aggregate_binding(iv, &data);
+    // The guest publishes the final binding state's two 128-bit cells (32 bytes).
     let want = [val16(&state[..16]), val16(&state[16..32])];
 
     // The XMSS instance parameters, injected into the program's placeholders;
@@ -173,8 +188,10 @@ pub fn run_xmss_aggregation(n: usize, log_inv_rate: usize) {
     // shape and reused across every proof — so it is one-time preprocessing (like a
     // proving key), not part of per-proof proving throughput. Warming it here makes
     // the timing below reflect steady-state repeated proving. The compression count
-    // is the asserted `181 + 158·n`.
-    lean_vm::blake3_flock::warm_setup(181 + 158 * n);
+    // is `181 + 146·n`: 181 aggregation-prefix blocks, then per signature
+    // one aggregate absorb + 2 encoding + 100 WOTS-chain + 11 WOTS-pubkey +
+    // 32 Merkle-parent compressions.
+    lean_vm::blake3_flock::warm_setup(181 + 146 * n);
 
     let t = Instant::now();
     let (proof, stats) = prove(&program, want, log_inv_rate);
@@ -183,19 +200,19 @@ pub fn run_xmss_aggregation(n: usize, log_inv_rate: usize) {
     verify(&program, &want, &proof).expect("XMSS aggregation verifies in-VM");
     let t_verify = t.elapsed();
 
-    // 181 fixed blocks + per signature: 1 (pk absorb) + 157 (the native
+    // 181 fixed blocks + per signature: 1 (pk absorb) + 145 (the native
     // verifier's constant).
-    assert_eq!(stats.counts[5], 181 + 158 * n, "BLAKE3 instruction count");
+    assert_eq!(stats.counts[5], 181 + 146 * n, "BLAKE3 instruction count");
     let bad = [want[0], want[1] + F192::ONE];
     assert!(verify(&program, &bad, &proof).is_err());
 
     let proof_bytes = bincode::serialized_size(&proof).expect("proof is serializable");
-    let per = |x: usize| x as f64 / n as f64;
+    let per = |x: usize| pretty_f64(x as f64 / n as f64);
     let pow = |x: usize| {
         if x == 0 {
             "     -".into()
         } else {
-            format!("2^{:.2}", (x as f64).log2())
+            format!("2^{}", pretty_f64((x as f64).log2()))
         }
     };
     // tracing-forest renders the tree when its root span closes. Close it
@@ -203,9 +220,9 @@ pub fn run_xmss_aggregation(n: usize, log_inv_rate: usize) {
     drop(trace_span);
 
     println!("\nXMSS aggregation, {} signatures", pretty_integer(n));
-    let cycles = pretty_integer(stats.cycles);
     println!(
-        "  cycles (VM steps)           : {cycles:>14} = {:>7}   ({:>8.1} / XMSS)",
+        "  cycles (VM steps)           : {:>14} = {:>9}   ({:>12} / XMSS)",
+        pretty_integer(stats.cycles),
         pow(stats.cycles),
         per(stats.cycles)
     );
@@ -213,28 +230,34 @@ pub fn run_xmss_aggregation(n: usize, log_inv_rate: usize) {
         .iter()
         .zip(&stats.counts)
     {
-        let count = pretty_integer(c);
         println!(
-            "    {name:<6} instructions       : {count:>14} = {:>7}   ({:>8.1} / XMSS)",
+            "    {name:<8} instructions     : {:>14} = {:>9}   ({:>12} / XMSS)",
+            pretty_integer(c),
             pow(c),
             per(c)
         );
     }
     println!(
-        "  committed witness size      : 2^{:.3}",
-        (stats.committed as f64).log2()
+        "  committed witness size      : 2^{}",
+        pretty_f64((stats.committed as f64).log2())
     );
     println!(
-        "  data memory                 : 2^{} padded (2^{:.2} used)",
-        stats.log_mem,
-        (stats.mem_used as f64).log2()
+        "  data memory                 : 2^{} padded (2^{} used)",
+        pretty_integer(stats.log_mem),
+        pretty_f64((stats.mem_used as f64).log2())
     );
-    println!("  proof size                  : {:.1} KiB", proof_bytes as f64 / 1024.0);
-    println!("  proving (incl. witness gen) : {t_prove:?}");
-    println!("  verifying                   : {t_verify:?}");
     println!(
-        "  throughput                  : {:.1} XMSS/s",
-        n as f64 / t_prove.as_secs_f64()
+        "  proof size                  : {} KiB",
+        pretty_f64(proof_bytes as f64 / 1024.0)
+    );
+    println!(
+        "  proving (incl. witness gen) : {} s",
+        pretty_f64(t_prove.as_secs_f64())
+    );
+    println!("  verifying                   : {} s", pretty_f64(t_verify.as_secs_f64()));
+    println!(
+        "  throughput                  : {} XMSS/s",
+        pretty_f64(n as f64 / t_prove.as_secs_f64())
     );
 }
 

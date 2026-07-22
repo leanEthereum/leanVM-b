@@ -9,8 +9,8 @@
 //! cell-by-cell holds the flock words `[v0, 0, v1, 0]`
 //! — the reference `compress` below is fed that lane layout.
 
+use lean_vm::blake3_flock::{compression, digest, metadata, warm_setup};
 use lean_compiler::{compile, parse};
-use lean_vm::blake3_flock::warm_setup;
 use lean_vm::cpu::{prove, verify};
 use primitives::field::{F64, F192};
 
@@ -65,6 +65,144 @@ def main():
     let mut bad = want;
     bad[0] += F192::ONE;
     assert!(verify(&program, &bad, &proof).is_err(), "wrong digest must be rejected");
+}
+
+/// Optional BLAKE3 metadata and a memory-supplied chaining value reproduce a
+/// standard two-block (80-byte) BLAKE3 hash.
+#[test]
+fn blake3_keywords_standard_multiblock() {
+    let src = "\
+def main():
+    block0 = [1, 2, 3, 4]
+    tail = [5, 0, 0, 0]
+    cv = StackBuf(2)
+    blake3(block0[0:2], block0[2:4], cv, step=0)
+    out = StackBuf(2)
+    blake3(tail[0:2], tail[2:4], out, cv=cv, step=1, end=1, root=1, block_len=16)
+    p = 1
+    p[1] = out[0]
+    p[GEN] = out[1]
+    return
+";
+    let program = compile(&parse(src).expect("parse"));
+    warm_setup(2);
+    let mut input = Vec::new();
+    for value in 1u64..=5 {
+        input.extend_from_slice(&value.to_le_bytes());
+        input.extend_from_slice(&0u64.to_le_bytes());
+    }
+    let d = blake3::hash(&input);
+    let word = |o: usize| u64::from_le_bytes(d.as_bytes()[o..o + 8].try_into().unwrap());
+    let want = [F192::new(word(0), word(8), 0), F192::new(word(16), word(24), 0)];
+    let (proof, stats) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    assert_eq!(stats.counts[5], 2);
+    verify(&program, &want, &proof).expect("standard two-block BLAKE3 verifies");
+}
+
+/// A default IV first materialized in an untaken runtime branch must not leak
+/// into the post-join lowering state. Both executions must initialize the IV
+/// on the path that reaches the second hash.
+#[test]
+fn blake3_default_iv_after_runtime_branch() {
+    let src = "\
+def main():
+    flag = StackBuf(1)
+    hint_witness(flag, \"flag\")
+    a = [1, 2, 3, 4]
+    if flag[0] == 1:
+        ignored = StackBuf(2)
+        blake3(a[0:2], a[2:4], ignored)
+    out = StackBuf(2)
+    blake3(a[0:2], a[2:4], out)
+    p = 1
+    p[1] = out[0]
+    p[GEN] = out[1]
+    return
+";
+    let want = digest_cells([F64(1), F64(0), F64(2), F64(0)], [F64(3), F64(0), F64(4), F64(0)]);
+    warm_setup(2);
+    for flag in [0, 1] {
+        let mut program = compile(&parse(src).expect("parse"));
+        program.set_witness("flag", vec![vec![F192::new(flag, 0, 0)]]);
+        let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+        verify(&program, &want, &proof).expect("post-join default IV is initialized on both paths");
+    }
+}
+
+/// Each mutually exclusive branch gets a path-local IV initialization when no
+/// dominating default-IV hash exists before the branch.
+#[test]
+fn blake3_default_iv_in_both_runtime_branches() {
+    let src = "\
+def main():
+    flag = StackBuf(1)
+    hint_witness(flag, \"flag\")
+    a = [1, 2, 3, 4]
+    out = StackBuf(2)
+    if flag[0] == 1:
+        blake3(a[0:2], a[2:4], out)
+    else:
+        blake3(a[0:2], a[2:4], out)
+    p = 1
+    p[1] = out[0]
+    p[GEN] = out[1]
+    return
+";
+    let want = digest_cells([F64(1), F64(0), F64(2), F64(0)], [F64(3), F64(0), F64(4), F64(0)]);
+    warm_setup(1);
+    for flag in [0, 1] {
+        let mut program = compile(&parse(src).expect("parse"));
+        program.set_witness("flag", vec![vec![F192::new(flag, 0, 0)]]);
+        let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+        verify(&program, &want, &proof).expect("each branch initializes its default IV");
+    }
+}
+
+/// Deferred aliases may expose non-adjacent source words for a syntactically
+/// consecutive CV StackBuf. The compiler must materialize that pair because
+/// the BLAKE3 opcode carries only one CV base offset.
+#[test]
+fn blake3_materializes_aliased_cv_pair() {
+    let src = "\
+def main():
+    msg = [1, 2, 3, 4]
+    sources = [5, 99, 6]
+    cv = [sources[0], sources[2]]
+    out = StackBuf(2)
+    blake3(msg[0:2], msg[2:4], out, cv=cv, flags=10)
+    p = 1
+    p[1] = out[0]
+    p[GEN] = out[1]
+    return
+";
+    let program = compile(&parse(src).expect("parse"));
+    let block = compression(
+        [F64(1), F64(0), F64(2), F64(0)],
+        [F64(3), F64(0), F64(4), F64(0)],
+        [F64(5), F64(0), F64(6), F64(0)],
+        metadata(0, 64, 10),
+    );
+    let d = digest(&block);
+    let want = [F192::new(d[0].0, d[1].0, 0), F192::new(d[2].0, d[3].0, 0)];
+    warm_setup(1);
+    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    verify(&program, &want, &proof).expect("materialized custom CV verifies");
+}
+
+/// A custom CV with the one-shot default flags is not a standard chained
+/// block. Require the caller to select structured metadata explicitly.
+#[test]
+#[should_panic(expected = "blake3 with cv= requires")]
+fn blake3_cv_alone_is_rejected() {
+    let src = "\
+def main():
+    msg = [1, 2, 3, 4]
+    cv = [5, 6]
+    out = StackBuf(2)
+    blake3(msg[0:2], msg[2:4], out, cv=cv)
+    return
+";
+    let _ = compile(&parse(src).expect("parse"));
 }
 
 /// A general (non-blake3) `StackBuf(3)`: indexed writes, an indexed read feeding

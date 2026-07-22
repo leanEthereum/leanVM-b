@@ -29,7 +29,9 @@ fn collect_parent_percentages(
     let percentage = match parent_duration {
         None => 100.0,
         Some(duration) if duration.is_zero() => 0.0,
-        Some(duration) => 100.0 * span.total_duration().as_nanos() as f64 / duration.as_nanos() as f64,
+        Some(duration) => {
+            100.0 * span.total_duration().as_nanos() as f64 / duration.as_nanos() as f64
+        }
     };
     percentages.push(percentage);
 
@@ -65,7 +67,7 @@ fn rewrite_trace_percentages(rendered: &str, percentages: &[f64]) -> String {
                 .next()
                 .expect("trace formatter found more spans than trace-tree timings");
             output.push_str(&line[..value_start]);
-            output.push_str(&format!("{percentage:.2}"));
+            output.push_str(&pretty_f64(*percentage));
             output.push_str(&line[percent_end..]);
         } else {
             output.push_str(line);
@@ -78,29 +80,6 @@ fn rewrite_trace_percentages(rendered: &str, percentages: &[f64]) -> String {
         "trace formatter found fewer spans than trace-tree timings"
     );
     output
-}
-
-#[cfg(test)]
-mod tracing_tests {
-    use super::rewrite_trace_percentages;
-
-    #[test]
-    fn trace_output_uses_parent_relative_percentage() {
-        let trace = concat!(
-            "INFO     Prove [ 3.38s | 73.12% ]\n",
-            "INFO     ┕━ PCS open [ 1.14s | 11.35% / 33.74% ]\n",
-            "INFO        ┕━ Sumcheck round [ 17.6ms | 0.53% ] round: 0\n",
-        );
-
-        assert_eq!(
-            rewrite_trace_percentages(trace, &[100.0, 33.727_810, 1.543_860]),
-            concat!(
-                "INFO     Prove [ 3.38s | 100.00% ]\n",
-                "INFO     ┕━ PCS open [ 1.14s | 33.73% ]\n",
-                "INFO        ┕━ Sumcheck round [ 17.6ms | 1.54% ] round: 0\n",
-            )
-        );
-    }
 }
 
 /// Install the hierarchical tracing subscriber used by benchmark binaries.
@@ -156,6 +135,117 @@ pub fn pretty_integer(value: impl ToString) -> String {
         out.push(byte as char);
     }
     out
+}
+
+/// Format a finite floating-point value with a grouped integer part and at
+/// most three meaningful fractional digits. Leading zeroes after the decimal
+/// point do not consume that budget, so tiny nonzero values remain visible.
+/// The fractional part is rounded and trailing zeroes are omitted; non-finite
+/// values retain Rust's standard spelling.
+///
+/// ```
+/// use primitives::pretty_f64;
+///
+/// assert_eq!(pretty_f64(2.186_834_667), "2.187");
+/// assert_eq!(pretty_f64(12_345.6), "12,345.6");
+/// ```
+pub fn pretty_f64(value: f64) -> String {
+    if !value.is_finite() {
+        return value.to_string();
+    }
+
+    let magnitude = value.abs();
+    let precision = if magnitude == 0.0 || magnitude >= 1.0 {
+        3
+    } else {
+        // Keep the first three nonzero-place digits: 0.001234 needs five
+        // decimal places, while 0.000000000012345 needs thirteen.
+        ((-magnitude.log10().floor()) as usize).saturating_add(2)
+    };
+    let mut raw = format!("{value:.precision$}");
+    while raw.contains('.') && raw.ends_with('0') {
+        raw.pop();
+    }
+    if raw.ends_with('.') {
+        raw.pop();
+    }
+    if raw == "-0" {
+        return "0".to_string();
+    }
+
+    let (integer, fraction) = raw.split_once('.').map_or((raw.as_str(), None), |(integer, fraction)| {
+        (integer, Some(fraction))
+    });
+    let mut out = pretty_integer(integer);
+    if let Some(fraction) = fraction {
+        out.push('.');
+        out.push_str(fraction);
+    }
+    out
+}
+
+#[cfg(test)]
+mod tracing_tests {
+    use super::rewrite_trace_percentages;
+
+    #[test]
+    fn trace_output_uses_parent_relative_percentage() {
+        let trace = concat!(
+            "INFO     Prove [ 3.38s | 73.12% ]\n",
+            "INFO     ┕━ PCS open [ 1.14s | 11.35% / 33.74% ]\n",
+            "INFO        ┕━ Sumcheck round [ 17.6ms | 0.53% ] round: 0\n",
+        );
+
+        assert_eq!(
+            rewrite_trace_percentages(trace, &[100.0, 33.727_810, 1.543_860]),
+            concat!(
+                "INFO     Prove [ 3.38s | 100% ]\n",
+                "INFO     ┕━ PCS open [ 1.14s | 33.728% ]\n",
+                "INFO        ┕━ Sumcheck round [ 17.6ms | 1.544% ] round: 0\n",
+            )
+        );
+    }
+}
+
+#[cfg(test)]
+mod formatting_tests {
+    use super::{pretty_f64, pretty_integer};
+
+    #[test]
+    fn pretty_integer_groups_decimal_digits() {
+        assert_eq!(pretty_integer(0), "0");
+        assert_eq!(pretty_integer(12), "12");
+        assert_eq!(pretty_integer(999), "999");
+        assert_eq!(pretty_integer(1_000), "1,000");
+        assert_eq!(pretty_integer(16_769_432), "16,769,432");
+        assert_eq!(
+            pretty_integer(u128::MAX),
+            "340,282,366,920,938,463,463,374,607,431,768,211,455"
+        );
+    }
+
+    #[test]
+    fn pretty_integer_preserves_sign() {
+        assert_eq!(pretty_integer(-12_345), "-12,345");
+        assert_eq!(pretty_integer("+123456"), "+123,456");
+    }
+
+    #[test]
+    fn pretty_f64_rounds_groups_and_trims() {
+        assert_eq!(pretty_f64(2.186_834_667), "2.187");
+        assert_eq!(pretty_f64(12_345.678_9), "12,345.679");
+        assert_eq!(pretty_f64(12_345.0), "12,345");
+        assert_eq!(pretty_f64(-12_345.6), "-12,345.6");
+        assert_eq!(pretty_f64(-0.0), "0");
+        assert_eq!(pretty_f64(0.000_000_000_012_345), "0.0000000000123");
+    }
+
+    #[test]
+    fn pretty_f64_preserves_non_finite_values() {
+        assert_eq!(pretty_f64(f64::INFINITY), "inf");
+        assert_eq!(pretty_f64(f64::NEG_INFINITY), "-inf");
+        assert_eq!(pretty_f64(f64::NAN), "NaN");
+    }
 }
 
 /// `log2` of a power of two (panics otherwise).
@@ -252,29 +342,7 @@ fn perf_core_count() -> usize {
             return n;
         }
     }
-    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)
-}
-
-#[cfg(test)]
-mod formatting_tests {
-    use super::pretty_integer;
-
-    #[test]
-    fn pretty_integer_groups_decimal_digits() {
-        assert_eq!(pretty_integer(0), "0");
-        assert_eq!(pretty_integer(12), "12");
-        assert_eq!(pretty_integer(999), "999");
-        assert_eq!(pretty_integer(1_000), "1,000");
-        assert_eq!(pretty_integer(16_769_432), "16,769,432");
-        assert_eq!(
-            pretty_integer(u128::MAX),
-            "340,282,366,920,938,463,463,374,607,431,768,211,455"
-        );
-    }
-
-    #[test]
-    fn pretty_integer_preserves_sign() {
-        assert_eq!(pretty_integer(-12_345), "-12,345");
-        assert_eq!(pretty_integer("+123456"), "+123,456");
-    }
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
 }

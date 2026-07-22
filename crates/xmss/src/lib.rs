@@ -1,15 +1,11 @@
 //! XMSS over BLAKE3 (inspired by leanVM's `xmss` crate, byte-oriented).
 //!
-//! The single-block hashes (chain steps, Merkle nodes) are plain BLAKE3 of
-//! `tweak | pp | payload`, truncated to n = 128 bits ([`tweak_hash`]). The
-//! multi-block inputs (the WOTS public key, the message encoding) are hashed
-//! with a Merkle-Damgard mode over 64-byte BLAKE3 compressions
-//! ([`md_tweak_hash`]); see [`hash`] for the constructions and per-call
-//! compression counts.
+//! Every hash is standard BLAKE3 of the exact byte string
+//! `tweak | pp | payload`, truncated to n = 128 bits. See [`hash`] for the
+//! constructions and per-call compression counts.
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
-pub mod gf64;
 mod hash;
 pub use hash::*;
 mod wots;
@@ -52,22 +48,22 @@ pub const WOTS_SIG_SIZE: usize = RANDOMNESS_LEN + V * DIGEST_LEN; // 696
 pub const XMSS_SIG_SIZE: usize = WOTS_SIG_SIZE + LOG_LIFETIME * DIGEST_LEN; // 1208
 pub const PUB_KEY_FLAT_SIZE: usize = DIGEST_LEN + PUBLIC_PARAM_LEN; // 32
 
-// The encoding uses v*w = 126 of the digest's 128 bits, 21 digits per 64-bit
-// word (the VM's word width); the leftover top bit of each word is ground to
-// zero, so each digest word decomposes exactly into its 21 chunks.
+// The encoding uses v*w = 126 of the digest's 128 bits; the 2 leftover top
+// bits are ground to zero, so the digest decomposes exactly into the chunks.
 const _: () = assert!(V * W + 2 == DIGEST_LEN * 8);
-const _: () = assert!((V / 2) * W + 1 == 64);
 
 /// Serde for `[T; N]` with N > 32 (serde only derives arrays up to 32):
 /// serialized as a fixed-length tuple, exactly like the native array impls.
 pub mod array_serialization {
-    use primitives::pretty_integer;
     use serde::de::{Error, SeqAccess, Visitor};
     use serde::ser::SerializeTuple;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
     use std::marker::PhantomData;
 
-    pub fn serialize<S: Serializer, T: Serialize, const N: usize>(data: &[T; N], ser: S) -> Result<S::Ok, S::Error> {
+    pub fn serialize<S: Serializer, T: Serialize, const N: usize>(
+        data: &[T; N],
+        ser: S,
+    ) -> Result<S::Ok, S::Error> {
         let mut tup = ser.serialize_tuple(N)?;
         for elem in data {
             tup.serialize_element(elem)?;
@@ -81,7 +77,7 @@ pub mod array_serialization {
         type Value = [T; N];
 
         fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-            write!(f, "an array of length {}", pretty_integer(N))
+            write!(f, "an array of length {N}")
         }
 
         fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<[T; N], A::Error> {

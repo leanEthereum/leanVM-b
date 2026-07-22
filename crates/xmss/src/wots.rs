@@ -74,14 +74,14 @@ impl WotsSignature {
 }
 
 impl WotsPublicKey {
-    /// The Merkle leaf: Merkle-Damgard over the 42 concatenated chain tips
-    /// (22 compressions: the tweak/pp block, then two tips per block).
+    /// The Merkle leaf: standard BLAKE3 over the tweak, public parameter, and
+    /// 42 concatenated chain tips (704 bytes, 11 compressions in one chunk).
     pub fn hash(&self, public_param: &PublicParam, slot: u32) -> Digest {
         let mut data = [0u8; V * DIGEST_LEN];
         for (chunk, tip) in data.chunks_exact_mut(DIGEST_LEN).zip(&self.0) {
             chunk.copy_from_slice(tip);
         }
-        md_tweak_hash(public_param, TWEAK_TYPE_WOTS_PK, 0, slot, &data)
+        tweak_hash_many(public_param, TWEAK_TYPE_WOTS_PK, 0, slot, &data)
     }
 }
 
@@ -123,8 +123,8 @@ pub fn find_randomness_for_wots_encoding(
 }
 
 /// The target-sum encoding. `D = MD(msg | randomness | zeros)` under the
-/// encoding tweak, truncated to 16 bytes: 3 compressions — the tweak/pp
-/// block, the message block, and the zero-padded randomness block. `D`'s two
+/// encoding tweak, truncated to 16 bytes: 2 standard BLAKE3 compressions over
+/// the 96-byte exact input. `D`'s two
 /// little-endian 64-bit words each hold 21 chunks of 3 bits (the VM's word
 /// width budgets the monomial encoding at 64 bits per word: `g^k = x^k` only
 /// for `k < 64`): digit `i < 21` sits at bits `3i` of word 0, digit `i >= 21`
@@ -144,7 +144,7 @@ pub fn wots_encode(
     let mut data = [0u8; 2 * STATE_LEN];
     data[..MESSAGE_LEN].copy_from_slice(message);
     data[MESSAGE_LEN..][..RANDOMNESS_LEN].copy_from_slice(randomness);
-    let digest = md_tweak_hash(public_param, TWEAK_TYPE_ENCODING, 0, slot, &data);
+    let digest = tweak_hash_many(public_param, TWEAK_TYPE_ENCODING, 0, slot, &data);
 
     if digest[7] >> 7 != 0 || digest[DIGEST_LEN - 1] >> 7 != 0 {
         return None; // the leftover top bit of each 64-bit word must be zero

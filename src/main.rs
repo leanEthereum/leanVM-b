@@ -5,6 +5,7 @@
 //! cargo run --release -- xmss --n-signatures 820 --log-inv-rate 2
 //! cargo run --release -- recursion --n 2
 //! cargo run --release -- fibonacci --n 2000000
+//! cargo run --release -- --tracing fibonacci --n 2000000
 //! ```
 
 use clap::{Parser, Subcommand};

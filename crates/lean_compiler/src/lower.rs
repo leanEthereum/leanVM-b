@@ -130,6 +130,10 @@ struct FnLower<'a> {
     /// but direct or indirect recursion would otherwise recurse forever in
     /// the compiler.
     inline_calls: Vec<String>,
+    /// Two consecutive frame cells holding the standard BLAKE3 IV, emitted
+    /// lazily at the first dominating default-IV compression in this
+    /// control-flow scope. [`Self::scoped`] restores this cache at branch joins.
+    blake3_iv: Option<Off>,
     queue: &'a mut Vec<Func>,
     loop_ctr: &'a mut usize,
     /// The program's function definitions by name, for `Const`-parameter
@@ -220,6 +224,25 @@ impl FnLower<'_> {
         o
     }
 
+    /// Two consecutive frame cells holding the standard BLAKE3 IV, emitted
+    /// lazily at the first dominating default-IV compression in this
+    /// control-flow scope. [`Self::scoped`] restores this cache at branch joins.
+    fn default_blake3_cv(&mut self) -> Off {
+        if let Some(o) = self.blake3_iv {
+            return o;
+        }
+        let o = self.alloc_stack(2);
+        for (k, value) in lean_vm::blake3_flock::IV_CELLS.into_iter().enumerate() {
+            self.emit(LOp::Set {
+                o: o + k as u32,
+                k: KVal::Const(value),
+            });
+            self.const_cells.insert([value.c0, value.c1, value.c2], o + k as u32);
+        }
+        self.blake3_iv = Some(o);
+        o
+    }
+
     /// A stack store `sa[k] = val` whose value is a plain copy or a zero, which we
     /// defer as an [`Alias`] (forwarded at use) instead of emitting.
     fn copy_alias(&self, val: &Expr) -> Option<Alias> {
@@ -302,9 +325,9 @@ impl FnLower<'_> {
     }
 
     /// Run `f` with branch-local scope: bindings AND the lazily cached cells
-    /// (`one`, `self_fp`, range-check bounds) revert afterwards — a cell
-    /// whose `SET` sits inside a conditionally-executed region must not be
-    /// trusted outside it.
+    /// (`one`, `self_fp`, range-check bounds, default BLAKE3 IV) revert
+    /// afterwards — a cell whose `SET` sits inside a conditionally-executed
+    /// region must not be trusted outside it.
     fn scoped(&mut self, f: impl FnOnce(&mut Self)) {
         let saved = (
             self.vars.clone(),
@@ -318,6 +341,7 @@ impl FnLower<'_> {
             self.alias.clone(),
             self.zero_off,
             self.zero2_off,
+            self.blake3_iv,
         );
         f(self);
         // A hint pending at the end of a branch (e.g. a trailing
@@ -342,6 +366,7 @@ impl FnLower<'_> {
             self.alias,
             self.zero_off,
             self.zero2_off,
+            self.blake3_iv,
         ) = saved;
     }
 
@@ -1288,6 +1313,22 @@ impl FnLower<'_> {
         }
     }
 
+    /// A BLAKE3 chaining value must occupy two consecutive frame cells because
+    /// the opcode carries one base offset for both words. Preserve a genuine
+    /// consecutive pair, including a heap pair already bridged by
+    /// [`Self::blake3_input`]; if deferred copy forwarding exposes two
+    /// non-adjacent sources, materialize them into a fresh consecutive run.
+    fn blake3_cv(&mut self, e: &Expr) -> Off {
+        let pair = self.blake3_input(e);
+        if pair[1] == pair[0] + 1 {
+            return pair[0];
+        }
+        let cv = self.alloc_stack(2);
+        self.copy(pair[0], cv);
+        self.copy(pair[1], cv + 1);
+        cv
+    }
+
     /// The cell holding the value of stack cell `o`, following a recorded copy /
     /// zero alias to its real source. Returns `o` when it holds a genuine value.
     fn word_src(&mut self, o: Off) -> Off {
@@ -2151,20 +2192,87 @@ impl FnLower<'_> {
                 // two `DEREF`s after the hash (the store direction is the same
                 // instruction as the load — write-once fills the unset side).
                 if f == "blake3" {
-                    assert_eq!(args.len(), 3, "blake3 takes (a, b, out)");
+                    let first_kw = args
+                        .iter()
+                        .position(|a| matches!(a, Expr::Call(name, _) if name.starts_with("__kw_")))
+                        .unwrap_or(args.len());
+                    assert_eq!(first_kw, 3, "{f} takes three positional arguments: (a, b, out)");
+                    assert!(
+                        args[first_kw..]
+                            .iter()
+                            .all(|a| matches!(a, Expr::Call(name, v) if name.starts_with("__kw_") && v.len() == 1)),
+                        "keyword arguments must follow the three positional {f} arguments"
+                    );
+                    let mut kwargs: HashMap<&str, &Expr> = HashMap::new();
+                    for kw in &args[first_kw..] {
+                        let Expr::Call(name, value) = kw else { unreachable!() };
+                        let key = name.strip_prefix("__kw_").unwrap();
+                        assert!(kwargs.insert(key, &value[0]).is_none(), "duplicate {f} keyword `{key}`");
+                    }
+                    let allowed = ["cv", "counter", "chunk", "block_len", "flags", "step", "end", "root", "parent"];
+                    assert!(kwargs.keys().all(|k| allowed.contains(k)), "unknown {f} keyword");
+                    let customized = kwargs.keys().any(|k| {
+                        matches!(*k, "counter" | "chunk" | "flags" | "step" | "end" | "root" | "parent")
+                    });
+                    assert!(
+                        !kwargs.contains_key("cv") || customized,
+                        "blake3 with cv= requires step=, flags=, or another structured metadata keyword"
+                    );
+
                     let a = self.blake3_input(&args[0]);
                     let b = self.blake3_input(&args[1]);
                     let (c, heap_out) = match self.blake3_operand(&args[2]) {
                         B3Operand::Stack(o) => (o, None),
                         B3Operand::Heap { ptr, lo } => (self.alloc_stack(2), Some((ptr, lo))),
                     };
+                    let cv = if let Some(value) = kwargs.get("cv") {
+                        self.blake3_cv(value)
+                    } else {
+                        self.default_blake3_cv()
+                    };
+                    let const_kw = |this: &Self, name: &str, default: u128| -> u128 {
+                        kwargs
+                            .get(name)
+                            .map(|e| this.const_index(e) as u128)
+                            .unwrap_or(default)
+                    };
+                    assert!(
+                        !(kwargs.contains_key("counter") && kwargs.contains_key("chunk")),
+                        "use either counter= or chunk=, not both"
+                    );
+                    let counter = if kwargs.contains_key("chunk") {
+                        const_kw(self, "chunk", 0)
+                    } else {
+                        const_kw(self, "counter", 0)
+                    };
+                    assert!(counter <= u64::MAX as u128, "BLAKE3 counter does not fit in u64");
+                    let block_len = const_kw(self, "block_len", 64);
+                    assert!(block_len <= 64, "BLAKE3 block_len must be at most 64");
+                    let step = kwargs.get("step").map(|e| self.const_index(e));
+                    if let Some(step) = step {
+                        assert!(step < 16, "BLAKE3 step must be in 0..16");
+                    }
+                    let mut flags = if kwargs.contains_key("flags") {
+                        const_kw(self, "flags", 0)
+                    } else if customized {
+                        if step == Some(0) { 1 } else { 0 }
+                    } else {
+                        lean_vm::blake3_flock::FLAGS as u128
+                    };
+                    if const_kw(self, "end", 0) != 0 { flags |= 1 << 1; }
+                    if const_kw(self, "parent", 0) != 0 { flags |= 1 << 2; }
+                    if const_kw(self, "root", 0) != 0 { flags |= 1 << 3; }
+                    assert!(flags <= u32::MAX as u128, "BLAKE3 flags do not fit in u32");
+                    let metadata = lean_vm::blake3_flock::metadata(counter as u64, block_len as u32, flags as u32);
                     // Each operand is two 128-bit chunk cells; the flexible opcode
                     // addresses the four input cells independently (`blake3_input`
                     // forwards the real chunk sources where it can). The digest
                     // occupies the two consecutive output cells `c, g·c`.
                     self.emit(LOp::Blake3 {
                         ins: [a[0], a[1], b[0], b[1]],
+                        cv,
                         c,
+                        metadata,
                     });
                     if let Some((ptr, lo)) = heap_out {
                         for k in 0..2 {
@@ -2633,6 +2741,7 @@ pub(crate) fn lower_func(
         zero2_off: None,
         pending: Vec::new(),
         inline_calls: Vec::new(),
+        blake3_iv: None,
         queue,
         loop_ctr,
         defs,

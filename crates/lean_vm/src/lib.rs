@@ -18,7 +18,7 @@
 //! - [`tables`] — the instruction tables (columns, flushes, constraints).
 //! - [`cpu`] — whole-program assembly, control flow, and the prove/verify entry points.
 //! - [`blake3_flock`] — the `BLAKE3` glue: flock's R1CS validity proof over the same commitment.
-//! - [`vmhash`]: VM-native hashing (the 64→32 compression and the length-in-IV Merkle–Damgård slice hash).
+//! - [`vmhash`]: VM-native hashing (one-block compression and standard BLAKE3 slice hashing).
 
 pub mod blake3_flock;
 pub mod constraints;
