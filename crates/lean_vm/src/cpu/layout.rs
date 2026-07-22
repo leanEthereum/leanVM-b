@@ -127,6 +127,51 @@ pub fn col_kappa_sources(log_bytecode: usize) -> Vec<Option<(usize, usize)>> {
     k
 }
 
+/// Public source of a committed Jagged column's real height. `Pow2` means
+/// `2^(source + adjustment)` where the source indices match
+/// [`col_kappa_sources`]; `TableRows(t)` is the announced, unpadded row count
+/// of opcode table `t`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ColHeightSource {
+    Pow2 { source: usize, adjustment: usize },
+    TableRows(usize),
+}
+
+/// Height sources in global schema order; `None` marks virtual columns.
+pub fn col_height_sources(log_bytecode: usize) -> Vec<Option<ColHeightSource>> {
+    let sch = schema();
+    let mut out = vec![None; sch.n];
+    out[MEM] = Some(ColHeightSource::Pow2 { source: 1, adjustment: 0 });
+    out[MFCNT] = Some(ColHeightSource::Pow2 { source: 1, adjustment: 0 });
+    out[BFCNT] = Some(ColHeightSource::Pow2 {
+        source: 0,
+        adjustment: log_bytecode,
+    });
+    out[QPKD] = Some(ColHeightSource::Pow2 {
+        source: 2 + tables::BLAKE3_TABLE,
+        adjustment: flock::blake3::K_LOG - ::pcs::LOG_PACKING,
+    });
+    for (t, table) in tables::tables().iter().enumerate() {
+        let base = sch.base[t];
+        out[base..base + table.n_committed_columns()]
+            .fill(Some(ColHeightSource::TableRows(t)));
+    }
+    let b3 = sch.base[tables::BLAKE3_TABLE];
+    for &c in &tables::BLAKE3_VALUE_COLS {
+        out[b3 + c] = None;
+    }
+    out
+}
+
+/// Dense Jagged column order. Keeping `q_pkd` first preserves flock's aligned
+/// ring-switch lift; all remaining committed columns follow schema order.
+pub fn jagged_column_order(log_bytecode: usize) -> Vec<usize> {
+    let sources = col_height_sources(log_bytecode);
+    std::iter::once(QPKD)
+        .chain((0..sources.len()).filter(|&i| i != QPKD && sources[i].is_some()))
+        .collect()
+}
+
 /// The bus flush blocks' kappa SOURCES, flattened in side order (push, pull,
 /// count) exactly as the blocks are constructed below: per block
 /// `(source, adj)` with kappa = value(source) + adj, source 0 = the constant
