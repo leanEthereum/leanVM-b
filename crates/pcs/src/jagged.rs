@@ -1,3 +1,7 @@
+// CREDIT: Basic Jagged PCS follows "Jagged Polynomial Commitments"
+// (ePrint 2025/917); the width-four branching-program formulation was
+// cross-checked against Succinct Labs SP1's `slop/crates/jagged` implementation
+// (MIT OR Apache-2.0): https://github.com/succinctlabs/sp1
 //! Basic Jagged PCS adapter primitives.
 //!
 //! A collection of columns with (possibly non-power-of-two) heights is packed
