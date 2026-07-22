@@ -1,8 +1,8 @@
 # A short BLAKE3 chain over 256-bit stack values: blake3(h, h, h2), twice.
-# Each StackBuf(2) holds the two 128-bit words of a 256-bit value in two
-# consecutive frame cells, read in place by the BLAKE3 instruction, which
-# writes the digest into the pre-allocated output pair. The public input is
-# the chain's digest, BLAKE3²(5, 7), as two 128-bit words.
+# A 256-bit BLAKE3 value uses two canonical 128-bit cells (StackBuf(2)); each
+# scalar cell holds one word in its low lane, so `h = [5, 7]` hashes the words
+# [5, 0, 7, 0]. The digest lands in the pre-allocated pair. The public input is
+# the two 128-bit digest cells of the chain's result, BLAKE3(BLAKE3(·)).
 # public_input: 101229015297003380629709256178361811305, 199495362546883507010283175921733252645
 from snark_lib import *
 

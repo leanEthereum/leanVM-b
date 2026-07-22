@@ -1,17 +1,21 @@
-//! leanVM-b — arithmetization of a minimal binary-field zkVM (see `doc.tex`).
+//! leanVM-b — arithmetization of a minimal zkVM (see `doc.tex` and
+//! `misc/transition-to-64-bits.tex`).
 //!
-//! Every machine value is an element of GF(2^128), and logical indices are powers
-//! of a fixed generator `g`, so incrementing an index is a multiplication by `g` —
-//! a free virtual operation needing no addition gadget. The witness is field-valued
-//! and committed directly by a dense multilinear PCS (no bit-decomposition).
+//! Machine words are `c0 + c1*y ∈ E = K[y]/(y^2 + x*y + 1)`.
+//! Addresses, pc/fp, read counters, and logical indices live in
+//! `K = GF(2^64)`; indices are powers of a fixed generator `g`, so incrementing
+//! one is a multiplication by `g`, a free virtual operation. Every physical
+//! witness column is K-valued (an E-valued word is two K-lane columns) and is
+//! committed directly by a dense multilinear PCS. Challenges and transcript
+//! scalars live in E, so interactive error terms keep their `c/2^128` form.
 //!
 //! - [`transcript`] — the shared Fiat–Shamir transcript (re-exported from `fiat_shamir`).
-//! - [`pcs`] — field-valued witness commitment via the stacked Ligerito (§3).
-//! - [`witness`] — field-valued columns stacked into one committed witness.
+//! - [`pcs`] — `K`-committed witness, `E`-opened, via the stacked Ligerito (§3).
+//! - [`witness`] — `K`-valued columns stacked into one committed witness.
 //! - [`gkr`] — the grand product via GKR (§4.3), balancing the bus.
 //! - [`leaf`] — the shared bus: grand-product balance, decomposed to per-column claims (§4.2–§4.4, §5).
 //! - [`constraints`] — the per-table degree-2 field zerocheck (§4.1).
-//! - [`tables`] — the six instruction tables (columns, flushes, constraints).
+//! - [`tables`] — the instruction tables (columns, flushes, constraints).
 //! - [`cpu`] — whole-program assembly, control flow, and the prove/verify entry points.
 //! - [`blake3_flock`] — the `BLAKE3` glue: flock's R1CS validity proof over the same commitment.
 //! - [`vmhash`]: VM-native hashing (one-block compression and standard BLAKE3 slice hashing).
@@ -68,11 +72,10 @@ fn set_qos_user_interactive() {
     }
 }
 
-/// Target soundness of the whole proof, in bits. Every round is designed to clear
-/// this: the PCS runs the Ligerito `Secure` profile ([`pcs::PROFILE`], 120-bit),
-/// and the bus grand product grinds up to it before its multiset challenge
-/// ([`leaf`]). Raising it means bumping BOTH (a stronger profile and more grinding).
-pub const SECURITY_BITS: u32 = 120;
+/// Target soundness of the whole proof, in bits. Every algebraic challenge is
+/// sampled in F192, and the PCS derives a Ligerito configuration whose query,
+/// proximity-gap, and OOD-binding terms each clear this target.
+pub const SECURITY_BITS: u32 = 128;
 
 /// Below this many parallelizable items a pass runs serially: rayon's fan-out
 /// overhead is not worth it for small inputs. Shared by [`constraints`], [`gkr`], [`leaf`].

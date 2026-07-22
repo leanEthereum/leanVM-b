@@ -18,54 +18,77 @@ Machine: M4 Max
 ### XMSS aggregation
 
 ```bash
-RAYON_NUM_THREADS=11 cargo run --release -- xmss --n-signatures 890
+RAYON_NUM_THREADS=11 cargo run --release -- xmss --n-signatures 820 --log-inv-rate 1
 ```
 
 ```
-XMSS aggregation, 890 signatures
-  cycles (VM steps)           :    1529572 = 2^20.54   (  1718.6 / XMSS)
-    XOR    instructions       :     125491 = 2^16.94   (   141.0 / XMSS)
-    MUL    instructions       :     295495 = 2^18.17   (   332.0 / XMSS)
-    SET    instructions       :     354194 = 2^18.43   (   398.0 / XMSS)
-    DEREF  instructions       :     508569 = 2^18.96   (   571.4 / XMSS)
-    JUMP   instructions       :     115702 = 2^16.82   (   130.0 / XMSS)
-    BLAKE3 instructions       :     130121 = 2^16.99   (   146.2 / XMSS)
-  committed witness size      : 2^25.662
-  data memory                 : 2^22 padded (2^21.71 used)
-  proof size                  : 593.3 KiB
-  proving (incl. witness gen) : 1.401495542s
-  verifying                   : 13.522416ms
-  throughput                  : 635.0 XMSS/s
+XMSS aggregation, 820 signatures
+  cycles (VM steps)           :      1,351,859 = 2^20.37   (  1648.6 / XMSS)
+    XOR    instructions       :        115,621 = 2^16.82   (   141.0 / XMSS)
+    MUL    instructions       :        269,792 = 2^18.04   (   329.0 / XMSS)
+    SET    instructions       :        261,504 = 2^18.00   (   318.9 / XMSS)
+    DEREF  instructions       :        468,599 = 2^18.84   (   571.5 / XMSS)
+    JUMP   instructions       :        106,602 = 2^16.70   (   130.0 / XMSS)
+    BLAKE3 instructions       :        129,741 = 2^16.99   (   158.2 / XMSS)
+  committed witness size      : 2^26.360
+  data memory                 : 2^22 padded (2^21.56 used)
+  proof size                  : 374.6 KiB
+  proving (incl. witness gen) : 2.446402417s
+  verifying                   : 5.343375ms
+  throughput                  : 335.2 XMSS/s
 ```
 
 ### Recursion
 
 
 ```bash
-RAYON_NUM_THREADS=11 cargo run --release -- recursion --n 2
+RAYON_NUM_THREADS=11 cargo run --release -- recursion --n 2  --log-inv-rate 2
 ```
 
 ```
-recursion 2→1: 2 inner proofs of 917755 cycles each
-  guest cycles (VM steps)     :    2516723 = 2^21.26   (1.37 / inner cycle)
-    XOR    instructions     :     573243 = 2^19.13
-    MUL    instructions     :     786042 = 2^19.58
-    SET    instructions     :     196196 = 2^17.58
-    DEREF  instructions     :     868775 = 2^19.73
-    JUMP   instructions     :      48646 = 2^15.57
-    BLAKE3 instructions     :      43821 = 2^15.42
-  committed witness size      : 2^26.085
-  data memory                 : 2^22 padded (2^21.53 used)
-  recursive proof size        : 648.2 KiB
-  outer proving               : 2.186834667s
+recursion 2→1: 2 inner proofs of 950,518 cycles each
+  guest cycles (VM steps)     :      2,122,954 = 2^21.02   (1.12 / inner cycle)
+    XOR    instructions     :        460,742 = 2^18.81
+    MUL    instructions     :        712,030 = 2^19.44
+    SET    instructions     :        184,512 = 2^17.49
+    DEREF  instructions     :        686,980 = 2^19.39
+    JUMP   instructions     :         46,663 = 2^15.51
+    BLAKE3 instructions     :         32,027 = 2^14.97
+  committed witness size      : 2^26.360
+  data memory                 : 2^22 padded (2^21.27 used)
+  recursive proof size        : 376.9 KiB
+  outer proving               : 2.592742583s
+  complete recursive verify   : 23.070708ms
 ```
 
-## Security, proof size etc
+### Fibonacci
 
-- security = 120 bits, proven, unique-decoding regime, Ligerito
-- proof size = BIG (≈ 0.7 MiB)
 
-Both will be improved later.
+```bash
+RAYON_NUM_THREADS=11 cargo run --release -- fibonacci --n 2000000  --log-inv-rate 1
+```
+
+```
+Fibonacci (in the exponent, i.e. modulo 2^64 - 1), N = 2,000,000
+  cycles (VM steps)           : 2,046,015
+    XOR   instructions        : 2^10.966
+    MUL   instructions        : 2^20.942
+    SET   instructions        : 2^13.288
+    DEREF instructions        : 2^13.967
+    JUMP  instructions        : 2^11.967
+    BLAKE3 instructions        : 0
+  committed witness size      : 2^25.662
+  proof size                  : 348.4 KiB
+  proving (incl. witness gen) : 1.304737417s
+  verifying                   : 5.016916ms
+  throughput                  : 1,568,143 cycles/s
+```
+
+## Security
+
+- 128 bits, proven, Johnson list-decoding regime (Whir/Ligerito)
+
+The proof-size target will be improved further.
 
 ## Credits
 

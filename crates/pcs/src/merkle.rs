@@ -18,7 +18,7 @@
 //! independent `blake3::hash` per leaf. Other sizes use the ordinary one-shot
 //! API. Internal 64-byte child pairs always take the batched path.
 
-use primitives::{field::F128, pretty_integer};
+use primitives::{field::F192, pretty_integer};
 use rayon::prelude::*;
 
 pub type Hash = [u8; 32];
@@ -45,20 +45,25 @@ const HASH_GROUP: usize = 1024;
 
 /// Encode a Merkle hash as the two little-endian field words used by transcripts.
 #[inline]
-pub fn hash_to_scalars(hash: &Hash) -> [F128; 2] {
-    [
-        F128::from_le_bytes(hash[..16].try_into().unwrap()),
-        F128::from_le_bytes(hash[16..].try_into().unwrap()),
-    ]
+pub fn hash_to_scalars(hash: &Hash) -> [F192; 2] {
+    let w = |o: usize| u64::from_le_bytes(hash[o..o + 8].try_into().unwrap());
+    [F192::new(w(0), w(8), w(16)), F192::new(w(24), 0, 0)]
 }
 
 /// Decode the two field words used by transcripts back into a Merkle hash.
 #[inline]
-pub fn scalars_to_hash(scalars: &[F128]) -> Hash {
+pub fn scalars_to_hash(scalars: &[F192]) -> Hash {
     assert_eq!(scalars.len(), 2, "a Merkle hash is exactly two field words");
     let mut hash = [0u8; 32];
-    hash[..16].copy_from_slice(&scalars[0].to_le_bytes());
-    hash[16..].copy_from_slice(&scalars[1].to_le_bytes());
+    hash[0..8].copy_from_slice(&scalars[0].c0.to_le_bytes());
+    hash[8..16].copy_from_slice(&scalars[0].c1.to_le_bytes());
+    assert_eq!(
+        (scalars[1].c1, scalars[1].c2),
+        (0, 0),
+        "packed Merkle hash tail must be K-valued"
+    );
+    hash[16..24].copy_from_slice(&scalars[0].c2.to_le_bytes());
+    hash[24..32].copy_from_slice(&scalars[1].c0.to_le_bytes());
     hash
 }
 
@@ -307,6 +312,86 @@ pub fn merkle_multi_proof(tree: &[Hash], num_leaves: usize, positions: &[usize])
     }
 
     proof
+}
+
+/// Verify a Merkle multi-proof produced by [`merkle_multi_proof`].
+///
+/// `sorted_unique_positions` and `leaf_hashes` must be aligned and sorted:
+/// `leaf_hashes[i]` is the hash of the leaf at `sorted_unique_positions[i]`,
+/// and the position list is strictly ascending. Returns true iff the
+/// reconstructed root equals `root` and the proof is consumed exactly.
+pub fn verify_merkle_multi_proof(
+    root: &Hash,
+    num_leaves: usize,
+    sorted_unique_positions: &[usize],
+    leaf_hashes: &[Hash],
+    proof: &[Hash],
+) -> bool {
+    if !num_leaves.is_power_of_two() || num_leaves == 0 {
+        return false;
+    }
+    if sorted_unique_positions.len() != leaf_hashes.len() {
+        return false;
+    }
+    if sorted_unique_positions.is_empty() {
+        // Vacuous; nothing to verify. Treat as "ok" iff the proof is empty.
+        return proof.is_empty();
+    }
+    // Verify the position list is sorted strictly ascending + in range.
+    for (i, &p) in sorted_unique_positions.iter().enumerate() {
+        if p >= num_leaves {
+            return false;
+        }
+        if i > 0 && sorted_unique_positions[i - 1] >= p {
+            return false;
+        }
+    }
+    // Edge case: 1-leaf tree, no proof needed.
+    if num_leaves == 1 {
+        return proof.is_empty() && leaf_hashes[0] == *root;
+    }
+
+    let mut active: Vec<(usize, Hash)> = sorted_unique_positions
+        .iter()
+        .copied()
+        .zip(leaf_hashes.iter().copied())
+        .collect();
+    let mut proof_iter = proof.iter().copied();
+    let mut level_len = num_leaves;
+
+    while level_len > 1 {
+        let mut next = Vec::with_capacity(active.len());
+        let mut i = 0;
+        while i < active.len() {
+            let (p, h) = active[i];
+            let sib_active = i + 1 < active.len() && active[i + 1].0 == (p ^ 1);
+            let (left, right) = if sib_active {
+                let (_, h_sib) = active[i + 1];
+                // Sorted strictly ascending → active[i+1].0 = p + 1 (= p ^ 1
+                // since p is even when p ^ 1 = p + 1). So p is LEFT child.
+                debug_assert_eq!(p & 1, 0);
+                i += 2;
+                (h, h_sib)
+            } else {
+                let sib = match proof_iter.next() {
+                    Some(s) => s,
+                    None => return false,
+                };
+                i += 1;
+                if p & 1 == 0 { (h, sib) } else { (sib, h) }
+            };
+            next.push((p >> 1, hash_pair(&left, &right)));
+        }
+        active = next;
+        level_len >>= 1;
+    }
+
+    // After the loop, `active` has exactly one element (the root). Reject
+    // any leftover proof bytes.
+    if proof_iter.next().is_some() {
+        return false;
+    }
+    active.len() == 1 && active[0].1 == *root
 }
 
 /// Reconstruct the full per-query Merkle paths from a *pruned* (octopus) proof —

@@ -1,33 +1,33 @@
 // Credit: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
-//! Bit-witness packing into F_{2^128} for the PCS commitment phase.
+//! Bit-witness packing into K = F_{2^64} for the 64-bit transition PCS.
 //!
-//! The witness `z : {0,1}^m → {0,1}` is laid out as a flat 2^m-length bool
-//! array. Packing groups the **first** `LOG_PACKING = 7` boolean coordinates
-//! into one F_{2^128} element, leaving an array of 2^(m−7) packed elements
-//! indexed by the remaining m−7 outer coords.
+//! The witness
+//! `z : {0,1}^m -> {0,1}` is laid out as a flat 2^m-length bool array, and
+//! packing groups the **first** `LOG_PACKING = 6` boolean coordinates into
+//! one F_{2^64} element, leaving `2^(m-6)` packed words indexed by the
+//! remaining m-6 outer coords.
 //!
-//! Layout convention: for packed index `i_rest ∈ {0..2^(m−7)}` and bit position
-//! `i_skip ∈ {0..128}`,
+//! Layout convention: for packed index `i_rest` and bit position `i`,
 //! ```text
-//!     bit i_skip of out[i_rest]  ==  z[i_rest * 128 + i_skip]
+//!     bit i of out[i_rest]  ==  z[i_rest * 64 + i]
 //! ```
-//! where "bit i_skip of an F_{2^128} element" means the i_skip-th coordinate of
-//! its natural polynomial basis decomposition (i.e. the i_skip-th bit of the
-//! u128 representation, little-endian).
+//! where "bit i of an F_{2^64} element" is the i-th coordinate of its
+//! polynomial-basis decomposition (bit i of the u64, little-endian).
 //!
-//! This matches the convention used in the [DP24] ring-switching reduction:
-//! `s_hat_v[i_skip] = ẑ_{i_skip}(x_mlv)`, the multilinear extension of the
-//! `i_skip`-th bit-slice of the witness.
-//!
-//! [DP24]: https://eprint.iacr.org/2024/504
+//! This matches the packing basis of the generalized ring-switching reduction
+//! ([`super::ring_switch`]): `s_hat_v[i]` is the MLE of the i-th bit-slice
+//! of the witness, and the i-th bit-slice is exactly bit i of every word.
 
-use primitives::field::F128;
+use primitives::field::F64;
 
-/// `log_2` of the packing width. F_{2^128} holds 128 bits = 2^7.
-pub const LOG_PACKING: usize = 7;
+/// `log_2` of the packing width. F_{2^64} holds 64 bits = 2^6.
+pub const LOG_PACKING: usize = 6;
 
-/// Pack a Boolean witness `z` of length `2^m` into `2^(m − LOG_PACKING)`
-/// F_{2^128} elements.
+/// Packing width (number of bits per F_{2^64} element).
+pub const PACKING_WIDTH: usize = 1 << LOG_PACKING;
+
+/// Pack a Boolean witness `z` of length `2^m` into `2^(m - LOG_PACKING)`
+/// F_{2^64} elements.
 ///
 /// See module docs for the layout convention.
 ///
@@ -35,7 +35,7 @@ pub const LOG_PACKING: usize = 7;
 ///
 /// - if `z.len() != 1 << m`
 /// - if `m < LOG_PACKING`
-pub fn pack_witness(z: &[bool], m: usize) -> Vec<F128> {
+pub fn pack_witness(z: &[bool], m: usize) -> Vec<F64> {
     use rayon::prelude::*;
     assert_eq!(z.len(), 1usize << m, "z length must be 2^m");
     assert!(
@@ -46,8 +46,9 @@ pub fn pack_witness(z: &[bool], m: usize) -> Vec<F128> {
 
     // `bool` is guaranteed 1 byte holding 0x00/0x01, so 8 bools read as one
     // little-endian u64 pack to an LSB-first byte with one multiply:
-    // byte 7 of `x * 0x0102040810204080` is Σ_r b_r·2^r (each lower product
-    // byte sums distinct powers of two ≤ 0xFE — no carry into byte 7).
+    // byte 7 of `x * 0x0102040810204080` is the sum of b_r * 2^r (each lower
+    // product byte sums distinct powers of two <= 0xFE, so nothing carries
+    // into byte 7).
     // SAFETY: same length, and any &[bool] is a valid &[u8].
     let bytes: &[u8] = unsafe { core::slice::from_raw_parts(z.as_ptr() as *const u8, z.len()) };
     #[inline]
@@ -61,10 +62,7 @@ pub fn pack_witness(z: &[bool], m: usize) -> Vec<F128> {
     }
     let one = |i_rest: usize| {
         let base = i_rest << LOG_PACKING;
-        F128 {
-            lo: pack64(&bytes[base..base + 64]),
-            hi: pack64(&bytes[base + 64..base + 128]),
-        }
+        F64(pack64(&bytes[base..base + PACKING_WIDTH]))
     };
     // Parallel for real witnesses; sequential below the dispatch-overhead
     // floor (tiny test instances).
@@ -75,60 +73,70 @@ pub fn pack_witness(z: &[bool], m: usize) -> Vec<F128> {
     }
 }
 
+/// Inverse of [`pack_witness`]: unpack F_{2^64} elements back to a Boolean
+/// witness of length `2^m`.
+///
+/// Round-trips with [`pack_witness`] by construction.
+#[cfg(test)]
+pub fn unpack_witness(packed: &[F64], m: usize) -> Vec<bool> {
+    let n_packed = 1usize << (m - LOG_PACKING);
+    assert_eq!(packed.len(), n_packed, "packed length must be 2^(m - LOG_PACKING)");
+    let mut out = vec![false; 1usize << m];
+    for (i_rest, elem) in packed.iter().enumerate() {
+        let base = i_rest << LOG_PACKING;
+        for r in 0..PACKING_WIDTH {
+            out[base | r] = (elem.0 >> r) & 1 == 1;
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn splitmix64(state: &mut u64) -> u64 {
+        *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = *state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    fn rand_bits(m: usize, seed: u64) -> Vec<bool> {
+        let mut s = seed;
+        (0..1usize << m).map(|_| splitmix64(&mut s) & 1 == 1).collect()
+    }
+
     #[test]
-    fn pack_layout_matches_natural_bit_order() {
-        // For m = LOG_PACKING (= 7): exactly one packed element, holding the
-        // entire 128-bit witness in natural u128 bit order.
-        let mut z = vec![false; 128];
-        // Set a known bit pattern: bits at positions 0, 1, 5, 63, 64, 127.
-        for &i in &[0usize, 1, 5, 63, 64, 127] {
-            z[i] = true;
+    fn roundtrip() {
+        for (m, seed) in [(6usize, 1u64), (7, 2), (10, 3), (13, 4)] {
+            let z = rand_bits(m, seed);
+            let packed = pack_witness(&z, m);
+            assert_eq!(packed.len(), 1 << (m - LOG_PACKING));
+            assert_eq!(unpack_witness(&packed, m), z, "roundtrip failed at m={m}");
         }
-        let packed = pack_witness(&z, LOG_PACKING);
-        assert_eq!(packed.len(), 1);
-        let expected = F128 {
-            lo: (1u64 << 0) | (1u64 << 1) | (1u64 << 5) | (1u64 << 63),
-            hi: (1u64 << 0) | (1u64 << 63),
-        };
-        assert_eq!(packed[0], expected);
     }
 
+    /// Bit-level layout: bit i of word i_rest is z[i_rest * 64 + i].
     #[test]
-    fn pack_independent_chunks() {
-        // Two adjacent 128-bit chunks should pack independently — flipping a
-        // bit in one chunk affects only that chunk.
-        let z = vec![true; 256];
-        let packed = pack_witness(&z, 8);
-        assert_eq!(packed.len(), 2);
-        assert_eq!(
-            packed[0],
-            F128 {
-                lo: u64::MAX,
-                hi: u64::MAX
+    fn bit_layout() {
+        let m = 9;
+        let z = rand_bits(m, 5);
+        let packed = pack_witness(&z, m);
+        for i_rest in 0..packed.len() {
+            for i in 0..PACKING_WIDTH {
+                assert_eq!(
+                    (packed[i_rest].0 >> i) & 1 == 1,
+                    z[(i_rest << LOG_PACKING) | i],
+                    "bit ({i_rest}, {i}) disagrees with the flat layout"
+                );
             }
-        );
-        assert_eq!(
-            packed[1],
-            F128 {
-                lo: u64::MAX,
-                hi: u64::MAX
-            }
-        );
-    }
-
-    #[test]
-    #[should_panic(expected = "witness too small")]
-    fn rejects_undersized_witness() {
-        let z = vec![false; 64]; // m = 6 < LOG_PACKING = 7
-        let _ = pack_witness(&z, 6);
+        }
     }
 }
 
-/// Use [`PaddingSpec::dense`] when the witness has no padding holes.
+/// Describes zero padding within each logical witness block.
 #[derive(Clone, Copy, Debug)]
 pub struct PaddingSpec {
     pub k_log: usize,
@@ -136,8 +144,7 @@ pub struct PaddingSpec {
 }
 
 impl PaddingSpec {
-    /// "No padding": every bit of the witness is treated as useful. Equivalent
-    /// to the legacy URM path with no skipping.
+    /// Treat every bit as useful.
     pub fn dense(m: usize) -> Self {
         Self {
             k_log: m,

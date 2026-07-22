@@ -35,9 +35,9 @@ pub enum WitnessLayout {
 ///
 /// `k_skip` is the zerocheck's univariate-skip dimension (`k_skip ≤ k_log`).
 /// It defines how the m-dim claim point is laid out in the protocol: one
-/// univariate F128 coord binds the LSB `k_skip` bits, `k_log − k_skip`
-/// multilinear F128 coords bind the next inner bits, and `n_log` multilinear
-/// F128 coords bind the outer bits.
+/// univariate F192 coord binds the LSB `k_skip` bits, `k_log − k_skip`
+/// multilinear F192 coords bind the next inner bits, and `n_log` multilinear
+/// F192 coords bind the outer bits.
 #[derive(Debug)]
 pub struct BlockR1cs {
     pub m: usize,
@@ -103,8 +103,7 @@ impl BlockR1cs {
     /// over the nonzeros) out of the prove path.
     pub fn csc_lincheck_circuit(&self) -> &crate::lincheck::CscCircuit {
         self.csc_cache.get_or_init(|| {
-            crate::lincheck::CscCircuit::from_matrices(&self.a_0, &self.b_0)
-                .with_const_pin(self.const_pin)
+            crate::lincheck::CscCircuit::from_matrices(&self.a_0, &self.b_0).with_const_pin(self.const_pin)
         })
     }
 
@@ -157,7 +156,6 @@ impl BlockR1cs {
         absorb_matrix(&mut h, &self.c_0);
         *h.finalize().as_bytes()
     }
-
 }
 
 /// Length-prefixed absorption of a sparse matrix into a BLAKE3 hasher.

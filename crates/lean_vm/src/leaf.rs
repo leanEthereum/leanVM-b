@@ -3,30 +3,33 @@
 //! direction; the bus balances when pushed and pulled tuples form the same
 //! multiset, proven by two GKR passes over the leaf vectors `γ − π_α(σ)`. Each pass
 //! reduces to a leaf claim `Ṽ₀(ζ)`, decomposed into evaluation claims on the
-//! committed columns.
+//! committed columns. Tuple coordinates `σ_i` are `K`-valued (column entries,
+//! g-powers, separators); the fingerprint challenges `α, γ` are `E`-valued, so a
+//! leaf accumulates via the mixed `mul_base` product (2 PMULL per coordinate).
 
 use crate::PAR_THRESHOLD;
-use primitives::field::{F128, G, index_mle};
 use crate::gkr;
-use primitives::multilinear::{eq_eval, mle_eval};
 use crate::transcript::{ProverState, VerifierState};
 use crate::witness::Column;
+use primitives::field::{F64, F192, F192BaseUnreduced, g_pow, index_mle};
+use primitives::multilinear::{eq_eval, mle_eval};
 use rayon::prelude::*;
 
 /// One tuple coordinate as a function of the block's row `z`.
 #[derive(Clone, Debug)]
 pub enum Coord {
     /// A public constant (domain separator, opcode, the seed count `1`).
-    Const(F128),
+    Const(F64),
     /// A committed column, value `col[z]`.
     Col(usize),
-    /// The free increment `g · col[z]` (a virtual column, §1).
-    GCol(usize),
+    /// The free increment `g^k · col[z]` (a virtual column, §1): `k = 1` for the
+    /// count/state steps, `k ∈ {1,2,3}` for BLAKE3's consecutive-word successors.
+    GCol(usize, u32),
     /// The index column `g^z` (§5.3), free via the factored MLE.
     Index,
     /// A public column (the bytecode program, §8): not committed; both parties form
     /// its MLE directly, so it raises no claim.
-    Public(Vec<F128>),
+    Public(Vec<F64>),
 }
 
 /// A flushing rule: `2^kappa` rows, each a tuple of coordinates. `real` is the
@@ -51,8 +54,8 @@ pub struct Layout {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ColumnClaim {
     pub col: usize,
-    pub point: Vec<F128>,
-    pub value: F128,
+    pub point: Vec<F192>,
+    pub value: F192,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -65,11 +68,9 @@ pub enum Error {
     Decomposition {
         side: &'static str,
     },
-    /// The bus grinding nonce (before the multiset challenge γ) failed its PoW.
-    PowFailed,
 }
 
-/// Proof-of-work bits to grind before the multiset challenge γ, so the bus
+/// Check that the 192-bit field alone supplies the target bus soundness. The bus
 /// grand-product phase clears [`crate::SECURITY_BITS`]. Two Schwartz–Zippel
 /// failure events share this randomness; union-bound over them:
 ///
@@ -81,7 +82,8 @@ pub enum Error {
 ///   `count factors`.
 ///
 /// So `N = max(2^push_mu, 2^pull_mu) + 2^count_mu`, and a false phase passes a
-/// random challenge with probability ≤ `N / 2^128`, i.e. `128 − log2(N)` bits.
+/// random challenge with probability ≤ `N / 2^192` (γ is sampled from `E`), i.e.
+/// `192 − log2(N)` bits.
 /// Two structural facts collapse this. The push and pull sides emit their bus
 /// blocks in matched pairs — every [`FlushBuilder`] call appends one block to
 /// each side with equal `κ`, and the three framework blocks (boundary, memory,
@@ -91,17 +93,19 @@ pub enum Error {
 /// carries none, so the count side sums strictly fewer `2^κ` than push and
 /// `count_mu ≤ push_mu`. Hence `N = 2^push_mu + 2^count_mu` with
 /// `count_mu ≤ push_mu`, so `⌈log2 N⌉ = push_mu + 1` exactly and the grind is
-/// simply `SECURITY_BITS + push_mu + 1 − 128`. Grinding adds that deficit back
-/// (the prover must redo the PoW to re-roll γ).
-///
-/// The fingerprint challenge α is sampled AFTER the grind, so re-rolling it
-/// also costs the PoW (besides the older argument that a fresh commitment to
-/// re-roll α already costs `≥ 2^MIN_MU` Merkle hashes, above the target for
-/// every admitted witness size).
-fn grand_product_grinding_bits(push: &Layout, pull: &Layout, count: &Layout) -> u32 {
-    assert_eq!(push.mu, pull.mu, "push/pull bus blocks are paired, so their layouts match");
+/// unnecessary whenever `SECURITY_BITS + push_mu + 1 ≤ 192`, asserted below.
+/// No nonce is transmitted or absorbed. The independent fingerprint challenge
+/// α remains protected by the commitment needed to re-roll it.
+fn assert_grinding_unnecessary(push: &Layout, pull: &Layout, count: &Layout) {
+    assert_eq!(
+        push.mu, pull.mu,
+        "push/pull bus blocks are paired, so their layouts match"
+    );
     assert!(count.mu <= push.mu, "count sums fewer bus messages than push");
-    (crate::SECURITY_BITS + push.mu as u32 + 1).saturating_sub(128)
+    assert!(
+        crate::SECURITY_BITS + (push.mu as u32) < 192,
+        "bus layout exceeds the unground F192 soundness budget"
+    );
 }
 
 /// Stack blocks largest-first at aligned offsets; `μ = ⌈log2 Σ 2^{κ_b}⌉`.
@@ -120,44 +124,49 @@ pub fn layout(blocks: &[Block]) -> Layout {
 }
 
 /// A non-constant coordinate as `(source, coefficient)`: its leaf contribution is
-/// `coeff · source(z)`. `GCol` folds the `g` factor into the coefficient.
+/// the mixed product `coeff · source(z)` with `source(z) ∈ K`, `coeff ∈ E`.
+/// `GCol` folds the `g^k` factor into the coefficient.
 enum Term<'a> {
-    Col(usize, F128),
-    Index(F128),
-    Public(&'a [F128], F128),
+    Col(usize, F192),
+    Index(F192),
+    Public(&'a [F64], F192),
 }
 
 /// Build one side's leaf vector: block `b` row `z` holds `γ − Σ_i α^i c_i(z)`,
 /// padded to `2^μ` with the identity `1`. The row-invariant `α`-power chain and
 /// constant coordinates are folded once per block into `const_part`.
-pub fn build_leaves(blocks: &[Block], lay: &Layout, cols: &[Column], alpha: F128, gamma: F128) -> Vec<F128> {
-    let mut leaves = vec![F128::ONE; 1usize << lay.mu];
+pub fn build_leaves(blocks: &[Block], lay: &Layout, cols: &[Column], alpha: F192, gamma: F192) -> Vec<F192> {
+    let mut leaves = vec![F192::ONE; 1usize << lay.mu];
     let maxk = blocks.iter().map(|b| b.kappa).max().unwrap_or(0);
     let gpow = primitives::field::g_powers(1usize << maxk);
     for (b, blk) in blocks.iter().enumerate() {
         let mut const_part = gamma;
         let mut terms: Vec<Term> = Vec::with_capacity(blk.coords.len());
-        let mut alpha_pow = F128::ONE;
+        let mut alpha_pow = F192::ONE;
         for c in &blk.coords {
             match c {
-                Coord::Const(v) => const_part += alpha_pow * *v,
+                Coord::Const(v) => const_part += alpha_pow.mul_base(*v),
                 Coord::Col(i) => terms.push(Term::Col(*i, alpha_pow)),
-                Coord::GCol(i) => terms.push(Term::Col(*i, alpha_pow * G)),
+                Coord::GCol(i, k) => terms.push(Term::Col(*i, alpha_pow.mul_base(g_pow(*k as usize)))),
                 Coord::Index => terms.push(Term::Index(alpha_pow)),
                 Coord::Public(vals) => terms.push(Term::Public(vals, alpha_pow)),
             }
             alpha_pow *= alpha;
         }
-        let row = |z: usize| -> F128 {
-            let mut acc = const_part;
+        let row = |z: usize| -> F192 {
+            // The α-weighted coordinate sum defers its reductions: each mixed
+            // product contributes its three raw limb products (3 PMULL, no
+            // reduction tail), one combined reduction per row at the end —
+            // bit-identical to summing reduced `mul_base` terms.
+            let mut acc = F192BaseUnreduced::ZERO;
             for t in &terms {
-                acc += match t {
-                    Term::Col(i, c) => *c * cols[*i][z],
-                    Term::Index(c) => *c * gpow[z],
-                    Term::Public(vals, c) => *c * vals[z],
+                acc ^= match t {
+                    Term::Col(i, c) => c.mul_base_unreduced(cols[*i][z]),
+                    Term::Index(c) => c.mul_base_unreduced(gpow[z]),
+                    Term::Public(vals, c) => c.mul_base_unreduced(vals[z]),
                 };
             }
-            acc
+            const_part + acc.reduce()
         };
         let off = lay.offsets[b];
         let rows = 1usize << blk.kappa;
@@ -173,52 +182,39 @@ pub fn build_leaves(blocks: &[Block], lay: &Layout, cols: &[Column], alpha: F128
     leaves
 }
 
-/// Recompute `Ṽ₀(ζ)` while recording each fresh committed-column claim.
-/// Repeated `(column, point)` coordinates reuse the first value; `fresh` supplies
-/// only values not already present in `claims`.
-fn decompose_formula<F: FnMut(usize, &[F128]) -> Result<F128, Error>>(
+/// Recompute `Ṽ₀(ζ)` from the block structure, taking each committed column's value
+/// at `ζ_lo` from `col_val` (block/coord order): the prover reads the real columns,
+/// the verifier replays PCS-certified values.
+pub fn decompose_formula<F: FnMut(usize, &[F192]) -> F192>(
     blocks: &[Block],
     lay: &Layout,
-    zeta: &[F128],
-    alpha: F128,
-    gamma: F128,
-    claims: &mut Vec<ColumnClaim>,
-    mut fresh: F,
-) -> Result<F128, Error> {
+    zeta: &[F192],
+    alpha: F192,
+    gamma: F192,
+    mut col_val: F,
+) -> F192 {
     assert_eq!(zeta.len(), lay.mu);
-    let mut col_val = |col, point: &[F128]| {
-        if let Some(claim) = claims.iter().find(|c| c.col == col && c.point == point) {
-            return Ok(claim.value);
-        }
-        let value = fresh(col, point)?;
-        claims.push(ColumnClaim {
-            col,
-            point: point.to_vec(),
-            value,
-        });
-        Ok(value)
-    };
-    let mut acc = F128::ZERO;
-    let mut sel_sum = F128::ZERO;
+    let mut acc = F192::ZERO;
+    let mut sel_sum = F192::ZERO;
     for (b, blk) in blocks.iter().enumerate() {
         let kappa = blk.kappa;
         let zeta_lo = &zeta[..kappa];
         let zeta_hi = &zeta[kappa..];
         let sel = lay.offsets[b] >> kappa;
-        let sel_bits: Vec<F128> = (0..(lay.mu - kappa))
-            .map(|k| F128::new(((sel >> k) & 1) as u64, 0))
+        let sel_bits: Vec<F192> = (0..(lay.mu - kappa))
+            .map(|k| F192::new(((sel >> k) & 1) as u64, 0, 0))
             .collect();
         let eq_hi = eq_eval(&sel_bits, zeta_hi);
         sel_sum += eq_hi;
 
-        let mut inner = F128::ZERO;
-        let mut alpha_pow = F128::ONE;
+        let mut inner = F192::ZERO;
+        let mut alpha_pow = F192::ONE;
         for c in &blk.coords {
             let coord_val = match c {
-                Coord::Const(v) => *v,
+                Coord::Const(v) => F192::from(*v),
                 Coord::Index => index_mle(zeta_lo),
-                Coord::Col(i) => col_val(*i, zeta_lo)?,
-                Coord::GCol(i) => G * col_val(*i, zeta_lo)?,
+                Coord::Col(i) => col_val(*i, zeta_lo),
+                Coord::GCol(i, k) => col_val(*i, zeta_lo).mul_base(g_pow(*k as usize)),
                 Coord::Public(vals) => mle_eval(vals, zeta_lo),
             };
             inner += alpha_pow * coord_val;
@@ -227,51 +223,119 @@ fn decompose_formula<F: FnMut(usize, &[F128]) -> Result<F128, Error>>(
         acc += eq_hi * (gamma + inner);
     }
     // The padding rows (identity `1`) contribute the leftover mass `1 - Σ_b sel_b`.
-    Ok(acc + (F128::ONE + sel_sum))
+    acc + (F192::ONE + sel_sum)
+}
+
+/// Look up an already-recorded claim on `(col, point)`. Push and pull share
+/// their GKR point, so a column read by both sides (or by two same-κ blocks of
+/// one side) is streamed and opened ONCE; later occurrences reuse the value.
+fn known_claim(claims: &[ColumnClaim], col: usize, point: &[F192]) -> Option<F192> {
+    claims
+        .iter()
+        .find(|c| c.col == col && c.point == point)
+        .map(|c| c.value)
 }
 
 /// Prover-side decomposition: reads the real columns, writing each FRESH
 /// committed value onto the stream and recording the matching claim
 /// (block/coord order); duplicates reuse the recorded value.
+///
+/// The fresh column MLE evaluations run in a parallel first pass: within one
+/// `decompose_formula` call no challenge is sampled between claims (`zeta`,
+/// `alpha`, `gamma` are fixed arguments and each claim's point is
+/// `zeta[..kappa]` of its block), so the values are independent of the
+/// transcript and only their `add_scalar` ORDER matters. The second pass
+/// replays them through the transcript in the original block/coord order,
+/// keeping the stream byte-identical to the serial form.
 #[allow(clippy::too_many_arguments)] // the shared dedup context is the 8th
 fn decompose_prove(
     blocks: &[Block],
     lay: &Layout,
     cols: &[Column],
-    zeta: &[F128],
-    alpha: F128,
-    gamma: F128,
+    zeta: &[F192],
+    alpha: F192,
+    gamma: F192,
     claims: &mut Vec<ColumnClaim>,
     ps: &mut ProverState,
 ) {
-    decompose_formula(blocks, lay, zeta, alpha, gamma, claims, |col, zeta_lo| {
-        let v = mle_eval(&cols[col], zeta_lo);
+    // Pass 1: enumerate the FRESH committed coords exactly as `decompose_formula`
+    // visits them (blocks in order, coords in order, Col/GCol only, first
+    // occurrence per `(col, point)` — the same dedup as `known_claim`), then
+    // evaluate the column MLEs in parallel.
+    let mut jobs: Vec<(usize, usize)> = Vec::new();
+    for blk in blocks {
+        for c in &blk.coords {
+            if let Coord::Col(i) | Coord::GCol(i, _) = c {
+                let fresh = known_claim(claims, *i, &zeta[..blk.kappa]).is_none() && !jobs.contains(&(*i, blk.kappa));
+                if fresh {
+                    jobs.push((*i, blk.kappa));
+                }
+            }
+        }
+    }
+    let vals: Vec<F192> = jobs
+        .par_iter()
+        .map(|&(col, kappa)| mle_eval(&cols[col], &zeta[..kappa]))
+        .collect();
+
+    // Pass 2: replay in the original order; duplicates reuse the recorded claim.
+    let mut fresh_iter = jobs.iter().zip(vals.iter());
+    decompose_formula(blocks, lay, zeta, alpha, gamma, |col, zeta_lo| {
+        if let Some(v) = known_claim(claims, col, zeta_lo) {
+            return v;
+        }
+        let (&(jc, jk), &v) = fresh_iter
+            .next()
+            .expect("job enumeration matches decompose_formula's col_val order");
+        debug_assert_eq!((jc, jk), (col, zeta_lo.len()), "job/coord order drift");
+        debug_assert_eq!(v, mle_eval(&cols[col], zeta_lo), "job/coord order drift");
         ps.add_scalar(v);
-        Ok(v)
-    })
-    .expect("prover decomposition is infallible");
+        claims.push(ColumnClaim {
+            col,
+            point: zeta_lo.to_vec(),
+            value: v,
+        });
+        v
+    });
 }
 
 /// Verifier-side decomposition: reads each FRESH committed value from the
 /// stream (duplicates reuse the recorded claim), recomputes `Ṽ₀(ζ)`, and
-/// records the fresh claims in one block/coordinate scan.
+/// records the fresh claims. A pre-pass mirrors the formula's block/coord scan
+/// so the stream reads stay sequential.
 fn decompose_verify(
     blocks: &[Block],
     lay: &Layout,
-    zeta: &[F128],
-    alpha: F128,
-    gamma: F128,
+    zeta: &[F192],
+    alpha: F192,
+    gamma: F192,
     claims: &mut Vec<ColumnClaim>,
     vs: &mut VerifierState,
-) -> Result<F128, Error> {
-    decompose_formula(blocks, lay, zeta, alpha, gamma, claims, |_, _| {
-        vs.next_scalar().map_err(|_| Error::Truncated)
-    })
+) -> Result<F192, Error> {
+    for blk in blocks {
+        let zeta_lo = &zeta[..blk.kappa];
+        for c in &blk.coords {
+            if let Coord::Col(i) | Coord::GCol(i, _) = c
+                && known_claim(claims, *i, zeta_lo).is_none()
+            {
+                let v = vs.next_scalar().map_err(|_| Error::Truncated)?;
+                claims.push(ColumnClaim {
+                    col: *i,
+                    point: zeta_lo.to_vec(),
+                    value: v,
+                });
+            }
+        }
+    }
+    let value = decompose_formula(blocks, lay, zeta, alpha, gamma, |col, zeta_lo| {
+        known_claim(claims, col, zeta_lo).expect("the pre-pass recorded every coordinate")
+    });
+    Ok(value)
 }
 
 /// `base^e` by repeated squaring.
-fn fpow(base: F128, mut e: usize) -> F128 {
-    let (mut r, mut b) = (F128::ONE, base);
+fn fpow(base: F192, mut e: usize) -> F192 {
+    let (mut r, mut b) = (F192::ONE, base);
     while e > 0 {
         if e & 1 == 1 {
             r *= b;
@@ -284,17 +348,17 @@ fn fpow(base: F128, mut e: usize) -> F128 {
 
 /// `π_α` of a block's padding-row tuple (every column zero but the read counts,
 /// value `1`). Only padded blocks are queried, and those carry only `Const`/`Col`/`GCol`.
-fn default_fingerprint(block: &Block, pad: &[F128], alpha: F128) -> F128 {
-    let mut fingerprint = F128::ZERO;
-    let mut alpha_pow = F128::ONE;
+fn default_fingerprint(block: &Block, pad: &[F64], alpha: F192) -> F192 {
+    let mut fingerprint = F192::ZERO;
+    let mut alpha_pow = F192::ONE;
     for c in &block.coords {
         let coord_val = match c {
             Coord::Const(v) => *v,
             Coord::Col(i) => pad[*i],
-            Coord::GCol(i) => G * pad[*i],
-            Coord::Index | Coord::Public(_) => F128::ZERO,
+            Coord::GCol(i, k) => g_pow(*k as usize) * pad[*i],
+            Coord::Index | Coord::Public(_) => F64::ZERO,
         };
-        fingerprint += alpha_pow * coord_val;
+        fingerprint += alpha_pow.mul_base(coord_val);
         alpha_pow *= alpha;
     }
     fingerprint
@@ -302,8 +366,8 @@ fn default_fingerprint(block: &Block, pad: &[F128], alpha: F128) -> F128 {
 
 /// The default-padding surplus on one side: `∏_b (γ − π_α(default_b))^{2^{κ_b} −
 /// real_b}`. The verifier divides it out before comparing the two sides (§sec:gp).
-fn default_surplus(blocks: &[Block], pad: &[F128], alpha: F128, gamma: F128) -> F128 {
-    let mut acc = F128::ONE;
+fn default_surplus(blocks: &[Block], pad: &[F64], alpha: F192, gamma: F192) -> F192 {
+    let mut acc = F192::ONE;
     for b in blocks {
         let delta = (1usize << b.kappa) - b.real;
         if delta != 0 {
@@ -325,14 +389,14 @@ fn default_surplus(blocks: &[Block], pad: &[F128], alpha: F128, gamma: F128) -> 
 #[derive(Clone, Debug)]
 pub struct BytecodeClaim {
     /// `ζ_side_lo ++ s` — a point in `κ_bc + 3` variables.
-    pub point: Vec<F128>,
+    pub point: Vec<F192>,
     /// `B̃(point)`.
-    pub value: F128,
+    pub value: F192,
 }
 
 /// The public (bytecode) coordinate evaluations of a side at its GKR point,
 /// block/coord order, with the bytecode block's `κ`.
-pub fn public_evals(blocks: &[Block], zeta: &[F128]) -> (usize, Vec<F128>) {
+pub fn public_evals(blocks: &[Block], zeta: &[F192]) -> (usize, Vec<F192>) {
     let mut kappa = 0;
     let mut out = Vec::new();
     for blk in blocks {
@@ -350,9 +414,9 @@ pub fn public_evals(blocks: &[Block], zeta: &[F128]) -> (usize, Vec<F128>) {
 /// columns along three selector bits (`B̃`'s evaluations on the cube). This is
 /// the polynomial [`BytecodeClaim`]s are claims about; the outermost native
 /// verifier evaluates it here.
-pub fn stacked_bytecode_table(blocks: &[Block]) -> Vec<F128> {
+pub fn stacked_bytecode_table(blocks: &[Block]) -> Vec<F64> {
     let mut kbc = 0;
-    let mut cols: Vec<&Vec<F128>> = Vec::new();
+    let mut cols: Vec<&Vec<F64>> = Vec::new();
     for blk in blocks {
         for c in &blk.coords {
             if let Coord::Public(vals) = c {
@@ -361,7 +425,8 @@ pub fn stacked_bytecode_table(blocks: &[Block]) -> Vec<F128> {
             }
         }
     }
-    let mut table = vec![F128::ZERO; 8 << kbc];
+    assert!(cols.len() <= 1 << N_BYTECODE_SELECTORS);
+    let mut table = vec![F64::ZERO; 1 << (N_BYTECODE_SELECTORS + kbc)];
     for (c_idx, vals) in cols.iter().enumerate() {
         assert_eq!(vals.len(), 1 << kbc);
         table[(c_idx << kbc)..((c_idx + 1) << kbc)].copy_from_slice(vals);
@@ -370,13 +435,19 @@ pub fn stacked_bytecode_table(blocks: &[Block]) -> Vec<F128> {
 }
 
 /// `Σ_c eq(s, c)·v_c`: one side's public-column evaluations reduced to the
+/// Selector bits of the stacked bytecode polynomial: the public encoding
+/// columns (opcode + eight operand/immediate slots = nine) stack along
+/// `2^N_BYTECODE_SELECTORS` slots.
+pub const N_BYTECODE_SELECTORS: usize = 4;
+
 /// stacked-polynomial value at selector point `s`.
-pub fn stacked_bytecode_value(evals: &[F128], s: &[F128; 3]) -> F128 {
-    let mut acc = F128::ZERO;
+pub fn stacked_bytecode_value(evals: &[F192], s: &[F192]) -> F192 {
+    debug_assert_eq!(s.len(), N_BYTECODE_SELECTORS);
+    let mut acc = F192::ZERO;
     for (c, &v) in evals.iter().enumerate() {
-        let mut e = F128::ONE;
+        let mut e = F192::ONE;
         for (t, &st) in s.iter().enumerate() {
-            e *= if (c >> t) & 1 == 1 { st } else { F128::ONE + st };
+            e *= if (c >> t) & 1 == 1 { st } else { F192::ONE + st };
         }
         acc += e * v;
     }
@@ -396,9 +467,7 @@ pub fn prove_balance(
     let push_lay = layout(push);
     let pull_lay = layout(pull);
     let mut count_lay = layout(count);
-    // Grind FIRST, so the PoW covers both bus challenges α and γ
-    // ([`grand_product_grinding_bits`]): re-rolling either means redoing it.
-    ps.grind(grand_product_grinding_bits(&push_lay, &pull_lay, &count_lay));
+    assert_grinding_unnecessary(&push_lay, &pull_lay, &count_lay);
     let alpha = ps.sample();
     // Pad the count tree to the pair's depth with identity leaves (the product,
     // blocks, and offsets are unchanged; `build_leaves` fills the cube with `1`
@@ -408,26 +477,48 @@ pub fn prove_balance(
     let gamma = ps.sample();
     // Independent leaf vectors; build concurrently. The count channel's leaf is the
     // count itself (a single `Col`, `γ=0`, `α=1`), so its root is the product of all counts.
+    let prof = std::env::var("LEANVM_PROFILE").is_ok();
+    let t0 = std::time::Instant::now();
     let (push_leaves, (pull_leaves, count_leaves)) = rayon::join(
         || build_leaves(push, &push_lay, cols, alpha, gamma),
         || {
             rayon::join(
                 || build_leaves(pull, &pull_lay, cols, alpha, gamma),
-                || build_leaves(count, &count_lay, cols, F128::ONE, F128::ZERO),
+                || build_leaves(count, &count_lay, cols, F192::ONE, F192::ZERO),
             )
         },
     );
+    if prof {
+        eprintln!("[bus]   leaves    : {:>7.2} ms", t0.elapsed().as_secs_f64() * 1e3);
+    }
+    let t0 = std::time::Instant::now();
     // All three trees run as ONE RLC-batched GKR (equal μ: push/pull match
     // block-for-block, count is padded), so every claim lands on ONE point ζ.
     let bus_gkr = gkr::prove_product_triple([push_leaves, pull_leaves, count_leaves], ps);
+    if prof {
+        eprintln!("[bus]   gkr       : {:>7.2} ms", t0.elapsed().as_secs_f64() * 1e3);
+    }
+    let t0 = std::time::Instant::now();
 
     // One shared claim list: push/pull duplicates (same column, same shared
-    // point) are streamed and opened once. The count side has its own point,
-    // so its claims stay distinct.
+    // point) are streamed and opened once. The count side has its own weights,
+    // so its claims stay distinct only where the columns differ.
     let mut claims: Vec<ColumnClaim> = Vec::new();
     decompose_prove(push, &push_lay, cols, &bus_gkr.point, alpha, gamma, &mut claims, ps);
     decompose_prove(pull, &pull_lay, cols, &bus_gkr.point, alpha, gamma, &mut claims, ps);
-    decompose_prove(count, &count_lay, cols, &bus_gkr.point, F128::ONE, F128::ZERO, &mut claims, ps);
+    decompose_prove(
+        count,
+        &count_lay,
+        cols,
+        &bus_gkr.point,
+        F192::ONE,
+        F192::ZERO,
+        &mut claims,
+        ps,
+    );
+    if prof {
+        eprintln!("[bus]   decompose : {:>7.2} ms", t0.elapsed().as_secs_f64() * 1e3);
+    }
 
     // Bytecode = ONE polynomial, and push/pull now share the point ζ, so the
     // eight public columns are opened ONCE: bind the evaluations, sample the
@@ -436,7 +527,7 @@ pub fn prove_balance(
     for &v in &pv {
         ps.observe_scalar(v);
     }
-    let s = [ps.sample(), ps.sample(), ps.sample()];
+    let s: Vec<F192> = (0..N_BYTECODE_SELECTORS).map(|_| ps.sample()).collect();
     let bytecode_claims = vec![BytecodeClaim {
         point: [&bus_gkr.point[..kbc], &s[..]].concat(),
         value: stacked_bytecode_value(&pv, &s),
@@ -451,7 +542,7 @@ pub fn prove_balance(
 pub struct BusVerify {
     pub claims: Vec<ColumnClaim>,
     pub bytecode_claims: Vec<BytecodeClaim>,
-    pub count_root: F128,
+    pub count_root: F192,
 }
 
 /// Verify the bus balances, oracle-free (the prover's committed values arrive on
@@ -460,18 +551,13 @@ pub fn verify_balance(
     push: &[Block],
     pull: &[Block],
     count: &[Block],
-    pad: &[F128],
+    pad: &[F64],
     vs: &mut VerifierState,
 ) -> Result<BusVerify, Error> {
-    // Check the grinding nonce FIRST: the PoW covers both bus challenges
-    // α and γ (mirror of prove_balance).
     let push_lay = layout(push);
     let pull_lay = layout(pull);
     let mut count_lay = layout(count);
-    vs.grind_check(grand_product_grinding_bits(&push_lay, &pull_lay, &count_lay)).map_err(|e| match e {
-        crate::transcript::Error::PowFailed => Error::PowFailed,
-        _ => Error::Truncated,
-    })?;
+    assert_grinding_unnecessary(&push_lay, &pull_lay, &count_lay);
     let alpha = vs.sample();
     // The count tree is padded to the pair's depth (identity leaves), so all
     // three verify as ONE RLC-batched GKR at ONE shared point.
@@ -481,7 +567,7 @@ pub fn verify_balance(
     let [push_root, pull_root, count_root] = bus_gkr.roots;
     // Every read count is nonzero iff this product is (§sec:memchan); a zero would
     // let a read self-cancel and free its value from memory.
-    if count_root == F128::ZERO {
+    if count_root == F192::ZERO {
         return Err(Error::ZeroCount);
     }
     // The two sides differ by the default-padding surplus; divide each out
@@ -501,7 +587,15 @@ pub fn verify_balance(
     if vq != bus_gkr.values[1] {
         return Err(Error::Decomposition { side: "pull" });
     }
-    let vc = decompose_verify(count, &count_lay, &bus_gkr.point, F128::ONE, F128::ZERO, &mut claims, vs)?;
+    let vc = decompose_verify(
+        count,
+        &count_lay,
+        &bus_gkr.point,
+        F192::ONE,
+        F192::ZERO,
+        &mut claims,
+        vs,
+    )?;
     if vc != bus_gkr.values[2] {
         return Err(Error::Decomposition { side: "count" });
     }
@@ -513,7 +607,7 @@ pub fn verify_balance(
     for &v in &pv {
         vs.observe_scalar(v);
     }
-    let s = [vs.sample(), vs.sample(), vs.sample()];
+    let s: Vec<F192> = (0..N_BYTECODE_SELECTORS).map(|_| vs.sample()).collect();
     let bytecode_claims = vec![BytecodeClaim {
         point: [&bus_gkr.point[..kbc], &s[..]].concat(),
         value: stacked_bytecode_value(&pv, &s),

@@ -1,14 +1,14 @@
 # zkDSL Language Reference (leanVM-b)
 
-The zkDSL is a Python-syntax language that compiles to the leanVM-b ISA — six
-instructions (`XOR`, `MUL`, `SET`, `DEREF`, `JUMP`, `BLAKE3`) over the binary
-field GF(2^128), with write-once memory and all indices carried "in the
+The zkDSL is a Python-syntax language that compiles to the leanVM-b ISA — seven
+instructions (`XOR`, `MUL`, `SET`, `DEREF`, `JUMP`, `BLAKE3`, `PACK64X2`) over the binary
+field GF(2^192), with write-once memory and all indices carried "in the
 exponent" as powers of a fixed generator. For the underlying VM and proving
 system, see [`misc/doc.tex`](../../misc/doc.tex) (released as `doc.pdf`).
 
 Source files use the `.py` extension and are **valid Python**: they import the
 [`snark_lib`](../../snark_lib.py) stub, which defines `GEN`, `log`, `mul_range`,
-`HeapBuf`, `StackBuf`, and `blake3` so that editors, linters, and even
+`HeapBuf`, `StackBuf`, `pack64x2`, and `blake3` so that editors, linters, and even
 `python3` itself accept the file. The compiler skips the import.
 
 Entry points: `lean_compiler::parse` / `parse_file_with_replacements` →
@@ -24,15 +24,34 @@ no-ops, so this only checks that the file is well-formed.
 
 ## The field — and indices in the exponent
 
-Every runtime value is one element of GF(2^128) in GHASH form
-(`F_2[x]/(x^128 + x^7 + x^2 + x + 1)`). There are no runtime integers.
+The fields are
 
-- `+` is field addition = bitwise **XOR** (so `x + x == 0`),
-- `*` is the field (GHASH) product,
-- an integer literal `n` denotes the field element with bit pattern `n`
-  (bit `k` is the coefficient of `x^k`) — `5` is `1 + x^2`, not "five",
-- `GEN` is the fixed generator `g = x` (multiplicative order `2^128 − 1`),
-- `GEN ** e` is the compile-time constant `g^e` (`**` takes base `GEN` and a
+`K = GF(2)[x]/(x^64 + x^4 + x^3 + x + 1)` and
+`E = K[y]/(y^3 + y + 1) = GF(2^192)`.
+
+Machine **words** — the contents of a memory cell, an immediate, a hashed
+value, the `JUMP` condition — are elements of `E`. **Addresses**,
+the program counter, the frame pointer, read counters, operands, opcodes, and
+domain separators live in the 64-bit subfield `K = GF(2^64)`. There are no
+runtime integers.
+
+- `+` is field addition = bitwise **XOR** (192-bit on words, so `x + x == 0`),
+- `*` is multiplication in `E`;
+  for g-powers and
+  addresses it stays within `K`,
+- `/` is runtime field division, `a / b = a · b⁻¹`. It costs one `MUL`: the
+  compiler leaves the quotient cell unset and emits the checked relation
+  `quotient · b == a`, which witness generation back-solves. Division by zero is
+  undefined. This is distinct from `//`, compile-time integer floor division in
+  sizes and indices,
+- an integer literal `n` supplies up to 128 raw bits and is embedded as
+  `F192(c0, c1, 0)`. This is a source-syntax limit, not the machine-word
+  width: words have three 64-bit limbs. Thus `5` is `1 + x^2`, not the integer five, and
+  `2 ** 64` is the tower element `y`. Full-width constants use
+  `f192(c0, c1, c2)`, with each limb an unsigned 64-bit compile-time integer,
+- `GEN` is the fixed generator `g = x` of the 64-bit subfield `K^×`
+  (multiplicative order `2^64 − 1`),
+- `GEN ** e` is the compile-time constant `g^e ∈ K` (`**` takes base `GEN` and a
   compile-time integer exponent — a literal, a constant, an `unroll` variable,
   `len(...)`, or index arithmetic of those). So `buf[GEN ** i]` names heap cell
   `i` directly inside an `unroll` loop, with no running-pointer cursor.
@@ -41,10 +60,10 @@ Every runtime value is one element of GF(2^128) in GHASH form
   or field arithmetic in a value position (`x ** k`, e.g. a loop counter `g^i`
   raised to a stride to reach cell `i·stride`). The base may be runtime.
 
-A logical **index** `i` is carried as `g^i`: incrementing is one
-multiplication by `GEN`, and memory/bytecode addresses are g-powers. This is
-the design idiom of the whole VM — loops, heap addressing, and range checks
-below all live in the exponent.
+A logical **index** `i` is carried as `g^i` in the 64-bit subfield (order
+`2^64 − 1`): incrementing is one multiplication by `GEN`, and memory/bytecode
+addresses are g-powers. This is the design idiom of the whole VM — loops, heap
+addressing, and range checks below all live in the exponent, in `K`.
 
 ## Program shape
 
@@ -67,9 +86,17 @@ def helper(a, b):         # other functions
 anything else is a compile error (no multi-file programs yet). Comments (`#`)
 and blank lines are free. Indentation is block structure, as in Python.
 
+Ordinary functions may return scalars, `HeapBuf` pointers, and `StackBuf`
+values, including mixtures in a tuple return. A returned `StackBuf(n)` has a
+compile-time-known size: its `n` cells are copied through `n` consecutive return
+slots and the caller binds the result as a new `StackBuf(n)`. A `HeapBuf` return
+is just its one-cell pointer; the allocation hint already ran where the buffer
+was created, so no size metadata needs to cross the call.
+
 ## Public input
 
-Memory cells `m[0]` and `m[1]` hold the two public-input field elements. A
+Memory cells `m[0]` and `m[1]` hold the two public-input words, each an F192
+machine word. A
 program *publishes* results by asserting them against those cells through the
 write-once heap store (the pointer `g^0` addresses absolute memory):
 
@@ -217,11 +244,13 @@ def combine(a, b, k: Const):
 
 An `@inline` function is **expanded at each call site** instead of emitting a
 real call — no frame, no argument/return `DEREF`s, no call/return `JUMP`s. The
-body must be a single **tail** `return`; it may contain `blake3`, `if`, and
-`unroll`, but not a call to another (user) function, a `for`/`match`, or any
-nested/early `return`. It is never lowered standalone; a call to a
-non-`@inline` function is unchanged. (Distinct from `unroll(a, b)`, which
-replicates a loop body: that one really does unroll.)
+body must be a single **tail** `return`; it may contain builtins, calls to other
+`@inline` functions, `if`, and `unroll`, but not a call to a non-inline user
+function, a `for`/`match`, or any nested/early `return`. Nested inline calls
+expand recursively; direct or indirect recursive inline calls are rejected.
+An inline function is never lowered standalone; a call to a non-`@inline`
+function is unchanged. (Distinct from `unroll(a, b)`, which replicates a loop
+body: that one really does unroll.)
 
 An `@inline` function may also **return a `StackBuf`**: the caller's binding
 aliases the returned cell run (zero copies), and `StackBuf` arguments alias
@@ -528,6 +557,17 @@ Statements without effect are rejected.
 A proof-enforced equality: 2 cycles (`XOR` into a fresh cell + `SET` it to
 zero, using write-once double-write as the assert).
 
+### `assert a != b`
+
+A proof-enforced inequality. The compiler computes `a + b` with one `XOR` and
+conditionally jumps over a poison path when it is nonzero. If the values are
+equal, execution jumps to `GEN ** -1` conceptually—the field element `g⁻¹`,
+outside the committed bytecode cube—so the bytecode bus cannot balance a
+continuing trace. The honest path is 3 executed instructions (`XOR`, target
+`SET`, `JUMP`), plus the same amortized self-frame/constant setup used by other
+branches; no inverse hint is needed. A compile-time assertion such as
+`assert 5 != 5` is rejected while compiling.
+
 ### Range checks: `assert log x < log Y` and `assert log x < k`
 
 The *range check in the exponent*: proves `x ∈ {g^0, g^1, …, g^{k-1}}`, i.e.
@@ -552,11 +592,67 @@ one amortized `SET` per distinct bound per frame:
    back-solves the complement `y = g^{k-1-e}` (the one unknown operand of a
    known product), and the double-write asserts `x·y = g^{k-1}`;
 3. `DEREF` through `y` — bounds the complement; a "negative" `k-1-e` would
-   wrap to `≈ 2^128`, far beyond any memory size, so together `e ≤ k-1`.
+   wrap to `≈ 2^64`, far beyond any memory size, so together `e ≤ k-1`.
 
 The two `DEREF` target cells are unconstrained touches, back-filled at the end
 of execution. A failing check surfaces at witness generation as the
 complement's `DEREF` panic ("not a small g-power … a failed range check").
+
+## Packing two 64-bit cells — `pack64x2`
+
+```python
+packed = pack64x2(lo, hi)
+```
+
+`pack64x2(a, b)` is an expression that takes one VM cycle. It proves that both
+source memory words are in the base field GF(2^64), then returns their canonical
+128-bit packing `(a.c0, b.c0, 0)` as one GF(2^192) word. The proof comes from
+the memory bus itself: the two source accesses use literal-zero upper limbs,
+and the destination access uses the tuple `(a.c0, b.c0, 0)`. Consequently a
+source with either upper limb nonzero cannot satisfy the memory permutation.
+
+This is useful before treating values supplied as GF(2^192) hints as serialized
+64-bit limbs. The returned packed word may be ignored when only the range
+assertion is needed.
+
+The recursion transcript uses `challenge_from_state(state)` to reinterpret the
+first three 64-bit lanes of a canonical two-cell BLAKE3 digest as one extension
+field challenge. For `state = [s0, s1]`, it lowers exactly as follows (the
+limb hints cost no cycles, but are not trusted):
+
+```python
+lo = StackBuf(2)
+hi = StackBuf(2)
+hint_f192_limbs(lo, s0)       # advice: [d0, d1]
+hint_f192_limbs(hi, s1)       # advice: [d2, d3]
+pack64x2_into(lo[0], lo[1], s0)
+pack64x2_into(hi[0], hi[1], s1)
+challenge = lo[0] + lo[1] * f192(0, 1, 0) + hi[0] * f192(0, 0, 1)
+```
+
+The two in-place `PACK64X2` instructions prove through write-once memory that
+`s0 = (d0,d1,0)` and `s1 = (d2,d3,0)`. Consequently all four digest lanes are
+really in GF(2^64); the challenge is `d0 + d1·Y + d2·Y²`, while `d3` is checked
+but deliberately discarded. `challenge_from_state` is not a compiler
+intrinsic: this is the complete `@inline` helper used by the recursion guest.
+
+Likewise, the recursion guest's `sponge_compress(state, scalar, tail, out)` is
+ordinary straight-line zkDSL:
+
+```python
+limbs = StackBuf(3)
+hint_f192_limbs(limbs, scalar)  # advice: scalar's three K coordinates
+block = StackBuf(2)
+pack64x2_into(limbs[0], limbs[1], block[0])
+pack64x2_into(limbs[2], tail, block[1])
+assert scalar == limbs[0] + Y * (limbs[1] + Y * limbs[2])
+blake3(state, block, out)
+```
+
+The first two rows range-check all four serialized lanes and form the exact
+64-byte BLAKE3 block `[scalar.c0, scalar.c1, scalar.c2, tail]`; the equality
+prevents the advice from changing `scalar`. The final row is the VM's sole,
+canonical `BLAKE3` instruction.
 
 ## BLAKE3
 
@@ -608,17 +704,19 @@ the hash root. Parent-node compressions use `parent=1`, the standard IV, and a
 Operands are size-2 `StackBuf`s or 2-cell slices:
 
 - **stack operands** are read/written in place — zero copies; a self-hash
-  `blake3(h, h, out)` aliases one pair into both inputs;
-- the instruction addresses its **four input words independently**, so when a
-  256-bit operand is *assembled* from values that live in different cells —
-  the idiom `p = StackBuf(2); p[0] = tweak; p[1] = pp; blake3(p, …)` — the
-  copies vanish: a stack store of a plain copy or a zero is forwarded to its
-  source (see "Variables"), and `BLAKE3` reads each word where it already is;
+  `blake3(h, h, out)` aliases one 2-cell pair into both inputs;
+- the instruction addresses its **four canonical 128-bit message chunks
+  independently** (each is a full F192 memory cell constrained at this use to
+  the BLAKE3 subspace `c2 = 0`), so when a 256-bit operand is
+  *assembled* from values that live in different places — the idiom
+  `p = StackBuf(2); p[0] = t0; p[1] = t1; blake3(p, …)` — the copies vanish:
+  a stack store of a plain copy or a zero is forwarded to its source (see
+  "Variables"), and `BLAKE3` reads each chunk where it already is;
 - the chaining value has only one opcode offset and therefore must be
-  consecutive. If a 2-cell `cv` was assembled from non-adjacent copied words,
-  the compiler materializes those two words into a fresh consecutive run;
+  consecutive. If a 2-cell `cv` was assembled from non-adjacent copied cells,
+  the compiler materializes those two cells into a fresh consecutive run;
 - **heap slices** are still bridged through the stack for the *input pull* (the
-  operand's word comes from the heap): +1 `DEREF` per heap word, and the output,
+  operand's words come from the heap): +1 `DEREF` per heap cell, and the output,
   if a heap slice, is stored after — write-once memory fills whichever side is
   unset.
 
@@ -650,7 +748,7 @@ critical vulnerability. Runtime-start heap slices (`buf[i:i + k]`, `k` a
 literal) work too.
 
 The prover supplies streams with `program.set_witness("name", entries)`
-(`Vec<Vec<F128>>`); test programs declare them as annotations, one line per
+(`Vec<Vec<extension-field>>`); test programs declare them as annotations, one line per
 entry — repeated lines with the same name are its successive entries:
 
 ```python
@@ -680,9 +778,11 @@ completely unconstrained: the program must re-verify them in-circuit.
 | `x = <literal>` / `GEN ** k` | 1 `SET` |
 | `a + b` | 1 `XOR` |
 | `a * b` | 1 `MUL` |
+| `a / b` | 1 `MUL` (write-once back-solve; division by zero is undefined) |
 | heap read / store `buf[i]` | 1 `DEREF`; +1 `MUL` for a *runtime* index (a compile-time g-power offset folds into the `DEREF` — free) |
 | stack read / store `sa[k]` | 0 (direct cell addressing) |
 | `assert a == b` | 2 |
+| `assert a != b` | 3 on the accepting path (+ amortized branch setup) |
 | `assert log x < k` | 3 (+1 `SET` amortized per bound per frame) |
 | `if a == b: …` | 3 (+2 to skip a non-empty `else`; +2 amortized `self-fp` per branching function); **0 if the condition is compile-time** |
 | `match log(x): …` | ≈ 7, independent of the case count |
@@ -725,4 +825,4 @@ Mutable variables; conditions other than field (in)equality; `match` defaults
 `mul_range` or range-check bounds (a substituted literal is a bit-pattern
 element, not the g-power a bound needs); runtime slice starts on a `StackBuf`;
 runtime range-check bounds (`assert log a < log b` with runtime `b`);
-precompiles beyond `BLAKE3`.
+precompiles beyond `BLAKE3` and `PACK64X2`.

@@ -1,32 +1,39 @@
 //! Standalone batch BLAKE3 proving, isolated from the VM.
 //!
-//! This exercises ONLY the flock "BLAKE3 stuff" over `N` compressions —
-//! witness-gen → commit → [`Blake3Setup::prove_validity_stacked`] (zerocheck +
-//! lincheck reduction, then the stacked Ligerito open) → verify — with no
-//! leanVM execute / bus / constraints around it. Much faster to iterate on
-//! than the full xmss benchmark when optimizing the flock reduction / PCS.
+//! This exercises only Flock's BLAKE3 path over `N` compressions: witness
+//! generation, F64 commitment, zerocheck + lincheck reduction, the stacked
+//! ring-switch/Ligerito opening, and verification. Circuit construction is
+//! outside the timed region, matching the VM's warmed-setup convention.
 //!
-//! `Blake3Setup::new` (circuit construction, one-time preprocessing
-//! independent of the witness) runs OUTSIDE the timed region, matching how
-//! `cpu::prove` warms it off the critical path. The Ligerito configuration is
-//! the one leanVM-b commits with, so the numbers are comparable to the
-//! `[open]` / `commit` stages of the xmss benchmark.
-//!
-//! Run (N = number of compressions; the xmss n=820 workload is ~120k = 181 + 146·820):
+//! Run with the XMSS-sized workload:
 //! ```text
-//!   RAYON_NUM_THREADS=11 FLOCK_N=131072 cargo test --release -p flock --test blake3_batch -- --nocapture
+//! RAYON_NUM_THREADS=11 FLOCK_N_LOG=17 cargo test --release -p flock --test blake3_batch -- --ignored --nocapture
 //! ```
 
 use std::time::Instant;
 
+use fiat_shamir::transcript::{ProverState, VerifierState};
 use flock::blake3::{
-    Blake3Setup, Compression, K_LOG, generate_witness_with_ab_packed_and_lincheck,
-    min_n_blocks_log, pinned_compression,
+    Blake3Setup, Compression, K_LOG, ReducedClaims, generate_witness_with_ab_packed_and_lincheck, min_n_blocks_log,
+    pinned_compression,
 };
-use pcs::{Commitment, LOG_PACKING, PcsParams, ProverState, VerifierState};
+use flock::proof::ZClaim;
+use pcs::ligerito::{INITIAL_FOLDING_FACTOR, LOG_INV_RATE_0};
+use pcs::ligerito::{commit, configs_for};
+use pcs::pack::{LOG_PACKING, PACKING_WIDTH};
+use pcs::stack_open::{
+    RingSwitchClaim, RingSwitchOpen, RingSwitchVerify, open_batch_mixed_ligerito_stacked,
+    verify_opening_batch_mixed_ligerito_stacked,
+};
+use primitives::multilinear::lagrange_weights_naive;
+use primitives::{
+    field::{F64, F192},
+    pretty_integer,
+};
 
-/// Tiny deterministic xorshift RNG — no `rand` dep, reproducible inputs.
+/// Tiny deterministic xorshift RNG: reproducible inputs without another dep.
 struct Rng(u64);
+
 impl Rng {
     fn next_u32(&mut self) -> u32 {
         let mut x = self.0;
@@ -38,91 +45,137 @@ impl Rng {
     }
 }
 
-#[test]
-fn blake3_batch_prove_verify() {
-    // Number of compressions to prove. Default is quick-but-meaningful; set
-    // FLOCK_N=131072 to mirror the xmss n=820 BLAKE3 workload (~2^17).
-    let n: usize = std::env::var("FLOCK_N").ok().and_then(|s| s.parse().ok()).unwrap_or(8192);
-    assert!(n >= 1, "FLOCK_N must be ≥ 1");
-    let n_log = min_n_blocks_log(n);
-    // Committed q_pkd log-size; the Secure ladder needs some room.
-    let mu = K_LOG + n_log - LOG_PACKING;
-    assert!(mu >= 15, "FLOCK_N too small — need ≥ 2^8 compressions (mu ≥ 15)");
+/// Split the two K coefficients of each packed tower element. Flock's fused
+/// witness generator uses 128-bit containers; the PCS commits 64 bits/word.
+fn flatten_packed(packed: &[F192]) -> Vec<F64> {
+    let mut out = Vec::with_capacity(2 * packed.len());
+    for value in packed {
+        out.push(F64(value.c0));
+        out.push(F64(value.c1));
+    }
+    out
+}
 
-    // Deterministic sample compressions (arbitrary messages; the prover does
-    // the same work regardless of values). cv/counter/blen/flags are pinned by
-    // the circuit's constant rows.
+/// Adapt one Flock evaluation claim to the 64-bit ring switch. Lincheck
+/// captures its 64 slices directly; the fused zerocheck kernel captures two
+/// banks around the first suffix coordinate, which are folded here.
+fn ring_claim(z: &ZClaim, captured: Option<&[F192]>, qpkd_vars: usize) -> RingSwitchClaim {
+    let mut suffix_point = z.point.x_inner_rest.clone();
+    suffix_point.extend_from_slice(&z.point.x_outer);
+    assert_eq!(suffix_point.len(), qpkd_vars);
+
+    let s_hat_v = captured.and_then(|s| match s.len() {
+        PACKING_WIDTH => Some(s.to_vec()),
+        n if n == 2 * PACKING_WIDTH && !z.point.x_inner_rest.is_empty() => {
+            let c = z.point.x_inner_rest[0];
+            Some(
+                (0..PACKING_WIDTH)
+                    .map(|i| (F192::ONE + c) * s[i] + c * s[i + PACKING_WIDTH])
+                    .collect(),
+            )
+        }
+        _ => None,
+    });
+
+    RingSwitchClaim {
+        prefix_weights: lagrange_weights_naive(LOG_PACKING, z.point.z_skip),
+        suffix_point,
+        value: z.value,
+        s_hat_v,
+    }
+}
+
+fn prover_ring(reduced: &ReducedClaims, qpkd_vars: usize) -> RingSwitchOpen {
+    RingSwitchOpen {
+        offset: 0,
+        qpkd_vars,
+        claims: vec![
+            ring_claim(&reduced.ab.claim, reduced.ab.s_hat_v.as_deref(), qpkd_vars),
+            ring_claim(&reduced.c.claim, reduced.c.s_hat_v.as_deref(), qpkd_vars),
+        ],
+    }
+}
+
+fn verifier_ring(ab: &ZClaim, c: &ZClaim, qpkd_vars: usize) -> RingSwitchVerify {
+    RingSwitchVerify {
+        offset: 0,
+        qpkd_vars,
+        claims: vec![ring_claim(ab, None, qpkd_vars), ring_claim(c, None, qpkd_vars)],
+    }
+}
+
+#[test]
+#[ignore = "manual release benchmark; needs a large-stack worker and substantial memory"]
+fn blake3_batch_prove_verify() {
+    // The XMSS n=820 workload executes about 2^17 BLAKE3 compressions.
+    let requested_n_log: usize = std::env::var("FLOCK_N_LOG")
+        .ok()
+        .map(|s| s.parse().expect("FLOCK_N_LOG must be an integer"))
+        .unwrap_or(13);
+    let n = 1usize
+        .checked_shl(requested_n_log as u32)
+        .expect("FLOCK_N_LOG exceeds the platform usize width");
+    let n_log = min_n_blocks_log(n);
+    let mu = K_LOG + n_log - LOG_PACKING;
+    assert!(
+        mu >= 15,
+        "FLOCK_N_LOG too small: need a committed witness with mu >= 15"
+    );
+
     let mut rng = Rng(0x9E37_79B9_7F4A_7C15 ^ n as u64);
     let blocks: Vec<Compression> = (0..n)
-        .map(|_| {
-            let m: [u32; 16] = std::array::from_fn(|_| rng.next_u32());
-            pinned_compression(m)
-        })
+        .map(|_| pinned_compression(std::array::from_fn(|_| rng.next_u32())))
         .collect();
 
-    // Circuit construction (one-time preprocessing) — OUTSIDE the timed region,
-    // like cpu::prove's background warm. Warms the CSC lincheck circuit and the
-    // prover scratch.
     let t = Instant::now();
     let setup = Blake3Setup::new(n);
     let setup_ms = t.elapsed().as_secs_f64() * 1e3;
 
-    // The committed stack is q_pkd itself (offset 0, no other columns).
     let t = Instant::now();
-    let (q_pkd, a_packed, b_packed, z_lincheck) =
+    let (z_packed, a_packed, b_packed, z_lincheck) =
         generate_witness_with_ab_packed_and_lincheck(&blocks, n_log);
+    let q_pkd = flatten_packed(&z_packed);
     let witness_ms = t.elapsed().as_secs_f64() * 1e3;
     assert_eq!(q_pkd.len(), 1 << mu);
 
-    let params = PcsParams {
-        m: mu + LOG_PACKING,
-        log_inv_rate: pcs::ligerito::LOG_INV_RATE_0,
-        log_batch_size: pcs::ligerito::INITIAL_FOLDING_FATOR,
-    };
-
-    let mut ps = ProverState::new(b"flock-blake3-batch", &[]);
+    let (prover_config, verifier_config) = configs_for(mu).expect("Ligerito configuration");
+    let mut ps = ProverState::<()>::new(b"flock-blake3-batch", &[]);
     let t_prove = Instant::now();
+
     let t = Instant::now();
-    let (commitment, prover_data) = pcs::commit(&q_pkd, &params);
+    let (commitment, prover_data) = commit(&q_pkd, INITIAL_FOLDING_FACTOR, LOG_INV_RATE_0);
     ps.add_scalars(&pcs::merkle::hash_to_scalars(&commitment.root));
     let commit_ms = t.elapsed().as_secs_f64() * 1e3;
 
-    // Reduction (zerocheck + lincheck) + the one stacked Ligerito open.
     let t = Instant::now();
     let reduced = setup.prove_reduction_precomputed(
-        &q_pkd,
+        &z_packed,
         &a_packed,
         &b_packed,
         &z_lincheck,
         &mut ps,
     );
-    drop((a_packed, b_packed, z_lincheck));
-    let proof = setup.discharge_reduction_stacked(
-        &q_pkd,
-        &reduced,
-        &q_pkd,
-        0,
-        &prover_data,
-        &commitment,
-        &[],
-        &mut ps,
-    );
+    drop((z_packed, a_packed, b_packed, z_lincheck));
+    let ring = prover_ring(&reduced, mu);
+    let opening = open_batch_mixed_ligerito_stacked(ps.sponge_mut(), &q_pkd, &prover_data, &prover_config, &[], &ring);
     let open_ms = t.elapsed().as_secs_f64() * 1e3;
     let prove_s = t_prove.elapsed().as_secs_f64();
-    let bundle = ps.into_proof();
+    let transcript = ps.into_proof();
 
-    // Verify (correctness gate + a verify timing for reference).
     let t = Instant::now();
-    let mut vs = VerifierState::new(b"flock-blake3-batch", &bundle, &[]);
-    let root = pcs::merkle::scalars_to_hash(&vs.next_scalars(2).expect("root scalars"));
-    let commitment_v = Commitment { root, params };
-    setup
-        .verify_validity_stacked(&commitment_v, 0, &[], &proof, &mut vs)
-        .expect("flock BLAKE3 batch proof must verify");
-    vs.finish().expect("stream fully consumed");
+    let mut vs = VerifierState::<()>::new(b"flock-blake3-batch", &transcript, &[]);
+    let root = pcs::merkle::scalars_to_hash(&vs.next_scalars(2).expect("commitment root"));
+    let replay = setup.verify_reduction(&mut vs).expect("Flock reduction verifies");
+    let ring = verifier_ring(&replay.ab, &replay.c, mu);
+    verify_opening_batch_mixed_ligerito_stacked(vs.sponge_mut(), &verifier_config, mu, &root, &[], &ring, &opening)
+        .expect("stacked PCS opening verifies");
+    vs.finish().expect("transcript fully consumed");
     let verify_ms = t.elapsed().as_secs_f64() * 1e3;
 
-    println!("\nflock BLAKE3 batch proving, {n} compressions (2^{n_log} slots)");
+    println!(
+        "\nFlock BLAKE3 batch proving, {} compressions (2^{n_log} slots)",
+        pretty_integer(n)
+    );
     println!("  setup (preprocessing, excluded) : {setup_ms:>8.1} ms");
     println!("  witness-gen                     : {witness_ms:>8.1} ms");
     println!("  commit                          : {commit_ms:>8.1} ms");
@@ -130,6 +183,13 @@ fn blake3_batch_prove_verify() {
     println!("  ------------------------------------------");
     println!("  prove TOTAL (witness excluded)  : {:>8.1} ms", prove_s * 1e3);
     println!("  verify                          : {verify_ms:>8.1} ms");
-    println!("  throughput                      : {:>10.0} compressions/s", n as f64 / prove_s);
-    println!("  (~{:.0} XMSS/s equiv @ 146 compressions/sig)", n as f64 / prove_s / 146.0);
+    let compressions_per_second = (n as f64 / prove_s).round() as u64;
+    println!(
+        "  throughput                      : {:>14} compressions/s",
+        pretty_integer(compressions_per_second)
+    );
+    println!(
+        "  (~{:.1} XMSS/s equivalent at 146 compressions/signature)",
+        n as f64 / prove_s / 146.0
+    );
 }

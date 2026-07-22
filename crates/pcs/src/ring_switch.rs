@@ -4,1009 +4,282 @@
 // Modifications copyright 2026 Succinct Labs, Benedikt Bunz, William Wang
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 //
-// The verifier's polylog `eval_rs_eq` helper is ported from binius64's
-// `crates/verifier/src/ring_switch.rs`
-// (https://github.com/binius-zk/binius64). The rest of this module (the
-// prover-side reduction adapted for the φ_8 LCH basis) is original to Flock.
+// The DP24 iterative `eval_rs_eq` is ported from binius64. The module is
+// the rectangular (f = 64, e = 192) generalization described in
+// the ring-switching-generalized note.
 
-//! Ring-switching reduction (DP24-style, adapted for the φ_8 LCH basis).
+//! Ring-switching reduction for the 64-bit transition: F_2 to K = GF(2^64)
+//! packing, opened over E = GF(2^192) (the tower [`F192`]).
 //!
-//! Converts the zerocheck's claim `ẑ_skip(z_skip, x_outer) = v` into a sumcheck
-//! claim over the packed multilinear `f_packed` with a transparent multilinear
-//! `rs_eq_ind`, discharged by the stacked Ligerito opening.
+//! With f = 64 (packing degree over F_2) and e = 192 (opening degree), this
+//! converts one evaluation claim on
+//! the bit-witness MLE at an E-point into a Ligerito sumcheck claim on the
+//! packed multilinear (a `Vec<F64>`, one word per 64 bits, see
+//! [`super::pack`]) against a transparent E-valued weight vector
+//! `rs_eq_ind`.
 //!
-//! ## Non-novelty basis: only affects the claim-check step
+//! ## Rectangular shape
 //!
-//! Binius's DP24 ring-switching uses tensor-product (`eq_ind`) weights for the
-//! verifier's claim check. That requires the prefix's LCH-Lagrange to factor
-//! as `eq(x_skip, i_skip)`, which holds only for the *novelty basis* of the
-//! subspace.
+//! - **Rectangular shape**: `s_hat_v` has 64 entries (one per packing bit),
+//!   each an E element; its tensor-algebra transpose `s_hat_u = (t_i)` has
+//!   192 K-entries. One challenge `rho in E` batches them with the univariate
+//!   weights `(1, rho, ..., rho^191)`. This uses all coordinates directly,
+//!   without padding them to a 256-entry Boolean cube.
+//! - **No "7 = 6 + 1" prefix split**: with 64-bit packing the packed prefix
+//!   is exactly the 6-bit skip domain, and the old 7th bit is an ordinary
+//!   suffix coordinate of the packed witness (which has `2^(m-6)` words).
+//! - **Generalized prefix weights**: the consumed claim is
+//!   `claim == sum_{i in 0..64} prefix_weights[i] * s_hat_v[i]`. For a plain
+//!   multilinear point claim the weights are the eq tensor of the 6 prefix
+//!   coords ([`eq_prefix_weights`]); for flock's univariate-skip claim (whose
+//!   first coordinate ranges over the phi_8 Lagrange domain, not the boolean
+//!   cube) the caller passes the 64 phi_8 Lagrange weights
+//!   `lagrange_weights_naive(6, z_skip)`.
+//!   This module never looks inside the weights, so flock's `z_skip` flows
+//!   through unchanged.
 //!
-//! Our zerocheck uses the φ_8 image of {1,2,4,…,32} as the 6-dim LCH basis.
-//! That basis is **not** a novelty basis (verified at k=2: the ratio of
-//! Lagrange values doesn't satisfy the tensor identity), so the 64 weights
-//! `ν_φ8(i_skip)(z_skip)` are not tensor-factorizable.
+//! ## Protocol (prover)
 //!
-//! Resolution: replace the verifier's claim check with **direct** Lagrange
-//! weights (computed via [`lagrange_weights_naive`]); every other component of
-//! the reduction (`s_hat_v`, `s_hat_u`, the sumcheck target `T`, `rs_eq_ind`) is
-//! independent of the prefix and stays identical to Binius.
+//! 1. Send `s_hat_v[i] = sum_y eq(r_suffix, y) * bit_i(packed[y])`, the MLE
+//!    of the i-th bit-slice at the suffix point (i in 0..64, values in E).
+//! 2. Verifier checks `claim == sum_i prefix_weights[i] * s_hat_v[i]`.
+//! 3. Sample `rho in E`; define `coord_weights[i] = rho^i`. Transpose
+//!    `s_hat_v` to `t_i = s_hat_u[i] in K` (see
+//!    [`super::tensor_algebra::transpose_s_hat`]); the batched target is
+//!    `sumcheck_claim = sum_i rho^i * t_i` (K x E via `mul_base`).
+//! 4. Both sides define the transparent weights
+//!    `rs_eq_ind[y] = Phi(eq(r_suffix, y))` where `Phi : E -> E` is the
+//!    F_2-linear map sending basis coordinate `i` to `rho^i`. Completeness:
+//!    `sum_y rs_eq_ind[y] * packed[y] == sumcheck_claim`, which is exactly
+//!    the claim shape [`super::ligerito::recursive_prover_with_basis`]
+//!    proves (with `b_initial = rs_eq_ind`, `target = sumcheck_claim`).
+//!    Soundness follows because any nonzero discrepancy gives a nonzero
+//!    polynomial in `rho` of degree at most 191.
 //!
 //! ## Prover vs. verifier paths for `rs_eq_ind`
 //!
-//! - **Prover side** ([`prove_batched_padded_with_precomputed`]): materializes
-//!   `rs_eq_ind` per claim (dense, deferred-dense, or sparse — [`RsEqInd`]);
-//!   the γ-combined vector becomes the opening's basis, so the prover does
-//!   need the full `2^(m-7)` entries.
-//! - **Verifier side** ([`verify_bind`] + [`eval_rs_eq`]): never materializes
-//!   `rs_eq_ind`. Instead, evaluates `MLE(rs_eq_ind)(c)` at the opening's
-//!   final challenge point in `O((m-7) · 128)` field ops via the linearized
-//!   trace form ([`linearized_eq_coeffs`]). Polylog in the witness size.
+//! - [`prove`] / [`verify`] materialize `rs_eq_ind` densely via
+//!   [`fold_ext_elems`] (bytewise-table fold, rayon), `2^(m-6)` E entries.
+//! - [`verify_succinct`] + [`eval_rs_eq`] never materialize it: the MLE of
+//!   `rs_eq_ind` at the Ligerito final point is evaluated in
+//!   `O((m-6) * 192^2)` bit-ops plus `O((m-6) * 192)` E-multiplications via
+//!   the DP24 tensor-algebra iterative algorithm (DP24 section 1.3 Figure 3).
 //!
 //! [DP24]: <https://eprint.iacr.org/2024/504>
-//!
-//! ## Layout (for m-bit witness, F_{2^128} packing with LOG_PACKING = 7)
-//!
-//! Zerocheck output: `(z_skip ∈ F, x_outer ∈ F^{m−6})` with claim `v`.
-//!
-//! After translation:
-//! - **prefix bits 0..6**: weighted by `ν_φ8(·)(z_skip)` (the 64 Lagrange weights).
-//! - **prefix bit 6**: weighted by `eq(x_outer[0], ·)`.
-//! - **suffix coords**: `x_outer[1..]`, length `m − 7`.
-//!
-//! The packed witness has `2^(m−7)` F_{2^128} elements indexed by the suffix.
-//! `s_hat_v` has 128 entries indexed by the 7-bit prefix.
 
+use fiat_shamir::Sponge;
 use primitives::bits::transpose_8x8_bits;
-use crate::{ProverState, VerifierState};
-use primitives::field::F128;
-use crate::pack::PaddingSpec;
-use primitives::multilinear::lagrange_weights_naive;
-use primitives::multilinear::build_eq;
+use primitives::field::{F64, F192};
+use serde::{Deserialize, Serialize};
 
-use super::pack::LOG_PACKING;
+use super::ligerito::{build_eq_table_ext, inner_product_base_ext};
+use super::pack::{LOG_PACKING, PACKING_WIDTH};
+use super::tensor_algebra::{DEGREE_E, TensorAlgebraE, transpose_s_hat};
 
-/// Per-block padding descriptor in F_{2^128} units. Computed once from a bit-
-/// level [`PaddingSpec`] and reused across the fold kernels: any chunk whose
-/// index modulo `chunks_per_block` is ≥ `useful_chunks_per_block` is fully
-/// inside the zero-padded suffix of every block and can be skipped.
-#[derive(Clone, Copy, Debug)]
-struct ChunkPadding {
-    /// `chunks_per_block - 1` for fast `idx % chunks_per_block` via AND;
-    /// `usize::MAX` (= "no skip") when there is only one block (e.g. dense
-    /// paddings).
-    chunk_in_block_mask: usize,
-    /// Index of the first fully-padding chunk within each block.
-    useful_chunks_per_block: usize,
-}
+/// Maximum degree of a nonzero ring-switch discrepancy in the univariate
+/// batching challenge. This is a soundness parameter, not merely an
+/// implementation detail.
+pub const RING_SWITCH_SOUNDNESS_DEGREE: usize = DEGREE_E - 1;
 
-impl ChunkPadding {
-    /// Build the per-chunk skip table for a given F128-chunk width
-    /// (e.g. `chunk_width = 8` for the 8-wide MFR path). Returns a "no skip"
-    /// descriptor if either (a) the spec covers the entire packed witness as
-    /// one block, or (b) every chunk in a block is at least partially useful.
-    fn new(padding: &PaddingSpec, chunk_width: usize) -> Self {
-        // Block size in F128 elements = 2^(k_log - LOG_PACKING).
-        if padding.k_log <= LOG_PACKING {
-            // Block smaller than one F128 — no per-block structure to exploit.
-            return Self::no_skip();
-        }
-        let block_size_f128 = 1usize << (padding.k_log - LOG_PACKING);
-        if block_size_f128 < chunk_width {
-            return Self::no_skip();
-        }
-        let chunks_per_block = block_size_f128 / chunk_width;
-        let useful_f128 = padding.useful_bits_per_block.div_ceil(1 << LOG_PACKING);
-        let useful_chunks_per_block = useful_f128.div_ceil(chunk_width).min(chunks_per_block);
-        if useful_chunks_per_block == chunks_per_block {
-            return Self::no_skip();
-        }
-        debug_assert!(chunks_per_block.is_power_of_two());
-        Self {
-            chunk_in_block_mask: chunks_per_block - 1,
-            useful_chunks_per_block,
-        }
-    }
-
-    fn no_skip() -> Self {
-        Self {
-            chunk_in_block_mask: usize::MAX,
-            useful_chunks_per_block: usize::MAX,
-        }
-    }
-
-    /// True iff the chunk at this global index is fully inside padding.
-    #[inline(always)]
-    fn skip(&self, chunk_idx: usize) -> bool {
-        (chunk_idx & self.chunk_in_block_mask) >= self.useful_chunks_per_block
-    }
-}
-
-/// Build the 128-entry weights vector for the verifier's ring-switching claim
-/// check, given the zerocheck's `z_skip` (univariate-skip coord, absorbs 6
-/// boolean coords via the φ_8 basis) and `x_outer_0` (the 7th prefix bit, a
-/// fresh F_{2^128} multilinear coord).
-///
-/// ```text
-/// weights[i] = ν_φ8(i & 63)(z_skip) · eq(x_outer_0, (i >> 6) & 1)
-///            for i ∈ {0..128}
-/// ```
-///
-/// `i & 63` selects the low 6 bits (LCH dimensions); `(i >> 6) & 1` is the 7th
-/// bit (a standard multilinear coord).
-pub fn build_claim_weights(z_skip: F128, x_outer_0: F128) -> Vec<F128> {
-    const K_SKIP: usize = 6;
-    let lambda = lagrange_weights_naive(K_SKIP, z_skip); // length 64
-    debug_assert_eq!(lambda.len(), 1 << K_SKIP);
-
-    let eq_lo = F128::ONE + x_outer_0; // eq(x_outer_0, 0)
-    let eq_hi = x_outer_0; // eq(x_outer_0, 1)
-
-    let n = 1 << LOG_PACKING; // 128
-    let mut weights = Vec::with_capacity(n);
-    // Layout: i ∈ {0..64} → bit-6 = 0 branch (eq_lo); i ∈ {64..128} → bit-6 = 1.
-    for i in 0..n {
-        let i_lo = i & 63;
-        let bit_6 = (i >> 6) & 1;
-        let eq_b6 = if bit_6 == 1 { eq_hi } else { eq_lo };
-        weights.push(lambda[i_lo] * eq_b6);
+/// Build `(1, rho, ..., rho^191)`, in the coordinate order produced by
+/// [`transpose_s_hat`].
+pub fn build_coordinate_weights(rho: F192) -> Vec<F192> {
+    let mut power = F192::ONE;
+    let mut weights = Vec::with_capacity(DEGREE_E);
+    weights.push(power);
+    for _ in 1..DEGREE_E {
+        power *= rho;
+        weights.push(power);
     }
     weights
 }
 
-/// Padding-aware multi-claim fold. Routes the k=2 MFR fast
-/// paths through their `_padded` kernels; the scalar bit-scan fallback (k ≠ 2
-/// or non-divisible len) is untouched — those `m` are tiny anyway.
-pub fn fold_1b_rows_multi_padded(
-    packed_witness: &[F128],
-    suffix_tensors: &[&[F128]],
-    padding: &PaddingSpec,
-) -> Vec<Vec<F128>> {
-    use rayon::prelude::*;
-    let k = suffix_tensors.len();
-    let n = 1 << LOG_PACKING;
-    assert!(
-        suffix_tensors
-            .iter()
-            .all(|t| t.len() == packed_witness.len())
-    );
+// ---------------------------------------------------------------------------
+// Sponge helpers: every 24-byte pattern is a valid F192.
+// ---------------------------------------------------------------------------
 
-    let zero_acc = || vec![vec![F128::ZERO; n]; k];
-
-    // The k=2 case (one pair of outers) is the hot path used by `open_batch`
-    // for zerocheck + lincheck claims. Method-of-four-Russians fold (ported
-    // from Binius): process several elements at a time with subset-sum table
-    // lookups per output bit, eliminating the scalar bit-scan's data-dependent
-    // control flow. The 16-wide variant groups 16 elements (four 4-element
-    // tables, 16-bit masks) so each acc entry is touched once per 16 elements,
-    // halving acc RMW traffic (the fold is LSU-bound) for ~1.25× over 8-wide.
-    // We run two *independent* 1-way 16-wide folds rather than one fused 2-way
-    // fold: the fused kernel's two accumulators + eight tables cause register
-    // pressure that eats most of the 16-wide win, and the shared bit-transpose
-    // it would save is nearly free. Falls back to the fused 8-wide → 4-wide →
-    // scalar as divisibility drops (only at toy m).
-    if k == 2 {
-        if packed_witness.len().is_multiple_of(16) {
-            let a0 =
-                fold_1b_rows_1way_mfr_16wide_padded(packed_witness, suffix_tensors[0], padding);
-            let a1 =
-                fold_1b_rows_1way_mfr_16wide_padded(packed_witness, suffix_tensors[1], padding);
-            return vec![a0, a1];
-        }
-        if packed_witness.len().is_multiple_of(8) {
-            let (a0, a1) = fold_1b_rows_2way_mfr_8wide_padded(
-                packed_witness,
-                suffix_tensors[0],
-                suffix_tensors[1],
-                padding,
-            );
-            return vec![a0, a1];
-        }
-        if packed_witness.len().is_multiple_of(4) {
-            let (a0, a1) = fold_1b_rows_2way_mfr_padded(
-                packed_witness,
-                suffix_tensors[0],
-                suffix_tensors[1],
-                padding,
-            );
-            return vec![a0, a1];
-        }
+fn observe_ext_slice(sponge: &mut Sponge, values: &[F192]) {
+    for &e in values {
+        sponge.observe(e);
     }
+}
 
-    packed_witness
-        .par_iter()
-        .enumerate()
-        .fold(zero_acc, |mut acc, (i_rest, elem)| {
-            // Single bit-scan, write into all k accumulators.
-            let mut lo = elem.lo;
-            while lo != 0 {
-                let r = lo.trailing_zeros() as usize;
-                for (j, t) in suffix_tensors.iter().enumerate() {
-                    acc[j][r] += t[i_rest];
-                }
-                lo &= lo - 1;
+// ---------------------------------------------------------------------------
+// Building blocks
+// ---------------------------------------------------------------------------
+
+/// Prefix weights for a plain multilinear point claim: the eq tensor of the
+/// 6 intra-word coordinates,
+/// `weights[i] = prod_j (bit_j(i) ? r_prefix[j] : 1 + r_prefix[j])`.
+///
+/// The prefix here is a plain boolean 6-cube (the bit index inside a K
+/// word), so plain eq weights are correct; the old module needed phi_8
+/// Lagrange weights only because its prefix was the univariate-skip domain.
+pub fn eq_prefix_weights(r_prefix: &[F192]) -> Vec<F192> {
+    assert_eq!(
+        r_prefix.len(),
+        LOG_PACKING,
+        "eq_prefix_weights: prefix must have LOG_PACKING = 6 coords"
+    );
+    build_eq_table_ext(r_prefix)
+}
+
+/// Standard inner product `sum_i a[i] * b[i]` over E.
+pub fn inner_product_ext(a: &[F192], b: &[F192]) -> F192 {
+    assert_eq!(a.len(), b.len());
+    let mut acc = F192::ZERO;
+    for (&x, &y) in a.iter().zip(b.iter()) {
+        acc += x * y;
+    }
+    acc
+}
+
+/// The verifier's claim check: `sum_i prefix_weights[i] * s_hat_v[i]`.
+pub fn claim_check(prefix_weights: &[F192], s_hat_v: &[F192]) -> F192 {
+    inner_product_ext(prefix_weights, s_hat_v)
+}
+
+/// Tower (`F192`) trace-dual basis: `TRACE_DUAL_BASIS[i]` is the unique element
+/// with `bit_i(y) = Tr(TRACE_DUAL_BASIS[i] · y)` for the coordinate bit `i` of
+/// `y ∈ F192` (c0 bits 0..64, c1 bits 64..128, c2 bits 128..192), where `Tr` is the absolute
+/// trace `F192 → F2`, using the tower's coordinate basis and trace form.
+/// The recursion guest replays bit extraction with these.
+pub fn trace_dual_basis() -> &'static [F192; 192] {
+    use std::sync::OnceLock;
+    static DUAL: OnceLock<[F192; 192]> = OnceLock::new();
+    DUAL.get_or_init(|| {
+        let basis = |j: usize| {
+            if j < 64 {
+                F192::new(1u64 << j, 0, 0)
+            } else if j < 128 {
+                F192::new(0, 1u64 << (j - 64), 0)
+            } else {
+                F192::new(0, 0, 1u64 << (j - 128))
             }
-            let mut hi = elem.hi;
-            while hi != 0 {
-                let r = hi.trailing_zeros() as usize;
-                for (j, t) in suffix_tensors.iter().enumerate() {
-                    acc[j][64 | r] += t[i_rest];
-                }
-                hi &= hi - 1;
+        };
+        // Absolute trace to F2: Tr(x) = Σ_{k=0}^{191} x^{2^k}.
+        let tr = |x: F192| {
+            let (mut acc, mut p) = (F192::ZERO, x);
+            for _ in 0..192 {
+                acc += p;
+                p = p.square();
             }
             acc
-        })
-        .reduce(zero_acc, |mut a, b| {
-            for (av, bv) in a.iter_mut().zip(b.iter()) {
-                for (avi, bvi) in av.iter_mut().zip(bv.iter()) {
-                    *avi += *bvi;
+        };
+        // Invert the 192x192 trace Gram matrix over F2. This runs once and is
+        // deliberately simple; protocol hot paths only read the cached basis.
+        let mut aug = vec![vec![0u8; 2 * DEGREE_E]; DEGREE_E];
+        for i in 0..DEGREE_E {
+            for j in 0..DEGREE_E {
+                if tr(basis(i) * basis(j)) == F192::ONE {
+                    aug[i][j] = 1;
                 }
             }
-            a
-        })
-}
-
-/// Parallel `build_eq` for ring-switching's suffix tensors. Same output as
-/// [`primitives::multilinear::build_eq`] (byte-identical), but
-/// parallelizes the inner doubling loop across rayon threads.
-///
-/// Each level `i` doubles a table of size `2^i` → `2^(i+1)`: for each
-/// `x ∈ 0..2^i`, write `t[x | (1<<i)] = t[x] * r_i` and
-/// `t[x] = t[x] * (1-r_i)`. The iterations within one level are
-/// independent and trivially parallelize. Earlier levels are tiny so
-/// rayon's per-task overhead dominates; we keep them sequential and only
-/// switch to parallel above a threshold.
-pub(crate) fn build_eq_parallel(r: &[F128]) -> Vec<F128> {
-    use rayon::prelude::*;
-    let n = r.len();
-    // Uninit alloc — at iter `i`, the loop reads from t[..2^i] (always written
-    // by an earlier iter or the t[0] = ONE seed) and writes to t[2^i..2^(i+1)]
-    // (purely written, never read first). So every slot is written before any
-    // read; uninit is safe.
-    let mut t = primitives::alloc_uninit_vec::<primitives::field::F128>(1usize << n);
-    t[0] = F128::ONE;
-    // Threshold below which rayon dispatch overhead beats the parallel work.
-    const PAR_THRESHOLD: usize = 1 << 12;
-    for i in 0..n {
-        let r_i = r[i];
-        let half = 1usize << i;
-        let (lo, hi_rest) = t.split_at_mut(half);
-        let hi = &mut hi_rest[..half];
-        if half < PAR_THRESHOLD {
-            for (lo_x, hi_x) in lo.iter_mut().zip(hi.iter_mut()) {
-                let old = *lo_x;
-                let high = old * r_i;
-                *hi_x = high;
-                *lo_x = old + high;
-            }
-        } else {
-            lo.par_iter_mut()
-                .zip(hi.par_iter_mut())
-                .for_each(|(lo_x, hi_x)| {
-                    let old = *lo_x;
-                    let high = old * r_i;
-                    *hi_x = high;
-                    *lo_x = old + high;
-                });
+            aug[i][DEGREE_E + i] = 1;
         }
-    }
-    t
-}
-
-/// Tensor-factored `build_eq`: split the point `r` (length `n`) into a low
-/// part `r[..n_lo]` and a high part `r[n_lo..]`, returning the two smaller
-/// eq-tables `(eq_lo, eq_hi)` of lengths `2^n_lo` and `2^(n - n_lo)`.
-///
-/// The full tensor factors **exactly** (GF(2^128) is a field — multiply is
-/// associative and has no rounding):
-///
-/// ```text
-/// build_eq_parallel(r)[i] == eq_lo[i & (2^n_lo - 1)] * eq_hi[i >> n_lo]
-/// ```
-///
-/// because round `j` of `build_eq` splits on bit `j` of the index and bit `j`
-/// selects `r[j]`. So the low `n_lo` index bits depend only on `r[..n_lo]` and
-/// the high bits only on `r[n_lo..]`.
-///
-/// Materializing the two factors costs `2^n_lo + 2^(n - n_lo)` entries instead
-/// of `2^n`. Consumers either reconstruct each full entry on demand as one GF
-/// multiply ([`fold_b128_elems_split`]) or never form it at all when the
-/// consumer is linear in the tensor ([`fold_1b_rows_split`]).
-pub fn build_eq_split(r: &[F128], n_lo: usize) -> (Vec<F128>, Vec<F128>) {
-    assert!(n_lo <= r.len());
-    let eq_lo = build_eq_parallel(&r[..n_lo]);
-    let eq_hi = build_eq_parallel(&r[n_lo..]);
-    (eq_lo, eq_hi)
-}
-
-/// Pick the low-split width `n_lo` for a suffix tensor of length `2^n`.
-/// Balanced near `n/2` so both factors are ~`2^(n/2)` (L1/L2-resident), and
-/// clamped to `[4, n]` so the low block `2^n_lo` is a whole number of 16-wide
-/// MFR chunks (`n_lo ≥ 4` ⇒ block ≥ 16). The high part drives block-level
-/// parallelism (`2^(n - n_lo)` blocks). Only meaningful for `n ≥ 4` (the
-/// split path requires `len` divisible by 16).
-pub fn split_n_lo(n: usize) -> usize {
-    (n / 2).clamp(4, n)
-}
-
-/// Build the 16-entry subset-sum lookup table over 4 F128 elements.
-///
-/// `sums[mask]` = `Σ_{k=0..4 : bit_k(mask) = 1} elems[k]` for `mask ∈ 0..16`.
-/// Cost: 15 F128 additions (8 + 4 + 2 + 1) via the standard doubling pattern.
-#[inline(always)]
-fn subset_sums_4(elems: [F128; 4]) -> [F128; 16] {
-    let mut sums = [F128::ZERO; 16];
-    // After processing elem[i], sums[0..2^(i+1)] are populated with the
-    // subset sums over elems[0..=i].
-    for (i, &e) in elems.iter().enumerate() {
-        let half = 1 << i;
-        // sums[half..2*half] = sums[0..half] + e
-        for k in 0..half {
-            sums[half + k] = sums[k] + e;
+        for col in 0..DEGREE_E {
+            let piv = (col..DEGREE_E)
+                .find(|&r| aug[r][col] == 1)
+                .expect("trace Gram matrix is invertible");
+            aug.swap(col, piv);
+            for r in 0..DEGREE_E {
+                if r != col && aug[r][col] == 1 {
+                    for j in col..2 * DEGREE_E {
+                        aug[r][j] ^= aug[col][j];
+                    }
+                }
+            }
         }
+        let mut out = [F192::ZERO; 192];
+        for (i, o) in out.iter_mut().enumerate() {
+            for j in 0..DEGREE_E {
+                if aug[i][DEGREE_E + j] == 1 {
+                    *o += basis(j);
+                }
+            }
+        }
+        out
+    })
+}
+
+/// Compute the slice-MLE vector `s_hat_v` (length 64) from a packed witness
+/// and a tensor-expanded suffix point.
+///
+/// `packed_witness[y] in K` for `y in 0..2^L`; `suffix_tensor` is
+/// `eq(r_suffix, .)` over the same range (from
+/// [`build_eq_table_ext`]).
+///
+/// Output: `s_hat_v[i] = sum_y bit_i(packed_witness[y]) * suffix_tensor[y]`
+/// for `i in 0..64` (bit i = polynomial-basis coordinate of the u64).
+///
+/// Dispatch: the method-of-four-Russians kernel
+/// ([`fold_1b_rows_mfr_8wide`]) for lengths divisible by 8 (any real
+/// witness), the scalar bit-scan otherwise (tiny test instances). Both
+/// compute the same per-bit XOR-sums, only regrouped, and GF(2^192)
+/// addition is XOR (commutative, associative, exact), so the output and
+/// hence the transcript are byte-identical either way.
+pub fn fold_1b_rows(packed_witness: &[F64], suffix_tensor: &[F192]) -> Vec<F192> {
+    assert_eq!(packed_witness.len(), suffix_tensor.len());
+    if !packed_witness.is_empty() && packed_witness.len().is_multiple_of(8) {
+        fold_1b_rows_mfr_8wide(packed_witness, suffix_tensor)
+    } else {
+        fold_1b_rows_scalar(packed_witness, suffix_tensor)
     }
-    sums
 }
 
-/// Padding-aware fused 2-claim MFR fold. Skips chunks of 4
-/// F128s that fall entirely in the zero padding of every block.
-pub fn fold_1b_rows_2way_mfr_padded(
-    packed_witness: &[F128],
-    t0: &[F128],
-    t1: &[F128],
-    padding: &PaddingSpec,
-) -> (Vec<F128>, Vec<F128>) {
+/// Reuse lincheck's partial fold to derive the 64 slice evaluations needed by
+/// the K ring switch, avoiding a second pass over the packed witness.
+pub fn s_hat_v_from_z_vec(z_vec: &[F192], inner_rest_tail: &[F192]) -> Vec<F192> {
     use rayon::prelude::*;
-    let n = 1 << LOG_PACKING; // 128
-    assert_eq!(t0.len(), packed_witness.len());
-    assert_eq!(t1.len(), packed_witness.len());
-    assert!(
-        packed_witness.len().is_multiple_of(4),
-        "fold_1b_rows_2way_mfr requires len divisible by 4 (got {})",
-        packed_witness.len()
-    );
-    let skip = ChunkPadding::new(padding, 4);
-
-    let pair = packed_witness
-        .par_chunks(4)
-        .zip(t0.par_chunks(4))
-        .zip(t1.par_chunks(4))
-        .enumerate()
-        .fold(
-            || (vec![F128::ZERO; n], vec![F128::ZERO; n]),
-            |(mut a0, mut a1), (chunk_idx, ((m_chunk, t0_chunk), t1_chunk))| {
-                if skip.skip(chunk_idx) {
-                    return (a0, a1);
-                }
-                let v0: [F128; 4] = [t0_chunk[0], t0_chunk[1], t0_chunk[2], t0_chunk[3]];
-                let v1: [F128; 4] = [t1_chunk[0], t1_chunk[1], t1_chunk[2], t1_chunk[3]];
-
-                // Build the two 16-entry subset-sum lookup tables.
-                let lookup0 = subset_sums_4(v0);
-                let lookup1 = subset_sums_4(v1);
-
-                // Cache all 16 bytes of each m element for fast indexed access.
-                let m_bytes: [[u8; 16]; 4] = std::array::from_fn(|e| m_chunk[e].to_le_bytes());
-
-                // For each byte position (16 total = bits [r_byte*8, r_byte*8+8)):
-                //   - Gather the same byte from each of the 4 m elements.
-                //   - Pack into a u64 with the 4 bytes occupying byte slots 0..4
-                //     (slots 4..8 are zero).
-                //   - Apply 8×8 bit transpose. After transpose, byte p of the
-                //     u64 has its low-bit positions filled with
-                //     (bit-p of m[0]'s r_byte, bit-p of m[1]'s, bit-p of m[2]'s,
-                //      bit-p of m[3]'s) — that's exactly the 4-bit mask for
-                //     output position r = r_byte*8 + p.
-                //   - Look up the mask in the subset-sum tables and XOR into
-                //     a0[r], a1[r].
-                for r_byte in 0..16 {
-                    let combined: u64 = (m_bytes[0][r_byte] as u64)
-                        | ((m_bytes[1][r_byte] as u64) << 8)
-                        | ((m_bytes[2][r_byte] as u64) << 16)
-                        | ((m_bytes[3][r_byte] as u64) << 24);
-                    let transposed = transpose_8x8_bits(combined);
-                    let tb = transposed.to_le_bytes();
-                    let base = r_byte * 8;
-                    // 8 unrolled lookups + RMWs. Each transposed byte's low
-                    // 4 bits hold the mask; high 4 bits are always zero (the
-                    // upper 4 byte-slots of `combined` were zero).
-                    a0[base] += lookup0[(tb[0] & 0x0F) as usize];
-                    a1[base] += lookup1[(tb[0] & 0x0F) as usize];
-                    a0[base + 1] += lookup0[(tb[1] & 0x0F) as usize];
-                    a1[base + 1] += lookup1[(tb[1] & 0x0F) as usize];
-                    a0[base + 2] += lookup0[(tb[2] & 0x0F) as usize];
-                    a1[base + 2] += lookup1[(tb[2] & 0x0F) as usize];
-                    a0[base + 3] += lookup0[(tb[3] & 0x0F) as usize];
-                    a1[base + 3] += lookup1[(tb[3] & 0x0F) as usize];
-                    a0[base + 4] += lookup0[(tb[4] & 0x0F) as usize];
-                    a1[base + 4] += lookup1[(tb[4] & 0x0F) as usize];
-                    a0[base + 5] += lookup0[(tb[5] & 0x0F) as usize];
-                    a1[base + 5] += lookup1[(tb[5] & 0x0F) as usize];
-                    a0[base + 6] += lookup0[(tb[6] & 0x0F) as usize];
-                    a1[base + 6] += lookup1[(tb[6] & 0x0F) as usize];
-                    a0[base + 7] += lookup0[(tb[7] & 0x0F) as usize];
-                    a1[base + 7] += lookup1[(tb[7] & 0x0F) as usize];
-                }
-
-                (a0, a1)
-            },
-        )
-        .reduce(
-            || (vec![F128::ZERO; n], vec![F128::ZERO; n]),
-            |(mut a0, mut a1), (b0, b1)| {
-                for r in 0..n {
-                    a0[r] += b0[r];
-                    a1[r] += b1[r];
-                }
-                (a0, a1)
-            },
-        );
-
-    (pair.0, pair.1)
-}
-
-/// Padding-aware fused 2-claim 8-wide MFR fold. Skips chunks of
-/// 8 F128s that fall entirely in the zero padding of every block — those
-/// chunks contribute nothing (witness bytes = 0 → subset-sum mask = 0 →
-/// `lookup[0] = 0`).
-pub fn fold_1b_rows_2way_mfr_8wide_padded(
-    packed_witness: &[F128],
-    t0: &[F128],
-    t1: &[F128],
-    padding: &PaddingSpec,
-) -> (Vec<F128>, Vec<F128>) {
-    use rayon::prelude::*;
-    let n = 1 << LOG_PACKING;
-    assert_eq!(t0.len(), packed_witness.len());
-    assert_eq!(t1.len(), packed_witness.len());
-    assert!(packed_witness.len().is_multiple_of(8));
-    let skip = ChunkPadding::new(padding, 8);
-
-    packed_witness
-        .par_chunks(8)
-        .zip(t0.par_chunks(8))
-        .zip(t1.par_chunks(8))
-        .enumerate()
-        .fold(
-            || (vec![F128::ZERO; n], vec![F128::ZERO; n]),
-            |(mut a0, mut a1), (chunk_idx, ((m_chunk, t0_chunk), t1_chunk))| {
-                if skip.skip(chunk_idx) {
-                    return (a0, a1);
-                }
-                let t0_lo = subset_sums_4([t0_chunk[0], t0_chunk[1], t0_chunk[2], t0_chunk[3]]);
-                let t0_hi = subset_sums_4([t0_chunk[4], t0_chunk[5], t0_chunk[6], t0_chunk[7]]);
-                let t1_lo = subset_sums_4([t1_chunk[0], t1_chunk[1], t1_chunk[2], t1_chunk[3]]);
-                let t1_hi = subset_sums_4([t1_chunk[4], t1_chunk[5], t1_chunk[6], t1_chunk[7]]);
-
-                let m_bytes: [[u8; 16]; 8] = std::array::from_fn(|e| m_chunk[e].to_le_bytes());
-
-                for r_byte in 0..16 {
-                    let combined: u64 = (m_bytes[0][r_byte] as u64)
-                        | ((m_bytes[1][r_byte] as u64) << 8)
-                        | ((m_bytes[2][r_byte] as u64) << 16)
-                        | ((m_bytes[3][r_byte] as u64) << 24)
-                        | ((m_bytes[4][r_byte] as u64) << 32)
-                        | ((m_bytes[5][r_byte] as u64) << 40)
-                        | ((m_bytes[6][r_byte] as u64) << 48)
-                        | ((m_bytes[7][r_byte] as u64) << 56);
-                    let tb = transpose_8x8_bits(combined).to_le_bytes();
-                    let base = r_byte * 8;
-                    for p in 0..8 {
-                        let mask = tb[p];
-                        let lo = (mask & 0x0F) as usize;
-                        let hi = (mask >> 4) as usize;
-                        a0[base + p] += t0_lo[lo] + t0_hi[hi];
-                        a1[base + p] += t1_lo[lo] + t1_hi[hi];
-                    }
-                }
-                (a0, a1)
-            },
-        )
-        .reduce(
-            || (vec![F128::ZERO; n], vec![F128::ZERO; n]),
-            |(mut a0, mut a1), (b0, b1)| {
-                for r in 0..n {
-                    a0[r] += b0[r];
-                    a1[r] += b1[r];
-                }
-                (a0, a1)
-            },
-        )
-}
-
-/// Single-tensor 16-wide method-of-four-Russians fold. Processes 16 witness
-/// elements per group (four 4-element subset-sum tables, 16-bit per-position
-/// masks) so each length-128 accumulator entry is touched once per 16 elements
-/// instead of once per 8, halving acc load+store traffic. Gathers (32·N), eor3
-/// count, and table-build adds match the 8-wide kernel; the only delta is fewer
-/// acc RMWs. Measured ~1.25× over the 8-wide kernel (the fold is LSU-bound).
-///
-/// `open_batch`'s k=2 path runs this **twice** (once per suffix tensor) rather
-/// than one fused 2-way fold: keeping a single length-128 accumulator + four
-/// tables in flight avoids the register pressure of the 2-way's two
-/// accumulators + eight tables, which ate most of the 16-wide win there. The
-/// shared bit-transpose recomputed per call is nearly free (the fold is not
-/// memory-bandwidth bound).
-pub fn fold_1b_rows_1way_mfr_16wide_padded(
-    packed_witness: &[F128],
-    t: &[F128],
-    padding: &PaddingSpec,
-) -> Vec<F128> {
-    use rayon::prelude::*;
-    let n = 1 << LOG_PACKING;
-    assert_eq!(t.len(), packed_witness.len());
-    assert!(packed_witness.len().is_multiple_of(16));
-    let skip = ChunkPadding::new(padding, 16);
-
-    packed_witness
-        .par_chunks(16)
-        .zip(t.par_chunks(16))
-        .enumerate()
-        .fold(
-            || vec![F128::ZERO; n],
-            |mut acc, (chunk_idx, (m_chunk, t_chunk))| {
-                if skip.skip(chunk_idx) {
-                    return acc;
-                }
-                let tbl0 = subset_sums_4([t_chunk[0], t_chunk[1], t_chunk[2], t_chunk[3]]);
-                let tbl1 = subset_sums_4([t_chunk[4], t_chunk[5], t_chunk[6], t_chunk[7]]);
-                let tbl2 = subset_sums_4([t_chunk[8], t_chunk[9], t_chunk[10], t_chunk[11]]);
-                let tbl3 = subset_sums_4([t_chunk[12], t_chunk[13], t_chunk[14], t_chunk[15]]);
-
-                let m_bytes: [[u8; 16]; 16] = std::array::from_fn(|e| m_chunk[e].to_le_bytes());
-
-                for r_byte in 0..16 {
-                    let lo8: u64 = (m_bytes[0][r_byte] as u64)
-                        | ((m_bytes[1][r_byte] as u64) << 8)
-                        | ((m_bytes[2][r_byte] as u64) << 16)
-                        | ((m_bytes[3][r_byte] as u64) << 24)
-                        | ((m_bytes[4][r_byte] as u64) << 32)
-                        | ((m_bytes[5][r_byte] as u64) << 40)
-                        | ((m_bytes[6][r_byte] as u64) << 48)
-                        | ((m_bytes[7][r_byte] as u64) << 56);
-                    let hi8: u64 = (m_bytes[8][r_byte] as u64)
-                        | ((m_bytes[9][r_byte] as u64) << 8)
-                        | ((m_bytes[10][r_byte] as u64) << 16)
-                        | ((m_bytes[11][r_byte] as u64) << 24)
-                        | ((m_bytes[12][r_byte] as u64) << 32)
-                        | ((m_bytes[13][r_byte] as u64) << 40)
-                        | ((m_bytes[14][r_byte] as u64) << 48)
-                        | ((m_bytes[15][r_byte] as u64) << 56);
-                    let tlo = transpose_8x8_bits(lo8).to_le_bytes();
-                    let thi = transpose_8x8_bits(hi8).to_le_bytes();
-                    let base = r_byte * 8;
-                    for p in 0..8 {
-                        let m_lo = tlo[p];
-                        let m_hi = thi[p];
-                        acc[base + p] += tbl0[(m_lo & 0x0F) as usize]
-                            + tbl1[(m_lo >> 4) as usize]
-                            + tbl2[(m_hi & 0x0F) as usize]
-                            + tbl3[(m_hi >> 4) as usize];
-                    }
-                }
-                acc
-            },
-        )
-        .reduce(
-            || vec![F128::ZERO; n],
-            |mut a, b| {
-                for r in 0..n {
-                    a[r] += b[r];
-                }
-                a
-            },
-        )
-}
-
-/// Tensor-split sibling of [`fold_1b_rows_1way_mfr_16wide_padded`]. Instead of
-/// streaming a fully-materialized length-`2^n` suffix tensor `t`, it takes the
-/// two factors `(eq_lo, eq_hi)` from [`build_eq_split`] and reassociates the
-/// fold as inner-then-outer:
-///
-/// ```text
-/// s_hat_v[r] = Σ_i bit_r(W[i]) · t[i]
-///            = Σ_{i_hi} eq_hi[i_hi] · ( Σ_{i_lo} bit_r(W[i_hi·B + i_lo]) · eq_lo[i_lo] )
-/// ```
-///
-/// with `B = eq_lo.len()` (a multiple of 16) and `i = i_hi·B + i_lo`. The inner
-/// sum is the same 16-wide method-of-four-Russians fold over one length-`B`
-/// block against `eq_lo`; the outer step scales that length-128 block result by
-/// `eq_hi[i_hi]` and XORs it into the global accumulator.
-///
-/// Result is **byte-identical** to
-/// `fold_1b_rows_1way_mfr_16wide_padded(W, build_eq_parallel(r), padding)`:
-/// GF(2^128) add is XOR (associative/commutative) and multiply is exact and
-/// distributes, so the reassociation reproduces the same multiset of XOR terms.
-/// Two wins over the materialized kernel:
-///   1. The four MFR subset-sum tables per 16-element chunk are built from
-///      `eq_lo` and are **identical for every block**, so they are precomputed
-///      once and reused across all `2^(n - n_lo)` blocks (no per-chunk table
-///      rebuilds).
-///   2. The `2^n`-entry tensor is never streamed from RAM — only `eq_lo`
-///      (+ its tables) and `eq_hi` are read, and they stay cache-resident.
-///      Since the fold is LSU-bound, dropping that traffic is the main win.
-pub fn fold_1b_rows_split(
-    packed_witness: &[F128],
-    eq_lo: &[F128],
-    eq_hi: &[F128],
-    padding: &PaddingSpec,
-) -> Vec<F128> {
-    use rayon::prelude::*;
-    let n = 1 << LOG_PACKING; // 128
-    let b = eq_lo.len();
-    assert!(
-        b.is_multiple_of(16),
-        "fold_1b_rows_split: eq_lo block size must be a multiple of 16 (got {b})"
-    );
-    assert_eq!(packed_witness.len(), b * eq_hi.len());
-    let chunks_per_block = b / 16;
-    let skip = ChunkPadding::new(padding, 16);
-
-    // Precompute the eq_lo subset-sum tables once and reuse for every block.
-    // `tables[c]` holds the four 16-entry tables for local chunk `c`'s 16 eq_lo
-    // values — exactly what the materialized kernel rebuilds per chunk.
-    let tables: Vec<[[F128; 16]; 4]> = (0..chunks_per_block)
-        .map(|c| {
-            let o = c * 16;
-            [
-                subset_sums_4([eq_lo[o], eq_lo[o + 1], eq_lo[o + 2], eq_lo[o + 3]]),
-                subset_sums_4([eq_lo[o + 4], eq_lo[o + 5], eq_lo[o + 6], eq_lo[o + 7]]),
-                subset_sums_4([eq_lo[o + 8], eq_lo[o + 9], eq_lo[o + 10], eq_lo[o + 11]]),
-                subset_sums_4([eq_lo[o + 12], eq_lo[o + 13], eq_lo[o + 14], eq_lo[o + 15]]),
-            ]
-        })
-        .collect();
-
-    packed_witness
-        .par_chunks(b)
-        .enumerate()
-        .fold(
-            || vec![F128::ZERO; n],
-            |mut acc, (i_hi, w_block)| {
-                let mut inner = [F128::ZERO; 128];
-                let base_chunk = i_hi * chunks_per_block;
-                for c in 0..chunks_per_block {
-                    // Same per-chunk skip predicate as the materialized kernel,
-                    // evaluated at the identical global chunk index — so the two
-                    // touch the exact same set of chunks.
-                    if skip.skip(base_chunk + c) {
-                        continue;
-                    }
-                    let m_chunk = &w_block[c * 16..c * 16 + 16];
-                    let [tbl0, tbl1, tbl2, tbl3] = &tables[c];
-
-                    let m_bytes: [[u8; 16]; 16] = std::array::from_fn(|e| m_chunk[e].to_le_bytes());
-
-                    for r_byte in 0..16 {
-                        let lo8: u64 = (m_bytes[0][r_byte] as u64)
-                            | ((m_bytes[1][r_byte] as u64) << 8)
-                            | ((m_bytes[2][r_byte] as u64) << 16)
-                            | ((m_bytes[3][r_byte] as u64) << 24)
-                            | ((m_bytes[4][r_byte] as u64) << 32)
-                            | ((m_bytes[5][r_byte] as u64) << 40)
-                            | ((m_bytes[6][r_byte] as u64) << 48)
-                            | ((m_bytes[7][r_byte] as u64) << 56);
-                        let hi8: u64 = (m_bytes[8][r_byte] as u64)
-                            | ((m_bytes[9][r_byte] as u64) << 8)
-                            | ((m_bytes[10][r_byte] as u64) << 16)
-                            | ((m_bytes[11][r_byte] as u64) << 24)
-                            | ((m_bytes[12][r_byte] as u64) << 32)
-                            | ((m_bytes[13][r_byte] as u64) << 40)
-                            | ((m_bytes[14][r_byte] as u64) << 48)
-                            | ((m_bytes[15][r_byte] as u64) << 56);
-                        let tlo = transpose_8x8_bits(lo8).to_le_bytes();
-                        let thi = transpose_8x8_bits(hi8).to_le_bytes();
-                        let base = r_byte * 8;
-                        for p in 0..8 {
-                            let m_lo = tlo[p];
-                            let m_hi = thi[p];
-                            inner[base + p] += tbl0[(m_lo & 0x0F) as usize]
-                                + tbl1[(m_lo >> 4) as usize]
-                                + tbl2[(m_hi & 0x0F) as usize]
-                                + tbl3[(m_hi >> 4) as usize];
-                        }
-                    }
-                }
-                // Outer: scale this block's length-128 partial by eq_hi[i_hi].
-                // `e · (Σ eq_lo·bit) = Σ (e·eq_lo)·bit` distributes exactly, so
-                // each term equals the materialized `t[i] = eq_lo·eq_hi` term.
-                let e = eq_hi[i_hi];
-                for r in 0..n {
-                    acc[r] += e * inner[r];
-                }
-                acc
-            },
-        )
-        .reduce(
-            || vec![F128::ZERO; n],
-            |mut a, b| {
-                for r in 0..n {
-                    a[r] += b[r];
-                }
-                a
-            },
-        )
-}
-
-/// Two-claim variant of [`fold_1b_rows_split`] with stack-allocated per-claim
-/// inner accumulators. The common batched case (exactly 2 dense claims, e.g.
-/// `[ab, c]` or `[ab, c]` alongside a sparse chain claim) hits this fast path.
-///
-/// Cross-claim sharing per chunk:
-///   * one streaming read of the 16 packed_witness entries
-///   * one bit transpose ([`transpose_8x8_bits`])
-///   * per-claim subset-sum table lookups + per-claim inner accumulator update
-///
-/// Per-claim outputs are **byte-identical** to calling [`fold_1b_rows_split`]
-/// twice — same chunk-skip predicate, same XOR multiset.
-pub fn fold_1b_rows_split_2way(
-    packed_witness: &[F128],
-    eq_lo_0: &[F128],
-    eq_hi_0: &[F128],
-    eq_lo_1: &[F128],
-    eq_hi_1: &[F128],
-    padding: &PaddingSpec,
-) -> (Vec<F128>, Vec<F128>) {
-    use rayon::prelude::*;
-    let n = 1 << LOG_PACKING; // 128
-    let b = eq_lo_0.len();
-    assert_eq!(eq_lo_1.len(), b);
-    let n_hi = eq_hi_0.len();
-    assert_eq!(eq_hi_1.len(), n_hi);
-    assert!(
-        b.is_multiple_of(16),
-        "fold_1b_rows_split_2way: eq_lo block size must be a multiple of 16 (got {b})"
-    );
-    assert_eq!(packed_witness.len(), b * n_hi);
-    let chunks_per_block = b / 16;
-    let skip = ChunkPadding::new(padding, 16);
-
-    // Precompute both claims' subset-sum tables once.
-    let tables_0: Vec<[[F128; 16]; 4]> = (0..chunks_per_block)
-        .map(|c| {
-            let o = c * 16;
-            [
-                subset_sums_4([eq_lo_0[o], eq_lo_0[o + 1], eq_lo_0[o + 2], eq_lo_0[o + 3]]),
-                subset_sums_4([
-                    eq_lo_0[o + 4],
-                    eq_lo_0[o + 5],
-                    eq_lo_0[o + 6],
-                    eq_lo_0[o + 7],
-                ]),
-                subset_sums_4([
-                    eq_lo_0[o + 8],
-                    eq_lo_0[o + 9],
-                    eq_lo_0[o + 10],
-                    eq_lo_0[o + 11],
-                ]),
-                subset_sums_4([
-                    eq_lo_0[o + 12],
-                    eq_lo_0[o + 13],
-                    eq_lo_0[o + 14],
-                    eq_lo_0[o + 15],
-                ]),
-            ]
-        })
-        .collect();
-    let tables_1: Vec<[[F128; 16]; 4]> = (0..chunks_per_block)
-        .map(|c| {
-            let o = c * 16;
-            [
-                subset_sums_4([eq_lo_1[o], eq_lo_1[o + 1], eq_lo_1[o + 2], eq_lo_1[o + 3]]),
-                subset_sums_4([
-                    eq_lo_1[o + 4],
-                    eq_lo_1[o + 5],
-                    eq_lo_1[o + 6],
-                    eq_lo_1[o + 7],
-                ]),
-                subset_sums_4([
-                    eq_lo_1[o + 8],
-                    eq_lo_1[o + 9],
-                    eq_lo_1[o + 10],
-                    eq_lo_1[o + 11],
-                ]),
-                subset_sums_4([
-                    eq_lo_1[o + 12],
-                    eq_lo_1[o + 13],
-                    eq_lo_1[o + 14],
-                    eq_lo_1[o + 15],
-                ]),
-            ]
-        })
-        .collect();
-
-    let zero_acc = || (vec![F128::ZERO; n], vec![F128::ZERO; n]);
-
-    packed_witness
-        .par_chunks(b)
-        .enumerate()
-        .fold(zero_acc, |(mut acc0, mut acc1), (i_hi, w_block)| {
-            // Two stack-allocated inner accumulators — identical layout to
-            // the single-claim split path, just two of them.
-            let mut inner0 = [F128::ZERO; 128];
-            let mut inner1 = [F128::ZERO; 128];
-            let base_chunk = i_hi * chunks_per_block;
-            for c in 0..chunks_per_block {
-                if skip.skip(base_chunk + c) {
-                    continue;
-                }
-                let m_chunk = &w_block[c * 16..c * 16 + 16];
-                let [t0a, t0b, t0c, t0d] = &tables_0[c];
-                let [t1a, t1b, t1c, t1d] = &tables_1[c];
-
-                let m_bytes: [[u8; 16]; 16] = std::array::from_fn(|e| m_chunk[e].to_le_bytes());
-
-                for r_byte in 0..16 {
-                    let lo8: u64 = (m_bytes[0][r_byte] as u64)
-                        | ((m_bytes[1][r_byte] as u64) << 8)
-                        | ((m_bytes[2][r_byte] as u64) << 16)
-                        | ((m_bytes[3][r_byte] as u64) << 24)
-                        | ((m_bytes[4][r_byte] as u64) << 32)
-                        | ((m_bytes[5][r_byte] as u64) << 40)
-                        | ((m_bytes[6][r_byte] as u64) << 48)
-                        | ((m_bytes[7][r_byte] as u64) << 56);
-                    let hi8: u64 = (m_bytes[8][r_byte] as u64)
-                        | ((m_bytes[9][r_byte] as u64) << 8)
-                        | ((m_bytes[10][r_byte] as u64) << 16)
-                        | ((m_bytes[11][r_byte] as u64) << 24)
-                        | ((m_bytes[12][r_byte] as u64) << 32)
-                        | ((m_bytes[13][r_byte] as u64) << 40)
-                        | ((m_bytes[14][r_byte] as u64) << 48)
-                        | ((m_bytes[15][r_byte] as u64) << 56);
-                    let tlo = transpose_8x8_bits(lo8).to_le_bytes();
-                    let thi = transpose_8x8_bits(hi8).to_le_bytes();
-                    let base = r_byte * 8;
-                    for p in 0..8 {
-                        let m_lo = tlo[p];
-                        let m_hi = thi[p];
-                        let i_lo4 = (m_lo & 0x0F) as usize;
-                        let i_hi4 = (m_lo >> 4) as usize;
-                        let i_lo4h = (m_hi & 0x0F) as usize;
-                        let i_hi4h = (m_hi >> 4) as usize;
-                        inner0[base + p] += t0a[i_lo4] + t0b[i_hi4] + t0c[i_lo4h] + t0d[i_hi4h];
-                        inner1[base + p] += t1a[i_lo4] + t1b[i_hi4] + t1c[i_lo4h] + t1d[i_hi4h];
-                    }
-                }
-            }
-            let e0 = eq_hi_0[i_hi];
-            let e1 = eq_hi_1[i_hi];
-            for r in 0..n {
-                acc0[r] += e0 * inner0[r];
-                acc1[r] += e1 * inner1[r];
-            }
-            (acc0, acc1)
-        })
-        .reduce(zero_acc, |(mut a0, mut a1), (b0, b1)| {
-            for r in 0..n {
-                a0[r] += b0[r];
-                a1[r] += b1[r];
-            }
-            (a0, a1)
-        })
-}
-
-/// AB-claim `s_hat_v` specialization that **skips `fold_1b_rows` entirely**
-/// when the upstream layer has already produced
-/// `z_vec[i_inner] = ẑ(i_inner, x_outer)` (length `2^k_log`) — the pre-sumcheck
-/// partial fold lincheck builds via `partial_fold_packed_z`.
-///
-/// # Identity
-///
-/// For a PCS opening at point `(r_inner_skip, r_inner_rest, x_outer)` where
-/// `x_outer` matches lincheck's, the AB-suffix tensor in `fold_1b_rows`
-/// factors over the same axis decomposition that `z_vec` was built along:
-///
-/// ```text
-/// s_hat_v[b] = Σ_{j ∈ {0,1}^(m−7)} eq(suffix, j) · bit_b(packed_witness[j])
-///            = Σ_{k ∈ {0,1}^(k_log − LOG_PACKING)}
-///                eq(r_inner_rest[1..], k) · z_vec[b + 2^LOG_PACKING · k]
-/// ```
-///
-/// `r_inner_rest[0]` becomes ring-switch's `prefix0` (`x_outer_full[0]`);
-/// `r_inner_rest[1..]` is the suffix's inner part. The witness's outer
-/// coords were already folded into `z_vec` by the partial fold.
-///
-/// Output is **byte-identical** to
-/// `fold_1b_rows(packed_witness, build_eq(suffix))` for the AB claim — same
-/// algebraic identity, just reassociated to use the lincheck intermediate.
-///
-/// # Cost
-///
-/// `128 · 2^(k_log − LOG_PACKING)` F128 mul-adds + a tiny eq tensor build.
-/// At keccak m=29, k_log=17: 128 · 1024 = 131k mul-adds — tens of µs MT, vs
-/// the ~7 ms share that AB contributes to `fold_1b_rows_split_2way`.
-///
-/// # Panics
-///
-/// - if `z_vec.len() != 2^(LOG_PACKING + tail.len())`.
-pub fn s_hat_v_from_z_vec(z_vec: &[F128], x_inner_rest_tail: &[F128]) -> Vec<F128> {
-    use rayon::prelude::*;
-    let n_packed = 1usize << LOG_PACKING; // 128
-    let n_tail = 1usize << x_inner_rest_tail.len();
-    assert_eq!(
-        z_vec.len(),
-        n_packed * n_tail,
-        "z_vec length {} mismatches 2^(LOG_PACKING + tail.len()) = {}",
-        z_vec.len(),
-        n_packed * n_tail,
-    );
-
-    if x_inner_rest_tail.is_empty() {
-        // Degenerate case (k_log == LOG_PACKING): the LOG_PACKING boundary
-        // ate the only inner-rest coord — z_vec IS the per-prefix-bit answer.
+    let n_packed = PACKING_WIDTH;
+    let n_tail = 1usize << inner_rest_tail.len();
+    assert_eq!(z_vec.len(), n_packed * n_tail);
+    if inner_rest_tail.is_empty() {
         return z_vec.to_vec();
     }
-
-    let eq_tail = build_eq_parallel(x_inner_rest_tail);
-
-    // Iterate over k outer (sequential per-thread → cache-friendly stride-1
-    // reads of z_vec). Parallelize across k-ranges; each thread accumulates
-    // a private length-128 buffer and the reduce step XORs them together.
-    eq_tail
+    build_eq_table_ext(inner_rest_tail)
         .par_iter()
         .enumerate()
         .fold(
-            || vec![F128::ZERO; n_packed],
-            |mut acc, (k, &w)| {
-                let block = &z_vec[k * n_packed..(k + 1) * n_packed];
-                for b in 0..n_packed {
-                    acc[b] += w * block[b];
+            || vec![F192::ZERO; n_packed],
+            |mut acc, (k, &weight)| {
+                for (slot, &value) in acc.iter_mut().zip(&z_vec[k * n_packed..(k + 1) * n_packed]) {
+                    *slot += weight * value;
                 }
                 acc
             },
         )
         .reduce(
-            || vec![F128::ZERO; n_packed],
-            |mut a, b| {
-                for i in 0..n_packed {
-                    a[i] += b[i];
+            || vec![F192::ZERO; n_packed],
+            |mut acc, part| {
+                for (slot, value) in acc.iter_mut().zip(part) {
+                    *slot += value;
                 }
-                a
+                acc
             },
         )
 }
 
-/// Compute the slice-MLE vector `s_hat_v` (length 128) from a packed witness
-/// and a tensor-expanded suffix point.
-///
-/// `packed_witness[i_rest] ∈ F_{2^128}` with `i_rest ∈ {0..2^L}` where
-/// `L = log2(packed_witness.len())`. `suffix_tensor` is `eq_ind(suffix)` over a
-/// suffix point of length `L`.
-///
-/// Output: `s_hat_v[i_skip] = Σ_{i_rest} (i_skip-th bit of packed_witness[i_rest]) · suffix_tensor[i_rest]`
-/// for `i_skip ∈ {0..128}`. The bit-index uses the natural polynomial-basis
-/// decomposition of F_{2^128} (i.e., bit-i of the u128 .lo:.hi).
-///
-/// O(2^L · 128) algorithm parallelized across packed-witness positions via
-/// rayon: each thread folds a chunk into a per-thread length-128 partial
-/// accumulator; the reduce step XORs partials elementwise into the final
-/// output.
-pub fn fold_1b_rows_naive(packed_witness: &[F128], suffix_tensor: &[F128]) -> Vec<F128> {
+/// Scalar reference path of [`fold_1b_rows`]: mirror of
+/// `ring_switch::fold_1b_rows_naive` at 64-bit width, a rayon bit-scan with
+/// per-thread length-64 partial accumulators XOR-reduced at the end.
+/// Data-dependent cost: `trailing_zeros` + RMW + branch per set bit
+/// (~32/word on a random witness).
+fn fold_1b_rows_scalar(packed_witness: &[F64], suffix_tensor: &[F192]) -> Vec<F192> {
     use rayon::prelude::*;
     assert_eq!(packed_witness.len(), suffix_tensor.len());
-    let n = 1 << LOG_PACKING;
-
-    // Partition into chunks; each chunk computes its own partial.
-    // Empty accumulator allocator returns Vec<F128>(n) for the fold's init.
-    let zero_acc = || vec![F128::ZERO; n];
+    let n = PACKING_WIDTH;
+    let zero_acc = || vec![F192::ZERO; n];
 
     packed_witness
         .par_iter()
         .zip(suffix_tensor.par_iter())
         .fold(zero_acc, |mut acc, (elem, &w)| {
-            // Bit r ∈ 0..64: from elem.lo.
-            let mut lo = elem.lo;
-            while lo != 0 {
-                let r = lo.trailing_zeros() as usize;
+            let mut bits = elem.0;
+            while bits != 0 {
+                let r = bits.trailing_zeros() as usize;
                 acc[r] += w;
-                lo &= lo - 1;
-            }
-            // Bit r ∈ 64..128: from elem.hi.
-            let mut hi = elem.hi;
-            while hi != 0 {
-                let r = hi.trailing_zeros() as usize;
-                acc[64 | r] += w;
-                hi &= hi - 1;
+                bits &= bits - 1;
             }
             acc
         })
@@ -1018,310 +291,139 @@ pub fn fold_1b_rows_naive(packed_witness: &[F128], suffix_tensor: &[F128]) -> Ve
         })
 }
 
-/// Compute the verifier's claim check: `Σ_i weights[i] · s_hat_v[i]`.
-pub fn claim_check(weights: &[F128], s_hat_v: &[F128]) -> F128 {
-    inner_product(weights, s_hat_v)
+/// Build the 16-entry subset-sum lookup table over 4 E elements:
+/// `sums[mask] = sum_{k in 0..4 : bit_k(mask) = 1} elems[k]`. 15 additions
+/// via the standard doubling pattern (mirror of
+/// `ring_switch::subset_sums_4` retyped to the tower).
+#[inline(always)]
+fn subset_sums_4_ext(elems: [F192; 4]) -> [F192; 16] {
+    let mut sums = [F192::ZERO; 16];
+    for (i, &e) in elems.iter().enumerate() {
+        let half = 1 << i;
+        for k in 0..half {
+            sums[half + k] = sums[k] + e;
+        }
+    }
+    sums
 }
 
-/// Standard inner product `Σ_i a[i] · b[i]` over F_{2^128}.
-/// The trace-dual basis {δ_i} of the polynomial basis {B_j = x^j}:
-/// `Tr(δ_i·B_j) = [i = j]`, so `bit_i(y) = Tr(δ_i·y)` for every `y`.
-/// Computed once (Gram matrix of the trace form inverted over F₂).
-pub fn trace_dual_basis() -> &'static [F128; 128] {
-    use std::sync::OnceLock;
-    static DUAL: OnceLock<[F128; 128]> = OnceLock::new();
-    DUAL.get_or_init(|| {
-        let basis = |j: usize| {
-            if j < 64 { F128::new(1u64 << j, 0) } else { F128::new(0, 1u64 << (j - 64)) }
-        };
-        let tr = |x: F128| {
-            let (mut acc, mut p) = (F128::ZERO, x);
-            for _ in 0..128 {
-                acc += p;
-                p *= p;
+/// Method-of-four-Russians [`fold_1b_rows`] kernel: the extension-field layer's
+/// `fold_1b_rows_1way_mfr_8wide_k4` ported to 8-byte K words (where 8 words
+/// per transpose group cover ALL 64 output bits with the 8 byte positions,
+/// no wasted transpose rows).
+///
+/// Per group of 8 words: build two 16-entry subset-sum tables over the 8
+/// suffix weights (low nibble = words 0..4, high = words 4..8, 30 adds
+/// total); then for each byte position `r_byte` gather that byte of all 8
+/// words into a u64 (word `e` in byte slot `e`) and 8x8 bit-transpose it,
+/// so transposed byte `p`, bit `e` is bit `r_byte*8 + p` of word `e`: an
+/// 8-bit mask over the group for output position `r = r_byte*8 + p`. Each
+/// output position then costs two table lookups + one in-register add + one
+/// accumulator RMW, regardless of bit density: a constant ~12 adds + 8 RMWs
+/// per word vs the scalar path's ~32 data-dependent conditional adds.
+/// Per-thread accumulators via rayon fold/reduce (no shared cache lines).
+fn fold_1b_rows_mfr_8wide(packed_witness: &[F64], suffix_tensor: &[F192]) -> Vec<F192> {
+    use rayon::prelude::*;
+    let n = PACKING_WIDTH;
+    assert_eq!(packed_witness.len(), suffix_tensor.len());
+    assert!(packed_witness.len().is_multiple_of(8));
+    let zero_acc = || vec![F192::ZERO; n];
+
+    packed_witness
+        .par_chunks(8)
+        .zip(suffix_tensor.par_chunks(8))
+        .fold(zero_acc, |mut acc, (m_chunk, t_chunk)| {
+            let lo_tbl = subset_sums_4_ext([t_chunk[0], t_chunk[1], t_chunk[2], t_chunk[3]]);
+            let hi_tbl = subset_sums_4_ext([t_chunk[4], t_chunk[5], t_chunk[6], t_chunk[7]]);
+
+            let mut m_bytes = [[0u8; 8]; 8];
+            for (e, slot) in m_bytes.iter_mut().enumerate() {
+                *slot = m_chunk[e].0.to_le_bytes();
+            }
+
+            for r_byte in 0..8 {
+                let combined: u64 = (m_bytes[0][r_byte] as u64)
+                    | ((m_bytes[1][r_byte] as u64) << 8)
+                    | ((m_bytes[2][r_byte] as u64) << 16)
+                    | ((m_bytes[3][r_byte] as u64) << 24)
+                    | ((m_bytes[4][r_byte] as u64) << 32)
+                    | ((m_bytes[5][r_byte] as u64) << 40)
+                    | ((m_bytes[6][r_byte] as u64) << 48)
+                    | ((m_bytes[7][r_byte] as u64) << 56);
+                let tb = transpose_8x8_bits(combined).to_le_bytes();
+                let base = r_byte * 8;
+                for (p, &mask) in tb.iter().enumerate() {
+                    acc[base + p] += lo_tbl[(mask & 0x0F) as usize] + hi_tbl[(mask >> 4) as usize];
+                }
             }
             acc
-        };
-        let mut g: Vec<u128> = vec![0; 128];
-        for i in 0..128 {
-            for j in 0..128 {
-                if tr(basis(i) * basis(j)) == F128::ONE {
-                    g[i] |= 1u128 << j;
-                }
+        })
+        .reduce(zero_acc, |mut a, b| {
+            for (av, bv) in a.iter_mut().zip(b.iter()) {
+                *av += *bv;
             }
-        }
-        let mut inv: Vec<u128> = (0..128).map(|i| 1u128 << i).collect();
-        for col in 0..128 {
-            let piv = (col..128).find(|&r| (g[r] >> col) & 1 == 1).expect("trace Gram matrix is invertible");
-            g.swap(col, piv);
-            inv.swap(col, piv);
-            for r in 0..128 {
-                if r != col && (g[r] >> col) & 1 == 1 {
-                    g[r] ^= g[col];
-                    inv[r] ^= inv[col];
-                }
-            }
-        }
-        let mut out = [F128::ZERO; 128];
-        for (i, o) in out.iter_mut().enumerate() {
-            for j in 0..128 {
-                if (inv[i] >> j) & 1 == 1 {
-                    *o += basis(j);
-                }
-            }
-        }
-        out
-    })
+            a
+        })
 }
 
-/// The linearized-polynomial coefficients of the eq-weighted bit-sum:
-/// `Σ_i w_i·bit_i(y) = L_w(y) = Σ_k c_k·y^{2^k}` with `c_k = Σ_i w_i·δ_i^{2^k}`.
-/// Every tensor-algebra fold against `w` reduces to `L_w`, replacing bit-level
-/// transposes with field arithmetic (squaring is one multiplication).
-pub fn linearized_eq_coeffs(w: &[F128]) -> [F128; 128] {
-    assert_eq!(w.len(), 128);
-    let delta = trace_dual_basis();
-    let mut c = [F128::ZERO; 128];
-    for i in 0..128 {
-        let mut p = delta[i];
-        for ck in c.iter_mut() {
-            *ck += w[i] * p;
-            p *= p;
-        }
-    }
-    c
-}
-
-/// `⟨tensor_algebra_transpose(s_hat_v), w⟩` without the transpose:
-/// `Σ_j B_j·L_w(s_hat_v[j])` (see [`linearized_eq_coeffs`]).
-pub fn transposed_claim_linearized(s_hat_v: &[F128], c: &[F128; 128]) -> F128 {
-    assert_eq!(s_hat_v.len(), 128);
-    let basis = |j: usize| {
-        if j < 64 { F128::new(1u64 << j, 0) } else { F128::new(0, 1u64 << (j - 64)) }
-    };
-    let mut acc = F128::ZERO;
-    for (j, &y) in s_hat_v.iter().enumerate() {
-        let (mut lw, mut p) = (F128::ZERO, y);
-        for &ck in c.iter() {
-            lw += ck * p;
-            p *= p;
-        }
-        acc += basis(j) * lw;
-    }
-    acc
-}
-
-/// [`eval_rs_eq`] via the telescoped product formula. The tensor element is
-/// `Π_j (z_j⊗1 + 1⊗(1+q_j))`; its rank-1 subset expansion re-sums per
-/// Frobenius power into `Σ_k c_k·Π_j (z_j^{2^k} + 1 + q_j)`.
-fn eval_rs_eq_linearized(z_vals: &[F128], query: &[F128], c: &[F128; 128]) -> F128 {
-    assert_eq!(z_vals.len(), query.len());
-    let mut zp: Vec<F128> = z_vals.to_vec();
-    let mut acc = F128::ZERO;
-    for &ck in c.iter() {
-        let mut prod = F128::ONE;
-        for (zpj, &qj) in zp.iter_mut().zip(query.iter()) {
-            prod *= *zpj + F128::ONE + qj;
-            *zpj *= *zpj;
-        }
-        acc += ck * prod;
-    }
-    acc
-}
-
-/// Standard inner product `Σ_i a[i] · b[i]` over F_{2^128}.
-pub use primitives::multilinear::inner_product;
-
-/// **TensorAlgebra transpose** (a.k.a. "bit transpose" of `s_hat_v`).
+/// Compute `rs_eq_ind`, the transparent E-valued weight vector over the
+/// suffix domain: `rs_eq_ind[y] = Phi(suffix_tensor[y])` where `Phi` sends
+/// E-basis bit w to `coordinate_weights[w]`, i.e.
 ///
-/// View `s_hat_v` (length 128) as a 128×128 binary matrix with row `i_skip` =
-/// the 128 polynomial-basis bits of `s_hat_v[i_skip]`. Output `s_hat_u`
-/// (length 128) is the transposed matrix re-packed: row `b` of `s_hat_u` =
-/// column `b` of the input. Equivalently:
-/// ```text
-///     bit i_skip of s_hat_u[b]  ==  bit b of s_hat_v[i_skip]
-/// ```
+/// `rs_eq_ind[y] = sum_w bit_w(suffix_tensor[y]) * coordinate_weights[w]`
 ///
-/// Used in the DP24 ring-switching: after computing `s_hat_v` (slice MLEs at
-/// the suffix point), `s_hat_u = transpose(s_hat_v)` is the data viewed with
-/// the "vertical" and "horizontal" dimensions swapped. The opening-sumcheck target is
-/// `T = ⟨s_hat_u, eq_ind(r'')⟩`.
-///
-/// Naive O(128²) bit-extract implementation. NEON acceleration via bit
-/// transpose intrinsics is future work.
-pub fn tensor_algebra_transpose(s_hat_v: &[F128]) -> Vec<F128> {
-    assert_eq!(s_hat_v.len(), 1 << LOG_PACKING);
-    let mut s_hat_u = vec![F128::ZERO; 1 << LOG_PACKING];
-    for i_skip in 0..128 {
-        let elem = s_hat_v[i_skip];
-        // Iterate over the 128 bits b of `elem`; deposit into s_hat_u[b]'s bit i_skip.
-        for b in 0..64 {
-            if (elem.lo >> b) & 1 == 1 {
-                if i_skip < 64 {
-                    s_hat_u[b].lo |= 1u64 << i_skip;
-                } else {
-                    s_hat_u[b].hi |= 1u64 << (i_skip - 64);
-                }
-            }
-        }
-        for b in 0..64 {
-            if (elem.hi >> b) & 1 == 1 {
-                if i_skip < 64 {
-                    s_hat_u[64 | b].lo |= 1u64 << i_skip;
-                } else {
-                    s_hat_u[64 | b].hi |= 1u64 << (i_skip - 64);
-                }
-            }
-        }
-    }
-    s_hat_u
-}
-
-/// Compute `rs_eq_ind` (the "ring-switching equality indicator"), a transparent
-/// multilinear of length `2^L` over the suffix domain.
-///
-/// `rs_eq_ind[i_rest] = Σ_b (bit b of suffix_tensor[i_rest]) · eq_r_dprime[b]`
-///
-/// Each `suffix_tensor[i_rest] ∈ F_{2^128}` is treated as 128 F_2-bits in the
-/// polynomial basis; the inner product with `eq_r_dprime` (length 128) produces
-/// one F_{2^128} value per suffix position. This is the transparent multilinear
-/// the opening runs its sumcheck against.
-///
-/// O(128 · 2^L) parallelized across positions via rayon. Output positions are
-/// independent — direct `par_iter` + `collect`.
-pub fn fold_b128_elems_naive(suffix_tensor: &[F128], eq_r_dprime: &[F128]) -> Vec<F128> {
+/// Naive reference: rayon per-position bit-scan over the three 64-bit limbs.
+/// See [`fold_ext_elems`] for the bytewise-table production version.
+#[cfg(test)]
+pub fn fold_ext_elems_naive(suffix_tensor: &[F192], coordinate_weights: &[F192]) -> Vec<F192> {
     use rayon::prelude::*;
-    assert_eq!(eq_r_dprime.len(), 1 << LOG_PACKING);
+    assert_eq!(coordinate_weights.len(), DEGREE_E);
     suffix_tensor
         .par_iter()
         .map(|&elem| {
-            let mut acc = F128::ZERO;
-            let mut lo = elem.lo;
-            while lo != 0 {
-                let b = lo.trailing_zeros() as usize;
-                acc += eq_r_dprime[b];
-                lo &= lo - 1;
+            let mut acc = F192::ZERO;
+            let mut c0 = elem.c0;
+            while c0 != 0 {
+                let w = c0.trailing_zeros() as usize;
+                acc += coordinate_weights[w];
+                c0 &= c0 - 1;
             }
-            let mut hi = elem.hi;
-            while hi != 0 {
-                let b = hi.trailing_zeros() as usize;
-                acc += eq_r_dprime[64 | b];
-                hi &= hi - 1;
+            let mut c1 = elem.c1;
+            while c1 != 0 {
+                let w = c1.trailing_zeros() as usize;
+                acc += coordinate_weights[64 | w];
+                c1 &= c1 - 1;
+            }
+            let mut c2 = elem.c2;
+            while c2 != 0 {
+                let w = c2.trailing_zeros() as usize;
+                acc += coordinate_weights[128 | w];
+                c2 &= c2 - 1;
             }
             acc
         })
         .collect()
 }
 
-/// Bit-table accelerated `fold_b128_elems`. Precomputes 16 lookup tables (one
-/// per byte position), each with 256 entries: `T[byte_idx][value] = Σ eq_r_dprime[bit]`
-/// over set bits in `value` (offset by `byte_idx * 8`). Per element: 16 table
-/// lookups + 16 F128 XORs, no data-dependent bit-scan.
-///
-/// Tables: 16 × 256 × 16 B = 64 KB (fits in L1+L2). Target speedup ~3× vs the
-/// `trailing_zeros` loop in `fold_b128_elems_naive`.
-pub fn fold_b128_elems(suffix_tensor: &[F128], eq_r_dprime: &[F128]) -> Vec<F128> {
-    use rayon::prelude::*;
-    assert_eq!(eq_r_dprime.len(), 1 << LOG_PACKING);
-    const N_BYTES: usize = 16; // bytes per F128
-    const TABLE_SIZE: usize = 256;
-
-    // Build the 16 byte-tables. `tables[byte_idx * 256 + value]` = the F128
-    // sum of `eq_r_dprime[byte_idx*8 + bit]` over set bits in `value`.
-    let mut tables = vec![F128::ZERO; N_BYTES * TABLE_SIZE];
-    for byte_idx in 0..N_BYTES {
-        let bit_base = byte_idx * 8;
-        for value in 0..TABLE_SIZE {
-            let mut acc = F128::ZERO;
-            for bit_in_byte in 0..8 {
-                if (value >> bit_in_byte) & 1 == 1 {
-                    acc += eq_r_dprime[bit_base + bit_in_byte];
-                }
-            }
-            tables[byte_idx * TABLE_SIZE + value] = acc;
-        }
-    }
-
-    suffix_tensor
-        .par_iter()
-        .map(|&elem| {
-            let tables_ptr = tables.as_ptr();
-            let lo_bytes = elem.lo.to_le_bytes();
-            let hi_bytes = elem.hi.to_le_bytes();
-            // Tree reduction (depth 4) — see fold_b128_elems_split for the
-            // pattern. Raw pointer access avoids per-lookup bounds checks
-            // (max index = 15 * 256 + 255 = 4095 = N_BYTES * TABLE_SIZE - 1,
-            // in bounds).
-            let (l0, l1, l2, l3, l4, l5, l6, l7, h0, h1, h2, h3, h4, h5, h6, h7) = unsafe {
-                (
-                    *tables_ptr.add(lo_bytes[0] as usize),
-                    *tables_ptr.add(TABLE_SIZE + lo_bytes[1] as usize),
-                    *tables_ptr.add(2 * TABLE_SIZE + lo_bytes[2] as usize),
-                    *tables_ptr.add(3 * TABLE_SIZE + lo_bytes[3] as usize),
-                    *tables_ptr.add(4 * TABLE_SIZE + lo_bytes[4] as usize),
-                    *tables_ptr.add(5 * TABLE_SIZE + lo_bytes[5] as usize),
-                    *tables_ptr.add(6 * TABLE_SIZE + lo_bytes[6] as usize),
-                    *tables_ptr.add(7 * TABLE_SIZE + lo_bytes[7] as usize),
-                    *tables_ptr.add(8 * TABLE_SIZE + hi_bytes[0] as usize),
-                    *tables_ptr.add(9 * TABLE_SIZE + hi_bytes[1] as usize),
-                    *tables_ptr.add(10 * TABLE_SIZE + hi_bytes[2] as usize),
-                    *tables_ptr.add(11 * TABLE_SIZE + hi_bytes[3] as usize),
-                    *tables_ptr.add(12 * TABLE_SIZE + hi_bytes[4] as usize),
-                    *tables_ptr.add(13 * TABLE_SIZE + hi_bytes[5] as usize),
-                    *tables_ptr.add(14 * TABLE_SIZE + hi_bytes[6] as usize),
-                    *tables_ptr.add(15 * TABLE_SIZE + hi_bytes[7] as usize),
-                )
-            };
-            let p0 = l0 + l1;
-            let p1 = l2 + l3;
-            let p2 = l4 + l5;
-            let p3 = l6 + l7;
-            let p4 = h0 + h1;
-            let p5 = h2 + h3;
-            let p6 = h4 + h5;
-            let p7 = h6 + h7;
-            let q0 = p0 + p1;
-            let q1 = p2 + p3;
-            let q2 = p4 + p5;
-            let q3 = p6 + p7;
-            let r0 = q0 + q1;
-            let r1 = q2 + q3;
-            r0 + r1
-        })
-        .collect()
-}
-
-/// Tensor-split sibling of [`fold_b128_elems`]. Takes the two factors
-/// `(eq_lo, eq_hi)` from [`build_eq_split`] instead of the materialized
-/// suffix tensor. Each full entry `elem = eq_lo[i_lo] * eq_hi[i_hi]` is
-/// reconstructed on the fly (one GF multiply per output position) and fed to
-/// the same 16-byte-table lookup — the bit-decomposition the table indexes
-/// does **not** factor through the `eq_lo`/`eq_hi` split, so the product must
-/// be formed first.
-///
-/// Output order matches the materialized tensor: `out[i_hi·B + i_lo]` with
-/// `B = eq_lo.len()`, so it is **byte-identical** to
-/// `fold_b128_elems(build_eq_parallel(r), eq_r_dprime)` (field multiply is
-/// exact, so `eq_lo[i_lo] * eq_hi[i_hi]` has the same bits as the
-/// materialized entry).
-/// Number of bytes in an `F128` (= lookup tables for the fold).
-const FOLD_N_BYTES: usize = 16;
+/// Number of bytes in an E element (= lookup tables for the fold).
+const FOLD_N_BYTES: usize = 24;
 /// Entries per byte-lookup table.
 const FOLD_TABLE_SIZE: usize = 256;
 
-/// Build the 16×256 byte-lookup table the fold indexes: `table[k·256 + v]` =
-/// `Σ_{bit b set in v} eq_r_dprime[k·8 + b]`. For the ring-switch fold,
-/// `eq_r_dprime` already has γ_k baked in, so the table carries γ too.
-fn build_fold_byte_table(eq_r_dprime: &[F128]) -> Vec<F128> {
-    assert_eq!(eq_r_dprime.len(), 1 << LOG_PACKING);
-    let mut tables = vec![F128::ZERO; FOLD_N_BYTES * FOLD_TABLE_SIZE];
+/// Build the 24x256 byte-lookup table for [`fold_ext_elems`]:
+/// `table[k * 256 + v] = sum_{bit b set in v} coordinate_weights[k * 8 + b]`.
+/// Byte order: bytes 0..8 are the little-endian bytes of `c0` (bits 0..64),
+/// bytes 8..16 those of `c1` (bits 64..128), and bytes 16..24 those of `c2`.
+fn build_fold_byte_table_ext(coordinate_weights: &[F192]) -> Vec<F192> {
+    assert_eq!(coordinate_weights.len(), DEGREE_E);
+    let mut tables = vec![F192::ZERO; FOLD_N_BYTES * FOLD_TABLE_SIZE];
     for byte_idx in 0..FOLD_N_BYTES {
         let bit_base = byte_idx * 8;
         for value in 0..FOLD_TABLE_SIZE {
-            let mut acc = F128::ZERO;
+            let mut acc = F192::ZERO;
             for bit_in_byte in 0..8 {
                 if (value >> bit_in_byte) & 1 == 1 {
-                    acc += eq_r_dprime[bit_base + bit_in_byte];
+                    acc += coordinate_weights[bit_base + bit_in_byte];
                 }
             }
             tables[byte_idx * FOLD_TABLE_SIZE + value] = acc;
@@ -1330,1240 +432,1004 @@ fn build_fold_byte_table(eq_r_dprime: &[F128]) -> Vec<F128> {
     tables
 }
 
-/// One folded output slot: `Σ_{k=0..16} tables[k·256 + byte_k(elem)]`, where
-/// `byte_k` are the 16 little-endian bytes of `elem`. `tables` MUST be a
-/// `build_fold_byte_table` output (length `16·256`). Tree-reduced (depth 4)
-/// rather than a length-15 XOR chain so the adds pipeline.
+/// One folded output slot: `sum_{k=0..24} tables[k * 256 + byte_k(elem)]`,
+/// tree-reduced (depth 4) so the XORs pipeline. `tables` MUST be a
+/// [`build_fold_byte_table_ext`] output (length 24 * 256). Mirror of
+/// `ring_switch::fold_one_slot` with `(c0, c1)` in place of `(lo, hi)`.
 #[inline(always)]
-pub(crate) fn fold_one_slot(elem: F128, tables: &[F128]) -> F128 {
+fn fold_one_slot_ext(elem: F192, tables: &[F192]) -> F192 {
     debug_assert_eq!(tables.len(), FOLD_N_BYTES * FOLD_TABLE_SIZE);
-    let lo_bytes = elem.lo.to_le_bytes();
-    let hi_bytes = elem.hi.to_le_bytes();
-    let tables_ptr = tables.as_ptr();
-    // SAFETY: byte values are u8 (0..256); the max offset is
-    // `15·256 + 255 = 4095 = 16·256 − 1`, in-bounds for the asserted length.
-    let (l0, l1, l2, l3, l4, l5, l6, l7, h0, h1, h2, h3, h4, h5, h6, h7) = unsafe {
-        (
-            *tables_ptr.add(lo_bytes[0] as usize),
-            *tables_ptr.add(FOLD_TABLE_SIZE + lo_bytes[1] as usize),
-            *tables_ptr.add(2 * FOLD_TABLE_SIZE + lo_bytes[2] as usize),
-            *tables_ptr.add(3 * FOLD_TABLE_SIZE + lo_bytes[3] as usize),
-            *tables_ptr.add(4 * FOLD_TABLE_SIZE + lo_bytes[4] as usize),
-            *tables_ptr.add(5 * FOLD_TABLE_SIZE + lo_bytes[5] as usize),
-            *tables_ptr.add(6 * FOLD_TABLE_SIZE + lo_bytes[6] as usize),
-            *tables_ptr.add(7 * FOLD_TABLE_SIZE + lo_bytes[7] as usize),
-            *tables_ptr.add(8 * FOLD_TABLE_SIZE + hi_bytes[0] as usize),
-            *tables_ptr.add(9 * FOLD_TABLE_SIZE + hi_bytes[1] as usize),
-            *tables_ptr.add(10 * FOLD_TABLE_SIZE + hi_bytes[2] as usize),
-            *tables_ptr.add(11 * FOLD_TABLE_SIZE + hi_bytes[3] as usize),
-            *tables_ptr.add(12 * FOLD_TABLE_SIZE + hi_bytes[4] as usize),
-            *tables_ptr.add(13 * FOLD_TABLE_SIZE + hi_bytes[5] as usize),
-            *tables_ptr.add(14 * FOLD_TABLE_SIZE + hi_bytes[6] as usize),
-            *tables_ptr.add(15 * FOLD_TABLE_SIZE + hi_bytes[7] as usize),
-        )
-    };
-    // Level 1: 8 pair sums.
-    let p0 = l0 + l1;
-    let p1 = l2 + l3;
-    let p2 = l4 + l5;
-    let p3 = l6 + l7;
-    let p4 = h0 + h1;
-    let p5 = h2 + h3;
-    let p6 = h4 + h5;
-    let p7 = h6 + h7;
-    // Level 2.
-    let q0 = p0 + p1;
-    let q1 = p2 + p3;
-    let q2 = p4 + p5;
-    let q3 = p6 + p7;
-    // Level 3.
-    let r0 = q0 + q1;
-    let r1 = q2 + q3;
-    // Level 4.
-    r0 + r1
-}
-
-/// Per-output-index value of a [`RsEqInd::DeferredDense`] fold (the value the
-/// materialized `fold_b128_elems_split` would store at position `j`):
-/// `fold_one_slot(eq_lo[j & (B−1)] · eq_hi[j >> log2 B], table)`, `B = eq_lo.len()`.
-#[inline(always)]
-pub(crate) fn deferred_dense_value(
-    eq_lo: &[F128],
-    eq_hi: &[F128],
-    table: &[F128],
-    log_b: usize,
-    j: usize,
-) -> F128 {
-    let mask = (1usize << log_b) - 1;
-    fold_one_slot(eq_lo[j & mask] * eq_hi[j >> log_b], table)
-}
-
-pub fn fold_b128_elems_split(eq_lo: &[F128], eq_hi: &[F128], eq_r_dprime: &[F128]) -> Vec<F128> {
-    let tables = build_fold_byte_table(eq_r_dprime);
-    fold_b128_from_table(eq_lo, eq_hi, &tables)
-}
-
-/// Materialize a split-tensor fold from a prebuilt byte `tables`
-/// (`build_fold_byte_table` output). Block-parallel over `eq_hi`: each rayon
-/// task sweeps one `e_hi` over all of `eq_lo` (so `e_hi` is hoisted once per
-/// block). Used to un-defer a [`RsEqInd::DeferredDense`] in the pcs combine's
-/// general (mixed/sparse/packed-direct) fallback path.
-pub(crate) fn fold_b128_from_table(eq_lo: &[F128], eq_hi: &[F128], tables: &[F128]) -> Vec<F128> {
-    use rayon::prelude::*;
-    let b = eq_lo.len();
-    // Each slot is written exactly once (`*slot = acc`) before any read.
-    let mut out = primitives::scratch::take_f128(b * eq_hi.len());
-    out.par_chunks_mut(b)
-        .zip(eq_hi.par_iter())
-        .for_each(|(out_block, &e_hi)| {
-            for (i_lo, slot) in out_block.iter_mut().enumerate() {
-                *slot = fold_one_slot(eq_lo[i_lo] * e_hi, tables);
-            }
-        });
-    out
-}
-
-// ---------------------------------------------------------------------------
-// Sparse-tensor fast path.
-//
-// When the suffix `x_outer[1..]` has `k` coords exactly equal to `F128::ZERO`
-// (as is the case for the hash-chain ẑ-opening, whose `x_inner_rest` is padded
-// with trailing zeros), `build_eq` zeros out half the table per zero coord —
-// so `1 − 2^{-k}` of the suffix tensor is zero and contributes nothing to
-// `s_hat_v` (in `fold_1b_rows`) or `rs_eq_ind` (in `fold_b128_elems`). The
-// sparse kernels touch only the `2^{-k}` support and produce byte-identical
-// outputs to the dense kernels.
-//
-// Claims with fewer than `SPARSE_ZERO_THRESHOLD` zero coords stay on the dense
-// (MFR / 8-wide) path; the crossover threshold of 3 is conservative — at 3
-// zeros the support is 1/8 of the suffix length, plenty to amortize the
-// sparse fold's per-entry overhead.
-// ---------------------------------------------------------------------------
-
-/// Minimum number of exactly-zero suffix coords for a claim to be routed
-/// through the sparse kernels instead of the dense MFR fold.
-const SPARSE_ZERO_THRESHOLD: usize = 3;
-
-/// Sparse representation of `build_eq(coords)` when `coords` contains exact
-/// `F128::ZERO` entries: stores values at the compact (live) tensor positions
-/// and a `live_positions` table that maps compact bit `j` → original coord
-/// position. Avoids materializing the scattered `(full_idx, val)` pairs —
-/// consumers compute the scattered idx on-the-fly via [`Self::scatter_idx`]
-/// (a bit-deposit / pdep operation) at the point of use.
-#[derive(Clone, Debug)]
-pub struct SparseEqTensor {
-    /// `build_eq(live_coords)` — length `2^live_positions.len()`.
-    pub live_tensor: Vec<F128>,
-    /// Original-coord positions of each live coord, ascending. So compact bit
-    /// `j` of an enumeration index maps to bit `live_positions[j]` of the full
-    /// scattered index.
-    pub live_positions: Vec<usize>,
-}
-
-impl SparseEqTensor {
-    /// Compact-to-scattered index translation: deposit the live bits of `c`
-    /// into the original-coord positions. Inline so consumers' hot loops fuse
-    /// this with their own per-entry work.
-    ///
-    /// (Tried backing this with per-byte 256-entry LUTs to reduce the
-    /// 19-iteration loop to 3 LUT reads + ORs at chain scale. Measured wash
-    /// on the keccak chain m=30 bench — LLVM auto-pipelines the iterative
-    /// bit-deposit so aggressively that the per-entry scatter is already at
-    /// the noise floor.)
-    #[inline(always)]
-    pub fn scatter_idx(&self, c: usize) -> usize {
-        let mut full = 0usize;
-        for (j, &pos) in self.live_positions.iter().enumerate() {
-            full |= ((c >> j) & 1) << pos;
+    let bytes = [elem.c0.to_le_bytes(), elem.c1.to_le_bytes(), elem.c2.to_le_bytes()];
+    let mut acc = F192::ZERO;
+    for (word, word_bytes) in bytes.iter().enumerate() {
+        for (byte, &value) in word_bytes.iter().enumerate() {
+            acc += tables[(8 * word + byte) * FOLD_TABLE_SIZE + value as usize];
         }
-        full
     }
+    acc
+}
 
-    /// Materialize the scattered `(idx, val)` pairs. Test-oracle / external
-    /// consumers that genuinely need the materialized form should call this;
-    /// the prover hot path leaves the entries deferred via `scatter_idx`.
-    pub fn materialize(&self) -> Vec<(usize, F128)> {
-        self.live_tensor
+/// Deferred, gamma-baked ring-switch output used by the stacked opener.
+///
+/// Keeping the split eq factors and the tiny byte table avoids materializing
+/// one full `rs_eq_ind` vector per claim.  The table already contains the
+/// claim's batching scalar, so combining several claims needs only additions.
+pub(crate) struct DeferredRingSwitchOutput {
+    pub(crate) batched_sumcheck_claim: F192,
+    eq_lo: Vec<F192>,
+    eq_hi: Vec<F192>,
+    table: Vec<F192>,
+}
+
+/// Finish a ring-switch claim without materializing its dense weight vector.
+/// The batching scalar is baked into both the target and the byte table.
+pub(crate) fn prove_finish_deferred(
+    state: RingSwitchProveState,
+    coordinate_weights: &[F192],
+    gamma: F192,
+) -> DeferredRingSwitchOutput {
+    let s_hat_u = transpose_s_hat(&state.s_hat_v);
+    let sumcheck_claim = inner_product_base_ext(&s_hat_u, coordinate_weights);
+    let scaled_weights: Vec<F192> = coordinate_weights.iter().map(|&x| gamma * x).collect();
+    DeferredRingSwitchOutput {
+        batched_sumcheck_claim: gamma * sumcheck_claim,
+        eq_lo: state.eq_lo,
+        eq_hi: state.eq_hi,
+        table: build_fold_byte_table_ext(&scaled_weights),
+    }
+}
+
+/// Fold several deferred claims directly into their final combined dense
+/// basis. Every output slot is written exactly once; no per-claim dense
+/// vectors are allocated or read back.
+pub(crate) fn combine_deferred_into(outputs: &[DeferredRingSwitchOutput], out: &mut [F192]) {
+    use rayon::prelude::*;
+
+    assert!(!outputs.is_empty());
+    let block_len = outputs[0].eq_lo.len();
+    assert!(block_len.is_power_of_two());
+    assert!(
+        outputs
             .iter()
-            .enumerate()
-            .map(|(c, &v)| (self.scatter_idx(c), v))
-            .collect()
-    }
+            .all(|o| { o.eq_lo.len() == block_len && o.eq_lo.len() * o.eq_hi.len() == out.len() })
+    );
 
+    out.par_chunks_mut(block_len).enumerate().for_each(|(hi, out_block)| {
+        for (claim_idx, claim) in outputs.iter().enumerate() {
+            let e_hi = claim.eq_hi[hi];
+            if claim_idx == 0 {
+                for (slot, &e_lo) in out_block.iter_mut().zip(&claim.eq_lo) {
+                    *slot = fold_one_slot_ext(e_lo * e_hi, &claim.table);
+                }
+            } else {
+                for (slot, &e_lo) in out_block.iter_mut().zip(&claim.eq_lo) {
+                    *slot += fold_one_slot_ext(e_lo * e_hi, &claim.table);
+                }
+            }
+        }
+    });
 }
 
-/// Build the sparse `build_eq(coords)` representation, skipping the zero-coord
-/// halvings. The output's `live_tensor` is the `build_eq` table over only the
-/// nonzero coords (length `2^live_count`); the scattered (full) index for
-/// compact entry `c` is reconstructed lazily via [`SparseEqTensor::scatter_idx`].
-///
-/// O(2^live_count) time and memory, vs the dense `build_eq`'s `O(2^coords.len())`.
-pub fn build_eq_sparse(coords: &[F128]) -> SparseEqTensor {
-    let live_positions: Vec<usize> = coords
-        .iter()
-        .enumerate()
-        .filter_map(|(i, &c)| if c == F128::ZERO { None } else { Some(i) })
-        .collect();
-    let live_coords: Vec<F128> = live_positions.iter().map(|&i| coords[i]).collect();
-    // Sequential build_eq. `build_eq_parallel` *does* save ~0.4 ms on the build
-    // itself at 19 live coords, but the downstream `fold_1b_rows_sparse` /
-    // `fold_b128_elems_sparse_pairs` then pay cross-core L2/L3 traffic to
-    // consume a tensor that was distributed across worker caches — net wash to
-    // slight loss at the ring_switch level. Keep the tensor cache-local here.
-    let live_tensor = build_eq(&live_coords);
-    SparseEqTensor {
-        live_tensor,
-        live_positions,
-    }
+/// Bytewise-table accelerated [`fold_ext_elems_naive`]: 24 lookup tables of
+/// 256 E entries each;
+/// per position 24 lookups + 23 XORs, no
+/// data-dependent bit-scan. Rayon across positions.
+/// Split point for the factored eq build: low half sized ~n/2 (min 4, the
+/// point where two factor tables beat one full build). Mirror of the extension-field
+/// layer's `ring_switch::split_n_lo`.
+pub fn split_n_lo(n: usize) -> usize {
+    (n / 2).clamp(4.min(n), n)
 }
 
-/// Sparse counterpart of one column of [`fold_1b_rows_multi`]: scans only the
-/// nonzero entries of the suffix tensor. Iterates compact (live-only) tensor
-/// indices and computes the scattered `packed_witness` index inline via
-/// [`SparseEqTensor::scatter_idx`] — avoids materializing the scattered
-/// `(idx, val)` pairs upfront.
-///
-/// Produces the same 128-entry `s_hat_v` as
-/// `fold_1b_rows_naive(packed_witness, build_eq(coords))`, since `build_eq`'s
-/// zero-coord halvings would otherwise contribute zero to every accumulator.
-pub fn fold_1b_rows_sparse(packed_witness: &[F128], eq: &SparseEqTensor) -> Vec<F128> {
-    // Tried: MFR fast path via `fold_1b_rows_sparse_mfr_block4` for the chain's
-    // block-of-4 / stride-128 support pattern. **Measured a regression on
-    // blake3 m=29** (~2.5 ms slower at chain proof level) and roughly break-
-    // even on keccak. The subset-sum + transpose overhead doesn't amortize
-    // over only 4 entries per group when packed_witness reads are scattered
-    // (stride 128 = 2 KB jumps defeat the prefetcher), so the dispatch is
-    // scalar.
-    fold_1b_rows_sparse_scalar(packed_witness, eq)
+/// Factored eq tensor: `eq(point, y) = eq_lo[y & (2^n_lo - 1)] * eq_hi[y >> n_lo]`
+/// (LSB-first indexing, matching `build_eq_table_ext`). Materializes
+/// `2^n_lo + 2^(n - n_lo)` entries instead of `2^n`; field multiplication is
+/// exact, so the reconstructed entries are bit-identical to the full build.
+/// Mirror of the extension-field layer's `ring_switch::build_eq_split`.
+pub fn build_eq_split_ext(point: &[F192]) -> (Vec<F192>, Vec<F192>) {
+    let n_lo = split_n_lo(point.len());
+    (build_eq_table_ext(&point[..n_lo]), build_eq_table_ext(&point[n_lo..]))
 }
 
-/// Scalar bit-scan fallback for `fold_1b_rows_sparse`. One bit-scan per support
-/// entry — used when the support's index pattern isn't a uniform stride-block.
-fn fold_1b_rows_sparse_scalar(packed_witness: &[F128], eq: &SparseEqTensor) -> Vec<F128> {
+/// [`fold_ext_elems`] over the FACTORED tensor: each entry is reconstructed on
+/// the fly (`eq_lo[a] * eq_hi[b]`, one multiply) and folded — the full
+/// `2^n`-entry tensor is never materialized. Bit-identical output.
+#[cfg(test)]
+pub fn fold_ext_elems_split(eq_lo: &[F192], eq_hi: &[F192], coordinate_weights: &[F192]) -> Vec<F192> {
     use rayon::prelude::*;
-    let n = 1 << LOG_PACKING;
-    let zero_acc = || vec![F128::ZERO; n];
-
-    eq.live_tensor
-        .par_iter()
-        .enumerate()
-        .fold(zero_acc, |mut acc, (c, &val)| {
-            // Scatter compact c → original index (inlined bit-deposit).
-            let idx = eq.scatter_idx(c);
-            let elem = packed_witness[idx];
-            let mut lo = elem.lo;
-            while lo != 0 {
-                let r = lo.trailing_zeros() as usize;
-                acc[r] += val;
-                lo &= lo - 1;
-            }
-            let mut hi = elem.hi;
-            while hi != 0 {
-                let r = hi.trailing_zeros() as usize;
-                acc[64 | r] += val;
-                hi &= hi - 1;
-            }
-            acc
-        })
-        .reduce(zero_acc, |mut a, b| {
-            for r in 0..n {
-                a[r] += b[r];
-            }
-            a
-        })
+    let tables = build_fold_byte_table_ext(coordinate_weights);
+    let n_lo = eq_lo.len();
+    debug_assert!(n_lo.is_power_of_two());
+    let mask = n_lo - 1;
+    let shift = n_lo.trailing_zeros();
+    (0..n_lo * eq_hi.len())
+        .into_par_iter()
+        .map(|y| fold_one_slot_ext(eq_lo[y & mask] * eq_hi[y >> shift], &tables))
+        .collect()
 }
 
-/// Sparse counterpart of [`fold_b128_elems`] returning **sparse pairs** instead
-/// of a dense vector — skips the O(L) zero-init / scatter entirely. Each pair
-/// `(idx, value)` has the same per-element bit-scan over `eq_r_dprime` as the
-/// dense kernel computed at that index; positions absent from the output are
-/// implicitly `F128::ZERO`. Consumers must handle the sparse representation
-/// (see [`RsEqInd::Sparse`]).
-///
-/// Iterates compact tensor positions and scatters the index inline only at
-/// emission — avoids materializing the scattered `(idx, val)` pairs upfront.
-pub fn fold_b128_elems_sparse_pairs(
-    eq: &SparseEqTensor,
-    eq_r_dprime: &[F128],
-) -> Vec<(usize, F128)> {
+#[cfg(test)]
+pub fn fold_ext_elems(suffix_tensor: &[F192], coordinate_weights: &[F192]) -> Vec<F192> {
     use rayon::prelude::*;
-    assert_eq!(eq_r_dprime.len(), 1 << LOG_PACKING);
-    eq.live_tensor
+    let tables = build_fold_byte_table_ext(coordinate_weights);
+    suffix_tensor
         .par_iter()
-        .enumerate()
-        .map(|(c, &tensor_val)| {
-            let mut acc = F128::ZERO;
-            let mut lo = tensor_val.lo;
-            while lo != 0 {
-                let b = lo.trailing_zeros() as usize;
-                acc += eq_r_dprime[b];
-                lo &= lo - 1;
-            }
-            let mut hi = tensor_val.hi;
-            while hi != 0 {
-                let b = hi.trailing_zeros() as usize;
-                acc += eq_r_dprime[64 | b];
-                hi &= hi - 1;
-            }
-            // Scatter compact c → original index via per-byte LUT (inlined).
-            (eq.scatter_idx(c), acc)
-        })
+        .map(|&elem| fold_one_slot_ext(elem, &tables))
         .collect()
 }
 
 // ---------------------------------------------------------------------------
-// Prover / verifier of the ring-switching reduction.
+// Prover / verifier of the reduction
 // ---------------------------------------------------------------------------
 
-// (No RingSwitchProof struct: the prover message — `s_hat_v`, the 128
-// slice-MLEs at the suffix point — rides the shared transcript stream.)
-
-/// Per-claim output of [`prove_batched_padded_with_precomputed`]: the claim's
-/// `rs_eq_ind` weight (dense, deferred-dense, or sparse) and its sumcheck
-/// claim. The verifier recomputes the claim via [`verify_bind`] inside the
-/// stacked verifier (`pcs::verify_opening_batch_mixed_ligerito_stacked`).
-pub struct RingSwitchBatchOutput {
-    /// For dense claims this is `γ_k · B_k` — γ is baked into the byte
-    /// table during the fold inside `prove_batched_padded_with_precomputed`,
-    /// so pcs's combine just adds it without per-slot γ-mul. For sparse
-    /// claims `γ_k · entries` are baked similarly.
-    pub rs_eq_ind: RsEqInd,
-    pub sumcheck_claim: F128,
+/// The prover message: the 64 bit-slice MLEs at the suffix point.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RingSwitchProof {
+    pub s_hat_v: Vec<F192>,
 }
 
-/// Sparse-or-dense representation of `rs_eq_ind`. All variants here have γ_k
-/// pre-multiplied in (see `RingSwitchBatchOutput`).
+/// What both prover and (dense) verifier compute as a result of the
+/// reduction: the transparent weight vector and the Ligerito target.
+#[cfg(test)]
 #[derive(Clone, Debug)]
-pub enum RsEqInd {
-    Dense(Vec<F128>),
-    /// Deferred dense: the `γ_k·B_k` buffer is **not** materialized. Instead the
-    /// fold ingredients (`build_eq_split` factors + the γ-baked byte table) are
-    /// carried so pcs's combine can fold each slot on the fly and accumulate it
-    /// straight into `b_combined` — avoiding a 2^(m-7) materialize + readback
-    /// per claim. `value(j) = deferred_dense_value(eq_lo, eq_hi, table, log2(B), j)`,
-    /// `B = eq_lo.len()`; byte-identical to `Dense(fold_b128_elems_split(..))`.
-    DeferredDense {
-        eq_lo: Vec<F128>,
-        eq_hi: Vec<F128>,
-        table: Vec<F128>,
-    },
-    Sparse {
-        len: usize,
-        entries: Vec<(usize, F128)>,
-    },
+pub struct RingSwitchOutput {
+    pub rs_eq_ind: Vec<F192>,
+    pub sumcheck_claim: F192,
 }
 
-impl RsEqInd {
-    /// Logical length of the underlying vector.
-    pub fn dense_len(&self) -> usize {
-        match self {
-            Self::Dense(v) => v.len(),
-            Self::DeferredDense { eq_lo, eq_hi, .. } => eq_lo.len() * eq_hi.len(),
-            Self::Sparse { len, .. } => *len,
-        }
-    }
-
-    /// Materialize the dense view. O(L) regardless of variant; use sparingly.
-    pub fn to_dense(&self) -> Vec<F128> {
-        match self {
-            Self::Dense(v) => v.clone(),
-            Self::DeferredDense {
-                eq_lo,
-                eq_hi,
-                table,
-            } => {
-                let log_b = eq_lo.len().trailing_zeros() as usize;
-                let l = eq_lo.len() * eq_hi.len();
-                (0..l)
-                    .map(|j| deferred_dense_value(eq_lo, eq_hi, table, log_b, j))
-                    .collect()
-            }
-            Self::Sparse { len, entries } => {
-                let mut out = vec![F128::ZERO; *len];
-                for &(idx, val) in entries {
-                    out[idx] = val;
-                }
-                out
-            }
-        }
-    }
-
+/// Verifier-side output of [`verify_succinct`]: everything needed to drive
+/// the Ligerito consistency check without materializing `rs_eq_ind`.
+#[derive(Clone, Debug)]
+pub struct RingSwitchVerifierOutput {
+    pub sumcheck_claim: F192,
+    /// Univariate powers derived from the batching challenge; feed them to
+    /// [`eval_rs_eq`] at the Ligerito final point.
+    pub coordinate_weights: Vec<F192>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VerifyError {
     ClaimMismatch,
-    /// The proof stream ran out while reading `s_hat_v`.
-    Transcript(fiat_shamir::transcript::Error),
 }
 
-/// THE batched ring-switching prover. Accepts an optional precomputed
-/// `s_hat_v` per claim. When `precomputed_s_hat_v[i] = Some(v)` for claim `i`,
-/// the prover skips that claim's `fold_1b_rows` work and uses `v` directly as
-/// `s_hat_v` for the per-opening tail (sumcheck_claim, rs_eq_ind, transcript
-/// observe). The eq tensor (`eq_lo`/`eq_hi` or sparse support) is still built
-/// because `fold_b128_elems_split` needs it for `rs_eq_ind`.
+/// Prover side of the reduction.
 ///
-/// Use case: AB-claim opening when lincheck's pre-sumcheck `z_vec` is
-/// available — see [`s_hat_v_from_z_vec`] and `prover::open_claims`.
+/// Inputs:
+/// - `packed_witness`: `2^L` K words (L = m - 6), from
+///   [`super::pack::pack_witness`].
+/// - `prefix_weights`: the 64 per-bit-column weights of the consumed claim
+///   ([`eq_prefix_weights`] for a plain point; phi_8 Lagrange weights mapped
+///   directly in the tower for flock's skip claim).
+/// - `suffix_point`: the L outer coords (in E) addressing words.
+/// - `claim`: the claimed value `sum_i prefix_weights[i] * s_hat_v[i]`;
+///   asserted against the witness (an honest caller always passes a
+///   consistent claim, so this is a cheap integration check, 64 E-mults).
+/// - `sponge` for sampling the row-batching challenge `rho`.
 ///
-/// `precomputed_s_hat_v` must be `&[]` (no precomputes) or have length equal
-/// to `x_outers.len()`. Each precomputed slice must be length `2^LOG_PACKING`.
-///
-/// Output is **byte-identical** to the no-precompute path when the precomputed
-/// `s_hat_v` is honest (matches what `fold_1b_rows` would produce). Transcript
-/// observes the same bytes in the same order.
-pub fn prove_batched_padded_with_precomputed(
-    packed_witness: &[F128],
-    x_outers: &[&[F128]],
-    precomputed_s_hat_v: &[Option<&[F128]>],
-    padding: &PaddingSpec,
-    ps: &mut ProverState,
-) -> (Vec<RingSwitchBatchOutput>, Vec<F128>) {
-    assert!(!x_outers.is_empty());
-    let trace = std::env::var("PCS_TRACE").is_ok();
-    let n = x_outers.len();
-    let l = packed_witness.len();
-    for x in x_outers {
-        assert!(!x.is_empty());
-        assert_eq!(l, 1 << (x.len() - 1));
-    }
-    assert!(
-        precomputed_s_hat_v.is_empty() || precomputed_s_hat_v.len() == n,
-        "precomputed_s_hat_v: must be empty or length {n}, got {}",
-        precomputed_s_hat_v.len(),
+/// Output: the proof message `s_hat_v` (64 E values) plus the Ligerito
+/// inputs `(rs_eq_ind, sumcheck_claim)`; open with
+/// `recursive_prover_with_basis(config, packed, rs_eq_ind, sumcheck_claim, ..)`.
+#[cfg(test)]
+pub fn prove(
+    packed_witness: &[F64],
+    prefix_weights: &[F192],
+    suffix_point: &[F192],
+    claim: F192,
+    precomputed_s_hat_v: Option<&[F192]>,
+    sponge: &mut Sponge,
+) -> (RingSwitchProof, RingSwitchOutput) {
+    assert_eq!(prefix_weights.len(), PACKING_WIDTH);
+    assert_eq!(
+        packed_witness.len(),
+        1usize << suffix_point.len(),
+        "packed witness must have 2^|suffix_point| words"
     );
-    let n_packed = 1usize << LOG_PACKING;
-    for p in precomputed_s_hat_v.iter().flatten() {
-        assert_eq!(
-            p.len(),
-            n_packed,
-            "precomputed_s_hat_v entry must have length 2^LOG_PACKING"
-        );
-    }
 
-    // Per-orig-claim "precomputed?" predicate. Empty precomputed slice → all
-    // claims need fold (matches the existing behavior bit-for-bit).
-    let has_precomputed =
-        |orig: usize| -> bool { precomputed_s_hat_v.get(orig).copied().flatten().is_some() };
-
-    // 1. Classify each claim. Claims whose suffix `x_outer[1..]` has at least
-    //    `SPARSE_ZERO_THRESHOLD` exactly-zero coords (e.g. the hash-chain
-    //    ẑ-claim) skip the dense kernels entirely; the rest fuse through the
-    //    existing MFR/8-wide multi-fold. Pulling sparse claims out also
-    //    restores k==2 (the MFR fast-path threshold in `fold_1b_rows_multi`)
-    //    when there are exactly two dense claims — the common case.
-    #[derive(Clone, Copy)]
-    enum Kind {
-        Dense(usize),
-        Sparse(usize),
-    }
-    let mut kinds: Vec<Kind> = Vec::with_capacity(n);
-    let mut dense_suffixes: Vec<&[F128]> = Vec::new();
-    let mut sparse_suffixes: Vec<&[F128]> = Vec::new();
-    // Map dense/sparse claim index back to the original `x_outers` index — used
-    // to look up precomputed slots without recomputing the classification.
-    let mut dense_to_orig: Vec<usize> = Vec::new();
-    let mut sparse_to_orig: Vec<usize> = Vec::new();
-    for (orig, x) in x_outers.iter().enumerate() {
-        let suffix = &x[1..];
-        let n_zeros = suffix.iter().filter(|&&c| c == F128::ZERO).count();
-        if n_zeros >= SPARSE_ZERO_THRESHOLD {
-            kinds.push(Kind::Sparse(sparse_suffixes.len()));
-            sparse_to_orig.push(orig);
-            sparse_suffixes.push(suffix);
-        } else {
-            kinds.push(Kind::Dense(dense_suffixes.len()));
-            dense_to_orig.push(orig);
-            dense_suffixes.push(suffix);
-        }
-    }
-
-    // 2. Build suffix representations. Dense claims use the tensor-split
-    //    factorization (two ~2^(n/2) factors instead of the full 2^n tensor)
-    //    whenever `len` is a whole number of 16-wide MFR chunks — i.e. all
-    //    real workloads. The split keeps `build_eq` off the critical path and
-    //    lets the fold skip streaming the multi-MB tensor (see
-    //    `fold_1b_rows_split`). Tiny test sizes (len not divisible by 16) fall
-    //    back to the materialized tensor + the legacy multi-fold.
-    let use_split = l.is_multiple_of(16);
-    let t = std::time::Instant::now();
-    let dense_splits: Vec<(Vec<F128>, Vec<F128>)> = if use_split {
-        dense_suffixes
-            .iter()
-            .map(|s| build_eq_split(s, split_n_lo(s.len())))
-            .collect()
-    } else {
-        Vec::new()
-    };
-    let dense_tensors: Vec<Vec<F128>> = if use_split {
-        Vec::new()
-    } else {
-        dense_suffixes
-            .iter()
-            .map(|s| build_eq_parallel(s))
-            .collect()
-    };
-    let sparse_supports: Vec<SparseEqTensor> =
-        sparse_suffixes.iter().map(|s| build_eq_sparse(s)).collect();
-    if trace {
-        eprintln!(
-            "    [rs::prove_batched] build_eq dense×{} ({}) + sparse×{}: {:6.2} ms",
-            dense_suffixes.len(),
-            if use_split { "split" } else { "full" },
-            sparse_supports.len(),
-            t.elapsed().as_secs_f64() * 1e3
-        );
-    }
-
-    // 3. fold_1b_rows: split inner-then-outer fold per dense claim (or the
-    //    legacy fused MFR multi-fold for tiny non-split sizes); per-claim
-    //    sparse scan for the rest.
-    //
-    //    Precomputed claims skip fold_1b_rows entirely — their s_hat_v is
-    //    supplied by the caller. dense_s_hat_v/sparse_s_hat_v are still
-    //    indexed by classify-time index `d` / `s`; we splice precomputed
-    //    values in at those slots and run the kernel only on the others.
-    let dense_needs_fold: Vec<usize> = (0..dense_suffixes.len())
-        .filter(|&d| !has_precomputed(dense_to_orig[d]))
-        .collect();
-    let sparse_needs_fold: Vec<usize> = (0..sparse_suffixes.len())
-        .filter(|&s| !has_precomputed(sparse_to_orig[s]))
-        .collect();
-    let t = std::time::Instant::now();
-    let mut dense_s_hat_v: Vec<Vec<F128>> = vec![Vec::new(); dense_suffixes.len()];
-    let mut sparse_s_hat_v: Vec<Vec<F128>> = vec![Vec::new(); sparse_suffixes.len()];
-    // Fill precomputed slots first.
-    for d in 0..dense_suffixes.len() {
-        if let Some(p) = precomputed_s_hat_v.get(dense_to_orig[d]).copied().flatten() {
-            dense_s_hat_v[d] = p.to_vec();
-        }
-    }
-    for s in 0..sparse_suffixes.len() {
-        if let Some(p) = precomputed_s_hat_v
-            .get(sparse_to_orig[s])
-            .copied()
-            .flatten()
-        {
-            sparse_s_hat_v[s] = p.to_vec();
-        }
-    }
-    // Run the kernel only on claims that genuinely need fold_1b_rows.
-    if use_split {
-        match dense_needs_fold.len() {
-            0 => {}
-            2 => {
-                // K=2 specialization with stack-allocated inner accumulators —
-                // one packed_witness streaming pass, shared transposes.
-                let d0 = dense_needs_fold[0];
-                let d1 = dense_needs_fold[1];
-                let (lo0, hi0) = (dense_splits[d0].0.as_slice(), dense_splits[d0].1.as_slice());
-                let (lo1, hi1) = (dense_splits[d1].0.as_slice(), dense_splits[d1].1.as_slice());
-                let (a, b) = fold_1b_rows_split_2way(packed_witness, lo0, hi0, lo1, hi1, padding);
-                dense_s_hat_v[d0] = a;
-                dense_s_hat_v[d1] = b;
-            }
-            _ => {
-                for &d in &dense_needs_fold {
-                    let (eq_lo, eq_hi) = (&dense_splits[d].0, &dense_splits[d].1);
-                    dense_s_hat_v[d] = fold_1b_rows_split(packed_witness, eq_lo, eq_hi, padding);
-                }
-            }
-        }
-    } else if !dense_needs_fold.is_empty() {
-        let dense_refs: Vec<&[F128]> = dense_needs_fold
-            .iter()
-            .map(|&d| dense_tensors[d].as_slice())
-            .collect();
-        let out = fold_1b_rows_multi_padded(packed_witness, &dense_refs, padding);
-        for (i, &d) in dense_needs_fold.iter().enumerate() {
-            dense_s_hat_v[d] = out[i].clone();
-        }
-    }
-    for &s in &sparse_needs_fold {
-        sparse_s_hat_v[s] = fold_1b_rows_sparse(packed_witness, &sparse_supports[s]);
-    }
-    if trace {
-        eprintln!(
-            "    [rs::prove_batched] fold_1b_rows dense(k={})+sparse(k={}): {:6.2} ms",
-            dense_s_hat_v.len(),
-            sparse_s_hat_v.len(),
-            t.elapsed().as_secs_f64() * 1e3
-        );
-    }
-
-    // 4. Per-opening tail. Two phases:
-    //    (a) Per claim: observe(label, s_hat_v), sample r''_i, compute
-    //        sumcheck_claim. Stash factors needed for fold.
-    //    (b) Sample γ_rs after all observations (Schwartz-Zippel-sound).
-    //    (c) Per claim: bake γ_k into eq_r_dprime, fold. Output rs_eq_ind
-    //        already has γ_k baked in — pcs combine just adds.
-    let t = std::time::Instant::now();
-
-    struct ClaimWork {
-        sumcheck_claim: F128,
-        eq_r_dprime: Vec<F128>,
-    }
-    // Bind every claim's slice first, then sample ONE r'' shared by all of
-    // them: each per-slice batching is sound conditioned on r'' being drawn
-    // after its slice is absorbed, which holds for all slices at once, and a
-    // recursive verifier then builds a single eq tensor and one linearized
-    // coefficient table for the whole batch.
-    let mut slices: Vec<Vec<F128>> = Vec::with_capacity(n);
-    for i in 0..n {
-        let s_hat_v: Vec<F128> = match kinds[i] {
-            Kind::Dense(d) => dense_s_hat_v[d].clone(),
-            Kind::Sparse(s) => sparse_s_hat_v[s].clone(),
-        };
-        ps.add_scalars(&s_hat_v);
-        slices.push(s_hat_v);
-    }
-    let r_dprime = ps.sample_vec(LOG_PACKING);
-    let eq_r_dprime = build_eq(&r_dprime);
-    let mut work: Vec<ClaimWork> = Vec::with_capacity(n);
-    for s_hat_v in slices {
-        let s_hat_u = tensor_algebra_transpose(&s_hat_v);
-        let sumcheck_claim = inner_product(&s_hat_u, &eq_r_dprime);
-        work.push(ClaimWork {
-            sumcheck_claim,
-            eq_r_dprime: eq_r_dprime.clone(),
-        });
-    }
-
-    // γ_rs sampled after all RS observations — sound. Each γ_rs[k] is then
-    // baked into eq_r_dprime[k] before building the Φ byte table, so the
-    // fold output is γ_k · B_k directly. pcs combine just adds.
-    let gammas_rs: Vec<F128> = (0..n).map(|_| ps.sample()).collect();
-
-    let results: Vec<RingSwitchBatchOutput> = work
-        .into_iter()
-        .zip(gammas_rs.iter())
-        .enumerate()
-        .map(|(i, (w, &g))| {
-            let scaled_eq_r_dprime: Vec<F128> = w.eq_r_dprime.iter().map(|x| g * *x).collect();
-            let rs_eq_ind = match kinds[i] {
-                Kind::Dense(d) => {
-                    if use_split {
-                        // Defer the fold: carry the split factors + γ-baked byte
-                        // table so pcs's combine folds each slot directly into
-                        // `b_combined` (no 2^(m-7) materialize + readback). The
-                        // table build is the only work done here (16·256 adds).
-                        let (eq_lo, eq_hi) = &dense_splits[d];
-                        RsEqInd::DeferredDense {
-                            eq_lo: eq_lo.clone(),
-                            eq_hi: eq_hi.clone(),
-                            table: build_fold_byte_table(&scaled_eq_r_dprime),
-                        }
-                    } else {
-                        RsEqInd::Dense(fold_b128_elems(&dense_tensors[d], &scaled_eq_r_dprime))
-                    }
-                }
-                Kind::Sparse(s) => RsEqInd::Sparse {
-                    len: l,
-                    entries: fold_b128_elems_sparse_pairs(&sparse_supports[s], &scaled_eq_r_dprime),
-                },
-            };
-            RingSwitchBatchOutput {
-                rs_eq_ind,
-                sumcheck_claim: w.sumcheck_claim,
-            }
-        })
-        .collect();
-
-    if trace {
-        eprintln!(
-            "    [rs::prove_batched] per-opening tail ×{}: {:6.2} ms",
-            n,
-            t.elapsed().as_secs_f64() * 1e3
-        );
-    }
-
-    (results, gammas_rs)
+    // Single-claim wrapper: observe s_hat_v, sample its own rho, finish. The
+    // STACKED opener instead calls `prove_observe` for every claim, samples ONE
+    // shared rho after all are observed, then `prove_finish` per claim
+    // (matching the extension-field opener + the recursion guest).
+    let (proof, state) = prove_observe(
+        packed_witness,
+        prefix_weights,
+        suffix_point,
+        claim,
+        precomputed_s_hat_v,
+        sponge,
+    );
+    let rho = sponge.sample();
+    let coordinate_weights = build_coordinate_weights(rho);
+    let out = prove_finish(&state, &coordinate_weights);
+    (proof, out)
 }
 
-/// Verifier-side output of the ring-switch binding (`verify_bind` plus the shared `r''` sample in the stacked verifier): contains everything the caller
-/// needs to drive the opening's consistency check, *without* materializing the
-/// dense `rs_eq_ind` vector of length `2^(m-7)`.
-#[derive(Clone, Debug)]
-pub struct RingSwitchVerifierOutput {
-    pub sumcheck_claim: F128,
-    /// The sampled `r''` itself (`LOG_PACKING = 7` coordinates).
-    pub r_dprime: Vec<F128>,
-    /// `eq` tensor of length `2^LOG_PACKING = 128` derived from the verifier's
-    /// sampled `r''`. Used by [`eval_rs_eq`] at the opening's final point.
-    pub eq_r_dprime: Vec<F128>,
+/// Prover-side scratch carried between [`prove_observe`] and [`prove_finish`]
+/// (the batching-independent data: the slice-MLE vector and the factored eq tensor).
+#[derive(Clone)]
+pub struct RingSwitchProveState {
+    s_hat_v: Vec<F192>,
+    eq_lo: Vec<F192>,
+    eq_hi: Vec<F192>,
 }
 
-/// The bind + claim-check phase of the ring-switch verifier, for batch callers
-/// that share one `r''` across claims: absorbs the label and slice, checks
-/// the claim, samples nothing.
-pub fn verify_bind(
-    claim: F128,
-    z_skip: F128,
-    x_outer: &[F128],
-    vs: &mut VerifierState<'_>,
-) -> Result<Vec<F128>, VerifyError> {
-    assert!(!x_outer.is_empty());
-    let s_hat_v = vs.next_scalars(1 << LOG_PACKING).map_err(VerifyError::Transcript)?;
-    let weights = build_claim_weights(z_skip, x_outer[0]);
-    if claim_check(&weights, &s_hat_v) != claim {
+/// Phase 1 of the ring-switch prover: compute + observe `s_hat_v` (NO domain
+/// label — matches the extension-field opener). Returns the proof and the scratch for
+/// [`prove_finish`]. The caller samples the possibly shared `rho` afterwards.
+pub fn prove_observe(
+    packed_witness: &[F64],
+    prefix_weights: &[F192],
+    suffix_point: &[F192],
+    claim: F192,
+    precomputed_s_hat_v: Option<&[F192]>,
+    sponge: &mut Sponge,
+) -> (RingSwitchProof, RingSwitchProveState) {
+    assert_eq!(prefix_weights.len(), PACKING_WIDTH);
+    assert_eq!(
+        packed_witness.len(),
+        1usize << suffix_point.len(),
+        "packed witness must have 2^|suffix_point| words"
+    );
+    let (eq_lo, eq_hi) = build_eq_split_ext(suffix_point);
+    let s_hat_v = match precomputed_s_hat_v {
+        Some(v) => {
+            assert_eq!(v.len(), PACKING_WIDTH);
+            v.to_vec()
+        }
+        None => {
+            use rayon::prelude::*;
+            let mask = eq_lo.len() - 1;
+            let shift = eq_lo.len().trailing_zeros();
+            let full: Vec<F192> = (0..packed_witness.len())
+                .into_par_iter()
+                .map(|y| eq_lo[y & mask] * eq_hi[y >> shift])
+                .collect();
+            fold_1b_rows(packed_witness, &full)
+        }
+    };
+    assert_eq!(
+        claim_check(prefix_weights, &s_hat_v),
+        claim,
+        "ring_switch::prove: supplied claim does not match the witness"
+    );
+    observe_ext_slice(sponge, &s_hat_v);
+    (
+        RingSwitchProof {
+            s_hat_v: s_hat_v.clone(),
+        },
+        RingSwitchProveState { s_hat_v, eq_lo, eq_hi },
+    )
+}
+
+/// Phase 2 of the ring-switch prover: given the shared coordinate weights, produce
+/// the batched sumcheck claim and the transparent weight vector `rs_eq_ind`.
+#[cfg(test)]
+pub fn prove_finish(state: &RingSwitchProveState, coordinate_weights: &[F192]) -> RingSwitchOutput {
+    let s_hat_u = transpose_s_hat(&state.s_hat_v);
+    let sumcheck_claim = inner_product_base_ext(&s_hat_u, coordinate_weights);
+    let rs_eq_ind = fold_ext_elems_split(&state.eq_lo, &state.eq_hi, coordinate_weights);
+    RingSwitchOutput {
+        rs_eq_ind,
+        sumcheck_claim,
+    }
+}
+
+/// Verifier side of the reduction (dense: materializes `rs_eq_ind`).
+///
+/// Mirrors [`prove`]'s transcript exactly; returns `ClaimMismatch` if
+/// `sum_i prefix_weights[i] * s_hat_v[i] != claim`.
+#[cfg(test)]
+pub fn verify(
+    claim: F192,
+    prefix_weights: &[F192],
+    suffix_point: &[F192],
+    proof: &RingSwitchProof,
+    sponge: &mut Sponge,
+) -> Result<RingSwitchOutput, VerifyError> {
+    assert_eq!(prefix_weights.len(), PACKING_WIDTH);
+    assert_eq!(proof.s_hat_v.len(), PACKING_WIDTH);
+
+    // No domain label (matches `prove`'s single-claim wrapper + the extension-field opener).
+    observe_ext_slice(sponge, &proof.s_hat_v);
+
+    if claim_check(prefix_weights, &proof.s_hat_v) != claim {
         return Err(VerifyError::ClaimMismatch);
     }
-    Ok(s_hat_v)
+
+    let rho = sponge.sample();
+    let coordinate_weights = build_coordinate_weights(rho);
+
+    let s_hat_u = transpose_s_hat(&proof.s_hat_v);
+    let sumcheck_claim = inner_product_base_ext(&s_hat_u, &coordinate_weights);
+
+    let suffix_tensor = build_eq_table_ext(suffix_point);
+    let rs_eq_ind = fold_ext_elems(&suffix_tensor, &coordinate_weights);
+
+    Ok(RingSwitchOutput {
+        rs_eq_ind,
+        sumcheck_claim,
+    })
 }
 
-/// Polylog-cost evaluation of `MLE(rs_eq_ind)(query)` at the opening's final
-/// challenge point (DP24 §1.3, in linearized trace form).
+/// Polylog-cost verifier: same transcript as [`verify`] but does NOT build
+/// the dense `rs_eq_ind`. Pair with [`eval_rs_eq`] at the Ligerito final
+/// point (e.g. inside `recursive_verifier_with_basis_succinct`'s
+/// `eval_b_residual` closure).
+#[cfg(test)]
+pub fn verify_succinct(
+    claim: F192,
+    prefix_weights: &[F192],
+    proof: &RingSwitchProof,
+    sponge: &mut Sponge,
+) -> Result<RingSwitchVerifierOutput, VerifyError> {
+    // Single-claim wrapper (self-rho); the STACKED verifier uses
+    // verify_observe per claim, one shared rho, then verify_finish per claim.
+    verify_observe(claim, prefix_weights, proof, sponge)?;
+    let rho = sponge.sample();
+    let coordinate_weights = build_coordinate_weights(rho);
+    Ok(verify_finish(proof, &coordinate_weights))
+}
+
+/// Phase 1 of the ring-switch verifier: observe `s_hat_v` (NO domain label —
+/// matches the extension-field opener) and check the prefix-weight claim. The caller
+/// samples the possibly shared `rho` afterwards.
+pub fn verify_observe(
+    claim: F192,
+    prefix_weights: &[F192],
+    proof: &RingSwitchProof,
+    sponge: &mut Sponge,
+) -> Result<(), VerifyError> {
+    assert_eq!(prefix_weights.len(), PACKING_WIDTH);
+    assert_eq!(proof.s_hat_v.len(), PACKING_WIDTH);
+    observe_ext_slice(sponge, &proof.s_hat_v);
+    if claim_check(prefix_weights, &proof.s_hat_v) != claim {
+        return Err(VerifyError::ClaimMismatch);
+    }
+    Ok(())
+}
+
+/// Phase 2 of the ring-switch verifier: given the shared coordinate weights,
+/// produce the batched sumcheck claim.
+pub fn verify_finish(proof: &RingSwitchProof, coordinate_weights: &[F192]) -> RingSwitchVerifierOutput {
+    let s_hat_u = transpose_s_hat(&proof.s_hat_v);
+    let sumcheck_claim = inner_product_base_ext(&s_hat_u, coordinate_weights);
+    RingSwitchVerifierOutput {
+        sumcheck_claim,
+        coordinate_weights: coordinate_weights.to_vec(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Polylog evaluation of MLE(rs_eq_ind)
+// ---------------------------------------------------------------------------
+
+/// Polylog-cost evaluation of `MLE(rs_eq_ind)(query)` at the Ligerito final
+/// challenge point, following DP24 section 1.3 Figure 3 (mirror of
+/// `ring_switch::eval_rs_eq` retyped to the tower).
 ///
-/// The dense alternative — `mle_eval(&fold_b128_elems(build_eq(z_vals),
-/// eq_r_dprime), query)` — costs `O(2^|z_vals|)` field operations. This
-/// function costs `O(|z_vals| · 128)`: the tensor recurrence telescopes to
-/// `Σ_k c_k · Π_j (z_j^{2^k} + 1 + q_j)` with `c = linearized_eq_coeffs(w)`.
+/// ## Derivation
+///
+/// `rs_eq_ind[y] = Phi(eq(z, y))` with `z = suffix_point` and `Phi : E -> E`
+/// the F_2-linear map sending basis bit w to `coordinate_weights[w]`. So
+///
+/// ```text
+/// MLE(rs_eq_ind)(q) = sum_y eq(q, y) * Phi(eq(z, y))
+///                   = sum_w coordinate_weights[w] * (sum_y A(y, w) * eq(q, y))
+/// ```
+///
+/// where `A(y, w) = bit_w(eq(z, y))`. The inner sums are the components of
+/// the tensor-algebra element `Theta = sum_y eq(q, y) (x) eq(z, y)` in
+/// `E (x)_F2 E`, decomposed on the second factor's F_2 basis. Theta builds
+/// iteratively because eq factorizes per coordinate: in char 2,
+/// `sum_{y_j} eq(q_j, y_j) (x) eq(z_j, y_j) = 1 (x) 1 + q_j (x) 1 + 1 (x) z_j`,
+/// so each step is `Theta += q_j * Theta|first + z_j * Theta|second`
+/// (`scale_horizontal` / `scale_vertical`). The final `fold_vertical`
+/// transposes (so rows are indexed by the z-side basis w) and folds with
+/// `coordinate_weights`.
+///
+/// The rectangular twist vs. the old module: the fold length is e = 192
+/// (the E-degree over F_2), not the packing width 64; the K side of the
+/// reduction never appears here because `rs_eq_ind` is E-valued.
 ///
 /// ## Arguments
 ///
-/// * `z_vals` — the suffix-side coords, i.e. `x_outer[1..]` of the claim.
-///   Length `ℓ' = m − 7`.
-/// * `query` — the opening-sumcheck final challenges, length `ℓ'`.
-/// * `eq_r_dprime` — the `eq` tensor over the sampled `r''`, length 128.
-///
-/// [DP24]: <https://eprint.iacr.org/2024/504>
-pub fn eval_rs_eq(z_vals: &[F128], query: &[F128], eq_r_dprime: &[F128]) -> F128 {
+/// * `z_vals`: the suffix point (`suffix_point` from [`prove`] / [`verify`]),
+///   length L = m - 6.
+/// * `query`: the Ligerito final challenges, length L, same coordinate order.
+/// * `coordinate_weights`: the 192 univariate batching weights (from
+///   [`RingSwitchVerifierOutput`]).
+pub fn eval_rs_eq(z_vals: &[F192], query: &[F192], coordinate_weights: &[F192]) -> F192 {
     assert_eq!(
         z_vals.len(),
         query.len(),
         "eval_rs_eq: z_vals and query must have equal length"
     );
     assert_eq!(
-        eq_r_dprime.len(),
-        1 << LOG_PACKING,
-        "eval_rs_eq: eq_r_dprime length must be 128"
+        coordinate_weights.len(),
+        DEGREE_E,
+        "eval_rs_eq: coordinate_weights length must be 192"
     );
-    // Linearized form (identical value): the tensor recurrence is the product
-    // Π_j (z_j⊗1 + 1⊗(1+q_j)) folded against eq_r_dprime, which telescopes to
-    // Σ_k c_k·Π_j (z_j^{2^k} + 1 + q_j).
-    let c = linearized_eq_coeffs(eq_r_dprime);
-    eval_rs_eq_linearized(z_vals, query, &c)
+
+    let mut eval = TensorAlgebraE::from_vertical(F192::ONE);
+    for (&z_i, &q_i) in z_vals.iter().zip(query.iter()) {
+        let vert_scaled = eval.clone().scale_vertical(z_i);
+        let hztl_scaled = eval.clone().scale_horizontal(q_i);
+        eval += &vert_scaled;
+        eval += &hztl_scaled;
+    }
+    eval.fold_vertical(coordinate_weights)
+}
+
+/// Prefix-only variant of [`eval_rs_eq`]: walks `query_prefix.len()` of
+/// the (z, query) pairs and returns the partially-evolved tensor element.
+/// Pair with [`eval_rs_eq_finish_from_prefix_binary_q`] to share the
+/// prefix across many residual positions (the succinct Ligerito closure).
+pub fn eval_rs_eq_prefix(z_vals: &[F192], query_prefix: &[F192]) -> TensorAlgebraE {
+    assert!(query_prefix.len() <= z_vals.len());
+    let mut eval = TensorAlgebraE::from_vertical(F192::ONE);
+    for (&z_i, &q_i) in z_vals.iter().zip(query_prefix.iter()) {
+        let vert_scaled = eval.clone().scale_vertical(z_i);
+        let hztl_scaled = eval.clone().scale_horizontal(q_i);
+        eval += &vert_scaled;
+        eval += &hztl_scaled;
+    }
+    eval
+}
+
+/// Finish [`eval_rs_eq`] from a precomputed prefix when the query suffix
+/// is **binary** (bit j of `y_bits` is the j-th suffix coord). With
+/// `q_j in {0, 1}` the general step collapses (char 2) to a single vertical
+/// scale: `q_j = 0` gives `(1 + z_j) * eval`, `q_j = 1` gives `z_j * eval`.
+/// Mirror of `ring_switch::eval_rs_eq_finish_from_prefix_binary_q`.
+pub fn eval_rs_eq_finish_from_prefix_binary_q(
+    prefix: &TensorAlgebraE,
+    z_vals_suffix: &[F192],
+    y_bits: u32,
+    coordinate_weights: &[F192],
+) -> F192 {
+    assert_eq!(coordinate_weights.len(), DEGREE_E);
+    debug_assert!(z_vals_suffix.len() <= 32, "y_bits is u32; suffix > 32 not supported");
+    let mut eval = prefix.clone();
+    for (j, &z_i) in z_vals_suffix.iter().enumerate() {
+        let scalar = if (y_bits >> j) & 1 == 1 { z_i } else { F192::ONE + z_i };
+        for e in eval.elems.iter_mut() {
+            *e *= scalar;
+        }
+    }
+    eval.fold_vertical(coordinate_weights)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ligerito::{
+        LigeritoProof, commit, configs_for, recursive_prover_with_basis, recursive_verifier_with_basis,
+        recursive_verifier_with_basis_succinct,
+    };
+    use crate::ligerito::{ProverConfig, VerifierConfig, default_config, default_verifier_config};
+    use crate::merkle::Hash;
     use crate::pack::pack_witness;
-    use crate::test_rng::Rng;
-    use primitives::multilinear::build_eq;
 
-    /// Reference: directly compute ẑ_skip(z_skip, x_outer) for a Boolean witness `z`.
-    ///
-    /// `ẑ_skip(z_skip, x_outer) = Σ_{i_skip ∈ {0,1}^6} ν_φ8(i_skip)(z_skip)
-    ///                          · Σ_{i_outer} eq(x_outer, i_outer)
-    ///                                       · z[i_outer * 64 + i_skip]`
-    ///
-    /// This is the polynomial that the zerocheck claims at value `v`.
-    fn zhat_skip_reference(z: &[bool], m: usize, z_skip: F128, x_outer: &[F128]) -> F128 {
-        const K_SKIP: usize = 6;
-        let ell = 1usize << K_SKIP;
-        assert_eq!(z.len(), 1 << m);
-        assert_eq!(x_outer.len(), m - K_SKIP);
-
-        let lambda = lagrange_weights_naive(K_SKIP, z_skip); // 64 weights
-        let eq_outer = build_eq(x_outer); // 2^(m-6) values
-
-        // Index convention: z[i] for i ∈ 0..2^m, with low k_skip bits = i_skip and
-        // high (m - k_skip) bits = i_outer (matching pack_bits in univariate_skip).
-        let mut acc = F128::ZERO;
-        for i_outer in 0..(1usize << (m - K_SKIP)) {
-            let base = i_outer * ell;
-            // Inner = Σ_{i_skip} λ[i_skip] · z[base + i_skip], where z bits are 0/1
-            // lifted to F_{2^128}.
-            let mut inner = F128::ZERO;
-            for i_skip in 0..ell {
-                if z[base + i_skip] {
-                    inner += lambda[i_skip];
-                }
-            }
-            acc += eq_outer[i_outer] * inner;
-        }
-        acc
-    }
-
-    /// The key identity: with weights and s_hat_v constructed from the right
-    /// places, the claim-check yields `ẑ_skip(z_skip, x_outer)`.
-    #[test]
-    fn claim_check_recovers_zhat_skip() {
-        let mut rng = Rng::new(0xAA7);
-        // m must satisfy m ≥ LOG_PACKING = 7 AND m ≥ K_SKIP + 1 = 7 (for x_outer
-        // to have at least one element so x_outer[0] is defined). m ≥ 7 suffices
-        // when m == K_SKIP only x_outer is length 1, x_outer[0..0] = empty suffix.
-        // But pack_witness needs m ≥ 7 (LOG_PACKING). Test at m in [8, 9, 10].
-        for &m in &[8usize, 9, 10] {
-            let z = rng.bits(1 << m);
-            let z_skip = rng.f128();
-            let x_outer: Vec<F128> = (0..(m - 6)).map(|_| rng.f128()).collect();
-
-            // Reference value: directly compute ẑ_skip.
-            let expected = zhat_skip_reference(&z, m, z_skip, &x_outer);
-
-            // Build PCS data: pack, then compute s_hat_v naively from the packed
-            // witness and the suffix tensor (= eq_ind of x_outer[1..]).
-            let packed = pack_witness(&z, m);
-            let suffix_tensor = build_eq(&x_outer[1..]); // length 2^(m-7)
-            assert_eq!(packed.len(), suffix_tensor.len());
-            let s_hat_v = fold_1b_rows_naive(&packed, &suffix_tensor);
-
-            // Build weights and run claim check.
-            let weights = build_claim_weights(z_skip, x_outer[0]);
-            let got = claim_check(&weights, &s_hat_v);
-
-            assert_eq!(got, expected, "claim-check mismatch at m={m}");
-        }
+    fn splitmix64(state: &mut u64) -> u64 {
+        *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = *state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
     }
 
     #[test]
-    fn weights_have_correct_length() {
-        let w = build_claim_weights(F128 { lo: 1, hi: 0 }, F128 { lo: 2, hi: 0 });
-        assert_eq!(w.len(), 128);
-    }
-
-    /// Tensor-algebra transpose is involutive (applying it twice returns the
-    /// original).
-    #[test]
-    fn transpose_is_involution() {
-        let mut rng = Rng::new(0xDEAD);
-        let s_hat_v: Vec<F128> = (0..128).map(|_| rng.f128()).collect();
-        let twice = tensor_algebra_transpose(&tensor_algebra_transpose(&s_hat_v));
-        assert_eq!(s_hat_v, twice);
-    }
-
-
-    /// Throughput A/B of the fold_1b_rows variants at m=29 scale. `#[ignore]`d
-    /// (allocates/folds 64 MB buffers many times); run explicitly with
-    /// `cargo test --release -- --ignored --nocapture zzz_bench_fold_1b`.
-    /// **Padding skip is byte-identical to the dense fold.** On a packed
-    /// witness whose every block has bits `[useful_bits, 2^k_log)` honestly
-    /// zero, the `_padded` kernels must produce the exact same `(a0, a1)` as
-    /// the dense kernels — every skipped chunk would have contributed
-    /// `lookup[0] = 0` to every output position.
-    ///
-    /// Covers all three hash padding shapes for both the 8-wide and 4-wide
-    /// MFR kernels.
-    #[test]
-    fn fold_1b_padded_matches_dense() {
-        // (m, k_log, useful_bits)
-        let cases: &[(usize, usize, usize)] = &[
-            // BLAKE3: k_log=14, useful=15409 (boundary not 128-aligned)
-            (17, 14, 15_409),
-            // SHA-2:  k_log=15, useful=31401 (boundary not 128-aligned)
-            (18, 15, 31_401),
-            // Keccak: k_log=16, useful=42560 (128-aligned; 35% of chunks skip)
-            (19, 16, 42_560),
+    fn deferred_batch_matches_materialized_weights() {
+        let mut seed = 0xdec0_de01_2345_6789;
+        let point = (0..10)
+            .map(|_| F192::new(splitmix64(&mut seed), splitmix64(&mut seed), splitmix64(&mut seed)))
+            .collect::<Vec<_>>();
+        let coordinate_weights = (0..DEGREE_E)
+            .map(|_| F192::new(splitmix64(&mut seed), splitmix64(&mut seed), splitmix64(&mut seed)))
+            .collect::<Vec<_>>();
+        let gammas = [
+            F192::new(splitmix64(&mut seed), splitmix64(&mut seed), splitmix64(&mut seed)),
+            F192::new(splitmix64(&mut seed), splitmix64(&mut seed), splitmix64(&mut seed)),
         ];
-        for &(m, k_log, useful_bits) in cases {
-            let mut rng = Rng::new(0xCAFE_FACE_u64.wrapping_add((k_log * 31 + m) as u64));
-            let total_bits = 1usize << m;
-            let block_size = 1usize << k_log;
-            let n_blocks = 1usize << (m - k_log);
-
-            // Random witness, then zero bits [useful_bits, block_size) of every
-            // block.
-            let mut z = rng.bits(total_bits);
-            for blk in 0..n_blocks {
-                for j in useful_bits..block_size {
-                    z[blk * block_size + j] = false;
+        let states = (0..2)
+            .map(|_| {
+                let (eq_lo, eq_hi) = build_eq_split_ext(&point);
+                RingSwitchProveState {
+                    s_hat_v: (0..PACKING_WIDTH)
+                        .map(|_| F192::new(splitmix64(&mut seed), splitmix64(&mut seed), splitmix64(&mut seed)))
+                        .collect(),
+                    eq_lo,
+                    eq_hi,
                 }
-            }
-            let packed = pack_witness(&z, m);
+            })
+            .collect::<Vec<_>>();
 
-            // Random suffix tensors of the right length.
-            let len = packed.len();
-            let t0: Vec<F128> = (0..len).map(|_| rng.f128()).collect();
-            let t1: Vec<F128> = (0..len).map(|_| rng.f128()).collect();
-            let padding = PaddingSpec {
-                k_log,
-                useful_bits_per_block: useful_bits,
-            };
+        let dense = states
+            .iter()
+            .map(|state| prove_finish(state, &coordinate_weights))
+            .collect::<Vec<_>>();
+        let expected_target = dense
+            .iter()
+            .zip(gammas)
+            .fold(F192::ZERO, |acc, (out, gamma)| acc + gamma * out.sumcheck_claim);
+        let expected_basis = (0..1usize << point.len())
+            .map(|i| gammas[0] * dense[0].rs_eq_ind[i] + gammas[1] * dense[1].rs_eq_ind[i])
+            .collect::<Vec<_>>();
 
-            // The padding bits of the witness are zero, so the scalar
-            // bit-scan over the FULL witness is the exact reference.
-            let want0 = fold_1b_rows_naive(&packed, &t0);
-            let want1 = fold_1b_rows_naive(&packed, &t1);
-            if packed.len().is_multiple_of(8) {
-                let (a0, a1) = fold_1b_rows_2way_mfr_8wide_padded(&packed, &t0, &t1, &padding);
-                assert_eq!(
-                    (&a0, &a1),
-                    (&want0, &want1),
-                    "8-wide mismatch: m={m}, k_log={k_log}, useful={useful_bits}"
-                );
-            }
-            if packed.len().is_multiple_of(4) {
-                let (a0, a1) = fold_1b_rows_2way_mfr_padded(&packed, &t0, &t1, &padding);
-                assert_eq!(
-                    (&a0, &a1),
-                    (&want0, &want1),
-                    "4-wide mismatch: m={m}, k_log={k_log}, useful={useful_bits}"
-                );
-            }
-            if packed.len().is_multiple_of(16) {
-                let a0 = fold_1b_rows_1way_mfr_16wide_padded(&packed, &t0, &padding);
-                assert_eq!(
-                    a0, want0,
-                    "16-wide mismatch: m={m}, k_log={k_log}, useful={useful_bits}"
-                );
-            }
-        }
-    }
+        let deferred = states
+            .into_iter()
+            .zip(gammas)
+            .map(|(state, gamma)| prove_finish_deferred(state, &coordinate_weights, gamma))
+            .collect::<Vec<_>>();
+        let deferred_target = deferred
+            .iter()
+            .fold(F192::ZERO, |acc, out| acc + out.batched_sumcheck_claim);
+        let mut deferred_basis = vec![F192::ZERO; expected_basis.len()];
+        combine_deferred_into(&deferred, &mut deferred_basis);
 
-    /// `build_eq_split` factors `build_eq` exactly: the outer product of the
-    /// two halves reconstructs every full-tensor entry bit-for-bit.
-    #[test]
-    fn build_eq_split_reconstructs_full() {
-        let mut rng = Rng::new(0x9911);
-        for &l in &[4usize, 7, 10] {
-            let r: Vec<F128> = (0..l).map(|_| rng.f128()).collect();
-            let full = build_eq(&r);
-            for n_lo in 0..=l {
-                let (eq_lo, eq_hi) = build_eq_split(&r, n_lo);
-                assert_eq!(eq_lo.len(), 1 << n_lo);
-                assert_eq!(eq_hi.len(), 1 << (l - n_lo));
-                let mask = (1usize << n_lo) - 1;
-                for (i, &f) in full.iter().enumerate() {
-                    let recon = eq_lo[i & mask] * eq_hi[i >> n_lo];
-                    assert_eq!(recon, f, "reconstruct mismatch l={l} n_lo={n_lo} i={i}");
-                }
-            }
-        }
-    }
-
-    /// `fold_1b_rows_split` is byte-identical to the materialized 16-wide
-    /// kernel for every split width, including padded (skip-engaging) shapes
-    /// and split blocks both smaller and larger than the padding block.
-    #[test]
-    fn fold_1b_rows_split_matches_16wide() {
-        // (m, k_log, useful_bits): same padding shapes as
-        // `fold_1b_padded_matches_dense`, so chunk-skip actually engages.
-        let cases: &[(usize, usize, usize)] =
-            &[(17, 14, 15_409), (18, 15, 31_401), (19, 16, 42_560)];
-        for &(m, k_log, useful_bits) in cases {
-            let l = m - LOG_PACKING;
-            let len = 1usize << l;
-            let mut rng = Rng::new(0x5757_u64.wrapping_add((m * 131 + k_log) as u64));
-            let w: Vec<F128> = (0..len).map(|_| rng.f128()).collect();
-            let r: Vec<F128> = (0..l).map(|_| rng.f128()).collect();
-            let full_eq = build_eq(&r);
-            let padding = PaddingSpec {
-                k_log,
-                useful_bits_per_block: useful_bits,
-            };
-
-            let reference = fold_1b_rows_1way_mfr_16wide_padded(&w, &full_eq, &padding);
-            // Sweep n_lo across, below, and equal to the padding block width so
-            // the split-block vs padding-block alignment is exercised both ways.
-            for n_lo in 4..=l {
-                let (eq_lo, eq_hi) = build_eq_split(&r, n_lo);
-                let got = fold_1b_rows_split(&w, &eq_lo, &eq_hi, &padding);
-                assert_eq!(
-                    got, reference,
-                    "fold_1b_rows_split mismatch: m={m}, k_log={k_log}, n_lo={n_lo}"
-                );
-            }
-            // The production chooser.
-            let (eq_lo, eq_hi) = build_eq_split(&r, split_n_lo(l));
-            assert_eq!(
-                fold_1b_rows_split(&w, &eq_lo, &eq_hi, &padding),
-                reference,
-                "fold_1b_rows_split mismatch at split_n_lo: m={m}"
-            );
-        }
-    }
-
-    /// `fold_1b_rows_split_2way` matches two separate `fold_1b_rows_split`
-    /// calls byte-for-byte across the padded/skip shapes.
-    #[test]
-    fn fold_1b_rows_split_2way_matches_per_claim() {
-        let cases: &[(usize, usize, usize)] =
-            &[(17, 14, 15_409), (18, 15, 31_401), (19, 16, 42_560)];
-        for &(m, k_log, useful_bits) in cases {
-            let l = m - LOG_PACKING;
-            let len = 1usize << l;
-            let mut rng = Rng::new(0xBEEF_u64.wrapping_add((m * 131 + k_log) as u64));
-            let w: Vec<F128> = (0..len).map(|_| rng.f128()).collect();
-            let padding = PaddingSpec {
-                k_log,
-                useful_bits_per_block: useful_bits,
-            };
-            let n_lo = split_n_lo(l);
-            let r0: Vec<F128> = (0..l).map(|_| rng.f128()).collect();
-            let r1: Vec<F128> = (0..l).map(|_| rng.f128()).collect();
-            let (lo0, hi0) = build_eq_split(&r0, n_lo);
-            let (lo1, hi1) = build_eq_split(&r1, n_lo);
-            let (got0, got1) = fold_1b_rows_split_2way(&w, &lo0, &hi0, &lo1, &hi1, &padding);
-            let want0 = fold_1b_rows_split(&w, &lo0, &hi0, &padding);
-            let want1 = fold_1b_rows_split(&w, &lo1, &hi1, &padding);
-            assert_eq!(
-                got0, want0,
-                "fold_1b_rows_split_2way mismatch (claim 0) m={m}"
-            );
-            assert_eq!(
-                got1, want1,
-                "fold_1b_rows_split_2way mismatch (claim 1) m={m}"
-            );
-        }
-    }
-
-    /// `fold_b128_elems_split` reconstructs the suffix entry on the fly and
-    /// matches the materialized `fold_b128_elems` for every split width.
-    #[test]
-    fn fold_b128_elems_split_matches_dense() {
-        let mut rng = Rng::new(0xB0B0);
-        for &l in &[4usize, 8, 10] {
-            let r: Vec<F128> = (0..l).map(|_| rng.f128()).collect();
-            let full_eq = build_eq(&r);
-            let eq_r: Vec<F128> = (0..128).map(|_| rng.f128()).collect();
-            let reference = fold_b128_elems(&full_eq, &eq_r);
-            for n_lo in 4..=l {
-                let (eq_lo, eq_hi) = build_eq_split(&r, n_lo);
-                let got = fold_b128_elems_split(&eq_lo, &eq_hi, &eq_r);
-                assert_eq!(
-                    got, reference,
-                    "fold_b128_elems_split mismatch l={l} n_lo={n_lo}"
-                );
-            }
-        }
-    }
-
-
-    /// `prove_batched_padded_with_precomputed` is byte-identical to the
-    /// no-precompute path when the supplied precomputed `s_hat_v` matches
-    /// what `fold_1b_rows` would have produced. Exercises every claim being
-    /// precomputed, the first being precomputed, and the second being
-    /// precomputed — covers the K=0, K=1 (claim 0 only), K=1 (claim 1 only),
-    /// and K=2 (no precompute) fold_1b_rows dispatch branches.
-    #[test]
-    fn prove_batched_with_precomputed_matches_unprecomputed() {
-        
-        let mut rng = Rng::new(0xF00D);
-        for &m in &[8usize, 9, 10, 11] {
-            let z = rng.bits(1 << m);
-            let x_a: Vec<F128> = (0..(m - 6)).map(|_| rng.f128()).collect();
-            let x_b: Vec<F128> = (0..(m - 6)).map(|_| rng.f128()).collect();
-            let packed = pack_witness(&z, m);
-
-            // Baseline: no precomputes. The streamed proof is the two
-            // s_hat_v slices (128 words each).
-            let mut ch_base = crate::ProverState::new(b"flock-test-v0", &[]);
-            let (base, _) = prove_batched_padded_with_precomputed(
-                &packed, &[&x_a, &x_b], &[None, None], &PaddingSpec::dense(m), &mut ch_base,
-            );
-            let base_stream = ch_base.into_proof().stream;
-            let s_hat_v_a = base_stream[0..128].to_vec();
-            let s_hat_v_b = base_stream[128..256].to_vec();
-
-            let padding = PaddingSpec::dense(m);
-
-            for &(pre_a, pre_b) in &[
-                (false, false), // K=2 path (no precompute)
-                (true, false),  // K=1 path: only claim 1 needs fold
-                (false, true),  // K=1 path: only claim 0 needs fold
-                (true, true),   // K=0 path: both precomputed
-            ] {
-                let pa: Option<&[F128]> = if pre_a { Some(&s_hat_v_a) } else { None };
-                let pb: Option<&[F128]> = if pre_b { Some(&s_hat_v_b) } else { None };
-                let mut ch = crate::ProverState::new(b"flock-test-v0", &[]);
-                let (got, _) = prove_batched_padded_with_precomputed(
-                    &packed,
-                    &[&x_a, &x_b],
-                    &[pa, pb],
-                    &padding,
-                    &mut ch,
-                );
-                assert_eq!(
-                    ch.into_proof().stream,
-                    base_stream,
-                    "streamed proof mismatch (pre_a={pre_a}, pre_b={pre_b}, m={m})"
-                );
-                assert_eq!(got[0].sumcheck_claim, base[0].sumcheck_claim);
-                assert_eq!(got[1].sumcheck_claim, base[1].sumcheck_claim);
-                assert_eq!(got[0].rs_eq_ind.to_dense(), base[0].rs_eq_ind.to_dense());
-                assert_eq!(got[1].rs_eq_ind.to_dense(), base[1].rs_eq_ind.to_dense());
-            }
-        }
-    }
-
-    /// Degenerate path: when k_log == LOG_PACKING (so x_inner_rest is just
-    /// the single prefix0 coord), the kernel returns z_vec untouched.
-    #[test]
-    fn s_hat_v_from_z_vec_degenerate_tail() {
-        let mut rng = Rng::new(0xDEAD);
-        let z_vec: Vec<F128> = (0..(1 << LOG_PACKING)).map(|_| rng.f128()).collect();
-        let got = s_hat_v_from_z_vec(&z_vec, &[]);
-        assert_eq!(got, z_vec);
-    }
-
-    /// `subset_sums_4` matches the obvious specification.
-    #[test]
-    fn subset_sums_4_correctness() {
-        let mut rng = Rng::new(0xABCD);
-        let elems: [F128; 4] = [rng.f128(), rng.f128(), rng.f128(), rng.f128()];
-        let sums = subset_sums_4(elems);
-        assert_eq!(sums[0], F128::ZERO);
-        for mask in 0..16 {
-            let mut expected = F128::ZERO;
-            for k in 0..4 {
-                if (mask >> k) & 1 == 1 {
-                    expected += elems[k];
-                }
-            }
-            assert_eq!(sums[mask], expected, "mask={mask:04b}");
-        }
+        assert_eq!(deferred_target, expected_target);
+        assert_eq!(deferred_basis, expected_basis);
     }
 
     #[test]
-    fn fold_b128_elems_matches_naive() {
-        let mut rng = Rng::new(0xF00D);
-        for &l in &[1usize, 4, 8, 12] {
-            let len = 1usize << l;
-            let suffix: Vec<F128> = (0..len).map(|_| rng.f128()).collect();
-            let eq_r: Vec<F128> = (0..128).map(|_| rng.f128()).collect();
-            let a = fold_b128_elems_naive(&suffix, &eq_r);
-            let b = fold_b128_elems(&suffix, &eq_r);
-            assert_eq!(a, b, "fold_b128_elems mismatch at L={l}");
+    fn trace_dual_basis_is_dual() {
+        // Tr(dual[i]·basis(j)) == δ_ij, and bit_i(y) = Tr(dual[i]·y) recovers
+        // coordinate bits of a few random elements.
+        let dual = trace_dual_basis();
+        let basis = |j: usize| {
+            if j < 64 {
+                F192::new(1u64 << j, 0, 0)
+            } else if j < 128 {
+                F192::new(0, 1u64 << (j - 64), 0)
+            } else {
+                F192::new(0, 0, 1u64 << (j - 128))
+            }
+        };
+        let tr = |x: F192| {
+            let (mut acc, mut p) = (F192::ZERO, x);
+            for _ in 0..192 {
+                acc += p;
+                p = p * p;
+            }
+            acc
+        };
+        for i in 0..DEGREE_E {
+            for j in 0..DEGREE_E {
+                let want = if i == j { F192::ONE } else { F192::ZERO };
+                assert_eq!(tr(dual[i] * basis(j)), want, "duality fails at i={i}, j={j}");
+            }
         }
-    }
-
-    // -----------------------------------------------------------------------
-    // Sparse-tensor fast path: each sparse kernel must produce byte-identical
-    // output to its dense counterpart for any coord vector that mixes nonzero
-    // and exactly-zero entries.
-    // -----------------------------------------------------------------------
-
-    /// Build a coord vector with `n_zeros` exact-zero entries at the requested
-    /// positions and random F128s elsewhere.
-    fn mk_coords(rng: &mut Rng, n: usize, zero_positions: &[usize]) -> Vec<F128> {
-        (0..n)
-            .map(|i| {
-                if zero_positions.contains(&i) {
-                    F128::ZERO
+        let mut s = 0xDEAD_BEEF_u64;
+        for _ in 0..8 {
+            let y = F192::new(splitmix64(&mut s), splitmix64(&mut s), splitmix64(&mut s));
+            for i in 0..DEGREE_E {
+                let bit = if i < 64 {
+                    (y.c0 >> i) & 1
+                } else if i < 128 {
+                    (y.c1 >> (i - 64)) & 1
                 } else {
-                    rng.f128()
+                    (y.c2 >> (i - 128)) & 1
+                };
+                let want = if bit == 1 { F192::ONE } else { F192::ZERO };
+                assert_eq!(tr(dual[i] * y), want, "bit {i} extraction wrong");
+            }
+        }
+    }
+
+    fn rand_ext(s: &mut u64) -> F192 {
+        F192::new(splitmix64(s), splitmix64(s), splitmix64(s))
+    }
+
+    fn rand_bits(m: usize, s: &mut u64) -> Vec<bool> {
+        (0..1usize << m).map(|_| splitmix64(s) & 1 == 1).collect()
+    }
+
+    #[test]
+    fn coordinate_weights_are_consecutive_powers() {
+        let mut s = 0x1234_5678_9abc_def0;
+        let rho = rand_ext(&mut s);
+        let weights = build_coordinate_weights(rho);
+
+        assert_eq!(weights.len(), DEGREE_E);
+        assert_eq!(weights[0], F192::ONE);
+        for pair in weights.windows(2) {
+            assert_eq!(pair[1], pair[0] * rho);
+        }
+    }
+
+    /// Reference s_hat_v: brute-force partial evaluation of each bit-column
+    /// MLE at the suffix point (direct bit-extract loop, no fold kernel).
+    fn s_hat_v_reference(packed: &[F64], suffix_point: &[F192]) -> Vec<F192> {
+        let eq_suffix = build_eq_table_ext(suffix_point);
+        (0..PACKING_WIDTH)
+            .map(|i| {
+                let mut acc = F192::ZERO;
+                for (word, &w) in packed.iter().zip(eq_suffix.iter()) {
+                    if (word.0 >> i) & 1 == 1 {
+                        acc += w;
+                    }
                 }
+                acc
             })
             .collect()
     }
 
+    /// s_hat_v[i] must equal the MLE of the i-th bit-slice at the suffix
+    /// point; cross-check the fold kernel against a from-the-bits brute
+    /// force over the full (prefix + suffix) hypercube.
     #[test]
-    fn build_eq_sparse_matches_dense() {
-        let mut rng = Rng::new(0xCAFE_F00D);
-        let cases: &[(usize, &[usize])] = &[
-            (1, &[0]),
-            (4, &[1, 3]),
-            (6, &[0, 1, 2, 3, 4]),
-            (8, &[2, 3, 4, 5, 6]),
-            (10, &[]),
-            (10, &[0, 5, 9]),
-        ];
-        for &(n_coords, zero_pos) in cases {
-            let coords = mk_coords(&mut rng, n_coords, zero_pos);
-            let dense = build_eq(&coords);
-            let sparse_eq = build_eq_sparse(&coords);
-            let materialized = sparse_eq.materialize();
+    fn s_hat_v_matches_bruteforce() {
+        let m = 9;
+        let mut s = 1u64;
+        let bits = rand_bits(m, &mut s);
+        let packed = pack_witness(&bits, m);
+        let suffix_point: Vec<F192> = (0..m - LOG_PACKING).map(|_| rand_ext(&mut s)).collect();
+        let eq_suffix = build_eq_table_ext(&suffix_point);
 
-            // Sparse entries match the dense table; dense entries off the
-            // sparse support are exactly zero.
-            let mut covered = vec![false; dense.len()];
-            for &(idx, val) in &materialized {
-                assert_eq!(
-                    val, dense[idx],
-                    "sparse value mismatch at idx={idx} (n={n_coords}, zeros={zero_pos:?})"
-                );
-                assert_ne!(
-                    val,
-                    F128::ZERO,
-                    "sparse entry is zero — should have been skipped"
-                );
-                covered[idx] = true;
-            }
-            for (i, &c) in covered.iter().enumerate() {
-                if !c {
-                    assert_eq!(
-                        dense[i],
-                        F128::ZERO,
-                        "dense[{i}] nonzero but absent from sparse (n={n_coords}, zeros={zero_pos:?})"
-                    );
+        let s_hat_v = fold_1b_rows(&packed, &eq_suffix);
+        assert_eq!(s_hat_v.len(), PACKING_WIDTH);
+
+        // From the flat bit layout: column i is z[y * 64 + i].
+        for i in 0..PACKING_WIDTH {
+            let mut expected = F192::ZERO;
+            for (y, &w) in eq_suffix.iter().enumerate() {
+                if bits[(y << LOG_PACKING) | i] {
+                    expected += w;
                 }
             }
-            // Support is in ascending index order.
-            for w in materialized.windows(2) {
-                assert!(w[0].0 < w[1].0, "support not strictly ascending");
-            }
-            // Support size = 2^live_count.
-            let live_count = n_coords - zero_pos.len();
-            assert_eq!(sparse_eq.live_tensor.len(), 1usize << live_count);
+            assert_eq!(s_hat_v[i], expected, "bit column {i}");
         }
+        assert_eq!(s_hat_v, s_hat_v_reference(&packed, &suffix_point));
     }
 
+    /// The MFR kernel must equal the scalar bit-scan (same XOR-sums, only
+    /// regrouped) on random data, and the dispatcher must route both regimes
+    /// correctly (multiple-of-8 lengths to MFR, smaller powers of two to the
+    /// scalar path).
     #[test]
-    fn fold_1b_rows_sparse_matches_naive() {
-        let mut rng = Rng::new(0x5EED_DEAD);
-        // m large enough that the suffix has multiple coords, with a few zeros.
-        for &m in &[9usize, 11, 13] {
-            let l = m - 7;
-            let pw_len = 1usize << l;
-            let pw: Vec<F128> = (0..pw_len).map(|_| rng.f128()).collect();
-            // Suffix length = l. Pin some coords to zero.
-            let zero_pos: Vec<usize> = (0..l.min(3)).collect();
-            let suffix = mk_coords(&mut rng, l, &zero_pos);
-
-            let dense_tensor = build_eq(&suffix);
-            let sparse_eq = build_eq_sparse(&suffix);
-
-            let dense_s = fold_1b_rows_naive(&pw, &dense_tensor);
-            let sparse_s = fold_1b_rows_sparse(&pw, &sparse_eq);
-
-            assert_eq!(dense_s, sparse_s, "s_hat_v mismatch at m={m}");
+    fn fold_1b_rows_mfr_matches_scalar() {
+        let mut s = 31u64;
+        for log_len in [3usize, 4, 7, 11] {
+            let len = 1usize << log_len;
+            let packed: Vec<F64> = (0..len).map(|_| F64(splitmix64(&mut s))).collect();
+            let tensor: Vec<F192> = (0..len).map(|_| rand_ext(&mut s)).collect();
+            let mfr = fold_1b_rows_mfr_8wide(&packed, &tensor);
+            let scalar = fold_1b_rows_scalar(&packed, &tensor);
+            assert_eq!(mfr, scalar, "MFR/scalar split at len={len}");
+            assert_eq!(fold_1b_rows(&packed, &tensor), mfr, "dispatcher at len={len}");
+        }
+        for len in [1usize, 2, 4] {
+            let packed: Vec<F64> = (0..len).map(|_| F64(splitmix64(&mut s))).collect();
+            let tensor: Vec<F192> = (0..len).map(|_| rand_ext(&mut s)).collect();
+            assert_eq!(
+                fold_1b_rows(&packed, &tensor),
+                fold_1b_rows_scalar(&packed, &tensor),
+                "scalar fallback at len={len}"
+            );
         }
     }
 
+    /// Claim-check completeness (a plain point claim verifies) and soundness
+    /// (a wrong claim value or a tampered s_hat_v is rejected).
+    #[test]
+    fn claim_check_completeness_and_soundness() {
+        let m = 10;
+        let mut s = 2u64;
+        let bits = rand_bits(m, &mut s);
+        let packed = pack_witness(&bits, m);
+        let point: Vec<F192> = (0..m).map(|_| rand_ext(&mut s)).collect();
+        let prefix_weights = eq_prefix_weights(&point[..LOG_PACKING]);
+        let suffix_point = &point[LOG_PACKING..];
 
-    /// Cross-check `eval_rs_eq` against the dense `mle_eval(fold_b128_elems(build_eq(z_vals)), query)`
-    /// path at several `ℓ' = |z_vals|` values. The two must agree bit-for-bit.
+        // Honest claim from the reference partials; sanity: it equals the
+        // full bit-MLE evaluated with the full eq table.
+        let s_ref = s_hat_v_reference(&packed, suffix_point);
+        let claim = claim_check(&prefix_weights, &s_ref);
+        let eq_full = build_eq_table_ext(&point);
+        let mut direct = F192::ZERO;
+        for (x, &w) in eq_full.iter().enumerate() {
+            if bits[x] {
+                direct += w;
+            }
+        }
+        assert_eq!(claim, direct, "prefix x suffix split must factor the MLE");
+
+        let mut ch = Sponge::new(b"rs-claim-test", &[]);
+        let (proof, _out) = prove(&packed, &prefix_weights, suffix_point, claim, None, &mut ch);
+
+        let mut ch = Sponge::new(b"rs-claim-test", &[]);
+        assert!(verify(claim, &prefix_weights, suffix_point, &proof, &mut ch).is_ok());
+
+        // Wrong claim value.
+        let bad_claim = claim + F192::ONE;
+        let mut ch = Sponge::new(b"rs-claim-test", &[]);
+        assert_eq!(
+            verify(bad_claim, &prefix_weights, suffix_point, &proof, &mut ch).unwrap_err(),
+            VerifyError::ClaimMismatch
+        );
+        let mut ch = Sponge::new(b"rs-claim-test", &[]);
+        assert_eq!(
+            verify_succinct(bad_claim, &prefix_weights, &proof, &mut ch).unwrap_err(),
+            VerifyError::ClaimMismatch
+        );
+
+        // Tampered s_hat_v.
+        let mut bad = proof.clone();
+        bad.s_hat_v[17].c0 ^= 1;
+        let mut ch = Sponge::new(b"rs-claim-test", &[]);
+        assert_eq!(
+            verify(claim, &prefix_weights, suffix_point, &bad, &mut ch).unwrap_err(),
+            VerifyError::ClaimMismatch
+        );
+    }
+
+    /// The bytewise-table rs_eq_ind fold must match the naive bit-scan on
+    /// arbitrary (not necessarily eq-structured) input.
+    #[test]
+    fn rs_eq_ind_fast_matches_naive() {
+        let mut s = 3u64;
+        let tensor: Vec<F192> = (0..1usize << 8).map(|_| rand_ext(&mut s)).collect();
+        let coordinate_weights: Vec<F192> = (0..DEGREE_E).map(|_| rand_ext(&mut s)).collect();
+        assert_eq!(
+            fold_ext_elems(&tensor, &coordinate_weights),
+            fold_ext_elems_naive(&tensor, &coordinate_weights)
+        );
+    }
+
+    /// eval_rs_eq must agree with the dense evaluation: materialize
+    /// rs_eq_ind, evaluate its MLE at a random query with the eq table.
+    /// Also pins the prefix + binary-q variant against the full path.
     #[test]
     fn eval_rs_eq_matches_dense() {
-        fn mle_eval_naive(values: &[F128], r: &[F128]) -> F128 {
-            assert_eq!(values.len(), 1 << r.len());
-            let mut buf = values.to_vec();
-            for &r_i in r.iter().rev() {
-                let half = buf.len() / 2;
-                for i in 0..half {
-                    let lo = buf[i];
-                    let hi = buf[i + half];
-                    buf[i] = lo + r_i * (lo + hi);
+        let l = 6;
+        let mut s = 4u64;
+        let z: Vec<F192> = (0..l).map(|_| rand_ext(&mut s)).collect();
+        let coordinate_weights = build_coordinate_weights(rand_ext(&mut s));
+        let rs_eq_ind = fold_ext_elems(&build_eq_table_ext(&z), &coordinate_weights);
+
+        let query: Vec<F192> = (0..l).map(|_| rand_ext(&mut s)).collect();
+        let eq_query = build_eq_table_ext(&query);
+        let dense = inner_product_ext(&rs_eq_ind, &eq_query);
+
+        assert_eq!(eval_rs_eq(&z, &query, &coordinate_weights), dense);
+
+        // Prefix + binary-q path: replace the last 3 query coords by the
+        // bits of y and compare against the general path.
+        let split = l - 3;
+        let prefix = eval_rs_eq_prefix(&z, &query[..split]);
+        for y in 0..8u32 {
+            let mut q_bin = query[..split].to_vec();
+            for j in 0..3 {
+                q_bin.push(if (y >> j) & 1 == 1 { F192::ONE } else { F192::ZERO });
+            }
+            assert_eq!(
+                eval_rs_eq_finish_from_prefix_binary_q(&prefix, &z[split..], y, &coordinate_weights),
+                eval_rs_eq(&z, &q_bin, &coordinate_weights),
+                "binary-q finish mismatch at y={y}"
+            );
+        }
+    }
+
+    /// The core algebraic identity of the reduction: the honest packed
+    /// witness satisfies the output claim,
+    /// `sum_y rs_eq_ind[y] * packed[y] == sumcheck_claim`.
+    #[test]
+    fn sumcheck_claim_matches_inner_product() {
+        let m = 12;
+        let mut s = 5u64;
+        let bits = rand_bits(m, &mut s);
+        let packed = pack_witness(&bits, m);
+        let point: Vec<F192> = (0..m).map(|_| rand_ext(&mut s)).collect();
+        let prefix_weights = eq_prefix_weights(&point[..LOG_PACKING]);
+        let suffix_point = &point[LOG_PACKING..];
+        let claim = claim_check(&prefix_weights, &s_hat_v_reference(&packed, suffix_point));
+
+        let mut ch = Sponge::new(b"rs-identity-test", &[]);
+        let (_proof, out) = prove(&packed, &prefix_weights, suffix_point, claim, None, &mut ch);
+        assert_eq!(
+            inner_product_base_ext(&packed, &out.rs_eq_ind),
+            out.sumcheck_claim,
+            "reduction output claim must hold for the honest witness"
+        );
+    }
+
+    // -- end-to-end: reduction + ligerito opening --------------------------
+
+    /// Configs for a K-witness of `2^log_n` words: prefer the production
+    /// Secure-profile derivation; fall back to the ad-hoc default_config
+    /// shape at test sizes below its feasibility floor (same fallback the
+    /// ligerito tests use).
+    fn test_configs_for(log_n: usize) -> (ProverConfig, VerifierConfig) {
+        if let Ok(pv) = configs_for(log_n) {
+            return pv;
+        }
+        for bs in (1..=5).rev() {
+            for rate in 1..=4 {
+                if let (Ok(pc), Ok(vc)) = (
+                    default_config(log_n, bs, rate),
+                    default_verifier_config(log_n, bs, rate),
+                ) {
+                    return (pc, vc);
                 }
-                buf.truncate(half);
-            }
-            buf[0]
-        }
-
-        let mut rng = Rng::new(0xDEADBEEF);
-        for &l_prime in &[3usize, 6, 10, 14] {
-            for _trial in 0..3 {
-                let z_vals: Vec<F128> = (0..l_prime).map(|_| rng.f128()).collect();
-                let query: Vec<F128> = (0..l_prime).map(|_| rng.f128()).collect();
-                let r_dprime: Vec<F128> = (0..LOG_PACKING).map(|_| rng.f128()).collect();
-                let eq_r_dprime = build_eq(&r_dprime);
-
-                // Dense path: build_eq(z_vals) → fold_b128_elems → mle_eval at query.
-                let suffix_tensor = build_eq(&z_vals);
-                let rs_eq_ind_dense = fold_b128_elems(&suffix_tensor, &eq_r_dprime);
-                let dense_eval = mle_eval_naive(&rs_eq_ind_dense, &query);
-
-                // Succinct path.
-                let succinct_eval = eval_rs_eq(&z_vals, &query, &eq_r_dprime);
-
-                assert_eq!(
-                    succinct_eval, dense_eval,
-                    "eval_rs_eq mismatch at l_prime={l_prime}"
-                );
             }
         }
+        panic!("no feasible ligerito config at log_n = {log_n}");
+    }
+
+    struct E2e {
+        vc: VerifierConfig,
+        log_n: usize,
+        prefix_weights: Vec<F192>,
+        suffix_point: Vec<F192>,
+        claim: F192,
+        root: Hash,
+        rs_proof: RingSwitchProof,
+        lig_proof: LigeritoProof,
+    }
+
+    const E2E_DOMAIN: &[u8] = b"ring-switch-e2e-test";
+
+    /// Full prover pipeline: random bit witness, pack, commit, ring switch
+    /// (plain-point eq weights or a caller-supplied generalized weight
+    /// vector), then the ligerito opening on (rs_eq_ind, sumcheck_claim),
+    /// all over one continuous transcript.
+    fn prove_e2e(m: usize, seed: u64, generalized_weights: bool) -> E2e {
+        let mut s = seed;
+        let bits = rand_bits(m, &mut s);
+        let packed = pack_witness(&bits, m);
+        let log_n = m - LOG_PACKING;
+        let (pc, vc) = test_configs_for(log_n);
+        let (cm, pd) = commit(&packed, pc.initial_k, pc.log_inv_rates[0]);
+
+        let suffix_point: Vec<F192> = (0..log_n).map(|_| rand_ext(&mut s)).collect();
+        let prefix_weights: Vec<F192> = if generalized_weights {
+            // Synthetic non-eq weights (e.g. standing in for phi_8 Lagrange
+            // weights): any 64 E-values work.
+            (0..PACKING_WIDTH).map(|_| rand_ext(&mut s)).collect()
+        } else {
+            let r_prefix: Vec<F192> = (0..LOG_PACKING).map(|_| rand_ext(&mut s)).collect();
+            eq_prefix_weights(&r_prefix)
+        };
+        let claim = claim_check(&prefix_weights, &s_hat_v_reference(&packed, &suffix_point));
+
+        let mut ch = Sponge::new(E2E_DOMAIN, &[]);
+        let (rs_proof, out) = prove(&packed, &prefix_weights, &suffix_point, claim, None, &mut ch);
+        assert_eq!(inner_product_base_ext(&packed, &out.rs_eq_ind), out.sumcheck_claim);
+        let lig_proof = recursive_prover_with_basis(
+            &pc,
+            &packed,
+            out.rs_eq_ind,
+            out.sumcheck_claim,
+            &pd.codeword,
+            &pd.merkle_tree,
+            &mut ch,
+        );
+        E2e {
+            vc,
+            log_n,
+            prefix_weights,
+            suffix_point,
+            claim,
+            root: cm.root,
+            rs_proof,
+            lig_proof,
+        }
+    }
+
+    /// Dense verification: ring-switch verify (rebuilds rs_eq_ind), then the
+    /// dense ligerito verifier with b_initial = rs_eq_ind.
+    fn verify_e2e_dense(e: &E2e) -> bool {
+        let mut ch = Sponge::new(E2E_DOMAIN, &[]);
+        let out = match verify(e.claim, &e.prefix_weights, &e.suffix_point, &e.rs_proof, &mut ch) {
+            Ok(o) => o,
+            Err(_) => return false,
+        };
+        recursive_verifier_with_basis(
+            &e.vc,
+            &e.lig_proof,
+            &out.rs_eq_ind,
+            out.sumcheck_claim,
+            &e.root,
+            &mut ch,
+        )
+    }
+
+    /// Succinct verification: verify_succinct (no rs_eq_ind), then the
+    /// succinct ligerito verifier whose eval_b_residual closure evaluates
+    /// MLE(rs_eq_ind) polylog via eval_rs_eq (shared prefix + binary-q
+    /// residual finish).
+    fn verify_e2e_succinct(e: &E2e) -> bool {
+        let mut ch = Sponge::new(E2E_DOMAIN, &[]);
+        let out = match verify_succinct(e.claim, &e.prefix_weights, &e.rs_proof, &mut ch) {
+            Ok(o) => o,
+            Err(_) => return false,
+        };
+        let z = e.suffix_point.clone();
+        let coordinate_weights = out.coordinate_weights.clone();
+        recursive_verifier_with_basis_succinct(
+            &e.vc,
+            &e.lig_proof,
+            e.log_n,
+            out.sumcheck_claim,
+            &e.root,
+            |ris, yr_log_n| {
+                let split = z.len() - yr_log_n;
+                assert_eq!(ris.len(), split, "closure gets the full folded ris");
+                let prefix = eval_rs_eq_prefix(&z, ris);
+                (0..1u32 << yr_log_n)
+                    .map(|y| eval_rs_eq_finish_from_prefix_binary_q(&prefix, &z[split..], y, &coordinate_weights))
+                    .collect()
+            },
+            &mut ch,
+        )
+    }
+
+    #[test]
+    fn end_to_end_plain_point() {
+        for (m, seed) in [(13usize, 10u64), (17, 11)] {
+            let e = prove_e2e(m, seed, false);
+            assert!(verify_e2e_dense(&e), "dense e2e rejected at m={m}");
+            assert!(verify_e2e_succinct(&e), "succinct e2e rejected at m={m}");
+        }
+    }
+
+    #[test]
+    fn end_to_end_generalized_weights() {
+        let e = prove_e2e(13, 12, true);
+        assert!(verify_e2e_dense(&e), "dense e2e (generalized) rejected");
+        assert!(verify_e2e_succinct(&e), "succinct e2e (generalized) rejected");
+    }
+
+    /// Tampering: a bit-flip in s_hat_v breaks the claim check; a
+    /// claim-preserving forgery (two entries adjusted so the weighted sum is
+    /// unchanged) passes the claim check but diverges the FS transcript, so
+    /// the ligerito opening must reject it. A tampered claim value is
+    /// rejected outright. Dense and succinct paths must agree throughout.
+    #[test]
+    fn end_to_end_rejects_tampering() {
+        let e = prove_e2e(13, 13, false);
+
+        // Plain bit flip: caught by the claim check.
+        let mut bad = E2e {
+            rs_proof: e.rs_proof.clone(),
+            lig_proof: e.lig_proof.clone(),
+            vc: e.vc.clone(),
+            log_n: e.log_n,
+            prefix_weights: e.prefix_weights.clone(),
+            suffix_point: e.suffix_point.clone(),
+            claim: e.claim,
+            root: e.root,
+        };
+        bad.rs_proof.s_hat_v[5].c1 ^= 1;
+        assert!(!verify_e2e_dense(&bad), "bit-flipped s_hat_v accepted");
+        assert!(!verify_e2e_succinct(&bad), "bit-flipped s_hat_v accepted (succinct)");
+
+        // Claim-preserving forgery: s'_1 = s_1 + d, s'_0 = s_0 + w_1*d/w_0
+        // keeps sum_i w_i s'_i = claim, so the claim check passes; the
+        // downstream opening must still reject (the batching weights and
+        // target diverge from what the ligerito proof was built for).
+        let mut s = 99u64;
+        let d = rand_ext(&mut s);
+        let w0 = e.prefix_weights[0];
+        let w1 = e.prefix_weights[1];
+        assert!(!w0.is_zero() && !d.is_zero());
+        bad.rs_proof = e.rs_proof.clone();
+        bad.rs_proof.s_hat_v[1] += d;
+        bad.rs_proof.s_hat_v[0] += w1 * d * w0.inv();
+        assert_eq!(
+            claim_check(&bad.prefix_weights, &bad.rs_proof.s_hat_v),
+            e.claim,
+            "forgery must be claim-preserving for this test to bite"
+        );
+        assert!(!verify_e2e_dense(&bad), "claim-preserving forgery accepted (dense)");
+        assert!(
+            !verify_e2e_succinct(&bad),
+            "claim-preserving forgery accepted (succinct)"
+        );
+
+        // Tampered claim value.
+        bad.rs_proof = e.rs_proof.clone();
+        bad.claim = e.claim + F192::ONE;
+        assert!(!verify_e2e_dense(&bad), "tampered claim accepted");
+        assert!(!verify_e2e_succinct(&bad), "tampered claim accepted (succinct)");
     }
 }

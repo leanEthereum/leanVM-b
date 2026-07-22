@@ -9,7 +9,7 @@
 // (https://github.com/binius-zk/binius64,
 // `crates/field/src/arch/aarch64/simd_arithmetic.rs`).
 
-//! GF(2^8) with the AES irreducible polynomial x^8 + x^4 + x^3 + x + 1.
+//! `GF(2)[x]/(x^8 + x^4 + x^3 + x + 1)`.
 //!
 //! Reduction: x^8 ≡ x^4 + x^3 + x + 1, so the upper byte h folds back as
 //!   h ^ (h<<1) ^ (h<<3) ^ (h<<4).
@@ -155,7 +155,7 @@ pub mod neon {
     /// passed as `(c0, c1)`) modulo `x^8 + x^4 + x^3 + x + 1`, returning 16 reduced
     /// GF(2^8) values.
     ///
-    /// Two-stage Binius-style reduction:
+    /// Two-stage reduction:
     ///   Stage 1: ch · QPLUS_RSH1 then ·2 (corrects for /x in QPLUS_RSH1)
     ///   Stage 2: high bytes of stage-1 · QSTAR; take low bytes only.
     ///
@@ -316,16 +316,8 @@ mod tests {
         // xtime: a · 0x02 (used by MixColumns), exhaustively cross-check
         // against the spec'd formula: xtime(a) = (a << 1) ^ (0x1B if a high bit).
         for a in 0u8..=255 {
-            let expected = if a & 0x80 != 0 {
-                (a << 1) ^ 0x1b
-            } else {
-                a << 1
-            };
-            assert_eq!(
-                (F8(a) * F8(0x02)).0,
-                expected,
-                "xtime mismatch at a=0x{a:02x}"
-            );
+            let expected = if a & 0x80 != 0 { (a << 1) ^ 0x1b } else { a << 1 };
+            assert_eq!((F8(a) * F8(0x02)).0, expected, "xtime mismatch at a=0x{a:02x}");
         }
     }
 

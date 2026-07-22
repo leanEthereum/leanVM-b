@@ -8,7 +8,9 @@ pub(crate) type Off = u32;
 /// once entry program counters are fixed.
 #[derive(Clone, Debug)]
 pub(crate) enum KVal {
-    Const(F128),
+    /// A 192-bit machine-word constant. Source literals fill only c0/c1, while
+    /// compiler-generated constants may use the full field.
+    Const(F192),
     Entry(String),
     /// The halt sentinel pc `g^{B-1}` (last bytecode slot), fixed once the
     /// padded bytecode size `B` is known. `main` jumps here to terminate.
@@ -60,13 +62,21 @@ pub(crate) enum LOp {
         od: Off,
         of: Off,
     },
-    /// `BLAKE3`: the four input words `ins` are addressed independently (`fp+ins[i]`);
-    /// the 32-bit output `c = (c, c+1)` occupies two CONSECUTIVE frame cells.
+    /// Pack two K-valued source cells into one canonical 128-bit cell. The VM
+    /// memory bus enforces that both inputs have zero extension limbs.
+    Pack64x2 {
+        a: Off,
+        b: Off,
+        c: Off,
+    },
+    /// `BLAKE3`: the four 128-bit input chunks `ins` are addressed independently,
+    /// one frame cell each. The 32-byte output occupies the two consecutive
+    /// 128-bit cells `c, c+1`.
     Blake3 {
         ins: [Off; 4],
         cv: Off,
         c: Off,
-        metadata: F128,
+        metadata: F192,
     },
 }
 
@@ -94,7 +104,12 @@ pub(crate) enum Hint {
     /// buffer `m[fp·g^bits_ptr]`, reconstruct their integer value, and write
     /// `g^max(log2_ceil(value), floor)` into `m[fp·g^dst]`. Nondeterministic
     /// (prover-side); the emitting code re-verifies the result in-circuit.
-    Log2Ceil { bits_ptr: Off, dst: Off, nbits: u32, floor: u32 },
+    Log2Ceil {
+        bits_ptr: Off,
+        dst: Off,
+        nbits: u32,
+        floor: u32,
+    },
     /// Prover-side debug print of `fp+cell` (witness generation only).
     Print { label: String, cell: Off },
     /// Computed advice: write the `nbits` bits of the value in `m[fp+value]`
@@ -105,6 +120,9 @@ pub(crate) enum Hint {
     /// (recovered by a bounded discrete log at witness generation), into the
     /// buffer `m[fp·g^bits_ptr]`. The emitting code re-checks it in-circuit.
     BitDecomposeExp { value: Off, bits_ptr: Off, nbits: u32 },
+    /// Computed advice: write the first `len` K-coordinate limbs of an F192
+    /// value into consecutive frame cells. The guest must constrain them.
+    FieldLimbs { value: Off, base: Off, len: u32 },
 }
 
 pub(crate) struct Lowered {

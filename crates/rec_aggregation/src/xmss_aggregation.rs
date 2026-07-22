@@ -12,22 +12,36 @@ use std::collections::BTreeMap;
 use lean_compiler::{compile, parse_file_with_replacements};
 use lean_vm::cpu::{prove, verify};
 use primitives::{
-    field::{F128, g_pow},
+    field::{F64, F192, g_pow},
     pretty_f64, pretty_integer,
 };
 use xmss::*;
 
 use crate::signers_cache;
 
-fn word(bytes: &[u8]) -> F128 {
-    F128::new(
-        u64::from_le_bytes(bytes[..8].try_into().unwrap()),
-        u64::from_le_bytes(bytes[8..16].try_into().unwrap()),
-    )
+fn word(bytes: &[u8]) -> F64 {
+    F64(u64::from_le_bytes(bytes[..8].try_into().unwrap()))
 }
 
-fn pair(a: &[u8], b: &[u8]) -> Vec<F128> {
-    vec![word(a), word(b)]
+/// A K-embedded F192 cell for count/digit hints, which are g-powers.
+fn cell(w: F64) -> F192 {
+    F192::from(w)
+}
+
+/// A 16-byte native value in the canonical BLAKE3 subspace of F192: `c0`
+/// carries bytes 0..8, `c1` bytes 8..16, and `c2` is zero.
+fn val16(b: &[u8]) -> F192 {
+    F192::new(word(&b[..8]).0, word(&b[8..16]).0, 0)
+}
+
+/// A 16-byte native value as ONE cell.
+fn pair(b: &[u8]) -> Vec<F192> {
+    vec![val16(b)]
+}
+
+/// A 32-byte hash block as two canonical 128-bit BLAKE3 cells.
+fn quad(b: &[u8]) -> Vec<F192> {
+    vec![val16(&b[..16]), val16(&b[16..32])]
 }
 
 /// Protocol-specific streaming binding used only by the runtime-sized XMSS
@@ -49,8 +63,8 @@ fn aggregate_binding(mut state: [u8; STATE_LEN], data: &[u8]) -> [u8; STATE_LEN]
 /// natively with the `xmss` crate, runs the in-VM aggregation verifier
 /// (`guests/xmss_aggregate.py`) over all signatures, proves, verifies, and
 /// prints the benchmark report.
-pub fn run_xmss_aggregation(n: usize) {
-    let trace_span = tracing::info_span!("XMSS aggregation", n = %pretty_integer(n)).entered();
+pub fn run_xmss_aggregation(n: usize, log_inv_rate: usize) {
+    let trace_span = tracing::info_span!("XMSS aggregation", n, log_inv_rate).entered();
 
     // Pin rayon workers to performance cores (QoS) before any parallel work runs,
     // so fork-join stages are not held up by efficiency-core stragglers. Thread
@@ -61,7 +75,7 @@ pub fn run_xmss_aggregation(n: usize) {
     // Generated once and cached to disk; see `signers_cache`.
     let signers = signers_cache::get_signers(n);
 
-    // The 328-word tweak table (word index — see the program header). The
+    // The 328-tweak table (tweak index — see the program header). The
     // Merkle parent index is `slot >> (level+1)` computed in u64 (a u32 shift
     // by 32 at the top level would mask, not zero).
     let mut tweaks: Vec<Tweak> = vec![make_tweak(TWEAK_TYPE_ENCODING, 0, slot)];
@@ -94,9 +108,10 @@ pub fn run_xmss_aggregation(n: usize) {
     let num_bytes = data.len();
     assert_eq!(num_bytes, 5792 + 32 * n);
     let mut iv = [0u8; STATE_LEN];
-    iv[..16].copy_from_slice(&g_pow(num_bytes).to_le_bytes());
+    iv[..8].copy_from_slice(&g_pow(num_bytes).0.to_le_bytes());
     let state = aggregate_binding(iv, &data);
-    let want = [word(&state[..16]), word(&state[16..])];
+    // The guest publishes the final binding state's two 128-bit cells (32 bytes).
+    let want = [val16(&state[..16]), val16(&state[16..32])];
 
     // The XMSS instance parameters, injected into the program's placeholders;
     // every derived size (tweak-table width, IV byte counts, …) is computed
@@ -114,17 +129,41 @@ pub fn run_xmss_aggregation(n: usize) {
         )
         .expect("parse"),
     );
-    program.set_witness("n_pks", vec![vec![g_pow(n)]]);
-    program.set_witness("msg", vec![pair(&message[..16], &message[16..])]);
-    program.set_witness("tweaks", tweaks.chunks(2).map(|c| pair(&c[0], &c[1])).collect());
-    let bit_word = |l: usize| F128::new(((slot >> l) & 1) as u64, 0);
+    program.set_witness("n_pks", vec![vec![cell(g_pow(n))]]);
+    program.set_witness("msg", vec![quad(&message)]);
+    program.set_witness(
+        "tweaks",
+        tweaks
+            .chunks(2)
+            .map(|c| {
+                let mut block = pair(&c[0]);
+                block.extend(pair(&c[1]));
+                block
+            })
+            .collect(),
+    );
+    // A merkle slot-bit as one 16-byte cell (bit in the low byte, rest zero).
+    let bit_word = |l: usize| vec![cell(F64(((slot >> l) & 1) as u64))];
     program.set_witness(
         "merkle_bits",
-        (0..LOG_LIFETIME / 2).map(|u| vec![bit_word(2 * u), bit_word(2 * u + 1)]).collect(),
+        (0..LOG_LIFETIME / 2)
+            .map(|u| {
+                let mut block = bit_word(2 * u);
+                block.extend(bit_word(2 * u + 1));
+                block
+            })
+            .collect(),
     );
     program.set_witness(
         "pks",
-        signers.iter().map(|(pk, _)| pair(&pk.merkle_root, &pk.public_param)).collect(),
+        signers
+            .iter()
+            .map(|(pk, _)| {
+                let mut block = pair(&pk.merkle_root);
+                block.extend(pair(&pk.public_param));
+                block
+            })
+            .collect(),
     );
     // Per-signature streams, signature-major order.
     let (mut rand_s, mut digits_s, mut chain_starts_s, mut sib_s) = (vec![], vec![], vec![], vec![]);
@@ -132,12 +171,11 @@ pub fn run_xmss_aggregation(n: usize) {
         let wots = &sig.wots_signature;
         let mut rnd = [0u8; STATE_LEN];
         rnd[..RANDOMNESS_LEN].copy_from_slice(&wots.randomness);
-        rand_s.push(pair(&rnd[..16], &rnd[16..]));
-        let encoding =
-            wots_encode(&message, slot, &pk.public_param, &wots.randomness).expect("encoding");
-        digits_s.extend(encoding.iter().map(|&e| vec![g_pow(e as usize)]));
-        chain_starts_s.extend(wots.chain_tips.iter().map(|t| vec![word(t)]));
-        sib_s.extend(sig.merkle_proof.iter().map(|s| vec![word(s)]));
+        rand_s.push(quad(&rnd));
+        let encoding = wots_encode(&message, slot, &pk.public_param, &wots.randomness).expect("encoding");
+        digits_s.extend(encoding.iter().map(|&e| vec![cell(g_pow(e as usize))]));
+        chain_starts_s.extend(wots.chain_tips.iter().map(|t| pair(t)));
+        sib_s.extend(sig.merkle_proof.iter().map(|s| pair(s)));
     }
     program.set_witness("rand", rand_s);
     program.set_witness("digits", digits_s);
@@ -156,7 +194,7 @@ pub fn run_xmss_aggregation(n: usize) {
     lean_vm::blake3_flock::warm_setup(181 + 146 * n);
 
     let t = Instant::now();
-    let (proof, stats) = prove(&program, want);
+    let (proof, stats) = prove(&program, want, log_inv_rate);
     let t_prove = t.elapsed();
     let t = Instant::now();
     verify(&program, &want, &proof).expect("XMSS aggregation verifies in-VM");
@@ -164,7 +202,8 @@ pub fn run_xmss_aggregation(n: usize) {
 
     // 181 fixed blocks + per signature: 1 (pk absorb) + 145 (the native
     // verifier's constant).
-    let bad = [want[0], want[1] + F128::ONE];
+    assert_eq!(stats.counts[5], 181 + 146 * n, "BLAKE3 instruction count");
+    let bad = [want[0], want[1] + F192::ONE];
     assert!(verify(&program, &bad, &proof).is_err());
 
     let proof_bytes = bincode::serialized_size(&proof).expect("proof is serializable");
@@ -187,9 +226,12 @@ pub fn run_xmss_aggregation(n: usize) {
         pow(stats.cycles),
         per(stats.cycles)
     );
-    for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3"].iter().zip(&stats.counts) {
+    for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3", "PACK64X2"]
+        .iter()
+        .zip(&stats.counts)
+    {
         println!(
-            "    {name:<6} instructions       : {:>14} = {:>9}   ({:>12} / XMSS)",
+            "    {name:<8} instructions     : {:>14} = {:>9}   ({:>12} / XMSS)",
             pretty_integer(c),
             pow(c),
             per(c)
@@ -224,7 +266,10 @@ mod tests {
     /// Batch size overridable: `LEANVM_XMSS_N=820 cargo test … -- --nocapture`.
     #[test]
     fn aggregate_xmss() {
-        let n = std::env::var("LEANVM_XMSS_N").ok().and_then(|s| s.parse().ok()).unwrap_or(3);
-        super::run_xmss_aggregation(n);
+        let n = std::env::var("LEANVM_XMSS_N")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(3);
+        super::run_xmss_aggregation(n, lean_vm::pcs::LOG_INV_RATE);
     }
 }

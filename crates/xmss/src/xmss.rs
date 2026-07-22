@@ -66,12 +66,13 @@ fn prf(seed: &[u8; 32], domain: u32, a: u64, b: u64) -> Digest {
     msg[..4].copy_from_slice(&domain.to_le_bytes());
     msg[4..12].copy_from_slice(&a.to_le_bytes());
     msg[12..20].copy_from_slice(&b.to_le_bytes());
-    blake3::keyed_hash(seed, &msg).as_bytes()[..DIGEST_LEN].try_into().unwrap()
+    blake3::keyed_hash(seed, &msg).as_bytes()[..DIGEST_LEN]
+        .try_into()
+        .unwrap()
 }
 
 fn gen_wots_secret_key(seed: &[u8; 32], slot: u32, public_param: &PublicParam) -> WotsSecretKey {
-    let pre_images =
-        std::array::from_fn(|i| prf(seed, PRF_DOMAINSEP_WOTS_SECRET_KEY, slot as u64, i as u64));
+    let pre_images = std::array::from_fn(|i| prf(seed, PRF_DOMAINSEP_WOTS_SECRET_KEY, slot as u64, i as u64));
     WotsSecretKey::new(pre_images, public_param, slot)
 }
 
@@ -85,13 +86,7 @@ fn gen_random_node(seed: &[u8; 32], level: usize, index: u64) -> Digest {
 }
 
 /// Merkle parent at `level` (1 compression: both children fill one block).
-pub fn merkle_node(
-    public_param: &PublicParam,
-    level: usize,
-    index: u64,
-    left: &Digest,
-    right: &Digest,
-) -> Digest {
+pub fn merkle_node(public_param: &PublicParam, level: usize, index: u64, left: &Digest, right: &Digest) -> Digest {
     let mut data = [0u8; 2 * DIGEST_LEN];
     data[..DIGEST_LEN].copy_from_slice(left);
     data[DIGEST_LEN..].copy_from_slice(right);
@@ -235,8 +230,7 @@ pub fn xmss_sign(
     if slot < secret_key.slot_start || slot > secret_key.slot_end {
         return Err(XmssSignatureError::SlotOutOfRange);
     }
-    let (randomness, ..) =
-        find_randomness_for_wots_encoding(message, slot, &secret_key.public_param, rng);
+    let (randomness, ..) = find_randomness_for_wots_encoding(message, slot, &secret_key.public_param, rng);
     let wots_secret_key = gen_wots_secret_key(&secret_key.seed, slot, &secret_key.public_param);
     let wots_signature = wots_secret_key
         .sign_with_randomness(message, slot, &secret_key.public_param, randomness)
@@ -285,7 +279,12 @@ impl XmssSecretKey {
     /// subtree, or `gen_random_node`.
     fn merkle_sibling(&self, level: usize, neighbour_index: u64, sub: &BottomSubtree) -> Digest {
         let (lo, hi, level_base, layers) = if level >= self.split_level {
-            (self.slot_start as u64, self.slot_end as u64, self.split_level, &self.top)
+            (
+                self.slot_start as u64,
+                self.slot_end as u64,
+                self.split_level,
+                &self.top,
+            )
         } else {
             let (lo, hi) = subtree_bounds(
                 self.slot_start as u64,
@@ -324,7 +323,11 @@ pub fn xmss_verify(
     for (level, neighbour) in signature.merkle_proof.iter().enumerate() {
         let is_left = ((slot as u64 >> level) & 1) == 0;
         let parent_index = (slot as u64) >> (level + 1);
-        let (left, right) = if is_left { (current, *neighbour) } else { (*neighbour, current) };
+        let (left, right) = if is_left {
+            (current, *neighbour)
+        } else {
+            (*neighbour, current)
+        };
         current = merkle_node(&pub_key.public_param, level + 1, parent_index, &left, &right);
     }
     if current == pub_key.merkle_root {

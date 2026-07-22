@@ -32,8 +32,8 @@ pub fn parse(src: &str) -> Result<Ast, String> {
 /// **Global constants.** Between the (optional) `snark_lib` import and the
 /// `def`s, the top level accepts constant declarations `NAME = <int-expr>`,
 /// where `<int-expr>` is a compile-time **integer** — decimal literals combined
-/// with `+ - * / **` and parentheses (ordinary integer arithmetic, *not* the
-/// runtime field's XOR/GHASH), and references to *earlier* constants. So a
+/// with `+ - * / **` and parentheses (ordinary integer arithmetic, not runtime
+/// field arithmetic), and references to *earlier* constants. So a
 /// derived size like `N_TWEAKS = 2 + (W - 1) * V + LOG_LIFETIME` comes out
 /// right. Each constant is evaluated and substituted, as a single decimal
 /// literal, everywhere its name appears in the functions below — so a constant
@@ -70,7 +70,7 @@ pub fn parse_with_replacements(src: &str, replacements: &BTreeMap<String, String
     // positions that demand a parse-time literal (`StackBuf`, `**`, `assert log
     // _ < _`).
     let mut consts: BTreeMap<String, String> = BTreeMap::new();
-    let mut const_arrays: Vec<(String, Vec<u128>)> = Vec::new();
+    let mut const_arrays: Vec<(String, Vec<F192>)> = Vec::new();
     let mut start = 0;
     while start < lines.len() {
         let (indent, line) = &lines[start];
@@ -81,11 +81,16 @@ pub fn parse_with_replacements(src: &str, replacements: &BTreeMap<String, String
             return Err(format!("unexpected indentation at top level: `{line}`"));
         }
         let (lhs, rhs) = split_assign(line).ok_or_else(|| {
-            format!("top level: expected `def`, a global constant `NAME = value`, or the `snark_lib` import, got `{line}`")
+            format!(
+                "top level: expected `def`, a global constant `NAME = value`, or the `snark_lib` import, got `{line}`"
+            )
         })?;
         let name = lhs.trim().to_string();
         if !is_ident(&name) {
-            return Err(format!("global constant name must be a plain identifier: `{}`", lhs.trim()));
+            return Err(format!(
+                "global constant name must be a plain identifier: `{}`",
+                lhs.trim()
+            ));
         }
         if consts.contains_key(&name) || const_arrays.iter().any(|(n, _)| n == &name) {
             return Err(format!("global constant `{name}` is declared twice"));
@@ -103,13 +108,24 @@ pub fn parse_with_replacements(src: &str, replacements: &BTreeMap<String, String
                 if p.is_empty() {
                     continue; // tolerate a trailing comma
                 }
-                elems.push(eval_const_int(p).map_err(|e| format!("global constant array `{name}`: {e}"))?);
+                let elem = if let Some(v) = parse_f192_const(p) {
+                    v.map_err(|e| format!("global constant array `{name}`: {e}"))?
+                } else {
+                    let n = eval_const_int(p).map_err(|e| format!("global constant array `{name}`: {e}"))?;
+                    F192::new(n as u64, (n >> 64) as u64, 0)
+                };
+                elems.push(elem);
             }
             const_arrays.push((name, elems));
         } else {
             // A scalar constant: evaluate it as a compile-time integer.
-            let value = eval_const_int(rhs).map_err(|e| format!("global constant `{name}`: {e}"))?;
-            consts.insert(name, value.to_string());
+            if let Some(value) = parse_f192_const(rhs) {
+                let v = value.map_err(|e| format!("global constant `{name}`: {e}"))?;
+                consts.insert(name, format!("f192({},{},{})", v.c0, v.c1, v.c2));
+            } else {
+                let value = eval_const_int(rhs).map_err(|e| format!("global constant `{name}`: {e}"))?;
+                consts.insert(name, value.to_string());
+            }
         }
         start += 1;
     }
@@ -118,12 +134,123 @@ pub fn parse_with_replacements(src: &str, replacements: &BTreeMap<String, String
         .iter()
         .map(|(ind, l)| (*ind, apply_replacements(l, &consts)))
         .collect();
-    let mut p = Parser { lines: func_lines, i: 0 };
+    let mut p = Parser {
+        lines: func_lines,
+        i: 0,
+    };
     let mut funcs = Vec::new();
     while p.i < p.lines.len() {
         funcs.push(p.func()?);
     }
+    infer_return_shapes(&mut funcs);
     Ok(Ast { funcs, const_arrays })
+}
+
+/// Infer the compile-time representation of each tail-return value. The DSL's
+/// StackBuf constructor makes its size static. HeapBuf remains an ordinary
+/// one-cell pointer: its allocation hint already ran in the creating function,
+/// so no allocation metadata needs to cross the call. Iterate to a fixed point
+/// so a wrapper may return a stack buffer produced by a later function.
+fn infer_return_shapes(funcs: &mut [Func]) {
+    fn expr_shape(
+        e: &Expr,
+        locals: &HashMap<String, ReturnShape>,
+        known: &HashMap<String, Vec<ReturnShape>>,
+    ) -> ReturnShape {
+        match e {
+            Expr::Var(v) => locals.get(v).copied().unwrap_or(ReturnShape::Scalar),
+            Expr::StackBuf(n) => ReturnShape::StackBuf((*n).try_into().expect("StackBuf size does not fit in u32")),
+            Expr::ListLit(es) => ReturnShape::StackBuf(es.len().try_into().expect("StackBuf size does not fit in u32")),
+            Expr::Call(f, _) => known
+                .get(f)
+                .filter(|r| r.len() == 1)
+                .and_then(|r| r.first())
+                .copied()
+                .unwrap_or(ReturnShape::Scalar),
+            _ => ReturnShape::Scalar,
+        }
+    }
+
+    fn scan(
+        body: &[Stmt],
+        params: &[String],
+        known: &HashMap<String, Vec<ReturnShape>>,
+        n_ret: usize,
+    ) -> Vec<ReturnShape> {
+        let mut locals: HashMap<String, ReturnShape> =
+            params.iter().map(|p| (p.clone(), ReturnShape::Scalar)).collect();
+        let mut returns = vec![ReturnShape::Scalar; n_ret];
+        for stmt in body {
+            match stmt {
+                Stmt::Let(name, e) => {
+                    locals.insert(name.clone(), expr_shape(e, &locals, known));
+                }
+                Stmt::LetTuple(names, f, _) => {
+                    let shapes = known.get(f);
+                    for (i, name) in names.iter().enumerate() {
+                        let shape = shapes.and_then(|s| s.get(i)).copied().unwrap_or(ReturnShape::Scalar);
+                        locals.insert(name.clone(), shape);
+                    }
+                }
+                // `unroll` is straight-line expansion, so a binding in its last
+                // copy remains visible afterward. One symbolic scan is enough
+                // for representation shapes (the iteration value is scalar).
+                Stmt::Unroll { var, body, .. } => {
+                    locals.insert(var.clone(), ReturnShape::Scalar);
+                    for inner in body {
+                        if let Stmt::Let(name, e) = inner {
+                            locals.insert(name.clone(), expr_shape(e, &locals, known));
+                        }
+                    }
+                }
+                Stmt::Return(es) => {
+                    returns = es.iter().map(|e| expr_shape(e, &locals, known)).collect();
+                }
+                _ => {}
+            }
+        }
+        returns
+    }
+
+    let mut known: HashMap<String, Vec<ReturnShape>> = funcs
+        .iter()
+        .map(|f| (f.name.clone(), vec![ReturnShape::Scalar; f.n_ret]))
+        .collect();
+    // A shape can only move from Scalar to one of the finite constructor
+    // shapes (or acquire one through a call), so `funcs.len() + 1` rounds are
+    // sufficient for the longest acyclic wrapper chain.
+    for _ in 0..=funcs.len() {
+        let next: HashMap<String, Vec<ReturnShape>> = funcs
+            .iter()
+            .map(|f| (f.name.clone(), scan(&f.body, &f.params, &known, f.n_ret)))
+            .collect();
+        if next == known {
+            known = next;
+            break;
+        }
+        known = next;
+    }
+    for f in funcs {
+        f.return_shapes = known
+            .remove(&f.name)
+            .unwrap_or_else(|| vec![ReturnShape::Scalar; f.n_ret]);
+    }
+}
+
+fn parse_f192_const(s: &str) -> Option<Result<F192, String>> {
+    let inner = s.trim().strip_prefix("f192(")?.strip_suffix(')')?;
+    let parts = split_top(inner, ',');
+    Some((|| {
+        if parts.len() != 3 {
+            return Err("f192 needs exactly three limbs".into());
+        }
+        let mut limbs = [0u64; 3];
+        for (i, p) in parts.iter().enumerate() {
+            limbs[i] =
+                u64::try_from(eval_const_int(p.trim())?).map_err(|_| "an f192 limb does not fit in u64".to_string())?;
+        }
+        Ok(F192::new(limbs[0], limbs[1], limbs[2]))
+    })())
 }
 
 /// Apply identifier-level **placeholder** replacements to source text before
@@ -167,8 +294,8 @@ fn is_ident(s: &str) -> bool {
 /// Evaluate a compile-time **integer** constant expression: decimal literals
 /// combined with `+`, `-`, `*`, `/` (truncating), `**` (power), and
 /// parentheses. This is ordinary integer arithmetic — a global constant is a
-/// count / size / exponent — deliberately *distinct* from the runtime field's
-/// `+` = XOR and `*` = GHASH, so derived sizes like `2 + (W - 1) * V +
+/// count / size / exponent — deliberately *distinct* from runtime field
+/// arithmetic, so derived sizes like `2 + (W - 1) * V +
 /// LOG_LIFETIME` come out right. All references to earlier constants have
 /// already been substituted to their decimal values, so the input is pure
 /// arithmetic. Overflow, division by zero, and a negative intermediate are
@@ -268,7 +395,8 @@ fn eval_const_int(s: &str) -> Result<u128, String> {
             *p += 1;
             let exp = power(t, p)?; // right-associative
             let exp = u32::try_from(exp).map_err(|_| "`**` exponent too large".to_string())?;
-            base.checked_pow(exp).ok_or_else(|| "constant overflow in `**`".to_string())
+            base.checked_pow(exp)
+                .ok_or_else(|| "constant overflow in `**`".to_string())
         } else {
             Ok(base)
         }
@@ -279,7 +407,8 @@ fn eval_const_int(s: &str) -> Result<u128, String> {
             *p += 1;
             let rhs = power(t, p)?;
             acc = if op == Tok::Mul {
-                acc.checked_mul(rhs).ok_or_else(|| "constant overflow in `*`".to_string())?
+                acc.checked_mul(rhs)
+                    .ok_or_else(|| "constant overflow in `*`".to_string())?
             } else {
                 acc.checked_div(rhs)
                     .ok_or_else(|| "division by zero in constant expression".to_string())?
@@ -293,9 +422,11 @@ fn eval_const_int(s: &str) -> Result<u128, String> {
             *p += 1;
             let rhs = term(t, p)?;
             acc = if op == Tok::Add {
-                acc.checked_add(rhs).ok_or_else(|| "constant overflow in `+`".to_string())?
+                acc.checked_add(rhs)
+                    .ok_or_else(|| "constant overflow in `+`".to_string())?
             } else {
-                acc.checked_sub(rhs).ok_or_else(|| "constant is negative (underflow in `-`)".to_string())?
+                acc.checked_sub(rhs)
+                    .ok_or_else(|| "constant is negative (underflow in `-`)".to_string())?
             };
         }
         Ok(acc)
@@ -303,7 +434,10 @@ fn eval_const_int(s: &str) -> Result<u128, String> {
     let mut pos = 0;
     let value = expr(&toks, &mut pos)?;
     if pos != toks.len() {
-        return Err(format!("unexpected trailing tokens in constant expression `{}`", s.trim()));
+        return Err(format!(
+            "unexpected trailing tokens in constant expression `{}`",
+            s.trim()
+        ));
     }
     Ok(value)
 }
@@ -312,12 +446,13 @@ fn eval_const_int(s: &str) -> Result<u128, String> {
 /// `GEN ** k`, and `+`/`*` combinations of those — to its field element.
 /// Used for the `# public_input: <elt>, <elt>` annotation of `.py` test
 /// programs (see `tests/py_source.rs`).
-pub fn parse_const(s: &str) -> Result<F128, String> {
-    fn eval(e: &Expr) -> Result<F128, String> {
+pub fn parse_const(s: &str) -> Result<F192, String> {
+    fn eval(e: &Expr) -> Result<F192, String> {
         match e {
-            Expr::Lit(n) => Ok(F128::new(*n as u64, (*n >> 64) as u64)),
-            Expr::Gen => Ok(g_pow(1)),
-            Expr::GPow(k) => Ok(g_pow_u128(*k)),
+            // An integer literal is the raw 128-bit bit pattern of a machine word.
+            Expr::Lit(n) => Ok(F192::new(*n as u64, (*n >> 64) as u64, 0)),
+            Expr::Gen => Ok(g_pow(1).into()),
+            Expr::GPow(k) => Ok(g_pow_u128(*k).into()),
             Expr::Add(a, b) => Ok(eval(a)? + eval(b)?),
             Expr::Mul(a, b) => Ok(eval(a)? * eval(b)?),
             other => Err(format!("not a constant expression: `{other:?}`")),
@@ -352,7 +487,11 @@ impl Parser {
                 return Err(format!("unknown decorator `@{}` (only `@inline`)", dec.trim()));
             }
             self.i += 1;
-            (indent, line) = self.lines.get(self.i).cloned().ok_or("`@inline` must precede a `def`")?;
+            (indent, line) = self
+                .lines
+                .get(self.i)
+                .cloned()
+                .ok_or("`@inline` must precede a `def`")?;
             true
         } else {
             false
@@ -395,6 +534,7 @@ impl Parser {
             params,
             const_params,
             n_ret,
+            return_shapes: vec![ReturnShape::Scalar; n_ret],
             body,
             inline,
         })
@@ -1104,7 +1244,11 @@ fn parse_expr(s: &str) -> Result<Expr, String> {
         for (op, seg) in ops.iter().zip(&segs[1..]) {
             let rhs = Box::new(parse_expr(seg)?);
             let lhs = Box::new(acc);
-            acc = if *op == b'+' { Expr::Add(lhs, rhs) } else { Expr::Sub(lhs, rhs) };
+            acc = if *op == b'+' {
+                Expr::Add(lhs, rhs)
+            } else {
+                Expr::Sub(lhs, rhs)
+            };
         }
         return Ok(acc);
     }
@@ -1124,8 +1268,10 @@ fn parse_expr(s: &str) -> Result<Expr, String> {
         }
         return Ok(acc);
     }
-    // `**` (compile-time power), tightest binding: `base ** k` with `k` a
-    // (possibly large) integer literal.
+    // `**` (compile-time power), tightest binding: `base ** k` with `k` an
+    // integer literal (possibly large), or a parenthesised compile-time
+    // integer expression like `GEN ** (2 * s + 1)`, evaluated at lowering,
+    // so it can reference `unroll` counters and constants.
     if let Some((base, exp)) = split_once_top(s, "**") {
         let base = parse_expr(&base)?;
         let exp_e = parse_expr(&exp)?;

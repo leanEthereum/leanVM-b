@@ -1,12 +1,12 @@
 //! The surface AST produced by the parser: expressions, statements, functions.
 
+use primitives::field::F192;
+
 /// An expression. Arithmetic is the field's own: `+` is `XOR`, `*` is `MUL`.
 #[derive(Clone, Debug)]
 pub enum Expr {
-    /// Integer / field literal: a `u128` taken as the field element's 128 bits,
-    /// `F128::new(n_lo, n_hi)`. Small values behave like integers (`5` is
-    /// `F128::new(5, 0)`); a full 128-bit value names an arbitrary field
-    /// constant (e.g. a Fibonacci result computed in the exponent).
+    /// Integer / field literal: the source syntax provides a raw 128-bit value,
+    /// embedded into the low two limbs of the 192-bit tower element (`c2 = 0`).
     Lit(u128),
     /// The generator `g` — written `GEN` in source. A logical index `i` is
     /// carried "in the exponent" as `gⁱ`, so `GEN` is the unit step and
@@ -47,9 +47,9 @@ pub enum Expr {
     /// `a · b⁻¹`. Lowered to one `MUL` whose quotient operand is unset, so the
     /// write-once back-solve fills it with `a · b⁻¹` and the `MUL` constraint
     /// pins `quotient · b == a` (§range-check trick). No hint: the inverse is
-    /// nondeterministic but the constraint binds it. `b == 0` is rejected
-    /// (unless `a == 0` too, the undefined `0/0`); `1 / b` therefore also
-    /// enforces `b != 0`. Distinct from the compile-time `//` ([`Expr::Div`]).
+    /// nondeterministic but the constraint binds it. `b == 0` is rejected,
+    /// including `0 / 0`; `1 / b` therefore also enforces `b != 0`. Distinct
+    /// from the compile-time `//` ([`Expr::Div`]).
     FieldDiv(Box<Expr>, Box<Expr>),
     /// Single-return function call in expression position.
     Call(String, Vec<Expr>),
@@ -64,8 +64,8 @@ pub enum Expr {
     HeapBufDyn(Box<Expr>),
     /// `StackBuf(n)` — allocate `n` *consecutive* frame (stack) cells, bound as a
     /// stack value. Its cells `sa[0..n]` are written/read directly (no heap deref),
-    /// and a size-2 `StackBuf` is a valid `blake3` operand (the two 128-bit words
-    /// of a 256-bit value live in the two consecutive cells). See [`FnLower`].
+    /// and a size-2 `StackBuf` is a valid `blake3` operand (the four 64-bit hash
+    /// words live as two lanes in each of two consecutive 128-bit cells).
     StackBuf(u64),
     /// `arr[idx]` — read a cell. For a heap `arr` (a pointer): `m[arr·idx]` (idx a
     /// g-power). For a [`Expr::StackBuf`]: the frame cell `base + idx` (idx a
@@ -199,6 +199,27 @@ pub enum ForBound {
     Runtime(Expr),
 }
 
+/// Compile-time representation of one source-level return value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReturnShape {
+    /// One ordinary field element or address cell. Heap buffers use this shape:
+    /// allocation happens in the callee and only their pointer is returned.
+    Scalar,
+    /// A compile-time-sized run of consecutive frame cells.
+    StackBuf(u32),
+}
+
+impl ReturnShape {
+    /// Number of physical call-frame return cells occupied by this source-level
+    /// return value.
+    pub(crate) fn cells(self) -> u32 {
+        match self {
+            Self::StackBuf(n) => n,
+            Self::Scalar => 1,
+        }
+    }
+}
+
 /// A function definition. `main` is the entry point.
 #[derive(Clone, Debug)]
 pub struct Func {
@@ -210,7 +231,11 @@ pub struct Func {
     /// with the parameter substituted by its literal (see
     /// [`FnLower::specialize`]).
     pub const_params: Vec<bool>,
+    /// Number of source-level return values (tuple arity).
     pub n_ret: usize,
+    /// Compile-time shape of each source-level return value. Stack buffers use
+    /// multiple physical ABI cells; everything else uses one cell.
+    pub return_shapes: Vec<ReturnShape>,
     pub body: Vec<Stmt>,
     /// `@inline` decorator: expand this function at each call site instead of
     /// emitting a real call — no frame, no argument/return plumbing (the
@@ -226,10 +251,10 @@ pub struct Func {
 pub struct Ast {
     pub funcs: Vec<Func>,
     /// Top-level constant arrays `NAME = [a, b, c]` (declaration order). Each
-    /// element is a `u128` (a field value `F128::new(lo,hi)` where used as a
+    /// element is a `u128` (a field value `extension-field::new(lo,hi)` where used as a
     /// value, or a small integer where used as a compile-time index / bound /
     /// `unroll` count). Indexed `NAME[i]` and measured `len(NAME)` at compile
     /// time only (`i` a literal / constant / `unroll` var). Not textually
     /// substituted (unlike scalar constants) — resolved at lowering.
-    pub const_arrays: Vec<(String, Vec<u128>)>,
+    pub const_arrays: Vec<(String, Vec<F192>)>,
 }

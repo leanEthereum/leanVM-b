@@ -5,9 +5,9 @@
 //! on the multilinear extensions â, b̂, ĉ at the protocol-derived point.
 //!
 //! Protocol shape (m = log_n, k_skip = [`K_SKIP`] = 6):
-//!   1. Verifier samples `r ∈ F_{2^128}^m` (the zerocheck challenge).
+//!   1. Verifier samples `r ∈ F_{2^192}^m` (the zerocheck challenge).
 //!   2. Prover sends `P^{AB}(λ)` and `P^C(λ)` for λ ∈ Λ, |Λ| = 2^k_skip.
-//!   3. Verifier samples `z ∈ F_{2^128}` (univariate-skip fold point).
+//!   3. Verifier samples `z ∈ F_{2^192}` (univariate-skip fold point).
 //!   4. For each of the `m - k_skip` multilinear rounds, prover sends
 //!      `(P_r(1), P_r(∞))` and verifier samples `ρ_r`.
 //!   5. Prover sends final MLE evaluations `(â, b̂, ĉ)` at the resulting point.
@@ -16,8 +16,9 @@
 //! is tested on honest witnesses; verify also rejects byte-mutated proofs and
 //! shape-corrupted ones.
 
-use pcs::{ProverState, VerifierState};
-use primitives::field::{F8, F128};
+use fiat_shamir::transcript::{ProverState, VerifierState};
+use primitives::field::{F8, F192};
+
 use pcs::ntt::{AdditiveNttGf8, InvNttTableByteSingleGf8};
 
 pub mod multilinear;
@@ -25,28 +26,27 @@ pub mod univariate_skip;
 pub mod univariate_skip_optimized;
 
 use multilinear::{
-    UniSkipFoldTable, fold_and_compute_round_pair_into, fold_in_place_pair,
-    interpolate_at_z_combined, interpolate_at_z_on_lambda, round_pair_naive,
-    uni_skip_fold_and_round_pair_optimized_packed_padded,
+    UniSkipFoldTable, fold_and_compute_round_pair_into, fold_in_place_pair, interpolate_at_z_combined,
+    interpolate_at_z_on_lambda, round_pair_naive, uni_skip_fold_and_round_pair_optimized_packed_padded,
 };
 use univariate_skip_optimized::{
-    c_s_f128, medium_challenges_ghash, small_challenges_ghash,
+    c_s, medium_challenges, round1_shift_reduce_extract_c_packed_padded, small_challenges,
 };
 
 /// Number of variables folded in round 1 via the additive-NTT univariate skip.
 /// |Λ| = 2^K_SKIP = 64 elements; the round-1 prover message is two length-64
-/// vectors of F128.
+/// vectors of F192.
 pub const K_SKIP: usize = 6;
 const N_INNER: usize = 7; // 3 small + 4 medium fixed-constant eq dimensions
 
 /// Build the zerocheck challenge vector in the shared prover/verifier order:
 /// sampled skip coordinates, fixed inner coordinates, then sampled outer ones.
-fn challenge_vector(m: usize, mut sample_vec: impl FnMut(usize) -> Vec<F128>) -> Vec<F128> {
+fn challenge_vector(m: usize, mut sample_vec: impl FnMut(usize) -> Vec<F192>) -> Vec<F192> {
     let skip = sample_vec(K_SKIP);
     let outer = sample_vec(m - K_SKIP - N_INNER);
     skip.into_iter()
-        .chain(small_challenges_ghash())
-        .chain(medium_challenges_ghash())
+        .chain(small_challenges())
+        .chain(medium_challenges())
         .chain(outer)
         .collect()
 }
@@ -82,20 +82,20 @@ pub use pcs::pack::PaddingSpec;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ZerocheckClaim {
     /// Univariate-skip challenge sampled after round 1 (binds the K_SKIP
-    /// skip variables).
-    pub z: F128,
+    /// skip variables), represented directly in `F192`.
+    pub z: F192,
     /// AB sumcheck bind challenges, one per multilinear round; length = `m - K_SKIP`.
-    pub mlv_challenges: Vec<F128>,
+    pub mlv_challenges: Vec<F192>,
     /// Eq weights for the rest variables = the zerocheck challenge restricted
     /// to `r[K_SKIP..m]`. This is the *rest part of the c-claim's point*.
     /// Length = `m - K_SKIP`.
-    pub r_rest: Vec<F128>,
+    pub r_rest: Vec<F192>,
     /// `â(z, mlv_challenges)`.
-    pub a_eval: F128,
+    pub a_eval: F192,
     /// `b̂(z, mlv_challenges)`.
-    pub b_eval: F128,
+    pub b_eval: F192,
     /// `ĉ(z, r_rest)` — at a *different point* than a_eval, b_eval.
-    pub c_eval: F128,
+    pub c_eval: F192,
 }
 
 // (No ZerocheckProof struct: every round message rides the shared transcript
@@ -126,15 +126,28 @@ pub enum VerifyError {
 /// ([`univariate_skip_optimized::round1_shift_reduce_extract_c_packed_padded_with_s_hat_v`]),
 /// which the downstream PCS open consumes to skip `fold_1b_rows` for the
 /// c-claim.
-#[allow(clippy::too_many_arguments)]
-pub fn prove_packed_padded(
+pub fn prove_packed_padded_capture_s_hat_v_c<O>(
     a_packed: &[u8],
     b_packed: &[u8],
     c_packed: &[u8],
     m: usize,
     padding: &PaddingSpec,
-    ps: &mut ProverState,
-) -> (ZerocheckClaim, Vec<F128>) {
+    ps: &mut ProverState<O>,
+) -> (ZerocheckClaim, Vec<F192>) {
+    let (claim, captured) = prove_packed_padded_inner(a_packed, b_packed, c_packed, m, padding, true, ps);
+    (claim, captured.expect("capture=true must produce s_hat_v_c"))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prove_packed_padded_inner<O>(
+    a_packed: &[u8],
+    b_packed: &[u8],
+    c_packed: &[u8],
+    m: usize,
+    padding: &PaddingSpec,
+    capture_s_hat_v_c: bool,
+    ps: &mut ProverState<O>,
+) -> (ZerocheckClaim, Option<Vec<F192>>) {
     let k_skip = K_SKIP;
     assert!(
         m >= k_skip + N_INNER,
@@ -156,7 +169,8 @@ pub fn prove_packed_padded(
     //   r[k_skip+3..k_skip+7]       — protocol medium-eq constants β_i
     //   r[k_skip+7..m]              — sampled (the "outer" eq weights for
     //                                  the URM and multilinear rounds)
-    let r = challenge_vector(m, |n| ps.sample_vec(n));
+    // Prover and verifier use the same tower-valued challenges directly.
+    let r = challenge_vector(m, |n| ps.sample_vec(n).into_iter().collect());
 
     // ---- 3. Round 1: URM (extract_c, parallel) ----
     //
@@ -170,20 +184,21 @@ pub fn prove_packed_padded(
     let ntt_s = AdditiveNttGf8::new(k_skip, F8::ZERO);
     let ntt_l = AdditiveNttGf8::new(k_skip, F8(1u8 << k_skip));
     let inv_table = InvNttTableByteSingleGf8::new(&ntt_s, &ntt_l);
-    let (round1_ab_opt, round1_c_opt, s_hat_v_c) =
-        crate::zerocheck::univariate_skip_optimized::round1_shift_reduce_extract_c_packed_padded_with_s_hat_v(
-            a_packed,
-            b_packed,
-            c_packed,
-            m,
-            k_skip,
-            &r,
-            &inv_table,
-            padding,
+    let (round1_ab_opt, round1_c_opt, s_hat_v_c) = if capture_s_hat_v_c {
+        let (ab, c, s) =
+            crate::zerocheck::univariate_skip_optimized::round1_shift_reduce_extract_c_packed_padded_with_s_hat_v(
+                a_packed, b_packed, c_packed, m, k_skip, &r, &inv_table, padding,
+            );
+        (ab, c, Some(s))
+    } else {
+        let (ab, c) = round1_shift_reduce_extract_c_packed_padded(
+            a_packed, b_packed, c_packed, m, k_skip, &r, &inv_table, padding,
         );
-    let c_s = c_s_f128();
-    let round1_ab: Vec<F128> = round1_ab_opt.iter().map(|x| c_s * *x).collect();
-    let round1_c: Vec<F128> = round1_c_opt.iter().map(|x| c_s * *x).collect();
+        (ab, c, None)
+    };
+    let c_s = c_s();
+    let round1_ab: Vec<F192> = round1_ab_opt.iter().map(|x| c_s * *x).collect();
+    let round1_c: Vec<F192> = round1_c_opt.iter().map(|x| c_s * *x).collect();
     if zc_timing {
         eprintln!(
             "[zc-timing] round1 URM: {:.2} ms",
@@ -192,8 +207,12 @@ pub fn prove_packed_padded(
     }
 
     // ---- 4. Transmit + bind round-1 message on the stream, sample z ----
-    ps.add_scalars(&round1_ab);
-    ps.add_scalars(&round1_c);
+    for &x in round1_ab.iter() {
+        ps.add_scalar(x);
+    }
+    for &x in round1_c.iter() {
+        ps.add_scalar(x);
+    }
     let z = ps.sample();
 
     // ---- 5. c_eval = ĉ(z, r_rest) via interpolation of round1_c at z ----
@@ -202,7 +221,7 @@ pub fn prove_packed_padded(
     // as its 2^k_skip evaluations on Λ. Interpolating to λ=z gives
     // `ĉ(z, r_rest)` directly (the eq-weighted sum collapses to the MLE
     // evaluation because ĉ is linear). This is **the c-claim** — at point
-    // `(z, r_rest)`, *not* `(z, ρ-values)`. ~64 F128 muls + Lagrange weights.
+    // `(z, r_rest)`, *not* `(z, ρ-values)`. ~64 F192 muls + Lagrange weights.
     let final_c_eval = interpolate_at_z_on_lambda(&round1_c, k_skip, z);
 
     // ---- 6. Round 2: fused fold + first multilinear message ----
@@ -212,18 +231,17 @@ pub fn prove_packed_padded(
     // verifier samples ρ_1 after observing this message.
     let t_round2 = std::time::Instant::now();
     let fold_table = UniSkipFoldTable::new(k_skip, z);
-    let mut mlv_arg = vec![F128::ONE; n_mlv];
+    let mut mlv_arg = vec![F192::ONE; n_mlv];
     mlv_arg[1..].copy_from_slice(&r[k_skip + 1..]);
-    let (mut a_mlv, mut b_mlv, msg_1, msg_inf) =
-        uni_skip_fold_and_round_pair_optimized_packed_padded(
-            a_packed,
-            b_packed,
-            m,
-            k_skip,
-            &fold_table,
-            &mlv_arg,
-            padding,
-        );
+    let (mut a_mlv, mut b_mlv, msg_1, msg_inf) = uni_skip_fold_and_round_pair_optimized_packed_padded(
+        a_packed,
+        b_packed,
+        m,
+        k_skip,
+        &fold_table,
+        &mlv_arg,
+        padding,
+    );
 
     if zc_timing {
         eprintln!(
@@ -236,14 +254,14 @@ pub fn prove_packed_padded(
     multilinear_msgs.push((msg_1, msg_inf));
     ps.add_scalar(msg_1);
     ps.add_scalar(msg_inf);
-    let mut mlv_rhos: Vec<F128> = Vec::with_capacity(n_mlv);
+    let mut mlv_rhos: Vec<F192> = Vec::with_capacity(n_mlv);
     mlv_rhos.push(ps.sample());
 
     // ---- 7. Rounds 3..(n_mlv + 1) — AB only (c is done) ----
     //
     // Iter i: fold (a, b) at ρ_{i+1}, compute round (i+3) message, sample
     // ρ_{i+2}. Use the fused parallel path while log_n ≥ 10; below that the
-    // SplitEqGhash inner can't form lo_size ≥ 2, so we fall back to
+    // SplitEq inner can't form lo_size ≥ 2, so we fall back to
     // fold_in_place_pair + round_pair_naive.
     //
     // Ping-pong scratch buffers for the fused path: each fused round folds
@@ -255,8 +273,8 @@ pub fn prove_packed_padded(
     let n_in = a_mlv.len();
     let (mut a_nxt, mut b_nxt) = if n_in >= 1024 {
         (
-            primitives::scratch::take_f128(n_in / 2),
-            primitives::scratch::take_f128(n_in / 2),
+            primitives::scratch::take_f192(n_in / 2),
+            primitives::scratch::take_f192(n_in / 2),
         )
     } else {
         (Vec::new(), Vec::new())
@@ -269,7 +287,7 @@ pub fn prove_packed_padded(
         // r_next for the next round's message: length log_n_before - 1.
         // r_next[0] = ONE (Convention A factor); r_next[1..] are the eq
         // weights for the remaining variables = r[k_skip + i + 2..m].
-        let mut r_next = vec![F128::ONE; log_n_before - 1];
+        let mut r_next = vec![F192::ONE; log_n_before - 1];
         r_next[1..].copy_from_slice(&r[k_skip + i + 2..]);
 
         let (m1, mi) = if log_n_before >= 10 {
@@ -327,10 +345,10 @@ pub fn prove_packed_padded(
 
     // Recycle the four tail buffers (the two len-1 survivors still own their
     // full round-2 capacity) for the next phase/prove.
-    primitives::scratch::give_f128(a_mlv);
-    primitives::scratch::give_f128(b_mlv);
-    primitives::scratch::give_f128(a_nxt);
-    primitives::scratch::give_f128(b_nxt);
+    primitives::scratch::give_f192(a_mlv);
+    primitives::scratch::give_f192(b_mlv);
+    primitives::scratch::give_f192(a_nxt);
+    primitives::scratch::give_f192(b_nxt);
 
     if zc_timing {
         eprintln!(
@@ -339,12 +357,10 @@ pub fn prove_packed_padded(
         );
     }
 
-    let r_rest: Vec<F128> = r[k_skip..].to_vec();
-
     let claim = ZerocheckClaim {
         z,
-        mlv_challenges: mlv_rhos,
-        r_rest,
+        mlv_challenges: mlv_rhos.to_vec(),
+        r_rest: r[k_skip..].to_vec(),
         a_eval: final_a_eval,
         b_eval: final_b_eval,
         c_eval: final_c_eval,
@@ -360,10 +376,7 @@ pub fn prove_packed_padded(
 /// On accept: returns the [`ZerocheckClaim`] the caller must check against
 /// its PCS opening of `â`, `b̂`, `ĉ`.
 /// On reject: returns a [`VerifyError`] indicating which check failed.
-pub fn verify(
-    log_n: usize,
-    vs: &mut VerifierState<'_>,
-) -> Result<ZerocheckClaim, VerifyError> {
+pub fn verify<O>(log_n: usize, vs: &mut VerifierState<'_, O>) -> Result<ZerocheckClaim, VerifyError> {
     let m = log_n;
     let k_skip = K_SKIP;
 
@@ -374,11 +387,12 @@ pub fn verify(
     let ell = 1usize << k_skip;
 
     // ---- Re-derive r (in lockstep with prove_packed) ----
+    // The verifier samples tower challenges directly, matching the prover.
     let r = challenge_vector(m, |n| vs.sample_vec(n));
 
     // ---- Read + bind round-1 messages off the stream, sample z ----
-    let round1_ab = vs.next_scalars(ell).map_err(VerifyError::Transcript)?;
-    let round1_c = vs.next_scalars(ell).map_err(VerifyError::Transcript)?;
+    let round1_ab: Vec<F192> = vs.next_scalars(ell).map_err(VerifyError::Transcript)?;
+    let round1_c: Vec<F192> = vs.next_scalars(ell).map_err(VerifyError::Transcript)?;
     let z = vs.sample();
 
     // ---- Reconstruct ĉ(z, r_rest) from round1_c ----
@@ -402,11 +416,7 @@ pub fn verify(
     // If the prover's witness is dishonest the S-zero assumption fails, the
     // reconstructed c_0 is wrong, and the running-claim chain ends at a value
     // inconsistent with `â · b̂`. We catch that at the final sumcheck check.
-    let combined_at_lambda: Vec<F128> = round1_ab
-        .iter()
-        .zip(&round1_c)
-        .map(|(x, y)| *x + *y)
-        .collect();
+    let combined_at_lambda: Vec<F192> = round1_ab.iter().zip(&round1_c).map(|(x, y)| *x + *y).collect();
     let combined_at_z = interpolate_at_z_combined(&combined_at_lambda, k_skip, z);
     let p_c_at_z = interpolate_at_z_on_lambda(&round1_c, k_skip, z);
     let mut c_running = combined_at_z + p_c_at_z;
@@ -427,14 +437,14 @@ pub fn verify(
     //   3. update `c_running ← G(ρ_i)`,
     //      where `G(X) = G(0)·(1+X) + G(1)·X + G(∞)·X·(X+1)` (char-2 quadratic
     //      interpolation through G(0), G(1), G(∞)).
-    let mut mlv_rhos: Vec<F128> = Vec::with_capacity(n_mlv);
-    let mut multilinear_rounds: Vec<(F128, F128)> = Vec::with_capacity(n_mlv);
+    let mut mlv_rhos: Vec<F192> = Vec::with_capacity(n_mlv);
+    let mut multilinear_rounds: Vec<(F192, F192)> = Vec::with_capacity(n_mlv);
     for i in 0..n_mlv {
         let msg_1 = vs.next_scalar().map_err(VerifyError::Transcript)?;
         let msg_inf = vs.next_scalar().map_err(VerifyError::Transcript)?;
         multilinear_rounds.push((msg_1, msg_inf));
         let r_eq = r[k_skip + i];
-        let one_plus_r_eq = F128::ONE + r_eq;
+        let one_plus_r_eq = F192::ONE + r_eq;
 
         let g1 = msg_1;
         let g_inf = msg_inf;
@@ -443,9 +453,8 @@ pub fn verify(
         let rho = vs.sample();
         mlv_rhos.push(rho);
 
-        let one_plus_rho = F128::ONE + rho;
         // G(ρ) = G(0)·(1+ρ) + G(1)·ρ + G(∞)·ρ·(1+ρ).
-        c_running = g0 * one_plus_rho + g1 * rho + g_inf * rho * one_plus_rho;
+        c_running = g0 + rho * (g0 + g1 + (F192::ONE + rho) * g_inf);
     }
 
     // ---- AB sumcheck final consistency ----
@@ -456,11 +465,11 @@ pub fn verify(
     // (The eq factors were absorbed round-by-round into the consistency checks,
     // never accumulating into the running claim.)
     // Read + bind the final â, b̂ claims off the stream (mirrors
-    // `prove_packed_padded`): binding must land before the next challenge
+    // `prove_packed_padded_inner`): binding must land before the next challenge
     // (lincheck's α) is drawn, so the α-batched reduction of these two claims is
     // sound. `final_c_eval` is the verifier's OWN interpolation of the
     // already-bound `round1_c` at `z` — never transported.
-    let r_rest: Vec<F128> = r[k_skip..].to_vec();
+    let r_rest: Vec<F192> = r[k_skip..].to_vec();
     let final_a_eval = vs.next_scalar().map_err(VerifyError::Transcript)?;
     let final_b_eval = vs.next_scalar().map_err(VerifyError::Transcript)?;
     if c_running != final_a_eval * final_b_eval {
@@ -491,14 +500,8 @@ mod tests {
         m: usize,
         ps: &mut pcs::ProverState,
     ) -> ZerocheckClaim {
-        let (claim, _) = prove_packed_padded(
-            a_packed,
-            b_packed,
-            c_packed,
-            m,
-            &PaddingSpec::dense(m),
-            ps,
-        );
+        let (claim, _) =
+            prove_packed_padded_capture_s_hat_v_c(a_packed, b_packed, c_packed, m, &PaddingSpec::dense(m), ps);
         claim
     }
 
@@ -535,7 +538,8 @@ mod tests {
             assert_eq!(stream.len(), 2 * (1 << K_SKIP) + 2 * (m - K_SKIP) + 2, "m={m}");
             assert_eq!(claim.mlv_challenges.len(), m - K_SKIP, "m={m}");
 
-            // Claim's eval fields agree with the streamed final evals.
+            // Claim's eval fields agree with the streamed final evals (both are
+            // now tower values — the prover streams eval).
             assert_eq!(claim.a_eval, stream[stream.len() - 2], "m={m}");
             assert_eq!(claim.b_eval, stream[stream.len() - 1], "m={m}");
         }
@@ -566,7 +570,7 @@ mod tests {
     }
 
     /// **Verify rejects byte-mutated proofs.** Walk each component of the
-    /// proof and flip one F128 entry; the verifier must return an `Err`
+    /// proof and flip one F192 entry; the verifier must return an `Err`
     /// (rather than panicking or silently accepting).
     #[test]
     fn verify_rejects_mutations() {
@@ -595,7 +599,7 @@ mod tests {
         ];
         for (label, word) in mutations {
             let mut bad = proof_t.clone();
-            bad.stream[word].lo ^= 1;
+            bad.stream[word].c0 ^= 1;
             let mut ch = pcs::VerifierState::new(b"flock-test-v0", &bad, &[]);
             let result = verify(m, &mut ch);
             assert!(
@@ -622,10 +626,7 @@ mod tests {
         let mut bad = proof_t.clone();
         bad.stream.truncate(bad.stream.len() - 3);
         let mut ch = pcs::VerifierState::new(b"flock-test-v0", &bad, &[]);
-        assert!(matches!(
-            verify(m, &mut ch),
-            Err(VerifyError::Transcript(_))
-        ));
+        assert!(matches!(verify(m, &mut ch), Err(VerifyError::Transcript(_))));
 
         // log_n too small.
         let mut ch = pcs::VerifierState::new(b"flock-test-v0", &proof_t, &[]);
@@ -655,10 +656,7 @@ mod tests {
 
             let mut ch_verify = pcs::VerifierState::new(b"flock-test-v0", &proof_t, &[]);
             let res = verify(m, &mut ch_verify);
-            assert!(
-                res.is_err(),
-                "verify ACCEPTED a false statement at m={m}: {res:?}"
-            );
+            assert!(res.is_err(), "verify ACCEPTED a false statement at m={m}: {res:?}");
         }
     }
 
@@ -683,7 +681,7 @@ mod tests {
         // verifier should reject (overwhelming probability).
         for idx in 0..(m - K_SKIP) {
             let mut bad = proof_t.clone();
-            bad.stream[2 * (1 << K_SKIP) + 2 * idx + 1] += F128::ONE;
+            bad.stream[2 * (1 << K_SKIP) + 2 * idx + 1] += F192::ONE;
             let mut ch = pcs::VerifierState::new(b"flock-test-v0", &bad, &[]);
             let res = verify(m, &mut ch);
             assert!(res.is_err(), "msg_inf tamper at round {idx} ACCEPTED");
@@ -708,12 +706,9 @@ mod tests {
 
         let last = m - K_SKIP - 1;
         let mut bad = proof_t.clone();
-        bad.stream[2 * (1 << K_SKIP) + 2 * last + 1] += F128::ONE;
+        bad.stream[2 * (1 << K_SKIP) + 2 * last + 1] += F192::ONE;
         let mut ch = pcs::VerifierState::new(b"flock-test-v0", &bad, &[]);
-        assert!(
-            verify(m, &mut ch).is_err(),
-            "last-round msg_inf unconstrained"
-        );
+        assert!(verify(m, &mut ch).is_err(), "last-round msg_inf unconstrained");
     }
 
     /// AUDIT (Fiat–Shamir binding of the final â, b̂ claims). Regression test
@@ -749,19 +744,14 @@ mod tests {
         // Honest verify, then capture the next challenge the transcript feeds
         // downstream — this is exactly the slot lincheck samples α from.
         let mut ch_honest = pcs::VerifierState::new(b"flock-test-v0", &proof_t, &[]);
-        assert!(
-            verify(m, &mut ch_honest).is_ok(),
-            "honest verify rejected"
-        );
+        assert!(verify(m, &mut ch_honest).is_ok(), "honest verify rejected");
         let alpha_honest = ch_honest.sample();
 
         // Product-preserving tamper: â' = â·t, b̂' = b̂·t⁻¹ ⇒ â'·b̂' = â·b̂, so the
         // zerocheck's `c_running == â·b̂` check still holds for the tampered pair.
-        let t = F128 {
-            lo: 0x0123_4567_89ab_cdef,
-            hi: 0xfedc_ba98_7654_3210,
-        };
-        assert!(t != F128::ZERO && t != F128::ONE, "t must be nontrivial");
+        // The stream now carries tower (F192) values, so tamper in F192.
+        let t = F192::new(0x0123_4567_89ab_cdef, 0xfedc_ba98_7654_3210, 0x55aa_aa55_0123_4567);
+        assert!(t != F192::ZERO && t != F192::ONE, "t must be nontrivial");
         // The finals are the LAST two stream words of this standalone proof.
         let n = proof_t.stream.len();
         let mut bad = proof_t.clone();
@@ -819,10 +809,7 @@ mod tests {
             let proof_t = ch_prove.into_proof();
             let mut ch_verify = pcs::VerifierState::new(b"flock-test-v0", &proof_t, &[]);
             let res = verify(m, &mut ch_verify);
-            assert!(
-                res.is_err(),
-                "false statement (seed={seed}) ACCEPTED: {res:?}"
-            );
+            assert!(res.is_err(), "false statement (seed={seed}) ACCEPTED: {res:?}");
         }
     }
 
@@ -840,12 +827,9 @@ mod tests {
         let proof_t = ch_prove.into_proof();
         for idx in 0..(m - K_SKIP) {
             let mut bad = proof_t.clone();
-            bad.stream[2 * (1 << K_SKIP) + 2 * idx] += F128::ONE;
+            bad.stream[2 * (1 << K_SKIP) + 2 * idx] += F192::ONE;
             let mut ch = pcs::VerifierState::new(b"flock-test-v0", &bad, &[]);
-            assert!(
-                verify(m, &mut ch).is_err(),
-                "msg_1 tamper round {idx} ACCEPTED"
-            );
+            assert!(verify(m, &mut ch).is_err(), "msg_1 tamper round {idx} ACCEPTED");
         }
     }
 
