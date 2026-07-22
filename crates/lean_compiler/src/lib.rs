@@ -216,8 +216,8 @@ pub fn disassemble(prog: &[Op]) -> String {
             }
             Op::Blake3 { ins, cv, out, metadata } => {
                 format!(
-                    "BLAKE3 fp[{out}..]= compress(cv=fp[{cv}..], m=fp[{}],fp[{}],fp[{}],fp[{}], meta={})",
-                    ins[0], ins[1], ins[2], ins[3], kfmt(*metadata)
+                    "BLAKE3 fp[{out}..]= compress(cv=fp[{}],fp[{}], m=fp[{}],fp[{}],fp[{}..], meta={})",
+                    cv[0], cv[1], ins[0], ins[1], ins[2], kfmt(*metadata)
                 )
             }
         };

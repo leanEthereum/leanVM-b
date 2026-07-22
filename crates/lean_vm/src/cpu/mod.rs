@@ -103,7 +103,15 @@ fn program_digest(prog: &[Op]) -> [F128; 2] {
             }
             Op::Jump { oc, od, of } => (6, oc, od, of, F128::ZERO, F128::ZERO, F128::ZERO),
             Op::Blake3 { ins, cv, out, metadata } => {
-                (7, ins[0], ins[1], ins[2], metadata, F128::new(ins[3] as u64, cv as u64), F128::new(out as u64, 0))
+                (
+                    7,
+                    cv[0],
+                    cv[1],
+                    ins[0],
+                    metadata,
+                    F128::new(ins[1] as u64, ins[2] as u64),
+                    F128::new(out as u64, 0),
+                )
             }
         };
         let lo = a as u64 | ((b as u64) << 32);
@@ -614,8 +622,8 @@ mod tests {
             Op::Set { o: 5, k: y1 },
             Op::Set { o: 8, k: F128::ONE },
             Op::Blake3 {
-                ins: [2, 3, 4, 5],
-                cv: 0,
+                ins: [2, 3, 4],
+                cv: [0, 1],
                 out: 6,
                 metadata: crate::blake3_flock::metadata(0, 64, crate::blake3_flock::FLAGS),
             },
@@ -660,8 +668,8 @@ mod tests {
             Op::Set { o: 9, k: F128::ONE },  // filler
             Op::Set { o: 10, k: F128::ONE }, // filler
             Op::Blake3 {
-                ins: [2, 3, 2, 3],
-                cv: 0,
+                ins: [2, 3, 2],
+                cv: [0, 1],
                 out: 6,
                 metadata: crate::blake3_flock::metadata(0, 64, crate::blake3_flock::FLAGS),
             }, // a == b: hash h ‖ h into cells 6,7
@@ -704,7 +712,7 @@ mod tests {
             },
             Op::Set { o: 8, k: F128::ONE },
             Op::Blake3 {
-                ins: [2, 3, 4, 5], cv: 0, out: 6,
+                ins: [2, 3, 4], cv: [0, 1], out: 6,
                 metadata: crate::blake3_flock::metadata(0, 64, crate::blake3_flock::FLAGS),
             },
             Op::Set { o: 9, k: F128::ONE },
@@ -754,7 +762,7 @@ mod tests {
             },
             Op::Set { o: 8, k: F128::ONE },
             Op::Blake3 {
-                ins: [2, 3, 4, 5], cv: 0, out: 6,
+                ins: [2, 3, 4], cv: [0, 1], out: 6,
                 metadata: crate::blake3_flock::metadata(0, 64, crate::blake3_flock::FLAGS),
             },
             Op::Set { o: 9, k: F128::ONE },
@@ -867,7 +875,7 @@ mod tests {
             },
             Op::Set { o: 8, k: F128::ONE },
             Op::Blake3 {
-                ins: [2, 3, 4, 5], cv: 0, out: 6,
+                ins: [2, 3, 4], cv: [0, 1], out: 6,
                 metadata: crate::blake3_flock::metadata(0, 64, crate::blake3_flock::FLAGS),
             },
             Op::Set { o: 9, k: F128::ONE },

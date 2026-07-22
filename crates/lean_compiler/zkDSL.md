@@ -570,6 +570,9 @@ blake3(hb[i:i + 2], h, hb[j:j + 2])  # runtime-indexed heap slices (i, j g-power
 # Blocks after the first in one BLAKE3 chunk. Keyword values are compile-time.
 blake3(a, b, next_cv, cv=cv, step=4)
 blake3(a, b, digest, cv=next_cv, step=15, end=1, root=1)
+
+# One-block keyed hash: key is the initial chaining value.
+blake3(a, b, digest, cv=key, step=0, end=1, root=1, keyed=1)
 ```
 
 The three positional arguments form a **statement**: one standard BLAKE3
@@ -582,7 +585,7 @@ standard IV, counter 0, block length 64, and
 Every compression also has a 256-bit chaining value and a compile-time 128-bit
 metadata immediate. The optional keywords are:
 
-- `cv=<pair>` — a consecutive 2-cell chaining value; omitting it selects the
+- `cv=<pair>` — a 2-cell chaining value or keyed-hash key; omitting it selects the
   standard BLAKE3 IV. On each runtime path, a function emits two `SET`s at its
   first such hash only and reuses those cells thereafter. Supplying `cv=` also
   requires `step=`, `flags=`, or another structured metadata keyword so a
@@ -593,7 +596,10 @@ metadata immediate. The optional keywords are:
 - `step=<0..15>` — the block index within a 1024-byte chunk. In the inferred
   flag mode, `step=0` sets `CHUNK_START`; later steps do not;
 - `end=1`, `root=1`, `parent=1` — OR `CHUNK_END`, `ROOT`, or `PARENT` into
-  the flags.
+  the flags;
+- `keyed=1` — OR `KEYED_HASH` into the flags. This requires `cv=`; on the first
+  block it supplies the 32-byte BLAKE3 key, and every later compression in the
+  same keyed hash must also set `keyed=1`.
 
 The metadata is packed as
 `counter:u64 | block_len:u32 | flags:u32`, little-endian, and is part of the
@@ -609,14 +615,14 @@ Operands are size-2 `StackBuf`s or 2-cell slices:
 
 - **stack operands** are read/written in place — zero copies; a self-hash
   `blake3(h, h, out)` aliases one pair into both inputs;
-- the instruction addresses its **four input words independently**, so when a
-  256-bit operand is *assembled* from values that live in different cells —
-  the idiom `p = StackBuf(2); p[0] = tweak; p[1] = pp; blake3(p, …)` — the
-  copies vanish: a stack store of a plain copy or a zero is forwarded to its
-  source (see "Variables"), and `BLAKE3` reads each word where it already is;
-- the chaining value has only one opcode offset and therefore must be
-  consecutive. If a 2-cell `cv` was assembled from non-adjacent copied words,
-  the compiler materializes those two words into a fresh consecutive run;
+- the instruction addresses both **chaining-value/key words** and the first two
+  message words independently. A key assembled as `public_parameter | tweak`
+  therefore reads both values in place even when their source cells are not
+  adjacent;
+- the second 32-byte message half has one opcode base offset and must be
+  consecutive. If forwarding exposes non-adjacent source words, the compiler
+  materializes that pair into a fresh consecutive run;
+- the 32-byte output is likewise consecutive;
 - **heap slices** are still bridged through the stack for the *input pull* (the
   operand's word comes from the heap): +1 `DEREF` per heap word, and the output,
   if a heap slice, is stored after — write-once memory fills whichever side is
@@ -690,7 +696,7 @@ completely unconstrained: the program must re-verify them in-circuit.
 | function call | ≈ `n_args + n_returns + 4` (0 when the callee is `@inline`) |
 | `mul_range` iteration | body + ≈ 1 `MUL` + 1 `XOR` + call overhead |
 | `unroll` iteration | body only (compile-time replication) |
-| `blake3(a, b, out, ...)` | 1; plus two `SET`s once per frame when `cv` is omitted; message/CV words are read in place, +1 `DEREF` per heap input or CV word, +1 `MUL` per runtime slice start |
+| `blake3(a, b, out, ...)` | 1; plus two `SET`s once per frame when `cv` is omitted; CV and the first message half are independently addressed, while a non-consecutive second half is materialized; +1 `DEREF` per heap input or CV word, +1 `MUL` per runtime slice start |
 | `hint_witness(dest, "name")` | 0 (+1 `MUL` for a runtime slice start) |
 
 ## Example

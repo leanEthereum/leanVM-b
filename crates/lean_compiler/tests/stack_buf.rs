@@ -1,9 +1,8 @@
 //! `StackBuf` — a run of consecutive frame (stack) cells in the zkDSL. Indexed
 //! reads/writes go straight to `base+k` (no heap deref), and a size-2 `StackBuf`
-//! is a `blake3` operand: its two cells hold the 256-bit value's two words, so
-//! `blake3(a, b, out)` reads them in place with no copies (a self-hash
-//! `blake3(h, h, out)` aliases one pair into both input operands) and writes
-//! the digest into the pre-allocated pair `out`.
+//! is a `blake3` operand: its two cells hold the 256-bit value's two words. The
+//! CV and first message half have independent offsets; the second message half
+//! and output are consecutive pairs.
 
 use lean_vm::blake3_flock::{compression, digest, metadata, warm_setup};
 use lean_compiler::{compile, parse};
@@ -162,14 +161,15 @@ def main():
 }
 
 /// Deferred aliases may expose non-adjacent source words for a syntactically
-/// consecutive CV StackBuf. The compiler must materialize that pair because
-/// the BLAKE3 opcode carries only one CV base offset.
+/// consecutive CV StackBuf. Both halves have dedicated opcode offsets, so the
+/// compiler must forward them directly instead of materializing a pair.
 #[test]
-fn blake3_materializes_aliased_cv_pair() {
+fn blake3_forwards_aliased_cv_words_independently() {
     let src = "\
 def main():
     msg = [1, 2, 3, 4]
-    sources = [5, 99, 6]
+    sources = StackBuf(3)
+    hint_witness(sources, \"cv_sources\")
     cv = [sources[0], sources[2]]
     out = StackBuf(2)
     blake3(msg[0:2], msg[2:4], out, cv=cv, flags=10)
@@ -178,7 +178,20 @@ def main():
     p[GEN] = out[1]
     return
 ";
-    let program = compile(&parse(src).expect("parse"));
+    let mut program = compile(&parse(src).expect("parse"));
+    program.set_witness(
+        "cv_sources",
+        vec![vec![F128::new(5, 0), F128::new(99, 0), F128::new(6, 0)]],
+    );
+    let cv_offsets = program
+        .prog
+        .iter()
+        .find_map(|op| match op {
+            lean_vm::cpu::Op::Blake3 { cv, .. } => Some(*cv),
+            _ => None,
+        })
+        .expect("one BLAKE3 instruction");
+    assert_ne!(cv_offsets[1], cv_offsets[0] + 1, "non-adjacent CV aliases stay zero-copy");
     let block = compression(
         [F128::new(1, 0), F128::new(2, 0)],
         [F128::new(3, 0), F128::new(4, 0)],
@@ -188,7 +201,45 @@ def main():
     let want = digest(&block);
     warm_setup(1);
     let (proof, _) = prove(&program, want);
-    verify(&program, &want, &proof).expect("materialized custom CV verifies");
+    verify(&program, &want, &proof).expect("independently addressed custom CV verifies");
+}
+
+#[test]
+fn blake3_keyed_keyword_matches_standard_keyed_hash() {
+    let src = "\
+def main():
+    msg = [1, 2, 3, 4]
+    key_sources = [5, 99, 6]
+    key = [key_sources[0], key_sources[2]]
+    out = StackBuf(2)
+    blake3(msg[0:2], msg[2:4], out, cv=key, step=0, end=1, root=1, keyed=1)
+    p = 1
+    p[1] = out[0]
+    p[GEN] = out[1]
+    return
+";
+    let program = compile(&parse(src).expect("parse"));
+    let mut key = [0u8; 32];
+    key[..16].copy_from_slice(&5u128.to_le_bytes());
+    key[16..].copy_from_slice(&6u128.to_le_bytes());
+    let mut msg = [0u8; 64];
+    for (chunk, value) in msg.chunks_exact_mut(16).zip([1u128, 2, 3, 4]) {
+        chunk.copy_from_slice(&value.to_le_bytes());
+    }
+    let hash = blake3::keyed_hash(&key, &msg);
+    let want = [
+        F128::new(
+            u64::from_le_bytes(hash.as_bytes()[..8].try_into().unwrap()),
+            u64::from_le_bytes(hash.as_bytes()[8..16].try_into().unwrap()),
+        ),
+        F128::new(
+            u64::from_le_bytes(hash.as_bytes()[16..24].try_into().unwrap()),
+            u64::from_le_bytes(hash.as_bytes()[24..].try_into().unwrap()),
+        ),
+    ];
+    warm_setup(1);
+    let (proof, _) = prove(&program, want);
+    verify(&program, &want, &proof).expect("keyed BLAKE3 opcode verifies");
 }
 
 /// A custom CV with the one-shot default flags is not a standard chained

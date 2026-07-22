@@ -60,11 +60,12 @@ pub(crate) enum LOp {
         od: Off,
         of: Off,
     },
-    /// `BLAKE3`: the four input words `ins` are addressed independently (`fp+ins[i]`);
-    /// the 32-bit output `c = (c, c+1)` occupies two CONSECUTIVE frame cells.
+    /// `BLAKE3`: the two CV words and first two message words are independently
+    /// addressed; `ins[2]` bases the consecutive second message half, and the
+    /// 32-byte output `c = (c, c+1)` is consecutive too.
     Blake3 {
-        ins: [Off; 4],
-        cv: Off,
+        ins: [Off; 3],
+        cv: [Off; 2],
         c: Off,
         metadata: F128,
     },

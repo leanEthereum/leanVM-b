@@ -32,7 +32,7 @@ fn serialize_deserialize_and_size() {
     assert_eq!(pk, pk2);
 
     let sig_bytes = bincode::serialize(&sig).unwrap();
-    assert_eq!(sig_bytes.len(), XMSS_SIG_SIZE); // 1208 bytes, below the IPv6 MTU
+    assert_eq!(sig_bytes.len(), XMSS_SIG_SIZE); // 1464 bytes: 48 quaternary-path siblings
     let sig2: XmssSignature = bincode::deserialize(&sig_bytes).unwrap();
     assert_eq!(sig, sig2);
 

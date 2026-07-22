@@ -13,14 +13,15 @@
 #     0                        : encoding tweak
 #     1 + CHAIN_STEPS·i + s    : chain tweak, chain i < V, step s < CHAIN_STEPS
 #     WOTS_PK_TWEAK_IDX        : wots-pk tweak
-#     MERKLE_TWEAK_IDX + l     : merkle tweak, level l < LOG_LIFETIME
+#     MERKLE_TWEAK_IDX + l     : merkle tweak, quaternary level l < MERKLE_HEIGHT
 from snark_lib import *
 
 # ---- XMSS instance parameters (host-supplied via placeholders) ----
 V = V_PLACEHOLDER                        # number of WOTS hash chains
 W = W_PLACEHOLDER                        # log2 of the Winternitz chain length
 TARGET_SUM = TARGET_SUM_PLACEHOLDER      # fixed encoding digit sum (Σ e_i)
-LOG_LIFETIME = LOG_LIFETIME_PLACEHOLDER  # Merkle tree height
+LOG_LIFETIME = LOG_LIFETIME_PLACEHOLDER  # log2 of the number of lifetime slots
+MERKLE_HEIGHT = LOG_LIFETIME / 2          # same 2^32 leaves, four children per level
 
 # ---- derived structural sizes (compile-time integer arithmetic) ----
 CHAIN_LENGTH = 2 ** W               # Winternitz digit base (each e_i < this)
@@ -31,20 +32,20 @@ WORDS_PER_BLOCK = 2                 # a 256-bit value = two field words …
 BYTES_PER_BLOCK = 32               # … = 32 bytes (one accumulator block)
 
 # Tweak table (word layout): encoding | V·CHAIN_STEPS chain | wots-pk | merkle.
-N_TWEAK_WORDS = 1 + V * CHAIN_STEPS + 1 + LOG_LIFETIME
+N_TWEAK_WORDS = 1 + V * CHAIN_STEPS + 1 + MERKLE_HEIGHT
 N_TWEAK_BLOCKS = N_TWEAK_WORDS / WORDS_PER_BLOCK
 WOTS_PK_TWEAK_IDX = 1 + V * CHAIN_STEPS      # word index of the wots-pk tweak
 MERKLE_TWEAK_IDX = WOTS_PK_TWEAK_IDX + 1     # word index of merkle level 0
 
-MERKLE_BIT_WORDS = LOG_LIFETIME              # one bit word per merkle level
+MERKLE_BIT_WORDS = LOG_LIFETIME              # two bit words per quaternary level
 MERKLE_BIT_BLOCKS = LOG_LIFETIME / WORDS_PER_BLOCK
 
 # Absorbed fixed preamble = message (1 block) | tweaks | merkle bits.
 FIXED_BLOCKS = 1 + N_TWEAK_BLOCKS + MERKLE_BIT_BLOCKS
 FIXED_BYTES = FIXED_BLOCKS * BYTES_PER_BLOCK
 
-# Sub-hash IV byte counts (num_bytes = #blocks · 32).
-WOTS_PK_BLOCKS = (2 + V) / 4  # prefix (tweak, pp) + V tips, four words per BLAKE3 block
+# Keyed WOTS-leaf blocks: 42 tips occupy ten full blocks and one 32-byte tail.
+WOTS_PK_BLOCKS = (V + 3) / 4
 
 N_SIGS_BOUND = 2 ** 16             # range cap for the hinted batch count
 
@@ -132,24 +133,18 @@ def verify_sig(message, tweak_table, merkle_bits, pk_ptr):
     # pk_ptr[1] is the signer's merkle root, pk_ptr[GEN] its public parameter.
     pp = pk_ptr[GEN]
 
-    # Encoding digest D = BLAKE3(tweak | pp | msg | randomness | zero-pad), 96 bytes:
-    # one full 64-byte block followed by a 32-byte final block (24 bytes of
-    # randomness and the specified 8-byte zero pad).
-    tweak_pp = StackBuf(WORDS_PER_BLOCK)
-    tweak_pp[0] = tweak_table[1]
-    tweak_pp[1] = pp
+    # Encoding digest D = keyed_BLAKE3(msg | randomness | zero-pad), one
+    # 64-byte block. The key is public_parameter | encoding_tweak.
+    encoding_key = StackBuf(WORDS_PER_BLOCK)
+    encoding_key[0] = pp
+    encoding_key[1] = tweak_table[1]
     msg_block = StackBuf(WORDS_PER_BLOCK)
     msg_block[0] = message[1]
     msg_block[1] = message[GEN]
-    after_msg = StackBuf(WORDS_PER_BLOCK)
-    blake3(tweak_pp, msg_block, after_msg, step=0)
     rand_block = StackBuf(WORDS_PER_BLOCK)
     hint_witness(rand_block, "rand")
     digest = StackBuf(WORDS_PER_BLOCK)
-    zero_block = StackBuf(WORDS_PER_BLOCK)
-    zero_block[0] = 0
-    zero_block[1] = 0
-    blake3(rand_block, zero_block, digest, cv=after_msg, step=1, end=1, root=1, block_len=32)
+    blake3(msg_block, rand_block, digest, cv=encoding_key, step=0, end=1, root=1, keyed=1)
 
     # V WOTS chains. Per chain: the digit is hinted in the exponent (g^{e_i}),
     # range checked, and dispatched once — arm k walks the remaining
@@ -180,64 +175,84 @@ def verify_sig(message, tweak_table, merkle_bits, pk_ptr):
     assert digit_product == GEN ** TARGET_SUM
     assert encoding_acc == digest[0]
 
-    # WOTS public-key leaf = standard BLAKE3 over prefix + 42 tips (704 bytes):
-    # 11 full blocks, carrying the chaining value between instructions.
-    pk_tweak_pp = StackBuf(WORDS_PER_BLOCK)
-    pk_tweak_pp[0] = tweak_table[GEN ** WOTS_PK_TWEAK_IDX]
-    pk_tweak_pp[1] = pp
+    # WOTS public-key leaf = keyed BLAKE3 over 42 tips (672 bytes): ten full
+    # blocks and one 32-byte tail, with key public_parameter | wots-pk tweak.
+    pk_key = StackBuf(WORDS_PER_BLOCK)
+    pk_key[0] = pp
+    pk_key[1] = tweak_table[GEN ** WOTS_PK_TWEAK_IDX]
     leaf = StackBuf(WORDS_PER_BLOCK)
-    blake3(pk_tweak_pp, tips[0:2], leaf, step=0)
-    for q in unroll(1, WOTS_PK_BLOCKS):
+    blake3(tips[0:2], tips[2:4], leaf, cv=pk_key, step=0, keyed=1)
+    for q in unroll(1, WOTS_PK_BLOCKS - 1):
         next_leaf = StackBuf(WORDS_PER_BLOCK)
-        blake3(tips[4 * q - 2:4 * q], tips[4 * q:4 * q + 2], next_leaf, cv=leaf, step=q, end=(q + 1) // WOTS_PK_BLOCKS, root=(q + 1) // WOTS_PK_BLOCKS)
+        blake3(tips[4 * q:4 * q + 2], tips[4 * q + 2:4 * q + 4], next_leaf, cv=leaf, step=q, keyed=1)
         leaf = next_leaf
+    zero_block = StackBuf(WORDS_PER_BLOCK)
+    zero_block[0] = 0
+    zero_block[1] = 0
+    final_leaf = StackBuf(WORDS_PER_BLOCK)
+    blake3(tips[V - 2:V], zero_block, final_leaf, cv=leaf, step=WOTS_PK_BLOCKS - 1, end=1, root=1, keyed=1, block_len=32)
+    leaf = final_leaf
 
-    # Merkle path from the leaf to the root: the hinted slot bit orders the
-    # two children at each level; the tweak comes from the bound table.
+    # Quaternary Merkle path: two bound slot bits select the current node's
+    # position among four children; three hinted siblings fill the other
+    # positions in ascending child order. Four 16-byte children are one block.
     node = leaf[0]
-    level = 1
+    bit_slot = 1
+    tweak_slot = 1
     merkle_tweaks = tweak_table * GEN ** MERKLE_TWEAK_IDX
-    for l in unroll(0, LOG_LIFETIME):
-        bit = merkle_bits[level]
-        sibling = StackBuf(1)
-        hint_witness(sibling[0:1], "siblings")
-        # Branchless child ordering: bit ∈ {0,1} (bound by the hash), so the
-        # swap is a select, not a branch. m = bit·(node⊕sibling) is 0 when
-        # bit=0 and node⊕sibling when bit=1, so children[0] = node⊕m is node
-        # for bit=0 and sibling for bit=1 (and children[1] the complement).
-        diff = node + sibling[0]
-        m = bit * diff
-        children = StackBuf(WORDS_PER_BLOCK)
-        children[0] = node + m
-        children[1] = sibling[0] + m
-        merkle_tweak_pp = StackBuf(WORDS_PER_BLOCK)
-        merkle_tweak_pp[0] = merkle_tweaks[level]
-        merkle_tweak_pp[1] = pp
+    for l in unroll(0, MERKLE_HEIGHT):
+        bit0 = merkle_bits[bit_slot]
+        bit1 = merkle_bits[bit_slot * GEN]
+        not0 = 1 + bit0
+        not1 = 1 + bit1
+        at0 = not0 * not1
+        at1 = bit0 * not1
+        at2 = not0 * bit1
+        at3 = bit0 * bit1
+        sibling0 = StackBuf(1)
+        sibling1 = StackBuf(1)
+        sibling2 = StackBuf(1)
+        hint_witness(sibling0[0:1], "siblings")
+        hint_witness(sibling1[0:1], "siblings")
+        hint_witness(sibling2[0:1], "siblings")
+        children = StackBuf(4)
+        children[0] = sibling0[0] + at0 * (sibling0[0] + node)
+        children[1] = sibling1[0] + at0 * (sibling1[0] + sibling0[0]) + at1 * (sibling1[0] + node)
+        children[2] = sibling2[0] + (at0 + at1) * (sibling2[0] + sibling1[0]) + at2 * (sibling2[0] + node)
+        children[3] = sibling2[0] + at3 * (sibling2[0] + node)
+        merkle_key = StackBuf(WORDS_PER_BLOCK)
+        merkle_key[0] = pp
+        merkle_key[1] = merkle_tweaks[tweak_slot]
         parent = StackBuf(WORDS_PER_BLOCK)
-        blake3(merkle_tweak_pp, children, parent)
+        blake3(children[0:2], children[2:4], parent, cv=merkle_key, step=0, end=1, root=1, keyed=1)
         node = parent[0]
-        level = level * GEN
+        bit_slot = bit_slot * GEN ** 2
+        tweak_slot = tweak_slot * GEN
     assert node == pk_ptr[1]
     return
 
 
 def walk(value, chain_tweaks, pp, k: Const):
-    # Walk WOTS chain steps k..CHAIN_STEPS-1: value' = H(tweak|pp, value|0), the
+    # Walk WOTS chain steps k..CHAIN_STEPS-1: value' is keyed BLAKE3 of the
+    # 16-byte value under public_parameter | tweak; the
     # step tweaks read off the bound subtable (cursor advanced to step k first).
     tweak_cur = chain_tweaks
     for a in unroll(0, k):
         tweak_cur = tweak_cur * GEN
-    block = StackBuf(WORDS_PER_BLOCK)
-    block[0] = value
-    block[1] = 0
+    first_half = StackBuf(WORDS_PER_BLOCK)
+    first_half[0] = value
+    first_half[1] = 0
+    zero_half = StackBuf(WORDS_PER_BLOCK)
+    zero_half[0] = 0
+    zero_half[1] = 0
     for s in unroll(k, CHAIN_STEPS):
-        step_tweak = StackBuf(WORDS_PER_BLOCK)
-        step_tweak[0] = tweak_cur[1]
-        step_tweak[1] = pp
+        step_key = StackBuf(WORDS_PER_BLOCK)
+        step_key[0] = pp
+        step_key[1] = tweak_cur[1]
         out = StackBuf(WORDS_PER_BLOCK)
-        blake3(step_tweak, block, out, block_len=48)
-        block = StackBuf(WORDS_PER_BLOCK)
-        block[0] = out[0]
-        block[1] = 0
+        blake3(first_half, zero_half, out, cv=step_key, step=0, end=1, root=1, keyed=1, block_len=16)
+        first_half = StackBuf(WORDS_PER_BLOCK)
+        first_half[0] = out[0]
+        first_half[1] = 0
         tweak_cur = tweak_cur * GEN
-    return block[0], k
+    return first_half[0], k

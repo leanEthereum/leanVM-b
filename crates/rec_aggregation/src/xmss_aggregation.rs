@@ -61,9 +61,8 @@ pub fn run_xmss_aggregation(n: usize) {
     // Generated once and cached to disk; see `signers_cache`.
     let signers = signers_cache::get_signers(n);
 
-    // The 328-word tweak table (word index — see the program header). The
-    // Merkle parent index is `slot >> (level+1)` computed in u64 (a u32 shift
-    // by 32 at the top level would mask, not zero).
+    // The 312-word tweak table (word index — see the program header). The
+    // quaternary Merkle parent index is `slot >> (2·level)` computed in u64.
     let mut tweaks: Vec<Tweak> = vec![make_tweak(TWEAK_TYPE_ENCODING, 0, slot)];
     for i in 0..V {
         for s in 0..CHAIN_LENGTH - 1 {
@@ -71,11 +70,11 @@ pub fn run_xmss_aggregation(n: usize) {
         }
     }
     tweaks.push(make_tweak(TWEAK_TYPE_WOTS_PK, 0, slot));
-    for l in 0..LOG_LIFETIME {
-        let parent_index = ((slot as u64) >> (l + 1)) as u32;
+    for l in 0..MERKLE_HEIGHT {
+        let parent_index = ((slot as u64) >> (2 * (l + 1))) as u32;
         tweaks.push(make_tweak(TWEAK_TYPE_MERKLE, (l + 1) as u32, parent_index));
     }
-    assert_eq!(tweaks.len(), 328);
+    assert_eq!(tweaks.len(), 312);
 
     // The natively computed aggregation hash.
     let mut data = Vec::new();
@@ -92,7 +91,9 @@ pub fn run_xmss_aggregation(n: usize) {
         data.extend_from_slice(&pk.flatten());
     }
     let num_bytes = data.len();
-    assert_eq!(num_bytes, 5792 + 32 * n);
+    assert_eq!(num_bytes, 5536 + 32 * n);
+    let fixed_blocks = (num_bytes - PUB_KEY_FLAT_SIZE * n) / STATE_LEN;
+    let expected_compressions = fixed_blocks + (1 + XMSS_VERIFY_COMPRESSIONS) * n;
     let mut iv = [0u8; STATE_LEN];
     iv[..16].copy_from_slice(&g_pow(num_bytes).to_le_bytes());
     let state = aggregate_binding(iv, &data);
@@ -150,19 +151,20 @@ pub fn run_xmss_aggregation(n: usize) {
     // shape and reused across every proof — so it is one-time preprocessing (like a
     // proving key), not part of per-proof proving throughput. Warming it here makes
     // the timing below reflect steady-state repeated proving. The compression count
-    // is `181 + 146·n`: 181 aggregation-prefix blocks, then per signature
-    // one aggregate absorb + 2 encoding + 100 WOTS-chain + 11 WOTS-pubkey +
-    // 32 Merkle-parent compressions.
-    lean_vm::blake3_flock::warm_setup(181 + 146 * n);
+    // is `173 + 129·n`: 173 aggregation-prefix blocks, then per signature
+    // one aggregate absorb + 1 encoding + 100 WOTS-chain + 11 WOTS-pubkey +
+    // 16 quaternary Merkle-parent compressions.
+    lean_vm::blake3_flock::warm_setup(expected_compressions);
 
     let t = Instant::now();
     let (proof, stats) = prove(&program, want);
     let t_prove = t.elapsed();
+    assert_eq!(stats.counts[5], expected_compressions, "XMSS BLAKE3 compression count");
     let t = Instant::now();
     verify(&program, &want, &proof).expect("XMSS aggregation verifies in-VM");
     let t_verify = t.elapsed();
 
-    // 181 fixed blocks + per signature: 1 (pk absorb) + 145 (the native
+    // 173 fixed blocks + per signature: 1 (pk absorb) + 128 (the native
     // verifier's constant).
     let bad = [want[0], want[1] + F128::ONE];
     assert!(verify(&program, &bad, &proof).is_err());

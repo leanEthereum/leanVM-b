@@ -16,7 +16,7 @@
 //! The filename carries a footprint of everything that determines the signers —
 //! not just the declared parameters but a known-answer of the hash construction
 //! itself (see [`hash_fingerprint`]), so a branch that changes the digests
-//! (e.g. a change to the standard BLAKE3 input encoding) without touching a
+//! (e.g. a change to the keyed BLAKE3 input encoding) without touching a
 //! single constant still lands in a fresh file rather than mis-loading the
 //! other branch's signers. Bump [`SCHEMA_VERSION`] to force regeneration by hand.
 
@@ -74,7 +74,7 @@ fn hash_fingerprint() -> [Digest; 2] {
     [
         // Single-block path (chain steps, Merkle nodes).
         tweak_hash(&pp, TWEAK_TYPE_CHAIN, 1, 2, &[0x5Au8; DIGEST_LEN]),
-        // Multi-block standard BLAKE3 path.
+        // Multi-block keyed BLAKE3 path.
         tweak_hash_many(&pp, TWEAK_TYPE_ENCODING, 3, 4, &[0x3Cu8; 2 * STATE_LEN]),
     ]
 }
@@ -90,7 +90,17 @@ fn footprint() -> u64 {
     KEY_START.hash(&mut h);
     KEY_END.hash(&mut h);
     message().hash(&mut h);
-    (V, W, CHAIN_LENGTH, LOG_LIFETIME, TARGET_SUM, RANDOMNESS_LEN).hash(&mut h);
+    (
+        V,
+        W,
+        CHAIN_LENGTH,
+        LOG_LIFETIME,
+        MERKLE_ARITY,
+        MERKLE_HEIGHT,
+        TARGET_SUM,
+        RANDOMNESS_LEN,
+    )
+        .hash(&mut h);
     hash_fingerprint().hash(&mut h);
     h.finish()
 }

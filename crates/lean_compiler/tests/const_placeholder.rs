@@ -103,7 +103,8 @@ V = V_PLACEHOLDER
 W = W_PLACEHOLDER
 LOG_LIFETIME = LOG_LIFETIME_PLACEHOLDER
 CHAIN_STEPS = W - 1
-N_TWEAK_WORDS = 2 + CHAIN_STEPS * V + LOG_LIFETIME
+MERKLE_HEIGHT = LOG_LIFETIME / 2
+N_TWEAK_WORDS = 2 + CHAIN_STEPS * V + MERKLE_HEIGHT
 N_TWEAK_BLOCKS = N_TWEAK_WORDS / 2
 FIXED_BLOCKS = 1 + N_TWEAK_BLOCKS + LOG_LIFETIME / 2
 FIXED_BYTES = FIXED_BLOCKS * 32
@@ -124,14 +125,14 @@ def main():
     repl.insert("LOG_LIFETIME_PLACEHOLDER".to_string(), "32".to_string());
     let filled = parse_with_replacements(templated, &repl).expect("derivations resolve");
 
-    // N_TWEAK_WORDS = 2 + 7*42 + 32 = 328, N_TWEAK_BLOCKS = 164,
-    // FIXED_BLOCKS = 1 + 164 + 16 = 181, FIXED_BYTES = 5792, N_SIGS_BOUND = 65536.
+    // N_TWEAK_WORDS = 2 + 7*42 + 16 = 312, N_TWEAK_BLOCKS = 156,
+    // FIXED_BLOCKS = 1 + 156 + 16 = 173, FIXED_BYTES = 5536, N_SIGS_BOUND = 65536.
     let concrete = "\
 def main():
-    a = StackBuf(328)
-    x = GEN ** 5792
+    a = StackBuf(312)
+    x = GEN ** 5536
     assert log x < 65536
-    for i in unroll(0, 164):
+    for i in unroll(0, 156):
         assert a[0] == 8
     return
 ";

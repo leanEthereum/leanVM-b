@@ -158,6 +158,7 @@ def blake3(
     end: int = 0,
     root: int = 0,
     parent: int = 0,
+    keyed: int = 0,
 ) -> None:
     """One standard BLAKE3 compression of the two 256-bit message operands
     `a`, `b`, written into the 2-cell run `out` (write-once: if `out` was
@@ -169,10 +170,11 @@ def blake3(
     keyword such as `step` or `flags`; `counter`/`chunk`, `block_len`, and
     `flags` set the compile-time metadata directly. In inferred-flag mode,
     `step=0` marks CHUNK_START, while `end`, `root`, and `parent` add the
-    corresponding BLAKE3 flags. Bytes after `block_len` must be zero-filled by
-    the program.
+    corresponding BLAKE3 flags; `keyed=1` adds KEYED_HASH and requires `cv` to
+    hold the 32-byte key on the first block. Bytes after `block_len` must be
+    zero-filled by the program.
 
     Message, chaining-value, and output operands are size-2 StackBufs or
     2-cell slices `buf[lo:hi]` of larger StackBufs or HeapBufs (heap inputs are
     bridged through the stack, one DEREF per cell)."""
-    _ = a, b, out, cv, counter, chunk, block_len, flags, step, end, root, parent
+    _ = a, b, out, cv, counter, chunk, block_len, flags, step, end, root, parent, keyed

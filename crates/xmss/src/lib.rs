@@ -1,8 +1,8 @@
 //! XMSS over BLAKE3 (inspired by leanVM's `xmss` crate, byte-oriented).
 //!
-//! Every hash is standard BLAKE3 of the exact byte string
-//! `tweak | pp | payload`, truncated to n = 128 bits. See [`hash`] for the
-//! constructions and per-call compression counts.
+//! Every verification hash is keyed BLAKE3 of the exact payload under the
+//! 32-byte key `public_parameter | tweak`, truncated to n = 128 bits. See
+//! [`hash`] for the constructions and per-call compression counts.
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
@@ -42,15 +42,25 @@ pub const PUBLIC_PARAM_LEN: usize = 16;
 // XMSS
 /// Merkle tree height: a key is valid for up to `2^32` slots.
 pub const LOG_LIFETIME: usize = 32;
+/// The same lifetime represented by a base-4 Merkle tree.
+pub const MERKLE_HEIGHT: usize = LOG_LIFETIME / 2;
+pub const MERKLE_ARITY: usize = 4;
+pub const MERKLE_SIBLINGS: usize = MERKLE_ARITY - 1;
+pub const MERKLE_PROOF_LEN: usize = MERKLE_HEIGHT * MERKLE_SIBLINGS;
+pub const WOTS_PK_COMPRESSIONS: usize = (V * DIGEST_LEN).div_ceil(64);
+pub const XMSS_VERIFY_COMPRESSIONS: usize =
+    1 + NUM_CHAIN_HASHES + WOTS_PK_COMPRESSIONS + MERKLE_HEIGHT;
 
 /// Serialized sizes (exact under bincode: fixed arrays, no length prefixes).
 pub const WOTS_SIG_SIZE: usize = RANDOMNESS_LEN + V * DIGEST_LEN; // 696
-pub const XMSS_SIG_SIZE: usize = WOTS_SIG_SIZE + LOG_LIFETIME * DIGEST_LEN; // 1208
+pub const XMSS_SIG_SIZE: usize = WOTS_SIG_SIZE + MERKLE_PROOF_LEN * DIGEST_LEN; // 1464
 pub const PUB_KEY_FLAT_SIZE: usize = DIGEST_LEN + PUBLIC_PARAM_LEN; // 32
 
 // The encoding uses v*w = 126 of the digest's 128 bits; the 2 leftover top
 // bits are ground to zero, so the digest decomposes exactly into the chunks.
 const _: () = assert!(V * W + 2 == DIGEST_LEN * 8);
+const _: () = assert!(LOG_LIFETIME.is_multiple_of(2));
+const _: () = assert!(XMSS_VERIFY_COMPRESSIONS == 128);
 
 /// Serde for `[T; N]` with N > 32 (serde only derives arrays up to 32):
 /// serialized as a fixed-length tuple, exactly like the native array impls.

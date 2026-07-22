@@ -522,17 +522,17 @@ impl Program {
                     }
                 }
                 Op::Blake3 { ins, cv, out, metadata } => {
-                    // Four independently-addressed message words; the chaining
-                    // value and output each span two consecutive words.
-                    let (aa0, aa1, ab0, ab1) = (fp + ins[0], fp + ins[1], fp + ins[2], fp + ins[3]);
-                    let acv = fp + cv;
+                    // The CV and first message half have independent offsets;
+                    // the second message half and output are consecutive pairs.
+                    let (acv0, acv1) = (fp + cv[0], fp + cv[1]);
+                    let (aa0, aa1, ab) = (fp + ins[0], fp + ins[1], fp + ins[2]);
                     let ac = fp + out;
                     let va0 = get(&mem, &written, aa0);
                     let va1 = get(&mem, &written, aa1);
-                    let vb0 = get(&mem, &written, ab0);
-                    let vb1 = get(&mem, &written, ab1);
-                    let vcv0 = get(&mem, &written, acv);
-                    let vcv1 = get(&mem, &written, acv + 1);
+                    let vb0 = get(&mem, &written, ab);
+                    let vb1 = get(&mem, &written, ab + 1);
+                    let vcv0 = get(&mem, &written, acv0);
+                    let vcv1 = get(&mem, &written, acv1);
                     // Compress the 64 message bytes to the 32-byte result, then write
                     // it to c's two words. No table constraint covers the digest (the
                     // relation is proven by flock, §blake3_flock); the interpreter
@@ -543,10 +543,10 @@ impl Program {
                     put(&mut mem, &mut written, &mut mem_count, ac + 1, vc1);
                     let ra0 = bump_access_count(&mut mem, &mut written, &mut mem_count, aa0);
                     let ra1 = bump_access_count(&mut mem, &mut written, &mut mem_count, aa1);
-                    let rb0 = bump_access_count(&mut mem, &mut written, &mut mem_count, ab0);
-                    let rb1 = bump_access_count(&mut mem, &mut written, &mut mem_count, ab1);
-                    let rcv0 = bump_access_count(&mut mem, &mut written, &mut mem_count, acv);
-                    let rcv1 = bump_access_count(&mut mem, &mut written, &mut mem_count, acv + 1);
+                    let rb0 = bump_access_count(&mut mem, &mut written, &mut mem_count, ab);
+                    let rb1 = bump_access_count(&mut mem, &mut written, &mut mem_count, ab + 1);
+                    let rcv0 = bump_access_count(&mut mem, &mut written, &mut mem_count, acv0);
+                    let rcv1 = bump_access_count(&mut mem, &mut written, &mut mem_count, acv1);
                     let rc0 = bump_access_count(&mut mem, &mut written, &mut mem_count, ac);
                     let rc1 = bump_access_count(&mut mem, &mut written, &mut mem_count, ac + 1);
                     blake3.push(Brow {
@@ -554,9 +554,9 @@ impl Program {
                         fp,
                         aa0,
                         aa1,
-                        ab0,
-                        ab1,
-                        acv,
+                        ab,
+                        acv0,
+                        acv1,
                         ac,
                         va0,
                         va1,

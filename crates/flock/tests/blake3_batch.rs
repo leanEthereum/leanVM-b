@@ -12,7 +12,7 @@
 //! the one leanVM-b commits with, so the numbers are comparable to the
 //! `[open]` / `commit` stages of the xmss benchmark.
 //!
-//! Run (N = number of compressions; the xmss n=820 workload is ~120k = 181 + 146·820):
+//! Run (N = number of compressions; the xmss n=820 workload is ~106k = 173 + 129·820):
 //! ```text
 //!   RAYON_NUM_THREADS=11 FLOCK_N=131072 cargo test --release -p flock --test blake3_batch -- --nocapture
 //! ```
@@ -41,7 +41,7 @@ impl Rng {
 #[test]
 fn blake3_batch_prove_verify() {
     // Number of compressions to prove. Default is quick-but-meaningful; set
-    // FLOCK_N=131072 to mirror the xmss n=820 BLAKE3 workload (~2^17).
+    // FLOCK_N=131072 to approximate the xmss n=820 BLAKE3 workload (~2^17).
     let n: usize = std::env::var("FLOCK_N").ok().and_then(|s| s.parse().ok()).unwrap_or(8192);
     assert!(n >= 1, "FLOCK_N must be ≥ 1");
     let n_log = min_n_blocks_log(n);
@@ -131,5 +131,5 @@ fn blake3_batch_prove_verify() {
     println!("  prove TOTAL (witness excluded)  : {:>8.1} ms", prove_s * 1e3);
     println!("  verify                          : {verify_ms:>8.1} ms");
     println!("  throughput                      : {:>10.0} compressions/s", n as f64 / prove_s);
-    println!("  (~{:.0} XMSS/s equiv @ 146 compressions/sig)", n as f64 / prove_s / 146.0);
+    println!("  (~{:.0} XMSS/s equiv @ 129 compressions/sig)", n as f64 / prove_s / 129.0);
 }

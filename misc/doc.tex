@@ -75,16 +75,16 @@ Instruction & Operands & Semantics\\
 \texttt{SET\_CONSTANT} & $[o,k]$         & $\loc{o}=k$\\
 \texttt{DEREF}         & $[\alpha,\beta,\gamma;\,s]$ & $\mem[\loc{\alpha}\cdot\beta]=\srcsel{s}$\\
 \texttt{JUMP}          & $[o_c,o_d,o_f]$ & conditional jump (below)\\
-\texttt{BLAKE3}        & $[o_0,o_1,o_2,o_3,o_V,o_C,\mu]$ & $\bigl(\loc{o_C},\loc{\gen\cdot o_C}\bigr)=\mathrm{Compress}\bigl(\loc{o_V},\loc{\gen\cdot o_V};\loc{o_0},\ldots,\loc{o_3};\mu\bigr)$ (below)\\
+\texttt{BLAKE3}        & $[o_{V0},o_{V1},o_0,o_1,o_2,o_C,\mu]$ & $\bigl(\loc{o_C},\loc{\gen\cdot o_C}\bigr)=\mathrm{Compress}\bigl(\loc{o_{V0}},\loc{o_{V1}};\loc{o_0},\loc{o_1},\loc{o_2},\loc{\gen\cdot o_2};\mu\bigr)$ (below)\\
 \hline
 \end{tabular}
 \end{center}
 
-\texttt{BLAKE3} is the standard BLAKE3 compression, consuming a $64$-byte message block and a $32$-byte chaining value and producing $32$ bytes. The four $128$-bit message words are addressed \emph{independently} by references $o_0,\dots,o_3$ (word $i$ at $\loc{o_i}=\fp\cdot o_i$), while $o_V$ names two \emph{consecutive} chaining-value words $\loc{o_V},\loc{\gen\cdot o_V}$. The $256$-bit result is written to the consecutive cells $\loc{o_C},\loc{\gen\cdot o_C}$. The immediate $\mu\in\F_{2^{128}}$ packs the standard compression metadata in little-endian order,
+\texttt{BLAKE3} is the standard BLAKE3 compression, consuming a $64$-byte message block and a $32$-byte chaining value and producing $32$ bytes. The chaining-value words at $\loc{o_{V0}},\loc{o_{V1}}$ and the first two message words at $\loc{o_0},\loc{o_1}$ are addressed independently. The second message half occupies the consecutive cells $\loc{o_2},\loc{\gen\cdot o_2}$, and the result similarly occupies $\loc{o_C},\loc{\gen\cdot o_C}$. This allocation makes a keyed BLAKE3 key---used as the initial chaining value---cheap to assemble from a public parameter and tweak without copying either half. The immediate $\mu\in\F_{2^{128}}$ packs the standard compression metadata in little-endian order,
 \[
   \mu=\mathit{counter}_{64}\;\Vert\;\mathit{block\_len}_{32}\;\Vert\;\mathit{flags}_{32}.
 \]
-For a one-block $64$-byte hash, the chaining value is the standard IV and $\mu=(0,64,\textsc{chunk-start}|\textsc{chunk-end}|\textsc{root})$. Within one $1024$-byte chunk, a longer standard BLAKE3 hash passes each compression result back through $o_V$ and chooses the length and flags prescribed by BLAKE3. Still longer inputs additionally use BLAKE3's chunk counters and binary tree of parent compressions. The BLAKE3 table (\S\ref{sec:tab-blake3}) wires its memory and bytecode operands into a flock~\cite{flock} R1CS proof.
+For a one-block $64$-byte hash, the chaining value is the standard IV and $\mu=(0,64,\textsc{chunk-start}|\textsc{chunk-end}|\textsc{root})$. Keyed mode instead uses the $256$-bit key as the initial chaining value and adds \textsc{keyed-hash} to every compression's flags. Within one $1024$-byte chunk, a longer standard BLAKE3 hash passes each compression result back through $o_{V0},o_{V1}$ and chooses the length and flags prescribed by BLAKE3. Still longer inputs additionally use BLAKE3's chunk counters and binary tree of parent compressions. The BLAKE3 table (\S\ref{sec:tab-blake3}) wires its memory and bytecode operands into a flock~\cite{flock} R1CS proof.
 
 \texttt{DEREF} stores, at the dereferenced address $\loc{\alpha}\cdot\beta$, a value chosen by a \emph{store mode} $s\in\{\texttt{deref\_cell}[\gamma],\texttt{deref\_pc},\texttt{deref\_fp}\}$:
 \[
@@ -387,17 +387,17 @@ Alone among the tables, \texttt{JUMP} commits its successors.
 
 \subsection{\texttt{BLAKE3}}\label{sec:tab-blake3}
 
-Compresses a $64$-byte message block (four $128$-bit words) under a $32$-byte chaining value to the $32$-byte result at $c$. The message words are addressed independently at $a_i=\fp\cdot o_i$, while $a_V=\fp\cdot o_V$ is the base of the two consecutive chaining-value cells $a_V,\gen a_V$. The output similarly occupies $a_C=\fp\cdot o_C$ and $\gen a_C$. The immediate $\mu$ packs the $64$-bit counter, $32$-bit block length, and $32$-bit flags required by the BLAKE3 specification.
+Compresses a $64$-byte message block (four $128$-bit words) under a $32$-byte chaining value to the $32$-byte result at $c$. The CV addresses $a_{V0}=\fp\cdot o_{V0}$, $a_{V1}=\fp\cdot o_{V1}$ and first-half message addresses $a_0=\fp\cdot o_0$, $a_1=\fp\cdot o_1$ are independent. The second message half occupies $a_2=\fp\cdot o_2$ and $\gen a_2$; the output similarly occupies $a_C=\fp\cdot o_C$ and $\gen a_C$. The immediate $\mu$ packs the $64$-bit counter, $32$-bit block length, and $32$-bit flags required by the BLAKE3 specification.
 
 The compression is \emph{proven} by flock~\cite{flock}, which proves a batched R1CS of the circuit against a committed Boolean witness $w$. We commit flock's ring-switched~\cite{cryptoeprint:2024/504} witness $\widehat w$ over $\F_{2^{128}}$ alongside our own columns, in one stacked commitment (\S\ref{sec:rs-dense}). The message, result, chaining value, and metadata already sit inside $\widehat w$ at fixed $128$-bit-aligned slots. Consequently the nine virtual value columns $v_{A0},v_{A1},v_{B0},v_{B1},v_{C0},v_{C1},v_{V0},v_{V1},v_\mu$ are not materialized in the AIR commitment: their opening claims are routed to the aligned packed coordinates of $q_{\mathrm{pkd}}$.
 \begin{itemize}
-\item \textbf{Columns:} $\pc,\fp$; operands $o_0,o_1,o_2,o_3,o_V,o_C$; base addresses $a_0,a_1,a_2,a_3,a_V,a_C$; memory counts $r_{A0},r_{A1},r_{B0},r_{B1},r_{V0},r_{V1},r_{C0},r_{C1}$; bytecode count $r_{\mathrm{bc}}$. The nine values above are virtual columns backed by $q_{\mathrm{pkd}}$. The successor addresses $\gen a_V$ and $\gen a_C$ are virtual.
-\item \textbf{Constraints:} the six address bindings $a_i=\fp\cdot o_i$ ($i\in\{0,1,2,3\}$), $a_V=\fp\cdot o_V$, and $a_C=\fp\cdot o_C$ — all degree $2$. The compression relation itself is handled by flock.
+\item \textbf{Columns:} $\pc,\fp$; operands $o_{V0},o_{V1},o_0,o_1,o_2,o_C$; base addresses $a_{V0},a_{V1},a_0,a_1,a_2,a_C$; memory counts $r_{A0},r_{A1},r_{B0},r_{B1},r_{V0},r_{V1},r_{C0},r_{C1}$; bytecode count $r_{\mathrm{bc}}$. The nine values above are virtual columns backed by $q_{\mathrm{pkd}}$. The successor addresses $\gen a_2$ and $\gen a_C$ are virtual.
+\item \textbf{Constraints:} the six address bindings $a_X=\fp\cdot o_X$ for $X\in\{V0,V1,0,1,2,C\}$, all degree $2$. The compression relation itself is handled by flock.
 \item \textbf{Flushes:}
   \begin{itemize}
   \item \textbf{State:} \pull\ $\tup{\dsep{ST},\pc,\fp}$, \push\ $\tup{\dsep{ST},\gen\cdot\pc,\fp}$.
-  \item \textbf{Bytecode:} \pull\ $\tup{\dsep{BC},\pc,r_{\mathrm{bc}},\opc{B3},o_0,o_1,o_2,o_3,o_V,o_C,v_\mu}$, \push\ the same at $\gen\cdot r_{\mathrm{bc}}$.
-  \item \textbf{Memory:} eight reads, each \pull\ at count $r$ and \push\ at $\gen\cdot r$: four independently addressed message words, the chaining value at $a_V,\gen a_V$, and the result at $a_C,\gen a_C$.
+  \item \textbf{Bytecode:} \pull\ $\tup{\dsep{BC},\pc,r_{\mathrm{bc}},\opc{B3},o_{V0},o_{V1},o_0,o_1,o_2,o_C,v_\mu}$, \push\ the same at $\gen\cdot r_{\mathrm{bc}}$.
+  \item \textbf{Memory:} eight reads, each \pull\ at count $r$ and \push\ at $\gen\cdot r$: CV words at $a_{V0},a_{V1}$, first message words at $a_0,a_1$, the second message half at $a_2,\gen a_2$, and the result at $a_C,\gen a_C$.
   \end{itemize}
 \end{itemize}
 
@@ -434,7 +434,7 @@ Instruction & $3$ & $4$ & $5$ & $6$ & $7$ & $8$ & $9$ & $10$\\
 \texttt{SET\_CONSTANT} & $\opc{SET}$ & $o$   & $k$   & $0$   & $0$ & $0$ & $0$ & $0$\\
 \texttt{DEREF}         & $\opc{DRF}$ & $\alpha$ & $\beta$ & $\gamma$ & $f_{\pc}$ & $f_{\fp}$ & $0$ & $0$\\
 \texttt{JUMP}          & $\opc{JMP}$ & $o_c$ & $o_d$ & $o_f$ & $0$ & $0$ & $0$ & $0$\\
-\texttt{BLAKE3}        & $\opc{B3}$  & $o_0$ & $o_1$ & $o_2$ & $o_3$ & $o_V$ & $o_C$ & $\mu$\\
+\texttt{BLAKE3}        & $\opc{B3}$  & $o_{V0}$ & $o_{V1}$ & $o_0$ & $o_1$ & $o_2$ & $o_C$ & $\mu$\\
 \hline
 \end{tabular}
 \end{center}

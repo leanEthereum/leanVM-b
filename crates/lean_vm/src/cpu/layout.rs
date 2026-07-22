@@ -201,7 +201,9 @@ pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; 6], pi: [F128; 2]
             Op::Set { o, .. } => o,
             Op::Deref { alpha, beta, gamma, .. } => alpha.max(beta).max(gamma),
             Op::Jump { oc, od, of } => oc.max(od).max(of),
-            Op::Blake3 { ins, cv, out, .. } => ins[0].max(ins[1]).max(ins[2]).max(ins[3]).max(cv).max(out),
+            Op::Blake3 { ins, cv, out, .. } => {
+                ins[0].max(ins[1]).max(ins[2]).max(cv[0]).max(cv[1]).max(out)
+            }
         })
         .max()
         .unwrap_or(0) as usize;
@@ -222,21 +224,22 @@ pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; 6], pi: [F128; 2]
             Op::Set { o, k } => (g_at(o), k, F128::ZERO),
             Op::Deref { alpha, beta, gamma, .. } => (g_at(alpha), g_at(beta), g_at(gamma)),
             Op::Jump { oc, od, of } => (g_at(oc), g_at(od), g_at(of)),
-            // BLAKE3's first three input-word offsets; the last two ride the
-            // fpc/ffp bytecode slots below.
-            Op::Blake3 { ins, .. } => (g_at(ins[0]), g_at(ins[1]), g_at(ins[2])),
+            // BLAKE3's independent CV halves and first message word; the
+            // remaining message offsets ride fpc/ffp below.
+            Op::Blake3 { ins, cv, .. } => (g_at(cv[0]), g_at(cv[1]), g_at(ins[0])),
         }
     };
     // The 4th/5th bytecode operand slots: the two DEREF store-mode flags, or
-    // BLAKE3's remaining input word / chaining-value base (0 elsewhere).
+    // BLAKE3's second independently addressed message word / consecutive
+    // second-half base (0 elsewhere).
     let fpc = |op: &Op| match op {
         Op::Deref { mode, .. } => mode.f_pc(),
-        Op::Blake3 { ins, .. } => g_at(ins[3]),
+        Op::Blake3 { ins, .. } => g_at(ins[1]),
         _ => F128::ZERO,
     };
     let ffp = |op: &Op| match op {
         Op::Deref { mode, .. } => mode.f_fp(),
-        Op::Blake3 { cv, .. } => g_at(*cv),
+        Op::Blake3 { ins, .. } => g_at(ins[2]),
         _ => F128::ZERO,
     };
     let extra0 = |op: &Op| match op {

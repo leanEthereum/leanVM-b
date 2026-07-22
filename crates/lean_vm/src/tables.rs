@@ -512,12 +512,10 @@ impl Table for JumpTable {
 
 // ---- BLAKE3 ------------------------------------------------------------------
 
-/// `BLAKE3` (doc §7.6): the four 16-byte input words are addressed
-/// *independently* at `aa0, aa1, ab0, ab1` (`= fp·g^{ins[i]}`) — no forced
-/// contiguity, so a caller hashing e.g. `(tweak, pp)` need not copy them into
-/// adjacent cells. The chaining value and 32-byte output each occupy two
-/// consecutive words, based at `acv` and `ac`. Six address bindings
-/// `a_X = fp·o_X` are constrained; the
+/// `BLAKE3` (doc §7.6): the two chaining-value words and first two 16-byte
+/// message words are addressed independently. `ab` bases the consecutive
+/// second message half, and `ac` bases the consecutive output. Six address
+/// bindings `a_X = fp·o_X` are constrained; the
 /// compression relating output to input words carries no table constraint
 /// here: it is proven by flock's R1CS validity via `q_pkd` (§blake3_flock).
 ///
@@ -528,11 +526,10 @@ impl Table for JumpTable {
 struct Blake3Table;
 
 mod blake3t {
-    // Operands: four input offsets + cv base + output base; addresses mirror that layout,
-    // with word 1 of the output at the free successor g·AC. Values and read
-    // counts then follow in canonical a0/a1/b0/b1/c0/c1 order.
+    // Operands: two independent CV offsets, two independent first-half message
+    // offsets, second-half base, output base. Successor words of AB/AC are free.
     columns!(
-        PC, FP, OA0, OA1, OB0, OB1, OCV, OC, AA0, AA1, AB0, AB1, ACV, AC,
+        PC, FP, OCV0, OCV1, OA0, OA1, OB, OC, ACV0, ACV1, AA0, AA1, AB, AC,
         VA0, VA1, VB0, VB1, VC0, VC1, VCV0, VCV1, METADATA,
         RA0, RA1, RB0, RB1, RCV0, RCV1, RC0, RC1, RBC,
     );
@@ -551,7 +548,7 @@ impl Table for Blake3Table {
     }
     fn constraint_columns(&self) -> &'static [usize] {
         use blake3t::*;
-        &[FP, OA0, OA1, OB0, OB1, OCV, OC, AA0, AA1, AB0, AB1, ACV, AC]
+        &[FP, OCV0, OCV1, OA0, OA1, OB, OC, ACV0, ACV1, AA0, AA1, AB, AC]
     }
     fn eval_constraint(&self, eta: F128, cols: &Cols) -> F128 {
         use blake3t::*;
@@ -559,11 +556,11 @@ impl Table for Blake3Table {
         // carries no table constraint here: flock's R1CS validity proves it
         // via q_pkd (§blake3_flock).
         let bind = |a: usize, o: usize| cols[a] + cols[FP] * cols[o];
-        bind(AA0, OA0)
-            + eta * bind(AA1, OA1)
-            + eta * eta * bind(AB0, OB0)
-            + eta * eta * eta * bind(AB1, OB1)
-            + eta * eta * eta * eta * bind(ACV, OCV)
+        bind(ACV0, OCV0)
+            + eta * bind(ACV1, OCV1)
+            + eta * eta * bind(AA0, OA0)
+            + eta * eta * eta * bind(AA1, OA1)
+            + eta * eta * eta * eta * bind(AB, OB)
             + eta * eta * eta * eta * eta * bind(AC, OC)
     }
     fn flushes(&self, f: &mut FlushBuilder) {
@@ -573,16 +570,14 @@ impl Table for Blake3Table {
             PC,
             RBC,
             OP_BLAKE3,
-            &[Col(OA0), Col(OA1), Col(OB0), Col(OB1), Col(OCV), Col(OC), Col(METADATA)],
+            &[Col(OCV0), Col(OCV1), Col(OA0), Col(OA1), Col(OB), Col(OC), Col(METADATA)],
         );
-        // Four independent input reads; the output occupies two consecutive words
-        // (base and the free successor g·AC).
+        f.memory(ACV0, RCV0, VCV0);
+        f.memory(ACV1, RCV1, VCV1);
         f.memory(AA0, RA0, VA0);
         f.memory(AA1, RA1, VA1);
-        f.memory(AB0, RB0, VB0);
-        f.memory(AB1, RB1, VB1);
-        f.memory(ACV, RCV0, VCV0);
-        f.memory_succ(ACV, RCV1, VCV1);
+        f.memory(AB, RB0, VB0);
+        f.memory_succ(AB, RB1, VB1);
         f.memory(AC, RC0, VC0);
         f.memory_succ(AC, RC1, VC1);
     }
@@ -591,17 +586,17 @@ impl Table for Blake3Table {
         let rows = &ctx.trace.blake3;
         out[PC] = rows.par_iter().map(|r| ctx.g_at(r.pc)).collect();
         out[FP] = rows.par_iter().map(|r| ctx.g_at(r.fp)).collect();
+        out[OCV0] = rows.par_iter().map(|r| ctx.g_at(r.acv0 - r.fp)).collect();
+        out[OCV1] = rows.par_iter().map(|r| ctx.g_at(r.acv1 - r.fp)).collect();
         out[OA0] = rows.par_iter().map(|r| ctx.g_at(r.aa0 - r.fp)).collect();
         out[OA1] = rows.par_iter().map(|r| ctx.g_at(r.aa1 - r.fp)).collect();
-        out[OB0] = rows.par_iter().map(|r| ctx.g_at(r.ab0 - r.fp)).collect();
-        out[OB1] = rows.par_iter().map(|r| ctx.g_at(r.ab1 - r.fp)).collect();
-        out[OCV] = rows.par_iter().map(|r| ctx.g_at(r.acv - r.fp)).collect();
+        out[OB] = rows.par_iter().map(|r| ctx.g_at(r.ab - r.fp)).collect();
         out[OC] = rows.par_iter().map(|r| ctx.g_at(r.ac - r.fp)).collect();
+        out[ACV0] = rows.par_iter().map(|r| ctx.g_at(r.acv0)).collect();
+        out[ACV1] = rows.par_iter().map(|r| ctx.g_at(r.acv1)).collect();
         out[AA0] = rows.par_iter().map(|r| ctx.g_at(r.aa0)).collect();
         out[AA1] = rows.par_iter().map(|r| ctx.g_at(r.aa1)).collect();
-        out[AB0] = rows.par_iter().map(|r| ctx.g_at(r.ab0)).collect();
-        out[AB1] = rows.par_iter().map(|r| ctx.g_at(r.ab1)).collect();
-        out[ACV] = rows.par_iter().map(|r| ctx.g_at(r.acv)).collect();
+        out[AB] = rows.par_iter().map(|r| ctx.g_at(r.ab)).collect();
         out[AC] = rows.par_iter().map(|r| ctx.g_at(r.ac)).collect();
         out[VA0] = rows.par_iter().map(|r| r.va0).collect();
         out[VA1] = rows.par_iter().map(|r| r.va1).collect();

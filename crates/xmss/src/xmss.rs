@@ -1,4 +1,4 @@
-//! XMSS: a Merkle tree of `2^LOG_LIFETIME` WOTS public-key hashes.
+//! XMSS: a 4-ary Merkle tree of `2^LOG_LIFETIME` WOTS public-key hashes.
 //!
 //! Mirrors leanVM's memory-optimized secret key: for a range of R = slot_end -
 //! slot_start + 1 slots, storage is O(sqrt(R) + LOG_LIFETIME) instead of O(R).
@@ -37,7 +37,10 @@ pub(crate) struct BottomSubtree {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct XmssSignature {
     pub wots_signature: WotsSignature,
-    pub merkle_proof: [Digest; LOG_LIFETIME],
+    /// Three siblings per quaternary level, ordered by child position with the
+    /// current node omitted, level-major from leaf to root.
+    #[serde(with = "array_serialization")]
+    pub merkle_proof: [Digest; MERKLE_PROOF_LEN],
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -84,22 +87,23 @@ fn gen_random_node(seed: &[u8; 32], level: usize, index: u64) -> Digest {
     prf(seed, PRF_DOMAINSEP_RANDOM_NODE, level as u64, index)
 }
 
-/// Merkle parent at `level` (1 compression: both children fill one block).
+/// Quaternary Merkle parent at `level` (one compression: four 16-byte children
+/// fill the 64-byte keyed-BLAKE3 message block).
 pub fn merkle_node(
     public_param: &PublicParam,
     level: usize,
     index: u64,
-    left: &Digest,
-    right: &Digest,
+    children: &[Digest; MERKLE_ARITY],
 ) -> Digest {
-    let mut data = [0u8; 2 * DIGEST_LEN];
-    data[..DIGEST_LEN].copy_from_slice(left);
-    data[DIGEST_LEN..].copy_from_slice(right);
+    let mut data = [0u8; MERKLE_ARITY * DIGEST_LEN];
+    for (dst, child) in data.chunks_exact_mut(DIGEST_LEN).zip(children) {
+        dst.copy_from_slice(child);
+    }
     tweak_hash(public_param, TWEAK_TYPE_MERKLE, level as u32, index as u32, &data)
 }
 
-fn log2_ceil(n: u64) -> usize {
-    n.next_power_of_two().trailing_zeros() as usize
+fn log4_ceil(n: u64) -> usize {
+    (n.next_power_of_two().trailing_zeros() as usize).div_ceil(2)
 }
 
 /// Level-0 layer: WOTS public-key hashes for the in-range leaves `[lo, hi]`.
@@ -126,8 +130,8 @@ fn build_up(
     to_level: usize,
 ) {
     for level in (from_level + 1)..=to_level {
-        let (base, top) = (lo >> level, hi >> level);
-        let (prev_base, prev_top) = (lo >> (level - 1), hi >> (level - 1));
+        let (base, top) = (lo >> (2 * level), hi >> (2 * level));
+        let (prev_base, prev_top) = (lo >> (2 * (level - 1)), hi >> (2 * (level - 1)));
         let prev = layers.last().unwrap();
         let nodes: Vec<Digest> = (base..=top)
             .into_par_iter()
@@ -139,7 +143,8 @@ fn build_up(
                         gen_random_node(seed, level - 1, idx)
                     }
                 };
-                merkle_node(public_param, level, i, &child(2 * i), &child(2 * i + 1))
+                let children = std::array::from_fn(|j| child(MERKLE_ARITY as u64 * i + j as u64));
+                merkle_node(public_param, level, i, &children)
             })
             .collect();
         layers.push(nodes);
@@ -149,8 +154,8 @@ fn build_up(
 /// In-range leaf bounds of the bottom subtree with the given index.
 fn subtree_bounds(slot_start: u64, slot_end: u64, split_level: usize, subtree_index: u64) -> (u64, u64) {
     (
-        slot_start.max(subtree_index << split_level),
-        slot_end.min(((subtree_index + 1) << split_level) - 1),
+        slot_start.max(subtree_index << (2 * split_level)),
+        slot_end.min(((subtree_index + 1) << (2 * split_level)) - 1),
     )
 }
 
@@ -183,12 +188,12 @@ pub fn xmss_key_gen(
     let public_param = gen_public_param(&seed);
     let (lo, hi) = (slot_start as u64, slot_end as u64);
 
-    // ~sqrt(R) leaves per bottom subtree; always <= LOG_LIFETIME/2.
-    let split_level = log2_ceil(hi - lo + 1).div_ceil(2);
+    // ~sqrt(R) leaves per bottom subtree, measured in quaternary levels.
+    let split_level = log4_ceil(hi - lo + 1).div_ceil(2);
 
     // Roots of each bottom subtree, built one at a time so peak memory stays O(sqrt(R)).
-    let first_subtree = lo >> split_level;
-    let last_subtree = hi >> split_level;
+    let first_subtree = lo >> (2 * split_level);
+    let last_subtree = hi >> (2 * split_level);
     let root_layer: Vec<Digest> = (first_subtree..=last_subtree)
         .into_par_iter()
         .map(|s| {
@@ -197,9 +202,9 @@ pub fn xmss_key_gen(
         })
         .collect();
 
-    // Top part: levels split_level..=LOG_LIFETIME.
+    // Top part: quaternary levels split_level..=MERKLE_HEIGHT.
     let mut top = vec![root_layer];
-    build_up(&seed, &public_param, &mut top, lo, hi, split_level, LOG_LIFETIME);
+    build_up(&seed, &public_param, &mut top, lo, hi, split_level, MERKLE_HEIGHT);
 
     let pub_key = XmssPublicKey {
         merkle_root: top.last().unwrap()[0],
@@ -242,17 +247,26 @@ pub fn xmss_sign(
         .sign_with_randomness(message, slot, &secret_key.public_param, randomness)
         .ok_or(XmssSignatureError::InvalidRandomness)?;
 
-    // Cache the bottom subtree covering `slot` (reused across its 2^split_level
-    // slots), then read the authentication path.
-    let subtree_index = (slot as u64) >> secret_key.split_level;
+    // Cache the bottom subtree covering `slot` (reused across its
+    // 4^split_level slots), then read the authentication path.
+    let subtree_index = (slot as u64) >> (2 * secret_key.split_level);
     let mut cache = secret_key.cache.lock().unwrap();
     if cache.as_ref().is_none_or(|s| s.subtree_index != subtree_index) {
         *cache = Some(secret_key.build_bottom_subtree(subtree_index));
     }
     let sub = cache.as_ref().unwrap();
-    let merkle_proof = std::array::from_fn(|level| {
-        let neighbour_index = ((slot as u64) >> level) ^ 1;
-        secret_key.merkle_sibling(level, neighbour_index, sub)
+    let merkle_proof = std::array::from_fn(|proof_index| {
+        let level = proof_index / MERKLE_SIBLINGS;
+        let sibling_ordinal = proof_index % MERKLE_SIBLINGS;
+        let node_index = (slot as u64) >> (2 * level);
+        let child_position = (node_index % MERKLE_ARITY as u64) as usize;
+        let sibling_position = if sibling_ordinal < child_position {
+            sibling_ordinal
+        } else {
+            sibling_ordinal + 1
+        };
+        let sibling_index = node_index - child_position as u64 + sibling_position as u64;
+        secret_key.merkle_node_at(level, sibling_index, sub)
     });
     drop(cache);
     Ok(XmssSignature {
@@ -281,9 +295,9 @@ impl XmssSecretKey {
         BottomSubtree { subtree_index, layers }
     }
 
-    /// Authentication-path sibling at `level`: from the top part, the cached
+    /// Authentication-path node at `level`: from the top part, the cached
     /// subtree, or `gen_random_node`.
-    fn merkle_sibling(&self, level: usize, neighbour_index: u64, sub: &BottomSubtree) -> Digest {
+    fn merkle_node_at(&self, level: usize, node_index: u64, sub: &BottomSubtree) -> Digest {
         let (lo, hi, level_base, layers) = if level >= self.split_level {
             (self.slot_start as u64, self.slot_end as u64, self.split_level, &self.top)
         } else {
@@ -295,11 +309,11 @@ impl XmssSecretKey {
             );
             (lo, hi, 0, &sub.layers)
         };
-        let base = lo >> level;
-        if neighbour_index >= base && neighbour_index <= (hi >> level) {
-            layers[level - level_base][(neighbour_index - base) as usize]
+        let base = lo >> (2 * level);
+        if node_index >= base && node_index <= (hi >> (2 * level)) {
+            layers[level - level_base][(node_index - base) as usize]
         } else {
-            gen_random_node(&self.seed, level, neighbour_index)
+            gen_random_node(&self.seed, level, node_index)
         }
     }
 }
@@ -321,11 +335,20 @@ pub fn xmss_verify(
         .recover_public_key(message, slot, &pub_key.public_param)
         .ok_or(XmssVerifyError::InvalidWots)?;
     let mut current = wots_public_key.hash(&pub_key.public_param, slot);
-    for (level, neighbour) in signature.merkle_proof.iter().enumerate() {
-        let is_left = ((slot as u64 >> level) & 1) == 0;
-        let parent_index = (slot as u64) >> (level + 1);
-        let (left, right) = if is_left { (current, *neighbour) } else { (*neighbour, current) };
-        current = merkle_node(&pub_key.public_param, level + 1, parent_index, &left, &right);
+    for level in 0..MERKLE_HEIGHT {
+        let child_position = ((slot as u64 >> (2 * level)) & 3) as usize;
+        let mut siblings = signature.merkle_proof
+            [level * MERKLE_SIBLINGS..(level + 1) * MERKLE_SIBLINGS]
+            .iter();
+        let children = std::array::from_fn(|position| {
+            if position == child_position {
+                current
+            } else {
+                *siblings.next().unwrap()
+            }
+        });
+        let parent_index = (slot as u64) >> (2 * (level + 1));
+        current = merkle_node(&pub_key.public_param, level + 1, parent_index, &children);
     }
     if current == pub_key.merkle_root {
         Ok(())

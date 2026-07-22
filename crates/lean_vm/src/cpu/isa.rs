@@ -29,16 +29,18 @@ pub enum Op {
         od: u32,
         of: u32,
     },
-    /// `BLAKE3` (§7.6): compresses the four 16-byte input words `ins` (the two
-    /// 256-bit operands `ins[0]‖ins[1]` and `ins[2]‖ins[3]`) and writes the
-    /// 32-byte digest to the two consecutive words `out`, `out+1`. Each input
-    /// word is addressed independently (`fp+ins[i]`) — no forced contiguity, so
-    /// the caller need not assemble its operands into adjacent cells. The
-    /// compression relation is proven by flock.
+    /// `BLAKE3` (§7.6): compresses a 64-byte message block and writes the
+    /// 32-byte digest to the two consecutive words `out`, `out+1`. The two CV
+    /// words and the first two message words are addressed independently. The
+    /// last two message words occupy the consecutive cells `ins[2]`,
+    /// `ins[2]+1`, preserving six bytecode offset slots while making keyed
+    /// hashing cheap when the key halves come from unrelated cells.
     Blake3 {
-        ins: [u32; 4],
-        /// Base of two consecutive words holding the 256-bit chaining value.
-        cv: u32,
+        /// First two message-word offsets, then the base of the consecutive
+        /// second message half.
+        ins: [u32; 3],
+        /// Independently addressed 128-bit halves of the chaining value/key.
+        cv: [u32; 2],
         out: u32,
         /// `counter:u64 | block_len:u32 | flags:u32`, little-endian.
         metadata: F128,

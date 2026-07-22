@@ -2,17 +2,18 @@
 
 ## Hash functions
 
-Every XMSS hash is standard BLAKE3 of an exact byte string:
+Every XMSS verification hash is keyed BLAKE3 of an exact payload. The 32-byte
+key is the concatenation of the public parameter and tweak:
 
 ```
-H(tweak, pp, payload) = BLAKE3(tweak | pp | payload)[..16]
+H(tweak, pp, payload) = BLAKE3_keyed(key = pp | tweak, payload)[..16]
 ```
 
-The 48-byte chain-step input takes one compression; the 64-byte Merkle-node
-input takes one; the 96-byte message-encoding input takes two; and the
-704-byte WOTS public-key input takes eleven. The VM supplies the standard IV,
-chaining value, chunk position, exact block length, and flags to each BLAKE3
-compression instruction.
+The 16-byte chain-step payload takes one compression; the 64-byte quaternary
+Merkle-node payload takes one; the 64-byte message-encoding payload takes one;
+and the 672-byte WOTS public-key payload takes eleven. The VM supplies the key
+as the initial chaining value and sets `KEYED_HASH` on every compression,
+together with the standard chunk position, exact block length, and flags.
 
 The 16-byte tweak, little-endian:
 
@@ -44,9 +45,10 @@ attempts).
 
 ## XMSS
 
-`log_lifetime = 32`: Merkle tree of height 32 over the WOTS public-key hashes.
-Key generation takes a slot range; out-of-range nodes are deterministic
-pseudo-random fillers.
+`log_lifetime = 32`: a 4-ary Merkle tree of height 16 over 2^32 WOTS public-key
+hashes. Each authentication level carries the other three children. Key
+generation takes a slot range; out-of-range nodes are deterministic pseudo-random
+fillers.
 
 ## Keys
 
@@ -57,9 +59,9 @@ pseudo-random fillers.
 
 ## Verification cost
 
-A constant 145 compressions per signature: 2 (encoding) + 100 (chain walks,
-fixed by the target sum) + 11 (WOTS public-key hash) + 32 (Merkle path).
+A constant 128 compressions per signature: 1 (encoding) + 100 (chain walks,
+fixed by the target sum) + 11 (WOTS public-key hash) + 16 (Merkle path).
 
 ## Signature size
 
-1208 bytes = `randomness (24) + v*n (672) + log_lifetime*n (512)`.
+1464 bytes = `randomness (24) + v*n (672) + 16*3*n (768)`.

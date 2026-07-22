@@ -36,8 +36,8 @@ const FOLD_MAX: u128 = 1 << 16;
 
 /// A deferred stack-cell store: the cell is a copy of another cell, or a zero.
 /// Recorded instead of emitting the `MUL`/`SET`, and forwarded to the source at
-/// each use ([`FnLower::word_src`]) — so `BLAKE3`, which now addresses its four
-/// input words independently, reads them in place without assembling copies.
+/// each use ([`FnLower::word_src`]) — so `BLAKE3` reads independently addressed
+/// CV and first-half message words in place without assembling copies.
 #[derive(Clone, Copy)]
 enum Alias {
     Cell(Off),
@@ -1095,20 +1095,19 @@ impl FnLower<'_> {
         }
     }
 
-    /// A BLAKE3 chaining value must occupy two consecutive frame cells because
-    /// the opcode carries one base offset for both words. Preserve a genuine
-    /// consecutive pair, including a heap pair already bridged by
-    /// [`Self::blake3_input`]; if deferred copy forwarding exposes two
-    /// non-adjacent sources, materialize them into a fresh consecutive run.
-    fn blake3_cv(&mut self, e: &Expr) -> Off {
+    /// Materialize a BLAKE3 pair into consecutive frame cells when copy/constant
+    /// forwarding exposes non-adjacent sources. The opcode needs this only for
+    /// the second 32-byte message half; CV words and the first message half have
+    /// independent bytecode offsets.
+    fn blake3_consecutive(&mut self, e: &Expr) -> Off {
         let pair = self.blake3_input(e);
         if pair[1] == pair[0] + 1 {
             return pair[0];
         }
-        let cv = self.alloc_stack(2);
-        self.copy(pair[0], cv);
-        self.copy(pair[1], cv + 1);
-        cv
+        let base = self.alloc_stack(2);
+        self.copy(pair[0], base);
+        self.copy(pair[1], base + 1);
+        base
     }
 
     /// The cell holding the value of stack cell `o`, following a recorded copy /
@@ -1876,10 +1875,20 @@ impl FnLower<'_> {
                         let key = name.strip_prefix("__kw_").unwrap();
                         assert!(kwargs.insert(key, &value[0]).is_none(), "duplicate {f} keyword `{key}`");
                     }
-                    let allowed = ["cv", "counter", "chunk", "block_len", "flags", "step", "end", "root", "parent"];
+                    let allowed = [
+                        "cv", "counter", "chunk", "block_len", "flags", "step", "end", "root",
+                        "parent", "keyed",
+                    ];
                     assert!(kwargs.keys().all(|k| allowed.contains(k)), "unknown {f} keyword");
+                    assert!(
+                        !kwargs.contains_key("keyed") || kwargs.contains_key("cv"),
+                        "blake3 keyed= requires cv= to supply the 32-byte key/chaining value"
+                    );
                     let customized = kwargs.keys().any(|k| {
-                        matches!(*k, "counter" | "chunk" | "flags" | "step" | "end" | "root" | "parent")
+                        matches!(
+                            *k,
+                            "counter" | "chunk" | "flags" | "step" | "end" | "root" | "parent" | "keyed"
+                        )
                     });
                     assert!(
                         !kwargs.contains_key("cv") || customized,
@@ -1887,15 +1896,16 @@ impl FnLower<'_> {
                     );
 
                     let a = self.blake3_input(&args[0]);
-                    let b = self.blake3_input(&args[1]);
+                    let b = self.blake3_consecutive(&args[1]);
                     let (c, heap_out) = match self.blake3_operand(&args[2]) {
                         B3Operand::Stack(o) => (o, None),
                         B3Operand::Heap { ptr, lo } => (self.alloc_stack(2), Some((ptr, lo))),
                     };
                     let cv = if let Some(value) = kwargs.get("cv") {
-                        self.blake3_cv(value)
+                        self.blake3_input(value)
                     } else {
-                        self.default_blake3_cv()
+                        let base = self.default_blake3_cv();
+                        [base, base + 1]
                     };
                     let const_kw = |this: &Self, name: &str, default: u128| -> u128 {
                         kwargs
@@ -1926,13 +1936,11 @@ impl FnLower<'_> {
                     if const_kw(self, "end", 0) != 0 { flags |= 1 << 1; }
                     if const_kw(self, "parent", 0) != 0 { flags |= 1 << 2; }
                     if const_kw(self, "root", 0) != 0 { flags |= 1 << 3; }
+                    if const_kw(self, "keyed", 0) != 0 { flags |= 1 << 4; }
                     assert!(flags <= u32::MAX as u128, "BLAKE3 flags do not fit in u32");
                     let metadata = lean_vm::blake3_flock::metadata(counter as u64, block_len as u32, flags as u32);
-                    // Each operand's two words are at `base, base+1`; the flexible
-                    // opcode addresses them independently (`blake3_input` forwards
-                    // the real word sources where it can).
                     self.emit(LOp::Blake3 {
-                        ins: [a[0], a[1], b[0], b[1]],
+                        ins: [a[0], a[1], b],
                         cv,
                         c,
                         metadata,
