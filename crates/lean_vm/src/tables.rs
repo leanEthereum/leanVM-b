@@ -94,7 +94,7 @@ impl FlushBuilder {
         );
     }
 
-    /// Bytecode read at `pc`: the program tuple (opcode + five operand slots),
+    /// Bytecode read at `pc`: the program tuple (opcode + seven operand slots),
     /// with the per-pc execution count advanced by ×g on the push side.
     pub(crate) fn bytecode(&mut self, pc: usize, count: usize, opcode: F64, operands: &[Coord]) {
         let mut push = vec![Const(SEP_BYTECODE), Col(pc), GCol(count, 1), Const(opcode)];
@@ -238,11 +238,12 @@ pub fn tables() -> [&'static dyn Table; N_TABLES] {
 pub(crate) const BLAKE3_TABLE: usize = 5;
 
 /// BLAKE3 value-column LOCAL indices in canonical slot order
-/// `[a0..a3, b0..b3, c0..c3]` (matches `blake3_flock::SLOTS`). These columns are
+/// `[a0..a3, b0..b3, c0..c3, cv0..cv3, md_lo, md_hi]` (matches
+/// `blake3_flock::SLOTS`). These columns are
 /// VIRTUAL (never committed): `q_pkd` already holds those words at fixed packed
 /// slots, so `cpu` routes their memory-bus evaluation claims straight to `q_pkd`
 /// (`slot_claims`) — the value the bus flushes IS the flock-proven word.
-pub const BLAKE3_VALUE_COLS: [usize; 12] = [
+pub const BLAKE3_VALUE_COLS: [usize; 18] = [
     blake3t::VA0,
     blake3t::VA0 + 1,
     blake3t::VA0 + 2,
@@ -255,10 +256,22 @@ pub const BLAKE3_VALUE_COLS: [usize; 12] = [
     blake3t::VC0 + 1,
     blake3t::VC0 + 2,
     blake3t::VC0 + 3,
+    blake3t::VCV0,
+    blake3t::VCV0 + 1,
+    blake3t::VCV0 + 2,
+    blake3t::VCV0 + 3,
+    blake3t::MD0,
+    blake3t::MD1,
 ];
-// The twelve value lanes are laid out contiguously (VA0..VA0+11), so they map
+// The eighteen value lanes are laid out contiguously (VA0..VA0+17), so they map
 // 1:1 onto `blake3_flock::SLOTS`.
-const _: () = assert!(blake3t::VB0 == blake3t::VA0 + 4 && blake3t::VC0 == blake3t::VA0 + 8);
+const _: () = assert!(
+    blake3t::VB0 == blake3t::VA0 + 4
+        && blake3t::VC0 == blake3t::VA0 + 8
+        && blake3t::VCV0 == blake3t::VA0 + 12
+        && blake3t::MD0 == blake3t::VA0 + 16
+        && blake3t::MD1 == blake3t::VA0 + 17
+);
 
 /// Declare consecutive local column indices and the resulting column count.
 // Kept from main's table refactor as a tool for future single-lane column sets;
@@ -748,17 +761,19 @@ impl Table for Pack64x2Table {
 
 // ---- BLAKE3 ------------------------------------------------------------------
 
-/// `BLAKE3` (doc §7.6): the four 128-bit input chunks are addressed
-/// *independently* at `aa0, aa1, ab0, ab1` (`= fp·g^{ins[i]}`), each a single
-/// 128-bit cell — no forced contiguity between chunks, so a caller hashing e.g.
-/// `(tweak, pp)` need not copy them into adjacent cells. The 32-byte output
-/// occupies the two consecutive words `ac`, `g·ac`, so the row reads six cells in
-/// all. Five address bindings `a_X = fp·o_X` are constrained; the compression
-/// relating output words to input words carries no table constraint here: it is
-/// proven by flock's R1CS validity via `q_pkd` (§blake3_flock).
+/// `BLAKE3` (doc §7.6): one standard compression. The four 128-bit message
+/// cells are addressed *independently* at `aa0, aa1, ab0, ab1`
+/// (`= fp·g^{ins[i]}`) — no forced contiguity between them, so a caller hashing
+/// e.g. `(tweak, pp)` need not copy them into adjacent cells. The chaining
+/// value and the 32-byte output each occupy two consecutive cells, based at
+/// `acv` and `ac`, so the row reads eight cells in all. Six address bindings
+/// `a_X = fp·o_X` are constrained; the compression relating output words to
+/// input words carries no table constraint here: it is proven by flock's R1CS
+/// validity via `q_pkd` (§blake3_flock).
 ///
-/// A 128-bit cell is two flock 64-bit words (lo, hi lanes), so the twelve flock
-/// words are twelve value LANE columns over six cells. They are listed in
+/// A 128-bit cell is two flock 64-bit words (lo, hi lanes), so the sixteen
+/// memory-borne flock words are sixteen value LANE columns over eight cells,
+/// plus the metadata immediate's two lanes. They are listed in
 /// `n_committed_columns` (they need a local index for the flushes and are filled
 /// from the trace for the bus), but `cpu` treats them as VIRTUAL — not committed —
 /// and routes their bus claims to `q_pkd`, which already holds those words (see
@@ -768,29 +783,37 @@ struct Blake3Table;
 mod blake3t {
     pub const PC: usize = 0;
     pub const FP: usize = 1;
-    pub const OA0: usize = 2; // operand g-powers (offsets) of the four input cells …
+    pub const OA0: usize = 2; // operand g-powers (offsets) of the four message cells …
     pub const OA1: usize = 3;
     pub const OB0: usize = 4;
     pub const OB1: usize = 5;
-    pub const OC: usize = 6; // … and the output base
-    pub const AA0: usize = 7; // the four independent input cell addresses …
-    pub const AA1: usize = 8;
-    pub const AB0: usize = 9;
-    pub const AB1: usize = 10;
-    pub const AC: usize = 11; // … and the output base (the second word is g·AC)
-    // The twelve flock words as value lanes: a's cells (AA0, AA1), b's cells
-    // (AB0, AB1), c's cells (AC, g·AC), two lanes (lo, hi) each.
-    pub const VA0: usize = 12; // AA0.lo, AA0.hi, AA1.lo, AA1.hi
-    pub const VB0: usize = 16; // AB0.lo, AB0.hi, AB1.lo, AB1.hi
-    pub const VC0: usize = 20; // AC.lo, AC.hi, (g·AC).lo, (g·AC).hi
-    pub const RA0: usize = 24; // per-cell read counts (two a cells) …
-    pub const RA1: usize = 25;
-    pub const RB0: usize = 26; // … two b cells …
-    pub const RB1: usize = 27;
-    pub const RC0: usize = 28; // … two c cells.
-    pub const RC1: usize = 29;
-    pub const RBC: usize = 30;
-    pub const N: usize = 31;
+    pub const OCV: usize = 6; // … the chaining-value base …
+    pub const OC: usize = 7; // … and the output base
+    pub const AA0: usize = 8; // the four independent message cell addresses …
+    pub const AA1: usize = 9;
+    pub const AB0: usize = 10;
+    pub const AB1: usize = 11;
+    pub const ACV: usize = 12; // … the cv base (the second word is g·ACV) …
+    pub const AC: usize = 13; // … and the output base (the second word is g·AC)
+    // The eighteen flock words as value lanes: a's cells (AA0, AA1), b's cells
+    // (AB0, AB1), c's cells (AC, g·AC), cv's cells (ACV, g·ACV), two lanes
+    // (lo, hi) each, then the bytecode metadata immediate's two lanes.
+    pub const VA0: usize = 14; // AA0.lo, AA0.hi, AA1.lo, AA1.hi
+    pub const VB0: usize = 18; // AB0.lo, AB0.hi, AB1.lo, AB1.hi
+    pub const VC0: usize = 22; // AC.lo, AC.hi, (g·AC).lo, (g·AC).hi
+    pub const VCV0: usize = 26; // ACV.lo, ACV.hi, (g·ACV).lo, (g·ACV).hi
+    pub const MD0: usize = 30; // metadata: the counter lane …
+    pub const MD1: usize = 31; // … and the block_len‖flags lane
+    pub const RA0: usize = 32; // per-cell read counts (two a cells) …
+    pub const RA1: usize = 33;
+    pub const RB0: usize = 34; // … two b cells …
+    pub const RB1: usize = 35;
+    pub const RCV0: usize = 36; // … two cv cells …
+    pub const RCV1: usize = 37;
+    pub const RC0: usize = 38; // … two c cells.
+    pub const RC1: usize = 39;
+    pub const RBC: usize = 40;
+    pub const N: usize = 41;
 }
 
 impl Table for Blake3Table {
@@ -802,15 +825,15 @@ impl Table for Blake3Table {
     }
     fn count_columns(&self) -> &'static [usize] {
         use blake3t::*;
-        &[RA0, RA1, RB0, RB1, RC0, RC1, RBC]
+        &[RA0, RA1, RB0, RB1, RCV0, RCV1, RC0, RC1, RBC]
     }
     fn constraint_columns(&self) -> &'static [usize] {
         use blake3t::*;
-        &[FP, OA0, OA1, OB0, OB1, OC, AA0, AA1, AB0, AB1, AC]
+        &[FP, OA0, OA1, OB0, OB1, OCV, OC, AA0, AA1, AB0, AB1, ACV, AC]
     }
     fn eval_constraint(&self, eta: F128T, cols: &Cols) -> F128T {
         use blake3t::*;
-        // The five address bindings a_X = fp·o_X (degree 2). The compression
+        // The six address bindings a_X = fp·o_X (degree 2). The compression
         // carries no table constraint here: flock's R1CS validity proves it
         // via q_pkd (§blake3_flock).
         let bind = |a: usize, o: usize| cols[a] + cols[FP] * cols[o];
@@ -818,18 +841,27 @@ impl Table for Blake3Table {
             + eta * bind(AA1, OA1)
             + eta * eta * bind(AB0, OB0)
             + eta * eta * eta * bind(AB1, OB1)
-            + eta * eta * eta * eta * bind(AC, OC)
+            + eta * eta * eta * eta * bind(ACV, OCV)
+            + eta * eta * eta * eta * eta * bind(AC, OC)
     }
     fn flushes(&self, f: &mut FlushBuilder) {
         use blake3t::*;
         f.state_step(PC, FP);
-        f.bytecode(PC, RBC, OP_BLAKE3, &[Col(OA0), Col(OA1), Col(OB0), Col(OB1), Col(OC)]);
-        // Six cell reads: four independent 128-bit input cells, then the output's
-        // two consecutive cells (AC, g·AC). Each carries its word's two lanes.
+        f.bytecode(
+            PC,
+            RBC,
+            OP_BLAKE3,
+            &[Col(OA0), Col(OA1), Col(OB0), Col(OB1), Col(OCV), Col(OC), Col(MD0), Col(MD1)],
+        );
+        // Eight cell reads: four independent 128-bit message cells, the chaining
+        // value's two consecutive cells (ACV, g·ACV), then the output's two
+        // consecutive cells (AC, g·AC). Each carries its word's two lanes.
         f.memory(AA0, RA0, VA0, VA0 + 1);
         f.memory(AA1, RA1, VA0 + 2, VA0 + 3);
         f.memory(AB0, RB0, VB0, VB0 + 1);
         f.memory(AB1, RB1, VB0 + 2, VB0 + 3);
+        f.memory(ACV, RCV0, VCV0, VCV0 + 1);
+        f.memory_succ(ACV, 1, RCV1, VCV0 + 2, VCV0 + 3);
         f.memory(AC, RC0, VC0, VC0 + 1);
         f.memory_succ(AC, 1, RC1, VC0 + 2, VC0 + 3);
     }
@@ -842,21 +874,28 @@ impl Table for Blake3Table {
         out[OA1] = rows.par_iter().map(|r| ctx.g_at(r.aa1 - r.fp)).collect();
         out[OB0] = rows.par_iter().map(|r| ctx.g_at(r.ab0 - r.fp)).collect();
         out[OB1] = rows.par_iter().map(|r| ctx.g_at(r.ab1 - r.fp)).collect();
+        out[OCV] = rows.par_iter().map(|r| ctx.g_at(r.acv - r.fp)).collect();
         out[OC] = rows.par_iter().map(|r| ctx.g_at(r.ac - r.fp)).collect();
         out[AA0] = rows.par_iter().map(|r| ctx.g_at(r.aa0)).collect();
         out[AA1] = rows.par_iter().map(|r| ctx.g_at(r.aa1)).collect();
         out[AB0] = rows.par_iter().map(|r| ctx.g_at(r.ab0)).collect();
         out[AB1] = rows.par_iter().map(|r| ctx.g_at(r.ab1)).collect();
+        out[ACV] = rows.par_iter().map(|r| ctx.g_at(r.acv)).collect();
         out[AC] = rows.par_iter().map(|r| ctx.g_at(r.ac)).collect();
         for k in 0..4 {
             out[VA0 + k] = rows.par_iter().map(|r| r.va[k]).collect();
             out[VB0 + k] = rows.par_iter().map(|r| r.vb[k]).collect();
             out[VC0 + k] = rows.par_iter().map(|r| r.vc[k]).collect();
+            out[VCV0 + k] = rows.par_iter().map(|r| r.vcv[k]).collect();
         }
+        out[MD0] = rows.par_iter().map(|r| F64(r.metadata.c0)).collect();
+        out[MD1] = rows.par_iter().map(|r| F64(r.metadata.c1)).collect();
         out[RA0] = rows.par_iter().map(|r| r.ra[0]).collect();
         out[RA1] = rows.par_iter().map(|r| r.ra[1]).collect();
         out[RB0] = rows.par_iter().map(|r| r.rb[0]).collect();
         out[RB1] = rows.par_iter().map(|r| r.rb[1]).collect();
+        out[RCV0] = rows.par_iter().map(|r| r.rcv[0]).collect();
+        out[RCV1] = rows.par_iter().map(|r| r.rcv[1]).collect();
         out[RC0] = rows.par_iter().map(|r| r.rc[0]).collect();
         out[RC1] = rows.par_iter().map(|r| r.rc[1]).collect();
         out[RBC] = rows.par_iter().map(|r| r.bytecode_read).collect();

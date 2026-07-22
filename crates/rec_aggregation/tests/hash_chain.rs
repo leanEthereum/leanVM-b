@@ -19,7 +19,10 @@ use std::time::Instant;
 use lean_vm::blake3_flock::warm_setup;
 use lean_compiler::{compile, parse};
 use lean_vm::cpu::{prove, verify};
-use primitives::field::{F64, F128T};
+use primitives::{
+    field::{F64, F128T},
+    pretty_f64, pretty_integer,
+};
 
 /// One compression step `c = BLAKE3(a, b)` (the VM's `blake3` builtin): the eight
 /// input words are laid little-endian into 64 bytes, BLAKE3-hashed, and the
@@ -119,27 +122,38 @@ fn blake3_hash_chain() {
 
     assert_eq!(stats.counts[5], n, "one BLAKE3 row per chain step");
 
-    println!("\nBLAKE3 hash chain, N = {n}, unroll = {unroll}");
-    println!("  cycles (VM steps)           : {}", stats.cycles);
+    println!(
+        "\nBLAKE3 hash chain, N = {}, unroll = {}",
+        pretty_integer(n),
+        pretty_integer(unroll)
+    );
+    println!("  cycles (VM steps)           : {}", pretty_integer(stats.cycles));
     for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3", "PACK64X2"].iter().zip(&stats.counts) {
         let pow = if c == 0 {
             "0".to_string()
         } else {
-            format!("2^{:.3}", (c as f64).log2())
+            format!("2^{}", pretty_f64((c as f64).log2()))
         };
         println!("    {name:<6} instructions       : {pow}");
     }
+
     println!(
-        "  committed witness size      : 2^{:.3}",
-        (stats.committed as f64).log2()
+        "  committed witness size      : 2^{}",
+        pretty_f64((stats.committed as f64).log2())
     );
     let proof_bytes = bincode::serialized_size(&proof).expect("proof is serializable");
-    println!("  proof size                  : {:.1} KiB", proof_bytes as f64 / 1024.0);
-    println!("  proving (incl. witness gen) : {t_prove:?}");
-    println!("  verifying                   : {t_verify:?}");
     println!(
-        "  throughput                  : {:.0} hashes/s",
-        n as f64 / t_prove.as_secs_f64()
+        "  proof size                  : {} KiB",
+        pretty_f64(proof_bytes as f64 / 1024.0)
+    );
+    println!(
+        "  proving (incl. witness gen) : {} s",
+        pretty_f64(t_prove.as_secs_f64())
+    );
+    println!("  verifying                   : {} s", pretty_f64(t_verify.as_secs_f64()));
+    println!(
+        "  throughput                  : {} hashes/s",
+        pretty_f64(n as f64 / t_prove.as_secs_f64())
     );
 
     // A wrong public input must be rejected.

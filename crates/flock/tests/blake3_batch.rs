@@ -44,7 +44,7 @@ impl Rng {
 
 /// Split the two K coefficients of each packed tower element. Flock's fused
 /// witness generator uses 128-bit containers; the PCS commits 64 bits/word.
-fn flatten_packed(packed: Vec<F128T>) -> Vec<F64> {
+fn flatten_packed(packed: &[F128T]) -> Vec<F64> {
     let mut out = Vec::with_capacity(2 * packed.len());
     for value in packed {
         out.push(F64(value.c0));
@@ -125,7 +125,9 @@ fn blake3_batch_prove_verify() {
     let setup_ms = t.elapsed().as_secs_f64() * 1e3;
 
     let t = Instant::now();
-    let q_pkd = flatten_packed(generate_witness_with_ab_packed_and_lincheck(&blocks, n_log).0);
+    let (q_pkd_words, a_packed, b_packed, z_lincheck) =
+        generate_witness_with_ab_packed_and_lincheck(&blocks, n_log);
+    let q_pkd = flatten_packed(&q_pkd_words);
     let witness_ms = t.elapsed().as_secs_f64() * 1e3;
     assert_eq!(q_pkd.len(), 1 << mu);
 
@@ -140,8 +142,14 @@ fn blake3_batch_prove_verify() {
     let commit_ms = t.elapsed().as_secs_f64() * 1e3;
 
     let t = Instant::now();
-    let (reduced_witness, reduced) = setup.prove_reduction(&blocks, &mut ps);
-    assert_eq!(flatten_packed(reduced_witness), q_pkd);
+    let reduced = setup.prove_reduction_precomputed(
+        &q_pkd_words,
+        &a_packed,
+        &b_packed,
+        &z_lincheck,
+        &mut ps,
+    );
+    drop((q_pkd_words, a_packed, b_packed, z_lincheck));
     let ring = prover_ring(&reduced, mu);
     let opening = open_batch_mixed_ligerito_stacked_k(
         ps.sponge_mut(),
@@ -182,5 +190,5 @@ fn blake3_batch_prove_verify() {
     println!("  prove TOTAL (witness excluded)  : {:>8.1} ms", prove_s * 1e3);
     println!("  verify                          : {verify_ms:>8.1} ms");
     println!("  throughput                      : {:>10.0} compressions/s", n as f64 / prove_s);
-    println!("  (~{:.1} XMSS/s equivalent at 158 compressions/signature)", n as f64 / prove_s / 158.0);
+    println!("  (~{:.1} XMSS/s equivalent at 146 compressions/signature)", n as f64 / prove_s / 146.0);
 }

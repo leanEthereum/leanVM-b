@@ -63,10 +63,12 @@ pub(crate) struct Jrow {
     pub(crate) bytecode_read: F64,
 }
 
-/// `BLAKE3` row: the four independent input-chunk addresses `aa0, aa1, ab0, ab1`
-/// (each a single 128-bit cell) and the output base `ac` (spanning two cells),
-/// the twelve flock words (four inputs `a`, four inputs `b`, four outputs `c` —
-/// two 64-bit lanes per 128-bit cell), and the six per-cell memory access counts.
+/// `BLAKE3` row: the four independent message-word addresses `aa0, aa1, ab0,
+/// ab1` (each a single 128-bit cell), the chaining-value base `acv`, and the
+/// output base `ac` (CV and output each span two consecutive cells); the
+/// eighteen flock words (message `a`/`b`, chaining value `cv`, output `c`,
+/// metadata — two 64-bit lanes per 128-bit word), and the eight per-cell
+/// memory access counts.
 pub(crate) struct Brow {
     pub(crate) pc: u32,
     pub(crate) fp: u32,
@@ -74,13 +76,17 @@ pub(crate) struct Brow {
     pub(crate) aa1: u32,
     pub(crate) ab0: u32,
     pub(crate) ab1: u32,
+    pub(crate) acv: u32,
     pub(crate) ac: u32,
-    pub(crate) va: [F64; 4], // a's four flock words = cells (aa0, aa1), lanes (lo, hi)
-    pub(crate) vb: [F64; 4], // b's four flock words = cells (ab0, ab1)
-    pub(crate) vc: [F64; 4], // c's four flock words = cells (ac, ac+1)
-    pub(crate) ra: [F64; 2], // per-cell counts for the two a input cells
-    pub(crate) rb: [F64; 2], // … the two b input cells
-    pub(crate) rc: [F64; 2], // … the two c output cells
+    pub(crate) va: [F64; 4],  // a's four flock words = cells (aa0, aa1), lanes (lo, hi)
+    pub(crate) vb: [F64; 4],  // b's four flock words = cells (ab0, ab1)
+    pub(crate) vcv: [F64; 4], // cv's four flock words = cells (acv, acv+1)
+    pub(crate) vc: [F64; 4],  // c's four flock words = cells (ac, ac+1)
+    pub(crate) metadata: F128T, // counter:u64 | block_len:u32 | flags:u32
+    pub(crate) ra: [F64; 2],  // per-cell counts for the two a input cells
+    pub(crate) rb: [F64; 2],  // … the two b input cells
+    pub(crate) rcv: [F64; 2], // … the two cv input cells
+    pub(crate) rc: [F64; 2],  // … the two c output cells
     pub(crate) bytecode_read: F64,
 }
 

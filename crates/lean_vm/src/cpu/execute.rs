@@ -5,6 +5,7 @@ use std::collections::HashMap;
 
 use super::*;
 use primitives::field::{F64, F128T, mul_by_g};
+use primitives::{pretty_f64, pretty_integer};
 
 pub struct Execution {
     pub mem: Vec<F128T>,     // data memory after the run, write-once (size cells, power of two)
@@ -245,9 +246,17 @@ impl Program {
                                 let k = as_addr(v).and_then(|lo| gmap.get(&lo).copied());
                                 let small = v.c1 == 0 && v.c0 < 1 << 32;
                                 match (k, small) {
-                                    (Some(k), true) => eprintln!("[print] {label} = {} (g^{k})", v.c0),
-                                    (Some(k), false) => eprintln!("[print] {label} = g^{k}"),
-                                    (None, true) => eprintln!("[print] {label} = {}", v.c0),
+                                    (Some(k), true) => eprintln!(
+                                        "[print] {label} = {} (g^{})",
+                                        pretty_integer(v.c0),
+                                        pretty_integer(k)
+                                    ),
+                                    (Some(k), false) => {
+                                        eprintln!("[print] {label} = g^{}", pretty_integer(k))
+                                    }
+                                    (None, true) => {
+                                        eprintln!("[print] {label} = {}", pretty_integer(v.c0))
+                                    }
                                     (None, false) => eprintln!("[print] {label} = {:#x}:{:#x}", v.c1, v.c0),
                                 }
                             } else {
@@ -570,12 +579,13 @@ impl Program {
                     });
                     pc += 1;
                 }
-                Op::Blake3 { ins, out } => {
-                    // Four independently-addressed 128-bit input chunks, each a
-                    // single cell; the output spans two consecutive cells (ac, ac+1).
+                Op::Blake3 { ins, cv, out, metadata } => {
+                    // Four independently-addressed 128-bit message cells; the
+                    // chaining value and the output each span two consecutive cells.
                     let (aa0, aa1, ab0, ab1) = (fp + ins[0], fp + ins[1], fp + ins[2], fp + ins[3]);
+                    let acv = fp + cv;
                     let ac = fp + out;
-                    // Each 128-bit input cell holds two flock words (lo, hi lanes).
+                    // Each 128-bit cell holds two flock words (lo, hi lanes).
                     let cell_words = |mem: &[F128T], written: &[bool], cell: u32| -> [F64; 2] {
                         let w = get(mem, written, cell);
                         [F64(w.c0), F64(w.c1)]
@@ -584,14 +594,17 @@ impl Program {
                     let a23 = cell_words(&mem, &written, aa1);
                     let b01 = cell_words(&mem, &written, ab0);
                     let b23 = cell_words(&mem, &written, ab1);
+                    let cv01 = cell_words(&mem, &written, acv);
+                    let cv23 = cell_words(&mem, &written, acv + 1);
                     let va: [F64; 4] = [a01[0], a01[1], a23[0], a23[1]];
                     let vb: [F64; 4] = [b01[0], b01[1], b23[0], b23[1]];
-                    // Compress the 64 input bytes to the 32-byte digest, then write
-                    // it to c's two cells. No table constraint covers the digest
-                    // (the relation is proven by flock, §blake3_flock); the
+                    let vcv: [F64; 4] = [cv01[0], cv01[1], cv23[0], cv23[1]];
+                    // Compress the 64 message bytes to the 32-byte result, then
+                    // write it to c's two cells. No table constraint covers the
+                    // digest (the relation is proven by flock, §blake3_flock); the
                     // interpreter still computes the definite digest so the output
                     // cells are consistent for any later read.
-                    let vc = blake3_compress(va, vb);
+                    let vc = blake3_compress(va, vb, vcv, metadata);
                     put(&mut mem, &mut written, &mut mem_count, ac, F128T::new(vc[0].0, vc[1].0));
                     put(&mut mem, &mut written, &mut mem_count, ac + 1, F128T::new(vc[2].0, vc[3].0));
                     let ra = [
@@ -601,6 +614,10 @@ impl Program {
                     let rb = [
                         bump_access_count(&mut mem, &mut written, &mut mem_count, ab0),
                         bump_access_count(&mut mem, &mut written, &mut mem_count, ab1),
+                    ];
+                    let rcv = [
+                        bump_access_count(&mut mem, &mut written, &mut mem_count, acv),
+                        bump_access_count(&mut mem, &mut written, &mut mem_count, acv + 1),
                     ];
                     let rc = [
                         bump_access_count(&mut mem, &mut written, &mut mem_count, ac),
@@ -613,12 +630,16 @@ impl Program {
                         aa1,
                         ab0,
                         ab1,
+                        acv,
                         ac,
                         va,
                         vb,
+                        vcv,
                         vc,
+                        metadata,
                         ra,
                         rb,
+                        rcv,
                         rc,
                         bytecode_read,
                     });
@@ -640,9 +661,16 @@ impl Program {
                 })
                 .collect();
             rows.sort_by_key(|(_, c)| std::cmp::Reverse(*c));
-            eprintln!("== DBG_PROF: cycles by function ({steps} total) ==");
+            eprintln!(
+                "== DBG_PROF: cycles by function ({} total) ==",
+                pretty_integer(steps)
+            );
             for (name, c) in rows.iter().filter(|(_, c)| *c > 0) {
-                eprintln!("  {c:>9}  {:>5.1}%  {name}", 100.0 * *c as f64 / steps as f64);
+                eprintln!(
+                    "  {:>12}  {:>7}%  {name}",
+                    pretty_integer(c),
+                    pretty_f64(100.0 * *c as f64 / steps as f64)
+                );
             }
         }
 

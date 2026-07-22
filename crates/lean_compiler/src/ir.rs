@@ -74,7 +74,9 @@ pub(crate) enum LOp {
     /// 128-bit cells `c, c+1`.
     Blake3 {
         ins: [Off; 4],
+        cv: Off,
         c: Off,
+        metadata: F128T,
     },
 }
 

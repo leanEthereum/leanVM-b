@@ -19,10 +19,13 @@ use std::collections::BTreeMap;
 use pcs::ligerito::log2_ceil;
 use lean_compiler::{compile, parse, parse_file_with_replacements};
 use lean_vm::cpu::{Program, prove, verify};
-use primitives::field::{g_pow, F128T, F64, G};
 use lean_vm::leaf::{Block, Coord};
-use primitives::multilinear::mle_eval;
 use lean_vm::transcript::{Sponge, TraceOp, trace_start, trace_take};
+use primitives::{
+    field::{F64, F128T, G, g_pow},
+    multilinear::mle_eval,
+    pretty_f64, pretty_integer,
+};
 
 /// A field element as the decimal `u128` literal the zkDSL parser accepts.
 fn u(f: F128T) -> u128 {
@@ -130,9 +133,9 @@ fn prove_inner(pi: [F128T; 2], hashes: usize, iters: usize) -> (Program, lean_vm
     program.set_witness("iters", vec![vec![F128T::new(g_pow(iters).0, 0)]]);
     let (proof, stats) = prove(&program, pi);
     eprintln!(
-        "[inner] cycles={} committed=2^{:.2}",
-        stats.cycles,
-        (stats.committed as f64).log2()
+        "[inner] cycles={} committed=2^{}",
+        pretty_integer(stats.cycles),
+        pretty_f64((stats.committed as f64).log2())
     );
     (program, proof, stats.cycles)
 }
@@ -292,7 +295,7 @@ fn gen_agg(
 ) -> (Vec<(String, Vec<F128T>)>, [F128T; 2], ReducedClaims) {
     let nsub = subs.len();
     let kbc = subs[0].kbc;
-    let kbcv = kbc + 3;
+    let kbcv = kbc + lean_vm::leaf::N_BYTECODE_SELECTORS;
     let klog = flock::blake3::K_LOG;
 
     // ---- the aggregation transcript (mirrors the guest exactly) ----
@@ -647,7 +650,7 @@ fn gen_verify(
     let _gdig = pows[0].2; // digest bits now advice-decomposed in-guest
 
     // Bus: the bytecode claims carry the push/pull ζ_lo points and sb.
-    let kbc = summary.bytecode_claims[0].point.len() - 3;
+    let kbc = summary.bytecode_claims[0].point.len() - lean_vm::leaf::N_BYTECODE_SELECTORS;
     let zeta: Vec<F128T> = summary.bytecode_claims[0].point[..kbc].to_vec();
     let sb: Vec<F128T> = summary.bytecode_claims[0].point[kbc..].to_vec();
 
@@ -739,8 +742,7 @@ fn gen_verify(
     let (kbc2, bcv) = lean_vm::leaf::public_evals(&l.push, &zeta);
     assert_eq!(kbc2, kbc);
     assert_eq!(bcv.len(), nbcv / 2);
-    let sb3: [F128T; 3] = sb.clone().try_into().unwrap();
-    let wbc = vec![lean_vm::leaf::stacked_bytecode_value(&bcv, &sb3)];
+    let wbc = vec![lean_vm::leaf::stacked_bytecode_value(&bcv, &sb)];
     // checkpoints: the verifier's phase-boundary sponge states (guest cvh).
 
     // ---- per-sub HINT data (the placeholder map is built once, elsewhere) ----
@@ -1357,6 +1359,10 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         let cs: Vec<usize> = (0..cn).map(|i| cq[i].div_ceil(cp[i])).collect();
         let cni: Vec<usize> = ck.iter().map(|&k| 1usize << k).collect();
         let cqb: Vec<usize> = (0..cn).map(|lvl| vc.grinding_bits[lvl]).collect();
+        assert!(
+            cni.iter().enumerate().all(|(lv, &n)| if lv == 0 { n <= 128 } else { n <= 64 }),
+            "recursive Ligerito guest supports Merkle rows of at most one 1024-byte BLAKE3 chunk"
+        );
         let cfgb = |lvl: usize| vc.fold_grinding_bits.get(lvl).copied().unwrap_or(0) as i64;
         let mut cfb: Vec<usize> = Vec::new();
         for (lvl, &k) in ck.iter().enumerate().take(cn) { for j in 0..k { cfb.push((cfgb(lvl) - j as i64).max(0) as usize); } }
@@ -1402,6 +1408,8 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         ps("LIG_MAX_SQUEEZES", ints(&scal(&|c| *c.8.iter().max().unwrap())));
         ps("LIG_MAX_LOG_MSG_COLS", ints(&scal(&|c| *c.4.iter().max().unwrap())));
         ps("LIG_MAX_INTERLEAVE", ints(&scal(&|c| *c.9.iter().max().unwrap())));
+        // StackBuf cap for level 0's packed leaf row (2 lanes per cell).
+        ps("LIG_PACKED_ROW_CAP", cands.iter().map(|c| c.9[0] / 2).max().unwrap().to_string());
         ps("LIG_POSITIONS_LEN", ints(&scal(&|c| (0..c.0).map(|lv| c.8[lv] * c.7[lv]).sum())));
         ps("LIG_SUMCHECK_LEN", ints(&scal(&|c| 2 * (c.3.iter().sum::<usize>() + c.0))));
         ps("LIG_ROWS_LEN", ints(&scal(&|c| (0..c.0).map(|lv| c.5[lv] * c.9[lv]).sum())));
@@ -1411,12 +1419,14 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         ps("LIG_QUERIES", ints(&flat(&|c| c.5.clone(), maxlev)));
         ps("LIG_FOLDS", ints(&flat(&|c| c.3.clone(), maxlev)));
         ps("LIG_INTERLEAVE", ints(&flat(&|c| c.9.clone(), maxlev)));
-        // Leaf byte length feeds the MD leaf IV (g^{num_bytes}). Level 0's
-        // committed rows are base-field F64 (8 bytes/lane); deeper levels are
-        // native F128T (16 bytes/word). The guest re-packs level-0's embedded
-        // lanes 4-per-block for the leaf hash (see the query loop).
-        ps("LIG_LEAF_BYTES", ints(&flat(&|c| c.9.iter().enumerate().map(|(lv, &n)| if lv == 0 { n * 8 } else { n * 16 }).collect(), maxlev)));
         ps("LIG_LEAF_PAIRS", ints(&flat(&|c| c.9.iter().map(|&n| n / 2).collect(), maxlev)));
+        // 64-byte blocks per leaf row. Level 0's committed rows are base-field
+        // F64 (8 bytes/lane, packed two per cell by the guest); deeper levels
+        // are native 128-bit cells (16 bytes/word).
+        let leaf_blocks = |c: &Vec<usize>| -> Vec<usize> {
+            c.iter().enumerate().map(|(lv, &n)| if lv == 0 { n / 8 } else { n / 4 }).collect()
+        };
+        ps("LIG_LEAF_BLOCKS", ints(&flat(&|c| leaf_blocks(&c.9), maxlev)));
         ps("LIG_TREE_DEPTH", ints(&flat(&|c| c.6.clone(), maxlev)));
         ps("LIG_SQUEEZES", ints(&flat(&|c| c.8.clone(), maxlev)));
         ps("LIG_POSITIONS_OFF", ints(&flat(&|c| c.15.clone(), maxlev)));
@@ -1527,7 +1537,9 @@ fn recursion_guest(inner_program: &Program, nsub: usize) -> Program {
 ///    map needs only that size);
 /// 3. prove the inner proofs (and extract their hints);
 /// 4. prove the recursion, verify, discharge the three reduced claims.
-pub fn run_recursion(inner: &[(usize, usize)]) -> RecursiveProof {
+/// When `enable_tracing` is true, tracing starts after the inner proofs so the
+/// emitted tree profiles the recursive aggregation itself.
+pub fn run_recursion(inner: &[(usize, usize)], enable_tracing: bool) -> RecursiveProof {
     // 1 + 2: the recursion program is generic — its map needs only the inner
     // bytecode size — so it is compiled FIRST, before any inner proof.
     let program = inner_program();
@@ -1537,13 +1549,20 @@ pub fn run_recursion(inner: &[(usize, usize)]) -> RecursiveProof {
     // The recursion program size + compile time, BEFORE any inner proving.
     let real_instrs: usize = guest.fn_ranges.iter().map(|(_, _, len)| *len as usize).sum();
     eprintln!(
-        "recursion program: {real_instrs} instructions (2^{} padded), compiled in {t_compile:?}",
-        guest.prog.len().trailing_zeros()
+        "recursion program: {} instructions (2^{} padded), compiled in {} s",
+        pretty_integer(real_instrs),
+        pretty_integer(guest.prog.len().trailing_zeros()),
+        pretty_f64(t_compile.as_secs_f64())
     );
     // 3: prove the inner proofs and extract the recursion witness (hints).
     let batch = build_batch(inner);
     let nsub = batch.nsub;
     let total_inner_cycles = batch.total_inner_cycles;
+    if enable_tracing {
+        primitives::init_tracing();
+    }
+    let trace_span =
+        tracing::info_span!("Recursive aggregation", n = %pretty_integer(nsub)).entered();
     let t = std::time::Instant::now();
     let (recursive_proof, stats) = batch.prove(&mut guest);
     let t_prove = t.elapsed();
@@ -1553,26 +1572,57 @@ pub fn run_recursion(inner: &[(usize, usize)]) -> RecursiveProof {
         .expect("complete recursive proof verifies");
     let t_verify = t.elapsed();
     let proof_bytes = bincode::serialized_size(&recursive_proof).expect("recursive proof is serializable");
-    let pow = |x: usize| if x == 0 { "     -".into() } else { format!("2^{:.2}", (x as f64).log2()) };
-    println!("\nrecursion {nsub}\u{2192}1: {nsub} inner proofs of {} cycles each", total_inner_cycles / nsub);
+    // tracing-forest renders the tree when its root span closes. Close it
+    // before printing the benchmark report so the complete trace appears first.
+    drop(trace_span);
+
+    let pow = |x: usize| {
+        if x == 0 {
+            "     -".into()
+        } else {
+            format!("2^{}", pretty_f64((x as f64).log2()))
+        }
+    };
     println!(
-        "  guest cycles (VM steps)     : {:>10} = {:>7}   ({:.2} / inner cycle)",
-        stats.cycles,
+        "\nrecursion {}\u{2192}1: {} inner proofs of {} cycles each",
+        pretty_integer(nsub),
+        pretty_integer(nsub),
+        pretty_integer(total_inner_cycles / nsub)
+    );
+    println!(
+        "  guest cycles (VM steps)     : {:>14} = {:>9}   ({} / inner cycle)",
+        pretty_integer(stats.cycles),
         pow(stats.cycles),
-        stats.cycles as f64 / total_inner_cycles as f64
+        pretty_f64(stats.cycles as f64 / total_inner_cycles as f64)
     );
     for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3", "PACK64X2"].iter().zip(&stats.counts) {
-        println!("    {name:<8} instructions   : {c:>10} = {:>7}", pow(c));
+        println!(
+            "    {name:<8} instructions   : {:>14} = {:>9}",
+            pretty_integer(c),
+            pow(c)
+        );
     }
-    println!("  committed witness size      : 2^{:.3}", (stats.committed as f64).log2());
     println!(
-        "  data memory                 : 2^{} padded (2^{:.2} used)",
-        stats.log_mem,
-        (stats.mem_used as f64).log2()
+        "  committed witness size      : 2^{}",
+        pretty_f64((stats.committed as f64).log2())
     );
-    println!("  recursive proof size        : {:.1} KiB", proof_bytes as f64 / 1024.0);
-    println!("  outer proving               : {t_prove:?}");
-    println!("  complete recursive verify   : {t_verify:?}");
+    println!(
+        "  data memory                 : 2^{} padded (2^{} used)",
+        pretty_integer(stats.log_mem),
+        pretty_f64((stats.mem_used as f64).log2())
+    );
+    println!(
+        "  recursive proof size        : {} KiB",
+        pretty_f64(proof_bytes as f64 / 1024.0)
+    );
+    println!(
+        "  outer proving               : {} s",
+        pretty_f64(t_prove.as_secs_f64())
+    );
+    println!(
+        "  complete recursive verify   : {} s",
+        pretty_f64(t_verify.as_secs_f64())
+    );
     recursive_proof
 }
 
@@ -1582,7 +1632,7 @@ pub fn run_recursion(inner: &[(usize, usize)]) -> RecursiveProof {
 /// natively.
 #[test]
 fn recursion_2to1() {
-    run_recursion(&[(8, 1 << 15), (8, 1 << 15)]);
+    run_recursion(&[(8, 1 << 15), (8, 1 << 15)], false);
 }
 
 /// THE genericity milestone: ONE compiled guest bytecode verifies two inner
@@ -1590,7 +1640,7 @@ fn recursion_2to1() {
 /// depends only on the inner bytecode size, so one map covers both shapes).
 #[test]
 fn recursion_2to1_mixed() {
-    run_recursion(&[(4, 1 << 13), (64, 1 << 15)]);
+    run_recursion(&[(4, 1 << 13), (64, 1 << 15)], false);
 }
 
 /// One compiled guest bytecode proves MANY inner runs with wildly different
@@ -1698,14 +1748,21 @@ fn recursion_generic_many() {
     // size alone, BEFORE any inner proof exists. Genericity is then shown directly
     // — every shape below verifies against this one bytecode.
     let mut guest = recursion_guest(&inner_program(), 1);
-    eprintln!("guest compiled ONCE ({} instrs)", guest.prog.len());
+    eprintln!("guest compiled ONCE ({} instrs)", pretty_integer(guest.prog.len()));
     for &cfg in configs {
         let batch = build_batch(&[cfg]);
         let (recursive_proof, _) = batch.prove(&mut guest);
         recursive_proof
             .verify(&batch.program0)
             .expect("complete recursive proof verifies");
-        eprintln!("  verified: hashes={:>2}, iters=2^{}", cfg.0, (cfg.1 as f64).log2() as u32);
+        eprintln!(
+            "  verified: hashes={:>2}, iters=2^{}",
+            pretty_integer(cfg.0),
+            pretty_integer((cfg.1 as f64).log2() as u32)
+        );
     }
-    eprintln!("all {} shapes verified by the SAME guest bytecode", configs.len());
+    eprintln!(
+        "all {} shapes verified by the SAME guest bytecode",
+        pretty_integer(configs.len())
+    );
 }

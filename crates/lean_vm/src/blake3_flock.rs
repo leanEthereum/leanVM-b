@@ -11,10 +11,10 @@
 //!
 //! ## The mapping
 //!
-//! The VM's `BLAKE3(a, b) -> c` is a flock single-block compression with the
-//! chaining value fixed to the BLAKE3 IV, counter `0`, block length `64`, flags
-//! `CHUNK_START | CHUNK_END | ROOT` (= [`FLAGS`]) — exactly `blake3::hash` of the
-//! 64-byte message `a‖b`, matching `cpu::blake3_compress`.
+//! The VM's `BLAKE3(a, b, cv, metadata) -> c` is one standard BLAKE3
+//! compression. `metadata` packs `counter:u64 | block_len:u32 | flags:u32` in
+//! little-endian order. All inputs are witness values in `q_pkd`; memory binds
+//! `a`, `b`, and `cv`, while the bytecode interaction binds `metadata`.
 //!
 //! ## The layout (aligned re-layout, `M_BASE = 640`, 64-bit words)
 //!
@@ -24,11 +24,11 @@
 //!
 //! ```text
 //!   c0..c3 = slots 4..8      a0..a3 = slots 10..14    b0..b3 = slots 14..18
-//!   cv = slots 0..4 (= IV)   counter = slot 18        blen‖flags = slot 19
+//!   cv0..cv3 = slots 0..4    counter = slot 18        blen‖flags = slot 19
 //! ```
 //!
-//! cv and the counter / blen‖flags slots hold constants baked into the
-//! per-block matrices (constant rows), so no claims are needed to pin them.
+//! All compression inputs are free witness rows; the VM routes claims on all
+//! eighteen aligned words directly to these slots.
 
 use primitives::field::{F64, F128T};
 use crate::transcript::{ProverState, VerifierState};
@@ -45,27 +45,59 @@ use flock::verifier::VerifyError;
 /// and later discharged by the PCS. Re-exported from [`flock::proof`].
 pub use flock::proof::ZClaim;
 
-/// flock flags for a single 64-byte root block: `CHUNK_START(1) | CHUNK_END(2) |
-/// ROOT(8) = 11` — the configuration under which the compression output equals
-/// `blake3::hash` of the 64-byte input. Baked into flock's per-block matrices
-/// (constant rows), along with `cv = IV`, `counter = 0` and `block_len = 64`.
+/// Default flags for a single 64-byte root block: `CHUNK_START(1) |
+/// CHUNK_END(2) | ROOT(8) = 11`.
 pub const FLAGS: u32 = flock::blake3::PINNED_FLAGS;
 
 /// Packed `F64` words per compression instance: `K / 64 = 2^(K_LOG-6)`.
 /// Instance `j` occupies packed indices `[j*PACKED_PER_INSTANCE, (j+1)*…)`.
 pub const PACKED_PER_INSTANCE: usize = 1 << (K_LOG - LOG_PACKING_K);
 
+/// Reduction-side buffers emitted in the same fused pass as the committed
+/// `q_pkd`. They stay prover-local and are retained only until flock consumes
+/// them after the stack commitment. Reuse does not increase peak memory (the
+/// legacy reduction allocated the same buffers while the committed stack was
+/// live) but it deliberately extends their lifetime across commit, bus, and
+/// constraint proving to save one witness generation pass.
+pub(crate) struct PreparedReductionWitness {
+    n_blocks: usize,
+    q_pkd_words: Vec<F128T>,
+    a_packed: Vec<F128T>,
+    b_packed: Vec<F128T>,
+    z_lincheck: Vec<u8>,
+}
+
+impl PreparedReductionWitness {
+    pub(crate) fn n_blocks(&self) -> usize {
+        self.n_blocks
+    }
+
+    pub(crate) fn prove(&self, ps: &mut ProverState) -> ReducedClaims {
+        setup_for(self.n_blocks).prove_reduction_precomputed(
+            &self.q_pkd_words,
+            &self.a_packed,
+            &self.b_packed,
+            &self.z_lincheck,
+            ps,
+        )
+    }
+}
+
 // Within-instance packed-word (slot) indices of the VM-visible words, fixed by
 // the aligned flock layout (bit bases asserted by `layout_constants` there):
-// `OUT_LO_BASE = 256` → c words 4..8, `M_BASE = 640` → a words 10..14 and
-// b words 14..18.
+// `CV_BASE = 0` → cv words 0..4, `OUT_LO_BASE = 256` → c words 4..8, `M_BASE
+// = 640` → a words 10..14 and b words 14..18, metadata (counter, blen‖flags)
+// words 18..20.
+pub const SLOT_CV0: usize = 0;
 pub const SLOT_C0: usize = 4;
 pub const SLOT_A0: usize = 10;
 pub const SLOT_B0: usize = 14;
+pub const SLOT_METADATA: usize = 18;
 
-/// The twelve within-instance value slots in canonical order
-/// `[a0..a3, b0..b3, c0..c3]`, matching `tables::BLAKE3_VALUE_COLS`.
-pub const SLOTS: [usize; 12] = [
+/// The eighteen within-instance value slots in canonical order
+/// `[a0..a3, b0..b3, c0..c3, cv0..cv3, md_lo, md_hi]`, matching
+/// `tables::BLAKE3_VALUE_COLS`.
+pub const SLOTS: [usize; 18] = [
     SLOT_A0,
     SLOT_A0 + 1,
     SLOT_A0 + 2,
@@ -78,6 +110,12 @@ pub const SLOTS: [usize; 12] = [
     SLOT_C0 + 1,
     SLOT_C0 + 2,
     SLOT_C0 + 3,
+    SLOT_CV0,
+    SLOT_CV0 + 1,
+    SLOT_CV0 + 2,
+    SLOT_CV0 + 3,
+    SLOT_METADATA,
+    SLOT_METADATA + 1,
 ];
 
 
@@ -92,10 +130,33 @@ pub fn pack_words(w: [u32; 2]) -> F64 {
     F64((w[0] as u64) | ((w[1] as u64) << 32))
 }
 
-/// The flock [`Compression`] for one VM `BLAKE3(a, b)`: message `m = a‖b` under
-/// the pinned configuration (`cv = IV`, counter `0`, block length `64`, flags
-/// [`FLAGS`] — all enforced by the matrices' constant rows).
-pub fn compression(a: [F64; 4], b: [F64; 4]) -> Compression {
+/// Pack BLAKE3's compression metadata as one little-endian 128-bit word.
+pub const fn metadata(counter: u64, block_len: u32, flags: u32) -> F128T {
+    F128T::new(counter, (block_len as u64) | ((flags as u64) << 32))
+}
+
+/// Unpack `counter:u64 | block_len:u32 | flags:u32` from one 128-bit word.
+pub const fn unpack_metadata(x: F128T) -> (u64, u32, u32) {
+    (x.c0, x.c1 as u32, (x.c1 >> 32) as u32)
+}
+
+/// BLAKE3's standard IV as four flock words (the two chaining-value cells'
+/// lanes, in canonical lane order).
+pub const IV: [F64; 4] = [
+    F64(0xbb67_ae85_6a09_e667),
+    F64(0xa54f_f53a_3c6e_f372),
+    F64(0x9b05_688c_510e_527f),
+    F64(0x5be0_cd19_1f83_d9ab),
+];
+
+/// The standard IV as the two 128-bit VM memory cells a chaining value occupies.
+pub const IV_CELLS: [F128T; 2] = [
+    F128T::new(0xbb67_ae85_6a09_e667, 0xa54f_f53a_3c6e_f372),
+    F128T::new(0x9b05_688c_510e_527f, 0x5be0_cd19_1f83_d9ab),
+];
+
+/// The flock [`Compression`] for one VM instruction.
+pub fn compression(a: [F64; 4], b: [F64; 4], cv: [F64; 4], meta: F128T) -> Compression {
     let mut m = [0u32; 16];
     for (i, &w) in a.iter().enumerate() {
         m[2 * i..2 * i + 2].copy_from_slice(&words_of(w));
@@ -103,11 +164,16 @@ pub fn compression(a: [F64; 4], b: [F64; 4]) -> Compression {
     for (i, &w) in b.iter().enumerate() {
         m[8 + 2 * i..8 + 2 * i + 2].copy_from_slice(&words_of(w));
     }
-    flock::blake3::pinned_compression(m)
+    let mut cv_words = [0u32; 8];
+    for (i, &w) in cv.iter().enumerate() {
+        cv_words[2 * i..2 * i + 2].copy_from_slice(&words_of(w));
+    }
+    let (counter, block_len, flags) = unpack_metadata(meta);
+    (cv_words, m, counter, block_len, flags)
 }
 
-/// The 256-bit digest `c = (c0..c3)` of a compression (= flock's `out_lo` =
-/// `blake3::hash(a‖b)`).
+/// The low 256-bit output `c = (c0..c3)` of an arbitrary compression. This is
+/// `blake3::hash(a‖b)` only for the standard IV and one-block root metadata.
 pub fn digest(block: &Compression) -> [F64; 4] {
     let st = blake3_compress(&block.0, &block.1, block.2, block.3, block.4);
     std::array::from_fn(|k| pack_words([st[2 * k], st[2 * k + 1]]))
@@ -139,9 +205,9 @@ pub fn padding_compression() -> Compression {
 /// position `i`) into the committed `F64` packing (64 bits per word): word `j`
 /// becomes words `2j` (lo lanes, bits 0..64) and `2j+1` (hi lanes, bits
 /// 64..128), which is exactly `pack_witness_k`'s convention on the same bit string.
-fn flatten_packed(packed: Vec<F128T>) -> Vec<F64> {
+fn flatten_packed(packed: &[F128T]) -> Vec<F64> {
     let mut out = Vec::with_capacity(packed.len() * 2);
-    for w in packed {
+    for &w in packed {
         out.push(F64(w.c0));
         out.push(F64(w.c1));
     }
@@ -153,7 +219,26 @@ fn flatten_packed(packed: Vec<F128T>) -> Vec<F64> {
 /// [`padding_compression`] blocks). Deterministic, so it matches what the reduction
 /// regenerates. An empty `blocks` yields one padding cube (all instances are padding).
 pub fn build_qpkd(blocks: &[Compression]) -> Vec<F64> {
-    flatten_packed(generate_witness_with_ab_packed_and_lincheck(blocks, n_blocks_log(blocks.len().max(1))).0)
+    build_qpkd_prepared(blocks).0
+}
+
+/// Build `q_pkd` and retain the packed words plus the `A·z`, `B·z`, and
+/// lincheck layouts produced by that same witness pass, so the reduction does
+/// not regenerate them later.
+pub(crate) fn build_qpkd_prepared(blocks: &[Compression]) -> (Vec<F64>, PreparedReductionWitness) {
+    let n_blocks = blocks.len().max(1);
+    let (q_pkd_words, a_packed, b_packed, z_lincheck) =
+        generate_witness_with_ab_packed_and_lincheck(blocks, n_blocks_log(n_blocks));
+    (
+        flatten_packed(&q_pkd_words),
+        PreparedReductionWitness {
+            n_blocks,
+            q_pkd_words,
+            a_packed,
+            b_packed,
+            z_lincheck,
+        },
+    )
 }
 
 /// The digest `(c0..c3)` of [`padding_compression`], i.e. `blake3(0^64)`. It is
@@ -249,7 +334,7 @@ pub fn prove_reduction(
 ) -> (Vec<F64>, ReducedClaims) {
     let _ = commitment;
     let (z_packed, reduced) = setup_for(blocks.len()).prove_reduction(blocks, ps);
-    (flatten_packed(z_packed), reduced)
+    (flatten_packed(&z_packed), reduced)
 }
 
 /// **Flock reduction only** (verifier): mirror of [`prove_reduction`]. Replay
@@ -375,6 +460,8 @@ mod tests {
                         f(0x77 * (i + 1)),
                         f(0x88 * (i + 1)),
                     ],
+                    IV,
+                    metadata(0, 64, FLAGS),
                 )
             })
             .collect()
@@ -392,7 +479,10 @@ mod tests {
                 )
             })
             .collect();
-        let blocks: Vec<Compression> = inputs.iter().map(|&(a, b)| compression(a, b)).collect();
+        let blocks: Vec<Compression> = inputs
+            .iter()
+            .map(|&(a, b)| compression(a, b, IV, metadata(0, 64, FLAGS)))
+            .collect();
         let q_pkd = build_qpkd(&blocks);
         assert_eq!(q_pkd.len(), 1 << qpkd_kappa(blocks.len()));
 
@@ -414,8 +504,9 @@ mod tests {
                 assert_eq!(slot(j, SLOT_C0 + k), d[k]);
             }
         }
-        // Constant slots (matrix-pinned): cv = IV in slots 0..4, the zero
-        // counter word in slot 18, and the packed block_len‖flags word in slot 19.
+        // Input slots for this default-root test: cv = IV in slots 0..4, the
+        // zero counter word in slot 18, and the packed block_len‖flags word in
+        // slot 19.
         let iv = flock::blake3::BLAKE3_IV;
         for k in 0..4 {
             assert_eq!(slot(0, k), pack_words([iv[2 * k], iv[2 * k + 1]]));

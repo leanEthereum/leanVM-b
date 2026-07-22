@@ -41,15 +41,19 @@ pub enum Op {
         b: u32,
         c: u32,
     },
-    /// `BLAKE3` (§7.6): compresses the 64-byte input `ins[0]‖ins[1]‖ins[2]‖ins[3]`
-    /// (each `ins[i]` names a 128-bit chunk in ONE 128-bit memory word `fp+ins[i]`)
-    /// and writes the 32-byte digest to the TWO consecutive words `out, out+1`.
-    /// Each input chunk is addressed independently — no forced contiguity, so the
-    /// caller need not assemble its operands into adjacent cells. The compression
-    /// relation is proven by flock.
+    /// `BLAKE3` (§7.6): one standard BLAKE3 compression. The four 16-byte input
+    /// words `ins` form the 64-byte message block; the digest lands in the two
+    /// consecutive words `out`, `out+1`. Each input word is addressed
+    /// independently (`fp+ins[i]`) — no forced contiguity, so the caller need
+    /// not assemble its operands into adjacent cells. The compression relation
+    /// is proven by flock.
     Blake3 {
         ins: [u32; 4],
+        /// Base of two consecutive words holding the 256-bit chaining value.
+        cv: u32,
         out: u32,
+        /// `counter:u64 | block_len:u32 | flags:u32`, little-endian.
+        metadata: F128T,
     },
 }
 

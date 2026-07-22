@@ -33,14 +33,13 @@ pub use isa::{DerefMode, Op};
 pub use layout::*;
 pub(crate) use trace::{Brow, Drow, Jrow, Srow, Trace, Xrow};
 
-/// Witness-gen `BLAKE3` compression (doc §7.6): the eight input words are the two
-/// 256-bit operands `a = va[0..4]`, `b = vb[0..4]` laid out little-endian into
-/// 64 bytes (8 bytes per 64-bit word); the 32-byte digest is split back into the
-/// four output words `c`. The BLAKE3 hash of the 64-byte input — the relation
-/// flock then proves ([`crate::blake3_flock`]). Delegates to
-/// [`crate::vmhash::compress`], THE primitive every VM-native hash chains.
-fn blake3_compress(va: [F64; 4], vb: [F64; 4]) -> [F64; 4] {
-    crate::vmhash::compress(va, vb)
+/// Witness-gen `BLAKE3` compression (doc §7.6): the four message cells' eight
+/// words are laid out little-endian into 64 bytes, combined with the supplied
+/// chaining value and metadata, and the 32-byte result is split back into the
+/// four output words `c`. Flock proves this same compression relation
+/// ([`crate::blake3_flock`]).
+fn blake3_compress(va: [F64; 4], vb: [F64; 4], vcv: [F64; 4], metadata: F128T) -> [F64; 4] {
+    crate::blake3_flock::digest(&crate::blake3_flock::compression(va, vb, vcv, metadata))
 }
 
 /// Data-memory size bounds (doc §Memory): memory is `2^h` cells with
@@ -79,40 +78,46 @@ const MAX_LOG_BYTECODE: usize = 32;
 /// the very first squeeze. Both sides hold the program, so both compute this
 /// identically; the announced sizes ride the stream (`announce_public`).
 fn program_digest(prog: &[Op]) -> [F64; 4] {
-    // VM-native: encode the program as a field-element slice and hash it with the
-    // Merkle–Damgård slice hash ([`crate::vmhash::hash_slice`]), so a recursive
-    // verifier can recompute this digest with the `Blake3` opcode alone.
-    let mut words: Vec<F64> = Vec::with_capacity(4 * prog.len() + 2);
-    // Domain/version marker (the MD IV also binds the total length).
+    // VM-native: encode the program as a field-element slice and hash its exact
+    // little-endian bytes with standard BLAKE3 ([`crate::vmhash::hash_slice`]).
+    let mut words: Vec<F64> = Vec::with_capacity(6 * prog.len() + 2);
+    // Domain/version marker; standard BLAKE3 binds the total byte length.
     words.push(F64(prog.len() as u64));
     words.push(F64(1));
     for op in prog {
-        // Encode every op injectively as (tag, four u32 operands, one 128-bit
-        // immediate) → four words: two operand-offset words packed with the tag,
-        // then the immediate's two lanes. BLAKE3 carries five offsets, so its
-        // 4th/5th ride the (otherwise-zero) immediate word's low lane.
-        let (tag, a, b, c, k) = match *op {
-            Op::Xor { a, b, c } => (0u8, a, b, c, F128T::ZERO),
-            Op::Mul { a, b, c } => (1, a, b, c, F128T::ZERO),
-            Op::Set { o, k } => (2, o, 0, 0, k),
+        // Fixed six-word encoding per instruction: two operand-offset words
+        // packed with the tag, the immediate's two lanes, then two words for
+        // BLAKE3's remaining offsets (zero for other opcodes).
+        let (tag, a, b, c, k, x, y) = match *op {
+            Op::Xor { a, b, c } => (0u8, a, b, c, F128T::ZERO, 0u64, 0u64),
+            Op::Mul { a, b, c } => (1, a, b, c, F128T::ZERO, 0, 0),
+            Op::Set { o, k } => (2, o, 0, 0, k, 0, 0),
             Op::Deref {
                 alpha,
                 beta,
                 gamma,
                 mode,
             } => {
-                (3 + mode as u8, alpha, beta, gamma, F128T::ZERO) // mode ∈ {Cell,Pc,Fp} ⇒ tag 3/4/5
+                (3 + mode as u8, alpha, beta, gamma, F128T::ZERO, 0, 0) // mode ∈ {Cell,Pc,Fp} ⇒ tag 3/4/5
             }
-            Op::Jump { oc, od, of } => (6, oc, od, of, F128T::ZERO),
-            Op::Pack64x2 { a, b, c } => (8, a, b, c, F128T::ZERO),
-            Op::Blake3 { ins, out } => {
-                (7, ins[0], ins[1], ins[2], F128T::new(ins[3] as u64 | ((out as u64) << 32), 0))
-            }
+            Op::Jump { oc, od, of } => (6, oc, od, of, F128T::ZERO, 0, 0),
+            Op::Blake3 { ins, cv, out, metadata } => (
+                7,
+                ins[0],
+                ins[1],
+                ins[2],
+                metadata,
+                ins[3] as u64 | ((cv as u64) << 32),
+                out as u64,
+            ),
+            Op::Pack64x2 { a, b, c } => (8, a, b, c, F128T::ZERO, 0, 0),
         };
         words.push(F64(a as u64 | ((b as u64) << 32)));
         words.push(F64(c as u64 | ((tag as u64) << 32)));
         words.push(F64(k.c0));
         words.push(F64(k.c1));
+        words.push(F64(x));
+        words.push(F64(y));
     }
     crate::vmhash::hash_slice(&words)
 }
@@ -325,11 +330,12 @@ pub struct Stats {
 /// then emit everything the verifier needs through the returned [`Proof`]
 /// (scalar stream + PCS commitment / opening hints). Returns the proof and the
 /// run [`Stats`].
+#[tracing::instrument(name = "Prove", skip_all)]
 pub fn prove(program: &Program, public_input: [F128T; 2]) -> (Proof, Stats) {
     let prof = std::env::var("LEANVM_PROFILE").is_ok();
     let ms = |t: std::time::Instant| t.elapsed().as_secs_f64() * 1e3;
     let t = std::time::Instant::now();
-    let exec = program.execute(public_input);
+    let exec = tracing::info_span!("Execute program").in_scope(|| program.execute(public_input));
     if prof {
         eprintln!("[prove] execute     : {:>7.2} ms", ms(t));
     }
@@ -345,7 +351,7 @@ pub fn prove(program: &Program, public_input: [F128T; 2]) -> (Proof, Stats) {
     let n_b3_warm = exec.trace.blake3.len().max(1);
     std::thread::spawn(move || crate::blake3_flock::warm_setup(n_b3_warm));
     let cycles = exec.cycles;
-    let w = program.build(&exec);
+    let mut w = tracing::info_span!("Build witness").in_scope(|| program.build(&exec));
     let counts = w.row_counts;
     // Real committed data, before zero-pad to 2^m. Virtual columns (the BLAKE3
     // value columns) carry data for the bus but are NOT committed, so exclude them.
@@ -363,7 +369,7 @@ pub fn prove(program: &Program, public_input: [F128T; 2]) -> (Proof, Stats) {
     // Announce the prover's sizes, then commit, before sampling any challenge.
     announce_public(&mut ps, w.log_mem, w.row_counts);
     let t = std::time::Instant::now();
-    let committed = pcs::commit(&mut ps, &w.q);
+    let committed = tracing::info_span!("Commit").in_scope(|| pcs::commit(&mut ps, &w.q));
     if prof {
         eprintln!("[prove] commit      : {:>7.2} ms", ms(t));
     }
@@ -377,23 +383,27 @@ pub fn prove(program: &Program, public_input: [F128T; 2]) -> (Proof, Stats) {
     // bus point, so no dedicated binding challenge is drawn. Mirrored in `verify`.
     let t = std::time::Instant::now();
     let l = &w.layout;
-    let (bus_claims, _bytecode_claims) = leaf::prove_balance(&l.push, &l.pull, &l.count, &w.cols, &mut ps);
+    let (bus_claims, _bytecode_claims) = tracing::info_span!("Prove bus")
+        .in_scope(|| leaf::prove_balance(&l.push, &l.pull, &l.count, &w.cols, &mut ps));
     if prof {
         eprintln!("[prove] bus(grand-p): {:>7.2} ms", ms(t));
     }
     let t = std::time::Instant::now();
-    let sch = schema();
-    let mut table_claims = Vec::new();
-    for (ti, table) in tables::tables().iter().enumerate() {
-        let involved = table.constraint_columns();
-        let position = tables::column_positions(involved);
-        let cols: Vec<Column> = involved.iter().map(|&c| w.cols[sch.base[ti] + c].clone()).collect();
-        table_claims.push(constraints::prove(
-            &cols,
-            |eta, vals| table.eval_constraint(eta, &tables::Cols::new(vals, &position)),
-            &mut ps,
-        ));
-    }
+    let table_claims = tracing::info_span!("Prove constraints").in_scope(|| {
+        let sch = schema();
+        let mut table_claims = Vec::new();
+        for (ti, table) in tables::tables().iter().enumerate() {
+            let involved = table.constraint_columns();
+            let position = tables::column_positions(involved);
+            let cols: Vec<Column> = involved.iter().map(|&c| w.cols[sch.base[ti] + c].clone()).collect();
+            table_claims.push(constraints::prove(
+                &cols,
+                |eta, vals| table.eval_constraint(eta, &tables::Cols::new(vals, &position)),
+                &mut ps,
+            ));
+        }
+        table_claims
+    });
     if prof {
         eprintln!("[prove] constraints : {:>7.2} ms", ms(t));
     }
@@ -411,34 +421,31 @@ pub fn prove(program: &Program, public_input: [F128T; 2]) -> (Proof, Stats) {
     // into flock's per-block matrices, so no pin claims are needed.
     let slots = slot_claims(&w.layout, &claims);
 
-    // Run flock's reduction (zerocheck + lincheck) over the executed compressions
-    // (or a single padding instance when none ran); it returns the `(ab, c)`
+    // Run flock's reduction (zerocheck + lincheck) over the prepared witness
+    // layouts retained from the fused q_pkd build pass; it returns the `(ab, c)`
     // validity claims on the committed `q_pkd`, discharged by the PCS below in the
     // SAME Ligerito as every leanVM point claim (the point claims become the
     // opener's `point_claims`).
     let t = std::time::Instant::now();
-    use flock::blake3::Compression;
-    let blocks: Vec<Compression> = if exec.trace.blake3.is_empty() {
-        vec![crate::blake3_flock::padding_compression()]
-    } else {
-        exec.trace
-            .blake3
-            .iter()
-            .map(|r| crate::blake3_flock::compression(r.va, r.vb))
-            .collect()
-    };
-    let (_z_packed, reduced) = crate::blake3_flock::prove_reduction(&blocks, &committed.commitment, &mut ps);
+    let flock_reduction = w
+        .flock_reduction
+        .take()
+        .expect("prepared flock reduction witness is present");
+    let reduced = tracing::info_span!("Flock reduction").in_scope(|| flock_reduction.prove(&mut ps));
+    let n_blocks = flock_reduction.n_blocks();
+    drop(flock_reduction);
     if prof {
         eprintln!("[prove]   reduction : {:>7.2} ms", ms(t));
     }
     let t = std::time::Instant::now();
     let offset = w.layout.placements[QPKD].offset;
-    let ring = crate::blake3_flock::ring_switch_open(blocks.len(), offset, &reduced);
+    let ring = tracing::info_span!("Package ring switch")
+        .in_scope(|| crate::blake3_flock::ring_switch_open(n_blocks, offset, &reduced));
     if prof {
         eprintln!("[prove]   ring pkg  : {:>7.2} ms", ms(t));
     }
     let t = std::time::Instant::now();
-    let mixed_open = pcs::open(&mut ps, &committed, &w.q, &slots, &ring);
+    let mixed_open = tracing::info_span!("PCS open").in_scope(|| pcs::open(&mut ps, &committed, &w.q, &slots, &ring));
     if prof {
         eprintln!("[prove]   stack open: {:>7.2} ms", ms(t));
     }
@@ -500,6 +507,7 @@ pub struct VerifySummary {
 /// the transcript, reconstruct the public layout from the announced sizes, read
 /// every scalar the prover wrote and pull the PCS hints, then assert the stream
 /// was fully consumed. Takes only public inputs — never the prover's witness.
+#[tracing::instrument(name = "Verify", skip_all)]
 pub fn verify(
     program: &Program,
     public_input: &[F128T; 2],
@@ -616,6 +624,16 @@ mod tests {
         F128T::new(lo.0, hi.0)
     }
 
+    /// The default one-block-root metadata for a hand-built BLAKE3 op.
+    fn md() -> F128T {
+        crate::blake3_flock::metadata(0, 64, crate::blake3_flock::FLAGS)
+    }
+
+    /// The four chaining-value lanes of the two cv cells.
+    fn cv_lanes(cv0: F128T, cv1: F128T) -> [F64; 4] {
+        [F64(cv0.c0), F64(cv0.c1), F64(cv1.c0), F64(cv1.c1)]
+    }
+
     /// A hand-built straight-line program with one BLAKE3 row: set up the two
     /// 256-bit inputs (`a` at cells 2,3, `b` at cells 4,5 — one 128-bit word per
     /// cell), hash them into the output `c` (cells 6,7), pad with filler SETs so
@@ -630,7 +648,8 @@ mod tests {
         prog.push(Op::Set { o: 3, k: cell(a[2], a[3]) });
         prog.push(Op::Set { o: 4, k: cell(b[0], b[1]) });
         prog.push(Op::Set { o: 5, k: cell(b[2], b[3]) });
-        prog.push(Op::Blake3 { ins: [2, 3, 4, 5], out: 6 }); // c → cells 6,7
+        // The chaining value reads cells 0,1 (the public input); any cv is legal.
+        prog.push(Op::Blake3 { ins: [2, 3, 4, 5], cv: 0, out: 6, metadata: md() }); // c → cells 6,7
         // 16 slots: 5 executed so far; 10 filler SETs step the pc to 15 (halt);
         // slot 15 is the never-executed sentinel.
         for k in 0..10u32 {
@@ -660,8 +679,9 @@ mod tests {
         let pi = [w(7), w(11)];
         let exec = program.execute(pi);
 
-        // The output cells hold the digest of the two inputs (two 128-bit words).
-        let d = blake3_compress(a, b);
+        // The output cells hold the compression of the two inputs under the
+        // pi-supplied chaining value (two 128-bit words).
+        let d = blake3_compress(a, b, cv_lanes(pi[0], pi[1]), md());
         assert_eq!(exec.mem[6], cell(d[0], d[1]));
         assert_eq!(exec.mem[7], cell(d[2], d[3]));
         assert_eq!(exec.trace.blake3.len(), 1);
@@ -692,7 +712,7 @@ mod tests {
         let mut prog = Vec::new();
         prog.push(Op::Set { o: 2, k: cell(h[0], h[1]) });
         prog.push(Op::Set { o: 3, k: cell(h[2], h[3]) });
-        prog.push(Op::Blake3 { ins: [2, 3, 2, 3], out: 4 }); // a == b: hash h ‖ h into cells 4,5
+        prog.push(Op::Blake3 { ins: [2, 3, 2, 3], cv: 0, out: 4, metadata: md() }); // a == b: hash h ‖ h into cells 4,5
         for k in 0..4u32 {
             prog.push(Op::Set { o: 12 + k, k: F128T::ONE }); // fillers step pc to the sentinel
         }
@@ -702,7 +722,7 @@ mod tests {
         let pi = [w(3), w(5)];
 
         let exec = program.execute(pi);
-        let d = blake3_compress(h, h);
+        let d = blake3_compress(h, h, cv_lanes(pi[0], pi[1]), md());
         assert_eq!(exec.mem[4], cell(d[0], d[1]));
         assert_eq!(exec.mem[5], cell(d[2], d[3]));
 

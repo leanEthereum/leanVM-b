@@ -16,6 +16,5 @@ xmss.workspace = true
 rand.workspace = true
 bincode.workspace = true
 serde.workspace = true
-
-[dev-dependencies]
+tracing.workspace = true
 blake3.workspace = true

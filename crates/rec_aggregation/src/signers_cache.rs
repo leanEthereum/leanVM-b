@@ -16,7 +16,7 @@
 //! The filename carries a footprint of everything that determines the signers —
 //! not just the declared parameters but a known-answer of the hash construction
 //! itself (see [`hash_fingerprint`]), so a branch that changes the digests
-//! (e.g. a different field width in the Merkle-Damgard IV) without touching a
+//! (e.g. a change to the standard BLAKE3 input encoding) without touching a
 //! single constant still lands in a fresh file rather than mis-loading the
 //! other branch's signers. Bump [`SCHEMA_VERSION`] to force regeneration by hand.
 
@@ -30,6 +30,7 @@ use std::time::Instant;
 
 use rand::SeedableRng;
 use rand::rngs::StdRng;
+use primitives::{pretty_f64, pretty_integer};
 use xmss::*;
 
 /// A cached signer: its public key and one signature over [`message`] at [`SLOT`].
@@ -61,8 +62,8 @@ fn compute_signer(index: usize) -> CachedSignature {
 
 /// A known-answer fingerprint of the *hash construction* the signers are built
 /// from. The declared constants below can stay fixed while the digests change
-/// underneath: switching the Merkle-Damgard IV's size field on another branch
-/// (e.g. GF(2^128) -> GF(2^64)) leaves V, W, DIGEST_LEN, ... untouched yet makes
+/// underneath: changing the exact encoded input leaves V, W, DIGEST_LEN, ...
+/// untouched yet makes
 /// every signer incompatible. Folding a fixed test vector of the real primitives
 /// into [`footprint`] lands such a change in a *different* cache file, so a run
 /// on one branch never loads (and then panics on) another branch's signers — the
@@ -73,10 +74,8 @@ fn hash_fingerprint() -> [Digest; 2] {
     [
         // Single-block path (chain steps, Merkle nodes).
         tweak_hash(&pp, TWEAK_TYPE_CHAIN, 1, 2, &[0x5Au8; DIGEST_LEN]),
-        // Multi-block path, whose IV carries the absorbed size in the exponent
-        // of the VM field's generator — precisely the piece that differs across
-        // the field-width branches.
-        md_tweak_hash(&pp, TWEAK_TYPE_ENCODING, 3, 4, &[0x3Cu8; 2 * STATE_LEN]),
+        // Multi-block standard BLAKE3 path.
+        tweak_hash_many(&pp, TWEAK_TYPE_ENCODING, 3, 4, &[0x3Cu8; 2 * STATE_LEN]),
     ]
 }
 
@@ -131,12 +130,17 @@ fn generate_range(start: usize, end: usize) -> Vec<CachedSignature> {
     let mut out = Vec::with_capacity(total);
     for (done, index) in (start..end).enumerate() {
         out.push(compute_signer(index));
-        print!("\r  generating XMSS signers (one-time, then cached): {}/{total}", done + 1);
+        print!(
+            "\r  generating XMSS signers (one-time, then cached): {}/{}",
+            pretty_integer(done + 1),
+            pretty_integer(total)
+        );
         let _ = std::io::stdout().flush();
     }
     println!(
-        "\r  generated {total} XMSS in {:.2}s (cached to disk)                ",
-        t.elapsed().as_secs_f32()
+        "\r  generated {} XMSS in {} s (cached to disk)                ",
+        pretty_integer(total),
+        pretty_f64(t.elapsed().as_secs_f64())
     );
     out
 }

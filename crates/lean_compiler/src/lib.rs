@@ -25,6 +25,7 @@ use std::collections::HashMap;
 use lean_vm::cpu::hints::RHint;
 use lean_vm::cpu::{DerefMode, Op, Program};
 use primitives::field::{F64, F128T, g_pow};
+use primitives::pretty_integer;
 
 mod ast;
 mod ir;
@@ -78,9 +79,9 @@ pub fn compile(ast: &Ast) -> Program {
         }
         let low = lower_func(&f, &mut queue, &mut loop_ctr, &defs, &const_arrays);
         if dbg_lower {
-            eprintln!("== fn {} (frame {}) ==", low.name, low.frame_size);
+            eprintln!("== fn {} (frame {}) ==", low.name, pretty_integer(low.frame_size));
             for (i, ins) in low.code.iter().enumerate() {
-                eprintln!("  {i:>3}: {:?}", ins.op);
+                eprintln!("  {:>3}: {:?}", pretty_integer(i), ins.op);
             }
         }
         lowered.push(low);
@@ -217,14 +218,14 @@ pub fn disassemble(prog: &[Op]) -> String {
             Op::Pack64x2 { a, b, c } => {
                 format!("PACK64X2 fp[{c}] = pack64(fp[{a}], fp[{b}])")
             }
-            Op::Blake3 { ins, out } => {
+            Op::Blake3 { ins, cv, out, metadata } => {
                 format!(
-                    "BLAKE3 fp[{out}..]= H(fp[{}], fp[{}] | fp[{}], fp[{}])",
-                    ins[0], ins[1], ins[2], ins[3]
+                    "BLAKE3 fp[{out}..]= compress(cv=fp[{cv}..], m=fp[{}],fp[{}],fp[{}],fp[{}], meta={})",
+                    ins[0], ins[1], ins[2], ins[3], kfmt(*metadata)
                 )
             }
         };
-        out.push_str(&format!("{pc:>4}  {line}\n"));
+        out.push_str(&format!("{:>6}  {line}\n", pretty_integer(pc)));
     }
     out
 }
@@ -288,7 +289,11 @@ fn resolve(op: &LOp, entry: &HashMap<String, u32>, sentinel: u32, base: u32) -> 
             of: *of,
         },
         LOp::Pack64x2 { a, b, c } => Op::Pack64x2 { a: *a, b: *b, c: *c },
-        LOp::Blake3 { ins, c } => Op::Blake3 { ins: *ins, out: *c },
+        LOp::Blake3 { ins, cv, c, metadata } => Op::Blake3 {
+            ins: *ins,
+            cv: *cv,
+            out: *c,
+            metadata: *metadata,
+        },
     }
 }
-
