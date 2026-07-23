@@ -1,7 +1,7 @@
 //! End-to-end N→1 recursion: one guest program (`guests/recursion.py`)
 //! replays `cpu::verify` for NSUB proofs of a fixed inner program, batches
-//! their deferred claims with the two aggregation sumchecks, and binds the sub
-//! statements + the three reduced claims (stacked bytecode, A0, B0) to its own
+//! their deferred claims with three aggregation sumchecks, and binds the sub
+//! statements + four reduced evaluations (stacked bytecode, A0, B0, trace-dual D) to its own
 //! public input (doc.tex §Recursive aggregation, §Deferred evaluation claims).
 //!
 //! Zero hand-mirroring: the transcript trace of a REAL `cpu::verify` run
@@ -9,8 +9,8 @@
 //! `gen_verify` walks it structurally (a `Walk` cursor; `Sponge::replay` yields
 //! the checkpoint states) to extract every hint value, and the real
 //! `cpu::layout` supplies every compile-time shape. `gen_agg` mirrors the
-//! guest's aggregation transcript and runs the two batching-sumcheck provers
-//! (dense for the bytecode, two-phase sparse for the flock matrices).
+//! guest's aggregation transcript and runs the three batching-sumcheck provers
+//! (dense bytecode, two-phase sparse matrices, and trace-dual certification).
 //! [`RecursiveProof::verify`] is the only public acceptance path: it verifies
 //! the outer VM proof and evaluates every deferred fixed polynomial.
 
@@ -130,6 +130,8 @@ struct SubDefer {
     lrr: Vec<F128>,
     lcz: Vec<F128>,
     matpart: F128,
+    rs_coeffs: Vec<F128>,
+    r_dprime: Vec<F128>,
 }
 
 /// The batched reduced claims the aggregation exports: one point + value on
@@ -142,6 +144,8 @@ struct ReducedClaims {
     r_m: Vec<F128>,
     v_a: F128,
     v_b: F128,
+    r_d: Vec<F128>,
+    v_d: F128,
 }
 
 /// Everything committed by the outer public input. Keeping this private makes
@@ -172,6 +176,10 @@ impl RecursiveStatement {
         }
         sponge.observe(self.reduced.v_a);
         sponge.observe(self.reduced.v_b);
+        for &v in &self.reduced.r_d {
+            sponge.observe(v);
+        }
+        sponge.observe(self.reduced.v_d);
         sponge.state()
     }
 }
@@ -215,6 +223,23 @@ pub enum RecursiveVerifyError {
     BytecodeClaim,
     MatrixAClaim,
     MatrixBClaim,
+    DualBasisClaim,
+}
+
+/// The fixed 14-var multilinear table
+/// `D(k, i) = trace_dual_basis[i]^(2^k)`, with the seven `k` variables
+/// occupying the low-order dimensions and the seven `i` variables the high.
+fn trace_dual_frobenius_table() -> Vec<F128> {
+    let basis = pcs::ring_switch::trace_dual_basis();
+    let mut table = vec![F128::ZERO; 128 * 128];
+    for (i, &delta) in basis.iter().enumerate() {
+        let mut v = delta;
+        for k in 0..128 {
+            table[k + 128 * i] = v;
+            v *= v;
+        }
+    }
+    table
 }
 
 fn fold_lsb(t: &mut Vec<F128>, r: F128) {
@@ -257,7 +282,8 @@ fn stacked_bytecode(program: &Program) -> Vec<F128> {
 }
 
 /// The aggregation layer: mirror the guest's aggregation transcript, run the
-/// two batching-sumcheck PROVERS (dense bytecode; two-phase sparse matrices),
+/// three batching-sumcheck PROVERS (dense bytecode; two-phase sparse matrices;
+/// trace-dual coefficient certification),
 /// and return the round-message hints, the terminal hints, the reduced claims,
 /// and the outer public input.
 #[allow(clippy::type_complexity)]
@@ -296,6 +322,12 @@ fn gen_agg(
             h.observe(v);
         }
         h.observe(d.matpart);
+        for &v in &d.rs_coeffs {
+            h.observe(v);
+        }
+        for &v in &d.r_dprime {
+            h.observe(v);
+        }
     }
 
     // ---- bytecode batching sumcheck (dense, 2^kbcv; ONE claim per sub, at
@@ -461,6 +493,58 @@ fn gen_agg(
         assert_eq!(mrun, v_a * wam + v_b * wbm, "guest terminal-weight formulas");
     }
 
+    // ---- trace-dual Frobenius batching sumcheck ----
+    //
+    // Each sub-proof used a hinted coefficient vector
+    //   c_t[k] = Σ_i eq(r''_t, i) D(k, i)
+    // in its ring-switch computations. Batch all 128 identities per sub at a
+    // random k-point `rho`, then reduce the remaining i-sum to one evaluation
+    // of the fixed 14-var table D. This moves the 128x128 fixed transform out
+    // of the recursion guest without trusting the hint.
+    let gdt: Vec<F128> = (0..nsub).map(|_| h.sample()).collect();
+    let rho: Vec<F128> = (0..7).map(|_| h.sample()).collect();
+    let eq_rho = primitives::multilinear::build_eq(&rho);
+    let mut drun = F128::ZERO;
+    for (t, d) in subs.iter().enumerate() {
+        drun += gdt[t]
+            * d.rs_coeffs
+                .iter()
+                .zip(&eq_rho)
+                .map(|(&c, &e)| c * e)
+                .fold(F128::ZERO, |a, x| a + x);
+    }
+    let dtable = trace_dual_frobenius_table();
+    let mut drow = vec![F128::ZERO; 128];
+    for i in 0..128 {
+        drow[i] = (0..128)
+            .map(|k| eq_rho[k] * dtable[k + 128 * i])
+            .fold(F128::ZERO, |a, x| a + x);
+    }
+    let mut dw = vec![F128::ZERO; 128];
+    for (t, d) in subs.iter().enumerate() {
+        let eq_dprime = primitives::multilinear::build_eq(&d.r_dprime);
+        for i in 0..128 {
+            dw[i] += gdt[t] * eq_dprime[i];
+        }
+    }
+    let mut dscr = Vec::new();
+    let mut r_dcol = Vec::new();
+    for _ in 0..7 {
+        let (g1, gi) = round_msg(&[(&drow, &dw, F128::ONE)]);
+        h.observe(g1);
+        h.observe(gi);
+        let r = h.sample();
+        dscr.extend([g1, gi]);
+        r_dcol.push(r);
+        let g0 = drun + g1;
+        let c1 = g0 + g1 + gi;
+        drun = gi * r * r + c1 * r + g0;
+        fold_lsb(&mut drow, r);
+        fold_lsb(&mut dw, r);
+    }
+    let v_d = drow[0];
+    assert_eq!(drun, v_d * dw[0], "trace-dual sumcheck terminal");
+
     // ---- outer public input: FS seed + sub statements + reduced claims ----
     // The inner proving environment (flock circuit family + program bytecode)
     // is identified by ONE seed digest in the recursion's PUBLIC INPUT (not
@@ -483,13 +567,20 @@ fn gen_agg(
     }
     e.observe(v_a);
     e.observe(v_b);
+    let r_d: Vec<F128> = rho.iter().chain(&r_dcol).copied().collect();
+    for &v in &r_d {
+        e.observe(v);
+    }
+    e.observe(v_d);
 
     let hints = vec![
         ("fs_seed".to_string(), vec![seed[0], seed[1]]),
         ("bc_sumcheck_msgs".to_string(), bscr),
         ("mat_sumcheck_msgs".to_string(), mscr),
+        ("dual_sumcheck_msgs".to_string(), dscr),
         ("bc_star_hint".to_string(), vec![v_bc]),
         ("mat_stars_hint".to_string(), vec![v_a, v_b]),
+        ("dual_star_hint".to_string(), vec![v_d]),
     ];
     (
         hints,
@@ -500,11 +591,13 @@ fn gen_agg(
             r_m,
             v_a,
             v_b,
+            r_d,
+            v_d,
         },
     )
 }
 
-/// Discharge the three fixed-polynomial claims deferred by the guest.
+/// Discharge the four fixed-polynomial claims deferred by the guest.
 fn check_reduced(program: &Program, red: &ReducedClaims) -> Result<(), RecursiveVerifyError> {
     let stacked = stacked_bytecode(program);
     let expected_bc = stacked.len().trailing_zeros() as usize;
@@ -534,6 +627,12 @@ fn check_reduced(program: &Program, red: &ReducedClaims) -> Result<(), Recursive
     }
     if direct(mb) != red.v_b {
         return Err(RecursiveVerifyError::MatrixBClaim);
+    }
+    if red.r_d.len() != 14 {
+        return Err(RecursiveVerifyError::InvalidDeferredShape);
+    }
+    if mle_eval(&trace_dual_frobenius_table(), &red.r_d) != red.v_d {
+        return Err(RecursiveVerifyError::DualBasisClaim);
     }
     Ok(())
 }
@@ -772,6 +871,11 @@ fn gen_verify(
         lrr: lrr.clone(),
         lcz: lcz.clone(),
         matpart,
+        rs_coeffs: {
+            let eq = primitives::multilinear::build_eq(&summary.opening.r_dprime);
+            pcs::ring_switch::linearized_eq_coeffs(&eq).to_vec()
+        },
+        r_dprime: summary.opening.r_dprime.clone(),
     };
 
     let hints = vec![
@@ -782,6 +886,7 @@ fn gen_verify(
         }),
         ("bytecode_vals".to_string(), bcv),
         ("matpart".to_string(), vec![matpart]),
+        ("rs_coeffs".to_string(), deferred.rs_coeffs.clone()),
         ("merkle_leaf_rows".to_string(), lrows_flat),
         ("merkle_paths".to_string(), lpaths_flat),
         ("sub_pis".to_string(), vec![pi[0], pi[1]]),
@@ -1361,17 +1466,16 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     // The stacked bytecode: nbcv/2 encoding columns per side, packed along
     // log2_ceil(cols) selector bits. The defer region is 2*kbc points + sel
     // bits + 2 reduced + alpha + z_skip + 2*lcrounds rounds + 64 z_partial
-    // + 1 matpart.
+    // + 1 matpart + 128 ring-switch coefficients + 7 r_dprime coordinates.
     let bc_cols = nbcv / 2;
     let log2_bc_cols = log2_ceil(bc_cols);
     ps("BYTECODE_COLS", bc_cols.to_string());
     ps("LOG2_BYTECODE_COLS", log2_bc_cols.to_string());
-    ps("DEFER_SIZE", (kbc + log2_bc_cols + 2 * lcrounds + 68).to_string());
+    ps("DEFER_SIZE", (kbc + log2_bc_cols + 2 * lcrounds + 203).to_string());
     ps("BYTECODE_VARS", (kbc + log2_bc_cols).to_string());
     let label_state = Sponge::new(b"leanvm-b", &[]).state();
     ps("TRANSCRIPT_SEED_0", u(label_state[0]).to_string());
     ps("TRANSCRIPT_SEED_1", u(label_state[1]).to_string());
-    ps("TRACE_DUAL_BASIS", flds(&pcs::ring_switch::trace_dual_basis()[..]));
     rep
 }
 
@@ -1394,7 +1498,7 @@ fn recursion_guest(inner_program: &Program, nsub: usize) -> Program {
 /// 2. compile the recursion guest (`guests/recursion.py` — the generic
 ///    map needs only that size);
 /// 3. prove the inner proofs (and extract their hints);
-/// 4. prove the recursion, verify, discharge the three reduced claims.
+/// 4. prove the recursion, verify, discharge the four reduced evaluations.
 /// When `enable_tracing` is true, tracing starts after the inner proofs so the
 /// emitted tree profiles the recursive aggregation itself.
 pub fn run_recursion(inner: &[(usize, usize)], enable_tracing: bool) -> RecursiveProof {
@@ -1490,16 +1594,43 @@ pub fn run_recursion(inner: &[(usize, usize)], enable_tracing: bool) -> Recursiv
 fn recursion_1to1_smoke() {
     let cfg = [(4, 1 << 12)];
     let batch = build_batch(&cfg);
+    check_reduced(&batch.program0, &batch.statement.reduced).expect("honest reduced claims");
+    let mut bad_reduced = batch.statement.reduced.clone();
+    bad_reduced.v_d += F128::ONE;
+    assert!(matches!(
+        check_reduced(&batch.program0, &bad_reduced),
+        Err(RecursiveVerifyError::DualBasisClaim)
+    ));
     let mut guest = recursion_guest(&batch.program0, cfg.len());
     for (name, entries) in &batch.merged {
         guest.set_witness(name, entries.clone());
     }
     let exec = guest.execute(batch.public_input());
     eprintln!("recursion smoke guest cycles: {}", pretty_integer(exec.cycles));
+
+    // The coefficients are advice, but not trusted: changing one while
+    // retaining the honest batched certificate must make the guest reject.
+    let mut bad_merged = batch.merged.clone();
+    let pos = bad_merged
+        .iter()
+        .position(|(name, _)| name == "rs_coeffs")
+        .expect("ring-switch coefficient hint");
+    bad_merged[pos].1[0][0] += F128::ONE;
+    let mut bad_guest = recursion_guest(&batch.program0, cfg.len());
+    for (name, entries) in &bad_merged {
+        bad_guest.set_witness(name, entries.clone());
+    }
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            bad_guest.execute(batch.public_input());
+        }))
+        .is_err(),
+        "tampered ring-switch coefficient must be rejected"
+    );
 }
 
 /// Two ~1M-cycle inner proofs, verified and aggregated by one guest into one
-/// outer proof, whose three reduced claims are then discharged natively.
+/// outer proof, whose four reduced evaluations are then discharged natively.
 #[test]
 fn recursion_2to1() {
     run_recursion(&[(8, 1 << 15), (8, 1 << 15)], false);

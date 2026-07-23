@@ -203,15 +203,13 @@ JAGGED_BATCH_COL = JAGGED_BATCH_COL_PLACEHOLDER
 JAGGED_BATCH_LOG = JAGGED_BATCH_LOG_PLACEHOLDER
 JAGGED_BATCH_BASE = JAGGED_BATCH_BASE_PLACEHOLDER
 QPKD_VARS_CAP = QPKD_VARS_CAP_PLACEHOLDER
-# Ring-switch trace-dual basis: bit_i(y) = Tr(TRACE_DUAL_BASIS[i] * y). Any eq-weighted
-# bit-sum is then the linearized polynomial L_w(y) = sum_k c_k y^(2^k) with
-# c_k = sum_i w_i TRACE_DUAL_BASIS[i]^(2^k); since squaring is one MUL, the tensor
-# transpose and eval_rs_eq run in-circuit (doc.tex, ring-switch section).
-TRACE_DUAL_BASIS = TRACE_DUAL_BASIS_PLACEHOLDER
 # Phase F: log rows of the bytecode blocks (the deferred bytecode points).
 BYTECODE_LOG = BYTECODE_LOG_PLACEHOLDER
-# One sub-proof's deferred-claim region: 2*BYTECODE_LOG + LOG2_BYTECODE_COLS
-# + 2*LINCHECK_ROUNDS + 69 words (see verify_sub's defer_out layout).
+# One sub-proof's deferred-claim region, including the 128 hinted ring-switch
+# coefficients and their seven-coordinate r'' point (see verify_sub's layout).
+MATPART_OFF = BYTECODE_LOG + LOG2_BYTECODE_COLS + 3 + 2 ** K_SKIP + 2 * LINCHECK_ROUNDS
+RS_COEFF_OFF = MATPART_OFF + 1
+RS_DPRIME_OFF = RS_COEFF_OFF + 128
 DEFER_SIZE = DEFER_SIZE_PLACEHOLDER
 # Aggregation: NSUB sub-proofs of the same program; per-sub proof data arrives
 # as hints. The seed sponge state after the two byte-string absorbs is baked
@@ -987,14 +985,13 @@ def exponent_tables():
     return g_logs_pow2, g_squares
 
 
-def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, defer_out):
+def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     # In-circuit verification of ONE inner proof for the statement
     # (pi_0, pi_1). All proof data is hinted HERE: each call pops the next
     # sub-proof's entry of every witness stream, so the body lowers once and
-    # main just calls it per statement. `delta_pows` (the dual-basis Frobenius
-    # table) and the g_logs_pow2/g_squares lookup tables are shared
-    # read-only tables built once in main; the deferred-claim data is written
-    # to `defer_out`.
+    # main just calls it per statement. The g_logs_pow2/g_squares lookup tables
+    # are shared read-only tables built once in main; the deferred-claim data
+    # is written to `defer_out`.
     #
     # Flow (mirrors cpu::verify):
     #   1. seed the Fiat-Shamir sponge from the statement + program digest;
@@ -1663,6 +1660,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     transposed_claims = StackBuf(2)
     rs_eq_vals = StackBuf(2)
     c_table = HeapBuf(FIELD_BITS)
+    hint_witness(c_table[0:FIELD_BITS], "rs_coeffs")
     z_vals = HeapBuf(2 * QPKD_VARS_CAP)
     r_dprime = HeapBuf(LOG2_FIELD_BITS)
     for rs in unroll(0, 2):
@@ -1692,15 +1690,6 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
         fs = squeeze(fs)
         rv = fs[0]
         r_dprime[GEN ** i] = rv
-    w_eq = HeapBuf(2 ** (LOG2_FIELD_BITS + 1) - 2)
-    eqtree(r_dprime, w_eq, LOG2_FIELD_BITS)  # w = eq tensor of the 7 shared r'' coords (one batch challenge, both claims)
-    # c_k = sum_i w_i * delta_pows[k][i], one runtime loop over the levels k.
-    for xk in mul_range(1, GEN ** FIELD_BITS):
-        delta_row = delta_pows * xk ** FIELD_BITS
-        c_acc = 0
-        for i in unroll(0, FIELD_BITS):
-            c_acc += w_eq[GEN ** (2 ** LOG2_FIELD_BITS - 2 + i)] * delta_row[GEN ** i]  # c_k = sum_i w_i * delta_i^(2^k): the linearized-poly coefficient table
-        c_table[xk] = c_acc
     for rs in unroll(0, 2):
         # transposed claim T = sum_j x^j * L_w(shv_j): one runtime pass over
         # the observed values; per value the Frobenius powers evolve as a
@@ -1962,7 +1951,8 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     # (SEL = LOG2_BYTECODE_COLS, LCR = LINCHECK_ROUNDS):
     #   +0..SEL bytecode_sel | +SEL bytecode_reduced | +SEL+1 alpha
     #   | +SEL+2 z_skip | +SEL+3.. zrho | +SEL+3+LCR.. lincheck rs
-    #   | +SEL+3+2*LCR.. z_partial (2^K_SKIP) | +SEL+3+2^K_SKIP+2*LCR matpart.
+    #   | +SEL+3+2*LCR.. z_partial (2^K_SKIP) | MATPART_OFF matpart
+    #   | RS_COEFF_OFF.. 128 ring-switch coefficients | RS_DPRIME_OFF.. r''.
     for k in unroll(0, BYTECODE_LOG):
         defer_out[GEN ** k] = zeta[GEN ** k]
     for k in unroll(0, LOG2_BYTECODE_COLS):
@@ -1975,15 +1965,19 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
         defer_out[GEN ** (BYTECODE_LOG + LOG2_BYTECODE_COLS + 3 + LINCHECK_ROUNDS + k)] = lincheck_rs[GEN ** k]
     for k in unroll(0, 2 ** K_SKIP):
         defer_out[GEN ** (BYTECODE_LOG + LOG2_BYTECODE_COLS + 3 + 2 * LINCHECK_ROUNDS + k)] = z_partial[GEN ** k]
-    defer_out[GEN ** (BYTECODE_LOG + LOG2_BYTECODE_COLS + 3 + 2 ** K_SKIP + 2 * LINCHECK_ROUNDS)] = matrix_eval[0]
+    defer_out[GEN ** MATPART_OFF] = matrix_eval[0]
+    for k in unroll(0, FIELD_BITS):
+        defer_out[GEN ** (RS_COEFF_OFF + k)] = c_table[GEN ** k]
+    for k in unroll(0, LOG2_FIELD_BITS):
+        defer_out[GEN ** (RS_DPRIME_OFF + k)] = r_dprime[GEN ** k]
     return
 
 
 def main():
     # NSUB sub-proofs of the fixed inner program: verify each (verify_sub),
     # then aggregate their deferred claims. The fresh aggregation transcript
-    # RLC-batches the bytecode and matrix claims through two sumchecks; only
-    # the three reduced claims (evaluated natively by the outer verifier)
+    # RLC-batches the bytecode, matrix, and trace-dual claims in three
+    # sumchecks; only the four reduced evaluations (checked natively)
     # reach this guest's public input.
     sub_pis = HeapBuf(NSUB * 2)
     hint_witness(sub_pis[0:NSUB * 2], "sub_pis")
@@ -1998,21 +1992,14 @@ def main():
     hint_witness(bc_sumcheck_msgs[0:2 * BYTECODE_VARS], "bc_sumcheck_msgs")
     mat_sumcheck_msgs = HeapBuf(4 * K_LOG)
     hint_witness(mat_sumcheck_msgs[0:4 * K_LOG], "mat_sumcheck_msgs")
+    dual_sumcheck_msgs = HeapBuf(2 * LOG2_FIELD_BITS)
+    hint_witness(dual_sumcheck_msgs[0:2 * LOG2_FIELD_BITS], "dual_sumcheck_msgs")
     bc_star_hint = StackBuf(1)
     hint_witness(bc_star_hint[0:1], "bc_star_hint")
     mat_stars_hint = StackBuf(2)
     hint_witness(mat_stars_hint[0:2], "mat_stars_hint")
-    # The dual-basis Frobenius powers delta_pows[128k + i] = TRACE_DUAL_BASIS[i]^(2^k) are claim-
-    # and sub-independent: build the table once, read-only afterwards.
-    delta_pows = HeapBuf(FIELD_BITS * FIELD_BITS)
-    for i in unroll(0, FIELD_BITS):
-        delta_pows[GEN ** i] = TRACE_DUAL_BASIS[i]
-    for xk in mul_range(1, GEN ** (FIELD_BITS - 1)):
-        delta_row = delta_pows * xk ** FIELD_BITS
-        next_delta_row = delta_row * GEN ** FIELD_BITS
-        for i in unroll(0, FIELD_BITS):
-            delta_v = delta_row[GEN ** i]
-            next_delta_row[GEN ** i] = delta_v * delta_v
+    dual_star_hint = StackBuf(1)
+    hint_witness(dual_star_hint[0:1], "dual_star_hint")
 
     # exponent-domain lookup tables, shared read-only across every sub-proof.
     g_logs_pow2, g_squares = exponent_tables()
@@ -2021,11 +2008,11 @@ def main():
     defer = HeapBuf(NSUB * DEFER_SIZE)
 
     for sub in unroll(0, NSUB):
-        verify_sub(sub_pis[GEN ** (2 * sub)], sub_pis[GEN ** (2 * sub + 1)], fs_seed[0], fs_seed[1], delta_pows, g_logs_pow2, g_squares, defer * GEN ** (sub * DEFER_SIZE))
+        verify_sub(sub_pis[GEN ** (2 * sub)], sub_pis[GEN ** (2 * sub + 1)], fs_seed[0], fs_seed[1], g_logs_pow2, g_squares, defer * GEN ** (sub * DEFER_SIZE))
 
     # ================= aggregation: batch the deferred claims =================
     # A fresh transcript absorbs every deferred claim (points and values),
-    # samples the RLC coefficients, and verifies the two batching sumchecks of
+    # samples the RLC coefficients, and verifies the three batching sumchecks of
     # doc.tex §Deferred evaluation claims. Only the reduced claims (one per
     # fixed polynomial) reach the public input.
     agg_fs = [0, 0]
@@ -2074,7 +2061,7 @@ def main():
         agg_fs = squeeze(agg_fs)
         gv = agg_fs[0]
         gamma_mat[t] = gv
-        mat_running += gv * defer[GEN ** (t * DEFER_SIZE + BYTECODE_LOG + LOG2_BYTECODE_COLS + 3 + 2 ** K_SKIP + 2 * LINCHECK_ROUNDS)]
+        mat_running += gv * defer[GEN ** (t * DEFER_SIZE + MATPART_OFF)]
     mat_point = HeapBuf(2 * K_LOG)
     for rd in unroll(0, 2 * K_LOG):
         agg_fs, msg_g1, c = fs_next(agg_fs, mat_sumcheck_msgs * GEN ** (2 * rd))
@@ -2117,6 +2104,45 @@ def main():
     mat_final = a_star * weight_a + b_star * weight_b
     assert mat_running == mat_final
 
+    # ---- certify the hinted ring-switch coefficient vectors ----
+    # At random rho, batch c_t(rho) = sum_i D(rho,i) eq(r''_t,i) across
+    # sub-proofs, then reduce the i-sum to one deferred evaluation of the fixed
+    # trace-dual Frobenius table D.
+    gamma_dual = StackBuf(NSUB)
+    for t in unroll(0, NSUB):
+        agg_fs = squeeze(agg_fs)
+        gamma_dual[t] = agg_fs[0]
+    dual_rho = HeapBuf(LOG2_FIELD_BITS)
+    for k in unroll(0, LOG2_FIELD_BITS):
+        agg_fs = squeeze(agg_fs)
+        dual_rho[GEN ** k] = agg_fs[0]
+    eq_dual_rho = HeapBuf(2 ** (LOG2_FIELD_BITS + 1) - 2)
+    eqtree(dual_rho, eq_dual_rho, LOG2_FIELD_BITS)
+    dual_running = 0
+    for t in unroll(0, NSUB):
+        c_at_rho = 0
+        for k in unroll(0, FIELD_BITS):
+            c_at_rho += defer[GEN ** (t * DEFER_SIZE + RS_COEFF_OFF + k)] * eq_dual_rho[GEN ** (FIELD_BITS - 2 + k)]
+        dual_running += gamma_dual[t] * c_at_rho
+    dual_col_point = HeapBuf(LOG2_FIELD_BITS)
+    for rd in unroll(0, LOG2_FIELD_BITS):
+        agg_fs, msg_g1, c = fs_next(agg_fs, dual_sumcheck_msgs * GEN ** (2 * rd))
+        agg_fs, msg_ginf, c = fs_next(agg_fs, c)
+        agg_fs = squeeze(agg_fs)
+        rv = agg_fs[0]
+        dual_col_point[GEN ** rd] = rv
+        g_zero = dual_running + msg_g1
+        c_one = g_zero + msg_g1 + msg_ginf
+        dual_running = msg_ginf * rv * rv + c_one * rv + g_zero
+    dual_weight = 0
+    for t in unroll(0, NSUB):
+        e = GEN ** 0
+        for k in unroll(0, LOG2_FIELD_BITS):
+            e *= (1 + defer[GEN ** (t * DEFER_SIZE + RS_DPRIME_OFF + k)] + dual_col_point[GEN ** k])
+        dual_weight += gamma_dual[t] * e
+    dual_star = dual_star_hint[0]
+    assert dual_running == dual_star * dual_weight
+
     # ---- bind the FS seed + sub statements + reduced claims to the PI ----
     out_fs = [0, 0]
     out_fs = obs(out_fs, fs_seed[0])  # the inner proving environment is part of the public statement
@@ -2131,6 +2157,11 @@ def main():
         out_fs = obs(out_fs, mat_point[GEN ** k])
     out_fs = obs(out_fs, a_star)
     out_fs = obs(out_fs, b_star)
+    for k in unroll(0, LOG2_FIELD_BITS):
+        out_fs = obs(out_fs, dual_rho[GEN ** k])
+    for k in unroll(0, LOG2_FIELD_BITS):
+        out_fs = obs(out_fs, dual_col_point[GEN ** k])
+    out_fs = obs(out_fs, dual_star)
     pub_ptr = GEN ** 0
     own_pi_0 = pub_ptr[1]
     own_pi_1 = pub_ptr[GEN]

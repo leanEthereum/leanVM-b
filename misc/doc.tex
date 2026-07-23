@@ -502,16 +502,22 @@ Proofs compose by running the verifier of \S\ref{sec:e2e-unrolled} \emph{inside}
 
 \subsection{Deferred evaluation claims}\label{sec:deferred-claims}
 
-Twice during verification, a large \emph{fixed} multilinear must be evaluated at a random point:
+Three places during verification would otherwise require a large \emph{fixed} multilinear computation:
 \begin{itemize}
 \item \textbf{the bytecode}: during leaf decomposition (\S\ref{sec:e2e-unrolled}, \emph{Bus}), the verifier evaluates the MLEs of the public program columns, a pass over the whole program;
-\item \textbf{the flock matrices}: the \texttt{BLAKE3} relation is proven by flock (\S\ref{sec:tab-blake3}), whose lincheck ends by evaluating $\widetilde A_0$ and $\widetilde B_0$, the per-block R1CS matrices: $28$-variable multilinears with $\approx 21\mathrm{M}$ nonzero Boolean entries between them.
+\item \textbf{the flock matrices}: the \texttt{BLAKE3} relation is proven by flock (\S\ref{sec:tab-blake3}), whose lincheck ends by evaluating $\widetilde A_0$ and $\widetilde B_0$, the per-block R1CS matrices: $28$-variable multilinears with $\approx 21\mathrm{M}$ nonzero Boolean entries between them;
+\item \textbf{the trace-dual Frobenius transform}: the ring-switch front uses the fixed table
+\[
+ D(k,i)=\delta_i^{2^k},\qquad k,i\in\{0,\ldots,127\},
+\]
+where $(\delta_i)$ is the trace-dual basis. At the shared seven-coordinate challenge $r''_t$, its linearized-polynomial coefficients are
+$c_t(k)=\sum_iD(k,i)\eq(r''_t,i)$. Forming all $128$ coefficients directly inside the VM costs a $128\times128$ contraction.
 \end{itemize}
-Either evaluation is one pass over a fixed object. This takes milliseconds natively, but in-circuit it would dwarf the entire remaining verifier, in cycles and in bytecode size alike.
+Each computation is one pass over a fixed object. This takes milliseconds natively, but in-circuit it would dwarf the entire remaining verifier, in cycles and in bytecode size alike.
 
 The aggregation program therefore does not check these claims. The polynomials are fixed and public, so each claim (an evaluation point and its claimed value) is forwarded to the public input, to be checked externally.
 
-There are thus three fixed polynomials: the bytecode and the two matrices $A_0, B_0$. A sub-proof may itself be an aggregation carrying deferred claims, so verifying it yields \textbf{two} claims per polynomial: the one read from its public input, and the fresh one produced by the verification itself. Once all $n_{\mathrm{rec}}$ sub-proofs are verified, a fresh Fiat-Shamir transcript is fed with all the points and values, and the $6n_{\mathrm{rec}}$ claims are batched by two sumchecks: one for the bytecode, and one for the matrices, which share their $28$ variables. The three reduced claims are written to the public input, for the next level of recursion (zeros when $n_{\mathrm{rec}}=0$). Only the outermost verifier, which runs natively, ever evaluates the fixed polynomials.
+There are thus four fixed polynomials: the bytecode, the two matrices $A_0,B_0$, and the $14$-variable multilinear extension $\widetilde D$. Once all $n_{\mathrm{rec}}$ sub-proofs are verified, a fresh Fiat--Shamir transcript is fed with all deferred points, values, and coefficient vectors. Three sumchecks batch them: one for the bytecode, one shared by the two matrices, and one for $D$. The four reduced evaluations are written to the recursive statement. Only the outermost verifier, which runs natively, evaluates the fixed polynomials.
 
 The matrix sumcheck runs over the $28$-variable polynomial
 \[
@@ -520,6 +526,15 @@ The matrix sumcheck runs over the $28$-variable polynomial
   W_M(x) \;=\; \textstyle\sum_t \gamma_{M,t}\,\eq(r_t,x),
 \]
 and ends in the reduced claims $\widetilde A_0(r^\ast)$ and $\widetilde B_0(r^\ast)$, at a common point. The in-circuit cost is that of the sumcheck verifier: $28$ cheap rounds. The prover exploits sparsity to avoid the $2^{28}$-sized cube. During the first $14$ rounds (the row variables), each claim enters through the column contraction $m_t[i]=\sum_{j\in\mathrm{row}_i}\eq(r_t^{\mathrm{col}},j)$; for the last $14$ rounds, each matrix is contracted once along its rows, at the row point just fixed. Each contraction is a single addition-only pass over the nonzeros (the entries are Boolean), and all remaining work is dense of size $2^{14}$. Batching $t$ claims per matrix therefore costs $t+1$ passes over its nonzeros plus $O(t\cdot2^{14})$ multiplications, against the $O(2^{28})$ field operations and memory of a dense sumcheck. The bytecode sumcheck is the same, only smaller and with a dense polynomial.
+
+For the trace-dual table, the prover supplies each $c_t$ as advice and the guest uses it immediately in the ring-switch checks. Soundness is restored in the fresh aggregation transcript. After absorbing every $c_t$ and $r''_t$, it samples batching scalars $\gamma_t$ and a random seven-coordinate row point $\rho$, and forms
+\[
+ C=\sum_t\gamma_t\sum_k\eq(\rho,k)c_t(k)
+   =\sum_i \widetilde D(\rho,i)\,
+      \underbrace{\sum_t\gamma_t\eq(r''_t,i)}_{W(i)}.
+\]
+A seven-round product sumcheck reduces this identity to
+$C^\ast=\widetilde D(\rho,r^\ast)W(r^\ast)$. The guest evaluates $W(r^\ast)$ itself and forwards only the single fixed-table evaluation $\widetilde D(\rho,r^\ast)$. Consequently the expensive fixed $128\times128$ construction and contraction disappear from the VM; the in-circuit replacement is one $128$-entry coefficient MLE evaluation per sub-proof plus seven sumcheck-verifier rounds.
 
 \section{ISA programming}\label{sec:isa-programming}
 
