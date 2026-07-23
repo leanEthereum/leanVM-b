@@ -958,12 +958,15 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     let sch = lean_vm::cpu::schema();
     let b3base = sch.base[5];
     let valcols: Vec<usize> = lean_vm::tables::BLAKE3_VALUE_COLS.iter().map(|&c| b3base + c).collect();
-    let col_order = lean_vm::cpu::jagged_column_order(kbc);
-    let col_index: std::collections::HashMap<usize, usize> =
-        col_order.iter().enumerate().map(|(i, &c)| (c, i)).collect();
+    let block_index: std::collections::HashMap<usize, usize> = l
+        .jagged_blocks
+        .iter()
+        .enumerate()
+        .map(|(block, cols)| (l.placements[cols[0]].offset, block))
+        .collect();
     let bks_for_claims = lean_vm::cpu::block_kappa_sources(kbc);
-    let (mut cpbuf, mut cpoff, mut cpcol, mut cppad, mut cpslot, mut cprowkey) =
-        (vec![], vec![], vec![], vec![], vec![], vec![]);
+    let (mut cpbuf, mut cpoff, mut cpcol, mut cppad, mut cpslot, mut cpblockslot, mut cpblocklog, mut cprowkey) =
+        (vec![], vec![], vec![], vec![], vec![], vec![], vec![], vec![]);
     let mut desc_seen: std::collections::HashSet<(usize, usize)> = Default::default();
     let mut block_idx = 0usize;
     for blocks in sides.iter() {
@@ -976,7 +979,10 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
                     cpbuf.push(if valcols.contains(i) { 3 } else { 0 });
                     cpoff.push(0); // the ONE shared zeta lives at region 0
                     let dense_col = if valcols.contains(i) { lean_vm::cpu::QPKD } else { *i };
-                    cpcol.push(col_index[&dense_col]);
+                    let placement = l.placements[dense_col];
+                    cpcol.push(block_index[&placement.offset]);
+                    cpblockslot.push(placement.slot);
+                    cpblocklog.push(placement.block_width_log);
                     cppad.push(if valcols.contains(i) { F128::ZERO } else { l.pad[*i] });
                     cpslot.push(
                         valcols
@@ -1002,7 +1008,10 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
             if l.placements[col].is_virtual() {
                 cpbuf.push(3);
                 cpoff.push(0);
-                cpcol.push(col_index[&lean_vm::cpu::QPKD]);
+                let placement = l.placements[lean_vm::cpu::QPKD];
+                cpcol.push(block_index[&placement.offset]);
+                cpblockslot.push(placement.slot);
+                cpblocklog.push(placement.block_width_log);
                 cppad.push(F128::ZERO);
                 let p = valcols.iter().position(|&v| v == col).unwrap();
                 cpslot.push(lean_vm::blake3_flock::VM_SLOTS[p]);
@@ -1010,7 +1019,10 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
             } else {
                 cpbuf.push(1);
                 cpoff.push(t * taumax_cap);
-                cpcol.push(col_index[&col]);
+                let placement = l.placements[col];
+                cpcol.push(block_index[&placement.offset]);
+                cpblockslot.push(placement.slot);
+                cpblocklog.push(placement.block_width_log);
                 cppad.push(l.pad[col]);
                 cpslot.push(0);
                 cprowkey.push((1, t, 0));
@@ -1019,7 +1031,10 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     }
     cpbuf.push(2);
     cpoff.push(0); // PI claim on MEM
-    cpcol.push(col_index[&lean_vm::cpu::MEM]);
+    let placement = l.placements[lean_vm::cpu::MEM];
+    cpcol.push(block_index[&placement.offset]);
+    cpblockslot.push(placement.slot);
+    cpblocklog.push(placement.block_width_log);
     cppad.push(l.pad[lean_vm::cpu::MEM]);
     cpslot.push(0);
     cprowkey.push((2, 0, 0));
@@ -1038,6 +1053,59 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         });
         claim_row_group[j] = group;
     }
+
+    // Match pcs::geometric_claim_weights structurally: complete row-major
+    // blocks get consecutive gamma exponents in selector order; q_pkd and
+    // singleton blocks retain one rank each. The batch list contains only the
+    // ordinary Jagged groups evaluated by the recursion terminal.
+    let mut claim_gamma_rank = vec![usize::MAX; ncl];
+    let (mut batch_rep, mut batch_row, mut batch_col, mut batch_log, mut batch_base) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let mut next_rank = 0usize;
+    for i in 0..ncl {
+        if claim_gamma_rank[i] != usize::MAX {
+            continue;
+        }
+        if cpbuf[i] == 3 {
+            claim_gamma_rank[i] = next_rank;
+            next_rank += 1;
+            continue;
+        }
+        let width = 1usize << cpblocklog[i];
+        if width == 1 {
+            claim_gamma_rank[i] = next_rank;
+            batch_rep.push(i);
+            batch_row.push(claim_row_group[i]);
+            batch_col.push(cpcol[i]);
+            batch_log.push(0);
+            batch_base.push(next_rank);
+            next_rank += 1;
+            continue;
+        }
+        let mut by_slot = vec![None; width];
+        for j in i..ncl {
+            if claim_gamma_rank[j] == usize::MAX
+                && cpbuf[j] != 3
+                && claim_row_group[j] == claim_row_group[i]
+                && cpcol[j] == cpcol[i]
+                && cpblocklog[j] == cpblocklog[i]
+            {
+                assert!(by_slot[cpblockslot[j]].replace(j).is_none(), "duplicate claim for one Jagged block slot");
+            }
+        }
+        assert!(by_slot.iter().all(Option::is_some), "Jagged membership partition must produce complete blocks");
+        let members: Vec<usize> = by_slot.into_iter().map(Option::unwrap).collect();
+        for (slot, &j) in members.iter().enumerate() {
+            claim_gamma_rank[j] = next_rank + slot;
+        }
+        batch_rep.push(members[0]);
+        batch_row.push(claim_row_group[i]);
+        batch_col.push(cpcol[i]);
+        batch_log.push(cpblocklog[i]);
+        batch_base.push(next_rank);
+        next_rank += width;
+    }
+    assert_eq!(next_rank, ncl);
 
     // ---- the placeholder map ----
     let ints = |v: &[usize]| format!("[{}]", v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(", "));
@@ -1153,14 +1221,18 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("LIG_MAX_VANISH_LEN", maxsvk.to_string());
     ps("LIG_MIN_LOG_SIZE", minm.to_string());
     let height_sources = lean_vm::cpu::col_height_sources(kbc);
-    let ordered_heights: Vec<_> = col_order.iter().map(|&c| height_sources[c].unwrap()).collect();
+    let ordered_heights: Vec<_> = l
+        .jagged_blocks
+        .iter()
+        .map(|cols| (height_sources[cols[0]].unwrap(), cols.len().trailing_zeros() as usize))
+        .collect();
     ps("N_COMMITTED_COLS", ordered_heights.len().to_string());
     ps(
         "COL_HEIGHT_KIND",
         ints(
             &ordered_heights
                 .iter()
-                .map(|s| usize::from(matches!(s, lean_vm::cpu::ColHeightSource::TableRows(_))))
+                .map(|(s, _)| usize::from(matches!(s, lean_vm::cpu::ColHeightSource::TableRows(_))))
                 .collect::<Vec<_>>(),
         ),
     );
@@ -1169,7 +1241,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         ints(
             &ordered_heights
                 .iter()
-                .map(|s| match *s {
+                .map(|(s, _)| match *s {
                     lean_vm::cpu::ColHeightSource::Pow2 { source, .. } => source,
                     lean_vm::cpu::ColHeightSource::TableRows(t) => t,
                 })
@@ -1181,13 +1253,14 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         ints(
             &ordered_heights
                 .iter()
-                .map(|s| match *s {
-                    lean_vm::cpu::ColHeightSource::Pow2 { adjustment, .. } => adjustment,
-                    lean_vm::cpu::ColHeightSource::TableRows(_) => 0,
+                .map(|(s, width_log)| match *s {
+                    lean_vm::cpu::ColHeightSource::Pow2 { adjustment, .. } => adjustment + *width_log,
+                    lean_vm::cpu::ColHeightSource::TableRows(_) => *width_log,
                 })
                 .collect::<Vec<_>>(),
         ),
     );
+    ps("COL_BLOCK_LOG", ints(&ordered_heights.iter().map(|(_, width_log)| *width_log).collect::<Vec<_>>()));
     ps("PCS_MIN_MU", lean_vm::pcs::MIN_MU.to_string());
     ps("LIG_LOG_MSG_COLS_CAP", cands.iter().map(|c| *c.4.iter().max().unwrap()).max().unwrap().to_string());
     ps("YR_LOG_CAP", cands.iter().map(|c| c.2).max().unwrap().to_string());
@@ -1247,9 +1320,18 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("CLAIM_COL", ints(&cpcol));
     ps("CLAIM_PAD", flds(&cppad));
     ps("CLAIM_QPKD_SLOT", ints(&cpslot));
+    ps("CLAIM_BLOCK_SLOT", ints(&cpblockslot));
+    ps("CLAIM_BLOCK_LOG", ints(&cpblocklog));
+    ps("CLAIM_GAMMA_RANK", ints(&claim_gamma_rank));
     ps("N_CLAIM_ROWS", claim_row_rep.len().to_string());
     ps("CLAIM_ROW_GROUP", ints(&claim_row_group));
     ps("CLAIM_ROW_REP", ints(&claim_row_rep));
+    ps("N_JAGGED_BATCHES", batch_rep.len().to_string());
+    ps("JAGGED_BATCH_REP", ints(&batch_rep));
+    ps("JAGGED_BATCH_ROW", ints(&batch_row));
+    ps("JAGGED_BATCH_COL", ints(&batch_col));
+    ps("JAGGED_BATCH_LOG", ints(&batch_log));
+    ps("JAGGED_BATCH_BASE", ints(&batch_base));
     ps("QPKD_VARS_CAP", (33 + flock::blake3::K_LOG - 7).to_string());
     ps("BYTECODE_LOG", kbc.to_string());
     // The stacked bytecode: nbcv/2 encoding columns per side, packed along

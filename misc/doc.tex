@@ -135,29 +135,29 @@ The proving field is $\F_{2^{128}}$ throughout.
 
 \subsection{Jagged commitment layout}\label{sec:stacking}
 
-No ordinary trace column is committed on its own.  We use the Jagged PCS construction of Hemo et al.~\cite{jagged-pcs}: if column $i$ has $h_i$ real rows, let $t_0=0$ and $t_{i+1}=t_i+h_i$.  The commitment witness contains only the real rows, tightly concatenated,
+No ordinary trace column is committed on its own.  We use the Jagged PCS construction of Hemo et al.~\cite{jagged-pcs}.  Compatible equal-height columns are partitioned into power-of-two-width blocks (the ``fancy Jagged'' layout of that work): compatibility means that the columns occur in exactly the same opening groups.  For a block of width $B=2^b$ and real height $h$, its columns are stored row-major,
 \[
-  q \;=\; P_0[0..h_0] \,\Vert\, P_1[0..h_1] \,\Vert\,\dots\,\Vert\, P_{T-1}[0..h_{T-1}] \,\Vert\, 0,
+  (P_0[0],\ldots,P_{B-1}[0],P_0[1],\ldots,P_{B-1}[h-1]).
 \]
-and is zero-padded only once, to $2^M$ where $M=\max\{M_{\min},\lceil\log_2 t_T\rceil\}$.  Thus commitment work and committed area depend on the actual trace area $\sum_i h_i$, not on the sum of the columns' separately rounded power-of-two heights.
+The blocks themselves are tightly concatenated and the final vector is zero-padded only once, to $2^M$.  A non-power-of-two compatible group is decomposed into power-of-two blocks, so this table packing adds no dummy cells.  Commitment work and committed area therefore still depend on the actual trace area $\sum_i h_i$, not on the sum of separately rounded column heights.
 
-For a Boolean dense index $w$, column $i$ and row $z$ correspond exactly when
+If such a block begins at dense offset $t$, its column $c$ and row $z$ correspond to the Boolean dense index
 \[
-  w=t_i+z \quad\text{and}\quad w<t_{i+1}.
+  w=t+c+Bz \quad\text{with}\quad w<t+Bh.
 \]
-Let $J_i(z,w)$ be the multilinear extension of this predicate.  It is the width-four read-once branching program from the Jagged PCS construction: its state records the carry of $t_i+z$ and the most-significant comparison seen between $w$ and $t_{i+1}$, while reading bits least-significant first.  The real part of a column evaluation is consequently the inner-product claim
+The low $b$ coordinates of the logical point are fixed to the bits of $c$ and the remaining coordinates are the row point.  Let $J_{t,Bh}((c,z),w)$ be the multilinear extension of this predicate.  It is the width-four read-once branching program from the Jagged PCS construction: its state records the carry of $t+(c,z)$ and the most-significant comparison seen between $w$ and $t+Bh$, while reading bits least-significant first.  The real part of a column evaluation is consequently the inner-product claim
 \[
-  \sum_{w\in\cube M} J_i(\zeta,w)\,\widehat q(w).
+  \sum_{w\in\cube M} J_{t,Bh}((c,\zeta),w)\,\widehat q(w).
 \]
 The arithmetization still regards a column as extended to its power-of-two logical height with a fixed public pad value $p_i$.  The verifier adds the omitted suffix itself: if $H_i(\zeta)$ is the MLE of $[z<h_i]$, the logical claim is the real contribution plus $p_i(1-H_i(\zeta))$.  (Addition and subtraction coincide in characteristic two.)
 
 The packed flock witness $q_{\mathrm{pkd}}$ is the sole aligned exception.  It occupies the offset-zero prefix so its ring-switch and fixed-slot claims retain their direct subcube formulas; all ordinary trace columns follow it in the tight Jagged layout.
 
-\paragraph{Batching.} Every claim the protocol raises against a column is such a weighted sum $\sum_w W_j(w)\,\widehat q(w)=c_j$. The verifier folds the $J$ of them with a random $\lambda$ into one weight $W_\lambda=\sum_j\lambda^j W_j$ and target $C_\lambda=\sum_j\lambda^j c_j$, and the inner-product PCS (\S\ref{sec:rs-dense}) proves
+\paragraph{Batching.} Every claim the protocol raises against a column is such a weighted sum $\sum_w W_j(w)\,\widehat q(w)=c_j$. The verifier folds the $J$ of them with powers of one random $\lambda$ into one weight $W_\lambda=\sum_j\lambda^j W_j$ and target $C_\lambda=\sum_j\lambda^j c_j$, and the inner-product PCS (\S\ref{sec:rs-dense}) proves
 \[
   \sum_{w\in\cube{M}} W_\lambda(w)\,\widehat q(w)=C_\lambda.
 \]
-Unlike the generic adapter in~\cite{jagged-pcs}, our underlying PCS already accepts a verifier-evaluable inner-product weight.  We therefore evaluate the batched Jagged indicators directly and introduce no separate Jagged reduction sumcheck.
+Claims covering a complete width-$B$ block receive consecutive powers in column-selector order.  Their sum is one Jagged indicator whose selector-coordinate weights are the unnormalised pairs $(1,\lambda^{2^r})$, scaled by the first power assigned to the block.  Thus the verifier runs one branching program per claimed block rather than per physical column, with no field inversions.  Unlike the generic adapter in~\cite{jagged-pcs}, our underlying PCS already accepts a verifier-evaluable inner-product weight, so we evaluate these batched indicators directly and introduce no separate Jagged reduction sumcheck.
 
 \subsection{Inner-product PCS}\label{sec:rs-dense}
 
@@ -466,7 +466,7 @@ We lay out the whole protocol as one ordered sequence. Each reduction below adds
 
 \paragraph{Commitment.}
 \begin{enumerate}
-\item \textbf{Prover.} Builds all committed columns (field-valued): each table's state, operands, addresses, read values, and counts (plus $w,b,\mathit{next\_pc},\mathit{next\_fp}$ for \texttt{JUMP}); the memory column $M$; and the memory and bytecode finalize counts. Counts are always committed $\gen$-powers (\S\ref{sec:memchan}); the public program and the virtual increments $\gen\cdot\pc,\gen\cdot\cnt$ are not. It tightly concatenates their real prefixes into the Jagged witness $q$ and sends its dense commitment (\S\ref{sec:stacking}, \S\ref{sec:rs-dense}).  It also announces each table's non-padded row count.  Those exact counts determine the Jagged interval boundaries; their power-of-two ceilings still determine the logical AIR and grand-product leaf layouts (\S\ref{sec:leafstack}). Padding rows are a fixed default (\S\ref{sec:e2e-pad}); the announced sizes fix the surplus the verifier later divides out (\S\ref{sec:gp}).
+\item \textbf{Prover.} Builds all committed columns (field-valued): each table's state, operands, addresses, read values, and counts (plus $w,b,\mathit{next\_pc},\mathit{next\_fp}$ for \texttt{JUMP}); the memory column $M$; and the memory and bytecode finalize counts. Counts are always committed $\gen$-powers (\S\ref{sec:memchan}); the public program and the virtual increments $\gen\cdot\pc,\gen\cdot\cnt$ are not. It packs compatible equal-height columns row-major and tightly concatenates the resulting blocks into the Jagged witness $q$, then sends its dense commitment (\S\ref{sec:stacking}, \S\ref{sec:rs-dense}).  It also announces each table's non-padded row count.  Those exact counts determine the Jagged interval boundaries; their power-of-two ceilings still determine the logical AIR and grand-product leaf layouts (\S\ref{sec:leafstack}). Padding rows are a fixed default (\S\ref{sec:e2e-pad}); the announced sizes fix the surplus the verifier later divides out (\S\ref{sec:gp}).
 \end{enumerate}
 
 \paragraph{Bus.}

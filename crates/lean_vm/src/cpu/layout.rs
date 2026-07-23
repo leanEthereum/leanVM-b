@@ -72,6 +72,9 @@ pub struct Layout {
     /// Per-column placement (offset + n_vars) in the stacked witness; from the
     /// columns' log-sizes alone, so reconstructable by the verifier.
     pub placements: Vec<witness::Placement>,
+    /// Power-of-two equal-height column blocks used by the row-major Jagged
+    /// commitment layout. Virtual columns are absent; q_pkd is a singleton.
+    pub jagged_blocks: Vec<Vec<usize>>,
     /// `log2` of the stacked witness length.
     pub m: usize,
     /// Public input: the first two memory cells `m[0], m[1]` (256 bits), bound to
@@ -81,6 +84,78 @@ pub struct Layout {
     /// Real (non-padded) per-table row counts, as announced. `row_counts[5]` is
     /// the executed `BLAKE3` count, which gates the flock sub-proof.
     pub row_counts: [usize; 6],
+}
+
+/// Shape-independent Jagged block partition. Columns share a block only when
+/// they have the same public height source and identical membership in every
+/// bus/constraint/PI opening row-group. Schema adjacency is irrelevant: the
+/// explicit placement map can globally cluster compatible columns. Consequently
+/// every point group claims either a whole block or none of it.
+fn jagged_column_blocks(log_bytecode: usize, sides: [&[Block]; 3]) -> Vec<Vec<usize>> {
+    let sources = col_height_sources(log_bytecode);
+    let mut signatures: Vec<Vec<usize>> = vec![Vec::new(); sources.len()];
+    let kappa_sources = block_kappa_sources(log_bytecode);
+    let mut block_index = 0usize;
+    let mut group_of_source = std::collections::BTreeMap::new();
+    for blocks in sides {
+        for block in blocks {
+            let source = kappa_sources[block_index];
+            block_index += 1;
+            let next = group_of_source.len();
+            let group = *group_of_source.entry(source).or_insert(next);
+            for coord in &block.coords {
+                if let Coord::Col(col) | Coord::GCol(col) = coord {
+                    if sources[*col].is_some() {
+                        signatures[*col].push(group);
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(block_index, kappa_sources.len());
+
+    let mut next_group = group_of_source.len();
+    let sch = schema();
+    for (t, table) in tables::tables().iter().enumerate() {
+        let base = sch.base[t];
+        for &col in table.constraint_columns() {
+            if sources[base + col].is_some() {
+                signatures[base + col].push(next_group);
+            }
+        }
+        next_group += 1;
+    }
+    signatures[MEM].push(next_group); // public-input claim
+    for signature in &mut signatures {
+        signature.sort_unstable();
+        signature.dedup();
+    }
+
+    let mut blocks = vec![vec![QPKD]];
+    let committed: Vec<usize> = (0..sources.len()).filter(|&col| col != QPKD && sources[col].is_some()).collect();
+    let mut consumed = vec![false; sources.len()];
+    for &first in &committed {
+        if consumed[first] {
+            continue;
+        }
+        let group: Vec<usize> = committed
+            .iter()
+            .copied()
+            .filter(|&col| !consumed[col] && sources[col] == sources[first] && signatures[col] == signatures[first])
+            .collect();
+        for &col in &group {
+            consumed[col] = true;
+        }
+        let mut start = 0usize;
+        let mut remaining = group.len();
+        while remaining != 0 {
+            let width = 1usize << (usize::BITS - 1 - remaining.leading_zeros());
+            blocks.push(group[start..start + width].to_vec());
+            start += width;
+            remaining -= width;
+        }
+    }
+    blocks
 }
 
 /// The prover's witness bundle: the committed column values + their stacked
@@ -442,13 +517,15 @@ pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; 6], pi: [F128; 2]
     // q_pkd stays at offset zero so its ring-switched weight remains an aligned
     // subcube. Every ordinary column after it is packed tightly and opened via
     // the Jagged indicator.
-    let (placements, m) = witness::placements_of(&kappas, &heights, Some(QPKD));
+    let jagged_blocks = jagged_column_blocks(log_bytecode, [&push, &pull, &count_blocks]);
+    let (placements, m) = witness::placements_of_blocks(&kappas, &heights, &jagged_blocks);
     Layout {
         push,
         pull,
         count: count_blocks,
         pad,
         placements,
+        jagged_blocks,
         m,
         pi,
         taus,

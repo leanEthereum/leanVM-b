@@ -1,7 +1,7 @@
 //! Field-valued columns packed into the dense representation of a Jagged PCS.
-//! Only each column's real prefix is committed; columns are concatenated without
-//! alignment gaps and the Jagged indicator maps their padded MLE claims back to
-//! this dense vector.
+//! Only each column's real prefix is committed. Compatible equal-height columns
+//! are interleaved row-major; other blocks are concatenated without alignment
+//! gaps. The Jagged indicator maps padded column-MLE claims to this dense vector.
 
 use primitives::field::F128;
 
@@ -130,18 +130,45 @@ pub fn stack_q(cols: &[Column], placements: &[Placement], m: usize) -> Vec<F128>
         if placement.is_virtual() {
             continue;
         }
+        // A row-major block is written once, by slot zero. Writing complete
+        // rows gives the CPU contiguous stores (and lets rayon split disjoint
+        // chunks); walking one physical column at a time would be a strided,
+        // cache-hostile transpose.
+        if placement.slot != 0 {
+            continue;
+        }
+        let width = 1usize << placement.block_width_log;
         let src = &cols[i][..placement.height];
-        if placement.block_width_log == 0 && src.len() >= crate::PAR_THRESHOLD {
+        if width == 1 && src.len() >= crate::PAR_THRESHOLD {
             let dst = &mut q[placement.offset..placement.offset + placement.height];
             dst.par_chunks_mut(COPY_CHUNK)
                 .zip(src.par_chunks(COPY_CHUNK))
                 .for_each(|(d, s)| d.copy_from_slice(s));
-        } else if placement.block_width_log == 0 {
+        } else if width == 1 {
             q[placement.offset..placement.offset + placement.height].copy_from_slice(src);
         } else {
-            let width = 1usize << placement.block_width_log;
-            for (row, &value) in src.iter().enumerate() {
-                q[placement.offset + placement.slot + row * width] = value;
+            let mut block_cols = vec![usize::MAX; width];
+            for (j, other) in placements.iter().enumerate() {
+                if !other.is_virtual()
+                    && other.offset == placement.offset
+                    && other.block_width_log == placement.block_width_log
+                {
+                    block_cols[other.slot] = j;
+                }
+            }
+            assert!(block_cols.iter().all(|&j| j != usize::MAX), "incomplete row-major Jagged block");
+            let dst = &mut q[placement.offset..placement.offset + placement.height * width];
+            let write_row = |row: usize, out: &mut [F128]| {
+                for (slot, &col) in block_cols.iter().enumerate() {
+                    out[slot] = cols[col][row];
+                }
+            };
+            if dst.len() >= crate::PAR_THRESHOLD {
+                dst.par_chunks_mut(width).enumerate().for_each(|(row, out)| write_row(row, out));
+            } else {
+                for (row, out) in dst.chunks_mut(width).enumerate() {
+                    write_row(row, out);
+                }
             }
         }
     }

@@ -586,10 +586,16 @@ fn slot_claims(l: &Layout, claims: &[ColumnClaim]) -> Vec<pcs::SlotClaim> {
             let suffix = F128::ONE
                 + ::pcs::jagged::prefix_indicator_eval(placement.height, &c.point);
             let jagged_value = c.value + l.pad[c.col] * suffix;
+            let mut block_point = Vec::with_capacity(placement.block_width_log + c.point.len());
+            for bit in 0..placement.block_width_log {
+                block_point.push(if (placement.slot >> bit) & 1 == 1 { F128::ONE } else { F128::ZERO });
+            }
+            block_point.extend_from_slice(&c.point);
             pcs::SlotClaim::Jagged {
                 offset: placement.offset,
-                height: placement.height,
-                row_point: c.point.clone(),
+                height: placement.height << placement.block_width_log,
+                selector_len: placement.block_width_log,
+                row_point: block_point,
                 value: jagged_value,
             }
         })

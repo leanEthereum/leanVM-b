@@ -25,8 +25,22 @@ use primitives::field::F128;
 /// `start` and `end` are public cumulative column heights and must fit in that
 /// cube.  `end == 2^index_point.len()` is supported by the extra top bit.
 pub fn indicator_eval(row_point: &[F128], start: usize, end: usize, index_point: &[F128]) -> F128 {
+    let row_weights: Vec<[F128; 2]> = row_point.iter().map(|&a| [F128::ONE + a, a]).collect();
+    indicator_eval_with_row_weights(&row_weights, start, end, index_point)
+}
+
+/// [`indicator_eval`] with explicit `(zero, one)` weights for each logical-row
+/// coordinate. The pairs need not sum to one. This lets a geometric column
+/// batch use selector weights `(1, gamma^(2^b))` directly, absorbing all
+/// normalization factors and avoiding exceptional inversions.
+pub fn indicator_eval_with_row_weights(
+    row_weights: &[[F128; 2]],
+    start: usize,
+    end: usize,
+    index_point: &[F128],
+) -> F128 {
     assert!(start <= end, "jagged column interval must be ordered");
-    assert!(row_point.len() <= index_point.len());
+    assert!(row_weights.len() <= index_point.len());
     assert!(end <= (1usize << index_point.len()));
 
     // State = (carry, comparison_so_far), indexed carry + 2*comparison.
@@ -38,11 +52,10 @@ pub fn indicator_eval(row_point: &[F128], start: usize, end: usize, index_point:
     // One extra fixed-zero top bit handles an interval ending at 2^m and also
     // rejects an addition that carries out of the committed cube.
     for bit in 0..=index_point.len() {
-        let a = row_point.get(bit).copied().unwrap_or(F128::ZERO);
         let b = index_point.get(bit).copied().unwrap_or(F128::ZERO);
         let c_bit = ((start >> bit) & 1) != 0;
         let d_bit = ((end >> bit) & 1) != 0;
-        let a_weights = [F128::ONE + a, a];
+        let a_weights = row_weights.get(bit).copied().unwrap_or([F128::ONE, F128::ZERO]);
         let b_weights = [F128::ONE + b, b];
         let mut next = [F128::ZERO; 4];
 
@@ -130,6 +143,30 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn indicator_accepts_unnormalized_row_weights() {
+        let index_point = [f(3), f(5), f(7), f(11)];
+        let row_weights = [[F128::ONE, f(13)], [F128::ONE, F128::ONE], [f(17), f(19)]];
+        let (start, end) = (3usize, 11usize);
+        let index_eq = build_eq(&index_point);
+        let mut expected = F128::ZERO;
+        for index in start..end {
+            let row = index - start;
+            if row >= 1 << row_weights.len() {
+                continue;
+            }
+            let mut weight = index_eq[index];
+            for (bit, pair) in row_weights.iter().enumerate() {
+                weight *= pair[(row >> bit) & 1];
+            }
+            expected += weight;
+        }
+        assert_eq!(
+            indicator_eval_with_row_weights(&row_weights, start, end, &index_point),
+            expected
+        );
     }
 
     #[test]

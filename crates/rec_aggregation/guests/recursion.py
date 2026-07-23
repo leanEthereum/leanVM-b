@@ -129,6 +129,7 @@ N_COMMITTED_COLS = N_COMMITTED_COLS_PLACEHOLDER
 COL_HEIGHT_KIND = COL_HEIGHT_KIND_PLACEHOLDER
 COL_HEIGHT_SRC = COL_HEIGHT_SRC_PLACEHOLDER
 COL_HEIGHT_ADJ = COL_HEIGHT_ADJ_PLACEHOLDER
+COL_BLOCK_LOG = COL_BLOCK_LOG_PLACEHOLDER
 PCS_MIN_MU = PCS_MIN_MU_PLACEHOLDER
 # Per-candidate opening tables (P3b): row (m - LIG_MIN_LOG_SIZE) drives that arm.
 LIG_MAX_LEVELS = LIG_MAX_LEVELS_PLACEHOLDER
@@ -185,9 +186,18 @@ CLAIM_POINT_OFF = CLAIM_POINT_OFF_PLACEHOLDER
 CLAIM_COL = CLAIM_COL_PLACEHOLDER
 CLAIM_PAD = CLAIM_PAD_PLACEHOLDER
 CLAIM_QPKD_SLOT = CLAIM_QPKD_SLOT_PLACEHOLDER
+CLAIM_BLOCK_SLOT = CLAIM_BLOCK_SLOT_PLACEHOLDER
+CLAIM_BLOCK_LOG = CLAIM_BLOCK_LOG_PLACEHOLDER
+CLAIM_GAMMA_RANK = CLAIM_GAMMA_RANK_PLACEHOLDER
 N_CLAIM_ROWS = N_CLAIM_ROWS_PLACEHOLDER
 CLAIM_ROW_GROUP = CLAIM_ROW_GROUP_PLACEHOLDER
 CLAIM_ROW_REP = CLAIM_ROW_REP_PLACEHOLDER
+N_JAGGED_BATCHES = N_JAGGED_BATCHES_PLACEHOLDER
+JAGGED_BATCH_REP = JAGGED_BATCH_REP_PLACEHOLDER
+JAGGED_BATCH_ROW = JAGGED_BATCH_ROW_PLACEHOLDER
+JAGGED_BATCH_COL = JAGGED_BATCH_COL_PLACEHOLDER
+JAGGED_BATCH_LOG = JAGGED_BATCH_LOG_PLACEHOLDER
+JAGGED_BATCH_BASE = JAGGED_BATCH_BASE_PLACEHOLDER
 QPKD_VARS_CAP = QPKD_VARS_CAP_PLACEHOLDER
 # Ring-switch trace-dual basis: bit_i(y) = Tr(TRACE_DUAL_BASIS[i] * y). Any eq-weighted
 # bit-sum is then the linearized polynomial L_w(y) = sum_k c_k y^(2^k) with
@@ -583,16 +593,25 @@ def jagged_step(s0, s1, s2, s3, w0, w1, w2, w3, start_bit_point, end_bit_point):
     return out[0], out[1], out[2], out[3]
 
 
-def jagged_prefix_fixed(row_index_weights, start_bits, end_bits, nbits: Const):
-    # Candidate-specialized straight-line prefix. Keeping the four states in a
-    # scalar chain avoids both recursive VM frames and intermediate memory.
+def jagged_prefix_fixed(row_point, index_point, gamma, selector_len: Const, start_bits, end_bits, nbits: Const):
+    # Candidate-specialized straight-line prefix. Generate the four equality
+    # weights immediately before their transition instead of materializing and
+    # reloading a 4 * nbits heap table for every block.
     s0 = 1
     s1 = 0
     s2 = 0
     s3 = 0
-    for bit in unroll(0, nbits):
-        weights = row_index_weights * GEN ** (4 * bit)
-        s0, s1, s2, s3 = jagged_step(s0, s1, s2, s3, weights[GEN ** 0], weights[GEN ** 1], weights[GEN ** 2], weights[GEN ** 3], start_bits[GEN ** bit], end_bits[GEN ** bit])
+    gamma_bit = gamma
+    for bit in unroll(0, selector_len):
+        index_bit = index_point[GEN ** bit]
+        rx = gamma_bit * index_bit
+        s0, s1, s2, s3 = jagged_step(s0, s1, s2, s3, 1 + index_bit, gamma_bit + rx, index_bit, rx, start_bits[GEN ** bit], end_bits[GEN ** bit])
+        gamma_bit *= gamma_bit
+    for bit in unroll(selector_len, nbits):
+        row_bit = row_point[GEN ** (bit - selector_len)]
+        index_bit = index_point[GEN ** bit]
+        rx = row_bit * index_bit
+        s0, s1, s2, s3 = jagged_step(s0, s1, s2, s3, 1 + row_bit + index_bit + rx, row_bit + rx, index_bit + rx, rx, start_bits[GEN ** bit], end_bits[GEN ** bit])
     return s0, s1, s2, s3
 
 
@@ -694,7 +713,7 @@ def jagged_contract_zero(final_msg, start_bits, end_bits, fold_bits: Const, log_
     return init0 * layers[layer_off] + init1 * layers[layer_off + 1] + init2 * layers[layer_off + 2] + init3 * layers[layer_off + 3]
 
 
-def jagged_contract_general(final_msg, row_point, start_bits, end_bits, fold_bits: Const, log_len: Const, init0, init1, init2, init3):
+def jagged_contract_general(final_msg, row_point, start_bits, end_bits, fold_bits: Const, log_len: Const, row_shift: Const, init0, init1, init2, init3):
     layers = StackBuf(8 * 2 ** YR_LOG_CAP)
     for y in unroll(0, 2 ** log_len):
         layers[4 * y] = 0
@@ -710,7 +729,7 @@ def jagged_contract_general(final_msg, row_point, start_bits, end_bits, fold_bit
         for t in unroll(0, next_len):
             v = layer_off + 4 * t
             w = layer_off + 4 * (t + next_len)
-            o0, o1, o2, o3 = jagged_reverse_step(layers[v], layers[v + 1], layers[v + 2], layers[v + 3], layers[w], layers[w + 1], layers[w + 2], layers[w + 3], row_point[GEN ** (fold_bits + bit)], start_bits[GEN ** (fold_bits + bit)], end_bits[GEN ** (fold_bits + bit)])
+            o0, o1, o2, o3 = jagged_reverse_step(layers[v], layers[v + 1], layers[v + 2], layers[v + 3], layers[w], layers[w + 1], layers[w + 2], layers[w + 3], row_point[GEN ** (fold_bits + bit - row_shift)], start_bits[GEN ** (fold_bits + bit)], end_bits[GEN ** (fold_bits + bit)])
             out = next_off + 4 * t
             layers[out] = o0
             layers[out + 1] = o1
@@ -722,48 +741,31 @@ def jagged_contract_general(final_msg, row_point, start_bits, end_bits, fold_bit
     return init0 * layers[layer_off] + init1 * layers[layer_off + 1] + init2 * layers[layer_off + 2] + init3 * layers[layer_off + 3]
 
 
-def jagged_terminal(m_idx: Const, fold_challenges, final_msg, claim_rows, col_start_bits, col_end_bits, gamma_pool):
-    row_index_weights = HeapBuf(4 * N_CLAIM_ROWS * SIZE_BITS)
-    residual_zero = HeapBuf(N_CLAIM_ROWS)
-    for group in unroll(0, N_CLAIM_ROWS):
-        row = claim_rows * GEN ** (SIZE_BITS * group)
-        weights = row_index_weights * GEN ** (4 * SIZE_BITS * group)
-        for bit in unroll(0, LIG_TOTAL_FOLDS[m_idx]):
-            row_bit = row[GEN ** bit]
-            index_bit = fold_challenges[GEN ** bit]
-            rx = row_bit * index_bit
-            weights[GEN ** (4 * bit)] = 1 + row_bit + index_bit + rx
-            weights[GEN ** (4 * bit + 1)] = row_bit + rx
-            weights[GEN ** (4 * bit + 2)] = index_bit + rx
-            weights[GEN ** (4 * bit + 3)] = rx
-        if LIG_YR_LOG_LEN[m_idx] == 3:
-            if row[GEN ** LIG_TOTAL_FOLDS[m_idx]] == 0:
-                if row[GEN ** (LIG_TOTAL_FOLDS[m_idx] + 1)] == 0:
-                    if row[GEN ** (LIG_TOTAL_FOLDS[m_idx] + 2)] == 0:
-                        residual_zero[GEN ** group] = 1
-                    else:
-                        residual_zero[GEN ** group] = 0
-                else:
-                    residual_zero[GEN ** group] = 0
-            else:
-                residual_zero[GEN ** group] = 0
-        else:
-            residual_zero[GEN ** group] = 0
+def jagged_terminal(m_idx: Const, fold_challenges, final_msg, claim_rows, col_start_bits, col_end_bits, gamma, gamma_powers):
+    # One automaton per complete row-major column block, rather than one per
+    # physical column. For selector bit b, unnormalized row weights (1,
+    # gamma^(2^b)) absorb the geometric batch scale Π(1+gamma^(2^b)) without
+    # any field inversions; the remaining coordinates are the shared row point.
     total = 0
-    for j in unroll(0, N_CLAIMS):
-        if CLAIM_POINT_BUF[j] != POINT_BUF_QPKD:
-            row = claim_rows * GEN ** (SIZE_BITS * CLAIM_ROW_GROUP[j])
-            start_bits = col_start_bits * GEN ** (SIZE_BITS * CLAIM_COL[j])
-            end_bits = col_end_bits * GEN ** (SIZE_BITS * CLAIM_COL[j])
-            weights = row_index_weights * GEN ** (4 * SIZE_BITS * CLAIM_ROW_GROUP[j])
-            p0, p1, p2, p3 = jagged_prefix_fixed(weights, start_bits, end_bits, LIG_TOTAL_FOLDS[m_idx])
-            folded_out = StackBuf(1)
-            if residual_zero[GEN ** CLAIM_ROW_GROUP[j]] == 1:
-                folded_out[0] = jagged_contract_zero(final_msg, start_bits, end_bits, LIG_TOTAL_FOLDS[m_idx], LIG_YR_LOG_LEN[m_idx], p0, p1, p2, p3)
-            else:
-                folded_out[0] = jagged_contract_general(final_msg, row, start_bits, end_bits, LIG_TOTAL_FOLDS[m_idx], LIG_YR_LOG_LEN[m_idx], p0, p1, p2, p3)
-            folded = folded_out[0]
-            total += gamma_pool[GEN ** j] * folded
+    for batch in unroll(0, N_JAGGED_BATCHES):
+        row = claim_rows * GEN ** (SIZE_BITS * JAGGED_BATCH_ROW[batch])
+        start_bits = col_start_bits * GEN ** (SIZE_BITS * JAGGED_BATCH_COL[batch])
+        end_bits = col_end_bits * GEN ** (SIZE_BITS * JAGGED_BATCH_COL[batch])
+        p0, p1, p2, p3 = jagged_prefix_fixed(row, fold_challenges, gamma, JAGGED_BATCH_LOG[batch], start_bits, end_bits, LIG_TOTAL_FOLDS[m_idx])
+        folded_out = StackBuf(1)
+        residual_zero = StackBuf(1)
+        residual_zero[0] = 0
+        if LIG_YR_LOG_LEN[m_idx] == 3:
+            if row[GEN ** (LIG_TOTAL_FOLDS[m_idx] - JAGGED_BATCH_LOG[batch])] == 0:
+                if row[GEN ** (LIG_TOTAL_FOLDS[m_idx] + 1 - JAGGED_BATCH_LOG[batch])] == 0:
+                    if row[GEN ** (LIG_TOTAL_FOLDS[m_idx] + 2 - JAGGED_BATCH_LOG[batch])] == 0:
+                        residual_zero[0] = 1
+        if residual_zero[0] == 1:
+            folded_out[0] = jagged_contract_zero(final_msg, start_bits, end_bits, LIG_TOTAL_FOLDS[m_idx], LIG_YR_LOG_LEN[m_idx], p0, p1, p2, p3)
+        else:
+            folded_out[0] = jagged_contract_general(final_msg, row, start_bits, end_bits, LIG_TOTAL_FOLDS[m_idx], LIG_YR_LOG_LEN[m_idx], JAGGED_BATCH_LOG[batch], p0, p1, p2, p3)
+        folded = folded_out[0]
+        total += gamma_powers[GEN ** JAGGED_BATCH_BASE[batch]] * folded
     return total
 
 
@@ -1734,6 +1736,8 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
             g_height = g_squares[kappa_base[GEN ** COL_HEIGHT_SRC[c]] * GEN ** COL_HEIGHT_ADJ[c]]
         else:
             g_height = count_gpows[GEN ** COL_HEIGHT_SRC[c]]
+            for bit in unroll(0, COL_HEIGHT_ADJ[c]):
+                g_height *= g_height
         col_heights[GEN ** c] = g_height
         col_bounds[GEN ** (c + 1)] = col_bounds[GEN ** c] * g_height
     g_total = col_bounds[GEN ** N_COMMITTED_COLS]
@@ -1741,6 +1745,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
 
     col_start_bits = HeapBuf(SIZE_BITS * N_COMMITTED_COLS)
     col_height_bits = HeapBuf(SIZE_BITS * N_COMMITTED_COLS)
+    col_row_height_bits = HeapBuf(SIZE_BITS * N_COMMITTED_COLS)
     col_end_bits = HeapBuf(SIZE_BITS * N_COMMITTED_COLS)
     for c in unroll(0, N_COMMITTED_COLS):
         start_bits = col_start_bits * GEN ** (SIZE_BITS * c)
@@ -1765,6 +1770,11 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
         assert start_g == col_bounds[GEN ** c]
         assert height_g == col_heights[GEN ** c]
         assert end_g == col_bounds[GEN ** (c + 1)]
+        row_height_bits = col_row_height_bits * GEN ** (SIZE_BITS * c)
+        for bit in unroll(0, SIZE_BITS - COL_BLOCK_LOG[c]):
+            row_height_bits[GEN ** bit] = height_bits[GEN ** (bit + COL_BLOCK_LOG[c])]
+        for bit in unroll(SIZE_BITS - COL_BLOCK_LOG[c], SIZE_BITS):
+            row_height_bits[GEN ** bit] = 0
 
     # Claims share only a handful of logical row points. Materialize each
     # distinct source/length once, with explicit zero high coordinates.
@@ -1808,7 +1818,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
                 opening_claim_values[GEN ** j] = claim_pool[GEN ** j]
             else:
                 row = claim_rows * GEN ** (SIZE_BITS * CLAIM_ROW_GROUP[j])
-                height_bits = col_height_bits * GEN ** (SIZE_BITS * CLAIM_COL[j])
+                height_bits = col_row_height_bits * GEN ** (SIZE_BITS * CLAIM_COL[j])
                 real_prefix = prefix_indicator(row, height_bits)
                 opening_claim_values[GEN ** j] = claim_pool[GEN ** j] + CLAIM_PAD[j] * (1 + real_prefix)
 
@@ -1819,11 +1829,15 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     gamma_pool = HeapBuf(N_CLAIMS)
     fs = squeeze(fs)
     gamma = fs[0]
+    gamma_powers = HeapBuf(N_CLAIMS)
     gv = 1
-    for j in unroll(0, N_CLAIMS):
-        gamma_pool[GEN ** j] = gv
-        target += gv * opening_claim_values[GEN ** j]
+    for rank in unroll(0, N_CLAIMS):
+        gamma_powers[GEN ** rank] = gv
         gv *= gamma
+    for j in unroll(0, N_CLAIMS):
+        weight = gamma_powers[GEN ** CLAIM_GAMMA_RANK[j]]
+        gamma_pool[GEN ** j] = weight
+        target += weight * opening_claim_values[GEN ** j]
 
     # ================= the Ligerito opening core (Jagged dense q) ===========
 
@@ -1906,7 +1920,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     # A second dispatch on the already-certified commitment size bakes both
     # the folded prefix length and the residual-message shape into straight-
     # line width-four contractions.
-    jagged_sum = match_range(log(sel), range(0, LIG_N_CANDIDATES), lambda m_idx: jagged_terminal(m_idx, fold_challenges, final_msg, claim_rows, col_start_bits, col_end_bits, gamma_pool))
+    jagged_sum = match_range(log(sel), range(0, LIG_N_CANDIDATES), lambda m_idx: jagged_terminal(m_idx, fold_challenges, final_msg, claim_rows, col_start_bits, col_end_bits, gamma, gamma_powers))
     # q_pkd occupies [0, 2^qpkdv), hence its residual y selector is zero.
     inner_sum = inner_total + jagged_sum + (rs_weight + qpkd_claim_weight) * final_msg[GEN ** 0]
     assert inner_sum == sumcheck_target
