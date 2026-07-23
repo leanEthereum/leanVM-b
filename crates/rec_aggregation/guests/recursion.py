@@ -757,12 +757,19 @@ def jagged_terminal(m_idx: Const, fold_challenges, final_msg, claim_rows, col_bo
         p0, p1, p2, p3 = jagged_prefix_fixed(row, fold_challenges, gamma, JAGGED_BATCH_LOG[batch], start_bits, end_bits, LIG_TOTAL_FOLDS[m_idx])
         folded_out = StackBuf(1)
         residual_zero = StackBuf(1)
-        residual_zero[0] = 0
         if LIG_YR_LOG_LEN[m_idx] == 3:
             if row[GEN ** (LIG_TOTAL_FOLDS[m_idx] - JAGGED_BATCH_LOG[batch])] == 0:
                 if row[GEN ** (LIG_TOTAL_FOLDS[m_idx] + 1 - JAGGED_BATCH_LOG[batch])] == 0:
                     if row[GEN ** (LIG_TOTAL_FOLDS[m_idx] + 2 - JAGGED_BATCH_LOG[batch])] == 0:
                         residual_zero[0] = 1
+                    else:
+                        residual_zero[0] = 0
+                else:
+                    residual_zero[0] = 0
+            else:
+                residual_zero[0] = 0
+        else:
+            residual_zero[0] = 0
         if residual_zero[0] == 1:
             folded_out[0] = jagged_contract_zero(final_msg, start_bits, end_bits, LIG_TOTAL_FOLDS[m_idx], LIG_YR_LOG_LEN[m_idx], p0, p1, p2, p3)
         else:
