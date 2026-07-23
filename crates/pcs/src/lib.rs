@@ -1,4 +1,4 @@
-// Credit: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
+// CREDIT: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
 //! Polynomial commitment scheme for the bit-MLE witness `ẑ` over GF(2).
 //!
 //! Construction: Binius-style packing with a Ligerito opening.
@@ -345,12 +345,12 @@ fn geometric_claim_weights(stack_pd: &[StackClaim], gamma: F128) -> (Vec<F128>, 
         let base = rank[members[0]];
         let mut a = gamma;
         let scale = powers[base];
-        let mut row_weights = Vec::with_capacity(stack_pd.len());
+        let StackClaim::Jagged { row_point, .. } = &stack_pd[members[0]] else { unreachable!() };
+        let mut row_weights = Vec::with_capacity(row_point.len());
         for _ in 0..selector_len {
             row_weights.push([F128::ONE, a]);
             a *= a;
         }
-        let StackClaim::Jagged { row_point, .. } = &stack_pd[members[0]] else { unreachable!() };
         row_weights.extend(row_point[selector_len..].iter().map(|&r| [F128::ONE + r, r]));
         batches.push(JaggedClaimBatch { members, offset, height, selector_len, row_weights, scale });
     }
@@ -612,7 +612,6 @@ pub fn open_batch_mixed_ligerito_stacked(
     let (gammas_pd, jagged_batches) = geometric_claim_weights(stack_pd, gamma);
     fold_stacked_point_claims(&mut b_stack, &mut target, stack_pd, &gammas_pd, &jagged_batches);
 
-    
     ligerito::multilevel_prover_with_basis(
         lig_config,
         stack.to_vec(),
@@ -759,4 +758,108 @@ pub fn verify_opening_batch_mixed_ligerito_stacked(
         r_dprime,
         lig,
     })
+}
+
+#[cfg(test)]
+mod jagged_batch_tests {
+    use super::*;
+
+    fn f(x: u64) -> F128 {
+        F128::new(x, x.rotate_left(23))
+    }
+
+    #[test]
+    fn geometric_batch_matches_individual_jagged_claims() {
+        let row = [f(3), f(5), f(7)];
+        // Deliberately shuffle the four selector slots: batching must assign
+        // powers by Boolean slot, not by input order.
+        let block_points = [
+            [F128::ONE, F128::ZERO, row[0], row[1], row[2]],
+            [F128::ZERO, F128::ZERO, row[0], row[1], row[2]],
+            [F128::ONE, F128::ONE, row[0], row[1], row[2]],
+            [F128::ZERO, F128::ONE, row[0], row[1], row[2]],
+        ];
+        let singleton_point = [f(11), f(13), f(17), f(19), f(23)];
+        let claims = [
+            StackClaim::Jagged {
+                offset: 3,
+                height: 20,
+                selector_len: 2,
+                row_point: &block_points[0],
+                value: f(29),
+            },
+            StackClaim::Jagged {
+                offset: 3,
+                height: 20,
+                selector_len: 2,
+                row_point: &block_points[1],
+                value: f(31),
+            },
+            StackClaim::Jagged {
+                offset: 3,
+                height: 20,
+                selector_len: 2,
+                row_point: &block_points[2],
+                value: f(37),
+            },
+            StackClaim::Jagged {
+                offset: 3,
+                height: 20,
+                selector_len: 2,
+                row_point: &block_points[3],
+                value: f(41),
+            },
+            StackClaim::Jagged {
+                offset: 29,
+                height: 7,
+                selector_len: 0,
+                row_point: &singleton_point,
+                value: f(43),
+            },
+        ];
+        let gamma = f(47);
+        let (weights, batches) = geometric_claim_weights(&claims, gamma);
+        assert_eq!(batches.len(), 1);
+
+        let mut folded = vec![F128::ZERO; 64];
+        let mut target = F128::ZERO;
+        fold_stacked_point_claims(&mut folded, &mut target, &claims, &weights, &batches);
+
+        let expected_target = claims
+            .iter()
+            .zip(&weights)
+            .fold(F128::ZERO, |acc, (claim, &weight)| acc + weight * claim.value());
+        assert_eq!(target, expected_target);
+
+        for index in 0..64 {
+            let point: Vec<_> = (0..6)
+                .map(|bit| if (index >> bit) & 1 == 1 { F128::ONE } else { F128::ZERO })
+                .collect();
+            let expected = claims
+                .iter()
+                .zip(&weights)
+                .fold(F128::ZERO, |acc, (claim, &weight)| {
+                    acc + weight * stack_claim_eq_at(claim, &point)
+                });
+            assert_eq!(folded[index], expected, "dense index {index}");
+        }
+
+        let residual_point = [f(53), f(59), f(61), f(67), f(71), f(73)];
+        let batch_eval = batches.iter().fold(F128::ZERO, |acc, batch| {
+            acc + batch.scale
+                * jagged::indicator_eval_with_row_weights(
+                    &batch.row_weights,
+                    batch.offset,
+                    batch.offset + batch.height,
+                    &residual_point,
+                )
+        });
+        let grouped_eval = batches[0]
+            .members
+            .iter()
+            .fold(F128::ZERO, |acc, &member| {
+                acc + weights[member] * stack_claim_eq_at(&claims[member], &residual_point)
+            });
+        assert_eq!(batch_eval, grouped_eval);
+    }
 }

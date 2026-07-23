@@ -1924,7 +1924,9 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     #   | +SEL+2 z_skip | +SEL+3.. zrho | +SEL+3+LCR.. lincheck rs
     #   | +SEL+3+2*LCR.. z_partial (2^K_SKIP) | MATPART_OFF matpart
     #   | RS_COEFF_OFF.. coefficients | RS_DPRIME_OFF.. r''
-    #   | RS_SHAT_OFF.. the two slices | RS_TRANSPOSED_OFF.. their claims.
+    #   | RS_SHAT_OFF.. the two slices | RS_TRANSPOSED_OFF.. their claims
+    #   | RS_Z_OFF.. two padded z rows | RS_QUERY_OFF.. padded query
+    #   | RS_TERMINAL_OFF.. the two terminal evaluations.
     for k in unroll(0, BYTECODE_LOG):
         defer_out[GEN ** k] = zeta[GEN ** k]
     for k in unroll(0, LOG2_BYTECODE_COLS):

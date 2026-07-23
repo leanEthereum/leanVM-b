@@ -143,7 +143,8 @@ struct SubDefer {
 
 /// The batched reduced claims the aggregation exports: one point + value on
 /// the stacked bytecode polynomial, one point + two values on the flock
-/// matrices (doc.tex §Deferred evaluation claims).
+/// matrices, and one point + value on the fixed trace-dual Frobenius table
+/// (doc.tex §Deferred evaluation claims).
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct ReducedClaims {
     r_bc: Vec<F128>,
@@ -232,8 +233,9 @@ impl RecursiveStatement {
 /// A complete N→1 recursive proof.
 ///
 /// Its contents are deliberately opaque. [`RecursiveProof::verify`] is the
-/// only acceptance path and checks both the outer VM proof and the fixed
-/// polynomial evaluations deferred by the recursion guest.
+/// only acceptance path and checks the outer VM proof, the fixed polynomial
+/// evaluations, and the transparent ring relations deferred by the recursion
+/// guest.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct RecursiveProof {
     statement: RecursiveStatement,
@@ -255,6 +257,7 @@ impl RecursiveProof {
         if statement.ring_checks.len() != statement.sub_statements.len() {
             return Err(RecursiveVerifyError::InvalidDeferredShape);
         }
+        validate_ring_shapes(&statement.ring_checks)?;
         let guest = recursion_guest(inner_program, statement.sub_statements.len());
         let public_input = statement.public_input(lean_vm::cpu::fs_seed(inner_program));
         verify(&guest, &public_input, &self.outer_proof)
@@ -293,7 +296,7 @@ fn trace_dual_frobenius_table() -> Vec<F128> {
     table
 }
 
-fn check_ring_relations(checks: &[RingChecks]) -> Result<(), RecursiveVerifyError> {
+fn validate_ring_shapes(checks: &[RingChecks]) -> Result<(), RecursiveVerifyError> {
     for check in checks {
         if check.r_dprime.len() != 7
             || check.s_hat_v.len() != 256
@@ -305,6 +308,13 @@ fn check_ring_relations(checks: &[RingChecks]) -> Result<(), RecursiveVerifyErro
         {
             return Err(RecursiveVerifyError::InvalidDeferredShape);
         }
+    }
+    Ok(())
+}
+
+fn check_ring_relations(checks: &[RingChecks]) -> Result<(), RecursiveVerifyError> {
+    validate_ring_shapes(checks)?;
+    for check in checks {
         let eq = primitives::multilinear::build_eq(&check.r_dprime);
         let coeffs = pcs::ring_switch::linearized_eq_coeffs(&eq);
         for rs in 0..2 {
@@ -1696,7 +1706,8 @@ fn recursion_guest(inner_program: &Program, nsub: usize) -> Program {
 /// 2. compile the recursion guest (`guests/recursion.py` — the generic
 ///    map needs only that size);
 /// 3. prove the inner proofs (and extract their hints);
-/// 4. prove the recursion, verify, discharge the four reduced evaluations.
+/// 4. prove the recursion, verify, discharge the fixed and transparent checks.
+///
 /// When `enable_tracing` is true, tracing starts after the inner proofs so the
 /// emitted tree profiles the recursive aggregation itself.
 pub fn run_recursion(inner: &[(usize, usize)], enable_tracing: bool) -> RecursiveProof {
@@ -1844,7 +1855,12 @@ fn recursion_1to1_smoke() {
 /// outer proof, whose four reduced evaluations are then discharged natively.
 #[test]
 fn recursion_2to1() {
-    run_recursion(&[(8, 1 << 15), (8, 1 << 15)], false);
+    let mut proof = run_recursion(&[(8, 1 << 15), (8, 1 << 15)], false);
+    proof.statement.ring_checks[0].z_vals.pop();
+    assert!(matches!(
+        proof.verify(&inner_program()),
+        Err(RecursiveVerifyError::InvalidDeferredShape)
+    ));
 }
 
 /// THE genericity milestone: ONE compiled guest bytecode verifies two inner
@@ -1879,7 +1895,8 @@ fn recursion_soundness_binds() {
 
     assert!(run(&mut guest, &batch.merged), "honest proof must verify");
 
-    for &(stream, idx, val) in &[("fs_seed", 0, F128::ONE)] {
+    {
+        let (stream, idx, val) = ("fs_seed", 0, F128::ONE);
         let mut merged = batch.merged.clone();
         let pos = merged.iter().position(|(n, _)| n == stream).expect("stream present");
         let orig = merged[pos].1[0][idx];

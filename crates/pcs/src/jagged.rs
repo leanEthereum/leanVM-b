@@ -132,9 +132,7 @@ mod tests {
                     let index_point: Vec<_> = (0..m).map(|i| f((43 * start + 59 * end + i + 1) as u64)).collect();
                     let row_eq = build_eq(&row_point);
                     let mut table = vec![F128::ZERO; n];
-                    for i in start..end {
-                        table[i] = row_eq[i - start];
-                    }
+                    table[start..end].copy_from_slice(&row_eq[..end - start]);
                     assert_eq!(
                         indicator_eval(&row_point, start, end, &index_point),
                         mle_eval(&table, &index_point),

@@ -104,10 +104,10 @@ fn jagged_column_blocks(log_bytecode: usize, sides: [&[Block]; 3]) -> Vec<Vec<us
             let next = group_of_source.len();
             let group = *group_of_source.entry(source).or_insert(next);
             for coord in &block.coords {
-                if let Coord::Col(col) | Coord::GCol(col) = coord {
-                    if sources[*col].is_some() {
-                        signatures[*col].push(group);
-                    }
+                if let Coord::Col(col) | Coord::GCol(col) = coord
+                    && sources[*col].is_some()
+                {
+                    signatures[*col].push(group);
                 }
             }
         }
@@ -236,15 +236,6 @@ pub fn col_height_sources(log_bytecode: usize) -> Vec<Option<ColHeightSource>> {
         out[b3 + c] = None;
     }
     out
-}
-
-/// Dense Jagged column order. Keeping `q_pkd` first preserves flock's aligned
-/// ring-switch lift; all remaining committed columns follow schema order.
-pub fn jagged_column_order(log_bytecode: usize) -> Vec<usize> {
-    let sources = col_height_sources(log_bytecode);
-    std::iter::once(QPKD)
-        .chain((0..sources.len()).filter(|&i| i != QPKD && sources[i].is_some()))
-        .collect()
 }
 
 /// The bus flush blocks' kappa SOURCES, flattened in side order (push, pull,
