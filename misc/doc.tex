@@ -536,6 +536,12 @@ For the trace-dual table, the prover supplies each $c_t$ as advice and the guest
 A seven-round product sumcheck reduces this identity to
 $C^\ast=\widetilde D(\rho,r^\ast)W(r^\ast)$. The guest evaluates $W(r^\ast)$ itself and forwards only the single fixed-table evaluation $\widetilde D(\rho,r^\ast)$. Consequently the expensive fixed $128\times128$ construction and contraction disappear from the VM; the in-circuit replacement is one $128$-entry coefficient MLE evaluation per sub-proof plus seven sumcheck-verifier rounds.
 
+One further ring-switch operation is transparent but proof-dependent rather than fixed. For each of the two $128$-word messages $s_{t,a}$, the opening target contains
+\[
+ T_{t,a}=\sum_{j=0}^{127}2^j\sum_{k=0}^{127}c_t(k)\,s_{t,a}(j)^{2^k}.
+\]
+Computing both values directly costs two more $128\times128$ contractions per sub-proof. The guest instead uses advised $T_{t,a}$ values, then copies $(r''_t,s_{t,0},s_{t,1},T_{t,0},T_{t,1})$ into the recursive statement; these are already-public transcript messages plus two field elements. The statement hash binds them to the outer VM proof. The native verifier reconstructs $c_t$ from $r''_t$, recomputes both displayed identities, and rejects on any mismatch. This adds $265$ field elements (about $4.2$ KiB) per sub-proof to the transparent statement while removing the two quadratic contractions from the recursion VM.
+
 \section{ISA programming}\label{sec:isa-programming}
 
 How the zkDSL compiler (\texttt{crates/lean\_compiler}; surface language in \texttt{crates/lean\_compiler/zkDSL.md}) programs the six-instruction ISA. Two themes run through every pattern: \emph{write-once memory is an assertion mechanism} (a second write of a cell is an equality check, an unwritten cell is prover-chosen), and \emph{indices live in the exponent} (a logical index $i$ is the element $\gen^{i}$, so incrementing, offsetting, and address formation are single field multiplications).
