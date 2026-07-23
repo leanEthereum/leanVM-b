@@ -36,7 +36,7 @@ enum Command {
         #[arg(long, default_value = "8")]
         hashes: usize,
         /// MUL iterations per inner proof (inner program shape).
-        #[arg(long, default_value = "32768")]
+        #[arg(long, default_value = "34816")]
         iters: usize,
     },
     /// Prove and verify Fibonacci in the exponent (demo).

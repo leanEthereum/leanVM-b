@@ -1855,7 +1855,7 @@ fn recursion_1to1_smoke() {
 /// outer proof, whose four reduced evaluations are then discharged natively.
 #[test]
 fn recursion_2to1() {
-    let mut proof = run_recursion(&[(8, 1 << 15), (8, 1 << 15)], false);
+    let mut proof = run_recursion(&[(8, 34816), (8, 34816)], false);
     proof.statement.ring_checks[0].z_vals.pop();
     assert!(matches!(
         proof.verify(&inner_program()),
