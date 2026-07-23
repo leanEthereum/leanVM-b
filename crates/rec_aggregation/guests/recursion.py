@@ -192,6 +192,10 @@ CLAIM_GAMMA_RANK = CLAIM_GAMMA_RANK_PLACEHOLDER
 N_CLAIM_ROWS = N_CLAIM_ROWS_PLACEHOLDER
 CLAIM_ROW_GROUP = CLAIM_ROW_GROUP_PLACEHOLDER
 CLAIM_ROW_REP = CLAIM_ROW_REP_PLACEHOLDER
+N_PAD_PREFIXES = N_PAD_PREFIXES_PLACEHOLDER
+PAD_PREFIX_ROW = PAD_PREFIX_ROW_PLACEHOLDER
+PAD_PREFIX_COL = PAD_PREFIX_COL_PLACEHOLDER
+CLAIM_PAD_PREFIX = CLAIM_PAD_PREFIX_PLACEHOLDER
 N_JAGGED_BATCHES = N_JAGGED_BATCHES_PLACEHOLDER
 JAGGED_BATCH_REP = JAGGED_BATCH_REP_PLACEHOLDER
 JAGGED_BATCH_ROW = JAGGED_BATCH_ROW_PLACEHOLDER
@@ -346,11 +350,10 @@ def verify_log2_ceil(bits_buf, g_logs_pow2, g_squares, floor: Const, nbits: Cons
     return g_log, word, exp_prod
 
 
-def log2_ceil_word(value, g_logs_pow2, g_squares, floor: Const, nbits: Const):
+def log2_ceil_word(value, bits, g_logs_pow2, g_squares, floor: Const, nbits: Const):
     # g^log2_ceil(value) for a concrete integer `value`. The bits are hinted HERE
-    # (hint_decompose_bits), not by the caller, then tied back to `value`. Returns
-    # (g_log, g^value).
-    bits = HeapBuf(GEN ** nbits)
+    # into caller-owned storage (so later phases can reuse them), then tied back
+    # to `value`. Returns (g_log, g^value).
     hint_decompose_bits(bits, value, nbits)
     g_log, word, g_value = verify_log2_ceil(bits, g_logs_pow2, g_squares, floor, nbits)
     assert word == value  # the hinted bits are exactly value's bits (so value < 2^nbits)
@@ -741,7 +744,7 @@ def jagged_contract_general(final_msg, row_point, start_bits, end_bits, fold_bit
     return init0 * layers[layer_off] + init1 * layers[layer_off + 1] + init2 * layers[layer_off + 2] + init3 * layers[layer_off + 3]
 
 
-def jagged_terminal(m_idx: Const, fold_challenges, final_msg, claim_rows, col_start_bits, col_end_bits, gamma, gamma_powers):
+def jagged_terminal(m_idx: Const, fold_challenges, final_msg, claim_rows, col_bound_bits, gamma, gamma_powers):
     # One automaton per complete row-major column block, rather than one per
     # physical column. For selector bit b, unnormalized row weights (1,
     # gamma^(2^b)) absorb the geometric batch scale Π(1+gamma^(2^b)) without
@@ -749,8 +752,8 @@ def jagged_terminal(m_idx: Const, fold_challenges, final_msg, claim_rows, col_st
     total = 0
     for batch in unroll(0, N_JAGGED_BATCHES):
         row = claim_rows * GEN ** (SIZE_BITS * JAGGED_BATCH_ROW[batch])
-        start_bits = col_start_bits * GEN ** (SIZE_BITS * JAGGED_BATCH_COL[batch])
-        end_bits = col_end_bits * GEN ** (SIZE_BITS * JAGGED_BATCH_COL[batch])
+        start_bits = col_bound_bits * GEN ** (SIZE_BITS * JAGGED_BATCH_COL[batch])
+        end_bits = col_bound_bits * GEN ** (SIZE_BITS * (JAGGED_BATCH_COL[batch] + 1))
         p0, p1, p2, p3 = jagged_prefix_fixed(row, fold_challenges, gamma, JAGGED_BATCH_LOG[batch], start_bits, end_bits, LIG_TOTAL_FOLDS[m_idx])
         folded_out = StackBuf(1)
         residual_zero = StackBuf(1)
@@ -1045,8 +1048,10 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     # count gadget: g^tau_t = log2_ceil_word(count_t), which also returns
     # g^count_t (for the padding-surplus certification).
     count_gpows = HeapBuf(N_TABLES)
+    count_bits = HeapBuf(N_TABLES * COUNT_BITS)
     for t in unroll(0, N_TABLES):
-        g_tau, g_count = log2_ceil_word(sizes[t + 1], g_logs_pow2, g_squares, FLOORS[t], COUNT_BITS)
+        table_count_bits = count_bits * GEN ** (COUNT_BITS * t)
+        g_tau, g_count = log2_ceil_word(sizes[t + 1], table_count_bits, g_logs_pow2, g_squares, FLOORS[t], COUNT_BITS)
         dims_g[GEN ** (t + 1)] = g_tau
         count_gpows[GEN ** t] = g_count
     # kappa_base maps a kappa source index to its certified announced log
@@ -1241,33 +1246,38 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     # (γ+fp)^DELTA ladder and are pinned by g^real · g^DELTA == g^(2^κ); real is
     # count_t for table blocks, 2^κ for shared blocks (DELTA = 0). An unpinned
     # DELTA would forge the balance (dlog is cheap in this field).
+    # Every block of table t has the same κ=τ_t and the same DELTA, so certify
+    # its bits once per table. Only the base (γ+fp_b) differs between blocks.
+    table_pad_bits = HeapBuf(N_TABLES * COUNT_BITS)
+    for t in unroll(0, N_TABLES):
+        pad_bits = table_pad_bits * GEN ** (COUNT_BITS * t)
+        g_two_tau = g_squares[dims_g[GEN ** (t + 1)]]
+        g_delta_want = g_two_tau / count_gpows[GEN ** t]
+        hint_decompose_bits_exponent(pad_bits, g_delta_want, COUNT_BITS)
+        g_delta = GEN ** 0
+        for j in unroll(0, COUNT_BITS):
+            pad_bit = pad_bits[GEN ** j]
+            assert pad_bit * pad_bit == pad_bit
+            g_delta *= (1 + pad_bit * (g_squares[GEN ** j] + 1))
+        assert count_gpows[GEN ** t] * g_delta == g_two_tau
+
     pad_products = HeapBuf(2)
     for s in unroll(0, 2):
         side_pad_product = GEN ** 0
         for b in unroll(SIDE_BLOCK_START[s], SIDE_BLOCK_START[s + 1]):
-            pad_fp = 0
-            alpha_pow = GEN ** 0
-            for i in unroll(0, BLOCK_COORD_COUNT[b]):
-                pad_fp += alpha_pow * COORD_PAD_VAL[BLOCK_COORD_OFF[b] + i]
-                alpha_pow *= alpha
-            g_two_kappa = g_squares[block_kappa[GEN ** b]]  # g^(2^κ_b)
-            if BLOCK_REAL_TABLE[b] == REAL_IS_FULL_CUBE:
-                g_real = g_two_kappa  # shared block: real = 2^κ, so DELTA = 0
-            else:
-                g_real = count_gpows[GEN ** BLOCK_REAL_TABLE[b]]  # g^count_t
-            g_delta_want = g_two_kappa / g_real  # g^DELTA (feeds the advice below)
-            pad_bits = HeapBuf(GEN ** COUNT_BITS)
-            hint_decompose_bits_exponent(pad_bits, g_delta_want, COUNT_BITS)
             ladder = GEN ** 0
-            ladder_square = gamma + pad_fp
-            g_delta = GEN ** 0
-            for j in unroll(0, COUNT_BITS):
-                pad_bit = pad_bits[GEN ** j]
-                assert pad_bit * pad_bit == pad_bit
-                ladder *= (1 + pad_bit * (ladder_square + 1))
-                g_delta *= (1 + pad_bit * (g_squares[GEN ** j] + 1))  # g^DELTA
-                ladder_square *= ladder_square
-            assert g_real * g_delta == g_two_kappa  # real_b + DELTA_b == 2^κ_b
+            if BLOCK_REAL_TABLE[b] != REAL_IS_FULL_CUBE:
+                pad_fp = 0
+                alpha_pow = GEN ** 0
+                for i in unroll(0, BLOCK_COORD_COUNT[b]):
+                    pad_fp += alpha_pow * COORD_PAD_VAL[BLOCK_COORD_OFF[b] + i]
+                    alpha_pow *= alpha
+                pad_bits = table_pad_bits * GEN ** (COUNT_BITS * BLOCK_REAL_TABLE[b])
+                ladder_square = gamma + pad_fp
+                for j in unroll(0, COUNT_BITS):
+                    pad_bit = pad_bits[GEN ** j]
+                    ladder *= (1 + pad_bit * (ladder_square + 1))
+                    ladder_square *= ladder_square
             side_pad_product *= ladder
         pad_products[GEN ** s] = side_pad_product
     lhsb = gkr_roots[PUSH_SIDE] * pad_products[GEN ** PULL_SIDE]  # balance: push_root * d_pull == pull_root * d_push (padding cancels)
@@ -1724,57 +1734,67 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     gamma_c = fs[0]
     target = gamma_ab * transposed_claims[0] + gamma_c * transposed_claims[1]  # gamma-batch the two ring-switch claims into the opening's target
 
-    # ---- Jagged dense layout: certify every cumulative column height ----
-    # Integer addition rides the exponent. `col_bounds[g^c] = g^t_c`; multiplying
-    # by g^height advances to the next cumulative height without an integer-add
-    # gadget. Bit decompositions are advice but are pinned back to these g-powers.
-    col_bounds = HeapBuf(N_COMMITTED_COLS + 1)
-    col_heights = HeapBuf(N_COMMITTED_COLS)
-    col_bounds[GEN ** 0] = GEN ** 0
-    for c in unroll(0, N_COMMITTED_COLS):
-        if COL_HEIGHT_KIND[c] == 0:
-            g_height = g_squares[kappa_base[GEN ** COL_HEIGHT_SRC[c]] * GEN ** COL_HEIGHT_ADJ[c]]
-        else:
-            g_height = count_gpows[GEN ** COL_HEIGHT_SRC[c]]
-            for bit in unroll(0, COL_HEIGHT_ADJ[c]):
-                g_height *= g_height
-        col_heights[GEN ** c] = g_height
-        col_bounds[GEN ** (c + 1)] = col_bounds[GEN ** c] * g_height
-    g_total = col_bounds[GEN ** N_COMMITTED_COLS]
-    gmv = log2_ceil_in_the_exponent(g_total, g_logs_pow2, g_squares, PCS_MIN_MU, SIZE_BITS)  # g^m
-
-    col_start_bits = HeapBuf(SIZE_BITS * N_COMMITTED_COLS)
-    col_height_bits = HeapBuf(SIZE_BITS * N_COMMITTED_COLS)
+    # ---- Jagged dense layout: derive one cumulative boundary-bit chain ----
+    # Table row-count bits were already Boolean-constrained and tied to their
+    # announced integer words by log2_ceil_word. A width-2^b block shifts that
+    # count by b. Power-of-two structural blocks use a one-hot height whose set
+    # position is pinned directly to their certified kappa. Starting from zero,
+    # a Boolean full-adder then derives every interval endpoint. This replaces
+    # three independent advice decompositions (start/height/end) per block with
+    # one deterministic prefix-sum chain.
+    col_bound_bits = HeapBuf(SIZE_BITS * (N_COMMITTED_COLS + 1))
+    col_block_height_bits = HeapBuf(SIZE_BITS * N_COMMITTED_COLS)
     col_row_height_bits = HeapBuf(SIZE_BITS * N_COMMITTED_COLS)
-    col_end_bits = HeapBuf(SIZE_BITS * N_COMMITTED_COLS)
+    for bit in unroll(0, SIZE_BITS):
+        col_bound_bits[GEN ** bit] = 0
     for c in unroll(0, N_COMMITTED_COLS):
-        start_bits = col_start_bits * GEN ** (SIZE_BITS * c)
-        height_bits = col_height_bits * GEN ** (SIZE_BITS * c)
-        end_bits = col_end_bits * GEN ** (SIZE_BITS * c)
-        hint_decompose_bits_exponent(start_bits, col_bounds[GEN ** c], SIZE_BITS)
-        hint_decompose_bits_exponent(height_bits, col_heights[GEN ** c], SIZE_BITS)
-        hint_decompose_bits_exponent(end_bits, col_bounds[GEN ** (c + 1)], SIZE_BITS)
-        start_g = GEN ** 0
-        height_g = GEN ** 0
-        end_g = GEN ** 0
-        for bit in unroll(0, SIZE_BITS):
-            sb = start_bits[GEN ** bit]
-            hb = height_bits[GEN ** bit]
-            eb = end_bits[GEN ** bit]
-            assert sb * sb == sb
-            assert hb * hb == hb
-            assert eb * eb == eb
-            start_g *= (1 + sb * (g_squares[GEN ** bit] + 1))
-            height_g *= (1 + hb * (g_squares[GEN ** bit] + 1))
-            end_g *= (1 + eb * (g_squares[GEN ** bit] + 1))
-        assert start_g == col_bounds[GEN ** c]
-        assert height_g == col_heights[GEN ** c]
-        assert end_g == col_bounds[GEN ** (c + 1)]
+        height_bits = col_block_height_bits * GEN ** (SIZE_BITS * c)
         row_height_bits = col_row_height_bits * GEN ** (SIZE_BITS * c)
+        if COL_HEIGHT_KIND[c] == 0:
+            # height = 2^kappa. The advice must be a Boolean one-hot vector,
+            # whose decoded word is the certified power 2^kappa.
+            kappa_g = kappa_base[GEN ** COL_HEIGHT_SRC[c]] * GEN ** COL_HEIGHT_ADJ[c]
+            assert log(kappa_g) < SIZE_BITS
+            hint_decompose_bits_exponent(height_bits, g_squares[kappa_g], SIZE_BITS)
+            height_word = 0
+            for bit in unroll(0, SIZE_BITS):
+                hb = height_bits[GEN ** bit]
+                assert hb * hb == hb
+                height_word += hb * (2 ** bit)
+            assert height_word == g_logs_pow2[kappa_g]
+        else:
+            table_bits = count_bits * GEN ** (COUNT_BITS * COL_HEIGHT_SRC[c])
+            for bit in unroll(0, COL_BLOCK_LOG[c]):
+                height_bits[GEN ** bit] = 0
+            if COL_BLOCK_LOG[c] == 0:
+                for bit in unroll(0, COUNT_BITS):
+                    height_bits[GEN ** bit] = table_bits[GEN ** bit]
+                for bit in unroll(COUNT_BITS, SIZE_BITS):
+                    height_bits[GEN ** bit] = 0
+            else:
+                for bit in unroll(COL_BLOCK_LOG[c], SIZE_BITS):
+                    height_bits[GEN ** bit] = table_bits[GEN ** (bit - COL_BLOCK_LOG[c])]
+
+        # Padding correction uses the per-column row height (block height / width).
         for bit in unroll(0, SIZE_BITS - COL_BLOCK_LOG[c]):
             row_height_bits[GEN ** bit] = height_bits[GEN ** (bit + COL_BLOCK_LOG[c])]
         for bit in unroll(SIZE_BITS - COL_BLOCK_LOG[c], SIZE_BITS):
             row_height_bits[GEN ** bit] = 0
+
+        start_bits = col_bound_bits * GEN ** (SIZE_BITS * c)
+        end_bits = col_bound_bits * GEN ** (SIZE_BITS * (c + 1))
+        carry = 0
+        for bit in unroll(0, SIZE_BITS):
+            sb = start_bits[GEN ** bit]
+            hb = height_bits[GEN ** bit]
+            end_bits[GEN ** bit] = sb + hb + carry
+            # Majority(sb, hb, carry) over F_2, factored to one MUL:
+            # sb*hb + sb*carry + hb*carry = (sb+carry)(sb+hb)+sb.
+            carry = (sb + carry) * (sb + hb) + sb
+        assert carry == 0  # the dense witness area fits in SIZE_BITS
+
+    total_bits = col_bound_bits * GEN ** (SIZE_BITS * N_COMMITTED_COLS)
+    gmv, total_word, g_total = verify_log2_ceil(total_bits, g_logs_pow2, g_squares, PCS_MIN_MU, SIZE_BITS)
 
     # Claims share only a handful of logical row points. Materialize each
     # distinct source/length once, with explicit zero high coordinates.
@@ -1807,6 +1827,12 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
 
     # Compute the public-padding correction: Jagged commits only the real
     # prefix, while the arithmetization's claim includes its fixed pad suffix.
+    pad_prefixes = HeapBuf(N_PAD_PREFIXES)
+    for prefix in unroll(0, N_PAD_PREFIXES):
+        row = claim_rows * GEN ** (SIZE_BITS * PAD_PREFIX_ROW[prefix])
+        height_bits = col_row_height_bits * GEN ** (SIZE_BITS * PAD_PREFIX_COL[prefix])
+        pad_prefixes[GEN ** prefix] = prefix_indicator(row, height_bits)
+
     opening_claim_values = HeapBuf(N_CLAIMS)
     for j in unroll(0, N_CLAIMS):
         if CLAIM_POINT_BUF[j] == POINT_BUF_QPKD:
@@ -1817,9 +1843,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
             if CLAIM_PAD[j] == 0:
                 opening_claim_values[GEN ** j] = claim_pool[GEN ** j]
             else:
-                row = claim_rows * GEN ** (SIZE_BITS * CLAIM_ROW_GROUP[j])
-                height_bits = col_row_height_bits * GEN ** (SIZE_BITS * CLAIM_COL[j])
-                real_prefix = prefix_indicator(row, height_bits)
+                real_prefix = pad_prefixes[GEN ** CLAIM_PAD_PREFIX[j]]
                 opening_claim_values[GEN ** j] = claim_pool[GEN ** j] + CLAIM_PAD[j] * (1 + real_prefix)
 
     # Every adjusted Jagged claim value is observed before its batching scalar,
@@ -1920,7 +1944,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     # A second dispatch on the already-certified commitment size bakes both
     # the folded prefix length and the residual-message shape into straight-
     # line width-four contractions.
-    jagged_sum = match_range(log(sel), range(0, LIG_N_CANDIDATES), lambda m_idx: jagged_terminal(m_idx, fold_challenges, final_msg, claim_rows, col_start_bits, col_end_bits, gamma, gamma_powers))
+    jagged_sum = match_range(log(sel), range(0, LIG_N_CANDIDATES), lambda m_idx: jagged_terminal(m_idx, fold_challenges, final_msg, claim_rows, col_bound_bits, gamma, gamma_powers))
     # q_pkd occupies [0, 2^qpkdv), hence its residual y selector is zero.
     inner_sum = inner_total + jagged_sum + (rs_weight + qpkd_claim_weight) * final_msg[GEN ** 0]
     assert inner_sum == sumcheck_target
