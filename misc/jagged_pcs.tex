@@ -1,0 +1,176 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1.05in]{geometry}
+\usepackage{amsmath,amssymb,mathtools}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage[colorlinks=true,linkcolor=blue!55!black,citecolor=blue!55!black,urlcolor=blue!55!black]{hyperref}
+
+\newcommand{\F}{\mathbb F_{2^{128}}}
+\newcommand{\cube}[1]{\{0,1\}^{#1}}
+\newcommand{\eq}{\operatorname{eq}}
+\newcommand{\mle}[1]{\widetilde{#1}}
+\newcommand{\bits}{\operatorname{bits}}
+\emergencystretch=1.5em
+
+\title{\textbf{Jagged polynomial packing}}
+\author{}
+\date{July 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent
+This note describes the two Jagged constructions used in leanVM. Unequal-height trace columns are packed into one Ligerito commitment without a power-of-two pad after every column. Independently, the grand-product leaves are formed by concatenating the real rows of all bus blocks and padding only once. A pair of quadratic sumchecks reduces the latter construction to ordinary column evaluations. The second construction is new and is not part of the original Jagged PCS paper~\cite{Jagged26}.
+\end{abstract}
+
+\section{The interval-transport polynomial}
+
+All bit vectors are little-endian. For \(x,u\in\F^m\), define
+\[
+\eq(x,u):=\prod_{i=0}^{m-1}(1+x_i+u_i).
+\]
+On the Boolean cube this is the equality indicator, so the multilinear extension of \(P:\cube m\to\F\) is \(\mle P(x)=\sum_{u\in\cube m}P(u)\eq(x,u)\).
+
+Suppose a logical table starts at dense offset \(t\) and has \(h\) real entries. Its fundamental weight is
+\[
+J_{t,h}(r,x):=\sum_{u=0}^{h-1}\eq(r,u)\eq(x,t+u).
+\]
+At Boolean \(x\), this is zero outside \([t,t+h)\), while \(J_{t,h}(r,t+u)=\eq(r,u)\). Consequently, if \(q[t+u]=P[u]\) for \(0\leq u<h\), then
+\[
+\sum_{v\in\cube m}q[v]J_{t,h}(r,v)=\sum_{u=0}^{h-1}P[u]\eq(r,u).
+\]
+This identity is the common core of both constructions below.
+
+\paragraph{Width-four evaluation.} The verifier evaluates \(J\) in \(O(m)\) field operations. Scan bits from least to most significant and maintain four states \((\kappa,\chi)\in\{0,1\}^2\). Here \(\kappa\) is the carry in \(x=t+u\), and \(\chi\) records whether the processed prefix of \(u\), read with the current bit as the most significant one seen so far, is strictly smaller than the corresponding prefix of \(h\). For Boolean bits \(a=u_i\), \(d=x_i\), \(s=t_i\), and \(\ell=h_i\),
+\[
+d=a+s+\kappa\pmod 2,\qquad \kappa'=\left\lfloor\frac{a+s+\kappa}{2}\right\rfloor,\qquad
+\chi'=\begin{cases}\chi,&a=\ell,\\ \ell,&a\neq\ell.\end{cases}
+\]
+Start in \((0,0)\), process one additional zero bit above the dense cube, and accept \((0,1)\). The extra bit supports \(t+h=2^m\) and rejects overflow. At coordinate \(i\), the two choices of \(a\) have weights \((1+r_i,r_i)\), and the two choices of \(d\) have weights \((1+x_i,x_i)\). Summing the valid weighted transitions gives the next four field elements. This is the Basic Jagged read-once branching program~\cite{Jagged26}.
+
+The same evaluator also accepts field points \(\sigma,\lambda\) in place of the Boolean bit strings \(\bits(t),\bits(h)\). At each coordinate, compute the transition for the four Boolean choices \((s,\ell)\in\cube2\), then multilinearly interpolate those four results at \((\sigma_i,\lambda_i)\). We denote the result by
+\[
+J(r,x;\sigma,\lambda).
+\]
+For Boolean parameter points it equals \(J_{t,h}(r,x)\); for arbitrary points it is the multilinear extension of that function in all start and length bits.
+
+\section{Jagged trace commitment}
+
+\paragraph{Layout.} A logical column \(P_i\) has \(2^{k_i}\) entries but only a real prefix of height \(h_i\leq2^{k_i}\) is committed. Compatible columns of equal height are grouped into row-major blocks of power-of-two width \(B=2^b\). If such a block starts at \(t\), then
+\[
+q[t+c+Bz]=P_c[z],\qquad 0\leq c<B,\quad 0\leq z<h.
+\]
+The block occupies exactly \(Bh\) dense cells. Wider blocks are placed first, which aligns every block to its width without inserting gaps. Flock's packed witness \(q_{\rm pkd}\) remains a full power-of-two block anchored at zero; all other committed columns use only their real prefixes. After the last block, \(q\) is padded once with zero to a cube of size \(2^M\). The value \(M\) is also large enough to embed every block's selector and logical row coordinates and to satisfy the PCS minimum dimension.
+
+\paragraph{Opening one column.} For slot \(c\) of a width-\(2^b\) block, form
+\[
+r^\star=(\bits_b(c),r_0,\ldots,r_{k-1},0,\ldots,0).
+\]
+The selector bits choose the slot and the row bits choose the logical entry. With \(L=2^bh\),
+\[
+\sum_x q[x]J_{t,L}(r^\star,x)=\sum_{z=0}^{h-1}P_c[z]\eq(r,z).
+\]
+If the logical column has public padding value \(p\) on rows \(h,\ldots,2^k-1\), let
+\[
+H_h(r):=\sum_{z<h}\eq(r,z).
+\]
+The full logical evaluation is recovered from the committed prefix \(R\) by
+\[
+\mle P(r)=R+p\bigl(1-H_h(r)\bigr).
+\]
+The prefix mass \(H_h\) is evaluated by a two-state, most-significant-bit-first comparison automaton in \(O(k)\).
+
+\paragraph{Batching a row-major block.} Suppose the \(B\) slots have batching coefficients \(1,\gamma,\ldots,\gamma^{B-1}\). Instead of evaluating one \(J\) per slot, replace the selector-coordinate pairs \((1+r_i,r_i)\) by
+\[
+(1,\gamma^{2^i}),\qquad 0\leq i<b.
+\]
+For slot \(c=\sum_i2^ic_i\), their product is \(\gamma^c\). One width-four evaluation therefore returns the complete geometric batch without an inversion or normalization. The prover writes the corresponding dense weight vector and invokes the ordinary Ligerito opening; Ligerito itself is unchanged.
+
+\paragraph{Recursive Ligerito terminal.} After Ligerito has folded the first \(f\) dense coordinates, let its final message be \(m:\cube\ell\to\F\), where \(f+\ell=M\). The verifier first applies the four-state transition through the fixed coordinates. It then contracts the \(2^\ell\) final-message entries in reverse through the two Boolean transition matrices, costing \(O(4\cdot2^\ell)\) per block. When every residual logical-row coordinate is fixed to zero, the surviving state identifies at most two adjacent entries of \(m\); the implementation uses this closed form instead of traversing the whole residual tree.
+
+\section{A tight grand product}
+
+\subsection{Leaves and the first reduction}
+
+A bus block \(b\) has \(h_b\) real rows and tuple coordinates \(c_{b,j}(u)\). Its fingerprint is
+\[
+\phi_b(u)=\gamma+\sum_j\alpha^j c_{b,j}(u),\qquad 0\leq u<h_b.
+\]
+For each side, blocks are concatenated in their fixed declaration order:
+\[
+L_b[t_b+u]=\phi_b(u),\qquad t_0=0,\qquad t_{b+1}=t_b+h_b.
+\]
+Only the suffix after the final real row is padded, with the product identity \(1\). Push and pull have paired blocks with equal heights, hence identical offsets, and their product roots are compared directly. The count side is padded with \(1\) to the same depth, so one batched product GKR produces terminal claims \(v_s=\mle L_s(\zeta)\) at one common point \(\zeta\).
+
+Because \(\sum_x\eq(\zeta,x)=1\) and every final padding leaf is \(1\),
+\[
+v_s+1=\sum_b\sum_{u<h_b}\bigl(\phi_b(u)+1\bigr)\eq(\zeta,t_b+u).
+\]
+Sample \(\eta\) and combine the push, pull, and count identities with coefficients \(1,\eta,\eta^2\). Paired push and pull blocks share one interval. For every resulting interval \(p=(t_p,h_p)\), collect its constants, index coordinate, public bytecode coordinates, and committed coordinates into one local multilinear \(A_p\). The combined claim is
+\[
+C=\sum_p\sum_{u<h_p}A_p(u)\eq(\zeta,t_p+u).
+\]
+
+Let \(\nu=\max_p\lceil\log_2\max(h_p,1)\rceil\), and define \(W_p(u)=\mathbf 1[u<h_p]\eq(\zeta,t_p+u)\) on \(\cube\nu\). A degree-two sumcheck reduces
+\[
+C=\sum_{u\in\cube\nu}\sum_p \mle A_p(u)\mle W_p(u)
+\]
+to a random row point \(\rho\), giving
+\[
+C_\rho=\sum_p a_pJ_{t_p,h_p}(\rho,\zeta),\qquad a_p:=\mle A_p(\rho).
+\]
+Each \(a_p\) is a public linear combination of ordinary source evaluations. A source whose real dimension is \(\nu_p<\nu\) is evaluated at \((\rho_0,\ldots,\rho_{\nu_p-1},0,\ldots,0)\). The index coordinate \(u\mapsto g^u\) is evaluated directly as
+\[
+\prod_{i<\nu_p}\bigl(1+\rho_i+g^{2^i}\rho_i\bigr).
+\]
+Thus the only nonstandard terminal quantity is the sum of many Jagged weights in \(C_\rho\).
+
+\subsection{The start--length assist}
+
+Evaluating one width-four automaton per interval would make recursive verification expensive. Instead define two tables over Boolean start and length strings:
+\[
+S(s,\ell):=\sum_{p:\,(\bits(t_p),\bits(h_p))=(s,\ell)}a_p,\qquad
+K(s,\ell):=J_{t,h}(\rho,\zeta)\quad\text{when }(s,\ell)=(\bits(t),\bits(h)).
+\]
+Then
+\[
+C_\rho=\sum_{s,\ell}S(s,\ell)K(s,\ell).
+\]
+A second degree-two sumcheck runs over the start bits followed by the length bits. At its random terminal point \((\sigma,\lambda)\), the verifier checks
+\[
+\widetilde S(\sigma,\lambda)=\sum_p a_p\eq(\sigma,\bits(t_p))\eq(\lambda,\bits(h_p))
+\]
+and
+\[
+\widetilde K(\sigma,\lambda)=J(\rho,\zeta;\sigma,\lambda).
+\]
+The first expression is a sparse-table evaluation; the second is one generalized width-four evaluation. Therefore the verifier performs one Jagged automaton for the entire grand product, rather than one per block.
+
+\paragraph{Recursive evaluation of \(\widetilde S\).} Every height bit is derived from a value already certified by recursion: a table row count, the used-memory prefix, the program-bound bytecode prefix, or a structural power of two. Blocks with the same symbolic height share the length equality product. Starts are not hints: in the fixed block order, a binary prefix adder derives \(t_{b+1}=t_b+h_b\). The same pass multiplies \(\eq(\sigma,\bits(t_b))\), so offset certification and start evaluation share all bit reads. Finally the guest forms the sparse sum above and multiplies it by the single value \(J(\rho,\zeta;\sigma,\lambda)\). For the main benchmark shape, the first sumcheck has \(20\) rounds and the assist has \(23+21\) rounds; all fixed-count loops in these small kernels are unrolled.
+
+\paragraph{Prover evaluation.} The first sumcheck stores each interval only at its local size \(2^{\nu_p}\). Once all local coordinates have been folded, the remaining row bits are forced to zero by \(W_p\), so the prover updates the interval's scalar without allocating a \(2^\nu\)-entry table. The assist sumcheck evaluates the sparse interval list directly. Its terminal computation is linear in the number of blocks and uses one width-four automaton.
+
+\section{Soundness and measured cost}
+
+The transcript absorbs all GKR terminal claims and source evaluations before sampling the challenges that batch them. The first sumcheck proves the reduction from the complete GKR leaf claims to ordinary source evaluations. The start--length assist is a separate quadratic sumcheck proving the remaining sparse Jagged-weight identity. Its terminal start and length bits are bound to certified public sizes and the canonical prefix sums, so no interval boundary is accepted as advice. The implementation reserves one additional grinding bit for the new batching and reduction checks.
+
+On the standard command
+\[
+\texttt{RAYON\_NUM\_THREADS=11 cargo run --release -- recursion --n 2},
+\]
+two \(975{,}099\)-cycle inner proofs produce a \(1{,}846{,}940\)-cycle recursion guest. The former grand product with a power-of-two pad after every block used \(1{,}865{,}318\) cycles, so the tight construction saves \(18{,}378\) cycles (\(0.99\%\)) while also removing the internal grand-product padding. The recursion program contains \(540{,}861\) instructions and pads to \(2^{20}\); this deliberate bytecode increase comes from inlining the fused prefix-adder kernel and reduces guest cycles. The recorded recursive proof size is \(597.828\) KiB.
+
+Tests cover exhaustive small intervals, arbitrary row-weight pairs, exact-full endpoints, Boolean start--length agreement with dense MLEs, native proof round trips, mixed-shape recursion, and adversarial mutations of the remaining named hints.
+
+\begin{thebibliography}{9}
+
+\bibitem{Jagged26}
+Tamir Hemo, Kevin Jue, Eugene Rabinovich, Gyumin Roh, and Ron D.\ Rothblum.
+\newblock \emph{Jagged Polynomial Commitments (or: How to Stack Multilinears)}.
+\newblock Manuscript, 2026.
+
+\end{thebibliography}
+
+\end{document}

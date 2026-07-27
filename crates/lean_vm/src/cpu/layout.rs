@@ -66,8 +66,8 @@ pub struct Layout {
     pub pull: Vec<Block>,
     /// Count channel: read-count columns whose product must be nonzero (§sec:memchan).
     pub count: Vec<Block>,
-    /// Per-column padding value (count columns pad with 1, else 0), so the verifier
-    /// can form the default-padding surplus it divides out of the bus (§sec:gp).
+    /// Per-column padding value (count columns pad with 1, else 0), used to
+    /// translate logical AIR evaluations to the real prefixes committed by PCS.
     pub pad: Vec<F128>,
     /// Per-column placement (offset + n_vars) in the stacked witness; from the
     /// columns' log-sizes alone, so reconstructable by the verifier.
@@ -155,6 +155,11 @@ fn jagged_column_blocks(log_bytecode: usize, bytecode_used: usize, sides: [&[Blo
             remaining -= width;
         }
     }
+    // Keep every row-major block aligned to its own width. Since widths are
+    // powers of two, placing wider blocks first makes the cumulative length of
+    // all preceding blocks divisible by the next width. QPKD remains anchored
+    // first; its power-of-two length is divisible by every ordinary width.
+    blocks[1..].sort_by_key(|block| std::cmp::Reverse(block.len()));
     blocks
 }
 
@@ -320,9 +325,9 @@ pub fn layout(
     assert!((2..=cells).contains(&mem_used), "used-memory prefix must fit the logical memory");
     assert!(bytecode_used < bytecode_size, "real bytecode prefix must end before the sentinel");
 
-    // Per-table padded log-row-counts (the boundary block is fixed). The real
-    // (non-padded) `row_counts[t]` tell each flush how many of its 2^kappa rows
-    // are padding (default rows divided out of the bus, §sec:gp).
+    // Per-table logical log-row-counts (the boundary block is fixed). The
+    // logical columns remain power-of-two padded for the AIR, while the tight
+    // bus and Jagged commitment use only the real `row_counts[t]` prefixes.
     let mut taus = [0usize; 6];
     for (i, &r) in row_counts.iter().enumerate() {
         taus[i] = crate::log2_ceil_usize(r.max(1));
@@ -434,14 +439,15 @@ pub fn layout(
             Const(g_pow(final_fp as usize)),
         ],
     ));
-    // memory seed + finalize (every address real, no padding).
-    push.push(blk(log_mem, cells, vec![Const(SEP_MEM), Index, Const(one), Col(MEM)]));
-    pull.push(blk(log_mem, cells, vec![Const(SEP_MEM), Index, Col(MFCNT), Col(MEM)]));
-    // bytecode seed + finalize (program columns are public; padding entries
-    // self-cancel at count 1, so the whole 2^log_bytecode is "real").
+    // Memory entries beyond the used prefix occur identically in seed and
+    // finalize and can be omitted from both grand-product sides.
+    push.push(blk(log_mem, mem_used, vec![Const(SEP_MEM), Index, Const(one), Col(MEM)]));
+    pull.push(blk(log_mem, mem_used, vec![Const(SEP_MEM), Index, Col(MFCNT), Col(MEM)]));
+    // Bytecode padding entries occur identically in seed and finalize and can
+    // likewise be omitted from both grand-product sides.
     push.push(blk(
         log_bytecode,
-        bytecode_size,
+        bytecode_used,
         vec![
             Const(SEP_BYTECODE),
             Index,
@@ -458,7 +464,7 @@ pub fn layout(
     ));
     pull.push(blk(
         log_bytecode,
-        bytecode_size,
+        bytecode_used,
         vec![
             Const(SEP_BYTECODE),
             Index,
@@ -498,13 +504,13 @@ pub fn layout(
             pad[base + c] = F128::ONE;
         }
     }
-    // BLAKE3 padding rows must match flock's padding instance (the all-zero-input
-    // compression): zero inputs but a NONZERO output `out_lo`. So the two output
-    // value columns pad with that digest, not 0 — the memory bus flushes these
-    // (virtual) columns, and their padding rows must equal `q_pkd`'s padding slots
-    // so the default-padding surplus divides out and the routed claims agree.
-    // Inputs/counts keep their 0/1 defaults. Always applied (the BLAKE3 table is
-    // always present, all-padding for a no-BLAKE3 program).
+    // BLAKE3 logical padding rows match flock's padding instance (the
+    // all-zero-input compression): zero inputs but a NONZERO output `out_lo`.
+    // The output columns therefore pad with that digest rather than zero.
+    // These public PCS padding values must match `q_pkd`'s padding slots so
+    // routed logical-column claims agree; the tight grand product itself omits
+    // every padding suffix. Inputs/counts retain their 0/1 defaults. This also
+    // applies when the always-present BLAKE3 table contains only padding.
     {
         let b3 = sch.base[tables::BLAKE3_TABLE];
         let pc = crate::blake3_flock::padding_digest();
@@ -631,12 +637,10 @@ impl Program {
             pi,
         );
 
-        // Pad each per-opcode table to its power-of-two row count: count columns
-        // with g^0 = 1, every other column with 0 (§e2e-pad). A default padding
-        // row (counts 1, else 0) flushes tuples that do not self-cancel; the
-        // verifier divides them out of the bus product (§sec:gp). The shared
-        // Shared columns keep their natural logical lengths in `cols`; Jagged
-        // copies only their non-default prefixes into the committed witness.
+        // Pad each per-opcode table to its logical power-of-two row count:
+        // count columns with g^0 = 1, every other column with 0 (§e2e-pad).
+        // The tight bus omits these suffixes, and Jagged copies only the
+        // non-default prefixes into the committed witness.
         // Pad to `2^taus[t]` (= `next_pow2(row_counts[t])` for every table except
         // BLAKE3, which `layout` rounds up to flock's `2^n_log`).
         for (t, table) in tables::tables().iter().enumerate() {
