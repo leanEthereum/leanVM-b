@@ -2034,7 +2034,7 @@ fn recursion_soundness_binds() {
     // over-read path stays live (asserted below, so a shape drift that parks
     // yr_log_n at the cap fails loudly instead of silently skipping the
     // tamper). Ignored: several full inner+outer proofs.
-    let cfg: &[(usize, usize)] = &[(8, 1 << 13)];
+    let cfg: &[(usize, usize)] = &[(8, 1 << 14)];
     let batch = build_batch(cfg, &[lean_vm::pcs::LOG_INV_RATE], lean_vm::pcs::LOG_INV_RATE);
     let mut guest = recursion_guest(&batch.program0, cfg.len());
     let public_input = batch.public_input();
