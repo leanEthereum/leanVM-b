@@ -139,7 +139,12 @@ No ordinary trace column is committed on its own.  We use the Jagged PCS constru
 \[
   (P_0[0],\ldots,P_{B-1}[0],P_0[1],\ldots,P_{B-1}[h-1]).
 \]
-The blocks themselves are tightly concatenated and the final vector is zero-padded only once, to $2^M$.  A non-power-of-two compatible group is decomposed into power-of-two blocks, so this table packing adds no dummy cells.  Commitment work and committed area therefore still depend on the actual trace area $\sum_i h_i$, not on the sum of separately rounded column heights.
+The blocks themselves are tightly concatenated and the final vector is zero-padded only once, to $2^M$.  A non-power-of-two compatible group is decomposed into power-of-two blocks, so this table packing adds no dummy cells.  Opcode columns use their announced row counts.  The memory image and memory-finalize count use the announced used-memory prefix, with public suffixes $0$ and $1$; the bytecode-finalize count uses the program-bound real instruction prefix, with public suffix $1$.  Thus $q_{\rm pkd}$ is the only full power-of-two committed column.  If $A$ is the sum of the physical block lengths, then
+\[
+  M=\max\!\left(15,\lceil\log_2\max(A,1)\rceil,
+                    \max_{\text{blocks}}(k+b)\right),
+\]
+where $k$ is a block's logical row dimension and $b$ its selector width.  The last term ensures that every logical point embeds in the dense cube even when its physical prefix is short.
 
 If such a block begins at dense offset $t$, its column $c$ and row $z$ correspond to the Boolean dense index
 \[
@@ -462,11 +467,11 @@ The public input is the first two memory cells $\mem[0],\mem[1]$ ($256$ bits), f
 
 We lay out the whole protocol as one ordered sequence. Each reduction below adds evaluation claims on committed columns to a shared \emph{claim pool}; the final \textsc{Opening} phase proves all of them with a single PCS opening.
 
-\paragraph{Setup.} Fixed and shared in advance (\S\ref{sec:e2e-const} through \S\ref{sec:e2e-pi}): the field and constants; the program, which is public; the memory size $2^{h}$ and the program length; the initial state $(\pc_0,\fp_0)$ and final state $(\pc_{\mathrm{final}},\fp_{\mathrm{final}})$; and the public input $\mem[0],\mem[1]$.
+\paragraph{Setup.} Fixed and shared in advance (\S\ref{sec:e2e-const} through \S\ref{sec:e2e-pi}): the field and constants; the public program; the initial state $(\pc_0,\fp_0)$ and final state $(\pc_{\mathrm{final}},\fp_{\mathrm{final}})$; and the public input $\mem[0],\mem[1]$.  The prover announces the used-memory prefix; the logical memory size is canonically $2^h$ for $h=\max(16,\lceil\log_2 h_{\rm mem}\rceil)$.
 
 \paragraph{Commitment.}
 \begin{enumerate}
-\item \textbf{Prover.} Builds all committed columns (field-valued): each table's state, operands, addresses, read values, and counts (plus $w,b,\mathit{next\_pc},\mathit{next\_fp}$ for \texttt{JUMP}); the memory column $M$; and the memory and bytecode finalize counts. Counts are always committed $\gen$-powers (\S\ref{sec:memchan}); the public program and the virtual increments $\gen\cdot\pc,\gen\cdot\cnt$ are not. It packs compatible equal-height columns row-major and tightly concatenates the resulting blocks into the Jagged witness $q$, then sends its dense commitment (\S\ref{sec:stacking}, \S\ref{sec:rs-dense}).  It also announces each table's non-padded row count.  Those exact counts determine the Jagged interval boundaries; their power-of-two ceilings still determine the logical AIR and grand-product leaf layouts (\S\ref{sec:leafstack}). Padding rows are a fixed default (\S\ref{sec:e2e-pad}); the announced sizes fix the surplus the verifier later divides out (\S\ref{sec:gp}).
+\item \textbf{Prover.} Builds all committed columns (field-valued): each table's state, operands, addresses, read values, and counts (plus $w,b,\mathit{next\_pc},\mathit{next\_fp}$ for \texttt{JUMP}); the memory column $M$; and the memory and bytecode finalize counts. Counts are always committed $\gen$-powers (\S\ref{sec:memchan}); the public program and the virtual increments $\gen\cdot\pc,\gen\cdot\cnt$ are not. It announces the used-memory prefix and each table's non-padded row count, packs the corresponding real prefixes into the Jagged witness $q$, and sends its dense commitment (\S\ref{sec:stacking}, \S\ref{sec:rs-dense}).  These sizes determine the Jagged boundaries; their power-of-two ceilings still determine the logical AIR and grand-product leaf layouts (\S\ref{sec:leafstack}). Padding rows are fixed defaults (\S\ref{sec:e2e-pad}); the verifier restores their MLE contributions during opening.
 \end{enumerate}
 
 \paragraph{Bus.}
