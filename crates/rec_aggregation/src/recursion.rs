@@ -90,12 +90,16 @@ fn inner_program() -> Program {
         \x20   hint_witness(nb[0:1], \"iters\")\n\
         \x20   bound = nb[GEN ** 0]\n\
         \x20   assert log(bound) < 65536\n\
-        \x20   buf = HeapBuf(bound)\n\
+        \x20   buf0 = HeapBuf(bound)\n\
+        \x20   mid = HeapBuf(bound)\n\
+        \x20   buf1 = HeapBuf(bound)\n\
         \x20   acc = HeapBuf(bound * GEN)\n\
         \x20   acc[GEN ** 0] = st0\n\
         \x20   for x in mul_range(1, bound):\n\
-        \x20       buf[x] = acc[x] * acc[x] + s1\n\
-        \x20       acc[x * GEN] = buf[x] + x\n\
+        \x20       buf0[x] = acc[x] * acc[x] + s1\n\
+        \x20       mid[x] = buf0[x] + x\n\
+        \x20       buf1[x] = mid[x] * mid[x] + s1\n\
+        \x20       acc[x * GEN] = buf1[x] + x\n\
         \x20   out = acc[bound]\n\
         \x20   nz = HeapBuf(1)\n\
         \x20   hint_witness(nz[0:1], \"outinv\")\n\
@@ -122,8 +126,10 @@ fn prove_inner(pi: [F128T; 2], hashes: usize, iters: usize) -> (Program, lean_vm
     let mut x = F128T::ONE;
     let g = F128T::new(primitives::field::g_pow(1).0, 0); // embedded base generator
     for _ in 0..iters {
-        let b = acc * acc + st[1];
-        acc = b + x;
+        let b0 = acc * acc + st[1];
+        let mid = b0 + x;
+        let b1 = mid * mid + st[1];
+        acc = b1 + x;
         x = x * g;
     }
     let out = acc;
