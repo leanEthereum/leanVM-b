@@ -174,6 +174,91 @@ c_k=d^{-2^k}\Bigl[\
 
 \paragraph{Cost.} The $k=0$ level needs $15$ constants: $d^{-1}\alpha^{127}$, the seven $1+\alpha^{-2^t}$, and the seven $d^{-1}\varepsilon_i$. Squaring all $15$ advances level $k$ to level $k+1$, so a verifier running a fixed program can bake in every level; and the $7\cdot128$ factor constants take only $128$ distinct values, since $1+\alpha^{-2^{k+t}}$ depends on $k+t\bmod128$ alone. Each $c_k$ then costs $14$ multiplications for the product and $7$ for the correction, so the whole table costs $O(e\log e)$ instead of $O(e^2)$. The seven weights $\lambda_i$, $i\le6$, share the four factors $1+s_t$, $t\ge3$, so they cost $O(\log e)$ as well.
 
+\section*{Closed-form coefficients: a quadratic tower over $\F_{2^{64}}$}
+
+The preceding factorization is not limited to the GHASH field.  It applies
+again when a sparse polynomial-basis field is used as the base of a tower,
+and the trace-dual of the tower basis supplies one additional small factor.
+This is the field representation used by leanVM:
+\[
+K=\F_2[x]/(q(x)),\qquad q(X)=X^{64}+X^4+X^3+X+1,
+\]
+\[
+E=K[Y]/(Y^2+xY+1).
+\]
+We use the product coordinate basis
+\[
+b^E_{j+64h}=x^jY^h,\qquad 0\le j<64,\quad h\in\{0,1\}.
+\]
+Write a seven-coordinate batching point as
+$s=(s_0,\ldots,s_5,s_6)$.  If
+$j=\sum_{t<6}2^tj_t$, its equality weight factors as
+\[
+\lambda_{j,h}
+=\lambda^K_j\mu_h,\qquad
+\lambda^K_j=\prod_{t<6}(1+s_t+j_t),\quad
+\mu_0=1+s_6,\quad\mu_1=s_6.
+\]
+
+\paragraph{The base-field dual.}
+Here $d=q'(x)=x^2+1$.  Applying the same polynomial-basis argument as in the
+GHASH case, now in degree $64$, gives the trace-dual basis
+\[
+\beta_j=d^{-1}\bigl(x^{63-j}+\eta_j\bigr),
+\]
+where only four corrections are nonzero:
+\[
+\eta_0=x^3+x^2+1,\qquad
+\eta_1=x^2+x,\qquad
+\eta_2=x+1,\qquad
+\eta_3=1,\qquad
+\eta_j=0\quad(j\ge4).
+\]
+Therefore
+\[
+B_k:=\sum_{j<64}\lambda^K_j\beta_j^{2^k}
+=d^{-2^k}\left[
+x^{63\cdot2^k}\prod_{t<6}
+\bigl(1+s_t+s_tx^{-2^{k+t}}\bigr)
++\sum_{j=0}^{3}\lambda^K_j\eta_j^{2^k}
+\right].
+\]
+
+\paragraph{The quadratic-tower dual.}
+The other root of $T^2+xT+1$ is $Y+x$, hence
+$Y^{2^{64}}=Y+x$ and
+\[
+\operatorname{Tr}_{E/K}(a+bY)=bx.
+\]
+The basis $(1,Y)$ consequently has relative trace-dual
+\[
+\gamma_0=1+x^{-1}Y,\qquad \gamma_1=x^{-1},
+\qquad
+\operatorname{Tr}_{E/K}(\gamma_hY^{h'})=[\,h=h'\,].
+\]
+Combining relative and absolute traces shows that
+$\beta_j\gamma_h$ is trace-dual to $x^jY^h$.  The $128$-coordinate
+coefficient sum now separates into a base part and a tower part:
+\[
+\boxed{\quad
+c_k
+=B_k\left[
+\gamma_0^{2^k}
++s_6\bigl(\gamma_0^{2^k}+\gamma_1^{2^k}\bigr)
+\right].
+\quad}
+\]
+
+\paragraph{Cost.}
+A fixed verifier needs only $13$ seed constants per Frobenius level:
+one base main term, six base product factors, four sparse corrections,
+and the two tower terms $\gamma_0^{2^k}$ and
+$(\gamma_0+\gamma_1)^{2^k}$.  Squaring the row advances it to the next
+level.  Thus all $c_k$ are again constructed in $O(e\log e)$ operations,
+using a $128\times13$ fixed table instead of the generic
+$128\times128$ trace-dual orbit table.  This is the direct quadratic-tower
+generalization of the GHASH optimization.
+
 \section*{Remarks}
 
 \begin{enumerate}
