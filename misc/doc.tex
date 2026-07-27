@@ -160,26 +160,36 @@ Committed columns and their truth tables are $\K$-valued; extensions are evaluat
 
 \section{Committing the witness}\label{sec:rs}
 
-\subsection{Stacking}\label{sec:stacking}
+\subsection{Jagged commitment layout}\label{sec:stacking}
 
-No column is committed on its own. The columns are $\K$-valued multilinears over boolean hypercubes of various sizes, concatenated into one witness $q$; one region of the stack is flock's packed Boolean witness $q_\pkd$, $64$ bits per $\K$-word (\S\ref{sec:tab-blake3}). Order the $T$ columns $\widehat P_1,\dots,\widehat P_T$ by size, $\kappa_1\ge\dots\ge\kappa_T$ variables, and lay their truth tables end to end,
+No ordinary trace column is committed on its own.  We use the Jagged PCS construction of Hemo et al.~\cite{jagged-pcs}.  Compatible equal-height columns are partitioned into power-of-two-width blocks (the ``fancy Jagged'' layout of that work): compatibility means that the columns occur in exactly the same opening groups.  For a block of width $B=2^b$ and real height $h$, its columns are stored row-major,
 \[
-  q \;=\; P_1 \,\Vert\, P_2 \,\Vert\,\dots\,\Vert\, P_T \,\Vert\, 0,
+  (P_0[0],\ldots,P_{B-1}[0],P_0[1],\ldots,P_{B-1}[h-1]).
 \]
-zero-padded to length $2^{M}$, with $M=\bigl\lceil\log_2\textstyle\sum_i 2^{\kappa_i}\bigr\rceil$. Placed largest first, column $i$ starts at an offset that is a multiple of $2^{\kappa_i}$; writing $\mathsf{sel}_i\in\cube{M-\kappa_i}$ for the high bits of that offset,
+The blocks themselves are tightly concatenated and the final vector is zero-padded only once, to $2^M$.  A non-power-of-two compatible group is decomposed into power-of-two blocks, so this table packing adds no dummy cells.  Opcode columns use their announced row counts.  The memory image and memory-finalize count use the announced used-memory prefix, with public suffixes $0$ and $1$; the bytecode-finalize count uses the program-bound real instruction prefix, with public suffix $1$.  Thus $q_{\rm pkd}$ is the only full power-of-two committed column.  If $A$ is the sum of the physical block lengths, then
 \[
-  \widehat P_i(z)\;=\;\widehat q(z,\mathsf{sel}_i)\qquad(z\in\cube{\kappa_i}).
+  M=\max\!\left(15,\lceil\log_2\max(A,1)\rceil,
+                    \max_{\text{blocks}}(k+b)\right),
 \]
-An evaluation claim $\widehat P_i(\zeta)=c$ is therefore a claim on the stack,
-\[
-  \widehat q(\zeta,\mathsf{sel}_i)\;=\;\sum_{w\in\cube{M}}\eq\bigl((\zeta,\mathsf{sel}_i),w\bigr)\,\widehat q(w)\;=\;c,
-\]
-a weighted sum over $\widehat q$ with weight $W(w)=\eq((\zeta,\mathsf{sel}_i),w)$.
+where $k$ is a block's logical row dimension and $b$ its selector width.  The last term ensures that every logical point embeds in the dense cube even when its physical prefix is short.
 
-\paragraph{Batching.} Every claim the protocol raises against a column is such a weighted sum $\sum_w W_j(w)\,\widehat q(w)=c_j$, with $\E$-valued weight and target. The verifier folds the $J$ of them with independent random coefficients $\lambda_j\in\E$, one per claim, each sampled after the claimed values are bound, into one weight $W_\lambda=\sum_j\lambda_j W_j$ and target $C_\lambda=\sum_j\lambda_j c_j$, and the inner-product PCS (\S\ref{sec:rs-dense}) proves
+If such a block begins at dense offset $t$, its column $c$ and row $z$ correspond to the Boolean dense index
 \[
-  \sum_{w\in\cube{M}} W_\lambda(w)\,\widehat q(w)=C_\lambda
+  w=t+c+Bz \quad\text{with}\quad w<t+Bh.
 \]
+The low $b$ coordinates of the logical point are fixed to the bits of $c$ and the remaining coordinates are the row point.  Let $J_{t,Bh}((c,z),w)$ be the multilinear extension of this predicate.  It is the width-four read-once branching program from the Jagged PCS construction: its state records the carry of $t+(c,z)$ and the most-significant comparison seen between $w$ and $t+Bh$, while reading bits least-significant first.  The real part of a column evaluation is consequently the inner-product claim
+\[
+  \sum_{w\in\cube M} J_{t,Bh}((c,\zeta),w)\,\widehat q(w).
+\]
+The arithmetization still regards a column as extended to its power-of-two logical height with a fixed public pad value $p_i$.  The verifier adds the omitted suffix itself: if $H_i(\zeta)$ is the MLE of $[z<h_i]$, the logical claim is the real contribution plus $p_i(1-H_i(\zeta))$.  (Addition and subtraction coincide in characteristic two.)
+
+The packed flock witness $q_{\mathrm{pkd}}$ is the sole aligned exception.  It occupies the offset-zero prefix so its ring-switch and fixed-slot claims retain their direct subcube formulas; all ordinary trace columns follow it in the tight Jagged layout.
+
+\paragraph{Batching.} Every claim the protocol raises against a column is such a weighted sum $\sum_w W_j(w)\,\widehat q(w)=c_j$. The verifier folds the $J$ of them with powers of one random $\lambda$ into one weight $W_\lambda=\sum_j\lambda^j W_j$ and target $C_\lambda=\sum_j\lambda^j c_j$, and the inner-product PCS (\S\ref{sec:rs-dense}) proves
+\[
+  \sum_{w\in\cube{M}} W_\lambda(w)\,\widehat q(w)=C_\lambda.
+\]
+Claims covering a complete width-$B$ block receive consecutive powers in column-selector order.  Their sum is one Jagged indicator whose selector-coordinate weights are the unnormalised pairs $(1,\lambda^{2^r})$, scaled by the first power assigned to the block.  Thus the verifier runs one branching program per claimed block rather than per physical column, with no field inversions.  Unlike the generic adapter in~\cite{jagged-pcs}, our underlying PCS already accepts a verifier-evaluable inner-product weight, so we evaluate these batched indicators directly and introduce no separate Jagged reduction sumcheck.
 
 \subsection{Inner-product PCS}\label{sec:rs-dense}
 
@@ -269,7 +279,7 @@ GKR (\S\ref{sec:gkr}) reduces one side of \eqref{eq:gp} to a single evaluation $
 
 \paragraph{Flush blocks.} The leaves split into \emph{blocks}, one per flush rule and one per boundary set. A block of a $2^{\kappa}$-row table holds $2^{\kappa}$ leaves; the row-$z$ leaf is $\gamma-\sum_{i=0}^{m-1}\alpha^{i}\,c_{i}(z)$, with $c_{i}(z)$ coordinate $i$ of the row's tuple. Each $c_i$ is public, a committed column, or a virtual column.
 
-\paragraph{Layout.} Order the blocks largest first at aligned offsets, padding to $2^{\mu}$ leaves with $1$s, which leave the product unchanged. This is the stacking of \S\ref{sec:stacking} applied to blocks: block $b$, of $2^{\kappa_b}$ leaves, occupies the subcube $\{(z,\mathsf{sel}_b):z\in\cube{\kappa_b}\}$ for a fixed selector $\mathsf{sel}_b$.
+\paragraph{Layout.} Order the blocks largest first at aligned offsets, padding to $2^{\mu}$ leaves with $1$s, which leave the product unchanged.  This is deliberately the older aligned block layout, not the Jagged commitment layout of \S\ref{sec:stacking}: Jagged is used only for the committed trace columns.  Block $b$, of $2^{\kappa_b}$ leaves, occupies the subcube $\{(z,\mathsf{sel}_b):z\in\cube{\kappa_b}\}$ for a fixed selector $\mathsf{sel}_b$.  The grand-product arguments and their polynomial stacking are otherwise unchanged.
 
 \paragraph{Decomposition.} Split $\zeta=(\zeta^{b}_{\mathrm{lo}},\zeta^{b}_{\mathrm{hi}})$ at block $b$'s boundary. Each block is a subcube, so the leaf MLE splits into a public selector times the block's own MLE, the padding contributing the leftover mass:
 \[
@@ -444,7 +454,7 @@ Asserts that two source cells are $\K$-valued and packs them into one canonical 
 
 Compresses a $64$-byte message block (four $128$-bit chunks) under a $32$-byte chaining value to the $32$-byte result at $c$. Each chunk occupies one $192$-bit cell through the canonical embedding with top limb zero. The message chunks are addressed independently at $a_i=\fp\cdot o_i$, while $a_V=\fp\cdot o_V$ is the base of the two consecutive chaining-value cells $a_V,\gen a_V$. The output similarly occupies $a_C=\fp\cdot o_C$ and $\gen a_C$, so each row accesses eight cells. The $128$-bit immediate $\mu$ packs the $64$-bit counter, $32$-bit block length, and $32$-bit flags required by the BLAKE3 specification; its two $\K$-lanes $\mu_0,\mu_1$ ride the bytecode tuple.
 
-Flock~\cite{flock} proves the compression relation with a batched R1CS over a Boolean witness. The witness is packed into $q_\pkd$, with $64$ bits per $\K$-element. The concrete ring switch of \S\ref{sec:ringswitch} maps its $\F_2$ claims to one $\E$-weighted claim on $q_\pkd$, which joins the batched opening (\S\ref{sec:e2e-unrolled}).
+Flock~\cite{flock} proves the compression relation with a batched R1CS over a Boolean witness. The witness is packed into $q_\pkd$, with $64$ bits per $\K$-element. $q_\pkd$ is the one aligned exception to the Jagged layout (\S\ref{sec:stacking}): it occupies the offset-zero prefix, so its ring-switch and fixed-slot claims keep their direct subcube formulas. The concrete ring switch of \S\ref{sec:ringswitch} maps its $\F_2$ claims to one $\E$-weighted claim on $q_\pkd$, which joins the batched opening (\S\ref{sec:e2e-unrolled}).
 
 The message, result, chaining value, and metadata are all contained in $q_\pkd$. Each $64$-bit flock word occupies one packed slot, and each BLAKE3 cell contributes its two low limbs; the top limb is canonically zero. The eighteen limbs $v_{A0},\dots,v_{C3},v_{V0},\dots,v_{V3},\mu_0,\mu_1$ therefore need no separate commitment: each is a strided point evaluation of $q_\pkd$. Linking these embedded values to the full memory interaction implicitly forces the top limb of every BLAKE3-accessed cell to zero, and the zero limbs are never committed. The generalized R1CS matrices take the chaining value, counter, block length, and flags as free input rows; the bus and bytecode interactions bind them.
 \begin{itemize}
@@ -526,11 +536,11 @@ The final stacked opening discharges all three limb claims.
 
 We lay out the whole protocol as one ordered sequence. Each reduction below adds evaluation claims on committed columns to a shared \emph{claim pool}; the final \textsc{Opening} phase proves all of them with a single PCS opening.
 
-\paragraph{Setup and statement binding.} Fixed and shared in advance (\S\ref{sec:e2e-const} through \S\ref{sec:e2e-pi}): the fields and constants; the instance caps (\S\ref{sec:memchan}); the public program and its length; the initial state $(\pc_0,\fp_0)$ and final state $(\pc_{\mathrm{final}},\fp_{\mathrm{final}})$; and the public input $\mem[0],\mem[1]$. Before any challenge, the transcript is seeded by the public input and one environment digest that binds both the exact bytecode and flock's BLAKE3 circuit family. The prover then announces $h$ and the seven real opcode-row counts; the verifier checks them against the caps and derives every table, stack, and leaf shape. Thus neither a different program nor an adaptively chosen shape can reuse the proof's later challenges.
+\paragraph{Setup.} Fixed and shared in advance (\S\ref{sec:e2e-const} through \S\ref{sec:e2e-pi}): the field and constants; the public program; the initial state $(\pc_0,\fp_0)$ and final state $(\pc_{\mathrm{final}},\fp_{\mathrm{final}})$; and the public input $\mem[0],\mem[1]$.  The prover announces the used-memory prefix; the logical memory size is canonically $2^h$ for $h=\max(16,\lceil\log_2 h_{\rm mem}\rceil)$.
 
 \paragraph{Commitment.}
 \begin{enumerate}
-\item \textbf{Prover.} Builds all committed columns ($\K$-valued; a $192$-bit value is three $\K$-limb columns, \S\ref{sec:prelim}): each table's state, operands, addresses, read-value limbs, and counts (plus $w,b,\mathit{next\_pc},\mathit{next\_fp}$ for \texttt{JUMP}); the three memory limbs $M_0,M_1,M_2$; the memory and bytecode finalize counts; and flock's packed witness $q_\pkd$ (\S\ref{sec:tab-blake3}), always present (a program that executes no \texttt{BLAKE3} carries one padding instance, keeping the proof shape uniform). Counts are always committed $\gen$-powers (\S\ref{sec:memchan}); the public program and the virtual increments $\gen\cdot\pc,\gen\cdot\cnt$ are not. It stacks these into $q$, sends the dense commitment (\S\ref{sec:stacking}, \S\ref{sec:rs-dense}), and announces each table's non-padded row count, which the verifier checks against the instance caps (\S\ref{sec:memchan}) and rounds up to a power of two to fix the stack and leaf layouts (\S\ref{sec:leafstack}). Padding rows are a fixed default (\S\ref{sec:e2e-pad}); the announced sizes fix the surplus the verifier later divides out (\S\ref{sec:gp}).
+\item \textbf{Prover.} Builds all committed columns (field-valued): each table's state, operands, addresses, read values, and counts (plus $w,b,\mathit{next\_pc},\mathit{next\_fp}$ for \texttt{JUMP}); the memory column $M$; and the memory and bytecode finalize counts. Counts are always committed $\gen$-powers (\S\ref{sec:memchan}); the public program and the virtual increments $\gen\cdot\pc,\gen\cdot\cnt$ are not. It announces the used-memory prefix and each table's non-padded row count, packs the corresponding real prefixes into the Jagged witness $q$, and sends its dense commitment (\S\ref{sec:stacking}, \S\ref{sec:rs-dense}).  These sizes determine the Jagged boundaries; their power-of-two ceilings still determine the logical AIR and grand-product leaf layouts (\S\ref{sec:leafstack}). Padding rows are fixed defaults (\S\ref{sec:e2e-pad}); the verifier restores their MLE contributions during opening.
 \end{enumerate}
 
 \paragraph{Bus.}
@@ -560,10 +570,10 @@ We lay out the whole protocol as one ordered sequence. Each reduction below adds
 
 \paragraph{Opening.}
 \begin{enumerate}
-\item \textbf{Prover \& Verifier.} Each pooled claim is one evaluation of a committed column at a point, its value already supplied; via the stacking selectors (\S\ref{sec:stacking}) it becomes a weighted sum $\sum_w W_j(w)\,\widehat q(w)=c_j$ over the stacked witness. (The ring-switched claims arrive already in this form, their weights supported on the $q_\pkd$ region.)
-\item \textbf{Verifier.} Sends the batching coefficients $\lambda_1,\dots,\lambda_J\in\E$, one per claim.
-\item \textbf{Prover \& Verifier.} Fold the $J$ claims into $W_\lambda=\sum_j\lambda_j W_j$ and $C_\lambda=\sum_j\lambda_j c_j$, and run the inner-product PCS opening on $\sum_w W_\lambda(w)\,\widehat q(w)=C_\lambda$ (\S\ref{sec:rs-dense}), the verifier evaluating $W_\lambda$ itself. This one opening discharges every pooled claim; there is no separate reduction sumcheck.
-\item \textbf{Verifier.} Accepts iff the announced sizes passed the caps, the two roots agreed, each leaf decomposition and every sumcheck's final value matched the supplied evaluations, flock's reduction verified, the public-input claim held, and the PCS opening verified.
+\item \textbf{Prover \& Verifier.} Each pooled claim is one evaluation of a committed column at a point, its value already supplied.  The verifier removes any fixed public-padding contribution and, via the interval indicator of \S\ref{sec:stacking}, turns the real-prefix claim into a weighted sum $\sum_w W_j(w)\,\widehat q(w)=c_j$ over the dense Jagged witness.
+\item \textbf{Verifier.} Sends the batching challenge $\lambda$.
+\item \textbf{Prover \& Verifier.} Fold the $J$ claims into $W_\lambda=\sum_j\lambda^{j}W_j$ and $C_\lambda=\sum_j\lambda^{j}c_j$, and run the inner-product PCS opening on $\sum_w W_\lambda(w)\,\widehat q(w)=C_\lambda$ (\S\ref{sec:rs-dense}), the verifier evaluating $W_\lambda$ itself. This one opening discharges every pooled claim; there is no separate reduction sumcheck.
+\item \textbf{Verifier.} Accepts iff the two roots agreed, each leaf decomposition and every sumcheck's final value matched the supplied evaluations, the public-input claim held, and the PCS opening verified.
 \end{enumerate}
 
 \section{Recursive aggregation}\label{sec:recursion}
@@ -800,6 +810,10 @@ Gal Arnon, Alessandro Chiesa, Giacomo Fenzi, and Eylon Yogev.
 \newblock WHIR: Reed--Solomon Proximity Testing with Super-Fast Verification.
 \newblock Cryptology ePrint Archive, Paper 2024/1586, 2024.
 \newblock \url{https://eprint.iacr.org/2024/1586}
+\bibitem{jagged-pcs}
+Tamir Hemo, Kevin Jue, Eugene Rabinovich, Gyumin Roh, and Ron~D. Rothblum.
+\newblock Jagged Polynomial Commitments (or: How to Stack Multilinears).
+\newblock Manuscript, April 2026.
 
 \bibitem{flock}
 Succinct Labs.

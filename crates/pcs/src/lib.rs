@@ -4,6 +4,7 @@
 //! Boolean witnesses are packed into `K = GF(2^64)` and Ligerito opens them
 //! over its cubic extension `E = GF(2^192)`.
 
+pub mod jagged;
 pub mod ligerito;
 mod ligerito_config;
 pub mod merkle;

@@ -75,6 +75,9 @@ pub struct Layout {
     /// Per-column placement (offset + n_vars) in the stacked witness; from the
     /// columns' log-sizes alone, so reconstructable by the verifier.
     pub placements: Vec<witness::Placement>,
+    /// Power-of-two equal-height column blocks used by the row-major Jagged
+    /// commitment layout. Virtual columns are absent; q_pkd is a singleton.
+    pub jagged_blocks: Vec<Vec<usize>>,
     /// `log2` of the stacked witness length.
     pub m: usize,
     /// Public input: the first two memory cells `m[0], m[1]` (each a 192-bit
@@ -84,6 +87,82 @@ pub struct Layout {
     /// Real (non-padded) per-table row counts, as announced. `row_counts[5]` is
     /// the executed `BLAKE3` count, which gates the flock sub-proof.
     pub row_counts: [usize; tables::N_TABLES],
+}
+
+/// Shape-independent Jagged block partition. Columns share a block only when
+/// they have the same public height source and identical membership in every
+/// bus/constraint/PI opening row-group. Schema adjacency is irrelevant: the
+/// explicit placement map can globally cluster compatible columns. Consequently
+/// every point group claims either a whole block or none of it.
+fn jagged_column_blocks(log_bytecode: usize, bytecode_used: usize, sides: [&[Block]; 3]) -> Vec<Vec<usize>> {
+    let sources = col_height_sources(bytecode_used);
+    let mut signatures: Vec<Vec<usize>> = vec![Vec::new(); sources.len()];
+    let kappa_sources = block_kappa_sources(log_bytecode);
+    let mut block_index = 0usize;
+    let mut group_of_source = std::collections::BTreeMap::new();
+    for blocks in sides {
+        for block in blocks {
+            let source = kappa_sources[block_index];
+            block_index += 1;
+            let next = group_of_source.len();
+            let group = *group_of_source.entry(source).or_insert(next);
+            for coord in &block.coords {
+                if let Coord::Col(col) | Coord::GCol(col, _) = coord
+                    && sources[*col].is_some()
+                {
+                    signatures[*col].push(group);
+                }
+            }
+        }
+    }
+    assert_eq!(block_index, kappa_sources.len());
+
+    let mut next_group = group_of_source.len();
+    let sch = schema();
+    for (t, table) in tables::tables().iter().enumerate() {
+        let base = sch.base[t];
+        for &col in table.constraint_columns() {
+            if sources[base + col].is_some() {
+                signatures[base + col].push(next_group);
+            }
+        }
+        next_group += 1;
+    }
+    // The public-input claim opens all three memory limbs at one point
+    // ([`bind_pi_claim`]), so they share this group and stay block-compatible.
+    signatures[MEM_LO].push(next_group);
+    signatures[MEM_HI].push(next_group);
+    signatures[MEM_TOP].push(next_group);
+    for signature in &mut signatures {
+        signature.sort_unstable();
+        signature.dedup();
+    }
+
+    let mut blocks = vec![vec![QPKD]];
+    let committed: Vec<usize> = (0..sources.len()).filter(|&col| col != QPKD && sources[col].is_some()).collect();
+    let mut consumed = vec![false; sources.len()];
+    for &first in &committed {
+        if consumed[first] {
+            continue;
+        }
+        let group: Vec<usize> = committed
+            .iter()
+            .copied()
+            .filter(|&col| !consumed[col] && sources[col] == sources[first] && signatures[col] == signatures[first])
+            .collect();
+        for &col in &group {
+            consumed[col] = true;
+        }
+        let mut start = 0usize;
+        let mut remaining = group.len();
+        while remaining != 0 {
+            let width = 1usize << (usize::BITS - 1 - remaining.leading_zeros());
+            blocks.push(group[start..start + width].to_vec());
+            start += width;
+            remaining -= width;
+        }
+    }
+    blocks
 }
 
 /// The prover's witness bundle: the committed column values + their stacked
@@ -127,6 +206,46 @@ pub fn col_kappa_sources(log_bytecode: usize) -> Vec<Option<(usize, usize)>> {
         k[b3 + c] = None;
     }
     k
+}
+
+/// Public source of a committed Jagged column's real height. `Pow2` means
+/// `2^(source + adjustment)` where the source indices match
+/// [`col_kappa_sources`]; `TableRows(t)` is the announced, unpadded row count
+/// of opcode table `t`. `MemoryRows` is the announced used-memory prefix, and
+/// `BytecodeRows(n)` is the program-bound real instruction prefix.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ColHeightSource {
+    Pow2 { source: usize, adjustment: usize },
+    TableRows(usize),
+    MemoryRows,
+    BytecodeRows(usize),
+}
+
+/// Height sources in global schema order; `None` marks virtual columns.
+pub fn col_height_sources(bytecode_used: usize) -> Vec<Option<ColHeightSource>> {
+    let sch = schema();
+    let mut out = vec![None; sch.n];
+    // The 64-bit data memory is three K-columns (lo / hi / top limbs) sharing
+    // one used-cell prefix, where upstream has a single `MEM`.
+    out[MEM_LO] = Some(ColHeightSource::MemoryRows);
+    out[MEM_HI] = Some(ColHeightSource::MemoryRows);
+    out[MEM_TOP] = Some(ColHeightSource::MemoryRows);
+    out[MFCNT] = Some(ColHeightSource::MemoryRows);
+    out[BFCNT] = Some(ColHeightSource::BytecodeRows(bytecode_used));
+    out[QPKD] = Some(ColHeightSource::Pow2 {
+        source: 2 + tables::BLAKE3_TABLE,
+        adjustment: flock::blake3::K_LOG - ::pcs::LOG_PACKING,
+    });
+    for (t, table) in tables::tables().iter().enumerate() {
+        let base = sch.base[t];
+        out[base..base + table.n_committed_columns()]
+            .fill(Some(ColHeightSource::TableRows(t)));
+    }
+    let b3 = sch.base[tables::BLAKE3_TABLE];
+    for &c in &tables::BLAKE3_VALUE_COLS {
+        out[b3 + c] = None;
+    }
+    out
 }
 
 /// The bus flush blocks' kappa SOURCES, flattened in side order (push, pull,
@@ -190,15 +309,57 @@ fn col_kappas(
     k
 }
 
+/// Real Jagged heights for the committed columns. Memory, memory-finalize, and
+/// bytecode-finalize commit only their non-default prefixes; flock's `q_pkd`
+/// remains a full aligned power-of-two column. Per-opcode columns commit only
+/// their executed-row prefix. Fixed suffixes are reconstructed publicly when
+/// claims are routed to the PCS.
+fn col_heights(
+    mem_used: usize,
+    bytecode_used: usize,
+    row_counts: [usize; tables::N_TABLES],
+    kappas: &[Option<usize>],
+) -> Vec<usize> {
+    let sch = schema();
+    let mut heights = vec![0usize; sch.n];
+    heights[MEM_LO] = mem_used;
+    heights[MEM_HI] = mem_used;
+    heights[MEM_TOP] = mem_used;
+    heights[MFCNT] = mem_used;
+    heights[BFCNT] = bytecode_used;
+    heights[QPKD] = 1usize << kappas[QPKD].expect("q_pkd is committed");
+    for (t, table) in tables::tables().iter().enumerate() {
+        let base = sch.base[t];
+        for height in &mut heights[base..base + table.n_committed_columns()] {
+            *height = row_counts[t];
+        }
+    }
+    for (height, kappa) in heights.iter_mut().zip(kappas) {
+        if kappa.is_none() {
+            *height = 0;
+        }
+    }
+    heights
+}
+
 /// Build the public [`Layout`] from the program, the memory log-size `log_mem`, the
 /// instruction tables' real row counts `row_counts`, and the public input `pi`. The flush
 /// blocks reference columns only by INDEX and the program only through its
 /// public columns, so this needs no committed witness — both prover and verifier
 /// reconstruct exactly the same structure (§7, §8).
-pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; tables::N_TABLES], pi: [F192; 2]) -> Layout {
+pub fn layout(
+    prog: &[Op],
+    bytecode_used: usize,
+    log_mem: usize,
+    mem_used: usize,
+    row_counts: [usize; tables::N_TABLES],
+    pi: [F192; 2],
+) -> Layout {
     let bytecode_size = prog.len();
     let log_bytecode = crate::log2_strict_usize(bytecode_size);
     let cells = 1usize << log_mem;
+    assert!((2..=cells).contains(&mem_used), "used-memory prefix must fit the logical memory");
+    assert!(bytecode_used < bytecode_size, "real bytecode prefix must end before the sentinel");
 
     // Per-table padded log-row-counts (the boundary block is fixed). The real
     // (non-padded) `row_counts[t]` tell each flush how many of its 2^kappa rows
@@ -398,6 +559,11 @@ pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; tables::N_TABLES]
     let sch = schema();
     let mut count_blocks: Vec<Block> = Vec::new();
     let mut pad = vec![F64::ZERO; sch.n];
+    // The memory- and bytecode-finalize counts default to g^0 = 1 outside their
+    // real prefixes; Jagged commits only the prefix and the verifier restores
+    // this public suffix when routing the claim.
+    pad[MFCNT] = F64::ONE;
+    pad[BFCNT] = F64::ONE;
     for (t, table) in tables::tables().iter().enumerate() {
         let base = sch.base[t];
         let (kappa, real) = (taus[t], row_counts[t]);
@@ -433,18 +599,20 @@ pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; tables::N_TABLES]
         pad[b3 + tables::BLAKE3_VALUE_COLS[17]] = F64(md.c1); // metadata blen‖flags lane
     }
 
-    let (placements, m) = witness::placements_of(&col_kappas(
-        log_mem,
-        log_bytecode,
-        taus,
-        row_counts[tables::BLAKE3_TABLE],
-    ));
+    let kappas = col_kappas(log_mem, log_bytecode, taus, row_counts[tables::BLAKE3_TABLE]);
+    let heights = col_heights(mem_used, bytecode_used, row_counts, &kappas);
+    // q_pkd stays at offset zero so its ring-switched weight remains an aligned
+    // subcube. Every ordinary column after it is packed tightly and opened via
+    // the Jagged indicator.
+    let jagged_blocks = jagged_column_blocks(log_bytecode, bytecode_used, [&push, &pull, &count_blocks]);
+    let (placements, m) = witness::placements_of_blocks(&kappas, &heights, &jagged_blocks);
     Layout {
         push,
         pull,
         count: count_blocks,
         pad,
         placements,
+        jagged_blocks,
         m,
         pi,
         taus,
@@ -534,13 +702,21 @@ impl Program {
             "a table exceeds 2^{MAX_LOG_ROWS} rows"
         );
         let pi = [exec.mem[0], exec.mem[1]];
-        let l = layout(&self.prog, log_mem, row_counts, pi);
+        let l = layout(
+            &self.prog,
+            self.bytecode_used(),
+            log_mem,
+            exec.mem_used,
+            row_counts,
+            pi,
+        );
 
         // Pad each per-opcode table to its power-of-two row count: count columns
         // with g^0 = 1, every other column with 0 (§e2e-pad). A default padding
         // row (counts 1, else 0) flushes tuples that do not self-cancel; the
         // verifier divides them out of the bus product (§sec:gp). The shared
-        // columns (MEM, MFCNT, BFCNT) keep their natural 2^h / 2^log_bytecode lengths.
+        // Shared columns keep their natural logical lengths in `cols`; Jagged
+        // copies only their non-default prefixes into the committed witness.
         // Pad to `2^taus[t]` (= `next_pow2(row_counts[t])` for every table except
         // BLAKE3, which `layout` rounds up to flock's `2^n_log`).
         for (t, table) in tables::tables().iter().enumerate() {
@@ -568,5 +744,38 @@ impl Program {
             row_counts,
             flock_reduction: Some(flock_reduction),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shared_default_suffixes_use_jagged_prefixes() {
+        let prog = vec![Op::Set { o: 0, k: F192::ZERO }; 8];
+        let bytecode_used = 3;
+        let mem_used = 5;
+        let l = layout(
+            &prog,
+            bytecode_used,
+            MIN_LOG_MEM,
+            mem_used,
+            [0; tables::N_TABLES],
+            [F192::ZERO; 2],
+        );
+
+        for col in [MEM_LO, MEM_HI, MEM_TOP] {
+            assert_eq!(l.placements[col].height, mem_used);
+            assert_eq!(l.pad[col], F64::ZERO);
+        }
+        assert_eq!(l.placements[MFCNT].height, mem_used);
+        assert_eq!(l.placements[BFCNT].height, bytecode_used);
+        assert_eq!(l.pad[MFCNT], F64::ONE);
+        assert_eq!(l.pad[BFCNT], F64::ONE);
+
+        let qpkd = l.placements[QPKD];
+        assert_eq!(qpkd.height, 1usize << qpkd.n_vars, "q_pkd remains a full aligned subcube");
+        assert_eq!(qpkd.offset, 0);
     }
 }
