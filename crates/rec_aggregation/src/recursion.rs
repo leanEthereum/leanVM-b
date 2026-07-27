@@ -700,11 +700,38 @@ fn gen_verify(
             block
                 .coords
                 .iter()
-                .any(|coord| matches!(coord, Coord::Col(_) | Coord::GCol(_)))
+                .any(|coord| match coord {
+                    Coord::Col(col) | Coord::GCol(col) => !l.placements[*col].is_virtual(),
+                    _ => false,
+                })
         })
-        .max_by_key(|(_, block)| block.real)
+        .max_by_key(|(_, block)| block.kappa)
         .map(|(i, _)| g_pow(i))
         .expect("bus layout has at least one block");
+    let mut seen_bus = std::collections::HashSet::new();
+    let mut bus_row_nus = Vec::new();
+    for blocks in sides {
+        for block in blocks {
+            let row_nu = primitives::log2_ceil_usize(block.real.max(1));
+            for coord in &block.coords {
+                if let Coord::Col(col) | Coord::GCol(col) = coord
+                    && seen_bus.insert((*col, block.kappa))
+                {
+                    bus_row_nus.push(row_nu);
+                }
+            }
+        }
+    }
+    assert_eq!(bus_row_nus.len(), summary.bus_claims.len());
+    let mut bus_tail_invs = vec![F128::ONE; 42];
+    if let Some(claim) = summary.bus_claims.iter().find(|claim| claim.prefix_shifted) {
+        for (row_nu, inverse) in bus_tail_invs.iter_mut().enumerate().take(claim.point.len() + 1) {
+            *inverse = claim.point[row_nu..]
+                .iter()
+                .fold(F128::ONE, |acc, &r| acc * (F128::ONE + r))
+                .inv();
+        }
+    }
     // ---- Phase E2 hints (the stacked Ligerito opening) ----
     let lig = &proof.openings[0];
     let numinter: Vec<usize> = klvl.iter().map(|&k| 1usize << k).collect();
@@ -791,6 +818,7 @@ fn gen_verify(
         ("merkle_paths".to_string(), lpaths_flat),
         ("sub_pis".to_string(), vec![pi[0], pi[1]]),
         ("reduction_max".to_string(), vec![reduction_max]),
+        ("bus_tail_invs".to_string(), bus_tail_invs),
     ];
     (hints, deferred)
 }
@@ -925,6 +953,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     let (mut ct, mut cval) = (vec![], vec![]);
     let (mut nclaims, mut nbcv, mut nblocks) = (0usize, 0usize, 0usize);
     let mut slot_of: std::collections::HashMap<(usize, usize), usize> = Default::default();
+    let mut bus_slot_col = Vec::new();
     let (mut coord_fresh, mut coord_slot) = (vec![], vec![]);
     for blocks in sides.iter() {
         for blk in blocks.iter() {
@@ -941,6 +970,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
                         slot_of.insert(key, nclaims);
                         fresh = 1;
                         slot = nclaims;
+                        bus_slot_col.push(*i);
                         nclaims += 1;
                     }
                 }
@@ -962,21 +992,52 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         }
         sblk.push(nblocks);
     }
-    let ncol: Vec<usize> = lean_vm::tables::tables().iter().map(|t| t.constraint_columns().len()).collect();
-    let evtot: usize = ncol.iter().sum();
-    let ncl = nclaims + evtot + 1; // bus + constraint + the PI claim
-
+    let ncol: Vec<usize> = lean_vm::tables::tables()
+        .iter()
+        .map(|t| t.constraint_columns().len())
+        .collect();
     // ---- claim descriptors: buffer id + offset only (both structural) ----
     let sch = lean_vm::cpu::schema();
     let b3base = sch.base[5];
     let valcols: Vec<usize> = lean_vm::tables::BLAKE3_VALUE_COLS.iter().map(|&c| b3base + c).collect();
+    let global_bus_slots: Vec<usize> = (0..nclaims)
+        .filter(|&slot| !valcols.contains(&bus_slot_col[slot]))
+        .collect();
+    let mut global_col_slot: std::collections::HashMap<usize, usize> = global_bus_slots
+        .iter()
+        .map(|&slot| (bus_slot_col[slot], slot))
+        .collect();
+    let mut next_claim = nclaims;
+    let mut global_extra_cols = Vec::new();
+    for (t, table) in lean_vm::tables::tables().iter().enumerate() {
+        for &local in table.constraint_columns() {
+            let col = sch.base[t] + local;
+            if let std::collections::hash_map::Entry::Vacant(entry) = global_col_slot.entry(col) {
+                entry.insert(next_claim);
+                global_extra_cols.push(col);
+                next_claim += 1;
+            }
+        }
+    }
+    let global_col_slots: Vec<usize> = global_bus_slots.iter().copied().chain(nclaims..next_claim).collect();
+    let mut air_global_slots = Vec::new();
+    for (t, table) in lean_vm::tables::tables().iter().enumerate() {
+        air_global_slots.extend(
+            table
+                .constraint_columns()
+                .iter()
+                .map(|&local| global_col_slot[&(sch.base[t] + local)]),
+        );
+    }
+    let pi_claim_slot = next_claim;
+    next_claim += 1;
+    let ncl = next_claim;
     let block_index: std::collections::HashMap<usize, usize> = l
         .jagged_blocks
         .iter()
         .enumerate()
         .map(|(block, cols)| (l.placements[cols[0]].offset, block))
         .collect();
-    let bks_for_claims = lean_vm::cpu::block_kappa_sources(kbc);
     let (mut cpbuf, mut cpoff, mut cpcol, mut cppad, mut cpslot, mut cpblockslot, mut cpblocklog, mut cprowkey) =
         (vec![], vec![], vec![], vec![], vec![], vec![], vec![], vec![]);
     let mut desc_seen: std::collections::HashSet<(usize, usize)> = Default::default();
@@ -988,7 +1049,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
                     if !desc_seen.insert((*i, blk.kappa)) {
                         continue;
                     }
-                    cpbuf.push(if valcols.contains(i) { 5 } else { 4 });
+                    cpbuf.push(if valcols.contains(i) { 5 } else { 6 });
                     cpoff.push(0);
                     let dense_col = if valcols.contains(i) { lean_vm::cpu::QPKD } else { *i };
                     let placement = l.placements[dense_col];
@@ -1003,39 +1064,29 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
                             .map(|p| lean_vm::blake3_flock::VM_SLOTS[p])
                             .unwrap_or(0),
                     );
-                    let (source, adjustment) = bks_for_claims[block_idx];
-                    cprowkey.push((4usize, source, adjustment));
+                    // Every ordinary tight-reduction claim is normalized to
+                    // the same full bus-rho point. Packed q_pkd slot claims
+                    // remain on their native instance point.
+                    cprowkey.push(if valcols.contains(i) {
+                        (5usize, block_idx, 0)
+                    } else {
+                        (6usize, 0, 0)
+                    });
                 }
             }
             block_idx += 1;
         }
     }
-    for (t, table) in lean_vm::tables::tables().iter().enumerate() {
-        for &c in table.constraint_columns() {
-            let col = sch.base[t] + c;
-            if l.placements[col].is_virtual() {
-                cpbuf.push(3);
-                cpoff.push(0);
-                let placement = l.placements[lean_vm::cpu::QPKD];
-                cpcol.push(block_index[&placement.offset]);
-                cpblockslot.push(placement.slot);
-                cpblocklog.push(placement.block_width_log);
-                cppad.push(F128::ZERO);
-                let p = valcols.iter().position(|&v| v == col).unwrap();
-                cpslot.push(lean_vm::blake3_flock::VM_SLOTS[p]);
-                cprowkey.push((3, 0, 0));
-            } else {
-                cpbuf.push(1);
-                cpoff.push(t * taumax_cap);
-                let placement = l.placements[col];
-                cpcol.push(block_index[&placement.offset]);
-                cpblockslot.push(placement.slot);
-                cpblocklog.push(placement.block_width_log);
-                cppad.push(l.pad[col]);
-                cpslot.push(0);
-                cprowkey.push((1, t, 0));
-            }
-        }
+    for &col in &global_extra_cols {
+        cpbuf.push(6);
+        cpoff.push(0);
+        let placement = l.placements[col];
+        cpcol.push(block_index[&placement.offset]);
+        cpblockslot.push(placement.slot);
+        cpblocklog.push(placement.block_width_log);
+        cppad.push(l.pad[col]);
+        cpslot.push(0);
+        cprowkey.push((6, 0, 0));
     }
     cpbuf.push(2);
     cpoff.push(0); // PI claim on MEM
@@ -1046,6 +1097,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     cppad.push(l.pad[lean_vm::cpu::MEM]);
     cpslot.push(0);
     cprowkey.push((2, 0, 0));
+    assert_eq!(cpbuf.len() - 1, pi_claim_slot);
     assert_eq!(cpbuf.len(), ncl, "descriptor count == pool size");
     let mut row_ids = std::collections::HashMap::new();
     let mut claim_row_group = vec![0usize; ncl];
@@ -1115,26 +1167,6 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         next_rank += width;
     }
     assert_eq!(next_rank, ncl);
-
-    // Padding-prefix indicators depend only on (logical row point, physical
-    // Jagged block), not on the column slot. Cache one per distinct pair used
-    // by a nonzero padding value.
-    let mut pad_prefix_ids = std::collections::HashMap::new();
-    let mut claim_pad_prefix = vec![0usize; ncl];
-    let (mut pad_prefix_row, mut pad_prefix_col) = (Vec::new(), Vec::new());
-    for j in 0..ncl {
-        if cpbuf[j] == 3 || cpbuf[j] == 5 || cppad[j] == F128::ZERO {
-            continue;
-        }
-        let key = (claim_row_group[j], cpcol[j]);
-        let next = pad_prefix_ids.len();
-        let prefix = *pad_prefix_ids.entry(key).or_insert_with(|| {
-            pad_prefix_row.push(key.0);
-            pad_prefix_col.push(key.1);
-            next
-        });
-        claim_pad_prefix[j] = prefix;
-    }
 
     // ---- the placeholder map ----
     let ints = |v: &[usize]| format!("[{}]", v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(", "));
@@ -1230,10 +1262,31 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("COORD_FRESH", ints(&coord_fresh));
     ps("COORD_CLAIM_SLOT", ints(&coord_slot));
     ps("N_BUS_CLAIMS", nclaims.to_string());
-    let idxc: Vec<u128> = (0..34).map(|i| { let mut g2k = G; for _ in 0..i { g2k = g2k * g2k; } u(F128::ONE + g2k) }).collect();
+    ps("GLOBAL_BUS_SLOTS", ints(&global_bus_slots));
+    ps("N_GLOBAL_BUS", global_bus_slots.len().to_string());
+    ps("GLOBAL_COL_SLOTS", ints(&global_col_slots));
+    ps("N_GLOBAL_COLS", global_col_slots.len().to_string());
+    ps("AIR_GLOBAL_SLOTS", ints(&air_global_slots));
+    ps("PI_CLAIM_SLOT", pi_claim_slot.to_string());
+    let idxc: Vec<u128> = (0..34)
+        .map(|i| {
+            let mut g2k = G;
+            for _ in 0..i {
+                g2k = g2k * g2k;
+            }
+            u(F128::ONE + g2k)
+        })
+        .collect();
     ps("INDEX_MLE_FACTORS", us(&idxc));
     ps("N_CLAIMS", ncl.to_string());
     ps("N_AIR_COLS", ints(&ncol));
+    let mut air_col_off = Vec::with_capacity(ncol.len());
+    let mut air_cursor = 0usize;
+    for &count in &ncol {
+        air_col_off.push(air_cursor);
+        air_cursor += count;
+    }
+    ps("AIR_COL_OFF", ints(&air_col_off));
     ps("AIR_COLS_CAP", (ncol.iter().max().unwrap() + 1).to_string());
     ps("N_TABLES", l.taus.len().to_string());
     ps("TAU_CAP", taumax_cap.to_string());
@@ -1436,10 +1489,6 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("N_CLAIM_ROWS", claim_row_rep.len().to_string());
     ps("CLAIM_ROW_GROUP", ints(&claim_row_group));
     ps("CLAIM_ROW_REP", ints(&claim_row_rep));
-    ps("N_PAD_PREFIXES", pad_prefix_row.len().to_string());
-    ps("PAD_PREFIX_ROW", ints(&pad_prefix_row));
-    ps("PAD_PREFIX_COL", ints(&pad_prefix_col));
-    ps("CLAIM_PAD_PREFIX", ints(&claim_pad_prefix));
     ps("N_JAGGED_BATCHES", batch_rep.len().to_string());
     ps("JAGGED_BATCH_REP", ints(&batch_rep));
     ps("JAGGED_BATCH_ROW", ints(&batch_row));

@@ -22,7 +22,7 @@
 
 \begin{abstract}
 \noindent
-This note describes the two Jagged constructions used in leanVM. Unequal-height trace columns are packed into one Ligerito commitment without a power-of-two pad after every column. Independently, the grand-product leaves are formed by concatenating the real rows of all bus blocks and padding only once. A pair of quadratic sumchecks reduces the latter construction to ordinary column evaluations. The second construction is new and is not part of the original Jagged PCS paper~\cite{Jagged26}.
+This note describes the two Jagged constructions used in leanVM. Unequal-height trace columns are packed into one Ligerito commitment without a power-of-two pad after every column. Independently, the grand-product leaves concatenate the real rows of all bus blocks and pad only once. Two quadratic sumchecks reduce the tight grand product to column evaluations at one common point, and a third sumcheck folds those evaluations together with all local constraints. The grand-product construction and its common-point reduction are not part of the original Jagged PCS paper~\cite{Jagged26}.
 \end{abstract}
 
 \section{The interval-transport polynomial}
@@ -58,11 +58,21 @@ For Boolean parameter points it equals \(J_{t,h}(r,x)\); for arbitrary points it
 
 \section{Jagged trace commitment}
 
-\paragraph{Layout.} A logical column \(P_i\) has \(2^{k_i}\) entries but only a real prefix of height \(h_i\leq2^{k_i}\) is committed. Compatible columns of equal height are grouped into row-major blocks of power-of-two width \(B=2^b\). If such a block starts at \(t\), then
+\paragraph{Shifted prefixes.} A logical column \(P_i\) has \(2^{k_i}\) entries, of which the first \(h_i\leq2^{k_i}\) are witness values and the remaining entries equal a public padding value \(p_i\). Define
 \[
-q[t+c+Bz]=P_c[z],\qquad 0\leq c<B,\quad 0\leq z<h.
+Q_i[z]=\begin{cases}P_i[z]+p_i,&z<h_i,\\0,&h_i\leq z<2^{k_i}.\end{cases}
 \]
-The block occupies exactly \(Bh\) dense cells. Wider blocks are placed first, which aligns every block to its width without inserting gaps. Flock's packed witness \(q_{\rm pkd}\) remains a full power-of-two block anchored at zero; all other committed columns use only their real prefixes. After the last block, \(q\) is padded once with zero to a cube of size \(2^M\). The value \(M\) is also large enough to embed every block's selector and logical row coordinates and to satisfy the PCS minimum dimension.
+Then \(P_i=Q_i+p_i\) on the whole Boolean cube and therefore
+\[
+\mle P_i(r)=\mle Q_i(r)+p_i.
+\]
+Committing \(Q_i\), rather than the unshifted real prefix, removes every padding-prefix correction from the verifier.
+
+\paragraph{Layout.} Compatible shifted prefixes of equal height are grouped into row-major blocks of power-of-two width \(B=2^b\). If a block starts at \(t\), then
+\[
+q[t+c+Bz]=Q_c[z],\qquad 0\leq c<B,\quad 0\leq z<h.
+\]
+The block occupies exactly \(Bh\) dense cells. Wider blocks are placed first, which aligns every block to its width without inserting gaps. Flock's packed witness \(q_{\rm pkd}\) remains an unshifted, full power-of-two block anchored at zero; all ordinary columns use shifted real prefixes. After the last block, \(q\) is padded once with zero to a cube of size \(2^M\). The dimension \(M\) is large enough to hold the packed area, every block selector followed by its longest row point, and the PCS minimum domain.
 
 \paragraph{Opening one column.} For slot \(c\) of a width-\(2^b\) block, form
 \[
@@ -70,17 +80,9 @@ r^\star=(\bits_b(c),r_0,\ldots,r_{k-1},0,\ldots,0).
 \]
 The selector bits choose the slot and the row bits choose the logical entry. With \(L=2^bh\),
 \[
-\sum_x q[x]J_{t,L}(r^\star,x)=\sum_{z=0}^{h-1}P_c[z]\eq(r,z).
+\sum_x q[x]J_{t,L}(r^\star,x)=\sum_{z=0}^{h-1}Q_c[z]\eq(r,z)=\mle Q_c(r).
 \]
-If the logical column has public padding value \(p\) on rows \(h,\ldots,2^k-1\), let
-\[
-H_h(r):=\sum_{z<h}\eq(r,z).
-\]
-The full logical evaluation is recovered from the committed prefix \(R\) by
-\[
-\mle P(r)=R+p\bigl(1-H_h(r)\bigr).
-\]
-The prefix mass \(H_h\) is evaluated by a two-state, most-significant-bit-first comparison automaton in \(O(k)\).
+The arithmetization recovers the full logical evaluation by adding \(p_c\).
 
 \paragraph{Batching a row-major block.} Suppose the \(B\) slots have batching coefficients \(1,\gamma,\ldots,\gamma^{B-1}\). Instead of evaluating one \(J\) per slot, replace the selector-coordinate pairs \((1+r_i,r_i)\) by
 \[
@@ -113,7 +115,11 @@ Sample \(\eta\) and combine the push, pull, and count identities with coefficien
 C=\sum_p\sum_{u<h_p}A_p(u)\eq(\zeta,t_p+u).
 \]
 
-Let \(\nu=\max_p\lceil\log_2\max(h_p,1)\rceil\), and define \(W_p(u)=\mathbf 1[u<h_p]\eq(\zeta,t_p+u)\) on \(\cube\nu\). A degree-two sumcheck reduces
+Let \(\nu\) be the largest real-row dimension and, for an ordinary committed source, the largest logical column dimension:
+\[
+\nu=\max\left(\max_p\left\lceil\log_2\max(h_p,1)\right\rceil,\ \max_{i\ {\rm committed}} k_i\right).
+\]
+Define \(W_p(u)=\mathbf 1[u<h_p]\eq(\zeta,t_p+u)\) on \(\cube\nu\). A degree-two sumcheck reduces
 \[
 C=\sum_{u\in\cube\nu}\sum_p \mle A_p(u)\mle W_p(u)
 \]
@@ -121,7 +127,16 @@ to a random row point \(\rho\), giving
 \[
 C_\rho=\sum_p a_pJ_{t_p,h_p}(\rho,\zeta),\qquad a_p:=\mle A_p(\rho).
 \]
-Each \(a_p\) is a public linear combination of ordinary source evaluations. A source whose real dimension is \(\nu_p<\nu\) is evaluated at \((\rho_0,\ldots,\rho_{\nu_p-1},0,\ldots,0)\). The index coordinate \(u\mapsto g^u\) is evaluated directly as
+Each \(a_p\) is a public linear combination of ordinary source evaluations. Let \(\nu_i=\lceil\log_2\max(h_i,1)\rceil\). For a committed shifted prefix, the prover exposes the common-point value
+\[
+e_i=\mle Q_i(\rho_0,\ldots,\rho_{\nu_i-1})\prod_{j=\nu_i}^{\nu-1}(1+\rho_j).
+\]
+The verifier checks the inverse of the displayed tail product and recovers the source value used in \(a_p\) as
+\[
+\mle P_i(\rho_0,\ldots,\rho_{\nu_i-1},0,\ldots,0)=
+\frac{e_i}{\prod_{j=\nu_i}^{\nu-1}(1+\rho_j)}+p_i.
+\]
+Thus every ordinary committed bus source is already claimed at the same \(\nu\)-coordinate point \(\rho\). Virtual \(q_{\rm pkd}\) slot claims remain at their native instance point. The index coordinate \(u\mapsto g^u\) is evaluated directly as
 \[
 \prod_{i<\nu_p}\bigl(1+\rho_i+g^{2^i}\rho_i\bigr).
 \]
@@ -152,17 +167,34 @@ The first expression is a sparse-table evaluation; the second is one generalized
 
 \paragraph{Prover evaluation.} The first sumcheck stores each interval only at its local size \(2^{\nu_p}\). Once all local coordinates have been folded, the remaining row bits are forced to zero by \(W_p\), so the prover updates the interval's scalar without allocating a \(2^\nu\)-entry table. The assist sumcheck evaluates the sparse interval list directly. Its terminal computation is linear in the number of blocks and uses one width-four automaton.
 
+\section{One common opening point}
+
+The tight reduction above produces ordinary bus claims \(e_j=\mle Q_j(\rho)\) at one point but would still leave the six instruction-table constraints at separate points. We follow the common-point opening reduction used by SP1~\cite{SP1} and fold the bus claims into one global constraint sumcheck.
+
+For each table \(t\), let \(C_t(\eta_t;\cdot)\) be the random linear combination of its degree-two row constraints, and sample a batching challenge \(\theta\). Every shifted column is zero-extended to the common \(\nu\)-cube. Define
+\[
+F(x)=\sum_{j=0}^{B-1}\theta^j Q_j(x)+\sum_{t=0}^{5}\theta^{B+t}
+C_t\bigl(\eta_t;(Q_c(x)+p_c)_{c\in I_t}\bigr),
+\]
+where the first sum follows the canonical order of the \(B\) ordinary bus claims and \(I_t\) is the constraint-column list of table \(t\). At Boolean rows inside a table, \(Q_c+p_c=P_c\); on its padding suffix and outside its native cube, \(Q_c=0\), so \(Q_c+p_c=p_c\), which is the valid public padding row. Hence every \(C_t\) vanishes on the common Boolean cube and
+\[
+\sum_{x\in\cube\nu}\eq(\rho,x)F(x)=\sum_{j=0}^{B-1}\theta^j e_j.
+\]
+A degree-two sumcheck reduces this identity to a new point \(\omega\). The common \(\eq(\rho,x)\) factor is kept outside the product polynomial, so each round still sends only its values at \(0,1,g\). At the terminal, the prover sends each distinct \(\mle Q_c(\omega)\); the verifier evaluates \(F(\omega)\), and the Jagged PCS opens every ordinary bus and constraint column at \(\omega\). Only the strided \(q_{\rm pkd}\) claims and the public-input memory claim use other points.
+
+This fusion has two effects in recursion: six independent constraint sumchecks become one, and columns that previously belonged to many row-point groups now share complete row-major Jagged blocks. Committing shifted prefixes additionally makes every terminal claim equal to the committed value, so no prefix-indicator evaluation remains.
+
 \section{Soundness and measured cost}
 
-The transcript absorbs all GKR terminal claims and source evaluations before sampling the challenges that batch them. The first sumcheck proves the reduction from the complete GKR leaf claims to ordinary source evaluations. The start--length assist is a separate quadratic sumcheck proving the remaining sparse Jagged-weight identity. Its terminal start and length bits are bound to certified public sizes and the canonical prefix sums, so no interval boundary is accepted as advice. The implementation reserves one additional grinding bit for the new batching and reduction checks.
+The transcript absorbs the GKR terminal claims before sampling the challenges that batch them. The first sumcheck proves the reduction from the complete GKR leaf claims to normalized source evaluations. The start--length assist proves the remaining sparse Jagged-weight identity; its terminal start and length bits are bound to certified public sizes and canonical prefix sums, so no interval boundary is accepted as advice. The global sumcheck is bound to the bus claims before \(\theta\) and its round challenges are sampled. Its random linear combination contributes at most the number of batched identities divided by \(|\F|\) to the soundness error. A zero tail product in the common-point normalization is rejected. The implementation reserves one additional grinding bit for the batching and reduction checks.
 
 On the standard command
 \[
 \texttt{RAYON\_NUM\_THREADS=11 cargo run --release -- recursion --n 2},
 \]
-two \(975{,}099\)-cycle inner proofs produce a \(1{,}846{,}940\)-cycle recursion guest. The former grand product with a power-of-two pad after every block used \(1{,}865{,}318\) cycles, so the tight construction saves \(18{,}378\) cycles (\(0.99\%\)) while also removing the internal grand-product padding. The recursion program contains \(540{,}861\) instructions and pads to \(2^{20}\); this deliberate bytecode increase comes from inlining the fused prefix-adder kernel and reduces guest cycles. The recorded recursive proof size is \(597.828\) KiB.
+two \(975{,}099\)-cycle inner proofs produce a \(1{,}772{,}858\)-cycle recursion guest. This is \(74{,}082\) cycles (\(4.01\%\)) below the first tight-grand-product version and \(92{,}460\) cycles (\(4.96\%\)) below the former internally padded grand product. The recursion program contains \(530{,}378\) instructions and pads to \(2^{20}\). A representative run proves in \(6.44\) seconds and verifies in \(0.56\) seconds; proof size varies slightly with Merkle-query collisions and is about \(596\)--\(598\) KiB.
 
-Tests cover exhaustive small intervals, arbitrary row-weight pairs, exact-full endpoints, Boolean start--length agreement with dense MLEs, native proof round trips, mixed-shape recursion, and adversarial mutations of the remaining named hints.
+Tests cover exhaustive small intervals, arbitrary row-weight pairs, exact-full endpoints, Boolean start--length agreement with dense MLEs, native proof round trips, six runtime shapes verified by the same compiled recursion guest, mixed-shape recursion, and adversarial mutations of the named hints.
 
 \begin{thebibliography}{9}
 
@@ -170,6 +202,11 @@ Tests cover exhaustive small intervals, arbitrary row-weight pairs, exact-full e
 Tamir Hemo, Kevin Jue, Eugene Rabinovich, Gyumin Roh, and Ron D.\ Rothblum.
 \newblock \emph{Jagged Polynomial Commitments (or: How to Stack Multilinears)}.
 \newblock Manuscript, 2026.
+
+\bibitem{SP1}
+Succinct Labs.
+\newblock \emph{SP1 Hypercube shard zerocheck implementation}.
+\newblock \url{https://github.com/succinctlabs/sp1/tree/main/crates/hypercube/src}.
 
 \end{thebibliography}
 

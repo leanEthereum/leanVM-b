@@ -1,5 +1,5 @@
-# CREDIT: The Jagged PCS branching-program evaluator is adapted from Succinct
-# Labs SP1's `slop/crates/jagged` implementation (MIT OR Apache-2.0):
+# CREDIT: The Jagged PCS evaluator and common-point opening-reduction
+# architecture are adapted from Succinct Labs SP1 (MIT OR Apache-2.0):
 # https://github.com/succinctlabs/sp1
 from snark_lib import *
 
@@ -68,6 +68,12 @@ COORD_CONST = COORD_CONST_PLACEHOLDER
 COORD_FRESH = COORD_FRESH_PLACEHOLDER
 COORD_CLAIM_SLOT = COORD_CLAIM_SLOT_PLACEHOLDER
 N_BUS_CLAIMS = N_BUS_CLAIMS_PLACEHOLDER
+GLOBAL_BUS_SLOTS = GLOBAL_BUS_SLOTS_PLACEHOLDER
+N_GLOBAL_BUS = N_GLOBAL_BUS_PLACEHOLDER
+GLOBAL_COL_SLOTS = GLOBAL_COL_SLOTS_PLACEHOLDER
+N_GLOBAL_COLS = N_GLOBAL_COLS_PLACEHOLDER
+AIR_GLOBAL_SLOTS = AIR_GLOBAL_SLOTS_PLACEHOLDER
+PI_CLAIM_SLOT = PI_CLAIM_SLOT_PLACEHOLDER
 # index_mle factor constants: INDEX_MLE_FACTORS[i] = 1 + g^(2^i).
 INDEX_MLE_FACTORS = INDEX_MLE_FACTORS_PLACEHOLDER
 # Committed-coordinate claims (Col/GCol coords across all sides) and the
@@ -81,6 +87,7 @@ LOG2_BYTECODE_COLS = LOG2_BYTECODE_COLS_PLACEHOLDER
 # Zerochecks: per-table constraint-column counts (round counts are the
 # certified tau_t); AIR_COLS_CAP caps the evaluation frame.
 N_AIR_COLS = N_AIR_COLS_PLACEHOLDER
+AIR_COL_OFF = AIR_COL_OFF_PLACEHOLDER
 AIR_COLS_CAP = AIR_COLS_CAP_PLACEHOLDER
 TAU_CAP = TAU_CAP_PLACEHOLDER
 # The instruction tables, in schema order:
@@ -187,6 +194,7 @@ POINT_BUF_PI = 2
 POINT_BUF_QPKD = 3
 POINT_BUF_BUS_RHO = 4
 POINT_BUF_QPKD_BUS_RHO = 5
+POINT_BUF_GLOBAL_RHO = 6
 CLAIM_POINT_BUF = CLAIM_POINT_BUF_PLACEHOLDER
 CLAIM_POINT_OFF = CLAIM_POINT_OFF_PLACEHOLDER
 # Dense Jagged column index and fixed public pad value for each pooled claim.
@@ -199,10 +207,6 @@ CLAIM_GAMMA_RANK = CLAIM_GAMMA_RANK_PLACEHOLDER
 N_CLAIM_ROWS = N_CLAIM_ROWS_PLACEHOLDER
 CLAIM_ROW_GROUP = CLAIM_ROW_GROUP_PLACEHOLDER
 CLAIM_ROW_REP = CLAIM_ROW_REP_PLACEHOLDER
-N_PAD_PREFIXES = N_PAD_PREFIXES_PLACEHOLDER
-PAD_PREFIX_ROW = PAD_PREFIX_ROW_PLACEHOLDER
-PAD_PREFIX_COL = PAD_PREFIX_COL_PLACEHOLDER
-CLAIM_PAD_PREFIX = CLAIM_PAD_PREFIX_PLACEHOLDER
 N_JAGGED_BATCHES = N_JAGGED_BATCHES_PLACEHOLDER
 JAGGED_BATCH_REP = JAGGED_BATCH_REP_PLACEHOLDER
 JAGGED_BATCH_ROW = JAGGED_BATCH_ROW_PLACEHOLDER
@@ -419,6 +423,44 @@ def sumcheck_round3(state_0, state_1, msg_cursor, claim, eq_acc, prev_challenge)
     return fs[0], fs[1], msg_cursor, new_claim, new_eq, round_challenge
 
 
+def air_constraint(table: Const, eta, col_evals):
+    c0 = col_evals[GEN ** 0]
+    c1 = col_evals[GEN ** 1]
+    c2 = col_evals[GEN ** 2]
+    c3 = col_evals[GEN ** 3]
+    c4 = col_evals[GEN ** 4]
+    c5 = col_evals[GEN ** 5]
+    c6 = col_evals[GEN ** 6]
+    c7 = col_evals[GEN ** 7]
+    c8 = col_evals[GEN ** 8]
+    c9 = col_evals[GEN ** 9]
+    c10 = col_evals[GEN ** 10]
+    c11 = col_evals[GEN ** 11]
+    c12 = col_evals[GEN ** 12]
+    c13 = col_evals[GEN ** 13]
+    c14 = col_evals[GEN ** 14]
+    if table == TABLE_XOR:
+        return (c4 + c0 * c1) + eta * (c5 + c0 * c2) + eta * eta * (c6 + c0 * c3) + eta * eta * eta * (c9 + c7 + c8)
+    if table == TABLE_MUL:
+        return (c4 + c0 * c1) + eta * (c5 + c0 * c2) + eta * eta * (c6 + c0 * c3) + eta * eta * eta * (c9 + c7 * c8)
+    if table == TABLE_SET:
+        return c2 + c0 * c1
+    if table == TABLE_DEREF:
+        src = (1 + c8 + c9) * c11 + c8 * (GEN * GEN * c12) + c9 * c0
+        return (c4 + c0 * c1) + eta * (c5 + c7 * c2) + eta * eta * (c6 + c0 * c3) + eta * eta * eta * (c10 + src)
+    if table == TABLE_JUMP:
+        ft = GEN * c0
+        addrs = (c7 + c1 * c4) + eta * (c8 + c1 * c5) + eta * eta * (c9 + c1 * c6)
+        eta3 = eta * eta * eta
+        ind_def = eta3 * (c14 + c10 * c13)
+        ind_nz = eta3 * eta * (c10 * (c14 + 1))
+        sel_pc = eta3 * eta * eta * (c2 + c14 * c11 + (c14 + 1) * ft)
+        sel_fp = eta3 * eta * eta * eta * (c3 + c14 * c12 + (c14 + 1) * c1)
+        return addrs + ind_def + ind_nz + sel_pc + sel_fp
+    assert table == TABLE_BLAKE3
+    return (c7 + c0 * c1) + eta * (c8 + c0 * c2) + eta * eta * (c9 + c0 * c3) + eta * eta * eta * (c10 + c0 * c4) + eta * eta * eta * eta * (c11 + c0 * c5) + eta * eta * eta * eta * eta * (c12 + c0 * c6)
+
+
 @inline
 def fold_final_msg(msg, weights, wbase: Const, log_len: Const):
     # Weighted fold of the final_msg multilinear over 2^log_len values (log_len is the
@@ -559,25 +601,6 @@ def eqtree(point_ptr, out, n_coords: Const):
             out[GEN ** (2 ** (t + 1) - 2 + i)] = pw * one_plus_rt
             out[GEN ** (2 ** (t + 1) - 2 + 2 ** t + i)] = pw * rt
     return
-
-
-def prefix_indicator(point, height_bits):
-    # MLE of [row < height], MSB first. `point` is zero above the logical
-    # column dimension and `height_bits` may therefore also encode the full
-    # power-of-two height.
-    states = StackBuf(2 * (SIZE_BITS + 1))
-    states[0] = 0  # already less
-    states[1] = 1  # equal so far
-    for rev in unroll(0, SIZE_BITS):
-        bit = SIZE_BITS - 1 - rev
-        less = states[2 * rev]
-        equal = states[2 * rev + 1]
-        x = point[GEN ** bit]
-        h = height_bits[GEN ** bit]
-        equal_zero = equal * (1 + x)
-        states[2 * (rev + 1)] = less + h * equal_zero
-        states[2 * (rev + 1) + 1] = equal * (1 + h + x)
-    return states[2 * SIZE_BITS]
 
 
 def prefix_indicator_fixed(point, height_bits, nbits: Const):
@@ -1269,7 +1292,8 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     #  10. export the deferred-claim region for the aggregation.
     # Claim pool: values of every committed-coordinate claim in structural
     # order. Their row points are derived from the shared reduction point.
-    claim_pool = HeapBuf(N_CLAIMS)
+    claim_pool = HeapBuf(N_BUS_CLAIMS)
+    opening_pool = HeapBuf(N_CLAIMS)
     # certified low dimension (cplen) per pooled claim, filled as the pool is
     # built (from the in-scope certified kappa/tau); the terminal pins each
     # claim's hinted lengths against it.
@@ -1355,8 +1379,9 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         else:
             block_height_g[GEN ** b] = count_gpows[GEN ** BLOCK_REAL_TABLE[b]]
             block_real_kappa[GEN ** b] = table_real_kappa[GEN ** BLOCK_REAL_TABLE[b]]
-    # The prover points to a block of maximum real height. Membership plus the
-    # exponent-range checks certify that its ceil-log dominates every block:
+    # The prover points to a committed block of maximum logical height.
+    # Membership plus the exponent-range checks certify that its log-height
+    # dominates every committed block:
     # if m < k, g^(m-k) wraps around the full multiplicative group and cannot
     # pass the small bounded-log check.
     reduction_max = HeapBuf(1)
@@ -1367,10 +1392,10 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     for b in unroll(0, N_BLOCKS):
         block_has_committed[GEN ** b] = BLOCK_HAS_COMMITTED[b]
     assert block_has_committed[reduction_max_idx] == 1
-    g_reduction_nu = block_real_kappa[reduction_max_idx]
+    g_reduction_nu = block_kappa[reduction_max_idx]
     for b in unroll(0, N_BLOCKS):
         if BLOCK_HAS_COMMITTED[b] == 1:
-            assert log(g_reduction_nu / block_real_kappa[GEN ** b]) < SIZE_BITS
+            assert log(g_reduction_nu / block_kappa[GEN ** b]) < SIZE_BITS
     push_total = GEN ** 0
     for b in unroll(SIDE_BLOCK_START[PUSH_SIDE], SIDE_BLOCK_START[PUSH_SIDE + 1]):
         push_total *= block_height_g[GEN ** b]
@@ -1579,7 +1604,19 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     for xk in mul_range(1, bus_rho_zero_len_g):
         bus_rho_zero[xk] = 0
 
-    # The prover streams one evaluation per first (column,kappa) occurrence.
+    # Ordinary committed sources are streamed as the common-point evaluation
+    # of `(column + pad)` zero-extended to the full reduction dimension.  A
+    # checked inverse of the known all-zero tail recovers the old local source
+    # value used by the overlap assist. Packed q_pkd slots stay at their native
+    # instance point.
+    bus_tail_invs = HeapBuf(MU_CAP + 2)
+    hint_witness(bus_tail_invs[0:MU_CAP + 2], "bus_tail_invs")
+    bus_tail_products = HeapBuf(MU_CAP + 2)
+    bus_tail_products[g_reduction_nu] = 1
+    for xk in mul_range(1, g_reduction_nu):
+        prev = g_reduction_nu / (xk * GEN)
+        bus_tail_products[prev] = bus_tail_products[prev * GEN] * (1 + bus_rho[prev])
+    bus_source_values = HeapBuf(N_BUS_CLAIMS)
     for s in unroll(0, N_GKR_SIDES):
         for b in unroll(SIDE_BLOCK_START[s], SIDE_BLOCK_START[s + 1]):
             for i in unroll(0, BLOCK_COORD_COUNT[b]):
@@ -1588,8 +1625,17 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
                     fs, column_value, cursor = fs_next(fs, cursor)
                     slot = COORD_CLAIM_SLOT[coord]
                     claim_pool[GEN ** slot] = column_value
-                    claim_cplen_g[GEN ** slot] = block_kappa[GEN ** b]
                     claim_bus_nu_g[GEN ** slot] = block_real_kappa[GEN ** b]
+                    if CLAIM_POINT_BUF[slot] == POINT_BUF_GLOBAL_RHO:
+                        claim_cplen_g[GEN ** slot] = g_reduction_nu
+                        tail = bus_tail_products[block_real_kappa[GEN ** b]]
+                        tail_inv = bus_tail_invs[block_real_kappa[GEN ** b]]
+                        assert tail * tail_inv == 1
+                        bus_source_values[GEN ** slot] = column_value * tail_inv + CLAIM_PAD[slot]
+                    else:
+                        claim_cplen_g[GEN ** slot] = block_kappa[GEN ** b]
+                        bus_source_values[GEN ** slot] = column_value
+                        opening_pool[GEN ** slot] = column_value
 
     # Public bytecode is another source polynomial in the reduction. Its eight
     # evaluations are fixed by the program, absorbed now, and later collapsed
@@ -1623,9 +1669,9 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
                         index_chain[xk * GEN] = index_chain[xk] * (1 + bus_rho[xk] * index_mle_factors[xk])
                     source_eval += alpha_pow * index_chain[row_nu_g]
                 elif COORD_TYPE[coord] == COORD_KIND_COL:
-                    source_eval += alpha_pow * claim_pool[GEN ** COORD_CLAIM_SLOT[coord]]
+                    source_eval += alpha_pow * bus_source_values[GEN ** COORD_CLAIM_SLOT[coord]]
                 elif COORD_TYPE[coord] == COORD_KIND_GCOL:
-                    source_eval += alpha_pow * GEN * claim_pool[GEN ** COORD_CLAIM_SLOT[coord]]
+                    source_eval += alpha_pow * GEN * bus_source_values[GEN ** COORD_CLAIM_SLOT[coord]]
                 else:
                     assert COORD_TYPE[coord] == COORD_KIND_PUBLIC
                     source_eval += alpha_pow * bytecode_vals[GEN ** block_public_idx]
@@ -1760,8 +1806,6 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     else:
         assist_overlap_out[0] = tight_overlap_start_length_points(bus_rho, zeta_full, assist_start, assist_length)
     assert assist_terminal == assist_batch_chain[GEN ** (push_count + count_count)] * assist_overlap_out[0]
-    claim_idx = N_BUS_CLAIMS
-
     # ---- stacked-bytecode reduction ----
     # The bytecode is ONE multilinear in BYTECODE_LOG + LOG2_BYTECODE_COLS
     # variables (BYTECODE_COLS encoding columns stacked along the selector
@@ -1775,104 +1819,79 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     for c in unroll(0, BYTECODE_COLS):
         bytecode_reduced += eq_weight(bytecode_sel, LOG2_BYTECODE_COLS, c, 0) * bytecode_vals[GEN ** c]
 
-    # ---- 6x per-table zerocheck (XOR, MUL, SET, DEREF, JUMP, BLAKE3) ----
-    # For each table: eta, the zerocheck point r (tau samples), tau eq-trick
-    # rounds (claim starts at 0), then the involved-column evaluations (pooled)
-    # and the final AIR check claim == eq_acc * C_t(eta, evals).
-    # RUNTIME round counts: tau_t is the certified announced log height
-    # (dims_g[1 + t], certified by the count gadget). Round state threads
-    # through heap chains exactly like the GKR trees.
-    rho = HeapBuf(N_TABLES * TAU_CAP)
-    zc_point_fs0 = HeapBuf(N_TABLES * (TAU_CAP + 2))
-    zc_point_fs1 = HeapBuf(N_TABLES * (TAU_CAP + 2))
-    zc_round_fs0 = HeapBuf(N_TABLES * (TAU_CAP + 2))
-    zc_round_fs1 = HeapBuf(N_TABLES * (TAU_CAP + 2))
-    zc_round_cursor = HeapBuf(N_TABLES * (TAU_CAP + 2))
-    zc_round_claim = HeapBuf(N_TABLES * (TAU_CAP + 2))
-    zc_round_eq = HeapBuf(N_TABLES * (TAU_CAP + 2))
+    # ---- common-point bus opening reduction + all AIR zerochecks ----
+    # This is the SP1-style fusion: the old bus evaluations form the claimed
+    # sum, while the six zero AIR polynomials are added under one random
+    # linear combination. All terms share eq(bus_rho, x), so the product part
+    # stays degree two and one 3-value sumcheck replaces six independent AIR
+    # sumchecks plus all ordinary bus PCS points.
+    air_etas = StackBuf(N_TABLES)
     for t in unroll(0, N_TABLES):
-        tau_g = dims_g[GEN ** (t + 1)]
         fs = squeeze(fs)
-        eta = fs[0]
-        # the zerocheck point r: tau squeezes, sponge chained by round.
-        eq_r = HeapBuf(TAU_CAP)
-        point_fs0 = zc_point_fs0 * GEN ** (t * (TAU_CAP + 2))
-        point_fs1 = zc_point_fs1 * GEN ** (t * (TAU_CAP + 2))
-        point_fs0[GEN ** 0] = fs[0]
-        point_fs1[GEN ** 0] = fs[1]
-        for xk in mul_range(1, tau_g):
-            point_fs = [point_fs0[xk], point_fs1[xk]]
-            point_fs = squeeze(point_fs)
-            eq_r[xk] = point_fs[0]
-            xkn = xk * GEN
-            point_fs0[xkn] = point_fs[0]
-            point_fs1[xkn] = point_fs[1]
-        fs = [point_fs0[tau_g], point_fs1[tau_g]]
-        # tau eq-trick rounds (claim starts at 0, eq at 1).
-        round_fs0 = zc_round_fs0 * GEN ** (t * (TAU_CAP + 2))
-        round_fs1 = zc_round_fs1 * GEN ** (t * (TAU_CAP + 2))
-        round_cursor = zc_round_cursor * GEN ** (t * (TAU_CAP + 2))
-        round_claim = zc_round_claim * GEN ** (t * (TAU_CAP + 2))
-        round_eq = zc_round_eq * GEN ** (t * (TAU_CAP + 2))
-        rho_t = rho * GEN ** (t * TAU_CAP)
-        round_fs0[GEN ** 0] = fs[0]
-        round_fs1[GEN ** 0] = fs[1]
-        round_cursor[GEN ** 0] = cursor
-        round_claim[GEN ** 0] = 0
-        round_eq[GEN ** 0] = 1
-        for xk in mul_range(1, tau_g):
-            nfs0, nfs1, ncur, nclaim, neq, rk = sumcheck_round3(round_fs0[xk], round_fs1[xk], round_cursor[xk], round_claim[xk], round_eq[xk], eq_r[xk])
-            rho_t[xk] = rk
-            xkn = xk * GEN
-            round_fs0[xkn] = nfs0
-            round_fs1[xkn] = nfs1
-            round_cursor[xkn] = ncur
-            round_claim[xkn] = nclaim
-            round_eq[xkn] = neq
-        fs = [round_fs0[tau_g], round_fs1[tau_g]]
-        cursor = round_cursor[tau_g]
-        claim = round_claim[tau_g]
-        eq_acc = round_eq[tau_g]
-        col_evals = StackBuf(AIR_COLS_CAP)
+        air_etas[t] = fs[0]
+    fs = squeeze(fs)
+    opening_theta = fs[0]
+    theta_power = 1
+    global_claim = 0
+    for i in unroll(0, N_GLOBAL_BUS):
+        slot = GLOBAL_BUS_SLOTS[i]
+        global_claim += theta_power * claim_pool[GEN ** slot]
+        theta_power *= opening_theta
+
+    global_rho = HeapBuf(TAU_CAP)
+    global_fs0 = HeapBuf(TAU_CAP + 2)
+    global_fs1 = HeapBuf(TAU_CAP + 2)
+    global_cursor = HeapBuf(TAU_CAP + 2)
+    global_claims = HeapBuf(TAU_CAP + 2)
+    global_eqs = HeapBuf(TAU_CAP + 2)
+    global_fs0[GEN ** 0] = fs[0]
+    global_fs1[GEN ** 0] = fs[1]
+    global_cursor[GEN ** 0] = cursor
+    global_claims[GEN ** 0] = global_claim
+    global_eqs[GEN ** 0] = 1
+    for xk in mul_range(1, g_reduction_nu):
+        nfs0, nfs1, ncur, nclaim, neq, rk = sumcheck_round3(global_fs0[xk], global_fs1[xk], global_cursor[xk], global_claims[xk], global_eqs[xk], bus_rho[xk])
+        global_rho[xk] = rk
+        xkn = xk * GEN
+        global_fs0[xkn] = nfs0
+        global_fs1[xkn] = nfs1
+        global_cursor[xkn] = ncur
+        global_claims[xkn] = nclaim
+        global_eqs[xkn] = neq
+    fs = [global_fs0[g_reduction_nu], global_fs1[g_reduction_nu]]
+    cursor = global_cursor[g_reduction_nu]
+    global_claim = global_claims[g_reduction_nu]
+    global_eq = global_eqs[g_reduction_nu]
+
+    for i in unroll(0, N_GLOBAL_COLS):
+        fs, e, cursor = fs_next(fs, cursor)
+        slot = GLOBAL_COL_SLOTS[i]
+        opening_pool[GEN ** slot] = e
+        claim_cplen_g[GEN ** slot] = g_reduction_nu
+
+    theta_power = 1
+    global_terminal = 0
+    for i in unroll(0, N_GLOBAL_BUS):
+        slot = GLOBAL_BUS_SLOTS[i]
+        global_terminal += theta_power * opening_pool[GEN ** slot]
+        theta_power *= opening_theta
+    for t in unroll(0, N_TABLES):
+        col_evals = HeapBuf(AIR_COLS_CAP)
         for k in unroll(0, N_AIR_COLS[t]):
-            fs, e, cursor = fs_next(fs, cursor)
-            col_evals[k] = e
-            claim_pool[GEN ** claim_idx] = e
-            claim_cplen_g[GEN ** claim_idx] = tau_g  # cplen = tau_t
-            claim_idx += 1
-        # the table's AIR constraint at the final point (ev order = the table's
-        # constraint_columns order; formulas mirror tables.rs eval_constraint).
-        if t == TABLE_XOR:
-            constraint_eval = (col_evals[4] + col_evals[0] * col_evals[1]) + eta * (col_evals[5] + col_evals[0] * col_evals[2]) + eta * eta * (col_evals[6] + col_evals[0] * col_evals[3]) + eta * eta * eta * (col_evals[9] + col_evals[7] + col_evals[8])
-        if t == TABLE_MUL:
-            constraint_eval = (col_evals[4] + col_evals[0] * col_evals[1]) + eta * (col_evals[5] + col_evals[0] * col_evals[2]) + eta * eta * (col_evals[6] + col_evals[0] * col_evals[3]) + eta * eta * eta * (col_evals[9] + col_evals[7] * col_evals[8])
-        if t == TABLE_SET:
-            constraint_eval = col_evals[2] + col_evals[0] * col_evals[1]
-        if t == TABLE_DEREF:
-            src = (1 + col_evals[8] + col_evals[9]) * col_evals[11] + col_evals[8] * (GEN * GEN * col_evals[12]) + col_evals[9] * col_evals[0]
-            constraint_eval = (col_evals[4] + col_evals[0] * col_evals[1]) + eta * (col_evals[5] + col_evals[7] * col_evals[2]) + eta * eta * (col_evals[6] + col_evals[0] * col_evals[3]) + eta * eta * eta * (col_evals[10] + src)
-        if t == TABLE_JUMP:
-            ft = GEN * col_evals[0]
-            addrs = (col_evals[7] + col_evals[1] * col_evals[4]) + eta * (col_evals[8] + col_evals[1] * col_evals[5]) + eta * eta * (col_evals[9] + col_evals[1] * col_evals[6])
-            eta3 = eta * eta * eta
-            ind_def = eta3 * (col_evals[14] + col_evals[10] * col_evals[13])
-            ind_nz = eta3 * eta * (col_evals[10] * (col_evals[14] + 1))
-            sel_pc = eta3 * eta * eta * (col_evals[2] + col_evals[14] * col_evals[11] + (col_evals[14] + 1) * ft)
-            sel_fp = eta3 * eta * eta * eta * (col_evals[3] + col_evals[14] * col_evals[12] + (col_evals[14] + 1) * col_evals[1])
-            constraint_eval = addrs + ind_def + ind_nz + sel_pc + sel_fp
-        if t == TABLE_BLAKE3:
-            constraint_eval = (col_evals[7] + col_evals[0] * col_evals[1]) + eta * (col_evals[8] + col_evals[0] * col_evals[2]) + eta * eta * (col_evals[9] + col_evals[0] * col_evals[3]) + eta * eta * eta * (col_evals[10] + col_evals[0] * col_evals[4]) + eta * eta * eta * eta * (col_evals[11] + col_evals[0] * col_evals[5]) + eta * eta * eta * eta * eta * (col_evals[12] + col_evals[0] * col_evals[6])
-        assert claim == eq_acc * constraint_eval
+            slot = AIR_GLOBAL_SLOTS[AIR_COL_OFF[t] + k]
+            col_evals[GEN ** k] = opening_pool[GEN ** slot] + CLAIM_PAD[slot]
+        global_terminal += theta_power * air_constraint(t, air_etas[t], col_evals)
+        theta_power *= opening_theta
+    assert global_claim == global_eq * global_terminal
 
     # ---- public-input binding claim: MEM(r_m, 0..) = interp(pi0, pi1, r_m) ----
     fs = squeeze(fs)
     rm = fs[0]
     pi_interp = pi_0 + rm * (pi_0 + pi_1)  # MLE of the 2-cell public memory at the sampled point rm
-    claim_pool[GEN ** claim_idx] = pi_interp
-    claim_idx += 1
+    opening_pool[GEN ** PI_CLAIM_SLOT] = pi_interp
 
     # ---- flock zerocheck (univariate skip, k_skip = 6) ----
-    tau_blake3_g = dims_g[GEN ** N_TABLES]  # the BLAKE3 table's certified tau
+    tau_blake3_g = dims_g[GEN ** N_TABLES]
     # tau's reach is bounded: the count gadget gives tau < 34 (all flock
     # buffers are sized for that), and q_pkd's committed kappa =
     # LOG2_FIELD_BITS + tau feeds the certified size m, whose opening
@@ -2228,37 +2247,27 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
             row[GEN ** 0] = rm
             for bit in unroll(1, SIZE_BITS):
                 row[GEN ** bit] = 0
-        else:
-            assert CLAIM_POINT_BUF[rep] == POINT_BUF_BUS_RHO
-            row_nu_g = claim_bus_nu_g[GEN ** rep]
-            for xk in mul_range(1, row_nu_g):
-                row[xk] = bus_rho[xk]
-            zero_ptr = row * row_nu_g
-            zero_len_g = GEN ** SIZE_BITS / row_nu_g
+        elif CLAIM_POINT_BUF[rep] == POINT_BUF_GLOBAL_RHO:
+            for xk in mul_range(1, g_reduction_nu):
+                row[xk] = global_rho[xk]
+            zero_ptr = row * g_reduction_nu
+            zero_len_g = GEN ** SIZE_BITS / g_reduction_nu
             for xk in mul_range(1, zero_len_g):
                 zero_ptr[xk] = 0
-    # Compute the public-padding correction: Jagged commits only the real
-    # prefix, while the arithmetization's claim includes its fixed pad suffix.
-    pad_prefixes = HeapBuf(N_PAD_PREFIXES)
-    for prefix in unroll(0, N_PAD_PREFIXES):
-        row = claim_rows * GEN ** (SIZE_BITS * PAD_PREFIX_ROW[prefix])
-        height_bits = col_row_height_bits * GEN ** (SIZE_BITS * PAD_PREFIX_COL[prefix])
-        pad_prefixes[GEN ** prefix] = prefix_indicator(row, height_bits)
-
+        else:
+            assert CLAIM_POINT_BUF[rep] == POINT_BUF_BUS_RHO
+            for xk in mul_range(1, g_reduction_nu):
+                row[xk] = bus_rho[xk]
+            zero_ptr = row * g_reduction_nu
+            zero_len_g = GEN ** SIZE_BITS / g_reduction_nu
+            for xk in mul_range(1, zero_len_g):
+                zero_ptr[xk] = 0
     opening_claim_values = HeapBuf(N_CLAIMS)
     for j in unroll(0, N_CLAIMS):
-        if CLAIM_POINT_BUF[j] == POINT_BUF_QPKD:
-            opening_claim_values[GEN ** j] = claim_pool[GEN ** j]
-        elif CLAIM_POINT_BUF[j] == POINT_BUF_QPKD_BUS_RHO:
-            # q_pkd remains the one aligned subcube for flock's ring-switch and
-            # its strided VM-value claims; it has no public padding correction.
-            opening_claim_values[GEN ** j] = claim_pool[GEN ** j]
-        else:
-            if CLAIM_PAD[j] == 0:
-                opening_claim_values[GEN ** j] = claim_pool[GEN ** j]
-            else:
-                real_prefix = pad_prefixes[GEN ** CLAIM_PAD_PREFIX[j]]
-                opening_claim_values[GEN ** j] = claim_pool[GEN ** j] + CLAIM_PAD[j] * (1 + real_prefix)
+        # Ordinary committed prefixes store `column + pad`, exactly the
+        # representation exposed by the common reduction. q_pkd and PI have
+        # zero pad, so every pooled claim reaches PCS unchanged.
+        opening_claim_values[GEN ** j] = opening_pool[GEN ** j]
     # Every adjusted Jagged claim value is observed before its batching scalar,
     # exactly as in the native verifier.
     for j in unroll(0, N_CLAIMS):

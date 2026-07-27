@@ -86,46 +86,36 @@ pub struct Layout {
     pub row_counts: [usize; 6],
 }
 
-/// Shape-independent Jagged block partition. Columns share a block only when
-/// they have the same public height source and identical membership in every
-/// bus/constraint/PI opening row-group. Schema adjacency is irrelevant: the
-/// explicit placement map can globally cluster compatible columns. Consequently
-/// every point group claims either a whole block or none of it.
-fn jagged_column_blocks(log_bytecode: usize, bytecode_used: usize, sides: [&[Block]; 3]) -> Vec<Vec<usize>> {
+/// Shape-independent Jagged block partition. The common opening reduction
+/// gives every ordinary bus column and every AIR column one shared row point.
+/// PI remains a separate point group. Columns can share a row-major
+/// block exactly when they have the same public height source and the same
+/// membership in those two groups.
+fn jagged_column_blocks(_log_bytecode: usize, bytecode_used: usize, sides: [&[Block]; 3]) -> Vec<Vec<usize>> {
     let sources = col_height_sources(bytecode_used);
     let mut signatures: Vec<Vec<usize>> = vec![Vec::new(); sources.len()];
-    let kappa_sources = block_kappa_sources(log_bytecode);
-    let mut block_index = 0usize;
-    let mut group_of_source = std::collections::BTreeMap::new();
     for blocks in sides {
         for block in blocks {
-            let source = kappa_sources[block_index];
-            block_index += 1;
-            let next = group_of_source.len();
-            let group = *group_of_source.entry(source).or_insert(next);
             for coord in &block.coords {
                 if let Coord::Col(col) | Coord::GCol(col) = coord
                     && sources[*col].is_some()
                 {
-                    signatures[*col].push(group);
+                    signatures[*col].push(0);
                 }
             }
         }
     }
-    assert_eq!(block_index, kappa_sources.len());
 
-    let mut next_group = group_of_source.len();
     let sch = schema();
     for (t, table) in tables::tables().iter().enumerate() {
         let base = sch.base[t];
         for &col in table.constraint_columns() {
             if sources[base + col].is_some() {
-                signatures[base + col].push(next_group);
+                signatures[base + col].push(0);
             }
         }
-        next_group += 1;
     }
-    signatures[MEM].push(next_group); // public-input claim
+    signatures[MEM].push(1); // public-input claim
     for signature in &mut signatures {
         signature.sort_unstable();
         signature.dedup();
@@ -526,8 +516,33 @@ pub fn layout(
     // q_pkd stays at offset zero so its ring-switched weight remains an aligned
     // subcube. Every ordinary column after it is packed tightly and opened via
     // the Jagged indicator.
+    let product_nu = push
+        .iter()
+        .chain(&pull)
+        .chain(&count_blocks)
+        .map(|block| crate::log2_ceil_usize(block.real.max(1)))
+        .max()
+        .unwrap_or(0);
+    let global_nu = kappas
+        .iter()
+        .enumerate()
+        .filter(|(col, _)| *col != QPKD)
+        .filter_map(|(_, &kappa)| kappa)
+        .max()
+        .unwrap_or(0)
+        .max(product_nu);
     let jagged_blocks = jagged_column_blocks(log_bytecode, bytecode_used, [&push, &pull, &count_blocks]);
-    let (placements, m) = witness::placements_of_blocks(&kappas, &heights, &jagged_blocks);
+    let global_width_log = jagged_blocks
+        .iter()
+        .skip(1)
+        .map(|block| block.len().trailing_zeros() as usize)
+        .max()
+        .unwrap_or(0);
+    let (placements, packed_m) = witness::placements_of_blocks(&kappas, &heights, &jagged_blocks);
+    // A global opening of a row-major block has `global_nu` row coordinates
+    // after its column selector. This can dominate the packed area for tiny
+    // programs, so make the embedding requirement explicit.
+    let m = packed_m.max(global_nu + global_width_log);
     Layout {
         push,
         pull,
@@ -653,7 +668,7 @@ impl Program {
         // (`execute` already asserts the run halts at the sentinel (pc, fp) =
         // (g^{B-1}, 0), exactly the boundary the public layout derives.)
         let t_stack = std::time::Instant::now();
-        let q = witness::stack_q(&cols, &l.placements, l.m);
+        let q = witness::stack_q(&cols, &l.pad, &l.placements, l.m);
         if prof {
             eprintln!("[build] stack_q     : {:>7.2} ms", t_stack.elapsed().as_secs_f64() * 1e3);
         }

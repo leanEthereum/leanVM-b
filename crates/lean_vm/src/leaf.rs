@@ -54,6 +54,10 @@ pub struct ColumnClaim {
     pub col: usize,
     pub point: Vec<F128>,
     pub value: F128,
+    /// The tight bus reduction exposes the MLE of `(column + pad)` restricted
+    /// to the committed real prefix.  Such a claim is already a Jagged-prefix
+    /// claim; ordinary AIR/PI claims still include the logical padding suffix.
+    pub prefix_shifted: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -69,6 +73,7 @@ pub enum Error {
     ReductionRound {
         round: usize,
     },
+    NonInvertibleTail,
     AssistFinal,
     /// The bus grinding nonce (before the multiset challenge γ) failed its PoW.
     PowFailed,
@@ -287,6 +292,7 @@ fn reduction_plan<'a>(
     alpha: F128,
     gamma: F128,
     eta: F128,
+    committed: &[bool],
 ) -> ReductionPlan<'a> {
     assert_eq!(push.len(), pull.len());
     let public: Vec<PublicGroup<'_>> = push
@@ -372,7 +378,20 @@ fn reduction_plan<'a>(
         });
     }
     assert_eq!(count_public, 0);
-    let nu = products.iter().map(|product| product.row_nu).max().unwrap_or(0);
+    // Continue through any logical high coordinates needed by a committed
+    // source. Those extra rounds are the trivial zero-extension rounds of the
+    // tight product, and give every ordinary committed source one common point.
+    let nu = products
+        .iter()
+        .map(|product| product.row_nu)
+        .chain(
+            columns
+                .iter()
+                .filter(|group| committed[group.col])
+                .map(|group| group.kappa),
+        )
+        .max()
+        .unwrap_or(0);
     ReductionPlan {
         products,
         columns,
@@ -416,6 +435,12 @@ fn index_eval(point: &[F128]) -> F128 {
         power *= power;
         next
     })
+}
+
+fn zero_tail(point: &[F128], live_vars: usize) -> F128 {
+    point[live_vars..]
+        .iter()
+        .fold(F128::ONE, |acc, &r| acc * (F128::ONE + r))
 }
 
 fn endpoint_bits(value: usize, len: usize) -> Vec<F128> {
@@ -595,10 +620,12 @@ fn prove_tight_reduction(
     alpha: F128,
     gamma: F128,
     cols: &[Column],
+    pad: &[F128],
+    committed: &[bool],
     ps: &mut ProverState,
 ) -> ReductionResult {
     let eta = ps.sample();
-    let plan = reduction_plan(push, pull, count, layouts, alpha, gamma, eta);
+    let plan = reduction_plan(push, pull, count, layouts, alpha, gamma, eta, committed);
     let target_eq = primitives::multilinear::build_eq(target_point);
 
     let mut work: Vec<ReductionWork> = plan
@@ -659,15 +686,29 @@ fn prove_tight_reduction(
     let mut column_values = Vec::with_capacity(plan.columns.len());
     let mut claims = Vec::with_capacity(plan.columns.len());
     for group in &plan.columns {
+        if committed[group.col] {
+            assert_ne!(
+                zero_tail(&rho, group.row_nu),
+                F128::ZERO,
+                "common-point zero-extension tail must be invertible",
+            );
+        }
         let mut point = rho[..group.row_nu].to_vec();
         point.resize(group.kappa, F128::ZERO);
-        let value = mle_eval(&cols[group.col][..1usize << group.kappa], &point);
+        let raw = mle_eval(&cols[group.col][..1usize << group.kappa], &point);
+        let extend = committed[group.col];
+        let value = if extend {
+            zero_tail(&rho, group.row_nu) * (raw + pad[group.col])
+        } else {
+            raw
+        };
         ps.add_scalar(value);
         column_values.push(value);
         claims.push(ColumnClaim {
             col: group.col,
-            point,
+            point: if extend { rho.clone() } else { point },
             value,
+            prefix_shifted: extend,
         });
     }
 
@@ -688,7 +729,14 @@ fn prove_tight_reduction(
                 let source = match term.source {
                     ReductionSource::One => F128::ONE,
                     ReductionSource::Index { row_nu } => index_eval(&rho[..row_nu]),
-                    ReductionSource::Column { group } => column_values[group],
+                    ReductionSource::Column { group } => {
+                        let source = &plan.columns[group];
+                        if committed[source.col] {
+                            column_values[group] * zero_tail(&rho, source.row_nu).inv() + pad[source.col]
+                        } else {
+                            column_values[group]
+                        }
+                    }
                     ReductionSource::Public { group } => public_values[group],
                 };
                 acc + term.coefficient * source
@@ -723,10 +771,12 @@ fn verify_tight_reduction(
     target_point: &[F128],
     alpha: F128,
     gamma: F128,
+    pad: &[F128],
+    committed: &[bool],
     vs: &mut VerifierState,
 ) -> Result<ReductionResult, Error> {
     let eta = vs.sample();
-    let plan = reduction_plan(push, pull, count, layouts, alpha, gamma, eta);
+    let plan = reduction_plan(push, pull, count, layouts, alpha, gamma, eta, committed);
     let mut claim =
         gkr_values[0] + F128::ONE + eta * (gkr_values[1] + F128::ONE) + eta * eta * (gkr_values[2] + F128::ONE);
 
@@ -745,14 +795,19 @@ fn verify_tight_reduction(
     let mut column_values = Vec::with_capacity(plan.columns.len());
     let mut claims = Vec::with_capacity(plan.columns.len());
     for group in &plan.columns {
+        if committed[group.col] && zero_tail(&rho, group.row_nu) == F128::ZERO {
+            return Err(Error::NonInvertibleTail);
+        }
         let value = vs.next_scalar().map_err(|_| Error::Truncated)?;
         let mut point = rho[..group.row_nu].to_vec();
         point.resize(group.kappa, F128::ZERO);
+        let extend = committed[group.col];
         column_values.push(value);
         claims.push(ColumnClaim {
             col: group.col,
-            point,
+            point: if extend { rho.clone() } else { point },
             value,
+            prefix_shifted: extend,
         });
     }
 
@@ -773,7 +828,14 @@ fn verify_tight_reduction(
                 let source = match term.source {
                     ReductionSource::One => F128::ONE,
                     ReductionSource::Index { row_nu } => index_eval(&rho[..row_nu]),
-                    ReductionSource::Column { group } => column_values[group],
+                    ReductionSource::Column { group } => {
+                        let source = &plan.columns[group];
+                        if committed[source.col] {
+                            column_values[group] * zero_tail(&rho, source.row_nu).inv() + pad[source.col]
+                        } else {
+                            column_values[group]
+                        }
+                    }
                     ReductionSource::Public { group } => public_values[group],
                 };
                 acc + term.coefficient * source
@@ -876,6 +938,8 @@ pub fn prove_balance(
     pull: &[Block],
     count: &[Block],
     cols: &[Column],
+    pad: &[F128],
+    committed: &[bool],
     ps: &mut ProverState,
 ) -> (Vec<ColumnClaim>, Vec<BytecodeClaim>) {
     let push_lay = layout(push);
@@ -918,6 +982,8 @@ pub fn prove_balance(
         alpha,
         gamma,
         cols,
+        pad,
+        committed,
         ps,
     );
 
@@ -947,7 +1013,8 @@ pub fn verify_balance(
     push: &[Block],
     pull: &[Block],
     count: &[Block],
-    _pad: &[F128],
+    pad: &[F128],
+    committed: &[bool],
     vs: &mut VerifierState,
 ) -> Result<BusVerify, Error> {
     // Check the grinding nonce FIRST: the PoW covers both bus challenges
@@ -984,6 +1051,8 @@ pub fn verify_balance(
         &bus_gkr.point,
         alpha,
         gamma,
+        pad,
+        committed,
         vs,
     )?;
 
