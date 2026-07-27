@@ -174,6 +174,51 @@ c_k=d^{-2^k}\Bigl[\
 
 \paragraph{Cost.} The $k=0$ level needs $15$ constants: $d^{-1}\alpha^{127}$, the seven $1+\alpha^{-2^t}$, and the seven $d^{-1}\varepsilon_i$. Squaring all $15$ advances level $k$ to level $k+1$, so a verifier running a fixed program can bake in every level; and the $7\cdot128$ factor constants take only $128$ distinct values, since $1+\alpha^{-2^{k+t}}$ depends on $k+t\bmod128$ alone. Each $c_k$ then costs $14$ multiplications for the product and $7$ for the correction, so the whole table costs $O(e\log e)$ instead of $O(e^2)$. The seven weights $\lambda_i$, $i\le6$, share the four factors $1+s_t$, $t\ge3$, so they cost $O(\log e)$ as well.
 
+\section*{Closed-form coefficients: univariate batching over a tower}
+
+The previous section leans on two properties of its setting: the basis is a \emph{power} basis $\alpha^i$ of a field defined by a sparse modulus, and the weights $\lambda_i$ are $\eq$ weights, hence a product over the bits of $i$. Neither survives verbatim when the opening field is a tower, but the technique does. We work out the case this codebase runs, $f=64$ and $e=192$ with
+\[
+K=\F_{2^{64}}=\F_2[X]/\bigl(q(X)\bigr),\qquad q(X)=X^{64}+X^4+X^3+X+1,
+\qquad
+\F_{2^{192}}=K[Y]/\bigl(Y^3+Y+1\bigr),
+\]
+and the product basis $b^E_{64j+i}=x^iy^j$, where $x,y$ are the residues of $X,Y$. Two things change.
+
+\paragraph{Change 1: the basis factors instead of being a power basis.} For a tower $\F_{2^e}/K/\F_2$ and a product basis, the trace-dual of $\{b^{K}_i c^{E}_j\}$ is $\{\beta_i\gamma_j\}$, where $\beta$ is dual to $\{b^K_i\}$ under $\operatorname{Tr}_{K/\F_2}$ and $\gamma$ dual to $\{c^E_j\}$ under $\operatorname{Tr}_{\F_{2^e}/K}$. With univariate weights $\rho^w$ the coefficient sum therefore \emph{splits}:
+\[
+c_k=\sum_{w<192}\rho^w\delta_w^{2^k}
+=\underbrace{\Bigl(\sum_{i<64}\rho^i\beta_i^{2^k}\Bigr)}_{A_k}
+\cdot
+\underbrace{\Bigl(\sum_{j<3}\rho^{64j}\gamma_j^{2^k}\Bigr)}_{B_k}.
+\]
+Here $\gamma_0=1$: $\operatorname{Tr}_{\F_{2^e}/K}(1)=3=1$, while $\operatorname{Tr}(y)$ and $\operatorname{Tr}(y^2)$ are symmetric functions of the roots of $Y^3+Y+1$ and vanish. So $\beta_i\in K$, and $A_k$ has Frobenius period $64$: only $64$ of the $192$ levels are distinct. $B_k$ is already two multiplications.
+
+\paragraph{Change 2: a geometric series replaces the $\eq$ product.} Step 2 of the previous section is generic in the modulus. Here $d=q'(x)=x^2+1$, and the Laurent expansion of $1/q$ at infinity is $X^{-64}+\bigl(X^{-124}+X^{-125}+X^{-127}+X^{-128}\bigr)+O(X^{-184})$, so $\operatorname{tr}(x^m/d)=[\,m=63\,]$ for all $m<120$ and $x^{63-i}/d$ fails only at $j-i\in\{60,61,63\}$. Repairing exactly as before,
+\[
+\beta_i=d^{-1}\bigl(x^{63-i}+\varepsilon_i\bigr),
+\qquad
+\varepsilon=\bigl[\,x^3+x^2+1,\ x^2+x,\ x+1,\ 1,\ 0,\dots,0\,\bigr],
+\]
+a correction on $i<4$ only (versus seven for GHASH: the modulus is sparser relative to the degree).
+
+Step 3 is where the weight family matters. The $\lambda_i$ no longer factor over the bits of $i$, so there is no $6$-fold product. But univariate weights give something equally good: with $u=\rho\,x^{-2^k}$,
+\[
+\sum_{i<64}\rho^i x^{(63-i)2^k}=x^{63\cdot2^k}\sum_{i<64}u^i
+=x^{63\cdot2^k}\,(1+u)^{63},
+\]
+because $\sum_{i<n}u^i=(u^n+1)/(u+1)$ and $n=64$ is a power of two, so $u^{64}+1=(u+1)^{64}$. The identity holds for \emph{every} $u$, including $u=1$, where both sides are $0$. Hence
+\[
+\boxed{\ \
+A_k=Q_k\,\bigl(1+\rho P_k\bigr)^{63}+\sum_{i<4}\rho^i R_{k,i},
+\qquad
+P_k=x^{-2^k},\quad Q_k=\bigl(d^{-1}x^{63}\bigr)^{2^k},\quad R_{k,i}=\bigl(d^{-1}\varepsilon_i\bigr)^{2^k}.
+\ \ }
+\]
+
+\paragraph{Cost.} Level $k$ needs $6$ constants, and squaring the row advances $k$ to $k+1$, so a fixed-program verifier bakes in all $64$ base levels and all $192$ tower levels and keeps no runtime orbit table. Evaluating $(1+u)^{63}$ by the $2^t-1$ addition chain costs $5$ squarings and $3$ products, so $A_k$ costs $13$ multiplications and $c_k$ costs $16$: the same $O(\log f)$ per coefficient the $\eq$ product achieves, reached through a different identity. The whole table drops from $64^2+3\cdot192$ multiplications to $64\cdot13+192\cdot3$.
+
+\paragraph{What generalizes.} Only Step 3 is weight-specific, and it needs the index sum to collapse. Two sufficient conditions, both met here: the basis is a power basis of the field the weights are indexed over (so $b_{n-1-i}$ is a geometric progression in $i$), and the weight family is closed under the corresponding collapse -- a product over bits for $\eq$, a geometric series for univariate powers. Steps 1 and 2 need only a sparse modulus, and the tower factorization of Change 1 applies to any product basis.
+
 \section*{Remarks}
 
 \begin{enumerate}

@@ -1827,23 +1827,15 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     let label_state = pack_state(Sponge::new(b"leanvm-b", &[]).state());
     ps("TRANSCRIPT_SEED_0", u(label_state[0]).to_string());
     ps("TRANSCRIPT_SEED_1", u(label_state[1]).to_string());
-    let trace_dual = pcs::ring_switch::trace_dual_basis();
-    let trace_dual_base: [F192; 64] = trace_dual[..64]
-        .try_into()
-        .expect("trace-dual base slice has length 64");
-    let d00_inv = trace_dual_base[0].inv();
-    let trace_dual_tower = [F192::ONE, trace_dual[64] * d00_inv, trace_dual[128] * d00_inv];
-    for j in 0..3 {
-        for i in 0..64 {
-            assert_eq!(
-                trace_dual[64 * j + i],
-                trace_dual_base[i] * trace_dual_tower[j],
-                "GF192 trace-dual basis must factor over the 64x3 tower"
-            );
-        }
-    }
-    ps("TRACE_DUAL_BASE", flds(&trace_dual_base));
-    ps("TRACE_DUAL_TOWER", flds(&trace_dual_tower));
+    // Closed-form ring-switch coefficients: the guest bakes both Frobenius
+    // orbits in, so it needs neither a runtime orbit table nor a 63-term
+    // Horner pass per level. See `pcs::ring_switch::base_coeff_orbit_constants`.
+    let base_orbits: Vec<F192> =
+        pcs::ring_switch::base_coeff_orbit_constants().iter().flatten().copied().collect();
+    let tower_orbits: Vec<F192> =
+        pcs::ring_switch::tower_coeff_orbit_constants().iter().flatten().copied().collect();
+    ps("RS_BASE_ORBITS", flds(&base_orbits));
+    ps("RS_TOWER_ORBITS", flds(&tower_orbits));
     rep
 }
 

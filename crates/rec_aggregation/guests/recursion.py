@@ -194,11 +194,19 @@ POINT_BUF_QPKD_RHO = 4
 CLAIM_POINT_BUF = CLAIM_POINT_BUF_PLACEHOLDER
 CLAIM_POINT_OFF = CLAIM_POINT_OFF_PLACEHOLDER
 QPKD_VARS_CAP = QPKD_VARS_CAP_PLACEHOLDER
-# The trace-dual basis factors across F2 < K < E:
-# dual[64*j+i] = TRACE_DUAL_BASE[i] * TRACE_DUAL_TOWER[j].
-# This reduces its Frobenius/coefficient tables from 192x192 to 64x64 + 192x3.
-TRACE_DUAL_BASE = TRACE_DUAL_BASE_PLACEHOLDER
-TRACE_DUAL_TOWER = TRACE_DUAL_TOWER_PLACEHOLDER
+# Closed-form ring-switch coefficients. The trace-dual basis factors across
+# F2 < K < E as dual[64*j+i] = beta_i * gamma_j, so c_k = A_k * B_k with
+# A_k = sum_i rho^i beta_i^(2^k) and B_k = sum_j rho^(64j) gamma_j^(2^k).
+# beta lies in K, hence A has Frobenius period 64; and beta_i is the sparse
+# reversed monomial d^-1 (x^(63-i) + eps_i), so the univariately weighted sum
+# collapses by the char-2 geometric series sum_{i<64} u^i = (1+u)^63:
+#   A_k = Q_k * (1 + rho*P_k)^63 + sum_{i<4} rho^i R_k[i].
+# Both orbits are fixed, so both are baked here rather than squared at runtime.
+# Row k of RS_BASE_ORBITS is P_k | Q_k | R_k[0..4]; row k of RS_TOWER_ORBITS is
+# gamma_1^(2^k) | gamma_2^(2^k) (gamma_0 = 1 is dropped).
+RS_BASE_ORBIT_WIDTH = 6
+RS_BASE_ORBITS = RS_BASE_ORBITS_PLACEHOLDER
+RS_TOWER_ORBITS = RS_TOWER_ORBITS_PLACEHOLDER
 # Phase F: log rows of the bytecode blocks (the deferred bytecode points).
 BYTECODE_LOG = BYTECODE_LOG_PLACEHOLDER
 # One sub-proof's deferred-claim region: 2*BYTECODE_LOG + LOG2_BYTECODE_COLS
@@ -884,13 +892,13 @@ def exponent_tables():
     return g_logs_pow2, g_squares
 
 
-def verify_sub(pi_0, pi_1, seed_0, seed_1, base_delta_pows, tower_delta_pows, g_logs_pow2, g_squares, defer_out):
+def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     # In-circuit verification of ONE inner proof for the statement
     # (pi_0, pi_1). All proof data is hinted HERE: each call pops the next
     # sub-proof's entry of every witness stream, so the body lowers once and
-    # main just calls it per statement. The factored dual-basis Frobenius tables
-    # and the exponent lookup tables are shared read-only across calls; the
-    # deferred-claim data is written to `defer_out`.
+    # main just calls it per statement. The exponent lookup tables are shared
+    # read-only across calls; the deferred-claim data is written to
+    # `defer_out`.
     #
     # Flow (mirrors cpu::verify):
     #   1. seed the Fiat-Shamir sponge from the statement + program digest;
@@ -1625,31 +1633,41 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, base_delta_pows, tower_delta_pows, g_
             claim_check += claim_nums[i] * LAGRANGE_INV_S[i] * s_hat_v[GEN ** ((2 ** K_SKIP) * rs + i)]
         assert claim_check == claim_val
     # One rho is shared by both claims after both slices have been absorbed.
-    # The coordinate weights are (1, rho, ..., rho^191). Construct each
-    # linearized coefficient directly by Horner evaluation, so neither the
-    # powers nor an equality tree need to be materialized.
+    # The coordinate weights are (1, rho, ..., rho^191), so
+    #   c_k = A_k * B_k,  A_k = sum_i rho^i beta_i^(2^k),
+    #                     B_k = sum_j rho^(64j) gamma_j^(2^k).
+    # Both factors are closed forms over baked constants (RS_BASE_ORBITS /
+    # RS_TOWER_ORBITS): no runtime Frobenius orbit table, and no 63-term Horner
+    # pass per level. A_k repeats with period 64 because beta lies in K.
     fs, rs_batch = squeeze(fs)
-    # dual[64*j+i] = base[i] * tower[j], hence
-    #   c_k = (sum_i rho^i base[i]^(2^k))
-    #         * (sum_j rho^(64j) tower[j]^(2^k)).
-    # The base factor has period 64 under Frobenius. Computing the two factors
-    # costs 64^2 + 3*192 products instead of 192^2.
     rho_64 = rs_batch
     for i in unroll(0, 6):
         rho_64 *= rho_64
-    base_coeffs = HeapBuf(BASE_FIELD_BITS)
-    for xk in mul_range(1, GEN ** BASE_FIELD_BITS):
-        delta_row = base_delta_pows * xk ** BASE_FIELD_BITS
-        c_acc = delta_row[GEN ** (BASE_FIELD_BITS - 1)]
-        for i in unroll(1, BASE_FIELD_BITS):
-            c_acc = c_acc * rs_batch + delta_row[GEN ** (BASE_FIELD_BITS - 1 - i)]
-        base_coeffs[xk] = c_acc
-    for block in unroll(0, 3):
-        for xr in mul_range(1, GEN ** BASE_FIELD_BITS):
-            xk = xr * GEN ** (block * BASE_FIELD_BITS)
-            tower_row = tower_delta_pows * xk ** 3
-            tower_coeff = (tower_row[GEN ** 2] * rho_64 + tower_row[GEN ** 1]) * rho_64 + tower_row[GEN ** 0]
-            c_table[xk] = base_coeffs[xr] * tower_coeff
+    rho_128 = rho_64 * rho_64
+    rho_2 = rs_batch * rs_batch
+    rho_3 = rho_2 * rs_batch
+    # A_k = Q_k * (1 + rho*P_k)^63 + sum_{i<4} rho^i R_k[i]. The 64-term
+    # geometric series sum_{i<64} u^i collapses to (1+u)^63 in characteristic
+    # two, evaluated by the 2^t-1 addition chain (5 squarings, 3 products).
+    base_coeffs = StackBuf(BASE_FIELD_BITS)
+    for k in unroll(0, BASE_FIELD_BITS):
+        orbit = RS_BASE_ORBIT_WIDTH * k
+        v = 1 + rs_batch * RS_BASE_ORBITS[orbit]
+        v3 = v * v * v
+        v7 = v3 * v3 * v
+        v56 = v7 * v7
+        v56 *= v56
+        v56 *= v56
+        c_acc = RS_BASE_ORBITS[orbit + 1] * (v56 * v7)
+        c_acc += RS_BASE_ORBITS[orbit + 2]
+        c_acc += rs_batch * RS_BASE_ORBITS[orbit + 3]
+        c_acc += rho_2 * RS_BASE_ORBITS[orbit + 4]
+        c_acc += rho_3 * RS_BASE_ORBITS[orbit + 5]
+        base_coeffs[k] = c_acc
+    # B_k = gamma_2^(2^k) * rho^128 + gamma_1^(2^k) * rho^64 + 1 (gamma_0 = 1).
+    for k in unroll(0, FIELD_BITS):
+        tower_coeff = 1 + RS_TOWER_ORBITS[2 * k] * rho_64 + RS_TOWER_ORBITS[2 * k + 1] * rho_128
+        c_table[GEN ** k] = base_coeffs[k % BASE_FIELD_BITS] * tower_coeff
     # Evaluate both claims together: they share c_k and x^i, so each is loaded
     # or advanced once rather than once per claim.
     s_hat_row_0 = s_hat_v
@@ -1669,8 +1687,9 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, base_delta_pows, tower_delta_pows, g_
             ck = c_table[GEN ** k]
             lin_eval_0 += ck * y_pow_0
             lin_eval_1 += ck * y_pow_1
-            y_pow_0 *= y_pow_0
-            y_pow_1 *= y_pow_1
+            if k != FIELD_BITS - 1:
+                y_pow_0 *= y_pow_0
+                y_pow_1 *= y_pow_1
         x_pow = x_pow_chain[x_round]
         t_chain_0[x_round * GEN] = t_chain_0[x_round] + x_pow * lin_eval_0
         t_chain_1[x_round * GEN] = t_chain_1[x_round] + x_pow * lin_eval_1
@@ -1840,54 +1859,46 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, base_delta_pows, tower_delta_pows, g_
         claim_weights[GEN ** j] = sel_chain[seln] * gamma_pool[GEN ** j]
     # eval_rs_eq per claim: E = sum_k c_k * prod_j (z_j^(2^k) + 1 + ris_j)
     # (the telescoped product formula; z powers evolve by squaring per k).
-    # QPKD_VARS_CAP = tau_5 + SLOT_STRIDE_LOG, exponent-additive from the certified
-    # announced log; the per-k z-power rows chain by a runtime g^qpkdv
-    # stride, and the inner passes are runtime loops with product/square
-    # state chained per row.
+    # QPKD_VARS_CAP = tau_5 + SLOT_STRIDE_LOG, exponent-additive from the
+    # certified announced log. Walk the runtime coordinates OUTSIDE and the
+    # fixed FIELD_BITS Frobenius powers inside: each coordinate loads its
+    # opening challenge once and evolves z by squaring in registers, advancing
+    # one contiguous FIELD_BITS-wide product row. Same product formula as the
+    # k-major form, but with no stored z-power table (the dominant memory
+    # traffic) and no per-level buffer.
     qpkdv_g = tau_blake3_g * GEN ** SLOT_STRIDE_LOG
-    one_plus_q = HeapBuf(GEN ** (QPKD_VARS_CAP))
-    for x_round in mul_range(1, qpkdv_g):
-        one_plus_q[x_round] = 1 + fold_challenges[x_round]
     # Evaluate both transparent weights in lockstep, sharing c_k and the
     # verifier-point factor in every inner iteration.
-    z_pows_0 = HeapBuf((FIELD_BITS + 1) * QPKD_VARS_CAP)
-    z_pows_1 = HeapBuf((FIELD_BITS + 1) * QPKD_VARS_CAP)
     z_row_src_1 = z_vals * GEN ** QPKD_VARS_CAP
+    prod_chains_0 = HeapBuf((qpkdv_g * GEN) ** FIELD_BITS)
+    prod_chains_1 = HeapBuf((qpkdv_g * GEN) ** FIELD_BITS)
+    for k in unroll(0, FIELD_BITS):
+        prod_chains_0[GEN ** k] = 1
+        prod_chains_1[GEN ** k] = 1
     for x_round in mul_range(1, qpkdv_g):
-        z_pows_0[x_round] = z_vals[x_round]
-        z_pows_1[x_round] = z_row_src_1[x_round]
-    e_acc_0 = HeapBuf(FIELD_BITS + 1)
-    e_acc_1 = HeapBuf(FIELD_BITS + 1)
-    e_acc_0[GEN ** 0] = 0
-    e_acc_1[GEN ** 0] = 0
-    row_ptr_0 = HeapBuf(FIELD_BITS + 1)
-    row_ptr_1 = HeapBuf(FIELD_BITS + 1)
-    row_ptr_0[GEN ** 0] = z_pows_0
-    row_ptr_1[GEN ** 0] = z_pows_1
-    for xk in mul_range(1, GEN ** FIELD_BITS):
-        z_row_0 = row_ptr_0[xk]
-        z_row_1 = row_ptr_1[xk]
-        z_row_next_0 = z_row_0 * qpkdv_g
-        z_row_next_1 = z_row_1 * qpkdv_g
-        prod_chain_0 = HeapBuf(GEN ** (QPKD_VARS_CAP + 1))
-        prod_chain_1 = HeapBuf(GEN ** (QPKD_VARS_CAP + 1))
-        prod_chain_0[GEN ** 0] = 1
-        prod_chain_1[GEN ** 0] = 1
-        for x_round in mul_range(1, qpkdv_g):
-            one_plus = one_plus_q[x_round]
-            zv_0 = z_row_0[x_round]
-            zv_1 = z_row_1[x_round]
-            prod_chain_0[x_round * GEN] = prod_chain_0[x_round] * (zv_0 + one_plus)
-            prod_chain_1[x_round * GEN] = prod_chain_1[x_round] * (zv_1 + one_plus)
-            z_row_next_0[x_round] = zv_0 * zv_0
-            z_row_next_1[x_round] = zv_1 * zv_1
-        ck = c_table[xk]
-        e_acc_0[xk * GEN] = e_acc_0[xk] + ck * prod_chain_0[qpkdv_g]
-        e_acc_1[xk * GEN] = e_acc_1[xk] + ck * prod_chain_1[qpkdv_g]
-        row_ptr_0[xk * GEN] = z_row_next_0
-        row_ptr_1[xk * GEN] = z_row_next_1
-    rs_eq_vals[0] = e_acc_0[GEN ** FIELD_BITS]
-    rs_eq_vals[1] = e_acc_1[GEN ** FIELD_BITS]
+        zv_0 = z_vals[x_round]
+        zv_1 = z_row_src_1[x_round]
+        one_plus = 1 + fold_challenges[x_round]
+        prod_row_0 = prod_chains_0 * x_round ** FIELD_BITS
+        prod_row_1 = prod_chains_1 * x_round ** FIELD_BITS
+        prod_row_next_0 = prod_row_0 * GEN ** FIELD_BITS
+        prod_row_next_1 = prod_row_1 * GEN ** FIELD_BITS
+        for k in unroll(0, FIELD_BITS):
+            prod_row_next_0[GEN ** k] = prod_row_0[GEN ** k] * (zv_0 + one_plus)
+            prod_row_next_1[GEN ** k] = prod_row_1[GEN ** k] * (zv_1 + one_plus)
+            if k != FIELD_BITS - 1:
+                zv_0 *= zv_0
+                zv_1 *= zv_1
+    prod_final_0 = prod_chains_0 * qpkdv_g ** FIELD_BITS
+    prod_final_1 = prod_chains_1 * qpkdv_g ** FIELD_BITS
+    e_acc_0 = 0
+    e_acc_1 = 0
+    for k in unroll(0, FIELD_BITS):
+        ck = c_table[GEN ** k]
+        e_acc_0 += ck * prod_final_0[GEN ** k]
+        e_acc_1 += ck * prod_final_1[GEN ** k]
+    rs_eq_vals[0] = e_acc_0
+    rs_eq_vals[1] = e_acc_1
     # ring-switch weight: extend by the selector bits over the fold_challenges
     # coords [qpkdv, lenris).
     rs_weight = gamma_ab * rs_eq_vals[0] + gamma_c * rs_eq_vals[1]
@@ -2016,27 +2027,6 @@ def main():
     hint_witness(bc_star_hint[0:1], "bc_star_hint")
     mat_stars_hint = StackBuf(2)
     hint_witness(mat_stars_hint[0:2], "mat_stars_hint")
-    # Frobenius powers of the factored trace-dual basis. These tables are
-    # claim- and sub-independent, so build them once.
-    base_delta_pows = HeapBuf(BASE_FIELD_BITS * BASE_FIELD_BITS)
-    for i in unroll(0, BASE_FIELD_BITS):
-        base_delta_pows[GEN ** i] = TRACE_DUAL_BASE[i]
-    for xk in mul_range(1, GEN ** (BASE_FIELD_BITS - 1)):
-        delta_row = base_delta_pows * xk ** BASE_FIELD_BITS
-        next_delta_row = delta_row * GEN ** BASE_FIELD_BITS
-        for i in unroll(0, BASE_FIELD_BITS):
-            delta_v = delta_row[GEN ** i]
-            next_delta_row[GEN ** i] = delta_v * delta_v
-    tower_delta_pows = HeapBuf(3 * FIELD_BITS)
-    for i in unroll(0, 3):
-        tower_delta_pows[GEN ** i] = TRACE_DUAL_TOWER[i]
-    for xk in mul_range(1, GEN ** (FIELD_BITS - 1)):
-        delta_row = tower_delta_pows * xk ** 3
-        next_delta_row = delta_row * GEN ** 3
-        for i in unroll(0, 3):
-            delta_v = delta_row[GEN ** i]
-            next_delta_row[GEN ** i] = delta_v * delta_v
-
     # exponent-domain lookup tables, shared read-only across every sub-proof.
     g_logs_pow2, g_squares = exponent_tables()
 
@@ -2044,7 +2034,7 @@ def main():
     defer = HeapBuf(NSUB * DEFER_SIZE)
 
     for sub in unroll(0, NSUB):
-        verify_sub(sub_pis[GEN ** (2 * sub)], sub_pis[GEN ** (2 * sub + 1)], fs_seed[0], fs_seed[1], base_delta_pows, tower_delta_pows, g_logs_pow2, g_squares, defer * GEN ** (sub * DEFER_SIZE))
+        verify_sub(sub_pis[GEN ** (2 * sub)], sub_pis[GEN ** (2 * sub + 1)], fs_seed[0], fs_seed[1], g_logs_pow2, g_squares, defer * GEN ** (sub * DEFER_SIZE))
 
     # ================= aggregation: batch the deferred claims =================
     # A fresh transcript absorbs every deferred claim (points and values),

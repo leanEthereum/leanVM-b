@@ -202,6 +202,128 @@ pub fn trace_dual_basis() -> &'static [F192; 192] {
     })
 }
 
+// ---------------------------------------------------------------------------
+// Closed-form linearized coefficients
+// ---------------------------------------------------------------------------
+
+/// Row width of [`base_coeff_orbit_constants`]: `P | Q | R[0..4]`.
+pub const RS_BASE_ORBIT_WIDTH: usize = 6;
+
+/// Number of Frobenius levels the base factor needs before it repeats.
+///
+/// The 64 base duals lie in `K` (because the tower dual of `1` is `1`, see
+/// [`tower_coeff_orbit_constants`]), so `beta_i^(2^64) = beta_i`.
+pub const RS_BASE_ORBIT_LEVELS: usize = PACKING_WIDTH;
+
+/// Seed constants of the closed-form base factor, at every Frobenius level.
+///
+/// A verifier that batches the 192 coordinates univariately needs
+///
+/// ```text
+/// c_k = A_k * B_k,   A_k = sum_{i<64} rho^i beta_i^(2^k),
+/// ```
+///
+/// where `beta_i` is the trace-dual of `K`'s power basis `x^i` (see
+/// [`trace_dual_basis`], whose first 64 entries are exactly these). Building
+/// `A_k` by Horner costs 63 multiplications per level, plus a runtime
+/// `64 x 64` table of Frobenius powers. It has a closed form instead.
+///
+/// With `q(X) = X^64 + X^4 + X^3 + X + 1` and `d = q'(x) = x^2 + 1`, the
+/// Laurent expansion of `1/q` at infinity gives `Tr(x^m/d) = [m = 63]` for
+/// every `m < 120`, so `x^(63-i)/d` already extracts coordinate `i` except at
+/// `j - i in {60, 61, 63}`. Repairing those, exactly as in the GHASH note's
+/// Step 2, leaves a correction supported on `i < 4` only:
+///
+/// ```text
+/// beta_i = d^-1 (x^(63-i) + eps_i),
+/// eps = [x^3+x^2+1, x^2+x, x+1, 1, 0, ..., 0].
+/// ```
+///
+/// The weights are the univariate powers `rho^i`, not an eq tensor, so the
+/// GHASH note's seven-factor product does not apply. What replaces it is a
+/// geometric series: `sum_{i<64} u^i = (1+u)^63` holds identically over any
+/// field of characteristic two, because `64` is a power of two (and both
+/// sides vanish at `u = 1`). Hence, with `u = rho x^(-2^k)`,
+///
+/// ```text
+/// A_k = Q_k (1 + rho P_k)^63 + sum_{i<4} rho^i R_k[i],
+/// P_k = x^(-2^k),  Q_k = (d^-1 x^63)^(2^k),  R_k[i] = (d^-1 eps_i)^(2^k).
+/// ```
+///
+/// `(1+u)^63` costs 5 squarings and 3 multiplications via the `2^t - 1`
+/// addition chain, so a level costs 13 multiplications instead of 63 — the
+/// same `O(log f)` the GHASH specialization reaches through its product form.
+///
+/// Squaring a whole row advances it from level `k` to level `k + 1`, so a
+/// verifier running a fixed program bakes every level in and needs no runtime
+/// orbit table at all.
+pub fn base_coeff_orbit_constants()
+-> &'static [[F192; RS_BASE_ORBIT_WIDTH]; RS_BASE_ORBIT_LEVELS] {
+    use std::sync::OnceLock;
+    static ORBITS: OnceLock<[[F192; RS_BASE_ORBIT_WIDTH]; RS_BASE_ORBIT_LEVELS]> = OnceLock::new();
+    ORBITS.get_or_init(|| {
+        let x = F192::new(2, 0, 0); // the residue of X, generating K's power basis
+        let d_inv = (x * x + F192::ONE).inv(); // 1/q'(x)
+        let mut x_pow = F192::ONE;
+        for _ in 0..PACKING_WIDTH - 1 {
+            x_pow *= x; // x^63
+        }
+        let eps = [
+            x * x * x + x * x + F192::ONE,
+            x * x + x,
+            x + F192::ONE,
+            F192::ONE,
+        ];
+
+        let mut rows = [[F192::ZERO; RS_BASE_ORBIT_WIDTH]; RS_BASE_ORBIT_LEVELS];
+        rows[0][0] = x.inv();
+        rows[0][1] = d_inv * x_pow;
+        for (slot, e) in rows[0][2..].iter_mut().zip(eps) {
+            *slot = d_inv * e;
+        }
+        for k in 1..RS_BASE_ORBIT_LEVELS {
+            rows[k] = rows[k - 1];
+            for value in rows[k].iter_mut() {
+                *value = value.square();
+            }
+        }
+        rows
+    })
+}
+
+/// Frobenius orbit of the tower half of the trace-dual basis.
+///
+/// The dual basis of `E / K` for `{1, y, y^2}` is `{1, gamma_1, gamma_2}`:
+/// `Tr_{E/K}(1) = 1` while `Tr_{E/K}(y) = Tr_{E/K}(y^2) = 0`, since both are
+/// symmetric functions of the roots of `y^3 + y + 1`. So the tower dual of `1`
+/// is `1`, which is also why the base duals stay inside `K`.
+///
+/// Row `k` holds `[gamma_1^(2^k), gamma_2^(2^k)]`; the `gamma_0` column is
+/// dropped because it is the constant `1`. The tower factor is then
+///
+/// ```text
+/// B_k = gamma_2^(2^k) rho^128 + gamma_1^(2^k) rho^64 + 1,
+/// ```
+///
+/// two multiplications per level, with no runtime orbit table.
+pub fn tower_coeff_orbit_constants() -> &'static [[F192; 2]; DEGREE_E] {
+    use std::sync::OnceLock;
+    static ORBITS: OnceLock<[[F192; 2]; DEGREE_E]> = OnceLock::new();
+    ORBITS.get_or_init(|| {
+        let dual = trace_dual_basis();
+        let beta0_inv = dual[0].inv();
+        let mut rows = [[F192::ZERO; 2]; DEGREE_E];
+        rows[0] = [dual[PACKING_WIDTH] * beta0_inv, dual[2 * PACKING_WIDTH] * beta0_inv];
+        for k in 1..DEGREE_E {
+            rows[k] = rows[k - 1];
+            for value in rows[k].iter_mut() {
+                *value = value.square();
+            }
+        }
+        rows
+    })
+}
+
 /// Compute the slice-MLE vector `s_hat_v` (length 64) from a packed witness
 /// and a tensor-expanded suffix point.
 ///
@@ -1011,6 +1133,61 @@ mod tests {
                 };
                 let want = if bit == 1 { F192::ONE } else { F192::ZERO };
                 assert_eq!(tr(dual[i] * y), want, "bit {i} extraction wrong");
+            }
+        }
+    }
+
+    /// The closed-form coefficients must equal the dense construction
+    /// `c_k = Σ_w rho^w dual[w]^(2^k)` that the guest used to build from a
+    /// runtime Frobenius orbit table.
+    #[test]
+    fn closed_form_coeffs_match_dense_frobenius_sum() {
+        let dual = trace_dual_basis();
+        let base = base_coeff_orbit_constants();
+        let tower = tower_coeff_orbit_constants();
+        let mut s = 0xC0FF_EE07_u64;
+        for _ in 0..4 {
+            let rho = rand_ext(&mut s);
+            let rho_pows: [F192; 4] = {
+                let mut p = [F192::ONE; 4];
+                for i in 1..4 {
+                    p[i] = p[i - 1] * rho;
+                }
+                p
+            };
+            let mut rho_64 = rho;
+            for _ in 0..LOG_PACKING {
+                rho_64 = rho_64.square();
+            }
+
+            for k in 0..DEGREE_E {
+                // reference: the dense 192-term Frobenius sum
+                let mut want = F192::ZERO;
+                for w in (0..DEGREE_E).rev() {
+                    let mut b = dual[w];
+                    for _ in 0..k {
+                        b = b.square();
+                    }
+                    want = want * rho + b;
+                }
+
+                // closed form: A_k * B_k
+                let row = &base[k % RS_BASE_ORBIT_LEVELS];
+                let v = F192::ONE + rho * row[0];
+                let a2 = v.square() * v; // v^3
+                let a3 = a2.square() * v; // v^7
+                let mut a6 = a3;
+                for _ in 0..3 {
+                    a6 = a6.square();
+                }
+                a6 *= a3; // v^63
+                let mut a_k = row[1] * a6;
+                for i in 0..4 {
+                    a_k += rho_pows[i] * row[2 + i];
+                }
+                let b_k = (tower[k][1] * rho_64 + tower[k][0]) * rho_64 + F192::ONE;
+
+                assert_eq!(a_k * b_k, want, "closed-form c_k mismatch at k={k}");
             }
         }
     }
