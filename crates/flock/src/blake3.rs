@@ -1780,9 +1780,9 @@ impl Blake3Setup {
         };
         let t_zerocheck = std::time::Instant::now();
         let (zc_claim, s_hat_v_c) = {
-            let a_packed = packed_128_bytes(&a_packed_words);
-            let b_packed = packed_128_bytes(&b_packed_words);
-            let c_packed = packed_128_bytes(&z_packed);
+            let a_packed = packed_128_bytes(a_packed_words);
+            let b_packed = packed_128_bytes(b_packed_words);
+            let c_packed = packed_128_bytes(z_packed);
             crate::zerocheck::prove_packed_padded_capture_s_hat_v_c(
                 &a_packed,
                 &b_packed,

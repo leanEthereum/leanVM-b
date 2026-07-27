@@ -444,13 +444,13 @@ unsafe fn butterfly_lanes_neon_8(top: *mut F64, bot: *mut F64, twiddle: u64) {
         let tw = vdupq_n_u64(twiddle);
 
         let p00: uint64x2_t = core::mem::transmute(vmull_p64(vgetq_lane_u64::<0>(v0), twiddle));
-        let p01: uint64x2_t = core::mem::transmute(vmull_high_p64(core::mem::transmute(v0), core::mem::transmute(tw)));
+        let p01: uint64x2_t = core::mem::transmute(vmull_high_p64(core::mem::transmute::<uint64x2_t, poly64x2_t>(v0), core::mem::transmute::<uint64x2_t, poly64x2_t>(tw)));
         let p10: uint64x2_t = core::mem::transmute(vmull_p64(vgetq_lane_u64::<0>(v1), twiddle));
-        let p11: uint64x2_t = core::mem::transmute(vmull_high_p64(core::mem::transmute(v1), core::mem::transmute(tw)));
+        let p11: uint64x2_t = core::mem::transmute(vmull_high_p64(core::mem::transmute::<uint64x2_t, poly64x2_t>(v1), core::mem::transmute::<uint64x2_t, poly64x2_t>(tw)));
         let p20: uint64x2_t = core::mem::transmute(vmull_p64(vgetq_lane_u64::<0>(v2), twiddle));
-        let p21: uint64x2_t = core::mem::transmute(vmull_high_p64(core::mem::transmute(v2), core::mem::transmute(tw)));
+        let p21: uint64x2_t = core::mem::transmute(vmull_high_p64(core::mem::transmute::<uint64x2_t, poly64x2_t>(v2), core::mem::transmute::<uint64x2_t, poly64x2_t>(tw)));
         let p30: uint64x2_t = core::mem::transmute(vmull_p64(vgetq_lane_u64::<0>(v3), twiddle));
-        let p31: uint64x2_t = core::mem::transmute(vmull_high_p64(core::mem::transmute(v3), core::mem::transmute(tw)));
+        let p31: uint64x2_t = core::mem::transmute(vmull_high_p64(core::mem::transmute::<uint64x2_t, poly64x2_t>(v3), core::mem::transmute::<uint64x2_t, poly64x2_t>(tw)));
 
         let prod0 = reduce_pair_pmull4(p00, p01);
         let prod1 = reduce_pair_pmull4(p10, p11);
@@ -545,7 +545,7 @@ unsafe fn butterfly_lane_pair_neon(top: *mut F64, bot: *mut F64, twiddle: u64) {
         // highs (the dup is loop-invariant and hoisted after inlining).
         let tw = vdupq_n_u64(twiddle);
         let p0: uint64x2_t = core::mem::transmute(vmull_p64(vgetq_lane_u64::<0>(v), twiddle));
-        let p1: uint64x2_t = core::mem::transmute(vmull_high_p64(core::mem::transmute(v), core::mem::transmute(tw)));
+        let p1: uint64x2_t = core::mem::transmute(vmull_high_p64(core::mem::transmute::<uint64x2_t, poly64x2_t>(v), core::mem::transmute::<uint64x2_t, poly64x2_t>(tw)));
         let prod = reduce_pair_pmull4(p0, p1);
         let new_u = veorq_u64(u, prod);
         let new_v = veorq_u64(v, new_u);

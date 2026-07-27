@@ -101,7 +101,7 @@ fn hash_many_oneshot<const N: usize>(
     out: &mut [Hash],
 ) {
     const {
-        assert!(N > 0 && N % 64 == 0 && N <= 1024);
+        assert!(N > 0 && N.is_multiple_of(64) && N <= 1024);
     }
     debug_assert_eq!(data.len(), out.len() * N);
     let inputs: Vec<&[u8; N]> = data

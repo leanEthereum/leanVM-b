@@ -8,7 +8,6 @@ workspace = true
 
 [dependencies]
 blake3.workspace = true
-primitives.workspace = true
 rand.workspace = true
 rayon.workspace = true
 serde.workspace = true

@@ -289,6 +289,9 @@ fn shift_reduce_inner_ab_neon(
 // ---------------------------------------------------------------------------
 
 #[cfg(target_arch = "aarch64")]
+// `0 ^ BH` is the i = 0 case of the `i ^ BH` row-select pattern below; spelling
+// it out keeps the four loads visibly parallel.
+#[allow(clippy::identity_op)]
 #[inline(always)]
 unsafe fn xor_apply_byte_into_8_regs<const BH: usize, const ODD: bool>(
     table_base: *const u8,

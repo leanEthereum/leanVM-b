@@ -1163,7 +1163,10 @@ struct Batch {
     total_inner_cycles: usize,
     inner_stats: Vec<(usize, usize)>,
     /// Per-sub stacked-witness log-size `m` (the dispatch candidate the guest
-    /// selects), derived from each inner proof's announced sizes.
+    /// selects), derived from each inner proof's announced sizes. Read only by
+    /// `recursion_soundness_binds`, which needs the selected candidate to place
+    /// its residual-coordinate tamper.
+    #[cfg_attr(not(test), allow(dead_code))]
     stack_mus: Vec<usize>,
     outer_log_inv_rate: usize,
 }
