@@ -434,20 +434,15 @@ pub fn verify_opening_batch_mixed_ligerito_stacked(
     // prover side, so no r'' is sampled there — skip it here too or the two
     // transcripts diverge (the prover samples r'' inside `prove_batched_*`).
     let r_dprime = if n_rs > 0 { vs.sample_vec(LOG_PACKING) } else { Vec::new() };
-    let eq_r_dprime = primitives::multilinear::build_eq(&r_dprime);
     let lin_coeffs =
-        if n_rs > 0 { ring_switch::linearized_eq_coeffs(&eq_r_dprime) } else { [F128::ZERO; 128] };
-    let rs_outputs: Vec<ring_switch::RingSwitchVerifierOutput> = (0..n_rs)
-        .map(|i| ring_switch::RingSwitchVerifierOutput {
-            sumcheck_claim: ring_switch::transposed_claim_linearized(&rs_proofs[i], &lin_coeffs),
-            r_dprime: r_dprime.clone(),
-            eq_r_dprime: eq_r_dprime.clone(),
-        })
+        if n_rs > 0 { ring_switch::linearized_eq_coeffs_eq(&r_dprime) } else { [F128::ZERO; 128] };
+    let rs_claims: Vec<F128> = (0..n_rs)
+        .map(|i| ring_switch::transposed_claim_linearized(&rs_proofs[i], &lin_coeffs))
         .collect();
     let gammas_rs: Vec<F128> = (0..n_rs).map(|_| vs.sample()).collect();
     let mut target_combined = F128::ZERO;
-    for (out, g) in rs_outputs.iter().zip(gammas_rs.iter()) {
-        target_combined += *g * out.sumcheck_claim;
+    for (claim, g) in rs_claims.iter().zip(gammas_rs.iter()) {
+        target_combined += *g * *claim;
     }
 
     for claim in stack_pd {
@@ -478,8 +473,9 @@ pub fn verify_opening_batch_mixed_ligerito_stacked(
                     sel_eq *= if (sel >> k) & 1 == 1 { xi } else { F128::ONE + xi };
                 }
                 let mut rs_part = F128::ZERO;
-                for (out, (g, x_outer)) in rs_outputs.iter().zip(gammas_rs.iter().zip(x_outers.iter())) {
-                    rs_part += *g * ring_switch::eval_rs_eq(&x_outer[1..], x_lo, &out.eq_r_dprime);
+                for (g, x_outer) in gammas_rs.iter().zip(x_outers.iter()) {
+                    rs_part +=
+                        *g * ring_switch::eval_rs_eq_from_coeffs(&x_outer[1..], x_lo, &lin_coeffs);
                 }
                 let mut acc = rs_part * sel_eq;
                 for (claim, g) in stack_pd.iter().zip(gammas_pd.iter()) {

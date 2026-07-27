@@ -104,8 +104,8 @@ LAGRANGE_INV_S = LAGRANGE_INV_S_PLACEHOLDER
 LINCHECK_ROUNDS = LINCHECK_ROUNDS_PLACEHOLDER
 PIN_COLUMN = PIN_COLUMN_PLACEHOLDER
 K_LOG = K_LOG_PLACEHOLDER
-# Phase E: the stacked mixed opening. The two ring-switch fronts
-# (claim check in-circuit; the tensor transpose + eval_rs_eq DEFERRED); the
+# Phase E: the stacked mixed opening. The two ring-switch fronts (claim check,
+# tensor transpose, and eval_rs_eq all in-circuit), followed by the
 # gamma-combination of the two ring-switch claims and the N_CLAIMS pool claims.
 # Phase E2: the Ligerito opening over the stacked commitment, dispatched by
 # the certified committed log-size m through match_range: the LIG_* tables
@@ -179,11 +179,11 @@ POINT_BUF_QPKD = 3
 CLAIM_POINT_BUF = CLAIM_POINT_BUF_PLACEHOLDER
 CLAIM_POINT_OFF = CLAIM_POINT_OFF_PLACEHOLDER
 QPKD_VARS_CAP = QPKD_VARS_CAP_PLACEHOLDER
-# Ring-switch trace-dual basis: bit_i(y) = Tr(TRACE_DUAL_BASIS[i] * y). Any eq-weighted
-# bit-sum is then the linearized polynomial L_w(y) = sum_k c_k y^(2^k) with
-# c_k = sum_i w_i TRACE_DUAL_BASIS[i]^(2^k); since squaring is one MUL, the tensor
-# transpose and eval_rs_eq run in-circuit (doc.tex, ring-switch section).
-TRACE_DUAL_BASIS = TRACE_DUAL_BASIS_PLACEHOLDER
+# Ring-switch coefficient factorization for the GHASH power basis. Each
+# 15-value row contains d^(-2^k)*x^(127*2^k), then
+# 1+x^(-2^(k+t)) for t=0..6, then d^(-2^k)*epsilon_i^(2^k) for i=0..6.
+RS_COEFF_ORBIT_WIDTH = 15
+RS_COEFF_ORBITS = RS_COEFF_ORBITS_PLACEHOLDER
 # Phase F: log rows of the bytecode blocks (the deferred bytecode points).
 BYTECODE_LOG = BYTECODE_LOG_PLACEHOLDER
 # One sub-proof's deferred-claim region: 2*BYTECODE_LOG + LOG2_BYTECODE_COLS
@@ -734,14 +734,13 @@ def exponent_tables():
     return g_logs_pow2, g_squares
 
 
-def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, defer_out):
+def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     # In-circuit verification of ONE inner proof for the statement
     # (pi_0, pi_1). All proof data is hinted HERE: each call pops the next
     # sub-proof's entry of every witness stream, so the body lowers once and
-    # main just calls it per statement. `delta_pows` (the dual-basis Frobenius
-    # table) and the g_logs_pow2/g_squares lookup tables are shared
-    # read-only tables built once in main; the deferred-claim data is written
-    # to `defer_out`.
+    # main just calls it per statement. The g_logs_pow2/g_squares lookup
+    # tables are shared read-only tables built once in main; the
+    # deferred-claim data is written to `defer_out`.
     #
     # Flow (mirrors cpu::verify):
     #   1. seed the Fiat-Shamir sponge from the statement + program digest;
@@ -1396,19 +1395,19 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
         lincheck_w += skip_nums[i] * LAGRANGE_INV_S[i] * z_partial[GEN ** i]
 
     # ---- stacked mixed opening: ring-switch fronts + claim combination ----
-    s_hat_v = HeapBuf(2 * FIELD_BITS)  # the two ring-switch slices (end the stream), fetched + observed in the loop below
+    s_hat_v = StackBuf(2 * FIELD_BITS)  # the two ring-switch slices (end the stream), fetched + observed in the loop below
     # Ring-switch claim 0 (ab): value lincheck_w, z_skip = lincheck_z_skip, x_outer[0] = lincheck_rs[LINCHECK_ROUNDS-1]
     # (x_inner_rest is the REVERSED lincheck round vector). Claim 1 (c): value
     # c_eval, z_skip = zerocheck_z, x_outer[0] = zerocheck_r[6].
     transposed_claims = StackBuf(2)
     rs_eq_vals = StackBuf(2)
-    c_table = HeapBuf(FIELD_BITS)
+    c_table = StackBuf(FIELD_BITS)
     z_vals = HeapBuf(2 * QPKD_VARS_CAP)
-    r_dprime = HeapBuf(LOG2_FIELD_BITS)
+    r_dprime = StackBuf(LOG2_FIELD_BITS)
     for rs in unroll(0, 2):
         for i in unroll(0, FIELD_BITS):
             fs, w, cursor = fs_next(fs, cursor)
-            s_hat_v[GEN ** (FIELD_BITS * rs + i)] = w
+            s_hat_v[FIELD_BITS * rs + i] = w
         # claim check: weights[i] = lambda_{i&63}(z_skip) * eq(x_outer0, i>>6).
         if rs == 0:
             claim_z_skip = lincheck_z_skip
@@ -1423,7 +1422,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
         claim_check = 0
         for i in unroll(0, 2 ** K_SKIP):
             lagrange_w = claim_nums[i] * LAGRANGE_INV_S[i]
-            claim_check += lagrange_w * ((1 + claim_x_outer_0) * s_hat_v[GEN ** (FIELD_BITS * rs + i)] + claim_x_outer_0 * s_hat_v[GEN ** (FIELD_BITS * rs + 2 ** K_SKIP + i)])  # claim = sum_i lambda_i(z_skip) * eq(x_outer0, i>>6) * s_hat_v[i]
+            claim_check += lagrange_w * ((1 + claim_x_outer_0) * s_hat_v[FIELD_BITS * rs + i] + claim_x_outer_0 * s_hat_v[FIELD_BITS * rs + 2 ** K_SKIP + i])  # claim = sum_i lambda_i(z_skip) * eq(x_outer0, i>>6) * s_hat_v[i]
         assert claim_check == claim_val
     # ONE r'' shared by both claims (each slice was absorbed before the
     # sample), so one eq tensor and one linearized coefficient table
@@ -1431,34 +1430,49 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
     for i in unroll(0, LOG2_FIELD_BITS):
         fs = squeeze(fs)
         rv = fs[0]
-        r_dprime[GEN ** i] = rv
-    w_eq = HeapBuf(2 ** (LOG2_FIELD_BITS + 1) - 2)
-    eqtree(r_dprime, w_eq, LOG2_FIELD_BITS)  # w = eq tensor of the 7 shared r'' coords (one batch challenge, both claims)
-    # c_k = sum_i w_i * delta_pows[k][i], one runtime loop over the levels k.
-    for xk in mul_range(1, GEN ** FIELD_BITS):
-        delta_row = delta_pows * xk ** FIELD_BITS
-        c_acc = 0
-        for i in unroll(0, FIELD_BITS):
-            c_acc += w_eq[GEN ** (2 ** LOG2_FIELD_BITS - 2 + i)] * delta_row[GEN ** i]  # c_k = sum_i w_i * delta_i^(2^k): the linearized-poly coefficient table
-        c_table[xk] = c_acc
+        r_dprime[i] = rv
+    # Only eq(r'', i), i=0..6, is needed by the sparse correction to the
+    # reversed-monomial trace-dual basis. These indices share four zero high
+    # bits, so their common factor is computed once.
+    correction_weights = StackBuf(LOG2_FIELD_BITS)
+    correction_high = GEN ** 0
+    for t in unroll(3, LOG2_FIELD_BITS):
+        correction_high *= 1 + r_dprime[t]
+    for i in unroll(0, LOG2_FIELD_BITS):
+        correction_weight = correction_high
+        for t in unroll(0, 3):
+            if (i // (2 ** t)) % 2 == 1:
+                correction_weight *= r_dprime[t]
+            else:
+                correction_weight *= 1 + r_dprime[t]
+        correction_weights[i] = correction_weight
+    # Factored c_k. The 128-term reversed-monomial sum is a seven-factor MLE
+    # product; only the first seven dual-basis elements add corrections.
+    for k in unroll(0, FIELD_BITS):
+        c_main = RS_COEFF_ORBITS[RS_COEFF_ORBIT_WIDTH * k]
+        for t in unroll(0, LOG2_FIELD_BITS):
+            c_main *= 1 + r_dprime[t] * RS_COEFF_ORBITS[RS_COEFF_ORBIT_WIDTH * k + 1 + t]
+        c_correction = 0
+        for i in unroll(0, LOG2_FIELD_BITS):
+            c_correction += correction_weights[i] * RS_COEFF_ORBITS[RS_COEFF_ORBIT_WIDTH * k + 1 + LOG2_FIELD_BITS + i]
+        c_table[k] = c_main + c_correction
     for rs in unroll(0, 2):
-        # transposed claim T = sum_j x^j * L_w(shv_j): one runtime pass over
-        # the observed values; per value the Frobenius powers evolve as a
-        # scalar against the c table, and x^j chains through a heap cell.
-        s_hat_row = s_hat_v * GEN ** (FIELD_BITS * rs)
-        x_pow_chain = HeapBuf(FIELD_BITS + 1)
-        x_pow_chain[GEN ** 0] = GEN ** 0
-        t_chain = HeapBuf(FIELD_BITS + 1)
-        t_chain[GEN ** 0] = 0
-        for x_round in mul_range(1, GEN ** FIELD_BITS):
-            y_pow = s_hat_row[x_round]
+        # Transposed claim T = sum_j x^j * L_w(shv_j). Both fixed 128-step
+        # dimensions are unrolled; only proof-size-dependent loops remain
+        # runtime loops in this verifier.
+        x_pow = GEN ** 0
+        transposed_claim = 0
+        for j in unroll(0, FIELD_BITS):
+            y_pow = s_hat_v[FIELD_BITS * rs + j]
             lin_eval = 0
             for k in unroll(0, FIELD_BITS):  # L_w(y) = sum_k c_k y^(2^k); y^(2^k) squares once per step
-                lin_eval += c_table[GEN ** k] * y_pow
-                y_pow *= y_pow
-            t_chain[x_round * GEN] = t_chain[x_round] + x_pow_chain[x_round] * lin_eval
-            x_pow_chain[x_round * GEN] = x_pow_chain[x_round] * 2  # x = the field element 2 (the polynomial x)
-        transposed_claims[rs] = t_chain[GEN ** FIELD_BITS]
+                lin_eval += c_table[k] * y_pow
+                if k != FIELD_BITS - 1:
+                    y_pow *= y_pow
+            transposed_claim += x_pow * lin_eval
+            if j != FIELD_BITS - 1:
+                x_pow *= 2  # x = the field element 2 (the polynomial x)
+        transposed_claims[rs] = transposed_claim
         # z_vals for eval_rs_eq (the x_outer tail), used at the opening terminal.
         if rs == 0:
             for t in unroll(0, LINCHECK_ROUNDS - 1):
@@ -1613,35 +1627,27 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, delta_pows, g_logs_pow2, g_squares, d
         claim_weights[GEN ** j] = sel_chain[seln] * gamma_pool[GEN ** j]
     # eval_rs_eq per claim: E = sum_k c_k * prod_j (z_j^(2^k) + 1 + ris_j)
     # (the telescoped product formula; z powers evolve by squaring per k).
-    # QPKD_VARS_CAP = tau_5 + (K_LOG - LOG2_FIELD_BITS), exponent-additive from the certified
-    # announced log; the per-k z-power rows chain by a runtime g^qpkdv
-    # stride, and the inner passes are runtime loops with product/square
-    # state chained per row.
+    # QPKD_VARS_CAP = tau_5 + (K_LOG - LOG2_FIELD_BITS), exponent-additive from the certified announced log. Walk the runtime coordinates outside and the fixed 128 Frobenius powers inside: each coordinate loads its opening challenge once, evolves z by squaring in registers, and advances one contiguous 128-product row. This is the same product formula as the k-major form, without 128 separate runtime loops or a stored z-power table.
     qpkdv_g = tau_blake3_g * GEN ** (K_LOG - LOG2_FIELD_BITS)
-    one_plus_q = HeapBuf(GEN ** (QPKD_VARS_CAP))
-    for x_round in mul_range(1, qpkdv_g):
-        one_plus_q[x_round] = 1 + fold_challenges[x_round]
     for rs in unroll(0, 2):
-        z_pows = HeapBuf((FIELD_BITS + 1) * QPKD_VARS_CAP)
+        prod_chains = HeapBuf((qpkdv_g * GEN) ** FIELD_BITS)
         z_row_src = z_vals * GEN ** (QPKD_VARS_CAP * rs)
+        for k in unroll(0, FIELD_BITS):
+            prod_chains[GEN ** k] = 1
         for x_round in mul_range(1, qpkdv_g):
-            z_pows[x_round] = z_row_src[x_round]
-        e_acc = HeapBuf(FIELD_BITS + 1)
-        e_acc[GEN ** 0] = 0
-        row_ptr = HeapBuf(FIELD_BITS + 1)
-        row_ptr[GEN ** 0] = z_pows
-        for xk in mul_range(1, GEN ** FIELD_BITS):
-            z_row = row_ptr[xk]
-            z_row_next = z_row * qpkdv_g
-            prod_chain = HeapBuf(GEN ** (QPKD_VARS_CAP + 1))
-            prod_chain[GEN ** 0] = 1
-            for x_round in mul_range(1, qpkdv_g):
-                zv = z_row[x_round]
-                prod_chain[x_round * GEN] = prod_chain[x_round] * (zv + one_plus_q[x_round])
-                z_row_next[x_round] = zv * zv
-            e_acc[xk * GEN] = e_acc[xk] + c_table[xk] * prod_chain[qpkdv_g]
-            row_ptr[xk * GEN] = z_row_next
-        rs_eq_vals[rs] = e_acc[GEN ** FIELD_BITS]
+            zv = z_row_src[x_round]
+            oq = 1 + fold_challenges[x_round]
+            prod_row = prod_chains * x_round ** FIELD_BITS
+            prod_row_next = prod_row * GEN ** FIELD_BITS
+            for k in unroll(0, FIELD_BITS):
+                prod_row_next[GEN ** k] = prod_row[GEN ** k] * (zv + oq)
+                if k != FIELD_BITS - 1:
+                    zv *= zv
+        prod_final = prod_chains * qpkdv_g ** FIELD_BITS
+        e_acc = 0
+        for k in unroll(0, FIELD_BITS):
+            e_acc += c_table[k] * prod_final[GEN ** k]
+        rs_eq_vals[rs] = e_acc
     # ring-switch weight: extend by the selector bits over the fold_challenges
     # coords [qpkdv, lenris).
     rs_weight = gamma_ab * rs_eq_vals[0] + gamma_c * rs_eq_vals[1]
@@ -1769,18 +1775,6 @@ def main():
     hint_witness(bc_star_hint[0:1], "bc_star_hint")
     mat_stars_hint = StackBuf(2)
     hint_witness(mat_stars_hint[0:2], "mat_stars_hint")
-    # The dual-basis Frobenius powers delta_pows[128k + i] = TRACE_DUAL_BASIS[i]^(2^k) are claim-
-    # and sub-independent: build the table once, read-only afterwards.
-    delta_pows = HeapBuf(FIELD_BITS * FIELD_BITS)
-    for i in unroll(0, FIELD_BITS):
-        delta_pows[GEN ** i] = TRACE_DUAL_BASIS[i]
-    for xk in mul_range(1, GEN ** (FIELD_BITS - 1)):
-        delta_row = delta_pows * xk ** FIELD_BITS
-        next_delta_row = delta_row * GEN ** FIELD_BITS
-        for i in unroll(0, FIELD_BITS):
-            delta_v = delta_row[GEN ** i]
-            next_delta_row[GEN ** i] = delta_v * delta_v
-
     # exponent-domain lookup tables, shared read-only across every sub-proof.
     g_logs_pow2, g_squares = exponent_tables()
 
@@ -1788,7 +1782,7 @@ def main():
     defer = HeapBuf(NSUB * DEFER_SIZE)
 
     for sub in unroll(0, NSUB):
-        verify_sub(sub_pis[GEN ** (2 * sub)], sub_pis[GEN ** (2 * sub + 1)], fs_seed[0], fs_seed[1], delta_pows, g_logs_pow2, g_squares, defer * GEN ** (sub * DEFER_SIZE))
+        verify_sub(sub_pis[GEN ** (2 * sub)], sub_pis[GEN ** (2 * sub + 1)], fs_seed[0], fs_seed[1], g_logs_pow2, g_squares, defer * GEN ** (sub * DEFER_SIZE))
 
     # ================= aggregation: batch the deferred claims =================
     # A fresh transcript absorbs every deferred claim (points and values),

@@ -17,7 +17,7 @@
 use std::collections::BTreeMap;
 
 use pcs::ligerito::log2_ceil;
-use lean_compiler::{compile, parse, parse_file_with_replacements};
+use lean_compiler::{compile, parse, parse_with_replacements};
 use lean_vm::cpu::{Program, prove, verify};
 use lean_vm::leaf::{Block, Coord};
 use lean_vm::transcript::{Sponge, TraceOp, trace_start, trace_take};
@@ -1333,7 +1333,9 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     let label_state = Sponge::new(b"leanvm-b", &[]).state();
     ps("TRANSCRIPT_SEED_0", u(label_state[0]).to_string());
     ps("TRANSCRIPT_SEED_1", u(label_state[1]).to_string());
-    ps("TRACE_DUAL_BASIS", flds(&pcs::ring_switch::trace_dual_basis()[..]));
+    let rs_coeff_orbits: Vec<F128> =
+        pcs::ring_switch::eq_linearized_orbit_constants().iter().flatten().copied().collect();
+    ps("RS_COEFF_ORBITS", flds(&rs_coeff_orbits));
     rep
 }
 
@@ -1342,9 +1344,8 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
 fn recursion_guest(inner_program: &Program, nsub: usize) -> Program {
     let mut replacements = placeholder_map(inner_program);
     replacements.insert("NSUB_PLACEHOLDER".to_string(), nsub.to_string());
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/guests/recursion.py");
     compile(
-        &parse_file_with_replacements(path, &replacements)
+        &parse_with_replacements(include_str!("../guests/recursion.py"), &replacements)
             .expect("the repository recursion guest must parse"),
     )
 }
