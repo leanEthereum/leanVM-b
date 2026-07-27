@@ -1,3 +1,6 @@
+# CREDIT: The Jagged PCS branching-program evaluator is adapted from Succinct
+# Labs SP1's `slop/crates/jagged` implementation (MIT OR Apache-2.0):
+# https://github.com/succinctlabs/sp1
 from snark_lib import *
 
 # The proof stream rides ONE padded witness hint (the guest walks only the
@@ -86,6 +89,7 @@ TABLE_JUMP = 4
 TABLE_BLAKE3 = 5
 TABLE_PACK64X2 = 6
 N_TABLES = N_TABLES_PLACEHOLDER
+MIN_LOG_MEM = MIN_LOG_MEM_PLACEHOLDER
 # Phase D (flock reduction): the seven fixed inner challenges (+ inverses of 1+c),
 # the phi8 node table + baked Lagrange inverse denominators (Lambda domain,
 # combined domain, S domain). The zerocheck point/round buffers are sized at
@@ -115,27 +119,31 @@ LINCHECK_ROUNDS = LINCHECK_ROUNDS_PLACEHOLDER
 PIN_COLUMN = PIN_COLUMN_PLACEHOLDER
 K_LOG = K_LOG_PLACEHOLDER
 SLOT_STRIDE_LOG = SLOT_STRIDE_LOG_PLACEHOLDER  # = K_LOG - LOG_PACKING_K (=8); the q_pkd slot stride
-# Phase E: the stacked mixed opening. The two ring-switch fronts
-# (claim check in-circuit; the tensor transpose + eval_rs_eq DEFERRED); the
+# Phase E: the dense Jagged opening, with q_pkd retained as an aligned prefix.
+# The two tower ring-switch fronts (claim check, tensor transpose, and
+# eval_rs_eq all in-circuit) are followed by the
 # gamma-combination of the two ring-switch claims and the N_CLAIMS pool claims.
-# Phase E2: the Ligerito opening over the stacked commitment, dispatched by
+# Phase E2: the Ligerito opening over the dense commitment, dispatched by
 # the certified committed log-size m through match_range: the LIG_* tables
 # below carry one row per candidate m in [LIG_MIN_LOG_SIZE, +LIG_N_CANDIDATES),
 # emitted from the SAME derive_profile/level_shapes the prover uses.
 # Scalars index as TBL[m_idx]; per-level values as TBL[m_idx * LIG_MAX_LEVELS + lvl];
 # per-fold grind schedules with the LIG_MAX_TOTAL_FOLDS stride; the subspace
 # vanishing constants with the LIG_MAX_VANISH_LEN stride. The eval_b terminal
-# claim descriptors keep only the FIXED parts baked (CLAIM_POINT_BUF, named
-# POINT_BUF_* below; CLAIM_POINT_OFF into those buffers) — the
-# shape-dependent lengths/selectors are hinted and identity-certified.
+# claim descriptors bake the point source, dense column, fixed padding, and
+# q_pkd slot. Runtime dimensions and intervals are derived from public counts.
 # Opening dispatch: baked committed log-size, candidate range, g^-LIG_MIN_LOG_SIZE.
 LIG_MIN_LOG_SIZE = LIG_MIN_LOG_SIZE_PLACEHOLDER
-# Committed-column kappa sources (0 = const COL_KAPPA_ADJ, 1 = log_mem, 2+t = tau_t)
-# and the PCS floor for the stacked size.
+# Committed-column real-height sources, in dense Jagged order: KIND 0 is the
+# full cube 2^(kappa_base[SRC] + ADJ), KIND 1 an announced table row count,
+# KIND 2 the announced used-memory prefix, and KIND 3 the program-bound
+# bytecode prefix. Their width-adjusted sum determines the packed area.
 N_COMMITTED_COLS = N_COMMITTED_COLS_PLACEHOLDER
-COL_KAPPA_SRC = COL_KAPPA_SRC_PLACEHOLDER
-COL_KAPPA_ADJ = COL_KAPPA_ADJ_PLACEHOLDER
-PCS_MIN_MU = PCS_MIN_MU_PLACEHOLDER
+COL_HEIGHT_KIND = COL_HEIGHT_KIND_PLACEHOLDER
+COL_HEIGHT_SRC = COL_HEIGHT_SRC_PLACEHOLDER
+COL_HEIGHT_ADJ = COL_HEIGHT_ADJ_PLACEHOLDER
+COL_BLOCK_LOG = COL_BLOCK_LOG_PLACEHOLDER
+BYTECODE_USED_BITS = BYTECODE_USED_BITS_PLACEHOLDER
 # Per-candidate opening tables (P3b): row (m - LIG_MIN_LOG_SIZE) drives that arm.
 LIG_MAX_LEVELS = LIG_MAX_LEVELS_PLACEHOLDER
 LIG_MAX_TOTAL_FOLDS = LIG_MAX_TOTAL_FOLDS_PLACEHOLDER
@@ -181,8 +189,6 @@ LIG_VANISH_INVS = LIG_VANISH_INVS_PLACEHOLDER
 LIG_N_CANDIDATES = LIG_N_CANDIDATES_PLACEHOLDER
 LIG_MIN_SHIFT_INV = LIG_MIN_SHIFT_INV_PLACEHOLDER
 # eval_b claim descriptors (fixed parts) + the qpkd capacity stride.
-# Per-claim y-slot hint stride (overlap mask / slot bits rows).
-YR_SLOT_STRIDE = YR_SLOT_STRIDE_PLACEHOLDER
 # Which point buffer a pooled claim's x-part lives in (CLAIM_POINT_BUF codes):
 POINT_BUF_ZETA = 0
 POINT_BUF_RHO = 1
@@ -190,6 +196,26 @@ POINT_BUF_PI = 2
 POINT_BUF_QPKD = 3
 CLAIM_POINT_BUF = CLAIM_POINT_BUF_PLACEHOLDER
 CLAIM_POINT_OFF = CLAIM_POINT_OFF_PLACEHOLDER
+# Dense Jagged column index and fixed public pad value for each pooled claim.
+CLAIM_COL = CLAIM_COL_PLACEHOLDER
+CLAIM_PAD = CLAIM_PAD_PLACEHOLDER
+CLAIM_QPKD_SLOT = CLAIM_QPKD_SLOT_PLACEHOLDER
+CLAIM_BLOCK_SLOT = CLAIM_BLOCK_SLOT_PLACEHOLDER
+CLAIM_BLOCK_LOG = CLAIM_BLOCK_LOG_PLACEHOLDER
+CLAIM_GAMMA_RANK = CLAIM_GAMMA_RANK_PLACEHOLDER
+N_CLAIM_ROWS = N_CLAIM_ROWS_PLACEHOLDER
+CLAIM_ROW_GROUP = CLAIM_ROW_GROUP_PLACEHOLDER
+CLAIM_ROW_REP = CLAIM_ROW_REP_PLACEHOLDER
+N_PAD_PREFIXES = N_PAD_PREFIXES_PLACEHOLDER
+PAD_PREFIX_ROW = PAD_PREFIX_ROW_PLACEHOLDER
+PAD_PREFIX_COL = PAD_PREFIX_COL_PLACEHOLDER
+CLAIM_PAD_PREFIX = CLAIM_PAD_PREFIX_PLACEHOLDER
+N_JAGGED_BATCHES = N_JAGGED_BATCHES_PLACEHOLDER
+JAGGED_BATCH_REP = JAGGED_BATCH_REP_PLACEHOLDER
+JAGGED_BATCH_ROW = JAGGED_BATCH_ROW_PLACEHOLDER
+JAGGED_BATCH_COL = JAGGED_BATCH_COL_PLACEHOLDER
+JAGGED_BATCH_LOG = JAGGED_BATCH_LOG_PLACEHOLDER
+JAGGED_BATCH_BASE = JAGGED_BATCH_BASE_PLACEHOLDER
 QPKD_VARS_CAP = QPKD_VARS_CAP_PLACEHOLDER
 # Ring-switch coefficient factorization for the F64-polynomial / quadratic
 # tower coordinate basis. Each 13-value row contains the base-field main
@@ -307,7 +333,7 @@ def grind_check(state_0, state_1, nonce, nbits_g):
     return
 
 
-def verify_log2_ceil(bits_buf, g_logs_pow2, g_squares, floor: Const, nbits: Const):
+def verify_log2_ceil(bits_buf, g_logs_pow2, g_squares, floor: Const, nbits: Const, need_exp: Const):
     # Given `nbits` bits already in bits_buf, return (g_log, word, exp_prod):
     # word = Σ bit_j 2^j, exp_prod = g^word, g_log = g^max(log2_ceil(word), floor).
     # g_log is prover advice, pinned to log2_ceil(word) by psum[g_log] == word
@@ -322,7 +348,8 @@ def verify_log2_ceil(bits_buf, g_logs_pow2, g_squares, floor: Const, nbits: Cons
     for j in unroll(0, nbits):
         bit = bits_buf[GEN ** j]
         assert bit * bit == bit
-        exp_prod *= (1 + bit * (g_squares[GEN ** j] + 1))
+        if need_exp == 1:
+            exp_prod *= (1 + bit * (g_squares[GEN ** j] + 1))
         word += bit * (2 ** j)
         psum_buf[GEN ** (j + 1)] = word
     g_log = hint_log2_ceil(bits_buf, nbits, floor)  # prover advice; verified below
@@ -343,31 +370,14 @@ def verify_log2_ceil(bits_buf, g_logs_pow2, g_squares, floor: Const, nbits: Cons
     return g_log, word, exp_prod
 
 
-def log2_ceil_word(value, g_logs_pow2, g_squares, floor: Const, nbits: Const):
+def log2_ceil_word(value, bits, g_logs_pow2, g_squares, floor: Const, nbits: Const, need_exp: Const):
     # g^log2_ceil(value) for a concrete integer `value`. The bits are hinted HERE
-    # (hint_decompose_bits), not by the caller, then tied back to `value`. Returns
-    # (g_log, g^value).
-    bits = HeapBuf(GEN ** nbits)
+    # into caller-owned storage (so later phases can reuse them), then tied back
+    # to `value`. Returns (g_log, g^value).
     hint_decompose_bits(bits, value, nbits)
-    g_log, word, g_value = verify_log2_ceil(bits, g_logs_pow2, g_squares, floor, nbits)
+    g_log, word, g_value = verify_log2_ceil(bits, g_logs_pow2, g_squares, floor, nbits, need_exp)
     assert word == value  # the hinted bits are exactly value's bits (so value < 2^nbits)
     return g_log, g_value
-
-
-def g_power_of_word(value, g_squares, nbits: Const):
-    # g^value for a concrete integer `value` < 2^nbits: advice-decompose its
-    # bits, tie them back to the word, and assemble Π g^(bit_j·2^j).
-    bits = HeapBuf(GEN ** nbits)
-    hint_decompose_bits(bits, value, nbits)
-    word = 0
-    g_value = GEN ** 0
-    for j in unroll(0, nbits):
-        bit = bits[GEN ** j]
-        assert bit * bit == bit
-        word += bit * (2 ** j)
-        g_value *= (1 + bit * (g_squares[GEN ** j] + 1))
-    assert word == value
-    return g_value
 
 
 def log2_ceil_in_the_exponent(g_N, g_logs_pow2, g_squares, floor: Const, nbits: Const):
@@ -376,7 +386,7 @@ def log2_ceil_in_the_exponent(g_N, g_logs_pow2, g_squares, floor: Const, nbits: 
     # verified and tied back: g^(the value the bits decode to) must equal g_N.
     bits = HeapBuf(GEN ** nbits)
     hint_decompose_bits_exponent(bits, g_N, nbits)
-    g_log, word, g_bits_value = verify_log2_ceil(bits, g_logs_pow2, g_squares, floor, nbits)
+    g_log, word, g_bits_value = verify_log2_ceil(bits, g_logs_pow2, g_squares, floor, nbits, 1)
     assert g_bits_value == g_N  # the hinted bits decode to N
     return g_log
 
@@ -540,6 +550,232 @@ def eqtree(point_ptr, out, n_coords: Const):
     return
 
 
+def prefix_indicator(point, height_bits):
+    # MLE of [row < height], MSB first. `point` is zero above the logical
+    # column dimension and `height_bits` may therefore also encode the full
+    # power-of-two height.
+    states = StackBuf(2 * (SIZE_BITS + 1))
+    states[0] = 0  # already less
+    states[1] = 1  # equal so far
+    for rev in unroll(0, SIZE_BITS):
+        bit = SIZE_BITS - 1 - rev
+        less = states[2 * rev]
+        equal = states[2 * rev + 1]
+        x = point[GEN ** bit]
+        h = height_bits[GEN ** bit]
+        equal_zero = equal * (1 + x)
+        states[2 * (rev + 1)] = less + h * equal_zero
+        states[2 * (rev + 1) + 1] = equal * (1 + h + x)
+    return states[2 * SIZE_BITS]
+
+
+@inline
+def jagged_step(s0, s1, s2, s3, w0, w1, w2, w3, start_bit_point, end_bit_point):
+    # Endpoint bits are Boolean-constrained public interval data, so select one
+    # of the four fixed transition matrices instead of evaluating a redundant
+    # four-variable tensor. The row/index eq tensor is shared by row groups.
+    out = StackBuf(4)
+    if start_bit_point == 0:
+        if end_bit_point == 0:
+            out[0] = s0 * (w0 + w3) + (s1 + s3) * w2 + s2 * w3
+            out[1] = s1 * w1
+            out[2] = s2 * w0
+            out[3] = s3 * w1
+        else:
+            out[0] = s0 * w3 + s1 * w2
+            out[1] = 0
+            out[2] = s0 * w0 + s2 * (w0 + w3) + s3 * w2
+            out[3] = (s1 + s3) * w1
+    else:
+        if end_bit_point == 0:
+            out[0] = (s0 + s2) * w2
+            out[1] = s0 * w1 + s1 * (w0 + w3) + s3 * w3
+            out[2] = 0
+            out[3] = s2 * w1 + s3 * w0
+        else:
+            out[0] = s0 * w2
+            out[1] = s1 * w3
+            out[2] = s2 * w2
+            out[3] = (s0 + s2) * w1 + s1 * w0 + s3 * (w0 + w3)
+    return out[0], out[1], out[2], out[3]
+
+
+def jagged_prefix_fixed(row_point, index_point, gamma, selector_len: Const, start_bits, end_bits, nbits: Const):
+    # Candidate-specialized straight-line prefix. Generate the four equality
+    # weights immediately before their transition instead of materializing and
+    # reloading a 4 * nbits heap table for every block.
+    s0 = 1
+    s1 = 0
+    s2 = 0
+    s3 = 0
+    gamma_bit = gamma
+    for bit in unroll(0, selector_len):
+        index_bit = index_point[GEN ** bit]
+        rx = gamma_bit * index_bit
+        s0, s1, s2, s3 = jagged_step(s0, s1, s2, s3, 1 + index_bit, gamma_bit + rx, index_bit, rx, start_bits[GEN ** bit], end_bits[GEN ** bit])
+        gamma_bit *= gamma_bit
+    for bit in unroll(selector_len, nbits):
+        row_bit = row_point[GEN ** (bit - selector_len)]
+        index_bit = index_point[GEN ** bit]
+        rx = row_bit * index_bit
+        s0, s1, s2, s3 = jagged_step(s0, s1, s2, s3, 1 + row_bit + index_bit + rx, row_bit + rx, index_bit + rx, rx, start_bits[GEN ** bit], end_bits[GEN ** bit])
+    return s0, s1, s2, s3
+
+
+def jagged_reverse_step(v0, v1, v2, v3, w0, w1, w2, w3, row_bit, start_bit, end_bit):
+    # General residual transition, retained for row points whose residual
+    # coordinates are not all zero.
+    if row_bit == 0:
+        if start_bit == 0:
+            if end_bit == 0:
+                return v0, w0, v2, w0
+            return v2, w0, v2, w2
+        if end_bit == 0:
+            return w0, v1, w0, v3
+        return w0, v3, w2, v3
+    if row_bit == 1:
+        if start_bit == 0:
+            if end_bit == 0:
+                return w0, v1, w0, v3
+            return w0, v3, w2, v3
+        if end_bit == 0:
+            return v1, w1, v3, w1
+        return v3, w1, v3, w3
+    one_plus_row = 1 + row_bit
+    if start_bit == 0:
+        if end_bit == 0:
+            return one_plus_row * v0 + row_bit * w0, row_bit * v1 + one_plus_row * w0, one_plus_row * v2 + row_bit * w0, row_bit * v3 + one_plus_row * w0
+        return one_plus_row * v2 + row_bit * w0, row_bit * v3 + one_plus_row * w0, one_plus_row * v2 + row_bit * w2, row_bit * v3 + one_plus_row * w2
+    if end_bit == 0:
+        return row_bit * v1 + one_plus_row * w0, one_plus_row * v1 + row_bit * w1, row_bit * v3 + one_plus_row * w0, one_plus_row * v3 + row_bit * w1
+    return row_bit * v3 + one_plus_row * w0, one_plus_row * v3 + row_bit * w1, row_bit * v3 + one_plus_row * w2, one_plus_row * v3 + row_bit * w3
+
+
+def jagged_contract_zero(final_msg, start_bits, end_bits, fold_bits: Const, log_len: Const, init0, init1, init2, init3):
+    # With every residual logical-row coordinate fixed to zero, each prefix
+    # state reaches exactly one message index: start_hi for carry 0, or
+    # start_hi + 1 for carry 1. The comparison state accepts equality only
+    # when its low-bit comparison is already strict. `final_msg` has one
+    # explicit zero sentinel after its 2^log_len real entries, so a carry from
+    # the last message index is rejected without an out-of-range read.
+    assert start_bits[GEN ** (fold_bits + log_len)] == 0
+    start_plus_one = StackBuf(YR_LOG_CAP + 1)
+    start_ptr = GEN ** 0
+    carry = 1
+    for bit in unroll(0, log_len):
+        start_bit = start_bits[GEN ** (fold_bits + bit)]
+        start_plus_one[bit] = start_bit + carry
+        carry *= start_bit
+        start_ptr *= 1 + start_bit * (1 + GEN ** (2 ** bit))
+    start_plus_one[log_len] = carry
+
+    # Compute start_hi < end_hi and start_hi == end_hi, including the extra
+    # endpoint bit that represents an interval ending exactly at 2^M. At the
+    # same time, test whether end_hi == start_hi + 1.
+    less = 0
+    equal = 1
+    adjacent = 1
+    for rev in unroll(0, log_len + 1):
+        bit = log_len - rev
+        end_bit = end_bits[GEN ** (fold_bits + bit)]
+        if bit == log_len:
+            start_bit = 0
+        else:
+            start_bit = start_bits[GEN ** (fold_bits + bit)]
+        equal_start_zero = equal * (1 + start_bit)
+        less += end_bit * equal_start_zero
+        equal *= 1 + start_bit + end_bit
+        adjacent *= 1 + start_plus_one[bit] + end_bit
+    start_plus_one_less = less * (1 + adjacent)
+
+    at_start = less * (init0 + init2) + equal * init2
+    at_start_plus_one = start_plus_one_less * init1 + less * init3
+    return final_msg[start_ptr] * at_start + final_msg[start_ptr * GEN] * at_start_plus_one
+
+
+def jagged_contract_general(final_msg, row_point, start_bits, end_bits, fold_bits: Const, log_len: Const, row_shift: Const, init0, init1, init2, init3):
+    layers = StackBuf(8 * 2 ** YR_LOG_CAP)
+    for y in unroll(0, 2 ** log_len):
+        layers[4 * y] = 0
+        layers[4 * y + 1] = 0
+        layers[4 * y + 2] = final_msg[GEN ** y]
+        layers[4 * y + 3] = 0
+    layer_off = 0
+    layer_len = 2 ** log_len
+    next_off = 4 * layer_len
+    for stage in unroll(0, log_len):
+        bit = log_len - 1 - stage
+        next_len = 2 ** bit
+        for t in unroll(0, next_len):
+            v = layer_off + 4 * t
+            w = layer_off + 4 * (t + next_len)
+            o0, o1, o2, o3 = jagged_reverse_step(layers[v], layers[v + 1], layers[v + 2], layers[v + 3], layers[w], layers[w + 1], layers[w + 2], layers[w + 3], row_point[GEN ** (fold_bits + bit - row_shift)], start_bits[GEN ** (fold_bits + bit)], end_bits[GEN ** (fold_bits + bit)])
+            out = next_off + 4 * t
+            layers[out] = o0
+            layers[out + 1] = o1
+            layers[out + 2] = o2
+            layers[out + 3] = o3
+        layer_off = next_off
+        layer_len = next_len
+        next_off = next_off + 4 * next_len
+    return init0 * layers[layer_off] + init1 * layers[layer_off + 1] + init2 * layers[layer_off + 2] + init3 * layers[layer_off + 3]
+
+
+def jagged_terminal(m_idx: Const, fold_challenges, final_msg, claim_rows, col_bound_bits, gamma, gamma_powers):
+    # One automaton per complete row-major column block, rather than one per
+    # physical column. For selector bit b, unnormalized row weights (1,
+    # gamma^(2^b)) absorb the geometric batch scale Π(1+gamma^(2^b)) without
+    # any field inversions; the remaining coordinates are the shared row point.
+    # The closed-form zero-residual terminal may address entry 2^log_len when
+    # the last real entry carries. Make that rejection an explicit shared zero.
+    terminal_msg = HeapBuf(2 ** YR_LOG_CAP + 1)
+    for y in unroll(0, 2 ** LIG_YR_LOG_LEN[m_idx]):
+        terminal_msg[GEN ** y] = final_msg[GEN ** y]
+    terminal_msg[GEN ** (2 ** LIG_YR_LOG_LEN[m_idx])] = 0
+    residual_zero = HeapBuf(N_JAGGED_BATCHES)
+    total = 0
+    for batch in unroll(0, N_JAGGED_BATCHES):
+        row = claim_rows * GEN ** (SIZE_BITS * JAGGED_BATCH_ROW[batch])
+        start_bits = col_bound_bits * GEN ** (SIZE_BITS * JAGGED_BATCH_COL[batch])
+        end_bits = col_bound_bits * GEN ** (SIZE_BITS * (JAGGED_BATCH_COL[batch] + 1))
+        p0, p1, p2, p3 = jagged_prefix_fixed(row, fold_challenges, gamma, JAGGED_BATCH_LOG[batch], start_bits, end_bits, LIG_TOTAL_FOLDS[m_idx])
+        folded_out = StackBuf(1)
+        if LIG_YR_LOG_LEN[m_idx] == 3:
+            if row[GEN ** (LIG_TOTAL_FOLDS[m_idx] - JAGGED_BATCH_LOG[batch])] == 0:
+                if row[GEN ** (LIG_TOTAL_FOLDS[m_idx] + 1 - JAGGED_BATCH_LOG[batch])] == 0:
+                    if row[GEN ** (LIG_TOTAL_FOLDS[m_idx] + 2 - JAGGED_BATCH_LOG[batch])] == 0:
+                        residual_zero[GEN ** batch] = 1
+                    else:
+                        residual_zero[GEN ** batch] = 0
+                else:
+                    residual_zero[GEN ** batch] = 0
+            else:
+                residual_zero[GEN ** batch] = 0
+        elif LIG_YR_LOG_LEN[m_idx] == 4:
+            if row[GEN ** (LIG_TOTAL_FOLDS[m_idx] - JAGGED_BATCH_LOG[batch])] == 0:
+                if row[GEN ** (LIG_TOTAL_FOLDS[m_idx] + 1 - JAGGED_BATCH_LOG[batch])] == 0:
+                    if row[GEN ** (LIG_TOTAL_FOLDS[m_idx] + 2 - JAGGED_BATCH_LOG[batch])] == 0:
+                        if row[GEN ** (LIG_TOTAL_FOLDS[m_idx] + 3 - JAGGED_BATCH_LOG[batch])] == 0:
+                            residual_zero[GEN ** batch] = 1
+                        else:
+                            residual_zero[GEN ** batch] = 0
+                    else:
+                        residual_zero[GEN ** batch] = 0
+                else:
+                    residual_zero[GEN ** batch] = 0
+            else:
+                residual_zero[GEN ** batch] = 0
+        else:
+            residual_zero[GEN ** batch] = 0
+        if residual_zero[GEN ** batch] == 1:
+            folded_out[0] = jagged_contract_zero(terminal_msg, start_bits, end_bits, LIG_TOTAL_FOLDS[m_idx], LIG_YR_LOG_LEN[m_idx], p0, p1, p2, p3)
+        else:
+            folded_out[0] = jagged_contract_general(final_msg, row, start_bits, end_bits, LIG_TOTAL_FOLDS[m_idx], LIG_YR_LOG_LEN[m_idx], JAGGED_BATCH_LOG[batch], p0, p1, p2, p3)
+        folded = folded_out[0]
+        total += gamma_powers[GEN ** JAGGED_BATCH_BASE[batch]] * folded
+    return total
+
+
 def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, cursor):
     # The stacked Ligerito opening. m_idx is the COMMITTED-LOG-SIZE CANDIDATE
     # INDEX: the certified size is m = LIG_MIN_LOG_SIZE + m_idx, and every
@@ -562,11 +798,8 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
     # are combined; the caller's eval_b terminal asserts the grand total.
     #
     # Returns (sumcheck_target, fold_challenges, final_msg, residual_total,
-    # yr_log_n_g = g^yr_log_n, yr_pad_g = g^(YR_LOG_CAP - yr_log_n),
-    # fold_cap_g = g^lenris). yr_log_n_g/yr_pad_g let the terminal zero-pin
-    # residual-slot coordinates beyond final_msg's 2^yr_log_n cells (positions
-    # yr_log_n .. YR_LOG_CAP-1); fold_cap_g is the certified total fold count
-    # the terminal pins its hinted claim lengths against.
+    # yr_log_n_g = g^yr_log_n, fold_cap_g = g^lenris). The latter two describe
+    # the final-message and folded-coordinate partitions of the dense point.
     fs = [fs0, fs1]
 
     # The K opener binds the initial Merkle root as its two F128T scalars (like
@@ -762,7 +995,7 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
             yr_eval = fold_final_msg(final_msg, fold_w, 0, LIG_YR_LOG_LEN[m_idx])
             residual_chain[xr * GEN] = residual_chain[xr] + alpha_weights[GEN ** (lvl * LIG_MAX_QUERIES[m_idx]) * xr] * prefix_eq * yr_eval
         inner_chain[GEN ** (lvl + 1)] = inner_chain[GEN ** lvl] + level_betas[GEN ** lvl] * residual_chain[GEN ** LIG_QUERIES[m_idx * LIG_MAX_LEVELS + lvl]]  # accumulate beta_lvl * (per-level residual sum) into the grand residual
-    return sumcheck_target, fold_challenges, final_msg, inner_chain[GEN ** LIG_N_LEVELS[m_idx]], GEN ** LIG_YR_LOG_LEN[m_idx], GEN ** (YR_LOG_CAP - LIG_YR_LOG_LEN[m_idx]), GEN ** LIG_TOTAL_FOLDS[m_idx]
+    return sumcheck_target, fold_challenges, final_msg, inner_chain[GEN ** LIG_N_LEVELS[m_idx]], GEN ** LIG_YR_LOG_LEN[m_idx], GEN ** LIG_TOTAL_FOLDS[m_idx]
 
 
 def exponent_tables():
@@ -828,28 +1061,32 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     hint_witness(stream[0:STREAM_CAP], "stream")
     cursor = stream  # the proof stream is replayed word by word; cursor walks it (advance = * g)
 
-    # ---- announced sizes: log_mem + 6 row counts (observed, then certified) ----
+    # ---- announced sizes: used-memory prefix + 6 row counts ----
     sizes = StackBuf(N_TABLES + 1)
     for i in unroll(0, N_TABLES + 1):
         fs, x, cursor = fs_next(fs, cursor)
         sizes[i] = x
 
-    # ---- structural logs: certify g^log_mem, compute the taus ----
+    # ---- structural logs: derive g^log_mem, compute the taus ----
     # The stream announced the sizes as integer WORDS; the shape-generic phases
-    # need them as G-POWERS (loop bounds, match_range scrutinees). dims_g[0] =
-    # g^log_mem arrives as a hint pinned to the word; dims_g[1 + t] = g^tau_t
-    # is computed by the count gadget.
-    dims_g = HeapBuf(N_TABLES + 1)  # [g^log_mem, g^tau_0 .. g^tau_{N_TABLES-1}], all computed
-    # log_mem is announced AS a log (an integer word L): g^L is assembled from
-    # L's advice-decomposed bits — no hint, no g^j -> j lookup table.
-    g_log_mem = g_power_of_word(sizes[0], g_squares, COUNT_BITS)
+    # need them as G-POWERS (loop bounds, match_range scrutinees). dims_g[0] is
+    # derived from mem_used; dims_g[1 + t] = g^tau_t comes from the count gadget.
+    dims_g = HeapBuf(N_TABLES + 1)  # [g^log_mem, g^tau_0 .. g^tau_{N_TABLES-1}]
+    # One exact decomposition drives both MEM/MFCNT Jagged heights and derives
+    # the canonical logical log_mem = max(MIN_LOG_MEM, ceil_log2(mem_used)).
+    memory_bits = HeapBuf(COUNT_BITS)
+    g_log_mem, g_memory_used = log2_ceil_word(sizes[0], memory_bits, g_logs_pow2, g_squares, MIN_LOG_MEM, COUNT_BITS, 0)
+    assert sizes[0] != 0
+    assert sizes[0] != 1
     assert log(g_log_mem) < COUNT_BITS
     dims_g[GEN ** 0] = g_log_mem
     # count gadget: g^tau_t = log2_ceil_word(count_t), which also returns
     # g^count_t (for the padding-surplus certification).
     count_gpows = HeapBuf(N_TABLES)
+    count_bits = HeapBuf(N_TABLES * COUNT_BITS)
     for t in unroll(0, N_TABLES):
-        g_tau, g_count = log2_ceil_word(sizes[t + 1], g_logs_pow2, g_squares, FLOORS[t], COUNT_BITS)
+        table_count_bits = count_bits * GEN ** (COUNT_BITS * t)
+        g_tau, g_count = log2_ceil_word(sizes[t + 1], table_count_bits, g_logs_pow2, g_squares, FLOORS[t], COUNT_BITS, 1)
         dims_g[GEN ** (t + 1)] = g_tau
         count_gpows[GEN ** t] = g_count
     # kappa_base maps a kappa source index to its certified announced log
@@ -1043,33 +1280,38 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     # (γ+fp)^DELTA ladder and are pinned by g^real · g^DELTA == g^(2^κ); real is
     # count_t for table blocks, 2^κ for shared blocks (DELTA = 0). An unpinned
     # DELTA would forge the balance (dlog is cheap in this field).
+    # Every block of table t has the same κ=τ_t and the same DELTA, so certify
+    # its bits once per table. Only the base (γ+fp_b) differs between blocks.
+    table_pad_bits = HeapBuf(N_TABLES * COUNT_BITS)
+    for t in unroll(0, N_TABLES):
+        pad_bits = table_pad_bits * GEN ** (COUNT_BITS * t)
+        g_two_tau = g_squares[dims_g[GEN ** (t + 1)]]
+        g_delta_want = g_two_tau / count_gpows[GEN ** t]
+        hint_decompose_bits_exponent(pad_bits, g_delta_want, COUNT_BITS)
+        g_delta = GEN ** 0
+        for j in unroll(0, COUNT_BITS):
+            pad_bit = pad_bits[GEN ** j]
+            assert pad_bit * pad_bit == pad_bit
+            g_delta *= (1 + pad_bit * (g_squares[GEN ** j] + 1))
+        assert count_gpows[GEN ** t] * g_delta == g_two_tau
+
     pad_products = HeapBuf(2)
     for s in unroll(0, 2):
         side_pad_product = GEN ** 0
         for b in unroll(SIDE_BLOCK_START[s], SIDE_BLOCK_START[s + 1]):
-            pad_fp = 0
-            alpha_pow = GEN ** 0
-            for i in unroll(0, BLOCK_COORD_COUNT[b]):
-                pad_fp += alpha_pow * COORD_PAD_VAL[BLOCK_COORD_OFF[b] + i]
-                alpha_pow *= alpha
-            g_two_kappa = g_squares[block_kappa[GEN ** b]]  # g^(2^κ_b)
-            if BLOCK_REAL_TABLE[b] == REAL_IS_FULL_CUBE:
-                g_real = g_two_kappa  # shared block: real = 2^κ, so DELTA = 0
-            else:
-                g_real = count_gpows[GEN ** BLOCK_REAL_TABLE[b]]  # g^count_t
-            g_delta_want = g_two_kappa / g_real  # g^DELTA (feeds the advice below)
-            pad_bits = HeapBuf(GEN ** COUNT_BITS)
-            hint_decompose_bits_exponent(pad_bits, g_delta_want, COUNT_BITS)
             ladder = GEN ** 0
-            ladder_square = gamma + pad_fp
-            g_delta = GEN ** 0
-            for j in unroll(0, COUNT_BITS):
-                pad_bit = pad_bits[GEN ** j]
-                assert pad_bit * pad_bit == pad_bit
-                ladder *= (1 + pad_bit * (ladder_square + 1))
-                g_delta *= (1 + pad_bit * (g_squares[GEN ** j] + 1))  # g^DELTA
-                ladder_square *= ladder_square
-            assert g_real * g_delta == g_two_kappa  # real_b + DELTA_b == 2^κ_b
+            if BLOCK_REAL_TABLE[b] != REAL_IS_FULL_CUBE:
+                pad_fp = 0
+                alpha_pow = GEN ** 0
+                for i in unroll(0, BLOCK_COORD_COUNT[b]):
+                    pad_fp += alpha_pow * COORD_PAD_VAL[BLOCK_COORD_OFF[b] + i]
+                    alpha_pow *= alpha
+                pad_bits = table_pad_bits * GEN ** (COUNT_BITS * BLOCK_REAL_TABLE[b])
+                ladder_square = gamma + pad_fp
+                for j in unroll(0, COUNT_BITS):
+                    pad_bit = pad_bits[GEN ** j]
+                    ladder *= (1 + pad_bit * (ladder_square + 1))
+                    ladder_square *= ladder_square
             side_pad_product *= ladder
         pad_products[GEN ** s] = side_pad_product
     lhsb = gkr_roots[PUSH_SIDE] * pad_products[GEN ** PULL_SIDE]  # balance: push_root * d_pull == pull_root * d_push (padding cancels)
@@ -1475,7 +1717,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     for i in unroll(0, 2 ** K_SKIP):
         lincheck_w += skip_nums[i] * LAGRANGE_INV_S[i] * z_partial[GEN ** i]
 
-    # ---- stacked mixed opening: ring-switch fronts + claim combination ----
+    # ---- dense Jagged opening: tower ring-switch fronts + claim combination ----
     # The two ring-switch slices (ab, c) each carry PACKING = 2^LOG_PACKING_K = 64
     # entries (one per packing bit) and live in the opening STRUCT
     # (RingSwitchProofK), observed into the sponge HERE (never on the stream).
@@ -1589,137 +1831,159 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     fs = squeeze(fs)
     gamma_c = fs[0]
     target = gamma_ab * transposed_claims[0] + gamma_c * transposed_claims[1]  # gamma-batch the two ring-switch claims into the opening's target
-    # ...then every pooled point claim, each observed.
-    for j in unroll(0, N_CLAIMS):
-        fs = obs(fs, claim_pool[GEN ** j])
-    gamma_pool = HeapBuf(N_CLAIMS)
-    for j in unroll(0, N_CLAIMS):
-        fs = squeeze(fs)
-        gv = fs[0]
-        gamma_pool[GEN ** j] = gv
-        target += gv * claim_pool[GEN ** j]
 
-    # ================= the Ligerito opening core (stacked, m = STACK) ========
-
-    # ---- stacked Ligerito opening: dispatch on the committed log-size ----
-    # ---- certify g^m: m = max(log2_ceil(sum_cols 2^kappa), PCS_MIN_MU) ----
-    # Integer addition rides the exponent: g^total = Π g^(2^kappa) over the
-    # committed columns (kappas from the certified announced logs via the baked
-    # source map); log2_ceil_in_the_exponent does the rest, with the PCS_MIN_MU
-    # floor waiving minimality exactly like the per-table tau floors.
-    g_total = GEN ** 0
+    # ---- Jagged dense layout: derive one cumulative boundary-bit chain ----
+    # Table-row and used-memory bits were already Boolean-constrained and tied
+    # to their announced words by log2_ceil_word.  The bytecode prefix is fixed
+    # by the program.  A width-2^b block shifts its row count by b.
+    # Power-of-two structural blocks use a one-hot height pinned to kappa.
+    # Starting from zero, a Boolean full-adder derives every interval endpoint.
+    col_bound_bits = HeapBuf(SIZE_BITS * (N_COMMITTED_COLS + 1))
+    col_block_height_bits = HeapBuf(SIZE_BITS * N_COMMITTED_COLS)
+    col_row_height_bits = HeapBuf(SIZE_BITS * N_COMMITTED_COLS)
+    for bit in unroll(0, SIZE_BITS):
+        col_bound_bits[GEN ** bit] = 0
     for c in unroll(0, N_COMMITTED_COLS):
-        g_total *= g_squares[kappa_base[GEN ** COL_KAPPA_SRC[c]] * GEN ** COL_KAPPA_ADJ[c]]
-    gmv = log2_ceil_in_the_exponent(g_total, g_logs_pow2, g_squares, PCS_MIN_MU, SIZE_BITS)  # g^m
+        height_bits = col_block_height_bits * GEN ** (SIZE_BITS * c)
+        row_height_bits = col_row_height_bits * GEN ** (SIZE_BITS * c)
+        if COL_HEIGHT_KIND[c] == 0:
+            # height = 2^kappa. The advice must be a Boolean one-hot vector,
+            # whose decoded word is the certified power 2^kappa.
+            kappa_g = kappa_base[GEN ** COL_HEIGHT_SRC[c]] * GEN ** COL_HEIGHT_ADJ[c]
+            assert log(kappa_g) < SIZE_BITS
+            hint_decompose_bits_exponent(height_bits, g_squares[kappa_g], SIZE_BITS)
+            height_word = 0
+            for bit in unroll(0, SIZE_BITS):
+                hb = height_bits[GEN ** bit]
+                assert hb * hb == hb
+                height_word += hb * (2 ** bit)
+            assert height_word == g_logs_pow2[kappa_g]
+        elif COL_HEIGHT_KIND[c] == 1:
+            table_bits = count_bits * GEN ** (COUNT_BITS * COL_HEIGHT_SRC[c])
+            for bit in unroll(0, COL_BLOCK_LOG[c]):
+                height_bits[GEN ** bit] = 0
+            if COL_BLOCK_LOG[c] == 0:
+                for bit in unroll(0, COUNT_BITS):
+                    height_bits[GEN ** bit] = table_bits[GEN ** bit]
+                for bit in unroll(COUNT_BITS, SIZE_BITS):
+                    height_bits[GEN ** bit] = 0
+            else:
+                for bit in unroll(COL_BLOCK_LOG[c], SIZE_BITS):
+                    height_bits[GEN ** bit] = table_bits[GEN ** (bit - COL_BLOCK_LOG[c])]
+        elif COL_HEIGHT_KIND[c] == 2:
+            for bit in unroll(0, COL_BLOCK_LOG[c]):
+                height_bits[GEN ** bit] = 0
+            if COL_BLOCK_LOG[c] == 0:
+                for bit in unroll(0, COUNT_BITS):
+                    height_bits[GEN ** bit] = memory_bits[GEN ** bit]
+                for bit in unroll(COUNT_BITS, SIZE_BITS):
+                    height_bits[GEN ** bit] = 0
+            else:
+                for bit in unroll(COL_BLOCK_LOG[c], SIZE_BITS):
+                    height_bits[GEN ** bit] = memory_bits[GEN ** (bit - COL_BLOCK_LOG[c])]
+        else:
+            # BFCNT is a singleton with a program-bound bytecode prefix.
+            for bit in unroll(0, SIZE_BITS):
+                height_bits[GEN ** bit] = BYTECODE_USED_BITS[bit]
+
+        # Padding correction uses the per-column row height (block height / width).
+        for bit in unroll(0, SIZE_BITS - COL_BLOCK_LOG[c]):
+            row_height_bits[GEN ** bit] = height_bits[GEN ** (bit + COL_BLOCK_LOG[c])]
+        for bit in unroll(SIZE_BITS - COL_BLOCK_LOG[c], SIZE_BITS):
+            row_height_bits[GEN ** bit] = 0
+
+        start_bits = col_bound_bits * GEN ** (SIZE_BITS * c)
+        end_bits = col_bound_bits * GEN ** (SIZE_BITS * (c + 1))
+        carry = 0
+        for bit in unroll(0, SIZE_BITS):
+            sb = start_bits[GEN ** bit]
+            hb = height_bits[GEN ** bit]
+            end_bits[GEN ** bit] = sb + hb + carry
+            # Majority(sb, hb, carry) over F_2, factored to one MUL:
+            # sb*hb + sb*carry + hb*carry = (sb+carry)(sb+hb)+sb.
+            carry = (sb + carry) * (sb + hb) + sb
+        assert carry == 0  # the dense witness area fits in SIZE_BITS
+
+    total_bits = col_bound_bits * GEN ** (SIZE_BITS * N_COMMITTED_COLS)
+    # LIG_MIN_LOG_SIZE includes the PCS floor and the fixed structural floors
+    # max(MIN_LOG_MEM, BYTECODE_LOG).  Above the memory floor, the two committed
+    # memory prefixes already make the packed area large enough to embed their
+    # logical row point.
+    gmv, total_word, g_total = verify_log2_ceil(total_bits, g_logs_pow2, g_squares, LIG_MIN_LOG_SIZE, SIZE_BITS, 0)
+
+    # Claims share only a handful of logical row points. Materialize each
+    # distinct source/length once, with explicit zero high coordinates.
+    claim_rows = HeapBuf(SIZE_BITS * N_CLAIM_ROWS)
+    for group in unroll(0, N_CLAIM_ROWS):
+        rep = CLAIM_ROW_REP[group]
+        row = claim_rows * GEN ** (SIZE_BITS * group)
+        if CLAIM_POINT_BUF[rep] == POINT_BUF_ZETA:
+            cplen_g = claim_cplen_g[GEN ** rep]
+            src = zeta * GEN ** CLAIM_POINT_OFF[rep]
+            for xk in mul_range(1, cplen_g):
+                row[xk] = src[xk]
+            zero_ptr = row * cplen_g
+            zero_len_g = GEN ** SIZE_BITS / cplen_g
+            for xk in mul_range(1, zero_len_g):
+                zero_ptr[xk] = 0
+        if CLAIM_POINT_BUF[rep] == POINT_BUF_RHO:
+            cplen_g = claim_cplen_g[GEN ** rep]
+            src = rho * GEN ** CLAIM_POINT_OFF[rep]
+            for xk in mul_range(1, cplen_g):
+                row[xk] = src[xk]
+            zero_ptr = row * cplen_g
+            zero_len_g = GEN ** SIZE_BITS / cplen_g
+            for xk in mul_range(1, zero_len_g):
+                zero_ptr[xk] = 0
+        if CLAIM_POINT_BUF[rep] == POINT_BUF_PI:
+            row[GEN ** 0] = rm
+            for bit in unroll(1, SIZE_BITS):
+                row[GEN ** bit] = 0
+
+    # Compute the public-padding correction: Jagged commits only the real
+    # prefix, while the arithmetization's claim includes its fixed pad suffix.
+    pad_prefixes = HeapBuf(N_PAD_PREFIXES)
+    for prefix in unroll(0, N_PAD_PREFIXES):
+        row = claim_rows * GEN ** (SIZE_BITS * PAD_PREFIX_ROW[prefix])
+        height_bits = col_row_height_bits * GEN ** (SIZE_BITS * PAD_PREFIX_COL[prefix])
+        pad_prefixes[GEN ** prefix] = prefix_indicator(row, height_bits)
+
+    opening_claim_values = HeapBuf(N_CLAIMS)
+    for j in unroll(0, N_CLAIMS):
+        if CLAIM_POINT_BUF[j] == POINT_BUF_QPKD:
+            # q_pkd remains the one aligned subcube for flock's ring-switch and
+            # its strided VM-value claims; it has no public padding correction.
+            opening_claim_values[GEN ** j] = claim_pool[GEN ** j]
+        else:
+            if CLAIM_PAD[j] == 0:
+                opening_claim_values[GEN ** j] = claim_pool[GEN ** j]
+            else:
+                real_prefix = pad_prefixes[GEN ** CLAIM_PAD_PREFIX[j]]
+                opening_claim_values[GEN ** j] = claim_pool[GEN ** j] + CLAIM_PAD[j] * (1 + real_prefix)
+
+    # Every adjusted Jagged claim value is observed before its batching scalar,
+    # exactly as in the native verifier.
+    for j in unroll(0, N_CLAIMS):
+        fs = obs(fs, opening_claim_values[GEN ** j])
+    gamma_pool = HeapBuf(N_CLAIMS)
+    fs = squeeze(fs)
+    gamma = fs[0]
+    gamma_powers = HeapBuf(N_CLAIMS)
+    gv = 1
+    for rank in unroll(0, N_CLAIMS):
+        gamma_powers[GEN ** rank] = gv
+        gv *= gamma
+    for j in unroll(0, N_CLAIMS):
+        weight = gamma_powers[GEN ** CLAIM_GAMMA_RANK[j]]
+        gamma_pool[GEN ** j] = weight
+        target += weight * opening_claim_values[GEN ** j]
+
+    # ================= the Ligerito opening core (Jagged dense q) ===========
+
+    # Dispatch on m = max(log2_ceil(total real area), LIG_MIN_LOG_SIZE).
     sel = gmv * LIG_MIN_SHIFT_INV  # g^(m - MIN): the match_range arm index selecting the opening candidate
     assert log(sel) < LIG_N_CANDIDATES
-    sumcheck_target, fold_challenges, final_msg, inner_total, yr_log_n_g, yr_pad_g, fold_cap_g = match_range(log(sel), range(0, LIG_N_CANDIDATES), lambda m_idx: open_stacked(m_idx, fs[0], fs[1], target, commit_root_0, commit_root_1, cursor))
-
-    # ---- generalized eval_b terminal (runtime claim shapes) ----
-    # Per-claim lengths, selector bits, and slot data are HINTED; the closing
-    # identity inner_sum == sumcheck_target (against the opening-bound target)
-    # pins their VALUES, so only range checks and booleanity are enforced here.
-    # All selector products use eq(b, r) = 1 + b + r.
-    claim_low_len = HeapBuf(N_CLAIMS)  # computed low_len per claim (the y-slot
-    #                             # overlap pointers below re-read it)
-    claim_nover = HeapBuf(N_CLAIMS)
-    hint_witness(claim_nover[0:N_CLAIMS], "claim_nover")
-    pi_cplen = StackBuf(1)
-    hint_witness(pi_cplen[0:1], "pi_cplen")
-    claim_qpkd_slot_bits = HeapBuf(SLOT_STRIDE_LOG * N_CLAIMS)
-    hint_witness(claim_qpkd_slot_bits[0:SLOT_STRIDE_LOG * N_CLAIMS], "claim_qpkd_slot_bits")
-    claim_sel_bits = HeapBuf(COUNT_BITS * N_CLAIMS)
-    hint_witness(claim_sel_bits[0:COUNT_BITS * N_CLAIMS], "claim_sel_bits")
-    # baked prefix-mask table replacing the hinted overlap mask: row t holds
-    # [k < t] for k in [0, YR_LOG_CAP); the y-slot loop below selects row nover
-    # by pointer arithmetic, so the mask is a prefix of exactly nover ones BY
-    # CONSTRUCTION (no hint, no booleanity/monotone/popcount pins).
-    prefix_mask_table = HeapBuf((YR_LOG_CAP + 1) * YR_LOG_CAP)
-    for t in unroll(0, YR_LOG_CAP + 1):
-        for k in unroll(0, t):
-            prefix_mask_table[GEN ** (t * YR_LOG_CAP + k)] = 1
-        for k in unroll(t, YR_LOG_CAP):
-            prefix_mask_table[GEN ** (t * YR_LOG_CAP + k)] = 0
-    claim_yslot_bits = HeapBuf(YR_SLOT_STRIDE * N_CLAIMS)
-    hint_witness(claim_yslot_bits[0:YR_SLOT_STRIDE * N_CLAIMS], "claim_yslot_bits")
-    rs_yslot_bits = HeapBuf(YR_SLOT_STRIDE)
-    hint_witness(rs_yslot_bits[0:YR_SLOT_STRIDE], "rs_yslot_bits")
-    rs_sel_bits = HeapBuf(COUNT_BITS)
-    hint_witness(rs_sel_bits[0:COUNT_BITS], "rs_sel_bits")
-    claim_weights = HeapBuf(N_CLAIMS)
-    for j in unroll(0, N_CLAIMS):
-        # EXACT lengths: cplen is certified, nover (the residual-overlap count)
-        # is the ONE hinted branch choice; low_len = cplen - nover and
-        # seln = lenris + nover - nlow are divisions off it, and the range
-        # checks + the product pins below reject any wrong nover.
-        if CLAIM_POINT_BUF[j] == POINT_BUF_PI:
-            # pi: cplen = min(log_mem, lenris), certified as a min (<= both via
-            # the range-checked division slacks, == one via the product).
-            cplen_g = pi_cplen[0]
-            mem_slack = g_log_mem / cplen_g
-            assert log(mem_slack) < SIZE_BITS
-            fold_slack = fold_cap_g / cplen_g
-            assert log(fold_slack) < SIZE_BITS
-            assert (cplen_g + g_log_mem) * (cplen_g + fold_cap_g) == 0  # == one of them
-            nlow = cplen_g                             # delta = 0 for pi
-        else:
-            cplen_g = claim_cplen_g[GEN ** j]
-            if CLAIM_POINT_BUF[j] == POINT_BUF_QPKD:
-                nlow = cplen_g * GEN ** SLOT_STRIDE_LOG  # nlow = cplen + the qpkd slot coords
-            else:
-                nlow = cplen_g            # nlow = cplen
-        nover_g = claim_nover[GEN ** j]
-        # nover <= YR_LOG_CAP: honest nover <= yr_log_n <= cap, and the y-slot
-        # loop below selects prefix_mask_table row nover, so its log must be
-        # pinned to the table (subsumes the SIZE_BITS check the division
-        # pins need).
-        assert log(nover_g) < YR_LOG_CAP + 1
-        low_len_g = cplen_g / nover_g              # low_len = cplen - nover
-        assert log(low_len_g) < SIZE_BITS
-        claim_low_len[GEN ** j] = low_len_g
-        seln = fold_cap_g * nover_g / nlow         # seln = lenris + nover - nlow
-        assert log(seln) < SIZE_BITS
-        assert (nover_g + 1) * (seln + 1) == 0      # nover == 0 OR seln == 0
-        # selector loop reads fold_challenges[nlow .. nlow+seln); pin the reach
-        # so it stays in [0, lenris): either seln == 0 (empty loop) or
-        # nlow + seln == lenris (the honest overlap-free case).
-        assert (nlow * seln + fold_cap_g) * (seln + 1) == 0
-        low_chain = HeapBuf(SIZE_BITS + 1)
-        if CLAIM_POINT_BUF[j] == POINT_BUF_ZETA:
-            zptr = zeta * GEN ** CLAIM_POINT_OFF[j]
-            low_chain[GEN ** 0] = 1
-            for xk in mul_range(1, low_len_g):
-                low_chain[xk * GEN] = low_chain[xk] * (1 + zptr[xk] + fold_challenges[xk])
-        if CLAIM_POINT_BUF[j] == POINT_BUF_RHO:
-            rptr = rho * GEN ** CLAIM_POINT_OFF[j]
-            low_chain[GEN ** 0] = 1
-            for xk in mul_range(1, low_len_g):
-                low_chain[xk * GEN] = low_chain[xk] * (1 + rptr[xk] + fold_challenges[xk])
-        if CLAIM_POINT_BUF[j] == POINT_BUF_PI:
-            low_chain[GEN ** 1] = 1 + rm + fold_challenges[GEN ** 0]
-            for xk in mul_range(GEN, low_len_g):
-                low_chain[xk * GEN] = low_chain[xk] * (1 + fold_challenges[xk])
-        if CLAIM_POINT_BUF[j] == POINT_BUF_QPKD:
-            qpkd_slot_eq = GEN ** 0
-            for k in unroll(0, SLOT_STRIDE_LOG):
-                sb3 = claim_qpkd_slot_bits[GEN ** (SLOT_STRIDE_LOG * j + k)]
-                assert sb3 * sb3 == sb3
-                qpkd_slot_eq *= (1 + sb3 + fold_challenges[GEN ** k])
-            zptr = zeta * GEN ** CLAIM_POINT_OFF[j]
-            ris7 = fold_challenges * GEN ** SLOT_STRIDE_LOG
-            low_chain[GEN ** 0] = qpkd_slot_eq
-            for xk in mul_range(1, low_len_g):
-                low_chain[xk * GEN] = low_chain[xk] * (1 + zptr[xk] + ris7[xk])
-        low_eq = low_chain[low_len_g]
-        ris_hi = fold_challenges * nlow
-        selrow = claim_sel_bits * GEN ** (COUNT_BITS * j)
-        sel_chain = HeapBuf(SIZE_BITS + 1)
-        sel_chain[GEN ** 0] = low_eq
-        for xk in mul_range(1, seln):
-            sel_bit = selrow[xk]
-            assert sel_bit * sel_bit == sel_bit
-            sel_chain[xk * GEN] = sel_chain[xk] * (1 + sel_bit + ris_hi[xk])
-        claim_weights[GEN ** j] = sel_chain[seln] * gamma_pool[GEN ** j]
+    sumcheck_target, fold_challenges, final_msg, inner_total, yr_log_n_g, fold_cap_g = match_range(log(sel), range(0, LIG_N_CANDIDATES), lambda m_idx: open_stacked(m_idx, fs[0], fs[1], target, commit_root_0, commit_root_1, cursor))
     # eval_rs_eq per claim: E = sum_k c_k * prod_j (z_j^(2^k) + 1 + ris_j)
     # (the telescoped product formula; z powers evolve by squaring per k).
     # Walk runtime coordinates outside and the fixed 128 Frobenius powers
@@ -1745,85 +2009,53 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         for k in unroll(0, FIELD_BITS):
             e_acc += c_table[GEN ** k] * prod_final[GEN ** k]
         rs_eq_vals[rs] = e_acc
-    # ring-switch weight: extend by the selector bits over the fold_challenges
-    # coords [qpkdv, lenris).
+    # q_pkd is deliberately the first dense Jagged column, so its selector is
+    # all-zero. Extend the ring-switch weight across the remaining ris coords.
     rs_weight = gamma_ab * rs_eq_vals[0] + gamma_c * rs_eq_vals[1]
-    # rs_len = lenris - qpkdv, DERIVED as g^lenris / g^qpkdv (not hinted). The
-    # selector loop then reads fold_challenges[qpkdv .. qpkdv+rs_len) = [qpkdv ..
-    # lenris), inside its written [0, lenris) extent; a qpkdv > lenris would make
-    # rs_len a huge exponent and blow the range check below.
     rs_len_g = fold_cap_g / qpkdv_g
     assert log(rs_len_g) < SIZE_BITS
     ris_q = fold_challenges * qpkdv_g
     rsw_chain = HeapBuf(SIZE_BITS + 1)
     rsw_chain[GEN ** 0] = rs_weight
     for xk in mul_range(1, rs_len_g):
-        rs_bit = rs_sel_bits[xk]
-        assert rs_bit * rs_bit == rs_bit
-        rsw_chain[xk * GEN] = rsw_chain[xk] * (1 + rs_bit + ris_q[xk])
+        rsw_chain[xk * GEN] = rsw_chain[xk] * (1 + ris_q[xk])
     rs_weight = rsw_chain[rs_len_g]
-    # inner_sum = sum_y final_msg[y] * eval_b[y]: reordered per claim. Claim j's
-    # y-contribution is cw_j times the final_msg MLE at the point (overlap coords
-    # || hinted slot bits): coord_k = m_k * ov_k + (1 + m_k) * bit_k with
-    # mask bits m_k = [k < NOVER], read from the baked prefix-mask row nover.
-    # The dot unrolls over the global cap 2^YR_LOG_CAP, but final_msg only has
-    # 2^yr_log_n cells, so the slot coordinates at k >= yr_log_n are ASSERTED
-    # zero (below): the eq tensor then puts zero weight on every index
-    # >= 2^yr_log_n, so the over-cap dot terms vanish and never depend on
-    # out-of-buffer cells. The ring-switch slot is the same, with no overlaps
-    # and the hinted YRS bits.
-    inner_sum = inner_total
+
+    # The VM value claims routed into fixed q_pkd slots use the same aligned
+    # offset-zero subcube. Evaluate their ris part directly; their residual-y
+    # selector is also zero, so they multiply final_msg[0] below.
+    qpkd_claim_weight = 0
     for j in unroll(0, N_CLAIMS):
-        slot_point = HeapBuf(YR_LOG_CAP)
-        if CLAIM_POINT_BUF[j] == POINT_BUF_ZETA:
-            overlap_ptr = zeta * GEN ** CLAIM_POINT_OFF[j] * claim_low_len[GEN ** j]
-        else:
-            overlap_ptr = rho * GEN ** CLAIM_POINT_OFF[j] * claim_low_len[GEN ** j]
-        # overlap_ptr[g^k] reads the claim point at low_len + k, which is written
-        # only for k < nover (the [low_len, cplen) span); at k >= nover it points
-        # into the unwritten point-buffer gap (prover-chosen free cells). The
-        # mask row IS the baked prefix of exactly nover ones (selected by the
-        # pinned nover), so no overlap coord can read past cplen by construction;
-        # a mask with a stray 1 at k >= nover would read a free cell and hand
-        # the sumcheck a linear knob (a full opening forgery) - the point-reuse
-        # analog of the hole b7b470c closed on the direct y-slot path.
-        mask_row = prefix_mask_table * claim_nover[GEN ** j] ** YR_LOG_CAP  # row nover: g^(nover * cap)
-        for k in unroll(0, YR_LOG_CAP):
-            mask_bit = mask_row[GEN ** k]
-            slot_bit = claim_yslot_bits[GEN ** (YR_SLOT_STRIDE * j + k)]
-            assert slot_bit * slot_bit == slot_bit
-            slot_point[GEN ** k] = mask_bit * overlap_ptr[GEN ** k] + (1 + mask_bit) * slot_bit
-        # zero-pin coords beyond final_msg's log-length (no over-cap weight): the
-        # pointers start at yr_log_n. The zero asserts double as the
-        # nover <= yr_log_n pin: a larger nover selects a row whose prefix
-        # reaches into [yr_log_n, cap), failing here. So the mask is 0 in this
-        # span, slot_point is 0, and no eq weight lands on the unwritten
-        # final_msg cells past 2^yr_log_n.
-        hi_mask = mask_row * yr_log_n_g
-        hi_slot = claim_yslot_bits * GEN ** (YR_SLOT_STRIDE * j) * yr_log_n_g
-        for xk in mul_range(1, yr_pad_g):
-            assert hi_mask[xk] == 0
-            assert hi_slot[xk] == 0
-        slot_eq = HeapBuf(2 ** (YR_LOG_CAP + 1) - 2)
-        eqtree(slot_point, slot_eq, YR_LOG_CAP)
-        final_msg_dot = 0
-        for y in unroll(0, 2 ** YR_LOG_CAP):
-            final_msg_dot += final_msg[GEN ** y] * slot_eq[GEN ** (2 ** YR_LOG_CAP - 2 + y)]
-        inner_sum += claim_weights[GEN ** j] * final_msg_dot
-    rs_slot_point = HeapBuf(YR_LOG_CAP)
-    for k in unroll(0, YR_LOG_CAP):
-        yb = rs_yslot_bits[GEN ** k]
-        assert yb * yb == yb
-        rs_slot_point[GEN ** k] = yb
-    rs_hi = rs_yslot_bits * yr_log_n_g
-    for xk in mul_range(1, yr_pad_g):
-        assert rs_hi[xk] == 0  # zero-pin coords beyond final_msg's log-length
-    rs_slot_eq = HeapBuf(2 ** (YR_LOG_CAP + 1) - 2)
-    eqtree(rs_slot_point, rs_slot_eq, YR_LOG_CAP)
-    rs_msg_dot = 0
-    for y in unroll(0, 2 ** YR_LOG_CAP):
-        rs_msg_dot += final_msg[GEN ** y] * rs_slot_eq[GEN ** (2 ** YR_LOG_CAP - 2 + y)]
-    inner_sum += rs_weight * rs_msg_dot
+        if CLAIM_POINT_BUF[j] == POINT_BUF_QPKD:
+            weight = GEN ** 0
+            for bit in unroll(0, SLOT_STRIDE_LOG):
+                if (CLAIM_QPKD_SLOT[j] // (2 ** bit)) % 2 == 1:
+                    weight *= fold_challenges[GEN ** bit]
+                else:
+                    weight *= 1 + fold_challenges[GEN ** bit]
+            zptr = zeta * GEN ** CLAIM_POINT_OFF[j]
+            ris_slot = fold_challenges * GEN ** SLOT_STRIDE_LOG
+            cplen_g = claim_cplen_g[GEN ** j]
+            point_chain = HeapBuf(SIZE_BITS + 1)
+            point_chain[GEN ** 0] = weight
+            for xk in mul_range(1, cplen_g):
+                point_chain[xk * GEN] = point_chain[xk] * (1 + zptr[xk] + ris_slot[xk])
+            weight = point_chain[cplen_g]
+            q_hi_len_g = fold_cap_g / qpkdv_g
+            q_hi = fold_challenges * qpkdv_g
+            selector_chain = HeapBuf(SIZE_BITS + 1)
+            selector_chain[GEN ** 0] = weight
+            for xk in mul_range(1, q_hi_len_g):
+                selector_chain[xk * GEN] = selector_chain[xk] * (1 + q_hi[xk])
+            qpkd_claim_weight += gamma_pool[GEN ** j] * selector_chain[q_hi_len_g]
+
+    # Contract every Basic Jagged indicator with the final Ligerito message.
+    # A second dispatch on the already-certified commitment size bakes both
+    # the folded prefix length and the residual-message shape into straight-
+    # line width-four contractions.
+    jagged_sum = match_range(log(sel), range(0, LIG_N_CANDIDATES), lambda m_idx: jagged_terminal(m_idx, fold_challenges, final_msg, claim_rows, col_bound_bits, gamma, gamma_powers))
+    # q_pkd occupies [0, 2^qpkdv), hence its residual y selector is zero.
+    inner_sum = inner_total + jagged_sum + (rs_weight + qpkd_claim_weight) * final_msg[GEN ** 0]
     assert inner_sum == sumcheck_target
 
 

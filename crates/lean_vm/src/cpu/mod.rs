@@ -63,10 +63,11 @@ const MAX_LOG_ROWS: usize = 32;
 /// `2^32` instructions.
 const MAX_LOG_BYTECODE: usize = 32;
 
-/// A binding digest of the program bytecode (BLAKE3 of every instruction's
-/// canonical encoding — opcode, operands, and the DEREF store-mode), as two field
-/// elements. Seeded into the transcript alongside the public input, so EVERY
-/// challenge depends on the exact program.
+/// A binding digest of the program bytecode and its real (pre-padding)
+/// instruction-prefix length. The bytecode encoding is
+/// canonical (opcode, operands, and the DEREF store-mode).  The digest is seeded
+/// into the transcript alongside the public input, so EVERY challenge depends on
+/// the exact program and on which public suffix is declared padding.
 ///
 /// Without this the program's instruction content would enter verification only
 /// through the bytecode bus's `Public`-coordinate MLE evaluation at the GKR point
@@ -77,13 +78,13 @@ const MAX_LOG_BYTECODE: usize = 32;
 /// input) — bound up front, so a different program yields a different sponge from
 /// the very first squeeze. Both sides hold the program, so both compute this
 /// identically; the announced sizes ride the stream (`announce_public`).
-fn program_digest(prog: &[Op]) -> [F64; 4] {
+fn program_digest(prog: &[Op], bytecode_used: usize) -> [F64; 4] {
     // VM-native: encode the program as a field-element slice and hash its exact
     // little-endian bytes with standard BLAKE3 ([`crate::vmhash::hash_slice`]).
     let mut words: Vec<F64> = Vec::with_capacity(6 * prog.len() + 2);
-    // Domain/version marker; standard BLAKE3 binds the total byte length.
+    // Bind both the padded bytecode length and its real prefix.
     words.push(F64(prog.len() as u64));
-    words.push(F64(1));
+    words.push(F64(bytecode_used as u64));
     for op in prog {
         // Fixed six-word encoding per instruction: two operand-offset words
         // packed with the tag, the immediate's two lanes, then two words for
@@ -148,26 +149,26 @@ fn transcript_seed(program: &Program, pi: &[F128T; 2]) -> [F128T; 4] {
     [seed[0], seed[1], pi[0], pi[1]]
 }
 
-/// Announce the prover's per-table log-sizes (`log_mem` + all `row_counts`) by
-/// writing them onto the scalar stream (which binds them into the sponge and lets
-/// the verifier reconstruct the layout). The public statement (program + input) is
-/// not announced here — it seeds the transcript at construction (see
-/// [`transcript_seed`]). The boundary states and per-table log-sizes (`taus`) are
-/// derived (constants from the program, and `padlen(row_counts)`), so they need no
-/// separate binding.
-fn announce_public(ps: &mut ProverState, log_mem: usize, row_counts: [usize; tables::N_TABLES]) {
-    ps.add_scalar(F128T::new(log_mem as u64, 0));
+/// Announce the non-default memory prefix and all table row counts. The
+/// logical memory log is canonically `max(MIN_LOG_MEM, ceil_log2(mem_used))`;
+/// the real bytecode prefix is fixed by the program and already bound by
+/// [`transcript_seed`].
+fn announce_public(ps: &mut ProverState, mem_used: usize, row_counts: [usize; tables::N_TABLES]) {
+    ps.add_scalar(F128T::new(mem_used as u64, 0));
     for r in row_counts {
         ps.add_scalar(F128T::new(r as u64, 0));
     }
 }
 
 /// Verifier side of [`announce_public`]: read the announced sizes from the
-/// stream, check them against the instance caps, and reconstruct the public
-/// [`Layout`] from the program + sizes + public input. (The public input was
-/// already bound by seeding the transcript.)
-fn read_public(vs: &mut VerifierState, prog: &Program, public_input: &[F128T; 2]) -> Result<Layout, Error> {
-    let log_mem = vs.next_scalar().map_err(Error::Transcript)?.c0 as usize;
+/// stream and reconstruct the public [`Layout`] from the program + sizes + public
+/// input. (The public input was already bound by seeding the transcript.)
+fn read_public(
+    vs: &mut VerifierState,
+    prog: &Program,
+    public_input: &[F128T; 2],
+) -> Result<Layout, Error> {
+    let mem_used = vs.next_scalar().map_err(Error::Transcript)?.c0 as usize;
     let mut row_counts = [0usize; tables::N_TABLES];
     for r in &mut row_counts {
         *r = vs.next_scalar().map_err(Error::Transcript)?.c0 as usize;
@@ -182,12 +183,20 @@ fn read_public(vs: &mut VerifierState, prog: &Program, public_input: &[F128T; 2]
     let bytecode_size = prog.prog.len();
     if !bytecode_size.is_power_of_two()
         || bytecode_size > (1usize << MAX_LOG_BYTECODE)
-        || !(MIN_LOG_MEM..=MAX_LOG_MEM).contains(&log_mem)
+        || !(2..=1usize << MAX_LOG_MEM).contains(&mem_used)
         || row_counts.iter().any(|&r| r >= (1usize << MAX_LOG_ROWS))
     {
         return Err(Error::PublicInput);
     }
-    let l = layout(&prog.prog, log_mem, row_counts, *public_input);
+    let log_mem = crate::log2_ceil_usize(mem_used).max(MIN_LOG_MEM);
+    let l = layout(
+        &prog.prog,
+        prog.bytecode_used(),
+        log_mem,
+        mem_used,
+        row_counts,
+        *public_input,
+    );
     Ok(l)
 }
 
@@ -196,6 +205,10 @@ pub struct Program {
     pub prog: Vec<Op>, // bytecode (size B, power of two)
     pub pc0: u32,
     pub fp0: u32,
+    /// Number of real instructions before the compiler-inserted public padding
+    /// and never-executed sentinel.  Only this prefix of the bytecode-finalize
+    /// count column needs commitment; the suffix is fixed to `g^0 = 1`.
+    bytecode_used: usize,
     /// A binding digest of `prog` ([`program_digest`]), computed once at assembly
     /// and seeded into the transcript so every challenge depends on the exact
     /// program. Trusted to match `prog` — always set by [`Program::assemble`] from
@@ -230,11 +243,13 @@ impl Program {
         hints: HashMap<u32, Vec<hints::RHint>>,
         main_frame: u32,
     ) -> Self {
-        let digest = program_digest(&prog);
+        let bytecode_used = prog.len().saturating_sub(1);
+        let digest = program_digest(&prog, bytecode_used);
         Self {
             prog,
             pc0,
             fp0,
+            bytecode_used,
             digest,
             hints,
             main_frame,
@@ -249,6 +264,22 @@ impl Program {
     /// invisible to verification.
     pub fn set_witness(&mut self, name: impl Into<String>, entries: Vec<Vec<F128T>>) {
         self.witness.insert(name.into(), entries);
+    }
+
+    /// Record the real instruction prefix before public bytecode padding.
+    ///
+    /// Hand-assembled programs default to all slots except the sentinel.  The
+    /// compiler calls this with its exact lowered length, which can exclude a
+    /// much larger suffix.  Recomputing the digest binds the cutoff into the
+    /// public statement.
+    pub fn set_bytecode_used(&mut self, bytecode_used: usize) {
+        assert!(bytecode_used < self.prog.len(), "real bytecode prefix must end before the sentinel");
+        self.bytecode_used = bytecode_used;
+        self.digest = program_digest(&self.prog, bytecode_used);
+    }
+
+    pub fn bytecode_used(&self) -> usize {
+        self.bytecode_used
     }
 }
 
@@ -313,8 +344,8 @@ fn blake3_value_slot(col: usize) -> Option<usize> {
 /// Run statistics returned alongside the proof: the cycle count (total executed
 /// instructions), the per-opcode counts
 /// `[XOR, MUL, SET, DEREF, JUMP, BLAKE3, PACK64X2]`, and the
-/// committed witness size — the sum of the column lengths, i.e. the real data
-/// before the stacked witness is zero-padded to a power of two `2^m`.
+/// committed witness size — the sum of the Jagged real-prefix heights before
+/// the dense witness is zero-padded to a power of two `2^m`.
 pub struct Stats {
     pub cycles: usize,
     pub counts: [usize; tables::N_TABLES],
@@ -356,18 +387,18 @@ pub fn prove(program: &Program, public_input: [F128T; 2]) -> (Proof, Stats) {
     // Real committed data, before zero-pad to 2^m. Virtual columns (the BLAKE3
     // value columns) carry data for the bus but are NOT committed, so exclude them.
     let committed_size: usize = w
-        .cols
+        .layout
+        .placements
         .iter()
-        .zip(&w.layout.placements)
-        .filter(|(_, p)| !p.is_virtual())
-        .map(|(c, _)| c.len())
+        .filter(|p| !p.is_virtual())
+        .map(|p| p.height)
         .sum();
     // The public statement (program digest + input) seeds the transcript, so
     // every challenge depends on the exact program and public input.
     let mut ps = ProverState::new(b"leanvm-b", &transcript_seed(program, &public_input));
 
     // Announce the prover's sizes, then commit, before sampling any challenge.
-    announce_public(&mut ps, w.log_mem, w.row_counts);
+    announce_public(&mut ps, exec.mem_used, w.row_counts);
     let t = std::time::Instant::now();
     let committed = tracing::info_span!("Commit").in_scope(|| pcs::commit(&mut ps, &w.q));
     if prof {
@@ -601,10 +632,29 @@ fn slot_claims(l: &Layout, claims: &[ColumnClaim]) -> Vec<pcs::SlotClaim> {
                     value: c.value,
                 };
             }
-            pcs::SlotClaim::Point {
-                offset: l.placements[c.col].offset,
-                low_point: c.point.clone(),
-                value: c.value,
+            let placement = l.placements[c.col];
+            debug_assert_eq!(c.point.len(), placement.n_vars);
+            // The arithmetization evaluates the full power-of-two column,
+            // including its fixed public padding. Jagged commits only the real
+            // prefix, so remove the padding MLE before opening the dense data.
+            let suffix = F128T::ONE
+                + ::pcs::jagged::prefix_indicator_eval(placement.height, &c.point);
+            let jagged_value = c.value + F128T::from(l.pad[c.col]) * suffix;
+            let mut block_point = Vec::with_capacity(placement.block_width_log + c.point.len());
+            for bit in 0..placement.block_width_log {
+                block_point.push(if (placement.slot >> bit) & 1 == 1 {
+                    F128T::ONE
+                } else {
+                    F128T::ZERO
+                });
+            }
+            block_point.extend_from_slice(&c.point);
+            pcs::SlotClaim::Jagged {
+                offset: placement.offset,
+                height: placement.height << placement.block_width_log,
+                selector_len: placement.block_width_log,
+                row_point: block_point,
+                value: jagged_value,
             }
         })
         .collect()

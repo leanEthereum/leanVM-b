@@ -99,6 +99,17 @@ fn eq_eval_ext(r: &[F128T], x: &[F128T]) -> F128T {
 /// `SlotClaim` shape).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StackClaimK {
+    /// A row-major Jagged block occupying `[offset, offset + height)` in the
+    /// dense commitment. The low `selector_len` coordinates select a column
+    /// within the block; the remaining coordinates address its padded row
+    /// domain. Only the real prefix is committed.
+    Jagged {
+        offset: usize,
+        height: usize,
+        selector_len: usize,
+        row_point: Vec<F128T>,
+        value: F128T,
+    },
     /// `eq(low_point, .)` on the aligned slice
     /// `[offset, offset + 2^|low_point|)`; `offset` must be a multiple of
     /// `2^|low_point|`.
@@ -127,7 +138,9 @@ impl StackClaimK {
     #[inline]
     pub fn value(&self) -> F128T {
         match self {
-            StackClaimK::Point { value, .. } | StackClaimK::Strided { value, .. } => *value,
+            StackClaimK::Jagged { value, .. }
+            | StackClaimK::Point { value, .. }
+            | StackClaimK::Strided { value, .. } => *value,
         }
     }
 }
@@ -209,6 +222,88 @@ pub struct LigVerifierSummaryK {
 // Shared claim folding / evaluation
 // ---------------------------------------------------------------------------
 
+/// Assign powers of one batching challenge so a complete row-major block gets
+/// consecutive powers in selector order. This is the transcript-compatible
+/// tower-field form of the Jagged branch's geometric batching.
+fn geometric_claim_weights_k(claims: &[StackClaimK], gamma: F128T) -> Vec<F128T> {
+    let mut rank = vec![usize::MAX; claims.len()];
+    let mut next_rank = 0usize;
+    for i in 0..claims.len() {
+        if rank[i] != usize::MAX {
+            continue;
+        }
+        let StackClaimK::Jagged {
+            offset,
+            height,
+            selector_len,
+            row_point,
+            ..
+        } = &claims[i]
+        else {
+            rank[i] = next_rank;
+            next_rank += 1;
+            continue;
+        };
+        if *selector_len == 0 {
+            rank[i] = next_rank;
+            next_rank += 1;
+            continue;
+        }
+        let width = 1usize << selector_len;
+        let mut by_slot = vec![None; width];
+        for j in i..claims.len() {
+            if rank[j] != usize::MAX {
+                continue;
+            }
+            let StackClaimK::Jagged {
+                offset: other_offset,
+                height: other_height,
+                selector_len: other_selector_len,
+                row_point: other_point,
+                ..
+            } = &claims[j]
+            else {
+                continue;
+            };
+            if other_offset != offset
+                || other_height != height
+                || other_selector_len != selector_len
+                || other_point[*selector_len..] != row_point[*selector_len..]
+            {
+                continue;
+            }
+            let mut slot = 0usize;
+            let mut boolean = true;
+            for (bit, &x) in other_point[..*selector_len].iter().enumerate() {
+                if x == F128T::ONE {
+                    slot |= 1 << bit;
+                } else if x != F128T::ZERO {
+                    boolean = false;
+                    break;
+                }
+            }
+            if boolean && by_slot[slot].is_none() {
+                by_slot[slot] = Some(j);
+            }
+        }
+        if by_slot.iter().all(Option::is_some) {
+            for (slot, member) in by_slot.into_iter().enumerate() {
+                rank[member.unwrap()] = next_rank + slot;
+            }
+            next_rank += width;
+        } else {
+            rank[i] = next_rank;
+            next_rank += 1;
+        }
+    }
+    assert_eq!(next_rank, claims.len());
+    let mut powers = vec![F128T::ONE; claims.len()];
+    for i in 1..powers.len() {
+        powers[i] = powers[i - 1] * gamma;
+    }
+    rank.into_iter().map(|r| powers[r]).collect()
+}
+
 /// Fold the gamma-weighted point claims into the stack weight `b_stack` and
 /// running `target` (pure: the caller has already observed the claim values
 /// and sampled `gammas` in transcript order). Mirror of the extension-field
@@ -239,6 +334,7 @@ fn fold_stacked_point_claims_k(
     let max_len = claims
         .iter()
         .map(|c| match c {
+            StackClaimK::Jagged { row_point, .. } => 1usize << row_point.len(),
             StackClaimK::Point { low_point, .. } => 1usize << low_point.len(),
             StackClaimK::Strided { .. } => 0,
         })
@@ -248,6 +344,31 @@ fn fold_stacked_point_claims_k(
     for (claim, g) in claims.iter().zip(gammas.iter()) {
         let g = *g;
         match claim {
+            StackClaimK::Jagged {
+                offset,
+                height,
+                row_point,
+                value,
+                ..
+            } => {
+                assert!(*height <= 1usize << row_point.len());
+                if *height != 0 {
+                    let len = 1usize << row_point.len();
+                    build_eq_table_ext_seeded_into(row_point, g, &mut scratch[..len]);
+                    let eq = &scratch[..*height];
+                    let dst = &mut b_stack[*offset..*offset + *height];
+                    if *height < PAR_FOLD_THRESHOLD {
+                        for (cell, &weight) in dst.iter_mut().zip(eq) {
+                            *cell += weight;
+                        }
+                    } else {
+                        dst.par_iter_mut()
+                            .zip(eq.par_iter())
+                            .for_each(|(cell, &weight)| *cell += weight);
+                    }
+                }
+                *target += g * *value;
+            }
             StackClaimK::Point {
                 offset,
                 low_point,
@@ -307,6 +428,12 @@ fn fold_stacked_point_claims_k(
 /// Mirror of the extension-field `stack_claim_eq_at`.
 fn stack_claim_eq_at_k(claim: &StackClaimK, x: &[F128T]) -> F128T {
     match claim {
+        StackClaimK::Jagged {
+            offset,
+            height,
+            row_point,
+            ..
+        } => super::jagged::indicator_eval(row_point, *offset, *offset + *height, x),
         StackClaimK::Point {
             offset, low_point, ..
         } => {
@@ -422,12 +549,14 @@ pub fn open_batch_mixed_ligerito_stacked_k(
         .collect();
     mark("ring-switch proves", &mut t);
 
-    // 2. Observe point-claim values + sample their gammas (Schwartz-Zippel
-    //    sound: every gamma_pd is sampled after all values are observed).
+    // 2. Observe every point-claim value, then sample one geometric batching
+    //    challenge. Complete Jagged blocks receive consecutive powers in
+    //    selector order.
     for claim in point_claims {
         observe_ext(sponge, claim.value());
     }
-    let gammas_pd = sample_ext_vec(sponge, point_claims.len());
+    let gamma_pd = sponge.sample();
+    let gammas_pd = geometric_claim_weights_k(point_claims, gamma_pd);
 
     // 3. Combined target and lifted stack weight b_stack: the gamma-weighted
     //    rs_eq_ind sum scattered at the q_pkd slice, plus the point-claim
@@ -550,11 +679,12 @@ pub fn verify_opening_batch_mixed_ligerito_stacked_k(
         target += *g * *claim;
     }
 
-    // 2. Point-claim values + gammas; fold into the target.
+    // 2. Point-claim values + one geometric batching challenge.
     for claim in point_claims {
         observe_ext(sponge, claim.value());
     }
-    let gammas_pd = sample_ext_vec(sponge, point_claims.len());
+    let gamma_pd = sponge.sample();
+    let gammas_pd = geometric_claim_weights_k(point_claims, gamma_pd);
     for (claim, g) in point_claims.iter().zip(gammas_pd.iter()) {
         target += *g * claim.value();
     }

@@ -6,6 +6,7 @@
 
 pub mod ligerito;
 pub mod ligerito_k;
+pub mod jagged;
 pub mod merkle;
 pub mod ntt;
 pub mod pack_k;

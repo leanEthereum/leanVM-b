@@ -170,6 +170,7 @@ pub fn compile(ast: &Ast) -> Program {
     // Pad the bytecode to `B` (the sentinel slot g^{B-1} must exist for execution).
     prog.resize(bytecode_size, Op::Set { o: 0, k: F128T::ZERO });
     let mut program = Program::assemble(prog, 0, 0, hints, frame_size["main"]);
+    program.set_bytecode_used(total);
     program.fn_ranges = lowered.iter().map(|l| (l.name.clone(), entry[&l.name], l.code.len() as u32)).collect();
     program
 }
