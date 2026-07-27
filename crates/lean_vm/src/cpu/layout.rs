@@ -91,8 +91,8 @@ pub struct Layout {
 /// bus/constraint/PI opening row-group. Schema adjacency is irrelevant: the
 /// explicit placement map can globally cluster compatible columns. Consequently
 /// every point group claims either a whole block or none of it.
-fn jagged_column_blocks(log_bytecode: usize, sides: [&[Block]; 3]) -> Vec<Vec<usize>> {
-    let sources = col_height_sources(log_bytecode);
+fn jagged_column_blocks(log_bytecode: usize, bytecode_used: usize, sides: [&[Block]; 3]) -> Vec<Vec<usize>> {
+    let sources = col_height_sources(bytecode_used);
     let mut signatures: Vec<Vec<usize>> = vec![Vec::new(); sources.len()];
     let kappa_sources = block_kappa_sources(log_bytecode);
     let mut block_index = 0usize;
@@ -205,23 +205,23 @@ pub fn col_kappa_sources(log_bytecode: usize) -> Vec<Option<(usize, usize)>> {
 /// Public source of a committed Jagged column's real height. `Pow2` means
 /// `2^(source + adjustment)` where the source indices match
 /// [`col_kappa_sources`]; `TableRows(t)` is the announced, unpadded row count
-/// of opcode table `t`.
+/// of opcode table `t`. `MemoryRows` is the announced used-memory prefix, and
+/// `BytecodeRows(n)` is the program-bound real instruction prefix.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ColHeightSource {
     Pow2 { source: usize, adjustment: usize },
     TableRows(usize),
+    MemoryRows,
+    BytecodeRows(usize),
 }
 
 /// Height sources in global schema order; `None` marks virtual columns.
-pub fn col_height_sources(log_bytecode: usize) -> Vec<Option<ColHeightSource>> {
+pub fn col_height_sources(bytecode_used: usize) -> Vec<Option<ColHeightSource>> {
     let sch = schema();
     let mut out = vec![None; sch.n];
-    out[MEM] = Some(ColHeightSource::Pow2 { source: 1, adjustment: 0 });
-    out[MFCNT] = Some(ColHeightSource::Pow2 { source: 1, adjustment: 0 });
-    out[BFCNT] = Some(ColHeightSource::Pow2 {
-        source: 0,
-        adjustment: log_bytecode,
-    });
+    out[MEM] = Some(ColHeightSource::MemoryRows);
+    out[MFCNT] = Some(ColHeightSource::MemoryRows);
+    out[BFCNT] = Some(ColHeightSource::BytecodeRows(bytecode_used));
     out[QPKD] = Some(ColHeightSource::Pow2 {
         source: 2 + tables::BLAKE3_TABLE,
         adjustment: flock::blake3::K_LOG - ::pcs::LOG_PACKING,
@@ -270,21 +270,22 @@ fn col_kappas(log_mem: usize, log_bytecode: usize, taus: [usize; 6]) -> Vec<Opti
         .collect()
 }
 
-/// Real Jagged heights for the committed columns. Shared memory/bytecode data
-/// and flock's `q_pkd` remain full power-of-two columns. Per-opcode columns
-/// commit only their executed-row prefix; their fixed padding is reconstructed
-/// publicly when claims are routed to the PCS.
+/// Real Jagged heights for the committed columns. Memory, memory-finalize, and
+/// bytecode-finalize commit only their non-default prefixes; flock's `q_pkd`
+/// remains a full aligned power-of-two column. Per-opcode columns commit only
+/// their executed-row prefix. Fixed suffixes are reconstructed publicly when
+/// claims are routed to the PCS.
 fn col_heights(
-    log_mem: usize,
-    log_bytecode: usize,
+    mem_used: usize,
+    bytecode_used: usize,
     row_counts: [usize; 6],
     kappas: &[Option<usize>],
 ) -> Vec<usize> {
     let sch = schema();
     let mut heights = vec![0usize; sch.n];
-    heights[MEM] = 1usize << log_mem;
-    heights[MFCNT] = 1usize << log_mem;
-    heights[BFCNT] = 1usize << log_bytecode;
+    heights[MEM] = mem_used;
+    heights[MFCNT] = mem_used;
+    heights[BFCNT] = bytecode_used;
     heights[QPKD] = 1usize << kappas[QPKD].expect("q_pkd is committed");
     for (t, table) in tables::tables().iter().enumerate() {
         let base = sch.base[t];
@@ -305,10 +306,19 @@ fn col_heights(
 /// blocks reference columns only by INDEX and the program only through its
 /// public columns, so this needs no committed witness — both prover and verifier
 /// reconstruct exactly the same structure (§7, §8).
-pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; 6], pi: [F128; 2]) -> Layout {
+pub fn layout(
+    prog: &[Op],
+    bytecode_used: usize,
+    log_mem: usize,
+    mem_used: usize,
+    row_counts: [usize; 6],
+    pi: [F128; 2],
+) -> Layout {
     let bytecode_size = prog.len();
     let log_bytecode = crate::log2_strict_usize(bytecode_size);
     let cells = 1usize << log_mem;
+    assert!((2..=cells).contains(&mem_used), "used-memory prefix must fit the logical memory");
+    assert!(bytecode_used < bytecode_size, "real bytecode prefix must end before the sentinel");
 
     // Per-table padded log-row-counts (the boundary block is fixed). The real
     // (non-padded) `row_counts[t]` tell each flush how many of its 2^kappa rows
@@ -470,6 +480,8 @@ pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; 6], pi: [F128; 2]
     let sch = schema();
     let mut count_blocks: Vec<Block> = Vec::new();
     let mut pad = vec![F128::ZERO; sch.n];
+    pad[MFCNT] = F128::ONE;
+    pad[BFCNT] = F128::ONE;
     for (t, table) in tables::tables().iter().enumerate() {
         let base = sch.base[t];
         let (kappa, real) = (taus[t], row_counts[t]);
@@ -504,11 +516,11 @@ pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; 6], pi: [F128; 2]
     }
 
     let kappas = col_kappas(log_mem, log_bytecode, taus);
-    let heights = col_heights(log_mem, log_bytecode, row_counts, &kappas);
+    let heights = col_heights(mem_used, bytecode_used, row_counts, &kappas);
     // q_pkd stays at offset zero so its ring-switched weight remains an aligned
     // subcube. Every ordinary column after it is packed tightly and opened via
     // the Jagged indicator.
-    let jagged_blocks = jagged_column_blocks(log_bytecode, [&push, &pull, &count_blocks]);
+    let jagged_blocks = jagged_column_blocks(log_bytecode, bytecode_used, [&push, &pull, &count_blocks]);
     let (placements, m) = witness::placements_of_blocks(&kappas, &heights, &jagged_blocks);
     Layout {
         push,
@@ -610,13 +622,21 @@ impl Program {
             "a table exceeds 2^{MAX_LOG_ROWS} rows"
         );
         let pi = [exec.mem[0], exec.mem[1]];
-        let l = layout(&self.prog, log_mem, row_counts, pi);
+        let l = layout(
+            &self.prog,
+            self.bytecode_used(),
+            log_mem,
+            exec.mem_used,
+            row_counts,
+            pi,
+        );
 
         // Pad each per-opcode table to its power-of-two row count: count columns
         // with g^0 = 1, every other column with 0 (§e2e-pad). A default padding
         // row (counts 1, else 0) flushes tuples that do not self-cancel; the
         // verifier divides them out of the bus product (§sec:gp). The shared
-        // columns (MEM, MFCNT, BFCNT) keep their natural 2^h / 2^log_bytecode lengths.
+        // Shared columns keep their natural logical lengths in `cols`; Jagged
+        // copies only their non-default prefixes into the committed witness.
         // Pad to `2^taus[t]` (= `next_pow2(row_counts[t])` for every table except
         // BLAKE3, which `layout` rounds up to flock's `2^n_log`).
         for (t, table) in tables::tables().iter().enumerate() {
@@ -641,5 +661,36 @@ impl Program {
             row_counts,
             flock_reduction: Some(flock_reduction),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shared_default_suffixes_use_jagged_prefixes() {
+        let prog = vec![Op::Set { o: 0, k: F128::ZERO }; 8];
+        let bytecode_used = 3;
+        let mem_used = 5;
+        let l = layout(
+            &prog,
+            bytecode_used,
+            MIN_LOG_MEM,
+            mem_used,
+            [0; 6],
+            [F128::ZERO; 2],
+        );
+
+        assert_eq!(l.placements[MEM].height, mem_used);
+        assert_eq!(l.placements[MFCNT].height, mem_used);
+        assert_eq!(l.placements[BFCNT].height, bytecode_used);
+        assert_eq!(l.pad[MEM], F128::ZERO);
+        assert_eq!(l.pad[MFCNT], F128::ONE);
+        assert_eq!(l.pad[BFCNT], F128::ONE);
+
+        let qpkd = l.placements[QPKD];
+        assert_eq!(qpkd.height, 1usize << qpkd.n_vars, "q_pkd remains a full aligned subcube");
+        assert_eq!(qpkd.offset, 0);
     }
 }

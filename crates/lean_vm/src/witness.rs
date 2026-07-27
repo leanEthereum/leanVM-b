@@ -84,11 +84,13 @@ pub fn placements_of_blocks(
     let mut placements = vec![Placement::VIRTUAL; n];
     let mut seen = vec![false; n];
     let mut off = 0usize;
+    let mut logical_m = 0usize;
     for block in blocks {
         assert!(!block.is_empty() && block.len().is_power_of_two(), "Jagged block width must be a nonzero power of two");
         let width_log = block.len().trailing_zeros() as usize;
         let first = block[0];
         let k = kappas[first].expect("Jagged blocks cannot contain virtual columns");
+        logical_m = logical_m.max(k + width_log);
         let height = heights[first];
         assert!(height <= 1usize << k, "column height exceeds its padded MLE");
         for (slot, &i) in block.iter().enumerate() {
@@ -107,9 +109,12 @@ pub fn placements_of_blocks(
         off += height * block.len();
     }
     assert!(kappas.iter().enumerate().all(|(i, k)| k.is_some() == seen[i]), "Jagged blocks must cover every committed column");
-    // Floor at the PCS minimum (Ligerito's level ladder needs room); tiny witnesses
-    // zero-pad up. Both sides derive this identically from the kappas.
-    let m = crate::log2_ceil_usize(off.max(1)).max(crate::pcs::MIN_MU);
+    // The dense cube must both hold the packed area and have enough coordinates
+    // to embed every block's selector + logical row point. Floor additionally at
+    // the PCS minimum required by Ligerito's level ladder.
+    let m = crate::log2_ceil_usize(off.max(1))
+        .max(logical_m)
+        .max(crate::pcs::MIN_MU);
     (placements, m)
 }
 
