@@ -370,7 +370,9 @@ fn stacked_bytecode(program: &Program) -> Vec<F128> {
     // sizes are sufficient and avoid retaining a representative inner proof.
     let l = lean_vm::cpu::layout(
         &program.prog,
+        program.bytecode_used(),
         20,
+        1usize << 20,
         [1usize << 10; 6],
         [F128::ZERO; 2],
     );
@@ -794,9 +796,13 @@ fn gen_verify(
     summary: &lean_vm::cpu::VerifySummary,
     ops: &[TraceOp],
 ) -> (Vec<(String, Vec<F128>)>, SubDefer) {
+    let mem_used = proof.stream[0].lo as usize;
+    let log_mem = mem_used.next_power_of_two().trailing_zeros() as usize;
     let l = lean_vm::cpu::layout(
         &program.prog,
-        proof.stream[0].lo as usize,
+        program.bytecode_used(),
+        log_mem.max(lean_vm::cpu::MIN_LOG_MEM),
+        mem_used,
         [1, 2, 3, 4, 5, 6].map(|i| proof.stream[i].lo as usize),
         pi,
     );
@@ -1210,7 +1216,14 @@ fn build_batch(inner: &[(usize, usize)]) -> Batch {
 #[allow(clippy::type_complexity)]
 fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     // Any valid sizes drive the layout — rep depends only on structure + kbc.
-    let l = lean_vm::cpu::layout(&program.prog, 20, [1usize << 10; 6], [F128::ZERO, F128::ZERO]);
+    let l = lean_vm::cpu::layout(
+        &program.prog,
+        program.bytecode_used(),
+        20,
+        1usize << 20,
+        [1usize << 10; 6],
+        [F128::ZERO, F128::ZERO],
+    );
     let kbc = program.prog.len().trailing_zeros() as usize;
     let sides: [&[Block]; 3] = [&l.push, &l.pull, &l.count];
     let mumax = 40usize;
@@ -1542,7 +1555,10 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     // Jagged packs only real prefixes, so small executions can reach the PCS
     // floor instead of the former aligned-stack minimum of 22. Tight packing
     // cannot exceed the old aligned layout, hence the upper bound is unchanged.
-    let (minm, maxm) = (lean_vm::pcs::MIN_MU, 28usize);
+    let minm = lean_vm::pcs::MIN_MU
+        .max(lean_vm::cpu::MIN_LOG_MEM)
+        .max(kbc);
+    let maxm = 28usize;
     let cands: Vec<_> = (minm..=maxm).map(oshape).collect();
     let maxlev = cands.iter().map(|c| c.0).max().unwrap();
     let maxfolds = cands.iter().map(|c| c.11.len()).max().unwrap();
@@ -1551,19 +1567,25 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("LIG_MAX_TOTAL_FOLDS", maxfolds.to_string());
     ps("LIG_MAX_VANISH_LEN", maxsvk.to_string());
     ps("LIG_MIN_LOG_SIZE", minm.to_string());
-    let height_sources = lean_vm::cpu::col_height_sources(kbc);
+    let height_sources = lean_vm::cpu::col_height_sources(program.bytecode_used());
     let ordered_heights: Vec<_> = l
         .jagged_blocks
         .iter()
         .map(|cols| (height_sources[cols[0]].unwrap(), cols.len().trailing_zeros() as usize))
         .collect();
     ps("N_COMMITTED_COLS", ordered_heights.len().to_string());
+    ps("MIN_LOG_MEM", lean_vm::cpu::MIN_LOG_MEM.to_string());
     ps(
         "COL_HEIGHT_KIND",
         ints(
             &ordered_heights
                 .iter()
-                .map(|(s, _)| usize::from(matches!(s, lean_vm::cpu::ColHeightSource::TableRows(_))))
+                .map(|(s, _)| match s {
+                    lean_vm::cpu::ColHeightSource::Pow2 { .. } => 0,
+                    lean_vm::cpu::ColHeightSource::TableRows(_) => 1,
+                    lean_vm::cpu::ColHeightSource::MemoryRows => 2,
+                    lean_vm::cpu::ColHeightSource::BytecodeRows(_) => 3,
+                })
                 .collect::<Vec<_>>(),
         ),
     );
@@ -1575,6 +1597,8 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
                 .map(|(s, _)| match *s {
                     lean_vm::cpu::ColHeightSource::Pow2 { source, .. } => source,
                     lean_vm::cpu::ColHeightSource::TableRows(t) => t,
+                    lean_vm::cpu::ColHeightSource::MemoryRows => 0,
+                    lean_vm::cpu::ColHeightSource::BytecodeRows(_) => 0,
                 })
                 .collect::<Vec<_>>(),
         ),
@@ -1586,13 +1610,24 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
                 .iter()
                 .map(|(s, width_log)| match *s {
                     lean_vm::cpu::ColHeightSource::Pow2 { adjustment, .. } => adjustment + *width_log,
-                    lean_vm::cpu::ColHeightSource::TableRows(_) => *width_log,
+                    lean_vm::cpu::ColHeightSource::TableRows(_)
+                    | lean_vm::cpu::ColHeightSource::MemoryRows
+                    | lean_vm::cpu::ColHeightSource::BytecodeRows(_) => *width_log,
                 })
                 .collect::<Vec<_>>(),
         ),
     );
     ps("COL_BLOCK_LOG", ints(&ordered_heights.iter().map(|(_, width_log)| *width_log).collect::<Vec<_>>()));
-    ps("PCS_MIN_MU", lean_vm::pcs::MIN_MU.to_string());
+    assert!(
+        ordered_heights
+            .iter()
+            .all(|(source, width_log)| !matches!(source, lean_vm::cpu::ColHeightSource::BytecodeRows(_)) || *width_log == 0),
+        "bytecode-finalize must remain a singleton",
+    );
+    ps(
+        "BYTECODE_USED_BITS",
+        ints(&(0..34).map(|bit| (program.bytecode_used() >> bit) & 1).collect::<Vec<_>>()),
+    );
     ps("LIG_LOG_MSG_COLS_CAP", cands.iter().map(|c| *c.4.iter().max().unwrap()).max().unwrap().to_string());
     ps("YR_LOG_CAP", cands.iter().map(|c| c.2).max().unwrap().to_string());
     {
@@ -1848,6 +1883,27 @@ fn recursion_1to1_smoke() {
         }))
         .is_err(),
         "tampered ring-switch coefficient must be rejected"
+    );
+
+    // The first announced word is the exact used-memory prefix.  It drives the
+    // MEM/MFCNT Jagged boundaries and must also derive a valid logical memory
+    // size; the minimum invalid value is rejected before any opening work.
+    let mut bad_memory = batch.merged.clone();
+    let stream = bad_memory
+        .iter_mut()
+        .find(|(name, _)| name == "stream")
+        .expect("proof stream hint");
+    stream.1[0][0] = F128::ONE;
+    let mut bad_guest = recursion_guest(&batch.program0, cfg.len());
+    for (name, entries) in &bad_memory {
+        bad_guest.set_witness(name, entries.clone());
+    }
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            bad_guest.execute(batch.public_input());
+        }))
+        .is_err(),
+        "invalid used-memory prefix must be rejected"
     );
 }
 

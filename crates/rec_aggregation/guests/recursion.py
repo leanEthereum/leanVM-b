@@ -88,6 +88,7 @@ TABLE_DEREF = 3
 TABLE_JUMP = 4
 TABLE_BLAKE3 = 5
 N_TABLES = N_TABLES_PLACEHOLDER
+MIN_LOG_MEM = MIN_LOG_MEM_PLACEHOLDER
 # Phase D (flock reduction): the seven fixed inner challenges (+ inverses of 1+c),
 # the phi8 node table + baked Lagrange inverse denominators (Lambda domain,
 # combined domain, S domain). The zerocheck point/round buffers are sized at
@@ -122,15 +123,16 @@ K_LOG = K_LOG_PLACEHOLDER
 # q_pkd slot. Runtime dimensions and intervals are derived from public counts.
 # Opening dispatch: baked committed log-size, candidate range, g^-LIG_MIN_LOG_SIZE.
 LIG_MIN_LOG_SIZE = LIG_MIN_LOG_SIZE_PLACEHOLDER
-# Committed-column real-height sources, in dense Jagged order. KIND 0 is the
-# full cube 2^(kappa_base[SRC] + ADJ); KIND 1 is the announced row count of
-# table SRC. Their sum determines the dense PCS size.
+# Committed-column real-height sources, in dense Jagged order: KIND 0 is the
+# full cube 2^(kappa_base[SRC] + ADJ), KIND 1 an announced table row count,
+# KIND 2 the announced used-memory prefix, and KIND 3 the program-bound
+# bytecode prefix. Their width-adjusted sum determines the packed area.
 N_COMMITTED_COLS = N_COMMITTED_COLS_PLACEHOLDER
 COL_HEIGHT_KIND = COL_HEIGHT_KIND_PLACEHOLDER
 COL_HEIGHT_SRC = COL_HEIGHT_SRC_PLACEHOLDER
 COL_HEIGHT_ADJ = COL_HEIGHT_ADJ_PLACEHOLDER
 COL_BLOCK_LOG = COL_BLOCK_LOG_PLACEHOLDER
-PCS_MIN_MU = PCS_MIN_MU_PLACEHOLDER
+BYTECODE_USED_BITS = BYTECODE_USED_BITS_PLACEHOLDER
 # Per-candidate opening tables (P3b): row (m - LIG_MIN_LOG_SIZE) drives that arm.
 LIG_MAX_LEVELS = LIG_MAX_LEVELS_PLACEHOLDER
 LIG_MAX_TOTAL_FOLDS = LIG_MAX_TOTAL_FOLDS_PLACEHOLDER
@@ -318,7 +320,7 @@ def grind_check(state_0, state_1, nonce, nbits_g):
     return
 
 
-def verify_log2_ceil(bits_buf, g_logs_pow2, g_squares, floor: Const, nbits: Const):
+def verify_log2_ceil(bits_buf, g_logs_pow2, g_squares, floor: Const, nbits: Const, need_exp: Const):
     # Given `nbits` bits already in bits_buf, return (g_log, word, exp_prod):
     # word = Σ bit_j 2^j, exp_prod = g^word, g_log = g^max(log2_ceil(word), floor).
     # g_log is prover advice, pinned to log2_ceil(word) by psum[g_log] == word
@@ -333,7 +335,8 @@ def verify_log2_ceil(bits_buf, g_logs_pow2, g_squares, floor: Const, nbits: Cons
     for j in unroll(0, nbits):
         bit = bits_buf[GEN ** j]
         assert bit * bit == bit
-        exp_prod *= (1 + bit * (g_squares[GEN ** j] + 1))
+        if need_exp == 1:
+            exp_prod *= (1 + bit * (g_squares[GEN ** j] + 1))
         word += bit * (2 ** j)
         psum_buf[GEN ** (j + 1)] = word
     g_log = hint_log2_ceil(bits_buf, nbits, floor)  # prover advice; verified below
@@ -354,30 +357,14 @@ def verify_log2_ceil(bits_buf, g_logs_pow2, g_squares, floor: Const, nbits: Cons
     return g_log, word, exp_prod
 
 
-def log2_ceil_word(value, bits, g_logs_pow2, g_squares, floor: Const, nbits: Const):
+def log2_ceil_word(value, bits, g_logs_pow2, g_squares, floor: Const, nbits: Const, need_exp: Const):
     # g^log2_ceil(value) for a concrete integer `value`. The bits are hinted HERE
     # into caller-owned storage (so later phases can reuse them), then tied back
     # to `value`. Returns (g_log, g^value).
     hint_decompose_bits(bits, value, nbits)
-    g_log, word, g_value = verify_log2_ceil(bits, g_logs_pow2, g_squares, floor, nbits)
+    g_log, word, g_value = verify_log2_ceil(bits, g_logs_pow2, g_squares, floor, nbits, need_exp)
     assert word == value  # the hinted bits are exactly value's bits (so value < 2^nbits)
     return g_log, g_value
-
-
-def g_power_of_word(value, g_squares, nbits: Const):
-    # g^value for a concrete integer `value` < 2^nbits: advice-decompose its
-    # bits, tie them back to the word, and assemble Π g^(bit_j·2^j).
-    bits = HeapBuf(GEN ** nbits)
-    hint_decompose_bits(bits, value, nbits)
-    word = 0
-    g_value = GEN ** 0
-    for j in unroll(0, nbits):
-        bit = bits[GEN ** j]
-        assert bit * bit == bit
-        word += bit * (2 ** j)
-        g_value *= (1 + bit * (g_squares[GEN ** j] + 1))
-    assert word == value
-    return g_value
 
 
 def log2_ceil_in_the_exponent(g_N, g_logs_pow2, g_squares, floor: Const, nbits: Const):
@@ -386,7 +373,7 @@ def log2_ceil_in_the_exponent(g_N, g_logs_pow2, g_squares, floor: Const, nbits: 
     # verified and tied back: g^(the value the bits decode to) must equal g_N.
     bits = HeapBuf(GEN ** nbits)
     hint_decompose_bits_exponent(bits, g_N, nbits)
-    g_log, word, g_bits_value = verify_log2_ceil(bits, g_logs_pow2, g_squares, floor, nbits)
+    g_log, word, g_bits_value = verify_log2_ceil(bits, g_logs_pow2, g_squares, floor, nbits, 1)
     assert g_bits_value == g_N  # the hinted bits decode to N
     return g_log
 
@@ -1038,21 +1025,23 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     hint_witness(stream[0:STREAM_CAP], "stream")
     cursor = stream  # the proof stream is replayed word by word; cursor walks it (advance = * g)
 
-    # ---- announced sizes: log_mem + 6 row counts (observed, then certified) ----
+    # ---- announced sizes: used-memory prefix + 6 row counts ----
     sizes = StackBuf(N_TABLES + 1)
     for i in unroll(0, N_TABLES + 1):
         fs, x, cursor = fs_next(fs, cursor)
         sizes[i] = x
 
-    # ---- structural logs: certify g^log_mem, compute the taus ----
+    # ---- structural logs: derive g^log_mem, compute the taus ----
     # The stream announced the sizes as integer WORDS; the shape-generic phases
-    # need them as G-POWERS (loop bounds, match_range scrutinees). dims_g[0] =
-    # g^log_mem arrives as a hint pinned to the word; dims_g[1 + t] = g^tau_t
-    # is computed by the count gadget.
+    # need them as G-POWERS (loop bounds, match_range scrutinees). dims_g[0] is
+    # derived from mem_used; dims_g[1 + t] = g^tau_t comes from the count gadget.
     dims_g = HeapBuf(N_TABLES + 1)  # [g^log_mem, g^tau_0 .. g^tau_5], all computed
-    # log_mem is announced AS a log (an integer word L): g^L is assembled from
-    # L's advice-decomposed bits — no hint, no g^j -> j lookup table.
-    g_log_mem = g_power_of_word(sizes[0], g_squares, COUNT_BITS)
+    # One exact decomposition drives both MEM/MFCNT Jagged heights and derives
+    # the canonical logical log_mem = max(MIN_LOG_MEM, ceil_log2(mem_used)).
+    memory_bits = HeapBuf(COUNT_BITS)
+    g_log_mem, g_memory_used = log2_ceil_word(sizes[0], memory_bits, g_logs_pow2, g_squares, MIN_LOG_MEM, COUNT_BITS, 0)
+    assert sizes[0] != 0
+    assert sizes[0] != 1
     assert log(g_log_mem) < COUNT_BITS
     dims_g[GEN ** 0] = g_log_mem
     # count gadget: g^tau_t = log2_ceil_word(count_t), which also returns
@@ -1061,7 +1050,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     count_bits = HeapBuf(N_TABLES * COUNT_BITS)
     for t in unroll(0, N_TABLES):
         table_count_bits = count_bits * GEN ** (COUNT_BITS * t)
-        g_tau, g_count = log2_ceil_word(sizes[t + 1], table_count_bits, g_logs_pow2, g_squares, FLOORS[t], COUNT_BITS)
+        g_tau, g_count = log2_ceil_word(sizes[t + 1], table_count_bits, g_logs_pow2, g_squares, FLOORS[t], COUNT_BITS, 1)
         dims_g[GEN ** (t + 1)] = g_tau
         count_gpows[GEN ** t] = g_count
     # kappa_base maps a kappa source index to its certified announced log
@@ -1725,13 +1714,11 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     target = gamma_ab * transposed_claims[0] + gamma_c * transposed_claims[1]  # gamma-batch the two ring-switch claims into the opening's target
 
     # ---- Jagged dense layout: derive one cumulative boundary-bit chain ----
-    # Table row-count bits were already Boolean-constrained and tied to their
-    # announced integer words by log2_ceil_word. A width-2^b block shifts that
-    # count by b. Power-of-two structural blocks use a one-hot height whose set
-    # position is pinned directly to their certified kappa. Starting from zero,
-    # a Boolean full-adder then derives every interval endpoint. This replaces
-    # three independent advice decompositions (start/height/end) per block with
-    # one deterministic prefix-sum chain.
+    # Table-row and used-memory bits were already Boolean-constrained and tied
+    # to their announced words by log2_ceil_word.  The bytecode prefix is fixed
+    # by the program.  A width-2^b block shifts its row count by b.
+    # Power-of-two structural blocks use a one-hot height pinned to kappa.
+    # Starting from zero, a Boolean full-adder derives every interval endpoint.
     col_bound_bits = HeapBuf(SIZE_BITS * (N_COMMITTED_COLS + 1))
     col_block_height_bits = HeapBuf(SIZE_BITS * N_COMMITTED_COLS)
     col_row_height_bits = HeapBuf(SIZE_BITS * N_COMMITTED_COLS)
@@ -1752,7 +1739,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
                 assert hb * hb == hb
                 height_word += hb * (2 ** bit)
             assert height_word == g_logs_pow2[kappa_g]
-        else:
+        elif COL_HEIGHT_KIND[c] == 1:
             table_bits = count_bits * GEN ** (COUNT_BITS * COL_HEIGHT_SRC[c])
             for bit in unroll(0, COL_BLOCK_LOG[c]):
                 height_bits[GEN ** bit] = 0
@@ -1764,6 +1751,21 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
             else:
                 for bit in unroll(COL_BLOCK_LOG[c], SIZE_BITS):
                     height_bits[GEN ** bit] = table_bits[GEN ** (bit - COL_BLOCK_LOG[c])]
+        elif COL_HEIGHT_KIND[c] == 2:
+            for bit in unroll(0, COL_BLOCK_LOG[c]):
+                height_bits[GEN ** bit] = 0
+            if COL_BLOCK_LOG[c] == 0:
+                for bit in unroll(0, COUNT_BITS):
+                    height_bits[GEN ** bit] = memory_bits[GEN ** bit]
+                for bit in unroll(COUNT_BITS, SIZE_BITS):
+                    height_bits[GEN ** bit] = 0
+            else:
+                for bit in unroll(COL_BLOCK_LOG[c], SIZE_BITS):
+                    height_bits[GEN ** bit] = memory_bits[GEN ** (bit - COL_BLOCK_LOG[c])]
+        else:
+            # BFCNT is a singleton with a program-bound bytecode prefix.
+            for bit in unroll(0, SIZE_BITS):
+                height_bits[GEN ** bit] = BYTECODE_USED_BITS[bit]
 
         # Padding correction uses the per-column row height (block height / width).
         for bit in unroll(0, SIZE_BITS - COL_BLOCK_LOG[c]):
@@ -1784,7 +1786,11 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         assert carry == 0  # the dense witness area fits in SIZE_BITS
 
     total_bits = col_bound_bits * GEN ** (SIZE_BITS * N_COMMITTED_COLS)
-    gmv, total_word, g_total = verify_log2_ceil(total_bits, g_logs_pow2, g_squares, PCS_MIN_MU, SIZE_BITS)
+    # LIG_MIN_LOG_SIZE includes the PCS floor and the fixed structural floors
+    # max(MIN_LOG_MEM, BYTECODE_LOG).  Above the memory floor, the two committed
+    # memory prefixes already make the packed area large enough to embed their
+    # logical row point.
+    gmv, total_word, g_total = verify_log2_ceil(total_bits, g_logs_pow2, g_squares, LIG_MIN_LOG_SIZE, SIZE_BITS, 0)
 
     # Claims share only a handful of logical row points. Materialize each
     # distinct source/length once, with explicit zero high coordinates.
@@ -1855,7 +1861,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
 
     # ================= the Ligerito opening core (Jagged dense q) ===========
 
-    # Dispatch on m = max(log2_ceil(total real area), PCS_MIN_MU).
+    # Dispatch on m = max(log2_ceil(total real area), LIG_MIN_LOG_SIZE).
     sel = gmv * LIG_MIN_SHIFT_INV  # g^(m - MIN): the match_range arm index selecting the opening candidate
     assert log(sel) < LIG_N_CANDIDATES
     sumcheck_target, fold_challenges, final_msg, inner_total, yr_log_n_g, fold_cap_g = match_range(log(sel), range(0, LIG_N_CANDIDATES), lambda m_idx: open_stacked(m_idx, fs[0], fs[1], target, commit_root_0, commit_root_1, cursor))
