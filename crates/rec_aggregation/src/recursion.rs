@@ -1471,7 +1471,12 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     let label_state = pack_state(Sponge::new(b"leanvm-b", &[]).state());
     ps("TRANSCRIPT_SEED_0", u(label_state[0]).to_string());
     ps("TRANSCRIPT_SEED_1", u(label_state[1]).to_string());
-    ps("TRACE_DUAL_BASIS", flds(&pcs::ring_switch_k::trace_dual_basis_k()[..]));
+    let rs_coeff_orbits: Vec<F128T> = pcs::ring_switch_k::eq_linearized_orbit_constants_k()
+        .iter()
+        .flatten()
+        .copied()
+        .collect();
+    ps("RS_COEFF_ORBITS", flds(&rs_coeff_orbits));
     rep
 }
 

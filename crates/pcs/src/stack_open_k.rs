@@ -22,11 +22,9 @@
 //! no dense `rs_eq_ind`) and drives
 //! [`super::ligerito_k::recursive_verifier_with_basis_succinct_k`] with a
 //! residual evaluator that reconstructs `MLE(b_stack)` at each residual point
-//! in closed form: eq / stride-selector products for the point claims, and the
-//! DP24 tensor-algebra prefix + binary-suffix finish
-//! ([`super::ring_switch_k::eval_rs_eq_prefix_k`] /
-//! [`super::ring_switch_k::eval_rs_eq_finish_from_prefix_binary_q_k`]) for the
-//! ring-switched part.
+//! in closed form: eq / stride-selector products for the point claims, and
+//! [`super::ring_switch_k::eval_rs_eq_from_coeffs_k`] for the ring-switched
+//! part.
 //!
 //! ## Transcript order (identical on both sides)
 //!
@@ -62,10 +60,7 @@ use super::ligerito_k::{
     recursive_prover_with_basis_k, recursive_verifier_with_basis_succinct_k_with_squeezes,
 };
 use super::pack_k::PACKING_WIDTH_K;
-use super::ring_switch_k::{
-    self, RingSwitchProofK, eval_rs_eq_finish_from_prefix_binary_q_k, eval_rs_eq_prefix_k,
-};
-use super::tensor_algebra_k::TensorAlgebraE;
+use super::ring_switch_k::{self, RingSwitchProofK, eval_rs_eq_from_coeffs_k};
 
 // ---------------------------------------------------------------------------
 // Sponge helpers (same convention as ligerito_k): E-scalars straight off
@@ -538,16 +533,21 @@ pub fn verify_opening_batch_mixed_ligerito_stacked_k(
         }
     }
     let r_dprime = sample_ext_vec(sponge, ring_switch_k::LOG_DEGREE_E);
-    let eq_r_dprime = build_eq_table_ext(&r_dprime);
-    let rs_outputs: Vec<_> = proof
+    let linearized_coeffs = ring_switch_k::linearized_eq_coeffs_eq_k(&r_dprime);
+    let rs_claims: Vec<_> = proof
         .ring_switches
         .iter()
-        .map(|rs_proof| ring_switch_k::verify_finish(rs_proof, &eq_r_dprime))
+        .map(|rs_proof| {
+            ring_switch_k::transposed_claim_linearized_k(
+                &rs_proof.s_hat_v,
+                &linearized_coeffs,
+            )
+        })
         .collect();
     let gammas_rs = sample_ext_vec(sponge, n_rs);
     let mut target = F128T::ZERO;
-    for (out, g) in rs_outputs.iter().zip(gammas_rs.iter()) {
-        target += *g * out.sumcheck_claim;
+    for (claim, g) in rs_claims.iter().zip(gammas_rs.iter()) {
+        target += *g * *claim;
     }
 
     // 2. Point-claim values + gammas; fold into the target.
@@ -571,13 +571,6 @@ pub fn verify_opening_batch_mixed_ligerito_stacked_k(
         // (shared prefix) and up to `n_qpkd_from_y` binary y coords.
         let split = qpkd_vars.min(n_ris);
         let n_qpkd_from_y = qpkd_vars - split;
-
-        // Shared tensor prefixes over the ris part of the q_pkd coords.
-        let rs_prefixes: Vec<TensorAlgebraE> = ring
-            .claims
-            .iter()
-            .map(|c| eval_rs_eq_prefix_k(&c.suffix_point, &ris[..split]))
-            .collect();
 
         // Selector eq over the ris coords above the q_pkd slice (E-valued
         // part; the y-covered selector coords are handled per position).
@@ -606,22 +599,13 @@ pub fn verify_opening_batch_mixed_ligerito_stacked_k(
                 }
                 let mut acc = F128T::ZERO;
                 if sel_ok {
-                    // Finish each claim's tensor prefix with the binary
-                    // query suffix (the q_pkd coords covered by y).
-                    let y_low = (y & ((1usize << n_qpkd_from_y) - 1)) as u32;
                     let mut rs_part = F128T::ZERO;
-                    for ((claim, prefix), (g, out)) in ring
-                        .claims
-                        .iter()
-                        .zip(rs_prefixes.iter())
-                        .zip(gammas_rs.iter().zip(rs_outputs.iter()))
-                    {
+                    for (claim, g) in ring.claims.iter().zip(gammas_rs.iter()) {
                         rs_part += *g
-                            * eval_rs_eq_finish_from_prefix_binary_q_k(
-                                prefix,
-                                &claim.suffix_point[split..],
-                                y_low,
-                                &out.eq_r_dprime,
+                            * eval_rs_eq_from_coeffs_k(
+                                &claim.suffix_point,
+                                &x[..qpkd_vars],
+                                &linearized_coeffs,
                             );
                     }
                     acc = rs_part * sel_prefix;

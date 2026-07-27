@@ -189,6 +189,150 @@ pub fn trace_dual_basis_k() -> &'static [F128T; 128] {
     })
 }
 
+/// Seeds for the factored equality-weighted linearized-polynomial
+/// coefficients in [`linearized_eq_coeffs_eq_k`].
+///
+/// The coordinate basis of `E = K[Y]/(Y² + xY + 1)` is the product of the
+/// polynomial basis `(1, x, ..., x^63)` of `K` and `(1, Y)`. Its trace-dual
+/// basis factors accordingly. For the base-field modulus
+///
+/// ```text
+/// p(x) = x^64 + x^4 + x^3 + x + 1,   d = p'(x) = x² + 1,
+/// ```
+///
+/// the polynomial-basis dual is
+///
+/// ```text
+/// β_i = d^-1 (x^(63-i) + ε_i),
+/// ε = [x³+x²+1, x²+x, x+1, 1, 0, ..., 0].
+/// ```
+///
+/// The relative trace-dual of `(1, Y)` is
+/// `(1 + x^-1 Y, x^-1)`. Thus the layout is
+///
+/// ```text
+/// base_main | base_factor[0..6] | base_correction[0..4]
+///           | tower_c0 | tower_c0_plus_c1
+/// ```
+///
+/// and squaring the whole row advances one Frobenius level.
+pub fn eq_linearized_seed_constants_k() -> [F128T; 13] {
+    let x = F64::G;
+    let x_inv = x.inv();
+    let mut powers = [F64::ONE; 64];
+    for i in 1..powers.len() {
+        powers[i] = powers[i - 1] * x;
+    }
+    let d_inv = (powers[2] + F64::ONE).inv();
+
+    let mut seeds = [F128T::ZERO; 13];
+    seeds[0] = F128T::from(d_inv * powers[63]);
+
+    let mut neg_frob = x_inv;
+    for t in 0..LOG_PACKING_K {
+        seeds[1 + t] = F128T::from(F64::ONE + neg_frob);
+        neg_frob = neg_frob.square();
+    }
+
+    let corrections = [
+        powers[3] + powers[2] + F64::ONE,
+        powers[2] + x,
+        x + F64::ONE,
+        F64::ONE,
+    ];
+    for (slot, correction) in seeds[1 + LOG_PACKING_K..11]
+        .iter_mut()
+        .zip(corrections)
+    {
+        *slot = F128T::from(d_inv * correction);
+    }
+
+    let tower_c0 = F128T::new(1, x_inv.0);
+    let tower_c1 = F128T::from(x_inv);
+    seeds[11] = tower_c0;
+    seeds[12] = tower_c0 + tower_c1;
+    seeds
+}
+
+/// The 13 factored tower-basis constants at all 128 Frobenius levels.
+///
+/// Native verification reuses this table directly; the recursive verifier
+/// bakes it into its fixed program.
+pub fn eq_linearized_orbit_constants_k() -> &'static [[F128T; 13]; 128] {
+    use std::sync::OnceLock;
+    static ORBITS: OnceLock<[[F128T; 13]; 128]> = OnceLock::new();
+    ORBITS.get_or_init(|| {
+        let mut rows = [[F128T::ZERO; 13]; 128];
+        rows[0] = eq_linearized_seed_constants_k();
+        for k in 1..128 {
+            rows[k] = rows[k - 1];
+            for value in &mut rows[k] {
+                *value = value.square();
+            }
+        }
+        rows
+    })
+}
+
+/// Coefficients of the equality-weighted bit functional for the tower
+/// coordinate basis, specialized to `w = eq(r, ·)`, `r ∈ E^7`.
+///
+/// This is the tower analogue of the GHASH power-basis factorization: the
+/// 64-coordinate polynomial-basis transform costs six product factors and
+/// four sparse corrections, while the seventh coordinate is absorbed by the
+/// relative trace-dual of the quadratic tower.
+pub fn linearized_eq_coeffs_eq_k(r: &[F128T]) -> [F128T; 128] {
+    assert_eq!(r.len(), LOG_DEGREE_E);
+
+    // Only base indices 0..3 have correction terms. Their upper four bits are
+    // zero, so share that equality factor.
+    let correction_high = r[2..LOG_PACKING_K]
+        .iter()
+        .fold(F128T::ONE, |acc, &rt| acc * (F128T::ONE + rt));
+    let correction_low = build_eq_table_ext(&r[..2]);
+    let correction_weights: [F128T; 4] =
+        std::array::from_fn(|i| correction_high * correction_low[i]);
+
+    let mut c = [F128T::ZERO; 128];
+    for (ck, orbit) in c.iter_mut().zip(eq_linearized_orbit_constants_k()) {
+        let mut base_main = orbit[0];
+        for t in 0..LOG_PACKING_K {
+            base_main *= F128T::ONE + r[t] * orbit[1 + t];
+        }
+        let mut base_correction = F128T::ZERO;
+        for i in 0..4 {
+            base_correction += correction_weights[i] * orbit[1 + LOG_PACKING_K + i];
+        }
+        let tower_factor = orbit[11] + r[LOG_PACKING_K] * orbit[12];
+        *ck = (base_main + base_correction) * tower_factor;
+    }
+    c
+}
+
+/// `Σ_j x^j L(s_hat_v[j])`, where `L(y) = Σ_k c_k y^(2^k)`.
+///
+/// This equals `inner_product_base_ext(transpose_s_hat(s_hat_v), eq(r'',·))`
+/// when `c = linearized_eq_coeffs_eq_k(r'')`, without materializing either
+/// the 128-entry equality tensor or the bit transpose.
+pub fn transposed_claim_linearized_k(
+    s_hat_v: &[F128T],
+    c: &[F128T; 128],
+) -> F128T {
+    assert_eq!(s_hat_v.len(), PACKING_WIDTH_K);
+    let mut acc = F128T::ZERO;
+    for (j, &y) in s_hat_v.iter().enumerate() {
+        let (mut linearized, mut y_pow) = (F128T::ZERO, y);
+        for (k, &ck) in c.iter().enumerate() {
+            linearized += ck * y_pow;
+            if k + 1 < c.len() {
+                y_pow = y_pow.square();
+            }
+        }
+        acc += linearized.mul_base(F64(1u64 << j));
+    }
+    acc
+}
+
 /// Compute the slice-MLE vector `s_hat_v` (length 64) from a packed witness
 /// and a tensor-expanded suffix point.
 ///
@@ -858,6 +1002,40 @@ pub fn eval_rs_eq_k(z_vals: &[F128T], query: &[F128T], eq_r_dprime: &[F128T]) ->
     eval.fold_vertical(eq_r_dprime)
 }
 
+/// Linearized-polynomial evaluation of `MLE(rs_eq_ind)(query)`.
+///
+/// Given the coefficients produced by [`linearized_eq_coeffs_eq_k`], this is
+/// algebraically identical to [`eval_rs_eq_k`], but avoids the 128×128 tensor
+/// algebra:
+///
+/// ```text
+/// Σ_k c_k Π_j (z_j^(2^k) + 1 + query_j).
+/// ```
+pub fn eval_rs_eq_from_coeffs_k(
+    z_vals: &[F128T],
+    query: &[F128T],
+    c: &[F128T; 128],
+) -> F128T {
+    assert_eq!(
+        z_vals.len(),
+        query.len(),
+        "eval_rs_eq_from_coeffs_k: z_vals and query must have equal length"
+    );
+    let mut z_pows = z_vals.to_vec();
+    let mut acc = F128T::ZERO;
+    for (k, &ck) in c.iter().enumerate() {
+        let mut product = F128T::ONE;
+        for (z_pow, &qj) in z_pows.iter_mut().zip(query) {
+            product *= *z_pow + F128T::ONE + qj;
+            if k + 1 < c.len() {
+                *z_pow = z_pow.square();
+            }
+        }
+        acc += ck * product;
+    }
+    acc
+}
+
 /// Prefix-only variant of [`eval_rs_eq_k`]: walks `query_prefix.len()` of
 /// the (z, query) pairs and returns the partially-evolved tensor element.
 /// Pair with [`eval_rs_eq_finish_from_prefix_binary_q_k`] to share the
@@ -1004,6 +1182,58 @@ mod tests {
 
     fn rand_ext(s: &mut u64) -> F128T {
         F128T::new(splitmix64(s), splitmix64(s))
+    }
+
+    #[test]
+    fn factored_tower_eq_coeffs_match_dense_trace_dual_transform() {
+        let mut seed = 0xFAC7_0EED_64D2_0128;
+        let points = [
+            vec![F128T::ZERO; LOG_DEGREE_E],
+            vec![F128T::ONE; LOG_DEGREE_E],
+            (0..LOG_DEGREE_E).map(|_| rand_ext(&mut seed)).collect(),
+            (0..LOG_DEGREE_E).map(|_| rand_ext(&mut seed)).collect(),
+        ];
+        for r in points {
+            let weights = build_eq_table_ext(&r);
+            let mut dual_pows = *trace_dual_basis_k();
+            let dense: [F128T; 128] = std::array::from_fn(|_| {
+                let coefficient = weights
+                    .iter()
+                    .zip(dual_pows)
+                    .fold(F128T::ZERO, |acc, (&w, d)| acc + w * d);
+                for d in &mut dual_pows {
+                    *d = d.square();
+                }
+                coefficient
+            });
+            assert_eq!(
+                linearized_eq_coeffs_eq_k(&r),
+                dense,
+                "factored tower coefficient mismatch at r={r:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn linearized_tower_transpose_and_eval_match_existing_paths() {
+        let mut seed = 0x11EA_12ED_C0EF_F1C5;
+        let r: Vec<F128T> = (0..LOG_DEGREE_E).map(|_| rand_ext(&mut seed)).collect();
+        let eq_r = build_eq_table_ext(&r);
+        let coefficients = linearized_eq_coeffs_eq_k(&r);
+        let s_hat_v: Vec<F128T> =
+            (0..PACKING_WIDTH_K).map(|_| rand_ext(&mut seed)).collect();
+        let transposed = transpose_s_hat(&s_hat_v);
+        assert_eq!(
+            transposed_claim_linearized_k(&s_hat_v, &coefficients),
+            inner_product_base_ext(&transposed, &eq_r)
+        );
+
+        let z: Vec<F128T> = (0..5).map(|_| rand_ext(&mut seed)).collect();
+        let query: Vec<F128T> = (0..z.len()).map(|_| rand_ext(&mut seed)).collect();
+        assert_eq!(
+            eval_rs_eq_from_coeffs_k(&z, &query, &coefficients),
+            eval_rs_eq_k(&z, &query, &eq_r)
+        );
     }
 
     fn rand_bits(m: usize, s: &mut u64) -> Vec<bool> {
