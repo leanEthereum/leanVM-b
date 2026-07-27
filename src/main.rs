@@ -46,8 +46,11 @@ enum Command {
         /// BLAKE3 compressions per inner proof (inner program shape).
         #[arg(long, default_value = "8")]
         hashes: usize,
-        /// MUL iterations per inner proof (inner program shape).
-        #[arg(long, default_value = "32768")]
+        /// MUL iterations per inner proof (inner program shape). Chosen so the
+        /// inner committed witness fills most of a 2^26 PCS, which is the size
+        /// the recursion cost should be quoted at. The inner program's DEREF
+        /// range check gives out just above 66000, so this is near the ceiling.
+        #[arg(long, default_value = "64000")]
         iters: usize,
     },
     /// Prove and verify Fibonacci in the exponent (demo).
