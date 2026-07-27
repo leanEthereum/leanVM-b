@@ -103,6 +103,79 @@ B(r') \;=\; \sum_{k<e}\, c_k \prod_{j=1}^m
 
 \paragraph{Cost.} Level $k$ needs one squaring per coordinate (to get $r_j^{2^k}$ from $r_j^{2^{k-1}}$) and one $m$-factor product: $O(em)$ multiplications in $L$, on top of the $O(e^2)$ for the $c_k$: plain field arithmetic throughout, no bit decompositions.
 
+\section*{Assisted recursive verification}
+
+The linearized-polynomial computation above can be expensive inside a recursive
+verifier.  Let $(B_j)_{j<f}$ be the packing basis and
+$(\delta_i)_{i<f}$ its trace-dual basis:
+\[
+  \operatorname{Tr}(\delta_i B_j)=[i=j].
+\]
+For a ring-switch weight vector $w_t=(w_t(i))_{i<f}$, define
+\[
+  c_t(k)=\sum_{i<f}w_t(i)\,\delta_i^{2^k},
+  \qquad
+  L_t(y)=\sum_{k<f}c_t(k)y^{2^k}.
+\]
+Constructing the whole vector $c_t$ directly costs $\Theta(f^2)$ field
+operations.
+
+\paragraph{Certifying assisted coefficients.}
+The coefficients may instead be supplied as advice and certified through the
+fixed table
+\[
+  D(k,i)=\delta_i^{2^k}.
+\]
+Let $d=\lceil\log_2 f\rceil$ and pad $D$ and every length-$f$ vector with zeros
+to a $2^d$-by-$2^d$ table.  After observing all advised vectors, sample
+batching scalars $\gamma_t$ and a random row point $\rho\in\F_{2^f}^d$.  When
+$w_t(i)=\eq(r''_t,i)$, the identity
+\[
+  \sum_t\gamma_t\sum_k\eq(\rho,k)c_t(k)
+  =
+  \sum_i \widetilde D(\rho,i)
+       \sum_t\gamma_t\eq(r''_t,i)
+\]
+is checked by a $d$-round product sumcheck over $i$.  It leaves one evaluation
+of the fixed $2d$-variable polynomial $\widetilde D$, which may be evaluated
+outside the recursive circuit.  Thus arbitrarily many coefficient vectors
+reduce to one constant-size fixed-table claim.
+
+\paragraph{Proof-dependent relations.}
+The same coefficients often appear in two further verifier computations.  If
+$s_{t,a}=(s_{t,a,j})_{j<f}$ is a proof message, its transpose contribution is
+\[
+  T_{t,a}
+  =
+  \sum_{j<f}B_j\,L_t(s_{t,a,j})
+  =
+  \sum_{j,k<f}B_j\,c_t(k)\,s_{t,a,j}^{2^k}.
+\]
+If $q_t=(q_{t,j})_{j<\ell_t}$ is the final PCS query, the corresponding
+terminal weight has the form
+\[
+  E_{t,a}
+  =
+  \sum_{k<f}c_t(k)
+  \prod_{j<\ell_t}\bigl(z_{t,a,j}^{2^k}+1+q_{t,j}\bigr).
+\]
+These identities cost $\Theta(f^2)$ and $\Theta(f\ell_t)$ respectively, but
+unlike the coefficient transform their right-hand sides depend on proof
+messages.  An assisted verifier may use advised values $T_{t,a}$ and
+$E_{t,a}$, bind all their inputs into the recursive statement, and let an
+outer verifier recompute them.
+
+\paragraph{Composability tradeoff.}
+The fixed-table reduction is naturally batchable and remains constant-size
+across recursion layers.  Forwarding the proof-dependent inputs above instead
+adds one record per immediate proof.  Those records cannot be compressed merely
+by random-linear combination, because their right-hand sides are nonlinear and
+different for every proof.  Constant-size deep recursion therefore requires
+either checking these identities inside the recursive circuit or giving them a
+separate proof-carrying accumulator.  In practice, assistance is worthwhile
+only when the saved recursive work justifies this extra protocol and statement
+complexity.
+
 \section*{Remarks}
 
 \begin{enumerate}
