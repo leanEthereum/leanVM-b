@@ -134,6 +134,10 @@ struct FnLower<'a> {
     /// lazily at the first dominating default-IV compression in this
     /// control-flow scope. [`Self::scoped`] restores this cache at branch joins.
     blake3_iv: Option<Off>,
+    /// Set by [`lower_func`] just before lowering a statement that sits in tail
+    /// position; consumed by the next [`Self::stmt`] call, so nested lowering
+    /// never inherits it.
+    tail_call: bool,
     queue: &'a mut Vec<Func>,
     loop_ctr: &'a mut usize,
     /// The program's function definitions by name, for `Const`-parameter
@@ -1699,7 +1703,7 @@ impl FnLower<'_> {
                 }
             }
         }
-        self.lower_call(callee, args, physical.len(), None, Some(&physical));
+        self.lower_call(callee, args, physical.len(), None, Some(&physical), false);
         self.inline_stack_ret = Some(binds);
         logical
     }
@@ -1722,7 +1726,7 @@ impl FnLower<'_> {
                     "a normal function's multi-cell StackBuf return needs a `let` binding"
                 );
             }
-            self.lower_call(callee, args, dsts.len(), None, Some(dsts));
+            self.lower_call(callee, args, dsts.len(), None, Some(dsts), false);
         }
     }
 
@@ -1843,7 +1847,17 @@ impl FnLower<'_> {
     /// either way; when not taken the callee frame is just never entered. Binds
     /// no return values, so the not-taken path continues straight after it.
     fn call_cond(&mut self, callee: &str, args: &[Expr], cond: Off) {
-        self.lower_call(callee, args, 0, Some(cond), None);
+        self.lower_call(callee, args, 0, Some(cond), None, false);
+    }
+
+    /// [`Self::call_cond`] in TAIL position: the callee inherits THIS frame's
+    /// `retpc`/`retfp` instead of returning here, so a `mul_range` loop stops
+    /// building an unwind chain — only the final iteration executes the
+    /// trailing `Return`, and it returns straight to the loop's original
+    /// caller. Saves the two unwind instructions on every iteration but the
+    /// last.
+    fn call_cond_tail(&mut self, callee: &str, args: &[Expr], cond: Off) {
+        self.lower_call(callee, args, 0, Some(cond), None, true);
     }
 
     /// If `callee` declares `Const` parameters, monomorphize: the constant
@@ -1922,6 +1936,7 @@ impl FnLower<'_> {
         n_ret: usize,
         cond: Option<Off>,
         dsts_in: Option<&[Off]>,
+        tail: bool,
     ) -> Vec<Off> {
         let (callee, args) = self.specialize(callee, args);
         let (callee, args) = (callee.as_str(), args.as_slice());
@@ -1950,18 +1965,36 @@ impl FnLower<'_> {
                 mode: DerefMode::Cell,
             });
         }
-        self.emit(LOp::Deref {
-            alpha: nfp,
-            beta: 1,
-            gamma: 0,
-            mode: DerefMode::Fp,
-        }); // retfp
-        self.emit(LOp::Deref {
-            alpha: nfp,
-            beta: 0,
-            gamma: 0,
-            mode: DerefMode::Pc,
-        }); // retpc = g²·pc
+        if tail {
+            // Tail call: hand the callee OUR return target, so it returns to our
+            // caller and we are never resumed. Cells 0/1 of this frame already
+            // hold that target (written by whoever called us).
+            self.emit(LOp::Deref {
+                alpha: nfp,
+                beta: 1,
+                gamma: 1,
+                mode: DerefMode::Cell,
+            }); // retfp := our retfp
+            self.emit(LOp::Deref {
+                alpha: nfp,
+                beta: 0,
+                gamma: 0,
+                mode: DerefMode::Cell,
+            }); // retpc := our retpc
+        } else {
+            self.emit(LOp::Deref {
+                alpha: nfp,
+                beta: 1,
+                gamma: 0,
+                mode: DerefMode::Fp,
+            }); // retfp
+            self.emit(LOp::Deref {
+                alpha: nfp,
+                beta: 0,
+                gamma: 0,
+                mode: DerefMode::Pc,
+            }); // retpc = g²·pc
+        }
         self.emit(LOp::Jump { oc, od: entry, of: nfp });
 
         let n_args = args.len() as u32;
@@ -1981,6 +2014,7 @@ impl FnLower<'_> {
     }
 
     fn stmt(&mut self, s: &Stmt) {
+        let tail = std::mem::take(&mut self.tail_call);
         match s {
             // A `let` rebinds the name's kind; clear the OTHER map so a stale
             // binding (e.g. a former StackBuf now rebound to a scalar) can't
@@ -2342,7 +2376,11 @@ impl FnLower<'_> {
                 let (la, lb) = (self.expr(lhs), self.expr(rhs));
                 let x = self.fresh();
                 self.emit(LOp::Xor { a: la, b: lb, c: x }); // x = lhs − rhs; x != 0 ⇔ lhs != rhs
-                self.call_cond(callee, args, x);
+                if tail {
+                    self.call_cond_tail(callee, args, x);
+                } else {
+                    self.call_cond(callee, args, x);
+                }
             }
             Stmt::For { var, lo, hi, body } => self.lower_for(var, *lo, hi, body),
             // Compile-time unrolling: emit the body per integer, the counter
@@ -2726,6 +2764,7 @@ pub(crate) fn lower_func(
         n_args: f.params.len() as u32,
         return_shapes: f.return_shapes.clone(),
         is_main: f.name == "main",
+        tail_call: false,
         code: Vec::new(),
         one_off: None,
         heap_sizes: HashMap::new(),
@@ -2747,7 +2786,15 @@ pub(crate) fn lower_func(
         defs,
         const_arrays,
     };
-    for s in &f.body {
+    for (i, s) in f.body.iter().enumerate() {
+        // Tail position: a conditional call whose only successor is a bare
+        // `return`, in a function that returns nothing. The `mul_range` helper
+        // ends exactly like this, so its self-call stops building an unwind
+        // chain.
+        lowerer.tail_call = !lowerer.is_main
+            && f.n_ret == 0
+            && matches!(s, Stmt::CallIfNe(..))
+            && matches!(f.body.get(i + 1), Some(Stmt::Return(r)) if r.is_empty());
         lowerer.stmt(s);
     }
     if lowerer.is_main {
