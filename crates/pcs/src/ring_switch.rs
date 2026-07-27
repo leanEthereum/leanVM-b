@@ -1092,6 +1092,122 @@ pub fn linearized_eq_coeffs(w: &[F128]) -> [F128; 128] {
     c
 }
 
+/// Seeds for the factored coefficient construction in
+/// [`linearized_eq_coeffs_eq`].
+///
+/// The layout is
+/// `main | factor[0..7] | correction[0..7]`.  Squaring the whole array advances
+/// it from Frobenius level `k` to level `k + 1`.
+///
+/// For the GHASH power basis, with `a = x` and `d = p'(a) = a^6 + 1`, the
+/// trace-dual basis is
+///
+/// ```text
+/// δ_i = d^-1 (a^(127-i) + ε_i),
+/// ε = [a^6+a+1, a^5+1, a^4, a^3, a^2, a, 1, 0, ..., 0].
+/// ```
+///
+/// The seeds are respectively `d^-1 a^127`, `1 + a^(-2^t)`, and
+/// `d^-1 ε_i`.
+pub fn eq_linearized_seed_constants() -> [F128; 15] {
+    let a = F128::generator();
+    let a_inv = a.inv();
+    let mut a_pow = F128::ONE;
+    let mut powers = [F128::ONE; 128];
+    for slot in powers.iter_mut() {
+        *slot = a_pow;
+        a_pow *= a;
+    }
+    let d_inv = (powers[6] + F128::ONE).inv();
+
+    let mut seeds = [F128::ZERO; 15];
+    seeds[0] = d_inv * powers[127];
+
+    let mut neg_frob = a_inv;
+    for t in 0..LOG_PACKING {
+        seeds[1 + t] = F128::ONE + neg_frob;
+        neg_frob *= neg_frob;
+    }
+
+    let corrections = [
+        powers[6] + a + F128::ONE,
+        powers[5] + F128::ONE,
+        powers[4],
+        powers[3],
+        powers[2],
+        a,
+        F128::ONE,
+    ];
+    for (slot, correction) in seeds[1 + LOG_PACKING..]
+        .iter_mut()
+        .zip(corrections)
+    {
+        *slot = d_inv * correction;
+    }
+    seeds
+}
+
+/// The 15 factored constants at all 128 Frobenius levels.
+///
+/// Native verification reuses this table directly.  Recursive verifiers bake
+/// it into their fixed program, so coefficient construction needs neither a
+/// runtime orbit table nor runtime squarings of constants.
+pub fn eq_linearized_orbit_constants() -> &'static [[F128; 15]; 128] {
+    use std::sync::OnceLock;
+    static ORBITS: OnceLock<[[F128; 15]; 128]> = OnceLock::new();
+    ORBITS.get_or_init(|| {
+        let mut rows = [[F128::ZERO; 15]; 128];
+        rows[0] = eq_linearized_seed_constants();
+        for k in 1..128 {
+            rows[k] = rows[k - 1];
+            for value in rows[k].iter_mut() {
+                *value *= *value;
+            }
+        }
+        rows
+    })
+}
+
+/// Coefficients of the equality-weighted bit functional, specialized to
+/// `w = eq(r, ·)` for a seven-coordinate point `r`.
+///
+/// This is exactly [`linearized_eq_coeffs`] applied to `build_eq(r)`, but uses
+/// the sparse closed form of the trace-dual GHASH power basis:
+///
+/// ```text
+/// Σ_i eq(r,i) a^((127-i)2^k)
+///   = a^(127·2^k) Π_t (1 + r_t + r_t a^(-2^(k+t))).
+/// ```
+///
+/// Only the first seven dual-basis elements have correction terms.  Thus each
+/// coefficient costs `O(LOG_PACKING)` operations instead of a 128-term dense
+/// Moore transform.
+pub fn linearized_eq_coeffs_eq(r: &[F128]) -> [F128; 128] {
+    assert_eq!(r.len(), LOG_PACKING);
+
+    // Only weights 0..6 occur in the sparse correction. Their four high bits
+    // are all zero, so share that factor instead of building all 128 weights.
+    let high_zero =
+        r[3..].iter().fold(F128::ONE, |acc, &rt| acc * (F128::ONE + rt));
+    let low_eq = build_eq(&r[..3]);
+    let correction_weights: [F128; LOG_PACKING] =
+        std::array::from_fn(|i| high_zero * low_eq[i]);
+
+    let mut c = [F128::ZERO; 128];
+    for (ck, orbit) in c.iter_mut().zip(eq_linearized_orbit_constants()) {
+        let mut main = orbit[0];
+        for t in 0..LOG_PACKING {
+            main *= F128::ONE + r[t] * orbit[1 + t];
+        }
+        let mut correction = F128::ZERO;
+        for i in 0..LOG_PACKING {
+            correction += correction_weights[i] * orbit[1 + LOG_PACKING + i];
+        }
+        *ck = main + correction;
+    }
+    c
+}
+
 /// `⟨tensor_algebra_transpose(s_hat_v), w⟩` without the transpose:
 /// `Σ_j B_j·L_w(s_hat_v[j])` (see [`linearized_eq_coeffs`]).
 pub fn transposed_claim_linearized(s_hat_v: &[F128], c: &[F128; 128]) -> F128 {
@@ -1102,9 +1218,11 @@ pub fn transposed_claim_linearized(s_hat_v: &[F128], c: &[F128; 128]) -> F128 {
     let mut acc = F128::ZERO;
     for (j, &y) in s_hat_v.iter().enumerate() {
         let (mut lw, mut p) = (F128::ZERO, y);
-        for &ck in c.iter() {
+        for (k, &ck) in c.iter().enumerate() {
             lw += ck * p;
-            p *= p;
+            if k + 1 < c.len() {
+                p *= p;
+            }
         }
         acc += basis(j) * lw;
     }
@@ -1114,15 +1232,17 @@ pub fn transposed_claim_linearized(s_hat_v: &[F128], c: &[F128; 128]) -> F128 {
 /// [`eval_rs_eq`] via the telescoped product formula. The tensor element is
 /// `Π_j (z_j⊗1 + 1⊗(1+q_j))`; its rank-1 subset expansion re-sums per
 /// Frobenius power into `Σ_k c_k·Π_j (z_j^{2^k} + 1 + q_j)`.
-fn eval_rs_eq_linearized(z_vals: &[F128], query: &[F128], c: &[F128; 128]) -> F128 {
+pub fn eval_rs_eq_from_coeffs(z_vals: &[F128], query: &[F128], c: &[F128; 128]) -> F128 {
     assert_eq!(z_vals.len(), query.len());
     let mut zp: Vec<F128> = z_vals.to_vec();
     let mut acc = F128::ZERO;
-    for &ck in c.iter() {
+    for (k, &ck) in c.iter().enumerate() {
         let mut prod = F128::ONE;
         for (zpj, &qj) in zp.iter_mut().zip(query.iter()) {
             prod *= *zpj + F128::ONE + qj;
-            *zpj *= *zpj;
+            if k + 1 < c.len() {
+                *zpj *= *zpj;
+            }
         }
         acc += ck * prod;
     }
@@ -1981,19 +2101,6 @@ pub fn prove_batched_padded_with_precomputed(
     (results, gammas_rs)
 }
 
-/// Verifier-side output of the ring-switch binding (`verify_bind` plus the shared `r''` sample in the stacked verifier): contains everything the caller
-/// needs to drive the opening's consistency check, *without* materializing the
-/// dense `rs_eq_ind` vector of length `2^(m-7)`.
-#[derive(Clone, Debug)]
-pub struct RingSwitchVerifierOutput {
-    pub sumcheck_claim: F128,
-    /// The sampled `r''` itself (`LOG_PACKING = 7` coordinates).
-    pub r_dprime: Vec<F128>,
-    /// `eq` tensor of length `2^LOG_PACKING = 128` derived from the verifier's
-    /// sampled `r''`. Used by [`eval_rs_eq`] at the opening's final point.
-    pub eq_r_dprime: Vec<F128>,
-}
-
 /// The bind + claim-check phase of the ring-switch verifier, for batch callers
 /// that share one `r''` across claims: absorbs the label and slice, checks
 /// the claim, samples nothing.
@@ -2043,7 +2150,7 @@ pub fn eval_rs_eq(z_vals: &[F128], query: &[F128], eq_r_dprime: &[F128]) -> F128
     // Π_j (z_j⊗1 + 1⊗(1+q_j)) folded against eq_r_dprime, which telescopes to
     // Σ_k c_k·Π_j (z_j^{2^k} + 1 + q_j).
     let c = linearized_eq_coeffs(eq_r_dprime);
-    eval_rs_eq_linearized(z_vals, query, &c)
+    eval_rs_eq_from_coeffs(z_vals, query, &c)
 }
 
 #[cfg(test)]
@@ -2135,6 +2242,24 @@ mod tests {
         assert_eq!(s_hat_v, twice);
     }
 
+    #[test]
+    fn factored_eq_coeffs_match_dense_moore_transform() {
+        let mut rng = Rng::new(0xFAC7_0EED);
+        let points = [
+            vec![F128::ZERO; LOG_PACKING],
+            vec![F128::ONE; LOG_PACKING],
+            (0..LOG_PACKING).map(|_| rng.f128()).collect(),
+            (0..LOG_PACKING).map(|_| rng.f128()).collect(),
+        ];
+        for r in points {
+            let weights = build_eq(&r);
+            assert_eq!(
+                linearized_eq_coeffs_eq(&r),
+                linearized_eq_coeffs(&weights),
+                "factored coefficient mismatch at r={r:?}"
+            );
+        }
+    }
 
     /// Throughput A/B of the fold_1b_rows variants at m=29 scale. `#[ignore]`d
     /// (allocates/folds 64 MB buffers many times); run explicitly with
