@@ -141,8 +141,8 @@ of the fixed $2d$-variable polynomial $\widetilde D$, which may be evaluated
 outside the recursive circuit.  Thus arbitrarily many coefficient vectors
 reduce to one constant-size fixed-table claim.
 
-\paragraph{Proof-dependent relations.}
-The same coefficients often appear in two further verifier computations.  If
+\paragraph{Proof-dependent relations stay in-circuit.}
+The same coefficients appear in two further verifier computations.  If
 $s_{t,a}=(s_{t,a,j})_{j<f}$ is a proof message, its transpose contribution is
 \[
   T_{t,a}
@@ -161,20 +161,18 @@ terminal weight has the form
 \]
 These identities cost $\Theta(f^2)$ and $\Theta(f\ell_t)$ respectively, but
 unlike the coefficient transform their right-hand sides depend on proof
-messages.  An assisted verifier may use advised values $T_{t,a}$ and
-$E_{t,a}$, bind all their inputs into the recursive statement, and let an
-outer verifier recompute them.
+messages.  The recursive verifier therefore computes $T_{t,a}$ and $E_{t,a}$
+itself from the advised $c_t$ and the transcript-derived inputs.  The aggregate
+fixed-table sumcheck certifies every $c_t$, so these local computations are
+sound without exporting any proof-specific records.
 
-\paragraph{Composability tradeoff.}
-The fixed-table reduction is naturally batchable and remains constant-size
-across recursion layers.  Forwarding the proof-dependent inputs above instead
-adds one record per immediate proof.  Those records cannot be compressed merely
-by random-linear combination, because their right-hand sides are nonlinear and
-different for every proof.  Constant-size deep recursion therefore requires
-either checking these identities inside the recursive circuit or giving them a
-separate proof-carrying accumulator.  In practice, assistance is worthwhile
-only when the saved recursive work justifies this extra protocol and statement
-complexity.
+\paragraph{Constant-size composition.}
+Only the fixed-table claims cross a recursion boundary, and the sumcheck above
+merges arbitrarily many of them into one evaluation of $\widetilde D$.
+Consequently a fixed-arity layer, in particular $2\mathbin{\to}1$, has
+fixed-size recursive state at every depth.  The assistance removes the fixed
+$\Theta(f^2)$ coefficient transform while retaining the proof-dependent
+$\Theta(f^2+f\ell_t)$ checks inside each recursive verifier.
 
 \section*{Remarks}
 

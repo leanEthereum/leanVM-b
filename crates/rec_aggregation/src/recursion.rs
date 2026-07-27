@@ -1,9 +1,8 @@
 //! End-to-end N→1 recursion: one guest program (`guests/recursion.py`)
 //! replays `cpu::verify` for NSUB proofs of a fixed inner program, batches
 //! their deferred claims with three aggregation sumchecks, and binds the sub
-//! statements, four reduced fixed-table evaluations, and transparent
-//! ring-switch relation checks to its own public input (doc.tex §Recursive
-//! aggregation, §Deferred evaluation claims).
+//! statements and four reduced fixed-table evaluations to its own public
+//! input (doc.tex §Recursive aggregation, §Deferred evaluation claims).
 //!
 //! Zero hand-mirroring: the transcript trace of a REAL `cpu::verify` run
 //! (`transcript::trace_start`/`trace_take`) is the guest's mechanical spec —
@@ -13,8 +12,7 @@
 //! guest's aggregation transcript and runs the three batching-sumcheck provers
 //! (dense bytecode, two-phase sparse matrices, and trace-dual certification).
 //! [`RecursiveProof::verify`] is the only public acceptance path: it verifies
-//! the outer VM proof, evaluates every deferred fixed polynomial, and checks
-//! every proof-bound transparent relation.
+//! the outer VM proof and evaluates every deferred fixed polynomial.
 
 use std::collections::BTreeMap;
 
@@ -117,9 +115,8 @@ fn prove_inner(pi: [F128; 2], hashes: usize, iters: usize) -> (Program, lean_vm:
     (program, proof, stats.cycles)
 }
 
-/// The deferred-claim data the guest binds to the outer public input: the outer
-/// verifier checks each claim natively (doc.tex §Deferred evaluation claims;
-/// n_rec = 1 forwards fresh claims without batching).
+/// The mergeable deferred-claim data the guest batches into fixed-size claims
+/// for the outer verifier (doc.tex §Deferred evaluation claims).
 struct SubDefer {
     pi: [F128; 2],
     kbc: usize,
@@ -134,11 +131,6 @@ struct SubDefer {
     matpart: F128,
     rs_coeffs: Vec<F128>,
     r_dprime: Vec<F128>,
-    s_hat_v: Vec<F128>,
-    rs_transposed: Vec<F128>,
-    rs_z_vals: Vec<F128>,
-    rs_query: Vec<F128>,
-    rs_terminal: Vec<F128>,
 }
 
 /// The batched reduced claims the aggregation exports: one point + value on
@@ -155,25 +147,12 @@ struct ReducedClaims {
     v_d: F128,
 }
 
-/// Proof-bound ring-switch data whose transparent transpose and terminal
-/// relations are cheaper to discharge natively than inside the recursion VM.
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-struct RingChecks {
-    r_dprime: Vec<F128>,
-    s_hat_v: Vec<F128>,
-    transposed: Vec<F128>,
-    z_vals: Vec<F128>,
-    query: Vec<F128>,
-    terminal: Vec<F128>,
-}
-
 /// Everything committed by the outer public input. Keeping this private makes
 /// the deferred checks an implementation detail of recursive verification.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct RecursiveStatement {
     sub_statements: Vec<[F128; 2]>,
     reduced: ReducedClaims,
-    ring_checks: Vec<RingChecks>,
 }
 
 impl RecursiveStatement {
@@ -200,31 +179,6 @@ impl RecursiveStatement {
             sponge.observe(v);
         }
         sponge.observe(self.reduced.v_d);
-        for check in &self.ring_checks {
-            for &v in &check.r_dprime {
-                sponge.observe(v);
-            }
-            for &v in &check.s_hat_v {
-                sponge.observe(v);
-            }
-            for &v in &check.transposed {
-                sponge.observe(v);
-            }
-            sponge.observe(g_pow(check.query.len()));
-            for rs in 0..2 {
-                for i in 0..40 {
-                    let v =
-                        if i < check.query.len() { check.z_vals[rs * check.query.len() + i] } else { F128::ZERO };
-                    sponge.observe(v);
-                }
-            }
-            for i in 0..40 {
-                sponge.observe(check.query.get(i).copied().unwrap_or(F128::ZERO));
-            }
-            for &v in &check.terminal {
-                sponge.observe(v);
-            }
-        }
         sponge.state()
     }
 }
@@ -252,15 +206,11 @@ impl RecursiveProof {
         if statement.sub_statements.is_empty() {
             return Err(RecursiveVerifyError::EmptyBatch);
         }
-        if statement.ring_checks.len() != statement.sub_statements.len() {
-            return Err(RecursiveVerifyError::InvalidDeferredShape);
-        }
         let guest = recursion_guest(inner_program, statement.sub_statements.len());
         let public_input = statement.public_input(lean_vm::cpu::fs_seed(inner_program));
         verify(&guest, &public_input, &self.outer_proof)
             .map_err(RecursiveVerifyError::OuterProof)?;
-        check_reduced(inner_program, &statement.reduced)?;
-        check_ring_relations(&statement.ring_checks)
+        check_reduced(inner_program, &statement.reduced)
     }
 }
 
@@ -273,8 +223,6 @@ pub enum RecursiveVerifyError {
     MatrixAClaim,
     MatrixBClaim,
     DualBasisClaim,
-    RingTransposeClaim,
-    RingTerminalClaim,
 }
 
 /// The fixed 14-var multilinear table
@@ -291,41 +239,6 @@ fn trace_dual_frobenius_table() -> Vec<F128> {
         }
     }
     table
-}
-
-fn check_ring_relations(checks: &[RingChecks]) -> Result<(), RecursiveVerifyError> {
-    for check in checks {
-        if check.r_dprime.len() != 7
-            || check.s_hat_v.len() != 256
-            || check.transposed.len() != 2
-            || check.query.is_empty()
-            || check.query.len() > 40
-            || check.z_vals.len() != 2 * check.query.len()
-            || check.terminal.len() != 2
-        {
-            return Err(RecursiveVerifyError::InvalidDeferredShape);
-        }
-        let eq = primitives::multilinear::build_eq(&check.r_dprime);
-        let coeffs = pcs::ring_switch::linearized_eq_coeffs(&eq);
-        for rs in 0..2 {
-            let got = pcs::ring_switch::transposed_claim_linearized(
-                &check.s_hat_v[128 * rs..128 * (rs + 1)],
-                &coeffs,
-            );
-            if got != check.transposed[rs] {
-                return Err(RecursiveVerifyError::RingTransposeClaim);
-            }
-            let got_terminal = pcs::ring_switch::eval_rs_eq(
-                &check.z_vals[check.query.len() * rs..check.query.len() * (rs + 1)],
-                &check.query,
-                &eq,
-            );
-            if got_terminal != check.terminal[rs] {
-                return Err(RecursiveVerifyError::RingTerminalClaim);
-            }
-        }
-    }
-    Ok(())
 }
 
 fn fold_lsb(t: &mut Vec<F128>, r: F128) {
@@ -412,29 +325,6 @@ fn gen_agg(
             h.observe(v);
         }
         for &v in &d.r_dprime {
-            h.observe(v);
-        }
-        for &v in &d.s_hat_v {
-            h.observe(v);
-        }
-        for &v in &d.rs_transposed {
-            h.observe(v);
-        }
-        h.observe(g_pow(d.rs_query.len()));
-        for rs in 0..2 {
-            for i in 0..40 {
-                let v = if i < d.rs_query.len() {
-                    d.rs_z_vals[rs * d.rs_query.len() + i]
-                } else {
-                    F128::ZERO
-                };
-                h.observe(v);
-            }
-        }
-        for i in 0..40 {
-            h.observe(d.rs_query.get(i).copied().unwrap_or(F128::ZERO));
-        }
-        for &v in &d.rs_terminal {
             h.observe(v);
         }
     }
@@ -681,34 +571,6 @@ fn gen_agg(
         e.observe(v);
     }
     e.observe(v_d);
-    for d in subs {
-        for &v in &d.r_dprime {
-            e.observe(v);
-        }
-        for &v in &d.s_hat_v {
-            e.observe(v);
-        }
-        for &v in &d.rs_transposed {
-            e.observe(v);
-        }
-        e.observe(g_pow(d.rs_query.len()));
-        for rs in 0..2 {
-            for i in 0..40 {
-                let v = if i < d.rs_query.len() {
-                    d.rs_z_vals[rs * d.rs_query.len() + i]
-                } else {
-                    F128::ZERO
-                };
-                e.observe(v);
-            }
-        }
-        for i in 0..40 {
-            e.observe(d.rs_query.get(i).copied().unwrap_or(F128::ZERO));
-        }
-        for &v in &d.rs_terminal {
-            e.observe(v);
-        }
-    }
 
     let hints = vec![
         ("fs_seed".to_string(), vec![seed[0], seed[1]]),
@@ -916,38 +778,9 @@ fn gen_verify(
     let ns = proof.stream.len() - lig_stream_words;
     let lcr: Vec<F128> = proof.stream[ns - 256 - 64 - 2 * lcrounds..ns - 256 - 64].to_vec();
     let lcz: Vec<F128> = proof.stream[ns - 256 - 64..ns - 256].to_vec();
-    let s_hat_v = proof.stream[ns - 256..ns].to_vec();
     let r_dprime = summary.opening.r_dprime.clone();
     let eq_dprime = primitives::multilinear::build_eq(&r_dprime);
     let rs_coeffs = pcs::ring_switch::linearized_eq_coeffs(&eq_dprime);
-    let rs_transposed: Vec<F128> = (0..2)
-        .map(|rs| {
-            pcs::ring_switch::transposed_claim_linearized(
-                &s_hat_v[128 * rs..128 * (rs + 1)],
-                &rs_coeffs,
-            )
-        })
-        .collect();
-    let inner_rest_len = flock::blake3::K_LOG - 6;
-    let mut ab_outer = summary.lc_claim.r_inner_rest.clone();
-    ab_outer.extend_from_slice(&summary.zc_claim.mlv_challenges[inner_rest_len..]);
-    let c_outer = summary.zc_claim.r_rest.clone();
-    assert_eq!(ab_outer.len(), c_outer.len());
-    assert!(!ab_outer.is_empty());
-    let qpkd_vars = ab_outer.len() - 1;
-    assert!(qpkd_vars <= 40);
-    let mut rs_z_vals = ab_outer[1..].to_vec();
-    rs_z_vals.extend_from_slice(&c_outer[1..]);
-    let rs_query = summary.opening.lig.ris[..qpkd_vars].to_vec();
-    let rs_terminal: Vec<F128> = (0..2)
-        .map(|rs| {
-            pcs::ring_switch::eval_rs_eq(
-                &rs_z_vals[qpkd_vars * rs..qpkd_vars * (rs + 1)],
-                &rs_query,
-                &eq_dprime,
-            )
-        })
-        .collect();
 
     // matpart = the deferred weighted matrix evaluation: the lincheck running
     // claim minus (= plus, char 2) the const-pin contribution.
@@ -1164,11 +997,6 @@ fn gen_verify(
         matpart,
         rs_coeffs: rs_coeffs.to_vec(),
         r_dprime,
-        s_hat_v,
-        rs_transposed: rs_transposed.clone(),
-        rs_z_vals,
-        rs_query,
-        rs_terminal: rs_terminal.clone(),
     };
 
     let hints = vec![
@@ -1180,20 +1008,6 @@ fn gen_verify(
         ("bytecode_vals".to_string(), bcv),
         ("matpart".to_string(), vec![matpart]),
         ("rs_coeffs".to_string(), deferred.rs_coeffs.clone()),
-        ("rs_transposed".to_string(), rs_transposed),
-        ("rs_terminal".to_string(), rs_terminal),
-        ("rs_z_vals".to_string(), {
-            let q = deferred.rs_query.len();
-            let mut v = vec![F128::ZERO; 80];
-            v[..q].copy_from_slice(&deferred.rs_z_vals[..q]);
-            v[40..40 + q].copy_from_slice(&deferred.rs_z_vals[q..]);
-            v
-        }),
-        ("rs_query".to_string(), {
-            let mut v = deferred.rs_query.clone();
-            v.resize(40, F128::ZERO);
-            v
-        }),
         ("merkle_leaf_rows".to_string(), lrows_flat),
         ("merkle_paths".to_string(), lpaths_flat),
         ("sub_pis".to_string(), vec![pi[0], pi[1]]),
@@ -1325,17 +1139,6 @@ fn build_batch(inner: &[(usize, usize)]) -> Batch {
     let statement = RecursiveStatement {
         sub_statements: subs.iter().map(|d| d.pi).collect(),
         reduced,
-        ring_checks: subs
-            .iter()
-            .map(|d| RingChecks {
-                r_dprime: d.r_dprime.clone(),
-                s_hat_v: d.s_hat_v.clone(),
-                transposed: d.rs_transposed.clone(),
-                z_vals: d.rs_z_vals.clone(),
-                query: d.rs_query.clone(),
-                terminal: d.rs_terminal.clone(),
-            })
-            .collect(),
     };
     assert_eq!(
         statement.public_input(lean_vm::cpu::fs_seed(program0)),
@@ -1624,14 +1427,12 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     // The stacked bytecode: nbcv/2 encoding columns per side, packed along
     // log2_ceil(cols) selector bits. The defer region is 2*kbc points + sel
     // bits + 2 reduced + alpha + z_skip + 2*lcrounds rounds + 64 z_partial
-    // + 1 matpart + 128 ring-switch coefficients + 7 r_dprime coordinates
-    // + 256 s_hat_v words + 2 transposed claims + one terminal query length,
-    // two 40-word z rows, one 40-word query, and 2 terminal evaluations.
+    // + 1 matpart + 128 ring-switch coefficients + 7 r_dprime coordinates.
     let bc_cols = nbcv / 2;
     let log2_bc_cols = log2_ceil(bc_cols);
     ps("BYTECODE_COLS", bc_cols.to_string());
     ps("LOG2_BYTECODE_COLS", log2_bc_cols.to_string());
-    ps("DEFER_SIZE", (kbc + log2_bc_cols + 2 * lcrounds + 584).to_string());
+    ps("DEFER_SIZE", (kbc + log2_bc_cols + 2 * lcrounds + 203).to_string());
     ps("BYTECODE_VARS", (kbc + log2_bc_cols).to_string());
     let label_state = Sponge::new(b"leanvm-b", &[]).state();
     ps("TRANSCRIPT_SEED_0", u(label_state[0]).to_string());
@@ -1755,24 +1556,11 @@ fn recursion_1to1_smoke() {
     let cfg = [(4, 1 << 12)];
     let batch = build_batch(&cfg);
     check_reduced(&batch.program0, &batch.statement.reduced).expect("honest reduced claims");
-    check_ring_relations(&batch.statement.ring_checks).expect("honest ring relations");
     let mut bad_reduced = batch.statement.reduced.clone();
     bad_reduced.v_d += F128::ONE;
     assert!(matches!(
         check_reduced(&batch.program0, &bad_reduced),
         Err(RecursiveVerifyError::DualBasisClaim)
-    ));
-    let mut bad_ring = batch.statement.ring_checks.clone();
-    bad_ring[0].transposed[0] += F128::ONE;
-    assert!(matches!(
-        check_ring_relations(&bad_ring),
-        Err(RecursiveVerifyError::RingTransposeClaim)
-    ));
-    let mut bad_terminal = batch.statement.ring_checks.clone();
-    bad_terminal[0].terminal[0] += F128::ONE;
-    assert!(matches!(
-        check_ring_relations(&bad_terminal),
-        Err(RecursiveVerifyError::RingTerminalClaim)
     ));
     let mut guest = recursion_guest(&batch.program0, cfg.len());
     for (name, entries) in &batch.merged {

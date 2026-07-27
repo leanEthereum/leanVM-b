@@ -181,17 +181,11 @@ CLAIM_POINT_OFF = CLAIM_POINT_OFF_PLACEHOLDER
 QPKD_VARS_CAP = QPKD_VARS_CAP_PLACEHOLDER
 # Phase F: log rows of the bytecode blocks (the deferred bytecode points).
 BYTECODE_LOG = BYTECODE_LOG_PLACEHOLDER
-# One sub-proof's deferred-claim region, including the 128 hinted ring-switch
-# coefficients and their seven-coordinate r'' point (see verify_sub's layout).
+# One sub-proof's deferred-claim region, including the mergeable 128 hinted
+# ring-switch coefficients and their seven-coordinate r'' point.
 MATPART_OFF = BYTECODE_LOG + LOG2_BYTECODE_COLS + 3 + 2 ** K_SKIP + 2 * LINCHECK_ROUNDS
 RS_COEFF_OFF = MATPART_OFF + 1
 RS_DPRIME_OFF = RS_COEFF_OFF + 128
-RS_SHAT_OFF = RS_DPRIME_OFF + 7
-RS_TRANSPOSED_OFF = RS_SHAT_OFF + 256
-RS_TERM_LEN_OFF = RS_TRANSPOSED_OFF + 2
-RS_TERM_Z_OFF = RS_TERM_LEN_OFF + 1
-RS_TERM_QUERY_OFF = RS_TERM_Z_OFF + 80
-RS_TERM_VALUE_OFF = RS_TERM_QUERY_OFF + 40
 DEFER_SIZE = DEFER_SIZE_PLACEHOLDER
 # Aggregation: NSUB sub-proofs of the same program; per-sub proof data arrives
 # as hints. The seed sponge state after the two byte-string absorbs is baked
@@ -1404,13 +1398,10 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     # (x_inner_rest is the REVERSED lincheck round vector). Claim 1 (c): value
     # c_eval, z_skip = zerocheck_z, x_outer[0] = zerocheck_r[6].
     transposed_claims = StackBuf(2)
-    hint_witness(transposed_claims[0:2], "rs_transposed")
     rs_eq_vals = StackBuf(2)
-    hint_witness(rs_eq_vals[0:2], "rs_terminal")
     c_table = HeapBuf(FIELD_BITS)
     hint_witness(c_table[0:FIELD_BITS], "rs_coeffs")
     z_vals = HeapBuf(2 * QPKD_VARS_CAP)
-    hint_witness(z_vals[0:2 * QPKD_VARS_CAP], "rs_z_vals")
     r_dprime = HeapBuf(LOG2_FIELD_BITS)
     for rs in unroll(0, 2):
         for i in unroll(0, FIELD_BITS):
@@ -1440,6 +1431,22 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         rv = fs[0]
         r_dprime[GEN ** i] = rv
     for rs in unroll(0, 2):
+        # The coefficient transform is certified later by a mergeable fixed-
+        # table sumcheck, but each proof-dependent transpose is checked here.
+        s_hat_row = s_hat_v * GEN ** (FIELD_BITS * rs)
+        x_pow_chain = HeapBuf(FIELD_BITS + 1)
+        x_pow_chain[GEN ** 0] = GEN ** 0
+        t_chain = HeapBuf(FIELD_BITS + 1)
+        t_chain[GEN ** 0] = 0
+        for x_round in mul_range(1, GEN ** FIELD_BITS):
+            y_pow = s_hat_row[x_round]
+            lin_eval = 0
+            for k in unroll(0, FIELD_BITS):
+                lin_eval += c_table[GEN ** k] * y_pow
+                y_pow *= y_pow
+            t_chain[x_round * GEN] = t_chain[x_round] + x_pow_chain[x_round] * lin_eval
+            x_pow_chain[x_round * GEN] = x_pow_chain[x_round] * 2
+        transposed_claims[rs] = t_chain[GEN ** FIELD_BITS]
         # z_vals for eval_rs_eq (the x_outer tail), used at the opening terminal.
         if rs == 0:
             for t in unroll(0, LINCHECK_ROUNDS - 1):
@@ -1455,9 +1462,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
             zcr7 = zerocheck_r * GEN ** (K_SKIP + 1)
             for xt in mul_range(1, tau_blake3_g * GEN ** (K_LOG - LOG2_FIELD_BITS)):
                 zv_hi[xt] = zcr7[xt]
-    # Gamma-combine the two transposed sumcheck claims. Their transparent
-    # bit-transpose relation is bound into the recursive statement and checked
-    # by the outer native verifier.
+    # Gamma-combine the two transposed sumcheck claims computed in-circuit.
     fs = squeeze(fs)
     gamma_ab = fs[0]
     fs = squeeze(fs)
@@ -1594,14 +1599,34 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
             assert sel_bit * sel_bit == sel_bit
             sel_chain[xk * GEN] = sel_chain[xk] * (1 + sel_bit + ris_hi[xk])
         claim_weights[GEN ** j] = sel_chain[seln] * gamma_pool[GEN ** j]
-    # The two eval_rs_eq terminal values are transparent advice: their z
-    # points and the Ligerito query are transcript-derived, exported below,
-    # and checked by the outer native verifier.
+    # Evaluate both proof-dependent ring-switch terminals in-circuit. Unlike
+    # the fixed coefficient table, these nonlinear records are not forwarded:
+    # doing so would make recursive statement size grow with depth.
     qpkdv_g = tau_blake3_g * GEN ** (K_LOG - LOG2_FIELD_BITS)
-    rs_query = HeapBuf(QPKD_VARS_CAP)
-    hint_witness(rs_query[0:QPKD_VARS_CAP], "rs_query")
-    for xk in mul_range(1, qpkdv_g):
-        rs_query[xk] = fold_challenges[xk]
+    one_plus_q = HeapBuf(GEN ** (QPKD_VARS_CAP))
+    for x_round in mul_range(1, qpkdv_g):
+        one_plus_q[x_round] = 1 + fold_challenges[x_round]
+    for rs in unroll(0, 2):
+        z_pows = HeapBuf((FIELD_BITS + 1) * QPKD_VARS_CAP)
+        z_row_src = z_vals * GEN ** (QPKD_VARS_CAP * rs)
+        for x_round in mul_range(1, qpkdv_g):
+            z_pows[x_round] = z_row_src[x_round]
+        e_acc = HeapBuf(FIELD_BITS + 1)
+        e_acc[GEN ** 0] = 0
+        row_ptr = HeapBuf(FIELD_BITS + 1)
+        row_ptr[GEN ** 0] = z_pows
+        for xk in mul_range(1, GEN ** FIELD_BITS):
+            z_row = row_ptr[xk]
+            z_row_next = z_row * qpkdv_g
+            prod_chain = HeapBuf(GEN ** (QPKD_VARS_CAP + 1))
+            prod_chain[GEN ** 0] = 1
+            for x_round in mul_range(1, qpkdv_g):
+                zv = z_row[x_round]
+                prod_chain[x_round * GEN] = prod_chain[x_round] * (zv + one_plus_q[x_round])
+                z_row_next[x_round] = zv * zv
+            e_acc[xk * GEN] = e_acc[xk] + c_table[xk] * prod_chain[qpkdv_g]
+            row_ptr[xk * GEN] = z_row_next
+        rs_eq_vals[rs] = e_acc[GEN ** FIELD_BITS]
     # ring-switch weight: extend by the selector bits over the fold_challenges
     # coords [qpkdv, lenris).
     rs_weight = gamma_ab * rs_eq_vals[0] + gamma_c * rs_eq_vals[1]
@@ -1690,8 +1715,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     #   +0..SEL bytecode_sel | +SEL bytecode_reduced | +SEL+1 alpha
     #   | +SEL+2 z_skip | +SEL+3.. zrho | +SEL+3+LCR.. lincheck rs
     #   | +SEL+3+2*LCR.. z_partial (2^K_SKIP) | MATPART_OFF matpart
-    #   | RS_COEFF_OFF.. coefficients | RS_DPRIME_OFF.. r''
-    #   | RS_SHAT_OFF.. the two slices | RS_TRANSPOSED_OFF.. their claims.
+    #   | RS_COEFF_OFF.. coefficients | RS_DPRIME_OFF.. r''.
     for k in unroll(0, BYTECODE_LOG):
         defer_out[GEN ** k] = zeta[GEN ** k]
     for k in unroll(0, LOG2_BYTECODE_COLS):
@@ -1709,17 +1733,6 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         defer_out[GEN ** (RS_COEFF_OFF + k)] = c_table[GEN ** k]
     for k in unroll(0, LOG2_FIELD_BITS):
         defer_out[GEN ** (RS_DPRIME_OFF + k)] = r_dprime[GEN ** k]
-    for k in unroll(0, 2 * FIELD_BITS):
-        defer_out[GEN ** (RS_SHAT_OFF + k)] = s_hat_v[GEN ** k]
-    for k in unroll(0, 2):
-        defer_out[GEN ** (RS_TRANSPOSED_OFF + k)] = transposed_claims[k]
-    defer_out[GEN ** RS_TERM_LEN_OFF] = qpkdv_g
-    for k in unroll(0, 2 * QPKD_VARS_CAP):
-        defer_out[GEN ** (RS_TERM_Z_OFF + k)] = z_vals[GEN ** k]
-    for k in unroll(0, QPKD_VARS_CAP):
-        defer_out[GEN ** (RS_TERM_QUERY_OFF + k)] = rs_query[GEN ** k]
-    for k in unroll(0, 2):
-        defer_out[GEN ** (RS_TERM_VALUE_OFF + k)] = rs_eq_vals[k]
     return
 
 
@@ -1727,8 +1740,8 @@ def main():
     # NSUB sub-proofs of the fixed inner program: verify each (verify_sub),
     # then aggregate their deferred claims. The fresh aggregation transcript
     # RLC-batches the bytecode, matrix, and trace-dual claims in three
-    # sumchecks. The four reduced fixed-table evaluations and the transparent
-    # ring-switch relation data reach this guest's public input.
+    # sumchecks. Only four reduced fixed-table evaluations reach this guest's
+    # public input.
     sub_pis = HeapBuf(NSUB * 2)
     hint_witness(sub_pis[0:NSUB * 2], "sub_pis")
     # The FS seed — ONE digest of everything fixed about the inner environment
@@ -1912,21 +1925,6 @@ def main():
     for k in unroll(0, LOG2_FIELD_BITS):
         out_fs = obs(out_fs, dual_col_point[GEN ** k])
     out_fs = obs(out_fs, dual_star)
-    for sub in unroll(0, NSUB):
-        for k in unroll(0, LOG2_FIELD_BITS):
-            out_fs = obs(out_fs, defer[GEN ** (sub * DEFER_SIZE + RS_DPRIME_OFF + k)])
-        for k in unroll(0, 2 * FIELD_BITS):
-            out_fs = obs(out_fs, defer[GEN ** (sub * DEFER_SIZE + RS_SHAT_OFF + k)])
-        for k in unroll(0, 2):
-            out_fs = obs(out_fs, defer[GEN ** (sub * DEFER_SIZE + RS_TRANSPOSED_OFF + k)])
-        term_len_g = defer[GEN ** (sub * DEFER_SIZE + RS_TERM_LEN_OFF)]
-        out_fs = obs(out_fs, term_len_g)
-        for k in unroll(0, 2 * QPKD_VARS_CAP):
-            out_fs = obs(out_fs, defer[GEN ** (sub * DEFER_SIZE + RS_TERM_Z_OFF + k)])
-        for k in unroll(0, QPKD_VARS_CAP):
-            out_fs = obs(out_fs, defer[GEN ** (sub * DEFER_SIZE + RS_TERM_QUERY_OFF + k)])
-        for k in unroll(0, 2):
-            out_fs = obs(out_fs, defer[GEN ** (sub * DEFER_SIZE + RS_TERM_VALUE_OFF + k)])
     pub_ptr = GEN ** 0
     own_pi_0 = pub_ptr[1]
     own_pi_1 = pub_ptr[GEN]
