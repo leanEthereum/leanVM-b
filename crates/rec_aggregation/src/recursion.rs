@@ -16,7 +16,7 @@
 
 use std::collections::BTreeMap;
 
-use lean_compiler::{compile, parse, parse_file_with_replacements};
+use lean_compiler::{compile, parse, parse_with_replacements};
 use lean_vm::cpu::{Program, prove, verify};
 use lean_vm::leaf::{Block, Coord};
 use lean_vm::transcript::{Sponge, TraceOp, trace_start, trace_take};
@@ -1867,9 +1867,9 @@ fn recursion_guest_arc(inner_program: &Program, nsub: usize) -> std::sync::Arc<P
 
     let mut replacements = placeholder_map(inner_program);
     replacements.insert("NSUB_PLACEHOLDER".to_string(), nsub.to_string());
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/guests/recursion.py");
     let guest = Arc::new(compile(
-        &parse_file_with_replacements(path, &replacements).expect("the repository recursion guest must parse"),
+        &parse_with_replacements(include_str!("../guests/recursion.py"), &replacements)
+            .expect("the repository recursion guest must parse"),
     ));
 
     let mut map = cache.lock().expect("recursion guest cache poisoned");
