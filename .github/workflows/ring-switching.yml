@@ -1,0 +1,36 @@
+name: Ring Switching Note PDF
+
+on:
+  push:
+    branches: [ "main" ]
+    paths:
+      - 'misc/ring-switching.tex'
+      - '.github/workflows/ring-switching.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ring-switching-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-pdf:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile LaTeX
+        uses: xu-cheng/latex-action@v3
+        with:
+          working_directory: misc
+          root_file: ring-switching.tex
+      - name: Publish PDF as release asset
+        if: github.event_name != 'pull_request'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ring-switching-latest
+          name: Latest ring switching note PDF
+          body: Auto-built from `misc/ring-switching.tex` on every push to `main`.
+          make_latest: false
+          files: misc/ring-switching.pdf
