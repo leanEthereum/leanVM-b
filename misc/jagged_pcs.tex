@@ -192,7 +192,7 @@ On the standard command
 \[
 \texttt{RAYON\_NUM\_THREADS=11 cargo run --release -- recursion --n 2},
 \]
-two \(975{,}099\)-cycle inner proofs produce a \(1{,}772{,}858\)-cycle recursion guest. This is \(74{,}082\) cycles (\(4.01\%\)) below the first tight-grand-product version and \(92{,}460\) cycles (\(4.96\%\)) below the former internally padded grand product. The recursion program contains \(530{,}378\) instructions and pads to \(2^{20}\). A representative run proves in \(6.44\) seconds and verifies in \(0.56\) seconds; proof size varies slightly with Merkle-query collisions and is about \(596\)--\(598\) KiB.
+two \(975{,}099\)-cycle inner proofs produce a \(1{,}766{,}120\)-cycle recursion guest. This is \(80{,}820\) cycles (\(4.38\%\)) below the first tight-grand-product version and \(99{,}198\) cycles (\(5.32\%\)) below the former internally padded grand product. The recursion program contains \(524{,}089\) instructions and pads to \(2^{19}\). A representative run proves in \(6.35\) seconds and verifies in \(0.43\) seconds; proof size varies slightly with Merkle-query collisions and is about \(594\) KiB.
 
 Tests cover exhaustive small intervals, arbitrary row-weight pairs, exact-full endpoints, Boolean start--length agreement with dense MLEs, native proof round trips, six runtime shapes verified by the same compiled recursion guest, mixed-shape recursion, and adversarial mutations of the named hints.
 

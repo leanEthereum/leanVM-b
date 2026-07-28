@@ -603,47 +603,6 @@ def eqtree(point_ptr, out, n_coords: Const):
     return
 
 
-def prefix_indicator_fixed(point, height_bits, nbits: Const):
-    # Prefix MLE on an nbits-coordinate cube. One fixed-zero top coordinate
-    # represents the exact-full endpoint 2^nbits.
-    states = StackBuf(2 * (SIZE_BITS + 2))
-    states[0] = 0
-    states[1] = 1
-    for rev in unroll(0, nbits + 1):
-        bit = nbits - rev
-        less = states[2 * rev]
-        equal = states[2 * rev + 1]
-        if bit == nbits:
-            x = 0
-        else:
-            x = point[GEN ** bit]
-        h = height_bits[GEN ** bit]
-        equal_zero = equal * (1 + x)
-        states[2 * (rev + 1)] = less + h * equal_zero
-        states[2 * (rev + 1) + 1] = equal * (1 + h + x)
-    return states[2 * (nbits + 1)]
-
-
-def prefix_geometric(point, height_bits, geometric_powers):
-    # Σ_{i<height} G^i eq(point,i), evaluated MSB first with the same
-    # less/equal digit DP as prefix_indicator. geometric_powers[g^b]=G^(2^b).
-    states = StackBuf(2 * (SIZE_BITS + 1))
-    states[0] = 0
-    states[1] = 1
-    for rev in unroll(0, SIZE_BITS):
-        bit = SIZE_BITS - 1 - rev
-        less = states[2 * rev]
-        equal = states[2 * rev + 1]
-        x = point[GEN ** bit]
-        zero = 1 + x
-        one = geometric_powers[GEN ** bit] * x
-        free = zero + one
-        h = height_bits[GEN ** bit]
-        states[2 * (rev + 1)] = less * free + h * equal * zero
-        states[2 * (rev + 1) + 1] = equal * (zero + h * free)
-    return states[2 * SIZE_BITS]
-
-
 @inline
 def jagged_step(s0, s1, s2, s3, w0, w1, w2, w3, start_bit_point, end_bit_point):
     # Endpoint bits are Boolean-constrained public interval data, so select one
@@ -673,70 +632,6 @@ def jagged_step(s0, s1, s2, s3, w0, w1, w2, w3, start_bit_point, end_bit_point):
             out[2] = s2 * w2
             out[3] = (s0 + s2) * w1 + s1 * w0 + s3 * (w0 + w3)
     return out[0], out[1], out[2], out[3]
-
-def tight_overlap_eval(row_point, index_point, start_bits, end_bits):
-    # Σ_{r<end-start} eq(row_point,r)·eq(index_point,start+r).
-    # This is the public terminal weight in the tight-layout reduction.
-    s0 = 1
-    s1 = 0
-    s2 = 0
-    s3 = 0
-    for bit in unroll(0, SIZE_BITS):
-        r = row_point[GEN ** bit]
-        x = index_point[GEN ** bit]
-        rx = r * x
-        s0, s1, s2, s3 = jagged_step(s0, s1, s2, s3, 1 + r + x + rx, r + rx, x + rx, rx, start_bits[GEN ** bit], end_bits[GEN ** bit])
-    s0, s1, s2, s3 = jagged_step(s0, s1, s2, s3, 1, 0, 0, 0, 0, 0)
-    return s2
-
-
-@inline
-def jagged_step_row_zero(s0, s1, s2, s3, x, start_bit, end_bit):
-    # jagged_step specialized to a logical row bit fixed to zero.
-    zero = 1 + x
-    out = StackBuf(4)
-    if start_bit == 0:
-        if end_bit == 0:
-            out[0] = s0 * zero + (s1 + s3) * x
-            out[1] = 0
-            out[2] = s2 * zero
-            out[3] = 0
-        else:
-            out[0] = s1 * x
-            out[1] = 0
-            out[2] = (s0 + s2) * zero + s3 * x
-            out[3] = 0
-    else:
-        if end_bit == 0:
-            out[0] = (s0 + s2) * x
-            out[1] = s1 * zero
-            out[2] = 0
-            out[3] = s3 * zero
-        else:
-            out[0] = s0 * x
-            out[1] = 0
-            out[2] = s2 * x
-            out[3] = (s1 + s3) * zero
-    return out[0], out[1], out[2], out[3]
-
-
-def tight_overlap_eval_fixed(row_point, index_point, start_bits, end_bits, row_bits: Const, index_bits: Const):
-    # The same overlap, specialized to the certified logical-row and target
-    # cubes. Above row_bits the logical row is fixed to zero.
-    s0 = 1
-    s1 = 0
-    s2 = 0
-    s3 = 0
-    for bit in unroll(0, row_bits):
-        r = row_point[GEN ** bit]
-        x = index_point[GEN ** bit]
-        rx = r * x
-        s0, s1, s2, s3 = jagged_step(s0, s1, s2, s3, 1 + r + x + rx, r + rx, x + rx, rx, start_bits[GEN ** bit], end_bits[GEN ** bit])
-    for bit in unroll(row_bits, index_bits):
-        x = index_point[GEN ** bit]
-        s0, s1, s2, s3 = jagged_step_row_zero(s0, s1, s2, s3, x, start_bits[GEN ** bit], end_bits[GEN ** bit])
-    s0, s1, s2, s3 = jagged_step(s0, s1, s2, s3, 1, 0, 0, 0, 0, 0)
-    return s2
 
 
 @inline
@@ -2148,12 +2043,10 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     # Starting from zero, a Boolean full-adder derives every interval endpoint.
     col_bound_bits = HeapBuf(SIZE_BITS * (N_COMMITTED_COLS + 1))
     col_block_height_bits = HeapBuf(SIZE_BITS * N_COMMITTED_COLS)
-    col_row_height_bits = HeapBuf(SIZE_BITS * N_COMMITTED_COLS)
     for bit in unroll(0, SIZE_BITS):
         col_bound_bits[GEN ** bit] = 0
     for c in unroll(0, N_COMMITTED_COLS):
         height_bits = col_block_height_bits * GEN ** (SIZE_BITS * c)
-        row_height_bits = col_row_height_bits * GEN ** (SIZE_BITS * c)
         if COL_HEIGHT_KIND[c] == 0:
             # height = 2^kappa. The advice must be a Boolean one-hot vector,
             # whose decoded word is the certified power 2^kappa.
@@ -2166,50 +2059,66 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
                 assert hb * hb == hb
                 height_word += hb * (2 ** bit)
             assert height_word == g_logs_pow2[kappa_g]
-        elif COL_HEIGHT_KIND[c] == 1:
-            table_bits = count_bits * GEN ** (COUNT_BITS * COL_HEIGHT_SRC[c])
-            for bit in unroll(0, COL_BLOCK_LOG[c]):
-                height_bits[GEN ** bit] = 0
-            if COL_BLOCK_LOG[c] == 0:
-                for bit in unroll(0, COUNT_BITS):
-                    height_bits[GEN ** bit] = table_bits[GEN ** bit]
-                for bit in unroll(COUNT_BITS, SIZE_BITS):
-                    height_bits[GEN ** bit] = 0
-            else:
-                for bit in unroll(COL_BLOCK_LOG[c], SIZE_BITS):
-                    height_bits[GEN ** bit] = table_bits[GEN ** (bit - COL_BLOCK_LOG[c])]
-        elif COL_HEIGHT_KIND[c] == 2:
-            for bit in unroll(0, COL_BLOCK_LOG[c]):
-                height_bits[GEN ** bit] = 0
-            if COL_BLOCK_LOG[c] == 0:
-                for bit in unroll(0, COUNT_BITS):
-                    height_bits[GEN ** bit] = memory_bits[GEN ** bit]
-                for bit in unroll(COUNT_BITS, SIZE_BITS):
-                    height_bits[GEN ** bit] = 0
-            else:
-                for bit in unroll(COL_BLOCK_LOG[c], SIZE_BITS):
-                    height_bits[GEN ** bit] = memory_bits[GEN ** (bit - COL_BLOCK_LOG[c])]
-        else:
-            # BFCNT is a singleton with a program-bound bytecode prefix.
-            for bit in unroll(0, SIZE_BITS):
-                height_bits[GEN ** bit] = BYTECODE_USED_BITS[bit]
-
-        # Padding correction uses the per-column row height (block height / width).
-        for bit in unroll(0, SIZE_BITS - COL_BLOCK_LOG[c]):
-            row_height_bits[GEN ** bit] = height_bits[GEN ** (bit + COL_BLOCK_LOG[c])]
-        for bit in unroll(SIZE_BITS - COL_BLOCK_LOG[c], SIZE_BITS):
-            row_height_bits[GEN ** bit] = 0
 
         start_bits = col_bound_bits * GEN ** (SIZE_BITS * c)
         end_bits = col_bound_bits * GEN ** (SIZE_BITS * (c + 1))
         carry = 0
-        for bit in unroll(0, SIZE_BITS):
-            sb = start_bits[GEN ** bit]
-            hb = height_bits[GEN ** bit]
-            end_bits[GEN ** bit] = sb + hb + carry
-            # Majority(sb, hb, carry) over F_2, factored to one MUL:
-            # sb*hb + sb*carry + hb*carry = (sb+carry)(sb+hb)+sb.
-            carry = (sb + carry) * (sb + hb) + sb
+        if COL_HEIGHT_KIND[c] == 0:
+            for bit in unroll(0, SIZE_BITS):
+                sb = start_bits[GEN ** bit]
+                hb = height_bits[GEN ** bit]
+                end_bits[GEN ** bit] = sb + hb + carry
+                carry = (sb + carry) * (sb + hb) + sb
+        elif COL_HEIGHT_KIND[c] == 1:
+            table_bits = count_bits * GEN ** (COUNT_BITS * COL_HEIGHT_SRC[c])
+            if COL_BLOCK_LOG[c] == 0:
+                for bit in unroll(0, COUNT_BITS):
+                    sb = start_bits[GEN ** bit]
+                    hb = table_bits[GEN ** bit]
+                    end_bits[GEN ** bit] = sb + hb + carry
+                    carry = (sb + carry) * (sb + hb) + sb
+                for bit in unroll(COUNT_BITS, SIZE_BITS):
+                    sb = start_bits[GEN ** bit]
+                    end_bits[GEN ** bit] = sb + carry
+                    carry = sb * carry
+            else:
+                for bit in unroll(0, COL_BLOCK_LOG[c]):
+                    sb = start_bits[GEN ** bit]
+                    end_bits[GEN ** bit] = sb + carry
+                    carry = sb * carry
+                for bit in unroll(COL_BLOCK_LOG[c], SIZE_BITS):
+                    sb = start_bits[GEN ** bit]
+                    hb = table_bits[GEN ** (bit - COL_BLOCK_LOG[c])]
+                    end_bits[GEN ** bit] = sb + hb + carry
+                    carry = (sb + carry) * (sb + hb) + sb
+        elif COL_HEIGHT_KIND[c] == 2:
+            if COL_BLOCK_LOG[c] == 0:
+                for bit in unroll(0, COUNT_BITS):
+                    sb = start_bits[GEN ** bit]
+                    hb = memory_bits[GEN ** bit]
+                    end_bits[GEN ** bit] = sb + hb + carry
+                    carry = (sb + carry) * (sb + hb) + sb
+                for bit in unroll(COUNT_BITS, SIZE_BITS):
+                    sb = start_bits[GEN ** bit]
+                    end_bits[GEN ** bit] = sb + carry
+                    carry = sb * carry
+            else:
+                for bit in unroll(0, COL_BLOCK_LOG[c]):
+                    sb = start_bits[GEN ** bit]
+                    end_bits[GEN ** bit] = sb + carry
+                    carry = sb * carry
+                for bit in unroll(COL_BLOCK_LOG[c], SIZE_BITS):
+                    sb = start_bits[GEN ** bit]
+                    hb = memory_bits[GEN ** (bit - COL_BLOCK_LOG[c])]
+                    end_bits[GEN ** bit] = sb + hb + carry
+                    carry = (sb + carry) * (sb + hb) + sb
+        else:
+            # BFCNT is a singleton with a program-bound bytecode prefix.
+            for bit in unroll(0, SIZE_BITS):
+                sb = start_bits[GEN ** bit]
+                hb = BYTECODE_USED_BITS[bit]
+                end_bits[GEN ** bit] = sb + hb + carry
+                carry = (sb + carry) * (sb + hb) + sb
         assert carry == 0  # the dense witness area fits in SIZE_BITS
 
     total_bits = col_bound_bits * GEN ** (SIZE_BITS * N_COMMITTED_COLS)
