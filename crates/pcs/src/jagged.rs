@@ -18,6 +18,183 @@
 
 use primitives::field::F128;
 
+#[inline]
+fn step_fixed(
+    [s0, s1, s2, s3]: [F128; 4],
+    [w0, w1, w2, w3]: [F128; 4],
+    start_bit: usize,
+    end_bit: usize,
+) -> [F128; 4] {
+    match (start_bit, end_bit) {
+        (0, 0) => [
+            s0 * (w0 + w3) + (s1 + s3) * w2 + s2 * w3,
+            s1 * w1,
+            s2 * w0,
+            s3 * w1,
+        ],
+        (0, 1) => [
+            s0 * w3 + s1 * w2,
+            F128::ZERO,
+            s0 * w0 + s2 * (w0 + w3) + s3 * w2,
+            (s1 + s3) * w1,
+        ],
+        (1, 0) => [
+            (s0 + s2) * w2,
+            s0 * w1 + s1 * (w0 + w3) + s3 * w3,
+            F128::ZERO,
+            s2 * w1 + s3 * w0,
+        ],
+        (1, 1) => [
+            s0 * w2,
+            s1 * w3,
+            s2 * w2,
+            (s0 + s2) * w1 + s1 * w0 + s3 * (w0 + w3),
+        ],
+        _ => unreachable!(),
+    }
+}
+
+#[inline]
+fn step_points(
+    state: [F128; 4],
+    row: F128,
+    index: F128,
+    start: F128,
+    end: F128,
+) -> [F128; 4] {
+    let ri = row * index;
+    let weights = [
+        F128::ONE + row + index + ri,
+        row + ri,
+        index + ri,
+        ri,
+    ];
+    let z0 = step_fixed(state, weights, 0, 0);
+    let z1 = step_fixed(state, weights, 0, 1);
+    let o0 = step_fixed(state, weights, 1, 0);
+    let o1 = step_fixed(state, weights, 1, 1);
+    std::array::from_fn(|out| {
+        let at_start_zero = z0[out] + end * (z0[out] + z1[out]);
+        let at_start_one = o0[out] + end * (o0[out] + o1[out]);
+        at_start_zero + start * (at_start_zero + at_start_one)
+    })
+}
+
+fn transition_matrix(
+    row: F128,
+    index: F128,
+    start: F128,
+    end: F128,
+) -> [[F128; 4]; 4] {
+    let mut matrix = [[F128::ZERO; 4]; 4];
+    for input in 0..4 {
+        let mut basis = [F128::ZERO; 4];
+        basis[input] = F128::ONE;
+        let output = step_points(basis, row, index, start, end);
+        for out in 0..4 {
+            matrix[out][input] = output[out];
+        }
+    }
+    matrix
+}
+
+#[inline]
+fn pull(matrix: &[[F128; 4]; 4], sink: &[F128; 4]) -> [F128; 4] {
+    std::array::from_fn(|input| {
+        (0..4).fold(F128::ZERO, |acc, out| {
+            acc + matrix[out][input] * sink[out]
+        })
+    })
+}
+
+/// Evaluate the multilinear extension of the Basic-Jagged indicator when both
+/// interval endpoints are arbitrary field points.
+pub fn indicator_eval_with_endpoint_points(
+    row_point: &[F128],
+    start_point: &[F128],
+    end_point: &[F128],
+    index_point: &[F128],
+) -> F128 {
+    assert!(row_point.len() <= index_point.len());
+    assert_eq!(start_point.len(), index_point.len() + 1);
+    assert_eq!(end_point.len(), index_point.len() + 1);
+    let mut state = [F128::ONE, F128::ZERO, F128::ZERO, F128::ZERO];
+    for bit in 0..=index_point.len() {
+        state = step_points(
+            state,
+            row_point.get(bit).copied().unwrap_or(F128::ZERO),
+            index_point.get(bit).copied().unwrap_or(F128::ZERO),
+            start_point[bit],
+            end_point[bit],
+        );
+    }
+    state[2]
+}
+
+/// Contract one generalized Basic-Jagged evaluation against Ligerito's final
+/// message. `index_prefix` contains the already-folded low coordinates; the
+/// remaining index coordinates range over the Boolean entries of
+/// `final_message`.
+pub fn assisted_terminal_eval(
+    row_point: &[F128],
+    start_point: &[F128],
+    end_point: &[F128],
+    index_prefix: &[F128],
+    final_message: &[F128],
+) -> F128 {
+    assert!(final_message.len().is_power_of_two());
+    let residual_vars = final_message.len().trailing_zeros() as usize;
+    let index_vars = index_prefix.len() + residual_vars;
+    assert!(row_point.len() <= index_vars);
+    assert_eq!(start_point.len(), index_vars + 1);
+    assert_eq!(end_point.len(), index_vars + 1);
+
+    let mut prefix_state = [F128::ONE, F128::ZERO, F128::ZERO, F128::ZERO];
+    for bit in 0..index_prefix.len() {
+        prefix_state = step_points(
+            prefix_state,
+            row_point.get(bit).copied().unwrap_or(F128::ZERO),
+            index_prefix[bit],
+            start_point[bit],
+            end_point[bit],
+        );
+    }
+
+    // Pull the accepting state backwards through the fixed-zero overflow bit.
+    let top = transition_matrix(
+        F128::ZERO,
+        F128::ZERO,
+        start_point[index_vars],
+        end_point[index_vars],
+    );
+    let accept = [F128::ZERO, F128::ZERO, F128::ONE, F128::ZERO];
+    let top_sink = pull(&top, &accept);
+    let mut layer: Vec<[F128; 4]> = final_message
+        .iter()
+        .map(|&message| top_sink.map(|value| message * value))
+        .collect();
+
+    // Pull the message tree backwards, one residual index bit at a time.
+    for stage in 0..residual_vars {
+        let bit = index_vars - 1 - stage;
+        let half = layer.len() / 2;
+        let row = row_point.get(bit).copied().unwrap_or(F128::ZERO);
+        let left_matrix = transition_matrix(row, F128::ZERO, start_point[bit], end_point[bit]);
+        let right_matrix = transition_matrix(row, F128::ONE, start_point[bit], end_point[bit]);
+        let mut next = Vec::with_capacity(half);
+        for i in 0..half {
+            let left = pull(&left_matrix, &layer[i]);
+            let right = pull(&right_matrix, &layer[i + half]);
+            next.push(std::array::from_fn(|state| left[state] + right[state]));
+        }
+        layer = next;
+    }
+
+    (0..4).fold(F128::ZERO, |acc, state| {
+        acc + prefix_state[state] * layer[0][state]
+    })
+}
+
 /// Evaluate the MLE of `1[index = start + row && index < end]`.
 ///
 /// `row_point` contains the low row coordinates; omitted high row coordinates
@@ -165,6 +342,82 @@ mod tests {
             indicator_eval_with_row_weights(&row_weights, start, end, &index_point),
             expected
         );
+    }
+
+    #[test]
+    fn endpoint_point_evaluator_matches_boolean_intervals() {
+        for m in 1usize..=6 {
+            let n = 1usize << m;
+            let row_point: Vec<_> = (0..m).map(|i| f((13 * m + i + 1) as u64)).collect();
+            let index_point: Vec<_> = (0..m).map(|i| f((29 * m + i + 1) as u64)).collect();
+            for start in 0..n {
+                for end in start..=n {
+                    let endpoint = |value: usize| {
+                        (0..=m)
+                            .map(|bit| F128::new(((value >> bit) & 1) as u64, 0))
+                            .collect::<Vec<_>>()
+                    };
+                    assert_eq!(
+                        indicator_eval_with_endpoint_points(
+                            &row_point,
+                            &endpoint(start),
+                            &endpoint(end),
+                            &index_point,
+                        ),
+                        indicator_eval(&row_point, start, end, &index_point),
+                        "m={m}, interval=[{start},{end})",
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn assisted_terminal_matches_explicit_residual_contraction() {
+        for m in 3usize..=7 {
+            let residual_vars = 2usize.min(m);
+            let folded = m - residual_vars;
+            let row_point: Vec<_> = (0..m).map(|i| f((41 * m + i + 1) as u64)).collect();
+            let index_prefix: Vec<_> =
+                (0..folded).map(|i| f((53 * m + i + 1) as u64)).collect();
+            let final_message: Vec<_> =
+                (0..1usize << residual_vars).map(|i| f((67 * m + i + 1) as u64)).collect();
+            let start = (1usize << (m - 2)) - 1;
+            let end = (3usize << (m - 2)).min(1usize << m);
+            let endpoint = |value: usize| {
+                (0..=m)
+                    .map(|bit| F128::new(((value >> bit) & 1) as u64, 0))
+                    .collect::<Vec<_>>()
+            };
+            let start_point = endpoint(start);
+            let end_point = endpoint(end);
+            let mut direct = F128::ZERO;
+            for (y, &message) in final_message.iter().enumerate() {
+                let mut index = index_prefix.clone();
+                index.extend(
+                    (0..residual_vars)
+                        .map(|bit| F128::new(((y >> bit) & 1) as u64, 0)),
+                );
+                direct += message
+                    * indicator_eval_with_endpoint_points(
+                        &row_point,
+                        &start_point,
+                        &end_point,
+                        &index,
+                    );
+            }
+            assert_eq!(
+                assisted_terminal_eval(
+                    &row_point,
+                    &start_point,
+                    &end_point,
+                    &index_prefix,
+                    &final_message,
+                ),
+                direct,
+                "m={m}",
+            );
+        }
     }
 
     #[test]

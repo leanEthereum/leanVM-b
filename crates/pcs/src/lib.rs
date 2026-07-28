@@ -19,6 +19,7 @@
 
 pub mod commit;
 pub mod jagged;
+mod jagged_assist;
 pub mod ligerito;
 pub mod merkle;
 pub mod ntt;
@@ -51,6 +52,8 @@ pub enum VerifyError {
     InvalidProofShape,
     /// The Ligerito verifier rejected the opening.
     Ligerito,
+    /// The commitment-level Jagged assist was malformed or inconsistent.
+    JaggedAssist,
 }
 
 /// What ring_switch + claim-combination produces, fed to the Ligerito opener.
@@ -257,6 +260,63 @@ struct JaggedClaimBatch {
     selector_len: usize,
     row_weights: Vec<[F128; 2]>,
     scale: F128,
+}
+
+/// Normalize every ordinary Jagged basis term into an evaluation of one common
+/// multilinear function. Complete row-major blocks retain their geometric
+/// batching: `(1, γ^(2^b)) = (1+γ^(2^b))·(1+z_b, z_b)`.
+fn jagged_assist_queries(
+    stack_pd: &[StackClaim],
+    gammas_pd: &[F128],
+    jagged_batches: &[JaggedClaimBatch],
+    index_vars: usize,
+) -> Option<Vec<jagged_assist::Query>> {
+    let mut grouped = vec![false; stack_pd.len()];
+    let mut queries = Vec::new();
+    for batch in jagged_batches {
+        for &member in &batch.members {
+            grouped[member] = true;
+        }
+        let mut coefficient = batch.scale;
+        let mut row_point = Vec::with_capacity(index_vars);
+        for &[zero, one] in &batch.row_weights {
+            let normalization = zero + one;
+            if normalization == F128::ZERO {
+                return None;
+            }
+            coefficient *= normalization;
+            row_point.push(one * normalization.inv());
+        }
+        queries.push(jagged_assist::Query::new(
+            coefficient,
+            row_point,
+            batch.offset,
+            batch.offset + batch.height,
+            index_vars,
+        )?);
+    }
+    for (j, claim) in stack_pd.iter().enumerate() {
+        if grouped[j] {
+            continue;
+        }
+        let StackClaim::Jagged {
+            offset,
+            height,
+            row_point,
+            ..
+        } = claim
+        else {
+            continue;
+        };
+        queries.push(jagged_assist::Query::new(
+            gammas_pd[j],
+            row_point.to_vec(),
+            *offset,
+            *offset + *height,
+            index_vars,
+        )?);
+    }
+    Some(queries)
 }
 
 /// Assign the powers of one batching challenge so complete row-major blocks
@@ -611,8 +671,27 @@ pub fn open_batch_mixed_ligerito_stacked(
     let gamma = ps.sample();
     let (gammas_pd, jagged_batches) = geometric_claim_weights(stack_pd, gamma);
     fold_stacked_point_claims(&mut b_stack, &mut target, stack_pd, &gammas_pd, &jagged_batches);
+    let index_vars = stack.len().trailing_zeros() as usize;
+    let assist_queries = jagged_assist_queries(
+        stack_pd,
+        &gammas_pd,
+        &jagged_batches,
+        index_vars,
+    )
+    .expect("geometric Jagged batch normalization must be nonzero");
+    if assist_queries.is_empty() {
+        return ligerito::multilevel_prover_with_basis(
+            lig_config,
+            stack.to_vec(),
+            b_stack,
+            target,
+            &stack_data.codeword,
+            &stack_data.merkle_tree,
+            ps,
+        );
+    }
 
-    ligerito::multilevel_prover_with_basis(
+    let (proof, terminal) = ligerito::multilevel_prover_with_basis_terminal(
         lig_config,
         stack.to_vec(),
         b_stack,
@@ -620,7 +699,15 @@ pub fn open_batch_mixed_ligerito_stacked(
         &stack_data.codeword,
         &stack_data.merkle_tree,
         ps,
-    )
+    );
+    jagged_assist::prove(
+        &assist_queries,
+        index_vars,
+        &terminal.ris,
+        &terminal.final_message,
+        ps,
+    );
+    proof
 }
 
 /// What the stacked opening verifier hands back on accept: the ring-switch
@@ -686,14 +773,16 @@ pub fn verify_opening_batch_mixed_ligerito_stacked(
     }
     let gamma = vs.sample();
     let (gammas_pd, jagged_batches) = geometric_claim_weights(stack_pd, gamma);
+    let index_vars = stack_commitment.params.m - LOG_PACKING;
+    let assist_queries = jagged_assist_queries(
+        stack_pd,
+        &gammas_pd,
+        &jagged_batches,
+        index_vars,
+    )
+    .ok_or(VerifyError::JaggedAssist)?;
     for (claim, g) in stack_pd.iter().zip(gammas_pd.iter()) {
         target_combined += *g * claim.value();
-    }
-    let mut jagged_grouped = vec![false; stack_pd.len()];
-    for batch in &jagged_batches {
-        for &member in &batch.members {
-            jagged_grouped[member] = true;
-        }
     }
 
     // Residual evaluator of the lifted weight: for each y over the residual cube,
@@ -721,17 +810,8 @@ pub fn verify_opening_batch_mixed_ligerito_stacked(
                         *g * ring_switch::eval_rs_eq_from_coeffs(&x_outer[1..], x_lo, &lin_coeffs);
                 }
                 let mut acc = rs_part * sel_eq;
-                for batch in &jagged_batches {
-                    acc += batch.scale
-                        * jagged::indicator_eval_with_row_weights(
-                            &batch.row_weights,
-                            batch.offset,
-                            batch.offset + batch.height,
-                            &x,
-                        );
-                }
-                for (j, (claim, g)) in stack_pd.iter().zip(gammas_pd.iter()).enumerate() {
-                    if !jagged_grouped[j] {
+                for (claim, g) in stack_pd.iter().zip(gammas_pd.iter()) {
+                    if !matches!(claim, StackClaim::Jagged { .. }) {
                         acc += *g * stack_claim_eq_at(claim, &x);
                     }
                 }
@@ -740,19 +820,41 @@ pub fn verify_opening_batch_mixed_ligerito_stacked(
             .collect()
     };
 
-    let lig = ligerito::multilevel_verifier_with_basis_succinct(
-        lig_config,
-        proof,
-        log_n,
-        target_combined,
-        &stack_commitment.root,
-        eval_b_residual,
+    if assist_queries.is_empty() {
+        let lig = ligerito::multilevel_verifier_with_basis_succinct(
+            lig_config,
+            proof,
+            log_n,
+            target_combined,
+            &stack_commitment.root,
+            eval_b_residual,
+            vs,
+        )
+        .ok_or(VerifyError::Ligerito)?;
+        return Ok(StackedOpeningSummary { r_dprime, lig });
+    }
+    let deferred =
+        ligerito::multilevel_verifier_with_basis_succinct_deferred(
+            lig_config,
+            proof,
+            log_n,
+            target_combined,
+            &stack_commitment.root,
+            eval_b_residual,
+            vs,
+        )
+        .ok_or(VerifyError::Ligerito)?;
+    jagged_assist::verify(
+        deferred.residual_claim,
+        &assist_queries,
+        index_vars,
+        &deferred.lig.ris,
+        &deferred.final_message,
         vs,
-    )
-    .ok_or(VerifyError::Ligerito)?;
+    )?;
     Ok(StackedOpeningSummary {
         r_dprime,
-        lig,
+        lig: deferred.lig,
     })
 }
 
@@ -857,5 +959,77 @@ mod jagged_batch_tests {
                 acc + weights[member] * stack_claim_eq_at(&claims[member], &residual_point)
             });
         assert_eq!(batch_eval, grouped_eval);
+    }
+
+    #[test]
+    fn jagged_assist_roundtrip_and_tamper() {
+        let index_vars = 5;
+        let index_prefix = [f(79), f(83), f(89)];
+        let final_message = [f(97), f(101), f(103), f(107)];
+        let queries = vec![
+            jagged_assist::Query::new(
+                f(109),
+                vec![f(113), f(127), f(131)],
+                3,
+                11,
+                index_vars,
+            )
+            .unwrap(),
+            jagged_assist::Query::new(
+                f(137),
+                vec![f(139), f(149), f(151), f(157)],
+                11,
+                24,
+                index_vars,
+            )
+            .unwrap(),
+            jagged_assist::Query::new(
+                f(163),
+                vec![f(167), f(173)],
+                24,
+                32,
+                index_vars,
+            )
+            .unwrap(),
+        ];
+        let required =
+            jagged_assist::claimed_sum(&queries, index_vars, &index_prefix, &final_message);
+
+        let mut ps = ProverState::new(b"jagged-assist-test", &[]);
+        jagged_assist::prove(
+            &queries,
+            index_vars,
+            &index_prefix,
+            &final_message,
+            &mut ps,
+        );
+        let proof = ps.into_proof();
+        let mut vs = VerifierState::new(b"jagged-assist-test", &proof, &[]);
+        jagged_assist::verify(
+            required,
+            &queries,
+            index_vars,
+            &index_prefix,
+            &final_message,
+            &mut vs,
+        )
+        .expect("honest assist verifies");
+        vs.finish().expect("assist consumes its complete transcript");
+
+        let mut tampered = proof.clone();
+        tampered.stream[1] += F128::ONE;
+        let mut bad_vs = VerifierState::new(b"jagged-assist-test", &tampered, &[]);
+        assert!(
+            jagged_assist::verify(
+                required,
+                &queries,
+                index_vars,
+                &index_prefix,
+                &final_message,
+                &mut bad_vs,
+            )
+            .is_err(),
+            "tampered assist round message must be rejected",
+        );
     }
 }

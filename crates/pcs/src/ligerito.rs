@@ -2467,6 +2467,40 @@ pub fn multilevel_prover_with_basis(
     l0_tree: &[Hash],
     ps: &mut ProverState,
 ) -> LigeritoProof {
+    multilevel_prover_with_basis_terminal(
+        config,
+        packed_witness,
+        b_initial,
+        target,
+        l0_codeword,
+        l0_tree,
+        ps,
+    )
+    .0
+}
+
+/// Prover-side terminal data needed by protocols that prove the final basis
+/// evaluation after the Ligerito opening has fixed its fold point and final
+/// message.
+#[derive(Clone, Debug)]
+pub struct LigProverTerminal {
+    pub ris: Vec<F128>,
+    pub final_message: Vec<F128>,
+}
+
+/// [`multilevel_prover_with_basis`] together with the final fold point and
+/// message. The ordinary entry point discards this summary; assisted basis
+/// evaluators use it to append their proof after Ligerito.
+#[allow(clippy::too_many_arguments)]
+pub fn multilevel_prover_with_basis_terminal(
+    config: &LigeritoConfig,
+    packed_witness: Vec<F128>,
+    b_initial: Vec<F128>,
+    target: F128,
+    l0_codeword: &[F128],
+    l0_tree: &[Hash],
+    ps: &mut ProverState,
+) -> (LigeritoProof, LigProverTerminal) {
     multilevel_prover_with_basis_impl(
         config,
         packed_witness,
@@ -2489,7 +2523,7 @@ fn multilevel_prover_with_basis_impl(
     l0_tree: &[Hash],
     first_msg: Option<SumcheckMessage>,
     ps: &mut ProverState,
-) -> LigeritoProof {
+) -> (LigeritoProof, LigProverTerminal) {
     let log_n = packed_witness.len().trailing_zeros() as usize;
     let r = config.level_steps;
     let initial_k = config.initial_k;
@@ -2697,6 +2731,7 @@ fn multilevel_prover_with_basis_impl(
     // Recursive levels — same as multilevel_prover_inner from here.
     let mut wtns_prev = wtns_1;
     let mut level_proofs: Vec<LevelProof> = Vec::new();
+    let mut ris = r_lane_fold.clone();
 
     for i in 0..r {
         let k_i = config.level_ks[i];
@@ -2712,6 +2747,7 @@ fn multilevel_prover_with_basis_impl(
                 ps.grind(bits);
             }
             let ri = ps.sample();
+            ris.push(ri);
             let log_size = sc_prover.f().len().trailing_zeros();
             let msg = sumcheck_span.in_scope(|| {
                 tracing::info_span!(
@@ -2730,12 +2766,18 @@ fn multilevel_prover_with_basis_impl(
         }
 
         if i == r - 1 {
-            ps.add_scalars(sc_prover.f());
+            let final_message = sc_prover.f().to_vec();
+            ps.add_scalars(&final_message);
             // PoW grinding for the last level before sampling its queries.
             ps.grind(config.grinding_bits[i + 1] as u32);
             let num_queries_last = config.queries[i + 1];
             let queries_last =
                 sample_queries_ordered(ps.sponge_mut(), wtns_prev.block_len, num_queries_last);
+            // The verifier samples these challenges to bind the final opened
+            // rows into its residual equation. The prover does not need their
+            // values, but must advance the transcript identically before a
+            // caller appends another protocol.
+            let _alpha_last = ps.sample_vec(log2_ceil(num_queries_last));
             let _t = std::time::Instant::now();
             // Final level: opened rows are only stored (no induce), so keep just
             // the compressed (deduped + octopus) form.
@@ -2748,6 +2790,7 @@ fn multilevel_prover_with_basis_impl(
             if trace {
                 t_opens += _t.elapsed();
             }
+            let _beta_last = ps.sample();
             if trace {
                 let total = t_total.elapsed();
                 eprintln!("[lig-prove] total = {:.2} ms", total.as_secs_f64() * 1e3);
@@ -2780,14 +2823,17 @@ fn multilevel_prover_with_basis_impl(
                     t_ood.as_secs_f64() * 1e3
                 );
             }
-            return LigeritoProof {
-                initial_proof,
-                level_proofs,
-                final_proof: FinalProof {
-                    opened_rows: opened_rows_last,
-                    merkle_proof: merkle_proof_last,
+            return (
+                LigeritoProof {
+                    initial_proof,
+                    level_proofs,
+                    final_proof: FinalProof {
+                        opened_rows: opened_rows_last,
+                        merkle_proof: merkle_proof_last,
+                    },
                 },
-            };
+                LigProverTerminal { ris, final_message },
+            );
         }
 
         let n_next = sc_prover.f().len().trailing_zeros() as usize;
@@ -2881,6 +2927,15 @@ fn multilevel_prover_with_basis_impl(
     unreachable!()
 }
 
+/// The part of the final Ligerito equation left for an assisted basis
+/// evaluator, together with the transcript-derived point and final message.
+#[derive(Clone, Debug)]
+pub struct LigVerifierDeferred {
+    pub lig: LigVerifierSummary,
+    pub final_message: Vec<F128>,
+    pub residual_claim: F128,
+}
+
 /// Succinct verifier for [`multilevel_prover_with_basis`]: instead of accepting
 /// a dense `b_initial: &[F128]` (which would be ~16 MB at m=29), accepts a
 /// **closure** `eval_b` that evaluates `b_initial(point)` at any multilinear
@@ -2905,6 +2960,38 @@ where
     // Returns 2^yr_log_n values: eval_b(ris ++ y_bits) for y ∈ [0, 2^yr_log_n).
     // This API allows callers to amortize prefix work across yr positions
     // (e.g. ring_switch::eval_rs_eq_prefix + finish_from_prefix).
+    F: Fn(&[F128], usize) -> Vec<F128>,
+{
+    let deferred = multilevel_verifier_with_basis_succinct_deferred(
+        config,
+        proof,
+        log_n,
+        target,
+        expected_initial_root,
+        eval_b_residual,
+        vs,
+    )?;
+    if deferred.residual_claim != F128::ZERO {
+        return None;
+    }
+    Some(deferred.lig)
+}
+
+/// Verify all of Ligerito while deliberately omitting one caller-defined part
+/// of the initial basis from the final residual evaluation. The returned
+/// `residual_claim` is exactly the missing inner-product contribution. A
+/// caller must prove that contribution before accepting.
+#[allow(clippy::too_many_arguments)]
+pub fn multilevel_verifier_with_basis_succinct_deferred<F>(
+    config: &LigeritoConfig,
+    proof: &LigeritoProof,
+    log_n: usize,
+    target: F128,
+    expected_initial_root: &Hash,
+    eval_b_residual: F,
+    vs: &mut VerifierState<'_>,
+) -> Option<LigVerifierDeferred>
+where
     F: Fn(&[F128], usize) -> Vec<F128>,
 {
     let trace = std::env::var("LIG_VERIFY_TRACE").is_ok();
@@ -3260,10 +3347,15 @@ where
                     t_evalb.as_secs_f64() * 1e3
                 );
             }
-            if inner != t_r {
-                return None;
-            }
-            return Some(LigVerifierSummary { ris, query_squeezes });
+            let residual_claim = t_r + inner;
+            return Some(LigVerifierDeferred {
+                lig: LigVerifierSummary {
+                    ris,
+                    query_squeezes,
+                },
+                final_message: yr,
+                residual_claim,
+            });
         }
 
         let root_next = next_root(vs)?;

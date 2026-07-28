@@ -622,9 +622,9 @@ fn gen_verify(
     let per: Vec<usize> = depth.iter().map(|&d| 128 / d).collect();
     let fgb = |lvl: usize| vcfg.fold_grinding_bits.get(lvl).copied().unwrap_or(0) as i64;
 
-    // The Ligerito opening's scalars close the stream: start msg (2), per
-    // level the fold (nonce? + msg) words, then root (2) / yr words, one
-    // query-grind nonce, and an intro msg (2) at every non-final level.
+    // The opening tail is Ligerito followed by the commitment-level Jagged
+    // assist: one claimed residual and two degree-2 sumcheck values for each
+    // of row(M), start(M+1), and end(M+1).
     let lig_stream_words: usize = 2
         + (0..nlev)
             .map(|lvl| {
@@ -634,10 +634,11 @@ fn gen_verify(
                     + if lvl == nlev - 1 { (1 << shapes.yr_log_n) + 1 } else { 2 + 1 + 2 }
             })
             .sum::<usize>();
+    let jagged_assist_words = 1 + 2 * (3 * stack_mu + 2);
     // The lincheck rounds and z_partial sit at fixed offsets from the FLOCK
     // tail (the stream up to the opening): [.. (e1,e_inf) x lcrounds |
     // z_partial (64) | s_hat_v (2 x 128) | the opening's scalars].
-    let ns = proof.stream.len() - lig_stream_words;
+    let ns = proof.stream.len() - lig_stream_words - jagged_assist_words;
     let lcr: Vec<F128> = proof.stream[ns - 256 - 64 - 2 * lcrounds..ns - 256 - 64].to_vec();
     let lcz: Vec<F128> = proof.stream[ns - 256 - 64..ns - 256].to_vec();
 
