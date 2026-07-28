@@ -1939,9 +1939,9 @@ fn run_recursion_with_rates(
     );
     for &(cycles, committed) in &batch.inner_stats {
         println!(
-            "[inner] cycles={} committed=2^{:.2}",
+            "[inner] cycles={} committed=2^{}",
             pretty_integer(cycles),
-            (committed as f64).log2()
+            pretty_f64((committed as f64).log2())
         );
     }
     let proof_bytes = bincode::serialized_size(&recursive_proof).expect("recursive proof is serializable");
@@ -1949,7 +1949,7 @@ fn run_recursion_with_rates(
         if x == 0 {
             "     -".into()
         } else {
-            format!("2^{:.2}", (x as f64).log2())
+            format!("2^{}", pretty_f64((x as f64).log2()))
         }
     };
     let nsub_pretty = pretty_integer(nsub);
@@ -1959,7 +1959,7 @@ fn run_recursion_with_rates(
     );
     let guest_cycles = pretty_integer(stats.cycles);
     println!(
-        "  guest cycles (VM steps)     : {guest_cycles:>14} = {:>7}   ({:.2} / inner cycle)",
+        "  guest cycles (VM steps)     : {guest_cycles:>14} = {:>9}   ({} / inner cycle)",
         pow(stats.cycles),
         pretty_f64(stats.cycles as f64 / total_inner_cycles as f64)
     );
@@ -1968,12 +1968,8 @@ fn run_recursion_with_rates(
         .zip(&stats.counts)
     {
         let count = pretty_integer(c);
-        println!("    {name:<6} instructions     : {count:>14} = {:>7}", pow(c));
+        println!("    {name:<6} instructions     : {count:>14} = {:>9}", pow(c));
     }
-    println!(
-        "  committed witness size      : 2^{:.3}",
-        (stats.committed as f64).log2()
-    );
     println!(
         "  committed witness size      : 2^{}",
         pretty_f64((stats.committed as f64).log2())
