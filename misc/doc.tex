@@ -174,23 +174,25 @@ The arithmetization follows the M3 model (multi-multiset matching)~\cite{m3}. Th
 
 \subsection{Proving the local constraints}\label{sec:air}
 
-A proof is valid when every table satisfies its local constraints and the bus balances; this subsection handles one table's constraints, \S\ref{sec:gp} the balance. Each table's constraints are batched into a single zerocheck of their own, with no batching across tables.
+Each table must satisfy its own constraints on every one of its own rows. Instead of $k$ zerochecks over cubes of $k$ different sizes, we use sumcheck batching to perform only a single sumcheck.
 
-Fix a table with $2^{\tau}$ rows on the cube $\cube\tau$, and let $C_1,\dots,C_s$ be its constraints: polynomials over $\F_{2^{128}}$ in the row's column values, each of degree $\le d$ and required to vanish on every row ($d=2$ throughout).
+Table $T_j$ has $2^{\tau_j}$ rows and constraints $C_{j,1},\dots,C_{j,s_j}$: polynomials of degree at most $d$ in a row's column values, required to vanish on every row ($d=2$ throughout). Write $\sigma=\sum_j s_j$ for the total number of constraints and $n=\max_j\tau_j$ for the tallest table's height.
 
-\paragraph{Batch the constraints.} The verifier samples $\eta\in\F_{2^{128}}$ and forms the combined constraint
+\paragraph{One challenge and one point.} The verifier samples $\eta\in\F_{2^{128}}$ and $r\in\F_{2^{128}}^{n}$. Table $T_j$ mixes its constraints with the powers of $\eta$ from $o_j=s_1+\dots+s_{j-1}$ on, and is tested at the length-$\tau_j$ prefix of $r$:
 \[
-  C\;=\;\sum_{t=1}^{s}\eta^{\,t-1}\,C_t .
+  C_j\;=\;\sum_{i=1}^{s_j}\eta^{\,o_j+i-1}\,C_{j,i},
+  \qquad
+  S_j\;=\;\widetilde{C_j}\bigl(r_{<\tau_j}\bigr)\;=\;\sum_{x\in\cube{\tau_j}}C_j(x)\,\eq(r_{<\tau_j},x).
 \]
-If some $C_t$ is nonzero on a row, so is $C$ there, except with probability $(s-1)/|\F_{2^{128}}|$ over $\eta$. It thus suffices to show $C$ vanishes on $\cube\tau$.
+The ranges of $\eta$-powers are \emph{disjoint}, so no table's violation can be cancelled by another's, and proving $\sum_j S_j=0$ proves every $C_{j,i}$ vanishes on every row of its own table, up to a Schwartz--Zippel error $(n+\sigma)/|\F_{2^{128}}|$ over $r$ and $\eta$.
 
-\paragraph{Zerocheck.} The verifier samples $r\in\F_{2^{128}}^{\tau}$ and the parties run the zerocheck of \S\ref{sec:prelim}, the sumcheck
+\paragraph{One sumcheck.} The $S_j$ are sumcheck claims of different lengths. Lift each onto the common cube $\cube n$ by attaching the indicator of the all-ones assignment on the $n-\tau_j$ variables $T_j$ does not use:
 \[
-  \sum_{x\in\cube\tau} C(x)\,\eq(r,x)\;=\;0 .
+  f_j(X_0,\dots,X_{n-1})\;=\;\bigl(C_j\,\eq(r_{<\tau_j},\cdot)\bigr)(X_0,\dots,X_{\tau_j-1})\cdot\prod_{i\ge\tau_j}X_i .
 \]
-Each round sends a univariate of degree at most $d+1$, and after $\tau$ rounds the claim is $C(\rho)\,\eq(r,\rho)$ at a random $\rho\in\F_{2^{128}}^{\tau}$.
+Because $\sum_x\prod_i x_i=1$ on any cube, $\sum_{x\in\cube n}f_j(x)=S_j$, so with $F=\sum_j f_j$ the whole statement is the single claim $\sum_{x\in\cube n}F(x)=0$, proven by $n$ rounds of sumcheck on $F$.
 
-\paragraph{Discharge.} To check the final value $C(\rho)\,\eq(r,\rho)$, the verifier computes $\eq(r,\rho)$ itself and assembles $C(\rho)=\sum_t\eta^{\,t-1}C_t(\rho)$ from the column values at $\rho$: the prover sends one value per committed column, each virtual column read off its source for free. These prover-sent values are checked later against the commitments by the PCS  (\S\ref{sec:stacking}).
+The rounds bind $X_{n-1}$ first and $X_0$ last, so the first $n-\tau_j$ touch only variables $T_j$ does not use: there $f_j$ contributes the line $Y\,k_j\,S_j$, with $k_j$ the product of the challenges drawn so far and $S_j=0$. Table $T_j$ enters at round $n-\tau_j$ and binds $X_{\tau_j-1},\dots,X_0$ in turn. This is back-loaded batching: a short claim waits, then joins weighted by the rounds it sat out.
 
 \subsection{Balancing the bus: grand product}\label{sec:gp}
 
@@ -472,10 +474,10 @@ We lay out the whole protocol as one ordered sequence. Each reduction below adds
 \item \textbf{Prover \& Verifier.} Decompose each leaf claim (\S\ref{sec:leafstack}). The verifier forms the public part: the block selectors; the constant coordinates (separators, the per-table read opcodes, the boundary state $(\pc_0,\fp_0)$ and $(\pc_{\mathrm{final}},\fp_{\mathrm{final}})$); the index column (\S\ref{sec:idxcol}); and the public program columns of the bytecode seed and finalize, whose MLEs it forms directly. The prover supplies each block's committed-column evaluations (one field element each, \S\ref{sec:prelim}); a virtual coordinate such as $\gen\cdot\pc$ is read off its committed source. The verifier checks the decomposition formula against $\widetilde V_0(\zeta)$; the supplied evaluations enter the claim pool. The count channel decomposes likewise (its leaves are the count columns), adding only their evaluations.
 \end{enumerate}
 
-\paragraph{Local constraints.} Run once per table (\S\ref{sec:air}); the six runs share no challenges.
+\paragraph{Local constraints.} One run for all six tables (\S\ref{sec:air}).
 \begin{enumerate}
-\item \textbf{Verifier.} For the table, sends the constraint-batch challenge $\eta$ and the zerocheck point $r\in\F_{2^{128}}^{\tau}$, where $2^{\tau}$ is its row count.
-\item \textbf{Prover \& Verifier.} Run the table's zerocheck, a $\tau$-round sumcheck on the $\eta$-batched constraint $\sum_x C(x)\,\eq(r,x)=0$. Its end needs that table's (committed) column evaluations at the random point, which enter the pool.
+\item \textbf{Verifier.} Sends the constraint-batch challenge $\eta$, each table taking a disjoint range of its powers, and the zerocheck point $r\in\F_{2^{128}}^{\mu}$, of which table $T_j$ uses the prefix $r_{<\tau_j}$.
+\item \textbf{Prover \& Verifier.} Run the back-loaded batched zerocheck, a $\mu$-round sumcheck on $\sum_j\sum_x C_j(x)\,\eq(r_{<\tau_j},x)=0$ in which a table of $2^{\tau}$ rows joins at round $\mu-\tau$. Its end needs every table's committed column evaluations, each at that table's own reduced point $\rho_{<\tau_j}$, all of them prefixes of one $\rho$; these enter the pool.
 \end{enumerate}
 
 \paragraph{Public input.}
