@@ -591,8 +591,7 @@ fn gen_verify(
         .collect();
     let _gdig = pows[0].2; // digest bits now advice-decomposed in-guest
 
-    // Bus: the bytecode claim carries the tight reduction's source-row point
-    // and the three bytecode-selector challenges.
+    // Bus: the bytecode claims carry the push/pull ζ_lo points and sb.
     let kbc = summary.bytecode_claims[0].point.len() - 3;
     let zeta: Vec<F128> = summary.bytecode_claims[0].point[..kbc].to_vec();
     let sb: Vec<F128> = summary.bytecode_claims[0].point[kbc..].to_vec();
@@ -682,8 +681,8 @@ fn gen_verify(
     assert!(grinds.next().is_none(), "every grind consumed");
 
     // ---- hints ----
-    // bcv: the deferred bytecode evaluations at the shared reduction row point
-    // (leaf's own scan, coord order; both bytecode blocks carry the same eight).
+    // bcv: the deferred bytecode evaluations at the SHARED push/pull point
+    // (leaf's own scan, coord order; both bytecode blocks carry the same six).
     let (kbc2, bcv) = lean_vm::leaf::public_evals(&l.push, &zeta);
     assert_eq!(kbc2, kbc);
     assert_eq!(bcv.len(), nbcv / 2);
@@ -692,45 +691,20 @@ fn gen_verify(
     // checkpoints: the verifier's phase-boundary sponge states (guest cvh).
 
     // ---- per-sub HINT data (the placeholder map is built once, elsewhere) ----
-    let reduction_max = sides
-        .iter()
-        .flat_map(|blocks| blocks.iter())
-        .enumerate()
-        .filter(|(_, block)| {
-            block
-                .coords
-                .iter()
-                .any(|coord| match coord {
-                    Coord::Col(col) | Coord::GCol(col) => !l.placements[*col].is_virtual(),
-                    _ => false,
-                })
-        })
-        .max_by_key(|(_, block)| block.kappa)
-        .map(|(i, _)| g_pow(i))
-        .expect("bus layout has at least one block");
-    let mut seen_bus = std::collections::HashSet::new();
-    let mut bus_row_nus = Vec::new();
-    for blocks in sides {
-        for block in blocks {
-            let row_nu = primitives::log2_ceil_usize(block.real.max(1));
-            for coord in &block.coords {
-                if let Coord::Col(col) | Coord::GCol(col) = coord
-                    && seen_bus.insert((*col, block.kappa))
-                {
-                    bus_row_nus.push(row_nu);
-                }
-            }
+    // Per side, the kappa-descending packing order (as in leaf.rs::layout):
+    // sort_order[side_base + rank] = g^{side-local index of the rank-r block}.
+    // The guest only perm-checks it and derives offsets; any aligned tiling is
+    // sound, so this canonical order just has to match the committed leaf.
+    let mut sort_order: Vec<F128> = Vec::new();
+    let mut gbase = 0usize;
+    for blocks in sides.iter() {
+        let n = blocks.len();
+        let mut order: Vec<usize> = (0..n).collect();
+        order.sort_by(|&a, &b| blocks[b].kappa.cmp(&blocks[a].kappa).then(a.cmp(&b)));
+        for &i in &order {
+            sort_order.push(g_pow(gbase + i)); // g^{global block index}
         }
-    }
-    assert_eq!(bus_row_nus.len(), summary.bus_claims.len());
-    let mut bus_tail_invs = vec![F128::ONE; 42];
-    if let Some(claim) = summary.bus_claims.iter().find(|claim| claim.prefix_shifted) {
-        for (row_nu, inverse) in bus_tail_invs.iter_mut().enumerate().take(claim.point.len() + 1) {
-            *inverse = claim.point[row_nu..]
-                .iter()
-                .fold(F128::ONE, |acc, &r| acc * (F128::ONE + r))
-                .inv();
-        }
+        gbase += n;
     }
     // ---- Phase E2 hints (the stacked Ligerito opening) ----
     let lig = &proof.openings[0];
@@ -817,8 +791,7 @@ fn gen_verify(
         ("merkle_leaf_rows".to_string(), lrows_flat),
         ("merkle_paths".to_string(), lpaths_flat),
         ("sub_pis".to_string(), vec![pi[0], pi[1]]),
-        ("reduction_max".to_string(), vec![reduction_max]),
-        ("bus_tail_invs".to_string(), bus_tail_invs),
+        ("sort_order".to_string(), sort_order.clone()),
     ];
     (hints, deferred)
 }
@@ -950,10 +923,11 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
 
     // ---- flattened block/coord descriptors (structural) ----
     let (mut sblk, mut bc0, mut bcn) = (vec![0usize], vec![], vec![]);
-    let (mut ct, mut cval) = (vec![], vec![]);
+    let (mut ct, mut cval, mut fpv) = (vec![], vec![], vec![]);
     let (mut nclaims, mut nbcv, mut nblocks) = (0usize, 0usize, 0usize);
+    // Claim dedup (mirrors leaf.rs): per coord, fresh = first (group, col,
+    // kappa) occurrence gets the next pool slot; duplicates point at it.
     let mut slot_of: std::collections::HashMap<(usize, usize), usize> = Default::default();
-    let mut bus_slot_col = Vec::new();
     let (mut coord_fresh, mut coord_slot) = (vec![], vec![]);
     for blocks in sides.iter() {
         for blk in blocks.iter() {
@@ -961,6 +935,8 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
             bcn.push(blk.coords.len());
             nblocks += 1;
             for c in &blk.coords {
+                // One COORD_FRESH/COORD_CLAIM_SLOT entry PER coord (the guest
+                // indexes them by global coord offset); only Col/GCol matter.
                 let (mut fresh, mut slot) = (0usize, 0usize);
                 if let Coord::Col(i) | Coord::GCol(i) = c {
                     let key = (*i, blk.kappa);
@@ -970,79 +946,38 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
                         slot_of.insert(key, nclaims);
                         fresh = 1;
                         slot = nclaims;
-                        bus_slot_col.push(*i);
                         nclaims += 1;
                     }
                 }
                 coord_fresh.push(fresh);
                 coord_slot.push(slot);
-                let (t, v) = match c {
-                    Coord::Const(v) => (0u128, *v),
-                    Coord::Col(_) => (1, F128::ZERO),
-                    Coord::GCol(_) => (2, F128::ZERO),
-                    Coord::Index => (3, F128::ZERO),
-                    Coord::Public(_) => {
-                        nbcv += 1;
-                        (4, F128::ZERO)
-                    }
+                let (t, v, f) = match c {
+                    Coord::Const(v) => (0u128, *v, *v),
+                    Coord::Col(i) => (1, F128::ZERO, l.pad[*i]),
+                    Coord::GCol(i) => (2, F128::ZERO, G * l.pad[*i]),
+                    Coord::Index => (3, F128::ZERO, F128::ZERO),
+                    Coord::Public(_) => { nbcv += 1; (4, F128::ZERO, F128::ZERO) }
                 };
-                ct.push(t);
-                cval.push(u(v));
+                ct.push(t); cval.push(u(v)); fpv.push(u(f));
             }
         }
         sblk.push(nblocks);
     }
-    let ncol: Vec<usize> = lean_vm::tables::tables()
-        .iter()
-        .map(|t| t.constraint_columns().len())
-        .collect();
+    let ncol: Vec<usize> = lean_vm::tables::tables().iter().map(|t| t.constraint_columns().len()).collect();
+    let evtot: usize = ncol.iter().sum();
+    let ncl = nclaims + evtot + 1; // bus + constraint + the PI claim
+
     // ---- claim descriptors: buffer id + offset only (both structural) ----
     let sch = lean_vm::cpu::schema();
     let b3base = sch.base[5];
     let valcols: Vec<usize> = lean_vm::tables::BLAKE3_VALUE_COLS.iter().map(|&c| b3base + c).collect();
-    let global_bus_slots: Vec<usize> = (0..nclaims)
-        .filter(|&slot| !valcols.contains(&bus_slot_col[slot]))
-        .collect();
-    let mut global_col_slot: std::collections::HashMap<usize, usize> = global_bus_slots
-        .iter()
-        .map(|&slot| (bus_slot_col[slot], slot))
-        .collect();
-    let mut next_claim = nclaims;
-    let mut global_extra_cols = Vec::new();
-    for (t, table) in lean_vm::tables::tables().iter().enumerate() {
-        for &local in table.constraint_columns() {
-            let col = sch.base[t] + local;
-            if let std::collections::hash_map::Entry::Vacant(entry) = global_col_slot.entry(col) {
-                entry.insert(next_claim);
-                global_extra_cols.push(col);
-                next_claim += 1;
-            }
-        }
-    }
-    let global_col_slots: Vec<usize> = global_bus_slots.iter().copied().chain(nclaims..next_claim).collect();
-    let mut air_global_slots = Vec::new();
-    for (t, table) in lean_vm::tables::tables().iter().enumerate() {
-        air_global_slots.extend(
-            table
-                .constraint_columns()
-                .iter()
-                .map(|&local| global_col_slot[&(sch.base[t] + local)]),
-        );
-    }
-    let count_target_block = l
-        .count
-        .iter()
-        .map(|block| block.count_target.expect("count block has a push target"))
-        .collect::<Vec<_>>();
-    let pi_claim_slot = next_claim;
-    next_claim += 1;
-    let ncl = next_claim;
     let block_index: std::collections::HashMap<usize, usize> = l
         .jagged_blocks
         .iter()
         .enumerate()
         .map(|(block, cols)| (l.placements[cols[0]].offset, block))
         .collect();
+    let bks_for_claims = lean_vm::cpu::block_kappa_sources(kbc);
     let (mut cpbuf, mut cpoff, mut cpcol, mut cppad, mut cpslot, mut cpblockslot, mut cpblocklog, mut cprowkey) =
         (vec![], vec![], vec![], vec![], vec![], vec![], vec![], vec![]);
     let mut desc_seen: std::collections::HashSet<(usize, usize)> = Default::default();
@@ -1052,10 +987,10 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
             for c in &blk.coords {
                 if let Coord::Col(i) | Coord::GCol(i) = c {
                     if !desc_seen.insert((*i, blk.kappa)) {
-                        continue;
+                        continue; // deduped: pooled once at its first occurrence
                     }
-                    cpbuf.push(if valcols.contains(i) { 5 } else { 6 });
-                    cpoff.push(0);
+                    cpbuf.push(if valcols.contains(i) { 3 } else { 0 });
+                    cpoff.push(0); // the ONE shared zeta lives at region 0
                     let dense_col = if valcols.contains(i) { lean_vm::cpu::QPKD } else { *i };
                     let placement = l.placements[dense_col];
                     cpcol.push(block_index[&placement.offset]);
@@ -1069,29 +1004,43 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
                             .map(|p| lean_vm::blake3_flock::VM_SLOTS[p])
                             .unwrap_or(0),
                     );
-                    // Every ordinary tight-reduction claim is normalized to
-                    // the same full bus-rho point. Packed q_pkd slot claims
-                    // remain on their native instance point.
                     cprowkey.push(if valcols.contains(i) {
-                        (5usize, block_idx, 0)
+                        (3usize, 0usize, 0usize)
                     } else {
-                        (6usize, 0, 0)
+                        let (source, adjustment) = bks_for_claims[block_idx];
+                        (0, source, adjustment)
                     });
                 }
             }
             block_idx += 1;
         }
     }
-    for &col in &global_extra_cols {
-        cpbuf.push(6);
-        cpoff.push(0);
-        let placement = l.placements[col];
-        cpcol.push(block_index[&placement.offset]);
-        cpblockslot.push(placement.slot);
-        cpblocklog.push(placement.block_width_log);
-        cppad.push(l.pad[col]);
-        cpslot.push(0);
-        cprowkey.push((6, 0, 0));
+    for (t, table) in lean_vm::tables::tables().iter().enumerate() {
+        for &c in table.constraint_columns() {
+            let col = sch.base[t] + c;
+            if l.placements[col].is_virtual() {
+                cpbuf.push(3);
+                cpoff.push(0);
+                let placement = l.placements[lean_vm::cpu::QPKD];
+                cpcol.push(block_index[&placement.offset]);
+                cpblockslot.push(placement.slot);
+                cpblocklog.push(placement.block_width_log);
+                cppad.push(F128::ZERO);
+                let p = valcols.iter().position(|&v| v == col).unwrap();
+                cpslot.push(lean_vm::blake3_flock::VM_SLOTS[p]);
+                cprowkey.push((3, 0, 0));
+            } else {
+                cpbuf.push(1);
+                cpoff.push(t * taumax_cap);
+                let placement = l.placements[col];
+                cpcol.push(block_index[&placement.offset]);
+                cpblockslot.push(placement.slot);
+                cpblocklog.push(placement.block_width_log);
+                cppad.push(l.pad[col]);
+                cpslot.push(0);
+                cprowkey.push((1, t, 0));
+            }
+        }
     }
     cpbuf.push(2);
     cpoff.push(0); // PI claim on MEM
@@ -1102,13 +1051,12 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     cppad.push(l.pad[lean_vm::cpu::MEM]);
     cpslot.push(0);
     cprowkey.push((2, 0, 0));
-    assert_eq!(cpbuf.len() - 1, pi_claim_slot);
     assert_eq!(cpbuf.len(), ncl, "descriptor count == pool size");
     let mut row_ids = std::collections::HashMap::new();
     let mut claim_row_group = vec![0usize; ncl];
     let mut claim_row_rep = Vec::new();
     for j in 0..ncl {
-        if cpbuf[j] == 3 || cpbuf[j] == 5 {
+        if cpbuf[j] == 3 {
             continue;
         }
         let next = row_ids.len();
@@ -1131,7 +1079,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         if claim_gamma_rank[i] != usize::MAX {
             continue;
         }
-        if cpbuf[i] == 3 || cpbuf[i] == 5 {
+        if cpbuf[i] == 3 {
             claim_gamma_rank[i] = next_rank;
             next_rank += 1;
             continue;
@@ -1151,7 +1099,6 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         for j in i..ncl {
             if claim_gamma_rank[j] == usize::MAX
                 && cpbuf[j] != 3
-                && cpbuf[j] != 5
                 && claim_row_group[j] == claim_row_group[i]
                 && cpcol[j] == cpcol[i]
                 && cpblocklog[j] == cpblocklog[i]
@@ -1173,6 +1120,26 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     }
     assert_eq!(next_rank, ncl);
 
+    // Padding-prefix indicators depend only on (logical row point, physical
+    // Jagged block), not on the column slot. Cache one per distinct pair used
+    // by a nonzero padding value.
+    let mut pad_prefix_ids = std::collections::HashMap::new();
+    let mut claim_pad_prefix = vec![0usize; ncl];
+    let (mut pad_prefix_row, mut pad_prefix_col) = (Vec::new(), Vec::new());
+    for j in 0..ncl {
+        if cpbuf[j] == 3 || cppad[j] == F128::ZERO {
+            continue;
+        }
+        let key = (claim_row_group[j], cpcol[j]);
+        let next = pad_prefix_ids.len();
+        let prefix = *pad_prefix_ids.entry(key).or_insert_with(|| {
+            pad_prefix_row.push(key.0);
+            pad_prefix_col.push(key.1);
+            next
+        });
+        claim_pad_prefix[j] = prefix;
+    }
+
     // ---- the placeholder map ----
     let ints = |v: &[usize]| format!("[{}]", v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(", "));
     let us = |v: &[u128]| format!("[{}]", v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(", "));
@@ -1181,6 +1148,9 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     let mut ps = |k: &str, v: String| { rep.insert(format!("{k}_PLACEHOLDER"), v); };
     ps("STREAM_CAP", stream_cap.to_string());
     ps("INV_GEN", u(G.inv()).to_string());
+    ps("LAGRANGE_INV_0", u(G.inv()).to_string());
+    ps("LAGRANGE_INV_1", u((F128::ONE + G).inv()).to_string());
+    ps("LAGRANGE_INV_2", u((G * (F128::ONE + G)).inv()).to_string());
     ps("MU_CAP", mumax.to_string());
     ps("GKR_ROUNDS_CAP", (mumax * (mumax + 1) / 2 + mumax + 2).to_string());
     ps("GKR_POINTS_CAP", ((mumax + 1) * mumax).to_string());
@@ -1193,109 +1163,28 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     assert_eq!(bks[sblk[0]..sblk[1]], bks[sblk[1]..sblk[2]], "push/pull kappa sources must match");
     ps("BLOCK_KAPPA_SRC", ints(&bks.iter().map(|&(s, _)| s).collect::<Vec<_>>()));
     ps("BLOCK_KAPPA_ADJ", ints(&bks.iter().map(|&(_, a)| a).collect::<Vec<_>>()));
-    let mut block_real_source = Vec::new();
-    for (side, blocks) in sides.iter().enumerate() {
-        for (local, _) in blocks.iter().enumerate() {
-            let source = if side < 2 && local == 1 {
-                7 // used-memory prefix
-            } else if side < 2 && local == 2 {
-                8 // public bytecode prefix
-            } else if (side < 2 && local >= 3) || side == 2 {
-                bks[block_real_source.len()].0 - 2
-            } else {
-                6 // full structural cube
-            };
-            block_real_source.push(source);
-        }
-    }
-    ps("BLOCK_REAL_TABLE", ints(&block_real_source));
-    let mut height_group_ids = std::collections::BTreeMap::new();
-    let mut block_height_group = Vec::with_capacity(nblocks);
-    let mut height_group_rep = Vec::new();
-    for (block, &source) in block_real_source.iter().enumerate() {
-        let key = if source == 6 {
-            (source, bks[block].0, bks[block].1)
-        } else {
-            (source, 0, 0)
-        };
-        let next = height_group_ids.len();
-        let group = *height_group_ids.entry(key).or_insert_with(|| {
-            height_group_rep.push(block);
-            next
-        });
-        block_height_group.push(group);
-    }
-    ps("N_HEIGHT_GROUPS", height_group_rep.len().to_string());
-    ps("BLOCK_HEIGHT_GROUP", ints(&block_height_group));
-    ps(
-        "HEIGHT_GROUP_KIND",
-        ints(&height_group_rep.iter().map(|&block| block_real_source[block]).collect::<Vec<_>>()),
-    );
-    ps(
-        "HEIGHT_GROUP_KAPPA_SRC",
-        ints(&height_group_rep.iter().map(|&block| bks[block].0).collect::<Vec<_>>()),
-    );
-    ps(
-        "HEIGHT_GROUP_KAPPA_ADJ",
-        ints(&height_group_rep.iter().map(|&block| bks[block].1).collect::<Vec<_>>()),
-    );
-    assert_eq!(
-        log2_ceil(program.bytecode_used()),
-        kbc,
-        "bytecode prefix must retain the program cube's logical dimension"
-    );
-    let block_has_committed: Vec<usize> = sides
-        .iter()
-        .flat_map(|blocks| blocks.iter())
-        .map(|block| {
-            usize::from(
-                block
-                    .coords
-                    .iter()
-                    .any(|coord| matches!(coord, Coord::Col(_) | Coord::GCol(_))),
-            )
-        })
-        .collect();
-    ps("BLOCK_HAS_COMMITTED", ints(&block_has_committed));
+    ps("BLOCK_REAL_TABLE", ints(&bks.iter().map(|&(s, _)| if s >= 2 { s - 2 } else { 6 }).collect::<Vec<_>>()));
+    let mut block_side = Vec::new();
+    for (s, blocks) in sides.iter().enumerate() { block_side.extend(std::iter::repeat_n(s, blocks.len())); }
+    ps("BLOCK_SIDE", ints(&block_side));
     ps("BLOCK_COORD_OFF", ints(&bc0));
     ps("BLOCK_COORD_COUNT", ints(&bcn));
     ps("COORD_TYPE", us(&ct));
     ps("COORD_CONST", us(&cval));
+    ps("COORD_PAD_VAL", us(&fpv));
     ps("COORD_FRESH", ints(&coord_fresh));
     ps("COORD_CLAIM_SLOT", ints(&coord_slot));
     ps("N_BUS_CLAIMS", nclaims.to_string());
-    ps("GLOBAL_BUS_SLOTS", ints(&global_bus_slots));
-    ps("N_GLOBAL_BUS", global_bus_slots.len().to_string());
-    ps("GLOBAL_COL_SLOTS", ints(&global_col_slots));
-    ps("N_GLOBAL_COLS", global_col_slots.len().to_string());
-    ps("AIR_GLOBAL_SLOTS", ints(&air_global_slots));
-    ps("COUNT_TARGET_BLOCK", ints(&count_target_block));
-    ps("PI_CLAIM_SLOT", pi_claim_slot.to_string());
-    let idxc: Vec<u128> = (0..34)
-        .map(|i| {
-            let mut g2k = G;
-            for _ in 0..i {
-                g2k = g2k * g2k;
-            }
-            u(F128::ONE + g2k)
-        })
-        .collect();
+    let idxc: Vec<u128> = (0..34).map(|i| { let mut g2k = G; for _ in 0..i { g2k = g2k * g2k; } u(F128::ONE + g2k) }).collect();
     ps("INDEX_MLE_FACTORS", us(&idxc));
     ps("N_CLAIMS", ncl.to_string());
     ps("N_AIR_COLS", ints(&ncol));
-    let mut air_col_off = Vec::with_capacity(ncol.len());
-    let mut air_cursor = 0usize;
-    for &count in &ncol {
-        air_col_off.push(air_cursor);
-        air_cursor += count;
-    }
-    ps("AIR_COL_OFF", ints(&air_col_off));
     ps("AIR_COLS_CAP", (ncol.iter().max().unwrap() + 1).to_string());
     ps("N_TABLES", l.taus.len().to_string());
     ps("TAU_CAP", taumax_cap.to_string());
     // g^(push.mu - BUS_GRIND_SHIFT) is the bus PoW window
-    // (leaf::grand_product_grinding_bits: bits = mu - (126 - SECURITY_BITS)).
-    ps("BUS_GRIND_SHIFT", (126 - lean_vm::SECURITY_BITS).to_string());
+    // (leaf::grand_product_grinding_bits: bits = mu - (127 - SECURITY_BITS)).
+    ps("BUS_GRIND_SHIFT", (127 - lean_vm::SECURITY_BITS).to_string());
     const MINB3: usize = 3;
     let fixed_challenges: Vec<F128> = flock::zerocheck::univariate_skip_optimized::small_challenges_ghash().into_iter().chain(flock::zerocheck::univariate_skip_optimized::medium_challenges_ghash()).collect();
     ps("FIXED_CHALLENGES", flds(&fixed_challenges));
@@ -1492,6 +1381,10 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("N_CLAIM_ROWS", claim_row_rep.len().to_string());
     ps("CLAIM_ROW_GROUP", ints(&claim_row_group));
     ps("CLAIM_ROW_REP", ints(&claim_row_rep));
+    ps("N_PAD_PREFIXES", pad_prefix_row.len().to_string());
+    ps("PAD_PREFIX_ROW", ints(&pad_prefix_row));
+    ps("PAD_PREFIX_COL", ints(&pad_prefix_col));
+    ps("CLAIM_PAD_PREFIX", ints(&claim_pad_prefix));
     ps("N_JAGGED_BATCHES", batch_rep.len().to_string());
     ps("JAGGED_BATCH_REP", ints(&batch_rep));
     ps("JAGGED_BATCH_ROW", ints(&batch_row));
@@ -1713,19 +1606,12 @@ fn recursion_soundness_binds() {
             "tampering {stream}[{idx}] must be rejected by the guest"
         );
     }
-    // reduction_max: point at a smaller (or non-committed) block.
+    // sort_order: duplicate a rank (break the packing bijection).
     {
         let mut merged = batch.merged.clone();
-        let pos = merged
-            .iter()
-            .position(|(n, _)| n == "reduction_max")
-            .expect("reduction_max");
-        assert_ne!(merged[pos].1[0][0], F128::ONE);
-        merged[pos].1[0][0] = F128::ONE;
-        assert!(
-            !run(&mut guest, &merged),
-            "a non-maximum reduction block must be rejected"
-        );
+        let pos = merged.iter().position(|(n, _)| n == "sort_order").expect("sort_order");
+        merged[pos].1[0][0] = merged[pos].1[0][1];
+        assert!(!run(&mut guest, &merged), "duplicated sort_order rank must be rejected");
     }
     eprintln!("all named-hint tamperings correctly rejected");
 }

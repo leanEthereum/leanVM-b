@@ -10,20 +10,123 @@ use primitives::field::{F128, F256Unreduced};
 use primitives::multilinear::{build_eq, interp, quartic_eval_from_eq};
 use rayon::prelude::*;
 
-/// Bind the lowest variable of `src` into `dst` (in parallel for large tables):
-/// `dst[i] = interp(src[2i], src[2i+1], rho)`. Writing into a caller-owned
-/// scratch buffer instead of a fresh Vec lets each layer's rounds ping-pong two
-/// allocations instead of allocating (and page-faulting) per round.
-fn par_fold_into(src: &[F128], rho: F128, dst: &mut Vec<F128>) {
-    let half = src.len() / 2;
-    if half >= PAR_THRESHOLD {
-        (0..half)
-            .into_par_iter()
-            .map(|i| interp(src[2 * i], src[2 * i + 1], rho))
-            .collect_into_vec(dst);
-    } else {
-        dst.clear();
-        dst.extend((0..half).map(|i| interp(src[2 * i], src[2 * i + 1], rho)));
+#[inline]
+fn mul_pair(a: [F128; 2], b: [F128; 2]) -> [F128; 2] {
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "vpclmulqdq",
+        target_feature = "avx2"
+    ))]
+    {
+        // SAFETY: both required features are enabled for the whole crate.
+        unsafe { primitives::field::gf2_128::x86_64::ghash_mul_vec2_clmul(a, b) }
+    }
+    #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
+    {
+        // SAFETY: PMULL is enabled for the whole crate.
+        unsafe { primitives::field::gf2_128::aarch64::ghash_mul_vec2_neon(a, b) }
+    }
+    #[cfg(not(any(
+        all(
+            target_arch = "x86_64",
+            target_feature = "vpclmulqdq",
+            target_feature = "avx2"
+        ),
+        all(target_arch = "aarch64", target_feature = "aes")
+    )))]
+    {
+        [a[0] * b[0], a[1] * b[1]]
+    }
+}
+
+#[inline]
+fn mul_four(a: [F128; 4], b: [F128; 4]) -> [F128; 4] {
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "vpclmulqdq",
+        target_feature = "avx512f",
+        target_feature = "avx512bw"
+    ))]
+    {
+        // SAFETY: all required features are enabled for the whole crate.
+        unsafe { primitives::field::gf2_128::x86_64::ghash_mul_vec4_clmul(a, b) }
+    }
+    #[cfg(not(all(
+        target_arch = "x86_64",
+        target_feature = "vpclmulqdq",
+        target_feature = "avx512f",
+        target_feature = "avx512bw"
+    )))]
+    {
+        let lo = mul_pair([a[0], a[1]], [b[0], b[1]]);
+        let hi = mul_pair([a[2], a[3]], [b[2], b[3]]);
+        [lo[0], lo[1], hi[0], hi[1]]
+    }
+}
+
+#[inline]
+fn mul_unreduced_four(a: F128, b: [F128; 4]) -> [F256Unreduced; 4] {
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "vpclmulqdq",
+        target_feature = "avx512f"
+    ))]
+    {
+        // SAFETY: all required features are enabled for the whole crate.
+        unsafe {
+            primitives::field::gf2_128::x86_64::ghash_mul_unreduced_vec4_clmul([a; 4], b)
+        }
+    }
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "vpclmulqdq",
+        target_feature = "avx2",
+        not(target_feature = "avx512f")
+    ))]
+    {
+        // SAFETY: both required features are enabled for the whole crate.
+        unsafe {
+            let lo = primitives::field::gf2_128::x86_64::ghash_mul_unreduced_vec2_clmul(
+                [a; 2],
+                [b[0], b[1]],
+            );
+            let hi = primitives::field::gf2_128::x86_64::ghash_mul_unreduced_vec2_clmul(
+                [a; 2],
+                [b[2], b[3]],
+            );
+            [lo[0], lo[1], hi[0], hi[1]]
+        }
+    }
+    #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
+    {
+        // SAFETY: PMULL is enabled for the whole crate.
+        unsafe {
+            let lo = primitives::field::gf2_128::aarch64::ghash_mul_unreduced_vec2_neon(
+                [a; 2],
+                [b[0], b[1]],
+            );
+            let hi = primitives::field::gf2_128::aarch64::ghash_mul_unreduced_vec2_neon(
+                [a; 2],
+                [b[2], b[3]],
+            );
+            [lo[0], lo[1], hi[0], hi[1]]
+        }
+    }
+    #[cfg(not(any(
+        all(
+            target_arch = "x86_64",
+            target_feature = "vpclmulqdq",
+            target_feature = "avx512f"
+        ),
+        all(
+            target_arch = "x86_64",
+            target_feature = "vpclmulqdq",
+            target_feature = "avx2"
+        ),
+        all(target_arch = "aarch64", target_feature = "aes")
+    )))]
+    {
+        b.map(|value| a.mul_unreduced(value))
     }
 }
 
@@ -35,31 +138,38 @@ pub enum GkrError {
 
 /// Build only the layers consumed by the radix-four protocol: levels
 /// `0,2,4,…`, plus a final binary root when `μ` is odd.
-fn build_layers(leaves: Vec<F128>) -> Vec<Vec<F128>> {
-    let mu = crate::log2_strict_usize(leaves.len());
+fn build_layers(leaves: Vec<F128>, mu: usize) -> Vec<Vec<F128>> {
+    assert!(leaves.len().is_power_of_two());
+    assert!(leaves.len() <= 1usize << mu);
     let mut layers: Vec<Vec<F128>> = (0..=mu).map(|_| Vec::new()).collect();
     layers[0] = leaves;
     let mut level = 0;
     while level + 2 <= mu {
         let cur = &layers[level];
         let quarter = cur.len() / 4;
-        let next: Vec<F128> = if quarter >= PAR_THRESHOLD {
+        let next: Vec<F128> = if cur.len() == 1 {
+            vec![cur[0]]
+        } else if cur.len() == 2 {
+            vec![cur[0] * cur[1]]
+        } else if quarter >= PAR_THRESHOLD {
             (0..quarter)
                 .into_par_iter()
                 .map(|j| {
-                    cur[4 * j]
-                        * cur[4 * j + 1]
-                        * cur[4 * j + 2]
-                        * cur[4 * j + 3]
+                    let [left, right] = mul_pair(
+                        [cur[4 * j], cur[4 * j + 2]],
+                        [cur[4 * j + 1], cur[4 * j + 3]],
+                    );
+                    left * right
                 })
                 .collect()
         } else {
             (0..quarter)
                 .map(|j| {
-                    cur[4 * j]
-                        * cur[4 * j + 1]
-                        * cur[4 * j + 2]
-                        * cur[4 * j + 3]
+                    let [left, right] = mul_pair(
+                        [cur[4 * j], cur[4 * j + 2]],
+                        [cur[4 * j + 1], cur[4 * j + 3]],
+                    );
+                    left * right
                 })
                 .collect()
         };
@@ -67,72 +177,93 @@ fn build_layers(leaves: Vec<F128>) -> Vec<Vec<F128>> {
         layers[level] = next;
     }
     if level < mu {
-        debug_assert_eq!(layers[level].len(), 2);
-        layers[mu] = vec![layers[level][0] * layers[level][1]];
+        layers[mu] = match layers[level].as_slice() {
+            [root] => vec![*root],
+            [left, right] => vec![*left * *right],
+            _ => unreachable!("the final binary layer has at most two explicit nodes"),
+        };
     }
     layers
 }
 
+#[inline]
+fn quartic_summand(linear: [[F128; 2]; 4], eq: F128) -> [F256Unreduced; 4] {
+    let [left0, left2, right0, right2] = mul_four(
+        [linear[0][0], linear[0][1], linear[2][0], linear[2][1]],
+        [linear[1][0], linear[1][1], linear[3][0], linear[3][1]],
+    );
+    let [left_at_one, right_at_one, c0, c4] = mul_four(
+        [
+            linear[0][0] + linear[0][1],
+            linear[2][0] + linear[2][1],
+            left0,
+            left2,
+        ],
+        [
+            linear[1][0] + linear[1][1],
+            linear[3][0] + linear[3][1],
+            right0,
+            right2,
+        ],
+    );
+    let left1 = left_at_one + left0 + left2;
+    let right1 = right_at_one + right0 + right2;
+    let [middle, at_one, cross_even, cross_high] = mul_four(
+        [
+            left1,
+            left0 + left1 + left2,
+            left0 + left2,
+            left1 + left2,
+        ],
+        [
+            right1,
+            right0 + right1 + right2,
+            right0 + right2,
+            right1 + right2,
+        ],
+    );
+    let c2 = cross_even + c0 + c4 + middle;
+    let c3 = cross_high + middle + c4;
+    mul_unreduced_four(eq, [c0 + at_one, c2, c3, c4])
+}
+
 /// Two binary product levels contracted into one degree-four layer.
 struct QuaternaryLayerState {
-    child: [Vec<F128>; 4],
-    child_next: [Vec<F128>; 4],
+    /// Four child tables interleaved in their original order. This lets the
+    /// prover consume a product-tree level without first transposing it.
+    values: Vec<F128>,
+    next: Vec<F128>,
+    /// Logical row count after identity padding. `values` stores a power-of-two
+    /// prefix; every omitted row is the constant four-tuple one.
+    logical_rows: usize,
 }
 
 impl QuaternaryLayerState {
-    fn new(below: &[F128], width: usize) -> Self {
-        let child = [0, 1, 2, 3].map(|off| {
-            if width >= PAR_THRESHOLD {
-                (0..width)
-                    .into_par_iter()
-                    .map(|j| below[4 * j + off])
-                    .collect()
-            } else {
-                (0..width).map(|j| below[4 * j + off]).collect()
-            }
-        });
+    fn new(mut values: Vec<F128>, width: usize) -> Self {
+        // Identity padding within the first explicit gate is materialized;
+        // complete all-one rows remain implicit.
+        values.resize(values.len().max(4), F128::ONE);
+        debug_assert_eq!(values.len() % 4, 0);
+        debug_assert!(values.len() <= 4 * width);
+        debug_assert!((values.len() / 4).is_power_of_two());
         Self {
-            child,
-            child_next: std::array::from_fn(|_| Vec::new()),
+            values,
+            next: Vec::new(),
+            logical_rows: width,
         }
     }
 
     /// `(q(0)+q(1), [X²]q, [X³]q, [X⁴]q)`.
     fn round_message(&self, eqr: &[F128]) -> [F128; 4] {
-        let half = self.child[0].len() / 2;
+        let stored_rows = self.values.len() / 4;
+        let half = stored_rows / 2;
         let summand = |idx: usize| -> [F256Unreduced; 4] {
-            let (lo, hi) = (2 * idx, 2 * idx + 1);
-            let linear = self.child.each_ref().map(|table| {
-                let a = table[lo];
-                [a, a + table[hi]]
+            let (lo, hi) = (8 * idx, 8 * idx + 4);
+            let linear = [0, 1, 2, 3].map(|child| {
+                let a = self.values[lo + child];
+                [a, a + self.values[hi + child]]
             });
-            let pair = |a: [[F128; 2]; 2]| {
-                let c0 = a[0][0] * a[1][0];
-                let c2 = a[0][1] * a[1][1];
-                [
-                    c0,
-                    (a[0][0] + a[0][1]) * (a[1][0] + a[1][1]) + c0 + c2,
-                    c2,
-                ]
-            };
-            let left = pair([linear[0], linear[1]]);
-            let right = pair([linear[2], linear[3]]);
-            let c0 = left[0] * right[0];
-            let c4 = left[2] * right[2];
-            let middle = left[1] * right[1];
-            let c2 =
-                (left[0] + left[2]) * (right[0] + right[2]) + c0 + c4 + middle;
-            let c3 =
-                (left[1] + left[2]) * (right[1] + right[2]) + middle + c4;
-            let at_one =
-                (left[0] + left[1] + left[2]) * (right[0] + right[1] + right[2]);
-            let eq = eqr[idx];
-            [
-                eq.mul_unreduced(c0 + at_one),
-                eq.mul_unreduced(c2),
-                eq.mul_unreduced(c3),
-                eq.mul_unreduced(c4),
-            ]
+            quartic_summand(linear, eqr[idx])
         };
         let xor4 = |mut x: [F256Unreduced; 4], y: [F256Unreduced; 4]| {
             for i in 0..4 {
@@ -140,7 +271,7 @@ impl QuaternaryLayerState {
             }
             x
         };
-        let acc = if half >= PAR_THRESHOLD {
+        let mut acc = if half >= PAR_THRESHOLD {
             (0..half)
                 .into_par_iter()
                 .map(summand)
@@ -150,14 +281,99 @@ impl QuaternaryLayerState {
                 .map(summand)
                 .fold([F256Unreduced::ZERO; 4], xor4)
         };
+        // Once the explicit prefix has folded to one row, the next logical
+        // coordinate pairs it with the all-one suffix. Other implicit pairs
+        // are constant one and contribute zero to the compact message.
+        if stored_rows == 1 && self.logical_rows > 1 {
+            let linear = [0, 1, 2, 3].map(|child| {
+                let a = self.values[child];
+                [a, a + F128::ONE]
+            });
+            acc = xor4(acc, quartic_summand(linear, eqr[0]));
+        }
         acc.map(F256Unreduced::reduce)
     }
 
     fn fold(&mut self, rk: F128) {
-        for i in 0..4 {
-            par_fold_into(&self.child[i], rk, &mut self.child_next[i]);
-            std::mem::swap(&mut self.child[i], &mut self.child_next[i]);
+        let stored_rows = self.values.len() / 4;
+        let rows = (stored_rows / 2).max(1);
+        self.next.resize(4 * rows, F128::ZERO);
+        if stored_rows == 1 {
+            debug_assert!(self.logical_rows > 1);
+            let [fold0, fold1] = mul_pair(
+                [self.values[0] + F128::ONE, self.values[1] + F128::ONE],
+                [rk, rk],
+            );
+            let [fold2, fold3] = mul_pair(
+                [self.values[2] + F128::ONE, self.values[3] + F128::ONE],
+                [rk, rk],
+            );
+            self.next[0] = self.values[0] + fold0;
+            self.next[1] = self.values[1] + fold1;
+            self.next[2] = self.values[2] + fold2;
+            self.next[3] = self.values[3] + fold3;
+            std::mem::swap(&mut self.values, &mut self.next);
+            self.logical_rows /= 2;
+            return;
         }
+        if rows >= PAR_THRESHOLD {
+            self.next
+                .par_chunks_exact_mut(4)
+                .enumerate()
+                .for_each(|(row, dst)| {
+                    let lo = 8 * row;
+                    let hi = lo + 4;
+                    let [fold0, fold1] = mul_pair(
+                        [
+                            self.values[lo] + self.values[hi],
+                            self.values[lo + 1] + self.values[hi + 1],
+                        ],
+                        [rk, rk],
+                    );
+                    let [fold2, fold3] = mul_pair(
+                        [
+                            self.values[lo + 2] + self.values[hi + 2],
+                            self.values[lo + 3] + self.values[hi + 3],
+                        ],
+                        [rk, rk],
+                    );
+                    dst[0] = self.values[lo] + fold0;
+                    dst[1] = self.values[lo + 1] + fold1;
+                    dst[2] = self.values[lo + 2] + fold2;
+                    dst[3] = self.values[lo + 3] + fold3;
+                });
+        } else {
+            for row in 0..rows {
+                let lo = 8 * row;
+                let hi = lo + 4;
+                let [fold0, fold1] = mul_pair(
+                    [
+                        self.values[lo] + self.values[hi],
+                        self.values[lo + 1] + self.values[hi + 1],
+                    ],
+                    [rk, rk],
+                );
+                let [fold2, fold3] = mul_pair(
+                    [
+                        self.values[lo + 2] + self.values[hi + 2],
+                        self.values[lo + 3] + self.values[hi + 3],
+                    ],
+                    [rk, rk],
+                );
+                self.next[4 * row] = self.values[lo] + fold0;
+                self.next[4 * row + 1] = self.values[lo + 1] + fold1;
+                self.next[4 * row + 2] = self.values[lo + 2] + fold2;
+                self.next[4 * row + 3] = self.values[lo + 3] + fold3;
+            }
+        }
+        std::mem::swap(&mut self.values, &mut self.next);
+        self.logical_rows /= 2;
+    }
+
+    fn children(&self) -> [F128; 4] {
+        debug_assert_eq!(self.values.len(), 4);
+        debug_assert_eq!(self.logical_rows, 1);
+        self.values[..4].try_into().unwrap()
     }
 }
 
@@ -189,8 +405,13 @@ pub struct ProductTriple {
 /// tail values inside their bound combination.
 pub fn prove_product_triple(leaves: [Vec<F128>; 3], ps: &mut ProverState) -> ProductTriple {
     let mu = crate::log2_strict_usize(leaves[0].len());
-    assert!(leaves.iter().all(|l| l.len() == 1 << mu), "batched trees must have equal size");
-    let layers = leaves.map(build_layers);
+    assert!(
+        leaves
+            .iter()
+            .all(|lane| lane.len().is_power_of_two() && lane.len() <= 1 << mu),
+        "batched trees must be power-of-two prefixes of the first tree"
+    );
+    let mut layers = leaves.map(|lane| build_layers(lane, mu));
     let roots = [layers[0][mu][0], layers[1][mu][0], layers[2][mu][0]];
     for root in roots {
         ps.add_scalar(root);
@@ -210,8 +431,11 @@ pub fn prove_product_triple(leaves: [Vec<F128>; 3], ps: &mut ProverState) -> Pro
             debug_assert_eq!(k, 0);
             let evals = [0, 1, 2].map(|t| {
                 let below = &layers[t][i - 1];
-                debug_assert_eq!(below.len(), 2);
-                [below[0], below[1]]
+                match below.as_slice() {
+                    [left, right] => [*left, *right],
+                    [left] => [*left, F128::ONE],
+                    _ => unreachable!("the root's children have at most two explicit nodes"),
+                }
             });
             for eval in &evals {
                 ps.add_scalars(eval);
@@ -225,7 +449,7 @@ pub fn prove_product_triple(leaves: [Vec<F128>; 3], ps: &mut ProverState) -> Pro
             i -= 1;
         } else {
             let mut trees = [0, 1, 2]
-                .map(|t| QuaternaryLayerState::new(&layers[t][i - 2], width));
+                .map(|t| QuaternaryLayerState::new(std::mem::take(&mut layers[t][i - 2]), width));
             let mut eqr = if k > 0 {
                 build_eq(&r[1..])
             } else {
@@ -248,13 +472,14 @@ pub fn prove_product_triple(leaves: [Vec<F128>; 3], ps: &mut ProverState) -> Pro
                 shrink_eq(&mut eqr);
             }
             for tree in &trees {
-                ps.add_scalars(&tree.child.each_ref().map(|table| table[0]));
+                ps.add_scalars(&tree.children());
             }
             let c0 = ps.sample();
             let c1 = ps.sample();
             for (value, tree) in values.iter_mut().zip(&trees) {
-                let lo = interp(tree.child[0][0], tree.child[1][0], c0);
-                let hi = interp(tree.child[2][0], tree.child[3][0], c0);
+                let child = tree.children();
+                let lo = interp(child[0], child[1], c0);
+                let hi = interp(child[2], child[3], c0);
                 *value = interp(lo, hi, c1);
             }
             lambda = ps.sample();
@@ -359,15 +584,19 @@ mod tests {
             let below: Vec<F128> = (0..4 * width)
                 .map(|i| F128::new((17 * i + width + 1) as u64, (i * i + 3) as u64))
                 .collect();
-            let state = QuaternaryLayerState::new(&below, width);
+            let state = QuaternaryLayerState::new(below, width);
             let eqr: Vec<F128> = (0..width / 2)
                 .map(|i| F128::new((31 * i + 5) as u64, (7 * i + 1) as u64))
                 .collect();
             let [difference, c2, c3, c4] = state.round_message(&eqr);
             let direct = |z: F128| {
                 (0..width / 2).fold(F128::ZERO, |sum, row| {
-                    let values = state.child.each_ref().map(|child| {
-                        interp(child[2 * row], child[2 * row + 1], z)
+                    let values = [0, 1, 2, 3].map(|child| {
+                        interp(
+                            state.values[8 * row + child],
+                            state.values[8 * row + 4 + child],
+                            z,
+                        )
                     });
                     sum + eqr[row] * values[0] * values[1] * values[2] * values[3]
                 })
@@ -413,6 +642,42 @@ mod tests {
 
             let proof = ps.into_proof();
             let mut vs = VerifierState::new(b"radix-four-gkr-test", &proof, &[]);
+            let verified = verify_product_triple(mu, &mut vs).expect("GKR verifies");
+            assert_eq!(verified.roots, proved.roots);
+            assert_eq!(verified.point, proved.point);
+            assert_eq!(verified.values, proved.values);
+            vs.finish().expect("proof stream is consumed");
+        }
+    }
+
+    #[test]
+    fn implicit_identity_suffix_matches_dense_padding() {
+        for mu in 3..=10 {
+            let lane_mu = [mu, mu - 1, mu - 3];
+            let leaves: [Vec<F128>; 3] = lane_mu.map(|depth| {
+                (0..1usize << depth)
+                    .map(|row| F128::new((3 + row + depth * 10_007) as u64, 0))
+                    .collect()
+            });
+            let dense = leaves.each_ref().map(|lane| {
+                let mut padded = lane.clone();
+                padded.resize(1 << mu, F128::ONE);
+                padded
+            });
+            let mut ps = ProverState::new(b"sparse-radix-four-gkr-test", &[]);
+            let proved = prove_product_triple(leaves, &mut ps);
+            for lane in 0..3 {
+                assert_eq!(proved.values[lane], mle_eval(&dense[lane], &proved.point));
+                assert_eq!(
+                    proved.roots[lane],
+                    dense[lane]
+                        .iter()
+                        .copied()
+                        .fold(F128::ONE, |product, value| product * value)
+                );
+            }
+            let proof = ps.into_proof();
+            let mut vs = VerifierState::new(b"sparse-radix-four-gkr-test", &proof, &[]);
             let verified = verify_product_triple(mu, &mut vs).expect("GKR verifies");
             assert_eq!(verified.roots, proved.roots);
             assert_eq!(verified.point, proved.point);

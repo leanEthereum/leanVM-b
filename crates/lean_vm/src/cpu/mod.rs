@@ -299,25 +299,21 @@ pub enum Error {
     Blake3(flock::verifier::VerifyError),
 }
 
-fn merge_bus_global_claims(bus_claims: Vec<ColumnClaim>, global_claims: Vec<ColumnClaim>) -> Vec<ColumnClaim> {
-    let mut global: Vec<Option<ColumnClaim>> = global_claims.into_iter().map(Some).collect();
-    let mut claims = Vec::new();
-    for bus in bus_claims {
-        if bus.prefix_shifted {
-            let claim = global
-                .iter_mut()
-                .find(|claim| claim.as_ref().is_some_and(|claim| claim.col == bus.col))
-                .and_then(Option::take)
-                .expect("every normalized bus column has one global opening");
-            claims.push(claim);
-        } else {
-            claims.push(bus);
+/// Lift each table's constraint evals (at its zerocheck point `rho`) to global
+/// column claims, offsetting the table's local constraint columns by its base.
+fn constraint_claims(table_claims: &[constraints::Claims]) -> Vec<ColumnClaim> {
+    let sch = schema();
+    let mut v = Vec::new();
+    for (t, table) in tables::tables().iter().enumerate() {
+        for (k, &c) in table.constraint_columns().iter().enumerate() {
+            v.push(ColumnClaim {
+                col: sch.base[t] + c,
+                point: table_claims[t].rho.clone(),
+                value: table_claims[t].evals[k],
+            });
         }
     }
-    // Remaining entries are AIR-only columns. Preserve schema order, which is
-    // also the global reduction's construction order after its bus prefix.
-    claims.extend(global.into_iter().flatten());
-    claims
+    v
 }
 
 /// If `col` is a BLAKE3 **value** column (global index), its `q_pkd` packed slot.
@@ -404,20 +400,33 @@ pub fn prove(program: &Program, public_input: [F128; 2]) -> (Proof, Stats) {
     // bus point, so no dedicated binding challenge is drawn. Mirrored in `verify`.
     let t = std::time::Instant::now();
     let l = &w.layout;
-    let committed_cols: Vec<bool> = l.placements.iter().map(|p| !p.is_virtual()).collect();
     let (bus_claims, _bytecode_claims) = tracing::info_span!("Prove bus")
-        .in_scope(|| leaf::prove_balance(&l.push, &l.pull, &l.count, &w.cols, &l.pad, &committed_cols, &mut ps));
+        .in_scope(|| leaf::prove_balance(&l.push, &l.pull, &l.count, &w.cols, &mut ps));
     if prof {
         eprintln!("[prove] bus(grand-p): {:>7.2} ms", ms(t));
     }
     let t = std::time::Instant::now();
-    let global_claims = tracing::info_span!("Prove constraints")
-        .in_scope(|| constraints::prove_global(&w.cols, &l.pad, &l.placements, &bus_claims, &mut ps));
+    let table_claims = tracing::info_span!("Prove constraints").in_scope(|| {
+        let sch = schema();
+        let mut table_claims = Vec::new();
+        for (ti, table) in tables::tables().iter().enumerate() {
+            let involved = table.constraint_columns();
+            let position = tables::column_positions(involved);
+            let cols: Vec<Column> = involved.iter().map(|&c| w.cols[sch.base[ti] + c].clone()).collect();
+            table_claims.push(constraints::prove(
+                &cols,
+                |eta, vals| table.eval_constraint(eta, &tables::Cols::new(vals, &position)),
+                &mut ps,
+            ));
+        }
+        table_claims
+    });
     if prof {
         eprintln!("[prove] constraints : {:>7.2} ms", ms(t));
     }
 
-    let mut claims = merge_bus_global_claims(bus_claims, global_claims);
+    let mut claims = bus_claims;
+    claims.extend(constraint_claims(&table_claims));
     claims.push(bind_pi_claim(ps.sample(), &w.layout.placements, &w.layout.pi));
     // The input/output words bind via the memory bus (value columns are virtual and
     // route to q_pkd, see `slot_claims`); cv/counter/blen/flags are constants baked
@@ -482,7 +491,6 @@ fn bind_pi_claim(r: F128, placements: &[witness::Placement], pi: &[F128; 2]) -> 
         col: MEM,
         point,
         value: primitives::multilinear::interp(pi[0], pi[1], r),
-        prefix_shifted: false,
     }
 }
 
@@ -494,7 +502,6 @@ fn bind_pi_claim(r: F128, placements: &[witness::Placement], pi: &[F128; 2]) -> 
 /// at fixed offsets from its tail. Ordinary callers just `?`-discard it.
 pub struct VerifySummary {
     pub bytecode_claims: Vec<leaf::BytecodeClaim>,
-    pub bus_claims: Vec<ColumnClaim>,
     pub count_root: F128,
     /// Sponge states after: the bus, the zerochecks, the PI sample, and the
     /// flock reduction.
@@ -527,16 +534,26 @@ pub fn verify(
     // words bind via the memory bus, the pins reuse a bus point.
     let n_b3 = l.row_counts[tables::BLAKE3_TABLE];
 
-    let committed_cols: Vec<bool> = l.placements.iter().map(|p| !p.is_virtual()).collect();
-    let bus = leaf::verify_balance(&l.push, &l.pull, &l.count, &l.pad, &committed_cols, &mut vs).map_err(Error::Bus)?;
+    let bus = leaf::verify_balance(&l.push, &l.pull, &l.count, &l.pad, &mut vs).map_err(Error::Bus)?;
     let checkpoint_bus = vs.sponge_state();
 
-    let global_claims =
-        constraints::verify_global(&l.pad, &bus.claims, &mut vs).map_err(|e| Error::Constraint(0, e))?;
+    let mut table_claims = Vec::new();
+    for (ti, table) in tables::tables().iter().enumerate() {
+        let involved = table.constraint_columns();
+        let position = tables::column_positions(involved);
+        let cl = constraints::verify(
+            l.taus[ti],
+            involved.len(),
+            |eta, vals| table.eval_constraint(eta, &tables::Cols::new(vals, &position)),
+            &mut vs,
+        )
+        .map_err(|e| Error::Constraint(ti, e))?;
+        table_claims.push(cl);
+    }
     let checkpoint_zerochecks = vs.sponge_state();
 
-    let bus_claims = bus.claims.clone();
-    let mut claims = merge_bus_global_claims(bus.claims, global_claims);
+    let mut claims = bus.claims;
+    claims.extend(constraint_claims(&table_claims));
     claims.push(bind_pi_claim(vs.sample(), &l.placements, &l.pi));
     let checkpoint_pi = vs.sponge_state();
     let slots = slot_claims(&l, &claims);
@@ -556,7 +573,6 @@ pub fn verify(
     vs.finish().map_err(Error::Transcript)?;
     Ok(VerifySummary {
         bytecode_claims: bus.bytecode_claims,
-        bus_claims,
         count_root: bus.count_root,
         checkpoints: [checkpoint_bus, checkpoint_zerochecks, checkpoint_pi, checkpoint_flock],
         zc_claim: replay.zc_claim,
@@ -583,7 +599,6 @@ fn slot_claims(l: &Layout, claims: &[ColumnClaim]) -> Vec<pcs::SlotClaim> {
             // (strided) claim on QPKD, folded sparsely (2^n_log, not the 2^(7+n_log)
             // dense QPKD block).
             if let Some(slot) = blake3_value_slot(c.col) {
-                debug_assert!(!c.prefix_shifted);
                 return pcs::SlotClaim::Strided {
                     offset: l.placements[QPKD].offset,
                     slot,
@@ -593,10 +608,13 @@ fn slot_claims(l: &Layout, claims: &[ColumnClaim]) -> Vec<pcs::SlotClaim> {
                 };
             }
             let placement = l.placements[c.col];
-            // Ordinary committed prefixes store `column + pad`, exactly the
-            // representation exposed by the common reduction. The only
-            // unshifted ordinary claim is PI on memory, whose pad is zero.
-            debug_assert!(c.prefix_shifted || l.pad[c.col] == F128::ZERO);
+            debug_assert_eq!(c.point.len(), placement.n_vars);
+            // The arithmetization evaluates the full power-of-two column,
+            // including its fixed public padding. Jagged commits only the real
+            // prefix, so remove the padding MLE before opening the dense data.
+            let suffix = F128::ONE
+                + ::pcs::jagged::prefix_indicator_eval(placement.height, &c.point);
+            let jagged_value = c.value + l.pad[c.col] * suffix;
             let mut block_point = Vec::with_capacity(placement.block_width_log + c.point.len());
             for bit in 0..placement.block_width_log {
                 block_point.push(if (placement.slot >> bit) & 1 == 1 { F128::ONE } else { F128::ZERO });
@@ -607,7 +625,7 @@ fn slot_claims(l: &Layout, claims: &[ColumnClaim]) -> Vec<pcs::SlotClaim> {
                 height: placement.height << placement.block_width_log,
                 selector_len: placement.block_width_log,
                 row_point: block_point,
-                value: c.value,
+                value: jagged_value,
             }
         })
         .collect()

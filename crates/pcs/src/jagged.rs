@@ -29,70 +29,6 @@ pub fn indicator_eval(row_point: &[F128], start: usize, end: usize, index_point:
     indicator_eval_with_row_weights(&row_weights, start, end, index_point)
 }
 
-/// Evaluate the multilinear extension of the Basic-Jagged predicate when the
-/// start and length bits are themselves field points. Boolean points recover
-/// [`indicator_eval`] with `end = start + length`. All four vectors are
-/// zero-extended to the longest length, and one further fixed-zero bit rejects
-/// overflow.
-pub fn indicator_eval_with_start_length_points(
-    row_point: &[F128],
-    index_point: &[F128],
-    start_point: &[F128],
-    length_point: &[F128],
-) -> F128 {
-    let n = row_point
-        .len()
-        .max(index_point.len())
-        .max(start_point.len())
-        .max(length_point.len());
-    let mut state = [F128::ZERO; 4];
-    state[0] = F128::ONE;
-
-    for bit in 0..=n {
-        let row = row_point.get(bit).copied().unwrap_or(F128::ZERO);
-        let index = index_point.get(bit).copied().unwrap_or(F128::ZERO);
-        let start = start_point.get(bit).copied().unwrap_or(F128::ZERO);
-        let length = length_point.get(bit).copied().unwrap_or(F128::ZERO);
-        let row_weights = [F128::ONE + row, row];
-        let index_weights = [F128::ONE + index, index];
-        let mut by_parameters = [[[F128::ZERO; 4]; 2]; 2];
-
-        for start_bit in 0..2 {
-            for length_bit in 0..2 {
-                let mut next = [F128::ZERO; 4];
-                for (state_idx, &state_weight) in state.iter().enumerate() {
-                    let carry = state_idx & 1;
-                    let comparison = state_idx >> 1;
-                    for row_bit in 0..2 {
-                        let sum = row_bit + carry + start_bit;
-                        let index_bit = sum & 1;
-                        let next_carry = sum >> 1;
-                        let next_comparison = if row_bit == length_bit {
-                            comparison
-                        } else {
-                            length_bit
-                        };
-                        next[next_carry + 2 * next_comparison] +=
-                            state_weight * row_weights[row_bit] * index_weights[index_bit];
-                    }
-                }
-                by_parameters[start_bit][length_bit] = next;
-            }
-        }
-
-        let mut next = [F128::ZERO; 4];
-        for out in 0..4 {
-            let at_start_zero = by_parameters[0][0][out]
-                + length * (by_parameters[0][0][out] + by_parameters[0][1][out]);
-            let at_start_one = by_parameters[1][0][out]
-                + length * (by_parameters[1][0][out] + by_parameters[1][1][out]);
-            next[out] = at_start_zero + start * (at_start_zero + at_start_one);
-        }
-        state = next;
-    }
-    state[2]
-}
-
 /// [`indicator_eval`] with explicit `(zero, one)` weights for each logical-row
 /// coordinate. The pairs need not sum to one. This lets a geometric column
 /// batch use selector weights `(1, gamma^(2^b))` directly, absorbing all
@@ -232,34 +168,6 @@ mod tests {
     }
 
     #[test]
-    fn start_length_point_evaluator_matches_boolean_intervals() {
-        for m in 1usize..=6 {
-            let n = 1usize << m;
-            let row_point: Vec<_> = (0..m).map(|i| f((13 * m + i) as u64)).collect();
-            let index_point: Vec<_> = (0..m).map(|i| f((19 * m + i) as u64)).collect();
-            for start in 0..n {
-                for end in start..=n {
-                    let bits = |value: usize| {
-                        (0..=m)
-                            .map(|bit| F128::new(((value >> bit) & 1) as u64, 0))
-                            .collect::<Vec<_>>()
-                    };
-                    assert_eq!(
-                        indicator_eval_with_start_length_points(
-                            &row_point,
-                            &index_point,
-                            &bits(start),
-                            &bits(end - start),
-                        ),
-                        indicator_eval(&row_point, start, end, &index_point),
-                        "m={m}, interval=[{start},{end})",
-                    );
-                }
-            }
-        }
-    }
-
-    #[test]
     fn prefix_indicator_matches_dense_table_mle() {
         for m in 0usize..=7 {
             let n = 1usize << m;
@@ -330,7 +238,7 @@ mod tests {
                                 + state[2] * F128::new((start_hi <= end_hi) as u64, 0))
                             + msg(start_hi + 1)
                                 * (state[1] * F128::new((start_hi + 1 < end_hi) as u64, 0)
-                                    + state[3] * F128::new((start_hi < end_hi) as u64, 0));
+                                    + state[3] * F128::new((start_hi + 1 <= end_hi) as u64, 0));
 
                         let mut expected = F128::ZERO;
                         for (y, &message) in final_msg.iter().enumerate() {

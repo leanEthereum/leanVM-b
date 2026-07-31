@@ -22,195 +22,109 @@
 
 \begin{abstract}
 \noindent
-This note describes the two Jagged constructions used in leanVM. Unequal-height trace columns are packed into one Ligerito commitment without a power-of-two pad after every column. Independently, the grand-product leaves concatenate the real rows of all bus blocks and pad only once. Two quadratic sumchecks reduce the tight grand product to column evaluations at one common point, and a third sumcheck folds those evaluations together with all local constraints. The product tree is verified two levels at a time by a radix-four GKR. The grand-product construction and its common-point reduction are not part of the original Jagged PCS paper~\cite{Jagged26}.
+This note describes the Jagged polynomial commitment used in leanVM. Unequal-height trace columns are packed into one Ligerito commitment without a power-of-two gap after every column, and a width-four branching program evaluates the resulting opening weights. Grand-product leaves retain their simpler aligned power-of-two blocks: the product GKR is accelerated by contracting two tree levels per layer and by keeping its identity-padding suffix implicit. The first construction follows the Basic Jagged method~\cite{Jagged26}; the grand-product optimizations are independent of it.
 \end{abstract}
 
 \section{The interval-transport polynomial}
 
-All bit vectors are little-endian. For \(x,u\in\F^m\), define
+All bit vectors are little-endian. For $x,u\in\F^m$, define
 \[
 \eq(x,u):=\prod_{i=0}^{m-1}(1+x_i+u_i).
 \]
-On the Boolean cube this is the equality indicator, so the multilinear extension of \(P:\cube m\to\F\) is \(\mle P(x)=\sum_{u\in\cube m}P(u)\eq(x,u)\).
+On the Boolean cube this is the equality indicator, so the multilinear extension of $P:\cube m\to\F$ is $\mle P(x)=\sum_{u\in\cube m}P(u)\eq(x,u)$.
 
-Suppose a logical table starts at dense offset \(t\) and has \(h\) real entries. Its fundamental weight is
+Suppose a logical table starts at dense offset $t$ and has $h$ entries. Define
 \[
 J_{t,h}(r,x):=\sum_{u=0}^{h-1}\eq(r,u)\eq(x,t+u).
 \]
-At Boolean \(x\), this is zero outside \([t,t+h)\), while \(J_{t,h}(r,t+u)=\eq(r,u)\). Consequently, if \(q[t+u]=P[u]\) for \(0\leq u<h\), then
+At Boolean $x$, this is zero outside $[t,t+h)$, while $J_{t,h}(r,t+u)=\eq(r,u)$. Hence, if $q[t+u]=P[u]$ for $0\leq u<h$, then
 \[
-\sum_{v\in\cube m}q[v]J_{t,h}(r,v)=\sum_{u=0}^{h-1}P[u]\eq(r,u).
+\sum_{x\in\cube m}q[x]J_{t,h}(r,x)=\sum_{u=0}^{h-1}P[u]\eq(r,u).
 \]
-This identity is the common core of both constructions below.
+Thus $J$ transports the ordinary equality kernel on a logical table to the table's physical interval inside a larger commitment.
 
-\paragraph{Width-four evaluation.} The verifier evaluates \(J\) in \(O(m)\) field operations. Scan bits from least to most significant and maintain four states \((\kappa,\chi)\in\{0,1\}^2\). Here \(\kappa\) is the carry in \(x=t+u\), and \(\chi\) records whether the processed prefix of \(u\), read with the current bit as the most significant one seen so far, is strictly smaller than the corresponding prefix of \(h\). For Boolean bits \(a=u_i\), \(d=x_i\), \(s=t_i\), and \(\ell=h_i\),
+\paragraph{Width-four evaluation.} The verifier evaluates $J$ in $O(m)$ field operations. Scan bits from least to most significant and maintain four weighted states $(\kappa,\chi)\in\cube2$. Here $\kappa$ is the carry in $x=t+u$, while $\chi$ says that the processed prefix of $u$, read with the latest bit as most significant, is strictly smaller than the corresponding prefix of $h$. For Boolean bits $a=u_i$, $d=x_i$, $s=t_i$, and $\ell=h_i$, a valid transition satisfies
 \[
-d=a+s+\kappa\pmod 2,\qquad \kappa'=\left\lfloor\frac{a+s+\kappa}{2}\right\rfloor,\qquad
-\chi'=\begin{cases}\chi,&a=\ell,\\ \ell,&a\neq\ell.\end{cases}
+d=a+s+\kappa\pmod 2,\qquad \kappa'=\left\lfloor\frac{a+s+\kappa}{2}\right\rfloor,\qquad \chi'=\begin{cases}\chi,&a=\ell,\\ \ell,&a\neq\ell.\end{cases}
 \]
-Start in \((0,0)\), process one additional zero bit above the dense cube, and accept \((0,1)\). The extra bit supports \(t+h=2^m\) and rejects overflow. At coordinate \(i\), the two choices of \(a\) have weights \((1+r_i,r_i)\), and the two choices of \(d\) have weights \((1+x_i,x_i)\). Summing the valid weighted transitions gives the next four field elements. This is the Basic Jagged read-once branching program~\cite{Jagged26}.
-
-The same evaluator also accepts field points \(\sigma,\lambda\) in place of the Boolean bit strings \(\bits(t),\bits(h)\). At each coordinate, compute the transition for the four Boolean choices \((s,\ell)\in\cube2\), then multilinearly interpolate those four results at \((\sigma_i,\lambda_i)\). We denote the result by
-\[
-J(r,x;\sigma,\lambda).
-\]
-For Boolean parameter points it equals \(J_{t,h}(r,x)\); for arbitrary points it is the multilinear extension of that function in all start and length bits.
+The choice $a\in\{0,1\}$ contributes weight $(1+r_i,r_i)$, and the forced output bit $d$ contributes $(1+x_i,x_i)$. Sum the weighted transitions reaching each new state. Start at $(0,0)$, process one extra zero bit above the committed cube, and return state $(0,1)$. The extra bit accepts the exact endpoint $t+h=2^m$ but rejects overflow. This is the Basic Jagged read-once branching program~\cite{Jagged26}.
 
 \section{Jagged trace commitment}
 
-\paragraph{Shifted prefixes.} A logical column \(P_i\) has \(2^{k_i}\) entries, of which the first \(h_i\leq2^{k_i}\) are witness values and the remaining entries equal a public padding value \(p_i\). Define
+\paragraph{Shift away public padding.} A logical column $P_i$ has $2^{k_i}$ entries: its first $h_i$ entries are witness values and the rest equal a public padding value $p_i$. Over characteristic two define
 \[
-Q_i[z]=\begin{cases}P_i[z]+p_i,&z<h_i,\\0,&h_i\leq z<2^{k_i}.\end{cases}
+Q_i[z]=\begin{cases}P_i[z]+p_i,&z<h_i,\\0,&h_i\leq z<2^{k_i}.
+\end{cases}
 \]
-Then \(P_i=Q_i+p_i\) on the whole Boolean cube and therefore
-\[
-\mle P_i(r)=\mle Q_i(r)+p_i.
-\]
-Committing \(Q_i\), rather than the unshifted real prefix, removes every padding-prefix correction from the verifier.
+Then $P_i=Q_i+p_i$ on the entire logical cube, so $\mle P_i(r)=\mle Q_i(r)+p_i$. Only the nonzero prefix of $Q_i$ needs committed space, and the verifier never needs a correction for a truncated padding prefix.
 
-\paragraph{Layout.} Compatible shifted prefixes of equal height are grouped into row-major blocks of power-of-two width \(B=2^b\). If a block starts at \(t\), then
+\paragraph{Physical layout.} Compatible shifted prefixes of equal height are grouped into a row-major block of width $B=2^b$. If the block starts at $t$, its slot $c$ is stored as
 \[
 q[t+c+Bz]=Q_c[z],\qquad 0\leq c<B,\quad 0\leq z<h.
 \]
-The block occupies exactly \(Bh\) dense cells. Wider blocks are placed first, which aligns every block to its width without inserting gaps. Flock's packed witness \(q_{\rm pkd}\) remains an unshifted, full power-of-two block anchored at zero; all ordinary columns use shifted real prefixes. After the last block, \(q\) is padded once with zero to a cube of size \(2^M\). The dimension \(M\) is large enough to hold the packed area, every block selector followed by its longest row point, and the PCS minimum domain.
+The block occupies exactly $Bh$ cells. Placing wider blocks first aligns every start to its width without inserting gaps. After the final block, $q$ is padded once with zero to length $2^M$. Flock's packed witness $q_{\rm pkd}$ remains one unshifted power-of-two block anchored at zero; the Jagged layout is used for the ordinary columns.
 
-\paragraph{Opening one column.} For slot \(c\) of a width-\(2^b\) block, form
+\paragraph{Opening and batching.} To open slot $c$ at row point $r$, form $r^\star=(\bits_b(c),r,0,\ldots,0)$ and set $L=Bh$. Then
 \[
-r^\star=(\bits_b(c),r_0,\ldots,r_{k-1},0,\ldots,0).
+\sum_xq[x]J_{t,L}(r^\star,x)=\mle Q_c(r),
 \]
-The selector bits choose the slot and the row bits choose the logical entry. With \(L=2^bh\),
+after which the verifier adds $p_c$. To batch all $B$ slots with coefficients $1,\gamma,\ldots,\gamma^{B-1}$, replace the selector-coordinate equality weights $(1+r_i,r_i)$ inside the branching program by $(1,\gamma^{2^i})$. A slot $c=\sum_i2^ic_i$ then receives $\prod_i\gamma^{2^ic_i}=\gamma^c$. One branching-program evaluation therefore produces the whole geometric batch. The prover materializes the corresponding dense weight vector and uses the unchanged Ligerito opening protocol.
+
+\paragraph{Recursive terminal.} Suppose Ligerito folds the first $f$ committed coordinates and leaves a final message $m:\cube\ell\to\F$, where $f+\ell=M$. Recursion runs the four-state automaton through the folded coordinates and contracts the remaining $2^\ell$ message entries through the residual transition matrices. When every residual logical-row coordinate is fixed to zero, only two adjacent message entries can survive; the implementation selects those entries directly instead of traversing the full residual tree.
+
+\section{Grand-product GKR}
+
+The grand product deliberately does not use the tight Jagged layout above. A bus block $b$ has $2^{\kappa_b}$ rows, including its public default-padding rows. Blocks are sorted by decreasing $\kappa_b$ and placed consecutively. A block of size $2^k$ then starts at a multiple of $2^k$, because every preceding block size is also a multiple of $2^k$. If the total length lies between $2^{\mu-1}$ and $2^\mu$, the single remaining suffix is filled with the product identity $1$.
+
+For block $b$, row $u$, tuple coordinates $c_{b,j}(u)$, and transcript challenges $\alpha,\gamma$, define the leaf
 \[
-\sum_x q[x]J_{t,L}(r^\star,x)=\sum_{z=0}^{h-1}Q_c[z]\eq(r,z)=\mle Q_c(r).
+L_b(u)=\gamma+\sum_j\alpha^jc_{b,j}(u).
 \]
-The arithmetization recovers the full logical evaluation by adding \(p_c\).
-
-\paragraph{Batching a row-major block.} Suppose the \(B\) slots have batching coefficients \(1,\gamma,\ldots,\gamma^{B-1}\). Instead of evaluating one \(J\) per slot, replace the selector-coordinate pairs \((1+r_i,r_i)\) by
+If its aligned offset is $t_b$, write $s_b=t_b/2^{\kappa_b}$. At a GKR terminal point $\zeta\in\F^\mu$, split $\zeta=(\zeta_{<\kappa_b},\zeta_{\geq\kappa_b})$. The leaf MLE is reconstructed as
 \[
-(1,\gamma^{2^i}),\qquad 0\leq i<b.
+\mle L(\zeta)=1+\sum_b\eq\!\left(\zeta_{\geq\kappa_b},\bits(s_b)\right)\left(1+\gamma+\sum_j\alpha^j\mle{c_{b,j}}(\zeta_{<\kappa_b})\right).
 \]
-For slot \(c=\sum_i2^ic_i\), their product is \(\gamma^c\). One width-four evaluation therefore returns the complete geometric batch without an inversion or normalization. The prover writes the corresponding dense weight vector and invokes the ordinary Ligerito opening; Ligerito itself is unchanged.
+The leading $1$ and the inner $1$ account for the outer identity padding in characteristic two. Constants and public columns are evaluated locally; each committed-column term becomes an ordinary PCS opening claim at the prefix $\zeta_{<\kappa_b}$. Repeated claims on the same column and point are sent only once.
 
-\paragraph{Recursive Ligerito terminal.} After Ligerito has folded the first \(f\) dense coordinates, let its final message be \(m:\cube\ell\to\F\), where \(f+\ell=M\). The verifier first applies the four-state transition through the fixed coordinates. It then contracts the \(2^\ell\) final-message entries in reverse through the two Boolean transition matrices, costing \(O(4\cdot2^\ell)\) per block. When every residual logical-row coordinate is fixed to zero, the surviving state identifies at most two adjacent entries of \(m\); the implementation uses this closed form instead of traversing the whole residual tree.
+Push and pull contain paired blocks and therefore have the same depth. Their roots include different numbers of public default-padding fingerprints, so the verifier removes the known surpluses before comparing them. The count lane is the product of read counts and may have smaller depth; its root must be nonzero.
 
-\section{A tight grand product}
+\subsection{One radix-four proof for three products}
 
-\subsection{Leaves and the first reduction}
+Push, pull, and count are combined with weights $1,\lambda,\lambda^2$ inside one GKR. After every layer a fresh $\lambda$ is sampled, so the individual terminal values cannot be changed while preserving only their old linear combination. Both native and recursive verifiers obtain all three leaf claims at one shared point $\zeta$.
 
-A bus block \(b\) has \(h_b\) real rows and tuple coordinates \(c_{b,j}(u)\). Its fingerprint is
-\[
-\phi_b(u)=\gamma+\sum_j\alpha^j c_{b,j}(u),\qquad 0\leq u<h_b.
-\]
-For each side, blocks are concatenated in their fixed declaration order:
-\[
-L_b[t_b+u]=\phi_b(u),\qquad t_0=0,\qquad t_{b+1}=t_b+h_b.
-\]
-Only the suffix after the final real row is padded, with the product identity \(1\). Push and pull have paired blocks with equal heights, hence identical offsets, and their product roots are compared directly. Count blocks occupy distinct same-height push intervals and every unused count leaf is \(1\), so all three trees have the same depth. One batched product GKR produces terminal claims \(v_s=\mle L_s(\zeta)\) at one common point \(\zeta\).
-
-\paragraph{Radix-four GKR.} A binary product tree normally proves one multiplication layer at a time. Here two layers are contracted together:
+Two binary product-tree levels are contracted at once:
 \[
 V_i(x)=\prod_{a,b\in\{0,1\}}V_{i-2}(a,b,x).
 \]
-For a current point \(r\), the equality trick writes \(V_i(r)\) as a sum over Boolean \(x\). In one sumcheck coordinate, remove the corresponding equality factor and call the resulting degree-four polynomial \(q(X)=\sum_{j=0}^4c_jX^j\). If that equality coordinate is \(s\), the incoming claim is
+The equality-trick sumcheck for this relation has degree four. In one round let $q(X)=\sum_{j=0}^4c_jX^j$, let $s$ be the corresponding coordinate of the current claim point, and let $T$ be the incoming claim. Then
 \[
-T=(1+s)q(0)+s q(1)=c_0+s\bigl(q(0)+q(1)\bigr).
+T=(1+s)q(0)+sq(1)=c_0+s\bigl(q(0)+q(1)\bigr).
 \]
 The prover sends only
 \[
 d=q(0)+q(1),\qquad c_2,\qquad c_3,\qquad c_4.
 \]
-The verifier recovers \(c_0=T+sd\) and \(c_1=d+c_2+c_3+c_4\), then evaluates \(q\) by Horner's rule. Thus two binary levels use one sumcheck challenge per coordinate, while sending exactly the four independent coefficients required by a degree-four round. If the tree depth is odd, its root-most layer is verified once as an ordinary binary multiplication; no sumcheck is needed there because the root has no row coordinate. The prover builds only the tree levels consumed by this radix-four protocol.
+The verifier recovers $c_0=T+sd$ and $c_1=d+c_2+c_3+c_4$, then evaluates $q$ at the new challenge by Horner's rule. These four elements are exactly the independent data of a degree-four round once the incoming sum is fixed. At the end of the layer the prover sends the four child evaluations for each lane, the verifier checks their products in the current $1,\lambda,\lambda^2$ combination, and two fresh challenges bind the child coordinates. An odd-depth tree begins with its single root-most binary layer.
 
-Because \(\sum_x\eq(\zeta,x)=1\) and every final padding leaf is \(1\),
-\[
-v_s+1=\sum_b\sum_{u<h_b}\bigl(\phi_b(u)+1\bigr)\eq(\zeta,t_b+u).
-\]
-Sample \(\eta\) and combine the push, pull, and count identities with coefficients \(1,\eta,\eta^2\). Paired push and pull blocks share one interval. For every resulting interval \(p=(t_p,h_p)\), collect its constants, index coordinate, public bytecode coordinates, and committed coordinates into one local multilinear \(A_p\). The combined claim is
-\[
-C=\sum_p\sum_{u<h_p}A_p(u)\eq(\zeta,t_p+u).
-\]
+The prover stores the four child values of each row interleaved. Folding can therefore consume a tree level in place; no full transposition into four separate arrays is needed. The quartic coefficient kernel batches field products at the widest available hardware width: four lanes with AVX-512, two pairs with AVX2/VPCLMUL, two pairs with NEON/PMULL, and a scalar fallback. Reduced and deferred-reduction products have the same architecture coverage.
 
-Let \(\nu\) be the largest real-row dimension and, for an ordinary committed source, the largest logical column dimension:
-\[
-\nu=\max\left(\max_p\left\lceil\log_2\max(h_p,1)\right\rceil,\ \max_{i\ {\rm committed}} k_i\right).
-\]
-Define \(W_p(u)=\mathbf 1[u<h_p]\eq(\zeta,t_p+u)\) on \(\cube\nu\). A degree-two sumcheck reduces
-\[
-C=\sum_{u\in\cube\nu}\sum_p \mle A_p(u)\mle W_p(u)
-\]
-to a random row point \(\rho\), giving
-\[
-C_\rho=\sum_p a_pJ_{t_p,h_p}(\rho,\zeta),\qquad a_p:=\mle A_p(\rho).
-\]
-Each \(a_p\) is a public linear combination of ordinary source evaluations. Let \(\nu_i=\lceil\log_2\max(h_i,1)\rceil\). For a committed shifted prefix, the prover exposes the common-point value
-\[
-e_i=\mle Q_i(\rho_0,\ldots,\rho_{\nu_i-1})\prod_{j=\nu_i}^{\nu-1}(1+\rho_j).
-\]
-The verifier checks the inverse of the displayed tail product and recovers the source value used in \(a_p\) as
-\[
-\mle P_i(\rho_0,\ldots,\rho_{\nu_i-1},0,\ldots,0)=
-\frac{e_i}{\prod_{j=\nu_i}^{\nu-1}(1+\rho_j)}+p_i.
-\]
-Thus every ordinary committed bus source is already claimed at the same \(\nu\)-coordinate point \(\rho\). Virtual \(q_{\rm pkd}\) slot claims remain at their native instance point. The index coordinate \(u\mapsto g^u\) is evaluated directly as
-\[
-\prod_{i<\nu_p}\bigl(1+\rho_i+g^{2^i}\rho_i\bigr).
-\]
-Thus the only nonstandard terminal quantity is the sum of many Jagged weights in \(C_\rho\).
+\subsection{Implicit identity suffix}
 
-\paragraph{Minimal quadratic messages.} Every quadratic reduction in this section sends two field elements per round, which is information-theoretically minimal. For \(q(X)=c_0+c_1X+c_2X^2\) with claimed Boolean sum \(T=q(0)+q(1)\), the prover sends \((c_0,c_2)\). The verifier recovers \(c_1=T+c_2\) and computes \(q(r)=c_0+r(T+c_2+rc_2)\). In an equality-trick round it instead sends \((d,c_2)\), where \(d=q(0)+q(1)\), and recovers \(c_0=T+sd\) exactly as above.
+Let the count tree have depth $\mu_c\leq\mu$. Logically it is extended to depth $\mu$ by appending $2^\mu-2^{\mu_c}$ leaves equal to $1$, but the prover never allocates or scans them. This optimization is generic: it depends only on a power-of-two prefix followed by identities, not on any particular trace shape.
 
-\subsection{The start--length assist}
-
-Evaluating one width-four automaton per interval would make recursive verification expensive. Instead define two tables over Boolean start and length strings:
+To see why it works, consider a radix-four sumcheck round after the explicit prefix has shrunk to one row. Every wholly implicit row contains four ones. Its gate polynomial is identically one, so its compact message $(d,c_2,c_3,c_4)$ is $(0,0,0,0)$: $q(0)=q(1)$ in characteristic two and there are no higher coefficients. Only the boundary pair, consisting of the current explicit row and one all-one row, contributes. After sampling $r$, each of its four entries $a$ becomes
 \[
-S(s,\ell):=\sum_{p:\,(\bits(t_p),\bits(h_p))=(s,\ell)}a_p,\qquad
-K(s,\ell):=J_{t,h}(\rho,\zeta)\quad\text{when }(s,\ell)=(\bits(t),\bits(h)).
+\operatorname{interp}(a,1;r)=a+r(a+1).
 \]
-Then
-\[
-C_\rho=\sum_{s,\ell}S(s,\ell)K(s,\ell).
-\]
-A second degree-two sumcheck runs over the start bits followed by the length bits. At its random terminal point \((\sigma,\lambda)\), the verifier checks
-\[
-\widetilde S(\sigma,\lambda)=\sum_p a_p\eq(\sigma,\bits(t_p))\eq(\lambda,\bits(h_p))
-\]
-and
-\[
-\widetilde K(\sigma,\lambda)=J(\rho,\zeta;\sigma,\lambda).
-\]
-The first expression is a sparse-table evaluation; the second is one generalized width-four evaluation. Therefore the verifier performs one Jagged automaton for the entire grand product, rather than one per block.
-
-\paragraph{Recursive evaluation of \(\widetilde S\).} Every height bit is derived from a value already certified by recursion: a table row count, the used-memory prefix, the program-bound bytecode prefix, or a structural power of two. Blocks with the same symbolic height share the length equality product. Starts are not hints: in the fixed block order, a binary prefix adder derives \(t_{b+1}=t_b+h_b\). The same pass multiplies \(\eq(\sigma,\bits(t_b))\), so offset certification and start evaluation share all bit reads; only the current prefix is kept in stack memory. Finally the guest forms the sparse sum above and multiplies it by the single value \(J(\rho,\zeta;\sigma,\lambda)\). For the main benchmark shape, the first sumcheck has \(20\) rounds and the assist has \(23+21\) rounds; all fixed-count loops in these small kernels are unrolled.
-
-\paragraph{Prover evaluation.} The first sumcheck stores each interval only at its local size \(2^{\nu_p}\). Once all local coordinates have been folded, the remaining row bits are forced to zero by \(W_p\), so the prover updates the interval's scalar without allocating a \(2^\nu\)-entry table. The assist sumcheck evaluates the sparse interval list directly. Its terminal computation is linear in the number of blocks and uses one width-four automaton.
-
-\section{One common opening point}
-
-The tight reduction above produces ordinary bus claims \(e_j=\mle Q_j(\rho)\) at one point but would still leave the six instruction-table constraints at separate points. We follow the common-point opening reduction used by SP1~\cite{SP1} and fold the bus claims into one global constraint sumcheck.
-
-For each table \(t\), let \(C_t(\eta_t;\cdot)\) be the random linear combination of its degree-two row constraints, and sample a batching challenge \(\theta\). Every shifted column is zero-extended to the common \(\nu\)-cube. Define
-\[
-F(x)=\sum_{j=0}^{B-1}\theta^j Q_j(x)+\sum_{t=0}^{5}\theta^{B+t}
-C_t\bigl(\eta_t;(Q_c(x)+p_c)_{c\in I_t}\bigr),
-\]
-where the first sum follows the canonical order of the \(B\) ordinary bus claims and \(I_t\) is the constraint-column list of table \(t\). At Boolean rows inside a table, \(Q_c+p_c=P_c\); on its padding suffix and outside its native cube, \(Q_c=0\), so \(Q_c+p_c=p_c\), which is the valid public padding row. Hence every \(C_t\) vanishes on the common Boolean cube and
-\[
-\sum_{x\in\cube\nu}\eq(\rho,x)F(x)=\sum_{j=0}^{B-1}\theta^j e_j.
-\]
-A degree-two sumcheck reduces this identity to a new point \(\omega\). The common \(\eq(\rho,x)\) factor is kept outside the product polynomial, so each round uses the two-coefficient equality-trick message described above. At the terminal, the prover sends each distinct \(\mle Q_c(\omega)\); the verifier evaluates \(F(\omega)\), and the Jagged PCS opens every ordinary bus and constraint column at \(\omega\). Only the strided \(q_{\rm pkd}\) claims and the public-input memory claim use other points.
-
-This fusion has two effects in recursion: six independent constraint sumchecks become one, and columns that previously belonged to many row-point groups now share complete row-major Jagged blocks. Committing shifted prefixes additionally makes every terminal claim equal to the committed value, so no prefix-indicator evaluation remains.
+The same constant-size boundary step repeats for every omitted coordinate. Thus the sparse prover emits exactly the transcript of the dense identity-padded tree, while its work remains proportional to the actual count tree.
 
 \section{Soundness and measured cost}
 
-The transcript absorbs the GKR terminal claims before sampling the challenges that batch them. The first sumcheck proves the reduction from the complete GKR leaf claims to normalized source evaluations. The start--length assist proves the remaining sparse Jagged-weight identity; its terminal start and length bits are bound to certified public sizes and canonical prefix sums, so no interval boundary is accepted as advice. The global sumcheck is bound to the bus claims before \(\theta\) and its round challenges are sampled. Its random linear combination contributes at most the number of batched identities divided by \(|\F|\) to the soundness error. Contracting two GKR levels changes a round degree from two to four but at least halves the number of such rounds, so its total Schwartz--Zippel degree is no larger than for the binary protocol. A zero tail product in the common-point normalization is rejected. The implementation reserves one additional grinding bit for the batching and reduction checks.
+The Jagged opening is an ordinary linear opening of the committed vector; the branching program only evaluates its public weight. The grand-product GKR keeps the verifier transcript of the dense protocol. Omitting identity rows changes neither a root nor a round polynomial, and the dense-MLE equivalence is tested across even and odd tree depths and several depth gaps. Radix four changes a layer's degree from two to four while halving its number of product levels; the verifier accounts for the degree-four messages explicitly. Bus challenges are sampled after the witness commitment and protected by the existing grinding bound.
 
-On the standard command
-\[
-\texttt{RAYON\_NUM\_THREADS=11 cargo run --release -- recursion --n 2},
-\]
-two \(975{,}099\)-cycle inner proofs produce a \(1{,}704{,}688\)-cycle recursion guest. Compact sumcheck messages, radix-four GKR, and stack-resident offset evaluation save \(46{,}244\) cycles (\(2.64\%\)) relative to the preceding count-aligned tight-grand-product implementation. The recursion program contains \(500{,}538\) instructions and pads to \(2^{19}\). A representative run proves in \(5.84\) seconds and verifies in \(0.43\) seconds; proof size varies with Merkle-query collisions and is about \(590\) KiB. Building only the radix-four tree levels reduces the native inner grand-product phase from about \(0.79\) seconds to \(0.74\)--\(0.76\) seconds on the same machine.
+On the reference machine with $\texttt{RAYON\_NUM\_THREADS=11}$, $\texttt{recursion --n 2}$ uses $1{,}827{,}834$ guest cycles, proves in $4.72$ seconds, and produces a $593.547$ KiB proof. The corresponding \texttt{jagged-pcs} baseline used $1{,}865{,}318$ guest cycles and about $5.5$ seconds. The command $\texttt{xmss --n-signatures 890}$ proves in $4.52$ seconds with a $590.031$ KiB proof, compared with roughly $4.7$ seconds and $595.422$ KiB on the same baseline. Timings are noisy; the cycle count and protocol sizes are deterministic for these inputs.
 
-Tests cover exhaustive small intervals, arbitrary row-weight pairs, exact-full endpoints, Boolean start--length agreement with dense MLEs, native proof round trips, six runtime shapes verified by the same compiled recursion guest, mixed-shape recursion, and adversarial mutations of the named hints.
+Tests compare every SIMD batch primitive with scalar multiplication, compare compact quartic messages with direct polynomial evaluation, compare sparse identity suffixes with dense padding, exercise even and odd GKR depths, and run native and recursive proof round trips.
 
 \begin{thebibliography}{9}
 
@@ -218,11 +132,6 @@ Tests cover exhaustive small intervals, arbitrary row-weight pairs, exact-full e
 Tamir Hemo, Kevin Jue, Eugene Rabinovich, Gyumin Roh, and Ron D.\ Rothblum.
 \newblock \emph{Jagged Polynomial Commitments (or: How to Stack Multilinears)}.
 \newblock Manuscript, 2026.
-
-\bibitem{SP1}
-Succinct Labs.
-\newblock \emph{SP1 Hypercube shard zerocheck implementation}.
-\newblock \url{https://github.com/succinctlabs/sp1/tree/main/crates/hypercube/src}.
 
 \end{thebibliography}
 

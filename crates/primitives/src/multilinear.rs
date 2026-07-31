@@ -64,6 +64,12 @@ pub fn lagrange_eval(nodes: &[F128], values: &[F128], p: F128) -> F128 {
     acc
 }
 
+/// The three interpolation nodes used by quadratic sumcheck transcripts.
+#[inline]
+pub fn tri_nodes() -> [F128; 3] {
+    [F128::ZERO, F128::ONE, F128::generator()]
+}
+
 /// `(g²+g)⁻¹`, used to recover the quadratic coefficient from evaluations at
 /// `{0,1,g}`.
 pub const QUADRATIC_DENOMINATOR_INV: F128 =

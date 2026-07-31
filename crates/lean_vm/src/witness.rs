@@ -118,14 +118,13 @@ pub fn placements_of_blocks(
     (placements, m)
 }
 
-/// Copy the shifted real prefixes `column + shift` into the Jagged dense vector
-/// `q` of length `2^m` (zero in the final PCS pad). Virtual columns are skipped. Large columns
+/// Copy the real column prefixes into the Jagged dense vector `q` of length
+/// `2^m` (zero in the final PCS pad). Virtual columns are skipped. Large columns
 /// (e.g. `q_pkd`, ~1 GB at scale) copy in parallel — the `2^m` stack is
 /// memory-bandwidth bound, so a single-threaded `memcpy` leaves most of the
 /// machine idle.
-pub fn stack_q(cols: &[Column], shifts: &[F128], placements: &[Placement], m: usize) -> Vec<F128> {
+pub fn stack_q(cols: &[Column], placements: &[Placement], m: usize) -> Vec<F128> {
     use rayon::prelude::*;
-    assert_eq!(cols.len(), shifts.len());
     // `alloc_zeroed`-backed for the all-zero pad tail; only the copied ranges are
     // touched. (F128 is all-zero bytes at ZERO, so the pad needs no explicit write.)
     let mut q = vec![F128::ZERO; 1 << m];
@@ -145,23 +144,13 @@ pub fn stack_q(cols: &[Column], shifts: &[F128], placements: &[Placement], m: us
         }
         let width = 1usize << placement.block_width_log;
         let src = &cols[i][..placement.height];
-        if width == 1 && shifts[i] == F128::ZERO && src.len() >= crate::PAR_THRESHOLD {
+        if width == 1 && src.len() >= crate::PAR_THRESHOLD {
             let dst = &mut q[placement.offset..placement.offset + placement.height];
             dst.par_chunks_mut(COPY_CHUNK)
                 .zip(src.par_chunks(COPY_CHUNK))
                 .for_each(|(d, s)| d.copy_from_slice(s));
-        } else if width == 1 && shifts[i] == F128::ZERO {
-            q[placement.offset..placement.offset + placement.height].copy_from_slice(src);
         } else if width == 1 {
-            let shift = shifts[i];
-            let dst = &mut q[placement.offset..placement.offset + placement.height];
-            if src.len() >= crate::PAR_THRESHOLD {
-                dst.par_iter_mut()
-                    .zip(src.par_iter())
-                    .for_each(|(dst, &value)| *dst = value + shift);
-            } else {
-                dst.iter_mut().zip(src).for_each(|(dst, &value)| *dst = value + shift);
-            }
+            q[placement.offset..placement.offset + placement.height].copy_from_slice(src);
         } else {
             let mut block_cols = vec![usize::MAX; width];
             for (j, other) in placements.iter().enumerate() {
@@ -176,7 +165,7 @@ pub fn stack_q(cols: &[Column], shifts: &[F128], placements: &[Placement], m: us
             let dst = &mut q[placement.offset..placement.offset + placement.height * width];
             let write_row = |row: usize, out: &mut [F128]| {
                 for (slot, &col) in block_cols.iter().enumerate() {
-                    out[slot] = cols[col][row] + shifts[col];
+                    out[slot] = cols[col][row];
                 }
             };
             if dst.len() >= crate::PAR_THRESHOLD {
@@ -203,8 +192,7 @@ pub(crate) fn stack(cols: &[Column]) -> Stacked {
         .collect();
     let heights: Vec<usize> = cols.iter().map(Vec::len).collect();
     let (placements, m) = placements_of(&kappas, &heights, None);
-    let shifts = vec![F128::ZERO; cols.len()];
-    let q = stack_q(cols, &shifts, &placements, m);
+    let q = stack_q(cols, &placements, m);
     Stacked { m, q, placements }
 }
 
@@ -235,7 +223,7 @@ mod tests {
             vec![F128::new(77, 0)],
             vec![F128::new(30, 0), F128::new(31, 0)],
         ];
-        let q = stack_q(&cols, &[F128::ZERO; 4], &placements, m);
+        let q = stack_q(&cols, &placements, m);
         assert_eq!(&q[..5], &cols[1][..5]);
         assert_eq!(&q[5..8], &cols[0][..3]);
         assert_eq!(&q[8..10], &cols[3][..2]);
@@ -251,7 +239,7 @@ mod tests {
             vec![F128::new(2, 0), F128::new(3, 0), F128::new(5, 0), F128::ZERO],
             vec![F128::new(7, 0), F128::new(11, 0), F128::new(13, 0), F128::ZERO],
         ];
-        let q = stack_q(&cols, &[F128::ZERO; 2], &placements, m);
+        let q = stack_q(&cols, &placements, m);
         assert_eq!(&q[..6], &[cols[0][0], cols[1][0], cols[0][1], cols[1][1], cols[0][2], cols[1][2]]);
 
         let z_col = F128::new(17, 0);
