@@ -958,6 +958,11 @@ fn gen_verify(
         ("merkle_leaf_rows".to_string(), lrows_flat),
         ("merkle_paths".to_string(), lpaths_flat),
         ("sub_pis".to_string(), vec![pi[0], pi[1]]),
+        // The shared AIR sumcheck has max_t tau_t rounds.
+        (
+            "zc_tau_max".to_string(),
+            vec![F192::new(g_pow(*l.taus.iter().max().unwrap()).0, 0, 0)],
+        ),
         ("sort_order".to_string(), sort_order.clone()),
     ];
     (hints, deferred)
@@ -1106,7 +1111,6 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     let kbc = program.prog.len().trailing_zeros() as usize;
     let sides: [&[Block]; 3] = [&l.push, &l.pull, &l.count];
     let mumax = 40usize;
-    let taumax_cap = 33usize;
     let stream_cap = 8192usize;
     let taus = l.taus;
     let lcrounds = flock::blake3::K_LOG - 6;
@@ -1165,7 +1169,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     let evtot: usize = ncol.iter().sum();
     let ncl = nclaims + evtot + 3; // bus + constraint + the three PI memory-limb claims
 
-    // ---- claim descriptors: buffer id + offset only (both structural) ----
+    // ---- claim descriptor buffer ids (structural) ----
     let sch = lean_vm::cpu::schema();
     let b3base = sch.base[5];
     let valcols: Vec<usize> = lean_vm::tables::BLAKE3_VALUE_COLS.iter().map(|&c| b3base + c).collect();
@@ -1221,7 +1225,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
                 // buf 3, q_pkd at zeta); both route to a strided q_pkd slot
                 // rather than a Jagged block.
                 cpbuf.push(4);
-                cpoff.push(t * taumax_cap);
+                cpoff.push(0);
                 let placement = l.placements[lean_vm::cpu::QPKD];
                 cpcol.push(block_index[&placement.offset]);
                 cpblockslot.push(placement.slot);
@@ -1232,7 +1236,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
                 cprowkey.push((3, 0, 0));
             } else {
                 cpbuf.push(1);
-                cpoff.push(t * taumax_cap);
+                cpoff.push(0); // every AIR point is a prefix of the shared rho
                 let placement = l.placements[col];
                 cpcol.push(block_index[&placement.offset]);
                 cpblockslot.push(placement.slot);
@@ -1429,7 +1433,14 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("N_AIR_COLS", ints(&ncol));
     ps("AIR_COLS_CAP", (ncol.iter().max().unwrap() + 1).to_string());
     ps("N_TABLES", l.taus.len().to_string());
-    ps("TAU_CAP", taumax_cap.to_string());
+    // Each table's disjoint range of eta-powers in the batched zerocheck, from the
+    // same derivation the native verifier uses.
+    let n_constraints: Vec<usize> = lean_vm::tables::tables().iter().map(|t| t.n_constraints()).collect();
+    ps("N_ETA_POWS", n_constraints.iter().sum::<usize>().to_string());
+    ps(
+        "ETA_OFFSET",
+        ints(&lean_vm::constraints::eta_offsets(n_constraints.iter().copied())),
+    );
     const MINB3: usize = 3;
     let fixed_challenges: Vec<F192> = flock::zerocheck::univariate_skip_optimized::small_challenges()
         .into_iter()
@@ -1448,11 +1459,9 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     let y_tower = F192::new(0, 1, 0);
     ps("Y_TOWER", u(y_tower).to_string());
     ps("Y_INV", f192_literal(y_tower.inv()));
-    // Coordinate basis e_i of F192 over F2 (spans the WHOLE field): e_i =
-    // new(1<<i, 0) for i<64, new(0, 1<<(i-64)) for i>=64. `hint_decompose_bits`
-    // emits a word's coordinate bits, so the guest reconstructs Σ b_i·e_i = v
-    // with this basis. Since g∈F64, span{g^i} is contained in F64 and cannot be
-    // used as the 128-coordinate reconstruction basis.
+    // Coordinate basis e_i of F192 over F2 (spans the whole field): the 64
+    // binary basis vectors in each of the three tower limbs. The guest uses
+    // these vectors to reconstruct a word from its 192 coordinate bits.
     let coord_basis: Vec<F192> = (0..192)
         .map(|i| match i / 64 {
             0 => F192::new(1u64 << i, 0, 0),
@@ -2102,9 +2111,10 @@ fn recursion_soundness_binds() {
 
     assert!(run(&mut guest, &batch.merged), "honest proof must verify");
 
-    {
-        // wrong proving environment: own_pi (the public input) must reject
-        let (stream, idx, val) = ("fs_seed", 0, F192::ONE);
+    for &(stream, idx, val) in &[
+        ("fs_seed", 0, F192::ONE), // wrong proving environment: own_pi (public input) must reject
+        ("zc_tau_max", 0, g_pow(2).into()), // not the max tau: the max-cert must reject
+    ] {
         let mut merged = batch.merged.clone();
         let pos = merged.iter().position(|(n, _)| n == stream).expect("stream present");
         let orig = merged[pos].1[0][idx];

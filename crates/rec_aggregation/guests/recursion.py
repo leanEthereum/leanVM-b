@@ -72,11 +72,14 @@ N_CLAIMS = N_CLAIMS_PLACEHOLDER
 # their GKR point, so the columns are opened ONCE (BYTECODE_COLS values).
 BYTECODE_COLS = BYTECODE_COLS_PLACEHOLDER
 LOG2_BYTECODE_COLS = LOG2_BYTECODE_COLS_PLACEHOLDER
-# Zerochecks: per-table constraint-column counts (round counts are the
-# certified tau_t); AIR_COLS_CAP caps the evaluation frame.
+# Zerocheck: per-table constraint-column counts (the ONE batched sumcheck runs
+# for max_t tau_t); AIR_COLS_CAP caps the
+# evaluation frame. ETA_OFFSET[t] is the start of table t's disjoint range of
+# eta-powers, and N_ETA_POWS covers the largest of them.
 N_AIR_COLS = N_AIR_COLS_PLACEHOLDER
 AIR_COLS_CAP = AIR_COLS_CAP_PLACEHOLDER
-TAU_CAP = TAU_CAP_PLACEHOLDER
+ETA_OFFSET = ETA_OFFSET_PLACEHOLDER
+N_ETA_POWS = N_ETA_POWS_PLACEHOLDER
 # The instruction tables, in schema order:
 TABLE_XOR = 0
 TABLE_MUL = 1
@@ -1559,63 +1562,85 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     for c in unroll(0, BYTECODE_COLS):
         bytecode_reduced += eq_weight(bytecode_sel, LOG2_BYTECODE_COLS, c, 0) * bytecode_vals[GEN ** c]
 
-    # ---- per-table zerochecks ------------------------------------------------
-    # For each table: eta, the zerocheck point r (tau samples), tau eq-trick
-    # rounds (claim starts at 0), then the involved-column evaluations (pooled)
-    # and the final AIR check claim == eq_acc * C_t(eta, evals).
-    # RUNTIME round counts: tau_t is the certified announced log height
-    # (dims_g[1 + t], certified by the count gadget). Round state threads
-    # through heap chains exactly like the GKR trees.
-    rho = HeapBuf(N_TABLES * TAU_CAP)
-    zc_point_fs0 = HeapBuf(N_TABLES * (TAU_CAP + 2))
-    zc_point_fs1 = HeapBuf(N_TABLES * (TAU_CAP + 2))
-    zc_round_fs0 = HeapBuf(N_TABLES * (TAU_CAP + 2))
-    zc_round_fs1 = HeapBuf(N_TABLES * (TAU_CAP + 2))
-    zc_round_cursor = HeapBuf(N_TABLES * (TAU_CAP + 2))
-    zc_round_claim = HeapBuf(N_TABLES * (TAU_CAP + 2))
-    zc_round_eq = HeapBuf(N_TABLES * (TAU_CAP + 2))
+    # ---- ONE batched zerocheck for all seven tables ----
+    # Mirrors lean_vm::constraints::verify. eta ONCE, each table folding its own
+    # identities with a DISJOINT range of its powers (ETA_OFFSET[t]); one shared
+    # point zc_zeta; n = max_t tau_t rounds. Rounds bind the HIGHEST variable
+    # first, so a 2^tau table sits out the first n - tau of them (its
+    # round polynomial is a multiple of its claimed sum, zero) and joins carrying
+    # the challenges it sat out. Per table the weight is then
+    #   cprod[n - tau] * peq[tau],
+    # the challenges drawn before it joined times peq[tau] = eq(zc_zeta[..tau],
+    # rho[..tau]); the eta-powers are already inside constraint_eval.
+    #
+    # g^n for n = max_t tau_t, the batch's round count. Hinted, then pinned
+    # exactly: the product identity forces it to BE one of the certified taus, and
+    # the range-checked division slacks force it to dominate every one of them.
+    zc_n_hint = StackBuf(1)
+    hint_witness(zc_n_hint[0:1], "zc_tau_max")
+    g_zc_n = zc_n_hint[0]
+    zc_is_a_tau = 1
+    for t in unroll(0, N_TABLES):
+        zc_is_a_tau *= g_zc_n + dims_g[GEN ** (t + 1)]
+    assert zc_is_a_tau == 0
+    for t in unroll(0, N_TABLES):
+        zc_dominates = g_zc_n / dims_g[GEN ** (t + 1)]
+        assert log(zc_dominates) < COUNT_BITS
+    fs, eta = squeeze(fs)
+    eta_pows = StackBuf(N_ETA_POWS)
+    eta_pows[0] = 1
+    for k in unroll(1, N_ETA_POWS):
+        eta_pows[k] = eta_pows[k - 1] * eta
+    # the shared point zc_zeta: n squeezes, sponge chained by round.
+    zc_zeta = HeapBuf(g_zc_n)
+    zc_point_fs0 = HeapBuf(g_zc_n * GEN)
+    zc_point_fs1 = HeapBuf(g_zc_n * GEN)
+    zc_point_fs0[GEN ** 0] = fs[0]
+    zc_point_fs1[GEN ** 0] = fs[1]
+    for xk in mul_range(1, g_zc_n):
+        point_fs = [zc_point_fs0[xk], zc_point_fs1[xk]]
+        point_fs, point_challenge = squeeze(point_fs)
+        zc_zeta[xk] = point_challenge
+        xkn = xk * GEN
+        zc_point_fs0[xkn] = point_fs[0]
+        zc_point_fs1[xkn] = point_fs[1]
+    fs = [zc_point_fs0[g_zc_n], zc_point_fs1[g_zc_n]]
+    # n eq-trick rounds. The batch's claimed sum is sum_t sigma_t = 0.
+    rho = HeapBuf(g_zc_n)   # rho[i] = the challenge that bound variable i
+    zc_round_fs0 = HeapBuf(g_zc_n * GEN)
+    zc_round_fs1 = HeapBuf(g_zc_n * GEN)
+    zc_round_cursor = HeapBuf(g_zc_n * GEN)
+    zc_round_claim = HeapBuf(g_zc_n * GEN)
+    zc_round_cprod = HeapBuf(g_zc_n * GEN)  # the challenges bound so far, multiplied
+    zc_round_fs0[GEN ** 0] = fs[0]
+    zc_round_fs1[GEN ** 0] = fs[1]
+    zc_round_cursor[GEN ** 0] = cursor
+    zc_round_claim[GEN ** 0] = 0
+    zc_round_cprod[GEN ** 0] = 1
+    for xk in mul_range(1, g_zc_n):
+        d = g_zc_n * INV_GEN / xk  # g^(n-1-j): the variable round j binds
+        # eq_acc is 1: the eq weight rides in the per-table weight (peq) instead.
+        nfs0, nfs1, ncur, nclaim, neq, rk = sumcheck_round3(zc_round_fs0[xk], zc_round_fs1[xk], zc_round_cursor[xk], zc_round_claim[xk], 1, zc_zeta[d])
+        rho[d] = rk
+        xkn = xk * GEN
+        zc_round_fs0[xkn] = nfs0
+        zc_round_fs1[xkn] = nfs1
+        zc_round_cursor[xkn] = ncur
+        zc_round_claim[xkn] = nclaim
+        zc_round_cprod[xkn] = zc_round_cprod[xk] * rk
+    fs = [zc_round_fs0[g_zc_n], zc_round_fs1[g_zc_n]]
+    cursor = zc_round_cursor[g_zc_n]
+    claim = zc_round_claim[g_zc_n]
+    # peq[g^tau] = eq(zc_zeta[..tau], rho[..tau]), as a prefix chain.
+    zc_peq = HeapBuf(g_zc_n * GEN)
+    zc_peq[GEN ** 0] = 1
+    for xi in mul_range(1, g_zc_n):
+        zc_peq[xi * GEN] = zc_peq[xi] * (1 + zc_zeta[xi] + rho[xi])
+    # Per table: the involved-column evaluations (pooled), its AIR constraint at
+    # its own reduced point rho[..tau_t], weighted into the batch's final claim.
+    air_acc = 0
     for t in unroll(0, N_TABLES):
         tau_g = dims_g[GEN ** (t + 1)]
-        fs, eta = squeeze(fs)
-        # the zerocheck point r: tau squeezes, sponge chained by round.
-        eq_r = HeapBuf(TAU_CAP)
-        point_fs0 = zc_point_fs0 * GEN ** (t * (TAU_CAP + 2))
-        point_fs1 = zc_point_fs1 * GEN ** (t * (TAU_CAP + 2))
-        point_fs0[GEN ** 0] = fs[0]
-        point_fs1[GEN ** 0] = fs[1]
-        for xk in mul_range(1, tau_g):
-            point_fs = [point_fs0[xk], point_fs1[xk]]
-            point_fs, point_challenge = squeeze(point_fs)
-            eq_r[xk] = point_challenge
-            xkn = xk * GEN
-            point_fs0[xkn] = point_fs[0]
-            point_fs1[xkn] = point_fs[1]
-        fs = [point_fs0[tau_g], point_fs1[tau_g]]
-        # tau eq-trick rounds (claim starts at 0, eq at 1).
-        round_fs0 = zc_round_fs0 * GEN ** (t * (TAU_CAP + 2))
-        round_fs1 = zc_round_fs1 * GEN ** (t * (TAU_CAP + 2))
-        round_cursor = zc_round_cursor * GEN ** (t * (TAU_CAP + 2))
-        round_claim = zc_round_claim * GEN ** (t * (TAU_CAP + 2))
-        round_eq = zc_round_eq * GEN ** (t * (TAU_CAP + 2))
-        rho_t = rho * GEN ** (t * TAU_CAP)
-        round_fs0[GEN ** 0] = fs[0]
-        round_fs1[GEN ** 0] = fs[1]
-        round_cursor[GEN ** 0] = cursor
-        round_claim[GEN ** 0] = 0
-        round_eq[GEN ** 0] = 1
-        for xk in mul_range(1, tau_g):
-            nfs0, nfs1, ncur, nclaim, neq, rk = sumcheck_round3(round_fs0[xk], round_fs1[xk], round_cursor[xk], round_claim[xk], round_eq[xk], eq_r[xk])
-            rho_t[xk] = rk
-            xkn = xk * GEN
-            round_fs0[xkn] = nfs0
-            round_fs1[xkn] = nfs1
-            round_cursor[xkn] = ncur
-            round_claim[xkn] = nclaim
-            round_eq[xkn] = neq
-        fs = [round_fs0[tau_g], round_fs1[tau_g]]
-        cursor = round_cursor[tau_g]
-        claim = round_claim[tau_g]
-        eq_acc = round_eq[tau_g]
         col_evals = StackBuf(AIR_COLS_CAP)
         for k in unroll(0, N_AIR_COLS[t]):
             fs, e, cursor = fs_next(fs, cursor)
@@ -1635,7 +1660,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
             c1 = col_evals[5] + col_evals[0] * col_evals[2]
             c2 = col_evals[6] + col_evals[0] * col_evals[3]
             c3 = vc + va + vb
-            constraint_eval = c0 + eta * (c1 + eta * (c2 + eta * c3))
+            constraint_eval = eta_pows[ETA_OFFSET[t] + 0] * c0 + eta_pows[ETA_OFFSET[t] + 1] * c1 + eta_pows[ETA_OFFSET[t] + 2] * c2 + eta_pows[ETA_OFFSET[t] + 3] * c3
         if t == TABLE_MUL:
             # same layout as XOR; third = va·vb (the E-product)
             va = f192_from_limbs(col_evals[7], col_evals[8], col_evals[9])
@@ -1645,10 +1670,10 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
             c1 = col_evals[5] + col_evals[0] * col_evals[2]
             c2 = col_evals[6] + col_evals[0] * col_evals[3]
             c3 = vc + va * vb
-            constraint_eval = c0 + eta * (c1 + eta * (c2 + eta * c3))
+            constraint_eval = eta_pows[ETA_OFFSET[t] + 0] * c0 + eta_pows[ETA_OFFSET[t] + 1] * c1 + eta_pows[ETA_OFFSET[t] + 2] * c2 + eta_pows[ETA_OFFSET[t] + 3] * c3
         if t == TABLE_SET:
             # cols: [FP, O, A]  (a = fp·o; no memory value in the constraint)
-            constraint_eval = col_evals[2] + col_evals[0] * col_evals[1]
+            constraint_eval = eta_pows[ETA_OFFSET[t] + 0] * (col_evals[2] + col_evals[0] * col_evals[1])
         if t == TABLE_DEREF:
             # cols: [FP, OAL, OBE, OGA, A1, A2, A3, P, FPC, FFP, V2[3], V3[3], PC]
             p = col_evals[7]  # single K-lane pointer (hi lane provably 0)
@@ -1660,7 +1685,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
             c1 = col_evals[5] + p * col_evals[2]
             c2 = col_evals[6] + col_evals[0] * col_evals[3]
             c3 = v2 + src
-            constraint_eval = c0 + eta * (c1 + eta * (c2 + eta * c3))
+            constraint_eval = eta_pows[ETA_OFFSET[t] + 0] * c0 + eta_pows[ETA_OFFSET[t] + 1] * c1 + eta_pows[ETA_OFFSET[t] + 2] * c2 + eta_pows[ETA_OFFSET[t] + 3] * c3
         if t == TABLE_JUMP:
             # cols: [PC, FP, NPC, NFP, OC, OD, OF, AC, AD, AF, C[3], D[3], F[3], W[3], B]
             c = f192_from_limbs(col_evals[10], col_evals[11], col_evals[12])
@@ -1675,7 +1700,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
             c4 = c * (col_evals[22] + 1)
             c5 = col_evals[2] + col_evals[22] * d + (col_evals[22] + 1) * fall_through
             c6 = col_evals[3] + col_evals[22] * ff + (col_evals[22] + 1) * col_evals[1]
-            constraint_eval = c0 + eta * (c1 + eta * (c2 + eta * (c3 + eta * (c4 + eta * (c5 + eta * c6)))))
+            constraint_eval = eta_pows[ETA_OFFSET[t] + 0] * c0 + eta_pows[ETA_OFFSET[t] + 1] * c1 + eta_pows[ETA_OFFSET[t] + 2] * c2 + eta_pows[ETA_OFFSET[t] + 3] * c3 + eta_pows[ETA_OFFSET[t] + 4] * c4 + eta_pows[ETA_OFFSET[t] + 5] * c5 + eta_pows[ETA_OFFSET[t] + 6] * c6
         if t == TABLE_BLAKE3:
             # cols: [FP, OA0, OA1, OB0, OB1, OCV, OC, AA0, AA1, AB0, AB1, ACV, AC].
             # All eight memory values use the sole canonical 128-bit encoding;
@@ -1686,7 +1711,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
             c3 = col_evals[10] + col_evals[0] * col_evals[4]
             c4 = col_evals[11] + col_evals[0] * col_evals[5]
             c5 = col_evals[12] + col_evals[0] * col_evals[6]
-            constraint_eval = c0 + eta * (c1 + eta * (c2 + eta * (c3 + eta * (c4 + eta * c5))))
+            constraint_eval = eta_pows[ETA_OFFSET[t] + 0] * c0 + eta_pows[ETA_OFFSET[t] + 1] * c1 + eta_pows[ETA_OFFSET[t] + 2] * c2 + eta_pows[ETA_OFFSET[t] + 3] * c3 + eta_pows[ETA_OFFSET[t] + 4] * c4 + eta_pows[ETA_OFFSET[t] + 5] * c5
         if t == TABLE_PACK64X2:
             # cols: [FP, OA, OB, OC, AA, AB, AC]. Source K-membership and
             # destination packing are enforced exactly by the memory bus
@@ -1695,8 +1720,9 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
             c0 = col_evals[4] + col_evals[0] * col_evals[1]
             c1 = col_evals[5] + col_evals[0] * col_evals[2]
             c2 = col_evals[6] + col_evals[0] * col_evals[3]
-            constraint_eval = c0 + eta * (c1 + eta * c2)
-        assert claim == eq_acc * constraint_eval
+            constraint_eval = eta_pows[ETA_OFFSET[t] + 0] * c0 + eta_pows[ETA_OFFSET[t] + 1] * c1 + eta_pows[ETA_OFFSET[t] + 2] * c2
+        air_acc += zc_round_cprod[g_zc_n / tau_g] * zc_peq[tau_g] * constraint_eval
+    assert air_acc == claim
 
     # ---- public-input binding claim: MEM as ONE logical E-column ----
     # The VM's bind_pi_claim makes a SINGLE E-claim at [rm, 0..]:

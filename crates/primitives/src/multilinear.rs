@@ -1,11 +1,10 @@
 // `build_eq` and `lagrange_weights_naive` come from https://github.com/succinctlabs/flock (MIT OR Apache-2.0).
 //! Multilinear-extension utilities: the equality polynomial, single-variable
 //! folding, and MLE evaluation. Truth tables are indexed little-endian (variable
-//! `k` is bit `k`); folding binds the lowest free variable, the order sumcheck
-//! rounds consume. Committed data is `K`-valued (`F64`), all randomness is
-//! `E`-valued (`F192`), so the workhorses come in two flavors: pure-`E`
-//! folding, and the mixed first fold that lifts a `K`-table into `E` via
-//! `mul_base` (2 PMULL per term).
+//! `k` is bit `k`). Sumchecks here consume variables from either end, so folding
+//! and `eq`-marginalization come in low and high variants. Committed data is
+//! `K`-valued (`F64`) while randomness is `E`-valued (`F192`), so the first
+//! fold of a committed table also lifts it into `E`.
 
 use crate::field::{F64, F192, F192Unreduced};
 
@@ -63,14 +62,43 @@ pub fn fold_low_k(table: &[F64], rho: F192) -> Vec<F192> {
         .collect()
 }
 
-/// Bind the lowest free variable of `table` to `rho` in place: `table[i] =
-/// interp(table[2i], table[2i+1], rho)` (no reallocation; `i ≤ 2i`, so unread
-/// entries survive).
-pub fn fold_low_inplace(table: &mut Vec<F192>, rho: F192) {
+/// Bind the highest variable of a `K`-table and lift the result into `E`.
+pub fn fold_high_k(table: &[F64], rho: F192) -> Vec<F192> {
+    debug_assert_eq!(table.len() % 2, 0);
+    let half = table.len() / 2;
+    (0..half).map(|i| interp_k(table[i], table[i + half], rho)).collect()
+}
+
+/// Bind the highest free variable of `table` to `rho` in place: `table[i] =
+/// interp(table[i], table[i + half], rho)`. Binding from the top down leaves the
+/// low variables, the ones every table of a batch shares, for last.
+pub fn fold_high_inplace(table: &mut Vec<F192>, rho: F192) {
     debug_assert_eq!(table.len() % 2, 0);
     let half = table.len() / 2;
     for i in 0..half {
-        table[i] = interp(table[2 * i], table[2 * i + 1], rho);
+        table[i] = interp(table[i], table[i + half], rho);
+    }
+    table.truncate(half);
+}
+
+/// Marginalize the lowest variable out of an `eq` table (in place). `eq(r_0, 0) +
+/// eq(r_0, 1) = 1`, so summing adjacent entries drops `r_0` with no multiplies,
+/// versus `2^{n-1}` to rebuild the table.
+pub fn shrink_eq_low(table: &mut Vec<F192>) {
+    let half = table.len() / 2;
+    for i in 0..half {
+        table[i] = table[2 * i] + table[2 * i + 1];
+    }
+    table.truncate(half);
+}
+
+/// Marginalize the highest variable out of an `eq` table (in place), the
+/// [`shrink_eq_low`] counterpart for a top-down sumcheck.
+pub fn shrink_eq_high(table: &mut Vec<F192>) {
+    let half = table.len() / 2;
+    for i in 0..half {
+        let hi = table[i + half];
+        table[i] += hi;
     }
     table.truncate(half);
 }

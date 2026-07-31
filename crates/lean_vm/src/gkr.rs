@@ -140,7 +140,6 @@ fn shrink_eq(eqr: &mut Vec<F192>) {
     }
     eqr.truncate(eq_half);
 }
-
 /// The result of a batched grand-product proof ([`prove_product_triple`]):
 /// the per-tree roots and leaf values, all reduced to ONE shared evaluation
 /// point (`Ṽ_t(point) = values[t]`).
