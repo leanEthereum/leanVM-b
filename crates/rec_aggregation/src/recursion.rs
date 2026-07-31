@@ -606,7 +606,6 @@ fn gen_verify(
     // Fixed capacities: every buffer/stride placeholder is a global cap so
     // the placeholder map is SHAPE-INDEPENDENT (the definition of generic).
     let mumax = 40usize;
-    let taumax_cap = 33usize;
     let stream_cap = 8192usize;
     assert!(*smu.iter().max().unwrap() <= mumax && proof.stream.len() <= stream_cap);
 
@@ -871,18 +870,16 @@ fn gen_verify(
     let qpkdv = l.placements[lean_vm::cpu::QPKD].n_vars;
 
     // claim descriptors, in exact clv order.
-    let (mut cpbuf, mut cpoff, mut cplen, mut cslot, mut csel, mut yt) =
-        (vec![], vec![], vec![], vec![], vec![], vec![]);
+    let (mut cpbuf, mut cplen, mut cslot, mut csel, mut yt) = (vec![], vec![], vec![], vec![], vec![]);
     let (mut nover_v, mut seln_v): (Vec<usize>, Vec<usize>) = (vec![], vec![]);
     let qpkd_pl = l.placements[lean_vm::cpu::QPKD];
     // Per claim: nvt = full low span; when nvt > lenris the point overlaps the
     // residual y region by nover coords (runtime factors in the terminal); the
     // selector's in-ris part has seln bits; the y-pattern is the rest.
-    let mut push_desc = |buf: usize, off: usize, plen: usize, slot: usize, sel_full: usize, nvt: usize| {
+    let mut push_desc = |buf: usize, plen: usize, slot: usize, sel_full: usize, nvt: usize| {
         let nover = nvt.saturating_sub(lenris);
         let seln = lenris.saturating_sub(nvt);
         cpbuf.push(buf);
-        cpoff.push(off);
         cplen.push(plen);
         cslot.push(slot);
         csel.push(if seln == 0 {
@@ -905,10 +902,10 @@ fn gen_verify(
                     if valcols.contains(i) {
                         let slot_i = lean_vm::blake3_flock::SLOTS[valcols.iter().position(|v| v == i).unwrap()];
                         let nvt = lean_vm::blake3_flock::SLOT_STRIDE_LOG + blk.kappa;
-                        push_desc(3, 0, blk.kappa, slot_i, qpkd_pl.offset >> nvt, nvt);
+                        push_desc(3, blk.kappa, slot_i, qpkd_pl.offset >> nvt, nvt);
                     } else {
                         let pl = l.placements[*i];
-                        push_desc(0, 0, blk.kappa, 0, pl.offset >> blk.kappa, blk.kappa);
+                        push_desc(0, blk.kappa, 0, pl.offset >> blk.kappa, blk.kappa);
                     }
                 }
             }
@@ -921,9 +918,9 @@ fn gen_verify(
             if pl.is_virtual() {
                 let slot_i = lean_vm::blake3_flock::SLOTS[valcols.iter().position(|v| *v == col).unwrap()];
                 let nvt = lean_vm::blake3_flock::SLOT_STRIDE_LOG + taus[t];
-                push_desc(4, t * taumax_cap, taus[t], slot_i, qpkd_pl.offset >> nvt, nvt);
+                push_desc(4, taus[t], slot_i, qpkd_pl.offset >> nvt, nvt);
             } else {
-                push_desc(1, t * taumax_cap, taus[t], 0, pl.offset >> taus[t], taus[t]);
+                push_desc(1, taus[t], 0, pl.offset >> taus[t], taus[t]);
             }
         }
     }
@@ -939,7 +936,7 @@ fn gen_verify(
             let pl = l.placements[col];
             let folded = pl.n_vars.saturating_sub(lenris);
             let low = pl.n_vars - folded;
-            push_desc(2, 0, low, 0, (pl.offset >> pl.n_vars) << folded, low);
+            push_desc(2, low, 0, (pl.offset >> pl.n_vars) << folded, low);
         }
     }
     assert_eq!(cpbuf.len(), ncl, "descriptor count == pool size");
@@ -1096,6 +1093,12 @@ fn gen_verify(
         (
             "pi_cplen".to_string(),
             vec![F192::new(g_pow(log_mem.min(lenris)).0, 0, 0)],
+        ),
+        // the batched zerocheck's round count: max_t tau_t, certified in-guest as a
+        // maximum (one of the taus, and dominating them all).
+        (
+            "zc_tau_max".to_string(),
+            vec![F192::new(g_pow(*taus.iter().max().unwrap()).0, 0, 0)],
         ),
         ("claim_qpkd_slot_bits".to_string(), {
             let mut v = Vec::new();
@@ -1292,7 +1295,6 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     let kbc = program.prog.len().trailing_zeros() as usize;
     let sides: [&[Block]; 3] = [&l.push, &l.pull, &l.count];
     let mumax = 40usize;
-    let taumax_cap = 33usize;
     let stream_cap = 8192usize;
     let taus = l.taus;
     let lcrounds = flock::blake3::K_LOG - 6;
@@ -1351,11 +1353,11 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     let evtot: usize = ncol.iter().sum();
     let ncl = nclaims + evtot + 3; // bus + constraint + the three PI memory-limb claims
 
-    // ---- claim descriptors: buffer id + offset only (both structural) ----
+    // ---- claim descriptor buffer ids (structural) ----
     let sch = lean_vm::cpu::schema();
     let b3base = sch.base[5];
     let valcols: Vec<usize> = lean_vm::tables::BLAKE3_VALUE_COLS.iter().map(|&c| b3base + c).collect();
-    let (mut cpbuf, mut cpoff) = (vec![], vec![]);
+    let mut cpbuf = vec![];
     let mut desc_seen: std::collections::HashSet<(usize, usize)> = Default::default();
     for blocks in sides.iter() {
         for blk in blocks.iter() {
@@ -1365,7 +1367,6 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
                         continue; // deduped: pooled once at its first occurrence
                     }
                     cpbuf.push(if valcols.contains(i) { 3 } else { 0 });
-                    cpoff.push(0); // the ONE shared zeta lives at region 0
                 }
             }
         }
@@ -1375,19 +1376,14 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
             let col = sch.base[t] + c;
             if l.placements[col].is_virtual() {
                 cpbuf.push(4);
-                cpoff.push(t * taumax_cap);
             } else {
                 cpbuf.push(1);
-                cpoff.push(t * taumax_cap);
             }
         }
     }
     cpbuf.push(2);
-    cpoff.push(0); // PI claim on MEM_LO
     cpbuf.push(2);
-    cpoff.push(0); // PI claim on MEM_HI
     cpbuf.push(2);
-    cpoff.push(0); // PI claim on MEM_TOP
     assert_eq!(cpbuf.len(), ncl, "descriptor count == pool size");
 
     // ---- the placeholder map ----
@@ -1469,7 +1465,14 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("N_AIR_COLS", ints(&ncol));
     ps("AIR_COLS_CAP", (ncol.iter().max().unwrap() + 1).to_string());
     ps("N_TABLES", l.taus.len().to_string());
-    ps("TAU_CAP", taumax_cap.to_string());
+    // Each table's disjoint range of eta-powers in the batched zerocheck, from the
+    // same derivation the native verifier uses.
+    let n_constraints: Vec<usize> = lean_vm::tables::tables().iter().map(|t| t.n_constraints()).collect();
+    ps("N_ETA_POWS", n_constraints.iter().sum::<usize>().to_string());
+    ps(
+        "ETA_OFFSET",
+        ints(&lean_vm::constraints::eta_offsets(n_constraints.iter().copied())),
+    );
     // Per-claim y-slot hint stride (overlap mask / slot bit rows).
     ps("YR_SLOT_STRIDE", "8".to_string());
     const MINB3: usize = 3;
@@ -1490,11 +1493,9 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     let y_tower = F192::new(0, 1, 0);
     ps("Y_TOWER", u(y_tower).to_string());
     ps("Y_INV", f192_literal(y_tower.inv()));
-    // Coordinate basis e_i of F192 over F2 (spans the WHOLE field): e_i =
-    // new(1<<i, 0) for i<64, new(0, 1<<(i-64)) for i>=64. `hint_decompose_bits`
-    // emits a word's coordinate bits, so the guest reconstructs Σ b_i·e_i = v
-    // with this basis. Since g∈F64, span{g^i} is contained in F64 and cannot be
-    // used as the 128-coordinate reconstruction basis.
+    // Coordinate basis e_i of F192 over F2 (spans the whole field): the 64
+    // binary basis vectors in each of the three tower limbs. The guest uses
+    // these vectors to reconstruct a word from its 192 coordinate bits.
     let coord_basis: Vec<F192> = (0..192)
         .map(|i| match i / 64 {
             0 => F192::new(1u64 << i, 0, 0),
@@ -1811,7 +1812,6 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("LIG_N_CANDIDATES", (n_log_sizes * n_rates).to_string());
     ps("LIG_MIN_SHIFT_INV", u(F192::new(g_pow(minm).inv().0, 0, 0)).to_string());
     ps("CLAIM_POINT_BUF", ints(&cpbuf));
-    ps("CLAIM_POINT_OFF", ints(&cpoff));
     ps(
         "QPKD_VARS_CAP",
         (33 + lean_vm::blake3_flock::SLOT_STRIDE_LOG).to_string(),
@@ -2073,6 +2073,7 @@ fn recursion_soundness_binds() {
         ("fs_seed", 0, F192::ONE), // wrong proving environment: own_pi (public input) must reject
         ("claim_nover", 0, g_pow(5).into()), // wrong overlap: exact length pin must reject
         ("pi_cplen", 0, g_pow(2).into()), // wrong pi dimension: min-cert must reject
+        ("zc_tau_max", 0, g_pow(2).into()), // not the max tau: the max-cert must reject
     ];
     // pad coord (k >= yr_log_n): over-read weight must be zero-pinned. Pick a
     // config above whose yr_log_n is below the cap so this path is exercised.

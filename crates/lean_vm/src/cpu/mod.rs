@@ -276,7 +276,7 @@ pub use crate::transcript::Proof;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
     Bus(leaf::Error),
-    Constraint(usize, constraints::Error),
+    Constraint(constraints::Error),
     Open(pcs::Error),
     PublicInput,
     Transcript(crate::transcript::Error),
@@ -284,6 +284,25 @@ pub enum Error {
     /// malformed sub-proof surfaces as [`Error::Transcript`] when the shared
     /// `stream`/`openings` fail to reconstruct or fully consume.)
     Blake3(flock::verifier::VerifyError),
+}
+
+/// The per-table inputs to the batched zerocheck (§constraints), in schema order.
+/// Prover and verifier both call this, so their column order and constraint
+/// closures agree by construction.
+fn airs(taus: &[usize; tables::N_TABLES]) -> Vec<constraints::Air<'static>> {
+    tables::tables()
+        .iter()
+        .zip(taus)
+        .map(|(&table, &tau)| {
+            let position = tables::column_positions(table.constraint_columns());
+            constraints::Air {
+                tau,
+                n_cols: table.constraint_columns().len(),
+                n_constraints: table.n_constraints(),
+                eval: Box::new(move |pows, vals| table.eval_constraint(pows, &tables::Cols::new(vals, &position))),
+            }
+        })
+        .collect()
 }
 
 /// Lift each table's constraint evals (at its zerocheck point `rho`) to global
@@ -398,18 +417,22 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
     let t = std::time::Instant::now();
     let table_claims = tracing::info_span!("Prove constraints").in_scope(|| {
         let sch = schema();
-        let mut table_claims = Vec::new();
-        for (ti, table) in tables::tables().iter().enumerate() {
-            let involved = table.constraint_columns();
-            let position = tables::column_positions(involved);
-            let cols: Vec<Column> = involved.iter().map(|&c| w.cols[sch.base[ti] + c].clone()).collect();
-            table_claims.push(constraints::prove(
-                &cols,
-                |eta, vals| table.eval_constraint(eta, &tables::Cols::new(vals, &position)),
-                &mut ps,
-            ));
-        }
-        table_claims
+        // One sumcheck for all seven tables (§constraints).
+        // MOVE the columns out: the batch folds them destructively and nothing
+        // reads them again (`prove_balance` is done, and `QPKD < N_SHARED` is never
+        // a constraint column), so copying them would be ~300 MB for nothing.
+        let mut cols: Vec<Vec<Column>> = tables::tables()
+            .iter()
+            .enumerate()
+            .map(|(ti, table)| {
+                table
+                    .constraint_columns()
+                    .iter()
+                    .map(|&c| std::mem::take(&mut w.cols[sch.base[ti] + c]))
+                    .collect()
+            })
+            .collect();
+        constraints::prove(&airs(&l.taus), &mut cols, &mut ps)
     });
     if prof {
         eprintln!("[prove] constraints : {:>7.2} ms", ms(t));
@@ -554,19 +577,7 @@ pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Res
     let bus = leaf::verify_balance(&l.push, &l.pull, &l.count, &l.pad, &mut vs).map_err(Error::Bus)?;
     let checkpoint_bus = vs.sponge_state();
 
-    let mut table_claims = Vec::new();
-    for (ti, table) in tables::tables().iter().enumerate() {
-        let involved = table.constraint_columns();
-        let position = tables::column_positions(involved);
-        let cl = constraints::verify(
-            l.taus[ti],
-            involved.len(),
-            |eta, vals| table.eval_constraint(eta, &tables::Cols::new(vals, &position)),
-            &mut vs,
-        )
-        .map_err(|e| Error::Constraint(ti, e))?;
-        table_claims.push(cl);
-    }
+    let table_claims = constraints::verify(&airs(&l.taus), &mut vs).map_err(Error::Constraint)?;
     let checkpoint_zerochecks = vs.sponge_state();
 
     let mut claims = bus.claims;
