@@ -408,7 +408,12 @@ pub fn layout(
     use Coord::{Col, Const, Index, Public};
     // `real` is the block's non-padded row count (= 2^kappa for the full
     // boundary/seed/finalize blocks; the table's real row count for a flush).
-    let blk = |kappa: usize, real: usize, coords: Vec<Coord>| Block { kappa, coords, real };
+    let blk = |kappa: usize, real: usize, coords: Vec<Coord>, count_target: Option<usize>| Block {
+        kappa,
+        coords,
+        real,
+        count_target,
+    };
 
     let mut push: Vec<Block> = Vec::new();
     let mut pull: Vec<Block> = Vec::new();
@@ -419,6 +424,7 @@ pub fn layout(
         0,
         1,
         vec![Const(SEP_STATE), Const(g_pow(pc0 as usize)), Const(g_pow(fp0 as usize))],
+        None,
     ));
     pull.push(blk(
         0,
@@ -428,11 +434,12 @@ pub fn layout(
             Const(g_pow(final_pc as usize)),
             Const(g_pow(final_fp as usize)),
         ],
+        None,
     ));
     // Memory entries beyond the used prefix occur identically in seed and
     // finalize and can be omitted from both grand-product sides.
-    push.push(blk(log_mem, mem_used, vec![Const(SEP_MEM), Index, Const(one), Col(MEM)]));
-    pull.push(blk(log_mem, mem_used, vec![Const(SEP_MEM), Index, Col(MFCNT), Col(MEM)]));
+    push.push(blk(log_mem, mem_used, vec![Const(SEP_MEM), Index, Const(one), Col(MEM)], None));
+    pull.push(blk(log_mem, mem_used, vec![Const(SEP_MEM), Index, Col(MFCNT), Col(MEM)], None));
     // Bytecode padding entries occur identically in seed and finalize and can
     // likewise be omitted from both grand-product sides.
     push.push(blk(
@@ -451,6 +458,7 @@ pub fn layout(
             Public(prog_extra0.clone()),
             Public(prog_extra1.clone()),
         ],
+        None,
     ));
     pull.push(blk(
         log_bytecode,
@@ -468,6 +476,7 @@ pub fn layout(
             Public(prog_extra0),
             Public(prog_extra1),
         ],
+        None,
     ));
 
     // Per-table blocks: each table declares its flushes and read-count columns in
@@ -483,14 +492,24 @@ pub fn layout(
         let (kappa, real) = (taus[t], row_counts[t]);
         let mut fb = FlushBuilder::new();
         table.flushes(&mut fb);
+        let table_push_start = push.len();
+        assert!(
+            table.count_columns().len() <= fb.push.len(),
+            "each count column needs a same-table push interval"
+        );
         for coords in fb.push {
-            push.push(blk(kappa, real, offset_coords(base, coords)));
+            push.push(blk(kappa, real, offset_coords(base, coords), None));
         }
         for coords in fb.pull {
-            pull.push(blk(kappa, real, offset_coords(base, coords)));
+            pull.push(blk(kappa, real, offset_coords(base, coords), None));
         }
-        for &c in table.count_columns() {
-            count_blocks.push(blk(kappa, real, vec![Col(base + c)]));
+        for (count_index, &c) in table.count_columns().iter().enumerate() {
+            count_blocks.push(blk(
+                kappa,
+                real,
+                vec![Col(base + c)],
+                Some(table_push_start + count_index),
+            ));
             pad[base + c] = F128::ONE;
         }
     }

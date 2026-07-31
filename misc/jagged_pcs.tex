@@ -22,7 +22,7 @@
 
 \begin{abstract}
 \noindent
-This note describes the two Jagged constructions used in leanVM. Unequal-height trace columns are packed into one Ligerito commitment without a power-of-two pad after every column. Independently, the grand-product leaves concatenate the real rows of all bus blocks and pad only once. Two quadratic sumchecks reduce the tight grand product to column evaluations at one common point, and a third sumcheck folds those evaluations together with all local constraints. The grand-product construction and its common-point reduction are not part of the original Jagged PCS paper~\cite{Jagged26}.
+This note describes the two Jagged constructions used in leanVM. Unequal-height trace columns are packed into one Ligerito commitment without a power-of-two pad after every column. Independently, the grand-product leaves concatenate the real rows of all bus blocks and pad only once. Two quadratic sumchecks reduce the tight grand product to column evaluations at one common point, and a third sumcheck folds those evaluations together with all local constraints. The product tree is verified two levels at a time by a radix-four GKR. The grand-product construction and its common-point reduction are not part of the original Jagged PCS paper~\cite{Jagged26}.
 \end{abstract}
 
 \section{The interval-transport polynomial}
@@ -104,7 +104,21 @@ For each side, blocks are concatenated in their fixed declaration order:
 \[
 L_b[t_b+u]=\phi_b(u),\qquad t_0=0,\qquad t_{b+1}=t_b+h_b.
 \]
-Only the suffix after the final real row is padded, with the product identity \(1\). Push and pull have paired blocks with equal heights, hence identical offsets, and their product roots are compared directly. The count side is padded with \(1\) to the same depth, so one batched product GKR produces terminal claims \(v_s=\mle L_s(\zeta)\) at one common point \(\zeta\).
+Only the suffix after the final real row is padded, with the product identity \(1\). Push and pull have paired blocks with equal heights, hence identical offsets, and their product roots are compared directly. Count blocks occupy distinct same-height push intervals and every unused count leaf is \(1\), so all three trees have the same depth. One batched product GKR produces terminal claims \(v_s=\mle L_s(\zeta)\) at one common point \(\zeta\).
+
+\paragraph{Radix-four GKR.} A binary product tree normally proves one multiplication layer at a time. Here two layers are contracted together:
+\[
+V_i(x)=\prod_{a,b\in\{0,1\}}V_{i-2}(a,b,x).
+\]
+For a current point \(r\), the equality trick writes \(V_i(r)\) as a sum over Boolean \(x\). In one sumcheck coordinate, remove the corresponding equality factor and call the resulting degree-four polynomial \(q(X)=\sum_{j=0}^4c_jX^j\). If that equality coordinate is \(s\), the incoming claim is
+\[
+T=(1+s)q(0)+s q(1)=c_0+s\bigl(q(0)+q(1)\bigr).
+\]
+The prover sends only
+\[
+d=q(0)+q(1),\qquad c_2,\qquad c_3,\qquad c_4.
+\]
+The verifier recovers \(c_0=T+sd\) and \(c_1=d+c_2+c_3+c_4\), then evaluates \(q\) by Horner's rule. Thus two binary levels use one sumcheck challenge per coordinate, while sending exactly the four independent coefficients required by a degree-four round. If the tree depth is odd, its root-most layer is verified once as an ordinary binary multiplication; no sumcheck is needed there because the root has no row coordinate. The prover builds only the tree levels consumed by this radix-four protocol.
 
 Because \(\sum_x\eq(\zeta,x)=1\) and every final padding leaf is \(1\),
 \[
@@ -142,6 +156,8 @@ Thus every ordinary committed bus source is already claimed at the same \(\nu\)-
 \]
 Thus the only nonstandard terminal quantity is the sum of many Jagged weights in \(C_\rho\).
 
+\paragraph{Minimal quadratic messages.} Every quadratic reduction in this section sends two field elements per round, which is information-theoretically minimal. For \(q(X)=c_0+c_1X+c_2X^2\) with claimed Boolean sum \(T=q(0)+q(1)\), the prover sends \((c_0,c_2)\). The verifier recovers \(c_1=T+c_2\) and computes \(q(r)=c_0+r(T+c_2+rc_2)\). In an equality-trick round it instead sends \((d,c_2)\), where \(d=q(0)+q(1)\), and recovers \(c_0=T+sd\) exactly as above.
+
 \subsection{The start--length assist}
 
 Evaluating one width-four automaton per interval would make recursive verification expensive. Instead define two tables over Boolean start and length strings:
@@ -163,7 +179,7 @@ and
 \]
 The first expression is a sparse-table evaluation; the second is one generalized width-four evaluation. Therefore the verifier performs one Jagged automaton for the entire grand product, rather than one per block.
 
-\paragraph{Recursive evaluation of \(\widetilde S\).} Every height bit is derived from a value already certified by recursion: a table row count, the used-memory prefix, the program-bound bytecode prefix, or a structural power of two. Blocks with the same symbolic height share the length equality product. Starts are not hints: in the fixed block order, a binary prefix adder derives \(t_{b+1}=t_b+h_b\). The same pass multiplies \(\eq(\sigma,\bits(t_b))\), so offset certification and start evaluation share all bit reads. Finally the guest forms the sparse sum above and multiplies it by the single value \(J(\rho,\zeta;\sigma,\lambda)\). For the main benchmark shape, the first sumcheck has \(20\) rounds and the assist has \(23+21\) rounds; all fixed-count loops in these small kernels are unrolled.
+\paragraph{Recursive evaluation of \(\widetilde S\).} Every height bit is derived from a value already certified by recursion: a table row count, the used-memory prefix, the program-bound bytecode prefix, or a structural power of two. Blocks with the same symbolic height share the length equality product. Starts are not hints: in the fixed block order, a binary prefix adder derives \(t_{b+1}=t_b+h_b\). The same pass multiplies \(\eq(\sigma,\bits(t_b))\), so offset certification and start evaluation share all bit reads; only the current prefix is kept in stack memory. Finally the guest forms the sparse sum above and multiplies it by the single value \(J(\rho,\zeta;\sigma,\lambda)\). For the main benchmark shape, the first sumcheck has \(20\) rounds and the assist has \(23+21\) rounds; all fixed-count loops in these small kernels are unrolled.
 
 \paragraph{Prover evaluation.} The first sumcheck stores each interval only at its local size \(2^{\nu_p}\). Once all local coordinates have been folded, the remaining row bits are forced to zero by \(W_p\), so the prover updates the interval's scalar without allocating a \(2^\nu\)-entry table. The assist sumcheck evaluates the sparse interval list directly. Its terminal computation is linear in the number of blocks and uses one width-four automaton.
 
@@ -180,19 +196,19 @@ where the first sum follows the canonical order of the \(B\) ordinary bus claims
 \[
 \sum_{x\in\cube\nu}\eq(\rho,x)F(x)=\sum_{j=0}^{B-1}\theta^j e_j.
 \]
-A degree-two sumcheck reduces this identity to a new point \(\omega\). The common \(\eq(\rho,x)\) factor is kept outside the product polynomial, so each round still sends only its values at \(0,1,g\). At the terminal, the prover sends each distinct \(\mle Q_c(\omega)\); the verifier evaluates \(F(\omega)\), and the Jagged PCS opens every ordinary bus and constraint column at \(\omega\). Only the strided \(q_{\rm pkd}\) claims and the public-input memory claim use other points.
+A degree-two sumcheck reduces this identity to a new point \(\omega\). The common \(\eq(\rho,x)\) factor is kept outside the product polynomial, so each round uses the two-coefficient equality-trick message described above. At the terminal, the prover sends each distinct \(\mle Q_c(\omega)\); the verifier evaluates \(F(\omega)\), and the Jagged PCS opens every ordinary bus and constraint column at \(\omega\). Only the strided \(q_{\rm pkd}\) claims and the public-input memory claim use other points.
 
 This fusion has two effects in recursion: six independent constraint sumchecks become one, and columns that previously belonged to many row-point groups now share complete row-major Jagged blocks. Committing shifted prefixes additionally makes every terminal claim equal to the committed value, so no prefix-indicator evaluation remains.
 
 \section{Soundness and measured cost}
 
-The transcript absorbs the GKR terminal claims before sampling the challenges that batch them. The first sumcheck proves the reduction from the complete GKR leaf claims to normalized source evaluations. The start--length assist proves the remaining sparse Jagged-weight identity; its terminal start and length bits are bound to certified public sizes and canonical prefix sums, so no interval boundary is accepted as advice. The global sumcheck is bound to the bus claims before \(\theta\) and its round challenges are sampled. Its random linear combination contributes at most the number of batched identities divided by \(|\F|\) to the soundness error. A zero tail product in the common-point normalization is rejected. The implementation reserves one additional grinding bit for the batching and reduction checks.
+The transcript absorbs the GKR terminal claims before sampling the challenges that batch them. The first sumcheck proves the reduction from the complete GKR leaf claims to normalized source evaluations. The start--length assist proves the remaining sparse Jagged-weight identity; its terminal start and length bits are bound to certified public sizes and canonical prefix sums, so no interval boundary is accepted as advice. The global sumcheck is bound to the bus claims before \(\theta\) and its round challenges are sampled. Its random linear combination contributes at most the number of batched identities divided by \(|\F|\) to the soundness error. Contracting two GKR levels changes a round degree from two to four but at least halves the number of such rounds, so its total Schwartz--Zippel degree is no larger than for the binary protocol. A zero tail product in the common-point normalization is rejected. The implementation reserves one additional grinding bit for the batching and reduction checks.
 
 On the standard command
 \[
 \texttt{RAYON\_NUM\_THREADS=11 cargo run --release -- recursion --n 2},
 \]
-two \(975{,}099\)-cycle inner proofs produce a \(1{,}766{,}120\)-cycle recursion guest. This is \(80{,}820\) cycles (\(4.38\%\)) below the first tight-grand-product version and \(99{,}198\) cycles (\(5.32\%\)) below the former internally padded grand product. The recursion program contains \(524{,}089\) instructions and pads to \(2^{19}\). A representative run proves in \(6.35\) seconds and verifies in \(0.43\) seconds; proof size varies slightly with Merkle-query collisions and is about \(594\) KiB.
+two \(975{,}099\)-cycle inner proofs produce a \(1{,}704{,}688\)-cycle recursion guest. Compact sumcheck messages, radix-four GKR, and stack-resident offset evaluation save \(46{,}244\) cycles (\(2.64\%\)) relative to the preceding count-aligned tight-grand-product implementation. The recursion program contains \(500{,}538\) instructions and pads to \(2^{19}\). A representative run proves in \(5.84\) seconds and verifies in \(0.43\) seconds; proof size varies with Merkle-query collisions and is about \(590\) KiB. Building only the radix-four tree levels reduces the native inner grand-product phase from about \(0.79\) seconds to \(0.74\)--\(0.76\) seconds on the same machine.
 
 Tests cover exhaustive small intervals, arbitrary row-weight pairs, exact-full endpoints, Boolean start--length agreement with dense MLEs, native proof round trips, six runtime shapes verified by the same compiled recursion guest, mixed-shape recursion, and adversarial mutations of the named hints.
 

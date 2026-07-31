@@ -8,8 +8,10 @@
 
 use crate::gkr;
 use crate::PAR_THRESHOLD;
-use primitives::field::{mul_by_x, F128, G};
-use primitives::multilinear::{fold_low_inplace, lagrange_eval, mle_eval, tri_nodes};
+use primitives::field::{F128, G};
+use primitives::multilinear::{
+    fold_low_inplace, mle_eval, quadratic_coefficient, quadratic_eval_from_sum,
+};
 use crate::transcript::{ProverState, VerifierState};
 use crate::witness::Column;
 use rayon::prelude::*;
@@ -38,9 +40,12 @@ pub struct Block {
     pub kappa: usize,
     pub coords: Vec<Coord>,
     pub real: usize,
+    /// A count block may reuse a paired push block's target interval. Gaps in
+    /// the count leaf vector remain the product identity.
+    pub count_target: Option<usize>,
 }
 
-/// Placement of each block in the stacked leaf vector (input order).
+/// Placement of each block in the product-tree leaf vector.
 #[derive(Clone, Debug)]
 pub struct Layout {
     pub mu: usize,
@@ -70,9 +75,6 @@ pub enum Error {
     Decomposition {
         side: &'static str,
     },
-    ReductionRound {
-        round: usize,
-    },
     NonInvertibleTail,
     AssistFinal,
     /// The bus grinding nonce (before the multiset challenge γ) failed its PoW.
@@ -84,7 +86,7 @@ pub enum Error {
 /// Schwartz–Zippel event is the push/pull fingerprint identity, whose degree
 /// is at most `2^push_mu`. The same transcript also contains:
 ///
-/// - the batched product-GKR degree-two sumchecks and combiners;
+/// - the batched product-GKR degree-four sumchecks and combiners;
 /// - a degree-two challenge batching the three terminal functionals;
 /// - the new degree-two reduction sumcheck.
 ///
@@ -115,6 +117,24 @@ pub fn layout(blocks: &[Block]) -> Layout {
     }
     let mu = crate::log2_ceil_usize(off.max(1));
     Layout { mu, offsets }
+}
+
+fn count_layout(push: &[Block], push_layout: &Layout, count: &[Block]) -> Layout {
+    let mut used = vec![false; push.len()];
+    let offsets = count
+        .iter()
+        .map(|block| {
+            let target = block.count_target.expect("count block has a push target");
+            assert!(!used[target], "count blocks have distinct push targets");
+            assert_eq!(block.real, push[target].real, "paired intervals have equal height");
+            used[target] = true;
+            push_layout.offsets[target]
+        })
+        .collect();
+    Layout {
+        mu: push_layout.mu,
+        offsets,
+    }
 }
 
 /// A non-constant coordinate as `(source, coefficient)`: its leaf contribution is
@@ -400,16 +420,13 @@ fn reduction_plan<'a>(
     }
 }
 
-fn product_round_message(column: &[F128], weight: &[F128]) -> [F128; 3] {
+fn product_round_message(column: &[F128], weight: &[F128]) -> [F128; 2] {
     let half = column.len() / 2;
-    (0..half).fold([F128::ZERO; 3], |mut acc, row| {
+    (0..half).fold([F128::ZERO; 2], |mut acc, row| {
         let (c0, c1) = (column[2 * row], column[2 * row + 1]);
         let (w0, w1) = (weight[2 * row], weight[2 * row + 1]);
-        let cg = c0 + mul_by_x(c0 + c1);
-        let wg = w0 + mul_by_x(w0 + w1);
         acc[0] += c0 * w0;
-        acc[1] += c1 * w1;
-        acc[2] += cg * wg;
+        acc[1] += (c0 + c1) * (w0 + w1);
         acc
     })
 }
@@ -525,15 +542,15 @@ fn prove_overlap_assist(
         })
         .collect();
     let mut prefix = Vec::with_capacity(start_len + length_len);
-    let nodes = tri_nodes();
     for round in 0..start_len + length_len {
         let at_zero =
             assist_eval_query(row_point, index_point, &interval_bits, coefficients, &prefix, round, F128::ZERO);
         let at_generator = assist_eval_query(row_point, index_point, &interval_bits, coefficients, &prefix, round, G);
-        ps.add_scalars(&[at_zero, at_generator]);
-        let challenge = ps.sample();
         let at_one = claim + at_zero;
-        claim = lagrange_eval(&nodes, &[at_zero, at_one, at_generator], challenge);
+        let quadratic = quadratic_coefficient([at_zero, at_one, at_generator]);
+        ps.add_scalars(&[at_zero, quadratic]);
+        let challenge = ps.sample();
+        claim = quadratic_eval_from_sum(at_zero, quadratic, claim, challenge);
         prefix.push(challenge);
     }
     let batch_weight = interval_bits
@@ -567,13 +584,11 @@ fn verify_overlap_assist(
 ) -> Result<(), Error> {
     let start_len = index_point.len();
     let length_len = products.iter().map(|product| product.row_nu).max().unwrap() + 1;
-    let nodes = tri_nodes();
     let mut point = Vec::with_capacity(start_len + length_len);
     for _round in 0..start_len + length_len {
         let message = vs.next_scalars(2).map_err(|_| Error::Truncated)?;
-        let at_one = claim + message[0];
         let challenge = vs.sample();
-        claim = lagrange_eval(&nodes, &[message[0], at_one, message[1]], challenge);
+        claim = quadratic_eval_from_sum(message[0], message[1], claim, challenge);
         point.push(challenge);
     }
     let mut batch_weight = F128::ZERO;
@@ -651,7 +666,6 @@ fn prove_tight_reduction(
 
     let mut claim =
         gkr_values[0] + F128::ONE + eta * (gkr_values[1] + F128::ONE) + eta * eta * (gkr_values[2] + F128::ONE);
-    let nodes = tri_nodes();
     let mut rho = Vec::with_capacity(plan.nu);
     for _ in 0..plan.nu {
         let msg = work
@@ -659,19 +673,15 @@ fn prove_tight_reduction(
             .map(|entry| {
                 if entry.column.len() == 1 {
                     let value = entry.column[0] * entry.weight[0];
-                    [value, F128::ZERO, (F128::ONE + G) * value]
+                    [value, F128::ZERO]
                 } else {
                     product_round_message(&entry.column, &entry.weight)
                 }
             })
-            .reduce(
-                || [F128::ZERO; 3],
-                |a, b| [a[0] + b[0], a[1] + b[1], a[2] + b[2]],
-            );
-        assert_eq!(msg[0] + msg[1], claim);
+            .reduce(|| [F128::ZERO; 2], |a, b| [a[0] + b[0], a[1] + b[1]]);
         ps.add_scalars(&msg);
         let challenge = ps.sample();
-        claim = lagrange_eval(&nodes, &msg, challenge);
+        claim = quadratic_eval_from_sum(msg[0], msg[1], claim, challenge);
         rho.push(challenge);
         work.par_iter_mut().for_each(|entry| {
             if entry.column.len() == 1 {
@@ -780,15 +790,11 @@ fn verify_tight_reduction(
     let mut claim =
         gkr_values[0] + F128::ONE + eta * (gkr_values[1] + F128::ONE) + eta * eta * (gkr_values[2] + F128::ONE);
 
-    let nodes = tri_nodes();
     let mut rho = Vec::with_capacity(plan.nu);
-    for round in 0..plan.nu {
-        let msg = vs.next_scalars(3).map_err(|_| Error::Truncated)?;
-        if msg[0] + msg[1] != claim {
-            return Err(Error::ReductionRound { round });
-        }
+    for _round in 0..plan.nu {
+        let msg = vs.next_scalars(2).map_err(|_| Error::Truncated)?;
         let challenge = vs.sample();
-        claim = lagrange_eval(&nodes, &msg, challenge);
+        claim = quadratic_eval_from_sum(msg[0], msg[1], claim, challenge);
         rho.push(challenge);
     }
 
@@ -944,15 +950,14 @@ pub fn prove_balance(
 ) -> (Vec<ColumnClaim>, Vec<BytecodeClaim>) {
     let push_lay = layout(push);
     let pull_lay = layout(pull);
-    let mut count_lay = layout(count);
+    let count_lay = count_layout(push, &push_lay, count);
     // Grind FIRST, so the PoW covers both bus challenges α and γ
     // ([`grand_product_grinding_bits`]): re-rolling either means redoing it.
     ps.grind(grand_product_grinding_bits(&push_lay, &pull_lay, &count_lay));
     let alpha = ps.sample();
-    // Pad the count tree to the pair's depth with identity leaves (the product,
-    // blocks, and offsets are unchanged; `build_leaves` fills the cube with
-    // `1`), so all THREE trees share one RLC-batched GKR and one point ζ.
-    count_lay.mu = push_lay.mu;
+    // Place count blocks in distinct same-height push intervals. Multiplication
+    // is order-independent and every unused count leaf is the identity, so the
+    // count product is unchanged while all THREE trees share one layout.
     let gamma = ps.sample();
     // Independent leaf vectors; build concurrently. The count channel's leaf is the
     // count itself (a single `Col`, `γ=0`, `α=1`), so its root is the product of all counts.
@@ -1021,15 +1026,14 @@ pub fn verify_balance(
     // α and γ (mirror of prove_balance).
     let push_lay = layout(push);
     let pull_lay = layout(pull);
-    let mut count_lay = layout(count);
+    let count_lay = count_layout(push, &push_lay, count);
     vs.grind_check(grand_product_grinding_bits(&push_lay, &pull_lay, &count_lay)).map_err(|e| match e {
         crate::transcript::Error::PowFailed => Error::PowFailed,
         _ => Error::Truncated,
     })?;
     let alpha = vs.sample();
-    // The count tree is padded to the pair's depth (identity leaves), so all
-    // three verify as ONE RLC-batched GKR at ONE shared point.
-    count_lay.mu = push_lay.mu;
+    // Count blocks reuse distinct push intervals and every gap is an identity
+    // leaf, so all three verify as ONE RLC-batched GKR at ONE shared point.
     let gamma = vs.sample();
     let bus_gkr = gkr::verify_product_triple(push_lay.mu, vs).map_err(Error::Gkr)?;
     let [push_root, pull_root, count_root] = bus_gkr.roots;

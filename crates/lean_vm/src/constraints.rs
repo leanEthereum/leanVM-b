@@ -3,8 +3,8 @@
 // https://github.com/succinctlabs/sp1/tree/main/crates/hypercube/src
 //! Local constraints (§4.1): a zerocheck of the row's degree-≤2 field
 //! identities, batched by a verifier scalar `η` and run by sumcheck. The `eq`
-//! weight is factored out (eq-trick), so each round univariate is degree 2, sent
-//! as 3 evaluations and reweighted by the verifier.
+//! weight is factored out (eq-trick), so each round univariate is degree 2.
+//! Its consistency equation eliminates one coefficient, leaving two scalars.
 
 use crate::PAR_THRESHOLD;
 use crate::leaf::ColumnClaim;
@@ -12,13 +12,15 @@ use crate::tables::{self, Table};
 use crate::transcript::{ProverState, VerifierState};
 use crate::witness::{Column, Placement};
 use primitives::field::{F128, mul_by_x};
-use primitives::multilinear::{add3, build_eq, fold_low_inplace, lagrange_eval, mle_eval, tri_nodes};
+use primitives::multilinear::{
+    add3, build_eq, fold_low_inplace, mle_eval, quadratic_coefficient,
+    quadratic_eval_from_eq,
+};
 use rayon::prelude::*;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
     Truncated,
-    RoundInconsistent { round: usize },
     FinalMismatch,
 }
 
@@ -67,7 +69,7 @@ struct GlobalBusWork {
 /// SP1-style opening reduction: fold every ordinary bus evaluation into the
 /// AIR zerocheck, so all ordinary columns are finally opened at one point.
 /// The common `eq(z, x)` factor stays outside the degree-two product part, hence
-/// each round still sends only the three `{0,1,g}` evaluations.
+/// each round still sends only two independent coefficients.
 pub fn prove_global(
     cols: &[Column],
     pad: &[F128],
@@ -133,9 +135,7 @@ pub fn prove_global(
         power *= theta;
     }
 
-    let nodes = tri_nodes();
     let mut rho = Vec::with_capacity(rounds);
-    let mut eq_acc = F128::ONE;
     for round in 0..rounds {
         let mut message = [F128::ZERO; 3];
         for work in &table_work {
@@ -240,13 +240,14 @@ pub fn prove_global(
             }
         }
         assert_eq!(
-            eq_acc * ((F128::ONE + z[round]) * message[0] + z[round] * message[1]),
+            (F128::ONE + z[round]) * message[0] + z[round] * message[1],
             claim
         );
-        ps.add_scalars(&message);
+        let compact = [message[0] + message[1], quadratic_coefficient(message)];
+        ps.add_scalars(&compact);
         let challenge = ps.sample();
-        eq_acc *= F128::ONE + z[round] + challenge;
-        claim = eq_acc * lagrange_eval(&nodes, &message, challenge);
+        claim =
+            quadratic_eval_from_eq(claim, z[round], compact[0], compact[1], challenge);
         rho.push(challenge);
         rayon::join(
             || {
@@ -306,11 +307,7 @@ pub fn prove_global(
         terminal += power * table.eval_constraint(etas[t], &tables::Cols::new(&evals, &position));
         power *= theta;
     }
-    let eq = z
-        .iter()
-        .zip(&rho)
-        .fold(F128::ONE, |acc, (&a, &b)| acc * (F128::ONE + a + b));
-    assert_eq!(claim, eq * terminal);
+    assert_eq!(claim, terminal);
 
     columns
         .into_iter()
@@ -347,18 +344,12 @@ pub fn verify_global(
         power *= theta;
     }
 
-    let nodes = tri_nodes();
     let mut rho = Vec::with_capacity(z.len());
-    let mut eq_acc = F128::ONE;
-    for (round, &zj) in z.iter().enumerate() {
-        let message = vs.next_scalars(3).map_err(|_| Error::Truncated)?;
-        if eq_acc * ((F128::ONE + zj) * message[0] + zj * message[1]) != claim {
-            return Err(Error::RoundInconsistent { round });
-        }
+    for &zj in &z {
+        let message = vs.next_scalars(2).map_err(|_| Error::Truncated)?;
         let challenge = vs.sample();
         rho.push(challenge);
-        eq_acc *= F128::ONE + zj + challenge;
-        claim = eq_acc * lagrange_eval(&nodes, &message, challenge);
+        claim = quadratic_eval_from_eq(claim, zj, message[0], message[1], challenge);
     }
 
     let columns = opening_columns(bus_claims);
@@ -381,7 +372,7 @@ pub fn verify_global(
         terminal += power * table.eval_constraint(etas[t], &tables::Cols::new(&evals, &position));
         power *= theta;
     }
-    if claim != eq_acc * terminal {
+    if claim != terminal {
         return Err(Error::FinalMismatch);
     }
 

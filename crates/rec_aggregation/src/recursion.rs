@@ -1029,6 +1029,11 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
                 .map(|&local| global_col_slot[&(sch.base[t] + local)]),
         );
     }
+    let count_target_block = l
+        .count
+        .iter()
+        .map(|block| block.count_target.expect("count block has a push target"))
+        .collect::<Vec<_>>();
     let pi_claim_slot = next_claim;
     next_claim += 1;
     let ncl = next_claim;
@@ -1176,9 +1181,6 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     let mut ps = |k: &str, v: String| { rep.insert(format!("{k}_PLACEHOLDER"), v); };
     ps("STREAM_CAP", stream_cap.to_string());
     ps("INV_GEN", u(G.inv()).to_string());
-    ps("LAGRANGE_INV_0", u(G.inv()).to_string());
-    ps("LAGRANGE_INV_1", u((F128::ONE + G).inv()).to_string());
-    ps("LAGRANGE_INV_2", u((G * (F128::ONE + G)).inv()).to_string());
     ps("MU_CAP", mumax.to_string());
     ps("GKR_ROUNDS_CAP", (mumax * (mumax + 1) / 2 + mumax + 2).to_string());
     ps("GKR_POINTS_CAP", ((mumax + 1) * mumax).to_string());
@@ -1267,6 +1269,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("GLOBAL_COL_SLOTS", ints(&global_col_slots));
     ps("N_GLOBAL_COLS", global_col_slots.len().to_string());
     ps("AIR_GLOBAL_SLOTS", ints(&air_global_slots));
+    ps("COUNT_TARGET_BLOCK", ints(&count_target_block));
     ps("PI_CLAIM_SLOT", pi_claim_slot.to_string());
     let idxc: Vec<u128> = (0..34)
         .map(|i| {

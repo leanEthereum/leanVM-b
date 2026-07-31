@@ -64,11 +64,57 @@ pub fn lagrange_eval(nodes: &[F128], values: &[F128], p: F128) -> F128 {
     acc
 }
 
-/// The 3 nodes {0, 1, γ} at which a degree-2 sumcheck round univariate is sent
-/// (the eq weight is factored out). Shared by `lean_vm::constraints` and `lean_vm::gkr`.
+/// `(g²+g)⁻¹`, used to recover the quadratic coefficient from evaluations at
+/// `{0,1,g}`.
+pub const QUADRATIC_DENOMINATOR_INV: F128 =
+    F128::new(0xffff_ffff_ffff_ffc1, 0x7fff_ffff_ffff_ffff);
+
+/// The `X²` coefficient of the quadratic taking `values` at `{0,1,g}`.
 #[inline]
-pub fn tri_nodes() -> [F128; 3] {
-    [F128::ZERO, F128::ONE, F128::generator()]
+pub fn quadratic_coefficient(values: [F128; 3]) -> F128 {
+    let difference = values[0] + values[1];
+    (values[0] + values[2] + crate::field::mul_by_x(difference))
+        * QUADRATIC_DENOMINATOR_INV
+}
+
+/// Evaluate `q(X)=u₀+bX+u₂X²` from `u₀`, `u₂`, and the sumcheck relation
+/// `q(0)+q(1)=sum` (hence `b=sum+u₂` in characteristic two).
+#[inline]
+pub fn quadratic_eval_from_sum(u_0: F128, u_2: F128, sum: F128, point: F128) -> F128 {
+    u_0 + point * (sum + u_2 + point * u_2)
+}
+
+/// Evaluate an eq-trick round from its normalized incoming claim. If
+/// `difference=q(0)+q(1)` and the equality coordinate is `eq_point`, then
+/// `q(0)=claim+eq_point·difference`.
+#[inline]
+pub fn quadratic_eval_from_eq(
+    claim: F128,
+    eq_point: F128,
+    difference: F128,
+    quadratic: F128,
+    point: F128,
+) -> F128 {
+    claim
+        + eq_point * difference
+        + point * (difference + quadratic + point * quadratic)
+}
+
+/// Evaluate a degree-four eq-trick round from the four independent
+/// coefficients sent by the prover.
+#[inline]
+pub fn quartic_eval_from_eq(
+    claim: F128,
+    eq_point: F128,
+    difference: F128,
+    c2: F128,
+    c3: F128,
+    c4: F128,
+    point: F128,
+) -> F128 {
+    let c0 = claim + eq_point * difference;
+    let c1 = difference + c2 + c3 + c4;
+    c0 + point * (c1 + point * (c2 + point * (c3 + point * c4)))
 }
 
 /// Add two 3-coefficient sumcheck accumulators componentwise.
@@ -136,4 +182,61 @@ pub fn lagrange_weights_naive(k_skip: usize, z: F128) -> Vec<F128> {
         weights[i] = num * den.inv();
     }
     weights
+}
+
+#[cfg(test)]
+mod coefficient_tests {
+    use super::*;
+
+    #[test]
+    fn compact_quadratic_and_quartic_evaluations_match_coefficients() {
+        let mut x = F128::generator();
+        for _ in 0..64 {
+            let c0 = x;
+            x *= F128::generator();
+            let c1 = x;
+            x *= F128::generator();
+            let c2 = x;
+            x *= F128::generator();
+            let point = x;
+            x *= F128::generator();
+            let eq_point = x;
+            x *= F128::generator();
+
+            let q = |z: F128| c0 + z * (c1 + z * c2);
+            let values = [q(F128::ZERO), q(F128::ONE), q(F128::generator())];
+            assert_eq!(quadratic_coefficient(values), c2);
+            let difference = c1 + c2;
+            assert_eq!(
+                quadratic_eval_from_sum(c0, c2, difference, point),
+                q(point)
+            );
+            let claim = c0 + eq_point * difference;
+            assert_eq!(
+                quadratic_eval_from_eq(claim, eq_point, difference, c2, point),
+                q(point)
+            );
+
+            let c3 = x;
+            x *= F128::generator();
+            let c4 = x;
+            x *= F128::generator();
+            let quartic =
+                |z: F128| c0 + z * (c1 + z * (c2 + z * (c3 + z * c4)));
+            let difference4 = c1 + c2 + c3 + c4;
+            let claim4 = c0 + eq_point * difference4;
+            assert_eq!(
+                quartic_eval_from_eq(
+                    claim4,
+                    eq_point,
+                    difference4,
+                    c2,
+                    c3,
+                    c4,
+                    point,
+                ),
+                quartic(point)
+            );
+        }
+    }
 }
