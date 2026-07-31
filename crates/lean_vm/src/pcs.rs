@@ -111,6 +111,7 @@ pub enum SlotClaim {
     Jagged {
         offset: usize,
         height: usize,
+        batch_group: usize,
         selector_len: usize,
         row_point: Vec<F128>,
         value: F128,
@@ -131,12 +132,14 @@ impl SlotClaim {
             SlotClaim::Jagged {
                 offset,
                 height,
+                batch_group,
                 selector_len,
                 row_point,
                 value,
             } => StackClaim::Jagged {
                 offset: *offset,
                 height: *height,
+                batch_group: *batch_group,
                 selector_len: *selector_len,
                 row_point,
                 value: *value,

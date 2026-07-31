@@ -791,6 +791,7 @@ fn gen_verify(
         ("merkle_leaf_rows".to_string(), lrows_flat),
         ("merkle_paths".to_string(), lpaths_flat),
         ("sub_pis".to_string(), vec![pi[0], pi[1]]),
+        ("zc_tau_max".to_string(), vec![g_pow(*l.taus.iter().max().unwrap())]),
         ("sort_order".to_string(), sort_order.clone()),
     ];
     (hints, deferred)
@@ -916,7 +917,6 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     let kbc = program.prog.len().trailing_zeros() as usize;
     let sides: [&[Block]; 3] = [&l.push, &l.pull, &l.count];
     let mumax = 40usize;
-    let taumax_cap = 33usize;
     let stream_cap = 8192usize;
     let taus = l.taus;
     let lcrounds = flock::blake3::K_LOG - 6;
@@ -1031,7 +1031,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
                 cprowkey.push((3, 0, 0));
             } else {
                 cpbuf.push(1);
-                cpoff.push(t * taumax_cap);
+                cpoff.push(0); // every AIR point is a prefix of the shared rho
                 let placement = l.placements[col];
                 cpcol.push(block_index[&placement.offset]);
                 cpblockslot.push(placement.slot);
@@ -1181,7 +1181,11 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("N_AIR_COLS", ints(&ncol));
     ps("AIR_COLS_CAP", (ncol.iter().max().unwrap() + 1).to_string());
     ps("N_TABLES", l.taus.len().to_string());
-    ps("TAU_CAP", taumax_cap.to_string());
+    // Each table's disjoint range of eta-powers in the batched zerocheck, from the
+    // same derivation the native verifier uses.
+    let n_constraints: Vec<usize> = lean_vm::tables::tables().iter().map(|t| t.n_constraints()).collect();
+    ps("N_ETA_POWS", n_constraints.iter().sum::<usize>().to_string());
+    ps("ETA_OFFSET", ints(&lean_vm::constraints::eta_offsets(n_constraints.iter().copied())));
     // g^(push.mu - BUS_GRIND_SHIFT) is the bus PoW window
     // (leaf::grand_product_grinding_bits: bits = mu - (127 - SECURITY_BITS)).
     ps("BUS_GRIND_SHIFT", (127 - lean_vm::SECURITY_BITS).to_string());
@@ -1594,8 +1598,10 @@ fn recursion_soundness_binds() {
 
     assert!(run(&mut guest, &batch.merged), "honest proof must verify");
 
-    {
-        let (stream, idx, val) = ("fs_seed", 0, F128::ONE);
+    for &(stream, idx, val) in &[
+        ("fs_seed", 0, F128::ONE),
+        ("zc_tau_max", 0, g_pow(2)),
+    ] {
         let mut merged = batch.merged.clone();
         let pos = merged.iter().position(|(n, _)| n == stream).expect("stream present");
         let orig = merged[pos].1[0][idx];

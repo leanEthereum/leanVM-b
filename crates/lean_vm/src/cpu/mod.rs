@@ -289,7 +289,7 @@ pub use crate::transcript::Proof;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
     Bus(leaf::Error),
-    Constraint(usize, constraints::Error),
+    Constraint(constraints::Error),
     Open(pcs::Error),
     PublicInput,
     Transcript(crate::transcript::Error),
@@ -297,6 +297,25 @@ pub enum Error {
     /// malformed sub-proof surfaces as [`Error::Transcript`] when the shared
     /// `stream`/`openings` fail to reconstruct or fully consume.)
     Blake3(flock::verifier::VerifyError),
+}
+
+/// The per-table inputs to the batched zerocheck (§constraints), in schema order.
+/// Prover and verifier both call this, so their column order and constraint
+/// closures agree by construction.
+fn airs(taus: &[usize; 6]) -> Vec<constraints::Air<'static>> {
+    tables::tables()
+        .iter()
+        .zip(taus)
+        .map(|(&table, &tau)| {
+            let position = tables::column_positions(table.constraint_columns());
+            constraints::Air {
+                tau,
+                n_cols: table.constraint_columns().len(),
+                n_constraints: table.n_constraints(),
+                eval: Box::new(move |pows, vals| table.eval_constraint(pows, &tables::Cols::new(vals, &position))),
+            }
+        })
+        .collect()
 }
 
 /// Lift each table's constraint evals (at its zerocheck point `rho`) to global
@@ -408,18 +427,22 @@ pub fn prove(program: &Program, public_input: [F128; 2]) -> (Proof, Stats) {
     let t = std::time::Instant::now();
     let table_claims = tracing::info_span!("Prove constraints").in_scope(|| {
         let sch = schema();
-        let mut table_claims = Vec::new();
-        for (ti, table) in tables::tables().iter().enumerate() {
-            let involved = table.constraint_columns();
-            let position = tables::column_positions(involved);
-            let cols: Vec<Column> = involved.iter().map(|&c| w.cols[sch.base[ti] + c].clone()).collect();
-            table_claims.push(constraints::prove(
-                &cols,
-                |eta, vals| table.eval_constraint(eta, &tables::Cols::new(vals, &position)),
-                &mut ps,
-            ));
-        }
-        table_claims
+        // ONE sumcheck for all six tables (§constraints).
+        // MOVE the columns out: the batch folds them destructively and nothing
+        // reads them again (`prove_balance` is done, and `QPKD < N_SHARED` is never
+        // a constraint column), so copying them would be ~300 MB for nothing.
+        let mut cols: Vec<Vec<Column>> = tables::tables()
+            .iter()
+            .enumerate()
+            .map(|(ti, table)| {
+                table
+                    .constraint_columns()
+                    .iter()
+                    .map(|&c| std::mem::take(&mut w.cols[sch.base[ti] + c]))
+                    .collect()
+            })
+            .collect();
+        constraints::prove(&airs(&l.taus), &mut cols, &mut ps)
     });
     if prof {
         eprintln!("[prove] constraints : {:>7.2} ms", ms(t));
@@ -537,19 +560,7 @@ pub fn verify(
     let bus = leaf::verify_balance(&l.push, &l.pull, &l.count, &l.pad, &mut vs).map_err(Error::Bus)?;
     let checkpoint_bus = vs.sponge_state();
 
-    let mut table_claims = Vec::new();
-    for (ti, table) in tables::tables().iter().enumerate() {
-        let involved = table.constraint_columns();
-        let position = tables::column_positions(involved);
-        let cl = constraints::verify(
-            l.taus[ti],
-            involved.len(),
-            |eta, vals| table.eval_constraint(eta, &tables::Cols::new(vals, &position)),
-            &mut vs,
-        )
-        .map_err(|e| Error::Constraint(ti, e))?;
-        table_claims.push(cl);
-    }
+    let table_claims = constraints::verify(&airs(&l.taus), &mut vs).map_err(Error::Constraint)?;
     let checkpoint_zerochecks = vs.sponge_state();
 
     let mut claims = bus.claims;
@@ -591,9 +602,18 @@ pub fn verify(
 /// the high coords to `r`. No downstream special-casing — it folds into the
 /// one opening like every other point claim.
 fn slot_claims(l: &Layout, claims: &[ColumnClaim]) -> Vec<pcs::SlotClaim> {
+    let n_air: usize = tables::tables().iter().map(|table| table.constraint_columns().len()).sum();
+    let n_bus = claims.len() - n_air - 1;
+    let mut batch_groups = vec![0usize; n_bus];
+    for (t, table) in tables::tables().iter().enumerate() {
+        batch_groups.extend(std::iter::repeat_n(t + 1, table.constraint_columns().len()));
+    }
+    batch_groups.push(tables::tables().len() + 1); // public-input claim
+    debug_assert_eq!(batch_groups.len(), claims.len());
     claims
         .iter()
-        .map(|c| {
+        .zip(batch_groups)
+        .map(|(c, batch_group)| {
             // A virtual BLAKE3 value column (always virtual): its bus claim at
             // instance point `c.point` is the q_pkd slot value — a boolean-selector
             // (strided) claim on QPKD, folded sparsely (2^n_log, not the 2^(7+n_log)
@@ -623,6 +643,7 @@ fn slot_claims(l: &Layout, claims: &[ColumnClaim]) -> Vec<pcs::SlotClaim> {
             pcs::SlotClaim::Jagged {
                 offset: placement.offset,
                 height: placement.height << placement.block_width_log,
+                batch_group,
                 selector_len: placement.block_width_log,
                 row_point: block_point,
                 value: jagged_value,

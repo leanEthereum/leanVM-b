@@ -217,6 +217,10 @@ pub enum StackClaim<'a> {
     Jagged {
         offset: usize,
         height: usize,
+        /// Claims are geometrically combined only within the same group. This
+        /// keeps the batching layout independent of accidental equality between
+        /// points from distinct protocol phases.
+        batch_group: usize,
         /// Low coordinates selecting a column inside a row-major block. Zero
         /// for a singleton column.
         selector_len: usize,
@@ -274,7 +278,7 @@ fn geometric_claim_weights(stack_pd: &[StackClaim], gamma: F128) -> (Vec<F128>, 
         if rank[i] != usize::MAX {
             continue;
         }
-        let StackClaim::Jagged { offset, height, selector_len, row_point, .. } = &stack_pd[i] else {
+        let StackClaim::Jagged { offset, height, batch_group, selector_len, row_point, .. } = &stack_pd[i] else {
             rank[i] = next_rank;
             next_rank += 1;
             continue;
@@ -293,6 +297,7 @@ fn geometric_claim_weights(stack_pd: &[StackClaim], gamma: F128) -> (Vec<F128>, 
             let StackClaim::Jagged {
                 offset: other_offset,
                 height: other_height,
+                batch_group: other_batch_group,
                 selector_len: other_selector_len,
                 row_point: other_point,
                 ..
@@ -302,6 +307,7 @@ fn geometric_claim_weights(stack_pd: &[StackClaim], gamma: F128) -> (Vec<F128>, 
             };
             if other_offset != offset
                 || other_height != height
+                || other_batch_group != batch_group
                 || other_selector_len != selector_len
                 || other_point[*selector_len..] != row_point[*selector_len..]
             {
@@ -463,7 +469,7 @@ fn fold_stacked_point_claims(
                 height,
                 selector_len: _,
                 row_point,
-                value: _,
+                ..
             } => {
                 if *height != 0 {
                     let eq = eq_for(row_point);
@@ -776,10 +782,11 @@ mod jagged_batch_tests {
             [F128::ZERO, F128::ONE, row[0], row[1], row[2]],
         ];
         let singleton_point = [f(11), f(13), f(17), f(19), f(23)];
-        let claims = [
+        let mut claims = [
             StackClaim::Jagged {
                 offset: 3,
                 height: 20,
+                batch_group: 0,
                 selector_len: 2,
                 row_point: &block_points[0],
                 value: f(29),
@@ -787,6 +794,7 @@ mod jagged_batch_tests {
             StackClaim::Jagged {
                 offset: 3,
                 height: 20,
+                batch_group: 0,
                 selector_len: 2,
                 row_point: &block_points[1],
                 value: f(31),
@@ -794,6 +802,7 @@ mod jagged_batch_tests {
             StackClaim::Jagged {
                 offset: 3,
                 height: 20,
+                batch_group: 0,
                 selector_len: 2,
                 row_point: &block_points[2],
                 value: f(37),
@@ -801,6 +810,7 @@ mod jagged_batch_tests {
             StackClaim::Jagged {
                 offset: 3,
                 height: 20,
+                batch_group: 0,
                 selector_len: 2,
                 row_point: &block_points[3],
                 value: f(41),
@@ -808,6 +818,7 @@ mod jagged_batch_tests {
             StackClaim::Jagged {
                 offset: 29,
                 height: 7,
+                batch_group: 1,
                 selector_len: 0,
                 row_point: &singleton_point,
                 value: f(43),
@@ -857,5 +868,9 @@ mod jagged_batch_tests {
                 acc + weights[member] * stack_claim_eq_at(&claims[member], &residual_point)
             });
         assert_eq!(batch_eval, grouped_eval);
+
+        let StackClaim::Jagged { batch_group, .. } = &mut claims[0] else { unreachable!() };
+        *batch_group = 9;
+        assert!(geometric_claim_weights(&claims, gamma).1.is_empty());
     }
 }
