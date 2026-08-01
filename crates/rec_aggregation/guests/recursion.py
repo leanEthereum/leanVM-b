@@ -1281,33 +1281,43 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     # (γ+fp)^DELTA ladder and are pinned by g^real · g^DELTA == g^(2^κ); real is
     # count_t for table blocks, 2^κ for shared blocks (DELTA = 0). An unpinned
     # DELTA would forge the balance (dlog is cheap in this field).
+    # ONE ladder per (side, table), not per block: every flush block of table t
+    # takes its kappa from the same certified source (tau_t) and its real row
+    # count from the same count_t, so the whole group shares one DELTA, and
+    #     prod_b (gamma + fp_b)^DELTA == (prod_b (gamma + fp_b))^DELTA.
+    # The framework blocks are REAL_IS_FULL_CUBE (= N_TABLES, so the table loop
+    # skips them): real = 2^kappa makes DELTA = 0 by construction, and the ladder
+    # they run today is forced to return 1 anyway -- g^DELTA == g^(2^kappa)/g^real
+    # == 1 with COUNT_BITS bits far below the group order pins every bit to zero.
+    # Dropping it removes a hint, not a constraint.
     pad_products = HeapBuf(2)
     for s in unroll(0, 2):
         side_pad_product = GEN ** 0
-        for b in unroll(SIDE_BLOCK_START[s], SIDE_BLOCK_START[s + 1]):
-            pad_fp = 0
-            alpha_pow = GEN ** 0
-            for i in unroll(0, BLOCK_COORD_COUNT[b]):
-                pad_fp += alpha_pow * COORD_PAD_VAL[BLOCK_COORD_OFF[b] + i]
-                alpha_pow *= alpha
-            g_two_kappa = g_squares[block_kappa[GEN ** b]]  # g^(2^κ_b)
-            if BLOCK_REAL_TABLE[b] == REAL_IS_FULL_CUBE:
-                g_real = g_two_kappa  # shared block: real = 2^κ, so DELTA = 0
-            else:
-                g_real = count_gpows[GEN ** BLOCK_REAL_TABLE[b]]  # g^count_t
+        for t in unroll(0, N_TABLES):
+            group_base = GEN ** 0
+            for b in unroll(SIDE_BLOCK_START[s], SIDE_BLOCK_START[s + 1]):
+                if BLOCK_REAL_TABLE[b] == t:
+                    pad_fp = 0
+                    alpha_pow = GEN ** 0
+                    for i in unroll(0, BLOCK_COORD_COUNT[b]):
+                        pad_fp += alpha_pow * COORD_PAD_VAL[BLOCK_COORD_OFF[b] + i]
+                        alpha_pow *= alpha
+                    group_base *= (gamma + pad_fp)
+            g_two_kappa = g_squares[dims_g[GEN ** (t + 1)]]  # g^(2^tau_t), the group's kappa
+            g_real = count_gpows[GEN ** t]                   # g^count_t
             g_delta_want = g_two_kappa / g_real  # g^DELTA (feeds the advice below)
             pad_bits = HeapBuf(GEN ** COUNT_BITS)
             hint_decompose_bits_exponent(pad_bits, g_delta_want, COUNT_BITS)
             ladder = GEN ** 0
-            ladder_square = gamma + pad_fp
+            ladder_square = group_base
             g_delta = GEN ** 0
             for j in unroll(0, COUNT_BITS):
                 pad_bit = pad_bits[GEN ** j]
                 assert pad_bit * pad_bit == pad_bit
                 ladder *= (1 + pad_bit * (ladder_square + 1))
-                g_delta *= (1 + pad_bit * (g_squares[GEN ** j] + 1))  # g^DELTA
+                g_delta *= (1 + pad_bit * gsq_plus[j])  # g^DELTA
                 ladder_square *= ladder_square
-            assert g_real * g_delta == g_two_kappa  # real_b + DELTA_b == 2^κ_b
+            assert g_real * g_delta == g_two_kappa  # count_t + DELTA_t == 2^tau_t
             side_pad_product *= ladder
         pad_products[GEN ** s] = side_pad_product
     lhsb = gkr_roots[PUSH_SIDE] * pad_products[GEN ** PULL_SIDE]  # balance: push_root * d_pull == pull_root * d_push (padding cancels)
