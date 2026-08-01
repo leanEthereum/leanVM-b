@@ -105,114 +105,71 @@ B_s(r') \;=\; \sum_{k<e}\, c_k \prod_{j=1}^m
 
 \paragraph{Cost.} Level $k$ needs one squaring per coordinate (to get $r_j^{2^k}$ from $r_j^{2^{k-1}}$) and one $m$-factor product: $O(em)$ multiplications in $L$, on top of the generic $O(e^2)$ construction of the $c_k$.
 
-\section*{Worked example: the GHASH power basis}
+\section*{Instantiation: $64$-bit packing, $192$-bit openings}
 
-For a general basis, constructing the $c_k$ after precomputing the fixed matrix inverse costs one $O(e^2)$ matrix-vector product per opening. In the GHASH field, over its power basis, the coefficients instead have a closed form using $15$ fixed seed constants and $O(\log e)$ multiplications per coefficient.
-
-Let $e=f=128$, so $L=\F_{2^{128}}$ and no embedding is involved. Define
+The recursion verifier of leanVM-b runs the reduction with $f=64$ and $e=192$:
 \[
-p(X)=X^{128}+X^7+X^2+X+1,
+K=\F_{2^{64}}=\F_2[X]/(q),\quad q=X^{64}+X^4+X^3+X+1,
 \qquad
-\F_{2^{128}}=\F_2[X]/\bigl(p(X)\bigr),
+\E=\F_{2^{192}}=K[\Theta]/(\Theta^3+\Theta+1).
 \]
-and let $\alpha$ denote the residue of $X$ modulo $p$. The basis is $b^E_i=\alpha^i$, $i<128$. Then $\ell=7$, the batching point is $s=(s_0,\dots,s_6)$, and the weights are $\lambda_i=\eq(s,\bar\imath)$.
+Write $x$ and $\vartheta$ for the residues of $X$ and $\Theta$. The packing basis is $b^F_i=x^i$, and the opening basis is the product basis
+\[
+b^E_{64\nu+i}=x^i\vartheta^{\nu},\qquad i<64,\quad \nu<3,
+\]
+so a committed word holds the $64$ bits $P_0(y),\dots,P_{63}(y)$. Since $K\subset\E$, the field $L$ of Fact~2 is $\E$ itself and the coefficients $c_k$ lie in $\E$.
 
-\paragraph{Step 1: extracting binary coordinates.} Define $\operatorname{tr}(z)=\sum_{k<128}z^{2^k}$, an $\F_2$-valued linear function. We will construct constants $\delta_i$ satisfying
-\[
-\operatorname{tr}\bigl(\delta_i\alpha^j\bigr)=[\,i=j\,].
-\]
-Consequently, if $x=\sum_{i<128}x_i\alpha^i$ with bits $x_i\in\F_2$, then $\operatorname{tr}(\delta_ix)=x_i$: multiplying by $\delta_i$ and applying $\operatorname{tr}$ extracts the $i$-th binary coordinate. Since $\Phi_s(\alpha^i)=\lambda_i$ by definition and $\Phi_s$ is $\F_2$-linear,
-\[
-\Phi_s(x)=\sum_{i<128}\lambda_ix_i=\sum_{i<128}\lambda_i\operatorname{tr}(\delta_ix)
-=\sum_{k<128}\Bigl(\underbrace{\textstyle\sum_{i<128}\lambda_i\delta_i^{2^k}}_{=\,c_k}\Bigr)x^{2^k}.
-\]
-Thus the coefficients are $c_k=\sum_{i<128}\lambda_i\delta_i^{2^k}$.
+One departure from the generic setup: the $\alpha_i$ are not handed to the verifier. The incoming claim is a fixed $\E$-linear combination of them with public weights, so the prover transmits the $64$ values $\alpha_i$ and the verifier recomputes that combination from them.
 
-\paragraph{Step 2: constructing the coordinate extractors.} Let $d=p'(\alpha)=\alpha^6+1$; only the odd-degree terms $X^7$ and $X$ of $p$ survive differentiation in characteristic $2$. The roots of $p$ are $\alpha,\alpha^2,\ldots,\alpha^{2^{127}}$. Partial fractions, followed by expanding each $(X+\beta)^{-1}$ in powers of $X^{-1}$, gives
-\[
-\frac{1}{p(X)}
-=\sum_{j=0}^{127}\frac{1}{p'(\alpha^{2^j})(X+\alpha^{2^j})}
-=\sum_{k\ge0}\operatorname{tr}\!\Bigl(\frac{\alpha^k}{p'(\alpha)}\Bigr)X^{-(k+1)}.
-\]
-Here the final sum is exactly a trace because $p'(\alpha^{2^j})=p'(\alpha)^{2^j}$. We can therefore read $\operatorname{tr}(\alpha^k/d)$ from the coefficient of $X^{-(k+1)}$ in $1/p$. Directly from the sparse polynomial,
-\[
-\frac1{p(X)}=X^{-128}(1+u)^{-1}=X^{-128}\bigl(1+u+u^2+\cdots\bigr),
+This verifier runs inside a VM where every field multiplication is an instruction, so we specialize two parts of the reduction. Throughout, $\Phi$, $B$ and $T$ carry the dependence on $\rho$ that $\Phi_s$, $B_s$ and $T(s)$ carried on $s$.
+
+\paragraph{One challenge, no sumcheck of its own.} The generic reduction batches with an $\eq$ tensor over $\ell=\lceil\log_2e\rceil$ variables and proves the batched claim by its own sumcheck. We instead draw a single $\rho\leftarrow\E$ once the verifier holds the $\alpha_i$, and replace the weights $\eq(s,\bar w)$ by weights polynomial in $\rho$, fixed in \eqref{eq:phi-choice}. The batched claim $\sum_yB(y)P_\pkd(y)=T$ then has exactly the shape the PCS opening already proves: a transparent $\E$-valued weight against the committed $K$-valued $P_\pkd$. We fold it into that opening, so the reduction adds no sumcheck and no second opening.
+
+\paragraph{Fix the map, not the weights.} The weights and the map determine each other, $\lambda_w=\Phi(b^E_w)$, so one may fix either. Fix the map. The in-VM verifier never evaluates a single $\lambda_w$; it applies $\Phi$, at the two places below, and each application costs one squaring and one multiplication per nonzero coefficient. The $\lambda_w$ are needed only outside the VM, where they are built once, off the hot path. The cost of the reduction is therefore the size of the support of $\Phi$, and we take that support to be $64$:
+\begin{equation}
+\Phi(a)=\sum_{k<64}\rho^{\,k}a^{2^k},
 \qquad
-u=X^{-121}+X^{-126}+X^{-127}+X^{-128}.
-\]
-The contribution $X^{-128}u^2$ starts at $X^{-370}$, corresponding to $k=369$, so only $1$ and $u$ contribute for $k\le255$:
+\lambda_w=\Phi\bigl(b^E_w\bigr).
+\label{eq:phi-choice}
+\end{equation}
+Its coefficients are the successive powers of $\rho$: $63$ multiplications and no table. The obvious choice $\lambda_w=\rho^w$ makes $\Phi$ dense instead, with all $192$ coefficients nonzero, and the verifier must then recover them by the $O(e^2)$ solve of the previous section. The support cannot be made smaller: $64$ terms is the minimum for any sound $\Phi$, as shown below.
+
+\paragraph{Where $\Phi$ is applied.} First, the target $T$. The verifier has the $\alpha_i$ and never needs to form the $t_w$:
 \[
-\operatorname{tr}\bigl(\alpha^k/d\bigr)=1
-\iff
-k\in\{127\}\cup\bigl(127+\{121,126,127,128\}\bigr)=\{127,248,253,254,255\}.
+T=\sum_{w<192}\lambda_w t_w
+=\sum_{w<192}\Phi\bigl(b^E_w\bigr)\sum_{i<64}\alpha_{w,i}\,x^i
+=\sum_{i<64}x^i\,\Phi\Bigl(\sum_{w<192}\alpha_{w,i}b^E_w\Bigr)
+=\sum_{i<64}x^i\,\Phi(\alpha_i),
 \]
-So $\alpha^{127-i}/d$ is \emph{almost} $\delta_i$: it satisfies the coordinate-extraction relation at every $j\le i$, where $127-i+j\le127$, and fails only at the $j$ with $127-i+j\in\{248,253,254\}$, i.e.\ $j-i\in\{121,126,127\}$ ($j-i=128$ being out of range). Each failing $j$ is $\ge121$, so $m:=127-j$ satisfies $m\le6$; for such $m$ and any $j'<128$ we have $m+j'<248$, hence $\operatorname{tr}(\alpha^{m+j'}/d)=[\,m+j'=127\,]$. Adding $d^{-1}\alpha^{m}$ therefore flips the relation at $j'=j$ and leaves every other $j'$ untouched. Summing one such monomial per failing $j$ repairs all of them at once:
+using $\alpha_{w,i}\in\F_2$ and the $\F_2$-linearity of $\Phi$. The VM computes the right-hand side: $64$ applications of $\Phi$, and no transpose of the bit matrix $(\alpha_{w,i})$.
+
+Second, the weight at the PCS query point $r'$, which is the boxed formula of the previous section with the coefficients of \eqref{eq:phi-choice}:
 \[
-\boxed{\ \delta_i=d^{-1}\bigl(\alpha^{127-i}+\varepsilon_i\bigr),\ }
+B(r')=\sum_{k<64}\rho^{\,k}\prod_{j=1}^{m}\bigl(1+r_j^{2^k}+r'_j\bigr).
+\]
+
+\paragraph{Soundness of the batching.} Suppose the transmitted $\alpha_i$ are wrong. Under the bijection $\F_{2^e}^f\to\F_{2^f}^e$ of Soundness item~1, their error maps to a nonzero $\Delta\in K^{192}$, fixed before $\rho$ is drawn. The check passes only if
+\[
+\sum_{w<192}\lambda_w\Delta_w=\sum_{k<64}\rho^{\,k}W_k=0,
 \qquad
-\begin{aligned}
-&\varepsilon_0=\alpha^6+\alpha+1, &&\varepsilon_1=\alpha^5+1,\\
-&\varepsilon_i=\alpha^{6-i}\quad(2\le i\le6), &&\varepsilon_i=0\quad(i\ge7).
-\end{aligned}
+W_k:=\sum_{w<192}\bigl(b^E_w\bigr)^{2^k}\Delta_w.
 \]
-The corrections die out at $i=6$ because $j=i+121<128$ forces $i\le6$ (and $j=i+126$, $j=i+127$ force $i\le1$ and $i=0$, which is why $\varepsilon_0,\varepsilon_1$ carry extra monomials).
-
-\paragraph{Step 3: factoring the $128$-term sum.} Write the index in bits, $i=\sum_{t<7}2^ti_t$. Then $127-i=\sum_{t<7}2^t(1-i_t)$, and $\lambda_i=\prod_{t<7}(1+s_t+i_t)$ by Fact~1. Both are products over $t$, so the sum over $i$ splits coordinatewise:
+Write $w=64\nu+i$ and $u_k:=\vartheta^{2^k}$, so that $\bigl(b^E_w\bigr)^{2^k}=x^{i2^k}u_k^{\nu}$. Collecting the factors that lie in $K$,
 \[
-\sum_{i<128}\lambda_i\,\alpha^{(127-i)2^k}
-=\prod_{t=0}^{6}\Bigl(s_t+(1+s_t)\,\alpha^{2^{k+t}}\Bigr)
-=\alpha^{127\cdot2^k}\prod_{t=0}^{6}\Bigl(1+s_t+s_t\,\alpha^{-2^{k+t}}\Bigr),
-\]
-the last step by $\alpha^{127\cdot2^k}=\prod_{t<7}\alpha^{2^{k+t}}$. Feeding Step 2 into Step 1 and applying this to the $\alpha^{127-i}$ part (the $\varepsilon_i$ part has only seven nonzero addends) gives
-\[
-\boxed{\ \
-c_k=d^{-2^k}\Bigl[\
-\alpha^{127\cdot2^k}\prod_{t=0}^{6}\bigl(1+s_t+s_t\,\alpha^{-2^{k+t}}\bigr)
-\ +\ \sum_{i=0}^{6}\lambda_i\,\varepsilon_i^{2^k}
-\ \Bigr].
-\ \ }
-\]
-
-\paragraph{Cost.} The $k=0$ level needs $15$ constants: $d^{-1}\alpha^{127}$, the seven $1+\alpha^{-2^t}$, and the seven $d^{-1}\varepsilon_i$. Squaring all $15$ advances level $k$ to level $k+1$, so a verifier running a fixed program can bake in every level; and the $7\cdot128$ factor constants take only $128$ distinct values, since $1+\alpha^{-2^{k+t}}$ depends on $k+t\bmod128$ alone. Each $c_k$ then costs $14$ multiplications for the product and $7$ for the correction, so the whole table costs $O(e\log e)$ instead of $O(e^2)$. The seven weights $\lambda_i$, $i\le6$, share the four factors $1+s_t$, $t\ge3$, so they cost $O(\log e)$ as well.
-
-\section*{Recursion specialization: choosing the map instead of the weights}
-
-The weights and the coefficients determine each other: $\lambda_w=B(b^E_w)$ and $c_k=\sum_w\lambda_w\delta_w^{2^k}$. The previous section fixes the weights first and works out the coefficients. For a \emph{recursive} verifier that is the wrong direction. Its cost is linear in the number of nonzero coefficients, since applying $B$ at one point costs one multiplication and one squaring per term, while the weights are only computed by the native prover and verifier, once, off the hot path. So fix the coefficients first.
-
-The recursion specialization uses $f=64$ and $e=192$ with
-\[
-K=\F_{2^{64}}=\F_2[X]/\bigl(q(X)\bigr),\qquad q(X)=X^{64}+X^4+X^3+X+1,
+W_k=\sum_{\nu<3}u_k^{\nu}R_{\nu,k},
 \qquad
-\E=\F_{2^{192}}=K[Y]/\bigl(Y^3+Y+1\bigr),
+R_{\nu,k}:=\sum_{i<64}x^{i2^k}\Delta_{64\nu+i}\ \in K.
 \]
-and the product basis $b^E_{64m+i}=x^iy^m$, where $x,y$ are the residues of $X,Y$. Take the $64$-term map
-\[
-B(v)=\sum_{l<64}\rho^{\,l}v^{2^l},\qquad \lambda_w=B(b^E_w),
-\]
-for a single $\rho\in\E$. This turns the reduction into one weighted PCS claim; no separate ring-switch sumcheck is required.
-
-\paragraph{Soundness.} Let $\delta\in K^{192}$ be the prover's error on the transposed coordinates, fixed before $\rho$ is sampled. The check misses it exactly when
-\[
-\sum_w \lambda_w\delta_w=\sum_{l<64}\rho^{\,l}W_l=0,
-\qquad W_l=\sum_w (b^E_w)^{2^l}\delta_w .
-\]
-Writing $w=64m+i$ and using $x\in K$,
-\[
-W_l=\sum_{m<3}\bigl(y^{2^l}\bigr)^m R_{m,l},
-\qquad R_{m,l}=\sum_{i<64}x^{i2^l}\delta_{64m+i}\in K .
-\]
-Frobenius is a bijection fixing $K$ setwise and $y$ generates $\E$ over $K$, so $y^{2^l}\notin K$; as $[\E:K]=3$ is prime, $\{1,y^{2^l},y^{2\cdot2^l}\}$ is a $K$-basis of $\E$. Hence $W_l=0$ forces $R_{0,l}=R_{1,l}=R_{2,l}=0$. The matrix $\bigl(x^{i2^l}\bigr)_{l,i<64}$ is the Moore matrix of $K$'s power basis, whose entries are $\F_2$-independent, so it is invertible over $K$, and $R_{m,l}=0$ for all $l$ forces $\delta=0$. So some $W_l\neq0$, the sum above is a nonzero polynomial of degree below $64$ in $\rho$, and the error survives with probability at most $63/2^{192}$: better than the $191/2^{192}$ the weights $\rho^w$ give.
-
-\paragraph{Why $64$ terms, and not fewer.} For a support $S$, the conditions $\{W_l=0:l\in S\}$ are $|S|$ equations over $\E$, that is $3|S|$ over $K$, in $192$ $K$-unknowns $\delta_w$. If $3|S|<192$ a nonzero $\delta$ lies in the kernel for \emph{every} choice of coefficients, and the prover shifts the claim by it and passes with probability one. So $|S|\geq64$ is necessary, and $|S|=64$ achieves it.
-
-\paragraph{Cost.} The coefficients are a running power of $\rho$: $63$ multiplications, no baked constants and no closed form, so the machinery of the previous section is not needed here. Applying $B$ at one point costs $63$ squarings and $64$ multiplications, a third of what the weights $\rho^w$ would force, because those induce a generically full $192$-term map. In the recursion verifier this is the largest single item, and the change removed $12\%$ of its cycles. Writing $B$ as a composition of six two-term maps $v\mapsto v+f_tv^{2^{2^t}}$ keeps the same support with $63$ squarings and $6$ multiplications, at the price of six independent challenges $f_t$ instead of one $\rho$.
-
-\section*{Remarks}
-
+Two observations finish it.
 \begin{enumerate}
-\item \emph{Small $\F_{2^f}$.} If $2^f$ is too small for the error $(2m+\ell)/2^f$, sample the batching point $s$ (and run the sumcheck) in an extension $L\supseteq\F_{2^f}$: the error becomes $(2m+\ell)/|L|$, and $P_\pkd$ is just opened at $r'\in L^m$.
-\item \emph{Other characteristics.} The coordinate-batching reduction extends to other base fields, but the binary closed forms above use characteristic two essentially: squaring is the relevant Frobenius map and $\eq(x,y)$ simplifies to $\prod_j(1+x_j+y_j)$. Other characteristics require their corresponding linearized maps and equality polynomial.
+\item $u_k\notin K$. The elements of $K$ are the fixed points of $a\mapsto a^{2^{64}}$, so $u_k\in K$ would give $\vartheta^{2^{k+64}}=\vartheta^{2^k}$, and applying the inverse Frobenius $k$ times gives $\vartheta^{2^{64}}=\vartheta$, that is $\vartheta\in K$, contradicting $[\E:K]=3$. As that degree is prime, any element outside $K$ generates $\E$ over $K$, so $\{1,u_k,u_k^2\}$ is a $K$-basis of $\E$ and $W_k=0$ forces $R_{0,k}=R_{1,k}=R_{2,k}=0$.
+\item For each $\nu$, the coefficient matrix of $\{R_{\nu,k}=0:k<64\}$ is $\bigl(x^{i2^k}\bigr)_{k,i<64}$, the Moore matrix of $x^0,\dots,x^{63}$. A Moore matrix is invertible exactly when the elements it is built from are $\F_2$-independent, and $x^0,\dots,x^{63}$ are an $\F_2$-basis of $K$, so the only solution is $\Delta_{64\nu+i}=0$ for all $i$.
 \end{enumerate}
+So $\Delta\neq0$ forces $W_k\neq0$ for some $k$, making $\sum_k\rho^kW_k$ a nonzero polynomial in $\rho$ of degree below $64$. By Schwartz--Zippel the error survives with probability at most $63/2^{192}$. The dense weights $\rho^w$ give $191/2^{192}$, since there the quantity checked is $\sum_w\rho^w\Delta_w$ directly, so the sparse map also has the smaller error. Both bounds explain why $\rho$ is drawn from $\E$: over $K$ the first would read $63/2^{64}$, about $58$ bits.
+
+\paragraph{$64$ terms are necessary.} Let $S\subseteq\{0,\dots,191\}$ be any support, so that $\Phi(a)=\sum_{k\in S}c_ka^{2^k}$. The quantity checked above is $\sum_{k\in S}c_kW_k$, so a $\Delta\neq0$ with $W_k=0$ for all $k\in S$ passes for \emph{every} choice of coefficients, with probability $1$. The map $\Delta\mapsto(W_k)_{k\in S}$ is $K$-linear and sends $K^{192}$ into $\E^{|S|}=K^{3|S|}$, so if $|S|<64$ its kernel is nonzero and such a $\Delta$ exists. Hence $|S|\ge64$, and \eqref{eq:phi-choice} attains it.
+
+\paragraph{Cost.} Applying $\Phi$ once costs $63$ squarings and $64$ multiplications, a third of the cost of the dense map, and $B(r')$ costs a further $64$ products of $m$ factors. Replacing the dense map by \eqref{eq:phi-choice} removed $11.9\%$ of the recursion verifier's VM cycles, and deleted the coefficient construction and its baked constants.
 
 \section*{Credits}
 
