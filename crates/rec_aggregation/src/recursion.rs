@@ -1236,13 +1236,36 @@ fn build_batch(inner: &[(usize, usize)], log_inv_rates: &[usize], outer_log_inv_
     }
 }
 
+struct OpeningShape {
+    n_levels: usize,
+    yr_level: usize,
+    yr_log_len: usize,
+    folds: Vec<usize>,
+    log_message_columns: Vec<usize>,
+    queries: Vec<usize>,
+    tree_depths: Vec<usize>,
+    positions_per_squeeze: Vec<usize>,
+    squeezes: Vec<usize>,
+    interleaving: Vec<usize>,
+    query_grinding_bits: Vec<usize>,
+    fold_grinding_bits: Vec<usize>,
+    row_offsets: Vec<usize>,
+    path_offsets: Vec<usize>,
+    positions_offsets: Vec<usize>,
+    vanish_offsets: Vec<usize>,
+    fold_offsets: Vec<usize>,
+    residual_fold_offsets: Vec<usize>,
+    vanish_values: Vec<F192>,
+    vanish_inverses: Vec<F192>,
+    ood_samples: Vec<usize>,
+}
+
 /// The recursion program's placeholder map (the SHAPE-INDEPENDENT constants the
 /// generic guest is compiled from), built from the inner program's STRUCTURE and
 /// bytecode SIZE alone — no proof. Dummy layout sizes are fine: `rep` reads only the
 /// size-independent block/coord structure and `kbc = log2(bytecode)`, so the guest
 /// can be compiled BEFORE any inner proof exists. Because the map is a function of
 /// the inner bytecode size alone, one compiled guest serves every shape.
-#[allow(clippy::type_complexity)]
 fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     // Any valid sizes drive the layout — rep depends only on structure + kbc.
     let l = lean_vm::cpu::layout(
@@ -1599,7 +1622,6 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         };
         let c_rowoff = psum(&|lv| cq[lv] * cni[lv] * if lv == 0 { 1 } else { 3 });
         let c_pathoff = psum(&|lv| cq[lv] * cd[lv] * 2);
-        let c_sbitsoff = psum(&|lv| cs[lv] * 192);
         let c_qpoff = psum(&|lv| cs[lv] * cp[lv]);
         let c_svkoff = psum(&|lv| cl[lv] + 1);
         let c_foldbase = psum(&|lv| ck[lv]);
@@ -1616,10 +1638,29 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
                 });
             }
         }
-        (
-            cn, cr, cyr, ck, cl, cq, cd, cp, cs, cni, cqb, cfb, c_rowoff, c_pathoff, c_sbitsoff, c_qpoff, c_svkoff,
-            c_foldbase, c_risstart, c_svk, c_ivk,
-        )
+        OpeningShape {
+            n_levels: cn,
+            yr_level: cr,
+            yr_log_len: cyr,
+            folds: ck,
+            log_message_columns: cl,
+            queries: cq,
+            tree_depths: cd,
+            positions_per_squeeze: cp,
+            squeezes: cs,
+            interleaving: cni,
+            query_grinding_bits: cqb,
+            fold_grinding_bits: cfb,
+            row_offsets: c_rowoff,
+            path_offsets: c_pathoff,
+            positions_offsets: c_qpoff,
+            vanish_offsets: c_svkoff,
+            fold_offsets: c_foldbase,
+            residual_fold_offsets: c_risstart,
+            vanish_values: c_svk,
+            vanish_inverses: c_ivk,
+            ood_samples: vc.ood_samples,
+        }
     };
     let (minm, maxm) = (MU_MIN, MU_MAX);
     let rates = pcs::ligerito::MIN_LOG_INV_RATE..=pcs::ligerito::MAX_LOG_INV_RATE;
@@ -1627,20 +1668,10 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         .clone()
         .flat_map(|r| (minm..=maxm).map(move |m| oshape(m, r)))
         .collect();
-    let cand_oods: Vec<Vec<usize>> = rates
-        .flat_map(|r| (minm..=maxm).map(move |m| (m, r)))
-        .map(|(m, r)| {
-            pcs::ligerito::LigeritoSecurityConfig::derive_config_with_log_inv_rate(m + pcs::LOG_PACKING, r)
-                .and_then(|s| s.to_prover_verifier_configs())
-                .expect("candidate ligerito config")
-                .1
-                .ood_samples
-        })
-        .collect();
-    let maxlev = cands.iter().map(|c| c.0).max().unwrap();
-    let maxfolds = cands.iter().map(|c| c.11.len()).max().unwrap();
-    let maxsvk = cands.iter().map(|c| c.19.len()).max().unwrap();
-    let maxood = cand_oods.iter().flatten().copied().max().unwrap_or(0);
+    let maxlev = cands.iter().map(|c| c.n_levels).max().unwrap();
+    let maxfolds = cands.iter().map(|c| c.fold_grinding_bits.len()).max().unwrap();
+    let maxsvk = cands.iter().map(|c| c.vanish_values.len()).max().unwrap();
+    let maxood = cands.iter().flat_map(|c| &c.ood_samples).copied().max().unwrap_or(0);
     ps("LIG_MAX_LEVELS", maxlev.to_string());
     ps("LIG_MAX_TOTAL_FOLDS", maxfolds.to_string());
     ps("LIG_MAX_VANISH_LEN", maxsvk.to_string());
@@ -1655,80 +1686,40 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         "LIG_LOG_MSG_COLS_CAP",
         cands
             .iter()
-            .map(|c| *c.4.iter().max().unwrap())
+            .map(|c| *c.log_message_columns.iter().max().unwrap())
             .max()
             .unwrap()
             .to_string(),
     );
-    ps("YR_LOG_CAP", cands.iter().map(|c| c.2).max().unwrap().to_string());
+    ps(
+        "YR_LOG_CAP",
+        cands.iter().map(|c| c.yr_log_len).max().unwrap().to_string(),
+    );
     {
         let pad = |v: &[usize], stride: usize| -> Vec<usize> {
             let mut o = v.to_vec();
             o.resize(stride, 0);
             o
         };
-        let flat = |f: &dyn Fn(
-            &(
-                usize,
-                usize,
-                usize,
-                Vec<usize>,
-                Vec<usize>,
-                Vec<usize>,
-                Vec<usize>,
-                Vec<usize>,
-                Vec<usize>,
-                Vec<usize>,
-                Vec<usize>,
-                Vec<usize>,
-                Vec<usize>,
-                Vec<usize>,
-                Vec<usize>,
-                Vec<usize>,
-                Vec<usize>,
-                Vec<usize>,
-                Vec<usize>,
-                Vec<F192>,
-                Vec<F192>,
-            ),
-        ) -> Vec<usize>,
-                    stride: usize|
-         -> Vec<usize> { cands.iter().flat_map(|c| pad(&f(c), stride)).collect() };
-        let scal = |f: &dyn Fn(
-            &(
-                usize,
-                usize,
-                usize,
-                Vec<usize>,
-                Vec<usize>,
-                Vec<usize>,
-                Vec<usize>,
-                Vec<usize>,
-                Vec<usize>,
-                Vec<usize>,
-                Vec<usize>,
-                Vec<usize>,
-                Vec<usize>,
-                Vec<usize>,
-                Vec<usize>,
-                Vec<usize>,
-                Vec<usize>,
-                Vec<usize>,
-                Vec<usize>,
-                Vec<F192>,
-                Vec<F192>,
-            ),
-        ) -> usize|
-         -> Vec<usize> { cands.iter().map(f).collect() };
-        ps("LIG_N_LEVELS", ints(&scal(&|c| c.0)));
-        ps("LIG_YR_LEVEL", ints(&scal(&|c| c.1)));
-        ps("LIG_YR_LOG_LEN", ints(&scal(&|c| c.2)));
-        ps("LIG_YR_LEN", ints(&scal(&|c| 1usize << c.2)));
-        ps("LIG_TOTAL_FOLDS", ints(&scal(&|c| c.3.iter().sum())));
-        ps("LIG_MAX_QUERIES", ints(&scal(&|c| *c.5.iter().max().unwrap())));
-        ps("LIG_MAX_SQUEEZES", ints(&scal(&|c| *c.8.iter().max().unwrap())));
-        ps("LIG_MAX_LOG_MSG_COLS", ints(&scal(&|c| *c.4.iter().max().unwrap())));
-        ps("LIG_MAX_INTERLEAVE", ints(&scal(&|c| *c.9.iter().max().unwrap())));
+        let flat = |f: &dyn Fn(&OpeningShape) -> Vec<usize>, stride: usize| -> Vec<usize> {
+            cands.iter().flat_map(|c| pad(&f(c), stride)).collect()
+        };
+        let scal = |f: &dyn Fn(&OpeningShape) -> usize| -> Vec<usize> { cands.iter().map(f).collect() };
+        ps("LIG_N_LEVELS", ints(&scal(&|c| c.n_levels)));
+        ps("LIG_YR_LEVEL", ints(&scal(&|c| c.yr_level)));
+        ps("LIG_YR_LOG_LEN", ints(&scal(&|c| c.yr_log_len)));
+        ps("LIG_YR_LEN", ints(&scal(&|c| 1usize << c.yr_log_len)));
+        ps("LIG_TOTAL_FOLDS", ints(&scal(&|c| c.folds.iter().sum())));
+        ps("LIG_MAX_QUERIES", ints(&scal(&|c| *c.queries.iter().max().unwrap())));
+        ps("LIG_MAX_SQUEEZES", ints(&scal(&|c| *c.squeezes.iter().max().unwrap())));
+        ps(
+            "LIG_MAX_LOG_MSG_COLS",
+            ints(&scal(&|c| *c.log_message_columns.iter().max().unwrap())),
+        );
+        ps(
+            "LIG_MAX_INTERLEAVE",
+            ints(&scal(&|c| *c.interleaving.iter().max().unwrap())),
+        );
         // StackBuf cap for the packed leaf row: level 0 packs 2 lanes per cell,
         // deeper levels pack 3 limbs per word into 3n/2 cells.
         let packed_cells = |c: &Vec<usize>| -> usize {
@@ -1740,45 +1731,68 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         };
         ps(
             "LIG_PACKED_ROW_CAP",
-            cands.iter().map(|c| packed_cells(&c.9)).max().unwrap().to_string(),
+            cands
+                .iter()
+                .map(|c| packed_cells(&c.interleaving))
+                .max()
+                .unwrap()
+                .to_string(),
         );
         ps(
             "LIG_POSITIONS_LEN",
-            ints(&scal(&|c| (0..c.0).map(|lv| c.8[lv] * c.7[lv]).sum())),
+            ints(&scal(&|c| {
+                (0..c.n_levels)
+                    .map(|level| c.squeezes[level] * c.positions_per_squeeze[level])
+                    .sum()
+            })),
         );
         ps(
             "LIG_SUMCHECK_LEN",
             ints(
                 &cands
                     .iter()
-                    .zip(&cand_oods)
-                    .map(|(c, ood)| 2 * (c.3.iter().sum::<usize>() + c.0 + ood.iter().sum::<usize>()))
+                    .map(|c| 2 * (c.folds.iter().sum::<usize>() + c.n_levels + c.ood_samples.iter().sum::<usize>()))
                     .collect::<Vec<_>>(),
             ),
         );
         ps(
             "LIG_ROWS_LEN",
             ints(&scal(&|c| {
-                (0..c.0).map(|lv| c.5[lv] * c.9[lv] * if lv == 0 { 1 } else { 3 }).sum()
+                (0..c.n_levels)
+                    .map(|level| c.queries[level] * c.interleaving[level] * if level == 0 { 1 } else { 3 })
+                    .sum()
             })),
         );
         ps(
             "LIG_PATHS_LEN",
-            ints(&scal(&|c| (0..c.0).map(|lv| c.5[lv] * c.6[lv] * 2).sum())),
+            ints(&scal(&|c| {
+                (0..c.n_levels)
+                    .map(|level| c.queries[level] * c.tree_depths[level] * 2)
+                    .sum()
+            })),
         );
-        ps("LIG_QUERY_GRIND_BITS", ints(&flat(&|c| c.10.clone(), maxlev)));
+        ps(
+            "LIG_QUERY_GRIND_BITS",
+            ints(&flat(&|c| c.query_grinding_bits.clone(), maxlev)),
+        );
         ps(
             "LIG_OOD_SAMPLES",
-            ints(&cand_oods.iter().flat_map(|v| pad(v, maxlev)).collect::<Vec<_>>()),
+            ints(
+                &cands
+                    .iter()
+                    .flat_map(|shape| pad(&shape.ood_samples, maxlev))
+                    .collect::<Vec<_>>(),
+            ),
         );
-        ps("LIG_QUERIES", ints(&flat(&|c| c.5.clone(), maxlev)));
-        ps("LIG_FOLDS", ints(&flat(&|c| c.3.clone(), maxlev)));
-        ps("LIG_INTERLEAVE", ints(&flat(&|c| c.9.clone(), maxlev)));
+        ps("LIG_QUERIES", ints(&flat(&|c| c.queries.clone(), maxlev)));
+        ps("LIG_FOLDS", ints(&flat(&|c| c.folds.clone(), maxlev)));
+        ps("LIG_INTERLEAVE", ints(&flat(&|c| c.interleaving.clone(), maxlev)));
         ps(
             "LIG_LEAF_PAIRS",
             ints(&flat(
                 &|c| {
-                    c.9.iter()
+                    c.interleaving
+                        .iter()
                         .enumerate()
                         .map(|(lv, &n)| if lv == 0 { n / 4 } else { 3 * n / 4 })
                         .collect()
@@ -1794,7 +1808,8 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
             "LIG_LEAF_BLOCKS",
             ints(&flat(
                 &|c| {
-                    c.9.iter()
+                    c.interleaving
+                        .iter()
                         .enumerate()
                         .map(|(lv, &n)| if lv == 0 { n / 8 } else { 3 * n / 8 })
                         .collect()
@@ -1802,29 +1817,52 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
                 maxlev,
             )),
         );
-        ps("LIG_TREE_DEPTH", ints(&flat(&|c| c.6.clone(), maxlev)));
-        ps("LIG_SQUEEZES", ints(&flat(&|c| c.8.clone(), maxlev)));
-        ps("LIG_POSITIONS_OFF", ints(&flat(&|c| c.15.clone(), maxlev)));
+        ps("LIG_TREE_DEPTH", ints(&flat(&|c| c.tree_depths.clone(), maxlev)));
+        ps("LIG_SQUEEZES", ints(&flat(&|c| c.squeezes.clone(), maxlev)));
+        ps(
+            "LIG_POSITIONS_OFF",
+            ints(&flat(&|c| c.positions_offsets.clone(), maxlev)),
+        );
         ps(
             "LIG_LOG_QUERIES",
-            ints(&flat(&|c| c.5.iter().map(|&q| log2_ceil(q)).collect(), maxlev)),
+            ints(&flat(
+                &|c| c.queries.iter().map(|&queries| log2_ceil(queries)).collect(),
+                maxlev,
+            )),
         );
-        ps("LIG_LOG_MSG_COLS", ints(&flat(&|c| c.4.clone(), maxlev)));
-        ps("LIG_RESIDUAL_FOLD_OFF", ints(&flat(&|c| c.18.clone(), maxlev)));
+        ps(
+            "LIG_LOG_MSG_COLS",
+            ints(&flat(&|c| c.log_message_columns.clone(), maxlev)),
+        );
+        ps(
+            "LIG_RESIDUAL_FOLD_OFF",
+            ints(&flat(&|c| c.residual_fold_offsets.clone(), maxlev)),
+        );
         ps(
             "LIG_RESIDUAL_PREFIX_LEN",
-            ints(&flat(&|c| c.4.iter().map(|&m2| m2 - c.2).collect(), maxlev)),
+            ints(&flat(
+                &|c| {
+                    c.log_message_columns
+                        .iter()
+                        .map(|&columns| columns - c.yr_log_len)
+                        .collect()
+                },
+                maxlev,
+            )),
         );
-        ps("LIG_FOLDS_OFF", ints(&flat(&|c| c.17.clone(), maxlev)));
-        ps("LIG_ROWS_OFF", ints(&flat(&|c| c.12.clone(), maxlev)));
-        ps("LIG_PATHS_OFF", ints(&flat(&|c| c.13.clone(), maxlev)));
-        ps("LIG_VANISH_OFF", ints(&flat(&|c| c.16.clone(), maxlev)));
-        ps("LIG_FOLD_GRIND_BITS", ints(&flat(&|c| c.11.clone(), maxfolds)));
+        ps("LIG_FOLDS_OFF", ints(&flat(&|c| c.fold_offsets.clone(), maxlev)));
+        ps("LIG_ROWS_OFF", ints(&flat(&|c| c.row_offsets.clone(), maxlev)));
+        ps("LIG_PATHS_OFF", ints(&flat(&|c| c.path_offsets.clone(), maxlev)));
+        ps("LIG_VANISH_OFF", ints(&flat(&|c| c.vanish_offsets.clone(), maxlev)));
+        ps(
+            "LIG_FOLD_GRIND_BITS",
+            ints(&flat(&|c| c.fold_grinding_bits.clone(), maxfolds)),
+        );
         let mut svk2 = Vec::new();
         let mut ivk2 = Vec::new();
         for c in &cands {
-            let mut s = c.19.clone();
-            let mut iv = c.20.clone();
+            let mut s = c.vanish_values.clone();
+            let mut iv = c.vanish_inverses.clone();
             s.resize(maxsvk, F192::ZERO);
             iv.resize(maxsvk, F192::ZERO);
             svk2.extend(s);

@@ -39,7 +39,7 @@ const FOLD_MAX: u128 = 1 << 16;
 
 /// A deferred stack-cell store: the cell is a copy of another cell, or a zero.
 /// Recorded instead of emitting the `MUL`/`SET`, and forwarded to the source at
-/// each use ([`FnLower::word_src`], [`FnLower::chunk_src`]) — so `BLAKE3`,
+/// each use ([`FnLower::word_src`]) — so `BLAKE3`,
 /// which addresses its four two-cell input chunks independently, reads them in
 /// place without assembling copies.
 #[derive(Clone, Copy)]
@@ -121,9 +121,6 @@ struct FnLower<'a> {
     alias: HashMap<Off, Alias>,
     /// A cached frame cell holding `0` (for forwarded zero words), set lazily.
     zero_off: Option<Off>,
-    /// A cached pair of CONSECUTIVE zero cells (a forwarded zero `BLAKE3`
-    /// chunk — e.g. a hash-chain padding half), set lazily.
-    zero2_off: Option<Off>,
     /// Hints queued to attach to the next emitted instruction.
     pending: Vec<Hint>,
     /// Active `@inline` expansion stack. Nested inline helpers are allowed,
@@ -205,26 +202,6 @@ impl FnLower<'_> {
             k: KVal::Const(F192::ZERO),
         });
         self.zero_off = Some(o);
-        o
-    }
-
-    /// Two CONSECUTIVE frame cells both holding `0`, set lazily once — the
-    /// source for a forwarded all-zero `BLAKE3` chunk (cells `base`, `base+1`).
-    // Retained for a possible return to two-cell chunk forwarding; a 128-bit
-    // chunk is now one cell, so `blake3_input` uses `word_src` directly.
-    #[allow(dead_code)]
-    fn zero_pair(&mut self) -> Off {
-        if let Some(o) = self.zero2_off {
-            return o;
-        }
-        let o = self.alloc_stack(2);
-        for k in 0..2 {
-            self.emit(LOp::Set {
-                o: o + k,
-                k: KVal::Const(F192::ZERO),
-            });
-        }
-        self.zero2_off = Some(o);
         o
     }
 
@@ -344,7 +321,6 @@ impl FnLower<'_> {
             self.fconsts.clone(),
             self.alias.clone(),
             self.zero_off,
-            self.zero2_off,
             self.blake3_iv,
         );
         f(self);
@@ -369,7 +345,6 @@ impl FnLower<'_> {
             self.fconsts,
             self.alias,
             self.zero_off,
-            self.zero2_off,
             self.blake3_iv,
         ) = saved;
     }
@@ -1287,32 +1262,6 @@ impl FnLower<'_> {
                     });
                 }
                 [t, t + 1]
-            }
-        }
-    }
-
-    /// The base of the two-cell chunk holding the values of stack cells `o`,
-    /// `o+1`, following recorded copy / zero aliases to their real source when
-    /// the pair stays CONTIGUOUS there (so `BLAKE3` reads the source cells
-    /// directly and the assembling copies are never emitted): a pair aliasing
-    /// adjacent cells `(s, s+1)` forwards to `s`, an all-zero pair to the
-    /// shared zero pair. A pair that does not forward as a unit (mixed or
-    /// non-adjacent sources) is materialized into its own cells instead.
-    #[allow(dead_code)]
-    fn chunk_src(&mut self, o: Off) -> Off {
-        match (self.alias.get(&o).copied(), self.alias.get(&(o + 1)).copied()) {
-            (None, None) => o,
-            (Some(Alias::Cell(s0)), Some(Alias::Cell(s1))) if s1 == s0 + 1 => self.chunk_src(s0),
-            (Some(Alias::Const(a)), Some(Alias::Const(b))) if a.is_zero() && b.is_zero() => self.zero_pair(),
-            _ => {
-                for k in [o, o + 1] {
-                    if self.alias.contains_key(&k) {
-                        let src = self.word_src(k);
-                        self.alias.remove(&k);
-                        self.copy(src, k);
-                    }
-                }
-                o
             }
         }
     }
@@ -2777,7 +2726,6 @@ pub(crate) fn lower_func(
         inline_stack_ret: None,
         alias: HashMap::new(),
         zero_off: None,
-        zero2_off: None,
         pending: Vec::new(),
         inline_calls: Vec::new(),
         blake3_iv: None,
