@@ -354,22 +354,41 @@ def decode_query_bits(v, positions_out, bit_ptrs_out, depth: Const):
     hint_decompose_bits(bits_ptr, v, FIELD_BITS)
     acc = 0
     for j in unroll(0, per_word):
-        position = 0
+        base_bit = j * depth  # this group's first coordinate of v
+        # A group that stays inside one 64-bit limb shifts as a WHOLE: the
+        # coordinate basis is the polynomial basis there, so
+        # COORD_BASIS[base_bit + b] == COORD_BASIS[base_bit] * COORD_BASIS[b]
+        # (exponents below 64, no reduction). The group's contribution to the
+        # reconstruction is then one multiply by the position value it already
+        # forms, instead of a constant multiply per bit. A group straddling the
+        # boundary splits into the two runs that do stay inside a limb.
+        cut = 64 - base_bit % 64  # bits of this group below the next limb
+        p_lo = 0
+        p_hi = 0
         for b in unroll(0, depth):
-            t = bits_ptr[GEN ** (j * depth + b)]
-            sq = t * t
-            assert sq == t
-            # position: the query index (integer). COORD_BASIS[b] = new(2^b, 0)
-            # for b < depth < 64, so position = new(Σ t_b 2^b, 0).
-            position += t * COORD_BASIS[b]
-            # reconstruction of v in the coordinate basis (bit j*depth+b).
-            acc += t * COORD_BASIS[j * depth + b]
-        positions_out[GEN ** j] = position
-        bit_ptrs_out[GEN ** j] = bits_ptr * GEN ** (j * depth)
+            t = bits_ptr[GEN ** (base_bit + b)]
+            # Booleanity as a write-once pin: the cell already holds t, so
+            # storing t*t back IS the assert t*t == t, one instruction shorter
+            # (a Cell deref unifies the two sides).
+            bits_ptr[GEN ** (base_bit + b)] = t * t
+            # `b // cut == 0` IS `b < cut`, in compile-time integer arithmetic
+            # (the DSL's `if` compares for equality only).
+            if b // cut == 0:
+                p_lo += t * COORD_BASIS[b]
+            else:
+                p_hi += t * COORD_BASIS[b - cut]
+        # position = p_lo + 2^cut * p_hi: multiplying by X^cut concatenates the
+        # two runs, since both degrees stay below 64.
+        if cut // depth == 0:  # `cut < depth`: this group straddles the boundary
+            positions_out[GEN ** j] = p_lo + COORD_BASIS[cut] * p_hi
+            acc += COORD_BASIS[base_bit] * p_lo + COORD_BASIS[base_bit + cut] * p_hi
+        else:
+            positions_out[GEN ** j] = p_lo
+            acc += COORD_BASIS[base_bit] * p_lo
+        bit_ptrs_out[GEN ** j] = bits_ptr * GEN ** base_bit
     for i in unroll(per_word * depth, FIELD_BITS):
         t = bits_ptr[GEN ** i]
-        sq = t * t
-        assert sq == t
+        bits_ptr[GEN ** i] = t * t
         acc += t * COORD_BASIS[i]
     assert acc == v
     return
