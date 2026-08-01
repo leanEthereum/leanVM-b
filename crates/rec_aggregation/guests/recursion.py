@@ -2144,7 +2144,6 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     # and comes from the same certified QPKD offset.
     inner_sum = inner_total
     for j in unroll(0, N_CLAIMS):
-        slot_point = HeapBuf(YR_LOG_CAP)
         overlap_ptr = rho * claim_low_len[GEN ** j]
         if CLAIM_POINT_BUF[j] == POINT_BUF_ZETA:
             overlap_ptr = zeta * claim_low_len[GEN ** j]
@@ -2161,10 +2160,15 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         mask_row = prefix_mask_table * claim_nover[GEN ** j] ** YR_LOG_CAP  # row nover: g^(nover * cap)
         claim_offset_bits = col_offset_bits * GEN ** ((SIZE_BITS + YR_LOG_CAP) * CLAIM_COMMITTED_COL[j])
         residual_offset_bits = claim_offset_bits * fold_cap_g
+        # The slot coordinates go straight into fold weights (frame cells, so the
+        # fold reads them as operands) instead of a heap point buffer.
+        slot_fold_w = StackBuf(2 * YR_LOG_CAP)
         for k in unroll(0, YR_LOG_CAP):
             mask_bit = mask_row[GEN ** k]
             slot_bit = residual_offset_bits[GEN ** k]
-            slot_point[GEN ** k] = mask_bit * overlap_ptr[GEN ** k] + (1 + mask_bit) * slot_bit
+            slot_coord = mask_bit * overlap_ptr[GEN ** k] + (1 + mask_bit) * slot_bit
+            slot_fold_w[2 * k] = 1 + slot_coord
+            slot_fold_w[2 * k + 1] = slot_coord
         # zero-pin coords beyond final_msg's log-length (no over-cap weight): the
         # pointers start at yr_log_n. The zero asserts double as the
         # nover <= yr_log_n pin: a larger nover selects a row whose prefix
@@ -2176,26 +2180,22 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         for xk in mul_range(1, yr_pad_g):
             assert hi_mask[xk] == 0
             assert hi_slot[xk] == 0
-        slot_eq = HeapBuf(2 ** (YR_LOG_CAP + 1) - 2)
-        eqtree(slot_point, slot_eq, YR_LOG_CAP)
-        final_msg_dot = 0
-        for y in unroll(0, 2 ** YR_LOG_CAP):
-            final_msg_dot += final_msg[GEN ** y] * slot_eq[GEN ** (2 ** YR_LOG_CAP - 2 + y)]
+        # The MLE at slot_point, by successive folding rather than by building the
+        # eq tensor and dotting it: same multilinear value (each coordinate
+        # contributes the pair (1 + p_k, p_k) either way), about half the work,
+        # and no 2^(cap+1) tensor buffer per claim.
+        final_msg_dot = fold_final_msg(final_msg, slot_fold_w, 0, YR_LOG_CAP)
         inner_sum += claim_weights[GEN ** j] * final_msg_dot
-    rs_slot_point = HeapBuf(YR_LOG_CAP)
     rs_yslot_bits = qpkd_offset_bits * fold_cap_g
+    rs_fold_w = StackBuf(2 * YR_LOG_CAP)
     for k in unroll(0, YR_LOG_CAP):
         yb = rs_yslot_bits[GEN ** k]
-        rs_slot_point[GEN ** k] = yb
+        rs_fold_w[2 * k] = 1 + yb
+        rs_fold_w[2 * k + 1] = yb
     rs_hi = rs_yslot_bits * yr_log_n_g
     for xk in mul_range(1, yr_pad_g):
         assert rs_hi[xk] == 0  # zero-pin coords beyond final_msg's log-length
-    rs_slot_eq = HeapBuf(2 ** (YR_LOG_CAP + 1) - 2)
-    eqtree(rs_slot_point, rs_slot_eq, YR_LOG_CAP)
-    rs_msg_dot = 0
-    for y in unroll(0, 2 ** YR_LOG_CAP):
-        rs_msg_dot += final_msg[GEN ** y] * rs_slot_eq[GEN ** (2 ** YR_LOG_CAP - 2 + y)]
-    inner_sum += rs_weight * rs_msg_dot
+    inner_sum += rs_weight * fold_final_msg(final_msg, rs_fold_w, 0, YR_LOG_CAP)
     assert inner_sum == sumcheck_target
 
 
