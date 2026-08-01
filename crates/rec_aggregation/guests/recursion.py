@@ -571,6 +571,25 @@ def sumcheck_round4(state_0, state_1, msg_cursor, claim):
 
 
 @inline
+def fold_monomial_msg(msg, weights, log_len: Const):
+    # `fold_final_msg` with the low weight fixed to 1 (the novel-basis residual
+    # weight pair is (1, w), not (1 + w, w)), so every level halves its
+    # multiplies: `lo + w*hi` instead of `w_lo*lo + w_hi*hi`.
+    l0 = StackBuf(2 ** YR_LOG_CAP)
+    for t in unroll(0, 2 ** log_len // 2):
+        l0[t] = msg[GEN ** (2 * t)] + weights[0] * msg[GEN ** (2 * t + 1)]
+    cursor = l0
+    n = 2 ** log_len // 2
+    for j in unroll(1, log_len):
+        nxt = StackBuf(2 ** YR_LOG_CAP)
+        for t in unroll(0, n // 2):
+            nxt[t] = cursor[2 * t] + weights[j] * cursor[2 * t + 1]
+        cursor = nxt
+        n = n // 2
+    return cursor[0]
+
+
+@inline
 def fold_final_msg(msg, weights, wbase: Const, log_len: Const):
     # Weighted fold of the final_msg multilinear over 2^log_len values (log_len is the
     # candidate's yr_log_n; the frame buffers use the global max size).
@@ -929,11 +948,10 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
             for t in unroll(0, LIG_RESIDUAL_PREFIX_LEN[m_idx * LIG_MAX_LEVELS + lvl]):
                 fold_c = fold_challenges[GEN ** (LIG_RESIDUAL_FOLD_OFF[m_idx * LIG_MAX_LEVELS + lvl] + t)]
                 prefix_eq *= (1 + fold_c * (1 + basis_w[t]))
-            fold_w = StackBuf(2 * YR_LOG_CAP)
+            fold_w = StackBuf(YR_LOG_CAP)
             for j in unroll(0, LIG_YR_LOG_LEN[m_idx]):
-                fold_w[2 * j] = GEN ** 0
-                fold_w[2 * j + 1] = basis_w[LIG_RESIDUAL_PREFIX_LEN[m_idx * LIG_MAX_LEVELS + lvl] + j]
-            yr_eval = fold_final_msg(final_msg, fold_w, 0, LIG_YR_LOG_LEN[m_idx])
+                fold_w[j] = basis_w[LIG_RESIDUAL_PREFIX_LEN[m_idx * LIG_MAX_LEVELS + lvl] + j]
+            yr_eval = fold_monomial_msg(final_msg, fold_w, LIG_YR_LOG_LEN[m_idx])
             residual_chain[xr * GEN] = residual_chain[xr] + alpha_weights[GEN ** (lvl * LIG_MAX_QUERIES[m_idx]) * xr] * prefix_eq * yr_eval
         inner_chain[GEN ** (lvl + 1)] = inner_chain[GEN ** lvl] + level_betas[GEN ** lvl] * residual_chain[GEN ** LIG_QUERIES[m_idx * LIG_MAX_LEVELS + lvl]]  # accumulate beta_lvl * (per-level residual sum) into the grand residual
 
