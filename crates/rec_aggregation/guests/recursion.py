@@ -420,6 +420,25 @@ def sumcheck_round3(state_0, state_1, msg_cursor, claim, eq_acc, prev_challenge)
     return fs[0], fs[1], msg_cursor, new_claim, new_eq, round_challenge
 
 
+@inline
+def quartic_eval_from_eq(claim, eq_point, difference, c2, c3, c4, challenge):
+    c0 = claim + eq_point * difference
+    c1 = difference + c2 + c3 + c4
+    return c0 + challenge * (c1 + challenge * (c2 + challenge * (c3 + challenge * c4)))
+
+
+def sumcheck_round5(state_0, state_1, msg_cursor, claim, prev_challenge):
+    fs = [state_0, state_1]
+    fs, difference, msg_cursor = fs_next(fs, msg_cursor)
+    fs, c2, msg_cursor = fs_next(fs, msg_cursor)
+    fs, c3, msg_cursor = fs_next(fs, msg_cursor)
+    fs, c4, msg_cursor = fs_next(fs, msg_cursor)
+    fs = squeeze(fs)
+    round_challenge = fs[0]
+    new_claim = quartic_eval_from_eq(claim, prev_challenge, difference, c2, c3, c4, round_challenge)
+    return fs[0], fs[1], msg_cursor, new_claim, round_challenge
+
+
 def sumcheck_round4(state_0, state_1, msg_cursor, claim):
     # One PLAIN sumcheck round. The prover sends the round polynomial itself at
     # {0, 1, g, g^2}, so the verifier does only the two textbook steps: check
@@ -885,13 +904,10 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
 
     # ---- ONE GKR grand product: push, pull, and count RLC-batched ----
     # Push and pull have equal depth (matched blocks) and the count tree is
-    # PADDED with identity leaves up to it (product unchanged), so a single
-    # sumcheck serves all three trees: the prover combines their round
-    # messages with weights 1, λ, λ². Each layer binds the six tail
-    # evaluations, checks the combined product identity, samples the line
-    # challenge, then a FRESH λ — pinning the individual values inside the
-    # bound combination (the last layer's are pinned by the decompose
-    # identities). All three trees reduce to claims at ONE shared point zeta.
+    # padded with identity leaves up to it (product unchanged), so a single
+    # sumcheck serves all three trees. Radix four contracts two binary levels
+    # per layer; after checking the combined product identity, a fresh λ pins
+    # the individual values. All three trees reduce to one shared point zeta.
     # State threads through write-once heap chains: layer state indexed by the
     # layer cursor, round state by a position pointer advancing per round.
     gkr_roots = StackBuf(N_GKR_SIDES)
@@ -910,7 +926,6 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     gkr_round_fs1 = HeapBuf(GKR_ROUNDS_CAP)
     gkr_round_cursor = HeapBuf(GKR_ROUNDS_CAP)
     gkr_round_claim = HeapBuf(GKR_ROUNDS_CAP)
-    gkr_round_eq = HeapBuf(GKR_ROUNDS_CAP)
     gkr_pts = HeapBuf(GKR_POINTS_CAP)
     assert log(g_bus_mu) < COUNT_BITS
     fs, root_push, cursor = fs_next(fs, cursor)
@@ -926,7 +941,23 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     gkr_layer_claim_c[GEN ** 0] = root_count
     gkr_layer_row[GEN ** 0] = gkr_pts
     gkr_layer_round_pos[GEN ** 0] = GEN ** 0
-    for x_layer in mul_range(1, g_bus_mu):
+
+    # Contract two binary product levels at a time. An odd-depth tree starts
+    # with its root-most binary layer.
+    gkr_pair_bounds = HeapBuf(COUNT_BITS)
+    gkr_depth_odd = HeapBuf(COUNT_BITS)
+    gkr_depth_shift = HeapBuf(COUNT_BITS)
+    for depth in unroll(0, COUNT_BITS):
+        gkr_pair_bounds[GEN ** depth] = GEN ** (depth // 2)
+        if (depth // 2) * 2 == depth:
+            gkr_depth_odd[GEN ** depth] = 0
+            gkr_depth_shift[GEN ** depth] = 1
+        else:
+            gkr_depth_odd[GEN ** depth] = 1
+            gkr_depth_shift[GEN ** depth] = GEN
+
+    if gkr_depth_odd[g_bus_mu] == 1:
+        x_layer = GEN ** 0
         layer_fs = [gkr_layer_fs0[x_layer], gkr_layer_fs1[x_layer]]
         lam = gkr_layer_lambda[x_layer]
         claim_l = gkr_layer_claim[x_layer] + lam * (gkr_layer_claim_b[x_layer] + lam * gkr_layer_claim_c[x_layer])
@@ -937,29 +968,17 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         gkr_round_fs1[round_pos] = layer_fs[1]
         gkr_round_cursor[round_pos] = gkr_layer_cursor[x_layer]
         gkr_round_claim[round_pos] = claim_l
-        gkr_round_eq[round_pos] = 1
-        for x_round in mul_range(1, x_layer):
-            ip = round_pos * x_round
-            nfs0, nfs1, ncur, nclaim, neq, rk = sumcheck_round3(gkr_round_fs0[ip], gkr_round_fs1[ip], gkr_round_cursor[ip], gkr_round_claim[ip], gkr_round_eq[ip], point_row[x_round])
-            nextrow[x_round * GEN] = rk
-            pos_next = ip * GEN
-            gkr_round_fs0[pos_next] = nfs0
-            gkr_round_fs1[pos_next] = nfs1
-            gkr_round_cursor[pos_next] = ncur
-            gkr_round_claim[pos_next] = nclaim
-            gkr_round_eq[pos_next] = neq
         final_pos = round_pos * x_layer
         tail_fs = [gkr_round_fs0[final_pos], gkr_round_fs1[final_pos]]
         tcur = gkr_round_cursor[final_pos]
         tclaim = gkr_round_claim[final_pos]
-        teq = gkr_round_eq[final_pos]
         tail_fs, e0_push, tcur = fs_next(tail_fs, tcur)
         tail_fs, e1_push, tcur = fs_next(tail_fs, tcur)
         tail_fs, e0_pull, tcur = fs_next(tail_fs, tcur)
         tail_fs, e1_pull, tcur = fs_next(tail_fs, tcur)
         tail_fs, e0_count, tcur = fs_next(tail_fs, tcur)
         tail_fs, e1_count, tcur = fs_next(tail_fs, tcur)
-        assert tclaim == teq * (e0_push * e1_push + lam * (e0_pull * e1_pull + lam * (e0_count * e1_count)))
+        assert tclaim == e0_push * e1_push + lam * (e0_pull * e1_pull + lam * (e0_count * e1_count))
         tail_fs = squeeze(tail_fs)
         layer_challenge = tail_fs[0]
         nextrow[GEN ** 0] = layer_challenge
@@ -968,6 +987,72 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         gkr_layer_claim_b[xln] = e0_pull + layer_challenge * (e0_pull + e1_pull)
         gkr_layer_claim_c[xln] = e0_count + layer_challenge * (e0_count + e1_count)
         tail_fs = squeeze(tail_fs)  # fresh λ pins the tail individuals
+        gkr_layer_lambda[xln] = tail_fs[0]
+        gkr_layer_fs0[xln] = tail_fs[0]
+        gkr_layer_fs1[xln] = tail_fs[1]
+        gkr_layer_cursor[xln] = tcur
+        gkr_layer_row[xln] = nextrow
+        gkr_layer_round_pos[xln] = round_pos * x_layer * GEN
+
+    pair_bound = gkr_pair_bounds[g_bus_mu]
+    for x_pair in mul_range(1, pair_bound):
+        x_layer = x_pair * x_pair * gkr_depth_shift[g_bus_mu]
+        layer_fs = [gkr_layer_fs0[x_layer], gkr_layer_fs1[x_layer]]
+        lam = gkr_layer_lambda[x_layer]
+        claim_l = gkr_layer_claim[x_layer] + lam * (gkr_layer_claim_b[x_layer] + lam * gkr_layer_claim_c[x_layer])
+        point_row = gkr_layer_row[x_layer]
+        round_pos = gkr_layer_round_pos[x_layer]
+        nextrow = point_row * GEN ** MU_CAP
+        gkr_round_fs0[round_pos] = layer_fs[0]
+        gkr_round_fs1[round_pos] = layer_fs[1]
+        gkr_round_cursor[round_pos] = gkr_layer_cursor[x_layer]
+        gkr_round_claim[round_pos] = claim_l
+        for x_round in mul_range(1, x_layer):
+            ip = round_pos * x_round
+            nfs0, nfs1, ncur, nclaim, rk = sumcheck_round5(gkr_round_fs0[ip], gkr_round_fs1[ip], gkr_round_cursor[ip], gkr_round_claim[ip], point_row[x_round])
+            nextrow[x_round * GEN ** 2] = rk
+            pos_next = ip * GEN
+            gkr_round_fs0[pos_next] = nfs0
+            gkr_round_fs1[pos_next] = nfs1
+            gkr_round_cursor[pos_next] = ncur
+            gkr_round_claim[pos_next] = nclaim
+        final_pos = round_pos * x_layer
+        tail_fs = [gkr_round_fs0[final_pos], gkr_round_fs1[final_pos]]
+        tcur = gkr_round_cursor[final_pos]
+        tclaim = gkr_round_claim[final_pos]
+        tail_fs, e0_push, tcur = fs_next(tail_fs, tcur)
+        tail_fs, e1_push, tcur = fs_next(tail_fs, tcur)
+        tail_fs, e2_push, tcur = fs_next(tail_fs, tcur)
+        tail_fs, e3_push, tcur = fs_next(tail_fs, tcur)
+        tail_fs, e0_pull, tcur = fs_next(tail_fs, tcur)
+        tail_fs, e1_pull, tcur = fs_next(tail_fs, tcur)
+        tail_fs, e2_pull, tcur = fs_next(tail_fs, tcur)
+        tail_fs, e3_pull, tcur = fs_next(tail_fs, tcur)
+        tail_fs, e0_count, tcur = fs_next(tail_fs, tcur)
+        tail_fs, e1_count, tcur = fs_next(tail_fs, tcur)
+        tail_fs, e2_count, tcur = fs_next(tail_fs, tcur)
+        tail_fs, e3_count, tcur = fs_next(tail_fs, tcur)
+        push_product = e0_push * e1_push * e2_push * e3_push
+        pull_product = e0_pull * e1_pull * e2_pull * e3_pull
+        count_product = e0_count * e1_count * e2_count * e3_count
+        assert tclaim == push_product + lam * (pull_product + lam * count_product)
+        tail_fs = squeeze(tail_fs)
+        c0 = tail_fs[0]
+        tail_fs = squeeze(tail_fs)
+        c1 = tail_fs[0]
+        nextrow[GEN ** 0] = c0
+        nextrow[GEN ** 1] = c1
+        push_lo = e0_push + c0 * (e0_push + e1_push)
+        push_hi = e2_push + c0 * (e2_push + e3_push)
+        pull_lo = e0_pull + c0 * (e0_pull + e1_pull)
+        pull_hi = e2_pull + c0 * (e2_pull + e3_pull)
+        count_lo = e0_count + c0 * (e0_count + e1_count)
+        count_hi = e2_count + c0 * (e2_count + e3_count)
+        xln = x_layer * GEN ** 2
+        gkr_layer_claim[xln] = push_lo + c1 * (push_lo + push_hi)
+        gkr_layer_claim_b[xln] = pull_lo + c1 * (pull_lo + pull_hi)
+        gkr_layer_claim_c[xln] = count_lo + c1 * (count_lo + count_hi)
+        tail_fs = squeeze(tail_fs)
         gkr_layer_lambda[xln] = tail_fs[0]
         gkr_layer_fs0[xln] = tail_fs[0]
         gkr_layer_fs1[xln] = tail_fs[1]

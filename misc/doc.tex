@@ -231,23 +231,33 @@ Each side's product is proven by a GKR pass over a product tree (\S\ref{sec:gkr}
 
 \subsection{Proving the grand product (GKR)}\label{sec:gkr}
 
-Take one side of \eqref{eq:gp}. Its tuples give the leaves $v_k=\gamma-\pi_\alpha(\sigma_k)$, padded with $1$s to a power of two, $2^\mu$ in all, and the product $P=\prod_k v_k$ is the root of a binary tree: layer $0$ is the leaves, layer $i$ has $2^{\mu-i}$ nodes, each the product of its two children, and layer $\mu$ is $P$. Let $\widetilde V_i$ be the MLE of the layer-$i$ values $V_i:\cube{\mu-i}\to\F_{2^{128}}$. Adjacent layers obey $V_i(x)=V_{i-1}(0,x)\,V_{i-1}(1,x)$ on the cube, so for any $r$,
+Take one side of \eqref{eq:gp}. Its tuples give leaves $v_k=\gamma-\pi_\alpha(\sigma_k)$, padded with $1$s to a power of two, $2^\mu$ in all. Their product $P=\prod_kv_k$ is the root of a binary product tree: layer $0$ is the leaves, layer $i$ has $2^{\mu-i}$ nodes, and layer $\mu$ is $P$. Let $\widetilde V_i$ denote the MLE of layer $i$.
+
+GKR contracts two binary levels at a time. Four grandchildren satisfy
 \[
-\widetilde V_i(r)=\sum_{x\in\cube{\mu-i}}\eq(r,x)\,\widetilde V_{i-1}(0,x)\,\widetilde V_{i-1}(1,x).
+V_i(x)=\prod_{a,b\in\{0,1\}}V_{i-2}(a,b,x),
 \]
-GKR walks from the root to the leaves, reducing one claim per layer. Starting from a claim $\widetilde V_i(r)$:
-\begin{enumerate}
-\item a $(\mu-i)$-round sumcheck of the identity above reduces it to the two values $\widetilde V_{i-1}(0,\rho)$, $\widetilde V_{i-1}(1,\rho)$ at a random $\rho$. The round univariate has degree $3$, but its $\eq(r,\cdot)$ factor is linear in the bound variable and known to the verifier, so the prover sends only the degree-$2$ cofactor (the product part) as $3$ evaluations and the verifier multiplies the $\eq$ factor back~\cite{cryptoeprint:2024/108}, making each round's work degree $2$ rather than $3$;
-\item the prover sends the degree-$1$ line $t\mapsto\widetilde V_{i-1}(t,\rho)$; the verifier checks its endpoints against those two values and evaluates it at a random $c$, leaving one claim $\widetilde V_{i-1}(c,\rho)$.
-\end{enumerate}
-After $\mu$ layers a single leaf claim $\widetilde V_0(\zeta)$ remains, which \S\ref{sec:leafstack} decomposes into evaluation claims on the committed columns. The bus is accepted when the two sides of \eqref{eq:gp} give equal roots and each leaf claim matches the commitments. Prover work is $O(2^\mu)$, and the proof is $O(\mu^2)$ field elements.
+and hence
+\[
+\widetilde V_i(r)=\sum_{x\in\cube{\mu-i}}\eq(r,x)\prod_{a,b\in\{0,1\}}\widetilde V_{i-2}(a,b,x).
+\]
+A sumcheck reduces a claim $\widetilde V_i(r)$ to the four values $\widetilde V_{i-2}(a,b,\rho)$ at one random point $\rho$. The product part of each round polynomial has degree four. As in the usual $\eq$-trick~\cite{cryptoeprint:2024/108}, the known equality factor is not transmitted. Moreover, the incoming claim already fixes one coefficient. Write the degree-four cofactor as $q(X)=\sum_{j=0}^{4}c_jX^j$, let $s$ be the current coordinate of $r$, and let $T$ be the incoming claim. The prover sends only
+\[
+d=q(0)+q(1),\qquad c_2,\qquad c_3,\qquad c_4.
+\]
+Since $T=(1+s)q(0)+sq(1)=c_0+sd$, the verifier recovers $c_0=T+sd$ and $c_1=d+c_2+c_3+c_4$, then evaluates $q$ at the new challenge by Horner's rule. Thus each round sends exactly the four independent field elements permitted by its consistency equation.
+
+At the end of the layer the prover sends the four grandchildren. Two fresh challenges $(u_0,u_1)$ combine them multilinearly, leaving one claim $\widetilde V_{i-2}(u_0,u_1,\rho)$. If $\mu$ is odd, GKR first processes the root-most binary layer, which has no sumcheck rounds, and then proceeds entirely in radix four. After $\lceil\mu/2\rceil$ layers a single leaf claim $\widetilde V_0(\zeta)$ remains, which \S\ref{sec:leafstack} settles against the committed columns. Prover work remains $O(2^\mu)$ and the proof remains $O(\mu^2)$ field elements, with fewer layers and a smaller constant.
 
 \paragraph{Batching the three trees.} The bus needs three grand products: push, pull, and counts. They are batched in a single GKR pass (verifier-friendliness, good for recursion). Push and pull have equal depth $\mu$ (their blocks come in matched pairs); the count tree, of depth $\mu_c\le\mu$, is padded with $1$-leaves to $2^{\mu}$.
 
-The verifier samples a combiner $\lambda$, and each layer runs a single sumcheck on the $\lambda$-combined layer identity
+The verifier samples a combiner $\lambda$, and each radix-four layer runs one sumcheck on the combined identity
 \[
-\sum_{t}\lambda^{t}\,\widetilde V^{t}_i(r)\;=\;\sum_{x\in\cube{\mu-i}}\eq(r,x)\,\sum_{t}\lambda^{t}\,\widetilde V^{t}_{i-1}(0,x)\,\widetilde V^{t}_{i-1}(1,x),\qquad t\in\{0,1,2\},
+\sum_t\lambda^t\widetilde V_i^t(r)=\sum_{x\in\cube{\mu-i}}\eq(r,x)\sum_t\lambda^t\prod_{a,b\in\{0,1\}}\widetilde V_{i-2}^t(a,b,x),\qquad t\in\{0,1,2\}.
 \]
+A fresh $\lambda$ after every layer binds the three individual tail values rather than only their previous linear combination. Consequently push, pull, and count all reduce to claims at the same point $\zeta$.
+
+The identity padding is logical: the prover stores only the count tree's actual power-of-two prefix. Once that prefix has folded to one value, each remaining gate pairs it with $1$, while every omitted all-one gate is known and contributes nothing to a nonconstant sumcheck message. The prover also stores each radix-four layer in its original interleaved child order and constructs only the even-numbered binary levels consumed by the protocol. Thus the radix-four verifier savings do not require materializing the padded tree or transposing four child tables.
 
 \subsection{Stacking the leaves}\label{sec:leafstack}
 

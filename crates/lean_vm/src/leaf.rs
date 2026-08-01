@@ -474,10 +474,10 @@ pub fn prove_balance(
     // ([`grand_product_grinding_bits`]): re-rolling either means redoing it.
     ps.grind(grand_product_grinding_bits(&push_lay, &pull_lay, &count_lay));
     let alpha = ps.sample();
-    // Pad the count tree to the pair's depth with identity leaves (the product,
-    // blocks, and offsets are unchanged; `build_leaves` fills the cube with `1`
-    // and the decompose accounts the padding mass), so all THREE trees share
-    // one RLC-batched GKR — and one point ζ.
+    // The GKR treats the count tree as identity-padded to the pair's depth, but
+    // its prover keeps that all-one suffix implicit. Retain the smaller layout
+    // for leaf construction and the full logical layout for decomposition.
+    let count_build_lay = count_lay.clone();
     count_lay.mu = push_lay.mu;
     let gamma = ps.sample();
     // Independent leaf vectors; build concurrently. The count channel's leaf is the
@@ -487,7 +487,7 @@ pub fn prove_balance(
         || {
             rayon::join(
                 || build_leaves(pull, &pull_lay, cols, alpha, gamma),
-                || build_leaves(count, &count_lay, cols, F128::ONE, F128::ZERO),
+                || build_leaves(count, &count_build_lay, cols, F128::ONE, F128::ZERO),
             )
         },
     );

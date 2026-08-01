@@ -102,6 +102,24 @@ pub fn quad_nodes() -> [F128; 4] {
     [F128::ZERO, F128::ONE, g, g * g]
 }
 
+/// Evaluate a degree-four eq-trick round from its four independent transcript
+/// coefficients. If `difference = q(0) + q(1)`, the incoming claim fixes the
+/// constant coefficient, and characteristic two fixes the linear coefficient.
+#[inline]
+pub fn quartic_eval_from_eq(
+    claim: F128,
+    eq_point: F128,
+    difference: F128,
+    c2: F128,
+    c3: F128,
+    c4: F128,
+    point: F128,
+) -> F128 {
+    let c0 = claim + eq_point * difference;
+    let c1 = difference + c2 + c3 + c4;
+    c0 + point * (c1 + point * (c2 + point * (c3 + point * c4)))
+}
+
 /// Add two 3-coefficient sumcheck accumulators componentwise.
 #[inline]
 pub fn add3(mut x: [F128; 3], y: [F128; 3]) -> [F128; 3] {
