@@ -996,6 +996,13 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     #  10. export the deferred-claim region for the aggregation.
     # Claim pool: values of every committed-coordinate claim, in decompose order
     # (their points are the GKR ζ's, resolvable from the baked block structure).
+    # `1 + g^(2^k)` per bit position, in FRAME cells: the bit-ladder rebuilds
+    # below (padding surplus, placement offsets) each need this factor once per
+    # bit, and a StackBuf entry is an instruction operand, where the g_squares
+    # HeapBuf costs a load and an add every time.
+    gsq_plus = StackBuf(SIZE_BITS)
+    for k in unroll(0, SIZE_BITS):
+        gsq_plus[k] = 1 + g_squares[GEN ** k]
     claim_pool = HeapBuf(N_CLAIMS)
     # certified low dimension (cplen) per pooled claim, filled as the pool is
     # built (from the in-scope certified kappa/tau); the terminal pins each
@@ -1926,7 +1933,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         for k in unroll(0, SIZE_BITS):
             offset_bit = offset_row[GEN ** k]
             assert offset_bit * offset_bit == offset_bit
-            rebuilt_offset *= (1 + offset_bit * (g_squares[GEN ** k] + 1))
+            rebuilt_offset *= (1 + offset_bit * gsq_plus[k])
         assert rebuilt_offset == col_off_g[GEN ** c]
         for k in unroll(SIZE_BITS, SIZE_BITS + YR_LOG_CAP):
             offset_row[GEN ** k] = 0
