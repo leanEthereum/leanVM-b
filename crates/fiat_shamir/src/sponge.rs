@@ -53,15 +53,16 @@ const DS_LEN: F64 = F64(3);
 const DS_SQUEEZE: F64 = F64(4);
 const DS_POW: F64 = F64(5);
 
-/// `compress(base, (nonce, 0, DS_POW, 0))` has its low `bits` bits zero — the
+/// `compress(base, (nonce.c0, nonce.c1, nonce.c2, DS_POW))` has its low `bits`
+/// bits zero — the
 /// grinding predicate over the VM compression. A CONTIGUOUS low-bit window
 /// (rather than byte-wise leading zeros) so a recursive verifier re-checks it
 /// with a single loop over the bit decomposition of the digest word
 /// (`grind_check` in `guests/recursion.py`). `bits` is always `< 64`.
 #[inline]
-fn pow_bits_ok(base: [F64; 4], nonce: u64, bits: u32) -> bool {
+fn pow_bits_ok(base: [F64; 4], nonce: F192, bits: u32) -> bool {
     debug_assert!(bits < 64, "grinding deficit fits the digest's low word");
-    let digest = compress(base, [F64(nonce), F64::ZERO, DS_POW, F64::ZERO])[0];
+    let digest = compress(base, [F64(nonce.c0), F64(nonce.c1), F64(nonce.c2), DS_POW])[0];
     digest.0 & ((1u64 << bits) - 1) == 0
 }
 
@@ -162,8 +163,8 @@ impl Sponge {
 
     /// The grinding digest word this state yields for `nonce` (read-only preview;
     /// [`Self::verify_pow`] is the mutating check).
-    pub fn pow_digest(&self, nonce: u64) -> F64 {
-        compress(self.pow_base(), [F64(nonce), F64::ZERO, DS_POW, F64::ZERO])[0]
+    pub fn pow_digest(&self, nonce: F192) -> F64 {
+        compress(self.pow_base(), [F64(nonce.c0), F64(nonce.c1), F64(nonce.c2), DS_POW])[0]
     }
 
     /// Re-run recorded verifier transcript ops through this sponge, asserting
@@ -179,7 +180,10 @@ impl Sponge {
                     assert_eq!(self.sample_untraced(), *v, "trace replay diverged")
                 }
                 TraceOp::Pow { nonce, bits, .. } => {
-                    assert!(self.verify_pow_untraced(*nonce, *bits), "trace replay: grind failed")
+                    assert!(
+                        self.verify_pow_field_untraced(*nonce, *bits),
+                        "trace replay: grind failed"
+                    )
                 }
                 TraceOp::StreamRaw(_) | TraceOp::Opening => {}
             }
@@ -187,8 +191,8 @@ impl Sponge {
     }
 
     /// Bind a grinding nonce into the state (both sides, so they stay in lockstep).
-    fn absorb_nonce(&mut self, nonce: u64) {
-        self.cv = compress(self.cv, [F64(nonce), F64::ZERO, DS_POW, F64::ZERO]);
+    fn absorb_nonce(&mut self, nonce: F192) {
+        self.cv = compress(self.cv, [F64(nonce.c0), F64(nonce.c1), F64(nonce.c2), DS_POW]);
     }
 
     /// Prover-side PoW grind: find the smallest `u64` nonce whose PoW hash clears
@@ -203,7 +207,7 @@ impl Sponge {
         } else if (1u64 << bits.min(63)) < PARALLEL_GRIND_MIN_HASHES {
             let mut n: u64 = 0;
             loop {
-                if pow_bits_ok(base, n, bits) {
+                if pow_bits_ok(base, F192::new(n, 0, 0), bits) {
                     break n;
                 }
                 n = n.wrapping_add(1);
@@ -217,14 +221,14 @@ impl Sponge {
             loop {
                 if let Some(n) = (start..start.saturating_add(block))
                     .into_par_iter()
-                    .find_first(|&n| pow_bits_ok(base, n, bits))
+                    .find_first(|&n| pow_bits_ok(base, F192::new(n, 0, 0), bits))
                 {
                     break n;
                 }
                 start = start.saturating_add(block);
             }
         };
-        self.absorb_nonce(nonce);
+        self.absorb_nonce(F192::new(nonce, 0, 0));
         nonce
     }
 
@@ -234,18 +238,26 @@ impl Sponge {
     /// site). `bits = 0` accepts only the canonical nonce `0`, which keeps proofs
     /// non-malleable at zero-bit grinding sites.
     pub fn verify_pow(&mut self, nonce: u64, bits: u32) -> bool {
+        self.verify_pow_field(F192::new(nonce, 0, 0), bits)
+    }
+
+    /// Verify a nonce transported as a field word. Allowing the complete field
+    /// domain does not weaken grinding: each candidate still requires one hash
+    /// and succeeds with probability 2^-bits. Honest provers remain canonical
+    /// and search the deterministic u64 subset in [`Self::grind_pow`].
+    pub fn verify_pow_field(&mut self, nonce: F192, bits: u32) -> bool {
         trace(|| TraceOp::Pow {
             nonce,
             bits,
             digest: self.pow_digest(nonce),
         });
-        self.verify_pow_untraced(nonce, bits)
+        self.verify_pow_field_untraced(nonce, bits)
     }
 
-    fn verify_pow_untraced(&mut self, nonce: u64, bits: u32) -> bool {
+    fn verify_pow_field_untraced(&mut self, nonce: F192, bits: u32) -> bool {
         let base = self.pow_base();
         let ok = if bits == 0 {
-            nonce == 0
+            nonce == F192::ZERO
         } else {
             pow_bits_ok(base, nonce, bits)
         };
@@ -274,7 +286,7 @@ pub enum TraceOp {
     /// pre-absorb state yields for that nonce (so trace consumers never need
     /// to track sponge state in lockstep).
     Pow {
-        nonce: u64,
+        nonce: F192,
         bits: u32,
         digest: F64,
     },
@@ -361,8 +373,28 @@ mod tests {
             let mut clone = sp.clone();
             clone.grind_pow(8)
         };
-        assert!(pow_bits_ok(base, good, 8));
+        assert!(pow_bits_ok(base, F192::new(good, 0, 0), 8));
         // A random wrong nonce almost surely fails an 8-bit grind.
-        assert!(!pow_bits_ok(base, good.wrapping_add(1).wrapping_mul(3) | 1, 8) || good != 0);
+        assert!(!pow_bits_ok(base, F192::new(good.wrapping_add(1).wrapping_mul(3) | 1, 0, 0), 8,) || good != 0);
+    }
+
+    /// Recursive proofs transport the nonce as one field word. Its high limb is
+    /// therefore part of both the PoW predicate and the subsequent transcript.
+    #[test]
+    fn pow_accepts_and_binds_full_field_nonce() {
+        let mut verifier = Sponge::new(b"t", &[f(1)]);
+        let base = verifier.pow_base();
+        let nonce = (0..u64::MAX)
+            .map(|lo| F192::new(lo, 1, 2))
+            .find(|&nonce| pow_bits_ok(base, nonce, 8))
+            .expect("an 8-bit grind has a solution");
+
+        let mut expected = verifier.clone();
+        expected.absorb_nonce(nonce);
+        assert!(verifier.verify_pow_field(nonce, 8));
+        assert_eq!(verifier.state(), expected.state());
+
+        let mut zero_bits = Sponge::new(b"t", &[f(1)]);
+        assert!(!zero_bits.verify_pow_field(F192::new(0, 1, 0), 0));
     }
 }

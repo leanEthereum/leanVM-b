@@ -522,12 +522,14 @@ class Sponge:
         self.state = compress(self.state, (0, 0, DS_SQUEEZE, 0))
         return F192(*self.state[:3])
 
-    def check_pow(self, nonce: int, bits: int) -> None:
+    def check_pow(self, nonce: int | F192, bits: int) -> None:
         require(0 <= bits < 64, "invalid grinding width")
+        encoded = nonce if isinstance(nonce, F192) else F192(nonce)
+        block = (encoded.c0, encoded.c1, encoded.c2, DS_POW)
         base = compress(self.state, (0, 0, DS_POW, 0))
-        digest = compress(base, (nonce, 0, DS_POW, 0))[0]
-        valid = nonce == 0 if bits == 0 else digest & ((1 << bits) - 1) == 0
-        self.state = compress(self.state, (nonce, 0, DS_POW, 0))
+        digest = compress(base, block)[0]
+        valid = encoded == F192(0) if bits == 0 else digest & ((1 << bits) - 1) == 0
+        self.state = compress(self.state, block)
         require(valid, "invalid grinding nonce")
 
 
@@ -564,8 +566,7 @@ class Transcript:
         require(self.stream_offset < len(self.proof.stream), "missing grinding nonce")
         encoded = self.proof.stream[self.stream_offset]
         self.stream_offset += 1
-        require(encoded.c1 == encoded.c2 == 0, "grinding nonce has a nonzero high limb")
-        self.sponge.check_pow(encoded.c0, bits)
+        self.sponge.check_pow(encoded, bits)
 
     def opening(self) -> LigeritoOpening:
         require(self.opening_offset < len(self.proof.openings), "PCS opening missing")
