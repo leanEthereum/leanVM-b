@@ -7,6 +7,7 @@
 \newcommand{\F}{\mathbb{F}}
 \newcommand{\eq}{\mathrm{eq}}
 \newcommand{\pkd}{\mathrm{packed}}
+\newcommand{\E}{\mathbb{E}}
 
 \title{\textbf{Ring switching, generalized}}
 
@@ -174,50 +175,37 @@ c_k=d^{-2^k}\Bigl[\
 
 \paragraph{Cost.} The $k=0$ level needs $15$ constants: $d^{-1}\alpha^{127}$, the seven $1+\alpha^{-2^t}$, and the seven $d^{-1}\varepsilon_i$. Squaring all $15$ advances level $k$ to level $k+1$, so a verifier running a fixed program can bake in every level; and the $7\cdot128$ factor constants take only $128$ distinct values, since $1+\alpha^{-2^{k+t}}$ depends on $k+t\bmod128$ alone. Each $c_k$ then costs $14$ multiplications for the product and $7$ for the correction, so the whole table costs $O(e\log e)$ instead of $O(e^2)$. The seven weights $\lambda_i$, $i\le6$, share the four factors $1+s_t$, $t\ge3$, so they cost $O(\log e)$ as well.
 
-\section*{Recursion specialization: univariate batching over a tower}
+\section*{Recursion specialization: choosing the map instead of the weights}
 
-The previous section is only a worked example. Its closed form leans on two properties: the basis is a \emph{power} basis $\alpha^i$ of a field defined by a sparse modulus, and the weights $\lambda_i$ are $\eq$ weights, hence a product over the bits of $i$. Neither survives verbatim when the opening field is a tower, but the technique does. The recursion specialization uses $f=64$ and $e=192$ with
+The weights and the coefficients determine each other: $\lambda_w=B(b^E_w)$ and $c_k=\sum_w\lambda_w\delta_w^{2^k}$. The previous section fixes the weights first and works out the coefficients. For a \emph{recursive} verifier that is the wrong direction. Its cost is linear in the number of nonzero coefficients, since applying $B$ at one point costs one multiplication and one squaring per term, while the weights are only computed by the native prover and verifier, once, off the hot path. So fix the coefficients first.
+
+The recursion specialization uses $f=64$ and $e=192$ with
 \[
 K=\F_{2^{64}}=\F_2[X]/\bigl(q(X)\bigr),\qquad q(X)=X^{64}+X^4+X^3+X+1,
 \qquad
-\F_{2^{192}}=K[Y]/\bigl(Y^3+Y+1\bigr),
+\E=\F_{2^{192}}=K[Y]/\bigl(Y^3+Y+1\bigr),
 \]
-and the product basis $b^E_{64j+i}=x^iy^j$, where $x,y$ are the residues of $X,Y$. It also batches coordinates with the univariate weights $1,\rho,\ldots,\rho^{191}$ for $\rho\in\F_{2^{192}}$. This turns the reduction directly into one weighted PCS claim; no separate ring-switch sumcheck is required. Two things change in the coefficient computation.
-
-\paragraph{Change 1: the basis factors instead of being a power basis.} Let $\beta_i\in K$ extract coordinate $i$ of the basis $1,x,\ldots,x^{63}$ through the trace to $\F_2$, and let $\gamma_j\in\F_{2^{192}}$ similarly extract coordinate $j$ of $1,y,y^2$ through the trace to $K$. Their products $\beta_i\gamma_j$ extract the coordinates of the product basis $x^iy^j$. With univariate weights $\rho^w$ the coefficient sum therefore \emph{splits}:
+and the product basis $b^E_{64m+i}=x^iy^m$, where $x,y$ are the residues of $X,Y$. Take the $64$-term map
 \[
-c_k=\sum_{w<192}\rho^w\delta_w^{2^k}
-=\underbrace{\Bigl(\sum_{i<64}\rho^i\beta_i^{2^k}\Bigr)}_{A_k}
-\cdot
-\underbrace{\Bigl(\sum_{j<3}\rho^{64j}\gamma_j^{2^k}\Bigr)}_{B_k}.
+B(v)=\sum_{l<64}\rho^{\,l}v^{2^l},\qquad \lambda_w=B(b^E_w),
 \]
-Here $\gamma_0=1$: $\operatorname{Tr}_{\F_{2^e}/K}(1)=3=1$, while $\operatorname{Tr}(y)$ and $\operatorname{Tr}(y^2)$ are symmetric functions of the roots of $Y^3+Y+1$ and vanish. So $\beta_i\in K$, and $A_k$ has Frobenius period $64$: only $64$ of the $192$ levels are distinct. $B_k$ is already two multiplications.
+for a single $\rho\in\E$. This turns the reduction into one weighted PCS claim; no separate ring-switch sumcheck is required.
 
-\paragraph{Change 2: a geometric series replaces the $\eq$ product.} Step 2 of the previous section is generic in the modulus. Here $d=q'(x)=x^2+1$, and the Laurent expansion of $1/q$ at infinity is $X^{-64}+\bigl(X^{-124}+X^{-125}+X^{-127}+X^{-128}\bigr)+O(X^{-184})$, so $\operatorname{tr}(x^m/d)=[\,m=63\,]$ for all $m<120$ and $x^{63-i}/d$ fails only at $j-i\in\{60,61,63\}$. Repairing exactly as before,
+\paragraph{Soundness.} Let $\delta\in K^{192}$ be the prover's error on the transposed coordinates, fixed before $\rho$ is sampled. The check misses it exactly when
 \[
-\beta_i=d^{-1}\bigl(x^{63-i}+\varepsilon_i\bigr),
-\qquad
-\varepsilon=\bigl[\,x^3+x^2+1,\ x^2+x,\ x+1,\ 1,\ 0,\dots,0\,\bigr],
+\sum_w \lambda_w\delta_w=\sum_{l<64}\rho^{\,l}W_l=0,
+\qquad W_l=\sum_w (b^E_w)^{2^l}\delta_w .
 \]
-a correction on $i<4$ only (versus seven for GHASH: the modulus is sparser relative to the degree).
-
-Step 3 is where the weight family matters. The $\lambda_i$ no longer factor over the bits of $i$, so there is no $6$-fold product. But univariate weights give something equally good: with $u=\rho\,x^{-2^k}$,
+Writing $w=64m+i$ and using $x\in K$,
 \[
-\sum_{i<64}\rho^i x^{(63-i)2^k}=x^{63\cdot2^k}\sum_{i<64}u^i
-=x^{63\cdot2^k}\,(1+u)^{63},
+W_l=\sum_{m<3}\bigl(y^{2^l}\bigr)^m R_{m,l},
+\qquad R_{m,l}=\sum_{i<64}x^{i2^l}\delta_{64m+i}\in K .
 \]
-because $\sum_{i<n}u^i=(u^n+1)/(u+1)$ and $n=64$ is a power of two, so $u^{64}+1=(u+1)^{64}$. The identity holds for \emph{every} $u$, including $u=1$, where both sides are $0$. Hence
-\[
-\boxed{\ \
-A_k=Q_k\,\bigl(1+\rho P_k\bigr)^{63}+\sum_{i<4}\rho^i R_{k,i},
-\qquad
-P_k=x^{-2^k},\quad Q_k=\bigl(d^{-1}x^{63}\bigr)^{2^k},\quad R_{k,i}=\bigl(d^{-1}\varepsilon_i\bigr)^{2^k}.
-\ \ }
-\]
+Frobenius is a bijection fixing $K$ setwise and $y$ generates $\E$ over $K$, so $y^{2^l}\notin K$; as $[\E:K]=3$ is prime, $\{1,y^{2^l},y^{2\cdot2^l}\}$ is a $K$-basis of $\E$. Hence $W_l=0$ forces $R_{0,l}=R_{1,l}=R_{2,l}=0$. The matrix $\bigl(x^{i2^l}\bigr)_{l,i<64}$ is the Moore matrix of $K$'s power basis, whose entries are $\F_2$-independent, so it is invertible over $K$, and $R_{m,l}=0$ for all $l$ forces $\delta=0$. So some $W_l\neq0$, the sum above is a nonzero polynomial of degree below $64$ in $\rho$, and the error survives with probability at most $63/2^{192}$: better than the $191/2^{192}$ the weights $\rho^w$ give.
 
-\paragraph{Cost.} Level $k$ needs $6$ constants, and squaring the row advances $k$ to $k+1$, so a fixed-program verifier bakes in all $64$ base levels and all $192$ tower levels and keeps no runtime orbit table. Evaluating $(1+u)^{63}$ by the $2^t-1$ addition chain costs $5$ squarings and $3$ products, so $A_k$ costs $13$ multiplications and $c_k$ costs $16$: the same $O(\log f)$ per coefficient the $\eq$ product achieves, reached through a different identity. The whole table drops from $64^2+3\cdot192$ multiplications to $64\cdot13+192\cdot3$.
+\paragraph{Why $64$ terms, and not fewer.} For a support $S$, the conditions $\{W_l=0:l\in S\}$ are $|S|$ equations over $\E$, that is $3|S|$ over $K$, in $192$ $K$-unknowns $\delta_w$. If $3|S|<192$ a nonzero $\delta$ lies in the kernel for \emph{every} choice of coefficients, and the prover shifts the claim by it and passes with probability one. So $|S|\geq64$ is necessary, and $|S|=64$ achieves it.
 
-\paragraph{What generalizes.} Only Step 3 is weight-specific, and it needs the index sum to collapse. Two sufficient conditions, both met here: the basis is a power basis of the field the weights are indexed over (so $b_{n-1-i}$ is a geometric progression in $i$), and the weight family is closed under the corresponding collapse -- a product over bits for $\eq$, a geometric series for univariate powers. Steps 1 and 2 need only a sparse modulus, and the tower factorization of Change 1 applies to any product basis.
+\paragraph{Cost.} The coefficients are a running power of $\rho$: $63$ multiplications, no baked constants and no closed form, so the machinery of the previous section is not needed here. Applying $B$ at one point costs $63$ squarings and $64$ multiplications, a third of what the weights $\rho^w$ would force, because those induce a generically full $192$-term map. In the recursion verifier this is the largest single item, and the change removed $12\%$ of its cycles. Writing $B$ as a composition of six two-term maps $v\mapsto v+f_tv^{2^{2^t}}$ keeps the same support with $63$ squarings and $6$ multiplications, at the price of six independent challenges $f_t$ instead of one $\rho$.
 
 \section*{Remarks}
 

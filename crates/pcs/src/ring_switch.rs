@@ -83,17 +83,71 @@ use super::tensor_algebra::{DEGREE_E, TensorAlgebraE, transpose_s_hat};
 /// implementation detail.
 pub const RING_SWITCH_SOUNDNESS_DEGREE: usize = DEGREE_E - 1;
 
-/// Build `(1, rho, ..., rho^191)`, in the coordinate order produced by
-/// [`transpose_s_hat`].
+/// Number of Frobenius terms in the batching map [`build_coordinate_weights`]
+/// builds. It is the F_2-dimension of `K`, and that is the floor: the weights
+/// must separate any nonzero error on the 192 transposed `K`-columns, which is
+/// `|S|` `E`-equations, i.e. `3·|S|` `K`-equations, in `192` `K`-unknowns — with
+/// `3·|S| < 192` a nonzero error lies in the kernel for EVERY coefficient
+/// choice and passes with probability one. See [`build_coordinate_weights`].
+pub const LINEARIZED_TERMS: usize = PACKING_WIDTH;
+
+/// The coordinate batching weights: `weights[w] = Phi(b_w)`, where `b_w` is the
+/// `w`-th `F_2`-coordinate basis element of `E` (the order [`transpose_s_hat`]
+/// produces) and
+///
+/// ```text
+/// Phi(v) = sum_{l < LINEARIZED_TERMS} rho^l · v^(2^l)
+/// ```
+///
+/// is `F_2`-linear, so `sum_w weights[w]·t_w = sum_j x^j·Phi(y_j)` for the row
+/// view `y` and the column view `t` of the same tensor-algebra element. That
+/// identity is what lets a verifier evaluate the batched claim from `Phi`'s
+/// COEFFICIENTS — `LINEARIZED_TERMS` of them, a running power of `rho` — instead
+/// of the 192 weights; the recursion guest does exactly that, and its cost is
+/// linear in the term count. Defining `Phi` first and deriving the weights from
+/// it is what keeps that count at 64: taking `weights[w] = rho^w` instead (the
+/// obvious choice) forces a generically full 192-term `Phi`, tripling the
+/// guest's work for no soundness gain.
+///
+/// ## Soundness
+///
+/// Let `delta != 0` be the prover's error on the transposed columns, fixed
+/// before `rho` (`s_hat_v` is bound first). The check misses it iff
+/// `sum_w Phi(b_w)·delta_w = sum_{l<64} rho^l·W_l = 0` with
+/// `W_l = sum_w b_w^(2^l)·delta_w`. Writing `w = 64m + i` and `b_w = x^i·Y^m`,
+///
+/// ```text
+/// W_l = sum_{m<3} (Y^(2^l))^m · R_{m,l},   R_{m,l} = sum_{i<64} x^(i·2^l)·delta_{64m+i} in K.
+/// ```
+///
+/// `Y^(2^l)` is not in `K` (Frobenius is a bijection fixing `K` setwise, and `Y`
+/// generates `E`), and `[E:K] = 3` is prime, so `{1, Y^(2^l), Y^(2·2^l)}` is a
+/// `K`-basis: `W_l = 0` forces every `R_{m,l} = 0`. But `(x^(i·2^l))_{l,i<64}` is
+/// the Moore matrix of `K`'s power basis, whose entries are `F_2`-independent, so
+/// it is invertible over `K` — every `R_{m,l} = 0` forces `delta = 0`. Hence some
+/// `W_l != 0`, `sum_l rho^l W_l` is a nonzero polynomial of degree `< 64` in
+/// `rho`, and the error survives with probability at most
+/// `63/2^192` — better than the `191/2^192` the power-basis weights gave.
+/// [`RING_SWITCH_SOUNDNESS_DEGREE`] stays at 191 as a conservative bound.
 pub fn build_coordinate_weights(rho: F192) -> Vec<F192> {
-    let mut power = F192::ONE;
-    let mut weights = Vec::with_capacity(DEGREE_E);
-    weights.push(power);
-    for _ in 1..DEGREE_E {
-        power *= rho;
-        weights.push(power);
-    }
-    weights
+    // b_w has only bit w set: bits 0..64 are K's power basis, and bits 64/128
+    // shift it by Y / Y^2.
+    let basis = |w: usize| match w / PACKING_WIDTH {
+        0 => F192::new(1u64 << (w % PACKING_WIDTH), 0, 0),
+        1 => F192::new(0, 1u64 << (w % PACKING_WIDTH), 0),
+        _ => F192::new(0, 0, 1u64 << (w % PACKING_WIDTH)),
+    };
+    (0..DEGREE_E)
+        .map(|w| {
+            let (mut frobenius, mut rho_pow, mut acc) = (basis(w), F192::ONE, F192::ZERO);
+            for _ in 0..LINEARIZED_TERMS {
+                acc += rho_pow * frobenius;
+                frobenius = frobenius.square();
+                rho_pow *= rho;
+            }
+            acc
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -201,128 +255,6 @@ pub fn trace_dual_basis() -> &'static [F192; 192] {
             }
         }
         out
-    })
-}
-
-// ---------------------------------------------------------------------------
-// Closed-form linearized coefficients
-// ---------------------------------------------------------------------------
-
-/// Row width of [`base_coeff_orbit_constants`]: `P | Q | R[0..4]`.
-pub const RS_BASE_ORBIT_WIDTH: usize = 6;
-
-/// Number of Frobenius levels the base factor needs before it repeats.
-///
-/// The 64 base duals lie in `K` (because the tower dual of `1` is `1`, see
-/// [`tower_coeff_orbit_constants`]), so `beta_i^(2^64) = beta_i`.
-pub const RS_BASE_ORBIT_LEVELS: usize = PACKING_WIDTH;
-
-/// Seed constants of the closed-form base factor, at every Frobenius level.
-///
-/// A verifier that batches the 192 coordinates univariately needs
-///
-/// ```text
-/// c_k = A_k * B_k,   A_k = sum_{i<64} rho^i beta_i^(2^k),
-/// ```
-///
-/// where `beta_i` is the trace-dual of `K`'s power basis `x^i` (see
-/// [`trace_dual_basis`], whose first 64 entries are exactly these). Building
-/// `A_k` by Horner costs 63 multiplications per level, plus a runtime
-/// `64 x 64` table of Frobenius powers. It has a closed form instead.
-///
-/// With `q(X) = X^64 + X^4 + X^3 + X + 1` and `d = q'(x) = x^2 + 1`, the
-/// Laurent expansion of `1/q` at infinity gives `Tr(x^m/d) = [m = 63]` for
-/// every `m < 120`, so `x^(63-i)/d` already extracts coordinate `i` except at
-/// `j - i in {60, 61, 63}`. Repairing those, exactly as in the GHASH note's
-/// Step 2, leaves a correction supported on `i < 4` only:
-///
-/// ```text
-/// beta_i = d^-1 (x^(63-i) + eps_i),
-/// eps = [x^3+x^2+1, x^2+x, x+1, 1, 0, ..., 0].
-/// ```
-///
-/// The weights are the univariate powers `rho^i`, not an eq tensor, so the
-/// GHASH note's seven-factor product does not apply. What replaces it is a
-/// geometric series: `sum_{i<64} u^i = (1+u)^63` holds identically over any
-/// field of characteristic two, because `64` is a power of two (and both
-/// sides vanish at `u = 1`). Hence, with `u = rho x^(-2^k)`,
-///
-/// ```text
-/// A_k = Q_k (1 + rho P_k)^63 + sum_{i<4} rho^i R_k[i],
-/// P_k = x^(-2^k),  Q_k = (d^-1 x^63)^(2^k),  R_k[i] = (d^-1 eps_i)^(2^k).
-/// ```
-///
-/// `(1+u)^63` costs 5 squarings and 3 multiplications via the `2^t - 1`
-/// addition chain, so a level costs 13 multiplications instead of 63 — the
-/// same `O(log f)` the GHASH specialization reaches through its product form.
-///
-/// Squaring a whole row advances it from level `k` to level `k + 1`, so a
-/// verifier running a fixed program bakes every level in and needs no runtime
-/// orbit table at all.
-pub fn base_coeff_orbit_constants()
--> &'static [[F192; RS_BASE_ORBIT_WIDTH]; RS_BASE_ORBIT_LEVELS] {
-    use std::sync::OnceLock;
-    static ORBITS: OnceLock<[[F192; RS_BASE_ORBIT_WIDTH]; RS_BASE_ORBIT_LEVELS]> = OnceLock::new();
-    ORBITS.get_or_init(|| {
-        let x = F192::new(2, 0, 0); // the residue of X, generating K's power basis
-        let d_inv = (x * x + F192::ONE).inv(); // 1/q'(x)
-        let mut x_pow = F192::ONE;
-        for _ in 0..PACKING_WIDTH - 1 {
-            x_pow *= x; // x^63
-        }
-        let eps = [
-            x * x * x + x * x + F192::ONE,
-            x * x + x,
-            x + F192::ONE,
-            F192::ONE,
-        ];
-
-        let mut rows = [[F192::ZERO; RS_BASE_ORBIT_WIDTH]; RS_BASE_ORBIT_LEVELS];
-        rows[0][0] = x.inv();
-        rows[0][1] = d_inv * x_pow;
-        for (slot, e) in rows[0][2..].iter_mut().zip(eps) {
-            *slot = d_inv * e;
-        }
-        for k in 1..RS_BASE_ORBIT_LEVELS {
-            rows[k] = rows[k - 1];
-            for value in rows[k].iter_mut() {
-                *value = value.square();
-            }
-        }
-        rows
-    })
-}
-
-/// Frobenius orbit of the tower half of the trace-dual basis.
-///
-/// The dual basis of `E / K` for `{1, y, y^2}` is `{1, gamma_1, gamma_2}`:
-/// `Tr_{E/K}(1) = 1` while `Tr_{E/K}(y) = Tr_{E/K}(y^2) = 0`, since both are
-/// symmetric functions of the roots of `y^3 + y + 1`. So the tower dual of `1`
-/// is `1`, which is also why the base duals stay inside `K`.
-///
-/// Row `k` holds `[gamma_1^(2^k), gamma_2^(2^k)]`; the `gamma_0` column is
-/// dropped because it is the constant `1`. The tower factor is then
-///
-/// ```text
-/// B_k = gamma_2^(2^k) rho^128 + gamma_1^(2^k) rho^64 + 1,
-/// ```
-///
-/// two multiplications per level, with no runtime orbit table.
-pub fn tower_coeff_orbit_constants() -> &'static [[F192; 2]; DEGREE_E] {
-    use std::sync::OnceLock;
-    static ORBITS: OnceLock<[[F192; 2]; DEGREE_E]> = OnceLock::new();
-    ORBITS.get_or_init(|| {
-        let dual = trace_dual_basis();
-        let beta0_inv = dual[0].inv();
-        let mut rows = [[F192::ZERO; 2]; DEGREE_E];
-        rows[0] = [dual[PACKING_WIDTH] * beta0_inv, dual[2 * PACKING_WIDTH] * beta0_inv];
-        for k in 1..DEGREE_E {
-            rows[k] = rows[k - 1];
-            for value in rows[k].iter_mut() {
-                *value = value.square();
-            }
-        }
-        rows
     })
 }
 
@@ -1139,61 +1071,6 @@ mod tests {
         }
     }
 
-    /// The closed-form coefficients must equal the dense construction
-    /// `c_k = Σ_w rho^w dual[w]^(2^k)` that the guest used to build from a
-    /// runtime Frobenius orbit table.
-    #[test]
-    fn closed_form_coeffs_match_dense_frobenius_sum() {
-        let dual = trace_dual_basis();
-        let base = base_coeff_orbit_constants();
-        let tower = tower_coeff_orbit_constants();
-        let mut s = 0xC0FF_EE07_u64;
-        for _ in 0..4 {
-            let rho = rand_ext(&mut s);
-            let rho_pows: [F192; 4] = {
-                let mut p = [F192::ONE; 4];
-                for i in 1..4 {
-                    p[i] = p[i - 1] * rho;
-                }
-                p
-            };
-            let mut rho_64 = rho;
-            for _ in 0..LOG_PACKING {
-                rho_64 = rho_64.square();
-            }
-
-            for k in 0..DEGREE_E {
-                // reference: the dense 192-term Frobenius sum
-                let mut want = F192::ZERO;
-                for w in (0..DEGREE_E).rev() {
-                    let mut b = dual[w];
-                    for _ in 0..k {
-                        b = b.square();
-                    }
-                    want = want * rho + b;
-                }
-
-                // closed form: A_k * B_k
-                let row = &base[k % RS_BASE_ORBIT_LEVELS];
-                let v = F192::ONE + rho * row[0];
-                let a2 = v.square() * v; // v^3
-                let a3 = a2.square() * v; // v^7
-                let mut a6 = a3;
-                for _ in 0..3 {
-                    a6 = a6.square();
-                }
-                a6 *= a3; // v^63
-                let mut a_k = row[1] * a6;
-                for i in 0..4 {
-                    a_k += rho_pows[i] * row[2 + i];
-                }
-                let b_k = (tower[k][1] * rho_64 + tower[k][0]) * rho_64 + F192::ONE;
-
-                assert_eq!(a_k * b_k, want, "closed-form c_k mismatch at k={k}");
-            }
-        }
-    }
-
     fn rand_ext(s: &mut u64) -> F192 {
         F192::new(splitmix64(s), splitmix64(s), splitmix64(s))
     }
@@ -1202,17 +1079,52 @@ mod tests {
         (0..1usize << m).map(|_| splitmix64(s) & 1 == 1).collect()
     }
 
+    /// The contract between the native opener and every verifier that batches
+    /// from `Phi`'s coefficients (the recursion guest, the Python reference
+    /// verifier): weighting the COLUMN view by `build_coordinate_weights` must
+    /// equal applying `Phi` to the ROW view and combining with `x^j`. If this
+    /// drifts, the guest computes a different opening target than the prover.
     #[test]
-    fn coordinate_weights_are_consecutive_powers() {
+    fn column_weights_match_the_row_side_linearized_map() {
+        let mut s = 0xF00D_BEEF_1234_5678;
+        for _ in 0..4 {
+            let rho = rand_ext(&mut s);
+            let s_hat_v: Vec<F192> = (0..PACKING_WIDTH).map(|_| rand_ext(&mut s)).collect();
+
+            // Column side: sum_w weights[w] * t_w over the transposed K columns.
+            let columns = transpose_s_hat(&s_hat_v);
+            let lhs = inner_product_base_ext(&columns, &build_coordinate_weights(rho));
+
+            // Row side: sum_j x^j * Phi(y_j), the guest's loop.
+            let x = F192::new(2, 0, 0);
+            let mut rhs = F192::ZERO;
+            let mut x_pow = F192::ONE;
+            for y in &s_hat_v {
+                let (mut frobenius, mut rho_pow, mut phi) = (*y, F192::ONE, F192::ZERO);
+                for _ in 0..LINEARIZED_TERMS {
+                    phi += rho_pow * frobenius;
+                    frobenius = frobenius.square();
+                    rho_pow *= rho;
+                }
+                rhs += x_pow * phi;
+                x_pow *= x;
+            }
+            assert_eq!(lhs, rhs, "column weights and row-side Phi disagree");
+        }
+    }
+
+    /// `Phi` must separate every nonzero single-coordinate error, the property
+    /// the soundness argument rests on: a 64-term map still gives each of the 192
+    /// coordinates a distinct nonzero weight.
+    #[test]
+    fn coordinate_weights_are_distinct_and_nonzero() {
         let mut s = 0x1234_5678_9abc_def0;
         let rho = rand_ext(&mut s);
         let weights = build_coordinate_weights(rho);
-
         assert_eq!(weights.len(), DEGREE_E);
-        assert_eq!(weights[0], F192::ONE);
-        for pair in weights.windows(2) {
-            assert_eq!(pair[1], pair[0] * rho);
-        }
+        assert!(weights.iter().all(|w| *w != F192::ZERO));
+        let unique: std::collections::HashSet<_> = weights.iter().map(|w| (w.c0, w.c1, w.c2)).collect();
+        assert_eq!(unique.len(), DEGREE_E, "weights must be pairwise distinct");
     }
 
     /// Reference s_hat_v: brute-force partial evaluation of each bit-column

@@ -2074,6 +2074,27 @@ def _claim_weights(point: QuirkyPoint) -> list[F192]:
     return lagrange_weights(PHI[:64], point.skip)
 
 
+def _coordinate_weights(rho: F192) -> list[F192]:
+    """`ring_switch::build_coordinate_weights`: the images `Phi(basis_w)` of the
+    F2-coordinate basis under `Phi(v) = sum_{l < 64} rho^l v^(2^l)`. The verifier
+    weights the transposed columns with these; a guest batching from Phi's 64
+    coefficients computes the same value (see the Rust doc comment for why 64
+    terms is both sufficient and the floor)."""
+    weights = []
+    for w in range(192):
+        # b_w has only bit w set: limb w // 64, bit w % 64.
+        limbs = [0, 0, 0]
+        limbs[w // 64] = 1 << (w % 64)
+        element = F192(*limbs)
+        acc, rho_pow = ZERO, ONE
+        for _ in range(64):
+            acc += rho_pow * element
+            element = element * element
+            rho_pow *= rho
+        weights.append(acc)
+    return weights
+
+
 def _transpose(values: Sequence[F192]) -> list[F192]:
     require(len(values) == 64, "ring-switch slice has the wrong length")
     output = [0] * 192
@@ -2136,7 +2157,7 @@ def verify_stacked_opening(
         slices.append(values)
 
     rho = transcript.sample()
-    coordinate_weights = powers(rho, 192)
+    coordinate_weights = _coordinate_weights(rho)
     ring_values = [sum((a * b for a, b in zip(_transpose(values), coordinate_weights)), ZERO)
                    for values in slices]
     ring_scales = transcript.samples(2)

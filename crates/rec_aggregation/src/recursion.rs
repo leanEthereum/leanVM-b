@@ -1920,19 +1920,6 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("STATEMENT_SEED_1", u(statement_state[1]).to_string());
     // Closed-form ring-switch coefficients: the guest bakes both Frobenius
     // orbits in, so it needs neither a runtime orbit table nor a 63-term
-    // Horner pass per level. See `pcs::ring_switch::base_coeff_orbit_constants`.
-    let base_orbits: Vec<F192> = pcs::ring_switch::base_coeff_orbit_constants()
-        .iter()
-        .flatten()
-        .copied()
-        .collect();
-    let tower_orbits: Vec<F192> = pcs::ring_switch::tower_coeff_orbit_constants()
-        .iter()
-        .flatten()
-        .copied()
-        .collect();
-    ps("RS_BASE_ORBITS", flds(&base_orbits));
-    ps("RS_TOWER_ORBITS", flds(&tower_orbits));
     rep
 }
 
