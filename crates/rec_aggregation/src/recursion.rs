@@ -31,6 +31,8 @@ use primitives::{
 /// virtual value column is referenced only by its own table's bus blocks, which
 /// the zerocheck settles, so no framework block can raise one at `zeta`.
 const VALCOL_FRAMEWORK: &str = "a framework block must not reference a virtual value column";
+const RECURSION_AGG_LABEL: &[u8] = b"leanvm-b/recursion-aggregation/v1";
+const RECURSION_STATEMENT_LABEL: &[u8] = b"leanvm-b/recursive-statement/v1";
 
 /// A field element as the decimal `u128` literal the zkDSL parser accepts.
 fn u(f: F128) -> u128 {
@@ -159,7 +161,8 @@ struct RecursiveStatement {
 
 impl RecursiveStatement {
     fn public_input(&self, inner_environment: [F128; 2]) -> [F128; 2] {
-        let mut sponge = Sponge::empty();
+        let mut sponge = Sponge::new(RECURSION_STATEMENT_LABEL, &[]);
+        sponge.observe(F128::new(self.sub_statements.len() as u64, 0));
         for &v in &inner_environment {
             sponge.observe(v);
         }
@@ -276,7 +279,8 @@ fn gen_agg(
     let klog = flock::blake3::K_LOG;
 
     // ---- the aggregation transcript (mirrors the guest exactly) ----
-    let mut h = Sponge::empty();
+    let mut h = Sponge::new(RECURSION_AGG_LABEL, &[]);
+    h.observe(F128::new(nsub as u64, 0));
     for d in subs {
         h.observe(d.pi[0]);
         h.observe(d.pi[1]);
@@ -471,7 +475,8 @@ fn gen_agg(
     // is identified by ONE seed digest in the recursion's PUBLIC INPUT (not
     // baked into the guest), so one compiled guest serves any inner program.
     let seed = lean_vm::cpu::fs_seed(program);
-    let mut e = Sponge::empty();
+    let mut e = Sponge::new(RECURSION_STATEMENT_LABEL, &[]);
+    e.observe(F128::new(subs.len() as u64, 0));
     e.observe(seed[0]);
     e.observe(seed[1]);
     for d in subs {
@@ -629,7 +634,7 @@ fn gen_verify(
     // Grinding digests are the only trace-borne data (they are functions of
     // sponge states): the first Pow is the bus grind; among the rest, fold
     // grinds carry bits > 0 and query-phase grinds carry bits = 0.
-    let pows: Vec<(u64, u32, F128)> = ops
+    let pows: Vec<(F128, u32, F128)> = ops
         .iter()
         .filter_map(|op| match op {
             TraceOp::Pow { nonce, bits, digest } => Some((*nonce, *bits, *digest)),
@@ -758,6 +763,23 @@ fn gen_verify(
         }
         gbase += n;
     }
+    // The stacked commitment uses witness::placements_of: committed columns
+    // sorted by descending kappa, then by their native column index. Transport
+    // compact committed-column indices; the guest certifies the permutation,
+    // ordering, and accumulated offsets before using them as claim selectors.
+    let col_sources = lean_vm::cpu::col_kappa_sources(kbc);
+    let committed_globals: Vec<usize> = col_sources
+        .iter()
+        .enumerate()
+        .filter_map(|(i, source)| source.map(|_| i))
+        .collect();
+    let mut compact_col = vec![usize::MAX; col_sources.len()];
+    for (compact, &global) in committed_globals.iter().enumerate() {
+        compact_col[global] = compact;
+    }
+    let mut col_order = committed_globals.clone();
+    col_order.sort_by_key(|&global| l.placements[global].offset);
+    let col_sort_order: Vec<F128> = col_order.iter().map(|&global| g_pow(compact_col[global])).collect();
     let sch = lean_vm::cpu::schema();
     let b3base = sch.base[5];
     let valcols: Vec<usize> = lean_vm::tables::BLAKE3_VALUE_COLS.iter().map(|&c| b3base + c).collect();
@@ -815,25 +837,16 @@ fn gen_verify(
             lpaths_flat.extend_from_slice(&hb32(h));
         }
     }
-    let qpkdv = l.placements[lean_vm::cpu::QPKD].n_vars;
-
     // claim descriptors, in exact clv order.
-    let (mut cpbuf, mut cplen, mut cslot, mut csel, mut yt) = (vec![], vec![], vec![], vec![], vec![]);
-    let (mut nover_v, mut seln_v): (Vec<usize>, Vec<usize>) = (vec![], vec![]);
-    let qpkd_pl = l.placements[lean_vm::cpu::QPKD];
+    let mut cpbuf = Vec::new();
+    let mut nover_v = Vec::new();
     // Per claim: nvt = full low span; when nvt > lenris the point overlaps the
-    // residual y region by nover coords (runtime factors in the terminal); the
-    // selector's in-ris part has seln bits; the y-pattern is the rest.
-    let mut push_desc = |buf: usize, plen: usize, slot: usize, sel_full: usize, nvt: usize| {
+    // residual y region by nover coords. Stack selectors are no longer emitted
+    // here: the guest derives them from the certified committed-column offsets.
+    let mut push_desc = |buf: usize, nvt: usize| {
         let nover = nvt.saturating_sub(lenris);
-        let seln = lenris.saturating_sub(nvt);
         cpbuf.push(buf);
-        cplen.push(plen);
-        cslot.push(slot);
-        csel.push(if seln == 0 { 0 } else { sel_full & ((1usize << seln) - 1) });
         nover_v.push(nover);
-        seln_v.push(seln);
-        yt.push(sel_full >> seln);
     };
     let mut desc_seen: std::collections::HashSet<(usize, usize)> = Default::default();
     let mut bi = 0usize;
@@ -850,8 +863,7 @@ fn gen_verify(
                         continue; // deduped: pooled once at its first occurrence
                     }
                     assert!(!valcols.contains(i), "{VALCOL_FRAMEWORK}");
-                    let pl = l.placements[*i];
-                    push_desc(0, blk.kappa, 0, pl.offset >> blk.kappa, blk.kappa);
+                    push_desc(0, blk.kappa);
                 }
             }
         }
@@ -861,12 +873,10 @@ fn gen_verify(
             let col = sch.base[t] + c;
             let pl = l.placements[col];
             if pl.is_virtual() {
-                let slot_i = lean_vm::blake3_flock::VM_SLOTS
-                    [valcols.iter().position(|v| *v == col).unwrap()];
                 let nvt = 7 + taus[t];
-                push_desc(3, taus[t], slot_i, qpkd_pl.offset >> nvt, nvt);
+                push_desc(3, nvt);
             } else {
-                push_desc(1, taus[t], 0, pl.offset >> taus[t], taus[t]);
+                push_desc(1, taus[t]);
             }
         }
     }
@@ -874,16 +884,13 @@ fn gen_verify(
         // PI claim on MEM: point = [r_m, 0, 0, ...]. Coords beyond lenris are
         // const zero, so they fold into the y pattern (required-zero bits)
         // instead of runtime overlap factors: cap the low span at lenris and
-        // shift the selector pattern left by the folded coord count.
+        // retain those zero coordinates in the derived offset-bit span.
         let pl = l.placements[lean_vm::cpu::MEM];
         let folded = pl.n_vars.saturating_sub(lenris);
         let low = pl.n_vars - folded;
-        push_desc(2, low, 0, (pl.offset >> pl.n_vars) << folded, low);
+        push_desc(2, low);
     }
     assert_eq!(cpbuf.len(), ncl, "descriptor count == pool size");
-    let rssel_full = qpkd_pl.offset >> qpkdv;
-    let yrs = rssel_full >> (lenris - qpkdv);
-    let rssel = rssel_full & ((1usize << (lenris - qpkdv)) - 1);
 
     let mut svk_flat = Vec::new();
     let mut ivk_flat = Vec::new();
@@ -931,38 +938,7 @@ fn gen_verify(
         // the batched zerocheck's round count: max_t tau_t, certified in-guest as a
         // maximum (one of the taus, and dominating them all).
         ("zc_tau_max".to_string(), vec![g_pow(*taus.iter().max().unwrap())]),
-        ("claim_qpkd_slot_bits".to_string(), {
-            let mut v = Vec::new();
-            for &slot in cslot.iter().take(ncl) {
-                for k in 0..7 {
-                    v.push(F128::new(((slot >> k) & 1) as u64, 0));
-                }
-            }
-            v
-        }),
-        ("claim_sel_bits".to_string(), {
-            let mut v = Vec::new();
-            for &sel in csel.iter().take(ncl) {
-                for k in 0..33 {
-                    v.push(F128::new(((sel >> k) & 1) as u64, 0));
-                }
-            }
-            v
-        }),
-        // (no overlap-mask stream: the guest bakes every prefix mask and
-        // selects row nover, so the mask is not prover-chosen at all.)
-        ("claim_yslot_bits".to_string(), {
-            let mut v = Vec::new();
-            for j in 0..ncl {
-                for k in 0..8 {
-                    let b = if k < nover_v[j] { 0 } else { (yt[j] >> (k - nover_v[j])) & 1 };
-                    v.push(F128::new(b as u64, 0));
-                }
-            }
-            v
-        }),
-        ("rs_yslot_bits".to_string(), (0..8).map(|k| F128::new(((yrs >> k) & 1) as u64, 0)).collect()),
-        ("rs_sel_bits".to_string(), (0..33).map(|k| F128::new(((rssel >> k) & 1) as u64, 0)).collect()),
+        ("col_sort_order".to_string(), col_sort_order),
         ("sort_order".to_string(), sort_order.clone()),
     ];
     (hints, deferred)
@@ -1148,7 +1124,18 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     let sch = lean_vm::cpu::schema();
     let b3base = sch.base[5];
     let valcols: Vec<usize> = lean_vm::tables::BLAKE3_VALUE_COLS.iter().map(|&c| b3base + c).collect();
-    let mut cpbuf: Vec<usize> = vec![];
+    let col_sources_pm = lean_vm::cpu::col_kappa_sources(kbc);
+    let mut compact_col_pm = vec![usize::MAX; col_sources_pm.len()];
+    let mut n_committed = 0usize;
+    for (global, source) in col_sources_pm.iter().enumerate() {
+        if source.is_some() {
+            compact_col_pm[global] = n_committed;
+            n_committed += 1;
+        }
+    }
+    let qpkd_compact = compact_col_pm[lean_vm::cpu::QPKD];
+    assert_ne!(qpkd_compact, usize::MAX, "QPKD must be committed");
+    let (mut cpbuf, mut cpcol, mut cpqslot): (Vec<usize>, Vec<usize>, Vec<usize>) = (vec![], vec![], vec![]);
     let mut desc_seen: std::collections::HashSet<(usize, usize)> = Default::default();
     let mut gi = 0usize;
     for blocks in sides.iter() {
@@ -1165,6 +1152,10 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
                     }
                     assert!(!valcols.contains(i), "{VALCOL_FRAMEWORK}");
                     cpbuf.push(0);
+                    let compact = compact_col_pm[*i];
+                    assert_ne!(compact, usize::MAX, "framework claim must target a committed column");
+                    cpcol.push(compact);
+                    cpqslot.push(0);
                 }
             }
         }
@@ -1172,11 +1163,22 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     for (t, table) in lean_vm::tables::tables().iter().enumerate() {
         for c in 0..table.n_committed_columns() {
             let col = sch.base[t] + c;
-            cpbuf.push(if l.placements[col].is_virtual() { 3 } else { 1 });
+            let virtual_col = l.placements[col].is_virtual();
+            cpbuf.push(if virtual_col { 3 } else { 1 });
+            cpcol.push(if virtual_col { qpkd_compact } else { compact_col_pm[col] });
+            cpqslot.push(if virtual_col {
+                lean_vm::blake3_flock::VM_SLOTS[valcols.iter().position(|&v| v == col).unwrap()]
+            } else {
+                0
+            });
         }
     }
     cpbuf.push(2); // PI claim on MEM
+    cpcol.push(compact_col_pm[lean_vm::cpu::MEM]);
+    cpqslot.push(0);
     assert_eq!(cpbuf.len(), ncl, "descriptor count == pool size");
+    assert_eq!(cpcol.len(), ncl, "every descriptor has a committed-column target");
+    assert_eq!(cpqslot.len(), ncl, "every descriptor has a fixed QPKD slot");
 
     // ---- the placeholder map ----
     let ints = |v: &[usize]| format!("[{}]", v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(", "));
@@ -1185,6 +1187,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     let mut rep = BTreeMap::new();
     let mut ps = |k: &str, v: String| { rep.insert(format!("{k}_PLACEHOLDER"), v); };
     ps("STREAM_CAP", stream_cap.to_string());
+    ps("MIN_LOG_MEM", lean_vm::cpu::MIN_LOG_MEM.to_string());
     ps("INV_GEN", u(G.inv()).to_string());
     ps("LAGRANGE_INV_0", u(G.inv()).to_string());
     ps("LAGRANGE_INV_1", u((F128::ONE + G).inv()).to_string());
@@ -1243,8 +1246,6 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     // g^(push.mu - BUS_GRIND_SHIFT) is the bus PoW window
     // (leaf::grand_product_grinding_bits: bits = mu - (127 - SECURITY_BITS)).
     ps("BUS_GRIND_SHIFT", (127 - lean_vm::SECURITY_BITS).to_string());
-    // Per-claim y-slot hint stride (overlap mask / slot bit rows).
-    ps("YR_SLOT_STRIDE", "8".to_string());
     const MINB3: usize = 3;
     let fixed_challenges: Vec<F128> = flock::zerocheck::univariate_skip_optimized::small_challenges_ghash().into_iter().chain(flock::zerocheck::univariate_skip_optimized::medium_challenges_ghash()).collect();
     ps("FIXED_CHALLENGES", flds(&fixed_challenges));
@@ -1369,6 +1370,13 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("LIG_N_CANDIDATES", (maxm - minm + 1).to_string());
     ps("LIG_MIN_SHIFT_INV", u(g_pow(minm).inv()).to_string());
     ps("CLAIM_POINT_BUF", ints(&cpbuf));
+    ps("CLAIM_COMMITTED_COL", ints(&cpcol));
+    let cpqbits: Vec<usize> = cpqslot
+        .iter()
+        .flat_map(|&slot| (0..7).map(move |k| (slot >> k) & 1))
+        .collect();
+    ps("CLAIM_QPKD_SLOT_BITS", ints(&cpqbits));
+    ps("QPKD_COMMITTED_COL", qpkd_compact.to_string());
     ps("QPKD_VARS_CAP", (33 + flock::blake3::K_LOG - 7).to_string());
     ps("BYTECODE_LOG", kbc.to_string());
     // The stacked bytecode: nbcv/2 encoding columns per side, packed along
@@ -1384,6 +1392,12 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     let label_state = Sponge::new(b"leanvm-b", &[]).state();
     ps("TRANSCRIPT_SEED_0", u(label_state[0]).to_string());
     ps("TRANSCRIPT_SEED_1", u(label_state[1]).to_string());
+    let agg_state = Sponge::new(RECURSION_AGG_LABEL, &[]).state();
+    ps("AGG_SEED_0", u(agg_state[0]).to_string());
+    ps("AGG_SEED_1", u(agg_state[1]).to_string());
+    let statement_state = Sponge::new(RECURSION_STATEMENT_LABEL, &[]).state();
+    ps("STATEMENT_SEED_0", u(statement_state[0]).to_string());
+    ps("STATEMENT_SEED_1", u(statement_state[1]).to_string());
     let rs_coeff_orbits: Vec<F128> =
         pcs::ring_switch::eq_linearized_orbit_constants().iter().flatten().copied().collect();
     ps("RS_COEFF_ORBITS", flds(&rs_coeff_orbits));
@@ -1526,12 +1540,10 @@ fn recursion_2to1_mixed() {
 #[test]
 #[ignore]
 fn recursion_soundness_binds() {
-    // Adversarial check that the layout-hint certifications actually BIND:
-    // the honest proof verifies, and corrupting any of the once-free hints
-    // (padding surplus, bus-leaf selectors + their packing order, and the
-    // residual-slot pad coordinates) makes the guest reject. Uses the m=22
-    // candidate, whose yr_log_n is below YR_LOG_CAP so the slot over-read
-    // path is live. Ignored: several full inner+outer proofs.
+    // Adversarial check that the remaining hints and native-format bounds bind:
+    // the honest proof verifies; malformed sizes/nonces and corrupted certified
+    // hints reject; and all commitment-placement descriptors are absent from the
+    // witness. Ignored because it runs several full inner+outer proofs.
     let cfg: &[(usize, usize)] = &[(4, 1 << 12)];
     let batch = build_batch(cfg);
     let mut guest = recursion_guest(&batch.program0, cfg.len());
@@ -1549,37 +1561,27 @@ fn recursion_soundness_binds() {
     };
 
     assert!(run(&mut guest, &batch.merged), "honest proof must verify");
-
-    // The first residual-slot PADDING coordinate (k = yr_log_n), shape-derived
-    // from the fold ladder so the test survives changes to the fold constants
-    // (INITIAL_K / LEVEL_K / RESIDUAL_MAX_LOG). This inner commits a stack of
-    // log-size 22 (flock m = 22 + 7); YR_LOG_CAP is the max residual log over
-    // the guest's dispatch candidates (mu 22..=28, mirroring gen_verify). The
-    // guest only reads YR_LOG_CAP slot coords, so a pad coordinate to tamper
-    // exists only when this candidate's yr_log_n sits BELOW the cap.
-    let yr_log = |mu: usize| {
-        pcs::ligerito::LigeritoSecurityConfig::derive_config(mu + 7)
-            .and_then(|s| s.to_config())
-            .expect("stacked opening config")
-            .level_shapes(mu)
-            .yr_log_n
-    };
-    let (stack_mu, yr_cap) = (22usize, (22..=28).map(yr_log).max().unwrap());
-    let yr_pad_idx = yr_log(stack_mu);
+    assert!(
+        batch.merged.iter().all(|(name, _)| !matches!(
+            name.as_str(),
+            "claim_sel_bits"
+                | "claim_yslot_bits"
+                | "claim_qpkd_slot_bits"
+                | "rs_sel_bits"
+                | "rs_yslot_bits"
+        )),
+        "claim and ring placement descriptors must be derived, not hinted"
+    );
 
     // each tamper flips one hint to a definitely-invalid value.
-    let mut tampers: Vec<(&str, usize, F128)> = vec![
+    let tampers: Vec<(&str, usize, F128)> = vec![
         ("fs_seed", 0, F128::ONE),          // wrong proving environment: own_pi (public input) must reject
+        ("stream", 0, F128::new((lean_vm::cpu::MIN_LOG_MEM - 1) as u64, 0)), // native memory floor
+        ("stream", 1, F128::new(1u64 << 32, 0)), // native row counts are strictly below 2^32
         ("claim_nover", 0, g_pow(5)),        // wrong overlap: exact length pin must reject
         ("pi_cplen", 0, g_pow(2)),           // wrong pi dimension: min-cert must reject
         ("zc_tau_max", 0, g_pow(2)),         // not the max tau: the max-cert must reject
     ];
-    if yr_pad_idx < yr_cap {
-        // pad coord (k >= yr_log_n): over-read weight must be zero-pinned
-        tampers.push(("rs_yslot_bits", yr_pad_idx, F128::ONE));
-    } else {
-        eprintln!("rs_yslot_bits tamper skipped: yr_log_n == YR_LOG_CAP (no pad coordinate)");
-    }
     for &(stream, idx, val) in &tampers {
         let mut merged = batch.merged.clone();
         let pos = merged.iter().position(|(n, _)| n == stream).expect("stream present");
@@ -1598,10 +1600,20 @@ fn recursion_soundness_binds() {
         merged[pos].1[0][0] = merged[pos].1[0][1];
         assert!(!run(&mut guest, &merged), "duplicated sort_order rank must be rejected");
     }
+    // col_sort_order: swapping two distinct entries preserves a valid
+    // permutation but violates either descending kappa or the native-index
+    // tie-break, so the reconstructed commitment offsets must reject it.
+    {
+        let mut merged = batch.merged.clone();
+        let pos = merged.iter().position(|(n, _)| n == "col_sort_order").expect("col_sort_order");
+        assert!(merged[pos].1[0].len() >= 2);
+        merged[pos].1[0].swap(0, 1);
+        assert!(!run(&mut guest, &merged), "non-canonical col_sort_order must be rejected");
+    }
     // (The overlap mask is no longer a hint: the guest selects a baked
     // prefix-mask row by the pinned nover, so the point-reuse y-slot
     // over-read path is covered by the claim_nover tamper above.)
-    eprintln!("all layout-hint tamperings correctly rejected");
+    eprintln!("all recursion soundness tamperings correctly rejected");
 }
 
 #[test]

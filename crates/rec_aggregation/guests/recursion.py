@@ -5,6 +5,7 @@ from snark_lib import *
 STREAM_CAP = STREAM_CAP_PLACEHOLDER
 # Per-table tau floor: BLAKE3 is sized to flock's instance count (>= 2^3).
 FLOORS = [0, 0, 0, 0, 0, 3]
+MIN_LOG_MEM = MIN_LOG_MEM_PLACEHOLDER
 INV_GEN = INV_GEN_PLACEHOLDER
 LAGRANGE_INV_0 = LAGRANGE_INV_0_PLACEHOLDER
 LAGRANGE_INV_1 = LAGRANGE_INV_1_PLACEHOLDER
@@ -131,9 +132,9 @@ K_LOG = K_LOG_PLACEHOLDER
 # Scalars index as TBL[m_idx]; per-level values as TBL[m_idx * LIG_MAX_LEVELS + lvl];
 # per-fold grind schedules with the LIG_MAX_TOTAL_FOLDS stride; the subspace
 # vanishing constants with the LIG_MAX_VANISH_LEN stride. The eval_b terminal
-# claim descriptors keep only the FIXED parts baked (CLAIM_POINT_BUF, named
-# POINT_BUF_* below) — the
-# shape-dependent lengths/selectors are hinted and identity-certified.
+# claim descriptors keep the fixed point-buffer and committed-column identities
+# baked. Shape-dependent lengths are certified below; selectors are derived from
+# the native largest-first committed-column placement reconstructed in-circuit.
 # Opening dispatch: baked committed log-size, candidate range, g^-LIG_MIN_LOG_SIZE.
 LIG_MIN_LOG_SIZE = LIG_MIN_LOG_SIZE_PLACEHOLDER
 # Committed-column kappa sources (0 = const COL_KAPPA_ADJ, 1 = log_mem, 2+t = tau_t)
@@ -186,14 +187,20 @@ LIG_VANISH_INVS = LIG_VANISH_INVS_PLACEHOLDER
 LIG_N_CANDIDATES = LIG_N_CANDIDATES_PLACEHOLDER
 LIG_MIN_SHIFT_INV = LIG_MIN_SHIFT_INV_PLACEHOLDER
 # eval_b claim descriptors (fixed parts) + the qpkd capacity stride.
-# Per-claim y-slot hint stride (overlap mask / slot bits rows).
-YR_SLOT_STRIDE = YR_SLOT_STRIDE_PLACEHOLDER
+# CLAIM_COMMITTED_COL maps each pooled logical claim to the compact index of the
+# committed column it must open. Virtual BLAKE3 value claims map to QPKD.
+# CLAIM_QPKD_SLOT_BITS contains the fixed seven VM-slot bits for every logical
+# claim (zero for non-virtual claims), and QPKD_COMMITTED_COL identifies the
+# ring-switch target.
 # Which point buffer a pooled claim's x-part lives in (CLAIM_POINT_BUF codes):
 POINT_BUF_ZETA = 0
 POINT_BUF_RHO = 1
 POINT_BUF_PI = 2
 POINT_BUF_QPKD = 3
 CLAIM_POINT_BUF = CLAIM_POINT_BUF_PLACEHOLDER
+CLAIM_COMMITTED_COL = CLAIM_COMMITTED_COL_PLACEHOLDER
+CLAIM_QPKD_SLOT_BITS = CLAIM_QPKD_SLOT_BITS_PLACEHOLDER
+QPKD_COMMITTED_COL = QPKD_COMMITTED_COL_PLACEHOLDER
 QPKD_VARS_CAP = QPKD_VARS_CAP_PLACEHOLDER
 # Ring-switch coefficient factorization for the GHASH power basis. Each
 # 15-value row contains d^(-2^k)*x^(127*2^k), then
@@ -216,6 +223,10 @@ NSUB = NSUB_PLACEHOLDER
 BYTECODE_VARS = BYTECODE_VARS_PLACEHOLDER
 TRANSCRIPT_SEED_0 = TRANSCRIPT_SEED_0_PLACEHOLDER
 TRANSCRIPT_SEED_1 = TRANSCRIPT_SEED_1_PLACEHOLDER
+AGG_SEED_0 = AGG_SEED_0_PLACEHOLDER
+AGG_SEED_1 = AGG_SEED_1_PLACEHOLDER
+STATEMENT_SEED_0 = STATEMENT_SEED_0_PLACEHOLDER
+STATEMENT_SEED_1 = STATEMENT_SEED_1_PLACEHOLDER
 
 DS_SCALAR = 1
 DS_BYTE = 2
@@ -227,9 +238,9 @@ DS_POW = 5
 # ring-switch coordinates (the q_pkd slot length, r'' length).
 FIELD_BITS = 128
 LOG2_FIELD_BITS = 7
-# Exponent bit-widths: an announced 32-bit count decomposes into COUNT_BITS
-# bits (count == 2^32 tops); any structural size (sums of 2^kappa, packing
-# offsets) fits SIZE_BITS bits.
+# Exponent bit-widths: an announced count uses COUNT_BITS bits internally, with
+# its top bit constrained to zero so the native strict 32-bit bound holds; any
+# structural size (sums of 2^kappa, packing offsets) fits SIZE_BITS bits.
 COUNT_BITS = 33
 SIZE_BITS = 34
 
@@ -290,7 +301,11 @@ def grind_check(state_0, state_1, nonce, nbits_g):
     # bits are advice-decomposed HERE and verified (booleanity + reconstruction,
     # check_128_bits_decomposition), and the low nbits (nbits_g = g^nbits) must
     # be zero — the CONTIGUOUS PoW window of transcript::pow_bits_ok. The
-    # caller absorbs the nonce afterwards.
+    # caller absorbs the full field nonce afterwards. The honest prover searches
+    # the deterministic u64 subset, while verification permits the full field:
+    # each candidate still costs one hash and succeeds with probability 2^-bits.
+    if nbits_g == GEN ** 0:
+        assert nonce == 0  # native canonical zero-work nonce
     st = [state_0, state_1]
     tag = [0, DS_POW]
     base = StackBuf(2)
@@ -343,13 +358,14 @@ def verify_log2_ceil(bits_buf, g_logs_pow2, g_squares, floor: Const, nbits: Cons
 
 
 def log2_ceil_word(value, g_logs_pow2, g_squares, floor: Const, nbits: Const):
-    # g^log2_ceil(value) for a concrete integer `value`. The bits are hinted HERE
-    # (hint_decompose_bits), not by the caller, then tied back to `value`. Returns
-    # (g_log, g^value).
+    # g^log2_ceil(value) for a concrete integer `value` < 2^(nbits - 1). The bits
+    # are hinted HERE (hint_decompose_bits), not by the caller, then tied back to
+    # `value`. The zero top bit mirrors the native strict 32-bit row-count bound.
     bits = HeapBuf(GEN ** nbits)
     hint_decompose_bits(bits, value, nbits)
     g_log, word, g_value = verify_log2_ceil(bits, g_logs_pow2, g_squares, floor, nbits)
     assert word == value  # the hinted bits are exactly value's bits (so value < 2^nbits)
+    assert bits[GEN ** (nbits - 1)] == 0
     return g_log, g_value
 
 
@@ -674,6 +690,8 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
         msg_cursor = msg_cursor * GEN
         if LIG_QUERY_GRIND_BITS[m_idx * LIG_MAX_LEVELS + lvl] != 0:
             grind_check(fs[0], fs[1], q_nonce, GEN ** LIG_QUERY_GRIND_BITS[m_idx * LIG_MAX_LEVELS + lvl])
+        else:
+            assert q_nonce == 0
         fs = absorb(fs, q_nonce, DS_POW)
 
         sqz_chain_0 = HeapBuf(GEN ** (LIG_MAX_SQUEEZES[m_idx] + 1))
@@ -854,6 +872,8 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     # L's advice-decomposed bits — no hint, no g^j -> j lookup table.
     g_log_mem = g_power_of_word(sizes[0], g_squares, COUNT_BITS)
     assert log(g_log_mem) < COUNT_BITS
+    mem_floor_slack = g_log_mem / GEN ** MIN_LOG_MEM
+    assert log(mem_floor_slack) < COUNT_BITS  # native MIN_LOG_MEM <= log_mem
     dims_g[GEN ** 0] = g_log_mem
     # count gadget: g^tau_t = log2_ceil_word(count_t), which also returns
     # g^count_t (for the padding-surplus certification).
@@ -1688,34 +1708,77 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     # ================= the Ligerito opening core (stacked, m = STACK) ========
 
     # ---- stacked Ligerito opening: dispatch on the committed log-size ----
-    # ---- certify g^m: m = max(log2_ceil(sum_cols 2^kappa), PCS_MIN_MU) ----
-    # Integer addition rides the exponent: g^total = Π g^(2^kappa) over the
-    # committed columns (kappas from the certified announced logs via the baked
-    # source map); log2_ceil_in_the_exponent does the rest, with the PCS_MIN_MU
-    # floor waiving minimality exactly like the per-table tau floors.
-    g_total = GEN ** 0
+    # ---- reconstruct the native committed-column placement ----
+    # placements_of sorts committed columns by descending kappa and then by
+    # ascending column index. The hinted order is only transport: range checks,
+    # write-once dynamic stores, the descending-kappa slack, and the tie-break
+    # check certify that it is exactly that canonical permutation. Offsets then
+    # accumulate as g^offset *= g^(2^kappa).
+    col_kappa_g = HeapBuf(N_COMMITTED_COLS)
     for c in unroll(0, N_COMMITTED_COLS):
-        g_total *= g_squares[kappa_base[GEN ** COL_KAPPA_SRC[c]] * GEN ** COL_KAPPA_ADJ[c]]
+        col_kappa_g[GEN ** c] = kappa_base[GEN ** COL_KAPPA_SRC[c]] * GEN ** COL_KAPPA_ADJ[c]
+    col_sort_order = HeapBuf(N_COMMITTED_COLS)
+    hint_witness(col_sort_order[0:N_COMMITTED_COLS], "col_sort_order")
+    col_off_g = HeapBuf(N_COMMITTED_COLS)
+    g_total = GEN ** 0
+    prev_col = GEN ** 0
+    prev_kappa = GEN ** 0
+    for rank in unroll(0, N_COMMITTED_COLS):
+        col = col_sort_order[GEN ** rank]
+        assert log(col) < N_COMMITTED_COLS
+        kappa_g = col_kappa_g[col]
+        if rank != 0:
+            # A negative exponent wraps around the order of GEN and cannot pass
+            # this small range check, hence prev_kappa >= kappa.
+            kappa_slack = prev_kappa / kappa_g
+            assert log(kappa_slack) < SIZE_BITS
+            if prev_kappa == kappa_g:
+                # Equal-sized columns use their compact (native column-order)
+                # index as the deterministic ascending tie-break.
+                tie_slack = col / prev_col
+                assert log(tie_slack) < N_COMMITTED_COLS
+        col_off_g[col] = g_total  # write-once: a duplicate permutation entry collides
+        g_total *= g_squares[kappa_g]
+        prev_col = col
+        prev_kappa = kappa_g
+
+    # Exact bit decompositions of every certified offset. Extra zero cells cover
+    # residual coordinates beyond the real stack log when dispatch candidates
+    # have different residual caps.
+    col_offset_bits = HeapBuf(N_COMMITTED_COLS * (SIZE_BITS + YR_LOG_CAP))
+    for c in unroll(0, N_COMMITTED_COLS):
+        offset_row = col_offset_bits * GEN ** ((SIZE_BITS + YR_LOG_CAP) * c)
+        hint_decompose_bits_exponent(offset_row, col_off_g[GEN ** c], SIZE_BITS)
+        rebuilt_offset = GEN ** 0
+        for k in unroll(0, SIZE_BITS):
+            offset_bit = offset_row[GEN ** k]
+            assert offset_bit * offset_bit == offset_bit
+            rebuilt_offset *= (1 + offset_bit * (g_squares[GEN ** k] + 1))
+        assert rebuilt_offset == col_off_g[GEN ** c]
+        for k in unroll(SIZE_BITS, SIZE_BITS + YR_LOG_CAP):
+            offset_row[GEN ** k] = 0
+
+    # ---- certify g^m: m = max(log2_ceil(sum_cols 2^kappa), PCS_MIN_MU) ----
+    # g_total is g^(sum 2^kappa) from the certified placement walk above.
     gmv = log2_ceil_in_the_exponent(g_total, g_logs_pow2, g_squares, PCS_MIN_MU, SIZE_BITS)  # g^m
     sel = gmv * LIG_MIN_SHIFT_INV  # g^(m - MIN): the match_range arm index selecting the opening candidate
     assert log(sel) < LIG_N_CANDIDATES
     sumcheck_target, fold_challenges, final_msg, inner_total, yr_log_n_g, yr_pad_g, fold_cap_g = match_range(log(sel), range(0, LIG_N_CANDIDATES), lambda m_idx: open_stacked(m_idx, fs[0], fs[1], target, commit_root_0, commit_root_1, cursor))
+    # `stream` is a fixed-capacity witness transport. The shape fixes the exact
+    # consumed prefix, whose every word is transcript-bound; the unused suffix
+    # is outside the recursively verified proof and intentionally unconstrained.
 
     # ---- generalized eval_b terminal (runtime claim shapes) ----
-    # Per-claim lengths, selector bits, and slot data are HINTED; the closing
-    # identity inner_sum == sumcheck_target (against the opening-bound target)
-    # pins their VALUES, so only range checks and booleanity are enforced here.
-    # All selector products use eq(b, r) = 1 + b + r.
+    # Per-claim lengths remain certified below. Every stack selector comes from
+    # the certified offset of CLAIM_COMMITTED_COL[j]; it is not prover advice.
+    # QPKD value-slot IDs are baked per logical claim. All selector products use
+    # eq(b, r) = 1 + b + r.
     claim_low_len = HeapBuf(N_CLAIMS)  # computed low_len per claim (the y-slot
     #                             # overlap pointers below re-read it)
     claim_nover = HeapBuf(N_CLAIMS)
     hint_witness(claim_nover[0:N_CLAIMS], "claim_nover")
     pi_cplen = StackBuf(1)
     hint_witness(pi_cplen[0:1], "pi_cplen")
-    claim_qpkd_slot_bits = HeapBuf(LOG2_FIELD_BITS * N_CLAIMS)
-    hint_witness(claim_qpkd_slot_bits[0:LOG2_FIELD_BITS * N_CLAIMS], "claim_qpkd_slot_bits")
-    claim_sel_bits = HeapBuf(COUNT_BITS * N_CLAIMS)
-    hint_witness(claim_sel_bits[0:COUNT_BITS * N_CLAIMS], "claim_sel_bits")
     # baked prefix-mask table replacing the hinted overlap mask: row t holds
     # [k < t] for k in [0, YR_LOG_CAP); the y-slot loop below selects row nover
     # by pointer arithmetic, so the mask is a prefix of exactly nover ones BY
@@ -1726,14 +1789,9 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
             prefix_mask_table[GEN ** (t * YR_LOG_CAP + k)] = 1
         for k in unroll(t, YR_LOG_CAP):
             prefix_mask_table[GEN ** (t * YR_LOG_CAP + k)] = 0
-    claim_yslot_bits = HeapBuf(YR_SLOT_STRIDE * N_CLAIMS)
-    hint_witness(claim_yslot_bits[0:YR_SLOT_STRIDE * N_CLAIMS], "claim_yslot_bits")
-    rs_yslot_bits = HeapBuf(YR_SLOT_STRIDE)
-    hint_witness(rs_yslot_bits[0:YR_SLOT_STRIDE], "rs_yslot_bits")
-    rs_sel_bits = HeapBuf(COUNT_BITS)
-    hint_witness(rs_sel_bits[0:COUNT_BITS], "rs_sel_bits")
     claim_weights = HeapBuf(N_CLAIMS)
     for j in unroll(0, N_CLAIMS):
+        claim_offset_bits = col_offset_bits * GEN ** ((SIZE_BITS + YR_LOG_CAP) * CLAIM_COMMITTED_COL[j])
         # EXACT lengths: cplen is certified, nover (the residual-overlap count)
         # is the ONE hinted branch choice; low_len = cplen - nover and
         # seln = lenris + nover - nlow are divisions off it, and the range
@@ -1782,14 +1840,14 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
             for xk in mul_range(1, low_len_g):
                 low_chain[xk * GEN] = low_chain[xk] * (1 + rptr[xk] + fold_challenges[xk])
         if CLAIM_POINT_BUF[j] == POINT_BUF_PI:
+            low_chain[GEN ** 0] = 1
             low_chain[GEN ** 1] = 1 + rm + fold_challenges[GEN ** 0]
             for xk in mul_range(GEN, low_len_g):
                 low_chain[xk * GEN] = low_chain[xk] * (1 + fold_challenges[xk])
         if CLAIM_POINT_BUF[j] == POINT_BUF_QPKD:
             qpkd_slot_eq = GEN ** 0
             for k in unroll(0, LOG2_FIELD_BITS):
-                sb3 = claim_qpkd_slot_bits[GEN ** (LOG2_FIELD_BITS * j + k)]
-                assert sb3 * sb3 == sb3
+                sb3 = CLAIM_QPKD_SLOT_BITS[LOG2_FIELD_BITS * j + k]
                 qpkd_slot_eq *= (1 + sb3 + fold_challenges[GEN ** k])
             # A value column is referenced only by its own table's bus blocks, and
             # those are settled by the zerocheck, so the instance point of a q_pkd
@@ -1802,12 +1860,13 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
                 low_chain[xk * GEN] = low_chain[xk] * (1 + zptr[xk] + ris7[xk])
         low_eq = low_chain[low_len_g]
         ris_hi = fold_challenges * nlow
-        selrow = claim_sel_bits * GEN ** (COUNT_BITS * j)
+        # Selector coordinates [nlow, lenris) are exactly the corresponding
+        # certified placement-offset bits.
+        selrow = claim_offset_bits * nlow
         sel_chain = HeapBuf(SIZE_BITS + 1)
         sel_chain[GEN ** 0] = low_eq
         for xk in mul_range(1, seln):
             sel_bit = selrow[xk]
-            assert sel_bit * sel_bit == sel_bit
             sel_chain[xk * GEN] = sel_chain[xk] * (1 + sel_bit + ris_hi[xk])
         claim_weights[GEN ** j] = sel_chain[seln] * gamma_pool[GEN ** j]
     # eval_rs_eq per claim: E = sum_k c_k * prod_j (z_j^(2^k) + 1 + ris_j)
@@ -1843,23 +1902,24 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     rs_len_g = fold_cap_g / qpkdv_g
     assert log(rs_len_g) < SIZE_BITS
     ris_q = fold_challenges * qpkdv_g
+    qpkd_offset_bits = col_offset_bits * GEN ** ((SIZE_BITS + YR_LOG_CAP) * QPKD_COMMITTED_COL)
+    rs_sel_bits = qpkd_offset_bits * qpkdv_g
     rsw_chain = HeapBuf(SIZE_BITS + 1)
     rsw_chain[GEN ** 0] = rs_weight
     for xk in mul_range(1, rs_len_g):
         rs_bit = rs_sel_bits[xk]
-        assert rs_bit * rs_bit == rs_bit
         rsw_chain[xk * GEN] = rsw_chain[xk] * (1 + rs_bit + ris_q[xk])
     rs_weight = rsw_chain[rs_len_g]
     # inner_sum = sum_y final_msg[y] * eval_b[y]: reordered per claim. Claim j's
     # y-contribution is cw_j times the final_msg MLE at the point (overlap coords
-    # || hinted slot bits): coord_k = m_k * ov_k + (1 + m_k) * bit_k with
+    # || certified placement bits): coord_k = m_k * ov_k + (1 + m_k) * bit_k with
     # mask bits m_k = [k < NOVER], read from the baked prefix-mask row nover.
     # The dot unrolls over the global cap 2^YR_LOG_CAP, but final_msg only has
     # 2^yr_log_n cells, so the slot coordinates at k >= yr_log_n are ASSERTED
     # zero (below): the eq tensor then puts zero weight on every index
     # >= 2^yr_log_n, so the over-cap dot terms vanish and never depend on
-    # out-of-buffer cells. The ring-switch slot is the same, with no overlaps
-    # and the hinted YRS bits.
+    # out-of-buffer cells. The ring-switch slot is the same, with no overlaps,
+    # and comes from the same certified QPKD offset.
     inner_sum = inner_total
     for j in unroll(0, N_CLAIMS):
         slot_point = HeapBuf(YR_LOG_CAP)
@@ -1876,10 +1936,11 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         # the sumcheck a linear knob (a full opening forgery) - the point-reuse
         # analog of the hole b7b470c closed on the direct y-slot path.
         mask_row = prefix_mask_table * claim_nover[GEN ** j] ** YR_LOG_CAP  # row nover: g^(nover * cap)
+        claim_offset_bits = col_offset_bits * GEN ** ((SIZE_BITS + YR_LOG_CAP) * CLAIM_COMMITTED_COL[j])
+        residual_offset_bits = claim_offset_bits * fold_cap_g
         for k in unroll(0, YR_LOG_CAP):
             mask_bit = mask_row[GEN ** k]
-            slot_bit = claim_yslot_bits[GEN ** (YR_SLOT_STRIDE * j + k)]
-            assert slot_bit * slot_bit == slot_bit
+            slot_bit = residual_offset_bits[GEN ** k]
             slot_point[GEN ** k] = mask_bit * overlap_ptr[GEN ** k] + (1 + mask_bit) * slot_bit
         # zero-pin coords beyond final_msg's log-length (no over-cap weight): the
         # pointers start at yr_log_n. The zero asserts double as the
@@ -1888,7 +1949,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         # span, slot_point is 0, and no eq weight lands on the unwritten
         # final_msg cells past 2^yr_log_n.
         hi_mask = mask_row * yr_log_n_g
-        hi_slot = claim_yslot_bits * GEN ** (YR_SLOT_STRIDE * j) * yr_log_n_g
+        hi_slot = residual_offset_bits * yr_log_n_g
         for xk in mul_range(1, yr_pad_g):
             assert hi_mask[xk] == 0
             assert hi_slot[xk] == 0
@@ -1899,9 +1960,9 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
             final_msg_dot += final_msg[GEN ** y] * slot_eq[GEN ** (2 ** YR_LOG_CAP - 2 + y)]
         inner_sum += claim_weights[GEN ** j] * final_msg_dot
     rs_slot_point = HeapBuf(YR_LOG_CAP)
+    rs_yslot_bits = qpkd_offset_bits * fold_cap_g
     for k in unroll(0, YR_LOG_CAP):
         yb = rs_yslot_bits[GEN ** k]
-        assert yb * yb == yb
         rs_slot_point[GEN ** k] = yb
     rs_hi = rs_yslot_bits * yr_log_n_g
     for xk in mul_range(1, yr_pad_g):
@@ -1974,7 +2035,8 @@ def main():
     # samples the RLC coefficients, and verifies the two batching sumchecks of
     # doc.tex §Deferred evaluation claims. Only the reduced claims (one per
     # fixed polynomial) reach the public input.
-    agg_fs = [0, 0]
+    agg_fs = [AGG_SEED_0, AGG_SEED_1]
+    agg_fs = obs(agg_fs, NSUB)
     for sub in unroll(0, NSUB):
         agg_fs = obs(agg_fs, sub_pis[GEN ** (2 * sub)])
         agg_fs = obs(agg_fs, sub_pis[GEN ** (2 * sub + 1)])
@@ -2064,7 +2126,8 @@ def main():
     assert mat_running == mat_final
 
     # ---- bind the FS seed + sub statements + reduced claims to the PI ----
-    out_fs = [0, 0]
+    out_fs = [STATEMENT_SEED_0, STATEMENT_SEED_1]
+    out_fs = obs(out_fs, NSUB)
     out_fs = obs(out_fs, fs_seed[0])  # the inner proving environment is part of the public statement
     out_fs = obs(out_fs, fs_seed[1])
     for sub in unroll(0, NSUB):
