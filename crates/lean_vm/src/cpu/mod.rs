@@ -333,7 +333,7 @@ fn sigmas(bus: &[Vec<F128>; 3], form_pows: [F128; 3]) -> Vec<F128> {
 /// per table. That sharing is what keeps the batch tied to the bus: with a common
 /// `η^{base+s}` per side, the batch's target is `Σ_s η^{FORM_POWS+s}·R_s` for
 /// the sides' table shares `R_s`, which the verifier DERIVES from the leaf claims
-/// ([`eta_form_pows`]; a mismatch surfaces as [`Error::Constraint`]). Were the
+/// (`eta_form_pows`; a mismatch surfaces as [`Error::Constraint`]). Were the
 /// powers per table, the target
 /// would not factor through the `R_s` and nothing would pin the tables' share of
 /// the bus.

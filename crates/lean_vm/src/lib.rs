@@ -70,9 +70,10 @@ fn set_qos_user_interactive() {
 }
 
 /// Target soundness of the whole proof, in bits. Every round is designed to clear
-/// this: the PCS runs the Ligerito `Secure` profile ([`pcs::PROFILE`], 120-bit),
-/// and the bus grand product grinds up to it before its multiset challenge
-/// ([`leaf`]). Raising it means bumping BOTH (a stronger profile and more grinding).
+/// this: the PCS runs Ligerito's one shipped configuration ([`pcs`]: rate 1/2, the
+/// unique-decoding regime, 120-bit round-by-round), and the bus grand product grinds
+/// up to it before its multiset challenge ([`leaf`]). Raising it means bumping BOTH
+/// (a stronger configuration and more grinding).
 pub const SECURITY_BITS: u32 = 120;
 
 /// Below this many parallelizable items a pass runs serially: rayon's fan-out
