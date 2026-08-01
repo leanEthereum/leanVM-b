@@ -245,10 +245,11 @@ DS_SQ = 4
 DS_POW = 5
 
 # Field structure: GF(2^192), represented as three GF(2^64) tower limbs.
-# One GF192 challenge batches the 192 transposed ring-switch coordinates with
-# univariate powers (1, rho, ..., rho^191).
+# Six challenges define the F2-linear map that batches the 192 transposed
+# ring-switch coordinates.
 FIELD_BITS = 192
 BASE_FIELD_BITS = 64
+RING_MAP_SHIFTS = [32, 16, 8, 4, 2, 1]
 # Exponent bit-widths: an announced 32-bit count decomposes into COUNT_BITS
 # bits, with its top bit constrained to zero so the native strict 32-bit bound
 # holds; any structural size (sums of 2^kappa, packing offsets) fits SIZE_BITS
@@ -493,6 +494,7 @@ def log2_ceil_in_the_exponent(g_N, g_logs_pow2, g_squares, floor: Const, nbits: 
     return g_log
 
 
+@inline
 def verify_merkle_path(leaf_0, leaf_1, path_ptr, direction_bits, depth: Const):
     node_0 = leaf_0
     node_1 = leaf_1
@@ -1026,7 +1028,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     #   6. public-input claim + BLAKE3 pin claims (telescoped prefix MLE);
     #   7. flock reduction: univariate-skip zerocheck + lincheck (matrix
     #      evaluation deferred);
-    #   8. ring-switch fronts (shared rho, linearized transpose in-circuit);
+    #   8. ring-switch fronts (shared linear map, transpose in-circuit);
     #   9. gamma-combine everything, certify the committed size m, dispatch
     #      the stacked Ligerito opening (open_stacked), and assert its
     #      eval_b terminal;
@@ -1823,11 +1825,12 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     hint_witness(s_hat_v[0 : 2 * (2 ** K_SKIP)], "rs_shatv")
     transposed_claims = StackBuf(2)
     rs_eq_vals = StackBuf(2)
+    map_challenges = HeapBuf(6)
     c_table = HeapBuf(BASE_FIELD_BITS)
     z_vals = HeapBuf(2 * QPKD_VARS_CAP)
     for rs in unroll(0, 2):
         # observe this claim's 64 s_hat_v entries (mirror of verify_observe /
-        # observe_ext_slice) before the claim check and the shared rho.
+        # observe_ext_slice) before the claim check and the shared map.
         for i in unroll(0, (2 ** K_SKIP)):
             fs = obs(fs, s_hat_v[GEN ** ((2 ** K_SKIP) * rs + i)])
         # claim check: value == sum_i prefix_weights[i] * s_hat_v[i], where
@@ -1844,21 +1847,25 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         for i in unroll(0, (2 ** K_SKIP)):
             claim_check += claim_nums[i] * LAGRANGE_INV_S[i] * s_hat_v[GEN ** ((2 ** K_SKIP) * rs + i)]
         assert claim_check == claim_val
-    # One rho is shared by both claims after both slices have been absorbed.
-    # Phi, the F2-linear batching map, IS its coefficient list: the native
-    # opener derives the 192 coordinate weights as Phi(basis_w) from the same
-    # rho, so the guest needs only Phi's BASE_FIELD_BITS coefficients
-    # rho^0..rho^63 (`pcs::ring_switch::build_coordinate_weights`). A 64-term
-    # support is the soundness floor (192 K-unknowns, 3 K-equations per term) and
-    # costs a third of the 192-term map the power-basis weights would force.
-    fs, rs_batch = squeeze(fs)
+    # Compose six two-term F2-linear maps with shifts 32,16,8,4,2,1. Their
+    # expansion has all 64 Frobenius terms required for soundness, while direct
+    # application costs 63 squarings and only six general multiplications.
+    for stage in unroll(0, len(RING_MAP_SHIFTS)):
+        fs, map_challenge = squeeze(fs)
+        map_challenges[GEN ** stage] = map_challenge
+    # Expand the same composition once for the later transparent-weight
+    # evaluation. Before shift d, the populated coefficients are exactly at
+    # multiples of 2d; the new branch fills the adjacent d-offset entries.
     c_table[GEN ** 0] = 1
-    c_pow = 1
-    for k in unroll(1, BASE_FIELD_BITS):
-        c_pow *= rs_batch
-        c_table[GEN ** k] = c_pow
-    # Evaluate both claims together: they share c_k and x^i, so each is loaded
-    # or advanced once rather than once per claim.
+    for stage in unroll(0, len(RING_MAP_SHIFTS)):
+        shift = RING_MAP_SHIFTS[stage]
+        map_challenge = map_challenges[GEN ** stage]
+        for slot in unroll(0, BASE_FIELD_BITS // (2 * shift)):
+            coefficient = c_table[GEN ** (slot * 2 * shift)]
+            for k in unroll(0, shift):
+                coefficient *= coefficient
+            c_table[GEN ** (slot * 2 * shift + shift)] = map_challenge * coefficient
+    # Evaluate both claims together and combine their 64 packing rows.
     s_hat_row_0 = s_hat_v
     s_hat_row_1 = s_hat_v * GEN ** (2 ** K_SKIP)
     x_pow_chain = HeapBuf((2 ** K_SKIP) + 1)
@@ -1868,17 +1875,17 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     t_chain_0[GEN ** 0] = 0
     t_chain_1[GEN ** 0] = 0
     for x_round in mul_range(1, GEN ** (2 ** K_SKIP)):
-        y_pow_0 = s_hat_row_0[x_round]
-        y_pow_1 = s_hat_row_1[x_round]
-        lin_eval_0 = 0
-        lin_eval_1 = 0
-        for k in unroll(0, BASE_FIELD_BITS):
-            ck = c_table[GEN ** k]
-            lin_eval_0 += ck * y_pow_0
-            lin_eval_1 += ck * y_pow_1
-            if k != BASE_FIELD_BITS - 1:
-                y_pow_0 *= y_pow_0
-                y_pow_1 *= y_pow_1
+        lin_eval_0 = s_hat_row_0[x_round]
+        lin_eval_1 = s_hat_row_1[x_round]
+        for stage in unroll(0, len(RING_MAP_SHIFTS)):
+            frobenius_0 = lin_eval_0
+            frobenius_1 = lin_eval_1
+            for k in unroll(0, RING_MAP_SHIFTS[stage]):
+                frobenius_0 *= frobenius_0
+                frobenius_1 *= frobenius_1
+            map_challenge = map_challenges[GEN ** stage]
+            lin_eval_0 += map_challenge * frobenius_0
+            lin_eval_1 += map_challenge * frobenius_1
         x_pow = x_pow_chain[x_round]
         t_chain_0[x_round * GEN] = t_chain_0[x_round] + x_pow * lin_eval_0
         t_chain_1[x_round * GEN] = t_chain_1[x_round] + x_pow * lin_eval_1

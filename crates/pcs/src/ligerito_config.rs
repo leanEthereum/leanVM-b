@@ -649,9 +649,9 @@ fn johnson_interleaved_list_log2(log_inv_rate: usize, log_msg_cols: usize, eta: 
 /// unioned over a Johnson list of size `L` fails with probability at most
 /// `dL/|F|`. The relevant degrees are:
 ///
-/// - 191 for GF64-to-GF192 ring-switch batching (L0 only, but included at
-///   every level so the bound also dominates the eq-vector batch entering
-///   the NEXT level's list, whatever its query count);
+/// - the total degree of the GF64-to-GF192 ring-switch batching map (L0 only,
+///   but included at every level so the bound also dominates the eq-vector
+///   batch entering the next level's list, whatever its query count);
 /// - `ceil(log2(queries))` for the multilinear query-row batching; and
 /// - 2 for quadratic sumcheck (glue challenges have degree 1).
 fn johnson_algebraic_bits_for(log_inv_rate: usize, log_msg_cols: usize, eta: f64, queries: usize) -> f64 {
@@ -1011,8 +1011,8 @@ impl LigeritoSecurityConfig {
             }
 
             // The largest list-unioned algebraic identity test (currently the
-            // degree-191 ring-switch batching) is not grindable and must clear
-            // the target.
+            // composed ring-switch batching map) is not grindable and must
+            // clear the target.
             let algebraic = johnson_algebraic_bits(lv);
             if algebraic + 1e-12 < lv.target_security_bits as f64 {
                 return Err(format!(

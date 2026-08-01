@@ -29,6 +29,7 @@ def require(condition: bool, message: str) -> None:
 
 MASK32 = (1 << 32) - 1
 MASK64 = (1 << 64) - 1
+RING_SWITCH_SOUNDNESS_DEGREE = (1 << 31) + (1 << 15) + (1 << 7) + (1 << 3) + (1 << 1) + 1
 
 
 def _base_mul(left: int, right: int) -> int:
@@ -1591,7 +1592,7 @@ def _johnson_parameters(rate: int, message_log: int, interleaved_log: int) -> tu
         )
         ood_bits = (192.0 - list_log - log2(variables) if ood == 0
                     else ood * (192.0 - log2(variables)) - (2.0 * list_log - 1.0))
-        algebraic_bits = 192.0 - log2(max(191, ceil(log2(queries)), 2)) - list_log
+        algebraic_bits = 192.0 - log2(max(RING_SWITCH_SOUNDNESS_DEGREE, ceil(log2(queries)), 2)) - list_log
         if ood_bits + 1e-12 < 128.0 or algebraic_bits + 1e-12 < 128.0:
             continue
         candidate = (queries, ood)
@@ -2074,24 +2075,27 @@ def _claim_weights(point: QuirkyPoint) -> list[F192]:
     return lagrange_weights(PHI[:64], point.skip)
 
 
-def _coordinate_weights(rho: F192) -> list[F192]:
+RING_MAP_SHIFTS = (32, 16, 8, 4, 2, 1)
+
+
+def _coordinate_weights(challenges: Sequence[F192]) -> list[F192]:
     """`ring_switch::build_coordinate_weights`: the images `Phi(basis_w)` of the
-    F2-coordinate basis under `Phi(v) = sum_{l < 64} rho^l v^(2^l)`. The verifier
-    weights the transposed columns with these; a guest batching from Phi's 64
-    coefficients computes the same value (see the Rust doc comment for why 64
-    terms is both sufficient and the floor)."""
+    F2-coordinate basis under the six composed two-term linearized maps. The
+    verifier weights the transposed columns with these; the guest applies the
+    same composition directly."""
+    require(len(challenges) == len(RING_MAP_SHIFTS), "wrong ring-map challenge count")
     weights = []
     for w in range(192):
         # b_w has only bit w set: limb w // 64, bit w % 64.
         limbs = [0, 0, 0]
         limbs[w // 64] = 1 << (w % 64)
         element = F192(*limbs)
-        acc, rho_pow = ZERO, ONE
-        for _ in range(64):
-            acc += rho_pow * element
-            element = element * element
-            rho_pow *= rho
-        weights.append(acc)
+        for challenge, shift in zip(challenges, RING_MAP_SHIFTS):
+            frobenius = element
+            for _ in range(shift):
+                frobenius *= frobenius
+            element += challenge * frobenius
+        weights.append(element)
     return weights
 
 
@@ -2156,8 +2160,8 @@ def verify_stacked_opening(
         require(expected == claim.value, "ring-switch claim mismatch")
         slices.append(values)
 
-    rho = transcript.sample()
-    coordinate_weights = _coordinate_weights(rho)
+    map_challenges = [transcript.sample() for _ in RING_MAP_SHIFTS]
+    coordinate_weights = _coordinate_weights(map_challenges)
     ring_values = [sum((a * b for a, b in zip(_transpose(values), coordinate_weights)), ZERO)
                    for values in slices]
     ring_scales = transcript.samples(2)

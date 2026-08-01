@@ -121,18 +121,16 @@ so a committed word holds the $64$ bits $P_0(y),\dots,P_{63}(y)$. Since $K\subse
 
 One departure from the generic setup: the $\alpha_i$ are not handed to the verifier. The incoming claim is a fixed $\E$-linear combination of them with public weights, so the prover transmits the $64$ values $\alpha_i$ and the verifier recomputes that combination from them.
 
-This verifier runs inside a VM where every field multiplication is an instruction, so we specialize two parts of the reduction. Throughout, $\Phi$, $B$ and $T$ carry the dependence on $\rho$ that $\Phi_s$, $B_s$ and $T(s)$ carried on $s$.
+This verifier runs inside a VM where every field multiplication is an instruction, so we specialize two parts of the reduction. Throughout, $\Phi$, $B$ and $T$ carry the dependence on the verifier's random challenges that $\Phi_s$, $B_s$ and $T(s)$ carried on $s$.
 
-\paragraph{One challenge, no sumcheck of its own.} The generic reduction batches with an $\eq$ tensor over $\ell=\lceil\log_2e\rceil$ variables and proves the batched claim by its own sumcheck. We instead draw a single $\rho\leftarrow\E$ once the verifier holds the $\alpha_i$, and replace the weights $\eq(s,\bar w)$ by weights polynomial in $\rho$, fixed in \eqref{eq:phi-choice}. The batched claim $\sum_yB(y)P_\pkd(y)=T$ then has exactly the shape the PCS opening already proves: a transparent $\E$-valued weight against the committed $K$-valued $P_\pkd$. We fold it into that opening, so the reduction adds no sumcheck and no second opening.
+\paragraph{No sumcheck of its own.} The generic reduction batches with an $\eq$ tensor over $\ell=\lceil\log_2e\rceil$ variables and proves the batched claim by its own sumcheck. Here the verifier instead samples six challenges $f_0,\ldots,f_5\leftarrow\E$ once it holds the $\alpha_i$, and uses the map fixed in \eqref{eq:phi-choice}. The batched claim $\sum_yB(y)P_\pkd(y)=T$ then has exactly the shape the PCS opening already proves: a transparent $\E$-valued weight against the committed $K$-valued $P_\pkd$. We fold it into that opening, so the reduction adds no sumcheck and no second opening.
 
-\paragraph{Fix the map, not the weights.} The weights and the map determine each other, $\lambda_w=\Phi(b^E_w)$, so one may fix either. Fix the map. The in-VM verifier never evaluates a single $\lambda_w$; it applies $\Phi$, at the two places below, and each application costs one squaring and one multiplication per nonzero coefficient. The $\lambda_w$ are needed only outside the VM, where they are built once, off the hot path. The cost of the reduction is therefore the size of the support of $\Phi$, and we take that support to be $64$:
+\paragraph{Fix the map, not the weights.} The weights and the map determine each other, $\lambda_w=\Phi(b^E_w)$, so one may fix either. Fix the map. Let $(d_0,\ldots,d_5)=(32,16,8,4,2,1)$, start with $a_0=a$, and define
 \begin{equation}
-\Phi(a)=\sum_{k<64}\rho^{\,k}a^{2^k},
-\qquad
-\lambda_w=\Phi\bigl(b^E_w\bigr).
+a_{t+1}=a_t+f_ta_t^{2^{d_t}},\qquad \Phi(a)=a_6=\sum_{k<64}C_k(f_0,\ldots,f_5)a^{2^k},\qquad \lambda_w=\Phi\bigl(b^E_w\bigr).
 \label{eq:phi-choice}
 \end{equation}
-Its coefficients are the successive powers of $\rho$: $63$ multiplications and no table. The obvious choice $\lambda_w=\rho^w$ makes $\Phi$ dense instead, with all $192$ coefficients nonzero, and the verifier must then recover them by the $O(e^2)$ solve of the previous section. The support cannot be made smaller: $64$ terms is the minimum for any sound $\Phi$, as shown below.
+The expansion contains every Frobenius exponent $k<64$, and each coefficient $C_k$ is a different monomial in the challenges. The in-VM verifier applies the composed form of $\Phi$, while the weights $\lambda_w$ are built only outside the VM. The support cannot be made smaller: $64$ terms is the minimum for any sound $\Phi$, as shown below.
 
 \paragraph{Where $\Phi$ is applied.} First, the target $T$. The verifier has the $\alpha_i$ and never needs to form the $t_w$:
 \[
@@ -145,12 +143,12 @@ using $\alpha_{w,i}\in\F_2$ and the $\F_2$-linearity of $\Phi$. The VM computes 
 
 Second, the weight at the PCS query point $r'$, which is the boxed formula of the previous section with the coefficients of \eqref{eq:phi-choice}:
 \[
-B(r')=\sum_{k<64}\rho^{\,k}\prod_{j=1}^{m}\bigl(1+r_j^{2^k}+r'_j\bigr).
+B(r')=\sum_{k<64}C_k(f_0,\ldots,f_5)\prod_{j=1}^{m}\bigl(1+r_j^{2^k}+r'_j\bigr).
 \]
 
-\paragraph{Soundness of the batching.} Suppose the transmitted $\alpha_i$ are wrong. Under the bijection $\F_{2^e}^f\to\F_{2^f}^e$ of Soundness item~1, their error maps to a nonzero $\Delta\in K^{192}$, fixed before $\rho$ is drawn. The check passes only if
+\paragraph{Soundness of the batching.} Suppose the transmitted $\alpha_i$ are wrong. Under the bijection $\F_{2^e}^f\to\F_{2^f}^e$ of Soundness item~1, their error maps to a nonzero $\Delta\in K^{192}$, fixed before the challenges are drawn. The check passes only if
 \[
-\sum_{w<192}\lambda_w\Delta_w=\sum_{k<64}\rho^{\,k}W_k=0,
+\sum_{w<192}\lambda_w\Delta_w=\sum_{k<64}C_k(f_0,\ldots,f_5)W_k=0,
 \qquad
 W_k:=\sum_{w<192}\bigl(b^E_w\bigr)^{2^k}\Delta_w.
 \]
@@ -165,11 +163,15 @@ Two observations finish it.
 \item $u_k\notin K$. The elements of $K$ are the fixed points of $a\mapsto a^{2^{64}}$, so $u_k\in K$ would give $\vartheta^{2^{k+64}}=\vartheta^{2^k}$, and applying the inverse Frobenius $k$ times gives $\vartheta^{2^{64}}=\vartheta$, that is $\vartheta\in K$, contradicting $[\E:K]=3$. As that degree is prime, any element outside $K$ generates $\E$ over $K$, so $\{1,u_k,u_k^2\}$ is a $K$-basis of $\E$ and $W_k=0$ forces $R_{0,k}=R_{1,k}=R_{2,k}=0$.
 \item For each $\nu$, the coefficient matrix of $\{R_{\nu,k}=0:k<64\}$ is $\bigl(x^{i2^k}\bigr)_{k,i<64}$, the Moore matrix of $x^0,\dots,x^{63}$. A Moore matrix is invertible exactly when the elements it is built from are $\F_2$-independent, and $x^0,\dots,x^{63}$ are an $\F_2$-basis of $K$, so the only solution is $\Delta_{64\nu+i}=0$ for all $i$.
 \end{enumerate}
-So $\Delta\neq0$ forces $W_k\neq0$ for some $k$, making $\sum_k\rho^kW_k$ a nonzero polynomial in $\rho$ of degree below $64$. By Schwartz--Zippel the error survives with probability at most $63/2^{192}$. The dense weights $\rho^w$ give $191/2^{192}$, since there the quantity checked is $\sum_w\rho^w\Delta_w$ directly, so the sparse map also has the smaller error. Both bounds explain why $\rho$ is drawn from $\E$: over $K$ the first would read $63/2^{64}$, about $58$ bits.
+So $\Delta\neq0$ forces $W_k\neq0$ for some $k$. Since the $C_k$ are distinct monomials, the discrepancy is a nonzero polynomial in the six challenges. Its total degree is at most
+\[
+2^{31}+2^{15}+2^7+2^3+2+1<2^{32},
+\]
+so Schwartz--Zippel bounds the error by less than $2^{-160}$ before accounting for the PCS decoder's list size.
 
 \paragraph{$64$ terms are necessary.} Let $S\subseteq\{0,\dots,191\}$ be any support, so that $\Phi(a)=\sum_{k\in S}c_ka^{2^k}$. The quantity checked above is $\sum_{k\in S}c_kW_k$, so a $\Delta\neq0$ with $W_k=0$ for all $k\in S$ passes for \emph{every} choice of coefficients, with probability $1$. The map $\Delta\mapsto(W_k)_{k\in S}$ is $K$-linear and sends $K^{192}$ into $\E^{|S|}=K^{3|S|}$, so if $|S|<64$ its kernel is nonzero and such a $\Delta$ exists. Hence $|S|\ge64$, and \eqref{eq:phi-choice} attains it.
 
-\paragraph{Cost.} Applying $\Phi$ once costs $63$ squarings and $64$ multiplications, a third of the cost of the dense map, and $B(r')$ costs a further $64$ products of $m$ factors. Replacing the dense map by \eqref{eq:phi-choice} removed $11.9\%$ of the recursion verifier's VM cycles, and deleted the coefficient construction and its baked constants.
+\paragraph{Cost.} Applying $\Phi$ once costs $63$ squarings and six multiplications. The expanded coefficients $C_k$ are generated once by the same six-stage recurrence, and $B(r')$ then costs $64$ products of $m$ factors.
 
 \section*{Credits}
 

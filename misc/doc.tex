@@ -723,54 +723,28 @@ Taking coordinates in the definition of \(s_i\) gives
   \label{eq:rs-coordinate-claim}
 \end{equation}
 
-\paragraph{Batching.} After absorbing all \(s_i\), the verifier samples one \(\rho\leftarrow\E\) and defines the \(\F_2\)-linear map
-\begin{equation}
-  \Phi_\rho:\E\longrightarrow\E,
-  \qquad
-  \Phi_\rho(a)=\sum_{k=0}^{63}\rho^{k}a^{2^k},
-  \qquad
-  \lambda_w:=\Phi_\rho(e_w).
-  \label{eq:rs-phi}
-\end{equation}
+\paragraph{Batching.} After absorbing all \(s_i\), the verifier samples independent \(f_0,\ldots,f_5\leftarrow\E\). Starting with \(v_0=v\), define
+\[
+  \begin{gathered}
+    (d_0,\ldots,d_5)=(32,16,8,4,2,1),\qquad v_{j+1}=v_j+f_jv_j^{2^{d_j}},\\
+    \Phi(v)=v_6,\qquad \lambda_w=\Phi(e_w).
+  \end{gathered}
+\]
 Multiplying \eqref{eq:rs-coordinate-claim} by \(\lambda_w\) and summing gives
 \begin{equation}
   T:=\sum_{w=0}^{191}\lambda_wt_w
-  =\sum_{y\in\cube L}
-    \underbrace{\Phi_\rho(\eq(z,y))}_{B_{z,\rho}(y)}
-    Q_\pkd(y).
+  =\sum_{y\in\cube L}\underbrace{\Phi(\eq(z,y))}_{B_z(y)}Q_\pkd(y).
   \label{eq:rs-batched}
 \end{equation}
-This is directly a weighted opening of the committed \(Q_\pkd\): the target is \(T\in\E\), and \(B_{z,\rho}\) is a transparent \(\E\)-valued weight. No ring-switch sumcheck is needed. Multiple Flock claims share the same \(\rho\); after this reduction, independent \(\E\)-scalars fold their targets and weights into the global stacked opening.
+This is directly a weighted opening of the committed \(Q_\pkd\): the target is \(T\in\E\), and \(B_z\) is a transparent \(\E\)-valued weight. No ring-switch sumcheck is needed. Multiple Flock claims share the same map; independent \(\E\)-scalars then fold their targets and weights into the global stacked opening.
 
-The map is specified by its \(64\) coefficients, not by the \(192\) weights \(\lambda_w\) it induces. Either determines the other, but only the coefficient count sets the verifier's cost, and no sound map has fewer than \(64\) coefficients.
-
-\paragraph{Soundness.} The coordinate transpose is a bijection \(\E^{64}\simeq\K^{192}\) of \(12288\)-dimensional \(\F_2\)-vector spaces. If the transmitted \(s_i\) disagree with the committed witness, transposing their difference yields a nonzero vector \((\Delta_w)_{w<192}\in\K^{192}\), fixed before \(\rho\) is sampled. The batched discrepancy is
-\[
-  \sum_{w=0}^{191}\lambda_w\Delta_w=\sum_{k=0}^{63}\rho^{k}W_k,
-  \qquad
-  W_k:=\sum_{w=0}^{191}e_w^{2^k}\Delta_w .
-\]
-Writing \(w=64\nu+i\) splits \(W_k\) over the \(\K\)-basis \(\{1,\vartheta^{2^k},\vartheta^{2\cdot2^k}\}\) of \(\E\), whose \(\K\)-coordinates are \(\sum_{i<64}x^{i2^k}\Delta_{64\nu+i}\) for \(\nu<3\). Those coefficient matrices are Moore matrices of the basis \(x^0,\dots,x^{63}\) of \(\K/\F_2\), hence invertible, so \(\Delta\neq0\) forces \(W_k\neq0\) for some \(k\). The discrepancy is then a nonzero polynomial in \(\rho\) of degree below \(64\), and the batching error is
-\[
-  \Pr\Bigl[\textstyle\sum_k\rho^kW_k=0\Bigr]\le\frac{63}{2^{192}}<2^{-186}.
-\]
-Sampling \(\rho\) from \(\K\) would provide only about \(58\) bits of soundness; hence \(\rho\) is sampled from \(\E\). The full derivation, including why no map with fewer than \(64\) coefficients is sound, is in \href{https://github.com/leanEthereum/leanVM-b/blob/main/misc/ring-switching.pdf}{\texttt{ring-switching.pdf}}.
+\paragraph{Soundness.} Expanding the composition gives \(\Phi(v)=\sum_{k<64}C_k(f_0,\ldots,f_5)v^{2^k}\), with one distinct challenge monomial \(C_k\) for every \(k\). The generalized ring-switching analysis shows that any nonzero coordinate error makes at least one coefficient of \(\sum_k C_kW_k\) nonzero. Its total degree is at most \(2^{31}+2^{15}+2^7+2^3+2+1<2^{32}\), so sampling the challenges after the \(s_i\) bounds the batching error by less than \(2^{-160}\) before the PCS decoder's list-size factor. The full argument is in \href{https://github.com/leanEthereum/leanVM-b/blob/main/misc/ring-switching.pdf}{\texttt{ring-switching.pdf}}.
 
 \paragraph{Succinct verification.} At a PCS query point \(r\in\E^L\), the verifier needs
 \[
-  \widehat B_{z,\rho}(r)
-  =\sum_{y\in\cube L}\eq(r,y)\Phi_\rho(\eq(z,y)).
+  \widehat B_z(r)=\sum_{y\in\cube L}\eq(r,y)\Phi(\eq(z,y))=\sum_{k<64}C_k\prod_{j=1}^{L}\left(1+r_j+z_j^{2^k}\right).
 \]
-In \(\E\otimes_{\F_2}\E\), set
-\[
-  \Theta(r,z)
-  :=\sum_{y\in\cube L}\eq(r,y)\otimes\eq(z,y)
-  =\prod_{j=1}^{L}
-    \left(1\otimes1+r_j\otimes1+1\otimes z_j\right).
-\]
-Applying \(\operatorname{id}\otimes\Phi_\rho\) to \(\Theta\) and multiplying the two tensor factors yields \(\widehat B_{z,\rho}(r)\). The implementation uses \(O(L\cdot192^2)\) bit operations and \(O(L\cdot192)\) multiplications in \(\E\), without constructing the \(2^L\)-entry table.
-
-For succinct evaluation the verifier needs \(\Phi_\rho\) as a linearized polynomial, which \eqref{eq:rs-phi} already is: \(c_k=\rho^k\) for \(k<64\), and \(c_k=0\) above. The coefficients therefore cost \(63\) multiplications and no precomputed table, and one evaluation of \(\Phi_\rho\) costs \(63\) squarings and \(64\) multiplications. Defining the map by its weights instead, say \(\lambda_w=\rho^w\), leaves all \(192\) coefficients nonzero and needs a closed form to construct them, which triples both this evaluation and the target \(T\). The in-VM verifier computes that target as \(\sum_{i<64}x^i\Phi_\rho(s_i)\), straight from the transmitted rows, so it never forms the coordinates \(t_w\) or the weights \(\lambda_w\).
+The last equality follows by expanding \(\Phi\), factorizing the Boolean sum coordinate by coordinate, and using characteristic two. The six-stage recurrence generates the \(C_k\) once. The verifier then evaluates the expression in \(O(64L)\) field operations, without constructing the \(2^L\)-entry table. Applying \(\Phi\) to an ordinary field element is cheaper still: the composed form takes exactly \(63\) squarings and six multiplications.
 
 \begin{thebibliography}{9}
 

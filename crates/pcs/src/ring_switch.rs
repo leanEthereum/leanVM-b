@@ -23,8 +23,7 @@
 //!
 //! - **Rectangular shape**: `s_hat_v` has 64 entries (one per packing bit),
 //!   each an E element; its tensor-algebra transpose `s_hat_u = (t_i)` has
-//!   192 K-entries. One challenge `rho in E` batches them with the univariate
-//!   weights `(1, rho, ..., rho^191)`. This uses all coordinates directly,
+//!   192 K-entries. A random `F_2`-linear map batches all coordinates directly,
 //!   without padding them to a 256-entry Boolean cube.
 //! - **No "7 = 6 + 1" prefix split**: with 64-bit packing the packed prefix
 //!   is exactly the 6-bit skip domain, and the old 7th bit is an ordinary
@@ -44,18 +43,21 @@
 //! 1. Send `s_hat_v[i] = sum_y eq(r_suffix, y) * bit_i(packed[y])`, the MLE
 //!    of the i-th bit-slice at the suffix point (i in 0..64, values in E).
 //! 2. Verifier checks `claim == sum_i prefix_weights[i] * s_hat_v[i]`.
-//! 3. Sample `rho in E`; define `coord_weights[i] = rho^i`. Transpose
+//! 3. Sample six challenges in E and compose the maps
+//!    `v <- v + f_t v^(2^d_t)` for `d_t = 32, 16, 8, 4, 2, 1`. For the
+//!    coordinate basis `(b_i)`, define `coord_weights[i] = Phi(b_i)`. Transpose
 //!    `s_hat_v` to `t_i = s_hat_u[i] in K` (see
 //!    [`super::tensor_algebra::transpose_s_hat`]); the batched target is
-//!    `sumcheck_claim = sum_i rho^i * t_i` (K x E via `mul_base`).
+//!    `sumcheck_claim = sum_i Phi(b_i) * t_i` (K x E via `mul_base`).
 //! 4. Both sides define the transparent weights
 //!    `rs_eq_ind[y] = Phi(eq(r_suffix, y))` where `Phi : E -> E` is the
-//!    F_2-linear map sending basis coordinate `i` to `rho^i`. Completeness:
+//!    composed map above. Completeness:
 //!    `sum_y rs_eq_ind[y] * packed[y] == sumcheck_claim`, which is exactly
 //!    the claim shape [`super::ligerito::recursive_prover_with_basis`]
 //!    proves (with `b_initial = rs_eq_ind`, `target = sumcheck_claim`).
-//!    Soundness follows because any nonzero discrepancy gives a nonzero
-//!    polynomial in `rho` of degree at most 191.
+//!    A nonzero discrepancy gives a nonzero polynomial in the six challenges;
+//!    its total degree is below `2^32`, hence its failure probability is below
+//!    `2^-160` before the Ligerito list-size factor.
 //!
 //! ## Prover vs. verifier paths for `rs_eq_ind`
 //!
@@ -78,10 +80,14 @@ use super::ligerito::{build_eq_table_ext, inner_product_base_ext};
 use super::pack::{LOG_PACKING, PACKING_WIDTH};
 use super::tensor_algebra::{DEGREE_E, TensorAlgebraE, transpose_s_hat};
 
-/// Maximum degree of a nonzero ring-switch discrepancy in the univariate
-/// batching challenge. This is a soundness parameter, not merely an
-/// implementation detail.
-pub const RING_SWITCH_SOUNDNESS_DEGREE: usize = DEGREE_E - 1;
+/// Total degree of the six-challenge composed batching map. This is the
+/// conservative degree used by the Ligerito list-size soundness accounting.
+pub const RING_SWITCH_SOUNDNESS_DEGREE: usize =
+    (1usize << 31) + (1usize << 15) + (1usize << 7) + (1usize << 3) + (1usize << 1) + 1;
+
+/// Frobenius shifts in the order in which the two-term maps are composed.
+/// Descending order bounds every challenge's exponent by `2^31`.
+pub const COMPOSITION_SHIFTS: [usize; 6] = [32, 16, 8, 4, 2, 1];
 
 /// Number of Frobenius terms in the batching map [`build_coordinate_weights`]
 /// builds. It is the F_2-dimension of `K`, and that is the floor: the weights
@@ -93,27 +99,26 @@ pub const LINEARIZED_TERMS: usize = PACKING_WIDTH;
 
 /// The coordinate batching weights: `weights[w] = Phi(b_w)`, where `b_w` is the
 /// `w`-th `F_2`-coordinate basis element of `E` (the order [`transpose_s_hat`]
-/// produces) and
+/// produces). Starting from `v`, the map composes
 ///
 /// ```text
-/// Phi(v) = sum_{l < LINEARIZED_TERMS} rho^l · v^(2^l)
+/// v <- v + f_t · v^(2^shift_t),    shift_t = 32, 16, 8, 4, 2, 1.
 /// ```
 ///
-/// is `F_2`-linear, so `sum_w weights[w]·t_w = sum_j x^j·Phi(y_j)` for the row
+/// The result is `F_2`-linear, so
+/// `sum_w weights[w]·t_w = sum_j x^j·Phi(y_j)` for the row
 /// view `y` and the column view `t` of the same tensor-algebra element. That
 /// identity is what lets a verifier evaluate the batched claim from `Phi`'s
-/// COEFFICIENTS — `LINEARIZED_TERMS` of them, a running power of `rho` — instead
-/// of the 192 weights; the recursion guest does exactly that, and its cost is
-/// linear in the term count. Defining `Phi` first and deriving the weights from
-/// it is what keeps that count at 64: taking `weights[w] = rho^w` instead (the
-/// obvious choice) forces a generically full 192-term `Phi`, tripling the
-/// guest's work for no soundness gain.
+/// six challenges instead of the 192 weights; the recursion guest does exactly
+/// that. Expanding the composition has one nonzero coefficient at every
+/// Frobenius exponent `0..64`, but applying it costs only 63 squarings and six
+/// multiplications.
 ///
 /// ## Soundness
 ///
 /// Let `delta != 0` be the prover's error on the transposed columns, fixed
-/// before `rho` (`s_hat_v` is bound first). The check misses it iff
-/// `sum_w Phi(b_w)·delta_w = sum_{l<64} rho^l·W_l = 0` with
+/// before the six challenges (`s_hat_v` is bound first). The check misses it iff
+/// `sum_w Phi(b_w)·delta_w = sum_{l<64} C_l(f)·W_l = 0` with
 /// `W_l = sum_w b_w^(2^l)·delta_w`. Writing `w = 64m + i` and `b_w = x^i·Y^m`,
 ///
 /// ```text
@@ -125,11 +130,21 @@ pub const LINEARIZED_TERMS: usize = PACKING_WIDTH;
 /// `K`-basis: `W_l = 0` forces every `R_{m,l} = 0`. But `(x^(i·2^l))_{l,i<64}` is
 /// the Moore matrix of `K`'s power basis, whose entries are `F_2`-independent, so
 /// it is invertible over `K` — every `R_{m,l} = 0` forces `delta = 0`. Hence some
-/// `W_l != 0`, `sum_l rho^l W_l` is a nonzero polynomial of degree `< 64` in
-/// `rho`, and the error survives with probability at most
-/// `63/2^192` — better than the `191/2^192` the power-basis weights gave.
-/// [`RING_SWITCH_SOUNDNESS_DEGREE`] stays at 191 as a conservative bound.
-pub fn build_coordinate_weights(rho: F192) -> Vec<F192> {
+/// `W_l != 0`. Expanding the six two-term maps gives each `W_l` a distinct
+/// monomial `C_l`, so the discrepancy is a nonzero polynomial. In descending shift order its total
+/// degree is [`RING_SWITCH_SOUNDNESS_DEGREE`], below `2^32`.
+fn apply_composed_map(mut value: F192, challenges: &[F192; COMPOSITION_SHIFTS.len()]) -> F192 {
+    for (&challenge, &shift) in challenges.iter().zip(COMPOSITION_SHIFTS.iter()) {
+        let mut frobenius = value;
+        for _ in 0..shift {
+            frobenius = frobenius.square();
+        }
+        value += challenge * frobenius;
+    }
+    value
+}
+
+pub fn build_coordinate_weights(challenges: &[F192; COMPOSITION_SHIFTS.len()]) -> Vec<F192> {
     // b_w has only bit w set: bits 0..64 are K's power basis, and bits 64/128
     // shift it by Y / Y^2.
     let basis = |w: usize| match w / PACKING_WIDTH {
@@ -138,16 +153,14 @@ pub fn build_coordinate_weights(rho: F192) -> Vec<F192> {
         _ => F192::new(0, 0, 1u64 << (w % PACKING_WIDTH)),
     };
     (0..DEGREE_E)
-        .map(|w| {
-            let (mut frobenius, mut rho_pow, mut acc) = (basis(w), F192::ONE, F192::ZERO);
-            for _ in 0..LINEARIZED_TERMS {
-                acc += rho_pow * frobenius;
-                frobenius = frobenius.square();
-                rho_pow *= rho;
-            }
-            acc
-        })
+        .map(|w| apply_composed_map(basis(w), challenges))
         .collect()
+}
+
+/// Sample the composed map's challenges after every ring-switch message has
+/// been absorbed.
+pub fn sample_map_challenges(sponge: &mut Sponge) -> [F192; COMPOSITION_SHIFTS.len()] {
+    std::array::from_fn(|_| sponge.sample())
 }
 
 // ---------------------------------------------------------------------------
@@ -638,7 +651,7 @@ pub struct RingSwitchOutput {
 #[derive(Clone, Debug)]
 pub struct RingSwitchVerifierOutput {
     pub sumcheck_claim: F192,
-    /// Univariate powers derived from the batching challenge; feed them to
+    /// Images of the coordinate basis under the batching map; feed them to
     /// [`eval_rs_eq`] at the Ligerito final point.
     pub coordinate_weights: Vec<F192>,
 }
@@ -660,7 +673,7 @@ pub enum VerifyError {
 /// - `claim`: the claimed value `sum_i prefix_weights[i] * s_hat_v[i]`;
 ///   asserted against the witness (an honest caller always passes a
 ///   consistent claim, so this is a cheap integration check, 64 E-mults).
-/// - `sponge` for sampling the row-batching challenge `rho`.
+/// - `sponge` for sampling the row-batching map challenges.
 ///
 /// Output: the proof message `s_hat_v` (64 E values) plus the Ligerito
 /// inputs `(rs_eq_ind, sumcheck_claim)`; open with
@@ -681,9 +694,9 @@ pub fn prove(
         "packed witness must have 2^|suffix_point| words"
     );
 
-    // Single-claim wrapper: observe s_hat_v, sample its own rho, finish. The
-    // STACKED opener instead calls `prove_observe` for every claim, samples ONE
-    // shared rho after all are observed, then `prove_finish` per claim
+    // Single-claim wrapper: observe s_hat_v, sample its map, finish. The
+    // STACKED opener instead calls `prove_observe` for every claim, samples one
+    // shared map after all are observed, then `prove_finish` per claim
     // (matching the extension-field opener + the recursion guest).
     let (proof, state) = prove_observe(
         packed_witness,
@@ -693,8 +706,8 @@ pub fn prove(
         precomputed_s_hat_v,
         sponge,
     );
-    let rho = sponge.sample();
-    let coordinate_weights = build_coordinate_weights(rho);
+    let challenges = sample_map_challenges(sponge);
+    let coordinate_weights = build_coordinate_weights(&challenges);
     let out = prove_finish(&state, &coordinate_weights);
     (proof, out)
 }
@@ -710,7 +723,7 @@ pub struct RingSwitchProveState {
 
 /// Phase 1 of the ring-switch prover: compute + observe `s_hat_v` (NO domain
 /// label — matches the extension-field opener). Returns the proof and the scratch for
-/// the finalization step. The caller samples the possibly shared `rho` afterwards.
+/// the finalization step. The caller samples the possibly shared map afterwards.
 pub fn prove_observe(
     packed_witness: &[F64],
     prefix_weights: &[F192],
@@ -791,8 +804,8 @@ pub fn verify(
         return Err(VerifyError::ClaimMismatch);
     }
 
-    let rho = sponge.sample();
-    let coordinate_weights = build_coordinate_weights(rho);
+    let challenges = sample_map_challenges(sponge);
+    let coordinate_weights = build_coordinate_weights(&challenges);
 
     let s_hat_u = transpose_s_hat(&proof.s_hat_v);
     let sumcheck_claim = inner_product_base_ext(&s_hat_u, &coordinate_weights);
@@ -817,17 +830,17 @@ pub fn verify_succinct(
     proof: &RingSwitchProof,
     sponge: &mut Sponge,
 ) -> Result<RingSwitchVerifierOutput, VerifyError> {
-    // Single-claim wrapper (self-rho); the STACKED verifier uses
-    // verify_observe per claim, one shared rho, then verify_finish per claim.
+    // Single-claim wrapper; the STACKED verifier observes every claim, samples
+    // one shared map, then finishes each claim.
     verify_observe(claim, prefix_weights, proof, sponge)?;
-    let rho = sponge.sample();
-    let coordinate_weights = build_coordinate_weights(rho);
+    let challenges = sample_map_challenges(sponge);
+    let coordinate_weights = build_coordinate_weights(&challenges);
     Ok(verify_finish(proof, &coordinate_weights))
 }
 
 /// Phase 1 of the ring-switch verifier: observe `s_hat_v` (NO domain label —
 /// matches the extension-field opener) and check the prefix-weight claim. The caller
-/// samples the possibly shared `rho` afterwards.
+/// samples the possibly shared map afterwards.
 pub fn verify_observe(
     claim: F192,
     prefix_weights: &[F192],
@@ -891,7 +904,7 @@ pub fn verify_finish(proof: &RingSwitchProof, coordinate_weights: &[F192]) -> Ri
 /// * `z_vals`: the ring-switch suffix point,
 ///   length L = m - 6.
 /// * `query`: the Ligerito final challenges, length L, same coordinate order.
-/// * `coordinate_weights`: the 192 univariate batching weights (from
+/// * `coordinate_weights`: the 192 coordinate batching weights (from
 ///   [`RingSwitchVerifierOutput`]).
 pub fn eval_rs_eq(z_vals: &[F192], query: &[F192], coordinate_weights: &[F192]) -> F192 {
     assert_eq!(
@@ -1088,24 +1101,19 @@ mod tests {
     fn column_weights_match_the_row_side_linearized_map() {
         let mut s = 0xF00D_BEEF_1234_5678;
         for _ in 0..4 {
-            let rho = rand_ext(&mut s);
+            let challenges = std::array::from_fn(|_| rand_ext(&mut s));
             let s_hat_v: Vec<F192> = (0..PACKING_WIDTH).map(|_| rand_ext(&mut s)).collect();
 
             // Column side: sum_w weights[w] * t_w over the transposed K columns.
             let columns = transpose_s_hat(&s_hat_v);
-            let lhs = inner_product_base_ext(&columns, &build_coordinate_weights(rho));
+            let lhs = inner_product_base_ext(&columns, &build_coordinate_weights(&challenges));
 
             // Row side: sum_j x^j * Phi(y_j), the guest's loop.
             let x = F192::new(2, 0, 0);
             let mut rhs = F192::ZERO;
             let mut x_pow = F192::ONE;
             for y in &s_hat_v {
-                let (mut frobenius, mut rho_pow, mut phi) = (*y, F192::ONE, F192::ZERO);
-                for _ in 0..LINEARIZED_TERMS {
-                    phi += rho_pow * frobenius;
-                    frobenius = frobenius.square();
-                    rho_pow *= rho;
-                }
+                let phi = apply_composed_map(*y, &challenges);
                 rhs += x_pow * phi;
                 x_pow *= x;
             }
@@ -1113,18 +1121,59 @@ mod tests {
         }
     }
 
-    /// `Phi` must separate every nonzero single-coordinate error, the property
-    /// the soundness argument rests on: a 64-term map still gives each of the 192
-    /// coordinates a distinct nonzero weight.
+    /// Expanding the composition must populate every Frobenius exponent exactly
+    /// once. Distinct support monomials are the property used by soundness;
+    /// pointwise distinct coordinate weights are neither required nor generally
+    /// true for every challenge tuple.
     #[test]
-    fn coordinate_weights_are_distinct_and_nonzero() {
+    fn composed_map_has_full_frobenius_support() {
+        let mut monomials = [None; LINEARIZED_TERMS];
+        monomials[0] = Some([0u64; COMPOSITION_SHIFTS.len()]);
+        for (stage, &shift) in COMPOSITION_SHIFTS.iter().enumerate() {
+            let previous = monomials;
+            for (i, exponents) in previous.into_iter().enumerate().take(LINEARIZED_TERMS - shift) {
+                if let Some(mut exponents) = exponents {
+                    for exponent in &mut exponents {
+                        *exponent <<= shift;
+                    }
+                    exponents[stage] += 1;
+                    assert!(monomials[i + shift].replace(exponents).is_none());
+                }
+            }
+        }
+        let monomials: std::collections::HashSet<_> = monomials.into_iter().map(Option::unwrap).collect();
+        assert_eq!(monomials.len(), LINEARIZED_TERMS);
+        assert_eq!(
+            monomials.iter().map(|exponents| exponents.iter().sum::<u64>()).max(),
+            Some(RING_SWITCH_SOUNDNESS_DEGREE as u64)
+        );
+
         let mut s = 0x1234_5678_9abc_def0;
-        let rho = rand_ext(&mut s);
-        let weights = build_coordinate_weights(rho);
-        assert_eq!(weights.len(), DEGREE_E);
-        assert!(weights.iter().all(|w| *w != F192::ZERO));
-        let unique: std::collections::HashSet<_> = weights.iter().map(|w| (w.c0, w.c1, w.c2)).collect();
-        assert_eq!(unique.len(), DEGREE_E, "weights must be pairwise distinct");
+        let challenges: [F192; COMPOSITION_SHIFTS.len()] = std::array::from_fn(|_| rand_ext(&mut s));
+        let mut coefficients = [F192::ZERO; LINEARIZED_TERMS];
+        coefficients[0] = F192::ONE;
+        for (&challenge, &shift) in challenges.iter().zip(COMPOSITION_SHIFTS.iter()) {
+            let previous = coefficients;
+            for (i, mut coefficient) in previous.into_iter().enumerate().take(LINEARIZED_TERMS - shift) {
+                if coefficient == F192::ZERO {
+                    continue;
+                }
+                for _ in 0..shift {
+                    coefficient = coefficient.square();
+                }
+                coefficients[i + shift] = challenge * coefficient;
+            }
+        }
+        assert!(coefficients.iter().all(|coefficient| *coefficient != F192::ZERO));
+
+        let value = rand_ext(&mut s);
+        let mut expanded = F192::ZERO;
+        let mut frobenius = value;
+        for coefficient in coefficients {
+            expanded += coefficient * frobenius;
+            frobenius = frobenius.square();
+        }
+        assert_eq!(apply_composed_map(value, &challenges), expanded);
     }
 
     /// Reference s_hat_v: brute-force partial evaluation of each bit-column
@@ -1274,7 +1323,8 @@ mod tests {
         let l = 6;
         let mut s = 4u64;
         let z: Vec<F192> = (0..l).map(|_| rand_ext(&mut s)).collect();
-        let coordinate_weights = build_coordinate_weights(rand_ext(&mut s));
+        let challenges = std::array::from_fn(|_| rand_ext(&mut s));
+        let coordinate_weights = build_coordinate_weights(&challenges);
         let rs_eq_ind = fold_ext_elems(&build_eq_table_ext(&z), &coordinate_weights);
 
         let query: Vec<F192> = (0..l).map(|_| rand_ext(&mut s)).collect();

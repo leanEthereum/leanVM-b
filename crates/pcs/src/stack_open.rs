@@ -32,7 +32,7 @@
 //! ## Transcript order (identical on both sides)
 //!
 //! label -> per ring-switched claim ([`super::ring_switch`]'s own label +
-//! `s_hat_v_i` observed + shared `rho` sampled) -> gamma_rs (one per claim) ->
+//! `s_hat_v_i` observed + shared linear map sampled) -> gamma_rs (one per claim) ->
 //! per point claim (label + value observed) -> gamma_pd (one per claim) ->
 //! Ligerito, with domain-separated labels for every phase.
 //!
@@ -371,9 +371,8 @@ pub fn open_batch_mixed_ligerito_stacked(
         *t = std::time::Instant::now();
     };
 
-    // 1. Ring-switch reduction: observe EVERY claim's s_hat_v first, then sample
-    //    ONE shared rho (matches the recursion guest), then
-    //    finish each claim's sumcheck/weight against the shared powers.
+    // 1. Ring-switch reduction: observe every claim's s_hat_v, sample one
+    //    shared linear map, then finish each claim against that map.
     let qpkd = &stack[ring.offset..ring.offset + qpkd_len];
     let mut rs_proofs = Vec::with_capacity(ring.claims.len());
     let mut rs_states = Vec::with_capacity(ring.claims.len());
@@ -394,8 +393,8 @@ pub fn open_batch_mixed_ligerito_stacked(
         rs_proofs.push(proof);
         rs_states.push(state);
     }
-    let rho = sponge.sample();
-    let coordinate_weights = ring_switch::build_coordinate_weights(rho);
+    let map_challenges = ring_switch::sample_map_challenges(sponge);
+    let coordinate_weights = ring_switch::build_coordinate_weights(&map_challenges);
     // Per-claim batching gammas, sampled AFTER all ring-switch messages are
     // bound (mirror of the extension-field layer's gamma_rs pattern).
     let gammas_rs = sample_ext_vec(sponge, ring.claims.len());
@@ -504,16 +503,15 @@ pub fn verify_opening_batch_mixed_ligerito_stacked(
         return None;
     }
 
-    // 1. Ring-switch succinct verify: observe EVERY claim's s_hat_v first, then
-    //    sample ONE shared rho, then finish each claim (mirrors the prover
-    //    and the recursion guest).
+    // 1. Ring-switch succinct verify: observe every claim's s_hat_v, sample one
+    //    shared linear map, then finish each claim (mirrors the prover and guest).
     for (claim, rs_proof) in ring.claims.iter().zip(proof.ring_switches.iter()) {
         if ring_switch::verify_observe(claim.value, &claim.prefix_weights, rs_proof, sponge).is_err() {
             return None;
         }
     }
-    let rho = sponge.sample();
-    let coordinate_weights = ring_switch::build_coordinate_weights(rho);
+    let map_challenges = ring_switch::sample_map_challenges(sponge);
+    let coordinate_weights = ring_switch::build_coordinate_weights(&map_challenges);
     let rs_outputs: Vec<_> = proof
         .ring_switches
         .iter()
