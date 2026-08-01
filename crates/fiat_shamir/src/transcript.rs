@@ -230,8 +230,8 @@ impl<'a, O> VerifierState<'a, O> {
     /// check it clears the `bits` proof-of-work, then bind it (so the sponge
     /// stays in lockstep). Rejects a proof that skipped or under-did the grind.
     pub fn grind_check(&mut self, bits: u32) -> Result<(), Error> {
-        let nonce = self.take_raw()?.c0;
-        if self.sponge.verify_pow(nonce, bits) {
+        let nonce = self.take_raw()?;
+        if self.sponge.verify_pow_field(nonce, bits) {
             Ok(())
         } else {
             Err(Error::PowFailed)

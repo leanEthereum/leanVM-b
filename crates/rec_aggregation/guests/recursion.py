@@ -266,6 +266,10 @@ NSUB = NSUB_PLACEHOLDER
 BYTECODE_VARS = BYTECODE_VARS_PLACEHOLDER
 TRANSCRIPT_SEED_0 = TRANSCRIPT_SEED_0_PLACEHOLDER
 TRANSCRIPT_SEED_1 = TRANSCRIPT_SEED_1_PLACEHOLDER
+AGG_SEED_0 = AGG_SEED_0_PLACEHOLDER
+AGG_SEED_1 = AGG_SEED_1_PLACEHOLDER
+STATEMENT_SEED_0 = STATEMENT_SEED_0_PLACEHOLDER
+STATEMENT_SEED_1 = STATEMENT_SEED_1_PLACEHOLDER
 
 DS_SCALAR = 1
 DS_BYTE = 2
@@ -408,12 +412,17 @@ def grind_check(state_0, state_1, nonce, nbits_g):
     # bits are advice-decomposed HERE and verified (booleanity + reconstruction,
     # check_field_bits_decomposition), and the low nbits (nbits_g = g^nbits) must
     # be zero — the CONTIGUOUS PoW window of transcript::pow_bits_ok. The
-    # caller absorbs the nonce afterwards.
+    # caller absorbs the full-field nonce afterwards. The honest prover searches
+    # the deterministic u64 subset, while verification permits the full field:
+    # each candidate still costs one hash and succeeds with probability 2^-bits.
+    if nbits_g == GEN ** 0:
+        assert nonce == 0  # native canonical zero-work nonce
     st = [state_0, state_1]
     base = StackBuf(2)
     sponge_compress(st, f192_from_limbs(0, 0, DS_POW), 0, base)
     out = StackBuf(2)
-    sponge_compress(base, f192_from_limbs(nonce, 0, DS_POW), 0, out)
+    # nonce's three F64 limbs followed by DS_POW, exactly as the native sponge.
+    sponge_compress(base, nonce, DS_POW, out)
     digest_bits = HeapBuf(GEN ** FIELD_BITS)
     hint_decompose_bits(digest_bits, out[0], FIELD_BITS)
     check_field_bits_decomposition(digest_bits, out[0])
@@ -460,12 +469,13 @@ def verify_log2_ceil(bits_buf, g_logs_pow2, g_squares, floor: Const, nbits: Cons
 
 
 def log2_ceil_word(value, bits, g_logs_pow2, g_squares, floor: Const, nbits: Const, need_exp: Const):
-    # g^log2_ceil(value) for a concrete integer `value`. The bits are hinted HERE
-    # into caller-owned storage (so later phases can reuse them), then tied back
-    # to `value`. Returns (g_log, g^value).
+    # g^log2_ceil(value) for a concrete integer `value` < 2^(nbits - 1). The
+    # bits are hinted into caller-owned storage, so later phases can reuse them.
+    # The zero top bit mirrors the native strict 32-bit row-count bound.
     hint_decompose_bits(bits, value, nbits)
     g_log, word, g_value = verify_log2_ceil(bits, g_logs_pow2, g_squares, floor, nbits, need_exp)
     assert word == value  # the hinted bits are exactly value's bits (so value < 2^nbits)
+    assert bits[GEN ** (nbits - 1)] == 0
     return g_log, g_value
 
 
@@ -616,10 +626,10 @@ def fs_next(state, cursor):
 
 
 @inline
-def absorb(state, x, tag):
-    # Tagged absorb (length frames, byte words, grinding nonces).
+def absorb_nonce(state, x):
+    # Full-field grinding nonce absorb: [x.c0, x.c1, x.c2, DS_POW].
     nb = StackBuf(2)
-    sponge_compress(state, f192_from_limbs(x, 0, tag), 0, nb)
+    sponge_compress(state, x, DS_POW, nb)
     return nb
 
 
@@ -1016,7 +1026,7 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
                 nonce_v = msg_cursor[GEN ** 0]  # raw transport word: bound by the DS_POW absorb below
                 msg_cursor = msg_cursor * GEN
                 grind_check(fs[0], fs[1], nonce_v, GEN ** LIG_FOLD_GRIND_BITS[m_idx * LIG_MAX_TOTAL_FOLDS + fold_idx])
-                fs = absorb(fs, nonce_v, DS_POW)
+                fs = absorb_nonce(fs, nonce_v)
             fs, fold_challenge = squeeze(fs)
             fold_challenges[GEN ** fold_idx] = fold_challenge
             sumcheck_target = (round_quad_a * fold_challenge + round_quad_b) * fold_challenge + round_quad_c  # evaluate this level's folded quadratic at the fold challenge
@@ -1057,7 +1067,9 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
         msg_cursor = msg_cursor * GEN
         if LIG_QUERY_GRIND_BITS[m_idx * LIG_MAX_LEVELS + lvl] != 0:
             grind_check(fs[0], fs[1], q_nonce, GEN ** LIG_QUERY_GRIND_BITS[m_idx * LIG_MAX_LEVELS + lvl])
-        fs = absorb(fs, q_nonce, DS_POW)
+        else:
+            assert q_nonce == 0
+        fs = absorb_nonce(fs, q_nonce)
 
         sqz_chain_0 = HeapBuf(GEN ** (LIG_MAX_SQUEEZES[m_idx] + 1))
         sqz_chain_1 = HeapBuf(GEN ** (LIG_MAX_SQUEEZES[m_idx] + 1))
@@ -2425,7 +2437,8 @@ def main():
     # samples the RLC coefficients, and verifies the two batching sumchecks of
     # doc.tex §Deferred evaluation claims. Only the reduced claims (one per
     # fixed polynomial) reach the public input.
-    agg_fs = [0, 0]
+    agg_fs = [AGG_SEED_0, AGG_SEED_1]
+    agg_fs = obs(agg_fs, NSUB)
     for sub in unroll(0, NSUB):
         agg_fs = obs(agg_fs, sub_pis[GEN ** (2 * sub)])
         agg_fs = obs(agg_fs, sub_pis[GEN ** (2 * sub + 1)])
@@ -2511,7 +2524,8 @@ def main():
     assert mat_running == mat_final
 
     # ---- bind the FS seed + sub statements + reduced claims to the PI ----
-    out_fs = [0, 0]
+    out_fs = [STATEMENT_SEED_0, STATEMENT_SEED_1]
+    out_fs = obs(out_fs, NSUB)
     out_fs = obs(out_fs, fs_seed[0])  # the inner proving environment is part of the public statement
     out_fs = obs(out_fs, fs_seed[1])
     for sub in unroll(0, NSUB):

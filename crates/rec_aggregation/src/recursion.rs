@@ -31,6 +31,8 @@ use primitives::{
 /// virtual value column is referenced only by its own table's bus blocks, which
 /// the zerocheck settles, so no framework block can raise one at `zeta`.
 const VALCOL_FRAMEWORK: &str = "a framework block must not reference a virtual value column";
+const RECURSION_AGG_LABEL: &[u8] = b"leanvm-b/recursion-aggregation/v1";
+const RECURSION_STATEMENT_LABEL: &[u8] = b"leanvm-b/recursive-statement/v1";
 
 /// A field element as the decimal `u128` literal the zkDSL parser accepts.
 fn u(f: F192) -> u128 {
@@ -196,7 +198,8 @@ struct RecursiveStatement {
 
 impl RecursiveStatement {
     fn public_input(&self, inner_environment: [F192; 2]) -> [F192; 2] {
-        let mut sponge = Sponge::empty();
+        let mut sponge = Sponge::new(RECURSION_STATEMENT_LABEL, &[]);
+        sponge.observe(F192::new(self.sub_statements.len() as u64, 0, 0));
         for &v in &inner_environment {
             sponge.observe(v);
         }
@@ -313,7 +316,8 @@ fn gen_agg(program: &Program, subs: &[SubDefer]) -> (Vec<(String, Vec<F192>)>, [
     let klog = flock::blake3::K_LOG;
 
     // ---- the aggregation transcript (mirrors the guest exactly) ----
-    let mut h = Sponge::empty();
+    let mut h = Sponge::new(RECURSION_AGG_LABEL, &[]);
+    h.observe(F192::new(nsub as u64, 0, 0));
     for d in subs {
         h.observe(d.pi[0]);
         h.observe(d.pi[1]);
@@ -527,7 +531,8 @@ fn gen_agg(program: &Program, subs: &[SubDefer]) -> (Vec<(String, Vec<F192>)>, [
     // is identified by ONE seed digest in the recursion's PUBLIC INPUT (not
     // baked into the guest), so one compiled guest serves any inner program.
     let seed = lean_vm::cpu::fs_seed(program);
-    let mut e = Sponge::empty();
+    let mut e = Sponge::new(RECURSION_STATEMENT_LABEL, &[]);
+    e.observe(F192::new(subs.len() as u64, 0, 0));
     e.observe(seed[0]);
     e.observe(seed[1]);
     for d in subs {
@@ -635,7 +640,7 @@ fn gen_verify(
 
     // Ligerito grinding digests are trace-borne functions of sponge states;
     // fold grinds carry bits > 0 and query-phase grinds carry bits = 0.
-    let pows: Vec<(u64, u32, F64)> = ops
+    let pows: Vec<(F192, u32, F64)> = ops
         .iter()
         .filter_map(|op| match op {
             TraceOp::Pow { nonce, bits, digest } => Some((*nonce, *bits, *digest)),
@@ -1913,6 +1918,12 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     let label_state = pack_state(Sponge::new(b"leanvm-b", &[]).state());
     ps("TRANSCRIPT_SEED_0", u(label_state[0]).to_string());
     ps("TRANSCRIPT_SEED_1", u(label_state[1]).to_string());
+    let agg_state = pack_state(Sponge::new(RECURSION_AGG_LABEL, &[]).state());
+    ps("AGG_SEED_0", u(agg_state[0]).to_string());
+    ps("AGG_SEED_1", u(agg_state[1]).to_string());
+    let statement_state = pack_state(Sponge::new(RECURSION_STATEMENT_LABEL, &[]).state());
+    ps("STATEMENT_SEED_0", u(statement_state[0]).to_string());
+    ps("STATEMENT_SEED_1", u(statement_state[1]).to_string());
     // Closed-form ring-switch coefficients: the guest bakes both Frobenius
     // orbits in, so it needs neither a runtime orbit table nor a 63-term
     // Horner pass per level. See `pcs::ring_switch::base_coeff_orbit_constants`.
@@ -2159,6 +2170,7 @@ fn recursion_soundness_binds() {
 
     for &(stream, idx, val) in &[
         ("fs_seed", 0, F192::ONE), // wrong proving environment: own_pi (public input) must reject
+        ("stream", 1, F192::new(1u64 << 32, 0, 0)), // native row counts are strictly below 2^32
         ("zc_tau_max", 0, g_pow(2).into()), // not the max tau: the max-cert must reject
     ] {
         let mut merged = batch.merged.clone();
@@ -2178,7 +2190,7 @@ fn recursion_soundness_binds() {
         merged[pos].1[0][0] = merged[pos].1[0][1];
         assert!(!run(&mut guest, &merged), "duplicated sort_order rank must be rejected");
     }
-    eprintln!("all named-hint tamperings correctly rejected");
+    eprintln!("all recursion soundness tamperings correctly rejected");
 }
 
 /// One compiled guest bytecode proves many inner runs with different opcode
