@@ -124,45 +124,31 @@ impl FillCtx<'_> {
 
 // ---- constraint column accessor ----------------------------------------------
 
-/// The values of a constraint's columns at its zerocheck point, indexed by
-/// *local* column index — so a constraint reads `cols[arith::AA]` directly rather
-/// than a positional `v[5]`. It holds the [`Table::constraint_columns`] values
-/// plus a reverse map (local index → position), so the order those columns are
-/// listed in is irrelevant to `eval_constraint`.
+/// One row's committed column values, indexed by *local* column index, so a
+/// constraint reads `cols[arith::AA]` directly rather than a positional `v[5]`.
+/// The batched zerocheck carries every committed column of a table, in local
+/// order, so this is a plain slice.
 pub struct Cols<'a> {
     values: &'a [F128],
-    position: &'a [usize],
 }
 
 impl<'a> Cols<'a> {
-    pub(crate) fn new(values: &'a [F128], position: &'a [usize]) -> Self {
-        Self { values, position }
+    pub(crate) fn new(values: &'a [F128]) -> Self {
+        Self { values }
     }
 }
 
 impl std::ops::Index<usize> for Cols<'_> {
     type Output = F128;
     fn index(&self, local: usize) -> &F128 {
-        &self.values[self.position[local]]
+        &self.values[local]
     }
-}
-
-/// Reverse map `local column index → position in `columns`` (the index `Cols`
-/// uses). Built once per constraint so the indexing stays O(1).
-pub(crate) fn column_positions(columns: &[usize]) -> Vec<usize> {
-    let len = columns.iter().copied().max().map_or(0, |m| m + 1);
-    let mut position = vec![0usize; len];
-    for (pos, &c) in columns.iter().enumerate() {
-        position[c] = pos;
-    }
-    position
 }
 
 // ---- the trait ---------------------------------------------------------------
 
-/// One instruction table. Indices in [`flushes`](Table::flushes),
-/// [`count_columns`](Table::count_columns), and
-/// [`constraint_columns`](Table::constraint_columns) are local to this table.
+/// One instruction table. Indices in [`flushes`](Table::flushes) and
+/// [`count_columns`](Table::count_columns) are local to this table.
 pub trait Table: Sync {
     /// Distinct opcode tag (coordinate 3 of the bytecode tuple).
     fn opcode_tag(&self) -> F128;
@@ -173,9 +159,6 @@ pub trait Table: Sync {
     /// framework treats them specially: each gets its own single-column "count"
     /// bus block, and padding rows fill them with `1` (= g^0) instead of `0`.
     fn count_columns(&self) -> &'static [usize];
-    /// The committed columns this constraint reads, opened at its zerocheck point.
-    /// Order is irrelevant — `eval_constraint` indexes them by name through [`Cols`].
-    fn constraint_columns(&self) -> &'static [usize];
     /// How many identities [`eval_constraint`](Table::eval_constraint) folds.
     /// Sizes this table's slice of the batch's disjoint `eta`-range (§constraints).
     fn n_constraints(&self) -> usize;
@@ -265,10 +248,6 @@ impl Table for Arith {
         use arith::*;
         &[RA, RB, RC, RBC]
     }
-    fn constraint_columns(&self) -> &'static [usize] {
-        use arith::*;
-        &[FP, OA, OB, OC, AA, AB, AC, VA, VB, VC]
-    }
     fn n_constraints(&self) -> usize {
         4 // three addresses + the third-operand identity
     }
@@ -337,10 +316,6 @@ impl Table for SetTable {
         use set::*;
         &[R, RBC]
     }
-    fn constraint_columns(&self) -> &'static [usize] {
-        use set::*;
-        &[FP, O, A]
-    }
     fn n_constraints(&self) -> usize {
         1 // the single address binding
     }
@@ -391,10 +366,6 @@ impl Table for DerefTable {
     fn count_columns(&self) -> &'static [usize] {
         use deref::*;
         &[R1, R2, R3, RBC]
-    }
-    fn constraint_columns(&self) -> &'static [usize] {
-        use deref::*;
-        &[FP, OAL, OBE, OGA, A1, A2, A3, P, FPC, FFP, V2, V3, PC]
     }
     fn n_constraints(&self) -> usize {
         4 // three addresses + the flag-selected store
@@ -463,10 +434,6 @@ impl Table for JumpTable {
     fn count_columns(&self) -> &'static [usize] {
         use jump::*;
         &[RC, RD, RF, RBC]
-    }
-    fn constraint_columns(&self) -> &'static [usize] {
-        use jump::*;
-        &[PC, FP, NPC, NFP, OC, OD, OF, AC, AD, AF, C, D, F, W, B]
     }
     fn n_constraints(&self) -> usize {
         7 // three addresses + two indicator identities + the pc/fp selections
@@ -563,10 +530,6 @@ impl Table for Blake3Table {
     fn count_columns(&self) -> &'static [usize] {
         use blake3t::*;
         &[RA0, RA1, RB0, RB1, RCV0, RCV1, RC0, RC1, RBC]
-    }
-    fn constraint_columns(&self) -> &'static [usize] {
-        use blake3t::*;
-        &[FP, OA0, OA1, OB0, OB1, OCV, OC, AA0, AA1, AB0, AB1, ACV, AC]
     }
     fn n_constraints(&self) -> usize {
         6 // the six address bindings

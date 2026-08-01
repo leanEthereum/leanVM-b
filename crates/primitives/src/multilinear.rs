@@ -86,11 +86,20 @@ pub fn lagrange_eval(nodes: &[F128], values: &[F128], p: F128) -> F128 {
     acc
 }
 
-/// The 3 nodes {0, 1, γ} at which a degree-2 sumcheck round univariate is sent
+/// The 3 nodes {0, 1, g} at which a degree-2 sumcheck round univariate is sent
 /// (the eq weight is factored out). Shared by `lean_vm::constraints` and `lean_vm::gkr`.
 #[inline]
 pub fn tri_nodes() -> [F128; 3] {
     [F128::ZERO, F128::ONE, F128::generator()]
+}
+
+/// The 4 nodes {0, 1, g, g²} at which a degree-3 sumcheck round univariate is sent
+/// WHOLE, eq weight included. Costs one field element more than [`tri_nodes`] and
+/// buys a verifier that reapplies nothing: `h(0) + h(1) = claim`, then interpolate.
+#[inline]
+pub fn quad_nodes() -> [F128; 4] {
+    let g = F128::generator();
+    [F128::ZERO, F128::ONE, g, g * g]
 }
 
 /// Add two 3-coefficient sumcheck accumulators componentwise.
