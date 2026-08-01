@@ -595,12 +595,32 @@ pub fn fold_and_compute_round_pair_optimized(
     r_next: &[F192],
 ) -> (Vec<F192>, Vec<F192>, F192, F192) {
     let half = a.len() / 2;
-    // SAFETY: zero is a valid F192 value.
-    let mut a_new = unsafe { primitives::alloc_zeroed_vec::<primitives::field::F192>(half) };
-    // SAFETY: zero is a valid F192 value.
-    let mut b_new = unsafe { primitives::alloc_zeroed_vec::<primitives::field::F192>(half) };
-    let (m1, mi) = fold_and_compute_round_pair_into(a, b, &mut a_new, &mut b_new, r_fold, r_next);
+    let mut a_new = primitives::alloc_uninit(half);
+    let mut b_new = primitives::alloc_uninit(half);
+    let (m1, mi) = fold_and_compute_round_pair_into_slots(a, b, &mut a_new, &mut b_new, r_fold, r_next);
+    // SAFETY: the fold writes every slot of both output vectors exactly once.
+    let a_new = unsafe { primitives::assume_init(a_new) };
+    // SAFETY: the fold writes every slot of both output vectors exactly once.
+    let b_new = unsafe { primitives::assume_init(b_new) };
     (a_new, b_new, m1, mi)
+}
+
+trait OutputSlot {
+    fn put(&mut self, value: F192);
+}
+
+impl OutputSlot for F192 {
+    #[inline(always)]
+    fn put(&mut self, value: F192) {
+        *self = value;
+    }
+}
+
+impl OutputSlot for std::mem::MaybeUninit<F192> {
+    #[inline(always)]
+    fn put(&mut self, value: F192) {
+        self.write(value);
+    }
 }
 
 /// Buffer-reusing variant of [`fold_and_compute_round_pair_optimized`]: writes
@@ -616,6 +636,17 @@ pub fn fold_and_compute_round_pair_into(
     b: &[F192],
     a_out: &mut [F192],
     b_out: &mut [F192],
+    r_fold: F192,
+    r_next: &[F192],
+) -> (F192, F192) {
+    fold_and_compute_round_pair_into_slots(a, b, a_out, b_out, r_fold, r_next)
+}
+
+fn fold_and_compute_round_pair_into_slots<O: OutputSlot + Send>(
+    a: &[F192],
+    b: &[F192],
+    a_out: &mut [O],
+    b_out: &mut [O],
     r_fold: F192,
     r_next: &[F192],
 ) -> (F192, F192) {
@@ -726,22 +757,22 @@ pub fn fold_and_compute_round_pair_into(
                     let oi_b = 2 * x_lo_b;
                     let oi_c = 2 * x_lo_c;
                     let oi_d = 2 * x_lo_d;
-                    a_out[oi_a] = a0_a;
-                    a_out[oi_a + 1] = a1_a;
-                    b_out[oi_a] = b0_a;
-                    b_out[oi_a + 1] = b1_a;
-                    a_out[oi_b] = a0_b;
-                    a_out[oi_b + 1] = a1_b;
-                    b_out[oi_b] = b0_b;
-                    b_out[oi_b + 1] = b1_b;
-                    a_out[oi_c] = a0_c;
-                    a_out[oi_c + 1] = a1_c;
-                    b_out[oi_c] = b0_c;
-                    b_out[oi_c + 1] = b1_c;
-                    a_out[oi_d] = a0_d;
-                    a_out[oi_d + 1] = a1_d;
-                    b_out[oi_d] = b0_d;
-                    b_out[oi_d + 1] = b1_d;
+                    a_out[oi_a].put(a0_a);
+                    a_out[oi_a + 1].put(a1_a);
+                    b_out[oi_a].put(b0_a);
+                    b_out[oi_a + 1].put(b1_a);
+                    a_out[oi_b].put(a0_b);
+                    a_out[oi_b + 1].put(a1_b);
+                    b_out[oi_b].put(b0_b);
+                    b_out[oi_b + 1].put(b1_b);
+                    a_out[oi_c].put(a0_c);
+                    a_out[oi_c + 1].put(a1_c);
+                    b_out[oi_c].put(b0_c);
+                    b_out[oi_c + 1].put(b1_c);
+                    a_out[oi_d].put(a0_d);
+                    a_out[oi_d + 1].put(a1_d);
+                    b_out[oi_d].put(b0_d);
+                    b_out[oi_d + 1].put(b1_d);
 
                     // 8 independent msg muls.
                     let eq_l_a = eq_lo[x_lo_a];
@@ -804,14 +835,14 @@ pub fn fold_and_compute_round_pair_into(
 
                 let oi_a = 2 * x_lo_a;
                 let oi_b = 2 * x_lo_b;
-                a_out[oi_a] = a0_a;
-                a_out[oi_a + 1] = a1_a;
-                b_out[oi_a] = b0_a;
-                b_out[oi_a + 1] = b1_a;
-                a_out[oi_b] = a0_b;
-                a_out[oi_b + 1] = a1_b;
-                b_out[oi_b] = b0_b;
-                b_out[oi_b + 1] = b1_b;
+                a_out[oi_a].put(a0_a);
+                a_out[oi_a + 1].put(a1_a);
+                b_out[oi_a].put(b0_a);
+                b_out[oi_a + 1].put(b1_a);
+                a_out[oi_b].put(a0_b);
+                a_out[oi_b + 1].put(a1_b);
+                b_out[oi_b].put(b0_b);
+                b_out[oi_b + 1].put(b1_b);
 
                 let eq_l_a = eq_lo[x_lo_a];
                 let eq_l_b = eq_lo[x_lo_b];

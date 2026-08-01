@@ -58,7 +58,7 @@ use primitives::field::{F64, F192};
 use serde::{Deserialize, Serialize};
 
 use super::ligerito::{
-    LigeritoProof, ProverData, build_eq_table_ext, build_eq_table_ext_seeded_into, recursive_prover_with_basis,
+    LigeritoProof, ProverData, build_eq_table_ext, recursive_prover_with_basis,
     recursive_verifier_with_basis_succinct_with_squeezes,
 };
 use super::ligerito::{ProverConfig, VerifierConfig};
@@ -234,8 +234,7 @@ fn fold_stacked_point_claims(b_stack: &mut [F192], target: &mut F192, claims: &[
         })
         .max()
         .unwrap_or(0);
-    // SAFETY: zero is a valid F192 value.
-    let mut scratch: Vec<F192> = unsafe { primitives::alloc_zeroed_vec(max_len) };
+    let mut scratch = primitives::alloc_uninit(max_len);
     for (claim, g) in claims.iter().zip(gammas.iter()) {
         let g = *g;
         match claim {
@@ -249,8 +248,9 @@ fn fold_stacked_point_claims(b_stack: &mut [F192], target: &mut F192, claims: &[
                     offset % len == 0,
                     "StackClaim::Point: offset must be 2^|low_point|-aligned"
                 );
-                build_eq_table_ext_seeded_into(low_point, g, &mut scratch[..len]);
-                let eq = &scratch[..len];
+                super::ligerito::build_eq_table_ext_seeded_uninit(low_point, g, &mut scratch[..len]);
+                // SAFETY: the seeded eq build initialized this entire prefix.
+                let eq = unsafe { std::slice::from_raw_parts(scratch.as_ptr().cast::<F192>(), len) };
                 let dst = &mut b_stack[*offset..*offset + len];
                 if len < PAR_FOLD_THRESHOLD {
                     for (bi, ei) in dst.iter_mut().zip(eq.iter()) {
@@ -420,16 +420,19 @@ pub fn open_batch_mixed_ligerito_stacked(
         .iter()
         .fold(F192::ZERO, |acc, out| acc + out.batched_sumcheck_claim);
     // Parallel first-touch wins for the tower stack: its many scattered point
-    // claims otherwise pay demand-zero page faults one claim at a time.
-    // SAFETY: zero is a valid F192 value.
-    let mut b_stack: Vec<F192> = unsafe { primitives::alloc_zeroed_vec(stack.len()) };
+    // claims otherwise fault pages one claim at a time.
+    let mut b_stack = primitives::alloc_uninit(stack.len());
     {
         use rayon::prelude::*;
         const ZERO_CHUNK: usize = 1 << 16;
-        b_stack
-            .par_chunks_mut(ZERO_CHUNK)
-            .for_each(|chunk| chunk.fill(F192::ZERO));
+        b_stack.par_chunks_mut(ZERO_CHUNK).for_each(|chunk| {
+            for value in chunk {
+                value.write(F192::ZERO);
+            }
+        });
     }
+    // SAFETY: the parallel fill initializes every stack weight to zero.
+    let mut b_stack = unsafe { primitives::assume_init(b_stack) };
     mark("b_stack zero fill", &mut t);
     ring_switch::combine_deferred_into(&rs_outputs, &mut b_stack[ring.offset..ring.offset + qpkd_len]);
     mark("rs_eq_ind scatter", &mut t);

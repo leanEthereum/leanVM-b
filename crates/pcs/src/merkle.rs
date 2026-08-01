@@ -95,24 +95,16 @@ pub fn hash_pair(left: &Hash, right: &Hash) -> Hash {
 /// inputs. A whole-block input no longer than 1024 bytes is exactly one chunk;
 /// counter zero, CHUNK_START on its first block, and CHUNK_END|ROOT on its last
 /// reproduce `blake3::hash` byte-for-byte.
-fn hash_many_oneshot<const N: usize>(
-    platform: blake3::platform::Platform,
-    data: &[u8],
-    out: &mut [Hash],
-) {
+#[cfg(test)]
+fn hash_many_oneshot<const N: usize>(platform: blake3::platform::Platform, data: &[u8], out: &mut [Hash]) {
     const {
         assert!(N > 0 && N.is_multiple_of(64) && N <= 1024);
     }
     debug_assert_eq!(data.len(), out.len() * N);
-    let inputs: Vec<&[u8; N]> = data
-        .chunks_exact(N)
-        .map(|input| input.try_into().unwrap())
-        .collect();
+    let inputs: Vec<&[u8; N]> = data.chunks_exact(N).map(|input| input.try_into().unwrap()).collect();
     // Hash is [u8; 32] with no padding; expose the contiguous output storage
     // expected by hash_many, which writes exactly 32 bytes per input.
-    let out_bytes = unsafe {
-        core::slice::from_raw_parts_mut(out.as_mut_ptr().cast::<u8>(), out.len() * 32)
-    };
+    let out_bytes = unsafe { core::slice::from_raw_parts_mut(out.as_mut_ptr().cast::<u8>(), out.len() * 32) };
     platform.hash_many::<N>(
         &inputs,
         &B3_IV,
@@ -125,22 +117,43 @@ fn hash_many_oneshot<const N: usize>(
     );
 }
 
-/// Hash equal-size leaves in parallel with standard BLAKE3, using cross-leaf
-/// SIMD for the PCS's whole-block, single-chunk geometries.
-fn hash_leaves_batched(
+fn hash_many_oneshot_uninit<const N: usize>(
+    platform: blake3::platform::Platform,
+    data: &[u8],
+    out: &mut [std::mem::MaybeUninit<Hash>],
+) {
+    const {
+        assert!(N > 0 && N.is_multiple_of(64) && N <= 1024);
+    }
+    debug_assert_eq!(data.len(), out.len() * N);
+    let inputs: Vec<&[u8; N]> = data.chunks_exact(N).map(|input| input.try_into().unwrap()).collect();
+    let out_bytes = unsafe { core::slice::from_raw_parts_mut(out.as_mut_ptr().cast::<u8>(), out.len() * 32) };
+    platform.hash_many::<N>(
+        &inputs,
+        &B3_IV,
+        0,
+        blake3::IncrementCounter::No,
+        0,
+        B3_CHUNK_START,
+        B3_CHUNK_END | B3_ROOT,
+        out_bytes,
+    );
+}
+
+fn hash_leaves_batched_uninit(
     platform: blake3::platform::Platform,
     data: &[u8],
     leaf_size: usize,
-    out: &mut [Hash],
+    out: &mut [std::mem::MaybeUninit<Hash>],
 ) {
     fn batched<const N: usize>(
         platform: blake3::platform::Platform,
         data: &[u8],
-        out: &mut [Hash],
+        out: &mut [std::mem::MaybeUninit<Hash>],
     ) {
         out.par_chunks_mut(HASH_GROUP)
             .zip(data.par_chunks(HASH_GROUP * N))
-            .for_each(|(outputs, inputs)| hash_many_oneshot::<N>(platform, inputs, outputs));
+            .for_each(|(outputs, inputs)| hash_many_oneshot_uninit::<N>(platform, inputs, outputs));
     }
     match leaf_size {
         64 => batched::<64>(platform, data, out),
@@ -151,29 +164,27 @@ fn hash_leaves_batched(
         _ => out
             .par_iter_mut()
             .zip(data.par_chunks(leaf_size))
-            .for_each(|(slot, leaf)| *slot = hash_leaf(leaf)),
+            .for_each(|(slot, leaf)| {
+                slot.write(hash_leaf(leaf));
+            }),
     }
 }
 
-/// Hash one internal level. Child hashes are already contiguous, so each pair
-/// is a zero-copy 64-byte input to the same SIMD-batched one-shot primitive.
-fn hash_pairs_level(
+fn hash_pairs_level_uninit(
     platform: blake3::platform::Platform,
     read: &[Hash],
-    write: &mut [Hash],
+    write: &mut [std::mem::MaybeUninit<Hash>],
 ) {
     debug_assert_eq!(read.len(), 2 * write.len());
-    let read_bytes = unsafe {
-        core::slice::from_raw_parts(read.as_ptr().cast::<u8>(), read.len() * 32)
-    };
+    let read_bytes = unsafe { core::slice::from_raw_parts(read.as_ptr().cast::<u8>(), read.len() * 32) };
     const SERIAL_LEVEL_NODES: usize = 1024;
     if write.len() <= SERIAL_LEVEL_NODES {
-        hash_many_oneshot::<64>(platform, read_bytes, write);
+        hash_many_oneshot_uninit::<64>(platform, read_bytes, write);
     } else {
         write
             .par_chunks_mut(HASH_GROUP)
             .zip(read_bytes.par_chunks(HASH_GROUP * 64))
-            .for_each(|(outputs, inputs)| hash_many_oneshot::<64>(platform, inputs, outputs));
+            .for_each(|(outputs, inputs)| hash_many_oneshot_uninit::<64>(platform, inputs, outputs));
     }
 }
 
@@ -200,12 +211,11 @@ pub fn merkle_tree(data: &[u8], num_leaves: usize) -> Vec<Hash> {
 
     let leaf_size = data.len() / num_leaves;
     let total_nodes = 2 * num_leaves - 1;
-    // SAFETY: every byte pattern is a valid hash byte array.
-    let mut tree: Vec<Hash> = unsafe { primitives::alloc_zeroed_vec(total_nodes) };
+    let mut tree = primitives::alloc_uninit(total_nodes);
     let platform = blake3::platform::Platform::detect();
 
     // 1. Leaves — independent standard BLAKE3 hashes.
-    hash_leaves_batched(platform, data, leaf_size, &mut tree[..num_leaves]);
+    hash_leaves_batched_uninit(platform, data, leaf_size, &mut tree[..num_leaves]);
 
     // 2. Internal levels — parallel within a level, sequential across levels.
     // Small upper levels can't fill the cores, so a rayon dispatch per level
@@ -215,18 +225,16 @@ pub fn merkle_tree(data: &[u8], num_leaves: usize) -> Vec<Hash> {
     let mut read_len = num_leaves;
     while read_len > 1 {
         let next_len = read_len >> 1;
-        // Split the buffer at the end of the current level so we get two
-        // non-overlapping mutable slices: `read` (input) and `write` (output).
-        let (read, rest) = tree[read_start..].split_at_mut(read_len);
-        let write = &mut rest[..next_len];
-
-        hash_pairs_level(platform, read, write);
+        let read = unsafe { std::slice::from_raw_parts(tree.as_ptr().add(read_start).cast::<Hash>(), read_len) };
+        let write_start = read_start + read_len;
+        hash_pairs_level_uninit(platform, read, &mut tree[write_start..write_start + next_len]);
 
         read_start += read_len;
         read_len = next_len;
     }
 
-    tree
+    // SAFETY: leaves and each successive internal level initialize the full tree.
+    unsafe { primitives::assume_init(tree) }
 }
 
 // ---------------------------------------------------------------------------
@@ -240,11 +248,7 @@ pub fn verify_merkle_proof(root: &Hash, leaf_hash: &Hash, index: usize, proof: &
     let mut idx = index;
     for sibling in proof {
         // If idx is even, our node is the LEFT child; sibling is on the RIGHT.
-        let (left, right) = if idx & 1 == 0 {
-            (acc, *sibling)
-        } else {
-            (*sibling, acc)
-        };
+        let (left, right) = if idx & 1 == 0 { (acc, *sibling) } else { (*sibling, acc) };
         acc = hash_pair(&left, &right);
         idx >>= 1;
     }
@@ -456,7 +460,10 @@ pub fn restore_multi_proof(
                 .map(|lvl| {
                     let sib = (leaf >> lvl) ^ 1;
                     let level = &known[lvl];
-                    level.binary_search_by_key(&sib, |&(j, _)| j).ok().map(|pos| level[pos].1)
+                    level
+                        .binary_search_by_key(&sib, |&(j, _)| j)
+                        .ok()
+                        .map(|pos| level[pos].1)
                 })
                 .collect::<Option<Vec<_>>>()
         })
@@ -490,7 +497,10 @@ mod prune_tests {
         let mut sorted = queries.to_vec();
         sorted.sort_unstable();
         sorted.dedup(); // [1, 3, 5]
-        let leaf_hashes: Vec<Hash> = sorted.iter().map(|&q| hash_leaf(&data[q * leaf_size..(q + 1) * leaf_size])).collect();
+        let leaf_hashes: Vec<Hash> = sorted
+            .iter()
+            .map(|&q| hash_leaf(&data[q * leaf_size..(q + 1) * leaf_size]))
+            .collect();
 
         let pruned = merkle_multi_proof(&tree, num_leaves, &sorted);
         let flat = restore_multi_proof(num_leaves, &queries, &leaf_hashes, &pruned).expect("restore");
@@ -498,7 +508,10 @@ mod prune_tests {
         for (i, &q) in queries.iter().enumerate() {
             let leaf = hash_leaf(&data[q * leaf_size..(q + 1) * leaf_size]);
             let path = &flat[i * height..(i + 1) * height];
-            assert!(verify_merkle_proof(&root, &leaf, q, path), "restored path for query {q} (pos {i}) must verify");
+            assert!(
+                verify_merkle_proof(&root, &leaf, q, path),
+                "restored path for query {q} (pos {i}) must verify"
+            );
         }
 
         // An extra (unconsumed) sibling is a malformed proof.
@@ -541,31 +554,31 @@ mod vmhash_batch_tests {
     /// Sequential (per-leaf `hash_leaf`) reference for the parallel
     /// [`merkle_tree`].
     fn merkle_tree_sequential(data: &[u8], num_leaves: usize) -> Vec<Hash> {
-    assert!(num_leaves.is_power_of_two() && num_leaves > 0);
-    assert_eq!(data.len() % num_leaves, 0);
+        assert!(num_leaves.is_power_of_two() && num_leaves > 0);
+        assert_eq!(data.len() % num_leaves, 0);
 
-    let leaf_size = data.len() / num_leaves;
-    let total_nodes = 2 * num_leaves - 1;
-    // SAFETY: every byte pattern is a valid hash byte array.
-    let mut tree: Vec<Hash> = unsafe { primitives::alloc_zeroed_vec(total_nodes) };
+        let leaf_size = data.len() / num_leaves;
+        let total_nodes = 2 * num_leaves - 1;
+        let mut tree = Vec::with_capacity(total_nodes);
 
-    for (i, leaf) in data.chunks(leaf_size).enumerate() {
-        tree[i] = hash_leaf(leaf);
-    }
-    let mut read_start = 0usize;
-    let mut read_len = num_leaves;
-    while read_len > 1 {
-        let next_len = read_len >> 1;
-        for i in 0..next_len {
-            let left = tree[read_start + 2 * i];
-            let right = tree[read_start + 2 * i + 1];
-            tree[read_start + read_len + i] = hash_pair(&left, &right);
+        for (i, leaf) in data.chunks(leaf_size).enumerate() {
+            debug_assert_eq!(tree.len(), i);
+            tree.push(hash_leaf(leaf));
         }
-        read_start += read_len;
-        read_len = next_len;
+        let mut read_start = 0usize;
+        let mut read_len = num_leaves;
+        while read_len > 1 {
+            let next_len = read_len >> 1;
+            for i in 0..next_len {
+                let left = tree[read_start + 2 * i];
+                let right = tree[read_start + 2 * i + 1];
+                tree.push(hash_pair(&left, &right));
+            }
+            read_start += read_len;
+            read_len = next_len;
+        }
+        tree
     }
-    tree
-}
 
     /// The parallel `merkle_tree` must be byte-identical to the per-leaf
     /// `merkle_tree_sequential` (which uses `hash_leaf`) — same root, same nodes —
@@ -583,7 +596,9 @@ mod vmhash_batch_tests {
             (8192, 16),
             (1, 32),
         ] {
-            let data: Vec<u8> = (0..num_leaves * leaf_size).map(|i| (i.wrapping_mul(131) ^ 0x5a) as u8).collect();
+            let data: Vec<u8> = (0..num_leaves * leaf_size)
+                .map(|i| (i.wrapping_mul(131) ^ 0x5a) as u8)
+                .collect();
             assert_eq!(
                 merkle_tree(&data, num_leaves),
                 merkle_tree_sequential(&data, num_leaves),

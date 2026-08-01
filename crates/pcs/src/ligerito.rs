@@ -104,10 +104,41 @@ pub fn build_eq_table_ext(point: &[F192]) -> Vec<F192> {
 /// to amortize dispatch. Structure copied from the extension-field layer's
 /// `ring_switch::build_eq_parallel`.
 pub fn build_eq_table_ext_parallel(point: &[F192]) -> Vec<F192> {
-    // SAFETY: zero is a valid F192 value.
-    let mut out: Vec<F192> = unsafe { primitives::alloc_zeroed_vec(1usize << point.len()) };
-    build_eq_table_ext_seeded_into(point, F192::ONE, &mut out);
-    out
+    let mut out = primitives::alloc_uninit(1usize << point.len());
+    build_eq_table_ext_seeded(point, F192::ONE, &mut out);
+    // SAFETY: the doubling recurrence initializes every table entry.
+    unsafe { primitives::assume_init(out) }
+}
+
+trait EqTableSlot {
+    fn put(&mut self, value: F192);
+    unsafe fn get(&self) -> F192;
+}
+
+impl EqTableSlot for F192 {
+    #[inline(always)]
+    fn put(&mut self, value: F192) {
+        *self = value;
+    }
+
+    #[inline(always)]
+    unsafe fn get(&self) -> F192 {
+        *self
+    }
+}
+
+impl EqTableSlot for std::mem::MaybeUninit<F192> {
+    #[inline(always)]
+    fn put(&mut self, value: F192) {
+        self.write(value);
+    }
+
+    #[inline(always)]
+    unsafe fn get(&self) -> F192 {
+        // SAFETY: the doubling recurrence reads only the prefix initialized by
+        // earlier levels.
+        unsafe { self.assume_init_read() }
+    }
 }
 
 /// In-place seeded core of [`build_eq_table_ext_parallel`]: fills
@@ -120,10 +151,18 @@ pub fn build_eq_table_ext_parallel(point: &[F192]) -> Vec<F192> {
 /// length exactly `2^point.len()`; every slot is written before any is read, so
 /// a reused scratch buffer is fine.
 pub fn build_eq_table_ext_seeded_into(point: &[F192], seed: F192, out: &mut [F192]) {
+    build_eq_table_ext_seeded(point, seed, out);
+}
+
+pub(crate) fn build_eq_table_ext_seeded_uninit(point: &[F192], seed: F192, out: &mut [std::mem::MaybeUninit<F192>]) {
+    build_eq_table_ext_seeded(point, seed, out);
+}
+
+fn build_eq_table_ext_seeded<S: EqTableSlot + Send>(point: &[F192], seed: F192, out: &mut [S]) {
     use rayon::prelude::*;
     let n = point.len();
     assert_eq!(out.len(), 1usize << n, "out must have length 2^point.len()");
-    out[0] = seed;
+    out[0].put(seed);
     // Threshold below which rayon dispatch overhead beats the parallel work
     // (same floor as the extension-field layer's `build_eq_parallel`).
     const PAR_THRESHOLD: usize = 1 << 12;
@@ -134,17 +173,19 @@ pub fn build_eq_table_ext_seeded_into(point: &[F192], seed: F192, out: &mut [F19
         let hi = &mut hi_rest[..half];
         if half < PAR_THRESHOLD {
             for (lo_x, hi_x) in lo.iter_mut().zip(hi.iter_mut()) {
-                let v = *lo_x;
+                // SAFETY: `lo` was initialized before this level starts.
+                let v = unsafe { lo_x.get() };
                 let high = v * r_j;
-                *hi_x = high;
-                *lo_x = v + high;
+                hi_x.put(high);
+                lo_x.put(v + high);
             }
         } else {
             lo.par_iter_mut().zip(hi.par_iter_mut()).for_each(|(lo_x, hi_x)| {
-                let v = *lo_x;
+                // SAFETY: `lo` was initialized before this level starts.
+                let v = unsafe { lo_x.get() };
                 let high = v * r_j;
-                *hi_x = high;
-                *lo_x = v + high;
+                hi_x.put(high);
+                lo_x.put(v + high);
             });
         }
     }
@@ -237,20 +278,24 @@ pub struct ProverData {
 /// Fill `codeword` with `2^r` replicas of `msg`: the exact state after the
 /// first `r` forward-NTT layers on the zero-padded coefficient vector
 /// `[msg, 0, ..., 0]`. Pair with `forward_transform_*_from_layer(.., r)`.
-fn replicate_message_fill_t<T: Copy + Send + Sync>(codeword: &mut [T], msg: &[T]) {
+fn replicate_message_fill_uninit<T: Copy + Send + Sync>(codeword: &mut [std::mem::MaybeUninit<T>], msg: &[T]) {
     use rayon::prelude::*;
     let msg_len = msg.len();
     debug_assert!(codeword.len().is_multiple_of(msg_len));
     const COPY_CHUNK: usize = 1 << 16;
+    let copy = |dst: &mut [std::mem::MaybeUninit<T>], src: &[T]| {
+        // SAFETY: source and destination are disjoint, have the same length,
+        // and each destination slot is written exactly once.
+        unsafe { std::ptr::copy_nonoverlapping(src.as_ptr(), dst.as_mut_ptr().cast(), dst.len()) };
+    };
     if msg_len >= COPY_CHUNK {
-        // Both are powers of two, so chunks never straddle a replica boundary.
         codeword.par_chunks_mut(COPY_CHUNK).enumerate().for_each(|(i, dst)| {
             let src_off = (i * COPY_CHUNK) % msg_len;
-            dst.copy_from_slice(&msg[src_off..src_off + dst.len()]);
+            copy(dst, &msg[src_off..src_off + dst.len()]);
         });
     } else {
-        for rep in codeword.chunks_mut(msg_len) {
-            rep.copy_from_slice(msg);
+        for replica in codeword.chunks_mut(msg_len) {
+            copy(replica, msg);
         }
     }
 }
@@ -271,9 +316,10 @@ pub fn commit(message: &[F64], log_batch_size: usize, log_inv_rate: usize) -> (C
     let n_positions = 1usize << k_code;
     let codeword_len = n_positions * num_ntts;
 
-    // SAFETY: zero is a valid F64 value.
-    let mut codeword: Vec<F64> = unsafe { primitives::alloc_zeroed_vec(codeword_len) };
-    replicate_message_fill_t(&mut codeword, message);
+    let mut codeword = primitives::alloc_uninit(codeword_len);
+    replicate_message_fill_uninit(&mut codeword, message);
+    // SAFETY: the replicate fill initializes every codeword element.
+    let mut codeword = unsafe { primitives::assume_init(codeword) };
 
     // Optional phase timing (LIGERITO_TRACE): one env lookup per commit, no
     // work when unset.
@@ -1520,9 +1566,10 @@ pub(crate) fn ligero_commit_ext(
 
     // Plain allocation (scratch-pool divergence; see module docs).
     let codeword_len = block_len * num_interleaved;
-    // SAFETY: zero is a valid F192 value.
-    let mut mat: Vec<F192> = unsafe { primitives::alloc_zeroed_vec(codeword_len) };
-    replicate_message_fill_t(&mut mat, poly);
+    let mut mat = primitives::alloc_uninit(codeword_len);
+    replicate_message_fill_uninit(&mut mat, poly);
+    // SAFETY: the replicate fill initializes every matrix element.
+    let mut mat = unsafe { primitives::assume_init(mat) };
 
     // Optional per-level NTT/Merkle split (LIGERITO_TRACE): one env lookup per
     // commit level, no work when unset.

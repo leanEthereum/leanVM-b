@@ -821,8 +821,7 @@ pub fn pack_z_lincheck(z_logical: &[bool], m: usize, k_log: usize) -> Vec<u8> {
     assert_eq!(n_outer % 8, 0, "need n_outer ≥ 8 for byte stripes");
     let n_stripes = n_outer / 8;
 
-    // SAFETY: every byte pattern is a valid u8.
-    let mut z_packed: Vec<u8> = unsafe { primitives::alloc_zeroed_vec(n_total / 8) };
+    let mut z_packed = primitives::alloc_uninit(n_total / 8);
     for byte_idx in 0..n_stripes {
         for i_inner in 0..k {
             let mut byte = 0u8;
@@ -833,27 +832,26 @@ pub fn pack_z_lincheck(z_logical: &[bool], m: usize, k_log: usize) -> Vec<u8> {
                     byte |= 1u8 << r;
                 }
             }
-            z_packed[byte_idx * k + i_inner] = byte;
+            z_packed[byte_idx * k + i_inner].write(byte);
         }
     }
-    z_packed
+    // SAFETY: the nested loops write every output byte exactly once.
+    unsafe { primitives::assume_init(z_packed) }
 }
 
 /// Same output as [`pack_z_lincheck`] but reads bits from a 128-bit packed
 /// witness embedded in F192
 /// witness (polynomial basis: bit `i` of logical = bit `i % 128` of
-/// `z_packed_f128[i / 128]`).
-pub fn pack_z_lincheck_from_packed(z_packed_f128: &[primitives::field::F192], m: usize, k_log: usize) -> Vec<u8> {
+/// `z_packed_words[i / 128]`).
+pub fn pack_z_lincheck_from_packed(z_packed_words: &[primitives::field::F192], m: usize, k_log: usize) -> Vec<u8> {
     use rayon::prelude::*;
     let k = 1usize << k_log;
     let n_total = 1usize << m;
-    assert_eq!(z_packed_f128.len(), n_total / 128);
+    assert_eq!(z_packed_words.len(), n_total / 128);
     let n_outer = n_total / k;
     assert_eq!(n_outer % 8, 0, "need n_outer ≥ 8 for byte stripes");
 
-    // The allocator's demand-zero path avoids a sequential fill before the
-    // parallel stripe conversion. SAFETY: every byte pattern is a valid u8.
-    let mut z_packed: Vec<u8> = unsafe { primitives::alloc_zeroed_vec(n_total / 8) };
+    let mut z_packed = primitives::alloc_uninit(n_total / 8);
     // Each stripe (byte_idx) writes a disjoint k-byte chunk — process them in
     // parallel. Inside one stripe, k independent output bytes.
     z_packed.par_chunks_mut(k).enumerate().for_each(|(byte_idx, chunk)| {
@@ -862,21 +860,22 @@ pub fn pack_z_lincheck_from_packed(z_packed_f128: &[primitives::field::F192], m:
             for r in 0..8 {
                 let i_outer = 8 * byte_idx + r;
                 let logical_idx = i_inner + i_outer * k;
-                let f128_idx = logical_idx / 128;
+                let packed_word = logical_idx / 128;
                 let local_bit = logical_idx % 128;
                 let bit = if local_bit < 64 {
-                    (z_packed_f128[f128_idx].c0 >> local_bit) & 1 == 1
+                    (z_packed_words[packed_word].c0 >> local_bit) & 1 == 1
                 } else {
-                    (z_packed_f128[f128_idx].c1 >> (local_bit - 64)) & 1 == 1
+                    (z_packed_words[packed_word].c1 >> (local_bit - 64)) & 1 == 1
                 };
                 if bit {
                     byte |= 1u8 << r;
                 }
             }
-            chunk[i_inner] = byte;
+            chunk[i_inner].write(byte);
         }
     });
-    z_packed
+    // SAFETY: every parallel chunk writes each of its output bytes exactly once.
+    unsafe { primitives::assume_init(z_packed) }
 }
 
 /// Build the **quirky eq table** for a claim point on the inner half:

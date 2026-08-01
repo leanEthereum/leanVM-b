@@ -29,9 +29,7 @@ fn collect_parent_percentages(
     let percentage = match parent_duration {
         None => 100.0,
         Some(duration) if duration.is_zero() => 0.0,
-        Some(duration) => {
-            100.0 * span.total_duration().as_nanos() as f64 / duration.as_nanos() as f64
-        }
+        Some(duration) => 100.0 * span.total_duration().as_nanos() as f64 / duration.as_nanos() as f64,
     };
     percentages.push(percentage);
 
@@ -173,9 +171,9 @@ pub fn pretty_f64(value: f64) -> String {
         return "0".to_string();
     }
 
-    let (integer, fraction) = raw.split_once('.').map_or((raw.as_str(), None), |(integer, fraction)| {
-        (integer, Some(fraction))
-    });
+    let (integer, fraction) = raw
+        .split_once('.')
+        .map_or((raw.as_str(), None), |(integer, fraction)| (integer, Some(fraction)));
     let mut out = pretty_integer(integer);
     if let Some(fraction) = fraction {
         out.push('.');
@@ -283,6 +281,25 @@ pub unsafe fn alloc_zeroed_vec<T: Copy>(n: usize) -> Vec<T> {
     unsafe { Vec::from_raw_parts(ptr, n, n) }
 }
 
+/// Allocate `n` slots without initializing `T` values.
+pub fn alloc_uninit<T>(n: usize) -> Vec<std::mem::MaybeUninit<T>> {
+    let mut values = Vec::with_capacity(n);
+    values.resize_with(n, std::mem::MaybeUninit::uninit);
+    values
+}
+
+/// Convert a vector after every slot has been initialized.
+///
+/// # Safety
+///
+/// Every element of `values` must contain a valid `T`.
+pub unsafe fn assume_init<T>(values: Vec<std::mem::MaybeUninit<T>>) -> Vec<T> {
+    let mut values = std::mem::ManuallyDrop::new(values);
+    // SAFETY: `MaybeUninit<T>` has the same layout as `T`; the caller guarantees
+    // that all elements are initialized, and ManuallyDrop transfers ownership.
+    unsafe { Vec::from_raw_parts(values.as_mut_ptr().cast(), values.len(), values.capacity()) }
+}
+
 /// Cached [`perf_core_count`]. The uncached version may spawn `sysctl`; this
 /// memoizes it so hot paths can cheaply ask "is the current rayon pool the
 /// homogeneous P-core pool?" (i.e. `current_num_threads() <= this`).
@@ -310,7 +327,5 @@ fn perf_core_count() -> usize {
             return n;
         }
     }
-    std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1)
+    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)
 }
