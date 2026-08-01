@@ -588,6 +588,20 @@ class ProductTriple:
     values: tuple[F192, F192, F192]
 
 
+def quartic_eval_from_eq(
+    claim: F192,
+    equality_point: F192,
+    difference: F192,
+    c2: F192,
+    c3: F192,
+    c4: F192,
+    challenge: F192,
+) -> F192:
+    c0 = claim + equality_point * difference
+    c1 = difference + c2 + c3 + c4
+    return c0 + challenge * (c1 + challenge * (c2 + challenge * (c3 + challenge * c4)))
+
+
 def verify_product_triple(depth: int, transcript: Transcript) -> ProductTriple:
     root_values = transcript.scalars(3)
     roots = (root_values[0], root_values[1], root_values[2])
@@ -595,31 +609,47 @@ def verify_product_triple(depth: int, transcript: Transcript) -> ProductTriple:
     point: list[F192] = []
     values = list(roots)
 
-    for layer in range(depth, 0, -1):
+    layer = depth
+    while layer > 0:
         round_count = depth - layer
         claim = values[0] + combine * (values[1] + combine * values[2])
+        if layer % 2 == 1:
+            require(round_count == 0, "binary GKR layer is not root-most")
+            tails = [transcript.scalars(2) for _ in range(3)]
+            products = [tail[0] * tail[1] for tail in tails]
+            expected = products[0] + combine * (products[1] + combine * products[2])
+            require(claim == expected, f"GKR layer {layer}: binary tail mismatch")
+            challenge = transcript.sample()
+            values = [interpolate(tail[0], tail[1], challenge) for tail in tails]
+            combine = transcript.sample()
+            point = [challenge]
+            layer -= 1
+            continue
+
         round_point: list[F192] = []
-        equality = ONE
-        for round_index, prior in enumerate(point[:round_count]):
-            message = transcript.scalars(3)
-            expected = equality * ((ONE + prior) * message[0] + prior * message[1])
-            require(
-                expected == claim,
-                f"GKR layer {layer}, round {round_index}: inconsistent sumcheck",
-            )
+        for prior in point[:round_count]:
+            message = transcript.scalars(4)
             challenge = transcript.sample()
             round_point.append(challenge)
-            equality *= ONE + prior + challenge
-            claim = equality * lagrange_eval(TRI_NODES, message, challenge)
+            claim = quartic_eval_from_eq(claim, prior, *message, challenge)
 
-        tails = [transcript.scalars(2) for _ in range(3)]
-        products = [a * b for a, b in tails]
-        expected = equality * (products[0] + combine * (products[1] + combine * products[2]))
-        require(claim == expected, f"GKR layer {layer}: tail mismatch")
-        line_challenge = transcript.sample()
-        values = [interpolate(a, b, line_challenge) for a, b in tails]
+        tails = [transcript.scalars(4) for _ in range(3)]
+        products = [tail[0] * tail[1] * tail[2] * tail[3] for tail in tails]
+        expected = products[0] + combine * (products[1] + combine * products[2])
+        require(claim == expected, f"GKR layer {layer}: radix-four tail mismatch")
+        low_challenge = transcript.sample()
+        high_challenge = transcript.sample()
+        values = [
+            interpolate(
+                interpolate(tail[0], tail[1], low_challenge),
+                interpolate(tail[2], tail[3], low_challenge),
+                high_challenge,
+            )
+            for tail in tails
+        ]
         combine = transcript.sample()
-        point = [line_challenge, *round_point]
+        point = [low_challenge, high_challenge, *round_point]
+        layer -= 2
 
     return ProductTriple(roots, tuple(point), (values[0], values[1], values[2]))
 
