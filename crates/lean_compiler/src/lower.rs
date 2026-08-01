@@ -2768,5 +2768,6 @@ pub(crate) fn lower_func(
         name: f.name.clone(),
         code: lowerer.code,
         frame_size: lowerer.next,
+        abi_end: 2 + f.params.len() as u32 + n_ret_cells,
     }
 }

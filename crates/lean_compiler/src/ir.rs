@@ -129,6 +129,13 @@ pub(crate) struct Lowered {
     pub(crate) name: String,
     pub(crate) code: Vec<LInstr>,
     pub(crate) frame_size: u32,
+    /// One past the last frame cell the CALLER touches: `2 + n_args +
+    /// n_ret_cells` (retpc/retfp, the arguments, then the flattened return
+    /// area). Cells below it cross the frame boundary — the caller writes the
+    /// arguments and reads the returns — so a write to one of them is
+    /// observable outside this function even when no instruction here reads it.
+    /// Everything at or above it is a local temporary.
+    pub(crate) abi_end: u32,
 }
 
 /// A resolved 2-cell `blake3` operand: a frame (stack) run used in place, or a
