@@ -1,208 +1,134 @@
 //! `StackBuf` — a run of consecutive frame (stack) cells in the zkDSL. Indexed
-//! reads/writes go straight to `base+k` (no heap deref), and a size-2 `StackBuf`
-//! is a `blake3` operand: its two canonical 128-bit cells hold the 256-bit value, so
+//! reads/writes go straight to `base+k` (no heap deref), and a size-4 `StackBuf`
+//! is a `blake3` operand: its four F64 cells hold the 256-bit value, so
 //! `blake3(a, b, out)` reads them in place with no copies (a self-hash
-//! `blake3(h, h, out)` aliases one pair into both input operands) and writes
-//! the digest into the pre-allocated pair `out`.
-//!
-//! Since these DSL scalars are K-embedded F192 cells, a `StackBuf(2)` written
-//! cell-by-cell holds the flock words `[v0, 0, v1, 0]`
-//! — the reference `compress` below is fed that lane layout.
+//! `blake3(h, h, out)` aliases one run into both input operands) and writes
+//! the digest into the pre-allocated four-word run `out`.
 
-use lean_vm::blake3_flock::{compression, digest, metadata, warm_setup};
 use lean_compiler::{compile, parse};
-use lean_vm::cpu::{prove, verify};
-use primitives::field::{F64, F192};
+use lean_vm::blake3_flock::{FLAGS, IV, compression, digest, metadata, warm_setup};
+use lean_vm::cpu::{Op, prove, verify};
+use primitives::field::F64;
 
 /// `BLAKE3(a, b)` reference (matches `cpu::blake3_compress`): the eight words
 /// laid little-endian into 64 bytes, hashed, digest split into four `F64` words.
 fn compress(a: [F64; 4], b: [F64; 4]) -> [F64; 4] {
-    let mut input = [0u8; 64];
-    for (slot, w) in input.chunks_exact_mut(8).zip(a.into_iter().chain(b)) {
-        slot.copy_from_slice(&w.0.to_le_bytes());
-    }
-    let d = blake3::hash(&input);
-    let d = d.as_bytes();
-    std::array::from_fn(|k| F64(u64::from_le_bytes(d[8 * k..8 * k + 8].try_into().unwrap())))
+    digest(&compression(a, b, IV, metadata(0, 64, FLAGS)))
 }
 
-/// The two 128-bit digest cells of `compress(a, b)` as `F192`s (lo = word 0/2,
-/// hi = word 1/3) — what a `blake3(...)` output `StackBuf(2)` holds cell-by-cell.
-fn digest_cells(a: [F64; 4], b: [F64; 4]) -> [F192; 2] {
-    let d = compress(a, b);
-    [F192::new(d[0].0, d[1].0, 0), F192::new(d[2].0, d[3].0, 0)]
+fn pi2(a: F64, b: F64) -> [F64; 4] {
+    [a, b, F64::ZERO, F64::ZERO]
 }
 
-/// A size-2 `StackBuf` fed to `blake3` as a self-hash `blake3(h, h)`, then the
-/// digest's two 128-bit cells published to `m[0], m[1]`. Proves and verifies, and
+/// A size-4 `StackBuf` fed to `blake3` as a self-hash `blake3(h, h)`, then its
+/// four digest words are published. Proves and verifies, and
 /// a wrong published digest is rejected — so the whole path (StackBuf load →
 /// aliased blake3 → stack read → publish) is exercised end-to-end.
 #[test]
 fn stack_buf_blake3_self_hash() {
     let src = "\
 def main():
-    a = StackBuf(2)
+    a = StackBuf(4)
     a[0] = 5
     a[1] = 7
-    c = StackBuf(2)
+    a[2] = 11
+    a[3] = 13
+    c = StackBuf(4)
     blake3(a, a, c)
     p = 1
     p[1] = c[0]
     p[GEN] = c[1]
+    p[GEN ** 2] = c[2]
+    p[GEN ** 3] = c[3]
     return
 ";
     let program = compile(&parse(src).expect("parse"));
     warm_setup(1);
 
-    // Each cell holds one scalar in its low lane, so the hashed words are [5,0,7,0].
-    let h = [F64(5), F64(0), F64(7), F64(0)];
-    let want = digest_cells(h, h);
+    // Each cell holds one F64 word.
+    let h = [F64(5), F64(7), F64(11), F64(13)];
+    let want = compress(h, h);
 
     let (proof, stats) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
-    assert_eq!(stats.counts[5], 1, "one BLAKE3 instruction");
+    assert_eq!(stats.counts[8], 1, "one BLAKE3 instruction");
     verify(&program, &want, &proof).expect("StackBuf self-hash verifies");
 
     let mut bad = want;
-    bad[0] += F192::ONE;
+    bad[0] += F64::ONE;
     assert!(verify(&program, &bad, &proof).is_err(), "wrong digest must be rejected");
 }
 
-/// Optional BLAKE3 metadata and a memory-supplied chaining value reproduce a
-/// standard two-block (80-byte) BLAKE3 hash.
+/// Copy aliases assembling a hash input are forwarded in 128-bit pairs. The
+/// second hash reads the first hash's output chunks directly instead of copying
+/// all four words into `t`.
 #[test]
-fn blake3_keywords_standard_multiblock() {
+fn blake3_forwards_two_word_chunks() {
     let src = "\
 def main():
-    block0 = [1, 2, 3, 4]
-    tail = [5, 0, 0, 0]
-    cv = StackBuf(2)
-    blake3(block0[0:2], block0[2:4], cv, step=0)
-    out = StackBuf(2)
-    blake3(tail[0:2], tail[2:4], out, cv=cv, step=1, end=1, root=1, block_len=16)
-    p = 1
-    p[1] = out[0]
-    p[GEN] = out[1]
+    a = [5, 7, 11, 13]
+    h = StackBuf(4)
+    blake3(a, a, h)
+    t = [h[0], h[1], h[2], h[3]]
+    out = StackBuf(4)
+    blake3(t, t, out)
     return
 ";
     let program = compile(&parse(src).expect("parse"));
-    warm_setup(2);
-    let mut input = Vec::new();
-    for value in 1u64..=5 {
-        input.extend_from_slice(&value.to_le_bytes());
-        input.extend_from_slice(&0u64.to_le_bytes());
-    }
-    let d = blake3::hash(&input);
-    let word = |o: usize| u64::from_le_bytes(d.as_bytes()[o..o + 8].try_into().unwrap());
-    let want = [F192::new(word(0), word(8), 0), F192::new(word(16), word(24), 0)];
-    let (proof, stats) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
-    assert_eq!(stats.counts[5], 2);
-    verify(&program, &want, &proof).expect("standard two-block BLAKE3 verifies");
-}
-
-/// A default IV first materialized in an untaken runtime branch must not leak
-/// into the post-join lowering state. Both executions must initialize the IV
-/// on the path that reaches the second hash.
-#[test]
-fn blake3_default_iv_after_runtime_branch() {
-    let src = "\
-def main():
-    flag = StackBuf(1)
-    hint_witness(flag, \"flag\")
-    a = [1, 2, 3, 4]
-    if flag[0] == 1:
-        ignored = StackBuf(2)
-        blake3(a[0:2], a[2:4], ignored)
-    out = StackBuf(2)
-    blake3(a[0:2], a[2:4], out)
-    p = 1
-    p[1] = out[0]
-    p[GEN] = out[1]
-    return
-";
-    let want = digest_cells([F64(1), F64(0), F64(2), F64(0)], [F64(3), F64(0), F64(4), F64(0)]);
-    warm_setup(2);
-    for flag in [0, 1] {
-        let mut program = compile(&parse(src).expect("parse"));
-        program.set_witness("flag", vec![vec![F192::new(flag, 0, 0)]]);
-        let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
-        verify(&program, &want, &proof).expect("post-join default IV is initialized on both paths");
+    let hashes: Vec<Op> = program
+        .prog
+        .iter()
+        .copied()
+        .filter(|op| matches!(op, Op::Blake3 { .. }))
+        .collect();
+    assert_eq!(hashes.len(), 2);
+    let first_out = match hashes[0] {
+        Op::Blake3 { out, .. } => out,
+        _ => unreachable!(),
+    };
+    match hashes[1] {
+        Op::Blake3 { ins, .. } => {
+            assert_eq!((ins[0], ins[1]), (first_out, first_out + 2));
+            assert_eq!((ins[2], ins[3]), (first_out, first_out + 2));
+        }
+        _ => unreachable!(),
     }
 }
 
-/// Each mutually exclusive branch gets a path-local IV initialization when no
-/// dominating default-IV hash exists before the branch.
+/// Each four-word heap bridge uses the three-word bundled dereference plus one
+/// scalar tail access, both for BLAKE3 inputs and its heap output.
 #[test]
-fn blake3_default_iv_in_both_runtime_branches() {
+fn blake3_heap_bridges_bundle_three_word_prefixes() {
     let src = "\
 def main():
-    flag = StackBuf(1)
-    hint_witness(flag, \"flag\")
-    a = [1, 2, 3, 4]
-    out = StackBuf(2)
-    if flag[0] == 1:
-        blake3(a[0:2], a[2:4], out)
-    else:
-        blake3(a[0:2], a[2:4], out)
-    p = 1
-    p[1] = out[0]
-    p[GEN] = out[1]
-    return
-";
-    let want = digest_cells([F64(1), F64(0), F64(2), F64(0)], [F64(3), F64(0), F64(4), F64(0)]);
-    warm_setup(1);
-    for flag in [0, 1] {
-        let mut program = compile(&parse(src).expect("parse"));
-        program.set_witness("flag", vec![vec![F192::new(flag, 0, 0)]]);
-        let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
-        verify(&program, &want, &proof).expect("each branch initializes its default IV");
-    }
-}
-
-/// Deferred aliases may expose non-adjacent source words for a syntactically
-/// consecutive CV StackBuf. The compiler must materialize that pair because
-/// the BLAKE3 opcode carries only one CV base offset.
-#[test]
-fn blake3_materializes_aliased_cv_pair() {
-    let src = "\
-def main():
-    msg = [1, 2, 3, 4]
-    sources = [5, 99, 6]
-    cv = [sources[0], sources[2]]
-    out = StackBuf(2)
-    blake3(msg[0:2], msg[2:4], out, cv=cv, flags=10)
-    p = 1
-    p[1] = out[0]
-    p[GEN] = out[1]
+    a = HeapBuf(4)
+    a[1] = 5
+    a[GEN] = 7
+    a[GEN ** 2] = 11
+    a[GEN ** 3] = 13
+    out = HeapBuf(4)
+    blake3(a[0:4], a[0:4], out[0:4])
     return
 ";
     let program = compile(&parse(src).expect("parse"));
-    let block = compression(
-        [F64(1), F64(0), F64(2), F64(0)],
-        [F64(3), F64(0), F64(4), F64(0)],
-        [F64(5), F64(0), F64(6), F64(0)],
-        metadata(0, 64, 10),
+    assert_eq!(
+        program
+            .prog
+            .iter()
+            .filter(|op| matches!(op, Op::DerefExt { .. }))
+            .count(),
+        3,
+        "two input prefixes and one output prefix"
     );
-    let d = digest(&block);
-    let want = [F192::new(d[0].0, d[1].0, 0), F192::new(d[2].0, d[3].0, 0)];
-    warm_setup(1);
-    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
-    verify(&program, &want, &proof).expect("materialized custom CV verifies");
-}
-
-/// A custom CV with the one-shot default flags is not a standard chained
-/// block. Require the caller to select structured metadata explicitly.
-#[test]
-#[should_panic(expected = "blake3 with cv= requires")]
-fn blake3_cv_alone_is_rejected() {
-    let src = "\
-def main():
-    msg = [1, 2, 3, 4]
-    cv = [5, 6]
-    out = StackBuf(2)
-    blake3(msg[0:2], msg[2:4], out, cv=cv)
-    return
-";
-    let _ = compile(&parse(src).expect("parse"));
+    assert_eq!(
+        program.prog.iter().filter(|op| matches!(op, Op::Deref { .. })).count(),
+        7,
+        "four initialization stores plus three bridge tails"
+    );
+    assert_eq!(
+        program.prog.iter().filter(|op| matches!(op, Op::Blake3 { .. })).count(),
+        1
+    );
+    program.execute([F64::ZERO; 4]);
 }
 
 /// A general (non-blake3) `StackBuf(3)`: indexed writes, an indexed read feeding
@@ -223,9 +149,9 @@ def main():
 ";
     let program = compile(&parse(src).expect("parse"));
     // `+` is XOR: 3 ^ 4 = 7. Published: (sa[2], sa[1]) = (7, 4).
-    let want = [F192::from(F64(7)), F192::from(F64(4))];
+    let want = pi2(F64(7), F64(4));
     let (proof, stats) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
-    assert_eq!(stats.counts[5], 0, "no BLAKE3 here");
+    assert_eq!(stats.counts[8], 0, "no BLAKE3 here");
     verify(&program, &want, &proof).expect("StackBuf indexing verifies");
 }
 
@@ -255,7 +181,7 @@ def make(v):
 ";
     let program = compile(&parse(src).expect("parse"));
     // Field addition is XOR: 5 ^ (5 ^ 3) == 3.
-    program.execute([F192::from(F64(3)), F192::from(F64(11))]);
+    program.execute(pi2(F64(3), F64(11)));
 }
 
 /// Tuple returns retain their source-level arity even though a StackBuf member
@@ -275,7 +201,7 @@ def make(v):
     return out, v + 1
 ";
     let program = compile(&parse(src).expect("parse"));
-    program.execute([F192::from(F64(15)), F192::from(F64(8))]);
+    program.execute(pi2(F64(15), F64(8)));
 }
 
 /// HeapBuf already crosses a normal call as its one-cell pointer. Allocation
@@ -298,7 +224,7 @@ def make():
     return out
 ";
     let program = compile(&parse(src).expect("parse"));
-    program.execute([F192::from(F64(17)), F192::from(F64(23))]);
+    program.execute(pi2(F64(17), F64(23)));
 }
 
 /// A StackBuf index literal that does not fit `u32` is rejected at compile time,
@@ -317,7 +243,7 @@ fn stack_buf_index_overflow_rejected() {
 fn stack_buf_rebind_to_scalar() {
     let src = "def main():\n    x = StackBuf(2)\n    x = 5\n    p = 1\n    p[1] = x\n    p[GEN] = x\n    return\n";
     let program = compile(&parse(src).expect("parse"));
-    let want = [F192::from(F64(5)), F192::from(F64(5))];
+    let want = pi2(F64(5), F64(5));
     let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
     verify(&program, &want, &proof).expect("rebound-scalar program verifies");
 }
@@ -342,40 +268,44 @@ fn inline_returns_stackbuf_and_scalar() {
     warm_setup(1);
     let src = "\
 def main():
-    s = StackBuf(2)
+    s = StackBuf(4)
     s[0] = 5
     s[1] = 7
+    s[2] = 11
+    s[3] = 13
     s, x = step(s, 9)
     s, y = step(s, x)
     p = 1
     p[1] = s[0]
     p[GEN] = s[1]
+    p[GEN ** 2] = s[2]
+    p[GEN ** 3] = s[3]
     return
 
 @inline
 def step(state, v):
-    tg = StackBuf(2)
+    tg = StackBuf(4)
     tg[0] = v
     tg[1] = 3
-    nb = StackBuf(2)
+    tg[2] = 4
+    tg[3] = 5
+    nb = StackBuf(4)
     blake3(state, tg, nb)
     return nb, v
 ";
     let program = compile(&parse(src).expect("parse"));
-
-    // Each cell = one scalar in its low lane, so a StackBuf(2) hashes words
-    // [c0, 0, c1, 0]. x == v == 9 (the scalar return), so both steps use tag 9.
-    let tag = [F64(9), F64(0), F64(3), F64(0)];
-    let s1 = compress([F64(5), F64(0), F64(7), F64(0)], tag);
+    // x == v == 9 (the scalar return), so both steps use tag 9.
+    let tag = [F64(9), F64(3), F64(4), F64(5)];
+    let s1 = compress([F64(5), F64(7), F64(11), F64(13)], tag);
     let s2 = compress(s1, tag); // the returned StackBuf (holding s1's words) fed back in
-    let want = [F192::new(s2[0].0, s2[1].0, 0), F192::new(s2[2].0, s2[3].0, 0)];
+    let want = s2;
 
     let (proof, stats) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
-    assert_eq!(stats.counts[5], 2, "two BLAKE3 instructions (one per inlined step)");
+    assert_eq!(stats.counts[8], 2, "two BLAKE3 instructions (one per inlined step)");
     verify(&program, &want, &proof).expect("inline StackBuf+scalar tuple return verifies");
 
     let mut bad = want;
-    bad[1] += F192::ONE;
+    bad[1] += F64::ONE;
     assert!(
         verify(&program, &bad, &proof).is_err(),
         "wrong published state must be rejected"
@@ -396,9 +326,11 @@ def main():
     hb[1] = 10
     hb[GEN] = 20
     hb[GEN ** 2] = 30
-    fs = StackBuf(2)
+    fs = StackBuf(4)
     fs[0] = 1
     fs[1] = 2
+    fs[2] = 3
+    fs[3] = 4
     cur = hb
     fs, a, cur = step(fs, cur)
     fs, b, cur = step(fs, cur)
@@ -411,17 +343,19 @@ def main():
 @inline
 def step(state, cursor):
     x = cursor[GEN ** 0]
-    tg = StackBuf(2)
+    tg = StackBuf(4)
     tg[0] = x
     tg[1] = 3
-    nb = StackBuf(2)
+    tg[2] = 4
+    tg[3] = 5
+    nb = StackBuf(4)
     blake3(state, tg, nb)
     return nb, x, cursor * GEN
 ";
     let program = compile(&parse(src).expect("parse"));
     // a = hb[0] = 10, b = hb[1] = 20, v = hb[2] = 30 read through the cursor
     // returned twice-advanced. a + b is XOR: 10 ^ 20 = 30.
-    let want = [F192::from(F64(30)), F192::from(F64(30))];
+    let want = pi2(F64(30), F64(30));
     let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
     verify(&program, &want, &proof).expect("inline advanced-cursor return verifies");
 }
@@ -436,21 +370,23 @@ fn stack_buf_list_literal() {
     warm_setup(1);
     let src = "\
 def main():
-    s = [5, 7]
-    s = [s[1], s[0]]
-    t = [s[0] + s[1], 3]
-    out = StackBuf(2)
+    s = [5, 7, 11, 13]
+    s = [s[1], s[0], s[3], s[2]]
+    t = [s[0] + s[1], 3, s[2] + s[3], 17]
+    out = StackBuf(4)
     blake3(s, t, out)
     p = 1
     p[1] = out[0]
     p[GEN] = out[1]
+    p[GEN ** 2] = out[2]
+    p[GEN ** 3] = out[3]
     return
 ";
     let program = compile(&parse(src).expect("parse"));
     // s = [7, 5] after the swap → words [7,0,5,0]; t = [7 ^ 5, 3] = [2, 3] → [2,0,3,0].
-    let want = digest_cells([F64(7), F64(0), F64(5), F64(0)], [F64(2), F64(0), F64(3), F64(0)]);
+    let want = compress([F64(7), F64(5), F64(13), F64(11)], [F64(2), F64(3), F64(6), F64(17)]);
     let (proof, stats) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
-    assert_eq!(stats.counts[5], 1, "one BLAKE3 instruction");
+    assert_eq!(stats.counts[8], 1, "one BLAKE3 instruction");
     verify(&program, &want, &proof).expect("list-literal StackBuf verifies");
 }
 
@@ -489,13 +425,11 @@ fn heap_hint_slice_oob_rejected() {
     let _ = compile(&parse(src).expect("parse"));
 }
 
-/// A blake3 heap slice straddling the buffer end is rejected. The 256-bit
-/// operand `hb[7:9]` is two 128-bit cells, so the bound check trips at
-/// `7 + 2 = 9 > 8`.
+/// A four-word BLAKE3 heap slice straddling the buffer end is rejected.
 #[test]
-#[should_panic(expected = "heap slice 7:9 out of bounds for `hb` (HeapBuf size 8)")]
+#[should_panic(expected = "heap slice 5:9 out of bounds for `hb` (HeapBuf size 8)")]
 fn heap_blake3_slice_oob_rejected() {
-    let src = "def main():\n    hb = HeapBuf(8)\n    hb[GEN ** 7] = 5\n    out = StackBuf(2)\n    blake3(hb[7:9], hb[7:9], out)\n    return\n";
+    let src = "def main():\n    hb = HeapBuf(8)\n    hb[GEN ** 7] = 5\n    out = StackBuf(4)\n    blake3(hb[5:9], hb[5:9], out)\n    return\n";
     let _ = compile(&parse(src).expect("parse"));
 }
 
@@ -505,7 +439,7 @@ fn heap_index_boundary_ok() {
     warm_setup(1);
     let src = "def main():\n    hb = HeapBuf(8)\n    hb[GEN ** 7] = 5\n    row = hb * GEN ** 4\n    y = row[GEN ** 3]\n    assert y == 5\n    return\n";
     let program = compile(&parse(src).expect("parse"));
-    let pi = [F192::from(F64(3)), F192::from(F64(4))];
+    let pi = pi2(F64(3), F64(4));
     let (proof, _) = prove(&program, pi, lean_vm::pcs::LOG_INV_RATE);
     verify(&program, &pi, &proof).expect("boundary access verifies");
 }

@@ -669,6 +669,7 @@ class Coordinate:
     constant: F192 | None = None
     column: int | None = None
     generator_column: int | None = None
+    generator_power: int = 1
     index: bool = False
     public: tuple[F192, ...] | None = None
 
@@ -681,6 +682,7 @@ class Coordinate:
             self.public is not None,
         )
         require(sum(choices) == 1, "a bus coordinate must have exactly one source")
+        require(self.generator_power >= 1, "generator power must be positive")
 
 
 @dataclass(frozen=True)
@@ -792,7 +794,7 @@ def _decompose_bus_side(
                     form.coefficients[coordinate.column - base] += selector_weight * coefficient
                 elif coordinate.generator_column is not None:
                     form.coefficients[coordinate.generator_column - base] += (
-                        selector_weight * coefficient * GEN
+                        selector_weight * coefficient * (GEN ** coordinate.generator_power)
                     )
                 else:
                     raise VerificationError("table bus block has a virtual coordinate")
@@ -807,7 +809,7 @@ def _decompose_bus_side(
             elif coordinate.column is not None:
                 value = committed_value(coordinate.column, low)
             elif coordinate.generator_column is not None:
-                value = GEN * committed_value(coordinate.generator_column, low)
+                value = (GEN ** coordinate.generator_power) * committed_value(coordinate.generator_column, low)
             elif coordinate.index:
                 value = index_mle(low)
             else:
@@ -832,7 +834,7 @@ def _padding_fingerprint(block: BusBlock, padding: Sequence[F192], alpha: F192) 
         elif coordinate.column is not None:
             value = padding[coordinate.column]
         elif coordinate.generator_column is not None:
-            value = GEN * padding[coordinate.generator_column]
+            value = (GEN ** coordinate.generator_power) * padding[coordinate.generator_column]
         else:
             value = ZERO
         result += coefficient * value
@@ -1026,17 +1028,23 @@ def verify_constraints(
 # VM statement, layout, and AIR -----------------------------------------------
 
 FAMILY_DIGEST = bytes.fromhex("afed7472c6f771a857599272ff33a4da86b21f2600f057fa0da797d15863eb58")
-BASES = (6, 27, 48, 57, 78, 105, 146)
-WIDTHS = (21, 21, 9, 21, 27, 41, 14)
-CONSTRAINT_COUNTS = (4, 4, 1, 4, 7, 6, 3)
+N_TABLES = 9
+BLAKE3_TABLE = 8
+MEM_COLUMN = 0
+QPKD_COLUMN = 3
+BASES = (4, 19, 34, 61, 88, 95, 112, 135, 154)
+WIDTHS = (15, 15, 27, 27, 7, 17, 23, 19, 49)
+CONSTRAINT_COUNTS = (4, 4, 4, 4, 1, 4, 4, 7, 6)
 COUNT_COLUMNS = (
-    (17, 18, 19, 20),
-    (17, 18, 19, 20),
-    (7, 8),
-    (17, 18, 19, 20),
-    (19, 20, 21, 22),
-    (32, 33, 34, 35, 36, 37, 38, 39, 40),
-    (10, 11, 12, 13),
+    (11, 12, 13, 14),
+    (11, 12, 13, 14),
+    (17, 18, 19, 20, 21, 22, 23, 24, 25, 26),
+    (17, 18, 19, 20, 21, 22, 23, 24, 25, 26),
+    (5, 6),
+    (13, 14, 15, 16),
+    (15, 16, 17, 18, 19, 20, 21, 22),
+    (13, 14, 15, 16),
+    tuple(range(32, 49)),
 )
 BLAKE3_VALUES = tuple(range(14, 32))
 BLAKE3_SLOTS = (10, 11, 12, 13, 14, 15, 16, 17, 4, 5, 6, 7, 0, 1, 2, 3, 18, 19)
@@ -1094,19 +1102,22 @@ class Operation:
     def parse(cls, data: dict[str, Any]) -> "Operation":
         require(isinstance(data, dict), "each program operation must be an object")
         name = str(data.get("op", "")).lower()
-        require(name in {"xor", "mul", "set", "deref", "jump", "pack64x2", "blake3"},
+        require(name in {"xor", "mul", "xor_192", "mul_192", "set", "deref", "deref_192", "jump", "blake3"},
                 f"unknown operation {name!r}")
-        if name in {"xor", "mul", "pack64x2"}:
+        if name in {"xor", "mul", "xor_192", "mul_192"}:
             for key in ("a", "b", "c"):
                 _u32(data[key], f"{name}.{key}")
         elif name == "set":
             _u32(data["o"], "set.o")
-            _field(data["k"])
-        elif name == "deref":
+            immediate = _field(data["k"])
+            require(immediate.c1 == immediate.c2 == 0,
+                    "set.k must be a base-field word")
+        elif name in {"deref", "deref_192"}:
             for key in ("alpha", "beta", "gamma"):
-                _u32(data[key], f"deref.{key}")
-            require(str(data["mode"]).lower() in {"cell", "pc", "fp"},
-                    "deref.mode must be cell, pc, or fp")
+                _u32(data[key], f"{name}.{key}")
+            if name == "deref":
+                require(str(data["mode"]).lower() in {"cell", "pc", "fp"},
+                        "deref.mode must be cell, pc, or fp")
         elif name == "jump":
             for key in ("oc", "od", "of"):
                 _u32(data[key], f"jump.{key}")
@@ -1118,7 +1129,13 @@ class Operation:
                 _u32(value, f"blake3.ins[{index}]")
             _u32(data["cv"], "blake3.cv")
             _u32(data["out"], "blake3.out")
-            _field(data["metadata"])
+            metadata = data["metadata"]
+            require(isinstance(metadata, (list, tuple)) and len(metadata) == 2,
+                    "blake3.metadata must contain two base-field words")
+            for index, value in enumerate(metadata):
+                field = _field(value)
+                require(field.c1 == field.c2 == 0,
+                        f"blake3.metadata[{index}] is not a base-field word")
         return cls(name, dict(data))
 
 
@@ -1138,30 +1155,35 @@ class Program:
         return cls(operations)
 
     def digest(self) -> tuple[int, int, int, int]:
-        words = [len(self.operations), 3]
-        tags = {"xor": 0, "mul": 1, "set": 2, "jump": 6, "blake3": 7, "pack64x2": 9}
+        words = [len(self.operations), 5]
+        tags = {
+            "xor": 0, "mul": 1, "xor_192": 2, "mul_192": 3,
+            "set": 4, "jump": 8, "blake3": 9, "deref_192": 10,
+        }
         for operation in self.operations:
             d = operation.values
             name = operation.name
-            k = x = y = ZERO
-            if name in {"xor", "mul", "pack64x2"}:
+            k0 = k1 = ZERO
+            d0 = e = f = 0
+            if name in {"xor", "mul", "xor_192", "mul_192"}:
                 a, b, c = int(d["a"]), int(d["b"]), int(d["c"])
                 tag = tags[name]
             elif name == "set":
-                a, b, c, tag, k = int(d["o"]), 0, 0, 2, _field(d["k"])
+                a, b, c, tag, k0 = int(d["o"]), 0, 0, 4, _field(d["k"])
             elif name == "deref":
                 a, b, c = int(d["alpha"]), int(d["beta"]), int(d["gamma"])
-                modes = {"cell": 3, "pc": 4, "fp": 5}
+                modes = {"cell": 5, "pc": 6, "fp": 7}
                 tag = modes[str(d["mode"]).lower()]
+            elif name == "deref_192":
+                a, b, c, tag = int(d["alpha"]), int(d["beta"]), int(d["gamma"]), 10
             elif name == "jump":
-                a, b, c, tag = int(d["oc"]), int(d["od"]), int(d["of"]), 6
+                a, b, c, tag = int(d["oc"]), int(d["od"]), int(d["of"]), 8
             else:
                 inputs = [int(v) for v in d["ins"]]
-                a, b, c, tag = inputs[0], inputs[1], inputs[2], 7
-                k = _field(d["metadata"])
-                x = inputs[3] | int(d["cv"]) << 32
-                y = int(d["out"])
-            words.extend((a | b << 32, c | tag << 32, k.c0, k.c1, k.c2, int(x), int(y)))
+                metadata = [_field(value) for value in d["metadata"]]
+                a, b, c, d0, e, f, tag = (*inputs, int(d["cv"]), int(d["out"]), 9)
+                k0, k1 = metadata
+            words.extend((a | b << 32, c | d0 << 32, e | f << 32, k0.c0, k1.c0, tag))
         digest = blake3_hash(b"".join(word.to_bytes(8, "little") for word in words))
         return tuple(int.from_bytes(digest[offset : offset + 8], "little") for offset in (0, 8, 16, 24))
 
@@ -1173,7 +1195,7 @@ class Program:
             + b"".join(word.to_bytes(8, "little") for word in program_digest)
         )
         words = tuple(int.from_bytes(seed[offset : offset + 8], "little") for offset in (0, 8, 16, 24))
-        return (F192(words[0], words[1]), F192(words[2], words[3]), *public_input)
+        return tuple(F192(word) for word in (*words, *(value.c0 for value in public_input)))
 
 
 @dataclass(frozen=True)
@@ -1213,8 +1235,8 @@ def _col(index: int) -> Coordinate:
     return Coordinate(column=index)
 
 
-def _gcol(index: int) -> Coordinate:
-    return Coordinate(generator_column=index)
+def _gcol(index: int, power: int = 1) -> Coordinate:
+    return Coordinate(generator_column=index, generator_power=power)
 
 
 def _public(values: Sequence[F192]) -> Coordinate:
@@ -1250,60 +1272,62 @@ class Flushes:
             (_const(GEN), addr, _col(count), *values),
         )
 
-    def memory_word(self, address: int, count: int, lo: int, hi: int, top: int) -> None:
-        self.memory(address, count, (_col(lo), _col(hi), _col(top)))
-
-    def memory_base(self, address: int, count: int, value: int) -> None:
-        self.memory(address, count, (_col(value), _const(ZERO), _const(ZERO)))
-
-    def memory_128(self, address: int, count: int, lo: int, hi: int, successor: bool = False) -> None:
-        self.memory(address, count, (_col(lo), _col(hi), _const(ZERO)), successor)
+    def memory_word(self, address: int, count: int, value: int, successor: int = 0) -> None:
+        addr = _gcol(address, successor) if successor else _col(address)
+        self.pair(
+            (_const(GEN), addr, _gcol(count), _col(value)),
+            (_const(GEN), addr, _col(count), _col(value)),
+        )
 
 
 def _table_flushes(table: int) -> Flushes:
     f = Flushes()
     if table in (0, 1):
         f.state_step(0, 1)
-        f.bytecode(0, 20, table, (_col(2), _col(3), _col(4), _const(ZERO), _const(ZERO)))
-        f.memory_word(5, 17, 8, 9, 10)
-        f.memory_word(6, 18, 11, 12, 13)
-        f.memory_word(7, 19, 14, 15, 16)
-    elif table == 2:
+        f.bytecode(0, 14, table, (_col(2), _col(3), _col(4), _const(ZERO), _const(ZERO)))
+        f.memory_word(5, 11, 8)
+        f.memory_word(6, 12, 9)
+        f.memory_word(7, 13, 10)
+    elif table in (2, 3):
         f.state_step(0, 1)
-        f.bytecode(0, 8, 2, (_col(2), _col(3), _col(4), _col(5), _const(ZERO)))
-        f.memory_word(6, 7, 3, 4, 5)
-    elif table == 3:
-        f.state_step(0, 1)
-        f.bytecode(0, 20, 3, (_col(2), _col(3), _col(4), _col(5), _col(6)))
-        f.memory_base(7, 17, 10)
-        f.memory_word(8, 18, 11, 12, 13)
-        f.memory_word(9, 19, 14, 15, 16)
+        f.bytecode(0, 26, table + 4, (_col(2), _col(3), _col(4), _const(ZERO), _const(ZERO)))
+        for lane in range(3):
+            f.memory_word(5, 17 + lane, 8 + lane, lane)
+            f.memory_word(6, 20 + lane, 11 + lane, lane)
+            f.memory_word(7, 23 + lane, 14 + lane, lane)
     elif table == 4:
-        f.state_jump(0, 1, 2, 3)
-        f.bytecode(0, 22, 4, (_col(4), _col(5), _col(6), _const(ZERO), _const(ZERO)))
-        f.memory_word(7, 19, 10, 11, 12)
-        f.memory_word(8, 20, 13, 14, 15)
-        f.memory_word(9, 21, 16, 17, 18)
+        f.state_step(0, 1)
+        f.bytecode(0, 6, 2, (_col(2), _col(3), _const(ZERO), _const(ZERO), _const(ZERO)))
+        f.memory_word(4, 5, 3)
     elif table == 5:
         f.state_step(0, 1)
-        f.bytecode(0, 40, 5, tuple(_col(i) for i in (2, 3, 4, 5, 6, 7, 30, 31)))
-        for address, count, lo, hi, successor in (
-            (8, 32, 14, 15, False),
-            (9, 33, 16, 17, False),
-            (10, 34, 18, 19, False),
-            (11, 35, 20, 21, False),
-            (12, 36, 26, 27, False),
-            (12, 37, 28, 29, True),
-            (13, 38, 22, 23, False),
-            (13, 39, 24, 25, True),
-        ):
-            f.memory_128(address, count, lo, hi, successor)
+        f.bytecode(0, 16, 3, tuple(_col(i) for i in (2, 3, 4, 5, 6)))
+        f.memory_word(7, 13, 10)
+        f.memory_word(8, 14, 11)
+        f.memory_word(9, 15, 12)
+    elif table == 6:
+        f.state_step(0, 1)
+        f.bytecode(0, 22, 8, (_col(2), _col(3), _col(4), _const(ZERO), _const(ZERO)))
+        f.memory_word(5, 15, 8)
+        for lane in range(3):
+            f.memory_word(6, 16 + lane, 9 + lane, lane)
+            f.memory_word(7, 19 + lane, 12 + lane, lane)
+    elif table == 7:
+        f.state_jump(0, 1, 2, 3)
+        f.bytecode(0, 16, 4, (_col(4), _col(5), _col(6), _const(ZERO), _const(ZERO)))
+        f.memory_word(7, 13, 10)
+        f.memory_word(8, 14, 11)
+        f.memory_word(9, 15, 12)
     else:
         f.state_step(0, 1)
-        f.bytecode(0, 13, 6, (_col(2), _col(3), _col(4), _const(ZERO), _const(ZERO)))
-        f.memory_base(5, 10, 8)
-        f.memory_base(6, 11, 9)
-        f.memory_128(7, 12, 8, 9)
+        f.bytecode(0, 48, 5, tuple(_col(i) for i in (2, 3, 4, 5, 6, 7, 30, 31)))
+        for lane in range(4):
+            first_half = lane < 2
+            successor = lane & 1
+            f.memory_word(8 if first_half else 9, 32 + lane, 14 + lane, successor)
+            f.memory_word(10 if first_half else 11, 36 + lane, 18 + lane, successor)
+            f.memory_word(12, 40 + lane, 26 + lane, lane)
+            f.memory_word(13, 44 + lane, 22 + lane, lane)
     return f
 
 
@@ -1311,36 +1335,41 @@ def _offset_coordinate(coordinate: Coordinate, base: int) -> Coordinate:
     if coordinate.column is not None:
         return _col(base + coordinate.column)
     if coordinate.generator_column is not None:
-        return _gcol(base + coordinate.generator_column)
+        return _gcol(base + coordinate.generator_column, coordinate.generator_power)
     return coordinate
 
 
 def _program_columns(program: Program) -> tuple[tuple[F192, ...], ...]:
     columns = [[] for _ in range(9)]
-    opcodes = {"xor": 0, "mul": 1, "set": 2, "deref": 3, "jump": 4, "blake3": 5, "pack64x2": 6}
+    opcodes = {
+        "xor": 0, "mul": 1, "set": 2, "deref": 3, "jump": 4,
+        "blake3": 5, "xor_192": 6, "mul_192": 7, "deref_192": 8,
+    }
     for operation in program.operations:
         d, name = operation.values, operation.name
         operands = [ZERO] * 8
-        if name in {"xor", "mul", "pack64x2"}:
+        if name in {"xor", "mul", "xor_192", "mul_192"}:
             operands[:3] = [_gpow(int(d[k])) for k in ("a", "b", "c")]
         elif name == "set":
             immediate = _field(d["k"])
-            operands[:4] = [_gpow(int(d["o"])), F192(immediate.c0), F192(immediate.c1), F192(immediate.c2)]
+            operands[:2] = [_gpow(int(d["o"])), F192(immediate.c0)]
         elif name == "deref":
             operands[:3] = [_gpow(int(d[k])) for k in ("alpha", "beta", "gamma")]
             mode = str(d["mode"]).lower()
             operands[3:5] = [ONE if mode == "pc" else ZERO, ONE if mode == "fp" else ZERO]
+        elif name == "deref_192":
+            operands[:3] = [_gpow(int(d[k])) for k in ("alpha", "beta", "gamma")]
         elif name == "jump":
             operands[:3] = [_gpow(int(d[k])) for k in ("oc", "od", "of")]
         else:
             inputs = [int(v) for v in d["ins"]]
-            metadata = _field(d["metadata"])
+            metadata = [_field(value) for value in d["metadata"]]
             operands = [
                 *(_gpow(v) for v in inputs),
                 _gpow(int(d["cv"])),
                 _gpow(int(d["out"])),
-                F192(metadata.c0),
-                F192(metadata.c1),
+                F192(metadata[0].c0),
+                F192(metadata[1].c0),
             ]
         row = [_gpow(opcodes[name]), *operands]
         for column, value in zip(columns, row):
@@ -1351,12 +1380,12 @@ def _program_columns(program: Program) -> tuple[tuple[F192, ...], ...]:
 def build_layout(program: Program, log_memory: int, row_counts: Sequence[int]) -> Layout:
     require(
         16 <= log_memory <= 32
-        and len(row_counts) == 7
+        and len(row_counts) == N_TABLES
         and all(0 <= count < 1 << 32 for count in row_counts),
         "invalid announced table sizes",
     )
     table_logs = [_ceil_log(max(1, count)) for count in row_counts]
-    table_logs[5] = max(3, table_logs[5])
+    table_logs[BLAKE3_TABLE] = max(3, table_logs[BLAKE3_TABLE])
     bytecode_log = len(program.operations).bit_length() - 1
     public_columns = _program_columns(program)
 
@@ -1364,7 +1393,7 @@ def build_layout(program: Program, log_memory: int, row_counts: Sequence[int]) -
         BusBlock(0, (_const(ONE), _const(ONE), _const(ONE)), 1),
         BusBlock(
             log_memory,
-            (_const(GEN), Coordinate(index=True), _const(ONE), _col(0), _col(1), _col(2)),
+            (_const(GEN), Coordinate(index=True), _const(ONE), _col(MEM_COLUMN)),
             1 << log_memory,
         ),
         BusBlock(
@@ -1382,7 +1411,7 @@ def build_layout(program: Program, log_memory: int, row_counts: Sequence[int]) -
         BusBlock(0, (_const(ONE), _const(_gpow(len(program.operations) - 1)), _const(ONE)), 1),
         BusBlock(
             log_memory,
-            (_const(GEN), Coordinate(index=True), _col(3), _col(0), _col(1), _col(2)),
+            (_const(GEN), Coordinate(index=True), _col(1), _col(MEM_COLUMN)),
             1 << log_memory,
         ),
         BusBlock(
@@ -1390,14 +1419,14 @@ def build_layout(program: Program, log_memory: int, row_counts: Sequence[int]) -
             (
                 _const(GEN * GEN),
                 Coordinate(index=True),
-                _col(4),
+                _col(2),
                 *(_public(column) for column in public_columns),
             ),
             len(program.operations),
         ),
     ]
     count: list[BusBlock] = []
-    padding = [ZERO] * (6 + sum(WIDTHS))
+    padding = [ZERO] * (4 + sum(WIDTHS))
     for table, (base, height, real) in enumerate(zip(BASES, table_logs, row_counts)):
         flushes = _table_flushes(table)
         for coordinates in flushes.push:
@@ -1411,7 +1440,7 @@ def build_layout(program: Program, log_memory: int, row_counts: Sequence[int]) -
             padding[base + local] = ONE
 
     zero_digest = blake3_hash(bytes(64))
-    b3 = BASES[5]
+    b3 = BASES[BLAKE3_TABLE]
     digest_words = [int.from_bytes(zero_digest[offset : offset + 8], "little") for offset in (0, 8, 16, 24)]
     for index, value in enumerate(digest_words):
         padding[b3 + 22 + index] = F192(value)
@@ -1419,10 +1448,10 @@ def build_layout(program: Program, log_memory: int, row_counts: Sequence[int]) -
     padding[b3 + 30] = ZERO
     padding[b3 + 31] = F192(64 | 11 << 32)
 
-    kappas: list[int | None] = [0] * (6 + sum(WIDTHS))
-    kappas[0] = kappas[1] = kappas[2] = kappas[3] = log_memory
-    kappas[4] = bytecode_log
-    kappas[5] = table_logs[5] + 8
+    kappas: list[int | None] = [0] * (4 + sum(WIDTHS))
+    kappas[MEM_COLUMN] = kappas[1] = log_memory
+    kappas[2] = bytecode_log
+    kappas[QPKD_COLUMN] = table_logs[BLAKE3_TABLE] + 8
     for table, (base, width) in enumerate(zip(BASES, WIDTHS)):
         kappas[base : base + width] = [table_logs[table]] * width
     for local in BLAKE3_VALUES:
@@ -1458,30 +1487,44 @@ def _air_evaluator(
             return value(lo) + F192(0, 1) * (value(hi) + F192(0, 1) * value(top))
 
         if table in (0, 1):
+            operation = value(8) + value(9) if table == 0 else value(8) * value(9)
+            terms = (
+                value(5) + value(1) * value(2),
+                value(6) + value(1) * value(3),
+                value(7) + value(1) * value(4),
+                value(10) + operation,
+            )
+        elif table in (2, 3):
             va, vb, vc = word(8, 9, 10), word(11, 12, 13), word(14, 15, 16)
-            operation = va + vb if table == 0 else va * vb
+            operation = va + vb if table == 2 else va * vb
             terms = (
                 value(5) + value(1) * value(2),
                 value(6) + value(1) * value(3),
                 value(7) + value(1) * value(4),
                 vc + operation,
             )
-        elif table == 2:
-            terms = (value(6) + value(1) * value(2),)
-        elif table == 3:
-            v2, v3 = word(11, 12, 13), word(14, 15, 16)
-            source = (ONE + value(5) + value(6)) * v3 + value(5) * GEN * GEN * value(0) + value(6) * value(1)
+        elif table == 4:
+            terms = (value(4) + value(1) * value(2),)
+        elif table == 5:
+            source = ((ONE + value(5) + value(6)) * value(12)
+                      + value(5) * GEN * GEN * value(0) + value(6) * value(1))
             terms = (
                 value(7) + value(1) * value(2),
                 value(8) + value(10) * value(3),
                 value(9) + value(1) * value(4),
-                v2 + source,
+                value(11) + source,
             )
-        elif table == 4:
-            condition = word(10, 11, 12)
-            destination = word(13, 14, 15)
-            frame = word(16, 17, 18)
-            inverse, flag = word(23, 24, 25), value(26)
+        elif table == 6:
+            v2, v3 = word(9, 10, 11), word(12, 13, 14)
+            terms = (
+                value(5) + value(1) * value(2),
+                value(6) + value(8) * value(3),
+                value(7) + value(1) * value(4),
+                v2 + v3,
+            )
+        elif table == 7:
+            condition, destination, frame = value(10), value(11), value(12)
+            inverse, flag = value(17), value(18)
             terms = (
                 value(7) + value(1) * value(4),
                 value(8) + value(1) * value(5),
@@ -1491,15 +1534,10 @@ def _air_evaluator(
                 value(2) + flag * destination + (flag + ONE) * GEN * value(0),
                 value(3) + flag * frame + (flag + ONE) * value(1),
             )
-        elif table == 5:
-            terms = tuple(
-                value(address) + value(1) * value(operand)
-                for address, operand in zip((8, 9, 10, 11, 12, 13), (2, 3, 4, 5, 6, 7))
-            )
         else:
             terms = tuple(
                 value(address) + value(1) * value(operand)
-                for address, operand in zip((5, 6, 7), (2, 3, 4))
+                for address, operand in zip((8, 9, 10, 11, 12, 13), (2, 3, 4, 5, 6, 7))
             )
 
         require(len(weights) == len(terms), "AIR constraint weight mismatch")
@@ -1534,13 +1572,18 @@ def build_airs(
 def constraint_claims(layout: Layout, claims: Sequence[AirClaim]) -> list[ColumnClaim]:
     result: list[ColumnClaim] = []
     for table, claim in enumerate(claims):
+        require(
+            len(claim.point) == layout.table_logs[table],
+            f"table {table} AIR claim has dimension {len(claim.point)}, "
+            f"expected {layout.table_logs[table]}",
+        )
         for local, value in enumerate(claim.evaluations):
             result.append(ColumnClaim(BASES[table] + local, claim.point, value))
     return result
 
 
 def virtual_slot(column: int) -> int | None:
-    return BLAKE3_SLOT_BY_VALUE.get(column - BASES[5])
+    return BLAKE3_SLOT_BY_VALUE.get(column - BASES[BLAKE3_TABLE])
 
 # Ligerito opening ------------------------------------------------------------
 
@@ -2382,26 +2425,36 @@ def verify_execution(statement: dict[str, Any], proof: Proof) -> None:
     """Verify a complete leanVM-b execution proof against its public statement."""
     program = Program.parse(statement)
     encoded_input = statement.get("public_input")
-    if not isinstance(encoded_input, list) or len(encoded_input) != 2:
-        raise VerificationError("public input must contain two field elements")
+    if not isinstance(encoded_input, list) or len(encoded_input) != 4:
+        raise VerificationError("public input must contain four base-field words")
     public_input = tuple(parse_field(value) for value in encoded_input)
+    require(all(value.c1 == value.c2 == 0 for value in public_input),
+            "public input contains a non-base-field value")
     transcript = Transcript(proof, b"leanvm-b", program.transcript_statement(public_input))
 
-    announced = transcript.scalars(9)
+    announced = transcript.scalars(N_TABLES + 2)
     require(all(value.c1 == value.c2 == 0 for value in announced), "announced size has a nonzero high limb")
     log_memory = announced[0].c0
-    row_counts = tuple(value.c0 for value in announced[1:8])
-    log_inverse_rate = announced[8].c0
+    row_counts = tuple(value.c0 for value in announced[1 : 1 + N_TABLES])
+    log_inverse_rate = announced[-1].c0
     require(1 <= log_inverse_rate <= 4, "invalid PCS inverse rate")
     layout = build_layout(program, log_memory, row_counts)
 
     root_words = transcript.scalars(2)
-    require(all(word.c2 == 0 for word in root_words), "commitment root has a nonzero top limb")
+    require(root_words[1].c1 == root_words[1].c2 == 0,
+            "commitment root tail is not a base-field word")
     root = b"".join(
         limb.to_bytes(8, "little")
-        for limb in (root_words[0].c0, root_words[0].c1, root_words[1].c0, root_words[1].c1)
+        for limb in (root_words[0].c0, root_words[0].c1, root_words[0].c2, root_words[1].c0)
     )
     bus = verify_bus_balance(layout.push, layout.pull, layout.count, layout.padding, transcript)
+    for claim in bus.claims:
+        if virtual_slot(claim.column) is None:
+            require(
+                len(claim.point) == layout.placements[claim.column].variables,
+                f"bus claim for column {claim.column} has dimension {len(claim.point)}, "
+                f"expected {layout.placements[claim.column].variables}",
+            )
     eta = transcript.sample()
     identity_count = sum(CONSTRAINT_COUNTS)
     form_powers = powers(eta, identity_count + 3)[identity_count:]
@@ -2419,26 +2472,26 @@ def verify_execution(statement: dict[str, Any], proof: Proof) -> None:
 
     claims = list(bus.claims)
     claims.extend(constraint_claims(layout, air_claims))
-    public_challenge = transcript.sample()
-    public_low, public_high = transcript.scalars(2)
-    public_point = [ZERO] * layout.placements[0].variables
-    public_point[0] = public_challenge
-    public_value = interpolate(public_input[0], public_input[1], public_challenge)
-    y = F192(0, 1)
-    public_top = (public_value + public_low + y * public_high) / (y * y)
-    claims.extend(
-        ColumnClaim(column, tuple(public_point), value)
-        for column, value in enumerate((public_low, public_high, public_top))
-    )
+    public_challenges = transcript.samples(2)
+    public_point = [ZERO] * layout.placements[MEM_COLUMN].variables
+    public_point[:2] = public_challenges
+    public_low = interpolate(public_input[0], public_input[1], public_challenges[0])
+    public_high = interpolate(public_input[2], public_input[3], public_challenges[0])
+    public_value = interpolate(public_low, public_high, public_challenges[1])
+    claims.append(ColumnClaim(MEM_COLUMN, tuple(public_point), public_value))
 
     point_claims: list[tuple[tuple[F192, ...], F192]] = []
-    qpkd = layout.placements[5]
+    qpkd = layout.placements[QPKD_COLUMN]
     for claim in claims:
         slot = virtual_slot(claim.column)
         if slot is None:
             placement = layout.placements[claim.column]
             require(not placement.virtual, "claim targets an uncommitted column")
-            require(len(claim.point) == placement.variables, "column claim dimension mismatch")
+            require(
+                len(claim.point) == placement.variables,
+                f"column {claim.column} claim has dimension {len(claim.point)}, "
+                f"expected {placement.variables}",
+            )
             selector = placement.offset >> placement.variables
             full_point = claim.point + _selector_point(
                 selector, layout.stack_log - placement.variables
@@ -2453,7 +2506,7 @@ def verify_execution(statement: dict[str, Any], proof: Proof) -> None:
             )
         point_claims.append((full_point, claim.value))
 
-    reduction = verify_reduction(14 + layout.table_logs[5], transcript)
+    reduction = verify_reduction(14 + layout.table_logs[BLAKE3_TABLE], transcript)
     opening = transcript.opening()
     verify_stacked_opening(
         transcript,

@@ -1,6 +1,6 @@
 use lean_compiler::{compile, parse_with_replacements};
 use lean_vm::cpu::{DerefMode, Op, Program, prove, verify};
-use primitives::field::{F64, F192, g_pow};
+use primitives::field::{F64, g_pow};
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::Command;
@@ -18,8 +18,8 @@ def mix(value):
     return product + value
 
 def main():
-    seed = [5, 7]
-    digest = StackBuf(2)
+    seed = [5, 7, 11, 13]
+    digest = StackBuf(4)
     blake3(seed, seed, digest)
 
     chain = HeapBuf(LOOP_STEPS + 1)
@@ -30,46 +30,46 @@ def main():
     public = GEN ** 0
     public[1] = chain[GEN ** LOOP_STEPS]
     public[GEN] = mix(digest[1])
+    public[GEN ** 2] = digest[2]
+    public[GEN ** 3] = digest[3]
     return
 "#;
 
 const LOOP_STEPS: usize = 16_384;
 
-fn public_input() -> [F192; 2] {
+fn public_input() -> [F64; 4] {
     use lean_vm::blake3_flock::{FLAGS, IV, compression, digest, metadata};
 
-    let seed = [F64(5), F64::ZERO, F64(7), F64::ZERO];
+    let seed = [F64(5), F64(7), F64(11), F64(13)];
     let metadata = metadata(0, 64, FLAGS);
     let digest = digest(&compression(seed, seed, IV, metadata));
-    let digest = [
-        F192::new(digest[0].0, digest[1].0, 0),
-        F192::new(digest[2].0, digest[3].0, 0),
-    ];
     let mut value = digest[0];
-    let mut index = F192::ONE;
-    let generator = F192::from(g_pow(1));
+    let mut index = F64::ONE;
+    let generator = g_pow(1);
     for _ in 0..LOOP_STEPS {
         let candidate = value + index;
         let product = candidate * generator;
-        value = (if product == F192::ZERO {
+        value = (if product == F64::ZERO {
             candidate
         } else {
             product + candidate
         }) + index;
         index *= generator;
     }
-    [value, digest[1] * generator + digest[1]]
+    [value, digest[1] * generator + digest[1], digest[2], digest[3]]
 }
 
-fn field_json(value: F192) -> String {
-    format!("[{}, {}, {}]", value.c0, value.c1, value.c2)
+fn word_json(value: F64) -> String {
+    value.0.to_string()
 }
 
 fn operation_json(operation: Op) -> String {
     match operation {
         Op::Xor { a, b, c } => format!(r#"    {{"op":"xor","a":{a},"b":{b},"c":{c}}}"#),
         Op::Mul { a, b, c } => format!(r#"    {{"op":"mul","a":{a},"b":{b},"c":{c}}}"#),
-        Op::Set { o, k } => format!(r#"    {{"op":"set","o":{o},"k":{}}}"#, field_json(k)),
+        Op::AddExt { a, b, c } => format!(r#"    {{"op":"xor_192","a":{a},"b":{b},"c":{c}}}"#),
+        Op::MulExt { a, b, c } => format!(r#"    {{"op":"mul_192","a":{a},"b":{b},"c":{c}}}"#),
+        Op::Set { o, k } => format!(r#"    {{"op":"set","o":{o},"k":{}}}"#, word_json(k)),
         Op::Deref {
             alpha,
             beta,
@@ -86,8 +86,8 @@ fn operation_json(operation: Op) -> String {
         Op::Jump { oc, od, of } => {
             format!(r#"    {{"op":"jump","oc":{oc},"od":{od},"of":{of}}}"#)
         }
-        Op::Pack64x2 { a, b, c } => {
-            format!(r#"    {{"op":"pack64x2","a":{a},"b":{b},"c":{c}}}"#)
+        Op::DerefExt { alpha, beta, gamma } => {
+            format!(r#"    {{"op":"deref_192","alpha":{alpha},"beta":{beta},"gamma":{gamma}}}"#)
         }
         Op::Blake3 { ins, cv, out, metadata } => format!(
             r#"    {{"op":"blake3","ins":[{},{},{},{}],"cv":{cv},"out":{out},"metadata":{}}}"#,
@@ -95,12 +95,12 @@ fn operation_json(operation: Op) -> String {
             ins[1],
             ins[2],
             ins[3],
-            field_json(metadata),
+            format!("[{},{}]", metadata[0].0, metadata[1].0),
         ),
     }
 }
 
-fn statement_json(program: &Program, public_input: [F192; 2]) -> String {
+fn statement_json(program: &Program, public_input: [F64; 4]) -> String {
     let operations = program
         .prog
         .iter()
@@ -109,9 +109,11 @@ fn statement_json(program: &Program, public_input: [F192; 2]) -> String {
         .collect::<Vec<_>>()
         .join(",\n");
     format!(
-        "{{\n  \"public_input\": [{}, {}],\n  \"program\": [\n{}\n  ]\n}}\n",
-        field_json(public_input[0]),
-        field_json(public_input[1]),
+        "{{\n  \"public_input\": [{}, {}, {}, {}],\n  \"program\": [\n{}\n  ]\n}}\n",
+        word_json(public_input[0]),
+        word_json(public_input[1]),
+        word_json(public_input[2]),
+        word_json(public_input[3]),
         operations,
     )
 }
@@ -166,7 +168,7 @@ fn test_python_verifier() {
 
     let mut malformed_root = proof.clone();
     let root_offset = lean_vm::tables::N_TABLES + 2;
-    malformed_root.stream[root_offset].c2 = 1;
+    malformed_root.stream[root_offset + 1].c1 = 1;
     assert!(verify(&program, &public_input, &malformed_root).is_err());
     std::fs::write(
         &proof_path,

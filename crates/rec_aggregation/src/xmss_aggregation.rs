@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use lean_compiler::{compile, parse_file_with_replacements};
 use lean_vm::cpu::{prove, verify};
 use primitives::{
-    field::{F64, F192, g_pow},
+    field::{F64, g_pow},
     pretty_f64, pretty_integer,
 };
 use xmss::*;
@@ -23,25 +23,14 @@ fn word(bytes: &[u8]) -> F64 {
     F64(u64::from_le_bytes(bytes[..8].try_into().unwrap()))
 }
 
-/// A K-embedded F192 cell for count/digit hints, which are g-powers.
-fn cell(w: F64) -> F192 {
-    F192::from(w)
+/// A 16-byte native value as two machine words.
+fn pair(b: &[u8]) -> Vec<F64> {
+    vec![word(&b[..8]), word(&b[8..16])]
 }
 
-/// A 16-byte native value in the canonical BLAKE3 subspace of F192: `c0`
-/// carries bytes 0..8, `c1` bytes 8..16, and `c2` is zero.
-fn val16(b: &[u8]) -> F192 {
-    F192::new(word(&b[..8]).0, word(&b[8..16]).0, 0)
-}
-
-/// A 16-byte native value as ONE cell.
-fn pair(b: &[u8]) -> Vec<F192> {
-    vec![val16(b)]
-}
-
-/// A 32-byte hash block as two canonical 128-bit BLAKE3 cells.
-fn quad(b: &[u8]) -> Vec<F192> {
-    vec![val16(&b[..16]), val16(&b[16..32])]
+/// A 32-byte hash block as four machine words.
+fn quad(b: &[u8]) -> Vec<F64> {
+    (0..4).map(|i| word(&b[8 * i..])).collect()
 }
 
 /// Protocol-specific streaming binding used only by the runtime-sized XMSS
@@ -110,8 +99,7 @@ pub fn run_xmss_aggregation(n: usize, log_inv_rate: usize) {
     let mut iv = [0u8; STATE_LEN];
     iv[..8].copy_from_slice(&g_pow(num_bytes).0.to_le_bytes());
     let state = aggregate_binding(iv, &data);
-    // The guest publishes the final binding state's two 128-bit cells (32 bytes).
-    let want = [val16(&state[..16]), val16(&state[16..32])];
+    let want: [F64; 4] = quad(&state).try_into().unwrap();
 
     // The XMSS instance parameters, injected into the program's placeholders;
     // every derived size (tweak-table width, IV byte counts, …) is computed
@@ -129,7 +117,7 @@ pub fn run_xmss_aggregation(n: usize, log_inv_rate: usize) {
         )
         .expect("parse"),
     );
-    program.set_witness("n_pks", vec![vec![cell(g_pow(n))]]);
+    program.set_witness("n_pks", vec![vec![g_pow(n)]]);
     program.set_witness("msg", vec![quad(&message)]);
     program.set_witness(
         "tweaks",
@@ -143,7 +131,7 @@ pub fn run_xmss_aggregation(n: usize, log_inv_rate: usize) {
             .collect(),
     );
     // A merkle slot-bit as one 16-byte cell (bit in the low byte, rest zero).
-    let bit_word = |l: usize| vec![cell(F64(((slot >> l) & 1) as u64))];
+    let bit_word = |l: usize| vec![F64(((slot >> l) & 1) as u64), F64::ZERO];
     program.set_witness(
         "merkle_bits",
         (0..LOG_LIFETIME / 2)
@@ -173,7 +161,7 @@ pub fn run_xmss_aggregation(n: usize, log_inv_rate: usize) {
         rnd[..RANDOMNESS_LEN].copy_from_slice(&wots.randomness);
         rand_s.push(quad(&rnd));
         let encoding = wots_encode(&message, slot, &pk.public_param, &wots.randomness).expect("encoding");
-        digits_s.extend(encoding.iter().map(|&e| vec![cell(g_pow(e as usize))]));
+        digits_s.extend(encoding.iter().map(|&e| vec![g_pow(e as usize)]));
         chain_starts_s.extend(wots.chain_tips.iter().map(|t| pair(t)));
         sib_s.extend(sig.merkle_proof.iter().map(|s| pair(s)));
     }
@@ -202,8 +190,9 @@ pub fn run_xmss_aggregation(n: usize, log_inv_rate: usize) {
 
     // 181 fixed blocks + per signature: 1 (pk absorb) + 145 (the native
     // verifier's constant).
-    assert_eq!(stats.counts[5], 181 + 146 * n, "BLAKE3 instruction count");
-    let bad = [want[0], want[1] + F192::ONE];
+    assert_eq!(stats.counts[8], 181 + 146 * n, "BLAKE3 instruction count");
+    let mut bad = want;
+    bad[3] += F64::ONE;
     assert!(verify(&program, &bad, &proof).is_err());
 
     let proof_bytes = bincode::serialized_size(&proof).expect("proof is serializable");
@@ -226,9 +215,11 @@ pub fn run_xmss_aggregation(n: usize, log_inv_rate: usize) {
         pow(stats.cycles),
         per(stats.cycles)
     );
-    for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3", "PACK64X2"]
-        .iter()
-        .zip(&stats.counts)
+    for (name, &c) in [
+        "XOR", "MUL", "XOR192", "MUL192", "SET", "DEREF", "DEREF192", "JUMP", "BLAKE3",
+    ]
+    .iter()
+    .zip(&stats.counts)
     {
         println!(
             "    {name:<8} instructions     : {:>14} = {:>9}   ({:>12} / XMSS)",
@@ -254,7 +245,10 @@ pub fn run_xmss_aggregation(n: usize, log_inv_rate: usize) {
         "  proving (incl. witness gen) : {} s",
         pretty_f64(t_prove.as_secs_f64())
     );
-    println!("  verifying                   : {} s", pretty_f64(t_verify.as_secs_f64()));
+    println!(
+        "  verifying                   : {} s",
+        pretty_f64(t_verify.as_secs_f64())
+    );
     println!(
         "  throughput                  : {} XMSS/s",
         pretty_f64(n as f64 / t_prove.as_secs_f64())

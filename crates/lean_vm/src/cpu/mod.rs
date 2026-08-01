@@ -1,10 +1,10 @@
 //! Whole-program assembly over GF(2^64) (`misc/doc.tex`): the instruction tables
 //! sharing the state / memory / bytecode buses, bound to one field-valued
 //! commitment and verified oracle-free. Addresses, the program counter, and read
-//! counts are g-powers, so every increment is a free ×g. Machine-word arithmetic
-//! is over `E = F192 = K[y]/(y³+y+1)` (XOR degree 1, MUL_NATIVE degree 2),
-//! with each word carried by three committed `K = F64` limbs. `BLAKE3`
-//! adds the memory/state/bytecode plumbing for a 64→32-byte compression
+//! counts are g-powers, so every increment is a free ×g. Machine words and the
+//! ordinary arithmetic instructions live in `K = F64`; explicit extension
+//! instructions operate on three consecutive words as one `F192` value. `BLAKE3`
+//! (§7.6) adds the memory/state/bytecode plumbing for a 64→32-byte compression
 //! whose relation is discharged by flock (see [`crate::blake3_flock`]). All
 //! Challenges and transcript scalars live in the same tower E.
 
@@ -30,14 +30,15 @@ mod trace;
 pub use execute::Execution;
 pub use isa::{DerefMode, Op};
 pub use layout::*;
-pub(crate) use trace::{Brow, Drow, Jrow, Srow, Trace, Xrow};
+pub(crate) use trace::{Brow, Drow, EDrow, Erow, Jrow, Srow, Trace, Xrow};
 
 /// Witness-gen `BLAKE3` compression: the four message cells' eight
 /// words are laid out little-endian into 64 bytes, combined with the supplied
 /// chaining value and metadata, and the 32-byte result is split back into the
 /// four output words `c`. Flock proves this same compression relation
 /// ([`crate::blake3_flock`]).
-fn blake3_compress(va: [F64; 4], vb: [F64; 4], vcv: [F64; 4], metadata: F192) -> [F64; 4] {
+fn blake3_compress(va: [F64; 4], vb: [F64; 4], vcv: [F64; 4], metadata: [F64; 2]) -> [F64; 4] {
+    let metadata = F192::new(metadata[0].0, metadata[1].0, 0);
     crate::blake3_flock::digest(&crate::blake3_flock::compression(va, vb, vcv, metadata))
 }
 
@@ -63,9 +64,9 @@ const MAX_LOG_ROWS: usize = 32;
 const MAX_LOG_BYTECODE: usize = 32;
 
 /// A binding digest of the program bytecode (BLAKE3 of every instruction's
-/// canonical encoding — opcode, operands, and the DEREF store-mode), as two field
-/// elements. Seeded into the transcript alongside the public input, so EVERY
-/// challenge depends on the exact program.
+/// canonical encoding — opcode, five operand slots, and immediate), as four
+/// field elements. Seeded into the transcript alongside the public input, so
+/// EVERY challenge depends on the exact program.
 ///
 /// Without this the program's instruction content would enter verification only
 /// through the bytecode bus's `Public`-coordinate MLE evaluation at the GKR point
@@ -77,47 +78,40 @@ const MAX_LOG_BYTECODE: usize = 32;
 /// the very first squeeze. Both sides hold the program, so both compute this
 /// identically; the announced sizes ride the stream (`announce_public`).
 fn program_digest(prog: &[Op]) -> [F64; 4] {
-    // VM-native: encode the program as a field-element slice and hash its exact
-    // little-endian bytes with standard BLAKE3 ([`crate::vmhash::hash_slice`]).
-    let mut words: Vec<F64> = Vec::with_capacity(7 * prog.len() + 2);
-    // Domain/version marker; standard BLAKE3 binds the total byte length.
+    // VM-native: encode the program as a field-element slice and hash it with the
+    // Merkle–Damgård slice hash ([`crate::vmhash::hash_slice`]), so a recursive
+    // verifier can recompute this digest with the `Blake3` opcode alone.
+    let mut words: Vec<F64> = Vec::with_capacity(6 * prog.len() + 2);
+    // Domain/version marker (the MD IV also binds the total length).
     words.push(F64(prog.len() as u64));
-    words.push(F64(3));
+    words.push(F64(5));
     for op in prog {
-        // Fixed seven-word encoding per instruction: two operand-offset words
-        // packed with the tag, the 192-bit immediate's three lanes, then two
-        // words for BLAKE3's remaining offsets (zero for other opcodes).
-        let (tag, a, b, c, k, x, y) = match *op {
-            Op::Xor { a, b, c } => (0u8, a, b, c, F192::ZERO, 0u64, 0u64),
-            Op::Mul { a, b, c } => (1, a, b, c, F192::ZERO, 0, 0),
-            Op::Set { o, k } => (2, o, 0, 0, k, 0, 0),
+        // Fixed-width injective encoding: opcode, six address/offset slots,
+        // and two base-field immediate words (BLAKE3 metadata uses both).
+        let (tag, a, b, c, d, e, f, k0, k1) = match *op {
+            Op::Xor { a, b, c } => (0u8, a, b, c, 0, 0, 0, F64::ZERO, F64::ZERO),
+            Op::Mul { a, b, c } => (1, a, b, c, 0, 0, 0, F64::ZERO, F64::ZERO),
+            Op::AddExt { a, b, c } => (2, a, b, c, 0, 0, 0, F64::ZERO, F64::ZERO),
+            Op::MulExt { a, b, c } => (3, a, b, c, 0, 0, 0, F64::ZERO, F64::ZERO),
+            Op::Set { o, k } => (4, o, 0, 0, 0, 0, 0, k, F64::ZERO),
             Op::Deref {
                 alpha,
                 beta,
                 gamma,
                 mode,
-            } => {
-                (3 + mode as u8, alpha, beta, gamma, F192::ZERO, 0, 0) // mode ∈ {Cell,Pc,Fp} ⇒ tag 3/4/5
+            } => (5 + mode as u8, alpha, beta, gamma, 0, 0, 0, F64::ZERO, F64::ZERO),
+            Op::DerefExt { alpha, beta, gamma } => (10, alpha, beta, gamma, 0, 0, 0, F64::ZERO, F64::ZERO),
+            Op::Jump { oc, od, of } => (8, oc, od, of, 0, 0, 0, F64::ZERO, F64::ZERO),
+            Op::Blake3 { ins, cv, out, metadata } => {
+                (9, ins[0], ins[1], ins[2], ins[3], cv, out, metadata[0], metadata[1])
             }
-            Op::Jump { oc, od, of } => (6, oc, od, of, F192::ZERO, 0, 0),
-            Op::Blake3 { ins, cv, out, metadata } => (
-                7,
-                ins[0],
-                ins[1],
-                ins[2],
-                metadata,
-                ins[3] as u64 | ((cv as u64) << 32),
-                out as u64,
-            ),
-            Op::Pack64x2 { a, b, c } => (9, a, b, c, F192::ZERO, 0, 0),
         };
         words.push(F64(a as u64 | ((b as u64) << 32)));
-        words.push(F64(c as u64 | ((tag as u64) << 32)));
-        words.push(F64(k.c0));
-        words.push(F64(k.c1));
-        words.push(F64(k.c2));
-        words.push(F64(x));
-        words.push(F64(y));
+        words.push(F64(c as u64 | ((d as u64) << 32)));
+        words.push(F64(e as u64 | ((f as u64) << 32)));
+        words.push(k0);
+        words.push(k1);
+        words.push(F64(tag as u64));
     }
     crate::vmhash::hash_slice(&words)
 }
@@ -129,7 +123,7 @@ fn program_digest(prog: &[Op]) -> [F64; 4] {
 /// challenges depend on the circuit version and the program before anything
 /// else; a recursion guest carries the INNER program's seed in its public
 /// input, pinning both with one word pair.
-pub fn fs_seed(program: &Program) -> [F192; 2] {
+pub fn fs_seed(program: &Program) -> [F64; 4] {
     let mut h = blake3::Hasher::new();
     h.update(b"leanvm-b-fs-seed-v1");
     h.update(&crate::blake3_flock::family_digest());
@@ -138,14 +132,14 @@ pub fn fs_seed(program: &Program) -> [F192; 2] {
     }
     let d = *h.finalize().as_bytes();
     let word = |o: usize| u64::from_le_bytes(d[o..o + 8].try_into().unwrap());
-    [F192::new(word(0), word(8), 0), F192::new(word(16), word(24), 0)]
+    [F64(word(0)), F64(word(8)), F64(word(16)), F64(word(24))]
 }
 
 /// The transcript seed: the public statement bound before any challenge, the
 /// public input `pi` prefixed by the [`fs_seed`]. Both sides build it identically.
-fn transcript_seed(program: &Program, pi: &[F192; 2]) -> [F192; 4] {
+fn transcript_seed(program: &Program, pi: &[F64; 4]) -> [F192; 8] {
     let seed = fs_seed(program);
-    [seed[0], seed[1], pi[0], pi[1]]
+    std::array::from_fn(|i| F192::from(if i < 4 { seed[i] } else { pi[i - 4] }))
 }
 
 /// Announce the prover's per-table log-sizes (`log_mem` + all `row_counts`) by
@@ -167,7 +161,7 @@ fn announce_public(ps: &mut ProverState, log_mem: usize, row_counts: [usize; tab
 /// rate from the stream, validate them, and reconstruct the public [`Layout`]
 /// from the program + sizes + public input. (The public input was already bound
 /// by seeding the transcript.)
-fn read_public(vs: &mut VerifierState, prog: &Program, public_input: &[F192; 2]) -> Result<(Layout, usize), Error> {
+fn read_public(vs: &mut VerifierState, prog: &Program, public_input: &[F64; 4]) -> Result<(Layout, usize), Error> {
     let read_size = |vs: &mut VerifierState| -> Result<usize, Error> {
         let word = vs.next_scalar().map_err(Error::Transcript)?;
         if word.c1 != 0 || word.c2 != 0 {
@@ -175,7 +169,6 @@ fn read_public(vs: &mut VerifierState, prog: &Program, public_input: &[F192; 2])
         }
         usize::try_from(word.c0).map_err(|_| Error::PublicInput)
     };
-
     let log_mem = read_size(vs)?;
     let mut row_counts = [0usize; tables::N_TABLES];
     for r in &mut row_counts {
@@ -223,7 +216,7 @@ pub struct Program {
     /// slice of values per `hint_witness` call — the same symbol may be
     /// hinted many times); each call pops the next entry, whose length must
     /// match its destination. Prover-side only; verification ignores them.
-    pub(crate) witness: HashMap<String, Vec<Vec<F192>>>,
+    pub(crate) witness: HashMap<String, Vec<Vec<F64>>>,
     /// Function pc-ranges `(name, entry, len)` from the compiler, for the
     /// `DBG_PROF=1` per-function cycle profile ([`Program::execute`]). Purely
     /// diagnostic; empty for hand-assembled programs.
@@ -258,7 +251,7 @@ impl Program {
     /// `hint_witness(dest, "name")` call, popped in order (the same symbol
     /// may be hinted many times). Prover-side data: entirely unconstrained,
     /// invisible to verification.
-    pub fn set_witness(&mut self, name: impl Into<String>, entries: Vec<Vec<F192>>) {
+    pub fn set_witness(&mut self, name: impl Into<String>, entries: Vec<Vec<F64>>) {
         self.witness.insert(name.into(), entries);
     }
 }
@@ -411,7 +404,7 @@ fn blake3_value_slot(col: usize) -> Option<usize> {
 
 /// Run statistics returned alongside the proof: the cycle count (total executed
 /// instructions), the per-opcode counts
-/// `[XOR, MUL, SET, DEREF, JUMP, BLAKE3, PACK64X2]`, and the
+/// `[XOR, MUL, XOR_192, MUL_192, SET, DEREF, DEREF_192, JUMP, BLAKE3]`, and the
 /// committed witness size — the sum of the column lengths, i.e. the real data
 /// before the stacked witness is zero-padded to a power of two `2^m`.
 pub struct Stats {
@@ -431,7 +424,7 @@ pub struct Stats {
 /// run [`Stats`]. `log_inv_rate` selects the PCS rate and is announced in the
 /// Fiat–Shamir transcript before the commitment.
 #[tracing::instrument(name = "Prove", skip_all, fields(log_inv_rate))]
-pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) -> (Proof, Stats) {
+pub fn prove(program: &Program, public_input: [F64; 4], log_inv_rate: usize) -> (Proof, Stats) {
     ::pcs::ligerito::validate_log_inv_rate(log_inv_rate).expect("valid log_inv_rate");
     let prof = std::env::var("LEANVM_PROFILE").is_ok();
     let ms = |t: std::time::Instant| t.elapsed().as_secs_f64() * 1e3;
@@ -524,14 +517,8 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
 
     let mut claims = bus.claims;
     claims.extend(constraint_claims(&table_claims));
-    // The PI binding transmits the low/high memory-limb evaluations. The full
-    // F192 public-input interpolation then determines the top-limb evaluation.
-    let r_pi = ps.sample();
-    let pi_lo = primitives::multilinear::interp_k(F64(w.layout.pi[0].c0), F64(w.layout.pi[1].c0), r_pi);
-    let pi_hi = primitives::multilinear::interp_k(F64(w.layout.pi[0].c1), F64(w.layout.pi[1].c1), r_pi);
-    ps.add_scalar(pi_lo);
-    ps.add_scalar(pi_hi);
-    claims.extend(bind_pi_claim(r_pi, &w.layout.placements, &w.layout.pi, pi_lo, pi_hi));
+    let r_pi = [ps.sample(), ps.sample()];
+    claims.push(bind_pi_claim(r_pi, &w.layout.placements, &w.layout.pi));
     // The input/output words bind via the memory bus (value columns are virtual and
     // route to q_pkd, see `slot_claims`); cv/counter/blen/flags are constants baked
     // into flock's per-block matrices, so no pin claims are needed.
@@ -584,40 +571,18 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
     )
 }
 
-/// The public-input binding (§8): the committed `MEM` at `(r, 0,…,0)` must equal
-/// `interp(pi[0], pi[1], r)`, split into its three physical `K` limbs. The
-/// prover transmits `MEM_LO(r)` and `MEM_HI(r)`; both sides derive `MEM_TOP(r)`
-/// from the full F192 interpolation. The opening discharges all three claims.
-/// `placements` and `pi` come from the prover's or verifier's layout, so both
-/// sides build byte-identical claims.
-fn bind_pi_claim(
-    r: F192,
-    placements: &[witness::Placement],
-    pi: &[F192; 2],
-    v_lo: F192,
-    v_hi: F192,
-) -> [ColumnClaim; 3] {
-    let mut point = vec![F192::ZERO; placements[MEM_LO].n_vars];
-    point[0] = r;
-    let y2 = F192::Y * F192::Y;
-    let v_top = (primitives::multilinear::interp(pi[0], pi[1], r) + v_lo + F192::Y * v_hi) * y2.inv();
-    [
-        ColumnClaim {
-            col: MEM_LO,
-            point: point.clone(),
-            value: v_lo,
-        },
-        ColumnClaim {
-            col: MEM_HI,
-            point: point.clone(),
-            value: v_hi,
-        },
-        ColumnClaim {
-            col: MEM_TOP,
-            point,
-            value: v_top,
-        },
-    ]
+/// Bind the first four base-field memory words to the four-word public input at
+/// a random two-variable point, with all higher memory variables fixed to zero.
+fn bind_pi_claim(r: [F192; 2], placements: &[witness::Placement], pi: &[F64; 4]) -> ColumnClaim {
+    let mut point = vec![F192::ZERO; placements[MEM].n_vars];
+    point[..2].copy_from_slice(&r);
+    let lo = primitives::multilinear::interp_k(pi[0], pi[1], r[0]);
+    let hi = primitives::multilinear::interp_k(pi[2], pi[3], r[0]);
+    ColumnClaim {
+        col: MEM,
+        point,
+        value: primitives::multilinear::interp(lo, hi, r[1]),
+    }
 }
 
 /// Everything a recursion harness needs from an accepting verify run, named
@@ -644,7 +609,7 @@ pub struct VerifySummary {
 /// every scalar the prover wrote and pull the PCS hints, then assert the stream
 /// was fully consumed. Takes only public inputs — never the prover's witness.
 #[tracing::instrument(name = "Verify", skip_all)]
-pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Result<VerifySummary, Error> {
+pub fn verify(program: &Program, public_input: &[F64; 4], proof: &Proof) -> Result<VerifySummary, Error> {
     let mut vs = VerifierState::new(b"leanvm-b", proof, &transcript_seed(program, public_input));
     let (l, log_inv_rate) = read_public(&mut vs, program, public_input)?;
     let root = pcs::read_commitment(&mut vs).map_err(Error::Transcript)?;
@@ -688,10 +653,8 @@ pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Res
 
     let mut claims = bus.claims;
     claims.extend(constraint_claims(&table_claims));
-    let r_pi = vs.sample();
-    let pi_lo = vs.next_scalar().map_err(Error::Transcript)?;
-    let pi_hi = vs.next_scalar().map_err(Error::Transcript)?;
-    claims.extend(bind_pi_claim(r_pi, &l.placements, &l.pi, pi_lo, pi_hi));
+    let r_pi = [vs.sample(), vs.sample()];
+    claims.push(bind_pi_claim(r_pi, &l.placements, &l.pi));
     let checkpoint_pi = vs.sponge_state();
     let slots = slot_claims(&l, &claims);
 
@@ -757,14 +720,12 @@ fn slot_claims(l: &Layout, claims: &[ColumnClaim]) -> Vec<pcs::SlotClaim> {
 mod tests {
     use super::*;
 
-    /// A K-embedded immediate (both extension limbs zero).
-    fn w(x: u64) -> F192 {
-        F192::new(x, 0, 0)
+    fn w(x: u64) -> F64 {
+        F64(x)
     }
 
-    /// Pack two 64-bit flock words into the canonical BLAKE3 subspace of F192.
-    fn cell(lo: F64, hi: F64) -> F192 {
-        F192::new(lo.0, hi.0, 0)
+    fn pi() -> [F64; 4] {
+        [w(7), w(11), w(13), w(17)]
     }
 
     /// The default one-block-root metadata for a hand-built BLAKE3 op.
@@ -772,53 +733,41 @@ mod tests {
         crate::blake3_flock::metadata(0, 64, crate::blake3_flock::FLAGS)
     }
 
-    /// The four chaining-value lanes of the two cv cells.
-    fn cv_lanes(cv0: F192, cv1: F192) -> [F64; 4] {
-        [F64(cv0.c0), F64(cv0.c1), F64(cv1.c0), F64(cv1.c1)]
-    }
-
     /// A hand-built straight-line program with one BLAKE3 row: set up the two
-    /// 256-bit inputs (`a` at cells 2,3, `b` at cells 4,5 — one 128-bit word per
-    /// cell), hash them into the output `c` (cells 6,7), pad with filler SETs so
+    /// 256-bit inputs (`a` at cells 4..8, `b` at cells 8..12), hash them into
+    /// the output `c` (cells 12..16), pad with filler SETs so
     /// the last executed instruction lands one before the sentinel, and halt
     /// there. The flock validity sub-proof plus the memory / state / bytecode bus
     /// interactions are verified end-to-end (the proof carries the Ligerito
     /// opening they assert on).
     fn blake3_program(a: [F64; 4], b: [F64; 4]) -> Program {
-        // a → cells 2,3 and b → cells 4,5 (two flock lanes per BLAKE3 cell).
-        let mut prog = vec![
-            Op::Set {
-                o: 2,
-                k: cell(a[0], a[1]),
-            },
-            Op::Set {
-                o: 3,
-                k: cell(a[2], a[3]),
-            },
-            Op::Set {
-                o: 4,
-                k: cell(b[0], b[1]),
-            },
-            Op::Set {
-                o: 5,
-                k: cell(b[2], b[3]),
-            },
-            // The chaining value reads cells 0,1 (the public input); any
-            // canonical cv is legal.
-            Op::Blake3 {
-                ins: [2, 3, 4, 5],
-                cv: 0,
-                out: 6,
-                metadata: crate::blake3_flock::metadata(0, 64, crate::blake3_flock::FLAGS),
-            },
-        ]; // c → cells 6,7
-        // 16 slots: 5 executed so far; 10 filler SETs step the pc to 15 (halt);
+        let mut prog: Vec<Op> = a
+            .into_iter()
+            .enumerate()
+            .map(|(k, v)| Op::Set { o: 4 + k as u32, k: v })
+            .chain(
+                b.into_iter()
+                    .enumerate()
+                    .map(|(k, v)| Op::Set { o: 8 + k as u32, k: v }),
+            )
+            .collect();
+        prog.extend(
+            crate::blake3_flock::IV
+                .into_iter()
+                .enumerate()
+                .map(|(k, v)| Op::Set { o: 24 + k as u32, k: v }),
+        );
+        let metadata = md();
+        prog.push(Op::Blake3 {
+            ins: [4, 6, 8, 10],
+            cv: 24,
+            out: 12,
+            metadata: [F64(metadata.c0), F64(metadata.c1)],
+        });
+        // 16 slots: 13 executed so far; 2 filler SETs step the pc to 15 (halt);
         // slot 15 is the never-executed sentinel.
-        for k in 0..10u32 {
-            prog.push(Op::Set {
-                o: 16 + k,
-                k: F192::ONE,
-            });
+        for k in 0..2u32 {
+            prog.push(Op::Set { o: 16 + k, k: F64::ONE });
         }
         prog.push(Op::Xor { a: 0, b: 0, c: 0 }); // sentinel (never executed)
         assert_eq!(prog.len(), 16);
@@ -841,36 +790,20 @@ mod tests {
         ];
         let program = blake3_program(a, b);
 
-        let pi = [w(7), w(11)];
+        let pi = pi();
         let exec = program.execute(pi);
 
-        // The output cells hold the compression of the two inputs under the
-        // pi-supplied chaining value (two 128-bit chunks).
-        let d = blake3_compress(a, b, cv_lanes(pi[0], pi[1]), md());
-        assert_eq!(exec.mem[6], cell(d[0], d[1]));
-        assert_eq!(exec.mem[7], cell(d[2], d[3]));
+        let metadata = md();
+        let d = blake3_compress(a, b, crate::blake3_flock::IV, [F64(metadata.c0), F64(metadata.c1)]);
+        assert_eq!(&exec.mem[12..16], &d);
         assert_eq!(exec.trace.blake3.len(), 1);
 
         let (proof, stats) = prove(&program, pi, pcs::LOG_INV_RATE);
-        assert_eq!(stats.counts[5], 1, "one BLAKE3 row");
+        assert_eq!(stats.counts[tables::BLAKE3_TABLE], 1, "one BLAKE3 row");
         // flock's sub-proof rides the shared channels: its Ligerito is the proof's
         // one opening, its scalar reduction trails the `stream`.
         assert!(!proof.openings.is_empty(), "BLAKE3 program carries a Ligerito opening");
         verify(&program, &pi, &proof).expect("BLAKE3 program verifies");
-    }
-
-    /// BLAKE consumes the `(c0,c1,0)` embedding. This is not an extra AIR
-    /// constraint: the full three-limb memory bus makes a request carrying a
-    /// literal zero in limb 2 match only such a stored word.
-    #[test]
-    #[should_panic(expected = "BLAKE3 input cell must be a canonical 128-bit embedding")]
-    fn blake3_requires_zero_third_limb() {
-        let mut program = blake3_program([F64::ZERO; 4], [F64::ZERO; 4]);
-        program.prog[0] = Op::Set {
-            o: 2,
-            k: F192::new(0, 0, 1),
-        };
-        let _ = program.execute([w(7), w(11)]);
     }
 
     /// A self-hash `BLAKE3(h, h)` (the hash-chain step) passes the *same* input
@@ -886,41 +819,38 @@ mod tests {
             F64(0xcafe_d00d_1337_c0de),
             F64(0x8877_6655_4433_2211),
         ];
-        // 8 slots: 2 SETs (h at cells 2,3), the aliased BLAKE3 (output 4,5),
-        // 2 filler SETs stepping the pc to 7 (the sentinel, halt).
-        let mut prog = Vec::new();
-        prog.push(Op::Set {
-            o: 2,
-            k: cell(h[0], h[1]),
-        });
-        prog.push(Op::Set {
-            o: 3,
-            k: cell(h[2], h[3]),
-        });
+        let mut prog: Vec<Op> = h
+            .into_iter()
+            .enumerate()
+            .map(|(k, v)| Op::Set { o: 4 + k as u32, k: v })
+            .collect();
+        prog.extend(
+            crate::blake3_flock::IV
+                .into_iter()
+                .enumerate()
+                .map(|(k, v)| Op::Set { o: 16 + k as u32, k: v }),
+        );
+        let metadata = md();
         prog.push(Op::Blake3 {
-            ins: [2, 3, 2, 3],
-            cv: 0,
-            out: 4,
-            metadata: crate::blake3_flock::metadata(0, 64, crate::blake3_flock::FLAGS),
-        }); // a == b: hash h ‖ h into cells 4,5
-        for k in 0..4u32 {
-            prog.push(Op::Set {
-                o: 12 + k,
-                k: F192::ONE,
-            }); // fillers step pc to the sentinel
+            ins: [4, 6, 4, 6],
+            cv: 16,
+            out: 8,
+            metadata: [F64(metadata.c0), F64(metadata.c1)],
+        });
+        for k in 0..6u32 {
+            prog.push(Op::Set { o: 20 + k, k: F64::ONE }); // fillers step pc to the sentinel
         }
         prog.push(Op::Xor { a: 0, b: 0, c: 0 }); // sentinel
-        assert_eq!(prog.len(), 8);
-        let program = Program::from_bytecode(prog, 16);
-        let pi = [w(3), w(5)];
+        assert_eq!(prog.len(), 16);
+        let program = Program::from_bytecode(prog, 24);
+        let pi = pi();
 
         let exec = program.execute(pi);
-        let d = blake3_compress(h, h, cv_lanes(pi[0], pi[1]), md());
-        assert_eq!(exec.mem[4], cell(d[0], d[1]));
-        assert_eq!(exec.mem[5], cell(d[2], d[3]));
+        let d = blake3_compress(h, h, crate::blake3_flock::IV, [F64(metadata.c0), F64(metadata.c1)]);
+        assert_eq!(&exec.mem[8..12], &d);
 
         let (proof, stats) = prove(&program, pi, pcs::LOG_INV_RATE);
-        assert_eq!(stats.counts[5], 1, "one BLAKE3 row");
+        assert_eq!(stats.counts[tables::BLAKE3_TABLE], 1, "one BLAKE3 row");
         verify(&program, &pi, &proof).expect("self-hash BLAKE3 verifies");
     }
 
@@ -932,7 +862,7 @@ mod tests {
             [F64(0xABCD), F64(0x1234), F64(0x5678), F64(0x9999)],
             [F64(0x1111), F64(0x2222), F64(0x3333), F64(0x4444)],
         );
-        let pi = [w(7), w(11)];
+        let pi = pi();
         let (mut proof, _) = prove(&program, pi, pcs::LOG_INV_RATE);
         verify(&program, &pi, &proof).expect("honest proof verifies");
 
@@ -958,7 +888,7 @@ mod tests {
             [F64(0xABCD), F64(0x1234), F64(0x5678), F64(0x9999)],
             [F64(0x1111), F64(0x2222), F64(0x3333), F64(0x4444)],
         );
-        let pi = [w(7), w(11)];
+        let pi = pi();
         let (proof, _) = prove(&program, pi, pcs::LOG_INV_RATE);
         verify(&program, &pi, &proof).expect("honest proof verifies");
 
@@ -981,38 +911,42 @@ mod tests {
     #[test]
     fn non_blake3_program_verifies() {
         let prog = vec![
-            Op::Set { o: 2, k: w(5) },
-            Op::Set { o: 3, k: w(6) },
-            Op::Xor { a: 2, b: 3, c: 4 },
+            Op::Set { o: 4, k: w(5) },
+            Op::Set { o: 5, k: w(6) },
+            Op::Xor { a: 4, b: 5, c: 6 },
             Op::Xor { a: 0, b: 0, c: 0 }, // sentinel
         ];
-        let program = Program::from_bytecode(prog, 5);
-        let pi = [F192::new(1, 2, 3), F192::new(4, 5, 6)];
+        let program = Program::from_bytecode(prog, 7);
+        let pi = pi();
         let (proof, stats) = prove(&program, pi, pcs::LOG_INV_RATE);
-        assert_eq!(stats.counts[5], 0, "no real BLAKE3 rows");
+        assert_eq!(stats.counts[tables::BLAKE3_TABLE], 0, "no real BLAKE3 rows");
         // The proof still carries exactly one Ligerito opening (over the padding).
         assert_eq!(proof.openings.len(), 1, "unified path: one opening always");
         verify(&program, &pi, &proof).expect("non-BLAKE3 program verifies");
     }
 
-    /// A 192-bit-word MUL: the E-product of two full machine words is proven and
-    /// verified. Exercises the tower-product constraint (all limbs nonzero).
+    /// Extension multiplication consumes and produces three consecutive words.
     #[test]
-    fn mul_192bit_word() {
+    fn mul_extension_words() {
         let x = F192::new(0x0123_4567_89ab_cdef, 0xfeed_face_dead_beef, 0x1111_2222_3333_4444);
         let y = F192::new(0x9999_aaaa_bbbb_cccc, 0x1357_9bdf_2468_ace0, 0x5555_6666_7777_8888);
-        let prog = vec![
-            Op::Set { o: 2, k: x },
-            Op::Set { o: 3, k: y },
-            Op::Mul { a: 2, b: 3, c: 4 },
-            Op::Xor { a: 0, b: 0, c: 0 }, // sentinel
-        ];
-        let program = Program::from_bytecode(prog, 5);
-        let pi = [w(1), w(2)];
+        let mut prog: Vec<Op> = [x.c0, x.c1, x.c2, y.c0, y.c1, y.c2]
+            .into_iter()
+            .enumerate()
+            .map(|(k, v)| Op::Set {
+                o: 4 + k as u32,
+                k: F64(v),
+            })
+            .collect();
+        prog.push(Op::MulExt { a: 4, b: 7, c: 10 });
+        prog.push(Op::Xor { a: 0, b: 0, c: 0 });
+        let program = Program::from_bytecode(prog, 13);
+        let pi = pi();
         let exec = program.execute(pi);
-        assert_eq!(exec.mem[4], x * y, "MUL computes the E product");
+        let got = F192::new(exec.mem[10].0, exec.mem[11].0, exec.mem[12].0);
+        assert_eq!(got, x * y, "MUL_192 computes the E product");
         let (proof, _) = prove(&program, pi, pcs::LOG_INV_RATE);
-        verify(&program, &pi, &proof).expect("192-bit MUL verifies");
+        verify(&program, &pi, &proof).expect("extension MUL verifies");
     }
 
     /// A proof is bound to its exact program: presenting it against a *different*
@@ -1023,24 +957,21 @@ mod tests {
     #[test]
     fn proof_bound_to_program() {
         let prog = vec![
-            Op::Set { o: 2, k: w(5) },
-            Op::Set { o: 3, k: w(6) },
-            Op::Xor { a: 2, b: 3, c: 4 },
+            Op::Set { o: 4, k: w(5) },
+            Op::Set { o: 5, k: w(6) },
+            Op::Xor { a: 4, b: 5, c: 6 },
             Op::Xor { a: 0, b: 0, c: 0 }, // sentinel
         ];
-        let program = Program::from_bytecode(prog.clone(), 5);
-        let pi = [w(1), w(2)];
+        let program = Program::from_bytecode(prog.clone(), 7);
+        let pi = pi();
         let (proof, _) = prove(&program, pi, pcs::LOG_INV_RATE);
         verify(&program, &pi, &proof).expect("honest proof verifies");
 
         // Same shape (4 ops, same opcodes/operands, so identical layout + announced
-        // sizes) but only the SET constant's third limb changed. Must be rejected.
+        // sizes) but only the SET constant changed. Must be rejected.
         let mut prog2 = prog;
-        prog2[0] = Op::Set {
-            o: 2,
-            k: F192::new(5, 0, 1),
-        };
-        let program2 = Program::from_bytecode(prog2, 5);
+        prog2[0] = Op::Set { o: 4, k: F64(7) };
+        let program2 = Program::from_bytecode(prog2, 7);
         assert!(
             verify(&program2, &pi, &proof).is_err(),
             "a proof must not verify against a different program"
@@ -1057,7 +988,7 @@ mod tests {
             [F64(0xABCD), F64(0x1234), F64(0x5678), F64(0x9999)],
             [F64(0x1111), F64(0x2222), F64(0x3333), F64(0x4444)],
         );
-        let pi = [w(7), w(11)];
+        let pi = pi();
         let (proof, _) = prove(&program, pi, pcs::LOG_INV_RATE);
 
         let bytes = bincode::serialize(&proof).expect("proof serializes");
@@ -1083,16 +1014,18 @@ mod tests {
         }
 
         let root_offset = tables::N_TABLES + 2;
-        for root_word in root_offset..root_offset + 2 {
+        // A 32-byte root is transported as one full F192 word (three F64
+        // lanes) plus one final F64 lane. Only the latter word has canonical
+        // zero high limbs.
+        for high_limb in [F192::new(0, 1, 0), F192::new(0, 0, 1)] {
             let mut malformed = decoded.clone();
-            malformed.stream[root_word].c2 = 1;
+            malformed.stream[root_offset + 1] += high_limb;
             assert!(
                 matches!(
                     verify(&program, &pi, &malformed),
                     Err(Error::Transcript(crate::transcript::Error::NonCanonicalEncoding))
                 ),
-                "commitment root word {} with a nonzero top limb must be rejected",
-                root_word - root_offset
+                "commitment root tail with a nonzero high limb must be rejected"
             );
         }
 
