@@ -6,6 +6,10 @@ on:
     paths:
       - 'misc/pcs.tex'
       - '.github/workflows/pcs.yml'
+  pull_request:
+    paths:
+      - 'misc/pcs.tex'
+      - '.github/workflows/pcs.yml'
   workflow_dispatch:
 
 permissions:

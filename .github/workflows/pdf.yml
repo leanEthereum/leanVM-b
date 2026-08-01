@@ -7,6 +7,11 @@ on:
       - 'misc/doc.tex'
       - 'misc/images/**'
       - '.github/workflows/pdf.yml'
+  pull_request:
+    paths:
+      - 'misc/doc.tex'
+      - 'misc/images/**'
+      - '.github/workflows/pdf.yml'
   workflow_dispatch:
 
 permissions:

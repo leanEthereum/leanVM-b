@@ -6,6 +6,10 @@ on:
     paths:
       - 'misc/ring-switching.tex'
       - '.github/workflows/ring-switching.yml'
+  pull_request:
+    paths:
+      - 'misc/ring-switching.tex'
+      - '.github/workflows/ring-switching.yml'
   workflow_dispatch:
 
 permissions:

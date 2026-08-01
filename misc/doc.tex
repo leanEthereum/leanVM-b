@@ -2,6 +2,7 @@
 
 \usepackage[margin=1in]{geometry}
 \usepackage{amsmath, amssymb}
+\usepackage{tabularx}
 \usepackage{xcolor}
 \usepackage[colorlinks=true, linkcolor=blue!50!black, citecolor=blue!50!black, urlcolor=blue!50!black]{hyperref}
 
@@ -11,15 +12,6 @@
 \newcommand{\pkd}{\mathrm{pkd}}
 \newcommand{\eq}{\operatorname{eq}}
 \newcommand{\cube}[1]{\{0,1\}^{#1}}
-\newcommand{\cin}{\mathit{cin}}
-\newcommand{\oA}{\widehat A}
-\newcommand{\oB}{\widehat B}
-\newcommand{\oC}{\widehat C}
-\newcommand{\ocout}{\widehat{c}_{\mathrm{out}}}
-\newcommand{\ocin}{\widehat{c}_{\mathrm{in}}}
-\newcommand{\oQ}{\widehat Q}
-\newcommand{\II}{\widehat I}
-\newcommand{\D}{D}
 
 % VM macros
 \newcommand{\gen}{\mathsf{g}}
@@ -36,7 +28,6 @@
 \newcommand{\dsep}[1]{\mathsf{#1}}
 \newcommand{\opc}[1]{\mathsf{op}_{\mathsf{#1}}}
 \newcommand{\srcsel}[1]{\mathsf{src}(#1)}
-\newcommand{\todo}[1]{\textcolor{red}{\textbf{[TODO:} #1\textbf{]}}}
 
 \title{\bf leanVM-b}
 \author{}
@@ -62,7 +53,7 @@ A \emph{memory word}, including a cell value, immediate, or hash value, is an el
 
 \paragraph{Addresses as powers of a generator.} Fix a generator $\gen$ of the multiplicative group $\K^{\times}$, of order $2^{64}-1$. Memory addresses and bytecode addresses (the program counter) are powers of $\gen$: the $i$-th address is the field element $\gen^{\,i}$. Its successor is one field multiplication: $\gen^{\,i+1}\;=\;\gen\cdot\gen^{\,i}$.
 
-\paragraph{Memory.} Memory is read-only (write-once): an array of $2^{h}$ cells, each holding one $192$-bit word (an $\E$-element), addressed by the $2^{h}$ powers $\gen^{0},\gen^{1},\dots,\gen^{2^{h}-1}$ (the addresses are $\K$-elements). The size exponent $h$ is fixed per execution, with $16\le h\le 32$. Each cell is set once; every access thereafter reads it.
+\paragraph{Memory.} Memory is immutable from the program's point of view: an array of $2^{h}$ cells, each holding one $192$-bit word (an $\E$-element), addressed by the $2^{h}$ powers $\gen^{0},\gen^{1},\dots,\gen^{2^{h}-1}$ (the addresses are $\K$-elements). The size exponent $h$ is fixed per execution, with $16\le h\le 32$. Witness generation may initialize an unset cell once; writing an initialized cell asserts that the value is unchanged.
 
 \paragraph{Program.} The program is a fixed, public sequence of instructions, addressed like memory by powers of $\gen$: the program counter $\gen^{\,i}$ selects the $i$-th instruction. An instruction is an opcode together with its operands, described below.
 
@@ -76,7 +67,7 @@ Since addresses are exponents of $\gen$, the frame is the contiguous block $\gen
 
 \paragraph{Instruction set.} The machine implements seven instructions. Below, $o,o_A,\dots$ are fp-relative references and $k$ an immediate operand.
 \begin{center}
-\begin{tabular}{lll}
+\begin{tabularx}{\textwidth}{@{}llX@{}}
 \hline
 Instruction & Operands & Semantics\\
 \hline
@@ -86,18 +77,22 @@ Instruction & Operands & Semantics\\
 \texttt{DEREF}         & $[\alpha,\beta,\gamma;\,s]$ & $\mem[\loc{\alpha}\cdot\beta]=\srcsel{s}$\\
 \texttt{JUMP}          & $[o_c,o_d,o_f]$ & conditional jump (below)\\
 \texttt{PACK64X2}      & $[o_A,o_B,o_C]$ & $\loc{o_C}=a_0+b_0y$ for $\loc{o_A}=a_0,\loc{o_B}=b_0\in\K$\\
-\texttt{BLAKE3}        & $[o_0,o_1,o_2,o_3,o_V,o_C,\mu]$ & $\bigl(\loc{o_C},\loc{\gen\cdot o_C}\bigr)=\mathrm{Compress}\bigl(\loc{o_V},\loc{\gen\cdot o_V};\loc{o_0},\ldots,\loc{o_3};\mu\bigr)$ (below)\\
+\texttt{BLAKE3}        & $[o_0,o_1,o_2,o_3,o_V,o_C,\mu]$ & standard BLAKE3 compression (below)\\
 \hline
-\end{tabular}
+\end{tabularx}
 \end{center}
 
-\texttt{PACK64X2} groups two $64$-bit cells into one canonical $128$-bit cell. Its memory interactions read the sources as $(a_0,0,0)$ and $(b_0,0,0)$ and the destination as $(a_0,b_0,0)$. Bus balance therefore proves that both source words lie in $\K$; this is not merely a witness-generation check. The instruction is useful when a program receives serialized $\K$-limbs through an $\E$-valued interface.
+\texttt{PACK64X2} groups the low limbs of two physical $\E$-valued cells into one canonical $128$-bit cell. Its memory interactions read the sources as $(a_0,0,0)$ and $(b_0,0,0)$ and the destination as $(a_0,b_0,0)$. Bus balance therefore proves that both source words lie in $\K$; this is not merely a witness-generation check. The instruction is useful when a program receives serialized $\K$-limbs through an $\E$-valued interface.
 
 \texttt{BLAKE3} is the standard BLAKE3 compression, consuming a $64$-byte message block and a $32$-byte chaining value and producing $32$ bytes. Each $128$-bit chunk occupies one full $\E$ memory cell through the canonical embedding $a_0+a_1y\mapsto a_0+a_1y+0y^2$; using a cell as a BLAKE3 operand therefore constrains its top limb to zero. The four message chunks are addressed \emph{independently} by references $o_0,\dots,o_3$ (chunk $i$ at $\loc{o_i}=\fp\cdot o_i$), while $o_V$ names two \emph{consecutive} chaining-value cells $\loc{o_V},\loc{\gen\cdot o_V}$. The $256$-bit result is written to the consecutive cells $\loc{o_C},\loc{\gen\cdot o_C}$, so each row accesses eight cells. The $128$-bit immediate $\mu$ (the two low $\K$-lanes of a $192$-bit word, top lane zero) packs the standard compression metadata in little-endian order,
 \[
   \mu=\mathit{counter}_{64}\;\Vert\;\mathit{block\_len}_{32}\;\Vert\;\mathit{flags}_{32}.
 \]
-For a one-block $64$-byte hash, the chaining value is the standard IV and $\mu=(0,64,\textsc{chunk-start}|\textsc{chunk-end}|\textsc{root})$. Within one $1024$-byte chunk, a longer standard BLAKE3 hash passes each compression result back through $o_V$ and chooses the length and flags prescribed by BLAKE3. Still longer inputs additionally use BLAKE3's chunk counters and binary tree of parent compressions. The BLAKE3 table (\S\ref{sec:tab-blake3}) wires its memory and bytecode operands into a flock~\cite{flock} R1CS proof.
+For a one-block $64$-byte hash, the chaining value is the standard IV and
+\[
+  \mu=(0,64,\textsc{chunk-start}\mathbin{|}\textsc{chunk-end}\mathbin{|}\textsc{root}).
+\]
+Within one $1024$-byte chunk, a longer standard BLAKE3 hash passes each compression result back through $o_V$ and chooses the length and flags prescribed by BLAKE3. Still longer inputs additionally use BLAKE3's chunk counters and binary tree of parent compressions. The BLAKE3 table (\S\ref{sec:tab-blake3}) wires its memory and bytecode operands into a flock~\cite{flock} R1CS proof.
 
 \texttt{DEREF} stores, at the dereferenced address $\loc{\alpha}\cdot\beta$, a value chosen by a \emph{store mode} $s\in\{\texttt{deref\_cell}[\gamma],\texttt{deref\_pc},\texttt{deref\_fp}\}$:
 \[
@@ -115,23 +110,6 @@ The \texttt{deref\_pc} and \texttt{deref\_fp} modes let a caller save its return
 \paragraph{Words used as addresses.} A memory word is $192$-bit, while $\pc$, $\fp$, and addresses are in $\K$. Three reads produce addresses or registers: the \texttt{DEREF} pointer $\loc{\alpha}$, the \texttt{JUMP} destination $\loc{o_d}$, and the \texttt{JUMP} frame $\loc{o_f}$. Each must have both nonconstant tower limbs zero. The address and selection constraints (\S\ref{sec:tab-deref}, \S\ref{sec:tab-jump}) equate these words, possibly multiplied by a $\K$-operand, to a $\K$ column.
 
 
-\iffalse % Deferred future instructions (u32, BLAKE3): commented out for now.
-\noindent The remaining instructions are listed to fix the eventual ISA but are deferred to a later version.
-\begin{center}
-\begin{tabular}{lll}
-\hline
-Instruction (later) & Operands & Semantics\\
-\hline
-\texttt{u32\_ADD}    & $[o_A,o_B,o_C]$     & integer add mod $2^{32}$\\
-\texttt{IS\_NONZERO} & $[o_x,o_b]$         & $\loc{o_b}=[\,\loc{o_x}\neq 0\,]$\\
-\texttt{u32\_MUL}    & $[o_A,o_B,o_C,o_D]$ & integer multiply, double word: $a\cdot b=c+2^{32}d$\\
-\hline
-\end{tabular}
-\end{center}
-
-\noindent These operate on $32$-bit integers (\texttt{u32}) rather than native field elements, and so require integer addition with carries, which the field arithmetic does not provide. Their full semantics are fixed later. \todo{specify the \texttt{u32\_MUL} semantics later.}
-\fi % end deferred future instructions
-
 \section{Proving primitives}\label{sec:prelim}
 
 Every physical committed column is $\K$-valued (\S\ref{sec:vm}); every challenge, sumcheck, zerocheck, GKR value, and evaluation claim is $\E$-valued, where
@@ -148,7 +126,7 @@ Thus $|\E|=2^{192}$. The embedding and mixed product are
 \]
 Committed columns and their truth tables are $\K$-valued; extensions are evaluated at $\E$-points; protocol randomness is sampled from $\E$. A $192$-bit \emph{value} column is represented by $V_0,V_1,V_2:\cube\ell\to\K$ with $V=V_0+V_1y+V_2y^2$. Address, register, and counter columns are single $\K$-columns.
 
-\textbf{Multilinear extension (MLE).} A function $b:\cube{\ell}\to\K$ (a committed column) or $b:\cube{\ell}\to\E$ (a product-tree layer of \S\ref{sec:gkr}) has a unique multilinear extension $\widetilde b:\E^{\ell}\to\E$, the polynomial of degree at most $1$ in each variable that agrees with $b$ on the boolean hypercube. The equality polynomial $\eq(r,X)=\prod_i(1+r_i+X_i)$ is the multilinear that is $1$ at $X=r$ and $0$ at every other Boolean point.
+\textbf{Multilinear extension (MLE).} A function $b:\cube{\ell}\to\K$ (a committed column) or $b:\cube{\ell}\to\E$ (a product-tree layer of \S\ref{sec:gkr}) has a unique multilinear extension $\widetilde b:\E^{\ell}\to\E$, the polynomial of degree at most $1$ in each variable that agrees with $b$ on the boolean hypercube. Define $\eq(r,X)=\prod_i(1+r_i+X_i)$. For Boolean $r$, this is $1$ at $X=r$ and $0$ at the other Boolean points. For arbitrary $r\in\E^\ell$, it gives the interpolation weights: $\widetilde b(r)=\sum_{x\in\cube\ell}b(x)\eq(r,x)$.
 
 \textbf{Tables and columns.} A \emph{table} is a group of columns of the same size. Each column is \emph{committed} or \emph{virtual}: a virtual column is a $\K$-linear function of the committed columns of its table, carried with no commitment of its own. Such a map, extended $\E$-linearly, commutes with the multilinear extension, $\widetilde{L(x)}(\zeta)=L\bigl(\widetilde x(\zeta)\bigr)$, so one opening of the committed columns evaluates the virtual one.
 
@@ -176,14 +154,14 @@ An evaluation claim $\widehat P_i(\zeta)=c$ is therefore a claim on the stack,
 \]
 a weighted sum over $\widehat q$ with weight $W(w)=\eq((\zeta,\mathsf{sel}_i),w)$.
 
-\paragraph{Batching.} Every claim the protocol raises against a column is such a weighted sum $\sum_w W_j(w)\,\widehat q(w)=c_j$, with $\E$-valued weight and target. The verifier folds the $J$ of them with independent random coefficients $\lambda_j\in\E$, one per claim, each sampled after the claimed values are bound, into one weight $W_\lambda=\sum_j\lambda_j W_j$ and target $C_\lambda=\sum_j\lambda_j c_j$, and the inner-product PCS (\S\ref{sec:rs-dense}) proves
+\paragraph{Batching.} Every claim the protocol raises against a column is a weighted sum $\langle W_j,\widehat q\rangle=c_j$ with $\E$-valued weight and target. After the claimed values are bound, the verifier samples independent $\lambda_j\in\E$ and defines $W_\lambda=\sum_j\lambda_jW_j$ and $C_\lambda=\sum_j\lambda_jc_j$. The inner-product PCS (\S\ref{sec:rs-dense}) proves
 \[
   \sum_{w\in\cube{M}} W_\lambda(w)\,\widehat q(w)=C_\lambda
 \]
 
 \subsection{Inner-product PCS}\label{sec:rs-dense}
 
-It is Ligerito~\cite{cryptoeprint:2025/1187}, instantiated at rate $1/2$ in the Johnson list-decoding regime with a per-level optimized slack $\eta$ and $128$-bit round-by-round soundness. The level-zero opening claim is sampled after its commitment and therefore also binds one element of the nearby-codeword list; no separate out-of-domain evaluation is needed there. Each recursive commitment is bound by one fresh out-of-domain evaluation. Since all challenges lie in $\E=\F_{2^{192}}$, the proximity-gap and binding errors clear $128$ bits without proof-of-work grinding; the query phase grinds $17$ bits per level, so queries only close the remaining $111$. The witness is Reed--Solomon encoded over $\K$; level-zero symbols are $8$ bytes and $2^6$ interleaved symbols form each $512$-byte Merkle leaf. Openings are over $\E$: the level-zero fold pairs $\K$-symbols with $\E$-challenges, and all deeper levels are $\E$-valued.
+It is Ligerito~\cite{cryptoeprint:2025/1187}, instantiated by default at rate $1/2$ in the Johnson list-decoding regime with a per-level optimized slack $\eta$ and $128$-bit round-by-round soundness. A proof may instead select rate $1/2^r$ for $1\le r\le4$; the verifier checks and transcript-binds this choice. The level-zero opening claim is sampled after its commitment and therefore also binds one element of the nearby-codeword list; no separate out-of-domain evaluation is needed there. Each recursive commitment is bound by one fresh out-of-domain evaluation. Since all challenges lie in $\E=\F_{2^{192}}$, the proximity-gap and binding errors clear $128$ bits without proof-of-work grinding; the query phase grinds $17$ bits per level, so queries only close the remaining $111$. The witness is Reed--Solomon encoded over $\K$; level-zero symbols are $8$ bytes and $2^6$ interleaved symbols form each $512$-byte Merkle leaf. Openings are over $\E$: the level-zero fold pairs $\K$-symbols with $\E$-challenges, and all deeper levels are $\E$-valued.
 
 \section{M3 model}\label{sec:m3}
 
@@ -249,7 +227,11 @@ each coordinate $\sigma_i$ a committed column value, a virtual column value, or 
 \prod_{\sigma\ \text{pulled}}\bigl(\gamma-\pi_\alpha(\sigma)\bigr).
 \label{eq:gp}
 \end{equation}
-\emph{Completeness and soundness.} If the pushed and pulled multisets agree, the two products in \eqref{eq:gp} have the same factors and are equal for every $\alpha,\gamma$; completeness is immediate. For soundness, read each side as the polynomial $\prod_\sigma\bigl(X-\pi_\alpha(\sigma)\bigr)$ evaluated at $X=\gamma$: its roots are that side's fingerprints, which over the formal $\alpha$ are the tuples themselves, so the polynomial determines that side's multiset. The two sides therefore agree as polynomials in $(\alpha,\gamma)$ exactly when the multisets do. When they differ, Schwartz--Zippel bounds the error by the number of product factors divided by $|\E|$. Under the instance caps of \S\ref{sec:memchan}, $\mu<64$, so the bus and count products together have error below $2^{\mu+1}/2^{192}<2^{-127}$. No Fiat--Shamir grinding is needed for the grand-product phase.
+\emph{Completeness and soundness.} If the pushed and pulled multisets agree, the two products in \eqref{eq:gp} have the same factors and are equal for every $\alpha,\gamma$; completeness is immediate. For soundness, read each side as the polynomial $\prod_\sigma\bigl(X-\pi_\alpha(\sigma)\bigr)$ evaluated at $X=\gamma$: its roots are that side's fingerprints, which over the formal $\alpha$ are the tuples themselves, so the polynomial determines that side's multiset. The two sides therefore agree as polynomials in $(\alpha,\gamma)$ exactly when the multisets do. When they differ, Schwartz--Zippel applies jointly to the tuple-fingerprinting challenge $\alpha$, the product challenge $\gamma$, the padding correction, and the GKR reductions. If each side has at most $2^\mu$ factors and tuples have width $m$, a conservative total degree bound is
+\[
+  2m\,2^\mu+8(\mu+1)^2.
+\]
+The verifier checks that this bound over $|\E|=2^{192}$ leaves at least $128$ bits of soundness. The count product is verified by the same GKR argument, and its root is checked directly for nonzero; it introduces no separate root-at-random test. No Fiat--Shamir grinding is needed for the grand-product phase.
 
 Each side's product is proven by a GKR pass over a product tree (\S\ref{sec:gkr}).
 
@@ -339,9 +321,9 @@ The interaction carries $\tup{\dsep{MEM},\addr,\cnt,\val}$: the address and coun
 \end{itemize}
 \paragraph{Counts must be nonzero.} A read multiplies its count by $\gen$, pulling $\tup{\dsep{MEM},a,\cnt,v}$ and pushing $\tup{\dsep{MEM},a,\gen\cdot\cnt,v}$. If $\cnt=0$ these coincide (as $\gen\cdot0=0$) and cancel, so the read disappears from the bus and its $v$ is never checked against $\mem[a]$. Every count must therefore be nonzero, i.e.\ a power of $\gen$. A third grand product, over all count columns (memory and bytecode), enforces this: its root is nonzero iff every count is (\S\ref{sec:gkr}).
 
-\paragraph{Counts must not wrap.} A count is the power $\gen^{t}$ after $t$ reads, so the total number of reads must stay below $\operatorname{ord}(\gen)=2^{64}-1$. At $64$ bits this is not waved through as automatic. The protocol fixes public \emph{instance caps}, and the verifier checks the announced instance against them before running any reduction (\S\ref{sec:e2e-unrolled}): memory size $16\le h\le 32$ (\S\ref{sec:vm}), each table's row count below $2^{32}$, and bytecode length at most $2^{32}$. A row makes at most $7$ reads (the \texttt{BLAKE3} row: six memory, one bytecode), so every \emph{admissible} instance performs
+\paragraph{Counts must not wrap.} A count is the power $\gen^{t}$ after $t$ reads, so the total number of reads must stay below $\operatorname{ord}(\gen)=2^{64}-1$. At $64$ bits this is not waved through as automatic. The protocol fixes public \emph{instance caps}, and the verifier checks the announced instance against them before running any reduction (\S\ref{sec:e2e-unrolled}): memory size $16\le h\le 32$ (\S\ref{sec:vm}), each table has at most $2^{32}$ rows, and bytecode length is at most $2^{32}$. A row makes at most $9$ reads (the \texttt{BLAKE3} row: eight memory, one bytecode), so the seven instruction tables perform
 \[
-  R\;\le\;7\cdot 6\cdot 2^{32}\;<\;2^{39}
+  R\;\le\;9\cdot 7\cdot 2^{32}\;<\;2^{38}
 \]
 read flushes in total, far below $2^{64}-1$: the powers $\gen^{0},\gen^{1},\dots$ occurring in one address's history are pairwise distinct, and the counting arguments of this section are exact, with no probabilistic term. The caps cost no completeness ($2^{32}$ rows per table is far beyond any provable trace).
 
@@ -530,7 +512,11 @@ Committed columns are $\K$-valued; machine words and challenges are $\E$-valued 
 
 \subsection{Bytecode encoding}\label{sec:e2e-bc}
 
-The program is public. Instruction $\pc$ fills coordinates $3$ through $11$ of its bytecode tuple $\tup{\dsep{BC},\pc,\cnt,\cdot}$: an opcode in coordinate $3$ and eight operand/immediate slots in coordinates $4,\ldots,11$. Each reference operand is a $\gen$-power; immediates ride slots as their $\K$-lanes (\texttt{SET\_CONSTANT}'s $k_0,k_1,k_2$ and \texttt{BLAKE3}'s $\mu_0,\mu_1$).
+The program is public. Instruction $\pc$ fills coordinates $3$ through $11$ of its bytecode tuple
+\[
+  \tup{\dsep{BC},\pc,\cnt,\cdot}.
+\]
+Coordinate $3$ holds the opcode and coordinates $4,\ldots,11$ hold eight operands or immediate lanes. Each reference operand is a $\gen$-power. Immediates occupy their $\K$-lanes: $k_0,k_1,k_2$ for \texttt{SET\_CONSTANT}, and $\mu_0,\mu_1$ for \texttt{BLAKE3}.
 \begin{center}
 \begin{tabular}{llllllllll}
 \hline
@@ -574,7 +560,7 @@ We lay out the whole protocol as one ordered sequence. Each reduction below adds
 
 \paragraph{Commitment.}
 \begin{enumerate}
-\item \textbf{Prover.} Builds all committed columns ($\K$-valued; a $192$-bit value is three $\K$-limb columns, \S\ref{sec:prelim}): each table's state, operands, addresses, read-value limbs, and counts (plus $w,b,\mathit{next\_pc},\mathit{next\_fp}$ for \texttt{JUMP}); the three memory limbs $M_0,M_1,M_2$; the memory and bytecode finalize counts; and flock's packed witness $q_\pkd$ (\S\ref{sec:tab-blake3}), always present (a program that executes no \texttt{BLAKE3} carries one padding instance, keeping the proof shape uniform). Counts are always committed $\gen$-powers (\S\ref{sec:memchan}); the public program and the virtual increments $\gen\cdot\pc,\gen\cdot\cnt$ are not. It stacks these into $q$, sends the dense commitment (\S\ref{sec:stacking}, \S\ref{sec:rs-dense}), and announces each table's non-padded row count, which the verifier checks against the instance caps (\S\ref{sec:memchan}) and rounds up to a power of two to fix the stack and leaf layouts (\S\ref{sec:leafstack}). Padding rows are a fixed default (\S\ref{sec:e2e-pad}); the announced sizes fix the surplus the verifier later divides out (\S\ref{sec:gp}).
+\item \textbf{Prover.} Builds the $\K$-valued committed columns: each table's state, operands, addresses, read-value limbs, and counts; the three memory limbs; the memory and bytecode finalize counts; and flock's packed witness $q_\pkd$ (\S\ref{sec:tab-blake3}). A program with no \texttt{BLAKE3} execution carries one padding instance so the proof shape remains uniform. A $192$-bit value occupies three $\K$-limb columns (\S\ref{sec:prelim}). The \texttt{JUMP} table additionally commits $w,b,\mathit{next\_pc},\mathit{next\_fp}$. Counts are committed $\gen$-powers (\S\ref{sec:memchan}); the public program and virtual increments $\gen\cdot\pc,\gen\cdot\cnt$ are not. The prover stacks these columns into $q$, sends the commitment (\S\ref{sec:stacking}, \S\ref{sec:rs-dense}), and announces each table's real row count. The verifier checks the instance caps and derives the power-of-two table, stack, and leaf shapes (\S\ref{sec:leafstack}). The sizes also fix the default-row surplus later divided out of the grand product (\S\ref{sec:e2e-pad}, \S\ref{sec:gp}).
 \end{enumerate}
 
 \paragraph{Bus.}
@@ -618,14 +604,14 @@ The implemented N-to-1 aggregation runs the verifier of \S\ref{sec:e2e-unrolled}
 
 Twice during verification, a large \emph{fixed} multilinear must be evaluated at a random point:
 \begin{itemize}
-\item \textbf{the bytecode}: during leaf decomposition (\S\ref{sec:e2e-unrolled}, \emph{Bus}), the verifier evaluates the stacked polynomial formed from the six public program columns and three selector variables, a pass over the whole program;
+\item \textbf{the bytecode}: during leaf decomposition (\S\ref{sec:e2e-unrolled}, \emph{Bus}), the verifier evaluates the nine public program columns, padded to sixteen selector slots under four selector variables, in one pass over the whole program;
 \item \textbf{the flock matrices}: the \texttt{BLAKE3} relation is proven by flock (\S\ref{sec:tab-blake3}), whose lincheck ends by evaluating $\widetilde A_0$ and $\widetilde B_0$, the per-block R1CS matrices: $28$-variable multilinears with $\approx 21\mathrm{M}$ nonzero Boolean entries between them.
 \end{itemize}
 Either evaluation is one pass over a fixed object. This takes milliseconds natively, but in-circuit it would dwarf the entire remaining verifier, in cycles and in bytecode size alike.
 
 The aggregation guest therefore does not evaluate these fixed tables. It verifies every surrounding reduction and exports only the resulting points and claimed values.
 
-There are three fixed polynomials: the stacked bytecode and the two matrices $A_0,B_0$. Verifying each ordinary sub-proof produces one claim on each, for $3n_{\mathrm{rec}}$ claims. A fresh Fiat--Shamir transcript absorbs all sub-statements and claim data, then batches them with two sumchecks: one for bytecode and one for the matrices, which share their $28$ variables. The guest reduces the batch to one bytecode evaluation and a common-point evaluation of each matrix. These three reduced claims, the inner proving-environment digest, and the sub-statements are hashed into the outer VM's two-word public input.
+There are three fixed polynomials: the bytecode and the two matrices $A_0,B_0$. Verifying each ordinary sub-proof produces one claim on each, for $3n_{\mathrm{rec}}$ claims. A fresh Fiat--Shamir transcript absorbs all sub-statements and claim data, then batches them with two sumchecks: one for bytecode and one for the matrices, which share their $28$ variables. The aggregation and recursive-statement transcripts use distinct domain labels; each absorbs $n_{\mathrm{rec}}$ before any variable-length sequence, so concatenations cannot be confused. The guest reduces the batch to one bytecode evaluation and a common-point evaluation of each matrix. These three reduced claims, the inner proving-environment digest, and the sub-statements are hashed into the outer VM's two-word public input.
 
 The public \texttt{RecursiveProof::verify} path first verifies that outer VM proof and then evaluates the three fixed polynomials natively at the reduced points. It rejects an empty batch and is the only complete acceptance path. Feeding a \texttt{RecursiveProof} into another aggregation layer (carrying its reduced claims forward rather than checking them natively) is not yet exposed by the current harness.
 
@@ -639,7 +625,7 @@ and ends in the reduced claims $\widetilde A_0(r^\ast)$ and $\widetilde B_0(r^\a
 
 \section{ISA programming}\label{sec:isa-programming}
 
-How the zkDSL compiler (\texttt{crates/lean\_compiler}; surface language in \texttt{crates/lean\_compiler/zkDSL.md}) programs the seven-instruction ISA. Two themes run through every pattern: \emph{write-once memory is an assertion mechanism} (a second write of a cell is an equality check, an unwritten cell is prover-chosen), and \emph{indices live in the exponent} (a logical index $i$ is the element $\gen^{i}$, so incrementing, offsetting, and address formation are single field multiplications).
+How the zkDSL compiler (\path{crates/lean_compiler}; surface language in \path{crates/lean_compiler/zkDSL.md}) programs the seven-instruction ISA. Two themes run through every pattern: \emph{write-once memory is an assertion mechanism} (a second write of a cell is an equality check, an unwritten cell is prover-chosen), and \emph{indices live in the exponent} (a logical index $i$ is the element $\gen^{i}$, so incrementing, offsetting, and address formation are single field multiplications).
 
 \subsection{Hints}\label{sec:prog-hints}
 
@@ -778,33 +764,15 @@ In \(\E\otimes_{\F_2}\E\), set
 \]
 Applying \(\operatorname{id}\otimes\Phi_\rho\) to \(\Theta\) and multiplying the two tensor factors yields \(\widehat B_{z,\rho}(r)\). The implementation uses \(O(L\cdot192^2)\) bit operations and \(O(L\cdot192)\) multiplications in \(\E\), without constructing the \(2^L\)-entry table.
 
-For recursion, represent \(\Phi_\rho\) by its linearized polynomial
+For succinct evaluation, represent \(\Phi_\rho\) by its linearized polynomial
 \[
   \Phi_\rho(a)=\sum_{k=0}^{191}c_ka^{2^k}.
 \]
-If \(d_w\) is the trace-dual basis element satisfying \(\operatorname{bit}_w(a)=\operatorname{Tr}_{\E/\F_2}(d_wa)\), then
+For each coordinate $w$, let $d_w$ be the unique field element for which $\operatorname{Tr}_{\E/\F_2}(d_wa)$ extracts bit $w$ of $a$. Then
 \[
   c_k=\sum_{w=0}^{191}\rho^w d_w^{2^k}.
 \]
-The guest computes each \(c_k\) by Horner evaluation in \(\rho\), then evaluates \(\Phi_\rho\) by repeated squaring.
-
-\iffalse % Deferred u32 addition gadget: commented out for now.
-% NOTE: this unused annex has not been re-audited for the current field tower.
-\appendix
-
-\section{The \texttt{u32} addition gadget (deferred)}\label{sec:add}
-
-This appendix is \emph{unused by v1}; it is kept for the deferred integer instructions \texttt{u32\_ADD} and \texttt{IS\_NONZERO} (\S\ref{sec:vm}), which need genuine $32$-bit addition with carries. Over $\E$ that integer sum is not the field sum, so it is proven bit-level by the gadget below, run as a single \emph{addition service}: one table proving a batch of additions $a+b=c\bmod2^{32}$ and pulling each proven row as $\tup{\dsep{ADD},a,b,c,e}$ on a fourth domain $\dsep{ADD}$, with $e\in\F_2$ the overflow (carry out of the top bit); consumers push the tuple they need, and balance forces every pushed addition to equal a proven one. Reviving it restores the bit-columns of \S\ref{sec:prelim} (a word as its $32$ bit-columns, materialized $\sum_j x^j\widetilde b_j$) and the ring switch of \S\ref{sec:ringswitch} to commit them. \texttt{IS\_NONZERO} reads off $e$ from $x+(2^{32}{-}1)$, whose overflow is $[x\neq0]$.
-
-The gadget proves $C=A+B$ word by word, modulo $2^{32}$, for $N=2^n$ words, using the bit-column/oblong machinery (a word column is the $(n+5)$-variate $\widetilde A$ with oblong view $\oA$ over a $5$-dimensional subspace $\D\subset\E$, $|\D|=32$). The prover commits the addends $\widetilde A,\widetilde B$ and the carry-out $\widetilde c_{\mathrm{out}}$; two virtual columns are the carry-in $\ocin=\ocout\ll1$ and the sum $\oC=\oA+\oB+\ocin$. The carry is correct exactly when
-\begin{equation}
-\oQ \;=\; \oA\cdot\oB \;+\; \oA\cdot\ocin \;+\; \oB\cdot\ocin \;+\; \ocout \;=\;0
-\quad\text{on } \D\times\cube n,
-\label{eq:Q}
-\end{equation}
-a single $\E$-identity of degree $\le2$ in each word variable and $\le62$ in $\II$. Its overflow $e$ is bit $31$ of $\widehat c_{\mathrm{out}}$. The zerocheck for \eqref{eq:Q} runs a univariate skip over the $32$ bit-positions (first round, degree $\le62$, reconstructed from $31$ values off $\D$ since $g$ vanishes on $\D$ when the statement holds) followed by $n$ ordinary degree-$\le3$ rounds; the final check needs $\oA,\oB,\ocout$ and $\ocin$ at $(r_{\II},\rho)$, obtained from one opening per committed column via the oblong reduction $\ocout(r_{\II},\rho)=\sum_{j}L_j(r_{\II})\,\widetilde c_{\mathrm{out}}(j,\rho)$ (the shift $\ocin$ relabels $j\mapsto j+1$). The full derivation and soundness ($O(n)/2^{192}$) are omitted here.
-
-\fi % end deferred annex
+The implementation does not evaluate this dense sum. Writing $w=64j+i$ makes the coordinate-extraction basis factor across $\F_2\subset\K\subset\E$, so $c_k=A_kB_k$. The three-term tower factor $B_k$ costs two multiplications, while the $64$-term base-field factor collapses by $\sum_{i<64}u^i=(1+u)^{63}$ in characteristic two. All Frobenius-orbit constants are fixed by the field basis and baked into the verifier. This computes every $c_k$ in constant work and then evaluates both Flock weights together. The full derivation is in \href{https://github.com/leanEthereum/leanVM-b/blob/main/misc/ring-switching.pdf}{\texttt{ring-switching.pdf}}.
 
 \begin{thebibliography}{9}
 
