@@ -1956,10 +1956,22 @@ fn recursion_guest_arc(inner_program: &Program, nsub: usize) -> std::sync::Arc<P
 
     let mut replacements = placeholder_map(inner_program);
     replacements.insert("NSUB_PLACEHOLDER".to_string(), nsub.to_string());
+    // `DBG_PLACEHOLDERS=path`: dump the baked guest constants, to read alongside
+    // a `DBG_PROF_DUMP` profile (the guest's shape is entirely in these).
+    if let Ok(path) = std::env::var("DBG_PLACEHOLDERS") {
+        let dump: String = replacements.iter().map(|(k, v)| format!("{k} = {v}\n")).collect();
+        std::fs::write(&path, dump).expect("write DBG_PLACEHOLDERS");
+    }
     let guest = Arc::new(compile(
         &parse_with_replacements(include_str!("../guests/recursion.py"), &replacements)
             .expect("the repository recursion guest must parse"),
     ));
+
+    // `DBG_DISASM=path`: dump the guest's disassembly, to read alongside a
+    // `DBG_PROF_DUMP` per-pc profile.
+    if let Ok(path) = std::env::var("DBG_DISASM") {
+        std::fs::write(&path, lean_compiler::disassemble(&guest.prog)).expect("write DBG_DISASM");
+    }
 
     let mut map = cache.lock().expect("recursion guest cache poisoned");
     if let Some(cached) = map.get(&key) {

@@ -137,6 +137,10 @@ struct FnLower<'a> {
     tail_call: bool,
     queue: &'a mut Vec<Func>,
     loop_ctr: &'a mut usize,
+    /// Name of the function being lowered. Only used to attribute a lowered
+    /// `for` loop to its source site under `DBG_LOOPS` (the profile prints bare
+    /// `__loopN` names, which are otherwise opaque).
+    fn_name: String,
     /// The program's function definitions by name, for `Const`-parameter
     /// specialization at call sites ([`Self::specialize`]).
     defs: &'a HashMap<String, Func>,
@@ -2431,6 +2435,13 @@ impl FnLower<'_> {
         let id = *self.loop_ctr;
         *self.loop_ctr += 1;
         let loop_name = format!("__loop{id}");
+        if std::env::var("DBG_LOOPS").is_ok() {
+            let bound = match hi {
+                ForBound::Const(h) => format!("g^{lo}..g^{h}"),
+                ForBound::Runtime(e) => format!("g^{lo}..{e:?}"),
+            };
+            eprintln!("DBG_LOOPS {loop_name} in {} for {var} in {bound}", self.fn_name);
+        }
         // A runtime stop bound is evaluated once here and threaded through the
         // helper as an extra leading parameter (the exit test compares the
         // advanced counter against it each iteration).
@@ -2713,6 +2724,7 @@ pub(crate) fn lower_func(
         n_args: f.params.len() as u32,
         return_shapes: f.return_shapes.clone(),
         is_main: f.name == "main",
+        fn_name: f.name.clone(),
         tail_call: false,
         code: Vec::new(),
         one_off: None,
