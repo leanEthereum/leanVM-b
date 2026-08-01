@@ -7,11 +7,11 @@
 //! g-powers, separators); the fingerprint challenges `α, γ` are `E`-valued, so a
 //! leaf accumulates via the mixed `mul_base` product (2 PMULL per coordinate).
 
-use crate::PAR_THRESHOLD;
 use crate::gkr;
 use crate::transcript::{ProverState, VerifierState};
 use crate::witness::Column;
-use primitives::field::{F64, F192, F192BaseUnreduced, g_pow, index_mle};
+use crate::PAR_THRESHOLD;
+use primitives::field::{g_pow, index_mle, F192BaseUnreduced, F192, F64};
 use primitives::multilinear::{eq_eval, mle_eval};
 use rayon::prelude::*;
 
@@ -559,10 +559,10 @@ pub fn prove_balance(
     let mut count_lay = layout(count);
     assert_grinding_unnecessary(&push_lay, &pull_lay, &count_lay);
     let alpha = ps.sample();
-    // Pad the count tree to the pair's depth with identity leaves (the product,
-    // blocks, and offsets are unchanged; `build_leaves` fills the cube with `1`
-    // and the decompose accounts the padding mass), so all THREE trees share
-    // one RLC-batched GKR — and one point ζ.
+    // The GKR treats the count tree as identity-padded to the pair's depth, but
+    // its prover keeps that all-one suffix implicit. Retain the smaller layout
+    // for leaf construction and the full logical layout for decomposition.
+    let count_build_lay = count_lay.clone();
     count_lay.mu = push_lay.mu;
     let gamma = ps.sample();
     // Independent leaf vectors; build concurrently. The count channel's leaf is the
@@ -574,7 +574,7 @@ pub fn prove_balance(
         || {
             rayon::join(
                 || build_leaves(pull, &pull_lay, cols, alpha, gamma),
-                || build_leaves(count, &count_lay, cols, F192::ONE, F192::ZERO),
+                || build_leaves(count, &count_build_lay, cols, F192::ONE, F192::ZERO),
             )
         },
     );

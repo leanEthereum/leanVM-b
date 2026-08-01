@@ -384,7 +384,7 @@ pub mod base {
 
 #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
 pub mod aarch64 {
-    use super::{F192, F192Unreduced, R64, base_reduce_128};
+    use super::{base_reduce_128, F192Unreduced, F192, R64};
     use core::arch::aarch64::*;
     use core::mem::transmute;
 
@@ -603,7 +603,7 @@ pub mod aarch64 {
 
 #[cfg(all(target_arch = "x86_64", target_feature = "pclmulqdq"))]
 pub mod x86_64 {
-    use super::{F192, F192Unreduced};
+    use super::{F192Unreduced, F192};
     use crate::field::gf2_64::x86_64::clmul;
     use core::arch::x86_64::__m128i;
 
@@ -651,6 +651,216 @@ pub mod x86_64 {
         }
     }
 
+    /// Two independent tower-field products in the two 128-bit lanes of a
+    /// YMM register. Each of the six Karatsuba base products is issued once
+    /// for both lanes, then the tower and base reductions stay packed.
+    ///
+    /// # Safety
+    /// Requires VPCLMULQDQ and AVX2 support.
+    #[cfg(all(target_feature = "vpclmulqdq", target_feature = "avx2"))]
+    #[target_feature(enable = "vpclmulqdq", enable = "avx2")]
+    pub unsafe fn mul_vec2(a: [F192; 2], b: [F192; 2]) -> [F192; 2] {
+        use core::arch::x86_64::*;
+
+        #[inline]
+        #[target_feature(enable = "vpclmulqdq", enable = "avx2")]
+        unsafe fn products(a: [F192; 2], b: [F192; 2]) -> [__m256i; 5] {
+            let pack = |x0: u64, x1: u64| _mm256_set_epi64x(0, x1 as i64, 0, x0 as i64);
+            let (a0, a1, a2) = (pack(a[0].c0, a[1].c0), pack(a[0].c1, a[1].c1), pack(a[0].c2, a[1].c2));
+            let (b0, b1, b2) = (pack(b[0].c0, b[1].c0), pack(b[0].c1, b[1].c1), pack(b[0].c2, b[1].c2));
+            let p0 = _mm256_clmulepi64_epi128::<0x00>(a0, b0);
+            let p1 = _mm256_clmulepi64_epi128::<0x00>(a1, b1);
+            let p2 = _mm256_clmulepi64_epi128::<0x00>(a2, b2);
+            let p01 = _mm256_clmulepi64_epi128::<0x00>(_mm256_xor_si256(a0, a1), _mm256_xor_si256(b0, b1));
+            let p02 = _mm256_clmulepi64_epi128::<0x00>(_mm256_xor_si256(a0, a2), _mm256_xor_si256(b0, b2));
+            let p12 = _mm256_clmulepi64_epi128::<0x00>(_mm256_xor_si256(a1, a2), _mm256_xor_si256(b1, b2));
+            [
+                p0,
+                _mm256_xor_si256(p01, _mm256_xor_si256(p0, p1)),
+                _mm256_xor_si256(p02, _mm256_xor_si256(p0, _mm256_xor_si256(p1, p2))),
+                _mm256_xor_si256(p12, _mm256_xor_si256(p1, p2)),
+                p2,
+            ]
+        }
+
+        #[inline]
+        #[target_feature(enable = "vpclmulqdq", enable = "avx2")]
+        unsafe fn reduce_base(value: __m256i) -> __m256i {
+            let modulus = _mm256_set1_epi64x(super::R64 as i64);
+            let first = _mm256_clmulepi64_epi128::<0x01>(value, modulus);
+            let second = _mm256_clmulepi64_epi128::<0x01>(first, modulus);
+            _mm256_xor_si256(value, _mm256_xor_si256(first, second))
+        }
+
+        unsafe {
+            let [p0, p1, p2, p3, p4] = products(a, b);
+            let d0 = reduce_base(_mm256_xor_si256(p0, p3));
+            let d1 = reduce_base(_mm256_xor_si256(p1, _mm256_xor_si256(p3, p4)));
+            let d2 = reduce_base(_mm256_xor_si256(p2, p4));
+            let mut c0 = [0u64; 4];
+            let mut c1 = [0u64; 4];
+            let mut c2 = [0u64; 4];
+            _mm256_storeu_si256(c0.as_mut_ptr().cast(), d0);
+            _mm256_storeu_si256(c1.as_mut_ptr().cast(), d1);
+            _mm256_storeu_si256(c2.as_mut_ptr().cast(), d2);
+            [F192::new(c0[0], c1[0], c2[0]), F192::new(c0[2], c1[2], c2[2])]
+        }
+    }
+
+    /// Two independent unreduced products, packed exactly as [`mul_vec2`].
+    ///
+    /// # Safety
+    /// Requires VPCLMULQDQ and AVX2 support.
+    #[cfg(all(target_feature = "vpclmulqdq", target_feature = "avx2"))]
+    #[target_feature(enable = "vpclmulqdq", enable = "avx2")]
+    pub unsafe fn mul_unreduced_vec2(a: [F192; 2], b: [F192; 2]) -> [F192Unreduced; 2] {
+        use core::arch::x86_64::*;
+
+        unsafe {
+            let pack = |x0: u64, x1: u64| _mm256_set_epi64x(0, x1 as i64, 0, x0 as i64);
+            let (a0, a1, a2) = (pack(a[0].c0, a[1].c0), pack(a[0].c1, a[1].c1), pack(a[0].c2, a[1].c2));
+            let (b0, b1, b2) = (pack(b[0].c0, b[1].c0), pack(b[0].c1, b[1].c1), pack(b[0].c2, b[1].c2));
+            let p0 = _mm256_clmulepi64_epi128::<0x00>(a0, b0);
+            let d1 = _mm256_clmulepi64_epi128::<0x00>(a1, b1);
+            let p4 = _mm256_clmulepi64_epi128::<0x00>(a2, b2);
+            let p1 = _mm256_xor_si256(
+                _mm256_clmulepi64_epi128::<0x00>(_mm256_xor_si256(a0, a1), _mm256_xor_si256(b0, b1)),
+                _mm256_xor_si256(p0, d1),
+            );
+            let p2 = _mm256_xor_si256(
+                _mm256_clmulepi64_epi128::<0x00>(_mm256_xor_si256(a0, a2), _mm256_xor_si256(b0, b2)),
+                _mm256_xor_si256(p0, _mm256_xor_si256(d1, p4)),
+            );
+            let p3 = _mm256_xor_si256(
+                _mm256_clmulepi64_epi128::<0x00>(_mm256_xor_si256(a1, a2), _mm256_xor_si256(b1, b2)),
+                _mm256_xor_si256(d1, p4),
+            );
+            let mut words = [[0u64; 4]; 5];
+            for (out, value) in words.iter_mut().zip([p0, p1, p2, p3, p4]) {
+                _mm256_storeu_si256(out.as_mut_ptr().cast(), value);
+            }
+            std::array::from_fn(|lane| {
+                let lo = 2 * lane;
+                F192Unreduced {
+                    w: std::array::from_fn(|word| words[word / 2][lo + word % 2]),
+                }
+            })
+        }
+    }
+
+    /// Four independent tower-field products in four AVX-512 128-bit lanes.
+    ///
+    /// # Safety
+    /// Requires VPCLMULQDQ and AVX-512F support.
+    #[cfg(all(target_feature = "vpclmulqdq", target_feature = "avx512f"))]
+    #[target_feature(enable = "vpclmulqdq", enable = "avx512f")]
+    pub unsafe fn mul_vec4(a: [F192; 4], b: [F192; 4]) -> [F192; 4] {
+        use core::arch::x86_64::*;
+
+        #[inline]
+        #[target_feature(enable = "vpclmulqdq", enable = "avx512f")]
+        unsafe fn pack(values: [F192; 4], coefficient: usize) -> __m512i {
+            let get = |value: F192| [value.c0, value.c1, value.c2][coefficient] as i64;
+            _mm512_set_epi64(
+                0,
+                get(values[3]),
+                0,
+                get(values[2]),
+                0,
+                get(values[1]),
+                0,
+                get(values[0]),
+            )
+        }
+
+        #[inline]
+        #[target_feature(enable = "vpclmulqdq", enable = "avx512f")]
+        unsafe fn reduce_base(value: __m512i) -> __m512i {
+            let modulus = _mm512_set1_epi64(super::R64 as i64);
+            let first = _mm512_clmulepi64_epi128::<0x01>(value, modulus);
+            let second = _mm512_clmulepi64_epi128::<0x01>(first, modulus);
+            _mm512_xor_si512(value, _mm512_xor_si512(first, second))
+        }
+
+        unsafe {
+            let (a0, a1, a2) = (pack(a, 0), pack(a, 1), pack(a, 2));
+            let (b0, b1, b2) = (pack(b, 0), pack(b, 1), pack(b, 2));
+            let p0 = _mm512_clmulepi64_epi128::<0x00>(a0, b0);
+            let p1 = _mm512_clmulepi64_epi128::<0x00>(a1, b1);
+            let p2 = _mm512_clmulepi64_epi128::<0x00>(a2, b2);
+            let p01 = _mm512_clmulepi64_epi128::<0x00>(_mm512_xor_si512(a0, a1), _mm512_xor_si512(b0, b1));
+            let p02 = _mm512_clmulepi64_epi128::<0x00>(_mm512_xor_si512(a0, a2), _mm512_xor_si512(b0, b2));
+            let p12 = _mm512_clmulepi64_epi128::<0x00>(_mm512_xor_si512(a1, a2), _mm512_xor_si512(b1, b2));
+            let p3 = _mm512_xor_si512(p12, _mm512_xor_si512(p1, p2));
+            let p4 = p2;
+            let p2 = _mm512_xor_si512(p02, _mm512_xor_si512(p0, _mm512_xor_si512(p1, p2)));
+            let p1 = _mm512_xor_si512(p01, _mm512_xor_si512(p0, p1));
+            let d0 = reduce_base(_mm512_xor_si512(p0, p3));
+            let d1 = reduce_base(_mm512_xor_si512(p1, _mm512_xor_si512(p3, p4)));
+            let d2 = reduce_base(_mm512_xor_si512(p2, p4));
+            let mut c0 = [0u64; 8];
+            let mut c1 = [0u64; 8];
+            let mut c2 = [0u64; 8];
+            _mm512_storeu_si512(c0.as_mut_ptr().cast(), d0);
+            _mm512_storeu_si512(c1.as_mut_ptr().cast(), d1);
+            _mm512_storeu_si512(c2.as_mut_ptr().cast(), d2);
+            std::array::from_fn(|lane| F192::new(c0[2 * lane], c1[2 * lane], c2[2 * lane]))
+        }
+    }
+
+    /// Four independent unreduced products in four AVX-512 lanes.
+    ///
+    /// # Safety
+    /// Requires VPCLMULQDQ and AVX-512F support.
+    #[cfg(all(target_feature = "vpclmulqdq", target_feature = "avx512f"))]
+    #[target_feature(enable = "vpclmulqdq", enable = "avx512f")]
+    pub unsafe fn mul_unreduced_vec4(a: [F192; 4], b: [F192; 4]) -> [F192Unreduced; 4] {
+        use core::arch::x86_64::*;
+
+        unsafe {
+            let pack = |values: [F192; 4], coefficient: usize| {
+                let get = |value: F192| [value.c0, value.c1, value.c2][coefficient] as i64;
+                _mm512_set_epi64(
+                    0,
+                    get(values[3]),
+                    0,
+                    get(values[2]),
+                    0,
+                    get(values[1]),
+                    0,
+                    get(values[0]),
+                )
+            };
+            let (a0, a1, a2) = (pack(a, 0), pack(a, 1), pack(a, 2));
+            let (b0, b1, b2) = (pack(b, 0), pack(b, 1), pack(b, 2));
+            let p0 = _mm512_clmulepi64_epi128::<0x00>(a0, b0);
+            let d1 = _mm512_clmulepi64_epi128::<0x00>(a1, b1);
+            let p4 = _mm512_clmulepi64_epi128::<0x00>(a2, b2);
+            let p1 = _mm512_xor_si512(
+                _mm512_clmulepi64_epi128::<0x00>(_mm512_xor_si512(a0, a1), _mm512_xor_si512(b0, b1)),
+                _mm512_xor_si512(p0, d1),
+            );
+            let p2 = _mm512_xor_si512(
+                _mm512_clmulepi64_epi128::<0x00>(_mm512_xor_si512(a0, a2), _mm512_xor_si512(b0, b2)),
+                _mm512_xor_si512(p0, _mm512_xor_si512(d1, p4)),
+            );
+            let p3 = _mm512_xor_si512(
+                _mm512_clmulepi64_epi128::<0x00>(_mm512_xor_si512(a1, a2), _mm512_xor_si512(b1, b2)),
+                _mm512_xor_si512(d1, p4),
+            );
+            let mut words = [[0u64; 8]; 5];
+            for (out, value) in words.iter_mut().zip([p0, p1, p2, p3, p4]) {
+                _mm512_storeu_si512(out.as_mut_ptr().cast(), value);
+            }
+            std::array::from_fn(|lane| {
+                let lo = 2 * lane;
+                F192Unreduced {
+                    w: std::array::from_fn(|word| words[word / 2][lo + word % 2]),
+                }
+            })
+        }
+    }
+
     /// Three carry-less squares followed by the common F192 reduction.
     ///
     /// # Safety
@@ -689,7 +899,7 @@ pub mod x86_64 {
 // ---------------------------------------------------------------------------
 
 pub mod software {
-    use super::{F192, F192Unreduced, base_reduce_128, clmul64};
+    use super::{base_reduce_128, clmul64, F192Unreduced, F192};
 
     /// Schoolbook 9-product unreduced coefficients.
     pub fn mul_unreduced(a: F192, b: F192) -> F192Unreduced {
@@ -859,6 +1069,32 @@ mod tests {
                 want += a * b;
             }
             assert_eq!(acc.reduce(), want);
+        }
+    }
+
+    #[cfg(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx2"))]
+    #[test]
+    fn x86_batch_products_match_scalar() {
+        let mut state = 6u64;
+        for _ in 0..1_000 {
+            let a: [F192; 4] = std::array::from_fn(|_| rand_elem(&mut state));
+            let b: [F192; 4] = std::array::from_fn(|_| rand_elem(&mut state));
+            let expected: [F192; 4] = std::array::from_fn(|lane| a[lane] * b[lane]);
+            // SAFETY: this test is compiled only when VPCLMULQDQ and AVX2 are enabled.
+            unsafe {
+                assert_eq!(x86_64::mul_vec2([a[0], a[1]], [b[0], b[1]]), [expected[0], expected[1]]);
+                let unreduced = x86_64::mul_unreduced_vec2([a[2], a[3]], [b[2], b[3]]);
+                assert_eq!(
+                    [unreduced[0].reduce(), unreduced[1].reduce()],
+                    [expected[2], expected[3]]
+                );
+            }
+            #[cfg(target_feature = "avx512f")]
+            // SAFETY: the nested cfg additionally guarantees AVX-512F.
+            unsafe {
+                assert_eq!(x86_64::mul_vec4(a, b), expected);
+                assert_eq!(x86_64::mul_unreduced_vec4(a, b).map(F192Unreduced::reduce), expected);
+            }
         }
     }
 

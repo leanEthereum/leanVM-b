@@ -6,7 +6,7 @@
 //! `K`-valued (`F64`) while randomness is `E`-valued (`F192`), so the first
 //! fold of a committed table also lifts it into `E`.
 
-use crate::field::{F64, F192, F192Unreduced};
+use crate::field::{F192Unreduced, F192, F64};
 
 /// Multilinear interpolation in one variable over `E`: `lo + t·(lo+hi)`, the
 /// char-2 form of `(1−t)·lo + t·hi`.
@@ -140,6 +140,24 @@ pub fn tri_nodes() -> [F192; 3] {
 pub fn quad_nodes() -> [F192; 4] {
     let g = F192::from(crate::field::G);
     [F192::ZERO, F192::ONE, g, g * g]
+}
+
+/// Evaluate a degree-four eq-trick round from its four independent transcript
+/// coefficients. If `difference = q(0) + q(1)`, the incoming claim fixes the
+/// constant coefficient, and characteristic two fixes the linear coefficient.
+#[inline]
+pub fn quartic_eval_from_eq(
+    claim: F192,
+    eq_point: F192,
+    difference: F192,
+    c2: F192,
+    c3: F192,
+    c4: F192,
+    point: F192,
+) -> F192 {
+    let c0 = claim + eq_point * difference;
+    let c1 = difference + c2 + c3 + c4;
+    c0 + point * (c1 + point * (c2 + point * (c3 + point * c4)))
 }
 
 /// Add two 3-coefficient sumcheck accumulators componentwise.
