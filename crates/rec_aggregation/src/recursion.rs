@@ -118,7 +118,7 @@ fn inner_program() -> Program {
 /// `iters` product-loop steps (both runtime, driven by the witness hints).
 /// The witness generator replays both natively to supply the final-inverse
 /// hint. Returns (program, proof, guest-cycle count).
-fn prove_inner(pi: [F128T; 2], hashes: usize, iters: usize) -> (Program, lean_vm::cpu::Proof, usize) {
+fn prove_inner(pi: [F128T; 2], hashes: usize, iters: usize) -> (Program, lean_vm::cpu::Proof, usize, usize) {
     assert!(hashes >= 1 && iters >= 1, "both loops run at least once");
     let mut program = inner_program();
     // Replay natively: the hash chain, then the product loop, to fetch the
@@ -148,7 +148,10 @@ fn prove_inner(pi: [F128T; 2], hashes: usize, iters: usize) -> (Program, lean_vm
         pretty_integer(stats.cycles),
         pretty_f64((stats.committed as f64).log2())
     );
-    (program, proof, stats.cycles)
+    // The stacked log-size the PCS committed at, which fixes which opening
+    // candidate the guest dispatches to (`pcs::commit` pads up to `MIN_MU`).
+    let stack_mu = lean_vm::pcs::MIN_MU.max(pcs::ligerito::log2_ceil(stats.committed));
+    (program, proof, stats.cycles, stack_mu)
 }
 
 /// The deferred-claim data the guest binds to the outer public input: the outer
@@ -1092,6 +1095,11 @@ struct Batch {
     statement: RecursiveStatement,
     nsub: usize,
     total_inner_cycles: usize,
+    /// Per sub-proof, the stacked log-size it committed at, hence which opening
+    /// candidate the guest dispatches to for it. These DIFFER across a mixed batch,
+    /// which is the point of the dispatch. `recursion_soundness_binds` needs one to
+    /// know whether that shape HAS a residual pad coordinate to tamper with.
+    inner_stack_mu: Vec<usize>,
 }
 
 impl Batch {
@@ -1124,14 +1132,16 @@ fn build_batch(inner: &[(usize, usize)]) -> Batch {
     assert!(!inner.is_empty(), "a recursion batch cannot be empty");
     let nsub = inner.len();
     let mut total_inner_cycles = 0usize;
+    let mut inner_stack_mu: Vec<usize> = Vec::new();
     let mut protos = Vec::new();
     for (k, &(hashes, iters)) in inner.iter().enumerate() {
         let pi = [
             F128T::new(0x1111_2222 + k as u64, 0x3333_4444),
             F128T::new(0x5555_6666, 0x7777_8888 + k as u64),
         ];
-        let (program, proof, inner_cycles) = prove_inner(pi, hashes, iters);
+        let (program, proof, inner_cycles, mu) = prove_inner(pi, hashes, iters);
         total_inner_cycles += inner_cycles;
+        inner_stack_mu.push(mu);
         trace_start();
         let summary = verify(&program, &pi, &proof).expect("inner verifies");
         let ops = trace_take();
@@ -1178,6 +1188,7 @@ fn build_batch(inner: &[(usize, usize)]) -> Batch {
         statement,
         nsub,
         total_inner_cycles,
+        inner_stack_mu,
     }
 }
 
@@ -1740,7 +1751,7 @@ fn recursion_soundness_binds() {
     // residual-slot pad coordinates) makes the guest reject. Uses the m=22
     // candidate, whose yr_log_n is below YR_LOG_CAP so the slot over-read
     // path is live. Ignored: several full inner+outer proofs.
-    let cfg: &[(usize, usize)] = &[(4, 1 << 12)];
+    let cfg: &[(usize, usize)] = &[(4, 1 << 11)];
     let batch = build_batch(cfg);
     let mut guest = recursion_guest(&batch.program0, cfg.len());
     let public_input = batch.public_input();
@@ -1760,11 +1771,12 @@ fn recursion_soundness_binds() {
 
     // The first residual-slot PADDING coordinate (k = yr_log_n), shape-derived
     // from the fold ladder so the test survives changes to the fold constants
-    // (INITIAL_K / LEVEL_K / RESIDUAL_MAX_LOG). This inner commits a stack of
-    // log-size 22; YR_LOG_CAP is the max residual log over
-    // the guest's dispatch candidates (mu 22..=28, mirroring gen_verify). The
-    // guest only reads YR_LOG_CAP slot coords, so a pad coordinate to tamper
-    // exists only when this candidate's yr_log_n sits BELOW the cap.
+    // (INITIAL_K / LEVEL_K / RESIDUAL_MAX_LOG) AND to the inner witness growing:
+    // the stacked log-size comes from the proof itself, never assumed. YR_LOG_CAP
+    // is the max residual log over the guest's dispatch candidates (mu 22..=28,
+    // mirroring gen_verify). The guest only reads YR_LOG_CAP slot coords, so a pad
+    // coordinate to tamper exists only when this candidate's yr_log_n sits BELOW
+    // the cap; at the cap every coord is real and there is nothing to over-read.
     let yr_log = |mu: usize| {
         pcs::ligerito::LigeritoSecurityConfig::derive_config(mu + pcs::LOG_PACKING)
             .and_then(|s| s.to_prover_verifier_configs())
@@ -1773,7 +1785,8 @@ fn recursion_soundness_binds() {
             .level_shapes(mu)
             .yr_log_n
     };
-    let (stack_mu, yr_cap) = (22usize, (22..=28).map(yr_log).max().unwrap());
+    // sub-proof 0's shape: the tampered hint streams are that sub-proof's entry.
+    let (stack_mu, yr_cap) = (batch.inner_stack_mu[0], (22..=28).map(yr_log).max().unwrap());
     let yr_pad_idx = yr_log(stack_mu);
 
     // each tamper flips one hint to a definitely-invalid value.
@@ -1783,12 +1796,16 @@ fn recursion_soundness_binds() {
         ("pi_cplen", 0, g_pow(2).into()),           // wrong pi dimension: min-cert must reject
         ("zc_tau_max", 0, g_pow(2).into()),         // not the max tau: the max-cert must reject
     ];
-    if yr_pad_idx < yr_cap {
-        // pad coord (k >= yr_log_n): over-read weight must be zero-pinned
-        tampers.push(("rs_yslot_bits", yr_pad_idx, F128T::ONE));
-    } else {
-        eprintln!("rs_yslot_bits tamper skipped: yr_log_n == YR_LOG_CAP (no pad coordinate)");
-    }
+    // Not a skip: if this shape had no pad coordinate the over-read path would go
+    // untested, and silently. Retune `cfg` (the inner witness fixes the stacked
+    // log-size, and hence the candidate) until it does.
+    assert!(
+        yr_pad_idx < yr_cap,
+        "mu={stack_mu} has yr_log_n == YR_LOG_CAP, so no residual pad coordinate exists \
+         and the slot over-read path cannot be exercised: pick a cfg with another mu"
+    );
+    // pad coord (k >= yr_log_n): over-read weight must be zero-pinned
+    tampers.push(("rs_yslot_bits", yr_pad_idx, F128T::ONE));
     for &(stream, idx, val) in &tampers {
         let mut merged = batch.merged.clone();
         let pos = merged.iter().position(|(n, _)| n == stream).expect("stream present");
