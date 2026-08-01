@@ -881,15 +881,25 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
                 # per word); constrain every serialized limb before reassembly
                 # and pack them into the contiguous 24-byte-per-word byte image
                 # the committed leaf hashes.
+                # Load each serialized limb ONCE into frame cells, then read the
+                # words back off the PACKED cells: a pack holds
+                # `lane(2k) + Y*lane(2k+1)` exactly, so word w (limbs 3w..3w+2)
+                # is one multiply-add away from the pack that covers its even
+                # limb pair. The old form re-read all three limbs per word and
+                # rebuilt it with two multiplies.
+                lanes = StackBuf(LIG_PACKED_ROW_CAP)  # >= 3 limbs per word for every candidate
+                for jl in unroll(0, 3 * LIG_INTERLEAVE[m_idx * LIG_MAX_LEVELS + lvl]):
+                    lanes[jl] = row_ptr[GEN ** jl]
                 for jb in unroll(0, LIG_LEAF_PAIRS[m_idx * LIG_MAX_LEVELS + lvl]):
-                    e0 = row_ptr[GEN ** (4 * jb)]
-                    e1 = row_ptr[GEN ** (4 * jb + 1)]
-                    e2 = row_ptr[GEN ** (4 * jb + 2)]
-                    e3 = row_ptr[GEN ** (4 * jb + 3)]
-                    pack64x2_into(e0, e1, packed_row[2 * jb])
-                    pack64x2_into(e2, e3, packed_row[2 * jb + 1])
+                    pack64x2_into(lanes[4 * jb], lanes[4 * jb + 1], packed_row[2 * jb])
+                    pack64x2_into(lanes[4 * jb + 2], lanes[4 * jb + 3], packed_row[2 * jb + 1])
                 for jw in unroll(0, LIG_INTERLEAVE[m_idx * LIG_MAX_LEVELS + lvl]):
-                    row_word = f192_from_limbs(row_ptr[GEN ** (3 * jw)], row_ptr[GEN ** (3 * jw + 1)], row_ptr[GEN ** (3 * jw + 2)])
+                    if 3 * jw % 2 == 0:
+                        # limbs (3w, 3w+1) are a pack; add Y^2 * limb(3w+2).
+                        row_word = packed_row[3 * jw // 2] + Y_TOWER * Y_TOWER * lanes[3 * jw + 2]
+                    else:
+                        # limbs (3w+1, 3w+2) are a pack; shift it by Y and add limb(3w).
+                        row_word = lanes[3 * jw] + Y_TOWER * packed_row[(3 * jw + 1) // 2]
                     row_dot += row_word * row_eq_weights[GEN ** jw]
             # Standard BLAKE3 of the packed row (a power of two of full 64-byte
             # blocks, within one 1024-byte chunk).
