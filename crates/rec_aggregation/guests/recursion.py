@@ -1967,6 +1967,36 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
             prefix_mask_table[GEN ** (t * YR_LOG_CAP + k)] = 1
         for k in unroll(t, YR_LOG_CAP):
             prefix_mask_table[GEN ** (t * YR_LOG_CAP + k)] = 0
+    # ---- shared low-coordinate eq chains ----
+    # A claim's low_eq is the prefix product prod_{k < low_len} (1 + p_k + ris_k)
+    # over its point buffer p: the FACTORS depend only on which buffer the claim
+    # reads (and, for the qpkd slots, on the ris shift), never on the claim, so
+    # every claim on one buffer multiplies the same factors in the same order and
+    # differs only in where it stops. Build one prefix-product chain per buffer
+    # and let each claim read the partial product at its own certified length.
+    # Chain entry t is written from inputs with index < t only, so a garbage tail
+    # (past a buffer's written extent) cannot corrupt any shorter prefix; the
+    # length pins below keep every claim's read inside the written span
+    # (low_len <= cplen <= the point buffer's extent, and nlow <= lenris).
+    zeta_eq_chain = HeapBuf(SIZE_BITS + 1)
+    zeta_eq_chain[GEN ** 0] = 1
+    for xk in mul_range(1, g_bus_mu):
+        zeta_eq_chain[xk * GEN] = zeta_eq_chain[xk] * (1 + zeta[xk] + fold_challenges[xk])
+    rho_eq_chain = HeapBuf(SIZE_BITS + 1)
+    rho_eq_chain[GEN ** 0] = 1
+    for xk in mul_range(1, g_zc_n):
+        rho_eq_chain[xk * GEN] = rho_eq_chain[xk] * (1 + rho[xk] + fold_challenges[xk])
+    # The qpkd variants read the same points against ris shifted past the slot
+    # coordinates, so they need their own chains.
+    ris_slot = fold_challenges * GEN ** SLOT_STRIDE_LOG
+    zeta_slot_eq_chain = HeapBuf(SIZE_BITS + 1)
+    zeta_slot_eq_chain[GEN ** 0] = 1
+    for xk in mul_range(1, g_bus_mu):
+        zeta_slot_eq_chain[xk * GEN] = zeta_slot_eq_chain[xk] * (1 + zeta[xk] + ris_slot[xk])
+    rho_slot_eq_chain = HeapBuf(SIZE_BITS + 1)
+    rho_slot_eq_chain[GEN ** 0] = 1
+    for xk in mul_range(1, g_zc_n):
+        rho_slot_eq_chain[xk * GEN] = rho_slot_eq_chain[xk] * (1 + rho[xk] + ris_slot[xk])
     claim_weights = HeapBuf(N_CLAIMS)
     for j in unroll(0, N_CLAIMS):
         claim_offset_bits = col_offset_bits * GEN ** ((SIZE_BITS + YR_LOG_CAP) * CLAIM_COMMITTED_COL[j])
@@ -2007,43 +2037,31 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         # so it stays in [0, lenris): either seln == 0 (empty loop) or
         # nlow + seln == lenris (the honest overlap-free case).
         assert (nlow * seln + fold_cap_g) * (seln + 1) == 0
-        low_chain = HeapBuf(SIZE_BITS + 1)
+        # low_eq: the shared chain's partial product at this claim's certified
+        # length, times the qpkd slot factors (the only per-claim part).
         if CLAIM_POINT_BUF[j] == POINT_BUF_ZETA:
-            zptr = zeta
-            low_chain[GEN ** 0] = 1
-            for xk in mul_range(1, low_len_g):
-                low_chain[xk * GEN] = low_chain[xk] * (1 + zptr[xk] + fold_challenges[xk])
+            low_eq = zeta_eq_chain[low_len_g]
         if CLAIM_POINT_BUF[j] == POINT_BUF_RHO:
-            rptr = rho
-            low_chain[GEN ** 0] = 1
-            for xk in mul_range(1, low_len_g):
-                low_chain[xk * GEN] = low_chain[xk] * (1 + rptr[xk] + fold_challenges[xk])
+            low_eq = rho_eq_chain[low_len_g]
         if CLAIM_POINT_BUF[j] == POINT_BUF_PI:
+            low_chain = HeapBuf(SIZE_BITS + 1)
             low_chain[GEN ** 0] = 1
             low_chain[GEN ** 1] = 1 + rm + fold_challenges[GEN ** 0]
             for xk in mul_range(GEN, low_len_g):
                 low_chain[xk * GEN] = low_chain[xk] * (1 + fold_challenges[xk])
+            low_eq = low_chain[low_len_g]
         if CLAIM_POINT_BUF[j] == POINT_BUF_QPKD:
             qpkd_slot_eq = GEN ** 0
             for k in unroll(0, SLOT_STRIDE_LOG):
                 sb3 = CLAIM_QPKD_SLOT_BITS[SLOT_STRIDE_LOG * j + k]
                 qpkd_slot_eq *= (1 + sb3 + fold_challenges[GEN ** k])
-            zptr = zeta
-            ris7 = fold_challenges * GEN ** SLOT_STRIDE_LOG
-            low_chain[GEN ** 0] = qpkd_slot_eq
-            for xk in mul_range(1, low_len_g):
-                low_chain[xk * GEN] = low_chain[xk] * (1 + zptr[xk] + ris7[xk])
+            low_eq = qpkd_slot_eq * zeta_slot_eq_chain[low_len_g]
         if CLAIM_POINT_BUF[j] == POINT_BUF_QPKD_RHO:
             qpkd_slot_eq = GEN ** 0
             for k in unroll(0, SLOT_STRIDE_LOG):
                 sb3 = CLAIM_QPKD_SLOT_BITS[SLOT_STRIDE_LOG * j + k]
                 qpkd_slot_eq *= (1 + sb3 + fold_challenges[GEN ** k])
-            zptr = rho
-            ris7 = fold_challenges * GEN ** SLOT_STRIDE_LOG
-            low_chain[GEN ** 0] = qpkd_slot_eq
-            for xk in mul_range(1, low_len_g):
-                low_chain[xk * GEN] = low_chain[xk] * (1 + zptr[xk] + ris7[xk])
-        low_eq = low_chain[low_len_g]
+            low_eq = qpkd_slot_eq * rho_slot_eq_chain[low_len_g]
         ris_hi = fold_challenges * nlow
         # Selector coordinates [nlow, lenris) are exactly the corresponding
         # certified placement-offset bits.
