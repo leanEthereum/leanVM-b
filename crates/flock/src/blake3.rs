@@ -1298,11 +1298,10 @@ fn packed_128_bytes(words: &[F192]) -> Vec<u8> {
 // Convenience API: Blake3Setup
 // ---------------------------------------------------------------------------
 
-/// Bundles the monolithic BLAKE3 compression R1CS sized for `n_blocks`
-/// compressions.
+/// Bundles the monolithic BLAKE3 compression R1CS for the smallest supported
+/// power-of-two shape that can hold `n_blocks` compressions.
 #[derive(Clone, Debug)]
 pub struct Blake3Setup {
-    pub n_blocks: usize,
     pub r1cs: BlockR1cs,
 }
 
@@ -1317,7 +1316,7 @@ impl Blake3Setup {
         // the prove-cycle scratch buffers (see scratch::prewarm_prover).
         r1cs.csc_lincheck_circuit();
         primitives::scratch::prewarm_prover(r1cs.m);
-        Self { n_blocks, r1cs }
+        Self { r1cs }
     }
 
     pub fn m(&self) -> usize {
@@ -1725,7 +1724,12 @@ impl Blake3Setup {
         blocks: &[Compression],
         ps: &mut fiat_shamir::transcript::ProverState<O>,
     ) -> (Vec<F192>, ReducedClaims) {
-        assert_eq!(blocks.len(), self.n_blocks);
+        assert!(
+            blocks.len() <= self.n_block_slots(),
+            "{} compressions exceed this setup's {} slots",
+            blocks.len(),
+            self.n_block_slots()
+        );
         let n_log = self.n_blocks_log();
         let t_witness = std::time::Instant::now();
         let (z_packed, a_packed_words, b_packed_words, z_packed_lincheck) =

@@ -261,43 +261,32 @@ pub fn padding_digest() -> [F64; 4] {
 /// claim on `q_pkd` is thus a boolean-selector (strided) claim with this stride.
 pub const SLOT_STRIDE_LOG: usize = K_LOG - LOG_PACKING;
 
-/// Memoized BLAKE3 R1CS [`Blake3Setup`], keyed by the executed-instance count.
+/// Memoized BLAKE3 R1CS [`Blake3Setup`], keyed by its power-of-two shape.
 /// Building it (the symbolic constraint walk over `2^K_LOG` slots) costs
 /// ~hundreds of ms — fixed per circuit shape, independent of `N` or the proof.
 /// So we build each shape once and reuse it across `prove`, `verify`, and
 /// repeated proofs; the per-setup caches then stay warm, making verification
 /// milliseconds rather than rebuilding the circuit each time.
 ///
-/// The cache is bounded ([`SETUP_CACHE_CAP`]): `verify` calls this with the
-/// PROVER-ANNOUNCED count, so an attacker cycling distinct counts could otherwise
-/// grow it without limit. Past the cap we build an ephemeral (uncached) setup —
-/// correct, just not memoized; legit workloads use only a handful of sizes.
-const SETUP_CACHE_CAP: usize = 256;
+type SetupCell = std::sync::Arc<std::sync::OnceLock<std::sync::Arc<Blake3Setup>>>;
 
-fn setup_cache() -> &'static std::sync::Mutex<std::collections::HashMap<usize, std::sync::Arc<Blake3Setup>>> {
-    static CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<usize, std::sync::Arc<Blake3Setup>>>> =
+fn setup_cache() -> &'static std::sync::Mutex<std::collections::HashMap<usize, SetupCell>> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<usize, SetupCell>>> =
         std::sync::OnceLock::new();
     CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
 fn setup_for(n_blocks: usize) -> std::sync::Arc<Blake3Setup> {
-    let cache = setup_cache();
-    // Fast path: build OUTSIDE the lock so a concurrent builder (e.g. the
-    // background warm spawned by `cpu::prove`) doesn't serialize behind us — the
-    // ~hundreds-of-ms build must not hold the mutex.
-    if let Some(s) = cache.lock().expect("BLAKE3 setup cache poisoned").get(&n_blocks) {
-        return std::sync::Arc::clone(s);
-    }
-    let setup = std::sync::Arc::new(Blake3Setup::new(n_blocks));
-    let mut map = cache.lock().expect("BLAKE3 setup cache poisoned");
-    // Re-check: another thread may have inserted while we built (harmless — one wins).
-    if let Some(s) = map.get(&n_blocks) {
-        return std::sync::Arc::clone(s);
-    }
-    if map.len() < SETUP_CACHE_CAP {
-        map.insert(n_blocks, std::sync::Arc::clone(&setup));
-    }
-    setup
+    let shape = n_blocks_log(n_blocks);
+    let cell = {
+        let mut cache = setup_cache().lock().expect("BLAKE3 setup cache poisoned");
+        std::sync::Arc::clone(
+            cache
+                .entry(shape)
+                .or_insert_with(|| std::sync::Arc::new(std::sync::OnceLock::new())),
+        )
+    };
+    std::sync::Arc::clone(cell.get_or_init(|| std::sync::Arc::new(Blake3Setup::new(1usize << shape))))
 }
 
 /// Pre-build (and cache) the flock BLAKE3 R1CS setup. This is the fixed,
@@ -446,6 +435,15 @@ pub fn ring_switch_verify(n_blocks: usize, offset: usize, ab: ZClaim, c: ZClaim)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn setup_cache_is_keyed_by_shape() {
+        let one = setup_for(1);
+        let eight = setup_for(8);
+        let nine = setup_for(9);
+        assert!(std::sync::Arc::ptr_eq(&one, &eight));
+        assert!(!std::sync::Arc::ptr_eq(&eight, &nine));
+    }
 
     fn f(x: u64) -> F64 {
         F64(x)
