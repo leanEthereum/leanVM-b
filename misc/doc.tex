@@ -201,17 +201,17 @@ The arithmetization follows the M3 model (multi-multiset matching)~\cite{m3}. Th
 
 \subsection{Proving the local constraints}\label{sec:air}
 
-Each table must satisfy its own constraints on every one of its own rows. Instead of $k$ zerochecks over cubes of $k$ different sizes, we use sumcheck batching to perform only a single sumcheck.
+Each table must satisfy its own constraints on every one of its own rows. Instead of one zerocheck per table, over cubes of different sizes, we batch them into a single sumcheck.
 
 Table $T_j$ has $2^{\tau_j}$ rows and constraints $C_{j,1},\dots,C_{j,s_j}$: polynomials of degree at most $d$ in a row's column values, required to vanish on every row ($d=2$ throughout). Write $\sigma=\sum_j s_j$ for the total number of constraints and $n=\max_j\tau_j$ for the tallest table's height.
 
-\paragraph{One challenge and one point.} The verifier samples $\eta\in\E$ and $r\in\E^{n}$. Table $T_j$ mixes its constraints with the powers of $\eta$ from $o_j=s_1+\dots+s_{j-1}$ on, and is tested at the length-$\tau_j$ prefix of $r$:
+\paragraph{One challenge and one point.} The verifier samples $\eta\in\E$ and fixes a point $r\in\E^{n}$ (in the assembled protocol $r$ is not freshly sampled but taken from the bus, see \emph{Nonzero claims} below and \S\ref{sec:leafstack}). Table $T_j$ mixes its constraints with the powers of $\eta$ from $o_j=s_1+\dots+s_{j-1}$ on, and is tested at the length-$\tau_j$ prefix of $r$:
 \[
   C_j\;=\;\sum_{i=1}^{s_j}\eta^{\,o_j+i-1}\,C_{j,i},
   \qquad
   S_j\;=\;\widetilde{C_j}\bigl(r_{<\tau_j}\bigr)\;=\;\sum_{x\in\cube{\tau_j}}C_j(x)\,\eq(r_{<\tau_j},x).
 \]
-The ranges of $\eta$-powers are disjoint. Consequently, a nonzero constraint in any table makes $\sum_j S_j$ a nonzero polynomial in $(\eta,r)$, except with Schwartz--Zippel error at most $(n+\sigma)/|\E|$.
+The ranges of $\eta$-powers are \emph{disjoint}, so no table's violation can be cancelled by another's, and proving $\sum_j S_j=0$ proves every $C_{j,i}$ vanishes on every row of its own table, up to Schwartz--Zippel error $(n+\sigma)/|\E|$ over $r$ and $\eta$. (The identities keep disjoint ranges throughout. \S\ref{sec:leafstack} appends three more entries per table that deliberately \emph{share} their powers, since only their total over tables has to be pinned; that lengthens the $\eta$-degree, and the error, by $3$.)
 
 \paragraph{One sumcheck.} The $S_j$ are sumcheck claims of different lengths. Lift each onto the common cube $\cube n$ by attaching the indicator of the all-ones assignment on the $n-\tau_j$ variables $T_j$ does not use:
 \[
@@ -219,7 +219,18 @@ The ranges of $\eta$-powers are disjoint. Consequently, a nonzero constraint in 
 \]
 Because $\sum_x\prod_i x_i=1$ on any cube, $\sum_{x\in\cube n}f_j(x)=S_j$, so with $F=\sum_j f_j$ the whole statement is the single claim $\sum_{x\in\cube n}F(x)=0$, proven by $n$ rounds of sumcheck on $F$.
 
-The rounds bind $X_{n-1}$ first and $X_0$ last, so the first $n-\tau_j$ touch only variables $T_j$ does not use: there $f_j$ contributes the line $Y\,k_j\,S_j$, with $k_j$ the product of the challenges drawn so far and $S_j=0$. Table $T_j$ enters at round $n-\tau_j$ and binds $X_{\tau_j-1},\dots,X_0$ in turn. This is back-loaded batching: a short claim waits, then joins weighted by the rounds it sat out.
+The rounds bind $X_{n-1}$ first and $X_0$ last, so the first $n-\tau_j$ touch only variables $T_j$ does not use: there $f_j$ contributes the line $Y\,k\,S_j$, with $k$ the product of the challenges drawn so far (the same for every table that is waiting) and $S_j=0$. Table $T_j$ enters at round $n-\tau_j$ and binds $X_{\tau_j-1},\dots,X_0$ in turn. This is back-loaded batching: a short claim waits, then joins weighted by the rounds it sat out.
+
+\paragraph{Nonzero claims.} Nothing above needs $S_j=0$, nor $r$ to be a fresh challenge. Any polynomial in $T_j$'s columns whose $\eq$-weighted sum over the rows is a value the verifier knows is batched exactly like a constraint, becoming one more entry of $C_j$ with a power of $\eta$ of its own; only $S_j$ changes, from $0$ to that value. And any point fixed at random after the trace commitment serves as $r$. \S\ref{sec:leafstack} does both, running the batch at $r=\zeta$, the point GKR leaves behind, and handing each table three such polynomials. What is proven is then
+\[
+  \sum_{x\in\cube n}F(x)\;=\;\sum_j S_j .
+\]
+
+The one consequence for the rounds is that a waiting table's line $Y\,k\,S_j$ no longer vanishes. Write $X_\ell$ for the variable a round binds, $Y$ for it while still an unknown, and $k$ for the product of the challenges drawn so far, which is common to every waiting table. They therefore sum to $Y\,u$ for the single scalar $u=k\sum_{\tau_j\le\ell}S_j$, and with $p$ the joined tables' cofactor, of degree at most $2$, the round polynomial is the cubic
+\[
+  h(Y)\;=\;\eq(r_\ell,Y)\,p(Y)+Y\,u .
+\]
+The prover sends $h$ whole, at $\{0,1,\gen,\gen^{2}\}$: four field elements a round, one more than \S\ref{sec:gkr}'s $\eq$-trick. That one is the price of the nonzero claims rather than of sending $h$ whole, for the trick cannot save it: the verifier has no way to form $u$, so $u$ would travel beside the cofactor instead. The rounds are then vanilla sumcheck, checking $h(0)+h(1)=c$ against the running claim $c$ and folding $c\leftarrow h(\rho_\ell)$, with no $\eq$ reapplied to the message. Prover work is unchanged: $p$ is quadratic, so its fourth value interpolates from the other three rather than costing another pass over the rows.
 
 \subsection{Balancing the bus: grand product}\label{sec:gp}
 
@@ -278,6 +289,27 @@ GKR (\S\ref{sec:gkr}) reduces one side of \eqref{eq:gp} to a single evaluation $
   \widetilde V_0(\zeta)\;=\;\sum_b \eq(\mathsf{sel}_b,\zeta^{b}_{\mathrm{hi}})\Bigl(\gamma-\sum_{i=0}^{m-1}\alpha^{i}\,\widetilde c_{b,i}(\zeta^{b}_{\mathrm{lo}})\Bigr)\;+\;\Bigl(1-\sum_b\eq(\mathsf{sel}_b,\zeta^{b}_{\mathrm{hi}})\Bigr).
 \]
 The verifier forms the selectors $\eq(\mathsf{sel}_b,\cdot)$ and the constant coordinates itself. Each remaining $\widetilde c_{b,i}(\zeta^{b}_{\mathrm{lo}})$ is settled by its kind: a committed column by a direct opening (\S\ref{sec:prelim}), a virtual column off the committed columns it images (so $\gen\cdot\pc$ adds nothing beyond the $\pc$ opening), a \texttt{BLAKE3} value coordinate by a point evaluation of $q_\pkd$ at its slot (\S\ref{sec:tab-blake3}), the index column by \S\ref{sec:idxcol}. A committed column feeding several equal-size blocks is opened once, at their shared point $\zeta_{\mathrm{lo}}$.
+
+\paragraph{Blocks of a table.} Split that sum by owner. Three blocks per side belong to no table, the state boundary and the memory and bytecode seeds (finalizations on the pull side); they settle exactly as above, and the counts side has none of them. Every other block belongs to a table, and a table owns many: one per flush on push and on pull, one per read count on the counts, so \texttt{BLAKE3} owns ten, ten and nine.
+
+All of $T_j$'s blocks are $2^{\tau_j}$ rows tall, so they read its columns at the one point $\zeta_{<\tau_j}$, and that shared point is what collapses them. Fix a side, let $\mathcal B$ be the blocks $T_j$ owns there, and put the row values back where those evaluations stand:
+\[
+  \sum_{b\in\mathcal B}\eq(\mathsf{sel}_b,\zeta^{b}_{\mathrm{hi}})\Bigl(\gamma-\sum_{i=0}^{m-1}\alpha^{i}\,\widetilde c_{b,i}(\zeta_{<\tau_j})\Bigr)
+  \;=\;\sum_{x\in\cube{\tau_j}}\eq(\zeta_{<\tau_j},x)\,B_j(x),
+\]
+where $B_j$ is that same expression read at a row $x$ of $T_j$, a polynomial every coefficient of which the verifier forms itself (on the counts side $\alpha=1$ and $\gamma=0$, \S\ref{sec:memchan}, so it is a bare sum of count columns). The right-hand side is exactly a claim of \S\ref{sec:air}'s kind, with a nonzero value. So hand the three $B_j$, one per side, to the batch and run it at $r=\zeta$. They take three powers of $\eta$ placed after all $\sigma=\sum_j s_j$ identity powers of \S\ref{sec:air} and \emph{shared} by every table, so with a table's real constraints vanishing,
+\[
+  S_j\;=\;\eta^{\,\sigma}\,\widetilde B^{\mathrm{push}}_j+\eta^{\,\sigma+1}\,\widetilde B^{\mathrm{pull}}_j+\eta^{\,\sigma+2}\,\widetilde B^{\mathrm{cnt}}_j ,
+\]
+all at $\zeta_{<\tau_j}$.
+
+Sharing those powers is what ties the batch to the bus. Summing over the tables,
+\[
+  \sum_j S_j\;=\;\eta^{\,\sigma}R_{\mathrm{push}}+\eta^{\,\sigma+1}R_{\mathrm{pull}}+\eta^{\,\sigma+2}R_{\mathrm{cnt}} ,
+\]
+each $R_{\mathrm{side}}$ being that side's leaf claim less its table-less blocks and padding, which the verifier forms for itself. The batch therefore starts from a target it derived, and $\eta$ is drawn only afterwards, so reaching that one number forces the three bus equations $\sum_j\widetilde B^{\mathrm{side}}_j=R_{\mathrm{side}}$ at once, and zero in every identity slot besides. Per-table powers would not factor this way: the verifier would need three shares per table transmitted, which is sound but costly, and a transmitted aggregate would settle nothing at all, appearing in no other check.
+
+So the bus sends nothing for a table's blocks, and no column of a table is opened at $\zeta$: no such evaluation travels at all. The batch leaves one claim per column of $T_j$ instead, at its own output point $\rho_{<\tau_j}$, settled as above.
 
 \subsection{State interaction}\label{sec:state}
 
@@ -540,13 +572,13 @@ We lay out the whole protocol as one ordered sequence. Each reduction below adds
 \item \textbf{Verifier.} Sends the fingerprint challenge $\alpha$ and the multiset challenge $\gamma$.
 \item \textbf{Prover.} Forms the push, pull, and \emph{count} leaf vectors (\S\ref{sec:leafstack}; the count leaves are the count columns themselves, \S\ref{sec:memchan}), stacked into blocks and padded with $1$s. Sends the count root $R_c$ and one bus root $R$, the push/pull product after the default surplus is removed (\S\ref{sec:gp}).
 \item \textbf{Prover \& Verifier.} Run the one batched GKR (\S\ref{sec:gkr}) over all three trees. For the bus, the verifier multiplies $R$ by each side's public surplus and checks the side's product against it; one $R$ for both sides is the balance check (\S\ref{sec:gp}). For the counts it checks $R_c\neq0$ (no read self-cancels, \S\ref{sec:memchan}). The pass yields three leaf claims $\widetilde V^{t}_0(\zeta)$ at one shared $\zeta$.
-\item \textbf{Prover \& Verifier.} Decompose each leaf claim (\S\ref{sec:leafstack}). The verifier forms the public part: the block selectors; the constant coordinates (separators, the per-table read opcodes, the boundary state $(\pc_0,\fp_0)$ and $(\pc_{\mathrm{final}},\fp_{\mathrm{final}})$); the index column (\S\ref{sec:idxcol}); and the public program columns of the bytecode seed and finalize, whose MLEs it forms directly. The prover supplies each block's committed-column evaluations (one $\E$-element each, \S\ref{sec:prelim}); a virtual coordinate such as $\gen\cdot\pc$ is read off its committed source, and a \texttt{BLAKE3} value coordinate off $q_\pkd$ at its slot (\S\ref{sec:tab-blake3}). The verifier checks the decomposition formula against $\widetilde V_0(\zeta)$; the supplied evaluations enter the claim pool. The count channel decomposes likewise (its leaves are the count columns), adding only their evaluations.
+\item \textbf{Prover \& Verifier.} Decompose each leaf claim (\S\ref{sec:leafstack}). The verifier forms the public part: the block selectors; the constant coordinates (separators, the per-table read opcodes, the boundary state $(\pc_0,\fp_0)$ and $(\pc_{\mathrm{final}},\fp_{\mathrm{final}})$); the index column (\S\ref{sec:idxcol}); and the public program columns of the bytecode seed and finalize, whose MLEs it forms directly. For the table-less blocks the prover supplies the committed-column evaluations (one $\E$-element each, \S\ref{sec:prelim}); a virtual coordinate such as $\gen\cdot\pc$ is read off its committed source, and these evaluations enter the claim pool. It sends nothing for the other blocks: what they owe the side is $\widetilde V_0(\zeta)$ less the part just formed, so the verifier forms that too, and the batch below settles it. The count channel decomposes likewise; none of its blocks is table-less, so its whole share falls to the batch.
 \end{enumerate}
 
 \paragraph{Local constraints.} One run for all seven tables (\S\ref{sec:air}).
 \begin{enumerate}
-\item \textbf{Verifier.} Sends the constraint-batch challenge $\eta$, each table taking a disjoint range of its powers, and the zerocheck point $r\in\E^n$, of which table $T_j$ uses the prefix $r_{<\tau_j}$.
-\item \textbf{Prover \& Verifier.} Run the back-loaded batched zerocheck, an $n$-round sumcheck on $\sum_j\sum_x C_j(x)\,\eq(r_{<\tau_j},x)=0$ in which a table of $2^{\tau}$ rows joins at round $n-\tau$. Its end needs every table's committed column evaluations, each at that table's own reduced point $\rho_{<\tau_j}$, all of them prefixes of one $\rho$; these enter the pool.
+\item \textbf{Verifier.} Sends the constraint-batch challenge $\eta$. Table $T_j$ takes a disjoint range of its powers, one per constraint; the bus forms absorbed above take three further powers, one per side and shared by every table. No point is drawn, the batch running at the bus point with $T_j$ tested at $\zeta_{<\tau_j}$.
+\item \textbf{Prover \& Verifier.} Run the back-loaded batched zerocheck, an $n$-round sumcheck with $n=\max_j\tau_j$, a table of $2^{\tau}$ rows joining at round $n-\tau$. It starts from a target the verifier derives from the three leaf claims, and each round is four $\E$-elements, the round polynomial itself at four nodes. Its end needs every column of every table, \texttt{BLAKE3}'s eighteen value columns included, whose claims route to $q_{\mathrm{pkd}}$; each at that table's own reduced point $\rho_{<\tau_j}$, all of them prefixes of one $\rho$; these enter the pool, and they are also what the bus forms are read off.
 \end{enumerate}
 
 \paragraph{Public input.}
@@ -565,7 +597,7 @@ We lay out the whole protocol as one ordered sequence. Each reduction below adds
 \item \textbf{Prover \& Verifier.} Each pooled claim is one evaluation of a committed column at a point, its value already supplied; via the stacking selectors (\S\ref{sec:stacking}) it becomes a weighted sum $\sum_w W_j(w)\,\widehat q(w)=c_j$ over the stacked witness. (The ring-switched claims arrive already in this form, their weights supported on the $q_\pkd$ region.)
 \item \textbf{Verifier.} Sends the batching coefficients $\lambda_1,\dots,\lambda_J\in\E$, one per claim.
 \item \textbf{Prover \& Verifier.} Fold the $J$ claims into $W_\lambda=\sum_j\lambda_j W_j$ and $C_\lambda=\sum_j\lambda_j c_j$, and run the inner-product PCS opening on $\sum_w W_\lambda(w)\,\widehat q(w)=C_\lambda$ (\S\ref{sec:rs-dense}), the verifier evaluating $W_\lambda$ itself. This one opening discharges every pooled claim; there is no separate reduction sumcheck.
-\item \textbf{Verifier.} Accepts iff the announced sizes passed the caps, the two roots agreed, each leaf decomposition and every sumcheck's final value matched the supplied evaluations, flock's reduction verified, the public-input claim held, and the PCS opening verified.
+\item \textbf{Verifier.} Accepts iff the announced sizes passed the caps, the two roots agreed after the surplus division, the count root was nonzero, every sumcheck's rounds were consistent (the batch's against the target derived from the three leaf claims) and its final value matched the supplied evaluations, flock's reduction verified, the public-input claim held, and the PCS opening verified.
 \end{enumerate}
 
 \section{Recursive aggregation}\label{sec:recursion}

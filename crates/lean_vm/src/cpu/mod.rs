@@ -286,36 +286,105 @@ pub enum Error {
     Blake3(flock::verifier::VerifyError),
 }
 
+/// Per side, which table (if any) owns each bus block, as `(table, column base)`.
+/// Blocks sourced from a table's height belong to it; the boundary, memory and
+/// bytecode blocks belong to none and keep their own column claims at ζ.
+fn block_owners(log_bytecode: usize, sides: [usize; 3]) -> [Vec<Option<(usize, usize)>>; 3] {
+    let sch = schema();
+    let src = block_kappa_sources(log_bytecode);
+    let mut it = src
+        .into_iter()
+        .map(|(source, _)| source.checked_sub(2).map(|t| (t, sch.base[t])));
+    sides.map(|n| it.by_ref().take(n).collect())
+}
+
+/// Each table's `(column base, committed column count)`. The batched zerocheck now
+/// carries every committed column of a table, because its bus forms reference the
+/// flushed ones and its constraint the rest.
+fn table_spans() -> Vec<(usize, usize)> {
+    let sch = schema();
+    tables::tables()
+        .iter()
+        .enumerate()
+        .map(|(t, tb)| (sch.base[t], tb.n_committed_columns()))
+        .collect()
+}
+
 /// The per-table inputs to the batched zerocheck (§constraints), in schema order.
 /// Prover and verifier both call this, so their column order and constraint
 /// closures agree by construction.
-fn airs(taus: &[usize; tables::N_TABLES]) -> Vec<constraints::Air<'static>> {
+/// The airs carry every committed column of their table, so `Cols` indexes the
+/// value array directly and each table's three bus forms can be
+/// evaluated on the same values. The identities take the air's own `η`-range; the
+/// three forms take the shared powers at [`eta_form_base`].
+fn airs<'a>(
+    taus: &[usize; tables::N_TABLES],
+    forms: &'a [Vec<leaf::BusForm>; 3],
+    form_pows: [F192; 3],
+) -> Vec<constraints::Air<'a>> {
     tables::tables()
         .iter()
         .zip(taus)
-        .map(|(&table, &tau)| {
-            let position = tables::column_positions(table.constraint_columns());
+        .enumerate()
+        .map(|(t, (&table, &tau))| {
+            let bus: Vec<&leaf::BusForm> = (0..3).map(|s| &forms[s][t]).collect();
             constraints::Air {
                 tau,
-                n_cols: table.constraint_columns().len(),
+                n_cols: table.n_committed_columns(),
                 n_constraints: table.n_constraints(),
-                eval: Box::new(move |pows, vals| table.eval_constraint(pows, &tables::Cols::new(vals, &position))),
+                eval: Box::new(move |p, vals| {
+                    let air = table.eval_constraint(p, &tables::Cols::new(vals));
+                    bus.iter()
+                        .zip(form_pows)
+                        .fold(air, |acc, (form, w)| acc + w * form.eval(vals))
+                }),
             }
         })
         .collect()
 }
 
-/// Lift each table's constraint evals (at its zerocheck point `rho`) to global
-/// column claims, offsetting the table's local constraint columns by its base.
+/// Each table's claimed sum: its identities vanish, so what its summand comes to
+/// is its three bus forms, `η`-weighted. Prover-side only, to build the waiting
+/// line each round; the verifier needs just their total, which it derives.
+fn sigmas(bus: &[Vec<F192>; 3], form_pows: [F192; 3]) -> Vec<F192> {
+    (0..tables::tables().len())
+        .map(|t| (0..3).fold(F192::ZERO, |acc, s| acc + form_pows[s] * bus[s][t]))
+        .collect()
+}
+
+/// Where the three bus forms sit in the batch's `η`-powers: the last three, AFTER
+/// every table's identity range, and shared by all tables rather than one triple
+/// per table. That sharing is what keeps the batch tied to the bus: with a common
+/// `η^{base+s}` per side, the batch's target is `Σ_s η^{FORM_POWS+s}·R_s` for
+/// the sides' table shares `R_s`, which the verifier DERIVES from the leaf claims
+/// (`eta_form_pows`; a mismatch surfaces as [`Error::Constraint`]). Were the
+/// powers per table, the target
+/// would not factor through the `R_s` and nothing would pin the tables' share of
+/// the bus.
+pub fn eta_form_base() -> usize {
+    tables::tables().iter().map(|t| t.n_constraints()).sum()
+}
+
+/// The three shared form powers `η^{base}, η^{base+1}, η^{base+2}`.
+fn eta_form_pows(eta: F192) -> [F192; 3] {
+    let base = eta_form_base();
+    let pows = constraints::eta_powers(eta, base + 3);
+    [pows[base], pows[base + 1], pows[base + 2]]
+}
+
+/// Lift each table's zerocheck evals (at its point `rho`) to global column claims.
+/// The batch carries every committed column of a table, so eval `c` is local
+/// column `c`; these are the ONLY claims those columns raise, the bus having been
+/// settled inside the batch.
 fn constraint_claims(table_claims: &[constraints::Claims]) -> Vec<ColumnClaim> {
     let sch = schema();
     let mut v = Vec::new();
     for (t, table) in tables::tables().iter().enumerate() {
-        for (k, &c) in table.constraint_columns().iter().enumerate() {
+        for c in 0..table.n_committed_columns() {
             v.push(ColumnClaim {
                 col: sch.base[t] + c,
                 point: table_claims[t].rho.clone(),
-                value: table_claims[t].evals[k],
+                value: table_claims[t].evals[c],
             });
         }
     }
@@ -409,36 +478,45 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
     // bus point, so no dedicated binding challenge is drawn. Mirrored in `verify`.
     let t = std::time::Instant::now();
     let l = &w.layout;
-    let (bus_claims, _bytecode_claims) =
-        tracing::info_span!("Prove bus").in_scope(|| leaf::prove_balance(&l.push, &l.pull, &l.count, &w.cols, &mut ps));
+    let owners = block_owners(
+        crate::log2_strict_usize(program.prog.len()),
+        [l.push.len(), l.pull.len(), l.count.len()],
+    );
+    let spans = table_spans();
+    let bus = tracing::info_span!("Prove bus")
+        .in_scope(|| leaf::prove_balance(&l.push, &l.pull, &l.count, &w.cols, &owners, &spans, &mut ps));
     if prof {
         eprintln!("[prove] bus(grand-p): {:>7.2} ms", ms(t));
     }
     let t = std::time::Instant::now();
     let table_claims = tracing::info_span!("Prove constraints").in_scope(|| {
-        let sch = schema();
         // One sumcheck for all seven tables (§constraints).
         // MOVE the columns out: the batch folds them destructively and nothing
         // reads them again (`prove_balance` is done, and `QPKD < N_SHARED` is never
-        // a constraint column), so copying them would be ~300 MB for nothing.
-        let mut cols: Vec<Vec<Column>> = tables::tables()
+        // a table column), so copying them would be ~300 MB for nothing.
+        let mut cols: Vec<Vec<Column>> = spans
             .iter()
-            .enumerate()
-            .map(|(ti, table)| {
-                table
-                    .constraint_columns()
-                    .iter()
-                    .map(|&c| std::mem::take(&mut w.cols[sch.base[ti] + c]))
-                    .collect()
-            })
+            .map(|&(base, n)| (0..n).map(|c| std::mem::take(&mut w.cols[base + c])).collect())
             .collect();
-        constraints::prove(&airs(&l.taus), &mut cols, &mut ps)
+        // The eq point is the bus GKR's ζ, not a fresh one: that is what lets the
+        // batch settle the bus forms alongside the constraints.
+        let eta = ps.sample();
+        let form_pows = eta_form_pows(eta);
+        let sigma = sigmas(&bus.sigmas, form_pows);
+        constraints::prove(
+            &airs(&l.taus, &bus.forms, form_pows),
+            &mut cols,
+            eta,
+            &bus.point,
+            &sigma,
+            &mut ps,
+        )
     });
     if prof {
         eprintln!("[prove] constraints : {:>7.2} ms", ms(t));
     }
 
-    let mut claims = bus_claims;
+    let mut claims = bus.claims;
     claims.extend(constraint_claims(&table_claims));
     // The PI binding transmits the low/high memory-limb evaluations. The full
     // F192 public-input interpolation then determines the top-limb evaluation.
@@ -574,10 +652,32 @@ pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Res
     // words bind via the memory bus, the pins reuse a bus point.
     let n_b3 = l.row_counts[tables::BLAKE3_TABLE];
 
-    let bus = leaf::verify_balance(&l.push, &l.pull, &l.count, &l.pad, &mut vs).map_err(Error::Bus)?;
+    let owners = block_owners(
+        crate::log2_strict_usize(program.prog.len()),
+        [l.push.len(), l.pull.len(), l.count.len()],
+    );
+    let spans = table_spans();
+    let bus = leaf::verify_balance(&l.push, &l.pull, &l.count, &l.pad, &owners, &spans, &mut vs).map_err(Error::Bus)?;
     let checkpoint_bus = vs.sponge_state();
 
-    let table_claims = constraints::verify(&airs(&l.taus), &mut vs).map_err(Error::Constraint)?;
+    let zc_eta = vs.sample();
+    let form_pows = eta_form_pows(zc_eta);
+    // THE tie between the batch and the bus, and the reason the batch's target is
+    // never transmitted. Each side's leaf claim less what its framework blocks
+    // account for is the tables' share `R_s`, which the verifier just derived; the
+    // batch must sum to `Σ_s η^{base+s}·R_s`. Since `η` is sampled after the `R_s`
+    // are fixed, hitting that one number forces `Σ_t σ_{s,t} = R_s` on all three
+    // sides. A transmitted target would be a free value in its own check, and the
+    // tables' bus blocks would be settled by nothing at all.
+    let target = (0..3).fold(F192::ZERO, |a, s| a + form_pows[s] * bus.totals[s]);
+    let table_claims = constraints::verify(
+        &airs(&l.taus, &bus.forms, form_pows),
+        zc_eta,
+        &bus.point,
+        target,
+        &mut vs,
+    )
+    .map_err(Error::Constraint)?;
     let checkpoint_zerochecks = vs.sponge_state();
 
     let mut claims = bus.claims;
