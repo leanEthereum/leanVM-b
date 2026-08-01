@@ -116,14 +116,8 @@ fn statement_json(program: &Program, public_input: [F128T; 2]) -> String {
 }
 
 #[test]
-// The reference verifier's field and instruction set are ported to the 64-bit tower
-// (`python-verifier/verifier.py`, pinned bit-exact by
-// `primitives/tests/xcheck.rs`), but its Ligerito opening layer still assumes the
-// GHASH commitment: level-0 opened rows are 16-byte E fields there and 8-byte K
-// symbols here, so the byte parse desynchronises. Porting that layer (K-symbol
-// rows, 512-byte interleaved leaves, the K x E level-0 fold, tower's rate/fold/query
-// constants) re-enables this.
-#[ignore = "reference verifier's Ligerito opening layer is not yet on the tower"]
+// The reference verifier (`python-verifier/verifier.py`) is on the 64-bit tower,
+// field pinned bit-exact by `primitives/tests/xcheck.rs`.
 fn test_python_verifier() {
     let replacements = BTreeMap::from([("LOOP_STEPS_PLACEHOLDER".to_string(), LOOP_STEPS.to_string())]);
     let ast = parse_with_replacements(SOURCE, &replacements).expect("parse zkDSL program");
@@ -141,6 +135,14 @@ fn test_python_verifier() {
 
     let verifier = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../python-verifier/verifier.py");
     let verification_started = Instant::now();
+    // `LEANVM_KEEP_ARTIFACTS` keeps the statement/proof pair for a standalone
+    // Python run and prints the transcript seed: when the two verifiers diverge,
+    // comparing the seed first says whether the split is in the statement binding
+    // or downstream of it.
+    if std::env::var("LEANVM_KEEP_ARTIFACTS").is_ok() {
+        let seed = lean_vm::cpu::fs_seed(&program);
+        eprintln!("rust fs_seed = [{},{}] [{},{}]", seed[0].c0, seed[0].c1, seed[1].c0, seed[1].c1);
+    }
     let output = Command::new("python3")
         .arg(verifier)
         .arg(statement_path)
