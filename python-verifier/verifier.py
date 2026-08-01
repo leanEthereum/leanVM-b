@@ -1094,6 +1094,7 @@ class Operation:
 @dataclass(frozen=True)
 class Program:
     operations: tuple[Operation, ...]
+    bytecode_used: int
 
     @classmethod
     def parse(cls, data: dict[str, Any]) -> "Program":
@@ -1104,10 +1105,17 @@ class Program:
         operations = tuple(Operation.parse(item) for item in encoded)
         require(bool(operations) and not len(operations) & (len(operations) - 1),
                 "program length must be a nonzero power of two")
-        return cls(operations)
+        bytecode_used = data.get("bytecode_used")
+        require(
+            isinstance(bytecode_used, int)
+            and not isinstance(bytecode_used, bool)
+            and 0 <= bytecode_used < len(operations),
+            "bytecode_used must identify a prefix before the sentinel",
+        )
+        return cls(operations, bytecode_used)
 
     def digest(self) -> tuple[int, int, int, int]:
-        words = [len(self.operations), 3]
+        words = [len(self.operations), 3, self.bytecode_used]
         tags = {"xor": 0, "mul": 1, "set": 2, "jump": 6, "blake3": 7, "pack64x2": 9}
         for operation in self.operations:
             d = operation.values
@@ -1149,6 +1157,9 @@ class Program:
 class Placement:
     variables: int
     offset: int
+    height: int = 0
+    block_width_log: int = 0
+    slot: int = 0
 
     @property
     def virtual(self) -> bool:
@@ -1317,9 +1328,15 @@ def _program_columns(program: Program) -> tuple[tuple[F192, ...], ...]:
     return tuple(tuple(column) for column in columns)
 
 
-def build_layout(program: Program, log_memory: int, row_counts: Sequence[int]) -> Layout:
+def build_layout(
+    program: Program,
+    log_memory: int,
+    memory_used: int,
+    row_counts: Sequence[int],
+) -> Layout:
     require(
         16 <= log_memory <= 32
+        and 2 <= memory_used <= 1 << log_memory
         and len(row_counts) == 7
         and all(0 <= count < 1 << 32 for count in row_counts),
         "invalid announced table sizes",
@@ -1367,6 +1384,7 @@ def build_layout(program: Program, log_memory: int, row_counts: Sequence[int]) -
     ]
     count: list[BusBlock] = []
     padding = [ZERO] * (6 + sum(WIDTHS))
+    padding[3] = padding[4] = ONE
     for table, (base, height, real) in enumerate(zip(BASES, table_logs, row_counts)):
         flushes = _table_flushes(table)
         for coordinates in flushes.push:
@@ -1396,22 +1414,97 @@ def build_layout(program: Program, log_memory: int, row_counts: Sequence[int]) -
         kappas[base : base + width] = [table_logs[table]] * width
     for local in BLAKE3_VALUES:
         kappas[b3 + local] = None
-    order = sorted(
-        (
-            (index, variables)
-            for index, variables in enumerate(kappas)
-            if variables is not None
-        ),
-        key=lambda item: (-item[1], item[0]),
-    )
+    heights = [0] * len(kappas)
+    height_sources: list[tuple[str, int] | None] = [None] * len(kappas)
+    for column in (0, 1, 2, 3):
+        heights[column] = memory_used
+        height_sources[column] = ("memory", 0)
+    heights[4] = program.bytecode_used
+    height_sources[4] = ("bytecode", program.bytecode_used)
+    heights[5] = 1 << (table_logs[5] + 8)
+    height_sources[5] = ("power", 0)
+    for table, (base, width, rows) in enumerate(zip(BASES, WIDTHS, row_counts)):
+        for column in range(base, base + width):
+            if kappas[column] is not None:
+                heights[column] = rows
+                height_sources[column] = ("table", table)
+
+    signatures: list[list[int]] = [[] for _ in kappas]
+    shared_sources = ((0, 0), (1, 0), (0, bytecode_log))
+    source_groups: dict[tuple[int, int], int] = {}
+    for side_index, side in enumerate((push, pull, count)):
+        for block_index, block in enumerate(side):
+            if block.owner is None:
+                require(side_index < 2 and block_index < 3, "invalid shared bus block")
+                source = shared_sources[block_index]
+            else:
+                source = (2 + block.owner[0], 0)
+            group = source_groups.setdefault(source, len(source_groups))
+            for coordinate in block.coordinates:
+                column = coordinate.column
+                if column is None:
+                    column = coordinate.generator_column
+                if column is not None and kappas[column] is not None:
+                    signatures[column].append(group)
+
+    next_group = len(source_groups)
+    for base, width in zip(BASES, WIDTHS):
+        for column in range(base, base + width):
+            if kappas[column] is not None:
+                signatures[column].append(next_group)
+        next_group += 1
+    for column in (0, 1, 2):
+        signatures[column].append(next_group)
+    signatures = [sorted(set(signature)) for signature in signatures]
+
+    blocks: list[list[int]] = [[5]]
+    committed = [column for column, variables in enumerate(kappas)
+                 if variables is not None and column != 5]
+    consumed: set[int] = set()
+    for first in committed:
+        if first in consumed:
+            continue
+        group = [
+            column for column in committed
+            if column not in consumed
+            and height_sources[column] == height_sources[first]
+            and signatures[column] == signatures[first]
+        ]
+        consumed.update(group)
+        start = 0
+        remaining = len(group)
+        while remaining:
+            width = 1 << (remaining.bit_length() - 1)
+            blocks.append(group[start : start + width])
+            start += width
+            remaining -= width
+
     placements = [Placement(-1, 0) for _ in kappas]
     offset = 0
-    for index, variables in order:
-        placements[index] = Placement(variables, offset)
-        offset += 1 << variables
-    stack_log = max(15, _ceil_log(max(1, offset)))
-    return Layout(tuple(push), tuple(pull), tuple(count), tuple(padding), tuple(placements),
-                  stack_log, tuple(table_logs))
+    logical_log = 0
+    for block in blocks:
+        width_log = len(block).bit_length() - 1
+        variables = kappas[block[0]]
+        require(variables is not None, "jagged block contains a virtual column")
+        height = heights[block[0]]
+        logical_log = max(logical_log, variables + width_log)
+        for slot, column in enumerate(block):
+            require(kappas[column] == variables and heights[column] == height,
+                    "incompatible columns in a jagged block")
+            placements[column] = Placement(variables, offset, height, width_log, slot)
+        offset += height * len(block)
+    require(len(consumed) + 1 == sum(kappa is not None for kappa in kappas),
+            "jagged layout omitted a committed column")
+    stack_log = max(15, logical_log, _ceil_log(max(1, offset)))
+    return Layout(
+        tuple(push),
+        tuple(pull),
+        tuple(count),
+        tuple(padding),
+        tuple(placements),
+        stack_log,
+        tuple(table_logs),
+    )
 
 
 def _air_evaluator(
@@ -2039,6 +2132,188 @@ class Reduction:
     c: ZClaim
 
 
+@dataclass(frozen=True)
+class JaggedClaim:
+    offset: int
+    height: int
+    selector_length: int
+    row_point: tuple[F192, ...]
+    value: F192
+
+
+@dataclass(frozen=True)
+class StridedClaim:
+    offset: int
+    slot: int
+    stride_log: int
+    point: tuple[F192, ...]
+    value: F192
+
+
+StackClaim = JaggedClaim | StridedClaim
+
+
+@dataclass(frozen=True)
+class JaggedBatch:
+    members: tuple[int, ...]
+    offset: int
+    height: int
+    row_weights: tuple[tuple[F192, F192], ...]
+    scale: F192
+
+
+def _prefix_indicator(height: int, point: Sequence[F192]) -> F192:
+    require(0 <= height <= 1 << len(point), "jagged prefix exceeds its logical column")
+    if height == 1 << len(point):
+        return ONE
+    less = ZERO
+    equal = ONE
+    for bit in range(len(point) - 1, -1, -1):
+        challenge = point[bit]
+        if height >> bit & 1:
+            less += equal * (ONE + challenge)
+            equal *= challenge
+        else:
+            equal *= ONE + challenge
+    return less
+
+
+def _jagged_indicator_with_weights(
+    row_weights: Sequence[tuple[F192, F192]],
+    start: int,
+    end: int,
+    index_point: Sequence[F192],
+) -> F192:
+    require(0 <= start <= end <= 1 << len(index_point), "invalid jagged interval")
+    require(len(row_weights) <= len(index_point), "jagged row point is too large")
+    state = [ONE, ZERO, ZERO, ZERO]
+    for bit in range(len(index_point) + 1):
+        challenge = index_point[bit] if bit < len(index_point) else ZERO
+        start_bit = start >> bit & 1
+        end_bit = end >> bit & 1
+        logical = row_weights[bit] if bit < len(row_weights) else (ONE, ZERO)
+        dense = (ONE + challenge, challenge)
+        following = [ZERO, ZERO, ZERO, ZERO]
+        for state_index, state_weight in enumerate(state):
+            carry = state_index & 1
+            comparison = state_index >> 1
+            for logical_bit in (0, 1):
+                total = logical_bit + carry + start_bit
+                dense_bit = total & 1
+                next_carry = total >> 1
+                next_comparison = comparison if dense_bit == end_bit else end_bit
+                following[next_carry + 2 * next_comparison] += (
+                    state_weight * logical[logical_bit] * dense[dense_bit]
+                )
+        state = following
+    return state[2]
+
+
+def _jagged_indicator(
+    row_point: Sequence[F192],
+    start: int,
+    end: int,
+    index_point: Sequence[F192],
+) -> F192:
+    return _jagged_indicator_with_weights(
+        tuple((ONE + challenge, challenge) for challenge in row_point),
+        start,
+        end,
+        index_point,
+    )
+
+
+def _geometric_claim_weights(
+    claims: Sequence[StackClaim], gamma: F192
+) -> tuple[list[F192], list[JaggedBatch]]:
+    count = len(claims)
+    unranked = count
+    ranks = [unranked] * count
+    raw_batches: list[tuple[tuple[int, ...], JaggedClaim]] = []
+    next_rank = 0
+    for index, claim in enumerate(claims):
+        if ranks[index] != unranked:
+            continue
+        if not isinstance(claim, JaggedClaim) or claim.selector_length == 0:
+            ranks[index] = next_rank
+            next_rank += 1
+            continue
+        width = 1 << claim.selector_length
+        by_slot: list[int | None] = [None] * width
+        for candidate_index in range(index, count):
+            candidate = claims[candidate_index]
+            if ranks[candidate_index] != unranked or not isinstance(candidate, JaggedClaim):
+                continue
+            if (
+                candidate.offset != claim.offset
+                or candidate.height != claim.height
+                or candidate.selector_length != claim.selector_length
+                or candidate.row_point[claim.selector_length :] != claim.row_point[claim.selector_length :]
+            ):
+                continue
+            slot = 0
+            for bit, challenge in enumerate(candidate.row_point[: claim.selector_length]):
+                if challenge == ONE:
+                    slot |= 1 << bit
+                elif challenge != ZERO:
+                    break
+            else:
+                if by_slot[slot] is None:
+                    by_slot[slot] = candidate_index
+        if all(member is not None for member in by_slot):
+            members = tuple(member for member in by_slot if member is not None)
+            for slot, member in enumerate(members):
+                ranks[member] = next_rank + slot
+            raw_batches.append((members, claim))
+            next_rank += width
+        else:
+            ranks[index] = next_rank
+            next_rank += 1
+    require(next_rank == count and sorted(ranks) == list(range(count)),
+            "invalid geometric claim ranking")
+
+    gamma_powers = powers(gamma, count)
+    weights = [gamma_powers[rank] for rank in ranks]
+    batches: list[JaggedBatch] = []
+    for members, claim in raw_batches:
+        selector_power = gamma
+        row_weights: list[tuple[F192, F192]] = []
+        for _ in range(claim.selector_length):
+            row_weights.append((ONE, selector_power))
+            selector_power *= selector_power
+        row_weights.extend(
+            (ONE + challenge, challenge)
+            for challenge in claim.row_point[claim.selector_length :]
+        )
+        batches.append(JaggedBatch(
+            members,
+            claim.offset,
+            claim.height,
+            tuple(row_weights),
+            gamma_powers[ranks[members[0]]],
+        ))
+    return weights, batches
+
+
+def _stack_claim_evaluation(claim: StackClaim, point: Sequence[F192]) -> F192:
+    if isinstance(claim, JaggedClaim):
+        return _jagged_indicator(
+            claim.row_point, claim.offset, claim.offset + claim.height, point
+        )
+    require(claim.slot < 1 << claim.stride_log, "strided slot is out of range")
+    block_variables = claim.stride_log + len(claim.point)
+    require(block_variables <= len(point), "strided claim exceeds the stack")
+    result = ONE
+    for bit, challenge in enumerate(point[: claim.stride_log]):
+        result *= challenge if claim.slot >> bit & 1 else ONE + challenge
+    for expected, challenge in zip(claim.point, point[claim.stride_log : block_variables]):
+        result *= ONE + expected + challenge
+    selector = claim.offset >> block_variables
+    for bit, challenge in enumerate(point[block_variables:]):
+        result *= challenge if selector >> bit & 1 else ONE + challenge
+    return result
+
+
 def _claim_weights(point: QuirkyPoint) -> list[F192]:
     return lagrange_weights(PHI[:64], point.skip)
 
@@ -2090,9 +2365,9 @@ def verify_stacked_opening(
     qpkd_offset: int,
     qpkd_variables: int,
     reduction: Reduction,
-    point_claims: Sequence[tuple[Sequence[F192], F192]],
+    point_claims: Sequence[StackClaim],
 ) -> None:
-    """Bind both ring-switched claims and all ordinary stack point claims."""
+    """Bind the ring-switched and jagged claims to one stacked opening."""
     ring_claims = (reduction.ab, reduction.c)
     require(len(opening.ring_switches) == len(ring_claims), "wrong ring-switch proof count")
     slices: list[Sequence[F192]] = []
@@ -2111,10 +2386,15 @@ def verify_stacked_opening(
     ring_scales = transcript.samples(2)
     target = sum((scale * value for scale, value in zip(ring_scales, ring_values)), ZERO)
 
-    for _, value in point_claims:
-        transcript.observe(value)
-    point_scales = transcript.samples(len(point_claims))
-    target += sum((scale * value for scale, (_, value) in zip(point_scales, point_claims)), ZERO)
+    for claim in point_claims:
+        transcript.observe(claim.value)
+    point_scales, jagged_batches = _geometric_claim_weights(
+        point_claims, transcript.sample()
+    )
+    target += sum(
+        (scale * claim.value for scale, claim in zip(point_scales, point_claims)), ZERO
+    )
+    grouped = {member for batch in jagged_batches for member in batch.members}
 
     selector = qpkd_offset >> qpkd_variables
 
@@ -2140,12 +2420,16 @@ def verify_stacked_opening(
                 (scale * _ring_weight(claim.point.ring_tail, low, coordinate_weights)
                  for scale, claim in zip(ring_scales, ring_claims)), ZERO)
             value = selector_weight * ring_value
-            for scale, (claim_point, _) in zip(point_scales, point_claims):
-                require(len(claim_point) == len(point), "stack point has the wrong dimension")
-                factor = ONE
-                for expected, challenge in zip(claim_point, point):
-                    factor *= ONE + expected + challenge
-                value += scale * factor
+            for batch in jagged_batches:
+                value += batch.scale * _jagged_indicator_with_weights(
+                    batch.row_weights,
+                    batch.offset,
+                    batch.offset + batch.height,
+                    point,
+                )
+            for claim_index, (scale, claim) in enumerate(zip(point_scales, point_claims)):
+                if claim_index not in grouped:
+                    value += scale * _stack_claim_evaluation(claim, point)
             result.append(value)
         return result
 
@@ -2337,11 +2621,14 @@ def verify_execution(statement: dict[str, Any], proof: Proof) -> None:
 
     announced = transcript.scalars(9)
     require(all(value.c1 == value.c2 == 0 for value in announced), "announced size has a nonzero high limb")
-    log_memory = announced[0].c0
+    memory_used = announced[0].c0
     row_counts = tuple(value.c0 for value in announced[1:8])
     log_inverse_rate = announced[8].c0
+    require(len(program.operations) <= 1 << 32 and 2 <= memory_used <= 1 << 32,
+            "public instance exceeds the VM size limits")
     require(1 <= log_inverse_rate <= 4, "invalid PCS inverse rate")
-    layout = build_layout(program, log_memory, row_counts)
+    log_memory = max(16, _ceil_log(memory_used))
+    layout = build_layout(program, log_memory, memory_used, row_counts)
 
     root_words = transcript.scalars(2)
     root = b"".join(
@@ -2378,7 +2665,7 @@ def verify_execution(statement: dict[str, Any], proof: Proof) -> None:
         for column, value in enumerate((public_low, public_high, public_top))
     )
 
-    point_claims: list[tuple[tuple[F192, ...], F192]] = []
+    point_claims: list[StackClaim] = []
     qpkd = layout.placements[5]
     for claim in claims:
         slot = virtual_slot(claim.column)
@@ -2386,19 +2673,21 @@ def verify_execution(statement: dict[str, Any], proof: Proof) -> None:
             placement = layout.placements[claim.column]
             require(not placement.virtual, "claim targets an uncommitted column")
             require(len(claim.point) == placement.variables, "column claim dimension mismatch")
-            selector = placement.offset >> placement.variables
-            full_point = claim.point + _selector_point(
-                selector, layout.stack_log - placement.variables
+            suffix = ONE + _prefix_indicator(placement.height, claim.point)
+            value = claim.value + layout.padding[claim.column] * suffix
+            row_point = (
+                _selector_point(placement.slot, placement.block_width_log) + claim.point
             )
+            point_claims.append(JaggedClaim(
+                placement.offset,
+                placement.height << placement.block_width_log,
+                placement.block_width_log,
+                row_point,
+                value,
+            ))
         else:
             require(len(claim.point) + 8 == qpkd.variables, "BLAKE3 slot claim dimension mismatch")
-            selector = qpkd.offset >> qpkd.variables
-            full_point = (
-                _selector_point(slot, 8)
-                + claim.point
-                + _selector_point(selector, layout.stack_log - qpkd.variables)
-            )
-        point_claims.append((full_point, claim.value))
+            point_claims.append(StridedClaim(qpkd.offset, slot, 8, claim.point, claim.value))
 
     reduction = verify_reduction(14 + layout.table_logs[5], transcript)
     opening = transcript.opening()

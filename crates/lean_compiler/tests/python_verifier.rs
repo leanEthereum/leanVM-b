@@ -109,9 +109,10 @@ fn statement_json(program: &Program, public_input: [F192; 2]) -> String {
         .collect::<Vec<_>>()
         .join(",\n");
     format!(
-        "{{\n  \"public_input\": [{}, {}],\n  \"program\": [\n{}\n  ]\n}}\n",
+        "{{\n  \"public_input\": [{}, {}],\n  \"bytecode_used\": {},\n  \"program\": [\n{}\n  ]\n}}\n",
         field_json(public_input[0]),
         field_json(public_input[1]),
+        program.bytecode_used(),
         operations,
     )
 }
