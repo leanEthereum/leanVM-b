@@ -162,5 +162,9 @@ fn test_python_verifier() {
         encoded.len(),
         verification_time,
     );
-    std::fs::remove_dir_all(directory).expect("remove test directory");
+    if std::env::var("LEANVM_KEEP_ARTIFACTS").is_err() {
+        std::fs::remove_dir_all(directory).expect("remove test directory");
+    } else {
+        eprintln!("artifacts kept in {}", directory.display());
+    }
 }

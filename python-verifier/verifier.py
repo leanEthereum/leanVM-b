@@ -390,38 +390,107 @@ class BinaryReader:
 
 @dataclass(frozen=True)
 class LevelOpening:
+    """`InitialProofK` / `RecursiveProofK` / the tail of `FinalProofK`.
+
+    Level 0 commits `K`, so its opened rows are 8-byte symbols; every deeper
+    level is `E`-valued and 16 bytes per entry.
+    """
+
     opened_rows: tuple[tuple[F128, ...], ...]
     merkle_proof: tuple[bytes, ...]
 
     @classmethod
-    def read(cls, reader: BinaryReader) -> "LevelOpening":
+    def read(cls, reader: BinaryReader, base_field: bool) -> "LevelOpening":
+        width = 8 if base_field else 16
         row_count = reader.u64()
-        require(row_count <= reader.remaining // 8, "invalid opened-row count")
-        rows = tuple(tuple(reader.fields()) for _ in range(row_count))
+        require(row_count <= reader.remaining // width, "invalid opened-row count")
+        rows = []
+        for _ in range(row_count):
+            length = reader.u64()
+            require(length <= reader.remaining // width, "invalid opened-row length")
+            if base_field:
+                rows.append(tuple(F128.new(reader.u64(), 0) for _ in range(length)))
+            else:
+                rows.append(tuple(reader.field() for _ in range(length)))
         path_length = reader.u64()
         require(path_length <= reader.remaining // 32, "invalid Merkle proof length")
-        return cls(rows, tuple(reader.take(32) for _ in range(path_length)))
+        return cls(tuple(rows), tuple(reader.take(32) for _ in range(path_length)))
+
+
+@dataclass(frozen=True)
+class SumcheckMessage:
+    """`SumcheckMessageK`: the round quadratic at 0 and 2."""
+
+    u_0: F128
+    u_2: F128
 
 
 @dataclass(frozen=True)
 class LigeritoOpening:
+    """`LigeritoProofK`, field for field.
+
+    Unlike the GHASH `LigeritoProof`, the tower carries its recursive roots,
+    sumcheck messages and proof-of-work nonces HERE rather than on the transcript
+    stream, so the parser mirrors all seven fields.
+    """
+
     initial: LevelOpening
+    recursive_roots: tuple[bytes, ...]
     levels: tuple[LevelOpening, ...]
+    final_yr: tuple[F128, ...]
     final: LevelOpening
+    sumcheck: tuple[SumcheckMessage, ...]
+    grinding_nonces: tuple[int, ...]
+    fold_grinding_nonces: tuple[int, ...]
 
     @classmethod
     def read(cls, reader: BinaryReader) -> "LigeritoOpening":
-        initial = LevelOpening.read(reader)
+        initial = LevelOpening.read(reader, base_field=True)
+        root_count = reader.u64()
+        require(root_count <= 32, "too many Ligerito levels")
+        roots = tuple(reader.take(32) for _ in range(root_count))
+        level_count = reader.u64()
+        require(level_count <= 32, "too many Ligerito levels")
+        levels = tuple(LevelOpening.read(reader, base_field=False) for _ in range(level_count))
+        yr_length = reader.u64()
+        require(yr_length <= reader.remaining // 16, "invalid residual length")
+        final_yr = tuple(reader.field() for _ in range(yr_length))
+        final = LevelOpening.read(reader, base_field=False)
+        message_count = reader.u64()
+        require(message_count <= reader.remaining // 32, "invalid sumcheck transcript length")
+        sumcheck = tuple(SumcheckMessage(reader.field(), reader.field()) for _ in range(message_count))
+        query_nonce_count = reader.u64()
+        require(query_nonce_count <= reader.remaining // 8, "invalid query-nonce count")
+        grinding = tuple(reader.u64() for _ in range(query_nonce_count))
+        fold_nonce_count = reader.u64()
+        require(fold_nonce_count <= reader.remaining // 8, "invalid fold-nonce count")
+        fold_grinding = tuple(reader.u64() for _ in range(fold_nonce_count))
+        return cls(initial, roots, levels, final_yr, final, sumcheck, grinding, fold_grinding)
+
+
+@dataclass(frozen=True)
+class BatchOpening:
+    """`BatchOpeningProofK`: the ring-switch scalars plus one Ligerito proof."""
+
+    ring_switches: tuple[tuple[F128, ...], ...]
+    ligerito: LigeritoOpening
+
+    @classmethod
+    def read(cls, reader: BinaryReader) -> "BatchOpening":
         count = reader.u64()
-        require(count <= 32, "too many Ligerito levels")
-        levels = tuple(LevelOpening.read(reader) for _ in range(count))
-        return cls(initial, levels, LevelOpening.read(reader))
+        require(count <= 64, "too many ring switches")
+        switches = []
+        for _ in range(count):
+            length = reader.u64()
+            require(length <= reader.remaining // 16, "invalid ring-switch length")
+            switches.append(tuple(reader.field() for _ in range(length)))
+        return cls(tuple(switches), LigeritoOpening.read(reader))
 
 
 @dataclass(frozen=True)
 class Proof:
     stream: tuple[F128, ...]
-    openings: tuple[LigeritoOpening, ...]
+    openings: tuple[BatchOpening, ...]
 
     @classmethod
     def from_bincode(cls, data: bytes) -> "Proof":
@@ -429,7 +498,7 @@ class Proof:
         stream = tuple(reader.fields())
         count = reader.u64()
         require(count <= 8, "too many PCS openings")
-        openings = tuple(LigeritoOpening.read(reader) for _ in range(count))
+        openings = tuple(BatchOpening.read(reader) for _ in range(count))
         reader.finish()
         return cls(stream, openings)
 
@@ -520,7 +589,16 @@ class Transcript:
         require(encoded.hi == 0, "grinding nonce has a nonzero high limb")
         self.sponge.check_pow(encoded.lo, bits)
 
-    def opening(self) -> LigeritoOpening:
+    def grind_nonce(self, nonce: int, bits: int) -> None:
+        """Check a proof-of-work whose nonce rides the OPENING, not the stream.
+
+        The tower's Ligerito keeps its query and fold nonces in `LigeritoProofK`;
+        only the bus grind (§sec:gp) still spends a stream word.
+        """
+        require(nonce >> 64 == 0, "grinding nonce must be a u64")
+        self.sponge.check_pow(nonce, bits)
+
+    def opening(self) -> BatchOpening:
         require(self.opening_offset < len(self.proof.openings), "PCS opening missing")
         result = self.proof.openings[self.opening_offset]
         self.opening_offset += 1
@@ -950,14 +1028,19 @@ def verify_constraints(
 # VM statement, layout, and AIR -----------------------------------------------
 
 FAMILY_DIGEST = bytes.fromhex("afed7472c6f771a857599272ff33a4da86b21f2600f057fa0da797d15863eb58")
-BASES = (4, 19, 34, 41, 58, 77)
-WIDTHS = (15, 15, 7, 17, 19, 32)
-CONSTRAINT_COUNTS = (4, 4, 1, 4, 7, 6)
-COUNT_COLUMNS = ((11, 12, 13, 14), (11, 12, 13, 14), (5, 6),
-                 (13, 14, 15, 16), (13, 14, 15, 16),
-                 (23, 24, 25, 26, 27, 28, 29, 30, 31))
-BLAKE3_VALUES = (14, 15, 16, 17, 18, 19, 20, 21, 22)
-BLAKE3_SLOTS = (5, 6, 7, 8, 2, 3, 0, 1, 9)
+# The tower schema, straight from `lean_vm::cpu::schema()` and the tables. Seven
+# tables (PACK64X2 last), and words are lane-split, so a 128-bit value costs two
+# K-columns: the widths and count-column indices are all larger than the GHASH
+# build's.
+BASES = (5, 23, 41, 49, 68, 91, 132)
+WIDTHS = (18, 18, 8, 19, 23, 41, 14)
+CONSTRAINT_COUNTS = (4, 4, 1, 4, 7, 6, 3)
+COUNT_COLUMNS = ((14, 15, 16, 17), (14, 15, 16, 17), (6, 7),
+                 (15, 16, 17, 18), (16, 17, 18, 19),
+                 (32, 33, 34, 35, 36, 37, 38, 39, 40),
+                 (10, 11, 12, 13))
+BLAKE3_VALUES = tuple(range(14, 32))
+BLAKE3_SLOTS = (10, 11, 12, 13, 14, 15, 16, 17, 4, 5, 6, 7, 0, 1, 2, 3, 18, 19)
 BLAKE3_SLOT_BY_VALUE: dict[int, int] = dict(zip(BLAKE3_VALUES, BLAKE3_SLOTS))
 VM_IV = (
     F128.new(0xBB67AE856A09E667, 0xA54FF53A3C6EF372),
@@ -1236,7 +1319,7 @@ def _program_columns(program: Program) -> tuple[tuple[F128, ...], ...]:
 def build_layout(program: Program, log_memory: int, row_counts: Sequence[int]) -> Layout:
     require(
         16 <= log_memory <= 32
-        and len(row_counts) == 6
+        and len(row_counts) == len(BASES)
         and all(0 <= count < 1 << 32 for count in row_counts),
         "invalid announced table sizes",
     )
@@ -1282,7 +1365,7 @@ def build_layout(program: Program, log_memory: int, row_counts: Sequence[int]) -
         ),
     ]
     count: list[BusBlock] = []
-    padding = [ZERO] * (4 + sum(WIDTHS))
+    padding = [ZERO] * (BASES[0] + sum(WIDTHS))
     for table, (base, height, real) in enumerate(zip(BASES, table_logs, row_counts)):
         flushes = _table_flushes(table)
         for coordinates in flushes.push:
@@ -1644,6 +1727,10 @@ def verify_ligerito(
     config = derive_config(log_n)
     level_count = len(config.folds)
     require(len(opening.levels) == max(0, level_count - 2), "wrong Ligerito level count")
+    # The tower keeps its proof-of-work nonces in the opening, consumed in
+    # transcript order (one query nonce per level; the fold nonces flattened).
+    query_nonces = list(opening.grinding_nonces)
+    fold_nonces = list(opening.fold_grinding_nonces)
     transcript.observe(target)
     transcript.absorb_bytes(root)
 
@@ -1662,7 +1749,8 @@ def verify_ligerito(
         for fold_index in range(config.folds[level]):
             bits = max(0, config.fold_grinding[level] - fold_index)
             if bits:
-                transcript.grind(bits)
+                require(fold_nonces, "missing Ligerito fold-grinding nonce")
+                transcript.grind_nonce(fold_nonces.pop(0), bits)
             challenge = transcript.sample()
             all_folds.append(challenge)
             fold_values.append(challenge)
@@ -1693,7 +1781,8 @@ def verify_ligerito(
             root_words = transcript.scalars(2)
             next_root = root_words[0].to_bytes() + root_words[1].to_bytes()
 
-        transcript.grind(config.query_grinding[level])
+        require(query_nonces, "missing Ligerito query-grinding nonce")
+        transcript.grind_nonce(query_nonces.pop(0), config.query_grinding[level])
         block_length = 1 << (opened_message_log + opened_rate)
         queries = sample_queries(transcript.sponge, block_length, config.queries[level])
         alpha = transcript.samples(max(0, (len(queries) - 1).bit_length()))
@@ -2125,7 +2214,7 @@ def verify_execution(statement: dict[str, Any], proof: Proof) -> None:
     public_input = tuple(parse_field(value) for value in encoded_input)
     transcript = Transcript(proof, b"leanvm-b", program.transcript_statement(public_input))
 
-    announced = transcript.scalars(7)
+    announced = transcript.scalars(1 + len(BASES))
     require(all(value.hi == 0 for value in announced), "announced size has a nonzero high limb")
     log_memory = announced[0].lo
     row_counts = tuple(value.lo for value in announced[1:])
