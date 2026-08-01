@@ -872,8 +872,11 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
                 assert root_0 == commit_root_0
                 assert root_1 == commit_root_1
             else:
-                assert root_0 == level_roots_0[GEN ** lvl]
-                assert root_1 == level_roots_1[GEN ** lvl]
+                # A heap store IS the equality assert here (`DerefMode::Cell`
+                # unifies the two cells, and the slot was written when the root
+                # was read off the stream), at one instruction instead of three.
+                level_roots_0[GEN ** lvl] = root_0
+                level_roots_1[GEN ** lvl] = root_1
         level_query_sum = query_sum_chain[GEN ** LIG_QUERIES[m_idx * LIG_MAX_LEVELS + lvl]]
 
         if lvl == LIG_YR_LEVEL[m_idx]:
