@@ -201,6 +201,5 @@ def blake3(
 
     Message, chaining-value, and output operands are size-2 StackBufs or
     2-cell slices `buf[lo:hi]` of larger StackBufs or HeapBufs (heap inputs are
->>>>>>> origin/main
     bridged through the stack, one DEREF per cell)."""
     _ = a, b, out, cv, counter, chunk, block_len, flags, step, end, root, parent
