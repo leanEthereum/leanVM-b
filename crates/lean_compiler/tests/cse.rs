@@ -129,3 +129,29 @@ def main():
     let want = [F192::ZERO, F192::from(g_pow(9))];
     let _ = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
 }
+
+/// A hint at the end of a runtime branch is attached to a no-op anchor by the
+/// lowerer. Even when that anchor repeats an earlier pure instruction, CSE must
+/// retain it: moving the hint to the next textual instruction would move it to
+/// the join and execute it when the branch is not taken.
+#[test]
+fn trailing_branch_hint_stays_in_its_branch() {
+    let src = "\
+def main():
+    flag = StackBuf(1)
+    hint_witness(flag, \"flag\")
+    data = StackBuf(1)
+    if flag[0] == 1:
+        print(\"anchor\", flag[0])
+        hint_witness(data, \"data\")
+    p = 1
+    p[1] = flag[0]
+    p[GEN] = 0
+    return
+";
+    let mut program = compile(&parse(src).expect("parse"));
+    program.set_witness("flag", vec![vec![F192::ZERO]]);
+    let want = [F192::ZERO, F192::ZERO];
+    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    verify(&program, &want, &proof).expect("untaken branch must not consume its witness");
+}

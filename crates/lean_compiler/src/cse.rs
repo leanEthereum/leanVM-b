@@ -60,7 +60,6 @@ pub(crate) fn cse(code: &mut Vec<LInstr>, abi_end: Off) -> usize {
     let mut subst: HashMap<Off, Off> = HashMap::new();
     let mut seen: HashMap<Key, Off> = HashMap::new();
     let mut drop = vec![false; code.len()];
-    let mut moved_hints: Vec<(usize, Vec<Hint>)> = Vec::new();
     let mut ends_block = false;
 
     for (i, ins) in code.iter_mut().enumerate() {
@@ -85,39 +84,23 @@ pub(crate) fn cse(code: &mut Vec<LInstr>, abi_end: Off) -> usize {
         if dst < abi_end || writes.get(&dst).copied().unwrap_or(0) != 1 {
             continue;
         }
+        // Hints execute immediately before their instruction. Keeping the
+        // instruction is the only generally safe way to preserve that control-
+        // flow position: moving a branch-local hint to the next textual
+        // instruction could move it past the branch join.
+        if !ins.hints.is_empty() {
+            seen.entry(key).or_insert(dst);
+            continue;
+        }
         match seen.get(&key) {
             // The value is already in `canon`: point later reads there and drop
             // this instruction.
             Some(&canon) => {
                 subst.insert(dst, canon);
                 drop[i] = true;
-                // The hints attached to a dropped instruction still have to run,
-                // and they ran before it: hand them to the next surviving
-                // instruction, ahead of its own. (A loop's tail call attaches its
-                // frame allocation to the counter advance, which is exactly the
-                // kind of duplicate this pass folds.)
-                moved_hints.push((i, std::mem::take(&mut ins.hints)));
             }
             None => {
                 seen.insert(key, dst);
-            }
-        }
-    }
-
-    // Re-attach in reverse index order, so several hints moved onto the same
-    // successor keep their original relative order.
-    for (i, hints) in moved_hints.into_iter().rev() {
-        if hints.is_empty() {
-            continue;
-        }
-        match code[i + 1..].iter_mut().zip(&drop[i + 1..]).find(|(_, d)| !**d) {
-            Some((next, _)) => {
-                next.hints.splice(0..0, hints);
-            }
-            // Nothing survives after it (a dropped tail): keep the instruction.
-            None => {
-                code[i].hints = hints;
-                drop[i] = false;
             }
         }
     }
