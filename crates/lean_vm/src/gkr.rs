@@ -9,7 +9,7 @@
 use crate::PAR_THRESHOLD;
 use primitives::field::{F128T, F128TUnreduced, mul_by_g_e};
 use primitives::multilinear::lagrange_eval;
-use primitives::multilinear::{eq_table, interp, tri_nodes, xor3};
+use primitives::multilinear::{eq_table, interp, shrink_eq_low, tri_nodes, xor3};
 use crate::transcript::{ProverState, VerifierState};
 use rayon::prelude::*;
 
@@ -126,18 +126,6 @@ impl LayerState {
     }
 }
 
-/// Shrink `eqr` to the next round's suffix table (in place: the read cursor
-/// `2·idx` stays ahead of the write cursor `idx`). `eq(r_j,0) + eq(r_j,1) = 1`,
-/// so summing adjacent entries marginalizes the bound variable with no
-/// multiplies (vs rebuilding with ~2^{k-j} muls per round).
-fn shrink_eq(eqr: &mut Vec<F128T>) {
-    let eq_half = eqr.len() / 2;
-    for idx in 0..eq_half {
-        eqr[idx] = eqr[2 * idx] + eqr[2 * idx + 1];
-    }
-    eqr.truncate(eq_half);
-}
-
 /// The result of a batched grand-product proof ([`prove_product_triple`]):
 /// the per-tree roots and leaf values, all reduced to ONE shared evaluation
 /// point (`Ṽ_t(point) = values[t]`).
@@ -186,7 +174,7 @@ pub fn prove_product_triple(leaves: [Vec<F128T>; 3], ps: &mut ProverState) -> Pr
             for tree in &mut trees {
                 tree.fold(rk);
             }
-            shrink_eq(&mut eqr);
+            shrink_eq_low(&mut eqr);
         }
 
         for tree in &trees {

@@ -1,11 +1,11 @@
 // `build_eq` and `lagrange_weights_naive` come from https://github.com/succinctlabs/flock (MIT OR Apache-2.0).
 //! Multilinear-extension utilities: the equality polynomial, single-variable
 //! folding, and MLE evaluation. Truth tables are indexed little-endian (variable
-//! `k` is bit `k`); folding binds the lowest free variable, the order sumcheck
-//! rounds consume. Committed data is `K`-valued (`F64`), all randomness is
-//! `E`-valued (`F128T`), so the workhorses come in two flavors: pure-`E`
-//! folding, and the mixed first fold that lifts a `K`-table into `E` via
-//! `mul_base` (2 PMULL per term).
+//! `k` is bit `k`). Sumchecks here consume variables from either end, so folding
+//! and `eq`-marginalization come in a low and a high variant. Committed data is
+//! `K`-valued (`F64`), all randomness is `E`-valued (`F128T`), so each direction
+//! has two flavors: pure-`E` folding, and the mixed fold that lifts a `K`-table
+//! into `E` via `mul_base` (2 PMULL per term).
 
 use crate::field::{F64, F128T, F128TUnreduced};
 
@@ -63,6 +63,16 @@ pub fn fold_low_k(table: &[F64], rho: F128T) -> Vec<F128T> {
         .collect()
 }
 
+/// The mixed fold, high variant: bind the HIGHEST variable of a `K`-table to an
+/// `E`-challenge. Two sequential streams rather than strided pairs, and the order
+/// the batched zerocheck consumes, since it leaves the low variables (the ones
+/// every table of the batch shares) for last.
+pub fn fold_high_k(table: &[F64], rho: F128T) -> Vec<F128T> {
+    debug_assert_eq!(table.len() % 2, 0);
+    let half = table.len() / 2;
+    (0..half).map(|i| interp_k(table[i], table[i + half], rho)).collect()
+}
+
 /// Bind the lowest free variable of `table` to `rho` in place: `table[i] =
 /// interp(table[2i], table[2i+1], rho)` (no reallocation; `i ≤ 2i`, so unread
 /// entries survive).
@@ -71,6 +81,39 @@ pub fn fold_low_inplace(table: &mut Vec<F128T>, rho: F128T) {
     let half = table.len() / 2;
     for i in 0..half {
         table[i] = interp(table[2 * i], table[2 * i + 1], rho);
+    }
+    table.truncate(half);
+}
+
+/// Bind the highest free variable of `table` to `rho` in place: `table[i] =
+/// interp(table[i], table[i + half], rho)`.
+pub fn fold_high_inplace(table: &mut Vec<F128T>, rho: F128T) {
+    debug_assert_eq!(table.len() % 2, 0);
+    let half = table.len() / 2;
+    for i in 0..half {
+        table[i] = interp(table[i], table[i + half], rho);
+    }
+    table.truncate(half);
+}
+
+/// Marginalize the lowest variable out of an `eq` table (in place). `eq(r_0, 0) +
+/// eq(r_0, 1) = 1`, so summing adjacent entries drops `r_0` with no multiplies,
+/// versus `2^{n-1}` to rebuild the table.
+pub fn shrink_eq_low(table: &mut Vec<F128T>) {
+    let half = table.len() / 2;
+    for i in 0..half {
+        table[i] = table[2 * i] + table[2 * i + 1];
+    }
+    table.truncate(half);
+}
+
+/// Marginalize the HIGHEST variable out of an `eq` table (in place), the mirror of
+/// [`shrink_eq_low`]: one table then serves every round of the batched zerocheck.
+pub fn shrink_eq_high(table: &mut Vec<F128T>) {
+    let half = table.len() / 2;
+    for i in 0..half {
+        let hi = table[i + half];
+        table[i] += hi;
     }
     table.truncate(half);
 }
@@ -98,11 +141,19 @@ pub fn lagrange_eval(nodes: &[F128T], values: &[F128T], p: F128T) -> F128T {
 }
 
 /// The 3 nodes {0, 1, g} at which a degree-2 sumcheck round univariate is sent
-/// (the eq weight is factored out); `g` embedded into `E`. Shared by
-/// `lean_vm::constraints` and `lean_vm::gkr`.
+/// (the eq weight is factored out); `g` embedded into `E`. Used by `lean_vm::gkr`.
 #[inline]
 pub fn tri_nodes() -> [F128T; 3] {
     [F128T::ZERO, F128T::ONE, F128T::from(crate::field::G)]
+}
+
+/// The 4 nodes {0, 1, g, g²} at which a degree-3 sumcheck round univariate is sent
+/// WHOLE, eq weight included. Costs one field element more than [`tri_nodes`] and
+/// buys a verifier that reapplies nothing: `h(0) + h(1) = claim`, then interpolate.
+#[inline]
+pub fn quad_nodes() -> [F128T; 4] {
+    let g = F128T::from(crate::field::G);
+    [F128T::ZERO, F128T::ONE, g, g * g]
 }
 
 /// Add two 3-coefficient sumcheck accumulators componentwise.

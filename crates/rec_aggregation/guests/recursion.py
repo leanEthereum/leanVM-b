@@ -9,6 +9,12 @@ INV_GEN = INV_GEN_PLACEHOLDER
 LAGRANGE_INV_0 = LAGRANGE_INV_0_PLACEHOLDER
 LAGRANGE_INV_1 = LAGRANGE_INV_1_PLACEHOLDER
 LAGRANGE_INV_2 = LAGRANGE_INV_2_PLACEHOLDER
+# The batched zerocheck's round polynomial arrives WHOLE, as a cubic at {0,1,g,g^2}:
+# one baked inverse denominator per node.
+LAG4_INV_0 = LAG4_INV_0_PLACEHOLDER
+LAG4_INV_1 = LAG4_INV_1_PLACEHOLDER
+LAG4_INV_2 = LAG4_INV_2_PLACEHOLDER
+LAG4_INV_3 = LAG4_INV_3_PLACEHOLDER
 
 # GKR sides. The layer counts mu_s are hinted and certified from the block
 # kappas.
@@ -41,7 +47,9 @@ COORD_KIND_GCOL = 2
 COORD_KIND_INDEX = 3
 COORD_KIND_PUBLIC = 4
 # BLOCK_REAL_TABLE: the table whose count is the block's real row count, or
-# REAL_IS_FULL_CUBE for the shared blocks (real = 2^kappa, no padding).
+# REAL_IS_FULL_CUBE for the framework blocks (real = 2^kappa, no padding). It is
+# also what marks a block as owned: an owned block's fingerprint is settled by the
+# batched zerocheck, off its table's column evaluations.
 REAL_IS_FULL_CUBE = REAL_IS_FULL_CUBE_PLACEHOLDER
 SIDE_BLOCK_START = SIDE_BLOCK_START_PLACEHOLDER
 N_BLOCKS = N_BLOCKS_PLACEHOLDER
@@ -61,6 +69,11 @@ COORD_PAD_VAL = COORD_PAD_VAL_PLACEHOLDER
 # side has its own point, so its claims never dedup against the pair's.
 COORD_FRESH = COORD_FRESH_PLACEHOLDER
 COORD_CLAIM_SLOT = COORD_CLAIM_SLOT_PLACEHOLDER
+# For a coord of a TABLE's block: its column's local index inside that table. Those
+# coords raise no claim (the zerocheck settles them), so they use this instead.
+COORD_COL_LOCAL = COORD_COL_LOCAL_PLACEHOLDER
+# A GCol coord's free g^k, as a value (the exponent cannot be a runtime list read).
+COORD_GVAL = COORD_GVAL_PLACEHOLDER
 N_BUS_CLAIMS = N_BUS_CLAIMS_PLACEHOLDER
 # index_mle factor constants: INDEX_MLE_FACTORS[i] = 1 + g^(2^i).
 INDEX_MLE_FACTORS = INDEX_MLE_FACTORS_PLACEHOLDER
@@ -72,11 +85,17 @@ N_CLAIMS = N_CLAIMS_PLACEHOLDER
 # their GKR point, so the columns are opened ONCE (BYTECODE_COLS values).
 BYTECODE_COLS = BYTECODE_COLS_PLACEHOLDER
 LOG2_BYTECODE_COLS = LOG2_BYTECODE_COLS_PLACEHOLDER
-# Zerochecks: per-table constraint-column counts (round counts are the
-# certified tau_t); AIR_COLS_CAP caps the evaluation frame.
-N_AIR_COLS = N_AIR_COLS_PLACEHOLDER
-AIR_COLS_CAP = AIR_COLS_CAP_PLACEHOLDER
-TAU_CAP = TAU_CAP_PLACEHOLDER
+# Zerocheck: the batch carries EVERY committed column of a table, because its bus
+# forms read the flushed ones and its constraint the rest; TABLE_COLS_CAP caps the
+# evaluation frame. ETA_OFFSET[t] starts table t's disjoint range of eta-powers.
+N_TABLE_COLS = N_TABLE_COLS_PLACEHOLDER
+TABLE_COLS_CAP = TABLE_COLS_CAP_PLACEHOLDER
+# ETA_OFFSET[t] starts table t's disjoint range of identity powers; the three bus
+# forms take ETA_FORM_BASE + side, the SAME three powers for every table. That
+# sharing is what makes the batch's target derivable from the three leaf claims.
+ETA_OFFSET = ETA_OFFSET_PLACEHOLDER
+ETA_FORM_BASE = ETA_FORM_BASE_PLACEHOLDER
+N_ETA_POWS = N_ETA_POWS_PLACEHOLDER
 # The instruction tables, in schema order:
 TABLE_XOR = 0
 TABLE_MUL = 1
@@ -126,7 +145,7 @@ SLOT_STRIDE_LOG = SLOT_STRIDE_LOG_PLACEHOLDER  # = K_LOG - LOG_PACKING_K (=8); t
 # per-fold grind schedules with the LIG_MAX_TOTAL_FOLDS stride; the subspace
 # vanishing constants with the LIG_MAX_VANISH_LEN stride. The eval_b terminal
 # claim descriptors keep only the FIXED parts baked (CLAIM_POINT_BUF, named
-# POINT_BUF_* below; CLAIM_POINT_OFF into those buffers) — the
+# POINT_BUF_* below) — the
 # shape-dependent lengths/selectors are hinted and identity-certified.
 # Opening dispatch: baked committed log-size, candidate range, g^-LIG_MIN_LOG_SIZE.
 LIG_MIN_LOG_SIZE = LIG_MIN_LOG_SIZE_PLACEHOLDER
@@ -189,7 +208,6 @@ POINT_BUF_RHO = 1
 POINT_BUF_PI = 2
 POINT_BUF_QPKD = 3
 CLAIM_POINT_BUF = CLAIM_POINT_BUF_PLACEHOLDER
-CLAIM_POINT_OFF = CLAIM_POINT_OFF_PLACEHOLDER
 QPKD_VARS_CAP = QPKD_VARS_CAP_PLACEHOLDER
 # Ring-switch coefficient factorization for the F64-polynomial / quadratic
 # tower coordinate basis. Each 13-value row contains the base-field main
@@ -419,6 +437,27 @@ def sumcheck_round3(state_0, state_1, msg_cursor, claim, eq_acc, prev_challenge)
     l2 = round_challenge * (round_challenge + 1) * LAGRANGE_INV_2
     new_claim = new_eq * (m0 * l0 + m1 * l1 + m2 * l2)
     return fs[0], fs[1], msg_cursor, new_claim, new_eq, round_challenge
+
+
+def sumcheck_round4(state_0, state_1, msg_cursor, claim):
+    # One PLAIN sumcheck round. The prover sends the round polynomial itself at
+    # {0, 1, g, g^2}, so the verifier does only the two textbook steps: check
+    # h(0) + h(1) == claim, then evaluate h at the challenge through the baked
+    # Lagrange basis. Nothing is reapplied: no eq factor, no separate term for the
+    # tables still waiting, and the eq point is not read here at all.
+    fs = [state_0, state_1]
+    fs, h0, msg_cursor = fs_next(fs, msg_cursor)
+    fs, h1, msg_cursor = fs_next(fs, msg_cursor)
+    fs, h2, msg_cursor = fs_next(fs, msg_cursor)
+    fs, h3, msg_cursor = fs_next(fs, msg_cursor)
+    assert h0 + h1 == claim
+    fs = squeeze(fs)
+    y = fs[0]
+    l0 = (y + 1) * (y + GEN) * (y + GEN * GEN) * LAG4_INV_0
+    l1 = y * (y + GEN) * (y + GEN * GEN) * LAG4_INV_1
+    l2 = y * (y + 1) * (y + GEN * GEN) * LAG4_INV_2
+    l3 = y * (y + 1) * (y + GEN) * LAG4_INV_3
+    return fs[0], fs[1], msg_cursor, h0 * l0 + h1 * l1 + h2 * l2 + h3 * l3, y
 
 
 @inline
@@ -797,10 +836,11 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     #      bit count); ONE RLC-batched GKR for all three trees (count padded
     #      to the pair's depth) at runtime depth, ONE shared point zeta;
     #   4. derive the block kappas, certify the GKR side depths; balance check
-    #      with advice-decomposed padding ladders; 3x leaf decomposition
-    #      against the GKR claims (pooling the committed-coordinate claims);
-    #      the stacked-bytecode reduction (deferred);
-    #   5. one AIR zerocheck per instruction table at the certified taus;
+    #      with advice-decomposed padding ladders; 3x leaf decomposition, DERIVING
+    #      each side's table share from its GKR claim (pooling the
+    #      committed-coordinate claims); the stacked-bytecode reduction (deferred);
+    #   5. ONE batched zerocheck for all the tables, n = max_t tau_t rounds at the
+    #      shared point zeta, target derived from the leaf claims (sumcheck_round4);
     #   6. public-input claim + BLAKE3 pin claims (telescoped prefix MLE);
     #   7. flock reduction: univariate-skip zerocheck + lincheck (matrix
     #      evaluation deferred);
@@ -1088,7 +1128,9 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     # twin's eq_hi and Index-MLE value instead of recomputing them; its column
     # values are mostly deduped pool reads (COORD_FRESH). The identity check
     # against pull's own GKR claim still binds everything.
+    bus_table_total = HeapBuf(N_GKR_SIDES)  # per side, what its tables' blocks owe
     block_eq_hi = HeapBuf(N_BLOCKS)      # per push block, reused by its pull twin
+    block_eq_all = HeapBuf(N_BLOCKS)     # every block's eq_hi, for the bus forms below
     block_index_mle = HeapBuf(N_BLOCKS)  # per push block with an Index coord
     for s in unroll(0, N_GKR_SIDES):
         acc = 0
@@ -1128,54 +1170,63 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
                 if s == PUSH_SIDE:
                     block_eq_hi[GEN ** b] = eq_hi
             selector_sum += eq_hi
-            # inner fingerprint Σ_i α^i · coord_i(ζ_lo); count side uses α=1,γ=0.
-            inner_sum = 0
-            alpha_pow = GEN ** 0
-            for i in unroll(0, BLOCK_COORD_COUNT[b]):
-                if COORD_TYPE[BLOCK_COORD_OFF[b] + i] == COORD_KIND_CONST:
-                    coord_val = COORD_CONST[BLOCK_COORD_OFF[b] + i]
-                if COORD_TYPE[BLOCK_COORD_OFF[b] + i] == COORD_KIND_COL:
-                    if COORD_FRESH[BLOCK_COORD_OFF[b] + i] == 1:
-                        fs, coord_val, cursor = fs_next(fs, cursor)
-                        claim_pool[GEN ** COORD_CLAIM_SLOT[BLOCK_COORD_OFF[b] + i]] = coord_val
-                        claim_cplen_g[GEN ** COORD_CLAIM_SLOT[BLOCK_COORD_OFF[b] + i]] = kappa_g  # cplen = block kappa
+            block_eq_all[GEN ** b] = eq_hi
+            # A TABLE's block contributes only its padding mass here: the batched
+            # zerocheck settles its fingerprint from that table's column evaluations,
+            # so no value is streamed for it. Only the framework blocks (boundary,
+            # memory, bytecode) still decompose.
+            if BLOCK_REAL_TABLE[b] == REAL_IS_FULL_CUBE:
+                # inner fingerprint Σ_i α^i · coord_i(ζ_lo); count side uses α=1,γ=0.
+                inner_sum = 0
+                alpha_pow = GEN ** 0
+                for i in unroll(0, BLOCK_COORD_COUNT[b]):
+                    if COORD_TYPE[BLOCK_COORD_OFF[b] + i] == COORD_KIND_CONST:
+                        coord_val = COORD_CONST[BLOCK_COORD_OFF[b] + i]
+                    if COORD_TYPE[BLOCK_COORD_OFF[b] + i] == COORD_KIND_COL:
+                        if COORD_FRESH[BLOCK_COORD_OFF[b] + i] == 1:
+                            fs, coord_val, cursor = fs_next(fs, cursor)
+                            claim_pool[GEN ** COORD_CLAIM_SLOT[BLOCK_COORD_OFF[b] + i]] = coord_val
+                            claim_cplen_g[GEN ** COORD_CLAIM_SLOT[BLOCK_COORD_OFF[b] + i]] = kappa_g  # cplen = block kappa
+                        else:
+                            coord_val = claim_pool[GEN ** COORD_CLAIM_SLOT[BLOCK_COORD_OFF[b] + i]]
+                    if COORD_TYPE[BLOCK_COORD_OFF[b] + i] == COORD_KIND_GCOL:
+                        if COORD_FRESH[BLOCK_COORD_OFF[b] + i] == 1:
+                            fs, rawv, cursor = fs_next(fs, cursor)
+                            claim_pool[GEN ** COORD_CLAIM_SLOT[BLOCK_COORD_OFF[b] + i]] = rawv
+                            claim_cplen_g[GEN ** COORD_CLAIM_SLOT[BLOCK_COORD_OFF[b] + i]] = kappa_g  # cplen = block kappa
+                        else:
+                            rawv = claim_pool[GEN ** COORD_CLAIM_SLOT[BLOCK_COORD_OFF[b] + i]]
+                        coord_val = GEN * rawv
+                    if COORD_TYPE[BLOCK_COORD_OFF[b] + i] == COORD_KIND_INDEX:
+                        if s == PULL_SIDE:
+                            coord_val = block_index_mle[GEN ** (b - SIDE_BLOCK_START[PULL_SIDE])]
+                        else:
+                            idx_chain = HeapBuf(MU_CAP + 2)
+                            idx_chain[GEN ** 0] = 1
+                            for xt in mul_range(1, kappa_g):
+                                idx_chain[xt * GEN] = idx_chain[xt] * (1 + zeta_zs[xt] * idxc_tab[xt])  # Index-coord MLE: prod_t (1 + zeta_t * (1 + g^(2^t)))
+                            coord_val = idx_chain[kappa_g]
+                            if s == PUSH_SIDE:
+                                block_index_mle[GEN ** b] = coord_val
+                    if COORD_TYPE[BLOCK_COORD_OFF[b] + i] == COORD_KIND_PUBLIC:
+                        # push and pull share zeta, so BOTH bytecode blocks read the
+                        # same public evaluations (indexed per block, not globally).
+                        coord_val = bytecode_vals[GEN ** block_public_idx]
+                        block_public_idx += 1
+                    if s == COUNT_SIDE:
+                        inner_sum += coord_val
                     else:
-                        coord_val = claim_pool[GEN ** COORD_CLAIM_SLOT[BLOCK_COORD_OFF[b] + i]]
-                if COORD_TYPE[BLOCK_COORD_OFF[b] + i] == COORD_KIND_GCOL:
-                    if COORD_FRESH[BLOCK_COORD_OFF[b] + i] == 1:
-                        fs, rawv, cursor = fs_next(fs, cursor)
-                        claim_pool[GEN ** COORD_CLAIM_SLOT[BLOCK_COORD_OFF[b] + i]] = rawv
-                        claim_cplen_g[GEN ** COORD_CLAIM_SLOT[BLOCK_COORD_OFF[b] + i]] = kappa_g  # cplen = block kappa
-                    else:
-                        rawv = claim_pool[GEN ** COORD_CLAIM_SLOT[BLOCK_COORD_OFF[b] + i]]
-                    coord_val = GEN * rawv
-                if COORD_TYPE[BLOCK_COORD_OFF[b] + i] == COORD_KIND_INDEX:
-                    if s == PULL_SIDE:
-                        coord_val = block_index_mle[GEN ** (b - SIDE_BLOCK_START[PULL_SIDE])]
-                    else:
-                        idx_chain = HeapBuf(MU_CAP + 2)
-                        idx_chain[GEN ** 0] = 1
-                        for xt in mul_range(1, kappa_g):
-                            idx_chain[xt * GEN] = idx_chain[xt] * (1 + zeta_zs[xt] * idxc_tab[xt])  # Index-coord MLE: prod_t (1 + zeta_t * (1 + g^(2^t)))
-                        coord_val = idx_chain[kappa_g]
-                        if s == PUSH_SIDE:
-                            block_index_mle[GEN ** b] = coord_val
-                if COORD_TYPE[BLOCK_COORD_OFF[b] + i] == COORD_KIND_PUBLIC:
-                    # push and pull share zeta, so BOTH bytecode blocks read the
-                    # same six evaluations (indexed per block, not globally).
-                    coord_val = bytecode_vals[GEN ** block_public_idx]
-                    block_public_idx += 1
+                        inner_sum += alpha_pow * coord_val
+                        alpha_pow *= alpha
                 if s == COUNT_SIDE:
-                    inner_sum += coord_val
+                    acc += eq_hi * inner_sum
                 else:
-                    inner_sum += alpha_pow * coord_val
-                    alpha_pow *= alpha
-            if s == COUNT_SIDE:
-                acc += eq_hi * inner_sum
-            else:
-                acc += eq_hi * (gamma + inner_sum)
+                    acc += eq_hi * (gamma + inner_sum)
         acc += 1 + selector_sum
-        assert acc == gkr_claims[s]
+        # What the tables' blocks owe this side: its GKR leaf value less the
+        # framework decomposition. DERIVED, not read: a transmitted total would be a
+        # free value in its own check. The batched zerocheck's target pins it below.
+        bus_table_total[GEN ** s] = acc + gkr_claims[s]
     claim_idx = N_BUS_CLAIMS  # AIR/PI/pin claims pool after the deduped bus claims
 
     # ---- stacked-bytecode reduction ----
@@ -1195,120 +1246,159 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     for c in unroll(0, BYTECODE_COLS):
         bytecode_reduced += eq_weight(bytecode_sel, LOG2_BYTECODE_COLS, c, 0) * bytecode_vals[GEN ** c]
 
-    # ---- 6x per-table zerocheck (XOR, MUL, SET, DEREF, JUMP, BLAKE3) ----
-    # For each table: eta, the zerocheck point r (tau samples), tau eq-trick
-    # rounds (claim starts at 0), then the involved-column evaluations (pooled)
-    # and the final AIR check claim == eq_acc * C_t(eta, evals).
-    # RUNTIME round counts: tau_t is the certified announced log height
-    # (dims_g[1 + t], certified by the count gadget). Round state threads
-    # through heap chains exactly like the GKR trees.
-    rho = HeapBuf(N_TABLES * TAU_CAP)
-    zc_point_fs0 = HeapBuf(N_TABLES * (TAU_CAP + 2))
-    zc_point_fs1 = HeapBuf(N_TABLES * (TAU_CAP + 2))
-    zc_round_fs0 = HeapBuf(N_TABLES * (TAU_CAP + 2))
-    zc_round_fs1 = HeapBuf(N_TABLES * (TAU_CAP + 2))
-    zc_round_cursor = HeapBuf(N_TABLES * (TAU_CAP + 2))
-    zc_round_claim = HeapBuf(N_TABLES * (TAU_CAP + 2))
-    zc_round_eq = HeapBuf(N_TABLES * (TAU_CAP + 2))
+    # ---- ONE batched zerocheck for all six tables (XOR, MUL, SET, DEREF, JUMP, BLAKE3) ----
+    # Mirrors lean_vm::constraints::verify. eta ONCE, each table folding its own
+    # identities with a DISJOINT range of its powers (ETA_OFFSET[t]); one shared
+    # point zeta (the bus GKR's); n = max_t tau_t rounds. Rounds bind the HIGHEST
+    # variable first, so a 2^tau table sits out the first n - tau of them and joins
+    # carrying the challenges it sat out. Per table the weight is then
+    #   cprod[n - tau] * peq[tau],
+    # the challenges drawn before it joined times peq[tau] = eq(zeta[..tau],
+    # rho[..tau]); the eta-powers are already inside constraint_eval.
+    #
+    # g^n for n = max_t tau_t, the batch's round count. Hinted, then pinned
+    # exactly: the product identity forces it to BE one of the certified taus, and
+    # the range-checked division slacks force it to dominate every one of them.
+    zc_n_hint = StackBuf(1)
+    hint_witness(zc_n_hint[0:1], "zc_tau_max")
+    g_zc_n = zc_n_hint[0]
+    zc_is_a_tau = 1
+    for t in unroll(0, N_TABLES):
+        zc_is_a_tau *= g_zc_n + dims_g[GEN ** (t + 1)]
+    assert zc_is_a_tau == 0
+    for t in unroll(0, N_TABLES):
+        zc_dominates = g_zc_n / dims_g[GEN ** (t + 1)]
+        assert log(zc_dominates) < COUNT_BITS
+    fs = squeeze(fs)
+    eta = fs[0]
+    eta_pows = StackBuf(N_ETA_POWS)
+    eta_pows[0] = 1
+    for k in unroll(1, N_ETA_POWS):
+        eta_pows[k] = eta_pows[k - 1] * eta
+    # The eq point is the bus GKR's zeta, NOT a fresh one: that is what lets the
+    # batch settle the bus forms alongside the constraints.
+    #
+    # THE tie to the bus, and the reason no target is read: what the three sides'
+    # tables owe, each in its own shared power of eta, IS the sum the batch must
+    # reach. Since eta is squeezed after those totals are fixed, hitting one number
+    # forces all three side equations.
+    bus_target = 0
+    for sd in unroll(0, N_GKR_SIDES):
+        bus_target += eta_pows[ETA_FORM_BASE + sd] * bus_table_total[GEN ** sd]
+    # n vanilla sumcheck rounds: the round polynomial arrives whole, so a round is
+    # `h(0) + h(1) == claim` and a fold, with no eq to reapply. The tables still
+    # waiting ride inside h, so nothing here is indexed by height; the heights enter
+    # only the per-table weights below.
+    rho = HeapBuf(g_zc_n)   # rho[i] = the challenge that bound variable i
+    zc_round_fs0 = HeapBuf(g_zc_n * GEN)
+    zc_round_fs1 = HeapBuf(g_zc_n * GEN)
+    zc_round_cursor = HeapBuf(g_zc_n * GEN)
+    zc_round_claim = HeapBuf(g_zc_n * GEN)
+    zc_round_cprod = HeapBuf(g_zc_n * GEN)  # the challenges bound so far, multiplied
+    zc_round_fs0[GEN ** 0] = fs[0]
+    zc_round_fs1[GEN ** 0] = fs[1]
+    zc_round_cursor[GEN ** 0] = cursor
+    zc_round_claim[GEN ** 0] = bus_target
+    zc_round_cprod[GEN ** 0] = 1
+    for xk in mul_range(1, g_zc_n):
+        d = g_zc_n * INV_GEN / xk  # g^(n-1-j): the variable round j binds
+        nfs0, nfs1, ncur, nclaim, rk = sumcheck_round4(zc_round_fs0[xk], zc_round_fs1[xk], zc_round_cursor[xk], zc_round_claim[xk])
+        rho[d] = rk
+        xkn = xk * GEN
+        zc_round_fs0[xkn] = nfs0
+        zc_round_fs1[xkn] = nfs1
+        zc_round_cursor[xkn] = ncur
+        # cprod is the weight of a table that joins here; peq below is the rest
+        zc_round_cprod[xkn] = zc_round_cprod[xk] * rk
+        zc_round_claim[xkn] = nclaim
+    fs = [zc_round_fs0[g_zc_n], zc_round_fs1[g_zc_n]]
+    cursor = zc_round_cursor[g_zc_n]
+    claim = zc_round_claim[g_zc_n]
+    # peq[g^tau] = eq(zeta[..tau], rho[..tau]), as a prefix chain.
+    zc_peq = HeapBuf(g_zc_n * GEN)
+    zc_peq[GEN ** 0] = 1
+    for xi in mul_range(1, g_zc_n):
+        zc_peq[xi * GEN] = zc_peq[xi] * (1 + zeta[xi] + rho[xi])
+    # Per table: every committed column's evaluation (pooled), its AIR constraint
+    # at its own reduced point rho[..tau_t], weighted into the batch's final claim.
+    air_acc = 0
     for t in unroll(0, N_TABLES):
         tau_g = dims_g[GEN ** (t + 1)]
-        fs = squeeze(fs)
-        eta = fs[0]
-        # the zerocheck point r: tau squeezes, sponge chained by round.
-        eq_r = HeapBuf(TAU_CAP)
-        point_fs0 = zc_point_fs0 * GEN ** (t * (TAU_CAP + 2))
-        point_fs1 = zc_point_fs1 * GEN ** (t * (TAU_CAP + 2))
-        point_fs0[GEN ** 0] = fs[0]
-        point_fs1[GEN ** 0] = fs[1]
-        for xk in mul_range(1, tau_g):
-            point_fs = [point_fs0[xk], point_fs1[xk]]
-            point_fs = squeeze(point_fs)
-            eq_r[xk] = point_fs[0]
-            xkn = xk * GEN
-            point_fs0[xkn] = point_fs[0]
-            point_fs1[xkn] = point_fs[1]
-        fs = [point_fs0[tau_g], point_fs1[tau_g]]
-        # tau eq-trick rounds (claim starts at 0, eq at 1).
-        round_fs0 = zc_round_fs0 * GEN ** (t * (TAU_CAP + 2))
-        round_fs1 = zc_round_fs1 * GEN ** (t * (TAU_CAP + 2))
-        round_cursor = zc_round_cursor * GEN ** (t * (TAU_CAP + 2))
-        round_claim = zc_round_claim * GEN ** (t * (TAU_CAP + 2))
-        round_eq = zc_round_eq * GEN ** (t * (TAU_CAP + 2))
-        rho_t = rho * GEN ** (t * TAU_CAP)
-        round_fs0[GEN ** 0] = fs[0]
-        round_fs1[GEN ** 0] = fs[1]
-        round_cursor[GEN ** 0] = cursor
-        round_claim[GEN ** 0] = 0
-        round_eq[GEN ** 0] = 1
-        for xk in mul_range(1, tau_g):
-            nfs0, nfs1, ncur, nclaim, neq, rk = sumcheck_round3(round_fs0[xk], round_fs1[xk], round_cursor[xk], round_claim[xk], round_eq[xk], eq_r[xk])
-            rho_t[xk] = rk
-            xkn = xk * GEN
-            round_fs0[xkn] = nfs0
-            round_fs1[xkn] = nfs1
-            round_cursor[xkn] = ncur
-            round_claim[xkn] = nclaim
-            round_eq[xkn] = neq
-        fs = [round_fs0[tau_g], round_fs1[tau_g]]
-        cursor = round_cursor[tau_g]
-        claim = round_claim[tau_g]
-        eq_acc = round_eq[tau_g]
-        col_evals = StackBuf(AIR_COLS_CAP)
-        for k in unroll(0, N_AIR_COLS[t]):
+        col_evals = StackBuf(TABLE_COLS_CAP)
+        for k in unroll(0, N_TABLE_COLS[t]):
             fs, e, cursor = fs_next(fs, cursor)
             col_evals[k] = e
             claim_pool[GEN ** claim_idx] = e
             claim_cplen_g[GEN ** claim_idx] = tau_g  # cplen = tau_t
             claim_idx += 1
-        # the table's AIR constraint at the final point (ev order = the table's
-        # constraint_columns order; formulas mirror tables.rs eval_constraint).
-        # Memory values are 128-bit E-words e128(lo, hi) = lo + hi·Y (two lane
-        # columns each), per the 64-bit-address / 128-bit-word memory model.
+        # the table's AIR constraint at the final point. col_evals is indexed by LOCAL
+        # committed-column index, and each identity takes its own power out of the
+        # table's disjoint eta range. A memory word is a 128-bit E-value
+        # e128(lo, hi) = lo + hi*Y, so it costs two lane columns. The formulas mirror
+        # tables.rs eval_constraint.
         if t == TABLE_XOR:
-            # cols: [FP, OA, OB, OC, AA, AB, AC, VA_LO, VA_HI, VB_LO, VB_HI, VC_LO, VC_HI]
-            va = col_evals[7] + col_evals[8] * Y_TOWER
-            vb = col_evals[9] + col_evals[10] * Y_TOWER
-            vc = col_evals[11] + col_evals[12] * Y_TOWER
-            constraint_eval = (col_evals[4] + col_evals[0] * col_evals[1]) + eta * (col_evals[5] + col_evals[0] * col_evals[2]) + eta * eta * (col_evals[6] + col_evals[0] * col_evals[3]) + eta * eta * eta * (vc + va + vb)
+            va = (col_evals[8] + col_evals[9] * Y_TOWER)
+            vb = (col_evals[10] + col_evals[11] * Y_TOWER)
+            vc = (col_evals[12] + col_evals[13] * Y_TOWER)
+            constraint_eval = eta_pows[ETA_OFFSET[t] + 0] * (col_evals[5] + col_evals[1] * col_evals[2]) + eta_pows[ETA_OFFSET[t] + 1] * (col_evals[6] + col_evals[1] * col_evals[3]) + eta_pows[ETA_OFFSET[t] + 2] * (col_evals[7] + col_evals[1] * col_evals[4]) + eta_pows[ETA_OFFSET[t] + 3] * (vc + va + vb)
         if t == TABLE_MUL:
-            # same layout as XOR; third = va·vb (the E-product)
-            va = col_evals[7] + col_evals[8] * Y_TOWER
-            vb = col_evals[9] + col_evals[10] * Y_TOWER
-            vc = col_evals[11] + col_evals[12] * Y_TOWER
-            constraint_eval = (col_evals[4] + col_evals[0] * col_evals[1]) + eta * (col_evals[5] + col_evals[0] * col_evals[2]) + eta * eta * (col_evals[6] + col_evals[0] * col_evals[3]) + eta * eta * eta * (vc + va * vb)
+            va = (col_evals[8] + col_evals[9] * Y_TOWER)
+            vb = (col_evals[10] + col_evals[11] * Y_TOWER)
+            vc = (col_evals[12] + col_evals[13] * Y_TOWER)
+            constraint_eval = eta_pows[ETA_OFFSET[t] + 0] * (col_evals[5] + col_evals[1] * col_evals[2]) + eta_pows[ETA_OFFSET[t] + 1] * (col_evals[6] + col_evals[1] * col_evals[3]) + eta_pows[ETA_OFFSET[t] + 2] * (col_evals[7] + col_evals[1] * col_evals[4]) + eta_pows[ETA_OFFSET[t] + 3] * (vc + va * vb)
         if t == TABLE_SET:
-            # cols: [FP, O, A]  (a = fp·o; no memory value in the constraint)
-            constraint_eval = col_evals[2] + col_evals[0] * col_evals[1]
+            constraint_eval = eta_pows[ETA_OFFSET[t] + 0] * (col_evals[5] + col_evals[1] * col_evals[2])
         if t == TABLE_DEREF:
-            # cols: [FP, OAL, OBE, OGA, A1, A2, A3, P, FPC, FFP, V2_LO, V2_HI, V3_LO, V3_HI, PC]
-            p = col_evals[7]  # single K-lane pointer (hi lane provably 0)
-            v2 = col_evals[10] + col_evals[11] * Y_TOWER
-            v3 = col_evals[12] + col_evals[13] * Y_TOWER
-            # src = (1+f_pc+f_fp)·v3 + f_pc·(g²·pc) + f_fp·fp
-            src = (1 + col_evals[8] + col_evals[9]) * v3 + col_evals[8] * (GEN * GEN * col_evals[14]) + col_evals[9] * col_evals[0]
-            constraint_eval = (col_evals[4] + col_evals[0] * col_evals[1]) + eta * (col_evals[5] + p * col_evals[2]) + eta * eta * (col_evals[6] + col_evals[0] * col_evals[3]) + eta * eta * eta * (v2 + src)
+            v2 = (col_evals[11] + col_evals[12] * Y_TOWER)
+            v3 = (col_evals[13] + col_evals[14] * Y_TOWER)
+            src = (1 + col_evals[5] + col_evals[6]) * v3 + col_evals[5] * (GEN * GEN * col_evals[0]) + col_evals[6] * col_evals[1]
+            constraint_eval = eta_pows[ETA_OFFSET[t] + 0] * (col_evals[7] + col_evals[1] * col_evals[2]) + eta_pows[ETA_OFFSET[t] + 1] * (col_evals[8] + col_evals[10] * col_evals[3]) + eta_pows[ETA_OFFSET[t] + 2] * (col_evals[9] + col_evals[1] * col_evals[4]) + eta_pows[ETA_OFFSET[t] + 3] * (v2 + src)
         if t == TABLE_JUMP:
-            # cols: [PC, FP, NPC, NFP, OC, OD, OF, AC, AD, AF, C_LO, C_HI, D_LO, D_HI, F_LO, F_HI, W_LO, W_HI, B]
-            c = col_evals[10] + col_evals[11] * Y_TOWER
-            d = col_evals[12] + col_evals[13] * Y_TOWER
-            ff = col_evals[14] + col_evals[15] * Y_TOWER
-            w = col_evals[16] + col_evals[17] * Y_TOWER
-            fall_through = GEN * col_evals[0]  # PC·g when branch not taken
-            addrs = (col_evals[7] + col_evals[1] * col_evals[4]) + eta * (col_evals[8] + col_evals[1] * col_evals[5]) + eta * eta * (col_evals[9] + col_evals[1] * col_evals[6])
-            eta3 = eta * eta * eta
-            ind_def = eta3 * (col_evals[18] + c * w)
-            ind_nz = eta3 * eta * (c * (col_evals[18] + 1))
-            sel_pc = eta3 * eta * eta * (col_evals[2] + col_evals[18] * d + (col_evals[18] + 1) * fall_through)
-            sel_fp = eta3 * eta * eta * eta * (col_evals[3] + col_evals[18] * ff + (col_evals[18] + 1) * col_evals[1])
+            c = (col_evals[10] + col_evals[11] * Y_TOWER)
+            d = (col_evals[12] + col_evals[13] * Y_TOWER)
+            ff = (col_evals[14] + col_evals[15] * Y_TOWER)
+            w = (col_evals[20] + col_evals[21] * Y_TOWER)
+            ft = GEN * col_evals[0]
+            addrs = eta_pows[ETA_OFFSET[t] + 0] * (col_evals[7] + col_evals[1] * col_evals[4]) + eta_pows[ETA_OFFSET[t] + 1] * (col_evals[8] + col_evals[1] * col_evals[5]) + eta_pows[ETA_OFFSET[t] + 2] * (col_evals[9] + col_evals[1] * col_evals[6])
+            ind_def = eta_pows[ETA_OFFSET[t] + 3] * (col_evals[22] + c * w)
+            ind_nz = eta_pows[ETA_OFFSET[t] + 4] * (c * (col_evals[22] + 1))
+            sel_pc = eta_pows[ETA_OFFSET[t] + 5] * (col_evals[2] + col_evals[22] * d + (col_evals[22] + 1) * ft)
+            sel_fp = eta_pows[ETA_OFFSET[t] + 6] * (col_evals[3] + col_evals[22] * ff + (col_evals[22] + 1) * col_evals[1])
             constraint_eval = addrs + ind_def + ind_nz + sel_pc + sel_fp
         if t == TABLE_BLAKE3:
-            # cols: [FP, OA0, OA1, OB0, OB1, OCV, OC, AA0, AA1, AB0, AB1, ACV, AC]  (six address bindings only)
-            constraint_eval = (col_evals[7] + col_evals[0] * col_evals[1]) + eta * (col_evals[8] + col_evals[0] * col_evals[2]) + eta * eta * (col_evals[9] + col_evals[0] * col_evals[3]) + eta * eta * eta * (col_evals[10] + col_evals[0] * col_evals[4]) + eta * eta * eta * eta * (col_evals[11] + col_evals[0] * col_evals[5]) + eta * eta * eta * eta * eta * (col_evals[12] + col_evals[0] * col_evals[6])
+            constraint_eval = eta_pows[ETA_OFFSET[t] + 0] * (col_evals[8] + col_evals[1] * col_evals[2]) + eta_pows[ETA_OFFSET[t] + 1] * (col_evals[9] + col_evals[1] * col_evals[3]) + eta_pows[ETA_OFFSET[t] + 2] * (col_evals[10] + col_evals[1] * col_evals[4]) + eta_pows[ETA_OFFSET[t] + 3] * (col_evals[11] + col_evals[1] * col_evals[5]) + eta_pows[ETA_OFFSET[t] + 4] * (col_evals[12] + col_evals[1] * col_evals[6]) + eta_pows[ETA_OFFSET[t] + 5] * (col_evals[13] + col_evals[1] * col_evals[7])
         if t == TABLE_PACK64X2:
-            # cols: [FP, OA, OB, OC, AA, AB, AC]  (address bindings only; source
-            # K-membership and destination packing ride the memory bus, `memory_k`)
-            constraint_eval = (col_evals[4] + col_evals[0] * col_evals[1]) + eta * (col_evals[5] + col_evals[0] * col_evals[2]) + eta * eta * (col_evals[6] + col_evals[0] * col_evals[3])
-        assert claim == eq_acc * constraint_eval
+            constraint_eval = eta_pows[ETA_OFFSET[t] + 0] * (col_evals[5] + col_evals[1] * col_evals[2]) + eta_pows[ETA_OFFSET[t] + 1] * (col_evals[6] + col_evals[1] * col_evals[3]) + eta_pows[ETA_OFFSET[t] + 2] * (col_evals[7] + col_evals[1] * col_evals[4])
+        # The table's three bus forms, evaluated at the SAME column evaluations:
+        # sum_b eq_hi(b) * (gamma + sum_i alpha^i * coord_i), each coord read off
+        # col_evals at its local index. This is what replaces opening those columns
+        # at zeta. A GCol applies its baked free factor g^k.
+        for sd in unroll(0, N_GKR_SIDES):
+            form = 0
+            for b in unroll(0, N_BLOCKS):
+                if BLOCK_SIDE[b] == sd:
+                    if BLOCK_REAL_TABLE[b] == t:
+                        inner = 0
+                        apow = GEN ** 0
+                        for i in unroll(0, BLOCK_COORD_COUNT[b]):
+                            if COORD_TYPE[BLOCK_COORD_OFF[b] + i] == COORD_KIND_CONST:
+                                cv = COORD_CONST[BLOCK_COORD_OFF[b] + i]
+                            if COORD_TYPE[BLOCK_COORD_OFF[b] + i] == COORD_KIND_COL:
+                                cv = col_evals[COORD_COL_LOCAL[BLOCK_COORD_OFF[b] + i]]
+                            if COORD_TYPE[BLOCK_COORD_OFF[b] + i] == COORD_KIND_GCOL:
+                                cv = COORD_GVAL[BLOCK_COORD_OFF[b] + i] * col_evals[COORD_COL_LOCAL[BLOCK_COORD_OFF[b] + i]]
+                            if sd == COUNT_SIDE:
+                                inner += cv
+                            else:
+                                inner += apow * cv
+                                apow *= alpha
+                        if sd == COUNT_SIDE:
+                            form += block_eq_all[GEN ** b] * inner
+                        else:
+                            form += block_eq_all[GEN ** b] * (gamma + inner)
+            constraint_eval += eta_pows[ETA_FORM_BASE + sd] * form
+        air_acc += zc_round_cprod[g_zc_n / tau_g] * zc_peq[tau_g] * constraint_eval  # cprod[n - tau] * peq[tau]
+    assert air_acc == claim
 
     # ---- public-input binding claim: MEM as ONE logical E-column ----
     # The VM's bind_pi_claim makes a SINGLE E-claim at [rm, 0..]:
@@ -1686,12 +1776,12 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         assert (nlow * seln + fold_cap_g) * (seln + 1) == 0
         low_chain = HeapBuf(SIZE_BITS + 1)
         if CLAIM_POINT_BUF[j] == POINT_BUF_ZETA:
-            zptr = zeta * GEN ** CLAIM_POINT_OFF[j]
+            zptr = zeta
             low_chain[GEN ** 0] = 1
             for xk in mul_range(1, low_len_g):
                 low_chain[xk * GEN] = low_chain[xk] * (1 + zptr[xk] + fold_challenges[xk])
         if CLAIM_POINT_BUF[j] == POINT_BUF_RHO:
-            rptr = rho * GEN ** CLAIM_POINT_OFF[j]
+            rptr = rho
             low_chain[GEN ** 0] = 1
             for xk in mul_range(1, low_len_g):
                 low_chain[xk * GEN] = low_chain[xk] * (1 + rptr[xk] + fold_challenges[xk])
@@ -1705,7 +1795,11 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
                 sb3 = claim_qpkd_slot_bits[GEN ** (SLOT_STRIDE_LOG * j + k)]
                 assert sb3 * sb3 == sb3
                 qpkd_slot_eq *= (1 + sb3 + fold_challenges[GEN ** k])
-            zptr = zeta * GEN ** CLAIM_POINT_OFF[j]
+            # A value column is referenced only by its own table's bus blocks, and
+            # those are settled by the zerocheck, so the instance point of a q_pkd
+            # slot claim is always the batch's rho (asserted where the descriptors
+            # are built).
+            zptr = rho
             ris7 = fold_challenges * GEN ** SLOT_STRIDE_LOG
             low_chain[GEN ** 0] = qpkd_slot_eq
             for xk in mul_range(1, low_len_g):
@@ -1776,9 +1870,9 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     for j in unroll(0, N_CLAIMS):
         slot_point = HeapBuf(YR_LOG_CAP)
         if CLAIM_POINT_BUF[j] == POINT_BUF_ZETA:
-            overlap_ptr = zeta * GEN ** CLAIM_POINT_OFF[j] * claim_low_len[GEN ** j]
+            overlap_ptr = zeta * claim_low_len[GEN ** j]
         else:
-            overlap_ptr = rho * GEN ** CLAIM_POINT_OFF[j] * claim_low_len[GEN ** j]
+            overlap_ptr = rho * claim_low_len[GEN ** j]
         # overlap_ptr[g^k] reads the claim point at low_len + k, which is written
         # only for k < nover (the [low_len, cplen) span); at k >= nover it points
         # into the unwritten point-buffer gap (prover-chosen free cells). The
