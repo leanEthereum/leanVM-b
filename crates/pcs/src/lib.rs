@@ -1,4 +1,4 @@
-// Credit: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
+// CREDIT: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
 //! Tower-field polynomial commitment infrastructure.
 //!
 //! Boolean witnesses are packed into `K = GF(2^64)` and Ligerito opens them

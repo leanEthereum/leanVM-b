@@ -4,7 +4,7 @@ The zkDSL is a Python-syntax language that compiles to the leanVM-b ISA — seve
 instructions (`XOR`, `MUL`, `SET`, `DEREF`, `JUMP`, `BLAKE3`, `PACK64X2`) over the binary
 field GF(2^192), with write-once memory and all indices carried "in the
 exponent" as powers of a fixed generator. For the underlying VM and proving
-system, see [`misc/doc.tex`](../../misc/doc.tex) (released as `doc.pdf`).
+system, see [`misc/doc.tex`](../../misc/doc.tex).
 
 Source files use the `.py` extension and are **valid Python**: they import the
 [`snark_lib`](../../snark_lib.py) stub, which defines `GEN`, `log`, `mul_range`,
@@ -313,7 +313,7 @@ instruction until used as a value:
 defaults to the argument's source text; output goes to stderr as
 `[print] label = ...`, showing the decimal reading for small integers, `g^k`
 when the value is a small g-power (both when they overlap: `8 (g^3)`), or
-`hi:lo` hex otherwise. Each print costs one anchor instruction, so the
+`c2:c1:c0` hex otherwise, from the most significant limb to the least significant. Each print costs one anchor instruction, so the
 witness differs from a print-free build — strip prints before benchmarking.
 
 ## Memory
@@ -381,17 +381,15 @@ instead).
 
 ### Slices — `buf[lo:hi]`
 
-`buf[lo:hi]` names a run of cells (`hi` exclusive). Slices exist only as
-`blake3` operands and must span exactly 2 cells (one 256-bit value). Two
-forms:
+`buf[lo:hi]` names a run of cells (`hi` exclusive). BLAKE3 operands must span exactly two cells; `hint_witness` accepts any supported literal length. Two forms:
 
 - **compile-time bounds** (integers, as for stack indexes): frame cells
   `base+lo .. base+hi` of a `StackBuf`, or heap cells `ptr·g^lo .. ptr·g^hi`
   of a `HeapBuf` — `hb[2:4]` is the pair `g^2, g^3`;
-- **runtime start, heap only**: `buf[i:i + 2]` with a runtime g-power index
-  `i` (e.g. a loop counter) names the cells `buf·i`, `buf·i·g` — one `MUL`
+- **runtime start, heap only**: `buf[i:i + k]` with a runtime g-power index
+  `i` (e.g. a loop counter) and literal length `k` names the cells `buf·i`, `buf·i·g`, and so on — one `MUL`
   folds `i` into the pointer. The `hi` bound cannot be evaluated, only
-  shape-checked: it must be syntactically `lo + 2`
+  shape-checked: it must be syntactically `lo + k`
   (`buf[b * GEN ** 2 : b * GEN ** 2 + 2]` is fine). A `StackBuf` slice cannot
   have a runtime start — frame offsets are baked into the bytecode operands.
 

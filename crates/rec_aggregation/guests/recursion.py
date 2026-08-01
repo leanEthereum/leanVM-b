@@ -252,8 +252,8 @@ RS_BASE_ORBITS = RS_BASE_ORBITS_PLACEHOLDER
 RS_TOWER_ORBITS = RS_TOWER_ORBITS_PLACEHOLDER
 # Phase F: log rows of the bytecode blocks (the deferred bytecode points).
 BYTECODE_LOG = BYTECODE_LOG_PLACEHOLDER
-# One sub-proof's deferred-claim region: 2*BYTECODE_LOG + LOG2_BYTECODE_COLS
-# + 2*LINCHECK_ROUNDS + 69 words (see verify_sub's defer_out layout).
+# One sub-proof's deferred-claim region: one bytecode point and the Flock
+# lincheck data (see verify_sub's defer_out layout).
 DEFER_SIZE = DEFER_SIZE_PLACEHOLDER
 # Aggregation: NSUB sub-proofs of the same program; per-sub proof data arrives
 # as hints. The seed sponge state after the two byte-string absorbs is baked
@@ -283,8 +283,9 @@ DS_POW = 5
 FIELD_BITS = 192
 BASE_FIELD_BITS = 64
 # Exponent bit-widths: an announced 32-bit count decomposes into COUNT_BITS
-# bits (count == 2^32 tops); any structural size (sums of 2^kappa, packing
-# offsets) fits SIZE_BITS bits.
+# bits, with its top bit constrained to zero so the native strict 32-bit bound
+# holds; any structural size (sums of 2^kappa, packing offsets) fits SIZE_BITS
+# bits.
 COUNT_BITS = 33
 SIZE_BITS = 34
 
@@ -2297,9 +2298,9 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     # Flatten (rate-1, m-MIN) in rate-major order. Both coordinates are
     # transcript-bound and range-checked above, so a single compiled guest can
     # dispatch independently for every inner proof in a mixed-rate batch.
-    sel = size_sel * rate_sel ** LIG_N_LOG_SIZES
-    assert log(sel) < LIG_N_CANDIDATES
-    sumcheck_target, fold_challenges, final_msg, inner_total, yr_log_n_g, yr_pad_g, fold_cap_g = match_range(log(sel), range(0, LIG_N_CANDIDATES), lambda m_idx: open_stacked(m_idx, fs[0], fs[1], target, commit_root_0, commit_root_1, cursor))
+    config_sel = size_sel * rate_sel ** LIG_N_LOG_SIZES
+    assert log(config_sel) < LIG_N_CANDIDATES
+    sumcheck_target, fold_challenges, final_msg, inner_total, yr_log_n_g, yr_pad_g, fold_cap_g = match_range(log(config_sel), range(0, LIG_N_CANDIDATES), lambda m_idx: open_stacked(m_idx, fs[0], fs[1], target, commit_root_0, commit_root_1, cursor))
     # eval_rs_eq per claim: E = sum_k c_k * prod_j (z_j^(2^k) + 1 + ris_j)
     # (the telescoped product formula; z powers evolve by squaring per k).
     # QPKD_VARS_CAP = tau_5 + SLOT_STRIDE_LOG, exponent-additive from the
@@ -2372,7 +2373,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     # A second dispatch on the already-certified commitment size bakes both
     # the folded prefix length and the residual-message shape into straight-
     # line width-four contractions.
-    jagged_sum = match_range(log(sel), range(0, LIG_N_CANDIDATES), lambda m_idx: jagged_terminal(m_idx, fold_challenges, final_msg, claim_rows, col_bound_bits, gamma, gamma_powers))
+    jagged_sum = match_range(log(config_sel), range(0, LIG_N_CANDIDATES), lambda m_idx: jagged_terminal(m_idx, fold_challenges, final_msg, claim_rows, col_bound_bits, gamma, gamma_powers))
     # q_pkd occupies [0, 2^qpkdv), hence its residual y selector is zero.
     inner_sum = inner_total + jagged_sum + (rs_weight + qpkd_claim_weight) * final_msg[GEN ** 0]
     assert inner_sum == sumcheck_target

@@ -1,10 +1,10 @@
-//! Whole-program assembly over GF(2^64) (§7, §8): the instruction tables
+//! Whole-program assembly over GF(2^64) (`misc/doc.tex`): the instruction tables
 //! sharing the state / memory / bytecode buses, bound to one field-valued
 //! commitment and verified oracle-free. Addresses, the program counter, and read
 //! counts are g-powers, so every increment is a free ×g. Machine-word arithmetic
 //! is over `E = F192 = K[y]/(y³+y+1)` (XOR degree 1, MUL_NATIVE degree 2),
 //! with each word carried by three committed `K = F64` limbs. `BLAKE3`
-//! (§7.6) adds the memory/state/bytecode plumbing for a 64→32-byte compression
+//! adds the memory/state/bytecode plumbing for a 64→32-byte compression
 //! whose relation is discharged by flock (see [`crate::blake3_flock`]). All
 //! Challenges and transcript scalars live in the same tower E.
 
@@ -32,7 +32,7 @@ pub use isa::{DerefMode, Op};
 pub use layout::*;
 pub(crate) use trace::{Brow, Drow, Jrow, Srow, Trace, Xrow};
 
-/// Witness-gen `BLAKE3` compression (doc §7.6): the four message cells' eight
+/// Witness-gen `BLAKE3` compression: the four message cells' eight
 /// words are laid out little-endian into 64 bytes, combined with the supplied
 /// chaining value and metadata, and the 32-byte result is split back into the
 /// four output words `c`. Flock proves this same compression relation
@@ -52,7 +52,7 @@ const MAX_LOG_MEM: usize = 32;
 
 /// Each per-opcode table holds at most `2^MAX_LOG_ROWS` rows (executed
 /// instructions of that opcode). Together with `MAX_LOG_MEM` and the bytecode
-/// cap these are the *instance caps* (transition doc §caps): at `ord(g) = 2^64−1`
+/// cap these are the instance caps from “Counts must not wrap” in `misc/doc.tex`: at `ord(g) = 2^64−1`
 /// the memory-soundness and count-non-wrap counting arguments are theorems only
 /// for instances whose total read-flush count stays far below `2^64`, so the
 /// verifier rejects any announcement exceeding them before running a reduction.
@@ -165,12 +165,7 @@ fn transcript_seed(program: &Program, pi: &[F192; 2]) -> [F192; 4] {
 /// `max(MIN_LOG_MEM, ceil_log2(mem_used))`, so it is derived rather than
 /// announced; the real bytecode prefix is fixed by the program and already
 /// bound by [`transcript_seed`].
-fn announce_public(
-    ps: &mut ProverState,
-    mem_used: usize,
-    row_counts: [usize; tables::N_TABLES],
-    log_inv_rate: usize,
-) {
+fn announce_public(ps: &mut ProverState, mem_used: usize, row_counts: [usize; tables::N_TABLES], log_inv_rate: usize) {
     ps.add_scalar(F192::new(mem_used as u64, 0, 0));
     for r in row_counts {
         ps.add_scalar(F192::new(r as u64, 0, 0));
@@ -183,14 +178,21 @@ fn announce_public(
 /// from the program + sizes + public input. (The public input was already bound
 /// by seeding the transcript.)
 fn read_public(vs: &mut VerifierState, prog: &Program, public_input: &[F192; 2]) -> Result<(Layout, usize), Error> {
-    let mem_used = vs.next_scalar().map_err(Error::Transcript)?.c0 as usize;
+    let read_size = |vs: &mut VerifierState| -> Result<usize, Error> {
+        let word = vs.next_scalar().map_err(Error::Transcript)?;
+        if word.c1 != 0 || word.c2 != 0 {
+            return Err(Error::PublicInput);
+        }
+        usize::try_from(word.c0).map_err(|_| Error::PublicInput)
+    };
+
+    let mem_used = read_size(vs)?;
     let mut row_counts = [0usize; tables::N_TABLES];
     for r in &mut row_counts {
-        *r = vs.next_scalar().map_err(Error::Transcript)?.c0 as usize;
+        *r = read_size(vs)?;
     }
-    let rate_word = vs.next_scalar().map_err(Error::Transcript)?;
-    let log_inv_rate = rate_word.c0 as usize;
-    // The instance caps (transition doc §caps): with `ord(g) = 2^64 − 1`, the
+    let log_inv_rate = read_size(vs)?;
+    // The public instance caps ensure that, with `ord(g) = 2^64 − 1`, the
     // counting arguments (memory soundness, count non-wrap, exponent range checks)
     // are theorems only when the announced instance keeps the total read-flush
     // count provably below `2^64 − 1`, so reject any announcement exceeding the
@@ -202,7 +204,6 @@ fn read_public(vs: &mut VerifierState, prog: &Program, public_input: &[F192; 2])
         || bytecode_size > (1usize << MAX_LOG_BYTECODE)
         || !(2..=1usize << MAX_LOG_MEM).contains(&mem_used)
         || row_counts.iter().any(|&r| r >= (1usize << MAX_LOG_ROWS))
-        || rate_word != F192::new(log_inv_rate as u64, 0, 0)
         || ::pcs::ligerito::validate_log_inv_rate(log_inv_rate).is_err()
     {
         return Err(Error::PublicInput);
@@ -252,7 +253,7 @@ pub struct Program {
 }
 
 impl Program {
-    /// Assemble a [`Program`], computing its bytecode [`digest`](Program::digest)
+    /// Assemble a [`Program`], computing its bytecode digest
     /// from `prog`. The single funnel for construction, so the digest is always
     /// consistent with the bytecode.
     pub fn assemble(
@@ -292,7 +293,10 @@ impl Program {
     /// much larger suffix.  Recomputing the digest binds the cutoff into the
     /// public statement.
     pub fn set_bytecode_used(&mut self, bytecode_used: usize) {
-        assert!(bytecode_used < self.prog.len(), "real bytecode prefix must end before the sentinel");
+        assert!(
+            bytecode_used < self.prog.len(),
+            "real bytecode prefix must end before the sentinel"
+        );
         self.bytecode_used = bytecode_used;
         self.digest = program_digest(&self.prog, bytecode_used);
     }
@@ -792,7 +796,11 @@ fn slot_claims(l: &Layout, claims: &[ColumnClaim]) -> Vec<pcs::SlotClaim> {
             let jagged_value = c.value + F192::from(l.pad[c.col]) * suffix;
             let mut block_point = Vec::with_capacity(placement.block_width_log + c.point.len());
             for bit in 0..placement.block_width_log {
-                block_point.push(if (placement.slot >> bit) & 1 == 1 { F192::ONE } else { F192::ZERO });
+                block_point.push(if (placement.slot >> bit) & 1 == 1 {
+                    F192::ONE
+                } else {
+                    F192::ZERO
+                });
             }
             block_point.extend_from_slice(&c.point);
             pcs::SlotClaim::Jagged {
@@ -1123,6 +1131,31 @@ mod tests {
             matches!(verify(&program, &pi, &bad_rate), Err(Error::PublicInput)),
             "the transcript-announced PCS rate must be in 1..=4"
         );
+
+        for announcement in 0..=tables::N_TABLES + 1 {
+            for high_limb in [F192::new(0, 1, 0), F192::new(0, 0, 1)] {
+                let mut malformed = decoded.clone();
+                malformed.stream[announcement] += high_limb;
+                assert!(
+                    matches!(verify(&program, &pi, &malformed), Err(Error::PublicInput)),
+                    "announcement {announcement} with a nonzero high limb must be rejected"
+                );
+            }
+        }
+
+        let root_offset = tables::N_TABLES + 2;
+        for root_word in root_offset..root_offset + 2 {
+            let mut malformed = decoded.clone();
+            malformed.stream[root_word].c2 = 1;
+            assert!(
+                matches!(
+                    verify(&program, &pi, &malformed),
+                    Err(Error::Transcript(crate::transcript::Error::NonCanonicalEncoding))
+                ),
+                "commitment root word {} with a nonzero top limb must be rejected",
+                root_word - root_offset
+            );
+        }
 
         let mut tampered = bytes.clone();
         let i = tampered.len() / 2;

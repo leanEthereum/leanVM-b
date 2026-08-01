@@ -1,4 +1,4 @@
-// Credit: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
+// CREDIT: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
 //! Process-global pool for the prover's large transient `F192` buffers.
 //!
 //! Each prove allocates, faults in, and frees several large F192 vectors
@@ -12,11 +12,11 @@
 //! hands out a previously-used buffer when one with enough capacity exists,
 //! `give` returns a buffer for later reuse. Contents are NOT cleared —
 //! `take` has the same write-before-read contract as
-//! [`crate::alloc_uninit_vec`].
+//! a fresh zeroed allocation.
 //!
-//! Steady-state retention is bounded by [`MAX_POOLED`] buffers (~640 MB for
-//! the m = 29 prove set). Call [`clear`] to release everything to the OS,
-//! e.g. after the last prove of a batch.
+//! Steady-state retention is bounded by a fixed buffer count; the byte total
+//! depends on the largest proof shape used by the process. Call [`clear`] to
+//! release everything to the OS, e.g. after the last prove of a batch.
 
 use crate::field::F192;
 use std::sync::Mutex;
@@ -35,16 +35,16 @@ static POOL: Mutex<Vec<Vec<F192>>> = Mutex::new(Vec::new());
 const MAX_POOLED: usize = 24;
 
 /// Take a length-`n` `F192` vector, preferring a pooled buffer (smallest
-/// capacity ≥ `n`); falls back to a fresh uninitialized allocation.
+/// capacity ≥ `n`); falls back to a fresh demand-zero allocation.
 ///
-/// Contents are UNINITIALIZED in both cases — recycled buffers hold stale
-/// data from a previous use. Caller MUST write every slot before reading it
-/// (same contract as [`crate::alloc_uninit_vec`]).
+/// Recycled buffers hold valid but unspecified stale values. Callers overwrite
+/// them before use.
 pub fn take_f192(n: usize) -> Vec<F192> {
     if let Some(v) = try_take_f192(n) {
         return v;
     }
-    crate::alloc_uninit_vec(n)
+    // SAFETY: zero is a valid F192 value.
+    unsafe { crate::alloc_zeroed_vec(n) }
 }
 
 /// Pool-only variant of [`take_f192`]: returns `None` instead of falling
@@ -63,9 +63,8 @@ pub(crate) fn try_take_f192(n: usize) -> Option<Vec<F192>> {
         let mut v = pool.swap_remove(i);
         drop(pool);
         v.clear();
-        // SAFETY: capacity ≥ n was checked above; F192: Copy (no Drop), so
-        // exposing uninit/stale elements is sound to *hold* — the caller
-        // upholds write-before-read per this function's contract.
+        // SAFETY: capacity ≥ n was checked above. The backing storage retains
+        // valid F192 values from its previous use.
         unsafe { v.set_len(n) };
         return Some(v);
     }

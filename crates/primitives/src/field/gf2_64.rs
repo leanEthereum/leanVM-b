@@ -1,3 +1,4 @@
+// CREDIT: https://github.com/binius-zk/binius64, Apache-2.0.
 //! `K = GF(2)[x]/(x^64 + x^4 + x^3 + x + 1)`,
 //! `R64 = 0x1B = x^4 + x^3 + x + 1`, and `ord(x) = 2^64 - 1`.
 //! One multiplication = 1 product PMULL + 1

@@ -1,4 +1,4 @@
-// Credit: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
+// CREDIT: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
 //! Round-1 prover message (univariate skip).
 //!
 //! The round-1 message is `(P^{AB}, P^C)`, each a length-`2^k_skip` vector

@@ -1,7 +1,8 @@
+// CREDIT: https://github.com/leanEthereum/leanVM (XMSS construction).
 //! XMSS over BLAKE3 (inspired by leanVM's `xmss` crate, byte-oriented).
 //!
 //! Every hash is standard BLAKE3 of the exact byte string
-//! `tweak | pp | payload`, truncated to n = 128 bits. See [`hash`] for the
+//! `tweak | pp | payload`, truncated to n = 128 bits. See the `hash` module for the
 //! constructions and per-call compression counts.
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
@@ -60,10 +61,7 @@ pub mod array_serialization {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
     use std::marker::PhantomData;
 
-    pub fn serialize<S: Serializer, T: Serialize, const N: usize>(
-        data: &[T; N],
-        ser: S,
-    ) -> Result<S::Ok, S::Error> {
+    pub fn serialize<S: Serializer, T: Serialize, const N: usize>(data: &[T; N], ser: S) -> Result<S::Ok, S::Error> {
         let mut tup = ser.serialize_tuple(N)?;
         for elem in data {
             tup.serialize_element(elem)?;

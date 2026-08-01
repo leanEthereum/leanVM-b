@@ -14,8 +14,8 @@ use std::time::Instant;
 
 use fiat_shamir::transcript::{ProverState, VerifierState};
 use flock::blake3::{
-    Blake3Setup, Compression, K_LOG, ReducedClaims, generate_witness_with_ab_packed_and_lincheck, min_n_blocks_log,
-    pinned_compression,
+    Blake3Setup, Compression, K_LOG, PackedWitnessClaims, generate_witness_with_ab_packed_and_lincheck,
+    min_n_blocks_log, pinned_compression,
 };
 use flock::proof::ZClaim;
 use pcs::ligerito::{INITIAL_FOLDING_FACTOR, LOG_INV_RATE_0};
@@ -85,7 +85,7 @@ fn ring_claim(z: &ZClaim, captured: Option<&[F192]>, qpkd_vars: usize) -> RingSw
     }
 }
 
-fn prover_ring(reduced: &ReducedClaims, qpkd_vars: usize) -> RingSwitchOpen {
+fn prover_ring(reduced: &PackedWitnessClaims, qpkd_vars: usize) -> RingSwitchOpen {
     RingSwitchOpen {
         offset: 0,
         qpkd_vars,
@@ -132,8 +132,7 @@ fn blake3_batch_prove_verify() {
     let setup_ms = t.elapsed().as_secs_f64() * 1e3;
 
     let t = Instant::now();
-    let (z_packed, a_packed, b_packed, z_lincheck) =
-        generate_witness_with_ab_packed_and_lincheck(&blocks, n_log);
+    let (z_packed, a_packed, b_packed, z_lincheck) = generate_witness_with_ab_packed_and_lincheck(&blocks, n_log);
     let q_pkd = flatten_packed(&z_packed);
     let witness_ms = t.elapsed().as_secs_f64() * 1e3;
     assert_eq!(q_pkd.len(), 1 << mu);
@@ -148,13 +147,7 @@ fn blake3_batch_prove_verify() {
     let commit_ms = t.elapsed().as_secs_f64() * 1e3;
 
     let t = Instant::now();
-    let reduced = setup.prove_reduction_precomputed(
-        &z_packed,
-        &a_packed,
-        &b_packed,
-        &z_lincheck,
-        &mut ps,
-    );
+    let reduced = setup.prove_reduction_precomputed(&z_packed, &a_packed, &b_packed, &z_lincheck, &mut ps);
     drop((z_packed, a_packed, b_packed, z_lincheck));
     let ring = prover_ring(&reduced, mu);
     let opening = open_batch_mixed_ligerito_stacked(ps.sponge_mut(), &q_pkd, &prover_data, &prover_config, &[], &ring);

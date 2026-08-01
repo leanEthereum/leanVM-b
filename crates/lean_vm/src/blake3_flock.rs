@@ -33,7 +33,7 @@
 use crate::transcript::{ProverState, VerifierState};
 use ::pcs::pack::{LOG_PACKING, PACKING_WIDTH};
 use flock::blake3::{
-    Blake3Setup, Compression, K_LOG, ReducedClaims, ReductionReplay, blake3_compress,
+    Blake3Setup, Compression, K_LOG, PackedWitnessClaims, ReductionReplay, blake3_compress,
     generate_witness_with_ab_packed_and_lincheck, min_n_blocks_log,
 };
 use flock::verifier::VerifyError;
@@ -74,7 +74,7 @@ impl PreparedReductionWitness {
         self.n_blocks
     }
 
-    pub(crate) fn prove(&self, ps: &mut ProverState) -> ReducedClaims {
+    pub(crate) fn prove(&self, ps: &mut ProverState) -> PackedWitnessClaims {
         setup_for(self.n_blocks).prove_reduction_precomputed(
             &self.z_packed,
             &self.a_packed,
@@ -126,7 +126,7 @@ fn words_of(x: F64) -> [u32; 2] {
     [x.0 as u32, (x.0 >> 32) as u32]
 }
 
-/// Inverse of [`words_of`]: pack two little-endian `u32` words into the `F64`.
+/// Inverse of `words_of`: pack two little-endian `u32` words into the `F64`.
 pub fn pack_words(w: [u32; 2]) -> F64 {
     F64((w[0] as u64) | ((w[1] as u64) << 32))
 }
@@ -230,9 +230,7 @@ pub fn build_qpkd(blocks: &[Compression]) -> Vec<F64> {
 
 /// Build the committed `q_pkd` and retain the Flock-native layouts produced by
 /// that same fused pass so reduction does not regenerate them later.
-pub(crate) fn build_qpkd_prepared(
-    blocks: &[Compression],
-) -> (Vec<F64>, PreparedReductionWitness) {
+pub(crate) fn build_qpkd_prepared(blocks: &[Compression]) -> (Vec<F64>, PreparedReductionWitness) {
     let n_blocks = blocks.len().max(1);
     let (z_packed, a_packed, b_packed, z_lincheck) =
         generate_witness_with_ab_packed_and_lincheck(blocks, n_blocks_log(n_blocks));
@@ -261,43 +259,32 @@ pub fn padding_digest() -> [F64; 4] {
 /// claim on `q_pkd` is thus a boolean-selector (strided) claim with this stride.
 pub const SLOT_STRIDE_LOG: usize = K_LOG - LOG_PACKING;
 
-/// Memoized BLAKE3 R1CS [`Blake3Setup`], keyed by the executed-instance count.
+/// Memoized BLAKE3 R1CS [`Blake3Setup`], keyed by its power-of-two shape.
 /// Building it (the symbolic constraint walk over `2^K_LOG` slots) costs
 /// ~hundreds of ms — fixed per circuit shape, independent of `N` or the proof.
 /// So we build each shape once and reuse it across `prove`, `verify`, and
 /// repeated proofs; the per-setup caches then stay warm, making verification
 /// milliseconds rather than rebuilding the circuit each time.
 ///
-/// The cache is bounded ([`SETUP_CACHE_CAP`]): `verify` calls this with the
-/// PROVER-ANNOUNCED count, so an attacker cycling distinct counts could otherwise
-/// grow it without limit. Past the cap we build an ephemeral (uncached) setup —
-/// correct, just not memoized; legit workloads use only a handful of sizes.
-const SETUP_CACHE_CAP: usize = 256;
+type SetupCell = std::sync::Arc<std::sync::OnceLock<std::sync::Arc<Blake3Setup>>>;
 
-fn setup_cache() -> &'static std::sync::Mutex<std::collections::HashMap<usize, std::sync::Arc<Blake3Setup>>> {
-    static CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<usize, std::sync::Arc<Blake3Setup>>>> =
+fn setup_cache() -> &'static std::sync::Mutex<std::collections::HashMap<usize, SetupCell>> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<usize, SetupCell>>> =
         std::sync::OnceLock::new();
     CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
 fn setup_for(n_blocks: usize) -> std::sync::Arc<Blake3Setup> {
-    let cache = setup_cache();
-    // Fast path: build OUTSIDE the lock so a concurrent builder (e.g. the
-    // background warm spawned by `cpu::prove`) doesn't serialize behind us — the
-    // ~hundreds-of-ms build must not hold the mutex.
-    if let Some(s) = cache.lock().expect("BLAKE3 setup cache poisoned").get(&n_blocks) {
-        return std::sync::Arc::clone(s);
-    }
-    let setup = std::sync::Arc::new(Blake3Setup::new(n_blocks));
-    let mut map = cache.lock().expect("BLAKE3 setup cache poisoned");
-    // Re-check: another thread may have inserted while we built (harmless — one wins).
-    if let Some(s) = map.get(&n_blocks) {
-        return std::sync::Arc::clone(s);
-    }
-    if map.len() < SETUP_CACHE_CAP {
-        map.insert(n_blocks, std::sync::Arc::clone(&setup));
-    }
-    setup
+    let shape = n_blocks_log(n_blocks);
+    let cell = {
+        let mut cache = setup_cache().lock().expect("BLAKE3 setup cache poisoned");
+        std::sync::Arc::clone(
+            cache
+                .entry(shape)
+                .or_insert_with(|| std::sync::Arc::new(std::sync::OnceLock::new())),
+        )
+    };
+    std::sync::Arc::clone(cell.get_or_init(|| std::sync::Arc::new(Blake3Setup::new(1usize << shape))))
 }
 
 /// Pre-build (and cache) the flock BLAKE3 R1CS setup. This is the fixed,
@@ -325,7 +312,7 @@ pub fn family_digest() -> [u8; 32] {
 }
 
 /// **Flock reduction only** (prover): run flock's BLAKE3 zerocheck + lincheck
-/// over `blocks` and return the two claims [`ReducedClaims`] on the committed
+/// over `blocks` and return the two [`PackedWitnessClaims`] on the committed
 /// witness `q_pkd` — `ab` (`A∘B`, lincheck) and `c` (`C`, zerocheck) — along
 /// with the regenerated packed witness (already flattened to the committed
 /// `F64` packing). The sub-proof scalars ride the shared transcript stream
@@ -339,7 +326,7 @@ pub fn prove_reduction(
     blocks: &[Compression],
     commitment: &::pcs::ligerito::Commitment,
     ps: &mut ProverState,
-) -> (Vec<F64>, ReducedClaims) {
+) -> (Vec<F64>, PackedWitnessClaims) {
     let _ = commitment;
     let (z_packed, reduced) = setup_for(blocks.len()).prove_reduction(blocks, ps);
     (flatten_packed(&z_packed), reduced)
@@ -409,11 +396,11 @@ fn ring_claim(z: &ZClaim, captured: Option<&[F192]>, qpkd_vars: usize) -> crate:
     }
 }
 
-/// Package the prover's reduction claims ([`ReducedClaims`]) as a
+/// Package the prover's reduction claims ([`PackedWitnessClaims`]) as a
 /// [`crate::pcs::RingSwitchOpen`], so the PCS discharges flock's `(ab, c)`
-/// validity in the SAME opening as leanVM's point claims. `offset` is `q_pkd`'s
+/// validity in the same opening as leanVM's point claims. `offset` is `q_pkd`'s
 /// slot in the committed stack; the opener slices `q_pkd` from there.
-pub fn ring_switch_open(n_blocks: usize, offset: usize, reduced: &ReducedClaims) -> crate::pcs::RingSwitchOpen {
+pub fn ring_switch_open(n_blocks: usize, offset: usize, reduced: &PackedWitnessClaims) -> crate::pcs::RingSwitchOpen {
     let qpkd_vars = qpkd_kappa(n_blocks);
     crate::pcs::RingSwitchOpen {
         offset,
@@ -446,6 +433,15 @@ pub fn ring_switch_verify(n_blocks: usize, offset: usize, ab: ZClaim, c: ZClaim)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn setup_cache_is_keyed_by_shape() {
+        let one = setup_for(1);
+        let eight = setup_for(8);
+        let nine = setup_for(9);
+        assert!(std::sync::Arc::ptr_eq(&one, &eight));
+        assert!(!std::sync::Arc::ptr_eq(&eight, &nine));
+    }
 
     fn f(x: u64) -> F64 {
         F64(x)

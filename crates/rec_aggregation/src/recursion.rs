@@ -4,13 +4,11 @@
 //! statements + the three reduced claims (stacked bytecode, A0, B0) to its own
 //! public input (doc.tex §Recursive aggregation, §Deferred evaluation claims).
 //!
-//! Zero hand-mirroring: the transcript trace of a REAL `cpu::verify` run
-//! (`transcript::trace_start`/`trace_take`) is the guest's mechanical spec —
-//! `gen_verify` walks it structurally (a `Walk` cursor; `Sponge::replay` yields
-//! the checkpoint states) to extract every hint value, and the real
-//! `cpu::layout` supplies every compile-time shape. `gen_agg` mirrors the
-//! guest's aggregation transcript and runs the two batching-sumcheck provers
-//! (dense for the bytecode, two-phase sparse for the flock matrices).
+//! The transcript trace of a real `cpu::verify` run
+//! (`transcript::trace_start`/`trace_take`) keeps the native and guest verifiers
+//! synchronized: `gen_verify` walks it structurally, while `cpu::layout`
+//! supplies every compile-time shape. `aggregate_deferred_claims` builds the guest's aggregation
+//! transcript and the two batching-sumcheck proofs.
 //! [`RecursiveProof::verify`] is the only public acceptance path: it verifies
 //! the outer VM proof and evaluates every deferred fixed polynomial.
 
@@ -162,30 +160,30 @@ fn prove_inner(
 /// The deferred-claim data the guest binds to the outer public input: the outer
 /// verifier checks each claim natively (doc.tex §Deferred evaluation claims;
 /// n_rec = 1 forwards fresh claims without batching).
-struct SubDefer {
-    pi: [F192; 2],
-    kbc: usize,
-    zeta: Vec<F192>,
-    sb: Vec<F192>,
-    wbc: Vec<F192>,
-    lc_alpha: F192,
-    zz: F192,
-    zrho8: Vec<F192>,
-    lrr: Vec<F192>,
-    lcz: Vec<F192>,
-    matpart: F192,
+struct DeferredSubproof {
+    public_input: [F192; 2],
+    bytecode_log: usize,
+    bytecode_row_point: Vec<F192>,
+    bytecode_selector_point: Vec<F192>,
+    bytecode_value: F192,
+    matrix_a_coefficient: F192,
+    skip_point: F192,
+    zerocheck_row_point: Vec<F192>,
+    lincheck_round_point: Vec<F192>,
+    lincheck_terminal_values: Vec<F192>,
+    matrix_claim: F192,
 }
 
-/// The batched reduced claims the aggregation exports: one point + value on
+/// The deferred claims the aggregation exports: one point and value on
 /// the stacked bytecode polynomial, one point + two values on the flock
 /// matrices (doc.tex §Deferred evaluation claims).
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-struct ReducedClaims {
-    r_bc: Vec<F192>,
-    v_bc: F192,
-    r_m: Vec<F192>,
-    v_a: F192,
-    v_b: F192,
+struct DeferredClaims {
+    bytecode_point: Vec<F192>,
+    bytecode_value: F192,
+    matrix_point: Vec<F192>,
+    matrix_a_value: F192,
+    matrix_b_value: F192,
 }
 
 /// Everything committed by the outer public input. Keeping this private makes
@@ -193,7 +191,7 @@ struct ReducedClaims {
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct RecursiveStatement {
     sub_statements: Vec<[F192; 2]>,
-    reduced: ReducedClaims,
+    reduced: DeferredClaims,
 }
 
 impl RecursiveStatement {
@@ -208,15 +206,15 @@ impl RecursiveStatement {
                 sponge.observe(v);
             }
         }
-        for &v in &self.reduced.r_bc {
+        for &v in &self.reduced.bytecode_point {
             sponge.observe(v);
         }
-        sponge.observe(self.reduced.v_bc);
-        for &v in &self.reduced.r_m {
+        sponge.observe(self.reduced.bytecode_value);
+        for &v in &self.reduced.matrix_point {
             sponge.observe(v);
         }
-        sponge.observe(self.reduced.v_a);
-        sponge.observe(self.reduced.v_b);
+        sponge.observe(self.reduced.matrix_a_value);
+        sponge.observe(self.reduced.matrix_b_value);
         pack_state(sponge.state())
     }
 }
@@ -249,7 +247,7 @@ impl RecursiveProof {
         let guest = recursion_guest_arc(inner_program, statement.sub_statements.len());
         let public_input = statement.public_input(lean_vm::cpu::fs_seed(inner_program));
         verify(&guest, &public_input, &self.outer_proof).map_err(RecursiveVerifyError::OuterProof)?;
-        check_reduced(inner_program, &statement.reduced)
+        check_deferred_claims(inner_program, &statement.reduced)
     }
 }
 
@@ -304,14 +302,16 @@ fn stacked_bytecode(program: &Program) -> Vec<F64> {
     lean_vm::leaf::stacked_bytecode_table(&l.push)
 }
 
-/// The aggregation layer: mirror the guest's aggregation transcript, run the
-/// two batching-sumcheck PROVERS (dense bytecode; two-phase sparse matrices),
-/// and return the round-message hints, the terminal hints, the reduced claims,
-/// and the outer public input.
+/// Mirror the guest's aggregation transcript and prove the two batching
+/// sumchecks: dense for bytecode and two-phase sparse for the matrices. Returns
+/// the guest hints, deferred claims, and outer public input.
 #[allow(clippy::type_complexity)]
-fn gen_agg(program: &Program, subs: &[SubDefer]) -> (Vec<(String, Vec<F192>)>, [F192; 2], ReducedClaims) {
+fn aggregate_deferred_claims(
+    program: &Program,
+    subs: &[DeferredSubproof],
+) -> (Vec<(String, Vec<F192>)>, [F192; 2], DeferredClaims) {
     let nsub = subs.len();
-    let kbc = subs[0].kbc;
+    let kbc = subs[0].bytecode_log;
     let kbcv = kbc + lean_vm::leaf::N_BYTECODE_SELECTORS;
     let klog = flock::blake3::K_LOG;
 
@@ -319,29 +319,27 @@ fn gen_agg(program: &Program, subs: &[SubDefer]) -> (Vec<(String, Vec<F192>)>, [
     let mut h = Sponge::new(RECURSION_AGG_LABEL, &[]);
     h.observe(F192::new(nsub as u64, 0, 0));
     for d in subs {
-        h.observe(d.pi[0]);
-        h.observe(d.pi[1]);
-        for &v in &d.zeta {
+        h.observe(d.public_input[0]);
+        h.observe(d.public_input[1]);
+        for &v in &d.bytecode_row_point {
             h.observe(v);
         }
-        for &v in &d.sb {
+        for &v in &d.bytecode_selector_point {
             h.observe(v);
         }
-        for &v in &d.wbc {
+        h.observe(d.bytecode_value);
+        h.observe(d.matrix_a_coefficient);
+        h.observe(d.skip_point);
+        for &v in &d.zerocheck_row_point {
             h.observe(v);
         }
-        h.observe(d.lc_alpha);
-        h.observe(d.zz);
-        for &v in &d.zrho8 {
+        for &v in &d.lincheck_round_point {
             h.observe(v);
         }
-        for &v in &d.lrr {
+        for &v in &d.lincheck_terminal_values {
             h.observe(v);
         }
-        for &v in &d.lcz {
-            h.observe(v);
-        }
-        h.observe(d.matpart);
+        h.observe(d.matrix_claim);
     }
 
     // ---- bytecode batching sumcheck (dense, 2^kbcv; ONE claim per sub, at
@@ -354,7 +352,13 @@ fn gen_agg(program: &Program, subs: &[SubDefer]) -> (Vec<(String, Vec<F192>)>, [
     let mut wt = vec![F192::ZERO; 1 << kbcv];
     let points: Vec<Vec<F192>> = subs
         .iter()
-        .map(|d| d.zeta.iter().chain(&d.sb).copied().collect::<Vec<_>>())
+        .map(|d| {
+            d.bytecode_row_point
+                .iter()
+                .chain(&d.bytecode_selector_point)
+                .copied()
+                .collect::<Vec<_>>()
+        })
         .collect();
     for (t, p) in points.iter().enumerate() {
         let eqt = pcs::ligerito::build_eq_table_ext(p);
@@ -363,7 +367,7 @@ fn gen_agg(program: &Program, subs: &[SubDefer]) -> (Vec<(String, Vec<F192>)>, [
         }
     }
     let mut brun: F192 = (0..nsub)
-        .map(|t| gbc[t] * subs[t].wbc[0])
+        .map(|t| gbc[t] * subs[t].bytecode_value)
         .fold(F192::ZERO, |a, x| a + x);
     let mut bscr = Vec::new();
     let mut r_bc = Vec::new();
@@ -389,15 +393,15 @@ fn gen_agg(program: &Program, subs: &[SubDefer]) -> (Vec<(String, Vec<F192>)>, [
     // per-claim dense weight tables: rows = quirky eq, cols = eq(top rounds) x z_partial.
     let mut us: Vec<Vec<F192>> = subs
         .iter()
-        .map(|d| flock::lincheck::build_quirky_eq_table(d.zz, &d.zrho8, 6))
+        .map(|d| flock::lincheck::build_quirky_eq_table(d.skip_point, &d.zerocheck_row_point, 6))
         .collect();
     let ws: Vec<Vec<F192>> = subs
         .iter()
         .map(|d| {
             (0..1usize << klog)
                 .map(|c| {
-                    let mut w = d.lcz[c & 63];
-                    for (j, &rj) in d.lrr.iter().enumerate() {
+                    let mut w = d.lincheck_terminal_values[c & 63];
+                    for (j, &rj) in d.lincheck_round_point.iter().enumerate() {
                         let bit = (c >> (klog - 1 - j)) & 1;
                         w *= if bit == 1 { rj } else { F192::ONE + rj };
                     }
@@ -417,14 +421,14 @@ fn gen_agg(program: &Program, subs: &[SubDefer]) -> (Vec<(String, Vec<F192>)>, [
         ms.push(contract_cols(ma, w));
         ms.push(contract_cols(mb, w));
     }
-    let ga: Vec<F192> = (0..nsub).map(|t| gmt[t] * subs[t].lc_alpha).collect();
+    let ga: Vec<F192> = (0..nsub).map(|t| gmt[t] * subs[t].matrix_a_coefficient).collect();
     let gb: Vec<F192> = gmt.clone();
     let mut mrun: F192 = (0..nsub)
-        .map(|t| gmt[t] * subs[t].matpart)
+        .map(|t| gmt[t] * subs[t].matrix_claim)
         .fold(F192::ZERO, |a, x| a + x);
     // sanity: the deferred matpart equals the bilinear form over the matrices.
     for (t, d) in subs.iter().enumerate() {
-        let direct = d.lc_alpha
+        let direct = d.matrix_a_coefficient
             * ms[2 * t]
                 .iter()
                 .zip(&us[t])
@@ -435,7 +439,7 @@ fn gen_agg(program: &Program, subs: &[SubDefer]) -> (Vec<(String, Vec<F192>)>, [
                 .zip(&us[t])
                 .map(|(&m, &u)| m * u)
                 .fold(F192::ZERO, |a, x| a + x);
-        assert_eq!(direct, d.matpart, "matpart bilinear identity, sub {t}");
+        assert_eq!(direct, d.matrix_claim, "matrix bilinear identity, sub {t}");
     }
     let mut mscr = Vec::new();
     let mut r_row = Vec::new();
@@ -510,13 +514,15 @@ fn gen_agg(program: &Program, subs: &[SubDefer]) -> (Vec<(String, Vec<F192>)>, [
         let eqc = pcs::ligerito::build_eq_table_ext(&r_col[..6]);
         let (mut wam, mut wbm) = (F192::ZERO, F192::ZERO);
         for (t, d) in subs.iter().enumerate() {
-            let lam = primitives::multilinear::lagrange_weights_naive(6, d.zz);
+            let lam = primitives::multilinear::lagrange_weights_naive(6, d.skip_point);
             let mut urow: F192 = (0..64).map(|i| lam[i] * eqr[i]).fold(F192::ZERO, |a, x| a + x);
-            for (k, &z) in d.zrho8.iter().enumerate() {
+            for (k, &z) in d.zerocheck_row_point.iter().enumerate() {
                 urow *= F192::ONE + z + r_row[6 + k];
             }
-            let mut wcol: F192 = (0..64).map(|i| d.lcz[i] * eqc[i]).fold(F192::ZERO, |a, x| a + x);
-            for (j, &rj) in d.lrr.iter().enumerate() {
+            let mut wcol: F192 = (0..64)
+                .map(|i| d.lincheck_terminal_values[i] * eqc[i])
+                .fold(F192::ZERO, |a, x| a + x);
+            for (j, &rj) in d.lincheck_round_point.iter().enumerate() {
                 wcol *= F192::ONE + rj + r_col[klog - 1 - j];
             }
             let u = urow * wcol;
@@ -536,8 +542,8 @@ fn gen_agg(program: &Program, subs: &[SubDefer]) -> (Vec<(String, Vec<F192>)>, [
     e.observe(seed[0]);
     e.observe(seed[1]);
     for d in subs {
-        e.observe(d.pi[0]);
-        e.observe(d.pi[1]);
+        e.observe(d.public_input[0]);
+        e.observe(d.public_input[1]);
     }
     for &v in &r_bc {
         e.observe(v);
@@ -560,37 +566,37 @@ fn gen_agg(program: &Program, subs: &[SubDefer]) -> (Vec<(String, Vec<F192>)>, [
     (
         hints,
         pack_state(e.state()),
-        ReducedClaims {
-            r_bc,
-            v_bc,
-            r_m,
-            v_a,
-            v_b,
+        DeferredClaims {
+            bytecode_point: r_bc,
+            bytecode_value: v_bc,
+            matrix_point: r_m,
+            matrix_a_value: v_a,
+            matrix_b_value: v_b,
         },
     )
 }
 
 /// Discharge the three fixed-polynomial claims deferred by the guest.
-fn check_reduced(program: &Program, red: &ReducedClaims) -> Result<(), RecursiveVerifyError> {
+fn check_deferred_claims(program: &Program, claims: &DeferredClaims) -> Result<(), RecursiveVerifyError> {
     let stacked = stacked_bytecode(program);
     let expected_bc = stacked.len().trailing_zeros() as usize;
-    if red.r_bc.len() != expected_bc {
+    if claims.bytecode_point.len() != expected_bc {
         return Err(RecursiveVerifyError::InvalidDeferredShape);
     }
-    if mle_eval(&stacked, &red.r_bc) != red.v_bc {
+    if mle_eval(&stacked, &claims.bytecode_point) != claims.bytecode_value {
         return Err(RecursiveVerifyError::BytecodeClaim);
     }
     let klog = flock::blake3::K_LOG;
-    if red.r_m.len() != 2 * klog {
+    if claims.matrix_point.len() != 2 * klog {
         return Err(RecursiveVerifyError::InvalidDeferredShape);
     }
-    let eq_r = pcs::ligerito::build_eq_table_ext(&red.r_m[..klog]);
-    let eq_c = pcs::ligerito::build_eq_table_ext(&red.r_m[klog..]);
+    let eq_r = pcs::ligerito::build_eq_table_ext(&claims.matrix_point[..klog]);
+    let eq_c = pcs::ligerito::build_eq_table_ext(&claims.matrix_point[klog..]);
     let (v_a, v_b) = flock::blake3::bilinear_walk_pair(&eq_r, &eq_c);
-    if v_a != red.v_a {
+    if v_a != claims.matrix_a_value {
         return Err(RecursiveVerifyError::MatrixAClaim);
     }
-    if v_b != red.v_b {
+    if v_b != claims.matrix_b_value {
         return Err(RecursiveVerifyError::MatrixBClaim);
     }
     Ok(())
@@ -605,7 +611,7 @@ fn gen_verify(
     proof: &lean_vm::cpu::Proof,
     summary: &lean_vm::cpu::VerifySummary,
     ops: &[TraceOp],
-) -> (Vec<(String, Vec<F192>)>, SubDefer) {
+) -> (Vec<(String, Vec<F192>)>, DeferredSubproof) {
     // The stream announces `mem_used`; the logical memory log is derived from it
     // exactly as `read_public` does.
     let mem_used = proof.stream[0].c0 as usize;
@@ -638,8 +644,9 @@ fn gen_verify(
     let seed = Sponge::new(b"leanvm-b", &[fs_seed[0], fs_seed[1], pi[0], pi[1]]);
     seed.clone().replay(ops);
 
-    // Ligerito grinding digests are trace-borne functions of sponge states;
-    // fold grinds carry bits > 0 and query-phase grinds carry bits = 0.
+    // Grinding digests are the only trace-borne data (they are functions of
+    // sponge states): fold grinds carry bits > 0 and query-phase grinds carry
+    // bits = 0.
     let pows: Vec<(F192, u32, F64)> = ops
         .iter()
         .filter_map(|op| match op {
@@ -732,11 +739,11 @@ fn gen_verify(
 
     // ---- hints ----
     // bcv: the deferred bytecode evaluations at the SHARED push/pull point
-    // (leaf's own scan, coord order; both bytecode blocks carry the same six).
+    // (leaf's own scan, coord order; push and pull carry the same nine).
     let (kbc2, bcv) = lean_vm::leaf::public_evals(&l.push, &zeta);
     assert_eq!(kbc2, kbc);
     assert_eq!(bcv.len(), nbcv / 2);
-    let wbc = vec![lean_vm::leaf::stacked_bytecode_value(&bcv, &sb)];
+    let bytecode_value = lean_vm::leaf::stacked_bytecode_value(&bcv, &sb);
     // checkpoints: the verifier's phase-boundary sponge states (guest cvh).
 
     // ---- per-sub HINT data (the placeholder map is built once, elsewhere) ----
@@ -845,18 +852,18 @@ fn gen_verify(
             });
         }
     }
-    let deferred = SubDefer {
-        pi,
-        kbc,
-        zeta,
-        sb: sb.clone(),
-        wbc: wbc.clone(),
-        lc_alpha,
-        zz: zc_z,
-        zrho8: zrho[..lcrounds].to_vec(),
-        lrr: lrr.clone(),
-        lcz: lcz.clone(),
-        matpart,
+    let deferred = DeferredSubproof {
+        public_input: pi,
+        bytecode_log: kbc,
+        bytecode_row_point: zeta,
+        bytecode_selector_point: sb.clone(),
+        bytecode_value,
+        matrix_a_coefficient: lc_alpha,
+        skip_point: zc_z,
+        zerocheck_row_point: zrho[..lcrounds].to_vec(),
+        lincheck_round_point: lrr.clone(),
+        lincheck_terminal_values: lcz.clone(),
+        matrix_claim: matpart,
     };
 
     let hints = vec![
@@ -992,10 +999,7 @@ const MU_MAX: usize = 28;
 /// minimum of 22; tight packing can never exceed the old aligned layout, so
 /// the ceiling is unchanged.
 fn mu_range(kbc: usize) -> (usize, usize) {
-    (
-        lean_vm::pcs::MIN_MU.max(lean_vm::cpu::MIN_LOG_MEM).max(kbc),
-        MU_MAX,
-    )
+    (lean_vm::pcs::MIN_MU.max(lean_vm::cpu::MIN_LOG_MEM).max(kbc), MU_MAX)
 }
 
 struct Batch {
@@ -1072,13 +1076,16 @@ fn build_batch(inner: &[(usize, usize)], log_inv_rates: &[usize], outer_log_inv_
     }
     let (program0, _, _, _, _) = &protos[0];
     // spi is main-level (one hint site): merge the statements into one entry.
-    let spi_all: Vec<F192> = subs.iter().flat_map(|d| [d.pi[0], d.pi[1]]).collect();
+    let spi_all: Vec<F192> = subs
+        .iter()
+        .flat_map(|d| [d.public_input[0], d.public_input[1]])
+        .collect();
     let spi_pos = merged.iter().position(|(n, _)| n == "sub_pis").expect("spi hint");
     merged[spi_pos].1 = vec![spi_all];
-    let (agg_hints, gpi, reduced) = gen_agg(program0, &subs);
+    let (agg_hints, gpi, reduced) = aggregate_deferred_claims(program0, &subs);
     merged.extend(agg_hints.into_iter().map(|(n, v)| (n, vec![v])));
     let statement = RecursiveStatement {
-        sub_statements: subs.iter().map(|d| d.pi).collect(),
+        sub_statements: subs.iter().map(|d| d.public_input).collect(),
         reduced,
     };
     assert_eq!(
@@ -1100,13 +1107,36 @@ fn build_batch(inner: &[(usize, usize)], log_inv_rates: &[usize], outer_log_inv_
     }
 }
 
+struct OpeningShape {
+    n_levels: usize,
+    yr_level: usize,
+    yr_log_len: usize,
+    folds: Vec<usize>,
+    log_message_columns: Vec<usize>,
+    queries: Vec<usize>,
+    tree_depths: Vec<usize>,
+    positions_per_squeeze: Vec<usize>,
+    squeezes: Vec<usize>,
+    interleaving: Vec<usize>,
+    query_grinding_bits: Vec<usize>,
+    fold_grinding_bits: Vec<usize>,
+    row_offsets: Vec<usize>,
+    path_offsets: Vec<usize>,
+    positions_offsets: Vec<usize>,
+    vanish_offsets: Vec<usize>,
+    fold_offsets: Vec<usize>,
+    residual_fold_offsets: Vec<usize>,
+    vanish_values: Vec<F192>,
+    vanish_inverses: Vec<F192>,
+    ood_samples: Vec<usize>,
+}
+
 /// The recursion program's placeholder map (the SHAPE-INDEPENDENT constants the
 /// generic guest is compiled from), built from the inner program's STRUCTURE and
 /// bytecode SIZE alone — no proof. Dummy layout sizes are fine: `rep` reads only the
 /// size-independent block/coord structure and `kbc = log2(bytecode)`, so the guest
 /// can be compiled BEFORE any inner proof exists. Because the map is a function of
 /// the inner bytecode size alone, one compiled guest serves every shape.
-#[allow(clippy::type_complexity)]
 fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     // Any valid sizes drive the layout — rep depends only on structure + kbc.
     let l = lean_vm::cpu::layout(
@@ -1336,10 +1366,16 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
                 && cpcol[j] == cpcol[i]
                 && cpblocklog[j] == cpblocklog[i]
             {
-                assert!(by_slot[cpblockslot[j]].replace(j).is_none(), "duplicate claim for one Jagged block slot");
+                assert!(
+                    by_slot[cpblockslot[j]].replace(j).is_none(),
+                    "duplicate claim for one Jagged block slot"
+                );
             }
         }
-        assert!(by_slot.iter().all(Option::is_some), "Jagged membership partition must produce complete blocks");
+        assert!(
+            by_slot.iter().all(Option::is_some),
+            "Jagged membership partition must produce complete blocks"
+        );
         let members: Vec<usize> = by_slot.into_iter().map(Option::unwrap).collect();
         for (slot, &j) in members.iter().enumerate() {
             claim_gamma_rank[j] = next_rank + slot;
@@ -1582,7 +1618,6 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         };
         let c_rowoff = psum(&|lv| cq[lv] * cni[lv] * if lv == 0 { 1 } else { 3 });
         let c_pathoff = psum(&|lv| cq[lv] * cd[lv] * 2);
-        let c_sbitsoff = psum(&|lv| cs[lv] * 192);
         let c_qpoff = psum(&|lv| cs[lv] * cp[lv]);
         let c_svkoff = psum(&|lv| cl[lv] + 1);
         let c_foldbase = psum(&|lv| ck[lv]);
@@ -1599,10 +1634,29 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
                 });
             }
         }
-        (
-            cn, cr, cyr, ck, cl, cq, cd, cp, cs, cni, cqb, cfb, c_rowoff, c_pathoff, c_sbitsoff, c_qpoff, c_svkoff,
-            c_foldbase, c_risstart, c_svk, c_ivk,
-        )
+        OpeningShape {
+            n_levels: cn,
+            yr_level: cr,
+            yr_log_len: cyr,
+            folds: ck,
+            log_message_columns: cl,
+            queries: cq,
+            tree_depths: cd,
+            positions_per_squeeze: cp,
+            squeezes: cs,
+            interleaving: cni,
+            query_grinding_bits: cqb,
+            fold_grinding_bits: cfb,
+            row_offsets: c_rowoff,
+            path_offsets: c_pathoff,
+            positions_offsets: c_qpoff,
+            vanish_offsets: c_svkoff,
+            fold_offsets: c_foldbase,
+            residual_fold_offsets: c_risstart,
+            vanish_values: c_svk,
+            vanish_inverses: c_ivk,
+            ood_samples: vc.ood_samples,
+        }
     };
     let (minm, maxm) = mu_range(kbc);
     let rates = pcs::ligerito::MIN_LOG_INV_RATE..=pcs::ligerito::MAX_LOG_INV_RATE;
@@ -1610,20 +1664,10 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         .clone()
         .flat_map(|r| (minm..=maxm).map(move |m| oshape(m, r)))
         .collect();
-    let cand_oods: Vec<Vec<usize>> = rates
-        .flat_map(|r| (minm..=maxm).map(move |m| (m, r)))
-        .map(|(m, r)| {
-            pcs::ligerito::LigeritoSecurityConfig::derive_config_with_log_inv_rate(m + pcs::LOG_PACKING, r)
-                .and_then(|s| s.to_prover_verifier_configs())
-                .expect("candidate ligerito config")
-                .1
-                .ood_samples
-        })
-        .collect();
-    let maxlev = cands.iter().map(|c| c.0).max().unwrap();
-    let maxfolds = cands.iter().map(|c| c.11.len()).max().unwrap();
-    let maxsvk = cands.iter().map(|c| c.19.len()).max().unwrap();
-    let maxood = cand_oods.iter().flatten().copied().max().unwrap_or(0);
+    let maxlev = cands.iter().map(|c| c.n_levels).max().unwrap();
+    let maxfolds = cands.iter().map(|c| c.fold_grinding_bits.len()).max().unwrap();
+    let maxsvk = cands.iter().map(|c| c.vanish_values.len()).max().unwrap();
+    let maxood = cands.iter().flat_map(|c| &c.ood_samples).copied().max().unwrap_or(0);
     ps("LIG_MAX_LEVELS", maxlev.to_string());
     ps("LIG_MAX_TOTAL_FOLDS", maxfolds.to_string());
     ps("LIG_MAX_VANISH_LEN", maxsvk.to_string());
@@ -1680,95 +1724,68 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
                 .collect::<Vec<_>>(),
         ),
     );
-    ps("COL_BLOCK_LOG", ints(&ordered_heights.iter().map(|(_, width_log)| *width_log).collect::<Vec<_>>()));
+    ps(
+        "COL_BLOCK_LOG",
+        ints(
+            &ordered_heights
+                .iter()
+                .map(|(_, width_log)| *width_log)
+                .collect::<Vec<_>>(),
+        ),
+    );
     assert!(
-        ordered_heights
-            .iter()
-            .all(|(source, width_log)| !matches!(source, lean_vm::cpu::ColHeightSource::BytecodeRows(_)) || *width_log == 0),
+        ordered_heights.iter().all(|(source, width_log)| !matches!(
+            source,
+            lean_vm::cpu::ColHeightSource::BytecodeRows(_)
+        ) || *width_log == 0),
         "bytecode-finalize must remain a singleton",
     );
     ps(
         "BYTECODE_USED_BITS",
-        ints(&(0..34).map(|bit| (program.bytecode_used() >> bit) & 1).collect::<Vec<_>>()),
+        ints(
+            &(0..34)
+                .map(|bit| (program.bytecode_used() >> bit) & 1)
+                .collect::<Vec<_>>(),
+        ),
     );
     ps(
         "LIG_LOG_MSG_COLS_CAP",
         cands
             .iter()
-            .map(|c| *c.4.iter().max().unwrap())
+            .map(|c| *c.log_message_columns.iter().max().unwrap())
             .max()
             .unwrap()
             .to_string(),
     );
-    ps("YR_LOG_CAP", cands.iter().map(|c| c.2).max().unwrap().to_string());
+    ps(
+        "YR_LOG_CAP",
+        cands.iter().map(|c| c.yr_log_len).max().unwrap().to_string(),
+    );
     {
         let pad = |v: &[usize], stride: usize| -> Vec<usize> {
             let mut o = v.to_vec();
             o.resize(stride, 0);
             o
         };
-        let flat = |f: &dyn Fn(
-            &(
-                usize,
-                usize,
-                usize,
-                Vec<usize>,
-                Vec<usize>,
-                Vec<usize>,
-                Vec<usize>,
-                Vec<usize>,
-                Vec<usize>,
-                Vec<usize>,
-                Vec<usize>,
-                Vec<usize>,
-                Vec<usize>,
-                Vec<usize>,
-                Vec<usize>,
-                Vec<usize>,
-                Vec<usize>,
-                Vec<usize>,
-                Vec<usize>,
-                Vec<F192>,
-                Vec<F192>,
-            ),
-        ) -> Vec<usize>,
-                    stride: usize|
-         -> Vec<usize> { cands.iter().flat_map(|c| pad(&f(c), stride)).collect() };
-        let scal = |f: &dyn Fn(
-            &(
-                usize,
-                usize,
-                usize,
-                Vec<usize>,
-                Vec<usize>,
-                Vec<usize>,
-                Vec<usize>,
-                Vec<usize>,
-                Vec<usize>,
-                Vec<usize>,
-                Vec<usize>,
-                Vec<usize>,
-                Vec<usize>,
-                Vec<usize>,
-                Vec<usize>,
-                Vec<usize>,
-                Vec<usize>,
-                Vec<usize>,
-                Vec<usize>,
-                Vec<F192>,
-                Vec<F192>,
-            ),
-        ) -> usize|
-         -> Vec<usize> { cands.iter().map(f).collect() };
-        ps("LIG_N_LEVELS", ints(&scal(&|c| c.0)));
-        ps("LIG_YR_LEVEL", ints(&scal(&|c| c.1)));
-        ps("LIG_YR_LOG_LEN", ints(&scal(&|c| c.2)));
-        ps("LIG_YR_LEN", ints(&scal(&|c| 1usize << c.2)));
-        ps("LIG_TOTAL_FOLDS", ints(&scal(&|c| c.3.iter().sum())));
-        ps("LIG_MAX_QUERIES", ints(&scal(&|c| *c.5.iter().max().unwrap())));
-        ps("LIG_MAX_SQUEEZES", ints(&scal(&|c| *c.8.iter().max().unwrap())));
-        ps("LIG_MAX_LOG_MSG_COLS", ints(&scal(&|c| *c.4.iter().max().unwrap())));
-        ps("LIG_MAX_INTERLEAVE", ints(&scal(&|c| *c.9.iter().max().unwrap())));
+        let flat = |f: &dyn Fn(&OpeningShape) -> Vec<usize>, stride: usize| -> Vec<usize> {
+            cands.iter().flat_map(|c| pad(&f(c), stride)).collect()
+        };
+        let scal = |f: &dyn Fn(&OpeningShape) -> usize| -> Vec<usize> { cands.iter().map(f).collect() };
+        ps("LIG_N_LEVELS", ints(&scal(&|c| c.n_levels)));
+        ps("LIG_YR_LEVEL", ints(&scal(&|c| c.yr_level)));
+        ps("LIG_YR_LOG_LEN", ints(&scal(&|c| c.yr_log_len)));
+        ps("LIG_YR_LEN", ints(&scal(&|c| 1usize << c.yr_log_len)));
+        ps("LIG_TOTAL_FOLDS", ints(&scal(&|c| c.folds.iter().sum())));
+        ps("LIG_MAX_QUERIES", ints(&scal(&|c| *c.queries.iter().max().unwrap())));
+        ps("LIG_MAX_SQUEEZES", ints(&scal(&|c| *c.squeezes.iter().max().unwrap())));
+        ps(
+            "LIG_MAX_LOG_MSG_COLS",
+            ints(&scal(&|c| *c.log_message_columns.iter().max().unwrap())),
+        );
+        ps(
+            "LIG_MAX_INTERLEAVE",
+            ints(&scal(&|c| *c.interleaving.iter().max().unwrap())),
+        );
         // StackBuf cap for the packed leaf row: level 0 packs 2 lanes per cell,
         // deeper levels pack 3 limbs per word into 3n/2 cells.
         let packed_cells = |c: &Vec<usize>| -> usize {
@@ -1780,45 +1797,68 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         };
         ps(
             "LIG_PACKED_ROW_CAP",
-            cands.iter().map(|c| packed_cells(&c.9)).max().unwrap().to_string(),
+            cands
+                .iter()
+                .map(|c| packed_cells(&c.interleaving))
+                .max()
+                .unwrap()
+                .to_string(),
         );
         ps(
             "LIG_POSITIONS_LEN",
-            ints(&scal(&|c| (0..c.0).map(|lv| c.8[lv] * c.7[lv]).sum())),
+            ints(&scal(&|c| {
+                (0..c.n_levels)
+                    .map(|level| c.squeezes[level] * c.positions_per_squeeze[level])
+                    .sum()
+            })),
         );
         ps(
             "LIG_SUMCHECK_LEN",
             ints(
                 &cands
                     .iter()
-                    .zip(&cand_oods)
-                    .map(|(c, ood)| 2 * (c.3.iter().sum::<usize>() + c.0 + ood.iter().sum::<usize>()))
+                    .map(|c| 2 * (c.folds.iter().sum::<usize>() + c.n_levels + c.ood_samples.iter().sum::<usize>()))
                     .collect::<Vec<_>>(),
             ),
         );
         ps(
             "LIG_ROWS_LEN",
             ints(&scal(&|c| {
-                (0..c.0).map(|lv| c.5[lv] * c.9[lv] * if lv == 0 { 1 } else { 3 }).sum()
+                (0..c.n_levels)
+                    .map(|level| c.queries[level] * c.interleaving[level] * if level == 0 { 1 } else { 3 })
+                    .sum()
             })),
         );
         ps(
             "LIG_PATHS_LEN",
-            ints(&scal(&|c| (0..c.0).map(|lv| c.5[lv] * c.6[lv] * 2).sum())),
+            ints(&scal(&|c| {
+                (0..c.n_levels)
+                    .map(|level| c.queries[level] * c.tree_depths[level] * 2)
+                    .sum()
+            })),
         );
-        ps("LIG_QUERY_GRIND_BITS", ints(&flat(&|c| c.10.clone(), maxlev)));
+        ps(
+            "LIG_QUERY_GRIND_BITS",
+            ints(&flat(&|c| c.query_grinding_bits.clone(), maxlev)),
+        );
         ps(
             "LIG_OOD_SAMPLES",
-            ints(&cand_oods.iter().flat_map(|v| pad(v, maxlev)).collect::<Vec<_>>()),
+            ints(
+                &cands
+                    .iter()
+                    .flat_map(|shape| pad(&shape.ood_samples, maxlev))
+                    .collect::<Vec<_>>(),
+            ),
         );
-        ps("LIG_QUERIES", ints(&flat(&|c| c.5.clone(), maxlev)));
-        ps("LIG_FOLDS", ints(&flat(&|c| c.3.clone(), maxlev)));
-        ps("LIG_INTERLEAVE", ints(&flat(&|c| c.9.clone(), maxlev)));
+        ps("LIG_QUERIES", ints(&flat(&|c| c.queries.clone(), maxlev)));
+        ps("LIG_FOLDS", ints(&flat(&|c| c.folds.clone(), maxlev)));
+        ps("LIG_INTERLEAVE", ints(&flat(&|c| c.interleaving.clone(), maxlev)));
         ps(
             "LIG_LEAF_PAIRS",
             ints(&flat(
                 &|c| {
-                    c.9.iter()
+                    c.interleaving
+                        .iter()
                         .enumerate()
                         .map(|(lv, &n)| if lv == 0 { n / 4 } else { 3 * n / 4 })
                         .collect()
@@ -1834,7 +1874,8 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
             "LIG_LEAF_BLOCKS",
             ints(&flat(
                 &|c| {
-                    c.9.iter()
+                    c.interleaving
+                        .iter()
                         .enumerate()
                         .map(|(lv, &n)| if lv == 0 { n / 8 } else { 3 * n / 8 })
                         .collect()
@@ -1842,29 +1883,52 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
                 maxlev,
             )),
         );
-        ps("LIG_TREE_DEPTH", ints(&flat(&|c| c.6.clone(), maxlev)));
-        ps("LIG_SQUEEZES", ints(&flat(&|c| c.8.clone(), maxlev)));
-        ps("LIG_POSITIONS_OFF", ints(&flat(&|c| c.15.clone(), maxlev)));
+        ps("LIG_TREE_DEPTH", ints(&flat(&|c| c.tree_depths.clone(), maxlev)));
+        ps("LIG_SQUEEZES", ints(&flat(&|c| c.squeezes.clone(), maxlev)));
+        ps(
+            "LIG_POSITIONS_OFF",
+            ints(&flat(&|c| c.positions_offsets.clone(), maxlev)),
+        );
         ps(
             "LIG_LOG_QUERIES",
-            ints(&flat(&|c| c.5.iter().map(|&q| log2_ceil(q)).collect(), maxlev)),
+            ints(&flat(
+                &|c| c.queries.iter().map(|&queries| log2_ceil(queries)).collect(),
+                maxlev,
+            )),
         );
-        ps("LIG_LOG_MSG_COLS", ints(&flat(&|c| c.4.clone(), maxlev)));
-        ps("LIG_RESIDUAL_FOLD_OFF", ints(&flat(&|c| c.18.clone(), maxlev)));
+        ps(
+            "LIG_LOG_MSG_COLS",
+            ints(&flat(&|c| c.log_message_columns.clone(), maxlev)),
+        );
+        ps(
+            "LIG_RESIDUAL_FOLD_OFF",
+            ints(&flat(&|c| c.residual_fold_offsets.clone(), maxlev)),
+        );
         ps(
             "LIG_RESIDUAL_PREFIX_LEN",
-            ints(&flat(&|c| c.4.iter().map(|&m2| m2 - c.2).collect(), maxlev)),
+            ints(&flat(
+                &|c| {
+                    c.log_message_columns
+                        .iter()
+                        .map(|&columns| columns - c.yr_log_len)
+                        .collect()
+                },
+                maxlev,
+            )),
         );
-        ps("LIG_FOLDS_OFF", ints(&flat(&|c| c.17.clone(), maxlev)));
-        ps("LIG_ROWS_OFF", ints(&flat(&|c| c.12.clone(), maxlev)));
-        ps("LIG_PATHS_OFF", ints(&flat(&|c| c.13.clone(), maxlev)));
-        ps("LIG_VANISH_OFF", ints(&flat(&|c| c.16.clone(), maxlev)));
-        ps("LIG_FOLD_GRIND_BITS", ints(&flat(&|c| c.11.clone(), maxfolds)));
+        ps("LIG_FOLDS_OFF", ints(&flat(&|c| c.fold_offsets.clone(), maxlev)));
+        ps("LIG_ROWS_OFF", ints(&flat(&|c| c.row_offsets.clone(), maxlev)));
+        ps("LIG_PATHS_OFF", ints(&flat(&|c| c.path_offsets.clone(), maxlev)));
+        ps("LIG_VANISH_OFF", ints(&flat(&|c| c.vanish_offsets.clone(), maxlev)));
+        ps(
+            "LIG_FOLD_GRIND_BITS",
+            ints(&flat(&|c| c.fold_grinding_bits.clone(), maxfolds)),
+        );
         let mut svk2 = Vec::new();
         let mut ivk2 = Vec::new();
         for c in &cands {
-            let mut s = c.19.clone();
-            let mut iv = c.20.clone();
+            let mut s = c.vanish_values.clone();
+            let mut iv = c.vanish_inverses.clone();
             s.resize(maxsvk, F192::ZERO);
             iv.resize(maxsvk, F192::ZERO);
             svk2.extend(s);
@@ -1886,7 +1950,10 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         (33 + lean_vm::blake3_flock::SLOT_STRIDE_LOG).to_string(),
     );
     ps("CLAIM_COL", ints(&cpcol));
-    ps("CLAIM_PAD", flds(&cppad.iter().map(|&v| F192::from(v)).collect::<Vec<_>>()));
+    ps(
+        "CLAIM_PAD",
+        flds(&cppad.iter().map(|&v| F192::from(v)).collect::<Vec<_>>()),
+    );
     ps("CLAIM_QPKD_SLOT", ints(&cpslot));
     ps("CLAIM_BLOCK_SLOT", ints(&cpblockslot));
     ps("CLAIM_BLOCK_LOG", ints(&cpblocklog));
@@ -2167,7 +2234,6 @@ fn recursion_soundness_binds() {
     };
 
     assert!(run(&mut guest, &batch.merged), "honest proof must verify");
-
     for &(stream, idx, val) in &[
         ("fs_seed", 0, F192::ONE), // wrong proving environment: own_pi (public input) must reject
         ("stream", 1, F192::new(1u64 << 32, 0, 0)), // native row counts are strictly below 2^32

@@ -47,7 +47,7 @@
 
 \begin{abstract}
 \noindent
-A self-contained description of the WHIR\slash Ligerito polynomial commitment scheme \cite{ACFY25,NA25} over binary fields, with a round-by-round soundness analysis in the Johnson list-decoding regime (nothing new). The two schemes coincide when WHIR is instantiated with interleaved codes and Ligerito with Reed--Solomon codes; which we describe. Reed--Solomon encoding is by the additive NTT in the novel polynomial basis~\cite{LCH14}, as used in~\cite{DP26}. Following Flock~\cite{Flock26}, we do not use out-of-domain (OOD) sampling at commitment, the PCS is therefore only list binding.
+A self-contained description of the WHIR\slash Ligerito polynomial commitment scheme \cite{ACFY25,NA25} over binary fields, with a round-by-round soundness analysis in the Johnson list-decoding regime (nothing new). The two schemes coincide when WHIR is instantiated with interleaved codes and Ligerito with the Reed--Solomon codes described here. Reed--Solomon encoding is by the additive NTT in the novel polynomial basis~\cite{LCH14}, as used in~\cite{DP26}. Following Flock~\cite{Flock26}, we do not use out-of-domain (OOD) sampling at commitment, so the PCS is only list binding.
 \end{abstract}
 
 %=====================================================================
@@ -161,7 +161,7 @@ R_{\mathrm{open}} \;:=\; \Bigl\{ \bigl(C^{(0)}, \{(w_\tau, v_\tau)\}_\tau\bigr) 
 The commitment binds the prover to the list $S_{\mathsf{cm}} := \{\pol{g_U} : U \in \Lam_{\gamma_0}(C^{(0)})\}$, of size at most $L_0 := \tfrac{1}{2\eta_0\sqrt{\rho_0}}$ for $\gamma_0 = 1 - \sqrt{\rho_0} - \eta_0$, by the Johnson bound (Theorem~\ref{thm:johnson-interleaved}).
 
 \begin{theorem}[RBR soundness, without OOD at commitment]\label{thm:rbr}
-Suppose that for every level $i$: $\gamma_i = 1 - \sqrt{\rho_i} - \eta_i$ with $\eta_i \in (0, 1-\sqrt{\rho_i})$, $L_i := \tfrac{1}{2\eta_i\sqrt{\rho_i}}$, and $\epsilon_i := a_i/|\F|$ is the mutual correlated agreement error of Theorem~\ref{thm:mca-johnson} below for $\mathcal{C}_i$ at radius $\gamma_i$. Then the Protocol~\ref{fig:protocol} is a $L_0$-list binding PCS, and its opening phase $R_{\mathrm{open}}$ has the following RBR soudness error at each verifier message:
+Suppose that for every level $i$: $\gamma_i = 1 - \sqrt{\rho_i} - \eta_i$ with $\eta_i \in (0, 1-\sqrt{\rho_i})$, $L_i := \tfrac{1}{2\eta_i\sqrt{\rho_i}}$, and $\epsilon_i := a_i/|\F|$ is the mutual correlated agreement error of Theorem~\ref{thm:mca-johnson} below for $\mathcal{C}_i$ at radius $\gamma_i$. Then the Protocol~\ref{fig:protocol} is a $L_0$-list binding PCS, and its opening phase $R_{\mathrm{open}}$ has the following RBR soundness error at each verifier message:
 \[
 \begin{array}{llcl}
 \textnormal{batching, level } i: & \varepsilon^{\mathrm{batch}}_i &=& \dfrac{(T_i - 1)\, L_i}{|\F|} , \\[2ex]

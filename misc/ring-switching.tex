@@ -104,7 +104,7 @@ B_s(r') \;=\; \sum_{k<e}\, c_k \prod_{j=1}^m
 
 \paragraph{Cost.} Level $k$ needs one squaring per coordinate (to get $r_j^{2^k}$ from $r_j^{2^{k-1}}$) and one $m$-factor product: $O(em)$ multiplications in $L$, on top of the generic $O(e^2)$ construction of the $c_k$.
 
-\section*{Closed-form coefficients: the GHASH power basis}
+\section*{Worked example: the GHASH power basis}
 
 For a general basis, constructing the $c_k$ after precomputing the fixed matrix inverse costs one $O(e^2)$ matrix-vector product per opening. In the GHASH field, over its power basis, the coefficients instead have a closed form using $15$ fixed seed constants and $O(\log e)$ multiplications per coefficient.
 
@@ -174,17 +174,17 @@ c_k=d^{-2^k}\Bigl[\
 
 \paragraph{Cost.} The $k=0$ level needs $15$ constants: $d^{-1}\alpha^{127}$, the seven $1+\alpha^{-2^t}$, and the seven $d^{-1}\varepsilon_i$. Squaring all $15$ advances level $k$ to level $k+1$, so a verifier running a fixed program can bake in every level; and the $7\cdot128$ factor constants take only $128$ distinct values, since $1+\alpha^{-2^{k+t}}$ depends on $k+t\bmod128$ alone. Each $c_k$ then costs $14$ multiplications for the product and $7$ for the correction, so the whole table costs $O(e\log e)$ instead of $O(e^2)$. The seven weights $\lambda_i$, $i\le6$, share the four factors $1+s_t$, $t\ge3$, so they cost $O(\log e)$ as well.
 
-\section*{Closed-form coefficients: univariate batching over a tower}
+\section*{Recursion specialization: univariate batching over a tower}
 
-The previous section leans on two properties of its setting: the basis is a \emph{power} basis $\alpha^i$ of a field defined by a sparse modulus, and the weights $\lambda_i$ are $\eq$ weights, hence a product over the bits of $i$. Neither survives verbatim when the opening field is a tower, but the technique does. We work out the case this codebase runs, $f=64$ and $e=192$ with
+The previous section is only a worked example. Its closed form leans on two properties: the basis is a \emph{power} basis $\alpha^i$ of a field defined by a sparse modulus, and the weights $\lambda_i$ are $\eq$ weights, hence a product over the bits of $i$. Neither survives verbatim when the opening field is a tower, but the technique does. The recursion specialization uses $f=64$ and $e=192$ with
 \[
 K=\F_{2^{64}}=\F_2[X]/\bigl(q(X)\bigr),\qquad q(X)=X^{64}+X^4+X^3+X+1,
 \qquad
 \F_{2^{192}}=K[Y]/\bigl(Y^3+Y+1\bigr),
 \]
-and the product basis $b^E_{64j+i}=x^iy^j$, where $x,y$ are the residues of $X,Y$. Two things change.
+and the product basis $b^E_{64j+i}=x^iy^j$, where $x,y$ are the residues of $X,Y$. It also batches coordinates with the univariate weights $1,\rho,\ldots,\rho^{191}$ for $\rho\in\F_{2^{192}}$. This turns the reduction directly into one weighted PCS claim; no separate ring-switch sumcheck is required. Two things change in the coefficient computation.
 
-\paragraph{Change 1: the basis factors instead of being a power basis.} For a tower $\F_{2^e}/K/\F_2$ and a product basis, the trace-dual of $\{b^{K}_i c^{E}_j\}$ is $\{\beta_i\gamma_j\}$, where $\beta$ is dual to $\{b^K_i\}$ under $\operatorname{Tr}_{K/\F_2}$ and $\gamma$ dual to $\{c^E_j\}$ under $\operatorname{Tr}_{\F_{2^e}/K}$. With univariate weights $\rho^w$ the coefficient sum therefore \emph{splits}:
+\paragraph{Change 1: the basis factors instead of being a power basis.} Let $\beta_i\in K$ extract coordinate $i$ of the basis $1,x,\ldots,x^{63}$ through the trace to $\F_2$, and let $\gamma_j\in\F_{2^{192}}$ similarly extract coordinate $j$ of $1,y,y^2$ through the trace to $K$. Their products $\beta_i\gamma_j$ extract the coordinates of the product basis $x^iy^j$. With univariate weights $\rho^w$ the coefficient sum therefore \emph{splits}:
 \[
 c_k=\sum_{w<192}\rho^w\delta_w^{2^k}
 =\underbrace{\Bigl(\sum_{i<64}\rho^i\beta_i^{2^k}\Bigr)}_{A_k}
@@ -223,7 +223,7 @@ P_k=x^{-2^k},\quad Q_k=\bigl(d^{-1}x^{63}\bigr)^{2^k},\quad R_{k,i}=\bigl(d^{-1}
 
 \begin{enumerate}
 \item \emph{Small $\F_{2^f}$.} If $2^f$ is too small for the error $(2m+\ell)/2^f$, sample the batching point $s$ (and run the sumcheck) in an extension $L\supseteq\F_{2^f}$: the error becomes $(2m+\ell)/|L|$, and $P_\pkd$ is just opened at $r'\in L^m$.
-\item \emph{Any field.} Nothing uses characteristic $2$: replace $\F_2$ by any field $K$ and $\F_{2^f},\F_{2^e}$ by degree-$f$ and degree-$e$ extensions of $K$; the reduction still works, and efficient algorithms for evaluating $B$ exist in general too.
+\item \emph{Other characteristics.} The coordinate-batching reduction extends to other base fields, but the binary closed forms above use characteristic two essentially: squaring is the relevant Frobenius map and $\eq(x,y)$ simplifies to $\prod_j(1+x_j+y_j)$. Other characteristics require their corresponding linearized maps and equality polynomial.
 \end{enumerate}
 
 \section*{Credits}

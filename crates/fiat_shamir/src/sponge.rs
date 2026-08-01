@@ -1,3 +1,4 @@
+// CREDIT: https://github.com/signalapp/libsignal/blob/main/rust/poksho/src/shosha256.rs, AGPL-3.0-only.
 //! The VM-native Fiat–Shamir sponge: THE verifier-randomness source for the
 //! whole stack — flock's zerocheck / lincheck, the Ligerito PCS, and
 //! leanVM-b's own protocol (whose `ProverState` / `VerifierState` wrap this
@@ -164,10 +165,7 @@ impl Sponge {
     /// The grinding digest word this state yields for `nonce` (read-only preview;
     /// [`Self::verify_pow`] is the mutating check).
     pub fn pow_digest(&self, nonce: F192) -> F64 {
-        compress(
-            self.pow_base(),
-            [F64(nonce.c0), F64(nonce.c1), F64(nonce.c2), DS_POW],
-        )[0]
+        compress(self.pow_base(), [F64(nonce.c0), F64(nonce.c1), F64(nonce.c2), DS_POW])[0]
     }
 
     /// Re-run recorded verifier transcript ops through this sponge, asserting
@@ -183,7 +181,10 @@ impl Sponge {
                     assert_eq!(self.sample_untraced(), *v, "trace replay diverged")
                 }
                 TraceOp::Pow { nonce, bits, .. } => {
-                    assert!(self.verify_pow_field_untraced(*nonce, *bits), "trace replay: grind failed")
+                    assert!(
+                        self.verify_pow_field_untraced(*nonce, *bits),
+                        "trace replay: grind failed"
+                    )
                 }
                 TraceOp::StreamRaw(_) | TraceOp::Opening => {}
             }
@@ -192,10 +193,7 @@ impl Sponge {
 
     /// Bind a grinding nonce into the state (both sides, so they stay in lockstep).
     fn absorb_nonce(&mut self, nonce: F192) {
-        self.cv = compress(
-            self.cv,
-            [F64(nonce.c0), F64(nonce.c1), F64(nonce.c2), DS_POW],
-        );
+        self.cv = compress(self.cv, [F64(nonce.c0), F64(nonce.c1), F64(nonce.c2), DS_POW]);
     }
 
     /// Prover-side PoW grind: find the smallest `u64` nonce whose PoW hash clears
@@ -249,13 +247,21 @@ impl Sponge {
     /// and succeeds with probability 2^-bits. Honest provers remain canonical
     /// and search the deterministic u64 subset in [`Self::grind_pow`].
     pub fn verify_pow_field(&mut self, nonce: F192, bits: u32) -> bool {
-        trace(|| TraceOp::Pow { nonce, bits, digest: self.pow_digest(nonce) });
+        trace(|| TraceOp::Pow {
+            nonce,
+            bits,
+            digest: self.pow_digest(nonce),
+        });
         self.verify_pow_field_untraced(nonce, bits)
     }
 
     fn verify_pow_field_untraced(&mut self, nonce: F192, bits: u32) -> bool {
         let base = self.pow_base();
-        let ok = if bits == 0 { nonce == F192::ZERO } else { pow_bits_ok(base, nonce, bits) };
+        let ok = if bits == 0 {
+            nonce == F192::ZERO
+        } else {
+            pow_bits_ok(base, nonce, bits)
+        };
         self.absorb_nonce(nonce);
         ok
     }
@@ -370,14 +376,7 @@ mod tests {
         };
         assert!(pow_bits_ok(base, F192::new(good, 0, 0), 8));
         // A random wrong nonce almost surely fails an 8-bit grind.
-        assert!(
-            !pow_bits_ok(
-                base,
-                F192::new(good.wrapping_add(1).wrapping_mul(3) | 1, 0, 0),
-                8,
-            )
-                || good != 0
-        );
+        assert!(!pow_bits_ok(base, F192::new(good.wrapping_add(1).wrapping_mul(3) | 1, 0, 0), 8,) || good != 0);
     }
 
     /// Recursive proofs transport the nonce as one field word. Its high limb is

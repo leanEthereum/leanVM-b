@@ -1,4 +1,4 @@
-// Credit: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
+// CREDIT: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
 //! §2.1 single-table collapse of the LDE matrix `M = fwd_NTT_Λ ∘ inv_NTT_S`.
 //!
 //! Background: the URM round-1 needs to map each `ell`-bit row of the boolean
@@ -184,7 +184,7 @@ impl InvNttTableByteSingleGf8 {
         }
     }
 
-    /// SSE2 variant of `apply` — the x86 twin of [`Self::apply_neon_unchecked`].
+    /// SSE2 variant of `apply` — the x86 twin of `apply_neon_unchecked`.
     /// Same 16-byte-chunk structure; the odd-`b` within-chunk half-swap is
     /// `_mm_shuffle_epi32::<0b01_00_11_10>` (swap the two 64-bit halves).
     ///

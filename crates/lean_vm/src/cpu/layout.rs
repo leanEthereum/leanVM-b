@@ -1,6 +1,6 @@
 //! The public column schema and bus layout: the committed-column indices, and
 //! the flush/count blocks the verifier reconstructs from the program + announced
-//! sizes + public input (§7, §8). Plus the prover-side witness build.
+//! sizes and public input. Plus the prover-side witness build.
 
 use super::*;
 
@@ -139,7 +139,9 @@ fn jagged_column_blocks(log_bytecode: usize, bytecode_used: usize, sides: [&[Blo
     }
 
     let mut blocks = vec![vec![QPKD]];
-    let committed: Vec<usize> = (0..sources.len()).filter(|&col| col != QPKD && sources[col].is_some()).collect();
+    let committed: Vec<usize> = (0..sources.len())
+        .filter(|&col| col != QPKD && sources[col].is_some())
+        .collect();
     let mut consumed = vec![false; sources.len()];
     for &first in &committed {
         if consumed[first] {
@@ -185,7 +187,7 @@ pub(crate) struct Witness {
 /// adj; used for the fixed-size columns and the program bytecode length,
 /// which the caller passes as `log_bytecode`), source 1 is log_mem, and
 /// source 2 + t is tau_t. `None` = virtual (never committed). Mirrors
-/// [`col_kappas`] exactly; keep the two in lockstep.
+/// `col_kappas` exactly; keep the two in lockstep.
 pub fn col_kappa_sources(log_bytecode: usize) -> Vec<Option<(usize, usize)>> {
     let sch = schema();
     let mut k = vec![Some((0usize, 0usize)); sch.n];
@@ -238,8 +240,7 @@ pub fn col_height_sources(bytecode_used: usize) -> Vec<Option<ColHeightSource>> 
     });
     for (t, table) in tables::tables().iter().enumerate() {
         let base = sch.base[t];
-        out[base..base + table.n_committed_columns()]
-            .fill(Some(ColHeightSource::TableRows(t)));
+        out[base..base + table.n_committed_columns()].fill(Some(ColHeightSource::TableRows(t)));
     }
     let b3 = sch.base[tables::BLAKE3_TABLE];
     for &c in &tables::BLAKE3_VALUE_COLS {
@@ -358,8 +359,14 @@ pub fn layout(
     let bytecode_size = prog.len();
     let log_bytecode = crate::log2_strict_usize(bytecode_size);
     let cells = 1usize << log_mem;
-    assert!((2..=cells).contains(&mem_used), "used-memory prefix must fit the logical memory");
-    assert!(bytecode_used < bytecode_size, "real bytecode prefix must end before the sentinel");
+    assert!(
+        (2..=cells).contains(&mem_used),
+        "used-memory prefix must fit the logical memory"
+    );
+    assert!(
+        bytecode_used < bytecode_size,
+        "real bytecode prefix must end before the sentinel"
+    );
 
     // Per-table padded log-row-counts (the boundary block is fixed). The real
     // (non-padded) `row_counts[t]` tell each flush how many of its 2^kappa rows
@@ -687,7 +694,7 @@ impl Program {
         // The public layout (flush/count blocks, per-column padding, placements,
         // boundary, taus) is a pure function of the program + announced sizes +
         // public input, with no committed witness; reconstruct it here so the
-        // prover and verifier share exactly the same structure (§7, §8).
+        // prover and verifier share exactly the same structure.
         let row_counts = [
             tr.xor.len(),
             tr.mul.len(),
@@ -702,14 +709,7 @@ impl Program {
             "a table exceeds 2^{MAX_LOG_ROWS} rows"
         );
         let pi = [exec.mem[0], exec.mem[1]];
-        let l = layout(
-            &self.prog,
-            self.bytecode_used(),
-            log_mem,
-            exec.mem_used,
-            row_counts,
-            pi,
-        );
+        let l = layout(&self.prog, self.bytecode_used(), log_mem, exec.mem_used, row_counts, pi);
 
         // Pad each per-opcode table to its power-of-two row count: count columns
         // with g^0 = 1, every other column with 0 (§e2e-pad). A default padding
@@ -775,7 +775,11 @@ mod tests {
         assert_eq!(l.pad[BFCNT], F64::ONE);
 
         let qpkd = l.placements[QPKD];
-        assert_eq!(qpkd.height, 1usize << qpkd.n_vars, "q_pkd remains a full aligned subcube");
+        assert_eq!(
+            qpkd.height,
+            1usize << qpkd.n_vars,
+            "q_pkd remains a full aligned subcube"
+        );
         assert_eq!(qpkd.offset, 0);
     }
 }

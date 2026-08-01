@@ -1,4 +1,4 @@
-// Credit: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
+// CREDIT: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
 //! `K = F64 = GF(2)[x]/(x^64 + x^4 + x^3 + x + 1)` and
 //! `E = F192 = K[y]/(y^3 + y + 1)`. Addresses, pc/fp, counters, and physical
 //! committed columns are K-valued. A machine word is `c0 + c1*y + c2*y² ∈ E`

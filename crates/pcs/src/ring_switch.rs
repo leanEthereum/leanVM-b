@@ -1,4 +1,5 @@
-// Credit: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
+// CREDIT: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
+// CREDIT: https://github.com/binius-zk/binius64 (`eval_rs_eq`), Apache-2.0.
 // Copyright 2025 The Binius Developers
 // Copyright 2025 Irreducible, Inc.
 // Modifications copyright 2026 Succinct Labs, Benedikt Bunz, William Wang
@@ -58,10 +59,11 @@
 //!
 //! ## Prover vs. verifier paths for `rs_eq_ind`
 //!
-//! - [`prove`] / [`verify`] materialize `rs_eq_ind` densely via
-//!   [`fold_ext_elems`] (bytewise-table fold, rayon), `2^(m-6)` E entries.
-//! - [`verify_succinct`] + [`eval_rs_eq`] never materialize it: the MLE of
-//!   `rs_eq_ind` at the Ligerito final point is evaluated in
+//! - The prover keeps the equality tensor factored, folds each claim into a
+//!   small byte table, and combines the claims directly into one dense PCS
+//!   weight. It never materializes a dense vector per claim.
+//! - [`eval_rs_eq`] lets the verifier avoid materializing the vector entirely:
+//!   its MLE at the Ligerito final point is evaluated in
 //!   `O((m-6) * 192^2)` bit-ops plus `O((m-6) * 192)` E-multiplications via
 //!   the DP24 tensor-algebra iterative algorithm (DP24 section 1.3 Figure 3).
 //!
@@ -257,8 +259,7 @@ pub const RS_BASE_ORBIT_LEVELS: usize = PACKING_WIDTH;
 /// Squaring a whole row advances it from level `k` to level `k + 1`, so a
 /// verifier running a fixed program bakes every level in and needs no runtime
 /// orbit table at all.
-pub fn base_coeff_orbit_constants()
--> &'static [[F192; RS_BASE_ORBIT_WIDTH]; RS_BASE_ORBIT_LEVELS] {
+pub fn base_coeff_orbit_constants() -> &'static [[F192; RS_BASE_ORBIT_WIDTH]; RS_BASE_ORBIT_LEVELS] {
     use std::sync::OnceLock;
     static ORBITS: OnceLock<[[F192; RS_BASE_ORBIT_WIDTH]; RS_BASE_ORBIT_LEVELS]> = OnceLock::new();
     ORBITS.get_or_init(|| {
@@ -268,12 +269,7 @@ pub fn base_coeff_orbit_constants()
         for _ in 0..PACKING_WIDTH - 1 {
             x_pow *= x; // x^63
         }
-        let eps = [
-            x * x * x + x * x + F192::ONE,
-            x * x + x,
-            x + F192::ONE,
-            F192::ONE,
-        ];
+        let eps = [x * x * x + x * x + F192::ONE, x * x + x, x + F192::ONE, F192::ONE];
 
         let mut rows = [[F192::ZERO; RS_BASE_ORBIT_WIDTH]; RS_BASE_ORBIT_LEVELS];
         rows[0][0] = x.inv();
@@ -335,7 +331,7 @@ pub fn tower_coeff_orbit_constants() -> &'static [[F192; 2]; DEGREE_E] {
 /// for `i in 0..64` (bit i = polynomial-basis coordinate of the u64).
 ///
 /// Dispatch: the method-of-four-Russians kernel
-/// ([`fold_1b_rows_mfr_8wide`]) for lengths divisible by 8 (any real
+/// (`fold_1b_rows_mfr_8wide`) for lengths divisible by 8 (any real
 /// witness), the scalar bit-scan otherwise (tiny test instances). Both
 /// compute the same per-bit XOR-sums, only regrouped, and GF(2^192)
 /// addition is XOR (commutative, associative, exact), so the output and
@@ -632,7 +628,7 @@ pub(crate) fn combine_deferred_into(outputs: &[DeferredRingSwitchOutput], out: &
     });
 }
 
-/// Bytewise-table accelerated [`fold_ext_elems_naive`]: 24 lookup tables of
+/// Bytewise-table accelerated `fold_ext_elems_naive`: 24 lookup tables of
 /// 256 E entries each;
 /// per position 24 lookups + 23 XORs, no
 /// data-dependent bit-scan. Rayon across positions.
@@ -699,7 +695,7 @@ pub struct RingSwitchOutput {
     pub sumcheck_claim: F192,
 }
 
-/// Verifier-side output of [`verify_succinct`]: everything needed to drive
+/// Verifier-side output of [`verify_finish`]: everything needed to drive
 /// the Ligerito consistency check without materializing `rs_eq_ind`.
 #[derive(Clone, Debug)]
 pub struct RingSwitchVerifierOutput {
@@ -765,7 +761,7 @@ pub fn prove(
     (proof, out)
 }
 
-/// Prover-side scratch carried between [`prove_observe`] and [`prove_finish`]
+/// Prover-side scratch carried from [`prove_observe`] into finalization
 /// (the batching-independent data: the slice-MLE vector and the factored eq tensor).
 #[derive(Clone)]
 pub struct RingSwitchProveState {
@@ -776,7 +772,7 @@ pub struct RingSwitchProveState {
 
 /// Phase 1 of the ring-switch prover: compute + observe `s_hat_v` (NO domain
 /// label — matches the extension-field opener). Returns the proof and the scratch for
-/// [`prove_finish`]. The caller samples the possibly shared `rho` afterwards.
+/// the finalization step. The caller samples the possibly shared `rho` afterwards.
 pub fn prove_observe(
     packed_witness: &[F64],
     prefix_weights: &[F192],
@@ -954,7 +950,7 @@ pub fn verify_finish(proof: &RingSwitchProof, coordinate_weights: &[F192]) -> Ri
 ///
 /// ## Arguments
 ///
-/// * `z_vals`: the suffix point (`suffix_point` from [`prove`] / [`verify`]),
+/// * `z_vals`: the ring-switch suffix point,
 ///   length L = m - 6.
 /// * `query`: the Ligerito final challenges, length L, same coordinate order.
 /// * `coordinate_weights`: the 192 univariate batching weights (from

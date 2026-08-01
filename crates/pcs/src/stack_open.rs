@@ -1,4 +1,4 @@
-// Credit: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
+// CREDIT: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
 //! Stacked batch-mixed opening for the F64-committed PCS.
 //!
 //! The committed witness is a stack of `2^log_n` [`F64`] words (committed via
@@ -40,7 +40,7 @@
 //! domain-separated labels for every phase.
 //!
 //! The point claims take consecutive POWERS of that single `gamma_pd`
-//! ([`geometric_claim_weights`]) rather than independent challenges. The
+//! (`geometric_claim_weights`) rather than independent challenges. The
 //! ordering puts a row-major block's columns on adjacent exponents, so the
 //! verifier collapses the whole block into one indicator evaluation; the cost
 //! is at most `claims.len() / |E|` soundness, negligible against a 192-bit
@@ -154,9 +154,9 @@ impl StackClaim {
     #[inline]
     pub fn value(&self) -> F192 {
         match self {
-            StackClaim::Jagged { value, .. }
-            | StackClaim::Point { value, .. }
-            | StackClaim::Strided { value, .. } => *value,
+            StackClaim::Jagged { value, .. } | StackClaim::Point { value, .. } | StackClaim::Strided { value, .. } => {
+                *value
+            }
         }
     }
 
@@ -451,7 +451,6 @@ fn fold_stacked_point_claims(
             .map(|(_, eq)| eq.as_slice())
             .expect("claim equality tensor was cached")
     };
-
     for (claim, g) in claims.iter().zip(gammas.iter()) {
         *target += *g * claim.value();
     }
@@ -520,7 +519,9 @@ fn fold_stacked_point_claims(
                         *bi += g * *ei;
                     }
                 } else {
-                    dst.par_iter_mut().zip(eq.par_iter()).for_each(|(bi, ei)| *bi += g * *ei);
+                    dst.par_iter_mut()
+                        .zip(eq.par_iter())
+                        .for_each(|(bi, ei)| *bi += g * *ei);
                 }
             }
             StackClaim::Strided {
@@ -691,15 +692,19 @@ pub fn open_batch_mixed_ligerito_stacked(
         .iter()
         .fold(F192::ZERO, |acc, out| acc + out.batched_sumcheck_claim);
     // Parallel first-touch wins for the tower stack: its many scattered point
-    // claims otherwise pay demand-zero page faults one claim at a time.
-    let mut b_stack: Vec<F192> = primitives::alloc_uninit_vec(stack.len());
+    // claims otherwise fault pages one claim at a time.
+    let mut b_stack = primitives::alloc_uninit(stack.len());
     {
         use rayon::prelude::*;
         const ZERO_CHUNK: usize = 1 << 16;
-        b_stack
-            .par_chunks_mut(ZERO_CHUNK)
-            .for_each(|chunk| chunk.fill(F192::ZERO));
+        b_stack.par_chunks_mut(ZERO_CHUNK).for_each(|chunk| {
+            for value in chunk {
+                value.write(F192::ZERO);
+            }
+        });
     }
+    // SAFETY: the parallel fill initializes every stack weight to zero.
+    let mut b_stack = unsafe { primitives::assume_init(b_stack) };
     mark("b_stack zero fill", &mut t);
     ring_switch::combine_deferred_into(&rs_outputs, &mut b_stack[ring.offset..ring.offset + qpkd_len]);
     mark("rs_eq_ind scatter", &mut t);
@@ -741,7 +746,7 @@ pub fn open_batch_mixed_ligerito_stacked(
 /// bits are binary, so they contribute an exact indicator (only matching `y`
 /// positions get a nonzero ring-switch part, which also caps the number of
 /// tensor finishes at `2^(qpkd coords covered by y)`). Point-claim weights
-/// are evaluated per position in closed form via [`stack_claim_eq_at`].
+/// are evaluated per position in closed form via `stack_claim_eq_at`.
 pub fn verify_opening_batch_mixed_ligerito_stacked(
     sponge: &mut Sponge,
     config: &VerifierConfig,
@@ -1323,12 +1328,9 @@ mod jagged_batch_tests {
             let point: Vec<F192> = (0..6)
                 .map(|bit| if (index >> bit) & 1 == 1 { F192::ONE } else { F192::ZERO })
                 .collect();
-            let expected = claims
-                .iter()
-                .zip(&weights)
-                .fold(F192::ZERO, |acc, (claim, &weight)| {
-                    acc + weight * stack_claim_eq_at(claim, &point)
-                });
+            let expected = claims.iter().zip(&weights).fold(F192::ZERO, |acc, (claim, &weight)| {
+                acc + weight * stack_claim_eq_at(claim, &point)
+            });
             assert_eq!(folded[index], expected, "dense index {index}");
         }
 

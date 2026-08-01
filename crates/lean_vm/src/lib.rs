@@ -1,13 +1,12 @@
-//! leanVM-b — arithmetization of a minimal zkVM (see `doc.tex` and
-//! `misc/transition-to-64-bits.tex`).
+//! leanVM-b — arithmetization of a minimal zkVM (see `misc/doc.tex`).
 //!
-//! Machine words are `c0 + c1*y ∈ E = K[y]/(y^2 + x*y + 1)`.
+//! Machine words are `c0 + c1*y + c2*y² ∈ E = K[y]/(y³ + y + 1)`.
 //! Addresses, pc/fp, read counters, and logical indices live in
 //! `K = GF(2^64)`; indices are powers of a fixed generator `g`, so incrementing
 //! one is a multiplication by `g`, a free virtual operation. Every physical
-//! witness column is K-valued (an E-valued word is two K-lane columns) and is
+//! witness column is K-valued (an E-valued word is three K-lane columns) and is
 //! committed directly by a dense multilinear PCS. Challenges and transcript
-//! scalars live in E, so interactive error terms keep their `c/2^128` form.
+//! scalars live in `E = GF(2^192)`, leaving ample margin for 128-bit soundness.
 //!
 //! - [`transcript`] — the shared Fiat–Shamir transcript (re-exported from `fiat_shamir`).
 //! - [`pcs`] — `K`-committed witness, `E`-opened, via the stacked Ligerito (§3).

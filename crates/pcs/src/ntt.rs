@@ -1,4 +1,4 @@
-// Credit: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
+// CREDIT: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
 //! Additive NTTs (Lin–Chung–Han novel polynomial basis).
 //!
 //! Two transforms live here: [`AdditiveNttF64`] for Ligerito commitments and
