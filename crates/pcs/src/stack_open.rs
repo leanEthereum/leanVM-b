@@ -225,9 +225,7 @@ fn fold_stacked_point_claims(b_stack: &mut [F192], target: &mut F192, claims: &[
     use rayon::prelude::*;
     const PAR_FOLD_THRESHOLD: usize = 1 << 14;
     // One reusable eq scratch sized to the largest Point claim: a fresh
-    // multi-MB allocation per claim would pay the first-touch page faults
-    // anew every time. Uninit is fine: the seeded build writes every slot of
-    // its prefix before any is read.
+    // multi-MB allocation per claim would pay the first-touch page faults anew.
     let max_len = claims
         .iter()
         .map(|c| match c {
@@ -236,7 +234,8 @@ fn fold_stacked_point_claims(b_stack: &mut [F192], target: &mut F192, claims: &[
         })
         .max()
         .unwrap_or(0);
-    let mut scratch: Vec<F192> = primitives::alloc_uninit_vec(max_len);
+    // SAFETY: zero is a valid F192 value.
+    let mut scratch: Vec<F192> = unsafe { primitives::alloc_zeroed_vec(max_len) };
     for (claim, g) in claims.iter().zip(gammas.iter()) {
         let g = *g;
         match claim {
@@ -422,7 +421,8 @@ pub fn open_batch_mixed_ligerito_stacked(
         .fold(F192::ZERO, |acc, out| acc + out.batched_sumcheck_claim);
     // Parallel first-touch wins for the tower stack: its many scattered point
     // claims otherwise pay demand-zero page faults one claim at a time.
-    let mut b_stack: Vec<F192> = primitives::alloc_uninit_vec(stack.len());
+    // SAFETY: zero is a valid F192 value.
+    let mut b_stack: Vec<F192> = unsafe { primitives::alloc_zeroed_vec(stack.len()) };
     {
         use rayon::prelude::*;
         const ZERO_CHUNK: usize = 1 << 16;

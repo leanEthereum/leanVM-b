@@ -260,38 +260,6 @@ pub fn log2_ceil_usize(n: usize) -> usize {
     usize::BITS as usize - (n - 1).leading_zeros() as usize
 }
 
-/// Allocate a `Vec<T>` of length `n` whose contents are NOT zero-initialized.
-/// Caller MUST write every slot before reading it.
-///
-/// Used to skip the eager zero-init of large ping-pong buffers in hot prover
-/// paths (Ligerito codeword + Merkle tree, zerocheck Round-2 fold, NTT
-/// scratch, lincheck packing). At m=29 the
-/// zero-fill of a fresh 128 MB `vec![T::default(); n]` runs sequentially on
-/// the main thread (~22 ms), which caps the parallel speedup of those phases.
-///
-/// `T: Copy` ensures `T` has no Drop impl, so the leaked uninitialized
-/// elements are a no-op on drop.
-///
-/// # Safety contract
-///
-/// Reading uninitialized memory is UB per Rust's memory model regardless of
-/// whether all bit patterns are valid for `T`. Caller must ensure every slot
-/// is written before any read.
-// `uninit_vec` flags exactly this pattern; here it is the deliberate purpose of
-// the function (the safety contract above is what makes it sound).
-#[allow(clippy::uninit_vec)]
-pub fn alloc_uninit_vec<T: Copy>(n: usize) -> Vec<T> {
-    let mut v: Vec<T> = Vec::with_capacity(n);
-    // SAFETY:
-    // - capacity == n was just allocated, so set_len(n) is in bounds.
-    // - T: Copy implies !Drop, so leaking uninit elements is a no-op.
-    // - Caller upholds write-before-read.
-    unsafe {
-        v.set_len(n);
-    }
-    v
-}
-
 /// Allocate a zero-filled `Vec<T>` through the global allocator's zeroed path.
 /// Large allocations can therefore start as demand-zero pages instead of
 /// paying an eager single-threaded fill before parallel work begins.

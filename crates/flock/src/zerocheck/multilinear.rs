@@ -425,10 +425,8 @@ pub fn uni_skip_fold_and_round_pair_optimized_packed_padded(
     assert_eq!(b_packed.len(), n_out * n_chunks);
     assert_eq!(mlv_challenges.len(), m - k_skip);
 
-    // Uninit alloc — the parallel loop below writes every slot (dense path)
-    // or explicitly writes F192::ZERO at padding holes (padded path).
-    // Saves ~22 ms of sequential zero-fill at m=29 (256 MB total) that would
-    // otherwise cap the parallel speedup of this phase at ~2.5× on 8 cores.
+    // The parallel loop overwrites every pooled slot (including padding holes),
+    // avoiding a separate sequential clear of 256 MB at m=29.
     let mut a_folded: Vec<F192> = primitives::scratch::take_f192(n_out);
     let mut b_folded: Vec<F192> = primitives::scratch::take_f192(n_out);
 
@@ -597,9 +595,10 @@ pub fn fold_and_compute_round_pair_optimized(
     r_next: &[F192],
 ) -> (Vec<F192>, Vec<F192>, F192, F192) {
     let half = a.len() / 2;
-    // Uninit alloc — `_into` writes every slot of a_new/b_new.
-    let mut a_new = primitives::alloc_uninit_vec::<primitives::field::F192>(half);
-    let mut b_new = primitives::alloc_uninit_vec::<primitives::field::F192>(half);
+    // SAFETY: zero is a valid F192 value.
+    let mut a_new = unsafe { primitives::alloc_zeroed_vec::<primitives::field::F192>(half) };
+    // SAFETY: zero is a valid F192 value.
+    let mut b_new = unsafe { primitives::alloc_zeroed_vec::<primitives::field::F192>(half) };
     let (m1, mi) = fold_and_compute_round_pair_into(a, b, &mut a_new, &mut b_new, r_fold, r_next);
     (a_new, b_new, m1, mi)
 }

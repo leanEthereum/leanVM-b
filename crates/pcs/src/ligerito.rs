@@ -104,10 +104,8 @@ pub fn build_eq_table_ext(point: &[F192]) -> Vec<F192> {
 /// to amortize dispatch. Structure copied from the extension-field layer's
 /// `ring_switch::build_eq_parallel`.
 pub fn build_eq_table_ext_parallel(point: &[F192]) -> Vec<F192> {
-    // Uninit alloc: the doubling below writes every slot before any is read
-    // (level j reads out[..2^j], all written earlier, and writes
-    // out[2^j..2^(j+1)] fresh).
-    let mut out: Vec<F192> = primitives::alloc_uninit_vec(1usize << point.len());
+    // SAFETY: zero is a valid F192 value.
+    let mut out: Vec<F192> = unsafe { primitives::alloc_zeroed_vec(1usize << point.len()) };
     build_eq_table_ext_seeded_into(point, F192::ONE, &mut out);
     out
 }
@@ -119,8 +117,8 @@ pub fn build_eq_table_ext_parallel(point: &[F192]) -> Vec<F192> {
 /// `seed` times a product of point factors, and field multiplication is
 /// exact and associative, so the result equals the post-multiplied table
 /// byte for byte while skipping one full multiply pass. `out` must have
-/// length exactly `2^point.len()`; every slot is written before any is read,
-/// so an uninit or reused scratch buffer is fine.
+/// length exactly `2^point.len()`; every slot is written before any is read, so
+/// a reused scratch buffer is fine.
 pub fn build_eq_table_ext_seeded_into(point: &[F192], seed: F192, out: &mut [F192]) {
     use rayon::prelude::*;
     let n = point.len();
@@ -273,8 +271,8 @@ pub fn commit(message: &[F64], log_batch_size: usize, log_inv_rate: usize) -> (C
     let n_positions = 1usize << k_code;
     let codeword_len = n_positions * num_ntts;
 
-    // Every slot is written by the replicate fill below, so uninit is fine.
-    let mut codeword: Vec<F64> = primitives::alloc_uninit_vec(codeword_len);
+    // SAFETY: zero is a valid F64 value.
+    let mut codeword: Vec<F64> = unsafe { primitives::alloc_zeroed_vec(codeword_len) };
     replicate_message_fill_t(&mut codeword, message);
 
     // Optional phase timing (LIGERITO_TRACE): one env lookup per commit, no
@@ -1520,10 +1518,10 @@ pub(crate) fn ligero_commit_ext(
     assert_eq!(poly.len(), num_interleaved * msg_cols);
     assert!(log_block_len <= ntt.log_domain_size());
 
-    // Plain allocation (scratch-pool divergence; see module docs). Every slot
-    // is written by the replicate fill.
+    // Plain allocation (scratch-pool divergence; see module docs).
     let codeword_len = block_len * num_interleaved;
-    let mut mat: Vec<F192> = primitives::alloc_uninit_vec(codeword_len);
+    // SAFETY: zero is a valid F192 value.
+    let mut mat: Vec<F192> = unsafe { primitives::alloc_zeroed_vec(codeword_len) };
     replicate_message_fill_t(&mut mat, poly);
 
     // Optional per-level NTT/Merkle split (LIGERITO_TRACE): one env lookup per
@@ -1766,7 +1764,8 @@ fn fold_out_buf(n: usize) -> Vec<F192> {
     }
     #[cfg(not(target_arch = "x86_64"))]
     {
-        primitives::alloc_uninit_vec(n)
+        // SAFETY: zero is a valid F192 value.
+        unsafe { primitives::alloc_zeroed_vec(n) }
     }
 }
 

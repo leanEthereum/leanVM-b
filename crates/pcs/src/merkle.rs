@@ -200,10 +200,8 @@ pub fn merkle_tree(data: &[u8], num_leaves: usize) -> Vec<Hash> {
 
     let leaf_size = data.len() / num_leaves;
     let total_nodes = 2 * num_leaves - 1;
-    // Uninit alloc — every node is written exactly once before being read:
-    // leaves at step 1, then each internal level reads the level below (which
-    // was just written) and writes itself.
-    let mut tree: Vec<Hash> = primitives::alloc_uninit_vec(total_nodes);
+    // SAFETY: every byte pattern is a valid hash byte array.
+    let mut tree: Vec<Hash> = unsafe { primitives::alloc_zeroed_vec(total_nodes) };
     let platform = blake3::platform::Platform::detect();
 
     // 1. Leaves — independent standard BLAKE3 hashes.
@@ -548,7 +546,8 @@ mod vmhash_batch_tests {
 
     let leaf_size = data.len() / num_leaves;
     let total_nodes = 2 * num_leaves - 1;
-    let mut tree: Vec<Hash> = primitives::alloc_uninit_vec(total_nodes);
+    // SAFETY: every byte pattern is a valid hash byte array.
+    let mut tree: Vec<Hash> = unsafe { primitives::alloc_zeroed_vec(total_nodes) };
 
     for (i, leaf) in data.chunks(leaf_size).enumerate() {
         tree[i] = hash_leaf(leaf);

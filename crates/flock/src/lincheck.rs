@@ -821,8 +821,8 @@ pub fn pack_z_lincheck(z_logical: &[bool], m: usize, k_log: usize) -> Vec<u8> {
     assert_eq!(n_outer % 8, 0, "need n_outer ≥ 8 for byte stripes");
     let n_stripes = n_outer / 8;
 
-    // Uninit alloc — every byte is written exactly once in the loop below.
-    let mut z_packed: Vec<u8> = primitives::alloc_uninit_vec(n_total / 8);
+    // SAFETY: every byte pattern is a valid u8.
+    let mut z_packed: Vec<u8> = unsafe { primitives::alloc_zeroed_vec(n_total / 8) };
     for byte_idx in 0..n_stripes {
         for i_inner in 0..k {
             let mut byte = 0u8;
@@ -851,10 +851,9 @@ pub fn pack_z_lincheck_from_packed(z_packed_f128: &[primitives::field::F192], m:
     let n_outer = n_total / k;
     assert_eq!(n_outer % 8, 0, "need n_outer ≥ 8 for byte stripes");
 
-    // Uninit alloc — the par_chunks_mut loop below writes every byte of
-    // every k-byte stripe exactly once. Saves ~10 ms of sequential
-    // zero-fill at m=29 (64 MB byte buffer) on the main thread.
-    let mut z_packed: Vec<u8> = primitives::alloc_uninit_vec(n_total / 8);
+    // The allocator's demand-zero path avoids a sequential fill before the
+    // parallel stripe conversion. SAFETY: every byte pattern is a valid u8.
+    let mut z_packed: Vec<u8> = unsafe { primitives::alloc_zeroed_vec(n_total / 8) };
     // Each stripe (byte_idx) writes a disjoint k-byte chunk — process them in
     // parallel. Inside one stripe, k independent output bytes.
     z_packed.par_chunks_mut(k).enumerate().for_each(|(byte_idx, chunk)| {
