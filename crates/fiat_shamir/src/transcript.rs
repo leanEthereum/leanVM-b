@@ -59,6 +59,9 @@ pub enum Error {
     NotFullyConsumed,
     /// A grinding nonce failed its proof-of-work check.
     PowFailed,
+    /// A transmitted field element used as a narrower encoding had nonzero
+    /// limbs outside that encoding.
+    NonCanonicalEncoding,
 }
 
 /// Prover side: writes scalars into the stream and opening hints to the side.

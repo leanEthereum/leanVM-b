@@ -2375,6 +2375,7 @@ def verify_execution(statement: dict[str, Any], proof: Proof) -> None:
     layout = build_layout(program, log_memory, row_counts)
 
     root_words = transcript.scalars(2)
+    require(all(word.c2 == 0 for word in root_words), "commitment root has a nonzero top limb")
     root = b"".join(
         limb.to_bytes(8, "little")
         for limb in (root_words[0].c0, root_words[0].c1, root_words[1].c0, root_words[1].c1)

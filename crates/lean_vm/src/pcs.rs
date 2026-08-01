@@ -118,21 +118,24 @@ fn root_to_scalars(root: &[u8; 32]) -> [F192; 2] {
     [F192::new(w(0), w(8), 0), F192::new(w(16), w(24), 0)]
 }
 
-fn scalars_to_root(s: &[F192]) -> [u8; 32] {
+fn scalars_to_root(s: &[F192]) -> Result<[u8; 32], crate::transcript::Error> {
     assert_eq!(s.len(), 2, "a Merkle root is exactly two field words");
+    if s.iter().any(|word| word.c2 != 0) {
+        return Err(crate::transcript::Error::NonCanonicalEncoding);
+    }
     let mut root = [0u8; 32];
     root[0..8].copy_from_slice(&s[0].c0.to_le_bytes());
     root[8..16].copy_from_slice(&s[0].c1.to_le_bytes());
     root[16..24].copy_from_slice(&s[1].c0.to_le_bytes());
     root[24..32].copy_from_slice(&s[1].c1.to_le_bytes());
-    root
+    Ok(root)
 }
 
 /// Verifier counterpart of [`commit`]'s root binding: read the committed root
 /// from the stream at the start of verification, before sampling any challenge.
 pub fn read_commitment(vs: &mut VerifierState) -> Result<[u8; 32], crate::transcript::Error> {
     let root_s = vs.next_scalars(2)?;
-    Ok(scalars_to_root(&root_s))
+    scalars_to_root(&root_s)
 }
 
 /// Open the committed witness: discharge the `points` (leanVM's bus / constraint /

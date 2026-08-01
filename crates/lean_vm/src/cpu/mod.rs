@@ -168,13 +168,20 @@ fn announce_public(ps: &mut ProverState, log_mem: usize, row_counts: [usize; tab
 /// from the program + sizes + public input. (The public input was already bound
 /// by seeding the transcript.)
 fn read_public(vs: &mut VerifierState, prog: &Program, public_input: &[F192; 2]) -> Result<(Layout, usize), Error> {
-    let log_mem = vs.next_scalar().map_err(Error::Transcript)?.c0 as usize;
+    let read_size = |vs: &mut VerifierState| -> Result<usize, Error> {
+        let word = vs.next_scalar().map_err(Error::Transcript)?;
+        if word.c1 != 0 || word.c2 != 0 {
+            return Err(Error::PublicInput);
+        }
+        usize::try_from(word.c0).map_err(|_| Error::PublicInput)
+    };
+
+    let log_mem = read_size(vs)?;
     let mut row_counts = [0usize; tables::N_TABLES];
     for r in &mut row_counts {
-        *r = vs.next_scalar().map_err(Error::Transcript)?.c0 as usize;
+        *r = read_size(vs)?;
     }
-    let rate_word = vs.next_scalar().map_err(Error::Transcript)?;
-    let log_inv_rate = rate_word.c0 as usize;
+    let log_inv_rate = read_size(vs)?;
     // The instance caps (transition doc §caps): with `ord(g) = 2^64 − 1`, the
     // counting arguments (memory soundness, count non-wrap, exponent range checks)
     // are theorems only when the announced instance keeps the total read-flush
@@ -187,7 +194,6 @@ fn read_public(vs: &mut VerifierState, prog: &Program, public_input: &[F192; 2])
         || bytecode_size > (1usize << MAX_LOG_BYTECODE)
         || !(MIN_LOG_MEM..=MAX_LOG_MEM).contains(&log_mem)
         || row_counts.iter().any(|&r| r >= (1usize << MAX_LOG_ROWS))
-        || rate_word != F192::new(log_inv_rate as u64, 0, 0)
         || ::pcs::ligerito::validate_log_inv_rate(log_inv_rate).is_err()
     {
         return Err(Error::PublicInput);
@@ -1064,6 +1070,31 @@ mod tests {
             matches!(verify(&program, &pi, &bad_rate), Err(Error::PublicInput)),
             "the transcript-announced PCS rate must be in 1..=4"
         );
+
+        for announcement in 0..=tables::N_TABLES + 1 {
+            for high_limb in [F192::new(0, 1, 0), F192::new(0, 0, 1)] {
+                let mut malformed = decoded.clone();
+                malformed.stream[announcement] += high_limb;
+                assert!(
+                    matches!(verify(&program, &pi, &malformed), Err(Error::PublicInput)),
+                    "announcement {announcement} with a nonzero high limb must be rejected"
+                );
+            }
+        }
+
+        let root_offset = tables::N_TABLES + 2;
+        for root_word in root_offset..root_offset + 2 {
+            let mut malformed = decoded.clone();
+            malformed.stream[root_word].c2 = 1;
+            assert!(
+                matches!(
+                    verify(&program, &pi, &malformed),
+                    Err(Error::Transcript(crate::transcript::Error::NonCanonicalEncoding))
+                ),
+                "commitment root word {} with a nonzero top limb must be rejected",
+                root_word - root_offset
+            );
+        }
 
         let mut tampered = bytes.clone();
         let i = tampered.len() / 2;

@@ -7,11 +7,11 @@
 //! g-powers, separators); the fingerprint challenges `α, γ` are `E`-valued, so a
 //! leaf accumulates via the mixed `mul_base` product (2 PMULL per coordinate).
 
+use crate::PAR_THRESHOLD;
 use crate::gkr;
 use crate::transcript::{ProverState, VerifierState};
 use crate::witness::Column;
-use crate::PAR_THRESHOLD;
-use primitives::field::{g_pow, index_mle, F192BaseUnreduced, F192, F64};
+use primitives::field::{F64, F192, F192BaseUnreduced, g_pow, index_mle};
 use primitives::multilinear::{eq_eval, mle_eval};
 use rayon::prelude::*;
 
@@ -67,40 +67,46 @@ pub enum Error {
     Gkr(gkr::GkrError),
 }
 
-/// Check that the 192-bit field alone supplies the target bus soundness. The bus
-/// grand-product phase clears [`crate::SECURITY_BITS`]. Two Schwartz–Zippel
-/// failure events share this randomness; union-bound over them:
-///
-/// - the push/pull **balance** `push_root · d_pull = pull_root · d_push` — one
-///   identity in γ whose difference has degree `max(push factors, pull
-///   factors)` (the larger of the two sides; within a side the default-padding
-///   factors are a single high-multiplicity root, so it is `max` not sum);
-/// - the **count** channel `count_root ≠ 0` — a *separate* grand product of
-///   `count factors`.
-///
-/// So `N = max(2^push_mu, 2^pull_mu) + 2^count_mu`, and a false phase passes a
-/// random challenge with probability ≤ `N / 2^192` (γ is sampled from `E`), i.e.
-/// `192 − log2(N)` bits.
-/// Two structural facts collapse this. The push and pull sides emit their bus
-/// blocks in matched pairs — every [`FlushBuilder`] call appends one block to
-/// each side with equal `κ`, and the three framework blocks (boundary, memory,
-/// bytecode) are paired the same way — so the two sides have identical
-/// `κ`-multisets and `push_mu == pull_mu`. And each count column is the count
-/// coordinate of exactly one bytecode/memory flush while the state flush
-/// carries none, so the count side sums strictly fewer `2^κ` than push and
-/// `count_mu ≤ push_mu`. Hence `N = 2^push_mu + 2^count_mu` with
-/// `count_mu ≤ push_mu`, so `⌈log2 N⌉ = push_mu + 1` exactly and the grind is
-/// unnecessary whenever `SECURITY_BITS + push_mu + 1 ≤ 192`, asserted below.
-/// No nonce is transmitted or absorbed. The independent fingerprint challenge
-/// α remains protected by the commitment needed to re-roll it.
-fn assert_grinding_unnecessary(push: &Layout, pull: &Layout, count: &Layout) {
+/// Conservative sum of the degree bounds for every random-challenge failure in
+/// the bus argument. A side contains at most `2^mu` leaf factors; multiplying by
+/// the other side's padding surplus can double that count. Each factor has total
+/// `(alpha, gamma)` degree at most the tuple width. The second term covers all
+/// radix-four GKR batching and sumcheck challenges.
+fn soundness_degree_bound(mu: usize, tuple_width: usize) -> u128 {
+    assert!(mu < u128::BITS as usize, "bus layout is too large to bound");
+    let fingerprint = 2u128 * tuple_width as u128 * (1u128 << mu);
+    let gkr = 8u128 * (mu as u128 + 1).pow(2);
+    fingerprint + gkr
+}
+
+fn soundness_bits(mu: usize, tuple_width: usize) -> u32 {
+    let degree = soundness_degree_bound(mu, tuple_width);
+    192u32.saturating_sub(u128::BITS - degree.leading_zeros())
+}
+
+/// Check that the 192-bit challenge field supplies the target bus soundness.
+/// Push and pull have the same logical height, and the count product is checked
+/// by the same GKR rather than by a separate root-at-random test.
+fn assert_grinding_unnecessary(
+    push_blocks: &[Block],
+    pull_blocks: &[Block],
+    push: &Layout,
+    pull: &Layout,
+    count: &Layout,
+) {
     assert_eq!(
         push.mu, pull.mu,
         "push/pull bus blocks are paired, so their layouts match"
     );
     assert!(count.mu <= push.mu, "count sums fewer bus messages than push");
+    let tuple_width = push_blocks
+        .iter()
+        .chain(pull_blocks)
+        .map(|block| block.coords.len())
+        .max()
+        .unwrap_or(0);
     assert!(
-        crate::SECURITY_BITS + (push.mu as u32) < 192,
+        soundness_bits(push.mu, tuple_width) >= crate::SECURITY_BITS,
         "bus layout exceeds the unground F192 soundness budget"
     );
 }
@@ -557,7 +563,7 @@ pub fn prove_balance(
     let push_lay = layout(push);
     let pull_lay = layout(pull);
     let mut count_lay = layout(count);
-    assert_grinding_unnecessary(&push_lay, &pull_lay, &count_lay);
+    assert_grinding_unnecessary(push, pull, &push_lay, &pull_lay, &count_lay);
     let alpha = ps.sample();
     // The GKR treats the count tree as identity-padded to the pair's depth, but
     // its prover keeps that all-one suffix implicit. Retain the smaller layout
@@ -700,7 +706,7 @@ pub fn verify_balance(
     let push_lay = layout(push);
     let pull_lay = layout(pull);
     let mut count_lay = layout(count);
-    assert_grinding_unnecessary(&push_lay, &pull_lay, &count_lay);
+    assert_grinding_unnecessary(push, pull, &push_lay, &pull_lay, &count_lay);
     let alpha = vs.sample();
     // The count tree is padded to the pair's depth (identity leaves), so all
     // three verify as ONE RLC-batched GKR at ONE shared point.
@@ -770,4 +776,17 @@ pub fn verify_balance(
         forms,
         totals,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::soundness_bits;
+
+    #[test]
+    fn bus_soundness_accounts_for_tuple_width() {
+        assert!(soundness_bits(38, 12) >= crate::SECURITY_BITS);
+        assert!(soundness_bits(59, 12) >= crate::SECURITY_BITS);
+        assert!(soundness_bits(60, 12) < crate::SECURITY_BITS);
+        assert!(soundness_bits(58, 16) < soundness_bits(58, 1));
+    }
 }

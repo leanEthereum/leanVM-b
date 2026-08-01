@@ -1,5 +1,5 @@
 use lean_compiler::{compile, parse_with_replacements};
-use lean_vm::cpu::{DerefMode, Op, Program, prove};
+use lean_vm::cpu::{DerefMode, Op, Program, prove, verify};
 use primitives::field::{F64, F192, g_pow};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -135,9 +135,9 @@ fn test_python_verifier() {
     let verifier = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../python-verifier/verifier.py");
     let verification_started = Instant::now();
     let output = Command::new("python3")
-        .arg(verifier)
-        .arg(statement_path)
-        .arg(proof_path)
+        .arg(&verifier)
+        .arg(&statement_path)
+        .arg(&proof_path)
         .output()
         .expect("run native Python verifier");
     let verification_time = verification_started.elapsed();
@@ -147,6 +147,42 @@ fn test_python_verifier() {
         String::from_utf8_lossy(&output.stderr),
     );
     assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "verification succeeded",);
+
+    let mut malformed_announcement = proof.clone();
+    malformed_announcement.stream[0].c1 = 1;
+    assert!(verify(&program, &public_input, &malformed_announcement).is_err());
+    std::fs::write(
+        &proof_path,
+        bincode::serialize(&malformed_announcement).expect("serialize malformed announcement"),
+    )
+    .expect("write malformed announcement");
+    let output = Command::new("python3")
+        .arg(&verifier)
+        .arg(&statement_path)
+        .arg(&proof_path)
+        .output()
+        .expect("run Python verifier on malformed announcement");
+    assert!(!output.status.success(), "Python accepted a noncanonical announcement");
+
+    let mut malformed_root = proof.clone();
+    let root_offset = lean_vm::tables::N_TABLES + 2;
+    malformed_root.stream[root_offset].c2 = 1;
+    assert!(verify(&program, &public_input, &malformed_root).is_err());
+    std::fs::write(
+        &proof_path,
+        bincode::serialize(&malformed_root).expect("serialize malformed root"),
+    )
+    .expect("write malformed root");
+    let output = Command::new("python3")
+        .arg(verifier)
+        .arg(statement_path)
+        .arg(proof_path)
+        .output()
+        .expect("run Python verifier on malformed root");
+    assert!(
+        !output.status.success(),
+        "Python accepted a noncanonical commitment root"
+    );
 
     println!(
         "zkDSL compiled to {} instructions; proved {} cycles in {} bytes; Python verified in {:.2?}",
