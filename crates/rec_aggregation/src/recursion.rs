@@ -31,6 +31,8 @@ use primitives::{
 /// virtual value column is referenced only by its own table's bus blocks, which
 /// the zerocheck settles, so no framework block can raise one at `zeta`.
 const VALCOL_FRAMEWORK: &str = "a framework block must not reference a virtual value column";
+const RECURSION_AGG_LABEL: &[u8] = b"leanvm-b/recursion-aggregation/v1";
+const RECURSION_STATEMENT_LABEL: &[u8] = b"leanvm-b/recursive-statement/v1";
 
 /// A field element as the decimal `u128` literal the zkDSL parser accepts.
 fn u(f: F128) -> u128 {
@@ -159,7 +161,8 @@ struct RecursiveStatement {
 
 impl RecursiveStatement {
     fn public_input(&self, inner_environment: [F128; 2]) -> [F128; 2] {
-        let mut sponge = Sponge::empty();
+        let mut sponge = Sponge::new(RECURSION_STATEMENT_LABEL, &[]);
+        sponge.observe(F128::new(self.sub_statements.len() as u64, 0));
         for &v in &inner_environment {
             sponge.observe(v);
         }
@@ -278,7 +281,8 @@ fn gen_agg(
     let klog = flock::blake3::K_LOG;
 
     // ---- the aggregation transcript (mirrors the guest exactly) ----
-    let mut h = Sponge::empty();
+    let mut h = Sponge::new(RECURSION_AGG_LABEL, &[]);
+    h.observe(F128::new(nsub as u64, 0));
     for d in subs {
         h.observe(d.pi[0]);
         h.observe(d.pi[1]);
@@ -473,7 +477,8 @@ fn gen_agg(
     // is identified by ONE seed digest in the recursion's PUBLIC INPUT (not
     // baked into the guest), so one compiled guest serves any inner program.
     let seed = lean_vm::cpu::fs_seed(program);
-    let mut e = Sponge::empty();
+    let mut e = Sponge::new(RECURSION_STATEMENT_LABEL, &[]);
+    e.observe(F128::new(subs.len() as u64, 0));
     e.observe(seed[0]);
     e.observe(seed[1]);
     for d in subs {
@@ -587,7 +592,7 @@ fn gen_verify(
     // Grinding digests are the only trace-borne data (they are functions of
     // sponge states): the first Pow is the bus grind; among the rest, fold
     // grinds carry bits > 0 and query-phase grinds carry bits = 0.
-    let pows: Vec<(u64, u32, F128)> = ops
+    let pows: Vec<(F128, u32, F128)> = ops
         .iter()
         .filter_map(|op| match op {
             TraceOp::Pow { nonce, bits, digest } => Some((*nonce, *bits, *digest)),
@@ -1439,6 +1444,12 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     let label_state = Sponge::new(b"leanvm-b", &[]).state();
     ps("TRANSCRIPT_SEED_0", u(label_state[0]).to_string());
     ps("TRANSCRIPT_SEED_1", u(label_state[1]).to_string());
+    let agg_state = Sponge::new(RECURSION_AGG_LABEL, &[]).state();
+    ps("AGG_SEED_0", u(agg_state[0]).to_string());
+    ps("AGG_SEED_1", u(agg_state[1]).to_string());
+    let statement_state = Sponge::new(RECURSION_STATEMENT_LABEL, &[]).state();
+    ps("STATEMENT_SEED_0", u(statement_state[0]).to_string());
+    ps("STATEMENT_SEED_1", u(statement_state[1]).to_string());
     let rs_coeff_orbits: Vec<F128> =
         pcs::ring_switch::eq_linearized_orbit_constants().iter().flatten().copied().collect();
     ps("RS_COEFF_ORBITS", flds(&rs_coeff_orbits));
@@ -1626,9 +1637,21 @@ fn recursion_soundness_binds() {
     };
 
     assert!(run(&mut guest, &batch.merged), "honest proof must verify");
+    assert!(
+        batch.merged.iter().all(|(name, _)| !matches!(
+            name.as_str(),
+            "claim_sel_bits"
+                | "claim_yslot_bits"
+                | "claim_qpkd_slot_bits"
+                | "rs_sel_bits"
+                | "rs_yslot_bits"
+        )),
+        "Jagged claim placement must be derived, not hinted"
+    );
 
     for &(stream, idx, val) in &[
         ("fs_seed", 0, F128::ONE),
+        ("stream", 1, F128::new(1u64 << 32, 0)),
         ("zc_tau_max", 0, g_pow(2)),
     ] {
         let mut merged = batch.merged.clone();
@@ -1648,7 +1671,7 @@ fn recursion_soundness_binds() {
         merged[pos].1[0][0] = merged[pos].1[0][1];
         assert!(!run(&mut guest, &merged), "duplicated sort_order rank must be rejected");
     }
-    eprintln!("all named-hint tamperings correctly rejected");
+    eprintln!("all recursion soundness tamperings correctly rejected");
 }
 
 /// One compiled guest bytecode proves many inner runs with different opcode
