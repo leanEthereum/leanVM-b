@@ -14,8 +14,9 @@
 //! - [`witness`] — `K`-valued columns stacked into one committed witness.
 //! - [`gkr`] — the grand product via GKR (§4.3), balancing the bus.
 //! - [`leaf`] — the shared bus: grand-product balance, decomposed to per-column claims (§4.2–§4.4, §5).
-//! - [`constraints`] — the per-table degree-2 field zerocheck (§4.1).
-//! - [`tables`] — the instruction tables (columns, flushes, constraints).
+//! - [`constraints`] — one back-loaded batched zerocheck over all seven tables'
+//!   degree-2 identities plus their three bus forms (§4.1).
+//! - [`tables`] — the seven instruction tables (columns, flushes, constraints).
 //! - [`cpu`] — whole-program assembly, control flow, and the prove/verify entry points.
 //! - [`blake3_flock`] — the `BLAKE3` glue: flock's R1CS validity proof over the same commitment.
 //! - [`vmhash`]: VM-native hashing (one-block compression and standard BLAKE3 slice hashing).

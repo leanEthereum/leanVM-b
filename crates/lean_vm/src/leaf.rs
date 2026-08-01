@@ -65,9 +65,6 @@ pub enum Error {
     /// A read count is zero, so a read self-cancels on the bus (§sec:memchan).
     ZeroCount,
     Gkr(gkr::GkrError),
-    Decomposition {
-        side: &'static str,
-    },
 }
 
 /// Check that the 192-bit field alone supplies the target bus soundness. The bus
@@ -182,17 +179,52 @@ pub fn build_leaves(blocks: &[Block], lay: &Layout, cols: &[Column], alpha: F192
     leaves
 }
 
-/// Recompute `Ṽ₀(ζ)` from the block structure, taking each committed column's value
-/// at `ζ_lo` from `col_val` (block/coord order): the prover reads the real columns,
-/// the verifier replays PCS-certified values.
-pub fn decompose_formula<F: FnMut(usize, &[F192]) -> F192>(
+/// One table's bus contribution on one side, as a linear form over that table's
+/// committed columns: `Σ_c coeffs[c]·col_c(z) + constant`. Every coefficient is a
+/// public function of `α`, `γ` and the block selectors at `ζ`, because a table's
+/// bus blocks carry only `Const`/`Col`/`GCol` coordinates. The batched zerocheck
+/// sums this against `eq(ζ[..τ], ·)` instead of opening each column at `ζ`, which
+/// is why those per-column claims no longer reach the PCS.
+#[derive(Clone, Debug)]
+pub struct BusForm {
+    pub coeffs: Vec<F192>,
+    pub constant: F192,
+}
+
+impl BusForm {
+    fn new(n_cols: usize) -> Self {
+        Self {
+            coeffs: vec![F192::ZERO; n_cols],
+            constant: F192::ZERO,
+        }
+    }
+
+    /// `Σ_c coeffs[c]·evals[c] + constant`: the form at one row, or at a point when
+    /// `evals` are column evaluations there.
+    pub fn eval(&self, evals: &[F192]) -> F192 {
+        self.coeffs
+            .iter()
+            .zip(evals)
+            .fold(self.constant, |acc, (&w, &v)| acc + w * v)
+    }
+}
+
+/// Walk one side's blocks. A block owned by table `t` (with column base `base`)
+/// accumulates into `forms[t]`; the framework blocks are decomposed into per-column
+/// claims as before, `fresh` supplying values not already in `claims`. Returns the
+/// framework blocks' contribution to `Ṽ₀(ζ)` plus the padding mass, so the caller
+/// can settle the side once the zerocheck has proven the tables' forms.
+fn decompose_formula<F: FnMut(usize, &[F192]) -> Result<F192, Error>>(
     blocks: &[Block],
     lay: &Layout,
     zeta: &[F192],
     alpha: F192,
     gamma: F192,
-    mut col_val: F,
-) -> F192 {
+    owners: &[Option<(usize, usize)>],
+    forms: &mut [BusForm],
+    claims: &mut Vec<ColumnClaim>,
+    mut fresh: F,
+) -> Result<F192, Error> {
     assert_eq!(zeta.len(), lay.mu);
     let mut acc = F192::ZERO;
     let mut sel_sum = F192::ZERO;
@@ -207,14 +239,59 @@ pub fn decompose_formula<F: FnMut(usize, &[F192]) -> F192>(
         let eq_hi = eq_eval(&sel_bits, zeta_hi);
         sel_sum += eq_hi;
 
+        // A table's block becomes a linear form the zerocheck will sum; only the
+        // framework blocks (boundary, memory, bytecode) still open columns at ζ.
+        if let Some((t, base)) = owners[b] {
+            let form = &mut forms[t];
+            form.constant += eq_hi * gamma;
+            let mut alpha_pow = F192::ONE;
+            for c in &blk.coords {
+                match c {
+                    Coord::Const(v) => form.constant += eq_hi * alpha_pow.mul_base(*v),
+                    Coord::Col(i) => form.coeffs[*i - base] += eq_hi * alpha_pow,
+                    Coord::GCol(i, k) => form.coeffs[*i - base] += eq_hi * alpha_pow.mul_base(g_pow(*k as usize)),
+                    Coord::Index | Coord::Public(_) => {
+                        unreachable!("a table's bus block carries no virtual coordinate")
+                    }
+                }
+                alpha_pow *= alpha;
+            }
+            continue;
+        }
+
         let mut inner = F192::ZERO;
         let mut alpha_pow = F192::ONE;
         for c in &blk.coords {
             let coord_val = match c {
                 Coord::Const(v) => F192::from(*v),
                 Coord::Index => index_mle(zeta_lo),
-                Coord::Col(i) => col_val(*i, zeta_lo),
-                Coord::GCol(i, k) => col_val(*i, zeta_lo).mul_base(g_pow(*k as usize)),
+                Coord::Col(i) => {
+                    if let Some(v) = known_claim(claims, *i, zeta_lo) {
+                        v
+                    } else {
+                        let v = fresh(*i, zeta_lo)?;
+                        claims.push(ColumnClaim {
+                            col: *i,
+                            point: zeta_lo.to_vec(),
+                            value: v,
+                        });
+                        v
+                    }
+                }
+                Coord::GCol(i, k) => {
+                    let v = if let Some(v) = known_claim(claims, *i, zeta_lo) {
+                        v
+                    } else {
+                        let v = fresh(*i, zeta_lo)?;
+                        claims.push(ColumnClaim {
+                            col: *i,
+                            point: zeta_lo.to_vec(),
+                            value: v,
+                        });
+                        v
+                    };
+                    v.mul_base(g_pow(*k as usize))
+                }
                 Coord::Public(vals) => mle_eval(vals, zeta_lo),
             };
             inner += alpha_pow * coord_val;
@@ -223,7 +300,7 @@ pub fn decompose_formula<F: FnMut(usize, &[F192]) -> F192>(
         acc += eq_hi * (gamma + inner);
     }
     // The padding rows (identity `1`) contribute the leftover mass `1 - Σ_b sel_b`.
-    acc + (F192::ONE + sel_sum)
+    Ok(acc + (F192::ONE + sel_sum))
 }
 
 /// Look up an already-recorded claim on `(col, point)`. Push and pull share
@@ -247,7 +324,7 @@ fn known_claim(claims: &[ColumnClaim], col: usize, point: &[F192]) -> Option<F19
 /// transcript and only their `add_scalar` ORDER matters. The second pass
 /// replays them through the transcript in the original block/coord order,
 /// keeping the stream byte-identical to the serial form.
-#[allow(clippy::too_many_arguments)] // the shared dedup context is the 8th
+#[allow(clippy::too_many_arguments)] // the shared dedup + form context
 fn decompose_prove(
     blocks: &[Block],
     lay: &Layout,
@@ -255,15 +332,20 @@ fn decompose_prove(
     zeta: &[F192],
     alpha: F192,
     gamma: F192,
+    owners: &[Option<(usize, usize)>],
+    forms: &mut [BusForm],
     claims: &mut Vec<ColumnClaim>,
     ps: &mut ProverState,
-) {
+) -> F192 {
     // Pass 1: enumerate the FRESH committed coords exactly as `decompose_formula`
     // visits them (blocks in order, coords in order, Col/GCol only, first
     // occurrence per `(col, point)` — the same dedup as `known_claim`), then
     // evaluate the column MLEs in parallel.
     let mut jobs: Vec<(usize, usize)> = Vec::new();
-    for blk in blocks {
+    for (b, blk) in blocks.iter().enumerate() {
+        if owners[b].is_some() {
+            continue;
+        }
         for c in &blk.coords {
             if let Coord::Col(i) | Coord::GCol(i, _) = c {
                 let fresh = known_claim(claims, *i, &zeta[..blk.kappa]).is_none() && !jobs.contains(&(*i, blk.kappa));
@@ -280,23 +362,26 @@ fn decompose_prove(
 
     // Pass 2: replay in the original order; duplicates reuse the recorded claim.
     let mut fresh_iter = jobs.iter().zip(vals.iter());
-    decompose_formula(blocks, lay, zeta, alpha, gamma, |col, zeta_lo| {
-        if let Some(v) = known_claim(claims, col, zeta_lo) {
-            return v;
-        }
-        let (&(jc, jk), &v) = fresh_iter
-            .next()
-            .expect("job enumeration matches decompose_formula's col_val order");
-        debug_assert_eq!((jc, jk), (col, zeta_lo.len()), "job/coord order drift");
-        debug_assert_eq!(v, mle_eval(&cols[col], zeta_lo), "job/coord order drift");
-        ps.add_scalar(v);
-        claims.push(ColumnClaim {
-            col,
-            point: zeta_lo.to_vec(),
-            value: v,
-        });
-        v
-    });
+    decompose_formula(
+        blocks,
+        lay,
+        zeta,
+        alpha,
+        gamma,
+        owners,
+        forms,
+        claims,
+        |col, zeta_lo| {
+            let (&(jc, jk), &v) = fresh_iter
+                .next()
+                .expect("job enumeration matches decompose_formula's col_val order");
+            debug_assert_eq!((jc, jk), (col, zeta_lo.len()), "job/coord order drift");
+            debug_assert_eq!(v, mle_eval(&cols[col], zeta_lo), "job/coord order drift");
+            ps.add_scalar(v);
+            Ok(v)
+        },
+    )
+    .expect("prover decomposition is infallible")
 }
 
 /// Verifier-side decomposition: reads each FRESH committed value from the
@@ -309,28 +394,14 @@ fn decompose_verify(
     zeta: &[F192],
     alpha: F192,
     gamma: F192,
+    owners: &[Option<(usize, usize)>],
+    forms: &mut [BusForm],
     claims: &mut Vec<ColumnClaim>,
     vs: &mut VerifierState,
 ) -> Result<F192, Error> {
-    for blk in blocks {
-        let zeta_lo = &zeta[..blk.kappa];
-        for c in &blk.coords {
-            if let Coord::Col(i) | Coord::GCol(i, _) = c
-                && known_claim(claims, *i, zeta_lo).is_none()
-            {
-                let v = vs.next_scalar().map_err(|_| Error::Truncated)?;
-                claims.push(ColumnClaim {
-                    col: *i,
-                    point: zeta_lo.to_vec(),
-                    value: v,
-                });
-            }
-        }
-    }
-    let value = decompose_formula(blocks, lay, zeta, alpha, gamma, |col, zeta_lo| {
-        known_claim(claims, col, zeta_lo).expect("the pre-pass recorded every coordinate")
-    });
-    Ok(value)
+    decompose_formula(blocks, lay, zeta, alpha, gamma, owners, forms, claims, |_, _| {
+        vs.next_scalar().map_err(|_| Error::Truncated)
+    })
 }
 
 /// `base^e` by repeated squaring.
@@ -457,13 +528,32 @@ pub fn stacked_bytecode_value(evals: &[F192], s: &[F192]) -> F192 {
 /// Prove the bus balances; returns the per-column claims to open (§4.4). `alpha`/
 /// `gamma` follow the witness commitment (the only ordering the grand product
 /// needs), and the block structure is public, so no shape is observed.
+/// Everything the bus hands on: the framework blocks' column claims, the reduced
+/// bytecode claim, the shared GKR point (the batched zerocheck's eq point), and
+/// per side the tables' linear forms plus what each is claimed to sum to.
+pub struct BusProof {
+    pub claims: Vec<ColumnClaim>,
+    pub bytecode_claims: Vec<BytecodeClaim>,
+    /// The GKR point ζ: the zerocheck reuses it, so no fresh point is sampled.
+    pub point: Vec<F192>,
+    /// `forms[side][table]`, in `[push, pull, count]` order.
+    pub forms: [Vec<BusForm>; 3],
+    /// `sigmas[side][table]`: each form's eq-weighted sum over its table's rows.
+    /// Prover-side only. NOTHING here travels: the batch's target is the caller's
+    /// derived `Σ_s η^·totals[s]`, and the shares serve only to build each round's
+    /// waiting line, which rides inside the round polynomial.
+    pub sigmas: [Vec<F192>; 3],
+}
+
 pub fn prove_balance(
     push: &[Block],
     pull: &[Block],
     count: &[Block],
     cols: &[Column],
+    owners: &[Vec<Option<(usize, usize)>>; 3],
+    tables: &[(usize, usize)],
     ps: &mut ProverState,
-) -> (Vec<ColumnClaim>, Vec<BytecodeClaim>) {
+) -> BusProof {
     let push_lay = layout(push);
     let pull_lay = layout(pull);
     let mut count_lay = layout(count);
@@ -500,22 +590,45 @@ pub fn prove_balance(
     }
     let t0 = std::time::Instant::now();
 
-    // One shared claim list: push/pull duplicates (same column, same shared
-    // point) are streamed and opened once. The count side has its own weights,
-    // so its claims stay distinct only where the columns differ.
+    // Framework blocks keep their per-column claims (deduped: push/pull share ζ);
+    // every table block becomes a linear form for the zerocheck instead.
     let mut claims: Vec<ColumnClaim> = Vec::new();
-    decompose_prove(push, &push_lay, cols, &bus_gkr.point, alpha, gamma, &mut claims, ps);
-    decompose_prove(pull, &pull_lay, cols, &bus_gkr.point, alpha, gamma, &mut claims, ps);
-    decompose_prove(
-        count,
-        &count_lay,
-        cols,
-        &bus_gkr.point,
-        F192::ONE,
-        F192::ZERO,
-        &mut claims,
-        ps,
-    );
+    let sides: [(&[Block], &Layout, F192, F192); 3] = [
+        (push, &push_lay, alpha, gamma),
+        (pull, &pull_lay, alpha, gamma),
+        (count, &count_lay, F192::ONE, F192::ZERO),
+    ];
+    // Each table's columns at ζ[..τ], computed once and shared by the three sides
+    // (a form is linear in them). Nothing here travels, neither the evaluations nor
+    // any total: the verifier derives each side's table share as `Ṽ₀(ζ)` less the
+    // framework decomposition ([`verify_balance`]) and the batch settles it. A
+    // transmitted total would appear in exactly one check, which it could always be
+    // solved to satisfy, and would settle nothing.
+    let table_evals = tables_at(cols, tables, &bus_gkr.point);
+    let mut forms = std::array::from_fn(|_| tables.iter().map(|&(_, n)| BusForm::new(n)).collect::<Vec<_>>());
+    let mut sigmas: [Vec<F192>; 3] = std::array::from_fn(|_| Vec::new());
+    for (s, &(blocks, lay, a, g)) in sides.iter().enumerate() {
+        let framework = decompose_prove(
+            blocks,
+            lay,
+            cols,
+            &bus_gkr.point,
+            a,
+            g,
+            &owners[s],
+            &mut forms[s],
+            &mut claims,
+            ps,
+        );
+        sigmas[s] = forms[s].iter().zip(&table_evals).map(|(f, e)| f.eval(e)).collect();
+        // Completeness only: the verifier derives this identity rather than checking
+        // it, so a mismatch here is a prover bug, not a rejection path.
+        debug_assert_eq!(
+            sigmas[s].iter().fold(framework, |acc, &b| acc + b),
+            bus_gkr.values[s],
+            "side {s} must decompose into its leaf value"
+        );
+    }
     if prof {
         eprintln!("[bus]   decompose : {:>7.2} ms", t0.elapsed().as_secs_f64() * 1e3);
     }
@@ -532,7 +645,28 @@ pub fn prove_balance(
         point: [&bus_gkr.point[..kbc], &s[..]].concat(),
         value: stacked_bytecode_value(&pv, &s),
     }];
-    (claims, bytecode_claims)
+    BusProof {
+        claims,
+        bytecode_claims,
+        point: bus_gkr.point,
+        forms,
+        sigmas,
+    }
+}
+
+/// Every table's committed columns at `ζ[..τ_t]`: one `eq` table per table, then an
+/// inner product per column. `tables[t] = (base, n_cols)` in the global schema.
+fn tables_at(cols: &[Column], tables: &[(usize, usize)], zeta: &[F192]) -> Vec<Vec<F192>> {
+    tables
+        .iter()
+        .map(|&(base, n_cols)| {
+            let tau = crate::log2_strict_usize(cols[base].len());
+            (0..n_cols)
+                .into_par_iter()
+                .map(|c| mle_eval(&cols[base + c], &zeta[..tau]))
+                .collect()
+        })
+        .collect()
 }
 
 /// What [`verify_balance`] establishes: the per-column claims to open, the
@@ -543,6 +677,13 @@ pub struct BusVerify {
     pub claims: Vec<ColumnClaim>,
     pub bytecode_claims: Vec<BytecodeClaim>,
     pub count_root: F192,
+    /// The GKR point ζ, reused as the batched zerocheck's eq point.
+    pub point: Vec<F192>,
+    /// `forms[side][table]`, for the zerocheck to settle.
+    pub forms: [Vec<BusForm>; 3],
+    /// Per side, what the tables' blocks owe its leaf claim: `Ṽ₀(ζ)` less the
+    /// framework blocks' decomposition. Derived here, pinned by the batch's target.
+    pub totals: [F192; 3],
 }
 
 /// Verify the bus balances, oracle-free (the prover's committed values arrive on
@@ -552,6 +693,8 @@ pub fn verify_balance(
     pull: &[Block],
     count: &[Block],
     pad: &[F64],
+    owners: &[Vec<Option<(usize, usize)>>; 3],
+    tables: &[(usize, usize)],
     vs: &mut VerifierState,
 ) -> Result<BusVerify, Error> {
     let push_lay = layout(push);
@@ -578,26 +721,33 @@ pub fn verify_balance(
         return Err(Error::Unbalanced);
     }
 
+    // Framework blocks decompose as before; the tables' blocks become linear forms.
+    // Each side's table share is DERIVED from `framework + Ṽ₀(ζ)` rather than checked
+    // here, the batch's target being what pins it, so no table column is opened at ζ.
     let mut claims: Vec<ColumnClaim> = Vec::new();
-    let vp = decompose_verify(push, &push_lay, &bus_gkr.point, alpha, gamma, &mut claims, vs)?;
-    if vp != bus_gkr.values[0] {
-        return Err(Error::Decomposition { side: "push" });
-    }
-    let vq = decompose_verify(pull, &pull_lay, &bus_gkr.point, alpha, gamma, &mut claims, vs)?;
-    if vq != bus_gkr.values[1] {
-        return Err(Error::Decomposition { side: "pull" });
-    }
-    let vc = decompose_verify(
-        count,
-        &count_lay,
-        &bus_gkr.point,
-        F192::ONE,
-        F192::ZERO,
-        &mut claims,
-        vs,
-    )?;
-    if vc != bus_gkr.values[2] {
-        return Err(Error::Decomposition { side: "count" });
+    let mut forms = std::array::from_fn(|_| tables.iter().map(|&(_, n)| BusForm::new(n)).collect::<Vec<_>>());
+    let sides: [(&[Block], &Layout, F192, F192); 3] = [
+        (push, &push_lay, alpha, gamma),
+        (pull, &pull_lay, alpha, gamma),
+        (count, &count_lay, F192::ONE, F192::ZERO),
+    ];
+    let mut totals = [F192::ZERO; 3];
+    for (s, &(blocks, lay, a, g)) in sides.iter().enumerate() {
+        let framework = decompose_verify(
+            blocks,
+            lay,
+            &bus_gkr.point,
+            a,
+            g,
+            &owners[s],
+            &mut forms[s],
+            &mut claims,
+            vs,
+        )?;
+        // What the tables owe this side: DERIVED, never read. A transmitted total
+        // would be a free variable in its own check and would settle nothing; the
+        // caller instead pins these against the batch's target.
+        totals[s] = framework + bus_gkr.values[s];
     }
 
     // Bytecode = ONE polynomial (mirror of `prove_balance`); the shared push/
@@ -616,5 +766,8 @@ pub fn verify_balance(
         claims,
         bytecode_claims,
         count_root,
+        point: bus_gkr.point,
+        forms,
+        totals,
     })
 }

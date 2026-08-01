@@ -133,6 +133,15 @@ pub fn tri_nodes() -> [F192; 3] {
     [F192::ZERO, F192::ONE, F192::from(crate::field::G)]
 }
 
+/// The 4 nodes {0, 1, g, g²} at which a degree-3 sumcheck round univariate is sent
+/// WHOLE, eq weight included. Costs one field element more than [`tri_nodes`] and
+/// buys a verifier that reapplies nothing: `h(0) + h(1) = claim`, then interpolate.
+#[inline]
+pub fn quad_nodes() -> [F192; 4] {
+    let g = F192::from(crate::field::G);
+    [F192::ZERO, F192::ONE, g, g * g]
+}
+
 /// Add two 3-coefficient sumcheck accumulators componentwise.
 #[inline]
 pub fn add3(mut x: [F192; 3], y: [F192; 3]) -> [F192; 3] {
