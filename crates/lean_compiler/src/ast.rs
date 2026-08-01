@@ -97,15 +97,15 @@ pub enum Stmt {
     /// `assert a != b` — a proof-enforced inequality. Lowers to a conditional
     /// `JUMP` on `a + b`: when the sides differ (nonzero) execution skips to the
     /// continuation; when they are equal it falls through to a jump to the
-    /// poison pc `g^-1` ([`KVal::Poison`]), which no valid trace can continue
-    /// past. See [`FnLower::lower_assert_ne`]. No prover hint (unlike the
+    /// poison pc `g^-1` (`KVal::Poison`), which no valid trace can continue
+    /// past. See `FnLower::lower_assert_ne`. No prover hint (unlike the
     /// `(a-b)·inv == 1` idiom it replaces).
     AssertNe(Expr, Expr),
     /// `assert log X < log Y` (also `assert log X < k` with an integer
     /// exponent) — a *range check in the exponent*: with `X = g^x`, proves
     /// `x < k`, i.e. `X ∈ {g^0, g^1, …, g^{k-1}}`. The bound `Y = g^k` is a
     /// compile-time power of `GEN` with `1 ≤ k ≤ 2^MIN_LOG_MEM`; see
-    /// [`FnLower::lower_assert_lt`] for the 3-cycle gadget (leanVM's DEREF
+    /// `FnLower::lower_assert_lt` for the 3-cycle gadget (leanVM's DEREF
     /// range-check trick, transported to g-powers).
     AssertLt(Expr, u64),
     /// `f(args)` as a statement (returns discarded).
@@ -126,7 +126,7 @@ pub enum Stmt {
     /// One conditional `JUMP` on the XOR of the two sides; bindings made
     /// inside a branch are local to it — branches communicate through
     /// write-once memory (only one branch executes, so both may write the
-    /// same cell). See [`FnLower::lower_if`].
+    /// same cell). See `FnLower::lower_if`.
     If {
         eq: bool,
         lhs: Expr,
@@ -139,7 +139,7 @@ pub enum Stmt {
     /// runs case `j`). Dispatched through a trampoline table in the bytecode
     /// (doc §ISA programming / Match statements); the scrutinee must be known
     /// to lie in `[0, n)` — range-check a hinted value first. Case bodies are
-    /// branch-local, like [`Stmt::If`] branches. See [`FnLower::lower_match`].
+    /// branch-local, like [`Stmt::If`] branches. See `FnLower::lower_match`.
     Match { x: Expr, cases: Vec<Vec<Stmt>> },
     /// `names = match_range(log(x), range(a, b), lambda i: expr, …)` — a
     /// [`Stmt::Match`] with generated arms (leanVM's `match_range`): arm `j`
@@ -229,7 +229,7 @@ pub struct Func {
     /// a `Const` parameter is a *template*: it is never lowered itself — each
     /// call site with a distinct constant tuple queues a monomorphized copy
     /// with the parameter substituted by its literal (see
-    /// [`FnLower::specialize`]).
+    /// `FnLower::specialize`).
     pub const_params: Vec<bool>,
     /// Number of source-level return values (tuple arity).
     pub n_ret: usize,

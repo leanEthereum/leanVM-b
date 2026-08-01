@@ -14,8 +14,8 @@ use std::time::Instant;
 
 use fiat_shamir::transcript::{ProverState, VerifierState};
 use flock::blake3::{
-    Blake3Setup, Compression, K_LOG, ReducedClaims, generate_witness_with_ab_packed_and_lincheck, min_n_blocks_log,
-    pinned_compression,
+    Blake3Setup, Compression, K_LOG, PackedWitnessClaims, generate_witness_with_ab_packed_and_lincheck,
+    min_n_blocks_log, pinned_compression,
 };
 use flock::proof::ZClaim;
 use pcs::ligerito::{INITIAL_FOLDING_FACTOR, LOG_INV_RATE_0};
@@ -85,7 +85,7 @@ fn ring_claim(z: &ZClaim, captured: Option<&[F192]>, qpkd_vars: usize) -> RingSw
     }
 }
 
-fn prover_ring(reduced: &ReducedClaims, qpkd_vars: usize) -> RingSwitchOpen {
+fn prover_ring(reduced: &PackedWitnessClaims, qpkd_vars: usize) -> RingSwitchOpen {
     RingSwitchOpen {
         offset: 0,
         qpkd_vars,

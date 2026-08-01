@@ -1,4 +1,4 @@
-// Credit: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
+// CREDIT: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
 //! Small bit-manipulation primitives shared across modules.
 
 /// Hacker's Delight (Sec. 7-3) 8×8 bit-matrix transpose stored in a `u64`.

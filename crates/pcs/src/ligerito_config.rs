@@ -1,4 +1,5 @@
-// Credit: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
+// CREDIT: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
+// CREDIT: https://github.com/bcc-research/bolt-rs, MIT.
 // Copyright (c) 2026 Bain Capital Crypto, LP and Ron Rothblum
 // Modifications copyright 2026 Succinct Labs, Benedikt Bunz, William Wang
 // SPDX-License-Identifier: Apache-2.0 OR MIT
@@ -820,7 +821,7 @@ impl LigeritoLevelConfig {
     }
 
     /// OOD binding bits this level is expected to deliver.
-    /// See [`paper_ood_bits`].
+    /// See `paper_ood_bits`.
     pub fn paper_predicted_ood_bits(&self) -> f64 {
         let mu = self.log_msg_cols + self.log_num_interleaved;
         paper_ood_bits(self.log_inv_rate, self.log_msg_cols, self.eta, mu, self.ood_samples)

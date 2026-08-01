@@ -15,17 +15,17 @@
 //! Cache location: `<workspace>/target/signers-cache/` (already git-ignored).
 //! The filename carries a footprint of everything that determines the signers —
 //! not just the declared parameters but a known-answer of the hash construction
-//! itself (see [`hash_fingerprint`]), so a branch that changes the digests
+//! itself (see `hash_fingerprint`), so a branch that changes the digests
 //! (e.g. a change to the standard BLAKE3 input encoding) without touching a
 //! single constant still lands in a fresh file rather than mis-loading the
 //! other branch's signers. The WOTS encoding *predicate* is fingerprinted the
-//! same way (see [`encoding_fingerprint`]): two branches can agree on every
+//! same way (see `encoding_fingerprint`): two branches can agree on every
 //! constant and every hash digest yet lay the digest out into digits
 //! differently, which silently invalidates every ground randomness. As a last
 //! line of defense, loaded signers are re-verified and the pool truncated at
-//! the first invalid one ([`try_load_cache`]), so a stale cache that slips
+//! the first invalid one (`try_load_cache`), so a stale cache that slips
 //! past the footprint regenerates instead of panicking downstream. Bump
-//! [`SCHEMA_VERSION`] to force regeneration by hand.
+//! `SCHEMA_VERSION` to force regeneration by hand.
 
 use std::collections::hash_map::DefaultHasher;
 use std::fs;

@@ -1,4 +1,4 @@
-// Credit: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
+// CREDIT: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
 //! Lincheck PIOP for **block-diagonal** R1CS over GF(2).
 //!
 //! Reduces three MLE evaluation claims (`â(x)=v`, `b̂(x')=v'`, `ĉ(x'')=v''`)
@@ -424,7 +424,7 @@ pub fn partial_fold_packed_z(z_packed: &[u8], m: usize, k_log: usize, eq_outer: 
     out
 }
 
-/// Padding-aware variant of [`partial_fold_packed_z_fast`]. Skips rows
+/// Padding-aware variant of `partial_fold_packed_z_fast`. Skips rows
 /// `i_inner ∈ [useful_bits, k)` — those rows hold zero in every block of an
 /// honestly padded witness, so the fold over the outer dim is zero. Output
 /// is byte-identical to the dense path on such witnesses.
@@ -839,10 +839,9 @@ pub fn pack_z_lincheck(z_logical: &[bool], m: usize, k_log: usize) -> Vec<u8> {
     unsafe { primitives::assume_init(z_packed) }
 }
 
-/// Same output as [`pack_z_lincheck`] but reads bits from a 128-bit packed
-/// witness embedded in F192
-/// witness (polynomial basis: bit `i` of logical = bit `i % 128` of
-/// `z_packed_words[i / 128]`).
+/// Same output as `pack_z_lincheck`, but reads bits from a 128-bit packed
+/// witness embedded in F192. In the polynomial basis, logical bit `i` is bit
+/// `i % 128` of `z_packed_words[i / 128]`.
 pub fn pack_z_lincheck_from_packed(z_packed_words: &[primitives::field::F192], m: usize, k_log: usize) -> Vec<u8> {
     use rayon::prelude::*;
     let k = 1usize << k_log;

@@ -1,4 +1,5 @@
-// Credit: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
+// CREDIT: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
+// CREDIT: https://github.com/binius-zk/binius64 (`packed_aes_16x8b_multiply`), Apache-2.0.
 // Copyright 2025 The Binius Developers
 // Copyright 2025 Irreducible, Inc.
 // Modifications copyright 2026 Succinct Labs, Benedikt Bunz, William Wang

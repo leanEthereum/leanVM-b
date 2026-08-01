@@ -1,4 +1,4 @@
-// Credit: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
+// CREDIT: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
 //! Stacked batch-mixed opening for the F64-committed PCS.
 //!
 //! The committed witness is a stack of `2^log_n` [`F64`] words (committed via
@@ -474,7 +474,7 @@ pub fn open_batch_mixed_ligerito_stacked(
 /// bits are binary, so they contribute an exact indicator (only matching `y`
 /// positions get a nonzero ring-switch part, which also caps the number of
 /// tensor finishes at `2^(qpkd coords covered by y)`). Point-claim weights
-/// are evaluated per position in closed form via [`stack_claim_eq_at`].
+/// are evaluated per position in closed form via `stack_claim_eq_at`.
 pub fn verify_opening_batch_mixed_ligerito_stacked(
     sponge: &mut Sponge,
     config: &VerifierConfig,

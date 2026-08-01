@@ -1,6 +1,6 @@
 //! The public column schema and bus layout: the committed-column indices, and
 //! the flush/count blocks the verifier reconstructs from the program + announced
-//! sizes + public input (§7, §8). Plus the prover-side witness build.
+//! sizes and public input. Plus the prover-side witness build.
 
 use super::*;
 
@@ -106,7 +106,7 @@ pub(crate) struct Witness {
 /// adj; used for the fixed-size columns and the program bytecode length,
 /// which the caller passes as `log_bytecode`), source 1 is log_mem, and
 /// source 2 + t is tau_t. `None` = virtual (never committed). Mirrors
-/// [`col_kappas`] exactly; keep the two in lockstep.
+/// `col_kappas` exactly; keep the two in lockstep.
 pub fn col_kappa_sources(log_bytecode: usize) -> Vec<Option<(usize, usize)>> {
     let sch = schema();
     let mut k = vec![Some((0usize, 0usize)); sch.n];
@@ -194,7 +194,7 @@ fn col_kappas(
 /// instruction tables' real row counts `row_counts`, and the public input `pi`. The flush
 /// blocks reference columns only by INDEX and the program only through its
 /// public columns, so this needs no committed witness — both prover and verifier
-/// reconstruct exactly the same structure (§7, §8).
+/// reconstruct exactly the same structure.
 pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; tables::N_TABLES], pi: [F192; 2]) -> Layout {
     let bytecode_size = prog.len();
     let log_bytecode = crate::log2_strict_usize(bytecode_size);
@@ -519,7 +519,7 @@ impl Program {
         // The public layout (flush/count blocks, per-column padding, placements,
         // boundary, taus) is a pure function of the program + announced sizes +
         // public input, with no committed witness; reconstruct it here so the
-        // prover and verifier share exactly the same structure (§7, §8).
+        // prover and verifier share exactly the same structure.
         let row_counts = [
             tr.xor.len(),
             tr.mul.len(),

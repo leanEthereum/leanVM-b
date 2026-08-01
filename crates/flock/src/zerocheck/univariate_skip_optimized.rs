@@ -1,8 +1,8 @@
-// Credit: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
+// CREDIT: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
 //! Round-1 prover message — fully optimized (shift_reduce + extract_c, scalar).
 //!
 //! Scalar Rust implementation (no NEON). Three layered optimizations on top of
-//! the [`super::round1_extract_c`] scaffold:
+//! the `round1_extract_c` scaffold:
 //!
 //! 1. **Geometric small-eq + shift_reduce inner** (3 inner-most rest-dims).
 //!    Protocol fixes the three small challenges to
@@ -697,7 +697,7 @@ fn shift_reduce_inner_ab_scalar(
 /// Compute the round-1 prover message via the full shift_reduce + extract_c
 /// optimization, in scalar Rust.
 ///
-/// Output relative to [`super::round1_naive`]:
+/// Output relative to `round1_naive`:
 /// `C_s · (res_AB[i] + res_C_lifted[i]) = naive_p_ab[i] + naive_p_c[i]`
 ///
 /// Preconditions:

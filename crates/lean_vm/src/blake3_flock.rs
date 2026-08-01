@@ -33,7 +33,7 @@
 use crate::transcript::{ProverState, VerifierState};
 use ::pcs::pack::{LOG_PACKING, PACKING_WIDTH};
 use flock::blake3::{
-    Blake3Setup, Compression, K_LOG, ReducedClaims, ReductionReplay, blake3_compress,
+    Blake3Setup, Compression, K_LOG, PackedWitnessClaims, ReductionReplay, blake3_compress,
     generate_witness_with_ab_packed_and_lincheck, min_n_blocks_log,
 };
 use flock::verifier::VerifyError;
@@ -74,7 +74,7 @@ impl PreparedReductionWitness {
         self.n_blocks
     }
 
-    pub(crate) fn prove(&self, ps: &mut ProverState) -> ReducedClaims {
+    pub(crate) fn prove(&self, ps: &mut ProverState) -> PackedWitnessClaims {
         setup_for(self.n_blocks).prove_reduction_precomputed(
             &self.z_packed,
             &self.a_packed,
@@ -126,7 +126,7 @@ fn words_of(x: F64) -> [u32; 2] {
     [x.0 as u32, (x.0 >> 32) as u32]
 }
 
-/// Inverse of [`words_of`]: pack two little-endian `u32` words into the `F64`.
+/// Inverse of `words_of`: pack two little-endian `u32` words into the `F64`.
 pub fn pack_words(w: [u32; 2]) -> F64 {
     F64((w[0] as u64) | ((w[1] as u64) << 32))
 }
@@ -314,7 +314,7 @@ pub fn family_digest() -> [u8; 32] {
 }
 
 /// **Flock reduction only** (prover): run flock's BLAKE3 zerocheck + lincheck
-/// over `blocks` and return the two claims [`ReducedClaims`] on the committed
+/// over `blocks` and return the two [`PackedWitnessClaims`] on the committed
 /// witness `q_pkd` — `ab` (`A∘B`, lincheck) and `c` (`C`, zerocheck) — along
 /// with the regenerated packed witness (already flattened to the committed
 /// `F64` packing). The sub-proof scalars ride the shared transcript stream
@@ -328,7 +328,7 @@ pub fn prove_reduction(
     blocks: &[Compression],
     commitment: &::pcs::ligerito::Commitment,
     ps: &mut ProverState,
-) -> (Vec<F64>, ReducedClaims) {
+) -> (Vec<F64>, PackedWitnessClaims) {
     let _ = commitment;
     let (z_packed, reduced) = setup_for(blocks.len()).prove_reduction(blocks, ps);
     (flatten_packed(&z_packed), reduced)
@@ -398,11 +398,11 @@ fn ring_claim(z: &ZClaim, captured: Option<&[F192]>, qpkd_vars: usize) -> crate:
     }
 }
 
-/// Package the prover's reduction claims ([`ReducedClaims`]) as a
+/// Package the prover's reduction claims ([`PackedWitnessClaims`]) as a
 /// [`crate::pcs::RingSwitchOpen`], so the PCS discharges flock's `(ab, c)`
-/// validity in the SAME opening as leanVM's point claims. `offset` is `q_pkd`'s
+/// validity in the same opening as leanVM's point claims. `offset` is `q_pkd`'s
 /// slot in the committed stack; the opener slices `q_pkd` from there.
-pub fn ring_switch_open(n_blocks: usize, offset: usize, reduced: &ReducedClaims) -> crate::pcs::RingSwitchOpen {
+pub fn ring_switch_open(n_blocks: usize, offset: usize, reduced: &PackedWitnessClaims) -> crate::pcs::RingSwitchOpen {
     let qpkd_vars = qpkd_kappa(n_blocks);
     crate::pcs::RingSwitchOpen {
         offset,

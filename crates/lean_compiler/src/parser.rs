@@ -18,7 +18,7 @@ pub fn parse(src: &str) -> Result<Ast, String> {
 }
 
 /// Like [`parse`], but first applies compile-time **placeholder** replacements
-/// (identifier-level text substitution — see [`apply_replacements`]). This is
+/// (identifier-level text substitution — see `apply_replacements`). This is
 /// how a host injects sizes/flags into a program without editing it: write a
 /// placeholder identifier in source and map it to a value at compile time. The
 /// idiom is a placeholder feeding a named constant:

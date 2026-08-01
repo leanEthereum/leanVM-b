@@ -1,5 +1,5 @@
 //! A compiler from a Python-like zkDSL (see `zkDSL.md`) to the ISA (`cpu::Op`).
-//! Produces a [`cpu::Program`] — bytecode plus the prover's allocation hints.
+//! Produces a [`lean_vm::cpu::Program`] — bytecode plus the prover's allocation hints.
 //!
 //! ## Calling convention
 //!
@@ -276,8 +276,8 @@ fn resolve(op: &LOp, entry: &HashMap<String, u32>, sentinel: u32, base: u32) -> 
     let resolve_kval = |kv: &KVal| -> F192 {
         match kv {
             KVal::Const(c) => *c,
-            // Address / entry / sentinel constants are K-valued g-powers; embed
-            // into the 128-bit word (hi lane 0).
+            // Address / entry / sentinel constants are K-valued g-powers;
+            // embed them canonically as (c0, 0, 0).
             KVal::Entry(name) => g_pow(entry[name] as usize).into(),
             KVal::EndSentinel => g_pow(sentinel as usize).into(),
             KVal::Local(i) => g_pow((base + i) as usize).into(),

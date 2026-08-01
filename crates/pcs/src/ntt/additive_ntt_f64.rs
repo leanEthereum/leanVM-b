@@ -1,13 +1,10 @@
 //! Additive NTT over GF(2^64) using the LCH novel polynomial basis: the
 //! encoding layer of the 64-bit transition (commitments over K = F_{2^64}).
 //!
-//! Structure and conventions mirror [`super::additive_ntt_f128`] exactly (see
-//! its module docs for the subspace-polynomial construction, the
-//! neighbors-last layer ordering, and the SoA interleaved layout). The inner
-//! butterfly loops route through an eight-lane NEON kernel (four independent
-//! lane-pair products with PMULL-by-0x1B folds, no GPR
-//! round-trips); at large sizes the transform is memory-bandwidth bound
-//! either way, like its extension-field twin.
+//! The transform uses the same subspace-polynomial construction,
+//! neighbors-last layer ordering, and SoA interleaved layout as the
+//! extension-field transform. Its inner butterflies use architecture-specific
+//! SIMD kernels where available; large transforms are memory-bandwidth bound.
 
 use primitives::field::F64;
 

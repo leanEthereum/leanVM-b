@@ -1,3 +1,4 @@
+// CREDIT: https://github.com/signalapp/libsignal/blob/main/rust/poksho/src/shosha256.rs, AGPL-3.0-only.
 //! The VM-native Fiat–Shamir sponge: THE verifier-randomness source for the
 //! whole stack — flock's zerocheck / lincheck, the Ligerito PCS, and
 //! leanVM-b's own protocol (whose `ProverState` / `VerifierState` wrap this

@@ -1,4 +1,4 @@
-// Credit: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
+// CREDIT: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
 // Copyright 2025 The Binius Developers / Irreducible, Inc.
 // Modifications copyright 2026 Succinct Labs, Benedikt Bunz, William Wang.
 // SPDX-License-Identifier: Apache-2.0 OR MIT

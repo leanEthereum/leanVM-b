@@ -1,7 +1,8 @@
+// CREDIT: https://github.com/leanEthereum/leanVM (XMSS construction).
 //! XMSS over BLAKE3 (inspired by leanVM's `xmss` crate, byte-oriented).
 //!
 //! Every hash is standard BLAKE3 of the exact byte string
-//! `tweak | pp | payload`, truncated to n = 128 bits. See [`hash`] for the
+//! `tweak | pp | payload`, truncated to n = 128 bits. See the `hash` module for the
 //! constructions and per-call compression counts.
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]

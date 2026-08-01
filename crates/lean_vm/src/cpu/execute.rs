@@ -1,5 +1,5 @@
 //! The write-once execution interpreter: run the compiled program to produce
-//! the final memory image and the per-opcode [`Trace`] (§7).
+//! the final memory image and the per-opcode [`Trace`].
 
 use std::collections::HashMap;
 

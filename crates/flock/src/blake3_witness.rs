@@ -1,4 +1,4 @@
-// Credit: https://github.com/succinctlabs/flock (flock-prover), MIT OR Apache-2.0.
+// CREDIT: https://github.com/succinctlabs/flock (flock-prover), MIT OR Apache-2.0.
 //! Bit-packing and R1CS-row helpers for the monolithic hash R1CS modules
 //! (only `blake3` in this vendored subset).
 

@@ -232,8 +232,8 @@ RS_BASE_ORBITS = RS_BASE_ORBITS_PLACEHOLDER
 RS_TOWER_ORBITS = RS_TOWER_ORBITS_PLACEHOLDER
 # Phase F: log rows of the bytecode blocks (the deferred bytecode points).
 BYTECODE_LOG = BYTECODE_LOG_PLACEHOLDER
-# One sub-proof's deferred-claim region: 2*BYTECODE_LOG + LOG2_BYTECODE_COLS
-# + 2*LINCHECK_ROUNDS + 69 words (see verify_sub's defer_out layout).
+# One sub-proof's deferred-claim region: one bytecode point and the Flock
+# lincheck data (see verify_sub's defer_out layout).
 DEFER_SIZE = DEFER_SIZE_PLACEHOLDER
 # Aggregation: NSUB sub-proofs of the same program; per-sub proof data arrives
 # as hints. The seed sponge state after the two byte-string absorbs is baked

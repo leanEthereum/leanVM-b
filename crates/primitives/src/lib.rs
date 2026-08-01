@@ -300,7 +300,7 @@ pub unsafe fn assume_init<T>(values: Vec<std::mem::MaybeUninit<T>>) -> Vec<T> {
     unsafe { Vec::from_raw_parts(values.as_mut_ptr().cast(), values.len(), values.capacity()) }
 }
 
-/// Cached [`perf_core_count`]. The uncached version may spawn `sysctl`; this
+/// Cached `perf_core_count`. The uncached version may spawn `sysctl`; this
 /// memoizes it so hot paths can cheaply ask "is the current rayon pool the
 /// homogeneous P-core pool?" (i.e. `current_num_threads() <= this`).
 #[cfg_attr(not(target_arch = "aarch64"), allow(dead_code))] // caller is aarch64-only

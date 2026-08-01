@@ -1,4 +1,4 @@
-// Credit: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
+// CREDIT: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
 //! Binary Merkle tree with BLAKE3, SIMD-batching independent hashes across
 //! leaves and internal levels through BLAKE3's multi-input backend.
 //!
@@ -84,7 +84,7 @@ pub fn hash_leaf(data: &[u8]) -> Hash {
     *blake3::hash(data).as_bytes()
 }
 
-/// Hash a pair of children into a parent node (64 B → 32 B): one [`compress`],
+/// Hash a pair of children into a parent node (64 B → 32 B): one compression,
 /// which is already exactly the VM opcode.
 #[inline]
 pub fn hash_pair(left: &Hash, right: &Hash) -> Hash {

@@ -1,4 +1,4 @@
-// Credit: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
+// CREDIT: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
 //! Multilinear sumcheck — rounds 2..(m − k_skip + 1) of the zerocheck protocol.
 //!
 //! After the round-1 URM and the verifier's univariate-skip fold-point `z`, the

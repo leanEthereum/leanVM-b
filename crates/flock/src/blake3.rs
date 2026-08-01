@@ -1,4 +1,4 @@
-// Credit: https://github.com/succinctlabs/flock (flock-prover), MIT OR Apache-2.0.
+// CREDIT: https://github.com/succinctlabs/flock (flock-prover), MIT OR Apache-2.0.
 //! Monolithic BLAKE3 compression-function R1CS — one R1CS instance per
 //! `compress(cv, m, counter, block_len, flags) → state[16]` call. Encodes
 //! the 16-word state init, all 7 rounds (8 G's per round + the message
@@ -1668,10 +1668,8 @@ mod tests {
     }
 }
 
-// ===== leanVM-b stacked BLAKE3 reduction (grafted) =====
-// (No Blake3StackProof struct: the zerocheck / lincheck / ring-switch scalars
-// ride the shared transcript stream, and the one hash-bearing Ligerito rides
-// the caller's opening channel.)
+// The zerocheck, lincheck, and ring-switch scalars use the shared transcript;
+// the caller carries the Ligerito opening.
 
 /// One claim on the committed packed BLAKE3 witness `q_pkd`, as left by the
 /// Flock reduction and handed to the PCS. `claim` is the `ẑ(point) = value`
@@ -1692,7 +1690,7 @@ pub struct WitnessClaim {
 /// This is the clean seam between Flock's reduction and the PCS: the reduction
 /// produces these; the PCS opens them (see [`Blake3Setup::prove_reduction`]).
 #[derive(Clone, Debug)]
-pub struct ReducedClaims {
+pub struct PackedWitnessClaims {
     pub ab: WitnessClaim,
     pub c: WitnessClaim,
 }
@@ -1714,16 +1712,15 @@ impl Blake3Setup {
     /// statement is already transcript-bound: the embedding protocol seeds
     /// with the circuit family digest and announces the count.) Returns:
     /// - `z_packed`: the regenerated packed witness the PCS later opens against;
-    /// - the [`ReducedClaims`] `(ab, c)` on `q_pkd`, with ring-switch weights.
+    /// - the [`PackedWitnessClaims`] `(ab, c)` on `q_pkd`, with ring-switch weights.
     ///
     /// Does NOT open the PCS; the caller discharges the returned claims in the
-    /// one stacked opening (`lean_vm`'s `pcs::open`, or
-    /// [`Self::prove_validity_stacked`] for a standalone roundtrip).
+    /// one stacked opening (`lean_vm`'s `pcs::open`).
     pub fn prove_reduction<O>(
         &self,
         blocks: &[Compression],
         ps: &mut fiat_shamir::transcript::ProverState<O>,
-    ) -> (Vec<F192>, ReducedClaims) {
+    ) -> (Vec<F192>, PackedWitnessClaims) {
         assert!(
             blocks.len() <= self.n_block_slots(),
             "{} compressions exceed this setup's {} slots",
@@ -1761,7 +1758,7 @@ impl Blake3Setup {
         b_packed_words: &[F192],
         z_packed_lincheck: &[u8],
         ps: &mut fiat_shamir::transcript::ProverState<O>,
-    ) -> ReducedClaims {
+    ) -> PackedWitnessClaims {
         let trace = std::env::var_os("FLOCK_PROVE_TRACE").is_some();
         let t_reduction = std::time::Instant::now();
 
@@ -1839,7 +1836,7 @@ impl Blake3Setup {
             None
         };
 
-        let reduced = ReducedClaims {
+        let reduced = PackedWitnessClaims {
             ab: WitnessClaim {
                 claim: ab,
                 s_hat_v: s_hat_v_ab,

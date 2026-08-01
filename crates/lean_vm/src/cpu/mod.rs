@@ -1,10 +1,10 @@
-//! Whole-program assembly over GF(2^64) (§7, §8): the instruction tables
+//! Whole-program assembly over GF(2^64) (`misc/doc.tex`): the instruction tables
 //! sharing the state / memory / bytecode buses, bound to one field-valued
 //! commitment and verified oracle-free. Addresses, the program counter, and read
 //! counts are g-powers, so every increment is a free ×g. Machine-word arithmetic
 //! is over `E = F192 = K[y]/(y³+y+1)` (XOR degree 1, MUL_NATIVE degree 2),
 //! with each word carried by three committed `K = F64` limbs. `BLAKE3`
-//! (§7.6) adds the memory/state/bytecode plumbing for a 64→32-byte compression
+//! adds the memory/state/bytecode plumbing for a 64→32-byte compression
 //! whose relation is discharged by flock (see [`crate::blake3_flock`]). All
 //! Challenges and transcript scalars live in the same tower E.
 
@@ -32,7 +32,7 @@ pub use isa::{DerefMode, Op};
 pub use layout::*;
 pub(crate) use trace::{Brow, Drow, Jrow, Srow, Trace, Xrow};
 
-/// Witness-gen `BLAKE3` compression (doc §7.6): the four message cells' eight
+/// Witness-gen `BLAKE3` compression: the four message cells' eight
 /// words are laid out little-endian into 64 bytes, combined with the supplied
 /// chaining value and metadata, and the 32-byte result is split back into the
 /// four output words `c`. Flock proves this same compression relation
@@ -52,7 +52,7 @@ const MAX_LOG_MEM: usize = 32;
 
 /// Each per-opcode table holds at most `2^MAX_LOG_ROWS` rows (executed
 /// instructions of that opcode). Together with `MAX_LOG_MEM` and the bytecode
-/// cap these are the *instance caps* (transition doc §caps): at `ord(g) = 2^64−1`
+/// cap these are the instance caps from “Counts must not wrap” in `misc/doc.tex`: at `ord(g) = 2^64−1`
 /// the memory-soundness and count-non-wrap counting arguments are theorems only
 /// for instances whose total read-flush count stays far below `2^64`, so the
 /// verifier rejects any announcement exceeding them before running a reduction.
@@ -182,7 +182,7 @@ fn read_public(vs: &mut VerifierState, prog: &Program, public_input: &[F192; 2])
         *r = read_size(vs)?;
     }
     let log_inv_rate = read_size(vs)?;
-    // The instance caps (transition doc §caps): with `ord(g) = 2^64 − 1`, the
+    // The public instance caps ensure that, with `ord(g) = 2^64 − 1`, the
     // counting arguments (memory soundness, count non-wrap, exponent range checks)
     // are theorems only when the announced instance keeps the total read-flush
     // count provably below `2^64 − 1`, so reject any announcement exceeding the
@@ -231,7 +231,7 @@ pub struct Program {
 }
 
 impl Program {
-    /// Assemble a [`Program`], computing its bytecode [`digest`](Program::digest)
+    /// Assemble a [`Program`], computing its bytecode digest
     /// from `prog`. The single funnel for construction, so the digest is always
     /// consistent with the bytecode.
     pub fn assemble(

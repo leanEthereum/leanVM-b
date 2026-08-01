@@ -1,4 +1,4 @@
-// Credit: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
+// CREDIT: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
 //! Process-global pool for the prover's large transient `F192` buffers.
 //!
 //! Each prove allocates, faults in, and frees several large F192 vectors
@@ -14,9 +14,9 @@
 //! `take` has the same write-before-read contract as
 //! a fresh zeroed allocation.
 //!
-//! Steady-state retention is bounded by [`MAX_POOLED`] buffers (~640 MB for
-//! the m = 29 prove set). Call [`clear`] to release everything to the OS,
-//! e.g. after the last prove of a batch.
+//! Steady-state retention is bounded by a fixed buffer count; the byte total
+//! depends on the largest proof shape used by the process. Call [`clear`] to
+//! release everything to the OS, e.g. after the last prove of a batch.
 
 use crate::field::F192;
 use std::sync::Mutex;

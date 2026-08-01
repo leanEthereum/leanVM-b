@@ -1,4 +1,4 @@
-// `build_eq` and `lagrange_weights_naive` come from https://github.com/succinctlabs/flock (MIT OR Apache-2.0).
+// CREDIT: https://github.com/succinctlabs/flock (`build_eq` and `lagrange_weights_naive`), MIT OR Apache-2.0.
 //! Multilinear-extension utilities: the equality polynomial, single-variable
 //! folding, and MLE evaluation. Truth tables are indexed little-endian (variable
 //! `k` is bit `k`). Sumchecks here consume variables from either end, so folding
@@ -22,7 +22,8 @@ pub fn interp_k(lo: F64, hi: F64, t: F192) -> F192 {
     F192::from(lo) + t.mul_base(lo + hi)
 }
 
-/// `eq(r, x) = ∏_i (1 + r_i + x_i)` — 1 at `x = r`, 0 at every other Boolean point.
+/// `eq(r, x) = ∏_i (1 + r_i + x_i)`. For Boolean `r`, this is the indicator
+/// of `x = r`; for arbitrary `r`, it is the multilinear interpolation weight.
 pub fn eq_eval(r: &[F192], x: &[F192]) -> F192 {
     debug_assert_eq!(r.len(), x.len());
     let mut acc = F192::ONE;

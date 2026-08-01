@@ -1,4 +1,4 @@
-// Credit: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
+// CREDIT: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
 // Copyright (c) 2026 Bain Capital Crypto, LP and Ron Rothblum
 // Modifications copyright 2026 Succinct Labs, Benedikt Bunz, William Wang
 // SPDX-License-Identifier: Apache-2.0 OR MIT
@@ -26,7 +26,7 @@
 //!
 //! Basis induction mirrors the original's two strategies: the dense
 //! per-query LCH expansion and the sparse transposed-NTT fast path
-//! ([`induce_sumcheck_poly_via_ntt_base`]), with the SAME auto-dispatch size
+//! (`induce_sumcheck_poly_via_ntt_base`), with the SAME auto-dispatch size
 //! heuristic at L0 (deeper levels stay dense, exactly like the original).
 //!
 //! Soundness note: [`LigeritoSecurityConfig`] analyzes the actual challenge
@@ -2689,7 +2689,7 @@ fn sorted_unique_queries(queries: &[usize]) -> Vec<usize> {
 /// Expand a base-level (`F64`, level 0) [`InitialProof`] into the flat per-query
 /// form the recursion guest re-hashes: one row and one full Merkle path per
 /// query, in transcript order (duplicates included). Mirror of
-/// [`crate::ligerito::expand_level_opening`] for the K stacked opening's `F64`
+/// `expand_level_opening` for the K stacked opening's `F64`
 /// leaf level. Authenticates nothing itself; the caller re-checks each restored
 /// path against the root.
 pub fn expand_level_opening_base(
@@ -3177,7 +3177,7 @@ pub fn recursive_verifier_with_basis(
 ///
 /// Per-level induced bases are never materialized: intro time uses the cheap
 /// enforced-sum recomputation, and the residual uses the closed-form
-/// [`induce_sumcheck_evaluate_at_residual`]. `log_n` is the committed
+/// `induce_sumcheck_evaluate_at_residual`. `log_n` is the committed
 /// K-witness log size (b's logical dimension). Transcript replay is
 /// byte-identical to the dense verifier (OOD elided; config must take zero
 /// OOD samples, as asserted by the prover).
