@@ -710,6 +710,28 @@ impl Program {
                 })
                 .collect();
             rows.sort_by_key(|(_, c)| std::cmp::Reverse(*c));
+            // `DBG_PROF_DUMP=path`: also write the raw per-pc counts plus the
+            // function table, so an offline pass can attribute the straight-line
+            // cycles of one big function to its source regions (the call sites of
+            // the lowered `for` helpers are the landmarks).
+            if let Ok(path) = std::env::var("DBG_PROF_DUMP") {
+                let mut out = format!("# steps {steps}\n");
+                for (name, entry, len) in &self.fn_ranges {
+                    out += &format!("F {name} {entry} {len}\n");
+                }
+                for (pc, c) in p.iter().enumerate() {
+                    if *c > 0 {
+                        out += &format!("{pc} {c}\n");
+                    }
+                }
+                let path = if std::path::Path::new(&path).exists() {
+                    format!("{path}.{}", std::process::id())
+                } else {
+                    path
+                };
+                std::fs::write(&path, out).expect("write DBG_PROF_DUMP");
+                eprintln!("== DBG_PROF: per-pc counts written to {path}");
+            }
             eprintln!("== DBG_PROF: cycles by function ({} total) ==", pretty_integer(steps));
             for (name, c) in rows.iter().filter(|(_, c)| *c > 0) {
                 eprintln!(

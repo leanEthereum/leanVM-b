@@ -35,6 +35,7 @@ use primitives::{
 };
 
 mod ast;
+mod cse;
 mod ir;
 mod lower;
 mod parser;
@@ -73,6 +74,7 @@ pub fn compile(ast: &Ast) -> Program {
     let dbg_lower = std::env::var("DBG_LOWER").is_ok();
 
     let mut loop_ctr = 0usize;
+    let mut cse_dropped = 0usize;
     let mut lowered: Vec<Lowered> = Vec::new();
     let mut i = 0;
     while i < queue.len() {
@@ -84,7 +86,12 @@ pub fn compile(ast: &Ast) -> Program {
         if f.const_params.contains(&true) || f.inline {
             continue;
         }
-        let low = lower_func(&f, &mut queue, &mut loop_ctr, &defs, &const_arrays);
+        let mut low = lower_func(&f, &mut queue, &mut loop_ctr, &defs, &const_arrays);
+        // Fold away the pure instructions the lowerer emitted twice. Runs before
+        // entry pcs are assigned, so only this function's own `KVal::Local`
+        // targets need renumbering (`cse::compact` does that).
+        let dropped = if std::env::var("DBG_NO_CSE").is_ok() { 0 } else { cse::cse(&mut low.code, low.abi_end) };
+        cse_dropped += dropped;
         if dbg_lower {
             eprintln!("== fn {} (frame {}) ==", low.name, pretty_integer(low.frame_size));
             for (i, ins) in low.code.iter().enumerate() {
@@ -93,6 +100,15 @@ pub fn compile(ast: &Ast) -> Program {
             }
         }
         lowered.push(low);
+    }
+
+    if std::env::var("DBG_CSE").is_ok() {
+        let kept: usize = lowered.iter().map(|l| l.code.len()).sum();
+        eprintln!(
+            "== DBG_CSE: dropped {} redundant pure instructions, {} remain",
+            pretty_integer(cse_dropped),
+            pretty_integer(kept)
+        );
     }
 
     // Assign entry program counters and frame sizes.

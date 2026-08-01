@@ -1993,19 +1993,6 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("STATEMENT_SEED_1", u(statement_state[1]).to_string());
     // Closed-form ring-switch coefficients: the guest bakes both Frobenius
     // orbits in, so it needs neither a runtime orbit table nor a 63-term
-    // Horner pass per level. See `pcs::ring_switch::base_coeff_orbit_constants`.
-    let base_orbits: Vec<F192> = pcs::ring_switch::base_coeff_orbit_constants()
-        .iter()
-        .flatten()
-        .copied()
-        .collect();
-    let tower_orbits: Vec<F192> = pcs::ring_switch::tower_coeff_orbit_constants()
-        .iter()
-        .flatten()
-        .copied()
-        .collect();
-    ps("RS_BASE_ORBITS", flds(&base_orbits));
-    ps("RS_TOWER_ORBITS", flds(&tower_orbits));
     rep
 }
 
@@ -2029,10 +2016,22 @@ fn recursion_guest_arc(inner_program: &Program, nsub: usize) -> std::sync::Arc<P
 
     let mut replacements = placeholder_map(inner_program);
     replacements.insert("NSUB_PLACEHOLDER".to_string(), nsub.to_string());
+    // `DBG_PLACEHOLDERS=path`: dump the baked guest constants, to read alongside
+    // a `DBG_PROF_DUMP` profile (the guest's shape is entirely in these).
+    if let Ok(path) = std::env::var("DBG_PLACEHOLDERS") {
+        let dump: String = replacements.iter().map(|(k, v)| format!("{k} = {v}\n")).collect();
+        std::fs::write(&path, dump).expect("write DBG_PLACEHOLDERS");
+    }
     let guest = Arc::new(compile(
         &parse_with_replacements(include_str!("../guests/recursion.py"), &replacements)
             .expect("the repository recursion guest must parse"),
     ));
+
+    // `DBG_DISASM=path`: dump the guest's disassembly, to read alongside a
+    // `DBG_PROF_DUMP` per-pc profile.
+    if let Ok(path) = std::env::var("DBG_DISASM") {
+        std::fs::write(&path, lean_compiler::disassemble(&guest.prog)).expect("write DBG_DISASM");
+    }
 
     let mut map = cache.lock().expect("recursion guest cache poisoned");
     if let Some(cached) = map.get(&key) {
