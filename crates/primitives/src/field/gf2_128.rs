@@ -507,6 +507,43 @@ pub mod aarch64 {
             }
         }
     }
+
+    /// Two full carry-less products, without reduction. The independent PMULLs
+    /// are issued together so the NEON path has the same batched structure as
+    /// the AVX2 and AVX-512 radix-four kernels.
+    ///
+    /// # Safety
+    /// Requires the `aes` target feature (which includes PMULL).
+    #[target_feature(enable = "aes")]
+    pub unsafe fn ghash_mul_unreduced_vec2_neon(a: [F128; 2], b: [F128; 2]) -> [F256Unreduced; 2] {
+        // SAFETY: this function carries the required target feature.
+        unsafe {
+            let p0_ll = pmull(a[0].lo, b[0].lo);
+            let p0_lh = pmull(a[0].lo, b[0].hi);
+            let p0_hl = pmull(a[0].hi, b[0].lo);
+            let p0_hh = pmull(a[0].hi, b[0].hi);
+            let p1_ll = pmull(a[1].lo, b[1].lo);
+            let p1_lh = pmull(a[1].lo, b[1].hi);
+            let p1_hl = pmull(a[1].hi, b[1].lo);
+            let p1_hh = pmull(a[1].hi, b[1].hi);
+            let c0 = veorq_u64(p0_lh, p0_hl);
+            let c1 = veorq_u64(p1_lh, p1_hl);
+            [
+                F256Unreduced {
+                    r0: vgetq_lane_u64::<0>(p0_ll),
+                    r1: vgetq_lane_u64::<1>(p0_ll) ^ vgetq_lane_u64::<0>(c0),
+                    r2: vgetq_lane_u64::<0>(p0_hh) ^ vgetq_lane_u64::<1>(c0),
+                    r3: vgetq_lane_u64::<1>(p0_hh),
+                },
+                F256Unreduced {
+                    r0: vgetq_lane_u64::<0>(p1_ll),
+                    r1: vgetq_lane_u64::<1>(p1_ll) ^ vgetq_lane_u64::<0>(c1),
+                    r2: vgetq_lane_u64::<0>(p1_hh) ^ vgetq_lane_u64::<1>(c1),
+                    r3: vgetq_lane_u64::<1>(p1_hh),
+                },
+            ]
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -620,6 +657,112 @@ pub mod x86_64 {
             let mut out = [F128::ZERO; 2];
             _mm256_storeu_si256(out.as_mut_ptr() as *mut __m256i, t0);
             out
+        }
+    }
+
+    /// Two full carry-less products in parallel, without reduction.
+    ///
+    /// # Safety
+    /// Requires `vpclmulqdq` and `avx2`.
+    #[cfg(all(target_feature = "vpclmulqdq", target_feature = "avx2"))]
+    #[target_feature(enable = "vpclmulqdq", enable = "avx2")]
+    pub unsafe fn ghash_mul_unreduced_vec2_clmul(a: [F128; 2], b: [F128; 2]) -> [F256Unreduced; 2] {
+        // SAFETY: this function carries the required target features and each
+        // unaligned load spans exactly two repr(C) field elements.
+        unsafe {
+            let x = _mm256_loadu_si256(a.as_ptr().cast());
+            let y = _mm256_loadu_si256(b.as_ptr().cast());
+            let ll = _mm256_clmulepi64_epi128::<0x00>(x, y);
+            let lh = _mm256_clmulepi64_epi128::<0x10>(x, y);
+            let hl = _mm256_clmulepi64_epi128::<0x01>(x, y);
+            let hh = _mm256_clmulepi64_epi128::<0x11>(x, y);
+            let mut ll_words = [0u64; 4];
+            let mut lh_words = [0u64; 4];
+            let mut hl_words = [0u64; 4];
+            let mut hh_words = [0u64; 4];
+            _mm256_storeu_si256(ll_words.as_mut_ptr().cast(), ll);
+            _mm256_storeu_si256(lh_words.as_mut_ptr().cast(), lh);
+            _mm256_storeu_si256(hl_words.as_mut_ptr().cast(), hl);
+            _mm256_storeu_si256(hh_words.as_mut_ptr().cast(), hh);
+            std::array::from_fn(|lane| {
+                let lo = 2 * lane;
+                let hi = lo + 1;
+                F256Unreduced {
+                    r0: ll_words[lo],
+                    r1: ll_words[hi] ^ lh_words[lo] ^ hl_words[lo],
+                    r2: hh_words[lo] ^ lh_words[hi] ^ hl_words[hi],
+                    r3: hh_words[hi],
+                }
+            })
+        }
+    }
+
+    /// Four reduced field products, one in each 128-bit AVX-512 lane.
+    ///
+    /// # Safety
+    /// Requires `vpclmulqdq`, `avx512f`, and `avx512bw`.
+    #[cfg(all(
+        target_feature = "vpclmulqdq",
+        target_feature = "avx512f",
+        target_feature = "avx512bw"
+    ))]
+    #[target_feature(enable = "vpclmulqdq", enable = "avx512f", enable = "avx512bw")]
+    pub unsafe fn ghash_mul_vec4_clmul(a: [F128; 4], b: [F128; 4]) -> [F128; 4] {
+        // SAFETY: this function carries all required target features.
+        unsafe {
+            let x = _mm512_loadu_si512(a.as_ptr().cast());
+            let y = _mm512_loadu_si512(b.as_ptr().cast());
+            let poly = _mm512_set_epi64(0, 0x87, 0, 0x87, 0, 0x87, 0, 0x87);
+            let t0 = _mm512_clmulepi64_epi128::<0x00>(x, y);
+            let t1a = _mm512_clmulepi64_epi128::<0x10>(x, y);
+            let t1b = _mm512_clmulepi64_epi128::<0x01>(x, y);
+            let t2 = _mm512_clmulepi64_epi128::<0x11>(x, y);
+            let mut t1 = _mm512_xor_si512(t1a, t1b);
+            t1 = _mm512_xor_si512(t1, _mm512_bslli_epi128::<8>(t2));
+            t1 = _mm512_xor_si512(t1, _mm512_clmulepi64_epi128::<0x01>(t2, poly));
+            let mut t0 = t0;
+            t0 = _mm512_xor_si512(t0, _mm512_bslli_epi128::<8>(t1));
+            t0 = _mm512_xor_si512(t0, _mm512_clmulepi64_epi128::<0x01>(t1, poly));
+            let mut out = [F128::ZERO; 4];
+            _mm512_storeu_si512(out.as_mut_ptr().cast(), t0);
+            out
+        }
+    }
+
+    /// Four full carry-less products in parallel, without reduction.
+    ///
+    /// # Safety
+    /// Requires `vpclmulqdq` and `avx512f`.
+    #[cfg(all(target_feature = "vpclmulqdq", target_feature = "avx512f"))]
+    #[target_feature(enable = "vpclmulqdq", enable = "avx512f")]
+    pub unsafe fn ghash_mul_unreduced_vec4_clmul(a: [F128; 4], b: [F128; 4]) -> [F256Unreduced; 4] {
+        // SAFETY: this function carries the required target features and every
+        // load/store spans exactly four repr(C) field elements.
+        unsafe {
+            let x = _mm512_loadu_si512(a.as_ptr().cast());
+            let y = _mm512_loadu_si512(b.as_ptr().cast());
+            let ll = _mm512_clmulepi64_epi128::<0x00>(x, y);
+            let lh = _mm512_clmulepi64_epi128::<0x10>(x, y);
+            let hl = _mm512_clmulepi64_epi128::<0x01>(x, y);
+            let hh = _mm512_clmulepi64_epi128::<0x11>(x, y);
+            let mut ll_words = [0u64; 8];
+            let mut lh_words = [0u64; 8];
+            let mut hl_words = [0u64; 8];
+            let mut hh_words = [0u64; 8];
+            _mm512_storeu_si512(ll_words.as_mut_ptr().cast(), ll);
+            _mm512_storeu_si512(lh_words.as_mut_ptr().cast(), lh);
+            _mm512_storeu_si512(hl_words.as_mut_ptr().cast(), hl);
+            _mm512_storeu_si512(hh_words.as_mut_ptr().cast(), hh);
+            std::array::from_fn(|lane| {
+                let lo = 2 * lane;
+                let hi = lo + 1;
+                F256Unreduced {
+                    r0: ll_words[lo],
+                    r1: ll_words[hi] ^ lh_words[lo] ^ hl_words[lo],
+                    r2: hh_words[lo] ^ lh_words[hi] ^ hl_words[hi],
+                    r3: hh_words[hi],
+                }
+            })
         }
     }
 
@@ -903,6 +1046,19 @@ mod tests {
         }
     }
 
+    #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
+    #[test]
+    fn neon_unreduced_vec2_matches_scalar() {
+        let mut rng = Rng::new(16);
+        for _ in 0..128 {
+            let a = std::array::from_fn(|_| rng.next_f128());
+            let b = std::array::from_fn(|_| rng.next_f128());
+            let expected = std::array::from_fn(|i| a[i].mul_unreduced(b[i]));
+            let result = unsafe { aarch64::ghash_mul_unreduced_vec2_neon(a, b) };
+            assert_eq!(result, expected);
+        }
+    }
+
     #[cfg(all(
         target_arch = "x86_64",
         target_feature = "vpclmulqdq",
@@ -920,6 +1076,50 @@ mod tests {
             let result = unsafe { x86_64::ghash_mul_vec2_clmul([a0, a1], [b0, b1]) };
             assert_eq!(result[0], expected[0], "lane 0");
             assert_eq!(result[1], expected[1], "lane 1");
+        }
+    }
+
+    #[cfg(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx2"))]
+    #[test]
+    fn clmul_unreduced_vec2_matches_scalar() {
+        let mut rng = Rng::new(17);
+        for _ in 0..128 {
+            let a = std::array::from_fn(|_| rng.next_f128());
+            let b = std::array::from_fn(|_| rng.next_f128());
+            let expected = std::array::from_fn(|i| a[i].mul_unreduced(b[i]));
+            let result = unsafe { x86_64::ghash_mul_unreduced_vec2_clmul(a, b) };
+            assert_eq!(result, expected);
+        }
+    }
+
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "vpclmulqdq",
+        target_feature = "avx512f",
+        target_feature = "avx512bw"
+    ))]
+    #[test]
+    fn clmul_mul_vec4_matches_scalar() {
+        let mut rng = Rng::new(14);
+        for _ in 0..128 {
+            let a = std::array::from_fn(|_| rng.next_f128());
+            let b = std::array::from_fn(|_| rng.next_f128());
+            let expected = std::array::from_fn(|i| a[i] * b[i]);
+            let result = unsafe { x86_64::ghash_mul_vec4_clmul(a, b) };
+            assert_eq!(result, expected);
+        }
+    }
+
+    #[cfg(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx512f"))]
+    #[test]
+    fn clmul_unreduced_vec4_matches_scalar() {
+        let mut rng = Rng::new(15);
+        for _ in 0..128 {
+            let a = std::array::from_fn(|_| rng.next_f128());
+            let b = std::array::from_fn(|_| rng.next_f128());
+            let expected = std::array::from_fn(|i| a[i].mul_unreduced(b[i]));
+            let result = unsafe { x86_64::ghash_mul_unreduced_vec4_clmul(a, b) };
+            assert_eq!(result, expected);
         }
     }
 
