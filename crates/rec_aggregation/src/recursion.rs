@@ -27,6 +27,11 @@ use primitives::{
     pretty_f64, pretty_integer,
 };
 
+/// Why the guest reads every `q_pkd` slot claim's instance point off `rho`: a
+/// virtual value column is referenced only by its own table's bus blocks, which
+/// the zerocheck settles, so no framework block can raise one at `zeta`.
+const VALCOL_FRAMEWORK: &str = "a framework block must not reference a virtual value column";
+
 /// A field element as the decimal `u128` literal the zkDSL parser accepts.
 fn u(f: F128) -> u128 {
     (f.lo as u128) | ((f.hi as u128) << 64)
@@ -928,29 +933,43 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     // Claim dedup (mirrors leaf.rs): per coord, fresh = first (group, col,
     // kappa) occurrence gets the next pool slot; duplicates point at it.
     let mut slot_of: std::collections::HashMap<(usize, usize), usize> = Default::default();
-    let (mut coord_fresh, mut coord_slot) = (vec![], vec![]);
+    let (mut coord_fresh, mut coord_slot, mut coord_local) = (vec![], vec![], vec![]);
+    // A table's blocks raise no claim any more: the batched zerocheck settles them
+    //, so only the framework blocks stream column values.
+    let sch_pm = lean_vm::cpu::schema();
+    let owner_pm: Vec<Option<usize>> =
+        lean_vm::cpu::block_kappa_sources(kbc).into_iter().map(|(src, _)| src.checked_sub(2)).collect();
     for blocks in sides.iter() {
         for blk in blocks.iter() {
             bc0.push(ct.len());
             bcn.push(blk.coords.len());
+            let owner = owner_pm[nblocks];
             nblocks += 1;
             for c in &blk.coords {
                 // One COORD_FRESH/COORD_CLAIM_SLOT entry PER coord (the guest
                 // indexes them by global coord offset); only Col/GCol matter.
-                let (mut fresh, mut slot) = (0usize, 0usize);
+                let (mut fresh, mut slot, mut local) = (0usize, 0usize, 0usize);
                 if let Coord::Col(i) | Coord::GCol(i) = c {
-                    let key = (*i, blk.kappa);
-                    if let Some(&known) = slot_of.get(&key) {
-                        slot = known;
-                    } else {
-                        slot_of.insert(key, nclaims);
-                        fresh = 1;
-                        slot = nclaims;
-                        nclaims += 1;
+                    match owner {
+                        // A table's coord: the zerocheck reads it off that table's
+                        // column evaluations, at its local index.
+                        Some(t) => local = *i - sch_pm.base[t],
+                        None => {
+                            let key = (*i, blk.kappa);
+                            if let Some(&known) = slot_of.get(&key) {
+                                slot = known;
+                            } else {
+                                slot_of.insert(key, nclaims);
+                                fresh = 1;
+                                slot = nclaims;
+                                nclaims += 1;
+                            }
+                        }
                     }
                 }
                 coord_fresh.push(fresh);
                 coord_slot.push(slot);
+                coord_local.push(local);
                 let (t, v, f) = match c {
                     Coord::Const(v) => (0u128, *v, *v),
                     Coord::Col(i) => (1, F128::ZERO, l.pad[*i]),
@@ -963,8 +982,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         }
         sblk.push(nblocks);
     }
-    let ncol: Vec<usize> = lean_vm::tables::tables().iter().map(|t| t.constraint_columns().len()).collect();
-    let evtot: usize = ncol.iter().sum();
+    let evtot: usize = lean_vm::tables::tables().iter().map(|t| t.n_committed_columns()).sum();
     let ncl = nclaims + evtot + 1; // bus + constraint + the PI claim
 
     // ---- claim descriptors: buffer id + offset only (both structural) ----
@@ -984,39 +1002,34 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     let mut block_idx = 0usize;
     for blocks in sides.iter() {
         for blk in blocks.iter() {
+            let owned = owner_pm[block_idx].is_some();
+            if owned {
+                block_idx += 1;
+                continue; // a table's coords are settled by the zerocheck
+            }
             for c in &blk.coords {
                 if let Coord::Col(i) | Coord::GCol(i) = c {
                     if !desc_seen.insert((*i, blk.kappa)) {
                         continue; // deduped: pooled once at its first occurrence
                     }
-                    cpbuf.push(if valcols.contains(i) { 3 } else { 0 });
+                    assert!(!valcols.contains(i), "{VALCOL_FRAMEWORK}");
+                    cpbuf.push(0);
                     cpoff.push(0); // the ONE shared zeta lives at region 0
-                    let dense_col = if valcols.contains(i) { lean_vm::cpu::QPKD } else { *i };
-                    let placement = l.placements[dense_col];
+                    let placement = l.placements[*i];
                     cpcol.push(block_index[&placement.offset]);
                     cpblockslot.push(placement.slot);
                     cpblocklog.push(placement.block_width_log);
-                    cppad.push(if valcols.contains(i) { F128::ZERO } else { l.pad[*i] });
-                    cpslot.push(
-                        valcols
-                            .iter()
-                            .position(|v| v == i)
-                            .map(|p| lean_vm::blake3_flock::VM_SLOTS[p])
-                            .unwrap_or(0),
-                    );
-                    cprowkey.push(if valcols.contains(i) {
-                        (3usize, 0usize, 0usize)
-                    } else {
-                        let (source, adjustment) = bks_for_claims[block_idx];
-                        (0, source, adjustment)
-                    });
+                    cppad.push(l.pad[*i]);
+                    cpslot.push(0);
+                    let (source, adjustment) = bks_for_claims[block_idx];
+                    cprowkey.push((0, source, adjustment));
                 }
             }
             block_idx += 1;
         }
     }
     for (t, table) in lean_vm::tables::tables().iter().enumerate() {
-        for &c in table.constraint_columns() {
+        for c in 0..table.n_committed_columns() {
             let col = sch.base[t] + c;
             if l.placements[col].is_virtual() {
                 cpbuf.push(3);
@@ -1151,6 +1164,15 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("LAGRANGE_INV_0", u(G.inv()).to_string());
     ps("LAGRANGE_INV_1", u((F128::ONE + G).inv()).to_string());
     ps("LAGRANGE_INV_2", u((G * (F128::ONE + G)).inv()).to_string());
+    // The batched zerocheck sends its round polynomial WHOLE, at {0, 1, g, g^2}, so
+    // it interpolates a cubic: one baked inverse denominator per node.
+    {
+        let q = primitives::multilinear::quad_nodes();
+        for i in 0..4 {
+            let den = (0..4).filter(|&j| j != i).fold(F128::ONE, |acc, j| acc * (q[i] + q[j]));
+            ps(&format!("LAG4_INV_{i}"), u(den.inv()).to_string());
+        }
+    }
     ps("MU_CAP", mumax.to_string());
     ps("GKR_ROUNDS_CAP", (mumax * (mumax + 1) / 2 + mumax + 2).to_string());
     ps("GKR_POINTS_CAP", ((mumax + 1) * mumax).to_string());
@@ -1174,18 +1196,25 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("COORD_PAD_VAL", us(&fpv));
     ps("COORD_FRESH", ints(&coord_fresh));
     ps("COORD_CLAIM_SLOT", ints(&coord_slot));
+    ps("COORD_COL_LOCAL", ints(&coord_local));
     ps("N_BUS_CLAIMS", nclaims.to_string());
     let idxc: Vec<u128> = (0..34).map(|i| { let mut g2k = G; for _ in 0..i { g2k = g2k * g2k; } u(F128::ONE + g2k) }).collect();
     ps("INDEX_MLE_FACTORS", us(&idxc));
     ps("N_CLAIMS", ncl.to_string());
-    ps("N_AIR_COLS", ints(&ncol));
-    ps("AIR_COLS_CAP", (ncol.iter().max().unwrap() + 1).to_string());
     ps("N_TABLES", l.taus.len().to_string());
-    // Each table's disjoint range of eta-powers in the batched zerocheck, from the
-    // same derivation the native verifier uses.
-    let n_constraints: Vec<usize> = lean_vm::tables::tables().iter().map(|t| t.n_constraints()).collect();
-    ps("N_ETA_POWS", n_constraints.iter().sum::<usize>().to_string());
-    ps("ETA_OFFSET", ints(&lean_vm::constraints::eta_offsets(n_constraints.iter().copied())));
+    // The batched zerocheck's eta layout, from the native verifier's own numbers:
+    // a disjoint range of identities per table, then THREE powers shared by every
+    // table, one per bus side. Sharing is what lets the target be derived from the
+    // three leaf claims instead of trusted (lean_vm::cpu::eta_form_base).
+    let n_id: Vec<usize> = lean_vm::tables::tables().iter().map(|t| t.n_constraints()).collect();
+    let form_base = lean_vm::cpu::eta_form_base();
+    ps("ETA_OFFSET", ints(&lean_vm::constraints::eta_offsets(n_id.iter().copied())));
+    ps("ETA_FORM_BASE", form_base.to_string());
+    ps("N_ETA_POWS", (form_base + 3).to_string());
+    let committed: Vec<usize> =
+        lean_vm::tables::tables().iter().map(|t| t.n_committed_columns()).collect();
+    ps("N_TABLE_COLS", ints(&committed));
+    ps("TABLE_COLS_CAP", (committed.iter().max().unwrap() + 1).to_string());
     // g^(push.mu - BUS_GRIND_SHIFT) is the bus PoW window
     // (leaf::grand_product_grinding_bits: bits = mu - (127 - SECURITY_BITS)).
     ps("BUS_GRIND_SHIFT", (127 - lean_vm::SECURITY_BITS).to_string());

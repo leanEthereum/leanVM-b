@@ -10,7 +10,8 @@
 //! - [`witness`] — field-valued columns stacked into one committed witness.
 //! - [`gkr`] — the grand product via GKR (§4.3), balancing the bus.
 //! - [`leaf`] — the shared bus: grand-product balance, decomposed to per-column claims (§4.2–§4.4, §5).
-//! - [`constraints`] — the per-table degree-2 field zerocheck (§4.1).
+//! - [`constraints`] — ONE back-loaded batched zerocheck over all six tables' degree-2
+//!   identities plus their three bus forms (§4.1).
 //! - [`tables`] — the six instruction tables (columns, flushes, constraints).
 //! - [`cpu`] — whole-program assembly, control flow, and the prove/verify entry points.
 //! - [`blake3_flock`] — the `BLAKE3` glue: flock's R1CS validity proof over the same commitment.
@@ -69,9 +70,10 @@ fn set_qos_user_interactive() {
 }
 
 /// Target soundness of the whole proof, in bits. Every round is designed to clear
-/// this: the PCS runs the Ligerito `Secure` profile ([`pcs::PROFILE`], 120-bit),
-/// and the bus grand product grinds up to it before its multiset challenge
-/// ([`leaf`]). Raising it means bumping BOTH (a stronger profile and more grinding).
+/// this: the PCS runs Ligerito's one shipped configuration ([`pcs`]: rate 1/2, the
+/// unique-decoding regime, 120-bit round-by-round), and the bus grand product grinds
+/// up to it before its multiset challenge ([`leaf`]). Raising it means bumping BOTH
+/// (a stronger configuration and more grinding).
 pub const SECURITY_BITS: u32 = 120;
 
 /// Below this many parallelizable items a pass runs serially: rayon's fan-out
