@@ -154,45 +154,31 @@ impl FillCtx<'_> {
 
 // ---- constraint column accessor ----------------------------------------------
 
-/// The values of a constraint's columns at its zerocheck point, indexed by
-/// *local* column index — so a constraint reads `cols[arith::AA]` directly rather
-/// than a positional `v[5]`. It holds the [`Table::constraint_columns`] values
-/// plus a reverse map (local index → position), so the order those columns are
-/// listed in is irrelevant to `eval_constraint`.
+/// One row's committed column values, indexed by *local* column index, so a
+/// constraint reads `cols[arith::AA]` directly rather than a positional `v[5]`.
+/// The batched zerocheck carries every committed column of a table, in local
+/// order, so this is a plain slice.
 pub struct Cols<'a> {
     values: &'a [F128T],
-    position: &'a [usize],
 }
 
 impl<'a> Cols<'a> {
-    pub(crate) fn new(values: &'a [F128T], position: &'a [usize]) -> Self {
-        Self { values, position }
+    pub(crate) fn new(values: &'a [F128T]) -> Self {
+        Self { values }
     }
 }
 
 impl std::ops::Index<usize> for Cols<'_> {
     type Output = F128T;
     fn index(&self, local: usize) -> &F128T {
-        &self.values[self.position[local]]
+        &self.values[local]
     }
-}
-
-/// Reverse map `local column index → position in `columns`` (the index `Cols`
-/// uses). Built once per constraint so the indexing stays O(1).
-pub(crate) fn column_positions(columns: &[usize]) -> Vec<usize> {
-    let len = columns.iter().copied().max().map_or(0, |m| m + 1);
-    let mut position = vec![0usize; len];
-    for (pos, &c) in columns.iter().enumerate() {
-        position[c] = pos;
-    }
-    position
 }
 
 // ---- the trait ---------------------------------------------------------------
 
-/// One instruction table. Indices in [`flushes`](Table::flushes),
-/// [`count_columns`](Table::count_columns), and
-/// [`constraint_columns`](Table::constraint_columns) are local to this table.
+/// One instruction table. Indices in [`flushes`](Table::flushes) and
+/// [`count_columns`](Table::count_columns) are local to this table.
 pub trait Table: Sync {
     /// Distinct opcode tag (coordinate 3 of the bytecode tuple).
     fn opcode_tag(&self) -> F64;
@@ -203,15 +189,16 @@ pub trait Table: Sync {
     /// framework treats them specially: each gets its own single-column "count"
     /// bus block, and padding rows fill them with `1` (= g^0) instead of `0`.
     fn count_columns(&self) -> &'static [usize];
-    /// The committed columns this constraint reads, opened at its zerocheck point.
-    /// Order is irrelevant — `eval_constraint` indexes them by name through [`Cols`].
-    fn constraint_columns(&self) -> &'static [usize];
+    /// How many identities [`eval_constraint`](Table::eval_constraint) folds.
+    /// Sizes this table's slice of the batch's disjoint `eta`-range (§constraints).
+    fn n_constraints(&self) -> usize;
     /// Evaluate the table's degree-2 constraint at one row, reading column values
-    /// by local index from `cols` (e.g. `cols[arith::AA]`). The table's individual
-    /// identities (fp-relative addresses, the opcode's arithmetic, JUMP selection)
-    /// are folded into one value by powers of the batching challenge `eta`. Returns
-    /// `0` on every valid row (§4.1).
-    fn eval_constraint(&self, eta: F128T, cols: &Cols) -> F128T;
+    /// by local index from `cols` (e.g. `cols[arith::AA]`) and weighting identity
+    /// `i` by `pows[i]`, this table's slice of the batch's `eta`-powers. The slice is
+    /// exactly [`n_constraints`](Table::n_constraints) long: an identity indexed past
+    /// its end panics rather than silently reaching into the next table's range.
+    /// Returns `0` on every valid row (§4.1).
+    fn eval_constraint(&self, pows: &[F128T], cols: &Cols) -> F128T;
     /// Declare the table's bus interactions.
     fn flushes(&self, f: &mut FlushBuilder);
     /// Fill this table's columns (`out[i]` is local column `i`) from the trace.
@@ -335,11 +322,10 @@ impl Table for Arith {
         use arith::*;
         &[RA, RB, RC, RBC]
     }
-    fn constraint_columns(&self) -> &'static [usize] {
-        use arith::*;
-        &[FP, OA, OB, OC, AA, AB, AC, VA_LO, VA_HI, VB_LO, VB_HI, VC_LO, VC_HI]
+    fn n_constraints(&self) -> usize {
+        4 // three addresses + the third-operand identity
     }
-    fn eval_constraint(&self, eta: F128T, cols: &Cols) -> F128T {
+    fn eval_constraint(&self, pows: &[F128T], cols: &Cols) -> F128T {
         use arith::*;
         // The three words as 128-bit E-values (each lo + hi·y).
         let va = e128(cols[VA_LO], cols[VA_HI]);
@@ -348,10 +334,10 @@ impl Table for Arith {
         // XOR = E-addition, MUL = E-multiplication — both degree 2
         // in the lane columns, so the round univariate stays degree 2.
         let third = if self.is_xor { va + vb } else { va * vb };
-        (cols[AA] + cols[FP] * cols[OA])
-            + eta * (cols[AB] + cols[FP] * cols[OB])
-            + eta * eta * (cols[AC] + cols[FP] * cols[OC])
-            + eta * eta * eta * (vc + third)
+        pows[0] * (cols[AA] + cols[FP] * cols[OA])
+            + pows[1] * (cols[AB] + cols[FP] * cols[OB])
+            + pows[2] * (cols[AC] + cols[FP] * cols[OC])
+            + pows[3] * (vc + third)
     }
     fn flushes(&self, f: &mut FlushBuilder) {
         use arith::*;
@@ -419,14 +405,13 @@ impl Table for SetTable {
         use set::*;
         &[R, RBC]
     }
-    fn constraint_columns(&self) -> &'static [usize] {
-        use set::*;
-        &[FP, O, A]
+    fn n_constraints(&self) -> usize {
+        1 // the single address binding
     }
-    fn eval_constraint(&self, _eta: F128T, cols: &Cols) -> F128T {
+    fn eval_constraint(&self, pows: &[F128T], cols: &Cols) -> F128T {
         use set::*;
         // The address a = fp·o.
-        cols[A] + cols[FP] * cols[O]
+        pows[0] * (cols[A] + cols[FP] * cols[O])
     }
     fn flushes(&self, f: &mut FlushBuilder) {
         use set::*;
@@ -498,11 +483,10 @@ impl Table for DerefTable {
         use deref::*;
         &[R1, R2, R3, RBC]
     }
-    fn constraint_columns(&self) -> &'static [usize] {
-        use deref::*;
-        &[FP, OAL, OBE, OGA, A1, A2, A3, P, FPC, FFP, V2_LO, V2_HI, V3_LO, V3_HI, PC]
+    fn n_constraints(&self) -> usize {
+        4 // three addresses + the flag-selected store
     }
-    fn eval_constraint(&self, eta: F128T, cols: &Cols) -> F128T {
+    fn eval_constraint(&self, pows: &[F128T], cols: &Cols) -> F128T {
         use deref::*;
         // The pointer / target / local words as 128-bit E-values.
         let p = cols[P]; // single K-lane pointer; high lane is provably 0
@@ -516,10 +500,10 @@ impl Table for DerefTable {
         let src = (F128T::ONE + cols[FPC] + cols[FFP]) * v3
             + cols[FPC] * cols[PC].mul_base(G * G)
             + cols[FFP] * cols[FP];
-        (cols[A1] + cols[FP] * cols[OAL])
-            + eta * (cols[A2] + p * cols[OBE])
-            + eta * eta * (cols[A3] + cols[FP] * cols[OGA])
-            + eta * eta * eta * (v2 + src)
+        pows[0] * (cols[A1] + cols[FP] * cols[OAL])
+            + pows[1] * (cols[A2] + p * cols[OBE])
+            + pows[2] * (cols[A3] + cols[FP] * cols[OGA])
+            + pows[3] * (v2 + src)
     }
     fn flushes(&self, f: &mut FlushBuilder) {
         use deref::*;
@@ -602,11 +586,10 @@ impl Table for JumpTable {
         use jump::*;
         &[RC, RD, RF, RBC]
     }
-    fn constraint_columns(&self) -> &'static [usize] {
-        use jump::*;
-        &[PC, FP, NPC, NFP, OC, OD, OF, AC, AD, AF, C_LO, C_HI, D_LO, D_HI, F_LO, F_HI, W_LO, W_HI, B]
+    fn n_constraints(&self) -> usize {
+        7 // three addresses + two indicator identities + the pc/fp selections
     }
-    fn eval_constraint(&self, eta: F128T, cols: &Cols) -> F128T {
+    fn eval_constraint(&self, pows: &[F128T], cols: &Cols) -> F128T {
         use jump::*;
         let one = F128T::ONE;
         // The condition / destination / frame / inverse as 128-bit E-values.
@@ -615,18 +598,17 @@ impl Table for JumpTable {
         let ff = e128(cols[F_LO], cols[F_HI]);
         let w = e128(cols[W_LO], cols[W_HI]);
         let fall_through = cols[PC].mul_base(G); // next pc when the branch is not taken
-        let addrs = (cols[AC] + cols[FP] * cols[OC])
-            + eta * (cols[AD] + cols[FP] * cols[OD])
-            + eta * eta * (cols[AF] + cols[FP] * cols[OF]);
-        let eta3 = eta * eta * eta;
+        let addrs = pows[0] * (cols[AC] + cols[FP] * cols[OC])
+            + pows[1] * (cols[AD] + cols[FP] * cols[OD])
+            + pows[2] * (cols[AF] + cols[FP] * cols[OF]);
         // `b = cond·w` and `cond·(b+1) = 0` together force `b = [cond ≠ 0]` (doc §7.5),
         // now over E: when `cond ≠ 0` the second gives `b = 1` (and the first
         // `w = cond⁻¹` in E); when `cond = 0` the first gives `b = 0`. NPC/NFP are
         // single K columns, so the selections force the chosen word (d or f) into K.
-        let ind_def = eta3 * (cols[B] + c * w);
-        let ind_nz = eta3 * eta * (c * (cols[B] + one));
-        let sel_pc = eta3 * eta * eta * (cols[NPC] + cols[B] * d + (cols[B] + one) * fall_through);
-        let sel_fp = eta3 * eta * eta * eta * (cols[NFP] + cols[B] * ff + (cols[B] + one) * cols[FP]);
+        let ind_def = pows[3] * (cols[B] + c * w);
+        let ind_nz = pows[4] * (c * (cols[B] + one));
+        let sel_pc = pows[5] * (cols[NPC] + cols[B] * d + (cols[B] + one) * fall_through);
+        let sel_fp = pows[6] * (cols[NFP] + cols[B] * ff + (cols[B] + one) * cols[FP]);
         addrs + ind_def + ind_nz + sel_pc + sel_fp
     }
     fn flushes(&self, f: &mut FlushBuilder) {
@@ -713,16 +695,15 @@ impl Table for Pack64x2Table {
         &[RA, RB, RC, RBC]
     }
 
-    fn constraint_columns(&self) -> &'static [usize] {
-        use pack64::*;
-        &[FP, OA, OB, OC, AA, AB, AC]
+    fn n_constraints(&self) -> usize {
+        3 // the three fp-relative addresses
     }
 
-    fn eval_constraint(&self, eta: F128T, cols: &Cols) -> F128T {
+    fn eval_constraint(&self, pows: &[F128T], cols: &Cols) -> F128T {
         use pack64::*;
-        (cols[AA] + cols[FP] * cols[OA])
-            + eta * (cols[AB] + cols[FP] * cols[OB])
-            + eta * eta * (cols[AC] + cols[FP] * cols[OC])
+        pows[0] * (cols[AA] + cols[FP] * cols[OA])
+            + pows[1] * (cols[AB] + cols[FP] * cols[OB])
+            + pows[2] * (cols[AC] + cols[FP] * cols[OC])
     }
 
     fn flushes(&self, f: &mut FlushBuilder) {
@@ -827,22 +808,21 @@ impl Table for Blake3Table {
         use blake3t::*;
         &[RA0, RA1, RB0, RB1, RCV0, RCV1, RC0, RC1, RBC]
     }
-    fn constraint_columns(&self) -> &'static [usize] {
-        use blake3t::*;
-        &[FP, OA0, OA1, OB0, OB1, OCV, OC, AA0, AA1, AB0, AB1, ACV, AC]
+    fn n_constraints(&self) -> usize {
+        6 // the six address bindings
     }
-    fn eval_constraint(&self, eta: F128T, cols: &Cols) -> F128T {
+    fn eval_constraint(&self, pows: &[F128T], cols: &Cols) -> F128T {
         use blake3t::*;
         // The six address bindings a_X = fp·o_X (degree 2). The compression
         // carries no table constraint here: flock's R1CS validity proves it
         // via q_pkd (§blake3_flock).
         let bind = |a: usize, o: usize| cols[a] + cols[FP] * cols[o];
-        bind(AA0, OA0)
-            + eta * bind(AA1, OA1)
-            + eta * eta * bind(AB0, OB0)
-            + eta * eta * eta * bind(AB1, OB1)
-            + eta * eta * eta * eta * bind(ACV, OCV)
-            + eta * eta * eta * eta * eta * bind(AC, OC)
+        pows[0] * bind(AA0, OA0)
+            + pows[1] * bind(AA1, OA1)
+            + pows[2] * bind(AB0, OB0)
+            + pows[3] * bind(AB1, OB1)
+            + pows[4] * bind(ACV, OCV)
+            + pows[5] * bind(AC, OC)
     }
     fn flushes(&self, f: &mut FlushBuilder) {
         use blake3t::*;

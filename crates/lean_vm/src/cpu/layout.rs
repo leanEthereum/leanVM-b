@@ -120,7 +120,9 @@ fn jagged_column_blocks(log_bytecode: usize, bytecode_used: usize, sides: [&[Blo
     let sch = schema();
     for (t, table) in tables::tables().iter().enumerate() {
         let base = sch.base[t];
-        for &col in table.constraint_columns() {
+        // The back-loaded AIR batch opens every committed column: constraints
+        // consume some directly and the bus forms consume the rest.
+        for col in 0..table.n_committed_columns() {
             if sources[base + col].is_some() {
                 signatures[base + col].push(next_group);
             }
