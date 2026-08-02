@@ -7,6 +7,8 @@
 
 pub mod gf2_128;
 pub mod gf2_8;
+#[cfg(target_arch = "aarch64")]
+pub mod neon;
 pub mod phi8;
 
 pub use gf2_8::F8;

@@ -1,7 +1,9 @@
 //! Shared primitives: the GF(2^128)/GF(2^8) field kernels, bit transposes,
-//! multilinear helpers, the scratch buffer pool, and small integer utilities.
+//! multilinear helpers, the scratch buffer pool, the efficiency-core helper
+//! pool, and small integer utilities.
 
 pub mod bits;
+pub mod epool;
 pub mod field;
 pub mod multilinear;
 pub mod scratch;

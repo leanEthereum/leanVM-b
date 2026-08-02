@@ -18,6 +18,10 @@
 //! independent `blake3::hash` per leaf. Other sizes use the ordinary one-shot
 //! API. Internal 64-byte child pairs always take the batched path.
 
+#[cfg(target_arch = "aarch64")]
+mod blake3_neon8;
+
+use primitives::epool::{SyncPtr, run_hetero_chunks};
 use primitives::{field::F128, pretty_integer};
 use rayon::prelude::*;
 
@@ -133,21 +137,66 @@ fn hash_leaves_batched(
         data: &[u8],
         out: &mut [Hash],
     ) {
-        out.par_chunks_mut(HASH_GROUP)
-            .zip(data.par_chunks(HASH_GROUP * N))
-            .for_each(|(outputs, inputs)| hash_many_oneshot::<N>(platform, inputs, outputs));
+        // Leaf hashing is the prover's purest embarrassingly parallel phase:
+        // fixed-size independent groups, no cross-group dependency, one join
+        // at the end. That makes it the right place to spend the idle
+        // efficiency cores — see `primitives::epool` for why the shared
+        // atomic chunk queue is safe here and widening the main pool is not.
+        let n_groups = out.len().div_ceil(HASH_GROUP);
+        let out_base = SyncPtr(out.as_mut_ptr());
+        let out_len = out.len();
+        run_hetero_chunks(n_groups, |g| {
+            let lo = g * HASH_GROUP;
+            let len = HASH_GROUP.min(out_len - lo);
+            // SAFETY: the queue hands each `g` to exactly one worker, and
+            // group `g` writes only `out[lo .. lo+len]`, so the mutable
+            // ranges are pairwise disjoint and in bounds.
+            let outputs = unsafe { core::slice::from_raw_parts_mut(out_base.ptr().add(lo), len) };
+            hash_many_oneshot::<N>(platform, &data[lo * N..(lo + len) * N], outputs);
+        });
     }
     match leaf_size {
+        // 1 KiB leaves (the PCS's L0 geometry at `log_batch_size = 6`) go
+        // through the eight-leaf NEON kernel, which keeps two independent
+        // 4-lane BLAKE3 states in flight instead of upstream's one.
+        #[cfg(target_arch = "aarch64")]
+        1024 => batched_1024(data, out),
         64 => batched::<64>(platform, data, out),
         128 => batched::<128>(platform, data, out),
         256 => batched::<256>(platform, data, out),
         512 => batched::<512>(platform, data, out),
+        #[cfg(not(target_arch = "aarch64"))]
         1024 => batched::<1024>(platform, data, out),
         _ => out
             .par_iter_mut()
             .zip(data.par_chunks(leaf_size))
             .for_each(|(slot, leaf)| *slot = hash_leaf(leaf)),
     }
+}
+
+/// 1 KiB leaves: eight-wide NEON for the complete groups, upstream `hash_many`
+/// for whatever remains (a chunk's leaf count need not be a multiple of 8).
+#[cfg(target_arch = "aarch64")]
+fn batched_1024(data: &[u8], out: &mut [Hash]) {
+    let n_groups = out.len().div_ceil(HASH_GROUP);
+    let out_base = SyncPtr(out.as_mut_ptr());
+    let out_len = out.len();
+    run_hetero_chunks(n_groups, |g| {
+        let lo = g * HASH_GROUP;
+        let len = HASH_GROUP.min(out_len - lo);
+        // SAFETY: as in `hash_leaves_batched` — one worker per `g`, and group
+        // `g` writes only `out[lo .. lo+len]`.
+        let outputs = unsafe { core::slice::from_raw_parts_mut(out_base.ptr().add(lo), len) };
+        let inputs = &data[lo * 1024..(lo + len) * 1024];
+        let done = blake3_neon8::hash_complete_groups_1024(inputs, outputs);
+        if done < len {
+            hash_many_oneshot::<1024>(
+                blake3::platform::Platform::detect(),
+                &inputs[done * 1024..],
+                &mut outputs[done..],
+            );
+        }
+    });
 }
 
 /// Hash one internal level. Child hashes are already contiguous, so each pair
@@ -165,10 +214,17 @@ fn hash_pairs_level(
     if write.len() <= SERIAL_LEVEL_NODES {
         hash_many_oneshot::<64>(platform, read_bytes, write);
     } else {
-        write
-            .par_chunks_mut(HASH_GROUP)
-            .zip(read_bytes.par_chunks(HASH_GROUP * 64))
-            .for_each(|(outputs, inputs)| hash_many_oneshot::<64>(platform, inputs, outputs));
+        let n_groups = write.len().div_ceil(HASH_GROUP);
+        let write_base = SyncPtr(write.as_mut_ptr());
+        let write_len = write.len();
+        run_hetero_chunks(n_groups, |g| {
+            let lo = g * HASH_GROUP;
+            let len = HASH_GROUP.min(write_len - lo);
+            // SAFETY: as in `hash_leaves_batched` — one worker per `g`, and
+            // group `g` writes only `write[lo .. lo+len]`.
+            let outputs = unsafe { core::slice::from_raw_parts_mut(write_base.ptr().add(lo), len) };
+            hash_many_oneshot::<64>(platform, &read_bytes[lo * 64..(lo + len) * 64], outputs);
+        });
     }
 }
 
@@ -457,6 +513,48 @@ mod vmhash_batch_tests {
 
     /// Sequential (per-leaf `hash_leaf`) reference for the parallel
     /// [`merkle_tree`].
+    /// The eight-wide NEON leaf kernel must reproduce `blake3::hash` for every
+    /// leaf, including when the batch is not a multiple of eight.
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn neon8_leaves_match_standard_blake3() {
+        for n_leaves in [1usize, 7, 8, 9, 16, 37, 64] {
+            let data: Vec<u8> = (0..n_leaves * 1024).map(|i| (i * 31 + 7) as u8).collect();
+            let mut out = vec![[0u8; 32]; n_leaves];
+            let done = blake3_neon8::hash_complete_groups_1024(&data, &mut out);
+            assert_eq!(done, n_leaves / 8 * 8);
+            for i in 0..done {
+                assert_eq!(
+                    out[i],
+                    *blake3::hash(&data[i * 1024..(i + 1) * 1024]).as_bytes(),
+                    "leaf {i} of {n_leaves}"
+                );
+            }
+        }
+    }
+
+    /// End-to-end: the dispatcher's 1 KiB path must agree with per-leaf
+    /// `blake3::hash` for a batch size that is not a multiple of eight.
+    #[test]
+    fn leaf_dispatch_1024_matches_standard_blake3() {
+        let n_leaves = 37usize;
+        let data: Vec<u8> = (0..n_leaves * 1024).map(|i| (i * 17 + 3) as u8).collect();
+        let mut out = vec![[0u8; 32]; n_leaves];
+        hash_leaves_batched(
+            blake3::platform::Platform::detect(),
+            &data,
+            1024,
+            &mut out,
+        );
+        for i in 0..n_leaves {
+            assert_eq!(
+                out[i],
+                *blake3::hash(&data[i * 1024..(i + 1) * 1024]).as_bytes(),
+                "leaf {i}"
+            );
+        }
+    }
+
     fn merkle_tree_sequential(data: &[u8], num_leaves: usize) -> Vec<Hash> {
     assert!(num_leaves.is_power_of_two() && num_leaves > 0);
     assert_eq!(data.len() % num_leaves, 0);
