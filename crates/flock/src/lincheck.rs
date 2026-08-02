@@ -506,6 +506,7 @@ unsafe fn process_block_neon_single(
     tables_ptr: *const F192,
     out_ptr: *mut F192,
 ) {
+    use primitives::field::neon::xor3_u64;
     use std::arch::aarch64::*;
     const TILE_T: usize = NEON_TILE_T;
 
@@ -517,11 +518,35 @@ unsafe fn process_block_neon_single(
         acc2[i] = out.c2;
     }
 
-    for t in 0..TILE_T {
-        let stripe_ptr = tile_bytes_ptr.add(t * k + bs);
-        let ta = tables_ptr.add(t * 256);
+    // The 8 z index bytes of a stripe are consecutive, so fetch them with one
+    // unaligned 8-byte scalar load and shift them out of the register rather
+    // than with eight LDRBs: the gather already issues a table load per index,
+    // and a second load per index would nearly double this kernel's load-port
+    // pressure for data that is already in a register.
+    //
+    // Stripes are swept in pairs so each vector accumulator folds both table
+    // lookups with one EOR3, halving the accumulator updates and the serial
+    // dependency chain through each of the 8 live accumulators. The `c2`
+    // limbs are scalar, so they just take two XORs.
+    let mut t = 0;
+    while t + 1 < TILE_T {
+        let ta0 = tables_ptr.add(t * 256);
+        let ta1 = tables_ptr.add((t + 1) * 256);
+        let w0 = (tile_bytes_ptr.add(t * k + bs) as *const u64).read_unaligned();
+        let w1 = (tile_bytes_ptr.add((t + 1) * k + bs) as *const u64).read_unaligned();
         for i in 0..8 {
-            let entry = &*ta.add(*stripe_ptr.add(i) as usize);
+            let e0 = &*ta0.add(((w0 >> (8 * i)) & 0xff) as usize);
+            let e1 = &*ta1.add(((w1 >> (8 * i)) & 0xff) as usize);
+            acc01[i] = xor3_u64(acc01[i], vld1q_u64(&e0.c0), vld1q_u64(&e1.c0));
+            acc2[i] ^= e0.c2 ^ e1.c2;
+        }
+        t += 2;
+    }
+    if t < TILE_T {
+        let ta = tables_ptr.add(t * 256);
+        let w = (tile_bytes_ptr.add(t * k + bs) as *const u64).read_unaligned();
+        for i in 0..8 {
+            let entry = &*ta.add(((w >> (8 * i)) & 0xff) as usize);
             acc01[i] = veorq_u64(acc01[i], vld1q_u64(&entry.c0));
             acc2[i] ^= entry.c2;
         }
