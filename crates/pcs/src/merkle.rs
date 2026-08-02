@@ -18,6 +18,7 @@
 //! independent `blake3::hash` per leaf. Other sizes use the ordinary one-shot
 //! API. Internal 64-byte child pairs always take the batched path.
 
+use primitives::epool::{SyncPtr, run_hetero_chunks};
 use primitives::{field::F192, pretty_integer};
 use rayon::prelude::*;
 
@@ -151,9 +152,23 @@ fn hash_leaves_batched_uninit(
         data: &[u8],
         out: &mut [std::mem::MaybeUninit<Hash>],
     ) {
-        out.par_chunks_mut(HASH_GROUP)
-            .zip(data.par_chunks(HASH_GROUP * N))
-            .for_each(|(outputs, inputs)| hash_many_oneshot_uninit::<N>(platform, inputs, outputs));
+        // Leaf hashing is the purest embarrassingly parallel phase here:
+        // fixed-size independent groups, no cross-group dependency, one join
+        // at the end. That makes it the right place to spend the otherwise
+        // idle efficiency cores — see `primitives::epool` for why a shared
+        // atomic chunk queue is safe here and widening the main pool is not.
+        let n_groups = out.len().div_ceil(HASH_GROUP);
+        let out_base = SyncPtr(out.as_mut_ptr());
+        let out_len = out.len();
+        run_hetero_chunks(n_groups, |g| {
+            let lo = g * HASH_GROUP;
+            let len = HASH_GROUP.min(out_len - lo);
+            // SAFETY: the queue hands each `g` to exactly one worker, and
+            // group `g` writes only `out[lo .. lo+len]`, so the mutable
+            // ranges are pairwise disjoint and in bounds.
+            let outputs = unsafe { core::slice::from_raw_parts_mut(out_base.ptr().add(lo), len) };
+            hash_many_oneshot_uninit::<N>(platform, &data[lo * N..(lo + len) * N], outputs);
+        });
     }
     match leaf_size {
         64 => batched::<64>(platform, data, out),
@@ -181,10 +196,17 @@ fn hash_pairs_level_uninit(
     if write.len() <= SERIAL_LEVEL_NODES {
         hash_many_oneshot_uninit::<64>(platform, read_bytes, write);
     } else {
-        write
-            .par_chunks_mut(HASH_GROUP)
-            .zip(read_bytes.par_chunks(HASH_GROUP * 64))
-            .for_each(|(outputs, inputs)| hash_many_oneshot_uninit::<64>(platform, inputs, outputs));
+        let n_groups = write.len().div_ceil(HASH_GROUP);
+        let write_base = SyncPtr(write.as_mut_ptr());
+        let write_len = write.len();
+        run_hetero_chunks(n_groups, |g| {
+            let lo = g * HASH_GROUP;
+            let len = HASH_GROUP.min(write_len - lo);
+            // SAFETY: as in `batched` — one worker per `g`, and group `g`
+            // writes only `write[lo .. lo+len]`.
+            let outputs = unsafe { core::slice::from_raw_parts_mut(write_base.ptr().add(lo), len) };
+            hash_many_oneshot_uninit::<64>(platform, &read_bytes[lo * 64..(lo + len) * 64], outputs);
+        });
     }
 }
 
