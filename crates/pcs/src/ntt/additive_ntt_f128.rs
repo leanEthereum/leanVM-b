@@ -348,14 +348,56 @@ impl AdditiveNttF128 {
         // layers. Each "outer block" at layer L has 4 contributing rows per
         // quarter-row; layer L butterflies (a,c) and (b,d) (distance =
         // block_size/2), layer L+1 butterflies (a,b) and (c,d) (distance =
-        // block_size/4).
+        // block_size/4). Radix-8 fuses three layers the same way and cuts the
+        // sweeps by another third; see
+        // [`butterfly_interleaved_fused_3layer_par_rows`] for why 8 is the
+        // widest fusion that fits.
+        //
+        // On x86_64 with VPCLMULQDQ the fused-2 kernel batches two lanes per
+        // 256-bit CLMUL, which beats the extra sweep radix-8 would save; the
+        // radix-8 kernel is scalar-per-lane and is selected everywhere else.
+        let fused3_ok = !cfg!(all(
+            target_arch = "x86_64",
+            target_feature = "vpclmulqdq",
+            target_feature = "avx2"
+        ));
         let mut layer = start_layer.min(n_top);
         while layer < n_top {
             let num_blocks = 1usize << layer;
             let block_size = 1usize << (log_d - layer);
             let block_bytes = block_size * num_ntts;
 
-            if layer + 1 < n_top && block_size >= 4 {
+            if fused3_ok && layer + 2 < n_top && block_size >= 8 {
+                // Fuse layers (layer, layer+1, layer+2): one read + one write
+                // per row group instead of three.
+                let eighth = block_size >> 3;
+                for block in 0..num_blocks {
+                    let mut tw = [F128::ZERO; 7];
+                    tw[0] = self.twiddle(layer, block);
+                    for s in 0..2 {
+                        tw[1 + s] = self.twiddle(layer + 1, 2 * block + s);
+                    }
+                    for s in 0..4 {
+                        tw[3 + s] = self.twiddle(layer + 2, 4 * block + s);
+                    }
+                    let start = block * block_bytes;
+                    let region = &mut data[start..start + block_bytes];
+                    // Block 0's left spine is `twiddle(l, 0) = 0` at every
+                    // layer, so seven of its twelve butterflies degenerate to
+                    // XORs. That is a property of the block index, not of any
+                    // particular transform shape.
+                    if block == 0 {
+                        butterfly_interleaved_fused_3layer_par_rows::<true>(
+                            region, &tw, eighth, num_ntts,
+                        );
+                    } else {
+                        butterfly_interleaved_fused_3layer_par_rows::<false>(
+                            region, &tw, eighth, num_ntts,
+                        );
+                    }
+                }
+                layer += 3;
+            } else if layer + 1 < n_top && block_size >= 4 {
                 // Fuse layers (layer, layer+1).
                 let quarter = block_size >> 2;
                 for block in 0..num_blocks {
@@ -839,6 +881,147 @@ fn butterfly_interleaved_fused_2layer_par_rows(
     }
 }
 
+/// One lane's radix-8 (fused three-layer) butterfly network.
+///
+/// `t` holds the seven twiddles in breadth-first order: `t[0]` is layer L
+/// (shared by all four pairs), `t[1..3]` layer L+1 (one per half), `t[3..7]`
+/// layer L+2 (one per quarter).
+#[inline(always)]
+fn butterfly_fused_3layer(v: &mut [F128; 8], t: &[F128; 7]) {
+    #[inline(always)]
+    fn bfly(v: &mut [F128; 8], u: usize, w: usize, twiddle: F128) {
+        let new_u = v[u] + v[w] * twiddle;
+        v[w] += new_u;
+        v[u] = new_u;
+    }
+
+    for i in 0..4 {
+        bfly(v, i, i + 4, t[0]);
+    }
+    for s in 0..2 {
+        for i in 0..2 {
+            bfly(v, 4 * s + i, 4 * s + i + 2, t[1 + s]);
+        }
+    }
+    for s in 0..4 {
+        bfly(v, 2 * s, 2 * s + 1, t[3 + s]);
+    }
+}
+
+/// [`butterfly_fused_3layer`] for block 0, whose left-spine twiddles
+/// `t[0] = t[1] = t[3]` are identically zero (block index 0 selects no basis
+/// vector at any layer). A zero-twiddle forward butterfly maps `(u, v)` to
+/// `(u, v + u)`, so those seven butterflies need only XORs — five field
+/// multiplies instead of twelve — and `v[0]` comes out unchanged.
+#[inline(always)]
+fn butterfly_fused_3layer_zero_root(v: &mut [F128; 8], t: &[F128; 7]) {
+    debug_assert_eq!(t[0], F128::ZERO);
+    debug_assert_eq!(t[1], F128::ZERO);
+    debug_assert_eq!(t[3], F128::ZERO);
+
+    #[inline(always)]
+    fn bfly(v: &mut [F128; 8], u: usize, w: usize, twiddle: F128) {
+        let new_u = v[u] + v[w] * twiddle;
+        v[w] += new_u;
+        v[u] = new_u;
+    }
+
+    // Layer L (t[0] = 0): four XOR-only butterflies.
+    for i in 0..4 {
+        let u = v[i];
+        v[i + 4] += u;
+    }
+    // Layer L+1: the top half's twiddle t[1] is zero, t[2] is general.
+    for i in 0..2 {
+        let u = v[i];
+        v[i + 2] += u;
+    }
+    bfly(v, 4, 6, t[2]);
+    bfly(v, 5, 7, t[2]);
+    // Layer L+2: the first quarter's twiddle t[3] is zero.
+    let u = v[0];
+    v[1] += u;
+    bfly(v, 2, 3, t[4]);
+    bfly(v, 4, 5, t[5]);
+    bfly(v, 6, 7, t[6]);
+}
+
+/// Apply [`butterfly_fused_3layer`] to row group `r` across every lane.
+///
+/// # Safety
+/// `ptr` must be valid for the `8 * eighth * num_ntts` elements of one
+/// layer-L block, and concurrent calls must use distinct `r` (which select
+/// disjoint rows).
+#[inline]
+unsafe fn butterfly_fused_3layer_row<const ZERO_ROOT: bool>(
+    ptr: *mut F128,
+    eighth: usize,
+    num_ntts: usize,
+    r: usize,
+    t: &[F128; 7],
+) {
+    // SAFETY: the caller supplies the pointer geometry and disjointness.
+    unsafe {
+        for lane in 0..num_ntts {
+            let mut v = [F128::ZERO; 8];
+            for (i, slot) in v.iter_mut().enumerate() {
+                *slot = *ptr.add((i * eighth + r) * num_ntts + lane);
+            }
+            if ZERO_ROOT {
+                butterfly_fused_3layer_zero_root(&mut v, t);
+            } else {
+                butterfly_fused_3layer(&mut v, t);
+            }
+            for (i, &value) in v.iter().enumerate() {
+                *ptr.add((i * eighth + r) * num_ntts + lane) = value;
+            }
+        }
+    }
+}
+
+/// Fused three-layer (radix-8) butterfly over one layer-L block: applies
+/// layers L, L+1 and L+2 in a single read/write of each row, instead of the
+/// three full-buffer sweeps they would otherwise cost. At the top layers,
+/// where a sweep is a DRAM round-trip over the whole codeword, that is a
+/// third fewer passes than the fused-2 kernel and two thirds fewer than
+/// unfused.
+///
+/// Eight is the widest fusion that pays: the eight live row streams sit at
+/// stride `eighth * num_ntts`, a multiple of the L1 set-repeat period at
+/// these shapes, so they all map to the same set — exactly 8 ways on an
+/// 8-way L1D. Radix-16 would demand 16 ways and thrash.
+#[inline]
+fn butterfly_interleaved_fused_3layer_par_rows<const ZERO_ROOT: bool>(
+    block: &mut [F128],
+    t: &[F128; 7],
+    eighth: usize,
+    num_ntts: usize,
+) {
+    use rayon::prelude::*;
+    const PARALLEL_ROW_THRESHOLD: usize = 256;
+    debug_assert_eq!(block.len(), 8 * eighth * num_ntts);
+
+    // Carry the base as `usize` so rayon's per-`r` closure can hold it without
+    // a raw-pointer `Sync` shim. Row group `r` writes rows
+    // `{i * eighth + r : i ∈ 0..8}`, disjoint across `r`.
+    let base = block.as_mut_ptr() as usize;
+    if eighth < PARALLEL_ROW_THRESHOLD {
+        for r in 0..eighth {
+            // SAFETY: `r` selects rows inside this block, run sequentially.
+            unsafe {
+                butterfly_fused_3layer_row::<ZERO_ROOT>(base as *mut F128, eighth, num_ntts, r, t)
+            };
+        }
+    } else {
+        (0..eighth).into_par_iter().for_each(|r| {
+            // SAFETY: distinct `r` → disjoint row groups → no aliasing.
+            unsafe {
+                butterfly_fused_3layer_row::<ZERO_ROOT>(base as *mut F128, eighth, num_ntts, r, t)
+            };
+        });
+    }
+}
+
 /// Butterfly `num_ntts` lanes of one (top_row, bot_row) pair with a shared
 /// twiddle: `u += v·t; v += u`. On x86_64 with VPCLMULQDQ the lane muls run
 /// 2-wide (ymm); elsewhere scalar-per-lane (see the ILP note on
@@ -1291,6 +1474,70 @@ mod tests {
                 v_par, v_scalar,
                 "parallel disagrees with scalar at log_d={log_d}"
             );
+        }
+    }
+
+    /// The radix-8 network, and its zero-root specialization, must reproduce
+    /// three separate single-layer passes over the same 8 values.
+    #[test]
+    fn fused_3layer_matches_three_single_layers() {
+        fn three_single_layers(v: &mut [F128; 8], t: &[F128; 7]) {
+            let mut bfly = |v: &mut [F128; 8], u: usize, w: usize, tw: F128| {
+                let new_u = v[u] + v[w] * tw;
+                v[w] += new_u;
+                v[u] = new_u;
+            };
+            for i in 0..4 {
+                bfly(v, i, i + 4, t[0]);
+            }
+            for s in 0..2 {
+                for i in 0..2 {
+                    bfly(v, 4 * s + i, 4 * s + i + 2, t[1 + s]);
+                }
+            }
+            for s in 0..4 {
+                bfly(v, 2 * s, 2 * s + 1, t[3 + s]);
+            }
+        }
+
+        let mut rng = Rng::new(0xF3);
+        for zero_root in [false, true] {
+            for _ in 0..64 {
+                let mut t = [F128::ZERO; 7];
+                for slot in t.iter_mut() {
+                    *slot = rng.f128();
+                }
+                if zero_root {
+                    t[0] = F128::ZERO;
+                    t[1] = F128::ZERO;
+                    t[3] = F128::ZERO;
+                }
+                let mut v = [F128::ZERO; 8];
+                for slot in v.iter_mut() {
+                    *slot = rng.f128();
+                }
+                let mut want = v;
+                three_single_layers(&mut want, &t);
+                let mut got = v;
+                if zero_root {
+                    butterfly_fused_3layer_zero_root(&mut got, &t);
+                } else {
+                    butterfly_fused_3layer(&mut got, &t);
+                }
+                assert_eq!(got, want, "radix-8 mismatch (zero_root={zero_root})");
+            }
+        }
+    }
+
+    /// Block 0's left spine is zero at every layer, which is what licenses the
+    /// unconditional zero-root dispatch in the top-layer loop.
+    #[test]
+    fn block_zero_left_spine_twiddles_vanish() {
+        for log_d in [4usize, 8, 12] {
+            let ntt = AdditiveNttF128::standard(log_d);
+            for layer in 0..log_d {
+                assert_eq!(ntt.twiddle(layer, 0), F128::ZERO);
+            }
         }
     }
 
