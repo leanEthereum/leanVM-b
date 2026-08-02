@@ -115,19 +115,19 @@ pub fn commit(ps: &mut ProverState, witness: &[F64], log_inv_rate: usize) -> Com
 /// stream like any other transmitted value (leanVM parses its root the same way).
 fn root_to_scalars(root: &[u8; 32]) -> [F192; 2] {
     let w = |o: usize| u64::from_le_bytes(root[o..o + 8].try_into().unwrap());
-    [F192::new(w(0), w(8), 0), F192::new(w(16), w(24), 0)]
+    [F192::new(w(0), w(8), w(16)), F192::new(w(24), 0, 0)]
 }
 
 fn scalars_to_root(s: &[F192]) -> Result<[u8; 32], crate::transcript::Error> {
     assert_eq!(s.len(), 2, "a Merkle root is exactly two field words");
-    if s.iter().any(|word| word.c2 != 0) {
+    if (s[1].c1, s[1].c2) != (0, 0) {
         return Err(crate::transcript::Error::NonCanonicalEncoding);
     }
     let mut root = [0u8; 32];
     root[0..8].copy_from_slice(&s[0].c0.to_le_bytes());
     root[8..16].copy_from_slice(&s[0].c1.to_le_bytes());
-    root[16..24].copy_from_slice(&s[1].c0.to_le_bytes());
-    root[24..32].copy_from_slice(&s[1].c1.to_le_bytes());
+    root[16..24].copy_from_slice(&s[0].c2.to_le_bytes());
+    root[24..32].copy_from_slice(&s[1].c0.to_le_bytes());
     Ok(root)
 }
 

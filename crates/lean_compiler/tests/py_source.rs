@@ -4,42 +4,41 @@
 //!
 //! The harness is generic: every `tests/programs/*.py` is parsed, compiled,
 //! proven, and verified. A program declares the public input it expects with a
-//! top-of-file annotation of two constant field elements,
+//! top-of-file annotation of up to four constant base-field words,
 //!
 //! ```text
 //! # public_input: GEN ** 89, 101229015297003380629709256178361811305
 //! ```
 //!
-//! or omits it to run with the empty public input (two zeros).
+//! or omits it to run with the empty public input (four zeros).
 
 use std::fs;
 
 use lean_compiler::{compile, parse, parse_const};
 use lean_vm::cpu::{prove, verify};
-use primitives::field::F192;
+use primitives::field::F64;
 
-/// The `# public_input: <elt>, <elt>` annotation, or `[0, 0]` if absent.
-fn public_input(src: &str) -> [F192; 2] {
+/// The `# public_input:` annotation, zero-filled to four words if needed.
+fn public_input(src: &str) -> [F64; 4] {
     for line in src.lines() {
         if let Some(rest) = line.trim().strip_prefix("# public_input:") {
             let parts: Vec<&str> = rest.split(',').collect();
-            assert_eq!(
-                parts.len(),
-                2,
-                "`# public_input:` needs two field elements, got `{rest}`"
+            assert!(
+                parts.len() <= 4,
+                "`# public_input:` accepts up to four base-field words"
             );
             let elt = |s: &str| parse_const(s).unwrap_or_else(|e| panic!("bad public_input: {e}"));
-            return [elt(parts[0]), elt(parts[1])];
+            return std::array::from_fn(|i| parts.get(i).map_or(F64::ZERO, |s| elt(s)));
         }
     }
-    [F192::ZERO; 2]
+    [F64::ZERO; 4]
 }
 
 /// The `# witness <name>: <elt>, …` annotations — one line per *entry*
 /// (repeated lines with the same name are the stream's successive entries,
 /// popped by successive `hint_witness` calls).
-fn witness(src: &str) -> std::collections::HashMap<String, Vec<Vec<F192>>> {
-    let mut streams: std::collections::HashMap<String, Vec<Vec<F192>>> = Default::default();
+fn witness(src: &str) -> std::collections::HashMap<String, Vec<Vec<F64>>> {
+    let mut streams: std::collections::HashMap<String, Vec<Vec<F64>>> = Default::default();
     for rest in src.lines().filter_map(|l| l.trim().strip_prefix("# witness ")) {
         let (name, vals) = rest.split_once(':').expect("`# witness` needs `name: values`");
         let entry = vals

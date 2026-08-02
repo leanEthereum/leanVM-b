@@ -1,6 +1,6 @@
 # Field identities, checked entirely in-program: no `# public_input:`
-# annotation, so the harness runs it with the empty public input (two zero
-# field elements) and nothing is published.
+# annotation, so the harness runs it with four zero public words and nothing
+# is published.
 from snark_lib import *
 
 

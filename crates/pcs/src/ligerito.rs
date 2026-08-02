@@ -3545,7 +3545,8 @@ where
             for y in 0..yr_len {
                 let mut combined_y = evb_vec[y];
                 for (k, residual) in induced_residuals.iter().enumerate() {
-                    combined_y += level_ctxs[k].beta * residual[y];
+                    let term = level_ctxs[k].beta * residual[y];
+                    combined_y += term;
                 }
                 for residual in &ood_residuals {
                     combined_y += residual[y];

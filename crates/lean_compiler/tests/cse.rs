@@ -3,7 +3,7 @@
 
 use lean_compiler::{compile, parse};
 use lean_vm::cpu::{prove, verify};
-use primitives::field::{F64, F192, g_pow};
+use primitives::field::{F64, g_pow};
 
 /// A returned value that repeats a constant computed earlier in the same
 /// function. The return slot lives in the callee frame and is read by the
@@ -27,7 +27,7 @@ def main():
     return
 ";
     let program = compile(&parse(src).expect("parse"));
-    let want = [F192::from(g_pow(3)) * F192::from(F64(7)), F192::from(F64(7))];
+    let want = [g_pow(3) * F64(7), F64(7), F64::ZERO, F64::ZERO];
     let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
     verify(&program, &want, &proof).expect("returned duplicate constant is preserved");
 }
@@ -52,7 +52,7 @@ def main():
 ";
     let program = compile(&parse(src).expect("parse"));
     // (k + k) + (k + k) == 0 in characteristic two.
-    let want = [F192::ZERO, F192::ZERO];
+    let want = [F64::ZERO; 4];
     let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
     verify(&program, &want, &proof).expect("duplicated call arguments are preserved");
 }
@@ -79,7 +79,7 @@ def main():
     return
 ";
     let program = compile(&parse(src).expect("parse"));
-    let want = [F192::from(g_pow(4)), F192::from(g_pow(3))];
+    let want = [g_pow(4), g_pow(3), F64::ZERO, F64::ZERO];
     let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
     verify(&program, &want, &proof).expect("both branches keep their own constant");
 }
@@ -104,7 +104,7 @@ def main():
     return
 ";
     let program = compile(&parse(src).expect("parse"));
-    let want = [F192::ZERO, F192::from(g_pow(9))];
+    let want = [F64::ZERO, g_pow(9), F64::ZERO, F64::ZERO];
     let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
     verify(&program, &want, &proof).expect("passing assert still verifies");
 }
@@ -126,7 +126,7 @@ def main():
     return
 ";
     let program = compile(&parse(src).expect("parse"));
-    let want = [F192::ZERO, F192::from(g_pow(9))];
+    let want = [F64::ZERO, g_pow(9), F64::ZERO, F64::ZERO];
     let _ = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
 }
 
@@ -150,8 +150,8 @@ def main():
     return
 ";
     let mut program = compile(&parse(src).expect("parse"));
-    program.set_witness("flag", vec![vec![F192::ZERO]]);
-    let want = [F192::ZERO, F192::ZERO];
+    program.set_witness("flag", vec![vec![F64::ZERO]]);
+    let want = [F64::ZERO; 4];
     let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
     verify(&program, &want, &proof).expect("untaken branch must not consume its witness");
 }

@@ -16,7 +16,7 @@
 //!
 //! The three rules that keep this sound:
 //! 1. **Only pure ops are eliminated.** `DEREF` unifies two memory cells (and
-//!    bumps the bus read counts), `BLAKE3`/`PACK64X2` carry bus effects, `JUMP`
+//!    bumps the bus read counts), `BLAKE3` carries bus effects, `JUMP`
 //!    is control flow — all are left alone. They still get their operands
 //!    rewritten.
 //! 2. **Only single-write targets.** An instruction is a candidate only if its
@@ -46,7 +46,7 @@ use std::collections::HashMap;
 enum Key {
     Xor(Off, Off),
     Mul(Off, Off),
-    Const([u64; 3]),
+    Const(u64),
 }
 
 /// Rewrite `code` in place, dropping redundant pure instructions. `abi_end` is
@@ -56,6 +56,7 @@ enum Key {
 pub(crate) fn cse(code: &mut Vec<LInstr>, abi_end: Off) -> usize {
     let writes = write_counts(code);
     let labels = label_targets(code);
+    let run_operands = implicit_run_operands(code);
 
     let mut subst: HashMap<Off, Off> = HashMap::new();
     let mut seen: HashMap<Key, Off> = HashMap::new();
@@ -75,13 +76,13 @@ pub(crate) fn cse(code: &mut Vec<LInstr>, abi_end: Off) -> usize {
         let (key, dst) = match &ins.op {
             LOp::Xor { a, b, c } => (Key::Xor(*a.min(b), *a.max(b)), *c),
             LOp::Mul { a, b, c } => (Key::Mul(*a.min(b), *a.max(b)), *c),
-            LOp::Set { o, k: KVal::Const(k) } => (Key::Const([k.c0, k.c1, k.c2]), *o),
+            LOp::Set { o, k: KVal::Const(k) } => (Key::Const(k.0), *o),
             _ => continue,
         };
         // A write to an argument or return slot is read by the CALLER, which
         // this pass cannot see: `walk` returning a flag as `SET fp[6] = 0` looks
         // dead here but is the function's result.
-        if dst < abi_end || writes.get(&dst).copied().unwrap_or(0) != 1 {
+        if dst < abi_end || run_operands.contains(&dst) || writes.get(&dst).copied().unwrap_or(0) != 1 {
             continue;
         }
         // Hints execute immediately before their instruction. Keeping the
@@ -112,6 +113,35 @@ pub(crate) fn cse(code: &mut Vec<LInstr>, abi_end: Off) -> usize {
     dropped
 }
 
+/// Cells consumed through the implicit width of a multiword operand. A BLAKE3
+/// chunk, chaining value, or extension operand names only its first address;
+/// rewriting (or deleting) an individual defining cell cannot retarget that
+/// lane independently. Keep all such definitions in place. Whole-run
+/// forwarding belongs in the lowerer, where contiguity is known explicitly.
+fn implicit_run_operands(code: &[LInstr]) -> std::collections::HashSet<Off> {
+    let mut out = std::collections::HashSet::new();
+    let mut add = |base: Off, len: Off| {
+        out.extend((0..len).map(|k| base + k));
+    };
+    for ins in code {
+        match &ins.op {
+            LOp::AddExt { a, b, .. } | LOp::MulExt { a, b, .. } => {
+                add(*a, 3);
+                add(*b, 3);
+            }
+            LOp::DerefExt { gamma, .. } => add(*gamma, 3),
+            LOp::Blake3 { ins, cv, .. } => {
+                for &chunk in ins {
+                    add(chunk, 2);
+                }
+                add(*cv, 4);
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 /// How many times each frame cell is written, instructions and hints together.
 /// Over-counting is safe (it only forgoes an optimization), so ambiguous cases
 /// count as writes.
@@ -121,7 +151,12 @@ fn write_counts(code: &[LInstr]) -> HashMap<Off, u32> {
     for ins in code {
         match &ins.op {
             LOp::Set { o, .. } => bump(*o),
-            LOp::Xor { c, .. } | LOp::Mul { c, .. } | LOp::Pack64x2 { c, .. } => bump(*c),
+            LOp::Xor { c, .. } | LOp::Mul { c, .. } => bump(*c),
+            LOp::AddExt { c, .. } | LOp::MulExt { c, .. } => {
+                for k in 0..3 {
+                    bump(*c + k);
+                }
+            }
             // A `Cell` deref unifies `m[p·g^beta]` with `fp[gamma]`, which writes
             // `fp[gamma]` when it acts as a load. The `Pc`/`Fp` modes take their
             // source from the machine state and leave `gamma` unused.
@@ -130,10 +165,16 @@ fn write_counts(code: &[LInstr]) -> HashMap<Off, u32> {
                     bump(*gamma);
                 }
             }
-            // The 32-byte digest lands in two consecutive cells.
-            LOp::Blake3 { c, .. } => {
-                bump(*c);
-                bump(*c + 1);
+            LOp::DerefExt { gamma, .. } => {
+                for k in 0..3 {
+                    bump(*gamma + k);
+                }
+            }
+            // The 32-byte digest lands in four consecutive cells.
+            LOp::Blake3 { out, .. } => {
+                for k in 0..4 {
+                    bump(*out + k);
+                }
             }
             LOp::Jump { .. } => {}
         }
@@ -143,7 +184,7 @@ fn write_counts(code: &[LInstr]) -> HashMap<Off, u32> {
                 | Hint::AllocFrameMax { ptr, .. }
                 | Hint::AllocBuffer { ptr, .. }
                 | Hint::AllocBufferDyn { ptr, .. } => bump(*ptr),
-                Hint::WitnessStack { base, len, .. } | Hint::FieldLimbs { base, len, .. } => {
+                Hint::WitnessStack { base, len, .. } => {
                     for k in 0..*len {
                         bump(*base + k);
                     }
@@ -185,7 +226,7 @@ fn rewrite_reads(ins: &mut LInstr, subst: &HashMap<Off, Off>) {
     };
     match &mut ins.op {
         LOp::Set { .. } => {}
-        LOp::Xor { a, b, .. } | LOp::Mul { a, b, .. } | LOp::Pack64x2 { a, b, .. } => {
+        LOp::Xor { a, b, .. } | LOp::Mul { a, b, .. } | LOp::AddExt { a, b, .. } | LOp::MulExt { a, b, .. } => {
             map(a);
             map(b);
         }
@@ -194,6 +235,10 @@ fn rewrite_reads(ins: &mut LInstr, subst: &HashMap<Off, Off>) {
             if matches!(mode, super::DerefMode::Cell) {
                 map(gamma);
             }
+        }
+        LOp::DerefExt { alpha, gamma, .. } => {
+            map(alpha);
+            map(gamma);
         }
         LOp::Jump { oc, od, of } => {
             map(oc);
@@ -216,7 +261,6 @@ fn rewrite_reads(ins: &mut LInstr, subst: &HashMap<Off, Off>) {
                 map(value);
                 map(bits_ptr);
             }
-            Hint::FieldLimbs { value, .. } => map(value),
             Hint::Print { cell, .. } => map(cell),
             Hint::AllocFrame { .. } | Hint::AllocFrameMax { .. } | Hint::AllocBuffer { .. } => {}
             Hint::WitnessStack { .. } => {}
