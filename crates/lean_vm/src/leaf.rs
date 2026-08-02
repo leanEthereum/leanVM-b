@@ -125,10 +125,18 @@ enum Term<'a> {
 }
 
 /// Build one side's leaf vector: block `b` row `z` holds `γ − Σ_i α^i c_i(z)`,
-/// padded to `2^μ` with the identity `1`. The row-invariant `α`-power chain and
-/// constant coordinates are folded once per block into `const_part`.
+/// followed implicitly by the identity `1` up to `2^μ`. The row-invariant
+/// `α`-power chain and constant coordinates are folded once per block into
+/// `const_part`.
 pub fn build_leaves(blocks: &[Block], lay: &Layout, cols: &[Column], alpha: F128, gamma: F128) -> Vec<F128> {
-    let mut leaves = vec![F128::ONE; 1usize << lay.mu];
+    let explicit = blocks
+        .iter()
+        .enumerate()
+        .map(|(b, block)| lay.offsets[b] + (1usize << block.kappa))
+        .max()
+        .unwrap_or(1);
+    debug_assert!(explicit <= 1usize << lay.mu);
+    let mut leaves = vec![F128::ONE; explicit];
     let maxk = blocks.iter().map(|b| b.kappa).max().unwrap_or(0);
     let gpow = primitives::field::g_powers(1usize << maxk);
     for (b, blk) in blocks.iter().enumerate() {
