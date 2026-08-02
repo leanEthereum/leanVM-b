@@ -4,9 +4,9 @@
 //! relation `V_i(x)=∏_{a,b∈{0,1}}V_{i-2}(a,b,x)`. Its normalized eq-trick
 //! sumcheck has degree four. An odd-depth tree starts with one binary layer.
 
-use crate::PAR_THRESHOLD;
 use crate::transcript::{ProverState, VerifierState};
-use primitives::field::{F128, F256Unreduced};
+use crate::PAR_THRESHOLD;
+use primitives::field::{F256Unreduced, F128};
 use primitives::multilinear::{build_eq, interp, quartic_eval_from_eq, shrink_eq_low};
 use rayon::prelude::*;
 
@@ -105,40 +105,36 @@ pub enum GkrError {
 /// Build only the levels consumed by radix four: `0,2,4,…`, plus a final
 /// binary root when the logical depth is odd.
 fn build_layers(leaves: Vec<F128>, mu: usize) -> Vec<Vec<F128>> {
-    assert!(leaves.len().is_power_of_two());
+    assert!(!leaves.is_empty());
     assert!(leaves.len() <= 1usize << mu);
     let mut layers: Vec<Vec<F128>> = (0..=mu).map(|_| Vec::new()).collect();
     layers[0] = leaves;
     let mut level = 0;
     while level + 2 <= mu {
         let current = &layers[level];
-        let quarter = current.len() / 4;
-        let next = if current.len() == 1 {
+        let full_rows = current.len() / 4;
+        let product = |row: usize| {
+            let [left, right] = mul_pair(
+                [current[4 * row], current[4 * row + 2]],
+                [current[4 * row + 1], current[4 * row + 3]],
+            );
+            left * right
+        };
+        let mut next = if current.len() == 1 {
             vec![current[0]]
         } else if current.len() == 2 {
             vec![current[0] * current[1]]
-        } else if quarter >= PAR_THRESHOLD {
-            (0..quarter)
-                .into_par_iter()
-                .map(|row| {
-                    let [left, right] = mul_pair(
-                        [current[4 * row], current[4 * row + 2]],
-                        [current[4 * row + 1], current[4 * row + 3]],
-                    );
-                    left * right
-                })
-                .collect()
+        } else if full_rows >= PAR_THRESHOLD {
+            (0..full_rows).into_par_iter().map(product).collect()
         } else {
-            (0..quarter)
-                .map(|row| {
-                    let [left, right] = mul_pair(
-                        [current[4 * row], current[4 * row + 2]],
-                        [current[4 * row + 1], current[4 * row + 3]],
-                    );
-                    left * right
-                })
-                .collect()
+            (0..full_rows).map(product).collect()
         };
+        if current.len() % 4 != 0 && current.len() > 2 {
+            let row = full_rows;
+            let child = |index| current.get(4 * row + index).copied().unwrap_or(F128::ONE);
+            let [left, right] = mul_pair([child(0), child(2)], [child(1), child(3)]);
+            next.push(left * right);
+        }
         level += 2;
         layers[level] = next;
     }
@@ -179,19 +175,18 @@ struct QuaternaryLayerState {
     /// prover consume a product-tree level without first transposing it.
     values: Vec<F128>,
     next: Vec<F128>,
-    /// Logical row count after identity padding. `values` stores a power-of-two
+    /// Logical row count after identity padding. `values` stores an arbitrary
     /// prefix; every omitted row is the constant four-tuple one.
     logical_rows: usize,
 }
 
 impl QuaternaryLayerState {
     fn new(mut values: Vec<F128>, width: usize) -> Self {
-        // Identity padding within the first explicit gate is materialized;
-        // complete all-one rows remain implicit.
-        values.resize(values.len().max(4), F128::ONE);
+        // Materialize only the incomplete final four-tuple. Every complete
+        // all-one row after the arbitrary explicit prefix remains implicit.
+        values.resize(4 * values.len().max(1).div_ceil(4), F128::ONE);
         debug_assert_eq!(values.len() % 4, 0);
         debug_assert!(values.len() <= 4 * width);
-        debug_assert!((values.len() / 4).is_power_of_two());
         Self {
             values,
             next: Vec::new(),
@@ -202,7 +197,7 @@ impl QuaternaryLayerState {
     /// `(q(0)+q(1), [X²]q, [X³]q, [X⁴]q)`.
     fn round_message(&self, equality: &[F128]) -> [F128; 4] {
         let stored_rows = self.values.len() / 4;
-        let half = stored_rows / 2;
+        let full_pairs = stored_rows / 2;
         let summand = |row: usize| -> [F256Unreduced; 4] {
             let (lo, hi) = (8 * row, 8 * row + 4);
             let lines = [0, 1, 2, 3].map(|child| {
@@ -217,45 +212,32 @@ impl QuaternaryLayerState {
             }
             left
         };
-        let mut message = if half >= PAR_THRESHOLD {
-            (0..half)
+        let mut message = if full_pairs >= PAR_THRESHOLD {
+            (0..full_pairs)
                 .into_par_iter()
                 .map(summand)
                 .reduce(|| [F256Unreduced::ZERO; 4], xor)
         } else {
-            (0..half).map(summand).fold([F256Unreduced::ZERO; 4], xor)
+            (0..full_pairs).map(summand).fold([F256Unreduced::ZERO; 4], xor)
         };
-        // Once the explicit prefix has folded to one row, the next logical
-        // coordinate pairs it with the all-one suffix. Other implicit pairs
-        // are constant one and contribute zero to the compact message.
-        if stored_rows == 1 && self.logical_rows > 1 {
+        if stored_rows % 2 != 0 {
+            let lo = 8 * full_pairs;
             let lines = [0, 1, 2, 3].map(|child| {
-                let at_zero = self.values[child];
+                let at_zero = self.values[lo + child];
                 [at_zero, at_zero + F128::ONE]
             });
-            message = xor(message, quartic_summand(lines, equality[0]));
+            message = xor(message, quartic_summand(lines, equality[full_pairs]));
         }
         message.map(F256Unreduced::reduce)
     }
 
     fn fold(&mut self, challenge: F128) {
         let stored_rows = self.values.len() / 4;
-        let rows = (stored_rows / 2).max(1);
+        let full_rows = stored_rows / 2;
+        let rows = stored_rows.div_ceil(2);
         self.next.resize(4 * rows, F128::ZERO);
-        if stored_rows == 1 {
-            debug_assert!(self.logical_rows > 1);
-            let [fold0, fold1] = mul_pair([self.values[0] + F128::ONE, self.values[1] + F128::ONE], [challenge; 2]);
-            let [fold2, fold3] = mul_pair([self.values[2] + F128::ONE, self.values[3] + F128::ONE], [challenge; 2]);
-            self.next[0] = self.values[0] + fold0;
-            self.next[1] = self.values[1] + fold1;
-            self.next[2] = self.values[2] + fold2;
-            self.next[3] = self.values[3] + fold3;
-            std::mem::swap(&mut self.values, &mut self.next);
-            self.logical_rows /= 2;
-            return;
-        }
-        if rows >= PAR_THRESHOLD {
-            self.next
+        if full_rows >= PAR_THRESHOLD {
+            self.next[..4 * full_rows]
                 .par_chunks_exact_mut(4)
                 .enumerate()
                 .for_each(|(row, destination)| {
@@ -281,7 +263,7 @@ impl QuaternaryLayerState {
                     destination[3] = self.values[lo + 3] + fold3;
                 });
         } else {
-            for row in 0..rows {
+            for row in 0..full_rows {
                 let lo = 8 * row;
                 let hi = lo + 4;
                 let [fold0, fold1] = mul_pair(
@@ -304,6 +286,21 @@ impl QuaternaryLayerState {
                 self.next[4 * row + 3] = self.values[lo + 3] + fold3;
             }
         }
+        if stored_rows % 2 != 0 {
+            let lo = 8 * full_rows;
+            let [fold0, fold1] = mul_pair(
+                [self.values[lo] + F128::ONE, self.values[lo + 1] + F128::ONE],
+                [challenge; 2],
+            );
+            let [fold2, fold3] = mul_pair(
+                [self.values[lo + 2] + F128::ONE, self.values[lo + 3] + F128::ONE],
+                [challenge; 2],
+            );
+            self.next[4 * full_rows] = self.values[lo] + fold0;
+            self.next[4 * full_rows + 1] = self.values[lo + 1] + fold1;
+            self.next[4 * full_rows + 2] = self.values[lo + 2] + fold2;
+            self.next[4 * full_rows + 3] = self.values[lo + 3] + fold3;
+        }
         std::mem::swap(&mut self.values, &mut self.next);
         self.logical_rows /= 2;
     }
@@ -325,12 +322,10 @@ pub struct ProductTriple {
 
 /// Prove three identity-padded grand products as one RLC-batched radix-four GKR.
 pub fn prove_product_triple(leaves: [Vec<F128>; 3], ps: &mut ProverState) -> ProductTriple {
-    let mu = crate::log2_strict_usize(leaves[0].len());
+    let mu = crate::log2_ceil_usize(leaves[0].len());
     assert!(
-        leaves
-            .iter()
-            .all(|lane| lane.len().is_power_of_two() && lane.len() <= 1 << mu),
-        "batched trees must be power-of-two prefixes of the first tree"
+        leaves.iter().all(|lane| !lane.is_empty() && lane.len() <= 1 << mu),
+        "batched trees must be nonempty prefixes of the first tree's logical tree"
     );
     let mut layers = leaves.map(|lane| build_layers(lane, mu));
     let roots = [layers[0][mu][0], layers[1][mu][0], layers[2][mu][0]];
@@ -556,10 +551,10 @@ mod tests {
     #[test]
     fn implicit_identity_suffix_matches_dense_padding() {
         for mu in 3..=10 {
-            let depths = [mu, mu - 1, mu - 3];
-            let leaves: [Vec<F128>; 3] = depths.map(|depth| {
-                (0..1usize << depth)
-                    .map(|row| F128::new((3 + row + depth * 10_007) as u64, 0))
+            let lengths = [(1usize << mu) - 3, (1usize << (mu - 1)) + 1, (1usize << (mu - 2)) + 3];
+            let leaves: [Vec<F128>; 3] = std::array::from_fn(|lane| {
+                (0..lengths[lane])
+                    .map(|row| F128::new((3 + row + lane * 10_007) as u64, 0))
                     .collect()
             });
             let dense = leaves.each_ref().map(|lane| {
@@ -567,8 +562,8 @@ mod tests {
                 padded.resize(1 << mu, F128::ONE);
                 padded
             });
-            let mut ps = ProverState::new(b"sparse-radix-four-gkr-test", &[]);
-            let proved = prove_product_triple(leaves, &mut ps);
+            let mut sparse_ps = ProverState::new(b"sparse-radix-four-gkr-test", &[]);
+            let proved = prove_product_triple(leaves, &mut sparse_ps);
             for lane in 0..3 {
                 assert_eq!(proved.values[lane], mle_eval(&dense[lane], &proved.point));
                 assert_eq!(
@@ -579,7 +574,13 @@ mod tests {
                         .fold(F128::ONE, |product, value| product * value)
                 );
             }
-            let proof = ps.into_proof();
+            let proof = sparse_ps.into_proof();
+            let mut dense_ps = ProverState::new(b"sparse-radix-four-gkr-test", &[]);
+            let dense_proved = prove_product_triple(dense, &mut dense_ps);
+            assert_eq!(dense_proved.roots, proved.roots);
+            assert_eq!(dense_proved.point, proved.point);
+            assert_eq!(dense_proved.values, proved.values);
+            assert_eq!(dense_ps.into_proof().stream, proof.stream);
             let mut vs = VerifierState::new(b"sparse-radix-four-gkr-test", &proof, &[]);
             let verified = verify_product_triple(mu, &mut vs).expect("GKR verifies");
             assert_eq!(verified.roots, proved.roots);
