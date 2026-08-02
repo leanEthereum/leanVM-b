@@ -384,9 +384,8 @@ impl FnLower<'_> {
             self.zero_off,
         );
         f(self);
-        // Stores into a stack run declared outside the branch must become real
-        // writes on that path. Leaving them as aliases would discard the write
-        // when the branch-local alias map is restored at the join.
+        // A deferred store into a buffer declared outside the branch must be
+        // materialized on that path before the branch-local aliases are dropped.
         let branch_outputs: Vec<Off> = self
             .alias
             .iter()
