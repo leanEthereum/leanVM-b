@@ -200,7 +200,30 @@ impl AdditiveNttF64 {
             let block_size = 1usize << (log_d - layer);
             let block_elems = block_size * num_ntts;
 
-            if layer + 1 < n_top && block_size >= 4 {
+            if layer + 2 < n_top && block_size >= 8 {
+                // Fuse three layers: one pass over the block instead of
+                // three. At the top layers a pass is a DRAM round-trip of the
+                // whole codeword, so the pass count sets the cost.
+                let eighth = block_size >> 3;
+                for block in 0..num_blocks {
+                    let mut t = [F64::ZERO; 7];
+                    t[0] = self.twiddle(layer, block);
+                    for s in 0..2 {
+                        t[1 + s] = self.twiddle(layer + 1, 2 * block + s);
+                    }
+                    for s in 0..4 {
+                        t[3 + s] = self.twiddle(layer + 2, 4 * block + s);
+                    }
+                    let start = block * block_elems;
+                    butterfly_interleaved_fused_3layer_par_rows(
+                        &mut data[start..start + block_elems],
+                        &t,
+                        eighth,
+                        num_ntts,
+                    );
+                }
+                layer += 3;
+            } else if layer + 1 < n_top && block_size >= 4 {
                 let quarter = block_size >> 2;
                 for block in 0..num_blocks {
                     let t_outer = self.twiddle(layer, block);
@@ -296,6 +319,84 @@ fn butterfly_interleaved_block_par_rows(block: &mut [F64], twiddle: F64, block_s
 }
 
 /// Fused 2-layer butterfly, row-parallel; see the extension-field twin for the shape.
+/// Fused three-layer (radix-8) butterfly over one layer-L block: applies
+/// layers L, L+1 and L+2 in a single pass over the block's rows, instead of
+/// the three full-buffer sweeps they would otherwise cost.
+///
+/// The eight participating rows stay L1-resident across all twelve
+/// butterflies, exactly as the four rows do in the fused-2 kernel; each
+/// butterfly is the same lane kernel, already 8-wide on NEON and AVX-512.
+///
+/// `block` is `8 * eighth * num_ntts` elements. For each `r ∈ 0..eighth` the
+/// rows `r + i·eighth` for `i ∈ 0..8` participate. Layer L pairs them at
+/// distance `4·eighth`, layer L+1 at `2·eighth`, layer L+2 at `eighth`.
+/// `t` holds the seven twiddles breadth-first: `t[0]` is layer L, `t[1..3]`
+/// layer L+1 (one per half), `t[3..7]` layer L+2 (one per quarter).
+fn butterfly_interleaved_fused_3layer_par_rows(block: &mut [F64], t: &[F64; 7], eighth: usize, num_ntts: usize) {
+    use rayon::prelude::*;
+    const PARALLEL_ROW_THRESHOLD: usize = 512;
+    let stride = eighth * num_ntts;
+    debug_assert_eq!(block.len(), 8 * stride);
+
+    let do_one = |rows: &mut [&mut [F64]; 8]| {
+        let [r0, r1, r2, r3, r4, r5, r6, r7] = rows;
+        // Layer L, distance 4·eighth.
+        butterfly_lanes(r0, r4, t[0]);
+        butterfly_lanes(r1, r5, t[0]);
+        butterfly_lanes(r2, r6, t[0]);
+        butterfly_lanes(r3, r7, t[0]);
+        // Layer L+1, distance 2·eighth: t[1] on the new top half, t[2] on the
+        // new bottom half.
+        butterfly_lanes(r0, r2, t[1]);
+        butterfly_lanes(r1, r3, t[1]);
+        butterfly_lanes(r4, r6, t[2]);
+        butterfly_lanes(r5, r7, t[2]);
+        // Layer L+2, distance eighth: one twiddle per quarter.
+        butterfly_lanes(r0, r1, t[3]);
+        butterfly_lanes(r2, r3, t[4]);
+        butterfly_lanes(r4, r5, t[5]);
+        butterfly_lanes(r6, r7, t[6]);
+    };
+
+    let (h0, h1) = block.split_at_mut(4 * stride);
+    let (q0, q1) = h0.split_at_mut(2 * stride);
+    let (q2, q3) = h1.split_at_mut(2 * stride);
+    let (e0, e1) = q0.split_at_mut(stride);
+    let (e2, e3) = q1.split_at_mut(stride);
+    let (e4, e5) = q2.split_at_mut(stride);
+    let (e6, e7) = q3.split_at_mut(stride);
+
+    if eighth < PARALLEL_ROW_THRESHOLD {
+        for r in 0..eighth {
+            let off = r * num_ntts;
+            let mut rows = [
+                &mut e0[off..off + num_ntts],
+                &mut e1[off..off + num_ntts],
+                &mut e2[off..off + num_ntts],
+                &mut e3[off..off + num_ntts],
+                &mut e4[off..off + num_ntts],
+                &mut e5[off..off + num_ntts],
+                &mut e6[off..off + num_ntts],
+                &mut e7[off..off + num_ntts],
+            ];
+            do_one(&mut rows);
+        }
+    } else {
+        e0.par_chunks_mut(num_ntts)
+            .zip(e1.par_chunks_mut(num_ntts))
+            .zip(e2.par_chunks_mut(num_ntts))
+            .zip(e3.par_chunks_mut(num_ntts))
+            .zip(e4.par_chunks_mut(num_ntts))
+            .zip(e5.par_chunks_mut(num_ntts))
+            .zip(e6.par_chunks_mut(num_ntts))
+            .zip(e7.par_chunks_mut(num_ntts))
+            .for_each(|(((((((a, b), c), d), e), f), g), h)| {
+                let mut rows = [a, b, c, d, e, f, g, h];
+                do_one(&mut rows);
+            });
+    }
+}
+
 fn butterfly_interleaved_fused_2layer_par_rows(
     block: &mut [F64],
     t_outer: F64,
@@ -593,6 +694,38 @@ mod tests {
 
             ntt.inverse_transform(&mut a);
             assert_eq!(a, orig, "inverse roundtrip at log_d={log_d}");
+        }
+    }
+
+    /// The parallel interleaved path must match the scalar reference at sizes
+    /// that actually reach the fused multi-layer passes.
+    ///
+    /// `interleaved_lanes_are_independent_ntts` runs at `log_d = 7`, below the
+    /// driver's `log_d < 8` bail-out, so it only ever exercises the scalar
+    /// path. These shapes give `n_top >= 3`, which is what selects the
+    /// radix-8 fused pass, and cover a non-zero `start_layer` because the
+    /// commit path enters at `log_inv_rate`.
+    #[test]
+    fn interleaved_parallel_matches_scalar_at_fused_sizes() {
+        let mut s = 0xC0FFEEu64;
+        for log_d in [12usize, 14] {
+            for lanes in [8usize, 64] {
+                for start_layer in [0usize, 1] {
+                    let ntt = AdditiveNttF64::standard(log_d);
+                    let n = (1usize << log_d) * lanes;
+                    let original: Vec<F64> = (0..n).map(|_| F64(splitmix64(&mut s))).collect();
+
+                    let mut want = original.clone();
+                    ntt.forward_transform_interleaved_scalar_from_layer(&mut want, lanes, start_layer);
+                    let mut got = original.clone();
+                    ntt.forward_transform_interleaved_from_layer(&mut got, lanes, start_layer);
+
+                    assert_eq!(
+                        got, want,
+                        "parallel != scalar at log_d={log_d}, lanes={lanes}, start_layer={start_layer}"
+                    );
+                }
+            }
         }
     }
 
