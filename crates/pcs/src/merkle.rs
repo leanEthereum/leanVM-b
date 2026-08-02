@@ -194,6 +194,13 @@ fn hash_leaves_batched_uninit(
         128 => batched::<128>(platform, data, out),
         256 => batched::<256>(platform, data, out),
         512 => batched::<512>(platform, data, out),
+        // The Ligerito recursion levels commit F192 rows, so their leaves are
+        // `num_interleaved * 24` bytes — a multiple of 64 but not a power of
+        // two, which used to miss every batched arm and fall through to the
+        // one-leaf-at-a-time path with no cross-leaf SIMD at all.
+        192 => batched::<192>(platform, data, out),
+        384 => batched::<384>(platform, data, out),
+        768 => batched::<768>(platform, data, out),
         1024 => batched::<1024>(platform, data, out),
         _ => out
             .par_iter_mut()
@@ -592,7 +599,10 @@ mod vmhash_batch_tests {
         check::<64>();
         check::<128>();
         check::<256>();
+        check::<192>();
+        check::<384>();
         check::<512>();
+        check::<768>();
         check::<1024>();
     }
 
@@ -600,7 +610,7 @@ mod vmhash_batch_tests {
     /// actually commits with (64 lanes x 8-byte F64 = 512 bytes).
     #[test]
     fn leaf_dispatch_matches_standard_blake3() {
-        for leaf in [64usize, 128, 256, 512, 1024] {
+        for leaf in [64usize, 128, 192, 256, 384, 512, 768, 1024] {
             let n_leaves = 37usize;
             let data: Vec<u8> = (0..n_leaves * leaf).map(|i| (i * 17 + 3) as u8).collect();
             let mut out: Vec<std::mem::MaybeUninit<Hash>> =
