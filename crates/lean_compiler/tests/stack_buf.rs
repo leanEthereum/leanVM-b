@@ -94,10 +94,43 @@ def main():
     }
 }
 
-/// Each four-word heap bridge uses the three-word bundled dereference plus one
-/// scalar tail access, both for BLAKE3 inputs and its heap output.
+/// Inline lists are useful when only half of a BLAKE3 input is live. Adjacent
+/// words must be forwarded directly and the zero half shared, rather than
+/// allocating a four-word staging buffer in the function frame.
 #[test]
-fn blake3_heap_bridges_bundle_three_word_prefixes() {
+fn blake3_inline_list_forwards_chunks() {
+    let src = "\
+def main():
+    hash_pair(5, 7)
+    return
+
+def hash_pair(a, b):
+    out = StackBuf(4)
+    blake3([a, b, 0, 0], [a, b, 0, 0], out)
+    return
+";
+    let program = compile(&parse(src).expect("parse"));
+    let hash = program
+        .prog
+        .iter()
+        .find_map(|op| match *op {
+            Op::Blake3 { ins, .. } => Some(ins),
+            _ => None,
+        })
+        .expect("one BLAKE3 instruction");
+    assert_eq!(hash[0], hash[2], "both live chunks share the argument pair");
+    assert_eq!(hash[1], hash[3], "both padding chunks share the zero pair");
+    assert_eq!(
+        hash[1],
+        hash[0] + 6,
+        "only the output and shared zero pair occupy locals"
+    );
+}
+
+/// Each four-word heap bridge uses two native two-word dereferences, both for
+/// BLAKE3 inputs and its heap output.
+#[test]
+fn blake3_heap_bridges_use_two_word_transfers() {
     let src = "\
 def main():
     a = HeapBuf(4)
@@ -114,15 +147,15 @@ def main():
         program
             .prog
             .iter()
-            .filter(|op| matches!(op, Op::DerefExt { .. }))
+            .filter(|op| matches!(op, Op::Deref128 { .. }))
             .count(),
-        3,
-        "two input prefixes and one output prefix"
+        6,
+        "two transfers for each of two inputs and one output"
     );
     assert_eq!(
         program.prog.iter().filter(|op| matches!(op, Op::Deref { .. })).count(),
-        7,
-        "four initialization stores plus three bridge tails"
+        4,
+        "only the four initialization stores remain scalar"
     );
     assert_eq!(
         program.prog.iter().filter(|op| matches!(op, Op::Blake3 { .. })).count(),

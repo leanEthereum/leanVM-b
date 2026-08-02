@@ -308,10 +308,10 @@ def emul(a: Ext, b: Ext):
 
 @inline
 def emul_base(x, value: Ext):
-    # Multiplication by the embedded F64 value [x, 0, 0] is componentwise in
-    # the F192/F64 tower. Three base MULs avoid assembling a temporary
-    # three-word extension operand and then issuing MUL_EXT.
-    out = [x * value[0], x * value[1], x * value[2]]
+    # The shared MUL_192 table has a base-scalar mode: one row scales all three
+    # limbs without materializing [x, 0, 0].
+    out = StackBuf(3)
+    mul_192_base(x, value, out)
     return out
 
 
@@ -387,7 +387,15 @@ def ext_air_constraint(col_evals, eta: Ext, is_mul: Const):
         result = eadd(va, vb)
     else:
         result = emul(va, vb)
-    return epoly4(eta, c0, c1, c2, eadd(vc, result))
+    c3 = eadd(vc, result)
+    if is_mul == 0:
+        out = epoly4(eta, c0, c1, c2, c3)
+    else:
+        full_a = eadd([1, 0, 0], sload(col_evals, 29))
+        c4 = eadd(sload(col_evals, 9), emul(full_a, sload(col_evals, 27)))
+        c5 = eadd(sload(col_evals, 10), emul(full_a, sload(col_evals, 28)))
+        out = epoly6(eta, c0, c1, c2, c3, c4, c5)
+    return out
 
 
 @inline
@@ -2194,8 +2202,9 @@ def verify_sub(pi_0, pi_1, pi_2, pi_3, seed_0, seed_1, seed_2, seed_3, g_logs_po
             c0 = eadd(sload(col_evals, 5), emul(fp, sload(col_evals, 2)))
             c1 = eadd(sload(col_evals, 6), emul(sload(col_evals, 8), sload(col_evals, 3)))
             c2 = eadd(sload(col_evals, 7), emul(fp, sload(col_evals, 4)))
-            v2 = combine_tower_limbs(sload(col_evals, 9), sload(col_evals, 10), sload(col_evals, 11))
-            v3 = combine_tower_limbs(sload(col_evals, 12), sload(col_evals, 13), sload(col_evals, 14))
+            width3 = sload(col_evals, 23)
+            v2 = combine_tower_limbs(sload(col_evals, 9), sload(col_evals, 10), emul(width3, sload(col_evals, 11)))
+            v3 = combine_tower_limbs(sload(col_evals, 12), sload(col_evals, 13), emul(width3, sload(col_evals, 14)))
             c3 = eadd(v2, v3)
             constraint_eval = emul(sload(eta_pows, ETA_OFFSET[t]), epoly4(eta, c0, c1, c2, c3))
         if t == TABLE_JUMP:

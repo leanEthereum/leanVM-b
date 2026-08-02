@@ -15,7 +15,7 @@
 use std::collections::BTreeMap;
 
 use lean_compiler::{compile, parse, parse_with_replacements};
-use lean_vm::cpu::{Program, prove, verify};
+use lean_vm::cpu::{DerefMode, Op, Program, prove, verify};
 use lean_vm::leaf::{Block, Coord};
 use lean_vm::transcript::{Sponge, TraceOp, trace_start, trace_take};
 use pcs::ligerito::log2_ceil;
@@ -80,12 +80,35 @@ fn hash_words(hash: &[u8; 32]) -> [F64; 4] {
 /// traffic, and a final assert tying them together. BOTH loop bounds ride
 /// witness hints ("n_hash", "iters"), so a single program (one bytecode, one
 /// digest) proves runs with wildly different opcode profiles and sizes - the
-/// exact genericity the recursion guest is built for. Exercises every table
-/// (XOR/MUL/SET/DEREF/JUMP/BLAKE3).
+/// exact genericity the recursion guest is built for. A straight-line prelude
+/// deliberately executes every ISA variant, so recursion continuously covers
+/// every instruction relation even when the benchmark loop profile changes.
 fn inner_program() -> Program {
     let src = "from snark_lib import *\n\
+        def cover_scalar(a, b):\n\
+        \x20   product = a * b\n\
+        \x20   return product + a\n\
+        \n\
         def main():\n\
         \x20   p = GEN ** 0\n\
+        \x20   cover_scalar_value = cover_scalar(p[1], p[GEN])\n\
+        \x20   cover_a = [cover_scalar_value, p[GEN], p[GEN ** 2]]\n\
+        \x20   cover_b = [p[GEN], p[GEN ** 2], p[GEN ** 3]]\n\
+        \x20   cover_sum = StackBuf(3)\n\
+        \x20   xor_192(cover_a, cover_b, cover_sum)\n\
+        \x20   cover_product = StackBuf(3)\n\
+        \x20   mul_192(cover_a, cover_b, cover_product)\n\
+        \x20   cover_scaled = StackBuf(3)\n\
+        \x20   mul_192_base(p[1], cover_product, cover_scaled)\n\
+        \x20   cover_ext_heap = HeapBuf(3)\n\
+        \x20   deref_192(cover_ext_heap, cover_scaled)\n\
+        \x20   cover_ext_load = StackBuf(3)\n\
+        \x20   deref_192(cover_ext_heap, cover_ext_load)\n\
+        \x20   cover_zero = [0, 0, 0]\n\
+        \x20   xor_192(cover_scaled, cover_ext_load, cover_zero)\n\
+        \x20   cover_block = [p[1], p[GEN], p[GEN ** 2], p[GEN ** 3]]\n\
+        \x20   cover_hash = HeapBuf(4)\n\
+        \x20   blake3(cover_block, cover_block, cover_hash[0:4])\n\
         \x20   nh = HeapBuf(1)\n\
         \x20   hint_witness(nh[0:1], \"n_hash\")\n\
         \x20   hbound = nh[GEN ** 0]\n\
@@ -128,7 +151,36 @@ fn inner_program() -> Program {
         \x20   prod = out * nz[GEN ** 0]\n\
         \x20   assert prod == 1\n\
         \x20   return\n";
-    compile(&parse(src).expect("parse inner"))
+    let program = compile(&parse(src).expect("parse inner"));
+    let mut seen = [false; 13];
+    for op in &program.prog {
+        match op {
+            Op::Xor { .. } => seen[0] = true,
+            Op::Mul { .. } => seen[1] = true,
+            Op::AddExt { .. } => seen[2] = true,
+            Op::MulExt { .. } => seen[3] = true,
+            Op::MulExtBase { .. } => seen[4] = true,
+            Op::Set { .. } => seen[5] = true,
+            Op::Deref {
+                mode: DerefMode::Cell, ..
+            } => seen[6] = true,
+            Op::Deref {
+                mode: DerefMode::Pc, ..
+            } => seen[7] = true,
+            Op::Deref {
+                mode: DerefMode::Fp, ..
+            } => seen[8] = true,
+            Op::Deref128 { .. } => seen[9] = true,
+            Op::DerefExt { .. } => seen[10] = true,
+            Op::Jump { .. } => seen[11] = true,
+            Op::Blake3 { .. } => seen[12] = true,
+        }
+    }
+    assert!(
+        seen.into_iter().all(|covered| covered),
+        "inner recursion fixture must cover every ISA variant and DEREF mode"
+    );
+    program
 }
 
 /// Prove one run of the inner program: `hashes` BLAKE3 compressions then
@@ -163,6 +215,10 @@ fn prove_inner(
     program.set_witness("n_hash", vec![vec![g_pow(hashes)]]);
     program.set_witness("iters", vec![vec![g_pow(iters)]]);
     let (proof, stats) = prove(&program, pi, log_inv_rate);
+    assert!(
+        stats.counts.iter().all(|&count| count > 0),
+        "inner recursion fixture must execute every instruction table"
+    );
     eprintln!(
         "[inner] cycles={} committed=2^{}",
         pretty_integer(stats.cycles),
@@ -2144,7 +2200,15 @@ fn run_recursion_with_rates(
         pretty_f64(stats.cycles as f64 / total_inner_cycles as f64)
     );
     for (name, &c) in [
-        "XOR", "MUL", "XOR192", "MUL192", "SET", "DEREF", "DEREF192", "JUMP", "BLAKE3",
+        "XOR",
+        "MUL",
+        "XOR192",
+        "MUL192",
+        "SET",
+        "DEREF",
+        "DEREF128/192",
+        "JUMP",
+        "BLAKE3",
     ]
     .iter()
     .zip(&stats.counts)

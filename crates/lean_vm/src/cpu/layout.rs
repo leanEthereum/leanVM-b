@@ -380,12 +380,15 @@ pub fn layout(
     let max_op = prog
         .iter()
         .map(|op| match *op {
-            Op::Xor { a, b, c } | Op::Mul { a, b, c } | Op::AddExt { a, b, c } | Op::MulExt { a, b, c } => {
-                a.max(b).max(c)
-            }
+            Op::Xor { a, b, c }
+            | Op::Mul { a, b, c }
+            | Op::AddExt { a, b, c }
+            | Op::MulExt { a, b, c }
+            | Op::MulExtBase { a, b, c } => a.max(b).max(c),
             Op::Blake3 { ins, cv, out, .. } => ins[0].max(ins[1]).max(ins[2]).max(ins[3]).max(cv).max(out),
             Op::Set { o, .. } => o,
             Op::Deref { alpha, beta, gamma, .. } => alpha.max(beta).max(gamma),
+            Op::Deref128 { alpha, beta, gamma } => alpha.max(beta).max(gamma),
             Op::DerefExt { alpha, beta, gamma } => alpha.max(beta).max(gamma),
             Op::Jump { oc, od, of } => oc.max(od).max(of),
         })
@@ -399,8 +402,10 @@ pub fn layout(
         Op::Mul { .. } => OP_MUL,
         Op::AddExt { .. } => tables::OP_ADD_EXT,
         Op::MulExt { .. } => tables::OP_MUL_EXT,
+        Op::MulExtBase { .. } => tables::OP_MUL_EXT,
         Op::Set { .. } => OP_SET,
         Op::Deref { .. } => OP_DEREF,
+        Op::Deref128 { .. } => tables::OP_DEREF_EXT,
         Op::DerefExt { .. } => tables::OP_DEREF_EXT,
         Op::Jump { .. } => OP_JUMP,
         Op::Blake3 { .. } => OP_BLAKE3,
@@ -410,6 +415,7 @@ pub fn layout(
             Op::Xor { a, b, c } | Op::Mul { a, b, c } | Op::AddExt { a, b, c } | Op::MulExt { a, b, c } => {
                 [g_at(a), g_at(b), g_at(c), F64::ZERO, F64::ZERO]
             }
+            Op::MulExtBase { a, b, c } => [g_at(a), g_at(b), g_at(c), F64::ONE, F64::ZERO],
             Op::Set { o, k } => [g_at(o), k, F64::ZERO, F64::ZERO, F64::ZERO],
             Op::Deref {
                 alpha,
@@ -417,7 +423,8 @@ pub fn layout(
                 gamma,
                 mode,
             } => [g_at(alpha), g_at(beta), g_at(gamma), mode.f_pc(), mode.f_fp()],
-            Op::DerefExt { alpha, beta, gamma } => [g_at(alpha), g_at(beta), g_at(gamma), F64::ZERO, F64::ZERO],
+            Op::Deref128 { alpha, beta, gamma } => [g_at(alpha), g_at(beta), g_at(gamma), F64::ZERO, F64::ZERO],
+            Op::DerefExt { alpha, beta, gamma } => [g_at(alpha), g_at(beta), g_at(gamma), F64::ONE, F64::ZERO],
             Op::Jump { oc, od, of } => [g_at(oc), g_at(od), g_at(of), F64::ZERO, F64::ZERO],
             Op::Blake3 { ins, cv, .. } => [g_at(ins[0]), g_at(ins[1]), g_at(ins[2]), g_at(ins[3]), g_at(cv)],
         }
@@ -652,6 +659,11 @@ impl Program {
             tr.jump.len(),
             tr.blake3.len(),
         ];
+        if prof {
+            let deref128 = tr.deref_ext.iter().filter(|row| row.width3 == F64::ZERO).count();
+            let deref192 = tr.deref_ext.len() - deref128;
+            eprintln!("[build] deref width : {deref128:>10} x128, {deref192:>10} x192");
+        }
         assert!(
             row_counts.iter().all(|&r| r <= 1 << MAX_LOG_ROWS),
             "a table exceeds 2^{MAX_LOG_ROWS} rows"

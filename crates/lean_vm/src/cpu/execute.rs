@@ -90,7 +90,7 @@ impl Program {
         // order-independent, so the value can be decided at the end (leanVM's
         // end-of-execution deref-hint resolution).
         let mut deferred: Vec<(usize, usize, u32)> = Vec::new();
-        let mut deferred_ext: Vec<(usize, usize, u32)> = Vec::new();
+        let mut deferred_wide: Vec<(usize, usize, u32, usize)> = Vec::new();
 
         // Attribution aid: LEANVM_PC_HISTO=1 dumps per-pc execution counts
         // alongside the disassembly after the run, tying cycles to source.
@@ -442,13 +442,14 @@ impl Program {
                     }
                     pc += 1;
                 }
-                Op::AddExt { a, b, c } | Op::MulExt { a, b, c } => {
+                Op::AddExt { a, b, c } | Op::MulExt { a, b, c } | Op::MulExtBase { a, b, c } => {
                     let is_add = matches!(self.prog[pc as usize], Op::AddExt { .. });
+                    let base_a = matches!(self.prog[pc as usize], Op::MulExtBase { .. });
                     let (aa, ab, ac) = (fp + a, fp + b, fp + c);
                     let is_set = |w: &[bool], cell: u32| {
                         (0..3).all(|k| ((cell + k) as usize) < w.len() && w[(cell + k) as usize])
                     };
-                    if is_set(&written, ac) {
+                    if !base_a && is_set(&written, ac) {
                         let (ha, hb) = (is_set(&written, aa), is_set(&written, ab));
                         if ha ^ hb {
                             let vc = get_ext(&mem, &written, ac);
@@ -462,7 +463,12 @@ impl Program {
                             put_ext(&mut mem, &mut written, &mut mem_count, if ha { ab } else { aa }, v);
                         }
                     }
-                    let va = get_ext(&mem, &written, aa);
+                    ensure(&mut mem, &mut written, &mut mem_count, aa as usize + 2);
+                    let va = if base_a {
+                        F192::from(get(&mem, &written, aa))
+                    } else {
+                        get_ext(&mem, &written, aa)
+                    };
                     let vb = get_ext(&mem, &written, ab);
                     put_ext(
                         &mut mem,
@@ -485,6 +491,7 @@ impl Program {
                         aa,
                         ab,
                         ac,
+                        base_a: if base_a { F64::ONE } else { F64::ZERO },
                         ra,
                         rb,
                         rc,
@@ -612,19 +619,22 @@ impl Program {
                     });
                     pc += 1;
                 }
-                Op::DerefExt { alpha, beta, gamma } => {
+                Op::Deref128 { alpha, beta, gamma } | Op::DerefExt { alpha, beta, gamma } => {
+                    let width = if matches!(self.prog[pc as usize], Op::DerefExt { .. }) {
+                        3
+                    } else {
+                        2
+                    };
+                    let kind = if width == 3 { "DEREF_EXT" } else { "DEREF_128" };
                     let a1 = fp + alpha;
                     let p = get(&mem, &written, a1);
-                    let p_addr = as_addr(p).expect("DEREF_EXT pointer is not a base-field word");
+                    let p_addr = as_addr(p).unwrap_or_else(|| panic!("{kind} pointer is not a base-field word"));
                     let base = match gmap.get(&p_addr) {
                         Some(&b) => b,
                         None => {
                             grow_gpow(&mut gpow, &mut gmap, 1 << MIN_LOG_MEM);
                             *gmap.get(&p_addr).unwrap_or_else(|| {
-                                panic!(
-                                    "DEREF_EXT pointer is not a small g-power at pc {pc}: 0x{:016x}",
-                                    p_addr.0
-                                )
+                                panic!("{kind} pointer is not a small g-power at pc {pc}: 0x{:016x}", p_addr.0)
                             })
                         }
                     };
@@ -633,14 +643,12 @@ impl Program {
                     ensure(&mut mem, &mut written, &mut mem_count, a2 + 2);
                     ensure(&mut mem, &mut written, &mut mem_count, a3 as usize + 2);
                     let mut unresolved = false;
-                    for k in 0..3 {
-                        let h2 = written[a2 + k];
-                        let h3 = written[a3 as usize + k];
-                        match (h2, h3) {
+                    for k in 0..width {
+                        match (written[a2 + k], written[a3 as usize + k]) {
                             (true, true) => assert_eq!(
                                 mem[a2 + k],
                                 mem[a3 as usize + k],
-                                "DEREF_EXT mismatch at pc {pc}, limb {k}"
+                                "{kind} mismatch at pc {pc}, limb {k}"
                             ),
                             (true, false) => {
                                 let v = mem[a2 + k];
@@ -654,12 +662,10 @@ impl Program {
                         }
                     }
                     if unresolved {
-                        deferred_ext.push((deref_ext.len(), a2, a3));
+                        deferred_wide.push((deref_ext.len(), a2, a3, width));
                     }
-                    let v2e = get_ext(&mem, &written, a2 as u32);
-                    let v3e = get_ext(&mem, &written, a3);
-                    let v2 = [F64(v2e.c0), F64(v2e.c1), F64(v2e.c2)];
-                    let v3 = [F64(v3e.c0), F64(v3e.c1), F64(v3e.c2)];
+                    let v2 = std::array::from_fn(|k| get(&mem, &written, a2 as u32 + k as u32));
+                    let v3 = std::array::from_fn(|k| get(&mem, &written, a3 + k as u32));
                     let r1 = bump_access_count(&mut mem, &mut written, &mut mem_count, a1);
                     let mut bump3 = |base: u32| {
                         std::array::from_fn(|k| {
@@ -674,6 +680,7 @@ impl Program {
                         alpha,
                         beta,
                         gamma,
+                        width3: if width == 3 { F64::ONE } else { F64::ZERO },
                         a1,
                         p,
                         a2,
@@ -873,9 +880,9 @@ impl Program {
                 }
                 v.is_none()
             });
-            deferred_ext.retain(|&(i, a2, a3)| {
+            deferred_wide.retain(|&(i, a2, a3, width)| {
                 let mut unresolved = false;
-                for k in 0..3 {
+                for k in 0..width {
                     let h2 = written[a2 + k];
                     let h3 = written[a3 as usize + k];
                     let v = match (h2, h3) {
@@ -883,7 +890,7 @@ impl Program {
                             assert_eq!(
                                 mem[a2 + k],
                                 mem[a3 as usize + k],
-                                "deferred DEREF_EXT mismatch, limb {k}"
+                                "deferred wide DEREF mismatch, limb {k}"
                             );
                             Some(mem[a2 + k])
                         }
@@ -920,8 +927,8 @@ impl Program {
                     put(&mut mem, &mut written, &mut mem_count, a2 as u32, F64::ZERO);
                     continue;
                 }
-                let seed = deferred_ext.iter().find_map(|&(_, a2, a3)| {
-                    (0..3)
+                let seed = deferred_wide.iter().find_map(|&(_, a2, a3, width)| {
+                    (0..width)
                         .find(|&k| !written[a2 + k] && !written[a3 as usize + k])
                         .map(|k| a2 + k)
                 });
@@ -930,6 +937,17 @@ impl Program {
                     continue;
                 }
                 break;
+            }
+        }
+
+        // A 128-bit row shares the three-lane memory plumbing but does not
+        // constrain lane 2 equal. Its two padding reads must nevertheless carry
+        // the final write-once memory values (a later instruction may have
+        // initialized either cell after this row executed).
+        for row in &mut deref_ext {
+            if row.width3 == F64::ZERO {
+                row.v2[2] = mem[row.a2 + 2];
+                row.v3[2] = mem[row.a3 as usize + 2];
             }
         }
 

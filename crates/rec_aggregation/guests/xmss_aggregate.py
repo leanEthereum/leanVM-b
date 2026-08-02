@@ -273,22 +273,13 @@ def walk(value_0, value_1, chain_tweaks, pp_0, pp_1, k: Const):
     # Walk WOTS chain steps k..CHAIN_STEPS-1: value' = H(tweak|pp, value|0).
     # Step s reads its tweak at cell s off the chain's subtable: a compile-time
     # (beta) offset, one DEREF each; no cursor to advance.
-    block = StackBuf(WORDS_PER_BLOCK)
-    block[0] = value_0
-    block[1] = value_1
-    block[2] = 0
-    block[3] = 0
+    current_0 = value_0
+    current_1 = value_1
     for s in unroll(k, CHAIN_STEPS):
-        step_tweak = StackBuf(WORDS_PER_BLOCK)
-        step_tweak[0] = chain_tweaks[GEN ** (WORDS_PER_VALUE * s)]
-        step_tweak[1] = chain_tweaks[GEN ** (WORDS_PER_VALUE * s + 1)]
-        step_tweak[2] = pp_0
-        step_tweak[3] = pp_1
+        tweak_0 = chain_tweaks[GEN ** (WORDS_PER_VALUE * s)]
+        tweak_1 = chain_tweaks[GEN ** (WORDS_PER_VALUE * s + 1)]
         out = StackBuf(WORDS_PER_BLOCK)
-        blake3(step_tweak, block, out, block_len=48)
-        block = StackBuf(WORDS_PER_BLOCK)
-        block[0] = out[0]
-        block[1] = out[1]
-        block[2] = 0
-        block[3] = 0
-    return block[0], block[1], k
+        blake3([tweak_0, tweak_1, pp_0, pp_1], [current_0, current_1, 0, 0], out, block_len=48)
+        current_0 = out[0]
+        current_1 = out[1]
+    return current_0, current_1, k

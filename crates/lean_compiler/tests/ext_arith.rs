@@ -194,6 +194,65 @@ def main():
 }
 
 #[test]
+fn extension_square_uses_base_field_identity() {
+    let src = r#"
+def main():
+    a = [5, 7, 11]
+    square = StackBuf(3)
+    mul_192(a, a, square)
+    out = GEN ** 0
+    out[1] = square[0]
+    out[GEN] = square[1]
+    out[GEN ** 2] = square[2]
+    return
+"#;
+    let program = compile(&parse(src).expect("parse"));
+    let expected = words(F192::new(5, 7, 11) * F192::new(5, 7, 11));
+    program.execute([expected[0], expected[1], expected[2], F64::ZERO]);
+    assert_eq!(
+        program
+            .prog
+            .iter()
+            .filter(|op| matches!(op, Op::Mul { a, b, .. } if a == b))
+            .count(),
+        3,
+        "the three coefficient squares use base-field multiplication"
+    );
+    assert_eq!(program.prog.iter().filter(|op| matches!(op, Op::Xor { .. })).count(), 1);
+    assert_eq!(
+        program.prog.iter().filter(|op| matches!(op, Op::MulExt { .. })).count(),
+        0
+    );
+}
+
+#[test]
+fn implicit_embedded_base_product_uses_three_base_multiplications() {
+    let src = r#"
+def main():
+    scalar = [5, 0, 0]
+    value = [7, 11, 13]
+    product = StackBuf(3)
+    mul_192(scalar, value, product)
+    out = GEN ** 0
+    out[1] = product[0]
+    out[GEN] = product[1]
+    out[GEN ** 2] = product[2]
+    return
+"#;
+    let program = compile(&parse(src).expect("parse"));
+    let expected = words(F192::from(F64(5)) * F192::new(7, 11, 13));
+    program.execute([expected[0], expected[1], expected[2], F64::ZERO]);
+    assert!(
+        program.prog.iter().filter(|op| matches!(op, Op::Mul { .. })).count() >= 3,
+        "the three coefficients use base-field multiplication"
+    );
+    assert_eq!(
+        program.prog.iter().filter(|op| matches!(op, Op::MulExt { .. })).count(),
+        0
+    );
+}
+
+#[test]
 fn extension_deref_stores_loads_and_proves() {
     let src = r#"
 def main():

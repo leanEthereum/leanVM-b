@@ -129,6 +129,11 @@ fn implicit_run_operands(code: &[LInstr]) -> std::collections::HashSet<Off> {
                 add(*a, 3);
                 add(*b, 3);
             }
+            LOp::MulExtBase { a, b, .. } => {
+                add(*a, 3);
+                add(*b, 3);
+            }
+            LOp::Deref128 { gamma, .. } => add(*gamma, 2),
             LOp::DerefExt { gamma, .. } => add(*gamma, 3),
             LOp::Blake3 { ins, cv, .. } => {
                 for &chunk in ins {
@@ -152,7 +157,7 @@ fn write_counts(code: &[LInstr]) -> HashMap<Off, u32> {
         match &ins.op {
             LOp::Set { o, .. } => bump(*o),
             LOp::Xor { c, .. } | LOp::Mul { c, .. } => bump(*c),
-            LOp::AddExt { c, .. } | LOp::MulExt { c, .. } => {
+            LOp::AddExt { c, .. } | LOp::MulExt { c, .. } | LOp::MulExtBase { c, .. } => {
                 for k in 0..3 {
                     bump(*c + k);
                 }
@@ -163,6 +168,11 @@ fn write_counts(code: &[LInstr]) -> HashMap<Off, u32> {
             LOp::Deref { gamma, mode, .. } => {
                 if matches!(mode, super::DerefMode::Cell) {
                     bump(*gamma);
+                }
+            }
+            LOp::Deref128 { gamma, .. } => {
+                for k in 0..2 {
+                    bump(*gamma + k);
                 }
             }
             LOp::DerefExt { gamma, .. } => {
@@ -226,7 +236,11 @@ fn rewrite_reads(ins: &mut LInstr, subst: &HashMap<Off, Off>) {
     };
     match &mut ins.op {
         LOp::Set { .. } => {}
-        LOp::Xor { a, b, .. } | LOp::Mul { a, b, .. } | LOp::AddExt { a, b, .. } | LOp::MulExt { a, b, .. } => {
+        LOp::Xor { a, b, .. }
+        | LOp::Mul { a, b, .. }
+        | LOp::AddExt { a, b, .. }
+        | LOp::MulExt { a, b, .. }
+        | LOp::MulExtBase { a, b, .. } => {
             map(a);
             map(b);
         }
@@ -236,7 +250,7 @@ fn rewrite_reads(ins: &mut LInstr, subst: &HashMap<Off, Off>) {
                 map(gamma);
             }
         }
-        LOp::DerefExt { alpha, gamma, .. } => {
+        LOp::Deref128 { alpha, gamma, .. } | LOp::DerefExt { alpha, gamma, .. } => {
             map(alpha);
             map(gamma);
         }

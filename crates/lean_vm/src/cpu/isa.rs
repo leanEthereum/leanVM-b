@@ -28,6 +28,13 @@ pub enum Op {
         b: u32,
         c: u32,
     },
+    /// Multiply an embedded base-field scalar by a three-word extension value.
+    /// The shared MUL_EXT row reads `a..a+3`, but only lane 0 participates.
+    MulExtBase {
+        a: u32,
+        b: u32,
+        c: u32,
+    },
     Set {
         o: u32,
         /// The 64-bit base-field immediate stored into `mem[fp·o]`.
@@ -38,6 +45,13 @@ pub enum Op {
         beta: u32,
         gamma: u32,
         mode: DerefMode,
+    },
+    /// Equality between two consecutive 64-bit words at
+    /// `mem[mem[fp+alpha]·g^beta .. +2]` and `mem[fp+gamma .. +2]`.
+    Deref128 {
+        alpha: u32,
+        beta: u32,
+        gamma: u32,
     },
     /// Equality between three consecutive heap words at
     /// `mem[mem[fp+alpha]·g^beta .. +3]` and `mem[fp+gamma .. +3]`.

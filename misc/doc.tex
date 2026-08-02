@@ -65,7 +65,7 @@ A \emph{memory word}, immediate, hash lane, address, program counter $\pc$, fram
 \]
 Since addresses are exponents of $\gen$, the frame is the contiguous block $\gen^{\mathrm{base}},\gen^{\mathrm{base}+1},\dots$, and adding the offset $j$ to the base exponent is, in the field, a single multiplication $\fp\cdot o$.
 
-\paragraph{Instruction set.} The machine implements nine instructions. Below, $o,o_A,\dots$ are fp-relative references and $k$ a base-field immediate.
+\paragraph{Instruction set.} The machine implements nine instruction-table families; two have bytecode-bound narrow/scalar modes used by the 64-bit representation. Below, $o,o_A,\dots$ are fp-relative references and $k$ a base-field immediate.
 \begin{center}
 \begin{tabularx}{\textwidth}{@{}llX@{}}
 \hline
@@ -74,10 +74,10 @@ Instruction & Operands & Semantics\\
 \texttt{XOR}           & $[o_A,o_B,o_C]$ & $\loc{o_C}=\loc{o_A}+\loc{o_B}$ in $\K$\\
 \texttt{MUL}           & $[o_A,o_B,o_C]$ & $\loc{o_C}=\loc{o_A}\cdot\loc{o_B}$ in $\K$\\
 \texttt{XOR\_192}      & $[o_A,o_B,o_C]$ & three-word extension addition\\
-\texttt{MUL\_192}      & $[o_A,o_B,o_C]$ & three-word extension multiplication\\
+\texttt{MUL\_192}      & $[o_A,o_B,o_C;m]$ & extension multiplication; $m=1$ embeds scalar $A$\\
 \texttt{SET\_CONSTANT} & $[o,k]$         & $\loc{o}=k$ \quad($k\in\K$)\\
 \texttt{DEREF}         & $[\alpha,\beta,\gamma;\,s]$ & $\mem[\loc{\alpha}\cdot\beta]=\srcsel{s}$\\
-\texttt{DEREF\_192}    & $[\alpha,\beta,\gamma]$ & three-word equality at $\loc{\alpha}\cdot\beta$ and $\loc{\gamma}$\\
+\texttt{DEREF\_WIDE}   & $[\alpha,\beta,\gamma;w]$ & equality of $2+w$ consecutive words\\
 \texttt{JUMP}          & $[o_c,o_d,o_f]$ & conditional jump (below)\\
 \texttt{BLAKE3}        & $[o_{A,0},o_{A,1},o_{B,0},o_{B,1},o_{CV},o_C;m_0,m_1]$ & $c=\mathrm{BLAKE3}(a,b)$ (below)\\
 \hline
@@ -99,7 +99,7 @@ For \texttt{XOR\_192} and \texttt{MUL\_192}, each operand reference names its fi
 \]
 The \texttt{deref\_pc} and \texttt{deref\_fp} modes let a caller save its return address and frame so a callee can later return and restore them, the basis for function calls. The skip of two is the call's return target: place the \texttt{DEREF} that saves $\gen^{2}\cdot\pc$ immediately before the \texttt{JUMP} that transfers control, and $\gen^{2}\cdot\pc$ names the instruction just after that \texttt{JUMP}.
 
-\texttt{DEREF\_192} is the three-word cell mode: it equates the heap run beginning at $\loc{\alpha}\beta$ with the local run beginning at $\loc{\gamma}$. Only the two base addresses are committed; their successors are virtual multiples by $\gen$ and $\gen^2$. Write-once witness generation fills whichever run is unset.
+\texttt{DEREF\_WIDE} equates the two-word ($w=0$, internally \texttt{DEREF\_128}) or three-word ($w=1$, \texttt{DEREF\_192}) heap run beginning at $\loc{\alpha}\beta$ with the local run beginning at $\loc{\gamma}$. The width is read from public bytecode. Only the base addresses are committed; successors are virtual multiples by $\gen$ and $\gen^2$. In two-word mode the third accesses remain read-only memory-bus accesses but are excluded from the equality. Write-once witness generation fills whichever active run is unset.
 
 \texttt{JUMP} reads a condition $c=\loc{o_c}\in\K$ and branches on whether it is zero. When $c\neq0$ it transfers control, $\pc\gets\loc{o_d}$ and $\fp\gets\loc{o_f}$; when $c=0$ it falls through, $\pc\gets\gen\cdot\pc$ and $\fp\gets\fp$.
 
@@ -397,10 +397,14 @@ Each operand is three consecutive base words. The table commits one address
 $a_X=\fp o_X$ per operand and uses $\gen a_X,\gen^2a_X$ virtually for the
 remaining coordinates. It performs nine memory accesses, reassembles
 $v_X=v_{X,0}+v_{X,1}y+v_{X,2}y^2$, and constrains respectively
-$v_C=v_A+v_B$ or $v_C=v_Av_B$ in $\E$. The bytecode shape remains the opcode
-and three starting offsets. In the zkDSL, \texttt{xor\_192} exposes addition
-and \texttt{div\_192} is a checked multiplication with the quotient
-back-solved by witness generation.
+$v_C=v_A+v_B$ or $v_C=v_Av_B$ in $\E$. The multiplication table also has a
+public-bytecode mode $m=1$ for $v_A\in\K$: only $v_{A,0}$ participates in the
+product, while the other two memory cells remain ordinary read-only memory-bus
+accesses. Two quadratic constraints tie the effective upper limbs to the
+memory values when $m=0$ and to zero when $m=1$, so the AIR remains degree two.
+In the zkDSL, \texttt{xor\_192} exposes addition,
+\texttt{mul\_192\_base} exposes the scalar mode, and \texttt{div\_192} is a
+checked multiplication with the quotient back-solved by witness generation.
 
 \subsection{\texttt{SET\_CONSTANT}}\label{sec:tab-set}
 
@@ -440,15 +444,24 @@ which gives $v_3$, $\gen^{2}\cdot\pc$, or $\fp$ at the three flag settings. All 
   \end{itemize}
 \end{itemize}
 
-\subsection{\texttt{DEREF\_192}}\label{sec:tab-deref-ext}
+\subsection{\texttt{DEREF\_WIDE}}\label{sec:tab-deref-ext}
 
-\texttt{DEREF\_192} bundles the three scalar cell-mode dereferences used for an extension word. It reads the pointer $p$ at $a_1=\fp\alpha$, the heap run $(v_{2,0},v_{2,1},v_{2,2})$ beginning at $a_2=p\beta$, and the local run $(v_{3,0},v_{3,1},v_{3,2})$ beginning at $a_3=\fp\gamma$. The successors $\gen a_2,\gen^2a_2$ and $\gen a_3,\gen^2a_3$ are virtual columns.
-Its constraints are the three base-address relations and the packed equality
+\texttt{DEREF\_WIDE} bundles consecutive scalar cell-mode dereferences. It
+reads the pointer $p$ at $a_1=\fp\alpha$, the heap run beginning at
+$a_2=p\beta$, and the local run beginning at $a_3=\fp\gamma$. The successors
+$\gen a_2,\gen^2a_2$ and $\gen a_3,\gen^2a_3$ are virtual columns. A width bit
+$w$, fixed by public bytecode, selects native two-word \texttt{DEREF\_128}
+($w=0$) or three-word \texttt{DEREF\_192} ($w=1$). Its constraints are the
+three base-address relations and the packed equality
 \[
-  \operatorname{ext}(v_{2,0},v_{2,1},v_{2,2})
-  =\operatorname{ext}(v_{3,0},v_{3,1},v_{3,2}).
+  v_{2,0}+yv_{2,1}+wy^2v_{2,2}
+  =v_{3,0}+yv_{3,1}+wy^2v_{3,2}.
 \]
-The row flushes one pointer access and all six run-cell accesses to memory, plus the usual state and bytecode interactions. Thus one VM cycle transfers one three-word extension value without weakening the 64-bit memory-word invariant.
+The row always flushes one pointer access and all six run-cell accesses to
+memory, plus the usual state and bytecode interactions. In two-word mode the
+third cells are independently memory-bound padding reads, but are not equated.
+Thus one VM cycle transfers either native 128-bit data or one three-word
+extension value without weakening the 64-bit memory-word invariant.
 
 \subsection{\texttt{JUMP}}\label{sec:tab-jump}
 
