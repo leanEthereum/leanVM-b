@@ -1997,22 +1997,6 @@ class JaggedClaimBatch:
     scale: F128
 
 
-def prefix_indicator_eval(height: int, point: Sequence[F128]) -> F128:
-    """Evaluate the MLE of ``1[index < height]`` at ``point``."""
-    require(0 <= height <= 1 << len(point), "Jagged prefix exceeds its logical cube")
-    if height == 1 << len(point):
-        return ONE
-    less, equal = ZERO, ONE
-    for bit in range(len(point) - 1, -1, -1):
-        x = point[bit]
-        if height >> bit & 1:
-            less += equal * (ONE + x)
-            equal *= x
-        else:
-            equal *= ONE + x
-    return less
-
-
 def jagged_indicator_with_weights(
     row_weights: Sequence[tuple[F128, F128]],
     start: int,
@@ -2469,8 +2453,9 @@ def verify_execution(statement: dict[str, Any], proof: Proof) -> None:
             placement = layout.placements[claim.column]
             require(not placement.virtual, "claim targets an uncommitted column")
             require(len(claim.point) == placement.variables, "column claim dimension mismatch")
-            suffix = ONE + prefix_indicator_eval(placement.height, claim.point)
-            adjusted_value = claim.value + layout.padding[claim.column] * suffix
+            # The committed prefix is the column offset by its pad value, so the
+            # logical evaluation is the committed one plus that constant.
+            adjusted_value = claim.value + layout.padding[claim.column]
             row_point = (
                 _selector_point(placement.slot, placement.block_width_log) + claim.point
             )

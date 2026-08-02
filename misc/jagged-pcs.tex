@@ -50,8 +50,8 @@ Commit instead, once, to the concatenation of the real prefixes with the padding
 dense $q:\cube m\to\F$ with $2^m$ near $\sum_i h_i$. Each column then occupies a known
 interval of the dense cube, and what is left to build is a reduction carrying a claim
 $\pol{P_i}(\zeta)=v$ on a padded column to a weighted claim $\inner Wq=C$ on that single
-commitment, with $W$ fixed by the interval and evaluable by the verifier in $O(m)$, plus a
-padding term the verifier computes for itself. This is the jagged PCS of~\cite{jagged}.
+commitment, with $W$ fixed by the interval and evaluable by the verifier in $O(m)$, plus the
+column's pad value. This is the jagged PCS of~\cite{jagged}.
 
 Section~\ref{sec:layout} fixes the layout and Section~\ref{sec:protocol} states the
 reduction, in full, as one protocol: the padding is discharged in its first step and the
@@ -84,10 +84,14 @@ padding column is introduced. A block of width $B=2^b$ whose columns
 $P_c:\cube k\to\F$, $c\in\cube b$, have logical dimension $k$ and common real height
 $h\le2^k$ is stored row-major at an integer offset $t\ge0$:
 \begin{equation}
-  q\bigl(t+\val c+B\val z\bigr)=P_c(z),\qquad c\in\cube b,\ z\in\cube k,\ \val z<h,
+  q\bigl(t+\val c+B\val z\bigr)=P_c(z)+p_c,\qquad c\in\cube b,\ z\in\cube k,\ \val z<h,
   \label{eq:place}
 \end{equation}
-so the block occupies the interval $[t,e)$ with $e=t+Bh$. Blocks are concatenated with no
+so the block occupies the interval $[t,e)$ with $e=t+Bh$. What is stored is the column
+offset by its own pad value $p_c$, the constant the arithmetization reads at and above $h$.
+The offset column vanishes there, so it is still supported exactly on the committed prefix,
+and Section~\ref{sec:protocol} shows that the offset costs the verifier one field addition
+in place of an evaluation. Blocks are concatenated with no
 alignment gap, and only the last is followed by zero padding, up to
 \[
   m=\lceil\log_2 A\rceil,\qquad A=\sum_{\text{blocks}}Bh .
@@ -109,8 +113,6 @@ $W^{t,e}_u:\cube m\to\F$ is
   W^{t,e}_u(w):=\sum_{\substack{a\in\cube n\\ t+\val a<e}}\Bigl(\prod_{j<n}u_j^{a_j}\Bigr)\bigl[\val w=t+\val a\bigr],
   \label{eq:weight}
 \end{equation}
-and for an integer height $0\le h\le2^k$ the \emph{prefix indicator} $H_h:\cube k\to\F$ is
-$H_h(z):=[\val z<h]$.
 
 One row-weight family serves a whole block. For a block of width $B=2^b$ and dimension
 $k$, claimed at a point $\zeta\in\F^k$, and a batching scalar $\gamma\in\F$, define
@@ -139,9 +141,7 @@ $\pol{P^{\mathrm{log}}_c}(\zeta_c)=v_c$ at points $\zeta_c\in\F^k$ with values $
 per column, where $P^{\mathrm{log}}_c:\cube k\to\F$ agrees with $P_c$ below $h$ and equals
 the public $p_c$ at and above $h$:
 \begin{enumerate}[itemsep=1pt,topsep=2pt]
-\item \emph{(pad)} Both parties replace each claimed value by
-      $C_c:=v_c+p_c\bigl(1+\pol{H_h}(\zeta_c)\bigr)\in\F$, the verifier evaluating
-      $\pol{H_h}$ by~\eqref{eq:prefix} below.
+\item \emph{(pad)} Both parties replace each claimed value by $C_c:=v_c+p_c\in\F$.
 \item \emph{(rank)} $\mathbf V$ observes every $C_c$, then samples $\gamma\leftarrow\F$ and
       gives each block the consecutive integer ranks $\mathrm{rk}(c)=\beta+\val c$,
       $c\in\cube b$, in slot order, distinct blocks receiving disjoint ranges.
@@ -169,11 +169,14 @@ $u(c,\zeta)\in(\F^2)^{b+k}$,
   \label{eq:uslot}
 \end{equation}
 which appears nowhere in the protocol and only here. The proof rests on two identities.
-The first concerns a single slot: splitting the logical column at $h$ and using
-$\val c+B\val z=\val{(c,z)}$ gives
+The first concerns a single slot. Write $R_c:=P^{\mathrm{log}}_c+p_c$, which
+by~\eqref{eq:place} is what the commitment holds on $[0,h)$ and which vanishes at and above
+$h$. The multilinear extension of a constant is that constant, so
+$\pol{P^{\mathrm{log}}_c}(\zeta)=\pol{R_c}(\zeta)+p_c$ at every $\zeta$, independently of
+$h$; and expanding $\pol{R_c}$ over its support, using $\val c+B\val z=\val{(c,z)}$,
 \begin{equation}
-  \pol{P^{\mathrm{log}}_c}(\zeta)=\sum_{\val z<h}\eq(\zeta,z)\,q\bigl(t+\val{(c,z)}\bigr)+p_c\bigl(1+\pol{H_h}(\zeta)\bigr)
-  =\bigl\langle W^{t,e}_{u(c,\zeta)},q\bigr\rangle+p_c\bigl(1+\pol{H_h}(\zeta)\bigr),
+  \pol{P^{\mathrm{log}}_c}(\zeta)=\sum_{\val z<h}\eq(\zeta,z)\,q\bigl(t+\val{(c,z)}\bigr)+p_c
+  =\bigl\langle W^{t,e}_{u(c,\zeta)},q\bigr\rangle+p_c,
   \label{eq:split}
 \end{equation}
 because $\prod_{j<b}u(c,\zeta)_j^{a_j}=[a_{<b}=c]$ selects $a=(c,z)$, the remaining factor is
@@ -198,27 +201,8 @@ is a nonzero polynomial in $\gamma$ of degree below the number of claims.
 \end{proof}
 
 Nothing else is proved about the reduction: it is an identity, and the soundness of the
-opening is that of the PCS, degraded only by the $\gamma$ term above. Two
-evaluations are left for the verifier, $\pol{H_h}$ and $\pol W$.
-
-\paragraph{The prefix indicator.} $\pol{H_h}(\zeta)$ is a two-state pass over $\cube k$, most
-significant bit first, with $\mathsf{lt}$ (already smaller) and $\mathsf{tie}$ (equal so far)
-starting at $(0,1)$:
-\begin{equation}
-  (\mathsf{lt},\mathsf{tie})\longmapsto
-  \begin{cases}
-    \bigl(\mathsf{lt},\ \mathsf{tie}(1+\zeta_j)\bigr) & h_j=0,\\[2pt]
-    \bigl(\mathsf{lt}+\mathsf{tie}(1+\zeta_j),\ \mathsf{tie}\,\zeta_j\bigr) & h_j=1,
-  \end{cases}
-  \label{eq:prefix}
-\end{equation}
-and $\pol{H_h}(\zeta)=\mathsf{lt}$ at the end ($\equiv1$ when $h=2^k$). A circuit verifier,
-whose $h_j$ are Boolean-constrained field elements rather than a branch, runs the same pass
-branch-free at two multiplications per bit: set $P:=\mathsf{tie}\,(1+h_j+\zeta_j)$, then
-$\mathsf{lt}\mathrel{+}=h_j(\mathsf{tie}+P)$ and $\mathsf{tie}:=P$, which reproduces both
-cases because $h_j(\mathsf{tie}+P)=h_j\,\mathsf{tie}\,(1+\zeta_j)$ for Boolean $h_j$. The
-height here is the per-column row count $h$, not $Bh$. The rest of the note evaluates
-$\pol W$.
+opening is that of the PCS, degraded only by the $\gamma$ term above. One evaluation is left
+for the verifier, $\pol W$, and the rest of the note is about it.
 
 %=====================================================================
 \section{The interval weight is a branching program}\label{sec:automaton}
@@ -421,7 +405,8 @@ $\cube m$: one $\eq$ table per distinct opening point, then one multiply-accumul
 (cell, claim) pair into that claim's interval.
 
 \emph{Verifier.} Per block, $7(m-L)$ multiplications for the automaton prefix, at most
-$8(2^L-1)+4$ for the contraction, and $2k$ for~\eqref{eq:prefix}, so roughly $7m$
+$8(2^L-1)+4$ for the contraction, and one addition per claim for the padding, so
+roughly $7m$
 multiplications per \emph{block} rather than per column. The
 computation is straight-line in $m$ and the block count, with the shape of the data entering
 only as bits, which is what makes it cheap to prove recursively.

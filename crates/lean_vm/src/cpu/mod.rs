@@ -710,11 +710,13 @@ fn slot_claims(l: &Layout, claims: &[ColumnClaim]) -> Vec<pcs::SlotClaim> {
             let placement = l.placements[c.col];
             debug_assert_eq!(c.point.len(), placement.n_vars);
             // The arithmetization evaluates the full power-of-two column,
-            // including its fixed public padding. Jagged commits only the real
-            // prefix, so remove the padding MLE before opening the dense data.
-            let suffix = F128::ONE
-                + ::pcs::jagged::prefix_indicator_eval(placement.height, &c.point);
-            let jagged_value = c.value + l.pad[c.col] * suffix;
+            // including its fixed public padding, while Jagged commits only the
+            // real prefix. `witness::stack_q` commits that prefix OFFSET by the
+            // column's pad value, so the committed column is the logical one
+            // plus the constant `pad`, and the correction is that constant: the
+            // MLE of a constant is itself, at every point and independently of
+            // the real height. No prefix indicator is needed.
+            let jagged_value = c.value + l.pad[c.col];
             let mut block_point = Vec::with_capacity(placement.block_width_log + c.point.len());
             for bit in 0..placement.block_width_log {
                 block_point.push(if (placement.slot >> bit) & 1 == 1 { F128::ONE } else { F128::ZERO });

@@ -211,10 +211,6 @@ CLAIM_GAMMA_RANK = CLAIM_GAMMA_RANK_PLACEHOLDER
 N_CLAIM_ROWS = N_CLAIM_ROWS_PLACEHOLDER
 CLAIM_ROW_GROUP = CLAIM_ROW_GROUP_PLACEHOLDER
 CLAIM_ROW_REP = CLAIM_ROW_REP_PLACEHOLDER
-N_PAD_PREFIXES = N_PAD_PREFIXES_PLACEHOLDER
-PAD_PREFIX_ROW = PAD_PREFIX_ROW_PLACEHOLDER
-PAD_PREFIX_COL = PAD_PREFIX_COL_PLACEHOLDER
-CLAIM_PAD_PREFIX = CLAIM_PAD_PREFIX_PLACEHOLDER
 N_JAGGED_BATCHES = N_JAGGED_BATCHES_PLACEHOLDER
 JAGGED_BATCH_REP = JAGGED_BATCH_REP_PLACEHOLDER
 JAGGED_BATCH_ROW = JAGGED_BATCH_ROW_PLACEHOLDER
@@ -597,30 +593,6 @@ def eqtree(point_ptr, out, n_coords: Const):
             out[GEN ** (2 ** (t + 1) - 2 + i)] = pw * one_plus_rt
             out[GEN ** (2 ** (t + 1) - 2 + 2 ** t + i)] = pw * rt
     return
-
-
-def prefix_indicator(point, height_bits):
-    # MLE of [row < height], MSB first. `point` is zero above the logical
-    # column dimension and `height_bits` may therefore also encode the full
-    # power-of-two height.
-    states = StackBuf(2 * (SIZE_BITS + 1))
-    states[0] = 0  # already less
-    states[1] = 1  # equal so far
-    for rev in unroll(0, SIZE_BITS):
-        bit = SIZE_BITS - 1 - rev
-        less = states[2 * rev]
-        equal = states[2 * rev + 1]
-        x = point[GEN ** bit]
-        h = height_bits[GEN ** bit]
-        # Two multiplications per bit, not three. The next `equal` is
-        # p = equal*(1+h+x) either way, and for Boolean h the increment to
-        # `less` is h*equal*(1+x) = h*(equal + p): at h=0 both vanish, at h=1
-        # p = equal*x so equal + p = equal*(1+x). So p is shared instead of
-        # forming equal*(1+x) separately.
-        p = equal * (1 + h + x)
-        states[2 * (rev + 1)] = less + h * (equal + p)
-        states[2 * (rev + 1) + 1] = p
-    return states[2 * SIZE_BITS]
 
 
 @inline
@@ -1943,12 +1915,10 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     # Starting from zero, a Boolean full-adder derives every interval endpoint.
     col_bound_bits = HeapBuf(SIZE_BITS * (N_COMMITTED_COLS + 1))
     col_block_height_bits = HeapBuf(SIZE_BITS * N_COMMITTED_COLS)
-    col_row_height_bits = HeapBuf(SIZE_BITS * N_COMMITTED_COLS)
     for bit in unroll(0, SIZE_BITS):
         col_bound_bits[GEN ** bit] = 0
     for c in unroll(0, N_COMMITTED_COLS):
         height_bits = col_block_height_bits * GEN ** (SIZE_BITS * c)
-        row_height_bits = col_row_height_bits * GEN ** (SIZE_BITS * c)
         if COL_HEIGHT_KIND[c] == 0:
             # height = 2^kappa. The advice must be a Boolean one-hot vector,
             # whose decoded word is the certified power 2^kappa.
@@ -1988,12 +1958,6 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
             # BFCNT is a singleton with a program-bound bytecode prefix.
             for bit in unroll(0, SIZE_BITS):
                 height_bits[GEN ** bit] = BYTECODE_USED_BITS[bit]
-
-        # Padding correction uses the per-column row height (block height / width).
-        for bit in unroll(0, SIZE_BITS - COL_BLOCK_LOG[c]):
-            row_height_bits[GEN ** bit] = height_bits[GEN ** (bit + COL_BLOCK_LOG[c])]
-        for bit in unroll(SIZE_BITS - COL_BLOCK_LOG[c], SIZE_BITS):
-            row_height_bits[GEN ** bit] = 0
 
         start_bits = col_bound_bits * GEN ** (SIZE_BITS * c)
         end_bits = col_bound_bits * GEN ** (SIZE_BITS * (c + 1))
@@ -2043,26 +2007,16 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
             for bit in unroll(1, SIZE_BITS):
                 row[GEN ** bit] = 0
 
-    # Compute the public-padding correction: Jagged commits only the real
-    # prefix, while the arithmetization's claim includes its fixed pad suffix.
-    pad_prefixes = HeapBuf(N_PAD_PREFIXES)
-    for prefix in unroll(0, N_PAD_PREFIXES):
-        row = claim_rows * GEN ** (SIZE_BITS * PAD_PREFIX_ROW[prefix])
-        height_bits = col_row_height_bits * GEN ** (SIZE_BITS * PAD_PREFIX_COL[prefix])
-        pad_prefixes[GEN ** prefix] = prefix_indicator(row, height_bits)
-
+    # The public-padding correction is one field addition: the committed prefix
+    # is the column offset by its pad value, so the logical evaluation is the
+    # committed one plus that constant, at every point and independently of the
+    # real height. q_pkd is exempt only because its pad is zero.
     opening_claim_values = HeapBuf(N_CLAIMS)
     for j in unroll(0, N_CLAIMS):
         if CLAIM_POINT_BUF[j] == POINT_BUF_QPKD:
-            # q_pkd remains the one aligned subcube for flock's ring-switch and
-            # its strided VM-value claims; it has no public padding correction.
             opening_claim_values[GEN ** j] = claim_pool[GEN ** j]
         else:
-            if CLAIM_PAD[j] == 0:
-                opening_claim_values[GEN ** j] = claim_pool[GEN ** j]
-            else:
-                real_prefix = pad_prefixes[GEN ** CLAIM_PAD_PREFIX[j]]
-                opening_claim_values[GEN ** j] = claim_pool[GEN ** j] + CLAIM_PAD[j] * (1 + real_prefix)
+            opening_claim_values[GEN ** j] = claim_pool[GEN ** j] + CLAIM_PAD[j]
 
     # Every adjusted Jagged claim value is observed before its batching scalar,
     # exactly as in the native verifier.
