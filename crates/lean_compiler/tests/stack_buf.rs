@@ -382,6 +382,45 @@ def step(state, v):
     );
 }
 
+/// Deferred stores made by a runtime branch must initialize buffers allocated
+/// by the surrounding inline call, including when its tuple result is rebound
+/// inside an unrolled loop.
+#[test]
+fn branch_writes_survive_unrolled_tuple_return() {
+    let src = "\
+def main():
+    public = GEN ** 0
+    flag = public[1]
+    a = [5, 7]
+    b = [13, 17]
+    for i in unroll(0, 1):
+        a, b = select_pair(flag, a, b)
+    assert a[0] == 13
+    assert a[1] == 17
+    assert b[0] == 5
+    assert b[1] == 7
+    return
+
+@inline
+def select_pair(flag, a, b):
+    first = StackBuf(2)
+    second = StackBuf(2)
+    if flag == 0:
+        first[0] = a[0]
+        first[1] = a[1]
+        second[0] = b[0]
+        second[1] = b[1]
+    else:
+        first[0] = b[0]
+        first[1] = b[1]
+        second[0] = a[0]
+        second[1] = a[1]
+    return first, second
+";
+    let program = compile(&parse(src).expect("parse"));
+    program.execute([F192::ONE, F192::ZERO]);
+}
+
 /// An `@inline` may also alias-return a folded **g-address** among its values:
 /// `fs, x, cur = step(fs, cur)` hands back the sponge state (StackBuf), the
 /// consumed word (scalar), and the ADVANCED cursor (`cursor * GEN`) as a

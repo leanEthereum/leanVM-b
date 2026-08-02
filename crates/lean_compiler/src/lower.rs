@@ -42,7 +42,7 @@ const FOLD_MAX: u128 = 1 << 16;
 /// each use ([`FnLower::word_src`]) — so `BLAKE3`,
 /// which addresses its four two-cell input chunks independently, reads them in
 /// place without assembling copies.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Alias {
     Cell(Off),
     /// A compile-time constant: forwarded at its uses to the pooled cell
@@ -314,6 +314,8 @@ impl FnLower<'_> {
     /// afterwards — a cell whose `SET` sits inside a conditionally-executed
     /// region must not be trusted outside it.
     fn scoped(&mut self, f: impl FnOnce(&mut Self)) {
+        let branch_start = self.next;
+        let saved_aliases = self.alias.clone();
         let saved = (
             self.vars.clone(),
             self.stacks.clone(),
@@ -323,11 +325,22 @@ impl FnLower<'_> {
             self.const_cells.clone(),
             self.gaddrs.clone(),
             self.fconsts.clone(),
-            self.alias.clone(),
             self.zero_off,
             self.blake3_iv,
         );
         f(self);
+        // A deferred store into a buffer declared outside the branch must be
+        // materialized on that path before the branch-local aliases are dropped.
+        let branch_outputs: Vec<Off> = self
+            .alias
+            .iter()
+            .filter_map(|(&dst, alias)| (dst < branch_start && saved_aliases.get(&dst) != Some(alias)).then_some(dst))
+            .collect();
+        for dst in branch_outputs {
+            let src = self.word_src(dst);
+            self.alias.remove(&dst);
+            self.copy(src, dst);
+        }
         // A hint pending at the end of a branch (e.g. a trailing
         // `hint_witness`) must not attach to whatever instruction follows the
         // join — that would fire it unconditionally. Absorb it with a no-op.
@@ -347,10 +360,10 @@ impl FnLower<'_> {
             self.const_cells,
             self.gaddrs,
             self.fconsts,
-            self.alias,
             self.zero_off,
             self.blake3_iv,
         ) = saved;
+        self.alias = saved_aliases;
     }
 
     /// Lower a branch body with branch-local scope ([`Self::scoped`]).
