@@ -1,0 +1,367 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1.1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm,mathtools}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage[colorlinks=true,linkcolor=blue!55!black,citecolor=blue!55!black,urlcolor=blue!55!black]{hyperref}
+
+\newcommand{\F}{\mathbb{F}}
+\newcommand{\eq}{\mathrm{eq}}
+\newcommand{\cube}[1]{\{0,1\}^{#1}}
+\newcommand{\pol}[1]{\widehat{#1}}
+\newcommand{\inner}[2]{\langle #1,\, #2 \rangle}
+\newcommand{\val}[1]{\langle #1 \rangle}
+\newcommand{\maj}{\mathrm{maj}}
+\newcommand{\st}[1]{\mathsf{s}_{#1}}
+
+\emergencystretch=1.5em
+
+\theoremstyle{plain}
+\newtheorem{lemma}{Lemma}[section]
+\theoremstyle{remark}
+\newtheorem{remark}[lemma]{Remark}
+
+\title{\textbf{The jagged adapter over a weighted-claim PCS}}
+\author{}
+\date{August 2, 2026}
+
+\begin{document}
+\maketitle
+
+\begin{center}
+\fbox{\textbf{Warning: AI-assisted writing, some parts have not been properly reviewed yet.}}
+\end{center}
+
+\medskip
+\noindent
+Notation, multilinear extensions and the inner-product commitment interface are those of the
+main document: an opening proves $\inner Wq=\sum_{w\in\cube m}W(w)q(w)=C$ against any weight
+$W$ the verifier can evaluate, a point evaluation being $W=\eq(r,\cdot)$. Bit strings are
+little-endian, $\val a=\sum_j a_j2^j$, and the field has characteristic two, so $1-x=1+x$.
+
+\smallskip
+\noindent
+Two things separate what follows from the adapter of the original paper ~\cite{jagged}. The dense scheme here
+opens an arbitrary verifier-evaluable weighted claim, so the adapter's $m$-round reduction
+sumcheck (about $5\cdot2^m$ prover multiplications, reducing $\inner Wq=C$ to $\pol q(\rho)$)
+is unnecessary and the jagged indicator is itself the opening weight. And a BaseFold/WHIR-style
+dense scheme~\cite{ligerito,whir} stops its sumcheck with $L$ variables left and transmits
+the tail in the clear, so the verifier needs that weight contracted against the tail over a
+residual cube rather than evaluated at a point (Section~\ref{sec:contract}).
+
+%=====================================================================
+\section{Layout and the opening weight}\label{sec:weight}
+%=====================================================================
+
+\paragraph{Blocks.} Columns of equal height that are always claimed together are grouped
+into \emph{blocks} of power-of-two width. A group of $g$ such columns is cut greedily
+($g=9$ becomes $8+1$), so no padding column is introduced. A block of width $B=2^b$ whose
+columns have logical dimension $k$ and common real height $h\le2^k$ is stored row-major at a
+dense offset $t$:
+\[
+  q\bigl(t+c+B\val z\bigr)=P_c(z),\qquad c\in\cube b,\ z\in\cube k,\ \val z<h,
+\]
+so the block occupies the interval $[t,e)$ with $e=t+Bh$. Blocks are concatenated with no
+alignment gap, and only the last is followed by zero padding, up to
+\[
+  m=\max\Bigl(\lceil\log_2 A\rceil,\ \max_{\text{blocks}}(k+b)\Bigr),\qquad A=\sum_{\text{blocks}}Bh .
+\]
+The second term guarantees that every block's logical cube $\cube{k+b}$ embeds in the dense
+cube even when its physical interval is short. The endpoints are public: they are the prefix
+sums of the announced heights, computed by a ripple-carry adder (one multiplication per bit,
+the carry being $\maj(s,h,\kappa)=(s+\kappa)(s+h)+s$), never transmitted.
+
+\paragraph{From a column claim to a weighted claim.} The arithmetization claims
+$\pol{P^{\mathrm{log}}_c}(\zeta)=v$ at $\zeta\in\F^k$, where $P^{\mathrm{log}}_c$ agrees with
+$P_c$ below $h$ and equals a public pad value $p_c$ at and above $h$. Split at $h$:
+\begin{equation}
+  \pol{P^{\mathrm{log}}_c}(\zeta)=\sum_{\val z<h}\eq(\zeta,z)\,q\bigl(t+c+B\val z\bigr)\;+\;p_c\bigl(1+\pol{H_h}(\zeta)\bigr),
+  \label{eq:split}
+\end{equation}
+$H_h(z):=[\val z<h]$ being the prefix indicator of Section~\ref{sec:pad}. The verifier
+evaluates the second term itself and moves it to the other side, leaving the first as the
+weighted claim. Since $c+B\val z=\val{(c,z)}$, writing $a:=(c,z)\in\cube{b+k}$ gives
+\begin{equation}
+\begin{gathered}
+  \sum_{\val z<h}\eq(\zeta,z)\,q\bigl(t+\val{(c,z)}\bigr)=\sum_{w\in\cube m}q(w)\,W^{t,e}_u(w),\\[2pt]
+  W^{t,e}_u(w):=\sum_{\substack{a\in\cube{b+k}\\ t+\val a<e}}\Bigl(\prod_j u_j^{a_j}\Bigr)\bigl[\val w=t+\val a\bigr],
+\end{gathered}
+  \label{eq:weight}
+\end{equation}
+with row weights $u_j=(1+c_j,c_j)$ on the $b$ selector coordinates and
+$u_{b+i}=(1+\zeta_i,\zeta_i)$ on the $k$ row coordinates. The interval condition
+$t+\val a<e$ is exactly $\val a<Bh$: the weight vanishes past the real height on its own.
+
+%=====================================================================
+\section{The width-four automaton}\label{sec:automaton}
+%=====================================================================
+
+Fix public $0\le t\le e\le2^m$, a length $n\le m$, and row weights $u=(u_j^0,u_j^1)_{j<n}$;
+set $u_j=(1,0)$ for $n\le j\le m$. The automaton reads positions $j=0,\dots,m$, least
+significant first, with state
+\[
+  \st0=(0,0),\quad \st1=(1,0),\quad \st2=(0,1),\quad \st3=(1,1),\qquad\text{index }\kappa+2\lambda,
+\]
+where $\kappa$ is the carry of $\val w=t+\val a$ over the bits read and $\lambda$ is the
+comparison $\val w<e$ over those bits (a more significant differing bit overrides a less
+significant one, so reading upward each differing bit overwrites $\lambda$). Two registers,
+hence width four~\cite{jagged}.
+
+At position $j$ let $t_j,e_j$ be the bits of $t,e$, let $x_j$ be the evaluation coordinate,
+and write $\chi_j^0:=1+x_j$, $\chi_j^1:=x_j$ for the two per-coordinate factors of $\eq$, so
+that $\eq(u,x)=\prod_j\chi_j^{u_j}$ for Boolean $u$. Set
+\[
+  w_0:=u_j^0\chi_j^0,\quad w_1:=u_j^1\chi_j^0,\quad w_2:=u_j^0\chi_j^1,\quad w_3:=u_j^1\chi_j^1 .
+\]
+Reading a row bit $a$ and an index bit $\omega$ from $(\kappa,\lambda)$ is permitted only
+when $\omega=a\oplus\kappa\oplus t_j$, and then
+\[
+  \kappa'=\maj(a,\kappa,t_j),\qquad
+  \lambda'=\begin{cases}\lambda & \omega=e_j,\\ e_j & \omega\neq e_j,\end{cases}
+  \qquad\text{with weight } u_j^a\chi_j^{\omega}.
+\]
+The output is the mass in $\st2$ after position $m$.
+
+\begin{lemma}\label{lem:automaton}
+For every $x\in\F^m$ the automaton outputs
+\[
+  \sum_{\substack{a\in\cube n\\ t+\val a<e}}\Bigl(\prod_{j<n}u_j^{a_j}\Bigr)\eq\bigl(t+\val a,\,x\bigr)\;=\;\pol{W^{t,e}_u}(x).
+\]
+\end{lemma}
+
+\begin{proof}
+Expanding the product of transition matrices, a path is a choice of $(a_j,\omega_j)_{j\le m}$
+of weight $\prod_j u_j^{a_j}\chi_j^{\omega_j}$. The constraint
+$\omega_j=a_j\oplus\kappa_j\oplus t_j$ with $\kappa_{j+1}=\maj(a_j,\kappa_j,t_j)$,
+$\kappa_0=0$, is binary addition, so paths biject with choices of $a$ and satisfy
+$\val\omega=t+\val a$; then $\prod_j\chi_j^{\omega_j}=\eq(\omega,x)$, and $u_j=(1,0)$ for
+$j\ge n$ kills every $a$ with a bit at or above $n$. Acceptance is $t+\val a<e$: $\lambda$
+ends at $1$ exactly when the most significant position where $\omega$ and $e$ differ has
+$e$-bit $1$, and $\kappa$ ends at $0$ exactly when the addition does not carry out of
+position $m$. The extra position $j=m$, where $u_m=(1,0)$ and $x_m:=0$ force
+$a_m=\omega_m=0$, supplies that carry test and also represents $e=2^m$ (there $e_m=1$, which
+sets $\lambda$ to $1$). Both sides are multilinear in every coordinate of $x$ and agree at
+Boolean arguments, hence agree everywhere.
+\end{proof}
+
+Since $t_j,e_j$ are public bits, the step selects one of four fixed matrices instead of
+evaluating a tensor over $(a,\omega)$. With $\st{}=(\st0,\st1,\st2,\st3)$ incoming and
+$\st{}'$ outgoing:
+\[
+\renewcommand{\arraystretch}{1.25}
+\begin{array}{l@{\qquad}l}
+(t_j,e_j)=(0,0): &
+\begin{aligned}
+\st0'&=\st0(w_0+w_3)+(\st1+\st3)w_2+\st2w_3, & \st1'&=\st1w_1,\\
+\st2'&=\st2w_0, & \st3'&=\st3w_1,
+\end{aligned}\\[2.2ex]
+(t_j,e_j)=(0,1): &
+\begin{aligned}
+\st0'&=\st0w_3+\st1w_2, & \st1'&=0,\\
+\st2'&=\st0w_0+\st2(w_0+w_3)+\st3w_2, & \st3'&=(\st1+\st3)w_1,
+\end{aligned}\\[2.2ex]
+(t_j,e_j)=(1,0): &
+\begin{aligned}
+\st0'&=(\st0+\st2)w_2, & \st1'&=\st0w_1+\st1(w_0+w_3)+\st3w_3,\\
+\st2'&=0, & \st3'&=\st2w_1+\st3w_0,
+\end{aligned}\\[2.2ex]
+(t_j,e_j)=(1,1): &
+\begin{aligned}
+\st0'&=\st0w_2, & \st1'&=\st1w_3,\\
+\st2'&=\st2w_2, & \st3'&=(\st0+\st2)w_1+\st1w_0+\st3(w_0+w_3).
+\end{aligned}
+\end{array}
+\]
+Each arm costs $6$ multiplications. The $w_i$ cost one more: for $u_j=(1+r,r)$ form
+$\pi=rx$ and read off $w_0=1+r+x+\pi$, $w_1=r+\pi$, $w_2=x+\pi$, $w_3=\pi$; for the
+unnormalised $u_j=(1,\gamma_j)$ of Section~\ref{sec:batch} form $\pi=\gamma_jx$ and read off
+$w_0=1+x$, $w_1=\gamma_j+\pi$, $w_2=x$, $w_3=\pi$. A position costs $7$ multiplications, a
+run $7(m+1)$.
+
+%=====================================================================
+\section{One automaton per block}\label{sec:batch}
+%=====================================================================
+
+All claims are folded into one opening with powers of a single challenge $\gamma$, at a cost
+of $(\text{number of claims})/|\F|$ in soundness.
+
+\begin{lemma}\label{lem:collapse}
+Let a block $[t,e)$ of width $B=2^b$ have all $B$ columns claimed at the same row point
+$\zeta\in\F^k$, with consecutive ranks $\beta+\val c$ in selector order, and let $u(c)$ be
+the weight family of~\eqref{eq:weight} for slot $c$. Then
+\[
+  \sum_{c\in\cube b}\gamma^{\beta+\val c}\,\pol{W^{t,e}_{u(c)}}=\gamma^{\beta}\,\pol{W^{t,e}_{u^{\star}}},
+  \qquad
+  u^{\star}_j=\begin{cases}\bigl(1,\ \gamma^{2^j}\bigr) & j<b,\\[2pt] \bigl(1+\zeta_{j-b},\ \zeta_{j-b}\bigr) & b\le j<b+k.\end{cases}
+\]
+\end{lemma}
+
+\begin{proof}
+By Lemma~\ref{lem:automaton} both sides sum $\bigl(\prod_j v_j^{a_j}\bigr)\eq(t+\val a,x)$
+over the same index set, so compare weight families. Slot $c$ contributes
+$\gamma^{\beta+\val c}\prod_{j<b}[a_j=c_j]$; summing over $c$ at fixed $a$ gives
+$\gamma^{\beta}\prod_{j<b}(\gamma^{2^j})^{a_j}$. Row coordinates are untouched.
+\end{proof}
+
+A complete block therefore costs one automaton run instead of $B$, the only change being
+selector weights that do not sum to $1$, which is why Lemma~\ref{lem:automaton} was stated
+for arbitrary weights. Normalising, that is factoring
+$(1,\gamma^{2^j})=(1+\gamma^{2^j})\cdot\bigl(1,\gamma^{2^j}/(1+\gamma^{2^j})\bigr)$, would
+cost $b$ inversions and fail at $\gamma=1$. The $\gamma^{2^j}$ come from repeated squaring.
+The collapse needs the block's claims to be complete: same interval, same width, same row
+point, one claim per Boolean slot. Otherwise claims are handled individually, which is the
+$b=0$ case of the same code path.
+
+%=====================================================================
+\section{Padding correction}\label{sec:pad}
+%=====================================================================
+
+Equation~\eqref{eq:split} needs $\pol{H_h}(\zeta)$, the multilinear extension of
+$[\val z<h]$ on $\cube k$. Two states, most significant bit first, $\mathsf{lt}$ (already
+smaller) and $\mathsf{tie}$ (equal so far), from $(0,1)$:
+\[
+  (\mathsf{lt},\mathsf{tie})\longmapsto
+  \begin{cases}
+    \bigl(\mathsf{lt},\ \mathsf{tie}(1+\zeta_j)\bigr) & h_j=0,\\[2pt]
+    \bigl(\mathsf{lt}+\mathsf{tie}(1+\zeta_j),\ \mathsf{tie}\,\zeta_j\bigr) & h_j=1,
+  \end{cases}
+\]
+and $\pol{H_h}(\zeta)=\mathsf{lt}$ at the end ($\equiv1$ when $h=2^k$). Branch-free, for a
+circuit verifier with Boolean-constrained $h_j$:
+$\mathsf{lt}\mathrel{+}=h_j\mathsf{tie}(1+\zeta_j)$,
+$\mathsf{tie}\mathrel{*}=1+h_j+\zeta_j$. Two multiplications per bit. The height used is the
+per-column row count $h$, not $Bh$.
+
+%=====================================================================
+\section{Contracting against the final message}\label{sec:contract}
+%=====================================================================
+
+A BaseFold/WHIR-style opening never evaluates $\pol W$ at a point. It consumes $m-L$ of the
+$m$ variables in sumcheck rounds, leaving a challenge prefix $\rho\in\F^{m-L}$, and
+transmits the remaining $L$-variable message $\mathrm{yr}:\cube L\to\F$ in the clear, $L$
+being small (typically $3$ or $4$). Its last check needs
+\begin{equation}
+  \Sigma:=\sum_{y\in\cube L}\mathrm{yr}(y)\,\pol W(\rho,y).
+  \label{eq:contract}
+\end{equation}
+Running the automaton $2^L$ times costs $2^L\cdot7(m+1)$ per block. One run suffices.
+
+\paragraph{Matrix form.} Let $T_j(x_j)\in\F^{4\times4}$ be the transitions above. Then
+\[
+  \pol W(x)=\mathbf e_{\st0}^{\!\top}\Bigl(\prod_{j=0}^{m}T_j(x_j)\Bigr)\mathbf e_{\st2}
+          =\mathbf e_{\st0}^{\!\top}\Bigl(\prod_{j=0}^{m-1}T_j(x_j)\Bigr)\mathbf u,
+  \qquad \mathbf u:=T_m(0)\,\mathbf e_{\st2},
+\]
+and reading the transition rule at $j=m$ (where $a_m=\omega_m=0$, $t_m=0$) gives
+\begin{equation}
+  \mathbf u=(\,e_m,\ 0,\ 1,\ 0\,),
+  \label{eq:accept}
+\end{equation}
+so $\mathbf u=\mathbf e_{\st2}$ unless the block ends exactly at $e=2^m$. Splitting the rest
+at $j=m-L$ and setting $S:=\mathbf e_{\st0}^{\!\top}\prod_{j<m-L}T_j(\rho_j)\in\F^4$,
+\begin{equation}
+  \Sigma=\inner SV,\qquad
+  V:=\sum_{y\in\cube L}\mathrm{yr}(y)\Bigl(\prod_{j=m-L}^{m-1}T_j\bigl(y_{j-(m-L)}\bigr)\Bigr)\mathbf u .
+  \label{eq:SV}
+\end{equation}
+$S$ is one automaton run of $m-L$ steps. $V$ is a reverse dynamic program: the residual
+index coordinates are Boolean, so $T_j$ collapses to $T_j^{(0)}$ or $T_j^{(1)}$ and
+\[
+  V_j(y')=T_j^{(0)}V_{j+1}(y',0)+T_j^{(1)}V_{j+1}(y',1),\qquad V_m(y)=\mathrm{yr}(y)\,\mathbf u,
+\]
+peeling the most significant residual bit first: $2^L-1$ reverse steps, then $\inner SV$.
+
+\paragraph{The reverse step.} It takes the child vectors $v$ (index bit $0$) and $w$ (index
+bit $1$), the row coordinate $r$, and $t_j,e_j$. Transposing the transitions with
+$u_j=(1+r,r)$ gives, for $(t_j,e_j)=(0,0)$,
+\[
+  V'=\bigl((1+r)v_0+rw_0,\ \ rv_1+(1+r)w_0,\ \ (1+r)v_2+rw_0,\ \ rv_3+(1+r)w_0\bigr),
+\]
+and analogously for the other three: $8$ multiplications. For $r\in\{0,1\}$ the step is a
+pure selection and costs nothing: $(v_0,w_0,v_2,w_0)$ at $r=0$, $(w_0,v_1,w_0,v_3)$ at
+$r=1$. The row point is zero above a column's logical dimension, so the free branch fires on
+every residual coordinate the column does not use.
+
+\paragraph{Closed form when all residual row coordinates vanish.} With the high row bits
+pinned to zero, $\val w=t+\val a$ forces $w$'s high part to be
+$t_{\mathrm{hi}}:=\lfloor t/2^{m-L}\rfloor$ plus the incoming carry, so each state reaches
+exactly one message index. With $e_{\mathrm{hi}}:=\lfloor e/2^{m-L}\rfloor$ read off the
+$L+1$ top bits of $e$ (the extra bit covering $e=2^m$),
+\begin{equation}
+\begin{aligned}
+  \Sigma=\ &\mathrm{yr}(t_{\mathrm{hi}})\Bigl(S_{\st0}[\,t_{\mathrm{hi}}<e_{\mathrm{hi}}\,]+S_{\st2}[\,t_{\mathrm{hi}}\le e_{\mathrm{hi}}\,]\Bigr)\\
+  +\ &\mathrm{yr}(t_{\mathrm{hi}}{+}1)\Bigl(S_{\st1}[\,t_{\mathrm{hi}}{+}1<e_{\mathrm{hi}}\,]+S_{\st3}[\,t_{\mathrm{hi}}{+}1\le e_{\mathrm{hi}}\,]\Bigr).
+\end{aligned}
+\label{eq:closed}
+\end{equation}
+The high part decides $\val w<e$ when it differs from $e_{\mathrm{hi}}$; when it agrees the
+prefix comparison decides, so $\st0$ (with $\lambda=0$) contributes only under a strict $<$
+while $\st2$ (with $\lambda=1$) also contributes at equality, and likewise for $\st1,\st3$
+at $t_{\mathrm{hi}}+1$. Cost $O(L)$: a ripple increment of $t_{\mathrm{hi}}$, one MSB-first
+pass yielding $[\,t_{\mathrm{hi}}<e_{\mathrm{hi}}\,]$, $[\,t_{\mathrm{hi}}=e_{\mathrm{hi}}\,]$
+and $[\,e_{\mathrm{hi}}=t_{\mathrm{hi}}{+}1\,]$ (the last converting $<$ into
+$t_{\mathrm{hi}}{+}1<e_{\mathrm{hi}}$ via
+$[\,t_{\mathrm{hi}}<e_{\mathrm{hi}}\,]\cdot(1+[\,e_{\mathrm{hi}}=t_{\mathrm{hi}}{+}1\,])$),
+and two message reads. Address $\mathrm{yr}$ with one zero sentinel after its $2^L$ entries
+so that a carry out of the last index reads in range.
+
+\begin{center}
+\fbox{\parbox{0.93\textwidth}{
+\textbf{Terminal evaluation of one block's weight.}
+\emph{Input:} bits of $t,e$; width $b$; scalar $\gamma$ and base rank $\beta$; row point
+$\zeta$, zero-padded; round challenges $\rho\in\F^{m-L}$; final message $\mathrm{yr}$.
+\emph{Output:} the block's term of~\eqref{eq:contract}.
+\begin{enumerate}[itemsep=1pt]
+\item Run the automaton over $j=0,\dots,m-L-1$ at coordinates $\rho_j$ with the weights
+$u^{\star}$ of Lemma~\ref{lem:collapse}, giving $S\in\F^4$. Cost $7(m-L)$.
+\item If $\zeta$ vanishes at every residual coordinate, return
+$\gamma^{\beta}\cdot$\eqref{eq:closed}. Cost $O(L)$.
+\item Otherwise set $V(y)=\mathrm{yr}(y)\mathbf u$ for $y\in\cube L$, apply one reverse step
+to each pair for $j=m-1$ down to $m-L$, and return $\gamma^{\beta}\inner SV$. Cost at most
+$8(2^L-1)+4$, and zero per step whose row coordinate is Boolean.
+\end{enumerate}
+}}
+\end{center}
+
+\begin{remark}\label{rem:topbit}
+Step~3 is exact with $\mathbf u=\mathbf e_{\st2}$ only when the block does not end at $2^m$;
+otherwise~\eqref{eq:accept} must be used. Step~2 consults that bit through
+$e_{\mathrm{hi}}$, so the closed form is unconditional.
+\end{remark}
+
+%=====================================================================
+\section{Cost}\label{sec:cost}
+%=====================================================================
+
+\emph{Prover.} One commitment to $q$, of length $2^m$ within a factor of two of the real
+area. No second oracle, in contrast with general-purpose sparse schemes such as
+Spark~\cite{spark}, which commit several vectors of the sparsity size. The adapter's only
+extra work is building $W=\sum_i\gamma^{\mathrm{rk}(i)}W_i$ over $\cube m$: one $\eq$ table
+per distinct opening point, then one multiply-accumulate per (cell, claim) pair into that
+claim's interval. This replaces the reduction sumcheck of~\cite{jagged} entirely.
+
+\emph{Verifier.} Per block, $7(m-L)$ multiplications for the automaton prefix, at most
+$8(2^L-1)+4$ for the contraction, and $2k$ for the padding correction, so roughly $7m$
+multiplications per \emph{block} rather than per column (Lemma~\ref{lem:collapse}). The
+computation is straight-line in $m$ and the block count, with the shape of the data entering
+only as bits, which is what makes it cheap to prove recursively.
+
+%=====================================================================
+\begin{thebibliography}{9}
+
+\bibitem{jagged} Tamir Hemo, Kevin Jue, Eugene Rabinovich, Gyumin Roh, and Ron D. Rothblum.
+Jagged Polynomial Commitments (or: How to Stack Multilinears). Manuscript, April 2026.
+
+\bibitem{ligerito} Andrija Novakovic and Guillermo Angeris. Ligerito: A Small and Concretely
+Fast Polynomial Commitment Scheme. Cryptology ePrint Archive, Paper 2025/1187, 2025.
+
+\bibitem{whir} Gal Arnon, Alessandro Chiesa, Giacomo Fenzi, and Eylon Yogev. WHIR:
+Reed--Solomon Proximity Testing with Super-Fast Verification. In \emph{EUROCRYPT 2025}.
+
+\bibitem{spark} Srinath T. V. Setty. Spartan: Efficient and General-Purpose zkSNARKs Without
+Trusted Setup. In \emph{CRYPTO 2020}.
+
+\end{thebibliography}
+
+\end{document}
