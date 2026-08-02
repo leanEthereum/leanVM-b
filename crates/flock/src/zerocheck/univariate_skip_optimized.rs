@@ -784,6 +784,73 @@ pub fn round1_shift_reduce_extract_c(
 //
 // ---------------------------------------------------------------------------
 
+/// Gather-and-accumulate the φ_8 convert tables for one chunk, across all
+/// `ELL` lanes.
+///
+/// Four lanes are swept per pass. Each lane's accumulator is a serial XOR
+/// chain of `n_b_med` dependent table loads, so a one-lane-at-a-time sweep
+/// keeps only three such chains in flight and the loop stalls on the gather
+/// latency. Four lanes give twelve independent chains — enough to cover it —
+/// and let the `b_med` table base be hoisted out of all twelve index
+/// computations.
+///
+/// `ELL` is 64, so the four-lane step divides it exactly.
+///
+/// # Safety
+/// `convert` must hold at least `n_b_med * 256` entries; every gather index is
+/// `b_med * 256 + byte` with `b_med < n_b_med` and `byte` a `u8`.
+#[cfg(target_arch = "aarch64")]
+#[inline]
+unsafe fn accumulate_convert_lanes(
+    convert: &[F128],
+    chunk_ab_bytes: &[[u8; 64]; 1 << N_MEDIUM],
+    chunk_c_bytes: &[[u8; 64]; 1 << N_MEDIUM],
+    n_b_med: usize,
+    eq_lo_val: F128,
+    partial_ab: &mut [F128; ELL],
+    partial_c_0: &mut [F128; ELL],
+    partial_c_1: &mut [F128; ELL],
+) {
+    use core::arch::aarch64::*;
+
+    const { assert!(ELL.is_multiple_of(4)) };
+
+    // SAFETY: caller guarantees the convert table covers every gather index.
+    unsafe {
+        let convert_ptr = convert.as_ptr() as *const u8;
+        let to_f128 = |v: uint8x16_t| {
+            let w = vreinterpretq_u64_u8(v);
+            F128 {
+                lo: vgetq_lane_u64::<0>(w),
+                hi: vgetq_lane_u64::<1>(w),
+            }
+        };
+
+        for lane in (0..ELL).step_by(4) {
+            let mut ab = [vdupq_n_u8(0); 4];
+            let mut c_0 = [vdupq_n_u8(0); 4];
+            let mut c_1 = [vdupq_n_u8(0); 4];
+            for b_med in 0..n_b_med {
+                let table = convert_ptr.add(b_med * 256 * 16);
+                let ab_row = &chunk_ab_bytes[b_med];
+                let c_row = &chunk_c_bytes[b_med];
+                for j in 0..4 {
+                    let v_ab = ab_row[lane + j] as usize;
+                    let v_c = c_row[lane + j] as usize;
+                    ab[j] = veorq_u8(ab[j], vld1q_u8(table.add(v_ab * 16)));
+                    c_0[j] = veorq_u8(c_0[j], vld1q_u8(table.add((v_c & 0x55) * 16)));
+                    c_1[j] = veorq_u8(c_1[j], vld1q_u8(table.add((v_c & 0xAA) * 16)));
+                }
+            }
+            for j in 0..4 {
+                partial_ab[lane + j] += to_f128(ab[j]) * eq_lo_val;
+                partial_c_0[lane + j] += to_f128(c_0[j]) * eq_lo_val;
+                partial_c_1[lane + j] += to_f128(c_1[j]) * eq_lo_val;
+            }
+        }
+    }
+}
+
 /// Per-worker scratch and local accumulators, with C split into its two banks.
 struct WorkerState {
     partial_ab: [F128; ELL],
@@ -870,48 +937,19 @@ fn process_one_x_hi(
             }
 
             #[cfg(target_arch = "aarch64")]
+            // SAFETY: `convert` holds 16·256 F128 entries, and every gather
+            // index below is `b_med · 256 + byte` with `b_med < 1 << N_MEDIUM`.
             unsafe {
-                use core::arch::aarch64::*;
-                let convert_ptr = convert.as_ptr() as *const u8;
-                for lane in 0..ELL {
-                    let mut cf_ab = vdupq_n_u8(0);
-                    let mut cf_c_0 = vdupq_n_u8(0);
-                    let mut cf_c_1 = vdupq_n_u8(0);
-                    for b_med in 0..(1 << N_MEDIUM) {
-                        let v_ab = state.chunk_ab_bytes[b_med][lane] as usize;
-                        let v_c = state.chunk_c_bytes[b_med][lane] as usize;
-                        let v_c_0 = v_c & 0x55;
-                        let v_c_1 = v_c & 0xAA;
-                        cf_ab =
-                            veorq_u8(cf_ab, vld1q_u8(convert_ptr.add((b_med * 256 + v_ab) * 16)));
-                        cf_c_0 = veorq_u8(
-                            cf_c_0,
-                            vld1q_u8(convert_ptr.add((b_med * 256 + v_c_0) * 16)),
-                        );
-                        cf_c_1 = veorq_u8(
-                            cf_c_1,
-                            vld1q_u8(convert_ptr.add((b_med * 256 + v_c_1) * 16)),
-                        );
-                    }
-                    let cf_ab_u64 = vreinterpretq_u64_u8(cf_ab);
-                    let cf_c_0_u64 = vreinterpretq_u64_u8(cf_c_0);
-                    let cf_c_1_u64 = vreinterpretq_u64_u8(cf_c_1);
-                    let cf_ab_f = F128 {
-                        lo: vgetq_lane_u64::<0>(cf_ab_u64),
-                        hi: vgetq_lane_u64::<1>(cf_ab_u64),
-                    };
-                    let cf_c_0_f = F128 {
-                        lo: vgetq_lane_u64::<0>(cf_c_0_u64),
-                        hi: vgetq_lane_u64::<1>(cf_c_0_u64),
-                    };
-                    let cf_c_1_f = F128 {
-                        lo: vgetq_lane_u64::<0>(cf_c_1_u64),
-                        hi: vgetq_lane_u64::<1>(cf_c_1_u64),
-                    };
-                    state.partial_ab[lane] += cf_ab_f * eq_lo_val;
-                    state.partial_c_0[lane] += cf_c_0_f * eq_lo_val;
-                    state.partial_c_1[lane] += cf_c_1_f * eq_lo_val;
-                }
+                accumulate_convert_lanes(
+                    convert,
+                    &state.chunk_ab_bytes,
+                    &state.chunk_c_bytes,
+                    1 << N_MEDIUM,
+                    eq_lo_val,
+                    &mut state.partial_ab,
+                    &mut state.partial_c_0,
+                    &mut state.partial_c_1,
+                );
             }
             #[cfg(not(target_arch = "aarch64"))]
             {
@@ -951,48 +989,19 @@ fn process_one_x_hi(
             }
 
             #[cfg(target_arch = "aarch64")]
+            // SAFETY: `convert` holds 16·256 F128 entries, and every gather
+            // index below is `b_med · 256 + byte` with `b_med < 1 << N_MEDIUM`.
             unsafe {
-                use core::arch::aarch64::*;
-                let convert_ptr = convert.as_ptr() as *const u8;
-                for lane in 0..ELL {
-                    let mut cf_ab = vdupq_n_u8(0);
-                    let mut cf_c_0 = vdupq_n_u8(0);
-                    let mut cf_c_1 = vdupq_n_u8(0);
-                    for b_med in 0..n_b_med {
-                        let v_ab = state.chunk_ab_bytes[b_med][lane] as usize;
-                        let v_c = state.chunk_c_bytes[b_med][lane] as usize;
-                        let v_c_0 = v_c & 0x55;
-                        let v_c_1 = v_c & 0xAA;
-                        cf_ab =
-                            veorq_u8(cf_ab, vld1q_u8(convert_ptr.add((b_med * 256 + v_ab) * 16)));
-                        cf_c_0 = veorq_u8(
-                            cf_c_0,
-                            vld1q_u8(convert_ptr.add((b_med * 256 + v_c_0) * 16)),
-                        );
-                        cf_c_1 = veorq_u8(
-                            cf_c_1,
-                            vld1q_u8(convert_ptr.add((b_med * 256 + v_c_1) * 16)),
-                        );
-                    }
-                    let cf_ab_u64 = vreinterpretq_u64_u8(cf_ab);
-                    let cf_c_0_u64 = vreinterpretq_u64_u8(cf_c_0);
-                    let cf_c_1_u64 = vreinterpretq_u64_u8(cf_c_1);
-                    let cf_ab_f = F128 {
-                        lo: vgetq_lane_u64::<0>(cf_ab_u64),
-                        hi: vgetq_lane_u64::<1>(cf_ab_u64),
-                    };
-                    let cf_c_0_f = F128 {
-                        lo: vgetq_lane_u64::<0>(cf_c_0_u64),
-                        hi: vgetq_lane_u64::<1>(cf_c_0_u64),
-                    };
-                    let cf_c_1_f = F128 {
-                        lo: vgetq_lane_u64::<0>(cf_c_1_u64),
-                        hi: vgetq_lane_u64::<1>(cf_c_1_u64),
-                    };
-                    state.partial_ab[lane] += cf_ab_f * eq_lo_val;
-                    state.partial_c_0[lane] += cf_c_0_f * eq_lo_val;
-                    state.partial_c_1[lane] += cf_c_1_f * eq_lo_val;
-                }
+                accumulate_convert_lanes(
+                    convert,
+                    &state.chunk_ab_bytes,
+                    &state.chunk_c_bytes,
+                    n_b_med,
+                    eq_lo_val,
+                    &mut state.partial_ab,
+                    &mut state.partial_c_0,
+                    &mut state.partial_c_1,
+                );
             }
             #[cfg(not(target_arch = "aarch64"))]
             {
