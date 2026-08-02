@@ -150,6 +150,18 @@ where
         }
         return;
     }
+    let Some(ep) = helper.filter(|_| n_chunks >= EPOOL_MIN_CHUNKS) else {
+        // No helper pool (any non-Apple-Silicon host, or a job too small to
+        // amortize the cross-pool kickoff): there is nothing to balance
+        // against, so use rayon's ordinary split rather than a shared atomic
+        // queue. The queue's per-chunk `fetch_add` and its loss of rayon's
+        // locality-aware splitting are pure overhead when one pool does all
+        // the work — measured as ~3% on Merkle leaf hashing on a 16-thread
+        // x86 host.
+        (0..n_chunks).into_par_iter().for_each(f);
+        return;
+    };
+
     let next = AtomicUsize::new(0);
     let worker = || {
         loop {
@@ -169,16 +181,13 @@ where
             .with_max_len(1)
             .for_each(|_| worker());
     };
-    match helper.filter(|_| n_chunks >= EPOOL_MIN_CHUNKS) {
-        Some(ep) => std::thread::scope(|s| {
-            // The scoped thread parks inside `broadcast` while the E-workers
-            // drain; it costs no main-pool worker. The scope join bounds the
-            // tail wait at one chunk on one efficiency core.
-            s.spawn(|| ep.broadcast(|_| worker()));
-            drain_main();
-        }),
-        None => drain_main(),
-    }
+    std::thread::scope(|s| {
+        // The scoped thread parks inside `broadcast` while the E-workers
+        // drain; it costs no main-pool worker. The scope join bounds the
+        // tail wait at one chunk on one efficiency core.
+        s.spawn(|| ep.broadcast(|_| worker()));
+        drain_main();
+    });
 }
 
 /// A `*mut T` that can cross into the chunk closures. The queue hands each
