@@ -437,35 +437,15 @@ def squeeze_step(state_0, state_1, state_2, state_3):
     return challenge, o[0], o[1], o[2], o[3]
 
 
-def reconstruct_field_bits(bits_ptr, v: Ext):
-    # Assert that FIELD_BITS bits reconstruct v in the F192 coordinate basis.
-    # Callers are responsible for boolean-constraining every bit first.
-    # Each 64-bit coordinate range contributes to exactly one tower limb; keep
-    # the accumulators separate so the two statically-zero limb products are
-    # not emitted for every bit.
-    acc0 = 0
-    acc1 = 0
-    acc2 = 0
+def check_base_word_bits_decomposition(bits_ptr, value):
+    # Boolean-constrain a hinted F64 decomposition and bind it to the word in
+    # the same pass, so each heap bit is loaded exactly once.
+    acc = 0
     for i in unroll(0, 64):
         b = bits_ptr[GEN ** i]
-        acc0 += b * COORD_BASIS[3 * i]
-    for i in unroll(64, 128):
-        b = bits_ptr[GEN ** i]
-        acc1 += b * COORD_BASIS[3 * i + 1]
-    for i in unroll(128, 192):
-        b = bits_ptr[GEN ** i]
-        acc2 += b * COORD_BASIS[3 * i + 2]
-    acc = [acc0, acc1, acc2]
-    ext_assert_eq(acc, v)
-    return
-
-
-def check_field_bits_decomposition(bits_ptr, v: Ext):
-    # Boolean-constrain every hinted bit, then bind the decomposition to v.
-    for i in unroll(0, FIELD_BITS):
-        b = bits_ptr[GEN ** i]
         bits_ptr[GEN ** i] = b * b
-    reconstruct_field_bits(bits_ptr, v)
+        acc += b * COORD_BASIS[3 * i]
+    assert acc == value
     return
 
 
@@ -479,6 +459,12 @@ def decode_query_bits(v: Ext, positions_out, bit_ptrs_out, depth: Const):
     hint_decompose_bits(bits_ptr, v[0], 64)
     hint_decompose_bits(bits_ptr * GEN ** 64, v[1], 64)
     hint_decompose_bits(bits_ptr * GEN ** 128, v[2], 64)
+    # The position groups below already form the polynomial-basis value of
+    # every run of bits. Accumulate those runs into their F64 tower limbs while
+    # they are live, instead of rereading all 192 heap bits afterwards.
+    acc0 = 0
+    acc1 = 0
+    acc2 = 0
     for j in unroll(0, per_word):
         base_bit = j * depth  # this group's first coordinate of v
         # A group that stays inside one 64-bit limb shifts as a WHOLE: the
@@ -509,21 +495,43 @@ def decode_query_bits(v: Ext, positions_out, bit_ptrs_out, depth: Const):
             positions_out[GEN ** j] = p_lo + (2 ** cut) * p_hi
         else:
             positions_out[GEN ** j] = p_lo
+        limb_shift = base_bit % 64
+        if base_bit // 64 == 0:
+            acc0 += (2 ** limb_shift) * p_lo
+            if cut // depth == 0:
+                acc1 += p_hi
+        if base_bit // 64 == 1:
+            acc1 += (2 ** limb_shift) * p_lo
+            if cut // depth == 0:
+                acc2 += p_hi
+        if base_bit // 64 == 2:
+            acc2 += (2 ** limb_shift) * p_lo
         bit_ptrs_out[GEN ** j] = bits_ptr * GEN ** base_bit
     for i in unroll(per_word * depth, FIELD_BITS):
         t = bits_ptr[GEN ** i]
         bits_ptr[GEN ** i] = t * t
-    # Every bit was pinned exactly once above, so only reconstruction remains.
-    reconstruct_field_bits(bits_ptr, v)
+        if i // 64 == 0:
+            acc0 += t * (2 ** (i % 64))
+        if i // 64 == 1:
+            acc1 += t * (2 ** (i % 64))
+        if i // 64 == 2:
+            acc2 += t * (2 ** (i % 64))
+    # Every bit was pinned exactly once, and the three disjoint accumulators
+    # bind exactly the three F192 coordinate limbs of the squeezed challenge.
+    assert acc0 == v[0]
+    assert acc1 == v[1]
+    assert acc2 == v[2]
     return
 
 
 def grind_check(state_0, state_1, state_2, state_3, nonce: Ext, nbits_g):
     # Ligerito fold/query grinding: digest = H(H(state, (0, POW)), (nonce, POW)); the digest's
-    # bits are advice-decomposed HERE and verified (booleanity + reconstruction,
-    # check_field_bits_decomposition), and the low nbits (nbits_g = g^nbits) must
-    # be zero — the CONTIGUOUS PoW window of transcript::pow_bits_ok. The
-    # caller absorbs the full field nonce afterwards. The honest prover searches
+    # low digest word's bits are advice-decomposed HERE and verified (booleanity
+    # + reconstruction), and the low nbits (nbits_g = g^nbits) must be zero —
+    # the CONTIGUOUS PoW window of transcript::pow_bits_ok. That native predicate
+    # is defined entirely on out[0] and always uses fewer than 64 bits, so the
+    # other independently constrained BLAKE output words need no decomposition.
+    # The caller absorbs the full field nonce afterwards. The honest prover searches
     # the deterministic u64 subset, while verification permits the full field:
     # each candidate still costs one hash and succeeds with probability 2^-bits.
     if nbits_g == GEN ** 0:
@@ -534,12 +542,9 @@ def grind_check(state_0, state_1, state_2, state_3, nonce: Ext, nbits_g):
     out = StackBuf(4)
     # nonce's three F64 limbs followed by DS_POW, exactly as the native sponge.
     sponge_compress(base, nonce, DS_POW, out)
-    digest_bits = HeapBuf(GEN ** FIELD_BITS)
+    digest_bits = HeapBuf(GEN ** 64)
     hint_decompose_bits(digest_bits, out[0], 64)
-    hint_decompose_bits(digest_bits * GEN ** 64, out[1], 64)
-    hint_decompose_bits(digest_bits * GEN ** 128, out[2], 64)
-    digest = challenge_from_state(out)
-    check_field_bits_decomposition(digest_bits, digest)
+    check_base_word_bits_decomposition(digest_bits, out[0])
     for xb in mul_range(1, nbits_g):
         assert digest_bits[xb] == 0
     return
@@ -622,33 +627,30 @@ def log2_ceil_in_the_exponent(g_N, g_logs_pow2, g_squares, floor: Const, nbits: 
 
 @inline
 def verify_merkle_path(leaf_0, leaf_1, leaf_2, leaf_3, path_ptr, direction_bits, depth: Const):
-    node_0 = leaf_0
-    node_1 = leaf_1
-    node_2 = leaf_2
+    node_prefix = [leaf_0, leaf_1, leaf_2]
     node_3 = leaf_3
     for level in unroll(0, depth):
         # A hash is four base words. Load its contiguous three-word prefix with
-        # DEREF_EXT and only the tail with scalar DEREF (two VM rows instead of
+        # DEREF_192 and only the tail with scalar DEREF (two VM rows instead of
         # four); the packed extension equality still binds each F64 limb.
         sibling_prefix = eload(path_ptr * GEN ** (4 * level))
-        sibling_0 = sibling_prefix[0]
-        sibling_1 = sibling_prefix[1]
-        sibling_2 = sibling_prefix[2]
         sibling_3 = path_ptr[GEN ** (4 * level + 3)]
         dir_bit = direction_bits[GEN ** level]  # query index bit: 0 keeps the running node left, 1 swaps it right
-        diff_0 = node_0 + sibling_0
-        diff_1 = node_1 + sibling_1
-        diff_2 = node_2 + sibling_2
+        # Select the first three words as one extension-vector operation. Since
+        # dir_bit is boolean and embedded in the base field, this is exactly the
+        # same coordinate-wise conditional swap as three scalar copies.
+        diff_prefix = eadd(node_prefix, sibling_prefix)
+        left_prefix = eadd(node_prefix, emul_base(dir_bit, diff_prefix))
+        right_prefix = eadd(diff_prefix, left_prefix)
         diff_3 = node_3 + sibling_3
-        left = [node_0 + dir_bit * diff_0, node_1 + dir_bit * diff_1, node_2 + dir_bit * diff_2, node_3 + dir_bit * diff_3]
-        right = [diff_0 + left[0], diff_1 + left[1], diff_2 + left[2], diff_3 + left[3]]
+        left_3 = node_3 + dir_bit * diff_3
+        left = [left_prefix[0], left_prefix[1], left_prefix[2], left_3]
+        right = [right_prefix[0], right_prefix[1], right_prefix[2], diff_3 + left_3]
         parent = StackBuf(4)
         blake3(left, right, parent[0:4])
-        node_0 = parent[0]
-        node_1 = parent[1]
-        node_2 = parent[2]
+        node_prefix = [parent[0], parent[1], parent[2]]
         node_3 = parent[3]
-    return node_0, node_1, node_2, node_3
+    return node_prefix[0], node_prefix[1], node_prefix[2], node_3
 
 
 def sumcheck_round3(state_0, state_1, state_2, state_3, msg_cursor, claim: Ext, eq_acc: Ext, prev_challenge: Ext):
@@ -1105,15 +1107,30 @@ def open_stacked(m_idx: Const, fs0, fs1, fs2, fs3, target: Ext, commit_root_0, c
             row_dot = [0, 0, 0]
             packed_row = StackBuf(LIG_PACKED_ROW_CAP)
             if lvl == 0:
-                for jw in unroll(0, LIG_INTERLEAVE[m_idx * LIG_MAX_LEVELS + lvl]):
+                # Level zero stores independent F64 lanes contiguously. Fetch
+                # complete three-word runs with DEREF_192, then handle the
+                # (at most two-word) tail scalarly. This is pure transport: the
+                # dot product below still treats every lane independently.
+                row_width = LIG_INTERLEAVE[m_idx * LIG_MAX_LEVELS + lvl]
+                row_triplets = row_width // 3
+                for jt in unroll(0, row_triplets):
+                    j0 = 3 * jt
+                    deref_192(row_ptr * GEN ** j0, packed_row[j0:j0 + 3])
+                    for jj in unroll(0, 3):
+                        jw = j0 + jj
+                        lane = packed_row[jw]
+                        weight = eload(row_eq_weights * GEN ** (3 * jw))
+                        row_dot = eadd(row_dot, emul_base(lane, weight))
+                for jw in unroll(3 * row_triplets, row_width):
                     lane = row_ptr[GEN ** jw]
                     packed_row[jw] = lane
                     weight = eload(row_eq_weights * GEN ** (3 * jw))
-                    row_dot = eadd(row_dot, emul(ebase(lane), weight))
+                    row_dot = eadd(row_dot, emul_base(lane, weight))
             else:
-                for jl in unroll(0, 3 * LIG_INTERLEAVE[m_idx * LIG_MAX_LEVELS + lvl]):
-                    packed_row[jl] = row_ptr[GEN ** jl]
                 for jw in unroll(0, LIG_INTERLEAVE[m_idx * LIG_MAX_LEVELS + lvl]):
+                    # Higher levels consist of contiguous F192 values. Load one
+                    # complete value per row lane instead of three scalar words.
+                    deref_192(row_ptr * GEN ** (3 * jw), packed_row[3 * jw:3 * jw + 3])
                     row_word = [packed_row[3 * jw], packed_row[3 * jw + 1], packed_row[3 * jw + 2]]
                     weight = eload(row_eq_weights * GEN ** (3 * jw))
                     row_dot = eadd(row_dot, emul(row_word, weight))
@@ -1137,17 +1154,13 @@ def open_stacked(m_idx: Const, fs0, fs1, fs2, fs3, target: Ext, commit_root_0, c
             path_ptr = merkle_paths * GEN ** LIG_PATHS_OFF[m_idx * LIG_MAX_LEVELS + lvl] * path_base
             root_0, root_1, root_2, root_3 = verify_merkle_path(node_0, node_1, node_2, node_3, path_ptr, direction_bits, LIG_TREE_DEPTH[m_idx * LIG_MAX_LEVELS + lvl])
             if lvl == 0:
-                assert root_0 == commit_root_0
-                assert root_1 == commit_root_1
-                assert root_2 == commit_root_2
+                ext_assert_eq([root_0, root_1, root_2], [commit_root_0, commit_root_1, commit_root_2])
                 assert root_3 == commit_root_3
             else:
                 # Heap stores unify the four computed digest words with the
                 # transcript-bound root written when this level was introduced.
                 root_ptr = level_roots * GEN ** (4 * lvl)
-                root_ptr[GEN ** 0] = root_0
-                root_ptr[GEN ** 1] = root_1
-                root_ptr[GEN ** 2] = root_2
+                estore(root_ptr, [root_0, root_1, root_2])
                 root_ptr[GEN ** 3] = root_3
         level_query_sum = eload(query_sum_chain * GEN ** (3 * LIG_QUERIES[m_idx * LIG_MAX_LEVELS + lvl]))
 
