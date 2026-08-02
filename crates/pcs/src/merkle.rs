@@ -18,6 +18,9 @@
 //! independent `blake3::hash` per leaf. Other sizes use the ordinary one-shot
 //! API. Internal 64-byte child pairs always take the batched path.
 
+#[cfg(target_arch = "aarch64")]
+mod blake3_neon8;
+
 use primitives::epool::{SyncPtr, run_hetero_chunks};
 use primitives::{field::F192, pretty_integer};
 use rayon::prelude::*;
@@ -167,7 +170,23 @@ fn hash_leaves_batched_uninit(
             // group `g` writes only `out[lo .. lo+len]`, so the mutable
             // ranges are pairwise disjoint and in bounds.
             let outputs = unsafe { core::slice::from_raw_parts_mut(out_base.ptr().add(lo), len) };
-            hash_many_oneshot_uninit::<N>(platform, &data[lo * N..(lo + len) * N], outputs);
+            let inputs = &data[lo * N..(lo + len) * N];
+            // Eight-wide NEON for the complete groups; upstream `hash_many`
+            // for whatever remains (a chunk's leaf count need not be a
+            // multiple of 8).
+            #[cfg(target_arch = "aarch64")]
+            {
+                let done = blake3_neon8::hash_complete_groups::<N>(inputs, outputs);
+                if done < len {
+                    hash_many_oneshot_uninit::<N>(
+                        platform,
+                        &inputs[done * N..],
+                        &mut outputs[done..],
+                    );
+                }
+            }
+            #[cfg(not(target_arch = "aarch64"))]
+            hash_many_oneshot_uninit::<N>(platform, inputs, outputs);
         });
     }
     match leaf_size {
@@ -545,6 +564,64 @@ mod prune_tests {
 
 #[cfg(test)]
 mod vmhash_batch_tests {
+
+    /// The eight-wide NEON leaf kernel must reproduce `blake3::hash` for every
+    /// leaf, at every leaf size the dispatch uses, including batches that are
+    /// not a multiple of eight.
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn neon8_leaves_match_standard_blake3() {
+        fn check<const N: usize>() {
+            for n_leaves in [1usize, 7, 8, 9, 16, 37, 64] {
+                let data: Vec<u8> = (0..n_leaves * N).map(|i| (i * 31 + 7) as u8).collect();
+                let mut out: Vec<std::mem::MaybeUninit<Hash>> =
+                    (0..n_leaves).map(|_| std::mem::MaybeUninit::uninit()).collect();
+                let done = super::blake3_neon8::hash_complete_groups::<N>(&data, &mut out);
+                assert_eq!(done, n_leaves / 8 * 8);
+                for i in 0..done {
+                    // SAFETY: the kernel initialized the first `done` slots.
+                    let got = unsafe { out[i].assume_init() };
+                    assert_eq!(
+                        got,
+                        *blake3::hash(&data[i * N..(i + 1) * N]).as_bytes(),
+                        "leaf {i} of {n_leaves} at N={N}"
+                    );
+                }
+            }
+        }
+        check::<64>();
+        check::<128>();
+        check::<256>();
+        check::<512>();
+        check::<1024>();
+    }
+
+    /// End-to-end through the dispatcher at the L0 leaf size this branch
+    /// actually commits with (64 lanes x 8-byte F64 = 512 bytes).
+    #[test]
+    fn leaf_dispatch_matches_standard_blake3() {
+        for leaf in [64usize, 128, 256, 512, 1024] {
+            let n_leaves = 37usize;
+            let data: Vec<u8> = (0..n_leaves * leaf).map(|i| (i * 17 + 3) as u8).collect();
+            let mut out: Vec<std::mem::MaybeUninit<Hash>> =
+                (0..n_leaves).map(|_| std::mem::MaybeUninit::uninit()).collect();
+            hash_leaves_batched_uninit(
+                blake3::platform::Platform::detect(),
+                &data,
+                leaf,
+                &mut out,
+            );
+            for i in 0..n_leaves {
+                // SAFETY: the dispatcher initializes every slot.
+                let got = unsafe { out[i].assume_init() };
+                assert_eq!(
+                    got,
+                    *blake3::hash(&data[i * leaf..(i + 1) * leaf]).as_bytes(),
+                    "leaf {i} at leaf_size={leaf}"
+                );
+            }
+        }
+    }
     use super::*;
 
     /// The low-level multi-input invocation must exactly reproduce independent
