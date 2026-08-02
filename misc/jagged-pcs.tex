@@ -84,7 +84,7 @@ padding column is introduced. A block of width $B=2^b$ whose columns
 $P_c:\cube k\to\F$, $c\in\cube b$, have logical dimension $k$ and common real height
 $h\le2^k$ is stored row-major at an integer offset $t\ge0$:
 \begin{equation}
-  q\bigl(t+c+B\val z\bigr)=P_c(z),\qquad c\in\cube b,\ z\in\cube k,\ \val z<h,
+  q\bigl(t+\val c+B\val z\bigr)=P_c(z),\qquad c\in\cube b,\ z\in\cube k,\ \val z<h,
   \label{eq:place}
 \end{equation}
 so the block occupies the interval $[t,e)$ with $e=t+Bh$. Blocks are concatenated with no
@@ -92,9 +92,10 @@ alignment gap, and only the last is followed by zero padding, up to
 \[
   m=\lceil\log_2 A\rceil,\qquad A=\sum_{\text{blocks}}Bh .
 \]
-The endpoints are public: they are the prefix sums of the announced heights, computed by a
-ripple-carry adder (one multiplication per bit, the carry being
-$\maj(s,h,\kappa)=(s+\kappa)(s+h)+s$), never transmitted.
+The endpoints are public: they are the prefix sums of the block lengths $Bh$, never
+transmitted, and a circuit verifier forms them with a ripple-carry adder at one
+multiplication per bit, the carry out of a position with addend bits $\sigma,\eta$ and carry
+in $\kappa$ being $\maj(\sigma,\eta,\kappa)=(\sigma+\kappa)(\sigma+\eta)+\sigma$.
 
 %=====================================================================
 \section{The protocol}\label{sec:protocol}
@@ -102,7 +103,7 @@ $\maj(s,h,\kappa)=(s+\kappa)(s+h)+s$), never transmitted.
 
 The protocol is built from two weights, which we define first. Given integer bounds
 $0\le t\le e\le2^m$ and a family of \emph{row weights}
-$u=(u_j^0,u_j^1)_{j<n}\in(\F^2)^n$ with $n\le m$, the \emph{interval weight}
+$u=(u_j^0,u_j^1)_{j<n}\in(\F^2)^n$, the \emph{interval weight}
 $W^{t,e}_u:\cube m\to\F$ is
 \begin{equation}
   W^{t,e}_u(w):=\sum_{\substack{a\in\cube n\\ t+\val a<e}}\Bigl(\prod_{j<n}u_j^{a_j}\Bigr)\bigl[\val w=t+\val a\bigr],
@@ -111,20 +112,16 @@ $W^{t,e}_u:\cube m\to\F$ is
 and for an integer height $0\le h\le2^k$ the \emph{prefix indicator} $H_h:\cube k\to\F$ is
 $H_h(z):=[\val z<h]$.
 
-Two families of row weights occur on a block of width $B=2^b$, both lying in
-$(\F^2)^{b+k}$, so that $n=b+k$. The first addresses a single slot $c\in\cube b$ claimed at a
-point $\zeta\in\F^k$:
-\begin{equation}
-  u(c,\zeta)_j:=(1+c_j,\,c_j)\ \ (j<b),\qquad u(c,\zeta)_{b+i}:=(1+\zeta_i,\,\zeta_i)\ \ (i<k).
-  \label{eq:uslot}
-\end{equation}
-The second addresses all $B$ slots at once and depends on a batching scalar $\gamma\in\F$:
+One row-weight family serves a whole block. For a block of width $B=2^b$ and dimension
+$k$, claimed at a point $\zeta\in\F^k$, and a batching scalar $\gamma\in\F$, define
+$u^{\star}(\gamma,\zeta)\in(\F^2)^{b+k}$, so that $n=b+k$, by
 \begin{equation}
   u^{\star}(\gamma,\zeta)_j:=\bigl(1,\,\gamma^{2^j}\bigr)\ \ (j<b),\qquad u^{\star}(\gamma,\zeta)_{b+i}:=(1+\zeta_i,\,\zeta_i)\ \ (i<k).
   \label{eq:ustar}
 \end{equation}
-Note that the selector pairs of $u^{\star}$ do not sum to $1$, which~\eqref{eq:weight} never
-required of them.
+Note that the selector pairs do not sum to $1$, which~\eqref{eq:weight} never required of
+them. At $b=0$ the selector part is empty and $u^{\star}$ is the plain equality family
+$(1+\zeta_i,\zeta_i)_{i<k}$.
 
 \begin{protocol}[Jagged opening]\label{prot:jagged}
 \ \par\smallskip
@@ -146,14 +143,12 @@ the public $p_c$ at and above $h$:
       $C_c:=v_c+p_c\bigl(1+\pol{H_h}(\zeta_c)\bigr)\in\F$, the verifier evaluating
       $\pol{H_h}$ by~\eqref{eq:prefix} below.
 \item \emph{(rank)} $\mathbf V$ observes every $C_c$, then samples $\gamma\leftarrow\F$ and
-      fixes a rank per claim: a block whose $B$ claims share one row point $\zeta$ and cover
-      all $B$ slots receives the consecutive integer ranks $\beta+\val c$ in slot order;
-      every other claim receives a rank of its own. Ranks are distinct.
+      gives each block the consecutive integer ranks $\mathrm{rk}(c)=\beta+\val c$,
+      $c\in\cube b$, in slot order, distinct blocks receiving disjoint ranges.
 \item \emph{(batch)} Both parties form the single weighted claim
       $(W,C)\in\F^{\cube m}\times\F$,
       \[
-        W:=\sum_{\text{complete blocks}}\gamma^{\beta}\,W^{t,e}_{u^{\star}(\gamma,\zeta)}
-           \;+\;\sum_{\text{other claims}}\gamma^{\mathrm{rk}}\,W^{t,e}_{u(c,\zeta_c)},
+        W:=\sum_{\text{blocks}}\gamma^{\beta}\,W^{t,e}_{u^{\star}(\gamma,\zeta)},
         \qquad C:=\sum_c\gamma^{\mathrm{rk}(c)}\,C_c .
       \]
 \item \emph{(open)} The PCS opens $\inner Wq=C$ against the commitment.
@@ -167,16 +162,24 @@ over $\gamma$.
 \end{lemma}
 
 \begin{proof}
-The proof rests on two identities. The first concerns a single slot: splitting the logical
-column at $h$ and using $c+B\val z=\val{(c,z)}$ gives
+Introduce, for one slot $c\in\cube b$ of a block claimed at $\zeta$, the per-slot family
+$u(c,\zeta)\in(\F^2)^{b+k}$,
+\begin{equation}
+  u(c,\zeta)_j:=(1+c_j,\,c_j)\ \ (j<b),\qquad u(c,\zeta)_{b+i}:=(1+\zeta_i,\,\zeta_i)\ \ (i<k),
+  \label{eq:uslot}
+\end{equation}
+which appears nowhere in the protocol and only here. The proof rests on two identities.
+The first concerns a single slot: splitting the logical column at $h$ and using
+$\val c+B\val z=\val{(c,z)}$ gives
 \begin{equation}
   \pol{P^{\mathrm{log}}_c}(\zeta)=\sum_{\val z<h}\eq(\zeta,z)\,q\bigl(t+\val{(c,z)}\bigr)+p_c\bigl(1+\pol{H_h}(\zeta)\bigr)
   =\bigl\langle W^{t,e}_{u(c,\zeta)},q\bigr\rangle+p_c\bigl(1+\pol{H_h}(\zeta)\bigr),
   \label{eq:split}
 \end{equation}
 because $\prod_{j<b}u(c,\zeta)_j^{a_j}=[a_{<b}=c]$ selects $a=(c,z)$, the remaining factor is
-$\eq(\zeta,z)$, and $t+\val a<e=t+Bh$ is exactly $\val z<h$ once $c<B$. So step~1 makes
-$C_c=\inner{W^{t,e}_{u(c,\zeta_c)}}q$ for every claim.
+$\eq(\zeta,z)$, and $t+\val a<e=t+Bh$ is exactly $\val z<h$ once $\val c<B$. So step~1
+makes $C_c-\inner{W^{t,e}_{u(c,\zeta_c)}}q$ the discrepancy of the claim on column $c$, zero
+exactly when that claim holds.
 
 The second identity concerns a complete block. Fix $a\in\cube{b+k}$ in~\eqref{eq:weight}. Its
 selector factor under $u(c,\zeta)$ is $[a_{<b}=c]$, so summing over the $B$ slots with their
@@ -188,7 +191,8 @@ consecutive ranks gives
 which is $\gamma^\beta$ times the selector factor of $u^{\star}(\gamma,\zeta)$; the row
 coordinates are identical. Hence
 $\sum_{c}\gamma^{\beta+\val c}W^{t,e}_{u(c,\zeta)}=\gamma^{\beta}W^{t,e}_{u^{\star}(\gamma,\zeta)}$,
-and $W$ of step~3 is $\sum_c\gamma^{\mathrm{rk}(c)}W^{t,e}_{u(c,\zeta_c)}$. Completeness
+so summing that over the blocks shows $W$ of step~3 equals
+$\sum_c\gamma^{\mathrm{rk}(c)}W^{t,e}_{u(c,\zeta_c)}$, one term per claim. Completeness
 follows. For the converse, $\inner Wq-C=\sum_c\gamma^{\mathrm{rk}(c)}\bigl(\inner{W^{t,e}_{u(c,\zeta_c)}}q-C_c\bigr)$
 is a nonzero polynomial in $\gamma$ of degree below the number of claims.
 \end{proof}
@@ -208,11 +212,13 @@ starting at $(0,1)$:
   \end{cases}
   \label{eq:prefix}
 \end{equation}
-and $\pol{H_h}(\zeta)=\mathsf{lt}$ at the end ($\equiv1$ when $h=2^k$). Branch-free, for a
-circuit verifier with Boolean-constrained $h_j$:
-$\mathsf{lt}\mathrel{+}=h_j\mathsf{tie}(1+\zeta_j)$,
-$\mathsf{tie}\mathrel{*}=1+h_j+\zeta_j$. Two multiplications per bit. The height is the
-per-column row count $h$, not $Bh$. The rest of the note evaluates $\pol W$.
+and $\pol{H_h}(\zeta)=\mathsf{lt}$ at the end ($\equiv1$ when $h=2^k$). A circuit verifier,
+whose $h_j$ are Boolean-constrained field elements rather than a branch, runs the same pass
+branch-free at two multiplications per bit: set $P:=\mathsf{tie}\,(1+h_j+\zeta_j)$, then
+$\mathsf{lt}\mathrel{+}=h_j(\mathsf{tie}+P)$ and $\mathsf{tie}:=P$, which reproduces both
+cases because $h_j(\mathsf{tie}+P)=h_j\,\mathsf{tie}\,(1+\zeta_j)$ for Boolean $h_j$. The
+height here is the per-column row count $h$, not $Bh$. The rest of the note evaluates
+$\pol W$.
 
 %=====================================================================
 \section{The interval weight is a branching program}\label{sec:automaton}
@@ -227,14 +233,14 @@ over the four-element state set
 \]
 where $\kappa$ is the carry of $\val w=t+\val a$ over the bits read and $\lambda$ is the
 comparison $\val w<e$ over those bits (a more significant differing bit overrides a less
-significant one, so reading upward each differing bit overwrites $\lambda$). Two registers,
-hence width four~\cite{jagged}.
+significant one, so reading upward each differing bit overwrites $\lambda$). Two registers
+suffice, so the program has width four~\cite{jagged}.
 
 At position $j$ let $t_j,e_j\in\{0,1\}$ be the $j$-th bits of $t$ and $e$, and write
 $\chi_j^0:=1+x_j$ and $\chi_j^1:=x_j$ in $\F$ for the two per-coordinate factors of $\eq$, so
-that $\eq(u,x)=\prod_j\chi_j^{u_j}$ for Boolean $u$. Set
+that $\eq(\upsilon,x)=\prod_j\chi_j^{\upsilon_j}$ for Boolean $\upsilon$. Set
 \[
-  w_0:=u_j^0\chi_j^0,\quad w_1:=u_j^1\chi_j^0,\quad w_2:=u_j^0\chi_j^1,\quad w_3:=u_j^1\chi_j^1 .
+  g_0:=u_j^0\chi_j^0,\quad g_1:=u_j^1\chi_j^0,\quad g_2:=u_j^0\chi_j^1,\quad g_3:=u_j^1\chi_j^1 .
 \]
 Reading a row bit $a$ and an index bit $\omega$ from $(\kappa,\lambda)$ is permitted only
 when $\omega=a\oplus\kappa\oplus t_j$, and then
@@ -260,10 +266,9 @@ $\kappa_0=0$, is binary addition, so paths biject with choices of $a$ and satisf
 $\val\omega=t+\val a$; then $\prod_j\chi_j^{\omega_j}=\eq(\omega,x)$, and $u_j=(1,0)$ for
 $j\ge n$ kills every $a$ with a bit at or above $n$. Acceptance is $t+\val a<e$: $\lambda$
 ends at $1$ exactly when the most significant position where $\omega$ and $e$ differ has
-$e$-bit $1$, and $\kappa$ ends at $0$ exactly when the addition does not carry out of
-position $m$. The extra position $j=m$, where $u_m=(1,0)$ and $x_m:=0$ force
-$a_m=\omega_m=0$, supplies that carry test and also represents $e=2^m$ (there $e_m=1$, which
-sets $\lambda$ to $1$). Both sides are multilinear in every coordinate of $x$ and agree at
+$e$-bit $1$, and a path that carries into position $m$ is annihilated there, because the
+carry forces $\omega_m=1$, of weight $\chi_m^1=x_m=0$. That extra position also represents
+$e=2^m$: there $e_m=1$, which sets $\lambda$ to $1$. Both sides are multilinear in every coordinate of $x$ and agree at
 Boolean arguments, hence agree everywhere.
 \end{proof}
 
@@ -275,35 +280,36 @@ $\st{}'$ outgoing:
 \begin{array}{l@{\qquad}l}
 (t_j,e_j)=(0,0): &
 \begin{aligned}
-\st0'&=\st0(w_0+w_3)+(\st1+\st3)w_2+\st2w_3, & \st1'&=\st1w_1,\\
-\st2'&=\st2w_0, & \st3'&=\st3w_1,
+\st0'&=\st0(g_0+g_3)+(\st1+\st3)g_2+\st2g_3, & \st1'&=\st1g_1,\\
+\st2'&=\st2g_0, & \st3'&=\st3g_1,
 \end{aligned}\\[2.2ex]
 (t_j,e_j)=(0,1): &
 \begin{aligned}
-\st0'&=\st0w_3+\st1w_2, & \st1'&=0,\\
-\st2'&=\st0w_0+\st2(w_0+w_3)+\st3w_2, & \st3'&=(\st1+\st3)w_1,
+\st0'&=\st0g_3+\st1g_2, & \st1'&=0,\\
+\st2'&=\st0g_0+\st2(g_0+g_3)+\st3g_2, & \st3'&=(\st1+\st3)g_1,
 \end{aligned}\\[2.2ex]
 (t_j,e_j)=(1,0): &
 \begin{aligned}
-\st0'&=(\st0+\st2)w_2, & \st1'&=\st0w_1+\st1(w_0+w_3)+\st3w_3,\\
-\st2'&=0, & \st3'&=\st2w_1+\st3w_0,
+\st0'&=(\st0+\st2)g_2, & \st1'&=\st0g_1+\st1(g_0+g_3)+\st3g_3,\\
+\st2'&=0, & \st3'&=\st2g_1+\st3g_0,
 \end{aligned}\\[2.2ex]
 (t_j,e_j)=(1,1): &
 \begin{aligned}
-\st0'&=\st0w_2, & \st1'&=\st1w_3,\\
-\st2'&=\st2w_2, & \st3'&=(\st0+\st2)w_1+\st1w_0+\st3(w_0+w_3).
+\st0'&=\st0g_2, & \st1'&=\st1g_3,\\
+\st2'&=\st2g_2, & \st3'&=(\st0+\st2)g_1+\st1g_0+\st3(g_0+g_3).
 \end{aligned}
 \end{array}
 \]
 Each arm costs $6$ multiplications. The $w_i$ cost one more: for a row pair $(1+r,r)$ form
-$\pi=rx$ and read off $w_0=1+r+x+\pi$, $w_1=r+\pi$, $w_2=x+\pi$, $w_3=\pi$; for a selector
-pair $(1,\gamma^{2^j})$ form $\pi=\gamma^{2^j}x$ and read off $w_0=1+x$,
-$w_1=\gamma^{2^j}+\pi$, $w_2=x$, $w_3=\pi$, the successive $\gamma^{2^j}$ coming from
-repeated squaring. A position costs $7$ multiplications, a run $7(m+1)$. One run per
+$\pi=rx$ and read off $g_0=1+r+x+\pi$, $g_1=r+\pi$, $g_2=x+\pi$, $g_3=\pi$; for a selector
+pair $(1,\gamma^{2^j})$ form $\pi=\gamma^{2^j}x$ and read off $g_0=1+x$,
+$g_1=\gamma^{2^j}+\pi$, $g_2=x$, $g_3=\pi$. A position therefore costs $7$
+multiplications and a run $7(m+1)$, plus one squaring per selector position to advance
+$\gamma^{2^j}$. One run per
 \emph{block}, not per column: that is what step~2 of Protocol~\ref{prot:jagged} buys, and it
-is why~\eqref{eq:weight} was stated for weights that need not sum to $1$. Normalising
-$u^\star$, that is factoring $(1,\gamma^{2^j})=(1+\gamma^{2^j})\cdot(1,\gamma^{2^j}/(1+\gamma^{2^j}))$,
-would cost $b$ inversions and fail at $\gamma=1$.
+is why~\eqref{eq:weight} was stated for weights that need not sum to $1$. Normalising $u^{\star}$, that is
+writing $(1,\gamma^{2^j})=(1+\gamma^{2^j})\cdot(1+r_j,\,r_j)$ with
+$r_j=\gamma^{2^j}/(1+\gamma^{2^j})$, would cost $b$ inversions and fail at $\gamma=1$.
 
 %=====================================================================
 \section{What the verifier evaluates}\label{sec:contract}
@@ -311,15 +317,17 @@ would cost $b$ inversions and fail at $\gamma=1$.
 
 A BaseFold/WHIR-style opening never evaluates $\pol W$ at a point. It consumes $m-L$ of the
 $m$ variables in sumcheck rounds, leaving a challenge prefix $\rho\in\F^{m-L}$, and
-transmits the remaining $L$-variable message $\mathrm{yr}:\cube L\to\F$ in the clear, $L$
+transmits the remaining $L$-variable message $f:\cube L\to\F$ in the clear, $L$
 being small (typically $3$ or $4$). Its last check needs
 \begin{equation}
-  \Sigma:=\sum_{y\in\cube L}\mathrm{yr}(y)\,\pol W(\rho,y).
+  \Sigma:=\sum_{y\in\cube L}f(y)\,\pol W(\rho,y).
   \label{eq:contract}
 \end{equation}
 Running the automaton $2^L$ times costs $2^L\cdot7(m+1)$ per block. One run suffices.
 
-\paragraph{Matrix form.} Let $T_j(x_j)\in\F^{4\times4}$ be the transitions above. Then
+\paragraph{Matrix form.} Collect the transitions above into $T_j(x_j)\in\F^{Q\times Q}$,
+with $\bigl(T_j(x_j)\bigr)_{s,s'}$ the weight of $s\to s'$, so that a state row vector
+updates by right multiplication. Then
 \[
   \pol W(x)=\mathbf e_{\st0}^{\!\top}\Bigl(\prod_{j=0}^{m}T_j(x_j)\Bigr)\mathbf e_{\st2}
           =\mathbf e_{\st0}^{\!\top}\Bigl(\prod_{j=0}^{m-1}T_j(x_j)\Bigr)\mathbf u,
@@ -334,26 +342,26 @@ so $\mathbf u=\mathbf e_{\st2}$ unless the block ends exactly at $e=2^m$. Splitt
 at $j=m-L$ and setting $S:=\mathbf e_{\st0}^{\!\top}\prod_{j<m-L}T_j(\rho_j)\in\F^4$,
 \begin{equation}
   \Sigma=\inner SV,\qquad
-  V:=\sum_{y\in\cube L}\mathrm{yr}(y)\Bigl(\prod_{j=m-L}^{m-1}T_j\bigl(y_{j-(m-L)}\bigr)\Bigr)\mathbf u .
+  V:=\sum_{y\in\cube L}f(y)\Bigl(\prod_{j=m-L}^{m-1}T_j\bigl(y_{j-(m-L)}\bigr)\Bigr)\mathbf u .
   \label{eq:SV}
 \end{equation}
 Here $S,V\in\F^4$, and $S$ is one automaton run of $m-L$ steps. $V$ is a reverse dynamic
 program: the residual
 index coordinates are Boolean, so $T_j$ collapses to $T_j^{(0)}$ or $T_j^{(1)}$ and
 \[
-  V_j(y')=T_j^{(0)}V_{j+1}(y',0)+T_j^{(1)}V_{j+1}(y',1),\qquad V_m(y)=\mathrm{yr}(y)\,\mathbf u,
+  V_j(y')=T_j^{(0)}V_{j+1}(y',0)+T_j^{(1)}V_{j+1}(y',1),\qquad V_m(y)=f(y)\,\mathbf u,
 \]
 peeling the most significant residual bit first: $2^L-1$ reverse steps, then $\inner SV$.
 
-\paragraph{The reverse step.} It takes the child vectors $v$ (index bit $0$) and $w$ (index
-bit $1$), the row coordinate $r$, and $t_j,e_j$. Transposing the transitions with row pair
-$(1+r,r)$ gives, for $(t_j,e_j)=(0,0)$,
+\paragraph{The reverse step.} It takes the two child vectors $v^{0}$ (index bit $0$) and
+$v^{1}$ (index bit $1$) in $\F^4$, the row coordinate $r$, and $t_j,e_j$. Transposing the
+transitions with row pair $(1+r,r)$ gives, for $(t_j,e_j)=(0,0)$,
 \[
-  V'=\bigl((1+r)v_0+rw_0,\ \ rv_1+(1+r)w_0,\ \ (1+r)v_2+rw_0,\ \ rv_3+(1+r)w_0\bigr),
+  V'=\bigl((1+r)v^{0}_0+rv^{1}_0,\ \ rv^{0}_1+(1+r)v^{1}_0,\ \ (1+r)v^{0}_2+rv^{1}_0,\ \ rv^{0}_3+(1+r)v^{1}_0\bigr),
 \]
 and analogously for the other three: $8$ multiplications. For $r\in\{0,1\}$ the step is a
-pure selection and costs nothing: $(v_0,w_0,v_2,w_0)$ at $r=0$, $(w_0,v_1,w_0,v_3)$ at
-$r=1$. The row point is zero above a column's logical dimension, so the free branch fires on
+pure selection and costs nothing: $(v^{0}_0,v^{1}_0,v^{0}_2,v^{1}_0)$ at $r=0$, and
+$(v^{1}_0,v^{0}_1,v^{1}_0,v^{0}_3)$ at $r=1$. The row point is zero above a column's logical dimension, so the free branch fires on
 every residual coordinate the column does not use.
 
 \paragraph{Closed form when all residual row coordinates vanish.} With the high row bits
@@ -363,34 +371,34 @@ state reaches exactly one message index. With $e_{\mathrm{hi}}:=\lfloor e/2^{m-L
 read off the $L+1$ top bits of $e$ (the extra bit covering $e=2^m$),
 \begin{equation}
 \begin{aligned}
-  \Sigma=\ &\mathrm{yr}(t_{\mathrm{hi}})\Bigl(S_{\st0}[\,t_{\mathrm{hi}}<e_{\mathrm{hi}}\,]+S_{\st2}[\,t_{\mathrm{hi}}\le e_{\mathrm{hi}}\,]\Bigr)\\
-  +\ &\mathrm{yr}(t_{\mathrm{hi}}{+}1)\Bigl(S_{\st1}[\,t_{\mathrm{hi}}{+}1<e_{\mathrm{hi}}\,]+S_{\st3}[\,t_{\mathrm{hi}}{+}1\le e_{\mathrm{hi}}\,]\Bigr).
+  \Sigma=\ &f(t_{\mathrm{hi}})\Bigl(S_{\st0}[\,t_{\mathrm{hi}}<e_{\mathrm{hi}}\,]+S_{\st2}[\,t_{\mathrm{hi}}\le e_{\mathrm{hi}}\,]\Bigr)\\
+  +\ &f(t_{\mathrm{hi}}{+}1)\Bigl(S_{\st1}[\,t_{\mathrm{hi}}{+}1<e_{\mathrm{hi}}\,]+S_{\st3}[\,t_{\mathrm{hi}}{+}1\le e_{\mathrm{hi}}\,]\Bigr).
 \end{aligned}
 \label{eq:closed}
 \end{equation}
 The high part decides $\val w<e$ when it differs from $e_{\mathrm{hi}}$; when it agrees the
 prefix comparison decides, so $\st0$ (with $\lambda=0$) contributes only under a strict $<$
 while $\st2$ (with $\lambda=1$) also contributes at equality, and likewise for $\st1,\st3$
-at $t_{\mathrm{hi}}+1$. Cost $O(L)$: a ripple increment of $t_{\mathrm{hi}}$, one MSB-first
-pass yielding $[\,t_{\mathrm{hi}}<e_{\mathrm{hi}}\,]$, $[\,t_{\mathrm{hi}}=e_{\mathrm{hi}}\,]$
+at $t_{\mathrm{hi}}+1$. This costs $O(L)$, namely a ripple increment of $t_{\mathrm{hi}}$
+and one MSB-first pass yielding $[\,t_{\mathrm{hi}}<e_{\mathrm{hi}}\,]$, $[\,t_{\mathrm{hi}}=e_{\mathrm{hi}}\,]$
 and $[\,e_{\mathrm{hi}}=t_{\mathrm{hi}}{+}1\,]$ (the last converting $<$ into
 $t_{\mathrm{hi}}{+}1<e_{\mathrm{hi}}$ via
 $[\,t_{\mathrm{hi}}<e_{\mathrm{hi}}\,]\cdot(1+[\,e_{\mathrm{hi}}=t_{\mathrm{hi}}{+}1\,])$),
-and two message reads. Address $\mathrm{yr}$ with one zero sentinel after its $2^L$ entries
+and two message reads. Address $f$ with one zero sentinel after its $2^L$ entries
 so that a carry out of the last index reads in range.
 
 \begin{center}
 \fbox{\parbox{0.93\textwidth}{
 \textbf{Terminal evaluation of one block's weight.}
 \emph{Input:} bits of $t,e$; width $b$; scalar $\gamma$ and base rank $\beta$; row point
-$\zeta$, zero-padded; round challenges $\rho\in\F^{m-L}$; final message $\mathrm{yr}$.
+$\zeta$, zero-padded; round challenges $\rho\in\F^{m-L}$; final message $f$.
 \emph{Output:} the block's term of~\eqref{eq:contract}.
 \begin{enumerate}[itemsep=1pt]
 \item Run the automaton over $j=0,\dots,m-L-1$ at coordinates $\rho_j$ with the weights
 $u^{\star}(\gamma,\zeta)$ of~\eqref{eq:ustar}, giving $S\in\F^4$. Cost $7(m-L)$.
 \item If $\zeta$ vanishes at every residual coordinate, return
 $\gamma^{\beta}\cdot$\eqref{eq:closed}. Cost $O(L)$.
-\item Otherwise set $V(y)=\mathrm{yr}(y)\mathbf u$ for $y\in\cube L$, apply one reverse step
+\item Otherwise set $V(y)=f(y)\mathbf u$ for $y\in\cube L$, apply one reverse step
 to each pair for $j=m-1$ down to $m-L$, and return $\gamma^{\beta}\inner SV$. Cost at most
 $8(2^L-1)+4$, and zero per step whose row coordinate is Boolean.
 \end{enumerate}
