@@ -253,10 +253,11 @@ DS_SQ = 4
 DS_POW = 5
 
 # Field structure: GF(2^192), represented as three GF(2^64) tower limbs.
-# One GF192 challenge batches the 192 transposed ring-switch coordinates with
-# univariate powers (1, rho, ..., rho^191).
+# Six challenges define the F2-linear map that batches the 192 transposed
+# ring-switch coordinates.
 FIELD_BITS = 192
 BASE_FIELD_BITS = 64
+RING_MAP_SHIFTS = [32, 16, 8, 4, 2, 1]
 # Exponent bit-widths: an announced 32-bit count decomposes into COUNT_BITS
 # bits, with its top bit constrained to zero so the native strict 32-bit bound
 # holds; any structural size (sums of 2^kappa, packing offsets) fits SIZE_BITS
@@ -619,6 +620,7 @@ def log2_ceil_in_the_exponent(g_N, g_logs_pow2, g_squares, floor: Const, nbits: 
     return g_log
 
 
+@inline
 def verify_merkle_path(leaf_0, leaf_1, leaf_2, leaf_3, path_ptr, direction_bits, depth: Const):
     node_0 = leaf_0
     node_1 = leaf_1
@@ -1270,7 +1272,7 @@ def verify_sub(pi_0, pi_1, pi_2, pi_3, seed_0, seed_1, seed_2, seed_3, g_logs_po
     #   6. public-input claim + BLAKE3 pin claims (telescoped prefix MLE);
     #   7. flock reduction: univariate-skip zerocheck + lincheck (matrix
     #      evaluation deferred);
-    #   8. ring-switch fronts (shared rho, linearized transpose in-circuit);
+    #   8. ring-switch fronts (shared linear map, transpose in-circuit);
     #   9. gamma-combine everything, certify the committed size m, dispatch
     #      the stacked Ligerito opening (open_stacked), and assert its
     #      eval_b terminal;
@@ -2150,11 +2152,12 @@ def verify_sub(pi_0, pi_1, pi_2, pi_3, seed_0, seed_1, seed_2, seed_3, g_logs_po
     hint_witness(s_hat_v[0 : 3 * 2 * (2 ** K_SKIP)], "rs_shatv")
     transposed_claims = StackBuf(3 * 2)
     rs_eq_vals = StackBuf(3 * 2)
+    map_challenges = HeapBuf(3 * 6)
     c_table = HeapBuf(3 * BASE_FIELD_BITS)
     z_vals = HeapBuf(3 * 2 * QPKD_VARS_CAP)
     for rs in unroll(0, 2):
         # observe this claim's 64 s_hat_v entries (mirror of verify_observe /
-        # observe_ext_slice) before the claim check and the shared rho.
+        # observe_ext_slice) before the claim check and the shared map.
         for i in unroll(0, (2 ** K_SKIP)):
             fs = obs(fs, eload(s_hat_v * GEN ** (3 * ((2 ** K_SKIP) * rs + i))))
         # claim check: value == sum_i prefix_weights[i] * s_hat_v[i], where
@@ -2171,21 +2174,25 @@ def verify_sub(pi_0, pi_1, pi_2, pi_3, seed_0, seed_1, seed_2, seed_3, g_logs_po
             shat = eload(s_hat_v * GEN ** (3 * ((2 ** K_SKIP) * rs + i)))
             claim_check = eadd(claim_check, emul(emul(sload(claim_nums, i), lagrange_inv_s(i)), shat))
         ext_assert_eq(claim_check, claim_val)
-    # One rho is shared by both claims after both slices have been absorbed.
-    # Phi, the F2-linear batching map, IS its coefficient list: the native
-    # opener derives the 192 coordinate weights as Phi(basis_w) from the same
-    # rho, so the guest needs only Phi's BASE_FIELD_BITS coefficients
-    # rho^0..rho^63 (`pcs::ring_switch::build_coordinate_weights`). A 64-term
-    # support is the soundness floor (192 K-unknowns, 3 K-equations per term) and
-    # costs a third of the 192-term map the power-basis weights would force.
-    fs, rs_batch = squeeze(fs)
+    # Compose six two-term F2-linear maps with shifts 32,16,8,4,2,1. Their
+    # expansion has all 64 Frobenius terms required for soundness, while direct
+    # application costs 63 squarings and only six general multiplications.
+    for stage in unroll(0, len(RING_MAP_SHIFTS)):
+        fs, map_challenge = squeeze(fs)
+        estore(map_challenges * GEN ** (3 * stage), map_challenge)
+    # Expand the same composition once for the later transparent-weight
+    # evaluation. Before shift d, the populated coefficients are exactly at
+    # multiples of 2d; the new branch fills the adjacent d-offset entries.
     estore(c_table, [1, 0, 0])
-    c_pow = [1, 0, 0]
-    for k in unroll(1, BASE_FIELD_BITS):
-        c_pow = emul(c_pow, rs_batch)
-        estore(c_table * GEN ** (3 * k), c_pow)
-    # Evaluate both claims together: they share c_k and x^i, so each is loaded
-    # or advanced once rather than once per claim.
+    for stage in unroll(0, len(RING_MAP_SHIFTS)):
+        shift = RING_MAP_SHIFTS[stage]
+        map_challenge = eload(map_challenges * GEN ** (3 * stage))
+        for slot in unroll(0, BASE_FIELD_BITS // (2 * shift)):
+            coefficient = eload(c_table * GEN ** (3 * slot * 2 * shift))
+            for k in unroll(0, shift):
+                coefficient = emul(coefficient, coefficient)
+            estore(c_table * GEN ** (3 * (slot * 2 * shift + shift)), emul(map_challenge, coefficient))
+    # Evaluate both claims together and combine their 64 packing rows.
     s_hat_row_0 = s_hat_v
     s_hat_row_1 = s_hat_v * GEN ** (3 * (2 ** K_SKIP))
     x_pow_chain = HeapBuf(3 * ((2 ** K_SKIP) + 1))
@@ -2196,17 +2203,17 @@ def verify_sub(pi_0, pi_1, pi_2, pi_3, seed_0, seed_1, seed_2, seed_3, g_logs_po
     estore(t_chain_1, [0, 0, 0])
     for x_round in mul_range(1, GEN ** (2 ** K_SKIP)):
         x_round3 = x_round ** 3
-        y_pow_0 = eload(s_hat_row_0 * x_round3)
-        y_pow_1 = eload(s_hat_row_1 * x_round3)
-        lin_eval_0 = [0, 0, 0]
-        lin_eval_1 = [0, 0, 0]
-        for k in unroll(0, BASE_FIELD_BITS):
-            ck = eload(c_table * GEN ** (3 * k))
-            lin_eval_0 = eadd(lin_eval_0, emul(ck, y_pow_0))
-            lin_eval_1 = eadd(lin_eval_1, emul(ck, y_pow_1))
-            if k != BASE_FIELD_BITS - 1:
-                y_pow_0 = emul(y_pow_0, y_pow_0)
-                y_pow_1 = emul(y_pow_1, y_pow_1)
+        lin_eval_0 = eload(s_hat_row_0 * x_round3)
+        lin_eval_1 = eload(s_hat_row_1 * x_round3)
+        for stage in unroll(0, len(RING_MAP_SHIFTS)):
+            frobenius_0 = lin_eval_0
+            frobenius_1 = lin_eval_1
+            for k in unroll(0, RING_MAP_SHIFTS[stage]):
+                frobenius_0 = emul(frobenius_0, frobenius_0)
+                frobenius_1 = emul(frobenius_1, frobenius_1)
+            map_challenge = eload(map_challenges * GEN ** (3 * stage))
+            lin_eval_0 = eadd(lin_eval_0, emul(map_challenge, frobenius_0))
+            lin_eval_1 = eadd(lin_eval_1, emul(map_challenge, frobenius_1))
         x_pow = eload(x_pow_chain * x_round3)
         estore(t_chain_0 * x_round3 * GEN ** 3, eadd(eload(t_chain_0 * x_round3), emul(x_pow, lin_eval_0)))
         estore(t_chain_1 * x_round3 * GEN ** 3, eadd(eload(t_chain_1 * x_round3), emul(x_pow, lin_eval_1)))
