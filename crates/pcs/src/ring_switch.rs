@@ -246,51 +246,13 @@ pub fn fold_1b_rows_multi_padded(
         })
 }
 
-/// Parallel `build_eq` for ring-switching's suffix tensors. Same output as
-/// [`primitives::multilinear::build_eq`] (byte-identical), but
-/// parallelizes the inner doubling loop across rayon threads.
+/// Parallel `build_eq` for ring-switching's suffix tensors.
 ///
-/// Each level `i` doubles a table of size `2^i` → `2^(i+1)`: for each
-/// `x ∈ 0..2^i`, write `t[x | (1<<i)] = t[x] * r_i` and
-/// `t[x] = t[x] * (1-r_i)`. The iterations within one level are
-/// independent and trivially parallelize. Earlier levels are tiny so
-/// rayon's per-task overhead dominates; we keep them sequential and only
-/// switch to parallel above a threshold.
+/// Now just [`primitives::multilinear::build_eq`], which parallelizes its own
+/// doubling levels. Retained as the local name used throughout this module.
+#[inline]
 pub(crate) fn build_eq_parallel(r: &[F128]) -> Vec<F128> {
-    use rayon::prelude::*;
-    let n = r.len();
-    // Uninit alloc — at iter `i`, the loop reads from t[..2^i] (always written
-    // by an earlier iter or the t[0] = ONE seed) and writes to t[2^i..2^(i+1)]
-    // (purely written, never read first). So every slot is written before any
-    // read; uninit is safe.
-    let mut t = primitives::alloc_uninit_vec::<primitives::field::F128>(1usize << n);
-    t[0] = F128::ONE;
-    // Threshold below which rayon dispatch overhead beats the parallel work.
-    const PAR_THRESHOLD: usize = 1 << 12;
-    for i in 0..n {
-        let r_i = r[i];
-        let half = 1usize << i;
-        let (lo, hi_rest) = t.split_at_mut(half);
-        let hi = &mut hi_rest[..half];
-        if half < PAR_THRESHOLD {
-            for (lo_x, hi_x) in lo.iter_mut().zip(hi.iter_mut()) {
-                let old = *lo_x;
-                let high = old * r_i;
-                *hi_x = high;
-                *lo_x = old + high;
-            }
-        } else {
-            lo.par_iter_mut()
-                .zip(hi.par_iter_mut())
-                .for_each(|(lo_x, hi_x)| {
-                    let old = *lo_x;
-                    let high = old * r_i;
-                    *hi_x = high;
-                    *lo_x = old + high;
-                });
-        }
-    }
-    t
+    primitives::multilinear::build_eq(r)
 }
 
 /// Tensor-factored `build_eq`: split the point `r` (length `n`) into a low

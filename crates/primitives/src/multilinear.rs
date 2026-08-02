@@ -147,19 +147,39 @@ pub fn mle_eval(table: &[F128], point: &[F128]) -> F128 {
 /// Build the multilinear-eq evaluation table over `r`:
 /// `table[x] = ∏_i ((1 + r_i) · (1 ⊕ bit_i(x)) + r_i · bit_i(x))` for `x ∈ {0,1}^n`,
 /// where `n = r.len()`. Standard in-place power-of-two doubling.
+///
+/// Each doubling level needs only ONE field multiply per pair: in
+/// characteristic 2, `v · (1 + r) = v + v · r`, so the low child is the high
+/// child XOR the parent. Levels are independent within themselves and
+/// parallelize once they are large enough to cover rayon's dispatch.
 pub fn build_eq(r: &[F128]) -> Vec<F128> {
+    use rayon::prelude::*;
+
     let n = r.len();
-    // Uninit alloc — same invariant as `build_eq_parallel` in ring_switch:
-    // every slot in t[0..2^n] is written exactly once before any read.
+    // Uninit alloc — at level `i` the loop reads `t[..2^i]` (written by an
+    // earlier level or the `t[0] = ONE` seed) and writes `t[2^i..2^(i+1)]`
+    // (purely written), so every slot is written before any read.
     let mut t = crate::alloc_uninit_vec::<crate::field::F128>(1usize << n);
     t[0] = F128::ONE;
-    for i in 0..n {
-        let r_i = r[i];
-        let one_minus_r = F128::ONE + r_i;
-        // Iterate downward so we read t[x] before overwriting it as t[x | (1<<i)].
-        for x in (0..(1usize << i)).rev() {
-            t[x | (1 << i)] = t[x] * r_i;
-            t[x] *= one_minus_r;
+    const PAR_THRESHOLD: usize = 1 << 12;
+    for (i, &r_i) in r.iter().enumerate() {
+        let half = 1usize << i;
+        let (lo, hi_rest) = t.split_at_mut(half);
+        let hi = &mut hi_rest[..half];
+        let build_pair = |lo_x: &mut F128, hi_x: &mut F128| {
+            let v = *lo_x;
+            let high = v * r_i;
+            *hi_x = high;
+            *lo_x = v + high;
+        };
+        if half < PAR_THRESHOLD {
+            lo.iter_mut()
+                .zip(hi.iter_mut())
+                .for_each(|(l, h)| build_pair(l, h));
+        } else {
+            lo.par_iter_mut()
+                .zip(hi.par_iter_mut())
+                .for_each(|(l, h)| build_pair(l, h));
         }
     }
     t
