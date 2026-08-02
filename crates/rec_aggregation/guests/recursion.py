@@ -612,9 +612,14 @@ def prefix_indicator(point, height_bits):
         equal = states[2 * rev + 1]
         x = point[GEN ** bit]
         h = height_bits[GEN ** bit]
-        equal_zero = equal * (1 + x)
-        states[2 * (rev + 1)] = less + h * equal_zero
-        states[2 * (rev + 1) + 1] = equal * (1 + h + x)
+        # Two multiplications per bit, not three. The next `equal` is
+        # p = equal*(1+h+x) either way, and for Boolean h the increment to
+        # `less` is h*equal*(1+x) = h*(equal + p): at h=0 both vanish, at h=1
+        # p = equal*x so equal + p = equal*(1+x). So p is shared instead of
+        # forming equal*(1+x) separately.
+        p = equal * (1 + h + x)
+        states[2 * (rev + 1)] = less + h * (equal + p)
+        states[2 * (rev + 1) + 1] = p
     return states[2 * SIZE_BITS]
 
 
