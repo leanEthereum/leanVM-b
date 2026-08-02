@@ -353,14 +353,11 @@ impl AdditiveNttF128 {
         // [`butterfly_interleaved_fused_3layer_par_rows`] for why 8 is the
         // widest fusion that fits.
         //
-        // On x86_64 with VPCLMULQDQ the fused-2 kernel batches two lanes per
-        // 256-bit CLMUL, which beats the extra sweep radix-8 would save; the
-        // radix-8 kernel is scalar-per-lane and is selected everywhere else.
-        let fused3_ok = !cfg!(all(
-            target_arch = "x86_64",
-            target_feature = "vpclmulqdq",
-            target_feature = "avx2"
-        ));
+        // Radix-8 is used on every target: its kernel batches lanes at the
+        // target's widest multiply width (see `MUL_LANES`), so it keeps the
+        // CLMUL batching the fused-2 kernel had on x86 while still cutting a
+        // third of the sweeps.
+        let fused3_ok = true;
         let mut layer = start_layer.min(n_top);
         while layer < n_top {
             let num_blocks = 1usize << layer;
@@ -881,20 +878,88 @@ fn butterfly_interleaved_fused_2layer_par_rows(
     }
 }
 
-/// One lane's radix-8 (fused three-layer) butterfly network.
+/// Lanes multiplied per batched call inside the radix-8 network.
+///
+/// The eight values of one radix-8 group are chained across the three layers,
+/// but the interleaved lanes are independent — so a butterfly at a fixed
+/// position can multiply `MUL_LANES` lanes at once against its shared twiddle.
+/// The width is whatever the target's widest reduced-product kernel is:
+/// AVX-512 does four 128-bit lanes per `VPCLMULQDQ`, AVX2 does two.
+///
+/// AArch64 deliberately stays at one: `ghash_mul_vec2_neon` was measured
+/// slower than scalar-with-ILP here, because PMULL batching serializes what
+/// the out-of-order engine was already overlapping (same finding as the note
+/// on [`butterfly_interleaved_block`]).
+#[cfg(all(
+    target_arch = "x86_64",
+    target_feature = "vpclmulqdq",
+    target_feature = "avx512f",
+    target_feature = "avx512bw"
+))]
+const MUL_LANES: usize = 4;
+#[cfg(all(
+    target_arch = "x86_64",
+    target_feature = "vpclmulqdq",
+    target_feature = "avx2",
+    not(all(target_feature = "avx512f", target_feature = "avx512bw"))
+))]
+const MUL_LANES: usize = 2;
+#[cfg(not(all(
+    target_arch = "x86_64",
+    target_feature = "vpclmulqdq",
+    any(
+        target_feature = "avx2",
+        all(target_feature = "avx512f", target_feature = "avx512bw")
+    )
+)))]
+const MUL_LANES: usize = 1;
+
+/// Multiply `L` values by one shared twiddle, using the widest batched kernel
+/// the target has. `L = 1` is a plain scalar product.
+#[inline(always)]
+fn mul_shared<const L: usize>(t: F128, v: [F128; L]) -> [F128; L] {
+    let mut out = [F128::ZERO; L];
+    let mut i = 0;
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "vpclmulqdq",
+        target_feature = "avx512f",
+        target_feature = "avx512bw"
+    ))]
+    while i + 4 <= L {
+        use primitives::field::gf2_128::x86_64::ghash_mul_vec4_clmul;
+        // SAFETY: the required features are statically enabled by the cfg gate.
+        let p = unsafe { ghash_mul_vec4_clmul([t; 4], [v[i], v[i + 1], v[i + 2], v[i + 3]]) };
+        out[i..i + 4].copy_from_slice(&p);
+        i += 4;
+    }
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "vpclmulqdq",
+        target_feature = "avx2"
+    ))]
+    while i + 2 <= L {
+        use primitives::field::gf2_128::x86_64::ghash_mul_vec2_clmul;
+        // SAFETY: the required features are statically enabled by the cfg gate.
+        let p = unsafe { ghash_mul_vec2_clmul([t; 2], [v[i], v[i + 1]]) };
+        out[i..i + 2].copy_from_slice(&p);
+        i += 2;
+    }
+    while i < L {
+        out[i] = v[i] * t;
+        i += 1;
+    }
+    out
+}
+
+/// One lane group's radix-8 (fused three-layer) butterfly network.
 ///
 /// `t` holds the seven twiddles in breadth-first order: `t[0]` is layer L
 /// (shared by all four pairs), `t[1..3]` layer L+1 (one per half), `t[3..7]`
-/// layer L+2 (one per quarter).
+/// layer L+2 (one per quarter). Each of the 8 slots holds `L` independent
+/// interleaved lanes.
 #[inline(always)]
-fn butterfly_fused_3layer(v: &mut [F128; 8], t: &[F128; 7]) {
-    #[inline(always)]
-    fn bfly(v: &mut [F128; 8], u: usize, w: usize, twiddle: F128) {
-        let new_u = v[u] + v[w] * twiddle;
-        v[w] += new_u;
-        v[u] = new_u;
-    }
-
+fn butterfly_fused_3layer<const L: usize>(v: &mut [[F128; L]; 8], t: &[F128; 7]) {
     for i in 0..4 {
         bfly(v, i, i + 4, t[0]);
     }
@@ -908,39 +973,49 @@ fn butterfly_fused_3layer(v: &mut [F128; 8], t: &[F128; 7]) {
     }
 }
 
+/// `(v[u], v[w]) <- (v[u] + v[w]·t, v[w] + v[u] + v[w]·t)`, across `L` lanes.
+#[inline(always)]
+fn bfly<const L: usize>(v: &mut [[F128; L]; 8], u: usize, w: usize, twiddle: F128) {
+    let prod = mul_shared(twiddle, v[w]);
+    for l in 0..L {
+        let new_u = v[u][l] + prod[l];
+        v[w][l] += new_u;
+        v[u][l] = new_u;
+    }
+}
+
+/// `v[w] += v[u]`, across `L` lanes — a butterfly whose twiddle is zero.
+#[inline(always)]
+fn bfly_zero<const L: usize>(v: &mut [[F128; L]; 8], u: usize, w: usize) {
+    for l in 0..L {
+        let x = v[u][l];
+        v[w][l] += x;
+    }
+}
+
 /// [`butterfly_fused_3layer`] for block 0, whose left-spine twiddles
 /// `t[0] = t[1] = t[3]` are identically zero (block index 0 selects no basis
 /// vector at any layer). A zero-twiddle forward butterfly maps `(u, v)` to
 /// `(u, v + u)`, so those seven butterflies need only XORs — five field
 /// multiplies instead of twelve — and `v[0]` comes out unchanged.
 #[inline(always)]
-fn butterfly_fused_3layer_zero_root(v: &mut [F128; 8], t: &[F128; 7]) {
+fn butterfly_fused_3layer_zero_root<const L: usize>(v: &mut [[F128; L]; 8], t: &[F128; 7]) {
     debug_assert_eq!(t[0], F128::ZERO);
     debug_assert_eq!(t[1], F128::ZERO);
     debug_assert_eq!(t[3], F128::ZERO);
 
-    #[inline(always)]
-    fn bfly(v: &mut [F128; 8], u: usize, w: usize, twiddle: F128) {
-        let new_u = v[u] + v[w] * twiddle;
-        v[w] += new_u;
-        v[u] = new_u;
-    }
-
     // Layer L (t[0] = 0): four XOR-only butterflies.
     for i in 0..4 {
-        let u = v[i];
-        v[i + 4] += u;
+        bfly_zero(v, i, i + 4);
     }
     // Layer L+1: the top half's twiddle t[1] is zero, t[2] is general.
     for i in 0..2 {
-        let u = v[i];
-        v[i + 2] += u;
+        bfly_zero(v, i, i + 2);
     }
     bfly(v, 4, 6, t[2]);
     bfly(v, 5, 7, t[2]);
     // Layer L+2: the first quarter's twiddle t[3] is zero.
-    let u = v[0];
-    v[1] += u;
+    bfly_zero(v, 0, 1);
     bfly(v, 2, 3, t[4]);
     bfly(v, 4, 5, t[5]);
     bfly(v, 6, 7, t[6]);
@@ -962,19 +1037,54 @@ unsafe fn butterfly_fused_3layer_row<const ZERO_ROOT: bool>(
 ) {
     // SAFETY: the caller supplies the pointer geometry and disjointness.
     unsafe {
-        for lane in 0..num_ntts {
-            let mut v = [F128::ZERO; 8];
-            for (i, slot) in v.iter_mut().enumerate() {
-                *slot = *ptr.add((i * eighth + r) * num_ntts + lane);
+        // Lanes are independent, so sweep them `MUL_LANES` at a time and let
+        // each butterfly multiply the whole group against its shared twiddle
+        // in one batched call. `num_ntts` is a power of two ≥ 1; a group
+        // narrower than `MUL_LANES` falls through to the scalar tail.
+        // A lane group is contiguous in the SoA layout, so gather and scatter
+        // it as one block move rather than element by element — the whole
+        // group is a single vector load/store at every width, including
+        // `MUL_LANES == 1`, where this compiles back to the plain scalar
+        // access the unbatched kernel used.
+        #[inline(always)]
+        unsafe fn group<const L: usize, const ZR: bool>(
+            ptr: *mut F128,
+            eighth: usize,
+            num_ntts: usize,
+            r: usize,
+            lane: usize,
+            t: &[F128; 7],
+        ) {
+            // SAFETY: the caller's geometry and disjointness contract holds,
+            // and `lane + L <= num_ntts` bounds every access to this block.
+            unsafe {
+                let mut v = [[F128::ZERO; L]; 8];
+                for (i, slot) in v.iter_mut().enumerate() {
+                    let base = ptr.add((i * eighth + r) * num_ntts + lane);
+                    core::ptr::copy_nonoverlapping(base, slot.as_mut_ptr(), L);
+                }
+                if ZR {
+                    butterfly_fused_3layer_zero_root(&mut v, t);
+                } else {
+                    butterfly_fused_3layer(&mut v, t);
+                }
+                for (i, slot) in v.iter().enumerate() {
+                    let base = ptr.add((i * eighth + r) * num_ntts + lane);
+                    core::ptr::copy_nonoverlapping(slot.as_ptr(), base, L);
+                }
             }
-            if ZERO_ROOT {
-                butterfly_fused_3layer_zero_root(&mut v, t);
-            } else {
-                butterfly_fused_3layer(&mut v, t);
-            }
-            for (i, &value) in v.iter().enumerate() {
-                *ptr.add((i * eighth + r) * num_ntts + lane) = value;
-            }
+        }
+
+        let mut lane = 0;
+        while lane + MUL_LANES <= num_ntts {
+            group::<MUL_LANES, ZERO_ROOT>(ptr, eighth, num_ntts, r, lane, t);
+            lane += MUL_LANES;
+        }
+        // `num_ntts` is a power of two, so a partial group only occurs when
+        // the transform is narrower than the multiply width.
+        while lane < num_ntts {
+            group::<1, ZERO_ROOT>(ptr, eighth, num_ntts, r, lane, t);
+            lane += 1;
         }
     }
 }
@@ -1518,12 +1628,16 @@ mod tests {
                 }
                 let mut want = v;
                 three_single_layers(&mut want, &t);
-                let mut got = v;
+                let mut got = [[F128::ZERO; 1]; 8];
+                for (g, &x) in got.iter_mut().zip(v.iter()) {
+                    g[0] = x;
+                }
                 if zero_root {
                     butterfly_fused_3layer_zero_root(&mut got, &t);
                 } else {
                     butterfly_fused_3layer(&mut got, &t);
                 }
+                let got: [F128; 8] = std::array::from_fn(|i| got[i][0]);
                 assert_eq!(got, want, "radix-8 mismatch (zero_root={zero_root})");
             }
         }
