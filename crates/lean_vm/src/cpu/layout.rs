@@ -494,6 +494,11 @@ impl Program {
             tr.jump.len(),
             tr.blake3.len(),
         ];
+        if prof {
+            let deref128 = tr.deref_ext.iter().filter(|row| row.width3 == F64::ZERO).count();
+            let deref192 = tr.deref_ext.len() - deref128;
+            eprintln!("[build] deref width : {deref128:>10} x128, {deref192:>10} x192");
+        }
         assert!(
             row_counts.iter().all(|&r| r <= 1 << MAX_LOG_ROWS),
             "a table exceeds 2^{MAX_LOG_ROWS} rows"

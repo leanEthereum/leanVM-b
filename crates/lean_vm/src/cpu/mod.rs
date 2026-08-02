@@ -483,6 +483,49 @@ pub fn prove(program: &Program, public_input: [F64; 4], log_inv_rate: usize) -> 
         crate::log2_strict_usize(program.prog.len()),
         [l.push.len(), l.pull.len(), l.count.len()],
     );
+    if prof {
+        let describe = |name: &str, blocks: &[crate::leaf::Block]| {
+            let entries: usize = blocks.iter().map(|block| 1usize << block.kappa).sum();
+            eprintln!(
+                "[bus]   {name:<5}     : {entries:>10} entries, {} blocks, 2^{} tree",
+                blocks.len(),
+                crate::log2_ceil_usize(entries.max(1)),
+            );
+        };
+        describe("push", &l.push);
+        describe("pull", &l.pull);
+        describe("count", &l.count);
+        let names = [
+            "xor",
+            "mul",
+            "add_ext",
+            "mul_ext",
+            "set",
+            "deref",
+            "deref_ext",
+            "jump",
+            "blake3",
+        ];
+        for (side, blocks) in [&l.push, &l.pull, &l.count].into_iter().enumerate() {
+            let mut entries = vec![0usize; tables::N_TABLES + 1];
+            let mut nblocks = vec![0usize; tables::N_TABLES + 1];
+            for (block, owner) in blocks.iter().zip(&owners[side]) {
+                let bucket = owner.map_or(tables::N_TABLES, |(table, _)| table);
+                entries[bucket] += 1usize << block.kappa;
+                nblocks[bucket] += 1;
+            }
+            let side_name = ["push", "pull", "count"][side];
+            for bucket in 0..=tables::N_TABLES {
+                if nblocks[bucket] != 0 {
+                    let name = names.get(bucket).copied().unwrap_or("framework");
+                    eprintln!(
+                        "[bus]   {side_name:<5}/{name:<9}: {:>10} entries, {} blocks",
+                        entries[bucket], nblocks[bucket],
+                    );
+                }
+            }
+        }
+    }
     let spans = table_spans();
     let bus = tracing::info_span!("Prove bus")
         .in_scope(|| leaf::prove_balance(&l.push, &l.pull, &l.count, &w.cols, &owners, &spans, &mut ps));

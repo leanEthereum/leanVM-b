@@ -13,7 +13,7 @@ type SpecializedBody = (Vec<String>, Vec<Expr>, Vec<Stmt>, usize);
 /// access folds the whole offset into `DEREF`'s `β` immediate rather than
 /// emitting a `SET`+`MUL` per step. A cursor read only as an index thus costs
 /// nothing; one used as a value is materialized on demand ([`FnLower::materialize`]).
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct GAddr {
     base: Option<Off>,
     exp: u128,
@@ -278,6 +278,18 @@ impl FnLower<'_> {
             // material); anything else that is a compile-time constant defers
             // to the pooled const cell.
             Expr::Var(v) if self.vars.contains_key(v) => self.vars.get(v).map(|&c| Alias::Cell(c)),
+            // A scalar assignment is also allowed to retain the value as the
+            // symbolic address `cell·g^0`. That representation is still the
+            // exact same cell, so it can be forwarded just like an ordinary
+            // scalar variable. This matters for the first round of a hash chain:
+            // its input has not yet been rebound to a digest cell.
+            Expr::Var(v) => match self.gaddrs.get(v) {
+                Some(GAddr {
+                    base: Some(cell),
+                    exp: 0,
+                }) => Some(Alias::Cell(*cell)),
+                _ => self.try_field_const(val).map(Alias::Const),
+            },
             Expr::Index(arr, idx) if self.stack_of(arr).is_some() => {
                 let (base, _) = self.stack_of(arr)?;
                 Some(Alias::Cell(base + self.try_const_index(idx)?))
@@ -1337,11 +1349,43 @@ impl FnLower<'_> {
         }
     }
 
+    /// Materialize one two-word BLAKE3 chunk only when its expressions cannot be
+    /// forwarded as an adjacent pair. This is what lets an inline four-word list
+    /// such as `[x[0], x[1], 0, 0]` name the two real chunks directly, without
+    /// reserving a throwaway four-cell `StackBuf` in every call frame.
+    fn blake3_chunk_exprs(&mut self, values: &[Expr]) -> Off {
+        assert_eq!(values.len(), 2, "a BLAKE3 chunk has two 64-bit words");
+        let aliases = [self.copy_alias(&values[0]), self.copy_alias(&values[1])];
+        match aliases {
+            [Some(Alias::Cell(a)), Some(Alias::Cell(b))] if b == a + 1 => self.chunk_src(a),
+            [Some(Alias::Const(a)), Some(Alias::Const(b))] => self.chunk_const_run([a, b]),
+            _ => {
+                let base = self.alloc_stack(2);
+                for (k, value) in values.iter().enumerate() {
+                    let dst = base + k as u32;
+                    if let Some(alias) = aliases[k] {
+                        self.alias.insert(dst, alias);
+                    } else {
+                        self.expr_into(value, dst);
+                    }
+                }
+                self.chunk_src(base)
+            }
+        }
+    }
+
     /// A `blake3` operand as two independently addressed 128-bit chunks. Stack
-    /// chunks forward through adjacent aliases without copies. A heap slice is
-    /// bridged into a fresh stack run with two `DEREF_128` rows. The `β` immediates fold in
-    /// the heap offsets. The heap cells must already be written.
+    /// chunks and inline four-word lists forward through adjacent aliases without
+    /// copies. A heap slice is bridged into a fresh stack run with two
+    /// `DEREF_128` rows. The `β` immediates fold in the heap offsets. The heap
+    /// cells must already be written.
     fn blake3_input(&mut self, e: &Expr) -> [Off; 2] {
+        if let Expr::ListLit(values) = e {
+            assert_eq!(values.len(), 4, "an inline BLAKE3 input list must contain four words");
+            let lo = self.blake3_chunk_exprs(&values[..2]);
+            let hi = self.blake3_chunk_exprs(&values[2..]);
+            return [lo, hi];
+        }
         match self.blake3_operand(e) {
             B3Operand::Stack(o) => [self.chunk_src(o), self.chunk_src(o + 2)],
             B3Operand::Heap { ptr, lo } => {
@@ -1388,9 +1432,11 @@ impl FnLower<'_> {
         }
     }
 
-    /// Resolve a three-word extension operand. Only StackBuf values and slices
-    /// are accepted because the instruction operands are compile-time FP offsets.
-    fn ext_operand(&mut self, e: &Expr) -> Off {
+    /// Resolve a three-word extension operand and, when its high two limbs are
+    /// statically zero, also return the cell containing its embedded base-field
+    /// value. Keeping that fact here lets multiplication use three `MUL_64`
+    /// rows instead of paying for a general `MUL_192` row.
+    fn ext_operand_with_base(&mut self, e: &Expr) -> (Off, Option<Off>) {
         let base = match e {
             Expr::Var(_) => {
                 let (base, size) = self
@@ -1408,7 +1454,67 @@ impl FnLower<'_> {
             }
             other => panic!("extension operands must be StackBuf values or slices, got `{other:?}`"),
         };
-        self.ext_src(base)
+        let aliased_base = matches!(self.alias.get(&(base + 1)), Some(Alias::Const(v)) if v.is_zero())
+            && matches!(self.alias.get(&(base + 2)), Some(Alias::Const(v)) if v.is_zero());
+        let constant_base = self
+            .ext_const_runs
+            .iter()
+            .any(|(value, &run)| run == base && value[1] == 0 && value[2] == 0);
+        let scalar = if aliased_base {
+            Some(self.word_src(base))
+        } else if constant_base {
+            Some(base)
+        } else {
+            None
+        };
+        (self.ext_src(base), scalar)
+    }
+
+    /// Resolve an arbitrary extension operand when no subfield information is
+    /// needed by the caller.
+    fn ext_operand(&mut self, e: &Expr) -> Off {
+        self.ext_operand_with_base(e).0
+    }
+
+    /// `(a + bY + cY²)² = a² + c²Y + (b² + c²)Y²` in
+    /// `F64[Y]/(Y³ + Y + 1)`. Three base multiplications and one base XOR are
+    /// cheaper for the 64-bit-memory VM and, crucially, do not consume a row in
+    /// the much wider extension-multiplication table.
+    fn square_ext_with_base_ops(&mut self, input: Off, output: Off) {
+        let b2 = self.fresh();
+        self.emit(LOp::Mul {
+            a: input,
+            b: input,
+            c: output,
+        });
+        self.emit(LOp::Mul {
+            a: input + 2,
+            b: input + 2,
+            c: output + 1,
+        });
+        self.emit(LOp::Mul {
+            a: input + 1,
+            b: input + 1,
+            c: b2,
+        });
+        self.emit(LOp::Xor {
+            a: b2,
+            b: output + 1,
+            c: output + 2,
+        });
+    }
+
+    /// Multiply an embedded base scalar by an extension value coefficient by
+    /// coefficient. This is exactly the tower-field mixed product and needs no
+    /// extension-table row.
+    fn mul_ext_base_with_base_ops(&mut self, scalar: Off, value: Off, output: Off) {
+        for k in 0..3 {
+            self.emit(LOp::Mul {
+                a: scalar,
+                b: value + k,
+                c: output + k,
+            });
+        }
     }
 
     /// Follow a deferred three-cell alias when it already names one contiguous
@@ -2545,12 +2651,22 @@ impl FnLower<'_> {
                 }
                 if matches!(f.as_str(), "xor_192" | "mul_192" | "div_192") {
                     assert_eq!(args.len(), 3, "{f}(a, b, out) takes three extension buffers");
-                    let a = self.ext_operand(&args[0]);
-                    let b = self.ext_operand(&args[1]);
+                    let (a, a_base) = self.ext_operand_with_base(&args[0]);
+                    let (b, b_base) = self.ext_operand_with_base(&args[1]);
                     let c = self.ext_operand(&args[2]);
                     match f.as_str() {
                         "xor_192" => self.emit(LOp::AddExt { a, b, c }),
-                        "mul_192" => self.emit(LOp::MulExt { a, b, c }),
+                        "mul_192" => {
+                            if a == b {
+                                self.square_ext_with_base_ops(a, c);
+                            } else if let Some(scalar) = a_base {
+                                self.mul_ext_base_with_base_ops(scalar, b, c);
+                            } else if let Some(scalar) = b_base {
+                                self.mul_ext_base_with_base_ops(scalar, a, c);
+                            } else {
+                                self.emit(LOp::MulExt { a, b, c });
+                            }
+                        }
                         // c = a / b is constrained by c * b = a; the VM's
                         // write-once deduction fills c when it is unset.
                         "div_192" => self.emit(LOp::MulExt { a: c, b, c: a }),
@@ -2567,6 +2683,10 @@ impl FnLower<'_> {
                     let a = self.expr(&args[0]);
                     let b = self.ext_operand(&args[1]);
                     let c = self.ext_operand(&args[2]);
+                    // Keep the explicit keyword as the dedicated ISA operation:
+                    // recursion's coverage guest deliberately exercises every
+                    // variant, while implicit `[x, 0, 0] * value` expressions
+                    // above are free to use the cheaper base decomposition.
                     self.emit(LOp::MulExtBase { a, b, c });
                     return;
                 }

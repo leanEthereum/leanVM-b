@@ -94,6 +94,39 @@ def main():
     }
 }
 
+/// Inline lists are useful when only half of a BLAKE3 input is live. Adjacent
+/// words must be forwarded directly and the zero half shared, rather than
+/// allocating a four-word staging buffer in the function frame.
+#[test]
+fn blake3_inline_list_forwards_chunks() {
+    let src = "\
+def main():
+    hash_pair(5, 7)
+    return
+
+def hash_pair(a, b):
+    out = StackBuf(4)
+    blake3([a, b, 0, 0], [a, b, 0, 0], out)
+    return
+";
+    let program = compile(&parse(src).expect("parse"));
+    let hash = program
+        .prog
+        .iter()
+        .find_map(|op| match *op {
+            Op::Blake3 { ins, .. } => Some(ins),
+            _ => None,
+        })
+        .expect("one BLAKE3 instruction");
+    assert_eq!(hash[0], hash[2], "both live chunks share the argument pair");
+    assert_eq!(hash[1], hash[3], "both padding chunks share the zero pair");
+    assert_eq!(
+        hash[1],
+        hash[0] + 6,
+        "only the output and shared zero pair occupy locals"
+    );
+}
+
 /// Each four-word heap bridge uses two native two-word dereferences, both for
 /// BLAKE3 inputs and its heap output.
 #[test]
