@@ -1249,6 +1249,72 @@ pub fn eval_rs_eq_from_coeffs(z_vals: &[F128], query: &[F128], c: &[F128; 128]) 
     acc
 }
 
+/// Evaluate the MLE of a ring-switch basis after restricting its Boolean
+/// support to the prefix containing n_instances complete packed rows.
+///
+/// The low LOG_PACKING coordinates select positions within one compression's
+/// packed row; the remaining logical coordinates select the compression
+/// instance. Coordinates above the logical q_pkd cube are fixed to zero in the
+/// dense stack. This is the offset-zero Fancy-Jagged specialization.
+pub fn eval_rs_eq_prefix_from_coeffs(
+    z_vals: &[F128],
+    query: &[F128],
+    n_instances: usize,
+    c: &[F128; 128],
+) -> F128 {
+    assert!(z_vals.len() >= LOG_PACKING);
+    assert!(query.len() >= z_vals.len());
+    let n_outer_vars = z_vals.len() - LOG_PACKING;
+    assert!(n_instances <= 1usize << n_outer_vars);
+
+    let mut high_zero = F128::ONE;
+    for &x in &query[z_vals.len()..] {
+        high_zero *= F128::ONE + x;
+    }
+    if n_instances == 1usize << n_outer_vars {
+        return eval_rs_eq_from_coeffs(z_vals, &query[..z_vals.len()], c) * high_zero;
+    }
+
+    let (x_inner, x_outer) = query[..z_vals.len()].split_at(LOG_PACKING);
+    let (z_inner, z_outer) = z_vals.split_at(LOG_PACKING);
+    let mut zi = z_inner.to_vec();
+    let mut zo = z_outer.to_vec();
+    let mut acc = F128::ZERO;
+
+    for (round, &ck) in c.iter().enumerate() {
+        let inner = zi
+            .iter()
+            .zip(x_inner)
+            .fold(F128::ONE, |product, (&z, &x)| product * (z + F128::ONE + x));
+
+        // Sum the unnormalised per-bit tensor weights over j < n_instances.
+        // MSB-first digit DP: equal follows n's prefix, while less has already
+        // chosen a smaller prefix and may use either remaining bit.
+        let mut less = F128::ZERO;
+        let mut equal = F128::ONE;
+        for bit in (0..n_outer_vars).rev() {
+            let zero = (F128::ONE + x_outer[bit]) * (F128::ONE + zo[bit]);
+            let one = x_outer[bit] * zo[bit];
+            let either = zero + one;
+            if (n_instances >> bit) & 1 == 0 {
+                less *= either;
+                equal *= zero;
+            } else {
+                less = less * either + equal * zero;
+                equal *= one;
+            }
+        }
+        acc += ck * inner * less;
+
+        if round + 1 < c.len() {
+            for value in zi.iter_mut().chain(zo.iter_mut()) {
+                *value *= *value;
+            }
+        }
+    }
+    acc * high_zero
+}
+
 /// Standard inner product `Σ_i a[i] · b[i]` over F_{2^128}.
 pub use primitives::multilinear::inner_product;
 
@@ -2688,6 +2754,48 @@ mod tests {
                     succinct_eval, dense_eval,
                     "eval_rs_eq mismatch at l_prime={l_prime}"
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn eval_rs_eq_prefix_matches_zero_extended_dense_basis() {
+        fn mle_eval_lsb(values: &[F128], point: &[F128]) -> F128 {
+            assert_eq!(values.len(), 1 << point.len());
+            let mut values = values.to_vec();
+            for &r in point {
+                let half = values.len() / 2;
+                for i in 0..half {
+                    values[i] = values[2 * i] + r * (values[2 * i] + values[2 * i + 1]);
+                }
+                values.truncate(half);
+            }
+            values[0]
+        }
+
+        let mut rng = Rng::new(0x5a17_0ff5);
+        for outer_vars in 0..=4 {
+            let logical_vars = LOG_PACKING + outer_vars;
+            let z_vals: Vec<F128> = (0..logical_vars).map(|_| rng.f128()).collect();
+            let r_dprime: Vec<F128> = (0..LOG_PACKING).map(|_| rng.f128()).collect();
+            let coeffs = linearized_eq_coeffs(&build_eq(&r_dprime));
+            let dense = fold_b128_elems(&build_eq(&z_vals), &build_eq(&r_dprime));
+            for extra_vars in 0..=2 {
+                let query: Vec<F128> =
+                    (0..logical_vars + extra_vars).map(|_| rng.f128()).collect();
+                for n_instances in 0..=1usize << outer_vars {
+                    let height = n_instances << LOG_PACKING;
+                    let mut zero_extended = vec![F128::ZERO; 1 << query.len()];
+                    zero_extended[..height].copy_from_slice(&dense[..height]);
+                    let expected = mle_eval_lsb(&zero_extended, &query);
+                    let actual = eval_rs_eq_prefix_from_coeffs(
+                        &z_vals,
+                        &query,
+                        n_instances,
+                        &coeffs,
+                    );
+                    assert_eq!(actual, expected, "outer={outer_vars}, extra={extra_vars}, n={n_instances}");
+                }
             }
         }
     }

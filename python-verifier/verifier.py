@@ -1324,12 +1324,7 @@ def build_layout(program: Program, memory_used: int, row_counts: Sequence[int]) 
             count.append(BusBlock(height, (_col(base + local),), real, (table, base)))
             padding[base + local] = ONE
 
-    zero_digest = blake3_hash(bytes(64))
     b3 = BASES[5]
-    padding[b3 + 18] = F128.from_bytes(zero_digest[:16])
-    padding[b3 + 19] = F128.from_bytes(zero_digest[16:])
-    padding[b3 + 20], padding[b3 + 21] = VM_IV
-    padding[b3 + 22] = F128.new(0, 64 | 11 << 32)
 
     kappas: list[int | None] = [0] * (4 + sum(WIDTHS))
     kappas[0] = kappas[1] = log_memory
@@ -1342,7 +1337,7 @@ def build_layout(program: Program, memory_used: int, row_counts: Sequence[int]) 
     heights = [0] * len(kappas)
     heights[0] = heights[1] = memory_used
     heights[2] = program.bytecode_used
-    heights[3] = 1 << int(kappas[3])
+    heights[3] = row_counts[5] << 7
     for table, (base, width) in enumerate(zip(BASES, WIDTHS)):
         heights[base : base + width] = [row_counts[table]] * width
     for local in BLAKE3_VALUES:
@@ -1354,7 +1349,7 @@ def build_layout(program: Program, memory_used: int, row_counts: Sequence[int]) 
     sources: list[tuple[Any, ...] | None] = [None] * len(kappas)
     sources[0] = sources[1] = ("memory",)
     sources[2] = ("bytecode", program.bytecode_used)
-    sources[3] = ("power", 5, 7)
+    sources[3] = ("table-shifted", 5, 7)
     for table, (base, width) in enumerate(zip(BASES, WIDTHS)):
         sources[base : base + width] = [("table", table)] * width
     for local in BLAKE3_VALUES:
@@ -1900,6 +1895,76 @@ def quirky_weights(skip_point: F128, rest: Sequence[F128]) -> list[F128]:
     return [a * b for b in tail for a in skip]
 
 
+@lru_cache(maxsize=1)
+def blake3_padding_witness() -> tuple[bool, ...]:
+    """The fixed 2^14-bit Flock witness for BLAKE3 of one zero block."""
+    witness = [False] * (1 << 14)
+    constant = 512
+    counter_low = 1152
+    counter_high = 1184
+    block_length = 1216
+    flags_base = 1248
+    gates_base = 1280
+    gate_stride = 250
+    output_high = 15280
+    lanes = ((0,4,8,12),(1,5,9,13),(2,6,10,14),(3,7,11,15),
+             (0,5,10,15),(1,6,11,12),(2,7,8,13),(3,4,9,14))
+
+    def write_word(base: int, value: int) -> None:
+        for bit in range(32):
+            witness[base + bit] = bool(value >> bit & 1)
+
+    def add(left: int, right: int, carry_base: int) -> int:
+        carry_bits = 0
+        for bit in range(31):
+            x = left >> bit & 1
+            y = right >> bit & 1
+            carry = carry_bits >> bit & 1
+            auxiliary = (x ^ carry) & (y ^ carry)
+            witness[carry_base + bit] = bool(auxiliary)
+            carry_bits |= (auxiliary ^ carry) << (bit + 1)
+        return (left + right) & MASK32
+
+    witness[constant] = True
+    for word, value in enumerate(BLAKE3_IV):
+        write_word(32 * word, value)
+    write_word(counter_low, 0)
+    write_word(counter_high, 0)
+    write_word(block_length, 64)
+    write_word(flags_base, 11)
+
+    state = list(BLAKE3_IV) + list(BLAKE3_IV[:4]) + [0, 0, 64, 11]
+    for round_index in range(7):
+        for gate_index, (lane_a, lane_b, lane_c, lane_d) in enumerate(lanes):
+            gate_base = gates_base + gate_stride * (8 * round_index + gate_index)
+            a, b, c, d = (state[lane_a], state[lane_b], state[lane_c], state[lane_d])
+            temp0 = add(a, b, gate_base)
+            a1 = add(temp0, 0, gate_base + 31)
+            d1 = _rotr32(d ^ a1, 16)
+            c1 = add(c, d1, gate_base + 62)
+            b1 = _rotr32(b ^ c1, 12)
+            temp1 = add(a1, b1, gate_base + 93)
+            a2 = add(temp1, 0, gate_base + 124)
+            d2 = _rotr32(d1 ^ a2, 8)
+            c2 = add(c1, d2, gate_base + 155)
+            b_new = _rotr32(b1 ^ c2, 7)
+            write_word(gate_base + 186, b_new)
+            write_word(gate_base + 218, d2)
+            state[lane_a], state[lane_b], state[lane_c], state[lane_d] = a2, b_new, c2, d2
+
+    for word in range(8):
+        write_word(256 + 32 * word, state[word] ^ state[word + 8])
+        write_word(output_high + 32 * word, state[word + 8] ^ BLAKE3_IV[word])
+    return tuple(witness)
+
+
+def padding_witness_eval(point: "QuirkyPoint") -> F128:
+    weights = quirky_weights(point.skip, point.inner)
+    return sum(
+        (weight for bit, weight in zip(blake3_padding_witness(), weights) if bit), ZERO
+    )
+
+
 @dataclass(frozen=True)
 class QuirkyPoint:
     skip: F128
@@ -1964,6 +2029,16 @@ class LincheckResult:
 class Reduction:
     ab: ZClaim
     c: ZClaim
+
+
+def remove_public_padding(reduction: Reduction, real_instances: int) -> Reduction:
+    """Turn Flock's repeated public suffix into a zero suffix before opening."""
+    def corrected(claim: ZClaim) -> ZClaim:
+        suffix = ONE + prefix_indicator_eval(real_instances, claim.point.outer)
+        value = claim.value + padding_witness_eval(claim.point) * suffix
+        return ZClaim(claim.point, value)
+
+    return Reduction(corrected(reduction.ab), corrected(reduction.c))
 
 
 @dataclass(frozen=True)
@@ -2194,6 +2269,7 @@ def verify_stacked_opening(
     stack_log: int,
     qpkd_offset: int,
     qpkd_variables: int,
+    qpkd_height: int,
     reduction: Reduction,
     point_claims: Sequence[PointClaim],
 ) -> None:
@@ -2225,7 +2301,9 @@ def verify_stacked_opening(
     ring_polynomials = []
     for claim in ring_claims:
         suffix = build_eq(claim.point.ring_tail[1:])
-        ring_polynomials.append(_fold_binary_elements(suffix, ring_weights))
+        polynomial = _fold_binary_elements(suffix, ring_weights)
+        polynomial[qpkd_height:] = [ZERO] * (len(polynomial) - qpkd_height)
+        ring_polynomials.append(polynomial)
     selector = qpkd_offset >> qpkd_variables
 
     def evaluate_basis(prefix: Sequence[F128], residual_log: int) -> list[F128]:
@@ -2487,10 +2565,19 @@ def verify_execution(statement: dict[str, Any], proof: Proof) -> None:
         else:
             require(len(claim.point) + 7 == qpkd.variables, "BLAKE3 slot claim dimension mismatch")
             point_claims.append(
-                StridedPointClaim(qpkd.offset, slot, 7, claim.point, claim.value)
+                JaggedPointClaim(
+                    qpkd.offset,
+                    qpkd.height,
+                    batch_group,
+                    7,
+                    _selector_point(slot, 7) + claim.point,
+                    claim.value,
+                )
             )
 
-    reduction = verify_reduction(14 + layout.table_logs[5], transcript)
+    reduction = remove_public_padding(
+        verify_reduction(14 + layout.table_logs[5], transcript), row_counts[5]
+    )
     opening = transcript.opening()
     verify_stacked_opening(
         transcript,
@@ -2499,6 +2586,7 @@ def verify_execution(statement: dict[str, Any], proof: Proof) -> None:
         layout.stack_log,
         qpkd.offset,
         qpkd.variables,
+        qpkd.height,
         reduction,
         point_claims,
     )

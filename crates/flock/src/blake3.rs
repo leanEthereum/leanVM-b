@@ -814,6 +814,37 @@ pub fn padding_block() -> Compression {
     pinned_compression([0u32; 16])
 }
 
+/// The fixed Boolean witness used in every inactive outer slot.
+///
+/// Keeping this memoized serves two users outside the Flock reduction itself:
+/// embedders can remove the repeated public suffix before committing, and
+/// outer recursive verifiers can discharge the resulting deferred evaluation
+/// claim without rebuilding the BLAKE3 execution trace for every proof.
+pub fn padding_witness() -> &'static [bool] {
+    static WITNESS: std::sync::OnceLock<Vec<bool>> = std::sync::OnceLock::new();
+    WITNESS.get_or_init(|| {
+        let (cv, message, counter, block_len, flags) = padding_block();
+        build_block_witness(&cv, &message, counter, block_len, flags)
+    })
+}
+
+/// Evaluate the padding witness at Flock's quirky inner point.
+///
+/// The first K_SKIP coordinates use the phi8 univariate Lagrange basis and the
+/// remaining K_LOG - K_SKIP coordinates are ordinary multilinear ones.  The
+/// padding block is independent of the outer instance coordinates, so callers
+/// multiply this value by the public suffix-indicator evaluation separately.
+pub fn eval_padding_witness(point: &crate::lincheck::QuirkyPoint) -> F128 {
+    assert_eq!(point.x_inner_rest.len(), K_LOG - K_SKIP);
+    let weights =
+        crate::lincheck::build_quirky_eq_table(point.z_skip, &point.x_inner_rest, K_SKIP);
+    padding_witness()
+        .iter()
+        .zip(weights)
+        .filter_map(|(&bit, weight)| bit.then_some(weight))
+        .fold(F128::ZERO, |acc, weight| acc + weight)
+}
+
 /// Generate the boolean witness vector for `blocks.len()` independent BLAKE3
 /// compressions, padded to `2^n_blocks_log` slots. Padding blocks run
 /// [`padding_block`] (constant wire = 1). Parallel across instances via rayon.
@@ -1187,6 +1218,14 @@ mod tests {
         assert!(USEFUL_BITS <= K);
         assert_eq!(CV_BASE % SLOT_BITS, 0);
         assert_eq!(OUT_LO_BASE % SLOT_BITS, 0);
+    }
+
+    #[test]
+    fn padding_witness_shape_is_stable() {
+        let witness = padding_witness();
+        assert_eq!(witness.len(), K);
+        assert_eq!(witness.iter().filter(|&&bit| bit).count(), 3_839);
+        assert!(witness[Z_CONST_POS]);
     }
 
     /// Reference compression matches the `blake3` crate for empty input
@@ -1728,6 +1767,7 @@ impl Blake3Setup {
             &padding,
             stack,
             stack_offset,
+            z_packed.len(),
             stack_data,
             stack_commitment,
             &pd,
@@ -1818,6 +1858,7 @@ impl Blake3Setup {
             stack_commitment,
             stack_offset,
             qpkd_vars,
+            1usize << qpkd_vars,
             &[ab.value, c.value],
             &[ab.point.z_skip, c.point.z_skip],
             &[ab_x.as_slice(), c_x.as_slice()],

@@ -211,6 +211,8 @@ pub fn col_kappa_sources(log_bytecode: usize) -> Vec<Option<(usize, usize)>> {
 pub enum ColHeightSource {
     Pow2 { source: usize, adjustment: usize },
     TableRows(usize),
+    /// An announced table row count multiplied by a fixed power of two.
+    TableRowsShifted { table: usize, shift: usize },
     MemoryRows,
     BytecodeRows(usize),
 }
@@ -222,9 +224,9 @@ pub fn col_height_sources(bytecode_used: usize) -> Vec<Option<ColHeightSource>> 
     out[MEM] = Some(ColHeightSource::MemoryRows);
     out[MFCNT] = Some(ColHeightSource::MemoryRows);
     out[BFCNT] = Some(ColHeightSource::BytecodeRows(bytecode_used));
-    out[QPKD] = Some(ColHeightSource::Pow2 {
-        source: 2 + tables::BLAKE3_TABLE,
-        adjustment: flock::blake3::K_LOG - ::pcs::LOG_PACKING,
+    out[QPKD] = Some(ColHeightSource::TableRowsShifted {
+        table: tables::BLAKE3_TABLE,
+        shift: flock::blake3::K_LOG - ::pcs::LOG_PACKING,
     });
     for (t, table) in tables::tables().iter().enumerate() {
         let base = sch.base[t];
@@ -286,7 +288,8 @@ fn col_heights(
     heights[MEM] = mem_used;
     heights[MFCNT] = mem_used;
     heights[BFCNT] = bytecode_used;
-    heights[QPKD] = 1usize << kappas[QPKD].expect("q_pkd is committed");
+    heights[QPKD] =
+        row_counts[tables::BLAKE3_TABLE] << (flock::blake3::K_LOG - ::pcs::LOG_PACKING);
     for (t, table) in tables::tables().iter().enumerate() {
         let base = sch.base[t];
         for height in &mut heights[base..base + table.n_committed_columns()] {
@@ -498,28 +501,12 @@ pub fn layout(
             pad[base + c] = F128::ONE;
         }
     }
-    // BLAKE3 padding rows must match flock's padding instance (the all-zero-input
-    // compression): zero inputs but a NONZERO output `out_lo`. So the two output
-    // value columns pad with that digest, not 0 — the memory bus flushes these
-    // (virtual) columns, and their padding rows must equal `q_pkd`'s padding slots
-    // so the default-padding surplus divides out and the routed claims agree.
-    // Inputs/counts keep their 0/1 defaults. Always applied (the BLAKE3 table is
-    // always present, all-padding for a no-BLAKE3 program).
-    {
-        let b3 = sch.base[tables::BLAKE3_TABLE];
-        let pc = crate::blake3_flock::padding_digest();
-        pad[b3 + tables::BLAKE3_VALUE_COLS[4]] = pc[0]; // c0
-        pad[b3 + tables::BLAKE3_VALUE_COLS[5]] = pc[1]; // c1
-        pad[b3 + tables::BLAKE3_VALUE_COLS[6]] = crate::blake3_flock::IV[0]; // cv0
-        pad[b3 + tables::BLAKE3_VALUE_COLS[7]] = crate::blake3_flock::IV[1]; // cv1
-        pad[b3 + tables::BLAKE3_VALUE_COLS[8]] = crate::blake3_flock::metadata(0, 64, crate::blake3_flock::FLAGS);
-    }
-
+    // Virtual BLAKE3 values use a zero logical suffix. Flock's fixed nonzero
+    // padding witness is removed publicly before its claims enter ring switching.
     let kappas = col_kappas(log_mem, log_bytecode, taus);
     let heights = col_heights(mem_used, bytecode_used, row_counts, &kappas);
-    // q_pkd stays at offset zero so its ring-switched weight remains an aligned
-    // subcube. Every ordinary column after it is packed tightly and opened via
-    // the Jagged indicator.
+    // q_pkd stays at offset zero, but stores only the real compression rows.
+    // Every ordinary column follows immediately in the tight Jagged layout.
     let jagged_blocks = jagged_column_blocks(log_bytecode, bytecode_used, [&push, &pull, &count_blocks]);
     let (placements, m) = witness::placements_of_blocks(&kappas, &heights, &jagged_blocks);
     Layout {
@@ -690,7 +677,8 @@ mod tests {
         assert_eq!(l.pad[BFCNT], F128::ONE);
 
         let qpkd = l.placements[QPKD];
-        assert_eq!(qpkd.height, 1usize << qpkd.n_vars, "q_pkd remains a full aligned subcube");
+        assert_eq!(qpkd.height, 0, "q_pkd commits no row when no BLAKE3 executes");
+        assert!(qpkd.height < 1usize << qpkd.n_vars);
         assert_eq!(qpkd.offset, 0);
     }
 }

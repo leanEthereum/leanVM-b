@@ -585,6 +585,7 @@ pub fn open_batch_mixed_ligerito_stacked(
     padding: &PaddingSpec,
     stack: &[F128],
     stack_offset: usize,
+    qpkd_height: usize,
     stack_data: &ProverData,
     stack_commitment: &Commitment,
     stack_pd: &[StackClaim],
@@ -605,7 +606,9 @@ pub fn open_batch_mixed_ligerito_stacked(
     // exactly F128::ZERO. A zeroed allocation leaves untouched padding on
     // demand-zero pages instead of eagerly writing the entire stack.
     let mut b_stack: Vec<F128> = unsafe { primitives::alloc_zeroed_vec(stack.len()) };
-    b_stack[stack_offset..stack_offset + combined.b_combined.len()].copy_from_slice(&combined.b_combined);
+    assert!(qpkd_height <= combined.b_combined.len());
+    b_stack[stack_offset..stack_offset + qpkd_height]
+        .copy_from_slice(&combined.b_combined[..qpkd_height]);
     let mut target = combined.target_combined;
 
     for claim in stack_pd {
@@ -648,6 +651,7 @@ pub fn verify_opening_batch_mixed_ligerito_stacked(
     stack_commitment: &Commitment,
     stack_offset: usize,
     qpkd_vars: usize,
+    qpkd_height: usize,
     claims: &[F128],
     z_skips: &[F128],
     x_outers: &[&[F128]],
@@ -705,7 +709,10 @@ pub fn verify_opening_batch_mixed_ligerito_stacked(
     // Residual evaluator of the lifted weight: for each y over the residual cube,
     // evaluate b at the full point `ris ++ y_bits` (low coords = ris, high = y).
     let log_n = stack_commitment.params.m - LOG_PACKING;
-    let sel = stack_offset >> qpkd_vars;
+    assert_eq!(stack_offset, 0, "Jagged q_pkd ring-switch interval must start at zero");
+    assert!(x_outers.iter().all(|point| qpkd_vars == point.len() - 1));
+    assert_eq!(qpkd_height & ((1 << LOG_PACKING) - 1), 0);
+    let n_instances = qpkd_height >> LOG_PACKING;
     let eval_b_residual = |ris: &[F128], yr_log_n: usize| -> Vec<F128> {
         use rayon::prelude::*;
         (0..1usize << yr_log_n)
@@ -716,17 +723,17 @@ pub fn verify_opening_batch_mixed_ligerito_stacked(
                 for k in 0..yr_log_n {
                     x.push(F128::new(((y >> k) & 1) as u64, 0));
                 }
-                let (x_lo, x_hi) = x.split_at(qpkd_vars);
-                let mut sel_eq = F128::ONE;
-                for (k, &xi) in x_hi.iter().enumerate() {
-                    sel_eq *= if (sel >> k) & 1 == 1 { xi } else { F128::ONE + xi };
-                }
                 let mut rs_part = F128::ZERO;
                 for (g, x_outer) in gammas_rs.iter().zip(x_outers.iter()) {
-                    rs_part +=
-                        *g * ring_switch::eval_rs_eq_from_coeffs(&x_outer[1..], x_lo, &lin_coeffs);
+                    rs_part += *g
+                        * ring_switch::eval_rs_eq_prefix_from_coeffs(
+                            &x_outer[1..],
+                            &x,
+                            n_instances,
+                            &lin_coeffs,
+                        );
                 }
-                let mut acc = rs_part * sel_eq;
+                let mut acc = rs_part;
                 for batch in &jagged_batches {
                     acc += batch.scale
                         * jagged::indicator_eval_with_row_weights(

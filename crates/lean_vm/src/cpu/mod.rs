@@ -529,19 +529,24 @@ pub fn prove(program: &Program, public_input: [F128; 2]) -> (Proof, Stats) {
         .flock_reduction
         .take()
         .expect("prepared flock reduction witness is present");
-    let reduced = tracing::info_span!("Flock reduction")
+    let mut reduced = tracing::info_span!("Flock reduction")
         .in_scope(|| flock_reduction.prove(&w.cols[QPKD], &mut ps));
     let n_blocks = flock_reduction.n_blocks();
+    let n_real = flock_reduction.n_real();
+    crate::blake3_flock::remove_public_padding(n_real, &mut reduced);
     drop(flock_reduction);
+    // Ring switching opens the corrected witness: real instances followed by
+    // zeros. The committed Jagged stack already contains exactly this prefix.
+    w.cols[QPKD][n_real * crate::blake3_flock::PACKED_PER_INSTANCE..].fill(F128::ZERO);
     let offset = w.layout.placements[QPKD].offset;
     let ring = tracing::info_span!("Package ring switch")
-        .in_scope(|| crate::blake3_flock::ring_switch_open(n_blocks, offset, &reduced));
+        .in_scope(|| crate::blake3_flock::ring_switch_open(n_blocks, n_real, offset, &reduced));
     if prof {
         eprintln!("[open]  reduction   : {:>7.2} ms", ms(t));
     }
     let t_pcs = std::time::Instant::now();
     let mixed_open = tracing::info_span!("PCS open")
-        .in_scope(|| pcs::open(&mut ps, &committed, &w.q, &slots, &ring));
+        .in_scope(|| pcs::open(&mut ps, &committed, &w.q, &w.cols[QPKD], &slots, &ring));
     if prof {
         eprintln!("[open]  pcs::open   : {:>7.2} ms", ms(t_pcs));
     }
@@ -655,11 +660,13 @@ pub fn verify(
     // (mirroring `prove`). `n_blocks = max(n_b3, 1)` — always ≥ 1 instance.
     let n_blocks = n_b3.max(1);
     let offset = l.placements[QPKD].offset;
-    let replay = crate::blake3_flock::verify_reduction(n_blocks, &root, l.m, &mut vs)
+    let mut replay = crate::blake3_flock::verify_reduction(n_blocks, &root, l.m, &mut vs)
         .map_err(Error::Blake3)?;
+    crate::blake3_flock::remove_public_padding_replay(n_b3, &mut replay);
     let checkpoint_flock = vs.sponge_state();
     let open = vs.next_opening().map_err(Error::Transcript)?;
-    let ring = crate::blake3_flock::ring_switch_verify(n_blocks, offset, replay.ab, replay.c);
+    let ring =
+        crate::blake3_flock::ring_switch_verify(n_blocks, n_b3, offset, replay.ab, replay.c);
     let opening = pcs::verify(&mut vs, &slots, &ring, open, l.m, &root).map_err(Error::Open)?;
     vs.finish().map_err(Error::Transcript)?;
     Ok(VerifySummary {
@@ -695,15 +702,21 @@ fn slot_claims(l: &Layout, claims: &[ColumnClaim]) -> Vec<pcs::SlotClaim> {
         .zip(batch_groups)
         .map(|(c, batch_group)| {
             // A virtual BLAKE3 value column (always virtual): its bus claim at
-            // instance point `c.point` is the q_pkd slot value — a boolean-selector
-            // (strided) claim on QPKD, folded sparsely (2^n_log, not the 2^(7+n_log)
-            // dense QPKD block).
+            // instance point `c.point` is the q_pkd slot value. Fixing the seven
+            // low slot coordinates turns it into an ordinary Jagged prefix claim
+            // over the consecutive real-instance rows.
             if let Some(slot) = blake3_value_slot(c.col) {
-                return pcs::SlotClaim::Strided {
+                let mut row_point = Vec::with_capacity(crate::blake3_flock::SLOT_STRIDE_LOG + c.point.len());
+                for bit in 0..crate::blake3_flock::SLOT_STRIDE_LOG {
+                    row_point.push(if (slot >> bit) & 1 == 1 { F128::ONE } else { F128::ZERO });
+                }
+                row_point.extend_from_slice(&c.point);
+                return pcs::SlotClaim::Jagged {
                     offset: l.placements[QPKD].offset,
-                    slot,
-                    stride_log: crate::blake3_flock::SLOT_STRIDE_LOG,
-                    point: c.point.clone(),
+                    height: l.placements[QPKD].height,
+                    batch_group,
+                    selector_len: crate::blake3_flock::SLOT_STRIDE_LOG,
+                    row_point,
                     value: c.value,
                 };
             }

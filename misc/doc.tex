@@ -551,16 +551,23 @@ Proofs compose by running the verifier of \S\ref{sec:e2e-unrolled} \emph{inside}
 
 \subsection{Deferred evaluation claims}\label{sec:deferred-claims}
 
-Twice during verification, a large \emph{fixed} multilinear must be evaluated at a random point:
+Three times during verification, a large \emph{fixed} multilinear must be evaluated at a random point:
 \begin{itemize}
 \item \textbf{the bytecode}: during leaf decomposition (\S\ref{sec:e2e-unrolled}, \emph{Bus}), the verifier evaluates the MLEs of the public program columns, a pass over the whole program;
 \item \textbf{the flock matrices}: the \texttt{BLAKE3} relation is proven by flock (\S\ref{sec:tab-blake3}), whose lincheck ends by evaluating $\widetilde A_0$ and $\widetilde B_0$, the per-block R1CS matrices: $28$-variable multilinears with $\approx 21\mathrm{M}$ nonzero Boolean entries between them.
+\item \textbf{the flock padding witness}: removing Flock's repeated public padding before the Jagged opening requires two evaluations of the fixed $2^{14}$-bit witness for the all-zero BLAKE3 block, one at each final Flock witness point.
 \end{itemize}
-Either evaluation is one pass over a fixed object. This takes milliseconds natively, but in-circuit it would dwarf the entire remaining verifier, in cycles and in bytecode size alike.
+Each evaluation is one pass over a fixed object. This takes milliseconds natively, but in-circuit it would dwarf the entire remaining verifier, in cycles and in bytecode size alike.
 
 The aggregation program therefore does not check these claims. The polynomials are fixed and public, so each claim (an evaluation point and its claimed value) is forwarded to the public input, to be checked externally.
 
-There are thus three fixed polynomials: the bytecode and the two matrices $A_0, B_0$. A sub-proof may itself be an aggregation carrying deferred claims, so verifying it yields \textbf{two} claims per polynomial: the one read from its public input, and the fresh one produced by the verification itself. Once all $n_{\mathrm{rec}}$ sub-proofs are verified, a fresh Fiat-Shamir transcript is fed with all the points and values, and the $6n_{\mathrm{rec}}$ claims are batched by two sumchecks: one for the bytecode, and one for the matrices, which share their $28$ variables. The three reduced claims are written to the public input, for the next level of recursion (zeros when $n_{\mathrm{rec}}=0$). Only the outermost verifier, which runs natively, ever evaluates the fixed polynomials.
+There are thus four fixed polynomials: the bytecode, the two matrices $A_0,B_0$, and the Boolean padding witness $p$. A sub-proof may itself be an aggregation carrying deferred claims, so verifying it yields the claims read from its public input together with the fresh claims produced by verification. Once all $n_{\mathrm{rec}}$ sub-proofs are verified, a fresh Fiat--Shamir transcript is fed with all points and values. Three sumchecks merge them: one for bytecode, one joint sumcheck for the matrices over their shared $28$ variables, and one $14$-round sumcheck for the two padding-witness claims produced by every Flock verification. The four reduced polynomial evaluations are written to the public input. Only the outermost native verifier evaluates the fixed polynomials themselves.
+
+The padding sumcheck uses
+\[
+  P_p(x)=p(x)\sum_t\bigl(\gamma_{t,AB}W_{t,AB}(x)+\gamma_{t,C}W_{t,C}(x)\bigr),
+\]
+where each $W$ is the transparent quirky-point weight (six univariate Lagrange coordinates followed by eight multilinear coordinates). Its terminal weight is evaluated in-circuit in $O(n_{\mathrm{rec}}2^6)$ work, while the native prover makes one pass over the fixed $2^{14}$-entry table. Consequently recursion never evaluates that table directly.
 
 The matrix sumcheck runs over the $28$-variable polynomial
 \[

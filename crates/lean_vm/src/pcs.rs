@@ -171,9 +171,11 @@ impl SlotClaim {
 pub struct RingSwitchOpen {
     /// `qpkd`'s offset inside the committed stack.
     pub offset: usize,
-    /// `log2` of `qpkd`'s length; the opener slices `qpkd = stack[offset ..
-    /// offset + 2^qpkd_vars]` (the committed sub-block, so no separate copy).
+    /// `log2` of qpkd's logical zero-extended length.
     pub qpkd_vars: usize,
+    /// Number of committed packed elements. The remaining logical subcube is
+    /// the public zero suffix removed from Flock's fixed padding witness.
+    pub qpkd_height: usize,
     /// Per-claim `x_outer_full` (the multilinear tail of each quirky point).
     pub x_outers: Vec<Vec<F128>>,
     /// Per-claim optional precomputed ring-switch weight `s_hat_v`.
@@ -190,6 +192,7 @@ pub struct RingSwitchVerify {
     pub offset: usize,
     /// `log2` of `qpkd`'s length (flock's `m − LOG_PACKING`).
     pub qpkd_vars: usize,
+    pub qpkd_height: usize,
     /// Per-claim value, univariate-skip coord, and `x_outer_full`.
     pub values: Vec<F128>,
     pub z_skips: Vec<F128>,
@@ -246,12 +249,13 @@ pub fn open(
     ps: &mut ProverState,
     c: &Committed,
     q: &[F128],
+    qpkd: &[F128],
     points: &[SlotClaim],
     ring: &RingSwitchOpen,
 ) -> ::pcs::ligerito::LigeritoProof {
     debug_assert_eq!(q.len(), 1usize << c.mu, "witness length must match the commitment");
-    // The packed sub-block is exactly the committed slice — no separate copy.
-    let qpkd = &q[ring.offset..ring.offset + (1usize << ring.qpkd_vars)];
+    debug_assert_eq!(qpkd.len(), 1usize << ring.qpkd_vars);
+    debug_assert!(qpkd[ring.qpkd_height..].iter().all(|&x| x == F128::ZERO));
     let stack_pd: Vec<StackClaim> = points.iter().map(|s| s.as_stack()).collect();
     let x_refs: Vec<&[F128]> = ring.x_outers.iter().map(|v| v.as_slice()).collect();
     let s_refs: Vec<Option<&[F128]>> = ring.s_hat_v.iter().map(|o| o.as_deref()).collect();
@@ -263,6 +267,7 @@ pub fn open(
         &ring.padding,
         q,
         ring.offset,
+        ring.qpkd_height,
         &c.prover_data,
         &c.commitment,
         &stack_pd,
@@ -291,6 +296,7 @@ pub fn verify(
         &commitment,
         ring.offset,
         ring.qpkd_vars,
+        ring.qpkd_height,
         &ring.values,
         &ring.z_skips,
         &x_refs,

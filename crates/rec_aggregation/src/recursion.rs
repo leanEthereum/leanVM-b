@@ -1,7 +1,8 @@
 //! End-to-end N→1 recursion: one guest program (`guests/recursion.py`)
 //! replays `cpu::verify` for NSUB proofs of a fixed inner program, batches
-//! their deferred claims with the two aggregation sumchecks, and binds the sub
-//! statements + the three reduced claims (stacked bytecode, A0, B0) to its own
+//! their deferred claims with three aggregation sumchecks, and binds the sub
+//! statements + the four reduced claims (stacked bytecode, A0, B0, and the
+//! fixed BLAKE3-padding witness) to its own
 //! public input (doc.tex §Recursive aggregation, §Deferred evaluation claims).
 //!
 //! Zero hand-mirroring: the transcript trace of a REAL `cpu::verify` run
@@ -9,7 +10,7 @@
 //! `gen_verify` walks it structurally (a `Walk` cursor; `Sponge::replay` yields
 //! the checkpoint states) to extract every hint value, and the real
 //! `cpu::layout` supplies every compile-time shape. `gen_agg` mirrors the
-//! guest's aggregation transcript and runs the two batching-sumcheck provers
+//! guest's aggregation transcript and runs the three batching-sumcheck provers
 //! (dense for the bytecode, two-phase sparse for the flock matrices).
 //! [`RecursiveProof::verify`] is the only public acceptance path: it verifies
 //! the outer VM proof and evaluates every deferred fixed polynomial.
@@ -137,6 +138,10 @@ struct SubDefer {
     lrr: Vec<F128>,
     lcz: Vec<F128>,
     matpart: F128,
+    pad_z_ab: F128,
+    pad_x_c_last: F128,
+    pad_eval_ab: F128,
+    pad_eval_c: F128,
 }
 
 /// The batched reduced claims the aggregation exports: one point + value on
@@ -149,6 +154,8 @@ struct ReducedClaims {
     r_m: Vec<F128>,
     v_a: F128,
     v_b: F128,
+    r_p: Vec<F128>,
+    v_p: F128,
 }
 
 /// Everything committed by the outer public input. Keeping this private makes
@@ -180,6 +187,10 @@ impl RecursiveStatement {
         }
         sponge.observe(self.reduced.v_a);
         sponge.observe(self.reduced.v_b);
+        for &v in &self.reduced.r_p {
+            sponge.observe(v);
+        }
+        sponge.observe(self.reduced.v_p);
         sponge.state()
     }
 }
@@ -223,6 +234,7 @@ pub enum RecursiveVerifyError {
     BytecodeClaim,
     MatrixAClaim,
     MatrixBClaim,
+    PaddingClaim,
 }
 
 fn fold_lsb(t: &mut Vec<F128>, r: F128) {
@@ -247,6 +259,13 @@ fn round_msg(pairs: &[(&[F128], &[F128], F128)]) -> (F128, F128) {
         gi += gamma * ai;
     }
     (g1, gi)
+}
+
+fn fixed_flock_challenges() -> Vec<F128> {
+    flock::zerocheck::univariate_skip_optimized::small_challenges_ghash()
+        .into_iter()
+        .chain(flock::zerocheck::univariate_skip_optimized::medium_challenges_ghash())
+        .collect()
 }
 
 /// The stacked bytecode polynomial of the inner program (leaf's canonical
@@ -307,6 +326,10 @@ fn gen_agg(
             h.observe(v);
         }
         h.observe(d.matpart);
+        h.observe(d.pad_z_ab);
+        h.observe(d.pad_x_c_last);
+        h.observe(d.pad_eval_ab);
+        h.observe(d.pad_eval_c);
     }
 
     // ---- bytecode batching sumcheck (dense, 2^kbcv; ONE claim per sub, at
@@ -472,6 +495,45 @@ fn gen_agg(
         assert_eq!(mrun, v_a * wam + v_b * wbm, "guest terminal-weight formulas");
     }
 
+    // ---- fixed padding-witness batching sumcheck ----
+    let gpad: Vec<[F128; 2]> = (0..nsub).map(|_| [h.sample(), h.sample()]).collect();
+    let mut ptab: Vec<F128> = flock::blake3::padding_witness()
+        .iter()
+        .map(|&bit| if bit { F128::ONE } else { F128::ZERO })
+        .collect();
+    let mut pweight = vec![F128::ZERO; 1 << klog];
+    let fixed = fixed_flock_challenges();
+    assert_eq!(fixed.len() + 1, klog - 6);
+    for (t, d) in subs.iter().enumerate() {
+        let ab_rest: Vec<F128> = d.lrr.iter().rev().copied().collect();
+        let wab = flock::lincheck::build_quirky_eq_table(d.pad_z_ab, &ab_rest, 6);
+        let c_rest: Vec<F128> = fixed.iter().copied().chain([d.pad_x_c_last]).collect();
+        let wc = flock::lincheck::build_quirky_eq_table(d.zz, &c_rest, 6);
+        for i in 0..1 << klog {
+            pweight[i] += gpad[t][0] * wab[i] + gpad[t][1] * wc[i];
+        }
+    }
+    let mut prun = (0..nsub)
+        .map(|t| gpad[t][0] * subs[t].pad_eval_ab + gpad[t][1] * subs[t].pad_eval_c)
+        .fold(F128::ZERO, |a, x| a + x);
+    let mut pscr = Vec::with_capacity(2 * klog);
+    let mut r_p = Vec::with_capacity(klog);
+    for _ in 0..klog {
+        let (g1, gi) = round_msg(&[(&ptab, &pweight, F128::ONE)]);
+        h.observe(g1);
+        h.observe(gi);
+        let r = h.sample();
+        pscr.extend([g1, gi]);
+        r_p.push(r);
+        let g0 = prun + g1;
+        let c1 = g0 + g1 + gi;
+        prun = gi * r * r + c1 * r + g0;
+        fold_lsb(&mut ptab, r);
+        fold_lsb(&mut pweight, r);
+    }
+    let v_p = ptab[0];
+    assert_eq!(prun, v_p * pweight[0], "padding-witness sumcheck terminal");
+
     // ---- outer public input: FS seed + sub statements + reduced claims ----
     // The inner proving environment (flock circuit family + program bytecode)
     // is identified by ONE seed digest in the recursion's PUBLIC INPUT (not
@@ -495,13 +557,19 @@ fn gen_agg(
     }
     e.observe(v_a);
     e.observe(v_b);
+    for &v in &r_p {
+        e.observe(v);
+    }
+    e.observe(v_p);
 
     let hints = vec![
         ("fs_seed".to_string(), vec![seed[0], seed[1]]),
         ("bc_sumcheck_msgs".to_string(), bscr),
         ("mat_sumcheck_msgs".to_string(), mscr),
+        ("pad_sumcheck_msgs".to_string(), pscr),
         ("bc_star_hint".to_string(), vec![v_bc]),
         ("mat_stars_hint".to_string(), vec![v_a, v_b]),
+        ("pad_star_hint".to_string(), vec![v_p]),
     ];
     (
         hints,
@@ -512,11 +580,13 @@ fn gen_agg(
             r_m,
             v_a,
             v_b,
+            r_p,
+            v_p,
         },
     )
 }
 
-/// Discharge the three fixed-polynomial claims deferred by the guest.
+/// Discharge the four fixed-polynomial claims deferred by the guest.
 fn check_reduced(program: &Program, red: &ReducedClaims) -> Result<(), RecursiveVerifyError> {
     let stacked = stacked_bytecode(program);
     let expected_bc = stacked.len().trailing_zeros() as usize;
@@ -546,6 +616,16 @@ fn check_reduced(program: &Program, red: &ReducedClaims) -> Result<(), Recursive
     }
     if direct(mb) != red.v_b {
         return Err(RecursiveVerifyError::MatrixBClaim);
+    }
+    if red.r_p.len() != klog {
+        return Err(RecursiveVerifyError::InvalidDeferredShape);
+    }
+    let padding: Vec<F128> = flock::blake3::padding_witness()
+        .iter()
+        .map(|&bit| if bit { F128::ONE } else { F128::ZERO })
+        .collect();
+    if mle_eval(&padding, &red.r_p) != red.v_p {
+        return Err(RecursiveVerifyError::PaddingClaim);
     }
     Ok(())
 }
@@ -776,6 +856,18 @@ fn gen_verify(
             ivk_flat.push(if v == F128::ZERO { F128::ZERO } else { v.inv() });
         }
     }
+    let pad_z_ab = summary.lc_claim.r_inner_skip;
+    let pad_eval_ab = flock::blake3::eval_padding_witness(&flock::lincheck::QuirkyPoint {
+        z_skip: pad_z_ab,
+        x_inner_rest: summary.lc_claim.r_inner_rest.clone(),
+        x_outer: Vec::new(),
+    });
+    let pad_eval_c = flock::blake3::eval_padding_witness(&flock::lincheck::QuirkyPoint {
+        z_skip: summary.zc_claim.z,
+        x_inner_rest: summary.zc_claim.r_rest[..lcrounds].to_vec(),
+        x_outer: Vec::new(),
+    });
+    let pad_x_c_last = summary.zc_claim.r_rest[lcrounds - 1];
     let deferred = SubDefer {
         pi,
         kbc,
@@ -788,6 +880,10 @@ fn gen_verify(
         lrr: lrr.clone(),
         lcz: lcz.clone(),
         matpart,
+        pad_z_ab,
+        pad_x_c_last,
+        pad_eval_ab,
+        pad_eval_c,
     };
 
     let hints = vec![
@@ -798,6 +894,7 @@ fn gen_verify(
         }),
         ("bytecode_vals".to_string(), bcv),
         ("matpart".to_string(), vec![matpart]),
+        ("padding_evals".to_string(), vec![pad_eval_ab, pad_eval_c]),
         ("merkle_leaf_rows".to_string(), lrows_flat),
         ("merkle_paths".to_string(), lpaths_flat),
         ("sub_pis".to_string(), vec![pi[0], pi[1]]),
@@ -1046,7 +1143,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
                 cppad.push(F128::ZERO);
                 let p = valcols.iter().position(|&v| v == col).unwrap();
                 cpslot.push(lean_vm::blake3_flock::VM_SLOTS[p]);
-                cprowkey.push((3, 0, 0));
+                cprowkey.push((3, lean_vm::blake3_flock::VM_SLOTS[p], 0));
             } else {
                 cpbuf.push(1);
                 cpoff.push(0); // every AIR point is a prefix of the shared rho
@@ -1074,9 +1171,6 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     let mut claim_row_group = vec![0usize; ncl];
     let mut claim_row_rep = Vec::new();
     for j in 0..ncl {
-        if cpbuf[j] == 3 {
-            continue;
-        }
         let next = row_ids.len();
         let group = *row_ids.entry(cprowkey[j]).or_insert_with(|| {
             claim_row_rep.push(j);
@@ -1086,20 +1180,14 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     }
 
     // Match pcs::geometric_claim_weights structurally: complete row-major
-    // blocks get consecutive gamma exponents in selector order; q_pkd and
-    // singleton blocks retain one rank each. The batch list contains only the
-    // ordinary Jagged groups evaluated by the recursion terminal.
+    // blocks get consecutive gamma exponents in selector order; singleton
+    // blocks retain one rank each.
     let mut claim_gamma_rank = vec![usize::MAX; ncl];
     let (mut batch_rep, mut batch_row, mut batch_col, mut batch_log, mut batch_base) =
         (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
     let mut next_rank = 0usize;
     for i in 0..ncl {
         if claim_gamma_rank[i] != usize::MAX {
-            continue;
-        }
-        if cpbuf[i] == 3 {
-            claim_gamma_rank[i] = next_rank;
-            next_rank += 1;
             continue;
         }
         let width = 1usize << cpblocklog[i];
@@ -1116,7 +1204,6 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         let mut by_slot = vec![None; width];
         for j in i..ncl {
             if claim_gamma_rank[j] == usize::MAX
-                && cpbuf[j] != 3
                 && claim_row_group[j] == claim_row_group[i]
                 && cpcol[j] == cpcol[i]
                 && cpblocklog[j] == cpblocklog[i]
@@ -1310,6 +1397,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
                 .map(|(s, _)| match s {
                     lean_vm::cpu::ColHeightSource::Pow2 { .. } => 0,
                     lean_vm::cpu::ColHeightSource::TableRows(_) => 1,
+                    lean_vm::cpu::ColHeightSource::TableRowsShifted { .. } => 1,
                     lean_vm::cpu::ColHeightSource::MemoryRows => 2,
                     lean_vm::cpu::ColHeightSource::BytecodeRows(_) => 3,
                 })
@@ -1324,6 +1412,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
                 .map(|(s, _)| match *s {
                     lean_vm::cpu::ColHeightSource::Pow2 { source, .. } => source,
                     lean_vm::cpu::ColHeightSource::TableRows(t) => t,
+                    lean_vm::cpu::ColHeightSource::TableRowsShifted { table, .. } => table,
                     lean_vm::cpu::ColHeightSource::MemoryRows => 0,
                     lean_vm::cpu::ColHeightSource::BytecodeRows(_) => 0,
                 })
@@ -1338,8 +1427,26 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
                 .map(|(s, width_log)| match *s {
                     lean_vm::cpu::ColHeightSource::Pow2 { adjustment, .. } => adjustment + *width_log,
                     lean_vm::cpu::ColHeightSource::TableRows(_)
+                    | lean_vm::cpu::ColHeightSource::TableRowsShifted { .. }
                     | lean_vm::cpu::ColHeightSource::MemoryRows
                     | lean_vm::cpu::ColHeightSource::BytecodeRows(_) => *width_log,
+                })
+                .collect::<Vec<_>>(),
+        ),
+    );
+    ps(
+        "COL_HEIGHT_SHIFT",
+        ints(
+            &ordered_heights
+                .iter()
+                .map(|(source, width_log)| match *source {
+                    lean_vm::cpu::ColHeightSource::TableRowsShifted { shift, .. } => {
+                        shift + *width_log
+                    }
+                    lean_vm::cpu::ColHeightSource::TableRows(_)
+                    | lean_vm::cpu::ColHeightSource::MemoryRows => *width_log,
+                    lean_vm::cpu::ColHeightSource::Pow2 { .. }
+                    | lean_vm::cpu::ColHeightSource::BytecodeRows(_) => 0,
                 })
                 .collect::<Vec<_>>(),
         ),
@@ -1439,7 +1546,7 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     let log2_bc_cols = log2_ceil(bc_cols);
     ps("BYTECODE_COLS", bc_cols.to_string());
     ps("LOG2_BYTECODE_COLS", log2_bc_cols.to_string());
-    ps("DEFER_SIZE", (kbc + log2_bc_cols + 2 * lcrounds + 68).to_string());
+    ps("DEFER_SIZE", (kbc + log2_bc_cols + 2 * lcrounds + 72).to_string());
     ps("BYTECODE_VARS", (kbc + log2_bc_cols).to_string());
     let label_state = Sponge::new(b"leanvm-b", &[]).state();
     ps("TRANSCRIPT_SEED_0", u(label_state[0]).to_string());

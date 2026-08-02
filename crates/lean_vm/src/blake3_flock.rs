@@ -63,6 +63,7 @@ pub const PACKED_PER_INSTANCE: usize = 1 << (K_LOG - LOG_PACKING);
 /// lifetime across commit, bus, and constraint proving to save one witness
 /// generation pass.
 pub(crate) struct PreparedReductionWitness {
+    n_real: usize,
     n_blocks: usize,
     a_packed: Vec<F128>,
     b_packed: Vec<F128>,
@@ -70,6 +71,10 @@ pub(crate) struct PreparedReductionWitness {
 }
 
 impl PreparedReductionWitness {
+    pub(crate) fn n_real(&self) -> usize {
+        self.n_real
+    }
+
     pub(crate) fn n_blocks(&self) -> usize {
         self.n_blocks
     }
@@ -205,12 +210,14 @@ pub fn build_qpkd(blocks: &[Compression]) -> Vec<F128> {
 pub(crate) fn build_qpkd_prepared(
     blocks: &[Compression],
 ) -> (Vec<F128>, PreparedReductionWitness) {
+    let n_real = blocks.len();
     let n_blocks = blocks.len().max(1);
     let (q_pkd, a_packed, b_packed, z_lincheck) =
         generate_witness_with_ab_packed_and_lincheck(blocks, n_blocks_log(n_blocks));
     (
         q_pkd,
         PreparedReductionWitness {
+            n_real,
             n_blocks,
             a_packed,
             b_packed,
@@ -219,16 +226,48 @@ pub(crate) fn build_qpkd_prepared(
     )
 }
 
-/// The digest `(c0, c1)` of [`padding_compression`], i.e. `blake3(0^64)`. It is
-/// NONZERO, so the VM pads its BLAKE3 output value columns with this.
+/// Convert Flock's claims on its repeated-padding witness into claims on the
+/// same real instances followed by zeros. Ring switching and the Jagged
+/// commitment operate on this zero-extended witness.
+///
+/// The precomputed ring-switch slices belong to the original padded witness,
+/// so they are discarded for now; the PCS recomputes them from the corrected
+/// prover-local packed witness.
+pub fn remove_public_padding(n_real: usize, claims: &mut ReducedClaims) -> [F128; 2] {
+    let ab = flock::blake3::eval_padding_witness(&claims.ab.claim.point);
+    let c = flock::blake3::eval_padding_witness(&claims.c.claim.point);
+    claims.ab.claim.value +=
+        ab * (F128::ONE
+            + ::pcs::jagged::prefix_indicator_eval(n_real, &claims.ab.claim.point.x_outer));
+    claims.c.claim.value +=
+        c * (F128::ONE
+            + ::pcs::jagged::prefix_indicator_eval(n_real, &claims.c.claim.point.x_outer));
+    claims.ab.s_hat_v = None;
+    claims.c.s_hat_v = None;
+    [ab, c]
+}
+
+/// Verifier-side counterpart of remove_public_padding.
+pub fn remove_public_padding_replay(n_real: usize, replay: &mut ReductionReplay) -> [F128; 2] {
+    let ab = flock::blake3::eval_padding_witness(&replay.ab.point);
+    let c = flock::blake3::eval_padding_witness(&replay.c.point);
+    replay.ab.value +=
+        ab * (F128::ONE
+            + ::pcs::jagged::prefix_indicator_eval(n_real, &replay.ab.point.x_outer));
+    replay.c.value +=
+        c * (F128::ONE
+            + ::pcs::jagged::prefix_indicator_eval(n_real, &replay.c.point.x_outer));
+    [ab, c]
+}
+
+/// The digest `(c0, c1)` of [`padding_compression`], i.e. `blake3(0^64)`.
 pub fn padding_digest() -> [F128; 2] {
     digest(&padding_compression())
 }
 
 /// `log2` of the within-instance packed span (`PACKED_PER_INSTANCE = 2^7`): the
-/// number of low coords of a `q_pkd` point that carry the slot's bits, and the
-/// stride between consecutive instances' same-slot coords in `q_pkd`. A value
-/// claim on `q_pkd` is thus a boolean-selector (strided) claim with this stride.
+/// number of low coords of a `q_pkd` point that carry the slot's bits. Fixing
+/// those coordinates selects the same slot from every consecutive instance.
 pub const SLOT_STRIDE_LOG: usize = K_LOG - LOG_PACKING;
 
 /// Memoized BLAKE3 R1CS [`Blake3Setup`], keyed by the executed-instance count.
@@ -336,12 +375,18 @@ fn x_outer_full(point: &flock::lincheck::QuirkyPoint) -> Vec<F128> {
 /// Package the prover's reduction claims ([`ReducedClaims`]) as a
 /// [`crate::pcs::RingSwitchOpen`], so the PCS discharges flock's `(ab, c)`
 /// validity in the SAME opening as leanVM's point claims. `offset` is `q_pkd`'s
-/// slot in the committed stack; the opener slices `q_pkd` from there.
-pub fn ring_switch_open(n_blocks: usize, offset: usize, reduced: &ReducedClaims) -> crate::pcs::RingSwitchOpen {
+/// start of the committed Jagged stack.
+pub fn ring_switch_open(
+    n_blocks: usize,
+    n_real: usize,
+    offset: usize,
+    reduced: &ReducedClaims,
+) -> crate::pcs::RingSwitchOpen {
     let setup = setup_for(n_blocks);
     crate::pcs::RingSwitchOpen {
         offset,
         qpkd_vars: qpkd_kappa(n_blocks),
+        qpkd_height: n_real * PACKED_PER_INSTANCE,
         x_outers: vec![
             x_outer_full(&reduced.ab.claim.point),
             x_outer_full(&reduced.c.claim.point),
@@ -356,10 +401,17 @@ pub fn ring_switch_open(n_blocks: usize, offset: usize, reduced: &ReducedClaims)
 
 /// Verifier counterpart of [`ring_switch_open`]: package the recovered `(ab, c)`
 /// claims (from [`verify_reduction`]) as a [`crate::pcs::RingSwitchVerify`].
-pub fn ring_switch_verify(n_blocks: usize, offset: usize, ab: ZClaim, c: ZClaim) -> crate::pcs::RingSwitchVerify {
+pub fn ring_switch_verify(
+    n_blocks: usize,
+    n_real: usize,
+    offset: usize,
+    ab: ZClaim,
+    c: ZClaim,
+) -> crate::pcs::RingSwitchVerify {
     crate::pcs::RingSwitchVerify {
         offset,
         qpkd_vars: qpkd_kappa(n_blocks),
+        qpkd_height: n_real * PACKED_PER_INSTANCE,
         values: vec![ab.value, c.value],
         z_skips: vec![ab.point.z_skip, c.point.z_skip],
         x_outers: vec![x_outer_full(&ab.point), x_outer_full(&c.point)],

@@ -148,6 +148,7 @@ N_COMMITTED_COLS = N_COMMITTED_COLS_PLACEHOLDER
 COL_HEIGHT_KIND = COL_HEIGHT_KIND_PLACEHOLDER
 COL_HEIGHT_SRC = COL_HEIGHT_SRC_PLACEHOLDER
 COL_HEIGHT_ADJ = COL_HEIGHT_ADJ_PLACEHOLDER
+COL_HEIGHT_SHIFT = COL_HEIGHT_SHIFT_PLACEHOLDER
 COL_BLOCK_LOG = COL_BLOCK_LOG_PLACEHOLDER
 BYTECODE_USED_BITS = BYTECODE_USED_BITS_PLACEHOLDER
 # Per-candidate opening tables (P3b): row (m - LIG_MIN_LOG_SIZE) drives that arm.
@@ -229,8 +230,7 @@ RS_COEFF_ORBIT_WIDTH = 15
 RS_COEFF_ORBITS = RS_COEFF_ORBITS_PLACEHOLDER
 # Phase F: log rows of the bytecode blocks (the deferred bytecode points).
 BYTECODE_LOG = BYTECODE_LOG_PLACEHOLDER
-# One sub-proof's deferred-claim region: 2*BYTECODE_LOG + LOG2_BYTECODE_COLS
-# + 2*LINCHECK_ROUNDS + 69 words (see verify_sub's defer_out layout).
+# One sub-proof's deferred-claim region (see verify_sub's defer_out layout).
 DEFER_SIZE = DEFER_SIZE_PLACEHOLDER
 # Aggregation: NSUB sub-proofs of the same program; per-sub proof data arrives
 # as hints. The seed sponge state after the two byte-string absorbs is baked
@@ -1792,6 +1792,8 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     # ---- flock lincheck (matrix evaluation DEFERRED) ----
     matrix_eval = StackBuf(1)
     hint_witness(matrix_eval[0:1], "matpart")
+    padding_evals = StackBuf(2)
+    hint_witness(padding_evals[0:2], "padding_evals")
     fs = squeeze(fs)
     lincheck_alpha = fs[0]
     fs = squeeze(fs)
@@ -1829,6 +1831,33 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     for i in unroll(0, 2 ** K_SKIP):
         lincheck_w += skip_nums[i] * LAGRANGE_INV_S[i] * z_partial[GEN ** i]
 
+    # The Flock reduction is over a power-of-two number of instances.  Its
+    # inactive suffix is one repeated public BLAKE3 witness; q_pkd commits only
+    # the real prefix.  Correct both claims by subtracting that public suffix.
+    padding_outer_points = HeapBuf(2 * SIZE_BITS)
+    ab_outer = padding_outer_points
+    ab_outer_src = zerocheck_rhos * GEN ** LINCHECK_ROUNDS
+    c_outer = padding_outer_points * GEN ** SIZE_BITS
+    c_outer_src = zerocheck_r * GEN ** K_LOG
+    for xt in mul_range(1, tau_blake3_g):
+        ab_outer[xt] = ab_outer_src[xt]
+        c_outer[xt] = c_outer_src[xt]
+    ab_zero = ab_outer * tau_blake3_g
+    c_zero = c_outer * tau_blake3_g
+    padding_zero_len_g = GEN ** SIZE_BITS / tau_blake3_g
+    for xt in mul_range(1, padding_zero_len_g):
+        ab_zero[xt] = 0
+        c_zero[xt] = 0
+    blake_count_bits = count_bits * GEN ** (COUNT_BITS * (N_TABLES - 1))
+    padding_height_bits = HeapBuf(SIZE_BITS)
+    for bit in unroll(0, COUNT_BITS):
+        padding_height_bits[GEN ** bit] = blake_count_bits[GEN ** bit]
+    for bit in unroll(COUNT_BITS, SIZE_BITS):
+        padding_height_bits[GEN ** bit] = 0
+    padding_suffix = StackBuf(2)
+    padding_suffix[0] = 1 + prefix_indicator(ab_outer, padding_height_bits)
+    padding_suffix[1] = 1 + prefix_indicator(c_outer, padding_height_bits)
+
     # ---- dense Jagged opening: ring-switch fronts + claim combination ----
     s_hat_v = StackBuf(2 * FIELD_BITS)  # the two ring-switch slices (end the stream), fetched + observed in the loop below
     # Ring-switch claim 0 (ab): value lincheck_w, z_skip = lincheck_z_skip, x_outer[0] = lincheck_rs[LINCHECK_ROUNDS-1]
@@ -1847,11 +1876,11 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         if rs == 0:
             claim_z_skip = lincheck_z_skip
             claim_x_outer_0 = lincheck_rs[GEN ** (LINCHECK_ROUNDS - 1)]
-            claim_val = lincheck_w
+            claim_val = lincheck_w + padding_evals[0] * padding_suffix[0]
         else:
             claim_z_skip = zerocheck_z
             claim_x_outer_0 = zerocheck_r[GEN ** K_SKIP]
-            claim_val = c_eval
+            claim_val = c_eval + padding_evals[1] * padding_suffix[1]
         claim_nums = StackBuf(2 ** K_SKIP)
         lag64(claim_z_skip, claim_nums, 0)
         claim_check = 0
@@ -1958,16 +1987,16 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
             assert height_word == g_logs_pow2[kappa_g]
         elif COL_HEIGHT_KIND[c] == 1:
             table_bits = count_bits * GEN ** (COUNT_BITS * COL_HEIGHT_SRC[c])
-            for bit in unroll(0, COL_BLOCK_LOG[c]):
+            for bit in unroll(0, COL_HEIGHT_SHIFT[c]):
                 height_bits[GEN ** bit] = 0
-            if COL_BLOCK_LOG[c] == 0:
+            if COL_HEIGHT_SHIFT[c] == 0:
                 for bit in unroll(0, COUNT_BITS):
                     height_bits[GEN ** bit] = table_bits[GEN ** bit]
                 for bit in unroll(COUNT_BITS, SIZE_BITS):
                     height_bits[GEN ** bit] = 0
             else:
-                for bit in unroll(COL_BLOCK_LOG[c], SIZE_BITS):
-                    height_bits[GEN ** bit] = table_bits[GEN ** (bit - COL_BLOCK_LOG[c])]
+                for bit in unroll(COL_HEIGHT_SHIFT[c], SIZE_BITS):
+                    height_bits[GEN ** bit] = table_bits[GEN ** (bit - COL_HEIGHT_SHIFT[c])]
         elif COL_HEIGHT_KIND[c] == 2:
             for bit in unroll(0, COL_BLOCK_LOG[c]):
                 height_bits[GEN ** bit] = 0
@@ -2037,6 +2066,22 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
             row[GEN ** 0] = rm
             for bit in unroll(1, SIZE_BITS):
                 row[GEN ** bit] = 0
+        if CLAIM_POINT_BUF[rep] == POINT_BUF_QPKD:
+            for bit in unroll(0, LOG2_FIELD_BITS):
+                if (CLAIM_QPKD_SLOT[rep] // (2 ** bit)) % 2 == 1:
+                    row[GEN ** bit] = 1
+                else:
+                    row[GEN ** bit] = 0
+            cplen_g = claim_cplen_g[GEN ** rep]
+            src = rho * GEN ** CLAIM_POINT_OFF[rep]
+            dst = row * GEN ** LOG2_FIELD_BITS
+            for xk in mul_range(1, cplen_g):
+                dst[xk] = src[xk]
+            q_row_len_g = cplen_g * GEN ** LOG2_FIELD_BITS
+            zero_ptr = row * q_row_len_g
+            zero_len_g = GEN ** SIZE_BITS / q_row_len_g
+            for xk in mul_range(1, zero_len_g):
+                zero_ptr[xk] = 0
 
     # Compute the public-padding correction: Jagged commits only the real
     # prefix, while the arithmetization's claim includes its fixed pad suffix.
@@ -2048,16 +2093,11 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
 
     opening_claim_values = HeapBuf(N_CLAIMS)
     for j in unroll(0, N_CLAIMS):
-        if CLAIM_POINT_BUF[j] == POINT_BUF_QPKD:
-            # q_pkd remains the one aligned subcube for flock's ring-switch and
-            # its strided VM-value claims; it has no public padding correction.
+        if CLAIM_PAD[j] == 0:
             opening_claim_values[GEN ** j] = claim_pool[GEN ** j]
         else:
-            if CLAIM_PAD[j] == 0:
-                opening_claim_values[GEN ** j] = claim_pool[GEN ** j]
-            else:
-                real_prefix = pad_prefixes[GEN ** CLAIM_PAD_PREFIX[j]]
-                opening_claim_values[GEN ** j] = claim_pool[GEN ** j] + CLAIM_PAD[j] * (1 + real_prefix)
+            real_prefix = pad_prefixes[GEN ** CLAIM_PAD_PREFIX[j]]
+            opening_claim_values[GEN ** j] = claim_pool[GEN ** j] + CLAIM_PAD[j] * (1 + real_prefix)
 
     # Every adjusted Jagged claim value is observed before its batching scalar,
     # exactly as in the native verifier.
@@ -2082,28 +2122,58 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     sel = gmv * LIG_MIN_SHIFT_INV  # g^(m - MIN): the match_range arm index selecting the opening candidate
     assert log(sel) < LIG_N_CANDIDATES
     sumcheck_target, fold_challenges, final_msg, inner_total, yr_log_n_g, fold_cap_g = match_range(log(sel), range(0, LIG_N_CANDIDATES), lambda m_idx: open_stacked(m_idx, fs[0], fs[1], target, commit_root_0, commit_root_1, cursor))
-    # eval_rs_eq per claim: E = sum_k c_k * prod_j (z_j^(2^k) + 1 + ris_j)
-    # (the telescoped product formula; z powers evolve by squaring per k).
-    # QPKD_VARS_CAP = tau_5 + (K_LOG - LOG2_FIELD_BITS), exponent-additive from the certified announced log. Walk the runtime coordinates outside and the fixed 128 Frobenius powers inside: each coordinate loads its opening challenge once, evolves z by squaring in registers, and advances one contiguous 128-product row. This is the same product formula as the k-major form, without 128 separate runtime loops or a stored z-power table.
+    # Evaluate the ring-switch basis restricted to q_pkd's real-instance
+    # prefix.  Its low seven coordinates remain a full packed row; over the
+    # outer instance coordinates a two-state digit DP sums exactly indices
+    # below the announced BLAKE3 count.
     qpkdv_g = tau_blake3_g * GEN ** (K_LOG - LOG2_FIELD_BITS)
     for rs in unroll(0, 2):
-        prod_chains = HeapBuf((qpkdv_g * GEN) ** FIELD_BITS)
         z_row_src = z_vals * GEN ** (QPKD_VARS_CAP * rs)
+        inner_chains = HeapBuf((GEN ** (LOG2_FIELD_BITS + 1)) ** FIELD_BITS)
         for k in unroll(0, FIELD_BITS):
-            prod_chains[GEN ** k] = 1
-        for x_round in mul_range(1, qpkdv_g):
+            inner_chains[GEN ** k] = 1
+        for x_round in mul_range(1, GEN ** LOG2_FIELD_BITS):
             zv = z_row_src[x_round]
             oq = 1 + fold_challenges[x_round]
-            prod_row = prod_chains * x_round ** FIELD_BITS
+            prod_row = inner_chains * x_round ** FIELD_BITS
             prod_row_next = prod_row * GEN ** FIELD_BITS
             for k in unroll(0, FIELD_BITS):
                 prod_row_next[GEN ** k] = prod_row[GEN ** k] * (zv + oq)
                 if k != FIELD_BITS - 1:
                     zv *= zv
-        prod_final = prod_chains * qpkdv_g ** FIELD_BITS
+        inner_final = inner_chains * GEN ** (LOG2_FIELD_BITS * FIELD_BITS)
+
+        prefix_chains = HeapBuf((tau_blake3_g * GEN) ** FIELD_BITS)
+        total_chains = HeapBuf((tau_blake3_g * GEN) ** FIELD_BITS)
+        for k in unroll(0, FIELD_BITS):
+            prefix_chains[GEN ** k] = 0
+            total_chains[GEN ** k] = 1
+        outer_z = z_row_src * GEN ** LOG2_FIELD_BITS
+        outer_q = fold_challenges * GEN ** LOG2_FIELD_BITS
+        for x_round in mul_range(1, tau_blake3_g):
+            zv = outer_z[x_round]
+            qv = outer_q[x_round]
+            nbit = blake_count_bits[x_round]
+            prefix_row = prefix_chains * x_round ** FIELD_BITS
+            prefix_next = prefix_row * GEN ** FIELD_BITS
+            total_row = total_chains * x_round ** FIELD_BITS
+            total_next = total_row * GEN ** FIELD_BITS
+            for k in unroll(0, FIELD_BITS):
+                zero = (1 + qv) * (1 + zv)
+                one = qv * zv
+                old_prefix = prefix_row[GEN ** k]
+                old_total = total_row[GEN ** k]
+                prefix_next[GEN ** k] = zero * old_prefix + nbit * (zero * old_total + (zero + one) * old_prefix)
+                total_next[GEN ** k] = old_total * (zero + one)
+                if k != FIELD_BITS - 1:
+                    zv *= zv
+        prefix_final = prefix_chains * tau_blake3_g ** FIELD_BITS
+        total_final = total_chains * tau_blake3_g ** FIELD_BITS
+        full_cube = blake_count_bits[tau_blake3_g]
         e_acc = 0
         for k in unroll(0, FIELD_BITS):
-            e_acc += c_table[k] * prod_final[GEN ** k]
+            outer_prefix = prefix_final[GEN ** k] + full_cube * (prefix_final[GEN ** k] + total_final[GEN ** k])
+            e_acc += c_table[k] * inner_final[GEN ** k] * outer_prefix
         rs_eq_vals[rs] = e_acc
     # q_pkd is deliberately the first dense Jagged column, so its selector is
     # all-zero. Extend the ring-switch weight across the remaining ris coords.
@@ -2117,43 +2187,14 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         rsw_chain[xk * GEN] = rsw_chain[xk] * (1 + ris_q[xk])
     rs_weight = rsw_chain[rs_len_g]
 
-    # The VM value claims routed into fixed q_pkd slots use the same aligned
-    # offset-zero subcube. Evaluate their ris part directly; their residual-y
-    # selector is also zero, so they multiply final_msg[0] below.
-    qpkd_claim_weight = 0
-    for j in unroll(0, N_CLAIMS):
-        if CLAIM_POINT_BUF[j] == POINT_BUF_QPKD:
-            weight = GEN ** 0
-            for bit in unroll(0, LOG2_FIELD_BITS):
-                if (CLAIM_QPKD_SLOT[j] // (2 ** bit)) % 2 == 1:
-                    weight *= fold_challenges[GEN ** bit]
-                else:
-                    weight *= 1 + fold_challenges[GEN ** bit]
-            # Table-owned BLAKE3 value columns are settled by the shared
-            # zerocheck, so their q_pkd slot claims use that table's rho point.
-            zptr = rho * GEN ** CLAIM_POINT_OFF[j]
-            ris7 = fold_challenges * GEN ** LOG2_FIELD_BITS
-            cplen_g = claim_cplen_g[GEN ** j]
-            point_chain = HeapBuf(SIZE_BITS + 1)
-            point_chain[GEN ** 0] = weight
-            for xk in mul_range(1, cplen_g):
-                point_chain[xk * GEN] = point_chain[xk] * (1 + zptr[xk] + ris7[xk])
-            weight = point_chain[cplen_g]
-            q_hi_len_g = fold_cap_g / qpkdv_g
-            q_hi = fold_challenges * qpkdv_g
-            selector_chain = HeapBuf(SIZE_BITS + 1)
-            selector_chain[GEN ** 0] = weight
-            for xk in mul_range(1, q_hi_len_g):
-                selector_chain[xk * GEN] = selector_chain[xk] * (1 + q_hi[xk])
-            qpkd_claim_weight += gamma_pool[GEN ** j] * selector_chain[q_hi_len_g]
-
     # Contract every Basic Jagged indicator with the final Ligerito message.
     # A second dispatch on the already-certified commitment size bakes both
     # the folded prefix length and the residual-message shape into straight-
     # line width-four contractions.
     jagged_sum = match_range(log(sel), range(0, LIG_N_CANDIDATES), lambda m_idx: jagged_terminal(m_idx, fold_challenges, final_msg, claim_rows, col_bound_bits, gamma, gamma_powers))
-    # q_pkd occupies [0, 2^qpkdv), hence its residual y selector is zero.
-    inner_sum = inner_total + jagged_sum + (rs_weight + qpkd_claim_weight) * final_msg[GEN ** 0]
+    # The q_pkd prefix restriction is already included in rs_weight, so only
+    # its first residual message entry contributes here.
+    inner_sum = inner_total + jagged_sum + rs_weight * final_msg[GEN ** 0]
     assert inner_sum == sumcheck_target
 
 
@@ -2176,14 +2217,18 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     for k in unroll(0, 2 ** K_SKIP):
         defer_out[GEN ** (BYTECODE_LOG + LOG2_BYTECODE_COLS + 3 + 2 * LINCHECK_ROUNDS + k)] = z_partial[GEN ** k]
     defer_out[GEN ** (BYTECODE_LOG + LOG2_BYTECODE_COLS + 3 + 2 ** K_SKIP + 2 * LINCHECK_ROUNDS)] = matrix_eval[0]
+    defer_out[GEN ** (BYTECODE_LOG + LOG2_BYTECODE_COLS + 4 + 2 ** K_SKIP + 2 * LINCHECK_ROUNDS)] = lincheck_z_skip
+    defer_out[GEN ** (BYTECODE_LOG + LOG2_BYTECODE_COLS + 5 + 2 ** K_SKIP + 2 * LINCHECK_ROUNDS)] = zerocheck_r[GEN ** (K_LOG - 1)]
+    defer_out[GEN ** (BYTECODE_LOG + LOG2_BYTECODE_COLS + 6 + 2 ** K_SKIP + 2 * LINCHECK_ROUNDS)] = padding_evals[0]
+    defer_out[GEN ** (BYTECODE_LOG + LOG2_BYTECODE_COLS + 7 + 2 ** K_SKIP + 2 * LINCHECK_ROUNDS)] = padding_evals[1]
     return
 
 
 def main():
     # NSUB sub-proofs of the fixed inner program: verify each (verify_sub),
     # then aggregate their deferred claims. The fresh aggregation transcript
-    # RLC-batches the bytecode and matrix claims through two sumchecks; only
-    # the three reduced claims (evaluated natively by the outer verifier)
+    # RLC-batches the bytecode, matrix, and fixed-padding claims through three
+    # sumchecks; only the four reduced claims (evaluated natively by the outer verifier)
     # reach this guest's public input.
     sub_pis = HeapBuf(NSUB * 2)
     hint_witness(sub_pis[0:NSUB * 2], "sub_pis")
@@ -2198,10 +2243,14 @@ def main():
     hint_witness(bc_sumcheck_msgs[0:2 * BYTECODE_VARS], "bc_sumcheck_msgs")
     mat_sumcheck_msgs = HeapBuf(4 * K_LOG)
     hint_witness(mat_sumcheck_msgs[0:4 * K_LOG], "mat_sumcheck_msgs")
+    pad_sumcheck_msgs = HeapBuf(2 * K_LOG)
+    hint_witness(pad_sumcheck_msgs[0:2 * K_LOG], "pad_sumcheck_msgs")
     bc_star_hint = StackBuf(1)
     hint_witness(bc_star_hint[0:1], "bc_star_hint")
     mat_stars_hint = StackBuf(2)
     hint_witness(mat_stars_hint[0:2], "mat_stars_hint")
+    pad_star_hint = StackBuf(1)
+    hint_witness(pad_star_hint[0:1], "pad_star_hint")
     # exponent-domain lookup tables, shared read-only across every sub-proof.
     g_logs_pow2, g_squares = exponent_tables()
 
@@ -2306,6 +2355,52 @@ def main():
     mat_final = a_star * weight_a + b_star * weight_b
     assert mat_running == mat_final
 
+    # ---- fixed BLAKE3-padding witness batching sumcheck ----
+    gamma_pad = HeapBuf(2 * NSUB)
+    pad_running = 0
+    for t in unroll(0, NSUB):
+        agg_fs = squeeze(agg_fs)
+        gab = agg_fs[0]
+        gamma_pad[GEN ** (2 * t)] = gab
+        agg_fs = squeeze(agg_fs)
+        gc = agg_fs[0]
+        gamma_pad[GEN ** (2 * t + 1)] = gc
+        pad_running += gab * defer[GEN ** (t * DEFER_SIZE + BYTECODE_LOG + LOG2_BYTECODE_COLS + 6 + 2 ** K_SKIP + 2 * LINCHECK_ROUNDS)]
+        pad_running += gc * defer[GEN ** (t * DEFER_SIZE + BYTECODE_LOG + LOG2_BYTECODE_COLS + 7 + 2 ** K_SKIP + 2 * LINCHECK_ROUNDS)]
+    pad_point = HeapBuf(K_LOG)
+    for rd in unroll(0, K_LOG):
+        agg_fs, msg_g1, c = fs_next(agg_fs, pad_sumcheck_msgs * GEN ** (2 * rd))
+        agg_fs, msg_ginf, c = fs_next(agg_fs, c)
+        agg_fs = squeeze(agg_fs)
+        rv = agg_fs[0]
+        pad_point[GEN ** rd] = rv
+        g_zero = pad_running + msg_g1
+        c_one = g_zero + msg_g1 + msg_ginf
+        pad_running = msg_ginf * rv * rv + c_one * rv + g_zero
+    eq_pad = HeapBuf(2 ** (K_SKIP + 1) - 2)
+    eqtree(pad_point, eq_pad, K_SKIP)
+    pad_weight = 0
+    for t in unroll(0, NSUB):
+        nums_ab = StackBuf(2 ** K_SKIP)
+        lag64(defer[GEN ** (t * DEFER_SIZE + BYTECODE_LOG + LOG2_BYTECODE_COLS + 4 + 2 ** K_SKIP + 2 * LINCHECK_ROUNDS)], nums_ab, 0)
+        wab = 0
+        for i in unroll(0, 2 ** K_SKIP):
+            wab += nums_ab[i] * LAGRANGE_INV_S[i] * eq_pad[GEN ** (2 ** K_SKIP - 2 + i)]
+        for k in unroll(0, LINCHECK_ROUNDS):
+            wab *= 1 + defer[GEN ** (t * DEFER_SIZE + BYTECODE_LOG + LOG2_BYTECODE_COLS + 3 + 2 * LINCHECK_ROUNDS - 1 - k)] + pad_point[GEN ** (K_SKIP + k)]
+
+        nums_c = StackBuf(2 ** K_SKIP)
+        lag64(defer[GEN ** (t * DEFER_SIZE + BYTECODE_LOG + LOG2_BYTECODE_COLS + 2)], nums_c, 0)
+        wc = 0
+        for i in unroll(0, 2 ** K_SKIP):
+            wc += nums_c[i] * LAGRANGE_INV_S[i] * eq_pad[GEN ** (2 ** K_SKIP - 2 + i)]
+        for k in unroll(0, N_FIXED_CHALLENGE_ROUNDS):
+            wc *= 1 + FIXED_CHALLENGES[k] + pad_point[GEN ** (K_SKIP + k)]
+        wc *= 1 + defer[GEN ** (t * DEFER_SIZE + BYTECODE_LOG + LOG2_BYTECODE_COLS + 5 + 2 ** K_SKIP + 2 * LINCHECK_ROUNDS)] + pad_point[GEN ** (K_LOG - 1)]
+        pad_weight += gamma_pad[GEN ** (2 * t)] * wab + gamma_pad[GEN ** (2 * t + 1)] * wc
+    padding_star = pad_star_hint[0]
+    assert pad_running == padding_star * pad_weight
+
     # ---- bind the FS seed + sub statements + reduced claims to the PI ----
     out_fs = [STATEMENT_SEED_0, STATEMENT_SEED_1]
     out_fs = obs(out_fs, NSUB)
@@ -2321,6 +2416,9 @@ def main():
         out_fs = obs(out_fs, mat_point[GEN ** k])
     out_fs = obs(out_fs, a_star)
     out_fs = obs(out_fs, b_star)
+    for k in unroll(0, K_LOG):
+        out_fs = obs(out_fs, pad_point[GEN ** k])
+    out_fs = obs(out_fs, padding_star)
     pub_ptr = GEN ** 0
     own_pi_0 = pub_ptr[1]
     own_pi_1 = pub_ptr[GEN]

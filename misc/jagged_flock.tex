@@ -1,0 +1,299 @@
+\documentclass[11pt]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb}
+\usepackage[margin=1in]{geometry}
+\usepackage[hidelinks]{hyperref}
+
+\newcommand{\F}{\mathbb{F}_{2^{128}}}
+\newcommand{\eq}{\operatorname{eq}}
+
+\title{Jagged Flock Commitments by Removing the Public Padding}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section{Conclusion}
+
+The construction is straightforward once the public padding is removed
+\emph{before} ring switching.
+
+Let \(n\) be the number of actual BLAKE3 compressions and let
+\[
+    N=2^\tau\geq n
+\]
+be Flock's power-of-two batch size.  Flock may remain completely unchanged:
+it proves a witness containing the \(n\) real compressions followed by \(N-n\)
+copies of its fixed padding compression.  After Flock has reduced validity to
+its final witness-evaluation claims, the verifier subtracts the publicly known
+padding contribution.  The resulting claims concern the real witness followed
+by zeros.  That zero-extended witness is what ring switching and the Jagged PCS
+open.
+
+Thus there is no need to change Flock's R1CS, zerocheck, lincheck, or
+constant-wire pin.
+
+\section{Split the witness into private and public parts}
+
+Write the Boolean Flock witness as a function of an inner circuit index \(i\)
+and an outer compression index \(j\):
+\[
+ z_{\mathrm{full}}(i,j)=
+ \begin{cases}
+   z_{\mathrm{real}}(i,j), & j<n,\\
+   p(i),                   & j\geq n,
+ \end{cases}
+\]
+where \(p\) is the fixed witness of the padding compression, namely the
+compression used for hashing the all-zero block.
+
+Let
+\[
+    S_n(j)=1[j\geq n]
+\]
+and define
+\[
+    z_0(i,j)
+      =z_{\mathrm{full}}(i,j)+p(i)S_n(j).
+\]
+Addition is over characteristic two.  Therefore
+\[
+ z_0(i,j)=
+ \begin{cases}
+   z_{\mathrm{real}}(i,j), & j<n,\\
+   0,                       & j\geq n.
+ \end{cases}
+\]
+
+Flock proves claims about \(z_{\mathrm{full}}\).  We deterministically convert
+each such claim into a claim about \(z_0\).
+
+\section{The public correction factors}
+
+Flock's final witness points separate into an inner point and an outer point.
+The inner part uses Flock's univariate-skip convention, but it is still
+tensor-separated from the outer instance coordinates.  Consequently,
+\[
+    \widehat z_0(x_{\mathrm{inner}},x_{\mathrm{outer}})
+      =
+    \widehat z_{\mathrm{full}}(x_{\mathrm{inner}},x_{\mathrm{outer}})
+      +
+    \widehat p(x_{\mathrm{inner}})
+    \widehat S_n(x_{\mathrm{outer}}).
+\]
+
+Both factors in the correction are public:
+
+\begin{itemize}
+  \item \(\widehat S_n(x_{\mathrm{outer}})\) is a logarithmic-time suffix
+        indicator evaluation;
+  \item \(\widehat p(x_{\mathrm{inner}})\) is the evaluation of one fixed
+        BLAKE3 padding witness.
+\end{itemize}
+
+The table has \(2^{14}=16{,}384\) Boolean positions.  For the current fixed
+zero-block compression witness, exactly \(3{,}839\) positions are one; the
+evaluation domain is therefore neither \(4{,}096\) nor \(8{,}192\) entries.
+
+The padding witness is constant with respect to the outer compression
+variables, which is what gives the factorization.  It is not constant with
+respect to the inner circuit variables: evaluating it naively touches the
+fixed \(2^{14}\)-bit witness.  This is nevertheless a constant cost independent
+of \(n\) and \(N\), and the witness bits can be baked into the native and
+Python verifiers.  The recursive verifier does not evaluate this table:
+it defers the two values and merges all such claims with one 14-round
+sumcheck, exactly like the existing bytecode and matrix deferrals.
+
+The current Flock reduction produces two final witness claims, one for the
+\(A\)-\(B\) side and one for the \(C\) side.  In general they have different
+inner points, so the verifier performs this fixed-witness evaluation once per
+claim.  The two evaluations can share fixed tables and implementation
+machinery.
+
+\section{Apply ring switching after the correction}
+
+For every Flock output claim
+\[
+    \widehat z_{\mathrm{full}}(x)=v_{\mathrm{full}},
+\]
+derive, without receiving another prover value,
+\[
+    v_0
+      =
+    v_{\mathrm{full}}
+      +
+    \widehat p(x_{\mathrm{inner}})
+    \widehat S_n(x_{\mathrm{outer}}).
+\]
+The claim passed to ring switching is then
+\[
+    \widehat z_0(x)=v_0.
+\]
+
+The prover likewise constructs ring switching's \(s_{\widehat v}\) data from
+\(z_0\), or equivalently corrects the data obtained from
+\(z_{\mathrm{full}}\) by the same public padding component.
+
+Ring switching is linear, so no other change to the reduction is needed.  The
+important point is that its input witness now has a zero suffix.
+
+\section{Variable ordering and the Jagged prefix}
+
+Choose the seven packed coordinates first, the remaining within-compression
+coordinates next, and the compression-index coordinates last.  This is already
+the natural current layout:
+\[
+    q_{\mathrm{pkd}}[128j+s],
+    \qquad 0\leq s<128.
+\]
+One compression therefore occupies \(128\) consecutive elements of \(\F\).
+After the public padding has been removed, the packed witness is
+\[
+    q_0=
+      (q_{\mathrm{real}},
+       0^{128(N-n)}).
+\]
+Its nonzero support is the single prefix
+\[
+    [0,128n).
+\]
+
+Equivalently, before packing, ring switching views the Boolean witness as
+\(128\) slices of size \(2^{m-7}\).  With the instance coordinates ordered
+last, every slice has the real data on the left and a zero suffix on the
+right.  The same Jagged boundary applies to all slices, and packing them
+pointwise gives the one \(q_{\mathrm{pkd}}\) prefix above.
+
+The commitment stores only the first \(128n\) packed elements.  All following
+ordinary Jagged blocks begin immediately after that prefix instead of after
+the full \(128N\)-element Flock cube.
+
+\section{Opening the committed prefix}
+
+Ring switching produces the same transparent logical opening weight \(W\) as
+before.  Since the omitted witness suffix is zero,
+\[
+    \langle q_0,W\rangle
+      =
+    \left\langle q_{\mathrm{real}},
+      W|_{[0,128n)}\right\rangle.
+\]
+The target does not require another correction.  The prover inserts only the
+first \(128n\) entries of the ring-switch basis into the stacked PCS opening.
+The Jagged adapter evaluates the corresponding interval-restricted weight.
+
+There is one standard Jagged subtlety: the verifier must evaluate the MLE of
+the restricted weight.  It must not multiply two MLE evaluations, since
+\[
+ \operatorname{MLE}(W\cdot 1_{[0,128n)})
+ \neq
+ \operatorname{MLE}(W)\operatorname{MLE}(1_{[0,128n)})
+\]
+in general.
+
+The existing ring-switch weight is a sum of \(128\) tensor terms.  The Jagged
+interval evaluator can restrict each term and add the results.  Because the
+interval starts at zero and is aligned to complete 128-element compression
+rows, this specializes to the existing seven-coordinate product followed by a
+small weighted prefix computation over the \(\tau\) instance coordinates.
+Its cost remains \(O(128(7+\tau))\).
+
+\section{Fixed BLAKE3 value slots}
+
+The VM's virtual BLAKE3 value columns can be treated in either of two
+equivalent ways:
+
+\begin{enumerate}
+  \item keep their current public padding values and subtract the corresponding
+        one-slot suffix contribution before opening; or
+  \item define their logical padding to be zero, matching \(q_0\), since these
+        are artificial table-padding rows.
+\end{enumerate}
+
+The second choice gives the cleaner leanVM--Flock interface.  Actual table rows
+are unchanged; only the public default for nonexistent rows becomes zero.
+Their fixed-slot claims then become ordinary Jagged claims at logical point
+\[
+    (\operatorname{bits}(s),r)
+\]
+on the interval \([0,128n)\).
+
+\section{Soundness}
+
+The composition is sound provided that:
+
+\begin{enumerate}
+  \item the actual count \(n\) and the fixed padding witness \(p\) are bound by
+        the statement before any relevant challenge;
+  \item both Flock output claims are corrected using their exact inner and
+        outer points;
+  \item the prover's ring-switch data is formed from the same zero-extended
+        witness \(z_0\);
+  \item the PCS verifier evaluates the genuinely interval-restricted
+        ring-switch weight;
+  \item the native, recursive, and Python verifiers perform the identical
+        public correction.
+\end{enumerate}
+
+Flock proves its original padded witness.  The public identity
+\[
+    z_0=z_{\mathrm{full}}+pS_n
+\]
+then converts its final claims into claims about a uniquely determined
+zero-extended witness.  Ring switching and the Jagged PCS bind those converted
+claims to the committed real prefix.  The prover receives no freedom in the
+conversion.
+
+\section{Cost and savings}
+
+The native and Python verifiers perform a constant number of evaluations of
+the fixed padding-compression witness, plus logarithmic suffix-indicator
+evaluations.  This cost does not grow with the number of BLAKE3 instances.
+Recursion exports those evaluations as deferred claims: a fresh transcript
+randomly combines the two claims from every verified proof, and a single
+14-round sumcheck reduces them to one evaluation of the fixed padding witness
+for the outer native verifier.  Hence recursion pays only the sumcheck
+verification and transparent terminal-weight costs, never a $2^{14}$-entry
+in-circuit evaluation.
+
+The physical Jagged area saved is exactly
+\[
+    128(N-n)
+\]
+elements of \(\F\), or
+\[
+    2048(N-n)\ \text{bytes}.
+\]
+When \(n\) is just above half a power of two, this removes almost half of the
+Flock packed column.  As with the other Jagged columns, the largest commitment
+and proof-size improvement occurs when the reduced total area lowers the
+global dense PCS dimension.
+
+\section{Implementation summary}
+
+\begin{enumerate}
+  \item Leave Flock's padded proof unchanged.
+  \item Bake the fixed padding witness into the native and Python verifiers,
+        and defer its recursive evaluations through one batched sumcheck.
+  \item Correct Flock's two final witness claims by
+        \(\widehat p(x_{\mathrm{inner}})
+          \widehat S_n(x_{\mathrm{outer}})\).
+  \item Produce ring-switch data for the corrected zero-suffix witness.
+  \item Commit only \(q_{\mathrm{pkd}}[0..128n]\).
+  \item Use Jagged interval weights for ring-switch and fixed-slot openings.
+\end{enumerate}
+
+The entire construction is captured by
+\[
+ \boxed{
+   \text{Flock padded witness}
+   =
+   \text{committed zero-extended witness}
+   +
+   \text{public repeated padding}.
+ }
+\]
+
+\end{document}
