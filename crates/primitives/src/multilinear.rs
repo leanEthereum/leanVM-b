@@ -33,22 +33,43 @@ pub fn eq_eval(r: &[F192], x: &[F192]) -> F192 {
     acc
 }
 
-/// The `eq(r, ·)` table over `n = r.len()` variables, expanded in place: descending
-/// `i` keeps the unread low half intact while the high half is written from it.
+/// The `eq(r, ·)` table over `n = r.len()` variables, expanded a level at a
+/// time: each level writes the new high half from the low half and rewrites
+/// the low half in place.
+///
+/// One multiply per pair, not two. In characteristic 2,
+/// `e · (1 + r) = e + e · r`, so the low child is the high child XOR the
+/// parent — the second product is redundant. (This is orthogonal to batching:
+/// `rk` is loop-invariant, and the scalar product still beats `F192::mul2`
+/// here, 3.37 vs 3.73 ns/entry.)
+///
+/// A level's pairs are independent, so levels wide enough to cover rayon's
+/// dispatch are split across threads.
 pub fn eq_table(r: &[F192]) -> Vec<F192> {
+    use rayon::prelude::*;
+
     let mut eq = vec![F192::ZERO; 1usize << r.len()];
     eq[0] = F192::ONE;
-    let mut half = 1usize;
-    for &rk in r {
-        let one_plus = F192::ONE + rk;
-        for i in (0..half).rev() {
-            // Deliberately scalar: `rk`/`one_plus` are loop-invariant and the
-            // scalar pair beats an `F192::mul2` here (3.37 vs 3.73 ns/entry).
-            let e = eq[i];
-            eq[i + half] = e * rk;
-            eq[i] = e * one_plus;
+    const PAR_THRESHOLD: usize = 1 << 12;
+    for (i, &rk) in r.iter().enumerate() {
+        let half = 1usize << i;
+        let (lo, hi_rest) = eq.split_at_mut(half);
+        let hi = &mut hi_rest[..half];
+        let build_pair = |lo_x: &mut F192, hi_x: &mut F192| {
+            let e = *lo_x;
+            let high = e * rk;
+            *hi_x = high;
+            *lo_x = e + high;
+        };
+        if half < PAR_THRESHOLD {
+            lo.iter_mut()
+                .zip(hi.iter_mut())
+                .for_each(|(l, h)| build_pair(l, h));
+        } else {
+            lo.par_iter_mut()
+                .zip(hi.par_iter_mut())
+                .for_each(|(l, h)| build_pair(l, h));
         }
-        half <<= 1;
     }
     eq
 }
