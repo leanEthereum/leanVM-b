@@ -110,29 +110,33 @@ pub const LINEARIZED_TERMS: usize = PACKING_WIDTH;
 /// view `y` and the column view `t` of the same tensor-algebra element. That
 /// identity is what lets a verifier evaluate the batched claim from `Phi`'s
 /// six challenges instead of the 192 weights; the recursion guest does exactly
-/// that. Expanding the composition has one nonzero coefficient at every
-/// Frobenius exponent `0..64`, but applying it costs only 63 squarings and six
-/// multiplications.
+/// that. Expanding the composition puts a distinct monomial at every Frobenius
+/// exponent `0..64`: writing `k = sum_p k_p·2^(5-p)` for the binary digits of
+/// `k`, the coefficient is `C_k = prod_{p : k_p = 1} f_p^(2^(k mod 2^(5-p)))`,
+/// which is what the guest's coefficient table builds. Applying the composed
+/// form directly costs only 63 squarings and six multiplications.
 ///
 /// ## Soundness
 ///
 /// Let `delta != 0` be the prover's error on the transposed columns, fixed
 /// before the six challenges (`s_hat_v` is bound first). The check misses it iff
-/// `sum_w Phi(b_w)·delta_w = sum_{l<64} C_l(f)·W_l = 0` with
-/// `W_l = sum_w b_w^(2^l)·delta_w`. Writing `w = 64m + i` and `b_w = x^i·Y^m`,
+/// `sum_w Phi(b_w)·delta_w = sum_{k<64} C_k(f)·V_k = 0` with
+/// `V_k = sum_w b_w^(2^k)·delta_w`. Writing `w = 64j + i` and `b_w = x^i·Y^j`,
 ///
 /// ```text
-/// W_l = sum_{m<3} (Y^(2^l))^m · R_{m,l},   R_{m,l} = sum_{i<64} x^(i·2^l)·delta_{64m+i} in K.
+/// V_k = sum_{j<3} (Y^(2^k))^j · R_{j,k},   R_{j,k} = sum_{i<64} x^(i·2^k)·delta_{64j+i} in K.
 /// ```
 ///
-/// `Y^(2^l)` is not in `K` (Frobenius is a bijection fixing `K` setwise, and `Y`
-/// generates `E`), and `[E:K] = 3` is prime, so `{1, Y^(2^l), Y^(2·2^l)}` is a
-/// `K`-basis: `W_l = 0` forces every `R_{m,l} = 0`. But `(x^(i·2^l))_{l,i<64}` is
-/// the Moore matrix of `K`'s power basis, whose entries are `F_2`-independent, so
-/// it is invertible over `K` — every `R_{m,l} = 0` forces `delta = 0`. Hence some
-/// `W_l != 0`. Expanding the six two-term maps gives each `W_l` a distinct
-/// monomial `C_l`, so the discrepancy is a nonzero polynomial. In descending shift order its total
-/// degree is [`RING_SWITCH_SOUNDNESS_DEGREE`], below `2^32`.
+/// `Y^(2^k)` is not in `K` (squaring is a bijection of `K`, so `Y^(2^k) in K`
+/// would force `Y in K` and `E = K[Y] = K`), and `[E:K] = 3` is prime, so
+/// `{1, Y^(2^k), Y^(2·2^k)}` is a `K`-basis: `V_k = 0` forces every
+/// `R_{j,k} = 0`. At fixed `j` those 64 equations say that the polynomial
+/// `D_j(U) = sum_{i<64} delta_{64j+i}·U^i`, of degree at most 63, vanishes at
+/// `x, x^2, x^4, ..., x^(2^63)`. Those are 64 distinct points, since `x` has
+/// degree 64 over `F_2`, so `D_j = 0` and `delta = 0`. Hence some `V_k != 0`.
+/// The 64 `C_k` are distinct monomials, so the discrepancy is a nonzero
+/// polynomial in the challenges. In descending shift order its total degree is
+/// [`RING_SWITCH_SOUNDNESS_DEGREE`], below `2^32`.
 fn apply_composed_map(mut value: F192, challenges: &[F192; COMPOSITION_SHIFTS.len()]) -> F192 {
     for (&challenge, &shift) in challenges.iter().zip(COMPOSITION_SHIFTS.iter()) {
         let mut frobenius = value;
