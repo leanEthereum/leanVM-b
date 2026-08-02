@@ -537,13 +537,31 @@ impl FnLower<'_> {
             ptr: nfp,
             callees: callees.to_vec(),
         });
-        for (i, &ao) in arg_offs.iter().enumerate() {
-            self.emit(LOp::Deref {
-                alpha: nfp,
-                beta: 2 + i as u32,
-                gamma: ao,
-                mode: DerefMode::Cell,
-            });
+        let mut i = 0;
+        while i < arg_offs.len() {
+            if i + 2 < arg_offs.len() && arg_offs[i + 1] == arg_offs[i] + 1 && arg_offs[i + 2] == arg_offs[i] + 2 {
+                self.emit(LOp::DerefExt {
+                    alpha: nfp,
+                    beta: 2 + i as u32,
+                    gamma: arg_offs[i],
+                });
+                i += 3;
+            } else if i + 1 < arg_offs.len() && arg_offs[i + 1] == arg_offs[i] + 1 {
+                self.emit(LOp::Deref128 {
+                    alpha: nfp,
+                    beta: 2 + i as u32,
+                    gamma: arg_offs[i],
+                });
+                i += 2;
+            } else {
+                self.emit(LOp::Deref {
+                    alpha: nfp,
+                    beta: 2 + i as u32,
+                    gamma: arg_offs[i],
+                    mode: DerefMode::Cell,
+                });
+                i += 1;
+            }
         }
         self.emit(LOp::Deref {
             alpha: nfp,
@@ -599,13 +617,31 @@ impl FnLower<'_> {
 
         // Join: read the return values (written by whichever callee ran).
         self.patch_local(join_set, self.code.len());
-        for (i, &r) in rcells.iter().enumerate() {
-            self.emit(LOp::Deref {
-                alpha: nfp,
-                beta: 2 + n_args + i as u32,
-                gamma: r,
-                mode: DerefMode::Cell,
-            });
+        let mut i = 0;
+        while i < rcells.len() {
+            if i + 2 < rcells.len() && rcells[i + 1] == rcells[i] + 1 && rcells[i + 2] == rcells[i] + 2 {
+                self.emit(LOp::DerefExt {
+                    alpha: nfp,
+                    beta: 2 + n_args + i as u32,
+                    gamma: rcells[i],
+                });
+                i += 3;
+            } else if i + 1 < rcells.len() && rcells[i + 1] == rcells[i] + 1 {
+                self.emit(LOp::Deref128 {
+                    alpha: nfp,
+                    beta: 2 + n_args + i as u32,
+                    gamma: rcells[i],
+                });
+                i += 2;
+            } else {
+                self.emit(LOp::Deref {
+                    alpha: nfp,
+                    beta: 2 + n_args + i as u32,
+                    gamma: rcells[i],
+                    mode: DerefMode::Cell,
+                });
+                i += 1;
+            }
         }
 
         for (name, &cell) in names.iter().zip(&rcells) {
@@ -1303,24 +1339,22 @@ impl FnLower<'_> {
 
     /// A `blake3` operand as two independently addressed 128-bit chunks. Stack
     /// chunks forward through adjacent aliases without copies. A heap slice is
-    /// bridged into a fresh stack run with one `DEREF_EXT` for its three-word
-    /// prefix and one scalar `DEREF` for its tail. The `β` immediates fold in
+    /// bridged into a fresh stack run with two `DEREF_128` rows. The `β` immediates fold in
     /// the heap offsets. The heap cells must already be written.
     fn blake3_input(&mut self, e: &Expr) -> [Off; 2] {
         match self.blake3_operand(e) {
             B3Operand::Stack(o) => [self.chunk_src(o), self.chunk_src(o + 2)],
             B3Operand::Heap { ptr, lo } => {
                 let t = self.alloc_stack(4);
-                self.emit(LOp::DerefExt {
+                self.emit(LOp::Deref128 {
                     alpha: ptr,
                     beta: lo,
                     gamma: t,
                 });
-                self.emit(LOp::Deref {
+                self.emit(LOp::Deref128 {
                     alpha: ptr,
-                    beta: lo + 3,
-                    gamma: t + 3,
-                    mode: DerefMode::Cell,
+                    beta: lo + 2,
+                    gamma: t + 2,
                 });
                 [t, t + 2]
             }
@@ -2107,6 +2141,13 @@ impl FnLower<'_> {
                     gamma: arg_offs[i],
                 });
                 i += 3;
+            } else if i + 1 < arg_offs.len() && arg_offs[i + 1] == arg_offs[i] + 1 {
+                self.emit(LOp::Deref128 {
+                    alpha: nfp,
+                    beta: 2 + i as u32,
+                    gamma: arg_offs[i],
+                });
+                i += 2;
             } else {
                 self.emit(LOp::Deref {
                     alpha: nfp,
@@ -2167,6 +2208,13 @@ impl FnLower<'_> {
                     gamma: dsts[i],
                 });
                 i += 3;
+            } else if i + 1 < dsts.len() && dsts[i + 1] == dsts[i] + 1 {
+                self.emit(LOp::Deref128 {
+                    alpha: nfp,
+                    beta: 2 + n_args + i as u32,
+                    gamma: dsts[i],
+                });
+                i += 2;
             } else {
                 self.emit(LOp::Deref {
                     alpha: nfp,
@@ -2482,16 +2530,15 @@ impl FnLower<'_> {
                         metadata,
                     });
                     if let Some((ptr, lo)) = heap_out {
-                        self.emit(LOp::DerefExt {
+                        self.emit(LOp::Deref128 {
                             alpha: ptr,
                             beta: lo,
                             gamma: out,
                         });
-                        self.emit(LOp::Deref {
+                        self.emit(LOp::Deref128 {
                             alpha: ptr,
-                            beta: lo + 3,
-                            gamma: out + 3,
-                            mode: DerefMode::Cell,
+                            beta: lo + 2,
+                            gamma: out + 2,
                         });
                     }
                     return;
@@ -2509,6 +2556,18 @@ impl FnLower<'_> {
                         "div_192" => self.emit(LOp::MulExt { a: c, b, c: a }),
                         _ => unreachable!(),
                     }
+                    return;
+                }
+                if f == "mul_192_base" {
+                    assert_eq!(
+                        args.len(),
+                        3,
+                        "mul_192_base(a, b, out) takes a scalar and two extension buffers"
+                    );
+                    let a = self.expr(&args[0]);
+                    let b = self.ext_operand(&args[1]);
+                    let c = self.ext_operand(&args[2]);
+                    self.emit(LOp::MulExtBase { a, b, c });
                     return;
                 }
                 if f == "deref_192" {
@@ -2880,8 +2939,10 @@ fn stmt_inline_safe(s: &Stmt, defs: &HashMap<String, Func>) -> bool {
         | Stmt::AssertNe(..)
         | Stmt::AssertLt(..) => true,
         Stmt::Call(f, _) => {
-            matches!(f.as_str(), "blake3" | "xor_192" | "mul_192" | "div_192" | "deref_192")
-                || defs.get(f).is_some_and(|d| d.inline)
+            matches!(
+                f.as_str(),
+                "blake3" | "xor_192" | "mul_192" | "mul_192_base" | "div_192" | "deref_192"
+            ) || defs.get(f).is_some_and(|d| d.inline)
         }
         Stmt::If { then, els, .. } => {
             then.iter().all(|s| stmt_inline_safe(s, defs)) && els.iter().all(|s| stmt_inline_safe(s, defs))

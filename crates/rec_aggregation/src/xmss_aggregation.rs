@@ -190,7 +190,11 @@ pub fn run_xmss_aggregation(n: usize, log_inv_rate: usize) {
 
     // 181 fixed blocks + per signature: 1 (pk absorb) + 145 (the native
     // verifier's constant).
-    assert_eq!(stats.counts[8], 181 + 146 * n, "BLAKE3 instruction count");
+    assert_eq!(
+        stats.counts[lean_vm::tables::BLAKE3_TABLE],
+        181 + 146 * n,
+        "BLAKE3 instruction count"
+    );
     let mut bad = want;
     bad[3] += F64::ONE;
     assert!(verify(&program, &bad, &proof).is_err());
@@ -216,7 +220,15 @@ pub fn run_xmss_aggregation(n: usize, log_inv_rate: usize) {
         per(stats.cycles)
     );
     for (name, &c) in [
-        "XOR", "MUL", "XOR192", "MUL192", "SET", "DEREF", "DEREF192", "JUMP", "BLAKE3",
+        "XOR",
+        "MUL",
+        "XOR192",
+        "MUL192",
+        "SET",
+        "DEREF",
+        "DEREF128/192",
+        "JUMP",
+        "BLAKE3",
     ]
     .iter()
     .zip(&stats.counts)

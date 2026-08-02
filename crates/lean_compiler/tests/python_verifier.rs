@@ -18,9 +18,27 @@ def mix(value):
     return product + value
 
 def main():
+    ext_a = [2, 3, 4]
+    ext_b = [5, 6, 7]
+    ext_sum = StackBuf(3)
+    xor_192(ext_a, ext_b, ext_sum)
+    ext_product = StackBuf(3)
+    mul_192(ext_a, ext_b, ext_product)
+    ext_scaled = StackBuf(3)
+    mul_192_base(9, ext_product, ext_scaled)
+    ext_heap = HeapBuf(3)
+    deref_192(ext_heap, ext_scaled)
+    ext_loaded = StackBuf(3)
+    deref_192(ext_heap, ext_loaded)
+    ext_zero = [0, 0, 0]
+    xor_192(ext_scaled, ext_loaded, ext_zero)
+
     seed = [5, 7, 11, 13]
+    digest_heap = HeapBuf(4)
+    blake3(seed, seed, digest_heap[0:4])
     digest = StackBuf(4)
-    blake3(seed, seed, digest)
+    for lane in unroll(0, 4):
+        digest[lane] = digest_heap[GEN ** lane]
 
     chain = HeapBuf(LOOP_STEPS + 1)
     chain[1] = digest[0]
@@ -69,6 +87,9 @@ fn operation_json(operation: Op) -> String {
         Op::Mul { a, b, c } => format!(r#"    {{"op":"mul","a":{a},"b":{b},"c":{c}}}"#),
         Op::AddExt { a, b, c } => format!(r#"    {{"op":"xor_192","a":{a},"b":{b},"c":{c}}}"#),
         Op::MulExt { a, b, c } => format!(r#"    {{"op":"mul_192","a":{a},"b":{b},"c":{c}}}"#),
+        Op::MulExtBase { a, b, c } => {
+            format!(r#"    {{"op":"mul_192_base","a":{a},"b":{b},"c":{c}}}"#)
+        }
         Op::Set { o, k } => format!(r#"    {{"op":"set","o":{o},"k":{}}}"#, word_json(k)),
         Op::Deref {
             alpha,
@@ -88,6 +109,9 @@ fn operation_json(operation: Op) -> String {
         }
         Op::DerefExt { alpha, beta, gamma } => {
             format!(r#"    {{"op":"deref_192","alpha":{alpha},"beta":{beta},"gamma":{gamma}}}"#)
+        }
+        Op::Deref128 { alpha, beta, gamma } => {
+            format!(r#"    {{"op":"deref_128","alpha":{alpha},"beta":{beta},"gamma":{gamma}}}"#)
         }
         Op::Blake3 { ins, cv, out, metadata } => format!(
             r#"    {{"op":"blake3","ins":[{},{},{},{}],"cv":{cv},"out":{out},"metadata":{}}}"#,

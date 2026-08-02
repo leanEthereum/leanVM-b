@@ -156,6 +156,11 @@ def mul_192(a, b, out) -> None:
     _ = a, b, out
 
 
+def mul_192_base(a, b, out) -> None:
+    """Scale a three-word extension value `b` by base-field scalar `a`."""
+    _ = a, b, out
+
+
 def div_192(a, b, out) -> None:
     """Divide two three-word extension-field StackBufs into `out`."""
     _ = a, b, out

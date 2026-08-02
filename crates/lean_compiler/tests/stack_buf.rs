@@ -94,10 +94,10 @@ def main():
     }
 }
 
-/// Each four-word heap bridge uses the three-word bundled dereference plus one
-/// scalar tail access, both for BLAKE3 inputs and its heap output.
+/// Each four-word heap bridge uses two native two-word dereferences, both for
+/// BLAKE3 inputs and its heap output.
 #[test]
-fn blake3_heap_bridges_bundle_three_word_prefixes() {
+fn blake3_heap_bridges_use_two_word_transfers() {
     let src = "\
 def main():
     a = HeapBuf(4)
@@ -114,15 +114,15 @@ def main():
         program
             .prog
             .iter()
-            .filter(|op| matches!(op, Op::DerefExt { .. }))
+            .filter(|op| matches!(op, Op::Deref128 { .. }))
             .count(),
-        3,
-        "two input prefixes and one output prefix"
+        6,
+        "two transfers for each of two inputs and one output"
     );
     assert_eq!(
         program.prog.iter().filter(|op| matches!(op, Op::Deref { .. })).count(),
-        7,
-        "four initialization stores plus three bridge tails"
+        4,
+        "only the four initialization stores remain scalar"
     );
     assert_eq!(
         program.prog.iter().filter(|op| matches!(op, Op::Blake3 { .. })).count(),

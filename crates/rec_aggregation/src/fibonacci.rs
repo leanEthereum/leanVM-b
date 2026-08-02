@@ -43,7 +43,15 @@ pub fn run_fibonacci(n: usize, log_inv_rate: usize) {
     );
     println!("  cycles (VM steps)           : {}", pretty_integer(stats.cycles));
     for (name, &c) in [
-        "XOR", "MUL", "XOR192", "MUL192", "SET", "DEREF", "DEREF192", "JUMP", "BLAKE3",
+        "XOR",
+        "MUL",
+        "XOR192",
+        "MUL192",
+        "SET",
+        "DEREF",
+        "DEREF128/192",
+        "JUMP",
+        "BLAKE3",
     ]
     .iter()
     .zip(&stats.counts)

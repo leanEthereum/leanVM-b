@@ -234,6 +234,9 @@ pub fn disassemble(prog: &[Op]) -> String {
             Op::Mul { a, b, c } => format!("MUL    fp[{c}] = fp[{a}] * fp[{b}]"),
             Op::AddExt { a, b, c } => format!("XOR_192 fp[{c}..+3] = fp[{a}..+3] + fp[{b}..+3]"),
             Op::MulExt { a, b, c } => format!("MUL_192 fp[{c}..+3] = fp[{a}..+3] * fp[{b}..+3]"),
+            Op::MulExtBase { a, b, c } => {
+                format!("MUL_192_BASE fp[{c}..+3] = fp[{a}] * fp[{b}..+3]")
+            }
             Op::Deref {
                 alpha,
                 beta,
@@ -246,6 +249,9 @@ pub fn disassemble(prog: &[Op]) -> String {
                     DerefMode::Fp => "fp".to_string(),
                 };
                 format!("DEREF  *(fp[{alpha}]·g^{beta}) = {src}  [{mode:?}]")
+            }
+            Op::Deref128 { alpha, beta, gamma } => {
+                format!("DEREF_128 *(fp[{alpha}]·g^{beta})[..2] = fp[{gamma}..+2]")
             }
             Op::DerefExt { alpha, beta, gamma } => {
                 format!("DEREF_192 *(fp[{alpha}]·g^{beta})[..3] = fp[{gamma}..+3]")
@@ -311,6 +317,7 @@ fn resolve(op: &LOp, entry: &HashMap<String, u32>, sentinel: u32, base: u32) -> 
         LOp::Mul { a, b, c } => Op::Mul { a: *a, b: *b, c: *c },
         LOp::AddExt { a, b, c } => Op::AddExt { a: *a, b: *b, c: *c },
         LOp::MulExt { a, b, c } => Op::MulExt { a: *a, b: *b, c: *c },
+        LOp::MulExtBase { a, b, c } => Op::MulExtBase { a: *a, b: *b, c: *c },
         LOp::Deref {
             alpha,
             beta,
@@ -321,6 +328,11 @@ fn resolve(op: &LOp, entry: &HashMap<String, u32>, sentinel: u32, base: u32) -> 
             beta: *beta,
             gamma: *gamma,
             mode: *mode,
+        },
+        LOp::Deref128 { alpha, beta, gamma } => Op::Deref128 {
+            alpha: *alpha,
+            beta: *beta,
+            gamma: *gamma,
         },
         LOp::DerefExt { alpha, beta, gamma } => Op::DerefExt {
             alpha: *alpha,

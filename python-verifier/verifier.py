@@ -1032,9 +1032,9 @@ N_TABLES = 9
 BLAKE3_TABLE = 8
 MEM_COLUMN = 0
 QPKD_COLUMN = 3
-BASES = (4, 19, 34, 61, 88, 95, 112, 135, 154)
-WIDTHS = (15, 15, 27, 27, 7, 17, 23, 19, 49)
-CONSTRAINT_COUNTS = (4, 4, 4, 4, 1, 4, 4, 7, 6)
+BASES = (4, 19, 34, 61, 91, 98, 115, 139, 158)
+WIDTHS = (15, 15, 27, 30, 7, 17, 24, 19, 49)
+CONSTRAINT_COUNTS = (4, 4, 4, 6, 1, 4, 4, 7, 6)
 COUNT_COLUMNS = (
     (11, 12, 13, 14),
     (11, 12, 13, 14),
@@ -1102,9 +1102,9 @@ class Operation:
     def parse(cls, data: dict[str, Any]) -> "Operation":
         require(isinstance(data, dict), "each program operation must be an object")
         name = str(data.get("op", "")).lower()
-        require(name in {"xor", "mul", "xor_192", "mul_192", "set", "deref", "deref_192", "jump", "blake3"},
+        require(name in {"xor", "mul", "xor_192", "mul_192", "mul_192_base", "set", "deref", "deref_128", "deref_192", "jump", "blake3"},
                 f"unknown operation {name!r}")
-        if name in {"xor", "mul", "xor_192", "mul_192"}:
+        if name in {"xor", "mul", "xor_192", "mul_192", "mul_192_base"}:
             for key in ("a", "b", "c"):
                 _u32(data[key], f"{name}.{key}")
         elif name == "set":
@@ -1112,7 +1112,7 @@ class Operation:
             immediate = _field(data["k"])
             require(immediate.c1 == immediate.c2 == 0,
                     "set.k must be a base-field word")
-        elif name in {"deref", "deref_192"}:
+        elif name in {"deref", "deref_128", "deref_192"}:
             for key in ("alpha", "beta", "gamma"):
                 _u32(data[key], f"{name}.{key}")
             if name == "deref":
@@ -1159,13 +1159,14 @@ class Program:
         tags = {
             "xor": 0, "mul": 1, "xor_192": 2, "mul_192": 3,
             "set": 4, "jump": 8, "blake3": 9, "deref_192": 10,
+            "deref_128": 11, "mul_192_base": 12,
         }
         for operation in self.operations:
             d = operation.values
             name = operation.name
             k0 = k1 = ZERO
             d0 = e = f = 0
-            if name in {"xor", "mul", "xor_192", "mul_192"}:
+            if name in {"xor", "mul", "xor_192", "mul_192", "mul_192_base"}:
                 a, b, c = int(d["a"]), int(d["b"]), int(d["c"])
                 tag = tags[name]
             elif name == "set":
@@ -1176,6 +1177,8 @@ class Program:
                 tag = modes[str(d["mode"]).lower()]
             elif name == "deref_192":
                 a, b, c, tag = int(d["alpha"]), int(d["beta"]), int(d["gamma"]), 10
+            elif name == "deref_128":
+                a, b, c, tag = int(d["alpha"]), int(d["beta"]), int(d["gamma"]), 11
             elif name == "jump":
                 a, b, c, tag = int(d["oc"]), int(d["od"]), int(d["of"]), 8
             else:
@@ -1290,9 +1293,11 @@ def _table_flushes(table: int) -> Flushes:
         f.memory_word(7, 13, 10)
     elif table in (2, 3):
         f.state_step(0, 1)
-        f.bytecode(0, 26, table + 4, (_col(2), _col(3), _col(4), _const(ZERO), _const(ZERO)))
+        mode = _const(ZERO) if table == 2 else _col(29)
+        f.bytecode(0, 26, table + 4, (_col(2), _col(3), _col(4), mode, _const(ZERO)))
         for lane in range(3):
-            f.memory_word(5, 17 + lane, 8 + lane, lane)
+            a_value = 8 + lane if table == 2 or lane == 0 else 26 + lane
+            f.memory_word(5, 17 + lane, a_value, lane)
             f.memory_word(6, 20 + lane, 11 + lane, lane)
             f.memory_word(7, 23 + lane, 14 + lane, lane)
     elif table == 4:
@@ -1307,7 +1312,7 @@ def _table_flushes(table: int) -> Flushes:
         f.memory_word(9, 15, 12)
     elif table == 6:
         f.state_step(0, 1)
-        f.bytecode(0, 22, 8, (_col(2), _col(3), _col(4), _const(ZERO), _const(ZERO)))
+        f.bytecode(0, 22, 8, (_col(2), _col(3), _col(4), _col(23), _const(ZERO)))
         f.memory_word(5, 15, 8)
         for lane in range(3):
             f.memory_word(6, 16 + lane, 9 + lane, lane)
@@ -1343,13 +1348,16 @@ def _program_columns(program: Program) -> tuple[tuple[F192, ...], ...]:
     columns = [[] for _ in range(9)]
     opcodes = {
         "xor": 0, "mul": 1, "set": 2, "deref": 3, "jump": 4,
-        "blake3": 5, "xor_192": 6, "mul_192": 7, "deref_192": 8,
+        "blake3": 5, "xor_192": 6, "mul_192": 7,
+        "mul_192_base": 7, "deref_128": 8, "deref_192": 8,
     }
     for operation in program.operations:
         d, name = operation.values, operation.name
         operands = [ZERO] * 8
-        if name in {"xor", "mul", "xor_192", "mul_192"}:
+        if name in {"xor", "mul", "xor_192", "mul_192", "mul_192_base"}:
             operands[:3] = [_gpow(int(d[k])) for k in ("a", "b", "c")]
+            if name == "mul_192_base":
+                operands[3] = ONE
         elif name == "set":
             immediate = _field(d["k"])
             operands[:2] = [_gpow(int(d["o"])), F192(immediate.c0)]
@@ -1357,8 +1365,9 @@ def _program_columns(program: Program) -> tuple[tuple[F192, ...], ...]:
             operands[:3] = [_gpow(int(d[k])) for k in ("alpha", "beta", "gamma")]
             mode = str(d["mode"]).lower()
             operands[3:5] = [ONE if mode == "pc" else ZERO, ONE if mode == "fp" else ZERO]
-        elif name == "deref_192":
+        elif name in {"deref_128", "deref_192"}:
             operands[:3] = [_gpow(int(d[k])) for k in ("alpha", "beta", "gamma")]
+            operands[3] = ONE if name == "deref_192" else ZERO
         elif name == "jump":
             operands[:3] = [_gpow(int(d[k])) for k in ("oc", "od", "of")]
         else:
@@ -1497,12 +1506,19 @@ def _air_evaluator(
         elif table in (2, 3):
             va, vb, vc = word(8, 9, 10), word(11, 12, 13), word(14, 15, 16)
             operation = va + vb if table == 2 else va * vb
-            terms = (
+            terms = [
                 value(5) + value(1) * value(2),
                 value(6) + value(1) * value(3),
                 value(7) + value(1) * value(4),
                 vc + operation,
-            )
+            ]
+            if table == 3:
+                full_a = ONE + value(29)
+                terms.extend((
+                    value(9) + full_a * value(27),
+                    value(10) + full_a * value(28),
+                ))
+            terms = tuple(terms)
         elif table == 4:
             terms = (value(4) + value(1) * value(2),)
         elif table == 5:
@@ -1515,7 +1531,9 @@ def _air_evaluator(
                 value(11) + source,
             )
         elif table == 6:
-            v2, v3 = word(9, 10, 11), word(12, 13, 14)
+            width3 = value(23)
+            v2 = value(9) + F192(0, 1) * (value(10) + F192(0, 1) * width3 * value(11))
+            v3 = value(12) + F192(0, 1) * (value(13) + F192(0, 1) * width3 * value(14))
             terms = (
                 value(5) + value(1) * value(2),
                 value(6) + value(8) * value(3),

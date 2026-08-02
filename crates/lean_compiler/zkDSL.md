@@ -1,8 +1,8 @@
 # zkDSL Language Reference (leanVM-b)
 
 The zkDSL is a Python-syntax language that compiles to the leanVM-b ISA — nine
-instructions (`XOR`, `MUL`, `XOR_192`, `MUL_192`, `SET`, `DEREF`, `DEREF_192`, `JUMP`,
-`BLAKE3`) with write-once 64-bit memory and all indices carried "in the
+instruction-table families, including native 128-bit transfer and base-scalar
+extension-multiplication modes, with write-once 64-bit memory and all indices carried "in the
 exponent" as powers of a fixed generator. For the underlying VM and proving
 system, see [`misc/doc.tex`](../../misc/doc.tex).
 
@@ -85,8 +85,8 @@ Ordinary functions may return scalars, `HeapBuf` pointers, and `StackBuf`
 values, including mixtures in a tuple return. A returned `StackBuf(n)` has a
 compile-time-known size: its `n` cells cross consecutive return slots and the
 caller binds the result as a new `StackBuf(n)`. The call ABI coalesces each
-physically contiguous three-cell run into one `DEREF_192` rather than three
-scalar transfers. A `HeapBuf` return is just its one-cell pointer; the
+physically contiguous two- or three-cell run into one wide `DEREF` row rather
+than separate scalar transfers. A `HeapBuf` return is just its one-cell pointer; the
 allocation hint already ran where the buffer was created, so no size metadata
 needs to cross the call.
 
@@ -611,6 +611,7 @@ b = [b0, b1, b2]
 c = StackBuf(3)
 xor_192(a, b, c)       # c = a + b in E (bitwise XOR)
 mul_192(a, b, c)       # c = a · b in E
+mul_192_base(a0, b, c) # c = embedded(a0) · b in E
 div_192(a, b, c)       # c · b = a; b must be nonzero
 ```
 
@@ -618,6 +619,8 @@ div_192(a, b, c)       # c · b = a; b must be nonzero
 checked `MUL_192`, with witness generation
 back-solving the quotient. The ordinary infix operators remain base-field
 operations and never implicitly reinterpret three words as an extension.
+`mul_192_base` uses the bytecode-bound scalar mode of the same multiplication
+table, avoiding a temporary `[a0, 0, 0]` and three base multiplications.
 
 Three consecutive extension words can be transferred between heap and stack in
 one instruction:
@@ -630,6 +633,9 @@ deref_192(ptr, value)  # load if the heap run is set; store if `value` is set
 `DEREF_192` has the same write-once equality semantics as cell-mode `DEREF`.
 It commits only the base heap and stack addresses; the other two addresses are
 their virtual `GEN` and `GEN ** 2` multiples.
+The compiler uses the table's bytecode-bound two-word mode (`DEREF_128`) for
+native 128-bit values and BLAKE3 chunks. Its third lane is a read-only padding
+access excluded from the equality relation.
 
 Normal functions declare extension parameters with `: Ext`; the call ABI
 flattens each one into three cells and transfers a contiguous run with one
@@ -729,6 +735,7 @@ completely unconstrained: the program must re-verify them in-circuit.
 | `a / b` | 1 `MUL` (write-once back-solve; division by zero is undefined) |
 | `xor_192(a, b, out)` | 1 `XOR_192` |
 | `mul_192(a, b, out)` / `div_192(...)` | 1 `MUL_192` |
+| `mul_192_base(a, b, out)` | 1 scalar-mode `MUL_192` |
 | `deref_192(ptr, value)` | 1 `DEREF_192` for three consecutive heap words |
 | heap read / store `buf[i]` | 1 `DEREF`; +1 `MUL` for a *runtime* index (a compile-time g-power offset folds into the `DEREF` — free) |
 | stack read / store `sa[k]` | 0 (direct cell addressing) |
@@ -738,7 +745,7 @@ completely unconstrained: the program must re-verify them in-circuit.
 | `if a == b: …` | 3 (+2 to skip a non-empty `else`; +2 amortized `self-fp` per branching function); **0 if the condition is compile-time** |
 | `match log(x): …` | ≈ 7, independent of the case count |
 | `… = match_range(log(x), …)` | the `match` + the arm; results written into the targets directly. Uniform-call arms (`lambda k: f(a, b, k)`) **fuse**: one shared frame + dispatch to entry, each arm just `SET`+`JUMP` |
-| function call | ≈ `n_arg_cells + n_return_cells + 4`, minus 2 for each adjacent physical triple coalesced into `DEREF_192` (0 when the callee is `@inline`) |
+| function call | ≈ `n_arg_cells + n_return_cells + 4`, reduced by coalescing adjacent physical pairs/triples into wide `DEREF` rows (0 when the callee is `@inline`) |
 | `mul_range` iteration | body + ≈ 1 `MUL` + 1 `XOR` + call overhead |
 | `unroll` iteration | body only (compile-time replication) |
 | `blake3(a, b, out, ...)` | 1; plus two `SET`s once per frame when `cv` is omitted; message/CV words are read in place, +1 `DEREF` per heap input or CV word, +1 `MUL` per runtime slice start |

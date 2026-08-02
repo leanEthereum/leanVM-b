@@ -366,7 +366,11 @@ mod ext {
     pub const RB0: usize = 20;
     pub const RC0: usize = 23;
     pub const RBC: usize = 26;
-    pub const N: usize = 27;
+    pub const MEM_A1: usize = 27;
+    pub const MEM_A2: usize = 28;
+    pub const BASE_A: usize = 29;
+    pub const N_ADD: usize = 27;
+    pub const N_MUL: usize = 30;
 }
 
 impl Table for ExtArith {
@@ -374,14 +378,14 @@ impl Table for ExtArith {
         if self.is_add { OP_ADD_EXT } else { OP_MUL_EXT }
     }
     fn n_committed_columns(&self) -> usize {
-        ext::N
+        if self.is_add { ext::N_ADD } else { ext::N_MUL }
     }
     fn count_columns(&self) -> &'static [usize] {
         use ext::*;
         &[RA0, RA0 + 1, RA0 + 2, RB0, RB0 + 1, RB0 + 2, RC0, RC0 + 1, RC0 + 2, RBC]
     }
     fn n_constraints(&self) -> usize {
-        4
+        if self.is_add { 4 } else { 6 }
     }
     fn eval_constraint(&self, pows: &[F192], cols: &Cols) -> F192 {
         use ext::*;
@@ -389,23 +393,37 @@ impl Table for ExtArith {
         let vb = e192(cols[VB0], cols[VB0 + 1], cols[VB0 + 2]);
         let vc = e192(cols[VC0], cols[VC0 + 1], cols[VC0 + 2]);
         let result = if self.is_add { va + vb } else { va * vb };
-        pows[0] * (cols[AA] + cols[FP] * cols[OA])
+        let mut constraint = pows[0] * (cols[AA] + cols[FP] * cols[OA])
             + pows[1] * (cols[AB] + cols[FP] * cols[OB])
             + pows[2] * (cols[AC] + cols[FP] * cols[OC])
-            + pows[3] * (vc + result)
+            + pows[3] * (vc + result);
+        if !self.is_add {
+            let full = F192::ONE + cols[BASE_A];
+            constraint += pows[4] * (cols[VA0 + 1] + full * cols[MEM_A1]);
+            constraint += pows[5] * (cols[VA0 + 2] + full * cols[MEM_A2]);
+        }
+        constraint
     }
     fn flushes(&self, f: &mut FlushBuilder) {
         use ext::*;
         f.state_step(PC, FP);
+        let base_a = if self.is_add { Const(F64::ZERO) } else { Col(BASE_A) };
         f.bytecode(
             PC,
             RBC,
             self.opcode_tag(),
-            &[Col(OA), Col(OB), Col(OC), Const(F64::ZERO), Const(F64::ZERO)],
+            &[Col(OA), Col(OB), Col(OC), base_a, Const(F64::ZERO)],
         );
         for k in 0usize..3 {
             let addr = |base| if k == 0 { Col(base) } else { GCol(base, k as u32) };
-            f.memory(addr(AA), RA0 + k, VA0 + k);
+            let va = if self.is_add || k == 0 {
+                VA0 + k
+            } else if k == 1 {
+                MEM_A1
+            } else {
+                MEM_A2
+            };
+            f.memory(addr(AA), RA0 + k, va);
             f.memory(addr(AB), RB0 + k, VB0 + k);
             f.memory(addr(AC), RC0 + k, VC0 + k);
         }
@@ -426,12 +444,26 @@ impl Table for ExtArith {
         out[AB] = rows.par_iter().map(|r| ctx.g_at(r.ab)).collect();
         out[AC] = rows.par_iter().map(|r| ctx.g_at(r.ac)).collect();
         for k in 0..3 {
-            out[VA0 + k] = rows.par_iter().map(|r| ctx.mem[r.aa as usize + k]).collect();
+            out[VA0 + k] = rows
+                .par_iter()
+                .map(|r| {
+                    if !self.is_add && r.base_a == F64::ONE && k > 0 {
+                        F64::ZERO
+                    } else {
+                        ctx.mem[r.aa as usize + k]
+                    }
+                })
+                .collect();
             out[VB0 + k] = rows.par_iter().map(|r| ctx.mem[r.ab as usize + k]).collect();
             out[VC0 + k] = rows.par_iter().map(|r| ctx.mem[r.ac as usize + k]).collect();
             out[RA0 + k] = rows.par_iter().map(|r| r.ra[k]).collect();
             out[RB0 + k] = rows.par_iter().map(|r| r.rb[k]).collect();
             out[RC0 + k] = rows.par_iter().map(|r| r.rc[k]).collect();
+        }
+        if !self.is_add {
+            out[MEM_A1] = rows.par_iter().map(|r| ctx.mem[r.aa as usize + 1]).collect();
+            out[MEM_A2] = rows.par_iter().map(|r| ctx.mem[r.aa as usize + 2]).collect();
+            out[BASE_A] = rows.par_iter().map(|r| r.base_a).collect();
         }
         out[RBC] = rows.par_iter().map(|r| r.bytecode_read).collect();
     }
@@ -600,7 +632,8 @@ mod deref_ext {
     pub const R20: usize = 16;
     pub const R30: usize = 19;
     pub const RBC: usize = 22;
-    pub const N: usize = 23;
+    pub const WIDTH3: usize = 23;
+    pub const N: usize = 24;
 }
 
 impl Table for DerefExtTable {
@@ -619,8 +652,11 @@ impl Table for DerefExtTable {
     }
     fn eval_constraint(&self, pows: &[F192], cols: &Cols) -> F192 {
         use deref_ext::*;
-        let v2 = e192(cols[V20], cols[V20 + 1], cols[V20 + 2]);
-        let v3 = e192(cols[V30], cols[V30 + 1], cols[V30 + 2]);
+        // WIDTH3=0 compares the native 128-bit prefix; WIDTH3=1 compares all
+        // three extension limbs. In two-word mode the last limbs remain
+        // independent, fully memory-bound padding reads.
+        let v2 = cols[V20] + F192::Y * cols[V20 + 1] + cols[WIDTH3] * F192::Y * F192::Y * cols[V20 + 2];
+        let v3 = cols[V30] + F192::Y * cols[V30 + 1] + cols[WIDTH3] * F192::Y * F192::Y * cols[V30 + 2];
         pows[0] * (cols[A1] + cols[FP] * cols[OAL])
             + pows[1] * (cols[A2] + cols[P] * cols[OBE])
             + pows[2] * (cols[A3] + cols[FP] * cols[OGA])
@@ -633,7 +669,7 @@ impl Table for DerefExtTable {
             PC,
             RBC,
             OP_DEREF_EXT,
-            &[Col(OAL), Col(OBE), Col(OGA), Const(F64::ZERO), Const(F64::ZERO)],
+            &[Col(OAL), Col(OBE), Col(OGA), Col(WIDTH3), Const(F64::ZERO)],
         );
         f.memory(Col(A1), R1, P);
         for k in 0usize..3 {
@@ -654,6 +690,7 @@ impl Table for DerefExtTable {
         out[A2] = rows.par_iter().map(|r| ctx.gpow[r.a2]).collect();
         out[A3] = rows.par_iter().map(|r| ctx.g_at(r.a3)).collect();
         out[P] = rows.par_iter().map(|r| r.p).collect();
+        out[WIDTH3] = rows.par_iter().map(|r| r.width3).collect();
         for k in 0..3 {
             out[V20 + k] = rows.par_iter().map(|r| r.v2[k]).collect();
             out[V30 + k] = rows.par_iter().map(|r| r.v3[k]).collect();

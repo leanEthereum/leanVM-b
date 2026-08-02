@@ -93,6 +93,7 @@ fn program_digest(prog: &[Op]) -> [F64; 4] {
             Op::Mul { a, b, c } => (1, a, b, c, 0, 0, 0, F64::ZERO, F64::ZERO),
             Op::AddExt { a, b, c } => (2, a, b, c, 0, 0, 0, F64::ZERO, F64::ZERO),
             Op::MulExt { a, b, c } => (3, a, b, c, 0, 0, 0, F64::ZERO, F64::ZERO),
+            Op::MulExtBase { a, b, c } => (12, a, b, c, 0, 0, 0, F64::ZERO, F64::ZERO),
             Op::Set { o, k } => (4, o, 0, 0, 0, 0, 0, k, F64::ZERO),
             Op::Deref {
                 alpha,
@@ -100,6 +101,7 @@ fn program_digest(prog: &[Op]) -> [F64; 4] {
                 gamma,
                 mode,
             } => (5 + mode as u8, alpha, beta, gamma, 0, 0, 0, F64::ZERO, F64::ZERO),
+            Op::Deref128 { alpha, beta, gamma } => (11, alpha, beta, gamma, 0, 0, 0, F64::ZERO, F64::ZERO),
             Op::DerefExt { alpha, beta, gamma } => (10, alpha, beta, gamma, 0, 0, 0, F64::ZERO, F64::ZERO),
             Op::Jump { oc, od, of } => (8, oc, od, of, 0, 0, 0, F64::ZERO, F64::ZERO),
             Op::Blake3 { ins, cv, out, metadata } => {
@@ -404,7 +406,7 @@ fn blake3_value_slot(col: usize) -> Option<usize> {
 
 /// Run statistics returned alongside the proof: the cycle count (total executed
 /// instructions), the per-opcode counts
-/// `[XOR, MUL, XOR_192, MUL_192, SET, DEREF, DEREF_192, JUMP, BLAKE3]`, and the
+/// `[XOR, MUL, XOR_192, MUL_192, SET, DEREF, DEREF_128/192, JUMP, BLAKE3]`, and the
 /// committed witness size — the sum of the column lengths, i.e. the real data
 /// before the stacked witness is zero-padded to a power of two `2^m`.
 pub struct Stats {

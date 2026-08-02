@@ -59,11 +59,21 @@ pub(crate) enum LOp {
         b: Off,
         c: Off,
     },
+    MulExtBase {
+        a: Off,
+        b: Off,
+        c: Off,
+    },
     Deref {
         alpha: Off,
         beta: Off,
         gamma: Off,
         mode: DerefMode,
+    },
+    Deref128 {
+        alpha: Off,
+        beta: Off,
+        gamma: Off,
     },
     DerefExt {
         alpha: Off,
