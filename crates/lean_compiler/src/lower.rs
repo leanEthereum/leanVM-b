@@ -2209,11 +2209,21 @@ impl FnLower<'_> {
                         let key = name.strip_prefix("__kw_").unwrap();
                         assert!(kwargs.insert(key, &value[0]).is_none(), "duplicate {f} keyword `{key}`");
                     }
-                    let allowed = ["cv", "counter", "chunk", "block_len", "flags", "step", "end", "root", "parent"];
+                    let allowed = [
+                        "cv",
+                        "counter",
+                        "chunk",
+                        "block_len",
+                        "flags",
+                        "step",
+                        "end",
+                        "root",
+                        "parent",
+                    ];
                     assert!(kwargs.keys().all(|k| allowed.contains(k)), "unknown {f} keyword");
-                    let customized = kwargs.keys().any(|k| {
-                        matches!(*k, "counter" | "chunk" | "flags" | "step" | "end" | "root" | "parent")
-                    });
+                    let customized = kwargs
+                        .keys()
+                        .any(|k| matches!(*k, "counter" | "chunk" | "flags" | "step" | "end" | "root" | "parent"));
                     assert!(
                         !kwargs.contains_key("cv") || customized,
                         "blake3 with cv= requires step=, flags=, or another structured metadata keyword"
@@ -2231,10 +2241,7 @@ impl FnLower<'_> {
                         self.default_blake3_cv()
                     };
                     let const_kw = |this: &Self, name: &str, default: u128| -> u128 {
-                        kwargs
-                            .get(name)
-                            .map(|e| this.const_index(e) as u128)
-                            .unwrap_or(default)
+                        kwargs.get(name).map(|e| this.const_index(e) as u128).unwrap_or(default)
                     };
                     assert!(
                         !(kwargs.contains_key("counter") && kwargs.contains_key("chunk")),
@@ -2259,9 +2266,15 @@ impl FnLower<'_> {
                     } else {
                         lean_vm::blake3_flock::FLAGS as u128
                     };
-                    if const_kw(self, "end", 0) != 0 { flags |= 1 << 1; }
-                    if const_kw(self, "parent", 0) != 0 { flags |= 1 << 2; }
-                    if const_kw(self, "root", 0) != 0 { flags |= 1 << 3; }
+                    if const_kw(self, "end", 0) != 0 {
+                        flags |= 1 << 1;
+                    }
+                    if const_kw(self, "parent", 0) != 0 {
+                        flags |= 1 << 2;
+                    }
+                    if const_kw(self, "root", 0) != 0 {
+                        flags |= 1 << 3;
+                    }
                     assert!(flags <= u32::MAX as u128, "BLAKE3 flags do not fit in u32");
                     let metadata = lean_vm::blake3_flock::metadata(counter as u64, block_len as u32, flags as u32);
                     // Each operand is two 128-bit chunk cells; the flexible opcode

@@ -6,7 +6,7 @@
 //! `K`-valued (`F64`) while randomness is `E`-valued (`F192`), so the first
 //! fold of a committed table also lifts it into `E`.
 
-use crate::field::{F192Unreduced, F192, F64};
+use crate::field::{F64, F192, F192Unreduced};
 
 /// Multilinear interpolation in one variable over `E`: `lo + t·(lo+hi)`, the
 /// char-2 form of `(1−t)·lo + t·hi`.
@@ -62,9 +62,7 @@ pub fn eq_table(r: &[F192]) -> Vec<F192> {
             *lo_x = e + high;
         };
         if half < PAR_THRESHOLD {
-            lo.iter_mut()
-                .zip(hi.iter_mut())
-                .for_each(|(l, h)| build_pair(l, h));
+            lo.iter_mut().zip(hi.iter_mut()).for_each(|(l, h)| build_pair(l, h));
         } else {
             lo.par_iter_mut()
                 .zip(hi.par_iter_mut())

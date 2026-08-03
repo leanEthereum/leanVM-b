@@ -43,13 +43,7 @@ pub fn make_tweak(tweak_type: u8, sub_position: u32, index: u32) -> Tweak {
 
 /// Standard BLAKE3 of `tweak | pp | payload`. This is one compression for
 /// chain steps (48 bytes total) and Merkle nodes (64 bytes total).
-pub fn tweak_hash(
-    pp: &PublicParam,
-    tweak_type: u8,
-    sub_position: u32,
-    index: u32,
-    payload: &[u8],
-) -> Digest {
+pub fn tweak_hash(pp: &PublicParam, tweak_type: u8, sub_position: u32, index: u32, payload: &[u8]) -> Digest {
     let mut hasher = blake3::Hasher::new();
     hasher.update(&make_tweak(tweak_type, sub_position, index));
     hasher.update(pp);
@@ -58,13 +52,7 @@ pub fn tweak_hash(
 }
 
 /// Standard BLAKE3 of the exact-length `tweak | pp | data` byte string.
-pub fn tweak_hash_many(
-    pp: &PublicParam,
-    tweak_type: u8,
-    sub_position: u32,
-    index: u32,
-    data: &[u8],
-) -> Digest {
+pub fn tweak_hash_many(pp: &PublicParam, tweak_type: u8, sub_position: u32, index: u32, data: &[u8]) -> Digest {
     let mut hasher = blake3::Hasher::new();
     hasher.update(&make_tweak(tweak_type, sub_position, index));
     hasher.update(pp);

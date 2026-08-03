@@ -15,13 +15,13 @@
 use std::collections::BTreeMap;
 
 use lean_compiler::{compile, parse, parse_with_replacements};
-use lean_vm::cpu::{prove, verify, Program};
+use lean_vm::cpu::{Program, prove, verify};
 use lean_vm::leaf::{Block, Coord};
-use lean_vm::transcript::{trace_start, trace_take, Sponge, TraceOp};
+use lean_vm::transcript::{Sponge, TraceOp, trace_start, trace_take};
 use pcs::ligerito::log2_ceil;
 use primitives::multilinear::mle_eval;
 use primitives::{
-    field::{g_pow, F192, F64, G},
+    field::{F64, F192, G, g_pow},
     pretty_f64, pretty_integer,
 };
 

@@ -73,12 +73,12 @@
 
 use fiat_shamir::Sponge;
 use primitives::bits::transpose_8x8_bits;
-use primitives::field::{F192, F64};
+use primitives::field::{F64, F192};
 use serde::{Deserialize, Serialize};
 
 use super::ligerito::{build_eq_table_ext, inner_product_base_ext};
 use super::pack::{LOG_PACKING, PACKING_WIDTH};
-use super::tensor_algebra::{transpose_s_hat, TensorAlgebraE, DEGREE_E};
+use super::tensor_algebra::{DEGREE_E, TensorAlgebraE, transpose_s_hat};
 
 /// Total degree of the six-challenge composed batching map. This is the
 /// conservative degree used by the Ligerito list-size soundness accounting.
@@ -561,9 +561,11 @@ pub(crate) fn combine_deferred_into(outputs: &[DeferredRingSwitchOutput], out: &
     assert!(!outputs.is_empty());
     let block_len = outputs[0].eq_lo.len();
     assert!(block_len.is_power_of_two());
-    assert!(outputs
-        .iter()
-        .all(|o| { o.eq_lo.len() == block_len && o.eq_lo.len() * o.eq_hi.len() == out.len() }));
+    assert!(
+        outputs
+            .iter()
+            .all(|o| { o.eq_lo.len() == block_len && o.eq_lo.len() * o.eq_hi.len() == out.len() })
+    );
 
     out.par_chunks_mut(block_len).enumerate().for_each(|(hi, out_block)| {
         for (claim_idx, claim) in outputs.iter().enumerate() {
@@ -973,10 +975,10 @@ pub fn eval_rs_eq_finish_from_prefix_binary_q(
 mod tests {
     use super::*;
     use crate::ligerito::{
-        commit, configs_for, recursive_prover_with_basis, recursive_verifier_with_basis,
-        recursive_verifier_with_basis_succinct, LigeritoProof,
+        LigeritoProof, commit, configs_for, recursive_prover_with_basis, recursive_verifier_with_basis,
+        recursive_verifier_with_basis_succinct,
     };
-    use crate::ligerito::{default_config, default_verifier_config, ProverConfig, VerifierConfig};
+    use crate::ligerito::{ProverConfig, VerifierConfig, default_config, default_verifier_config};
     use crate::merkle::Hash;
     use crate::pack::pack_witness;
 

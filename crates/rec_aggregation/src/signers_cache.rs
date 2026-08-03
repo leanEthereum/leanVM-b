@@ -35,9 +35,9 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Instant;
 
+use primitives::{pretty_f64, pretty_integer};
 use rand::SeedableRng;
 use rand::rngs::StdRng;
-use primitives::{pretty_f64, pretty_integer};
 use xmss::*;
 
 /// A cached signer: its public key and one signature over [`message`] at [`SLOT`].

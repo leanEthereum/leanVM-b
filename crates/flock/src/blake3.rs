@@ -815,9 +815,8 @@ impl crate::lincheck::LincheckCircuit for WalkLincheckCircuit<'_> {
 /// The `family_digest_matches_baked` test recomputes and compares — a circuit
 /// change fails it until this constant is updated alongside.
 pub const FAMILY_DIGEST: [u8; 32] = [
-    0xaf, 0xed, 0x74, 0x72, 0xc6, 0xf7, 0x71, 0xa8, 0x57, 0x59, 0x92, 0x72, 0xff, 0x33, 0xa4,
-    0xda, 0x86, 0xb2, 0x1f, 0x26, 0x00, 0xf0, 0x57, 0xfa, 0x0d, 0xa7, 0x97, 0xd1, 0x58, 0x63,
-    0xeb, 0x58,
+    0xaf, 0xed, 0x74, 0x72, 0xc6, 0xf7, 0x71, 0xa8, 0x57, 0x59, 0x92, 0x72, 0xff, 0x33, 0xa4, 0xda, 0x86, 0xb2, 0x1f,
+    0x26, 0x00, 0xf0, 0x57, 0xfa, 0x0d, 0xa7, 0x97, 0xd1, 0x58, 0x63, 0xeb, 0x58,
 ];
 
 /// Build a [`BlockR1cs`] batching `2^n_blocks_log` independent BLAKE3
@@ -1533,7 +1532,13 @@ mod tests {
                 .map(|_| {
                     let cv: [u32; 8] = std::array::from_fn(|_| rng.next_u32());
                     let m: [u32; 16] = std::array::from_fn(|_| rng.next_u32());
-                    (cv, m, rng.next_u32() as u64 | ((rng.next_u32() as u64) << 32), rng.next_u32() % 65, rng.next_u32())
+                    (
+                        cv,
+                        m,
+                        rng.next_u32() as u64 | ((rng.next_u32() as u64) << 32),
+                        rng.next_u32() % 65,
+                        rng.next_u32(),
+                    )
                 })
                 .collect();
             let z = generate_witness(&blocks, n_log);
@@ -1737,13 +1742,8 @@ impl Blake3Setup {
                 t_witness.elapsed().as_secs_f64() * 1e3,
             );
         }
-        let reduced = self.prove_reduction_precomputed(
-            &z_packed,
-            &a_packed_words,
-            &b_packed_words,
-            &z_packed_lincheck,
-            ps,
-        );
+        let reduced =
+            self.prove_reduction_precomputed(&z_packed, &a_packed_words, &b_packed_words, &z_packed_lincheck, ps);
         (z_packed, reduced)
     }
 

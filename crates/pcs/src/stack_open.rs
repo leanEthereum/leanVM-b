@@ -51,12 +51,12 @@
 
 use crate::merkle::Hash;
 use fiat_shamir::Sponge;
-use primitives::field::{F192, F64};
+use primitives::field::{F64, F192};
 use serde::{Deserialize, Serialize};
 
 use super::ligerito::{
-    build_eq_table_ext, recursive_prover_with_basis, recursive_verifier_with_basis_succinct_with_squeezes,
-    LigeritoProof, ProverData,
+    LigeritoProof, ProverData, build_eq_table_ext, recursive_prover_with_basis,
+    recursive_verifier_with_basis_succinct_with_squeezes,
 };
 use super::ligerito::{ProverConfig, VerifierConfig};
 use super::pack::PACKING_WIDTH;
@@ -562,7 +562,7 @@ mod tests {
     use super::*;
     use crate::ligerito::{commit, configs_for, inner_product_base_ext};
     use crate::ligerito::{default_config, default_verifier_config};
-    use crate::pack::{pack_witness, LOG_PACKING};
+    use crate::pack::{LOG_PACKING, pack_witness};
     use crate::ring_switch::{claim_check, eq_prefix_weights, fold_1b_rows};
 
     fn splitmix64(state: &mut u64) -> u64 {

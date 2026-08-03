@@ -254,7 +254,10 @@ pub fn run_xmss_aggregation(n: usize, log_inv_rate: usize) {
         "  proving (incl. witness gen) : {} s",
         pretty_f64(t_prove.as_secs_f64())
     );
-    println!("  verifying                   : {} s", pretty_f64(t_verify.as_secs_f64()));
+    println!(
+        "  verifying                   : {} s",
+        pretty_f64(t_verify.as_secs_f64())
+    );
     println!(
         "  throughput                  : {} XMSS/s",
         pretty_f64(n as f64 / t_prove.as_secs_f64())

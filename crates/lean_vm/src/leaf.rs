@@ -7,11 +7,11 @@
 //! g-powers, separators); the fingerprint challenges `α, γ` are `E`-valued, so a
 //! leaf accumulates via the mixed `mul_base` product (2 PMULL per coordinate).
 
+use crate::PAR_THRESHOLD;
 use crate::gkr;
 use crate::transcript::{ProverState, VerifierState};
 use crate::witness::Column;
-use crate::PAR_THRESHOLD;
-use primitives::field::{g_pow, index_mle, F192BaseUnreduced, F192, F64};
+use primitives::field::{F64, F192, F192BaseUnreduced, g_pow, index_mle};
 use primitives::multilinear::{eq_eval, mle_eval};
 use rayon::prelude::*;
 
