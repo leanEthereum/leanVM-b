@@ -496,6 +496,82 @@ const NEON_TILE_T: usize = 8;
 /// - `tile_bytes_ptr` must point to at least `TILE_T * k` bytes.
 /// - `tables_ptr` must point to at least `TILE_T * 256` F192 entries.
 /// - `out_ptr` must point to at least 8 F192 entries of mutable storage.
+/// x86-64 twin of the tiled gather kernel below.
+///
+/// `VPTERNLOGQ` is the exact counterpart of AArch64's `EOR3`: an arbitrary
+/// three-input bitwise function in one instruction, so immediate `0x96`
+/// (`a ^ b ^ c`) folds a paired-stripe accumulate the same way. Only the
+/// `c0`/`c1` limbs ride in the vector — `c2` is scalar and takes two XORs.
+///
+/// Before this, x86 had no tiled kernel at all: the dispatcher sent every
+/// non-AArch64 target to the generic `partial_fold_packed_z_fast_padded`.
+///
+/// # Safety
+/// - `tile_bytes_ptr` must point to at least `TILE_T * k` bytes, with `bs + 8`
+///   readable in every stripe row (guaranteed by `bs + BLOCK_K <= k`).
+/// - `tables_ptr` must point to at least `TILE_T * 256` `F192`.
+/// - `out_ptr` must point to at least 8 writable `F192`.
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f", target_feature = "avx512vl"))]
+#[inline(never)]
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn process_block_neon_single(
+    tile_bytes_ptr: *const u8,
+    k: usize,
+    bs: usize,
+    tables_ptr: *const F192,
+    out_ptr: *mut F192,
+) {
+    use std::arch::x86_64::*;
+    const TILE_T: usize = NEON_TILE_T;
+    // `F192` is `#[repr(C)]` with `c0, c1, c2`, so a 128-bit load at `&c0`
+    // covers exactly the `(c0, c1)` pair.
+    const XOR3: i32 = 0x96;
+
+    let mut acc01 = [_mm_setzero_si128(); 8];
+    let mut acc2 = [0u64; 8];
+    for i in 0..8 {
+        let out = &*out_ptr.add(i);
+        acc01[i] = _mm_loadu_si128((&out.c0 as *const u64).cast());
+        acc2[i] = out.c2;
+    }
+
+    // One unaligned 8-byte load per stripe replaces eight LDRB-equivalents,
+    // and stripes are swept in pairs so each vector accumulator folds both
+    // table entries with a single VPTERNLOGQ.
+    let mut t = 0;
+    while t + 1 < TILE_T {
+        let ta0 = tables_ptr.add(t * 256);
+        let ta1 = tables_ptr.add((t + 1) * 256);
+        let w0 = (tile_bytes_ptr.add(t * k + bs) as *const u64).read_unaligned();
+        let w1 = (tile_bytes_ptr.add((t + 1) * k + bs) as *const u64).read_unaligned();
+        for i in 0..8 {
+            let e0 = &*ta0.add(((w0 >> (8 * i)) & 0xff) as usize);
+            let e1 = &*ta1.add(((w1 >> (8 * i)) & 0xff) as usize);
+            let v0 = _mm_loadu_si128((&e0.c0 as *const u64).cast());
+            let v1 = _mm_loadu_si128((&e1.c0 as *const u64).cast());
+            acc01[i] = _mm_ternarylogic_epi64::<XOR3>(acc01[i], v0, v1);
+            acc2[i] ^= e0.c2 ^ e1.c2;
+        }
+        t += 2;
+    }
+    if t < TILE_T {
+        let ta = tables_ptr.add(t * 256);
+        let w = (tile_bytes_ptr.add(t * k + bs) as *const u64).read_unaligned();
+        for i in 0..8 {
+            let entry = &*ta.add(((w >> (8 * i)) & 0xff) as usize);
+            let v = _mm_loadu_si128((&entry.c0 as *const u64).cast());
+            acc01[i] = _mm_xor_si128(acc01[i], v);
+            acc2[i] ^= entry.c2;
+        }
+    }
+
+    for i in 0..8 {
+        let out = &mut *out_ptr.add(i);
+        _mm_storeu_si128((&mut out.c0 as *mut u64).cast(), acc01[i]);
+        out.c2 = acc2[i];
+    }
+}
+
 #[cfg(target_arch = "aarch64")]
 #[inline(never)]
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -576,7 +652,7 @@ unsafe fn process_block_neon_single(
 /// uses the register-tiled inner kernel (8 accumulators across `TILE_T`
 /// stripes); it just rebuilds the per-tile sum tables for its own slice (a few
 /// % of redundant table-build XORs, far cheaper than the memory re-streaming).
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "x86_64", target_feature = "avx512f", target_feature = "avx512vl")))]
 pub fn partial_fold_packed_z_neon_iblock_padded(
     z_packed: &[u8],
     m: usize,
@@ -681,7 +757,7 @@ pub fn partial_fold_packed_z_neon_iblock_padded(
 /// grows with the outer dim (the redundant-table cost it removes is ∝ `n_stripes`).
 ///
 /// # Safety / preconditions: identical to the iblock kernel.
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "x86_64", target_feature = "avx512f", target_feature = "avx512vl")))]
 pub fn partial_fold_packed_z_neon_oblock_padded(
     z_packed: &[u8],
     m: usize,
@@ -769,7 +845,7 @@ fn partial_fold_packed_z_best(
     eq_outer: &[F192],
 ) -> Vec<F192> {
     if n_log_ok_for_tile(m, k_log, NEON_TILE_T) {
-        #[cfg(target_arch = "aarch64")]
+        #[cfg(any(target_arch = "aarch64", all(target_arch = "x86_64", target_feature = "avx512f", target_feature = "avx512vl")))]
         {
             // Pick the partition that wins for this size. The outer(tile)-partitioned
             // `oblock` builds each tile's sum-tables once instead of once per worker,
@@ -784,7 +860,7 @@ fn partial_fold_packed_z_best(
             }
             partial_fold_packed_z_neon_iblock_padded(z_packed, m, k_log, useful_bits, eq_outer)
         }
-        #[cfg(not(target_arch = "aarch64"))]
+        #[cfg(not(any(target_arch = "aarch64", all(target_arch = "x86_64", target_feature = "avx512f", target_feature = "avx512vl"))))]
         {
             partial_fold_packed_z_fast_padded(z_packed, m, k_log, useful_bits, eq_outer)
         }
@@ -796,7 +872,7 @@ fn partial_fold_packed_z_best(
 /// Outer-dimension threshold (`n_log = m − k_log`) at/above which the
 /// outer(tile)-partitioned fold beats the i_inner-partitioned one. See
 /// [`partial_fold_packed_z_best`] for the crossover calibration.
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "x86_64", target_feature = "avx512f", target_feature = "avx512vl")))]
 const OBLOCK_MIN_N_LOG: usize = 16;
 
 /// Quick test for "can we use the tiled fast path?". Tile uses `TILE_T`
