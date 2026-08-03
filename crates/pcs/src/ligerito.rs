@@ -33,7 +33,7 @@
 
 use fiat_shamir::sponge::Sponge;
 use crate::{ProverState, VerifierState};
-use primitives::{field::F128, multilinear::build_eq, pretty_integer};
+use primitives::{field::F128, multilinear::{build_eq, eq_eval, mle_eval}, pretty_integer};
 use crate::merkle::{self, Hash};
 use crate::ntt::additive_ntt_f128::AdditiveNttF128;
 use serde::{Deserialize, Serialize};
@@ -2736,6 +2736,11 @@ fn multilevel_prover_with_basis_impl(
             let num_queries_last = config.queries[i + 1];
             let queries_last =
                 sample_queries_ordered(ps.sponge_mut(), wtns_prev.block_len, num_queries_last);
+            // Mirror the verifier's challenge order exactly: the last
+            // commitment's basis-induction challenge is drawn after `yr` is
+            // bound and the queries are fixed, so a forged `yr` cannot be
+            // adapted to it.
+            let alpha_last = ps.sample_vec(log2_ceil(num_queries_last));
             let _t = std::time::Instant::now();
             // Final level: opened rows are only stored (no induce), so keep just
             // the compressed (deduped + octopus) form.
@@ -2747,6 +2752,44 @@ fn multilevel_prover_with_basis_impl(
             );
             if trace {
                 t_opens += _t.elapsed();
+            }
+
+            // Tie the last commitment into the running claim, then run the
+            // remaining `n_res` sumcheck rounds instead of leaving the residual
+            // cube for the verifier to sum over. That is what lets the verifier
+            // finish with ONE evaluation of its weight rather than `2^n_res` of
+            // them, which matters whenever the weight does not factor across the
+            // split (an `eq` weight does; a jagged interval indicator does not).
+            let rows_last: Vec<Vec<F128>> =
+                queries_last.iter().map(|&q| wtns_prev.row(q).to_vec()).collect();
+            let enforced_sum_last =
+                induce_sumcheck_enforced_sum(&rows_last, &level_rs, &queries_last, &alpha_last);
+            let n_res = sc_prover.f().len().trailing_zeros() as usize;
+            let basis_last = induce_sumcheck_evaluate_at_residual(
+                n_res,
+                &eval_sk_at_vks(n_res),
+                &queries_last,
+                &alpha_last,
+                &[],
+                n_res,
+            );
+            // Same intro/glue shape as every non-final level: the message is
+            // what lets the verifier fold this basis into its running round
+            // polynomial, so it travels. Its claimed sum does not, being
+            // derived from the Merkle-bound opened rows.
+            let intro_msg_last = sc_prover.introduce_new(basis_last, enforced_sum_last);
+            add_sumcheck_msg(ps, &intro_msg_last);
+            let beta_last = ps.sample();
+            sc_prover.glue(beta_last);
+            for j in 0..n_res {
+                let ri = ps.sample();
+                let msg = sc_prover.fold(ri);
+                // The last fold leaves a single value; its "next round" message
+                // would describe a zero-variable round, and the verifier closes
+                // on the point evaluation instead.
+                if j + 1 < n_res {
+                    add_sumcheck_msg(ps, &msg);
+                }
             }
             if trace {
                 let total = t_total.elapsed();
@@ -2897,15 +2940,16 @@ pub fn multilevel_verifier_with_basis_succinct<F>(
     log_n: usize,
     target: F128,
     expected_initial_root: &Hash,
-    eval_b_residual: F,
+    eval_b_at: F,
     vs: &mut VerifierState<'_>,
 ) -> Option<LigVerifierSummary>
 where
-    // Called ONCE at the residual check with the full ris and yr_log_n.
-    // Returns 2^yr_log_n values: eval_b(ris ++ y_bits) for y ∈ [0, 2^yr_log_n).
-    // This API allows callers to amortize prefix work across yr positions
-    // (e.g. ring_switch::eval_rs_eq_prefix + finish_from_prefix).
-    F: Fn(&[F128], usize) -> Vec<F128>,
+    // Called ONCE, at the very end, with the full fold point of length `log_n`.
+    // The sumcheck now runs to completion, so a single evaluation closes the
+    // opening; a weight that does not factor across the residual split (a
+    // jagged interval indicator, say) therefore costs one evaluation, not
+    // `2^yr_log_n` of them.
+    F: Fn(&[F128]) -> F128,
 {
     let trace = std::env::var("LIG_VERIFY_TRACE").is_ok();
     let mut t_merkle = std::time::Duration::ZERO;
@@ -2913,7 +2957,7 @@ where
     let mut t_enforced = std::time::Duration::ZERO;
     let mut t_residual = std::time::Duration::ZERO;
     let mut t_evalb = std::time::Duration::ZERO;
-    let t_start = std::time::Instant::now();
+    let _t_start = std::time::Instant::now();
 
     let mut query_squeezes: Vec<Vec<F128>> = Vec::new();
     let initial_k = config.initial_k;
@@ -3149,7 +3193,10 @@ where
                 &queries_last,
                 &alpha_last,
             );
+            let intro_msg_last = next_sumcheck_msg(vs)?;
+            let intro_quad_last = RoundQuad::from_msg(intro_msg_last, enforced_sum_last);
             let beta_last = vs.sample();
+            running_quad = RoundQuad::fold(&running_quad, &intro_quad_last, beta_last);
             t_r += beta_last * enforced_sum_last;
             level_ctxs.push(LevelCtx {
                 log_msg_cols: n_current,
@@ -3159,42 +3206,47 @@ where
                 beta: beta_last,
             });
 
-            // Succinct residual check: per-level induced basis evaluations
-            // via closed-form (no dense materialization).
-            let yr_len = yr.len();
+            // Finish the sumcheck over the residual cube. The prover has
+            // already folded its message and combined basis down to a single
+            // value each, so the check closes on ONE evaluation of the weight
+            // rather than `2^n_res` of them.
             let yr_log_n = n_current;
-
-            let _t = std::time::Instant::now();
-            let induced_residuals: Vec<Vec<F128>> = level_ctxs
-                .iter()
-                .map(|ctx| {
-                    let sks_vks = eval_sk_at_vks(ctx.log_msg_cols);
-                    let ris_for_basis =
-                        &ris[ctx.ris_start..ctx.ris_start + ctx.log_msg_cols - yr_log_n];
-                    induce_sumcheck_evaluate_at_residual(
-                        ctx.log_msg_cols,
-                        &sks_vks,
-                        &ctx.queries,
-                        &ctx.alpha,
-                        ris_for_basis,
-                        yr_log_n,
-                    )
-                })
-                .collect();
-            if trace {
-                t_residual += _t.elapsed();
-            }
-            for resid in &induced_residuals {
-                if resid.len() != yr_len {
-                    return None;
+            let mut ris_tail: Vec<F128> = Vec::with_capacity(yr_log_n);
+            for j in 0..yr_log_n {
+                let ri = vs.sample();
+                t_r = running_quad.eval(ri);
+                ris_tail.push(ri);
+                if j + 1 < yr_log_n {
+                    let msg = next_sumcheck_msg(vs)?;
+                    running_quad = RoundQuad::from_msg(msg, t_r);
                 }
             }
 
-            // OOD bases: closed-form residual. An eq(z, ·) basis introduced
-            // at dim |z| and folded by the subsequent challenges contributes
-            // `beta · Π_b eq(z_b, r_b)` times the eq table on z's unfolded
-            // tail (char-2 eq factor: 1 + a + b).
-            let mut ood_residuals: Vec<Vec<F128>> = Vec::with_capacity(ood_ctxs.len());
+            // Every basis is now evaluated at the one point `ris ++ ris_tail`.
+            // `induce_sumcheck_evaluate_at_residual` with a residual width of 0
+            // IS a point evaluation, so no new closed form is needed.
+            let _t = std::time::Instant::now();
+            let mut weight = F128::ZERO;
+            for ctx in level_ctxs.iter() {
+                if ctx.log_msg_cols < yr_log_n
+                    || ctx.ris_start + (ctx.log_msg_cols - yr_log_n) > ris.len()
+                {
+                    return None;
+                }
+                let folded = ctx.log_msg_cols - yr_log_n;
+                let mut point: Vec<F128> =
+                    ris[ctx.ris_start..ctx.ris_start + folded].to_vec();
+                point.extend_from_slice(&ris_tail);
+                let at = induce_sumcheck_evaluate_at_residual(
+                    ctx.log_msg_cols,
+                    &eval_sk_at_vks(ctx.log_msg_cols),
+                    &ctx.queries,
+                    &ctx.alpha,
+                    &point,
+                    0,
+                );
+                weight += ctx.beta * at[0];
+            }
             for ctx in &ood_ctxs {
                 if ctx.z.len() < yr_log_n || ctx.ris_start + (ctx.z.len() - yr_log_n) > ris.len() {
                     return None;
@@ -3204,62 +3256,24 @@ where
                 for b in 0..folded {
                     scalar *= F128::ONE + ctx.z[b] + ris[ctx.ris_start + b];
                 }
-                let mut tail = build_eq(&ctx.z[folded..]);
-                for v in tail.iter_mut() {
-                    *v *= scalar;
-                }
-                ood_residuals.push(tail);
-            }
-
-            // Batch-evaluate b at all yr positions in one call so the
-            // caller can amortize prefix work (e.g. ring_switch tensor prefix).
-            let _te = std::time::Instant::now();
-            let evb_vec = eval_b_residual(&ris, yr_log_n);
-            if trace {
-                t_evalb += _te.elapsed();
-            }
-            if evb_vec.len() != yr_len {
-                return None;
-            }
-            let mut inner = F128::ZERO;
-            let _t = std::time::Instant::now();
-            for (y, &yr_y) in yr.iter().enumerate() {
-                let mut combined_y = evb_vec[y];
-                for (k, residual) in induced_residuals.iter().enumerate() {
-                    combined_y += level_ctxs[k].beta * residual[y];
-                }
-                for resid in &ood_residuals {
-                    combined_y += resid[y];
-                }
-                inner += yr_y * combined_y;
+                weight += scalar * eq_eval(&ctx.z[folded..], &ris_tail);
             }
             if trace {
                 t_residual += _t.elapsed();
             }
+
+            // The caller's weight, once, at the full point.
+            let mut full_point: Vec<F128> = ris.clone();
+            full_point.extend_from_slice(&ris_tail);
+            let _te = std::time::Instant::now();
+            weight += eval_b_at(&full_point);
             if trace {
-                let total = t_start.elapsed();
-                eprintln!("[lig-verify] total = {:.2} ms", total.as_secs_f64() * 1e3);
-                eprintln!(
-                    "  merkle multi-proofs:       {:.2} ms",
-                    t_merkle.as_secs_f64() * 1e3
-                );
-                eprintln!(
-                    "  sample_queries_ordered:   {:.2} ms",
-                    t_sample_q.as_secs_f64() * 1e3
-                );
-                eprintln!(
-                    "  enforced_sum (eq+dot):     {:.2} ms",
-                    t_enforced.as_secs_f64() * 1e3
-                );
-                eprintln!(
-                    "  residual basis eval:       {:.2} ms",
-                    t_residual.as_secs_f64() * 1e3
-                );
-                eprintln!(
-                    "  eval_b (yr_len positions): {:.2} ms",
-                    t_evalb.as_secs_f64() * 1e3
-                );
+                t_evalb += _te.elapsed();
             }
+
+            // `yr` was transmitted in the clear, so its folded value is a
+            // multilinear evaluation the verifier does itself.
+            let inner = weight * mle_eval(&yr, &ris_tail);
             if inner != t_r {
                 return None;
             }
@@ -4099,25 +4113,9 @@ mod tests {
 
         let bundle = p_ch.into_proof();
 
-        let eval_b_residual = {
+        let eval_b_at = {
             let z = z.clone();
-            move |ris: &[F128], yr_log_n: usize| -> Vec<F128> {
-                let yr_len = 1usize << yr_log_n;
-                let mut point = ris.to_vec();
-                point.resize(ris.len() + yr_log_n, F128::ZERO);
-                (0..yr_len)
-                    .map(|y| {
-                        for j in 0..yr_log_n {
-                            point[ris.len() + j] = if (y >> j) & 1 == 1 {
-                                F128::ONE
-                            } else {
-                                F128::ZERO
-                            };
-                        }
-                        primitives::multilinear::eq_eval(&z, &point)
-                    })
-                    .collect()
-            }
+            move |point: &[F128]| -> F128 { primitives::multilinear::eq_eval(&z, point) }
         };
         let succinct = |bundle: &fiat_shamir::transcript::Proof<LigeritoProof>| {
             let mut ch = crate::VerifierState::new(b"ood-test", bundle, &[]);
@@ -4127,7 +4125,7 @@ mod tests {
                 log_n,
                 target,
                 &initial_root,
-                &eval_b_residual,
+                &eval_b_at,
                 &mut ch,
             )
             .is_some()
@@ -4220,22 +4218,11 @@ mod tests {
             &mut p_ch,
         );
 
-        // Succinct verify: the residual closure evaluates the batched basis
-        // `γ₁·eq(z₁,·) + γ₂·eq(z₂,·)` at (ris ++ y) for all y.
-        let eval_b_residual = move |ris: &[F128], yr_log_n: usize| -> Vec<F128> {
-            let yr_len = 1usize << yr_log_n;
-            let mut point = ris.to_vec();
-            point.resize(ris.len() + yr_log_n, F128::ZERO);
-            (0..yr_len)
-                .map(|y| {
-                    for j in 0..yr_log_n {
-                        point[ris.len() + j] =
-                            if (y >> j) & 1 == 1 { F128::ONE } else { F128::ZERO };
-                    }
-                    g1 * primitives::multilinear::eq_eval(&z1, &point)
-                        + g2 * primitives::multilinear::eq_eval(&z2, &point)
-                })
-                .collect()
+        // Succinct verify: the closure evaluates the batched basis
+        // `γ₁·eq(z₁,·) + γ₂·eq(z₂,·)` at the single fold point.
+        let eval_b_at = move |point: &[F128]| -> F128 {
+            g1 * primitives::multilinear::eq_eval(&z1, point)
+                + g2 * primitives::multilinear::eq_eval(&z2, point)
         };
         let bundle = p_ch.into_proof();
         let mut v_ch = crate::VerifierState::new(b"batched", &bundle, &[]);
@@ -4245,7 +4232,7 @@ mod tests {
             log_n,
             target,
             &initial_root,
-            &eval_b_residual,
+            &eval_b_at,
             &mut v_ch,
         )
         .is_some();

@@ -681,16 +681,23 @@ fn gen_verify(
 
     // The Ligerito opening's scalars close the stream: start msg (2), per
     // level the fold (nonce? + msg) words, then root (2) / yr words, one
-    // query-grind nonce, and an intro msg (2) at every non-final level.
+    // query-grind nonce, and an intro msg (2) at EVERY level including the last.
+    // The sumcheck then runs to the end, adding a message per tail round except
+    // the closing one, which needs none.
     let lig_stream_words: usize = 2
         + (0..nlev)
             .map(|lvl| {
                 let folds: usize =
                     (0..klvl[lvl]).map(|j| 2 + usize::from(fgb(lvl) - j as i64 > 0)).sum();
                 folds
-                    + if lvl == nlev - 1 { (1 << shapes.yr_log_n) + 1 } else { 2 + 1 + 2 }
+                    + if lvl == nlev - 1 {
+                        (1 << shapes.yr_log_n) + 1 + 2
+                    } else {
+                        2 + 1 + 2
+                    }
             })
-            .sum::<usize>();
+            .sum::<usize>()
+        + 2 * (shapes.yr_log_n - 1);
     // The lincheck rounds and z_partial sit at fixed offsets from the FLOCK
     // tail (the stream up to the opening): [.. (e1,e_inf) x lcrounds |
     // z_partial (64) | s_hat_v (2 x 128) | the opening's scalars].

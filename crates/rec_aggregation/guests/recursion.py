@@ -749,23 +749,54 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
                 assert root_1 == level_roots_1[GEN ** lvl]
         level_query_sum = query_sum_chain[GEN ** LIG_QUERIES[m_idx * LIG_MAX_LEVELS + lvl]]
 
-        if lvl == LIG_YR_LEVEL[m_idx]:
-            fs = squeeze(fs)
-            beta_lvl = fs[0]
-            level_betas[GEN ** lvl] = beta_lvl
-            sumcheck_target += beta_lvl * level_query_sum
-        else:
-            fs, intro_u0, msg_cursor = fs_next(fs, msg_cursor)
-            fs, intro_u2, msg_cursor = fs_next(fs, msg_cursor)
-            fs = squeeze(fs)
-            beta_lvl = fs[0]
-            level_betas[GEN ** lvl] = beta_lvl
-            round_quad_c += beta_lvl * intro_u0
-            round_quad_b += beta_lvl * (level_query_sum + intro_u2)
-            round_quad_a += beta_lvl * intro_u2
-            sumcheck_target += beta_lvl * level_query_sum
+        # Every level, the last one included, ties its commitment in through an
+        # intro message folded into the running round polynomial. The last used
+        # to skip the message because the sumcheck stopped there; it no longer
+        # does, so the shapes coincide.
+        fs, intro_u0, msg_cursor = fs_next(fs, msg_cursor)
+        fs, intro_u2, msg_cursor = fs_next(fs, msg_cursor)
+        fs = squeeze(fs)
+        beta_lvl = fs[0]
+        level_betas[GEN ** lvl] = beta_lvl
+        round_quad_c += beta_lvl * intro_u0
+        round_quad_b += beta_lvl * (level_query_sum + intro_u2)
+        round_quad_a += beta_lvl * intro_u2
+        sumcheck_target += beta_lvl * level_query_sum
 
-    # ---- per-level residuals: novel-basis prefix x final-message fold ----
+    # ---- finish the sumcheck over the tail coordinates ----
+    # The opening no longer hands the verifier a residual cube to sum over, so
+    # every basis below is evaluated at ONE point: the fold challenges followed
+    # by these. Coordinates past this candidate's yr_log_n are pinned to zero so
+    # the terminal can unroll to the global cap and have them contribute 1.
+    tail_challenges = HeapBuf(GEN ** YR_LOG_CAP)
+    for j in unroll(0, LIG_YR_LOG_LEN[m_idx] - 1):
+        fs = squeeze(fs)
+        tail_c = fs[0]
+        tail_challenges[GEN ** j] = tail_c
+        sumcheck_target = round_quad_c + tail_c * round_quad_b + tail_c * tail_c * round_quad_a
+        fs, msg_a, msg_cursor = fs_next(fs, msg_cursor)
+        fs, msg_b, msg_cursor = fs_next(fs, msg_cursor)
+        round_quad_c = msg_a
+        round_quad_b = sumcheck_target + msg_b
+        round_quad_a = msg_b
+    # The last round closes on the point evaluation, so it sends no message.
+    fs = squeeze(fs)
+    tail_last = fs[0]
+    tail_challenges[GEN ** (LIG_YR_LOG_LEN[m_idx] - 1)] = tail_last
+    sumcheck_target = round_quad_c + tail_last * round_quad_b + tail_last * tail_last * round_quad_a
+    for j in unroll(LIG_YR_LOG_LEN[m_idx], YR_LOG_CAP):
+        tail_challenges[GEN ** j] = 0
+
+    # The transmitted message is public, so its value at the tail point is a
+    # multilinear evaluation the verifier does itself. Every weight below is
+    # scaled by it once, at the terminal.
+    tail_w = StackBuf(2 * YR_LOG_CAP)
+    for j in unroll(0, LIG_YR_LOG_LEN[m_idx]):
+        tail_w[2 * j] = 1 + tail_challenges[GEN ** j]
+        tail_w[2 * j + 1] = tail_challenges[GEN ** j]
+    yr_at_tail = fold_final_msg(final_msg, tail_w, 0, LIG_YR_LOG_LEN[m_idx])
+
+    # ---- per-level residuals: novel-basis at the single fold point ----
     inner_chain = HeapBuf(GEN ** (LIG_N_LEVELS[m_idx] + 1))
     inner_chain[GEN ** 0] = 0
     for lvl in unroll(0, LIG_N_LEVELS[m_idx]):
@@ -782,14 +813,12 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
             for t in unroll(0, LIG_RESIDUAL_PREFIX_LEN[m_idx * LIG_MAX_LEVELS + lvl]):
                 fold_c = fold_challenges[GEN ** (LIG_RESIDUAL_FOLD_OFF[m_idx * LIG_MAX_LEVELS + lvl] + t)]
                 prefix_eq *= (1 + fold_c * (1 + basis_w[t]))
-            fold_w = StackBuf(2 * YR_LOG_CAP)
             for j in unroll(0, LIG_YR_LOG_LEN[m_idx]):
-                fold_w[2 * j] = GEN ** 0
-                fold_w[2 * j + 1] = basis_w[LIG_RESIDUAL_PREFIX_LEN[m_idx * LIG_MAX_LEVELS + lvl] + j]
-            yr_eval = fold_final_msg(final_msg, fold_w, 0, LIG_YR_LOG_LEN[m_idx])
-            residual_chain[xr * GEN] = residual_chain[xr] + alpha_weights[GEN ** (lvl * LIG_MAX_QUERIES[m_idx]) * xr] * prefix_eq * yr_eval
+                tail_c = tail_challenges[GEN ** j]
+                prefix_eq *= (1 + tail_c * (1 + basis_w[LIG_RESIDUAL_PREFIX_LEN[m_idx * LIG_MAX_LEVELS + lvl] + j]))
+            residual_chain[xr * GEN] = residual_chain[xr] + alpha_weights[GEN ** (lvl * LIG_MAX_QUERIES[m_idx]) * xr] * prefix_eq
         inner_chain[GEN ** (lvl + 1)] = inner_chain[GEN ** lvl] + level_betas[GEN ** lvl] * residual_chain[GEN ** LIG_QUERIES[m_idx * LIG_MAX_LEVELS + lvl]]  # accumulate beta_lvl * (per-level residual sum) into the grand residual
-    return sumcheck_target, fold_challenges, final_msg, inner_chain[GEN ** LIG_N_LEVELS[m_idx]], GEN ** LIG_YR_LOG_LEN[m_idx], GEN ** (YR_LOG_CAP - LIG_YR_LOG_LEN[m_idx]), GEN ** LIG_TOTAL_FOLDS[m_idx]
+    return sumcheck_target, fold_challenges, final_msg, inner_chain[GEN ** LIG_N_LEVELS[m_idx]], GEN ** LIG_YR_LOG_LEN[m_idx], GEN ** (YR_LOG_CAP - LIG_YR_LOG_LEN[m_idx]), GEN ** LIG_TOTAL_FOLDS[m_idx], tail_challenges, yr_at_tail
 
 
 def exponent_tables():
@@ -1763,7 +1792,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     gmv = log2_ceil_in_the_exponent(g_total, g_logs_pow2, g_squares, PCS_MIN_MU, SIZE_BITS)  # g^m
     sel = gmv * LIG_MIN_SHIFT_INV  # g^(m - MIN): the match_range arm index selecting the opening candidate
     assert log(sel) < LIG_N_CANDIDATES
-    sumcheck_target, fold_challenges, final_msg, inner_total, yr_log_n_g, yr_pad_g, fold_cap_g = match_range(log(sel), range(0, LIG_N_CANDIDATES), lambda m_idx: open_stacked(m_idx, fs[0], fs[1], target, commit_root_0, commit_root_1, cursor))
+    sumcheck_target, fold_challenges, final_msg, inner_total, yr_log_n_g, yr_pad_g, fold_cap_g, tail_challenges, yr_at_tail = match_range(log(sel), range(0, LIG_N_CANDIDATES), lambda m_idx: open_stacked(m_idx, fs[0], fs[1], target, commit_root_0, commit_root_1, cursor))
     # `stream` is a fixed-capacity witness transport. The shape fixes the exact
     # consumed prefix, whose every word is transcript-bound; the unused suffix
     # is outside the recursively verified proof and intentionally unconstrained.
@@ -1910,16 +1939,14 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         rs_bit = rs_sel_bits[xk]
         rsw_chain[xk * GEN] = rsw_chain[xk] * (1 + rs_bit + ris_q[xk])
     rs_weight = rsw_chain[rs_len_g]
-    # inner_sum = sum_y final_msg[y] * eval_b[y]: reordered per claim. Claim j's
-    # y-contribution is cw_j times the final_msg MLE at the point (overlap coords
-    # || certified placement bits): coord_k = m_k * ov_k + (1 + m_k) * bit_k with
-    # mask bits m_k = [k < NOVER], read from the baked prefix-mask row nover.
-    # The dot unrolls over the global cap 2^YR_LOG_CAP, but final_msg only has
-    # 2^yr_log_n cells, so the slot coordinates at k >= yr_log_n are ASSERTED
-    # zero (below): the eq tensor then puts zero weight on every index
-    # >= 2^yr_log_n, so the over-cap dot terms vanish and never depend on
-    # out-of-buffer cells. The ring-switch slot is the same, with no overlaps,
-    # and comes from the same certified QPKD offset.
+    # Every weight is evaluated at the one fold point, so a claim contributes
+    # cw_j times eq(its tail coordinates, tail_challenges): coord_k = m_k * ov_k
+    # + (1 + m_k) * bit_k with mask bits m_k = [k < NOVER], read from the baked
+    # prefix-mask row nover. The product unrolls to the global cap; coordinates
+    # at k >= yr_log_n are ASSERTED zero below and the tail challenges are pinned
+    # to zero there, so those factors are 1 and nothing reads an unwritten cell.
+    # The ring-switch slot is the same, with no overlaps, and comes from the same
+    # certified QPKD offset. The transmitted message enters once, at the end.
     inner_sum = inner_total
     for j in unroll(0, N_CLAIMS):
         slot_point = HeapBuf(YR_LOG_CAP)
@@ -1953,12 +1980,10 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         for xk in mul_range(1, yr_pad_g):
             assert hi_mask[xk] == 0
             assert hi_slot[xk] == 0
-        slot_eq = HeapBuf(2 ** (YR_LOG_CAP + 1) - 2)
-        eqtree(slot_point, slot_eq, YR_LOG_CAP)
-        final_msg_dot = 0
-        for y in unroll(0, 2 ** YR_LOG_CAP):
-            final_msg_dot += final_msg[GEN ** y] * slot_eq[GEN ** (2 ** YR_LOG_CAP - 2 + y)]
-        inner_sum += claim_weights[GEN ** j] * final_msg_dot
+        tail_eq = GEN ** 0
+        for k in unroll(0, YR_LOG_CAP):
+            tail_eq *= (1 + slot_point[GEN ** k] + tail_challenges[GEN ** k])
+        inner_sum += claim_weights[GEN ** j] * tail_eq
     rs_slot_point = HeapBuf(YR_LOG_CAP)
     rs_yslot_bits = qpkd_offset_bits * fold_cap_g
     for k in unroll(0, YR_LOG_CAP):
@@ -1967,13 +1992,11 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     rs_hi = rs_yslot_bits * yr_log_n_g
     for xk in mul_range(1, yr_pad_g):
         assert rs_hi[xk] == 0  # zero-pin coords beyond final_msg's log-length
-    rs_slot_eq = HeapBuf(2 ** (YR_LOG_CAP + 1) - 2)
-    eqtree(rs_slot_point, rs_slot_eq, YR_LOG_CAP)
-    rs_msg_dot = 0
-    for y in unroll(0, 2 ** YR_LOG_CAP):
-        rs_msg_dot += final_msg[GEN ** y] * rs_slot_eq[GEN ** (2 ** YR_LOG_CAP - 2 + y)]
-    inner_sum += rs_weight * rs_msg_dot
-    assert inner_sum == sumcheck_target
+    rs_tail_eq = GEN ** 0
+    for k in unroll(0, YR_LOG_CAP):
+        rs_tail_eq *= (1 + rs_slot_point[GEN ** k] + tail_challenges[GEN ** k])
+    inner_sum += rs_weight * rs_tail_eq
+    assert inner_sum * yr_at_tail == sumcheck_target
 
 
     # ---- export this sub-proof's deferred-claim data to the caller ----

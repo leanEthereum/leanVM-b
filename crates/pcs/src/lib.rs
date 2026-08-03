@@ -453,37 +453,26 @@ pub fn verify_opening_batch_mixed_ligerito_stacked(
         target_combined += *g * claim.value();
     }
 
-    // Residual evaluator of the lifted weight: for each y over the residual cube,
-    // evaluate b at the full point `ris ++ y_bits` (low coords = ris, high = y).
+    // The lifted weight at ONE point. The opening now runs its sumcheck to
+    // completion, so a single evaluation closes it; there is no residual cube to
+    // sweep and no need for the weight to factor across a split.
     let log_n = stack_commitment.params.m - LOG_PACKING;
     let sel = stack_offset >> qpkd_vars;
-    let eval_b_residual = |ris: &[F128], yr_log_n: usize| -> Vec<F128> {
-        use rayon::prelude::*;
-        (0..1usize << yr_log_n)
-            .into_par_iter()
-            .map(|y| {
-                let mut x = Vec::with_capacity(ris.len() + yr_log_n);
-                x.extend_from_slice(ris);
-                for k in 0..yr_log_n {
-                    x.push(F128::new(((y >> k) & 1) as u64, 0));
-                }
-                let (x_lo, x_hi) = x.split_at(qpkd_vars);
-                let mut sel_eq = F128::ONE;
-                for (k, &xi) in x_hi.iter().enumerate() {
-                    sel_eq *= if (sel >> k) & 1 == 1 { xi } else { F128::ONE + xi };
-                }
-                let mut rs_part = F128::ZERO;
-                for (g, x_outer) in gammas_rs.iter().zip(x_outers.iter()) {
-                    rs_part +=
-                        *g * ring_switch::eval_rs_eq_from_coeffs(&x_outer[1..], x_lo, &lin_coeffs);
-                }
-                let mut acc = rs_part * sel_eq;
-                for (claim, g) in stack_pd.iter().zip(gammas_pd.iter()) {
-                    acc += *g * stack_claim_eq_at(claim, &x);
-                }
-                acc
-            })
-            .collect()
+    let eval_b_at = |x: &[F128]| -> F128 {
+        let (x_lo, x_hi) = x.split_at(qpkd_vars);
+        let mut sel_eq = F128::ONE;
+        for (k, &xi) in x_hi.iter().enumerate() {
+            sel_eq *= if (sel >> k) & 1 == 1 { xi } else { F128::ONE + xi };
+        }
+        let mut rs_part = F128::ZERO;
+        for (g, x_outer) in gammas_rs.iter().zip(x_outers.iter()) {
+            rs_part += *g * ring_switch::eval_rs_eq_from_coeffs(&x_outer[1..], x_lo, &lin_coeffs);
+        }
+        let mut acc = rs_part * sel_eq;
+        for (claim, g) in stack_pd.iter().zip(gammas_pd.iter()) {
+            acc += *g * stack_claim_eq_at(claim, x);
+        }
+        acc
     };
 
     let lig = ligerito::multilevel_verifier_with_basis_succinct(
@@ -492,7 +481,7 @@ pub fn verify_opening_batch_mixed_ligerito_stacked(
         log_n,
         target_combined,
         &stack_commitment.root,
-        eval_b_residual,
+        eval_b_at,
         vs,
     )
     .ok_or(VerifyError::Ligerito)?;

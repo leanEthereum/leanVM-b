@@ -1727,24 +1727,37 @@ def verify_ligerito(
         enforced = _enforced_sum(rows, fold_values, alpha)
 
         if level == level_count - 1:
+            # Same intro/glue shape as every other level, then finish the
+            # sumcheck over the tail so the opening closes on ONE evaluation of
+            # the basis rather than 2^message_log of them.
+            intro = QuadraticMessage.read(transcript, enforced)
             beta = transcript.sample()
+            running_quad = running_quad.add_scaled(intro, beta)
             running_target += beta * enforced
             level_contexts.append((message_log, queries, alpha, len(all_folds), beta))
-            basis_values = list(evaluate_basis(all_folds, message_log))
-            require(len(basis_values) == len(residual), "basis residual has the wrong length")
-            combined = basis_values
+            tail_folds: list[F128] = []
+            for round_index in range(message_log):
+                challenge = transcript.sample()
+                running_target = running_quad.evaluate(challenge)
+                tail_folds.append(challenge)
+                if round_index + 1 < message_log:
+                    running_quad = QuadraticMessage.read(transcript, running_target)
+            # A residual width of zero turns each residual evaluator into a
+            # point evaluator, so no new closed form is needed.
+            weight = evaluate_basis(list(all_folds) + tail_folds, 0)[0]
             for context_log, context_queries, context_alpha, start, context_beta in level_contexts:
                 prefix_length = context_log - message_log
+                point = list(all_folds[start : start + prefix_length]) + tail_folds
                 induced = _induced_residual(
                     context_log,
                     context_queries,
                     context_alpha,
-                    all_folds[start : start + prefix_length],
-                    message_log,
+                    point,
+                    0,
                 )
-                combined = [a + context_beta * b for a, b in zip(combined, induced)]
-            terminal = sum((a * b for a, b in zip(residual, combined)), ZERO)
-            require(terminal == running_target, "Ligerito residual check failed")
+                weight += context_beta * induced[0]
+            terminal = weight * mle_eval(residual, tail_folds)
+            require(terminal == running_target, "Ligerito terminal check failed")
             return
 
         intro = QuadraticMessage.read(transcript, enforced)
