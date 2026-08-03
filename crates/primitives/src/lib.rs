@@ -1,6 +1,7 @@
 //! Shared primitives: field kernels, bit transposes,
 //! multilinear helpers, the scratch buffer pool, and small integer utilities.
 
+pub mod bench;
 pub mod bits;
 pub mod epool;
 pub mod field;

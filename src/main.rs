@@ -3,10 +3,16 @@
 //! ```text
 //! cargo run --release -- xmss --n-signatures 820
 //! cargo run --release -- xmss --n-signatures 820 --log-inv-rate 2
+//! cargo run --release -- xmss --n-signatures 820 --repeat 5
 //! cargo run --release -- recursion --n 2
 //! cargo run --release -- fibonacci --n 2000000
 //! cargo run --release -- --tracing fibonacci --n 2000000
 //! ```
+//!
+//! Every workload discards one warmup pass before measuring, so a reported
+//! duration is steady-state proving rather than a cold first run. `--repeat n`
+//! averages `n` measured passes and reports a 95% confidence half-width
+//! alongside the mean.
 
 use clap::{Parser, Subcommand};
 
@@ -25,6 +31,18 @@ struct Cli {
     /// Enable hierarchical timing traces. Use RUST_LOG to adjust verbosity.
     #[arg(long, global = true)]
     tracing: bool,
+
+    /// Measured proving passes to average, after the warmup pass. Reported with
+    /// a 95% confidence half-width once above 1.
+    #[arg(long, global = true, default_value_t = 1, value_parser = parse_repeat)]
+    repeat: usize,
+
+    /// Idle milliseconds before each measured pass. On a thermally limited host
+    /// (any Apple laptop) back-to-back proving throttles the SoC and measures
+    /// the power budget instead of the prover: ~6000 restores steady-state
+    /// clocks on an M4 Max MacBook Pro, and a server-class host needs none.
+    #[arg(long, global = true, default_value_t = 0)]
+    cooldown_ms: u64,
 
     #[command(subcommand)]
     command: Command,
@@ -72,24 +90,32 @@ fn parse_log_inv_rate(value: &str) -> Result<usize, String> {
     }
 }
 
+fn parse_repeat(value: &str) -> Result<usize, String> {
+    match value.parse::<usize>() {
+        Ok(n) if n >= 1 => Ok(n),
+        _ => Err("repeat must be a positive integer".to_string()),
+    }
+}
+
 fn main() {
     let cli = Cli::parse();
+    let plan = primitives::bench::Plan::new(cli.repeat, cli.cooldown_ms);
     match cli.command {
         Command::Xmss { n_signatures } => {
             if cli.tracing {
                 primitives::init_tracing();
             }
-            rec_aggregation::run_xmss_aggregation(n_signatures, cli.log_inv_rate);
+            rec_aggregation::run_xmss_aggregation(n_signatures, cli.log_inv_rate, plan);
         }
         Command::Recursion { n, hashes, iters } => {
             let inner: Vec<(usize, usize)> = (0..n).map(|_| (hashes, iters)).collect();
-            rec_aggregation::run_recursion(&inner, cli.log_inv_rate, cli.tracing);
+            rec_aggregation::run_recursion(&inner, cli.log_inv_rate, cli.tracing, plan);
         }
         Command::Fibonacci { n } => {
             if cli.tracing {
                 primitives::init_tracing();
             }
-            rec_aggregation::run_fibonacci(n, cli.log_inv_rate);
+            rec_aggregation::run_fibonacci(n, cli.log_inv_rate, plan);
         }
     }
 }
