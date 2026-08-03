@@ -1545,6 +1545,17 @@ def virtual_slot(column: int) -> int | None:
 
 # Ligerito opening ------------------------------------------------------------
 
+# Ligerito ladder geometry. These mirror the Rust source of truth in
+# crates/pcs/src/ligerito_config.rs and must stay in sync with it: the prover
+# derives its opening shape from those constants, so a mismatch here rejects a
+# valid proof. Change a factor there, change it here.
+INITIAL_FOLDING_FACTOR = 6
+SUBSEQUENT_FOLDING_FACTOR = 3
+RS_DOMAIN_INITIAL_REDUCTION_FACTOR = 3
+RS_DOMAIN_SUBSEQUENT_REDUCTION_FACTOR = 1
+RESIDUAL_MAX_LOG = 5
+
+
 @dataclass(frozen=True)
 class LigeritoConfig:
     rates: tuple[int, ...]
@@ -1585,7 +1596,7 @@ def _johnson_parameters(rate: int, message_log: int, interleaved_log: int) -> tu
         if queries > block_length:
             continue
         list_log = log2(1.0 / (2.0 * eta * root_rho))
-        ood = 0 if interleaved_log == 6 else next(
+        ood = 0 if interleaved_log == INITIAL_FOLDING_FACTOR else next(
             (count for count in range(1, 9)
              if count * (192.0 - log2(variables)) - (2.0 * list_log - 1.0) + 1e-12 >= 128.0),
             0,
@@ -1604,21 +1615,21 @@ def _johnson_parameters(rate: int, message_log: int, interleaved_log: int) -> tu
 
 def derive_config(log_n: int, initial_rate: int) -> LigeritoConfig:
     """Derive the production Johnson/OOD ladder used by the Rust PCS."""
-    require(log_n > 6 and 1 <= initial_rate <= 4, "invalid Ligerito shape")
-    folds = [6]
-    message_logs = [log_n - 6]
+    require(log_n > INITIAL_FOLDING_FACTOR and 1 <= initial_rate <= 4, "invalid Ligerito shape")
+    folds = [INITIAL_FOLDING_FACTOR]
+    message_logs = [log_n - INITIAL_FOLDING_FACTOR]
     rates = [initial_rate]
     remaining = message_logs[0]
-    prior_fold = 6
-    reduction = 3
-    while remaining > 5:
-        fold = min(3, remaining)
+    prior_fold = INITIAL_FOLDING_FACTOR
+    reduction = RS_DOMAIN_INITIAL_REDUCTION_FACTOR
+    while remaining > RESIDUAL_MAX_LOG:
+        fold = min(SUBSEQUENT_FOLDING_FACTOR, remaining)
         rates.append(rates[-1] + prior_fold - reduction)
         remaining -= fold
         folds.append(fold)
         message_logs.append(remaining)
         prior_fold = fold
-        reduction = 1
+        reduction = RS_DOMAIN_SUBSEQUENT_REDUCTION_FACTOR
     require(len(folds) >= 2, "Ligerito requires at least two levels")
     parameters = tuple(
         _johnson_parameters(rate, columns, fold)
