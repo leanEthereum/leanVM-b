@@ -26,7 +26,7 @@ pub fn run_fibonacci(n: usize, log_inv_rate: usize, plan: Plan) {
     lean_vm::blake3_flock::warm_setup(0);
 
     let ((proof, stats), prove_time) = plan.warm_then_measure(|| prove(&program, pi, log_inv_rate));
-    let (_, verify_time) = Plan::new(plan.repeat, 0).measure(|| verify(&program, &pi, &proof).unwrap());
+    let (_, verify_time) = Plan::new(plan.repeat, 0).measure_quiet(|| verify(&program, &pi, &proof).unwrap());
 
     let proof_bytes = bincode::serialized_size(&proof).expect("proof is serializable");
     // tracing-forest renders the tree when its root span closes. Close it
@@ -60,11 +60,7 @@ pub fn run_fibonacci(n: usize, log_inv_rate: usize, plan: Plan) {
         prove_time.spread(),
         prove_time.provenance()
     );
-    println!(
-        "  verifying                   : {} s{}",
-        pretty_f64(verify_time.mean()),
-        verify_time.spread()
-    );
+    println!("  verifying                   : {} s", pretty_f64(verify_time.mean()));
     let cycles_per_second = (stats.cycles as f64 / prove_time.mean()).round() as u64;
     println!(
         "  throughput                  : {} cycles/s{}",

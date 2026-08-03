@@ -197,7 +197,7 @@ pub fn run_xmss_aggregation(n: usize, log_inv_rate: usize, plan: Plan) {
     lean_vm::blake3_flock::warm_setup(181 + 146 * n);
 
     let ((proof, stats), prove_time) = plan.warm_then_measure(|| prove(&program, want, log_inv_rate));
-    let (_, verify_time) = Plan::new(plan.repeat, 0).measure(|| {
+    let (_, verify_time) = Plan::new(plan.repeat, 0).measure_quiet(|| {
         verify(&program, &want, &proof).expect("XMSS aggregation verifies in-VM");
     });
 
@@ -257,11 +257,7 @@ pub fn run_xmss_aggregation(n: usize, log_inv_rate: usize, plan: Plan) {
         prove_time.spread(),
         prove_time.provenance()
     );
-    println!(
-        "  verifying                   : {} s{}",
-        pretty_f64(verify_time.mean()),
-        verify_time.spread()
-    );
+    println!("  verifying                   : {} s", pretty_f64(verify_time.mean()));
     println!(
         "  throughput                  : {} XMSS/s{}",
         pretty_f64(n as f64 / prove_time.mean()),

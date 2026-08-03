@@ -18,7 +18,7 @@ Machine: Mac M4 Max
 ### XMSS aggregation
 
 ```bash
-LEANVM_NUM_THREADS=11 cargo run --release -- xmss --n-signatures 890 --log-inv-rate 1
+cargo run --release -- xmss --n-signatures 890 --log-inv-rate 1 --repeat 3 --cooldown-ms 2000
 ```
 
 ```
@@ -43,7 +43,7 @@ XMSS aggregation, 890 signatures
 
 
 ```bash
-LEANVM_NUM_THREADS=11 cargo run --release -- recursion --n 2 --log-inv-rate 2
+cargo run --release -- recursion --n 2 --log-inv-rate 2 --repeat 3 --cooldown-ms 2000
 ```
 
 ```
@@ -67,7 +67,7 @@ recursion 2→1: 2 inner proofs of 1,472,224 cycles each
 
 
 ```bash
-LEANVM_NUM_THREADS=11 cargo run --release -- fibonacci --n 2000000  --log-inv-rate 1
+cargo run --release -- fibonacci --n 2000000 --log-inv-rate 1 --repeat 3 --cooldown-ms 2000
 ```
 
 ```

@@ -105,6 +105,10 @@ fn main() {
     lean_vm::init_prover();
     let plan = primitives::bench::Plan::new(cli.repeat, cli.cooldown_ms);
     run(&cli, plan);
+    println!(
+        "  peak memory                 : {} GiB",
+        primitives::pretty_f64(primitives::bench::peak_rss_bytes() as f64 / (1u64 << 30) as f64)
+    );
     // What the proving arena absorbed, for sizing its slabs and checking that the
     // buffers meant to be arena-backed are.
     if std::env::var_os("ZK_ALLOC_STATS").is_some() {

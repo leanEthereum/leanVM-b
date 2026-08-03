@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 /// declarations `NAME = <const-expr>` (see [`parse_with_replacements`]).
 ///
 /// A DSL source is a valid Python file: `import snark_lib` / `from snark_lib
-/// import *` pulls the stub definitions (`snark_lib.py` at the repo root) that
+/// import *` pulls the stub definitions (`crates/lean_compiler/snark_lib.py`) that
 /// make editors and linters happy, and is skipped here. Importing anything
 /// else is an error — the compiler does not include other source files.
 pub fn parse(src: &str) -> Result<Ast, String> {

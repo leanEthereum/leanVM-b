@@ -1,6 +1,7 @@
-# Import this in zkDSL .py files (`from snark_lib import *`) to make them
-# valid Python for editors and linters. The leanVM-b compiler skips the
-# import; it does not include other source files (single-file programs only).
+# Import this in zkDSL .py files (`from snark_lib import *`) to make them valid
+# Python for editors and linters. The leanVM-b compiler skips the import; it does
+# not include other source files (single-file programs only). Resolved through
+# `extraPaths` in the root pyrightconfig.json; see zkDSL.md.
 
 from typing import Any, Optional
 

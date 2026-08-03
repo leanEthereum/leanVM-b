@@ -161,7 +161,18 @@ impl Plan {
 
     /// Run `f` `self.repeat` times with no warmup pass, for a stage an earlier
     /// stage already warmed (verification after proving, say).
-    pub fn measure<T>(&self, mut f: impl FnMut() -> T) -> (T, Timing) {
+    pub fn measure<T>(&self, f: impl FnMut() -> T) -> (T, Timing) {
+        self.run(f, true)
+    }
+
+    /// [`measure`](Self::measure) without the per-pass echo, for a stage whose
+    /// individual passes are not interesting. Verification takes milliseconds and
+    /// nobody tunes it, so echoing every pass would bury the numbers that matter.
+    pub fn measure_quiet<T>(&self, f: impl FnMut() -> T) -> (T, Timing) {
+        self.run(f, false)
+    }
+
+    fn run<T>(&self, mut f: impl FnMut() -> T, echo: bool) -> (T, Timing) {
         let mut timing = Timing::default();
         let mut last = None;
         for pass in 1..=self.repeat {
@@ -173,7 +184,7 @@ impl Plan {
             let out = f();
             let secs = t.elapsed().as_secs_f64();
             timing.push(secs);
-            if self.repeat > 1 {
+            if echo && self.repeat > 1 {
                 // Echo each pass: a throttling ramp is visible here and invisible
                 // in the mean.
                 eprintln!("  [pass {pass}/{}] {secs:.3} s", self.repeat);
@@ -182,6 +193,22 @@ impl Plan {
         }
         (last.expect("repeat >= 1"), timing)
     }
+}
+
+/// Peak resident set size of this process, in bytes.
+///
+/// Worth reporting next to any timing here: the proving arena trades resident
+/// memory for the page faults it removes, so a throughput number is only half the
+/// picture. Read after a warmup pass, this is the steady-state footprint.
+#[must_use]
+pub fn peak_rss_bytes() -> u64 {
+    // SAFETY: `getrusage` only writes into the `rusage` we hand it, which is
+    // zeroed and correctly sized.
+    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+    unsafe { libc::getrusage(libc::RUSAGE_SELF, &raw mut usage) };
+    let max = usage.ru_maxrss as u64;
+    // `ru_maxrss` is bytes on macOS and KiB on Linux.
+    if cfg!(target_os = "macos") { max } else { max * 1024 }
 }
 
 /// Read a `usize` benchmark knob from the environment, defaulting when unset.

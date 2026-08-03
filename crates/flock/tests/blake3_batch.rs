@@ -206,7 +206,7 @@ fn blake3_batch_prove_verify() {
     )
     .expect("four stages");
 
-    let (_, verify_time) = Plan::new(plan.repeat, 0).measure(|| {
+    let (_, verify_time) = Plan::new(plan.repeat, 0).measure_quiet(|| {
         let mut vs = VerifierState::<()>::new(b"flock-blake3-batch", &transcript, &[]);
         let root = pcs::merkle::scalars_to_hash(&vs.next_scalars(2).expect("commitment root"));
         let replay = setup.verify_reduction(&mut vs).expect("Flock reduction verifies");
@@ -227,7 +227,10 @@ fn blake3_batch_prove_verify() {
     println!("  reduction + open                : {}", ms(&open));
     println!("  ------------------------------------------");
     println!("  prove TOTAL (witness excluded)  : {}", ms(&prove));
-    println!("  verify                          : {}", ms(&verify_time));
+    println!(
+        "  verify                          : {:>8.1} ms",
+        verify_time.mean() * 1e3
+    );
     let prove_s = prove.mean();
     let compressions_per_second = (n as f64 / prove_s).round() as u64;
     println!(

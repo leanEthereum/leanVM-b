@@ -2034,7 +2034,7 @@ fn run_recursion_with_rates(
     let trace_span =
         tracing::info_span!("Recursive aggregation", n = nsub, log_inv_rate = outer_log_inv_rate).entered();
     let ((recursive_proof, stats), prove_time) = plan.warm_then_measure(|| batch.prove(&mut guest));
-    let (_, verify_time) = Plan::new(plan.repeat, 0).measure(|| {
+    let (_, verify_time) = Plan::new(plan.repeat, 0).measure_quiet(|| {
         recursive_proof
             .verify(&batch.program0)
             .expect("complete recursive proof verifies");
@@ -2100,11 +2100,7 @@ fn run_recursion_with_rates(
         prove_time.spread(),
         prove_time.provenance()
     );
-    println!(
-        "  complete recursive verify   : {} s{}",
-        pretty_f64(verify_time.mean()),
-        verify_time.spread()
-    );
+    println!("  complete recursive verify   : {} s", pretty_f64(verify_time.mean()));
     recursive_proof
 }
 

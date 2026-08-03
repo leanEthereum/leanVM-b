@@ -366,6 +366,7 @@ name = "primitives"
 version = "0.1.0"
 dependencies = [
  "bincode",
+ "libc",
  "parallel",
  "serde",
  "tracing-forest",
