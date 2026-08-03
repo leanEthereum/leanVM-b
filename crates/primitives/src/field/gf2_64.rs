@@ -209,7 +209,7 @@ pub mod aarch64 {
     }
 
     /// Like [`reduce_pair`] but the two ≤4-bit second-order overflows fold
-    /// through one 16-byte TBL lookup ([`FOLD_TBL`]): the overflow nibbles
+    /// through one 16-byte TBL lookup (`FOLD_TBL`): the overflow nibbles
     /// sit in bytes 0 and 8 of the transposed high words and the table maps
     /// each to its exact 8-bit fold in a single instruction. Shortest
     /// dependency chain of the three pair reductions.

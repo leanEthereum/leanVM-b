@@ -36,7 +36,6 @@ pub const PACKING_WIDTH: usize = 1 << LOG_PACKING;
 /// - if `z.len() != 1 << m`
 /// - if `m < LOG_PACKING`
 pub fn pack_witness(z: &[bool], m: usize) -> Vec<F64> {
-    use rayon::prelude::*;
     assert_eq!(z.len(), 1usize << m, "z length must be 2^m");
     assert!(
         m >= LOG_PACKING,
@@ -67,7 +66,7 @@ pub fn pack_witness(z: &[bool], m: usize) -> Vec<F64> {
     // Parallel for real witnesses; sequential below the dispatch-overhead
     // floor (tiny test instances).
     if n_packed >= (1 << 12) {
-        (0..n_packed).into_par_iter().map(one).collect()
+        parallel::map_collect(n_packed, one)
     } else {
         (0..n_packed).map(one).collect()
     }

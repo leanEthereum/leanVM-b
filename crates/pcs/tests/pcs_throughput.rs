@@ -94,7 +94,7 @@ fn pcs_throughput() {
                 let proof = recursive_prover_with_basis(
                     &pc,
                     &witness,
-                    b_initial.clone(),
+                    zk_alloc::ArenaVec::from_slice(&b_initial),
                     target,
                     &pd.codeword,
                     &pd.merkle_tree,

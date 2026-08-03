@@ -1,0 +1,11 @@
+[package]
+name = "parallel"
+version.workspace = true
+edition.workspace = true
+description = "Fixed-size heterogeneous thread pool for flat data-parallel kernels"
+
+[lints]
+workspace = true
+
+[dependencies]
+libc.workspace = true

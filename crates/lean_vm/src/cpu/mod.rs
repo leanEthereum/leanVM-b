@@ -10,8 +10,6 @@
 
 use std::collections::HashMap;
 
-use rayon::prelude::*;
-
 use crate::constraints;
 use crate::leaf::{self, Block, ColumnClaim, Coord};
 use crate::pcs;
@@ -463,9 +461,48 @@ pub struct Stats {
     pub committed: usize,
     /// Data memory is `2^log_mem` cells (the padded write-once image).
     pub log_mem: usize,
-    /// Cells actually touched, before the pad to `2^log_mem` — the real memory
+    /// Cells actually touched, before the pad to `2^log_mem`, i.e. the real memory
     /// footprint (`log2` is fractional).
     pub mem_used: usize,
+}
+
+impl Stats {
+    /// Table names in `counts` order.
+    pub const TABLES: [&'static str; tables::N_TABLES] = ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3", "PACK64X2"];
+
+    /// One line of run sizes, every one a power of two: the per-table instruction
+    /// counts with their share of the run, largest first, then the data memory and
+    /// the committed witness. Reads as
+    /// `"DEREF 2^18.838 (33.6%)  SET 2^18.265 (22.6%)  …  MEMORY 2^21.701  TOTAL_COMMITTED 2^26.364"`.
+    ///
+    /// The per-table counts sum to `cycles`, so the percentages are shares of the
+    /// whole run. Every exponent is an actual count, never a padded one, so the
+    /// figures are directly comparable; `log_mem` holds the padded memory size the
+    /// commitment covers. Zero-count tables are omitted.
+    #[must_use]
+    pub fn details(&self) -> String {
+        if self.cycles == 0 {
+            return "-".to_string();
+        }
+        let mut shares: Vec<(&str, usize)> = Self::TABLES
+            .iter()
+            .zip(&self.counts)
+            .filter(|&(_, &c)| c > 0)
+            .map(|(&name, &c)| (name, c))
+            .collect();
+        shares.sort_unstable_by_key(|&(_, c)| std::cmp::Reverse(c));
+        let mut parts: Vec<String> = shares
+            .iter()
+            .map(|&(name, c)| {
+                let pct = 100.0 * c as f64 / self.cycles as f64;
+                format!("{name} 2^{} ({pct:.1}%)", primitives::pretty_f64((c as f64).log2()))
+            })
+            .collect();
+        let log2 = |n: usize| primitives::pretty_f64((n.max(1) as f64).log2());
+        parts.push(format!("MEMORY 2^{}", log2(self.mem_used)));
+        parts.push(format!("TOTAL_COMMITTED 2^{}", log2(self.committed)));
+        parts.join("  ")
+    }
 }
 
 /// Prove the program on the given public input: run it (witness generation),
@@ -476,6 +513,12 @@ pub struct Stats {
 #[tracing::instrument(name = "Prove", skip_all, fields(log_inv_rate))]
 pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) -> (Proof, Stats) {
     ::pcs::ligerito::validate_log_inv_rate(log_inv_rate).expect("valid log_inv_rate");
+    // One proof is one arena phase: every transient buffer below is bump-allocated
+    // and reclaimed wholesale here, rather than faulted in and unmapped again per
+    // proof. Bound first so it outlives them; inert unless `init_prover` opted in.
+    // The returned `Proof` is system-allocated (`ps.into_proof()` builds `Vec`s),
+    // so it survives the next phase.
+    let _phase = zk_alloc::enter_phase();
     let prof = std::env::var("LEANVM_PROFILE").is_ok();
     let ms = |t: std::time::Instant| t.elapsed().as_secs_f64() * 1e3;
     let t = std::time::Instant::now();

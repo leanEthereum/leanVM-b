@@ -9,7 +9,6 @@
 use std::sync::Mutex;
 
 use rand::CryptoRng;
-use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::*;
@@ -98,9 +97,11 @@ fn log2_ceil(n: u64) -> usize {
 }
 
 /// Level-0 layer: WOTS public-key hashes for the in-range leaves `[lo, hi]`.
+///
+/// Sequential: this runs once per bottom subtree, and the subtrees are what
+/// [`xmss_key_gen`] fans out over.
 fn leaf_layer(seed: &[u8; 32], public_param: &PublicParam, lo: u64, hi: u64) -> Vec<Digest> {
     (lo..=hi)
-        .into_par_iter()
         .map(|slot| {
             gen_wots_secret_key(seed, slot as u32, public_param)
                 .public_key()
@@ -109,8 +110,12 @@ fn leaf_layer(seed: &[u8; 32], public_param: &PublicParam, lo: u64, hi: u64) -> 
         .collect()
 }
 
-/// Build levels `(from_level+1)..=to_level` onto `layers`; out-of-range
-/// children use `gen_random_node`.
+/// Build levels `(from_level+1)..=to_level` onto `layers`; out-of-range children
+/// use `gen_random_node`.
+///
+/// Sequential: each level depends on the one below it, and every level here is at
+/// most `O(sqrt(R))` wide, whether it is a bottom subtree's levels or the top part
+/// built from the subtree roots.
 fn build_up(
     seed: &[u8; 32],
     public_param: &PublicParam,
@@ -125,7 +130,6 @@ fn build_up(
         let (prev_base, prev_top) = (lo >> (level - 1), hi >> (level - 1));
         let prev = layers.last().unwrap();
         let nodes: Vec<Digest> = (base..=top)
-            .into_par_iter()
             .map(|i| {
                 let child = |idx: u64| {
                     if idx >= prev_base && idx <= prev_top {
@@ -181,16 +185,17 @@ pub fn xmss_key_gen(
     // ~sqrt(R) leaves per bottom subtree; always <= LOG_LIFETIME/2.
     let split_level = log2_ceil(hi - lo + 1).div_ceil(2);
 
-    // Roots of each bottom subtree, built one at a time so peak memory stays O(sqrt(R)).
+    // The bottom subtrees are the only fan-out in key generation: `O(sqrt(R))` of
+    // them, each independent, each holding only its own `O(sqrt(R))` layers, so
+    // peak memory stays `O(sqrt(R))` and one flat dispatch covers the whole tree.
+    // Everything below this is sequential by construction.
     let first_subtree = lo >> split_level;
     let last_subtree = hi >> split_level;
-    let root_layer: Vec<Digest> = (first_subtree..=last_subtree)
-        .into_par_iter()
-        .map(|s| {
-            let (in_lo, in_hi) = subtree_bounds(lo, hi, split_level, s);
-            build_subtree_layers(&seed, &public_param, in_lo, in_hi, split_level)[split_level][0]
-        })
-        .collect();
+    let root_layer: Vec<Digest> = parallel::map_collect((last_subtree - first_subtree + 1) as usize, |i| {
+        let subtree = first_subtree + i as u64;
+        let (in_lo, in_hi) = subtree_bounds(lo, hi, split_level, subtree);
+        build_subtree_layers(&seed, &public_param, in_lo, in_hi, split_level)[split_level][0]
+    });
 
     // Top part: levels split_level..=LOG_LIFETIME.
     let mut top = vec![root_layer];

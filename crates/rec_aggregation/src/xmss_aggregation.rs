@@ -5,13 +5,12 @@
 //! signature against the bound data, and publishes the final 32-byte state —
 //! compared against the natively computed aggregation hash.
 
-use std::time::Instant;
-
 use std::collections::BTreeMap;
 
 use lean_compiler::{compile, parse_file_with_replacements};
 use lean_vm::cpu::{prove, verify};
 use primitives::{
+    bench::Plan,
     field::{F64, F192, g_pow},
     pretty_f64, pretty_integer,
 };
@@ -63,12 +62,16 @@ fn aggregate_binding(mut state: [u8; STATE_LEN], data: &[u8]) -> [u8; STATE_LEN]
 /// natively with the `xmss` crate, runs the in-VM aggregation verifier
 /// (`guests/xmss_aggregate.py`) over all signatures, proves, verifies, and
 /// prints the benchmark report.
-pub fn run_xmss_aggregation(n: usize, log_inv_rate: usize) {
+///
+/// Proving runs one discarded warmup pass followed by `plan.repeat` measured
+/// passes; see [`primitives::bench`] for why the first pass is not
+/// representative and why the cooldown matters.
+pub fn run_xmss_aggregation(n: usize, log_inv_rate: usize, plan: Plan) {
     let trace_span = tracing::info_span!("XMSS aggregation", n, log_inv_rate).entered();
 
-    // Pin rayon workers to performance cores (QoS) before any parallel work runs,
-    // so fork-join stages are not held up by efficiency-core stragglers. Thread
-    // count still follows RAYON_NUM_THREADS.
+    // Spawn the worker pool before any timed work, so no kernel pays the spawn
+    // cost. Opting into the arena is the calling *process's* decision (one region,
+    // one proof at a time), so it stays in `main`, not here.
     lean_vm::init_prover_pool();
     let slot = signers_cache::SLOT;
     let message: Message = signers_cache::message();
@@ -193,12 +196,10 @@ pub fn run_xmss_aggregation(n: usize, log_inv_rate: usize) {
     // 32 Merkle-parent compressions.
     lean_vm::blake3_flock::warm_setup(181 + 146 * n);
 
-    let t = Instant::now();
-    let (proof, stats) = prove(&program, want, log_inv_rate);
-    let t_prove = t.elapsed();
-    let t = Instant::now();
-    verify(&program, &want, &proof).expect("XMSS aggregation verifies in-VM");
-    let t_verify = t.elapsed();
+    let ((proof, stats), prove_time) = plan.warm_then_measure(|| prove(&program, want, log_inv_rate));
+    let (_, verify_time) = Plan::new(plan.repeat, 0).measure_quiet(|| {
+        verify(&program, &want, &proof).expect("XMSS aggregation verifies in-VM");
+    });
 
     // 181 fixed blocks + per signature: 1 (pk absorb) + 145 (the native
     // verifier's constant).
@@ -221,47 +222,21 @@ pub fn run_xmss_aggregation(n: usize, log_inv_rate: usize) {
 
     println!("\nXMSS aggregation, {} signatures", pretty_integer(n));
     println!(
-        "  cycles (VM steps)           : {:>14} = {:>9}   ({:>12} / XMSS)",
+        "  cycles (VM steps)           : {} = {}   ({} / XMSS)",
         pretty_integer(stats.cycles),
         pow(stats.cycles),
         per(stats.cycles)
     );
-    for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3", "PACK64X2"]
-        .iter()
-        .zip(&stats.counts)
-    {
-        println!(
-            "    {name:<8} instructions     : {:>14} = {:>9}   ({:>12} / XMSS)",
-            pretty_integer(c),
-            pow(c),
-            per(c)
-        );
-    }
+    println!("    details                   : {}", stats.details());
+    println!("  proof size                  : {:.1} KiB", proof_bytes as f64 / 1024.0);
     println!(
-        "  committed witness size      : 2^{}",
-        pretty_f64((stats.committed as f64).log2())
+        "  proving                     : {} s{}   {} XMSS/s      peak memory {} GiB",
+        pretty_f64(prove_time.mean()),
+        prove_time.spread(),
+        pretty_f64(n as f64 / prove_time.mean()),
+        pretty_f64(primitives::bench::peak_rss_bytes() as f64 / (1u64 << 30) as f64)
     );
-    println!(
-        "  data memory                 : 2^{} padded (2^{} used)",
-        pretty_integer(stats.log_mem),
-        pretty_f64((stats.mem_used as f64).log2())
-    );
-    println!(
-        "  proof size                  : {} KiB",
-        pretty_f64(proof_bytes as f64 / 1024.0)
-    );
-    println!(
-        "  proving (incl. witness gen) : {} s",
-        pretty_f64(t_prove.as_secs_f64())
-    );
-    println!(
-        "  verifying                   : {} s",
-        pretty_f64(t_verify.as_secs_f64())
-    );
-    println!(
-        "  throughput                  : {} XMSS/s",
-        pretty_f64(n as f64 / t_prove.as_secs_f64())
-    );
+    println!("  verifying                   : {} s", pretty_f64(verify_time.mean()));
 }
 
 #[cfg(test)]
@@ -273,6 +248,6 @@ mod tests {
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(3);
-        super::run_xmss_aggregation(n, lean_vm::pcs::LOG_INV_RATE);
+        super::run_xmss_aggregation(n, lean_vm::pcs::LOG_INV_RATE, primitives::bench::Plan::default());
     }
 }

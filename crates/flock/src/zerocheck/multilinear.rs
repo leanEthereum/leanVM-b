@@ -37,6 +37,7 @@ use crate::zerocheck::PaddingSpec;
 use crate::zerocheck::univariate_skip::{SplitEq, build_eq, pack_bits};
 use primitives::field::{F192, F192Unreduced, PHI_8_TABLE_192 as PHI_8_TABLE};
 pub use primitives::multilinear::eq_eval;
+use zk_alloc::ArenaVec;
 
 /// Returns `(pair_in_block_mask, useful_pairs_inclusive)` for the round-2
 /// fused-fold kernel. A pair (post-URM chunks `2k`, `2k+1`) is fully inside
@@ -168,14 +169,15 @@ pub fn interpolate_at_z_combined(values_on_lambda: &[F192], k_skip: usize, z: F1
 ///
 /// `a(s, x_rest)` is the witness bit at index `x_rest * 2^k_skip + s` (low
 /// bits = skip variable, high bits = rest variables).
-pub fn fold_at_z_naive(witness: &[bool], m: usize, k_skip: usize, weights: &[F192]) -> Vec<F192> {
+pub fn fold_at_z_naive(witness: &[bool], m: usize, k_skip: usize, weights: &[F192]) -> ArenaVec<F192> {
     assert!(k_skip <= m);
     let ell = 1usize << k_skip;
     let n_rest = 1usize << (m - k_skip);
     assert_eq!(witness.len(), 1usize << m);
     assert_eq!(weights.len(), ell);
 
-    let mut folded = vec![F192::ZERO; n_rest];
+    // SAFETY: the loop below writes every one of the `n_rest` slots.
+    let mut folded = unsafe { ArenaVec::<F192>::uninitialized(n_rest) };
     for x_rest in 0..n_rest {
         let base = x_rest * ell;
         let mut acc = F192::ZERO;
@@ -259,7 +261,7 @@ pub fn uni_skip_fold_and_round_pair_naive(
     k_skip: usize,
     z: F192,
     mlv_challenges: &[F192],
-) -> (Vec<F192>, Vec<F192>, F192, F192) {
+) -> (ArenaVec<F192>, ArenaVec<F192>, F192, F192) {
     assert_eq!(a.len(), 1usize << m);
     assert_eq!(b.len(), 1usize << m);
     assert!(m > k_skip, "need at least one multilinear variable past the skip");
@@ -365,7 +367,7 @@ unsafe fn fold_one_row_neon_unchecked_8(table_data: *const F192, bytes_ptr: *con
 /// Optimized fused fold (at the URM challenge `z`, baked into `table`) plus
 /// round-2 prover message. **Packed input** (LSB-first bit packing). **Parallel
 /// by default** via rayon — the outer x_hi loop is distributed across workers,
-/// each writing to a disjoint chunk of `a_folded`/`b_folded` via `par_chunks_mut`
+/// each writing to a disjoint chunk of `a_folded`/`b_folded`
 /// and accumulating its own `(sum1_contrib, sum_inf_contrib)`. The final
 /// reduce sums the per-worker contributions (commutative + associative F192
 /// XOR/multiply).
@@ -380,7 +382,7 @@ unsafe fn fold_one_row_neon_unchecked_8(table_data: *const F192, bytes_ptr: *con
 /// Returns `(a_folded, b_folded, mlv_challenges[0] · G(1), G(∞))` — same
 /// convention as `uni_skip_fold_and_round_pair_naive`.
 ///
-/// To run single-threaded for debugging, set `RAYON_NUM_THREADS=1`.
+/// To run single-threaded for debugging, set `LEANVM_NUM_THREADS=1`.
 ///
 /// `k_skip = 6` is currently hardcoded (the protocol headline).
 pub fn uni_skip_fold_and_round_pair_optimized_packed(
@@ -390,7 +392,7 @@ pub fn uni_skip_fold_and_round_pair_optimized_packed(
     k_skip: usize,
     table: &UniSkipFoldTable,
     mlv_challenges: &[F192],
-) -> (Vec<F192>, Vec<F192>, F192, F192) {
+) -> (ArenaVec<F192>, ArenaVec<F192>, F192, F192) {
     uni_skip_fold_and_round_pair_optimized_packed_padded(
         a_packed,
         b_packed,
@@ -414,9 +416,7 @@ pub fn uni_skip_fold_and_round_pair_optimized_packed_padded(
     table: &UniSkipFoldTable,
     mlv_challenges: &[F192],
     padding: &PaddingSpec,
-) -> (Vec<F192>, Vec<F192>, F192, F192) {
-    use rayon::prelude::*;
-
+) -> (ArenaVec<F192>, ArenaVec<F192>, F192, F192) {
     assert_eq!(k_skip, 6, "optimized fold-and-round_pair variant is k_skip=6 only");
     assert_eq!(table.n_chunks, 8);
     let n_chunks = table.n_chunks;
@@ -425,10 +425,10 @@ pub fn uni_skip_fold_and_round_pair_optimized_packed_padded(
     assert_eq!(b_packed.len(), n_out * n_chunks);
     assert_eq!(mlv_challenges.len(), m - k_skip);
 
-    // The parallel loop overwrites every pooled slot (including padding holes),
-    // avoiding a separate sequential clear of 256 MB at m=29.
-    let mut a_folded: Vec<F192> = primitives::scratch::take_f192(n_out);
-    let mut b_folded: Vec<F192> = primitives::scratch::take_f192(n_out);
+    // SAFETY (x2): the parallel loop below writes every slot (including padding
+    // holes), which is also why no separate 256 MB clear is needed at m = 29.
+    let mut a_folded = unsafe { ArenaVec::<F192>::uninitialized(n_out) };
+    let mut b_folded = unsafe { ArenaVec::<F192>::uninitialized(n_out) };
 
     let eq = SplitEq::new(&mlv_challenges[1..]);
     let lo_size = 1usize << eq.n_lo;
@@ -442,95 +442,99 @@ pub fn uni_skip_fold_and_round_pair_optimized_packed_padded(
 
     // Parallel: each worker writes one disjoint chunk of a_folded/b_folded
     // and returns its (sum1, sum_inf) contribution. Reduce by F192 XOR.
-    let (sum1, sum_inf) = a_folded
-        .par_chunks_mut(chunk_size)
-        .zip(b_folded.par_chunks_mut(chunk_size))
-        .enumerate()
-        .map(|(x_hi, (a_chunk, b_chunk))| {
-            let mut p1_acc = F192Unreduced::ZERO;
-            let mut pinf_acc = F192Unreduced::ZERO;
-            let pair_idx_base = x_hi * lo_size;
-
-            #[cfg(target_arch = "aarch64")]
-            unsafe {
-                let table_ptr = table.data.as_ptr();
-                let a_pkt_ptr = a_packed.as_ptr();
-                let b_pkt_ptr = b_packed.as_ptr();
-                let base = x_hi * chunk_size;
-
-                for x_lo in 0..lo_size {
-                    let x0l = 2 * x_lo;
-                    let x1l = x0l + 1;
-                    if ((pair_idx_base + x_lo) & pair_in_block_mask) >= useful_pairs_inclusive {
-                        // Padding hole: write zero (a_folded/b_folded were alloc'd
-                        // uninit, so we have to write every slot we don't fold into).
-                        a_chunk[x0l] = F192::ZERO;
-                        a_chunk[x1l] = F192::ZERO;
-                        b_chunk[x0l] = F192::ZERO;
-                        b_chunk[x1l] = F192::ZERO;
-                        continue;
-                    }
-                    let x0g = base + 2 * x_lo;
-                    let x1g = x0g + 1;
-
-                    let a0 = fold_one_row_neon_unchecked_8(table_ptr, a_pkt_ptr.add(x0g * 8));
-                    let b0 = fold_one_row_neon_unchecked_8(table_ptr, b_pkt_ptr.add(x0g * 8));
-                    let a1 = fold_one_row_neon_unchecked_8(table_ptr, a_pkt_ptr.add(x1g * 8));
-                    let b1 = fold_one_row_neon_unchecked_8(table_ptr, b_pkt_ptr.add(x1g * 8));
-
-                    a_chunk[x0l] = a0;
-                    a_chunk[x1l] = a1;
-                    b_chunk[x0l] = b0;
-                    b_chunk[x1l] = b1;
-
-                    let eq_l = eq_lo[x_lo];
-                    let g1 = a1 * b1;
-                    p1_acc ^= eq_l.mul_unreduced(g1);
-                    let g_inf = (a0 + a1) * (b0 + b1);
-                    pinf_acc ^= eq_l.mul_unreduced(g_inf);
-                }
-            }
-            #[cfg(not(target_arch = "aarch64"))]
+    let a_chunks = parallel::Chunks::new(&mut a_folded, chunk_size);
+    let b_chunks = parallel::Chunks::new(&mut b_folded, chunk_size);
+    let (sum1, sum_inf) = parallel::map_reduce(
+        a_chunks.count(),
+        || (F192::ZERO, F192::ZERO),
+        |x_hi| {
+            // SAFETY: `x_hi` takes chunk `x_hi` of each output exactly once, and
+            // both buffers stay borrowed for the whole dispatch.
+            let (a_chunk, b_chunk) = unsafe { (a_chunks.get(x_hi), b_chunks.get(x_hi)) };
             {
-                let base = x_hi * chunk_size;
-                for x_lo in 0..lo_size {
-                    let x0l = 2 * x_lo;
-                    let x1l = x0l + 1;
-                    if ((pair_idx_base + x_lo) & pair_in_block_mask) >= useful_pairs_inclusive {
-                        // See aarch64 branch above for why this zero write is needed.
-                        a_chunk[x0l] = F192::ZERO;
-                        a_chunk[x1l] = F192::ZERO;
-                        b_chunk[x0l] = F192::ZERO;
-                        b_chunk[x1l] = F192::ZERO;
-                        continue;
-                    }
-                    let x0g = base + 2 * x_lo;
-                    let x1g = x0g + 1;
-                    let a0 = table.fold_one_row(&a_packed[x0g * n_chunks..(x0g + 1) * n_chunks]);
-                    let b0 = table.fold_one_row(&b_packed[x0g * n_chunks..(x0g + 1) * n_chunks]);
-                    let a1 = table.fold_one_row(&a_packed[x1g * n_chunks..(x1g + 1) * n_chunks]);
-                    let b1 = table.fold_one_row(&b_packed[x1g * n_chunks..(x1g + 1) * n_chunks]);
-                    a_chunk[x0l] = a0;
-                    a_chunk[x1l] = a1;
-                    b_chunk[x0l] = b0;
-                    b_chunk[x1l] = b1;
-                    let eq_l = eq_lo[x_lo];
-                    let g1 = a1 * b1;
-                    p1_acc ^= eq_l.mul_unreduced(g1);
-                    let g_inf = (a0 + a1) * (b0 + b1);
-                    pinf_acc ^= eq_l.mul_unreduced(g_inf);
-                }
-            }
+                let mut p1_acc = F192Unreduced::ZERO;
+                let mut pinf_acc = F192Unreduced::ZERO;
+                let pair_idx_base = x_hi * lo_size;
 
-            let p1 = p1_acc.reduce();
-            let pinf = pinf_acc.reduce();
-            let eq_h = eq_hi[x_hi];
-            (eq_h * p1, eq_h * pinf)
-        })
-        .reduce(
-            || (F192::ZERO, F192::ZERO),
-            |(s1, sinf), (c1, cinf)| (s1 + c1, sinf + cinf),
-        );
+                #[cfg(target_arch = "aarch64")]
+                unsafe {
+                    let table_ptr = table.data.as_ptr();
+                    let a_pkt_ptr = a_packed.as_ptr();
+                    let b_pkt_ptr = b_packed.as_ptr();
+                    let base = x_hi * chunk_size;
+
+                    for x_lo in 0..lo_size {
+                        let x0l = 2 * x_lo;
+                        let x1l = x0l + 1;
+                        if ((pair_idx_base + x_lo) & pair_in_block_mask) >= useful_pairs_inclusive {
+                            // Padding hole: write zero (a_folded/b_folded were alloc'd
+                            // uninit, so we have to write every slot we don't fold into).
+                            a_chunk[x0l] = F192::ZERO;
+                            a_chunk[x1l] = F192::ZERO;
+                            b_chunk[x0l] = F192::ZERO;
+                            b_chunk[x1l] = F192::ZERO;
+                            continue;
+                        }
+                        let x0g = base + 2 * x_lo;
+                        let x1g = x0g + 1;
+
+                        let a0 = fold_one_row_neon_unchecked_8(table_ptr, a_pkt_ptr.add(x0g * 8));
+                        let b0 = fold_one_row_neon_unchecked_8(table_ptr, b_pkt_ptr.add(x0g * 8));
+                        let a1 = fold_one_row_neon_unchecked_8(table_ptr, a_pkt_ptr.add(x1g * 8));
+                        let b1 = fold_one_row_neon_unchecked_8(table_ptr, b_pkt_ptr.add(x1g * 8));
+
+                        a_chunk[x0l] = a0;
+                        a_chunk[x1l] = a1;
+                        b_chunk[x0l] = b0;
+                        b_chunk[x1l] = b1;
+
+                        let eq_l = eq_lo[x_lo];
+                        let g1 = a1 * b1;
+                        p1_acc ^= eq_l.mul_unreduced(g1);
+                        let g_inf = (a0 + a1) * (b0 + b1);
+                        pinf_acc ^= eq_l.mul_unreduced(g_inf);
+                    }
+                }
+                #[cfg(not(target_arch = "aarch64"))]
+                {
+                    let base = x_hi * chunk_size;
+                    for x_lo in 0..lo_size {
+                        let x0l = 2 * x_lo;
+                        let x1l = x0l + 1;
+                        if ((pair_idx_base + x_lo) & pair_in_block_mask) >= useful_pairs_inclusive {
+                            // See aarch64 branch above for why this zero write is needed.
+                            a_chunk[x0l] = F192::ZERO;
+                            a_chunk[x1l] = F192::ZERO;
+                            b_chunk[x0l] = F192::ZERO;
+                            b_chunk[x1l] = F192::ZERO;
+                            continue;
+                        }
+                        let x0g = base + 2 * x_lo;
+                        let x1g = x0g + 1;
+                        let a0 = table.fold_one_row(&a_packed[x0g * n_chunks..(x0g + 1) * n_chunks]);
+                        let b0 = table.fold_one_row(&b_packed[x0g * n_chunks..(x0g + 1) * n_chunks]);
+                        let a1 = table.fold_one_row(&a_packed[x1g * n_chunks..(x1g + 1) * n_chunks]);
+                        let b1 = table.fold_one_row(&b_packed[x1g * n_chunks..(x1g + 1) * n_chunks]);
+                        a_chunk[x0l] = a0;
+                        a_chunk[x1l] = a1;
+                        b_chunk[x0l] = b0;
+                        b_chunk[x1l] = b1;
+                        let eq_l = eq_lo[x_lo];
+                        let g1 = a1 * b1;
+                        p1_acc ^= eq_l.mul_unreduced(g1);
+                        let g_inf = (a0 + a1) * (b0 + b1);
+                        pinf_acc ^= eq_l.mul_unreduced(g_inf);
+                    }
+                }
+
+                let p1 = p1_acc.reduce();
+                let pinf = pinf_acc.reduce();
+                let eq_h = eq_hi[x_hi];
+                (eq_h * p1, eq_h * pinf)
+            }
+        },
+        |(s1, sinf), (c1, cinf)| (s1 + c1, sinf + cinf),
+    );
 
     (a_folded, b_folded, mlv_challenges[0] * sum1, sum_inf)
 }
@@ -542,7 +546,7 @@ pub fn uni_skip_fold_and_round_pair_optimized_packed_padded(
 /// In-place fold of a single multilinear polynomial table at `challenge`.
 /// Pairs `(a[2x], a[2x+1])` collapse to `a[x] = a[2x] + challenge · (a[2x+1] + a[2x])`.
 /// After the call, `a.len()` is halved.
-pub fn fold_in_place_single(a: &mut Vec<F192>, challenge: F192) {
+pub fn fold_in_place_single(a: &mut ArenaVec<F192>, challenge: F192) {
     let n = a.len();
     assert!(n.is_power_of_two() && n >= 2);
     let half = n / 2;
@@ -561,7 +565,7 @@ pub fn fold_in_place_single(a: &mut Vec<F192>, challenge: F192) {
 ///
 /// Used at the tail of the multilinear-round sequence where the polynomial is
 /// small enough that parallel/fusion overhead outweighs benefit.
-pub fn fold_in_place_pair(a: &mut Vec<F192>, b: &mut Vec<F192>, challenge: F192) {
+pub fn fold_in_place_pair(a: &mut ArenaVec<F192>, b: &mut ArenaVec<F192>, challenge: F192) {
     let n = a.len();
     assert_eq!(b.len(), n);
     assert!(n.is_power_of_two() && n >= 2);
@@ -593,15 +597,15 @@ pub fn fold_and_compute_round_pair_optimized(
     b: &[F192],
     r_fold: F192,
     r_next: &[F192],
-) -> (Vec<F192>, Vec<F192>, F192, F192) {
+) -> (ArenaVec<F192>, ArenaVec<F192>, F192, F192) {
     let half = a.len() / 2;
-    let mut a_new = primitives::alloc_uninit(half);
-    let mut b_new = primitives::alloc_uninit(half);
+    let mut a_new = zk_alloc::alloc_uninit(half);
+    let mut b_new = zk_alloc::alloc_uninit(half);
     let (m1, mi) = fold_and_compute_round_pair_into_slots(a, b, &mut a_new, &mut b_new, r_fold, r_next);
     // SAFETY: the fold writes every slot of both output vectors exactly once.
-    let a_new = unsafe { primitives::assume_init(a_new) };
+    let a_new = unsafe { zk_alloc::assume_init(a_new) };
     // SAFETY: the fold writes every slot of both output vectors exactly once.
-    let b_new = unsafe { primitives::assume_init(b_new) };
+    let b_new = unsafe { zk_alloc::assume_init(b_new) };
     (a_new, b_new, m1, mi)
 }
 
@@ -650,8 +654,6 @@ fn fold_and_compute_round_pair_into_slots<O: OutputSlot + Send>(
     r_fold: F192,
     r_next: &[F192],
 ) -> (F192, F192) {
-    use rayon::prelude::*;
-
     let n = a.len();
     assert_eq!(b.len(), n);
     assert!(n.is_power_of_two() && n >= 8);
@@ -673,11 +675,15 @@ fn fold_and_compute_round_pair_into_slots<O: OutputSlot + Send>(
     let eq_lo = &eq.lo;
     let eq_hi = &eq.hi;
 
-    let (sum1, sum_inf) = a_out
-        .par_chunks_mut(chunk_out)
-        .zip(b_out.par_chunks_mut(chunk_out))
-        .enumerate()
-        .map(|(x_hi, (a_out, b_out))| {
+    let a_chunks = parallel::Chunks::new(a_out, chunk_out);
+    let b_chunks = parallel::Chunks::new(b_out, chunk_out);
+    let (sum1, sum_inf) = parallel::map_reduce(
+        a_chunks.count(),
+        || (F192::ZERO, F192::ZERO),
+        |x_hi| {
+            // SAFETY: `x_hi` takes chunk `x_hi` of each output exactly once, and
+            // both buffers stay borrowed for the whole dispatch.
+            let (a_out, b_out) = unsafe { (a_chunks.get(x_hi), b_chunks.get(x_hi)) };
             let a_in = &a[x_hi * chunk_in..(x_hi + 1) * chunk_in];
             let b_in = &b[x_hi * chunk_in..(x_hi + 1) * chunk_in];
 
@@ -862,11 +868,9 @@ fn fold_and_compute_round_pair_into_slots<O: OutputSlot + Send>(
             let pinf = pinf_acc.reduce();
             let eq_h = eq_hi[x_hi];
             (eq_h * p1, eq_h * pinf)
-        })
-        .reduce(
-            || (F192::ZERO, F192::ZERO),
-            |(s1, sinf), (c1, cinf)| (s1 + c1, sinf + cinf),
-        );
+        },
+        |(s1, sinf), (c1, cinf)| (s1 + c1, sinf + cinf),
+    );
 
     (r_next[0] * sum1, sum_inf)
 }
@@ -882,13 +886,14 @@ fn uni_skip_fold_and_round_pair_optimized_packed_serial(
     k_skip: usize,
     table: &UniSkipFoldTable,
     mlv_challenges: &[F192],
-) -> (Vec<F192>, Vec<F192>, F192, F192) {
+) -> (ArenaVec<F192>, ArenaVec<F192>, F192, F192) {
     assert_eq!(k_skip, 6);
     assert_eq!(table.n_chunks, 8);
     let n_chunks = table.n_chunks;
     let n_out = 1usize << (m - k_skip);
-    let mut a_folded = vec![F192::ZERO; n_out];
-    let mut b_folded = vec![F192::ZERO; n_out];
+    // SAFETY (x2): both loops below write every one of the `n_out` slots.
+    let mut a_folded = unsafe { ArenaVec::<F192>::uninitialized(n_out) };
+    let mut b_folded = unsafe { ArenaVec::<F192>::uninitialized(n_out) };
     let eq = SplitEq::new(&mlv_challenges[1..]);
     let lo_size = 1usize << eq.n_lo;
     let hi_size = 1usize << eq.n_hi;
@@ -934,7 +939,7 @@ pub fn uni_skip_fold_and_round_pair_optimized(
     k_skip: usize,
     z: F192,
     mlv_challenges: &[F192],
-) -> (Vec<F192>, Vec<F192>, F192, F192) {
+) -> (ArenaVec<F192>, ArenaVec<F192>, F192, F192) {
     assert_eq!(a.len(), 1usize << m);
     assert_eq!(b.len(), 1usize << m);
     let a_packed = pack_bits(a);
@@ -1122,8 +1127,8 @@ mod tests {
             let b_orig: Vec<F192> = (0..n).map(|_| rng.ext()).collect();
             let challenge = rng.ext();
 
-            let mut a = a_orig.clone();
-            let mut b = b_orig.clone();
+            let mut a = ArenaVec::from_slice(&a_orig);
+            let mut b = ArenaVec::from_slice(&b_orig);
             fold_in_place_pair(&mut a, &mut b, challenge);
 
             assert_eq!(a.len(), n / 2);
@@ -1228,8 +1233,8 @@ mod tests {
                 fold_and_compute_round_pair_optimized(&a, &b, r_fold, &r_next);
 
             // Unfused path: clone, in-place fold, naive message.
-            let mut a_unf = a.clone();
-            let mut b_unf = b.clone();
+            let mut a_unf = ArenaVec::from_slice(&a);
+            let mut b_unf = ArenaVec::from_slice(&b);
             fold_in_place_pair(&mut a_unf, &mut b_unf, r_fold);
             let (m1_unf, minf_unf) = round_pair_naive(&a_unf, &b_unf, &r_next);
 

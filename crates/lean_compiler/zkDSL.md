@@ -7,7 +7,7 @@ exponent" as powers of a fixed generator. For the underlying VM and proving
 system, see [`misc/doc.tex`](../../misc/doc.tex).
 
 Source files use the `.py` extension and are **valid Python**: they import the
-[`snark_lib`](../../snark_lib.py) stub, which defines `GEN`, `log`, `mul_range`,
+[`snark_lib`](snark_lib.py) stub, which defines `GEN`, `log`, `mul_range`,
 `HeapBuf`, `StackBuf`, `pack64x2`, and `blake3` so that editors, linters, and even
 `python3` itself accept the file. The compiler skips the import.
 
@@ -17,10 +17,10 @@ Entry points: `lean_compiler::parse` / `parse_file_with_replacements` →
 ## Dev experience
 
 The repo ships a root [`pyrightconfig.json`](../../pyrightconfig.json) with
-`"extraPaths": ["."]`, so any `.py` program anywhere in the repo resolves
-`snark_lib` when the repo root is opened in the editor. Programs also run as
-plain Python (`PYTHONPATH=. python3 crates/lean_compiler/tests/programs/foo.py`) — the stubs are
-no-ops, so this only checks that the file is well-formed.
+`"extraPaths": ["crates/lean_compiler"]`, so any `.py` program anywhere in the repo
+resolves `snark_lib` when the repo root is opened in the editor. Programs also run as
+plain Python (`PYTHONPATH=crates/lean_compiler python3 crates/lean_compiler/tests/programs/foo.py`);
+the stubs are no-ops, so this only checks that the file is well-formed.
 
 ## The field — and indices in the exponent
 

@@ -19,6 +19,7 @@ use lean_vm::cpu::{Program, prove, verify};
 use lean_vm::leaf::{Block, Coord};
 use lean_vm::transcript::{Sponge, TraceOp, trace_start, trace_take};
 use pcs::ligerito::log2_ceil;
+use primitives::bench::Plan;
 use primitives::multilinear::mle_eval;
 use primitives::{
     field::{F64, F192, G, g_pow},
@@ -149,11 +150,7 @@ fn prove_inner(
     program.set_witness("n_hash", vec![vec![F192::new(g_pow(hashes).0, 0, 0)]]);
     program.set_witness("iters", vec![vec![F192::new(g_pow(iters).0, 0, 0)]]);
     let (proof, stats) = prove(&program, pi, log_inv_rate);
-    eprintln!(
-        "[inner] cycles={} committed=2^{}",
-        pretty_integer(stats.cycles),
-        pretty_f64((stats.committed as f64).log2())
-    );
+    // Reported once, by `run_recursion_with_rates` from `Batch::inner_stats`.
     (program, proof, stats.cycles, stats.committed)
 }
 
@@ -2039,9 +2036,17 @@ fn recursion_guest(inner_program: &Program, nsub: usize) -> Program {
 ///    map needs only that size);
 /// 3. prove the inner proofs (and extract their hints);
 /// 4. prove the recursion, verify, discharge the three reduced claims.
-pub fn run_recursion(inner: &[(usize, usize)], log_inv_rate: usize, enable_tracing: bool) -> RecursiveProof {
+///
+/// Outer proving runs one discarded warmup pass followed by `plan.repeat`
+/// measured passes (see [`primitives::bench`]); the inner proofs are built once.
+pub fn run_recursion(
+    inner: &[(usize, usize)],
+    log_inv_rate: usize,
+    enable_tracing: bool,
+    plan: Plan,
+) -> RecursiveProof {
     let rates = vec![log_inv_rate; inner.len()];
-    run_recursion_with_rates(inner, &rates, log_inv_rate, enable_tracing)
+    run_recursion_with_rates(inner, &rates, log_inv_rate, enable_tracing, plan)
 }
 
 /// Run recursion with one transcript-bound PCS rate per inner proof. The guest
@@ -2051,6 +2056,7 @@ fn run_recursion_with_rates(
     log_inv_rates: &[usize],
     outer_log_inv_rate: usize,
     enable_tracing: bool,
+    plan: Plan,
 ) -> RecursiveProof {
     // 1 + 2: the recursion program is generic — its map needs only the inner
     // bytecode size — so it is compiled FIRST, before any inner proof.
@@ -2069,22 +2075,21 @@ fn run_recursion_with_rates(
     }
     let trace_span =
         tracing::info_span!("Recursive aggregation", n = nsub, log_inv_rate = outer_log_inv_rate).entered();
-    let t = std::time::Instant::now();
-    let (recursive_proof, stats) = batch.prove(&mut guest);
-    let t_prove = t.elapsed();
-    let t = std::time::Instant::now();
-    recursive_proof
-        .verify(&batch.program0)
-        .expect("complete recursive proof verifies");
-    let t_verify = t.elapsed();
+    let ((recursive_proof, stats), prove_time) = plan.warm_then_measure(|| batch.prove(&mut guest));
+    let (_, verify_time) = Plan::new(plan.repeat, 0).measure_quiet(|| {
+        recursive_proof
+            .verify(&batch.program0)
+            .expect("complete recursive proof verifies");
+    });
     // tracing-forest renders a tree when its root span closes. Close it before
     // printing any benchmark/status output so the complete trace appears first.
     drop(trace_span);
 
     println!(
-        "recursion program: {} instructions (2^{} padded), compiled in {t_compile:?}",
+        "recursion program: {} instructions (2^{} padded), compiled in {} s",
         pretty_integer(real_instrs),
-        guest.prog.len().trailing_zeros()
+        guest.prog.len().trailing_zeros(),
+        pretty_f64(t_compile.as_secs_f64())
     );
     for &(cycles, committed) in &batch.inner_stats {
         println!(
@@ -2108,38 +2113,19 @@ fn run_recursion_with_rates(
     );
     let guest_cycles = pretty_integer(stats.cycles);
     println!(
-        "  guest cycles (VM steps)     : {guest_cycles:>14} = {:>9}   ({} / inner cycle)",
+        "  guest cycles (VM steps)     : {guest_cycles} = {}   ({} / inner cycle)",
         pow(stats.cycles),
         pretty_f64(stats.cycles as f64 / total_inner_cycles as f64)
     );
-    for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3", "PACK64X2"]
-        .iter()
-        .zip(&stats.counts)
-    {
-        let count = pretty_integer(c);
-        println!("    {name:<6} instructions     : {count:>14} = {:>9}", pow(c));
-    }
+    println!("    details                   : {}", stats.details());
+    println!("proof size                : {:.1} KiB", proof_bytes as f64 / 1024.0);
     println!(
-        "  committed witness size      : 2^{}",
-        pretty_f64((stats.committed as f64).log2())
+        "recursion proving         : {} s{}      peak memory {} GiB",
+        pretty_f64(prove_time.mean()),
+        prove_time.spread(),
+        pretty_f64(primitives::bench::peak_rss_bytes() as f64 / (1u64 << 30) as f64)
     );
-    println!(
-        "  data memory                 : 2^{} padded (2^{} used)",
-        pretty_integer(stats.log_mem),
-        pretty_f64((stats.mem_used as f64).log2())
-    );
-    println!(
-        "  recursive proof size        : {} KiB",
-        pretty_f64(proof_bytes as f64 / 1024.0)
-    );
-    println!(
-        "  outer proving               : {} s",
-        pretty_f64(t_prove.as_secs_f64())
-    );
-    println!(
-        "  complete recursive verify   : {} s",
-        pretty_f64(t_verify.as_secs_f64())
-    );
+    println!("verification              : {} s", pretty_f64(verify_time.mean()));
     recursive_proof
 }
 
@@ -2182,7 +2168,12 @@ fn recursion_1to1_smoke() {
 /// outer proof, whose three reduced claims are then discharged natively.
 #[test]
 fn recursion_2to1() {
-    run_recursion(&[(8, 34816), (8, 34816)], lean_vm::pcs::LOG_INV_RATE, false);
+    run_recursion(
+        &[(8, 34816), (8, 34816)],
+        lean_vm::pcs::LOG_INV_RATE,
+        false,
+        Plan::default(),
+    );
 }
 
 /// THE genericity milestone: ONE compiled guest bytecode verifies two inner
@@ -2190,7 +2181,7 @@ fn recursion_2to1() {
 /// map depends only on the inner bytecode size, so one map covers both shapes).
 #[test]
 fn recursion_2to1_mixed() {
-    run_recursion_with_rates(&[(4, 1 << 13), (64, 1 << 15)], &[1, 4], 3, false);
+    run_recursion_with_rates(&[(4, 1 << 13), (64, 1 << 15)], &[1, 4], 3, false, Plan::default());
 }
 
 /// Adversarial checks for the remaining named recursion hints. Jagged interval

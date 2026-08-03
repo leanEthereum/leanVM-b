@@ -146,7 +146,7 @@ fn blake3_hash_chain() {
     );
     let proof_bytes = bincode::serialized_size(&proof).expect("proof is serializable");
     println!("  proof size                  : {:.1} KiB", proof_bytes as f64 / 1024.0);
-    println!("  proving (incl. witness gen) : {t_prove:?}");
+    println!("  proving                     : {t_prove:?}");
     println!("  verifying                   : {t_verify:?}");
     let hashes_per_second = (n as f64 / t_prove.as_secs_f64()).round() as u64;
     println!(

@@ -18,6 +18,7 @@
 
 use fiat_shamir::transcript::{ProverState, VerifierState};
 use primitives::field::{F8, F192};
+use zk_alloc::ArenaVec;
 
 use pcs::ntt::{AdditiveNttGf8, InvNttTableByteSingleGf8};
 
@@ -265,19 +266,22 @@ fn prove_packed_padded_inner<O>(
     // fold_in_place_pair + round_pair_naive.
     //
     // Ping-pong scratch buffers for the fused path: each fused round folds
-    // (a_mlv, b_mlv) of size N into size N/2. Rather than allocating — and,
-    // worse, `munmap`-ing, which is single-threaded and caps the tail's
-    // parallel speedup — a fresh 64 MB buffer per round, we alternate between
-    // two persistent buffers. Scratch capacity = N/2 (the largest fused
-    // output); only needed when the first round is actually fused.
+    // (a_mlv, b_mlv) of size N into size N/2. Rather than allocating a fresh
+    // 64 MB buffer per round, we alternate between two persistent ones. Scratch
+    // capacity = N/2 (the largest fused output); only needed when the first
+    // round is actually fused.
     let n_in = a_mlv.len();
     let (mut a_nxt, mut b_nxt) = if n_in >= 1024 {
-        (
-            primitives::scratch::take_f192(n_in / 2),
-            primitives::scratch::take_f192(n_in / 2),
-        )
+        // SAFETY (x2): the fused rounds below write every slot they read; a
+        // buffer is only ever read over the prefix a round just wrote.
+        unsafe {
+            (
+                ArenaVec::<F192>::uninitialized(n_in / 2),
+                ArenaVec::<F192>::uninitialized(n_in / 2),
+            )
+        }
     } else {
-        (Vec::new(), Vec::new())
+        (ArenaVec::new(), ArenaVec::new())
     };
 
     for i in 0..(n_mlv - 1) {
@@ -342,13 +346,6 @@ fn prove_packed_padded_inner<O>(
     // is already transcript-bound and carrying it would be redundant transport.
     ps.add_scalar(final_a_eval);
     ps.add_scalar(final_b_eval);
-
-    // Recycle the four tail buffers (the two len-1 survivors still own their
-    // full round-2 capacity) for the next phase/prove.
-    primitives::scratch::give_f192(a_mlv);
-    primitives::scratch::give_f192(b_mlv);
-    primitives::scratch::give_f192(a_nxt);
-    primitives::scratch::give_f192(b_nxt);
 
     if zc_timing {
         eprintln!(

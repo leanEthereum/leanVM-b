@@ -63,6 +63,7 @@ use crate::merkle::Hash;
 use fiat_shamir::Sponge;
 use primitives::field::{F64, F192};
 use serde::{Deserialize, Serialize};
+use zk_alloc::ArenaVec;
 
 use super::ligerito::{
     LigeritoProof, ProverData, build_eq_table_ext, build_eq_table_ext_parallel, recursive_prover_with_basis,
@@ -368,7 +369,7 @@ pub struct LigVerifierSummary {
 /// overlapping slices accumulate correctly and the OUTER loop stays serial
 /// (several bus claims can land on one column region); parallelism lives
 /// inside each claim's slice add. Small slices stay fully serial: with many
-/// tiny point claims, rayon dispatch would cost more than the fold itself.
+/// tiny point claims, pool dispatch would cost more than the fold itself.
 ///
 /// Equality tensors are built once per DISTINCT point and shared. Under the
 /// Jagged layout each table contributes one claim per column and they all
@@ -385,7 +386,6 @@ fn fold_stacked_point_claims(
     gammas: &[F192],
     jagged_batches: &[JaggedClaimBatch],
 ) {
-    use rayon::prelude::*;
     const PAR_FOLD_THRESHOLD: usize = 1 << 14;
     const PAR_EQ_THRESHOLD: usize = 14;
 
@@ -397,14 +397,17 @@ fn fold_stacked_point_claims(
         }
     }
 
-    let build_eq = |point: &[F192]| -> Vec<F192> {
+    // Arena-backed: the shared tables are the fold's largest transients, and the
+    // parallel builder already returns an `ArenaVec`; the small serial path copies
+    // into one, which at under 2^14 entries is noise.
+    let build_eq = |point: &[F192]| -> ArenaVec<F192> {
         if point.len() < PAR_EQ_THRESHOLD {
-            build_eq_table_ext(point)
+            ArenaVec::from_slice(&build_eq_table_ext(point))
         } else {
             build_eq_table_ext_parallel(point)
         }
     };
-    let mut eq_tables: Vec<(&[F192], Vec<F192>)> = Vec::new();
+    let mut eq_tables: Vec<(&[F192], ArenaVec<F192>)> = Vec::new();
     for (j, claim) in claims.iter().enumerate() {
         if grouped[j] {
             continue;
@@ -443,13 +446,12 @@ fn fold_stacked_point_claims(
         let slot_weights: Vec<F192> = batch.members.iter().map(|&member| gammas[member]).collect();
         let dst = &mut b_stack[batch.offset..batch.offset + batch.height];
         if dst.len() >= PAR_FOLD_THRESHOLD {
-            dst.par_chunks_mut(width)
-                .zip(eq[..rows].par_iter())
-                .for_each(|(row, &er)| {
-                    for (cell, &weight) in row.iter_mut().zip(&slot_weights) {
-                        *cell += weight * er;
-                    }
-                });
+            parallel::chunks_mut(dst, width, |i, row| {
+                let er = eq[i];
+                for (cell, &weight) in row.iter_mut().zip(&slot_weights) {
+                    *cell += weight * er;
+                }
+            });
         } else {
             for (row, &er) in dst.chunks_mut(width).zip(&eq[..rows]) {
                 for (cell, &weight) in row.iter_mut().zip(&slot_weights) {
@@ -483,9 +485,12 @@ fn fold_stacked_point_claims(
                         *bi += g * *ei;
                     }
                 } else {
-                    dst.par_iter_mut()
-                        .zip(eq.par_iter())
-                        .for_each(|(bi, ei)| *bi += g * *ei);
+                    let chunk = parallel::recommended_chunk_size(len);
+                    parallel::chunks_mut_zip(dst, eq, chunk, |_, d, e| {
+                        for (bi, ei) in d.iter_mut().zip(e) {
+                            *bi += g * *ei;
+                        }
+                    });
                 }
             }
             StackClaim::Strided {
@@ -654,18 +659,17 @@ pub fn open_batch_mixed_ligerito_stacked(
         .fold(F192::ZERO, |acc, out| acc + out.batched_sumcheck_claim);
     // Parallel first-touch wins for the tower stack: its many scattered point
     // claims otherwise fault pages one claim at a time.
-    let mut b_stack = primitives::alloc_uninit(stack.len());
+    let mut b_stack = zk_alloc::alloc_uninit(stack.len());
     {
-        use rayon::prelude::*;
         const ZERO_CHUNK: usize = 1 << 16;
-        b_stack.par_chunks_mut(ZERO_CHUNK).for_each(|chunk| {
+        parallel::chunks_mut(&mut b_stack, ZERO_CHUNK, |_, chunk| {
             for value in chunk {
                 value.write(F192::ZERO);
             }
         });
     }
     // SAFETY: the parallel fill initializes every stack weight to zero.
-    let mut b_stack = unsafe { primitives::assume_init(b_stack) };
+    let mut b_stack = unsafe { zk_alloc::assume_init(b_stack) };
     mark("b_stack zero fill", &mut t);
     ring_switch::combine_deferred_into(&rs_outputs, &mut b_stack[ring.offset..ring.offset + qpkd_len]);
     mark("rs_eq_ind scatter", &mut t);
