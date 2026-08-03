@@ -39,9 +39,9 @@ use crate::transcript::{ProverState, VerifierState};
 use crate::witness::Column;
 use primitives::field::{F192, F192Unreduced, mul_by_g, mul_by_g_e};
 use primitives::multilinear::{
-    add3, eq_table, fold_high_inplace, fold_high_k, lagrange_eval, quad_nodes, shrink_eq_high, tri_nodes, xor3,
+    add3, eq_table_arena, fold_high_inplace, fold_high_k, lagrange_eval, quad_nodes, shrink_eq_high, tri_nodes, xor3,
 };
-use rayon::prelude::*;
+use zk_alloc::ArenaVec;
 
 /// One table's involved columns' evaluations at its zerocheck point.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -117,14 +117,15 @@ fn table_message_k(
         ]
     };
     let acc = if half >= PAR_THRESHOLD {
-        (0..half)
-            .into_par_iter()
-            .fold(
-                || ([F192Unreduced::ZERO; 3], vec![F192::ZERO; 3 * ncols]),
-                |(acc, mut scratch), i| (xor3(acc, summand(i, &mut scratch)), scratch),
-            )
-            .map(|(acc, _)| acc)
-            .reduce(|| [F192Unreduced::ZERO; 3], xor3)
+        // The `3 * ncols` scratch is per-worker, not per-row: `map_reduce_with_state`
+        // creates it once and threads it through every row that worker claims.
+        parallel::map_reduce_with_state(
+            half,
+            || vec![F192::ZERO; 3 * ncols],
+            || [F192Unreduced::ZERO; 3],
+            |scratch, acc, i| *acc = xor3(*acc, summand(i, scratch)),
+            xor3,
+        )
     } else {
         let mut scratch = vec![F192::ZERO; 3 * ncols];
         (0..half).fold([F192Unreduced::ZERO; 3], |acc, i| xor3(acc, summand(i, &mut scratch)))
@@ -134,7 +135,7 @@ fn table_message_k(
 
 /// Later active rounds after the table has been lifted into `E`.
 fn table_message_e(
-    cols: &[Vec<F192>],
+    cols: &[ArenaVec<F192>],
     eval: &(dyn Fn(&[F192], &[F192]) -> F192 + Sync),
     pows: &[F192],
     half: usize,
@@ -158,14 +159,15 @@ fn table_message_e(
         ]
     };
     let acc = if half >= PAR_THRESHOLD {
-        (0..half)
-            .into_par_iter()
-            .fold(
-                || ([F192Unreduced::ZERO; 3], vec![F192::ZERO; 3 * ncols]),
-                |(acc, mut scratch), i| (xor3(acc, summand(i, &mut scratch)), scratch),
-            )
-            .map(|(acc, _)| acc)
-            .reduce(|| [F192Unreduced::ZERO; 3], xor3)
+        // The `3 * ncols` scratch is per-worker, not per-row: `map_reduce_with_state`
+        // creates it once and threads it through every row that worker claims.
+        parallel::map_reduce_with_state(
+            half,
+            || vec![F192::ZERO; 3 * ncols],
+            || [F192Unreduced::ZERO; 3],
+            |scratch, acc, i| *acc = xor3(*acc, summand(i, scratch)),
+            xor3,
+        )
     } else {
         let mut scratch = vec![F192::ZERO; 3 * ncols];
         (0..half).fold([F192Unreduced::ZERO; 3], |acc, i| xor3(acc, summand(i, &mut scratch)))
@@ -193,10 +195,13 @@ pub fn prove(
     // challenges and the eq factor, so `weights` is the whole per-table state.
     let mut weights = vec![F192::ONE; airs.len()];
     // ONE eq table over the low (still free) variables serves every active table.
-    let mut eqr = eq_table(&zeta[..n.saturating_sub(1)]);
+    let mut eqr = eq_table_arena(&zeta[..n.saturating_sub(1)]);
     let nd = tri_nodes();
     let mut rho = vec![F192::ZERO; n];
-    let mut folded: Vec<Option<Vec<Vec<F192>>>> = (0..airs.len()).map(|_| None).collect();
+    // The folded tables are the batch's largest transients: one E-lifted copy of
+    // every column of every still-active table. Arena-backed, so they are bumped
+    // rather than mapped afresh each round.
+    let mut folded: Vec<Option<Vec<ArenaVec<F192>>>> = (0..airs.len()).map(|_| None).collect();
     // `k`, the challenges drawn so far, common to every air that is still waiting.
     let mut k = F192::ONE;
     for j in 0..n {
@@ -244,7 +249,12 @@ pub fn prove(
             }
             if let Some(table) = &mut folded[t] {
                 if m >= PAR_THRESHOLD.trailing_zeros() as usize {
-                    table.par_iter_mut().for_each(|c| fold_high_inplace(c, rk));
+                    let cols = parallel::Chunks::new(table, 1);
+                    parallel::for_each(cols.count(), |ci| {
+                        // SAFETY: column `ci` is folded by exactly one task.
+                        let col = unsafe { &mut cols.get(ci)[0] };
+                        fold_high_inplace(col, rk);
+                    });
                 } else {
                     table.iter_mut().for_each(|c| fold_high_inplace(c, rk));
                 }

@@ -1,19 +1,19 @@
 //! Fibonacci in the exponent: the demo benchmark (`buff[g^k] = g^{F(k)}`,
 //! recurrence `buff[i·g²] = buff[i·g] · buff[i]`).
 
-use std::time::Instant;
-
 use lean_compiler::{compile, parse};
 use lean_vm::cpu::{prove, verify};
 use primitives::{
+    bench::Plan,
     field::{F64, F192, g_pow},
     pretty_f64, pretty_integer,
 };
 
 /// Prove and verify Fibonacci-in-the-exponent over a `HeapBuf` (an unrolled
 /// `mul_range` recurrence), binding `g^{F(n)}` as the public input. Prints the
-/// benchmark report.
-pub fn run_fibonacci(n: usize, log_inv_rate: usize) {
+/// benchmark report. Proving runs one discarded warmup pass followed by
+/// `plan.repeat` measured passes (see [`primitives::bench`]).
+pub fn run_fibonacci(n: usize, log_inv_rate: usize, plan: Plan) {
     let trace_span = tracing::info_span!("Fibonacci", n, log_inv_rate).entered();
 
     let (src, pi) = fibonacci_program(n);
@@ -25,12 +25,8 @@ pub fn run_fibonacci(n: usize, log_inv_rate: usize) {
     // verify below reflects steady-state performance.
     lean_vm::blake3_flock::warm_setup(0);
 
-    let t = Instant::now();
-    let (proof, stats) = prove(&program, pi, log_inv_rate);
-    let t_prove = t.elapsed();
-    let t = Instant::now();
-    verify(&program, &pi, &proof).unwrap();
-    let t_verify = t.elapsed();
+    let ((proof, stats), prove_time) = plan.warm_then_measure(|| prove(&program, pi, log_inv_rate));
+    let (_, verify_time) = Plan::new(plan.repeat, 0).measure(|| verify(&program, &pi, &proof).unwrap());
 
     let proof_bytes = bincode::serialized_size(&proof).expect("proof is serializable");
     // tracing-forest renders the tree when its root span closes. Close it
@@ -58,12 +54,22 @@ pub fn run_fibonacci(n: usize, log_inv_rate: usize) {
         pretty_f64((stats.committed as f64).log2())
     );
     println!("  proof size                  : {:.1} KiB", proof_bytes as f64 / 1024.0);
-    println!("  proving (incl. witness gen) : {t_prove:?}");
-    println!("  verifying                   : {t_verify:?}");
-    let cycles_per_second = (stats.cycles as f64 / t_prove.as_secs_f64()).round() as u64;
     println!(
-        "  throughput                  : {} cycles/s",
-        pretty_integer(cycles_per_second)
+        "  proving (incl. witness gen) : {} s{}{}",
+        pretty_f64(prove_time.mean()),
+        prove_time.spread(),
+        prove_time.provenance()
+    );
+    println!(
+        "  verifying                   : {} s{}",
+        pretty_f64(verify_time.mean()),
+        verify_time.spread()
+    );
+    let cycles_per_second = (stats.cycles as f64 / prove_time.mean()).round() as u64;
+    println!(
+        "  throughput                  : {} cycles/s{}",
+        pretty_integer(cycles_per_second),
+        prove_time.spread()
     );
 }
 
@@ -124,6 +130,6 @@ fn fibonacci_program(fib_n: usize) -> (String, [F192; 2]) {
 mod tests {
     #[test]
     fn fibonacci() {
-        super::run_fibonacci(200_000, lean_vm::pcs::LOG_INV_RATE);
+        super::run_fibonacci(200_000, lean_vm::pcs::LOG_INV_RATE, primitives::bench::Plan::default());
     }
 }

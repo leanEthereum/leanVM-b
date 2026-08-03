@@ -214,17 +214,15 @@ impl Sponge {
                 n = n.wrapping_add(1);
             }
         } else {
-            use rayon::prelude::*;
             // `find_first` returns the globally smallest satisfying nonce, so the
-            // proof is deterministic regardless of the block scan.
+            // proof is deterministic regardless of how the scan is claimed.
             let block: u64 = 1 << (bits.min(24) + 1);
             let mut start: u64 = 0;
             loop {
-                if let Some(n) = (start..start.saturating_add(block))
-                    .into_par_iter()
-                    .find_first(|&n| pow_bits_ok(base, F192::new(n, 0, 0), bits))
-                {
-                    break n;
+                if let Some(n) = parallel::find_first(block as usize, |i| {
+                    pow_bits_ok(base, F192::new(start + i as u64, 0, 0), bits)
+                }) {
+                    break start + n as u64;
                 }
                 start = start.saturating_add(block);
             }

@@ -6,7 +6,32 @@
 //! `K`-valued (`F64`) while randomness is `E`-valued (`F192`), so the first
 //! fold of a committed table also lifts it into `E`.
 
+use std::ops::DerefMut;
+
 use crate::field::{F64, F192, F192Unreduced};
+use zk_alloc::ArenaVec;
+
+/// The one thing the in-place folds need beyond a mutable slice: the ability to
+/// drop a suffix. Implemented for `Vec` and `ArenaVec`, so a fold works on either
+/// without duplicating the kernel or naming a container in its signature.
+pub trait Shrink<T>: DerefMut<Target = [T]> {
+    /// Keep the first `len` elements, dropping the rest.
+    fn shrink_to(&mut self, len: usize);
+}
+
+impl<T> Shrink<T> for Vec<T> {
+    #[inline]
+    fn shrink_to(&mut self, len: usize) {
+        self.truncate(len);
+    }
+}
+
+impl<T> Shrink<T> for ArenaVec<T> {
+    #[inline]
+    fn shrink_to(&mut self, len: usize) {
+        self.truncate(len);
+    }
+}
 
 /// Multilinear interpolation in one variable over `E`: `lo + t·(lo+hi)`, the
 /// char-2 form of `(1−t)·lo + t·hi`.
@@ -43,12 +68,25 @@ pub fn eq_eval(r: &[F192], x: &[F192]) -> F192 {
 /// `rk` is loop-invariant, and the scalar product still beats `F192::mul2`
 /// here, 3.37 vs 3.73 ns/entry.)
 ///
-/// A level's pairs are independent, so levels wide enough to cover rayon's
+/// A level's pairs are independent, so levels wide enough to cover the
 /// dispatch are split across threads.
 pub fn eq_table(r: &[F192]) -> Vec<F192> {
-    use rayon::prelude::*;
-
     let mut eq = vec![F192::ZERO; 1usize << r.len()];
+    fill_eq_table(r, &mut eq);
+    eq
+}
+
+/// Arena-backed [`eq_table`], for the prover's large tables. Identical output.
+pub fn eq_table_arena(r: &[F192]) -> ArenaVec<F192> {
+    // SAFETY: `fill_eq_table` writes every one of the `2^r.len()` entries.
+    let mut eq = unsafe { ArenaVec::<F192>::uninitialized(1usize << r.len()) };
+    fill_eq_table(r, &mut eq);
+    eq
+}
+
+/// The doubling recurrence itself, over a caller-supplied `2^r.len()` buffer.
+fn fill_eq_table(r: &[F192], eq: &mut [F192]) {
+    debug_assert_eq!(eq.len(), 1usize << r.len());
     eq[0] = F192::ONE;
     const PAR_THRESHOLD: usize = 1 << 12;
     for (i, &rk) in r.iter().enumerate() {
@@ -64,12 +102,12 @@ pub fn eq_table(r: &[F192]) -> Vec<F192> {
         if half < PAR_THRESHOLD {
             lo.iter_mut().zip(hi.iter_mut()).for_each(|(l, h)| build_pair(l, h));
         } else {
-            lo.par_iter_mut()
-                .zip(hi.par_iter_mut())
-                .for_each(|(l, h)| build_pair(l, h));
+            let chunk = parallel::recommended_chunk_size(half);
+            parallel::chunks_mut2(lo, hi, chunk, |_, lo_c, hi_c| {
+                lo_c.iter_mut().zip(hi_c.iter_mut()).for_each(|(l, h)| build_pair(l, h));
+            });
         }
     }
-    eq
 }
 
 /// The mixed fold: bind the lowest variable of a `K`-table to an
@@ -83,7 +121,7 @@ pub fn fold_low_k(table: &[F64], rho: F192) -> Vec<F192> {
 }
 
 /// Bind the highest variable of a `K`-table and lift the result into `E`.
-pub fn fold_high_k(table: &[F64], rho: F192) -> Vec<F192> {
+pub fn fold_high_k(table: &[F64], rho: F192) -> ArenaVec<F192> {
     debug_assert_eq!(table.len() % 2, 0);
     let half = table.len() / 2;
     (0..half).map(|i| interp_k(table[i], table[i + half], rho)).collect()
@@ -92,35 +130,35 @@ pub fn fold_high_k(table: &[F64], rho: F192) -> Vec<F192> {
 /// Bind the highest free variable of `table` to `rho` in place: `table[i] =
 /// interp(table[i], table[i + half], rho)`. Binding from the top down leaves the
 /// low variables, the ones every table of a batch shares, for last.
-pub fn fold_high_inplace(table: &mut Vec<F192>, rho: F192) {
+pub fn fold_high_inplace<B: Shrink<F192>>(table: &mut B, rho: F192) {
     debug_assert_eq!(table.len() % 2, 0);
     let half = table.len() / 2;
     for i in 0..half {
         table[i] = interp(table[i], table[i + half], rho);
     }
-    table.truncate(half);
+    table.shrink_to(half);
 }
 
 /// Marginalize the lowest variable out of an `eq` table (in place). `eq(r_0, 0) +
 /// eq(r_0, 1) = 1`, so summing adjacent entries drops `r_0` with no multiplies,
 /// versus `2^{n-1}` to rebuild the table.
-pub fn shrink_eq_low(table: &mut Vec<F192>) {
+pub fn shrink_eq_low<B: Shrink<F192>>(table: &mut B) {
     let half = table.len() / 2;
     for i in 0..half {
         table[i] = table[2 * i] + table[2 * i + 1];
     }
-    table.truncate(half);
+    table.shrink_to(half);
 }
 
 /// Marginalize the highest variable out of an `eq` table (in place), the
 /// [`shrink_eq_low`] counterpart for a top-down sumcheck.
-pub fn shrink_eq_high(table: &mut Vec<F192>) {
+pub fn shrink_eq_high<B: Shrink<F192>>(table: &mut B) {
     let half = table.len() / 2;
     for i in 0..half {
         let hi = table[i + half];
         table[i] += hi;
     }
-    table.truncate(half);
+    table.shrink_to(half);
 }
 
 /// Lagrange evaluation: given distinct `nodes` and a polynomial's `values` there,

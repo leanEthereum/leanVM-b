@@ -183,43 +183,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "crossbeam-deque"
-version = "0.8.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9dd111b7b7f7d55b72c0a6ae361660ee5853c9af73f70c3c2ef6858b950e2e51"
-dependencies = [
- "crossbeam-epoch",
- "crossbeam-utils",
-]
-
-[[package]]
-name = "crossbeam-epoch"
-version = "0.9.18"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b82ac4a3c2ca9c3460964f020e1402edd5753411d7737aa39c3714ad1b5420e"
-dependencies = [
- "crossbeam-utils",
-]
-
-[[package]]
-name = "crossbeam-utils"
-version = "0.8.21"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d0a5c400df2834b80a4c3327b3aad3a4c4cd4de0629063962b03235697506a28"
-
-[[package]]
-name = "either"
-version = "1.16.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "91622ff5e7162018101f2fea40d6ebf4a78bbe5a49736a2020649edf9693679e"
-
-[[package]]
 name = "fiat_shamir"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "parallel",
  "primitives",
- "rayon",
  "serde",
 ]
 
@@ -235,9 +204,10 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "fiat_shamir",
+ "parallel",
  "pcs",
  "primitives",
- "rayon",
+ "zk_alloc",
 ]
 
 [[package]]
@@ -289,10 +259,11 @@ dependencies = [
  "blake3",
  "fiat_shamir",
  "flock",
+ "parallel",
  "pcs",
  "primitives",
- "rayon",
  "tracing",
+ "zk_alloc",
 ]
 
 [[package]]
@@ -300,8 +271,10 @@ name = "leanvm-b"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "lean_vm",
  "primitives",
  "rec_aggregation",
+ "zk_alloc",
 ]
 
 [[package]]
@@ -353,16 +326,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
+name = "parallel"
+version = "0.1.0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "pcs"
 version = "0.1.0"
 dependencies = [
  "bincode",
  "blake3",
  "fiat_shamir",
+ "parallel",
  "primitives",
- "rayon",
  "serde",
  "tracing",
+ "zk_alloc",
 ]
 
 [[package]]
@@ -385,10 +366,11 @@ name = "primitives"
 version = "0.1.0"
 dependencies = [
  "bincode",
- "rayon",
+ "parallel",
  "serde",
  "tracing-forest",
  "tracing-subscriber",
+ "zk_alloc",
 ]
 
 [[package]]
@@ -445,26 +427,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rayon"
-version = "1.12.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fb39b166781f92d482534ef4b4b1b2568f42613b53e5b6c160e24cfbfa30926d"
-dependencies = [
- "either",
- "rayon-core",
-]
-
-[[package]]
-name = "rayon-core"
-version = "1.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "22e18b0f0062d30d4230b2e85ff77fdfe4326feb054b9783a3460d8435c8ab91"
-dependencies = [
- "crossbeam-deque",
- "crossbeam-utils",
-]
-
-[[package]]
 name = "rec_aggregation"
 version = "0.1.0"
 dependencies = [
@@ -479,6 +441,7 @@ dependencies = [
  "serde",
  "tracing",
  "xmss",
+ "zk_alloc",
 ]
 
 [[package]]
@@ -745,8 +708,8 @@ version = "0.1.0"
 dependencies = [
  "bincode",
  "blake3",
+ "parallel",
  "rand",
- "rayon",
  "serde",
 ]
 
@@ -768,4 +731,11 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "zk_alloc"
+version = "0.1.0"
+dependencies = [
+ "libc",
 ]

@@ -19,6 +19,7 @@ use lean_vm::cpu::{Program, prove, verify};
 use lean_vm::leaf::{Block, Coord};
 use lean_vm::transcript::{Sponge, TraceOp, trace_start, trace_take};
 use pcs::ligerito::log2_ceil;
+use primitives::bench::Plan;
 use primitives::multilinear::mle_eval;
 use primitives::{
     field::{F64, F192, G, g_pow},
@@ -1993,9 +1994,17 @@ fn recursion_guest(inner_program: &Program, nsub: usize) -> Program {
 ///    map needs only that size);
 /// 3. prove the inner proofs (and extract their hints);
 /// 4. prove the recursion, verify, discharge the three reduced claims.
-pub fn run_recursion(inner: &[(usize, usize)], log_inv_rate: usize, enable_tracing: bool) -> RecursiveProof {
+///
+/// Outer proving runs one discarded warmup pass followed by `plan.repeat`
+/// measured passes (see [`primitives::bench`]); the inner proofs are built once.
+pub fn run_recursion(
+    inner: &[(usize, usize)],
+    log_inv_rate: usize,
+    enable_tracing: bool,
+    plan: Plan,
+) -> RecursiveProof {
     let rates = vec![log_inv_rate; inner.len()];
-    run_recursion_with_rates(inner, &rates, log_inv_rate, enable_tracing)
+    run_recursion_with_rates(inner, &rates, log_inv_rate, enable_tracing, plan)
 }
 
 /// Run recursion with one transcript-bound PCS rate per inner proof. The guest
@@ -2005,6 +2014,7 @@ fn run_recursion_with_rates(
     log_inv_rates: &[usize],
     outer_log_inv_rate: usize,
     enable_tracing: bool,
+    plan: Plan,
 ) -> RecursiveProof {
     // 1 + 2: the recursion program is generic — its map needs only the inner
     // bytecode size — so it is compiled FIRST, before any inner proof.
@@ -2023,14 +2033,12 @@ fn run_recursion_with_rates(
     }
     let trace_span =
         tracing::info_span!("Recursive aggregation", n = nsub, log_inv_rate = outer_log_inv_rate).entered();
-    let t = std::time::Instant::now();
-    let (recursive_proof, stats) = batch.prove(&mut guest);
-    let t_prove = t.elapsed();
-    let t = std::time::Instant::now();
-    recursive_proof
-        .verify(&batch.program0)
-        .expect("complete recursive proof verifies");
-    let t_verify = t.elapsed();
+    let ((recursive_proof, stats), prove_time) = plan.warm_then_measure(|| batch.prove(&mut guest));
+    let (_, verify_time) = Plan::new(plan.repeat, 0).measure(|| {
+        recursive_proof
+            .verify(&batch.program0)
+            .expect("complete recursive proof verifies");
+    });
     // tracing-forest renders a tree when its root span closes. Close it before
     // printing any benchmark/status output so the complete trace appears first.
     drop(trace_span);
@@ -2087,12 +2095,15 @@ fn run_recursion_with_rates(
         pretty_f64(proof_bytes as f64 / 1024.0)
     );
     println!(
-        "  outer proving               : {} s",
-        pretty_f64(t_prove.as_secs_f64())
+        "  outer proving               : {} s{}{}",
+        pretty_f64(prove_time.mean()),
+        prove_time.spread(),
+        prove_time.provenance()
     );
     println!(
-        "  complete recursive verify   : {} s",
-        pretty_f64(t_verify.as_secs_f64())
+        "  complete recursive verify   : {} s{}",
+        pretty_f64(verify_time.mean()),
+        verify_time.spread()
     );
     recursive_proof
 }
@@ -2101,7 +2112,12 @@ fn run_recursion_with_rates(
 /// by one guest, then its three reduced claims are discharged natively.
 #[test]
 fn recursion_2to1() {
-    run_recursion(&[(8, 1 << 15), (8, 1 << 15)], lean_vm::pcs::LOG_INV_RATE, false);
+    run_recursion(
+        &[(8, 1 << 15), (8, 1 << 15)],
+        lean_vm::pcs::LOG_INV_RATE,
+        false,
+        Plan::default(),
+    );
 }
 
 /// THE genericity milestone: ONE compiled guest bytecode verifies two inner
@@ -2109,7 +2125,7 @@ fn recursion_2to1() {
 /// map depends only on the inner bytecode size, so one map covers both shapes).
 #[test]
 fn recursion_2to1_mixed() {
-    run_recursion_with_rates(&[(4, 1 << 13), (64, 1 << 15)], &[1, 4], 3, false);
+    run_recursion_with_rates(&[(4, 1 << 13), (64, 1 << 15)], &[1, 4], 3, false, Plan::default());
 }
 
 /// One compiled guest bytecode proves MANY inner runs with wildly different

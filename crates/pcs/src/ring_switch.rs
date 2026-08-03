@@ -303,65 +303,60 @@ pub fn fold_1b_rows(packed_witness: &[F64], suffix_tensor: &[F192]) -> Vec<F192>
 /// Reuse lincheck's partial fold to derive the 64 slice evaluations needed by
 /// the K ring switch, avoiding a second pass over the packed witness.
 pub fn s_hat_v_from_z_vec(z_vec: &[F192], inner_rest_tail: &[F192]) -> Vec<F192> {
-    use rayon::prelude::*;
     let n_packed = PACKING_WIDTH;
     let n_tail = 1usize << inner_rest_tail.len();
     assert_eq!(z_vec.len(), n_packed * n_tail);
     if inner_rest_tail.is_empty() {
         return z_vec.to_vec();
     }
-    build_eq_table_ext(inner_rest_tail)
-        .par_iter()
-        .enumerate()
-        .fold(
-            || vec![F192::ZERO; n_packed],
-            |mut acc, (k, &weight)| {
-                for (slot, &value) in acc.iter_mut().zip(&z_vec[k * n_packed..(k + 1) * n_packed]) {
-                    *slot += weight * value;
-                }
-                acc
-            },
-        )
-        .reduce(
-            || vec![F192::ZERO; n_packed],
-            |mut acc, part| {
-                for (slot, value) in acc.iter_mut().zip(part) {
-                    *slot += value;
-                }
-                acc
-            },
-        )
+    let eq = build_eq_table_ext(inner_rest_tail);
+    parallel::fold_reduce(
+        eq.len(),
+        || vec![F192::ZERO; n_packed],
+        |acc, k| {
+            let weight = eq[k];
+            for (slot, &value) in acc.iter_mut().zip(&z_vec[k * n_packed..(k + 1) * n_packed]) {
+                *slot += weight * value;
+            }
+        },
+        |mut acc, part| {
+            for (slot, value) in acc.iter_mut().zip(part) {
+                *slot += value;
+            }
+            acc
+        },
+    )
 }
 
 /// Scalar reference path of [`fold_1b_rows`]: mirror of
-/// `ring_switch::fold_1b_rows_naive` at 64-bit width, a rayon bit-scan with
+/// `ring_switch::fold_1b_rows_naive` at 64-bit width, a parallel bit-scan with
 /// per-thread length-64 partial accumulators XOR-reduced at the end.
 /// Data-dependent cost: `trailing_zeros` + RMW + branch per set bit
 /// (~32/word on a random witness).
 fn fold_1b_rows_scalar(packed_witness: &[F64], suffix_tensor: &[F192]) -> Vec<F192> {
-    use rayon::prelude::*;
     assert_eq!(packed_witness.len(), suffix_tensor.len());
     let n = PACKING_WIDTH;
     let zero_acc = || vec![F192::ZERO; n];
 
-    packed_witness
-        .par_iter()
-        .zip(suffix_tensor.par_iter())
-        .fold(zero_acc, |mut acc, (elem, &w)| {
-            let mut bits = elem.0;
+    parallel::fold_reduce(
+        packed_witness.len(),
+        zero_acc,
+        |acc, i| {
+            let w = suffix_tensor[i];
+            let mut bits = packed_witness[i].0;
             while bits != 0 {
                 let r = bits.trailing_zeros() as usize;
                 acc[r] += w;
                 bits &= bits - 1;
             }
-            acc
-        })
-        .reduce(zero_acc, |mut a, b| {
+        },
+        |mut a, b| {
             for (av, bv) in a.iter_mut().zip(b.iter()) {
                 *av += *bv;
             }
             a
-        })
+        },
+    )
 }
 
 /// Build the 16-entry subset-sum lookup table over 4 E elements:
@@ -394,18 +389,19 @@ fn subset_sums_4_ext(elems: [F192; 4]) -> [F192; 16] {
 /// output position then costs two table lookups + one in-register add + one
 /// accumulator RMW, regardless of bit density: a constant ~12 adds + 8 RMWs
 /// per word vs the scalar path's ~32 data-dependent conditional adds.
-/// Per-thread accumulators via rayon fold/reduce (no shared cache lines).
+/// Per-worker accumulators via `parallel::fold_reduce` (no shared cache lines).
 fn fold_1b_rows_mfr_8wide(packed_witness: &[F64], suffix_tensor: &[F192]) -> Vec<F192> {
-    use rayon::prelude::*;
     let n = PACKING_WIDTH;
     assert_eq!(packed_witness.len(), suffix_tensor.len());
     assert!(packed_witness.len().is_multiple_of(8));
     let zero_acc = || vec![F192::ZERO; n];
 
-    packed_witness
-        .par_chunks(8)
-        .zip(suffix_tensor.par_chunks(8))
-        .fold(zero_acc, |mut acc, (m_chunk, t_chunk)| {
+    parallel::fold_reduce(
+        packed_witness.len() / 8,
+        zero_acc,
+        |acc, c| {
+            let m_chunk = &packed_witness[8 * c..8 * c + 8];
+            let t_chunk = &suffix_tensor[8 * c..8 * c + 8];
             let lo_tbl = subset_sums_4_ext([t_chunk[0], t_chunk[1], t_chunk[2], t_chunk[3]]);
             let hi_tbl = subset_sums_4_ext([t_chunk[4], t_chunk[5], t_chunk[6], t_chunk[7]]);
 
@@ -429,14 +425,14 @@ fn fold_1b_rows_mfr_8wide(packed_witness: &[F64], suffix_tensor: &[F192]) -> Vec
                     acc[base + p] += lo_tbl[(mask & 0x0F) as usize] + hi_tbl[(mask >> 4) as usize];
                 }
             }
-            acc
-        })
-        .reduce(zero_acc, |mut a, b| {
+        },
+        |mut a, b| {
             for (av, bv) in a.iter_mut().zip(b.iter()) {
                 *av += *bv;
             }
             a
-        })
+        },
+    )
 }
 
 /// Compute `rs_eq_ind`, the transparent E-valued weight vector over the
@@ -445,37 +441,34 @@ fn fold_1b_rows_mfr_8wide(packed_witness: &[F64], suffix_tensor: &[F192]) -> Vec
 ///
 /// `rs_eq_ind[y] = sum_w bit_w(suffix_tensor[y]) * coordinate_weights[w]`
 ///
-/// Naive reference: rayon per-position bit-scan over the three 64-bit limbs.
+/// Naive reference: a per-position bit-scan over the three 64-bit limbs.
 /// See [`fold_ext_elems`] for the bytewise-table production version.
 #[cfg(test)]
 pub fn fold_ext_elems_naive(suffix_tensor: &[F192], coordinate_weights: &[F192]) -> Vec<F192> {
-    use rayon::prelude::*;
     assert_eq!(coordinate_weights.len(), DEGREE_E);
-    suffix_tensor
-        .par_iter()
-        .map(|&elem| {
-            let mut acc = F192::ZERO;
-            let mut c0 = elem.c0;
-            while c0 != 0 {
-                let w = c0.trailing_zeros() as usize;
-                acc += coordinate_weights[w];
-                c0 &= c0 - 1;
-            }
-            let mut c1 = elem.c1;
-            while c1 != 0 {
-                let w = c1.trailing_zeros() as usize;
-                acc += coordinate_weights[64 | w];
-                c1 &= c1 - 1;
-            }
-            let mut c2 = elem.c2;
-            while c2 != 0 {
-                let w = c2.trailing_zeros() as usize;
-                acc += coordinate_weights[128 | w];
-                c2 &= c2 - 1;
-            }
-            acc
-        })
-        .collect()
+    parallel::map_collect(suffix_tensor.len(), |i| {
+        let elem = suffix_tensor[i];
+        let mut acc = F192::ZERO;
+        let mut c0 = elem.c0;
+        while c0 != 0 {
+            let w = c0.trailing_zeros() as usize;
+            acc += coordinate_weights[w];
+            c0 &= c0 - 1;
+        }
+        let mut c1 = elem.c1;
+        while c1 != 0 {
+            let w = c1.trailing_zeros() as usize;
+            acc += coordinate_weights[64 | w];
+            c1 &= c1 - 1;
+        }
+        let mut c2 = elem.c2;
+        while c2 != 0 {
+            let w = c2.trailing_zeros() as usize;
+            acc += coordinate_weights[128 | w];
+            c2 &= c2 - 1;
+        }
+        acc
+    })
 }
 
 /// Number of bytes in an E element (= lookup tables for the fold).
@@ -556,8 +549,6 @@ pub(crate) fn prove_finish_deferred(
 /// basis. Every output slot is written exactly once; no per-claim dense
 /// vectors are allocated or read back.
 pub(crate) fn combine_deferred_into(outputs: &[DeferredRingSwitchOutput], out: &mut [F192]) {
-    use rayon::prelude::*;
-
     assert!(!outputs.is_empty());
     let block_len = outputs[0].eq_lo.len();
     assert!(block_len.is_power_of_two());
@@ -567,7 +558,7 @@ pub(crate) fn combine_deferred_into(outputs: &[DeferredRingSwitchOutput], out: &
             .all(|o| { o.eq_lo.len() == block_len && o.eq_lo.len() * o.eq_hi.len() == out.len() })
     );
 
-    out.par_chunks_mut(block_len).enumerate().for_each(|(hi, out_block)| {
+    parallel::chunks_mut(out, block_len, |hi, out_block| {
         for (claim_idx, claim) in outputs.iter().enumerate() {
             let e_hi = claim.eq_hi[hi];
             if claim_idx == 0 {
@@ -609,26 +600,20 @@ pub fn build_eq_split_ext(point: &[F192]) -> (Vec<F192>, Vec<F192>) {
 /// `2^n`-entry tensor is never materialized. Bit-identical output.
 #[cfg(test)]
 pub fn fold_ext_elems_split(eq_lo: &[F192], eq_hi: &[F192], coordinate_weights: &[F192]) -> Vec<F192> {
-    use rayon::prelude::*;
     let tables = build_fold_byte_table_ext(coordinate_weights);
     let n_lo = eq_lo.len();
     debug_assert!(n_lo.is_power_of_two());
     let mask = n_lo - 1;
     let shift = n_lo.trailing_zeros();
-    (0..n_lo * eq_hi.len())
-        .into_par_iter()
-        .map(|y| fold_one_slot_ext(eq_lo[y & mask] * eq_hi[y >> shift], &tables))
-        .collect()
+    parallel::map_collect(n_lo * eq_hi.len(), |y| {
+        fold_one_slot_ext(eq_lo[y & mask] * eq_hi[y >> shift], &tables)
+    })
 }
 
 #[cfg(test)]
 pub fn fold_ext_elems(suffix_tensor: &[F192], coordinate_weights: &[F192]) -> Vec<F192> {
-    use rayon::prelude::*;
     let tables = build_fold_byte_table_ext(coordinate_weights);
-    suffix_tensor
-        .par_iter()
-        .map(|&elem| fold_one_slot_ext(elem, &tables))
-        .collect()
+    parallel::map_collect(suffix_tensor.len(), |i| fold_one_slot_ext(suffix_tensor[i], &tables))
 }
 
 // ---------------------------------------------------------------------------
@@ -749,13 +734,9 @@ pub fn prove_observe(
             v.to_vec()
         }
         None => {
-            use rayon::prelude::*;
             let mask = eq_lo.len() - 1;
             let shift = eq_lo.len().trailing_zeros();
-            let full: Vec<F192> = (0..packed_witness.len())
-                .into_par_iter()
-                .map(|y| eq_lo[y & mask] * eq_hi[y >> shift])
-                .collect();
+            let full: Vec<F192> = parallel::map_collect(packed_witness.len(), |y| eq_lo[y & mask] * eq_hi[y >> shift]);
             fold_1b_rows(packed_witness, &full)
         }
     };
@@ -1442,7 +1423,7 @@ mod tests {
         let lig_proof = recursive_prover_with_basis(
             &pc,
             &packed,
-            out.rs_eq_ind,
+            zk_alloc::ArenaVec::from_slice(&out.rs_eq_ind),
             out.sumcheck_claim,
             &pd.codeword,
             &pd.merkle_tree,

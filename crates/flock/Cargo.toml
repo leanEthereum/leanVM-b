@@ -7,10 +7,12 @@ edition.workspace = true
 workspace = true
 
 [dependencies]
+parallel.workspace = true
 primitives.workspace = true
 fiat_shamir.workspace = true
 pcs.workspace = true
-rayon.workspace = true
 blake3.workspace = true
+zk_alloc.workspace = true
 
 [dev-dependencies]
+zk_alloc.workspace = true

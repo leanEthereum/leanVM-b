@@ -39,6 +39,7 @@ use flock::blake3::{
 use flock::verifier::VerifyError;
 use primitives::field::{F64, F192};
 use primitives::multilinear::lagrange_weights_naive;
+use zk_alloc::ArenaVec;
 
 /// A `ẑ(point) = value` claim on the committed witness `q_pkd`, recovered by the
 /// Flock zerocheck + lincheck reduction ([`prove_reduction`] / [`verify_reduction`])
@@ -63,10 +64,10 @@ pub const PACKED_PER_INSTANCE: usize = 1 << (K_LOG - LOG_PACKING);
 /// across commit, bus, and constraint proving to save one witness pass.
 pub(crate) struct PreparedReductionWitness {
     n_blocks: usize,
-    z_packed: Vec<F192>,
-    a_packed: Vec<F192>,
-    b_packed: Vec<F192>,
-    z_lincheck: Vec<u8>,
+    z_packed: ArenaVec<F192>,
+    a_packed: ArenaVec<F192>,
+    b_packed: ArenaVec<F192>,
+    z_lincheck: ArenaVec<u8>,
 }
 
 impl PreparedReductionWitness {

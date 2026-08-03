@@ -20,3 +20,4 @@ tracing.workspace = true
 blake3.workspace = true
 
 [dev-dependencies]
+zk_alloc.workspace = true

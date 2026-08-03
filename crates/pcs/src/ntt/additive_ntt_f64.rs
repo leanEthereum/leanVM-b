@@ -169,7 +169,6 @@ impl AdditiveNttF64 {
         num_ntts: usize,
         start_layer: usize,
     ) {
-        use rayon::prelude::*;
         let n_total = data.len();
         let log_d = log2_pow2(n_total / num_ntts);
 
@@ -182,7 +181,7 @@ impl AdditiveNttF64 {
         const PARALLEL_FLOOR_LOG_D: usize = 12;
         const MIN_SUB_LOG: usize = 8;
         let n_top = if log_d >= PARALLEL_FLOOR_LOG_D {
-            let want_subs_log = log2_pow2(rayon::current_num_threads().next_power_of_two());
+            let want_subs_log = log2_pow2(parallel::num_threads().next_power_of_two());
             let max_n_top = log_d.saturating_sub(MIN_SUB_LOG);
             cache_n_top.max(want_subs_log.min(max_n_top))
         } else {
@@ -259,24 +258,22 @@ impl AdditiveNttF64 {
         // Deep layers: parallel cache-resident sub-NTTs.
         let sub_size_positions = 1usize << (log_d - n_top);
         let sub_elems = sub_size_positions * num_ntts;
-        data.par_chunks_mut(sub_elems)
-            .enumerate()
-            .for_each(|(sub_idx, sub_data)| {
-                for layer in n_top.max(start_layer)..log_d {
-                    let layer_in_sub = layer - n_top;
-                    let num_blocks_in_sub = 1usize << layer_in_sub;
-                    let block_size = 1usize << (log_d - layer);
-                    let block_size_half = block_size >> 1;
-                    let block_elems = block_size * num_ntts;
-                    for block_in_sub in 0..num_blocks_in_sub {
-                        let global_block = sub_idx * num_blocks_in_sub + block_in_sub;
-                        let twiddle = self.twiddle(layer, global_block);
-                        let block_start = block_in_sub * block_elems;
-                        let block = &mut sub_data[block_start..block_start + block_elems];
-                        butterfly_interleaved_block(block, twiddle, block_size_half, num_ntts);
-                    }
+        parallel::chunks_mut(data, sub_elems, |sub_idx, sub_data| {
+            for layer in n_top.max(start_layer)..log_d {
+                let layer_in_sub = layer - n_top;
+                let num_blocks_in_sub = 1usize << layer_in_sub;
+                let block_size = 1usize << (log_d - layer);
+                let block_size_half = block_size >> 1;
+                let block_elems = block_size * num_ntts;
+                for block_in_sub in 0..num_blocks_in_sub {
+                    let global_block = sub_idx * num_blocks_in_sub + block_in_sub;
+                    let twiddle = self.twiddle(layer, global_block);
+                    let block_start = block_in_sub * block_elems;
+                    let block = &mut sub_data[block_start..block_start + block_elems];
+                    butterfly_interleaved_block(block, twiddle, block_size_half, num_ntts);
                 }
-            });
+            }
+        });
     }
 
     /// Inverse additive NTT in place (scalar). Exact inverse of the forward
@@ -303,7 +300,6 @@ impl AdditiveNttF64 {
 }
 
 fn butterfly_interleaved_block_par_rows(block: &mut [F64], twiddle: F64, block_size_half: usize, num_ntts: usize) {
-    use rayon::prelude::*;
     const PARALLEL_ROW_THRESHOLD: usize = 1024;
     if block_size_half < PARALLEL_ROW_THRESHOLD {
         butterfly_interleaved_block(block, twiddle, block_size_half, num_ntts);
@@ -311,11 +307,14 @@ fn butterfly_interleaved_block_par_rows(block: &mut [F64], twiddle: F64, block_s
     }
     let half_offset = block_size_half * num_ntts;
     let (top, bot) = block.split_at_mut(half_offset);
-    top.par_chunks_mut(num_ntts)
-        .zip(bot.par_chunks_mut(num_ntts))
-        .for_each(|(top_row, bot_row)| {
-            butterfly_lanes(top_row, bot_row, twiddle);
-        });
+    let bot_base = parallel::SendPtr(bot.as_mut_ptr());
+    parallel::chunks_mut(top, num_ntts, |r, top_row| {
+        // SAFETY: distinct `r` take disjoint `num_ntts`-windows of `bot`, the
+        // same windows `chunks_mut` just proved disjoint in `top`; the two halves
+        // are themselves disjoint by `split_at_mut`.
+        let bot_row = unsafe { bot_base.slice(r * num_ntts, top_row.len()) };
+        butterfly_lanes(top_row, bot_row, twiddle);
+    });
 }
 
 /// Fused 2-layer butterfly, row-parallel; see the extension-field twin for the shape.
@@ -333,7 +332,6 @@ fn butterfly_interleaved_block_par_rows(block: &mut [F64], twiddle: F64, block_s
 /// `t` holds the seven twiddles breadth-first: `t[0]` is layer L, `t[1..3]`
 /// layer L+1 (one per half), `t[3..7]` layer L+2 (one per quarter).
 fn butterfly_interleaved_fused_3layer_par_rows(block: &mut [F64], t: &[F64; 7], eighth: usize, num_ntts: usize) {
-    use rayon::prelude::*;
     const PARALLEL_ROW_THRESHOLD: usize = 512;
     let stride = eighth * num_ntts;
     debug_assert_eq!(block.len(), 8 * stride);
@@ -358,42 +356,26 @@ fn butterfly_interleaved_fused_3layer_par_rows(block: &mut [F64], t: &[F64; 7], 
         butterfly_lanes(r6, r7, t[6]);
     };
 
-    let (h0, h1) = block.split_at_mut(4 * stride);
-    let (q0, q1) = h0.split_at_mut(2 * stride);
-    let (q2, q3) = h1.split_at_mut(2 * stride);
-    let (e0, e1) = q0.split_at_mut(stride);
-    let (e2, e3) = q1.split_at_mut(stride);
-    let (e4, e5) = q2.split_at_mut(stride);
-    let (e6, e7) = q3.split_at_mut(stride);
+    // Row group `r` owns the eight windows `block[i·stride + r·num_ntts ..
+    // + num_ntts]` for `i ∈ 0..8`. Distinct `r` give disjoint windows within each
+    // eighth, and the eighths are disjoint by construction, so the groups are
+    // pairwise disjoint — which is what makes one pointer plus an index sound
+    // where eight nested `split_at_mut`s would be needed to say the same thing.
+    let base = parallel::SendPtr(block.as_mut_ptr());
+    let group = |r: usize| {
+        let off = r * num_ntts;
+        // SAFETY: see the disjointness argument above; `off + num_ntts <= stride`
+        // because `r < eighth`.
+        let mut rows: [&mut [F64]; 8] = std::array::from_fn(|i| unsafe { base.slice(i * stride + off, num_ntts) });
+        do_one(&mut rows);
+    };
 
     if eighth < PARALLEL_ROW_THRESHOLD {
         for r in 0..eighth {
-            let off = r * num_ntts;
-            let mut rows = [
-                &mut e0[off..off + num_ntts],
-                &mut e1[off..off + num_ntts],
-                &mut e2[off..off + num_ntts],
-                &mut e3[off..off + num_ntts],
-                &mut e4[off..off + num_ntts],
-                &mut e5[off..off + num_ntts],
-                &mut e6[off..off + num_ntts],
-                &mut e7[off..off + num_ntts],
-            ];
-            do_one(&mut rows);
+            group(r);
         }
     } else {
-        e0.par_chunks_mut(num_ntts)
-            .zip(e1.par_chunks_mut(num_ntts))
-            .zip(e2.par_chunks_mut(num_ntts))
-            .zip(e3.par_chunks_mut(num_ntts))
-            .zip(e4.par_chunks_mut(num_ntts))
-            .zip(e5.par_chunks_mut(num_ntts))
-            .zip(e6.par_chunks_mut(num_ntts))
-            .zip(e7.par_chunks_mut(num_ntts))
-            .for_each(|(((((((a, b), c), d), e), f), g), h)| {
-                let mut rows = [a, b, c, d, e, f, g, h];
-                do_one(&mut rows);
-            });
+        parallel::for_each(eighth, group);
     }
 }
 
@@ -405,7 +387,6 @@ fn butterfly_interleaved_fused_2layer_par_rows(
     quarter: usize,
     num_ntts: usize,
 ) {
-    use rayon::prelude::*;
     const PARALLEL_ROW_THRESHOLD: usize = 512;
     let stride = quarter * num_ntts;
     debug_assert_eq!(block.len(), 4 * stride);
@@ -419,27 +400,24 @@ fn butterfly_interleaved_fused_2layer_par_rows(
         butterfly_lanes(row_c, row_d, t_inner_b);
     };
 
-    let (top_half, bot_half) = block.split_at_mut(2 * stride);
-    let (q1, q2) = top_half.split_at_mut(stride);
-    let (q3, q4) = bot_half.split_at_mut(stride);
+    // Same disjointness as the fused-3 kernel, four quarters instead of eight
+    // eighths: row group `r` owns `block[i·stride + r·num_ntts .. + num_ntts]`
+    // for `i ∈ 0..4`.
+    let base = parallel::SendPtr(block.as_mut_ptr());
+    let group = |r: usize| {
+        let off = r * num_ntts;
+        // SAFETY: distinct `r` give disjoint windows, and `off + num_ntts <=
+        // stride` because `r < quarter`.
+        let [a, b, c, d] = std::array::from_fn(|i| unsafe { base.slice(i * stride + off, num_ntts) });
+        do_one(a, b, c, d);
+    };
 
     if quarter < PARALLEL_ROW_THRESHOLD {
         for r in 0..quarter {
-            let off = r * num_ntts;
-            let (q1r, _) = q1[off..].split_at_mut(num_ntts);
-            let (q2r, _) = q2[off..].split_at_mut(num_ntts);
-            let (q3r, _) = q3[off..].split_at_mut(num_ntts);
-            let (q4r, _) = q4[off..].split_at_mut(num_ntts);
-            do_one(q1r, q2r, q3r, q4r);
+            group(r);
         }
     } else {
-        q1.par_chunks_mut(num_ntts)
-            .zip(q2.par_chunks_mut(num_ntts))
-            .zip(q3.par_chunks_mut(num_ntts))
-            .zip(q4.par_chunks_mut(num_ntts))
-            .for_each(|(((row_a, row_b), row_c), row_d)| {
-                do_one(row_a, row_b, row_c, row_d);
-            });
+        parallel::for_each(quarter, group);
     }
 }
 

@@ -7,8 +7,14 @@
 //!
 //! Run with the XMSS-sized workload:
 //! ```text
-//! RAYON_NUM_THREADS=11 FLOCK_N_LOG=17 cargo test --release -p flock --test blake3_batch -- --ignored --nocapture
+//! LEANVM_NUM_THREADS=11 FLOCK_N_LOG=17 cargo test --release -p flock --test blake3_batch -- --ignored --nocapture
 //! ```
+//!
+//! `BENCH_REPEAT=n` averages `n` measured passes after the warmup pass, and
+//! `BENCH_COOLDOWN_MS=6000` spaces them so a thermally limited laptop does not
+//! report its power budget as proving cost. One warmup always runs: a cold pass
+//! pays thread-pool spawn, first-touch page faults, and setup-table construction
+//! that steady-state proving does not (see [`primitives::bench`]).
 
 use std::time::Instant;
 
@@ -25,6 +31,7 @@ use pcs::stack_open::{
     RingSwitchClaim, RingSwitchOpen, RingSwitchVerify, open_batch_mixed_ligerito_stacked,
     verify_opening_batch_mixed_ligerito_stacked,
 };
+use primitives::bench::{Plan, Timing};
 use primitives::multilinear::lagrange_weights_naive;
 use primitives::{
     field::{F64, F192},
@@ -131,58 +138,106 @@ fn blake3_batch_prove_verify() {
     let setup = Blake3Setup::new(n);
     let setup_ms = t.elapsed().as_secs_f64() * 1e3;
 
-    let t = Instant::now();
-    let (z_packed, a_packed, b_packed, z_lincheck) = generate_witness_with_ab_packed_and_lincheck(&blocks, n_log);
-    let q_pkd = flatten_packed(&z_packed);
-    let witness_ms = t.elapsed().as_secs_f64() * 1e3;
-    assert_eq!(q_pkd.len(), 1 << mu);
-
     let (prover_config, verifier_config) = configs_for(mu).expect("Ligerito configuration");
-    let mut ps = ProverState::<()>::new(b"flock-blake3-batch", &[]);
-    let t_prove = Instant::now();
 
-    let t = Instant::now();
-    let (commitment, prover_data) = commit(&q_pkd, INITIAL_FOLDING_FACTOR, LOG_INV_RATE_0);
-    ps.add_scalars(&pcs::merkle::hash_to_scalars(&commitment.root));
-    let commit_ms = t.elapsed().as_secs_f64() * 1e3;
+    // One full prove pass: witness generation, commitment, and the reduction +
+    // stacked opening. Deterministic in `blocks`, so every pass is the same work
+    // on the same shape and their timings are directly comparable.
+    //
+    // Each pass is one arena phase, matching how the VM prover runs. Only the
+    // transcript and the opening escape, and both are plain `Vec` proof data, so
+    // nothing here outlives its phase. `setup` is built above, outside any phase,
+    // because it is cached across passes.
+    zk_alloc::enable_arena();
+    let prove_pass = || {
+        let _phase = zk_alloc::enter_phase();
+        let t = Instant::now();
+        let (z_packed, a_packed, b_packed, z_lincheck) = generate_witness_with_ab_packed_and_lincheck(&blocks, n_log);
+        let q_pkd = flatten_packed(&z_packed);
+        let witness_s = t.elapsed().as_secs_f64();
+        assert_eq!(q_pkd.len(), 1 << mu);
 
-    let t = Instant::now();
-    let reduced = setup.prove_reduction_precomputed(&z_packed, &a_packed, &b_packed, &z_lincheck, &mut ps);
-    drop((z_packed, a_packed, b_packed, z_lincheck));
-    let ring = prover_ring(&reduced, mu);
-    let opening = open_batch_mixed_ligerito_stacked(ps.sponge_mut(), &q_pkd, &prover_data, &prover_config, &[], &ring);
-    let open_ms = t.elapsed().as_secs_f64() * 1e3;
-    let prove_s = t_prove.elapsed().as_secs_f64();
-    let transcript = ps.into_proof();
+        let mut ps = ProverState::<()>::new(b"flock-blake3-batch", &[]);
+        let t_prove = Instant::now();
 
-    let t = Instant::now();
-    let mut vs = VerifierState::<()>::new(b"flock-blake3-batch", &transcript, &[]);
-    let root = pcs::merkle::scalars_to_hash(&vs.next_scalars(2).expect("commitment root"));
-    let replay = setup.verify_reduction(&mut vs).expect("Flock reduction verifies");
-    let ring = verifier_ring(&replay.ab, &replay.c, mu);
-    verify_opening_batch_mixed_ligerito_stacked(vs.sponge_mut(), &verifier_config, mu, &root, &[], &ring, &opening)
-        .expect("stacked PCS opening verifies");
-    vs.finish().expect("transcript fully consumed");
-    let verify_ms = t.elapsed().as_secs_f64() * 1e3;
+        let t = Instant::now();
+        let (commitment, prover_data) = commit(&q_pkd, INITIAL_FOLDING_FACTOR, LOG_INV_RATE_0);
+        ps.add_scalars(&pcs::merkle::hash_to_scalars(&commitment.root));
+        let commit_s = t.elapsed().as_secs_f64();
 
+        let t = Instant::now();
+        let reduced = setup.prove_reduction_precomputed(&z_packed, &a_packed, &b_packed, &z_lincheck, &mut ps);
+        drop((z_packed, a_packed, b_packed, z_lincheck));
+        let ring = prover_ring(&reduced, mu);
+        let opening =
+            open_batch_mixed_ligerito_stacked(ps.sponge_mut(), &q_pkd, &prover_data, &prover_config, &[], &ring);
+        let open_s = t.elapsed().as_secs_f64();
+        let prove_s = t_prove.elapsed().as_secs_f64();
+
+        ((ps.into_proof(), opening), [witness_s, commit_s, open_s, prove_s])
+    };
+
+    // The per-stage timings ride alongside the pass result, so one `Plan` drives
+    // the warmup, the cooldown, and the repetition for all four of them.
+    let plan = Plan::from_env();
+    let ((transcript, opening), stage_samples) = {
+        let mut stages: Vec<Timing> = vec![Timing::default(); 4];
+        let (out, _) = plan.warm_then_measure(|| {
+            let (out, secs) = prove_pass();
+            for (timing, s) in stages.iter_mut().zip(secs) {
+                timing.push(s);
+            }
+            out
+        });
+        // The warmup pass also pushed a sample; drop the leading one per stage.
+        (out, stages)
+    };
+    let [witness, commit_stage, open, prove] = <[Timing; 4]>::try_from(
+        stage_samples
+            .into_iter()
+            .map(|t| {
+                let mut kept = Timing::default();
+                for &s in &t.samples()[1..] {
+                    kept.push(s);
+                }
+                kept
+            })
+            .collect::<Vec<_>>(),
+    )
+    .expect("four stages");
+
+    let (_, verify_time) = Plan::new(plan.repeat, 0).measure(|| {
+        let mut vs = VerifierState::<()>::new(b"flock-blake3-batch", &transcript, &[]);
+        let root = pcs::merkle::scalars_to_hash(&vs.next_scalars(2).expect("commitment root"));
+        let replay = setup.verify_reduction(&mut vs).expect("Flock reduction verifies");
+        let ring = verifier_ring(&replay.ab, &replay.c, mu);
+        verify_opening_batch_mixed_ligerito_stacked(vs.sponge_mut(), &verifier_config, mu, &root, &[], &ring, &opening)
+            .expect("stacked PCS opening verifies");
+        vs.finish().expect("transcript fully consumed");
+    });
+
+    let ms = |t: &Timing| format!("{:>8.1} ms{}", t.mean() * 1e3, t.spread());
     println!(
         "\nFlock BLAKE3 batch proving, {} compressions (2^{n_log} slots)",
         pretty_integer(n)
     );
     println!("  setup (preprocessing, excluded) : {setup_ms:>8.1} ms");
-    println!("  witness-gen                     : {witness_ms:>8.1} ms");
-    println!("  commit                          : {commit_ms:>8.1} ms");
-    println!("  reduction + open                : {open_ms:>8.1} ms");
+    println!("  witness-gen                     : {}", ms(&witness));
+    println!("  commit                          : {}", ms(&commit_stage));
+    println!("  reduction + open                : {}", ms(&open));
     println!("  ------------------------------------------");
-    println!("  prove TOTAL (witness excluded)  : {:>8.1} ms", prove_s * 1e3);
-    println!("  verify                          : {verify_ms:>8.1} ms");
+    println!("  prove TOTAL (witness excluded)  : {}", ms(&prove));
+    println!("  verify                          : {}", ms(&verify_time));
+    let prove_s = prove.mean();
     let compressions_per_second = (n as f64 / prove_s).round() as u64;
     println!(
-        "  throughput                      : {:>14} compressions/s",
-        pretty_integer(compressions_per_second)
+        "  throughput                      : {:>14} compressions/s{}",
+        pretty_integer(compressions_per_second),
+        prove.spread()
     );
     println!(
         "  (~{:.1} XMSS/s equivalent at 146 compressions/signature)",
         n as f64 / prove_s / 146.0
     );
+    println!("  {} measured pass(es) after 1 warmup", plan.repeat);
 }

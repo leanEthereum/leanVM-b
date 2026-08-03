@@ -41,6 +41,7 @@ use primitives::{
     pretty_integer,
 };
 use serde::{Deserialize, Serialize};
+use zk_alloc::ArenaVec;
 
 pub use super::ligerito_config::*;
 
@@ -117,14 +118,14 @@ fn mle_eval_ext(table: &[F192], point: &[F192]) -> F192 {
 
 /// Parallel mirror of [`build_eq_table_ext`]: identical LSB-first doubling
 /// recurrence, byte-identical output, with each level's independent
-/// iterations fanned out across rayon threads once the level is large enough
+/// iterations fanned out across the pool once the level is large enough
 /// to amortize dispatch. Structure copied from the extension-field layer's
 /// `ring_switch::build_eq_parallel`.
-pub fn build_eq_table_ext_parallel(point: &[F192]) -> Vec<F192> {
-    let mut out = primitives::alloc_uninit(1usize << point.len());
+pub fn build_eq_table_ext_parallel(point: &[F192]) -> ArenaVec<F192> {
+    let mut out = zk_alloc::alloc_uninit(1usize << point.len());
     build_eq_table_ext_seeded(point, F192::ONE, &mut out);
     // SAFETY: the doubling recurrence initializes every table entry.
-    unsafe { primitives::assume_init(out) }
+    unsafe { zk_alloc::assume_init(out) }
 }
 
 trait EqTableSlot {
@@ -176,11 +177,10 @@ pub(crate) fn build_eq_table_ext_seeded_uninit(point: &[F192], seed: F192, out: 
 }
 
 fn build_eq_table_ext_seeded<S: EqTableSlot + Send>(point: &[F192], seed: F192, out: &mut [S]) {
-    use rayon::prelude::*;
     let n = point.len();
     assert_eq!(out.len(), 1usize << n, "out must have length 2^point.len()");
     out[0].put(seed);
-    // Threshold below which rayon dispatch overhead beats the parallel work
+    // Threshold below which dispatch overhead beats the parallel work
     // (same floor as the extension-field layer's `build_eq_parallel`).
     const PAR_THRESHOLD: usize = 1 << 12;
     for j in 0..n {
@@ -197,12 +197,15 @@ fn build_eq_table_ext_seeded<S: EqTableSlot + Send>(point: &[F192], seed: F192, 
                 lo_x.put(v + high);
             }
         } else {
-            lo.par_iter_mut().zip(hi.par_iter_mut()).for_each(|(lo_x, hi_x)| {
-                // SAFETY: `lo` was initialized before this level starts.
-                let v = unsafe { lo_x.get() };
-                let high = v * r_j;
-                hi_x.put(high);
-                lo_x.put(v + high);
+            let chunk = parallel::recommended_chunk_size(half);
+            parallel::chunks_mut2(lo, hi, chunk, |_, lo_c, hi_c| {
+                for (lo_x, hi_x) in lo_c.iter_mut().zip(hi_c.iter_mut()) {
+                    // SAFETY: `lo` was initialized before this level starts.
+                    let v = unsafe { lo_x.get() };
+                    let high = v * r_j;
+                    hi_x.put(high);
+                    lo_x.put(v + high);
+                }
             });
         }
     }
@@ -228,7 +231,6 @@ pub(crate) fn partial_eval_lsb_ext(evals: &[F192], rs: &[F192]) -> Vec<F192> {
 /// Mixed inner product `Σ_i b[i] · witness[i]` (E x K via `mul_base`). The
 /// evaluation-claim `target` for a K-witness against an E-basis.
 pub fn inner_product_base_ext(witness: &[F64], b: &[F192]) -> F192 {
-    use rayon::prelude::*;
     assert_eq!(witness.len(), b.len());
     const PAR_THRESHOLD: usize = 4096;
     if witness.len() < PAR_THRESHOLD {
@@ -238,12 +240,12 @@ pub fn inner_product_base_ext(witness: &[F64], b: &[F192]) -> F192 {
             .map(|(&w, &e)| e.mul_base(w))
             .fold(F192::ZERO, |a, v| a + v);
     }
-    witness
-        .par_iter()
-        .zip(b.par_iter())
-        .with_min_len(PAR_THRESHOLD / 4)
-        .map(|(&w, &e)| e.mul_base(w))
-        .reduce(|| F192::ZERO, |a, v| a + v)
+    parallel::map_reduce(
+        witness.len(),
+        || F192::ZERO,
+        |i| b[i].mul_base(witness[i]),
+        |a, v| a + v,
+    )
 }
 
 #[inline]
@@ -288,15 +290,14 @@ pub struct Commitment {
 /// Prover-side state retained after commit for the opening phase. The message
 /// itself is not stored; the caller retains it for opening.
 pub struct ProverData {
-    pub codeword: Vec<F64>,
-    pub merkle_tree: Vec<Hash>,
+    pub codeword: ArenaVec<F64>,
+    pub merkle_tree: ArenaVec<Hash>,
 }
 
 /// Fill `codeword` with `2^r` replicas of `msg`: the exact state after the
 /// first `r` forward-NTT layers on the zero-padded coefficient vector
 /// `[msg, 0, ..., 0]`. Pair with `forward_transform_*_from_layer(.., r)`.
 fn replicate_message_fill_uninit<T: Copy + Send + Sync>(codeword: &mut [std::mem::MaybeUninit<T>], msg: &[T]) {
-    use rayon::prelude::*;
     let msg_len = msg.len();
     debug_assert!(codeword.len().is_multiple_of(msg_len));
     const COPY_CHUNK: usize = 1 << 16;
@@ -306,7 +307,7 @@ fn replicate_message_fill_uninit<T: Copy + Send + Sync>(codeword: &mut [std::mem
         unsafe { std::ptr::copy_nonoverlapping(src.as_ptr(), dst.as_mut_ptr().cast(), dst.len()) };
     };
     if msg_len >= COPY_CHUNK {
-        codeword.par_chunks_mut(COPY_CHUNK).enumerate().for_each(|(i, dst)| {
+        parallel::chunks_mut(codeword, COPY_CHUNK, |i, dst| {
             let src_off = (i * COPY_CHUNK) % msg_len;
             copy(dst, &msg[src_off..src_off + dst.len()]);
         });
@@ -333,10 +334,10 @@ pub fn commit(message: &[F64], log_batch_size: usize, log_inv_rate: usize) -> (C
     let n_positions = 1usize << k_code;
     let codeword_len = n_positions * num_ntts;
 
-    let mut codeword = primitives::alloc_uninit(codeword_len);
+    let mut codeword = zk_alloc::alloc_uninit(codeword_len);
     replicate_message_fill_uninit(&mut codeword, message);
     // SAFETY: the replicate fill initializes every codeword element.
-    let mut codeword = unsafe { primitives::assume_init(codeword) };
+    let mut codeword = unsafe { zk_alloc::assume_init(codeword) };
 
     // Optional phase timing (LIGERITO_TRACE): one env lookup per commit, no
     // work when unset.
@@ -452,7 +453,6 @@ fn forward_transform_interleaved_ext_parallel_from_layer(
     num_ntts: usize,
     start_layer: usize,
 ) {
-    use rayon::prelude::*;
     let n_total = data.len();
     let log_d = log2_pow2(n_total / num_ntts);
 
@@ -465,7 +465,7 @@ fn forward_transform_interleaved_ext_parallel_from_layer(
     const PARALLEL_FLOOR_LOG_D: usize = 12;
     const MIN_SUB_LOG: usize = 8;
     let n_top = if log_d >= PARALLEL_FLOOR_LOG_D {
-        let want_subs_log = log2_pow2(rayon::current_num_threads().next_power_of_two());
+        let want_subs_log = log2_pow2(parallel::num_threads().next_power_of_two());
         let max_n_top = log_d.saturating_sub(MIN_SUB_LOG);
         cache_n_top.max(want_subs_log.min(max_n_top))
     } else {
@@ -519,28 +519,25 @@ fn forward_transform_interleaved_ext_parallel_from_layer(
     // Deep layers: parallel cache-resident sub-NTTs.
     let sub_size_positions = 1usize << (log_d - n_top);
     let sub_elems = sub_size_positions * num_ntts;
-    data.par_chunks_mut(sub_elems)
-        .enumerate()
-        .for_each(|(sub_idx, sub_data)| {
-            for layer in n_top.max(start_layer)..log_d {
-                let layer_in_sub = layer - n_top;
-                let num_blocks_in_sub = 1usize << layer_in_sub;
-                let block_size = 1usize << (log_d - layer);
-                let block_size_half = block_size >> 1;
-                let block_elems = block_size * num_ntts;
-                for block_in_sub in 0..num_blocks_in_sub {
-                    let global_block = sub_idx * num_blocks_in_sub + block_in_sub;
-                    let twiddle = ntt.twiddle(layer, global_block);
-                    let block_start = block_in_sub * block_elems;
-                    let block = &mut sub_data[block_start..block_start + block_elems];
-                    butterfly_interleaved_ext_block(block, twiddle, block_size_half, num_ntts);
-                }
+    parallel::chunks_mut(data, sub_elems, |sub_idx, sub_data| {
+        for layer in n_top.max(start_layer)..log_d {
+            let layer_in_sub = layer - n_top;
+            let num_blocks_in_sub = 1usize << layer_in_sub;
+            let block_size = 1usize << (log_d - layer);
+            let block_size_half = block_size >> 1;
+            let block_elems = block_size * num_ntts;
+            for block_in_sub in 0..num_blocks_in_sub {
+                let global_block = sub_idx * num_blocks_in_sub + block_in_sub;
+                let twiddle = ntt.twiddle(layer, global_block);
+                let block_start = block_in_sub * block_elems;
+                let block = &mut sub_data[block_start..block_start + block_elems];
+                butterfly_interleaved_ext_block(block, twiddle, block_size_half, num_ntts);
             }
-        });
+        }
+    });
 }
 
 fn butterfly_interleaved_ext_block_par_rows(block: &mut [F192], twiddle: F64, block_size_half: usize, num_ntts: usize) {
-    use rayon::prelude::*;
     const PARALLEL_ROW_THRESHOLD: usize = 1024;
     if block_size_half < PARALLEL_ROW_THRESHOLD {
         butterfly_interleaved_ext_block(block, twiddle, block_size_half, num_ntts);
@@ -548,11 +545,14 @@ fn butterfly_interleaved_ext_block_par_rows(block: &mut [F192], twiddle: F64, bl
     }
     let half_offset = block_size_half * num_ntts;
     let (top, bot) = block.split_at_mut(half_offset);
-    top.par_chunks_mut(num_ntts)
-        .zip(bot.par_chunks_mut(num_ntts))
-        .for_each(|(top_row, bot_row)| {
-            butterfly_ext_lanes(top_row, bot_row, twiddle);
-        });
+    let bot_base = parallel::SendPtr(bot.as_mut_ptr());
+    parallel::chunks_mut(top, num_ntts, |r, top_row| {
+        // SAFETY: distinct `r` take disjoint `num_ntts`-windows of `bot` — the
+        // same windows `chunks_mut` proved disjoint in `top` — and the halves are
+        // disjoint by `split_at_mut`.
+        let bot_row = unsafe { bot_base.slice(r * num_ntts, top_row.len()) };
+        butterfly_ext_lanes(top_row, bot_row, twiddle);
+    });
 }
 
 /// Fused 2-layer butterfly, row-parallel; see the F64 twin for the shape.
@@ -564,7 +564,6 @@ fn butterfly_interleaved_ext_fused_2layer_par_rows(
     quarter: usize,
     num_ntts: usize,
 ) {
-    use rayon::prelude::*;
     const PARALLEL_ROW_THRESHOLD: usize = 512;
     let stride = quarter * num_ntts;
     debug_assert_eq!(block.len(), 4 * stride);
@@ -573,27 +572,23 @@ fn butterfly_interleaved_ext_fused_2layer_par_rows(
         butterfly_ext_fused_lanes(row_a, row_b, row_c, row_d, t_outer, t_inner_a, t_inner_b);
     };
 
-    let (top_half, bot_half) = block.split_at_mut(2 * stride);
-    let (q1, q2) = top_half.split_at_mut(stride);
-    let (q3, q4) = bot_half.split_at_mut(stride);
+    // Row group `r` owns `block[i·stride + r·num_ntts .. + num_ntts]` for
+    // `i ∈ 0..4`; distinct `r` give disjoint windows within each quarter, and the
+    // quarters are disjoint by construction.
+    let base = parallel::SendPtr(block.as_mut_ptr());
+    let group = |r: usize| {
+        let off = r * num_ntts;
+        // SAFETY: see above; `off + num_ntts <= stride` because `r < quarter`.
+        let [a, b, c, d] = std::array::from_fn(|i| unsafe { base.slice(i * stride + off, num_ntts) });
+        do_one(a, b, c, d);
+    };
 
     if quarter < PARALLEL_ROW_THRESHOLD {
         for r in 0..quarter {
-            let off = r * num_ntts;
-            let (q1r, _) = q1[off..].split_at_mut(num_ntts);
-            let (q2r, _) = q2[off..].split_at_mut(num_ntts);
-            let (q3r, _) = q3[off..].split_at_mut(num_ntts);
-            let (q4r, _) = q4[off..].split_at_mut(num_ntts);
-            do_one(q1r, q2r, q3r, q4r);
+            group(r);
         }
     } else {
-        q1.par_chunks_mut(num_ntts)
-            .zip(q2.par_chunks_mut(num_ntts))
-            .zip(q3.par_chunks_mut(num_ntts))
-            .zip(q4.par_chunks_mut(num_ntts))
-            .for_each(|(((row_a, row_b), row_c), row_d)| {
-                do_one(row_a, row_b, row_c, row_d);
-            });
+        parallel::for_each(quarter, group);
     }
 }
 
@@ -961,8 +956,7 @@ pub(crate) fn induce_sumcheck_poly_base(
     v_challenges: &[F192],
     queries: &[usize],
     alpha: &[F192],
-) -> (Vec<F192>, F192) {
-    use rayon::prelude::*;
+) -> (ArenaVec<F192>, F192) {
     let n = 1usize << log_msg_cols;
     let n_queries = queries.len();
     assert_eq!(opened_rows.len(), n_queries);
@@ -989,12 +983,11 @@ pub(crate) fn induce_sumcheck_poly_base(
         .map(|&v| if v.is_zero() { F64::ZERO } else { v.inv() })
         .collect();
 
-    let n_threads = rayon::current_num_threads().max(1);
+    let n_threads = parallel::num_threads();
     let chunk_size = (n_queries + n_threads - 1) / n_threads.max(1);
 
-    let partials: Vec<(Vec<F192>, F192)> = (0..n_threads)
-        .into_par_iter()
-        .map(|t| {
+    let partials: Vec<(Vec<F192>, F192)> = parallel::map_collect(n_threads, |t| {
+        {
             let start = t * chunk_size;
             let end = (start + chunk_size).min(n_queries);
             if start >= end {
@@ -1025,10 +1018,11 @@ pub(crate) fn induce_sumcheck_poly_base(
                 }
             }
             (accum_basis, local_sum)
-        })
-        .collect();
+        }
+    });
 
-    let mut basis_poly = vec![F192::ZERO; n];
+    // SAFETY: zero is a valid F192, and the accumulate loop below reads it.
+    let mut basis_poly = unsafe { ArenaVec::<F192>::zeroed(n) };
     let mut enforced_sum = F192::ZERO;
     for (lb, ls) in partials {
         for (acc, &v) in basis_poly.iter_mut().zip(lb.iter()) {
@@ -1049,8 +1043,7 @@ pub(crate) fn induce_sumcheck_poly_ext(
     v_challenges: &[F192],
     queries: &[usize],
     alpha: &[F192],
-) -> (Vec<F192>, F192) {
-    use rayon::prelude::*;
+) -> (ArenaVec<F192>, F192) {
     let n = 1usize << log_msg_cols;
     let n_queries = queries.len();
     assert_eq!(opened_rows.len(), n_queries);
@@ -1077,45 +1070,43 @@ pub(crate) fn induce_sumcheck_poly_ext(
         .map(|&v| if v.is_zero() { F64::ZERO } else { v.inv() })
         .collect();
 
-    let n_threads = rayon::current_num_threads().max(1);
+    let n_threads = parallel::num_threads();
     let chunk_size = (n_queries + n_threads - 1) / n_threads.max(1);
 
-    let partials: Vec<(Vec<F192>, F192)> = (0..n_threads)
-        .into_par_iter()
-        .map(|t| {
-            let start = t * chunk_size;
-            let end = (start + chunk_size).min(n_queries);
-            if start >= end {
-                return (vec![F192::ZERO; n], F192::ZERO);
+    let partials: Vec<(Vec<F192>, F192)> = parallel::map_collect(n_threads, |t| {
+        let start = t * chunk_size;
+        let end = (start + chunk_size).min(n_queries);
+        if start >= end {
+            return (vec![F192::ZERO; n], F192::ZERO);
+        }
+        let mut accum_basis = vec![F192::ZERO; n];
+        let mut local_basis = vec![F192::ZERO; n];
+        let mut sks_at_x = vec![F64::ZERO; log_msg_cols.max(1)];
+        let mut local_sum = F192::ZERO;
+
+        for i in start..end {
+            let row = &opened_rows[i];
+            let q = queries[i];
+            let ap = alpha_pows[i];
+
+            let dot: F192 = row
+                .iter()
+                .zip(eq.iter())
+                .map(|(&r, &e)| r * e)
+                .fold(F192::ZERO, |a, v| a + v);
+            local_sum += dot * ap;
+
+            let q_field = F64(q as u64);
+            evaluate_scaled_basis_inplace(&mut sks_at_x, &mut local_basis, sks_vks, &inv_sks_vks, q_field, ap);
+            for (acc, &v) in accum_basis.iter_mut().zip(local_basis.iter()) {
+                *acc += v;
             }
-            let mut accum_basis = vec![F192::ZERO; n];
-            let mut local_basis = vec![F192::ZERO; n];
-            let mut sks_at_x = vec![F64::ZERO; log_msg_cols.max(1)];
-            let mut local_sum = F192::ZERO;
+        }
+        (accum_basis, local_sum)
+    });
 
-            for i in start..end {
-                let row = &opened_rows[i];
-                let q = queries[i];
-                let ap = alpha_pows[i];
-
-                let dot: F192 = row
-                    .iter()
-                    .zip(eq.iter())
-                    .map(|(&r, &e)| r * e)
-                    .fold(F192::ZERO, |a, v| a + v);
-                local_sum += dot * ap;
-
-                let q_field = F64(q as u64);
-                evaluate_scaled_basis_inplace(&mut sks_at_x, &mut local_basis, sks_vks, &inv_sks_vks, q_field, ap);
-                for (acc, &v) in accum_basis.iter_mut().zip(local_basis.iter()) {
-                    *acc += v;
-                }
-            }
-            (accum_basis, local_sum)
-        })
-        .collect();
-
-    let mut basis_poly = vec![F192::ZERO; n];
+    // SAFETY: zero is a valid F192, and the accumulate loop below reads it.
+    let mut basis_poly = unsafe { ArenaVec::<F192>::zeroed(n) };
     let mut enforced_sum = F192::ZERO;
     for (lb, ls) in partials {
         for (acc, &v) in basis_poly.iter_mut().zip(lb.iter()) {
@@ -1203,8 +1194,7 @@ pub(crate) fn induce_sumcheck_evaluate_at_residual(
     alpha: &[F192],
     ris_for_basis: &[F192],
     yr_log_n: usize,
-) -> Vec<F192> {
-    use rayon::prelude::*;
+) -> ArenaVec<F192> {
     assert_eq!(ris_for_basis.len() + yr_log_n, log_msg_cols);
     let n_queries = queries.len();
     let yr_len = 1usize << yr_log_n;
@@ -1255,10 +1245,10 @@ pub(crate) fn induce_sumcheck_evaluate_at_residual(
         PerQuery { prefix_prod, suffix_w }
     };
     // Once per recursion level over verify-sized inputs; stay serial below
-    // the rayon dispatch crossover (mirror of the original's PAR_FLOOR).
+    // the dispatch crossover (mirror of the original's PAR_FLOOR).
     const PAR_FLOOR: usize = 1024;
     let per_query: Vec<PerQuery> = if n_queries > PAR_FLOOR {
-        queries.par_iter().map(compute_query).collect()
+        parallel::map_collect(n_queries, |i| compute_query(&queries[i]))
     } else {
         queries.iter().map(compute_query).collect()
     };
@@ -1278,7 +1268,7 @@ pub(crate) fn induce_sumcheck_evaluate_at_residual(
         sum
     };
     if yr_len > PAR_FLOOR {
-        (0..yr_len).into_par_iter().map(compute_y).collect()
+        <ArenaVec<F192> as primitives::ParCollectArena<F192>>::par_collect(yr_len, compute_y)
     } else {
         (0..yr_len).map(compute_y).collect()
     }
@@ -1294,16 +1284,15 @@ pub(crate) fn induce_sumcheck_evaluate_at_residual(
 /// `s.mul_base(t) + b`), applied in reverse layer order. Mirror of
 /// `ligerito::transpose_forward_ntt` (one parallel sweep per layer).
 fn transpose_forward_ntt_ext(ntt: &AdditiveNttF64, data: &mut [F192], log_d: usize) {
-    use rayon::prelude::*;
     debug_assert_eq!(data.len(), 1usize << log_d);
     debug_assert!(log_d <= ntt.log_domain_size());
-    let n_threads = rayon::current_num_threads().max(1);
+    let n_threads = parallel::num_threads();
     for layer in (0..log_d).rev() {
         let num_blocks = 1usize << layer;
         let block_size = 1usize << (log_d - layer);
         let bsh = block_size >> 1;
         if num_blocks >= n_threads {
-            data.par_chunks_mut(block_size).enumerate().for_each(|(block, chunk)| {
+            parallel::chunks_mut(data, block_size, |block, chunk| {
                 let t = ntt.twiddle(layer, block);
                 let (top, bot) = chunk.split_at_mut(bsh);
                 for (a_ref, b_ref) in top.iter_mut().zip(bot.iter_mut()) {
@@ -1319,12 +1308,15 @@ fn transpose_forward_ntt_ext(ntt: &AdditiveNttF64, data: &mut [F192], log_d: usi
                 let t = ntt.twiddle(layer, block);
                 let chunk = &mut data[block * block_size..(block + 1) * block_size];
                 let (top, bot) = chunk.split_at_mut(bsh);
-                top.par_iter_mut().zip(bot.par_iter_mut()).for_each(|(a_ref, b_ref)| {
-                    let a = *a_ref;
-                    let b = *b_ref;
-                    let s = a + b;
-                    *a_ref = s;
-                    *b_ref = s.mul_base(t) + b;
+                let chunk_len = parallel::recommended_chunk_size(bsh);
+                parallel::chunks_mut2(top, bot, chunk_len, |_, top_c, bot_c| {
+                    for (a_ref, b_ref) in top_c.iter_mut().zip(bot_c.iter_mut()) {
+                        let a = *a_ref;
+                        let b = *b_ref;
+                        let s = a + b;
+                        *a_ref = s;
+                        *b_ref = s.mul_base(t) + b;
+                    }
                 });
             }
         }
@@ -1352,7 +1344,6 @@ fn transpose_forward_ntt_sparse_ext(
         nonzero = positions.len()
     )
     .entered();
-    use rayon::prelude::*;
     use std::collections::HashMap;
     let n = 1usize << log_d;
     // No prefix for small domains: just scatter + full dense transpose.
@@ -1379,9 +1370,9 @@ fn transpose_forward_ntt_sparse_ext(
 
     // Steps s = 0..k-1 within each active window, in parallel (windows disjoint).
     let win_vec: Vec<(usize, Vec<F192>)> = windows.into_iter().collect();
-    let processed: Vec<(usize, Vec<F192>)> = win_vec
-        .into_par_iter()
-        .map(|(w, mut buf)| {
+    let processed: Vec<(usize, Vec<F192>)> = parallel::map_collect(win_vec.len(), |wi| {
+        {
+            let (w, mut buf) = (win_vec[wi].0, win_vec[wi].1.clone());
             for s in 0..k {
                 let layer = log_d - 1 - s;
                 let bsh = 1usize << s; // pairing distance
@@ -1401,8 +1392,8 @@ fn transpose_forward_ntt_sparse_ext(
                 }
             }
             (w, buf)
-        })
-        .collect();
+        }
+    });
 
     // Densify (active windows only; the rest stay zero, which is the correct
     // post-step-(k-1) state for an all-zero window).
@@ -1412,13 +1403,13 @@ fn transpose_forward_ntt_sparse_ext(
     }
 
     // Remaining steps s = k..log_d-1 = forward layers (log_d-1-k) .. 0, dense.
-    let n_threads = rayon::current_num_threads().max(1);
+    let n_threads = parallel::num_threads();
     for layer in (0..(log_d - k)).rev() {
         let num_blocks = 1usize << layer;
         let block_size = 1usize << (log_d - layer);
         let bsh = block_size >> 1;
         if num_blocks >= n_threads {
-            data.par_chunks_mut(block_size).enumerate().for_each(|(block, chunk)| {
+            parallel::chunks_mut(&mut data, block_size, |block, chunk: &mut [F192]| {
                 let t = ntt.twiddle(layer, block);
                 let (top, bot) = chunk.split_at_mut(bsh);
                 for (a_ref, b_ref) in top.iter_mut().zip(bot.iter_mut()) {
@@ -1434,12 +1425,15 @@ fn transpose_forward_ntt_sparse_ext(
                 let t = ntt.twiddle(layer, block);
                 let chunk = &mut data[block * block_size..(block + 1) * block_size];
                 let (top, bot) = chunk.split_at_mut(bsh);
-                top.par_iter_mut().zip(bot.par_iter_mut()).for_each(|(a_ref, b_ref)| {
-                    let a = *a_ref;
-                    let b = *b_ref;
-                    let sab = a + b;
-                    *a_ref = sab;
-                    *b_ref = sab.mul_base(t) + b;
+                let chunk_len = parallel::recommended_chunk_size(bsh);
+                parallel::chunks_mut2(top, bot, chunk_len, |_, top_c, bot_c| {
+                    for (a_ref, b_ref) in top_c.iter_mut().zip(bot_c.iter_mut()) {
+                        let a = *a_ref;
+                        let b = *b_ref;
+                        let sab = a + b;
+                        *a_ref = sab;
+                        *b_ref = sab.mul_base(t) + b;
+                    }
                 });
             }
         }
@@ -1459,7 +1453,7 @@ pub(crate) fn induce_sumcheck_poly_via_ntt_base(
     v_challenges: &[F192],
     queries: &[usize],
     alpha: &[F192],
-) -> (Vec<F192>, F192) {
+) -> (ArenaVec<F192>, F192) {
     let n = 1usize << log_msg_cols;
     let log_block = log_msg_cols + log_inv_rate;
     let block_len = 1usize << log_block;
@@ -1486,14 +1480,15 @@ pub(crate) fn induce_sumcheck_poly_via_ntt_base(
     }
 
     let mut coeffs = if log_block == 0 {
-        let mut c = vec![F192::ZERO; block_len];
+        // SAFETY: zero is a valid F192, and the loop below reads these slots.
+        let mut c = unsafe { ArenaVec::<F192>::zeroed(block_len) };
         for i in 0..n_queries {
             c[queries[i]] += alpha_pows[i];
         }
         c
     } else {
         let ntt = AdditiveNttF64::standard(log_block);
-        transpose_forward_ntt_sparse_ext(&ntt, queries, &alpha_pows, log_block)
+        ArenaVec::from_slice(&transpose_forward_ntt_sparse_ext(&ntt, queries, &alpha_pows, log_block))
     };
     coeffs.truncate(n);
     (coeffs, enforced_sum)
@@ -1525,7 +1520,7 @@ pub(crate) fn induce_sumcheck_poly_auto_base(
     v_challenges: &[F192],
     queries: &[usize],
     alpha: &[F192],
-) -> (Vec<F192>, F192) {
+) -> (ArenaVec<F192>, F192) {
     if induce_use_ntt_heuristic(log_msg_cols, log_inv_rate, queries.len()) {
         induce_sumcheck_poly_via_ntt_base(log_msg_cols, log_inv_rate, opened_rows, v_challenges, queries, alpha)
     } else {
@@ -1541,15 +1536,11 @@ pub(crate) fn induce_sumcheck_poly_auto_base(
 /// `mat[pos * num_interleaved + lane]`; each row (one `pos` across all lanes)
 /// is one Merkle leaf of `num_interleaved * 16` bytes.
 pub(crate) struct LigeroWitness {
-    pub mat: Vec<F192>,
-    pub tree: Vec<Hash>,
+    pub mat: ArenaVec<F192>,
+    pub tree: ArenaVec<Hash>,
     pub block_len: usize,
     pub num_interleaved: usize,
 }
-
-// No Drop/scratch-pool recycling here (divergence from the original's
-// `LigeroWitness`): there is no F192 scratch pool, and deeper-level matrices
-// are small relative to L0.
 
 impl LigeroWitness {
     #[inline]
@@ -1581,12 +1572,11 @@ pub(crate) fn ligero_commit_ext(
     assert_eq!(poly.len(), num_interleaved * msg_cols);
     assert!(log_block_len <= ntt.log_domain_size());
 
-    // Plain allocation (scratch-pool divergence; see module docs).
     let codeword_len = block_len * num_interleaved;
-    let mut mat = primitives::alloc_uninit(codeword_len);
+    let mut mat = zk_alloc::alloc_uninit(codeword_len);
     replicate_message_fill_uninit(&mut mat, poly);
     // SAFETY: the replicate fill initializes every matrix element.
-    let mut mat = unsafe { primitives::assume_init(mat) };
+    let mut mat = unsafe { zk_alloc::assume_init(mat) };
 
     // Optional per-level NTT/Merkle split (LIGERITO_TRACE): one env lookup per
     // commit level, no work when unset.
@@ -1683,7 +1673,6 @@ impl RoundQuad {
 /// Round message for the mixed phase: `f` in K, `b` in E. All products are
 /// `mul_base` (2 PMULL each).
 fn round_msg_lsb_base(f: &[F64], b: &[F192]) -> SumcheckMessage {
-    use rayon::prelude::*;
     let n = f.len();
     debug_assert!(n.is_power_of_two() && n >= 2);
     debug_assert_eq!(b.len(), n);
@@ -1710,30 +1699,29 @@ fn round_msg_lsb_base(f: &[F64], b: &[F192]) -> SumcheckMessage {
         };
     }
 
-    let (u_0, u_2) = (0..half)
-        .into_par_iter()
-        .with_min_len(PAR_THRESHOLD / 4)
-        .fold(
-            || (F192BaseUnreduced::ZERO, F192BaseUnreduced::ZERO),
-            |(a0, a2), j| {
-                let f0 = f[2 * j];
-                let f1 = f[2 * j + 1];
-                let b0 = b[2 * j];
-                let b1 = b[2 * j + 1];
-                (
-                    a0 ^ b0.mul_base_unreduced(f0),
-                    a2 ^ (b0 + b1).mul_base_unreduced(f0 + f1),
-                )
-            },
-        )
-        .map(|(a0, a2)| (a0.reduce(), a2.reduce()))
-        .reduce(|| (F192::ZERO, F192::ZERO), |(a0, a2), (b0, b2)| (a0 + b0, a2 + b2));
-    SumcheckMessage { u_0, u_2 }
+    let (u_0, u_2) = parallel::map_reduce(
+        half,
+        || (F192BaseUnreduced::ZERO, F192BaseUnreduced::ZERO),
+        |j| {
+            let f0 = f[2 * j];
+            let f1 = f[2 * j + 1];
+            let b0 = b[2 * j];
+            let b1 = b[2 * j + 1];
+            (b0.mul_base_unreduced(f0), (b0 + b1).mul_base_unreduced(f0 + f1))
+        },
+        // Unreduced accumulators combine by XOR just as they do within a worker,
+        // and `reduce` is linear, so one reduction at the very end matches the
+        // sequential path above exactly.
+        |(a0, a2), (c0, c2)| (a0 ^ c0, a2 ^ c2),
+    );
+    SumcheckMessage {
+        u_0: u_0.reduce(),
+        u_2: u_2.reduce(),
+    }
 }
 
 /// Round message for the pure-E phase. Mirror of `ligerito::round_msg_lsb`.
 fn round_msg_lsb_ext(f: &[F192], b: &[F192]) -> SumcheckMessage {
-    use rayon::prelude::*;
     let n = f.len();
     debug_assert!(n.is_power_of_two() && n >= 2);
     debug_assert_eq!(b.len(), n);
@@ -1759,28 +1747,28 @@ fn round_msg_lsb_ext(f: &[F192], b: &[F192]) -> SumcheckMessage {
         };
     }
 
-    let (u_0, u_2) = (0..half)
-        .into_par_iter()
-        .with_min_len(PAR_THRESHOLD / 4)
-        .fold(
-            || (F192Unreduced::ZERO, F192Unreduced::ZERO),
-            |(a0, a2), j| {
-                let f0 = f[2 * j];
-                let f1 = f[2 * j + 1];
-                let b0 = b[2 * j];
-                let b1 = b[2 * j + 1];
-                (a0 ^ f0.mul_unreduced(b0), a2 ^ (f0 + f1).mul_unreduced(b0 + b1))
-            },
-        )
-        .map(|(a0, a2)| (a0.reduce(), a2.reduce()))
-        .reduce(|| (F192::ZERO, F192::ZERO), |(a0, a2), (b0, b2)| (a0 + b0, a2 + b2));
-    SumcheckMessage { u_0, u_2 }
+    let (u_0, u_2) = parallel::map_reduce(
+        half,
+        || (F192Unreduced::ZERO, F192Unreduced::ZERO),
+        |j| {
+            let f0 = f[2 * j];
+            let f1 = f[2 * j + 1];
+            let b0 = b[2 * j];
+            let b1 = b[2 * j + 1];
+            (f0.mul_unreduced(b0), (f0 + f1).mul_unreduced(b0 + b1))
+        },
+        // As in the base variant: XOR the unreduced accumulators and reduce once.
+        |(a0, a2), (c0, c2)| (a0 ^ c0, a2 ^ c2),
+    );
+    SumcheckMessage {
+        u_0: u_0.reduce(),
+        u_2: u_2.reduce(),
+    }
 }
 
 /// Build the round message and the full inner product in one pass. For an OOD
 /// basis `b = eq(z, ·)`, the inner product is the claimed MLE evaluation.
 fn round_msg_and_eval_lsb_ext(f: &[F192], b: &[F192]) -> (SumcheckMessage, F192) {
-    use rayon::prelude::*;
     let n = f.len();
     debug_assert!(n.is_power_of_two() && n >= 2);
     debug_assert_eq!(b.len(), n);
@@ -1802,43 +1790,35 @@ fn round_msg_and_eval_lsb_ext(f: &[F192], b: &[F192]) -> (SumcheckMessage, F192)
                 (a0 + b0, a2 + b2, ay + by)
             })
     } else {
-        (0..half)
-            .into_par_iter()
-            .with_min_len(PAR_THRESHOLD / 4)
-            .map(term)
-            .reduce(
-                || (F192::ZERO, F192::ZERO, F192::ZERO),
-                |(a0, a2, ay), (b0, b2, by)| (a0 + b0, a2 + b2, ay + by),
-            )
+        parallel::map_reduce(
+            half,
+            || (F192::ZERO, F192::ZERO, F192::ZERO),
+            term,
+            |(a0, a2, ay), (b0, b2, by)| (a0 + b0, a2 + b2, ay + by),
+        )
     };
     (SumcheckMessage { u_0, u_2 }, y)
 }
 
-/// Output buffer for an initial-sumcheck fold. On x86_64 these ~100 MB F192
-/// vectors are drawn from (and later returned to, in [`SumcheckProver::fold`])
-/// the process-global scratch pool, so repeated proves reuse resident pages
-/// instead of faulting a fresh mapping each round; other targets keep the
-/// fresh-alloc path (pooling measured slower on aarch64). Credit: flock
-/// (flock-core) scratch-pool reuse for the initial-sumcheck fold buffers.
+/// Output buffer for an initial-sumcheck fold: ~100 MB of `F192` per round, all
+/// of it dead by the end of the proof. A slab bump costs a pointer add and
+/// reuses pages the previous proof already faulted in, so there is no
+/// target-specific pooling decision left to make.
+///
+/// # Safety
+/// Every element must be written before it is read — which every fold kernel
+/// below does, one output slot per input pair.
 #[inline]
-fn fold_out_buf(n: usize) -> Vec<F192> {
-    #[cfg(target_arch = "x86_64")]
-    {
-        primitives::scratch::take_f192(n)
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        // SAFETY: zero is a valid F192 value.
-        unsafe { primitives::alloc_zeroed_vec(n) }
-    }
+unsafe fn fold_out_buf(n: usize) -> ArenaVec<F192> {
+    // SAFETY: forwarded to the caller's obligation, documented above.
+    unsafe { ArenaVec::uninitialized(n) }
 }
 
 /// Fused fold + next-round message for the FIRST fold (mixed phase): the
 /// K-witness folds into E (`(1+r).mul_base(f0) + r.mul_base(f1)`), the basis
 /// folds in E, and the next-round message is built over the freshly folded
 /// E values in the same pass. Mirror of `ligerito::fold_and_msg_lsb`.
-fn fold_and_msg_lsb_base(f: &[F64], b: &[F192], r: F192) -> (Vec<F192>, Vec<F192>, SumcheckMessage) {
-    use rayon::prelude::*;
+fn fold_and_msg_lsb_base(f: &[F64], b: &[F192], r: F192) -> (ArenaVec<F192>, ArenaVec<F192>, SumcheckMessage) {
     let n = f.len();
     debug_assert!(n.is_power_of_two() && n >= 2);
     debug_assert_eq!(b.len(), n);
@@ -1852,8 +1832,8 @@ fn fold_and_msg_lsb_base(f: &[F64], b: &[F192], r: F192) -> (Vec<F192>, Vec<F192
     let fold_b = |j: usize| -> F192 { b[2 * j] + r * (b[2 * j] + b[2 * j + 1]) };
     const PAR_THRESHOLD: usize = 4096;
     if half < PAR_THRESHOLD {
-        let mut nf = Vec::with_capacity(half);
-        let mut nb = Vec::with_capacity(half);
+        let mut nf = ArenaVec::with_capacity(half);
+        let mut nb = ArenaVec::with_capacity(half);
         for j in 0..half {
             nf.push(fold_f(j));
             nb.push(fold_b(j));
@@ -1884,15 +1864,24 @@ fn fold_and_msg_lsb_base(f: &[F64], b: &[F192], r: F192) -> (Vec<F192>, Vec<F192
     // power of two, so every chunk has even length and starts at an even
     // global index (message pairs never straddle a chunk boundary).
     const CHUNK: usize = 2048;
-    let mut nf: Vec<F192> = fold_out_buf(half);
-    let mut nb: Vec<F192> = fold_out_buf(half);
-    let (u_0, u_2) = nf
-        .par_chunks_mut(CHUNK)
-        .zip(nb.par_chunks_mut(CHUNK))
-        .enumerate()
-        .map(|(ci, (fc, bc))| {
+    // SAFETY (x2): every slot of `nf`/`nb` is written by the chunked loop below
+    // (one output per input pair) before any is read.
+    let mut nf = unsafe { fold_out_buf(half) };
+    let mut nb = unsafe { fold_out_buf(half) };
+    // The fold writes and the message accumulate share one pass per chunk, so
+    // the freshly folded values are still in L1 when they are multiplied.
+    let nf_base = parallel::SendPtr(nf.as_mut_ptr());
+    let nb_base = parallel::SendPtr(nb.as_mut_ptr());
+    let (u_0, u_2) = parallel::map_reduce(
+        half.div_ceil(CHUNK),
+        || (F192Unreduced::ZERO, F192Unreduced::ZERO),
+        |ci| {
             let base = ci * CHUNK;
-            let len = fc.len();
+            let len = CHUNK.min(half - base);
+            // SAFETY: distinct `ci` own disjoint in-bounds `CHUNK`-windows of
+            // `nf`/`nb`, and both buffers stay borrowed for the whole dispatch.
+            let fc = unsafe { nf_base.slice(base, len) };
+            let bc = unsafe { nb_base.slice(base, len) };
             let mut u0 = F192Unreduced::ZERO;
             let mut u2 = F192Unreduced::ZERO;
             for t in 0..len {
@@ -1910,16 +1899,23 @@ fn fold_and_msg_lsb_base(f: &[F64], b: &[F192], r: F192) -> (Vec<F192>, Vec<F192
                 u2 ^= (f0 + f1).mul_unreduced(b0 + b1);
                 k += 2;
             }
-            (u0.reduce(), u2.reduce())
-        })
-        .reduce(|| (F192::ZERO, F192::ZERO), |(a0, a2), (c0, c2)| (a0 + c0, a2 + c2));
-    (nf, nb, SumcheckMessage { u_0, u_2 })
+            (u0, u2)
+        },
+        |(a0, a2), (c0, c2)| (a0 ^ c0, a2 ^ c2),
+    );
+    (
+        nf,
+        nb,
+        SumcheckMessage {
+            u_0: u_0.reduce(),
+            u_2: u_2.reduce(),
+        },
+    )
 }
 
 /// Fused fold + next-round message for the pure-E phase. Mirror of
 /// `ligerito::fold_and_msg_lsb`.
-fn fold_and_msg_lsb_ext(f: &[F192], b: &[F192], r: F192) -> (Vec<F192>, Vec<F192>, SumcheckMessage) {
-    use rayon::prelude::*;
+fn fold_and_msg_lsb_ext(f: &[F192], b: &[F192], r: F192) -> (ArenaVec<F192>, ArenaVec<F192>, SumcheckMessage) {
     let n = f.len();
     debug_assert!(n.is_power_of_two() && n >= 2);
     debug_assert_eq!(b.len(), n);
@@ -1930,8 +1926,8 @@ fn fold_and_msg_lsb_ext(f: &[F192], b: &[F192], r: F192) -> (Vec<F192>, Vec<F192
     let fold_pair = |x0: F192, x1: F192| -> F192 { x0 + r * (x0 + x1) };
     const PAR_THRESHOLD: usize = 4096;
     if half < PAR_THRESHOLD {
-        let mut nf = Vec::with_capacity(half);
-        let mut nb = Vec::with_capacity(half);
+        let mut nf = ArenaVec::with_capacity(half);
+        let mut nb = ArenaVec::with_capacity(half);
         for j in 0..half {
             nf.push(fold_pair(f[2 * j], f[2 * j + 1]));
             nb.push(fold_pair(b[2 * j], b[2 * j + 1]));
@@ -1959,15 +1955,23 @@ fn fold_and_msg_lsb_ext(f: &[F192], b: &[F192], r: F192) -> (Vec<F192>, Vec<F192
     }
 
     const CHUNK: usize = 2048;
-    let mut nf: Vec<F192> = fold_out_buf(half);
-    let mut nb: Vec<F192> = fold_out_buf(half);
-    let (u_0, u_2) = nf
-        .par_chunks_mut(CHUNK)
-        .zip(nb.par_chunks_mut(CHUNK))
-        .enumerate()
-        .map(|(ci, (fc, bc))| {
+    // SAFETY (x2): every slot of `nf`/`nb` is written by the chunked loop below
+    // (one output per input pair) before any is read.
+    let mut nf = unsafe { fold_out_buf(half) };
+    let mut nb = unsafe { fold_out_buf(half) };
+    // As in the base variant: fold and accumulate in one pass per chunk.
+    let nf_base = parallel::SendPtr(nf.as_mut_ptr());
+    let nb_base = parallel::SendPtr(nb.as_mut_ptr());
+    let (u_0, u_2) = parallel::map_reduce(
+        half.div_ceil(CHUNK),
+        || (F192Unreduced::ZERO, F192Unreduced::ZERO),
+        |ci| {
             let base = ci * CHUNK;
-            let len = fc.len();
+            let len = CHUNK.min(half - base);
+            // SAFETY: distinct `ci` own disjoint in-bounds `CHUNK`-windows of
+            // `nf`/`nb`, and both buffers stay borrowed for the whole dispatch.
+            let fc = unsafe { nf_base.slice(base, len) };
+            let bc = unsafe { nb_base.slice(base, len) };
             let mut u0 = F192Unreduced::ZERO;
             let mut u2 = F192Unreduced::ZERO;
             for t in 0..len {
@@ -1985,10 +1989,18 @@ fn fold_and_msg_lsb_ext(f: &[F192], b: &[F192], r: F192) -> (Vec<F192>, Vec<F192
                 u2 ^= (f0 + f1).mul_unreduced(b0 + b1);
                 k += 2;
             }
-            (u0.reduce(), u2.reduce())
-        })
-        .reduce(|| (F192::ZERO, F192::ZERO), |(a0, a2), (c0, c2)| (a0 + c0, a2 + c2));
-    (nf, nb, SumcheckMessage { u_0, u_2 })
+            (u0, u2)
+        },
+        |(a0, a2), (c0, c2)| (a0 ^ c0, a2 ^ c2),
+    );
+    (
+        nf,
+        nb,
+        SumcheckMessage {
+            u_0: u_0.reduce(),
+            u_2: u_2.reduce(),
+        },
+    )
 }
 
 /// Two-phase witness: the committed K-message (borrowed from the caller, it
@@ -1996,7 +2008,7 @@ fn fold_and_msg_lsb_ext(f: &[F192], b: &[F192], r: F192) -> (Vec<F192>, Vec<F192
 /// E-vector afterwards.
 enum Witness<'a> {
     Base(&'a [F64]),
-    Ext(Vec<F192>),
+    Ext(ArenaVec<F192>),
 }
 
 /// Mirror of `ligerito::SumcheckProver` with the two-phase witness.
@@ -2004,15 +2016,15 @@ pub struct SumcheckProver<'a> {
     f: Witness<'a>,
     /// Single combined basis poly: after every `glue(beta)` the introduced
     /// basis is folded in as `combined_basis += beta * b_new`.
-    combined_basis: Vec<F192>,
+    combined_basis: ArenaVec<F192>,
     t_r: F192,
     transcript: Vec<SumcheckMessage>,
     round: usize,
-    pending_glue: Option<(Vec<F192>, F192)>,
+    pending_glue: Option<(ArenaVec<F192>, F192)>,
 }
 
 impl<'a> SumcheckProver<'a> {
-    pub fn new(f: &'a [F64], b1: Vec<F192>, h1: F192) -> (Self, SumcheckMessage) {
+    pub fn new(f: &'a [F64], b1: ArenaVec<F192>, h1: F192) -> (Self, SumcheckMessage) {
         let _span = tracing::info_span!("Sumcheck round", round = 0, log_size = f.len().trailing_zeros()).entered();
         assert_eq!(f.len(), b1.len());
         let msg = round_msg_lsb_base(f, &b1);
@@ -2039,32 +2051,18 @@ impl<'a> SumcheckProver<'a> {
             Witness::Base(f) => fold_and_msg_lsb_base(f, &self.combined_basis, r),
             Witness::Ext(f) => fold_and_msg_lsb_ext(f, &self.combined_basis, r),
         };
-        // Swap the freshly folded buffers in and reclaim the consumed ones. On
-        // x86_64 the old E buffers return to the scratch pool so the next
-        // round's `fold_out_buf` reuses resident pages instead of faulting a
-        // fresh mapping (the base witness is borrowed — nothing to reclaim).
-        // Credit: flock (flock-core) scratch-pool reuse.
-        let old_f = std::mem::replace(&mut self.f, Witness::Ext(nf));
-        let old_b = std::mem::replace(&mut self.combined_basis, nb);
-        #[cfg(target_arch = "x86_64")]
-        {
-            if let Witness::Ext(v) = old_f {
-                primitives::scratch::give_f192(v);
-            }
-            primitives::scratch::give_f192(old_b);
-        }
-        #[cfg(not(target_arch = "x86_64"))]
-        {
-            drop(old_f);
-            drop(old_b);
-        }
+        // Swap the freshly folded buffers in and drop the consumed ones. Their
+        // slab space is not reclaimed until the phase ends, which is exactly what
+        // makes the next round's `fold_out_buf` a bump instead of a fresh mapping.
+        drop(std::mem::replace(&mut self.f, Witness::Ext(nf)));
+        drop(std::mem::replace(&mut self.combined_basis, nb));
         self.transcript.push(msg);
         msg
     }
 
     /// Introduce a fresh basis poly with claimed sum `h_new`; sends the
     /// (u_0, u_2) for `Σ_x f(x) · b_new(x)` at the current dim.
-    pub fn introduce_new(&mut self, b_new: Vec<F192>, h_new: F192) -> SumcheckMessage {
+    pub fn introduce_new(&mut self, b_new: ArenaVec<F192>, h_new: F192) -> SumcheckMessage {
         let msg = match &self.f {
             Witness::Base(f) => {
                 assert_eq!(b_new.len(), f.len());
@@ -2083,7 +2081,7 @@ impl<'a> SumcheckProver<'a> {
     /// Introduce `b_new` and compute its claimed inner product in the same
     /// pass as the round message. OOD claims only occur after the first fold,
     /// when the witness has already been lifted from K to E.
-    pub fn introduce_new_with_eval(&mut self, b_new: Vec<F192>) -> (SumcheckMessage, F192) {
+    pub fn introduce_new_with_eval(&mut self, b_new: ArenaVec<F192>) -> (SumcheckMessage, F192) {
         let f = match &self.f {
             Witness::Ext(f) => f,
             Witness::Base(_) => panic!("OOD claim introduced before the first fold"),
@@ -2098,7 +2096,6 @@ impl<'a> SumcheckProver<'a> {
     /// Combine the introduced basis into `combined_basis` with separation
     /// `alpha`: `combined_basis[j] += alpha * b_new[j]`, `T_r += alpha * h_new`.
     pub fn glue(&mut self, alpha: F192) {
-        use rayon::prelude::*;
         let (b_new, h_new) = self.pending_glue.take().expect("glue without introduce_new");
         assert_eq!(b_new.len(), self.combined_basis.len());
         const PAR_THRESHOLD: usize = 4096;
@@ -2107,11 +2104,12 @@ impl<'a> SumcheckProver<'a> {
                 *acc += alpha * v;
             }
         } else {
-            self.combined_basis
-                .par_iter_mut()
-                .zip(b_new.par_iter())
-                .with_min_len(PAR_THRESHOLD / 4)
-                .for_each(|(acc, &v)| *acc += alpha * v);
+            let chunk = parallel::recommended_chunk_size(self.combined_basis.len());
+            parallel::chunks_mut_zip(&mut self.combined_basis, &b_new, chunk, |_, accs, news| {
+                for (acc, &v) in accs.iter_mut().zip(news) {
+                    *acc += alpha * v;
+                }
+            });
         }
         self.t_r += alpha * h_new;
     }
@@ -2300,7 +2298,7 @@ fn merkle_multi_proof_for(tree: &[Hash], block_len: usize, queries: &[usize]) ->
 pub fn recursive_prover_with_basis(
     config: &ProverConfig,
     witness: &[F64],
-    b_initial: Vec<F192>,
+    b_initial: ArenaVec<F192>,
     target: F192,
     l0_codeword: &[F64],
     l0_tree: &[Hash],
@@ -2975,7 +2973,7 @@ pub fn recursive_verifier_with_basis(
 
     // Basis poly tracking for the residual check. b_initial folds at ALL ris;
     // basis_0_induced starts after the lane folds.
-    let mut basis_polys: Vec<Vec<F192>> = vec![b_initial.to_vec(), basis_0_induced];
+    let mut basis_polys: Vec<ArenaVec<F192>> = vec![ArenaVec::from_slice(b_initial), basis_0_induced];
     let mut basis_ris_starts: Vec<usize> = vec![0, initial_k];
     let mut basis_separations: Vec<F192> = vec![beta_0];
     let mut ris: Vec<F192> = r_lane_fold.clone();
@@ -3816,7 +3814,7 @@ mod tests {
         let proof = recursive_prover_with_basis(
             &pc,
             &witness,
-            b_initial.clone(),
+            ArenaVec::from_slice(&b_initial),
             target,
             &pd.codeword,
             &pd.merkle_tree,
