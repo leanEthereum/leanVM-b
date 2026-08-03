@@ -14,7 +14,7 @@
 
 # Benchmarks
 
-Measured on an AMD Ryzen 7 PRO 8700GE with 11 Rayon workers. Timings vary by machine; cycles and proof sizes describe the protocol configuration more reliably.
+Machine: Mac M4 Max
 
 ### XMSS aggregation
 
