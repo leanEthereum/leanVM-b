@@ -13,6 +13,8 @@ workspace = true
 [dependencies]
 primitives.workspace = true
 rec_aggregation.workspace = true
+lean_vm.workspace = true
+zk_alloc.workspace = true
 clap = { version = "4", features = ["derive"] }
 
 [workspace.package]
@@ -40,7 +42,9 @@ lean_vm = { path = "crates/lean_vm" }
 lean_compiler = { path = "crates/lean_compiler" }
 rec_aggregation = { path = "crates/rec_aggregation" }
 xmss = { path = "crates/xmss" }
+zk_alloc = { path = "crates/zk_alloc" }
 rayon = "1.10"
+libc = "0.2"
 blake3 = "1.5"
 serde = { version = "1", features = ["derive"] }
 bincode = "1"

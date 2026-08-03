@@ -24,6 +24,7 @@ mod blake3_neon8;
 use primitives::epool::{SyncPtr, run_hetero_chunks};
 use primitives::{field::F192, pretty_integer};
 use rayon::prelude::*;
+use zk_alloc::ArenaVec;
 
 pub type Hash = [u8; 32];
 
@@ -242,7 +243,7 @@ fn hash_pairs_level_uninit(
         leaf_size = %pretty_integer(data.len().checked_div(num_leaves).unwrap_or(0))
     )
 )]
-pub fn merkle_tree(data: &[u8], num_leaves: usize) -> Vec<Hash> {
+pub fn merkle_tree(data: &[u8], num_leaves: usize) -> ArenaVec<Hash> {
     assert!(
         num_leaves.is_power_of_two() && num_leaves > 0,
         "num_leaves must be power of 2"
@@ -255,7 +256,7 @@ pub fn merkle_tree(data: &[u8], num_leaves: usize) -> Vec<Hash> {
 
     let leaf_size = data.len() / num_leaves;
     let total_nodes = 2 * num_leaves - 1;
-    let mut tree = primitives::alloc_uninit(total_nodes);
+    let mut tree = zk_alloc::alloc_uninit(total_nodes);
     let platform = blake3::platform::Platform::detect();
 
     // 1. Leaves — independent standard BLAKE3 hashes.
@@ -278,7 +279,7 @@ pub fn merkle_tree(data: &[u8], num_leaves: usize) -> Vec<Hash> {
     }
 
     // SAFETY: leaves and each successive internal level initialize the full tree.
-    unsafe { primitives::assume_init(tree) }
+    unsafe { zk_alloc::assume_init(tree) }
 }
 
 // ---------------------------------------------------------------------------

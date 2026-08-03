@@ -14,6 +14,7 @@ flock.workspace = true
 blake3.workspace = true
 rayon.workspace = true
 tracing.workspace = true
+zk_alloc.workspace = true
 
 [dev-dependencies]
 bincode.workspace = true

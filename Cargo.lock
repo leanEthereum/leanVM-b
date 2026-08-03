@@ -238,6 +238,7 @@ dependencies = [
  "pcs",
  "primitives",
  "rayon",
+ "zk_alloc",
 ]
 
 [[package]]
@@ -293,6 +294,7 @@ dependencies = [
  "primitives",
  "rayon",
  "tracing",
+ "zk_alloc",
 ]
 
 [[package]]
@@ -300,8 +302,10 @@ name = "leanvm-b"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "lean_vm",
  "primitives",
  "rec_aggregation",
+ "zk_alloc",
 ]
 
 [[package]]
@@ -363,6 +367,7 @@ dependencies = [
  "rayon",
  "serde",
  "tracing",
+ "zk_alloc",
 ]
 
 [[package]]
@@ -389,6 +394,7 @@ dependencies = [
  "serde",
  "tracing-forest",
  "tracing-subscriber",
+ "zk_alloc",
 ]
 
 [[package]]
@@ -479,6 +485,7 @@ dependencies = [
  "serde",
  "tracing",
  "xmss",
+ "zk_alloc",
 ]
 
 [[package]]
@@ -768,4 +775,11 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "zk_alloc"
+version = "0.1.0"
+dependencies = [
+ "libc",
 ]

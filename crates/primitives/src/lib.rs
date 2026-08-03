@@ -1,12 +1,11 @@
-//! Shared primitives: field kernels, bit transposes,
-//! multilinear helpers, the scratch buffer pool, and small integer utilities.
+//! Shared primitives: field kernels, bit transposes, multilinear helpers,
+//! benchmark timing, and small integer utilities.
 
 pub mod bench;
 pub mod bits;
 pub mod epool;
 pub mod field;
 pub mod multilinear;
-pub mod scratch;
 
 pub use field::{F64, F192, G, g_pow, g_powers, x_pow};
 
@@ -258,6 +257,26 @@ pub fn log2_strict_usize(n: usize) -> usize {
 pub fn log2_ceil_usize(n: usize) -> usize {
     assert!(n >= 1);
     usize::BITS as usize - (n - 1).leading_zeros() as usize
+}
+
+/// Arena-backed parallel collects. This lives here rather than in `zk_alloc` so
+/// the allocator itself stays free of a thread-pool dependency.
+pub trait ParCollectArena<T>: Sized {
+    /// Parallel `(0..n).map(build).collect()`: one allocation on the calling
+    /// thread, filled in place by the workers. Unlike rayon's `collect`, there
+    /// are no per-thread intermediate vectors to allocate and copy out of.
+    fn par_collect(n: usize, build: impl Fn(usize) -> T + Sync) -> Self;
+}
+
+impl<T: Send> ParCollectArena<T> for zk_alloc::ArenaVec<T> {
+    fn par_collect(n: usize, build: impl Fn(usize) -> T + Sync) -> Self {
+        use rayon::prelude::*;
+        // SAFETY: the fill below writes every slot in `0..n` exactly once, and
+        // rayon joins before the buffer is observable.
+        let mut out = unsafe { Self::uninitialized(n) };
+        out.par_iter_mut().enumerate().for_each(|(i, slot)| *slot = build(i));
+        out
+    }
 }
 
 /// Allocate a zero-filled `Vec<T>` through the global allocator's zeroed path.

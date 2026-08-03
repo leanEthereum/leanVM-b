@@ -143,7 +143,14 @@ fn blake3_batch_prove_verify() {
     // One full prove pass: witness generation, commitment, and the reduction +
     // stacked opening. Deterministic in `blocks`, so every pass is the same work
     // on the same shape and their timings are directly comparable.
+    //
+    // Each pass is one arena phase, matching how the VM prover runs. Only the
+    // transcript and the opening escape, and both are plain `Vec` proof data, so
+    // nothing here outlives its phase. `setup` is built above, outside any phase,
+    // because it is cached across passes.
+    zk_alloc::enable_arena();
     let prove_pass = || {
+        let _phase = zk_alloc::enter_phase();
         let t = Instant::now();
         let (z_packed, a_packed, b_packed, z_lincheck) = generate_witness_with_ab_packed_and_lincheck(&blocks, n_log);
         let q_pkd = flatten_packed(&z_packed);

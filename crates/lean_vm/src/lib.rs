@@ -31,6 +31,28 @@ pub mod transcript;
 pub mod vmhash;
 pub mod witness;
 
+/// Prepare the process for proving: the pinned worker pool ([`init_prover_pool`])
+/// plus the proving arena ([`zk_alloc::enable_arena`]), which recycles the
+/// prover's large transient buffers across proofs instead of re-faulting them.
+///
+/// Call once at program or test start.
+///
+/// Set `LEANVM_NO_ARENA` (or call only [`init_prover_pool`]) on a
+/// memory-constrained host: every [`ArenaVec`](zk_alloc::ArenaVec) then falls back
+/// to the system allocator, which is slower but holds only the live working set
+/// instead of a phase's cumulative allocation.
+///
+/// # Contract
+/// The arena has one region per process, so two proofs must never run
+/// concurrently in one process — [`zk_alloc::begin_phase`] asserts this. Use
+/// separate processes to parallelize across proofs.
+pub fn init_prover() {
+    init_prover_pool();
+    if std::env::var_os("LEANVM_NO_ARENA").is_none() {
+        zk_alloc::enable_arena();
+    }
+}
+
 /// Build rayon's global thread pool with every worker pinned to a **performance
 /// core** (macOS QoS `USER_INTERACTIVE`), so the prover's fork-join stages are not
 /// dragged by efficiency-core stragglers at their barriers. The thread *count*

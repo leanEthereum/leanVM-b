@@ -71,7 +71,9 @@ pub fn run_xmss_aggregation(n: usize, log_inv_rate: usize, plan: Plan) {
 
     // Pin rayon workers to performance cores (QoS) before any parallel work runs,
     // so fork-join stages are not held up by efficiency-core stragglers. Thread
-    // count still follows RAYON_NUM_THREADS.
+    // count still follows RAYON_NUM_THREADS. Opting into the arena is the calling
+    // *process's* decision (one region, one proof at a time), so it stays in
+    // `main`, not here.
     lean_vm::init_prover_pool();
     let slot = signers_cache::SLOT;
     let message: Message = signers_cache::message();
@@ -278,6 +280,6 @@ mod tests {
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(3);
-        super::run_xmss_aggregation(n, lean_vm::pcs::LOG_INV_RATE, Plan::default());
+        super::run_xmss_aggregation(n, lean_vm::pcs::LOG_INV_RATE, primitives::bench::Plan::default());
     }
 }

@@ -100,6 +100,7 @@ use crate::blake3_witness::{BitRecord, add_carry_parts, or_bit_at, or_u32_at_bit
 use crate::r1cs::{BlockR1cs, SparseBinaryMatrix};
 use crate::verifier;
 use primitives::field::F192;
+use zk_alloc::ArenaVec;
 
 // ---------------------------------------------------------------------------
 // Public constants
@@ -1259,10 +1260,10 @@ pub fn generate_witness_with_ab_packed_and_lincheck(
     blocks: &[Compression],
     n_blocks_log: usize,
 ) -> (
-    Vec<primitives::field::F192>,
-    Vec<primitives::field::F192>,
-    Vec<primitives::field::F192>,
-    Vec<u8>,
+    ArenaVec<primitives::field::F192>,
+    ArenaVec<primitives::field::F192>,
+    ArenaVec<primitives::field::F192>,
+    ArenaVec<u8>,
 ) {
     // Constant-wire pin (see lincheck's `LincheckCircuit::const_pin_col`): fill padding blocks with the
     // pinned compression of the all-zero message so the constant cell is 1 in
@@ -1311,10 +1312,10 @@ impl Blake3Setup {
         let n_log = min_n_blocks_log(n_blocks);
         let r1cs = build_block_r1cs(n_log);
         // Warm the CSC fold circuit here so its one-time build (a pass over
-        // ~21M nonzeros) stays out of the first prove/verify, and pre-fault
-        // the prove-cycle scratch buffers (see scratch::prewarm_prover).
+        // ~21M nonzeros) stays out of the first prove/verify. The prove-cycle
+        // buffers need no pre-faulting: they come from the arena, which keeps its
+        // pages resident across proofs (see `zk_alloc`).
         r1cs.csc_lincheck_circuit();
-        primitives::scratch::prewarm_prover(r1cs.m);
         Self { r1cs }
     }
 
@@ -1725,7 +1726,7 @@ impl Blake3Setup {
         &self,
         blocks: &[Compression],
         ps: &mut fiat_shamir::transcript::ProverState<O>,
-    ) -> (Vec<F192>, PackedWitnessClaims) {
+    ) -> (ArenaVec<F192>, PackedWitnessClaims) {
         assert!(
             blocks.len() <= self.n_block_slots(),
             "{} compressions exceed this setup's {} slots",

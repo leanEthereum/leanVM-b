@@ -122,6 +122,7 @@ use fiat_shamir::transcript::{ProverState, VerifierState};
 use pcs::ring_switch::inner_product_ext;
 use primitives::field::F192;
 use primitives::multilinear::{eq_table as build_eq, lagrange_weights_naive};
+use zk_alloc::ArenaVec;
 
 // ---------------------------------------------------------------------------
 // LincheckCircuit: the per-block linear structure lincheck consumes
@@ -929,7 +930,7 @@ fn build_sum_table(eq8: &[F192], table: &mut [F192]) {
 ///
 /// See the module-level docs for the full bit-position decomposition.
 #[cfg(test)]
-pub fn pack_z_lincheck(z_logical: &[bool], m: usize, k_log: usize) -> Vec<u8> {
+pub fn pack_z_lincheck(z_logical: &[bool], m: usize, k_log: usize) -> ArenaVec<u8> {
     let k = 1usize << k_log;
     let n_total = 1usize << m;
     assert_eq!(z_logical.len(), n_total);
@@ -937,7 +938,7 @@ pub fn pack_z_lincheck(z_logical: &[bool], m: usize, k_log: usize) -> Vec<u8> {
     assert_eq!(n_outer % 8, 0, "need n_outer ≥ 8 for byte stripes");
     let n_stripes = n_outer / 8;
 
-    let mut z_packed = primitives::alloc_uninit(n_total / 8);
+    let mut z_packed = zk_alloc::alloc_uninit(n_total / 8);
     for byte_idx in 0..n_stripes {
         for i_inner in 0..k {
             let mut byte = 0u8;
@@ -952,13 +953,13 @@ pub fn pack_z_lincheck(z_logical: &[bool], m: usize, k_log: usize) -> Vec<u8> {
         }
     }
     // SAFETY: the nested loops write every output byte exactly once.
-    unsafe { primitives::assume_init(z_packed) }
+    unsafe { zk_alloc::assume_init(z_packed) }
 }
 
 /// Same output as `pack_z_lincheck`, but reads bits from a 128-bit packed
 /// witness embedded in F192. In the polynomial basis, logical bit `i` is bit
 /// `i % 128` of `z_packed_words[i / 128]`.
-pub fn pack_z_lincheck_from_packed(z_packed_words: &[primitives::field::F192], m: usize, k_log: usize) -> Vec<u8> {
+pub fn pack_z_lincheck_from_packed(z_packed_words: &[primitives::field::F192], m: usize, k_log: usize) -> ArenaVec<u8> {
     use rayon::prelude::*;
     let k = 1usize << k_log;
     let n_total = 1usize << m;
@@ -966,7 +967,7 @@ pub fn pack_z_lincheck_from_packed(z_packed_words: &[primitives::field::F192], m
     let n_outer = n_total / k;
     assert_eq!(n_outer % 8, 0, "need n_outer ≥ 8 for byte stripes");
 
-    let mut z_packed = primitives::alloc_uninit(n_total / 8);
+    let mut z_packed = zk_alloc::alloc_uninit(n_total / 8);
     // Each stripe (byte_idx) writes a disjoint k-byte chunk — process them in
     // parallel. Inside one stripe, k independent output bytes.
     z_packed.par_chunks_mut(k).enumerate().for_each(|(byte_idx, chunk)| {
@@ -990,7 +991,7 @@ pub fn pack_z_lincheck_from_packed(z_packed_words: &[primitives::field::F192], m
         }
     });
     // SAFETY: every parallel chunk writes each of its output bytes exactly once.
-    unsafe { primitives::assume_init(z_packed) }
+    unsafe { zk_alloc::assume_init(z_packed) }
 }
 
 /// Build the **quirky eq table** for a claim point on the inner half:

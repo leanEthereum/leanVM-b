@@ -230,7 +230,7 @@ fn fold_stacked_point_claims(b_stack: &mut [F192], target: &mut F192, claims: &[
         })
         .max()
         .unwrap_or(0);
-    let mut scratch = primitives::alloc_uninit(max_len);
+    let mut scratch = zk_alloc::alloc_uninit(max_len);
     for (claim, g) in claims.iter().zip(gammas.iter()) {
         let g = *g;
         match claim {
@@ -416,7 +416,7 @@ pub fn open_batch_mixed_ligerito_stacked(
         .fold(F192::ZERO, |acc, out| acc + out.batched_sumcheck_claim);
     // Parallel first-touch wins for the tower stack: its many scattered point
     // claims otherwise fault pages one claim at a time.
-    let mut b_stack = primitives::alloc_uninit(stack.len());
+    let mut b_stack = zk_alloc::alloc_uninit(stack.len());
     {
         use rayon::prelude::*;
         const ZERO_CHUNK: usize = 1 << 16;
@@ -427,7 +427,7 @@ pub fn open_batch_mixed_ligerito_stacked(
         });
     }
     // SAFETY: the parallel fill initializes every stack weight to zero.
-    let mut b_stack = unsafe { primitives::assume_init(b_stack) };
+    let mut b_stack = unsafe { zk_alloc::assume_init(b_stack) };
     mark("b_stack zero fill", &mut t);
     ring_switch::combine_deferred_into(&rs_outputs, &mut b_stack[ring.offset..ring.offset + qpkd_len]);
     mark("rs_eq_ind scatter", &mut t);

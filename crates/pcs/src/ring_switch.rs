@@ -1442,7 +1442,7 @@ mod tests {
         let lig_proof = recursive_prover_with_basis(
             &pc,
             &packed,
-            out.rs_eq_ind,
+            zk_alloc::ArenaVec::from_slice(&out.rs_eq_ind),
             out.sumcheck_claim,
             &pd.codeword,
             &pd.merkle_tree,

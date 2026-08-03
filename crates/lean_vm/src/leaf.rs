@@ -14,6 +14,7 @@ use crate::witness::Column;
 use primitives::field::{F64, F192, F192BaseUnreduced, g_pow, index_mle};
 use primitives::multilinear::{eq_eval, mle_eval};
 use rayon::prelude::*;
+use zk_alloc::ArenaVec;
 
 /// One tuple coordinate as a function of the block's row `z`.
 #[derive(Clone, Debug)]
@@ -147,7 +148,7 @@ pub fn build_leaves(blocks: &[Block], lay: &Layout, cols: &[Column], alpha: F192
         .max()
         .unwrap_or(1);
     debug_assert!(explicit <= 1usize << lay.mu);
-    let mut leaves = vec![F192::ONE; explicit];
+    let mut leaves = ArenaVec::filled(F192::ONE, explicit);
     let mut pads = Vec::new();
     let maxk = blocks.iter().map(|b| b.kappa).max().unwrap_or(0);
     let gpow = primitives::field::g_powers(1usize << maxk);

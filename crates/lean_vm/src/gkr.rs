@@ -8,10 +8,12 @@
 
 use crate::PAR_THRESHOLD;
 use crate::transcript::{ProverState, VerifierState};
+use primitives::ParCollectArena;
 use primitives::field::{F192, F192Unreduced};
 use primitives::multilinear::{eq_table, interp, quartic_eval_from_eq, shrink_eq_low};
 use rayon::prelude::*;
 use std::ops::Range;
+use zk_alloc::ArenaVec;
 
 #[inline]
 fn mul_pair(a: [F192; 2], b: [F192; 2]) -> [F192; 2] {
@@ -145,12 +147,12 @@ fn for_each_piece(window: Range<usize>, runs: &[PadRun], mut visit: impl FnMut(R
 
 /// One tree's dense leaves and the aligned runs known to be constant.
 pub struct LeafVector {
-    leaves: Vec<F192>,
+    leaves: ArenaVec<F192>,
     pads: Vec<PadRun>,
 }
 
 impl LeafVector {
-    pub fn new(leaves: Vec<F192>, mut pads: Vec<PadRun>) -> Self {
+    pub fn new(leaves: ArenaVec<F192>, mut pads: Vec<PadRun>) -> Self {
         pads.sort_unstable_by_key(|run| run.start);
         debug_assert!(pads.iter().all(|run| run.start < run.end && run.end <= leaves.len()));
         debug_assert!(pads.windows(2).all(|pair| pair[0].end <= pair[1].start));
@@ -161,14 +163,16 @@ impl LeafVector {
         Self { leaves, pads }
     }
 
-    pub fn dense(leaves: Vec<F192>) -> Self {
+    pub fn dense(leaves: ArenaVec<F192>) -> Self {
         Self::new(leaves, Vec::new())
     }
 }
 
 #[derive(Default)]
 struct Layer {
-    values: Vec<F192>,
+    /// One level of the grand-product tree: at mu = 22 the leaf level alone is
+    /// hundreds of megabytes, and every level dies with the proof.
+    values: ArenaVec<F192>,
     pads: Vec<PadRun>,
 }
 
@@ -200,12 +204,12 @@ fn build_layers(leaves: LeafVector, mu: usize) -> Vec<Layer> {
                 run.regroup(2, square * square)
             })
             .collect();
-        let mut next = if current.len() == 1 {
-            vec![current[0]]
+        let mut next: ArenaVec<F192> = if current.len() == 1 {
+            ArenaVec::from_iter([current[0]])
         } else if current.len() == 2 {
-            vec![current[0] * current[1]]
+            ArenaVec::from_iter([current[0] * current[1]])
         } else if full_rows >= PAR_THRESHOLD {
-            (0..full_rows).into_par_iter().map(product).collect()
+            ArenaVec::par_collect(full_rows, product)
         } else {
             (0..full_rows).map(product).collect()
         };
@@ -224,8 +228,8 @@ fn build_layers(leaves: LeafVector, mu: usize) -> Vec<Layer> {
     if level < mu {
         layers[mu] = Layer {
             values: match layers[level].values.as_slice() {
-                [root] => vec![*root],
-                [left, right] => vec![*left * *right],
+                [root] => ArenaVec::from_iter([*root]),
+                [left, right] => ArenaVec::from_iter([*left * *right]),
                 _ => unreachable!("the final binary layer has at most two explicit nodes"),
             },
             pads: Vec::new(),
@@ -259,8 +263,8 @@ fn quartic_summand(lines: [[F192; 2]; 4], equality: F192) -> [F192Unreduced; 4] 
 struct QuaternaryLayerState {
     /// Four child tables interleaved in their original order. This lets the
     /// prover consume a product-tree level without first transposing it.
-    values: Vec<F192>,
-    next: Vec<F192>,
+    values: ArenaVec<F192>,
+    next: ArenaVec<F192>,
     /// Logical row count after identity padding. `values` stores an arbitrary
     /// prefix; every omitted row is the constant four-tuple one.
     logical_rows: usize,
@@ -269,7 +273,7 @@ struct QuaternaryLayerState {
 }
 
 impl QuaternaryLayerState {
-    fn new(mut values: Vec<F192>, pads: Vec<PadRun>, width: usize) -> Self {
+    fn new(mut values: ArenaVec<F192>, pads: Vec<PadRun>, width: usize) -> Self {
         // Materialize only the incomplete final four-tuple. Every complete
         // all-one row after the arbitrary explicit prefix remains implicit.
         values.resize(4 * values.len().max(1).div_ceil(4), F192::ONE);
@@ -278,7 +282,7 @@ impl QuaternaryLayerState {
         let pads = pads.iter().filter_map(|run| run.regroup(2, run.value)).collect();
         Self {
             values,
-            next: Vec::new(),
+            next: ArenaVec::new(),
             logical_rows: width,
             pads,
         }
@@ -597,7 +601,7 @@ mod tests {
     #[test]
     fn quartic_round_message_matches_direct_evaluation() {
         for width in [2, 4, 8, 16] {
-            let below: Vec<F192> = (0..4 * width)
+            let below: ArenaVec<F192> = (0..4 * width)
                 .map(|i| F192::new((17 * i + width + 1) as u64, (i * i + 3) as u64, (5 * i + 7) as u64))
                 .collect();
             let state = QuaternaryLayerState::new(below, Vec::new(), width);
@@ -635,7 +639,10 @@ mod tests {
                 .each_ref()
                 .map(|lane| lane.iter().copied().fold(F192::ONE, |product, value| product * value));
             let mut ps = ProverState::new(b"radix-four-gkr-test", &[]);
-            let proved = prove_product_triple(leaves.clone().map(LeafVector::dense), &mut ps);
+            let proved = prove_product_triple(
+                leaves.each_ref().map(|l| LeafVector::dense(ArenaVec::from_slice(l))),
+                &mut ps,
+            );
             assert_eq!(proved.roots, expected_roots);
             for lane in 0..3 {
                 assert_eq!(proved.values[lane], mle_eval_e(&leaves[lane], &proved.point));
@@ -651,14 +658,14 @@ mod tests {
         }
     }
 
-    fn padded_blocks(mu: usize, lane: usize) -> (Vec<F192>, Vec<PadRun>) {
+    fn padded_blocks(mu: usize, lane: usize) -> (ArenaVec<F192>, Vec<PadRun>) {
         let (half, quarter, eighth) = (1usize << (mu - 1), 1usize << (mu - 2), 1usize << (mu - 3));
         let blocks = [
             (0usize, half, half - 3 - lane),
             (half, quarter, quarter),
             (half + quarter, eighth, 1),
         ];
-        let mut leaves = vec![F192::ONE; half + quarter + eighth];
+        let mut leaves = ArenaVec::filled(F192::ONE, half + quarter + eighth);
         let mut pads = Vec::new();
         for (index, &(off, rows, real)) in blocks.iter().enumerate() {
             for z in 0..real {
@@ -680,7 +687,7 @@ mod tests {
     #[test]
     fn declared_pad_runs_match_the_dense_prover() {
         for mu in 4..=11 {
-            let lanes: [(Vec<F192>, Vec<PadRun>); 3] = std::array::from_fn(|lane| padded_blocks(mu, lane));
+            let lanes: [(ArenaVec<F192>, Vec<PadRun>); 3] = std::array::from_fn(|lane| padded_blocks(mu, lane));
 
             let mut skipped_ps = ProverState::new(b"pad-run-gkr-test", &[]);
             let skipped = prove_product_triple(
@@ -730,7 +737,10 @@ mod tests {
                 padded
             });
             let mut sparse_ps = ProverState::new(b"sparse-radix-four-gkr-test", &[]);
-            let proved = prove_product_triple(leaves.map(LeafVector::dense), &mut sparse_ps);
+            let proved = prove_product_triple(
+                leaves.each_ref().map(|l| LeafVector::dense(ArenaVec::from_slice(l))),
+                &mut sparse_ps,
+            );
             for lane in 0..3 {
                 assert_eq!(proved.values[lane], mle_eval_e(&dense[lane], &proved.point));
                 assert_eq!(
@@ -743,7 +753,10 @@ mod tests {
             }
             let proof = sparse_ps.into_proof();
             let mut dense_ps = ProverState::new(b"sparse-radix-four-gkr-test", &[]);
-            let dense_proved = prove_product_triple(dense.map(LeafVector::dense), &mut dense_ps);
+            let dense_proved = prove_product_triple(
+                dense.each_ref().map(|l| LeafVector::dense(ArenaVec::from_slice(l))),
+                &mut dense_ps,
+            );
             assert_eq!(dense_proved.roots, proved.roots);
             assert_eq!(dense_proved.point, proved.point);
             assert_eq!(dense_proved.values, proved.values);
