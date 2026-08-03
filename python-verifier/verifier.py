@@ -1970,8 +1970,8 @@ class Reduction:
 class JaggedPointClaim:
     offset: int
     height: int
-    batch_group: int
     selector_len: int
+    slot: int
     row_point: tuple[F128, ...]
     value: F128
 
@@ -2048,9 +2048,10 @@ def jagged_indicator(
 
 def point_claim_eq(claim: PointClaim, point: Sequence[F128]) -> F128:
     if isinstance(claim, JaggedPointClaim):
-        return jagged_indicator(
-            claim.row_point, claim.offset, claim.offset + claim.height, point
-        )
+        # Only an empty column reaches here: every other Jagged claim is a batch
+        # member, and an empty interval carries the identically zero weight.
+        require(claim.height == 0, "unbatched non-empty Jagged claim")
+        return ZERO
     block_variables = claim.stride_log + len(claim.point)
     require(block_variables <= len(point), "strided claim exceeds the committed cube")
     result = ONE
@@ -2075,7 +2076,11 @@ def geometric_claim_weights(
     for index, claim in enumerate(claims):
         if ranks[index] >= 0:
             continue
-        if not isinstance(claim, JaggedPointClaim) or claim.selector_len == 0:
+        if not isinstance(claim, JaggedPointClaim) or claim.height == 0:
+            # A non-Jagged claim, or an empty column: an empty interval carries the
+            # identically zero weight and needs only a rank. Skipping it also keeps
+            # the gather unambiguous, since a zero-height block shares its dense
+            # offset with its successor.
             ranks[index] = next_rank
             next_rank += 1
             continue
@@ -2083,35 +2088,27 @@ def geometric_claim_weights(
         by_slot: list[int | None] = [None] * width
         for other_index in range(index, count):
             other = claims[other_index]
-            if ranks[other_index] >= 0 or not isinstance(other, JaggedPointClaim):
+            if not isinstance(other, JaggedPointClaim) or other.height == 0:
                 continue
-            if (
-                other.offset != claim.offset
-                or other.height != claim.height
-                or other.batch_group != claim.batch_group
-                or other.selector_len != claim.selector_len
-                or other.row_point[claim.selector_len :] != claim.row_point[claim.selector_len :]
-            ):
+            if other.offset != claim.offset:
                 continue
-            slot = 0
-            boolean = True
-            for bit, coordinate in enumerate(other.row_point[: claim.selector_len]):
-                if coordinate == ONE:
-                    slot |= 1 << bit
-                elif coordinate != ZERO:
-                    boolean = False
-                    break
-            if boolean and by_slot[slot] is None:
-                by_slot[slot] = other_index
-        if all(member is not None for member in by_slot):
-            members = tuple(int(member) for member in by_slot)
-            for slot, member in enumerate(members):
-                ranks[member] = next_rank + slot
-            batch_members.append((members, claim.offset, claim.height, claim.selector_len))
-            next_rank += width
-        else:
-            ranks[index] = next_rank
-            next_rank += 1
+            require(by_slot[other.slot] is None, "two Jagged claims on one column")
+            by_slot[other.slot] = other_index
+        members = []
+        for slot, member in enumerate(by_slot):
+            require(member is not None, "a Jagged block must have a claim per slot")
+            other = claims[member]
+            assert isinstance(other, JaggedPointClaim)
+            require(
+                other.height == claim.height
+                and other.selector_len == claim.selector_len
+                and other.row_point == claim.row_point,
+                "a Jagged block's claims must share its shape and row point",
+            )
+            ranks[member] = next_rank + slot
+            members.append(member)
+        batch_members.append((tuple(members), claim.offset, claim.height, claim.selector_len))
+        next_rank += width
     require(next_rank == count, "invalid Jagged claim ranking")
 
     gamma_powers = [ONE]
@@ -2127,7 +2124,7 @@ def geometric_claim_weights(
         for _ in range(selector_len):
             row_weights.append((ONE, geometric))
             geometric *= geometric
-        row_weights.extend((ONE + value, value) for value in first.row_point[selector_len:])
+        row_weights.extend((ONE + value, value) for value in first.row_point)
         batches.append(
             JaggedClaimBatch(
                 members,
@@ -2393,10 +2390,6 @@ def blake3_matrix_fold(alpha: F128, row_weights: Sequence[F128]) -> list[F128]:
 # Complete VM verification and CLI -------------------------------------------
 
 
-def _selector_point(selector: int, length: int) -> tuple[F128, ...]:
-    return tuple(F128(selector >> bit & 1) for bit in range(length))
-
-
 def verify_execution(statement: dict[str, Any], proof: Proof) -> None:
     """Verify a complete leanVM-b execution proof against its public statement."""
     program = Program.parse(statement)
@@ -2439,41 +2432,52 @@ def verify_execution(statement: dict[str, Any], proof: Proof) -> None:
     public_value = interpolate(public_input[0], public_input[1], public_challenge)
     claims.append(ColumnClaim(0, tuple(public_point), public_value))
 
-    batch_groups = [0] * bus_claim_count
-    for table, width in enumerate(WIDTHS):
-        batch_groups.extend([table + 1] * width)
-    batch_groups.append(len(WIDTHS) + 1)
-    require(len(batch_groups) == len(claims), "opening-claim grouping mismatch")
+    # The public-input claim is the last one and the only claim that is not a
+    # whole-column evaluation: its point is (r, 0, .., 0), so eq is supported on
+    # rows 0 and 1 alone. Those two dense cells are offset + slot and
+    # offset + slot + 2^b, so the weight is an ordinary aligned eq and the claim
+    # rides the strided path, keeping every Jagged claim a whole-column claim.
+    public_index = len(claims) - 1
+    del bus_claim_count
 
     point_claims: list[PointClaim] = []
     qpkd = layout.placements[3]
-    for claim, batch_group in zip(claims, batch_groups):
+    for index, claim in enumerate(claims):
         slot = virtual_slot(claim.column)
-        if slot is None:
-            placement = layout.placements[claim.column]
-            require(not placement.virtual, "claim targets an uncommitted column")
-            require(len(claim.point) == placement.variables, "column claim dimension mismatch")
-            # The committed prefix is the column offset by its pad value, so the
-            # logical evaluation is the committed one plus that constant.
-            adjusted_value = claim.value + layout.padding[claim.column]
-            row_point = (
-                _selector_point(placement.slot, placement.block_width_log) + claim.point
-            )
-            point_claims.append(
-                JaggedPointClaim(
-                    placement.offset,
-                    placement.height << placement.block_width_log,
-                    batch_group,
-                    placement.block_width_log,
-                    row_point,
-                    adjusted_value,
-                )
-            )
-        else:
+        if slot is not None:
             require(len(claim.point) + 7 == qpkd.variables, "BLAKE3 slot claim dimension mismatch")
             point_claims.append(
                 StridedPointClaim(qpkd.offset, slot, 7, claim.point, claim.value)
             )
+            continue
+        placement = layout.placements[claim.column]
+        require(not placement.virtual, "claim targets an uncommitted column")
+        require(len(claim.point) == placement.variables, "column claim dimension mismatch")
+        # The committed prefix is the column offset by its pad value, so the
+        # logical evaluation is the committed one plus that constant.
+        adjusted_value = claim.value + layout.padding[claim.column]
+        if index == public_index:
+            require(all(x == ZERO for x in claim.point[1:]), "public-input point must pin two cells")
+            point_claims.append(
+                StridedPointClaim(
+                    placement.offset,
+                    placement.slot,
+                    placement.block_width_log,
+                    claim.point[:1],
+                    adjusted_value,
+                )
+            )
+            continue
+        point_claims.append(
+            JaggedPointClaim(
+                placement.offset,
+                placement.height << placement.block_width_log,
+                placement.block_width_log,
+                placement.slot,
+                claim.point,
+                adjusted_value,
+            )
+        )
 
     reduction = verify_reduction(14 + layout.table_logs[5], transcript)
     opening = transcript.opening()
