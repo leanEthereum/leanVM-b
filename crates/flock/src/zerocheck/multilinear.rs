@@ -367,7 +367,7 @@ unsafe fn fold_one_row_neon_unchecked_8(table_data: *const F192, bytes_ptr: *con
 /// Optimized fused fold (at the URM challenge `z`, baked into `table`) plus
 /// round-2 prover message. **Packed input** (LSB-first bit packing). **Parallel
 /// by default** via rayon — the outer x_hi loop is distributed across workers,
-/// each writing to a disjoint chunk of `a_folded`/`b_folded` via `par_chunks_mut`
+/// each writing to a disjoint chunk of `a_folded`/`b_folded`
 /// and accumulating its own `(sum1_contrib, sum_inf_contrib)`. The final
 /// reduce sums the per-worker contributions (commutative + associative F192
 /// XOR/multiply).
@@ -382,7 +382,7 @@ unsafe fn fold_one_row_neon_unchecked_8(table_data: *const F192, bytes_ptr: *con
 /// Returns `(a_folded, b_folded, mlv_challenges[0] · G(1), G(∞))` — same
 /// convention as `uni_skip_fold_and_round_pair_naive`.
 ///
-/// To run single-threaded for debugging, set `RAYON_NUM_THREADS=1`.
+/// To run single-threaded for debugging, set `LEANVM_NUM_THREADS=1`.
 ///
 /// `k_skip = 6` is currently hardcoded (the protocol headline).
 pub fn uni_skip_fold_and_round_pair_optimized_packed(
@@ -417,8 +417,6 @@ pub fn uni_skip_fold_and_round_pair_optimized_packed_padded(
     mlv_challenges: &[F192],
     padding: &PaddingSpec,
 ) -> (ArenaVec<F192>, ArenaVec<F192>, F192, F192) {
-    use rayon::prelude::*;
-
     assert_eq!(k_skip, 6, "optimized fold-and-round_pair variant is k_skip=6 only");
     assert_eq!(table.n_chunks, 8);
     let n_chunks = table.n_chunks;
@@ -444,95 +442,99 @@ pub fn uni_skip_fold_and_round_pair_optimized_packed_padded(
 
     // Parallel: each worker writes one disjoint chunk of a_folded/b_folded
     // and returns its (sum1, sum_inf) contribution. Reduce by F192 XOR.
-    let (sum1, sum_inf) = a_folded
-        .par_chunks_mut(chunk_size)
-        .zip(b_folded.par_chunks_mut(chunk_size))
-        .enumerate()
-        .map(|(x_hi, (a_chunk, b_chunk))| {
-            let mut p1_acc = F192Unreduced::ZERO;
-            let mut pinf_acc = F192Unreduced::ZERO;
-            let pair_idx_base = x_hi * lo_size;
-
-            #[cfg(target_arch = "aarch64")]
-            unsafe {
-                let table_ptr = table.data.as_ptr();
-                let a_pkt_ptr = a_packed.as_ptr();
-                let b_pkt_ptr = b_packed.as_ptr();
-                let base = x_hi * chunk_size;
-
-                for x_lo in 0..lo_size {
-                    let x0l = 2 * x_lo;
-                    let x1l = x0l + 1;
-                    if ((pair_idx_base + x_lo) & pair_in_block_mask) >= useful_pairs_inclusive {
-                        // Padding hole: write zero (a_folded/b_folded were alloc'd
-                        // uninit, so we have to write every slot we don't fold into).
-                        a_chunk[x0l] = F192::ZERO;
-                        a_chunk[x1l] = F192::ZERO;
-                        b_chunk[x0l] = F192::ZERO;
-                        b_chunk[x1l] = F192::ZERO;
-                        continue;
-                    }
-                    let x0g = base + 2 * x_lo;
-                    let x1g = x0g + 1;
-
-                    let a0 = fold_one_row_neon_unchecked_8(table_ptr, a_pkt_ptr.add(x0g * 8));
-                    let b0 = fold_one_row_neon_unchecked_8(table_ptr, b_pkt_ptr.add(x0g * 8));
-                    let a1 = fold_one_row_neon_unchecked_8(table_ptr, a_pkt_ptr.add(x1g * 8));
-                    let b1 = fold_one_row_neon_unchecked_8(table_ptr, b_pkt_ptr.add(x1g * 8));
-
-                    a_chunk[x0l] = a0;
-                    a_chunk[x1l] = a1;
-                    b_chunk[x0l] = b0;
-                    b_chunk[x1l] = b1;
-
-                    let eq_l = eq_lo[x_lo];
-                    let g1 = a1 * b1;
-                    p1_acc ^= eq_l.mul_unreduced(g1);
-                    let g_inf = (a0 + a1) * (b0 + b1);
-                    pinf_acc ^= eq_l.mul_unreduced(g_inf);
-                }
-            }
-            #[cfg(not(target_arch = "aarch64"))]
+    let a_chunks = parallel::Chunks::new(&mut a_folded, chunk_size);
+    let b_chunks = parallel::Chunks::new(&mut b_folded, chunk_size);
+    let (sum1, sum_inf) = parallel::map_reduce(
+        a_chunks.count(),
+        || (F192::ZERO, F192::ZERO),
+        |x_hi| {
+            // SAFETY: `x_hi` takes chunk `x_hi` of each output exactly once, and
+            // both buffers stay borrowed for the whole dispatch.
+            let (a_chunk, b_chunk) = unsafe { (a_chunks.get(x_hi), b_chunks.get(x_hi)) };
             {
-                let base = x_hi * chunk_size;
-                for x_lo in 0..lo_size {
-                    let x0l = 2 * x_lo;
-                    let x1l = x0l + 1;
-                    if ((pair_idx_base + x_lo) & pair_in_block_mask) >= useful_pairs_inclusive {
-                        // See aarch64 branch above for why this zero write is needed.
-                        a_chunk[x0l] = F192::ZERO;
-                        a_chunk[x1l] = F192::ZERO;
-                        b_chunk[x0l] = F192::ZERO;
-                        b_chunk[x1l] = F192::ZERO;
-                        continue;
-                    }
-                    let x0g = base + 2 * x_lo;
-                    let x1g = x0g + 1;
-                    let a0 = table.fold_one_row(&a_packed[x0g * n_chunks..(x0g + 1) * n_chunks]);
-                    let b0 = table.fold_one_row(&b_packed[x0g * n_chunks..(x0g + 1) * n_chunks]);
-                    let a1 = table.fold_one_row(&a_packed[x1g * n_chunks..(x1g + 1) * n_chunks]);
-                    let b1 = table.fold_one_row(&b_packed[x1g * n_chunks..(x1g + 1) * n_chunks]);
-                    a_chunk[x0l] = a0;
-                    a_chunk[x1l] = a1;
-                    b_chunk[x0l] = b0;
-                    b_chunk[x1l] = b1;
-                    let eq_l = eq_lo[x_lo];
-                    let g1 = a1 * b1;
-                    p1_acc ^= eq_l.mul_unreduced(g1);
-                    let g_inf = (a0 + a1) * (b0 + b1);
-                    pinf_acc ^= eq_l.mul_unreduced(g_inf);
-                }
-            }
+                let mut p1_acc = F192Unreduced::ZERO;
+                let mut pinf_acc = F192Unreduced::ZERO;
+                let pair_idx_base = x_hi * lo_size;
 
-            let p1 = p1_acc.reduce();
-            let pinf = pinf_acc.reduce();
-            let eq_h = eq_hi[x_hi];
-            (eq_h * p1, eq_h * pinf)
-        })
-        .reduce(
-            || (F192::ZERO, F192::ZERO),
-            |(s1, sinf), (c1, cinf)| (s1 + c1, sinf + cinf),
-        );
+                #[cfg(target_arch = "aarch64")]
+                unsafe {
+                    let table_ptr = table.data.as_ptr();
+                    let a_pkt_ptr = a_packed.as_ptr();
+                    let b_pkt_ptr = b_packed.as_ptr();
+                    let base = x_hi * chunk_size;
+
+                    for x_lo in 0..lo_size {
+                        let x0l = 2 * x_lo;
+                        let x1l = x0l + 1;
+                        if ((pair_idx_base + x_lo) & pair_in_block_mask) >= useful_pairs_inclusive {
+                            // Padding hole: write zero (a_folded/b_folded were alloc'd
+                            // uninit, so we have to write every slot we don't fold into).
+                            a_chunk[x0l] = F192::ZERO;
+                            a_chunk[x1l] = F192::ZERO;
+                            b_chunk[x0l] = F192::ZERO;
+                            b_chunk[x1l] = F192::ZERO;
+                            continue;
+                        }
+                        let x0g = base + 2 * x_lo;
+                        let x1g = x0g + 1;
+
+                        let a0 = fold_one_row_neon_unchecked_8(table_ptr, a_pkt_ptr.add(x0g * 8));
+                        let b0 = fold_one_row_neon_unchecked_8(table_ptr, b_pkt_ptr.add(x0g * 8));
+                        let a1 = fold_one_row_neon_unchecked_8(table_ptr, a_pkt_ptr.add(x1g * 8));
+                        let b1 = fold_one_row_neon_unchecked_8(table_ptr, b_pkt_ptr.add(x1g * 8));
+
+                        a_chunk[x0l] = a0;
+                        a_chunk[x1l] = a1;
+                        b_chunk[x0l] = b0;
+                        b_chunk[x1l] = b1;
+
+                        let eq_l = eq_lo[x_lo];
+                        let g1 = a1 * b1;
+                        p1_acc ^= eq_l.mul_unreduced(g1);
+                        let g_inf = (a0 + a1) * (b0 + b1);
+                        pinf_acc ^= eq_l.mul_unreduced(g_inf);
+                    }
+                }
+                #[cfg(not(target_arch = "aarch64"))]
+                {
+                    let base = x_hi * chunk_size;
+                    for x_lo in 0..lo_size {
+                        let x0l = 2 * x_lo;
+                        let x1l = x0l + 1;
+                        if ((pair_idx_base + x_lo) & pair_in_block_mask) >= useful_pairs_inclusive {
+                            // See aarch64 branch above for why this zero write is needed.
+                            a_chunk[x0l] = F192::ZERO;
+                            a_chunk[x1l] = F192::ZERO;
+                            b_chunk[x0l] = F192::ZERO;
+                            b_chunk[x1l] = F192::ZERO;
+                            continue;
+                        }
+                        let x0g = base + 2 * x_lo;
+                        let x1g = x0g + 1;
+                        let a0 = table.fold_one_row(&a_packed[x0g * n_chunks..(x0g + 1) * n_chunks]);
+                        let b0 = table.fold_one_row(&b_packed[x0g * n_chunks..(x0g + 1) * n_chunks]);
+                        let a1 = table.fold_one_row(&a_packed[x1g * n_chunks..(x1g + 1) * n_chunks]);
+                        let b1 = table.fold_one_row(&b_packed[x1g * n_chunks..(x1g + 1) * n_chunks]);
+                        a_chunk[x0l] = a0;
+                        a_chunk[x1l] = a1;
+                        b_chunk[x0l] = b0;
+                        b_chunk[x1l] = b1;
+                        let eq_l = eq_lo[x_lo];
+                        let g1 = a1 * b1;
+                        p1_acc ^= eq_l.mul_unreduced(g1);
+                        let g_inf = (a0 + a1) * (b0 + b1);
+                        pinf_acc ^= eq_l.mul_unreduced(g_inf);
+                    }
+                }
+
+                let p1 = p1_acc.reduce();
+                let pinf = pinf_acc.reduce();
+                let eq_h = eq_hi[x_hi];
+                (eq_h * p1, eq_h * pinf)
+            }
+        },
+        |(s1, sinf), (c1, cinf)| (s1 + c1, sinf + cinf),
+    );
 
     (a_folded, b_folded, mlv_challenges[0] * sum1, sum_inf)
 }
@@ -652,8 +654,6 @@ fn fold_and_compute_round_pair_into_slots<O: OutputSlot + Send>(
     r_fold: F192,
     r_next: &[F192],
 ) -> (F192, F192) {
-    use rayon::prelude::*;
-
     let n = a.len();
     assert_eq!(b.len(), n);
     assert!(n.is_power_of_two() && n >= 8);
@@ -675,11 +675,15 @@ fn fold_and_compute_round_pair_into_slots<O: OutputSlot + Send>(
     let eq_lo = &eq.lo;
     let eq_hi = &eq.hi;
 
-    let (sum1, sum_inf) = a_out
-        .par_chunks_mut(chunk_out)
-        .zip(b_out.par_chunks_mut(chunk_out))
-        .enumerate()
-        .map(|(x_hi, (a_out, b_out))| {
+    let a_chunks = parallel::Chunks::new(a_out, chunk_out);
+    let b_chunks = parallel::Chunks::new(b_out, chunk_out);
+    let (sum1, sum_inf) = parallel::map_reduce(
+        a_chunks.count(),
+        || (F192::ZERO, F192::ZERO),
+        |x_hi| {
+            // SAFETY: `x_hi` takes chunk `x_hi` of each output exactly once, and
+            // both buffers stay borrowed for the whole dispatch.
+            let (a_out, b_out) = unsafe { (a_chunks.get(x_hi), b_chunks.get(x_hi)) };
             let a_in = &a[x_hi * chunk_in..(x_hi + 1) * chunk_in];
             let b_in = &b[x_hi * chunk_in..(x_hi + 1) * chunk_in];
 
@@ -864,11 +868,9 @@ fn fold_and_compute_round_pair_into_slots<O: OutputSlot + Send>(
             let pinf = pinf_acc.reduce();
             let eq_h = eq_hi[x_hi];
             (eq_h * p1, eq_h * pinf)
-        })
-        .reduce(
-            || (F192::ZERO, F192::ZERO),
-            |(s1, sinf), (c1, cinf)| (s1 + c1, sinf + cinf),
-        );
+        },
+        |(s1, sinf), (c1, cinf)| (s1 + c1, sinf + cinf),
+    );
 
     (r_next[0] * sum1, sum_inf)
 }

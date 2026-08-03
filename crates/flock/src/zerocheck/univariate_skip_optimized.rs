@@ -753,6 +753,11 @@ struct WorkerState {
 }
 
 impl WorkerState {
+    /// The three result banks, once every claimed `x_hi` has been folded in.
+    fn into_results(self) -> ([F192; ELL], [F192; ELL], [F192; ELL]) {
+        (self.local_res_ab, self.local_res_c_s_0, self.local_res_c_s_1)
+    }
+
     fn new() -> Self {
         Self {
             partial_ab: [F192::ZERO; ELL],
@@ -928,7 +933,7 @@ fn build_b_med_counts(padding: &PaddingSpec) -> (usize, Vec<u8>) {
 /// each with its own scratch + local accumulator. Reduction is a per-lane
 /// F192 XOR across workers (commutative + associative).
 ///
-/// To run single-threaded for debugging, set `RAYON_NUM_THREADS=1`.
+/// To run single-threaded for debugging, set `LEANVM_NUM_THREADS=1`.
 pub fn round1_shift_reduce_extract_c_packed(
     a_packed: &[u8],
     b_packed: &[u8],
@@ -995,8 +1000,6 @@ pub fn round1_shift_reduce_extract_c_packed_padded_with_s_hat_v(
     inv_table: &InvNttTableByteSingleGf8,
     padding: &PaddingSpec,
 ) -> (Vec<F192>, Vec<F192>, Vec<F192>) {
-    use rayon::prelude::*;
-
     assert_eq!(k_skip, K_SKIP, "optimized variant is k_skip=6 only");
     assert!(
         m >= k_skip + N_INNER,
@@ -1022,9 +1025,12 @@ pub fn round1_shift_reduce_extract_c_packed_padded_with_s_hat_v(
 
     let (within_outer_mask, b_med_counts) = build_b_med_counts(padding);
 
-    let (res_ab, res_c_s_0, res_c_s_1) = (0..hi_size)
-        .into_par_iter()
-        .fold(WorkerState::new, |mut state, x_hi| {
+    // One `WorkerState` per worker (it carries multi-KB scratch), folded over the
+    // `x_hi` values that worker claims and combined at the end.
+    let (res_ab, res_c_s_0, res_c_s_1) = parallel::fold_reduce(
+        hi_size,
+        WorkerState::new,
+        |state, x_hi| {
             let eq_hi_val = eq_hi[x_hi];
             process_one_x_hi(
                 x_hi,
@@ -1039,22 +1045,19 @@ pub fn round1_shift_reduce_extract_c_packed_padded_with_s_hat_v(
                 &eq_lo_scaled,
                 eq_hi_val,
                 convert,
-                &mut state,
+                state,
             );
-            state
-        })
-        .map(|s| (s.local_res_ab, s.local_res_c_s_0, s.local_res_c_s_1))
-        .reduce(
-            || ([F192::ZERO; ELL], [F192::ZERO; ELL], [F192::ZERO; ELL]),
-            |(mut ab1, mut c0_1, mut c1_1), (ab2, c0_2, c1_2)| {
-                for i in 0..ELL {
-                    ab1[i] += ab2[i];
-                    c0_1[i] += c0_2[i];
-                    c1_1[i] += c1_2[i];
-                }
-                (ab1, c0_1, c1_1)
-            },
-        );
+        },
+        |mut a, b| {
+            for i in 0..ELL {
+                a.local_res_ab[i] += b.local_res_ab[i];
+                a.local_res_c_s_0[i] += b.local_res_c_s_0[i];
+                a.local_res_c_s_1[i] += b.local_res_c_s_1[i];
+            }
+            a
+        },
+    )
+    .into_results();
 
     // Wire output: bank_0 + bank_1 reconstructs the original `res_c_s` (by
     // F_2-linearity of φ_8 over the masked-byte sum).

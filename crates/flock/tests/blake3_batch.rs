@@ -7,7 +7,7 @@
 //!
 //! Run with the XMSS-sized workload:
 //! ```text
-//! RAYON_NUM_THREADS=11 FLOCK_N_LOG=17 cargo test --release -p flock --test blake3_batch -- --ignored --nocapture
+//! LEANVM_NUM_THREADS=11 FLOCK_N_LOG=17 cargo test --release -p flock --test blake3_batch -- --ignored --nocapture
 //! ```
 //!
 //! `BENCH_REPEAT=n` averages `n` measured passes after the warmup pass, and

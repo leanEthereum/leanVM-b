@@ -273,7 +273,6 @@ impl LincheckCircuit for CscCircuit {
         self.const_pin
     }
     fn fold_alpha_batched(&self, alpha: F192, eq_inner: &[F192]) -> Vec<F192> {
-        use rayon::prelude::*;
         assert_eq!(eq_inner.len(), self.n_cols);
         let one_col = |c: usize| {
             let mut sa = F192::ZERO;
@@ -289,9 +288,7 @@ impl LincheckCircuit for CscCircuit {
         if self.n_cols < SUMCHECK_PAR_THRESHOLD {
             return (0..self.n_cols).map(one_col).collect();
         }
-        let mut out = vec![F192::ZERO; self.n_cols];
-        out.par_iter_mut().enumerate().for_each(|(c, slot)| *slot = one_col(c));
-        out
+        parallel::map_collect(self.n_cols, one_col)
     }
 }
 
@@ -436,8 +433,6 @@ pub fn partial_fold_packed_z_fast_padded(
     useful_bits: usize,
     eq_outer: &[F192],
 ) -> Vec<F192> {
-    use rayon::prelude::*;
-
     let n_log = m - k_log;
     let k = 1usize << k_log;
     let n_outer = 1usize << n_log;
@@ -454,12 +449,14 @@ pub fn partial_fold_packed_z_fast_padded(
     // at large k the per-chunk accumulators of map().reduce() dominate MT
     // time with allocation + tree-reduce XOR traffic (keccak3: k = 2^17
     // means 2 MB per chunk across ~128 chunks).
-    z_packed
-        .par_chunks(bytes_per_chunk)
-        .enumerate()
-        .fold(
-            || vec![F192::ZERO; k],
-            |mut acc, (chunk_idx, chunk_bytes)| {
+    let n_chunks = z_packed.len().div_ceil(bytes_per_chunk);
+    parallel::fold_reduce(
+        n_chunks,
+        || vec![F192::ZERO; k],
+        |acc, chunk_idx| {
+            let lo = chunk_idx * bytes_per_chunk;
+            let chunk_bytes = &z_packed[lo..(lo + bytes_per_chunk).min(z_packed.len())];
+            {
                 let stripe_start = chunk_idx * stripes_per_chunk;
                 let mut table = vec![F192::ZERO; 256];
                 for (rel_stripe, stripe) in chunk_bytes.chunks(k).enumerate() {
@@ -469,18 +466,15 @@ pub fn partial_fold_packed_z_fast_padded(
                         acc[i_inner] += table[z_byte as usize];
                     }
                 }
-                acc
-            },
-        )
-        .reduce(
-            || vec![F192::ZERO; k],
-            |mut a, b| {
-                for (x, y) in a.iter_mut().zip(b.iter()) {
-                    *x += *y;
-                }
-                a
-            },
-        )
+            }
+        },
+        |mut a, b| {
+            for (x, y) in a.iter_mut().zip(b.iter()) {
+                *x += *y;
+            }
+            a
+        },
+    )
 }
 
 /// Stripes swept per accumulator touch in the NEON tiled partial fold.
@@ -664,8 +658,6 @@ pub fn partial_fold_packed_z_neon_iblock_padded(
     useful_bits: usize,
     eq_outer: &[F192],
 ) -> Vec<F192> {
-    use rayon::prelude::*;
-
     const TILE_T: usize = NEON_TILE_T;
     const BLOCK_K: usize = 8;
 
@@ -698,48 +690,36 @@ pub fn partial_fold_packed_z_neon_iblock_padded(
     // Partition the useful i_inner range across workers. Each chunk independently
     // rebuilds the per-tile sum tables, so chunk count drives redundant table
     // work — work that does NOT scale with cores and dominates the residual at
-    // m=30 (≈3.3 ms/core at 3 chunks/worker). On the homogeneous pinned P-core
-    // pool, 1 chunk/worker is perfectly balanced (par_chunks_mut → exactly `p`
-    // equal chunks) and cuts that residual ~3×: partial-fold MT 6.2 → 4.5 ms,
-    // no ST change. Oversubscribe (3/worker) only when the pool is larger than
-    // the P-core count — i.e. likely includes slower E-cores — so rayon can
-    // steal from a straggler. Each chunk is a BLOCK_K multiple.
-    let p = rayon::current_num_threads().max(1);
-    let chunks_per_worker = if p <= primitives::perf_core_count_cached() {
-        1
-    } else {
-        3
-    };
-    let i_chunk = (useful / (p * chunks_per_worker))
-        .max(BLOCK_K)
-        .next_multiple_of(BLOCK_K);
+    // m=30 (≈3.3 ms/core at 3 chunks/worker). One chunk per worker minimizes that
+    // redundancy; the pool's claim counter then rebalances a straggler (an
+    // efficiency core, say) without needing extra chunks to steal from. Each
+    // chunk is a BLOCK_K multiple.
+    let p = parallel::num_threads();
+    let i_chunk = (useful / p).max(BLOCK_K).next_multiple_of(BLOCK_K);
 
-    out[..useful]
-        .par_chunks_mut(i_chunk)
-        .enumerate()
-        .for_each(|(ci, out_slice)| {
-            let i_base = ci * i_chunk;
-            let n_block = out_slice.len() / BLOCK_K;
-            // TILE_T × 256 F192 = 32 KB tables, L1-resident, rebuilt per tile.
-            let mut tables = vec![F192::ZERO; TILE_T * 256];
-            for tile in 0..n_tiles {
-                let stripe_base = tile * TILE_T;
-                for t in 0..TILE_T {
-                    let eq_off = 8 * (stripe_base + t);
-                    build_sum_table(&eq_outer[eq_off..eq_off + 8], &mut tables[t * 256..(t + 1) * 256]);
-                }
-                let tables_ptr = tables.as_ptr();
-                // Base of this (tile, i_base): process_block reads
-                // z_base[t·k + bs] = z[(stripe_base+t)·k + i_base + bs].
-                let z_base = unsafe { z_packed.as_ptr().add(stripe_base * k + i_base) };
-                for b in 0..n_block {
-                    let i = b * BLOCK_K;
-                    unsafe {
-                        process_block_neon_single(z_base, k, i, tables_ptr, out_slice.as_mut_ptr().add(i));
-                    }
+    parallel::chunks_mut(&mut out[..useful], i_chunk, |ci, out_slice| {
+        let i_base = ci * i_chunk;
+        let n_block = out_slice.len() / BLOCK_K;
+        // TILE_T × 256 F192 = 32 KB tables, L1-resident, rebuilt per tile.
+        let mut tables = vec![F192::ZERO; TILE_T * 256];
+        for tile in 0..n_tiles {
+            let stripe_base = tile * TILE_T;
+            for t in 0..TILE_T {
+                let eq_off = 8 * (stripe_base + t);
+                build_sum_table(&eq_outer[eq_off..eq_off + 8], &mut tables[t * 256..(t + 1) * 256]);
+            }
+            let tables_ptr = tables.as_ptr();
+            // Base of this (tile, i_base): process_block reads
+            // z_base[t·k + bs] = z[(stripe_base+t)·k + i_base + bs].
+            let z_base = unsafe { z_packed.as_ptr().add(stripe_base * k + i_base) };
+            for b in 0..n_block {
+                let i = b * BLOCK_K;
+                unsafe {
+                    process_block_neon_single(z_base, k, i, tables_ptr, out_slice.as_mut_ptr().add(i));
                 }
             }
-        });
+        }
+    });
     out
 }
 
@@ -772,8 +752,6 @@ pub fn partial_fold_packed_z_neon_oblock_padded(
     useful_bits: usize,
     eq_outer: &[F192],
 ) -> Vec<F192> {
-    use rayon::prelude::*;
-
     const TILE_T: usize = NEON_TILE_T;
     const BLOCK_K: usize = 8;
 
@@ -802,12 +780,12 @@ pub fn partial_fold_packed_z_neon_oblock_padded(
 
     // One private length-k partial per worker; workers own contiguous tile bands,
     // so each tile's sum-tables are built exactly once (not once per worker).
-    let p = rayon::current_num_threads().max(1);
+    let p = parallel::num_threads();
     let tiles_per_worker = n_tiles.div_ceil(p);
     let n_workers = n_tiles.div_ceil(tiles_per_worker); // ≤ p, every band non-empty
 
     let mut partials = vec![F192::ZERO; n_workers * k];
-    partials.par_chunks_mut(k).enumerate().for_each(|(w, partial)| {
+    parallel::chunks_mut(&mut partials, k, |w, partial| {
         let tile_lo = w * tiles_per_worker;
         let tile_hi = ((w + 1) * tiles_per_worker).min(n_tiles);
         // TILE_T × 256 F192 = 32 KB tables, L1-resident, built once per tile.
@@ -834,8 +812,13 @@ pub fn partial_fold_packed_z_neon_oblock_padded(
     // workers so each 256 KB partial is streamed once (cache-friendly).
     let (first, rest) = partials.split_at(k);
     let mut out = first.to_vec();
+    let col_chunk = parallel::recommended_chunk_size(k);
     for chunk in rest.chunks(k) {
-        out.par_iter_mut().zip(chunk.par_iter()).for_each(|(o, s)| *o += *s);
+        parallel::chunks_mut_zip(&mut out, chunk, col_chunk, |_, o, s| {
+            for (o_i, s_i) in o.iter_mut().zip(s) {
+                *o_i += *s_i;
+            }
+        });
     }
     out
 }
@@ -960,7 +943,6 @@ pub fn pack_z_lincheck(z_logical: &[bool], m: usize, k_log: usize) -> ArenaVec<u
 /// witness embedded in F192. In the polynomial basis, logical bit `i` is bit
 /// `i % 128` of `z_packed_words[i / 128]`.
 pub fn pack_z_lincheck_from_packed(z_packed_words: &[primitives::field::F192], m: usize, k_log: usize) -> ArenaVec<u8> {
-    use rayon::prelude::*;
     let k = 1usize << k_log;
     let n_total = 1usize << m;
     assert_eq!(z_packed_words.len(), n_total / 128);
@@ -970,7 +952,7 @@ pub fn pack_z_lincheck_from_packed(z_packed_words: &[primitives::field::F192], m
     let mut z_packed = zk_alloc::alloc_uninit(n_total / 8);
     // Each stripe (byte_idx) writes a disjoint k-byte chunk — process them in
     // parallel. Inside one stripe, k independent output bytes.
-    z_packed.par_chunks_mut(k).enumerate().for_each(|(byte_idx, chunk)| {
+    parallel::chunks_mut(&mut z_packed, k, |byte_idx, chunk| {
         for i_inner in 0..k {
             let mut byte = 0u8;
             for r in 0..8 {
@@ -1025,15 +1007,14 @@ pub fn build_quirky_eq_table(z_skip: F192, x_inner_rest: &[F192], k_skip: usize)
     out
 }
 
-/// Length above which the inner product / element-wise kernels split via
-/// rayon. Below it, sequential beats dispatch overhead.
+/// Length above which the inner product / element-wise kernels fan out to the
+/// pool. Below it, sequential beats dispatch overhead.
 const SUMCHECK_PAR_THRESHOLD: usize = 1usize << 12;
 
 /// One round of product-sumcheck on `(c, z)`: compute `(q(1), q(∞))` =
 /// `(Σ c_hi·z_hi, Σ (c_hi+c_lo)·(z_hi+z_lo))` over the top-bit split. The
 /// `len()` of `c` and `z` is even; `half = len/2`.
 fn sumcheck_round_eval_par(c: &[F192], z: &[F192]) -> (F192, F192) {
-    use rayon::prelude::*;
     let half = c.len() / 2;
     debug_assert_eq!(z.len(), c.len());
     let (clo, chi) = c.split_at(half);
@@ -1047,20 +1028,21 @@ fn sumcheck_round_eval_par(c: &[F192], z: &[F192]) -> (F192, F192) {
         }
         return (e1, einf);
     }
-    (0..half)
-        .into_par_iter()
-        .map(|i| {
+    parallel::map_reduce(
+        half,
+        || (F192::ZERO, F192::ZERO),
+        |i| {
             let e1_i = chi[i] * zhi[i];
             let einf_i = (chi[i] + clo[i]) * (zhi[i] + zlo[i]);
             (e1_i, einf_i)
-        })
-        .reduce(|| (F192::ZERO, F192::ZERO), |a, b| (a.0 + b.0, a.1 + b.1))
+        },
+        |a, b| (a.0 + b.0, a.1 + b.1),
+    )
 }
 
 /// Bind the top remaining variable of `v` at challenge `r`: `v[i] ← v[i] +
 /// r·(v[i+half] + v[i])` for `i ∈ [0, half)`, then truncate to `half`. In-place.
 pub fn sumcheck_bind_top_in_place_par(v: &mut Vec<F192>, r: F192) {
-    use rayon::prelude::*;
     let half = v.len() / 2;
     if half < SUMCHECK_PAR_THRESHOLD {
         for i in 0..half {
@@ -1069,8 +1051,11 @@ pub fn sumcheck_bind_top_in_place_par(v: &mut Vec<F192>, r: F192) {
     } else {
         let (lo, hi) = v.split_at_mut(half);
         let hi = &hi[..half];
-        lo.par_iter_mut().zip(hi.par_iter()).for_each(|(lo_i, &hi_i)| {
-            *lo_i = *lo_i + r * (hi_i + *lo_i);
+        let chunk = parallel::recommended_chunk_size(half);
+        parallel::chunks_mut_zip(lo, hi, chunk, |_, lo_c, hi_c| {
+            for (lo_i, &hi_i) in lo_c.iter_mut().zip(hi_c) {
+                *lo_i = *lo_i + r * (hi_i + *lo_i);
+            }
         });
     }
     v.truncate(half);
@@ -1078,7 +1063,6 @@ pub fn sumcheck_bind_top_in_place_par(v: &mut Vec<F192>, r: F192) {
 
 /// Tower (`F192`) twin of [`sumcheck_bind_top_in_place_par`], for the verifier.
 pub fn sumcheck_bind_top_in_place_par_t(v: &mut Vec<F192>, r: F192) {
-    use rayon::prelude::*;
     let half = v.len() / 2;
     if half < SUMCHECK_PAR_THRESHOLD {
         for i in 0..half {
@@ -1087,8 +1071,11 @@ pub fn sumcheck_bind_top_in_place_par_t(v: &mut Vec<F192>, r: F192) {
     } else {
         let (lo, hi) = v.split_at_mut(half);
         let hi = &hi[..half];
-        lo.par_iter_mut().zip(hi.par_iter()).for_each(|(lo_i, &hi_i)| {
-            *lo_i = *lo_i + r * (hi_i + *lo_i);
+        let chunk = parallel::recommended_chunk_size(half);
+        parallel::chunks_mut_zip(lo, hi, chunk, |_, lo_c, hi_c| {
+            for (lo_i, &hi_i) in lo_c.iter_mut().zip(hi_c) {
+                *lo_i = *lo_i + r * (hi_i + *lo_i);
+            }
         });
     }
     v.truncate(half);
@@ -1120,7 +1107,6 @@ pub fn sumcheck_bind_top_in_place_par_t(v: &mut Vec<F192>, r: F192) {
 /// later round exists). The returned message is bit-identical to
 /// `sumcheck_round_eval_par` run on the bound tables.
 fn sumcheck_bind_both_and_eval_next(comb: &mut Vec<F192>, z: &mut Vec<F192>, r: F192) -> (F192, F192) {
-    use rayon::prelude::*;
     let len = comb.len();
     debug_assert_eq!(z.len(), len);
     let half = len / 2;
@@ -1152,26 +1138,39 @@ fn sumcheck_bind_both_and_eval_next(comb: &mut Vec<F192>, z: &mut Vec<F192>, r: 
         }
         (e1, einf)
     } else {
-        cq0.par_iter_mut()
-            .zip(cq1.par_iter_mut())
-            .zip(cq2.par_iter())
-            .zip(cq3.par_iter())
-            .zip(zq0.par_iter_mut())
-            .zip(zq1.par_iter_mut())
-            .zip(zq2.par_iter())
-            .zip(zq3.par_iter())
-            .map(|(((((((c0, c1), c2), c3), z0), z1), z2), z3)| {
-                let lo = *c0 + r * (*c2 + *c0);
-                let hi = *c1 + r * (*c3 + *c1);
-                let zlo = *z0 + r * (*z2 + *z0);
-                let zhi = *z1 + r * (*z3 + *z1);
+        // The two written quarters are indexed rather than zipped: eight-way
+        // `zip` of four mutable and four shared slices has no counterpart here,
+        // and index `i` of each quarter is written by exactly one task.
+        let cq0_p = parallel::SendPtr(cq0.as_mut_ptr());
+        let cq1_p = parallel::SendPtr(cq1.as_mut_ptr());
+        let zq0_p = parallel::SendPtr(zq0.as_mut_ptr());
+        let zq1_p = parallel::SendPtr(zq1.as_mut_ptr());
+        parallel::map_reduce(
+            half2,
+            || (F192::ZERO, F192::ZERO),
+            |i| {
+                // SAFETY: distinct `i` touch distinct slots of four disjoint
+                // quarters (`split_at_mut` above), all borrowed for the dispatch.
+                let (c0, c1, z0, z1) = unsafe {
+                    (
+                        &mut *cq0_p.add(i),
+                        &mut *cq1_p.add(i),
+                        &mut *zq0_p.add(i),
+                        &mut *zq1_p.add(i),
+                    )
+                };
+                let lo = *c0 + r * (cq2[i] + *c0);
+                let hi = *c1 + r * (cq3[i] + *c1);
+                let zlo = *z0 + r * (zq2[i] + *z0);
+                let zhi = *z1 + r * (zq3[i] + *z1);
                 *c0 = lo;
                 *c1 = hi;
                 *z0 = zlo;
                 *z1 = zhi;
                 (hi * zhi, (hi + lo) * (zhi + zlo))
-            })
-            .reduce(|| (F192::ZERO, F192::ZERO), |a, b| (a.0 + b.0, a.1 + b.1))
+            },
+            |a, b| (a.0 + b.0, a.1 + b.1),
+        )
     };
 
     comb.truncate(half);

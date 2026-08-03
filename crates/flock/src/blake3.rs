@@ -988,9 +988,8 @@ pub fn padding_block() -> Compression {
 
 /// Generate the boolean witness vector for `blocks.len()` independent BLAKE3
 /// compressions, padded to `2^n_blocks_log` slots. Padding blocks run
-/// [`padding_block`] (constant wire = 1). Parallel across instances via rayon.
+/// [`padding_block`] (constant wire = 1). Parallel across instances.
 pub fn generate_witness(blocks: &[Compression], n_blocks_log: usize) -> Vec<bool> {
-    use rayon::prelude::*;
     let n_total = 1usize << n_blocks_log;
     let n_blocks = blocks.len();
     assert!(
@@ -999,7 +998,7 @@ pub fn generate_witness(blocks: &[Compression], n_blocks_log: usize) -> Vec<bool
     );
     let padding = padding_block();
     let mut z = vec![false; n_total * K];
-    z.par_chunks_mut(K).enumerate().for_each(|(idx, chunk)| {
+    parallel::chunks_mut(&mut z, K, |idx, chunk| {
         let (cv, m, t, b, d) = if idx < n_blocks { blocks[idx] } else { padding };
         let block = build_block_witness(&cv, &m, t, b, d);
         chunk.copy_from_slice(&block);
@@ -1187,7 +1186,7 @@ fn build_block_witness_ab_packed_into(
 /// **The fast path.** Produces `(z, a, b)` directly as 128-bit packed values
 /// embedded in F192
 /// vectors — no bool intermediates, no `pack_witness` step, no
-/// `apply_block_diag_packed`. Parallel across compression instances via rayon.
+/// `apply_block_diag_packed`. Parallel across compression instances.
 ///
 /// **No c buffer** — since `C = I` (circuit-shape R1CS), `c == z`
 /// byte-for-byte; callers wrap `z_packed` as the c-side input to zerocheck.
@@ -1200,7 +1199,6 @@ pub fn generate_witness_with_ab_packed(
     Vec<primitives::field::F192>,
 ) {
     use primitives::field::F192;
-    use rayon::prelude::*;
     let n_total = 1usize << n_blocks_log;
     let n_blocks = blocks.len();
     assert!(
@@ -1219,11 +1217,14 @@ pub fn generate_witness_with_ab_packed(
     // [`generate_witness_with_ab_packed_and_lincheck`].
     let padding = padding_block();
 
-    z.par_chunks_mut(PACKED_PER_BLOCK)
-        .zip(a.par_chunks_mut(PACKED_PER_BLOCK))
-        .zip(b.par_chunks_mut(PACKED_PER_BLOCK))
-        .enumerate()
-        .for_each(|(idx, ((z_c, a_c), b_c))| {
+    let z_chunks = parallel::Chunks::new(&mut z, PACKED_PER_BLOCK);
+    let a_chunks = parallel::Chunks::new(&mut a, PACKED_PER_BLOCK);
+    let b_chunks = parallel::Chunks::new(&mut b, PACKED_PER_BLOCK);
+    parallel::for_each(z_chunks.count(), |idx| {
+        // SAFETY: instance `idx` takes chunk `idx` of each table exactly once,
+        // and all three stay borrowed for the whole dispatch.
+        let (z_c, a_c, b_c) = unsafe { (z_chunks.get(idx), a_chunks.get(idx), b_chunks.get(idx)) };
+        {
             let (cv, m, t, bl, fl) = if idx < n_blocks { &blocks[idx] } else { &padding };
             let mut z_u64 = vec![0u64; z_c.len() * 2];
             let mut a_u64 = vec![0u64; a_c.len() * 2];
@@ -1238,7 +1239,8 @@ pub fn generate_witness_with_ab_packed(
             for (dst, words) in b_c.iter_mut().zip(b_u64.chunks_exact(2)) {
                 *dst = F192::new(words[0], words[1], 0);
             }
-        });
+        }
+    });
 
     (z, a, b)
 }

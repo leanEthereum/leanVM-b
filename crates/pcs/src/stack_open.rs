@@ -213,12 +213,11 @@ pub struct LigVerifierSummary {
 /// gamma-seeded eq build ([`build_eq_table_ext_seeded_into`], parallel above
 /// its level floor, into one scratch buffer reused across claims) and the
 /// slice add. Small slices stay fully serial (with many tiny point claims,
-/// rayon dispatch would cost more than the fold itself). The gamma seeding
+/// pool dispatch would cost more than the fold itself). The gamma seeding
 /// and the serial/parallel splits are exact-field/order-preserving, so
 /// `b_stack`'s bytes (and hence the proof) are unchanged relative to the
 /// build-then-multiply form.
 fn fold_stacked_point_claims(b_stack: &mut [F192], target: &mut F192, claims: &[StackClaim], gammas: &[F192]) {
-    use rayon::prelude::*;
     const PAR_FOLD_THRESHOLD: usize = 1 << 14;
     // One reusable eq scratch sized to the largest Point claim: a fresh
     // multi-MB allocation per claim would pay the first-touch page faults anew.
@@ -253,7 +252,10 @@ fn fold_stacked_point_claims(b_stack: &mut [F192], target: &mut F192, claims: &[
                         *bi += *ei;
                     }
                 } else {
-                    dst.par_iter_mut().zip(eq.par_iter()).for_each(|(bi, ei)| *bi += *ei);
+                    let chunk = parallel::recommended_chunk_size(dst.len());
+                    parallel::chunks_mut_zip(dst, eq, chunk, |_, d, e| {
+                        d.iter_mut().zip(e).for_each(|(bi, ei)| *bi += *ei);
+                    });
                 }
                 *target += g * *value;
             }
@@ -418,9 +420,8 @@ pub fn open_batch_mixed_ligerito_stacked(
     // claims otherwise fault pages one claim at a time.
     let mut b_stack = zk_alloc::alloc_uninit(stack.len());
     {
-        use rayon::prelude::*;
         const ZERO_CHUNK: usize = 1 << 16;
-        b_stack.par_chunks_mut(ZERO_CHUNK).for_each(|chunk| {
+        parallel::chunks_mut(&mut b_stack, ZERO_CHUNK, |_, chunk| {
             for value in chunk {
                 value.write(F192::ZERO);
             }

@@ -175,8 +175,6 @@ pub(crate) fn drive_witness_packed_and_lincheck<S: Sync, F>(
 where
     F: Fn(&S, &mut [u64], &mut [u64], &mut [u64]) + Sync,
 {
-    use rayon::prelude::*;
-
     let k = 1usize << k_log;
     let packed_per_block = k / 128;
     let u64_per_block = k / 64;
@@ -208,12 +206,19 @@ where
     // start zeroed.
     let mut z_lincheck = unsafe { ArenaVec::<u8>::zeroed((n_total / 8) * k) };
 
-    z.par_chunks_mut(8 * packed_per_block)
-        .zip(a.par_chunks_mut(8 * packed_per_block))
-        .zip(b.par_chunks_mut(8 * packed_per_block))
-        .zip(z_lincheck.par_chunks_mut(k))
-        .enumerate()
-        .for_each(|(g, (((z_grp, a_grp), b_grp), stripe))| {
+    // Four output tables at two widths, indexed by the same group: `z`/`a`/`b`
+    // take eight blocks' packed words, `z_lincheck` takes one byte stripe.
+    let z_chunks = parallel::Chunks::new(&mut z, 8 * packed_per_block);
+    let a_chunks = parallel::Chunks::new(&mut a, 8 * packed_per_block);
+    let b_chunks = parallel::Chunks::new(&mut b, 8 * packed_per_block);
+    let stripe_chunks = parallel::Chunks::new(&mut z_lincheck, k);
+    debug_assert_eq!(z_chunks.count(), stripe_chunks.count());
+    parallel::for_each(z_chunks.count(), |g| {
+        // SAFETY: each group `g` takes chunk `g` of each table exactly once, and
+        // all four tables stay borrowed for the whole dispatch.
+        let (z_grp, a_grp, b_grp, stripe) =
+            unsafe { (z_chunks.get(g), a_chunks.get(g), b_chunks.get(g), stripe_chunks.get(g)) };
+        {
             // The circuit witness remains 128-bit packed even though protocol
             // scalars are F192. Build contiguous u64 pairs, then embed each
             // pair as (lo, hi, 0); F192's 24-byte stride cannot be viewed as a
@@ -264,7 +269,8 @@ where
                 ];
                 transpose_8_u64s_to_64_bytes(&lanes, &mut stripe[i * 64..i * 64 + 64]);
             }
-        });
+        }
+    });
 
     (z, a, b, z_lincheck)
 }

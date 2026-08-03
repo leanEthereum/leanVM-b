@@ -21,9 +21,8 @@
 #[cfg(target_arch = "aarch64")]
 mod blake3_neon8;
 
-use primitives::epool::{SyncPtr, run_hetero_chunks};
+use parallel::SendPtr;
 use primitives::{field::F192, pretty_integer};
-use rayon::prelude::*;
 use zk_alloc::ArenaVec;
 
 pub type Hash = [u8; 32];
@@ -158,19 +157,19 @@ fn hash_leaves_batched_uninit(
     ) {
         // Leaf hashing is the purest embarrassingly parallel phase here:
         // fixed-size independent groups, no cross-group dependency, one join
-        // at the end. That makes it the right place to spend the otherwise
-        // idle efficiency cores — see `primitives::epool` for why a shared
-        // atomic chunk queue is safe here and widening the main pool is not.
+        // at the end. The pool's efficiency-core workers pull from the same claim
+        // counter as the performance ones, so this is also where the otherwise
+        // idle E-cores get spent (see the `parallel` crate).
         let n_groups = out.len().div_ceil(HASH_GROUP);
-        let out_base = SyncPtr(out.as_mut_ptr());
+        let out_base = SendPtr(out.as_mut_ptr());
         let out_len = out.len();
-        run_hetero_chunks(n_groups, |g| {
+        parallel::for_each(n_groups, |g| {
             let lo = g * HASH_GROUP;
             let len = HASH_GROUP.min(out_len - lo);
             // SAFETY: the queue hands each `g` to exactly one worker, and
             // group `g` writes only `out[lo .. lo+len]`, so the mutable
             // ranges are pairwise disjoint and in bounds.
-            let outputs = unsafe { core::slice::from_raw_parts_mut(out_base.ptr().add(lo), len) };
+            let outputs = unsafe { out_base.slice(lo, len) };
             let inputs = &data[lo * N..(lo + len) * N];
             // Eight-wide NEON for the complete groups; upstream `hash_many`
             // for whatever remains (a chunk's leaf count need not be a
@@ -199,12 +198,9 @@ fn hash_leaves_batched_uninit(
         384 => batched::<384>(platform, data, out),
         768 => batched::<768>(platform, data, out),
         1024 => batched::<1024>(platform, data, out),
-        _ => out
-            .par_iter_mut()
-            .zip(data.par_chunks(leaf_size))
-            .for_each(|(slot, leaf)| {
-                slot.write(hash_leaf(leaf));
-            }),
+        _ => parallel::for_each_mut(out, |i, slot| {
+            slot.write(hash_leaf(&data[i * leaf_size..(i + 1) * leaf_size]));
+        }),
     }
 }
 
@@ -220,14 +216,14 @@ fn hash_pairs_level_uninit(
         hash_many_oneshot_uninit::<64>(platform, read_bytes, write);
     } else {
         let n_groups = write.len().div_ceil(HASH_GROUP);
-        let write_base = SyncPtr(write.as_mut_ptr());
+        let write_base = SendPtr(write.as_mut_ptr());
         let write_len = write.len();
-        run_hetero_chunks(n_groups, |g| {
+        parallel::for_each(n_groups, |g| {
             let lo = g * HASH_GROUP;
             let len = HASH_GROUP.min(write_len - lo);
             // SAFETY: as in `batched` — one worker per `g`, and group `g`
             // writes only `write[lo .. lo+len]`.
-            let outputs = unsafe { core::slice::from_raw_parts_mut(write_base.ptr().add(lo), len) };
+            let outputs = unsafe { write_base.slice(lo, len) };
             hash_many_oneshot_uninit::<64>(platform, &read_bytes[lo * 64..(lo + len) * 64], outputs);
         });
     }
@@ -263,7 +259,7 @@ pub fn merkle_tree(data: &[u8], num_leaves: usize) -> ArenaVec<Hash> {
     hash_leaves_batched_uninit(platform, data, leaf_size, &mut tree[..num_leaves]);
 
     // 2. Internal levels — parallel within a level, sequential across levels.
-    // Small upper levels can't fill the cores, so a rayon dispatch per level
+    // Small upper levels can't fill the cores, so a pool dispatch per level
     // costs more than the hashing itself; hash those in one serial SIMD batch
     // and only fan out the wide lower levels.
     let mut read_start = 0usize;

@@ -115,12 +115,10 @@ pub fn round1_naive(a: &[bool], b: &[bool], c: &[bool], m: usize, k_skip: usize,
 
 /// Pack a bit vector LSB-first into bytes.
 pub fn pack_bits(bits: &[bool]) -> Vec<u8> {
-    use rayon::prelude::*;
     let n_bytes = bits.len().div_ceil(8);
-    let mut out = vec![0u8; n_bytes];
     // Each output byte depends on 8 contiguous input bits — disjoint, so
     // process bytes in parallel.
-    out.par_chunks_mut(1).enumerate().for_each(|(byte_idx, slot)| {
+    parallel::map_collect(n_bytes, |byte_idx| {
         let mut byte = 0u8;
         let base = byte_idx * 8;
         for j in 0..8 {
@@ -129,9 +127,8 @@ pub fn pack_bits(bits: &[bool]) -> Vec<u8> {
                 byte |= 1u8 << j;
             }
         }
-        slot[0] = byte;
-    });
-    out
+        byte
+    })
 }
 
 /// Eq table split into a lo half (large, L2-resident) and a hi half (small,

@@ -11,7 +11,6 @@ use crate::transcript::{ProverState, VerifierState};
 use primitives::ParCollectArena;
 use primitives::field::{F192, F192Unreduced};
 use primitives::multilinear::{eq_table, interp, quartic_eval_from_eq, shrink_eq_low};
-use rayon::prelude::*;
 use std::ops::Range;
 use zk_alloc::ArenaVec;
 
@@ -122,7 +121,7 @@ impl PadRun {
 }
 
 fn window_rows(total: usize) -> usize {
-    let tasks = (rayon::current_num_threads() * 4).max(1);
+    let tasks = parallel::num_threads() * 4;
     total.div_ceil(tasks).clamp(32, 1 << 12)
 }
 
@@ -324,10 +323,7 @@ impl QuaternaryLayerState {
         };
         let windows = full_pairs.div_ceil(rows);
         let mut message = if full_pairs >= PAR_THRESHOLD {
-            (0..windows)
-                .into_par_iter()
-                .map(window)
-                .reduce(|| [F192Unreduced::ZERO; 4], xor)
+            parallel::map_reduce(windows, || [F192Unreduced::ZERO; 4], window, xor)
         } else {
             (0..windows).map(window).fold([F192Unreduced::ZERO; 4], xor)
         };
@@ -375,10 +371,9 @@ impl QuaternaryLayerState {
         };
         if full_rows >= PAR_THRESHOLD {
             let rows = window_rows(full_rows);
-            next[..4 * full_rows]
-                .par_chunks_mut(4 * rows)
-                .enumerate()
-                .for_each(|(index, destination)| window(index * rows, destination));
+            parallel::chunks_mut(&mut next[..4 * full_rows], 4 * rows, |index, destination| {
+                window(index * rows, destination);
+            });
         } else {
             window(0, &mut next[..4 * full_rows]);
         }

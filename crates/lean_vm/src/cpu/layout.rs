@@ -292,15 +292,16 @@ pub fn layout(prog: &[Op], log_mem: usize, row_counts: [usize; tables::N_TABLES]
     };
     // The program is PUBLIC (not committed): nine public columns over the
     // program cube, embedded in the bytecode seed/finalize blocks below.
-    let prog_op: Vec<F64> = prog.par_iter().map(opcode).collect();
-    let prog_o1: Vec<F64> = prog.par_iter().map(|o| operands(o).0).collect();
-    let prog_o2: Vec<F64> = prog.par_iter().map(|o| operands(o).1).collect();
-    let prog_o3: Vec<F64> = prog.par_iter().map(|o| operands(o).2).collect();
-    let prog_fpc: Vec<F64> = prog.par_iter().map(fpc).collect();
-    let prog_ffp: Vec<F64> = prog.par_iter().map(ffp).collect();
-    let prog_extra0: Vec<F64> = prog.par_iter().map(extra0).collect();
-    let prog_extra1: Vec<F64> = prog.par_iter().map(extra1).collect();
-    let prog_extra2: Vec<F64> = prog.par_iter().map(extra2).collect();
+    let column = |f: &(dyn Fn(&Op) -> F64 + Sync)| parallel::map_collect(prog.len(), |i| f(&prog[i]));
+    let prog_op: Vec<F64> = column(&opcode);
+    let prog_o1: Vec<F64> = column(&|o| operands(o).0);
+    let prog_o2: Vec<F64> = column(&|o| operands(o).1);
+    let prog_o3: Vec<F64> = column(&|o| operands(o).2);
+    let prog_fpc: Vec<F64> = column(&fpc);
+    let prog_ffp: Vec<F64> = column(&ffp);
+    let prog_extra0: Vec<F64> = column(&extra0);
+    let prog_extra1: Vec<F64> = column(&extra1);
+    let prog_extra2: Vec<F64> = column(&extra2);
 
     // ---- bus blocks ----
     use Coord::{Col, Const, Index, Public};
@@ -489,9 +490,9 @@ impl Program {
             table.fill(&ctx, &mut cols[base..base + n]);
         }
         // Shared columns. The 192-bit memory image splits into three K-limbs.
-        cols[MEM_LO] = exec.mem.par_iter().map(|w| F64(w.c0)).collect();
-        cols[MEM_HI] = exec.mem.par_iter().map(|w| F64(w.c1)).collect();
-        cols[MEM_TOP] = exec.mem.par_iter().map(|w| F64(w.c2)).collect();
+        cols[MEM_LO] = parallel::map_collect(exec.mem.len(), |i| F64(exec.mem[i].c0));
+        cols[MEM_HI] = parallel::map_collect(exec.mem.len(), |i| F64(exec.mem[i].c1));
+        cols[MEM_TOP] = parallel::map_collect(exec.mem.len(), |i| F64(exec.mem[i].c2));
         cols[MFCNT] = tr.mem_count.clone(); // running counts ended at g^{A[i]}
         cols[BFCNT] = tr.bytecode_count.clone(); // running counts ended at g^{A[pc]}
         // flock's packed BLAKE3 witness q_pkd, ALWAYS committed in this same stack:

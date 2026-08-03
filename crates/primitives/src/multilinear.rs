@@ -68,7 +68,7 @@ pub fn eq_eval(r: &[F192], x: &[F192]) -> F192 {
 /// `rk` is loop-invariant, and the scalar product still beats `F192::mul2`
 /// here, 3.37 vs 3.73 ns/entry.)
 ///
-/// A level's pairs are independent, so levels wide enough to cover rayon's
+/// A level's pairs are independent, so levels wide enough to cover the
 /// dispatch are split across threads.
 pub fn eq_table(r: &[F192]) -> Vec<F192> {
     let mut eq = vec![F192::ZERO; 1usize << r.len()];
@@ -86,8 +86,6 @@ pub fn eq_table_arena(r: &[F192]) -> ArenaVec<F192> {
 
 /// The doubling recurrence itself, over a caller-supplied `2^r.len()` buffer.
 fn fill_eq_table(r: &[F192], eq: &mut [F192]) {
-    use rayon::prelude::*;
-
     debug_assert_eq!(eq.len(), 1usize << r.len());
     eq[0] = F192::ONE;
     const PAR_THRESHOLD: usize = 1 << 12;
@@ -104,9 +102,10 @@ fn fill_eq_table(r: &[F192], eq: &mut [F192]) {
         if half < PAR_THRESHOLD {
             lo.iter_mut().zip(hi.iter_mut()).for_each(|(l, h)| build_pair(l, h));
         } else {
-            lo.par_iter_mut()
-                .zip(hi.par_iter_mut())
-                .for_each(|(l, h)| build_pair(l, h));
+            let chunk = parallel::recommended_chunk_size(half);
+            parallel::chunks_mut2(lo, hi, chunk, |_, lo_c, hi_c| {
+                lo_c.iter_mut().zip(hi_c.iter_mut()).for_each(|(l, h)| build_pair(l, h));
+            });
         }
     }
 }

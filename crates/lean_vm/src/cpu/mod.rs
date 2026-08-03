@@ -10,8 +10,6 @@
 
 use std::collections::HashMap;
 
-use rayon::prelude::*;
-
 use crate::constraints;
 use crate::leaf::{self, Block, ColumnClaim, Coord};
 use crate::pcs;

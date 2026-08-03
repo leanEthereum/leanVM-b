@@ -69,11 +69,10 @@ pub fn placements_of(kappas: &[Option<usize>]) -> (Vec<Placement>, usize) {
 /// memory-bandwidth bound, so a single-threaded `memcpy` leaves most of the
 /// machine idle.
 pub fn stack_q(cols: &[Column], placements: &[Placement], m: usize) -> Vec<F64> {
-    use rayon::prelude::*;
     // `alloc_zeroed`-backed for the all-zero pad tail; only the copied ranges are
     // touched. (F64 is all-zero bytes at ZERO, so the pad needs no explicit write.)
     let mut q = vec![F64::ZERO; 1 << m];
-    // Copy chunk width: big enough that per-chunk `copy_from_slice` amortizes rayon
+    // Copy chunk width: big enough that per-chunk `copy_from_slice` amortizes the
     // dispatch, small enough to spread the largest column across cores.
     const COPY_CHUNK: usize = 1 << 16;
     for (i, placement) in placements.iter().enumerate() {
@@ -84,9 +83,7 @@ pub fn stack_q(cols: &[Column], placements: &[Placement], m: usize) -> Vec<F64> 
         let dst = &mut q[offset..offset + (1 << placement.n_vars)];
         let src = &cols[i];
         if src.len() >= crate::PAR_THRESHOLD {
-            dst.par_chunks_mut(COPY_CHUNK)
-                .zip(src.par_chunks(COPY_CHUNK))
-                .for_each(|(d, s)| d.copy_from_slice(s));
+            parallel::chunks_mut_zip(dst, src, COPY_CHUNK, |_, d, s| d.copy_from_slice(s));
         } else {
             dst.copy_from_slice(src);
         }

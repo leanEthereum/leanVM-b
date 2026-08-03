@@ -13,12 +13,16 @@
 //! the `JUMP` selection) are written as `E`-relations — still degree 2 in the
 //! lane columns.
 
-use rayon::prelude::*;
-
 use crate::cpu::Trace;
 use crate::leaf::Coord::{self, Col, Const, GCol};
 use crate::witness::Column;
 use primitives::field::{F64, F192, G, mul_by_g};
+
+/// Fill one column from the trace rows, in parallel: `parallel::map_collect`
+/// with the row-slice indexing folded in, so a column definition stays one line.
+fn map_rows<R: Sync, T: Send>(rows: &[R], f: impl Fn(&R) -> T + Sync) -> Vec<T> {
+    parallel::map_collect(rows.len(), |i| f(&rows[i]))
+}
 
 /// Reassemble a 192-bit machine word from its three `K`-limbs (as folded
 /// `E`-column values).
@@ -412,27 +416,27 @@ impl Table for Arith {
     fn fill(&self, ctx: &FillCtx, out: &mut [Column]) {
         use arith::*;
         let rows = if self.is_xor { &ctx.trace.xor } else { &ctx.trace.mul };
-        out[PC] = rows.par_iter().map(|r| ctx.g_at(r.pc)).collect();
-        out[FP] = rows.par_iter().map(|r| ctx.g_at(r.fp)).collect();
-        out[OA] = rows.par_iter().map(|r| ctx.g_at(r.aa - r.fp)).collect();
-        out[OB] = rows.par_iter().map(|r| ctx.g_at(r.ab - r.fp)).collect();
-        out[OC] = rows.par_iter().map(|r| ctx.g_at(r.ac - r.fp)).collect();
-        out[AA] = rows.par_iter().map(|r| ctx.g_at(r.aa)).collect();
-        out[AB] = rows.par_iter().map(|r| ctx.g_at(r.ab)).collect();
-        out[AC] = rows.par_iter().map(|r| ctx.g_at(r.ac)).collect();
-        out[VA_LO] = rows.par_iter().map(|r| F64(ctx.mem[r.aa as usize].c0)).collect();
-        out[VA_HI] = rows.par_iter().map(|r| F64(ctx.mem[r.aa as usize].c1)).collect();
-        out[VA_TOP] = rows.par_iter().map(|r| F64(ctx.mem[r.aa as usize].c2)).collect();
-        out[VB_LO] = rows.par_iter().map(|r| F64(ctx.mem[r.ab as usize].c0)).collect();
-        out[VB_HI] = rows.par_iter().map(|r| F64(ctx.mem[r.ab as usize].c1)).collect();
-        out[VB_TOP] = rows.par_iter().map(|r| F64(ctx.mem[r.ab as usize].c2)).collect();
-        out[VC_LO] = rows.par_iter().map(|r| F64(ctx.mem[r.ac as usize].c0)).collect();
-        out[VC_HI] = rows.par_iter().map(|r| F64(ctx.mem[r.ac as usize].c1)).collect();
-        out[VC_TOP] = rows.par_iter().map(|r| F64(ctx.mem[r.ac as usize].c2)).collect();
-        out[RA] = rows.par_iter().map(|r| r.ra).collect();
-        out[RB] = rows.par_iter().map(|r| r.rb).collect();
-        out[RC] = rows.par_iter().map(|r| r.rc).collect();
-        out[RBC] = rows.par_iter().map(|r| r.bytecode_read).collect();
+        out[PC] = map_rows(rows, |r| ctx.g_at(r.pc));
+        out[FP] = map_rows(rows, |r| ctx.g_at(r.fp));
+        out[OA] = map_rows(rows, |r| ctx.g_at(r.aa - r.fp));
+        out[OB] = map_rows(rows, |r| ctx.g_at(r.ab - r.fp));
+        out[OC] = map_rows(rows, |r| ctx.g_at(r.ac - r.fp));
+        out[AA] = map_rows(rows, |r| ctx.g_at(r.aa));
+        out[AB] = map_rows(rows, |r| ctx.g_at(r.ab));
+        out[AC] = map_rows(rows, |r| ctx.g_at(r.ac));
+        out[VA_LO] = map_rows(rows, |r| F64(ctx.mem[r.aa as usize].c0));
+        out[VA_HI] = map_rows(rows, |r| F64(ctx.mem[r.aa as usize].c1));
+        out[VA_TOP] = map_rows(rows, |r| F64(ctx.mem[r.aa as usize].c2));
+        out[VB_LO] = map_rows(rows, |r| F64(ctx.mem[r.ab as usize].c0));
+        out[VB_HI] = map_rows(rows, |r| F64(ctx.mem[r.ab as usize].c1));
+        out[VB_TOP] = map_rows(rows, |r| F64(ctx.mem[r.ab as usize].c2));
+        out[VC_LO] = map_rows(rows, |r| F64(ctx.mem[r.ac as usize].c0));
+        out[VC_HI] = map_rows(rows, |r| F64(ctx.mem[r.ac as usize].c1));
+        out[VC_TOP] = map_rows(rows, |r| F64(ctx.mem[r.ac as usize].c2));
+        out[RA] = map_rows(rows, |r| r.ra);
+        out[RB] = map_rows(rows, |r| r.rb);
+        out[RC] = map_rows(rows, |r| r.rc);
+        out[RBC] = map_rows(rows, |r| r.bytecode_read);
     }
 }
 
@@ -489,15 +493,15 @@ impl Table for SetTable {
     fn fill(&self, ctx: &FillCtx, out: &mut [Column]) {
         use set::*;
         let rows = &ctx.trace.set;
-        out[PC] = rows.par_iter().map(|r| ctx.g_at(r.pc)).collect();
-        out[FP] = rows.par_iter().map(|r| ctx.g_at(r.fp)).collect();
-        out[O] = rows.par_iter().map(|r| ctx.g_at(r.o)).collect();
-        out[K_LO] = rows.par_iter().map(|r| F64(r.k.c0)).collect();
-        out[K_HI] = rows.par_iter().map(|r| F64(r.k.c1)).collect();
-        out[K_TOP] = rows.par_iter().map(|r| F64(r.k.c2)).collect();
-        out[A] = rows.par_iter().map(|r| ctx.g_at(r.a)).collect();
-        out[R] = rows.par_iter().map(|r| r.r).collect();
-        out[RBC] = rows.par_iter().map(|r| r.bytecode_read).collect();
+        out[PC] = map_rows(rows, |r| ctx.g_at(r.pc));
+        out[FP] = map_rows(rows, |r| ctx.g_at(r.fp));
+        out[O] = map_rows(rows, |r| ctx.g_at(r.o));
+        out[K_LO] = map_rows(rows, |r| F64(r.k.c0));
+        out[K_HI] = map_rows(rows, |r| F64(r.k.c1));
+        out[K_TOP] = map_rows(rows, |r| F64(r.k.c2));
+        out[A] = map_rows(rows, |r| ctx.g_at(r.a));
+        out[R] = map_rows(rows, |r| r.r);
+        out[RBC] = map_rows(rows, |r| r.bytecode_read);
     }
 }
 
@@ -578,31 +582,31 @@ impl Table for DerefTable {
     fn fill(&self, ctx: &FillCtx, out: &mut [Column]) {
         use deref::*;
         let rows = &ctx.trace.deref;
-        out[PC] = rows.par_iter().map(|r| ctx.g_at(r.pc)).collect();
-        out[FP] = rows.par_iter().map(|r| ctx.g_at(r.fp)).collect();
-        out[OAL] = rows.par_iter().map(|r| ctx.g_at(r.alpha)).collect();
-        out[OBE] = rows.par_iter().map(|r| ctx.g_at(r.beta)).collect();
-        out[OGA] = rows.par_iter().map(|r| ctx.g_at(r.gamma)).collect();
-        out[FPC] = rows.par_iter().map(|r| r.mode.f_pc()).collect();
-        out[FFP] = rows.par_iter().map(|r| r.mode.f_fp()).collect();
-        out[A1] = rows.par_iter().map(|r| ctx.g_at(r.a1)).collect();
-        out[A2] = rows.par_iter().map(|r| ctx.gpow[r.a2]).collect(); // a2 is a full memory index
-        out[A3] = rows.par_iter().map(|r| ctx.g_at(r.a3)).collect();
+        out[PC] = map_rows(rows, |r| ctx.g_at(r.pc));
+        out[FP] = map_rows(rows, |r| ctx.g_at(r.fp));
+        out[OAL] = map_rows(rows, |r| ctx.g_at(r.alpha));
+        out[OBE] = map_rows(rows, |r| ctx.g_at(r.beta));
+        out[OGA] = map_rows(rows, |r| ctx.g_at(r.gamma));
+        out[FPC] = map_rows(rows, |r| r.mode.f_pc());
+        out[FFP] = map_rows(rows, |r| r.mode.f_fp());
+        out[A1] = map_rows(rows, |r| ctx.g_at(r.a1));
+        out[A2] = map_rows(rows, |r| ctx.gpow[r.a2]); // a2 is a full memory index
+        out[A3] = map_rows(rows, |r| ctx.g_at(r.a3));
         debug_assert!(
             rows.iter().all(|r| r.p.c1 == 0 && r.p.c2 == 0),
             "deref pointer must be K-valued"
         );
-        out[P] = rows.par_iter().map(|r| F64(r.p.c0)).collect();
-        out[V2_LO] = rows.par_iter().map(|r| F64(r.v2.c0)).collect();
-        out[V2_HI] = rows.par_iter().map(|r| F64(r.v2.c1)).collect();
-        out[V2_TOP] = rows.par_iter().map(|r| F64(r.v2.c2)).collect();
-        out[V3_LO] = rows.par_iter().map(|r| F64(r.v3.c0)).collect();
-        out[V3_HI] = rows.par_iter().map(|r| F64(r.v3.c1)).collect();
-        out[V3_TOP] = rows.par_iter().map(|r| F64(r.v3.c2)).collect();
-        out[R1] = rows.par_iter().map(|r| r.r1).collect();
-        out[R2] = rows.par_iter().map(|r| r.r2).collect();
-        out[R3] = rows.par_iter().map(|r| r.r3).collect();
-        out[RBC] = rows.par_iter().map(|r| r.bytecode_read).collect();
+        out[P] = map_rows(rows, |r| F64(r.p.c0));
+        out[V2_LO] = map_rows(rows, |r| F64(r.v2.c0));
+        out[V2_HI] = map_rows(rows, |r| F64(r.v2.c1));
+        out[V2_TOP] = map_rows(rows, |r| F64(r.v2.c2));
+        out[V3_LO] = map_rows(rows, |r| F64(r.v3.c0));
+        out[V3_HI] = map_rows(rows, |r| F64(r.v3.c1));
+        out[V3_TOP] = map_rows(rows, |r| F64(r.v3.c2));
+        out[R1] = map_rows(rows, |r| r.r1);
+        out[R2] = map_rows(rows, |r| r.r2);
+        out[R3] = map_rows(rows, |r| r.r3);
+        out[RBC] = map_rows(rows, |r| r.bytecode_read);
     }
 }
 
@@ -696,33 +700,33 @@ impl Table for JumpTable {
     fn fill(&self, ctx: &FillCtx, out: &mut [Column]) {
         use jump::*;
         let rows = &ctx.trace.jump;
-        out[PC] = rows.par_iter().map(|r| ctx.g_at(r.pc)).collect();
-        out[FP] = rows.par_iter().map(|r| ctx.g_at(r.fp)).collect();
-        out[NPC] = rows.par_iter().map(|r| r.npc).collect();
-        out[NFP] = rows.par_iter().map(|r| r.nfp).collect();
-        out[OC] = rows.par_iter().map(|r| ctx.g_at(r.oc)).collect();
-        out[OD] = rows.par_iter().map(|r| ctx.g_at(r.od)).collect();
-        out[OF] = rows.par_iter().map(|r| ctx.g_at(r.of)).collect();
-        out[AC] = rows.par_iter().map(|r| ctx.g_at(r.ac)).collect();
-        out[AD] = rows.par_iter().map(|r| ctx.g_at(r.ad)).collect();
-        out[AF] = rows.par_iter().map(|r| ctx.g_at(r.af)).collect();
-        out[C_LO] = rows.par_iter().map(|r| F64(r.c.c0)).collect();
-        out[C_HI] = rows.par_iter().map(|r| F64(r.c.c1)).collect();
-        out[C_TOP] = rows.par_iter().map(|r| F64(r.c.c2)).collect();
-        out[D_LO] = rows.par_iter().map(|r| F64(r.d.c0)).collect();
-        out[D_HI] = rows.par_iter().map(|r| F64(r.d.c1)).collect();
-        out[D_TOP] = rows.par_iter().map(|r| F64(r.d.c2)).collect();
-        out[F_LO] = rows.par_iter().map(|r| F64(r.f.c0)).collect();
-        out[F_HI] = rows.par_iter().map(|r| F64(r.f.c1)).collect();
-        out[F_TOP] = rows.par_iter().map(|r| F64(r.f.c2)).collect();
-        out[W_LO] = rows.par_iter().map(|r| F64(r.w.c0)).collect();
-        out[W_HI] = rows.par_iter().map(|r| F64(r.w.c1)).collect();
-        out[W_TOP] = rows.par_iter().map(|r| F64(r.w.c2)).collect();
-        out[B] = rows.par_iter().map(|r| r.b).collect();
-        out[RC] = rows.par_iter().map(|r| r.rc).collect();
-        out[RD] = rows.par_iter().map(|r| r.rd).collect();
-        out[RF] = rows.par_iter().map(|r| r.rf).collect();
-        out[RBC] = rows.par_iter().map(|r| r.bytecode_read).collect();
+        out[PC] = map_rows(rows, |r| ctx.g_at(r.pc));
+        out[FP] = map_rows(rows, |r| ctx.g_at(r.fp));
+        out[NPC] = map_rows(rows, |r| r.npc);
+        out[NFP] = map_rows(rows, |r| r.nfp);
+        out[OC] = map_rows(rows, |r| ctx.g_at(r.oc));
+        out[OD] = map_rows(rows, |r| ctx.g_at(r.od));
+        out[OF] = map_rows(rows, |r| ctx.g_at(r.of));
+        out[AC] = map_rows(rows, |r| ctx.g_at(r.ac));
+        out[AD] = map_rows(rows, |r| ctx.g_at(r.ad));
+        out[AF] = map_rows(rows, |r| ctx.g_at(r.af));
+        out[C_LO] = map_rows(rows, |r| F64(r.c.c0));
+        out[C_HI] = map_rows(rows, |r| F64(r.c.c1));
+        out[C_TOP] = map_rows(rows, |r| F64(r.c.c2));
+        out[D_LO] = map_rows(rows, |r| F64(r.d.c0));
+        out[D_HI] = map_rows(rows, |r| F64(r.d.c1));
+        out[D_TOP] = map_rows(rows, |r| F64(r.d.c2));
+        out[F_LO] = map_rows(rows, |r| F64(r.f.c0));
+        out[F_HI] = map_rows(rows, |r| F64(r.f.c1));
+        out[F_TOP] = map_rows(rows, |r| F64(r.f.c2));
+        out[W_LO] = map_rows(rows, |r| F64(r.w.c0));
+        out[W_HI] = map_rows(rows, |r| F64(r.w.c1));
+        out[W_TOP] = map_rows(rows, |r| F64(r.w.c2));
+        out[B] = map_rows(rows, |r| r.b);
+        out[RC] = map_rows(rows, |r| r.rc);
+        out[RD] = map_rows(rows, |r| r.rd);
+        out[RF] = map_rows(rows, |r| r.rf);
+        out[RBC] = map_rows(rows, |r| r.bytecode_read);
     }
 }
 
@@ -795,20 +799,20 @@ impl Table for Pack64x2Table {
     fn fill(&self, ctx: &FillCtx, out: &mut [Column]) {
         use pack64::*;
         let rows = &ctx.trace.pack64x2;
-        out[PC] = rows.par_iter().map(|r| ctx.g_at(r.pc)).collect();
-        out[FP] = rows.par_iter().map(|r| ctx.g_at(r.fp)).collect();
-        out[OA] = rows.par_iter().map(|r| ctx.g_at(r.aa - r.fp)).collect();
-        out[OB] = rows.par_iter().map(|r| ctx.g_at(r.ab - r.fp)).collect();
-        out[OC] = rows.par_iter().map(|r| ctx.g_at(r.ac - r.fp)).collect();
-        out[AA] = rows.par_iter().map(|r| ctx.g_at(r.aa)).collect();
-        out[AB] = rows.par_iter().map(|r| ctx.g_at(r.ab)).collect();
-        out[AC] = rows.par_iter().map(|r| ctx.g_at(r.ac)).collect();
-        out[VA] = rows.par_iter().map(|r| F64(ctx.mem[r.aa as usize].c0)).collect();
-        out[VB] = rows.par_iter().map(|r| F64(ctx.mem[r.ab as usize].c0)).collect();
-        out[RA] = rows.par_iter().map(|r| r.ra).collect();
-        out[RB] = rows.par_iter().map(|r| r.rb).collect();
-        out[RC] = rows.par_iter().map(|r| r.rc).collect();
-        out[RBC] = rows.par_iter().map(|r| r.bytecode_read).collect();
+        out[PC] = map_rows(rows, |r| ctx.g_at(r.pc));
+        out[FP] = map_rows(rows, |r| ctx.g_at(r.fp));
+        out[OA] = map_rows(rows, |r| ctx.g_at(r.aa - r.fp));
+        out[OB] = map_rows(rows, |r| ctx.g_at(r.ab - r.fp));
+        out[OC] = map_rows(rows, |r| ctx.g_at(r.ac - r.fp));
+        out[AA] = map_rows(rows, |r| ctx.g_at(r.aa));
+        out[AB] = map_rows(rows, |r| ctx.g_at(r.ab));
+        out[AC] = map_rows(rows, |r| ctx.g_at(r.ac));
+        out[VA] = map_rows(rows, |r| F64(ctx.mem[r.aa as usize].c0));
+        out[VB] = map_rows(rows, |r| F64(ctx.mem[r.ab as usize].c0));
+        out[RA] = map_rows(rows, |r| r.ra);
+        out[RB] = map_rows(rows, |r| r.rb);
+        out[RC] = map_rows(rows, |r| r.rc);
+        out[RBC] = map_rows(rows, |r| r.bytecode_read);
     }
 }
 
@@ -931,36 +935,36 @@ impl Table for Blake3Table {
     fn fill(&self, ctx: &FillCtx, out: &mut [Column]) {
         use blake3t::*;
         let rows = &ctx.trace.blake3;
-        out[PC] = rows.par_iter().map(|r| ctx.g_at(r.pc)).collect();
-        out[FP] = rows.par_iter().map(|r| ctx.g_at(r.fp)).collect();
-        out[OA0] = rows.par_iter().map(|r| ctx.g_at(r.aa0 - r.fp)).collect();
-        out[OA1] = rows.par_iter().map(|r| ctx.g_at(r.aa1 - r.fp)).collect();
-        out[OB0] = rows.par_iter().map(|r| ctx.g_at(r.ab0 - r.fp)).collect();
-        out[OB1] = rows.par_iter().map(|r| ctx.g_at(r.ab1 - r.fp)).collect();
-        out[OCV] = rows.par_iter().map(|r| ctx.g_at(r.acv - r.fp)).collect();
-        out[OC] = rows.par_iter().map(|r| ctx.g_at(r.ac - r.fp)).collect();
-        out[AA0] = rows.par_iter().map(|r| ctx.g_at(r.aa0)).collect();
-        out[AA1] = rows.par_iter().map(|r| ctx.g_at(r.aa1)).collect();
-        out[AB0] = rows.par_iter().map(|r| ctx.g_at(r.ab0)).collect();
-        out[AB1] = rows.par_iter().map(|r| ctx.g_at(r.ab1)).collect();
-        out[ACV] = rows.par_iter().map(|r| ctx.g_at(r.acv)).collect();
-        out[AC] = rows.par_iter().map(|r| ctx.g_at(r.ac)).collect();
+        out[PC] = map_rows(rows, |r| ctx.g_at(r.pc));
+        out[FP] = map_rows(rows, |r| ctx.g_at(r.fp));
+        out[OA0] = map_rows(rows, |r| ctx.g_at(r.aa0 - r.fp));
+        out[OA1] = map_rows(rows, |r| ctx.g_at(r.aa1 - r.fp));
+        out[OB0] = map_rows(rows, |r| ctx.g_at(r.ab0 - r.fp));
+        out[OB1] = map_rows(rows, |r| ctx.g_at(r.ab1 - r.fp));
+        out[OCV] = map_rows(rows, |r| ctx.g_at(r.acv - r.fp));
+        out[OC] = map_rows(rows, |r| ctx.g_at(r.ac - r.fp));
+        out[AA0] = map_rows(rows, |r| ctx.g_at(r.aa0));
+        out[AA1] = map_rows(rows, |r| ctx.g_at(r.aa1));
+        out[AB0] = map_rows(rows, |r| ctx.g_at(r.ab0));
+        out[AB1] = map_rows(rows, |r| ctx.g_at(r.ab1));
+        out[ACV] = map_rows(rows, |r| ctx.g_at(r.acv));
+        out[AC] = map_rows(rows, |r| ctx.g_at(r.ac));
         for k in 0..4 {
-            out[VA0 + k] = rows.par_iter().map(|r| r.va[k]).collect();
-            out[VB0 + k] = rows.par_iter().map(|r| r.vb[k]).collect();
-            out[VC0 + k] = rows.par_iter().map(|r| r.vc[k]).collect();
-            out[VCV0 + k] = rows.par_iter().map(|r| r.vcv[k]).collect();
+            out[VA0 + k] = map_rows(rows, |r| r.va[k]);
+            out[VB0 + k] = map_rows(rows, |r| r.vb[k]);
+            out[VC0 + k] = map_rows(rows, |r| r.vc[k]);
+            out[VCV0 + k] = map_rows(rows, |r| r.vcv[k]);
         }
-        out[MD0] = rows.par_iter().map(|r| F64(r.metadata.c0)).collect();
-        out[MD1] = rows.par_iter().map(|r| F64(r.metadata.c1)).collect();
-        out[RA0] = rows.par_iter().map(|r| r.ra[0]).collect();
-        out[RA1] = rows.par_iter().map(|r| r.ra[1]).collect();
-        out[RB0] = rows.par_iter().map(|r| r.rb[0]).collect();
-        out[RB1] = rows.par_iter().map(|r| r.rb[1]).collect();
-        out[RCV0] = rows.par_iter().map(|r| r.rcv[0]).collect();
-        out[RCV1] = rows.par_iter().map(|r| r.rcv[1]).collect();
-        out[RC0] = rows.par_iter().map(|r| r.rc[0]).collect();
-        out[RC1] = rows.par_iter().map(|r| r.rc[1]).collect();
-        out[RBC] = rows.par_iter().map(|r| r.bytecode_read).collect();
+        out[MD0] = map_rows(rows, |r| F64(r.metadata.c0));
+        out[MD1] = map_rows(rows, |r| F64(r.metadata.c1));
+        out[RA0] = map_rows(rows, |r| r.ra[0]);
+        out[RA1] = map_rows(rows, |r| r.ra[1]);
+        out[RB0] = map_rows(rows, |r| r.rb[0]);
+        out[RB1] = map_rows(rows, |r| r.rb[1]);
+        out[RCV0] = map_rows(rows, |r| r.rcv[0]);
+        out[RCV1] = map_rows(rows, |r| r.rcv[1]);
+        out[RC0] = map_rows(rows, |r| r.rc[0]);
+        out[RC1] = map_rows(rows, |r| r.rc[1]);
+        out[RBC] = map_rows(rows, |r| r.bytecode_read);
     }
 }

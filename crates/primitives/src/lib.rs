@@ -3,7 +3,6 @@
 
 pub mod bench;
 pub mod bits;
-pub mod epool;
 pub mod field;
 pub mod multilinear;
 
@@ -263,18 +262,17 @@ pub fn log2_ceil_usize(n: usize) -> usize {
 /// the allocator itself stays free of a thread-pool dependency.
 pub trait ParCollectArena<T>: Sized {
     /// Parallel `(0..n).map(build).collect()`: one allocation on the calling
-    /// thread, filled in place by the workers. Unlike rayon's `collect`, there
-    /// are no per-thread intermediate vectors to allocate and copy out of.
+    /// thread, filled in place by the workers — no per-worker intermediate
+    /// vectors to allocate and copy out of.
     fn par_collect(n: usize, build: impl Fn(usize) -> T + Sync) -> Self;
 }
 
 impl<T: Send> ParCollectArena<T> for zk_alloc::ArenaVec<T> {
     fn par_collect(n: usize, build: impl Fn(usize) -> T + Sync) -> Self {
-        use rayon::prelude::*;
         // SAFETY: the fill below writes every slot in `0..n` exactly once, and
-        // rayon joins before the buffer is observable.
+        // the dispatch joins before the buffer is observable.
         let mut out = unsafe { Self::uninitialized(n) };
-        out.par_iter_mut().enumerate().for_each(|(i, slot)| *slot = build(i));
+        parallel::fill(&mut out, build);
         out
     }
 }
@@ -319,34 +317,4 @@ pub unsafe fn assume_init<T>(values: Vec<std::mem::MaybeUninit<T>>) -> Vec<T> {
     // SAFETY: `MaybeUninit<T>` has the same layout as `T`; the caller guarantees
     // that all elements are initialized, and ManuallyDrop transfers ownership.
     unsafe { Vec::from_raw_parts(values.as_mut_ptr().cast(), values.len(), values.capacity()) }
-}
-
-/// Cached `perf_core_count`. The uncached version may spawn `sysctl`; this
-/// memoizes it so hot paths can cheaply ask "is the current rayon pool the
-/// homogeneous P-core pool?" (i.e. `current_num_threads() <= this`).
-#[cfg_attr(not(target_arch = "aarch64"), allow(dead_code))] // caller is aarch64-only
-pub fn perf_core_count_cached() -> usize {
-    use std::sync::OnceLock;
-    static N: OnceLock<usize> = OnceLock::new();
-    *N.get_or_init(perf_core_count)
-}
-
-/// Best-effort count of performance cores. On macOS, queries
-/// `hw.perflevel0.physicalcpu` (= P-core count on Apple silicon, =
-/// physical CPU count on Intel). Elsewhere, falls back to
-/// `std::thread::available_parallelism()`.
-fn perf_core_count() -> usize {
-    #[cfg(target_os = "macos")]
-    {
-        if let Ok(out) = std::process::Command::new("sysctl")
-            .args(["-n", "hw.perflevel0.physicalcpu"])
-            .output()
-            && let Ok(s) = std::str::from_utf8(&out.stdout)
-            && let Ok(n) = s.trim().parse::<usize>()
-            && n > 0
-        {
-            return n;
-        }
-    }
-    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)
 }

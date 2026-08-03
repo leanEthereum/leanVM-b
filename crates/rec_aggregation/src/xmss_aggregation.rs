@@ -69,11 +69,9 @@ fn aggregate_binding(mut state: [u8; STATE_LEN], data: &[u8]) -> [u8; STATE_LEN]
 pub fn run_xmss_aggregation(n: usize, log_inv_rate: usize, plan: Plan) {
     let trace_span = tracing::info_span!("XMSS aggregation", n, log_inv_rate).entered();
 
-    // Pin rayon workers to performance cores (QoS) before any parallel work runs,
-    // so fork-join stages are not held up by efficiency-core stragglers. Thread
-    // count still follows RAYON_NUM_THREADS. Opting into the arena is the calling
-    // *process's* decision (one region, one proof at a time), so it stays in
-    // `main`, not here.
+    // Spawn the worker pool before any timed work, so no kernel pays the spawn
+    // cost. Opting into the arena is the calling *process's* decision (one region,
+    // one proof at a time), so it stays in `main`, not here.
     lean_vm::init_prover_pool();
     let slot = signers_cache::SLOT;
     let message: Message = signers_cache::message();

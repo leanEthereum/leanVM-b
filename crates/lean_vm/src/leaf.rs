@@ -13,7 +13,6 @@ use crate::transcript::{ProverState, VerifierState};
 use crate::witness::Column;
 use primitives::field::{F64, F192, F192BaseUnreduced, g_pow, index_mle};
 use primitives::multilinear::{eq_eval, mle_eval};
-use rayon::prelude::*;
 use zk_alloc::ArenaVec;
 
 /// One tuple coordinate as a function of the block's row `z`.
@@ -186,7 +185,7 @@ pub fn build_leaves(blocks: &[Block], lay: &Layout, cols: &[Column], alpha: F192
         assert!(blk.real <= rows, "a block's real rows must fit its cube");
         let dst = &mut leaves[off..off + blk.real];
         if dst.len() >= PAR_THRESHOLD {
-            dst.par_iter_mut().enumerate().for_each(|(z, slot)| *slot = row(z));
+            parallel::fill(dst, row);
         } else {
             for (z, slot) in dst.iter_mut().enumerate() {
                 *slot = row(z);
@@ -381,10 +380,10 @@ fn decompose_prove(
             }
         }
     }
-    let vals: Vec<F192> = jobs
-        .par_iter()
-        .map(|&(col, kappa)| mle_eval(&cols[col], &zeta[..kappa]))
-        .collect();
+    let vals: Vec<F192> = parallel::map_collect(jobs.len(), |i| {
+        let (col, kappa) = jobs[i];
+        mle_eval(&cols[col], &zeta[..kappa])
+    });
 
     // Pass 2: replay in the original order; duplicates reuse the recorded claim.
     let mut fresh_iter = jobs.iter().zip(vals.iter());
@@ -590,19 +589,16 @@ pub fn prove_balance(
     let count_build_lay = count_lay.clone();
     count_lay.mu = push_lay.mu;
     let gamma = ps.sample();
-    // Independent leaf vectors; build concurrently. The count channel's leaf is the
-    // count itself (a single `Col`, `γ=0`, `α=1`), so its root is the product of all counts.
+    // Three independent leaf vectors, built one after another: each `build_leaves`
+    // already fans its own blocks out across the whole pool, so nesting a
+    // three-way outer split on top would only add a barrier.
+    // The count channel's leaf is the count itself (a single `Col`, `γ=0`, `α=1`),
+    // so its root is the product of all counts.
     let prof = std::env::var("LEANVM_PROFILE").is_ok();
     let t0 = std::time::Instant::now();
-    let (push_leaves, (pull_leaves, count_leaves)) = rayon::join(
-        || build_leaves(push, &push_lay, cols, alpha, gamma),
-        || {
-            rayon::join(
-                || build_leaves(pull, &pull_lay, cols, alpha, gamma),
-                || build_leaves(count, &count_build_lay, cols, F192::ONE, F192::ZERO),
-            )
-        },
-    );
+    let push_leaves = build_leaves(push, &push_lay, cols, alpha, gamma);
+    let pull_leaves = build_leaves(pull, &pull_lay, cols, alpha, gamma);
+    let count_leaves = build_leaves(count, &count_build_lay, cols, F192::ONE, F192::ZERO);
     if prof {
         eprintln!("[bus]   leaves    : {:>7.2} ms", t0.elapsed().as_secs_f64() * 1e3);
     }
@@ -686,10 +682,7 @@ fn tables_at(cols: &[Column], tables: &[(usize, usize)], zeta: &[F192]) -> Vec<V
         .iter()
         .map(|&(base, n_cols)| {
             let tau = crate::log2_strict_usize(cols[base].len());
-            (0..n_cols)
-                .into_par_iter()
-                .map(|c| mle_eval(&cols[base + c], &zeta[..tau]))
-                .collect()
+            parallel::map_collect(n_cols, |c| mle_eval(&cols[base + c], &zeta[..tau]))
         })
         .collect()
 }

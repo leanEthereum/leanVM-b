@@ -31,9 +31,9 @@ pub mod transcript;
 pub mod vmhash;
 pub mod witness;
 
-/// Prepare the process for proving: the pinned worker pool ([`init_prover_pool`])
-/// plus the proving arena ([`zk_alloc::enable_arena`]), which recycles the
-/// prover's large transient buffers across proofs instead of re-faulting them.
+/// Prepare the process for proving: the worker pool ([`init_prover_pool`]) plus
+/// the proving arena ([`zk_alloc::enable_arena`]), which recycles the prover's
+/// large transient buffers across proofs instead of re-faulting them.
 ///
 /// Call once at program or test start.
 ///
@@ -53,45 +53,16 @@ pub fn init_prover() {
     }
 }
 
-/// Build rayon's global thread pool with every worker pinned to a **performance
-/// core** (macOS QoS `USER_INTERACTIVE`), so the prover's fork-join stages are not
-/// dragged by efficiency-core stragglers at their barriers. The thread *count*
-/// still follows `RAYON_NUM_THREADS` (or rayon's default); this only fixes which
-/// cores the workers are scheduled on.
+/// Spawn the worker pool up front, so no kernel pays the spawn cost inside a
+/// timed region. Idempotent.
 ///
-/// Idempotent and best-effort: call it **once at program/test start, before any
-/// other rayon use** (rayon's global pool is built on first use — once built, this
-/// is a no-op and the QoS hint does not apply). On non-macOS it is a plain pool.
+/// Thread placement is the pool's own business: performance-core workers run at
+/// `USER_INTERACTIVE` and (on Apple silicon) efficiency-core workers at `UTILITY`,
+/// all drawing from one claim counter. `LEANVM_NUM_THREADS` — or
+/// `RAYON_NUM_THREADS`, still honored — sets the performance-worker count. See the
+/// `parallel` crate.
 pub fn init_prover_pool() {
-    use std::sync::Once;
-    static ONCE: Once = Once::new();
-    ONCE.call_once(|| {
-        let builder = rayon::ThreadPoolBuilder::new().spawn_handler(|thread| {
-            std::thread::Builder::new().spawn(move || {
-                #[cfg(target_os = "macos")]
-                set_qos_user_interactive();
-                thread.run();
-            })?;
-            Ok(())
-        });
-        // Fails only if the global pool is already built — then we silently keep it.
-        let _ = builder.build_global();
-    });
-}
-
-/// Pin the calling thread to a performance core by requesting the
-/// `USER_INTERACTIVE` QoS class (macOS): the scheduler keeps `USER_INTERACTIVE`
-/// work off the efficiency cores. `QOS_CLASS_USER_INTERACTIVE = 0x21`.
-#[cfg(target_os = "macos")]
-fn set_qos_user_interactive() {
-    const QOS_CLASS_USER_INTERACTIVE: u32 = 0x21;
-    unsafe extern "C" {
-        fn pthread_set_qos_class_self_np(qos_class: u32, relative_priority: i32) -> i32;
-    }
-    // SAFETY: a libSystem call that only adjusts this thread's scheduling class.
-    unsafe {
-        pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
-    }
+    parallel::init();
 }
 
 /// Target soundness of the whole proof, in bits. Every algebraic challenge is
@@ -99,7 +70,7 @@ fn set_qos_user_interactive() {
 /// proximity-gap, and OOD-binding terms each clear this target.
 pub const SECURITY_BITS: u32 = 128;
 
-/// Below this many parallelizable items a pass runs serially: rayon's fan-out
+/// Below this many parallelizable items a pass runs serially: the fan-out
 /// overhead is not worth it for small inputs. Shared by [`constraints`], [`gkr`], [`leaf`].
 pub(crate) const PAR_THRESHOLD: usize = 1 << 11;
 
