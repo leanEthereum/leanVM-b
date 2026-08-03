@@ -777,9 +777,20 @@ pub fn verify(program: &Program, public_input: &[F64; 4], proof: &Proof) -> Resu
 /// the high coords to `r`. No downstream special-casing — it folds into the
 /// one opening like every other point claim.
 fn slot_claims(l: &Layout, claims: &[ColumnClaim]) -> Vec<pcs::SlotClaim> {
+    // The single public-input claim is last (`verify`/`prove` push it after the
+    // bus and constraint claims) and is the only claim that is not a whole-column
+    // evaluation. Its point is `(r0, r1, 0, .., 0)` over the four base-field
+    // public words, so `eq` is supported on rows 0..3 alone. Those four dense
+    // cells are `offset + slot + j*2^b` for `j in 0..4`, so the weight is an
+    // ordinary aligned two-variable `eq`, and routing it through `Strided` keeps
+    // it out of the Jagged set. That is what makes every Jagged claim a
+    // whole-column claim, one per committed column, which
+    // `geometric_claim_weights` relies on.
+    let public_start = claims.len() - 1;
     claims
         .iter()
-        .map(|c| {
+        .enumerate()
+        .map(|(index, c)| {
             // A virtual BLAKE3 value column (always virtual): its bus claim at
             // instance point `c.point` is the q_pkd slot value — a boolean-selector
             // (strided) claim on QPKD, folded sparsely (2^n_log, not the 2^(8+n_log)
@@ -796,25 +807,30 @@ fn slot_claims(l: &Layout, claims: &[ColumnClaim]) -> Vec<pcs::SlotClaim> {
             let placement = l.placements[c.col];
             debug_assert_eq!(c.point.len(), placement.n_vars);
             // The arithmetization evaluates the full power-of-two column,
-            // including its fixed public padding. Jagged commits only the real
-            // prefix, so remove the padding MLE before opening the dense data.
-            let suffix = F192::ONE + ::pcs::jagged::prefix_indicator_eval(placement.height, &c.point);
-            let jagged_value = c.value + F192::from(l.pad[c.col]) * suffix;
-            let mut block_point = Vec::with_capacity(placement.block_width_log + c.point.len());
-            for bit in 0..placement.block_width_log {
-                block_point.push(if (placement.slot >> bit) & 1 == 1 {
-                    F192::ONE
-                } else {
-                    F192::ZERO
-                });
+            // including its fixed public padding, while Jagged commits only the
+            // real prefix. `witness::stack_q` commits that prefix OFFSET by the
+            // column's pad value, so the committed column is the logical one
+            // plus the constant `pad`, and the correction is that constant: the
+            // MLE of a constant is itself, at every point and independently of
+            // the real height. No prefix indicator is needed.
+            let value = c.value + F192::from(l.pad[c.col]);
+            if index >= public_start {
+                debug_assert!(c.point[2..].iter().all(|&x| x == F192::ZERO));
+                return pcs::SlotClaim::Strided {
+                    offset: placement.offset,
+                    slot: placement.slot,
+                    stride_log: placement.block_width_log,
+                    point: c.point[..2].to_vec(),
+                    value,
+                };
             }
-            block_point.extend_from_slice(&c.point);
             pcs::SlotClaim::Jagged {
                 offset: placement.offset,
                 height: placement.height << placement.block_width_log,
                 selector_len: placement.block_width_log,
-                row_point: block_point,
-                value: jagged_value,
+                slot: placement.slot,
+                row_point: c.point.clone(),
+                value,
             }
         })
         .collect()

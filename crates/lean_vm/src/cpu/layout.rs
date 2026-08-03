@@ -689,7 +689,7 @@ impl Program {
         // (`execute` already asserts the run halts at the sentinel (pc, fp) =
         // (g^{B-1}, 0), exactly the boundary the public layout derives.)
         let t_stack = std::time::Instant::now();
-        let q = witness::stack_q(&cols, &l.placements, l.m);
+        let q = witness::stack_q(&cols, &l.placements, &l.pad, l.m);
         if prof {
             eprintln!(
                 "[build] stack_q     : {:>7.2} ms",

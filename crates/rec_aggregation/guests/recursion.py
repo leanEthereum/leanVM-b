@@ -219,21 +219,12 @@ POINT_BUF_QPKD_RHO = 4
 CLAIM_POINT_BUF = CLAIM_POINT_BUF_PLACEHOLDER
 CLAIM_POINT_OFF = CLAIM_POINT_OFF_PLACEHOLDER
 # Dense Jagged column index and fixed public pad value for each pooled claim.
-CLAIM_COL = CLAIM_COL_PLACEHOLDER
 CLAIM_PAD = CLAIM_PAD_PLACEHOLDER
 CLAIM_QPKD_SLOT = CLAIM_QPKD_SLOT_PLACEHOLDER
-CLAIM_BLOCK_SLOT = CLAIM_BLOCK_SLOT_PLACEHOLDER
-CLAIM_BLOCK_LOG = CLAIM_BLOCK_LOG_PLACEHOLDER
 CLAIM_GAMMA_RANK = CLAIM_GAMMA_RANK_PLACEHOLDER
 N_CLAIM_ROWS = N_CLAIM_ROWS_PLACEHOLDER
-CLAIM_ROW_GROUP = CLAIM_ROW_GROUP_PLACEHOLDER
 CLAIM_ROW_REP = CLAIM_ROW_REP_PLACEHOLDER
-N_PAD_PREFIXES = N_PAD_PREFIXES_PLACEHOLDER
-PAD_PREFIX_ROW = PAD_PREFIX_ROW_PLACEHOLDER
-PAD_PREFIX_COL = PAD_PREFIX_COL_PLACEHOLDER
-CLAIM_PAD_PREFIX = CLAIM_PAD_PREFIX_PLACEHOLDER
 N_JAGGED_BATCHES = N_JAGGED_BATCHES_PLACEHOLDER
-JAGGED_BATCH_REP = JAGGED_BATCH_REP_PLACEHOLDER
 JAGGED_BATCH_ROW = JAGGED_BATCH_ROW_PLACEHOLDER
 JAGGED_BATCH_COL = JAGGED_BATCH_COL_PLACEHOLDER
 JAGGED_BATCH_LOG = JAGGED_BATCH_LOG_PLACEHOLDER
@@ -760,29 +751,6 @@ def sumcheck_round4(state_0, state_1, state_2, state_3, msg_cursor, claim: Ext):
 
 
 @inline
-def fold_monomial_msg(msg, weights, log_len: Const):
-    # `fold_final_msg` with the low weight fixed to 1 (the novel-basis residual
-    # weight pair is (1, w), not (1 + w, w)), so every level halves its
-    # multiplies: `lo + w*hi` instead of `w_lo*lo + w_hi*hi`.
-    l0 = StackBuf(3 * (2 ** YR_LOG_CAP))
-    for t in unroll(0, 2 ** log_len // 2):
-        lo = eload(msg * GEN ** (3 * (2 * t)))
-        hi = eload(msg * GEN ** (3 * (2 * t + 1)))
-        sstore(l0, t, eadd(lo, emul(sload(weights, 0), hi)))
-    cursor = l0
-    n = 2 ** log_len // 2
-    for j in unroll(1, log_len):
-        nxt = StackBuf(3 * (2 ** YR_LOG_CAP))
-        for t in unroll(0, n // 2):
-            lo = sload(cursor, 2 * t)
-            hi = sload(cursor, 2 * t + 1)
-            sstore(nxt, t, eadd(lo, emul(sload(weights, j), hi)))
-        cursor = nxt
-        n = n // 2
-    return sload(cursor, 0)
-
-
-@inline
 def fold_final_msg(msg, weights, wbase: Const, log_len: Const):
     # Weighted fold of the final_msg multilinear over 2^log_len values (log_len is the
     # candidate's yr_log_n; the frame buffers use the global max size).
@@ -976,27 +944,6 @@ def eqtree(point_ptr, out, n_coords: Const):
     return
 
 
-def prefix_indicator(point, height_bits):
-    # MLE of [row < height], MSB first. `point` is zero above the logical
-    # column dimension and `height_bits` may therefore also encode the full
-    # power-of-two height.
-    states = StackBuf(3 * 2 * (SIZE_BITS + 1))
-    sstore(states, 0, [0, 0, 0])  # already less
-    sstore(states, 1, [1, 0, 0])  # equal so far
-    for rev in unroll(0, SIZE_BITS):
-        bit = SIZE_BITS - 1 - rev
-        less = sload(states, 2 * rev)
-        equal = sload(states, 2 * rev + 1)
-        x = eload(point * GEN ** (3 * bit))
-        h = height_bits[GEN ** bit]
-        equal_zero = emul(equal, eadd([1, 0, 0], x))
-        sstore(states, 2 * (rev + 1), eadd(less, emul_base(h, equal_zero)))
-        sstore(states, 2 * (rev + 1) + 1, emul(equal, eadd_base(1 + h, x)))
-    out = StackBuf(3)
-    sstore(out, 0, sload(states, 2 * SIZE_BITS))
-    return out
-
-
 @inline
 def jagged_step(s0: Ext, s1: Ext, s2: Ext, s3: Ext, w0: Ext, w1: Ext, w2: Ext, w3: Ext, start_bit_point, end_bit_point):
     # Endpoint bits are Boolean-constrained public interval data, so select one
@@ -1050,149 +997,27 @@ def jagged_prefix_fixed(row_point, index_point, gamma: Ext, selector_len: Const,
     return s0, s1, s2, s3
 
 
-def jagged_reverse_step(v0: Ext, v1: Ext, v2: Ext, v3: Ext, w0: Ext, w1: Ext, w2: Ext, w3: Ext, row_bit: Ext, start_bit, end_bit):
-    # General residual transition, retained for row points whose residual
-    # coordinates are not all zero.
-    one_plus_row = eadd([1, 0, 0], row_bit)
-    if start_bit == 0:
-        if end_bit == 0:
-            o0 = eadd(emul(one_plus_row, v0), emul(row_bit, w0))
-            o1 = eadd(emul(row_bit, v1), emul(one_plus_row, w0))
-            o2 = eadd(emul(one_plus_row, v2), emul(row_bit, w0))
-            o3 = eadd(emul(row_bit, v3), emul(one_plus_row, w0))
-            return o0, o1, o2, o3
-        o0 = eadd(emul(one_plus_row, v2), emul(row_bit, w0))
-        o1 = eadd(emul(row_bit, v3), emul(one_plus_row, w0))
-        o2 = eadd(emul(one_plus_row, v2), emul(row_bit, w2))
-        o3 = eadd(emul(row_bit, v3), emul(one_plus_row, w2))
-        return o0, o1, o2, o3
-    if end_bit == 0:
-        o0 = eadd(emul(row_bit, v1), emul(one_plus_row, w0))
-        o1 = eadd(emul(one_plus_row, v1), emul(row_bit, w1))
-        o2 = eadd(emul(row_bit, v3), emul(one_plus_row, w0))
-        o3 = eadd(emul(one_plus_row, v3), emul(row_bit, w1))
-        return o0, o1, o2, o3
-    o0 = eadd(emul(row_bit, v3), emul(one_plus_row, w0))
-    o1 = eadd(emul(one_plus_row, v3), emul(row_bit, w1))
-    o2 = eadd(emul(row_bit, v3), emul(one_plus_row, w2))
-    o3 = eadd(emul(one_plus_row, v3), emul(row_bit, w3))
-    return o0, o1, o2, o3
-
-
-def jagged_contract_zero(final_msg, start_bits, end_bits, fold_bits: Const, log_len: Const, init0: Ext, init1: Ext, init2: Ext, init3: Ext):
-    # With every residual logical-row coordinate fixed to zero, each prefix
-    # state reaches exactly one message index: start_hi for carry 0, or
-    # start_hi + 1 for carry 1. The comparison state accepts equality only
-    # when its low-bit comparison is already strict. `final_msg` has one
-    # explicit zero sentinel after its 2^log_len real entries, so a carry from
-    # the last message index is rejected without an out-of-range read.
-    assert start_bits[GEN ** (fold_bits + log_len)] == 0
-    start_plus_one = StackBuf(YR_LOG_CAP + 1)
-    start_ptr = GEN ** 0
-    carry = 1
-    for bit in unroll(0, log_len):
-        start_bit = start_bits[GEN ** (fold_bits + bit)]
-        start_plus_one[bit] = start_bit + carry
-        carry *= start_bit
-        start_ptr *= 1 + start_bit * (1 + GEN ** (2 ** bit))
-    start_plus_one[log_len] = carry
-
-    # Compute start_hi < end_hi and start_hi == end_hi, including the extra
-    # endpoint bit that represents an interval ending exactly at 2^M. At the
-    # same time, test whether end_hi == start_hi + 1.
-    less = 0
-    equal = 1
-    adjacent = 1
-    for rev in unroll(0, log_len + 1):
-        bit = log_len - rev
-        end_bit = end_bits[GEN ** (fold_bits + bit)]
-        if bit == log_len:
-            start_bit = 0
-        else:
-            start_bit = start_bits[GEN ** (fold_bits + bit)]
-        equal_start_zero = equal * (1 + start_bit)
-        less += end_bit * equal_start_zero
-        equal *= 1 + start_bit + end_bit
-        adjacent *= 1 + start_plus_one[bit] + end_bit
-    start_plus_one_less = less * (1 + adjacent)
-
-    at_start = eadd(emul_base(less, eadd(init0, init2)), emul_base(equal, init2))
-    at_start_plus_one = eadd(emul_base(start_plus_one_less, init1), emul_base(less, init3))
-    out = eadd(emul(eload(final_msg * start_ptr ** 3), at_start), emul(eload(final_msg * (start_ptr * GEN) ** 3), at_start_plus_one))
-    return out
-
-
-def jagged_contract_general(final_msg, row_point, start_bits, end_bits, fold_bits: Const, log_len: Const, row_shift: Const, init0: Ext, init1: Ext, init2: Ext, init3: Ext):
-    layers = StackBuf(3 * 8 * 2 ** YR_LOG_CAP)
-    for y in unroll(0, 2 ** log_len):
-        sstore(layers, 4 * y, [0, 0, 0])
-        sstore(layers, 4 * y + 1, [0, 0, 0])
-        sstore(layers, 4 * y + 2, eload(final_msg * GEN ** (3 * y)))
-        sstore(layers, 4 * y + 3, [0, 0, 0])
-    layer_off = 0
-    layer_len = 2 ** log_len
-    next_off = 4 * layer_len
-    for stage in unroll(0, log_len):
-        bit = log_len - 1 - stage
-        next_len = 2 ** bit
-        for t in unroll(0, next_len):
-            v = layer_off + 4 * t
-            w = layer_off + 4 * (t + next_len)
-            o0, o1, o2, o3 = jagged_reverse_step(sload(layers, v), sload(layers, v + 1), sload(layers, v + 2), sload(layers, v + 3), sload(layers, w), sload(layers, w + 1), sload(layers, w + 2), sload(layers, w + 3), eload(row_point * GEN ** (3 * (fold_bits + bit - row_shift))), start_bits[GEN ** (fold_bits + bit)], end_bits[GEN ** (fold_bits + bit)])
-            out = next_off + 4 * t
-            sstore(layers, out, o0)
-            sstore(layers, out + 1, o1)
-            sstore(layers, out + 2, o2)
-            sstore(layers, out + 3, o3)
-        layer_off = next_off
-        layer_len = next_len
-        next_off = next_off + 4 * next_len
-    out = eadd(eadd(emul(init0, sload(layers, layer_off)), emul(init1, sload(layers, layer_off + 1))), eadd(emul(init2, sload(layers, layer_off + 2)), emul(init3, sload(layers, layer_off + 3))))
-    return out
-
-
-def jagged_terminal(m_idx: Const, fold_challenges, final_msg, claim_rows, col_bound_bits, gamma: Ext, gamma_powers, out):
-    # One automaton per complete row-major column block, rather than one per
-    # physical column. For selector bit b, unnormalized row weights (1,
-    # gamma^(2^b)) absorb the geometric batch scale Π(1+gamma^(2^b)) without
-    # any field inversions; the remaining coordinates are the shared row point.
-    # The closed-form zero-residual terminal may address entry 2^log_len when
-    # the last real entry carries. Make that rejection an explicit shared zero.
-    terminal_msg = HeapBuf(3 * (2 ** YR_LOG_CAP + 1))
-    for y in unroll(0, 2 ** LIG_YR_LOG_LEN[m_idx]):
-        estore(terminal_msg * GEN ** (3 * y), eload(final_msg * GEN ** (3 * y)))
-    estore(terminal_msg * GEN ** (3 * 2 ** LIG_YR_LOG_LEN[m_idx]), [0, 0, 0])
-    residual_zero = HeapBuf(N_JAGGED_BATCHES)
+def jagged_eval_terminal(m_idx: Const, fold_challenges, tail_challenges, claim_rows, col_bound_bits, gamma: Ext, gamma_powers, out):
+    # Evaluate every complete row-major Jagged block at the single terminal
+    # point (fold_challenges || tail_challenges). Selector coordinates use the
+    # same unnormalized geometric weights as the native verifier. After the
+    # committed coordinates, one fixed-zero top bit rejects an overflow carry
+    # and handles an interval ending exactly at the cube boundary.
     total = [0, 0, 0]
     for batch in unroll(0, N_JAGGED_BATCHES):
         row = claim_rows * GEN ** (3 * SIZE_BITS * JAGGED_BATCH_ROW[batch])
         start_bits = col_bound_bits * GEN ** (SIZE_BITS * JAGGED_BATCH_COL[batch])
         end_bits = col_bound_bits * GEN ** (SIZE_BITS * (JAGGED_BATCH_COL[batch] + 1))
         p0, p1, p2, p3 = jagged_prefix_fixed(row, fold_challenges, gamma, JAGGED_BATCH_LOG[batch], start_bits, end_bits, LIG_TOTAL_FOLDS[m_idx])
-        folded_out = StackBuf(3)
-        if LIG_YR_LOG_LEN[m_idx] == 3:
-            residual_0 = eload(row * GEN ** (3 * (LIG_TOTAL_FOLDS[m_idx] - JAGGED_BATCH_LOG[batch])))
-            residual_1 = eload(row * GEN ** (3 * (LIG_TOTAL_FOLDS[m_idx] + 1 - JAGGED_BATCH_LOG[batch])))
-            residual_2 = eload(row * GEN ** (3 * (LIG_TOTAL_FOLDS[m_idx] + 2 - JAGGED_BATCH_LOG[batch])))
-            residual_zero[GEN ** batch] = ext_is_zero(residual_0) * ext_is_zero(residual_1) * ext_is_zero(residual_2)
-        elif LIG_YR_LOG_LEN[m_idx] == 4:
-            residual_0 = eload(row * GEN ** (3 * (LIG_TOTAL_FOLDS[m_idx] - JAGGED_BATCH_LOG[batch])))
-            residual_1 = eload(row * GEN ** (3 * (LIG_TOTAL_FOLDS[m_idx] + 1 - JAGGED_BATCH_LOG[batch])))
-            residual_2 = eload(row * GEN ** (3 * (LIG_TOTAL_FOLDS[m_idx] + 2 - JAGGED_BATCH_LOG[batch])))
-            residual_3 = eload(row * GEN ** (3 * (LIG_TOTAL_FOLDS[m_idx] + 3 - JAGGED_BATCH_LOG[batch])))
-            residual_zero[GEN ** batch] = ext_is_zero(residual_0) * ext_is_zero(residual_1) * ext_is_zero(residual_2) * ext_is_zero(residual_3)
-        else:
-            residual_zero[GEN ** batch] = 0
-        if residual_zero[GEN ** batch] == 1:
-            folded_zero = jagged_contract_zero(terminal_msg, start_bits, end_bits, LIG_TOTAL_FOLDS[m_idx], LIG_YR_LOG_LEN[m_idx], p0, p1, p2, p3)
-            sstore(folded_out, 0, folded_zero)
-        else:
-            folded_general = jagged_contract_general(final_msg, row, start_bits, end_bits, LIG_TOTAL_FOLDS[m_idx], LIG_YR_LOG_LEN[m_idx], JAGGED_BATCH_LOG[batch], p0, p1, p2, p3)
-            sstore(folded_out, 0, folded_general)
-        folded = sload(folded_out, 0)
+        for bit in unroll(0, LIG_YR_LOG_LEN[m_idx]):
+            row_bit = eload(row * GEN ** (3 * (LIG_TOTAL_FOLDS[m_idx] + bit - JAGGED_BATCH_LOG[batch])))
+            index_bit = eload(tail_challenges * GEN ** (3 * bit))
+            rx = emul(row_bit, index_bit)
+            p0, p1, p2, p3 = jagged_step(p0, p1, p2, p3, eadd([1, 0, 0], eadd(eadd(row_bit, index_bit), rx)), eadd(row_bit, rx), eadd(index_bit, rx), rx, start_bits[GEN ** (LIG_TOTAL_FOLDS[m_idx] + bit)], end_bits[GEN ** (LIG_TOTAL_FOLDS[m_idx] + bit)])
+        top = LIG_TOTAL_FOLDS[m_idx] + LIG_YR_LOG_LEN[m_idx]
+        p0, p1, p2, p3 = jagged_step(p0, p1, p2, p3, [1, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], start_bits[GEN ** top], end_bits[GEN ** top])
         gamma_weight = eload(gamma_powers * GEN ** (3 * JAGGED_BATCH_BASE[batch]))
-        batch_term = emul(gamma_weight, folded)
-        total = eadd(total, batch_term)
+        total = eadd(total, emul(gamma_weight, p2))
     estore(out, total)
     return GEN ** 0
 
@@ -1227,7 +1052,7 @@ def eval_qpkd_claim_weight(point, point_len_g, slot: Const, fold_challenges, fol
     return out
 
 
-def open_stacked(m_idx: Const, fs0, fs1, fs2, fs3, target: Ext, commit_root_0, commit_root_1, commit_root_2, commit_root_3, cursor, sumcheck_out, inner_out):
+def open_stacked(m_idx: Const, fs0, fs1, fs2, fs3, target: Ext, commit_root_0, commit_root_1, commit_root_2, commit_root_3, cursor, sumcheck_out, inner_out, yr_at_tail_out):
     # The stacked Ligerito opening. m_idx is the flattened (rate, committed
     # log-size) configuration index, and every LIG_* table below reads row
     # m_idx (the match_range dispatch bakes one
@@ -1244,16 +1069,18 @@ def open_stacked(m_idx: Const, fs0, fs1, fs2, fs3, target: Ext, commit_root_0, c
     #      alpha-batched row dot against the fold eq weights, and verify the
     #      Merkle authentication path against the bound root
     #      (verify_merkle_path);
-    #   5. sample beta, fold the query sums into the running target.
-    # Then the per-level residuals (novel-basis prefix x final-message fold)
-    # are combined; the caller's eval_b terminal asserts the grand total.
+    #   5. read the level's intro message, sample beta, and fold the query sum
+    #      into the running target.
+    # Then finish the tail sumcheck and evaluate every transparent basis once
+    # at its terminal point; the final-message MLE enters as one multiplier.
     #
     # Returns (sumcheck_target, fold_challenges, final_msg, residual_total,
     # yr_log_n_g = g^yr_log_n, yr_pad_g = g^(YR_LOG_CAP - yr_log_n),
-    # fold_cap_g = g^lenris). yr_log_n_g/yr_pad_g let the terminal zero-pin
-    # residual-slot coordinates beyond final_msg's 2^yr_log_n cells (positions
-    # yr_log_n .. YR_LOG_CAP-1); fold_cap_g is the certified total fold count
-    # the terminal pins its hinted claim lengths against.
+    # fold_cap_g = g^lenris, tail_challenges); the sumcheck target, inner total,
+    # and yr_at_tail are written to the caller's out-buffers. yr_log_n_g/yr_pad_g
+    # let the terminal zero-pin residual-slot coordinates beyond final_msg's
+    # 2^yr_log_n cells (positions yr_log_n .. YR_LOG_CAP-1); fold_cap_g is the
+    # certified total fold count the terminal pins its hinted claim lengths against.
     fs = [fs0, fs1, fs2, fs3]
 
     # The K opener binds the initial Merkle root as two transcript F192 scalars:
@@ -1451,21 +1278,42 @@ def open_stacked(m_idx: Const, fs0, fs1, fs2, fs3, target: Ext, commit_root_0, c
                 root_ptr[GEN ** 3] = root_3
         level_query_sum = eload(query_sum_chain * GEN ** (3 * LIG_QUERIES[m_idx * LIG_MAX_LEVELS + lvl]))
 
-        if lvl == LIG_YR_LEVEL[m_idx]:
-            fs, beta_lvl = squeeze(fs)
-            estore(level_betas * GEN ** (3 * lvl), beta_lvl)
-            sumcheck_target = eadd(sumcheck_target, emul(beta_lvl, level_query_sum))
-        else:
-            fs, intro_u0, msg_cursor = fs_next(fs, msg_cursor)
-            fs, intro_u2, msg_cursor = fs_next(fs, msg_cursor)
-            fs, beta_lvl = squeeze(fs)
-            estore(level_betas * GEN ** (3 * lvl), beta_lvl)
-            round_quad_c = eadd(round_quad_c, emul(beta_lvl, intro_u0))
-            round_quad_b = eadd(round_quad_b, emul(beta_lvl, eadd(level_query_sum, intro_u2)))
-            round_quad_a = eadd(round_quad_a, emul(beta_lvl, intro_u2))
-            sumcheck_target = eadd(sumcheck_target, emul(beta_lvl, level_query_sum))
+        # Every level, including the last, ties its commitment in through an
+        # intro message before drawing its separation challenge.
+        fs, intro_u0, msg_cursor = fs_next(fs, msg_cursor)
+        fs, intro_u2, msg_cursor = fs_next(fs, msg_cursor)
+        fs, beta_lvl = squeeze(fs)
+        estore(level_betas * GEN ** (3 * lvl), beta_lvl)
+        round_quad_c = eadd(round_quad_c, emul(beta_lvl, intro_u0))
+        round_quad_b = eadd(round_quad_b, emul(beta_lvl, eadd(level_query_sum, intro_u2)))
+        round_quad_a = eadd(round_quad_a, emul(beta_lvl, intro_u2))
+        sumcheck_target = eadd(sumcheck_target, emul(beta_lvl, level_query_sum))
 
-    # ---- per-level residuals: novel-basis prefix x final-message fold ----
+    # ---- finish the sumcheck over the tail coordinates ----
+    tail_challenges = HeapBuf(GEN ** (3 * YR_LOG_CAP))
+    for j in unroll(0, LIG_YR_LOG_LEN[m_idx] - 1):
+        fs, tail_c = squeeze(fs)
+        estore(tail_challenges * GEN ** (3 * j), tail_c)
+        sumcheck_target = eadd(round_quad_c, eadd(emul(tail_c, round_quad_b), emul(emul(tail_c, tail_c), round_quad_a)))
+        fs, msg_a, msg_cursor = fs_next(fs, msg_cursor)
+        fs, msg_b, msg_cursor = fs_next(fs, msg_cursor)
+        round_quad_c = msg_a
+        round_quad_b = eadd(sumcheck_target, msg_b)
+        round_quad_a = msg_b
+    # The closing round sends no following message.
+    fs, tail_last = squeeze(fs)
+    estore(tail_challenges * GEN ** (3 * (LIG_YR_LOG_LEN[m_idx] - 1)), tail_last)
+    sumcheck_target = eadd(round_quad_c, eadd(emul(tail_last, round_quad_b), emul(emul(tail_last, tail_last), round_quad_a)))
+    for j in unroll(LIG_YR_LOG_LEN[m_idx], YR_LOG_CAP):
+        estore(tail_challenges * GEN ** (3 * j), [0, 0, 0])
+
+    tail_w = StackBuf(3 * 2 * YR_LOG_CAP)
+    for j in unroll(0, LIG_YR_LOG_LEN[m_idx]):
+        sstore(tail_w, 2 * j, eadd([1, 0, 0], eload(tail_challenges * GEN ** (3 * j))))
+        sstore(tail_w, 2 * j + 1, eload(tail_challenges * GEN ** (3 * j)))
+    yr_at_tail = fold_final_msg(final_msg, tail_w, 0, LIG_YR_LOG_LEN[m_idx])
+
+    # ---- per-level induced bases at the single terminal point ----
     inner_chain = HeapBuf(GEN ** (3 * (LIG_N_LEVELS[m_idx] + 1)))
     estore(inner_chain, [0, 0, 0])
     for lvl in unroll(0, LIG_N_LEVELS[m_idx]):
@@ -1493,21 +1341,18 @@ def open_stacked(m_idx: Const, fs0, fs1, fs2, fs3, target: Ext, commit_root_0, c
                 fold_c = eload(fold_challenges * GEN ** (3 * (LIG_RESIDUAL_FOLD_OFF[m_idx * LIG_MAX_LEVELS + lvl] + t)))
                 basis = sload(basis_w, t)
                 prefix_eq = emul(prefix_eq, eadd([1, 0, 0], emul(fold_c, eadd([1, 0, 0], basis))))
-            fold_w = StackBuf(3 * YR_LOG_CAP)
             for j in unroll(0, LIG_YR_LOG_LEN[m_idx]):
-                sstore(fold_w, j, sload(basis_w, LIG_RESIDUAL_PREFIX_LEN[m_idx * LIG_MAX_LEVELS + lvl] + j))
-            yr_eval = fold_monomial_msg(final_msg, fold_w, LIG_YR_LOG_LEN[m_idx])
+                tail_c = eload(tail_challenges * GEN ** (3 * j))
+                prefix_eq = emul(prefix_eq, eadd([1, 0, 0], emul(tail_c, eadd([1, 0, 0], sload(basis_w, LIG_RESIDUAL_PREFIX_LEN[m_idx * LIG_MAX_LEVELS + lvl] + j)))))
             prev_residual = eload(residual_chain * xr3)
             alpha_weight = eload(alpha_weights * GEN ** (3 * lvl * LIG_MAX_QUERIES[m_idx]) * xr3)
-            estore(residual_chain * xr3 * GEN ** 3, eadd(prev_residual, emul(alpha_weight, emul(prefix_eq, yr_eval))))
+            estore(residual_chain * xr3 * GEN ** 3, eadd(prev_residual, emul(alpha_weight, prefix_eq)))
         prior_inner = eload(inner_chain * GEN ** (3 * lvl))
         beta_lvl = eload(level_betas * GEN ** (3 * lvl))
         residual_total = eload(residual_chain * GEN ** (3 * LIG_QUERIES[m_idx * LIG_MAX_LEVELS + lvl]))
         estore(inner_chain * GEN ** (3 * (lvl + 1)), eadd(prior_inner, emul(beta_lvl, residual_total)))
 
-    # Explicit OOD bases are eq(z, ·). Fold their prefixes at all subsequent
-    # sumcheck challenges and evaluate the remaining yr_log_n-coordinate tail
-    # directly against the final message.
+    # Explicit OOD eq bases at the same terminal point.
     ood_inner = [0, 0, 0]
     for ood_lvl in unroll(1, LIG_N_LEVELS[m_idx]):
         z_len = LIG_LOG_MSG_COLS[m_idx * LIG_MAX_LEVELS + ood_lvl - 1]
@@ -1520,17 +1365,15 @@ def open_stacked(m_idx: Const, fs0, fs1, fs2, fs3, target: Ext, commit_root_0, c
                 zt = eload(oz * GEN ** (3 * t))
                 fold_c = eload(fold_challenges * GEN ** (3 * (ris_start + t)))
                 scalar = emul(scalar, eadd(eadd([1, 0, 0], zt), fold_c))
-            ood_fold_w = StackBuf(3 * 2 * YR_LOG_CAP)
             for t in unroll(0, LIG_YR_LOG_LEN[m_idx]):
                 zt = eload(oz * GEN ** (3 * (z_folded + t)))
-                sstore(ood_fold_w, 2 * t, eadd([1, 0, 0], zt))
-                sstore(ood_fold_w, 2 * t + 1, zt)
-            ood_eval = fold_final_msg(final_msg, ood_fold_w, 0, LIG_YR_LOG_LEN[m_idx])
-            ood_inner = eadd(ood_inner, emul(scalar, ood_eval))
+                scalar = emul(scalar, eadd(eadd([1, 0, 0], zt), eload(tail_challenges * GEN ** (3 * t))))
+            ood_inner = eadd(ood_inner, scalar)
     inner_total = eadd(eload(inner_chain * GEN ** (3 * LIG_N_LEVELS[m_idx])), ood_inner)
     estore(sumcheck_out, sumcheck_target)
     estore(inner_out, inner_total)
-    return fold_challenges, final_msg, GEN ** LIG_YR_LOG_LEN[m_idx], GEN ** (YR_LOG_CAP - LIG_YR_LOG_LEN[m_idx]), GEN ** LIG_TOTAL_FOLDS[m_idx]
+    estore(yr_at_tail_out, yr_at_tail)
+    return fold_challenges, final_msg, GEN ** LIG_YR_LOG_LEN[m_idx], GEN ** (YR_LOG_CAP - LIG_YR_LOG_LEN[m_idx]), GEN ** LIG_TOTAL_FOLDS[m_idx], tail_challenges
 
 
 def exponent_tables():
@@ -2548,12 +2391,10 @@ def verify_sub(pi_0, pi_1, pi_2, pi_3, seed_0, seed_1, seed_2, seed_3, g_logs_po
     # Starting from zero, a Boolean full-adder derives every interval endpoint.
     col_bound_bits = HeapBuf(SIZE_BITS * (N_COMMITTED_COLS + 1))
     col_block_height_bits = HeapBuf(SIZE_BITS * N_COMMITTED_COLS)
-    col_row_height_bits = HeapBuf(SIZE_BITS * N_COMMITTED_COLS)
     for bit in unroll(0, SIZE_BITS):
         col_bound_bits[GEN ** bit] = 0
     for c in unroll(0, N_COMMITTED_COLS):
         height_bits = col_block_height_bits * GEN ** (SIZE_BITS * c)
-        row_height_bits = col_row_height_bits * GEN ** (SIZE_BITS * c)
         if COL_HEIGHT_KIND[c] == 0:
             # height = 2^kappa. The advice must be a Boolean one-hot vector,
             # whose decoded word is the certified power 2^kappa.
@@ -2593,12 +2434,6 @@ def verify_sub(pi_0, pi_1, pi_2, pi_3, seed_0, seed_1, seed_2, seed_3, g_logs_po
             # BFCNT is a singleton with a program-bound bytecode prefix.
             for bit in unroll(0, SIZE_BITS):
                 height_bits[GEN ** bit] = BYTECODE_USED_BITS[bit]
-
-        # Padding correction uses the per-column row height (block height / width).
-        for bit in unroll(0, SIZE_BITS - COL_BLOCK_LOG[c]):
-            row_height_bits[GEN ** bit] = height_bits[GEN ** (bit + COL_BLOCK_LOG[c])]
-        for bit in unroll(SIZE_BITS - COL_BLOCK_LOG[c], SIZE_BITS):
-            row_height_bits[GEN ** bit] = 0
 
         start_bits = col_bound_bits * GEN ** (SIZE_BITS * c)
         end_bits = col_bound_bits * GEN ** (SIZE_BITS * (c + 1))
@@ -2651,15 +2486,9 @@ def verify_sub(pi_0, pi_1, pi_2, pi_3, seed_0, seed_1, seed_2, seed_3, g_logs_po
             for bit in unroll(2, SIZE_BITS):
                 estore(row * GEN ** (3 * bit), [0, 0, 0])
 
-    # Compute the public-padding correction: Jagged commits only the real
-    # prefix, while the arithmetization's claim includes its fixed pad suffix.
-    pad_prefixes = HeapBuf(3 * N_PAD_PREFIXES)
-    for prefix in unroll(0, N_PAD_PREFIXES):
-        row = claim_rows * GEN ** (3 * SIZE_BITS * PAD_PREFIX_ROW[prefix])
-        height_bits = col_row_height_bits * GEN ** (SIZE_BITS * PAD_PREFIX_COL[prefix])
-        prefix_value = prefix_indicator(row, height_bits)
-        estore(pad_prefixes * GEN ** (3 * prefix), prefix_value)
-
+    # The committed real prefix is offset by its public pad value, so the
+    # logical evaluation is the committed one plus that constant at every
+    # point. q_pkd is exempt because its pad is zero.
     opening_claim_values = HeapBuf(3 * N_CLAIMS)
     for j in unroll(0, N_CLAIMS):
         if CLAIM_POINT_BUF[j] == POINT_BUF_QPKD:
@@ -2670,9 +2499,7 @@ def verify_sub(pi_0, pi_1, pi_2, pi_3, seed_0, seed_1, seed_2, seed_3, g_logs_po
             if CLAIM_PAD[j] == 0:
                 estore(opening_claim_values * GEN ** (3 * j), eload(claim_pool * GEN ** (3 * j)))
             else:
-                real_prefix = eload(pad_prefixes * GEN ** (3 * CLAIM_PAD_PREFIX[j]))
-                adjusted = eadd(eload(claim_pool * GEN ** (3 * j)), emul_base(CLAIM_PAD[j], eadd([1, 0, 0], real_prefix)))
-                estore(opening_claim_values * GEN ** (3 * j), adjusted)
+                estore(opening_claim_values * GEN ** (3 * j), eadd_base(CLAIM_PAD[j], eload(claim_pool * GEN ** (3 * j))))
 
     # Every adjusted Jagged claim value is observed before its batching scalar,
     # exactly as in the native verifier.
@@ -2702,12 +2529,18 @@ def verify_sub(pi_0, pi_1, pi_2, pi_3, seed_0, seed_1, seed_2, seed_3, g_logs_po
     assert log(config_sel) < LIG_N_CANDIDATES
     sumcheck_out = HeapBuf(3)
     inner_out = HeapBuf(3)
-    fold_challenges, final_msg, yr_log_n_g, yr_pad_g, fold_cap_g = match_range(log(config_sel), range(0, LIG_N_CANDIDATES), lambda m_idx: open_stacked(m_idx, fs[0], fs[1], fs[2], fs[3], target, commit_root_0, commit_root_1, commit_root_2, commit_root_3, cursor, sumcheck_out, inner_out))
+    yr_at_tail_out = HeapBuf(3)
+    # The opening now runs the tail sumcheck to one terminal point and returns
+    # both that point (tail_challenges) and the final-message evaluation there
+    # (yr_at_tail, written to its out-buffer).
+    fold_challenges, final_msg, yr_log_n_g, yr_pad_g, fold_cap_g, tail_challenges = match_range(log(config_sel), range(0, LIG_N_CANDIDATES), lambda m_idx: open_stacked(m_idx, fs[0], fs[1], fs[2], fs[3], target, commit_root_0, commit_root_1, commit_root_2, commit_root_3, cursor, sumcheck_out, inner_out, yr_at_tail_out))
     sumcheck_target = eload(sumcheck_out)
     inner_total = eload(inner_out)
+    yr_at_tail = eload(yr_at_tail_out)
     # `stream` is a fixed-capacity witness transport. The shape fixes the exact
     # consumed prefix, whose every word is transcript-bound; the unused suffix
     # is outside the recursively verified proof and intentionally unconstrained.
+
 
     # eval_rs_eq per claim: E = sum_k c_k * prod_j (z_j^(2^k) + 1 + ris_j)
     # (the telescoped product formula; z powers evolve by squaring per k).
@@ -2781,18 +2614,17 @@ def verify_sub(pi_0, pi_1, pi_2, pi_3, seed_0, seed_1, seed_2, seed_3, g_logs_po
             weight = eval_qpkd_claim_weight(rho, cplen_g, CLAIM_QPKD_SLOT[j], fold_challenges, fold_cap_g, qpkdv_g)
             qpkd_claim_weight = eadd(qpkd_claim_weight, emul(eload(gamma_pool * GEN ** (3 * j)), weight))
 
-    # Contract every Basic Jagged indicator with the final Ligerito message.
-    # A second dispatch on the already-certified commitment size bakes both
-    # the folded prefix length and the residual-message shape into straight-
-    # line width-four contractions.
+    # Evaluate the dense Jagged weights at the tail-sumcheck point. q_pkd is
+    # the aligned offset-zero subcube, so its residual selector is all zero.
     jagged_out = HeapBuf(3)
-    jagged_dispatch = match_range(log(config_sel), range(0, LIG_N_CANDIDATES), lambda m_idx: jagged_terminal(m_idx, fold_challenges, final_msg, claim_rows, col_bound_bits, gamma, gamma_powers, jagged_out))
+    jagged_dispatch = match_range(log(config_sel), range(0, LIG_N_CANDIDATES), lambda m_idx: jagged_eval_terminal(m_idx, fold_challenges, tail_challenges, claim_rows, col_bound_bits, gamma, gamma_powers, jagged_out))
     assert jagged_dispatch == GEN ** 0
     jagged_sum = eload(jagged_out)
-    # q_pkd occupies [0, 2^qpkdv), hence its residual y selector is zero.
-    qpkd_sum = emul(eadd(rs_weight, qpkd_claim_weight), eload(final_msg))
-    inner_sum = eadd(eadd(inner_total, jagged_sum), qpkd_sum)
-    ext_assert_eq(inner_sum, sumcheck_target)
+    tail_zero_eq = [1, 0, 0]
+    for k in unroll(0, YR_LOG_CAP):
+        tail_zero_eq = emul(tail_zero_eq, eadd([1, 0, 0], eload(tail_challenges * GEN ** (3 * k))))
+    inner_sum = eadd(eadd(inner_total, jagged_sum), emul(eadd(rs_weight, qpkd_claim_weight), tail_zero_eq))
+    ext_assert_eq(emul(inner_sum, yr_at_tail), sumcheck_target)
 
 
     # ---- export this sub-proof's deferred-claim data to the caller ----

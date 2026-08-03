@@ -10,6 +10,9 @@
 //! - [`F192`]  — `K[y]/(y^3 + y + 1)`
 //! - [`F192Unreduced`] — its deferred-reduction accumulator
 
+#[cfg(target_arch = "aarch64")]
+pub mod neon;
+
 pub mod gf2_64;
 pub mod gf2_64x3;
 pub mod gf2_8;

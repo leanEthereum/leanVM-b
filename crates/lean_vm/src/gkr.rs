@@ -11,6 +11,7 @@ use crate::PAR_THRESHOLD;
 use primitives::field::{F192Unreduced, F192};
 use primitives::multilinear::{eq_table, interp, quartic_eval_from_eq, shrink_eq_low};
 use rayon::prelude::*;
+use std::ops::Range;
 
 #[inline]
 fn mul_pair(a: [F192; 2], b: [F192; 2]) -> [F192; 2] {
@@ -95,16 +96,94 @@ pub enum GkrError {
     LayerMismatch { layer: usize },
 }
 
+/// Rows `[start, end)` of a layer that all hold `value`. Such an aligned
+/// constant run can be skipped in the layer sumcheck: a constant fold pair only
+/// changes the constant coefficient, which the verifier reconstructs from the
+/// incoming claim.
+#[derive(Clone, Copy, Debug)]
+pub struct PadRun {
+    start: usize,
+    end: usize,
+    value: F192,
+}
+
+impl PadRun {
+    pub fn new(start: usize, end: usize, value: F192) -> Self {
+        Self { start, end, value }
+    }
+
+    fn regroup(self, log_group: usize, value: F192) -> Option<Self> {
+        let start = self.start.div_ceil(1 << log_group);
+        let end = self.end >> log_group;
+        (start < end).then_some(Self { start, end, value })
+    }
+}
+
+fn window_rows(total: usize) -> usize {
+    let tasks = (rayon::current_num_threads() * 4).max(1);
+    total.div_ceil(tasks).clamp(32, 1 << 12)
+}
+
+fn for_each_piece(window: Range<usize>, runs: &[PadRun], mut visit: impl FnMut(Range<usize>, Option<F192>)) {
+    let first = runs.partition_point(|run| run.end <= window.start);
+    let mut cursor = window.start;
+    for run in &runs[first..] {
+        if run.start >= window.end {
+            break;
+        }
+        if cursor < run.start {
+            visit(cursor..run.start, None);
+        }
+        let end = run.end.min(window.end);
+        visit(run.start.max(cursor)..end, Some(run.value));
+        cursor = end;
+    }
+    if cursor < window.end {
+        visit(cursor..window.end, None);
+    }
+}
+
+/// One tree's dense leaves and the aligned runs known to be constant.
+pub struct LeafVector {
+    leaves: Vec<F192>,
+    pads: Vec<PadRun>,
+}
+
+impl LeafVector {
+    pub fn new(leaves: Vec<F192>, mut pads: Vec<PadRun>) -> Self {
+        pads.sort_unstable_by_key(|run| run.start);
+        debug_assert!(pads.iter().all(|run| run.start < run.end && run.end <= leaves.len()));
+        debug_assert!(pads.windows(2).all(|pair| pair[0].end <= pair[1].start));
+        debug_assert!(pads
+            .iter()
+            .all(|run| leaves[run.start..run.end].iter().all(|&leaf| leaf == run.value)));
+        Self { leaves, pads }
+    }
+
+    pub fn dense(leaves: Vec<F192>) -> Self {
+        Self::new(leaves, Vec::new())
+    }
+}
+
+#[derive(Default)]
+struct Layer {
+    values: Vec<F192>,
+    pads: Vec<PadRun>,
+}
+
 /// Build only the levels consumed by radix four: `0,2,4,…`, plus a final
 /// binary root when the logical depth is odd.
-fn build_layers(leaves: Vec<F192>, mu: usize) -> Vec<Vec<F192>> {
-    assert!(!leaves.is_empty());
-    assert!(leaves.len() <= 1usize << mu);
-    let mut layers: Vec<Vec<F192>> = (0..=mu).map(|_| Vec::new()).collect();
-    layers[0] = leaves;
+fn build_layers(leaves: LeafVector, mu: usize) -> Vec<Layer> {
+    assert!(!leaves.leaves.is_empty());
+    assert!(leaves.leaves.len() <= 1usize << mu);
+    let mut layers: Vec<Layer> = (0..=mu).map(|_| Layer::default()).collect();
+    layers[0] = Layer {
+        values: leaves.leaves,
+        pads: leaves.pads,
+    };
     let mut level = 0;
     while level + 2 <= mu {
-        let current = &layers[level];
+        let Layer { values: current, pads } = &layers[level];
         let full_rows = current.len() / 4;
         let product = |row: usize| {
             let [left, right] = mul_pair(
@@ -113,6 +192,13 @@ fn build_layers(leaves: Vec<F192>, mu: usize) -> Vec<Vec<F192>> {
             );
             left * right
         };
+        let next_pads = pads
+            .iter()
+            .filter_map(|run| {
+                let square = run.value * run.value;
+                run.regroup(2, square * square)
+            })
+            .collect();
         let mut next = if current.len() == 1 {
             vec![current[0]]
         } else if current.len() == 2 {
@@ -129,13 +215,19 @@ fn build_layers(leaves: Vec<F192>, mu: usize) -> Vec<Vec<F192>> {
             next.push(left * right);
         }
         level += 2;
-        layers[level] = next;
+        layers[level] = Layer {
+            values: next,
+            pads: next_pads,
+        };
     }
     if level < mu {
-        layers[mu] = match layers[level].as_slice() {
-            [root] => vec![*root],
-            [left, right] => vec![*left * *right],
-            _ => unreachable!("the final binary layer has at most two explicit nodes"),
+        layers[mu] = Layer {
+            values: match layers[level].values.as_slice() {
+                [root] => vec![*root],
+                [left, right] => vec![*left * *right],
+                _ => unreachable!("the final binary layer has at most two explicit nodes"),
+            },
+            pads: Vec::new(),
         };
     }
     layers
@@ -171,20 +263,28 @@ struct QuaternaryLayerState {
     /// Logical row count after identity padding. `values` stores an arbitrary
     /// prefix; every omitted row is the constant four-tuple one.
     logical_rows: usize,
+    /// Rows whose four children are one known value.
+    pads: Vec<PadRun>,
 }
 
 impl QuaternaryLayerState {
-    fn new(mut values: Vec<F192>, width: usize) -> Self {
+    fn new(mut values: Vec<F192>, pads: Vec<PadRun>, width: usize) -> Self {
         // Materialize only the incomplete final four-tuple. Every complete
         // all-one row after the arbitrary explicit prefix remains implicit.
         values.resize(4 * values.len().max(1).div_ceil(4), F192::ONE);
         debug_assert_eq!(values.len() % 4, 0);
         debug_assert!(values.len() <= 4 * width);
+        let pads = pads.iter().filter_map(|run| run.regroup(2, run.value)).collect();
         Self {
             values,
             next: Vec::new(),
             logical_rows: width,
+            pads,
         }
+    }
+
+    fn folded_pads(&self) -> Vec<PadRun> {
+        self.pads.iter().filter_map(|run| run.regroup(1, run.value)).collect()
     }
 
     /// `(q(0)+q(1), [X²]q, [X³]q, [X⁴]q)`.
@@ -205,13 +305,26 @@ impl QuaternaryLayerState {
             }
             left
         };
+        let pads = self.folded_pads();
+        let rows = window_rows(full_pairs);
+        let window = |index: usize| -> [F192Unreduced; 4] {
+            let base = index * rows;
+            let mut acc = [F192Unreduced::ZERO; 4];
+            for_each_piece(base..(base + rows).min(full_pairs), &pads, |piece, constant| {
+                if constant.is_none() {
+                    acc = piece.fold(acc, |sum, row| xor(sum, summand(row)));
+                }
+            });
+            acc
+        };
+        let windows = full_pairs.div_ceil(rows);
         let mut message = if full_pairs >= PAR_THRESHOLD {
-            (0..full_pairs)
+            (0..windows)
                 .into_par_iter()
-                .map(summand)
+                .map(window)
                 .reduce(|| [F192Unreduced::ZERO; 4], xor)
         } else {
-            (0..full_pairs).map(summand).fold([F192Unreduced::ZERO; 4], xor)
+            (0..windows).map(window).fold([F192Unreduced::ZERO; 4], xor)
         };
         if stored_rows % 2 != 0 {
             let lo = 8 * full_pairs;
@@ -229,34 +342,42 @@ impl QuaternaryLayerState {
         let full_rows = stored_rows / 2;
         let rows = stored_rows.div_ceil(2);
         self.next.resize(4 * rows, F192::ZERO);
-        if full_rows >= PAR_THRESHOLD {
-            self.next[..4 * full_rows]
-                .par_chunks_exact_mut(4)
-                .enumerate()
-                .for_each(|(row, destination)| {
-                    let lo = 8 * row;
-                    let hi = lo + 4;
-                    let folds = mul_four(
-                        [0, 1, 2, 3].map(|child| self.values[lo + child] + self.values[hi + child]),
-                        [challenge; 4],
-                    );
-                    for child in 0..4 {
-                        destination[child] = self.values[lo + child] + folds[child];
-                    }
-                });
-        } else {
-            for row in 0..full_rows {
-                let lo = 8 * row;
-                let hi = lo + 4;
-                let folds = mul_four(
-                    [0, 1, 2, 3].map(|child| self.values[lo + child] + self.values[hi + child]),
-                    [challenge; 4],
-                );
-                for child in 0..4 {
-                    self.next[4 * row + child] = self.values[lo + child] + folds[child];
-                }
+        let folded = self.folded_pads();
+        let (values, next) = (&self.values, &mut self.next);
+        let fold_row = |row: usize, destination: &mut [F192]| {
+            let lo = 8 * row;
+            let hi = lo + 4;
+            let folds = mul_four(
+                [0, 1, 2, 3].map(|child| values[lo + child] + values[hi + child]),
+                [challenge; 4],
+            );
+            for child in 0..4 {
+                destination[child] = values[lo + child] + folds[child];
             }
+        };
+        let window = |base: usize, destination: &mut [F192]| {
+            for_each_piece(base..base + destination.len() / 4, &folded, |piece, constant| {
+                let (lo, hi) = (4 * (piece.start - base), 4 * (piece.end - base));
+                match constant {
+                    Some(value) => destination[lo..hi].fill(value),
+                    None => {
+                        for (row, slot) in destination[lo..hi].chunks_exact_mut(4).enumerate() {
+                            fold_row(piece.start + row, slot);
+                        }
+                    }
+                }
+            });
+        };
+        if full_rows >= PAR_THRESHOLD {
+            let rows = window_rows(full_rows);
+            next[..4 * full_rows]
+                .par_chunks_mut(4 * rows)
+                .enumerate()
+                .for_each(|(index, destination)| window(index * rows, destination));
+        } else {
+            window(0, &mut next[..4 * full_rows]);
         }
+        self.pads = folded;
         if stored_rows % 2 != 0 {
             let lo = 8 * full_rows;
             let folds = mul_four(
@@ -287,14 +408,20 @@ pub struct ProductTriple {
 }
 
 /// Prove three identity-padded grand products as one RLC-batched radix-four GKR.
-pub fn prove_product_triple(leaves: [Vec<F192>; 3], ps: &mut ProverState) -> ProductTriple {
-    let mu = crate::log2_ceil_usize(leaves[0].len());
+pub fn prove_product_triple(leaves: [LeafVector; 3], ps: &mut ProverState) -> ProductTriple {
+    let mu = crate::log2_ceil_usize(leaves[0].leaves.len());
     assert!(
-        leaves.iter().all(|lane| !lane.is_empty() && lane.len() <= 1 << mu),
+        leaves
+            .iter()
+            .all(|lane| !lane.leaves.is_empty() && lane.leaves.len() <= 1 << mu),
         "batched trees must be nonempty prefixes of the first tree's logical tree"
     );
     let mut layers = leaves.map(|lane| build_layers(lane, mu));
-    let roots = [layers[0][mu][0], layers[1][mu][0], layers[2][mu][0]];
+    let roots = [
+        layers[0][mu].values[0],
+        layers[1][mu].values[0],
+        layers[2][mu].values[0],
+    ];
     for root in roots {
         ps.add_scalar(root);
     }
@@ -308,7 +435,7 @@ pub fn prove_product_triple(leaves: [Vec<F192>; 3], ps: &mut ProverState) -> Pro
         if layer % 2 == 1 {
             debug_assert_eq!(round_count, 0, "only the root-most layer may be binary");
             let tails = [0, 1, 2].map(|tree| {
-                let below = &layers[tree][layer - 1];
+                let below = &layers[tree][layer - 1].values;
                 match below.as_slice() {
                     [left, right] => [*left, *right],
                     [left] => [*left, F192::ONE],
@@ -329,8 +456,10 @@ pub fn prove_product_triple(leaves: [Vec<F192>; 3], ps: &mut ProverState) -> Pro
         }
 
         let width = 1usize << round_count;
-        let mut trees =
-            [0, 1, 2].map(|tree| QuaternaryLayerState::new(std::mem::take(&mut layers[tree][layer - 2]), width));
+        let mut trees = [0, 1, 2].map(|tree| {
+            let Layer { values, pads } = std::mem::take(&mut layers[tree][layer - 2]);
+            QuaternaryLayerState::new(values, pads, width)
+        });
         let mut equality = if round_count > 0 {
             eq_table(&point[1..])
         } else {
@@ -470,7 +599,7 @@ mod tests {
             let below: Vec<F192> = (0..4 * width)
                 .map(|i| F192::new((17 * i + width + 1) as u64, (i * i + 3) as u64, (5 * i + 7) as u64))
                 .collect();
-            let state = QuaternaryLayerState::new(below, width);
+            let state = QuaternaryLayerState::new(below, Vec::new(), width);
             let equality: Vec<F192> = (0..width / 2)
                 .map(|i| F192::new((31 * i + 5) as u64, (7 * i + 1) as u64, (11 * i + 9) as u64))
                 .collect();
@@ -505,7 +634,7 @@ mod tests {
                 .each_ref()
                 .map(|lane| lane.iter().copied().fold(F192::ONE, |product, value| product * value));
             let mut ps = ProverState::new(b"radix-four-gkr-test", &[]);
-            let proved = prove_product_triple(leaves.clone(), &mut ps);
+            let proved = prove_product_triple(leaves.clone().map(LeafVector::dense), &mut ps);
             assert_eq!(proved.roots, expected_roots);
             for lane in 0..3 {
                 assert_eq!(proved.values[lane], mle_eval_e(&leaves[lane], &proved.point));
@@ -517,6 +646,70 @@ mod tests {
             assert_eq!(verified.roots, proved.roots);
             assert_eq!(verified.point, proved.point);
             assert_eq!(verified.values, proved.values);
+            vs.finish().expect("proof stream is consumed");
+        }
+    }
+
+    fn padded_blocks(mu: usize, lane: usize) -> (Vec<F192>, Vec<PadRun>) {
+        let (half, quarter, eighth) = (1usize << (mu - 1), 1usize << (mu - 2), 1usize << (mu - 3));
+        let blocks = [
+            (0usize, half, half - 3 - lane),
+            (half, quarter, quarter),
+            (half + quarter, eighth, 1),
+        ];
+        let mut leaves = vec![F192::ONE; half + quarter + eighth];
+        let mut pads = Vec::new();
+        for (index, &(off, rows, real)) in blocks.iter().enumerate() {
+            for z in 0..real {
+                leaves[off + z] = F192::new(
+                    (3 + off + z + 1_000 * lane) as u64,
+                    (z * z + 1) as u64,
+                    (7 + z + lane) as u64,
+                );
+            }
+            if real < rows {
+                let default = F192::new((17 + index + 31 * lane) as u64, (5 + index) as u64, (11 + lane) as u64);
+                leaves[off + real..off + rows].fill(default);
+                pads.push(PadRun::new(off + real, off + rows, default));
+            }
+        }
+        (leaves, pads)
+    }
+
+    #[test]
+    fn declared_pad_runs_match_the_dense_prover() {
+        for mu in 4..=11 {
+            let lanes: [(Vec<F192>, Vec<PadRun>); 3] = std::array::from_fn(|lane| padded_blocks(mu, lane));
+
+            let mut skipped_ps = ProverState::new(b"pad-run-gkr-test", &[]);
+            let skipped = prove_product_triple(
+                lanes.clone().map(|(leaves, pads)| LeafVector::new(leaves, pads)),
+                &mut skipped_ps,
+            );
+            let mut dense_ps = ProverState::new(b"pad-run-gkr-test", &[]);
+            let dense = prove_product_triple(
+                lanes.clone().map(|(leaves, _)| LeafVector::dense(leaves)),
+                &mut dense_ps,
+            );
+
+            assert_eq!(skipped.roots, dense.roots);
+            assert_eq!(skipped.point, dense.point);
+            assert_eq!(skipped.values, dense.values);
+            let proof = skipped_ps.into_proof();
+            assert_eq!(proof.stream, dense_ps.into_proof().stream);
+
+            for (lane, (leaves, _)) in lanes.iter().enumerate() {
+                let mut padded = leaves.clone();
+                padded.resize(1 << mu, F192::ONE);
+                assert_eq!(skipped.values[lane], mle_eval_e(&padded, &skipped.point));
+                assert_eq!(
+                    skipped.roots[lane],
+                    padded.iter().copied().fold(F192::ONE, |product, value| product * value)
+                );
+            }
+            let mut vs = VerifierState::new(b"pad-run-gkr-test", &proof, &[]);
+            let verified = verify_product_triple(mu, &mut vs).expect("GKR verifies");
+            assert_eq!(verified.values, skipped.values);
             vs.finish().expect("proof stream is consumed");
         }
     }
@@ -536,7 +729,7 @@ mod tests {
                 padded
             });
             let mut sparse_ps = ProverState::new(b"sparse-radix-four-gkr-test", &[]);
-            let proved = prove_product_triple(leaves, &mut sparse_ps);
+            let proved = prove_product_triple(leaves.map(LeafVector::dense), &mut sparse_ps);
             for lane in 0..3 {
                 assert_eq!(proved.values[lane], mle_eval_e(&dense[lane], &proved.point));
                 assert_eq!(
@@ -549,7 +742,7 @@ mod tests {
             }
             let proof = sparse_ps.into_proof();
             let mut dense_ps = ProverState::new(b"sparse-radix-four-gkr-test", &[]);
-            let dense_proved = prove_product_triple(dense, &mut dense_ps);
+            let dense_proved = prove_product_triple(dense.map(LeafVector::dense), &mut dense_ps);
             assert_eq!(dense_proved.roots, proved.roots);
             assert_eq!(dense_proved.point, proved.point);
             assert_eq!(dense_proved.values, proved.values);

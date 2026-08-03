@@ -1953,7 +1953,7 @@ def verify_ligerito(
     root: bytes,
     evaluate_basis: Callable[[Sequence[F192], int], Sequence[F192]],
 ) -> None:
-    """Verify the base-field multilevel opening with succinct residual checks."""
+    """Verify the base-field multilevel opening with a one-point terminal check."""
     config = derive_config(log_n, initial_rate)
     levels = len(config.folds)
     require(len(proof.recursive_roots) == levels - 1, "wrong Ligerito root count")
@@ -2048,41 +2048,53 @@ def verify_ligerito(
             raise VerificationError(f"Ligerito level {level}: {exc}") from exc
         enforced = _enforced_sum(rows, level_folds, alpha)
 
-        beta = transcript.sample() if final_level else None
-        if not final_level:
-            intro = next_quad(enforced)
-            beta = transcript.sample()
-            running_quad = running_quad.add_scaled(intro, beta)
-        assert beta is not None
+        # Every commitment, including the last one, enters through an intro
+        # message before its separation challenge.
+        intro = next_quad(enforced)
+        beta = transcript.sample()
+        running_quad = running_quad.add_scaled(intro, beta)
         running_target += beta * enforced
         contexts.append((message_log, queries, alpha, len(folds), beta))
 
         if final_level:
+            # Finish the remaining sumcheck rounds and close on one evaluation
+            # of every basis at the resulting point.
+            tail_folds: list[F192] = []
+            for round_index in range(message_log):
+                challenge = transcript.sample()
+                running_target = running_quad.evaluate(challenge)
+                tail_folds.append(challenge)
+                if round_index + 1 < message_log:
+                    running_quad = next_quad(running_target)
             require(message_index == len(proof.sumcheck), "trailing Ligerito sumcheck messages")
             require(ood_index == len(proof.ood_values), "trailing Ligerito OOD values")
             require(fold_nonce_index == len(proof.fold_grinding_nonces),
                     "trailing Ligerito fold nonces")
-            combined = list(evaluate_basis(folds, message_log))
-            require(len(combined) == len(residual), "basis residual has the wrong length")
+            weight_values = list(evaluate_basis(list(folds) + tail_folds, 0))
+            require(len(weight_values) == 1, "basis point evaluation has the wrong length")
+            weight = weight_values[0]
             for context_log, context_queries, context_alpha, start, separation in contexts:
                 fixed = context_log - message_log
+                point = list(folds[start : start + fixed]) + tail_folds
                 induced = _induced_residual(
                     context_log,
                     context_queries,
                     context_alpha,
-                    folds[start : start + fixed],
-                    message_log,
+                    point,
+                    0,
                 )
-                combined = [left + separation * right for left, right in zip(combined, induced)]
+                require(len(induced) == 1, "induced point evaluation has the wrong length")
+                weight += separation * induced[0]
             for point, start, separation in ood_contexts:
                 fixed = len(point) - message_log
                 scale = separation
                 for expected, actual in zip(point[:fixed], folds[start : start + fixed]):
                     scale *= ONE + expected + actual
-                tail = build_eq(point[fixed:])
-                combined = [left + scale * right for left, right in zip(combined, tail)]
-            terminal = sum((a * b for a, b in zip(residual, combined)), ZERO)
-            require(terminal == running_target, "Ligerito residual check failed")
+                for expected, actual in zip(point[fixed:], tail_folds):
+                    scale *= ONE + expected + actual
+                weight += scale
+            terminal = weight * mle_eval(residual, tail_folds)
+            require(terminal == running_target, "Ligerito terminal check failed")
             return
         current_root = next_root
 
@@ -2228,6 +2240,7 @@ class JaggedClaim:
     offset: int
     height: int
     selector_length: int
+    slot: int
     row_point: tuple[F192, ...]
     value: F192
 
@@ -2251,22 +2264,6 @@ class JaggedBatch:
     height: int
     row_weights: tuple[tuple[F192, F192], ...]
     scale: F192
-
-
-def _prefix_indicator(height: int, point: Sequence[F192]) -> F192:
-    require(0 <= height <= 1 << len(point), "jagged prefix exceeds its logical column")
-    if height == 1 << len(point):
-        return ONE
-    less = ZERO
-    equal = ONE
-    for bit in range(len(point) - 1, -1, -1):
-        challenge = point[bit]
-        if height >> bit & 1:
-            less += equal * (ONE + challenge)
-            equal *= challenge
-        else:
-            equal *= ONE + challenge
-    return less
 
 
 def _jagged_indicator_with_weights(
@@ -2320,77 +2317,73 @@ def _geometric_claim_weights(
     count = len(claims)
     unranked = count
     ranks = [unranked] * count
-    raw_batches: list[tuple[tuple[int, ...], JaggedClaim]] = []
+    gamma_powers = powers(gamma, count)
+    batches: list[JaggedBatch] = []
     next_rank = 0
+
     for index, claim in enumerate(claims):
         if ranks[index] != unranked:
             continue
-        if not isinstance(claim, JaggedClaim) or claim.selector_length == 0:
+        if not isinstance(claim, JaggedClaim) or claim.height == 0:
             ranks[index] = next_rank
             next_rank += 1
             continue
+
         width = 1 << claim.selector_length
         by_slot: list[int | None] = [None] * width
         for candidate_index in range(index, count):
             candidate = claims[candidate_index]
-            if ranks[candidate_index] != unranked or not isinstance(candidate, JaggedClaim):
-                continue
             if (
-                candidate.offset != claim.offset
-                or candidate.height != claim.height
-                or candidate.selector_length != claim.selector_length
-                or candidate.row_point[claim.selector_length :] != claim.row_point[claim.selector_length :]
+                not isinstance(candidate, JaggedClaim)
+                or candidate.height == 0
+                or candidate.offset != claim.offset
             ):
                 continue
-            slot = 0
-            for bit, challenge in enumerate(candidate.row_point[: claim.selector_length]):
-                if challenge == ONE:
-                    slot |= 1 << bit
-                elif challenge != ZERO:
-                    break
-            else:
-                if by_slot[slot] is None:
-                    by_slot[slot] = candidate_index
-        if all(member is not None for member in by_slot):
-            members = tuple(member for member in by_slot if member is not None)
-            for slot, member in enumerate(members):
-                ranks[member] = next_rank + slot
-            raw_batches.append((members, claim))
-            next_rank += width
-        else:
-            ranks[index] = next_rank
-            next_rank += 1
-    require(next_rank == count and sorted(ranks) == list(range(count)),
-            "invalid geometric claim ranking")
+            require(0 <= candidate.slot < width, "Jagged claim slot exceeds its block width")
+            require(by_slot[candidate.slot] is None, "two Jagged claims on one column")
+            by_slot[candidate.slot] = candidate_index
 
-    gamma_powers = powers(gamma, count)
-    weights = [gamma_powers[rank] for rank in ranks]
-    batches: list[JaggedBatch] = []
-    for members, claim in raw_batches:
+        members: list[int] = []
+        for slot, member in enumerate(by_slot):
+            require(member is not None, "a Jagged block must have a claim per slot")
+            candidate = claims[member]
+            assert isinstance(candidate, JaggedClaim)
+            require(
+                candidate.height == claim.height
+                and candidate.selector_length == claim.selector_length
+                and candidate.row_point == claim.row_point,
+                "a Jagged block's claims must share its shape and row point",
+            )
+            ranks[member] = next_rank + slot
+            members.append(member)
+
         selector_power = gamma
         row_weights: list[tuple[F192, F192]] = []
         for _ in range(claim.selector_length):
             row_weights.append((ONE, selector_power))
             selector_power *= selector_power
-        row_weights.extend(
-            (ONE + challenge, challenge)
-            for challenge in claim.row_point[claim.selector_length :]
+        row_weights.extend((ONE + challenge, challenge) for challenge in claim.row_point)
+        batches.append(
+            JaggedBatch(
+                tuple(members),
+                claim.offset,
+                claim.height,
+                tuple(row_weights),
+                gamma_powers[next_rank],
+            )
         )
-        batches.append(JaggedBatch(
-            members,
-            claim.offset,
-            claim.height,
-            tuple(row_weights),
-            gamma_powers[ranks[members[0]]],
-        ))
-    return weights, batches
+        next_rank += width
 
+    require(
+        next_rank == count and sorted(ranks) == list(range(count)),
+        "invalid geometric claim ranking",
+    )
+    return [gamma_powers[rank] for rank in ranks], batches
 
 def _stack_claim_evaluation(claim: StackClaim, point: Sequence[F192]) -> F192:
     if isinstance(claim, JaggedClaim):
-        return _jagged_indicator(
-            claim.row_point, claim.offset, claim.offset + claim.height, point
-        )
+        require(claim.height == 0, "unbatched non-empty Jagged claim")
+        return ZERO
     require(claim.slot < 1 << claim.stride_log, "strided slot is out of range")
     block_variables = claim.stride_log + len(claim.point)
     require(block_variables <= len(point), "strided claim exceeds the stack")
@@ -2720,10 +2713,6 @@ def blake3_bilinear(
 # Complete VM verification and CLI -------------------------------------------
 
 
-def _selector_point(selector: int, length: int) -> tuple[F192, ...]:
-    return tuple(F192(selector >> bit & 1) for bit in range(length))
-
-
 def verify_execution(statement: dict[str, Any], proof: Proof) -> None:
     """Verify a complete leanVM-b execution proof against its public statement."""
     program = Program.parse(statement)
@@ -2785,30 +2774,45 @@ def verify_execution(statement: dict[str, Any], proof: Proof) -> None:
     public_high = interpolate(public_input[2], public_input[3], public_challenges[0])
     public_value = interpolate(public_low, public_high, public_challenges[1])
     claims.append(ColumnClaim(MEM_COLUMN, tuple(public_point), public_value))
+    public_start = len(claims) - 1
 
     point_claims: list[StackClaim] = []
     qpkd = layout.placements[QPKD_COLUMN]
-    for claim in claims:
+    for index, claim in enumerate(claims):
         slot = virtual_slot(claim.column)
-        if slot is None:
-            placement = layout.placements[claim.column]
-            require(not placement.virtual, "claim targets an uncommitted column")
-            require(len(claim.point) == placement.variables, "column claim dimension mismatch")
-            suffix = ONE + _prefix_indicator(placement.height, claim.point)
-            value = claim.value + layout.padding[claim.column] * suffix
-            row_point = (
-                _selector_point(placement.slot, placement.block_width_log) + claim.point
+        if slot is not None:
+            require(len(claim.point) + 8 == qpkd.variables, "BLAKE3 slot claim dimension mismatch")
+            point_claims.append(StridedClaim(qpkd.offset, slot, 8, claim.point, claim.value))
+            continue
+
+        placement = layout.placements[claim.column]
+        require(not placement.virtual, "claim targets an uncommitted column")
+        require(len(claim.point) == placement.variables, "column claim dimension mismatch")
+        # The committed prefix is offset by its pad value, so the logical
+        # evaluation differs from the committed one by that constant.
+        value = claim.value + layout.padding[claim.column]
+        if index >= public_start:
+            require(all(x == ZERO for x in claim.point[2:]), "public-input point must leave only the two low coordinates free")
+            point_claims.append(
+                StridedClaim(
+                    placement.offset,
+                    placement.slot,
+                    placement.block_width_log,
+                    claim.point[:2],
+                    value,
+                )
             )
-            point_claims.append(JaggedClaim(
+            continue
+        point_claims.append(
+            JaggedClaim(
                 placement.offset,
                 placement.height << placement.block_width_log,
                 placement.block_width_log,
-                row_point,
+                placement.slot,
+                claim.point,
                 value,
-            ))
-        else:
-            require(len(claim.point) + 8 == qpkd.variables, "BLAKE3 slot claim dimension mismatch")
-            point_claims.append(StridedClaim(qpkd.offset, slot, 8, claim.point, claim.value))
+            )
+        )
 
     reduction = verify_reduction(14 + layout.table_logs[BLAKE3_TABLE], transcript)
     opening = transcript.opening()
