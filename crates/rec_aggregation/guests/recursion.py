@@ -993,8 +993,12 @@ def exponent_tables():
     # g-powers (so they must be heap, not stack): g_logs_pow2[g^j] = 2^j is 2
     # raised to a g-power's log, and g_squares[g^j] = g^(2^j) turns integer
     # sums of powers of two into field products. Returns the 2 pointers.
-    g_logs_pow2 = HeapBuf(COUNT_BITS)
-    for j in unroll(0, COUNT_BITS):
+    # Both tables span SIZE_BITS: verify_log2_ceil bounds its result by
+    # SIZE_BITS (assert log(g_log) < SIZE_BITS), so g_log reaches g^(SIZE_BITS-1)
+    # and indexes g_logs_pow2 there; sizing to COUNT_BITS would leave that lookup
+    # reading an unwritten (prover-chosen) cell.
+    g_logs_pow2 = HeapBuf(SIZE_BITS)
+    for j in unroll(0, SIZE_BITS):
         g_logs_pow2[GEN ** j] = 2 ** j
     g_squares = HeapBuf(SIZE_BITS)
     sq_run = GEN
