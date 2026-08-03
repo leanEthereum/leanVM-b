@@ -13,7 +13,7 @@
 
 # Benchmarks
 
-Machine: M4 Max
+Machine: Mac M4 Max
 
 ### XMSS aggregation
 
