@@ -22,12 +22,9 @@
 //! the ring-switch reductions succinctly ([`super::ring_switch::verify_observe`]
 //! and [`super::ring_switch::verify_finish`], with no dense `rs_eq_ind`) and drives
 //! [`super::ligerito::recursive_verifier_with_basis_succinct`] with a
-//! residual evaluator that reconstructs `MLE(b_stack)` at each residual point
-//! in closed form: eq / stride-selector products for the point claims, and the
-//! DP24 tensor-algebra prefix + binary-suffix finish
-//! ([`super::ring_switch::eval_rs_eq_prefix`] /
-//! [`super::ring_switch::eval_rs_eq_finish_from_prefix_binary_q`]) for the
-//! ring-switched part.
+//! terminal evaluator that reconstructs `MLE(b_stack)` once, at the final fold
+//! point, using closed-form eq / stride selectors and
+//! [`super::ring_switch::eval_rs_eq`].
 //!
 //! ## Transcript order (identical on both sides)
 //!
@@ -54,17 +51,16 @@
 
 use crate::merkle::Hash;
 use fiat_shamir::Sponge;
-use primitives::field::{F64, F192};
+use primitives::field::{F192, F64};
 use serde::{Deserialize, Serialize};
 
 use super::ligerito::{
-    LigeritoProof, ProverData, build_eq_table_ext, recursive_prover_with_basis,
-    recursive_verifier_with_basis_succinct_with_squeezes,
+    build_eq_table_ext, recursive_prover_with_basis, recursive_verifier_with_basis_succinct_with_squeezes,
+    LigeritoProof, ProverData,
 };
 use super::ligerito::{ProverConfig, VerifierConfig};
 use super::pack::PACKING_WIDTH;
-use super::ring_switch::{self, RingSwitchProof, eval_rs_eq_finish_from_prefix_binary_q, eval_rs_eq_prefix};
-use super::tensor_algebra::TensorAlgebraE;
+use super::ring_switch::{self, RingSwitchProof};
 
 // ---------------------------------------------------------------------------
 // Sponge helpers (same convention as ligerito): E-scalars straight off
@@ -461,19 +457,9 @@ pub fn open_batch_mixed_ligerito_stacked(
 
 /// Verifier mirror of [`open_batch_mixed_ligerito_stacked`]: replay the
 /// ring-switch reductions succinctly, recompute the combined target, then
-/// drive the succinct Ligerito verifier with a residual evaluator for the
+/// drive the succinct Ligerito verifier with one terminal evaluation of the
 /// lifted weight. `log_n` is the committed stack's log size in F64 words and
 /// `root` the L0 commitment root ([`super::ligerito::Commitment::root`]).
-///
-/// Residual evaluator: at each residual point `x = ris ++ y_bits` the
-/// ring-switch part is `eq(sel, x_hi) * sum_i gamma_i * MLE(rs_eq_ind_i)(x_lo)`
-/// with `x` split at `qpkd_vars`. The tensor-algebra prefix over the `ris`
-/// portion of `x_lo` is shared across all `2^yr_log_n` positions and finished
-/// per position with the binary suffix; the `y` coords that land on selector
-/// bits are binary, so they contribute an exact indicator (only matching `y`
-/// positions get a nonzero ring-switch part, which also caps the number of
-/// tensor finishes at `2^(qpkd coords covered by y)`). Point-claim weights
-/// are evaluated per position in closed form via `stack_claim_eq_at`.
 pub fn verify_opening_batch_mixed_ligerito_stacked(
     sponge: &mut Sponge,
     config: &VerifierConfig,
@@ -532,79 +518,23 @@ pub fn verify_opening_batch_mixed_ligerito_stacked(
         target += *g * claim.value();
     }
 
-    // 3. Residual evaluator of the lifted weight, called once by the succinct
-    //    Ligerito verifier with the full folded `ris` and the residual cube
-    //    log-size; returns b's MLE at `ris ++ y_bits` for every y.
+    // 3. Evaluate the lifted weight once, at the terminal sumcheck point.
     let sel = ring.offset >> qpkd_vars;
-    let eval_b_residual = |ris: &[F192], yr_log_n: usize| -> Vec<F192> {
-        use rayon::prelude::*;
-        debug_assert!(yr_log_n <= 32, "yr_log_n > 32 not supported by binary path");
-        let n_ris = ris.len();
-        // The q_pkd coords x_lo = x[..qpkd_vars] split into a ris part
-        // (shared prefix) and up to `n_qpkd_from_y` binary y coords.
-        let split = qpkd_vars.min(n_ris);
-        let n_qpkd_from_y = qpkd_vars - split;
-
-        // Shared tensor prefixes over the ris part of the q_pkd coords.
-        let rs_prefixes: Vec<TensorAlgebraE> = ring
-            .claims
-            .iter()
-            .map(|c| eval_rs_eq_prefix(&c.suffix_point, &ris[..split]))
-            .collect();
-
-        // Selector eq over the ris coords above the q_pkd slice (E-valued
-        // part; the y-covered selector coords are handled per position).
-        let mut sel_prefix = F192::ONE;
-        for (k, &xi) in ris[split..].iter().enumerate() {
-            sel_prefix *= if (sel >> k) & 1 == 1 { xi } else { F192::ONE + xi };
+    let eval_b_at = |x: &[F192]| -> F192 {
+        let (x_lo, x_hi) = x.split_at(qpkd_vars);
+        let mut sel_eq = F192::ONE;
+        for (k, &xi) in x_hi.iter().enumerate() {
+            sel_eq *= if (sel >> k) & 1 == 1 { xi } else { F192::ONE + xi };
         }
-
-        (0..1usize << yr_log_n)
-            .into_par_iter()
-            .map(|y| {
-                // Full point x = ris ++ y_bits for the point-claim weights.
-                let mut x = Vec::with_capacity(n_ris + yr_log_n);
-                x.extend_from_slice(ris);
-                for k in 0..yr_log_n {
-                    x.push(if (y >> k) & 1 == 1 { F192::ONE } else { F192::ZERO });
-                }
-
-                // Selector coords covered by y are binary: an indicator.
-                let mut sel_ok = true;
-                for k in n_qpkd_from_y..yr_log_n {
-                    if (sel >> (n_ris + k - qpkd_vars)) & 1 != (y >> k) & 1 {
-                        sel_ok = false;
-                        break;
-                    }
-                }
-                let mut acc = F192::ZERO;
-                if sel_ok {
-                    // Finish each claim's tensor prefix with the binary
-                    // query suffix (the q_pkd coords covered by y).
-                    let y_low = (y & ((1usize << n_qpkd_from_y) - 1)) as u32;
-                    let mut rs_part = F192::ZERO;
-                    for ((claim, prefix), (g, out)) in ring
-                        .claims
-                        .iter()
-                        .zip(rs_prefixes.iter())
-                        .zip(gammas_rs.iter().zip(rs_outputs.iter()))
-                    {
-                        rs_part += *g
-                            * eval_rs_eq_finish_from_prefix_binary_q(
-                                prefix,
-                                &claim.suffix_point[split..],
-                                y_low,
-                                &out.coordinate_weights,
-                            );
-                    }
-                    acc = rs_part * sel_prefix;
-                }
-                for (claim, g) in point_claims.iter().zip(gammas_pd.iter()) {
-                    acc += *g * stack_claim_eq_at(claim, &x);
-                }
-                acc
-            })
-            .collect()
+        let mut rs_part = F192::ZERO;
+        for ((claim, g), out) in ring.claims.iter().zip(gammas_rs.iter()).zip(rs_outputs.iter()) {
+            rs_part += *g * ring_switch::eval_rs_eq(&claim.suffix_point, x_lo, &out.coordinate_weights);
+        }
+        let mut acc = rs_part * sel_eq;
+        for (claim, g) in point_claims.iter().zip(gammas_pd.iter()) {
+            acc += *g * stack_claim_eq_at(claim, x);
+        }
+        acc
     };
 
     let mut query_squeezes: Vec<Vec<F192>> = Vec::new();
@@ -614,7 +544,7 @@ pub fn verify_opening_batch_mixed_ligerito_stacked(
         log_n,
         target,
         root,
-        eval_b_residual,
+        eval_b_at,
         sponge,
         &mut query_squeezes,
     );
@@ -632,7 +562,7 @@ mod tests {
     use super::*;
     use crate::ligerito::{commit, configs_for, inner_product_base_ext};
     use crate::ligerito::{default_config, default_verifier_config};
-    use crate::pack::{LOG_PACKING, pack_witness};
+    use crate::pack::{pack_witness, LOG_PACKING};
     use crate::ring_switch::{claim_check, eq_prefix_weights, fold_1b_rows};
 
     fn splitmix64(state: &mut u64) -> u64 {

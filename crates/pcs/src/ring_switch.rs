@@ -73,12 +73,12 @@
 
 use fiat_shamir::Sponge;
 use primitives::bits::transpose_8x8_bits;
-use primitives::field::{F64, F192};
+use primitives::field::{F192, F64};
 use serde::{Deserialize, Serialize};
 
 use super::ligerito::{build_eq_table_ext, inner_product_base_ext};
 use super::pack::{LOG_PACKING, PACKING_WIDTH};
-use super::tensor_algebra::{DEGREE_E, TensorAlgebraE, transpose_s_hat};
+use super::tensor_algebra::{transpose_s_hat, TensorAlgebraE, DEGREE_E};
 
 /// Total degree of the six-challenge composed batching map. This is the
 /// conservative degree used by the Ligerito list-size soundness accounting.
@@ -561,11 +561,9 @@ pub(crate) fn combine_deferred_into(outputs: &[DeferredRingSwitchOutput], out: &
     assert!(!outputs.is_empty());
     let block_len = outputs[0].eq_lo.len();
     assert!(block_len.is_power_of_two());
-    assert!(
-        outputs
-            .iter()
-            .all(|o| { o.eq_lo.len() == block_len && o.eq_lo.len() * o.eq_hi.len() == out.len() })
-    );
+    assert!(outputs
+        .iter()
+        .all(|o| { o.eq_lo.len() == block_len && o.eq_lo.len() * o.eq_hi.len() == out.len() }));
 
     out.par_chunks_mut(block_len).enumerate().for_each(|(hi, out_block)| {
         for (claim_idx, claim) in outputs.iter().enumerate() {
@@ -825,8 +823,8 @@ pub fn verify(
 
 /// Polylog-cost verifier: same transcript as [`verify`] but does NOT build
 /// the dense `rs_eq_ind`. Pair with [`eval_rs_eq`] at the Ligerito final
-/// point (e.g. inside `recursive_verifier_with_basis_succinct`'s
-/// `eval_b_residual` closure).
+/// point (e.g. inside `recursive_verifier_with_basis_succinct`'s terminal
+/// weight closure).
 #[cfg(test)]
 pub fn verify_succinct(
     claim: F192,
@@ -975,10 +973,10 @@ pub fn eval_rs_eq_finish_from_prefix_binary_q(
 mod tests {
     use super::*;
     use crate::ligerito::{
-        LigeritoProof, commit, configs_for, recursive_prover_with_basis, recursive_verifier_with_basis,
-        recursive_verifier_with_basis_succinct,
+        commit, configs_for, recursive_prover_with_basis, recursive_verifier_with_basis,
+        recursive_verifier_with_basis_succinct, LigeritoProof,
     };
-    use crate::ligerito::{ProverConfig, VerifierConfig, default_config, default_verifier_config};
+    use crate::ligerito::{default_config, default_verifier_config, ProverConfig, VerifierConfig};
     use crate::merkle::Hash;
     use crate::pack::pack_witness;
 
@@ -1479,9 +1477,8 @@ mod tests {
     }
 
     /// Succinct verification: verify_succinct (no rs_eq_ind), then the
-    /// succinct ligerito verifier whose eval_b_residual closure evaluates
-    /// MLE(rs_eq_ind) polylog via eval_rs_eq (shared prefix + binary-q
-    /// residual finish).
+    /// succinct Ligerito verifier whose terminal closure evaluates
+    /// MLE(rs_eq_ind) once via `eval_rs_eq`.
     fn verify_e2e_succinct(e: &E2e) -> bool {
         let mut ch = Sponge::new(E2E_DOMAIN, &[]);
         let out = match verify_succinct(e.claim, &e.prefix_weights, &e.rs_proof, &mut ch) {
@@ -1496,14 +1493,7 @@ mod tests {
             e.log_n,
             out.sumcheck_claim,
             &e.root,
-            |ris, yr_log_n| {
-                let split = z.len() - yr_log_n;
-                assert_eq!(ris.len(), split, "closure gets the full folded ris");
-                let prefix = eval_rs_eq_prefix(&z, ris);
-                (0..1u32 << yr_log_n)
-                    .map(|y| eval_rs_eq_finish_from_prefix_binary_q(&prefix, &z[split..], y, &coordinate_weights))
-                    .collect()
-            },
+            |point| eval_rs_eq(&z, point, &coordinate_weights),
             &mut ch,
         )
     }

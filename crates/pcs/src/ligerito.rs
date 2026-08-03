@@ -36,7 +36,8 @@ use crate::merkle::{self, Hash};
 use crate::ntt::AdditiveNttF64;
 use fiat_shamir::Sponge;
 use primitives::{
-    field::{F64, F192, F192BaseUnreduced, F192Unreduced},
+    field::{F192BaseUnreduced, F192Unreduced, F192, F64},
+    multilinear::eq_eval,
     pretty_integer,
 };
 use serde::{Deserialize, Serialize};
@@ -96,6 +97,22 @@ pub fn build_eq_table_ext(point: &[F192]) -> Vec<F192> {
         }
     }
     out
+}
+
+/// Evaluate an E-valued multilinear table at an E-valued point, LSB-first.
+fn mle_eval_ext(table: &[F192], point: &[F192]) -> F192 {
+    assert_eq!(table.len(), 1usize << point.len());
+    let mut folded = table.to_vec();
+    for &challenge in point {
+        let half = folded.len() / 2;
+        for row in 0..half {
+            let lo = folded[2 * row];
+            let hi = folded[2 * row + 1];
+            folded[row] = lo + challenge * (lo + hi);
+        }
+        folded.truncate(half);
+    }
+    folded[0]
 }
 
 /// Parallel mirror of [`build_eq_table_ext`]: identical LSB-first doubling
@@ -2488,12 +2505,43 @@ pub fn recursive_prover_with_basis(
             grinding_nonces.push(nonce_last);
             let num_queries_last = config.queries[i + 1];
             let queries_last = sample_queries_ordered(sponge, wtns_prev.block_len, num_queries_last);
+            // The final commitment's basis challenge is drawn only after `yr`
+            // and its queries are bound, matching the verifier exactly.
+            let alpha_last = sample_ext_vec(sponge, log2_ceil(num_queries_last));
             let _t = std::time::Instant::now();
             // Final level: stored (sorted-unique) only — no local induce; the
             // verifier fans these to ordered for its last-level induce.
             let sq_last = sorted_unique_queries(&queries_last);
             let opened_rows_last: Vec<Vec<F192>> = sq_last.iter().map(|&q| wtns_prev.row(q).to_vec()).collect();
             let merkle_proof_last = merkle_multi_proof_for(&wtns_prev.tree, wtns_prev.block_len, &sq_last);
+            // Tie the last commitment into the running claim through the same
+            // intro/glue step as every other level, then finish the remaining
+            // sumcheck rounds. This closes on one weight evaluation instead of
+            // a sweep over the residual cube.
+            let rows_last: Vec<Vec<F192>> = queries_last.iter().map(|&q| wtns_prev.row(q).to_vec()).collect();
+            let enforced_sum_last = induce_sumcheck_enforced_sum_ext(&rows_last, &level_rs, &queries_last, &alpha_last);
+            let n_res = sc_prover.f_ext().len().trailing_zeros() as usize;
+            let basis_last = induce_sumcheck_evaluate_at_residual(
+                n_res,
+                &eval_sk_at_vks(n_res),
+                &queries_last,
+                &alpha_last,
+                &[],
+                n_res,
+            );
+            let intro_msg_last = sc_prover.introduce_new(basis_last, enforced_sum_last);
+            observe_ext(sponge, intro_msg_last.u_0);
+            observe_ext(sponge, intro_msg_last.u_2);
+            sc_prover.glue(sample_ext(sponge));
+            for j in 0..n_res {
+                let ri = sample_ext(sponge);
+                let msg = sc_prover.fold(ri);
+                if j + 1 < n_res {
+                    observe_ext(sponge, msg.u_0);
+                    observe_ext(sponge, msg.u_2);
+                }
+            }
+            let transmitted_sumcheck_len = sc_prover.transcript().len() - usize::from(n_res > 0);
             if trace {
                 t_opens += _t.elapsed();
                 let total = t_total.elapsed();
@@ -2532,7 +2580,7 @@ pub fn recursive_prover_with_basis(
                     opened_rows: opened_rows_last,
                     merkle_proof: merkle_proof_last,
                 },
-                sumcheck_transcript: sc_prover.transcript().to_vec(),
+                sumcheck_transcript: sc_prover.transcript()[..transmitted_sumcheck_len].to_vec(),
                 grinding_nonces,
                 ood_values,
                 fold_grinding_nonces,
@@ -2974,9 +3022,6 @@ pub fn recursive_verifier_with_basis(
         n_current -= k_i;
 
         if i == r - 1 {
-            if tx_idx != proof.sumcheck_transcript.len() {
-                return false;
-            }
             if ood_idx != proof.ood_values.len() || fold_nonce_idx != proof.fold_grinding_nonces.len() {
                 return false;
             }
@@ -3032,41 +3077,59 @@ pub fn recursive_verifier_with_basis(
                 &queries_last,
                 &alpha_last,
             );
+            let Some(&intro_msg_last) = proof.sumcheck_transcript.get(tx_idx) else {
+                return false;
+            };
+            tx_idx += 1;
+            observe_ext(sponge, intro_msg_last.u_0);
+            observe_ext(sponge, intro_msg_last.u_2);
+            let intro_quad_last = RoundQuad::from_msg(intro_msg_last, enforced_sum_last);
             let beta_last = sample_ext(sponge);
+            running_quad = RoundQuad::fold(&running_quad, &intro_quad_last, beta_last);
             t_r += beta_last * enforced_sum_last;
             basis_polys.push(basis_last_induced);
             basis_ris_starts.push(ris.len());
             basis_separations.push(beta_last);
 
-            // Residual check.
-            let yr_len = yr.len();
-            let mut combined = vec![F192::ZERO; yr_len];
+            // Finish the residual sumcheck rounds, then evaluate every dense
+            // basis and the transmitted final message at the one terminal point.
+            let mut ris_tail = Vec::with_capacity(n_current);
+            for j in 0..n_current {
+                let ri = sample_ext(sponge);
+                t_r = running_quad.eval(ri);
+                ris_tail.push(ri);
+                if j + 1 < n_current {
+                    let Some(&msg) = proof.sumcheck_transcript.get(tx_idx) else {
+                        return false;
+                    };
+                    tx_idx += 1;
+                    observe_ext(sponge, msg.u_0);
+                    observe_ext(sponge, msg.u_2);
+                    running_quad = RoundQuad::from_msg(msg, t_r);
+                }
+            }
+            if tx_idx != proof.sumcheck_transcript.len() {
+                return false;
+            }
+            ris.extend_from_slice(&ris_tail);
+            let mut weight = F192::ZERO;
             for (k, basis) in basis_polys.iter().enumerate() {
                 let start = basis_ris_starts[k];
-                let residual = partial_eval_lsb_ext(basis, &ris[start..]);
-                if residual.len() != yr_len {
+                let at = partial_eval_lsb_ext(basis, &ris[start..]);
+                if at.len() != 1 {
                     return false;
                 }
                 let sep = if k == 0 { F192::ONE } else { basis_separations[k - 1] };
-                for (c, &rr) in combined.iter_mut().zip(residual.iter()) {
-                    *c += sep * rr;
-                }
+                weight += sep * at[0];
             }
             for (basis, start, beta) in &ood_bases {
-                let residual = partial_eval_lsb_ext(basis, &ris[*start..]);
-                if residual.len() != yr_len {
+                let at = partial_eval_lsb_ext(basis, &ris[*start..]);
+                if at.len() != 1 {
                     return false;
                 }
-                for (c, &rr) in combined.iter_mut().zip(residual.iter()) {
-                    *c += *beta * rr;
-                }
+                weight += *beta * at[0];
             }
-            let inner: F192 = yr
-                .iter()
-                .zip(combined.iter())
-                .map(|(&y, &c)| y * c)
-                .fold(F192::ZERO, |a, v| a + v);
-            return inner == t_r;
+            return weight * mle_eval_ext(yr, &ris_tail) == t_r;
         }
 
         if next_root_idx >= proof.recursive_roots.len() {
@@ -3169,11 +3232,8 @@ pub fn recursive_verifier_with_basis(
 
 /// Succinct verifier for [`recursive_prover_with_basis`] (mirror of
 /// `ligerito::recursive_verifier_with_basis_succinct`): instead of a dense
-/// `b_initial` (2^log_n E-values) it takes a closure `eval_b_residual` that
-/// evaluates b's multilinear extension at the residual. The closure is called
-/// ONCE at the final check with the full `ris` and `yr_log_n`, and must
-/// return the `2^yr_log_n` values `eval_b(ris ++ y_bits)` for
-/// `y in [0, 2^yr_log_n)` (batching lets callers amortize prefix work).
+/// `b_initial` (2^log_n E-values) it takes a closure `eval_b_at` that evaluates
+/// b's multilinear extension once, at the final fold point.
 ///
 /// Per-level induced bases are never materialized: intro time uses the cheap
 /// enforced-sum recomputation, and the residual uses the closed-form
@@ -3190,11 +3250,11 @@ pub fn recursive_verifier_with_basis_succinct<F>(
     log_n: usize,
     target: F192,
     expected_initial_root: &Hash,
-    eval_b_residual: F,
+    eval_b_at: F,
     sponge: &mut Sponge,
 ) -> bool
 where
-    F: Fn(&[F192], usize) -> Vec<F192>,
+    F: Fn(&[F192]) -> F192,
 {
     let mut discard = Vec::new();
     recursive_verifier_with_basis_succinct_with_squeezes(
@@ -3203,7 +3263,7 @@ where
         log_n,
         target,
         expected_initial_root,
-        eval_b_residual,
+        eval_b_at,
         sponge,
         &mut discard,
     )
@@ -3219,13 +3279,13 @@ pub fn recursive_verifier_with_basis_succinct_with_squeezes<F>(
     log_n: usize,
     target: F192,
     expected_initial_root: &Hash,
-    eval_b_residual: F,
+    eval_b_at: F,
     sponge: &mut Sponge,
     query_squeezes_out: &mut Vec<Vec<F192>>,
 ) -> bool
 where
-    // Called ONCE at the residual check with the full ris and yr_log_n.
-    F: Fn(&[F192], usize) -> Vec<F192>,
+    // Called once at the terminal check with the full fold point.
+    F: Fn(&[F192]) -> F192,
 {
     let initial_k = config.initial_k;
     let r = config.level_steps;
@@ -3433,9 +3493,6 @@ where
         n_current -= k_i;
 
         if i == r - 1 {
-            if tx_idx != proof.sumcheck_transcript.len() {
-                return false;
-            }
             if ood_idx != proof.ood_values.len() || fold_nonce_idx != proof.fold_grinding_nonces.len() {
                 return false;
             }
@@ -3480,13 +3537,17 @@ where
                 None => return false,
             };
 
-            // Bind the LAST commitment to `yr` (same tie as the dense
-            // verifier): its induced basis is already at the residual
-            // dimension (zero further folds), so it joins `combined` below
-            // via this LevelCtx.
             let enforced_sum_last =
                 induce_sumcheck_enforced_sum_ext(&ordered_rows_last, &level_rs, &queries_last, &alpha_last);
+            let Some(&intro_msg_last) = proof.sumcheck_transcript.get(tx_idx) else {
+                return false;
+            };
+            tx_idx += 1;
+            observe_ext(sponge, intro_msg_last.u_0);
+            observe_ext(sponge, intro_msg_last.u_2);
+            let intro_quad_last = RoundQuad::from_msg(intro_msg_last, enforced_sum_last);
             let beta_last = sample_ext(sponge);
+            running_quad = RoundQuad::fold(&running_quad, &intro_quad_last, beta_last);
             t_r += beta_last * enforced_sum_last;
             level_ctxs.push(LevelCtx {
                 log_msg_cols: n_current,
@@ -3496,33 +3557,49 @@ where
                 beta: beta_last,
             });
 
-            // Succinct residual check: per-level induced basis evaluations
-            // via closed-form (no dense materialization).
-            let yr_len = yr.len();
+            // Finish the sumcheck over the residual cube. Each basis and the
+            // caller's weight are then evaluated once at `ris ++ ris_tail`.
             let yr_log_n = n_current;
-
-            let induced_residuals: Vec<Vec<F192>> = level_ctxs
-                .iter()
-                .map(|ctx| {
-                    let sks_vks = eval_sk_at_vks(ctx.log_msg_cols);
-                    let ris_for_basis = &ris[ctx.ris_start..ctx.ris_start + ctx.log_msg_cols - yr_log_n];
-                    induce_sumcheck_evaluate_at_residual(
-                        ctx.log_msg_cols,
-                        &sks_vks,
-                        &ctx.queries,
-                        &ctx.alpha,
-                        ris_for_basis,
-                        yr_log_n,
-                    )
-                })
-                .collect();
-            for resid in &induced_residuals {
-                if resid.len() != yr_len {
-                    return false;
+            let mut ris_tail = Vec::with_capacity(yr_log_n);
+            for j in 0..yr_log_n {
+                let ri = sample_ext(sponge);
+                t_r = running_quad.eval(ri);
+                ris_tail.push(ri);
+                if j + 1 < yr_log_n {
+                    let Some(&msg) = proof.sumcheck_transcript.get(tx_idx) else {
+                        return false;
+                    };
+                    tx_idx += 1;
+                    observe_ext(sponge, msg.u_0);
+                    observe_ext(sponge, msg.u_2);
+                    running_quad = RoundQuad::from_msg(msg, t_r);
                 }
             }
+            if tx_idx != proof.sumcheck_transcript.len() {
+                return false;
+            }
 
-            let mut ood_residuals = Vec::with_capacity(ood_ctxs.len());
+            let mut weight = F192::ZERO;
+            for ctx in &level_ctxs {
+                if ctx.log_msg_cols < yr_log_n || ctx.ris_start + (ctx.log_msg_cols - yr_log_n) > ris.len() {
+                    return false;
+                }
+                let folded = ctx.log_msg_cols - yr_log_n;
+                let mut point = ris[ctx.ris_start..ctx.ris_start + folded].to_vec();
+                point.extend_from_slice(&ris_tail);
+                let at = induce_sumcheck_evaluate_at_residual(
+                    ctx.log_msg_cols,
+                    &eval_sk_at_vks(ctx.log_msg_cols),
+                    &ctx.queries,
+                    &ctx.alpha,
+                    &point,
+                    0,
+                );
+                if at.len() != 1 {
+                    return false;
+                }
+                weight += ctx.beta * at[0];
+            }
             for ctx in &ood_ctxs {
                 if ctx.z.len() < yr_log_n || ctx.ris_start + (ctx.z.len() - yr_log_n) > ris.len() {
                     return false;
@@ -3532,31 +3609,13 @@ where
                 for b in 0..folded {
                     scalar *= F192::ONE + ctx.z[b] + ris[ctx.ris_start + b];
                 }
-                let mut tail = build_eq_table_ext(&ctx.z[folded..]);
-                for v in &mut tail {
-                    *v *= scalar;
-                }
-                ood_residuals.push(tail);
+                weight += scalar * eq_eval(&ctx.z[folded..], &ris_tail);
             }
 
-            // Batch-evaluate b at all yr positions in one call so the caller
-            // can amortize prefix work.
-            let evb_vec = eval_b_residual(&ris, yr_log_n);
-            if evb_vec.len() != yr_len {
-                return false;
-            }
-            let mut inner = F192::ZERO;
-            for y in 0..yr_len {
-                let mut combined_y = evb_vec[y];
-                for (k, residual) in induced_residuals.iter().enumerate() {
-                    combined_y += level_ctxs[k].beta * residual[y];
-                }
-                for residual in &ood_residuals {
-                    combined_y += residual[y];
-                }
-                inner += yr[y] * combined_y;
-            }
-            return inner == t_r;
+            let mut full_point = ris.clone();
+            full_point.extend_from_slice(&ris_tail);
+            weight += eval_b_at(&full_point);
+            return weight * mle_eval_ext(yr, &ris_tail) == t_r;
         }
 
         if next_root_idx >= proof.recursive_roots.len() {
@@ -3667,7 +3726,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ligerito::{QUERY_GRINDING_BITS, default_config, default_verifier_config};
+    use crate::ligerito::{default_config, default_verifier_config, QUERY_GRINDING_BITS};
 
     fn splitmix64(state: &mut u64) -> u64 {
         *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
@@ -3779,33 +3838,17 @@ mod tests {
         recursive_verifier_with_basis(&inst.vc, proof, &inst.b_initial, inst.target, &inst.root, &mut ch)
     }
 
-    /// Succinct verify with the eq-point residual closure: for b = eq(point, ·)
-    /// (LSB-first), `eval_b(ris ++ y_bits)` factors into the char-2 eq prefix
-    /// over the folded variables times the eq table over the residual tail:
-    ///   `Π_{j<split} (1 + point[j] + ris[j]) · eq_table(point[split..])[y]`.
+    /// Succinct verify with the eq weight evaluated at the terminal fold point.
     fn verify_succinct_instance(inst: &Instance, proof: &LigeritoProof) -> bool {
         let mut ch = Sponge::new(b"ligerito-test", &[]);
         let point = &inst.point;
-        let log_n = inst.log_n;
         recursive_verifier_with_basis_succinct(
             &inst.vc,
             proof,
-            log_n,
+            inst.log_n,
             inst.target,
             &inst.root,
-            |ris, yr_log_n| {
-                let split = log_n - yr_log_n;
-                assert_eq!(ris.len(), split, "closure gets the full folded ris");
-                let mut prefix = F192::ONE;
-                for j in 0..split {
-                    prefix *= F192::ONE + point[j] + ris[j];
-                }
-                let mut tail = build_eq_table_ext(&point[split..]);
-                for v in tail.iter_mut() {
-                    *v *= prefix;
-                }
-                tail
-            },
+            |fold_point| eq_eval(point, fold_point),
             &mut ch,
         )
     }
@@ -3894,7 +3937,7 @@ mod tests {
     }
 
     /// The succinct verifier accepts the same honest proofs the dense one
-    /// does, driven through the eq-point residual closure (LSB-first).
+    /// does, closing through one eq-weight evaluation at the fold point.
     #[test]
     fn succinct_roundtrips() {
         for (log_n, seed) in [(16usize, 2u64), (18, 8)] {

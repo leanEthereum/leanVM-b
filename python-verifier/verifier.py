@@ -1801,7 +1801,7 @@ def verify_ligerito(
     root: bytes,
     evaluate_basis: Callable[[Sequence[F192], int], Sequence[F192]],
 ) -> None:
-    """Verify the base-field multilevel opening with succinct residual checks."""
+    """Verify the base-field multilevel opening with a one-point terminal check."""
     config = derive_config(log_n, initial_rate)
     levels = len(config.folds)
     require(len(proof.recursive_roots) == levels - 1, "wrong Ligerito root count")
@@ -1896,41 +1896,53 @@ def verify_ligerito(
             raise VerificationError(f"Ligerito level {level}: {exc}") from exc
         enforced = _enforced_sum(rows, level_folds, alpha)
 
-        beta = transcript.sample() if final_level else None
-        if not final_level:
-            intro = next_quad(enforced)
-            beta = transcript.sample()
-            running_quad = running_quad.add_scaled(intro, beta)
-        assert beta is not None
+        # Every commitment, including the last one, enters through an intro
+        # message before its separation challenge.
+        intro = next_quad(enforced)
+        beta = transcript.sample()
+        running_quad = running_quad.add_scaled(intro, beta)
         running_target += beta * enforced
         contexts.append((message_log, queries, alpha, len(folds), beta))
 
         if final_level:
+            # Finish the remaining sumcheck rounds and close on one evaluation
+            # of every basis at the resulting point.
+            tail_folds: list[F192] = []
+            for round_index in range(message_log):
+                challenge = transcript.sample()
+                running_target = running_quad.evaluate(challenge)
+                tail_folds.append(challenge)
+                if round_index + 1 < message_log:
+                    running_quad = next_quad(running_target)
             require(message_index == len(proof.sumcheck), "trailing Ligerito sumcheck messages")
             require(ood_index == len(proof.ood_values), "trailing Ligerito OOD values")
             require(fold_nonce_index == len(proof.fold_grinding_nonces),
                     "trailing Ligerito fold nonces")
-            combined = list(evaluate_basis(folds, message_log))
-            require(len(combined) == len(residual), "basis residual has the wrong length")
+            weight_values = list(evaluate_basis(list(folds) + tail_folds, 0))
+            require(len(weight_values) == 1, "basis point evaluation has the wrong length")
+            weight = weight_values[0]
             for context_log, context_queries, context_alpha, start, separation in contexts:
                 fixed = context_log - message_log
+                point = list(folds[start : start + fixed]) + tail_folds
                 induced = _induced_residual(
                     context_log,
                     context_queries,
                     context_alpha,
-                    folds[start : start + fixed],
-                    message_log,
+                    point,
+                    0,
                 )
-                combined = [left + separation * right for left, right in zip(combined, induced)]
+                require(len(induced) == 1, "induced point evaluation has the wrong length")
+                weight += separation * induced[0]
             for point, start, separation in ood_contexts:
                 fixed = len(point) - message_log
                 scale = separation
                 for expected, actual in zip(point[:fixed], folds[start : start + fixed]):
                     scale *= ONE + expected + actual
-                tail = build_eq(point[fixed:])
-                combined = [left + scale * right for left, right in zip(combined, tail)]
-            terminal = sum((a * b for a, b in zip(residual, combined)), ZERO)
-            require(terminal == running_target, "Ligerito residual check failed")
+                for expected, actual in zip(point[fixed:], tail_folds):
+                    scale *= ONE + expected + actual
+                weight += scale
+            terminal = weight * mle_eval(residual, tail_folds)
+            require(terminal == running_target, "Ligerito terminal check failed")
             return
         current_root = next_root
 

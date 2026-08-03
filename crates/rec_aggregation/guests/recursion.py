@@ -573,25 +573,6 @@ def sumcheck_round4(state_0, state_1, msg_cursor, claim):
 
 
 @inline
-def fold_monomial_msg(msg, weights, log_len: Const):
-    # `fold_final_msg` with the low weight fixed to 1 (the novel-basis residual
-    # weight pair is (1, w), not (1 + w, w)), so every level halves its
-    # multiplies: `lo + w*hi` instead of `w_lo*lo + w_hi*hi`.
-    l0 = StackBuf(2 ** YR_LOG_CAP)
-    for t in unroll(0, 2 ** log_len // 2):
-        l0[t] = msg[GEN ** (2 * t)] + weights[0] * msg[GEN ** (2 * t + 1)]
-    cursor = l0
-    n = 2 ** log_len // 2
-    for j in unroll(1, log_len):
-        nxt = StackBuf(2 ** YR_LOG_CAP)
-        for t in unroll(0, n // 2):
-            nxt[t] = cursor[2 * t] + weights[j] * cursor[2 * t + 1]
-        cursor = nxt
-        n = n // 2
-    return cursor[0]
-
-
-@inline
 def fold_final_msg(msg, weights, wbase: Const, log_len: Const):
     # Weighted fold of the final_msg multilinear over 2^log_len values (log_len is the
     # candidate's yr_log_n; the frame buffers use the global max size).
@@ -725,13 +706,15 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
     #      alpha-batched row dot against the fold eq weights, and verify the
     #      Merkle authentication path against the bound root
     #      (verify_merkle_path);
-    #   5. sample beta, fold the query sums into the running target.
-    # Then the per-level residuals (novel-basis prefix x final-message fold)
-    # are combined; the caller's eval_b terminal asserts the grand total.
+    #   5. read the level's intro message, sample beta, and fold the query sum
+    #      into the running target.
+    # Then finish the tail sumcheck and evaluate every transparent basis once
+    # at its terminal point; the final-message MLE enters as one multiplier.
     #
     # Returns (sumcheck_target, fold_challenges, final_msg, residual_total,
     # yr_log_n_g = g^yr_log_n, yr_pad_g = g^(YR_LOG_CAP - yr_log_n),
-    # fold_cap_g = g^lenris). yr_log_n_g/yr_pad_g let the terminal zero-pin
+    # fold_cap_g = g^lenris), tail_challenges, and yr_at_tail.
+    # yr_log_n_g/yr_pad_g let the terminal zero-pin
     # residual-slot coordinates beyond final_msg's 2^yr_log_n cells (positions
     # yr_log_n .. YR_LOG_CAP-1); fold_cap_g is the certified total fold count
     # the terminal pins its hinted claim lengths against.
@@ -929,21 +912,42 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
                 level_roots_1[GEN ** lvl] = root_1
         level_query_sum = query_sum_chain[GEN ** LIG_QUERIES[m_idx * LIG_MAX_LEVELS + lvl]]
 
-        if lvl == LIG_YR_LEVEL[m_idx]:
-            fs, beta_lvl = squeeze(fs)
-            level_betas[GEN ** lvl] = beta_lvl
-            sumcheck_target += beta_lvl * level_query_sum
-        else:
-            fs, intro_u0, msg_cursor = fs_next(fs, msg_cursor)
-            fs, intro_u2, msg_cursor = fs_next(fs, msg_cursor)
-            fs, beta_lvl = squeeze(fs)
-            level_betas[GEN ** lvl] = beta_lvl
-            round_quad_c += beta_lvl * intro_u0
-            round_quad_b += beta_lvl * (level_query_sum + intro_u2)
-            round_quad_a += beta_lvl * intro_u2
-            sumcheck_target += beta_lvl * level_query_sum
+        # Every level, including the last, ties its commitment in through an
+        # intro message before drawing its separation challenge.
+        fs, intro_u0, msg_cursor = fs_next(fs, msg_cursor)
+        fs, intro_u2, msg_cursor = fs_next(fs, msg_cursor)
+        fs, beta_lvl = squeeze(fs)
+        level_betas[GEN ** lvl] = beta_lvl
+        round_quad_c += beta_lvl * intro_u0
+        round_quad_b += beta_lvl * (level_query_sum + intro_u2)
+        round_quad_a += beta_lvl * intro_u2
+        sumcheck_target += beta_lvl * level_query_sum
 
-    # ---- per-level residuals: novel-basis prefix x final-message fold ----
+    # ---- finish the sumcheck over the tail coordinates ----
+    tail_challenges = HeapBuf(GEN ** YR_LOG_CAP)
+    for j in unroll(0, LIG_YR_LOG_LEN[m_idx] - 1):
+        fs, tail_c = squeeze(fs)
+        tail_challenges[GEN ** j] = tail_c
+        sumcheck_target = round_quad_c + tail_c * round_quad_b + tail_c * tail_c * round_quad_a
+        fs, msg_a, msg_cursor = fs_next(fs, msg_cursor)
+        fs, msg_b, msg_cursor = fs_next(fs, msg_cursor)
+        round_quad_c = msg_a
+        round_quad_b = sumcheck_target + msg_b
+        round_quad_a = msg_b
+    # The closing round sends no following message.
+    fs, tail_last = squeeze(fs)
+    tail_challenges[GEN ** (LIG_YR_LOG_LEN[m_idx] - 1)] = tail_last
+    sumcheck_target = round_quad_c + tail_last * round_quad_b + tail_last * tail_last * round_quad_a
+    for j in unroll(LIG_YR_LOG_LEN[m_idx], YR_LOG_CAP):
+        tail_challenges[GEN ** j] = 0
+
+    tail_w = StackBuf(2 * YR_LOG_CAP)
+    for j in unroll(0, LIG_YR_LOG_LEN[m_idx]):
+        tail_w[2 * j] = 1 + tail_challenges[GEN ** j]
+        tail_w[2 * j + 1] = tail_challenges[GEN ** j]
+    yr_at_tail = fold_final_msg(final_msg, tail_w, 0, LIG_YR_LOG_LEN[m_idx])
+
+    # ---- per-level induced bases at the single terminal point ----
     inner_chain = HeapBuf(GEN ** (LIG_N_LEVELS[m_idx] + 1))
     inner_chain[GEN ** 0] = 0
     for lvl in unroll(0, LIG_N_LEVELS[m_idx]):
@@ -960,16 +964,13 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
             for t in unroll(0, LIG_RESIDUAL_PREFIX_LEN[m_idx * LIG_MAX_LEVELS + lvl]):
                 fold_c = fold_challenges[GEN ** (LIG_RESIDUAL_FOLD_OFF[m_idx * LIG_MAX_LEVELS + lvl] + t)]
                 prefix_eq *= (1 + fold_c * (1 + basis_w[t]))
-            fold_w = StackBuf(YR_LOG_CAP)
             for j in unroll(0, LIG_YR_LOG_LEN[m_idx]):
-                fold_w[j] = basis_w[LIG_RESIDUAL_PREFIX_LEN[m_idx * LIG_MAX_LEVELS + lvl] + j]
-            yr_eval = fold_monomial_msg(final_msg, fold_w, LIG_YR_LOG_LEN[m_idx])
-            residual_chain[xr * GEN] = residual_chain[xr] + alpha_weights[GEN ** (lvl * LIG_MAX_QUERIES[m_idx]) * xr] * prefix_eq * yr_eval
+                tail_c = tail_challenges[GEN ** j]
+                prefix_eq *= (1 + tail_c * (1 + basis_w[LIG_RESIDUAL_PREFIX_LEN[m_idx * LIG_MAX_LEVELS + lvl] + j]))
+            residual_chain[xr * GEN] = residual_chain[xr] + alpha_weights[GEN ** (lvl * LIG_MAX_QUERIES[m_idx]) * xr] * prefix_eq
         inner_chain[GEN ** (lvl + 1)] = inner_chain[GEN ** lvl] + level_betas[GEN ** lvl] * residual_chain[GEN ** LIG_QUERIES[m_idx * LIG_MAX_LEVELS + lvl]]  # accumulate beta_lvl * (per-level residual sum) into the grand residual
 
-    # Explicit OOD bases are eq(z, ·). Fold their prefixes at all subsequent
-    # sumcheck challenges and evaluate the remaining yr_log_n-coordinate tail
-    # directly against the final message.
+    # Explicit OOD eq bases at the same terminal point.
     ood_inner = 0
     for ood_lvl in unroll(1, LIG_N_LEVELS[m_idx]):
         z_len = LIG_LOG_MSG_COLS[m_idx * LIG_MAX_LEVELS + ood_lvl - 1]
@@ -980,13 +981,11 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
             scalar = ood_betas[GEN ** (ood_lvl * LIG_MAX_OOD_SAMPLES + os)]
             for t in unroll(0, z_folded):
                 scalar *= (1 + oz[GEN ** t] + fold_challenges[GEN ** (ris_start + t)])
-            ood_fold_w = StackBuf(2 * YR_LOG_CAP)
             for t in unroll(0, LIG_YR_LOG_LEN[m_idx]):
                 zt = oz[GEN ** (z_folded + t)]
-                ood_fold_w[2 * t] = 1 + zt
-                ood_fold_w[2 * t + 1] = zt
-            ood_inner += scalar * fold_final_msg(final_msg, ood_fold_w, 0, LIG_YR_LOG_LEN[m_idx])
-    return sumcheck_target, fold_challenges, final_msg, inner_chain[GEN ** LIG_N_LEVELS[m_idx]] + ood_inner, GEN ** LIG_YR_LOG_LEN[m_idx], GEN ** (YR_LOG_CAP - LIG_YR_LOG_LEN[m_idx]), GEN ** LIG_TOTAL_FOLDS[m_idx]
+                scalar *= (1 + zt + tail_challenges[GEN ** t])
+            ood_inner += scalar
+    return sumcheck_target, fold_challenges, final_msg, inner_chain[GEN ** LIG_N_LEVELS[m_idx]] + ood_inner, GEN ** LIG_YR_LOG_LEN[m_idx], GEN ** (YR_LOG_CAP - LIG_YR_LOG_LEN[m_idx]), GEN ** LIG_TOTAL_FOLDS[m_idx], tail_challenges, yr_at_tail
 
 
 def exponent_tables():
@@ -1979,7 +1978,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     # dispatch independently for every inner proof in a mixed-rate batch.
     config_sel = size_sel * rate_sel ** LIG_N_LOG_SIZES
     assert log(config_sel) < LIG_N_CANDIDATES
-    sumcheck_target, fold_challenges, final_msg, inner_total, yr_log_n_g, yr_pad_g, fold_cap_g = match_range(log(config_sel), range(0, LIG_N_CANDIDATES), lambda m_idx: open_stacked(m_idx, fs[0], fs[1], target, commit_root_0, commit_root_1, cursor))
+    sumcheck_target, fold_challenges, final_msg, inner_total, yr_log_n_g, yr_pad_g, fold_cap_g, tail_challenges, yr_at_tail = match_range(log(config_sel), range(0, LIG_N_CANDIDATES), lambda m_idx: open_stacked(m_idx, fs[0], fs[1], target, commit_root_0, commit_root_1, cursor))
     # `stream` is a fixed-capacity witness transport. The shape fixes the exact
     # consumed prefix, whose every word is transcript-bound; the unused suffix
     # is outside the recursively verified proof and intentionally unconstrained.
@@ -2170,16 +2169,9 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         rs_bit = rs_sel_bits[xk]
         rsw_chain[xk * GEN] = rsw_chain[xk] * (1 + rs_bit + ris_q[xk])
     rs_weight = rsw_chain[rs_len_g]
-    # inner_sum = sum_y final_msg[y] * eval_b[y]: reordered per claim. Claim j's
-    # y-contribution is cw_j times the final_msg MLE at the point (overlap coords
-    # || certified placement bits): coord_k = m_k * ov_k + (1 + m_k) * bit_k with
-    # mask bits m_k = [k < NOVER], read from the baked prefix-mask row nover.
-    # The dot unrolls over the global cap 2^YR_LOG_CAP, but final_msg only has
-    # 2^yr_log_n cells, so the slot coordinates at k >= yr_log_n are ASSERTED
-    # zero (below): the eq tensor then puts zero weight on every index
-    # >= 2^yr_log_n, so the over-cap dot terms vanish and never depend on
-    # out-of-buffer cells. The ring-switch slot is the same, with no overlaps,
-    # and comes from the same certified QPKD offset.
+    # Evaluate every transparent weight at the one terminal fold point. Claim
+    # j contributes cw_j * eq(slot_point_j, tail_challenges); the transmitted
+    # final message is evaluated once and multiplied into their combined weight.
     inner_sum = inner_total
     for j in unroll(0, N_CLAIMS):
         overlap_ptr = rho * claim_low_len[GEN ** j]
@@ -2198,15 +2190,12 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         mask_row = prefix_mask_table * claim_nover[GEN ** j] ** YR_LOG_CAP  # row nover: g^(nover * cap)
         claim_offset_bits = col_offset_bits * GEN ** ((SIZE_BITS + YR_LOG_CAP) * CLAIM_COMMITTED_COL[j])
         residual_offset_bits = claim_offset_bits * fold_cap_g
-        # The slot coordinates go straight into fold weights (frame cells, so the
-        # fold reads them as operands) instead of a heap point buffer.
-        slot_fold_w = StackBuf(2 * YR_LOG_CAP)
+        tail_eq = GEN ** 0
         for k in unroll(0, YR_LOG_CAP):
             mask_bit = mask_row[GEN ** k]
             slot_bit = residual_offset_bits[GEN ** k]
             slot_coord = mask_bit * overlap_ptr[GEN ** k] + (1 + mask_bit) * slot_bit
-            slot_fold_w[2 * k] = 1 + slot_coord
-            slot_fold_w[2 * k + 1] = slot_coord
+            tail_eq *= (1 + slot_coord + tail_challenges[GEN ** k])
         # zero-pin coords beyond final_msg's log-length (no over-cap weight): the
         # pointers start at yr_log_n. The zero asserts double as the
         # nover <= yr_log_n pin: a larger nover selects a row whose prefix
@@ -2218,23 +2207,17 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         for xk in mul_range(1, yr_pad_g):
             assert hi_mask[xk] == 0
             assert hi_slot[xk] == 0
-        # The MLE at slot_point, by successive folding rather than by building the
-        # eq tensor and dotting it: same multilinear value (each coordinate
-        # contributes the pair (1 + p_k, p_k) either way), about half the work,
-        # and no 2^(cap+1) tensor buffer per claim.
-        final_msg_dot = fold_final_msg(final_msg, slot_fold_w, 0, YR_LOG_CAP)
-        inner_sum += claim_weights[GEN ** j] * final_msg_dot
+        inner_sum += claim_weights[GEN ** j] * tail_eq
     rs_yslot_bits = qpkd_offset_bits * fold_cap_g
-    rs_fold_w = StackBuf(2 * YR_LOG_CAP)
+    rs_tail_eq = GEN ** 0
     for k in unroll(0, YR_LOG_CAP):
         yb = rs_yslot_bits[GEN ** k]
-        rs_fold_w[2 * k] = 1 + yb
-        rs_fold_w[2 * k + 1] = yb
+        rs_tail_eq *= (1 + yb + tail_challenges[GEN ** k])
     rs_hi = rs_yslot_bits * yr_log_n_g
     for xk in mul_range(1, yr_pad_g):
         assert rs_hi[xk] == 0  # zero-pin coords beyond final_msg's log-length
-    inner_sum += rs_weight * fold_final_msg(final_msg, rs_fold_w, 0, YR_LOG_CAP)
-    assert inner_sum == sumcheck_target
+    inner_sum += rs_weight * rs_tail_eq
+    assert inner_sum * yr_at_tail == sumcheck_target
 
 
     # ---- export this sub-proof's deferred-claim data to the caller ----

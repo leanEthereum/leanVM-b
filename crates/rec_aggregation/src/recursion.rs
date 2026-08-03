@@ -15,13 +15,13 @@
 use std::collections::BTreeMap;
 
 use lean_compiler::{compile, parse, parse_with_replacements};
-use lean_vm::cpu::{Program, prove, verify};
+use lean_vm::cpu::{prove, verify, Program};
 use lean_vm::leaf::{Block, Coord};
-use lean_vm::transcript::{Sponge, TraceOp, trace_start, trace_take};
+use lean_vm::transcript::{trace_start, trace_take, Sponge, TraceOp};
 use pcs::ligerito::log2_ceil;
 use primitives::multilinear::mle_eval;
 use primitives::{
-    field::{F64, F192, G, g_pow},
+    field::{g_pow, F192, F64, G},
     pretty_f64, pretty_integer,
 };
 
@@ -419,9 +419,7 @@ fn aggregate_deferred_claims(
         ms.push(contract_cols(ma, w));
         ms.push(contract_cols(mb, w));
     }
-    let ga: Vec<F192> = (0..nsub)
-        .map(|t| gmt[t] * subs[t].matrix_a_coefficient)
-        .collect();
+    let ga: Vec<F192> = (0..nsub).map(|t| gmt[t] * subs[t].matrix_a_coefficient).collect();
     let gb: Vec<F192> = gmt.clone();
     let mut mrun: F192 = (0..nsub)
         .map(|t| gmt[t] * subs[t].matrix_claim)
@@ -1003,7 +1001,8 @@ fn gen_verify(
             // F64-verifier order (see ligerito::recursive_verifier_with_basis_
             // succinct): the interleaved raw grind nonces + observed scalars
             // (start_msg, per-fold [grind-nonce?, msg u0/u2], level roots as two
-            // hash_to_scalars, query-grind nonce, non-final intro msg, final yr).
+            // hash_to_scalars, query-grind nonce, every level's intro msg,
+            // final yr, and the remaining tail-round messages).
             // The guest's open_stacked reads these via `msg_cursor = cursor`,
             // which sits at proof.stream.len() after the flock reduction — the
             // ring-switch is struct-observed and no longer advances the cursor.
@@ -1048,9 +1047,15 @@ fn gen_verify(
                 }
                 if i == vcfg.level_steps - 1 {
                     // last level: final message yr, then the query-grind nonce
-                    // (the verifier reads grinding_nonces[qi] without advancing).
+                    // (the verifier reads grinding_nonces[qi] without advancing),
+                    // its intro message, and every tail-round message except
+                    // the closing round, which sends none.
                     v.extend_from_slice(&lp.final_proof.yr);
                     v.push(F192::new(lp.grinding_nonces[qi], 0, 0));
+                    v.extend_from_slice(&msg(&mut tx));
+                    for _ in 1..shapes.yr_log_n {
+                        v.extend_from_slice(&msg(&mut tx));
+                    }
                 } else {
                     v.extend_from_slice(&pcs::merkle::hash_to_scalars(&lp.recursive_roots[rri]));
                     rri += 1;
