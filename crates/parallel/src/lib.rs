@@ -25,13 +25,13 @@
 //! - `total() - 1` background workers (ids `1..total()`); the dispatcher is
 //!   worker 0 and runs its share inline.
 //! - Dispatch bumps a `generation` counter that idle workers spin on, parking
-//!   after [`SPIN_LIMIT`] spins. Completion is a `working` countdown the
+//!   after `SPIN_LIMIT` spins. Completion is a `working` countdown the
 //!   dispatcher spins on. `parked` is SeqCst-ordered against `generation`, so on
 //!   each dispatch one side sees the other and no wakeup is lost.
 //! - **No nesting.** A dispatch from inside a task would deadlock on the dispatch
-//!   lock, so an `IN_TASK` guard panics instead. Code that genuinely has two
-//!   levels of fan-out picks the inner one with [`is_in_task`] rather than
-//!   relying on the pool to serialize it silently.
+//!   lock, so an `IN_TASK` guard panics instead. Every kernel fans out over its
+//!   outermost independent unit and is sequential below that, so a nested dispatch
+//!   means a mistake, not a slow path.
 //! - A task panic is caught on its worker and re-raised on the dispatcher once
 //!   the dispatch quiesces; the pool stays usable.
 //! - One dispatcher at a time, serialized by the `dispatch` mutex.
@@ -78,15 +78,6 @@ thread_local! {
 #[inline]
 pub fn current_worker_id() -> usize {
     WORKER_ID.get()
-}
-
-/// True while this thread is running a pool task, where a further dispatch would
-/// panic. A kernel reachable both from the dispatcher and from inside a task uses
-/// this to pick a sequential inner path.
-#[must_use]
-#[inline]
-pub fn is_in_task() -> bool {
-    IN_TASK.get()
 }
 
 /// A type-erased work unit. The `&dyn Fn`'s lifetime is erased to `'static`; it
@@ -261,16 +252,16 @@ fn drain(pool: &Pool) {
 }
 
 /// Run `f(start, end)` over disjoint ranges tiling `0..n_tasks`, in parallel; one
-/// worker may get several (see [`drain`]). Blocks until every range is done, with
+/// worker may get several (guided self-scheduling). Blocks until every range is done, with
 /// the dispatcher acting as worker 0.
 ///
 /// This is the base primitive. It is range-based rather than index-based so a
 /// reduction can amortize its per-worker lookups over a whole claim.
 ///
 /// # Panics
-/// If called from inside a pool task: that would deadlock on the dispatch lock,
-/// so it panics rather than silently serializing. A caller with two real levels
-/// of fan-out branches on [`is_in_task`] and runs the inner one itself.
+/// If called from inside a pool task: that would deadlock on the dispatch lock, so
+/// it panics rather than silently serializing. Fan out over the outermost
+/// independent unit and keep the levels below it sequential.
 pub fn for_each_chunk<F: Fn(usize, usize) + Sync>(n_tasks: usize, f: F) {
     assert!(!IN_TASK.get(), "nested parallel dispatch from inside a pool task");
 

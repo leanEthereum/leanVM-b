@@ -222,47 +222,21 @@ pub fn run_xmss_aggregation(n: usize, log_inv_rate: usize, plan: Plan) {
 
     println!("\nXMSS aggregation, {} signatures", pretty_integer(n));
     println!(
-        "  cycles (VM steps)           : {:>14} = {:>9}   ({:>12} / XMSS)",
+        "  cycles (VM steps)           : {} = {}   ({} / XMSS)",
         pretty_integer(stats.cycles),
         pow(stats.cycles),
         per(stats.cycles)
     );
-    for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3", "PACK64X2"]
-        .iter()
-        .zip(&stats.counts)
-    {
-        println!(
-            "    {name:<8} instructions     : {:>14} = {:>9}   ({:>12} / XMSS)",
-            pretty_integer(c),
-            pow(c),
-            per(c)
-        );
-    }
+    println!("    details                   : {}", stats.details());
+    println!("  proof size                  : {:.1} KiB", proof_bytes as f64 / 1024.0);
     println!(
-        "  committed witness size      : 2^{}",
-        pretty_f64((stats.committed as f64).log2())
-    );
-    println!(
-        "  data memory                 : 2^{} padded (2^{} used)",
-        pretty_integer(stats.log_mem),
-        pretty_f64((stats.mem_used as f64).log2())
-    );
-    println!(
-        "  proof size                  : {} KiB",
-        pretty_f64(proof_bytes as f64 / 1024.0)
-    );
-    println!(
-        "  proving (incl. witness gen) : {} s{}{}",
+        "  proving                     : {} s{}   {} XMSS/s      peak memory {} GiB",
         pretty_f64(prove_time.mean()),
         prove_time.spread(),
-        prove_time.provenance()
+        pretty_f64(n as f64 / prove_time.mean()),
+        pretty_f64(primitives::bench::peak_rss_bytes() as f64 / (1u64 << 30) as f64)
     );
     println!("  verifying                   : {} s", pretty_f64(verify_time.mean()));
-    println!(
-        "  throughput                  : {} XMSS/s{}",
-        pretty_f64(n as f64 / prove_time.mean()),
-        prove_time.spread()
-    );
 }
 
 #[cfg(test)]

@@ -96,32 +96,26 @@ fn log2_ceil(n: u64) -> usize {
     n.next_power_of_two().trailing_zeros() as usize
 }
 
-/// `parallel::map_collect`, sequential when already inside a pool task.
-///
-/// Key generation fans out twice: once over the bottom subtrees, then again over
-/// each subtree's nodes. The pool forbids nested dispatch, and the outer level
-/// already has every core busy, so the inner level runs inline. This is key
-/// generation, not proving — it sits outside every timed region.
-fn map_layer<T: Send>(n: usize, f: impl Fn(usize) -> T + Sync) -> Vec<T> {
-    if parallel::is_in_task() {
-        (0..n).map(f).collect()
-    } else {
-        parallel::map_collect(n, f)
-    }
-}
-
 /// Level-0 layer: WOTS public-key hashes for the in-range leaves `[lo, hi]`.
+///
+/// Sequential: this runs once per bottom subtree, and the subtrees are what
+/// [`xmss_key_gen`] fans out over.
 fn leaf_layer(seed: &[u8; 32], public_param: &PublicParam, lo: u64, hi: u64) -> Vec<Digest> {
-    map_layer((hi - lo + 1) as usize, |i| {
-        let slot = lo + i as u64;
-        gen_wots_secret_key(seed, slot as u32, public_param)
-            .public_key()
-            .hash(public_param, slot as u32)
-    })
+    (lo..=hi)
+        .map(|slot| {
+            gen_wots_secret_key(seed, slot as u32, public_param)
+                .public_key()
+                .hash(public_param, slot as u32)
+        })
+        .collect()
 }
 
-/// Build levels `(from_level+1)..=to_level` onto `layers`; out-of-range
-/// children use `gen_random_node`.
+/// Build levels `(from_level+1)..=to_level` onto `layers`; out-of-range children
+/// use `gen_random_node`.
+///
+/// Sequential: each level depends on the one below it, and every level here is at
+/// most `O(sqrt(R))` wide, whether it is a bottom subtree's levels or the top part
+/// built from the subtree roots.
 fn build_up(
     seed: &[u8; 32],
     public_param: &PublicParam,
@@ -135,17 +129,18 @@ fn build_up(
         let (base, top) = (lo >> level, hi >> level);
         let (prev_base, prev_top) = (lo >> (level - 1), hi >> (level - 1));
         let prev = layers.last().unwrap();
-        let nodes: Vec<Digest> = map_layer((top - base + 1) as usize, |offset| {
-            let i = base + offset as u64;
-            let child = |idx: u64| {
-                if idx >= prev_base && idx <= prev_top {
-                    prev[(idx - prev_base) as usize]
-                } else {
-                    gen_random_node(seed, level - 1, idx)
-                }
-            };
-            merkle_node(public_param, level, i, &child(2 * i), &child(2 * i + 1))
-        });
+        let nodes: Vec<Digest> = (base..=top)
+            .map(|i| {
+                let child = |idx: u64| {
+                    if idx >= prev_base && idx <= prev_top {
+                        prev[(idx - prev_base) as usize]
+                    } else {
+                        gen_random_node(seed, level - 1, idx)
+                    }
+                };
+                merkle_node(public_param, level, i, &child(2 * i), &child(2 * i + 1))
+            })
+            .collect();
         layers.push(nodes);
     }
 }
@@ -190,12 +185,15 @@ pub fn xmss_key_gen(
     // ~sqrt(R) leaves per bottom subtree; always <= LOG_LIFETIME/2.
     let split_level = log2_ceil(hi - lo + 1).div_ceil(2);
 
-    // Roots of each bottom subtree, built one at a time so peak memory stays O(sqrt(R)).
+    // The bottom subtrees are the only fan-out in key generation: `O(sqrt(R))` of
+    // them, each independent, each holding only its own `O(sqrt(R))` layers, so
+    // peak memory stays `O(sqrt(R))` and one flat dispatch covers the whole tree.
+    // Everything below this is sequential by construction.
     let first_subtree = lo >> split_level;
     let last_subtree = hi >> split_level;
     let root_layer: Vec<Digest> = parallel::map_collect((last_subtree - first_subtree + 1) as usize, |i| {
-        let s = first_subtree + i as u64;
-        let (in_lo, in_hi) = subtree_bounds(lo, hi, split_level, s);
+        let subtree = first_subtree + i as u64;
+        let (in_lo, in_hi) = subtree_bounds(lo, hi, split_level, subtree);
         build_subtree_layers(&seed, &public_param, in_lo, in_hi, split_level)[split_level][0]
     });
 

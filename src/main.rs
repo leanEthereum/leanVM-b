@@ -11,8 +11,9 @@
 //!
 //! Every workload discards one warmup pass before measuring, so a reported
 //! duration is steady-state proving rather than a cold first run. `--repeat n`
-//! averages `n` measured passes and reports a 95% confidence half-width
-//! alongside the mean.
+//! averages `n` measured passes and reports a 95% confidence half-width alongside
+//! the mean. `--cooldown` (seconds, default 2) idles before each pass so a
+//! thermally limited laptop does not report its power budget as proving cost.
 
 use clap::{Parser, Subcommand};
 
@@ -37,12 +38,12 @@ struct Cli {
     #[arg(long, global = true, default_value_t = 1, value_parser = parse_repeat)]
     repeat: usize,
 
-    /// Idle milliseconds before each measured pass. On a thermally limited host
-    /// (any Apple laptop) back-to-back proving throttles the SoC and measures
-    /// the power budget instead of the prover: ~6000 restores steady-state
-    /// clocks on an M4 Max MacBook Pro, and a server-class host needs none.
-    #[arg(long, global = true, default_value_t = 0)]
-    cooldown_ms: u64,
+    /// Idle seconds before each measured pass. On a thermally limited host (any
+    /// Apple laptop) back-to-back proving throttles the SoC and measures the power
+    /// budget instead of the prover. The default recovers most of that; use 6 when
+    /// comparing two builds, and 0 on a server-class host, which needs none.
+    #[arg(long, global = true, default_value_t = 2)]
+    cooldown: u64,
 
     #[command(subcommand)]
     command: Command,
@@ -103,12 +104,8 @@ fn main() {
     // are process-wide policy, which is why they are set here and not inside the
     // library entry points.
     lean_vm::init_prover();
-    let plan = primitives::bench::Plan::new(cli.repeat, cli.cooldown_ms);
+    let plan = primitives::bench::Plan::new(cli.repeat, cli.cooldown);
     run(&cli, plan);
-    println!(
-        "  peak memory                 : {} GiB",
-        primitives::pretty_f64(primitives::bench::peak_rss_bytes() as f64 / (1u64 << 30) as f64)
-    );
     // What the proving arena absorbed, for sizing its slabs and checking that the
     // buffers meant to be arena-backed are.
     if std::env::var_os("ZK_ALLOC_STATS").is_some() {

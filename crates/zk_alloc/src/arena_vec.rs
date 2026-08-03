@@ -285,7 +285,7 @@ impl<T> ArenaVec<T> {
     ///
     /// # Safety
     /// `ptr` must be non-null and aligned for `T`, `len <= cap`, and either `ptr`
-    /// came from [`raw_alloc`](crate::raw_alloc) for `cap * size_of::<T>()` bytes
+    /// came from `raw_alloc` for `cap * size_of::<T>()` bytes
     /// at `align_of::<T>()`, or `cap == 0` and `ptr` is dangling-but-aligned.
     /// Exactly one `ArenaVec` may own a given pointer.
     #[inline]

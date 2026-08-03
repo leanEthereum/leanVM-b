@@ -327,7 +327,7 @@ impl QuaternaryLayerState {
         } else {
             (0..windows).map(window).fold([F192Unreduced::ZERO; 4], xor)
         };
-        if stored_rows % 2 != 0 {
+        if !stored_rows.is_multiple_of(2) {
             let lo = 8 * full_pairs;
             let lines = [0, 1, 2, 3].map(|child| {
                 let at_zero = self.values[lo + child];
@@ -378,7 +378,7 @@ impl QuaternaryLayerState {
             window(0, &mut next[..4 * full_rows]);
         }
         self.pads = folded;
-        if stored_rows % 2 != 0 {
+        if !stored_rows.is_multiple_of(2) {
             let lo = 8 * full_rows;
             let folds = mul_four(
                 [0, 1, 2, 3].map(|child| self.values[lo + child] + F192::ONE),

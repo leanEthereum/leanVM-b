@@ -418,9 +418,48 @@ pub struct Stats {
     pub committed: usize,
     /// Data memory is `2^log_mem` cells (the padded write-once image).
     pub log_mem: usize,
-    /// Cells actually touched, before the pad to `2^log_mem` — the real memory
+    /// Cells actually touched, before the pad to `2^log_mem`, i.e. the real memory
     /// footprint (`log2` is fractional).
     pub mem_used: usize,
+}
+
+impl Stats {
+    /// Table names in `counts` order.
+    pub const TABLES: [&'static str; tables::N_TABLES] = ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3", "PACK64X2"];
+
+    /// One line of run sizes, every one a power of two: the per-table instruction
+    /// counts with their share of the run, largest first, then the data memory and
+    /// the committed witness. Reads as
+    /// `"DEREF 2^18.838 (33.6%)  SET 2^18.265 (22.6%)  …  MEMORY 2^21.701  TOTAL_COMMITTED 2^26.364"`.
+    ///
+    /// The per-table counts sum to `cycles`, so the percentages are shares of the
+    /// whole run. Every exponent is an actual count, never a padded one, so the
+    /// figures are directly comparable; `log_mem` holds the padded memory size the
+    /// commitment covers. Zero-count tables are omitted.
+    #[must_use]
+    pub fn details(&self) -> String {
+        if self.cycles == 0 {
+            return "-".to_string();
+        }
+        let mut shares: Vec<(&str, usize)> = Self::TABLES
+            .iter()
+            .zip(&self.counts)
+            .filter(|&(_, &c)| c > 0)
+            .map(|(&name, &c)| (name, c))
+            .collect();
+        shares.sort_unstable_by_key(|&(_, c)| std::cmp::Reverse(c));
+        let mut parts: Vec<String> = shares
+            .iter()
+            .map(|&(name, c)| {
+                let pct = 100.0 * c as f64 / self.cycles as f64;
+                format!("{name} 2^{} ({pct:.1}%)", primitives::pretty_f64((c as f64).log2()))
+            })
+            .collect();
+        let log2 = |n: usize| primitives::pretty_f64((n.max(1) as f64).log2());
+        parts.push(format!("MEMORY 2^{}", log2(self.mem_used)));
+        parts.push(format!("TOTAL_COMMITTED 2^{}", log2(self.committed)));
+        parts.join("  ")
+    }
 }
 
 /// Prove the program on the given public input: run it (witness generation),

@@ -127,12 +127,11 @@ fn task_panic_reaches_the_dispatcher_and_the_pool_survives() {
 }
 
 /// Nesting is a bug, not a slow path: it must be reported, not silently
-/// serialized. A caller with two real levels branches on `is_in_task` instead.
+/// serialized, so that a lost fan-out cannot hide as a slow one.
 #[test]
 #[should_panic = "nested parallel dispatch"]
 fn nested_dispatch_panics_rather_than_deadlocking() {
     parallel::for_each(parallel::num_threads().max(2), |_| {
-        assert!(parallel::is_in_task());
         parallel::for_each(4, |_| {});
     });
 }

@@ -31,7 +31,80 @@
 //! server-class host. A/B comparisons are only meaningful between runs that
 //! used the same cooldown.
 
+use std::io::{IsTerminal, Write};
 use std::time::{Duration, Instant};
+
+/// One line of live progress on stderr.
+///
+/// Measured pass times accumulate on it while transient status (warming,
+/// cooling) is appended after them and erased again, so the passes stay put and
+/// the whole run costs one line instead of one per pass.
+///
+/// Off a terminal it degrades to plain appends with no escape codes, so piped or
+/// redirected output stays readable; the transient parts are simply skipped.
+struct Progress {
+    tty: bool,
+    /// Permanent content, i.e. everything after the label.
+    parts: String,
+}
+
+const PROGRESS_LABEL: &str = "  passes                      : ";
+
+impl Progress {
+    fn new() -> Self {
+        Self {
+            tty: std::io::stderr().is_terminal(),
+            parts: String::new(),
+        }
+    }
+
+    fn draw(&self, transient: &str) {
+        if self.tty {
+            eprint!("\r\x1b[2K{PROGRESS_LABEL}{}{transient}", self.parts);
+            let _ = std::io::stderr().flush();
+        }
+    }
+
+    /// Show `msg` after the passes recorded so far; erased by the next draw.
+    fn status(&self, msg: &str) {
+        if self.parts.is_empty() {
+            self.draw(msg);
+        } else {
+            self.draw(&format!("  {msg}"));
+        }
+    }
+
+    /// Record a pass time, permanently.
+    fn push(&mut self, secs: f64) {
+        let first = self.parts.is_empty();
+        if !first {
+            self.parts.push_str("  ");
+        }
+        self.parts.push_str(&format!("{secs:.3} s"));
+        if self.tty {
+            self.draw("");
+        } else {
+            if first {
+                eprint!("{PROGRESS_LABEL}");
+            } else {
+                eprint!("  ");
+            }
+            eprint!("{secs:.3} s");
+            let _ = std::io::stderr().flush();
+        }
+    }
+
+    /// Terminate the line, or erase it entirely (label included) if nothing was
+    /// recorded, so a silent measurement leaves the terminal untouched.
+    fn finish(self) {
+        if !self.parts.is_empty() {
+            eprintln!();
+        } else if self.tty {
+            eprint!("\r\x1b[2K");
+            let _ = std::io::stderr().flush();
+        }
+    }
+}
 
 /// Mean and 95%-confidence half-width of `samples` (half-width `0` for a
 /// single sample). Uses the Student-t critical value for `n - 1` degrees of
@@ -100,16 +173,6 @@ impl Timing {
             format!(" ± {:.1}%", 100.0 * ci / mean)
         }
     }
-
-    /// `"   (mean of 3 runs, 1 warmup)"`, or empty for an unrepeated measurement.
-    #[must_use]
-    pub fn provenance(&self) -> String {
-        if self.samples.len() < 2 {
-            String::new()
-        } else {
-            format!("   (mean of {} runs, 1 warmup)", self.samples.len())
-        }
-    }
 }
 
 /// How a benchmark repeats and paces its measured passes.
@@ -132,65 +195,78 @@ impl Default for Plan {
 }
 
 impl Plan {
-    /// A plan of `repeat` measured passes, each preceded by `cooldown_ms` idle.
+    /// A plan of `repeat` measured passes, each preceded by `cooldown_secs` idle.
     #[must_use]
-    pub fn new(repeat: usize, cooldown_ms: u64) -> Self {
+    pub fn new(repeat: usize, cooldown_secs: u64) -> Self {
         assert!(repeat >= 1, "a benchmark needs at least one measured pass");
         Self {
             repeat,
-            cooldown: Duration::from_millis(cooldown_ms),
+            cooldown: Duration::from_secs(cooldown_secs),
         }
     }
 
-    /// Read the plan from the environment: `BENCH_REPEAT` and
-    /// `BENCH_COOLDOWN_MS`. For the `#[ignore]`d benchmark tests, which have no
-    /// command line of their own.
+    /// Read the plan from the environment: `BENCH_REPEAT` and `BENCH_COOLDOWN`
+    /// (seconds), for the `#[ignore]`d benchmark tests, which have no command line
+    /// of their own. Defaults match the CLI.
     #[must_use]
     pub fn from_env() -> Self {
-        Self::new(env_usize("BENCH_REPEAT", 1), env_usize("BENCH_COOLDOWN_MS", 0) as u64)
+        Self::new(env_usize("BENCH_REPEAT", 1), env_usize("BENCH_COOLDOWN", 2) as u64)
     }
 
     /// Run `f` once untimed to warm up, then `self.repeat` measured passes,
     /// keeping the last result and the samples.
     pub fn warm_then_measure<T>(&self, mut f: impl FnMut() -> T) -> (T, Timing) {
+        let progress = Progress::new();
+        progress.status("[warming]");
         // Free the warmup's result before the first measured pass allocates, so
         // every measured pass sees the same steady-state footprint.
         drop(f());
-        self.measure(f)
+        self.run(f, progress, true)
+    }
+
+    /// Idle for [`Self::cooldown`], counting down in place so a six-second wait
+    /// does not look like a hang.
+    fn cool_down(&self, progress: &Progress) {
+        let mut left = self.cooldown;
+        while !left.is_zero() {
+            progress.status(&format!("[cooldown {}s]", left.as_secs_f64().ceil() as u64));
+            let step = Duration::from_secs(1).min(left);
+            std::thread::sleep(step);
+            left -= step;
+        }
     }
 
     /// Run `f` `self.repeat` times with no warmup pass, for a stage an earlier
     /// stage already warmed (verification after proving, say).
     pub fn measure<T>(&self, f: impl FnMut() -> T) -> (T, Timing) {
-        self.run(f, true)
+        self.run(f, Progress::new(), true)
     }
 
     /// [`measure`](Self::measure) without the per-pass echo, for a stage whose
     /// individual passes are not interesting. Verification takes milliseconds and
     /// nobody tunes it, so echoing every pass would bury the numbers that matter.
     pub fn measure_quiet<T>(&self, f: impl FnMut() -> T) -> (T, Timing) {
-        self.run(f, false)
+        self.run(f, Progress::new(), false)
     }
 
-    fn run<T>(&self, mut f: impl FnMut() -> T, echo: bool) -> (T, Timing) {
+    fn run<T>(&self, mut f: impl FnMut() -> T, mut progress: Progress, echo: bool) -> (T, Timing) {
         let mut timing = Timing::default();
         let mut last = None;
-        for pass in 1..=self.repeat {
+        for _ in 0..self.repeat {
             drop(last.take()); // free the previous result before the next pass allocates
-            if !self.cooldown.is_zero() {
-                std::thread::sleep(self.cooldown);
-            }
+            self.cool_down(&progress);
             let t = Instant::now();
             let out = f();
             let secs = t.elapsed().as_secs_f64();
             timing.push(secs);
             if echo && self.repeat > 1 {
-                // Echo each pass: a throttling ramp is visible here and invisible
+                // Record each pass: a throttling ramp is visible here and invisible
                 // in the mean.
-                eprintln!("  [pass {pass}/{}] {secs:.3} s", self.repeat);
+                progress.push(secs);
             }
             last = Some(out);
         }
+        progress.finish();
         (last.expect("repeat >= 1"), timing)
     }
 }
@@ -234,7 +310,6 @@ mod tests {
         assert_eq!(t.mean(), 1.5);
         assert_eq!(t.ci(), 0.0);
         assert_eq!(t.spread(), "");
-        assert_eq!(t.provenance(), "");
     }
 
     #[test]
@@ -246,7 +321,6 @@ mod tests {
         assert_eq!(t.mean(), 2.0);
         assert_eq!(t.ci(), 0.0);
         assert_eq!(t.spread(), " ± 0.0%");
-        assert_eq!(t.provenance(), "   (mean of 4 runs, 1 warmup)");
     }
 
     #[test]

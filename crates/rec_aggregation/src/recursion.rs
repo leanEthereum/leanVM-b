@@ -150,11 +150,7 @@ fn prove_inner(
     program.set_witness("n_hash", vec![vec![F192::new(g_pow(hashes).0, 0, 0)]]);
     program.set_witness("iters", vec![vec![F192::new(g_pow(iters).0, 0, 0)]]);
     let (proof, stats) = prove(&program, pi, log_inv_rate);
-    eprintln!(
-        "[inner] cycles={} committed=2^{}",
-        pretty_integer(stats.cycles),
-        pretty_f64((stats.committed as f64).log2())
-    );
+    // Reported once, by `run_recursion_with_rates` from `Batch::inner_stats`.
     (program, proof, stats.cycles, stats.committed)
 }
 
@@ -2044,9 +2040,10 @@ fn run_recursion_with_rates(
     drop(trace_span);
 
     println!(
-        "recursion program: {} instructions (2^{} padded), compiled in {t_compile:?}",
+        "recursion program: {} instructions (2^{} padded), compiled in {} s",
         pretty_integer(real_instrs),
-        guest.prog.len().trailing_zeros()
+        guest.prog.len().trailing_zeros(),
+        pretty_f64(t_compile.as_secs_f64())
     );
     for &(cycles, committed) in &batch.inner_stats {
         println!(
@@ -2070,37 +2067,19 @@ fn run_recursion_with_rates(
     );
     let guest_cycles = pretty_integer(stats.cycles);
     println!(
-        "  guest cycles (VM steps)     : {guest_cycles:>14} = {:>9}   ({} / inner cycle)",
+        "  guest cycles (VM steps)     : {guest_cycles} = {}   ({} / inner cycle)",
         pow(stats.cycles),
         pretty_f64(stats.cycles as f64 / total_inner_cycles as f64)
     );
-    for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3", "PACK64X2"]
-        .iter()
-        .zip(&stats.counts)
-    {
-        let count = pretty_integer(c);
-        println!("    {name:<6} instructions     : {count:>14} = {:>9}", pow(c));
-    }
+    println!("    details                   : {}", stats.details());
+    println!("proof size                : {:.1} KiB", proof_bytes as f64 / 1024.0);
     println!(
-        "  committed witness size      : 2^{}",
-        pretty_f64((stats.committed as f64).log2())
-    );
-    println!(
-        "  data memory                 : 2^{} padded (2^{} used)",
-        pretty_integer(stats.log_mem),
-        pretty_f64((stats.mem_used as f64).log2())
-    );
-    println!(
-        "  recursive proof size        : {} KiB",
-        pretty_f64(proof_bytes as f64 / 1024.0)
-    );
-    println!(
-        "  outer proving               : {} s{}{}",
+        "recursion proving         : {} s{}      peak memory {} GiB",
         pretty_f64(prove_time.mean()),
         prove_time.spread(),
-        prove_time.provenance()
+        pretty_f64(primitives::bench::peak_rss_bytes() as f64 / (1u64 << 30) as f64)
     );
-    println!("  complete recursive verify   : {} s", pretty_f64(verify_time.mean()));
+    println!("verification              : {} s", pretty_f64(verify_time.mean()));
     recursive_proof
 }
 

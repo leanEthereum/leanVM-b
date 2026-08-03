@@ -38,35 +38,17 @@ pub fn run_fibonacci(n: usize, log_inv_rate: usize, plan: Plan) {
         pretty_integer(n)
     );
     println!("  cycles (VM steps)           : {}", pretty_integer(stats.cycles));
-    for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3", "PACK64X2"]
-        .iter()
-        .zip(&stats.counts)
-    {
-        let pow = if c == 0 {
-            "0".to_string()
-        } else {
-            format!("2^{}", pretty_f64((c as f64).log2()))
-        };
-        println!("    {name:<5} instructions        : {pow}");
-    }
-    println!(
-        "  committed witness size      : 2^{}",
-        pretty_f64((stats.committed as f64).log2())
-    );
+    println!("    details                   : {}", stats.details());
     println!("  proof size                  : {:.1} KiB", proof_bytes as f64 / 1024.0);
-    println!(
-        "  proving (incl. witness gen) : {} s{}{}",
-        pretty_f64(prove_time.mean()),
-        prove_time.spread(),
-        prove_time.provenance()
-    );
-    println!("  verifying                   : {} s", pretty_f64(verify_time.mean()));
     let cycles_per_second = (stats.cycles as f64 / prove_time.mean()).round() as u64;
     println!(
-        "  throughput                  : {} cycles/s{}",
+        "  proving                     : {} s{}   {} cycles/s      peak memory {} GiB",
+        pretty_f64(prove_time.mean()),
+        prove_time.spread(),
         pretty_integer(cycles_per_second),
-        prove_time.spread()
+        pretty_f64(primitives::bench::peak_rss_bytes() as f64 / (1u64 << 30) as f64)
     );
+    println!("  verifying                   : {} s", pretty_f64(verify_time.mean()));
 }
 
 /// Build the demo program: Fibonacci in the exponent over `fib_n` steps (an

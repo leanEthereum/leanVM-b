@@ -192,7 +192,7 @@ pub fn enter_phase() -> PhaseGuard {
     PhaseGuard(())
 }
 
-/// What the arena did, for sizing [`SLAB_SIZE`] and checking that the buffers
+/// What the arena did, for sizing `SLAB_SIZE` and checking that the buffers
 /// meant to be arena-backed actually are.
 #[derive(Clone, Copy, Debug)]
 pub struct Stats {
@@ -209,7 +209,7 @@ pub struct Stats {
     /// Compare against [`Stats::slab_size`].
     pub high_water: usize,
     /// Bytes that overflowed a slab mid-phase and fell back to the system
-    /// allocator. Nonzero means [`SLAB_SIZE`] is too small for this workload.
+    /// allocator. Nonzero means `SLAB_SIZE` is too small for this workload.
     pub overflow: usize,
     /// The per-thread slab size this build was compiled with.
     pub slab_size: usize,

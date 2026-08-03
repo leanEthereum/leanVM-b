@@ -11,10 +11,10 @@
 //! ```
 //!
 //! `BENCH_REPEAT=n` averages `n` measured passes after the warmup pass, and
-//! `BENCH_COOLDOWN_MS=6000` spaces them so a thermally limited laptop does not
-//! report its power budget as proving cost. One warmup always runs: a cold pass
-//! pays thread-pool spawn, first-touch page faults, and setup-table construction
-//! that steady-state proving does not (see [`primitives::bench`]).
+//! `BENCH_COOLDOWN` (seconds, default 2) spaces them so a thermally limited laptop
+//! does not report its power budget as proving cost. One warmup always runs: a cold
+//! pass pays thread-pool spawn, first-touch page faults, and setup-table
+//! construction that steady-state proving does not (see [`primitives::bench`]).
 
 use std::time::Instant;
 
