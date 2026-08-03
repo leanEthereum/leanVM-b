@@ -7,11 +7,11 @@
 //! g-powers, separators); the fingerprint challenges `α, γ` are `E`-valued, so a
 //! leaf accumulates via the mixed `mul_base` product (2 PMULL per coordinate).
 
-use crate::PAR_THRESHOLD;
 use crate::gkr;
 use crate::transcript::{ProverState, VerifierState};
 use crate::witness::Column;
-use primitives::field::{F64, F192, F192BaseUnreduced, g_pow, index_mle};
+use crate::PAR_THRESHOLD;
+use primitives::field::{g_pow, index_mle, F192BaseUnreduced, F192, F64};
 use primitives::multilinear::{eq_eval, mle_eval};
 use rayon::prelude::*;
 
@@ -139,7 +139,7 @@ enum Term<'a> {
 /// followed implicitly by the identity `1` up to `2^μ`. The row-invariant
 /// `α`-power chain and constant coordinates are folded once per block into
 /// `const_part`.
-pub fn build_leaves(blocks: &[Block], lay: &Layout, cols: &[Column], alpha: F192, gamma: F192) -> Vec<F192> {
+pub fn build_leaves(blocks: &[Block], lay: &Layout, cols: &[Column], alpha: F192, gamma: F192) -> gkr::LeafVector {
     let explicit = blocks
         .iter()
         .enumerate()
@@ -148,6 +148,7 @@ pub fn build_leaves(blocks: &[Block], lay: &Layout, cols: &[Column], alpha: F192
         .unwrap_or(1);
     debug_assert!(explicit <= 1usize << lay.mu);
     let mut leaves = vec![F192::ONE; explicit];
+    let mut pads = Vec::new();
     let maxk = blocks.iter().map(|b| b.kappa).max().unwrap_or(0);
     let gpow = primitives::field::g_powers(1usize << maxk);
     for (b, blk) in blocks.iter().enumerate() {
@@ -181,16 +182,26 @@ pub fn build_leaves(blocks: &[Block], lay: &Layout, cols: &[Column], alpha: F192
         };
         let off = lay.offsets[b];
         let rows = 1usize << blk.kappa;
-        let dst = &mut leaves[off..off + rows];
-        if rows >= PAR_THRESHOLD {
+        assert!(blk.real <= rows, "a block's real rows must fit its cube");
+        let dst = &mut leaves[off..off + blk.real];
+        if dst.len() >= PAR_THRESHOLD {
             dst.par_iter_mut().enumerate().for_each(|(z, slot)| *slot = row(z));
         } else {
             for (z, slot) in dst.iter_mut().enumerate() {
                 *slot = row(z);
             }
         }
+        if blk.real < rows {
+            let default = row(blk.real);
+            debug_assert!(
+                (blk.real..rows).all(|z| row(z) == default),
+                "a padded block's rows past `real` must be one fixed default"
+            );
+            leaves[off + blk.real..off + rows].fill(default);
+            pads.push(gkr::PadRun::new(off + blk.real, off + rows, default));
+        }
     }
-    leaves
+    gkr::LeafVector::new(leaves, pads)
 }
 
 /// One table's bus contribution on one side, as a linear form over that table's
