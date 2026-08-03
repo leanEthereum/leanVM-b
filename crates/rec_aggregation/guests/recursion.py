@@ -621,10 +621,13 @@ def jagged_step(s0, s1, s2, s3, w0, w1, w2, w3, start_bit_point, end_bit_point):
     return out[0], out[1], out[2], out[3]
 
 
-def jagged_prefix_fixed(row_point, index_point, gamma, selector_len: Const, start_bits, end_bits, nbits: Const):
-    # Candidate-specialized straight-line prefix. Generate the four equality
-    # weights immediately before their transition instead of materializing and
-    # reloading a 4 * nbits heap table for every block.
+def jagged_weight(row_point, index_point, tail_point, gamma, selector_len: Const, start_bits, end_bits, fold_bits: Const, tail_bits: Const):
+    # Candidate-specialized straight-line automaton over every index
+    # coordinate: the block's selector bits, then the shared row point against
+    # the folded coordinates, then against the tail coordinates the sumcheck
+    # consumed last. Generate the four equality weights immediately before
+    # their transition instead of materializing and reloading a 4 * nbits heap
+    # table for every block.
     s0 = 1
     s1 = 0
     s2 = 0
@@ -635,165 +638,39 @@ def jagged_prefix_fixed(row_point, index_point, gamma, selector_len: Const, star
         rx = gamma_bit * index_bit
         s0, s1, s2, s3 = jagged_step(s0, s1, s2, s3, 1 + index_bit, gamma_bit + rx, index_bit, rx, start_bits[GEN ** bit], end_bits[GEN ** bit])
         gamma_bit *= gamma_bit
-    for bit in unroll(selector_len, nbits):
+    for bit in unroll(selector_len, fold_bits):
         row_bit = row_point[GEN ** (bit - selector_len)]
         index_bit = index_point[GEN ** bit]
         rx = row_bit * index_bit
         s0, s1, s2, s3 = jagged_step(s0, s1, s2, s3, 1 + row_bit + index_bit + rx, row_bit + rx, index_bit + rx, rx, start_bits[GEN ** bit], end_bits[GEN ** bit])
-    return s0, s1, s2, s3
+    for bit in unroll(fold_bits, fold_bits + tail_bits):
+        row_bit = row_point[GEN ** (bit - selector_len)]
+        index_bit = tail_point[GEN ** (bit - fold_bits)]
+        rx = row_bit * index_bit
+        s0, s1, s2, s3 = jagged_step(s0, s1, s2, s3, 1 + row_bit + index_bit + rx, row_bit + rx, index_bit + rx, rx, start_bits[GEN ** bit], end_bits[GEN ** bit])
+    # One extra index coordinate fixed to zero, with row weight (1, 0). Its
+    # transition admits an interval ending exactly at 2^m and rejects an
+    # addition carrying out of the cube, and it accepts the states with carry
+    # zero and index < end. Both endpoint bits are public Boolean data, so
+    # write that transition out rather than pay a general step for it.
+    top_start = start_bits[GEN ** (fold_bits + tail_bits)]
+    top_end = end_bits[GEN ** (fold_bits + tail_bits)]
+    return (1 + top_start) * (s2 + top_end * s0)
 
 
-def jagged_reverse_step(v0, v1, v2, v3, w0, w1, w2, w3, row_bit, start_bit, end_bit):
-    # General residual transition, retained for row points whose residual
-    # coordinates are not all zero.
-    if row_bit == 0:
-        if start_bit == 0:
-            if end_bit == 0:
-                return v0, w0, v2, w0
-            return v2, w0, v2, w2
-        if end_bit == 0:
-            return w0, v1, w0, v3
-        return w0, v3, w2, v3
-    if row_bit == 1:
-        if start_bit == 0:
-            if end_bit == 0:
-                return w0, v1, w0, v3
-            return w0, v3, w2, v3
-        if end_bit == 0:
-            return v1, w1, v3, w1
-        return v3, w1, v3, w3
-    one_plus_row = 1 + row_bit
-    if start_bit == 0:
-        if end_bit == 0:
-            return one_plus_row * v0 + row_bit * w0, row_bit * v1 + one_plus_row * w0, one_plus_row * v2 + row_bit * w0, row_bit * v3 + one_plus_row * w0
-        return one_plus_row * v2 + row_bit * w0, row_bit * v3 + one_plus_row * w0, one_plus_row * v2 + row_bit * w2, row_bit * v3 + one_plus_row * w2
-    if end_bit == 0:
-        return row_bit * v1 + one_plus_row * w0, one_plus_row * v1 + row_bit * w1, row_bit * v3 + one_plus_row * w0, one_plus_row * v3 + row_bit * w1
-    return row_bit * v3 + one_plus_row * w0, one_plus_row * v3 + row_bit * w1, row_bit * v3 + one_plus_row * w2, one_plus_row * v3 + row_bit * w3
-
-
-def jagged_contract_zero(final_msg, start_bits, end_bits, fold_bits: Const, log_len: Const, init0, init1, init2, init3):
-    # With every residual logical-row coordinate fixed to zero, each prefix
-    # state reaches exactly one message index: start_hi for carry 0, or
-    # start_hi + 1 for carry 1. The comparison state accepts equality only
-    # when its low-bit comparison is already strict. `final_msg` has one
-    # explicit zero sentinel after its 2^log_len real entries, so a carry from
-    # the last message index is rejected without an out-of-range read.
-    assert start_bits[GEN ** (fold_bits + log_len)] == 0
-    start_plus_one = StackBuf(YR_LOG_CAP + 1)
-    start_ptr = GEN ** 0
-    carry = 1
-    for bit in unroll(0, log_len):
-        start_bit = start_bits[GEN ** (fold_bits + bit)]
-        start_plus_one[bit] = start_bit + carry
-        carry *= start_bit
-        start_ptr *= 1 + start_bit * (1 + GEN ** (2 ** bit))
-    start_plus_one[log_len] = carry
-
-    # Compute start_hi < end_hi and start_hi == end_hi, including the extra
-    # endpoint bit that represents an interval ending exactly at 2^M. At the
-    # same time, test whether end_hi == start_hi + 1.
-    less = 0
-    equal = 1
-    adjacent = 1
-    for rev in unroll(0, log_len + 1):
-        bit = log_len - rev
-        end_bit = end_bits[GEN ** (fold_bits + bit)]
-        if bit == log_len:
-            start_bit = 0
-        else:
-            start_bit = start_bits[GEN ** (fold_bits + bit)]
-        equal_start_zero = equal * (1 + start_bit)
-        less += end_bit * equal_start_zero
-        equal *= 1 + start_bit + end_bit
-        adjacent *= 1 + start_plus_one[bit] + end_bit
-    start_plus_one_less = less * (1 + adjacent)
-
-    at_start = less * (init0 + init2) + equal * init2
-    at_start_plus_one = start_plus_one_less * init1 + less * init3
-    return final_msg[start_ptr] * at_start + final_msg[start_ptr * GEN] * at_start_plus_one
-
-
-def jagged_contract_general(final_msg, row_point, start_bits, end_bits, fold_bits: Const, log_len: Const, row_shift: Const, init0, init1, init2, init3):
-    layers = StackBuf(8 * 2 ** YR_LOG_CAP)
-    for y in unroll(0, 2 ** log_len):
-        layers[4 * y] = 0
-        layers[4 * y + 1] = 0
-        layers[4 * y + 2] = final_msg[GEN ** y]
-        layers[4 * y + 3] = 0
-    layer_off = 0
-    layer_len = 2 ** log_len
-    next_off = 4 * layer_len
-    for stage in unroll(0, log_len):
-        bit = log_len - 1 - stage
-        next_len = 2 ** bit
-        for t in unroll(0, next_len):
-            v = layer_off + 4 * t
-            w = layer_off + 4 * (t + next_len)
-            o0, o1, o2, o3 = jagged_reverse_step(layers[v], layers[v + 1], layers[v + 2], layers[v + 3], layers[w], layers[w + 1], layers[w + 2], layers[w + 3], row_point[GEN ** (fold_bits + bit - row_shift)], start_bits[GEN ** (fold_bits + bit)], end_bits[GEN ** (fold_bits + bit)])
-            out = next_off + 4 * t
-            layers[out] = o0
-            layers[out + 1] = o1
-            layers[out + 2] = o2
-            layers[out + 3] = o3
-        layer_off = next_off
-        layer_len = next_len
-        next_off = next_off + 4 * next_len
-    return init0 * layers[layer_off] + init1 * layers[layer_off + 1] + init2 * layers[layer_off + 2] + init3 * layers[layer_off + 3]
-
-
-def jagged_terminal(m_idx: Const, fold_challenges, final_msg, claim_rows, col_bound_bits, gamma, gamma_powers):
+def jagged_terminal(m_idx: Const, fold_challenges, tail_challenges, claim_rows, col_bound_bits, gamma, gamma_powers):
     # One automaton per complete row-major column block, rather than one per
     # physical column. For selector bit b, unnormalized row weights (1,
-    # gamma^(2^b)) absorb the geometric batch scale Π(1+gamma^(2^b)) without
-    # any field inversions; the remaining coordinates are the shared row point.
-    # The closed-form zero-residual terminal may address entry 2^log_len when
-    # the last real entry carries. Make that rejection an explicit shared zero.
-    terminal_msg = HeapBuf(2 ** YR_LOG_CAP + 1)
-    for y in unroll(0, 2 ** LIG_YR_LOG_LEN[m_idx]):
-        terminal_msg[GEN ** y] = final_msg[GEN ** y]
-    terminal_msg[GEN ** (2 ** LIG_YR_LOG_LEN[m_idx])] = 0
-    residual_zero = HeapBuf(N_JAGGED_BATCHES)
+    # gamma^(2^b)) absorb the geometric batch scale prod (1 + gamma^(2^b))
+    # without any field inversions; the remaining coordinates are the shared
+    # row point.
     total = 0
     for batch in unroll(0, N_JAGGED_BATCHES):
         row = claim_rows * GEN ** (SIZE_BITS * JAGGED_BATCH_ROW[batch])
         start_bits = col_bound_bits * GEN ** (SIZE_BITS * JAGGED_BATCH_COL[batch])
         end_bits = col_bound_bits * GEN ** (SIZE_BITS * (JAGGED_BATCH_COL[batch] + 1))
-        p0, p1, p2, p3 = jagged_prefix_fixed(row, fold_challenges, gamma, JAGGED_BATCH_LOG[batch], start_bits, end_bits, LIG_TOTAL_FOLDS[m_idx])
-        folded_out = StackBuf(1)
-        if LIG_YR_LOG_LEN[m_idx] == 3:
-            if row[GEN ** (LIG_TOTAL_FOLDS[m_idx] - JAGGED_BATCH_LOG[batch])] == 0:
-                if row[GEN ** (LIG_TOTAL_FOLDS[m_idx] + 1 - JAGGED_BATCH_LOG[batch])] == 0:
-                    if row[GEN ** (LIG_TOTAL_FOLDS[m_idx] + 2 - JAGGED_BATCH_LOG[batch])] == 0:
-                        residual_zero[GEN ** batch] = 1
-                    else:
-                        residual_zero[GEN ** batch] = 0
-                else:
-                    residual_zero[GEN ** batch] = 0
-            else:
-                residual_zero[GEN ** batch] = 0
-        elif LIG_YR_LOG_LEN[m_idx] == 4:
-            if row[GEN ** (LIG_TOTAL_FOLDS[m_idx] - JAGGED_BATCH_LOG[batch])] == 0:
-                if row[GEN ** (LIG_TOTAL_FOLDS[m_idx] + 1 - JAGGED_BATCH_LOG[batch])] == 0:
-                    if row[GEN ** (LIG_TOTAL_FOLDS[m_idx] + 2 - JAGGED_BATCH_LOG[batch])] == 0:
-                        if row[GEN ** (LIG_TOTAL_FOLDS[m_idx] + 3 - JAGGED_BATCH_LOG[batch])] == 0:
-                            residual_zero[GEN ** batch] = 1
-                        else:
-                            residual_zero[GEN ** batch] = 0
-                    else:
-                        residual_zero[GEN ** batch] = 0
-                else:
-                    residual_zero[GEN ** batch] = 0
-            else:
-                residual_zero[GEN ** batch] = 0
-        else:
-            residual_zero[GEN ** batch] = 0
-        if residual_zero[GEN ** batch] == 1:
-            folded_out[0] = jagged_contract_zero(terminal_msg, start_bits, end_bits, LIG_TOTAL_FOLDS[m_idx], LIG_YR_LOG_LEN[m_idx], p0, p1, p2, p3)
-        else:
-            folded_out[0] = jagged_contract_general(final_msg, row, start_bits, end_bits, LIG_TOTAL_FOLDS[m_idx], LIG_YR_LOG_LEN[m_idx], JAGGED_BATCH_LOG[batch], p0, p1, p2, p3)
-        folded = folded_out[0]
-        total += gamma_powers[GEN ** JAGGED_BATCH_BASE[batch]] * folded
+        weight = jagged_weight(row, fold_challenges, tail_challenges, gamma, JAGGED_BATCH_LOG[batch], start_bits, end_bits, LIG_TOTAL_FOLDS[m_idx], LIG_YR_LOG_LEN[m_idx])
+        total += gamma_powers[GEN ** JAGGED_BATCH_BASE[batch]] * weight
     return total
 
 
@@ -815,12 +692,14 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
     #      Merkle authentication path against the bound root
     #      (verify_merkle_path);
     #   5. sample beta, fold the query sums into the running target.
-    # Then the per-level residuals (novel-basis prefix x final-message fold)
-    # are combined; the caller's eval_b terminal asserts the grand total.
+    # Then the sumcheck runs to its last coordinate and the per-level residual
+    # bases are evaluated at that single point; the caller's eval_b terminal
+    # asserts the grand total.
     #
-    # Returns (sumcheck_target, fold_challenges, final_msg, residual_total,
-    # yr_log_n_g = g^yr_log_n, fold_cap_g = g^lenris). The latter two describe
-    # the final-message and folded-coordinate partitions of the dense point.
+    # Returns (sumcheck_target, fold_challenges, residual_total,
+    # fold_cap_g = g^lenris, tail_challenges, yr_at_tail): the dense point is
+    # fold_challenges followed by tail_challenges, and yr_at_tail is the
+    # transmitted final message evaluated at the tail coordinates.
     fs = [fs0, fs1]
 
     fs = obs(fs, target)
@@ -948,23 +827,54 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
                 assert root_1 == level_roots_1[GEN ** lvl]
         level_query_sum = query_sum_chain[GEN ** LIG_QUERIES[m_idx * LIG_MAX_LEVELS + lvl]]
 
-        if lvl == LIG_YR_LEVEL[m_idx]:
-            fs = squeeze(fs)
-            beta_lvl = fs[0]
-            level_betas[GEN ** lvl] = beta_lvl
-            sumcheck_target += beta_lvl * level_query_sum
-        else:
-            fs, intro_u0, msg_cursor = fs_next(fs, msg_cursor)
-            fs, intro_u2, msg_cursor = fs_next(fs, msg_cursor)
-            fs = squeeze(fs)
-            beta_lvl = fs[0]
-            level_betas[GEN ** lvl] = beta_lvl
-            round_quad_c += beta_lvl * intro_u0
-            round_quad_b += beta_lvl * (level_query_sum + intro_u2)
-            round_quad_a += beta_lvl * intro_u2
-            sumcheck_target += beta_lvl * level_query_sum
+        # Every level, the last one included, ties its commitment in through an
+        # intro message folded into the running round polynomial. The last used
+        # to skip the message because the sumcheck stopped there; it no longer
+        # does, so the shapes coincide.
+        fs, intro_u0, msg_cursor = fs_next(fs, msg_cursor)
+        fs, intro_u2, msg_cursor = fs_next(fs, msg_cursor)
+        fs = squeeze(fs)
+        beta_lvl = fs[0]
+        level_betas[GEN ** lvl] = beta_lvl
+        round_quad_c += beta_lvl * intro_u0
+        round_quad_b += beta_lvl * (level_query_sum + intro_u2)
+        round_quad_a += beta_lvl * intro_u2
+        sumcheck_target += beta_lvl * level_query_sum
 
-    # ---- per-level residuals: novel-basis prefix x final-message fold ----
+    # ---- finish the sumcheck over the tail coordinates ----
+    # The opening no longer hands the verifier a residual cube to sum over, so
+    # every basis below is evaluated at ONE point: the fold challenges followed
+    # by these. Coordinates past this candidate's yr_log_n are pinned to zero so
+    # the terminal can unroll to the global cap and have them contribute 1.
+    tail_challenges = HeapBuf(GEN ** YR_LOG_CAP)
+    for j in unroll(0, LIG_YR_LOG_LEN[m_idx] - 1):
+        fs = squeeze(fs)
+        tail_c = fs[0]
+        tail_challenges[GEN ** j] = tail_c
+        sumcheck_target = round_quad_c + tail_c * round_quad_b + tail_c * tail_c * round_quad_a
+        fs, msg_a, msg_cursor = fs_next(fs, msg_cursor)
+        fs, msg_b, msg_cursor = fs_next(fs, msg_cursor)
+        round_quad_c = msg_a
+        round_quad_b = sumcheck_target + msg_b
+        round_quad_a = msg_b
+    # The last round closes on the point evaluation, so it sends no message.
+    fs = squeeze(fs)
+    tail_last = fs[0]
+    tail_challenges[GEN ** (LIG_YR_LOG_LEN[m_idx] - 1)] = tail_last
+    sumcheck_target = round_quad_c + tail_last * round_quad_b + tail_last * tail_last * round_quad_a
+    for j in unroll(LIG_YR_LOG_LEN[m_idx], YR_LOG_CAP):
+        tail_challenges[GEN ** j] = 0
+
+    # The transmitted message is public, so its value at the tail point is a
+    # multilinear evaluation the verifier does itself. Every weight below is
+    # scaled by it once, at the terminal.
+    tail_w = StackBuf(2 * YR_LOG_CAP)
+    for j in unroll(0, LIG_YR_LOG_LEN[m_idx]):
+        tail_w[2 * j] = 1 + tail_challenges[GEN ** j]
+        tail_w[2 * j + 1] = tail_challenges[GEN ** j]
+    yr_at_tail = fold_final_msg(final_msg, tail_w, 0, LIG_YR_LOG_LEN[m_idx])
+
+    # ---- per-level residuals: novel-basis at the single fold point ----
     inner_chain = HeapBuf(GEN ** (LIG_N_LEVELS[m_idx] + 1))
     inner_chain[GEN ** 0] = 0
     for lvl in unroll(0, LIG_N_LEVELS[m_idx]):
@@ -981,14 +891,12 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
             for t in unroll(0, LIG_RESIDUAL_PREFIX_LEN[m_idx * LIG_MAX_LEVELS + lvl]):
                 fold_c = fold_challenges[GEN ** (LIG_RESIDUAL_FOLD_OFF[m_idx * LIG_MAX_LEVELS + lvl] + t)]
                 prefix_eq *= (1 + fold_c * (1 + basis_w[t]))
-            fold_w = StackBuf(2 * YR_LOG_CAP)
             for j in unroll(0, LIG_YR_LOG_LEN[m_idx]):
-                fold_w[2 * j] = GEN ** 0
-                fold_w[2 * j + 1] = basis_w[LIG_RESIDUAL_PREFIX_LEN[m_idx * LIG_MAX_LEVELS + lvl] + j]
-            yr_eval = fold_final_msg(final_msg, fold_w, 0, LIG_YR_LOG_LEN[m_idx])
-            residual_chain[xr * GEN] = residual_chain[xr] + alpha_weights[GEN ** (lvl * LIG_MAX_QUERIES[m_idx]) * xr] * prefix_eq * yr_eval
+                tail_c = tail_challenges[GEN ** j]
+                prefix_eq *= (1 + tail_c * (1 + basis_w[LIG_RESIDUAL_PREFIX_LEN[m_idx * LIG_MAX_LEVELS + lvl] + j]))
+            residual_chain[xr * GEN] = residual_chain[xr] + alpha_weights[GEN ** (lvl * LIG_MAX_QUERIES[m_idx]) * xr] * prefix_eq
         inner_chain[GEN ** (lvl + 1)] = inner_chain[GEN ** lvl] + level_betas[GEN ** lvl] * residual_chain[GEN ** LIG_QUERIES[m_idx * LIG_MAX_LEVELS + lvl]]  # accumulate beta_lvl * (per-level residual sum) into the grand residual
-    return sumcheck_target, fold_challenges, final_msg, inner_chain[GEN ** LIG_N_LEVELS[m_idx]], GEN ** LIG_YR_LOG_LEN[m_idx], GEN ** LIG_TOTAL_FOLDS[m_idx]
+    return sumcheck_target, fold_challenges, inner_chain[GEN ** LIG_N_LEVELS[m_idx]], GEN ** LIG_TOTAL_FOLDS[m_idx], tail_challenges, yr_at_tail
 
 
 def exponent_tables():
@@ -2035,7 +1943,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     # Dispatch on m = max(log2_ceil(total real area), LIG_MIN_LOG_SIZE).
     sel = gmv * LIG_MIN_SHIFT_INV  # g^(m - MIN): the match_range arm index selecting the opening candidate
     assert log(sel) < LIG_N_CANDIDATES
-    sumcheck_target, fold_challenges, final_msg, inner_total, yr_log_n_g, fold_cap_g = match_range(log(sel), range(0, LIG_N_CANDIDATES), lambda m_idx: open_stacked(m_idx, fs[0], fs[1], target, commit_root_0, commit_root_1, cursor))
+    sumcheck_target, fold_challenges, inner_total, fold_cap_g, tail_challenges, yr_at_tail = match_range(log(sel), range(0, LIG_N_CANDIDATES), lambda m_idx: open_stacked(m_idx, fs[0], fs[1], target, commit_root_0, commit_root_1, cursor))
     # eval_rs_eq per claim: E = sum_k c_k * prod_j (z_j^(2^k) + 1 + ris_j)
     # (the telescoped product formula; z powers evolve by squaring per k).
     # QPKD_VARS_CAP = tau_5 + (K_LOG - LOG2_FIELD_BITS), exponent-additive from the certified announced log. Walk the runtime coordinates outside and the fixed 128 Frobenius powers inside: each coordinate loads its opening challenge once, evolves z by squaring in registers, and advances one contiguous 128-product row. This is the same product formula as the k-major form, without 128 separate runtime loops or a stored z-power table.
@@ -2072,8 +1980,8 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     rs_weight = rsw_chain[rs_len_g]
 
     # The VM value claims routed into fixed q_pkd slots use the same aligned
-    # offset-zero subcube. Evaluate their ris part directly; their residual-y
-    # selector is also zero, so they multiply final_msg[0] below.
+    # offset-zero subcube. Evaluate their ris part directly; their tail
+    # coordinates are handled with the ring-switch weight's below.
     qpkd_claim_weight = 0
     for j in unroll(0, N_CLAIMS):
         if CLAIM_POINT_BUF[j] == POINT_BUF_QPKD:
@@ -2101,14 +2009,22 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
                 selector_chain[xk * GEN] = selector_chain[xk] * (1 + q_hi[xk])
             qpkd_claim_weight += gamma_pool[GEN ** j] * selector_chain[q_hi_len_g]
 
-    # Contract every Basic Jagged indicator with the final Ligerito message.
-    # A second dispatch on the already-certified commitment size bakes both
-    # the folded prefix length and the residual-message shape into straight-
-    # line width-four contractions.
-    jagged_sum = match_range(log(sel), range(0, LIG_N_CANDIDATES), lambda m_idx: jagged_terminal(m_idx, fold_challenges, final_msg, claim_rows, col_bound_bits, gamma, gamma_powers))
-    # q_pkd occupies [0, 2^qpkdv), hence its residual y selector is zero.
-    inner_sum = inner_total + jagged_sum + (rs_weight + qpkd_claim_weight) * final_msg[GEN ** 0]
-    assert inner_sum == sumcheck_target
+    # Every Basic Jagged indicator, evaluated at the one point the sumcheck
+    # settled on. A second dispatch on the already-certified commitment size
+    # bakes the number of index coordinates into a straight-line width-four
+    # automaton per block.
+    jagged_sum = match_range(log(sel), range(0, LIG_N_CANDIDATES), lambda m_idx: jagged_terminal(m_idx, fold_challenges, tail_challenges, claim_rows, col_bound_bits, gamma, gamma_powers))
+    # q_pkd occupies [0, 2^qpkdv), so the ring-switch weight and the value-slot
+    # claims have an all-zero selector: their tail coordinates contribute
+    # prod (1 + tail_k). Coordinates past this candidate's yr_log_n are pinned
+    # to zero, so the product unrolls to the global cap and they contribute 1.
+    tail_pad_eq = GEN ** 0
+    for k in unroll(0, YR_LOG_CAP):
+        tail_pad_eq *= (1 + tail_challenges[GEN ** k])
+    # The transmitted final message is public; its value at the tail point
+    # scales the whole weight exactly once.
+    inner_sum = inner_total + jagged_sum + (rs_weight + qpkd_claim_weight) * tail_pad_eq
+    assert inner_sum * yr_at_tail == sumcheck_target
 
 
     # ---- export this sub-proof's deferred-claim data to the caller ----
