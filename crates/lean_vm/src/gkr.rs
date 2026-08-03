@@ -6,9 +6,9 @@
 //! Leaves and every layer are `E`-valued (the bus fingerprints mix `K`-columns
 //! into `E` upstream, [`crate::leaf`]).
 
-use crate::transcript::{ProverState, VerifierState};
 use crate::PAR_THRESHOLD;
-use primitives::field::{F192Unreduced, F192};
+use crate::transcript::{ProverState, VerifierState};
+use primitives::field::{F192, F192Unreduced};
 use primitives::multilinear::{eq_table, interp, quartic_eval_from_eq, shrink_eq_low};
 use rayon::prelude::*;
 use std::ops::Range;
@@ -154,9 +154,10 @@ impl LeafVector {
         pads.sort_unstable_by_key(|run| run.start);
         debug_assert!(pads.iter().all(|run| run.start < run.end && run.end <= leaves.len()));
         debug_assert!(pads.windows(2).all(|pair| pair[0].end <= pair[1].start));
-        debug_assert!(pads
-            .iter()
-            .all(|run| leaves[run.start..run.end].iter().all(|&leaf| leaf == run.value)));
+        debug_assert!(
+            pads.iter()
+                .all(|run| leaves[run.start..run.end].iter().all(|&leaf| leaf == run.value))
+        );
         Self { leaves, pads }
     }
 

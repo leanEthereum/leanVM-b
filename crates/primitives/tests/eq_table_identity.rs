@@ -36,7 +36,11 @@ impl Rng {
         z ^ (z >> 31)
     }
     fn f192(&mut self) -> F192 {
-        F192 { c0: self.next_u64(), c1: self.next_u64(), c2: self.next_u64() }
+        F192 {
+            c0: self.next_u64(),
+            c1: self.next_u64(),
+            c2: self.next_u64(),
+        }
     }
 }
 

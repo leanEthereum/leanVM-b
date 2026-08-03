@@ -652,7 +652,10 @@ unsafe fn process_block_neon_single(
 /// uses the register-tiled inner kernel (8 accumulators across `TILE_T`
 /// stripes); it just rebuilds the per-tile sum tables for its own slice (a few
 /// % of redundant table-build XORs, far cheaper than the memory re-streaming).
-#[cfg(any(target_arch = "aarch64", all(target_arch = "x86_64", target_feature = "avx512f", target_feature = "avx512vl")))]
+#[cfg(any(
+    target_arch = "aarch64",
+    all(target_arch = "x86_64", target_feature = "avx512f", target_feature = "avx512vl")
+))]
 pub fn partial_fold_packed_z_neon_iblock_padded(
     z_packed: &[u8],
     m: usize,
@@ -757,7 +760,10 @@ pub fn partial_fold_packed_z_neon_iblock_padded(
 /// grows with the outer dim (the redundant-table cost it removes is ∝ `n_stripes`).
 ///
 /// # Safety / preconditions: identical to the iblock kernel.
-#[cfg(any(target_arch = "aarch64", all(target_arch = "x86_64", target_feature = "avx512f", target_feature = "avx512vl")))]
+#[cfg(any(
+    target_arch = "aarch64",
+    all(target_arch = "x86_64", target_feature = "avx512f", target_feature = "avx512vl")
+))]
 pub fn partial_fold_packed_z_neon_oblock_padded(
     z_packed: &[u8],
     m: usize,
@@ -845,7 +851,10 @@ fn partial_fold_packed_z_best(
     eq_outer: &[F192],
 ) -> Vec<F192> {
     if n_log_ok_for_tile(m, k_log, NEON_TILE_T) {
-        #[cfg(any(target_arch = "aarch64", all(target_arch = "x86_64", target_feature = "avx512f", target_feature = "avx512vl")))]
+        #[cfg(any(
+            target_arch = "aarch64",
+            all(target_arch = "x86_64", target_feature = "avx512f", target_feature = "avx512vl")
+        ))]
         {
             // Pick the partition that wins for this size. The outer(tile)-partitioned
             // `oblock` builds each tile's sum-tables once instead of once per worker,
@@ -860,7 +869,10 @@ fn partial_fold_packed_z_best(
             }
             partial_fold_packed_z_neon_iblock_padded(z_packed, m, k_log, useful_bits, eq_outer)
         }
-        #[cfg(not(any(target_arch = "aarch64", all(target_arch = "x86_64", target_feature = "avx512f", target_feature = "avx512vl"))))]
+        #[cfg(not(any(
+            target_arch = "aarch64",
+            all(target_arch = "x86_64", target_feature = "avx512f", target_feature = "avx512vl")
+        )))]
         {
             partial_fold_packed_z_fast_padded(z_packed, m, k_log, useful_bits, eq_outer)
         }
@@ -872,7 +884,10 @@ fn partial_fold_packed_z_best(
 /// Outer-dimension threshold (`n_log = m − k_log`) at/above which the
 /// outer(tile)-partitioned fold beats the i_inner-partitioned one. See
 /// [`partial_fold_packed_z_best`] for the crossover calibration.
-#[cfg(any(target_arch = "aarch64", all(target_arch = "x86_64", target_feature = "avx512f", target_feature = "avx512vl")))]
+#[cfg(any(
+    target_arch = "aarch64",
+    all(target_arch = "x86_64", target_feature = "avx512f", target_feature = "avx512vl")
+))]
 const OBLOCK_MIN_N_LOG: usize = 16;
 
 /// Quick test for "can we use the tiled fast path?". Tile uses `TILE_T`

@@ -384,7 +384,7 @@ pub mod base {
 
 #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
 pub mod aarch64 {
-    use super::{base_reduce_128, F192Unreduced, F192, R64};
+    use super::{F192, F192Unreduced, R64, base_reduce_128};
     use core::arch::aarch64::*;
     use core::mem::transmute;
 
@@ -603,7 +603,7 @@ pub mod aarch64 {
 
 #[cfg(all(target_arch = "x86_64", target_feature = "pclmulqdq"))]
 pub mod x86_64 {
-    use super::{F192Unreduced, F192};
+    use super::{F192, F192Unreduced};
     use crate::field::gf2_64::x86_64::clmul;
     use core::arch::x86_64::__m128i;
 
@@ -899,7 +899,7 @@ pub mod x86_64 {
 // ---------------------------------------------------------------------------
 
 pub mod software {
-    use super::{base_reduce_128, clmul64, F192Unreduced, F192};
+    use super::{F192, F192Unreduced, base_reduce_128, clmul64};
 
     /// Schoolbook 9-product unreduced coefficients.
     pub fn mul_unreduced(a: F192, b: F192) -> F192Unreduced {

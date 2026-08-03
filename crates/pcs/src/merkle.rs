@@ -178,11 +178,7 @@ fn hash_leaves_batched_uninit(
             {
                 let done = blake3_neon8::hash_complete_groups::<N>(inputs, outputs);
                 if done < len {
-                    hash_many_oneshot_uninit::<N>(
-                        platform,
-                        &inputs[done * N..],
-                        &mut outputs[done..],
-                    );
+                    hash_many_oneshot_uninit::<N>(platform, &inputs[done * N..], &mut outputs[done..]);
                 }
             }
             #[cfg(not(target_arch = "aarch64"))]
@@ -615,12 +611,7 @@ mod vmhash_batch_tests {
             let data: Vec<u8> = (0..n_leaves * leaf).map(|i| (i * 17 + 3) as u8).collect();
             let mut out: Vec<std::mem::MaybeUninit<Hash>> =
                 (0..n_leaves).map(|_| std::mem::MaybeUninit::uninit()).collect();
-            hash_leaves_batched_uninit(
-                blake3::platform::Platform::detect(),
-                &data,
-                leaf,
-                &mut out,
-            );
+            hash_leaves_batched_uninit(blake3::platform::Platform::detect(), &data, leaf, &mut out);
             for i in 0..n_leaves {
                 // SAFETY: the dispatcher initializes every slot.
                 let got = unsafe { out[i].assume_init() };

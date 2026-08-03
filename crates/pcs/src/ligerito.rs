@@ -36,7 +36,7 @@ use crate::merkle::{self, Hash};
 use crate::ntt::AdditiveNttF64;
 use fiat_shamir::Sponge;
 use primitives::{
-    field::{F192BaseUnreduced, F192Unreduced, F192, F64},
+    field::{F64, F192, F192BaseUnreduced, F192Unreduced},
     multilinear::eq_eval,
     pretty_integer,
 };
@@ -3726,7 +3726,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ligerito::{default_config, default_verifier_config, QUERY_GRINDING_BITS};
+    use crate::ligerito::{QUERY_GRINDING_BITS, default_config, default_verifier_config};
 
     fn splitmix64(state: &mut u64) -> u64 {
         *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);

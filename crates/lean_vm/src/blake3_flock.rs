@@ -230,9 +230,7 @@ pub fn build_qpkd(blocks: &[Compression]) -> Vec<F64> {
 
 /// Build the committed `q_pkd` and retain the Flock-native layouts produced by
 /// that same fused pass so reduction does not regenerate them later.
-pub(crate) fn build_qpkd_prepared(
-    blocks: &[Compression],
-) -> (Vec<F64>, PreparedReductionWitness) {
+pub(crate) fn build_qpkd_prepared(blocks: &[Compression]) -> (Vec<F64>, PreparedReductionWitness) {
     let n_blocks = blocks.len().max(1);
     let (z_packed, a_packed, b_packed, z_lincheck) =
         generate_witness_with_ab_packed_and_lincheck(blocks, n_blocks_log(n_blocks));

@@ -17,11 +17,11 @@ use std::collections::BTreeMap;
 use lean_compiler::{compile, parse, parse_with_replacements};
 use lean_vm::cpu::{DerefMode, Op, Program, prove, verify};
 use lean_vm::leaf::{Block, Coord};
-use lean_vm::transcript::{trace_start, trace_take, Sponge, TraceOp};
+use lean_vm::transcript::{Sponge, TraceOp, trace_start, trace_take};
 use pcs::ligerito::log2_ceil;
 use primitives::multilinear::mle_eval;
 use primitives::{
-    field::{g_pow, F192, F64, G},
+    field::{F64, F192, G, g_pow},
     pretty_f64, pretty_integer,
 };
 
@@ -1802,8 +1802,12 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
             "LIG_MAX_INTERLEAVE",
             ints(&scal(&|c| *c.interleaving.iter().max().unwrap())),
         );
-        // StackBuf cap for the packed leaf row: level 0 packs 2 lanes per cell,
-        // deeper levels pack 3 limbs per word into 3n/2 cells.
+        // StackBuf cap for the packed leaf row `open_stacked` hashes. A cell is a
+        // full 64-bit word here, so level 0 holds one base-field lane per cell
+        // (n cells) and deeper levels hold a tower value's 3 raw limbs per word
+        // (3n cells). The deeper term takes that raw-limb count 3n, not 3n/2:
+        // the halved size only ever held while level 0's term dominated, and it
+        // under-provisions once a deeper interleave overtakes it.
         let packed_cells = |c: &Vec<usize>| -> usize {
             c.iter()
                 .enumerate()

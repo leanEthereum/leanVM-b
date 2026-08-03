@@ -98,11 +98,7 @@ unsafe fn transpose4(vecs: &mut [uint32x4_t; 4]) {
 /// # Safety
 /// Each `inputs[i]` must be readable for `block_offset + 64` bytes.
 #[inline(always)]
-unsafe fn transpose_block4(
-    inputs: [*const u8; 4],
-    block_offset: usize,
-    out: &mut [uint32x4_t; 16],
-) {
+unsafe fn transpose_block4(inputs: [*const u8; 4], block_offset: usize, out: &mut [uint32x4_t; 16]) {
     // SAFETY: the caller guarantees each input covers the requested block.
     unsafe {
         for quarter in 0..4 {
@@ -246,12 +242,7 @@ pub(super) fn hash_complete_groups<const LEAF: usize>(
                 h0[i] = vdupq_n_u32(IV[i]);
                 h1[i] = h0[i];
             }
-            let lanes_lo = [
-                input,
-                input.add(LEAF),
-                input.add(2 * LEAF),
-                input.add(3 * LEAF),
-            ];
+            let lanes_lo = [input, input.add(LEAF), input.add(2 * LEAF), input.add(3 * LEAF)];
             let lanes_hi = [
                 input.add(4 * LEAF),
                 input.add(5 * LEAF),
