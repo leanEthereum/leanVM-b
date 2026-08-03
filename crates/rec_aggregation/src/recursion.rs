@@ -1390,17 +1390,12 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     ps("LIG_MIN_SHIFT_INV", u(g_pow(minm).inv()).to_string());
     ps("CLAIM_POINT_BUF", ints(&cpbuf));
     ps("CLAIM_POINT_OFF", ints(&cpoff));
-    ps("CLAIM_COL", ints(&cpcol));
     ps("CLAIM_PAD", flds(&cppad));
     ps("CLAIM_QPKD_SLOT", ints(&cpslot));
-    ps("CLAIM_BLOCK_SLOT", ints(&cpblockslot));
-    ps("CLAIM_BLOCK_LOG", ints(&cpblocklog));
     ps("CLAIM_GAMMA_RANK", ints(&claim_gamma_rank));
     ps("N_CLAIM_ROWS", claim_row_rep.len().to_string());
-    ps("CLAIM_ROW_GROUP", ints(&claim_row_group));
     ps("CLAIM_ROW_REP", ints(&claim_row_rep));
     ps("N_JAGGED_BATCHES", batch_rep.len().to_string());
-    ps("JAGGED_BATCH_REP", ints(&batch_rep));
     ps("JAGGED_BATCH_ROW", ints(&batch_row));
     ps("JAGGED_BATCH_COL", ints(&batch_col));
     ps("JAGGED_BATCH_LOG", ints(&batch_log));

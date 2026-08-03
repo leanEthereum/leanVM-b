@@ -682,18 +682,19 @@ pub fn verify(
 /// the high coords to `r`. No downstream special-casing — it folds into the
 /// one opening like every other point claim.
 fn slot_claims(l: &Layout, claims: &[ColumnClaim]) -> Vec<pcs::SlotClaim> {
-    let n_air: usize = tables::tables().iter().map(|table| table.n_committed_columns()).sum();
-    let n_bus = claims.len() - n_air - 1;
-    let mut batch_groups = vec![0usize; n_bus];
-    for (t, table) in tables::tables().iter().enumerate() {
-        batch_groups.extend(std::iter::repeat_n(t + 1, table.n_committed_columns()));
-    }
-    batch_groups.push(tables::tables().len() + 1); // public-input claim
-    debug_assert_eq!(batch_groups.len(), claims.len());
+    // The public-input claim is the last one (`verify`/`prove` push it after the
+    // bus and constraint claims) and is the one claim that is not a whole-column
+    // evaluation: its point is `(r, 0, .., 0)`, so `eq` is supported on rows 0 and
+    // 1 alone (`mem_used >= 2` is asserted in `layout`). Those two dense cells are
+    // `offset + slot` and `offset + slot + 2^b`, so the weight is an ordinary
+    // aligned `eq`, and routing it through `Strided` keeps it out of the Jagged
+    // set. That is what makes every Jagged claim a whole-column claim, one per
+    // committed column, which `geometric_claim_weights` relies on.
+    let pi_index = claims.len() - 1;
     claims
         .iter()
-        .zip(batch_groups)
-        .map(|(c, batch_group)| {
+        .enumerate()
+        .map(|(index, c)| {
             // A virtual BLAKE3 value column (always virtual): its bus claim at
             // instance point `c.point` is the q_pkd slot value — a boolean-selector
             // (strided) claim on QPKD, folded sparsely (2^n_log, not the 2^(7+n_log)
@@ -716,19 +717,24 @@ fn slot_claims(l: &Layout, claims: &[ColumnClaim]) -> Vec<pcs::SlotClaim> {
             // plus the constant `pad`, and the correction is that constant: the
             // MLE of a constant is itself, at every point and independently of
             // the real height. No prefix indicator is needed.
-            let jagged_value = c.value + l.pad[c.col];
-            let mut block_point = Vec::with_capacity(placement.block_width_log + c.point.len());
-            for bit in 0..placement.block_width_log {
-                block_point.push(if (placement.slot >> bit) & 1 == 1 { F128::ONE } else { F128::ZERO });
+            let value = c.value + l.pad[c.col];
+            if index == pi_index {
+                debug_assert!(c.point[1..].iter().all(|&x| x == F128::ZERO));
+                return pcs::SlotClaim::Strided {
+                    offset: placement.offset,
+                    slot: placement.slot,
+                    stride_log: placement.block_width_log,
+                    point: c.point[..1].to_vec(),
+                    value,
+                };
             }
-            block_point.extend_from_slice(&c.point);
             pcs::SlotClaim::Jagged {
                 offset: placement.offset,
                 height: placement.height << placement.block_width_log,
-                batch_group,
                 selector_len: placement.block_width_log,
-                row_point: block_point,
-                value: jagged_value,
+                slot: placement.slot,
+                row_point: c.point.clone(),
+                value,
             }
         })
         .collect()
