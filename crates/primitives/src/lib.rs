@@ -2,6 +2,7 @@
 //! multilinear helpers, the scratch buffer pool, and small integer utilities.
 
 pub mod bits;
+pub mod epool;
 pub mod field;
 pub mod multilinear;
 pub mod scratch;

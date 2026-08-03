@@ -6,10 +6,8 @@
 
 \newcommand{\F}{\mathbb{F}}
 \newcommand{\eq}{\mathrm{eq}}
-\newcommand{\pkd}{\mathrm{packed}}
-\newcommand{\E}{\mathbb{E}}
 
-\title{\textbf{Ring switching, generalized}}
+\title{\textbf{Ring switching}}
 
 \author{}
 \date{}
@@ -18,163 +16,192 @@
 \maketitle
 \vspace{-3em}
 \begin{center}
-How to transform a PCS for $\F_{2^f}$ into a PCS for $\F_{2^e}$, for arbitrary $e$ and $f$.
+Turning $64$ evaluation claims over $\F_{2^{192}}$ into one opening of a commitment whose values are $64$ bits wide.
 \end{center}
 
-\paragraph{Goal.} We want $f$ \emph{bit}-valued multilinears $P_0,\dots,P_{f-1}:\{0,1\}^m\to\{0,1\}$ over the same $m$ variables to be committed through a dense PCS over the \emph{packing} field $\F_{2^f}$ (if we can commit to bits, we can trivially commit in any extension). The evaluation claims, however, arrive over a \emph{different} field: at an opening point $r\in\F_{2^e}^m$ we are given $P_i(r)=\alpha_i\in\F_{2^e}$. Ring switching~\cite{DP26} packs the $f$ polynomials into one $\F_{2^f}$-dense polynomial and reduces the $f$ claims to a single claim on it. The two extension degrees, $f$ (packing) and $e$ (opening), are unrelated: neither field need contain the other.
+\section*{Setting}
 
-\paragraph{The ambient field $L$.} Let $L$ be a field containing both $\F_{2^f}$ and $\F_{2^e}$, large enough that $1/|L|$ is cryptographically negligible. The batching scalars are sampled in $L$, the sumcheck runs over $L$ and outputs a point of $L^m$, at which the PCS must be able to open.
+Two fields, one inside the other:
+\[
+\F_{2^{64}}=\F_2[X]/(X^{64}+X^4+X^3+X+1),
+\qquad
+\F_{2^{192}}=\F_{2^{64}}[Y]/(Y^3+Y+1).
+\]
+As $\F_2$-vector spaces, $\F_{2^{64}}$ has basis $X^0,\dots,X^{63}$, and $\F_{2^{192}}$ has the $192$ products
+\[
+b_w=X^iY^j\in\F_{2^{192}},\qquad w=64j+i,\quad 0\le i<64,\quad 0\le j<3.
+\]
 
-\paragraph{Packing.} Fix an $\F_2$-basis $\{b^{F}_i\}_{i=0}^{f-1}$ of $\F_{2^f}$. Consider the multilinear polynomial
+The witness is $64$ bit-valued multilinears $P_0,\dots,P_{63}:\{0,1\}^m\to\{0,1\}$. We commit to them packed, one $\F_{2^{64}}$ element per point:
 \[
-P_\pkd(z)=\sum_{i=0}^{f-1} P_i(z)\,b^{F}_i,\qquad z\in\{0,1\}^m,
+P:\{0,1\}^m\to\F_{2^{64}},\qquad P(z)=\sum_{i=0}^{63}P_i(z)\,X^i.
 \]
-dense over $\F_{2^f}$, which we commit to.
+The commitment scheme proves statements of one shape. Given a target $T\in\F_{2^{192}}$ and a transparent weight $W:\{0,1\}^m\to\F_{2^{192}}$, one that the verifier can evaluate for itself, an opening proves
+\[
+\sum_{z\in\{0,1\}^m}W(z)\,P(z)=T.
+\]
+The weight is $\F_{2^{192}}$-valued, the committed values are $\F_{2^{64}}$-valued, and the sum is taken in $\F_{2^{192}}$.
 
-\paragraph{Reduction.} The claims share the point $r\in\F_{2^e}^m$; each is
+What arrives is not of that shape. It is $64$ claimed values $\alpha_i\in\F_{2^{192}}$, one per bit polynomial, at a point $r\in\F_{2^{192}}^m$ they all share. An honest prover sends
 \[
-\alpha_i=P_i(r)=\sum_{z\in\{0,1\}^m}\eq(r,z)\,P_i(z),
+\alpha_i=P_i(r)=\sum_{z\in\{0,1\}^m}\eq(r,z)\,P_i(z),\qquad 0\le i<64,
 \]
-with bits $P_i(z)$ and weights $\eq(r,z)\in\F_{2^e}$. Fix an $\F_2$-basis $\{b^{E}_w\}_{w=0}^{e-1}$ of the \emph{opening} field $\F_{2^e}$ and expand the weights, $\eq(r,z)=\sum_{w=0}^{e-1} A(z,w)\,b^{E}_w$, with $A:\{0,1\}^m\times\{0,\dots,e-1\}\to\F_2$ public. Substituting and pulling out the basis,
+where $\eq:\F_{2^{192}}^m\times\F_{2^{192}}^m\to\F_{2^{192}}$ is the equality indicator
 \[
-\alpha_i=\sum_{w=0}^{e-1}b^{E}_w\underbrace{\sum_{z\in\{0,1\}^m}A(z,w)\,P_i(z)}_{\in\,\F_2},
+\eq(u,v)=\prod_{n=1}^m\bigl(u_nv_n+(1+u_n)(1+v_n)\bigr),
 \]
-so the $w$-th $\F_2$-coordinate of $\alpha_i$ is $\alpha_{w,i}=\sum_{z\in\{0,1\}^m}A(z,w)\,P_i(z)$. Now recombine \emph{across $i$} with the \emph{packing} basis $\{b^{F}_i\}$: define, for each $w\in\{0,\dots,e-1\}$,
-\[
-t_w:=\sum_{i=0}^{f-1}\alpha_{w,i}\,b^{F}_i=\sum_{z\in\{0,1\}^m}A(z,w)\underbrace{\sum_{i=0}^{f-1}P_i(z)\,b^{F}_i}_{=\,P_\pkd(z)}=\sum_{z\in\{0,1\}^m}A(z,w)\,P_\pkd(z)\ \in\ \F_{2^f}.
-\]
-These are $e$ claims about the packed polynomial $P_\pkd$. Let $\ell=\lceil\log_2 e\rceil$, identify each $w<e$ with its $\ell$-bit encoding $\bar w\in\{0,1\}^{\ell}$, and pad with $t_w=0$ and $A(\cdot,w)\equiv0$ for $e\le w<2^\ell$. The verifier samples a batching point $s\leftarrow L^{\ell}$ and uses weights $\lambda_w=\eq(s,\bar w)$. One sumcheck over $L$ proves
-\[
-\sum_{z\in\{0,1\}^m}B_s(z)\,P_\pkd(z)=T_s,\qquad B_s(z):=\sum_{w<2^\ell}\lambda_w\,A(z,w),\qquad T_s:=\sum_{w<2^\ell}\lambda_w\,t_w.
-\]
-The sumcheck outputs the packed claim $P_\pkd(r')=\alpha'$ at a point $r'\in L^m$; the verifier computes $B_s(r')$ itself (see \nameref{section:eval_B}). This is the complete reduction.
+and $P_i(r)$ denotes the multilinear extension of $P_i$ evaluated at $r$, as it does for every multilinear below.
+Ring switching~\cite{DP26} turns those $64$ claims into a single statement the opening can prove.
 
-\paragraph{Soundness.} Suppose the input is wrong: $\alpha_i\neq P_i(r)$ for some $i$, where the $P_i$ are the bit polynomials of the committed $P_\pkd$. Then the reduction outputs a correct packed claim $P_\pkd(r')=\alpha'$ with probability at most
-\[
-\underbrace{\frac{\ell}{|L|}}_{\text{batching}}\;+\;\underbrace{\frac{2m}{|L|}}_{\text{sumcheck}}\;=\;\frac{2m+\ell}{|L|}.
-\]
+\section*{The reduction}
+
+Fix an $\F_2$-linear map $\Phi:\F_{2^{192}}\to\F_{2^{192}}$:
+\begin{equation}
+\begin{split}
+\sum_{z\in\{0,1\}^m}\Phi\bigl(\eq(r,z)\bigr)\,P(z)
+&=\sum_{i=0}^{63}X^i\sum_{z\in\{0,1\}^m}P_i(z)\,\Phi\bigl(\eq(r,z)\bigr)\\
+&=\sum_{i=0}^{63}X^i\,\Phi\Bigl(\sum_{z\in\{0,1\}^m}P_i(z)\,\eq(r,z)\Bigr)
+=\sum_{i=0}^{63}X^i\,\Phi(\alpha_i).
+\end{split}
+\label{eq:complete}
+\end{equation}
+The reduction is:
 \begin{enumerate}
-\item The map $(\alpha_i)_{i=0}^{f-1}\mapsto(t_w)_{w=0}^{e-1}$ transposes the bit matrix $(\alpha_{w,i})$, so it is a \emph{bijection} $\F_{2^e}^f\to\F_{2^f}^e$. Therefore a wrong input forces $t_w\neq\sum_zA(z,w)\,P_\pkd(z)$ for at least one $w$.
-\item The multilinear extension of these coordinate errors does not vanish at the Boolean point $\bar w$, hence is nonzero. By Schwartz--Zippel, its evaluation at $s\leftarrow L^{\ell}$ vanishes with probability at most $\ell/|L|$.
-\item Sumcheck started from this false value (summand of degree $2$, over $m$ variables) ends at a correct claim $P_\pkd(r')=\alpha'$ with probability at most $2m/|L|$.
+\item once the $\alpha_i$ are fixed, the verifier draws $\Phi$ at random;
+\item it computes the target $T=\sum_{i=0}^{63}X^i\Phi(\alpha_i)$;
+\item the commitment scheme opens $P$ against the weight $W:\{0,1\}^m\to\F_{2^{192}}$, $W(z)=\Phi\bigl(\eq(r,z)\bigr)$, with target $T$; if that opening accepts, the verifier accepts the $64$ claims.
 \end{enumerate}
+Everything now turns on which $\Phi$ we can afford to draw.
 
-\phantomsection
-\section*{Evaluating $B_s$}
-\label{section:eval_B}
+\section*{Which maps are sound}
 
-It remains to compute $B_s(r')$. Recall $\eq(r,z)=\sum_{w=0}^{e-1}A(z,w)\,b^E_w$. Following~\cite{Flock}, define the $\F_2$-linear map $\Phi_s:\F_{2^e}\to L$ by $\Phi_s(b^E_w)=\lambda_w$. For every $z\in\{0,1\}^m$:
+\paragraph{The error, transposed.} Suppose the $\alpha_i$ are wrong. The errors $\delta_i=\alpha_i-P_i(r)\in\F_{2^{192}}$, for $0\le i<64$, are not all zero, and they are fixed before $\Phi$ is drawn. By \eqref{eq:complete} the target the verifier computes differs from the honest one by $\sum_{i=0}^{63}X^i\Phi(\delta_i)$, so the opening succeeds only if
 \[
-\Phi_s\bigl(\eq(r,z)\bigr)=\Phi_s\Big(\sum_{w=0}^{e-1}A(z,w)b^E_w\Big)=\sum_{w=0}^{e-1}A(z,w)\,\lambda_w=B_s(z).
+\sum_{i=0}^{63}X^i\,\Phi(\delta_i)=0.
 \]
-Thus, on the hypercube, $B_s$ is ``compute $\eq(r,z)\in\F_{2^e}$, then apply $\Phi_s$.''
+Expand each error in the $\F_2$-basis of $\F_{2^{192}}$, say $\delta_i=\sum_{w=0}^{191}\delta_{i,w}b_w$ with $\delta_{i,w}\in\F_2$, and exchange the two sums:
+\begin{equation}
+\sum_{i=0}^{63}X^i\,\Phi(\delta_i)
+=\sum_{i=0}^{63}X^i\sum_{w=0}^{191}\delta_{i,w}\,\Phi(b_w)
+=\sum_{w=0}^{191}\Phi(b_w)\,\Delta_w,
+\qquad
+\Delta_w:=\sum_{i=0}^{63}\delta_{i,w}X^i\in\F_{2^{64}}.
+\label{eq:transpose}
+\end{equation}
+The $X^i$ are an $\F_2$-basis of $\F_{2^{64}}$, so some $\Delta_w\neq0$. The check passes only if $\sum_{w=0}^{191}\Phi(b_w)\,\Delta_w=0$. No fixed $\Phi$ rules that out, so the draw must make it unlikely.
 
-\paragraph{Closed form.}
-\emph{Fact 1 ($\eq$ in characteristic $2$).} In each factor of $\eq$ the two $u_nv_n$ terms cancel:
+\paragraph{Linear maps are Frobenius sums.} Squaring is additive in characteristic $2$, so
 \[
-\eq(u,v)=\prod_{n=1}^m\bigl(u_nv_n+(1+u_n)(1+v_n)\bigr)=\prod_{n=1}^m(1+u_n+v_n).
+\Phi(a)=\sum_{k=0}^{191}c_k\,a^{2^k},\qquad a\in\F_{2^{192}},\quad c_k\in\F_{2^{192}},
+\]
+is $\F_2$-linear for any choice of coefficients. Every $\F_2$-linear map $\F_{2^{192}}\to\F_{2^{192}}$ arises this way, and exactly once. Distinct tuples give distinct maps: their difference would be a nonzero polynomial of degree at most $2^{191}$ with $2^{192}$ roots. There are $|\F_{2^{192}}|^{192}$ tuples and as many maps. Call $S=\{k:c_k\neq0\}\subseteq\{0,\dots,191\}$ the \emph{support} of $\Phi$. Substituting into the check above,
+\begin{equation}
+\sum_{w=0}^{191}\Phi(b_w)\,\Delta_w=\sum_{k\in S}c_k\,V_k,
+\qquad
+V_k:=\sum_{w=0}^{191}b_w^{2^k}\,\Delta_w\in\F_{2^{192}}.
+\label{eq:pairing}
+\end{equation}
+The $V_k$ depend only on the error, the $c_k$ only on the randomness. So we need the map $\F_{2^{64}}^{192}\to\F_{2^{192}}^{|S|}$, $\Delta\mapsto(V_k)_{k\in S}$, to be injective: a nonzero error has to leave some $V_k\neq0$ for the coefficients to act on.
+
+\paragraph{Sixty-four terms.} That map is $\F_{2^{64}}$-linear, since the $\Delta_w$ enter linearly and the Frobenius touches only the constants $b_w$. It sends $\F_{2^{64}}^{192}$, of $\F_{2^{64}}$-dimension $192$, into $\F_{2^{192}}^{|S|}$, of $\F_{2^{64}}$-dimension $3|S|$, so injectivity needs $|S|\ge64$. Take $S=\{0,\dots,63\}$ and suppose $V_k=0$ for all $k<64$. Two steps force $\Delta=0$.
+
+First, split $V_k$ over $\F_{2^{64}}$. Write $w=64j+i$ and $Y_k:=Y^{2^k}$, so that $b_w^{2^k}=X^{i2^k}Y_k^{\,j}$ and
+\[
+V_k=\sum_{j=0}^{2}Y_k^{\,j}\,R_{j,k},
+\qquad
+R_{j,k}:=\sum_{i=0}^{63}\Delta_{64j+i}\,X^{i2^k}\in\F_{2^{64}},\qquad 0\le j<3.
+\]
+Now $Y_k\notin\F_{2^{64}}$. Squaring is a bijection of $\F_{2^{64}}$ onto itself, so $Y^{2^k}\in\F_{2^{64}}$ would force $Y\in\F_{2^{64}}$, whence $\F_{2^{192}}=\F_{2^{64}}[Y]=\F_{2^{64}}$. Since $[\F_{2^{192}}:\F_{2^{64}}]=3$ is prime, any element outside $\F_{2^{64}}$ generates $\F_{2^{192}}$ over $\F_{2^{64}}$, so $\{1,Y_k,Y_k^2\}$ is an $\F_{2^{64}}$-basis of $\F_{2^{192}}$, and $V_k=0$ forces $R_{0,k}=R_{1,k}=R_{2,k}=0$.
+
+Second, read the $64$ equations $R_{j,k}=0$, at fixed $j$, as a single polynomial. Put
+\[
+D_j(U)=\sum_{i=0}^{63}\Delta_{64j+i}\,U^i\in\F_{2^{64}}[U],
+\qquad\text{so that}\qquad
+R_{j,k}=D_j\bigl(X^{2^k}\bigr).
+\]
+Then $D_j$ has degree at most $63$ and vanishes at the $64$ points $X,X^2,X^4,\dots,X^{2^{63}}$. Those are distinct, because $X$ has degree $64$ over $\F_2$ and so has $64$ distinct conjugates. A nonzero polynomial of degree at most $63$ cannot have $64$ roots, so $D_j=0$ and every $\Delta_{64j+i}$ vanishes. A nonzero error therefore leaves some $V_k\neq0$.
+
+The count is tight on both sides: $64$ terms give $64$ equations $V_k=0$ over $\F_{2^{192}}$, which is $192$ equations over $\F_{2^{64}}$, against exactly $192$ unknowns $\Delta_w\in\F_{2^{64}}$.
+
+\section*{The map we draw}
+
+We need a random $\Phi$ of support $\{0,\dots,63\}$, cheap to apply. Sixty-four independent coefficients would need $64$ challenges and $64$ multiplications per application, and a false claim would then survive with probability $2^{-192}$. Six challenges are enough, at less than $2^{-160}$.
+
+Draw $\gamma_0,\dots,\gamma_5\leftarrow\F_{2^{192}}$ once the $\alpha_i$ are fixed, and compose six two-term maps: for an input $a\in\F_{2^{192}}$, put $a_0=a$ and
+\begin{equation}
+a_{p+1}=a_p+\gamma_p\,a_p^{2^{2^{5-p}}}\in\F_{2^{192}}\quad(0\le p<6),
+\qquad
+\Phi(a)=a_6.
+\label{eq:phi}
+\end{equation}
+Each stage is $\F_2$-linear, so $\Phi$ is. Write $k=\sum_{p=0}^{5}k_p\,2^{5-p}$ for the binary digits of $k$. The composition expands to
+\begin{equation}
+\Phi(a)=\sum_{k=0}^{63}c_k\,a^{2^k},
+\qquad
+c_k=\prod_{p\,:\,k_p=1}\gamma_p^{\,2^{(k\bmod 2^{5-p})}}.
+\label{eq:ck}
+\end{equation}
+Stage $p$ fires when $k_p=1$ and contributes a factor $\gamma_p$, which every later stage that fires raises to its own Frobenius power; those shifts sum to $k\bmod 2^{5-p}$. Each $k$ from $0$ to $63$ occurs exactly once, so the $c_k$ are $64$ distinct monomials in $\gamma_0,\dots,\gamma_5$, one for every Frobenius power the previous section requires.
+
+\paragraph{Soundness.} Fix a nonzero error before the challenges are drawn. The previous section gives some $V_k\neq0$, and distinct monomials cannot cancel, so
+\[
+\sum_{k=0}^{63}c_k\,V_k
+\]
+is a nonzero polynomial in $\gamma_0,\dots,\gamma_5$. Its total degree is at most the largest degree of a $c_k$, reached at $k=63$ where every bit is set:
+\[
+2^{31}+2^{15}+2^7+2^3+2+1<2^{32},
+\]
+so by Schwartz--Zippel over $\F_{2^{192}}$ the check passes with probability less than $2^{32}/2^{192}=2^{-160}$, before the opening's own soundness error.
+
+\section*{Evaluating the weight}
+
+An opening reduces $\sum_{z\in\{0,1\}^m}W(z)\,P(z)=T$ to a claim about $P$ at a random point $r'\in\F_{2^{192}}^m$, and the verifier must evaluate the multilinear extension of $W$ at $r'$, written $W(r')$, by itself. Two facts turn that into a short formula.
+
+\emph{Fact 1 ($\eq$ in characteristic $2$).} In each factor the two $u_nv_n$ terms cancel, identically in $u$ and $v$:
+\[
+\eq(u,v)=\prod_{n=1}^m(1+u_n+v_n).
 \]
 
-\emph{Fact 2 (linear maps are sums of squarings).} Since $\F_{2^e}\subseteq L$, the map $\Phi_s$ can be written as a polynomial over $L$. Squaring is additive in characteristic $2$, so any expression
-\[
-a\;\mapsto\;c_0\,a+c_1\,a^2+c_2\,a^4+\dots+c_{e-1}\,a^{2^{e-1}},\qquad c_k\in L,
-\]
-is an $\F_2$-linear map $\F_{2^e}\to L$, and every such map can be written this way. We find the $c_k$ by writing out what $\Phi_s$ must do on the basis:
-\[
-\sum_{k=0}^{e-1}\bigl(b^E_w\bigr)^{2^k}c_k=\lambda_w,\qquad w=0,\dots,e-1.
-\]
-This square system is invertible: a combination of $a,a^2,\dots,a^{2^{e-1}}$ that vanishes on the basis vanishes on all $2^e$ elements of $\F_{2^e}$, but has degree at most $2^{e-1}$, so its coefficients are zero. Its matrix depends only on the basis and can therefore be inverted once; each opening then computes $(c_k)_{k<e}$ by an $O(e^2)$ matrix-vector product.
-
-Now compute. Squaring respects sums and products and fixes bits ($z_n^2=z_n$), so on the hypercube, by Fact~1,
+\emph{Fact 2 (Frobenius passes through $\eq$ on the cube).} Squaring respects sums and products and fixes bits, so for $z\in\{0,1\}^m$, by Fact~1,
 \[
 \eq(r,z)^{2^k}=\prod_{n=1}^m(1+r_n+z_n)^{2^k}=\prod_{n=1}^m\bigl(1+r_n^{2^k}+z_n\bigr)=\eq\bigl(r^{2^k},z\bigr),
 \qquad r^{2^k}:=\bigl(r_1^{2^k},\dots,r_m^{2^k}\bigr).
 \]
-Since $B_s$ is multilinear, evaluate it at $r'$ and expand with Fact~2:
+
+Expand $W$ at $r'$ with \eqref{eq:ck} and Fact~2:
 \[
-B_s(r')=\sum_{z\in\{0,1\}^m}B_s(z)\,\eq(r',z)
-=\sum_{z\in\{0,1\}^m}\Phi_s\bigl(\eq(r,z)\bigr)\,\eq(r',z)
-=\sum_{k<e}c_k\sum_{z\in\{0,1\}^m}\eq\bigl(r^{2^k},z\bigr)\,\eq(r',z).
+W(r')=\sum_{z\in\{0,1\}^m}W(z)\,\eq(r',z)
+=\sum_{z\in\{0,1\}^m}\Phi\bigl(\eq(r,z)\bigr)\,\eq(r',z)
+=\sum_{k=0}^{63}c_k\sum_{z\in\{0,1\}^m}\eq\bigl(r^{2^k},z\bigr)\,\eq(r',z).
 \]
-The inner sum evaluates, at $r'$, the multilinear extension of $z\mapsto\eq(r^{2^k},z)$, which is $\eq(r^{2^k},\cdot\,)$ itself. So it collapses to $\eq(r^{2^k},r')$, and by Fact~1 again:
+The inner sum is $\eq(r^{2^k},r')$, since $\eq(u,\cdot\,)$ is its own multilinear extension for every $u$. By Fact~1 again,
 \[
 \boxed{\ \
-B_s(r') \;=\; \sum_{k<e}\, c_k \prod_{n=1}^m
+W(r') \;=\; \sum_{k=0}^{63}\, c_k \prod_{n=1}^m
 \bigl( 1 + r_n^{2^k} + r'_n \bigr).
 \ \ }
 \]
 
-\paragraph{Cost.} Term $k$ needs one squaring per coordinate (to get $r_n^{2^k}$ from $r_n^{2^{k-1}}$) and one $m$-factor product: $O(em)$ multiplications in $L$, on top of the $O(e^2)$ construction of the $c_k$.
+\section*{Cost}
 
-\section*{Example: $64$-bit packing, $192$-bit openings}
+One application of $\Phi$ takes $63$ squarings and $6$ multiplications: the Frobenius ladder climbs $32+16+8+4+2+1$ steps, and each stage multiplies once by its challenge. The same recurrence run on the coefficient table gives the $c_k$ of \eqref{eq:ck}: stage $p$ raises its $2^p$ entries to the $2^{2^{5-p}}$ power and multiplies each by $\gamma_p$; the raising is $32$ squarings whatever $p$ is.
 
-Take $f=64$ and $e=192$:
-\[
-K=\F_{2^{64}}=\F_2[X]/(q),\quad q=X^{64}+X^4+X^3+X+1,
-\qquad
-\E=\F_{2^{192}}=K[Y]/(Y^3+Y+1).
-\]
-The cubic is irreducible over $K$ because its roots generate $\F_8$ and $\gcd(3,64)=1$. Since $K\subset\E$ and $192$ bits are enough for security, $L=\E$. The packing basis is $b^F_i=X^i$, and the opening basis is the product basis
-\[
-b^E_{64j+i}=X^iY^{j},\qquad i<64,\quad j<3.
-\]
-The challenges, the weights $\lambda_w$ and the points $r,r'$ are $\E$-valued; $P_\pkd$ and the $t_w$ are $K$-valued.
+\begin{center}
+\begin{tabular}{lrr}
+& squarings & multiplications\\[2pt]
+\hline
+one application of $\Phi$ & $63$ & $6$\\
+the target $T$, $64$ applications & $4032$ & $384$\\
+the coefficients $c_k$, once & $192$ & $63$\\
+the weight $W(r')$ & $63m$ & $64m$\\
+\end{tabular}
+\end{center}
 
-Suppose the verifier runs inside a VM where every field multiplication is an instruction.
-
-\paragraph{No sumcheck of its own.} The generic reduction batches with an $\eq$ tensor over $\ell=8$ variables and proves the batched claim by its own sumcheck. Here the verifier instead samples six challenges $s=(\gamma_0,\dots,\gamma_5)\leftarrow\E^6$ once it holds the $\alpha_i$, and takes the weights $\lambda_w$ from the map fixed in \eqref{eq:phi-choice}. The batched claim $\sum_zB_s(z)\,P_\pkd(z)=T_s$ then has the shape the PCS opening already proves: a transparent $\E$-valued weight against the committed $K$-valued $P_\pkd$. We fold it into the PCS opening (which turns out to be an inner product PCS), so the Ring-Switching thus adds no sumcheck.
-
-\paragraph{Fix the map, not the weights.} The weights (the $192$ scalars $\lambda_w$ batching the claims $t_w$) and the map (the $\F_2$-linear $\Phi_s:\E\to\E$) determine each other, $\lambda_w=\Phi_s(b^E_w)$, so we fix the map. Let $(d_0,\dots,d_5)=(32,16,8,4,2,1)$. For an input $a\in\E$, put $a_0=a$ and define
-\begin{equation}
-a_{p+1}=a_p+\gamma_pa_p^{2^{d_p}},\qquad \Phi_s(a)=a_6=\sum_{k<64}C_k(s)\,a^{2^k},\qquad \lambda_w=\Phi_s\bigl(b^E_w\bigr).
-\label{eq:phi-choice}
-\end{equation}
-The $d_p$ are the six powers of two below $64$, so the subset sums $\sum_{p\in S}d_p$ run over $0,\dots,63$ exactly once: the expansion contains every Frobenius exponent $k<64$, each with its own monomial $C_k$ in the challenges. The in-VM verifier applies the composed form of $\Phi_s$ and never materializes the $192$ weights $\lambda_w$. $64$ terms is the minimum for any sound $\Phi_s$, as shown below.
-
-\paragraph{Where $\Phi_s$ is applied.} First, the target $T_s$. The verifier has the $\alpha_i$ and never needs to form the $t_w$:
-\[
-T_s=\sum_{w<192}\lambda_w t_w
-=\sum_{w<192}\Phi_s\bigl(b^E_w\bigr)\sum_{i<64}\alpha_{w,i}\,X^i
-=\sum_{i<64}X^i\,\Phi_s\Bigl(\sum_{w<192}\alpha_{w,i}b^E_w\Bigr)
-=\sum_{i<64}X^i\,\Phi_s(\alpha_i),
-\]
-using $\alpha_{w,i}\in\F_2$ and the $\F_2$-linearity of $\Phi_s$. The VM computes the right-hand side: $64$ applications of $\Phi_s$, and no transpose of the bit matrix $(\alpha_{w,i})$.
-
-Second, the weight at the PCS query point $r'$. The boxed formula of the previous section, with the coefficients of \eqref{eq:phi-choice}, gives
-\[
-B_s(r')=\sum_{k<64}C_k(s)\prod_{n=1}^{m}\bigl(1+r_n^{2^k}+r'_n\bigr).
-\]
-
-\paragraph{Soundness of the batching.} Suppose the $\alpha_i$ are wrong. Under the bijection $\E^{64}\to K^{192}$ of Soundness item~1, their error maps to a nonzero $\Delta\in K^{192}$, fixed before the challenges are drawn. The check passes only if
-\[
-\sum_{w<192}\lambda_w\Delta_w=\sum_{k<64}C_k(s)\,W_k=0,
-\qquad
-W_k:=\sum_{w<192}\bigl(b^E_w\bigr)^{2^k}\Delta_w.
-\]
-Write $w=64j+i$ and $Y_k:=Y^{2^k}$, so that $\bigl(b^E_w\bigr)^{2^k}=X^{i2^k}Y_k^{j}$. Collecting the factors that lie in $K$,
-\[
-W_k=\sum_{j<3}Y_k^{j}R_{j,k},
-\qquad
-R_{j,k}:=\sum_{i<64}X^{i2^k}\Delta_{64j+i}\ \in\ K.
-\]
-Two observations finish the argument.
-\begin{enumerate}
-\item $Y_k\notin K$. The elements of $K$ are the fixed points of $a\mapsto a^{2^{64}}$, so $Y_k\in K$ would give $Y^{2^{k+64}}=Y^{2^k}$, and applying the inverse Frobenius $k$ times gives $Y^{2^{64}}=Y$, that is, $Y\in K$, whence $\E=K[Y]=K$, contradicting $[\E:K]=3$. As that degree is prime, any element outside $K$ generates $\E$ over $K$, so $\{1,Y_k,Y_k^2\}$ is a $K$-basis of $\E$ and $W_k=0$ forces $R_{0,k}=R_{1,k}=R_{2,k}=0$.
-\item For each $j$, the coefficient matrix of $\{R_{j,k}=0:k<64\}$ is $\bigl(X^{i2^k}\bigr)_{k,i<64}$, the Moore matrix of $X^0,\dots,X^{63}$. A Moore matrix is invertible exactly when the elements it is built from are $\F_2$-independent, and $X^0,\dots,X^{63}$ are an $\F_2$-basis of $K$, so the only solution is $\Delta_{64j+i}=0$ for all $i$.
-\end{enumerate}
-So $\Delta\neq0$ forces $W_k\neq0$ for some $k$. Since the $C_k$ are distinct monomials, $\sum_{k<64}C_k(s)\,W_k$ is a nonzero polynomial in the six challenges. Its total degree is at most
-\[
-2^{31}+2^{15}+2^7+2^3+2+1<2^{32},
-\]
-so Schwartz--Zippel over $\E$ bounds the soundness error by less than $2^{-160}$, before accounting for the PCS decoder's list size. Sampling the challenges in $K$ instead of $\E$ would give only $2^{-32}$.
-
-\paragraph{$64$ terms are necessary.} Let $S\subseteq\{0,\dots,191\}$ be any support, so that $\Phi_s(a)=\sum_{k\in S}c_ka^{2^k}$. The quantity checked above is $\sum_{k\in S}c_kW_k$, so a $\Delta\neq0$ with $W_k=0$ for all $k\in S$ passes for \emph{every} choice of coefficients. The map $\Delta\mapsto(W_k)_{k\in S}$ is $K$-linear and sends $K^{192}$ into $\E^{|S|}=K^{3|S|}$, so if $|S|<64$ its kernel is nonzero and such a $\Delta$ exists. Hence $|S|\ge64$, and \eqref{eq:phi-choice} attains it.
-
-\paragraph{Cost.} Applying $\Phi_s$ once costs $63$ squarings and six multiplications. The expanded coefficients $C_k$ are generated once by the same six-stage recurrence, and $B_s(r')$ then costs $64$ products of $m$ factors, plus the squaring ladder for the $r_n^{2^k}$.
+Everything above is in $\F_{2^{192}}$. The $64$ products $X^i\,\Phi(\alpha_i)$ in the target are left out: $X^i$ lies in $\F_{2^{64}}$, so they are cheaper, and stepping $X^i$ to $X^{i+1}$ is a shift.
 
 \section*{Credits}
 
-Generalizing ring switching~\cite{DP26} to arbitrary extension degrees, not necessarily powers of two, is an idea of Lev Soukhanov, \textit{[[alloc]init]}.
+The construction above rests on generalizing ring switching~\cite{DP26} to extension degrees that are not powers of two, an idea of Lev Soukhanov, \textit{[[alloc]init]}. The map $\Phi$ follows~\cite{Flock}.
 
 \begin{thebibliography}{9}
 \bibitem{DP26} Benjamin E. Diamond and Jim Posen. Polylogarithmic proofs for multilinears over binary towers. In \emph{Advances in Cryptology -- EUROCRYPT 2026}, pages 3--32. Springer, 2026.
