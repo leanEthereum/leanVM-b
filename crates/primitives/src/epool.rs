@@ -176,10 +176,7 @@ where
     // splits down to single indices so every main worker can pick one up;
     // under nesting fewer run, which the queue tolerates by construction.
     let drain_main = || {
-        (0..main_threads)
-            .into_par_iter()
-            .with_max_len(1)
-            .for_each(|_| worker());
+        (0..main_threads).into_par_iter().with_max_len(1).for_each(|_| worker());
     };
     std::thread::scope(|s| {
         // The scoped thread parks inside `broadcast` while the E-workers
@@ -218,10 +215,7 @@ mod tests {
     /// Every chunk runs exactly once, whichever pool claims it.
     #[test]
     fn helper_queue_runs_each_chunk_exactly_once() {
-        let helper = rayon::ThreadPoolBuilder::new()
-            .num_threads(2)
-            .build()
-            .unwrap();
+        let helper = rayon::ThreadPoolBuilder::new().num_threads(2).build().unwrap();
         for n in [0usize, 1, 15, 16, 257] {
             let counts: Vec<AtomicU32> = (0..n).map(|_| AtomicU32::new(0)).collect();
             run_chunks_with_helper(

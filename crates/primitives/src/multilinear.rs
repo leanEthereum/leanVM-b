@@ -1,39 +1,98 @@
-// `build_eq` and `lagrange_weights_naive` come from https://github.com/succinctlabs/flock (MIT OR Apache-2.0).
+// CREDIT: https://github.com/succinctlabs/flock (`build_eq` and `lagrange_weights_naive`), MIT OR Apache-2.0.
 //! Multilinear-extension utilities: the equality polynomial, single-variable
 //! folding, and MLE evaluation. Truth tables are indexed little-endian (variable
 //! `k` is bit `k`). Sumchecks here consume variables from either end, so folding
-//! and `eq`-marginalization come in a low and a high variant.
+//! and `eq`-marginalization come in low and high variants. Committed data is
+//! `K`-valued (`F64`) while randomness is `E`-valued (`F192`), so the first
+//! fold of a committed table also lifts it into `E`.
 
-use crate::field::F128;
+use crate::field::{F64, F192, F192Unreduced};
 
-/// Multilinear interpolation in one variable: `lo + t·(lo+hi)`, the char-2 form of
-/// `(1−t)·lo + t·hi`.
+/// Multilinear interpolation in one variable over `E`: `lo + t·(lo+hi)`, the
+/// char-2 form of `(1−t)·lo + t·hi`.
 #[inline]
-pub fn interp(lo: F128, hi: F128, t: F128) -> F128 {
+pub fn interp(lo: F192, hi: F192, t: F192) -> F192 {
     lo + t * (lo + hi)
 }
 
-/// `eq(r, x) = ∏_i (1 + r_i + x_i)` — 1 at `x = r`, 0 at every other Boolean point.
-pub fn eq_eval(r: &[F128], x: &[F128]) -> F128 {
+/// Mixed interpolation: two `K` endpoints against an `E` parameter, one
+/// `mul_base` (`lo + t·(lo+hi)` with `lo, hi ∈ K`).
+#[inline]
+pub fn interp_k(lo: F64, hi: F64, t: F192) -> F192 {
+    F192::from(lo) + t.mul_base(lo + hi)
+}
+
+/// `eq(r, x) = ∏_i (1 + r_i + x_i)`. For Boolean `r`, this is the indicator
+/// of `x = r`; for arbitrary `r`, it is the multilinear interpolation weight.
+pub fn eq_eval(r: &[F192], x: &[F192]) -> F192 {
     debug_assert_eq!(r.len(), x.len());
-    let mut acc = F128::ONE;
+    let mut acc = F192::ONE;
     for i in 0..r.len() {
-        acc *= F128::ONE + r[i] + x[i];
+        acc *= F192::ONE + r[i] + x[i];
     }
     acc
 }
 
-/// Standard inner product of two equal-length field vectors.
-#[inline]
-pub fn inner_product(a: &[F128], b: &[F128]) -> F128 {
-    assert_eq!(a.len(), b.len());
-    a.iter().zip(b).fold(F128::ZERO, |acc, (&x, &y)| acc + x * y)
+/// The `eq(r, ·)` table over `n = r.len()` variables, expanded a level at a
+/// time: each level writes the new high half from the low half and rewrites
+/// the low half in place.
+///
+/// One multiply per pair, not two. In characteristic 2,
+/// `e · (1 + r) = e + e · r`, so the low child is the high child XOR the
+/// parent — the second product is redundant. (This is orthogonal to batching:
+/// `rk` is loop-invariant, and the scalar product still beats `F192::mul2`
+/// here, 3.37 vs 3.73 ns/entry.)
+///
+/// A level's pairs are independent, so levels wide enough to cover rayon's
+/// dispatch are split across threads.
+pub fn eq_table(r: &[F192]) -> Vec<F192> {
+    use rayon::prelude::*;
+
+    let mut eq = vec![F192::ZERO; 1usize << r.len()];
+    eq[0] = F192::ONE;
+    const PAR_THRESHOLD: usize = 1 << 12;
+    for (i, &rk) in r.iter().enumerate() {
+        let half = 1usize << i;
+        let (lo, hi_rest) = eq.split_at_mut(half);
+        let hi = &mut hi_rest[..half];
+        let build_pair = |lo_x: &mut F192, hi_x: &mut F192| {
+            let e = *lo_x;
+            let high = e * rk;
+            *hi_x = high;
+            *lo_x = e + high;
+        };
+        if half < PAR_THRESHOLD {
+            lo.iter_mut().zip(hi.iter_mut()).for_each(|(l, h)| build_pair(l, h));
+        } else {
+            lo.par_iter_mut()
+                .zip(hi.par_iter_mut())
+                .for_each(|(l, h)| build_pair(l, h));
+        }
+    }
+    eq
+}
+
+/// The mixed fold: bind the lowest variable of a `K`-table to an
+/// `E`-challenge, producing the `E`-table the remaining rounds fold. One
+/// `mul_base` per output entry.
+pub fn fold_low_k(table: &[F64], rho: F192) -> Vec<F192> {
+    debug_assert_eq!(table.len() % 2, 0);
+    (0..table.len() / 2)
+        .map(|i| interp_k(table[2 * i], table[2 * i + 1], rho))
+        .collect()
+}
+
+/// Bind the highest variable of a `K`-table and lift the result into `E`.
+pub fn fold_high_k(table: &[F64], rho: F192) -> Vec<F192> {
+    debug_assert_eq!(table.len() % 2, 0);
+    let half = table.len() / 2;
+    (0..half).map(|i| interp_k(table[i], table[i + half], rho)).collect()
 }
 
 /// Bind the highest free variable of `table` to `rho` in place: `table[i] =
 /// interp(table[i], table[i + half], rho)`. Binding from the top down leaves the
 /// low variables, the ones every table of a batch shares, for last.
-pub fn fold_high_inplace(table: &mut Vec<F128>, rho: F128) {
+pub fn fold_high_inplace(table: &mut Vec<F192>, rho: F192) {
     debug_assert_eq!(table.len() % 2, 0);
     let half = table.len() / 2;
     for i in 0..half {
@@ -45,7 +104,7 @@ pub fn fold_high_inplace(table: &mut Vec<F128>, rho: F128) {
 /// Marginalize the lowest variable out of an `eq` table (in place). `eq(r_0, 0) +
 /// eq(r_0, 1) = 1`, so summing adjacent entries drops `r_0` with no multiplies,
 /// versus `2^{n-1}` to rebuild the table.
-pub fn shrink_eq_low(table: &mut Vec<F128>) {
+pub fn shrink_eq_low(table: &mut Vec<F192>) {
     let half = table.len() / 2;
     for i in 0..half {
         table[i] = table[2 * i] + table[2 * i + 1];
@@ -55,7 +114,7 @@ pub fn shrink_eq_low(table: &mut Vec<F128>) {
 
 /// Marginalize the highest variable out of an `eq` table (in place), the
 /// [`shrink_eq_low`] counterpart for a top-down sumcheck.
-pub fn shrink_eq_high(table: &mut Vec<F128>) {
+pub fn shrink_eq_high(table: &mut Vec<F192>) {
     let half = table.len() / 2;
     for i in 0..half {
         let hi = table[i + half];
@@ -67,13 +126,13 @@ pub fn shrink_eq_high(table: &mut Vec<F128>) {
 /// Lagrange evaluation: given distinct `nodes` and a polynomial's `values` there,
 /// evaluate the interpolant at `p`. Reads a sumcheck round's univariate (sent as
 /// evaluations) at the verifier's challenge.
-pub fn lagrange_eval(nodes: &[F128], values: &[F128], p: F128) -> F128 {
+pub fn lagrange_eval(nodes: &[F192], values: &[F192], p: F192) -> F192 {
     debug_assert_eq!(nodes.len(), values.len());
     let n = nodes.len();
-    let mut acc = F128::ZERO;
+    let mut acc = F192::ZERO;
     for i in 0..n {
-        let mut num = F128::ONE;
-        let mut den = F128::ONE;
+        let mut num = F192::ONE;
+        let mut den = F192::ONE;
         for k in 0..n {
             if k == i {
                 continue;
@@ -87,19 +146,20 @@ pub fn lagrange_eval(nodes: &[F128], values: &[F128], p: F128) -> F128 {
 }
 
 /// The 3 nodes {0, 1, g} at which a degree-2 sumcheck round univariate is sent
-/// (the eq weight is factored out). Shared by `lean_vm::constraints` and `lean_vm::gkr`.
+/// (the eq weight is factored out); `g` embedded into `E`. Shared by
+/// `lean_vm::constraints` and `lean_vm::gkr`.
 #[inline]
-pub fn tri_nodes() -> [F128; 3] {
-    [F128::ZERO, F128::ONE, F128::generator()]
+pub fn tri_nodes() -> [F192; 3] {
+    [F192::ZERO, F192::ONE, F192::from(crate::field::G)]
 }
 
 /// The 4 nodes {0, 1, g, g²} at which a degree-3 sumcheck round univariate is sent
 /// WHOLE, eq weight included. Costs one field element more than [`tri_nodes`] and
 /// buys a verifier that reapplies nothing: `h(0) + h(1) = claim`, then interpolate.
 #[inline]
-pub fn quad_nodes() -> [F128; 4] {
-    let g = F128::generator();
-    [F128::ZERO, F128::ONE, g, g * g]
+pub fn quad_nodes() -> [F192; 4] {
+    let g = F192::from(crate::field::G);
+    [F192::ZERO, F192::ONE, g, g * g]
 }
 
 /// Evaluate a degree-four eq-trick round from its four independent transcript
@@ -107,14 +167,14 @@ pub fn quad_nodes() -> [F128; 4] {
 /// constant coefficient, and characteristic two fixes the linear coefficient.
 #[inline]
 pub fn quartic_eval_from_eq(
-    claim: F128,
-    eq_point: F128,
-    difference: F128,
-    c2: F128,
-    c3: F128,
-    c4: F128,
-    point: F128,
-) -> F128 {
+    claim: F192,
+    eq_point: F192,
+    difference: F192,
+    c2: F192,
+    c3: F192,
+    c4: F192,
+    point: F192,
+) -> F192 {
     let c0 = claim + eq_point * difference;
     let c1 = difference + c2 + c3 + c4;
     c0 + point * (c1 + point * (c2 + point * (c3 + point * c4)))
@@ -122,21 +182,38 @@ pub fn quartic_eval_from_eq(
 
 /// Add two 3-coefficient sumcheck accumulators componentwise.
 #[inline]
-pub fn add3(mut x: [F128; 3], y: [F128; 3]) -> [F128; 3] {
+pub fn add3(mut x: [F192; 3], y: [F192; 3]) -> [F192; 3] {
     for i in 0..3 {
         x[i] += y[i];
     }
     x
 }
 
-/// Evaluate the MLE with truth table `table` at `point` (length `log2(len)`),
-/// binding variables LSB-first. One copy, then folded in place.
-pub fn mle_eval(table: &[F128], point: &[F128]) -> F128 {
+/// XOR two 3-slot deferred-reduction accumulators componentwise (the unreduced
+/// counterpart of [`add3`]; XOR IS addition on the unreduced parts).
+#[inline]
+pub fn xor3(mut x: [F192Unreduced; 3], y: [F192Unreduced; 3]) -> [F192Unreduced; 3] {
+    for i in 0..3 {
+        x[i] ^= y[i];
+    }
+    x
+}
+
+/// Evaluate the MLE of a `K`-valued truth table at an `E`-point (length
+/// `log2(len)`), binding variables LSB-first: the first fold is mixed
+/// ([`fold_low_k`]), the rest pure `E` in place.
+pub fn mle_eval(table: &[F64], point: &[F192]) -> F192 {
     debug_assert_eq!(table.len(), 1 << point.len());
-    let mut cur = table.to_vec();
+    if point.is_empty() {
+        return F192::from(table[0]);
+    }
+    let mut cur = fold_low_k(table, point[0]);
     let mut len = cur.len();
-    for &p in point {
+    for &p in &point[1..] {
         len /= 2;
+        // Deliberately scalar: the fold's mul has the loop-invariant `p` on
+        // one side, and pairing outputs through `F192::mul2` measures slower
+        // (1.75 vs 2.14 ns/output, same shape as the GKR `par_fold`).
         for i in 0..len {
             cur[i] = interp(cur[2 * i], cur[2 * i + 1], p);
         }
@@ -144,61 +221,21 @@ pub fn mle_eval(table: &[F128], point: &[F128]) -> F128 {
     cur[0]
 }
 
-/// Build the multilinear-eq evaluation table over `r`:
-/// `table[x] = ∏_i ((1 + r_i) · (1 ⊕ bit_i(x)) + r_i · bit_i(x))` for `x ∈ {0,1}^n`,
-/// where `n = r.len()`. Standard in-place power-of-two doubling.
-///
-/// Each doubling level needs only ONE field multiply per pair: in
-/// characteristic 2, `v · (1 + r) = v + v · r`, so the low child is the high
-/// child XOR the parent. Levels are independent within themselves and
-/// parallelize once they are large enough to cover rayon's dispatch.
-pub fn build_eq(r: &[F128]) -> Vec<F128> {
-    use rayon::prelude::*;
-
-    let n = r.len();
-    // Uninit alloc — at level `i` the loop reads `t[..2^i]` (written by an
-    // earlier level or the `t[0] = ONE` seed) and writes `t[2^i..2^(i+1)]`
-    // (purely written), so every slot is written before any read.
-    let mut t = crate::alloc_uninit_vec::<crate::field::F128>(1usize << n);
-    t[0] = F128::ONE;
-    const PAR_THRESHOLD: usize = 1 << 12;
-    for (i, &r_i) in r.iter().enumerate() {
-        let half = 1usize << i;
-        let (lo, hi_rest) = t.split_at_mut(half);
-        let hi = &mut hi_rest[..half];
-        let build_pair = |lo_x: &mut F128, hi_x: &mut F128| {
-            let v = *lo_x;
-            let high = v * r_i;
-            *hi_x = high;
-            *lo_x = v + high;
-        };
-        if half < PAR_THRESHOLD {
-            lo.iter_mut()
-                .zip(hi.iter_mut())
-                .for_each(|(l, h)| build_pair(l, h));
-        } else {
-            lo.par_iter_mut()
-                .zip(hi.par_iter_mut())
-                .for_each(|(l, h)| build_pair(l, h));
-        }
-    }
-    t
-}
-
 /// O(2^{2·k_skip}) field multiplies — one-time cost.
-pub fn lagrange_weights_naive(k_skip: usize, z: F128) -> Vec<F128> {
+pub fn lagrange_weights_naive(k_skip: usize, z: F192) -> Vec<F192> {
+    use crate::field::PHI_8_TABLE_192 as PHI_8_TABLE;
     let ell = 1usize << k_skip;
     assert!(ell <= 256, "k_skip > 8 would exceed PHI_8_TABLE");
-    let mut weights = vec![F128::ZERO; ell];
+    let mut weights = vec![F192::ZERO; ell];
     for i in 0..ell {
-        let si = crate::field::phi8::PHI_8_TABLE[i];
-        let mut num = F128::ONE;
-        let mut den = F128::ONE;
+        let si = PHI_8_TABLE[i];
+        let mut num = F192::ONE;
+        let mut den = F192::ONE;
         for j in 0..ell {
             if j == i {
                 continue;
             }
-            let sj = crate::field::phi8::PHI_8_TABLE[j];
+            let sj = PHI_8_TABLE[j];
             num *= z + sj;
             den *= si + sj;
         }

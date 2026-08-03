@@ -1,4 +1,4 @@
-// Credit: https://github.com/succinctlabs/flock, MIT OR Apache-2.0.
+// CREDIT: https://github.com/succinctlabs/flock, MIT OR Apache-2.0.
 //! flock: a batched R1CS proving system for hash circuits over GF(2), reduced
 //! to evaluation claims on the committed packed witness.
 //!

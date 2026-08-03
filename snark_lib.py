@@ -10,10 +10,10 @@ argument; the compiler specializes the function per distinct constant."""
 
 
 class _Elt:
-    """A GF(2^128) element (GHASH form). Indices and addresses are carried as
-    powers of GEN — "in the exponent": `GEN ** k` is the k-th index, `x * GEN`
-    its successor. A heap pointer is an element too, its cells addressed by
-    g-power offsets (`buf[i]` is the cell at `buf * i`, write-once)."""
+    """A 192-bit machine word in E = GF(2^192), represented as a cubic tower
+    over K = GF(2^64). Indices and addresses are K-valued powers of GEN —
+    "in the exponent": `GEN ** k` is the k-th index and `x * GEN` its successor.
+    A heap pointer is K-valued too; `buf[i]` is the write-once cell at `buf * i`."""
 
     def __add__(self, other):  # field addition = XOR
         _ = other
@@ -21,7 +21,7 @@ class _Elt:
 
     __radd__ = __add__
 
-    def __mul__(self, other):  # field (GHASH) product
+    def __mul__(self, other):  # tower-field product
         _ = other
         return _Elt()
 
@@ -45,8 +45,14 @@ class _Elt:
         _ = idx, value
 
 
+def f192(c0: int, c1: int, c2: int) -> _Elt:
+    """Construct a field constant from its three little-endian GF(2^64) limbs."""
+    _ = c0, c1, c2
+    return _Elt()
+
+
 GEN = _Elt()
-"""The fixed generator g = x of GF(2^128)^× (order 2^128 - 1)."""
+"""The fixed generator g = x of K^× = GF(2^64)^× (order 2^64 - 1)."""
 
 
 def hint_decompose_bits(bits, value, nbits: int) -> None:
@@ -142,6 +148,27 @@ def hint_witness(dest, name: str) -> None:
     completely UNCONSTRAINED: the program must constrain them itself
     (asserts, range checks, hashes)."""
     _ = dest, name
+
+
+def pack64x2(a, b) -> _Elt:
+    """Prove that `a` and `b` are GF(2^64)-valued machine words and return
+    their canonical 128-bit packing `(a.c0, b.c0, 0)` as one GF(2^192) word.
+    This is one VM instruction."""
+    _ = a, b
+    return _Elt()
+
+
+def pack64x2_into(a, b, out) -> None:
+    """The destination-target form of `pack64x2`: assert that `out` is the
+    canonical packing `(a.c0, b.c0, 0)`. All three arguments are scalar cells."""
+    _ = a, b, out
+
+
+def hint_f192_limbs(dest, value) -> None:
+    """Computed advice: write the first `len(dest)` GF(2^64) coordinate limbs
+    of `value` into a 1-to-3-cell StackBuf. UNCONSTRAINED; callers bind the
+    result with `PACK64X2` and/or field reconstruction."""
+    _ = dest, value
 
 
 def blake3(

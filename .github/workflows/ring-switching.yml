@@ -6,18 +6,35 @@ on:
     paths:
       - 'misc/ring-switching.tex'
       - '.github/workflows/ring-switching.yml'
+  pull_request:
+    paths:
+      - 'misc/ring-switching.tex'
+      - '.github/workflows/ring-switching.yml'
   workflow_dispatch:
-
-permissions:
-  contents: write
 
 concurrency:
   group: ring-switching-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  build-pdf:
+  check-pdf:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile LaTeX
+        uses: xu-cheng/latex-action@v3
+        with:
+          working_directory: misc
+          root_file: ring-switching.tex
+
+  build-pdf:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - name: Compile LaTeX
@@ -26,7 +43,6 @@ jobs:
           working_directory: misc
           root_file: ring-switching.tex
       - name: Publish PDF as release asset
-        if: github.event_name != 'pull_request'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ring-switching-latest

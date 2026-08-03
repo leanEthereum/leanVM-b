@@ -1,4 +1,4 @@
-// Credit: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
+// CREDIT: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
 //! §2.1 single-table collapse of the LDE matrix `M = fwd_NTT_Λ ∘ inv_NTT_S`.
 //!
 //! Background: the URM round-1 needs to map each `ell`-bit row of the boolean
@@ -18,8 +18,8 @@
 //! Storage: 256 × ell bytes (16 KB at k=6, 32 KB at k=7) — fits in L1.
 //! Lookups per row: n_chunks (= ell/8), each load is `ell` contiguous bytes.
 
-use primitives::field::F8;
 use crate::ntt::AdditiveNttGf8;
+use primitives::field::F8;
 
 #[derive(Clone, Debug)]
 pub struct InvNttTableByteSingleGf8 {
@@ -41,10 +41,7 @@ impl InvNttTableByteSingleGf8 {
         let ell = 1usize << k;
         assert!(ell >= 8, "ell must be ≥ 8 so n_chunks ≥ 1");
         let n_chunks = ell / 8;
-        assert!(
-            n_chunks <= 16,
-            "n_chunks must fit the i'/chunk XOR encoding"
-        );
+        assert!(n_chunks <= 16, "n_chunks must fit the i'/chunk XOR encoding");
 
         let mut data = vec![F8::ZERO; 256 * ell];
 
@@ -81,12 +78,7 @@ impl InvNttTableByteSingleGf8 {
             }
         }
 
-        Self {
-            k,
-            ell,
-            n_chunks,
-            data,
-        }
+        Self { k, ell, n_chunks, data }
     }
 
     /// Raw pointer to the table data (`256 × ell` bytes, row-major). Used by
@@ -192,7 +184,7 @@ impl InvNttTableByteSingleGf8 {
         }
     }
 
-    /// SSE2 variant of `apply` — the x86 twin of [`Self::apply_neon_unchecked`].
+    /// SSE2 variant of `apply` — the x86 twin of `apply_neon_unchecked`.
     /// Same 16-byte-chunk structure; the odd-`b` within-chunk half-swap is
     /// `_mm_shuffle_epi32::<0b01_00_11_10>` (swap the two 64-bit halves).
     ///
@@ -336,9 +328,7 @@ mod tests {
 
             let mut rng = Rng::new(100 + k as u64);
             for _ in 0..32 {
-                let bytes: Vec<u8> = (0..n_chunks)
-                    .map(|_| (rng.next_u64() & 0xff) as u8)
-                    .collect();
+                let bytes: Vec<u8> = (0..n_chunks).map(|_| (rng.next_u64() & 0xff) as u8).collect();
                 let mut out_scalar = vec![F8::ZERO; ell];
                 let mut out_neon = vec![F8::ZERO; ell];
                 table.apply_scalar(&bytes, &mut out_scalar);
@@ -367,9 +357,7 @@ mod tests {
 
             let mut rng = Rng::new(100 + k as u64);
             for _ in 0..32 {
-                let bytes: Vec<u8> = (0..n_chunks)
-                    .map(|_| (rng.next_u64() & 0xff) as u8)
-                    .collect();
+                let bytes: Vec<u8> = (0..n_chunks).map(|_| (rng.next_u64() & 0xff) as u8).collect();
                 let mut out_scalar = vec![F8::ZERO; ell];
                 let mut out_sse2 = vec![F8::ZERO; ell];
                 table.apply_scalar(&bytes, &mut out_scalar);

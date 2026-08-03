@@ -1,11 +1,12 @@
 # A miniature WOTS-style chain walk bundling the DSL's moving parts: a
 # runtime digit is range-checked (dispatch soundness), then match_range
 # dispatches it to a Const-specialized walker whose BLAKE3 chain is unrolled
-# over heap slices; the walker also builds g^{2n} at runtime (unrolled MULs)
-# to read its final pair back through g-power indexing. The recomputation at
-# the end lands on an already-written StackBuf pair, so write-once turns the
-# hash into a digest assertion; the dead `if` branch holds an impossible
-# assert that must never execute. Published: H²(5, 7).
+# over heap slices (a 256-bit BLAKE3 value occupies two canonical cells);
+# the walker also builds g^{2n} at runtime (unrolled MULs) to read its final
+# pair back through g-power indexing. The recomputation at the end lands on an
+# already-written StackBuf pair, so write-once turns the hash into a digest
+# assertion; the dead `if` branch holds an impossible assert that must never
+# execute. Published: the two 128-bit digest cells of H^2(5, 7).
 # public_input: 101229015297003380629709256178361811305, 199495362546883507010283175921733252645
 from snark_lib import *
 
@@ -22,7 +23,7 @@ def main():
     v = StackBuf(2)
     v[0] = t0
     v[1] = t1
-    blake3(buf[2:4], buf[2:4], v)  # recompute H(pair1, pair1): asserts == (t0, t1)
+    blake3(buf[2:4], buf[2:4], v)  # recompute H(value1, value1): asserts v[0:2] == (t0, t1)
     p = GEN ** 0
     p[1] = t0
     p[GEN] = t1

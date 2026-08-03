@@ -1,6 +1,5 @@
-//! Shared primitives: the GF(2^128)/GF(2^8) field kernels, bit transposes,
-//! multilinear helpers, the scratch buffer pool, the efficiency-core helper
-//! pool, and small integer utilities.
+//! Shared primitives: field kernels, bit transposes,
+//! multilinear helpers, the scratch buffer pool, and small integer utilities.
 
 pub mod bits;
 pub mod epool;
@@ -8,7 +7,7 @@ pub mod field;
 pub mod multilinear;
 pub mod scratch;
 
-pub use field::{F128, F256Unreduced, G, g_pow, g_powers, mul_by_x, x_pow};
+pub use field::{F64, F192, G, g_pow, g_powers, x_pow};
 
 fn format_trace_tree(tree: &tracing_forest::tree::Tree) -> Result<String, std::fmt::Error> {
     use tracing_forest::Formatter;
@@ -31,9 +30,7 @@ fn collect_parent_percentages(
     let percentage = match parent_duration {
         None => 100.0,
         Some(duration) if duration.is_zero() => 0.0,
-        Some(duration) => {
-            100.0 * span.total_duration().as_nanos() as f64 / duration.as_nanos() as f64
-        }
+        Some(duration) => 100.0 * span.total_duration().as_nanos() as f64 / duration.as_nanos() as f64,
     };
     percentages.push(percentage);
 
@@ -175,9 +172,9 @@ pub fn pretty_f64(value: f64) -> String {
         return "0".to_string();
     }
 
-    let (integer, fraction) = raw.split_once('.').map_or((raw.as_str(), None), |(integer, fraction)| {
-        (integer, Some(fraction))
-    });
+    let (integer, fraction) = raw
+        .split_once('.')
+        .map_or((raw.as_str(), None), |(integer, fraction)| (integer, Some(fraction)));
     let mut out = pretty_integer(integer);
     if let Some(fraction) = fraction {
         out.push('.');
@@ -262,38 +259,6 @@ pub fn log2_ceil_usize(n: usize) -> usize {
     usize::BITS as usize - (n - 1).leading_zeros() as usize
 }
 
-/// Allocate a `Vec<T>` of length `n` whose contents are NOT zero-initialized.
-/// Caller MUST write every slot before reading it.
-///
-/// Used to skip the eager zero-init of large ping-pong buffers in hot prover
-/// paths (Ligerito codeword + Merkle tree, zerocheck Round-2 fold, NTT
-/// scratch, lincheck packing). At m=29 the
-/// zero-fill of a fresh 128 MB `vec![T::default(); n]` runs sequentially on
-/// the main thread (~22 ms), which caps the parallel speedup of those phases.
-///
-/// `T: Copy` ensures `T` has no Drop impl, so the leaked uninitialized
-/// elements are a no-op on drop.
-///
-/// # Safety contract
-///
-/// Reading uninitialized memory is UB per Rust's memory model regardless of
-/// whether all bit patterns are valid for `T`. Caller must ensure every slot
-/// is written before any read.
-// `uninit_vec` flags exactly this pattern; here it is the deliberate purpose of
-// the function (the safety contract above is what makes it sound).
-#[allow(clippy::uninit_vec)]
-pub fn alloc_uninit_vec<T: Copy>(n: usize) -> Vec<T> {
-    let mut v: Vec<T> = Vec::with_capacity(n);
-    // SAFETY:
-    // - capacity == n was just allocated, so set_len(n) is in bounds.
-    // - T: Copy implies !Drop, so leaking uninit elements is a no-op.
-    // - Caller upholds write-before-read.
-    unsafe {
-        v.set_len(n);
-    }
-    v
-}
-
 /// Allocate a zero-filled `Vec<T>` through the global allocator's zeroed path.
 /// Large allocations can therefore start as demand-zero pages instead of
 /// paying an eager single-threaded fill before parallel work begins.
@@ -317,7 +282,26 @@ pub unsafe fn alloc_zeroed_vec<T: Copy>(n: usize) -> Vec<T> {
     unsafe { Vec::from_raw_parts(ptr, n, n) }
 }
 
-/// Cached [`perf_core_count`]. The uncached version may spawn `sysctl`; this
+/// Allocate `n` slots without initializing `T` values.
+pub fn alloc_uninit<T>(n: usize) -> Vec<std::mem::MaybeUninit<T>> {
+    let mut values = Vec::with_capacity(n);
+    values.resize_with(n, std::mem::MaybeUninit::uninit);
+    values
+}
+
+/// Convert a vector after every slot has been initialized.
+///
+/// # Safety
+///
+/// Every element of `values` must contain a valid `T`.
+pub unsafe fn assume_init<T>(values: Vec<std::mem::MaybeUninit<T>>) -> Vec<T> {
+    let mut values = std::mem::ManuallyDrop::new(values);
+    // SAFETY: `MaybeUninit<T>` has the same layout as `T`; the caller guarantees
+    // that all elements are initialized, and ManuallyDrop transfers ownership.
+    unsafe { Vec::from_raw_parts(values.as_mut_ptr().cast(), values.len(), values.capacity()) }
+}
+
+/// Cached `perf_core_count`. The uncached version may spawn `sysctl`; this
 /// memoizes it so hot paths can cheaply ask "is the current rayon pool the
 /// homogeneous P-core pool?" (i.e. `current_num_threads() <= this`).
 #[cfg_attr(not(target_arch = "aarch64"), allow(dead_code))] // caller is aarch64-only
@@ -344,7 +328,5 @@ fn perf_core_count() -> usize {
             return n;
         }
     }
-    std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1)
+    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)
 }

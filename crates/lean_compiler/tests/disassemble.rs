@@ -1,4 +1,5 @@
 use lean_compiler::{compile, disassemble, parse};
+use primitives::pretty_integer;
 
 #[test]
 fn disassemble_simple_program() {
@@ -19,9 +20,9 @@ def main():
     println!("\n=== zkDSL source ===\n{src}");
     println!(
         "=== compiled ISA ({} instructions, pc0 = {}, fp0 = {}) ===",
-        program.prog.len(),
-        program.pc0,
-        program.fp0,
+        pretty_integer(program.prog.len()),
+        pretty_integer(program.pc0),
+        pretty_integer(program.fp0),
     );
     print!("{}", disassemble(&program.prog));
 

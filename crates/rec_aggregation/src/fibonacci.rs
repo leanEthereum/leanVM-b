@@ -6,15 +6,15 @@ use std::time::Instant;
 use lean_compiler::{compile, parse};
 use lean_vm::cpu::{prove, verify};
 use primitives::{
-    field::{F128, g_pow},
+    field::{F64, F192, g_pow},
     pretty_f64, pretty_integer,
 };
 
 /// Prove and verify Fibonacci-in-the-exponent over a `HeapBuf` (an unrolled
 /// `mul_range` recurrence), binding `g^{F(n)}` as the public input. Prints the
 /// benchmark report.
-pub fn run_fibonacci(n: usize) {
-    let trace_span = tracing::info_span!("Fibonacci", n = %pretty_integer(n)).entered();
+pub fn run_fibonacci(n: usize, log_inv_rate: usize) {
+    let trace_span = tracing::info_span!("Fibonacci", n, log_inv_rate).entered();
 
     let (src, pi) = fibonacci_program(n);
     let program = compile(&parse(&src).unwrap());
@@ -26,7 +26,7 @@ pub fn run_fibonacci(n: usize) {
     lean_vm::blake3_flock::warm_setup(0);
 
     let t = Instant::now();
-    let (proof, stats) = prove(&program, pi);
+    let (proof, stats) = prove(&program, pi, log_inv_rate);
     let t_prove = t.elapsed();
     let t = Instant::now();
     verify(&program, &pi, &proof).unwrap();
@@ -38,11 +38,11 @@ pub fn run_fibonacci(n: usize) {
     drop(trace_span);
 
     println!(
-        "Fibonacci (in the exponent, i.e. modulo 2^128 - 1), N = {}",
+        "Fibonacci (in the exponent, i.e. modulo 2^64 - 1), N = {}",
         pretty_integer(n)
     );
     println!("  cycles (VM steps)           : {}", pretty_integer(stats.cycles));
-    for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3"]
+    for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE3", "PACK64X2"]
         .iter()
         .zip(&stats.counts)
     {
@@ -57,18 +57,13 @@ pub fn run_fibonacci(n: usize) {
         "  committed witness size      : 2^{}",
         pretty_f64((stats.committed as f64).log2())
     );
-    println!(
-        "  proof size                  : {} KiB",
-        pretty_f64(proof_bytes as f64 / 1024.0)
-    );
-    println!(
-        "  proving (incl. witness gen) : {} s",
-        pretty_f64(t_prove.as_secs_f64())
-    );
-    println!("  verifying                   : {} s", pretty_f64(t_verify.as_secs_f64()));
+    println!("  proof size                  : {:.1} KiB", proof_bytes as f64 / 1024.0);
+    println!("  proving (incl. witness gen) : {t_prove:?}");
+    println!("  verifying                   : {t_verify:?}");
+    let cycles_per_second = (stats.cycles as f64 / t_prove.as_secs_f64()).round() as u64;
     println!(
         "  throughput                  : {} cycles/s",
-        pretty_f64(stats.cycles as f64 / t_prove.as_secs_f64())
+        pretty_integer(cycles_per_second)
     );
 }
 
@@ -76,7 +71,7 @@ pub fn run_fibonacci(n: usize) {
 /// unrolled `mul_range` loop over a `HeapBuf`), with the result `g^{F(N)}`
 /// published into cell `m[0]`. Returns the zkDSL source and the public input
 /// `[g^{F(N)}, 0]`.
-fn fibonacci_program(fib_n: usize) -> (String, [F128; 2]) {
+fn fibonacci_program(fib_n: usize) -> (String, [F192; 2]) {
     const UNROLL: usize = 1000;
     assert!(
         fib_n >= UNROLL && fib_n.is_multiple_of(UNROLL),
@@ -86,13 +81,13 @@ fn fibonacci_program(fib_n: usize) -> (String, [F128; 2]) {
 
     // Run the recurrence in the field (the same one the VM runs in the exponent)
     // to pin the result g^{F(N)}, the public input.
-    let (mut a, mut b) = (F128::ONE, g_pow(1)); // g^{F(0)}, g^{F(1)}
+    let (mut a, mut b) = (F64::ONE, g_pow(1)); // g^{F(0)}, g^{F(1)}
     for _ in 1..=fib_n {
         let c = a * b;
         a = b;
         b = c; // (a, b) = (g^{F(m)}, g^{F(m+1)})
     }
-    let pi = [a, F128::ZERO]; // a = g^{F(N)}: the result, then 0
+    let pi = [F192::from(a), F192::ZERO]; // a = g^{F(N)}: the result, then 0
 
     // `K` blocks: each reads its boundary pair into locals, runs `UNROLL`
     // Fibonacci `MUL`s in registers, and writes the next pair (4 DEREFs per
@@ -129,6 +124,6 @@ fn fibonacci_program(fib_n: usize) -> (String, [F128; 2]) {
 mod tests {
     #[test]
     fn fibonacci() {
-        super::run_fibonacci(200_000);
+        super::run_fibonacci(200_000, lean_vm::pcs::LOG_INV_RATE);
     }
 }

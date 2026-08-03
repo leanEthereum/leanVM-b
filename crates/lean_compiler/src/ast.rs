@@ -1,12 +1,12 @@
 //! The surface AST produced by the parser: expressions, statements, functions.
 
+use primitives::field::F192;
+
 /// An expression. Arithmetic is the field's own: `+` is `XOR`, `*` is `MUL`.
 #[derive(Clone, Debug)]
 pub enum Expr {
-    /// Integer / field literal: a `u128` taken as the field element's 128 bits,
-    /// `F128::new(n_lo, n_hi)`. Small values behave like integers (`5` is
-    /// `F128::new(5, 0)`); a full 128-bit value names an arbitrary field
-    /// constant (e.g. a Fibonacci result computed in the exponent).
+    /// Integer / field literal: the source syntax provides a raw 128-bit value,
+    /// embedded into the low two limbs of the 192-bit tower element (`c2 = 0`).
     Lit(u128),
     /// The generator `g` — written `GEN` in source. A logical index `i` is
     /// carried "in the exponent" as `gⁱ`, so `GEN` is the unit step and
@@ -47,9 +47,9 @@ pub enum Expr {
     /// `a · b⁻¹`. Lowered to one `MUL` whose quotient operand is unset, so the
     /// write-once back-solve fills it with `a · b⁻¹` and the `MUL` constraint
     /// pins `quotient · b == a` (§range-check trick). No hint: the inverse is
-    /// nondeterministic but the constraint binds it. `b == 0` is rejected
-    /// (unless `a == 0` too, the undefined `0/0`); `1 / b` therefore also
-    /// enforces `b != 0`. Distinct from the compile-time `//` ([`Expr::Div`]).
+    /// nondeterministic but the constraint binds it. `b == 0` is rejected,
+    /// including `0 / 0`; `1 / b` therefore also enforces `b != 0`. Distinct
+    /// from the compile-time `//` ([`Expr::Div`]).
     FieldDiv(Box<Expr>, Box<Expr>),
     /// Single-return function call in expression position.
     Call(String, Vec<Expr>),
@@ -64,8 +64,8 @@ pub enum Expr {
     HeapBufDyn(Box<Expr>),
     /// `StackBuf(n)` — allocate `n` *consecutive* frame (stack) cells, bound as a
     /// stack value. Its cells `sa[0..n]` are written/read directly (no heap deref),
-    /// and a size-2 `StackBuf` is a valid `blake3` operand (the two 128-bit words
-    /// of a 256-bit value live in the two consecutive cells). See [`FnLower`].
+    /// and a size-2 `StackBuf` is a valid `blake3` operand (the four 64-bit hash
+    /// words live as two lanes in each of two consecutive 128-bit cells).
     StackBuf(u64),
     /// `arr[idx]` — read a cell. For a heap `arr` (a pointer): `m[arr·idx]` (idx a
     /// g-power). For a [`Expr::StackBuf`]: the frame cell `base + idx` (idx a
@@ -97,15 +97,15 @@ pub enum Stmt {
     /// `assert a != b` — a proof-enforced inequality. Lowers to a conditional
     /// `JUMP` on `a + b`: when the sides differ (nonzero) execution skips to the
     /// continuation; when they are equal it falls through to a jump to the
-    /// poison pc `g^-1` ([`KVal::Poison`]), which no valid trace can continue
-    /// past. See [`FnLower::lower_assert_ne`]. No prover hint (unlike the
+    /// poison pc `g^-1` (`KVal::Poison`), which no valid trace can continue
+    /// past. See `FnLower::lower_assert_ne`. No prover hint (unlike the
     /// `(a-b)·inv == 1` idiom it replaces).
     AssertNe(Expr, Expr),
     /// `assert log X < log Y` (also `assert log X < k` with an integer
     /// exponent) — a *range check in the exponent*: with `X = g^x`, proves
     /// `x < k`, i.e. `X ∈ {g^0, g^1, …, g^{k-1}}`. The bound `Y = g^k` is a
     /// compile-time power of `GEN` with `1 ≤ k ≤ 2^MIN_LOG_MEM`; see
-    /// [`FnLower::lower_assert_lt`] for the 3-cycle gadget (leanVM's DEREF
+    /// `FnLower::lower_assert_lt` for the 3-cycle gadget (leanVM's DEREF
     /// range-check trick, transported to g-powers).
     AssertLt(Expr, u64),
     /// `f(args)` as a statement (returns discarded).
@@ -126,7 +126,7 @@ pub enum Stmt {
     /// One conditional `JUMP` on the XOR of the two sides; bindings made
     /// inside a branch are local to it — branches communicate through
     /// write-once memory (only one branch executes, so both may write the
-    /// same cell). See [`FnLower::lower_if`].
+    /// same cell). See `FnLower::lower_if`.
     If {
         eq: bool,
         lhs: Expr,
@@ -139,7 +139,7 @@ pub enum Stmt {
     /// runs case `j`). Dispatched through a trampoline table in the bytecode
     /// (doc §ISA programming / Match statements); the scrutinee must be known
     /// to lie in `[0, n)` — range-check a hinted value first. Case bodies are
-    /// branch-local, like [`Stmt::If`] branches. See [`FnLower::lower_match`].
+    /// branch-local, like [`Stmt::If`] branches. See `FnLower::lower_match`.
     Match { x: Expr, cases: Vec<Vec<Stmt>> },
     /// `names = match_range(log(x), range(a, b), lambda i: expr, …)` — a
     /// [`Stmt::Match`] with generated arms (leanVM's `match_range`): arm `j`
@@ -199,6 +199,27 @@ pub enum ForBound {
     Runtime(Expr),
 }
 
+/// Compile-time representation of one source-level return value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReturnShape {
+    /// One ordinary field element or address cell. Heap buffers use this shape:
+    /// allocation happens in the callee and only their pointer is returned.
+    Scalar,
+    /// A compile-time-sized run of consecutive frame cells.
+    StackBuf(u32),
+}
+
+impl ReturnShape {
+    /// Number of physical call-frame return cells occupied by this source-level
+    /// return value.
+    pub(crate) fn cells(self) -> u32 {
+        match self {
+            Self::StackBuf(n) => n,
+            Self::Scalar => 1,
+        }
+    }
+}
+
 /// A function definition. `main` is the entry point.
 #[derive(Clone, Debug)]
 pub struct Func {
@@ -208,9 +229,13 @@ pub struct Func {
     /// a `Const` parameter is a *template*: it is never lowered itself — each
     /// call site with a distinct constant tuple queues a monomorphized copy
     /// with the parameter substituted by its literal (see
-    /// [`FnLower::specialize`]).
+    /// `FnLower::specialize`).
     pub const_params: Vec<bool>,
+    /// Number of source-level return values (tuple arity).
     pub n_ret: usize,
+    /// Compile-time shape of each source-level return value. Stack buffers use
+    /// multiple physical ABI cells; everything else uses one cell.
+    pub return_shapes: Vec<ReturnShape>,
     pub body: Vec<Stmt>,
     /// `@inline` decorator: expand this function at each call site instead of
     /// emitting a real call — no frame, no argument/return plumbing (the
@@ -226,10 +251,10 @@ pub struct Func {
 pub struct Ast {
     pub funcs: Vec<Func>,
     /// Top-level constant arrays `NAME = [a, b, c]` (declaration order). Each
-    /// element is a `u128` (a field value `F128::new(lo,hi)` where used as a
+    /// element is a `u128` (a field value `extension-field::new(lo,hi)` where used as a
     /// value, or a small integer where used as a compile-time index / bound /
     /// `unroll` count). Indexed `NAME[i]` and measured `len(NAME)` at compile
     /// time only (`i` a literal / constant / `unroll` var). Not textually
     /// substituted (unlike scalar constants) — resolved at lowering.
-    pub const_arrays: Vec<(String, Vec<u128>)>,
+    pub const_arrays: Vec<(String, Vec<F192>)>,
 }

@@ -7,7 +7,7 @@
 
 use lean_compiler::{compile, parse};
 use lean_vm::cpu::{prove, verify};
-use primitives::field::{F128, g_pow};
+use primitives::field::{F64, F192, g_pow};
 
 /// Honest inequality over runtime values: prove + verify pass, and corrupting
 /// the public output is still caught (the assert does not disturb the trace).
@@ -26,12 +26,15 @@ def main():
     return
 ";
     let program = compile(&parse(src).expect("parse"));
-    let want = [g_pow(12), g_pow(5)];
-    let (proof, _) = prove(&program, want);
+    let want = [F192::from(g_pow(12)), F192::from(g_pow(5))];
+    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
     verify(&program, &want, &proof).expect("inequality program verifies");
 
-    let bad = [g_pow(11), g_pow(5)];
-    assert!(verify(&program, &bad, &proof).is_err(), "wrong public input must be rejected");
+    let bad = [F192::from(g_pow(11)), F192::from(g_pow(5))];
+    assert!(
+        verify(&program, &bad, &proof).is_err(),
+        "wrong public input must be rejected"
+    );
 }
 
 /// The adversarial case: two hinted cells the prover sets *equal*, asserted
@@ -49,12 +52,13 @@ def main():
     p[GEN] = v[1]
     return
 ";
-    let run = |a: F128, b: F128| -> bool {
+    let run = |a: F64, b: F64| -> bool {
         let mut program = compile(&parse(src).expect("parse"));
-        program.set_witness("vals", vec![vec![a, b]]);
+        program.set_witness("vals", vec![vec![F192::from(a), F192::from(b)]]);
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let (proof, _) = prove(&program, [a, b]);
-            verify(&program, &[a, b], &proof).is_ok()
+            let pi = [F192::from(a), F192::from(b)];
+            let (proof, _) = prove(&program, pi, lean_vm::pcs::LOG_INV_RATE);
+            verify(&program, &pi, &proof).is_ok()
         }))
         .unwrap_or(false)
     };
@@ -78,8 +82,8 @@ def main():
     return
 ";
     let program = compile(&parse(src).expect("parse"));
-    let want = [F128::new(5, 0), F128::new(7, 0)];
-    let (proof, _) = prove(&program, want);
+    let want = [F192::from(F64(5)), F192::from(F64(7))];
+    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
     verify(&program, &want, &proof).expect("loop inequality verifies");
 }
 

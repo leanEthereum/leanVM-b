@@ -1,4 +1,4 @@
-// Credit: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
+// CREDIT: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
 //! Errors of the R1CS reduction (zerocheck + lincheck + PCS opening).
 
 use crate::lincheck;
@@ -9,5 +9,4 @@ use crate::zerocheck;
 pub enum VerifyError {
     Zerocheck(zerocheck::VerifyError),
     Lincheck(lincheck::VerifyError),
-    Pcs(::pcs::VerifyError),
 }

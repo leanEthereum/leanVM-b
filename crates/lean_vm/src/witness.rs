@@ -1,12 +1,13 @@
-//! Field-valued columns stacked into one committed witness (§3.1): columns laid
-//! end to end, largest first at aligned offsets, into one multilinear `q`. An
-//! evaluation claim on column `i` at `ζ` becomes the claim `q̂(ζ, sel_i) = c` on
-//! the stack, where `sel_i` is the high-bit selector of the column's offset.
+//! `K`-valued columns stacked into one committed witness (§3.1): columns laid
+//! end to end, largest first at aligned offsets, into one multilinear `q` over
+//! `F64`. An evaluation claim on column `i` at `ζ ∈ E` becomes the claim
+//! `q̂(ζ, sel_i) = c` on the stack, where `sel_i` is the high-bit selector of
+//! the column's offset.
 
-use primitives::field::F128;
+use primitives::field::F64;
 
-/// A committed column: `2^κ` field elements.
-pub type Column = Vec<F128>;
+/// A committed column: `2^κ` `K`-elements.
+pub type Column = Vec<F64>;
 
 /// Where a column sits in the stacked witness. A [`Placement::VIRTUAL`] column is
 /// NOT committed: it carries data for the bus, but its evaluation claims settle
@@ -37,7 +38,7 @@ impl Placement {
 #[cfg(test)]
 pub(crate) struct Stacked {
     pub m: usize,
-    pub q: Vec<F128>,
+    pub q: Vec<F64>,
     pub placements: Vec<Placement>,
 }
 
@@ -56,8 +57,8 @@ pub fn placements_of(kappas: &[Option<usize>]) -> (Vec<Placement>, usize) {
         placements[i] = Placement { n_vars: k, offset: off };
         off += 1 << k;
     }
-    // Floor at the PCS minimum (Ligerito's level ladder needs room); tiny witnesses
-    // zero-pad up. Both sides derive this identically from the kappas.
+    // Floor at the PCS minimum (Ligerito's level ladder needs room); tiny
+    // witnesses zero-pad up. Both sides derive this identically from the kappas.
     let m = crate::log2_ceil_usize(off.max(1)).max(crate::pcs::MIN_MU);
     (placements, m)
 }
@@ -67,11 +68,11 @@ pub fn placements_of(kappas: &[Option<usize>]) -> (Vec<Placement>, usize) {
 /// (e.g. `q_pkd`, ~1 GB at scale) copy in parallel — the `2^m` stack is
 /// memory-bandwidth bound, so a single-threaded `memcpy` leaves most of the
 /// machine idle.
-pub fn stack_q(cols: &[Column], placements: &[Placement], m: usize) -> Vec<F128> {
+pub fn stack_q(cols: &[Column], placements: &[Placement], m: usize) -> Vec<F64> {
     use rayon::prelude::*;
     // `alloc_zeroed`-backed for the all-zero pad tail; only the copied ranges are
-    // touched. (F128 is all-zero bytes at ZERO, so the pad needs no explicit write.)
-    let mut q = vec![F128::ZERO; 1 << m];
+    // touched. (F64 is all-zero bytes at ZERO, so the pad needs no explicit write.)
+    let mut q = vec![F64::ZERO; 1 << m];
     // Copy chunk width: big enough that per-chunk `copy_from_slice` amortizes rayon
     // dispatch, small enough to spread the largest column across cores.
     const COPY_CHUNK: usize = 1 << 16;

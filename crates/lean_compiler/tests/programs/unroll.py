@@ -2,7 +2,8 @@
 # as the integer literal of each iteration — zero loop overhead (no call, no
 # frame, no counter). Bounds are compile-time integers, including Const
 # parameters: `chain(buf, 3)` specializes and unrolls three BLAKE3 steps over
-# heap slices indexed by `i`. Published: H³(5, 7) — same chain as
+# heap slices indexed by `i` (a 256-bit BLAKE3 value is two canonical cells).
+# Published: the two 128-bit digest cells of H^3(5, 7) — same chain as
 # blake3_heap_chain.py, unrolled instead of looped.
 # public_input: 259899574965733219954697446670390340005, 71594800443637044304569228067009621691
 from snark_lib import *

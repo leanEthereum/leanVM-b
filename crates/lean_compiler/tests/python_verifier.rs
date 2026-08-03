@@ -1,6 +1,6 @@
 use lean_compiler::{compile, parse_with_replacements};
-use lean_vm::cpu::{prove, DerefMode, Op, Program};
-use primitives::field::{g_pow, F128};
+use lean_vm::cpu::{DerefMode, Op, Program, prove, verify};
+use primitives::field::{F64, F192, g_pow};
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::Command;
@@ -35,29 +35,34 @@ def main():
 
 const LOOP_STEPS: usize = 16_384;
 
-fn public_input() -> [F128; 2] {
-    use lean_vm::blake3_flock::{compression, digest, metadata, FLAGS, IV};
+fn public_input() -> [F192; 2] {
+    use lean_vm::blake3_flock::{FLAGS, IV, compression, digest, metadata};
 
-    let seed = [F128::new(5, 0), F128::new(7, 0)];
+    let seed = [F64(5), F64::ZERO, F64(7), F64::ZERO];
     let metadata = metadata(0, 64, FLAGS);
     let digest = digest(&compression(seed, seed, IV, metadata));
+    let digest = [
+        F192::new(digest[0].0, digest[1].0, 0),
+        F192::new(digest[2].0, digest[3].0, 0),
+    ];
     let mut value = digest[0];
-    let mut index = F128::ONE;
+    let mut index = F192::ONE;
+    let generator = F192::from(g_pow(1));
     for _ in 0..LOOP_STEPS {
         let candidate = value + index;
-        let product = candidate * g_pow(1);
-        value = (if product == F128::ZERO {
+        let product = candidate * generator;
+        value = (if product == F192::ZERO {
             candidate
         } else {
             product + candidate
         }) + index;
-        index *= g_pow(1);
+        index *= generator;
     }
-    [value, digest[1] * g_pow(1) + digest[1]]
+    [value, digest[1] * generator + digest[1]]
 }
 
-fn field_json(value: F128) -> String {
-    format!("[{}, {}]", value.lo, value.hi)
+fn field_json(value: F192) -> String {
+    format!("[{}, {}, {}]", value.c0, value.c1, value.c2)
 }
 
 fn operation_json(operation: Op) -> String {
@@ -81,6 +86,9 @@ fn operation_json(operation: Op) -> String {
         Op::Jump { oc, od, of } => {
             format!(r#"    {{"op":"jump","oc":{oc},"od":{od},"of":{of}}}"#)
         }
+        Op::Pack64x2 { a, b, c } => {
+            format!(r#"    {{"op":"pack64x2","a":{a},"b":{b},"c":{c}}}"#)
+        }
         Op::Blake3 { ins, cv, out, metadata } => format!(
             r#"    {{"op":"blake3","ins":[{},{},{},{}],"cv":{cv},"out":{out},"metadata":{}}}"#,
             ins[0],
@@ -92,7 +100,7 @@ fn operation_json(operation: Op) -> String {
     }
 }
 
-fn statement_json(program: &Program, public_input: [F128; 2]) -> String {
+fn statement_json(program: &Program, public_input: [F192; 2]) -> String {
     let operations = program
         .prog
         .iter()
@@ -114,7 +122,7 @@ fn test_python_verifier() {
     let ast = parse_with_replacements(SOURCE, &replacements).expect("parse zkDSL program");
     let program = compile(&ast);
     let public_input = public_input();
-    let (proof, stats) = prove(&program, public_input);
+    let (proof, stats) = prove(&program, public_input, 1);
 
     let directory = std::env::temp_dir().join(format!("leanvm-python-verifier-test-{}", std::process::id()));
     std::fs::create_dir_all(&directory).expect("create test directory");
@@ -127,9 +135,9 @@ fn test_python_verifier() {
     let verifier = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../python-verifier/verifier.py");
     let verification_started = Instant::now();
     let output = Command::new("python3")
-        .arg(verifier)
-        .arg(statement_path)
-        .arg(proof_path)
+        .arg(&verifier)
+        .arg(&statement_path)
+        .arg(&proof_path)
         .output()
         .expect("run native Python verifier");
     let verification_time = verification_started.elapsed();
@@ -139,6 +147,42 @@ fn test_python_verifier() {
         String::from_utf8_lossy(&output.stderr),
     );
     assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "verification succeeded",);
+
+    let mut malformed_announcement = proof.clone();
+    malformed_announcement.stream[0].c1 = 1;
+    assert!(verify(&program, &public_input, &malformed_announcement).is_err());
+    std::fs::write(
+        &proof_path,
+        bincode::serialize(&malformed_announcement).expect("serialize malformed announcement"),
+    )
+    .expect("write malformed announcement");
+    let output = Command::new("python3")
+        .arg(&verifier)
+        .arg(&statement_path)
+        .arg(&proof_path)
+        .output()
+        .expect("run Python verifier on malformed announcement");
+    assert!(!output.status.success(), "Python accepted a noncanonical announcement");
+
+    let mut malformed_root = proof.clone();
+    let root_offset = lean_vm::tables::N_TABLES + 2;
+    malformed_root.stream[root_offset].c2 = 1;
+    assert!(verify(&program, &public_input, &malformed_root).is_err());
+    std::fs::write(
+        &proof_path,
+        bincode::serialize(&malformed_root).expect("serialize malformed root"),
+    )
+    .expect("write malformed root");
+    let output = Command::new("python3")
+        .arg(verifier)
+        .arg(statement_path)
+        .arg(proof_path)
+        .output()
+        .expect("run Python verifier on malformed root");
+    assert!(
+        !output.status.success(),
+        "Python accepted a noncanonical commitment root"
+    );
 
     println!(
         "zkDSL compiled to {} instructions; proved {} cycles in {} bytes; Python verified in {:.2?}",

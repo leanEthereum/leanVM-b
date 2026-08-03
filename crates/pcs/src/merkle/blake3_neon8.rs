@@ -12,11 +12,12 @@
 //! doubles the independent work available to the out-of-order engine at every
 //! step while still fitting both states plus both message blocks in registers.
 //!
-//! The contract is fixed to the PCS's L0 Merkle leaf: eight contiguous
-//! 1024-byte unkeyed chunks, counter zero, `CHUNK_START` on the first block
-//! and `CHUNK_END | ROOT` on the last — i.e. byte-identical to
+//! The contract is fixed to a PCS Merkle leaf: eight contiguous unkeyed
+//! leaves of `LEAF` bytes, counter zero, `CHUNK_START` on the first block and
+//! `CHUNK_END | ROOT` on the last — i.e. byte-identical to
 //! `blake3::hash(leaf)` for each of the eight leaves, exactly like
-//! [`super::hash_many_oneshot`].
+//! [`super::hash_many_oneshot_uninit`]. `LEAF` must be a positive multiple of
+//! 64 no greater than 1024, so that a leaf is exactly one whole chunk.
 //!
 //! Derived from the reference kernel in Layr-Labs/flock-challenge, which
 //! ships the same algorithm as pre-generated assembly.
@@ -46,10 +47,6 @@ const MSG_SCHEDULE: [[u8; 16]; 7] = [
 
 /// Leaves per group. Two 4-lane states.
 const LANES: usize = 8;
-/// Bytes per leaf: one full BLAKE3 chunk.
-const LEAF: usize = 1024;
-/// 64-byte compression blocks per chunk.
-const BLOCKS: usize = LEAF / 64;
 
 #[inline(always)]
 unsafe fn rot16(x: uint32x4_t) -> uint32x4_t {
@@ -101,11 +98,7 @@ unsafe fn transpose4(vecs: &mut [uint32x4_t; 4]) {
 /// # Safety
 /// Each `inputs[i]` must be readable for `block_offset + 64` bytes.
 #[inline(always)]
-unsafe fn transpose_block4(
-    inputs: [*const u8; 4],
-    block_offset: usize,
-    out: &mut [uint32x4_t; 16],
-) {
+unsafe fn transpose_block4(inputs: [*const u8; 4], block_offset: usize, out: &mut [uint32x4_t; 16]) {
     // SAFETY: the caller guarantees each input covers the requested block.
     unsafe {
         for quarter in 0..4 {
@@ -218,11 +211,19 @@ unsafe fn store_cv4(h: &mut [uint32x4_t; 8], out: *mut u8) {
     }
 }
 
-/// Hash as many complete groups of eight 1 KiB leaves as fit in `out`,
+/// Hash as many complete groups of eight `LEAF`-byte leaves as fit in `out`,
 /// returning the number of leaves written. The caller handles the remainder
 /// through upstream `hash_many`, which also makes arbitrary chunk sizes safe
 /// without padding or over-read.
-pub(super) fn hash_complete_groups_1024(data: &[u8], out: &mut [[u8; 32]]) -> usize {
+pub(super) fn hash_complete_groups<const LEAF: usize>(
+    data: &[u8],
+    out: &mut [core::mem::MaybeUninit<[u8; 32]>],
+) -> usize {
+    const {
+        assert!(LEAF > 0 && LEAF.is_multiple_of(64) && LEAF <= 1024);
+    }
+    // 64-byte compression blocks per leaf.
+    let blocks = LEAF / 64;
     debug_assert_eq!(data.len(), out.len() * LEAF);
     let groups = out.len() / LANES;
     if groups == 0 {
@@ -241,12 +242,7 @@ pub(super) fn hash_complete_groups_1024(data: &[u8], out: &mut [[u8; 32]]) -> us
                 h0[i] = vdupq_n_u32(IV[i]);
                 h1[i] = h0[i];
             }
-            let lanes_lo = [
-                input,
-                input.add(LEAF),
-                input.add(2 * LEAF),
-                input.add(3 * LEAF),
-            ];
+            let lanes_lo = [input, input.add(LEAF), input.add(2 * LEAF), input.add(3 * LEAF)];
             let lanes_hi = [
                 input.add(4 * LEAF),
                 input.add(5 * LEAF),
@@ -256,7 +252,7 @@ pub(super) fn hash_complete_groups_1024(data: &[u8], out: &mut [[u8; 32]]) -> us
 
             let mut m0 = [vdupq_n_u32(0); 16];
             let mut m1 = [vdupq_n_u32(0); 16];
-            for block in 0..BLOCKS {
+            for block in 0..blocks {
                 let block_offset = block * 64;
                 transpose_block4(lanes_lo, block_offset, &mut m0);
                 transpose_block4(lanes_hi, block_offset, &mut m1);
@@ -264,7 +260,7 @@ pub(super) fn hash_complete_groups_1024(data: &[u8], out: &mut [[u8; 32]]) -> us
                 // CHUNK_START on the first block; CHUNK_END | ROOT on the
                 // last — a whole 1 KiB leaf is exactly one chunk and is its
                 // own root, so this reproduces `blake3::hash(leaf)`.
-                let flags = u32::from(block == 0) | if block == BLOCKS - 1 { 2 | 8 } else { 0 };
+                let flags = u32::from(block == 0) | if block == blocks - 1 { 2 | 8 } else { 0 };
                 let mut v0 = init_state(&h0, flags);
                 let mut v1 = init_state(&h1, flags);
 

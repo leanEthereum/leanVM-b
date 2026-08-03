@@ -2,9 +2,9 @@
 # site passes a compile-time constant and gets a monomorphized copy with `k`
 # substituted as the integer literal, usable in compile-time positions (the
 # slice bounds below). The direct call and match_range arm 0 share the k=0
-# specialization. Published: H(pair0, pair0) + H(pair1, pair1), word-wise
-# (`+` is XOR) — the direct k=0 digest XORed with the arm the runtime x = GEN
-# selects (k=1).
+# specialization. A 256-bit BLAKE3 value occupies two canonical cells.
+# Published: the two 128-bit digest cells of H(quad0, quad0) XOR H(quad1, quad1)
+# — the direct k=0 digest XORed with the arm the runtime x = GEN selects (k=1).
 # public_input: 151852673551549100809121251071251225977, 143253370905495339312277763262351734242
 from snark_lib import *
 

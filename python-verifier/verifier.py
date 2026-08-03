@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import lru_cache
-from math import ceil, log2
+from math import ceil, isfinite, log2, nextafter, sqrt
 from pathlib import Path
 from struct import pack, unpack
 from typing import Any, Callable, Sequence
@@ -28,110 +28,100 @@ def require(condition: bool, message: str) -> None:
 # Field arithmetic and BLAKE3 -------------------------------------------------
 
 MASK32 = (1 << 32) - 1
-MASK128 = (1 << 128) - 1
-REDUCTION = 0x87  # x^128 = x^7 + x^2 + x + 1
+MASK64 = (1 << 64) - 1
+RING_SWITCH_SOUNDNESS_DEGREE = (1 << 31) + (1 << 15) + (1 << 7) + (1 << 3) + (1 << 1) + 1
+
+
+def _base_mul(left: int, right: int) -> int:
+    product = 0
+    while right:
+        if right & 1:
+            product ^= left
+        right >>= 1
+        left <<= 1
+    low, high = product & MASK64, product >> 64
+    folded = low ^ high ^ (high << 1) ^ (high << 3) ^ (high << 4)
+    overflow = folded >> 64
+    return (
+        (folded & MASK64)
+        ^ overflow
+        ^ (overflow << 1)
+        ^ (overflow << 3)
+        ^ (overflow << 4)
+    ) & MASK64
 
 
 @dataclass(frozen=True, slots=True)
-class F128:
-    """GF(2^128), in the GHASH polynomial basis."""
+class F192:
+    """The tower field GF(2^192) = GF(2^64)[y]/(y^3 + y + 1)."""
 
-    value: int = 0
+    c0: int = 0
+    c1: int = 0
+    c2: int = 0
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "value", self.value & MASK128)
+        object.__setattr__(self, "c0", self.c0 & MASK64)
+        object.__setattr__(self, "c1", self.c1 & MASK64)
+        object.__setattr__(self, "c2", self.c2 & MASK64)
 
     @classmethod
-    def new(cls, lo: int, hi: int) -> "F128":
-        return cls((lo & ((1 << 64) - 1)) | ((hi & ((1 << 64) - 1)) << 64))
+    def new(cls, c0: int, c1: int, c2: int = 0) -> "F192":
+        return cls(c0, c1, c2)
 
     @classmethod
-    def from_bytes(cls, data: bytes) -> "F128":
-        require(len(data) == 16, "a field element must contain exactly 16 bytes")
-        return cls(int.from_bytes(data, "little"))
-
-    @property
-    def lo(self) -> int:
-        return self.value & ((1 << 64) - 1)
-
-    @property
-    def hi(self) -> int:
-        return self.value >> 64
+    def from_bytes(cls, data: bytes) -> "F192":
+        require(len(data) == 24, "a field element must contain exactly 24 bytes")
+        return cls(*(int.from_bytes(data[offset : offset + 8], "little") for offset in (0, 8, 16)))
 
     def to_bytes(self) -> bytes:
-        return self.value.to_bytes(16, "little")
+        return b"".join(limb.to_bytes(8, "little") for limb in (self.c0, self.c1, self.c2))
 
     @staticmethod
-    def _coerce(other: object) -> "F128":
-        if isinstance(other, F128):
+    def _coerce(other: object) -> "F192":
+        if isinstance(other, F192):
             return other
         if isinstance(other, int):
-            return F128(other)
-        return NotImplemented
+            return F192(other)
+        raise TypeError(f"cannot use {type(other).__name__} as a field element")
 
     def __int__(self) -> int:
-        return self.value
+        return self.c0 | self.c1 << 64 | self.c2 << 128
 
     def __bool__(self) -> bool:
-        return self.value != 0
+        return bool(self.c0 or self.c1 or self.c2)
 
     def __eq__(self, other: object) -> bool:
+        if not isinstance(other, (F192, int)):
+            return False
         rhs = self._coerce(other)
-        return False if rhs is NotImplemented else self.value == rhs.value
+        return self.c0 == rhs.c0 and self.c1 == rhs.c1 and self.c2 == rhs.c2
 
     def __hash__(self) -> int:
-        return hash(self.value)
+        return hash((self.c0, self.c1, self.c2))
 
-    def __add__(self, other: object) -> "F128":
+    def __add__(self, other: object) -> "F192":
         rhs = self._coerce(other)
-        if rhs is NotImplemented:
-            return NotImplemented
-        return F128(self.value ^ rhs.value)
+        return F192(self.c0 ^ rhs.c0, self.c1 ^ rhs.c1, self.c2 ^ rhs.c2)
 
     __radd__ = __add__
     __sub__ = __add__
     __rsub__ = __add__
 
-    def __neg__(self) -> "F128":
+    def __neg__(self) -> "F192":
         return self
 
-    def __mul__(self, other: object) -> "F128":
+    def __mul__(self, other: object) -> "F192":
         rhs = self._coerce(other)
-        if rhs is NotImplemented:
-            return NotImplemented
-        # Four-bit carry-less windows cut the Python loop from 128 iterations
-        # to 32.  Accumulate an unreduced polynomial, then fold its upper half
-        # with x^128 = x^7 + x^2 + x + 1 (and fold the at-most-seven overflow
-        # bits once more).
-        a, b, product = self.value, rhs.value, 0
-        multiples = [0] * 16
-        for nibble in range(1, 16):
-            multiples[nibble] = (
-                (a if nibble & 1 else 0)
-                ^ (a << 1 if nibble & 2 else 0)
-                ^ (a << 2 if nibble & 4 else 0)
-                ^ (a << 3 if nibble & 8 else 0)
-            )
-        shift = 0
-        while b:
-            product ^= multiples[b & 15] << shift
-            b >>= 4
-            shift += 4
-        low, high = product & MASK128, product >> 128
-        folded = low ^ high ^ (high << 1) ^ (high << 2) ^ (high << 7)
-        overflow = folded >> 128
-        product = (
-            (folded & MASK128)
-            ^ overflow
-            ^ (overflow << 1)
-            ^ (overflow << 2)
-            ^ (overflow << 7)
-        )
-        return F128(product & MASK128)
+        p0 = _base_mul(self.c0, rhs.c0)
+        p1 = _base_mul(self.c0, rhs.c1) ^ _base_mul(self.c1, rhs.c0)
+        p2 = _base_mul(self.c0, rhs.c2) ^ _base_mul(self.c1, rhs.c1) ^ _base_mul(self.c2, rhs.c0)
+        p3 = _base_mul(self.c1, rhs.c2) ^ _base_mul(self.c2, rhs.c1)
+        p4 = _base_mul(self.c2, rhs.c2)
+        return F192(p0 ^ p3, p1 ^ p3 ^ p4, p2 ^ p4)
 
     __rmul__ = __mul__
 
-    def __pow__(self, exponent: int) -> "F128":
+    def __pow__(self, exponent: int) -> "F192":
         if exponent < 0:
             return self.inv() ** -exponent
         base, out, n = self, ONE, exponent
@@ -142,29 +132,25 @@ class F128:
             n >>= 1
         return out
 
-    def inv(self) -> "F128":
-        require(self.value != 0, "division by zero in GF(2^128)")
-        return self ** ((1 << 128) - 2)
+    def inv(self) -> "F192":
+        require(bool(self), "division by zero in GF(2^192)")
+        return self ** ((1 << 192) - 2)
 
-    def __truediv__(self, other: object) -> "F128":
+    def __truediv__(self, other: object) -> "F192":
         rhs = self._coerce(other)
-        if rhs is NotImplemented:
-            return NotImplemented
         return self * rhs.inv()
 
-    def __rtruediv__(self, other: object) -> "F128":
+    def __rtruediv__(self, other: object) -> "F192":
         lhs = self._coerce(other)
-        if lhs is NotImplemented:
-            return NotImplemented
         return lhs * self.inv()
 
     def __repr__(self) -> str:
-        return f"F128(0x{self.value:032x})"
+        return f"F192(0x{self.c2:016x}{self.c1:016x}{self.c0:016x})"
 
 
-ZERO = F128(0)
-ONE = F128(1)
-GEN = F128(2)
+ZERO = F192(0)
+ONE = F192(1)
+GEN = F192(2)
 
 
 # BLAKE3 --------------------------------------------------------------------
@@ -291,14 +277,14 @@ def blake3_hash(data: bytes) -> bytes:
     return _output_root(output)
 
 
-def build_eq(point: Sequence[F128]) -> list[F128]:
+def build_eq(point: Sequence[F192]) -> list[F192]:
     out = [ONE]
     for r in point:
         out = [v * (ONE + r) for v in out] + [v * r for v in out]
     return out
 
 
-def mle_eval(evals: Sequence[F128], point: Sequence[F128]) -> F128:
+def mle_eval(evals: Sequence[F192], point: Sequence[F192]) -> F192:
     require(len(evals) == 1 << len(point), "multilinear table has the wrong size")
     cur = list(evals)
     for r in point:
@@ -306,12 +292,12 @@ def mle_eval(evals: Sequence[F128], point: Sequence[F128]) -> F128:
     return cur[0]
 
 # Shared verification helpers -------------------------------------------------
-def interpolate(a: F128, b: F128, point: F128) -> F128:
+def interpolate(a: F192, b: F192, point: F192) -> F192:
     """Evaluate the line through ``a`` and ``b`` at ``point``."""
     return a + point * (a + b)
 
 
-def eq_eval(left: Sequence[F128], right: Sequence[F128]) -> F128:
+def eq_eval(left: Sequence[F192], right: Sequence[F192]) -> F192:
     require(len(left) == len(right), "eq: dimension mismatch")
     result = ONE
     for x, y in zip(left, right):
@@ -324,8 +310,8 @@ QUAD_NODES = (ZERO, ONE, GEN, GEN * GEN)
 
 
 def lagrange_eval(
-    nodes: Sequence[F128], values: Sequence[F128], point: F128
-) -> F128:
+    nodes: Sequence[F192], values: Sequence[F192], point: F192
+) -> F192:
     require(len(nodes) == len(values), "Lagrange data length mismatch")
     result = ZERO
     for index, (node, value) in enumerate(zip(nodes, values)):
@@ -358,13 +344,26 @@ class BinaryReader:
     def u64(self) -> int:
         return int.from_bytes(self.take(8), "little")
 
-    def field(self) -> F128:
-        return F128.from_bytes(self.take(16))
+    def field(self) -> F192:
+        return F192.from_bytes(self.take(24))
 
-    def fields(self) -> list[F128]:
+    def base_field(self) -> int:
+        return self.u64()
+
+    def fields(self) -> list[F192]:
         length = self.u64()
-        require(length <= self.remaining // 16, "invalid field-vector length")
+        require(length <= self.remaining // 24, "invalid field-vector length")
         return [self.field() for _ in range(length)]
+
+    def base_fields(self) -> list[int]:
+        length = self.u64()
+        require(length <= self.remaining // 8, "invalid base-field-vector length")
+        return [self.base_field() for _ in range(length)]
+
+    def hashes(self) -> tuple[bytes, ...]:
+        length = self.u64()
+        require(length <= self.remaining // 32, "invalid hash-vector length")
+        return tuple(self.take(32) for _ in range(length))
 
     @property
     def remaining(self) -> int:
@@ -375,38 +374,98 @@ class BinaryReader:
 
 
 @dataclass(frozen=True)
-class LevelOpening:
-    opened_rows: tuple[tuple[F128, ...], ...]
+class InitialOpening:
+    opened_rows: tuple[tuple[int, ...], ...]
     merkle_proof: tuple[bytes, ...]
 
     @classmethod
-    def read(cls, reader: BinaryReader) -> "LevelOpening":
+    def read(cls, reader: BinaryReader) -> "InitialOpening":
+        row_count = reader.u64()
+        require(row_count <= reader.remaining // 8, "invalid opened-row count")
+        rows = tuple(tuple(reader.base_fields()) for _ in range(row_count))
+        return cls(rows, reader.hashes())
+
+
+@dataclass(frozen=True)
+class RecursiveOpening:
+    opened_rows: tuple[tuple[F192, ...], ...]
+    merkle_proof: tuple[bytes, ...]
+
+    @classmethod
+    def read(cls, reader: BinaryReader) -> "RecursiveOpening":
         row_count = reader.u64()
         require(row_count <= reader.remaining // 8, "invalid opened-row count")
         rows = tuple(tuple(reader.fields()) for _ in range(row_count))
-        path_length = reader.u64()
-        require(path_length <= reader.remaining // 32, "invalid Merkle proof length")
-        return cls(rows, tuple(reader.take(32) for _ in range(path_length)))
+        return cls(rows, reader.hashes())
+
+
+@dataclass(frozen=True)
+class FinalOpening:
+    residual: tuple[F192, ...]
+    opened_rows: tuple[tuple[F192, ...], ...]
+    merkle_proof: tuple[bytes, ...]
+
+    @classmethod
+    def read(cls, reader: BinaryReader) -> "FinalOpening":
+        residual = tuple(reader.fields())
+        opened = RecursiveOpening.read(reader)
+        return cls(residual, opened.opened_rows, opened.merkle_proof)
+
+
+@dataclass(frozen=True)
+class SumcheckMessage:
+    constant: F192
+    quadratic: F192
+
+
+@dataclass(frozen=True)
+class LigeritoProofData:
+    initial: InitialOpening
+    recursive_roots: tuple[bytes, ...]
+    recursive: tuple[RecursiveOpening, ...]
+    final: FinalOpening
+    sumcheck: tuple[SumcheckMessage, ...]
+    grinding_nonces: tuple[int, ...]
+    ood_values: tuple[F192, ...]
+    fold_grinding_nonces: tuple[int, ...]
+
+    @classmethod
+    def read(cls, reader: BinaryReader) -> "LigeritoProofData":
+        initial = InitialOpening.read(reader)
+        roots = reader.hashes()
+        count = reader.u64()
+        require(count <= 32, "too many Ligerito levels")
+        recursive = tuple(RecursiveOpening.read(reader) for _ in range(count))
+        final = FinalOpening.read(reader)
+        message_count = reader.u64()
+        require(message_count <= reader.remaining // 48, "invalid sumcheck length")
+        sumcheck = tuple(SumcheckMessage(reader.field(), reader.field()) for _ in range(message_count))
+        nonce_count = reader.u64()
+        require(nonce_count <= reader.remaining // 8, "invalid nonce-vector length")
+        nonces = tuple(reader.u64() for _ in range(nonce_count))
+        ood_values = tuple(reader.fields())
+        fold_count = reader.u64()
+        require(fold_count <= reader.remaining // 8, "invalid fold-nonce length")
+        fold_nonces = tuple(reader.u64() for _ in range(fold_count))
+        return cls(initial, roots, recursive, final, sumcheck, nonces, ood_values, fold_nonces)
 
 
 @dataclass(frozen=True)
 class LigeritoOpening:
-    initial: LevelOpening
-    levels: tuple[LevelOpening, ...]
-    final: LevelOpening
+    ring_switches: tuple[tuple[F192, ...], ...]
+    ligerito: LigeritoProofData
 
     @classmethod
     def read(cls, reader: BinaryReader) -> "LigeritoOpening":
-        initial = LevelOpening.read(reader)
         count = reader.u64()
-        require(count <= 32, "too many Ligerito levels")
-        levels = tuple(LevelOpening.read(reader) for _ in range(count))
-        return cls(initial, levels, LevelOpening.read(reader))
+        require(count <= 16, "too many ring-switch proofs")
+        ring_switches = tuple(tuple(reader.fields()) for _ in range(count))
+        return cls(ring_switches, LigeritoProofData.read(reader))
 
 
 @dataclass(frozen=True)
 class Proof:
-    stream: tuple[F128, ...]
+    stream: tuple[F192, ...]
     openings: tuple[LigeritoOpening, ...]
 
     @classmethod
@@ -427,73 +486,78 @@ class Proof:
 # Fiat--Shamir ---------------------------------------------------------------
 
 
-DS_SCALAR = F128(1)
-DS_BYTE = F128(2)
-DS_LEN = F128(3)
-DS_SQUEEZE = F128(4)
-DS_POW = F128(5)
+DS_SCALAR = 1
+DS_BYTE = 2
+DS_LEN = 3
+DS_SQUEEZE = 4
+DS_POW = 5
 
 
-def compress(left: Sequence[F128], right: Sequence[F128]) -> tuple[F128, F128]:
-    require(len(left) == len(right) == 2, "compression operands must contain two fields")
-    digest = blake3_hash(b"".join(x.to_bytes() for x in (*left, *right)))
-    return F128.from_bytes(digest[:16]), F128.from_bytes(digest[16:])
+def compress(left: Sequence[int], right: Sequence[int]) -> tuple[int, int, int, int]:
+    require(len(left) == len(right) == 4, "compression operands must contain four words")
+    digest = blake3_hash(b"".join(x.to_bytes(8, "little") for x in (*left, *right)))
+    return tuple(int.from_bytes(digest[offset : offset + 8], "little") for offset in (0, 8, 16, 24))
 
 
 class Sponge:
-    def __init__(self, label: bytes, statement: Sequence[F128]):
-        self.state = (ZERO, ZERO)
-        self.absorb_bytes(b"leanvm-b/transcript/v1")
+    def __init__(self, label: bytes, statement: Sequence[F192]):
+        self.state = (0, 0, 0, 0)
+        self.absorb_bytes(b"leanvm-b/transcript/v2")
         self.absorb_bytes(label)
         for value in statement:
             self.observe(value)
 
-    def observe(self, value: F128) -> None:
-        self.state = compress(self.state, (value, DS_SCALAR))
+    def observe(self, value: F192) -> None:
+        self.state = compress(self.state, (value.c0, value.c1, value.c2, DS_SCALAR))
 
     def absorb_bytes(self, data: bytes) -> None:
-        self.state = compress(self.state, (F128(len(data)), DS_LEN))
+        self.state = compress(self.state, (len(data), 0, DS_LEN, 0))
         for offset in range(0, len(data), 16):
-            block = F128.from_bytes(data[offset : offset + 16].ljust(16, b"\0"))
-            self.state = compress(self.state, (block, DS_BYTE))
+            block = data[offset : offset + 16].ljust(16, b"\0")
+            self.state = compress(
+                self.state,
+                (int.from_bytes(block[:8], "little"), int.from_bytes(block[8:], "little"), DS_BYTE, 0),
+            )
 
-    def sample(self) -> F128:
-        self.state = compress(self.state, (ZERO, DS_SQUEEZE))
-        return self.state[0]
+    def sample(self) -> F192:
+        self.state = compress(self.state, (0, 0, DS_SQUEEZE, 0))
+        return F192(*self.state[:3])
 
-    def check_pow(self, nonce: int, bits: int) -> None:
+    def check_pow(self, nonce: int | F192, bits: int) -> None:
         require(0 <= bits < 64, "invalid grinding width")
-        base = compress(self.state, (ZERO, DS_POW))
-        digest = compress(base, (F128(nonce), DS_POW))[0]
-        valid = nonce == 0 if bits == 0 else digest.lo & ((1 << bits) - 1) == 0
-        self.state = compress(self.state, (F128(nonce), DS_POW))
+        encoded = nonce if isinstance(nonce, F192) else F192(nonce)
+        block = (encoded.c0, encoded.c1, encoded.c2, DS_POW)
+        base = compress(self.state, (0, 0, DS_POW, 0))
+        digest = compress(base, block)[0]
+        valid = encoded == F192(0) if bits == 0 else digest & ((1 << bits) - 1) == 0
+        self.state = compress(self.state, block)
         require(valid, "invalid grinding nonce")
 
 
 class Transcript:
-    def __init__(self, proof: Proof, label: bytes, statement: Sequence[F128]):
+    def __init__(self, proof: Proof, label: bytes, statement: Sequence[F192]):
         self.proof = proof
         self.sponge = Sponge(label, statement)
         self.stream_offset = 0
         self.opening_offset = 0
 
-    def scalar(self) -> F128:
+    def scalar(self) -> F192:
         require(self.stream_offset < len(self.proof.stream), "proof stream exhausted")
         value = self.proof.stream[self.stream_offset]
         self.stream_offset += 1
         self.sponge.observe(value)
         return value
 
-    def scalars(self, count: int) -> list[F128]:
+    def scalars(self, count: int) -> list[F192]:
         return [self.scalar() for _ in range(count)]
 
-    def sample(self) -> F128:
+    def sample(self) -> F192:
         return self.sponge.sample()
 
-    def samples(self, count: int) -> list[F128]:
+    def samples(self, count: int) -> list[F192]:
         return [self.sample() for _ in range(count)]
 
-    def observe(self, value: F128) -> None:
+    def observe(self, value: F192) -> None:
         self.sponge.observe(value)
 
     def absorb_bytes(self, data: bytes) -> None:
@@ -503,8 +567,7 @@ class Transcript:
         require(self.stream_offset < len(self.proof.stream), "missing grinding nonce")
         encoded = self.proof.stream[self.stream_offset]
         self.stream_offset += 1
-        require(encoded.hi == 0, "grinding nonce has a nonzero high limb")
-        self.sponge.check_pow(encoded.lo, bits)
+        self.sponge.check_pow(encoded, bits)
 
     def opening(self) -> LigeritoOpening:
         require(self.opening_offset < len(self.proof.openings), "PCS opening missing")
@@ -522,20 +585,20 @@ class Transcript:
 
 @dataclass(frozen=True)
 class ProductTriple:
-    roots: tuple[F128, F128, F128]
-    point: tuple[F128, ...]
-    values: tuple[F128, F128, F128]
+    roots: tuple[F192, F192, F192]
+    point: tuple[F192, ...]
+    values: tuple[F192, F192, F192]
 
 
 def quartic_eval_from_eq(
-    claim: F128,
-    equality_point: F128,
-    difference: F128,
-    c2: F128,
-    c3: F128,
-    c4: F128,
-    challenge: F128,
-) -> F128:
+    claim: F192,
+    equality_point: F192,
+    difference: F192,
+    c2: F192,
+    c3: F192,
+    c4: F192,
+    challenge: F192,
+) -> F192:
     c0 = claim + equality_point * difference
     c1 = difference + c2 + c3 + c4
     return c0 + challenge * (c1 + challenge * (c2 + challenge * (c3 + challenge * c4)))
@@ -545,7 +608,7 @@ def verify_product_triple(depth: int, transcript: Transcript) -> ProductTriple:
     root_values = transcript.scalars(3)
     roots = (root_values[0], root_values[1], root_values[2])
     combine = transcript.sample()
-    point: list[F128] = []
+    point: list[F192] = []
     values = list(roots)
 
     layer = depth
@@ -565,7 +628,7 @@ def verify_product_triple(depth: int, transcript: Transcript) -> ProductTriple:
             layer -= 1
             continue
 
-        round_point: list[F128] = []
+        round_point: list[F192] = []
         for prior in point[:round_count]:
             message = transcript.scalars(4)
             challenge = transcript.sample()
@@ -604,11 +667,11 @@ class Coordinate:
     committed global columns; ``public`` is a dense public multilinear table.
     """
 
-    constant: F128 | None = None
+    constant: F192 | None = None
     column: int | None = None
     generator_column: int | None = None
     index: bool = False
-    public: tuple[F128, ...] | None = None
+    public: tuple[F192, ...] | None = None
 
     def __post_init__(self) -> None:
         choices = (
@@ -649,7 +712,7 @@ def bus_layout(blocks: Sequence[BusBlock]) -> BusLayout:
     return BusLayout(depth, tuple(offsets))
 
 
-def index_mle(point: Sequence[F128]) -> F128:
+def index_mle(point: Sequence[F192]) -> F192:
     """MLE of ``[1, g, g^2, ...]`` at an LSB-first point."""
     result = ONE
     generator_power = GEN
@@ -662,22 +725,22 @@ def index_mle(point: Sequence[F128]) -> F128:
 @dataclass(frozen=True)
 class ColumnClaim:
     column: int
-    point: tuple[F128, ...]
-    value: F128
+    point: tuple[F192, ...]
+    value: F192
 
 
 @dataclass(frozen=True)
 class BytecodeClaim:
-    point: tuple[F128, ...]
-    value: F128
+    point: tuple[F192, ...]
+    value: F192
 
 
 @dataclass
 class BusForm:
-    coefficients: list[F128]
-    constant: F128 = ZERO
+    coefficients: list[F192]
+    constant: F192 = ZERO
 
-    def evaluate(self, values: Sequence[F128]) -> F128:
+    def evaluate(self, values: Sequence[F192]) -> F192:
         require(len(values) == len(self.coefficients), "bus form width mismatch")
         return sum(
             (coefficient * value for coefficient, value in zip(self.coefficients, values)),
@@ -688,16 +751,16 @@ class BusForm:
 def _decompose_bus_side(
     blocks: Sequence[BusBlock],
     layout: BusLayout,
-    point: Sequence[F128],
-    alpha: F128,
-    gamma: F128,
+    point: Sequence[F192],
+    alpha: F192,
+    gamma: F192,
     forms: Sequence[BusForm],
     claims: list[ColumnClaim],
     transcript: Transcript,
-) -> F128:
+) -> F192:
     require(len(point) == layout.depth, "bus point dimension mismatch")
 
-    def committed_value(column: int, low_point: tuple[F128, ...]) -> F128:
+    def committed_value(column: int, low_point: tuple[F192, ...]) -> F192:
         for prior in claims:
             if prior.column == column and prior.point == low_point:
                 return prior.value
@@ -712,7 +775,7 @@ def _decompose_bus_side(
         high = point[block.log_rows :]
         selector = layout.offsets[block_index] >> block.log_rows
         selector_bits = tuple(
-            F128((selector >> bit) & 1)
+            F192((selector >> bit) & 1)
             for bit in range(layout.depth - block.log_rows)
         )
         selector_weight = eq_eval(selector_bits, high)
@@ -761,7 +824,7 @@ def _decompose_bus_side(
     return result + ONE + selector_sum
 
 
-def _padding_fingerprint(block: BusBlock, padding: Sequence[F128], alpha: F128) -> F128:
+def _padding_fingerprint(block: BusBlock, padding: Sequence[F192], alpha: F192) -> F192:
     result = ZERO
     coefficient = ONE
     for coordinate in block.coordinates:
@@ -780,10 +843,10 @@ def _padding_fingerprint(block: BusBlock, padding: Sequence[F128], alpha: F128) 
 
 def _padding_surplus(
     blocks: Sequence[BusBlock],
-    padding: Sequence[F128],
-    alpha: F128,
-    gamma: F128,
-) -> F128:
+    padding: Sequence[F192],
+    alpha: F192,
+    gamma: F192,
+) -> F192:
     result = ONE
     for block in blocks:
         surplus_rows = (1 << block.log_rows) - block.real_rows
@@ -793,10 +856,10 @@ def _padding_surplus(
 
 
 def _public_evaluations(
-    blocks: Sequence[BusBlock], point: Sequence[F128]
-) -> tuple[int, list[F128]]:
+    blocks: Sequence[BusBlock], point: Sequence[F192]
+) -> tuple[int, list[F192]]:
     log_rows = 0
-    values: list[F128] = []
+    values: list[F192] = []
     for block in blocks:
         for coordinate in block.coordinates:
             if coordinate.public is not None:
@@ -805,7 +868,7 @@ def _public_evaluations(
     return log_rows, values
 
 
-def _stack_public_evaluations(values: Sequence[F128], selector_point: Sequence[F128]) -> F128:
+def _stack_public_evaluations(values: Sequence[F192], selector_point: Sequence[F192]) -> F192:
     require(len(values) <= 1 << len(selector_point), "too many public columns")
     result = ZERO
     for column, value in enumerate(values):
@@ -820,17 +883,17 @@ def _stack_public_evaluations(values: Sequence[F128], selector_point: Sequence[F
 class BusResult:
     claims: tuple[ColumnClaim, ...]
     bytecode_claim: BytecodeClaim
-    count_root: F128
-    point: tuple[F128, ...]
+    count_root: F192
+    point: tuple[F192, ...]
     forms: tuple[tuple[BusForm, ...], ...]
-    totals: tuple[F128, F128, F128]
+    totals: tuple[F192, F192, F192]
 
 
 def verify_bus_balance(
     push: Sequence[BusBlock],
     pull: Sequence[BusBlock],
     count: Sequence[BusBlock],
-    padding: Sequence[F128],
+    padding: Sequence[F192],
     transcript: Transcript,
 ) -> BusResult:
     push_layout = bus_layout(push)
@@ -839,8 +902,6 @@ def verify_bus_balance(
     require(push_layout.depth == pull_layout.depth, "push/pull bus depths differ")
     require(count_layout.depth <= push_layout.depth, "count bus is deeper than push bus")
 
-    grinding_bits = max(0, 120 + push_layout.depth + 1 - 128)
-    transcript.grind(grinding_bits)
     alpha = transcript.sample()
     gamma = transcript.sample()
     padded_count_layout = BusLayout(push_layout.depth, count_layout.offsets)
@@ -879,7 +940,7 @@ def verify_bus_balance(
     public_log_rows, public_values = _public_evaluations(push, product.point)
     for value in public_values:
         transcript.observe(value)
-    selector_point = transcript.samples(3)
+    selector_point = transcript.samples(4)
     bytecode_claim = BytecodeClaim(
         tuple(product.point[:public_log_rows]) + tuple(selector_point),
         _stack_public_evaluations(public_values, selector_point),
@@ -902,16 +963,16 @@ class Air:
     log_height: int
     column_count: int
     constraint_count: int
-    evaluate: Callable[[Sequence[F128], Sequence[F128]], F128]
+    evaluate: Callable[[Sequence[F192], Sequence[F192]], F192]
 
 
 @dataclass(frozen=True)
 class AirClaim:
-    point: tuple[F128, ...]
-    evaluations: tuple[F128, ...]
+    point: tuple[F192, ...]
+    evaluations: tuple[F192, ...]
 
 
-def powers(base: F128, count: int) -> list[F128]:
+def powers(base: F192, count: int) -> list[F192]:
     result, current = [], ONE
     for _ in range(count):
         result.append(current)
@@ -921,9 +982,9 @@ def powers(base: F128, count: int) -> list[F128]:
 
 def verify_constraints(
     airs: Sequence[Air],
-    eta: F128,
-    equality_point: Sequence[F128],
-    target: F128,
+    eta: F192,
+    equality_point: Sequence[F192],
+    target: F192,
     transcript: Transcript,
 ) -> list[AirClaim]:
     depth = max((air.log_height for air in airs), default=0)
@@ -966,23 +1027,26 @@ def verify_constraints(
 # VM statement, layout, and AIR -----------------------------------------------
 
 FAMILY_DIGEST = bytes.fromhex("afed7472c6f771a857599272ff33a4da86b21f2600f057fa0da797d15863eb58")
-BASES = (4, 19, 34, 41, 58, 77)
-WIDTHS = (15, 15, 7, 17, 19, 32)
-CONSTRAINT_COUNTS = (4, 4, 1, 4, 7, 6)
-COUNT_COLUMNS = ((11, 12, 13, 14), (11, 12, 13, 14), (5, 6),
-                 (13, 14, 15, 16), (13, 14, 15, 16),
-                 (23, 24, 25, 26, 27, 28, 29, 30, 31))
-BLAKE3_VALUES = (14, 15, 16, 17, 18, 19, 20, 21, 22)
-BLAKE3_SLOTS = (5, 6, 7, 8, 2, 3, 0, 1, 9)
-BLAKE3_SLOT_BY_VALUE: dict[int, int] = dict(zip(BLAKE3_VALUES, BLAKE3_SLOTS))
-VM_IV = (
-    F128.new(0xBB67AE856A09E667, 0xA54FF53A3C6EF372),
-    F128.new(0x9B05688C510E527F, 0x5BE0CD191F83D9AB),
+BASES = (6, 27, 48, 57, 78, 105, 146)
+WIDTHS = (21, 21, 9, 21, 27, 41, 14)
+CONSTRAINT_COUNTS = (4, 4, 1, 4, 7, 6, 3)
+COUNT_COLUMNS = (
+    (17, 18, 19, 20),
+    (17, 18, 19, 20),
+    (7, 8),
+    (17, 18, 19, 20),
+    (19, 20, 21, 22),
+    (32, 33, 34, 35, 36, 37, 38, 39, 40),
+    (10, 11, 12, 13),
 )
+BLAKE3_VALUES = tuple(range(14, 32))
+BLAKE3_SLOTS = (10, 11, 12, 13, 14, 15, 16, 17, 4, 5, 6, 7, 0, 1, 2, 3, 18, 19)
+BLAKE3_SLOT_BY_VALUE: dict[int, int] = dict(zip(BLAKE3_VALUES, BLAKE3_SLOTS))
+VM_IV = (0xBB67AE856A09E667, 0xA54FF53A3C6EF372, 0x9B05688C510E527F, 0x5BE0CD191F83D9AB)
 
 
-def _field(value: Any) -> F128:
-    if isinstance(value, F128):
+def _field(value: Any) -> F192:
+    if isinstance(value, F192):
         return value
     if isinstance(value, int) and not isinstance(value, bool):
         integer = value
@@ -994,22 +1058,22 @@ def _field(value: Any) -> F128:
     else:
         integer = None
     if integer is not None:
-        require(0 <= integer < 1 << 128, f"field element is out of range: {value!r}")
-        return F128(integer)
-    if isinstance(value, (list, tuple)) and len(value) == 2:
+        require(0 <= integer < 1 << 192, f"field element is out of range: {value!r}")
+        return F192(integer & MASK64, integer >> 64 & MASK64, integer >> 128)
+    if isinstance(value, (list, tuple)) and len(value) == 3:
         try:
-            low, high = (int(limb) for limb in value)
+            limbs = tuple(int(limb) for limb in value)
         except (TypeError, ValueError) as exc:
             raise VerificationError(f"invalid field limbs: {value!r}") from exc
         require(
-            0 <= low < 1 << 64 and 0 <= high < 1 << 64,
+            all(0 <= limb < 1 << 64 for limb in limbs),
             f"field limb is out of range: {value!r}",
         )
-        return F128.new(low, high)
+        return F192(*limbs)
     raise VerificationError(f"invalid field element: {value!r}")
 
 
-def parse_field(value: Any) -> F128:
+def parse_field(value: Any) -> F192:
     """Parse the field-element forms accepted by the statement JSON schema."""
     return _field(value)
 
@@ -1031,9 +1095,9 @@ class Operation:
     def parse(cls, data: dict[str, Any]) -> "Operation":
         require(isinstance(data, dict), "each program operation must be an object")
         name = str(data.get("op", "")).lower()
-        require(name in {"xor", "mul", "set", "deref", "jump", "blake3"},
+        require(name in {"xor", "mul", "set", "deref", "jump", "pack64x2", "blake3"},
                 f"unknown operation {name!r}")
-        if name in {"xor", "mul"}:
+        if name in {"xor", "mul", "pack64x2"}:
             for key in ("a", "b", "c"):
                 _u32(data[key], f"{name}.{key}")
         elif name == "set":
@@ -1074,14 +1138,14 @@ class Program:
                 "program length must be a nonzero power of two")
         return cls(operations)
 
-    def digest(self) -> tuple[F128, F128]:
-        words = [F128.new(len(self.operations), 1)]
-        tags = {"xor": 0, "mul": 1, "set": 2, "jump": 6, "blake3": 7}
+    def digest(self) -> tuple[int, int, int, int]:
+        words = [len(self.operations), 3]
+        tags = {"xor": 0, "mul": 1, "set": 2, "jump": 6, "blake3": 7, "pack64x2": 9}
         for operation in self.operations:
             d = operation.values
             name = operation.name
             k = x = y = ZERO
-            if name in {"xor", "mul"}:
+            if name in {"xor", "mul", "pack64x2"}:
                 a, b, c = int(d["a"]), int(d["b"]), int(d["c"])
                 tag = tags[name]
             elif name == "set":
@@ -1096,17 +1160,21 @@ class Program:
                 inputs = [int(v) for v in d["ins"]]
                 a, b, c, tag = inputs[0], inputs[1], inputs[2], 7
                 k = _field(d["metadata"])
-                x = F128.new(inputs[3], int(d["cv"]))
-                y = F128.new(int(d["out"]), 0)
-            words.extend((F128.new(a | b << 32, c | tag << 32), k, x, y))
-        digest = blake3_hash(b"".join(word.to_bytes() for word in words))
-        return F128.from_bytes(digest[:16]), F128.from_bytes(digest[16:])
+                x = inputs[3] | int(d["cv"]) << 32
+                y = int(d["out"])
+            words.extend((a | b << 32, c | tag << 32, k.c0, k.c1, k.c2, int(x), int(y)))
+        digest = blake3_hash(b"".join(word.to_bytes(8, "little") for word in words))
+        return tuple(int.from_bytes(digest[offset : offset + 8], "little") for offset in (0, 8, 16, 24))
 
-    def transcript_statement(self, public_input: Sequence[F128]) -> tuple[F128, ...]:
+    def transcript_statement(self, public_input: Sequence[F192]) -> tuple[F192, ...]:
         program_digest = self.digest()
-        seed = blake3_hash(b"leanvm-b-fs-seed-v1" + FAMILY_DIGEST
-                           + program_digest[0].to_bytes() + program_digest[1].to_bytes())
-        return (F128.from_bytes(seed[:16]), F128.from_bytes(seed[16:]), *public_input)
+        seed = blake3_hash(
+            b"leanvm-b-fs-seed-v1"
+            + FAMILY_DIGEST
+            + b"".join(word.to_bytes(8, "little") for word in program_digest)
+        )
+        words = tuple(int.from_bytes(seed[offset : offset + 8], "little") for offset in (0, 8, 16, 24))
+        return (F192(words[0], words[1]), F192(words[2], words[3]), *public_input)
 
 
 @dataclass(frozen=True)
@@ -1124,7 +1192,7 @@ class Layout:
     push: tuple[BusBlock, ...]
     pull: tuple[BusBlock, ...]
     count: tuple[BusBlock, ...]
-    padding: tuple[F128, ...]
+    padding: tuple[F192, ...]
     placements: tuple[Placement, ...]
     stack_log: int
     table_logs: tuple[int, ...]
@@ -1134,11 +1202,11 @@ def _ceil_log(value: int) -> int:
     return max(0, (value - 1).bit_length())
 
 
-def _gpow(index: int) -> F128:
+def _gpow(index: int) -> F192:
     return GEN ** index
 
 
-def _const(value: F128 | int) -> Coordinate:
+def _const(value: F192 | int) -> Coordinate:
     return Coordinate(constant=_field(value))
 
 
@@ -1150,7 +1218,7 @@ def _gcol(index: int) -> Coordinate:
     return Coordinate(generator_column=index)
 
 
-def _public(values: Sequence[F128]) -> Coordinate:
+def _public(values: Sequence[F192]) -> Coordinate:
     return Coordinate(public=tuple(values))
 
 
@@ -1174,44 +1242,69 @@ class Flushes:
         prefix_pull = (_const(GEN * GEN), _col(pc), _col(count), _const(_gpow(opcode)))
         self.pair((*prefix_push, *operands), (*prefix_pull, *operands))
 
-    def memory(self, address: int, count: int, value: int, successor: bool = False) -> None:
+    def memory(
+        self, address: int, count: int, values: Sequence[Coordinate], successor: bool = False
+    ) -> None:
         addr = _gcol(address) if successor else _col(address)
-        self.pair((_const(GEN), addr, _gcol(count), _col(value)),
-                  (_const(GEN), addr, _col(count), _col(value)))
+        self.pair(
+            (_const(GEN), addr, _gcol(count), *values),
+            (_const(GEN), addr, _col(count), *values),
+        )
+
+    def memory_word(self, address: int, count: int, lo: int, hi: int, top: int) -> None:
+        self.memory(address, count, (_col(lo), _col(hi), _col(top)))
+
+    def memory_base(self, address: int, count: int, value: int) -> None:
+        self.memory(address, count, (_col(value), _const(ZERO), _const(ZERO)))
+
+    def memory_128(self, address: int, count: int, lo: int, hi: int, successor: bool = False) -> None:
+        self.memory(address, count, (_col(lo), _col(hi), _const(ZERO)), successor)
 
 
 def _table_flushes(table: int) -> Flushes:
     f = Flushes()
     if table in (0, 1):
         f.state_step(0, 1)
-        f.bytecode(0, 14, table, (_col(2), _col(3), _col(4), _const(ZERO), _const(ZERO)))
-        f.memory(5, 11, 8)
-        f.memory(6, 12, 9)
-        f.memory(7, 13, 10)
+        f.bytecode(0, 20, table, (_col(2), _col(3), _col(4), _const(ZERO), _const(ZERO)))
+        f.memory_word(5, 17, 8, 9, 10)
+        f.memory_word(6, 18, 11, 12, 13)
+        f.memory_word(7, 19, 14, 15, 16)
     elif table == 2:
         f.state_step(0, 1)
-        f.bytecode(0, 6, 2, (_col(2), _col(3), _const(ZERO), _const(ZERO), _const(ZERO)))
-        f.memory(4, 5, 3)
+        f.bytecode(0, 8, 2, (_col(2), _col(3), _col(4), _col(5), _const(ZERO)))
+        f.memory_word(6, 7, 3, 4, 5)
     elif table == 3:
         f.state_step(0, 1)
-        f.bytecode(0, 16, 3, (_col(2), _col(3), _col(4), _col(5), _col(6)))
-        f.memory(7, 13, 10)
-        f.memory(8, 14, 11)
-        f.memory(9, 15, 12)
+        f.bytecode(0, 20, 3, (_col(2), _col(3), _col(4), _col(5), _col(6)))
+        f.memory_base(7, 17, 10)
+        f.memory_word(8, 18, 11, 12, 13)
+        f.memory_word(9, 19, 14, 15, 16)
     elif table == 4:
         f.state_jump(0, 1, 2, 3)
-        f.bytecode(0, 16, 4, (_col(4), _col(5), _col(6), _const(ZERO), _const(ZERO)))
-        f.memory(7, 13, 10)
-        f.memory(8, 14, 11)
-        f.memory(9, 15, 12)
+        f.bytecode(0, 22, 4, (_col(4), _col(5), _col(6), _const(ZERO), _const(ZERO)))
+        f.memory_word(7, 19, 10, 11, 12)
+        f.memory_word(8, 20, 13, 14, 15)
+        f.memory_word(9, 21, 16, 17, 18)
+    elif table == 5:
+        f.state_step(0, 1)
+        f.bytecode(0, 40, 5, tuple(_col(i) for i in (2, 3, 4, 5, 6, 7, 30, 31)))
+        for address, count, lo, hi, successor in (
+            (8, 32, 14, 15, False),
+            (9, 33, 16, 17, False),
+            (10, 34, 18, 19, False),
+            (11, 35, 20, 21, False),
+            (12, 36, 26, 27, False),
+            (12, 37, 28, 29, True),
+            (13, 38, 22, 23, False),
+            (13, 39, 24, 25, True),
+        ):
+            f.memory_128(address, count, lo, hi, successor)
     else:
         f.state_step(0, 1)
-        f.bytecode(0, 31, 5, tuple(_col(i) for i in (2, 3, 4, 5, 6, 7, 22)))
-        for address, count, value, successor in (
-            (8,23,14,False), (9,24,15,False), (10,25,16,False), (11,26,17,False),
-            (12,27,20,False), (12,28,21,True), (13,29,18,False), (13,30,19,True),
-        ):
-            f.memory(address, count, value, successor)
+        f.bytecode(0, 13, 6, (_col(2), _col(3), _col(4), _const(ZERO), _const(ZERO)))
+        f.memory_base(5, 10, 8)
+        f.memory_base(6, 11, 9)
+        f.memory_128(7, 12, 8, 9)
     return f
 
 
@@ -1223,16 +1316,17 @@ def _offset_coordinate(coordinate: Coordinate, base: int) -> Coordinate:
     return coordinate
 
 
-def _program_columns(program: Program) -> tuple[tuple[F128, ...], ...]:
-    columns = [[] for _ in range(8)]
-    opcodes = {"xor": 0, "mul": 1, "set": 2, "deref": 3, "jump": 4, "blake3": 5}
+def _program_columns(program: Program) -> tuple[tuple[F192, ...], ...]:
+    columns = [[] for _ in range(9)]
+    opcodes = {"xor": 0, "mul": 1, "set": 2, "deref": 3, "jump": 4, "blake3": 5, "pack64x2": 6}
     for operation in program.operations:
         d, name = operation.values, operation.name
-        operands = [ZERO] * 7
-        if name in {"xor", "mul"}:
+        operands = [ZERO] * 8
+        if name in {"xor", "mul", "pack64x2"}:
             operands[:3] = [_gpow(int(d[k])) for k in ("a", "b", "c")]
         elif name == "set":
-            operands[:2] = [_gpow(int(d["o"])), _field(d["k"])]
+            immediate = _field(d["k"])
+            operands[:4] = [_gpow(int(d["o"])), F192(immediate.c0), F192(immediate.c1), F192(immediate.c2)]
         elif name == "deref":
             operands[:3] = [_gpow(int(d[k])) for k in ("alpha", "beta", "gamma")]
             mode = str(d["mode"]).lower()
@@ -1241,8 +1335,14 @@ def _program_columns(program: Program) -> tuple[tuple[F128, ...], ...]:
             operands[:3] = [_gpow(int(d[k])) for k in ("oc", "od", "of")]
         else:
             inputs = [int(v) for v in d["ins"]]
-            operands = [*(_gpow(v) for v in inputs), _gpow(int(d["cv"])),
-                        _gpow(int(d["out"])), _field(d["metadata"])]
+            metadata = _field(d["metadata"])
+            operands = [
+                *(_gpow(v) for v in inputs),
+                _gpow(int(d["cv"])),
+                _gpow(int(d["out"])),
+                F192(metadata.c0),
+                F192(metadata.c1),
+            ]
         row = [_gpow(opcodes[name]), *operands]
         for column, value in zip(columns, row):
             column.append(value)
@@ -1252,7 +1352,7 @@ def _program_columns(program: Program) -> tuple[tuple[F128, ...], ...]:
 def build_layout(program: Program, log_memory: int, row_counts: Sequence[int]) -> Layout:
     require(
         16 <= log_memory <= 32
-        and len(row_counts) == 6
+        and len(row_counts) == 7
         and all(0 <= count < 1 << 32 for count in row_counts),
         "invalid announced table sizes",
     )
@@ -1265,7 +1365,7 @@ def build_layout(program: Program, log_memory: int, row_counts: Sequence[int]) -
         BusBlock(0, (_const(ONE), _const(ONE), _const(ONE)), 1),
         BusBlock(
             log_memory,
-            (_const(GEN), Coordinate(index=True), _const(ONE), _col(0)),
+            (_const(GEN), Coordinate(index=True), _const(ONE), _col(0), _col(1), _col(2)),
             1 << log_memory,
         ),
         BusBlock(
@@ -1283,7 +1383,7 @@ def build_layout(program: Program, log_memory: int, row_counts: Sequence[int]) -
         BusBlock(0, (_const(ONE), _const(_gpow(len(program.operations) - 1)), _const(ONE)), 1),
         BusBlock(
             log_memory,
-            (_const(GEN), Coordinate(index=True), _col(1), _col(0)),
+            (_const(GEN), Coordinate(index=True), _col(3), _col(0), _col(1), _col(2)),
             1 << log_memory,
         ),
         BusBlock(
@@ -1291,14 +1391,14 @@ def build_layout(program: Program, log_memory: int, row_counts: Sequence[int]) -
             (
                 _const(GEN * GEN),
                 Coordinate(index=True),
-                _col(2),
+                _col(4),
                 *(_public(column) for column in public_columns),
             ),
             len(program.operations),
         ),
     ]
     count: list[BusBlock] = []
-    padding = [ZERO] * (4 + sum(WIDTHS))
+    padding = [ZERO] * (6 + sum(WIDTHS))
     for table, (base, height, real) in enumerate(zip(BASES, table_logs, row_counts)):
         flushes = _table_flushes(table)
         for coordinates in flushes.push:
@@ -1313,15 +1413,17 @@ def build_layout(program: Program, log_memory: int, row_counts: Sequence[int]) -
 
     zero_digest = blake3_hash(bytes(64))
     b3 = BASES[5]
-    padding[b3 + 18] = F128.from_bytes(zero_digest[:16])
-    padding[b3 + 19] = F128.from_bytes(zero_digest[16:])
-    padding[b3 + 20], padding[b3 + 21] = VM_IV
-    padding[b3 + 22] = F128.new(0, 64 | 11 << 32)
+    digest_words = [int.from_bytes(zero_digest[offset : offset + 8], "little") for offset in (0, 8, 16, 24)]
+    for index, value in enumerate(digest_words):
+        padding[b3 + 22 + index] = F192(value)
+        padding[b3 + 26 + index] = F192(VM_IV[index])
+    padding[b3 + 30] = ZERO
+    padding[b3 + 31] = F192(64 | 11 << 32)
 
-    kappas: list[int | None] = [0] * (4 + sum(WIDTHS))
-    kappas[0] = kappas[1] = log_memory
-    kappas[2] = bytecode_log
-    kappas[3] = table_logs[5] + 7
+    kappas: list[int | None] = [0] * (6 + sum(WIDTHS))
+    kappas[0] = kappas[1] = kappas[2] = kappas[3] = log_memory
+    kappas[4] = bytecode_log
+    kappas[5] = table_logs[5] + 8
     for table, (base, width) in enumerate(zip(BASES, WIDTHS)):
         kappas[base : base + width] = [table_logs[table]] * width
     for local in BLAKE3_VALUES:
@@ -1347,51 +1449,58 @@ def build_layout(program: Program, log_memory: int, row_counts: Sequence[int]) -
 def _air_evaluator(
     table: int,
     forms: Sequence[BusForm],
-    form_powers: Sequence[F128],
-) -> Callable[[Sequence[F128], Sequence[F128]], F128]:
-    def evaluate(weights: Sequence[F128], columns: Sequence[F128]) -> F128:
-        def value(column: int) -> F128:
+    form_powers: Sequence[F192],
+) -> Callable[[Sequence[F192], Sequence[F192]], F192]:
+    def evaluate(weights: Sequence[F192], columns: Sequence[F192]) -> F192:
+        def value(column: int) -> F192:
             return columns[column]
 
+        def word(lo: int, hi: int, top: int) -> F192:
+            return value(lo) + F192(0, 1) * (value(hi) + F192(0, 1) * value(top))
+
         if table in (0, 1):
-            operation = (
-                value(8) + value(9) if table == 0 else value(8) * value(9)
-            )
+            va, vb, vc = word(8, 9, 10), word(11, 12, 13), word(14, 15, 16)
+            operation = va + vb if table == 0 else va * vb
             terms = (
                 value(5) + value(1) * value(2),
                 value(6) + value(1) * value(3),
                 value(7) + value(1) * value(4),
-                value(10) + operation,
+                vc + operation,
             )
         elif table == 2:
-            terms = (value(4) + value(1) * value(2),)
+            terms = (value(6) + value(1) * value(2),)
         elif table == 3:
-            source = (
-                (ONE + value(5) + value(6)) * value(12)
-                + value(5) * GEN * GEN * value(0)
-                + value(6) * value(1)
-            )
+            v2, v3 = word(11, 12, 13), word(14, 15, 16)
+            source = (ONE + value(5) + value(6)) * v3 + value(5) * GEN * GEN * value(0) + value(6) * value(1)
             terms = (
                 value(7) + value(1) * value(2),
                 value(8) + value(10) * value(3),
                 value(9) + value(1) * value(4),
-                value(11) + source,
+                v2 + source,
             )
         elif table == 4:
-            flag, condition = value(18), value(10)
+            condition = word(10, 11, 12)
+            destination = word(13, 14, 15)
+            frame = word(16, 17, 18)
+            inverse, flag = word(23, 24, 25), value(26)
             terms = (
                 value(7) + value(1) * value(4),
                 value(8) + value(1) * value(5),
                 value(9) + value(1) * value(6),
-                flag + condition * value(17),
+                flag + condition * inverse,
                 condition * (flag + ONE),
-                value(2) + flag * value(11) + (flag + ONE) * GEN * value(0),
-                value(3) + flag * value(12) + (flag + ONE) * value(1),
+                value(2) + flag * destination + (flag + ONE) * GEN * value(0),
+                value(3) + flag * frame + (flag + ONE) * value(1),
+            )
+        elif table == 5:
+            terms = tuple(
+                value(address) + value(1) * value(operand)
+                for address, operand in zip((8, 9, 10, 11, 12, 13), (2, 3, 4, 5, 6, 7))
             )
         else:
             terms = tuple(
                 value(address) + value(1) * value(operand)
-                for address, operand in zip((8, 9, 10, 11, 12, 13), (2, 3, 4, 5, 6, 7))
+                for address, operand in zip((5, 6, 7), (2, 3, 4))
             )
 
         require(len(weights) == len(terms), "AIR constraint weight mismatch")
@@ -1408,7 +1517,7 @@ def _air_evaluator(
 def build_airs(
     layout: Layout,
     bus_forms: Sequence[Sequence[BusForm]],
-    form_powers: Sequence[F128],
+    form_powers: Sequence[F192],
 ) -> list[Air]:
     return [
         Air(
@@ -1436,6 +1545,17 @@ def virtual_slot(column: int) -> int | None:
 
 # Ligerito opening ------------------------------------------------------------
 
+# Ligerito ladder geometry. These mirror the Rust source of truth in
+# crates/pcs/src/ligerito_config.rs and must stay in sync with it: the prover
+# derives its opening shape from those constants, so a mismatch here rejects a
+# valid proof. Change a factor there, change it here.
+INITIAL_FOLDING_FACTOR = 6
+SUBSEQUENT_FOLDING_FACTOR = 3
+RS_DOMAIN_INITIAL_REDUCTION_FACTOR = 3
+RS_DOMAIN_SUBSEQUENT_REDUCTION_FACTOR = 1
+RESIDUAL_MAX_LOG = 5
+
+
 @dataclass(frozen=True)
 class LigeritoConfig:
     rates: tuple[int, ...]
@@ -1443,74 +1563,111 @@ class LigeritoConfig:
     queries: tuple[int, ...]
     query_grinding: tuple[int, ...]
     fold_grinding: tuple[int, ...]
+    ood_samples: tuple[int, ...]
 
 
-def _per_query_bits(rate: int, message_log: int) -> float:
-    rho = 2.0 ** -rate
-    delta = 1.0 - rho
-    codeword_length = 2.0 ** (message_log + rate)
-    radius = delta / 2.0 - 3.0 / (delta * codeword_length)
-    return log2(1.0 / (1.0 - radius))
+def _reduced_rate(rate: int, message_log: int) -> float:
+    return ((2.0 ** message_log) - 1.0) / (2.0 ** (message_log + rate))
 
 
-def derive_config(log_n: int) -> LigeritoConfig:
-    """Reproduce ``LigeritoSecurityConfig::derive_config(log_n + 7)``."""
-    require(log_n > 6, "Ligerito input is too small")
-    message_logs = [log_n - 6]
-    folds = [6]
-    rates = [1]
+def _johnson_parameters(rate: int, message_log: int, interleaved_log: int) -> tuple[int, int]:
+    rho = _reduced_rate(rate, message_log)
+    root_rho = sqrt(rho)
+    block_length = 1 << (message_log + rate)
+    variables = message_log + interleaved_log
+    best: tuple[int, int] | None = None
+    for theorem_m in range(3, 4097):
+        eta = root_rho / theorem_m
+        while ceil(root_rho / eta) > theorem_m:
+            eta = nextafter(eta, float("inf"))
+        if eta >= 1.0 - root_rho:
+            continue
+        gamma = 1.0 - root_rho - eta
+        half = theorem_m + 0.5
+        a = ((2.0 * half ** 5 + 3.0 * half * gamma * rho)
+             / (3.0 * rho ** 1.5) * block_length + half / root_rho)
+        proximity_bits = 192.0 - log2(a) - max(0, interleaved_log - 1)
+        if proximity_bits + 1e-12 < 128.0:
+            break
+        per_query = log2(1.0 / (1.0 - gamma))
+        if not isfinite(per_query) or per_query <= 0.0:
+            continue
+        queries = ceil(111.0 / per_query)
+        if queries > block_length:
+            continue
+        list_log = log2(1.0 / (2.0 * eta * root_rho))
+        ood = 0 if interleaved_log == INITIAL_FOLDING_FACTOR else next(
+            (count for count in range(1, 9)
+             if count * (192.0 - log2(variables)) - (2.0 * list_log - 1.0) + 1e-12 >= 128.0),
+            0,
+        )
+        ood_bits = (192.0 - list_log - log2(variables) if ood == 0
+                    else ood * (192.0 - log2(variables)) - (2.0 * list_log - 1.0))
+        algebraic_bits = 192.0 - log2(max(RING_SWITCH_SOUNDNESS_DEGREE, ceil(log2(queries)), 2)) - list_log
+        if ood_bits + 1e-12 < 128.0 or algebraic_bits + 1e-12 < 128.0:
+            continue
+        candidate = (queries, ood)
+        if best is None or queries < best[0]:
+            best = candidate
+    require(best is not None, "no secure Ligerito configuration")
+    return best
 
-    # The feasibility pass in Rust uses the asymptotic UDR query bound.
-    def feasible_queries(rate: int) -> int:
-        rho = 2.0 ** -rate
-        bits = log2(1.0 / (1.0 - (1.0 - rho) / 2.0))
-        return ceil(107.0 / bits)
 
-    require(1 << (message_logs[0] + rates[0]) >= feasible_queries(1),
-           "Ligerito level zero cannot hold its query set")
+def derive_config(log_n: int, initial_rate: int) -> LigeritoConfig:
+    """Derive the production Johnson/OOD ladder used by the Rust PCS."""
+    require(log_n > INITIAL_FOLDING_FACTOR and 1 <= initial_rate <= 4, "invalid Ligerito shape")
+    folds = [INITIAL_FOLDING_FACTOR]
+    message_logs = [log_n - INITIAL_FOLDING_FACTOR]
+    rates = [initial_rate]
     remaining = message_logs[0]
-    while remaining > 5:
-        fold = min(3, remaining)
-        next_message_log = remaining - fold
-        rate = rates[-1] + 1
-        while 1 << (next_message_log + rate) < feasible_queries(rate):
-            rate += 1
-            require(rate <= 20, "no feasible Ligerito rate")
+    prior_fold = INITIAL_FOLDING_FACTOR
+    reduction = RS_DOMAIN_INITIAL_REDUCTION_FACTOR
+    while remaining > RESIDUAL_MAX_LOG:
+        fold = min(SUBSEQUENT_FOLDING_FACTOR, remaining)
+        rates.append(rates[-1] + prior_fold - reduction)
+        remaining -= fold
         folds.append(fold)
-        message_logs.append(next_message_log)
-        rates.append(rate)
-        remaining = next_message_log
-
+        message_logs.append(remaining)
+        prior_fold = fold
+        reduction = RS_DOMAIN_SUBSEQUENT_REDUCTION_FACTOR
     require(len(folds) >= 2, "Ligerito requires at least two levels")
-    queries = tuple(ceil(102.0 / _per_query_bits(r, n)) for r, n in zip(rates, message_logs))
-    fold_grinding = []
-    for rate, n in zip(rates, message_logs):
-        rho = 2.0 ** -rate
-        delta = 1.0 - rho
-        codeword_length = 2.0 ** (n + rate)
-        radius = delta / 2.0 - 3.0 / (delta * codeword_length)
-        exceptional_log = log2(radius * codeword_length + 1.0)
-        fold_grinding.append(max(0, ceil(120.0 - (128.0 - exceptional_log))))
-    return LigeritoConfig(tuple(rates), tuple(folds), queries,
-                          (18,) * len(folds), tuple(fold_grinding))
+    parameters = tuple(
+        _johnson_parameters(rate, columns, fold)
+        for rate, columns, fold in zip(rates, message_logs, folds)
+    )
+    return LigeritoConfig(
+        tuple(rates),
+        tuple(folds),
+        tuple(value[0] for value in parameters),
+        (17,) * len(folds),
+        (0,) * len(folds),
+        tuple(value[1] for value in parameters),
+    )
 
 
 def _hash_pair(left: bytes, right: bytes) -> bytes:
     return blake3_hash(left + right)
 
 
-def _row_hash(row: Sequence[F128]) -> bytes:
-    return blake3_hash(b"".join(value.to_bytes() for value in row))
+FieldValue = F192 | int
+
+
+def _row_hash(row: Sequence[FieldValue], base_field: bool) -> bytes:
+    if base_field:
+        return blake3_hash(b"".join(int(value).to_bytes(8, "little") for value in row))
+    require(all(isinstance(value, F192) for value in row), "non-field value in extension row")
+    return blake3_hash(b"".join(value.to_bytes() for value in row if isinstance(value, F192)))
 
 
 def authenticate_rows(
     root: bytes,
     leaf_count: int,
     queries: Sequence[int],
-    rows: Sequence[Sequence[F128]],
+    rows: Sequence[Sequence[FieldValue]],
     row_width: int,
     octopus: Sequence[bytes],
-) -> list[Sequence[F128]]:
+    base_field: bool = False,
+) -> list[Sequence[FieldValue]]:
     """Authenticate a compressed multiproof and restore transcript row order."""
     require(leaf_count > 0 and leaf_count & (leaf_count - 1) == 0,
            "invalid Merkle leaf count")
@@ -1520,7 +1677,7 @@ def authenticate_rows(
     require(all(0 <= q < leaf_count for q in unique), "Merkle query is out of range")
     require(all(len(row) == row_width for row in rows), "opened row has the wrong width")
 
-    nodes = [(index, _row_hash(row)) for index, row in zip(unique, rows)]
+    nodes = [(index, _row_hash(row, base_field)) for index, row in zip(unique, rows)]
     supplied = iter(octopus)
     for _ in range(leaf_count.bit_length() - 1):
         parents: list[tuple[int, bytes]] = []
@@ -1553,7 +1710,7 @@ def authenticate_rows(
 def sample_queries(sponge: Sponge, block_length: int, count: int) -> list[int]:
     depth = block_length.bit_length() - 1
     require(block_length == 1 << depth and depth > 0, "invalid query domain")
-    per_word = 128 // depth
+    per_word = 192 // depth
     result: list[int] = []
     while len(result) < count:
         bits = int(sponge.sample())
@@ -1564,19 +1721,14 @@ def sample_queries(sponge: Sponge, block_length: int, count: int) -> list[int]:
 
 @dataclass(frozen=True)
 class QuadraticMessage:
-    constant: F128
-    linear: F128
-    quadratic: F128
+    constant: F192
+    linear: F192
+    quadratic: F192
 
-    @classmethod
-    def read(cls, transcript: Transcript, target: F128) -> "QuadraticMessage":
-        constant, quadratic = transcript.scalars(2)
-        return cls(constant, target + quadratic, quadratic)
-
-    def evaluate(self, point: F128) -> F128:
+    def evaluate(self, point: F192) -> F192:
         return self.constant + point * self.linear + point * point * self.quadratic
 
-    def add_scaled(self, other: "QuadraticMessage", scale: F128) -> "QuadraticMessage":
+    def add_scaled(self, other: "QuadraticMessage", scale: F192) -> "QuadraticMessage":
         return QuadraticMessage(
             self.constant + scale * other.constant,
             self.linear + scale * other.linear,
@@ -1585,23 +1737,26 @@ class QuadraticMessage:
 
 
 def _enforced_sum(
-    rows: Sequence[Sequence[F128]],
-    folds: Sequence[F128],
-    alpha: Sequence[F128],
-) -> F128:
+    rows: Sequence[Sequence[FieldValue]],
+    folds: Sequence[F192],
+    alpha: Sequence[F192],
+) -> F192:
     lane_weights = build_eq(folds)
     query_weights = build_eq(alpha)[: len(rows)]
     total = ZERO
     for query_weight, row in zip(query_weights, rows):
         require(len(row) == len(lane_weights), "Ligerito row/fold width mismatch")
-        total += query_weight * sum((x * y for x, y in zip(row, lane_weights)), ZERO)
+        total += query_weight * sum(
+            ((F192(x) if isinstance(x, int) else x) * y for x, y in zip(row, lane_weights)),
+            ZERO,
+        )
     return total
 
 
-def _subspace_roots(log_n: int) -> list[F128]:
+def _subspace_roots(log_n: int) -> list[F192]:
     roots = [ZERO] * (log_n + 1)
     roots[0] = ONE
-    layer = [F128(1 << i) for i in range(1, log_n + 1)]
+    layer = [F192(1 << i) for i in range(1, log_n + 1)]
     for level in range(log_n):
         for index in range(log_n - level):
             value = layer[index] * layer[index] + roots[level] * layer[index]
@@ -1615,18 +1770,18 @@ def _subspace_roots(log_n: int) -> list[F128]:
 def _induced_residual(
     message_log: int,
     queries: Sequence[int],
-    alpha: Sequence[F128],
-    prefix: Sequence[F128],
+    alpha: Sequence[F192],
+    prefix: Sequence[F192],
     residual_log: int,
-) -> list[F128]:
+) -> list[F192]:
     require(len(prefix) + residual_log == message_log, "bad induced-basis dimensions")
     roots = _subspace_roots(message_log)
     inverses = [value.inv() if value else ZERO for value in roots]
     query_weights = build_eq(alpha)[: len(queries)]
-    prepared: list[tuple[F128, tuple[F128, ...]]] = []
+    prepared: list[tuple[F192, tuple[F192, ...]]] = []
     for query in queries:
-        normalized: list[F128] = []
-        current = F128(query)
+        normalized: list[F192] = []
+        current = F192(query)
         for coordinate in range(message_log):
             normalized.append(current * inverses[coordinate])
             current = current * current + roots[coordinate] * current
@@ -1635,7 +1790,7 @@ def _induced_residual(
             fixed *= ONE + challenge * (ONE + basis_value)
         prepared.append((fixed, tuple(normalized[len(prefix) :])))
 
-    result: list[F128] = []
+    result: list[F192] = []
     for vertex in range(1 << residual_log):
         value = ZERO
         for query_weight, (fixed, tail) in zip(query_weights, prepared):
@@ -1650,104 +1805,136 @@ def _induced_residual(
 
 def verify_ligerito(
     transcript: Transcript,
-    opening: LigeritoOpening,
+    proof: LigeritoProofData,
     log_n: int,
-    target: F128,
+    initial_rate: int,
+    target: F192,
     root: bytes,
-    evaluate_basis: Callable[[Sequence[F128], int], Sequence[F128]],
+    evaluate_basis: Callable[[Sequence[F192], int], Sequence[F192]],
 ) -> None:
-    """Verify one succinct multilevel opening and consume its transcript data."""
-    config = derive_config(log_n)
-    level_count = len(config.folds)
-    require(len(opening.levels) == max(0, level_count - 2), "wrong Ligerito level count")
+    """Verify the base-field multilevel opening with a one-point terminal check."""
+    config = derive_config(log_n, initial_rate)
+    levels = len(config.folds)
+    require(len(proof.recursive_roots) == levels - 1, "wrong Ligerito root count")
+    require(len(proof.recursive) == levels - 2, "wrong Ligerito recursive-proof count")
+    require(len(proof.grinding_nonces) == levels, "wrong Ligerito nonce count")
+
+    def observe_root(value: bytes) -> None:
+        require(len(value) == 32, "invalid Merkle root")
+        transcript.observe(F192.from_bytes(value[:24]))
+        transcript.observe(F192(int.from_bytes(value[24:], "little")))
+
+    message_index = 0
+
+    def next_quad(claim: F192) -> QuadraticMessage:
+        nonlocal message_index
+        require(message_index < len(proof.sumcheck), "truncated Ligerito sumcheck")
+        message = proof.sumcheck[message_index]
+        message_index += 1
+        transcript.observe(message.constant)
+        transcript.observe(message.quadratic)
+        return QuadraticMessage(message.constant, claim + message.quadratic, message.quadratic)
+
     transcript.observe(target)
-    transcript.absorb_bytes(root)
-
+    observe_root(root)
     running_target = target
-    running_quad = QuadraticMessage.read(transcript, running_target)
-    all_folds: list[F128] = []
-    level_contexts: list[tuple[int, list[int], list[F128], int, F128]] = []
-    previous_root: bytes | None = None
-    previous_message_log = 0
-    previous_rate = 0
-    previous_fold = 0
-    middle_index = 0
+    running_quad = next_quad(target)
+    folds: list[F192] = []
+    contexts: list[tuple[int, list[int], list[F192], int, F192]] = []
+    ood_contexts: list[tuple[tuple[F192, ...], int, F192]] = []
+    fold_nonce_index = 0
+    ood_index = 0
+    current_root = root
 
-    for level in range(level_count):
-        fold_values: list[F128] = []
-        for fold_index in range(config.folds[level]):
+    for level, (fold_count, rate) in enumerate(zip(config.folds, config.rates)):
+        level_folds: list[F192] = []
+        for fold_index in range(fold_count):
             bits = max(0, config.fold_grinding[level] - fold_index)
             if bits:
-                transcript.grind(bits)
+                require(fold_nonce_index < len(proof.fold_grinding_nonces),
+                        "missing Ligerito fold nonce")
+                transcript.sponge.check_pow(proof.fold_grinding_nonces[fold_nonce_index], bits)
+                fold_nonce_index += 1
             challenge = transcript.sample()
-            all_folds.append(challenge)
-            fold_values.append(challenge)
+            folds.append(challenge)
+            level_folds.append(challenge)
             running_target = running_quad.evaluate(challenge)
-            running_quad = QuadraticMessage.read(transcript, running_target)
+            running_quad = next_quad(running_target)
 
-        message_log = log_n - len(all_folds)
-        if level == 0:
-            opened = opening.initial
-            authentication_root = root
-            opened_message_log = message_log
-            opened_rate = config.rates[0]
-            opened_width = 1 << config.folds[0]
+        message_log = log_n - len(folds)
+        final_level = level == levels - 1
+        if final_level:
+            residual = proof.final.residual
+            require(len(residual) == 1 << message_log, "wrong Ligerito residual length")
+            for value in residual:
+                transcript.observe(value)
         else:
-            opened = opening.final if level == level_count - 1 else opening.levels[middle_index]
-            if level < level_count - 1:
-                middle_index += 1
-            if previous_root is None:
-                raise VerificationError("missing preceding Ligerito commitment")
-            authentication_root = previous_root
-            opened_message_log = previous_message_log
-            opened_rate = previous_rate
-            opened_width = 1 << previous_fold
+            next_root = proof.recursive_roots[level]
+            observe_root(next_root)
+            for _ in range(config.ood_samples[level + 1]):
+                point = tuple(transcript.samples(message_log))
+                require(ood_index < len(proof.ood_values), "missing Ligerito OOD value")
+                value = proof.ood_values[ood_index]
+                ood_index += 1
+                transcript.observe(value)
+                intro = next_quad(value)
+                beta = transcript.sample()
+                running_quad = running_quad.add_scaled(intro, beta)
+                running_target += beta * value
+                ood_contexts.append((point, len(folds), beta))
 
-        if level == level_count - 1:
-            residual = transcript.scalars(1 << message_log)
-        else:
-            root_words = transcript.scalars(2)
-            next_root = root_words[0].to_bytes() + root_words[1].to_bytes()
-
-        transcript.grind(config.query_grinding[level])
-        block_length = 1 << (opened_message_log + opened_rate)
+        transcript.sponge.check_pow(proof.grinding_nonces[level], config.query_grinding[level])
+        block_length = 1 << (message_log + rate)
         queries = sample_queries(transcript.sponge, block_length, config.queries[level])
         alpha = transcript.samples(max(0, (len(queries) - 1).bit_length()))
+        if level == 0:
+            opened = proof.initial
+        elif final_level:
+            opened = proof.final
+        else:
+            opened = proof.recursive[level - 1]
         try:
             rows = authenticate_rows(
-                authentication_root,
+                current_root,
                 block_length,
                 queries,
                 opened.opened_rows,
-                opened_width,
+                1 << fold_count,
                 opened.merkle_proof,
+                level == 0,
             )
         except VerificationError as exc:
             raise VerificationError(f"Ligerito level {level}: {exc}") from exc
-        enforced = _enforced_sum(rows, fold_values, alpha)
+        enforced = _enforced_sum(rows, level_folds, alpha)
 
-        if level == level_count - 1:
-            # Same intro/glue shape as every other level, then finish the
-            # sumcheck over the tail so the opening closes on ONE evaluation of
-            # the basis rather than 2^message_log of them.
-            intro = QuadraticMessage.read(transcript, enforced)
-            beta = transcript.sample()
-            running_quad = running_quad.add_scaled(intro, beta)
-            running_target += beta * enforced
-            level_contexts.append((message_log, queries, alpha, len(all_folds), beta))
-            tail_folds: list[F128] = []
+        # Every commitment, including the last one, enters through an intro
+        # message before its separation challenge.
+        intro = next_quad(enforced)
+        beta = transcript.sample()
+        running_quad = running_quad.add_scaled(intro, beta)
+        running_target += beta * enforced
+        contexts.append((message_log, queries, alpha, len(folds), beta))
+
+        if final_level:
+            # Finish the remaining sumcheck rounds and close on one evaluation
+            # of every basis at the resulting point.
+            tail_folds: list[F192] = []
             for round_index in range(message_log):
                 challenge = transcript.sample()
                 running_target = running_quad.evaluate(challenge)
                 tail_folds.append(challenge)
                 if round_index + 1 < message_log:
-                    running_quad = QuadraticMessage.read(transcript, running_target)
-            # A residual width of zero turns each residual evaluator into a
-            # point evaluator, so no new closed form is needed.
-            weight = evaluate_basis(list(all_folds) + tail_folds, 0)[0]
-            for context_log, context_queries, context_alpha, start, context_beta in level_contexts:
-                prefix_length = context_log - message_log
-                point = list(all_folds[start : start + prefix_length]) + tail_folds
+                    running_quad = next_quad(running_target)
+            require(message_index == len(proof.sumcheck), "trailing Ligerito sumcheck messages")
+            require(ood_index == len(proof.ood_values), "trailing Ligerito OOD values")
+            require(fold_nonce_index == len(proof.fold_grinding_nonces),
+                    "trailing Ligerito fold nonces")
+            weight_values = list(evaluate_basis(list(folds) + tail_folds, 0))
+            require(len(weight_values) == 1, "basis point evaluation has the wrong length")
+            weight = weight_values[0]
+            for context_log, context_queries, context_alpha, start, separation in contexts:
+                fixed = context_log - message_log
+                point = list(folds[start : start + fixed]) + tail_folds
                 induced = _induced_residual(
                     context_log,
                     context_queries,
@@ -1755,45 +1942,56 @@ def verify_ligerito(
                     point,
                     0,
                 )
-                weight += context_beta * induced[0]
+                require(len(induced) == 1, "induced point evaluation has the wrong length")
+                weight += separation * induced[0]
+            for point, start, separation in ood_contexts:
+                fixed = len(point) - message_log
+                scale = separation
+                for expected, actual in zip(point[:fixed], folds[start : start + fixed]):
+                    scale *= ONE + expected + actual
+                for expected, actual in zip(point[fixed:], tail_folds):
+                    scale *= ONE + expected + actual
+                weight += scale
             terminal = weight * mle_eval(residual, tail_folds)
             require(terminal == running_target, "Ligerito terminal check failed")
             return
-
-        intro = QuadraticMessage.read(transcript, enforced)
-        beta = transcript.sample()
-        running_quad = running_quad.add_scaled(intro, beta)
-        running_target += beta * enforced
-        level_contexts.append((message_log, queries, alpha, len(all_folds), beta))
-        previous_root = next_root
-        previous_message_log = message_log - config.folds[level + 1]
-        previous_rate = config.rates[level + 1]
-        previous_fold = config.folds[level + 1]
+        current_root = next_root
 
     raise VerificationError("Ligerito verification ended without a terminal level")
 
 # Flock reduction -------------------------------------------------------------
 
 PHI_BASIS = (
-    F128.new(0x0000000000000001, 0x0000000000000000),
-    F128.new(0x6B8330483C2E9849, 0x0DCB364640A222FE),
-    F128.new(0x7573DA4A5F7710ED, 0x3D5BD35C94646A24),
-    F128.new(0x41A12DB1F974F3AC, 0x6D58C4E181F9199F),
-    F128.new(0x5E2F716F4EDE412F, 0xA72EC17764D7CED5),
-    F128.new(0x5CB10FBABCF00118, 0x4D52354A3A3D8C86),
-    F128.new(0x95ED1F57F3632D4D, 0x553E92E8BC0AE9A7),
-    F128.new(0x512625B1F09FA87E, 0x93252331BF042B11),
+    F192(0x0000000000000001),
+    F192(0x033CE8BEDDC8A656),
+    F192(0x512620375ED2A108),
+    F192(0x0C9E636090AAFC01),
+    F192(0xBA4F3CD82801769C),
+    F192(0xBA26E7904ADB4A47),
+    F192(0x467698598926DC01),
+    F192(0x4418AE808B28BDD0),
 )
 PHI = tuple(sum((PHI_BASIS[bit] for bit in range(8) if value >> bit & 1), ZERO)
             for value in range(256))
+_MEDIUM_GENERATOR = F192.new(
+    0x243F6A8885A308D3,
+    0x13198A2E03707344,
+    0xA4093822299F31D0,
+)
+_MEDIUM_POWERS = (
+    _MEDIUM_GENERATOR,
+    _MEDIUM_GENERATOR ** 2,
+    _MEDIUM_GENERATOR ** 4,
+    _MEDIUM_GENERATOR ** 8,
+)
 FIXED_CHALLENGES = (
     PHI[0xF7], PHI[0x53], PHI[0xB5],
-    F128(2) / F128(3), F128(4) / F128(5), F128(16) / F128(17), F128(256) / F128(257),
+    *tuple(value / (ONE + value) for value in _MEDIUM_POWERS),
 )
 
 
 @lru_cache(maxsize=None)
-def _denominators(nodes: tuple[F128, ...]) -> tuple[F128, ...]:
+def _denominators(nodes: tuple[F192, ...]) -> tuple[F192, ...]:
     result = []
     for index, node in enumerate(nodes):
         denominator = ONE
@@ -1804,7 +2002,7 @@ def _denominators(nodes: tuple[F128, ...]) -> tuple[F128, ...]:
     return tuple(result)
 
 
-def lagrange_weights(nodes: Sequence[F128], point: F128) -> list[F128]:
+def lagrange_weights(nodes: Sequence[F192], point: F192) -> list[F192]:
     fixed_nodes = tuple(nodes)
     differences = [point + node for node in fixed_nodes]
     prefix = [ONE]
@@ -1819,12 +2017,12 @@ def lagrange_weights(nodes: Sequence[F128], point: F128) -> list[F128]:
     return result
 
 
-def lagrange_interpolate(nodes: Sequence[F128], values: Sequence[F128], point: F128) -> F128:
+def lagrange_interpolate(nodes: Sequence[F192], values: Sequence[F192], point: F192) -> F192:
     weights = lagrange_weights(nodes, point)
     return sum((weight * value for weight, value in zip(weights, values)), ZERO)
 
 
-def quirky_weights(skip_point: F128, rest: Sequence[F128]) -> list[F128]:
+def quirky_weights(skip_point: F192, rest: Sequence[F192]) -> list[F192]:
     skip = lagrange_weights(PHI[:64], skip_point)
     tail = build_eq(rest)
     return [a * b for b in tail for a in skip]
@@ -1832,29 +2030,29 @@ def quirky_weights(skip_point: F128, rest: Sequence[F128]) -> list[F128]:
 
 @dataclass(frozen=True)
 class QuirkyPoint:
-    skip: F128
-    inner: tuple[F128, ...]
-    outer: tuple[F128, ...]
+    skip: F192
+    inner: tuple[F192, ...]
+    outer: tuple[F192, ...]
 
     @property
-    def ring_tail(self) -> tuple[F128, ...]:
+    def ring_tail(self) -> tuple[F192, ...]:
         return self.inner + self.outer
 
 
 @dataclass(frozen=True)
 class ZClaim:
     point: QuirkyPoint
-    value: F128
+    value: F192
 
 
 @dataclass(frozen=True)
 class ZerocheckResult:
-    skip: F128
-    rounds: tuple[F128, ...]
-    equality_tail: tuple[F128, ...]
-    a: F128
-    b: F128
-    c: F128
+    skip: F192
+    rounds: tuple[F192, ...]
+    equality_tail: tuple[F192, ...]
+    a: F192
+    b: F192
+    c: F192
 
 
 def verify_zerocheck(log_n: int, transcript: Transcript) -> ZerocheckResult:
@@ -1887,7 +2085,7 @@ def verify_zerocheck(log_n: int, transcript: Transcript) -> ZerocheckResult:
 @dataclass(frozen=True)
 class LincheckResult:
     point: QuirkyPoint
-    value: F128
+    value: F192
 
 
 @dataclass(frozen=True)
@@ -1896,35 +2094,70 @@ class Reduction:
     c: ZClaim
 
 
-def _claim_weights(point: QuirkyPoint) -> list[F128]:
-    low = lagrange_weights(PHI[:64], point.skip)
-    low_scale, high_scale = ONE + point.ring_tail[0], point.ring_tail[0]
-    return [value * low_scale for value in low] + [value * high_scale for value in low]
+def _claim_weights(point: QuirkyPoint) -> list[F192]:
+    return lagrange_weights(PHI[:64], point.skip)
 
 
-def _transpose(values: Sequence[F128]) -> list[F128]:
-    require(len(values) == 128, "ring-switch slice has the wrong length")
-    output = [0] * 128
+RING_MAP_SHIFTS = (32, 16, 8, 4, 2, 1)
+
+
+def _coordinate_weights(challenges: Sequence[F192]) -> list[F192]:
+    """`ring_switch::build_coordinate_weights`: the images `Phi(basis_w)` of the
+    F2-coordinate basis under the six composed two-term linearized maps. The
+    verifier weights the transposed columns with these; the guest applies the
+    same composition directly."""
+    require(len(challenges) == len(RING_MAP_SHIFTS), "wrong ring-map challenge count")
+    weights = []
+    for w in range(192):
+        # b_w has only bit w set: limb w // 64, bit w % 64.
+        limbs = [0, 0, 0]
+        limbs[w // 64] = 1 << (w % 64)
+        element = F192(*limbs)
+        for challenge, shift in zip(challenges, RING_MAP_SHIFTS):
+            frobenius = element
+            for _ in range(shift):
+                frobenius *= frobenius
+            element += challenge * frobenius
+        weights.append(element)
+    return weights
+
+
+def _transpose(values: Sequence[F192]) -> list[F192]:
+    require(len(values) == 64, "ring-switch slice has the wrong length")
+    output = [0] * 192
     for row, value in enumerate(values):
         bits = int(value)
         while bits:
             bit = (bits & -bits).bit_length() - 1
             output[bit] ^= 1 << row
             bits &= bits - 1
-    return [F128(value) for value in output]
+    return [F192(value) for value in output]
 
 
-def _fold_binary_elements(elements: Sequence[F128], weights: Sequence[F128]) -> list[F128]:
-    output = []
-    for element in elements:
-        bits = int(element)
-        value = ZERO
-        while bits:
-            bit = (bits & -bits).bit_length() - 1
-            value += weights[bit]
-            bits &= bits - 1
-        output.append(value)
-    return output
+def _linear_map(value: F192, weights: Sequence[F192]) -> F192:
+    result = ZERO
+    bits = int(value)
+    while bits:
+        bit = (bits & -bits).bit_length() - 1
+        result += weights[bit]
+        bits &= bits - 1
+    return result
+
+
+def _ring_weight(
+    suffix_point: Sequence[F192],
+    query: Sequence[F192],
+    coordinate_weights: Sequence[F192],
+) -> F192:
+    """Evaluate the transparent ring-switch weight at one query point."""
+    require(len(suffix_point) == len(query), "ring-switch query dimension mismatch")
+    suffix_tensor = build_eq(suffix_point)
+    query_tensor = build_eq(query)
+    return sum(
+        (query_weight * _linear_map(suffix_weight, coordinate_weights)
+         for query_weight, suffix_weight in zip(query_tensor, suffix_tensor)),
+        ZERO,
+    )
 
 
 def verify_stacked_opening(
@@ -1932,23 +2165,27 @@ def verify_stacked_opening(
     opening: LigeritoOpening,
     root: bytes,
     stack_log: int,
+    initial_rate: int,
     qpkd_offset: int,
     qpkd_variables: int,
     reduction: Reduction,
-    point_claims: Sequence[tuple[Sequence[F128], F128]],
+    point_claims: Sequence[tuple[Sequence[F192], F192]],
 ) -> None:
     """Bind both ring-switched claims and all ordinary stack point claims."""
     ring_claims = (reduction.ab, reduction.c)
-    slices = []
-    for claim in ring_claims:
-        values = transcript.scalars(128)
+    require(len(opening.ring_switches) == len(ring_claims), "wrong ring-switch proof count")
+    slices: list[Sequence[F192]] = []
+    for claim, values in zip(ring_claims, opening.ring_switches):
+        require(len(values) == 64, "ring-switch proof has the wrong width")
+        for value in values:
+            transcript.observe(value)
         expected = sum((a * b for a, b in zip(_claim_weights(claim.point), values)), ZERO)
         require(expected == claim.value, "ring-switch claim mismatch")
         slices.append(values)
 
-    ring_challenge = transcript.samples(7)
-    ring_weights = build_eq(ring_challenge)
-    ring_values = [sum((a * b for a, b in zip(_transpose(values), ring_weights)), ZERO)
+    map_challenges = [transcript.sample() for _ in RING_MAP_SHIFTS]
+    coordinate_weights = _coordinate_weights(map_challenges)
+    ring_values = [sum((a * b for a, b in zip(_transpose(values), coordinate_weights)), ZERO)
                    for values in slices]
     ring_scales = transcript.samples(2)
     target = sum((scale * value for scale, value in zip(ring_scales, ring_values)), ZERO)
@@ -1958,23 +2195,30 @@ def verify_stacked_opening(
     point_scales = transcript.samples(len(point_claims))
     target += sum((scale * value for scale, (_, value) in zip(point_scales, point_claims)), ZERO)
 
-    ring_polynomials = []
-    for claim in ring_claims:
-        suffix = build_eq(claim.point.ring_tail[1:])
-        ring_polynomials.append(_fold_binary_elements(suffix, ring_weights))
     selector = qpkd_offset >> qpkd_variables
 
-    def evaluate_basis(prefix: Sequence[F128], residual_log: int) -> list[F128]:
+    def evaluate_basis(prefix: Sequence[F192], residual_log: int) -> list[F192]:
+        shared_ring = None
+        if len(prefix) >= qpkd_variables:
+            shared_ring = sum(
+                (scale * _ring_weight(
+                    claim.point.ring_tail,
+                    prefix[:qpkd_variables],
+                    coordinate_weights,
+                ) for scale, claim in zip(ring_scales, ring_claims)),
+                ZERO,
+            )
         result = []
         for vertex in range(1 << residual_log):
-            point = list(prefix) + [F128(vertex >> bit & 1) for bit in range(residual_log)]
+            point = list(prefix) + [F192(vertex >> bit & 1) for bit in range(residual_log)]
             low, high = point[:qpkd_variables], point[qpkd_variables:]
             selector_weight = ONE
             for bit, challenge in enumerate(high):
                 selector_weight *= challenge if selector >> bit & 1 else ONE + challenge
-            value = selector_weight * sum(
-                (scale * mle_eval(poly, low)
-                 for scale, poly in zip(ring_scales, ring_polynomials)), ZERO)
+            ring_value = shared_ring if shared_ring is not None else sum(
+                (scale * _ring_weight(claim.point.ring_tail, low, coordinate_weights)
+                 for scale, claim in zip(ring_scales, ring_claims)), ZERO)
+            value = selector_weight * ring_value
             for scale, (claim_point, _) in zip(point_scales, point_claims):
                 require(len(claim_point) == len(point), "stack point has the wrong dimension")
                 factor = ONE
@@ -1984,7 +2228,15 @@ def verify_stacked_opening(
             result.append(value)
         return result
 
-    verify_ligerito(transcript, opening, stack_log, target, root, evaluate_basis)
+    verify_ligerito(
+        transcript,
+        opening.ligerito,
+        stack_log,
+        initial_rate,
+        target,
+        root,
+        evaluate_basis,
+    )
 
 
 def verify_reduction(log_n: int, transcript: Transcript) -> Reduction:
@@ -2001,16 +2253,14 @@ def verify_reduction(log_n: int, transcript: Transcript) -> Reduction:
 def verify_lincheck(
     log_n: int,
     point: QuirkyPoint,
-    a: F128,
-    b: F128,
+    a: F192,
+    b: F192,
     transcript: Transcript,
 ) -> LincheckResult:
     """Replay the fixed BLAKE3 matrix reduction."""
     alpha = transcript.sample()
     inner_weights = quirky_weights(point.skip, point.inner)
-    coefficients = blake3_matrix_fold(alpha, inner_weights)
     beta = transcript.sample()
-    coefficients[512] += beta
     running = alpha * a + b + beta
     challenges = []
     for _ in range(8):
@@ -2019,22 +2269,28 @@ def verify_lincheck(
         linear = at_zero + at_one + at_infinity
         challenge = transcript.sample()
         running = at_infinity * challenge * challenge + linear * challenge + at_zero
-        half = len(coefficients) // 2
-        coefficients = [coefficients[i] * (ONE + challenge) + coefficients[i + half] * challenge
-                        for i in range(half)]
         challenges.append(challenge)
     partial = transcript.scalars(64)
-    require(sum((x * y for x, y in zip(coefficients, partial)), ZERO) == running,
+    rest_weights = build_eq(tuple(reversed(challenges)))
+    column_weights = [value * weight for weight in rest_weights for value in partial]
+    terminal = blake3_bilinear(alpha, inner_weights, column_weights)
+    terminal += beta * column_weights[512]
+    require(terminal == running,
            "Flock lincheck terminal mismatch")
     skip = transcript.sample()
     value = sum((x * y for x, y in zip(lagrange_weights(PHI[:64], skip), partial)), ZERO)
     return LincheckResult(QuirkyPoint(skip, tuple(reversed(challenges)), point.outer), value)
 
 
-def blake3_matrix_fold(alpha: F128, row_weights: Sequence[F128]) -> list[F128]:
-    """Compute ``alpha * eq^T A + eq^T B`` by walking the fixed circuit."""
-    require(len(row_weights) == 1 << 14, "bad BLAKE3 row-weight vector")
+def blake3_bilinear(
+    alpha: F192,
+    row_weights: Sequence[F192],
+    column_weights: Sequence[F192],
+) -> F192:
+    """Evaluate the two BLAKE3 R1CS matrix forms by walking the circuit."""
     size = 1 << 14
+    require(len(row_weights) == size, "bad BLAKE3 row-weight vector")
+    require(len(column_weights) == size, "bad BLAKE3 column-weight vector")
     constant = 512
     message_base = 640
     counter_low = 1152
@@ -2049,48 +2305,50 @@ def blake3_matrix_fold(alpha: F128, row_weights: Sequence[F128]) -> list[F128]:
              (0,5,10,15),(1,6,11,12),(2,7,8,13),(3,4,9,14))
     message_pairs = ((0,1),(2,3),(4,5),(6,7),(8,9),(10,11),(12,13),(14,15))
     permutation = (2,6,3,10,7,0,4,13,1,11,12,5,9,14,15,8)
-    accumulated = [0] * size
+    left_total = ZERO
+    right_total = ZERO
+    constant_rows = ZERO
 
-    def emit(row: int, left: frozenset[int], right: frozenset[int]) -> None:
-        weight = row_weights[row]
-        scaled = int(alpha * weight)
-        plain = int(weight)
-        for column in left:
-            accumulated[column] ^= scaled
-        for column in right:
-            accumulated[column] ^= plain
+    def slots(base: int) -> tuple[F192, ...]:
+        return tuple(column_weights[base + bit] for bit in range(32))
 
-    def slots(base: int) -> tuple[frozenset[int], ...]:
-        return tuple(frozenset((base + bit,)) for bit in range(32))
+    empty_word = (ZERO,) * 32
 
-    empty_word = tuple(frozenset() for _ in range(32))
-
-    def literal(value: int) -> tuple[frozenset[int], ...]:
-        return tuple(frozenset((constant,)) if value >> bit & 1 else frozenset()
+    def literal(value: int) -> tuple[F192, ...]:
+        return tuple(column_weights[constant] if value >> bit & 1 else ZERO
                      for bit in range(32))
 
-    def xor(x: Sequence[frozenset[int]], y: Sequence[frozenset[int]]) -> tuple[frozenset[int], ...]:
-        return tuple(a ^ b for a, b in zip(x, y))
+    def xor(x: Sequence[F192], y: Sequence[F192]) -> tuple[F192, ...]:
+        return tuple(a + b for a, b in zip(x, y))
 
-    def rotate_right(word: Sequence[frozenset[int]], amount: int) -> tuple[frozenset[int], ...]:
+    def rotate_right(word: Sequence[F192], amount: int) -> tuple[F192, ...]:
         return tuple(word[(bit + amount) & 31] for bit in range(32))
 
-    def add(x: Sequence[frozenset[int]], y: Sequence[frozenset[int]], carry_base: int):
-        carry: set[int] = set()
+    def add(x: Sequence[F192], y: Sequence[F192], carry_base: int) -> tuple[F192, ...]:
+        nonlocal left_total, right_total
+        carry = ZERO
         output = []
         for bit in range(32):
             if bit < 31:
-                emit(carry_base + bit, x[bit] ^ carry, y[bit] ^ carry)
-            output.append(x[bit] ^ y[bit] ^ carry)
+                weight = row_weights[carry_base + bit]
+                left_total += weight * (x[bit] + carry)
+                right_total += weight * (y[bit] + carry)
+            output.append(x[bit] + y[bit] + carry)
             if bit < 31:
-                carry.add(carry_base + bit)
+                carry += column_weights[carry_base + bit]
         return tuple(output)
 
-    # Booleanity/constant and unconstrained public input rows.
-    emit(constant, frozenset((constant,)), frozenset((constant,)))
-    for base, length in ((0,256),(message_base,512),(counter_low,64),(block_length,32),(flags,32)):
+    def linear_rows(values: Sequence[F192], base: int) -> None:
+        nonlocal left_total, constant_rows
+        for bit in range(32):
+            left_total += row_weights[base + bit] * values[bit]
+            constant_rows += row_weights[base + bit]
+
+    for base, length in ((0, 256), (message_base, 512), (counter_low, 64),
+                         (block_length, 32), (flags, 32)):
         for row in range(base, base + length):
-            emit(row, frozenset((row,)), frozenset((constant,)))
+            left_total += row_weights[row] * column_weights[row]
+            constant_rows += row_weights[row]
 
     state = [empty_word for _ in range(16)]
     for word in range(8):
@@ -2121,9 +2379,8 @@ def blake3_matrix_fold(alpha: F128, row_weights: Sequence[F128]) -> list[F128]:
             b_new = rotate_right(xor(b1, c2), 7)
             b_base = gate_base + 186
             d_base = b_base + 32
-            for bit in range(32):
-                emit(b_base + bit, b_new[bit], frozenset((constant,)))
-                emit(d_base + bit, d2[bit], frozenset((constant,)))
+            linear_rows(b_new, b_base)
+            linear_rows(d2, d_base)
             state[lane_a] = a2
             state[lane_b] = slots(b_base)
             state[lane_c] = c2
@@ -2133,16 +2390,19 @@ def blake3_matrix_fold(alpha: F128, row_weights: Sequence[F128]) -> list[F128]:
     for word in range(8):
         low = xor(state[word], state[word + 8])
         high = xor(state[word + 8], slots(32 * word))
-        for bit in range(32):
-            emit(256 + 32 * word + bit, low[bit], frozenset((constant,)))
-            emit(output_high + 32 * word + bit, high[bit], frozenset((constant,)))
-    return [F128(value) for value in accumulated]
+        linear_rows(low, 256 + 32 * word)
+        linear_rows(high, output_high + 32 * word)
+
+    constant_weight = column_weights[constant]
+    left_total += constant_weight * row_weights[constant]
+    right_total += constant_weight * (constant_rows + row_weights[constant])
+    return alpha * left_total + right_total
 
 # Complete VM verification and CLI -------------------------------------------
 
 
-def _selector_point(selector: int, length: int) -> tuple[F128, ...]:
-    return tuple(F128(selector >> bit & 1) for bit in range(length))
+def _selector_point(selector: int, length: int) -> tuple[F192, ...]:
+    return tuple(F192(selector >> bit & 1) for bit in range(length))
 
 
 def verify_execution(statement: dict[str, Any], proof: Proof) -> None:
@@ -2154,14 +2414,20 @@ def verify_execution(statement: dict[str, Any], proof: Proof) -> None:
     public_input = tuple(parse_field(value) for value in encoded_input)
     transcript = Transcript(proof, b"leanvm-b", program.transcript_statement(public_input))
 
-    announced = transcript.scalars(7)
-    require(all(value.hi == 0 for value in announced), "announced size has a nonzero high limb")
-    log_memory = announced[0].lo
-    row_counts = tuple(value.lo for value in announced[1:])
+    announced = transcript.scalars(9)
+    require(all(value.c1 == value.c2 == 0 for value in announced), "announced size has a nonzero high limb")
+    log_memory = announced[0].c0
+    row_counts = tuple(value.c0 for value in announced[1:8])
+    log_inverse_rate = announced[8].c0
+    require(1 <= log_inverse_rate <= 4, "invalid PCS inverse rate")
     layout = build_layout(program, log_memory, row_counts)
 
     root_words = transcript.scalars(2)
-    root = root_words[0].to_bytes() + root_words[1].to_bytes()
+    require(all(word.c2 == 0 for word in root_words), "commitment root has a nonzero top limb")
+    root = b"".join(
+        limb.to_bytes(8, "little")
+        for limb in (root_words[0].c0, root_words[0].c1, root_words[1].c0, root_words[1].c1)
+    )
     bus = verify_bus_balance(layout.push, layout.pull, layout.count, layout.padding, transcript)
     eta = transcript.sample()
     identity_count = sum(CONSTRAINT_COUNTS)
@@ -2181,13 +2447,19 @@ def verify_execution(statement: dict[str, Any], proof: Proof) -> None:
     claims = list(bus.claims)
     claims.extend(constraint_claims(layout, air_claims))
     public_challenge = transcript.sample()
+    public_low, public_high = transcript.scalars(2)
     public_point = [ZERO] * layout.placements[0].variables
     public_point[0] = public_challenge
     public_value = interpolate(public_input[0], public_input[1], public_challenge)
-    claims.append(ColumnClaim(0, tuple(public_point), public_value))
+    y = F192(0, 1)
+    public_top = (public_value + public_low + y * public_high) / (y * y)
+    claims.extend(
+        ColumnClaim(column, tuple(public_point), value)
+        for column, value in enumerate((public_low, public_high, public_top))
+    )
 
-    point_claims: list[tuple[tuple[F128, ...], F128]] = []
-    qpkd = layout.placements[3]
+    point_claims: list[tuple[tuple[F192, ...], F192]] = []
+    qpkd = layout.placements[5]
     for claim in claims:
         slot = virtual_slot(claim.column)
         if slot is None:
@@ -2199,10 +2471,10 @@ def verify_execution(statement: dict[str, Any], proof: Proof) -> None:
                 selector, layout.stack_log - placement.variables
             )
         else:
-            require(len(claim.point) + 7 == qpkd.variables, "BLAKE3 slot claim dimension mismatch")
+            require(len(claim.point) + 8 == qpkd.variables, "BLAKE3 slot claim dimension mismatch")
             selector = qpkd.offset >> qpkd.variables
             full_point = (
-                _selector_point(slot, 7)
+                _selector_point(slot, 8)
                 + claim.point
                 + _selector_point(selector, layout.stack_log - qpkd.variables)
             )
@@ -2215,6 +2487,7 @@ def verify_execution(statement: dict[str, Any], proof: Proof) -> None:
         opening,
         root,
         layout.stack_log,
+        log_inverse_rate,
         qpkd.offset,
         qpkd.variables,
         reduction,

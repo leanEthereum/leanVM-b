@@ -37,7 +37,11 @@ def main():
 ";
     let ac = parse(with_const).expect("const program parses");
     let ai = parse(inlined).expect("inlined program parses");
-    assert_eq!(format!("{ac:?}"), format!("{ai:?}"), "constant must inline to its value");
+    assert_eq!(
+        format!("{ac:?}"),
+        format!("{ai:?}"),
+        "constant must inline to its value"
+    );
     let _ = compile(&ac); // and it lowers to a real program
 }
 
@@ -93,8 +97,8 @@ def main():
     let _ = compile(&parse(src).unwrap());
 }
 
-/// Constant expressions use **integer** arithmetic (`+ - * / **`), not the
-/// runtime field's XOR/GHASH — so derived sizes/counts come out right. Filled
+/// Constant expressions use **integer** arithmetic (`+ - * / **`), not runtime
+/// field arithmetic, so derived sizes/counts come out right. Filled
 /// via placeholders, the whole set of derivations resolves to plain literals.
 #[test]
 fn const_integer_arithmetic_derivations() {
@@ -198,7 +202,10 @@ def main():
     return
 ";
     let err = parse(unfilled).expect_err("an unfilled placeholder must fail");
-    assert!(err.contains("V_PLACEHOLDER"), "error should name the placeholder: {err}");
+    assert!(
+        err.contains("V_PLACEHOLDER"),
+        "error should name the placeholder: {err}"
+    );
 
     let dup = "\
 N = 1

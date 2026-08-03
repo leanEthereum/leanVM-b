@@ -1,4 +1,4 @@
-use primitives::field::F128;
+use primitives::field::F192;
 
 /// Deterministic SplitMix64 generator shared by the crate's unit tests.
 pub(crate) struct Rng(u64);
@@ -28,11 +28,11 @@ impl Rng {
         (0..n).map(|_| self.bit()).collect()
     }
 
-    pub(crate) fn f128(&mut self) -> F128 {
-        F128::new(self.next_u64(), self.next_u64())
+    pub(crate) fn ext(&mut self) -> F192 {
+        F192::new(self.next_u64(), self.next_u64(), self.next_u64())
     }
 
-    pub(crate) fn f128_vec(&mut self, n: usize) -> Vec<F128> {
-        (0..n).map(|_| self.f128()).collect()
+    pub(crate) fn ext_vec(&mut self, n: usize) -> Vec<F192> {
+        (0..n).map(|_| self.ext()).collect()
     }
 }

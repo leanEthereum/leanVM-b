@@ -12,4 +12,5 @@ lean_vm.workspace = true
 
 [dev-dependencies]
 blake3.workspace = true
+rand.workspace = true
 bincode.workspace = true

@@ -4,7 +4,7 @@
 use lean_compiler::{compile, parse};
 use lean_vm::blake3_flock::warm_setup;
 use lean_vm::cpu::{prove, verify};
-use primitives::field::F128;
+use primitives::field::{F64, F192};
 
 #[test]
 fn print_is_constraint_free() {
@@ -24,7 +24,7 @@ def main():
 ";
     let program = compile(&parse(src).expect("parse"));
     warm_setup(1);
-    let want = [F128::new(5, 0) * primitives::field::g_pow(1), F128::new(3, 0)];
-    let (proof, _) = prove(&program, want);
+    let want = [F192::from(F64(5) * primitives::field::g_pow(1)), F192::from(F64(3))];
+    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
     verify(&program, &want, &proof).expect("prints must not disturb proving");
 }
