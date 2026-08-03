@@ -1846,8 +1846,14 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
             "LIG_MAX_INTERLEAVE",
             ints(&scal(&|c| *c.interleaving.iter().max().unwrap())),
         );
-        // StackBuf cap for the packed leaf row: level 0 packs 2 lanes per cell,
-        // deeper levels pack 3 limbs per word into 3n/2 cells.
+        // StackBuf cap for the packed leaf row AND the raw-limb `lanes` scratch
+        // that shares it (`open_stacked`). A memory cell holds one base-field
+        // word here, so level 0's n lanes take n cells. Deeper levels load 3 raw
+        // tower limbs per word into `lanes` (3n cells) and then pack them into a
+        // leaf row that is also 3n cells wide, so the two coincide and 3n covers
+        // both. (On 128-bit cells these were n/2 and 3n/2, and `lanes` alone
+        // forced the deeper term to 3n; sizing it at 3n/2 under-provisioned
+        // once a deeper interleave exceeded level 0's.)
         let packed_cells = |c: &Vec<usize>| -> usize {
             c.iter()
                 .enumerate()
