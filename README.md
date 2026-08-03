@@ -9,8 +9,7 @@
   <a href="https://github.com/leanEthereum/leanVM-b/releases/download/spec-latest/doc.pdf"><img src="https://img.shields.io/badge/main-PDF-blue?style=for-the-badge&logo=latex&logoColor=white" alt="Latest main-branch PDF"></a>
 </p>
 
-- Warning: highly experimental.
-- The proving architecture is intentionally kept simple.
+Warning: highly experimental.
 
 # Benchmarks
 
