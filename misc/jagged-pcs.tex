@@ -37,7 +37,8 @@
 \section{The goal}\label{sec:goal}
 %=====================================================================
 
-An arithmetization presents $N$ columns. Column $i$ is a multilinear
+An arithmetization presents $N$ columns; here and below $N,m,n,k,h,b,B,L,t,e,A$ and $\beta$
+are nonnegative integers. Column $i$ is a multilinear
 $P_i:\cube{k_i}\to\F$, so of logical length $2^{k_i}$, but only a prefix of $h_i\le2^{k_i}$
 entries carries data: from $h_i$ upward the column repeats a fixed public value $p_i\in\F$.
 The heights $h_i$ are run-time quantities while the dimensions $k_i$ are fixed when the
@@ -60,8 +61,7 @@ evaluated at a point.
 Notation, multilinear extensions and the inner-product commitment interface are those of the
 main document: an opening proves $\inner Wq=\sum_{w\in\cube m}W(w)q(w)=C$ against any weight
 $W$ the verifier can evaluate, a point evaluation being $W=\eq(\zeta,\cdot)$. Bit strings are
-little-endian, with $\val a=\sum_j a_j2^j$. The counters
-$N,m,n,k,h,b,B,L,t,e,A$ and $\beta$ are nonnegative integers throughout.
+little-endian, with $\val a=\sum_j a_j2^j$.
 
 %=====================================================================
 \section{The layout}\label{sec:layout}
@@ -276,8 +276,9 @@ $1+\gamma^{2^j}$ vanishes.
 A BaseFold/WHIR-style opening does not reduce to a single evaluation of $\pol W$. It consumes
 $m-L$ of the $m$ variables in sumcheck rounds, leaving a challenge prefix $\rho\in\F^{m-L}$,
 and transmits the remaining $L$-variable message $f:\cube L\to\F$ in the clear, with $L$ small,
-typically $3$ or $4$, and $b\le m-L$ for every block, so that a block's selector coordinates
-are all consumed by the prefix. Its last check needs $\sum_{y\in\cube L}f(y)\,\pol W(\rho,y)$.
+typically $3$ or $4$. Call positions $0,\dots,m-L-1$ the \emph{prefix} coordinates, fixed by
+$\rho$, and positions $m-L,\dots,m-1$ the \emph{tail} coordinates, over which $f$ ranges. Every
+block has $b\le m-L$, so a block's selector coordinates are all prefix coordinates. Its last check needs $\sum_{y\in\cube L}f(y)\,\pol W(\rho,y)$.
 Since $W$ is the $\gamma^{\beta}$-weighted sum of its blocks' interval weights, it is enough to
 do one block. Fix one, write $\Omega:=W^{t,e}_{u^{\star}(\gamma,\zeta)}$ for its interval
 weight, and let
@@ -306,13 +307,13 @@ $j=m-L$ and letting $S$ be row $0$ of $\prod_{j<m-L}T_j(\rho_j)$,
   \label{eq:SV}
 \end{equation}
 with $S,V\in\F^Q$. So $S$ is one automaton run of $m-L$ steps, and $V$ is a reverse dynamic
-program over vectors $V_j(y')\in\F^Q$ indexed by the residual bits $y'\in\cube{\,j-(m-L)}$
-below position $j$, with $V=V_{m-L}$ on the empty index. The residual index coordinates are
+program over vectors $V_j(y')\in\F^Q$ indexed by the tail bits $y'\in\cube{\,j-(m-L)}$ below
+position $j$, with $V=V_{m-L}$ on the empty index. The tail coordinates of the index are
 Boolean, so
 \[
   V_j(y')=T_j^{(0)}V_{j+1}(y',0)+T_j^{(1)}V_{j+1}(y',1),\qquad V_m(y)=f(y)\,\acc ,
 \]
-peeling the most significant residual bit first: $2^L-1$ reverse steps, then $\inner SV$.
+peeling the most significant tail bit first: $2^L-1$ reverse steps, then $\inner SV$.
 
 \paragraph{The reverse step} It takes the two children $V^{0}:=V_{j+1}(y',0)$ and
 $V^{1}:=V_{j+1}(y',1)$ in $\F^Q$, the row coordinate $r$, and $t_j,e_j$. Transposing the
@@ -323,10 +324,10 @@ transitions with the row pair $u_j=(1-r,r)$ gives, for $(t_j,e_j)=(0,0)$,
 and analogously for the other three: $8$ multiplications. For $r\in\{0,1\}$ the step is a pure
 selection and costs nothing whichever arm it is, being $(V^{0}_0,V^{1}_0,V^{0}_2,V^{1}_0)$ at
 $r=0$ and $(V^{1}_0,V^{0}_1,V^{1}_0,V^{0}_3)$ at $r=1$ for the arm displayed. The block's row
-point is zero above its dimension, so that free case covers every residual coordinate the
-block does not use.
+point is zero above its dimension, so that free case covers every tail coordinate the block
+does not use.
 
-\paragraph{Closed form when every residual row coordinate vanishes} With the high row bits pinned
+\paragraph{Closed form when $\zeta$ has no tail coordinate} With the high row bits pinned
 to zero, $\val w=t+\val a$ forces $w$'s high part to be the integer
 $t_{\mathrm{hi}}:=\lfloor t/2^{m-L}\rfloor$ plus the incoming carry, so each state reaches
 exactly one message index. With $e_{\mathrm{hi}}:=\lfloor e/2^{m-L}\rfloor$ read off the $L+1$
@@ -358,7 +359,7 @@ message $f$. \emph{Output:} the block's contribution $\gamma^{\beta}\Sigma$.
 \begin{enumerate}[itemsep=1pt,topsep=2pt]
 \item Run the automaton over $j=0,\dots,m-L-1$ at coordinates $\rho_j$ with the weights
 $u^{\star}(\gamma,\zeta)$, giving $S\in\F^Q$. Cost $7(m-L)$ plus $b$ squarings.
-\item If $\zeta$ vanishes at every residual coordinate, return
+\item If $b+k\le m-L$, so that all of $\zeta$'s coordinates are prefix coordinates, return
 $\gamma^{\beta}\cdot$\eqref{eq:closed}. Cost $O(L)$.
 \item Otherwise set $V_m(y)=f(y)\,\acc$ for $y\in\cube L$, apply one reverse step to each pair
 for $j=m-1$ down to $m-L$, and return $\gamma^{\beta}\inner SV$. Cost at most $8(2^L-1)+5$,
@@ -383,7 +384,8 @@ that claim's column.
 
 Given the endpoint bits, the powers of $\gamma$ and $C$, all of which are $O(m)$ or one pass
 over the claims, the verifier spends on the weight itself, per block, $7(m-L)$ multiplications
-for the automaton and at most $8(2^L-1)+5$ for the contraction, so roughly $7m$ per
+for the automaton plus $b$ squarings, and at most $8(2^L-1)+5$ for the contraction, so
+roughly $7m$ per
 \emph{block} rather than per column. That computation is straight-line in $m$ and the number of
 blocks, with the shape of the data entering only as bits, which is what makes it cheap to
 prove recursively.
