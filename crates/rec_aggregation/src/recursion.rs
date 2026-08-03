@@ -1396,26 +1396,6 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
     }
     assert_eq!(next_rank, ncl);
 
-    // Padding-prefix indicators depend only on (logical row point, physical
-    // Jagged block), not on the column slot. Cache one per distinct pair used
-    // by a nonzero padding value.
-    let mut pad_prefix_ids = std::collections::HashMap::new();
-    let mut claim_pad_prefix = vec![0usize; ncl];
-    let (mut pad_prefix_row, mut pad_prefix_col) = (Vec::new(), Vec::new());
-    for j in 0..ncl {
-        if cpbuf[j] >= 3 || cppad[j] == F64::ZERO {
-            continue;
-        }
-        let key = (claim_row_group[j], cpcol[j]);
-        let next = pad_prefix_ids.len();
-        let prefix = *pad_prefix_ids.entry(key).or_insert_with(|| {
-            pad_prefix_row.push(key.0);
-            pad_prefix_col.push(key.1);
-            next
-        });
-        claim_pad_prefix[j] = prefix;
-    }
-
     // ---- the placeholder map ----
     let ints = |v: &[usize]| format!("[{}]", v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(", "));
     let us = |v: &[u128]| format!("[{}]", v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(", "));
@@ -1956,24 +1936,15 @@ fn placeholder_map(program: &Program) -> BTreeMap<String, String> {
         "QPKD_VARS_CAP",
         (33 + lean_vm::blake3_flock::SLOT_STRIDE_LOG).to_string(),
     );
-    ps("CLAIM_COL", ints(&cpcol));
     ps(
         "CLAIM_PAD",
         flds(&cppad.iter().map(|&v| F192::from(v)).collect::<Vec<_>>()),
     );
     ps("CLAIM_QPKD_SLOT", ints(&cpslot));
-    ps("CLAIM_BLOCK_SLOT", ints(&cpblockslot));
-    ps("CLAIM_BLOCK_LOG", ints(&cpblocklog));
     ps("CLAIM_GAMMA_RANK", ints(&claim_gamma_rank));
     ps("N_CLAIM_ROWS", claim_row_rep.len().to_string());
-    ps("CLAIM_ROW_GROUP", ints(&claim_row_group));
     ps("CLAIM_ROW_REP", ints(&claim_row_rep));
-    ps("N_PAD_PREFIXES", pad_prefix_row.len().to_string());
-    ps("PAD_PREFIX_ROW", ints(&pad_prefix_row));
-    ps("PAD_PREFIX_COL", ints(&pad_prefix_col));
-    ps("CLAIM_PAD_PREFIX", ints(&claim_pad_prefix));
     ps("N_JAGGED_BATCHES", batch_rep.len().to_string());
-    ps("JAGGED_BATCH_REP", ints(&batch_rep));
     ps("JAGGED_BATCH_ROW", ints(&batch_row));
     ps("JAGGED_BATCH_COL", ints(&batch_col));
     ps("JAGGED_BATCH_LOG", ints(&batch_log));

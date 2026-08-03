@@ -131,7 +131,17 @@ pub fn placements_of_blocks(
 /// columns (e.g. `q_pkd`, ~1 GB at scale) copy in parallel — the `2^m` stack
 /// is memory-bandwidth bound, so a single-threaded `memcpy` leaves most of the
 /// machine idle.
-pub fn stack_q(cols: &[Column], placements: &[Placement], m: usize) -> Vec<F64> {
+///
+/// What is committed is the column OFFSET BY ITS PAD VALUE, `P_c + pad[c]`. The
+/// logical column is `P_c` below its real height and the constant `pad[c]` at and
+/// above it, so the offset column vanishes on the padding and is still supported
+/// exactly on `[0, height)`; and since the MLE of a constant is that constant, a
+/// logical evaluation is the committed one plus `pad[c]`. That turns the padding
+/// correction into a single field addition and removes the prefix indicator the
+/// verifier would otherwise evaluate per claim (`cpu::slot_claims`). Columns with
+/// `pad[c] == 0`, which is all but the read counts and the two finalize-count
+/// columns, keep the plain `memcpy` path.
+pub fn stack_q(cols: &[Column], placements: &[Placement], pads: &[F64], m: usize) -> Vec<F64> {
     use rayon::prelude::*;
     // `alloc_zeroed`-backed for the all-zero pad tail; only the copied ranges are
     // touched. (F64 is all-zero bytes at ZERO, so the pad needs no explicit write.)
@@ -152,7 +162,17 @@ pub fn stack_q(cols: &[Column], placements: &[Placement], m: usize) -> Vec<F64> 
         }
         let width = 1usize << placement.block_width_log;
         let src = &cols[i][..placement.height];
-        if width == 1 && src.len() >= crate::PAR_THRESHOLD {
+        let pad = pads[i];
+        if width == 1 && pad != F64::ZERO {
+            let dst = &mut q[placement.offset..placement.offset + placement.height];
+            if dst.len() >= crate::PAR_THRESHOLD {
+                dst.par_iter_mut().zip(src.par_iter()).for_each(|(d, s)| *d = *s + pad);
+            } else {
+                for (d, s) in dst.iter_mut().zip(src) {
+                    *d = *s + pad;
+                }
+            }
+        } else if width == 1 && src.len() >= crate::PAR_THRESHOLD {
             let dst = &mut q[placement.offset..placement.offset + placement.height];
             dst.par_chunks_mut(COPY_CHUNK)
                 .zip(src.par_chunks(COPY_CHUNK))
@@ -176,7 +196,7 @@ pub fn stack_q(cols: &[Column], placements: &[Placement], m: usize) -> Vec<F64> 
             let dst = &mut q[placement.offset..placement.offset + placement.height * width];
             let write_row = |row: usize, out: &mut [F64]| {
                 for (slot, &col) in block_cols.iter().enumerate() {
-                    out[slot] = cols[col][row];
+                    out[slot] = cols[col][row] + pads[col];
                 }
             };
             if dst.len() >= crate::PAR_THRESHOLD {
@@ -205,7 +225,7 @@ pub(crate) fn stack(cols: &[Column]) -> Stacked {
         .collect();
     let heights: Vec<usize> = cols.iter().map(Vec::len).collect();
     let (placements, m) = placements_of(&kappas, &heights, None);
-    let q = stack_q(cols, &placements, m);
+    let q = stack_q(cols, &placements, &vec![F64::ZERO; cols.len()], m);
     Stacked { m, q, placements }
 }
 
@@ -232,7 +252,7 @@ mod tests {
             vec![F64(77)],
             vec![F64(30), F64(31)],
         ];
-        let q = stack_q(&cols, &placements, m);
+        let q = stack_q(&cols, &placements, &vec![F64::ZERO; cols.len()], m);
         assert_eq!(&q[..5], &cols[1][..5]);
         assert_eq!(&q[5..8], &cols[0][..3]);
         assert_eq!(&q[8..10], &cols[3][..2]);
@@ -250,7 +270,7 @@ mod tests {
             vec![F64(2), F64(3), F64(5), F64::ZERO],
             vec![F64(7), F64(11), F64(13), F64::ZERO],
         ];
-        let q = stack_q(&cols, &placements, m);
+        let q = stack_q(&cols, &placements, &vec![F64::ZERO; cols.len()], m);
         assert_eq!(
             &q[..6],
             &[cols[0][0], cols[1][0], cols[0][1], cols[1][1], cols[0][2], cols[1][2]]

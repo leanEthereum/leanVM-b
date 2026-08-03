@@ -115,10 +115,14 @@ pub enum StackClaim {
     /// indicator of [`super::jagged`], supported only on the real prefix.
     Jagged {
         offset: usize,
+        /// Interval length `2^selector_len * rows`.
         height: usize,
-        /// Low coordinates selecting a column inside a row-major block; zero
-        /// for a singleton column.
+        /// Log width of the row-major block; zero for a singleton column.
         selector_len: usize,
+        /// This column's slot inside the block, `< 2^selector_len`.
+        slot: usize,
+        /// The column's own evaluation point. Selector coordinates are not
+        /// prefixed onto it.
         row_point: Vec<F192>,
         value: F192,
     },
@@ -181,23 +185,19 @@ struct JaggedClaimBatch {
     scale: F192,
 }
 
-/// Assign the powers of one batching challenge so that complete row-major
-/// blocks receive consecutive exponents in selector order. Their weighted
-/// residual evaluations then collapse to one Basic-Jagged evaluation:
-/// `sum_c gamma^(base+c) eq(z,c) = gamma^base * D * eq(z_gamma, c)`, with
-/// `z_gamma[b] = gamma^(2^b) / (1 + gamma^(2^b))` and
-/// `D = prod_b (1 + gamma^(2^b))`. Passing the unnormalized pairs
-/// `(1, gamma^(2^b))` straight to
-/// [`super::jagged::indicator_eval_with_row_weights`] absorbs `D` and avoids
-/// the inversions entirely.
-///
-/// Claims that do not complete a block keep a plain distinct power. Using
-/// powers rather than independent challenges costs at most
-/// `claims.len() / |E|` soundness, negligible against a 192-bit `E`.
+/// Assign powers of one batching challenge so a row-major block's claims take
+/// consecutive exponents in slot order. Every non-empty Jagged block must have
+/// exactly one whole-column claim per slot and all members must share one row
+/// point. The public-input exception is routed through `Strided` upstream.
 fn geometric_claim_weights(claims: &[StackClaim], gamma: F192) -> (Vec<F192>, Vec<JaggedClaimBatch>) {
     let n = claims.len();
+    let mut powers = vec![F192::ONE; n];
+    for k in 1..n {
+        powers[k] = powers[k - 1] * gamma;
+    }
+
     let mut rank = vec![usize::MAX; n];
-    let mut batch_members: Vec<(Vec<usize>, usize, usize, usize)> = Vec::new();
+    let mut batches = Vec::new();
     let mut next_rank = 0usize;
 
     for i in 0..n {
@@ -216,91 +216,74 @@ fn geometric_claim_weights(claims: &[StackClaim], gamma: F192) -> (Vec<F192>, Ve
             next_rank += 1;
             continue;
         };
-        if *selector_len == 0 {
+
+        // Empty columns carry the identically-zero weight. They still consume a
+        // batching rank but are not gathered, since their offset may equal the
+        // following block's offset.
+        if *height == 0 {
             rank[i] = next_rank;
             next_rank += 1;
             continue;
         }
+
         let width = 1usize << selector_len;
-        let mut by_slot = vec![None; width];
+        let mut members = vec![usize::MAX; width];
         for (j, other) in claims.iter().enumerate().skip(i) {
-            if rank[j] != usize::MAX {
-                continue;
-            }
             let StackClaim::Jagged {
                 offset: other_offset,
                 height: other_height,
-                selector_len: other_selector_len,
-                row_point: other_point,
+                slot,
                 ..
             } = other
             else {
                 continue;
             };
-            if other_offset != offset
-                || other_height != height
-                || other_selector_len != selector_len
-                || other_point[*selector_len..] != row_point[*selector_len..]
-            {
+            if other_offset != offset || *other_height == 0 {
                 continue;
             }
-            // Only a Boolean selector prefix can be folded into the geometric
-            // block; anything else keeps its own power.
-            let mut slot = 0usize;
-            let mut boolean = true;
-            for (bit, &x) in other_point[..*selector_len].iter().enumerate() {
-                if x == F192::ONE {
-                    slot |= 1 << bit;
-                } else if x != F192::ZERO {
-                    boolean = false;
-                    break;
-                }
-            }
-            if boolean && by_slot[slot].is_none() {
-                by_slot[slot] = Some(j);
-            }
+            assert!(*slot < width, "Jagged claim slot exceeds its block width");
+            assert_eq!(members[*slot], usize::MAX, "two Jagged claims on one column");
+            members[*slot] = j;
         }
-        if by_slot.iter().all(Option::is_some) {
-            let members: Vec<usize> = by_slot.into_iter().map(Option::unwrap).collect();
-            for (slot, &j) in members.iter().enumerate() {
-                rank[j] = next_rank + slot;
-            }
-            batch_members.push((members, *offset, *height, *selector_len));
-            next_rank += width;
-        } else {
-            rank[i] = next_rank;
-            next_rank += 1;
-        }
-    }
-    assert_eq!(next_rank, n, "geometric ranking must be a permutation");
 
-    let mut powers = vec![F192::ONE; n];
-    for k in 1..n {
-        powers[k] = powers[k - 1] * gamma;
-    }
-    let weights: Vec<F192> = rank.iter().map(|&r| powers[r]).collect();
-    let mut batches = Vec::new();
-    for (members, offset, height, selector_len) in batch_members {
-        let scale = powers[rank[members[0]]];
-        let StackClaim::Jagged { row_point, .. } = &claims[members[0]] else {
-            unreachable!("batch members are Jagged claims")
-        };
-        let mut a = gamma;
-        let mut row_weights = Vec::with_capacity(row_point.len());
-        for _ in 0..selector_len {
-            row_weights.push([F192::ONE, a]);
-            a *= a;
+        for (slot, &member) in members.iter().enumerate() {
+            assert_ne!(member, usize::MAX, "a Jagged block must have a claim per slot");
+            let StackClaim::Jagged {
+                height: member_height,
+                selector_len: member_selector_len,
+                row_point: member_point,
+                ..
+            } = &claims[member]
+            else {
+                unreachable!("batch members are Jagged claims")
+            };
+            assert!(
+                member_height == height && member_selector_len == selector_len && member_point == row_point,
+                "a Jagged block's claims must share its shape and row point",
+            );
+            rank[member] = next_rank + slot;
         }
-        row_weights.extend(row_point[selector_len..].iter().map(|&r| [F192::ONE + r, r]));
+
+        let mut geometric = gamma;
+        let mut row_weights = Vec::with_capacity(*selector_len + row_point.len());
+        for _ in 0..*selector_len {
+            row_weights.push([F192::ONE, geometric]);
+            geometric *= geometric;
+        }
+        row_weights.extend(row_point.iter().map(|&r| [F192::ONE + r, r]));
         batches.push(JaggedClaimBatch {
             members,
-            offset,
-            height,
-            selector_len,
+            offset: *offset,
+            height: *height,
+            selector_len: *selector_len,
             row_weights,
-            scale,
+            scale: powers[next_rank],
         });
+        next_rank += width;
     }
+
+    assert_eq!(next_rank, n, "geometric ranking must be a permutation");
+    let weights = rank.iter().map(|&r| powers[r]).collect();
     (weights, batches)
 }
 
@@ -434,7 +417,7 @@ fn fold_stacked_point_claims(
         eq_tables.push((point, eq));
     }
     for batch in jagged_batches {
-        let point = &claims[batch.members[0]].point()[batch.selector_len..];
+        let point = claims[batch.members[0]].point();
         if !eq_tables.iter().any(|(cached, _)| *cached == point) {
             let eq = build_eq(point);
             eq_tables.push((point, eq));
@@ -456,7 +439,7 @@ fn fold_stacked_point_claims(
     for batch in jagged_batches {
         let width = 1usize << batch.selector_len;
         let rows = batch.height / width;
-        let eq = eq_for(&claims[batch.members[0]].point()[batch.selector_len..]);
+        let eq = eq_for(claims[batch.members[0]].point());
         let slot_weights: Vec<F192> = batch.members.iter().map(|&member| gammas[member]).collect();
         let dst = &mut b_stack[batch.offset..batch.offset + batch.height];
         if dst.len() >= PAR_FOLD_THRESHOLD {
@@ -482,25 +465,10 @@ fn fold_stacked_point_claims(
         }
         let g = *g;
         match claim {
-            StackClaim::Jagged {
-                offset,
-                height,
-                row_point,
-                ..
-            } => {
-                if *height != 0 {
-                    let eq = eq_for(row_point);
-                    let dst = &mut b_stack[*offset..*offset + *height];
-                    if *height < PAR_FOLD_THRESHOLD {
-                        for (bi, ei) in dst.iter_mut().zip(eq.iter()) {
-                            *bi += g * *ei;
-                        }
-                    } else {
-                        dst.par_iter_mut()
-                            .zip(eq[..*height].par_iter())
-                            .for_each(|(bi, ei)| *bi += g * *ei);
-                    }
-                }
+            // Every non-empty Jagged claim belongs to a complete block batch.
+            // An empty interval carries the identically-zero weight.
+            StackClaim::Jagged { height, .. } => {
+                assert_eq!(*height, 0, "unbatched non-empty Jagged claim");
             }
             StackClaim::Point { offset, low_point, .. } => {
                 let len = 1usize << low_point.len();
@@ -554,12 +522,10 @@ fn fold_stacked_point_claims(
 /// Mirror of the extension-field `stack_claim_eq_at`.
 fn stack_claim_eq_at(claim: &StackClaim, x: &[F192]) -> F192 {
     match claim {
-        StackClaim::Jagged {
-            offset,
-            height,
-            row_point,
-            ..
-        } => super::jagged::indicator_eval(row_point, *offset, *offset + *height, x),
+        StackClaim::Jagged { height, .. } => {
+            assert_eq!(*height, 0, "unbatched non-empty Jagged claim");
+            F192::ZERO
+        }
         StackClaim::Point { offset, low_point, .. } => {
             let n = low_point.len();
             let mut e = eq_eval_ext(low_point, &x[..n]);
@@ -1215,37 +1181,87 @@ mod jagged_batch_tests {
     }
 
     /// The geometric block fold must agree, both in the dense `b_stack` it
-    /// scatters and in the single batched indicator the verifier evaluates,
-    /// with treating each column of the block as an independent Jagged claim.
+    /// scatters and at an arbitrary verifier point, with the independent
+    /// per-column Jagged weights.
     #[test]
     fn geometric_batch_matches_individual_jagged_claims() {
-        let row = [f(3), f(5), f(7)];
-        // Deliberately shuffle the four selector slots: batching must assign
-        // powers by Boolean slot, not by input order.
-        let block_point = |b0: F192, b1: F192| vec![b0, b1, row[0], row[1], row[2]];
-        let singleton_point = vec![f(11), f(13), f(17), f(19), f(23)];
-        let jagged = |row_point: Vec<F192>, offset, height, selector_len, value| StackClaim::Jagged {
-            offset,
-            height,
-            selector_len,
-            row_point,
-            value,
-        };
+        let row = vec![f(3), f(5), f(7)];
+        let singleton = vec![f(11), f(13), f(17), f(19), f(23)];
         let claims = [
-            jagged(block_point(F192::ONE, F192::ZERO), 3, 20, 2, f(29)),
-            jagged(block_point(F192::ZERO, F192::ZERO), 3, 20, 2, f(31)),
-            jagged(block_point(F192::ONE, F192::ONE), 3, 20, 2, f(37)),
-            jagged(block_point(F192::ZERO, F192::ONE), 3, 20, 2, f(41)),
-            jagged(singleton_point, 29, 7, 0, f(43)),
+            StackClaim::Jagged {
+                offset: 4,
+                height: 20,
+                selector_len: 2,
+                slot: 0,
+                row_point: row.clone(),
+                value: f(29),
+            },
+            StackClaim::Jagged {
+                offset: 29,
+                height: 7,
+                selector_len: 0,
+                slot: 0,
+                row_point: singleton,
+                value: f(43),
+            },
+            StackClaim::Jagged {
+                offset: 4,
+                height: 20,
+                selector_len: 2,
+                slot: 1,
+                row_point: row.clone(),
+                value: f(31),
+            },
+            StackClaim::Jagged {
+                offset: 4,
+                height: 20,
+                selector_len: 2,
+                slot: 2,
+                row_point: row.clone(),
+                value: f(37),
+            },
+            StackClaim::Jagged {
+                offset: 4,
+                height: 20,
+                selector_len: 2,
+                slot: 3,
+                row_point: row,
+                value: f(41),
+            },
         ];
         let gamma = f(47);
         let (weights, batches) = geometric_claim_weights(&claims, gamma);
-        assert_eq!(batches.len(), 1, "the four block columns form one batch");
+        assert_eq!(batches.len(), 2);
+        assert_eq!(weights[1], gamma * gamma * gamma * gamma);
+
+        let per_claim_at = |claim: &StackClaim, x: &[F192]| -> F192 {
+            let StackClaim::Jagged {
+                offset,
+                height,
+                selector_len,
+                slot,
+                row_point,
+                ..
+            } = claim
+            else {
+                unreachable!()
+            };
+            let mut row_weights: Vec<[F192; 2]> = (0..*selector_len)
+                .map(|bit| {
+                    if (slot >> bit) & 1 == 1 {
+                        [F192::ZERO, F192::ONE]
+                    } else {
+                        [F192::ONE, F192::ZERO]
+                    }
+                })
+                .collect();
+            row_weights.extend(row_point.iter().map(|&r| [F192::ONE + r, r]));
+            super::super::jagged::indicator_eval_with_row_weights(&row_weights, *offset, *offset + *height, x)
+        };
 
         let mut folded = vec![F192::ZERO; 64];
         let mut target = F192::ZERO;
         fold_stacked_point_claims(&mut folded, &mut target, &claims, &weights, &batches);
-
         let expected_target = claims
             .iter()
             .zip(&weights)
@@ -1257,24 +1273,49 @@ mod jagged_batch_tests {
                 .map(|bit| if (index >> bit) & 1 == 1 { F192::ONE } else { F192::ZERO })
                 .collect();
             let expected = claims.iter().zip(&weights).fold(F192::ZERO, |acc, (claim, &weight)| {
-                acc + weight * stack_claim_eq_at(claim, &point)
+                acc + weight * per_claim_at(claim, &point)
             });
             assert_eq!(folded[index], expected, "dense index {index}");
         }
 
-        let residual_point = [f(53), f(59), f(61), f(67), f(71), f(73)];
+        let residual = [f(53), f(59), f(61), f(67), f(71), f(73)];
         let batch_eval = batches.iter().fold(F192::ZERO, |acc, batch| {
             acc + batch.scale
                 * super::super::jagged::indicator_eval_with_row_weights(
                     &batch.row_weights,
                     batch.offset,
                     batch.offset + batch.height,
-                    &residual_point,
+                    &residual,
                 )
         });
-        let grouped_eval = batches[0].members.iter().fold(F192::ZERO, |acc, &member| {
-            acc + weights[member] * stack_claim_eq_at(&claims[member], &residual_point)
+        let direct = claims.iter().zip(&weights).fold(F192::ZERO, |acc, (claim, &weight)| {
+            acc + weight * per_claim_at(claim, &residual)
         });
-        assert_eq!(batch_eval, grouped_eval, "batched indicator must equal the column sum");
+        assert_eq!(batch_eval, direct);
+    }
+
+    #[test]
+    #[should_panic(expected = "a Jagged block must have a claim per slot")]
+    fn incomplete_jagged_block_is_rejected() {
+        let row = vec![f(3), f(5), f(7)];
+        let claims = [
+            StackClaim::Jagged {
+                offset: 4,
+                height: 20,
+                selector_len: 2,
+                slot: 0,
+                row_point: row.clone(),
+                value: f(29),
+            },
+            StackClaim::Jagged {
+                offset: 4,
+                height: 20,
+                selector_len: 2,
+                slot: 1,
+                row_point: row,
+                value: f(31),
+            },
+        ];
+        geometric_claim_weights(&claims, f(47));
     }
 }
