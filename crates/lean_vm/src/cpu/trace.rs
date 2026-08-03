@@ -78,15 +78,15 @@ pub(crate) struct Brow {
     pub(crate) ab1: u32,
     pub(crate) acv: u32,
     pub(crate) ac: u32,
-    pub(crate) va: [F64; 4],  // a's four flock words = cells (aa0, aa1), lanes (lo, hi)
-    pub(crate) vb: [F64; 4],  // b's four flock words = cells (ab0, ab1)
-    pub(crate) vcv: [F64; 4], // cv's four flock words = cells (acv, acv+1)
-    pub(crate) vc: [F64; 4],  // c's four flock words = cells (ac, ac+1)
+    pub(crate) va: [F64; 4],   // a's four flock words = cells (aa0, aa1), lanes (lo, hi)
+    pub(crate) vb: [F64; 4],   // b's four flock words = cells (ab0, ab1)
+    pub(crate) vcv: [F64; 4],  // cv's four flock words = cells (acv, acv+1)
+    pub(crate) vc: [F64; 4],   // c's four flock words = cells (ac, ac+1)
     pub(crate) metadata: F192, // counter:u64 | block_len:u32 | flags:u32 (top lane zero)
-    pub(crate) ra: [F64; 2],  // per-cell counts for the two a input cells
-    pub(crate) rb: [F64; 2],  // … the two b input cells
-    pub(crate) rcv: [F64; 2], // … the two cv input cells
-    pub(crate) rc: [F64; 2],  // … the two c output cells
+    pub(crate) ra: [F64; 2],   // per-cell counts for the two a input cells
+    pub(crate) rb: [F64; 2],   // … the two b input cells
+    pub(crate) rcv: [F64; 2],  // … the two cv input cells
+    pub(crate) rc: [F64; 2],   // … the two c output cells
     pub(crate) bytecode_read: F64,
 }
 

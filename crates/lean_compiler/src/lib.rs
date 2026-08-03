@@ -90,7 +90,11 @@ pub fn compile(ast: &Ast) -> Program {
         // Fold away the pure instructions the lowerer emitted twice. Runs before
         // entry pcs are assigned, so only this function's own `KVal::Local`
         // targets need renumbering (`cse::compact` does that).
-        let dropped = if std::env::var("DBG_NO_CSE").is_ok() { 0 } else { cse::cse(&mut low.code, low.abi_end) };
+        let dropped = if std::env::var("DBG_NO_CSE").is_ok() {
+            0
+        } else {
+            cse::cse(&mut low.code, low.abi_end)
+        };
         cse_dropped += dropped;
         if dbg_lower {
             eprintln!("== fn {} (frame {}) ==", low.name, pretty_integer(low.frame_size));

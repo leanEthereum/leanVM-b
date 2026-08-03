@@ -111,9 +111,9 @@ pub fn prefix_indicator_eval(height: usize, point: &[F192]) -> F192 {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::ligerito::build_eq_table_ext as build_eq;
     use super::super::ring_switch::inner_product_ext;
+    use super::*;
 
     /// MLE of an E-valued table, the shape jagged's reference checks need
     /// (`primitives::multilinear::mle_eval` takes a K-valued table).

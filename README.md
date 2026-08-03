@@ -22,20 +22,21 @@ RAYON_NUM_THREADS=11 cargo run --release -- xmss --n-signatures 890 --log-inv-ra
 ```
 
 ```
-XMSS aggregation, 820 signatures
-  cycles (VM steps)           :      1,351,859 = 2^20.37   (  1648.6 / XMSS)
-    XOR    instructions       :        115,621 = 2^16.82   (   141.0 / XMSS)
-    MUL    instructions       :        269,792 = 2^18.04   (   329.0 / XMSS)
-    SET    instructions       :        261,504 = 2^18.00   (   318.9 / XMSS)
-    DEREF  instructions       :        468,599 = 2^18.84   (   571.5 / XMSS)
-    JUMP   instructions       :        106,602 = 2^16.70   (   130.0 / XMSS)
-    BLAKE3 instructions       :        129,741 = 2^16.99   (   158.2 / XMSS)
-  committed witness size      : 2^26.360
-  data memory                 : 2^22 padded (2^21.56 used)
-  proof size                  : 374.6 KiB
-  proving (incl. witness gen) : 2.446402417s
-  verifying                   : 5.343375ms
-  throughput                  : 335.2 XMSS/s
+XMSS aggregation, 890 signatures
+  cycles (VM steps)           :      1,513,580 =   2^20.53   (   1,700.652 / XMSS)
+    XOR      instructions     :        125,491 =  2^16.937   (     141.001 / XMSS)
+    MUL      instructions     :        292,821 =   2^18.16   (     329.012 / XMSS)
+    SET      instructions     :        341,765 =  2^18.383   (     384.006 / XMSS)
+    DEREF    instructions     :        508,569 =  2^18.956   (     571.426 / XMSS)
+    JUMP     instructions     :        114,813 =  2^16.809   (     129.003 / XMSS)
+    BLAKE3   instructions     :        130,121 =  2^16.989   (     146.203 / XMSS)
+    PACK64X2 instructions     :              0 =         -   (           0 / XMSS)
+  committed witness size      : 2^26.364
+  data memory                 : 2^22 padded (2^21.701 used)
+  proof size                  : 359.617 KiB
+  proving (incl. witness gen) : 1.905 s
+  verifying                   : 0.00426 s
+  throughput                  : 467.072 XMSS/s
 ```
 
 ### Recursion
@@ -46,19 +47,20 @@ RAYON_NUM_THREADS=11 cargo run --release -- recursion --n 2  --log-inv-rate 2
 ```
 
 ```
-recursion 2→1: 2 inner proofs of 950,518 cycles each
-  guest cycles (VM steps)     :      2,122,954 = 2^21.02   (1.12 / inner cycle)
-    XOR    instructions     :        460,742 = 2^18.81
-    MUL    instructions     :        712,030 = 2^19.44
-    SET    instructions     :        184,512 = 2^17.49
-    DEREF  instructions     :        686,980 = 2^19.39
-    JUMP   instructions     :         46,663 = 2^15.51
-    BLAKE3 instructions     :         32,027 = 2^14.97
-  committed witness size      : 2^26.360
-  data memory                 : 2^22 padded (2^21.27 used)
-  recursive proof size        : 376.9 KiB
-  outer proving               : 2.592742583s
-  complete recursive verify   : 23.070708ms
+recursion 2→1: 2 inner proofs of 1,472,224 cycles each
+  guest cycles (VM steps)     :        869,886 =   2^19.73   (0.295 / inner cycle)
+    XOR    instructions     :        215,490 =  2^17.717
+    MUL    instructions     :        268,787 =  2^18.036
+    SET    instructions     :         70,556 =  2^16.106
+    DEREF  instructions     :        265,183 =  2^18.017
+    JUMP   instructions     :          9,299 =  2^13.183
+    BLAKE3 instructions     :         18,115 =  2^14.145
+    PACK64X2 instructions     :         22,456 =  2^14.455
+  committed witness size      : 2^25.506
+  data memory                 : 2^21 padded (2^20.044 used)
+  recursive proof size        : 235.305 KiB
+  outer proving               : 1.26 s
+  complete recursive verify   : 0.0303 s
 ```
 
 ### Fibonacci
@@ -70,18 +72,19 @@ RAYON_NUM_THREADS=11 cargo run --release -- fibonacci --n 2000000  --log-inv-rat
 
 ```
 Fibonacci (in the exponent, i.e. modulo 2^64 - 1), N = 2,000,000
-  cycles (VM steps)           : 2,046,015
+  cycles (VM steps)           : 2,034,017
     XOR   instructions        : 2^10.966
-    MUL   instructions        : 2^20.942
-    SET   instructions        : 2^13.288
+    MUL   instructions        : 2^20.937
+    SET   instructions        : 2^12.552
     DEREF instructions        : 2^13.967
     JUMP  instructions        : 2^11.967
     BLAKE3 instructions        : 0
-  committed witness size      : 2^25.662
-  proof size                  : 348.4 KiB
-  proving (incl. witness gen) : 1.304737417s
-  verifying                   : 5.016916ms
-  throughput                  : 1,568,143 cycles/s
+    PACK64X2 instructions        : 0
+  committed witness size      : 2^25.658
+  proof size                  : 336.4 KiB
+  proving (incl. witness gen) : 1.031051291s
+  verifying                   : 3.274ms
+  throughput                  : 1,972,760 cycles/s
 ```
 
 ## Security

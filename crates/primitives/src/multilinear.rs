@@ -62,9 +62,7 @@ pub fn eq_table(r: &[F192]) -> Vec<F192> {
             *lo_x = e + high;
         };
         if half < PAR_THRESHOLD {
-            lo.iter_mut()
-                .zip(hi.iter_mut())
-                .for_each(|(l, h)| build_pair(l, h));
+            lo.iter_mut().zip(hi.iter_mut()).for_each(|(l, h)| build_pair(l, h));
         } else {
             lo.par_iter_mut()
                 .zip(hi.par_iter_mut())

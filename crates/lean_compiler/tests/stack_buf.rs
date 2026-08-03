@@ -9,8 +9,8 @@
 //! cell-by-cell holds the flock words `[v0, 0, v1, 0]`
 //! — the reference `compress` below is fed that lane layout.
 
-use lean_vm::blake3_flock::{compression, digest, metadata, warm_setup};
 use lean_compiler::{compile, parse};
+use lean_vm::blake3_flock::{compression, digest, metadata, warm_setup};
 use lean_vm::cpu::{prove, verify};
 use primitives::field::{F64, F192};
 
